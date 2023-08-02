@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+    <Properties>
+        <Property name="fileName">bfcs.log</Property>
+        <Property name="pattern">%d{yyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</Property>
+        <Property name="logPath">logs/</Property>
+        <Property name="age14d">14d</Property>
+    </Properties>
+    <Appenders>
+        <Console name="STDOUT" target="SYSTEM_OUT">
+            <PatternLayout charset="UTF-8" pattern="${pattern}"/>
+        </Console>
+
+        <RollingFile name="FileLog" fileName="${logPath}${fileName}" append="true"
+                     filePattern="${logPath}${fileName}.%d{yyyy-MM-dd}.%i">
+            <PatternLayout charset="UTF-8" pattern="${pattern}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy/>
+                <SizeBasedTriggeringPolicy size="100 MB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="50" />
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <Logger name="bf.bfcs" level="debug" additivity="false">
+            <AppenderRef ref="STDOUT" />
+            <AppenderRef ref="FileLog" />
+        </Logger>
+        <Logger name="org.springframework" level="info" additivity="false">
+            <AppenderRef ref="STDOUT" />
+            <AppenderRef ref="FileLog" />
+        </Logger>
+        <Logger name="org.springframework.cloud.config.client" level="warn" additivity="false">
+            <AppenderRef ref="STDOUT" />
+            <AppenderRef ref="FileLog" />
+        </Logger>
+        <Root level="info">
+            <AppenderRef ref="FileLog" />
+        </Root>
+    </Loggers>
+</Configuration>
