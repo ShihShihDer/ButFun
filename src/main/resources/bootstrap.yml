@@ -1,0 +1,57 @@
+but:
+  fun:
+    server:
+      name: BFCS01
+server:
+  port: 8000
+  servlet:
+    context-path: /but-fun-center-service
+spring:
+
+  application:
+    name: bfcs
+
+  boot:
+    admin:
+      client:
+        instance:
+          name: but-fun-center-service
+
+  cloud:
+    config:
+      uri: https://BF-BFCSS01:9000/but-fun-config-server
+      profile:
+    consul:
+      host: BF-BFRS01
+      port: 18221
+      discovery:
+        health-check-interval: 15s
+        health-check-url: https://IP_ADDRESS:SERVER_PORT/but-fun-center-service/actuator/health
+        prefer-ip-address: true
+        register: true
+        service-name: ${spring.boot.admin.client.instance.name}
+
+  redis:
+    database: 0
+    host: BF-BFCS-REDIS01
+    port: 26379
+    password:
+    lettuce:
+      pool:
+        max-active: 10
+        max-idle: 20
+        min-idle: 5
+    timeout: 3000ms
+    sentinel:
+      master: mymaster
+      nodes: BF-BFCS-REDIS01:26379,BF-BFCS-REDIS02:26379,BF-BFCS-REDIS03:26379
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+jasypt:
+  encryptor:
+    password: BFPassWord
