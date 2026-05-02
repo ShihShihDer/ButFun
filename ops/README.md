@@ -103,15 +103,24 @@ ops/
 
 ---
 
+## 策略決策紀錄
+
+> CEO 已決定: **全平台 + 全語言 (中/英/西) 鋪滿,機會最大化**。
+> 不採用單點突破策略 (傳統建議是先攻 Upwork)。
+> 這個策略的優點: 風險分散、品牌曝光最大;缺點: 各平台都需要維護 profile,初期工作量較大。
+
+---
+
 ## 第一週啟動 checklist
 
 - [ ] 跟 Claude 一起把 `profile.md` 裡所有 `[TODO]` 填完
-- [ ] 從 `platforms.md` 的 Tier S 選 2-3 個平台註冊
-- [ ] 在每個平台建立 profile (Claude 幫你寫對應語言的 bio)
-- [ ] GitHub pinned repos 整理 3-5 個展示用 repo (Claude 可以快速幫你做幾個)
-- [ ] LinkedIn 改成接案 mode (Claude 幫你寫 headline + about)
-- [ ] 設定每日掃案的 30 min 時段 (建議早 7:00 + 晚 22:00)
-- [ ] 第一週只投 5 個案,目標是**驗證流程**,不是接到案
+- [ ] 確認接案用名字 (真名 / 英文名 / ButFun 品牌名)
+- [ ] 在 `platforms.md` Tier S + Tier A 全部註冊 (約 8-10 個平台)
+- [ ] 在每個平台建立 profile (Claude 幫你寫對應語言的 bio,直接從 profile.md 產出)
+- [ ] GitHub pinned repos 整理 3-5 個展示用 repo (Claude 可以快速幫你做幾個 demo project)
+- [ ] LinkedIn 改成接案 mode (Claude 幫你寫 headline + about,中英雙語)
+- [ ] 設定每日掃案的時段 (建議早 7:00 + 晚 22:00,各 15 min)
+- [ ] 第一週目標: 投 10-15 個案 (跨平台、跨語言),驗證流程而非要求命中
 
 ---
 

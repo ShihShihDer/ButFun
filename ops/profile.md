@@ -8,8 +8,8 @@
 
 ## 基本身分 / Identity
 
-- **Name**: [TODO: 真名 / 接案用名 / 公司名?]
-- **Title**: AI Application Integration Engineer / Full-Stack Software Engineer
+- **Name**: [TODO 待確認: 真名 / 英文名 / 用 ButFun 為品牌名?]
+- **Title**: AI Application Integration Engineer / Full-Stack & Embedded Systems Engineer
 - **位置**: Taiwan (UTC+8)
 - **語言**: 中文 (母語) / English (working) / Español (working)
 - **聯絡方式**: [TODO: email / Discord / Telegram / LINE]
@@ -22,10 +22,12 @@
 | 期間 | 公司 / 角色 | 重點產出 |
 |---|---|---|
 | 8 yrs | 餐飲業 | 服務業、客戶溝通、壓力管理(轉職前的軟實力) |
-| — | 資策會 Java Web 班 [TODO 確認] | 結業轉職 |
-| ~6 mo | 博弈科技公司 [TODO 公司名] | **高併發開獎系統** — Java/Spring,處理即時下注與開獎 |
+| — | 資策會 **Java Web 班** | 結業轉職 |
+| ~6 mo | **勝聖科技 (博弈)** | **高併發即時開獎系統** — Java/Spring,處理即時下注與開獎,尖峰壓力測試通過 |
 | ~6 mo | 自學 (在家) | DevOps、Kubernetes、雲架構 |
-| 現職 | 育成科技 (SI) | iOS 原生 [TODO Swift?] / IoT / 5G 無線通訊;**主導團隊 CI/CD 建置**: Jenkins、SkyWalking、ELK、SonarQube [TODO 確認工具鏈] |
+| 現職 | **宇辰科技 (SI)** | **IoT / Linux ARM 嵌入式系統** / 5G 無線通訊;**主導團隊 CI/CD 平台建置**: GitLab + Jenkins + Redmine |
+
+> **離職故事 (對外統一口徑)**: 從勝聖離開的原因對外一律說「家庭因素 + 新竹↔台北通勤距離過遠」。**內部知道是被裁,但對任何客戶 / 平台 / 推薦人都不講這件事**。LinkedIn / Resume / 接案 profile 上的離職原因都用這個版本。
 
 ---
 
@@ -36,41 +38,46 @@
 > 我用 Claude (Max 訂閱) 作為工程槓桿,能在傳統工程師 1/3 ~ 1/5 的時間內交付高品質軟體產品。專長是把 AI 能力嵌進真實業務流程 — 不是 demo,是可上線的系統。
 
 ### 三句話自我介紹 (中)
-1. 8 年餐飲業轉職的全端工程師,目前在育成科技做 iOS / IoT / 5G。
-2. 主導團隊 CI/CD 與雲原生基礎建設,熟悉高併發系統設計。
-3. 現在以 Claude AI 為工具核心,接 AI 整合 / 自動化 / 全端開發案。
+1. 軟體工程師,跨領域背景 (8 年餐飲轉職),做過高併發後端 (博弈即時開獎系統) 與嵌入式 IoT/Linux ARM。
+2. 目前在 SI 公司主導團隊 CI/CD 平台 (GitLab + Jenkins + Redmine),熟悉雲原生與 5G 通訊。
+3. 以 Claude AI 為工程核心,接 **AI 整合 / 自動化 / 全端開發 / 嵌入式 / DevOps** 案,交付速度 3-5×。
 
 ### Three-line bio (EN)
-1. Full-stack engineer with 6+ years across high-concurrency gaming backends, iOS/IoT/5G systems, and DevOps platform building.
-2. Currently leading CI/CD and cloud-native infrastructure at an SI firm in Taiwan.
-3. AI-augmented delivery using Claude — I ship production-grade software 3-5× faster than typical contractors.
+1. Software engineer with a unique cross-domain background — 8 years in F&B before transitioning into tech via Java Web bootcamp.
+2. Production experience: high-concurrency real-time gaming backends, embedded IoT / Linux ARM systems, 5G wireless, and leading CI/CD platform builds (GitLab + Jenkins + Redmine).
+3. AI-augmented delivery using Claude — I ship production-grade software 3-5× faster than typical contractors, with senior architectural judgment.
 
 ### Bio en español (3 líneas)
-1. Ingeniero full-stack con experiencia en backends de alta concurrencia, sistemas iOS/IoT/5G y DevOps.
-2. Actualmente lidero la infraestructura CI/CD y cloud-native en una empresa SI en Taiwán.
-3. Entrega potenciada por IA con Claude — sistemas listos para producción, 3-5× más rápido que un contratista típico.
+1. Ingeniero de software con un trasfondo poco común — 8 años en gastronomía antes de transicionar a tech vía bootcamp de Java Web.
+2. Experiencia en producción: backends de gaming en tiempo real de alta concurrencia, sistemas embebidos IoT / Linux ARM, comunicación 5G, y construcción de plataformas CI/CD (GitLab + Jenkins + Redmine).
+3. Entrega potenciada por IA con Claude — sistemas listos para producción, 3-5× más rápido que un contratista típico, con criterio arquitectónico senior.
 
 ---
 
 ## 技能矩陣 / Skills
 
 ### 拿手 (Production-grade)
-- **Backend**: Java / Spring Boot, 高併發系統設計
-- **DevOps**: Jenkins, Docker, Kubernetes, ELK, SkyWalking, SonarQube [TODO 確認]
-- **Cloud**: [TODO 哪一家? AWS/GCP/Azure/地端?]
+- **Backend**: Java / Spring Boot, 高併發即時系統設計 (來自博弈即時開獎)
+- **DevOps / 平台**: GitLab CI, Jenkins, Redmine, Docker, Kubernetes
+- **嵌入式 / IoT**: Linux ARM, 5G 無線通訊協定整合
 - **AI 整合**: Claude API, Claude Code, Anthropic SDK, Prompt Engineering, AI Agent 工作流
 
 ### 會用 (Working knowledge — 配合 Claude 可達 production)
-- iOS (Swift / Flutter [TODO 確認])
 - Rust
 - Flutter
 - Python
-- Web 前端 (React / Vue [TODO 哪個?])
-- IoT / 5G 通訊協定
+- Web 前端 (React / Vue [TODO 哪個比較熟?])
 - 資料庫: [TODO MySQL / PostgreSQL / MongoDB / Redis ?]
+- Cloud: [TODO AWS / GCP / Azure / 地端?]
 
 ### 「凡是現代軟體工程能做的我都接」
 > 因為 Claude Code 作為團隊,語言/框架不是瓶頸 — 限制是**問題理解**與**架構判斷**,這兩塊我自己負責。
+>
+> **特別強的領域組合**:
+> - AI 整合 + 後端 (例如把 Claude 嵌進 Spring Boot 客服系統)
+> - 嵌入式 + AI (例如 ARM 上跑 LLM 邊緣推論、IoT + LLM 控制)
+> - DevOps 平台從零建置 (GitLab + Jenkins + Redmine 三件組,我做過)
+> - 高併發即時系統 (來自博弈經驗)
 
 ---
 
