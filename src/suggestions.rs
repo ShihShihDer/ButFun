@@ -48,7 +48,13 @@ fn anonymous() -> String {
 /// 控制字元先濾掉(不佔截斷額度)。兩欄差別:署名是單行身分欄位(對齊 `sanitize_name`),濾掉
 /// 全部控制字元;內容是多行回饋(前端 `<textarea>`),保留換行 `\n` 讓玩家能分段,只濾掉換行
 /// 以外的控制字元——換行存進 JSONL 會被 serde 轉義成 `\n`、不會把一筆紀錄拆成多行。
-fn sanitize(from: &str, text: &str, at: u64) -> Suggestion {
+///
+/// 清乾淨後內容變空(全空白 / 全控制字元)回 `None`,呼叫端據此不存——比照 `sanitize_chat`
+/// 回 `Option` 的模式。這把「擋空建議」的判斷對齊到「實際會被存下的內容」這個單一真實
+/// 來源:endpoint 先前只對 raw `text.trim()` 判空,而 `trim` 不濾控制字元,一則「全控制
+/// 字元」的內容(如 `\0`/`ESC`,皆非空白)會通過 raw 檢查、卻在這裡被濾成空字串,仍寫進
+/// JSONL 留下空建議垃圾紀錄。
+fn sanitize(from: &str, text: &str, at: u64) -> Option<Suggestion> {
     let from: String = from
         .chars()
         .filter(|c| !c.is_control())
@@ -65,11 +71,14 @@ fn sanitize(from: &str, text: &str, at: u64) -> Suggestion {
         .chars()
         .take(MAX_TEXT_CHARS)
         .collect();
-    Suggestion {
+    if text.is_empty() {
+        return None;
+    }
+    Some(Suggestion {
         from: if from.is_empty() { anonymous() } else { from },
         text,
         at,
-    }
+    })
 }
 
 /// 建議的存放處。可被複製（內部共享）。
@@ -86,14 +95,15 @@ impl SuggestionStore {
         }
     }
 
-    /// 新增一則建議，回傳存好的紀錄。
-    pub fn add(&self, new: NewSuggestion) -> Suggestion {
-        let suggestion = sanitize(&new.from, &new.text, now_millis());
+    /// 新增一則建議；清乾淨後內容變空(全空白 / 全控制字元)回 `None`、不存任何東西，
+    /// 否則回存好的紀錄。把「擋空」收斂到實際會被存下的內容上，避免空建議垃圾進檔。
+    pub fn add(&self, new: NewSuggestion) -> Option<Suggestion> {
+        let suggestion = sanitize(&new.from, &new.text, now_millis())?;
         append_to_disk(&suggestion);
         let mut items = self.items.lock().unwrap();
         items.push(suggestion.clone());
         tracing::info!(from = %suggestion.from, "收到玩家建議：{}", suggestion.text);
-        suggestion
+        Some(suggestion)
     }
 
     /// 列出所有建議（最新的在前）。
@@ -151,7 +161,7 @@ mod tests {
 
     #[test]
     fn trims_and_keeps_normal_input() {
-        let s = sanitize("  小明  ", "  希望有貓咪  ", 42);
+        let s = sanitize("  小明  ", "  希望有貓咪  ", 42).unwrap();
         assert_eq!(s.from, "小明");
         assert_eq!(s.text, "希望有貓咪");
         assert_eq!(s.at, 42);
@@ -159,14 +169,14 @@ mod tests {
 
     #[test]
     fn empty_from_falls_back_to_anonymous() {
-        assert_eq!(sanitize("", "有內容", 0).from, anonymous());
-        assert_eq!(sanitize("   ", "有內容", 0).from, anonymous());
+        assert_eq!(sanitize("", "有內容", 0).unwrap().from, anonymous());
+        assert_eq!(sanitize("   ", "有內容", 0).unwrap().from, anonymous());
     }
 
     #[test]
     fn caps_from_by_chars() {
         let long = "字".repeat(MAX_FROM_CHARS + 10);
-        let s = sanitize(&long, "x", 0);
+        let s = sanitize(&long, "x", 0).unwrap();
         assert_eq!(s.from.chars().count(), MAX_FROM_CHARS);
     }
 
@@ -174,14 +184,14 @@ mod tests {
     fn caps_text_by_chars_not_bytes() {
         // 全中文(每字多位元組):應以字元數截斷,不是位元組數。
         let long = "乙".repeat(MAX_TEXT_CHARS + 50);
-        let s = sanitize("我", &long, 0);
+        let s = sanitize("我", &long, 0).unwrap();
         assert_eq!(s.text.chars().count(), MAX_TEXT_CHARS);
     }
 
     #[test]
     fn keeps_text_at_exactly_the_cap() {
         let exact = "a".repeat(MAX_TEXT_CHARS);
-        let s = sanitize("我", &exact, 0);
+        let s = sanitize("我", &exact, 0).unwrap();
         assert_eq!(s.text.chars().count(), MAX_TEXT_CHARS);
     }
 
@@ -189,7 +199,7 @@ mod tests {
     fn strips_control_chars_from_from() {
         // 署名是單行身分欄位：換行 / 歸位 / NUL / ESC / tab 全濾掉，
         // 不讓壞客戶端把多行或終端機轉義塞進回給公開 GET 的署名。
-        let s = sanitize("小\n明\r\0\u{1b}\t", "有內容", 0);
+        let s = sanitize("小\n明\r\0\u{1b}\t", "有內容", 0).unwrap();
         assert_eq!(s.from, "小明");
     }
 
@@ -197,7 +207,7 @@ mod tests {
     fn keeps_newlines_in_text_but_strips_other_controls() {
         // 內容是多行回饋（textarea）：保留換行讓玩家分段，但濾掉換行以外的控制字元
         // （NUL / 歸位 / ESC——維護者多在終端機讀檔，ESC 可注入 ANSI 轉義偽造顯示）。
-        let s = sanitize("我", "第一段\0\r\n第二段", 0);
+        let s = sanitize("我", "第一段\0\r\n第二段", 0).unwrap();
         assert_eq!(s.text, "第一段\n第二段");
     }
 
@@ -205,16 +215,22 @@ mod tests {
     fn stripping_esc_neutralizes_ansi_injection() {
         // 注入 ANSI 轉義靠的是 ESC（0x1B）控制位元組；濾掉它，殘留的 `[31m` 只是
         // 無害的字面文字，不再能在維護者的終端機著色 / 偽造顯示。
-        let s = sanitize("我", "正常\u{1b}[31m紅字", 0);
+        let s = sanitize("我", "正常\u{1b}[31m紅字", 0).unwrap();
         assert!(!s.text.contains('\u{1b}'));
         assert_eq!(s.text, "正常[31m紅字");
     }
 
     #[test]
-    fn control_only_text_becomes_empty() {
-        // 清乾淨後變空的內容（全控制字元）不該留下垃圾，截斷前先被濾光。
-        let s = sanitize("我", "\0\r\u{1b}\t", 0);
-        assert_eq!(s.text, "");
+    fn control_or_whitespace_only_text_is_rejected() {
+        // 清乾淨後變空的內容不該被存：全控制字元（`\0`/`ESC` 等非空白，會通過
+        // endpoint 對 raw `text.trim()` 的判空）以及全空白，sanitize 一律回 None，
+        // 呼叫端據此回 400、不寫進 JSONL 留下空建議垃圾紀錄。
+        assert!(sanitize("我", "\0\r\u{1b}\t", 0).is_none());
+        assert!(sanitize("我", "\0\u{1b}", 0).is_none());
+        assert!(sanitize("我", "   ", 0).is_none());
+        assert!(sanitize("我", "", 0).is_none());
+        // 還有可見字元的內容仍照常存下。
+        assert!(sanitize("我", "\0真有建議\u{1b}", 0).is_some());
     }
 
     #[test]
@@ -226,7 +242,7 @@ mod tests {
             raw.push('字');
             raw.push('\0');
         }
-        let s = sanitize(&raw, "x", 0);
+        let s = sanitize(&raw, "x", 0).unwrap();
         assert_eq!(s.from.chars().count(), MAX_FROM_CHARS);
         assert!(!s.from.contains('\0'));
     }

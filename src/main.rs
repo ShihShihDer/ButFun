@@ -83,16 +83,16 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// 收到一則玩家建議。
+/// 收到一則玩家建議。內容清乾淨後若為空（全空白 / 全控制字元）回 400、不存——
+/// 擋空的判斷下沉到 `add`（依實際會被存下的內容），不是只對 raw 輸入 `trim`。
 async fn post_suggestion(
     State(app): State<AppState>,
     Json(new): Json<NewSuggestion>,
 ) -> impl IntoResponse {
-    if new.text.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "建議內容不可為空").into_response();
+    match app.suggestions.add(new) {
+        Some(saved) => (StatusCode::CREATED, Json(saved)).into_response(),
+        None => (StatusCode::BAD_REQUEST, "建議內容不可為空").into_response(),
     }
-    let saved = app.suggestions.add(new);
-    (StatusCode::CREATED, Json(saved)).into_response()
 }
 
 /// 列出所有玩家建議（最新在前）。

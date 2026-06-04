@@ -39,6 +39,15 @@
   灌入任意大小的行膨脹建議檔。抽出純函式 `sanitize`（trim + 依字元截斷 + 空署名退回
   匿名），署名截 24 字（對齊 `sanitize_name`）、內容截 1000 字，集中與聊天截 200 字
   同類的輸入邊界。加 5 個單元測試，`cargo test` 68 綠、伺服器啟動正常。
+  ✅ 輸入加固補洞之三（空建議繞過 endpoint 判空，2026-06-05）：`post_suggestion` 用
+  `new.text.trim().is_empty()` 擋空，但 `trim` 只去空白、不濾控制字元——一則「全控制字元」
+  的內容（如 `\0`/`ESC`，皆非空白）會通過這道 raw 檢查，接著被 `sanitize` 濾光成空字串、
+  仍寫進 `data/suggestions.jsonl` 留下空建議垃圾紀錄（`control_only_text_becomes_empty`
+  測試正好證明 sanitize 後變空）。把「擋空」下沉到 sanitize/add 層：`sanitize` 改回
+  `Option<Suggestion>`（清乾淨後 text 空回 `None`，比照 `sanitize_chat` 的模式），`add`
+  連帶回 `Option`、空就不存任何東西，endpoint 依此回 400。擋空從此用「實際會被存下的內容」
+  這個單一真實來源，而非較弱的 raw `trim`。改 1 個既有測試、補強成涵蓋全控制字元/全空白/
+  含可見字元三情境，`cargo test` 91 綠、clippy 乾淨、伺服器二進位啟動正常（埠被正式服務占用屬預期）。
   ✅ 輸入加固補洞之二（控制字元，2026-06-05）：建議的 `sanitize` 是公開輸入硬化弧線裡
   唯一還只做 `trim`+`take`、沒濾控制字元的 sanitizer——而建議經未驗身的
   `POST /api/suggestions` 進來、又由公開的 `GET /api/suggestions` 回出，且維護者多半直接
