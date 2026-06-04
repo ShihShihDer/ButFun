@@ -41,6 +41,12 @@
     刻意做成可抽換點：接 Postgres 時把這個 store swap 成 `PgStore`（同介面）即可，
     不用動 ws / 遊戲迴圈。仍待做：引入 `sqlx` + `DATABASE_URL` + migration + 跨重啟
     持久化（架構級／大相依，留待人決策後再上）。加 6 個單元測試，`cargo test` 25 綠。
+  - ✅ 前置補強（乙太納入記憶體前置，2026-06-05）：先前重連只記回位置，收成的乙太
+    仍固定歸零（網路抖動／換頁重連就丟失當場進度，且與「記住位置」不一致）。把
+    `PositionStore` 的儲值從 `(x,y)` 廣化為 `Saved{x,y,ether}`，`remember`/`recall`
+    同步帶上乙太；ws 重連讀回、離線寫下乙太。維持同一個可抽換點與「只記已登入玩家」
+    原則，跨重啟持久化仍待 0-E。加 1 個乙太 round-trip 測試（既有 3 測試改對應新介面），
+    `cargo test` 62 綠、伺服器啟動正常。
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、
