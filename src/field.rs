@@ -25,6 +25,9 @@ pub const FIELD_ROWS: usize = 4;
 /// 世界 2000×2000、農地 288×192，置中後左上角約在此。
 pub const FIELD_ORIGIN_X: f32 = 856.0;
 pub const FIELD_ORIGIN_Y: f32 = 904.0;
+/// 要照顧農地，玩家至少得站在地塊裡、或緊鄰邊緣這個距離內（像素）。
+/// 權威伺服器用它擋掉「人根本不在農地卻送座標隔空遙控」的客戶端。
+pub const FARM_REACH: f32 = TILE_SIZE;
 
 /// 一格耕地的狀態。
 #[derive(Debug, Clone, PartialEq)]
@@ -220,6 +223,19 @@ impl Field {
     }
 }
 
+/// 玩家位於 (px,py) 時，是否近到能在農地上操作（在地塊內、或離邊緣 `FARM_REACH` 內）。
+/// 量的是「點到農地矩形的最近距離」，所以站在地塊任一處都算，不必貼著某一格。純函式。
+pub fn within_field_reach(px: f32, py: f32) -> bool {
+    let right = FIELD_ORIGIN_X + FIELD_COLS as f32 * TILE_SIZE;
+    let bottom = FIELD_ORIGIN_Y + FIELD_ROWS as f32 * TILE_SIZE;
+    // 把玩家座標夾到農地矩形上，得到矩形上的最近點。
+    let nx = px.clamp(FIELD_ORIGIN_X, right);
+    let ny = py.clamp(FIELD_ORIGIN_Y, bottom);
+    let dx = px - nx;
+    let dy = py - ny;
+    dx * dx + dy * dy <= FARM_REACH * FARM_REACH
+}
+
 /// 一格 → 前端可見狀態。純函式。
 /// state：0=自然地 1=空土 2=種子 3=發芽 4=成熟；dry 只在「未成熟且已乾」時為真。
 fn tile_view(tile: &Tile) -> TileView {
@@ -406,6 +422,34 @@ mod tests {
         let mut f = Field::new();
         assert_eq!(f.interact(FIELD_COLS, 0), FarmOutcome::Nothing);
         assert_eq!(f.interact(0, FIELD_ROWS), FarmOutcome::Nothing);
+    }
+
+    #[test]
+    fn within_reach_inside_field_is_true() {
+        // 農地正中央。
+        let cx = FIELD_ORIGIN_X + FIELD_COLS as f32 * TILE_SIZE / 2.0;
+        let cy = FIELD_ORIGIN_Y + FIELD_ROWS as f32 * TILE_SIZE / 2.0;
+        assert!(within_field_reach(cx, cy));
+        // 左上角格的中心也算。
+        assert!(within_field_reach(FIELD_ORIGIN_X, FIELD_ORIGIN_Y));
+    }
+
+    #[test]
+    fn within_reach_just_outside_edge_is_true() {
+        // 緊貼左緣外 FARM_REACH 內。
+        assert!(within_field_reach(
+            FIELD_ORIGIN_X - FARM_REACH * 0.5,
+            FIELD_ORIGIN_Y + TILE_SIZE
+        ));
+    }
+
+    #[test]
+    fn within_reach_far_away_is_false() {
+        // 站在世界另一頭，不能隔空照顧。
+        assert!(!within_field_reach(0.0, 0.0));
+        let right = FIELD_ORIGIN_X + FIELD_COLS as f32 * TILE_SIZE;
+        // 離右緣超過 FARM_REACH。
+        assert!(!within_field_reach(right + FARM_REACH * 2.0, FIELD_ORIGIN_Y));
     }
 
     #[test]

@@ -142,11 +142,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::Farm { x, y }) => {
                     // 點到農地外的座標 cell_at 會回 None，直接忽略。
                     if let Some((col, row)) = Field::cell_at(x, y) {
-                        let outcome = app.field.write().unwrap().interact(col, row);
-                        if let FarmOutcome::Harvested(ether) = outcome {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                p.ether = p.ether.saturating_add(ether);
-                                tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                        // 權威伺服器：只接受「玩家確實站在農地（或緊鄰邊緣）」的照顧動作，
+                        // 不讓客戶端用任意座標隔空遙控這片共享農地。讀鎖在本句結束即釋放，
+                        // 之後才取農地與玩家的寫鎖，避免互鎖。
+                        let at_field = app
+                            .players
+                            .read()
+                            .unwrap()
+                            .get(&id)
+                            .map(|p| crate::field::within_field_reach(p.x, p.y))
+                            .unwrap_or(false);
+                        if at_field {
+                            let outcome = app.field.write().unwrap().interact(col, row);
+                            if let FarmOutcome::Harvested(ether) = outcome {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.ether = p.ether.saturating_add(ether);
+                                    tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                                }
                             }
                         }
                     }
