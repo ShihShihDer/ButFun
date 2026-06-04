@@ -7,6 +7,7 @@ mod auth;
 mod game;
 mod protocol;
 mod state;
+mod store;
 mod suggestions;
 mod users;
 mod ws;
@@ -36,7 +37,12 @@ async fn main() {
         )
         .init();
 
-    let app_state = AppState::new();
+    // 先(async)建好持久層:有 DATABASE_URL 就連 Postgres,否則退回記憶體。
+    let store = store::PlayerStore::connect().await;
+    if !store.is_persistent() {
+        tracing::warn!("玩家位置未持久化(純記憶體);設 DATABASE_URL 後重啟即啟用");
+    }
+    let app_state = AppState::new(store);
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
     } else {

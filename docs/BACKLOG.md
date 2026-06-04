@@ -28,13 +28,18 @@
 
 ## 進行中 / 下一步（由上往下）
 
-- [ ] **Phase 0-E：Postgres 持久化**
+- [ ] **Phase 0-E：Postgres 持久化** —— ⏳ 實作於 draft PR(待人工以真實 DB 驗收 + merge)
   把玩家位置（之後含背包 / 農地）存進 Postgres，伺服器重啟後玩家回到原位。
   - 加入 `sqlx`（Postgres、非同步），`DATABASE_URL` 走環境變數。
   - 在 `state.rs` 抽換點後面接一個 `PgStore`；無 `DATABASE_URL` 時退回現有記憶體模式，方便本機跑。
   - 加 migration 建 `players` 表（id, name, species, x, y, updated_at）。
   - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
   - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
+  - 🔧 已在分支 `feat/phase-0e-postgres-persistence` 實作:`src/store.rs`(`PlayerStore`,
+    runtime query API 不需連著 DB 即可 build/test)、`migrations/0001_create_players.sql`、
+    ws 進場載回 + 離線寫回、game.rs 每 30 秒定期寫回、main 啟動依 `DATABASE_URL` 決定模式。
+    無 DATABASE_URL 行為與現狀完全相同(記憶體)。**因引入大型相依 sqlx + 動玩家資料持久化,
+    只開 draft PR 不自走 merge;真實 Postgres 的「重啟後位置仍在」需人工在維護窗驗收。**
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、

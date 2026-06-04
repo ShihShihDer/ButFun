@@ -33,7 +33,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 已登入 → player.id = user.id(同帳號重連即同玩家);name/species 從 user 來,可以
     // 直接建場、不必等客戶端 Join。
     // 訪客 → 等第一則 Join,uid 隨機(localStorage 名字僅在那個瀏覽器留)。
-    let player = if let Some(uid) = authed_uid {
+    let mut player = if let Some(uid) = authed_uid {
         let user = match app.users.get(uid) {
             Some(u) => u,
             None => return, // cookie 對得上但人不在了:直接斷
@@ -78,6 +78,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     };
     let id = player.id;
+
+    // 若持久層有此玩家的舊紀錄(登入玩家 id 穩定 → 跨重啟回到原位),載回座標。
+    // 夾制進世界邊界,避免日後世界縮小時座標越界。
+    if let Some(saved) = app.store.load(id).await {
+        player.x = saved.x.clamp(0.0, WORLD_WIDTH);
+        player.y = saved.y.clamp(0.0, WORLD_HEIGHT);
+    }
 
     {
         let mut players = app.players.write().unwrap();
@@ -152,7 +159,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 }
 
 async fn cleanup(app: &AppState, id: Uuid) {
-    app.players.write().unwrap().remove(&id);
+    // 取出離線玩家(同時拿到最後座標)→ 寫回持久層(無 DB 時為 no-op)。
+    // 注意:先在同步區塊內 remove 並丟掉鎖,再 await save,避免持鎖跨 await。
+    let last = app.players.write().unwrap().remove(&id);
+    if let Some(p) = last {
+        app.store.save(&p).await;
+    }
     let left = ServerMsg::PlayerLeft { id };
     if let Ok(json) = serde_json::to_string(&left) {
         let _ = app.tx.send(json);

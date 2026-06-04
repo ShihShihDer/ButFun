@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthConfig;
 use crate::protocol::{PlayerView, WorldInfo};
+use crate::store::PlayerStore;
 use crate::suggestions::SuggestionStore;
 use crate::users::UserStore;
 
@@ -93,10 +94,13 @@ pub struct AppState {
     pub users: UserStore,
     /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
     pub auth: Option<AuthConfig>,
+    /// 玩家位置持久化(Phase 0-E);無 DATABASE_URL 時為純記憶體模式。
+    pub store: PlayerStore,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    /// `store` 由 main 先(async)建好再傳進來;測試 / Default 用記憶體 store。
+    pub fn new(store: PlayerStore) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
@@ -104,6 +108,7 @@ impl AppState {
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
             auth: AuthConfig::from_env(),
+            store,
         }
     }
 
@@ -117,7 +122,7 @@ impl AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::new()
+        Self::new(PlayerStore::memory())
     }
 }
 
