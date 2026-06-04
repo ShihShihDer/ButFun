@@ -18,6 +18,10 @@
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
 
+  // ---- 觸控搖桿狀態(手機沒鍵盤,用拖曳設方向) ----
+  let touchOrigin = null;   // 手指按下的初始位置
+  let touchCurrent = null;  // 手指目前的位置
+
   // ---- 畫布尺寸 ----
   function resize() {
     canvas.width = window.innerWidth;
@@ -117,6 +121,38 @@
     if (dir) { keys[dir] = false; sendInputIfChanged(); }
   });
 
+  // ---- 觸控:任何地方按下拖曳當搖桿,放開即停止 ----
+  function setTouchKeys(dx, dy) {
+    const dead = 14;
+    keys.up = dy < -dead;
+    keys.down = dy > dead;
+    keys.left = dx < -dead;
+    keys.right = dx > dead;
+    sendInputIfChanged();
+  }
+  canvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 0) return;
+    const t = e.touches[0];
+    touchOrigin = { x: t.clientX, y: t.clientY };
+    touchCurrent = { x: t.clientX, y: t.clientY };
+    e.preventDefault();
+  }, { passive: false });
+  canvas.addEventListener("touchmove", (e) => {
+    if (!touchOrigin || e.touches.length === 0) return;
+    const t = e.touches[0];
+    touchCurrent = { x: t.clientX, y: t.clientY };
+    setTouchKeys(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
+    e.preventDefault();
+  }, { passive: false });
+  function endTouch(e) {
+    touchOrigin = null;
+    touchCurrent = null;
+    setTouchKeys(0, 0);
+    e.preventDefault();
+  }
+  canvas.addEventListener("touchend", endTouch, { passive: false });
+  canvas.addEventListener("touchcancel", endTouch, { passive: false });
+
   // ---- 渲染迴圈 ----
   function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -152,6 +188,20 @@
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(p.name, sx, sy - 22);
+    }
+
+    // 觸控搖桿視覺(只在按住時出現)
+    if (touchOrigin && touchCurrent) {
+      const dx = touchCurrent.x - touchOrigin.x;
+      const dy = touchCurrent.y - touchOrigin.y;
+      const dist = Math.hypot(dx, dy);
+      const cap = 50;
+      const r = dist > 0 ? Math.min(dist, cap) / dist : 0;
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(touchOrigin.x, touchOrigin.y, cap, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = "rgba(201,162,75,0.9)";
+      ctx.beginPath(); ctx.arc(touchOrigin.x + dx * r, touchOrigin.y + dy * r, 18, 0, Math.PI * 2); ctx.fill();
     }
 
     requestAnimationFrame(render);
@@ -246,9 +296,27 @@
     requestAnimationFrame(render);
   }
 
+  // 在這台裝置上記住名字與種族,refresh 不用重打
+  // (真正的跨裝置登入屬 Phase 0-F:Google OAuth)
+  try {
+    const savedName = localStorage.getItem("butfun.name");
+    if (savedName) document.getElementById("nameInput").value = savedName;
+    const savedSpecies = localStorage.getItem("butfun.species");
+    if (savedSpecies) {
+      const sel = document.getElementById("speciesInput");
+      if ([...sel.options].some((o) => o.value === savedSpecies && !o.disabled)) {
+        sel.value = savedSpecies;
+      }
+    }
+  } catch {}
+
   document.getElementById("joinBtn").addEventListener("click", () => {
     const name = document.getElementById("nameInput").value.trim() || "拓荒者";
     const species = document.getElementById("speciesInput").value;
+    try {
+      localStorage.setItem("butfun.name", name);
+      localStorage.setItem("butfun.species", species);
+    } catch {}
     connect(name, species);
   });
   document.getElementById("nameInput").addEventListener("keydown", (e) => {

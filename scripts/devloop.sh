@@ -18,10 +18,20 @@ set -euo pipefail
 REPO="${BUTFUN_REPO:-/opt/butfun}"
 cd "$REPO"
 
-# 取最新程式，避免跟正式線上版本歪掉。
+# 取最新程式，但**只在乾淨且能 fast-forward 時才同步**：
+# 若工作目錄有未 commit 改動，或本地 main 已超前 origin（你正在 oncall 手改），
+# 就跳過這一輪，**絕不**用 reset --hard 吃掉你的手改。
 git fetch --quiet origin main || true
+if [ -n "$(git status --porcelain)" ]; then
+  echo "[devloop] 工作目錄有未 commit 改動，跳過這一輪（等你 commit/push 再來）"
+  exit 0
+fi
 git checkout --quiet main || true
-git reset --hard --quiet origin/main || true
+# 只接受 fast-forward；要 rebase / merge 的時候停手，留給人處理。
+if ! git merge --ff-only --quiet origin/main; then
+  echo "[devloop] 本地 main 與 origin/main 分歧（多半是你手改後還沒 push），跳過這一輪"
+  exit 0
+fi
 
 # 把這一輪的指示交給 Claude Code（無互動模式）。
 # 它會照 docs/AUTONOMOUS_OPS.md 的「每一輪做什麼」自走一個小增量。

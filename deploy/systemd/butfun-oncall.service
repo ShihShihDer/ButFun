@@ -1,0 +1,16 @@
+[Unit]
+Description=ButFun on-call Claude (persistent tmux session for /rc)
+After=network.target butfun.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+User=butfun
+Environment=HOME=/home/butfun
+WorkingDirectory=/opt/butfun
+# 已存在就不動；不存在就在 tmux 開一個跑 claude 的常駐會話。
+ExecStart=/bin/bash -c 'tmux has-session -t butfun-oncall 2>/dev/null || tmux new-session -d -s butfun-oncall -c /opt/butfun /usr/bin/env claude'
+ExecStop=/bin/bash -c 'tmux kill-session -t butfun-oncall 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target

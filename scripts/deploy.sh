@@ -37,7 +37,16 @@ if [ "$LOCAL" = "$REMOTE" ] && [ -x "$BIN" ]; then
 fi
 
 git checkout --quiet "$BRANCH"
-git reset --hard --quiet "origin/$BRANCH"
+# 安全變更：只接受 fast-forward；若本地有未 push 的手改、或有未 commit 變動，
+# 就中止這一輪上線（不要用 reset --hard 把線上 oncall 手改吃掉）。
+if [ -n "$(git status --porcelain)" ]; then
+  echo "[deploy] 工作目錄有未 commit 改動，中止上線（等手改清理乾淨再說）"
+  exit 1
+fi
+if ! git merge --ff-only --quiet "origin/$BRANCH"; then
+  echo "[deploy] 本地 $BRANCH 與 origin 分歧，中止上線（可能有 oncall 手改未 push）"
+  exit 1
+fi
 
 echo "[deploy] 建置…"
 cargo build --release
