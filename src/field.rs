@@ -81,6 +81,12 @@ impl Field {
 
     /// 世界座標 (x,y) → 落在哪一格 (col,row)；不在農地範圍內回 `None`。純函式。
     pub fn cell_at(x: f32, y: f32) -> Option<(usize, usize)> {
+        // 先擋非有限座標：客戶端可能送 NaN / Inf，而 `NaN < 0.0` 為 false 不會被下面
+        // 的範圍檢查擋下，且 `(NaN / TILE_SIZE) as usize` 在 Rust 飽和轉型成 0，會讓
+        // 垃圾座標誤落到 (0,0) 格。權威伺服器一律視為界外。
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let local_x = x - FIELD_ORIGIN_X;
         let local_y = y - FIELD_ORIGIN_Y;
         if local_x < 0.0 || local_y < 0.0 {
@@ -305,6 +311,15 @@ mod tests {
         let far_x = FIELD_ORIGIN_X + FIELD_COLS as f32 * TILE_SIZE;
         let far_y = FIELD_ORIGIN_Y + FIELD_ROWS as f32 * TILE_SIZE;
         assert_eq!(Field::cell_at(far_x, far_y), None);
+    }
+
+    #[test]
+    fn cell_at_rejects_non_finite_coords() {
+        // 客戶端送 NaN / Inf 不該被當成 (0,0)；權威伺服器視為界外。
+        assert_eq!(Field::cell_at(f32::NAN, FIELD_ORIGIN_Y), None);
+        assert_eq!(Field::cell_at(FIELD_ORIGIN_X, f32::NAN), None);
+        assert_eq!(Field::cell_at(f32::INFINITY, f32::INFINITY), None);
+        assert_eq!(Field::cell_at(f32::NEG_INFINITY, FIELD_ORIGIN_Y), None);
     }
 
     #[test]
