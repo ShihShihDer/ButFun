@@ -15,6 +15,16 @@
   ✅ 前端 💡 表單 → `POST /api/suggestions` → 存 `data/suggestions.jsonl`。
 - [x] **Phase 0-D：自動測試閘門**
   ✅ 移動整合抽成 `Player::step`，加上單元測試；`cargo test` 全綠。
+- [x] **Phase 0-F：帳號身份模型（provider 無關）+ Google OAuth**
+  ✅ provider 無關 `User` 模型(`src/users.rs`,目前以 `data/users.jsonl` 持久化,
+  之後接 0-E Postgres 時直接 swap);Google OAuth flow(`src/auth.rs`)含
+  `/auth/google/start|callback|me|logout`、CSRF state cookie、HMAC-SHA256 簽章
+  session cookie(stateless);WebSocket 升級前讀 cookie → 同 Google 帳號跨裝置
+  /重連即同玩家;前端「以 Google 登入」按鈕 + 登入後跳過進場畫面、HUD 顯示用戶名
+  與登出。`.env`/EnvironmentFile 載入秘密,gitignored 不入 repo。
+- [x] **Phase 0-H 雛形：Cloudflare Tunnel 上線**
+  ✅ 自架 + `cloudflared` 反向通道,公開於 https://peregrine.but-fun.com;手冊
+  與設定範例已在 repo。
 
 ## 進行中 / 下一步（由上往下）
 
@@ -26,13 +36,10 @@
   - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
   - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
 
-- [ ] **Phase 0-F：帳號身份模型（provider 無關）+ Google OAuth**
-  先做 provider 無關的 `users` 模型（內部 user id；外部登入只是連結），再接 Google OAuth。
-  - 內部 `user_id` 為主鍵；`auth_identities`(provider, external_id, user_id) 連結外部登入。
-  - 第一個 provider 實作 Google OAuth（憑證走環境變數，**不入庫**）。
-  - 角色 / 存檔改綁 `user_id` 而非每次新 uuid。
-  - 驗收：用 Google 登入後刷新頁面仍是同一角色；介面留好之後加別的 provider。
-  - ⚠️ 需要使用者提供 Google OAuth client id/secret —— 開始前先問。
+- [ ] **Phase 0-F-1：補 auth 純邏輯單元測試**
+  `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、
+  含空白)、`constant_time_eq`、`sanitize_name`。純函式、無 IO、易測,補上即可
+  push。驗收:`cargo test` 全綠且涵蓋上述函式。
 
 - [ ] **Phase 0-G：種田起源（地球人 / 繼承農莊）—— 療癒核心**
   讓世界「玩起來有感覺」的第一個玩法循環。
@@ -41,14 +48,9 @@
   - 前端顯示耕地格與作物階段。
   - 驗收：種下、澆水、過一段時間收成拿到乙太；重啟後農地狀態還在；`cargo test` 涵蓋成長邏輯。
 
-- [ ] **Phase 0-H：發佈管線**
-  讓「改版 → 發佈」變成一個動作。
-  - **已選定的上線方式**：自架 + **Cloudflare Tunnel**（使用者有網域、有可當伺服器的電腦，
-    但無法設 NAT/路由器轉發）。手冊見 `docs/DEPLOY_CLOUDFLARE_TUNNEL.md`，
-    cloudflared 設定範例見 `deploy/cloudflared/config.example.yml`。
-  - repo 已 tunnel-ready（伺服器讀 `PORT`、綁 `0.0.0.0`；前端 HTTPS 下自動用 `wss`），
-    上線屬使用者本機操作，不需改碼。
-  - 之後（選用，想要關機也能玩時）：容器化、CI（build+test）、雲端代管（Fly.io）。
+- [ ] **Phase 0-H 進階(選用)：容器化 + 雲端代管**
+  目前已透過 Cloudflare Tunnel 自架上線。之後若想關機也能玩或要切到雲端,
+  容器化 + Fly.io 是路。
 
 ## 之後（Phase 1+，先別碰，見 GDD）
 
