@@ -1,37 +1,17 @@
-HELP.md
-.gradle
-build/
-!gradle/wrapper/gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
+# ButFun — Rust backend build artifacts
+/target
 
-### STS ###
-.apt_generated
-.classpath
-.factorypath
-.project
-.settings
-.springBeans
-.sts4-cache
-bin/
-!**/src/main/**/bin/
-!**/src/test/**/bin/
+# Environment / secrets
+.env
 
-### IntelliJ IDEA ###
-.idea
-*.iws
-*.iml
-*.ipr
-out/
-!**/src/main/**/out/
-!**/src/test/**/out/
+# Local Postgres data dir (dev)
+/.pgdata
 
-### NetBeans ###
-/nbproject/private/
-/nbbuild/
-/dist/
-/nbdist/
-/.nb-gradle/
+# Runtime data (玩家建議等，伺服器執行時產生)
+/data
 
-### VS Code ###
+# OS / editor
+.DS_Store
+.idea/
 .vscode/
+*.iml

@@ -1,0 +1,185 @@
+//! 伺服器的共享狀態：權威世界、玩家清單、廣播頻道。
+//!
+//! 目前狀態存在記憶體裡。持久化（Postgres）刻意藏在這層之後——之後把 `players`
+//! 換成「啟動時從 DB 載入、變動時寫回」即可，不用動 WebSocket / 遊戲迴圈的程式。
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+use tokio::sync::broadcast;
+use uuid::Uuid;
+
+use crate::protocol::{PlayerView, WorldInfo};
+use crate::suggestions::SuggestionStore;
+
+/// 世界大小（像素）。MVP：一張單一地圖。
+pub const WORLD_WIDTH: f32 = 2000.0;
+pub const WORLD_HEIGHT: f32 = 2000.0;
+/// 玩家移動速度（像素 / 秒）。
+pub const PLAYER_SPEED: f32 = 200.0;
+
+/// 一名玩家在伺服器上的權威狀態。
+#[derive(Debug, Clone)]
+pub struct Player {
+    pub id: Uuid,
+    pub name: String,
+    pub species: String,
+    pub x: f32,
+    pub y: f32,
+    pub input: Input,
+}
+
+impl Player {
+    pub fn view(&self) -> PlayerView {
+        PlayerView {
+            id: self.id,
+            name: self.name.clone(),
+            species: self.species.clone(),
+            x: self.x,
+            y: self.y,
+        }
+    }
+
+    /// 依目前輸入意圖，把位置往前推進 `dt` 秒（權威整合，含邊界夾制）。
+    /// 抽成純函式以便自動測試。
+    pub fn step(&mut self, dt: f32) {
+        let mut dx = 0.0;
+        let mut dy = 0.0;
+        if self.input.up {
+            dy -= 1.0;
+        }
+        if self.input.down {
+            dy += 1.0;
+        }
+        if self.input.left {
+            dx -= 1.0;
+        }
+        if self.input.right {
+            dx += 1.0;
+        }
+        // 對角線正規化，避免斜走變快。
+        if dx != 0.0 && dy != 0.0 {
+            let inv = 1.0 / (2.0_f32).sqrt();
+            dx *= inv;
+            dy *= inv;
+        }
+        self.x = (self.x + dx * PLAYER_SPEED * dt).clamp(0.0, WORLD_WIDTH);
+        self.y = (self.y + dy * PLAYER_SPEED * dt).clamp(0.0, WORLD_HEIGHT);
+    }
+}
+
+/// 玩家目前按住的方向鍵（移動意圖）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Input {
+    pub up: bool,
+    pub down: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+/// 整個應用程式共享的狀態。用 `Arc` 包起來在 handler 間共用。
+#[derive(Clone)]
+pub struct AppState {
+    /// 權威玩家清單。
+    pub players: Arc<RwLock<HashMap<Uuid, Player>>>,
+    /// 廣播頻道：tick 快照與聊天都走這裡，內容是已序列化的 JSON 字串
+    /// （只序列化一次，再扇出給所有連線）。
+    pub tx: broadcast::Sender<String>,
+    /// 遊戲內建議箱（玩家回饋迴圈的伺服器端）。
+    pub suggestions: SuggestionStore,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        let (tx, _rx) = broadcast::channel(256);
+        Self {
+            players: Arc::new(RwLock::new(HashMap::new())),
+            tx,
+            suggestions: SuggestionStore::new(),
+        }
+    }
+
+    pub fn world_info(&self) -> WorldInfo {
+        WorldInfo {
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+        }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn player_at(x: f32, y: f32, input: Input) -> Player {
+        Player {
+            id: Uuid::new_v4(),
+            name: "測試".into(),
+            species: "terran".into(),
+            x,
+            y,
+            input,
+        }
+    }
+
+    #[test]
+    fn moves_right_at_expected_speed() {
+        let mut p = player_at(
+            100.0,
+            100.0,
+            Input {
+                right: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0); // 一秒
+        assert!((p.x - (100.0 + PLAYER_SPEED)).abs() < 0.001);
+        assert!((p.y - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn diagonal_is_not_faster() {
+        let mut p = player_at(
+            500.0,
+            500.0,
+            Input {
+                right: true,
+                down: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0);
+        let dist = (((p.x - 500.0).powi(2)) + ((p.y - 500.0).powi(2))).sqrt();
+        // 對角線位移量應約等於單軸速度，而非 sqrt(2) 倍。
+        assert!((dist - PLAYER_SPEED).abs() < 0.01, "dist={dist}");
+    }
+
+    #[test]
+    fn clamped_to_world_bounds() {
+        let mut p = player_at(
+            5.0,
+            5.0,
+            Input {
+                up: true,
+                left: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0);
+        assert!(p.x >= 0.0 && p.y >= 0.0);
+    }
+
+    #[test]
+    fn idle_player_stays_put() {
+        let mut p = player_at(300.0, 300.0, Input::default());
+        p.step(1.0);
+        assert_eq!(p.x, 300.0);
+        assert_eq!(p.y, 300.0);
+    }
+}
