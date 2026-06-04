@@ -11,6 +11,10 @@
 | **遊戲線上**（玩家隨時能玩） | systemd 服務 `butfun` + `cloudflared` | 開機自動起、崩了自動重啟。**跟 Claude 無關**，Claude 出錯也不影響玩家。 |
 | **持續開發**（世界長大、修錯） | 排程叫起的 headless Claude（開發迴圈） | systemd timer 每隔一小段時間叫起一輪；重開機自動續、成本可控。 |
 
+> 還有第三個角色——**應急客服（隨叫隨到）**：筆電上一個常駐的 Claude 會話開了
+> `/rc` 遠端控制，你用手機隨時呼叫它救火。它是「按需」的，不算背景常駐，細節見
+> `docs/ONCALL_RC.md`、啟動用 `scripts/oncall.sh`。
+
 **權責切分（讓「全自動」也安全）：**
 - 開發迴圈的 Claude 用**普通帳號**跑，只做「改程式 → build → test → 綠了 commit/push」。
   **它碰不到 sudo、碰不到上線。**
