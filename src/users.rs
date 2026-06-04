@@ -77,7 +77,7 @@ impl UserStore {
             external_id: external_id.to_string(),
             email,
             name: sanitize_name(name),
-            species: "terran".to_string(),
+            species: DEFAULT_SPECIES.to_string(),
             created_at: now_millis(),
         };
         append_to_disk(&user);
@@ -98,12 +98,27 @@ impl Default for UserStore {
     }
 }
 
-fn sanitize_name(raw: &str) -> String {
+/// 新玩家 / 訪客的預設物種。
+pub const DEFAULT_SPECIES: &str = "terran";
+
+/// 清理玩家輸入的名字：去頭尾空白、以「字元」截到 24、空字串退回「拓荒者」。
+/// 訪客進場（`ws.rs`）與帳號建立（這裡）共用，避免兩處規則漂移。
+pub fn sanitize_name(raw: &str) -> String {
     let s: String = raw.trim().chars().take(24).collect();
     if s.is_empty() {
         "拓荒者".to_string()
     } else {
         s
+    }
+}
+
+/// 清理玩家輸入的物種：去頭尾空白、空字串退回預設物種。
+pub fn sanitize_species(raw: &str) -> String {
+    let s = raw.trim();
+    if s.is_empty() {
+        DEFAULT_SPECIES.to_string()
+    } else {
+        s.to_string()
     }
 }
 
@@ -146,7 +161,7 @@ fn append_to_disk(u: &User) {
 // ============= 純邏輯單元測試(無 IO) =============
 #[cfg(test)]
 mod tests {
-    use super::sanitize_name;
+    use super::{sanitize_name, sanitize_species, DEFAULT_SPECIES};
 
     #[test]
     fn keeps_normal_name() {
@@ -177,5 +192,21 @@ mod tests {
         // 25 個中日文字應被截到 24 個字元(而非 24 bytes)。
         let name = "界".repeat(25);
         assert_eq!(sanitize_name(&name).chars().count(), 24);
+    }
+
+    #[test]
+    fn species_keeps_normal_value() {
+        assert_eq!(sanitize_species("celestial"), "celestial");
+    }
+
+    #[test]
+    fn species_trims_whitespace() {
+        assert_eq!(sanitize_species("  terran  "), "terran");
+    }
+
+    #[test]
+    fn species_empty_or_whitespace_falls_back_to_default() {
+        assert_eq!(sanitize_species(""), DEFAULT_SPECIES);
+        assert_eq!(sanitize_species("   "), DEFAULT_SPECIES);
     }
 }

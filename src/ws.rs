@@ -68,12 +68,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         let (name, species) = join;
         Player {
             id: Uuid::new_v4(),
-            name: sanitize(&name, "拓荒者"),
-            species: if species.trim().is_empty() {
-                "terran".to_string()
-            } else {
-                species.trim().to_string()
-            },
+            name: crate::users::sanitize_name(&name),
+            species: crate::users::sanitize_species(&species),
             x: WORLD_WIDTH / 2.0,
             y: WORLD_HEIGHT / 2.0,
             input: Input::default(),
@@ -165,15 +161,5 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     let left = ServerMsg::PlayerLeft { id };
     if let Ok(json) = serde_json::to_string(&left) {
         let _ = app.tx.send(json);
-    }
-}
-
-/// 清理玩家輸入的名字：去頭尾空白、限制長度、空字串給預設。
-fn sanitize(raw: &str, fallback: &str) -> String {
-    let trimmed: String = raw.trim().chars().take(24).collect();
-    if trimmed.is_empty() {
-        fallback.to_string()
-    } else {
-        trimmed
     }
 }

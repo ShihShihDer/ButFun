@@ -50,6 +50,10 @@
   錯誤一律拒絕、`constant_time_eq` 含長度不等、`read_cookie` 多 cookie+空白+
   缺失+不誤中前綴;`src/users.rs` 加 5 個 `sanitize_name` 測試(去頭尾空白、
   空字串退回「拓荒者」、以字元而非位元組截到 24)。`cargo test` 19 passed。
+  ✅ 後續(2026-06-05):消除 `ws.rs` 訪客進場與 `users.rs` 重複的名字清理邏輯——
+  `sanitize_name` 改 `pub` 共用,並新增 `sanitize_species`(去空白、空退回
+  `DEFAULT_SPECIES`)取代 `ws.rs` 原本 inline 且無測試的物種清理。補 3 個
+  `sanitize_species` 測試,`cargo test` 28 綠。
 
 - [ ] **Phase 0-G：種田起源（地球人 / 繼承農莊）—— 療癒核心**
   讓世界「玩起來有感覺」的第一個玩法循環。
