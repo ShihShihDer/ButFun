@@ -5,6 +5,7 @@
 
 mod auth;
 mod crops;
+mod field;
 mod game;
 mod positions;
 mod protocol;
