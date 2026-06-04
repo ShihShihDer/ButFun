@@ -41,10 +41,14 @@
   - 前端顯示耕地格與作物階段。
   - 驗收：種下、澆水、過一段時間收成拿到乙太；重啟後農地狀態還在；`cargo test` 涵蓋成長邏輯。
 
-- [ ] **Phase 0-H：發佈管線（需使用者提供部署環境）**
+- [ ] **Phase 0-H：發佈管線**
   讓「改版 → 發佈」變成一個動作。
-  - ⚠️ 需要使用者指定主機 / 部署平台與機敏設定 —— **開始前必問**。
-  - 之後：容器化、CI（build+test）、部署腳本。
+  - **已選定的上線方式**：自架 + **Cloudflare Tunnel**（使用者有網域、有可當伺服器的電腦，
+    但無法設 NAT/路由器轉發）。手冊見 `docs/DEPLOY_CLOUDFLARE_TUNNEL.md`，
+    cloudflared 設定範例見 `deploy/cloudflared/config.example.yml`。
+  - repo 已 tunnel-ready（伺服器讀 `PORT`、綁 `0.0.0.0`；前端 HTTPS 下自動用 `wss`），
+    上線屬使用者本機操作，不需改碼。
+  - 之後（選用，想要關機也能玩時）：容器化、CI（build+test）、雲端代管（Fly.io）。
 
 ## 之後（Phase 1+，先別碰，見 GDD）
 

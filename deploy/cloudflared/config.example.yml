@@ -1,0 +1,20 @@
+# Cloudflare Tunnel 設定範例
+#
+# 用途：把你家電腦上跑的 ButFun 伺服器，透過 Cloudflare 反向通道
+#       公開到你的網域，手機在外面也能連。不需要設定 NAT / 路由器轉發。
+#
+# 用法：複製成 config.yml，填入你自己的值，放在 ~/.cloudflared/ 底下。
+# 步驟說明見 docs/DEPLOY_CLOUDFLARE_TUNNEL.md。
+
+# `cloudflared tunnel create butfun` 之後拿到的 Tunnel UUID。
+tunnel: <你的-TUNNEL-UUID>
+# create 後自動產生的憑證檔（通常在 ~/.cloudflared/<UUID>.json）。
+credentials-file: /home/你的帳號/.cloudflared/<你的-TUNNEL-UUID>.json
+
+ingress:
+  # 把你的網域（或子網域）導到本機在跑的 ButFun 伺服器。
+  # cloudflared 會自動代理 WebSocket（/ws），不用額外設定。
+  - hostname: play.你的網域.com
+    service: http://localhost:3000
+  # 收尾規則：其餘流量回 404（ingress 最後一條一定要是 catch-all）。
+  - service: http_status:404
