@@ -6,6 +6,30 @@
 > 狀態：**Phase 0 垂直切片**。已打通最難的一條技術主軸——
 > 「網頁即時多人 + 權威伺服器」，並內建「玩家建議箱」回饋迴圈。
 
+## 🚀 上線營運（讓 Claude Code 帶你做）
+
+ButFun 設計成可以自走營運：你一直玩、丟反饋，Claude 自己慢慢改版、上線。
+在一台要當伺服器的電腦（筆電即可）上開台，**只有一件事要你親手做**，其餘讓 cc 引導：
+
+1. **（唯一手動起點）** 裝好 `git` 與 **Claude Code 並登入**——cc 還沒裝起來，
+   沒辦法引導你裝它自己。
+2. clone 本 repo，在 repo 目錄開 Claude Code，丟這一句把棒子交給它：
+
+   > 依序照 `docs/SETUP_ON_SERVER.md` 把遊戲和 Cloudflare 通道架成常駐服務，
+   > 再照 `docs/AUTONOMOUS_OPS.md` 把排程開發迴圈與維護窗部署裝好開起來。
+   > 每個需要我本人操作或機敏設定的地方（裝工具、Cloudflare 接管網域、
+   > `cloudflared tunnel login`、sudo）先停下來一步步帶我做。
+
+3. 最後把應急客服會話開著：`./scripts/oncall.sh` → 進去輸入 `/rc` → 手機 Claude App 連上，
+   之後人在外面也能隨時呼叫它救火。
+
+四個角色 / 說明書：
+[遊戲+通道架設](docs/SETUP_ON_SERVER.md)、
+[自走營運（開發迴圈+自動上線）](docs/AUTONOMOUS_OPS.md)、
+[應急客服 /rc](docs/ONCALL_RC.md)、
+[開發待辦](docs/BACKLOG.md)。
+全域邊界見 [`CLAUDE.md`](CLAUDE.md)。
+
 ## 目前能玩到什麼
 
 - 進場選名字（種族起源系統已預留，MVP 先開放「地球人」）。
