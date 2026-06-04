@@ -78,6 +78,13 @@
   `sanitize_name` 改 `pub` 共用,並新增 `sanitize_species`(去空白、空退回
   `DEFAULT_SPECIES`)取代 `ws.rs` 原本 inline 且無測試的物種清理。補 3 個
   `sanitize_species` 測試,`cargo test` 28 綠。
+  ✅ 輸入加固補洞(2026-06-05):聊天內容 `sanitize_chat` 已濾控制字元,但
+  `sanitize_name`/`sanitize_species` 沒濾——而名字會成為**廣播給所有人**的聊天
+  `from` 標籤與 HUD 顯示名。壞客戶端可把換行/NUL 塞進名字、繞過聊天自己的過濾,
+  廣播出多行或破壞顯示/偽造介面的內容(物種同為訪客完全可控的顯示用單行欄位)。
+  兩個共用 sanitizer 比照 `sanitize_chat`:先濾控制字元(不佔截斷額度)、再 trim、
+  依字元截斷、清空退回預設。補齊訪客名字→建議→聊天公開輸入硬化弧線裡身分欄位這一塊。
+  加 4 個測試,`cargo test` 83 綠、clippy 乾淨、伺服器啟動正常。
 
 - [ ] **Phase 0-G：種田起源（地球人 / 繼承農莊）—— 療癒核心**
   讓世界「玩起來有感覺」的第一個玩法循環。
