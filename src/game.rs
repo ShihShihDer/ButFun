@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::protocol::ServerMsg;
-use crate::state::{AppState, PLAYER_SPEED, WORLD_HEIGHT, WORLD_WIDTH};
+use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
@@ -23,28 +23,7 @@ pub fn spawn(app: AppState) {
             let snapshot = {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
-                    let mut dx = 0.0;
-                    let mut dy = 0.0;
-                    if p.input.up {
-                        dy -= 1.0;
-                    }
-                    if p.input.down {
-                        dy += 1.0;
-                    }
-                    if p.input.left {
-                        dx -= 1.0;
-                    }
-                    if p.input.right {
-                        dx += 1.0;
-                    }
-                    // 對角線正規化，避免斜走變快。
-                    if dx != 0.0 && dy != 0.0 {
-                        let inv = 1.0 / (2.0_f32).sqrt();
-                        dx *= inv;
-                        dy *= inv;
-                    }
-                    p.x = (p.x + dx * PLAYER_SPEED * dt).clamp(0.0, WORLD_WIDTH);
-                    p.y = (p.y + dy * PLAYER_SPEED * dt).clamp(0.0, WORLD_HEIGHT);
+                    p.step(dt);
                 }
 
                 ServerMsg::Snapshot {

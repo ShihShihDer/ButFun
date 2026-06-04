@@ -39,6 +39,33 @@ impl Player {
             y: self.y,
         }
     }
+
+    /// 依目前輸入意圖，把位置往前推進 `dt` 秒（權威整合，含邊界夾制）。
+    /// 抽成純函式以便自動測試。
+    pub fn step(&mut self, dt: f32) {
+        let mut dx = 0.0;
+        let mut dy = 0.0;
+        if self.input.up {
+            dy -= 1.0;
+        }
+        if self.input.down {
+            dy += 1.0;
+        }
+        if self.input.left {
+            dx -= 1.0;
+        }
+        if self.input.right {
+            dx += 1.0;
+        }
+        // 對角線正規化，避免斜走變快。
+        if dx != 0.0 && dy != 0.0 {
+            let inv = 1.0 / (2.0_f32).sqrt();
+            dx *= inv;
+            dy *= inv;
+        }
+        self.x = (self.x + dx * PLAYER_SPEED * dt).clamp(0.0, WORLD_WIDTH);
+        self.y = (self.y + dy * PLAYER_SPEED * dt).clamp(0.0, WORLD_HEIGHT);
+    }
 }
 
 /// 玩家目前按住的方向鍵（移動意圖）。
@@ -83,5 +110,76 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn player_at(x: f32, y: f32, input: Input) -> Player {
+        Player {
+            id: Uuid::new_v4(),
+            name: "測試".into(),
+            species: "terran".into(),
+            x,
+            y,
+            input,
+        }
+    }
+
+    #[test]
+    fn moves_right_at_expected_speed() {
+        let mut p = player_at(
+            100.0,
+            100.0,
+            Input {
+                right: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0); // 一秒
+        assert!((p.x - (100.0 + PLAYER_SPEED)).abs() < 0.001);
+        assert!((p.y - 100.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn diagonal_is_not_faster() {
+        let mut p = player_at(
+            500.0,
+            500.0,
+            Input {
+                right: true,
+                down: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0);
+        let dist = (((p.x - 500.0).powi(2)) + ((p.y - 500.0).powi(2))).sqrt();
+        // 對角線位移量應約等於單軸速度，而非 sqrt(2) 倍。
+        assert!((dist - PLAYER_SPEED).abs() < 0.01, "dist={dist}");
+    }
+
+    #[test]
+    fn clamped_to_world_bounds() {
+        let mut p = player_at(
+            5.0,
+            5.0,
+            Input {
+                up: true,
+                left: true,
+                ..Default::default()
+            },
+        );
+        p.step(1.0);
+        assert!(p.x >= 0.0 && p.y >= 0.0);
+    }
+
+    #[test]
+    fn idle_player_stays_put() {
+        let mut p = player_at(300.0, 300.0, Input::default());
+        p.step(1.0);
+        assert_eq!(p.x, 300.0);
+        assert_eq!(p.y, 300.0);
     }
 }
