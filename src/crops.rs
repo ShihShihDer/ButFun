@@ -96,6 +96,27 @@ impl Crop {
         self.moisture <= 0.0
     }
 
+    /// 從存檔載入的值是否「健全」：成長與濕度都是有限且非負。
+    /// 這是與調校常數無關的最小不變式——正常流程（`plant` 起 0、`water` 補滿、
+    /// `grow` 一律夾在 `>= 0`）絕不會產生 `NaN` / `Inf` / 負值，所以這些只會來自
+    /// 壞檔或被竄改的存檔。上界（`RIPE_AT` / `MOISTURE_PER_WATER`）刻意不檢查：
+    /// 它們是會調整的常數，且即使 growth 載入時偏大，`grow` 下一 tick 也會把它夾回
+    /// 上限、過量濕度只是多撐一下，皆無害。持久化（接 0-E）載入時用它逐株驗證。
+    /// 接 0-E 載入路徑時移除此 `allow`（沿用本檔前置地基的慣例）。
+    #[allow(dead_code)]
+    pub fn is_loadable(&self) -> bool {
+        self.growth.is_finite()
+            && self.moisture.is_finite()
+            && self.growth >= 0.0
+            && self.moisture >= 0.0
+    }
+
+    /// 測試用：直接組出指定 `growth` / `moisture`（含壞值）的作物，驗證載入防線。
+    #[cfg(test)]
+    pub fn from_raw(growth: f32, moisture: f32) -> Self {
+        Self { growth, moisture }
+    }
+
     /// 收成：成熟才給乙太，並把這格重置成可再種的新種子。
     /// 未成熟時回 `None`、不改變狀態。
     pub fn harvest(&mut self) -> Option<u32> {
@@ -198,6 +219,21 @@ mod tests {
         // 多次澆水後成長被夾在 RIPE_AT；再收成只拿固定量。
         assert!(c.is_ripe());
         assert_eq!(c.harvest(), Some(ETHER_PER_HARVEST));
+    }
+
+    #[test]
+    fn is_loadable_accepts_normal_and_rejects_corrupt() {
+        // 正常流程產出的值都該可載入。
+        assert!(Crop::plant().is_loadable());
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(SPROUT_AT);
+        assert!(c.is_loadable());
+        // 壞值：NaN / Inf / 負成長 / 負濕度，皆非正常流程能產生，視為壞檔。
+        assert!(!Crop::from_raw(f32::NAN, 0.0).is_loadable());
+        assert!(!Crop::from_raw(0.0, f32::INFINITY).is_loadable());
+        assert!(!Crop::from_raw(-1.0, 0.0).is_loadable());
+        assert!(!Crop::from_raw(0.0, -1.0).is_loadable());
     }
 
     #[test]

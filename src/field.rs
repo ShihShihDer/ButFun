@@ -76,17 +76,25 @@ impl Field {
         }
     }
 
-    /// 從存檔的格子陣列重建農地（持久化載入入口，接 0-E）。格數必須正好等於
-    /// 目前格線（`FIELD_COLS * FIELD_ROWS`）；不符（舊版存檔、壞檔、被竄改）回 `None`，
-    /// 讓呼叫端可退回 `new()` 的全新地，而不是吃進一個長度錯誤的 `tiles`。
+    /// 從存檔的格子陣列重建農地（持久化載入入口，接 0-E）。兩道防線都過才收：
+    /// 其一，格數必須正好等於目前格線（`FIELD_COLS * FIELD_ROWS`），擋舊版 / 被截斷的存檔；
+    /// 其二，每株種下的作物成長值都得健全（見 `Crop::is_loadable`），擋格數對、卻含
+    /// `NaN` / `Inf` / 負成長的被竄改存檔，否則一格壞值會毒化整塊地的成長與顯示。
+    /// 任一不符（舊版、壞檔、被竄改）回 `None`，讓呼叫端可退回 `new()` 的全新地，
+    /// 而不是吃進一塊長度或內容錯誤的 `tiles`。
     /// 接 0-E 載入路徑時移除此 `allow`（沿用本檔前置地基的慣例）。
     #[allow(dead_code)]
     pub fn from_tiles(tiles: Vec<Tile>) -> Option<Self> {
-        if tiles.len() == FIELD_COLS * FIELD_ROWS {
-            Some(Self { tiles })
-        } else {
-            None
+        if tiles.len() != FIELD_COLS * FIELD_ROWS {
+            return None;
         }
+        if tiles
+            .iter()
+            .any(|t| matches!(t, Tile::Planted(c) if !c.is_loadable()))
+        {
+            return None;
+        }
+        Some(Self { tiles })
     }
 
     /// (col,row) → tiles 陣列索引；超出範圍回 `None`。純函式。
@@ -547,6 +555,23 @@ mod tests {
         assert!(Field::from_tiles(vec![]).is_none());
         assert!(Field::from_tiles(vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS - 1]).is_none());
         assert!(Field::from_tiles(vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS + 1]).is_none());
+    }
+
+    #[test]
+    fn from_tiles_rejects_corrupt_crop_values() {
+        use crate::crops::Crop;
+        // 格數正確、但某格作物成長是 NaN（壞檔 / 被竄改）→ 整塊拒收。
+        let mut tiles = vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS];
+        tiles[0] = Tile::Planted(Crop::from_raw(f32::NAN, 0.0));
+        assert!(Field::from_tiles(tiles).is_none());
+        // 負濕度同樣不健全。
+        let mut tiles = vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS];
+        tiles[5] = Tile::Planted(Crop::from_raw(10.0, -1.0));
+        assert!(Field::from_tiles(tiles).is_none());
+        // 正常範圍內的作物可順利載入。
+        let mut tiles = vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS];
+        tiles[3] = Tile::Planted(Crop::from_raw(SPROUT_AT, 20.0));
+        assert!(Field::from_tiles(tiles).is_some());
     }
 
     #[test]
