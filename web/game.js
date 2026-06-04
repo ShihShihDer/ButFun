@@ -120,10 +120,12 @@
   }
 
   window.addEventListener("keydown", (e) => {
-    // 聊天輸入中不攔截移動鍵
-    if (document.activeElement && document.activeElement.tagName === "INPUT" &&
-        document.activeElement.id !== "chatText") return;
-    if (document.activeElement && document.activeElement.id === "chatText") return;
+    // 在任何文字輸入欄打字時，完全不攔截遊戲按鍵——否則 w/a/s/d、方向鍵會被
+    // e.preventDefault() 吃掉、角色還在背景亂走，Enter 也被搶去 focus 聊天。
+    // 尤其建議箱 #suggestText 是 <textarea>（先前只擋 INPUT 沒擋它），玩家寫
+    // 回饋時打到這些字就壞掉——而建議箱正是 devloop 收回饋的主要管道。
+    const el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
     if (e.key === "Enter") { document.getElementById("chatText").focus(); return; }
     const dir = keyToDir(e);
     if (dir) { keys[dir] = true; sendInputIfChanged(); e.preventDefault(); }

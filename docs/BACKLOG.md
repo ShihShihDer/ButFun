@@ -35,6 +35,14 @@
   （埠被正式服務占用屬預期）。
 - [x] **Phase 0-C：遊戲內建議箱**
   ✅ 前端 💡 表單 → `POST /api/suggestions` → 存 `data/suggestions.jsonl`。
+  ✅ 前端修 bug（建議箱 textarea 吃按鍵，2026-06-05）：`game.js` 的 keydown 守衛只擋
+  `INPUT`、沒擋 `TEXTAREA`——而建議箱內容 `#suggestText` 正是 `<textarea>`。玩家寫
+  回饋時，內含的 `w/a/s/d`／方向鍵會被遊戲攔截 `preventDefault` 吃掉、打不進去，角色
+  還在背景亂走，Enter 也被搶去 focus 聊天而無法換行。建議箱是整個 devloop 收回饋的
+  主要管道，這 bug 直接傷到它。守衛改為「焦點在任何文字輸入欄（`INPUT` 或 `TEXTAREA`）
+  就完全不攔截遊戲按鍵」，語意更清楚且保留所有既有行為（聊天 input 照舊、Enter 在空白
+  處仍開聊天）。bump `index.html` 的 `game.js?v` 快取版號讓玩家拿到新檔。純前端、
+  `cargo test` 91 綠不受影響。
   ✅ 輸入加固（2026-06-05）：先前 `text`/`from` 無長度上限，公開 endpoint 可被
   灌入任意大小的行膨脹建議檔。抽出純函式 `sanitize`（trim + 依字元截斷 + 空署名退回
   匿名），署名截 24 字（對齊 `sanitize_name`）、內容截 1000 字，集中與聊天截 200 字
