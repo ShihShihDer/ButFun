@@ -76,6 +76,9 @@ pub struct FieldView {
     pub tile_size: f32,
     pub cols: usize,
     pub rows: usize,
+    /// 要照顧農地，玩家離地塊矩形最近距離須在此像素內（伺服器權威 `FARM_REACH`）。
+    /// 帶給前端，讓「太遠就變暗、提示走近」與伺服器的拒絕判斷用同一個來源、不會各說各話。
+    pub reach: f32,
     /// row-major 的每格狀態，長度為 `cols * rows`。
     pub cells: Vec<TileView>,
 }
@@ -125,6 +128,7 @@ mod tests {
                 tile_size: 48.0,
                 cols: 6,
                 rows: 4,
+                reach: 48.0,
                 cells: vec![TileView {
                     state: 2,
                     dry: true,
@@ -135,6 +139,7 @@ mod tests {
         assert_eq!(v["type"], "snapshot");
         assert_eq!(v["players"][0]["ether"], 7);
         assert_eq!(v["field"]["tile_size"], 48.0);
+        assert_eq!(v["field"]["reach"], 48.0);
         assert_eq!(v["field"]["cells"][0]["state"], 2);
         assert_eq!(v["field"]["cells"][0]["dry"], true);
     }

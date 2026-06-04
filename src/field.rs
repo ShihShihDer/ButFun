@@ -224,6 +224,7 @@ impl Field {
             tile_size: TILE_SIZE,
             cols: FIELD_COLS,
             rows: FIELD_ROWS,
+            reach: FARM_REACH,
             cells: self.tiles.iter().map(tile_view).collect(),
         }
     }
@@ -475,6 +476,8 @@ mod tests {
         assert_eq!(v.tile_size, TILE_SIZE);
         assert_eq!(v.cols, FIELD_COLS);
         assert_eq!(v.rows, FIELD_ROWS);
+        // 照顧距離跟著快照帶給前端，與伺服器權威常數一致（避免前後端各定一套）。
+        assert_eq!(v.reach, FARM_REACH);
         assert_eq!(v.cells.len(), FIELD_COLS * FIELD_ROWS);
         // 全新地每格都是自然地、不需澆水。
         assert!(v.cells.iter().all(|c| c.state == 0 && !c.dry));

@@ -252,10 +252,28 @@
   }
 
   // ---- 農地（Phase 0-G 種田起源）----
+  // 玩家(權威座標 px,py)是否近到能照顧農地：鏡像伺服器的 within_field_reach，
+  // 用快照帶來的 field.reach 當同一個來源，前後端對「多近才算」不會各說各話。
+  function withinFieldReach(px, py) {
+    if (!field) return false;
+    const right = field.origin_x + field.cols * field.tile_size;
+    const bottom = field.origin_y + field.rows * field.tile_size;
+    const nx = Math.max(field.origin_x, Math.min(px, right));
+    const ny = Math.max(field.origin_y, Math.min(py, bottom));
+    const dx = px - nx, dy = py - ny;
+    return dx * dx + dy * dy <= field.reach * field.reach;
+  }
+
   // 依伺服器廣播的每格 state/dry 畫出耕地與作物階段。
   function drawField(camX, camY) {
     if (!field) return;
     const ts = field.tile_size;
+    // 自己離農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
+    // 不再表現成「點了沒反應像壞掉」。沒有自己（如剛進場）就照常畫。
+    const me = myId ? players.get(myId) : null;
+    const reachable = me ? withinFieldReach(me.x, me.y) : true;
+    ctx.save();
+    if (!reachable) ctx.globalAlpha = 0.4;
     for (let row = 0; row < field.rows; row++) {
       for (let col = 0; col < field.cols; col++) {
         const cell = field.cells[row * field.cols + col];
@@ -264,6 +282,15 @@
         if (sx + ts < 0 || sy + ts < 0 || sx > canvas.width || sy > canvas.height) continue;
         drawTile(sx, sy, ts, cell);
       }
+    }
+    ctx.restore();
+    if (!reachable) {
+      const cx = field.origin_x + (field.cols * ts) / 2 - camX;
+      const top = field.origin_y - camY;
+      ctx.fillStyle = "rgba(232,224,207,0.85)";
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("走近一點才能照顧農地 🌱", cx, top - 10);
     }
   }
 
@@ -306,9 +333,21 @@
     }
   }
 
+  // 距離提示節流：太遠時只偶爾提醒一次，不洗聊天視窗。
+  let lastReachHint = 0;
   // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
   function farmAtScreen(clientX, clientY) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // 自己離農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
+    const me = myId ? players.get(myId) : null;
+    if (me && field && !withinFieldReach(me.x, me.y)) {
+      const now = Date.now();
+      if (now - lastReachHint > 2500) {
+        addChat("系統", "走近農地才能照顧作物哦。");
+        lastReachHint = now;
+      }
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
