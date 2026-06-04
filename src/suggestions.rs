@@ -37,12 +37,34 @@ fn anonymous() -> String {
     "匿名拓荒者".to_string()
 }
 
-/// 把進來的署名 / 內容整理成要存下的 `Suggestion`：去頭尾空白、依「字元」(非位元組,
-/// 中文才不會被切壞)截到上限、空署名退回匿名。抽成純函式以便測試,並把長度上限這條
-/// 公開 endpoint 的輸入加固集中在一處(對齊聊天截 200 字、`sanitize_name` 截 24 字)。
+/// 把進來的署名 / 內容整理成要存下的 `Suggestion`：先濾控制字元、去頭尾空白、依「字元」
+/// (非位元組,中文才不會被切壞)截到上限、空署名退回匿名。抽成純函式以便測試,把這條公開
+/// endpoint 的輸入加固集中在一處(對齊聊天截 200 字、`sanitize_name` 截 24 字)。
+///
+/// 濾控制字元是必要的,且補齊先前只做 `trim`+`take` 的缺口:建議經公開未驗身的
+/// `POST /api/suggestions` 進來、又會由公開的 `GET /api/suggestions` 回出,而我(維護者)
+/// 多半直接在終端機讀 `data/suggestions.jsonl` 三角化——`ESC`(0x1B)等控制字元可被用來注入
+/// ANSI 轉義、偽造或破壞顯示,`NUL` / `\r` 同理。比照 `sanitize_name` / `sanitize_chat`,
+/// 控制字元先濾掉(不佔截斷額度)。兩欄差別:署名是單行身分欄位(對齊 `sanitize_name`),濾掉
+/// 全部控制字元;內容是多行回饋(前端 `<textarea>`),保留換行 `\n` 讓玩家能分段,只濾掉換行
+/// 以外的控制字元——換行存進 JSONL 會被 serde 轉義成 `\n`、不會把一筆紀錄拆成多行。
 fn sanitize(from: &str, text: &str, at: u64) -> Suggestion {
-    let from: String = from.trim().chars().take(MAX_FROM_CHARS).collect();
-    let text: String = text.trim().chars().take(MAX_TEXT_CHARS).collect();
+    let from: String = from
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(MAX_FROM_CHARS)
+        .collect();
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(MAX_TEXT_CHARS)
+        .collect();
     Suggestion {
         from: if from.is_empty() { anonymous() } else { from },
         text,
@@ -161,5 +183,51 @@ mod tests {
         let exact = "a".repeat(MAX_TEXT_CHARS);
         let s = sanitize("我", &exact, 0);
         assert_eq!(s.text.chars().count(), MAX_TEXT_CHARS);
+    }
+
+    #[test]
+    fn strips_control_chars_from_from() {
+        // 署名是單行身分欄位：換行 / 歸位 / NUL / ESC / tab 全濾掉，
+        // 不讓壞客戶端把多行或終端機轉義塞進回給公開 GET 的署名。
+        let s = sanitize("小\n明\r\0\u{1b}\t", "有內容", 0);
+        assert_eq!(s.from, "小明");
+    }
+
+    #[test]
+    fn keeps_newlines_in_text_but_strips_other_controls() {
+        // 內容是多行回饋（textarea）：保留換行讓玩家分段，但濾掉換行以外的控制字元
+        // （NUL / 歸位 / ESC——維護者多在終端機讀檔，ESC 可注入 ANSI 轉義偽造顯示）。
+        let s = sanitize("我", "第一段\0\r\n第二段", 0);
+        assert_eq!(s.text, "第一段\n第二段");
+    }
+
+    #[test]
+    fn stripping_esc_neutralizes_ansi_injection() {
+        // 注入 ANSI 轉義靠的是 ESC（0x1B）控制位元組；濾掉它，殘留的 `[31m` 只是
+        // 無害的字面文字，不再能在維護者的終端機著色 / 偽造顯示。
+        let s = sanitize("我", "正常\u{1b}[31m紅字", 0);
+        assert!(!s.text.contains('\u{1b}'));
+        assert_eq!(s.text, "正常[31m紅字");
+    }
+
+    #[test]
+    fn control_only_text_becomes_empty() {
+        // 清乾淨後變空的內容（全控制字元）不該留下垃圾，截斷前先被濾光。
+        let s = sanitize("我", "\0\r\u{1b}\t", 0);
+        assert_eq!(s.text, "");
+    }
+
+    #[test]
+    fn control_chars_do_not_count_toward_cap() {
+        // 控制字元先濾掉、不佔截斷額度：夾在合法字元間的控制字元被移除後，
+        // 仍保留滿額的可見字元。
+        let mut raw = String::new();
+        for _ in 0..MAX_FROM_CHARS {
+            raw.push('字');
+            raw.push('\0');
+        }
+        let s = sanitize(&raw, "x", 0);
+        assert_eq!(s.from.chars().count(), MAX_FROM_CHARS);
+        assert!(!s.from.contains('\0'));
     }
 }

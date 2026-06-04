@@ -39,6 +39,15 @@
   灌入任意大小的行膨脹建議檔。抽出純函式 `sanitize`（trim + 依字元截斷 + 空署名退回
   匿名），署名截 24 字（對齊 `sanitize_name`）、內容截 1000 字，集中與聊天截 200 字
   同類的輸入邊界。加 5 個單元測試，`cargo test` 68 綠、伺服器啟動正常。
+  ✅ 輸入加固補洞之二（控制字元，2026-06-05）：建議的 `sanitize` 是公開輸入硬化弧線裡
+  唯一還只做 `trim`+`take`、沒濾控制字元的 sanitizer——而建議經未驗身的
+  `POST /api/suggestions` 進來、又由公開的 `GET /api/suggestions` 回出，且維護者多半直接
+  在終端機讀 `data/suggestions.jsonl` 三角化，`ESC`(0x1B) 可被用來注入 ANSI 轉義偽造/
+  破壞顯示（`NUL`/`\r` 同理）。比照 `sanitize_name`/`sanitize_chat` 先濾控制字元（不佔截斷
+  額度）：署名是單行身分欄位、濾掉全部控制字元；內容是多行回饋（前端 `<textarea>`），保留
+  換行 `\n` 讓玩家分段、只濾換行以外的控制字元（換行存進 JSONL 會被 serde 轉義、不拆紀錄）。
+  補齊訪客名字→物種→聊天→建議的公開輸入硬化弧線最後一塊。加 4 個測試，`cargo test` 91 綠、
+  clippy 乾淨、伺服器二進位啟動正常（埠被正式服務占用屬預期）。
 - [x] **Phase 0-D：自動測試閘門**
   ✅ 移動整合抽成 `Player::step`，加上單元測試；`cargo test` 全綠。
 - [x] **Phase 0-F：帳號身份模型（provider 無關）+ Google OAuth**
