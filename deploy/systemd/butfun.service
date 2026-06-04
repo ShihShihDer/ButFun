@@ -1,0 +1,18 @@
+# ButFun 遊戲伺服器——常駐服務，開機自動起、掛了自動重啟。
+# 安裝：複製到 /etc/systemd/system/butfun.service，改好路徑與帳號，再
+#   sudo systemctl daemon-reload && sudo systemctl enable --now butfun
+[Unit]
+Description=ButFun game server
+After=network.target
+
+[Service]
+# WorkingDirectory 必須是 repo 根目錄：伺服器相對讀 web/ 與寫 data/。
+WorkingDirectory=/opt/butfun
+Environment=PORT=3000
+ExecStart=/opt/butfun/target/release/butfun-server
+Restart=always
+RestartSec=3
+User=butfun
+
+[Install]
+WantedBy=multi-user.target
