@@ -1,0 +1,62 @@
+//! 權威遊戲迴圈：固定 tick 整合所有玩家位置，廣播世界快照。
+
+use std::time::Duration;
+
+use crate::protocol::ServerMsg;
+use crate::state::{AppState, PLAYER_SPEED, WORLD_HEIGHT, WORLD_WIDTH};
+
+/// 每秒 tick 數（伺服器模擬頻率）。
+const TICK_HZ: f32 = 15.0;
+
+/// 啟動遊戲迴圈，常駐執行。
+pub fn spawn(app: AppState) {
+    tokio::spawn(async move {
+        let dt = 1.0 / TICK_HZ;
+        let mut interval = tokio::time::interval(Duration::from_secs_f32(dt));
+        let mut tick: u64 = 0;
+
+        loop {
+            interval.tick().await;
+            tick += 1;
+
+            // 整合位置並建立快照（短暫持鎖，不跨 await）。
+            let snapshot = {
+                let mut players = app.players.write().unwrap();
+                for p in players.values_mut() {
+                    let mut dx = 0.0;
+                    let mut dy = 0.0;
+                    if p.input.up {
+                        dy -= 1.0;
+                    }
+                    if p.input.down {
+                        dy += 1.0;
+                    }
+                    if p.input.left {
+                        dx -= 1.0;
+                    }
+                    if p.input.right {
+                        dx += 1.0;
+                    }
+                    // 對角線正規化，避免斜走變快。
+                    if dx != 0.0 && dy != 0.0 {
+                        let inv = 1.0 / (2.0_f32).sqrt();
+                        dx *= inv;
+                        dy *= inv;
+                    }
+                    p.x = (p.x + dx * PLAYER_SPEED * dt).clamp(0.0, WORLD_WIDTH);
+                    p.y = (p.y + dy * PLAYER_SPEED * dt).clamp(0.0, WORLD_HEIGHT);
+                }
+
+                ServerMsg::Snapshot {
+                    tick,
+                    players: players.values().map(|p| p.view()).collect(),
+                }
+            };
+
+            // 沒有訂閱者時 send 會回 Err，忽略即可。
+            if let Ok(json) = serde_json::to_string(&snapshot) {
+                let _ = app.tx.send(json);
+            }
+        }
+    });
+}
