@@ -312,3 +312,96 @@ fn random_b64(bytes: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
 }
 
+// ============= 純邏輯單元測試(無 IO) =============
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &[u8] = b"test-secret-do-not-leak";
+
+    // ---- sign_session / verify_session ----
+
+    #[test]
+    fn sign_then_verify_round_trip() {
+        let uid = Uuid::new_v4();
+        let token = sign_session(&uid, SECRET);
+        // token 形如 {uuid}.{sig};驗章後應拿回同一個 uid。
+        assert!(token.starts_with(&uid.to_string()));
+        assert_eq!(verify_session(&token, SECRET), Some(uid));
+    }
+
+    #[test]
+    fn verify_rejects_tampered_signature() {
+        let uid = Uuid::new_v4();
+        let token = sign_session(&uid, SECRET);
+        // 把簽章尾巴改掉一個字元 → 驗章失敗。
+        let mut bad = token.clone();
+        let last = bad.pop().unwrap();
+        bad.push(if last == 'A' { 'B' } else { 'A' });
+        assert_eq!(verify_session(&bad, SECRET), None);
+    }
+
+    #[test]
+    fn verify_rejects_forged_uid_with_unknown_secret() {
+        // 攻擊者自行替某個 uid 簽章,但用錯誤(不知道的)secret。
+        let uid = Uuid::new_v4();
+        let forged = sign_session(&uid, b"attacker-secret");
+        assert_eq!(verify_session(&forged, SECRET), None);
+    }
+
+    #[test]
+    fn verify_rejects_uid_swap_under_same_secret() {
+        // 即使握有合法 secret,也不能把別人的 uid 套上自己的簽章。
+        let real = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let token = sign_session(&real, SECRET);
+        let (_, sig) = token.split_once('.').unwrap();
+        let swapped = format!("{other}.{sig}");
+        assert_eq!(verify_session(&swapped, SECRET), None);
+    }
+
+    #[test]
+    fn verify_rejects_malformed_tokens() {
+        assert_eq!(verify_session("沒有點號", SECRET), None);
+        assert_eq!(verify_session("not-a-uuid.sig", SECRET), None);
+        assert_eq!(verify_session("", SECRET), None);
+    }
+
+    // ---- constant_time_eq ----
+
+    #[test]
+    fn constant_time_eq_basics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab")); // 長度不同
+        assert!(constant_time_eq(b"", b""));
+    }
+
+    // ---- read_cookie ----
+
+    #[test]
+    fn read_cookie_single() {
+        assert_eq!(read_cookie("foo=bar", "foo"), Some("bar"));
+    }
+
+    #[test]
+    fn read_cookie_multiple_with_whitespace() {
+        let header = "a=1; butfun_session=tok123;  b=2";
+        assert_eq!(read_cookie(header, "butfun_session"), Some("tok123"));
+        assert_eq!(read_cookie(header, "a"), Some("1"));
+        assert_eq!(read_cookie(header, "b"), Some("2"));
+    }
+
+    #[test]
+    fn read_cookie_missing_returns_none() {
+        assert_eq!(read_cookie("a=1; b=2", "c"), None);
+        assert_eq!(read_cookie("", "a"), None);
+    }
+
+    #[test]
+    fn read_cookie_does_not_match_prefix() {
+        // 找 "ab" 不應誤中 "abc=x"。
+        assert_eq!(read_cookie("abc=x", "ab"), None);
+    }
+}
+

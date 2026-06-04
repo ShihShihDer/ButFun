@@ -36,10 +36,14 @@
   - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
   - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
 
-- [ ] **Phase 0-F-1：補 auth 純邏輯單元測試**
+- [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、
   含空白)、`constant_time_eq`、`sanitize_name`。純函式、無 IO、易測,補上即可
   push。驗收:`cargo test` 全綠且涵蓋上述函式。
+  ✅ `src/auth.rs` 加 10 個測試:簽章 round-trip、改簽章/換 secret/換 uid/格式
+  錯誤一律拒絕、`constant_time_eq` 含長度不等、`read_cookie` 多 cookie+空白+
+  缺失+不誤中前綴;`src/users.rs` 加 5 個 `sanitize_name` 測試(去頭尾空白、
+  空字串退回「拓荒者」、以字元而非位元組截到 24)。`cargo test` 19 passed。
 
 - [ ] **Phase 0-G：種田起源（地球人 / 繼承農莊）—— 療癒核心**
   讓世界「玩起來有感覺」的第一個玩法循環。

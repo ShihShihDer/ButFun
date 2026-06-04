@@ -142,3 +142,40 @@ fn append_to_disk(u: &User) {
         Err(e) => tracing::warn!("無法寫入 users 檔 {STORE_PATH}: {e}"),
     }
 }
+
+// ============= 純邏輯單元測試(無 IO) =============
+#[cfg(test)]
+mod tests {
+    use super::sanitize_name;
+
+    #[test]
+    fn keeps_normal_name() {
+        assert_eq!(sanitize_name("施育群"), "施育群");
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        assert_eq!(sanitize_name("  小明  "), "小明");
+    }
+
+    #[test]
+    fn empty_or_whitespace_falls_back_to_default() {
+        assert_eq!(sanitize_name(""), "拓荒者");
+        assert_eq!(sanitize_name("   "), "拓荒者");
+    }
+
+    #[test]
+    fn truncates_to_24_chars() {
+        // 取 24 個「字元」(非位元組),確保多位元組字也以字元計。
+        let long = "あ".repeat(50);
+        let out = sanitize_name(&long);
+        assert_eq!(out.chars().count(), 24);
+    }
+
+    #[test]
+    fn counts_chars_not_bytes() {
+        // 25 個中日文字應被截到 24 個字元(而非 24 bytes)。
+        let name = "界".repeat(25);
+        assert_eq!(sanitize_name(&name).chars().count(), 24);
+    }
+}
