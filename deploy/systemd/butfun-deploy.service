@@ -1,0 +1,16 @@
+# 維護窗上線——oneshot，由 butfun-deploy.timer 每日觸發。
+# 跑確定性的 scripts/deploy.sh：測試綠才換版、失敗自動回滾。
+[Unit]
+Description=ButFun nightly deploy (test-gated, auto-rollback)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/butfun
+Environment=BUTFUN_REPO=/opt/butfun
+Environment=BUTFUN_DEPLOY_BRANCH=main
+Environment=BUTFUN_SERVICE=butfun
+Environment=BUTFUN_HEALTH_URL=http://localhost:3000/healthz
+ExecStart=/opt/butfun/scripts/deploy.sh
+User=butfun
+TimeoutStartSec=1800

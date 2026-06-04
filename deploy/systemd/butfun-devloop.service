@@ -1,0 +1,16 @@
+# 開發迴圈——oneshot，由 butfun-devloop.timer 短排程觸發。
+# 用普通帳號跑，不碰 sudo、不換版上線；只把程式做好、推上 git。
+[Unit]
+Description=ButFun autonomous dev loop (one iteration)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/butfun
+Environment=BUTFUN_REPO=/opt/butfun
+# Claude Code 的認證（擇一）：登入過的家目錄，或 API 金鑰環境變數。
+# Environment=ANTHROPIC_API_KEY=...   ← 建議改放 EnvironmentFile，別寫死在這
+ExecStart=/opt/butfun/scripts/devloop.sh
+User=butfun
+# 單輪別跑太久，避免卡住或燒過頭。
+TimeoutStartSec=1800

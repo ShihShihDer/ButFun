@@ -1,0 +1,12 @@
+# 維護窗：每日 03:00 上線（你選的 3–5 點窗）。
+# RandomizedDelaySec 讓它落在 03:00–05:00 之間，避開整點尖峰。
+[Unit]
+Description=Run ButFun deploy daily in the 03:00-05:00 maintenance window
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
