@@ -19,6 +19,13 @@ pub fn spawn(app: AppState) {
             interval.tick().await;
             tick += 1;
 
+            // 推進農地成長（短暫持鎖，不跨 await）。
+            let field_view = {
+                let mut field = app.field.write().unwrap();
+                field.tick(dt);
+                field.view()
+            };
+
             // 整合位置並建立快照（短暫持鎖，不跨 await）。
             let snapshot = {
                 let mut players = app.players.write().unwrap();
@@ -29,6 +36,7 @@ pub fn spawn(app: AppState) {
                 ServerMsg::Snapshot {
                     tick,
                     players: players.values().map(|p| p.view()).collect(),
+                    field: field_view,
                 }
             };
 

@@ -17,10 +17,15 @@
   const players = new Map();
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
+  // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
+  let field = null;
+  let myEther = 0;
 
   // ---- 觸控搖桿狀態(手機沒鍵盤,用拖曳設方向) ----
   let touchOrigin = null;   // 手指按下的初始位置
   let touchCurrent = null;  // 手指目前的位置
+  // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
+  const lastCam = { x: 0, y: 0 };
 
   // ---- 畫布尺寸 ----
   function resize() {
@@ -77,6 +82,13 @@
           if (!seen.has(id)) players.delete(id);
         }
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
+        // 農地狀態 + 我的乙太
+        field = msg.field;
+        const me = msg.players.find((p) => p.id === myId);
+        if (me) {
+          myEther = me.ether;
+          document.getElementById("hudEther").textContent = `乙太：${myEther}`;
+        }
         break;
       }
       case "chat":
@@ -145,6 +157,12 @@
     e.preventDefault();
   }, { passive: false });
   function endTouch(e) {
+    // 幾乎沒移動的觸碰當成「輕點」→ 農地互動（拖曳則是搖桿移動，不互動）。
+    if (touchOrigin && e.changedTouches && e.changedTouches.length) {
+      const t = e.changedTouches[0];
+      const moved = Math.hypot(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
+      if (moved < 12) farmAtScreen(t.clientX, t.clientY);
+    }
     touchOrigin = null;
     touchCurrent = null;
     setTouchKeys(0, 0);
@@ -167,8 +185,11 @@
     // 鏡頭跟隨自己
     const camX = me ? me.rx - canvas.width / 2 : world.width / 2 - canvas.width / 2;
     const camY = me ? me.ry - canvas.height / 2 : world.height / 2 - canvas.height / 2;
+    lastCam.x = camX;
+    lastCam.y = camY;
 
     drawGround(camX, camY);
+    drawField(camX, camY);
 
     // 畫玩家
     for (const p of players.values()) {
@@ -229,6 +250,72 @@
     ctx.lineWidth = 4;
     ctx.strokeRect(-camX, -camY, world.width, world.height);
   }
+
+  // ---- 農地（Phase 0-G 種田起源）----
+  // 依伺服器廣播的每格 state/dry 畫出耕地與作物階段。
+  function drawField(camX, camY) {
+    if (!field) return;
+    const ts = field.tile_size;
+    for (let row = 0; row < field.rows; row++) {
+      for (let col = 0; col < field.cols; col++) {
+        const cell = field.cells[row * field.cols + col];
+        const sx = field.origin_x + col * ts - camX;
+        const sy = field.origin_y + row * ts - camY;
+        if (sx + ts < 0 || sy + ts < 0 || sx > canvas.width || sy > canvas.height) continue;
+        drawTile(sx, sy, ts, cell);
+      }
+    }
+  }
+
+  function drawTile(sx, sy, ts, cell) {
+    // 底色：未翻的自然地（略亮草色，提示可耕） vs 翻好的土。
+    ctx.fillStyle = cell.state === 0 ? "rgba(70,104,64,0.55)" : "#5b4636";
+    ctx.fillRect(sx + 1, sy + 1, ts - 2, ts - 2);
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx + 0.5, sy + 0.5, ts - 1, ts - 1);
+
+    const cx = sx + ts / 2;
+    const cy = sy + ts / 2;
+    if (cell.state === 2) {
+      // 種子：一顆小土點
+      ctx.fillStyle = "#caa46a";
+      ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.fill();
+    } else if (cell.state === 3) {
+      // 發芽：綠莖 + 兩片小葉
+      ctx.strokeStyle = "#7ec850"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(cx, cy + 8); ctx.lineTo(cx, cy - 6); ctx.stroke();
+      ctx.fillStyle = "#7ec850";
+      ctx.beginPath(); ctx.arc(cx - 4, cy - 4, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + 4, cy - 6, 3, 0, Math.PI * 2); ctx.fill();
+    } else if (cell.state === 4) {
+      // 成熟乙太作物：莖 + 發光金果
+      ctx.fillStyle = "#7ec850"; ctx.fillRect(cx - 1.5, cy - 4, 3, 12);
+      ctx.shadowColor = "#ffe9a0"; ctx.shadowBlur = 10;
+      ctx.fillStyle = "#ffd24a";
+      ctx.beginPath(); ctx.arc(cx, cy - 6, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+    // 需澆水：藍色虛線框提示。
+    if (cell.dry) {
+      ctx.strokeStyle = "rgba(90,170,255,0.9)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(sx + 2, sy + 2, ts - 4, ts - 4);
+      ctx.setLineDash([]);
+    }
+  }
+
+  // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
+  function farmAtScreen(clientX, clientY) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const rect = canvas.getBoundingClientRect();
+    const wx = clientX - rect.left + lastCam.x;
+    const wy = clientY - rect.top + lastCam.y;
+    ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+  }
+  // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
+  canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
 
   // ---- 聊天 ----
   function addChat(who, text) {

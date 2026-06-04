@@ -73,6 +73,15 @@
     （讓全地作物成長）。延續「純邏輯可測、不碰 ws/遊戲迴圈」模式，加 13 個單元測試，
     `cargo test` 51 綠。仍待做：接遊戲迴圈 `tick`、接 ws 互動把乙太加進背包、前端畫格、
     持久化（接 0-E）。接線時移除 `field.rs`/`crops.rs` 的 `allow(dead_code)`。
+  - ✅ 玩法接通（端到端可玩，2026-06-05）：把農地接上整條線——
+    `AppState` 加共享 `Field`、遊戲迴圈每 tick `field.tick(dt)` 並把 `field.view()` 隨快照
+    廣播；新增 `ClientMsg::Farm{x,y}` 與 `Field::interact`「一鍵照顧」（依該格狀態自動
+    翻土/播種/澆水/收成），收成把乙太加進 `Player.ether`。前端 canvas 依每格 `state`/`dry`
+    畫出耕地、作物階段與「該澆水」提示，點擊（手機輕觸）送 `farm`，HUD 顯示乙太。
+    移除 `crops.rs`/`field.rs` 的 `allow(dead_code)`；加 `Field::interact`/`view` 與
+    protocol JSON 契約共 7 個測試，`cargo test` 58 綠、伺服器啟動正常。
+    **仍差最後一塊才算完成本項**：農地與乙太目前是記憶體狀態，重啟會歸零；
+    需接 0-E 持久化（驗收標準「重啟後農地狀態還在」），故主項暫不打勾。
 
 ## Phase 1（採集 + 合成 + 載具 MVP）
 

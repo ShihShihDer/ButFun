@@ -11,11 +11,9 @@
 //!
 //! 療癒迴圈：自然地 → 翻土 → 播種 → 澆水 → 成長 → 收成 → 回到翻好的空地可再種。
 //! 每一步都要玩家主動做，「照顧」本身就是玩法。
-//!
-//! 註：尚未接上遊戲迴圈 / 前端 / 持久化，先放行未使用警告，接線後即可移除。
-#![allow(dead_code)]
 
 use crate::crops::{Crop, CropStage};
+use crate::protocol::{FieldView, TileView};
 
 /// 每格耕地的邊長（世界像素）。
 pub const TILE_SIZE: f32 = 48.0;
@@ -37,6 +35,21 @@ pub enum Tile {
     Tilled,
     /// 種了一株作物（成長狀態在 `Crop` 裡）。
     Planted(Crop),
+}
+
+/// 玩家對一格做了「一鍵照顧」後，實際發生了什麼（給上層回饋 / 加乙太）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarmOutcome {
+    /// 把自然地翻成空土。
+    Tilled,
+    /// 在空土上播了種。
+    Planted,
+    /// 替作物澆了水。
+    Watered,
+    /// 收成了成熟作物，拿到這麼多乙太。
+    Harvested(u32),
+    /// 沒對應到任何格或無事可做。
+    Nothing,
 }
 
 /// 一塊固定位置、固定大小的農地（row-major 的格子陣列）。
@@ -80,11 +93,15 @@ impl Field {
     }
 
     /// 讀某格狀態（唯讀）；超出範圍回 `None`。
+    /// 生產端走 `view()` 取整塊地，單格查詢目前只用於測試斷言；
+    /// 之後接持久化逐格存取時再放開。
+    #[cfg(test)]
     pub fn tile(&self, col: usize, row: usize) -> Option<&Tile> {
         Self::index(col, row).map(|i| &self.tiles[i])
     }
 
     /// 某格作物目前的成長階段；該格沒種東西或超出範圍回 `None`。
+    #[cfg(test)]
     pub fn crop_stage(&self, col: usize, row: usize) -> Option<CropStage> {
         match self.tile(col, row) {
             Some(Tile::Planted(c)) => Some(c.stage()),
@@ -148,6 +165,82 @@ impl Field {
         for t in &mut self.tiles {
             if let Tile::Planted(c) = t {
                 c.grow(dt);
+            }
+        }
+    }
+
+    /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
+    /// 自然地→翻土、空土→播種、未熟作物→澆水、成熟作物→收成。
+    /// 越界回 `Nothing`。把「該做哪個動作」的判斷集中在這裡，前端只要送座標。
+    pub fn interact(&mut self, col: usize, row: usize) -> FarmOutcome {
+        let Some(i) = Self::index(col, row) else {
+            return FarmOutcome::Nothing;
+        };
+        // 先唯讀地決定動作，放掉借用後再做可變操作（避免 borrow 衝突）。
+        enum Act {
+            Till,
+            Plant,
+            Water,
+            Harvest,
+        }
+        let act = match &self.tiles[i] {
+            Tile::Untilled => Act::Till,
+            Tile::Tilled => Act::Plant,
+            Tile::Planted(c) if c.is_ripe() => Act::Harvest,
+            Tile::Planted(_) => Act::Water,
+        };
+        // 走既有的單一動作方法，集中各自的狀態前提檢查。
+        match act {
+            Act::Till => {
+                self.till(col, row);
+                FarmOutcome::Tilled
+            }
+            Act::Plant => {
+                self.plant(col, row);
+                FarmOutcome::Planted
+            }
+            Act::Water => {
+                self.water(col, row);
+                FarmOutcome::Watered
+            }
+            Act::Harvest => FarmOutcome::Harvested(self.harvest(col, row).unwrap_or(0)),
+        }
+    }
+
+    /// 把整塊地轉成給前端的可見快照。
+    pub fn view(&self) -> FieldView {
+        FieldView {
+            origin_x: FIELD_ORIGIN_X,
+            origin_y: FIELD_ORIGIN_Y,
+            tile_size: TILE_SIZE,
+            cols: FIELD_COLS,
+            rows: FIELD_ROWS,
+            cells: self.tiles.iter().map(tile_view).collect(),
+        }
+    }
+}
+
+/// 一格 → 前端可見狀態。純函式。
+/// state：0=自然地 1=空土 2=種子 3=發芽 4=成熟；dry 只在「未成熟且已乾」時為真。
+fn tile_view(tile: &Tile) -> TileView {
+    match tile {
+        Tile::Untilled => TileView {
+            state: 0,
+            dry: false,
+        },
+        Tile::Tilled => TileView {
+            state: 1,
+            dry: false,
+        },
+        Tile::Planted(c) => {
+            let state = match c.stage() {
+                CropStage::Seed => 2,
+                CropStage::Sprout => 3,
+                CropStage::Ripe => 4,
+            };
+            TileView {
+                state,
+                dry: !c.is_ripe() && c.needs_water(),
             }
         }
     }
@@ -282,5 +375,75 @@ mod tests {
         f.till(0, 0);
         assert_eq!(f.tile(1, 0), Some(&Tile::Untilled));
         assert_eq!(f.tile(0, 1), Some(&Tile::Untilled));
+    }
+
+    #[test]
+    fn interact_walks_the_care_cycle() {
+        let mut f = Field::new();
+        // 自然地 → 翻土
+        assert_eq!(f.interact(0, 0), FarmOutcome::Tilled);
+        assert_eq!(f.tile(0, 0), Some(&Tile::Tilled));
+        // 空土 → 播種
+        assert_eq!(f.interact(0, 0), FarmOutcome::Planted);
+        assert_eq!(f.crop_stage(0, 0), Some(CropStage::Seed));
+        // 未熟作物 → 澆水
+        assert_eq!(f.interact(0, 0), FarmOutcome::Watered);
+        // 長到成熟
+        f.tick(MOISTURE_PER_WATER);
+        f.interact(0, 0); // 再澆一次
+        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        assert_eq!(f.crop_stage(0, 0), Some(CropStage::Ripe));
+        // 成熟作物 → 收成拿乙太，回到空土
+        assert_eq!(
+            f.interact(0, 0),
+            FarmOutcome::Harvested(crate::crops::ETHER_PER_HARVEST)
+        );
+        assert_eq!(f.tile(0, 0), Some(&Tile::Tilled));
+    }
+
+    #[test]
+    fn interact_out_of_bounds_is_nothing() {
+        let mut f = Field::new();
+        assert_eq!(f.interact(FIELD_COLS, 0), FarmOutcome::Nothing);
+        assert_eq!(f.interact(0, FIELD_ROWS), FarmOutcome::Nothing);
+    }
+
+    #[test]
+    fn view_reports_origin_size_and_cell_count() {
+        let v = Field::new().view();
+        assert_eq!(v.origin_x, FIELD_ORIGIN_X);
+        assert_eq!(v.origin_y, FIELD_ORIGIN_Y);
+        assert_eq!(v.tile_size, TILE_SIZE);
+        assert_eq!(v.cols, FIELD_COLS);
+        assert_eq!(v.rows, FIELD_ROWS);
+        assert_eq!(v.cells.len(), FIELD_COLS * FIELD_ROWS);
+        // 全新地每格都是自然地、不需澆水。
+        assert!(v.cells.iter().all(|c| c.state == 0 && !c.dry));
+    }
+
+    #[test]
+    fn view_marks_planted_seed_dry_then_wet() {
+        let mut f = Field::new();
+        f.till(0, 0);
+        f.plant(0, 0);
+        // 剛種下、還沒澆水：種子且乾。
+        let v = f.view();
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true });
+        // 澆水後不再標乾。
+        f.water(0, 0);
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false });
+    }
+
+    #[test]
+    fn view_ripe_crop_is_not_marked_dry() {
+        let mut f = Field::new();
+        f.till(0, 0);
+        f.plant(0, 0);
+        f.water(0, 0);
+        f.tick(MOISTURE_PER_WATER);
+        f.water(0, 0);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        // 成熟即使濕度耗盡也不該再叫玩家澆水。
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false });
     }
 }

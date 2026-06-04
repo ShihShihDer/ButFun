@@ -11,6 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
+use crate::field::{FarmOutcome, Field};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -47,6 +48,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             x,
             y,
             input: Input::default(),
+            ether: 0,
         }
     } else {
         // 等 Join
@@ -73,6 +75,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             x: WORLD_WIDTH / 2.0,
             y: WORLD_HEIGHT / 2.0,
             input: Input::default(),
+            ether: 0,
         }
     };
     let id = player.id;
@@ -133,6 +136,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         };
                         if let Ok(json) = serde_json::to_string(&chat) {
                             let _ = app.tx.send(json);
+                        }
+                    }
+                }
+                Ok(ClientMsg::Farm { x, y }) => {
+                    // 點到農地外的座標 cell_at 會回 None，直接忽略。
+                    if let Some((col, row)) = Field::cell_at(x, y) {
+                        let outcome = app.field.write().unwrap().interact(col, row);
+                        if let FarmOutcome::Harvested(ether) = outcome {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.ether = p.ether.saturating_add(ether);
+                                tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                            }
                         }
                     }
                 }

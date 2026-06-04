@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth::AuthConfig;
+use crate::field::Field;
 use crate::positions::PositionStore;
 use crate::protocol::{PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
@@ -30,6 +31,8 @@ pub struct Player {
     pub x: f32,
     pub y: f32,
     pub input: Input,
+    /// 收成累積的乙太（持久化待 Phase 0-E，目前重連歸零）。
+    pub ether: u32,
 }
 
 impl Player {
@@ -40,6 +43,7 @@ impl Player {
             species: self.species.clone(),
             x: self.x,
             y: self.y,
+            ether: self.ether,
         }
     }
 
@@ -85,6 +89,9 @@ pub struct Input {
 pub struct AppState {
     /// 權威玩家清單。
     pub players: Arc<RwLock<HashMap<Uuid, Player>>>,
+    /// 共享的農地（Phase 0-G 種田起源）。目前單一塊、存記憶體；
+    /// 持久化待 Phase 0-E，重啟會回到全自然地。
+    pub field: Arc<RwLock<Field>>,
     /// 廣播頻道：tick 快照與聊天都走這裡，內容是已序列化的 JSON 字串
     /// （只序列化一次，再扇出給所有連線）。
     pub tx: broadcast::Sender<String>,
@@ -103,6 +110,7 @@ impl AppState {
         let (tx, _rx) = broadcast::channel(256);
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
+            field: Arc::new(RwLock::new(Field::new())),
             tx,
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
@@ -137,6 +145,7 @@ mod tests {
             x,
             y,
             input,
+            ether: 0,
         }
     }
 
