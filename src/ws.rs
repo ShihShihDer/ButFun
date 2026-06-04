@@ -147,11 +147,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
-    // 轉發任務：把廣播（快照 / 聊天）推給這個客戶端。
+    // 轉發任務：把兩條廣播推給這個客戶端。
+    // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
+    // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
+    // 判斷 Lagged（跳過、不踢人）/ Closed（結束）。
     let mut rx = app.tx.subscribe();
+    let mut rx_chat = app.tx_chat.subscribe();
     let forward = tokio::spawn(async move {
         loop {
-            match rx.recv().await {
+            let received = tokio::select! {
+                r = rx.recv() => r,
+                r = rx_chat.recv() => r,
+            };
+            match received {
                 Ok(msg) => {
                     if sender.send(Message::Text(msg)).await.is_err() {
                         break; // 客戶端已斷
@@ -194,7 +202,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             text,
                         };
                         if let Ok(json) = serde_json::to_string(&chat) {
-                            let _ = app.tx.send(json);
+                            // 走聊天專用頻道，不與高頻快照爭緩衝、不被 Lagged 一起丟。
+                            let _ = app.tx_chat.send(json);
                         }
                     }
                 }

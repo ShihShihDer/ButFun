@@ -92,9 +92,16 @@ pub struct AppState {
     /// 共享的農地（Phase 0-G 種田起源）。目前單一塊、存記憶體；
     /// 持久化待 Phase 0-E，重啟會回到全自然地。
     pub field: Arc<RwLock<Field>>,
-    /// 廣播頻道：tick 快照與聊天都走這裡，內容是已序列化的 JSON 字串
-    /// （只序列化一次，再扇出給所有連線）。
+    /// 廣播頻道：高頻 tick 快照與 `PlayerLeft` 走這裡，內容是已序列化的 JSON 字串
+    /// （只序列化一次，再扇出給所有連線）。這條會被 15Hz 快照灌滿，跟不上的客戶端
+    /// 收到 `Lagged` 時丟掉舊快照繼續追即可——快照本身自我修正（含「移除缺席玩家」），
+    /// 漏幾張無害。
     pub tx: broadcast::Sender<String>,
+    /// 聊天專用廣播頻道，刻意與高頻快照分開。聊天是「一次性事件」：客戶端漏掉就永久
+    /// 看不到那行。先前聊天和快照共用一條，手機 Lagged（網路抖／分頁背景）追快照時
+    /// 會把同段時間捲過的聊天一起丟掉——延續「Lagged 不踢人」修復後浮現的缺口。
+    /// 分開後聊天量極低、幾乎不可能 Lagged，廣播得以可靠送達。
+    pub tx_chat: broadcast::Sender<String>,
     /// 遊戲內建議箱（玩家回饋迴圈的伺服器端）。
     pub suggestions: SuggestionStore,
     /// 使用者帳號(provider 無關)。
@@ -108,10 +115,13 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(256);
+        // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
+        let (tx_chat, _rx_chat) = broadcast::channel(256);
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
             field: Arc::new(RwLock::new(Field::new())),
             tx,
+            tx_chat,
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
             positions: PositionStore::new(),
@@ -202,5 +212,22 @@ mod tests {
         p.step(1.0);
         assert_eq!(p.x, 300.0);
         assert_eq!(p.y, 300.0);
+    }
+
+    #[test]
+    fn chat_and_snapshot_channels_are_independent() {
+        // 聊天與快照走不同廣播頻道：高頻快照灌滿 tx 造成 Lagged 時，不會把聊天一起丟。
+        // 這裡驗證兩條頻道彼此隔離——各自的訂閱者只收到自己頻道的訊息，不會串流。
+        let app = AppState::new();
+        let mut rx_snap = app.tx.subscribe();
+        let mut rx_chat = app.tx_chat.subscribe();
+        app.tx_chat.send("聊天".to_string()).unwrap();
+        app.tx.send("快照".to_string()).unwrap();
+        // 聊天訂閱者只拿到聊天，沒有快照混進來。
+        assert_eq!(rx_chat.try_recv().unwrap(), "聊天");
+        assert!(rx_chat.try_recv().is_err());
+        // 快照訂閱者只拿到快照，沒有聊天混進來。
+        assert_eq!(rx_snap.try_recv().unwrap(), "快照");
+        assert!(rx_snap.try_recv().is_err());
     }
 }
