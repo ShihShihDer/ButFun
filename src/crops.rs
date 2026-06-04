@@ -9,6 +9,12 @@
 //! 療癒迴圈刻意做成「澆水才會長」：播種後要澆水，濕度會隨成長慢慢被消耗，
 //! 乾了就停滯、得再澆——讓「照顧」本身有意義，而不是種下去放著就好。
 //!
+//! 持久化（接 0-E）：`Crop` 衍生 serde，存的是內部 `growth`/`moisture`（秒），
+//! 而非推導出的階段——這樣「成長到一半」的作物重啟後能原封不動接續長，而不是被
+//! 四捨五入到某個階段。序列化格式刻意對齊記憶體表示，是農地持久化的格式地基。
+
+use serde::{Deserialize, Serialize};
+
 /// 作物的成長階段（依累積成長時間推導）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropStage {
@@ -41,7 +47,7 @@ pub fn stage_for(growth: f32) -> CropStage {
 }
 
 /// 一株種在某格耕地上的乙太作物。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Crop {
     /// 累積有效成長時間（秒）。只有有濕度時才會增加。
     growth: f32,

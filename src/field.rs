@@ -12,6 +12,8 @@
 //! 療癒迴圈：自然地 → 翻土 → 播種 → 澆水 → 成長 → 收成 → 回到翻好的空地可再種。
 //! 每一步都要玩家主動做，「照顧」本身就是玩法。
 
+use serde::{Deserialize, Serialize};
+
 use crate::crops::{Crop, CropStage};
 use crate::protocol::{FieldView, TileView};
 
@@ -30,7 +32,7 @@ pub const FIELD_ORIGIN_Y: f32 = 904.0;
 pub const FARM_REACH: f32 = TILE_SIZE;
 
 /// 一格耕地的狀態。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Tile {
     /// 還沒翻過的自然地，要先翻土才能種。
     Untilled,
@@ -56,7 +58,11 @@ pub enum FarmOutcome {
 }
 
 /// 一塊固定位置、固定大小的農地（row-major 的格子陣列）。
-#[derive(Debug, Clone, PartialEq)]
+///
+/// 衍生 serde 作為持久化格式地基（接 0-E）：整塊地可序列化存回、重啟載入，
+/// 達成驗收標準「重啟後農地狀態還在」。格線尺寸（cols/rows/origin）是編譯期常數、
+/// 不入存檔，只存每格 `Tile`；載入時以 `from_tiles` 驗證長度，格線改版不會吃進壞檔。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     /// 長度固定為 `FIELD_COLS * FIELD_ROWS`，以 `index` 對映 (col,row)。
     tiles: Vec<Tile>,
@@ -67,6 +73,19 @@ impl Field {
     pub fn new() -> Self {
         Self {
             tiles: vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS],
+        }
+    }
+
+    /// 從存檔的格子陣列重建農地（持久化載入入口，接 0-E）。格數必須正好等於
+    /// 目前格線（`FIELD_COLS * FIELD_ROWS`）；不符（舊版存檔、壞檔、被竄改）回 `None`，
+    /// 讓呼叫端可退回 `new()` 的全新地，而不是吃進一個長度錯誤的 `tiles`。
+    /// 接 0-E 載入路徑時移除此 `allow`（沿用本檔前置地基的慣例）。
+    #[allow(dead_code)]
+    pub fn from_tiles(tiles: Vec<Tile>) -> Option<Self> {
+        if tiles.len() == FIELD_COLS * FIELD_ROWS {
+            Some(Self { tiles })
+        } else {
+            None
         }
     }
 
@@ -494,6 +513,40 @@ mod tests {
         // 澆水後不再標乾。
         f.water(0, 0);
         assert_eq!(f.view().cells[0], TileView { state: 2, dry: false });
+    }
+
+    #[test]
+    fn serialized_field_round_trips_mid_growth() {
+        // 持久化格式地基：一塊「正種到一半」的農地序列化再讀回，要一模一樣——
+        // 尤其是還沒到下一階段、成長/濕度都在中段的作物（重啟後要能原地接續長，
+        // 而不是被四捨五入到某個階段）。
+        let mut f = Field::new();
+        f.till(0, 0); // 空土
+        f.till(1, 0);
+        f.plant(1, 0); // 剛種、還沒澆水的乾種子
+        f.till(2, 0);
+        f.plant(2, 0);
+        f.water(2, 0);
+        f.tick(SPROUT_AT + 5.0); // 發芽、濕度也消耗到一半，停在階段中段
+        // 留 (3,0) 為自然地當對照。
+
+        let json = serde_json::to_string(&f).unwrap();
+        let back: Field = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, f); // 整塊地（含中段的 growth/moisture）原封不動
+        // 階段也跟著保留。
+        assert_eq!(back.tile(0, 0), Some(&Tile::Tilled));
+        assert_eq!(back.crop_stage(1, 0), Some(CropStage::Seed));
+        assert_eq!(back.crop_stage(2, 0), Some(CropStage::Sprout));
+        assert_eq!(back.tile(3, 0), Some(&Tile::Untilled));
+    }
+
+    #[test]
+    fn from_tiles_rejects_wrong_cell_count() {
+        // 舊版存檔 / 壞檔 / 被竄改的長度一律拒絕，呼叫端才好退回全新地。
+        assert!(Field::from_tiles(vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS]).is_some());
+        assert!(Field::from_tiles(vec![]).is_none());
+        assert!(Field::from_tiles(vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS - 1]).is_none());
+        assert!(Field::from_tiles(vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS + 1]).is_none());
     }
 
     #[test]
