@@ -31,7 +31,7 @@ pub struct Player {
     pub x: f32,
     pub y: f32,
     pub input: Input,
-    /// 收成累積的乙太（持久化待 Phase 0-E，目前重連歸零）。
+    /// 收成累積的乙太。已登入玩家重連會帶回（記憶體前置），跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
     pub ether: u32,
 }
 

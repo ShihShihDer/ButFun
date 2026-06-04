@@ -62,7 +62,8 @@ pub struct PlayerView {
     pub species: String,
     pub x: f32,
     pub y: f32,
-    /// 目前持有的乙太（收成累積；持久化待 Phase 0-E，目前重連歸零）。
+    /// 目前持有的乙太（收成累積）。已登入玩家重連會帶回（記憶體前置），
+    /// 跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
     pub ether: u32,
 }
 
