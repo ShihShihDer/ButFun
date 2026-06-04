@@ -38,12 +38,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             Some(u) => u,
             None => return, // cookie 對得上但人不在了:直接斷
         };
+        // 同帳號重連 → 回到離線前的位置（沒有歷史就地圖中央）。
+        let (x, y) = crate::positions::spawn_at(app.positions.recall(user.id));
         Player {
             id: user.id,
             name: user.name,
             species: user.species,
-            x: WORLD_WIDTH / 2.0,
-            y: WORLD_HEIGHT / 2.0,
+            x,
+            y,
             input: Input::default(),
         }
     } else {
@@ -92,7 +94,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     };
     if let Ok(text) = serde_json::to_string(&welcome) {
         if sender.send(Message::Text(text)).await.is_err() {
-            cleanup(&app, id).await;
+            cleanup(&app, id, authed_uid.is_some()).await;
             return;
         }
     }
@@ -147,12 +149,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     }
 
     forward.abort();
-    cleanup(&app, id).await;
+    cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");
 }
 
-async fn cleanup(app: &AppState, id: Uuid) {
-    app.players.write().unwrap().remove(&id);
+/// 玩家離線清理。`persist_pos` 為真（已登入玩家）時，先把最後位置記下來，
+/// 讓同帳號下次重連回到原位。
+async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
+    let removed = app.players.write().unwrap().remove(&id);
+    if persist_pos {
+        if let Some(p) = removed {
+            app.positions.remember(id, p.x, p.y);
+        }
+    }
     let left = ServerMsg::PlayerLeft { id };
     if let Ok(json) = serde_json::to_string(&left) {
         let _ = app.tx.send(json);

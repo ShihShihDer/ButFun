@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth::AuthConfig;
+use crate::positions::PositionStore;
 use crate::protocol::{PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
 use crate::users::UserStore;
@@ -91,6 +92,8 @@ pub struct AppState {
     pub suggestions: SuggestionStore,
     /// 使用者帳號(provider 無關)。
     pub users: UserStore,
+    /// 玩家最後位置記憶(Phase 0-E 記憶體前置):已登入玩家重連回到離線前位置。
+    pub positions: PositionStore,
     /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
     pub auth: Option<AuthConfig>,
 }
@@ -103,6 +106,7 @@ impl AppState {
             tx,
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
+            positions: PositionStore::new(),
             auth: AuthConfig::from_env(),
         }
     }

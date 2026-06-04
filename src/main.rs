@@ -5,6 +5,7 @@
 
 mod auth;
 mod game;
+mod positions;
 mod protocol;
 mod state;
 mod suggestions;
