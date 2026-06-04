@@ -107,6 +107,11 @@ impl SuggestionStore {
     }
 
     /// 列出所有建議（最新的在前）。
+    ///
+    /// 目前沒有對外路由消費它：先前的公開 `GET /api/suggestions` 已移除（未驗身就把
+    /// 全部玩家回饋整包吐出的資料曝露點，且前端從不使用）。保留此方法給日後「驗身後的
+    /// 後台檢視」用，屆時把 `allow(dead_code)` 拿掉即可。
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<Suggestion> {
         let items = self.items.lock().unwrap();
         items.iter().rev().cloned().collect()

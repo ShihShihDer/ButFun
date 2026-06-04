@@ -25,7 +25,7 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use state::AppState;
-use suggestions::{NewSuggestion, Suggestion};
+use suggestions::NewSuggestion;
 
 #[tokio::main]
 async fn main() {
@@ -52,10 +52,12 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(health))
         .route("/ws", get(ws::ws_handler))
-        .route(
-            "/api/suggestions",
-            post(post_suggestion).get(list_suggestions),
-        )
+        // 只收建議（POST），刻意不開公開的 GET 清單：建議是玩家送回的回饋（含自選
+        // 署名），維護者本就直接讀 `data/suggestions.jsonl`。先前 `GET /api/suggestions`
+        // 是未驗身公開端點、會把全部建議整包吐給任何人，而前端從不消費它——等於線上
+        // 一個沒人用卻能被任意 `curl` 撈走所有玩家回饋的資料曝露點。移除以收口；
+        // 日後若要做後台檢視，再走驗身（見 `SuggestionStore::list`）。
+        .route("/api/suggestions", post(post_suggestion))
         // 登入相關路由
         .merge(auth::auth_router())
         // 其餘路徑交給靜態前端（web/）。
@@ -83,6 +85,8 @@ async fn health() -> &'static str {
     "ok"
 }
 
+// 註：刻意不再提供 `list_suggestions` HTTP handler——建議清單不對外公開（見上方路由註解）。
+
 /// 收到一則玩家建議。內容清乾淨後若為空（全空白 / 全控制字元）回 400、不存——
 /// 擋空的判斷下沉到 `add`（依實際會被存下的內容），不是只對 raw 輸入 `trim`。
 async fn post_suggestion(
@@ -95,7 +99,3 @@ async fn post_suggestion(
     }
 }
 
-/// 列出所有玩家建議（最新在前）。
-async fn list_suggestions(State(app): State<AppState>) -> Json<Vec<Suggestion>> {
-    Json(app.suggestions.list())
-}
