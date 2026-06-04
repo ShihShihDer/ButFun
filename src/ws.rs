@@ -15,6 +15,30 @@ use crate::field::{FarmOutcome, Field};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
+/// 一則聊天訊息的最長字元數。聊天會廣播給所有玩家，這條是「公開輸入邊界」的集中
+/// 常數（對齊建議內容 1000 / 署名 24 / 玩家名 24 的同類上限）。
+const MAX_CHAT_CHARS: usize = 200;
+
+/// 整理一則進來的聊天輸入：先濾掉控制字元（換行 / 歸位 / NUL 等——聊天是單行輸入，
+/// 這些只會來自壞客戶端，放行會讓廣播出多行或破壞顯示／偽造介面的內容）、去頭尾空白、
+/// 依「字元」(非位元組，中文不被切壞)截到上限。清乾淨後變空（全空白 / 全控制字元）回
+/// `None`，呼叫端據此不廣播空訊息。抽成純函式以便測試，與訪客名字 / 建議的輸入加固一致。
+fn sanitize_chat(text: &str) -> Option<String> {
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(MAX_CHAT_CHARS)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: HeaderMap,
@@ -129,11 +153,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Chat { text }) => {
-                    let text = text.trim();
-                    if !text.is_empty() {
+                    // 清過控制字元 / 截長後若還有內容才廣播（集中在 sanitize_chat，可測）。
+                    if let Some(text) = sanitize_chat(&text) {
                         let chat = ServerMsg::Chat {
                             from: player.name.clone(),
-                            text: text.chars().take(200).collect(),
+                            text,
                         };
                         if let Ok(json) = serde_json::to_string(&chat) {
                             let _ = app.tx.send(json);
@@ -189,5 +213,46 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     let left = ServerMsg::PlayerLeft { id };
     if let Ok(json) = serde_json::to_string(&left) {
         let _ = app.tx.send(json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_normal_chat_trimmed() {
+        assert_eq!(sanitize_chat("  哈囉大家  "), Some("哈囉大家".to_string()));
+    }
+
+    #[test]
+    fn strips_control_chars() {
+        // 換行 / 歸位 / NUL / tab 都該被濾掉，不讓客戶端廣播多行或破壞顯示的內容。
+        assert_eq!(
+            sanitize_chat("一\n二\r三\0四\t五"),
+            Some("一二三四五".to_string())
+        );
+    }
+
+    #[test]
+    fn whitespace_or_control_only_is_none() {
+        // 全空白或清乾淨後變空 → 不廣播。
+        assert_eq!(sanitize_chat("   "), None);
+        assert_eq!(sanitize_chat("\n\r\0\t"), None);
+        assert_eq!(sanitize_chat(""), None);
+    }
+
+    #[test]
+    fn caps_by_chars_not_bytes() {
+        // 全中文（每字多位元組）：以字元數截到上限，不被切壞。
+        let long = "乙".repeat(MAX_CHAT_CHARS + 50);
+        let out = sanitize_chat(&long).unwrap();
+        assert_eq!(out.chars().count(), MAX_CHAT_CHARS);
+    }
+
+    #[test]
+    fn keeps_chat_at_exactly_the_cap() {
+        let exact = "a".repeat(MAX_CHAT_CHARS);
+        assert_eq!(sanitize_chat(&exact).unwrap().chars().count(), MAX_CHAT_CHARS);
     }
 }
