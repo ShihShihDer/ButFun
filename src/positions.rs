@@ -21,8 +21,19 @@ pub fn default_spawn() -> (f32, f32) {
 }
 
 /// 依「是否有記住的歷史位置」決定進場座標。純函式，便於測試。
+///
+/// 契約：回傳的座標一定有限且落在世界範圍內。記憶體版的歷史位置來自
+/// `Player::step` 已夾過的座標，本就合法；但這層刻意防住「載入被竄改/壞掉的
+/// 持久化位置」——接 0-E 的 Postgres float 欄位可能存進 `NaN`/`Inf`/界外值，
+/// 不檢查就會把玩家生在地圖外、或讓座標變非有限。非有限一律退回地圖中央，
+/// 界外則夾回邊界（延續 `cell_at`/`from_tiles` 的持久化載入防線脈絡）。
 pub fn spawn_at(recalled: Option<(f32, f32)>) -> (f32, f32) {
-    recalled.unwrap_or_else(default_spawn)
+    match recalled {
+        Some((x, y)) if x.is_finite() && y.is_finite() => {
+            (x.clamp(0.0, WORLD_WIDTH), y.clamp(0.0, WORLD_HEIGHT))
+        }
+        _ => default_spawn(),
+    }
 }
 
 /// 某玩家離線時記下的最後狀態：位置 + 收成累積的乙太。
@@ -67,6 +78,24 @@ mod tests {
     #[test]
     fn spawn_uses_recalled_position() {
         assert_eq!(spawn_at(Some((123.0, 456.0))), (123.0, 456.0));
+    }
+
+    #[test]
+    fn spawn_falls_back_to_center_on_non_finite() {
+        // 壞掉的持久化座標（NaN/Inf）不該把玩家生到非有限位置。
+        assert_eq!(spawn_at(Some((f32::NAN, 100.0))), default_spawn());
+        assert_eq!(spawn_at(Some((100.0, f32::INFINITY))), default_spawn());
+        assert_eq!(spawn_at(Some((f32::NEG_INFINITY, f32::NAN))), default_spawn());
+    }
+
+    #[test]
+    fn spawn_clamps_out_of_bounds_into_world() {
+        // 界外的歷史位置夾回世界邊界，而不是把玩家生在地圖外。
+        assert_eq!(spawn_at(Some((-50.0, -50.0))), (0.0, 0.0));
+        assert_eq!(
+            spawn_at(Some((WORLD_WIDTH + 999.0, WORLD_HEIGHT + 999.0))),
+            (WORLD_WIDTH, WORLD_HEIGHT)
+        );
     }
 
     #[test]
