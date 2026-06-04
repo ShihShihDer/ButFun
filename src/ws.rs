@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
@@ -36,6 +37,29 @@ fn sanitize_chat(text: &str) -> Option<String> {
         None
     } else {
         Some(cleaned)
+    }
+}
+
+/// 轉發迴圈從 broadcast 收訊息時遇到錯誤，該繼續還是收掉這條連線。
+#[derive(Debug, PartialEq, Eq)]
+enum ForwardAction {
+    /// 跳過、繼續轉發後續廣播。
+    Skip,
+    /// 結束轉發、收掉這條連線。
+    Stop,
+}
+
+/// 把一個 broadcast `RecvError` 分類成轉發迴圈的動作。抽成純函式以便測試。
+///
+/// `Lagged` 只代表「這個客戶端一時跟不上廣播速度」（手機網路抖、分頁切到背景），
+/// tokio 已替它丟掉最舊的快照、之後 `recv` 會接著給最新的——跳過繼續轉即可，
+/// **不該因此把玩家踢下線**（對一個手機上玩的療癒多人世界尤其重要）。下一則
+/// 快照 15 分之一秒就到，畫面自然追回，無需重連。
+/// 只有 `Closed`（伺服器端關了廣播頻道、要收攤）才結束轉發。
+fn forward_action(err: &RecvError) -> ForwardAction {
+    match err {
+        RecvError::Lagged(_) => ForwardAction::Skip,
+        RecvError::Closed => ForwardAction::Stop,
     }
 }
 
@@ -126,9 +150,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 轉發任務：把廣播（快照 / 聊天）推給這個客戶端。
     let mut rx = app.tx.subscribe();
     let forward = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg)).await.is_err() {
-                break;
+        loop {
+            match rx.recv().await {
+                Ok(msg) => {
+                    if sender.send(Message::Text(msg)).await.is_err() {
+                        break; // 客戶端已斷
+                    }
+                }
+                // 落後（Lagged）只是這客戶端一時跟不上，跳過繼續轉、別踢人下線；
+                // 只有頻道關閉（Closed）才結束。判斷集中在 forward_action（可測）。
+                Err(e) => match forward_action(&e) {
+                    ForwardAction::Skip => continue,
+                    ForwardAction::Stop => break,
+                },
             }
         }
     });
@@ -254,5 +288,17 @@ mod tests {
     fn keeps_chat_at_exactly_the_cap() {
         let exact = "a".repeat(MAX_CHAT_CHARS);
         assert_eq!(sanitize_chat(&exact).unwrap().chars().count(), MAX_CHAT_CHARS);
+    }
+
+    #[test]
+    fn lagged_client_is_skipped_not_disconnected() {
+        // 跟不上廣播（手機網路抖／分頁背景）只跳過丟掉的快照、繼續轉發，不踢人下線。
+        assert_eq!(forward_action(&RecvError::Lagged(7)), ForwardAction::Skip);
+    }
+
+    #[test]
+    fn closed_channel_stops_forwarding() {
+        // 伺服器端關了廣播頻道才結束轉發。
+        assert_eq!(forward_action(&RecvError::Closed), ForwardAction::Stop);
     }
 }

@@ -9,6 +9,13 @@
 - [x] **Phase 0-A：權威伺服器即時多人骨架**
   ✅ Rust(axum) WebSocket 權威伺服器、15Hz tick、客戶端送輸入、廣播快照；
   原生 canvas 前端可進場、WASD 移動、鏡頭跟隨、看到其他玩家。
+  ✅ 轉發迴圈修 bug（2026-06-05）：先前 `ws.rs` 用 `while let Ok(msg) = rx.recv()`
+  轉發廣播——tokio broadcast 在客戶端跟不上時回 `Err(Lagged)`，此寫法會直接
+  break 把人靜默踢下線（手機網路一抖／分頁切背景一下跟不上 15Hz 快照就斷線，
+  對手機上玩的療癒多人世界是真體驗 bug）。把「遇到 recv 錯誤該繼續還是停」抽成
+  純函式 `forward_action`：`Lagged` 只跳過丟掉的快照繼續轉（下一則 1/15 秒就到、
+  畫面自然追回），只有 `Closed`（伺服器關頻道）才結束。加 2 個單元測試，
+  `cargo test` 79 綠、clippy 乾淨、伺服器二進位啟動正常（埠被正式服務占用屬預期）。
 - [x] **Phase 0-B：聊天**
   ✅ Enter 開啟輸入，訊息經伺服器廣播給所有人。
   ✅ 輸入加固（2026-06-05）：聊天是最後一個還只做 inline `trim`+`take(200)`、沒抽成
