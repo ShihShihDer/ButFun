@@ -13,6 +13,10 @@
   ✅ Enter 開啟輸入，訊息經伺服器廣播給所有人。
 - [x] **Phase 0-C：遊戲內建議箱**
   ✅ 前端 💡 表單 → `POST /api/suggestions` → 存 `data/suggestions.jsonl`。
+  ✅ 輸入加固（2026-06-05）：先前 `text`/`from` 無長度上限，公開 endpoint 可被
+  灌入任意大小的行膨脹建議檔。抽出純函式 `sanitize`（trim + 依字元截斷 + 空署名退回
+  匿名），署名截 24 字（對齊 `sanitize_name`）、內容截 1000 字，集中與聊天截 200 字
+  同類的輸入邊界。加 5 個單元測試，`cargo test` 68 綠、伺服器啟動正常。
 - [x] **Phase 0-D：自動測試閘門**
   ✅ 移動整合抽成 `Player::step`，加上單元測試；`cargo test` 全綠。
 - [x] **Phase 0-F：帳號身份模型（provider 無關）+ Google OAuth**

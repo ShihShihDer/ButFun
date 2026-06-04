@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 
 const LOG_PATH: &str = "data/suggestions.jsonl";
 
+/// 建議署名最長字元數（與玩家名 `sanitize_name` 的上限一致）。
+pub const MAX_FROM_CHARS: usize = 24;
+/// 建議內容最長字元數。夠寫一整段心得，又擋掉「灌爆建議檔」的濫用 / 壞客戶端。
+pub const MAX_TEXT_CHARS: usize = 1000;
+
 /// 一則玩家建議。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suggestion {
@@ -32,6 +37,19 @@ fn anonymous() -> String {
     "匿名拓荒者".to_string()
 }
 
+/// 把進來的署名 / 內容整理成要存下的 `Suggestion`：去頭尾空白、依「字元」(非位元組,
+/// 中文才不會被切壞)截到上限、空署名退回匿名。抽成純函式以便測試,並把長度上限這條
+/// 公開 endpoint 的輸入加固集中在一處(對齊聊天截 200 字、`sanitize_name` 截 24 字)。
+fn sanitize(from: &str, text: &str, at: u64) -> Suggestion {
+    let from: String = from.trim().chars().take(MAX_FROM_CHARS).collect();
+    let text: String = text.trim().chars().take(MAX_TEXT_CHARS).collect();
+    Suggestion {
+        from: if from.is_empty() { anonymous() } else { from },
+        text,
+        at,
+    }
+}
+
 /// 建議的存放處。可被複製（內部共享）。
 #[derive(Clone)]
 pub struct SuggestionStore {
@@ -48,13 +66,7 @@ impl SuggestionStore {
 
     /// 新增一則建議，回傳存好的紀錄。
     pub fn add(&self, new: NewSuggestion) -> Suggestion {
-        let text = new.text.trim().to_string();
-        let from = new.from.trim().to_string();
-        let suggestion = Suggestion {
-            from: if from.is_empty() { anonymous() } else { from },
-            text,
-            at: now_millis(),
-        };
+        let suggestion = sanitize(&new.from, &new.text, now_millis());
         append_to_disk(&suggestion);
         let mut items = self.items.lock().unwrap();
         items.push(suggestion.clone());
@@ -108,5 +120,46 @@ fn append_to_disk(s: &Suggestion) {
             }
         }
         Err(e) => tracing::warn!("無法寫入建議檔 {LOG_PATH}: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trims_and_keeps_normal_input() {
+        let s = sanitize("  小明  ", "  希望有貓咪  ", 42);
+        assert_eq!(s.from, "小明");
+        assert_eq!(s.text, "希望有貓咪");
+        assert_eq!(s.at, 42);
+    }
+
+    #[test]
+    fn empty_from_falls_back_to_anonymous() {
+        assert_eq!(sanitize("", "有內容", 0).from, anonymous());
+        assert_eq!(sanitize("   ", "有內容", 0).from, anonymous());
+    }
+
+    #[test]
+    fn caps_from_by_chars() {
+        let long = "字".repeat(MAX_FROM_CHARS + 10);
+        let s = sanitize(&long, "x", 0);
+        assert_eq!(s.from.chars().count(), MAX_FROM_CHARS);
+    }
+
+    #[test]
+    fn caps_text_by_chars_not_bytes() {
+        // 全中文(每字多位元組):應以字元數截斷,不是位元組數。
+        let long = "乙".repeat(MAX_TEXT_CHARS + 50);
+        let s = sanitize("我", &long, 0);
+        assert_eq!(s.text.chars().count(), MAX_TEXT_CHARS);
+    }
+
+    #[test]
+    fn keeps_text_at_exactly_the_cap() {
+        let exact = "a".repeat(MAX_TEXT_CHARS);
+        let s = sanitize("我", &exact, 0);
+        assert_eq!(s.text.chars().count(), MAX_TEXT_CHARS);
     }
 }
