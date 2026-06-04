@@ -101,10 +101,22 @@ impl Default for UserStore {
 /// 新玩家 / 訪客的預設物種。
 pub const DEFAULT_SPECIES: &str = "terran";
 
-/// 清理玩家輸入的名字：去頭尾空白、以「字元」截到 24、空字串退回「拓荒者」。
-/// 訪客進場（`ws.rs`）與帳號建立（這裡）共用，避免兩處規則漂移。
+/// 清理玩家輸入的名字：先濾掉控制字元（換行 / 歸位 / NUL 等）、去頭尾空白、以「字元」
+/// 截到 24、空字串退回「拓荒者」。訪客進場（`ws.rs`）與帳號建立（這裡）共用，避免兩處規則漂移。
+///
+/// 濾控制字元是必要的：名字是單行身分欄位，卻會成為廣播給所有人的聊天 `from` 標籤與 HUD
+/// 顯示名。聊天內容自己（`sanitize_chat`）已濾控制字元，名字若不濾，壞客戶端就能把換行 /
+/// NUL 塞進名字、繞過聊天過濾，廣播出多行或破壞顯示／偽造介面的內容。與 `sanitize_chat`
+/// 同一道公開輸入邊界。
 pub fn sanitize_name(raw: &str) -> String {
-    let s: String = raw.trim().chars().take(24).collect();
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(24)
+        .collect();
     if s.is_empty() {
         "拓荒者".to_string()
     } else {
@@ -112,13 +124,19 @@ pub fn sanitize_name(raw: &str) -> String {
     }
 }
 
-/// 清理玩家輸入的物種：去頭尾空白、空字串退回預設物種。
+/// 清理玩家輸入的物種：先濾掉控制字元、去頭尾空白、空字串退回預設物種。
+/// 物種同樣是訪客完全可控、會顯示出來的單行身分欄位，比照名字濾控制字元。
 pub fn sanitize_species(raw: &str) -> String {
-    let s = raw.trim();
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string();
     if s.is_empty() {
         DEFAULT_SPECIES.to_string()
     } else {
-        s.to_string()
+        s
     }
 }
 
@@ -195,6 +213,28 @@ mod tests {
     }
 
     #[test]
+    fn strips_control_chars_from_name() {
+        // 換行 / 歸位 / NUL / tab 都該被濾掉——名字會成為廣播的聊天 from 標籤，
+        // 不讓壞客戶端藉名字塞進多行或破壞顯示的內容。
+        assert_eq!(sanitize_name("施\n育\r群\0老\t師"), "施育群老師");
+    }
+
+    #[test]
+    fn control_only_name_falls_back_to_default() {
+        // 清乾淨後變空（全是控制字元）→ 退回預設名，而非空字串。
+        assert_eq!(sanitize_name("\n\r\0\t"), "拓荒者");
+    }
+
+    #[test]
+    fn control_chars_filtered_before_truncation() {
+        // 控制字元先被濾掉、不佔截斷的 24 字額度：24 個有效字 + 夾雜換行 → 全留下。
+        let raw = "字\n".repeat(24); // 24 個「字」+ 24 個換行
+        let out = sanitize_name(&raw);
+        assert_eq!(out.chars().count(), 24);
+        assert!(!out.contains('\n'));
+    }
+
+    #[test]
     fn species_keeps_normal_value() {
         assert_eq!(sanitize_species("celestial"), "celestial");
     }
@@ -208,5 +248,13 @@ mod tests {
     fn species_empty_or_whitespace_falls_back_to_default() {
         assert_eq!(sanitize_species(""), DEFAULT_SPECIES);
         assert_eq!(sanitize_species("   "), DEFAULT_SPECIES);
+    }
+
+    #[test]
+    fn species_strips_control_chars() {
+        // 物種同樣是顯示用的單行身分欄位，控制字元一律濾掉。
+        assert_eq!(sanitize_species("ter\nr\0an"), "terran");
+        // 清乾淨後變空 → 退回預設物種。
+        assert_eq!(sanitize_species("\n\0\t"), DEFAULT_SPECIES);
     }
 }
