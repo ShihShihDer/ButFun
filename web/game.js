@@ -296,8 +296,7 @@
     requestAnimationFrame(render);
   }
 
-  // 在這台裝置上記住名字與種族,refresh 不用重打
-  // (真正的跨裝置登入屬 Phase 0-F:Google OAuth)
+  // 在這台裝置上記住名字與種族,refresh 不用重打(訪客流程才用)
   try {
     const savedName = localStorage.getItem("butfun.name");
     if (savedName) document.getElementById("nameInput").value = savedName;
@@ -322,4 +321,27 @@
   document.getElementById("nameInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("joinBtn").click();
   });
+
+  // 開頁就查 /auth/me:已登入就跳過進場畫面、直接連線(同一帳號跨裝置同一玩家)
+  fetch("/auth/me", { credentials: "same-origin" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((me) => {
+      if (!me) return; // 訪客流程,維持顯示登入畫面
+      // 顯示登入狀態 + 一鍵登出
+      const hud = document.getElementById("hud");
+      const tag = document.createElement("div");
+      tag.style.opacity = "0.7";
+      tag.innerHTML = `已登入：<b></b> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
+      tag.querySelector("b").textContent = me.name;
+      hud.appendChild(tag);
+      tag.querySelector("#logoutLink").addEventListener("click", async (e) => {
+        e.preventDefault();
+        await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
+        location.reload();
+      });
+      // 已登入 → 伺服器會用 cookie 拿到 user_id、忽略 name/species,但還是送個空 Join
+      // 確保走原本的訊息流程。
+      connect(me.name, me.species || "terran");
+    })
+    .catch(() => {});
 })();

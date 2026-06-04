@@ -14,6 +14,14 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Google OAuth + 簽章 session cookie
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+dotenvy = "0.15"
+urlencoding = "2"
 
 [profile.dev]
 opt-level = 1

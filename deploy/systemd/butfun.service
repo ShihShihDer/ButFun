@@ -9,6 +9,7 @@ After=network.target
 # WorkingDirectory 必須是 repo 根目錄：伺服器相對讀 web/ 與寫 data/。
 WorkingDirectory=/opt/butfun
 Environment=PORT=3000
+EnvironmentFile=/opt/butfun/.env
 ExecStart=/opt/butfun/target/release/butfun-server
 Restart=always
 RestartSec=3

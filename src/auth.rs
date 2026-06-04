@@ -1,0 +1,314 @@
+//! Google OAuth 流程 + 簽章式 session cookie。
+//!
+//! 設計重點:
+//! - 身份模型 **provider 無關**(見 `users.rs`),這裡只是 Google 這個 provider 的接線。
+//! - Session 為 **stateless 簽章 cookie**:`{user_id}.{HMAC-SHA256(user_id, secret)}`。
+//!   伺服器不存 session 表,純驗 HMAC,簡單可橫向擴展。
+//! - CSRF 防護:OAuth 起始時種一個短期 `state` cookie,callback 對齊。
+
+use axum::extract::{Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Json, Redirect, Response};
+use axum::Router;
+use axum::routing::{get, post};
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::state::AppState;
+
+const SESSION_COOKIE: &str = "butfun_session";
+const STATE_COOKIE: &str = "butfun_oauth_state";
+
+/// 啟動 / callback 用的設定(讀環境變數)。
+#[derive(Clone)]
+pub struct AuthConfig {
+    pub google_client_id: String,
+    pub google_client_secret: String,
+    pub google_redirect_uri: String,
+    pub session_secret: Vec<u8>,
+}
+
+impl AuthConfig {
+    pub fn from_env() -> Option<Self> {
+        Some(Self {
+            google_client_id: std::env::var("GOOGLE_CLIENT_ID").ok()?,
+            google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok()?,
+            google_redirect_uri: std::env::var("GOOGLE_REDIRECT_URI").ok()?,
+            session_secret: std::env::var("BUTFUN_SESSION_SECRET").ok()?.into_bytes(),
+        })
+    }
+}
+
+/// 已驗身的使用者抓取(從 cookie),供其他處共用。
+pub fn user_id_from_cookies(headers: &HeaderMap, secret: &[u8]) -> Option<Uuid> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    let token = read_cookie(cookie_header, SESSION_COOKIE)?;
+    verify_session(token, secret)
+}
+
+pub fn auth_router() -> Router<AppState> {
+    Router::new()
+        .route("/auth/google/start", get(google_start))
+        .route("/auth/google/callback", get(google_callback))
+        .route("/auth/me", get(me))
+        .route("/auth/logout", post(logout))
+}
+
+// ---- /auth/google/start ----
+async fn google_start(State(app): State<AppState>) -> Response {
+    let Some(cfg) = app.auth.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth 尚未設定").into_response();
+    };
+    let state = random_b64(16);
+    let scopes = "openid email profile";
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={cid}&redirect_uri={ru}&scope={sc}&state={st}&access_type=online&prompt=select_account",
+        cid = urlencoding::encode(&cfg.google_client_id),
+        ru = urlencoding::encode(&cfg.google_redirect_uri),
+        sc = urlencoding::encode(scopes),
+        st = urlencoding::encode(&state),
+    );
+
+    let mut resp = Redirect::temporary(&auth_url).into_response();
+    // state cookie,5 分鐘,SameSite=Lax 才能在從 Google 轉回來時帶回。
+    let cookie = format!(
+        "{STATE_COOKIE}={state}; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax"
+    );
+    resp.headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
+    resp
+}
+
+// ---- /auth/google/callback ----
+#[derive(Deserialize)]
+struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn google_callback(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CallbackQuery>,
+) -> Response {
+    let Some(cfg) = app.auth.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth 尚未設定").into_response();
+    };
+
+    if let Some(err) = q.error {
+        return (StatusCode::BAD_REQUEST, format!("Google 回傳錯誤: {err}")).into_response();
+    }
+    let (Some(code), Some(state)) = (q.code, q.state) else {
+        return (StatusCode::BAD_REQUEST, "缺少 code 或 state").into_response();
+    };
+
+    // 驗 state(對齊 cookie 中先前種下的值)。
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    match read_cookie(cookie_header, STATE_COOKIE) {
+        Some(saved) if saved == state => {}
+        _ => return (StatusCode::BAD_REQUEST, "state 對不上(防 CSRF 機制)").into_response(),
+    }
+
+    // 1) 用 code 換 access_token + id_token
+    let token: TokenResponse = match exchange_code(cfg, &code).await {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("換 token 失敗: {e}"),
+            )
+                .into_response();
+        }
+    };
+    // 2) 用 access_token 取 userinfo
+    let info: GoogleUserInfo = match fetch_userinfo(&token.access_token).await {
+        Ok(i) => i,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("取 userinfo 失敗: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    // 3) find-or-create user
+    let user = app.users.find_or_create(
+        "google",
+        &info.sub,
+        info.email.clone(),
+        info.name.as_deref().unwrap_or("拓荒者"),
+    );
+
+    // 4) 種 session cookie + 清掉 state cookie + 導回 /
+    let session_token = sign_session(&user.id, &cfg.session_secret);
+    let session_cookie = format!(
+        "{SESSION_COOKIE}={session_token}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax"
+    );
+    let clear_state = format!(
+        "{STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    );
+
+    let mut resp = Redirect::temporary("/").into_response();
+    resp.headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(&session_cookie).unwrap());
+    resp.headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(&clear_state).unwrap());
+    resp
+}
+
+// ---- /auth/me ----
+#[derive(Serialize)]
+struct MeResponse {
+    id: Uuid,
+    name: String,
+    species: String,
+    email: Option<String>,
+}
+
+async fn me(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(cfg) = app.auth.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth 尚未設定").into_response();
+    };
+    let Some(uid) = user_id_from_cookies(&headers, &cfg.session_secret) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(u) = app.users.get(uid) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    Json(MeResponse {
+        id: u.id,
+        name: u.name,
+        species: u.species,
+        email: u.email,
+    })
+    .into_response()
+}
+
+// ---- /auth/logout ----
+async fn logout() -> Response {
+    let mut resp = StatusCode::NO_CONTENT.into_response();
+    let clear = format!(
+        "{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    );
+    resp.headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(&clear).unwrap());
+    resp
+}
+
+// ============= Google token + userinfo =============
+
+#[derive(Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    #[allow(dead_code)]
+    id_token: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct GoogleUserInfo {
+    sub: String,
+    email: Option<String>,
+    name: Option<String>,
+}
+
+async fn exchange_code(cfg: &AuthConfig, code: &str) -> Result<TokenResponse, String> {
+    let client = reqwest::Client::new();
+    let params = [
+        ("code", code),
+        ("client_id", cfg.google_client_id.as_str()),
+        ("client_secret", cfg.google_client_secret.as_str()),
+        ("redirect_uri", cfg.google_redirect_uri.as_str()),
+        ("grant_type", "authorization_code"),
+    ];
+    let resp = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "token endpoint 回 {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
+    }
+    resp.json::<TokenResponse>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn fetch_userinfo(access_token: &str) -> Result<GoogleUserInfo, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("userinfo 回 {}", resp.status()));
+    }
+    resp.json::<GoogleUserInfo>()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ============= session 簽章 + cookie 解析 =============
+
+fn sign_session(user_id: &Uuid, secret: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let uid = user_id.to_string();
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC 任意長度");
+    mac.update(uid.as_bytes());
+    let sig = mac.finalize().into_bytes();
+    let sig_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig);
+    format!("{uid}.{sig_b64}")
+}
+
+fn verify_session(token: &str, secret: &[u8]) -> Option<Uuid> {
+    let (uid_str, _sig) = token.split_once('.')?;
+    let uid = Uuid::parse_str(uid_str).ok()?;
+    let expected = sign_session(&uid, secret);
+    if constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        Some(uid)
+    } else {
+        None
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut x = 0u8;
+    for i in 0..a.len() {
+        x |= a[i] ^ b[i];
+    }
+    x == 0
+}
+
+fn read_cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    for part in header.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix(&format!("{name}=")) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn random_b64(bytes: usize) -> String {
+    use rand::RngCore;
+    let mut buf = vec![0u8; bytes];
+    rand::thread_rng().fill_bytes(&mut buf);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf)
+}
+

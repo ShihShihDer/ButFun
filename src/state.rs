@@ -9,8 +9,10 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::auth::AuthConfig;
 use crate::protocol::{PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
+use crate::users::UserStore;
 
 /// 世界大小（像素）。MVP：一張單一地圖。
 pub const WORLD_WIDTH: f32 = 2000.0;
@@ -87,6 +89,10 @@ pub struct AppState {
     pub tx: broadcast::Sender<String>,
     /// 遊戲內建議箱（玩家回饋迴圈的伺服器端）。
     pub suggestions: SuggestionStore,
+    /// 使用者帳號(provider 無關)。
+    pub users: UserStore,
+    /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
+    pub auth: Option<AuthConfig>,
 }
 
 impl AppState {
@@ -96,6 +102,8 @@ impl AppState {
             players: Arc::new(RwLock::new(HashMap::new())),
             tx,
             suggestions: SuggestionStore::new(),
+            users: UserStore::new(),
+            auth: AuthConfig::from_env(),
         }
     }
 

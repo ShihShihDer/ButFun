@@ -3,10 +3,12 @@
 //!
 //! 詳見 docs/GAME_DESIGN.md。
 
+mod auth;
 mod game;
 mod protocol;
 mod state;
 mod suggestions;
+mod users;
 mod ws;
 
 use std::net::SocketAddr;
@@ -24,6 +26,9 @@ use suggestions::{NewSuggestion, Suggestion};
 
 #[tokio::main]
 async fn main() {
+    // 開發/正式上線都從 .env 載入秘密(systemd 會用 EnvironmentFile,本機 cargo run 用 dotenvy)。
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -32,6 +37,11 @@ async fn main() {
         .init();
 
     let app_state = AppState::new();
+    if app_state.auth.is_some() {
+        tracing::info!("Google OAuth 已啟用(/auth/google/start)");
+    } else {
+        tracing::warn!("Google OAuth 未設定;走訪客模式(設好 GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI/BUTFUN_SESSION_SECRET 即啟用)");
+    }
 
     // 啟動權威遊戲迴圈。
     game::spawn(app_state.clone());
@@ -43,6 +53,8 @@ async fn main() {
             "/api/suggestions",
             post(post_suggestion).get(list_suggestions),
         )
+        // 登入相關路由
+        .merge(auth::auth_router())
         // 其餘路徑交給靜態前端（web/）。
         .fallback_service(ServeDir::new("web"))
         .layer(TraceLayer::new_for_http())
