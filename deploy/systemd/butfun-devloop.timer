@@ -1,13 +1,11 @@
-# 短排程：每 20 分鐘叫起一輪開發迴圈（含開機後一分鐘先跑一次）。
-# 想更頻繁/更省，改 OnUnitActiveSec 即可。
 [Unit]
-Description=Run ButFun dev loop on a short interval
+Description=Run ButFun dev loop nearly continuously (1 min gap between iterations)
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=20min
-# 沒做完的話不要疊著跑。
-AccuracySec=1min
+OnBootSec=30s
+# 從「上一輪結束」算 60 秒後再觸發 → 不會把仍在跑的下一輪疊起來
+OnUnitInactiveSec=60s
+AccuracySec=10s
 
 [Install]
 WantedBy=timers.target
