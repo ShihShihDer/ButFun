@@ -135,6 +135,19 @@
     if (dir) { keys[dir] = false; sendInputIfChanged(); }
   });
 
+  // 視窗失焦 / 分頁切到背景時，瀏覽器多半不會再送 keyup——若此時還按著方向鍵，
+  // keys[dir] 會卡在 true，伺服器持續整合位置，角色在背景一直走（玩家切回來時
+  // 人已飄到別處／撞牆）。延續「角色別在玩家沒在控時亂走」的修復家族：失焦就清掉
+  // 所有移動鍵並把「停止」意圖送給伺服器。
+  function releaseAllKeys() {
+    keys.up = keys.down = keys.left = keys.right = false;
+    sendInputIfChanged();
+  }
+  window.addEventListener("blur", releaseAllKeys);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) releaseAllKeys();
+  });
+
   // ---- 觸控:任何地方按下拖曳當搖桿,放開即停止 ----
   function setTouchKeys(dx, dy) {
     const dead = 14;

@@ -35,6 +35,13 @@
   （埠被正式服務占用屬預期）。
 - [x] **Phase 0-C：遊戲內建議箱**
   ✅ 前端 💡 表單 → `POST /api/suggestions` → 存 `data/suggestions.jsonl`。
+  ✅ 前端修 bug（視窗失焦移動鍵卡住，2026-06-05）：`game.js` 只有 `keyup` 會清移動鍵——
+  但玩家按著 w／方向鍵時切走分頁或視窗失焦時，瀏覽器多半不再送 `keyup`，`keys[dir]` 卡在
+  `true`，伺服器持續整合位置，角色在背景一直走（切回來人已飄到別處／撞牆）。對「常在手機／
+  分頁間切換」的療癒多人世界是真體驗 bug，且延續「角色別在玩家沒在控時亂走」（建議箱 textarea
+  吃按鍵）的修復家族。加 `window` `blur` 與 `document` `visibilitychange`（隱藏時）兜底：
+  失焦就清掉所有移動鍵並送出「停止」意圖。bump `index.html` 的 `game.js?v` 快取版號。
+  純前端、`cargo test` 91 綠不受影響。
   ✅ 前端修 bug（建議箱 textarea 吃按鍵，2026-06-05）：`game.js` 的 keydown 守衛只擋
   `INPUT`、沒擋 `TEXTAREA`——而建議箱內容 `#suggestText` 正是 `<textarea>`。玩家寫
   回饋時，內含的 `w/a/s/d`／方向鍵會被遊戲攔截 `preventDefault` 吃掉、打不進去，角色
