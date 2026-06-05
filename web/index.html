@@ -39,6 +39,13 @@
     #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
       background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5; }
     #hud .brass { color: var(--brass); }
+    /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
+    #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
+    #helpToggle:hover { opacity: 0.85; }
+    #helpCaret { display: inline-block; transition: transform 0.15s; }
+    #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
+    #hud.help-collapsed #helpBody { display: none; }
+    #helpBody > div { opacity: 0.6; }
 
     /* 聊天 */
     #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5; }
@@ -87,8 +94,11 @@
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
     <div id="hudTime">—</div>
-    <div style="opacity:.6">WASD / 方向鍵 · 手機任處長按拖曳 · Enter 聊天</div>
-    <div style="opacity:.6">走到田邊,<b>滑鼠點 / 手機輕點</b>格子:翻土 → 播種 → 澆水 → 收成</div>
+    <div id="helpToggle">操作說明 <span id="helpCaret">▾</span></div>
+    <div id="helpBody">
+      <div>WASD / 方向鍵 · 手機任處長按拖曳 · Enter 聊天</div>
+      <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子:翻土 → 播種 → 澆水 → 收成</div>
+    </div>
   </div>
 
   <div id="suggestBtn" class="hidden"><button>💡 給點建議</button></div>

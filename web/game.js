@@ -748,8 +748,30 @@
     }
   });
 
+  // ---- 操作說明可收合 ----
+  // 點標題列收起／展開;狀態存 localStorage,玩家選過就尊重他的選擇。
+  // 沒選過時依視窗寬度給預設:窄畫面(手機直式)預設收起省空間,寬畫面預設展開讓新手看得到。
+  function initHelpToggle() {
+    const hud = document.getElementById("hud");
+    const toggle = document.getElementById("helpToggle");
+    if (!hud || !toggle) return;
+    let collapsed;
+    try { collapsed = localStorage.getItem("butfun.helpCollapsed"); } catch {}
+    if (collapsed === null || collapsed === undefined) {
+      collapsed = window.innerWidth < 560 ? "1" : "0"; // 窄畫面預設收起
+    }
+    const apply = (v) => hud.classList.toggle("help-collapsed", v === "1");
+    apply(collapsed);
+    toggle.addEventListener("click", () => {
+      const next = hud.classList.contains("help-collapsed") ? "0" : "1";
+      apply(next);
+      try { localStorage.setItem("butfun.helpCollapsed", next); } catch {}
+    });
+  }
+
   // ---- 進場流程 ----
   function enterGame() {
+    initHelpToggle();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
