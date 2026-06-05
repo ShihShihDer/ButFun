@@ -344,12 +344,19 @@
   // ---- 小地圖（玩家建議：2000x2000 大世界容易迷路）----
   // 右下角畫一張固定大小的世界縮圖：世界邊界、農地位置、自己（亮點）、其他玩家（暗點）。
   // 純螢幕座標、每幀依最新快照重畫，不參與鏡頭換算。
-  const MM = { size: 150, margin: 16, pad: 6 };
+  const MM = { maxSize: 150, minSize: 96, margin: 16, pad: 6 };
+  // 小地圖邊長依畫面自適應:手機直式窄螢幕縮小(別吃掉太多空間、也少跟左下聊天框
+  // 在底部重疊),平板/桌面維持上限。取畫面短邊的一個比例,夾在 min/max 之間。
+  function minimapSize() {
+    const shorter = Math.min(canvas.width, canvas.height);
+    return Math.round(Math.max(MM.minSize, Math.min(MM.maxSize, shorter * 0.26)));
+  }
   function drawMinimap() {
     if (!world || !world.width || !world.height) return;
     const w = world.width, h = world.height;
     // 等比縮到 size 方框內，長寬各自映射（世界目前是正方，但不假設）。
-    const scale = MM.size / Math.max(w, h);
+    const size = minimapSize();
+    const scale = size / Math.max(w, h);
     const mw = w * scale, mh = h * scale;
     const ox = canvas.width - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
     const oy = canvas.height - MM.margin - mh;
