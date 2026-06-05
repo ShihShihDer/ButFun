@@ -433,4 +433,98 @@ mod tests {
         corrupt[1] = Enemy::from_raw(kind_for(1), 999, 0.0);
         assert!(EnemyField::from_saved(corrupt).is_none());
     }
+
+    // ── Phase 1 完整戰鬥迴圈（field 級）的跨模組組合測試 ─────────────────────
+    // `combat`/`enemy_field`/`vitals` 三塊純邏輯各自單元測試都很扎實，`vitals.rs` 也有
+    // 「單一 `EnemyKind::threat` 餵進 `take_damage`」的組合測試——但**整個戰鬥迴圈在
+    // field 層接起來**的這道接縫此前零測試保證：玩家站在一群敵人中，每 tick 承受
+    // `threat_at` 聚合反擊扣血→被打趴，同時靠 `attack_nearest` 反過來打倒敵人、減少自己
+    // 承受的威脅。接線層（backend ws / 遊戲迴圈）正是要把這兩向串起來，bug 就藏在接縫。
+    // 不疊第 N 個沒人呼叫的死碼，改補上證明這幾塊地基真的組合成完整迴圈的組合測試——
+    // 任一邊契約日後漂移（threat_at 聚合語意 / take_damage 致命判定 / attack_nearest
+    // 鎖定致命掉落）都會在此整條斷掉，而非等上線才在 ws 裡爆。
+
+    use crate::vitals::Vitals;
+
+    #[test]
+    fn aggregated_field_threat_downs_player_and_beats_a_single_enemy() {
+        // 玩家被兩隻不同種類的敵人包圍（都在 ATTACK_REACH 內）。
+        let field = EnemyField {
+            enemies: vec![
+                PlacedEnemy {
+                    x: 100.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::ScrapDrone),
+                },
+                PlacedEnemy {
+                    x: 140.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::EtherWisp),
+                },
+            ],
+        };
+        // 站在兩隻中間（各距 20 < ATTACK_REACH 64）：兩隻都還手。
+        let (px, py) = (120.0, 100.0);
+        let per_tick = field.threat_at(px, py);
+        assert!(per_tick > 0, "被包圍時每次聚合反擊應有正威脅");
+
+        // 反覆把當下聚合威脅餵進玩家生命值：有限次內被打趴——戰鬥確實有風險、
+        // 不是無傷收割（正是 `threat_at`／`vitals` 一起要證明的設計）。
+        let mut v = Vitals::new();
+        let mut blows = 0;
+        while v.is_alive() {
+            v.take_damage(field.threat_at(px, py));
+            blows += 1;
+            assert!(blows < 1000, "正聚合威脅應在有限次內把玩家打趴");
+        }
+        assert!(v.is_downed());
+
+        // 聚合威脅（兩隻相加）嚴格大於任一單隻：被一群包圍確實比遇到一隻更危險。
+        let strongest_single = EnemyKind::ScrapDrone
+            .threat()
+            .max(EnemyKind::EtherWisp.threat());
+        assert!(
+            per_tick > strongest_single,
+            "兩隻包圍的聚合威脅應大於任一單隻"
+        );
+    }
+
+    #[test]
+    fn fighting_back_reduces_incoming_threat() {
+        // 雙向迴圈的另一半：玩家不只挨打，反過來打倒敵人能減少自己承受的威脅。
+        // A（ScrapDrone，威脅較高）離玩家更近、B（EtherWisp）較遠但仍在範圍內。
+        let mut field = EnemyField {
+            enemies: vec![
+                PlacedEnemy {
+                    x: 105.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::ScrapDrone),
+                },
+                PlacedEnemy {
+                    x: 130.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::EtherWisp),
+                },
+            ],
+        };
+        let (px, py) = (100.0, 100.0);
+        // 一開始兩隻都還手：威脅是兩者相加。
+        let before = field.threat_at(px, py);
+        assert_eq!(
+            before,
+            EnemyKind::ScrapDrone.threat() + EnemyKind::EtherWisp.threat()
+        );
+
+        // 自動鎖定最近那隻（A）一口氣打倒：致命那下回傳掉落。
+        let got = field.attack_nearest(px, py, EnemyKind::ScrapDrone.max_hp());
+        assert_eq!(
+            got,
+            Some((EnemyKind::ScrapDrone, Some(EnemyKind::ScrapDrone.drop_loot())))
+        );
+
+        // 打倒一隻後，承受的威脅隨之下降——只剩仍存活的 B 在還手。
+        let after = field.threat_at(px, py);
+        assert!(after < before, "打倒敵人後承受的威脅應下降");
+        assert_eq!(after, EnemyKind::EtherWisp.threat());
+    }
 }

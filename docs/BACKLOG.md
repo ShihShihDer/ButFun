@@ -682,6 +682,21 @@
     的不還手、非有限座標回 0),`cargo test` 304 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被
     正式服務占用屬預期)。**仍待**:接線(玩家帶 `Vitals`、遊戲迴圈每隔一段用 `threat_at` 反擊扣血、快照廣播血量、
     前端畫血條)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
+  - ✅ 完整戰鬥迴圈(field 級)跨模組組合測試(2026-06-05):1-F 戰鬥四塊純邏輯
+    (combat/enemy_field/vitals + threat 聚合)齊備、各自單元測試扎實,`vitals.rs` 也有「單一
+    `EnemyKind::threat` 餵進 `take_damage`」的組合測試——但**整個戰鬥迴圈在 field 層接起來**這道
+    接縫此前零測試保證:玩家站在一群敵人中、每 tick 承受 `EnemyField::threat_at` 聚合反擊扣血→被
+    打趴(敵人→玩家),同時靠 `attack_nearest` 反過來打倒敵人、減少自己承受的威脅(玩家→敵人)。接線層
+    (backend ws/遊戲迴圈)正是要把這兩向串起來,bug 就藏在接縫。比照上輪「採集→合成→工具→戰鬥」垂直
+    迴圈組合測試(commit 92d01e7)的去風險路數:**不疊第 N 個沒人呼叫的死碼**,改補上證明這幾塊地基
+    真的組合成完整迴圈的組合測試——任一邊契約日後漂移(threat_at 聚合語意/take_damage 致命判定/
+    attack_nearest 鎖定致命掉落)都會在此整條斷掉,而非等上線才在 ws 裡爆。刻意只動 `enemy_field.rs`
+    的 `#[cfg(test)]` 測試碼(該模組同時擁有 threat_at 與 attack_nearest 兩向、是 field 級接縫的所在),
+    零共用檔編輯、不碰 ws/game/main.rs 等 backend 在動的檔,執行期程式與廣播 shape 全未動。加 2 個組合測試
+    (兩隻包圍的聚合威脅有限次內把玩家打趴且嚴格大於任一單隻、打倒最近那隻後承受威脅下降至只剩存活那隻),
+    `cargo test` 306 綠(304→306)、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用
+    屬預期)。**仍待**:接線(玩家帶 `Vitals`、遊戲迴圈用 `threat_at` 反擊扣血+`attack_nearest` 自動打怪、
+    快照廣播血量/敵人、前端畫血條/敵人/戰鬥回饋)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
 
 ## 玩家回饋處理區(devloop 從 data/suggestions.jsonl 進來的)
 
