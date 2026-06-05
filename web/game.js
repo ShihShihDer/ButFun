@@ -726,6 +726,64 @@
   canvas.addEventListener("touchcancel", endTouch, { passive: false });
 
   // ---- 渲染迴圈 ----
+  // 畫單一玩家(角色 sprite／fallback 圓 + 頭上名字)。抽成獨立函式,讓 render 能
+  // 控制畫的順序——別人先畫、自己最後畫,確保自己永遠在最上層。純表現層,不嵌任何
+  // 遊戲規則(將來 WebXR renderer 自有角色呈現,這層只屬 2D 客戶端)。
+  function drawPlayer(p, camX, camY) {
+    const sx = p.rx - camX;
+    const sy = p.ry - camY;
+    const isMe = p.id === myId;
+    // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動。
+    // 開「減少動態」時不彈跳（避免持續上下晃造成不適），sprite 仍逐格切換不受影響。
+    const bob = (p.moving && !reduceMotion) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
+    const by = sy - bob;
+
+    // 腳下陰影（固定在地面，賣出彈跳的踏地感）
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 12, 11, 4, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fill();
+
+    if (artOk("player")) {
+      // 像素角色:列=朝向(0下1左2右3上)、欄=走路影格(0-3);靜止用第 0 格。
+      const dir = facingToDir(p.facing);
+      const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
+      // sprite 32x32,放大成 36 比較好看;腳對齊 sy(陰影位置)。
+      const dw = 36, dh = 36;
+      ctx.drawImage(
+        ART.player, frame * TS, dir * TS, TS, TS,
+        Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
+      );
+    } else {
+      // fallback:程式畫的圓 + 朝向小護目鏡點
+      ctx.beginPath();
+      ctx.arc(sx, by, 14, 0, Math.PI * 2);
+      ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.stroke();
+      const fx = sx + Math.cos(p.facing) * 8;
+      const fy = by + Math.sin(p.facing) * 8;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
+      ctx.fill();
+    }
+
+    // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
+    // 紋理上米白字會糊掉(飄字/小地圖都有襯底,唯獨頭上名字沒有),描邊讓名字在任何
+    // 地表、任何日夜亮度下都讀得清。lineJoin=round 讓尖角不溢出成毛刺。
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.strokeText(p.name, sx, sy - 24);
+    ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
+    ctx.fillText(p.name, sx, sy - 24);
+  }
+
   function render() {
     // 每幀重設基準變換(dpr 縮放),確保前一幀任何 save/restore 失衡也不會累積偏移。
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -761,61 +819,12 @@
     drawGround(camX, camY);
     drawField(camX, camY);
 
-    // 畫玩家
+    // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
+    // 與角色仍蓋在最上層,不被別人的 sprite／名字遮住,「一眼找到自己」才真的成立。
     for (const p of players.values()) {
-      const sx = p.rx - camX;
-      const sy = p.ry - camY;
-      const isMe = p.id === myId;
-      // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動。
-      // 開「減少動態」時不彈跳（避免持續上下晃造成不適），sprite 仍逐格切換不受影響。
-      const bob = (p.moving && !reduceMotion) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
-      const by = sy - bob;
-
-      // 腳下陰影（固定在地面，賣出彈跳的踏地感）
-      ctx.beginPath();
-      ctx.ellipse(sx, sy + 12, 11, 4, 0, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(0,0,0,0.22)";
-      ctx.fill();
-
-      if (artOk("player")) {
-        // 像素角色:列=朝向(0下1左2右3上)、欄=走路影格(0-3);靜止用第 0 格。
-        const dir = facingToDir(p.facing);
-        const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
-        // sprite 32x32,放大成 36 比較好看;腳對齊 sy(陰影位置)。
-        const dw = 36, dh = 36;
-        ctx.drawImage(
-          ART.player, frame * TS, dir * TS, TS, TS,
-          Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
-        );
-      } else {
-        // fallback:程式畫的圓 + 朝向小護目鏡點
-        ctx.beginPath();
-        ctx.arc(sx, by, 14, 0, Math.PI * 2);
-        ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "rgba(0,0,0,0.4)";
-        ctx.stroke();
-        const fx = sx + Math.cos(p.facing) * 8;
-        const fy = by + Math.sin(p.facing) * 8;
-        ctx.beginPath();
-        ctx.arc(fx, fy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
-        ctx.fill();
-      }
-
-      // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
-      // 紋理上米白字會糊掉(飄字/小地圖都有襯底,唯獨頭上名字沒有),描邊讓名字在任何
-      // 地表、任何日夜亮度下都讀得清。lineJoin=round 讓尖角不溢出成毛刺。
-      ctx.font = "13px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.lineJoin = "round";
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "rgba(0,0,0,0.55)";
-      ctx.strokeText(p.name, sx, sy - 24);
-      ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
-      ctx.fillText(p.name, sx, sy - 24);
+      if (p.id !== myId) drawPlayer(p, camX, camY);
     }
+    if (me) drawPlayer(me, camX, camY);
 
     // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
     drawDayNightTint();
