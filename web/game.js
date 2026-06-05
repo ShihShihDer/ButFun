@@ -415,10 +415,16 @@
         ctx.fill();
       }
 
-      // 自己的名字描金,讓玩家一眼找到自己。
-      ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
+      // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
+      // 紋理上米白字會糊掉(飄字/小地圖都有襯底,唯獨頭上名字沒有),描邊讓名字在任何
+      // 地表、任何日夜亮度下都讀得清。lineJoin=round 讓尖角不溢出成毛刺。
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.strokeText(p.name, sx, sy - 24);
+      ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
       ctx.fillText(p.name, sx, sy - 24);
     }
 
