@@ -1,0 +1,13 @@
+[Unit]
+Description=ButFun feedback-focused dev loop (parallel to main)
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/butfun
+Environment=BUTFUN_REPO=/opt/butfun
+Environment=HOME=/home/butfun
+Environment=PATH=/home/butfun/.local/bin:/home/butfun/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/butfun/scripts/devloop-feedback.sh
+User=butfun
+TimeoutStartSec=1800

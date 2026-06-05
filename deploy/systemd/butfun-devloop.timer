@@ -1,11 +1,10 @@
 [Unit]
-Description=Run ButFun dev loop nearly continuously (1 min gap between iterations)
+Description=Run ButFun dev loop nearly continuously (10s gap)
 
 [Timer]
-OnBootSec=30s
-# 從「上一輪結束」算 60 秒後再觸發 → 不會把仍在跑的下一輪疊起來
-OnUnitInactiveSec=60s
-AccuracySec=10s
+OnBootSec=15s
+OnUnitInactiveSec=10s
+AccuracySec=2s
 
 [Install]
 WantedBy=timers.target

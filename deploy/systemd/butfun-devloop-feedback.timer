@@ -1,0 +1,11 @@
+[Unit]
+Description=Run feedback devloop nearly continuously (10s gap, staggered)
+
+[Timer]
+# 跟主管線錯開 30 秒避免兩條同一刻撞 git lock
+OnBootSec=45s
+OnUnitInactiveSec=10s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target
