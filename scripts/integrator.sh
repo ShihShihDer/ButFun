@@ -15,6 +15,14 @@ DIR="${BUTFUN_WORKTREES_DIR:-/home/shihshih}/bf-integrator"
 LANES=(${BUTFUN_LANES:-backend frontend feature feedback})
 cd "$DIR"
 
+# 簡單推播:設了 NTFY_TOPIC(在 systemd 環境裡,不入 repo)就 curl 一條到使用者手機。
+# 免費、免註冊;手機裝 ntfy App 訂閱同一個 topic 即可。失敗不影響整合流程。
+notify() {
+  [ -n "${NTFY_TOPIC:-}" ] || return 0
+  curl -s -m 6 -H "Title: ButFun 更新" -H "Tags: hammer_and_wrench" \
+    -d "$1" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null 2>&1 || true
+}
+
 git fetch --quiet origin main
 git checkout --quiet -B auto/integrate origin/main
 git reset --hard --quiet origin/main
@@ -30,6 +38,7 @@ for lane in "${LANES[@]}"; do
     if cargo build --release -q 2>/dev/null && cargo test --release -q 2>/dev/null; then
       if git push --quiet origin auto/integrate:main; then
         echo "[integrator] ✅ 已合併 $lane 到 main：$(git rev-parse --short HEAD)"
+        notify "🔧 [$lane] $(git log -1 --format=%s)"
         git fetch --quiet origin main
         git reset --hard --quiet origin/main   # 對齊新 main,接著合下一個 lane
       else
