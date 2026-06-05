@@ -5,7 +5,9 @@
   <!-- 不鎖縮放(移除 maximum-scale / user-scalable=no):弱視玩家要能雙指放大讀 HUD／說明／
        聊天／建議文字(WCAG 1.4.4)。遊戲操作不受影響——canvas 自己對 touch 事件 preventDefault,
        搖桿拖曳照舊;放大手勢只作用在 HTML 面板上。 -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover:讓 canvas 鋪滿到瀏海/圓角/底部手勢條底下(沉浸式全螢幕),
+       再用下方各 HUD 的 env(safe-area-inset-*) 把固定面板推離被切到的邊,兩者搭配缺一不可。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <!-- 手機/桌面瀏覽器外殼適配(自適應 UI 的最後一塊):
        theme-color 讓行動瀏覽器的網址列/狀態列底色貼齊遊戲深色背景,不再夾一條突兀的
        淺色帶,進場即沉浸。color-scheme=dark 告訴瀏覽器本頁是暗色,讓原生 <select> 下拉
@@ -46,7 +48,9 @@
       /* 短螢幕(手機橫式)上元素疊起來會超過視窗高:body 是 overflow:hidden,純
          justify-content:center 會把頂/底裁掉、進場按鈕點不到。safe center 在會溢出時
          自動退回頂端對齊,再加自身捲動 + 留白,確保所有控制項都搆得到。 */
-      overflow-y: auto; padding: 24px 16px;
+      overflow-y: auto;
+      padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+               calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
       background: radial-gradient(circle at 50% 30%, #1a2230, #0b0d12 70%); z-index: 10;
     }
     #login h1 { color: var(--brass); margin: 0; font-size: 2rem; letter-spacing: 2px; }
@@ -83,7 +87,9 @@
     /* 上限寬度:操作說明是長句,沒有上限時在寬螢幕會橫向拉滿一整行、難讀,在中寬螢幕更會
        往右延伸逼近右上角的建議鈕。約束成一個可讀窄欄(手機上 78vw 仍給右上鈕留白),
        長句自然換行而非溢出。overflow-wrap 確保超長 token(如網址)也不會撐破面板。 */
-    #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
+    /* 邊距用 env(safe-area-inset-*) 疊加:一般螢幕 inset 為 0、維持 12px;notched 手機
+       橫式時自動讓開瀏海/圓角,固定面板不被切到。沒有 cover 時 inset 恆為 0,無副作用。 */
+    #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; font-size: 0.85rem;
       background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
       max-width: min(340px, 78vw); overflow-wrap: break-word; }
     #hud .brass { color: var(--brass); }
@@ -113,7 +119,7 @@
     #helpBody > div { opacity: 0.6; }
 
     /* 聊天 */
-    #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5;
+    #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
       /* 軟鍵盤彈起時整塊抬到鍵盤之上(見 game.js initChatKeyboardLift),平滑移動不跳。 */
       transition: transform 0.18s ease; }
     /* 收合面板位移與兩顆箭頭旋轉都屬「純裝飾、不傳遞資訊」的動態(收合狀態由 display:none
@@ -143,12 +149,14 @@
     #chatText { flex: 1; }
 
     /* 建議箱按鈕 + modal */
-    #suggestBtn { position: fixed; right: 12px; top: 12px; z-index: 5; cursor: pointer; }
+    #suggestBtn { position: fixed; right: calc(12px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; cursor: pointer; }
     .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 20;
       display: none; align-items: safe center; justify-content: center;
       /* 同 #login:短螢幕上 modal 比視窗高時垂直會被裁掉。modal-bg 是 row flex,垂直置中
          由 align-items 管,故這裡用 align-items: safe center + 捲動 + 留白讓送出鈕搆得到。 */
-      overflow-y: auto; padding: 24px 16px; }
+      overflow-y: auto;
+      padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+               calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
     .modal { background: #11151c; border: 1px solid #3a4250; border-radius: 12px;
       padding: 20px; width: min(420px, 90vw); display: flex; flex-direction: column; gap: 10px; }
     .modal h2 { margin: 0; color: var(--brass); font-size: 1.2rem; }
@@ -162,7 +170,7 @@
        回來時給玩家持續的回饋(不只聊天裡閃過一行),讓他知道「正在重連、別急著
        重整頁面」。純客戶端韌性 UI,不碰任何遊戲規則。 */
     #connStatus {
-      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
       z-index: 8; font-size: 0.85rem; padding: 7px 14px; border-radius: 999px;
       background: rgba(60, 30, 10, 0.92); color: var(--brass);
       border: 1px solid var(--brass); box-shadow: 0 2px 10px rgba(0,0,0,0.4);
