@@ -35,6 +35,15 @@
   （埠被正式服務占用屬預期）。
 - [x] **Phase 0-C：遊戲內建議箱**
   ✅ 前端 💡 表單 → `POST /api/suggestions` → 存 `data/suggestions.jsonl`。
+  ✅ 資料曝露收口（移除公開未驗身的 GET 清單端點，2026-06-05）：`GET /api/suggestions`
+  是未驗身公開端點、會把全部玩家建議（含玩家自填署名）整包吐給任何 `curl`，而前端從不
+  消費它（`web/game.js` 只 POST）——線上一個沒人用卻能撈走所有玩家回饋的資料曝露點。
+  建議的整條硬化弧線（長度上限／控制字元／載入路徑 sanitizer）一直在加固「回出的內容」，
+  卻沒堵住「不該對外回出」本身；此輪把它收口：移除 `list_suggestions` handler、路由只留
+  `POST`。維護者本就直接讀 `data/suggestions.jsonl` 三角化，零影響；刻意保留
+  `SuggestionStore::list`（標 `allow(dead_code)`）當建材，日後做後台檢視走驗身路由再接上。
+  **不刪除／不改寫磁碟資料**（不破壞玩家資料），只移除讀路徑。`cargo test` 122 綠、
+  clippy 乾淨、伺服器二進位啟動正常（埠被正式服務占用屬預期）。
   ✅ 持久化載入防線（建議讀路徑也過 sanitizer，2026-06-05）：控制字元過濾原本只加在
   **寫入**路徑（`add`/`sanitize`），但建議是「存檔又重載」的持久化結構——`load_from_disk`
   直接 `serde_json::from_str` 收進記憶體、由公開 `GET /api/suggestions` 回出、維護者又常

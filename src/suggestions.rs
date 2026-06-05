@@ -107,6 +107,12 @@ impl SuggestionStore {
     }
 
     /// 列出所有建議（最新的在前）。
+    ///
+    /// 目前沒有呼叫端：先前的公開 `GET /api/suggestions` 已移除（資料曝露收口，見
+    /// `main.rs` 路由註解）。刻意保留這個建材給「日後驗身後的後台檢視」，接上時
+    /// 走驗身路由再呼叫即可——故標 `allow(dead_code)`，比照 `crops::is_loadable`
+    /// 等「先備好、之後接線」的前置慣例。
+    #[allow(dead_code)]
     pub fn list(&self) -> Vec<Suggestion> {
         let items = self.items.lock().unwrap();
         items.iter().rev().cloned().collect()
