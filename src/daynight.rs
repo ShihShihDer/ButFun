@@ -2,24 +2,25 @@
 //!
 //! GDD 第 9 章「要做」明列「伺服器驅動的日夜循環」、0-G 驗收提「隨日夜收成」，
 //! 但這塊目前完全沒有模型。這層先把「現在是一天裡的什麼時候、有多亮、是哪個階段」
-//! 抽成純資料 + 純函式，無 IO、不碰 WebSocket / 遊戲迴圈，便於自動測試。之後接上：
+//! 抽成純資料 + 純函式，無 IO、不碰 WebSocket / 遊戲迴圈，便於自動測試。
+//!
+//! 已接上（2026-06-05）：
 //!   - 遊戲迴圈：每 tick 對共享的 `DayNight` 呼叫 `advance(dt)` 推進時間。
-//!   - WebSocket：把 `phase()` / `light_level()` 隨快照廣播，前端依此做環境染色。
-//!   - 前端：依亮度疊一層由亮到暗的色調，給「日夜流轉」的療癒體感。
+//!   - WebSocket：把 `view()`（階段 + 亮度）隨快照廣播，前端依此做環境染色。
+//!   - 前端：依亮度疊一層夜色，給「日夜流轉」的療癒體感。
+//!
+//! 仍待：
 //!   - 作物（選用）：白天成長略快、夜裡放慢——把 0-G 的「隨日夜成長」收尾。
 //!   - 持久化（接 0-E）：把 `elapsed` 序列化存回，重啟後從同一個時刻接續。
 //!
 //! 刻意只做「時間 → 階段 / 亮度」的純映射，先不耦合作物成長（那是接線，留待後續），
 //! 一如 `crops.rs` / `field.rs` 當初先落地純邏輯地基、之後才接遊戲迴圈的慣例。
-//! 接線時移除本檔的 `allow(dead_code)`。
-
-// 整塊地基目前尚未接上遊戲迴圈 / ws / 前端，所有公開項在非測試建置下都還沒有
-// 呼叫端——比照 `crops.rs` / `field.rs` 前置階段的慣例先標起來，接線時移除。
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
 use std::f32::consts::TAU;
+
+use crate::protocol::DayNightView;
 
 /// 一個完整日夜循環的長度（秒）。10 分鐘一輪——療癒節奏，看得到流轉又不催促。
 pub const DAY_LENGTH_SECS: f32 = 600.0;
@@ -91,6 +92,9 @@ impl DayNight {
     /// 不讓壞檔 / 被竄改的值算出非有限的階段或亮度。延續
     /// `positions::spawn_at` / `field::from_tiles` / `crops::is_loadable`
     /// 的載入時驗證脈絡。
+    // 持久化載入入口，待接 0-E（跨重啟接續日夜時刻）才有非測試呼叫端；
+    // 比照 `crops::is_loadable` 先以標靶 allow 標起，接 0-E 時移除。
+    #[allow(dead_code)]
     pub fn at(elapsed: f32) -> Self {
         let wrapped = if elapsed.is_finite() {
             elapsed.rem_euclid(DAY_LENGTH_SECS)
@@ -121,6 +125,14 @@ impl DayNight {
     /// 目前環境亮度，`[MIN_LIGHT, 1.0]`。
     pub fn light_level(&self) -> f32 {
         light_for(self.fraction())
+    }
+
+    /// 對前端的可見狀態（階段 + 亮度）。隨快照廣播，比照 `Field::view` / `Player::view`。
+    pub fn view(&self) -> DayNightView {
+        DayNightView {
+            phase: self.phase(),
+            light: self.light_level(),
+        }
     }
 }
 
@@ -230,6 +242,18 @@ mod tests {
         // 非有限退回破曉。
         assert_eq!(DayNight::at(f32::NAN).fraction(), 0.0);
         assert_eq!(DayNight::at(f32::INFINITY).fraction(), 0.0);
+    }
+
+    #[test]
+    fn view_reflects_current_phase_and_light() {
+        // view() 該與當下的 phase()/light_level() 一致（隨快照廣播給前端的單一來源）。
+        let mut d = DayNight::new();
+        d.advance(DAY_LENGTH_SECS * 0.3); // 白天
+        let v = d.view();
+        assert_eq!(v.phase, d.phase());
+        assert_eq!(v.phase, Phase::Day);
+        assert!((v.light - d.light_level()).abs() < 1e-6);
+        assert!((MIN_LIGHT..=1.0).contains(&v.light));
     }
 
     #[test]

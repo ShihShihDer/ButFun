@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::daynight::Phase;
+
 /// 客戶端送給伺服器的訊息。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -40,6 +42,8 @@ pub enum ServerMsg {
         tick: u64,
         players: Vec<PlayerView>,
         field: FieldView,
+        /// 伺服器權威的日夜狀態（階段 + 亮度），前端依此做環境染色。
+        daynight: DayNightView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -81,6 +85,15 @@ pub struct FieldView {
     pub reach: f32,
     /// row-major 的每格狀態，長度為 `cols * rows`。
     pub cells: Vec<TileView>,
+}
+
+/// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DayNightView {
+    /// 目前階段（dawn/day/dusk/night）：前端可用來顯示或選色調。
+    pub phase: Phase,
+    /// 環境亮度，落在 `[daynight::MIN_LIGHT, 1.0]`：前端依此疊夜色，越暗疊越濃。
+    pub light: f32,
 }
 
 /// 一格耕地對前端的可見狀態。
@@ -134,6 +147,10 @@ mod tests {
                     dry: true,
                 }],
             },
+            daynight: DayNightView {
+                phase: Phase::Day,
+                light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
+            },
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
@@ -142,5 +159,8 @@ mod tests {
         assert_eq!(v["field"]["reach"], 48.0);
         assert_eq!(v["field"]["cells"][0]["state"], 2);
         assert_eq!(v["field"]["cells"][0]["dry"], true);
+        // 日夜狀態：階段以 snake_case 字串、亮度為數值，鎖住前端依賴的契約。
+        assert_eq!(v["daynight"]["phase"], "day");
+        assert_eq!(v["daynight"]["light"], 0.5);
     }
 }

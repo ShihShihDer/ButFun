@@ -20,6 +20,8 @@
   // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
   let field = null;
   let myEther = 0;
+  // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
+  let daynight = null;
 
   // ---- 觸控搖桿狀態(手機沒鍵盤,用拖曳設方向) ----
   let touchOrigin = null;   // 手指按下的初始位置
@@ -82,8 +84,10 @@
           if (!seen.has(id)) players.delete(id);
         }
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
-        // 農地狀態 + 我的乙太
+        // 農地狀態 + 我的乙太 + 日夜
         field = msg.field;
+        daynight = msg.daynight;
+        if (daynight) updateDayNightHud(daynight);
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
           myEther = me.ether;
@@ -98,6 +102,18 @@
         players.delete(msg.id);
         break;
     }
+  }
+
+  // 日夜階段 → HUD 顯示文字（emoji + 繁中），讓玩家一眼知道現在是一天的哪個時段。
+  const PHASE_LABELS = {
+    dawn: "🌅 破曉",
+    day: "☀️ 白天",
+    dusk: "🌇 黃昏",
+    night: "🌙 夜晚",
+  };
+  function updateDayNightHud(dn) {
+    const el = document.getElementById("hudTime");
+    if (el) el.textContent = PHASE_LABELS[dn.phase] || "—";
   }
 
   // ---- 輸入 ----
@@ -224,6 +240,16 @@
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(p.name, sx, sy - 22);
+    }
+
+    // 日夜染色：亮度越低，疊越濃的夜色（蓋住世界與玩家，但不蓋觸控搖桿）。
+    // light 落在 [0.2, 1.0]；白天(≈1)幾乎不疊、午夜(0.2)疊最濃但仍看得見（療癒、非全黑）。
+    if (daynight) {
+      const dark = Math.max(0, Math.min(1, 1 - daynight.light));
+      if (dark > 0.001) {
+        ctx.fillStyle = `rgba(14,20,52,${(dark * 0.72).toFixed(3)})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
     }
 
     // 觸控搖桿視覺(只在按住時出現)

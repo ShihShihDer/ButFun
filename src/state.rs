@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthConfig;
 use crate::connections::ConnectionCounts;
+use crate::daynight::DayNight;
 use crate::field::Field;
 use crate::positions::PositionStore;
 use crate::protocol::{PlayerView, WorldInfo};
@@ -93,6 +94,9 @@ pub struct AppState {
     /// 共享的農地（Phase 0-G 種田起源）。目前單一塊、存記憶體；
     /// 持久化待 Phase 0-E，重啟會回到全自然地。
     pub field: Arc<RwLock<Field>>,
+    /// 伺服器權威的日夜時鐘（Phase 0-G 療癒核心）。遊戲迴圈每 tick 推進、隨快照廣播；
+    /// 目前存記憶體，持久化待 Phase 0-E（重啟會回到破曉）。
+    pub daynight: Arc<RwLock<DayNight>>,
     /// 廣播頻道：高頻 tick 快照與 `PlayerLeft` 走這裡，內容是已序列化的 JSON 字串
     /// （只序列化一次，再扇出給所有連線）。這條會被 15Hz 快照灌滿，跟不上的客戶端
     /// 收到 `Lagged` 時丟掉舊快照繼續追即可——快照本身自我修正（含「移除缺席玩家」），
@@ -124,6 +128,7 @@ impl AppState {
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
             field: Arc::new(RwLock::new(Field::new())),
+            daynight: Arc::new(RwLock::new(DayNight::new())),
             tx,
             tx_chat,
             suggestions: SuggestionStore::new(),

@@ -26,6 +26,13 @@ pub fn spawn(app: AppState) {
                 field.view()
             };
 
+            // 推進日夜時鐘（短暫持鎖，不跨 await）。
+            let daynight_view = {
+                let mut daynight = app.daynight.write().unwrap();
+                daynight.advance(dt);
+                daynight.view()
+            };
+
             // 整合位置並建立快照（短暫持鎖，不跨 await）。
             let snapshot = {
                 let mut players = app.players.write().unwrap();
@@ -37,6 +44,7 @@ pub fn spawn(app: AppState) {
                     tick,
                     players: players.values().map(|p| p.view()).collect(),
                     field: field_view,
+                    daynight: daynight_view,
                 }
             };
 

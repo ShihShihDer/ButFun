@@ -231,6 +231,17 @@
     跨重啟接續預留。延續本檔「純邏輯可測、不接 IO、接線時移除 `allow(dead_code)`」的前置慣例；
     實際接遊戲迴圈 `advance`、隨快照廣播階段／亮度給前端染色、（選用）作物白天長快，留待後續。
     加 11 個單元測試，`cargo test` 115 綠、clippy 乾淨、伺服器二進位啟動正常。
+  - ✅ 日夜循環接通（端到端染色，2026-06-05）：上一輪落地的 `daynight.rs` 純邏輯地基終於
+    接上整條線——`AppState` 加共享 `DayNight`，遊戲迴圈每 tick `daynight.advance(dt)` 並把
+    `daynight.view()`（階段 + 亮度）隨快照廣播；新增 `protocol::DayNightView`（`phase` 以
+    snake_case 字串、`light` 為數值，鎖住前後端契約）。前端依 `light` 在世界上疊一層夜色
+    （白天≈1 幾乎不疊、午夜 0.2 最濃但仍 `MIN_LIGHT` 微光不全黑，療癒非恐怖），HUD 顯示
+    當前階段（🌅破曉/☀️白天/🌇黃昏/🌙夜晚），給「日夜流轉」的療癒體感。移除 `daynight.rs`
+    的 `allow(dead_code)`（持久化載入入口 `at` 改標靶 allow，待 0-E 跨重啟接續才有呼叫端，
+    比照 `crops::is_loadable`）。加 protocol 契約與 `view()` 一致性共 2 個測試、補既有快照
+    測試的 `daynight` 欄位，`cargo test` 116 綠、clippy 乾淨、伺服器二進位啟動正常（埠被
+    正式服務占用屬預期）。bump `index.html` 的 `game.js?v`。**仍待**：作物白天長略快（選用）、
+    日夜時刻持久化（接 0-E）。
   - ✅ 照顧距離前端回饋（2026-06-05）：上一輪伺服器加了「離農地太遠就拒絕照顧」的權威
     檢查，但客戶端零回饋——玩家走遠後點農地會靜默沒反應、像壞掉。把 `FARM_REACH` 隨
     `FieldView` 快照帶給前端（新增 `reach` 欄位，伺服器常數為單一來源、前後端不各定一套），
