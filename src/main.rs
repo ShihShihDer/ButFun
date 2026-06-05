@@ -22,6 +22,7 @@ mod state;
 mod suggestions;
 mod tools;
 mod users;
+mod vehicle;
 mod ws;
 
 use std::net::SocketAddr;
