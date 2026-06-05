@@ -341,6 +341,20 @@
     (序號從 0 遞增、同玩家重連同一塊、不同玩家互異、只增不減、`index_of` 反映分配、`owns` 只認自己的地),
     `cargo test` 137 綠、clippy 乾淨、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線
     (進場 `assign`+`Field` 帶 origin+Farm 驗地主+前端畫多塊)屬架構級、動 live 廣播 shape,留待後續輪/PR。
+  - ✅ 前置(`Field` 帶自己的 origin——連接幾何與登記兩塊地基,2026-06-05):前兩塊地基算出
+    「第 N 塊地在世界哪裡」(`plots.rs`)與「哪個玩家擁有第幾塊」(`plot_registry.rs`),但 `Field`
+    本身仍寫死用全域常數 `FIELD_ORIGIN`,無法擺到別塊地。這輪補上中間最後一塊純邏輯:`Field` 改帶
+    自己的 `origin_x/origin_y`,`cell_at`/`within_reach`/`view` 全改吃 `self.origin`(不再吃全域常數);
+    新增 `Field::for_plot(index)`(origin 由 `plots::plot_origin(index)` 決定,序號 0 對齊現有全域農地)
+    與 `origin()` 取值。**origin 刻意 `#[serde(skip)]` 不入存檔**——接 0-E 載入時由該玩家的序號重建供入,
+    `from_tiles` 改收 `(index, tiles)`、origin 一律由序號說了算(per-player 的關鍵:同一份 tiles 擺哪塊
+    地由序號決定,不靠磁碟值)。**行為不變**:單一全域 `Field::new()` 仍落在 `FIELD_ORIGIN`(序號 0),
+    快照 shape、前端、live 廣播全不動,故可直接進 main。`ws.rs` 的 `Farm` 改用實例方法、每把鎖各自取
+    各自放(同時至多持一把,沿用不互鎖的鎖序)。加 4 個測試(`for_plot(0)`==`new()`、`for_plot` origin
+    對齊 plots 幾何、`cell_at`/`within_reach` 以該塊 origin 為基準、`from_tiles` origin 來自序號),改
+    既有 serde round-trip 測試走 `from_tiles(0,..)` 還原。`cargo test` 141 綠、clippy 乾淨、伺服器二進位
+    啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(AppState 改 `HashMap<Uuid,Field>`+進場分配+Farm
+    驗地主+快照送多塊+前端畫多塊)屬架構級、動 live 廣播 shape,留待後續輪/PR。
 
 - [ ] **Phase 0-G-O2:地圖擴張 + 用乙太購買土地**
   家園區可隨玩家數往外長;玩家用收成的乙太**購買**擴充地塊(乙太的消耗去處,接上經濟)。

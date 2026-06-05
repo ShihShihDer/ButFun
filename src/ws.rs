@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
-use crate::field::{FarmOutcome, Field};
+use crate::field::FarmOutcome;
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -228,17 +228,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {
-                    // 點到農地外的座標 cell_at 會回 None，直接忽略。
-                    if let Some((col, row)) = Field::cell_at(x, y) {
+                    // 點到這塊地外的座標 cell_at 會回 None，直接忽略。
+                    // cell_at 現在吃這塊地自己的 origin（per-player 地基），故需短暫讀農地鎖。
+                    let cell = app.field.read().unwrap().cell_at(x, y);
+                    if let Some((col, row)) = cell {
                         // 權威伺服器：只接受「玩家確實站在農地（或緊鄰邊緣）」的照顧動作，
-                        // 不讓客戶端用任意座標隔空遙控這片共享農地。讀鎖在本句結束即釋放，
-                        // 之後才取農地與玩家的寫鎖，避免互鎖。
-                        let at_field = app
-                            .players
-                            .read()
-                            .unwrap()
-                            .get(&id)
-                            .map(|p| crate::field::within_field_reach(p.x, p.y))
+                        // 不讓客戶端用任意座標隔空遙控這塊地。每把鎖各自取、各自釋放，
+                        // 同一時間至多持一把，沿用原先「不互鎖」的鎖序。
+                        let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                        let at_field = player_pos
+                            .map(|(px, py)| app.field.read().unwrap().within_reach(px, py))
                             .unwrap_or(false);
                         if at_field {
                             let outcome = app.field.write().unwrap().interact(col, row);
