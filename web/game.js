@@ -432,6 +432,11 @@
     ctx.lineWidth = 3;
     ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
+    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」而非
+    // 一塊浮在草地上的色塊(玩家回饋:想要田地周圍的木柵欄)。純程式畫,
+    // 之後真 sprite 進來可直接替換。
+    drawFence(fx, fy, fw, fh);
+
     // 田地名字標籤(平時也顯示,不只在太遠時)。
     ctx.fillStyle = "rgba(232,224,207,0.9)";
     ctx.font = "13px system-ui, sans-serif";
@@ -486,6 +491,47 @@
       ctx.strokeRect(sx + 2, sy + 2, ts - 4, ts - 4);
       ctx.setLineDash([]);
     }
+  }
+
+  // 木柵欄:在田四邊立等距木樁,兩條橫桿把樁串起來。樁位由邊長算出固定間距,
+  // 所以鏡頭移動時柵欄「貼」在田邊不會抖。柵欄畫在田框外側一點,不蓋到作物格。
+  function drawFence(fx, fy, fw, fh) {
+    const POST_GAP = 26;   // 木樁間距(畫面 px)
+    const POST_W = 4;      // 木樁寬
+    const POST_H = 14;     // 木樁高(往田外長)
+    const wood = "#6b4a2b";
+    const woodHi = "#8a6438"; // 樁頂亮面,給一點立體感
+    const margin = 4;         // 離黃銅框外側一點
+    const left = fx - margin;
+    const top = fy - margin;
+    const right = fx + fw + margin;
+    const bottom = fy + fh + margin;
+
+    // 兩條橫桿(上下圍一圈),柵欄感主要靠這個。
+    ctx.strokeStyle = wood;
+    ctx.lineWidth = 2;
+    for (const inset of [3, POST_H - 4]) {
+      ctx.strokeRect(left, top - POST_H + inset, right - left, bottom - top + 2 * (POST_H - inset));
+    }
+
+    // 沿四邊撒木樁。每邊用 round 讓兩端對齊角落、間距平均。
+    function postsAlong(x0, y0, x1, y1, vertical) {
+      const span = vertical ? Math.abs(y1 - y0) : Math.abs(x1 - x0);
+      const n = Math.max(1, Math.round(span / POST_GAP));
+      for (let i = 0; i <= n; i++) {
+        const t = i / n;
+        const px = vertical ? x0 : x0 + (x1 - x0) * t;
+        const py = vertical ? y0 + (y1 - y0) * t : y0;
+        ctx.fillStyle = wood;
+        ctx.fillRect(px - POST_W / 2, py - POST_H, POST_W, POST_H);
+        ctx.fillStyle = woodHi;
+        ctx.fillRect(px - POST_W / 2, py - POST_H, POST_W, 3);
+      }
+    }
+    postsAlong(left, top, right, top, false);       // 上邊
+    postsAlong(left, bottom, right, bottom, false); // 下邊
+    postsAlong(left, top, left, bottom, true);      // 左邊
+    postsAlong(right, top, right, bottom, true);    // 右邊
   }
 
   // 距離提示節流：太遠時只偶爾提醒一次，不洗聊天視窗。
