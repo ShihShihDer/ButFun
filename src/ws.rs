@@ -87,17 +87,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             Some(u) => u,
             None => return, // cookie 對得上但人不在了:直接斷
         };
-        // 同帳號重連 → 回到離線前的位置與乙太（沒有歷史就地圖中央、乙太 0）。
-        let saved = app.positions.recall(user.id);
-        let (x, y) = crate::positions::spawn_at(saved.map(|s| (s.x, s.y)));
+        // 同帳號重連 → 回到離線前的位置與乙太(沒有歷史就地圖中央、乙太 0)。
+        // 真正的 recall **延後到 players 寫鎖內**(見下方 acquire 區塊),避免和
+        // cleanup 的 remember 之間出現 race window(refresh 時舊連線 cleanup 與
+        // 新連線進場兩個 async 任務交錯,recall 若在鎖外搶先跑會拿到 None,
+        // 玩家被瞬移回地圖中央)。此處只是建占位 Player,位置/乙太會在鎖內覆寫。
         Player {
             id: user.id,
             name: user.name,
             species: user.species,
-            x,
-            y,
+            x: WORLD_WIDTH / 2.0,
+            y: WORLD_HEIGHT / 2.0,
             input: Input::default(),
-            ether: saved.map(|s| s.ether).unwrap_or(0),
+            ether: 0,
         }
     } else {
         // 等 Join
@@ -132,11 +134,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 登記這條連線。同帳號（同 id）開多個分頁／裝置時，只有第一條連線建立玩家、從記憶
     // 位置進場；之後的連線共用既有權威狀態（不用舊存檔覆蓋當前位置，避免畫面瞬移）。
     // 鎖序固定「先 players 再 conns」，與 cleanup 一致，避免死鎖。
+    //
+    // recall 也在這裡(鎖內)做，跟 cleanup 的 remember 用同一把 players 寫鎖排序，
+    // 消除 refresh 時「新連線 recall 早於舊連線 remember」的 race window。
     {
         let mut players = app.players.write().unwrap();
         if app.connections.acquire(id) {
-            players.insert(id, player.clone());
+            // 第一條連線:讀記憶位置(已登入玩家才記),把占位 Player 的位置/乙太覆寫掉。
+            let mut p = player.clone();
+            if let Some(uid) = authed_uid {
+                let saved = app.positions.recall(uid);
+                let (x, y) = crate::positions::spawn_at(saved.map(|s| (s.x, s.y)));
+                p.x = x;
+                p.y = y;
+                p.ether = saved.map(|s| s.ether).unwrap_or(0);
+            }
+            players.insert(id, p);
         }
+        // 不是第一條連線:既有玩家記錄保留(同帳號其他分頁仍在用),不動。
     }
     tracing::info!(player = %player.name, %id, "玩家進場");
 
@@ -257,17 +272,24 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     let removed = {
         let mut players = app.players.write().unwrap();
         if app.connections.release(id) {
-            players.remove(&id)
+            let p = players.remove(&id);
+            // remember **在鎖內**做,跟新連線的 recall(也在這把鎖內)用同一把鎖排序,
+            // 消除 refresh race(舊 cleanup 釋放鎖後才 remember,新連線取得鎖時 recall
+            // 還是 None,被瞬移回中央)。鎖內呼叫 PositionStore.remember 用的是它自己的
+            // 內部 Mutex,與 players 鎖無交集,不會死鎖。
+            if let Some(ref player) = p {
+                if persist_pos {
+                    app.positions.remember(id, player.x, player.y, player.ether);
+                }
+            }
+            p
         } else {
             None // 同帳號還有其他連線在線，保留玩家
         }
     };
-    // 只有真的移除了玩家（最後一條連線離線）才記位置、廣播離線；否則世界裡那名玩家還在，
+    // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
     // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
-    if let Some(p) = removed {
-        if persist_pos {
-            app.positions.remember(id, p.x, p.y, p.ether);
-        }
+    if removed.is_some() {
         let left = ServerMsg::PlayerLeft { id };
         if let Ok(json) = serde_json::to_string(&left) {
             let _ = app.tx.send(json);
