@@ -699,14 +699,19 @@
   canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
 
   // ---- 聊天 ----
+  const MAX_CHAT_LINES = 60;
   function addChat(who, text) {
     const log = document.getElementById("chatLog");
     log.style.display = "block";
     const line = document.createElement("div");
+    // 系統訊息(連線中斷、靠近農地提示)淡化斜體,跟真人發言視覺區隔,不互相搶眼。
+    if (who === "系統") line.className = "sys";
     line.innerHTML = `<span class="who"></span>: <span class="msg"></span>`;
     line.querySelector(".who").textContent = who;
     line.querySelector(".msg").textContent = text;
     log.appendChild(line);
+    // 長時間掛機聊天會無上限堆 DOM(慢慢吃記憶體、捲動也變重);只留最近 N 則,舊的移除。
+    while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
     log.scrollTop = log.scrollHeight;
   }
 
