@@ -195,7 +195,9 @@
     <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
     <!-- placeholder 不是無障礙標籤(報讀器逐欄位巡覽時唸不到、輸入後也消失),
          每個欄位補一條 aria-label,讓只用報讀器的玩家也知道這格在填什麼。 -->
-    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" aria-label="你的名字（訪客代號）" />
+    <!-- enterkeyhint=go:手機軟鍵盤的 Enter 鍵顯示「前往」而非通用換行——名字欄按 Enter
+         會直接進場(見 game.js nameInput keydown→joinBtn.click),讓鍵帽語意對得上動作。 -->
+    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" enterkeyhint="go" aria-label="你的名字（訪客代號）" />
     <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
     <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
     <select id="speciesInput" aria-label="選擇種族">
@@ -247,7 +249,9 @@
          不會被當成更動再唸一次。延續 #srStatus（連線狀態）的無障礙弧線,補上聊天這條社交管道。 -->
     <div id="chatLog" role="log" aria-live="polite" aria-relevant="additions"></div>
     <form id="chatForm" autocomplete="off">
-      <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" aria-label="聊天輸入（Enter 送出）" />
+      <!-- enterkeyhint=send:手機軟鍵盤的 Enter 鍵顯示「傳送」而非通用換行——聊天框在 form
+         內按 Enter 即送出(見 game.js chatForm submit),讓鍵帽語意對得上動作。 -->
+    <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" enterkeyhint="send" aria-label="聊天輸入（Enter 送出）" />
     </form>
   </div>
 
