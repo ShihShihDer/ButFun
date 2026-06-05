@@ -306,6 +306,10 @@
           // 乙太變多 → 收成回饋飄字（首次同步不噴，否則進場/重連會把存量當成一次大獲得）。
           if (etherKnown && me.ether > myEther) {
             spawnEtherFloater(me.ether - myEther, me.x, me.y);
+            // 飄字是純視覺,看不到畫面的玩家收成時毫無回饋——同步播給報讀器。帶上累計
+            // 總量(me.ether):總量每次都不同,確保連續同額收成(如每次 +1)也都被重新朗讀,
+            // 而非被 aria-live「文字沒變不重播」吃掉。延續缺水/日夜的無障礙弧線。
+            announce(`收成 +${me.ether - myEther} 乙太,共 ${me.ether}`);
           }
           myEther = me.ether;
           etherKnown = true;
