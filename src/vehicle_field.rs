@@ -279,4 +279,108 @@ mod tests {
         saved[0].vx = f32::NAN;
         assert!(VehicleField::from_saved(saved).is_none());
     }
+
+    // ── 完整騎乘迴圈（field 級）跨模組組合測試 ──────────────────────────────
+    // 1-E 載具三塊純邏輯（vehicle 物理／vehicle_field 佈置+偵測／ride_registry 歸屬）
+    // 各自單元測試扎實，但**整個騎乘迴圈在 field 層接起來**這道接縫此前零測試保證：
+    // 玩家走近 → `nearest_within_reach` 找到車 → `board` 登記 → 遊戲迴圈只對
+    // `vehicle_of` 那台 `step_ridden`（一人一車、別台不動）→ `disembark` 釋放、車停在
+    // 被開到的新位置。接線層（backend ws／遊戲迴圈）正是要把這幾步串起來，bug 就藏在
+    // 接縫。比照戰鬥迴圈組合測試（commit e908b2a）的去風險路數：不疊死碼，改補上證明
+    // 這幾塊真的組合成完整迴圈的組合測試——任一邊契約日後漂移（nearest 選最近／board
+    // 一台一人／step_ridden 只動指定那台）都會在此整條斷掉，而非等上線才在 ws 裡爆。
+    // 刻意只動本模組 `#[cfg(test)]` 測試碼（field 級接縫所在），零共用檔編輯。
+
+    #[test]
+    fn full_ride_loop_board_drive_disembark_across_field_and_registry() {
+        use crate::ride_registry::RideRegistry;
+        use uuid::Uuid;
+
+        let mut field = VehicleField::new();
+        let reg = RideRegistry::new();
+        let rider = Uuid::new_v4();
+
+        // 1) 玩家走到某台載具旁 → field 找出最近那台的序號。
+        let parked = field.vehicles()[0];
+        let idx = field
+            .nearest_within_reach(parked.x, parked.y)
+            .expect("站在車旁應找得到車");
+
+        // 2) registry 登記上車成功，雙向對應建立。
+        assert!(reg.board(rider, idx), "空車應上得了");
+        assert_eq!(reg.vehicle_of(rider), Some(idx));
+
+        // 3) 遊戲迴圈：對「有人騎的那台」導向方向輸入，只動那台、別台靜止。
+        let others_before: Vec<Vehicle> = field
+            .vehicles()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != idx)
+            .map(|(_, v)| *v)
+            .collect();
+        let driven = reg.vehicle_of(rider).expect("還在騎");
+        for _ in 0..10 {
+            field.step_ridden(driven, input(false, false, false, true), 1.0 / 15.0);
+        }
+        assert!(field.vehicles()[idx].x > parked.x, "騎著的那台應往右開出去");
+        let others_after: Vec<Vehicle> = field
+            .vehicles()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != idx)
+            .map(|(_, v)| *v)
+            .collect();
+        assert_eq!(others_before, others_after, "沒人騎的載具不該被推進");
+
+        // 4) 下車：registry 釋放序號，但車停在它被開到的新位置（位置是會變、要存的狀態，
+        //    不該瞬移回原停放點）；之後在新位置旁仍找得到、可被再上。
+        let moved_to = field.vehicles()[idx];
+        assert_eq!(reg.disembark(rider), Some(idx));
+        assert_eq!(reg.vehicle_of(rider), None, "下車後不再騎任何車");
+        assert_eq!(field.vehicles()[idx], moved_to, "下車不該瞬移車回原停放點");
+        assert_eq!(
+            field.nearest_within_reach(moved_to.x, moved_to.y),
+            Some(idx),
+            "車停在新位置，在新位置旁仍找得到同一台"
+        );
+    }
+
+    #[test]
+    fn two_players_contending_same_vehicle_only_rider_drives() {
+        use crate::ride_registry::RideRegistry;
+        use uuid::Uuid;
+
+        let mut field = VehicleField::new();
+        let reg = RideRegistry::new();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        // 兩人都站在同一台載具旁 → field 對同一位置給出同一個序號。
+        let parked = field.vehicles()[1];
+        let idx_first = field
+            .nearest_within_reach(parked.x, parked.y)
+            .expect("車旁找得到車");
+        let idx_second = field
+            .nearest_within_reach(parked.x, parked.y)
+            .expect("車旁找得到車");
+        assert_eq!(idx_first, idx_second, "同一位置應指向同一台");
+
+        // 先到先得：第一人上車，第二人被 registry 擋下（一台車只准一人騎）。
+        assert!(reg.board(first, idx_first));
+        assert!(!reg.board(second, idx_second), "同台已有人騎，第二人不該上");
+
+        // 接線層只對「有 vehicle_of 的人」導向輸入：第一人開得動那台，第二人沒車可開。
+        let start_x = field.vehicles()[idx_first].x;
+        let driven = reg.vehicle_of(first).expect("第一人在騎");
+        for _ in 0..6 {
+            field.step_ridden(driven, input(false, false, false, true), 1.0 / 15.0);
+        }
+        assert!(field.vehicles()[idx_first].x > start_x, "騎到的人開得動");
+        assert_eq!(reg.vehicle_of(second), None, "被擋下的人沒有車可開");
+
+        // 第一人下車讓出 → 第二人現在上得了同一台實體車。
+        assert_eq!(reg.disembark(first), Some(idx_first));
+        assert!(reg.board(second, idx_second), "讓出後第二人上得了同一台");
+        assert_eq!(reg.rider_of(idx_second), Some(second));
+    }
 }

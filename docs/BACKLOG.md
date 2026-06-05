@@ -606,6 +606,19 @@
     干擾、空車無騎士),`cargo test` 228 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常
     (埠被正式服務占用屬預期)。**仍待**:接線(AppState 持有 `VehicleField`+`RideRegistry`+ws
     上下車+遊戲迴圈推進+快照廣播+前端畫車與騎乘)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
+  - ✅ 完整騎乘迴圈(field 級)跨模組組合測試(2026-06-05):1-E 載具三塊純邏輯
+    (vehicle 物理／vehicle_field 佈置+偵測／ride_registry 歸屬)齊備、各自單元測試扎實,但
+    **整個騎乘迴圈在 field 層接起來**這道接縫此前零測試保證——比照戰鬥迴圈(commit e908b2a)、
+    採集→合成→工具→戰鬥垂直迴圈(commit 92d01e7)已補的組合測試,載具這條還缺。接線層(backend
+    ws／遊戲迴圈)正是要把「玩家走近 `nearest_within_reach` 找到車 → `board` 登記 → 遊戲迴圈只對
+    `vehicle_of` 那台 `step_ridden`(一人一車、別台不動)→ `disembark` 釋放、車停在被開到的新位置」
+    這幾步串起來,bug 就藏在接縫。延續去風險路數:**不疊死碼**,改補上證明這幾塊真組合成完整迴圈的
+    組合測試——任一邊契約日後漂移(nearest 選最近／board 一台一人／step_ridden 只動指定那台／下車不
+    瞬移車)都會在此整條斷掉,而非等上線才在 ws 裡爆。刻意只動 `vehicle_field.rs` 的 `#[cfg(test)]`
+    測試碼(field 級接縫所在、同時握有 nearest+step_ridden),零共用檔編輯、不碰 ws/game/main.rs,執行
+    期程式與廣播 shape 全未動。加 2 個組合測試(單人:走近→上車→只開動那台→下車車留新位置仍找得到;
+    兩人爭同台:同位置給同序號、先到先得、被擋下者無車可開、讓出後第二人上得了同台),`cargo test`
+    308 綠(306→308)、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。
 
 - [ ] **Phase 1-F:戰鬥 MVP(自動打怪)** —— 對齊 PLAN.md 當前主攻 slice 3
   世界出現可打的目標,角色能**自動攻擊**附近敵人、掉落物進背包。先做最薄一條:有敵人、
