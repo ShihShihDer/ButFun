@@ -143,6 +143,12 @@
     try { localStorage.setItem("butfun.gatheredOnce", "1"); } catch {}
   }
 
+  // 上一拍「最近可採節點」的穩定鍵（kind@x,y）。看得到的玩家走進可採範圍會看到黃環+「採X」+
+  // 「按空白鍵或點一下」;報讀器玩家原本毫無回饋,只能到處亂按鍵碰運氣。用來在「走進新可採節點
+  // 範圍」那拍播一句給報讀器,延續採空/採到/連線/日夜的無障礙弧線。離開再進來(鍵變了)才重播,
+  // 同顆站著不重複擾人。純讀快照、不在前端判規則(判定半徑 GATHER_REACH 與伺服器一致)。
+  let lastReachableKey = null;
+
   // ---- 畫布尺寸 ----
   // viewW/viewH 是「邏輯像素」的視窗尺寸,所有繪製碼一律用這兩個值(鏡頭置中、視野
   // 裁切、小地圖定位…),不直接讀 canvas.width/height——那是放大後的實體像素緩衝。
@@ -957,6 +963,7 @@
     drawGround(camX, camY);
     drawField(camX, camY);
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
+    maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
     // 與角色仍蓋在最上層,不被別人的 sprite／名字遮住,「一眼找到自己」才真的成立。
@@ -1373,6 +1380,17 @@
       }
       ctx.restore();
     }
+  }
+
+  // 走進「最近可採節點」範圍時,播一句給報讀器玩家——他們看不到黃環/動作詞/「按鍵採集」那組
+  // 視覺提示,沒這句就只能到處亂按鍵才知道哪裡採得到。鍵(kind@x,y)變了才播:離開再進來會重播、
+  // 同顆站著不重複擾人。和視覺一樣讀 nearestHarvestable(GATHER_REACH 內最近可採),不嵌規則。
+  function maybeAnnounceReachable(me) {
+    const n = nearestHarvestable(me);
+    const key = n ? `${n.kind}@${n.x},${n.y}` : null;
+    if (key === lastReachableKey) return;
+    lastReachableKey = key;
+    if (n) announce(`走到${NODE_NAME[n.kind] || "資源"}旁,可採——按空白鍵或點一下採集`);
   }
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
