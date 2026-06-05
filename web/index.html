@@ -2,7 +2,37 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- 不鎖縮放(移除 maximum-scale / user-scalable=no):弱視玩家要能雙指放大讀 HUD／說明／
+       聊天／建議文字(WCAG 1.4.4)。遊戲操作不受影響——canvas 自己對 touch 事件 preventDefault,
+       搖桿拖曳照舊;放大手勢只作用在 HTML 面板上。 -->
+  <!-- viewport-fit=cover:讓 canvas 鋪滿到瀏海/圓角/底部手勢條底下(沉浸式全螢幕),
+       再用下方各 HUD 的 env(safe-area-inset-*) 把固定面板推離被切到的邊,兩者搭配缺一不可。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <!-- 手機/桌面瀏覽器外殼適配(自適應 UI 的最後一塊):
+       theme-color 讓行動瀏覽器的網址列/狀態列底色貼齊遊戲深色背景,不再夾一條突兀的
+       淺色帶,進場即沉浸。color-scheme=dark 告訴瀏覽器本頁是暗色,讓原生 <select> 下拉
+       選單與 #chatLog 捲軸自動走深色,跟整個 HUD 一致(過去在淺色系統上會冒白底白軸)。 -->
+  <meta name="theme-color" content="#0b0d12" />
+  <meta name="color-scheme" content="dark" />
+  <!-- 社群分享預覽(外殼適配的下一塊):這個「瀏覽器即玩」的世界靠玩家把連結貼進聊天／
+       社群擴散,但過去頁面沒有任何 description / Open Graph,貼出去只剩一條冷冰冰的網址、
+       不會展開成帶標題與介紹的卡片。補上 meta description 與 OG／Twitter card,讓連結在
+       Slack／Discord／iMessage／社群平台上自動展開成「ButFun — 邊境星拓荒 + 一句世界觀」。
+       刻意不放 og:image／og:url:正式網域由使用者自配(見 docs/DEPLOY_CLOUDFLARE_TUNNEL.md)、
+       這裡寫死會指向錯網址或破圖;純文字卡片在各平台仍會顯示標題與描述。純靜態 meta,
+       不碰任何遊戲規則。 -->
+  <meta name="description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。「大靜默」之後乙太緩緩回流——回到邊境星,在廢墟上重建家園、種田、和其他拓荒者相遇。" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ButFun" />
+  <meta property="og:locale" content="zh_TW" />
+  <meta property="og:title" content="ButFun — 邊境星拓荒" />
+  <meta property="og:description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。「大靜默」之後乙太緩緩回流——回到邊境星,在廢墟上重建家園、種田、和其他拓荒者相遇。" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="ButFun — 邊境星拓荒" />
+  <meta name="twitter:description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。在邊境星重建家園、種田、和其他拓荒者相遇。" />
+  <!-- 內嵌 SVG favicon(零額外素材檔):深底黃銅環的小行星——對齊蒸汽龐克太空歌劇主題與
+       黃銅品牌色,讓分頁有識別圖示,同時消掉瀏覽器對 /favicon.ico 的 404 請求。 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d12'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23c9a24b' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23c9a24b'/%3E%3C/svg%3E" />
   <title>ButFun — 邊境星拓荒</title>
   <style>
     :root { --ink: #e8e0cf; --brass: #c9a24b; --panel: rgba(20, 24, 30, 0.85); }
@@ -14,7 +44,13 @@
     /* 進場畫面 */
     #login {
       position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 16px;
+      align-items: center; justify-content: safe center; gap: 16px;
+      /* 短螢幕(手機橫式)上元素疊起來會超過視窗高:body 是 overflow:hidden,純
+         justify-content:center 會把頂/底裁掉、進場按鈕點不到。safe center 在會溢出時
+         自動退回頂端對齊,再加自身捲動 + 留白,確保所有控制項都搆得到。 */
+      overflow-y: auto;
+      padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+               calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
       background: radial-gradient(circle at 50% 30%, #1a2230, #0b0d12 70%); z-index: 10;
     }
     #login h1 { color: var(--brass); margin: 0; font-size: 2rem; letter-spacing: 2px; }
@@ -34,24 +70,93 @@
     }
     #login .primary-link:hover { filter: brightness(0.96); }
     #login .or-sep { opacity: 0.5; font-size: 0.85rem; margin: 8px 0 4px; }
+    /* Google 登入下方的隱私小提示:玩家擔心 Google 登入會公開真名(玩家建議),
+       這裡明說系統只配遊戲代號、不公開真名,讓會在意隱私的人敢按登入。 */
+    #login .login-note {
+      opacity: 0.6; font-size: 0.8rem; margin: -8px 0 0; max-width: 320px;
+      text-align: center; line-height: 1.5;
+    }
+    /* 訪客名字輸入下方的小提示:玩家問「能不能改名/名字會不會公開」(玩家建議),
+       這裡明說這個名字是公開顯示給其他玩家看的、可自己改或重骰,消除疑慮。 */
+    #login .guest-note {
+      opacity: 0.55; font-size: 0.75rem; margin: 2px 0 0; max-width: 320px;
+      text-align: center; line-height: 1.5;
+    }
 
     /* HUD */
-    #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
-      background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5; }
+    /* 上限寬度:操作說明是長句,沒有上限時在寬螢幕會橫向拉滿一整行、難讀,在中寬螢幕更會
+       往右延伸逼近右上角的建議鈕。約束成一個可讀窄欄(手機上 78vw 仍給右上鈕留白),
+       長句自然換行而非溢出。overflow-wrap 確保超長 token(如網址)也不會撐破面板。 */
+    /* 邊距用 env(safe-area-inset-*) 疊加:一般螢幕 inset 為 0、維持 12px;notched 手機
+       橫式時自動讓開瀏海/圓角,固定面板不被切到。沒有 cover 時 inset 恆為 0,無副作用。 */
+    #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; font-size: 0.85rem;
+      background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
+      max-width: min(340px, 78vw); overflow-wrap: break-word; }
     #hud .brass { color: var(--brass); }
+    /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
+    #hudFarm { color: #7fbfff; }
+    /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
+    #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
+    #helpToggle:hover { opacity: 0.85; }
+    /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作收合的玩家看得到焦點落在哪。
+       focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
+    #helpToggle:focus-visible, #chatToggle:focus-visible {
+      outline: 2px solid var(--brass); outline-offset: 2px; opacity: 1;
+    }
+    /* 同一套黃銅焦點框延伸到所有自訂深色互動控件:進場按鈕／Google 連結／訪客欄位／
+       種族下拉、💡 建議鈕、聊天輸入、建議箱欄位與按鈕。這些控件都覆寫了背景與邊框,
+       瀏覽器預設的 focus ring 在深色主題上常被吃掉、低對比,只用鍵盤(Tab)的玩家看不清
+       焦點落在哪。focus-visible 只在鍵盤導航時亮,滑鼠點擊不會多冒框——延續收合鈕的
+       焦點可見弧線,讓整個鍵盤動線一致。 */
+    #login input:focus-visible, #login select:focus-visible, #login button:focus-visible,
+    #login .primary-link:focus-visible, #suggestBtn button:focus-visible, #chatText:focus-visible,
+    .modal input:focus-visible, .modal textarea:focus-visible, .modal button:focus-visible {
+      outline: 2px solid var(--brass); outline-offset: 2px;
+    }
+    #helpCaret { display: inline-block; transition: transform 0.15s; }
+    #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
+    #hud.help-collapsed #helpBody { display: none; }
+    #helpBody > div { opacity: 0.6; }
 
     /* 聊天 */
-    #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5; }
+    #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
+      /* 軟鍵盤彈起時整塊抬到鍵盤之上(見 game.js initChatKeyboardLift),平滑移動不跳。 */
+      transition: transform 0.18s ease; }
+    /* 收合面板位移與兩顆箭頭旋轉都屬「純裝飾、不傳遞資訊」的動態(收合狀態由 display:none
+       + aria-expanded 傳達,不靠箭頭轉)。比照連線橫幅脈動/遊戲內踏步微光,在系統「減少動態」
+       偏好下一併關掉——前庭敏感的玩家收/展面板時不再有旋轉動效,狀態切換照舊即時生效。 */
+    @media (prefers-reduced-motion: reduce) {
+      #chat, #helpCaret, #chatCaret { transition: none; }
+    }
+    /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
+       手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
+       收起時仍保留輸入列可發言;有新訊息進來會在標題列冒未讀數,收著也不漏訊息。
+       預設不收(維持既有行為),只在玩家自己收過才記住。初次有訊息才顯示這條標題列。 */
+    #chatToggle { display: none; background: var(--panel); border-radius: 8px;
+      padding: 4px 10px; margin-bottom: 6px; font-size: 0.8rem; cursor: pointer;
+      user-select: none; opacity: 0.7; }
+    #chatToggle:hover { opacity: 1; }
+    #chatCaret { display: inline-block; transition: transform 0.15s; }
+    #chat.chat-collapsed #chatCaret { transform: rotate(-90deg); }
+    #chat.chat-collapsed #chatLog { display: none !important; }
+    #chatUnread { color: var(--brass); font-weight: 700; margin-left: 4px; }
     #chatLog { max-height: 30vh; overflow-y: auto; background: var(--panel); border-radius: 8px;
       padding: 8px 10px; margin-bottom: 6px; font-size: 0.85rem; line-height: 1.5; display: none; }
     #chatLog .who { color: var(--brass); font-weight: 600; }
+    #chatLog .sys { opacity: 0.6; font-style: italic; }
+    #chatLog .sys .who { color: #8fa0b8; font-weight: 400; }
     #chatForm { display: flex; gap: 6px; }
     #chatText { flex: 1; }
 
     /* 建議箱按鈕 + modal */
-    #suggestBtn { position: fixed; right: 12px; top: 12px; z-index: 5; cursor: pointer; }
+    #suggestBtn { position: fixed; right: calc(12px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; cursor: pointer; }
     .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 20;
-      display: none; align-items: center; justify-content: center; }
+      display: none; align-items: safe center; justify-content: center;
+      /* 同 #login:短螢幕上 modal 比視窗高時垂直會被裁掉。modal-bg 是 row flex,垂直置中
+         由 align-items 管,故這裡用 align-items: safe center + 捲動 + 留白讓送出鈕搆得到。 */
+      overflow-y: auto;
+      padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+               calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
     .modal { background: #11151c; border: 1px solid #3a4250; border-radius: 12px;
       padding: 20px; width: min(420px, 90vw); display: flex; flex-direction: column; gap: 10px; }
     .modal h2 { margin: 0; color: var(--brass); font-size: 1.2rem; }
@@ -60,52 +165,130 @@
     .modal .row { display: flex; gap: 8px; justify-content: flex-end; }
     .modal button { cursor: pointer; }
     #suggestStatus { font-size: 0.85rem; min-height: 1.2em; }
+
+    /* 連線狀態橫幅:斷線自動重連期間持續顯示,接回就消失。手機網路一抖／切背景
+       回來時給玩家持續的回饋(不只聊天裡閃過一行),讓他知道「正在重連、別急著
+       重整頁面」。純客戶端韌性 UI,不碰任何遊戲規則。 */
+    #connStatus {
+      position: fixed; top: calc(12px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+      z-index: 8; font-size: 0.85rem; padding: 7px 14px; border-radius: 999px;
+      background: rgba(60, 30, 10, 0.92); color: var(--brass);
+      border: 1px solid var(--brass); box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+      animation: connpulse 1.4s ease-in-out infinite; pointer-events: none;
+    }
+    @keyframes connpulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+    /* 尊重系統「減少動態」偏好:前庭敏感的玩家關掉脈動閃爍,橫幅仍在、只是不閃。 */
+    @media (prefers-reduced-motion: reduce) {
+      #connStatus { animation: none; opacity: 1; }
+    }
+    /* 沒有 JavaScript 時的告示:整個遊戲(canvas 世界、進場、農作)都靠 JS,關掉 JS
+       的玩家(隱私瀏覽器/擋腳本的擴充/受限網路)只會看到登入畫面、按「以訪客進場」毫無
+       反應卻不知為何。這層全屏告示蓋過登入畫面,明說需要開 JavaScript——只有在 JS 沒跑
+       時才會被瀏覽器渲染出來(有 JS 的玩家完全看不到)。純靜態降級告示,不碰任何遊戲規則。 */
+    #noscript {
+      position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px; padding: 24px;
+      text-align: center; background: radial-gradient(circle at 50% 30%, #1a2230, #0b0d12 70%);
+    }
+    #noscript h1 { color: var(--brass); margin: 0; font-size: 2rem; letter-spacing: 2px; }
+    #noscript p { margin: 0; max-width: 340px; line-height: 1.7; opacity: 0.85; }
     .hidden { display: none !important; }
+    /* 螢幕報讀器專用:視覺上完全隱藏,但仍被報讀器朗讀。給「只有畫面才看得到」的
+       狀態(如重連橫幅)一條無障礙的播報管道。 */
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
 
+  <noscript>
+    <div id="noscript">
+      <h1>ButFun</h1>
+      <p>這個邊境星世界需要瀏覽器的 JavaScript 才能進場。請開啟 JavaScript(或關掉擋腳本的擴充)後重新整理頁面。</p>
+    </div>
+  </noscript>
+
   <div id="login">
     <h1>ButFun</h1>
     <p>「大靜默」之後，乙太緩緩回流。你回到這顆邊境星，準備在廢墟上重建家園。</p>
     <a id="googleBtn" href="/auth/google/start" class="primary-link">以 Google 登入</a>
+    <div class="login-note">🔒 不會公開你的 Google 真名——系統只給你一個遊戲代號。</div>
     <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
-    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" />
-    <select id="speciesInput">
+    <!-- placeholder 不是無障礙標籤(報讀器逐欄位巡覽時唸不到、輸入後也消失),
+         每個欄位補一條 aria-label,讓只用報讀器的玩家也知道這格在填什麼。 -->
+    <!-- enterkeyhint=go:手機軟鍵盤的 Enter 鍵顯示「前往」而非通用換行——名字欄按 Enter
+         會直接進場(見 game.js nameInput keydown→joinBtn.click),讓鍵帽語意對得上動作。 -->
+    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" enterkeyhint="go" aria-label="你的名字（訪客代號）" />
+    <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
+    <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
+    <select id="speciesInput" aria-label="選擇種族">
       <option value="terran">地球人（索爾人）— 繼承農莊</option>
       <option value="shilaya" disabled>施拉雅人（商會飛船）— 即將開放</option>
       <option value="busi" disabled>布司人（礦星齒輪）— 即將開放</option>
       <option value="lumen" disabled>燐光族（乙太霧星）— 即將開放</option>
     </select>
     <button id="joinBtn">以訪客進場</button>
+    <!-- 進場連線回饋:按下進場到收到 welcome 之間,登入畫面原本毫無動靜——伺服器慢或
+         連不上時(手機網路一抖很常見)按鈕看起來像壞了,玩家會狂點、疊出多條連線。
+         這條 aria-live 狀態列在連線中／重試中顯示文字,讓視覺與報讀器玩家都知道「正在連、
+         別急著重按」。延續重連橫幅 / srStatus 的韌性回饋弧線。 -->
+    <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
   </div>
 
   <div id="hud" class="hidden">
     <div><span class="brass">ButFun</span> · 邊境星地表</div>
+    <div id="hudName" class="hidden">你：—</div>
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
     <div id="hudTime">—</div>
-    <div style="opacity:.6">WASD / 方向鍵 · 手機任處長按拖曳 · Enter 聊天</div>
-    <div style="opacity:.6">走到田邊,<b>滑鼠點 / 手機輕點</b>格子:翻土 → 播種 → 澆水 → 收成</div>
+    <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
+         不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
+    <div id="hudFarm" class="hidden"></div>
+    <div id="helpToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpBody">操作說明 <span id="helpCaret">▾</span></div>
+    <div id="helpBody">
+      <div>WASD / 方向鍵 / 手把 · 手機任處長按拖曳 · Enter 聊天（Esc 退出）· M 收合地圖</div>
+      <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E / 手把臉鈕</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
+    </div>
   </div>
 
-  <div id="suggestBtn" class="hidden"><button>💡 給點建議</button></div>
+  <!-- aria-haspopup=dialog:報讀器先告知這顆鈕會開一個對話框,玩家按之前就有預期。 -->
+  <div id="suggestBtn" class="hidden"><button aria-haspopup="dialog">💡 給點建議</button></div>
+
+  <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
+
+  <!-- 螢幕報讀器即時播報區:上方重連橫幅是純視覺(脈動色塊),看不到畫面的玩家斷線時
+       毫無回饋。這條視覺隱藏的 aria-live 區只在斷線／接回等重要切換時更新文字,讓報讀器
+       即時報出連線狀況。polite=等當前朗讀的空檔再播,不打斷玩家正在聽的內容。 -->
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
 
   <div id="chat" class="hidden">
-    <div id="chatLog"></div>
+    <div id="chatToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="chatLog">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
+    <!-- role=log + aria-live=polite:聊天訊息與玩家進出場提示（「X 來到了邊境星」）原本只更新到
+         這個視覺聊天框,報讀器玩家在多人世界裡聽不到任何社交事件。宣告成標準 log live region,
+         新進的每一行都被即時朗讀（polite=等朗讀空檔再播,不打斷玩家正在聽的內容）。
+         aria-relevant=additions:只播「新加的行」,堆滿上限後移除舊行（addChat 的 removeChild）
+         不會被當成更動再唸一次。延續 #srStatus（連線狀態）的無障礙弧線,補上聊天這條社交管道。 -->
+    <div id="chatLog" role="log" aria-live="polite" aria-relevant="additions"></div>
     <form id="chatForm" autocomplete="off">
-      <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" />
+      <!-- enterkeyhint=send:手機軟鍵盤的 Enter 鍵顯示「傳送」而非通用換行——聊天框在 form
+         內按 Enter 即送出(見 game.js chatForm submit),讓鍵帽語意對得上動作。 -->
+    <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" enterkeyhint="send" aria-label="聊天輸入（Enter 送出）" />
     </form>
   </div>
 
   <div id="suggestModal" class="modal-bg">
-    <div class="modal">
-      <h2>給點建議</h2>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="suggestTitle">
+      <h2 id="suggestTitle">給點建議</h2>
       <p>你希望這個世界長成什麼樣子？我會收到，然後改版。</p>
-      <input id="suggestFrom" maxlength="24" placeholder="你的稱呼（可留空）" />
-      <textarea id="suggestText" maxlength="1000" placeholder="想加什麼、哪裡卡卡的、什麼好玩…"></textarea>
-      <div id="suggestStatus"></div>
+      <input id="suggestFrom" maxlength="24" placeholder="你的稱呼（可留空）" aria-label="你的稱呼（可留空）" />
+      <textarea id="suggestText" maxlength="1000" placeholder="想加什麼、哪裡卡卡的、什麼好玩…" aria-label="建議內容"></textarea>
+      <!-- 送出狀態('送出中…／收到了／送出失敗')原是純視覺更新,只用報讀器的玩家
+           送完建議聽不到任何回饋。比照重連橫幅的 srStatus 補 role=status + aria-live,
+           狀態字一變就被即時朗讀;polite 等朗讀空檔再播,不打斷玩家正在聽的內容。 -->
+      <div id="suggestStatus" role="status" aria-live="polite"></div>
       <div class="row">
         <button id="suggestCancel">取消</button>
         <button id="suggestSend" class="primary">送出建議</button>
@@ -113,6 +296,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605k"></script>
+  <script src="game.js?v=20260605-per-player-plots"></script>
 </body>
 </html>

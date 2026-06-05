@@ -128,13 +128,21 @@
 
 ## 進行中 / 下一步（由上往下）
 
-- [ ] **Phase 0-E：Postgres 持久化**
-  把玩家位置（之後含背包 / 農地）存進 Postgres，伺服器重啟後玩家回到原位。
-  - 加入 `sqlx`（Postgres、非同步），`DATABASE_URL` 走環境變數。
-  - 在 `state.rs` 抽換點後面接一個 `PgStore`；無 `DATABASE_URL` 時退回現有記憶體模式，方便本機跑。
-  - 加 migration 建 `players` 表（id, name, species, x, y, updated_at）。
-  - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
-  - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
+- [ ] **Phase 0-E：串接 PostgreSQL 持久化（backend lane 最高優先,使用者明確要求）**
+  > 現況:位置+乙太已用 `PositionStore` 寫穿到 `data/positions.jsonl`(commit 8a18a84),
+  > 重啟不掉了。**這份 JSONL 版正好是 Postgres 版的模板與 fallback。** DB 已就緒
+  > (PostgreSQL 17、`butfun` 庫、`DATABASE_URL` 在 `.env`/EnvironmentFile)。
+  做法(沿用既有抽象、最小擾動):
+  - `cargo add sqlx`(features: runtime-tokio, postgres, uuid),加 `migrations/`(用 `sqlx::migrate!`)。
+  - 建表 `player_state(id uuid pk, x real, y real, ether int, updated_at timestamptz)`。
+  - 擴 `PositionStore`:多一個 `Option<PgPool>` 後端。**保持 recall/remember 同步介面不變**
+    (避免動 ws.rs/game.rs):做法是「記憶體 cache + 背景非同步刷 PG」——
+    - 啟動時若有 pool → `SELECT` 全表載入 cache(沿用 `spawn_at` 驗座標);無 pool → 維持 JSONL/記憶體。
+    - 遊戲迴圈那個每 10s 的 flush:有 pool → `INSERT … ON CONFLICT DO UPDATE` upsert cache;無 pool → 維持寫 JSONL。
+  - `main.rs` 啟動時依 `DATABASE_URL` 建 `PgPool`(失敗就 log + 退回 JSONL,別讓伺服器起不來)。
+  - 驗收:設好 `DATABASE_URL` 跑、移動+收乙太→重啟伺服器→重連位置與乙太仍在;
+    `psql -d butfun -c 'select * from player_state'` 看得到;無 `DATABASE_URL` 時仍走 JSONL、`cargo test` 全綠。
+  - 之後同法把 users/suggestions/field/daynight 也接 PG(一次一個,別一個巨大 PR)。
   - ♻️ 撤回外洩進 main 的 0-E 地基(2026-06-05):一個純前端「田地可見」熱修 commit(7460edd)
     意外把 0-E 的 sqlx 依賴(+Cargo.lock 741 行)、`migrations/0001_players_positions.sql`、
     `positions.rs` 一行 unused `use sqlx::Row;`、以及一段謊稱「設了 `DATABASE_URL` 走 Postgres
@@ -367,6 +375,18 @@
     (protocol `fields[].owner` 契約、`cell_at` 對別塊座標回 None 的歸屬保證),`cargo test` 142 綠、
     clippy 乾淨、伺服器二進位啟動正常。**待人決定**:訪客是否給臨時地(本 PR 取保守的「訪客唯讀、
     登入才有地」避免序號無界成長);跨重啟持久化(把 `plots` 表也存進 Postgres)接 0-E。
+  - ✅ 前置(地塊登記的載入路徑驗證,2026-06-05):`PlotRegistry`(0-E 會把 user_id→序號表存進
+    Postgres)是 per-player 諸 store 裡唯一還沒有**載入入口**的——其餘存檔又重載結構都已先補上
+    載入時的不變式驗證(`positions::spawn_at`/`field::from_tiles`/`daynight::at`+`Deserialize`/
+    `suggestions`/`users::parse_and_sanitize`)。新增 `PlotRegistry::from_saved((user_id,序號) 對)`
+    重建登記表,**關鍵不變式:`next` 一律重建成「已用最大序號 + 1」**。若天真載入把 `next` 設回 0,
+    重啟後 `assign` 會把序號 0(或任何已發出的序號)再發給新玩家,造成「同一塊地兩個地主、作物歸屬
+    錯亂」——正是本模組「序號只增不減、不回收」白紙黑字要防的災難。重複 user_id 取後見者、空輸入＝全新
+    登記表(第一個玩家仍拿序號 0 對齊現有全域農地)。純邏輯、無 IO、標 `allow(dead_code)` 待 0-E 從
+    Postgres 載回才有呼叫端,**行為不變**(不動 PR #12 接線範圍的 field/game/protocol/state/ws),故直接
+    進 main。加 3 個測試(空輸入如新、載回保留地主、稀疏跳號續發＝最大+1 不撞既有地主),`cargo test`
+    144 綠、clippy 乾淨、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:0-E 真正把這張表
+    存讀 Postgres(架構級,留待 0-E)。
 
 - [ ] **Phase 0-G-O2:地圖擴張 + 用乙太購買土地**
   家園區可隨玩家數往外長;玩家用收成的乙太**購買**擴充地塊(乙太的消耗去處,接上經濟)。
@@ -413,11 +433,55 @@
   節點空了會在固定時間後重生。
   - 驗收:看得到節點、按一下採到、伺服器 log 顯示「採到 X」、可重複採直到節點空、
     重生計時運作;`cargo test` 涵蓋採集純邏輯(扣耐久、回滿、節點上限)。
+  - ✅ 前置(採集節點純邏輯地基,2026-06-05):Phase 1 第一個垂直切片開工——新增
+    `src/gather.rs` `ResourceNode`(`NodeKind` 樹/石/乙太礦,各帶 `max_durability`/
+    `yield_per_gather`/`respawn_secs` 調校常數)。狀態只有「剩餘耐久」+「重生倒數」兩欄,
+    可採/採空皆由耐久推導(單一真實來源,比照 `Crop` 以 `growth`/`moisture` 推導階段)。
+    `gather()` 還有耐久就扣 1 並回產出、扣到 0 啟動重生倒數、採空回 `None`(比照
+    `Crop::harvest`);`tick(dt)` 只對採空節點倒數、到點補滿耐久再次可採(擋非正 dt)。
+    延續本專案「純邏輯可測、無 IO、不碰 ws/遊戲迴圈、標 `allow(dead_code)` 待接線」的前置慣例,
+    並沿用載入防線:`is_loadable`(耐久不超上限、重生倒數有限非負,`remaining` 為 `u32` 型別本身
+    擋掉 NaN/負值)供接 0-E 載入時驗證,`NodeKind`/`ResourceNode` 衍生 serde 為持久化格式地基。
+    加 10 個單元測試(滿耐久可採、採空進重生、採空再採無效、倒數重生、`tick` 對可採節點 no-op、
+    非正 dt no-op、整圈採→空→重生→再採、載入防線收壞值、serde round-trip),`cargo test` 154 綠、
+    `cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線
+    (世界撒佈節點+ws 走近按鍵採集進背包+遊戲迴圈每 tick 推進重生+前端畫節點/採集回饋)屬動 live
+    廣播 shape 的架構級接線,留待後續輪/PR;背包持久化接 Phase 1-B / 0-E。
+  - ✅ 前置之二(節點的世界佈置與採集互動純邏輯,2026-06-05):`gather.rs` 解了「單一節點怎麼被採」,
+    接線還缺另一半「節點擺世界哪裡、玩家走近採到哪一個」——比照 `plots.rs` 之於 `field.rs`。新增
+    `src/gather_field.rs` `NodeField`(一組散佈的 `PlacedNode`=座標+`ResourceNode`):`new()` 用確定性
+    雜湊(splitmix64 風格、不靠亂數/時鐘)把節點散在世界中央家園淨空圈外的一圈曠野,座標由序號推導故
+    重啟後落在同一處;`tick(dt)` 一次推進全部節點重生;`gather_near(x,y)` 在 `GATHER_REACH` 內挑**最近**
+    且仍可採的節點採一下、回 `(種類,產出)`(範圍內無可採回 `None`,權威由伺服器判定、客戶端只送意圖)。
+    佈置刻意「環繞家園的曠野」:中央留空給 `plots.rs` 往外排的地塊與出生點,出門採集 vs 居家種田兩種
+    節奏。沿用載入防線:`gather_near` 擋非有限座標(比照 `cell_at`)、`from_saved` 比照 `field::from_tiles`
+    驗節點數/種類對齊序號/逐個 `is_loadable`,壞檔整組拒收讓呼叫端退回全新一組;接 0-E 時佈置座標由序號
+    重建、只存讀會變的耐久/重生狀態。延續「純函式、無 IO、不碰 ws/遊戲迴圈/廣播 shape、標 `allow(dead_code)`
+    待接線」的前置慣例。加 11 個單元測試(滿員可採、佈置確定性、避開中央淨空且在世界內、三種齊全、
+    最近節點採集扣耐久、界外/非有限座標回 None、採空被跳過再 tick 重生、from_saved round-trip、拒錯誤
+    節點數、拒種類不符/壞值),`cargo test` 165 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常
+    (埠被正式服務占用屬預期)。**仍待**:接線(AppState 持有 `NodeField`+遊戲迴圈 tick+ws 採集進背包
+    +快照廣播+前端畫節點/採集回饋)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
 
 - [ ] **Phase 1-B：背包系統 + 持久化**
   伺服器端 player.inventory(item_id → count),客戶端按 I 開背包面板顯示。
   接 0-E 持久化。
   - 驗收:採集→開背包看到資源→重連/重啟仍在;`cargo test` 涵蓋背包增減上限。
+  - ✅ 前置(背包容器純邏輯地基,2026-06-05):採集(1-A)的產出要有地方放——新增
+    `src/inventory.rs` `Inventory`(`ItemKind`→數量,內部 `BTreeMap` 故序列化/顯示順序
+    確定)。`add(item,qty)` 夾 `MAX_STACK` 上限並回實際加入量(背包滿了採不進的手感日後接得上);
+    `take(item,qty)` **夠才扣、不夠回 false 完全不動**(合成「材料不足不給合」要的全有全無語意,
+    1-C 會用);`has`/`count`/`entries`(供前端面板)。不變式「只存數量 > 0 條目」——歸零即移除,
+    「有沒有某物」永遠等同「key 在不在」、序列化不留 0 垃圾。把資源抽成 `ItemKind` enum
+    (非散落字串 id):採集 `NodeKind` 直接 `From`/`.into()` 對應物品(`Tree`→`Wood`/`Rock`→
+    `Stone`/`EtherOre`→`Ether`),型別擋掉拼錯 id,日後工具/合成產物只加變體、容器不動。
+    沿用載入防線:`is_loadable`(無 0 條目、不超上限,`u32` 型別本身擋 NaN/負值)供接 0-E 載入時驗證,
+    衍生 serde 為持久化格式地基。延續本專案「純邏輯可測、無 IO、不碰 ws/遊戲迴圈、標
+    `allow(dead_code)` 待接線」的前置慣例。加 14 個單元測試(累加/夾上限/回實際量、扣料全有全無、
+    歸零移除、`has`/`count`、`NodeKind`→`ItemKind` 映射、採集產出灌進背包、`entries` 排序非零、
+    載入防線收壞值、serde round-trip),`cargo test` 179 綠、`cargo build`/clippy 無警告、伺服器
+    二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(ws 採集→`add` 進背包+快照廣播該玩家
+    背包+前端按 I 開面板)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR;持久化接 0-E。
 
 - [ ] **Phase 1-C:合成台 + 第一份配方**
   玩家可在地盤蓋一個「合成台」實體;互動開菜單,有材料就能做出產物。

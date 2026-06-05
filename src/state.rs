@@ -127,7 +127,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// 無 DB 模式（測試、本機 `cargo run`）：位置走 JSONL 退回層（見 `PositionStore::new`）。
     pub fn new() -> Self {
+        Self::with_positions(PositionStore::new())
+    }
+
+    /// 用已備好的位置 store 建狀態。`main` 連好 Postgres 後會傳入 DB-backed 的 store
+    /// （見 `PositionStore::from_pool`）,其餘狀態不變。
+    pub fn with_positions(positions: PositionStore) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
         let (tx_chat, _rx_chat) = broadcast::channel(256);
@@ -140,7 +147,7 @@ impl AppState {
             tx_chat,
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
-            positions: PositionStore::new(),
+            positions,
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
         }
