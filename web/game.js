@@ -1063,6 +1063,26 @@
       }
     }
 
+    // 腳下格指示:玩家站在某個田格上時,在那一格描一圈低調的虛線框,讓用「空白鍵 / E
+    // 採腳下格」的鍵盤/觸控玩家也看得到「按下去會作用在這格」——桌面靠上方的滑鼠 hover
+    // 亮框,這條補上沒有滑鼠時同等的目標回饋,跟 HUD 教的腳下格操作對上。用虛線 + 較低
+    // 透明度跟滑鼠 hover 的實線亮框區分開。純從自己的位置推得(做什麼仍由權威伺服器決定,
+    // 不嵌任何遊戲規則),只在能照顧(夠近)且確實踩在田格上時畫;手機/鍵盤都受益。
+    if (reachable && me) {
+      const fcol = Math.floor((me.x - field.origin_x) / ts);
+      const frow = Math.floor((me.y - field.origin_y) / ts);
+      if (fcol >= 0 && frow >= 0 && fcol < field.cols && frow < field.rows) {
+        const ex = field.origin_x + fcol * ts - camX;
+        const ey = field.origin_y + frow * ts - camY;
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,210,74,0.55)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]); // 虛線:跟滑鼠 hover 的實線亮框一眼分得開
+        ctx.strokeRect(ex + 2, ey + 2, ts - 4, ts - 4);
+        ctx.restore(); // 還原 lineDash,免得漏進後面黃銅框/柵欄的實線繪製
+      }
+    }
+
     // 周圍畫一圈黃銅色邊框(對齊世界邊界的設計語彙),從遠處也看得到
     // 「那邊有一塊我的地」。
     ctx.strokeStyle = "#c9a24b";
