@@ -44,8 +44,9 @@
   const players = new Map();
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
-  // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
-  let field = null;
+  // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
+  // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
+  let fields = [];
   let myEther = 0;
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
@@ -111,8 +112,8 @@
           if (!seen.has(id)) players.delete(id);
         }
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
-        // 農地狀態 + 我的乙太 + 日夜
-        field = msg.field;
+        // 各玩家農地狀態（per-player）+ 我的乙太 + 日夜
+        fields = msg.fields || [];
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         const me = msg.players.find((p) => p.id === myId);
@@ -359,13 +360,13 @@
     ctx.fillStyle = "rgba(10,16,30,0.55)";
     ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM.pad * 2);
 
-    // 農地位置（黃銅外框前先畫，免得被框線蓋住）。
-    if (field) {
-      const fx = ox + clampUnit(field.origin_x, w) * scale;
-      const fy = oy + clampUnit(field.origin_y, h) * scale;
-      const fw = field.cols * field.tile_size * scale;
-      const fh = field.rows * field.tile_size * scale;
-      ctx.fillStyle = "rgba(123,80,40,0.95)";
+    // 各玩家農地位置（黃銅外框前先畫，免得被框線蓋住）。自己那塊畫亮、別人的暗。
+    for (const f of fields) {
+      const fx = ox + clampUnit(f.origin_x, w) * scale;
+      const fy = oy + clampUnit(f.origin_y, h) * scale;
+      const fw = f.cols * f.tile_size * scale;
+      const fh = f.rows * f.tile_size * scale;
+      ctx.fillStyle = f.owner === myId ? "rgba(201,162,75,0.95)" : "rgba(123,80,40,0.85)";
       ctx.fillRect(fx, fy, Math.max(3, fw), Math.max(3, fh));
     }
 
@@ -431,7 +432,10 @@
   // 把「繼承的工坊農莊」氛圍擺出來:工坊與墜毀飛船放在農地附近(固定世界座標)。
   // 飛船就是 GDD 的星際北極星勾子(玩家看得到、知道未來能飛出去)。
   function drawDecorations(camX, camY) {
-    if (!field) return;
+    // 工坊／飛船是「你繼承的工坊農莊」氛圍，擺在自己那塊地附近。沒有自己的地
+    // （訪客 / 尚未分到）就不擺。
+    const f = myField();
+    if (!f) return;
     const place = (img, wx, wy) => {
       if (!img || !img.complete || !img.naturalWidth) return;
       const dw = img.naturalWidth, dh = img.naturalHeight;
@@ -440,11 +444,11 @@
       if (dx + dw < 0 || dy + dh < 0 || dx > canvas.width || dy > canvas.height) return;
       ctx.drawImage(img, dx, dy);
     };
-    const fx = field.origin_x, fy = field.origin_y;
+    const fx = f.origin_x, fy = f.origin_y;
     place(ART.workshop, fx - 70, fy + 10);             // 工坊在田地左邊
-    place(ART.ship, fx + field.cols * field.tile_size + 80, fy + 40); // 飛船在田地右邊
+    place(ART.ship, fx + f.cols * f.tile_size + 80, fy + 40); // 飛船在田地右邊
     place(ART.tree, fx - 30, fy - 40);
-    place(ART.rock, fx + field.cols * field.tile_size + 20, fy - 20);
+    place(ART.rock, fx + f.cols * f.tile_size + 20, fy - 20);
   }
 
   // 32-bit 整數雜湊:給定世界格座標,回傳穩定的 [0,1) 偽亂數。
@@ -482,70 +486,83 @@
     }
   }
 
-  // ---- 農地（Phase 0-G 種田起源）----
-  // 玩家(權威座標 px,py)是否近到能照顧農地：鏡像伺服器的 within_field_reach，
-  // 用快照帶來的 field.reach 當同一個來源，前後端對「多近才算」不會各說各話。
-  function withinFieldReach(px, py) {
-    if (!field) return false;
-    const right = field.origin_x + field.cols * field.tile_size;
-    const bottom = field.origin_y + field.rows * field.tile_size;
-    const nx = Math.max(field.origin_x, Math.min(px, right));
-    const ny = Math.max(field.origin_y, Math.min(py, bottom));
-    const dx = px - nx, dy = py - ny;
-    return dx * dx + dy * dy <= field.reach * field.reach;
+  // ---- 農地（Phase 0-G 種田起源 / 0-G-O1 per-player）----
+  // 自己擁有的那塊地（owner === myId）；訪客或尚未分到地時為 null。
+  function myField() {
+    return myId ? fields.find((f) => f.owner === myId) : null;
   }
 
-  // 依伺服器廣播的每格 state/dry 畫出耕地與作物階段。
+  // 玩家(權威座標 px,py)是否近到能照顧**指定的**那塊地：鏡像伺服器的 within_reach，
+  // 用快照帶來的 f.reach 當同一個來源，前後端對「多近才算」不會各說各話。
+  function withinFieldReach(f, px, py) {
+    if (!f) return false;
+    const right = f.origin_x + f.cols * f.tile_size;
+    const bottom = f.origin_y + f.rows * f.tile_size;
+    const nx = Math.max(f.origin_x, Math.min(px, right));
+    const ny = Math.max(f.origin_y, Math.min(py, bottom));
+    const dx = px - nx, dy = py - ny;
+    return dx * dx + dy * dy <= f.reach * f.reach;
+  }
+
+  // 畫出世界上所有玩家的地塊（per-player）。只有自己那塊套用照顧距離回饋；
+  // 別人的地照常畫、標上地主名，但點不動（伺服器也只接受對自己地的動作）。
   function drawField(camX, camY) {
-    if (!field) return;
-    const ts = field.tile_size;
-    // 自己離農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
-    // 不再表現成「點了沒反應像壞掉」。沒有自己（如剛進場）就照常畫。
+    for (const f of fields) drawOnePlot(camX, camY, f);
+  }
+
+  // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
+  function drawOnePlot(camX, camY, f) {
+    if (!f || !f.cells) return;
+    const ts = f.tile_size;
+    const mine = f.owner === myId;
+    // 自己離自己的農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
+    // 不再表現成「點了沒反應像壞掉」。別人的地不套這個（本就不能由你照顧）。
     const me = myId ? players.get(myId) : null;
-    const reachable = me ? withinFieldReach(me.x, me.y) : true;
-    const fx = field.origin_x - camX;
-    const fy = field.origin_y - camY;
-    const fw = field.cols * ts;
-    const fh = field.rows * ts;
+    const reachable = mine ? (me ? withinFieldReach(f, me.x, me.y) : true) : true;
+    const fx = f.origin_x - camX;
+    const fy = f.origin_y - camY;
+    const fw = f.cols * ts;
+    const fh = f.rows * ts;
+    // 整塊在畫面外就略過（多塊地時省繪製）。
+    if (fx + fw < -40 || fy + fh < -40 || fx > canvas.width + 40 || fy > canvas.height + 40) return;
 
     ctx.save();
     if (!reachable) ctx.globalAlpha = 0.55;
+    else if (!mine) ctx.globalAlpha = 0.82; // 別人的地稍微壓一點，凸顯自己的
 
-    // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開(原本未翻土的格子
-    // 顏色和草地太接近,玩家完全看不出腳下站著一塊田)。
+    // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開。
     ctx.fillStyle = "#3a2818";
     ctx.fillRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
-    for (let row = 0; row < field.rows; row++) {
-      for (let col = 0; col < field.cols; col++) {
-        const cell = field.cells[row * field.cols + col];
-        const sx = field.origin_x + col * ts - camX;
-        const sy = field.origin_y + row * ts - camY;
+    for (let row = 0; row < f.rows; row++) {
+      for (let col = 0; col < f.cols; col++) {
+        const cell = f.cells[row * f.cols + col];
+        const sx = f.origin_x + col * ts - camX;
+        const sy = f.origin_y + row * ts - camY;
         if (sx + ts < 0 || sy + ts < 0 || sx > canvas.width || sy > canvas.height) continue;
         drawTile(sx, sy, ts, cell);
       }
     }
 
-    // 周圍畫一圈黃銅色邊框(對齊世界邊界的設計語彙),從遠處也看得到
-    // 「那邊有一塊我的地」。
-    ctx.strokeStyle = "#c9a24b";
+    // 周圍畫一圈邊框：自己的黃銅亮框、別人的暗一點，一眼分得出哪塊是自己的。
+    ctx.strokeStyle = mine ? "#c9a24b" : "#8a7340";
     ctx.lineWidth = 3;
     ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
-    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」而非
-    // 一塊浮在草地上的色塊(玩家回饋:想要田地周圍的木柵欄)。純程式畫,
-    // 之後真 sprite 進來可直接替換。
+    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」。純程式畫。
     drawFence(fx, fy, fw, fh);
 
-    // 田地名字標籤(平時也顯示,不只在太遠時)。
-    ctx.fillStyle = "rgba(232,224,207,0.9)";
+    // 田地名字標籤：自己的標「你的乙太田」，別人的標地主名。
+    const owner = players.get(f.owner);
+    const label = mine ? "你的乙太田 🌱" : `${owner ? owner.name : "拓荒者"} 的乙太田`;
+    ctx.fillStyle = mine ? "rgba(232,224,207,0.9)" : "rgba(232,224,207,0.7)";
     ctx.font = "13px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("你的乙太田 🌱", fx + fw / 2, fy - 8);
+    ctx.fillText(label, fx + fw / 2, fy - 8);
 
     ctx.restore();
 
-    if (!reachable) {
+    if (mine && !reachable) {
       ctx.fillStyle = "rgba(232,224,207,0.85)";
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
@@ -673,12 +690,21 @@
   // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
   function farmAtScreen(clientX, clientY) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // 自己離農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
     const me = myId ? players.get(myId) : null;
-    if (me && field && !withinFieldReach(me.x, me.y)) {
-      const now = Date.now();
+    const f = myField();
+    const now = Date.now();
+    // 沒有自己的地（訪客 / 尚未分到）：伺服器只接受對自己地的動作，先給回饋、不白送一則。
+    if (me && !f) {
       if (now - lastReachHint > 2500) {
-        addChat("系統", "走近農地才能照顧作物哦。");
+        addChat("系統", "登入後就有自己的乙太田可以照顧哦。");
+        lastReachHint = now;
+      }
+      return;
+    }
+    // 自己離自己的農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
+    if (me && f && !withinFieldReach(f, me.x, me.y)) {
+      if (now - lastReachHint > 2500) {
+        addChat("系統", "走近你的農地才能照顧作物哦。");
         lastReachHint = now;
       }
       return;

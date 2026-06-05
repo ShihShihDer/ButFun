@@ -94,8 +94,7 @@ impl Field {
 
     /// 建第 `index` 塊地（per-player 用）：origin 由 `plots::plot_origin` 依序號決定，
     /// 一圈一圈往外排、互不重疊；序號 0 正好對齊現有全域農地（與 `new()` 同位置）。
-    /// O1 接線輪：玩家進場拿到自己的序號後，用這個建他那塊地。
-    #[allow(dead_code)] // 接線輪（AppState 改 per-player、進場分配地塊）才有呼叫端。
+    /// O1 接線：玩家進場拿到自己的序號後，用這個建他那塊地（見 `ws.rs` 進場處）。
     pub fn for_plot(index: usize) -> Self {
         let (origin_x, origin_y) = crate::plots::plot_origin(index);
         Self::fresh_at(origin_x, origin_y)
@@ -283,8 +282,11 @@ impl Field {
     }
 
     /// 把整塊地轉成給前端的可見快照（origin 用這塊地自己的，前端據此畫在世界對的位置）。
+    /// `owner` 先填 `nil`——`Field` 本身不知道自己屬於誰；由廣播層（持有 `user_id → Field`
+    /// 對映）在送出快照前戳上真正的擁有者（見 `game.rs` 建快照處）。
     pub fn view(&self) -> FieldView {
         FieldView {
+            owner: uuid::Uuid::nil(),
             origin_x: self.origin_x,
             origin_y: self.origin_y,
             tile_size: TILE_SIZE,
@@ -427,6 +429,24 @@ mod tests {
         // 全域農地（序號 0）的位置在序號 1 這塊地眼裡是界外、也搆不到。
         assert_eq!(f.cell_at(FIELD_ORIGIN_X, FIELD_ORIGIN_Y), None);
         assert!(!f.within_reach(FIELD_ORIGIN_X, FIELD_ORIGIN_Y));
+    }
+
+    /// per-player 歸屬的招牌保證（鏡像 ws `Farm` 接線的核心）：玩家只對「自己這塊地」
+    /// 算格，送來落在**別塊地**的世界座標一律 `cell_at → None`，於是 ws 端走不到
+    /// `interact`——動不到別人的地，不必額外存一張「座標→地主」表，由幾何建構性保證。
+    #[test]
+    fn coords_in_another_plot_map_to_no_cell_on_my_field() {
+        let mine = Field::for_plot(0);
+        let other = Field::for_plot(1);
+        let (ox, oy) = other.origin();
+        // 別人那塊地的左上角、與其中央，在「我這塊」眼裡都是界外。
+        assert_eq!(mine.cell_at(ox, oy), None);
+        let cx = ox + FIELD_COLS as f32 * TILE_SIZE / 2.0;
+        let cy = oy + FIELD_ROWS as f32 * TILE_SIZE / 2.0;
+        assert_eq!(mine.cell_at(cx, cy), None);
+        // 反向：我自己這塊的座標當然算得到格（確認上面的 None 不是因為整塊都壞）。
+        let (mx, my) = mine.origin();
+        assert_eq!(mine.cell_at(mx, my), Some((0, 0)));
     }
 
     #[test]

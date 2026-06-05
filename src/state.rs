@@ -13,6 +13,7 @@ use crate::auth::AuthConfig;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
 use crate::field::Field;
+use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
 use crate::protocol::{PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
@@ -91,9 +92,14 @@ pub struct Input {
 pub struct AppState {
     /// 權威玩家清單。
     pub players: Arc<RwLock<HashMap<Uuid, Player>>>,
-    /// 共享的農地（Phase 0-G 種田起源）。目前單一塊、存記憶體；
+    /// 每個玩家自己的農地（Phase 0-G-O1：per-player 擁有）。鍵是擁有者 `user_id`，
+    /// 值是那塊地（origin 由其地塊序號決定，互不重疊）。玩家（已登入者）進場時建立、
+    /// 之後整個伺服器生命週期都留著——人離線了作物仍在自己的地裡繼續長，重連看得到
+    /// 自己離開時的進度（記憶體量級＝歷來已登入玩家數，比照 `plots`／`positions` 有界）。
     /// 持久化待 Phase 0-E，重啟會回到全自然地。
-    pub field: Arc<RwLock<Field>>,
+    pub fields: Arc<RwLock<HashMap<Uuid, Field>>>,
+    /// 地塊歸屬登記：哪個玩家擁有第幾塊地（決定其農地 origin、往外排不重疊）。
+    pub plots: PlotRegistry,
     /// 伺服器權威的日夜時鐘（Phase 0-G 療癒核心）。遊戲迴圈每 tick 推進、隨快照廣播；
     /// 目前存記憶體，持久化待 Phase 0-E（重啟會回到破曉）。
     pub daynight: Arc<RwLock<DayNight>>,
@@ -127,7 +133,8 @@ impl AppState {
         let (tx_chat, _rx_chat) = broadcast::channel(256);
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
-            field: Arc::new(RwLock::new(Field::new())),
+            fields: Arc::new(RwLock::new(HashMap::new())),
+            plots: PlotRegistry::new(),
             daynight: Arc::new(RwLock::new(DayNight::new())),
             tx,
             tx_chat,

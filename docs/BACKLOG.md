@@ -355,6 +355,18 @@
     既有 serde round-trip 測試走 `from_tiles(0,..)` 還原。`cargo test` 141 綠、clippy 乾淨、伺服器二進位
     啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(AppState 改 `HashMap<Uuid,Field>`+進場分配+Farm
     驗地主+快照送多塊+前端畫多塊)屬架構級、動 live 廣播 shape,留待後續輪/PR。
+  - 🔵 接線(per-player 端到端接通,**draft PR、待人審不自走 merge**,2026-06-05,回應建議
+    at=1780631397524「領地還沒鎖使用者、新玩家沒有自己的地」):把三塊純邏輯地基接上整條線——
+    `AppState` 由單一 `field` 改成 `fields: HashMap<Uuid, Field>` + `plots: PlotRegistry`;已登入玩家
+    進場 `plots.assign` 取序號、`Field::for_plot` 建自己那塊地(同帳號重連拿回同一塊、作物續長);
+    遊戲迴圈 tick 所有地塊、快照改送 `fields: Vec<FieldView>`(每塊戳上 `owner`);ws `Farm` 只對
+    `fields.get(&id)`(自己那塊)算格——**歸屬由建構性保證**:路過別人的地送來的座標落在別塊、
+    `cell_at` 回 `None`,動不到別人的地,不必另存座標→地主表。前端畫出所有玩家的地、只有 owner===myId
+    那塊套照顧距離回饋與互動,別塊標地主名、點不動;小地圖多塊、自己亮別人暗。**架構級、動 live 廣播
+    shape(`field`→`fields`)**,故依 AUTONOMOUS_OPS 護欄只開 draft PR、不自走 merge。加 2 個測試
+    (protocol `fields[].owner` 契約、`cell_at` 對別塊座標回 None 的歸屬保證),`cargo test` 142 綠、
+    clippy 乾淨、伺服器二進位啟動正常。**待人決定**:訪客是否給臨時地(本 PR 取保守的「訪客唯讀、
+    登入才有地」避免序號無界成長);跨重啟持久化(把 `plots` 表也存進 Postgres)接 0-E。
 
 - [ ] **Phase 0-G-O2:地圖擴張 + 用乙太購買土地**
   家園區可隨玩家數往外長;玩家用收成的乙太**購買**擴充地塊(乙太的消耗去處,接上經濟)。
