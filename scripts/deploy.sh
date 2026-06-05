@@ -27,6 +27,13 @@ BACKUP="$REPO/target/release/butfun-server.prev"
 
 cd "$REPO"
 
+# 簡單推播:prod 真正換版成功時推一條到使用者手機(NTFY_TOPIC 在 systemd 環境、不入 repo)。
+notify() {
+  [ -n "${NTFY_TOPIC:-}" ] || return 0
+  curl -s -m 6 -H "Title: ButFun 已上線 🚀" -H "Tags: rocket" \
+    -d "$1" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null 2>&1 || true
+}
+
 echo "[deploy] 取得最新版本（origin/$BRANCH）…"
 git fetch --quiet origin "$BRANCH"
 LOCAL="$(git rev-parse HEAD)"
@@ -84,3 +91,4 @@ if [ "$ok" != 1 ]; then
 fi
 
 echo "[deploy] 上線成功：$(git rev-parse --short HEAD)"
+notify "玩家現在玩到的就是這版：$(git log -1 --format=%s)"
