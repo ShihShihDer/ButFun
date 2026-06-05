@@ -346,10 +346,17 @@
           // 背包某品項變多 → 採集回饋飄字（首次同步不噴,否則進場/重連會把存量當成一次大採）。
           if (invKnown) {
             let stack = 0; // 同一拍多項一起變多時上下疊開,不互相蓋住
+            const gained = []; // 同一拍採到的品項,湊成一句報給報讀器
             for (const s of inv) {
               const gain = s.qty - (myInv.get(s.item) || 0);
-              if (gain > 0) spawnGatherFloater(s.item, gain, me.x, me.y, stack++);
+              if (gain > 0) {
+                spawnGatherFloater(s.item, gain, me.x, me.y, stack++);
+                gained.push(`${gain} ${ITEM_NAME[s.item] || s.item}`);
+              }
             }
+            // 飄字對看不到畫面的玩家無效,補一句 aria-live 播報——延續日夜/連線/聊天的
+            // 無障礙弧線,讓報讀器玩家也即時知道「採到什麼」。只在真的採到時報。
+            if (gained.length) announce(`採到 ${gained.join("、")}`);
           }
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
@@ -1368,6 +1375,8 @@
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
   const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨" };
+  // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
+  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74" };
   function updateBagHud(inv) {
