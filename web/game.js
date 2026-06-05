@@ -169,6 +169,30 @@
     }
   }
 
+  // 日夜染色（純表現，色相由權威 phase、濃度由權威 light 推得，不嵌任何遊戲規則；
+  // 將來 WebXR renderer 自有環境光，這層只屬 2D 客戶端）：
+  //  ① 夜色：亮度越低疊越濃的冷藍，午夜最濃但仍微光不全黑（療癒、非全黑）。
+  //  ② 金色時刻：破曉／黃昏疊一層暖橘，呼應 HUD 的 🌅🌇。強度取三角函數——破曉與黃昏
+  //     兩段亮度都落在 [0.421, 0.781]（伺服器 phase_for/light_for 推得），故把暖光峰設在
+  //     中點 0.6、兩端 0.18 處歸零：每個相位邊界都正好在亮度極端、暖光已近 0，相位切換
+  //     不會有色相突跳（金光在破曉／黃昏的正中最濃，自然地淡入淡出）。
+  function drawDayNightTint() {
+    if (!daynight) return;
+    const light = daynight.light;
+    const dark = Math.max(0, Math.min(1, 1 - light));
+    if (dark > 0.001) {
+      ctx.fillStyle = `rgba(14,20,52,${(dark * 0.72).toFixed(3)})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    if (daynight.phase === "dawn" || daynight.phase === "dusk") {
+      const warm = Math.max(0, 1 - Math.abs(light - 0.6) / 0.18);
+      if (warm > 0.001) {
+        ctx.fillStyle = `rgba(255,150,60,${(warm * 0.18).toFixed(3)})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+  }
+
   // 日夜階段 → HUD 顯示文字（emoji + 繁中），讓玩家一眼知道現在是一天的哪個時段。
   const PHASE_LABELS = {
     dawn: "🌅 破曉",
@@ -349,15 +373,8 @@
       ctx.fillText(p.name, sx, sy - 24);
     }
 
-    // 日夜染色：亮度越低，疊越濃的夜色（蓋住世界與玩家，但不蓋觸控搖桿）。
-    // light 落在 [0.2, 1.0]；白天(≈1)幾乎不疊、午夜(0.2)疊最濃但仍看得見（療癒、非全黑）。
-    if (daynight) {
-      const dark = Math.max(0, Math.min(1, 1 - daynight.light));
-      if (dark > 0.001) {
-        ctx.fillStyle = `rgba(14,20,52,${(dark * 0.72).toFixed(3)})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    }
+    // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
+    drawDayNightTint();
 
     // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawEtherFloaters(camX, camY, performance.now());
