@@ -6,6 +6,13 @@ set -euo pipefail
 REPO="${BUTFUN_REPO:-/opt/butfun}"
 cd "$REPO"
 
+# 跟主 devloop 共用同一把鎖(同一棵工作樹只准一條動工)。搶不到就讓位。
+exec 9>/tmp/butfun-devloop.lock
+if ! flock -n 9; then
+  echo "[devloop-feedback] 另一條 devloop 正在動工作樹,本輪讓位"
+  exit 0
+fi
+
 git fetch --quiet origin main || true
 if [ -n "$(git status --porcelain)" ]; then exit 0; fi
 git checkout --quiet main || true

@@ -18,6 +18,15 @@ set -euo pipefail
 REPO="${BUTFUN_REPO:-/opt/butfun}"
 cd "$REPO"
 
+# 互斥鎖:兩條 devloop(主 + 回饋專員)共用同一棵工作樹,絕不能同時動它,
+# 否則會像回饋專員回報的那樣——兩個 agent 同時改同幾個檔、版本纏在一起、
+# build 不過。同一時間只准一條動工,搶不到鎖就讓位、下輪再來。
+exec 9>/tmp/butfun-devloop.lock
+if ! flock -n 9; then
+  echo "[devloop] 另一條 devloop 正在動工作樹,本輪讓位"
+  exit 0
+fi
+
 # 取最新程式，但**只在乾淨且能 fast-forward 時才同步**：
 # 若工作目錄有未 commit 改動，或本地 main 已超前 origin（你正在 oncall 手改），
 # 就跳過這一輪，**絕不**用 reset --hard 吃掉你的手改。
