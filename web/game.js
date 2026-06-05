@@ -78,9 +78,24 @@
   let hoverScreen = null;
 
   // ---- 畫布尺寸 ----
+  // viewW/viewH 是「邏輯像素」的視窗尺寸,所有繪製碼一律用這兩個值(鏡頭置中、視野
+  // 裁切、小地圖定位…),不直接讀 canvas.width/height——那是放大後的實體像素緩衝。
+  let viewW = window.innerWidth;
+  let viewH = window.innerHeight;
+  let dpr = 1; // 裝置像素比,resize 時更新
   function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    dpr = window.devicePixelRatio || 1;
+    viewW = window.innerWidth;
+    viewH = window.innerHeight;
+    // 背景緩衝放大成裝置實體像素、CSS 尺寸維持邏輯像素,成像在 retina／手機高解析
+    // 螢幕上不再被瀏覽器整張放大糊掉(此前 canvas.width=邏輯像素,DPR>1 時被拉伸)。
+    // 繪圖座標系以 dpr 縮放,讓所有繪製碼照舊用邏輯像素——成像更銳利,純客戶端品質,
+    // 不碰任何遊戲規則(將來 WebXR renderer 連同一後端可各自實作)。
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(viewH * dpr);
+    canvas.style.width = viewW + "px";
+    canvas.style.height = viewH + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   window.addEventListener("resize", resize);
   resize();
@@ -294,13 +309,13 @@
     const dark = Math.max(0, Math.min(1, 1 - light));
     if (dark > 0.001) {
       ctx.fillStyle = `rgba(14,20,52,${(dark * 0.72).toFixed(3)})`;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillRect(0, 0, viewW, viewH);
     }
     if (daynight.phase === "dawn" || daynight.phase === "dusk") {
       const warm = Math.max(0, 1 - Math.abs(light - 0.6) / 0.18);
       if (warm > 0.001) {
         ctx.fillStyle = `rgba(255,150,60,${(warm * 0.18).toFixed(3)})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, viewW, viewH);
       }
     }
   }
@@ -353,15 +368,15 @@
     // 農地矩形是否與畫面相交：相交（看得到田）就不畫指標。用半尺寸當判定半徑近似即可。
     const halfW = (field.cols * field.tile_size) / 2;
     const halfH = (field.rows * field.tile_size) / 2;
-    if (sx + halfW >= 0 && sx - halfW <= canvas.width &&
-        sy + halfH >= 0 && sy - halfH <= canvas.height) return;
+    if (sx + halfW >= 0 && sx - halfW <= viewW &&
+        sy + halfH >= 0 && sy - halfH <= viewH) return;
 
     // 從畫面中心朝農地方向、夾到邊緣內側的安全框上，當作箭頭落點。
-    const ccx = canvas.width / 2, ccy = canvas.height / 2;
+    const ccx = viewW / 2, ccy = viewH / 2;
     const ang = Math.atan2(sy - ccy, sx - ccx);
     const m = 46; // 邊緣留白，避開 HUD / 小地圖最外圈
-    const px = Math.max(m, Math.min(canvas.width - m, sx));
-    const py = Math.max(m, Math.min(canvas.height - m, sy));
+    const px = Math.max(m, Math.min(viewW - m, sx));
+    const py = Math.max(m, Math.min(viewH - m, sy));
 
     const dry = farmDryCount > 0;
     // 缺水時用田格藍色澆水語彙 + 顯示格數，催玩家回去澆水；不缺水用低調黃銅。
@@ -505,8 +520,10 @@
 
   // ---- 渲染迴圈 ----
   function render() {
+    // 每幀重設基準變換(dpr 縮放),確保前一幀任何 save/restore 失衡也不會累積偏移。
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false; // 像素風禁止插值放大,否則糊邊
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, viewW, viewH);
 
     const me = myId ? players.get(myId) : null;
     // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
@@ -526,8 +543,8 @@
     }
 
     // 鏡頭跟隨自己
-    const camX = me ? me.rx - canvas.width / 2 : world.width / 2 - canvas.width / 2;
-    const camY = me ? me.ry - canvas.height / 2 : world.height / 2 - canvas.height / 2;
+    const camX = me ? me.rx - viewW / 2 : world.width / 2 - viewW / 2;
+    const camY = me ? me.ry - viewH / 2 : world.height / 2 - viewH / 2;
     lastCam.x = camX;
     lastCam.y = camY;
 
@@ -628,7 +645,7 @@
   // 小地圖邊長依畫面自適應:手機直式窄螢幕縮小(別吃掉太多空間、也少跟左下聊天框
   // 在底部重疊),平板/桌面維持上限。取畫面短邊的一個比例,夾在 min/max 之間。
   function minimapSize() {
-    const shorter = Math.min(canvas.width, canvas.height);
+    const shorter = Math.min(viewW, viewH);
     return Math.round(Math.max(MM.minSize, Math.min(MM.maxSize, shorter * 0.26)));
   }
   function drawMinimap() {
@@ -638,8 +655,8 @@
     const size = minimapSize();
     const scale = size / Math.max(w, h);
     const mw = w * scale, mh = h * scale;
-    const ox = canvas.width - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
-    const oy = canvas.height - MM.margin - mh;
+    const ox = viewW - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
+    const oy = viewH - MM.margin - mh;
     const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
 
     // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。
@@ -667,8 +684,8 @@
     // 不嵌任何遊戲規則。畫在玩家點之前，讓玩家點疊在最上層仍醒目。
     const vx0 = clampUnit(lastCam.x, w);
     const vy0 = clampUnit(lastCam.y, h);
-    const vx1 = clampUnit(lastCam.x + canvas.width, w);
-    const vy1 = clampUnit(lastCam.y + canvas.height, h);
+    const vx1 = clampUnit(lastCam.x + viewW, w);
+    const vy1 = clampUnit(lastCam.y + viewH, h);
     ctx.strokeStyle = "rgba(255,255,255,0.5)";
     ctx.lineWidth = 1;
     ctx.strokeRect(
@@ -691,14 +708,14 @@
   // 畫地面 + 世界邊界。有像素 tileset 就鋪草地瓦片,否則退回程式草叢紋理。
   function drawGround(camX, camY) {
     ctx.fillStyle = "#12331f";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, viewW, viewH);
 
     if (artOk("tileset_a")) {
       // 鋪草地瓦片(tileset 第 0 列 = 草地,4 個變體靠座標雜湊挑,免機械重複)。
       const tx0 = Math.floor(camX / TS) - 1;
       const ty0 = Math.floor(camY / TS) - 1;
-      const tx1 = Math.floor((camX + canvas.width) / TS) + 1;
-      const ty1 = Math.floor((camY + canvas.height) / TS) + 1;
+      const tx1 = Math.floor((camX + viewW) / TS) + 1;
+      const ty1 = Math.floor((camY + viewH) / TS) + 1;
       for (let ty = ty0; ty <= ty1; ty++) {
         for (let tx = tx0; tx <= tx1; tx++) {
           const variant = (grassHash(tx, ty) * 4) | 0; // 0..3
@@ -716,11 +733,11 @@
       ctx.lineWidth = 1;
       const startX = -((camX % grid) + grid) % grid;
       const startY = -((camY % grid) + grid) % grid;
-      for (let x = startX; x < canvas.width; x += grid) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      for (let x = startX; x < viewW; x += grid) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, viewH); ctx.stroke();
       }
-      for (let y = startY; y < canvas.height; y += grid) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      for (let y = startY; y < viewH; y += grid) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(viewW, y); ctx.stroke();
       }
     }
 
@@ -739,7 +756,7 @@
       const dw = img.naturalWidth, dh = img.naturalHeight;
       const dx = Math.round(wx - camX - dw / 2);
       const dy = Math.round(wy - camY - dh); // 底部對齊 wy
-      if (dx + dw < 0 || dy + dh < 0 || dx > canvas.width || dy > canvas.height) return;
+      if (dx + dw < 0 || dy + dh < 0 || dx > viewW || dy > viewH) return;
       ctx.drawImage(img, dx, dy);
     };
     const fx = field.origin_x, fy = field.origin_y;
@@ -764,8 +781,8 @@
     const cell = GRASS_CELL;
     const gx0 = Math.floor(camX / cell) - 1;
     const gy0 = Math.floor(camY / cell) - 1;
-    const gx1 = Math.floor((camX + canvas.width) / cell) + 1;
-    const gy1 = Math.floor((camY + canvas.height) / cell) + 1;
+    const gx1 = Math.floor((camX + viewW) / cell) + 1;
+    const gy1 = Math.floor((camY + viewH) / cell) + 1;
     for (let gx = gx0; gx <= gx1; gx++) {
       for (let gy = gy0; gy <= gy1; gy++) {
         const r = grassHash(gx, gy);
@@ -823,7 +840,7 @@
         const cell = field.cells[row * field.cols + col];
         const sx = field.origin_x + col * ts - camX;
         const sy = field.origin_y + row * ts - camY;
-        if (sx + ts < 0 || sy + ts < 0 || sx > canvas.width || sy > canvas.height) continue;
+        if (sx + ts < 0 || sy + ts < 0 || sx > viewW || sy > viewH) continue;
         drawTile(sx, sy, ts, cell);
       }
     }
