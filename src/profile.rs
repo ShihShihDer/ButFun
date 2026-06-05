@@ -58,12 +58,20 @@ async fn patch_profile(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     match app.users.rename(uid, &update.name) {
-        Some(u) => Json(ProfileResponse {
-            id: u.id,
-            name: u.name,
-            species: u.species,
-        })
-        .into_response(),
+        Some(u) => {
+            // 即時反映到線上世界:若該玩家此刻在線,更新其權威 Player 的 name,下一張快照就帶新名
+            // (HUD / 世界名牌 / 聊天 from 都讀這個)——不必重連。離線玩家下次進場時 ws.rs 從
+            // UserStore 讀到新名,同樣生效。
+            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                p.name = u.name.clone();
+            }
+            Json(ProfileResponse {
+                id: u.id,
+                name: u.name,
+                species: u.species,
+            })
+            .into_response()
+        }
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
 }

@@ -234,10 +234,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::Chat { text }) => {
                     // 清過控制字元 / 截長後若還有內容才廣播（集中在 sanitize_chat，可測）。
                     if let Some(text) = sanitize_chat(&text) {
-                        let chat = ServerMsg::Chat {
-                            from: player.name.clone(),
-                            text,
-                        };
+                        // 讀**線上即時**名(不是進場時擷取的舊名):改名後不重連、聊天 from 也立刻是新名。
+                        let from = app
+                            .players
+                            .read()
+                            .unwrap()
+                            .get(&id)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_else(|| player.name.clone());
+                        let chat = ServerMsg::Chat { from, text };
                         if let Ok(json) = serde_json::to_string(&chat) {
                             // 走聊天專用頻道，不與高頻快照爭緩衝、不被 Lagged 一起丟。
                             let _ = app.tx_chat.send(json);

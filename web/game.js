@@ -2112,9 +2112,32 @@
       const hud = document.getElementById("hud");
       const tag = document.createElement("div");
       tag.style.opacity = "0.7";
-      tag.innerHTML = `已登入：<b></b> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
+      tag.innerHTML = `已登入：<b></b> · <a href="#" id="renameLink" style="color:#c9a24b">✏️改名</a> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
       tag.querySelector("b").textContent = me.name;
       hud.appendChild(tag);
+      // 改名:輸入新顯示名 → PATCH /api/profile → 成功即更新標籤(世界名牌/HUD 靠下一張快照即時換)。
+      tag.querySelector("#renameLink").addEventListener("click", async (e) => {
+        e.preventDefault();
+        const next = prompt("改新的顯示名(最多 24 字,其他玩家會看到):", tag.querySelector("b").textContent);
+        if (next === null) return;
+        try {
+          const res = await fetch("/api/profile", {
+            method: "PATCH",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: next }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            tag.querySelector("b").textContent = data.name; // 伺服器清理後的實際新名
+            addChat("系統", `已改名為「${data.name}」。`);
+          } else {
+            addChat("系統", "改名失敗,請稍後再試。");
+          }
+        } catch {
+          addChat("系統", "改名失敗(連線問題)。");
+        }
+      });
       tag.querySelector("#logoutLink").addEventListener("click", async (e) => {
         e.preventDefault();
         await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
