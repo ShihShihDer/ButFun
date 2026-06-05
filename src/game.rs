@@ -54,6 +54,24 @@ pub fn spawn(app: AppState) {
             if let Ok(json) = serde_json::to_string(&snapshot) {
                 let _ = app.tx.send(json);
             }
+
+            // 定期把「線上已登入玩家」的位置 + 乙太快照寫到磁碟（每 ~10 秒一次）。
+            // 先前只有玩家離線時才 remember,線上玩家撐不過 server 重啟（換版）——
+            // 乙太會歸零。這裡讓線上玩家的狀態也持續落地,重啟後重連即帶回。
+            // 只記已登入玩家（id 在 users 裡）；訪客 id 隨機、不記,避免無界成長。
+            if tick % (TICK_HZ as u64 * 10) == 0 {
+                let online: Vec<(uuid::Uuid, f32, f32, u32)> = {
+                    let players = app.players.read().unwrap();
+                    players
+                        .values()
+                        .filter(|p| app.users.get(p.id).is_some())
+                        .map(|p| (p.id, p.x, p.y, p.ether))
+                        .collect()
+                };
+                if !online.is_empty() {
+                    app.positions.remember_all(online);
+                }
+            }
         }
     });
 }

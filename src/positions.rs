@@ -9,12 +9,26 @@
 //! 故不記，避免 map 無界成長。
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
+
+/// 跨重啟持久化檔（執行期產生、已 gitignore）。記憶體前置寫穿到磁碟,讓玩家位置 +
+/// 乙太撐過 server 重啟（換版）。之後接 0-E Postgres 時整層 swap 掉即可。
+const STORE_PATH: &str = "data/positions.jsonl";
+
+/// 磁碟一行紀錄：把 id 與 `Saved` 合起來序列化。
+#[derive(Serialize, Deserialize)]
+struct DiskRow {
+    id: Uuid,
+    x: f32,
+    y: f32,
+    ether: u32,
+}
 
 /// 玩家進場時的預設位置（地圖中央）。沒有歷史位置時用它。
 pub fn default_spawn() -> (f32, f32) {
@@ -54,15 +68,35 @@ pub struct Saved {
     pub ether: u32,
 }
 
-/// 記住玩家最後狀態的儲存層。MVP：記憶體；之後可 swap 成 Postgres。
-#[derive(Clone, Default)]
+/// 記住玩家最後狀態的儲存層。記憶體 + 寫穿磁碟撐過重啟；之後可 swap 成 Postgres。
+#[derive(Clone)]
 pub struct PositionStore {
     inner: Arc<RwLock<HashMap<Uuid, Saved>>>,
+    /// 持久化檔路徑。`None` = 純記憶體（測試用,不碰磁碟）。
+    path: Option<&'static str>,
+}
+
+impl Default for PositionStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PositionStore {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(load_from_disk(STORE_PATH))),
+            path: Some(STORE_PATH),
+        }
+    }
+
+    /// 純記憶體版（測試用）：不載入、不寫磁碟。
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+            path: None,
+        }
     }
 
     /// 取出某玩家上次離線時的狀態（沒有就 None）。
@@ -70,10 +104,68 @@ impl PositionStore {
         self.inner.read().unwrap().get(&id).copied()
     }
 
-    /// 記住某玩家目前狀態（離線時呼叫）。
+    /// 記住某玩家目前狀態（離線時呼叫）並寫穿到磁碟,撐過 server 重啟。
     pub fn remember(&self, id: Uuid, x: f32, y: f32, ether: u32) {
         self.inner.write().unwrap().insert(id, Saved { x, y, ether });
+        self.persist();
     }
+
+    /// 批次記住多名玩家（給遊戲迴圈定期快照線上玩家用）：更新一次、只寫一次磁碟。
+    pub fn remember_all<I: IntoIterator<Item = (Uuid, f32, f32, u32)>>(&self, items: I) {
+        {
+            let mut m = self.inner.write().unwrap();
+            for (id, x, y, ether) in items {
+                m.insert(id, Saved { x, y, ether });
+            }
+        }
+        self.persist();
+    }
+
+    /// 把整份 map 快照寫到磁碟（整檔覆寫,非 append,避免無界成長）。純記憶體版(path=None)不寫。
+    fn persist(&self) {
+        let Some(path) = self.path else {
+            return;
+        };
+        let rows: Vec<String> = {
+            let m = self.inner.read().unwrap();
+            m.iter()
+                .filter_map(|(id, s)| {
+                    serde_json::to_string(&DiskRow {
+                        id: *id,
+                        x: s.x,
+                        y: s.y,
+                        ether: s.ether,
+                    })
+                    .ok()
+                })
+                .collect()
+        };
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // 先寫暫存再 rename,避免寫到一半被重啟而毀檔。
+        let tmp = format!("{path}.tmp");
+        if let Ok(mut f) = std::fs::File::create(&tmp) {
+            let _ = f.write_all(rows.join("\n").as_bytes());
+            let _ = f.write_all(b"\n");
+            let _ = f.sync_all();
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
+fn load_from_disk(path: &str) -> HashMap<Uuid, Saved> {
+    let mut map = HashMap::new();
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        for line in contents.lines() {
+            if let Ok(r) = serde_json::from_str::<DiskRow>(line) {
+                // 位置經 spawn_at 驗證（壞值退回中央/夾邊界）;ether 型別本身擋壞值。
+                let (x, y) = spawn_at(Some((r.x, r.y)));
+                map.insert(r.id, Saved { x, y, ether: r.ether });
+            }
+        }
+    }
+    map
 }
 
 #[cfg(test)]
@@ -110,13 +202,13 @@ mod tests {
 
     #[test]
     fn recall_is_none_before_remember() {
-        let store = PositionStore::new();
+        let store = PositionStore::in_memory();
         assert_eq!(store.recall(Uuid::new_v4()), None);
     }
 
     #[test]
     fn remember_then_recall_round_trips() {
-        let store = PositionStore::new();
+        let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
         store.remember(id, 10.0, 20.0, 5);
         assert_eq!(
@@ -131,7 +223,7 @@ mod tests {
 
     #[test]
     fn remember_overwrites_previous_state() {
-        let store = PositionStore::new();
+        let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
         store.remember(id, 10.0, 20.0, 1);
         store.remember(id, 30.0, 40.0, 9);
@@ -148,7 +240,7 @@ mod tests {
     #[test]
     fn recalled_ether_survives_round_trip() {
         // 收成的乙太要能跟著重連回來，不被歸零。
-        let store = PositionStore::new();
+        let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
         store.remember(id, 0.0, 0.0, 42);
         assert_eq!(store.recall(id).map(|s| s.ether), Some(42));
@@ -184,7 +276,7 @@ mod tests {
 
     #[test]
     fn stores_are_independent_per_player() {
-        let store = PositionStore::new();
+        let store = PositionStore::in_memory();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         store.remember(a, 1.0, 1.0, 3);
