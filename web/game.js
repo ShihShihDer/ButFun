@@ -47,6 +47,11 @@
   // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
   let field = null;
   let myEther = 0;
+  // 是否已同步過初始乙太：避免進場／重連時把既有存量當成一次大量「獲得」而噴一大串飄字。
+  let etherKnown = false;
+  // 收成得乙太時的「+N 乙太」飄字（純表現，從權威 ether 差值推得，不嵌任何遊戲規則）。
+  // 每筆 { wx, wy, gain, born }：以世界座標固定在收成當下的玩家位置上方，隨時間上飄淡出。
+  const etherFloaters = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
 
@@ -117,7 +122,12 @@
         if (daynight) updateDayNightHud(daynight);
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
+          // 乙太變多 → 收成回饋飄字（首次同步不噴，否則進場/重連會把存量當成一次大獲得）。
+          if (etherKnown && me.ether > myEther) {
+            spawnEtherFloater(me.ether - myEther, me.x, me.y);
+          }
           myEther = me.ether;
+          etherKnown = true;
           document.getElementById("hudEther").textContent = `乙太：${myEther}`;
         }
         break;
@@ -128,6 +138,31 @@
       case "player_left":
         players.delete(msg.id);
         break;
+    }
+  }
+
+  // 收成得乙太時，在玩家當下位置上方記一筆飄字（世界座標，鏡頭移動也黏在原地飄起）。
+  function spawnEtherFloater(gain, wx, wy) {
+    etherFloaters.push({ wx, wy: wy - 22, gain, born: performance.now() });
+  }
+
+  // 把飄字逐一上飄、淡出，過了壽命就移除。畫在日夜染色之後（當回饋 HUD，不被夜色蓋暗）。
+  const FLOAT_MS = 1100;
+  function drawEtherFloaters(camX, camY, now) {
+    for (let i = etherFloaters.length - 1; i >= 0; i--) {
+      const f = etherFloaters[i];
+      const age = now - f.born;
+      if (age >= FLOAT_MS) { etherFloaters.splice(i, 1); continue; }
+      const t = age / FLOAT_MS;
+      const alpha = 1 - t;
+      const sx = f.wx - camX;
+      const sy = f.wy - camY - t * 34; // 隨時間往上飄
+      ctx.font = "bold 15px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = `rgba(0,0,0,${(alpha * 0.5).toFixed(3)})`;
+      ctx.fillText(`+${f.gain} 乙太 ✨`, sx + 1, sy + 1); // 描影,任何地表上都讀得到
+      ctx.fillStyle = `rgba(255,210,74,${alpha.toFixed(3)})`;
+      ctx.fillText(`+${f.gain} 乙太 ✨`, sx, sy);
     }
   }
 
@@ -320,6 +355,9 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
     }
+
+    // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
+    drawEtherFloaters(camX, camY, performance.now());
 
     // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
     drawMinimap();
