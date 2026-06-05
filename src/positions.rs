@@ -1,17 +1,18 @@
-//! 玩家最後狀態（位置 + 乙太）的伺服器端記憶（Phase 0-E 的記憶體前置）。
+//! 玩家最後狀態（位置 + 乙太）的伺服器端記憶（Phase 0-E）。
 //!
-//! 目前存在記憶體：同一帳號（已登入）重連時回到離線前的位置、並保有收成的乙太，
-//! 而不是被重設到地圖中央、乙太歸零。這層刻意做成可抽換點——之後接 Postgres 時，
-//! 把這個 store 換成 `PgStore`（同樣的 recall / remember 介面）即可，不用動
-//! WebSocket / 遊戲迴圈。跨伺服器重啟的持久化仍待 0-E（記憶體版重啟會清空）。
+//! 同一帳號（已登入）重連時回到離線前的位置、並保有收成的乙太，而不是被重設到
+//! 地圖中央、乙太歸零。儲存層刻意做成可抽換點：設了 `DATABASE_URL` 走 Postgres
+//! （跨伺服器重啟仍在），沒設則退回記憶體（重啟歸零，方便本機跑與測試）。兩種模式
+//! 共用同一組 `recall` / `remember` 介面，WebSocket / 遊戲迴圈不必知道背後是哪種。
 //!
 //! 注意：只記「已登入」玩家（穩定 id）；訪客每次連線 id 隨機、記了也對不上，
-//! 故不記，避免 map 無界成長。
+//! 故不記，避免無界成長。
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};

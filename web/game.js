@@ -313,8 +313,19 @@
     // 不再表現成「點了沒反應像壞掉」。沒有自己（如剛進場）就照常畫。
     const me = myId ? players.get(myId) : null;
     const reachable = me ? withinFieldReach(me.x, me.y) : true;
+    const fx = field.origin_x - camX;
+    const fy = field.origin_y - camY;
+    const fw = field.cols * ts;
+    const fh = field.rows * ts;
+
     ctx.save();
-    if (!reachable) ctx.globalAlpha = 0.4;
+    if (!reachable) ctx.globalAlpha = 0.55;
+
+    // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開(原本未翻土的格子
+    // 顏色和草地太接近,玩家完全看不出腳下站著一塊田)。
+    ctx.fillStyle = "#3a2818";
+    ctx.fillRect(fx - 2, fy - 2, fw + 4, fh + 4);
+
     for (let row = 0; row < field.rows; row++) {
       for (let col = 0; col < field.cols; col++) {
         const cell = field.cells[row * field.cols + col];
@@ -324,20 +335,33 @@
         drawTile(sx, sy, ts, cell);
       }
     }
+
+    // 周圍畫一圈黃銅色邊框(對齊世界邊界的設計語彙),從遠處也看得到
+    // 「那邊有一塊我的地」。
+    ctx.strokeStyle = "#c9a24b";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
+
+    // 田地名字標籤(平時也顯示,不只在太遠時)。
+    ctx.fillStyle = "rgba(232,224,207,0.9)";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("你的乙太田 🌱", fx + fw / 2, fy - 8);
+
     ctx.restore();
+
     if (!reachable) {
-      const cx = field.origin_x + (field.cols * ts) / 2 - camX;
-      const top = field.origin_y - camY;
       ctx.fillStyle = "rgba(232,224,207,0.85)";
-      ctx.font = "14px system-ui, sans-serif";
+      ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("走近一點才能照顧農地 🌱", cx, top - 10);
+      ctx.fillText("(走近一點才能照顧)", fx + fw / 2, fy + fh + 18);
     }
   }
 
   function drawTile(sx, sy, ts, cell) {
-    // 底色：未翻的自然地（略亮草色，提示可耕） vs 翻好的土。
-    ctx.fillStyle = cell.state === 0 ? "rgba(70,104,64,0.55)" : "#5b4636";
+    // 底色:未翻土 = 暖土黃(像未開墾的乾土);翻好的 = 深咖啡(翻過的潮土)。
+    // 兩者都跟草地(深綠)明顯不同,玩家一眼看得到「這裡是一塊田」。
+    ctx.fillStyle = cell.state === 0 ? "#7a5f3c" : "#5b4636";
     ctx.fillRect(sx + 1, sy + 1, ts - 2, ts - 2);
     ctx.strokeStyle = "rgba(0,0,0,0.35)";
     ctx.lineWidth = 1;
