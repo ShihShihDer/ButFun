@@ -1231,6 +1231,16 @@
     input.value = "";
     input.blur();
   });
+  // Esc 退出聊天:用 Enter 開了聊天又改變主意時,給一條鍵盤退路退回操控(對齊建議箱
+  // 的「Esc 關閉」慣例)。先前唯一離開輸入的方式是硬送出或滑鼠點別處——鍵盤玩家會卡住。
+  // 清掉打到一半的內容(取消即丟棄,不誤送)並 blur,焦點還給遊戲、移動鍵恢復作用。
+  document.getElementById("chatText").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.target.value = "";
+      e.target.blur();
+    }
+  });
 
   // ---- 建議箱 ----
   const modal = document.getElementById("suggestModal");
