@@ -116,6 +116,15 @@
   // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
   // 純表現:手機沒有 hover、靠輕點即時互動,觸控時不更新它,自然不畫高亮。
   let hoverScreen = null;
+  // 新手只要照顧過一次田就不再需要「怎麼按」提示——記在 localStorage,回訪玩家不再被打擾。
+  // 純前端引導狀態(不嵌規則):腳下格的動作詞在此旗標為 false 時多帶一行按鍵提示。
+  let tendedOnce = false;
+  try { tendedOnce = localStorage.getItem("butfun.tendedOnce") === "1"; } catch {}
+  function markTendedOnce() {
+    if (tendedOnce) return;
+    tendedOnce = true;
+    try { localStorage.setItem("butfun.tendedOnce", "1"); } catch {}
+  }
 
   // ---- 畫布尺寸 ----
   // viewW/viewH 是「邏輯像素」的視窗尺寸,所有繪製碼一律用這兩個值(鏡頭置中、視野
@@ -1283,6 +1292,16 @@
             ctx.strokeText(act, tx, ty);
             ctx.fillStyle = "rgba(255,235,180,0.95)";
             ctx.fillText(act, tx, ty);
+            // 新手第一次:動作詞上方再補一行「怎麼按」——光標出動詞還不夠,沒按過的玩家不知道
+            // 要按空白鍵或點一下才會發生。照顧過一次(markTendedOnce)就不再顯示,不長期擾人。
+            if (!tendedOnce) {
+              ctx.font = "10px system-ui, sans-serif";
+              const hint = "按空白鍵或點一下";
+              const hy = ty - 13; // 疊在動作詞正上方,兩行一起貼在田格上緣
+              ctx.strokeText(hint, tx, hy);
+              ctx.fillStyle = "rgba(255,235,180,0.8)";
+              ctx.fillText(hint, tx, hy);
+            }
             ctx.restore();
           }
         }
@@ -1502,6 +1521,7 @@
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
     ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+    markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(wx, wy); // 純確認回饋:這一下已送出
   }
   // 純鍵盤/無滑鼠玩家:對「自己腳下這格」送農作意圖(空白鍵 / E / F)。玩家回饋
@@ -1520,6 +1540,7 @@
       return;
     }
     ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
+    markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(me.x, me.y); // 純確認回饋:這一下已送出
   }
   // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
