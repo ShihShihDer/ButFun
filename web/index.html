@@ -114,6 +114,10 @@
       animation: connpulse 1.4s ease-in-out infinite; pointer-events: none;
     }
     @keyframes connpulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+    /* 尊重系統「減少動態」偏好:前庭敏感的玩家關掉脈動閃爍,橫幅仍在、只是不閃。 */
+    @media (prefers-reduced-motion: reduce) {
+      #connStatus { animation: none; opacity: 1; }
+    }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -180,6 +184,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-nightmotes"></script>
+  <script src="game.js?v=20260605-reducemotion"></script>
 </body>
 </html>

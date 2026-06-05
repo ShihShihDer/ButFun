@@ -35,6 +35,21 @@
     return 1;                                // 左
   }
 
+  // ---- 無障礙：尊重系統「減少動態」偏好 ----
+  // 有些玩家對持續飄動／彈跳／閃爍的畫面會暈或不適（前庭敏感）。作業系統提供
+  // prefers-reduced-motion 偏好，這裡即時讀取：開啟時關掉「純裝飾、不傳遞資訊」的環境
+  // 動態——角色踏步彈跳、夜晚乙太微光的飄移與明滅、重連橫幅的脈動。靜態的畫面照樣資訊
+  // 完整（夜色濃淡、微光位置、重連橫幅本身都還在），只是不再動。純表現層、不嵌遊戲規則。
+  const reduceMotionMQ = window.matchMedia
+    ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  let reduceMotion = !!(reduceMotionMQ && reduceMotionMQ.matches);
+  if (reduceMotionMQ) {
+    const onRM = (e) => { reduceMotion = e.matches; };
+    // 舊瀏覽器只有 addListener;兩種都掛以求相容。
+    if (reduceMotionMQ.addEventListener) reduceMotionMQ.addEventListener("change", onRM);
+    else if (reduceMotionMQ.addListener) reduceMotionMQ.addListener(onRM);
+  }
+
   // ---- 狀態 ----
   let ws = null;
   let myId = null;
@@ -355,13 +370,16 @@
     if (!(dt > 0) || dt > 0.1) dt = 0.016; // 首幀／分頁切回的大跳用固定步,避免瞬移
     ctx.save();
     for (const m of NIGHT_MOTES) {
-      m.x += m.vx * dt;
-      m.y += m.vy * dt;
-      // 飄出邊界就從另一側繞回（無限飄,畫面永遠均勻散著微光）。
-      if (m.x < 0) m.x += 1; else if (m.x >= 1) m.x -= 1;
-      if (m.y < 0) m.y += 1; else if (m.y >= 1) m.y -= 1;
-      m.tw += m.tws * dt;
-      const twinkle = 0.55 + 0.45 * Math.sin(m.tw); // 0.1..1 之間明滅
+      // 開「減少動態」時：微光留在原位、不飄不明滅，只剩一層靜態柔光點綴夜色。
+      if (!reduceMotion) {
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+        // 飄出邊界就從另一側繞回（無限飄,畫面永遠均勻散著微光）。
+        if (m.x < 0) m.x += 1; else if (m.x >= 1) m.x -= 1;
+        if (m.y < 0) m.y += 1; else if (m.y >= 1) m.y -= 1;
+        m.tw += m.tws * dt;
+      }
+      const twinkle = reduceMotion ? 0.8 : 0.55 + 0.45 * Math.sin(m.tw); // 0.1..1 之間明滅
       const alpha = dark * twinkle * 0.5;           // 夜越濃越亮,最濃也僅半透不刺眼
       if (alpha < 0.02) continue;
       const px = m.x * viewW;
@@ -614,8 +632,9 @@
       const sx = p.rx - camX;
       const sy = p.ry - camY;
       const isMe = p.id === myId;
-      // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動
-      const bob = p.moving ? Math.abs(Math.sin(p.walk)) * 3 : 0;
+      // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動。
+      // 開「減少動態」時不彈跳（避免持續上下晃造成不適），sprite 仍逐格切換不受影響。
+      const bob = (p.moving && !reduceMotion) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
       const by = sy - bob;
 
       // 腳下陰影（固定在地面，賣出彈跳的踏地感）
