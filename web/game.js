@@ -872,15 +872,21 @@
   canvas.addEventListener("touchend", endTouch, { passive: false });
   canvas.addEventListener("touchcancel", endTouch, { passive: false });
 
-  // 把 species 字串雜湊成一個穩定的色相(0-359)→ 同族群恆得同色,不同族群一眼分得開。
-  // 玩家反覆回報「周圍有各種族群(銅齒/發條/琥珀/乙太/電弧/齒輪)卻分不出來」——伺服器本就
-  // 帶 species,但 2D 客戶端先前讓所有人名牌同色。純表現層的雜湊著色,不需後端改、不嵌規則;
-  // 將來 WebXR renderer 可各自挑呈現方式。亮度壓在偏亮區間,配上名牌既有的深色描邊在任何
-  // 地表/日夜都讀得清,且顏色只是「附加線索」、名字本身仍在,不依賴辨色力(無障礙)。
-  function speciesAccent(species) {
-    const s = species || "terran";
+  // 把名牌雜湊成一個穩定的色相(0-359)→ 同族群恆得同色,不同族群一眼分得開。
+  // 玩家反覆回報「周圍有各種族群(銅齒/發條/琥珀/電弧/齒輪)卻分不出來」。先前是依 species
+  // 上色,但目前可選種族只開放「地球人(terran)」一種,幾乎每位玩家 species 都相同、雜湊後同色
+  // ——等於沒分。玩家實際拿來辨識彼此「族群」的,是代號開頭那個材質詞(黃銅/發條/琥珀…,見
+  // users.rs 與本檔 CODENAME_ADJ),固定為開頭 2 個字。改以這個材質詞雜湊:同材質族群恆同色、
+  // 不同族群一眼分得開,且將來 species 真開放多族時這層也不受影響(屆時可再疊第二層線索)。
+  // 純表現層,不需後端改、不嵌規則,WebXR renderer 可各自挑呈現;亮度壓在偏亮區間配名牌既有的
+  // 深色描邊,在任何地表/日夜都讀得清,顏色只是「附加線索」、名字本身仍在,不依賴辨色力(無障礙)。
+  function kinAccent(name) {
+    // 代號形如「黃銅領航員-417」,材質詞固定佔開頭 2 字;自訂短名則退化成用整串名字,
+    // 仍得到穩定色。空名給個定值避免 charCodeAt 取到 NaN。
+    const s = (name || "拓荒者").trim();
+    const kin = s.length >= 2 ? s.slice(0, 2) : s;
     let h = 0;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    for (let i = 0; i < kin.length; i++) h = (h * 31 + kin.charCodeAt(i)) >>> 0;
     return `hsl(${h % 360}, 62%, 78%)`;
   }
 
@@ -939,8 +945,8 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.strokeText(p.name, sx, sy - 24);
-    // 自己恆金色(一眼找到自己);別人依 species 上色,讓不同族群在名牌就分得開。
-    ctx.fillStyle = isMe ? "#ffd24a" : speciesAccent(p.species);
+    // 自己恆金色(一眼找到自己);別人依代號材質詞(族群)上色,讓不同族群在名牌就分得開。
+    ctx.fillStyle = isMe ? "#ffd24a" : kinAccent(p.name);
     ctx.fillText(p.name, sx, sy - 24);
   }
 
