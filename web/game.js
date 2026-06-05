@@ -344,6 +344,9 @@
           // 乙太變多 → 收成回饋飄字（首次同步不噴，否則進場/重連會把存量當成一次大獲得）。
           if (etherKnown && me.ether > myEther) {
             spawnEtherFloater(me.ether - myEther, me.x, me.y);
+            // 飄字看不到畫面的玩家收不到——比照採集(下方 gained)補一句 aria-live 播報,
+            // 讓報讀器玩家照顧作物收成時也即時聽到「+N 乙太」。延續採集/背包/日夜的無障礙弧線。
+            announce(`收成 ${me.ether - myEther} 乙太`);
           }
           myEther = me.ether;
           etherKnown = true;
