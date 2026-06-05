@@ -1258,10 +1258,32 @@
     return best;
   }
 
+  // 回傳「玩家搆得到、但已採空(harvestable=false)的最近節點」,沒有就 null。
+  // 用來在玩家站在採空節點旁時標「已採空」,免得按鍵沒反應卻不知為何(切片 1 無重生,採空即長期變淡)。
+  function nearestDepleted(me) {
+    if (!me) return null;
+    let best = null;
+    let bestD = GATHER_REACH * GATHER_REACH;
+    for (const n of nodes) {
+      if (n.harvestable) continue;
+      const dx = n.x - me.x;
+      const dy = n.y - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
   // 畫世界上的採集節點。可採的亮、採空(重生中)的壓暗;玩家搆得到的那顆描一圈亮環提示「可採」。
   function drawNodes(camX, camY) {
     const me = myId ? players.get(myId) : null;
     const reachable = nearestHarvestable(me);
+    // 沒有可採的在搆得到範圍內時,才標最近的採空節點為「已採空」——有可採的就不打擾,
+    // 引導玩家去採那顆。純讀快照,不在前端判規則。
+    const depleted = reachable ? null : nearestDepleted(me);
     for (const n of nodes) {
       const sx = n.x - camX;
       const sy = n.y - camY;
@@ -1304,6 +1326,18 @@
           ctx.fillStyle = "rgba(255,235,180,0.8)";
           ctx.fillText(hint, sx, hy);
         }
+      } else if (n === depleted) {
+        // 玩家就站在採空節點旁、附近又沒有可採的:標一行淡「已採空」,解釋為何按鍵沒反應,
+        // 別讓人對著按不動的節點乾按。alpha 已壓暗,字提到 1 才讀得清。
+        ctx.globalAlpha = 1;
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        const ty = sy - 24;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("已採空", sx, ty);
+        ctx.fillStyle = "rgba(220,220,220,0.85)";
+        ctx.fillText("已採空", sx, ty);
       }
       ctx.restore();
     }
