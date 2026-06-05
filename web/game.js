@@ -86,9 +86,13 @@
   let myEther = 0;
   // 是否已同步過初始乙太：避免進場／重連時把既有存量當成一次大量「獲得」而噴一大串飄字。
   let etherKnown = false;
-  // 收成得乙太時的「+N 乙太」飄字（純表現，從權威 ether 差值推得，不嵌任何遊戲規則）。
-  // 每筆 { wx, wy, gain, born }：以世界座標固定在收成當下的玩家位置上方，隨時間上飄淡出。
-  const etherFloaters = [];
+  // 上一次快照的背包數量（item → qty）+ 是否已同步過初始背包。和乙太同理:進場/重連時
+  // 既有存量不算「採到」,不噴飄字;之後某品項數量變多才是真的採進來,才噴「+N 🪵」。
+  let myInv = new Map();
+  let invKnown = false;
+  // 收成得乙太、採集進背包時的「+N」飄字（純表現，從權威數值差值推得，不嵌任何遊戲規則）。
+  // 每筆 { wx, wy, text, color, born }：以世界座標固定在獲得當下的玩家位置上方，隨時間上飄淡出。
+  const floaters = [];
   // 互動確認漣漪（純表現）：點/輕點田格送出農作意圖時，在該格畫一圈短暫擴張淡出的亮環，
   // 讓玩家「按下就有回饋」——尤其手機沒有桌面的 hover 高亮,輕點後到下一個快照回來前
   // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
@@ -338,7 +342,18 @@
           myEther = me.ether;
           etherKnown = true;
           document.getElementById("hudEther").textContent = `乙太：${myEther}`;
-          updateBagHud(me.inventory || []); // 防呆:舊版沒這欄 → 空背包
+          const inv = me.inventory || []; // 防呆:舊版沒這欄 → 空背包
+          // 背包某品項變多 → 採集回饋飄字（首次同步不噴,否則進場/重連會把存量當成一次大採）。
+          if (invKnown) {
+            let stack = 0; // 同一拍多項一起變多時上下疊開,不互相蓋住
+            for (const s of inv) {
+              const gain = s.qty - (myInv.get(s.item) || 0);
+              if (gain > 0) spawnGatherFloater(s.item, gain, me.x, me.y, stack++);
+            }
+          }
+          myInv = new Map(inv.map((s) => [s.item, s.qty]));
+          invKnown = true;
+          updateBagHud(inv);
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
@@ -361,29 +376,37 @@
     }
   }
 
-  // 收成得乙太時，在玩家當下位置上方記一筆飄字（世界座標，鏡頭移動也黏在原地飄起）。
+  // 收成得乙太時，在玩家當下位置上方記一筆金色飄字（世界座標，鏡頭移動也黏在原地飄起）。
   function spawnEtherFloater(gain, wx, wy) {
-    etherFloaters.push({ wx, wy: wy - 22, gain, born: performance.now() });
+    floaters.push({ wx, wy: wy - 22, text: `+${gain} 乙太 ✨`, color: "255,210,74", born: performance.now() });
+  }
+
+  // 採集進背包時，在玩家當下位置上方記飄字（多項一起獲得就上下疊開,不互相蓋住）。
+  // 顏色用背包品項色,讓「採到什麼」一眼可分;同樣從快照差值推得,不嵌規則。
+  function spawnGatherFloater(item, gain, wx, wy, stackIdx) {
+    const icon = ITEM_LOOK[item] || item;
+    const color = ITEM_FLOAT_COLOR[item] || "230,230,230";
+    floaters.push({ wx, wy: wy - 22 - stackIdx * 18, text: `+${gain} ${icon}`, color, born: performance.now() });
   }
 
   // 把飄字逐一上飄、淡出，過了壽命就移除。畫在日夜染色之後（當回饋 HUD，不被夜色蓋暗）。
   const FLOAT_MS = 1100;
-  function drawEtherFloaters(camX, camY, now) {
-    for (let i = etherFloaters.length - 1; i >= 0; i--) {
-      const f = etherFloaters[i];
+  function drawFloaters(camX, camY, now) {
+    for (let i = floaters.length - 1; i >= 0; i--) {
+      const f = floaters[i];
       const age = now - f.born;
-      if (age >= FLOAT_MS) { etherFloaters.splice(i, 1); continue; }
+      if (age >= FLOAT_MS) { floaters.splice(i, 1); continue; }
       const t = age / FLOAT_MS;
       const alpha = 1 - t;
       const sx = f.wx - camX;
-      // 開「減少動態」時不上飄,只在原地淡出（+N 乙太的資訊由文字本身傳達,上飄純裝飾）。
+      // 開「減少動態」時不上飄,只在原地淡出（+N 的資訊由文字本身傳達,上飄純裝飾）。
       const sy = f.wy - camY - (reduceMotion ? 0 : t * 34);
       ctx.font = "bold 15px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = `rgba(0,0,0,${(alpha * 0.5).toFixed(3)})`;
-      ctx.fillText(`+${f.gain} 乙太 ✨`, sx + 1, sy + 1); // 描影,任何地表上都讀得到
-      ctx.fillStyle = `rgba(255,210,74,${alpha.toFixed(3)})`;
-      ctx.fillText(`+${f.gain} 乙太 ✨`, sx, sy);
+      ctx.fillText(f.text, sx + 1, sy + 1); // 描影,任何地表上都讀得到
+      ctx.fillStyle = `rgba(${f.color},${alpha.toFixed(3)})`;
+      ctx.fillText(f.text, sx, sy);
     }
   }
 
@@ -942,8 +965,8 @@
     // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
     drawNightMotes(performance.now());
 
-    // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
-    drawEtherFloaters(camX, camY, performance.now());
+    // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
+    drawFloaters(camX, camY, performance.now());
 
     // 互動確認漣漪：同在日夜染色之後畫，點/輕點田格的當下回饋不被夜色蓋暗。
     drawTapFlashes(camX, camY, performance.now());
@@ -1345,6 +1368,8 @@
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
   const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨" };
+  // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74" };
   function updateBagHud(inv) {
     const el = document.getElementById("hudBag");
     if (!el) return;
