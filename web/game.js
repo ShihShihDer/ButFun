@@ -48,6 +48,9 @@
   let lastSentInput = "";
   // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
   let field = null;
+  // 最近一次快照數到的「有作物且缺水」格數（updateFarmHud 算好順手記下）；
+  // 給離田時的「回農地」邊緣指標決定要不要強調缺水，數字與 HUD 一致、不另外再數一遍。
+  let farmDryCount = 0;
   let myEther = 0;
   // 是否已同步過初始乙太：避免進場／重連時把既有存量當成一次大量「獲得」而噴一大串飄字。
   let etherKnown = false;
@@ -284,12 +287,76 @@
         if (cell.dry && cell.state >= 2 && cell.state <= 4) dry++;
       }
     }
+    farmDryCount = dry;
     if (dry > 0) {
       el.textContent = `🌱 ${dry} 格作物缺水`;
       el.classList.remove("hidden");
     } else {
       el.classList.add("hidden");
     }
+  }
+
+  // ---- 離田時的「回農地」邊緣指標 ----
+  // 農地完全移出畫面時，在螢幕邊緣畫一個指向農地的小箭頭，讓玩家走遠探索後一眼知道
+  // 「我的田在哪個方向」、要回去澆水時不必先開小地圖對位。農地在畫面內時不畫（不打擾）。
+  // 純從農地世界座標 + 鏡頭推得的表現層回饋，不嵌任何遊戲規則（WebXR renderer 可各自實作）。
+  function drawFarmPointer(camX, camY) {
+    if (!field || !field.cols || !field.rows) return;
+    // 農地中心（世界座標）→ 螢幕座標。
+    const cx = field.origin_x + (field.cols * field.tile_size) / 2;
+    const cy = field.origin_y + (field.rows * field.tile_size) / 2;
+    const sx = cx - camX;
+    const sy = cy - camY;
+    // 農地矩形是否與畫面相交：相交（看得到田）就不畫指標。用半尺寸當判定半徑近似即可。
+    const halfW = (field.cols * field.tile_size) / 2;
+    const halfH = (field.rows * field.tile_size) / 2;
+    if (sx + halfW >= 0 && sx - halfW <= canvas.width &&
+        sy + halfH >= 0 && sy - halfH <= canvas.height) return;
+
+    // 從畫面中心朝農地方向、夾到邊緣內側的安全框上，當作箭頭落點。
+    const ccx = canvas.width / 2, ccy = canvas.height / 2;
+    const ang = Math.atan2(sy - ccy, sx - ccx);
+    const m = 46; // 邊緣留白，避開 HUD / 小地圖最外圈
+    const px = Math.max(m, Math.min(canvas.width - m, sx));
+    const py = Math.max(m, Math.min(canvas.height - m, sy));
+
+    const dry = farmDryCount > 0;
+    // 缺水時用田格藍色澆水語彙 + 顯示格數，催玩家回去澆水；不缺水用低調黃銅。
+    const color = dry ? "#7fbfff" : "rgba(201,162,75,0.85)";
+
+    ctx.save();
+    // 底盤圓，讓箭頭在任何地表都讀得到。
+    ctx.beginPath();
+    ctx.arc(px, py, 15, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,16,30,0.6)";
+    ctx.fill();
+    // 三角箭頭，尖端指向農地方向。
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-5, -6);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+
+    // 圖示（與 HUD 缺水提示同一顆 🌱）+ 缺水格數，貼在箭頭旁。
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const label = dry ? `🌱${farmDryCount}` : "🌱";
+    // 標籤擺在箭頭「背向農地」那側，不擋住指向。
+    const lx = px - Math.cos(ang) * 24;
+    const ly = py - Math.sin(ang) * 24;
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.strokeText(label, lx, ly);
+    ctx.fillStyle = dry ? "#bfe0ff" : "#e8e0cf";
+    ctx.fillText(label, lx, ly);
+    ctx.textBaseline = "alphabetic"; // 復原預設，免得影響其後文字繪製
   }
 
   // ---- 輸入 ----
@@ -484,6 +551,9 @@
 
     // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawEtherFloaters(camX, camY, performance.now());
+
+    // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
+    drawFarmPointer(camX, camY);
 
     // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
     drawMinimap();
