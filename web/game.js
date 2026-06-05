@@ -1267,6 +1267,24 @@
           ctx.setLineDash([4, 3]); // 虛線:跟滑鼠 hover 的實線亮框一眼分得開
           ctx.strokeRect(ex + 2, ey + 2, ts - 4, ts - 4);
           ctx.restore(); // 還原 lineDash,免得漏進後面黃銅框/柵欄的實線繪製
+          // 腳下格動作提示:在虛線框正上方標出「現在按採集鍵/鈕會做什麼」(翻土/播種/澆水/
+          // 收成),讓玩家不必先試一次才知道腳下這格按下去的結果——新手最常卡在「站在田上卻
+          // 不知道下一步」。動作詞鏡像 field.rs interact() 只讀快照 state:規則仍在伺服器,
+          // 這裡純把權威狀態翻成一個可讀詞,不自己判斷能不能做。
+          const act = tendActionLabel(f.cells[frow * f.cols + fcol]);
+          if (act) {
+            ctx.save();
+            ctx.font = "12px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            const tx = ex + ts / 2;
+            const ty = ey - 3; // 貼在虛線框正上方
+            ctx.lineWidth = 3; // 深色描邊讓字在土黃/作物任何底色上都讀得清
+            ctx.strokeStyle = "rgba(0,0,0,0.6)";
+            ctx.strokeText(act, tx, ty);
+            ctx.fillStyle = "rgba(255,235,180,0.95)";
+            ctx.fillText(act, tx, ty);
+            ctx.restore();
+          }
         }
       }
     }
@@ -1294,6 +1312,19 @@
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("(走近一點才能照顧)", fx + fw / 2, fy + fh + 18);
+    }
+  }
+
+  // 腳下這格「按採集鍵會發生什麼」的可讀動作詞。鏡像 field.rs 的 interact():
+  // 自然地→翻土、空土→播種、成熟→收成、其餘已種未熟→澆水。只讀權威快照的 state,
+  // 不在前端決定能不能做(那是伺服器的事),純把狀態翻成一個給玩家看的詞。
+  function tendActionLabel(cell) {
+    if (!cell) return null;
+    switch (cell.state) {
+      case 0: return "翻土";
+      case 1: return "播種";
+      case 4: return "收成";
+      default: return "澆水"; // 2=種子 3=發芽:未熟作物,interact 一律當澆水
     }
   }
 
