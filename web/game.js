@@ -1510,7 +1510,7 @@
 
   // ---- 操作說明可收合 ----
   // 點標題列收起／展開;狀態存 localStorage,玩家選過就尊重他的選擇。
-  // 沒選過時依視窗寬度給預設:窄畫面(手機直式)預設收起省空間,寬畫面預設展開讓新手看得到。
+  // 沒選過時依視窗大小給預設:小畫面預設收起省空間,大畫面預設展開讓新手看得到。
   function initHelpToggle() {
     const hud = document.getElementById("hud");
     const toggle = document.getElementById("helpToggle");
@@ -1518,7 +1518,12 @@
     let collapsed;
     try { collapsed = localStorage.getItem("butfun.helpCollapsed"); } catch {}
     if (collapsed === null || collapsed === undefined) {
-      collapsed = window.innerWidth < 560 ? "1" : "0"; // 窄畫面預設收起
+      // 窄(手機直式)或矮(手機橫式:寬而矮,667×375 之類)都預設收起。橫式手機寬度過關卻
+      // 只有一點垂直空間,展開的多行說明會把矮螢幕的地表擠掉——垂直才是橫式的稀缺資源,
+      // 故寬高任一不足就收起。
+      const tooNarrow = window.innerWidth < 560;
+      const tooShort = window.innerHeight < 480;
+      collapsed = tooNarrow || tooShort ? "1" : "0";
     }
     const apply = (v) => {
       const isCollapsed = v === "1";
