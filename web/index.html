@@ -96,6 +96,10 @@
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
     #hudRipe { color: #ffd24a; }
+    /* 訪客「下一步」引導:用黃銅色 + 微微邊框框出,讓茫然的新手第一眼就看到該怎麼開始 */
+    #hudGuestHint { color: var(--brass); margin: 2px 0; padding: 3px 7px; border: 1px solid var(--brass);
+      border-radius: 6px; opacity: 0.92; }
+    #hudGuestHint b { color: #ffd24a; }
     /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
     #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
     #helpToggle:hover { opacity: 0.85; }
@@ -242,6 +246,10 @@
   <div id="hud" class="hidden">
     <div><span class="brass">ButFun</span> · 邊境星地表</div>
     <div id="hudName" class="hidden">你：—</div>
+    <!-- 訪客引導:玩家回饋最大宗是「訪客一進來沒農地、不知道下一步」(suggestions.jsonl)。
+         給訪客(且只給訪客)一行明確的「下一步」——登入即有專屬田、可開始種田——直擊新手
+         茫然,登入者不顯示、不打擾。純前端提示,不嵌任何遊戲規則。 -->
+    <div id="hudGuestHint" class="hidden">👋 探索中 · <b>登入</b>即可獲得專屬乙太田開始種田</div>
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
     <div id="hudTime">—</div>
