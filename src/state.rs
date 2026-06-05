@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::auth::AuthConfig;
+use crate::connections::ConnectionCounts;
 use crate::field::Field;
 use crate::positions::PositionStore;
 use crate::protocol::{PlayerView, WorldInfo};
@@ -108,6 +109,9 @@ pub struct AppState {
     pub users: UserStore,
     /// 玩家最後位置記憶(Phase 0-E 記憶體前置):已登入玩家重連回到離線前位置。
     pub positions: PositionStore,
+    /// 每個玩家 id 當前的在線連線數。同帳號多分頁/多裝置共用同一玩家 id,靠這個計數
+    /// 讓「先離線的那條連線」不會把另一條還在線的 session 一起從世界移除。
+    pub connections: ConnectionCounts,
     /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
     pub auth: Option<AuthConfig>,
 }
@@ -125,6 +129,7 @@ impl AppState {
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
             positions: PositionStore::new(),
+            connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
         }
     }

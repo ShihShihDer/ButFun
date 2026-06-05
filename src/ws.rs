@@ -129,9 +129,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     };
     let id = player.id;
 
+    // 登記這條連線。同帳號（同 id）開多個分頁／裝置時，只有第一條連線建立玩家、從記憶
+    // 位置進場；之後的連線共用既有權威狀態（不用舊存檔覆蓋當前位置，避免畫面瞬移）。
+    // 鎖序固定「先 players 再 conns」，與 cleanup 一致，避免死鎖。
     {
         let mut players = app.players.write().unwrap();
-        players.insert(id, player.clone());
+        if app.connections.acquire(id) {
+            players.insert(id, player.clone());
+        }
     }
     tracing::info!(player = %player.name, %id, "玩家進場");
 
@@ -244,18 +249,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     tracing::info!(player = %player.name, %id, "玩家離線");
 }
 
-/// 玩家離線清理。`persist_pos` 為真（已登入玩家）時，先把最後位置與乙太記下來，
-/// 讓同帳號下次重連回到原位、保有收成。
+/// 玩家離線清理。先放掉這條連線；只有當這是該玩家的**最後一條**連線（同帳號其餘分頁
+/// 都離線）時，才真正把玩家移出世界——避免關掉一個分頁順手把另一個還連著的同帳號
+/// session 一起踢掉。`persist_pos` 為真（已登入玩家）時，移除前先把最後位置與乙太記
+/// 下來，讓同帳號下次重連回到原位、保有收成。鎖序固定「先 players 再 conns」。
 async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
-    let removed = app.players.write().unwrap().remove(&id);
-    if persist_pos {
-        if let Some(p) = removed {
+    let removed = {
+        let mut players = app.players.write().unwrap();
+        if app.connections.release(id) {
+            players.remove(&id)
+        } else {
+            None // 同帳號還有其他連線在線，保留玩家
+        }
+    };
+    // 只有真的移除了玩家（最後一條連線離線）才記位置、廣播離線；否則世界裡那名玩家還在，
+    // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
+    if let Some(p) = removed {
+        if persist_pos {
             app.positions.remember(id, p.x, p.y, p.ether);
         }
-    }
-    let left = ServerMsg::PlayerLeft { id };
-    if let Ok(json) = serde_json::to_string(&left) {
-        let _ = app.tx.send(json);
+        let left = ServerMsg::PlayerLeft { id };
+        if let Ok(json) = serde_json::to_string(&left) {
+            let _ = app.tx.send(json);
+        }
     }
 }
 

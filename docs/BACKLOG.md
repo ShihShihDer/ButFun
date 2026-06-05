@@ -81,6 +81,16 @@
   session cookie(stateless);WebSocket 升級前讀 cookie → 同 Google 帳號跨裝置
   /重連即同玩家;前端「以 Google 登入」按鈕 + 登入後跳過進場畫面、HUD 顯示用戶名
   與登出。`.env`/EnvironmentFile 載入秘密,gitignored 不入 repo。
+  ✅ 跨裝置同玩家補洞（同帳號多連線互踢，2026-06-05）：已登入玩家 `player.id == user.id`，
+  所以同一帳號開兩個分頁／兩台裝置時，兩條 WebSocket 連線共用同一個玩家 id——正是本項招牌
+  「同 Google 帳號跨裝置即同玩家」會踩到的情境。先前 `cleanup` 無條件 `players.remove(id)`：
+  關掉其中一個分頁，會把另一條還連著的同帳號 session 一起從世界移除（不再進快照、輸入被靜默
+  丟棄，那條連線等於憑空變死人）。新增 `src/connections.rs` `ConnectionCounts`（每個 id 的在線
+  連線數，`acquire`/`release` 純可測）：第一條連線才從記憶位置建立玩家，之後同帳號連線只增計數、
+  共用既有權威狀態（不用舊存檔覆蓋當前位置、避免瞬移），最後一條離線（計數歸零）才真正移除、
+  記位置、廣播 `PlayerLeft`（不再對「人還在世界」誤送離線造成閃爍）。鎖序固定「先 players 再
+  conns」與遊戲迴圈無交集，無死鎖。加 6 個單元測試，`cargo test` 97 綠、clippy 乾淨、伺服器二進位
+  啟動正常（埠被正式服務占用屬預期）。
 - [x] **Phase 0-H 雛形：Cloudflare Tunnel 上線**
   ✅ 自架 + `cloudflared` 反向通道,公開於 https://peregrine.but-fun.com;手冊
   與設定範例已在 repo。
