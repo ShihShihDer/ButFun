@@ -276,7 +276,13 @@
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
     if (e.key === "Enter") { document.getElementById("chatText").focus(); return; }
     const dir = keyToDir(e);
-    if (dir) { keys[dir] = true; sendInputIfChanged(); e.preventDefault(); }
+    if (dir) { keys[dir] = true; sendInputIfChanged(); e.preventDefault(); return; }
+    // 採集鍵:空白鍵 / E / F 對腳下田格互動,讓沒滑鼠的玩家也能農作。
+    // 用 e.repeat 擋住長按連發(一次按一次,跟滑鼠單擊一致)。
+    if (e.key === " " || e.key === "e" || e.key === "E" || e.key === "f" || e.key === "F") {
+      if (!e.repeat) farmAtPlayer();
+      e.preventDefault();
+    }
   });
   window.addEventListener("keyup", (e) => {
     const dir = keyToDir(e);
@@ -825,6 +831,23 @@
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
     ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+  }
+  // 純鍵盤/無滑鼠玩家:對「自己腳下這格」送農作意圖(空白鍵 / E / F)。玩家回饋
+  // 「不一定有滑鼠」——走得動卻點不到田格。這裡只挑目標格(自己的位置)送原始世界
+  // 座標,做什麼仍由權威伺服器決定,不在客戶端判規則。
+  function farmAtPlayer() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const me = myId ? players.get(myId) : null;
+    if (!me) return;
+    if (field && !withinFieldReach(me.x, me.y)) {
+      const now = Date.now();
+      if (now - lastReachHint > 2500) {
+        addChat("系統", "走進農地再按採集鍵照顧作物哦。");
+        lastReachHint = now;
+      }
+      return;
+    }
+    ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
   }
   // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
   canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
