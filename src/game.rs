@@ -19,18 +19,20 @@ pub fn spawn(app: AppState) {
             interval.tick().await;
             tick += 1;
 
-            // 推進農地成長（短暫持鎖，不跨 await）。
-            let field_view = {
-                let mut field = app.field.write().unwrap();
-                field.tick(dt);
-                field.view()
-            };
-
-            // 推進日夜時鐘（短暫持鎖，不跨 await）。
-            let daynight_view = {
+            // 先推進日夜時鐘，取得當下亮度決定作物成長速度（短暫持鎖，不跨 await）。
+            let (daynight_view, growth_rate) = {
                 let mut daynight = app.daynight.write().unwrap();
                 daynight.advance(dt);
-                daynight.view()
+                (daynight.view(), daynight.growth_rate())
+            };
+
+            // 推進農地成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、放慢
+            // （0-G「隨日夜成長」）。濕度也一併縮放，故每次澆水的總成長量不變、
+            // 只有牆鐘速度隨日夜變化（短暫持鎖，不跨 await）。
+            let field_view = {
+                let mut field = app.field.write().unwrap();
+                field.tick(dt * growth_rate);
+                field.view()
             };
 
             // 整合位置並建立快照（短暫持鎖，不跨 await）。

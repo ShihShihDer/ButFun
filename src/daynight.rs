@@ -8,13 +8,12 @@
 //!   - 遊戲迴圈：每 tick 對共享的 `DayNight` 呼叫 `advance(dt)` 推進時間。
 //!   - WebSocket：把 `view()`（階段 + 亮度）隨快照廣播，前端依此做環境染色。
 //!   - 前端：依亮度疊一層夜色，給「日夜流轉」的療癒體感。
+//!   - 作物成長（2026-06-05）：`growth_rate_for(light)` 把當前亮度映成成長倍率，
+//!     遊戲迴圈用它縮放餵給 `field.tick` 的 `dt`——白天亮、長得快，夜裡暗、放慢，
+//!     把 0-G 的「隨日夜成長」收尾。
 //!
 //! 仍待：
-//!   - 作物（選用）：白天成長略快、夜裡放慢——把 0-G 的「隨日夜成長」收尾。
 //!   - 持久化（接 0-E）：把 `elapsed` 序列化存回，重啟後從同一個時刻接續。
-//!
-//! 刻意只做「時間 → 階段 / 亮度」的純映射，先不耦合作物成長（那是接線，留待後續），
-//! 一如 `crops.rs` / `field.rs` 當初先落地純邏輯地基、之後才接遊戲迴圈的慣例。
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +26,12 @@ pub const DAY_LENGTH_SECS: f32 = 600.0;
 
 /// 夜裡的最低亮度。刻意不歸零，讓畫面在最暗時仍看得見（療癒、不是恐怖）。
 pub const MIN_LIGHT: f32 = 0.2;
+
+/// 作物成長倍率的下界（最暗的午夜）。刻意不歸零，夜裡仍緩慢生長、不卡死療癒節奏。
+pub const MIN_GROWTH_RATE: f32 = 0.6;
+/// 作物成長倍率的上界（最亮的日中）。比 1.0 高一些，給「白天最適合農作」的體感。
+/// 與下界合起來是「略快／略慢」的溫和差距，不把夜裡懲罰得太重。
+pub const MAX_GROWTH_RATE: f32 = 1.25;
 
 /// 一天裡「最亮的時刻」落在循環的哪個比例（日正當中，約在白天階段中段）。
 /// 亮度曲線以此為峰、半圈之外（午夜）為谷。
@@ -70,6 +75,18 @@ pub fn light_for(f: f32) -> f32 {
     // 0..1 的鐘形：峰在 PEAK_FRACTION（cos(0)=1）、谷在其半圈之外（cos(π)=-1）。
     let raw = 0.5 + 0.5 * (TAU * (f - PEAK_FRACTION)).cos();
     MIN_LIGHT + (1.0 - MIN_LIGHT) * raw
+}
+
+/// 依環境亮度推導作物的成長倍率，落在 `[MIN_GROWTH_RATE, MAX_GROWTH_RATE]`。純函式。
+/// 亮度（`light_for` 保證落在 `[MIN_LIGHT, 1.0]`）線性映到倍率：最暗（午夜）最慢、
+/// 最亮（日中）最快。遊戲迴圈用它縮放餵給 `field.tick` 的 `dt`，達成「白天長略快、
+/// 夜裡放慢」。防線：輸入先夾回 `[MIN_LIGHT, 1.0]`，壞值（理論上不會出現）也不算出
+/// 界外倍率。
+pub fn growth_rate_for(light: f32) -> f32 {
+    let l = light.clamp(MIN_LIGHT, 1.0);
+    // 把 [MIN_LIGHT, 1.0] 正規化成 [0, 1]，再映到倍率區間。
+    let t = (l - MIN_LIGHT) / (1.0 - MIN_LIGHT);
+    MIN_GROWTH_RATE + (MAX_GROWTH_RATE - MIN_GROWTH_RATE) * t
 }
 
 /// 伺服器權威的日夜時鐘。只存「這一輪內已經過的秒數」，階段 / 亮度都由它推導，
@@ -125,6 +142,12 @@ impl DayNight {
     /// 目前環境亮度，`[MIN_LIGHT, 1.0]`。
     pub fn light_level(&self) -> f32 {
         light_for(self.fraction())
+    }
+
+    /// 目前的作物成長倍率，`[MIN_GROWTH_RATE, MAX_GROWTH_RATE]`。
+    /// 由當下亮度推導（白天快、夜裡慢），遊戲迴圈用它縮放農地成長的 `dt`。
+    pub fn growth_rate(&self) -> f32 {
+        growth_rate_for(self.light_level())
     }
 
     /// 對前端的可見狀態（階段 + 亮度）。隨快照廣播，比照 `Field::view` / `Player::view`。
@@ -254,6 +277,40 @@ mod tests {
         assert_eq!(v.phase, Phase::Day);
         assert!((v.light - d.light_level()).abs() < 1e-6);
         assert!((MIN_LIGHT..=1.0).contains(&v.light));
+    }
+
+    #[test]
+    fn growth_rate_maps_light_to_bounds() {
+        // 最暗 → 下界、最亮 → 上界，端點精準對齊。
+        assert!((growth_rate_for(MIN_LIGHT) - MIN_GROWTH_RATE).abs() < 1e-6);
+        assert!((growth_rate_for(1.0) - MAX_GROWTH_RATE).abs() < 1e-6);
+        // 中間亮度落在兩界之間、且單調遞增（越亮長越快）。
+        let mid = growth_rate_for((MIN_LIGHT + 1.0) / 2.0);
+        assert!(mid > MIN_GROWTH_RATE && mid < MAX_GROWTH_RATE);
+        assert!(growth_rate_for(0.4) < growth_rate_for(0.8));
+    }
+
+    #[test]
+    fn growth_rate_clamps_out_of_range_light() {
+        // 亮度本就保證在 [MIN_LIGHT,1]，但壞值也不該算出界外倍率。
+        assert_eq!(growth_rate_for(0.0), MIN_GROWTH_RATE);
+        assert_eq!(growth_rate_for(2.0), MAX_GROWTH_RATE);
+        assert_eq!(growth_rate_for(-1.0), MIN_GROWTH_RATE);
+    }
+
+    #[test]
+    fn growth_rate_fastest_at_midday_slowest_at_midnight() {
+        // 透過時鐘端到端：日中成長最快、午夜最慢，且都落在界內。
+        let mut midday = DayNight::new();
+        midday.advance(DAY_LENGTH_SECS * PEAK_FRACTION); // 日正當中
+        let mut midnight = DayNight::new();
+        midnight.advance(DAY_LENGTH_SECS * (PEAK_FRACTION + 0.5).rem_euclid(1.0)); // 午夜
+        assert!(midday.growth_rate() > midnight.growth_rate());
+        assert!((midday.growth_rate() - MAX_GROWTH_RATE).abs() < 1e-3);
+        assert!((midnight.growth_rate() - MIN_GROWTH_RATE).abs() < 1e-3);
+        for d in [&midday, &midnight] {
+            assert!((MIN_GROWTH_RATE..=MAX_GROWTH_RATE).contains(&d.growth_rate()));
+        }
     }
 
     #[test]
