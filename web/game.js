@@ -872,6 +872,18 @@
   canvas.addEventListener("touchend", endTouch, { passive: false });
   canvas.addEventListener("touchcancel", endTouch, { passive: false });
 
+  // 把 species 字串雜湊成一個穩定的色相(0-359)→ 同族群恆得同色,不同族群一眼分得開。
+  // 玩家反覆回報「周圍有各種族群(銅齒/發條/琥珀/乙太/電弧/齒輪)卻分不出來」——伺服器本就
+  // 帶 species,但 2D 客戶端先前讓所有人名牌同色。純表現層的雜湊著色,不需後端改、不嵌規則;
+  // 將來 WebXR renderer 可各自挑呈現方式。亮度壓在偏亮區間,配上名牌既有的深色描邊在任何
+  // 地表/日夜都讀得清,且顏色只是「附加線索」、名字本身仍在,不依賴辨色力(無障礙)。
+  function speciesAccent(species) {
+    const s = species || "terran";
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return `hsl(${h % 360}, 62%, 78%)`;
+  }
+
   // ---- 渲染迴圈 ----
   // 畫單一玩家(角色 sprite／fallback 圓 + 頭上名字)。抽成獨立函式,讓 render 能
   // 控制畫的順序——別人先畫、自己最後畫,確保自己永遠在最上層。純表現層,不嵌任何
@@ -927,7 +939,8 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.strokeText(p.name, sx, sy - 24);
-    ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
+    // 自己恆金色(一眼找到自己);別人依 species 上色,讓不同族群在名牌就分得開。
+    ctx.fillStyle = isMe ? "#ffd24a" : speciesAccent(p.species);
     ctx.fillText(p.name, sx, sy - 24);
   }
 
