@@ -93,6 +93,11 @@
   // ---- 觸控搖桿狀態(手機沒鍵盤,用拖曳設方向) ----
   let touchOrigin = null;   // 手指按下的初始位置
   let touchCurrent = null;  // 手指目前的位置
+  // 正在當搖桿的那根手指 identifier:多指處理的關鍵。手機上玩時第二指常會碰到畫面
+  // (誤觸／手掌／想點田格),先前用 e.touches[0] 追蹤、又在「任何」touchend 都清掉搖桿,
+  // 會被第二指的按下重設原點、第二指一放開就整個停止移動——即使主控手指還按著。
+  // 鎖定第一根落下的手指,其餘手指的 start/move/end 一律不干擾它。
+  let touchId = null;
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
   // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
@@ -624,29 +629,43 @@
     keys.right = dx > dead;
     sendInputIfChanged();
   }
+  // 從 TouchList 取出搖桿那根手指(依 identifier);找不到回 null。
+  function findTouch(list) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].identifier === touchId) return list[i];
+    }
+    return null;
+  }
   canvas.addEventListener("touchstart", (e) => {
-    if (e.touches.length === 0) return;
-    const t = e.touches[0];
-    touchOrigin = { x: t.clientX, y: t.clientY };
-    touchCurrent = { x: t.clientX, y: t.clientY };
+    // 已有手指在當搖桿就不被後續手指接管(避免第二指重設原點、跳動搖桿)。
+    if (touchId === null && e.changedTouches.length) {
+      const t = e.changedTouches[0];
+      touchId = t.identifier;
+      touchOrigin = { x: t.clientX, y: t.clientY };
+      touchCurrent = { x: t.clientX, y: t.clientY };
+    }
     e.preventDefault();
   }, { passive: false });
   canvas.addEventListener("touchmove", (e) => {
-    if (!touchOrigin || e.touches.length === 0) return;
-    const t = e.touches[0];
+    if (touchId === null || !touchOrigin) return;
+    const t = findTouch(e.touches);
+    if (!t) return; // 這次 move 不含搖桿那根手指(別根手指在動),不理
     touchCurrent = { x: t.clientX, y: t.clientY };
     setTouchKeys(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
     e.preventDefault();
   }, { passive: false });
   function endTouch(e) {
+    // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
+    const t = touchId === null ? null : findTouch(e.changedTouches);
+    if (!t) return;
     // 幾乎沒移動的觸碰當成「輕點」→ 農地互動（拖曳則是搖桿移動，不互動）。
     // 容差 22px(>移動死區 14px):手指按下自然會稍微滑動,先前 12px 太嚴,
     // 玩家想點田格常被誤判成搖桿微動、整個 tap 被吃掉。
-    if (touchOrigin && e.changedTouches && e.changedTouches.length) {
-      const t = e.changedTouches[0];
+    if (touchOrigin) {
       const moved = Math.hypot(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
       if (moved < 22) farmAtScreen(t.clientX, t.clientY);
     }
+    touchId = null;
     touchOrigin = null;
     touchCurrent = null;
     setTouchKeys(0, 0);
