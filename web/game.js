@@ -1571,6 +1571,7 @@
     modal.style.display = "none";
     setBackgroundInert(false); // 還原背景的互動與無障礙可達性
     document.getElementById("suggestStatus").textContent = "";
+    document.getElementById("suggestSend").disabled = false; // 還原送出鈕,下次開箱可再送
     if (suggestOpener && suggestOpener.focus) suggestOpener.focus();
     suggestOpener = null;
   }
@@ -1593,12 +1594,18 @@
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
   });
-  document.getElementById("suggestSend").addEventListener("click", async () => {
+  // 送出中防重送:fetch 在飛時把送出鈕停用,擋掉「手機快點兩下／連按 Enter／網路慢時
+  // 不耐煩再按」造成的重複 POST——建議箱是 devloop 收回饋的主管道,重送會在
+  // suggestions.jsonl 留下整則重複紀錄。成功會自動關閉 modal;失敗或例外則還原鈕讓玩家重試。
+  const suggestSendBtn = document.getElementById("suggestSend");
+  suggestSendBtn.addEventListener("click", async () => {
+    if (suggestSendBtn.disabled) return; // 已在送出中,忽略重複觸發
     const text = document.getElementById("suggestText").value.trim();
     const from = document.getElementById("suggestFrom").value.trim();
     const status = document.getElementById("suggestStatus");
     if (!text) { status.textContent = "寫點東西再送吧。"; return; }
     status.textContent = "送出中…";
+    suggestSendBtn.disabled = true;
     try {
       const res = await fetch("/api/suggestions", {
         method: "POST",
@@ -1611,9 +1618,11 @@
         setTimeout(closeSuggestModal, 1200); // 一併把焦點還回開啟者
       } else {
         status.textContent = "送出失敗，稍後再試。";
+        suggestSendBtn.disabled = false; // 還原讓玩家重試
       }
     } catch {
       status.textContent = "送出失敗，稍後再試。";
+      suggestSendBtn.disabled = false; // 還原讓玩家重試
     }
   });
 
