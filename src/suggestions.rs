@@ -129,12 +129,29 @@ fn now_millis() -> u64 {
 
 fn load_from_disk() -> Vec<Suggestion> {
     match std::fs::read_to_string(LOG_PATH) {
-        Ok(contents) => contents
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Suggestion>(line).ok())
-            .collect(),
+        Ok(contents) => parse_and_sanitize(&contents),
         Err(_) => Vec::new(),
     }
+}
+
+/// 把 JSONL 檔內容解析成建議清單，並讓每則**再過一次 `sanitize`**（載入防線）。純函式以便測試。
+///
+/// 為什麼載入也要過濾：控制字元過濾原本只加在**寫入**路徑（`add`/`sanitize`），但建議是
+/// 「存檔又重載」的持久化結構——`data/suggestions.jsonl` 裡可能有**那道硬化 landing 之前**
+/// 寫進的舊行，或被手動編輯 / 損毀的行。這些行會由公開的 `GET /api/suggestions` 原樣回出、
+/// 又被維護者直接在終端機讀來三角化，殘留的 `ESC`(0x1B) / `NUL` / `\r` 仍能注入 ANSI 轉義、
+/// 偽造或破壞顯示。讓讀路徑也走同一個 sanitizer，輸出就用「實際會被存下的乾淨內容」當單一
+/// 真實來源，不論磁碟上那行是何時、被什麼寫進去的——延續 `field.rs::from_tiles` /
+/// `Crop::is_loadable` / `positions::spawn_at` 在**載入時**驗證壞持久化資料的防線脈絡。
+///
+/// 刻意**不改寫 / 不刪除**磁碟上的檔（不破壞玩家資料）：只過濾載進記憶體、回給 GET 的內容。
+/// 解析失敗的行照舊跳過；清乾淨後變空的行（全控制字元 / 全空白）也丟掉，比照寫入路徑「空建議不存」。
+fn parse_and_sanitize(contents: &str) -> Vec<Suggestion> {
+    contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Suggestion>(line).ok())
+        .filter_map(|s| sanitize(&s.from, &s.text, s.at))
+        .collect()
 }
 
 fn append_to_disk(s: &Suggestion) {
@@ -231,6 +248,55 @@ mod tests {
         assert!(sanitize("我", "", 0).is_none());
         // 還有可見字元的內容仍照常存下。
         assert!(sanitize("我", "\0真有建議\u{1b}", 0).is_some());
+    }
+
+    #[test]
+    fn load_path_strips_control_chars_from_legacy_lines() {
+        // legacy lines may carry control bytes written before write-path hardening;
+        // the load path must re-filter so GET output stays clean.
+        let jsonl = "{\"from\":\"A\\u001bB\",\"text\":\"normal\\u001b[31mred\\u0000 \",\"at\":7}";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].from, "AB");
+        assert_eq!(out[0].text, "normal[31mred");
+        assert!(!out[0].text.contains('\u{1b}'));
+        assert!(!out[0].text.contains('\0'));
+        assert_eq!(out[0].at, 7);
+    }
+
+    #[test]
+    fn load_path_drops_empty_after_sanitize() {
+        // 內容清乾淨後變空的行（全控制字元 / 全空白）不該載進來當空建議垃圾。
+        let jsonl = "{\"from\":\"我\",\"text\":\"\\u0000\\u001b\",\"at\":1}\n\
+                     {\"from\":\"我\",\"text\":\"   \",\"at\":2}\n\
+                     {\"from\":\"我\",\"text\":\"真有建議\",\"at\":3}";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "真有建議");
+        assert_eq!(out[0].at, 3);
+    }
+
+    #[test]
+    fn load_path_skips_malformed_json_but_keeps_valid() {
+        // 損毀 / 非 JSON 的行跳過，合法的照常載入（沿用原本 filter_map 的容錯）。
+        let jsonl = "這不是 json\n\
+                     {\"from\":\"小明\",\"text\":\"希望有貓咪\",\"at\":42}\n\
+                     {壞掉的";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].from, "小明");
+        assert_eq!(out[0].text, "希望有貓咪");
+    }
+
+    #[test]
+    fn load_path_preserves_clean_lines_unchanged() {
+        // 已經乾淨的正常內容載入後一字不差（過 sanitizer 不該動到合法內容）。
+        let jsonl = r#"{"from":"拓荒者","text":"多一點花","at":100}"#;
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].from, "拓荒者");
+        assert_eq!(out[0].text, "多一點花");
+        assert_eq!(out[0].at, 100);
     }
 
     #[test]
