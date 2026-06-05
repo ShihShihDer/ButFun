@@ -27,6 +27,9 @@ pub struct AuthConfig {
     pub google_client_secret: String,
     pub google_redirect_uri: String,
     pub session_secret: Vec<u8>,
+    /// AI 居民自助註冊的共用金鑰(`AI_REGISTER_KEY`)。`None` = 未啟用,`/auth/ai/register` 回 503。
+    /// 持有這把鑰匙才能建 AI 帳號——否則公開端點等於讓任何人無限生帳號。
+    pub ai_register_key: Option<String>,
 }
 
 impl AuthConfig {
@@ -36,6 +39,11 @@ impl AuthConfig {
             google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok()?,
             google_redirect_uri: std::env::var("GOOGLE_REDIRECT_URI").ok()?,
             session_secret: std::env::var("BUTFUN_SESSION_SECRET").ok()?.into_bytes(),
+            // 選用:沒設就不開放 AI 註冊。去頭尾空白後為空也視為沒設。
+            ai_register_key: std::env::var("AI_REGISTER_KEY")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         })
     }
 }
@@ -53,6 +61,60 @@ pub fn auth_router() -> Router<AppState> {
         .route("/auth/google/callback", get(google_callback))
         .route("/auth/me", get(me))
         .route("/auth/logout", post(logout))
+        .route("/auth/ai/register", post(ai_register))
+}
+
+// ---- /auth/ai/register ----
+// AI 居民自助註冊:持金鑰 → 建一個 provider="ai" 的帳號 → 回 session token。
+// 讓 AI 測試員/居民有固定身分、進度持久化、可無上限擴增(見 docs/PLAN 的 AI 居民方向)。
+
+#[derive(Deserialize)]
+struct AiRegisterReq {
+    key: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    species: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AiRegisterResp {
+    user_id: Uuid,
+    /// 可直接當 Cookie header 用:`butfun_session=<token>`。
+    session: String,
+}
+
+async fn ai_register(State(app): State<AppState>, Json(req): Json<AiRegisterReq>) -> Response {
+    let Some(cfg) = app.auth.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "auth 尚未設定").into_response();
+    };
+    let Some(expected) = cfg.ai_register_key.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "AI 註冊未啟用(伺服器未設 AI_REGISTER_KEY)",
+        )
+            .into_response();
+    };
+    // 常數時間比對金鑰,避免時序側信道。
+    if !constant_time_eq(req.key.as_bytes(), expected.as_bytes()) {
+        return (StatusCode::FORBIDDEN, "註冊金鑰錯誤").into_response();
+    }
+    // 沒給名字就配一個主題隨機代號;沒給物種就用預設。一律過既有 sanitizer(create_ai 內處理)。
+    let name = req
+        .name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(crate::users::random_codename);
+    let species = req
+        .species
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| crate::users::DEFAULT_SPECIES.to_string());
+    let user = app.users.create_ai(&name, &species);
+    let token = sign_session(&user.id, &cfg.session_secret);
+    Json(AiRegisterResp {
+        user_id: user.id,
+        session: format!("{SESSION_COOKIE}={token}"),
+    })
+    .into_response()
 }
 
 // ---- /auth/google/start ----
@@ -324,6 +386,28 @@ mod tests {
     use super::*;
 
     const SECRET: &[u8] = b"test-secret-do-not-leak";
+
+    // ---- /auth/ai/register 請求合約 ----
+
+    #[test]
+    fn ai_register_req_name_species_optional() {
+        // 只給 key 也要能解析(name/species 省略 → None,端點會配隨機代號 + 預設物種)。
+        let r: AiRegisterReq = serde_json::from_str(r#"{"key":"abc"}"#).unwrap();
+        assert_eq!(r.key, "abc");
+        assert!(r.name.is_none() && r.species.is_none());
+        let r2: AiRegisterReq =
+            serde_json::from_str(r#"{"key":"abc","name":"居民阿一","species":"aurelian"}"#).unwrap();
+        assert_eq!(r2.name.as_deref(), Some("居民阿一"));
+        assert_eq!(r2.species.as_deref(), Some("aurelian"));
+    }
+
+    #[test]
+    fn ai_register_wrong_key_rejected_by_constant_time_eq() {
+        // 金鑰比對是這個公開端點的唯一守門——錯的金鑰一定要被擋(常數時間比對)。
+        assert!(constant_time_eq(b"right-key", b"right-key"));
+        assert!(!constant_time_eq(b"right-key", b"wrong-key"));
+        assert!(!constant_time_eq(b"right-key", b"right-key-extra"));
+    }
 
     // ---- sign_session / verify_session ----
 
