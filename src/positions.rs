@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
@@ -37,7 +38,16 @@ pub fn spawn_at(recalled: Option<(f32, f32)>) -> (f32, f32) {
 }
 
 /// 某玩家離線時記下的最後狀態：位置 + 收成累積的乙太。
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// 衍生 serde 作為玩家狀態持久化的格式地基（接 0-E）：`Saved` 是 0-E 要跨重啟存回的
+/// 玩家狀態本體，沿用本 repo 既有的 jsonl 持久化路數（`users.jsonl` / `suggestions.jsonl`）
+/// 時得逐筆序列化。延續 `Field` / `Crop` / `DayNight` 都在接 0-E 前先補上序列化格式的
+/// 前置慣例——補齊「每個存檔又重載的結構都可序列化」這組地基的最後一塊。
+///
+/// 載入時的防線沿用既有入口、不在此重複：位置一律經 `spawn_at` 驗證（非有限退回地圖中央、
+/// 界外夾回邊界，比照 `Field` 用 `from_tiles` 當載入閘門），`ether` 是 `u32`、型別本身就
+/// 擋掉 `NaN` / `Inf` / 負值，故衍生 `Deserialize` 不會把壞值原樣放行到世界裡。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Saved {
     pub x: f32,
     pub y: f32,
@@ -142,6 +152,34 @@ mod tests {
         let id = Uuid::new_v4();
         store.remember(id, 0.0, 0.0, 42);
         assert_eq!(store.recall(id).map(|s| s.ether), Some(42));
+    }
+
+    #[test]
+    fn saved_round_trips_through_serde() {
+        // 持久化格式地基：玩家最後狀態序列化再讀回要一模一樣（接 0-E 跨重啟接續）。
+        let s = Saved {
+            x: 123.5,
+            y: 678.25,
+            ether: 7,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Saved = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn loaded_bad_position_still_gated_by_spawn_at() {
+        // 即使磁碟上被竄改成非有限 / 界外座標的 Saved 載入進來，進場仍一律經 spawn_at
+        // 驗證、不會把玩家生到非有限或界外位置（位置的載入閘門是 spawn_at，
+        // 比照 Field 的 from_tiles）。ether 是 u32，型別本身就擋掉壞值。
+        let bad = Saved {
+            x: f32::INFINITY,
+            y: WORLD_HEIGHT + 9999.0,
+            ether: 1,
+        };
+        let (x, y) = spawn_at(Some((bad.x, bad.y)));
+        assert!(x.is_finite() && y.is_finite());
+        assert!((0.0..=WORLD_WIDTH).contains(&x) && (0.0..=WORLD_HEIGHT).contains(&y));
     }
 
     #[test]

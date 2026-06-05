@@ -146,6 +146,16 @@
     clamp 語意）。延續 `cell_at` 非有限座標、`from_tiles`／`Crop::is_loadable` 壞值的
     持久化載入防線脈絡。加 2 個測試，`cargo test` 86 綠、clippy 乾淨、伺服器二進位
     啟動正常（埠被正式服務占用屬預期）。
+  - ✅ 前置（玩家狀態持久化格式地基，2026-06-05）：`Field`／`Crop`／`DayNight` 都已在
+    接 0-E 前先衍生 serde 當「格式地基」，但 `positions::Saved`（玩家離線時記下的位置 + 乙太、
+    正是 0-E 要跨重啟存回的玩家狀態本體）是唯一一個「存檔又重載」結構還沒有序列化格式——
+    只 derive 了 `Debug/Clone/Copy/PartialEq`。接 0-E（沿用本 repo 既有的 jsonl 持久化路數，
+    如 `users.jsonl`／`suggestions.jsonl`）一定得逐筆序列化 `Saved`。給它補上 `Serialize`/
+    `Deserialize`，補齊「每個存檔又重載的結構都可序列化」這組地基的最後一塊。載入防線沿用既有
+    入口不重複：位置一律經 `spawn_at` 驗證（非有限退回地圖中央、界外夾回邊界，比照 `Field` 的
+    `from_tiles` 當載入閘門），`ether` 是 `u32`、型別本身就擋掉 `NaN`／`Inf`／負值。加 2 個測試
+    （round-trip、壞座標仍經 `spawn_at` 守門），`cargo test` 122 綠、clippy 乾淨、伺服器二進位
+    啟動正常（埠被正式服務占用屬預期）。
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、
