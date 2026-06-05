@@ -38,6 +38,12 @@
     }
     #login .primary-link:hover { filter: brightness(0.96); }
     #login .or-sep { opacity: 0.5; font-size: 0.85rem; margin: 8px 0 4px; }
+    /* Google 登入下方的隱私小提示:玩家擔心 Google 登入會公開真名(玩家建議),
+       這裡明說系統只配遊戲代號、不公開真名,讓會在意隱私的人敢按登入。 */
+    #login .login-note {
+      opacity: 0.6; font-size: 0.8rem; margin: -8px 0 0; max-width: 320px;
+      text-align: center; line-height: 1.5;
+    }
 
     /* HUD */
     #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
@@ -86,6 +92,7 @@
     <h1>ButFun</h1>
     <p>「大靜默」之後，乙太緩緩回流。你回到這顆邊境星，準備在廢墟上重建家園。</p>
     <a id="googleBtn" href="/auth/google/start" class="primary-link">以 Google 登入</a>
+    <div class="login-note">🔒 不會公開你的 Google 真名——系統只給你一個遊戲代號。</div>
     <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
     <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" />
     <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
