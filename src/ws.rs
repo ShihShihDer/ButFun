@@ -286,6 +286,16 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             None // 同帳號還有其他連線在線，保留玩家
         }
     };
+    // Postgres 模式：離線時把最後狀態 upsert 到 DB,補上「最後一次 10s flush 後到離線之間」
+    // 的移動（離線後就不再進線上快照了）。在鎖外 await（不可持 std 鎖跨 await）;cache 已在
+    // 鎖內由 remember 更新,recall 不受此 await 時序影響。非 Postgres 模式此呼叫無動作。
+    if persist_pos {
+        if let Some(ref player) = removed {
+            app.positions
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether)
+                .await;
+        }
+    }
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
     // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
     if removed.is_some() {

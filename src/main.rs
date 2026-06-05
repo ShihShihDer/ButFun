@@ -7,6 +7,7 @@ mod auth;
 mod connections;
 mod crops;
 mod daynight;
+mod db;
 mod field;
 mod game;
 mod gather;
@@ -46,7 +47,21 @@ async fn main() {
         )
         .init();
 
-    let app_state = AppState::new();
+    // Phase 0-E 跨重啟持久化：有 DATABASE_URL 就連 Postgres、套 migration、把玩家位置
+    // 載回；沒設則退回 JSONL/記憶體模式（見 db.rs / positions.rs）。連得到但 migration 失敗
+    // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
+    let positions = match db::connect().await.expect("Postgres 連線或 migration 失敗") {
+        Some(pool) => {
+            tracing::info!("Postgres 已連線、migration 已套用；玩家位置走 DB 持久化");
+            positions::PositionStore::from_pool(pool).await
+        }
+        None => {
+            tracing::warn!("未設 DATABASE_URL；玩家位置走 JSONL 退回層（本機/測試模式）");
+            positions::PositionStore::new()
+        }
+    };
+
+    let app_state = AppState::with_positions(positions);
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
     } else {
