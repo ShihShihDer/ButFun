@@ -60,6 +60,11 @@
     /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
     #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
     #helpToggle:hover { opacity: 0.85; }
+    /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作收合的玩家看得到焦點落在哪。
+       focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
+    #helpToggle:focus-visible, #chatToggle:focus-visible {
+      outline: 2px solid var(--brass); outline-offset: 2px; opacity: 1;
+    }
     #helpCaret { display: inline-block; transition: transform 0.15s; }
     #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
     #hud.help-collapsed #helpBody { display: none; }
@@ -151,7 +156,7 @@
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
     <div id="hudFarm" class="hidden"></div>
-    <div id="helpToggle">操作說明 <span id="helpCaret">▾</span></div>
+    <div id="helpToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpBody">操作說明 <span id="helpCaret">▾</span></div>
     <div id="helpBody">
       <div>WASD / 方向鍵 · 手機任處長按拖曳 · Enter 聊天</div>
       <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
@@ -163,7 +168,7 @@
   <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
 
   <div id="chat" class="hidden">
-    <div id="chatToggle">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
+    <div id="chatToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="chatLog">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
     <div id="chatLog"></div>
     <form id="chatForm" autocomplete="off">
       <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" />
@@ -184,6 +189,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-reducemotion"></script>
+  <script src="game.js?v=20260605-a11ytoggle"></script>
 </body>
 </html>

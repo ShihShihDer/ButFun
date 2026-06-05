@@ -1241,12 +1241,23 @@
     if (collapsed === null || collapsed === undefined) {
       collapsed = window.innerWidth < 560 ? "1" : "0"; // 窄畫面預設收起
     }
-    const apply = (v) => hud.classList.toggle("help-collapsed", v === "1");
+    const apply = (v) => {
+      const isCollapsed = v === "1";
+      hud.classList.toggle("help-collapsed", isCollapsed);
+      // 收起＝內容隱藏＝aria-expanded false,讓螢幕報讀器報出展開/收合狀態
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    };
     apply(collapsed);
-    toggle.addEventListener("click", () => {
+    const flip = () => {
       const next = hud.classList.contains("help-collapsed") ? "0" : "1";
       apply(next);
       try { localStorage.setItem("butfun.helpCollapsed", next); } catch {}
+    };
+    toggle.addEventListener("click", flip);
+    // 鍵盤可達:Tab 聚焦後 Enter / 空白鍵也能收合。stopPropagation 擋掉全域 keydown,
+    // 免得空白被當「採腳下格」、Enter 被搶去 focus 聊天。
+    toggle.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
     });
   }
 
@@ -1263,8 +1274,10 @@
       if (v !== null && v !== undefined) collapsed = v;
     } catch {}
     chat.classList.toggle("chat-collapsed", collapsed === "1");
-    toggle.addEventListener("click", () => {
+    toggle.setAttribute("aria-expanded", collapsed === "1" ? "false" : "true");
+    const flip = () => {
       const nowCollapsed = chat.classList.toggle("chat-collapsed");
+      toggle.setAttribute("aria-expanded", nowCollapsed ? "false" : "true");
       try { localStorage.setItem("butfun.chatCollapsed", nowCollapsed ? "1" : "0"); } catch {}
       if (!nowCollapsed) {
         chatUnread = 0;
@@ -1272,6 +1285,11 @@
         const log = document.getElementById("chatLog");
         log.scrollTop = log.scrollHeight; // 展開直接看到最新
       }
+    };
+    toggle.addEventListener("click", flip);
+    // 鍵盤可達:同操作說明,Enter / 空白鍵收合,並擋掉全域 keydown 的採集/聊天行為。
+    toggle.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
     });
   }
 
