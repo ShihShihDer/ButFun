@@ -486,9 +486,25 @@
     dusk: "🌇 黃昏",
     night: "🌙 夜晚",
   };
+  // 階段「換場」時播給報讀器的整句（不帶 emoji——報讀器唸 emoji 名稱常突兀）。
+  // 視覺上日夜變化已有 HUD 文字＋夜晚乙太微光,看不到畫面的玩家卻完全收不到時段切換,
+  // 補上這條讓報讀器在天色轉換時報一句,延續 srStatus(連線/聊天)的無障礙弧線。
+  const PHASE_ANNOUNCE = {
+    dawn: "破曉了，天色漸亮",
+    day: "天亮了",
+    dusk: "黃昏了，天色漸暗",
+    night: "入夜了",
+  };
+  // 首份快照只建基準、不報(比照 presenceKnown:進場/重連不該把「現在的時段」當成切換)。
+  let lastPhase = null;
   function updateDayNightHud(dn) {
     const el = document.getElementById("hudTime");
     if (el) el.textContent = PHASE_LABELS[dn.phase] || "—";
+    // 只在階段真的變了、且已過基準時報讀器播一句,避免每幀重唸。
+    if (dn.phase !== lastPhase) {
+      if (lastPhase !== null && PHASE_ANNOUNCE[dn.phase]) announce(PHASE_ANNOUNCE[dn.phase]);
+      lastPhase = dn.phase;
+    }
   }
 
   // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
