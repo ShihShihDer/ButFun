@@ -193,7 +193,12 @@
 
   <div id="chat" class="hidden">
     <div id="chatToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="chatLog">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
-    <div id="chatLog"></div>
+    <!-- role=log + aria-live=polite:聊天訊息與玩家進出場提示（「X 來到了邊境星」）原本只更新到
+         這個視覺聊天框,報讀器玩家在多人世界裡聽不到任何社交事件。宣告成標準 log live region,
+         新進的每一行都被即時朗讀（polite=等朗讀空檔再播,不打斷玩家正在聽的內容）。
+         aria-relevant=additions:只播「新加的行」,堆滿上限後移除舊行（addChat 的 removeChild）
+         不會被當成更動再唸一次。延續 #srStatus（連線狀態）的無障礙弧線,補上聊天這條社交管道。 -->
+    <div id="chatLog" role="log" aria-live="polite" aria-relevant="additions"></div>
     <form id="chatForm" autocomplete="off">
       <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" aria-label="聊天輸入（Enter 送出）" />
     </form>
