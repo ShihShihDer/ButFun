@@ -74,7 +74,10 @@
     #helpBody > div { opacity: 0.6; }
 
     /* 聊天 */
-    #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5; }
+    #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5;
+      /* 軟鍵盤彈起時整塊抬到鍵盤之上(見 game.js initChatKeyboardLift),平滑移動不跳。 */
+      transition: transform 0.18s ease; }
+    @media (prefers-reduced-motion: reduce) { #chat { transition: none; } }
     /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
        手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
        收起時仍保留輸入列可發言;有新訊息進來會在標題列冒未讀數,收著也不漏訊息。
@@ -206,6 +209,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-eschint"></script>
+  <script src="game.js?v=20260605-kbdlift"></script>
 </body>
 </html>

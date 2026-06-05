@@ -1439,12 +1439,35 @@
     });
   }
 
+  // ---- 手機軟鍵盤不擋聊天 ----
+  // 手機點聊天輸入時系統鍵盤從底部彈起,而聊天面板是 position:fixed 貼底,會被鍵盤整個
+  // 蓋住——看不到自己正在打的字、也看不到剛冒出的訊息。用 visualViewport 量出鍵盤吃掉的
+  // 高度,聚焦輸入時把整個聊天面板抬到鍵盤之上,失焦或鍵盤收起就放回原位。桌機沒有
+  // visualViewport 縮放(overlap 恆 0)行為不變。純客戶端自適應,不碰任何遊戲規則。
+  function initChatKeyboardLift() {
+    const vv = window.visualViewport;
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("chatText");
+    if (!vv || !chat || !input) return;
+    let focused = false;
+    const apply = () => {
+      // 鍵盤吃掉的高度 = 版面視窗底 與 視覺視窗底 的落差(含視覺視窗上移量)
+      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      chat.style.transform = focused && overlap > 0 ? `translateY(${-overlap}px)` : "";
+    };
+    input.addEventListener("focus", () => { focused = true; apply(); });
+    input.addEventListener("blur", () => { focused = false; apply(); });
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+  }
+
   // ---- 進場流程 ----
   function enterGame() {
     if (started) return; // 自動重連時 welcome 會再來一次，別重複初始化、別啟動第二個 render 迴圈
     started = true;
     initHelpToggle();
     initChatToggle();
+    initChatKeyboardLift();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
