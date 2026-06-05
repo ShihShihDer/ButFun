@@ -18,3 +18,7 @@
 node_modules/
 package-lock.json
 /scripts/e2e/node_modules
+
+# 所有 env 變體都不入 repo
+.env*
+!.env.example
