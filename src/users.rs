@@ -90,6 +90,31 @@ impl UserStore {
     pub fn get(&self, id: Uuid) -> Option<User> {
         self.inner.lock().unwrap().by_id.get(&id).cloned()
     }
+
+    /// 建一個 `provider="ai"` 的居民帳號(給 AI 自助註冊端點用)。每呼叫一次就是一個新居民
+    /// (新 uuid、固定身分),其遊戲進度(位置/乙太)會比照其他登入玩家持久化。`external_id`
+    /// 用 uuid 自身保證唯一(AI 居民沒有外部 provider)。`provider="ai"` 標記方便日後把這些
+    /// 帳號轉成遊戲內 AI NPC。名字/物種一律過既有 sanitizer(與 Google 帳號同一道輸入邊界)。
+    pub fn create_ai(&self, name: &str, species: &str) -> User {
+        let mut inner = self.inner.lock().unwrap();
+        let id = Uuid::new_v4();
+        let user = User {
+            id,
+            provider: "ai".to_string(),
+            external_id: id.to_string(),
+            email: None,
+            name: sanitize_name(name),
+            species: sanitize_species(species),
+            created_at: now_millis(),
+        };
+        append_to_disk(&user);
+        inner
+            .by_external
+            .insert(("ai".to_string(), user.external_id.clone()), user.id);
+        inner.by_id.insert(user.id, user.clone());
+        tracing::info!(user_id = %user.id, "新 AI 居民帳號建立: {}", user.name);
+        user
+    }
 }
 
 impl Default for UserStore {
