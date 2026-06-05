@@ -912,9 +912,20 @@
     modal.style.display = "flex";
     document.getElementById("suggestFrom").value = myName;
   });
-  document.getElementById("suggestCancel").addEventListener("click", () => {
+  // 關閉建議箱(收掉 modal、清掉殘留狀態字)。集中成一個函式,讓「取消鈕／點背景
+  // 遮罩／按 Esc」三條關閉路徑行為一致。
+  function closeSuggestModal() {
     modal.style.display = "none";
     document.getElementById("suggestStatus").textContent = "";
+  }
+  document.getElementById("suggestCancel").addEventListener("click", closeSuggestModal);
+  // 點 modal 外的暗色遮罩關閉(只在點到遮罩本身、非點到內層面板時)——對話框「點外面
+  // 關掉」是普遍預期,少一步找取消鈕。
+  modal.addEventListener("click", (e) => { if (e.target === modal) closeSuggestModal(); });
+  // Esc 關閉:即使焦點正在建議箱的輸入欄/文字框內也要能關(故獨立監聽,不受遊戲
+  // 按鍵守衛影響);只在 modal 開著時作用,不干擾平常的遊戲操作。
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.style.display === "flex") closeSuggestModal();
   });
   document.getElementById("suggestSend").addEventListener("click", async () => {
     const text = document.getElementById("suggestText").value.trim();
