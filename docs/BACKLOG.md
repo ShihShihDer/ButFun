@@ -102,6 +102,17 @@
   記位置、廣播 `PlayerLeft`（不再對「人還在世界」誤送離線造成閃爍）。鎖序固定「先 players 再
   conns」與遊戲迴圈無交集，無死鎖。加 6 個單元測試，`cargo test` 97 綠、clippy 乾淨、伺服器二進位
   啟動正常（埠被正式服務占用屬預期）。
+  ✅ 持久化載入防線（users 讀路徑也過 sanitizer，2026-06-05）：名字濾控制字元的硬化（`sanitize_name`）原本只在
+  **寫入**路徑（`find_or_create`）；但 `data/users.jsonl` 是「存檔又重載」的持久化結構——`load_from_disk` 直接
+  `serde_json::from_str::<User>` 收進記憶體，而 `User.name` 正是已登入玩家進場後**廣播給所有人**的聊天 `from` 標籤與
+  HUD 顯示名（`ws.rs` authed 路徑 `name: user.name`）。那道硬化 landing**之前**建立的舊帳號、或被手動編輯／損毀的行，
+  殘留的 `NUL`／`ESC`(0x1B)／換行會原樣載入並隨登入玩家廣播出去，注入 ANSI 轉義偽造顯示或廣播多行。這正是上一輪
+  `suggestions::parse_and_sanitize`（建議讀路徑）修的同一類缺口的孿生——`users.jsonl` 是另一個「存檔又重載卻在載入
+  路徑沒驗證」的結構。把讀路徑抽成純函式 `parse_and_sanitize`，每筆的**顯示用**欄位（name/species）再過一次對應
+  sanitizer；刻意不碰 `provider`／`external_id`（登入比對鍵，要與 OAuth 送來的值逐字相符，動了會讓既有帳號對不上、
+  形同丟失帳號），也不改寫／不刪除磁碟檔（不破壞玩家資料），只過濾載進記憶體的內容。延續
+  `field.rs::from_tiles`／`positions::spawn_at`／`suggestions::parse_and_sanitize` 的載入時驗證脈絡。加 3 個測試，
+  `cargo test` 104 綠、clippy 乾淨、伺服器二進位啟動正常、`healthz` 回 `ok`。
 - [x] **Phase 0-H 雛形：Cloudflare Tunnel 上線**
   ✅ 自架 + `cloudflared` 反向通道,公開於 https://peregrine.but-fun.com;手冊
   與設定範例已在 repo。

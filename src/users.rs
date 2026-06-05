@@ -150,12 +150,39 @@ fn now_millis() -> u64 {
 
 fn load_from_disk() -> Vec<User> {
     match std::fs::read_to_string(STORE_PATH) {
-        Ok(contents) => contents
-            .lines()
-            .filter_map(|line| serde_json::from_str::<User>(line).ok())
-            .collect(),
+        Ok(contents) => parse_and_sanitize(&contents),
         Err(_) => Vec::new(),
     }
+}
+
+/// 把 JSONL 檔內容解析成使用者清單，並讓每筆的顯示用身分欄位（`name` / `species`）
+/// **再過一次對應的 sanitizer**（載入防線）。純函式以便測試。
+///
+/// 為什麼載入也要過濾：`name` / `species` 是「存檔又重載」的持久化欄位，而 `name` 會成為
+/// 已登入玩家進場後**廣播給所有人**的聊天 `from` 標籤與 HUD 顯示名（見 `ws.rs` 的 authed
+/// 路徑 `name: user.name`），`species` 也會顯示。控制字元過濾原本只加在**寫入**路徑
+/// （`find_or_create` 呼叫 `sanitize_name`），但 `data/users.jsonl` 裡可能有**那道硬化
+/// landing 之前**（名字濾控制字元是後來才加的）寫進的舊行，或被手動編輯 / 損毀的行——
+/// 殘留的 `NUL` / `ESC`(0x1B) / 換行 會原樣載進記憶體、再隨登入玩家廣播出去，注入 ANSI
+/// 轉義偽造顯示、或廣播出多行內容。讓讀路徑也走同一個 sanitizer，輸出就用「實際會被存下
+/// 的乾淨值」當單一真實來源，不論磁碟上那行是何時、被什麼寫進去的——延續
+/// `suggestions::parse_and_sanitize` / `field::from_tiles` / `positions::spawn_at` 在**載入時**
+/// 驗證壞持久化資料的防線脈絡（`users.jsonl` 是另一個「存檔又重載卻在載入路徑沒驗證」的結構）。
+///
+/// 刻意只清**顯示用**欄位（`name` / `species`）：`provider` / `external_id` 是登入比對鍵
+/// （要與 OAuth 那邊送來的值逐字相符），動了會讓既有帳號對不上、形同丟失帳號，故不碰；
+/// `email` 同理不顯示給其他玩家。也刻意**不改寫 / 不刪除**磁碟上的檔（不破壞玩家資料），
+/// 只過濾載進記憶體的內容。解析失敗的行照舊跳過。
+fn parse_and_sanitize(contents: &str) -> Vec<User> {
+    contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<User>(line).ok())
+        .map(|mut u| {
+            u.name = sanitize_name(&u.name);
+            u.species = sanitize_species(&u.species);
+            u
+        })
+        .collect()
 }
 
 fn append_to_disk(u: &User) {
@@ -179,7 +206,8 @@ fn append_to_disk(u: &User) {
 // ============= 純邏輯單元測試(無 IO) =============
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_name, sanitize_species, DEFAULT_SPECIES};
+    use super::{parse_and_sanitize, sanitize_name, sanitize_species, DEFAULT_SPECIES};
+    use uuid::Uuid;
 
     #[test]
     fn keeps_normal_name() {
@@ -256,5 +284,63 @@ mod tests {
         assert_eq!(sanitize_species("ter\nr\0an"), "terran");
         // 清乾淨後變空 → 退回預設物種。
         assert_eq!(sanitize_species("\n\0\t"), DEFAULT_SPECIES);
+    }
+
+    // ===== 載入路徑（parse_and_sanitize）防線：對齊 suggestions::parse_and_sanitize =====
+
+    #[test]
+    fn load_path_strips_control_chars_from_name_and_species() {
+        // name/species 是「存檔又重載」的顯示用欄位（name 會廣播成聊天 from / HUD 名）。
+        // 硬化 landing 之前寫進、或被竄改的舊行殘留控制字元，載入時要被同一個 sanitizer
+        // 濾掉，不讓它原樣載進記憶體再隨登入玩家廣播出去（ESC 可注入 ANSI 轉義偽造顯示）。
+        let jsonl = "{\"id\":\"00000000-0000-0000-0000-000000000001\",\
+                      \"provider\":\"google\",\"external_id\":\"sub-1\",\
+                      \"email\":\"a@b.com\",\"name\":\"小\\u001b明\\u0000\",\
+                      \"species\":\"ter\\nran\",\"created_at\":7}";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        let u = &out[0];
+        assert_eq!(u.name, "小明");
+        assert_eq!(u.species, "terran");
+        assert!(!u.name.contains('\u{1b}'));
+        assert!(!u.name.contains('\0'));
+        // 查找鍵 / 中介資料不被動到：provider/external_id 是登入比對鍵，動了會對不上帳號。
+        assert_eq!(u.provider, "google");
+        assert_eq!(u.external_id, "sub-1");
+        assert_eq!(u.email.as_deref(), Some("a@b.com"));
+        assert_eq!(
+            u.id,
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
+        );
+        assert_eq!(u.created_at, 7);
+    }
+
+    #[test]
+    fn load_path_control_only_name_falls_back_to_default() {
+        // 名字 / 物種被竄改成全控制字元 → 退回預設（拓荒者 / terran），而非空字串。
+        let jsonl = "{\"id\":\"00000000-0000-0000-0000-000000000002\",\
+                      \"provider\":\"google\",\"external_id\":\"s2\",\
+                      \"name\":\"\\u0000\\u001b\",\"species\":\"\\n\",\"created_at\":1}";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "拓荒者");
+        assert_eq!(out[0].species, DEFAULT_SPECIES);
+    }
+
+    #[test]
+    fn load_path_keeps_clean_lines_and_skips_malformed() {
+        // 已經乾淨的正常行載入後一字不差；損毀 / 非 JSON 的行跳過（沿用 filter_map 容錯）。
+        let jsonl = "這不是 json\n\
+                     {\"id\":\"00000000-0000-0000-0000-000000000003\",\"provider\":\"google\",\
+                      \"external_id\":\"s3\",\"email\":null,\"name\":\"拓荒者\",\
+                      \"species\":\"terran\",\"created_at\":100}\n\
+                     {壞掉";
+        let out = parse_and_sanitize(jsonl);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "拓荒者");
+        assert_eq!(out[0].species, "terran");
+        assert_eq!(out[0].external_id, "s3");
+        assert_eq!(out[0].email, None);
+        assert_eq!(out[0].created_at, 100);
     }
 }
