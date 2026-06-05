@@ -6,6 +6,15 @@
        聊天／建議文字(WCAG 1.4.4)。遊戲操作不受影響——canvas 自己對 touch 事件 preventDefault,
        搖桿拖曳照舊;放大手勢只作用在 HTML 面板上。 -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- 手機/桌面瀏覽器外殼適配(自適應 UI 的最後一塊):
+       theme-color 讓行動瀏覽器的網址列/狀態列底色貼齊遊戲深色背景,不再夾一條突兀的
+       淺色帶,進場即沉浸。color-scheme=dark 告訴瀏覽器本頁是暗色,讓原生 <select> 下拉
+       選單與 #chatLog 捲軸自動走深色,跟整個 HUD 一致(過去在淺色系統上會冒白底白軸)。 -->
+  <meta name="theme-color" content="#0b0d12" />
+  <meta name="color-scheme" content="dark" />
+  <!-- 內嵌 SVG favicon(零額外素材檔):深底黃銅環的小行星——對齊蒸汽龐克太空歌劇主題與
+       黃銅品牌色,讓分頁有識別圖示,同時消掉瀏覽器對 /favicon.ico 的 404 請求。 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d12'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23c9a24b' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23c9a24b'/%3E%3C/svg%3E" />
   <title>ButFun — 邊境星拓荒</title>
   <style>
     :root { --ink: #e8e0cf; --brass: #c9a24b; --panel: rgba(20, 24, 30, 0.85); }
