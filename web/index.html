@@ -252,7 +252,9 @@
     <div id="hudGuestHint" class="hidden">👋 探索中 · <b>登入</b>即可獲得專屬乙太田開始種田</div>
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
-    <div id="hudBag">背包：空</div>
+    <!-- 背包 HUD:可見文字用 emoji（🪵🪨✨）給看得到的玩家;aria-label 由 game.js 隨快照
+         同步成中文品項名,讓報讀器玩家也讀得出背包現況（emoji 會被亂念／跳過）。 -->
+    <div id="hudBag" aria-label="背包：空">背包：空</div>
     <div id="hudTime">—</div>
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
@@ -309,6 +311,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-depleted-hint"></script>
+  <script src="game.js?v=20260606-bag-aria"></script>
 </body>
 </html>

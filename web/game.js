@@ -1384,10 +1384,18 @@
     if (!el) return;
     if (!inv || inv.length === 0) {
       el.textContent = "背包：空";
+      el.setAttribute("aria-label", "背包：空");
       return;
     }
+    // 可見文字用 emoji（看得到的玩家一眼分品項）;但 emoji 對報讀器無意義(會亂念或跳過),
+    // 同步補一個中文 aria-label,沿用採集播報的 ITEM_NAME。延續日夜/連線/採集的無障礙弧線,
+    // 讓盲人玩家「採到那瞬間」聽過播報後,之後想查背包現況時也讀得出來,而非只剩亂念的圖示。
     el.textContent =
       "背包：" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
+    el.setAttribute(
+      "aria-label",
+      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
+    );
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
