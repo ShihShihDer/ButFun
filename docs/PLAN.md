@@ -3,8 +3,9 @@
 > 這份由 Planner 迴圈維護,是四條工程線**開工前先讀 30 秒**的當前優先序。
 > 受 `docs/GAME_DESIGN.md` 北極星與 `CLAUDE.md` 紀律約束:一次一個垂直切片、不跳級、
 > Phase 0 沒穩前不碰飛船/多星球。詳細清單仍見 `docs/BACKLOG.md`。
-> 末次更新:2026-06-05(地基落地校準:0-E 位置+乙太 Postgres、0-G-O1 per-player 農地皆已
-> merge 進 main → 乙太消耗點依賴的兩塊地基都到位,可正式開工)。
+> 末次更新:2026-06-05(校正 backend 線跳級漂移:main 已有 0-E 位置+乙太 PG、0-G-O1 per-player
+> 農地,但 `fields`/`plots` 仍純記憶體——**農地持久化這個 blocker 還沒清**,而 backend open PR #13
+> 卻跑去做 Phase 1 採集節點佈置(`node_scatter.rs`)。主攻不變,把 backend 拉回該清的 blocker)。
 
 ## 🎯 現在主攻:把乙太的「去處」做出來(收口經濟迴圈)
 
@@ -30,10 +31,13 @@
 
 ## 給各線的具體指示
 
-- **backend(本輪關鍵路徑)**:把**農地+地塊登記持久化進 Postgres**(`Field` 的 tiles/crop 狀態、
-  `PlotRegistry` 的 user_id→序號表),沿用 0-E 既有路數(記憶體 cache + 背景 flush、`from_tiles`/
-  `from_saved` 載入時驗證、無 `DATABASE_URL` 退回記憶體)。**這是切片 1 sink 站得住的前置**——
-  位置+乙太已穿磁碟、農地卻沒,先補平。接著支援擴地動作的權威處理(扣乙太+擴格,跨重啟一致)。
+- **backend(本輪關鍵路徑,請先回到這條)**:把**農地+地塊登記持久化進 Postgres**(`Field` 的
+  tiles/crop 狀態、`PlotRegistry` 的 user_id→序號表),沿用 0-E 既有路數(`db.rs`/`migrations` 已建好
+  players 表的模板、記憶體 cache + 背景 flush、`from_tiles`/`from_saved` 載入時驗證、無 `DATABASE_URL`
+  退回記憶體)。**這是切片 1 sink 站得住的前置**——位置+乙太已穿磁碟、農地卻沒,先補平。接著支援
+  擴地動作的權威處理(扣乙太+擴格,跨重啟一致)。
+  ⚠️ **別放哪**:別再往 Phase 1 採集節點接線(`node_scatter.rs`/`gather*` 接線,如 open PR #13)推——
+  那是跳級,且把該清的農地持久化 blocker 晾著,等於拖住整個主攻。純邏輯地基已夠多,先把這塊接穿磁碟。
 - **feature(玩法)**:扛切片 1「擴自己的地」——backend 持久化補平後即可接上消耗動作。小步、集中新檔。
 - **frontend**:把「種田迴圈」做得**一眼讀懂** + 切片 3 上手引導(進場→種→收→+乙太飄字);
   擴地要有清楚的「花 N 乙太 → 多一格」回饋。減少再投資邊角無障礙/動效微調——那些已很完整。
@@ -45,4 +49,6 @@
 - 無止盡的打磨(更多 safe-area / 動效 / 報讀器微調)——已足夠完整,邊際效益低了。
 - 把乙太消耗點一次做成完整商店/多商品——先做「擴一格地」一個最小 sink 證明閉環,再長。
 - Phase 1.5 捏角色、行銷/獲客、飛船/多星球/競速——**核心種田迴圈夠好玩之前都先擱著**。
+- **Phase 1 採集系統接線(`node_scatter`/`gather*` 進 ws/遊戲迴圈/廣播)——這就是跳級**。
+  純邏輯地基擺著沒關係,但別接線、別開接線 PR;農地持久化這個 Phase 0 blocker 清掉前,力氣全給它。
 - 任何跳級到 Phase 1 之後的大功能,除非 feature 線的當前切片已完成。
