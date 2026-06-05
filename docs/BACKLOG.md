@@ -447,6 +447,21 @@
   伺服器端 player.inventory(item_id → count),客戶端按 I 開背包面板顯示。
   接 0-E 持久化。
   - 驗收:採集→開背包看到資源→重連/重啟仍在;`cargo test` 涵蓋背包增減上限。
+  - ✅ 前置(背包容器純邏輯地基,2026-06-05):採集(1-A)的產出要有地方放——新增
+    `src/inventory.rs` `Inventory`(`ItemKind`→數量,內部 `BTreeMap` 故序列化/顯示順序
+    確定)。`add(item,qty)` 夾 `MAX_STACK` 上限並回實際加入量(背包滿了採不進的手感日後接得上);
+    `take(item,qty)` **夠才扣、不夠回 false 完全不動**(合成「材料不足不給合」要的全有全無語意,
+    1-C 會用);`has`/`count`/`entries`(供前端面板)。不變式「只存數量 > 0 條目」——歸零即移除,
+    「有沒有某物」永遠等同「key 在不在」、序列化不留 0 垃圾。把資源抽成 `ItemKind` enum
+    (非散落字串 id):採集 `NodeKind` 直接 `From`/`.into()` 對應物品(`Tree`→`Wood`/`Rock`→
+    `Stone`/`EtherOre`→`Ether`),型別擋掉拼錯 id,日後工具/合成產物只加變體、容器不動。
+    沿用載入防線:`is_loadable`(無 0 條目、不超上限,`u32` 型別本身擋 NaN/負值)供接 0-E 載入時驗證,
+    衍生 serde 為持久化格式地基。延續本專案「純邏輯可測、無 IO、不碰 ws/遊戲迴圈、標
+    `allow(dead_code)` 待接線」的前置慣例。加 14 個單元測試(累加/夾上限/回實際量、扣料全有全無、
+    歸零移除、`has`/`count`、`NodeKind`→`ItemKind` 映射、採集產出灌進背包、`entries` 排序非零、
+    載入防線收壞值、serde round-trip),`cargo test` 179 綠、`cargo build`/clippy 無警告、伺服器
+    二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(ws 採集→`add` 進背包+快照廣播該玩家
+    背包+前端按 I 開面板)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR;持久化接 0-E。
 
 - [ ] **Phase 1-C:合成台 + 第一份配方**
   玩家可在地盤蓋一個「合成台」實體;互動開菜單,有材料就能做出產物。

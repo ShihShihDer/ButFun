@@ -11,6 +11,7 @@ mod field;
 mod game;
 mod gather;
 mod gather_field;
+mod inventory;
 mod plot_registry;
 mod plots;
 mod positions;
