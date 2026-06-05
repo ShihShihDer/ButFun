@@ -9,6 +9,7 @@ mod crops;
 mod daynight;
 mod field;
 mod game;
+mod plot_registry;
 mod plots;
 mod positions;
 mod protocol;
