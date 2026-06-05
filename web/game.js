@@ -111,10 +111,31 @@
   let viewW = window.innerWidth;
   let viewH = window.innerHeight;
   let dpr = 1; // 裝置像素比,resize 時更新
+  // 螢幕安全區內距(瀏海/圓角/底部手勢條)。DOM HUD 已用 CSS env(safe-area-inset-*) 讓開被
+  // 切的邊,但 canvas 內畫的小地圖／農地指標是用 viewW/viewH 從邊緣定位、讀不到那些 inset,
+  // 在 notched 手機(尤其橫式或底部手勢條)會被瀏海/圓角/手勢條切掉一角。用一顆隱形探針把
+  // 四邊 inset 量成數字(getComputedStyle 讀 env() 解出的 padding),resize 時更新,讓 canvas
+  // HUD 跟 DOM 面板共用同一套安全區、一起讓邊。一般螢幕 inset 恆為 0,無副作用。延續 HUD
+  // safe-area 修復家族到 canvas 層,不碰任何遊戲規則(WebXR renderer 可各自實作)。
+  const safeArea = { top: 0, right: 0, bottom: 0, left: 0 };
+  const saProbe = document.createElement("div");
+  saProbe.style.cssText =
+    "position:fixed;visibility:hidden;pointer-events:none;top:0;left:0;width:0;height:0;" +
+    "padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);" +
+    "padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);";
+  document.body.appendChild(saProbe);
+  function readSafeArea() {
+    const cs = getComputedStyle(saProbe);
+    safeArea.top = parseFloat(cs.paddingTop) || 0;
+    safeArea.right = parseFloat(cs.paddingRight) || 0;
+    safeArea.bottom = parseFloat(cs.paddingBottom) || 0;
+    safeArea.left = parseFloat(cs.paddingLeft) || 0;
+  }
   function resize() {
     dpr = window.devicePixelRatio || 1;
     viewW = window.innerWidth;
     viewH = window.innerHeight;
+    readSafeArea();
     // 背景緩衝放大成裝置實體像素、CSS 尺寸維持邏輯像素,成像在 retina／手機高解析
     // 螢幕上不再被瀏覽器整張放大糊掉(此前 canvas.width=邏輯像素,DPR>1 時被拉伸)。
     // 繪圖座標系以 dpr 縮放,讓所有繪製碼照舊用邏輯像素——成像更銳利,純客戶端品質,
@@ -506,8 +527,9 @@
     const ccx = viewW / 2, ccy = viewH / 2;
     const ang = Math.atan2(sy - ccy, sx - ccx);
     const m = 46; // 邊緣留白，避開 HUD / 小地圖最外圈
-    const px = Math.max(m, Math.min(viewW - m, sx));
-    const py = Math.max(m, Math.min(viewH - m, sy));
+    // 邊緣框再加安全區內距,指標不躲到瀏海/圓角/手勢條底下(與小地圖同套安全區)。
+    const px = Math.max(m + safeArea.left, Math.min(viewW - m - safeArea.right, sx));
+    const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, sy));
 
     const dry = farmDryCount > 0;
     // 缺水時用田格藍色澆水語彙 + 顯示格數，催玩家回去澆水；不缺水用低調黃銅。
@@ -896,8 +918,8 @@
     // 收合狀態:只畫一顆小「展開地圖」鈕在右下角,省下整塊縮圖的空間。
     if (minimapHidden) {
       const bw = 34, bh = 26;
-      const bx = viewW - MM.margin - bw;
-      const by = viewH - MM.margin - bh;
+      const bx = viewW - MM.margin - safeArea.right - bw;
+      const by = viewH - MM.margin - safeArea.bottom - bh;
       ctx.fillStyle = "rgba(10,16,30,0.7)";
       ctx.fillRect(bx, by, bw, bh);
       ctx.strokeStyle = "rgba(201,162,75,0.7)";
@@ -917,8 +939,9 @@
     const size = minimapSize();
     const scale = size / Math.max(w, h);
     const mw = w * scale, mh = h * scale;
-    const ox = viewW - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
-    const oy = viewH - MM.margin - mh;
+    // 右下錨點扣掉安全區內距,notched 手機不被瀏海/圓角/手勢條切到。
+    const ox = viewW - MM.margin - safeArea.right - mw;   // 縮圖內容左上角（螢幕座標）
+    const oy = viewH - MM.margin - safeArea.bottom - mh;
     const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
 
     // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。
