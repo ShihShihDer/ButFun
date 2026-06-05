@@ -1323,9 +1323,24 @@
   // 記住開啟建議箱前焦點所在的元素(通常是那顆「💡 給點建議」鈕),關閉時把焦點還回去。
   // 用鍵盤/報讀器的玩家關掉對話框後不會掉到 body 從頭找,焦點回到他原本的位置。
   let suggestOpener = null;
+  // 開對話框時把背後的遊戲畫面與面板設為 inert。Tab 焦點環(見下方 keydown)已擋住
+  // 鍵盤焦點跑出對話框,但螢幕報讀器的虛擬游標／觸控報讀器的滑動瀏覽仍能讀到背景的
+  // canvas、HUD、聊天等內容——`aria-modal` 單獨並不可靠地把它們藏起來。inert 把整個
+  // 背景移出無障礙樹與互動,讓只用報讀器的玩家也真正被限制在對話框內,延續建議箱這串
+  // 無障礙修補(欄位標籤／aria-live 狀態播報)。刻意不含 #srStatus:那是連線狀態的
+  // aria-live 區,開著對話框時若斷線重連仍要能播報出來。inert 屬性在不支援的舊瀏覽器
+  // 上是無害 no-op,焦點環仍照常運作。
+  const bgInertIds = ["game", "hud", "suggestBtn", "chat", "connStatus"];
+  function setBackgroundInert(on) {
+    for (const id of bgInertIds) {
+      const el = document.getElementById(id);
+      if (el) el.inert = on;
+    }
+  }
   function openSuggestModal() {
     suggestOpener = document.activeElement;
     modal.style.display = "flex";
+    setBackgroundInert(true); // 背景對報讀器/觸控瀏覽封閉,直到關閉還原
     document.getElementById("suggestFrom").value = myName;
     // 開啟即把焦點移進對話框的主要欄位,鍵盤玩家不必先盲目 Tab 穿過遮罩才開始打字。
     document.getElementById("suggestText").focus();
@@ -1335,6 +1350,7 @@
   // 讓「取消鈕／點背景遮罩／按 Esc」三條關閉路徑行為一致。
   function closeSuggestModal() {
     modal.style.display = "none";
+    setBackgroundInert(false); // 還原背景的互動與無障礙可達性
     document.getElementById("suggestStatus").textContent = "";
     if (suggestOpener && suggestOpener.focus) suggestOpener.focus();
     suggestOpener = null;
