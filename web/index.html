@@ -141,10 +141,12 @@
     <a id="googleBtn" href="/auth/google/start" class="primary-link">以 Google 登入</a>
     <div class="login-note">🔒 不會公開你的 Google 真名——系統只給你一個遊戲代號。</div>
     <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
-    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" />
+    <!-- placeholder 不是無障礙標籤(報讀器逐欄位巡覽時唸不到、輸入後也消失),
+         每個欄位補一條 aria-label,讓只用報讀器的玩家也知道這格在填什麼。 -->
+    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" aria-label="你的名字（訪客代號）" />
     <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
     <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
-    <select id="speciesInput">
+    <select id="speciesInput" aria-label="選擇種族">
       <option value="terran">地球人（索爾人）— 繼承農莊</option>
       <option value="shilaya" disabled>施拉雅人（商會飛船）— 即將開放</option>
       <option value="busi" disabled>布司人（礦星齒輪）— 即將開放</option>
@@ -169,7 +171,8 @@
     </div>
   </div>
 
-  <div id="suggestBtn" class="hidden"><button>💡 給點建議</button></div>
+  <!-- aria-haspopup=dialog:報讀器先告知這顆鈕會開一個對話框,玩家按之前就有預期。 -->
+  <div id="suggestBtn" class="hidden"><button aria-haspopup="dialog">💡 給點建議</button></div>
 
   <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
 
@@ -182,7 +185,7 @@
     <div id="chatToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="chatLog">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
     <div id="chatLog"></div>
     <form id="chatForm" autocomplete="off">
-      <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" />
+      <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" aria-label="聊天輸入（Enter 送出）" />
     </form>
   </div>
 
@@ -190,8 +193,8 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="suggestTitle">
       <h2 id="suggestTitle">給點建議</h2>
       <p>你希望這個世界長成什麼樣子？我會收到，然後改版。</p>
-      <input id="suggestFrom" maxlength="24" placeholder="你的稱呼（可留空）" />
-      <textarea id="suggestText" maxlength="1000" placeholder="想加什麼、哪裡卡卡的、什麼好玩…"></textarea>
+      <input id="suggestFrom" maxlength="24" placeholder="你的稱呼（可留空）" aria-label="你的稱呼（可留空）" />
+      <textarea id="suggestText" maxlength="1000" placeholder="想加什麼、哪裡卡卡的、什麼好玩…" aria-label="建議內容"></textarea>
       <div id="suggestStatus"></div>
       <div class="row">
         <button id="suggestCancel">取消</button>
