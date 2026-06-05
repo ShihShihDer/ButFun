@@ -128,13 +128,21 @@
 
 ## 進行中 / 下一步（由上往下）
 
-- [ ] **Phase 0-E：Postgres 持久化**
-  把玩家位置（之後含背包 / 農地）存進 Postgres，伺服器重啟後玩家回到原位。
-  - 加入 `sqlx`（Postgres、非同步），`DATABASE_URL` 走環境變數。
-  - 在 `state.rs` 抽換點後面接一個 `PgStore`；無 `DATABASE_URL` 時退回現有記憶體模式，方便本機跑。
-  - 加 migration 建 `players` 表（id, name, species, x, y, updated_at）。
-  - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
-  - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
+- [ ] **Phase 0-E：串接 PostgreSQL 持久化（backend lane 最高優先,使用者明確要求）**
+  > 現況:位置+乙太已用 `PositionStore` 寫穿到 `data/positions.jsonl`(commit 8a18a84),
+  > 重啟不掉了。**這份 JSONL 版正好是 Postgres 版的模板與 fallback。** DB 已就緒
+  > (PostgreSQL 17、`butfun` 庫、`DATABASE_URL` 在 `.env`/EnvironmentFile)。
+  做法(沿用既有抽象、最小擾動):
+  - `cargo add sqlx`(features: runtime-tokio, postgres, uuid),加 `migrations/`(用 `sqlx::migrate!`)。
+  - 建表 `player_state(id uuid pk, x real, y real, ether int, updated_at timestamptz)`。
+  - 擴 `PositionStore`:多一個 `Option<PgPool>` 後端。**保持 recall/remember 同步介面不變**
+    (避免動 ws.rs/game.rs):做法是「記憶體 cache + 背景非同步刷 PG」——
+    - 啟動時若有 pool → `SELECT` 全表載入 cache(沿用 `spawn_at` 驗座標);無 pool → 維持 JSONL/記憶體。
+    - 遊戲迴圈那個每 10s 的 flush:有 pool → `INSERT … ON CONFLICT DO UPDATE` upsert cache;無 pool → 維持寫 JSONL。
+  - `main.rs` 啟動時依 `DATABASE_URL` 建 `PgPool`(失敗就 log + 退回 JSONL,別讓伺服器起不來)。
+  - 驗收:設好 `DATABASE_URL` 跑、移動+收乙太→重啟伺服器→重連位置與乙太仍在;
+    `psql -d butfun -c 'select * from player_state'` 看得到;無 `DATABASE_URL` 時仍走 JSONL、`cargo test` 全綠。
+  - 之後同法把 users/suggestions/field/daynight 也接 PG(一次一個,別一個巨大 PR)。
   - ♻️ 撤回外洩進 main 的 0-E 地基(2026-06-05):一個純前端「田地可見」熱修 commit(7460edd)
     意外把 0-E 的 sqlx 依賴(+Cargo.lock 741 行)、`migrations/0001_players_positions.sql`、
     `positions.rs` 一行 unused `use sqlx::Row;`、以及一段謊稱「設了 `DATABASE_URL` 走 Postgres
