@@ -445,6 +445,7 @@
     }
   }
   let lastMoteT = 0;
+  let lastFrameT = 0; // 上一幀時戳:給 render 算本幀 dt(位置插值/踏步相位),首幀為 0 走固定步守衛
   function drawNightMotes(now) {
     if (!daynight) return;
     const dark = Math.max(0, Math.min(1, 1 - daynight.light));
@@ -867,8 +868,18 @@
     // 手把沒有事件式的「按住中」回呼,必須每幀輪詢;放在繪製前讓本幀就反映方向。
     pollGamepad();
 
+    // 本幀 dt:給位置插值與踏步相位用,讓平滑「速率」不隨螢幕更新率變動。沿用夜光微光
+    // (drawNightMotes)同款 dt 守衛——首幀/分頁切回的大跳用固定步,避免一次補太多造成瞬移。
+    const now = performance.now();
+    let fdt = (now - lastFrameT) / 1000;
+    lastFrameT = now;
+    if (!(fdt > 0) || fdt > 0.1) fdt = 0.016;
+    // 指數平滑係數 1 - e^(-rate·dt):rate≈21.4 讓 60fps 下每幀約收斂 0.3(維持既有觀感),
+    // 但高更新率(120/144Hz 手機)不再過衝、被節流的低幀分頁不再拖慢——遠端玩家移動一致平滑。
+    const lerpK = 1 - Math.exp(-21.4 * fdt);
+
     const me = myId ? players.get(myId) : null;
-    // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
+    // 插值所有玩家位置，讓 15Hz 快照看起來平滑(係數依 dt 算,觀感與螢幕更新率無關)；
     // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
     for (const p of players.values()) {
       const ddx = p.x - p.rx;
@@ -877,11 +888,11 @@
       p.moving = speed > 0.6;
       if (p.moving) {
         p.facing = Math.atan2(ddy, ddx); // 朝移動方向（弧度）
-        p.walk = (p.walk || 0) + Math.min(speed, 12) * 0.06; // 越快踏步越快
+        p.walk = (p.walk || 0) + Math.min(speed, 12) * 3.6 * fdt; // 越快踏步越快(3.6=0.06×60,折回每秒)
       }
       if (p.facing === undefined) p.facing = Math.PI / 2; // 預設面向下方
-      p.rx += ddx * 0.3;
-      p.ry += ddy * 0.3;
+      p.rx += ddx * lerpK;
+      p.ry += ddy * lerpK;
     }
 
     // 鏡頭跟隨自己
