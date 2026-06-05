@@ -75,6 +75,10 @@
   // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
   // 給離田時的「回農地」邊緣指標決定要不要強調缺水，數字與 HUD 一致、不另外再數一遍。
   let farmDryCount = 0;
+  // 同上,數到「自己那塊」已成熟可收成（state 4）的格數。種田迴圈的回報這一步先前沒有
+  // 任何離田指標——澆水這個雜務有缺水提醒,收成這個甜頭卻沒,玩家走遠就不知道乙太已熟在等。
+  // 補一個讓「收成迴圈的回報」也一眼可讀,數字與 HUD 一致、給邊緣指標共用。
+  let farmRipeCount = 0;
   let myEther = 0;
   // 是否已同步過初始乙太：避免進場／重連時把既有存量當成一次大量「獲得」而噴一大串飄字。
   let etherKnown = false;
@@ -516,19 +520,34 @@
   // 純從權威快照數得的表現層回饋，不嵌任何遊戲規則（將來 WebXR renderer 可各自實作）。
   function updateFarmHud(f) {
     const el = document.getElementById("hudFarm");
-    if (!el) return;
+    const ripeEl = document.getElementById("hudRipe");
     let dry = 0;
+    let ripe = 0;
     if (f && f.cells) {
       for (const cell of f.cells) {
         if (cell.dry && cell.state >= 2 && cell.state <= 4) dry++;
+        if (cell.state === 4) ripe++; // 4=成熟可收成(鏡像 field.rs 的 state 定義)
       }
     }
     farmDryCount = dry;
-    if (dry > 0) {
-      el.textContent = `🌱 ${dry} 格作物缺水`;
-      el.classList.remove("hidden");
-    } else {
-      el.classList.add("hidden");
+    farmRipeCount = ripe;
+    if (el) {
+      if (dry > 0) {
+        el.textContent = `🌱 ${dry} 格作物缺水`;
+        el.classList.remove("hidden");
+      } else {
+        el.classList.add("hidden");
+      }
+    }
+    // 收成提醒:有熟透的格子就告訴玩家「去收乙太」,把迴圈的回報那步顯到 HUD,
+    // 跟缺水提醒對稱;沒有就隱藏不佔行。純從權威快照數得,不嵌任何遊戲規則。
+    if (ripeEl) {
+      if (ripe > 0) {
+        ripeEl.textContent = `✨ ${ripe} 格可收成`;
+        ripeEl.classList.remove("hidden");
+      } else {
+        ripeEl.classList.add("hidden");
+      }
     }
   }
 
@@ -559,8 +578,9 @@
     const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, sy));
 
     const dry = farmDryCount > 0;
-    // 缺水時用田格藍色澆水語彙 + 顯示格數，催玩家回去澆水；不缺水用低調黃銅。
-    const color = dry ? "#7fbfff" : "rgba(201,162,75,0.85)";
+    const ripe = !dry && farmRipeCount > 0; // 缺水(雜務)較急,先顯;不缺水才換成可收成(回報)
+    // 缺水→田格藍色澆水語彙;否則熟透→亮金催玩家回去收乙太;都沒有→低調黃銅。
+    const color = dry ? "#7fbfff" : ripe ? "#ffd24a" : "rgba(201,162,75,0.85)";
 
     ctx.save();
     // 底盤圓，讓箭頭在任何地表都讀得到。
@@ -584,7 +604,7 @@
     ctx.font = "12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const label = dry ? `🌱${farmDryCount}` : "🌱";
+    const label = dry ? `🌱${farmDryCount}` : ripe ? `✨${farmRipeCount}` : "🌱";
     // 標籤擺在箭頭「背向農地」那側，不擋住指向。
     const lx = px - Math.cos(ang) * 24;
     const ly = py - Math.sin(ang) * 24;
@@ -592,7 +612,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
     ctx.strokeText(label, lx, ly);
-    ctx.fillStyle = dry ? "#bfe0ff" : "#e8e0cf";
+    ctx.fillStyle = dry ? "#bfe0ff" : ripe ? "#ffe9a0" : "#e8e0cf";
     ctx.fillText(label, lx, ly);
     ctx.textBaseline = "alphabetic"; // 復原預設，免得影響其後文字繪製
   }
