@@ -565,6 +565,23 @@
     `cargo test` 220 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬
     預期)。**仍待**:接線(AppState 持有 `VehicleField`+騎乘登記表+ws 上下車+遊戲迴圈推進+快照
     廣播+前端畫車與騎乘)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
+  - ✅ 前置之三(騎乘登記表純邏輯,2026-06-05):`vehicle.rs`(車怎麼開)與 `vehicle_field.rs`
+    (車停哪、上哪一台)都刻意把「這台有沒有人騎、是誰在騎」往外推給一張登記表——比照
+    `plots.rs`(幾何)與 `plot_registry.rs`(歸屬)分屬兩層。新增 `src/ride_registry.rs`
+    `RideRegistry`:玩家 id ↔ 載具序號的雙向對應(兩張 `HashMap` 互為反向),外加權威
+    不變式「一台車至多一個騎士、一個騎士至多一台車」。`board(user,index)` 對別人已騎的車
+    回 `false`(招牌「一台車只准一人騎」)、對自己重複上同台 idempotent、上新車前自動讓出
+    舊車;`disembark(user)` 放掉車回被釋放序號(下車與**斷線 cleanup** 都要叫,否則車被鬼
+    佔住);`vehicle_of`/`rider_of`/`is_ridden` 供接線層查詢。**與 `plot_registry` 關鍵
+    差異**:地塊歸屬持久、只增不減,騎乘是連線期暫態、可釋放——故無「序號單調遞增」那套,
+    改維護雙向一致;也**刻意無 `from_saved`**,比照同為連線期暫態的 `connections.rs`(重啟
+    時無連線存活⇒無人騎⇒全部載具空閒,`vehicle_field` 仍從存檔還原停放位置),不發明對不上
+    語意的持久化路徑。延續「純函式、無 IO、不碰 ws/遊戲迴圈/廣播 shape、標 `allow(dead_code)`
+    待接線」的前置慣例。加 8 個單元測試(空車可上、別人已騎拒絕且不頂掉既有騎士、同人同台
+    idempotent、換車自動讓舊車、下車釋放且可被他人接手、沒在騎下車 no-op、多人各騎各的互不
+    干擾、空車無騎士),`cargo test` 228 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常
+    (埠被正式服務占用屬預期)。**仍待**:接線(AppState 持有 `VehicleField`+`RideRegistry`+ws
+    上下車+遊戲迴圈推進+快照廣播+前端畫車與騎乘)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
 
 ## 玩家回饋處理區(devloop 從 data/suggestions.jsonl 進來的)
 

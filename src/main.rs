@@ -18,6 +18,7 @@ mod plot_registry;
 mod plots;
 mod positions;
 mod protocol;
+mod ride_registry;
 mod state;
 mod suggestions;
 mod tools;
