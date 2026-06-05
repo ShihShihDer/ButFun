@@ -44,6 +44,7 @@ esac
 
 PROMPT="你是 ButFun AI 開發團隊的 [$LANE] 成員,在自己的 git worktree($DIR)與分支 $BRANCH 上做一輪。
 ${FOCUS}
+**開工前先讀 docs/PLAN.md**(Planner 迴圈排好的「當前主攻方向」):讓你這輪挑的事盡量對齊它指向的優先序,別去做它列在「暫緩」的事。PLAN.md 是導航,細項仍以 docs/BACKLOG.md 為準;與你 lane 的 FOCUS 邊界衝突時,以 FOCUS 邊界優先。
 嚴格遵守 docs/AUTONOMOUS_OPS.md 的「每一輪做什麼」與 CLAUDE.md 的邊界與品質閘門。
 先判斷你 lane 內有沒有值得做的事;沒有就什麼都別改、直接結束(省 token)。
 有就**只做一個小而完整的增量**,cargo build + cargo test 全綠才 commit 到 $BRANCH
