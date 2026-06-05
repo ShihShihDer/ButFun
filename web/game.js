@@ -1623,6 +1623,12 @@
     .then((me) => {
       if (!me) return; // 訪客流程,維持顯示登入畫面
       isGuest = false; // 已登入 → 用下方「已登入：X · 登出」標籤,不另顯示 hudName
+      // 自動以登入身份連線期間,登入畫面仍短暫可見(到 welcome 抵達才隱藏):比照訪客
+      // 進場路徑擋掉「以訪客進場」鈕——否則玩家在連上前點它會疊出一條訪客連線、與登入
+      // 身份打架;並顯示「連線中…」回饋(慢網路/伺服器剛重啟時才知道在連、別乾等)。
+      // 延續登入連線回饋(loginStatus / connStatus / srStatus)的韌性弧線。
+      document.getElementById("joinBtn").disabled = true;
+      setLoginStatus("連線中…");
       // 顯示登入狀態 + 一鍵登出
       const hud = document.getElementById("hud");
       const tag = document.createElement("div");
