@@ -29,6 +29,7 @@ mod tools;
 mod users;
 mod vehicle;
 mod vehicle_field;
+mod vitals;
 mod ws;
 
 use std::net::SocketAddr;
