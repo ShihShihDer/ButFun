@@ -60,6 +60,9 @@
   let touchCurrent = null;  // 手指目前的位置
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
+  // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
+  // 純表現:手機沒有 hover、靠輕點即時互動,觸控時不更新它,自然不畫高亮。
+  let hoverScreen = null;
 
   // ---- 畫布尺寸 ----
   function resize() {
@@ -586,6 +589,21 @@
       }
     }
 
+    // 桌面 hover 高亮:游標所指的田格描一圈亮框 + 淡填,讓玩家清楚「點下去會作用在這格」。
+    // 只在能照顧(夠近)時顯示,跟「太遠整塊變淡、點了沒反應」的回饋一致;手機無 hover 自然不畫。
+    if (reachable && hoverScreen) {
+      const t = fieldTileAtScreen(hoverScreen.x, hoverScreen.y);
+      if (t) {
+        const hx = field.origin_x + t.col * ts - camX;
+        const hy = field.origin_y + t.row * ts - camY;
+        ctx.fillStyle = "rgba(255,210,74,0.12)";
+        ctx.fillRect(hx + 1, hy + 1, ts - 2, ts - 2);
+        ctx.strokeStyle = "rgba(255,210,74,0.9)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(hx + 1, hy + 1, ts - 2, ts - 2);
+      }
+    }
+
     // 周圍畫一圈黃銅色邊框(對齊世界邊界的設計語彙),從遠處也看得到
     // 「那邊有一塊我的地」。
     ctx.strokeStyle = "#c9a24b";
@@ -750,6 +768,22 @@
   }
   // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
   canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
+  // 桌面 hover:記住游標位置以高亮所指田格;移出畫布就清掉(別留個鬼影高亮)。
+  canvas.addEventListener("mousemove", (e) => { hoverScreen = { x: e.clientX, y: e.clientY }; });
+  canvas.addEventListener("mouseleave", () => { hoverScreen = null; });
+
+  // 螢幕座標 → 農地格 {col,row};落在田格範圍內才回傳,否則 null。純表現用
+  // (高亮游標所指格),不參與任何互動判定——互動仍送原始世界座標給權威伺服器決定。
+  function fieldTileAtScreen(sx, sy) {
+    if (!field) return null;
+    const rect = canvas.getBoundingClientRect();
+    const wx = sx - rect.left + lastCam.x;
+    const wy = sy - rect.top + lastCam.y;
+    const col = Math.floor((wx - field.origin_x) / field.tile_size);
+    const row = Math.floor((wy - field.origin_y) / field.tile_size);
+    if (col < 0 || row < 0 || col >= field.cols || row >= field.rows) return null;
+    return { col, row };
+  }
 
   // ---- 聊天 ----
   const MAX_CHAT_LINES = 60;
