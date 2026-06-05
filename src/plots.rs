@@ -59,7 +59,6 @@ fn spiral_grid(index: usize) -> (i32, i32) {
 }
 
 /// 第 `index` 塊地左上角在世界中的座標（像素）。序號 0 對齊現有全域農地位置。
-#[allow(dead_code)] // 接線輪（玩家進場分配地塊）才有呼叫端；沿用本專案前置地基的慣例。
 pub fn plot_origin(index: usize) -> (f32, f32) {
     let (gx, gy) = spiral_grid(index);
     (

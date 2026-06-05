@@ -69,9 +69,10 @@
   let presenceKnown = false;
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
-  // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
-  let field = null;
-  // 最近一次快照數到的「有作物且缺水」格數（updateFarmHud 算好順手記下）；
+  // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
+  // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
+  let fields = [];
+  // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
   // 給離田時的「回農地」邊緣指標決定要不要強調缺水，數字與 HUD 一致、不另外再數一遍。
   let farmDryCount = 0;
   let myEther = 0;
@@ -296,11 +297,11 @@
         }
         presenceKnown = true;
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
-        // 農地狀態 + 我的乙太 + 日夜
-        field = msg.field;
+        // 各玩家農地狀態（per-player）+ 我的乙太 + 日夜
+        fields = msg.fields || [];
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
-        updateFarmHud(field);
+        updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
           // 乙太變多 → 收成回饋飄字（首次同步不噴，否則進場/重連會把存量當成一次大獲得）。
@@ -358,13 +359,14 @@
   // 否則(腳下沒田格的邊角點)就用原始點。座標為世界座標,鏡頭移動也黏在原處。
   function spawnTapFlash(wx, wy) {
     let cx = wx, cy = wy;
-    if (field) {
-      const ts = field.tile_size;
-      const col = Math.floor((wx - field.origin_x) / ts);
-      const row = Math.floor((wy - field.origin_y) / ts);
-      if (col >= 0 && row >= 0 && col < field.cols && row < field.rows) {
-        cx = field.origin_x + (col + 0.5) * ts;
-        cy = field.origin_y + (row + 0.5) * ts;
+    const mf = myField();
+    if (mf) {
+      const ts = mf.tile_size;
+      const col = Math.floor((wx - mf.origin_x) / ts);
+      const row = Math.floor((wy - mf.origin_y) / ts);
+      if (col >= 0 && row >= 0 && col < mf.cols && row < mf.rows) {
+        cx = mf.origin_x + (col + 0.5) * ts;
+        cy = mf.origin_y + (row + 0.5) * ts;
       }
     }
     tapFlashes.push({ wx: cx, wy: cy, born: performance.now() });
@@ -373,7 +375,8 @@
   // 漣漪：由小擴張到約一格大、同時淡出。畫在日夜染色之後（當回饋 HUD,不被夜色蓋暗）。
   const TAP_MS = 360;
   function drawTapFlashes(camX, camY, now) {
-    const ts = field ? field.tile_size : 24;
+    const mf = myField();
+    const ts = mf ? mf.tile_size : 24;
     for (let i = tapFlashes.length - 1; i >= 0; i--) {
       const f = tapFlashes[i];
       const age = now - f.born;
@@ -534,15 +537,16 @@
   // 「我的田在哪個方向」、要回去澆水時不必先開小地圖對位。農地在畫面內時不畫（不打擾）。
   // 純從農地世界座標 + 鏡頭推得的表現層回饋，不嵌任何遊戲規則（WebXR renderer 可各自實作）。
   function drawFarmPointer(camX, camY) {
-    if (!field || !field.cols || !field.rows) return;
+    const mf = myField();
+    if (!mf || !mf.cols || !mf.rows) return;
     // 農地中心（世界座標）→ 螢幕座標。
-    const cx = field.origin_x + (field.cols * field.tile_size) / 2;
-    const cy = field.origin_y + (field.rows * field.tile_size) / 2;
+    const cx = mf.origin_x + (mf.cols * mf.tile_size) / 2;
+    const cy = mf.origin_y + (mf.rows * mf.tile_size) / 2;
     const sx = cx - camX;
     const sy = cy - camY;
     // 農地矩形是否與畫面相交：相交（看得到田）就不畫指標。用半尺寸當判定半徑近似即可。
-    const halfW = (field.cols * field.tile_size) / 2;
-    const halfH = (field.rows * field.tile_size) / 2;
+    const halfW = (mf.cols * mf.tile_size) / 2;
+    const halfH = (mf.rows * mf.tile_size) / 2;
     if (sx + halfW >= 0 && sx - halfW <= viewW &&
         sy + halfH >= 0 && sy - halfH <= viewH) return;
 
@@ -975,13 +979,13 @@
     ctx.fillStyle = "rgba(10,16,30,0.55)";
     ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM.pad * 2);
 
-    // 農地位置（黃銅外框前先畫，免得被框線蓋住）。
-    if (field) {
-      const fx = ox + clampUnit(field.origin_x, w) * scale;
-      const fy = oy + clampUnit(field.origin_y, h) * scale;
-      const fw = field.cols * field.tile_size * scale;
-      const fh = field.rows * field.tile_size * scale;
-      ctx.fillStyle = "rgba(123,80,40,0.95)";
+    // 各玩家農地位置（黃銅外框前先畫，免得被框線蓋住）。自己那塊畫亮、別人的暗。
+    for (const f of fields) {
+      const fx = ox + clampUnit(f.origin_x, w) * scale;
+      const fy = oy + clampUnit(f.origin_y, h) * scale;
+      const fw = f.cols * f.tile_size * scale;
+      const fh = f.rows * f.tile_size * scale;
+      ctx.fillStyle = f.owner === myId ? "rgba(201,162,75,0.95)" : "rgba(123,80,40,0.85)";
       ctx.fillRect(fx, fy, Math.max(3, fw), Math.max(3, fh));
     }
 
@@ -1101,7 +1105,10 @@
   // 把「繼承的工坊農莊」氛圍擺出來:工坊與墜毀飛船放在農地附近(固定世界座標)。
   // 飛船就是 GDD 的星際北極星勾子(玩家看得到、知道未來能飛出去)。
   function drawDecorations(camX, camY) {
-    if (!field) return;
+    // 工坊／飛船是「你繼承的工坊農莊」氛圍，擺在自己那塊地附近。沒有自己的地
+    // （訪客 / 尚未分到）就不擺。
+    const f = myField();
+    if (!f) return;
     const place = (img, wx, wy) => {
       if (!img || !img.complete || !img.naturalWidth) return;
       const dw = img.naturalWidth, dh = img.naturalHeight;
@@ -1110,11 +1117,11 @@
       if (dx + dw < 0 || dy + dh < 0 || dx > viewW || dy > viewH) return;
       ctx.drawImage(img, dx, dy);
     };
-    const fx = field.origin_x, fy = field.origin_y;
+    const fx = f.origin_x, fy = f.origin_y;
     place(ART.workshop, fx - 70, fy + 10);             // 工坊在田地左邊
-    place(ART.ship, fx + field.cols * field.tile_size + 80, fy + 40); // 飛船在田地右邊
+    place(ART.ship, fx + f.cols * f.tile_size + 80, fy + 40); // 飛船在田地右邊
     place(ART.tree, fx - 30, fy - 40);
-    place(ART.rock, fx + field.cols * field.tile_size + 20, fy - 20);
+    place(ART.rock, fx + f.cols * f.tile_size + 20, fy - 20);
   }
 
   // 32-bit 整數雜湊:給定世界格座標,回傳穩定的 [0,1) 偽亂數。
@@ -1152,105 +1159,117 @@
     }
   }
 
-  // ---- 農地（Phase 0-G 種田起源）----
-  // 玩家(權威座標 px,py)是否近到能照顧農地：鏡像伺服器的 within_field_reach，
-  // 用快照帶來的 field.reach 當同一個來源，前後端對「多近才算」不會各說各話。
-  function withinFieldReach(px, py) {
-    if (!field) return false;
-    const right = field.origin_x + field.cols * field.tile_size;
-    const bottom = field.origin_y + field.rows * field.tile_size;
-    const nx = Math.max(field.origin_x, Math.min(px, right));
-    const ny = Math.max(field.origin_y, Math.min(py, bottom));
-    const dx = px - nx, dy = py - ny;
-    return dx * dx + dy * dy <= field.reach * field.reach;
+  // ---- 農地（Phase 0-G 種田起源 / 0-G-O1 per-player）----
+  // 自己擁有的那塊地（owner === myId）；訪客或尚未分到地時為 null。
+  function myField() {
+    return myId ? fields.find((f) => f.owner === myId) : null;
   }
 
-  // 依伺服器廣播的每格 state/dry 畫出耕地與作物階段。
+  // 玩家(權威座標 px,py)是否近到能照顧**指定的**那塊地：鏡像伺服器的 within_reach，
+  // 用快照帶來的 f.reach 當同一個來源，前後端對「多近才算」不會各說各話。
+  function withinFieldReach(f, px, py) {
+    if (!f) return false;
+    const right = f.origin_x + f.cols * f.tile_size;
+    const bottom = f.origin_y + f.rows * f.tile_size;
+    const nx = Math.max(f.origin_x, Math.min(px, right));
+    const ny = Math.max(f.origin_y, Math.min(py, bottom));
+    const dx = px - nx, dy = py - ny;
+    return dx * dx + dy * dy <= f.reach * f.reach;
+  }
+
+  // 畫出世界上所有玩家的地塊（per-player）。只有自己那塊套用照顧距離回饋；
+  // 別人的地照常畫、標上地主名，但點不動（伺服器也只接受對自己地的動作）。
   function drawField(camX, camY) {
-    if (!field) return;
-    const ts = field.tile_size;
-    // 自己離農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
-    // 不再表現成「點了沒反應像壞掉」。沒有自己（如剛進場）就照常畫。
+    for (const f of fields) drawOnePlot(camX, camY, f);
+  }
+
+  // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
+  function drawOnePlot(camX, camY, f) {
+    if (!f || !f.cells) return;
+    const ts = f.tile_size;
+    const mine = f.owner === myId;
+    // 自己離自己的農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
+    // 不再表現成「點了沒反應像壞掉」。別人的地不套這個（本就不能由你照顧）。
     const me = myId ? players.get(myId) : null;
-    const reachable = me ? withinFieldReach(me.x, me.y) : true;
-    const fx = field.origin_x - camX;
-    const fy = field.origin_y - camY;
-    const fw = field.cols * ts;
-    const fh = field.rows * ts;
+    const reachable = mine ? (me ? withinFieldReach(f, me.x, me.y) : true) : true;
+    const fx = f.origin_x - camX;
+    const fy = f.origin_y - camY;
+    const fw = f.cols * ts;
+    const fh = f.rows * ts;
+    // 整塊在畫面外就略過（多塊地時省繪製）。
+    if (fx + fw < -40 || fy + fh < -40 || fx > canvas.width + 40 || fy > canvas.height + 40) return;
 
     ctx.save();
     if (!reachable) ctx.globalAlpha = 0.55;
+    else if (!mine) ctx.globalAlpha = 0.82; // 別人的地稍微壓一點，凸顯自己的
 
-    // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開(原本未翻土的格子
-    // 顏色和草地太接近,玩家完全看不出腳下站著一塊田)。
+    // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開。
     ctx.fillStyle = "#3a2818";
     ctx.fillRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
-    for (let row = 0; row < field.rows; row++) {
-      for (let col = 0; col < field.cols; col++) {
-        const cell = field.cells[row * field.cols + col];
-        const sx = field.origin_x + col * ts - camX;
-        const sy = field.origin_y + row * ts - camY;
+    for (let row = 0; row < f.rows; row++) {
+      for (let col = 0; col < f.cols; col++) {
+        const cell = f.cells[row * f.cols + col];
+        const sx = f.origin_x + col * ts - camX;
+        const sy = f.origin_y + row * ts - camY;
         if (sx + ts < 0 || sy + ts < 0 || sx > viewW || sy > viewH) continue;
         drawTile(sx, sy, ts, cell);
       }
     }
 
-    // 桌面 hover 高亮:游標所指的田格描一圈亮框 + 淡填,讓玩家清楚「點下去會作用在這格」。
-    // 只在能照顧(夠近)時顯示,跟「太遠整塊變淡、點了沒反應」的回饋一致;手機無 hover 自然不畫。
-    if (reachable && hoverScreen) {
-      const t = fieldTileAtScreen(hoverScreen.x, hoverScreen.y);
-      if (t) {
-        const hx = field.origin_x + t.col * ts - camX;
-        const hy = field.origin_y + t.row * ts - camY;
-        ctx.fillStyle = "rgba(255,210,74,0.12)";
-        ctx.fillRect(hx + 1, hy + 1, ts - 2, ts - 2);
-        ctx.strokeStyle = "rgba(255,210,74,0.9)";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(hx + 1, hy + 1, ts - 2, ts - 2);
+    // hover 高亮 + 腳下格指示:只在「自己的地」且夠近時畫——互動只作用在自己的地,
+    // 別人的地點不動,自然不需要這些「點下去會作用在這格」的目標回饋。
+    if (mine && reachable) {
+      // 桌面 hover 高亮:游標所指的田格描一圈亮框 + 淡填。手機無 hover 自然不畫。
+      if (hoverScreen) {
+        const t = fieldTileAtScreen(hoverScreen.x, hoverScreen.y);
+        if (t) {
+          const hx = f.origin_x + t.col * ts - camX;
+          const hy = f.origin_y + t.row * ts - camY;
+          ctx.fillStyle = "rgba(255,210,74,0.12)";
+          ctx.fillRect(hx + 1, hy + 1, ts - 2, ts - 2);
+          ctx.strokeStyle = "rgba(255,210,74,0.9)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(hx + 1, hy + 1, ts - 2, ts - 2);
+        }
+      }
+      // 腳下格指示:踩在某田格上時描一圈虛線框,給用「空白鍵 / E 採腳下格」的鍵盤/觸控
+      // 玩家同等的目標回饋(桌面靠滑鼠 hover 亮框)。虛線 + 較低透明度跟 hover 實線框區分。
+      if (me) {
+        const fcol = Math.floor((me.x - f.origin_x) / ts);
+        const frow = Math.floor((me.y - f.origin_y) / ts);
+        if (fcol >= 0 && frow >= 0 && fcol < f.cols && frow < f.rows) {
+          const ex = f.origin_x + fcol * ts - camX;
+          const ey = f.origin_y + frow * ts - camY;
+          ctx.save();
+          ctx.strokeStyle = "rgba(255,210,74,0.55)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 3]); // 虛線:跟滑鼠 hover 的實線亮框一眼分得開
+          ctx.strokeRect(ex + 2, ey + 2, ts - 4, ts - 4);
+          ctx.restore(); // 還原 lineDash,免得漏進後面黃銅框/柵欄的實線繪製
+        }
       }
     }
 
-    // 腳下格指示:玩家站在某個田格上時,在那一格描一圈低調的虛線框,讓用「空白鍵 / E
-    // 採腳下格」的鍵盤/觸控玩家也看得到「按下去會作用在這格」——桌面靠上方的滑鼠 hover
-    // 亮框,這條補上沒有滑鼠時同等的目標回饋,跟 HUD 教的腳下格操作對上。用虛線 + 較低
-    // 透明度跟滑鼠 hover 的實線亮框區分開。純從自己的位置推得(做什麼仍由權威伺服器決定,
-    // 不嵌任何遊戲規則),只在能照顧(夠近)且確實踩在田格上時畫;手機/鍵盤都受益。
-    if (reachable && me) {
-      const fcol = Math.floor((me.x - field.origin_x) / ts);
-      const frow = Math.floor((me.y - field.origin_y) / ts);
-      if (fcol >= 0 && frow >= 0 && fcol < field.cols && frow < field.rows) {
-        const ex = field.origin_x + fcol * ts - camX;
-        const ey = field.origin_y + frow * ts - camY;
-        ctx.save();
-        ctx.strokeStyle = "rgba(255,210,74,0.55)";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]); // 虛線:跟滑鼠 hover 的實線亮框一眼分得開
-        ctx.strokeRect(ex + 2, ey + 2, ts - 4, ts - 4);
-        ctx.restore(); // 還原 lineDash,免得漏進後面黃銅框/柵欄的實線繪製
-      }
-    }
-
-    // 周圍畫一圈黃銅色邊框(對齊世界邊界的設計語彙),從遠處也看得到
-    // 「那邊有一塊我的地」。
-    ctx.strokeStyle = "#c9a24b";
+    // 周圍畫一圈邊框：自己的黃銅亮框、別人的暗一點，一眼分得出哪塊是自己的。
+    ctx.strokeStyle = mine ? "#c9a24b" : "#8a7340";
     ctx.lineWidth = 3;
     ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
-    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」而非
-    // 一塊浮在草地上的色塊(玩家回饋:想要田地周圍的木柵欄)。純程式畫,
-    // 之後真 sprite 進來可直接替換。
+    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」。純程式畫。
     drawFence(fx, fy, fw, fh);
 
-    // 田地名字標籤(平時也顯示,不只在太遠時)。
-    ctx.fillStyle = "rgba(232,224,207,0.9)";
+    // 田地名字標籤：自己的標「你的乙太田」，別人的標地主名。
+    const owner = players.get(f.owner);
+    const label = mine ? "你的乙太田 🌱" : `${owner ? owner.name : "拓荒者"} 的乙太田`;
+    ctx.fillStyle = mine ? "rgba(232,224,207,0.9)" : "rgba(232,224,207,0.7)";
     ctx.font = "13px system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("你的乙太田 🌱", fx + fw / 2, fy - 8);
+    ctx.fillText(label, fx + fw / 2, fy - 8);
 
     ctx.restore();
 
-    if (!reachable) {
+    if (mine && !reachable) {
       ctx.fillStyle = "rgba(232,224,207,0.85)";
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
@@ -1409,12 +1428,21 @@
     // 先看是不是點到小地圖收合鈕(純 UI 切換,不需連線、也不該被當成農作意圖)。
     if (minimapToggleHit(clientX, clientY)) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // 自己離農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
     const me = myId ? players.get(myId) : null;
-    if (me && field && !withinFieldReach(me.x, me.y)) {
-      const now = Date.now();
+    const f = myField();
+    const now = Date.now();
+    // 沒有自己的地（訪客 / 尚未分到）：伺服器只接受對自己地的動作，先給回饋、不白送一則。
+    if (me && !f) {
       if (now - lastReachHint > 2500) {
-        addChat("系統", "走近農地才能照顧作物哦。");
+        addChat("系統", "登入後就有自己的乙太田可以照顧哦。");
+        lastReachHint = now;
+      }
+      return;
+    }
+    // 自己離自己的農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
+    if (me && f && !withinFieldReach(f, me.x, me.y)) {
+      if (now - lastReachHint > 2500) {
+        addChat("系統", "走近你的農地才能照顧作物哦。");
         lastReachHint = now;
       }
       return;
@@ -1452,13 +1480,14 @@
   // 螢幕座標 → 農地格 {col,row};落在田格範圍內才回傳,否則 null。純表現用
   // (高亮游標所指格),不參與任何互動判定——互動仍送原始世界座標給權威伺服器決定。
   function fieldTileAtScreen(sx, sy) {
-    if (!field) return null;
+    const f = myField();
+    if (!f) return null;
     const rect = canvas.getBoundingClientRect();
     const wx = sx - rect.left + lastCam.x;
     const wy = sy - rect.top + lastCam.y;
-    const col = Math.floor((wx - field.origin_x) / field.tile_size);
-    const row = Math.floor((wy - field.origin_y) / field.tile_size);
-    if (col < 0 || row < 0 || col >= field.cols || row >= field.rows) return null;
+    const col = Math.floor((wx - f.origin_x) / f.tile_size);
+    const row = Math.floor((wy - f.origin_y) / f.tile_size);
+    if (col < 0 || row < 0 || col >= f.cols || row >= f.rows) return null;
     return { col, row };
   }
 

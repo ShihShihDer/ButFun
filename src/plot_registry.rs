@@ -40,14 +40,12 @@ struct Inner {
 }
 
 impl PlotRegistry {
-    #[allow(dead_code)] // 接線輪在 `AppState` 建立 store 才有呼叫端；沿用本專案前置地基的慣例。
     pub fn new() -> Self {
         Self::default()
     }
 
     /// 取得 `user_id` 的地塊序號；還沒有就分配下一個未用序號並記住。
     /// 同一玩家重複呼叫（重連／多分頁）一律拿回**同一個**序號，不會多吃地塊。
-    #[allow(dead_code)] // 接線輪（玩家進場分配地塊）才有呼叫端；沿用本專案前置地基的慣例。
     pub fn assign(&self, user_id: Uuid) -> usize {
         let mut inner = self.inner.lock().unwrap();
         if let Some(&idx) = inner.by_user.get(&user_id) {

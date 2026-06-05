@@ -37,11 +37,13 @@ pub enum ClientMsg {
 pub enum ServerMsg {
     /// 進場成功，告訴客戶端自己的 id 與世界資訊。
     Welcome { id: Uuid, world: WorldInfo },
-    /// 每個 tick 廣播一次的權威世界狀態快照（含農地當前狀態）。
+    /// 每個 tick 廣播一次的權威世界狀態快照（含各玩家農地當前狀態）。
     Snapshot {
         tick: u64,
         players: Vec<PlayerView>,
-        field: FieldView,
+        /// 世界上所有玩家的地塊（per-player：每人一塊，各在不同位置）。
+        /// 前端畫出全部，但只有 `owner == 自己 id` 的那塊能互動。
+        fields: Vec<FieldView>,
         /// 伺服器權威的日夜狀態（階段 + 亮度），前端依此做環境染色。
         daynight: DayNightView,
     },
@@ -74,6 +76,10 @@ pub struct PlayerView {
 /// 快照裡的農地狀態：固定位置 / 大小的格陣列，讓前端能畫出每格。
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldView {
+    /// 這塊地的擁有者（per-player）。前端比對自己的 id：相同才畫成「你的地」、
+    /// 才套用照顧距離回饋與互動；其餘只看得到、點不動。
+    /// `Field::view()` 先填 `nil`，由廣播層（知道 HashMap key）戳上真正的擁有者。
+    pub owner: Uuid,
     /// 農地左上角世界座標與每格邊長，讓前端對齊伺服器的格線。
     pub origin_x: f32,
     pub origin_y: f32,
@@ -122,9 +128,11 @@ mod tests {
         }
     }
 
-    /// 快照序列化後要帶前端依賴的欄位名：field / 每位玩家的 ether / 每格的 state、dry。
+    /// 快照序列化後要帶前端依賴的欄位名：fields（陣列、每塊帶 owner）/ 每位玩家的
+    /// ether / 每格的 state、dry。
     #[test]
     fn snapshot_serializes_field_and_ether() {
+        let owner = Uuid::nil();
         let snap = ServerMsg::Snapshot {
             tick: 1,
             players: vec![PlayerView {
@@ -135,7 +143,8 @@ mod tests {
                 y: 0.0,
                 ether: 7,
             }],
-            field: FieldView {
+            fields: vec![FieldView {
+                owner,
                 origin_x: 856.0,
                 origin_y: 904.0,
                 tile_size: 48.0,
@@ -146,7 +155,7 @@ mod tests {
                     state: 2,
                     dry: true,
                 }],
-            },
+            }],
             daynight: DayNightView {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
@@ -155,10 +164,11 @@ mod tests {
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
         assert_eq!(v["players"][0]["ether"], 7);
-        assert_eq!(v["field"]["tile_size"], 48.0);
-        assert_eq!(v["field"]["reach"], 48.0);
-        assert_eq!(v["field"]["cells"][0]["state"], 2);
-        assert_eq!(v["field"]["cells"][0]["dry"], true);
+        assert_eq!(v["fields"][0]["owner"], owner.to_string());
+        assert_eq!(v["fields"][0]["tile_size"], 48.0);
+        assert_eq!(v["fields"][0]["reach"], 48.0);
+        assert_eq!(v["fields"][0]["cells"][0]["state"], 2);
+        assert_eq!(v["fields"][0]["cells"][0]["dry"], true);
         // 日夜狀態：階段以 snake_case 字串、亮度為數值，鎖住前端依賴的契約。
         assert_eq!(v["daynight"]["phase"], "day");
         assert_eq!(v["daynight"]["light"], 0.5);

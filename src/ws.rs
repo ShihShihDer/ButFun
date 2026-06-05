@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
-use crate::field::FarmOutcome;
+use crate::field::{FarmOutcome, Field};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -153,6 +153,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
         // 不是第一條連線:既有玩家記錄保留(同帳號其他分頁仍在用),不動。
     }
+
+    // 已登入玩家擁有自己的一塊地（Phase 0-G-O1 per-player）：分配一個地塊序號
+    // （同帳號重連永遠拿回同一塊），第一次進場時依序號建立那塊地。`assign`/`entry`
+    // 皆冪等，多分頁/重連重複呼叫不會多吃地塊、也不會覆蓋既有作物。
+    // 訪客（隨機 id、不持久）刻意不分地：避免每次連線都吃掉一個只增不減的序號造成
+    // 無界成長；他們仍看得到別人的地、只是還不能耕種（待人決定是否給臨時地，見 PR）。
+    if let Some(uid) = authed_uid {
+        let index = app.plots.assign(uid);
+        app.fields
+            .write()
+            .unwrap()
+            .entry(uid)
+            .or_insert_with(|| Field::for_plot(index));
+    }
+
     tracing::info!(player = %player.name, %id, "玩家進場");
 
     // 先送 Welcome。
@@ -228,25 +243,33 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {
-                    // 點到這塊地外的座標 cell_at 會回 None，直接忽略。
-                    // cell_at 現在吃這塊地自己的 origin（per-player 地基），故需短暫讀農地鎖。
-                    let cell = app.field.read().unwrap().cell_at(x, y);
-                    if let Some((col, row)) = cell {
-                        // 權威伺服器：只接受「玩家確實站在農地（或緊鄰邊緣）」的照顧動作，
-                        // 不讓客戶端用任意座標隔空遙控這塊地。每把鎖各自取、各自釋放，
-                        // 同一時間至多持一把，沿用原先「不互鎖」的鎖序。
-                        let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
-                        let at_field = player_pos
-                            .map(|(px, py)| app.field.read().unwrap().within_reach(px, py))
-                            .unwrap_or(false);
-                        if at_field {
-                            let outcome = app.field.write().unwrap().interact(col, row);
-                            if let FarmOutcome::Harvested(ether) = outcome {
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    p.ether = p.ether.saturating_add(ether);
-                                    tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                    // per-player：玩家只能照顧**自己**那塊地。用自己的 id 取自己的 `Field`
+                    // （訪客沒有地塊 → 取不到 → 一律不能耕種），歸屬由此建構性保證：
+                    // 路過別人的地時送來的座標落在別人 plot，但 `cell_at` 是對「自己這塊」
+                    // 算的 → 回 `None` → 無效，無從隔空動到別人的地。
+                    // 仍保留「人要近到搆得著自己這塊」的權威檢查。每把鎖各自取各自放，
+                    // 同一時間至多持一把，沿用原先「不互鎖」的鎖序。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let outcome = {
+                        let mut fields = app.fields.write().unwrap();
+                        match fields.get_mut(&id) {
+                            Some(field) => match field.cell_at(x, y) {
+                                Some((col, row))
+                                    if player_pos
+                                        .map(|(px, py)| field.within_reach(px, py))
+                                        .unwrap_or(false) =>
+                                {
+                                    field.interact(col, row)
                                 }
-                            }
+                                _ => FarmOutcome::Nothing,
+                            },
+                            None => FarmOutcome::Nothing,
+                        }
+                    };
+                    if let FarmOutcome::Harvested(ether) = outcome {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.ether = p.ether.saturating_add(ether);
+                            tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
                         }
                     }
                 }
