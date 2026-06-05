@@ -27,7 +27,7 @@ pub struct Ingredient {
 /// 一份合成配方：消耗 `inputs` 列出的材料，產出 `output_qty` 個 `output`。
 ///
 /// 約定：`inputs` 裡每種物品**只列一筆**（不重複同一 `ItemKind`）——`craft` 的全有全無
-/// 檢查以每筆獨立判斷，重複列同物會讓檢查失準。目前唯一的配方（鎬子）符合此約定。
+/// 檢查以每筆獨立判斷，重複列同物會讓檢查失準。目前的配方（鎬子、鋤頭）皆符合此約定。
 pub struct Recipe {
     /// 產物種類。
     pub output: ItemKind,
@@ -55,9 +55,27 @@ pub const PICKAXE: Recipe = Recipe {
     ],
 };
 
+/// 第二份配方：木×2 + 石×1 = 鋤頭（翻土工具，Phase 1-D 工具效用用）。
+/// 比鎬子便宜，貼合「鋤頭較簡單」；也讓 `RECIPES` 不再是單筆、示範加配方只需多列一筆。
+#[allow(dead_code)]
+pub const HOE: Recipe = Recipe {
+    output: ItemKind::Hoe,
+    output_qty: 1,
+    inputs: &[
+        Ingredient {
+            item: ItemKind::Wood,
+            qty: 2,
+        },
+        Ingredient {
+            item: ItemKind::Stone,
+            qty: 1,
+        },
+    ],
+};
+
 /// 全部可用配方表。接線時前端列這張表、ws 依索引 / 名稱挑一份來合。
 #[allow(dead_code)]
-pub const RECIPES: &[Recipe] = &[PICKAXE];
+pub const RECIPES: &[Recipe] = &[PICKAXE, HOE];
 
 // 整個模組是前置地基：接線輪（合成台實體、ws 互動、前端菜單）才有呼叫端，
 // 在此之前公開項目皆無外部呼叫，比照 `inventory.rs` / `gather.rs` 標 `allow(dead_code)`。
@@ -199,5 +217,30 @@ mod tests {
     #[test]
     fn recipes_table_lists_pickaxe() {
         assert!(RECIPES.iter().any(|r| r.output == ItemKind::Pickaxe));
+    }
+
+    #[test]
+    fn hoe_recipe_matches_spec_and_crafts() {
+        // 驗收：木×2 + 石×1 = 鋤頭×1。
+        assert_eq!(HOE.output, ItemKind::Hoe);
+        assert_eq!(HOE.output_qty, 1);
+        let wood = HOE.inputs.iter().find(|i| i.item == ItemKind::Wood);
+        let stone = HOE.inputs.iter().find(|i| i.item == ItemKind::Stone);
+        assert_eq!(wood.map(|i| i.qty), Some(2));
+        assert_eq!(stone.map(|i| i.qty), Some(1));
+
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Wood, 2);
+        inv.add(ItemKind::Stone, 1);
+        assert!(HOE.craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Hoe), 1);
+        assert_eq!(inv.count(ItemKind::Wood), 0);
+        assert_eq!(inv.count(ItemKind::Stone), 0);
+    }
+
+    #[test]
+    fn recipes_table_lists_both_tools() {
+        assert!(RECIPES.iter().any(|r| r.output == ItemKind::Pickaxe));
+        assert!(RECIPES.iter().any(|r| r.output == ItemKind::Hoe));
     }
 }
