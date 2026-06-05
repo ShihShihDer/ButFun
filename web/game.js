@@ -38,8 +38,9 @@
   // ---- 無障礙：尊重系統「減少動態」偏好 ----
   // 有些玩家對持續飄動／彈跳／閃爍的畫面會暈或不適（前庭敏感）。作業系統提供
   // prefers-reduced-motion 偏好，這裡即時讀取：開啟時關掉「純裝飾、不傳遞資訊」的環境
-  // 動態——角色踏步彈跳、夜晚乙太微光的飄移與明滅、重連橫幅的脈動。靜態的畫面照樣資訊
-  // 完整（夜色濃淡、微光位置、重連橫幅本身都還在），只是不再動。純表現層、不嵌遊戲規則。
+  // 動態——角色踏步彈跳、夜晚乙太微光的飄移與明滅、收成「+N 乙太」飄字的上飄、輕點田格
+  // 漣漪的擴張、重連橫幅的脈動。靜態的畫面照樣資訊完整（夜色濃淡、微光位置、飄字的 +N、
+  // 漣漪框住的那格、重連橫幅本身都還在），只是不再動。純表現層、不嵌遊戲規則。
   const reduceMotionMQ = window.matchMedia
     ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
   let reduceMotion = !!(reduceMotionMQ && reduceMotionMQ.matches);
@@ -314,7 +315,8 @@
       const t = age / FLOAT_MS;
       const alpha = 1 - t;
       const sx = f.wx - camX;
-      const sy = f.wy - camY - t * 34; // 隨時間往上飄
+      // 開「減少動態」時不上飄,只在原地淡出（+N 乙太的資訊由文字本身傳達,上飄純裝飾）。
+      const sy = f.wy - camY - (reduceMotion ? 0 : t * 34);
       ctx.font = "bold 15px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = `rgba(0,0,0,${(alpha * 0.5).toFixed(3)})`;
@@ -351,7 +353,9 @@
       const t = age / TAP_MS;
       const sx = f.wx - camX;
       const sy = f.wy - camY;
-      const r = ts * (0.28 + t * 0.42); // 由小擴張到約半格半徑
+      // 開「減少動態」時不擴張,改畫固定半格大的環、只淡出（「點在這格」由位置本身傳達,
+      // 由小到大的擴張純裝飾,前庭敏感的玩家輕點仍有靜態回饋）。
+      const r = reduceMotion ? ts * 0.5 : ts * (0.28 + t * 0.42); // 由小擴張到約半格半徑
       ctx.save();
       ctx.lineWidth = 2.5 * (1 - t * 0.5);
       ctx.strokeStyle = `rgba(255,210,74,${(0.85 * (1 - t)).toFixed(3)})`;
