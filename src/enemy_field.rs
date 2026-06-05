@@ -126,6 +126,36 @@ impl EnemyField {
         Some((kind, loot))
     }
 
+    /// 玩家在 `(px, py)` 這一刻**承受的反擊總威脅**：所有在 `ATTACK_REACH` 內、仍存活的
+    /// 敵人，各自的 `threat`（每次反擊傷害）相加。`attack_nearest` 是玩家→敵人這一向，
+    /// 本函式是對等的敵人→玩家那一向——湊成完整的「自動打怪」迴圈：靠近自動出手的同時，
+    /// 圍上來的敵人也在還手。被多隻敵人同時包圍時威脅疊加（愈深入曠野、敵人愈密就愈危險），
+    /// 給戰鬥真正的風險面，避免淪為「無傷收割」的空殼（正是 `vitals.rs` 承接 `threat` 要的對象）。
+    ///
+    /// 威脅範圍刻意**重用 `ATTACK_REACH`**（單一真實來源）：你近到能自動打牠，牠就近到能還手，
+    /// 不另立一套距離常數。純查詢——**不改任何敵人狀態**（反擊不消耗敵人，敵人照樣被
+    /// `attack_nearest` 打），故吃 `&self`。反擊的**節奏**（接線層多久把這份威脅套進玩家
+    /// `Vitals::take_damage` 一次）由伺服器迴圈決定——比照 `attack_nearest` 的 `power`、
+    /// `tick` 的 `dt`，cadence 是接線層的權責，這層只回「此刻圍著你的敵人有多危險」。
+    /// 非有限座標一律回 `0`（延續 `attack_nearest` 的載入防線脈絡）。
+    pub fn threat_at(&self, px: f32, py: f32) -> u32 {
+        if !px.is_finite() || !py.is_finite() {
+            return 0;
+        }
+        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        self.enemies
+            .iter()
+            // 只有活著的敵人會還手；重生中的不構成威脅。
+            .filter(|placed| placed.enemy.is_alive())
+            .filter(|placed| {
+                let dx = placed.x - px;
+                let dy = placed.y - py;
+                dx * dx + dy * dy <= reach_sq
+            })
+            .map(|placed| placed.enemy.kind().threat())
+            .sum()
+    }
+
     /// 載入入口（接 0-E 從存檔還原敵人狀態用）：佈置（座標）一律由序號重新推導，
     /// 只有「生命 / 重生倒數」這組會變的狀態取自存檔。延續 `gather_field::from_saved`
     /// 的載入時驗證——存檔敵人數必須與目前佈置一致、種類對齊序號、且每隻都 `is_loadable`，
@@ -298,6 +328,78 @@ mod tests {
         }
         // 被打倒的那隻仍維持被打倒（沒有被重複攻擊復活或多掉）。
         assert!(f.enemies()[0].enemy.is_defeated());
+    }
+
+    #[test]
+    fn threat_at_is_zero_when_no_enemy_in_range() {
+        // 真實佈置、站在世界外：附近沒有任何敵人，反擊威脅為 0。
+        let f = EnemyField::new();
+        assert_eq!(f.threat_at(WORLD_WIDTH + 5000.0, WORLD_HEIGHT + 5000.0), 0);
+    }
+
+    #[test]
+    fn threat_at_sums_alive_enemies_in_reach() {
+        // 兩隻不同種類的存活敵人都落在攻擊範圍內：威脅相加（被包圍更危險）。
+        let f = EnemyField {
+            enemies: vec![
+                PlacedEnemy {
+                    x: 100.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::ScrapDrone),
+                },
+                PlacedEnemy {
+                    x: 140.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::EtherWisp),
+                },
+            ],
+        };
+        // 站在兩隻中間（各距 20 < ATTACK_REACH 64）：兩隻都還手。
+        let expected = EnemyKind::ScrapDrone.threat() + EnemyKind::EtherWisp.threat();
+        assert_eq!(f.threat_at(120.0, 100.0), expected);
+    }
+
+    #[test]
+    fn threat_at_excludes_enemies_out_of_reach() {
+        let f = EnemyField {
+            enemies: vec![PlacedEnemy {
+                x: 100.0,
+                y: 100.0,
+                enemy: Enemy::new(EnemyKind::ScrapDrone),
+            }],
+        };
+        // 玩家在攻擊範圍外（距 65 > 64）：威脅為 0。
+        assert_eq!(f.threat_at(100.0, 100.0 + ATTACK_REACH + 1.0), 0);
+    }
+
+    #[test]
+    fn threat_at_ignores_defeated_enemies() {
+        // 一隻存活、一隻被打倒，都在範圍內：只算存活那隻的威脅（倒下的不還手）。
+        let mut defeated = Enemy::new(EnemyKind::EtherWisp);
+        defeated.attack(EnemyKind::EtherWisp.max_hp());
+        assert!(defeated.is_defeated());
+        let f = EnemyField {
+            enemies: vec![
+                PlacedEnemy {
+                    x: 100.0,
+                    y: 100.0,
+                    enemy: Enemy::new(EnemyKind::ScrapDrone),
+                },
+                PlacedEnemy {
+                    x: 105.0,
+                    y: 100.0,
+                    enemy: defeated,
+                },
+            ],
+        };
+        assert_eq!(f.threat_at(102.0, 100.0), EnemyKind::ScrapDrone.threat());
+    }
+
+    #[test]
+    fn threat_at_rejects_non_finite_coords() {
+        let f = EnemyField::new();
+        assert_eq!(f.threat_at(f32::NAN, 100.0), 0);
+        assert_eq!(f.threat_at(100.0, f32::INFINITY), 0);
     }
 
     #[test]
