@@ -633,6 +633,36 @@
     if (document.hidden) releaseAllKeys();
   });
 
+  // ---- 遊戲手把(玩家建議:不一定有滑鼠/鍵盤,接手把也要能玩) ----
+  // 純客戶端輸入源:讀左類比搖桿與十字鍵,折算成與鍵盤／觸控相同的四個方向布林,送一樣的
+  // input 訊息給(權威)伺服器——不碰任何遊戲規則(將來 WebXR renderer 連同一後端各自實作)。
+  // 用「邊緣觸發」:只在方向有變化的那一幀寫 keys(像 keydown/keyup),空檔不覆寫 keys,
+  // 才不會每幀把鍵盤/觸控正按住的方向硬清成 false、彼此打架。
+  const gpPrev = { up: false, down: false, left: false, right: false };
+  function pollGamepad() {
+    if (!navigator.getGamepads) return;
+    let pad = null;
+    for (const p of navigator.getGamepads()) { if (p) { pad = p; break; } }
+    if (!pad) return;
+    const dz = 0.35; // 死區:類比搖桿歸中常有微小漂移,小於此量不算方向
+    const ax = pad.axes[0] || 0, ay = pad.axes[1] || 0;
+    const btn = (i) => !!(pad.buttons[i] && pad.buttons[i].pressed); // 標準佈局十字鍵 12~15
+    const cur = {
+      up:    ay < -dz || btn(12),
+      down:  ay >  dz || btn(13),
+      left:  ax < -dz || btn(14),
+      right: ax >  dz || btn(15),
+    };
+    let changed = false;
+    for (const d of ["up", "down", "left", "right"]) {
+      if (cur[d] !== gpPrev[d]) { keys[d] = cur[d]; gpPrev[d] = cur[d]; changed = true; }
+    }
+    if (changed) sendInputIfChanged();
+  }
+  // 手把接上時報一聲:玩家(尤其無滑鼠/報讀器使用者)知道可以直接用手把走動。
+  window.addEventListener("gamepadconnected", () =>
+    announce("已連接遊戲手把,可用左類比搖桿或十字鍵走動"));
+
   // ---- 觸控:任何地方按下拖曳當搖桿,放開即停止 ----
   function setTouchKeys(dx, dy) {
     const dead = 14;
@@ -693,6 +723,9 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false; // 像素風禁止插值放大,否則糊邊
     ctx.clearRect(0, 0, viewW, viewH);
+
+    // 手把沒有事件式的「按住中」回呼,必須每幀輪詢;放在繪製前讓本幀就反映方向。
+    pollGamepad();
 
     const me = myId ? players.get(myId) : null;
     // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
