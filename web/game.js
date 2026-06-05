@@ -1328,7 +1328,15 @@
     // 第一次有訊息才顯示「聊天」標題列(沒人說話時不佔位);收合中則累計未讀。
     const toggle = document.getElementById("chatToggle");
     if (toggle) toggle.style.display = "block";
-    if (document.getElementById("chat").classList.contains("chat-collapsed")) bumpChatUnread();
+    const collapsed = document.getElementById("chat").classList.contains("chat-collapsed");
+    if (collapsed) {
+      bumpChatUnread();
+      // 收合時 #chatLog 是 display:none,其 aria-live 區被報讀器忽略——收著聊天的報讀器玩家
+      // 聽不到任何人發言(那顆 (N) 未讀數是純視覺)。把真人發言(who 非「系統」)改走一直在的
+      // #srStatus 播報區,讓收著也聽得到社交訊息。連線中斷/接回等「系統」訊息本就各自呼叫
+      // announce()(見 onclose/welcome),這裡略過以免雙重朗讀。延續 srStatus 的無障礙弧線。
+      if (who !== "系統") announce(`${who}：${text}`);
+    }
     // 加新行「之前」先量玩家是否已捲在底部附近:玩家往上捲讀舊訊息時,新訊息不該把他
     // 硬拉回底部(讀不完歷史是聊天介面經典 bug)。容差 24px 吸收次像素誤差與行高。
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
