@@ -6,6 +6,7 @@
 mod auth;
 mod connections;
 mod crops;
+mod daynight;
 mod field;
 mod game;
 mod positions;
