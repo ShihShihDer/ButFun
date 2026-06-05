@@ -55,8 +55,12 @@
     }
 
     /* HUD */
+    /* 上限寬度:操作說明是長句,沒有上限時在寬螢幕會橫向拉滿一整行、難讀,在中寬螢幕更會
+       往右延伸逼近右上角的建議鈕。約束成一個可讀窄欄(手機上 78vw 仍給右上鈕留白),
+       長句自然換行而非溢出。overflow-wrap 確保超長 token(如網址)也不會撐破面板。 */
     #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
-      background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5; }
+      background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
+      max-width: min(340px, 78vw); overflow-wrap: break-word; }
     #hud .brass { color: var(--brass); }
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
