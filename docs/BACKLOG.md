@@ -355,6 +355,18 @@
     既有 serde round-trip 測試走 `from_tiles(0,..)` 還原。`cargo test` 141 綠、clippy 乾淨、伺服器二進位
     啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(AppState 改 `HashMap<Uuid,Field>`+進場分配+Farm
     驗地主+快照送多塊+前端畫多塊)屬架構級、動 live 廣播 shape,留待後續輪/PR。
+  - ✅ 前置(地塊登記的載入路徑驗證,2026-06-05):`PlotRegistry`(0-E 會把 user_id→序號表存進
+    Postgres)是 per-player 諸 store 裡唯一還沒有**載入入口**的——其餘存檔又重載結構都已先補上
+    載入時的不變式驗證(`positions::spawn_at`/`field::from_tiles`/`daynight::at`+`Deserialize`/
+    `suggestions`/`users::parse_and_sanitize`)。新增 `PlotRegistry::from_saved((user_id,序號) 對)`
+    重建登記表,**關鍵不變式:`next` 一律重建成「已用最大序號 + 1」**。若天真載入把 `next` 設回 0,
+    重啟後 `assign` 會把序號 0(或任何已發出的序號)再發給新玩家,造成「同一塊地兩個地主、作物歸屬
+    錯亂」——正是本模組「序號只增不減、不回收」白紙黑字要防的災難。重複 user_id 取後見者、空輸入＝全新
+    登記表(第一個玩家仍拿序號 0 對齊現有全域農地)。純邏輯、無 IO、標 `allow(dead_code)` 待 0-E 從
+    Postgres 載回才有呼叫端,**行為不變**(不動 PR #12 接線範圍的 field/game/protocol/state/ws),故直接
+    進 main。加 3 個測試(空輸入如新、載回保留地主、稀疏跳號續發＝最大+1 不撞既有地主),`cargo test`
+    144 綠、clippy 乾淨、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:0-E 真正把這張表
+    存讀 Postgres(架構級,留待 0-E)。
 
 - [ ] **Phase 0-G-O2:地圖擴張 + 用乙太購買土地**
   家園區可隨玩家數往外長;玩家用收成的乙太**購買**擴充地塊(乙太的消耗去處,接上經濟)。

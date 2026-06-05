@@ -71,6 +71,31 @@ impl PlotRegistry {
     pub fn owns(&self, user_id: Uuid, index: usize) -> bool {
         self.index_of(user_id) == Some(index)
     }
+
+    /// 從持久化的 `(user_id, 序號)` 對重建登記表——0-E 跨重啟載入入口。
+    ///
+    /// **關鍵不變式**：`next` 一律重建成「已用最大序號 + 1」。若天真載入把 `next`
+    /// 設回 0，重啟後 `assign` 會把序號 0（或任何已發出的序號）再發給新玩家，
+    /// 造成「同一塊地兩個地主、作物歸屬錯亂」——正是本模組「序號只增不減、不回收」
+    /// 要防的災難。比照 `positions::spawn_at`／`field::from_tiles`／`daynight::at`
+    /// 那條「每個存檔又重載的結構都在載入路徑驗證自身不變式」的硬化弧線。
+    ///
+    /// 重複的 `user_id` 取後見者（`HashMap` 覆蓋語意）；重複的**序號**不在這層擋
+    /// （持久化端以 UNIQUE 保證唯一），這裡只負責 `next` 絕不回頭。空輸入＝全新登記表
+    /// （`next` 為 0，第一個玩家仍拿序號 0、對齊現有全域農地）。
+    #[allow(dead_code)] // 接 0-E 從 Postgres 載回時才有呼叫端；沿用本專案載入入口的前置慣例。
+    pub fn from_saved(saved: impl IntoIterator<Item = (Uuid, usize)>) -> Self {
+        let mut by_user = HashMap::new();
+        let mut next = 0usize;
+        for (user, index) in saved {
+            // 已用最大序號 + 1：確保續發的序號永遠落在所有既有地塊之後，不重疊。
+            next = next.max(index + 1);
+            by_user.insert(user, index);
+        }
+        Self {
+            inner: Arc::new(Mutex::new(Inner { by_user, next })),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +174,40 @@ mod tests {
         let nobody = Uuid::new_v4();
         assert!(!reg.owns(nobody, mine));
         assert!(!reg.owns(nobody, 0));
+    }
+
+    /// 空輸入＝全新登記表：`next` 為 0，第一個玩家仍拿序號 0（對齊現有全域農地）。
+    #[test]
+    fn from_saved_empty_behaves_like_new() {
+        let reg = PlotRegistry::from_saved(std::iter::empty());
+        assert_eq!(reg.assign(Uuid::new_v4()), 0);
+    }
+
+    /// 載回後保留每個玩家原本的地塊（returning 玩家重啟仍拿回同一塊）。
+    #[test]
+    fn from_saved_preserves_owners() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let reg = PlotRegistry::from_saved([(a, 0), (b, 3)]);
+        assert_eq!(reg.index_of(a), Some(0));
+        assert_eq!(reg.index_of(b), Some(3));
+        assert!(reg.owns(b, 3));
+        // 重連也拿回原序號、不重新分配。
+        assert_eq!(reg.assign(a), 0);
+    }
+
+    /// 招牌不變式：續發的序號＝已用最大序號 + 1，**絕不**把已發出的序號再給新玩家。
+    /// （天真載入把 `next` 設回 0 會讓新玩家撞上序號 0 的既有地主——本測試鎖死此災難不復現。）
+    #[test]
+    fn from_saved_resumes_after_max_index() {
+        let owner0 = Uuid::new_v4();
+        // 稀疏／跳號的歷史：最大序號是 10，續發必須從 11 起，而非填補 1..=9 的空洞。
+        let reg = PlotRegistry::from_saved([(owner0, 0), (Uuid::new_v4(), 10)]);
+        let fresh = reg.assign(Uuid::new_v4());
+        assert_eq!(fresh, 11, "續發序號應為最大序號+1，不得回頭撞既有地塊");
+        assert_ne!(fresh, 0);
+        // 序號 0 的既有地主未被頂掉。
+        assert!(reg.owns(owner0, 0), "載回後既有地主仍擁有自己的地");
+        assert_eq!(reg.index_of(owner0), Some(0));
     }
 }
