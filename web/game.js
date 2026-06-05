@@ -579,6 +579,13 @@
   }
 
   window.addEventListener("keydown", (e) => {
+    // 建議箱對話框開著時，完全不攔截遊戲按鍵——背景遮罩雖設了 inert（封閉滑鼠/報讀器），
+    // 但這個監聽掛在 window 上、inert 擋不住，焦點落在對話框的按鈕（取消/送出，activeElement
+    // 是 <button> 不是 INPUT/TEXTAREA、漏過下面那道守衛）時按 WASD 角色會在 modal 背後偷走、
+    // 按 M 切換背後小地圖、按 Enter 還把焦點搶去背景聊天框（與按鈕本身的 Enter 啟用衝突）。
+    // 對話框的 Esc 關閉／Tab 焦點環是另一條獨立監聽，不受此早退影響。延續「角色別在玩家沒在
+    // 控時亂走」的修復家族。
+    if (modal.style.display === "flex") return;
     // 在任何文字輸入欄打字時，完全不攔截遊戲按鍵——否則 w/a/s/d、方向鍵會被
     // e.preventDefault() 吃掉、角色還在背景亂走，Enter 也被搶去 focus 聊天。
     // 尤其建議箱 #suggestText 是 <textarea>（先前只擋 INPUT 沒擋它），玩家寫
