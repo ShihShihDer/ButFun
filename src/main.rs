@@ -23,6 +23,7 @@ mod suggestions;
 mod tools;
 mod users;
 mod vehicle;
+mod vehicle_field;
 mod ws;
 
 use std::net::SocketAddr;

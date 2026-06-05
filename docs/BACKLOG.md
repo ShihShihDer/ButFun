@@ -546,6 +546,25 @@
     **仍待**:接線(世界撒佈載具實體+ws 走近按鍵上下車、上車後方向輸入導向 `Vehicle::step`
     +遊戲迴圈每 tick 推進+快照廣播載具/前端畫車與騎乘)屬動 live 廣播 shape 的架構級接線,
     留待後續輪/PR;載具靜止狀態持久化接 0-E。
+  - ✅ 前置之二(載具世界佈置與上車偵測純邏輯,2026-06-05):`vehicle.rs` 解了「上車後車怎麼開」,
+    接線還缺另一半「載具停世界哪裡、玩家走近上的是哪一台」——比照 `gather_field.rs` 之於
+    `gather.rs`。新增 `src/vehicle_field.rs` `VehicleField`(一組停在世界裡的 `Vehicle`):`new()`
+    用序號在固定半徑環上**等分角度**把載具停在家園附近(出生點在中心、走幾步就騎得到,與
+    `gather_field` 把節點散在更外圈曠野呼應「騎車出門採集」);等分角度 ⇒ 任兩台至少差一個夾角
+    ⇒ **不重疊**。`nearest_within_reach(x,y)` 在 `BOARD_REACH` 內挑**最近**那台回序號(非有限座標
+    回 `None`,比照 `gather_near`;權威由伺服器判,客戶端只送上車意圖),「這台有沒有人騎」刻意
+    不在此層管——交給接線層的騎乘登記表,比照 `plots.rs`(幾何)與 `plot_registry.rs`(歸屬)分層。
+    `step_ridden(index,input,dt)`/`get_mut` 供遊戲迴圈只推進有人騎的那台(空閒載具靜止)。
+    **與 `gather_field` 關鍵差異**:採集節點位置固定可由序號重算,但載具會被騎著移動,位置是
+    會變、要存的狀態——故 `from_saved` 不重算座標,改信任存檔位置(每台過 `Vehicle::is_loadable`
+    驗證、`Vehicle::at` 已夾界),數量不符或含非有限值整組拒收讓呼叫端退回全新一組停回原位
+    (延續 `field::from_tiles` 載入時驗證)。延續「純函式、無 IO、不碰 ws/遊戲迴圈/廣播 shape、
+    標 `allow(dead_code)` 待接線」的前置慣例。加 13 個單元測試(滿員皆靜止、佈置確定性、停在
+    世界內且近家、任兩台不重疊、最近上車挑對台、遠處/非有限回 None、只推進被騎的那台、界外
+    序號 no-op、`get_mut` 界外 None、被騎移動後 from_saved round-trip、拒數量不符、拒非有限),
+    `cargo test` 220 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬
+    預期)。**仍待**:接線(AppState 持有 `VehicleField`+騎乘登記表+ws 上下車+遊戲迴圈推進+快照
+    廣播+前端畫車與騎乘)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
 
 ## 玩家回饋處理區(devloop 從 data/suggestions.jsonl 進來的)
 
