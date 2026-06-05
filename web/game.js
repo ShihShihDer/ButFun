@@ -1390,7 +1390,11 @@
     const key = n ? `${n.kind}@${n.x},${n.y}` : null;
     if (key === lastReachableKey) return;
     lastReachableKey = key;
-    if (n) announce(`走到${NODE_NAME[n.kind] || "資源"}旁,可採——按空白鍵或點一下採集`);
+    // 鏡像視覺的 gatheredOnce 收斂(見 drawNodes):採過一次的玩家已懂怎麼按,走近只報「可採」,
+    // 不再每次都唸一整句操作教學,免得對熟手囉嗦;新手(還沒採過)才帶「按空白鍵或點一下」。
+    if (n) announce(gatheredOnce
+      ? `走到${NODE_NAME[n.kind] || "資源"}旁,可採`
+      : `走到${NODE_NAME[n.kind] || "資源"}旁,可採——按空白鍵或點一下採集`);
   }
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
