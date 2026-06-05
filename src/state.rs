@@ -21,11 +21,11 @@ use crate::protocol::{ItemStack, PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
 use crate::users::UserStore;
 
-/// 世界大小（像素）。MVP：一張單一地圖。
-pub const WORLD_WIDTH: f32 = 2000.0;
-pub const WORLD_HEIGHT: f32 = 2000.0;
-/// 玩家移動速度（像素 / 秒）。
-pub const PLAYER_SPEED: f32 = 200.0;
+/// 世界大小（像素）。放大成大世界,讓玩家散得開、各自有空間(回應「農地都擠中央、地圖太小」)。
+pub const WORLD_WIDTH: f32 = 6000.0;
+pub const WORLD_HEIGHT: f32 = 6000.0;
+/// 玩家移動速度（像素 / 秒）。大世界一併調快,跨圖不至於太久。
+pub const PLAYER_SPEED: f32 = 320.0;
 
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]

@@ -139,6 +139,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     //
     // recall 也在這裡(鎖內)做，跟 cleanup 的 remember 用同一把 players 寫鎖排序，
     // 消除 refresh 時「新連線 recall 早於舊連線 remember」的 race window。
+    // 先決定地塊序號(已登入才有),好讓「沒有歷史位置的玩家一進來就落在自己那塊地」。
+    // `assign` 冪等:同帳號重連永遠拿回同一塊、不會多吃序號。
+    let plot_index = authed_uid.map(|uid| app.plots.assign(uid));
     {
         let mut players = app.players.write().unwrap();
         if app.connections.acquire(id) {
@@ -146,23 +149,34 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             let mut p = player.clone();
             if let Some(uid) = authed_uid {
                 let saved = app.positions.recall(uid);
-                let (x, y) = crate::positions::spawn_at(saved.map(|s| (s.x, s.y)));
-                p.x = x;
-                p.y = y;
-                p.ether = saved.map(|s| s.ether).unwrap_or(0);
+                match saved {
+                    // 有歷史位置 → 回到離線前的地方(大世界裡 spawn_at 仍夾進界內)。
+                    Some(s) => {
+                        let (x, y) = crate::positions::spawn_at(Some((s.x, s.y)));
+                        p.x = x;
+                        p.y = y;
+                        p.ether = s.ether;
+                    }
+                    // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心:大世界裡各自散開、
+                    // 一進來就站在自家農場上,而不是全擠在世界中央。
+                    None => {
+                        if let Some(idx) = plot_index {
+                            let (ox, oy) = crate::plots::plot_origin(idx);
+                            p.x = ox + crate::plots::PLOT_WIDTH / 2.0;
+                            p.y = oy + crate::plots::PLOT_HEIGHT / 2.0;
+                        }
+                        p.ether = 0;
+                    }
+                }
             }
             players.insert(id, p);
         }
         // 不是第一條連線:既有玩家記錄保留(同帳號其他分頁仍在用),不動。
     }
 
-    // 已登入玩家擁有自己的一塊地（Phase 0-G-O1 per-player）：分配一個地塊序號
-    // （同帳號重連永遠拿回同一塊），第一次進場時依序號建立那塊地。`assign`/`entry`
-    // 皆冪等，多分頁/重連重複呼叫不會多吃地塊、也不會覆蓋既有作物。
-    // 訪客（隨機 id、不持久）刻意不分地：避免每次連線都吃掉一個只增不減的序號造成
-    // 無界成長；他們仍看得到別人的地、只是還不能耕種（待人決定是否給臨時地，見 PR）。
-    if let Some(uid) = authed_uid {
-        let index = app.plots.assign(uid);
+    // 已登入玩家擁有自己的一塊地（Phase 0-G-O1 per-player）：依上面分到的序號建立那塊地。
+    // `entry` 冪等,多分頁/重連重複呼叫不會覆蓋既有作物。訪客(隨機 id、不持久)刻意不分地。
+    if let (Some(uid), Some(index)) = (authed_uid, plot_index) {
         app.fields
             .write()
             .unwrap()

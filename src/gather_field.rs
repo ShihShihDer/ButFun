@@ -18,15 +18,9 @@
 use crate::gather::{NodeKind, ResourceNode};
 use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
 
-/// 散佈在世界裡的節點總數（三種輪流分配，故會是 3 的倍數較均勻）。
-const NODE_COUNT: usize = 24;
-
-/// 世界中央留給家園農莊的淨空半徑：節點不會生在這個圈內，
-/// 避免和 `plots.rs` 往外排的地塊、出生點重疊。
-const CLEARING_RADIUS: f32 = 380.0;
-
-/// 節點散佈的外圈半徑上限（距世界中心）。再往外會貼到世界邊界，留點邊距。
-const SCATTER_OUTER_RADIUS: f32 = 920.0;
+/// 散佈在世界裡的節點總數（三種輪流分配，故會是 3 的倍數較均勻）。大世界放大後一併增量,
+/// 讓散開的玩家走不遠就能遇到可採的東西。
+const NODE_COUNT: usize = 60;
 
 /// 節點距世界邊界至少留這麼多，免得卡在邊上採不到。
 const EDGE_MARGIN: f32 = 60.0;
@@ -148,14 +142,15 @@ fn kind_for(i: usize) -> NodeKind {
 /// 一圈曠野裡，再夾進世界邊界內。確定性（同序號永遠同位置）、不靠亂數 / 時鐘，故重啟後
 /// 節點落在同一處。
 fn scatter_position(i: usize) -> (f32, f32) {
-    let cx = WORLD_WIDTH / 2.0;
-    let cy = WORLD_HEIGHT / 2.0;
-    // 兩個獨立的雜湊流：一個決定半徑、一個決定角度。
-    let r = CLEARING_RADIUS + hash01(i as u64) * (SCATTER_OUTER_RADIUS - CLEARING_RADIUS);
-    let theta = hash01((i as u64).wrapping_mul(2).wrapping_add(1)) * std::f32::consts::TAU;
-    let x = (cx + r * theta.cos()).clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN);
-    let y = (cy + r * theta.sin()).clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN);
-    (x, y)
+    // 大世界:把節點撒滿整張圖(不再只繞中心一圈)。兩個獨立雜湊流決定 x、y,夾進世界邊界內。
+    // 確定性(同序號永遠同位置),重啟後落在同一處。
+    let x = EDGE_MARGIN + hash01(i as u64) * (WORLD_WIDTH - 2.0 * EDGE_MARGIN);
+    let y = EDGE_MARGIN
+        + hash01((i as u64).wrapping_mul(2).wrapping_add(1)) * (WORLD_HEIGHT - 2.0 * EDGE_MARGIN);
+    (
+        x.clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN),
+        y.clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN),
+    )
 }
 
 /// 確定性雜湊：把序號攪成 `[0, 1)` 的浮點（splitmix64 風格），佈置用。
@@ -189,21 +184,22 @@ mod tests {
     }
 
     #[test]
-    fn nodes_avoid_central_clearing_and_stay_in_world() {
-        let cx = WORLD_WIDTH / 2.0;
-        let cy = WORLD_HEIGHT / 2.0;
-        for p in NodeField::new().nodes() {
+    fn nodes_stay_in_world_and_spread_wide() {
+        let nodes = NodeField::new();
+        let ns = nodes.nodes();
+        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for p in ns {
             // 在世界內、留邊距。
             assert!((EDGE_MARGIN..=WORLD_WIDTH - EDGE_MARGIN).contains(&p.x));
             assert!((EDGE_MARGIN..=WORLD_HEIGHT - EDGE_MARGIN).contains(&p.y));
-            // 在家園淨空圈外（給家園農莊留空）。夾邊可能把半徑壓短，
-            // 故用「夾之前的理論半徑」保證：理論上一律 >= CLEARING_RADIUS。
-            let dx = p.x - cx;
-            let dy = p.y - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-            // 邊界夾制只會把點往內拉，極端情況下可能略小於淨空半徑，但仍應遠離正中心。
-            assert!(dist > CLEARING_RADIUS / 2.0, "節點離中心太近: {dist}");
+            minx = minx.min(p.x);
+            maxx = maxx.max(p.x);
+            miny = miny.min(p.y);
+            maxy = maxy.max(p.y);
         }
+        // 撒滿大圖:節點的橫/縱跨幅應佔世界一大半以上(不再擠在中央一圈)。
+        assert!(maxx - minx > WORLD_WIDTH * 0.5, "節點橫向沒散開: {}", maxx - minx);
+        assert!(maxy - miny > WORLD_HEIGHT * 0.5, "節點縱向沒散開: {}", maxy - miny);
     }
 
     #[test]
