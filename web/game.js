@@ -189,10 +189,12 @@
   }, { passive: false });
   function endTouch(e) {
     // 幾乎沒移動的觸碰當成「輕點」→ 農地互動（拖曳則是搖桿移動，不互動）。
+    // 容差 22px(>移動死區 14px):手指按下自然會稍微滑動,先前 12px 太嚴,
+    // 玩家想點田格常被誤判成搖桿微動、整個 tap 被吃掉。
     if (touchOrigin && e.changedTouches && e.changedTouches.length) {
       const t = e.changedTouches[0];
       const moved = Math.hypot(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
-      if (moved < 12) farmAtScreen(t.clientX, t.clientY);
+      if (moved < 22) farmAtScreen(t.clientX, t.clientY);
     }
     touchOrigin = null;
     touchCurrent = null;
