@@ -44,6 +44,12 @@
       opacity: 0.6; font-size: 0.8rem; margin: -8px 0 0; max-width: 320px;
       text-align: center; line-height: 1.5;
     }
+    /* 訪客名字輸入下方的小提示:玩家問「能不能改名/名字會不會公開」(玩家建議),
+       這裡明說這個名字是公開顯示給其他玩家看的、可自己改或重骰,消除疑慮。 */
+    #login .guest-note {
+      opacity: 0.55; font-size: 0.75rem; margin: 2px 0 0; max-width: 320px;
+      text-align: center; line-height: 1.5;
+    }
 
     /* HUD */
     #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
@@ -122,6 +128,7 @@
     <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
     <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" />
     <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
+    <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
     <select id="speciesInput">
       <option value="terran">地球人（索爾人）— 繼承農莊</option>
       <option value="shilaya" disabled>施拉雅人（商會飛船）— 即將開放</option>
