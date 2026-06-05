@@ -567,6 +567,13 @@
     // 回饋時打到這些字就壞掉——而建議箱正是 devloop 收回饋的主要管道。
     const el = document.activeElement;
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+    // 有 Ctrl / Cmd / Alt 修飾鍵時完全不攔截：那些是瀏覽器／系統快捷鍵（Ctrl+F 找頁面、
+    // Ctrl+S 存檔、Cmd/Ctrl+W 關分頁、Ctrl+A 全選、Cmd+M 縮小視窗…）。遊戲把單字母鍵
+    // 當移動／採集（空白·E·F）／地圖（M）用並 e.preventDefault()，沒擋修飾鍵時會把這些
+    // 快捷鍵整個吃掉失效，角色還順手亂動一下。延續「角色別在玩家沒在控時亂走」的修復家族：
+    // 按組合鍵＝玩家在操作瀏覽器、不是在操控角色，放行給瀏覽器處理。Shift 不算（Shift 不
+    // 改變鍵的快捷義，且 Shift+WASD 仍該照常移動）。
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === "Enter") {
       // 開聊天打字＝玩家從操控移動切換到打字。比照失焦/切背景的修復家族：先放開所有
       // 移動鍵並送出「停止」，免得按著方向鍵開聊天時，角色在你打字的整段時間持續亂走
