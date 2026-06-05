@@ -258,6 +258,16 @@
     `crops.rs`/`field.rs` 既有測試直接呼叫 `tick(dt)` 完全不受影響。加 3 個測試（端點對齊倍率界、
     壞亮度夾回界內、端到端日中最快午夜最慢），`cargo test` 119 綠、clippy 乾淨、伺服器二進位啟動
     正常（埠被正式服務占用屬預期）。**仍待**：日夜時刻持久化（接 0-E）。
+  - ✅ 持久化載入防線（日夜 serde 路徑也過驗證，2026-06-05）：`DayNight` 同時有兩條載入路徑——
+    手動入口 `at()`（非有限退回破曉、界外/負值取模繞回）與 `#[derive(Deserialize)]`（**完全不驗證**）。
+    `serialized_day_night_round_trips` 測試證明 0-E 會用 serde 序列化日夜時刻，但衍生的 Deserialize
+    會把磁碟上被竄改／損毀的 `elapsed`（負值、界外、接 Postgres float 後的非有限）原樣讀進來，
+    違反 `elapsed` 文件白紙黑字的不變式「恆落在 `[0, DAY_LENGTH_SECS)`」、毒化 `fraction()`／階段／亮度——
+    正是 `from_tiles`／`is_loadable`／`spawn_at` 一路在補的同一類「存檔又重載卻在載入路徑沒驗證」缺口。
+    改用手動 `impl Deserialize`：先以無驗證的鏡像結構吃下原始 `elapsed`，再一律過 `at()` 同一道守門，
+    讓兩條載入路徑共用單一真實驗證。`at()` 從此被 Deserialize 呼叫、不再是 dead code（移除標靶 allow）。
+    加 1 個測試（界外／負值反序列化繞回、正常值原樣保留），`cargo test` 120 綠、clippy 乾淨、伺服器
+    二進位啟動正常（埠被正式服務占用屬預期）。**仍待**：日夜時刻持久化（接 0-E）。
 
 ## Phase 1（採集 + 合成 + 載具 MVP）
 

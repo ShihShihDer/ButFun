@@ -15,7 +15,7 @@
 //! 仍待：
 //!   - 持久化（接 0-E）：把 `elapsed` 序列化存回，重啟後從同一個時刻接續。
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use std::f32::consts::TAU;
 
@@ -91,7 +91,13 @@ pub fn growth_rate_for(light: f32) -> f32 {
 
 /// 伺服器權威的日夜時鐘。只存「這一輪內已經過的秒數」，階段 / 亮度都由它推導，
 /// 確保單一真實來源。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+///
+/// 反序列化刻意走手動 `impl Deserialize`（不衍生）：讓 serde 這條載入路徑也
+/// 過 `at()` 同一道驗證，否則磁碟上被竄改 / 損毀的 `elapsed`（負值、界外、
+/// 非有限）會繞過 `at()` 原樣讀進來，違反 `elapsed` 下面標注的不變式、毒化
+/// 階段 / 亮度。延續 `field::from_tiles` / `crops::is_loadable` /
+/// `positions::spawn_at` 的載入時驗證脈絡。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct DayNight {
     /// 這一輪循環內已經過的秒數，恆落在 `[0, DAY_LENGTH_SECS)`。
     elapsed: f32,
@@ -103,15 +109,13 @@ impl DayNight {
         Self { elapsed: 0.0 }
     }
 
-    /// 從一個已經過秒數重建時鐘（持久化載入入口，接 0-E）。
+    /// 從一個已經過秒數重建時鐘（持久化載入的驗證核心）。
     /// 契約：回傳的 `elapsed` 一定有限且落在 `[0, DAY_LENGTH_SECS)`——
     /// 非有限退回 0（破曉）、其餘一律取模繞回（界外 / 負值都安全），
     /// 不讓壞檔 / 被竄改的值算出非有限的階段或亮度。延續
     /// `positions::spawn_at` / `field::from_tiles` / `crops::is_loadable`
-    /// 的載入時驗證脈絡。
-    // 持久化載入入口，待接 0-E（跨重啟接續日夜時刻）才有非測試呼叫端；
-    // 比照 `crops::is_loadable` 先以標靶 allow 標起，接 0-E 時移除。
-    #[allow(dead_code)]
+    /// 的載入時驗證脈絡。serde 反序列化（見本型別的 `Deserialize` 實作）
+    /// 也一律經由此入口，確保兩條載入路徑共用同一道守門。
     pub fn at(elapsed: f32) -> Self {
         let wrapped = if elapsed.is_finite() {
             elapsed.rem_euclid(DAY_LENGTH_SECS)
@@ -162,6 +166,23 @@ impl DayNight {
 impl Default for DayNight {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<'de> Deserialize<'de> for DayNight {
+    /// 讓 serde 載入路徑與手動 `at()` 入口共用同一道驗證：先用一個無驗證的
+    /// 鏡像結構吃下原始欄位，再一律過 `at()` 把 `elapsed` 夾回 / 繞回不變式範圍。
+    /// 磁碟上負值、界外、（接 0-E 的 Postgres float）非有限的值都不會原樣讀進來。
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            elapsed: f32,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(DayNight::at(raw.elapsed))
     }
 }
 
@@ -322,5 +343,22 @@ mod tests {
         let back: DayNight = serde_json::from_str(&json).unwrap();
         assert_eq!(back, d);
         assert_eq!(back.phase(), d.phase());
+    }
+
+    #[test]
+    fn deserialize_wraps_out_of_range_elapsed() {
+        // 磁碟上被竄改 / 損毀的界外或負值 elapsed，反序列化也要過 at() 的守門，
+        // 不可原樣讀進來違反「elapsed 恆落在 [0, DAY_LENGTH_SECS)」的不變式。
+        let over: DayNight =
+            serde_json::from_str(&format!("{{\"elapsed\": {}}}", DAY_LENGTH_SECS + 120.0)).unwrap();
+        assert!((over.fraction() - 120.0 / DAY_LENGTH_SECS).abs() < 1e-6);
+        assert!((0.0..1.0).contains(&over.fraction()));
+
+        let neg: DayNight = serde_json::from_str("{\"elapsed\": -120.0}").unwrap();
+        assert!((0.0..1.0).contains(&neg.fraction()));
+
+        // 正常範圍的值原樣保留（不被守門誤改）。
+        let ok: DayNight = serde_json::from_str("{\"elapsed\": 120.0}").unwrap();
+        assert!((ok.fraction() - 120.0 / DAY_LENGTH_SECS).abs() < 1e-6);
     }
 }
