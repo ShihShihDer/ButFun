@@ -44,13 +44,7 @@ struct Inner {
 
 impl UserStore {
     pub fn new() -> Self {
-        let users = load_from_disk();
-        let mut by_id = HashMap::new();
-        let mut by_external = HashMap::new();
-        for u in users {
-            by_external.insert((u.provider.clone(), u.external_id.clone()), u.id);
-            by_id.insert(u.id, u);
-        }
+        let (by_id, by_external) = index_users(load_from_disk());
         Self {
             inner: Arc::new(Mutex::new(Inner { by_id, by_external })),
         }
@@ -115,6 +109,39 @@ impl UserStore {
         tracing::info!(user_id = %user.id, "新 AI 居民帳號建立: {}", user.name);
         user
     }
+
+    /// 改顯示名:把該 user 的 `name` 換成清理後的新名,更新記憶體索引並 append 一行到磁碟。
+    /// 回傳更新後的 `User`;查無此人回 `None`。
+    ///
+    /// 刻意走 **append**(不重寫整檔):沿用本檔既有的 append-only JSONL 路數,不做破壞性
+    /// 改寫 / 刪除——舊行留著,載入時被後出現的同 `id` 行覆蓋(last-wins,見 `index_users`)。
+    /// 因 `ws.rs` 連線時即時讀 `UserStore`(authed 路徑 `user.name`),改名後**重連**即生效,
+    /// 重啟也還在。名字一律過 `sanitize_name`(濾控制字元、截 24 字、空退「拓荒者」),與帳號
+    /// 建立、訪客進場共用同一道公開輸入邊界。`provider` / `external_id`(登入比對鍵)不動,
+    /// 故 `by_external` 無需更新。
+    pub fn rename(&self, id: Uuid, new_name: &str) -> Option<User> {
+        let mut inner = self.inner.lock().unwrap();
+        let mut user = inner.by_id.get(&id)?.clone();
+        user.name = sanitize_name(new_name);
+        append_to_disk(&user);
+        inner.by_id.insert(id, user.clone());
+        tracing::info!(user_id = %id, "玩家改名為: {}", user.name);
+        Some(user)
+    }
+}
+
+/// 把載入的使用者清單建成記憶體索引(`by_id` / `by_external`)。純函式以便測試。
+///
+/// **契約:同一個 `id` 後出現的行覆蓋先前的**(`by_id` 以最後一筆為準)——這正是
+/// `rename` 靠 append 一筆同 `id`、新 `name` 的紀錄就能改名的基礎:重啟載入時後者勝出。
+fn index_users(users: Vec<User>) -> (HashMap<Uuid, User>, HashMap<(String, String), Uuid>) {
+    let mut by_id = HashMap::new();
+    let mut by_external = HashMap::new();
+    for u in users {
+        by_external.insert((u.provider.clone(), u.external_id.clone()), u.id);
+        by_id.insert(u.id, u);
+    }
+    (by_id, by_external)
 }
 
 impl Default for UserStore {
@@ -262,9 +289,52 @@ fn append_to_disk(u: &User) {
 #[cfg(test)]
 mod tests {
     use super::{
-        codename_from_seed, parse_and_sanitize, sanitize_name, sanitize_species, DEFAULT_SPECIES,
+        codename_from_seed, index_users, parse_and_sanitize, sanitize_name, sanitize_species, User,
+        DEFAULT_SPECIES,
     };
     use uuid::Uuid;
+
+    // 測試用:組一個帶指定 id / name 的 User(其餘欄位填佔位值)。
+    fn mk_user(id: Uuid, name: &str) -> User {
+        User {
+            id,
+            provider: "google".to_string(),
+            external_id: "sub".to_string(),
+            email: None,
+            name: name.to_string(),
+            species: "terran".to_string(),
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn index_users_last_line_wins_for_same_id() {
+        // rename 靠 append 一筆同 id、新 name 的紀錄,載入時後者勝出。鎖住這個契約——
+        // 否則改名重啟後會復活舊名。
+        let id = Uuid::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap();
+        let (by_id, by_external) = index_users(vec![mk_user(id, "舊名"), mk_user(id, "新名")]);
+        assert_eq!(by_id.len(), 1, "同 id 應收斂成一筆");
+        assert_eq!(by_id.get(&id).unwrap().name, "新名");
+        // 登入比對鍵索引仍指向同一個 id(provider/external_id 不因改名變動)。
+        assert_eq!(
+            by_external.get(&("google".to_string(), "sub".to_string())),
+            Some(&id)
+        );
+    }
+
+    #[test]
+    fn index_users_keeps_distinct_ids() {
+        let a = Uuid::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap();
+        let b = Uuid::parse_str("00000000-0000-0000-0000-0000000000b2").unwrap();
+        let mut ua = mk_user(a, "甲");
+        ua.external_id = "sa".to_string();
+        let mut ub = mk_user(b, "乙");
+        ub.external_id = "sb".to_string();
+        let (by_id, _) = index_users(vec![ua, ub]);
+        assert_eq!(by_id.len(), 2);
+        assert_eq!(by_id.get(&a).unwrap().name, "甲");
+        assert_eq!(by_id.get(&b).unwrap().name, "乙");
+    }
 
     #[test]
     fn keeps_normal_name() {

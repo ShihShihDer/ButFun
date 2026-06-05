@@ -515,6 +515,20 @@
   加 3 個測試(形狀/通過 sanitize 不變/不同 seed 夠分散)。`GoogleUserInfo.name` 保留欄位但標
   `#[allow(dead_code)]` 文件化「收得到但刻意不採用」。`cargo test` 131 綠。**仍待**:玩家自訂暱稱
   的編輯入口(這輪只堵本名外洩;改名 UI 是更大塊,留待後續)。
+  - ✅ 改名後端半(`PATCH /api/profile` + 持久化,2026-06-05,對齊 PLAN.md 高優先薄切片 slice 2
+    「玩家改顯示名」):上一輪只堵本名外洩、留下「玩家自訂暱稱的編輯入口」待做——這輪補上其**後端
+    半**。新增 `src/profile.rs` `PATCH /api/profile`(body `{name}`):用既有 `auth::user_id_from_cookies`
+    驗身(只能改自己的名、uid 取自呼叫者簽章 session),名字過既有 `sanitize_name`(濾控制字元/截 24
+    字/空退「拓荒者」,與帳號建立、訪客進場共用同一道公開輸入邊界),回出清理後實際結果供前端更新 HUD;
+    未設 OAuth→503、未登入/cookie 無效→401。`UserStore` 加 `rename`:**append 一筆同 id、新 name 的
+    紀錄**(沿用本檔 append-only JSONL,不重寫/不刪除舊行,非破壞),載入時後者勝出。因 `ws.rs` 連線時
+    即時讀 `UserStore`(authed `user.name`),改名後**重連**即生效、重啟也還在(驗收「重連仍是新名」)。
+    把索引邏輯抽成可測純函式 `index_users` 鎖住「同 id last-wins」契約(改名靠它生效)。刻意**不碰 ws/
+    遊戲迴圈/廣播 shape**——「線上不重連就即時反映 HUD/聊天」的 live 廣播依 PLAN.md 分工留給 backend lane,
+    前端改名面板留給 frontend lane。加 2 個 `index_users` 測試(同 id 後者勝出、互異 id 各自保留),
+    `cargo test` 280 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。
+    **仍待**:前端改名設定面板(frontend lane);線上即時廣播新名(backend lane);改名跨重啟持久化已
+    靠 append 成立,接 0-E 後 users 改存 Postgres 時 `rename` 同步改走 upsert。
 - [ ] **像素風 sprite(建議 at=1780624298053)**：屬美術方向,已有 commit 5530cb9
   「美術素材簡報 + 角色全自由化」在規劃、需素材包,非單輪小增量,留待美術素材到位。
   - ✅ 純程式先補兩塊「不靠素材也能做」的視覺(2026-06-05)：建議三點裡的第 2 點

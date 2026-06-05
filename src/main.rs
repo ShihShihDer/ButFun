@@ -16,6 +16,7 @@ mod inventory;
 mod plot_registry;
 mod plots;
 mod positions;
+mod profile;
 mod protocol;
 mod state;
 mod suggestions;
@@ -83,6 +84,8 @@ async fn main() {
         .route("/api/suggestions", post(post_suggestion))
         // 登入相關路由
         .merge(auth::auth_router())
+        // 個人資料編輯(改顯示名)——需登入,見 profile.rs
+        .merge(profile::profile_router())
         // 其餘路徑交給靜態前端（web/）。
         .fallback_service(ServeDir::new("web"))
         .layer(TraceLayer::new_for_http())
