@@ -59,6 +59,13 @@
   let isGuest = true;
   // id -> { name, species, x, y (目標), rx, ry (渲染中插值位置) }
   const players = new Map();
+  // 進出場提示用的在場名單基準：上一份快照看到的「其他玩家」id→name。
+  // 對照每份新快照的差集，推出誰剛來、誰剛走，在聊天裡冒一行系統提示——
+  // 這個療癒小世界裡知道身邊有人來/走是社交存在感，純從快照差得，不嵌任何遊戲規則。
+  const knownPlayers = new Map();
+  // 是否已建立過在場基準：進場/重連的第一份快照只默默記名單、不把既有在場者當成「剛進場」
+  // 洗一排提示（對齊 etherKnown 對乙太的同款防洗處理）。
+  let presenceKnown = false;
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
   // 伺服器廣播的農地狀態（含每格 state / dry）；進場前為 null。
@@ -201,6 +208,7 @@
           announce("已重新連上，繼續吧。"); // 同步播給報讀器
           announcedDrop = false;
           etherKnown = false;
+          presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
         }
         hideConnStatus(); // 接回（或初次連上）就收掉重連橫幅
         enterGame();
@@ -223,6 +231,27 @@
         for (const id of players.keys()) {
           if (!seen.has(id)) players.delete(id);
         }
+        // 進出場提示：拿這份快照的「其他玩家」對照上一份的基準，誰新出現＝剛進場、
+        // 誰不見了＝剛離開，各冒一行系統提示。第一份快照（presenceKnown=false）只建基準
+        // 不提示，免得進場/重連把既有在場者洗成一排「剛進場」。
+        const otherIds = new Set();
+        for (const p of msg.players) {
+          if (p.id === myId) continue;
+          otherIds.add(p.id);
+          if (presenceKnown && !knownPlayers.has(p.id)) {
+            addChat("系統", `${p.name} 來到了邊境星 ✨`);
+          }
+        }
+        for (const [id, name] of knownPlayers) {
+          if (!otherIds.has(id)) {
+            if (presenceKnown) addChat("系統", `${name} 離開了邊境星`);
+            knownPlayers.delete(id);
+          }
+        }
+        for (const p of msg.players) {
+          if (p.id !== myId) knownPlayers.set(p.id, p.name);
+        }
+        presenceKnown = true;
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
         // 農地狀態 + 我的乙太 + 日夜
         field = msg.field;
