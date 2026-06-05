@@ -10,6 +10,7 @@ mod daynight;
 mod field;
 mod game;
 mod gather;
+mod gather_field;
 mod plot_registry;
 mod plots;
 mod positions;

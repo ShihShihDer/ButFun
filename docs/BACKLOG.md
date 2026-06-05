@@ -427,6 +427,21 @@
     `cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線
     (世界撒佈節點+ws 走近按鍵採集進背包+遊戲迴圈每 tick 推進重生+前端畫節點/採集回饋)屬動 live
     廣播 shape 的架構級接線,留待後續輪/PR;背包持久化接 Phase 1-B / 0-E。
+  - ✅ 前置之二(節點的世界佈置與採集互動純邏輯,2026-06-05):`gather.rs` 解了「單一節點怎麼被採」,
+    接線還缺另一半「節點擺世界哪裡、玩家走近採到哪一個」——比照 `plots.rs` 之於 `field.rs`。新增
+    `src/gather_field.rs` `NodeField`(一組散佈的 `PlacedNode`=座標+`ResourceNode`):`new()` 用確定性
+    雜湊(splitmix64 風格、不靠亂數/時鐘)把節點散在世界中央家園淨空圈外的一圈曠野,座標由序號推導故
+    重啟後落在同一處;`tick(dt)` 一次推進全部節點重生;`gather_near(x,y)` 在 `GATHER_REACH` 內挑**最近**
+    且仍可採的節點採一下、回 `(種類,產出)`(範圍內無可採回 `None`,權威由伺服器判定、客戶端只送意圖)。
+    佈置刻意「環繞家園的曠野」:中央留空給 `plots.rs` 往外排的地塊與出生點,出門採集 vs 居家種田兩種
+    節奏。沿用載入防線:`gather_near` 擋非有限座標(比照 `cell_at`)、`from_saved` 比照 `field::from_tiles`
+    驗節點數/種類對齊序號/逐個 `is_loadable`,壞檔整組拒收讓呼叫端退回全新一組;接 0-E 時佈置座標由序號
+    重建、只存讀會變的耐久/重生狀態。延續「純函式、無 IO、不碰 ws/遊戲迴圈/廣播 shape、標 `allow(dead_code)`
+    待接線」的前置慣例。加 11 個單元測試(滿員可採、佈置確定性、避開中央淨空且在世界內、三種齊全、
+    最近節點採集扣耐久、界外/非有限座標回 None、採空被跳過再 tick 重生、from_saved round-trip、拒錯誤
+    節點數、拒種類不符/壞值),`cargo test` 165 綠、`cargo build`/clippy 無警告、伺服器二進位啟動正常
+    (埠被正式服務占用屬預期)。**仍待**:接線(AppState 持有 `NodeField`+遊戲迴圈 tick+ws 採集進背包
+    +快照廣播+前端畫節點/採集回饋)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
 
 - [ ] **Phase 1-B：背包系統 + 持久化**
   伺服器端 player.inventory(item_id → count),客戶端按 I 開背包面板顯示。
