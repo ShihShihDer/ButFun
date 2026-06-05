@@ -2,7 +2,10 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- 不鎖縮放(移除 maximum-scale / user-scalable=no):弱視玩家要能雙指放大讀 HUD／說明／
+       聊天／建議文字(WCAG 1.4.4)。遊戲操作不受影響——canvas 自己對 touch 事件 preventDefault,
+       搖桿拖曳照舊;放大手勢只作用在 HTML 面板上。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ButFun — 邊境星拓荒</title>
   <style>
     :root { --ink: #e8e0cf; --brass: #c9a24b; --panel: rgba(20, 24, 30, 0.85); }
