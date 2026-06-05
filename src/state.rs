@@ -13,9 +13,11 @@ use crate::auth::AuthConfig;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
 use crate::field::Field;
+use crate::gather_field::NodeField;
+use crate::inventory::Inventory;
 use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
-use crate::protocol::{PlayerView, WorldInfo};
+use crate::protocol::{ItemStack, PlayerView, WorldInfo};
 use crate::suggestions::SuggestionStore;
 use crate::users::UserStore;
 
@@ -36,6 +38,8 @@ pub struct Player {
     pub input: Input,
     /// 收成累積的乙太。已登入玩家重連會帶回（記憶體前置），跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
     pub ether: u32,
+    /// 採集到的物品。記憶體前置（重連不帶回、重啟歸零，待持久化）——薄切片先讓「採到 → 進背包 → 看得見」成立。
+    pub inventory: Inventory,
 }
 
 impl Player {
@@ -47,6 +51,11 @@ impl Player {
             x: self.x,
             y: self.y,
             ether: self.ether,
+            inventory: self
+                .inventory
+                .entries()
+                .map(|(item, qty)| ItemStack { item, qty })
+                .collect(),
         }
     }
 
@@ -103,6 +112,10 @@ pub struct AppState {
     /// 伺服器權威的日夜時鐘（Phase 0-G 療癒核心）。遊戲迴圈每 tick 推進、隨快照廣播；
     /// 目前存記憶體，持久化待 Phase 0-E（重啟會回到破曉）。
     pub daynight: Arc<RwLock<DayNight>>,
+    /// 世界裡共享的採集節點（樹／石／乙太礦,Phase 1-A）。所有玩家從同一組節點採集,
+    /// 採空後各自重生。遊戲迴圈每 tick 推進重生、隨快照廣播位置與狀態。目前存記憶體,
+    /// 持久化待後續（重啟回到全滿一組）。
+    pub nodes: Arc<RwLock<NodeField>>,
     /// 廣播頻道：高頻 tick 快照與 `PlayerLeft` 走這裡，內容是已序列化的 JSON 字串
     /// （只序列化一次，再扇出給所有連線）。這條會被 15Hz 快照灌滿，跟不上的客戶端
     /// 收到 `Lagged` 時丟掉舊快照繼續追即可——快照本身自我修正（含「移除缺席玩家」），
@@ -143,6 +156,7 @@ impl AppState {
             fields: Arc::new(RwLock::new(HashMap::new())),
             plots: PlotRegistry::new(),
             daynight: Arc::new(RwLock::new(DayNight::new())),
+            nodes: Arc::new(RwLock::new(NodeField::new())),
             tx,
             tx_chat,
             suggestions: SuggestionStore::new(),
@@ -180,6 +194,7 @@ mod tests {
             y,
             input,
             ether: 0,
+            inventory: Inventory::new(),
         }
     }
 
