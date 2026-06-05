@@ -879,6 +879,9 @@
   function addChat(who, text) {
     const log = document.getElementById("chatLog");
     log.style.display = "block";
+    // 加新行「之前」先量玩家是否已捲在底部附近:玩家往上捲讀舊訊息時,新訊息不該把他
+    // 硬拉回底部(讀不完歷史是聊天介面經典 bug)。容差 24px 吸收次像素誤差與行高。
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
     const line = document.createElement("div");
     // 系統訊息(連線中斷、靠近農地提示)淡化斜體,跟真人發言視覺區隔,不互相搶眼。
     if (who === "系統") line.className = "sys";
@@ -888,7 +891,8 @@
     log.appendChild(line);
     // 長時間掛機聊天會無上限堆 DOM(慢慢吃記憶體、捲動也變重);只留最近 N 則,舊的移除。
     while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
-    log.scrollTop = log.scrollHeight;
+    // 只有本來就貼著底部(在追最新)才自動捲到底;正在讀舊訊息就保持原位不打擾。
+    if (atBottom) log.scrollTop = log.scrollHeight;
   }
 
   document.getElementById("chatForm").addEventListener("submit", (e) => {
