@@ -29,10 +29,14 @@ pub const PLOT_GAP: f32 = TILE_SIZE;
 pub const PLOT_WIDTH: f32 = FIELD_COLS as f32 * TILE_SIZE;
 pub const PLOT_HEIGHT: f32 = FIELD_ROWS as f32 * TILE_SIZE;
 
-/// 相鄰地塊左上角的間距（footprint + 縫）。橫向 / 縱向各一套。
+/// 地塊之間額外撒開的曠野(世界像素)。大世界裡每個玩家的家園各自落在大圖的一塊區域、
+/// 彼此隔著一段路,而不是全擠在中央(回應「農地都擠一起、地圖太小」)。
+pub const PLOT_SPREAD: f32 = 700.0;
+
+/// 相鄰地塊左上角的間距（footprint + 縫 + 曠野）。橫向 / 縱向各一套。
 /// stride ≥ footprint 是「整數格座標不同 ⇒ 地塊不重疊」這個保證的關鍵前提。
-pub const PLOT_STRIDE_X: f32 = PLOT_WIDTH + PLOT_GAP;
-pub const PLOT_STRIDE_Y: f32 = PLOT_HEIGHT + PLOT_GAP;
+pub const PLOT_STRIDE_X: f32 = PLOT_WIDTH + PLOT_GAP + PLOT_SPREAD;
+pub const PLOT_STRIDE_Y: f32 = PLOT_HEIGHT + PLOT_GAP + PLOT_SPREAD;
 
 /// 第 `index` 塊地在「螺旋格」中的整數座標（中心為 (0,0)，一圈一圈往外）。
 ///

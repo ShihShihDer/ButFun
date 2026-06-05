@@ -24,9 +24,10 @@ pub const FIELD_COLS: usize = 6;
 /// 農地的列數（縱向格數）。
 pub const FIELD_ROWS: usize = 4;
 /// 農地左上角在世界中的位置（像素）。挑在地圖中央附近，讓初來的玩家走幾步就到。
-/// 世界 2000×2000、農地 288×192，置中後左上角約在此。
-pub const FIELD_ORIGIN_X: f32 = 856.0;
-pub const FIELD_ORIGIN_Y: f32 = 904.0;
+/// 大世界 6000×6000、農地 288×192,**置中於世界中心**(3000,3000)後左上角約在此。
+/// 序號 0 的地塊在此(世界中心),其餘玩家的地塊由此一圈圈往外螺旋撒滿大圖(見 plots.rs)。
+pub const FIELD_ORIGIN_X: f32 = 2856.0;
+pub const FIELD_ORIGIN_Y: f32 = 2904.0;
 /// 要照顧農地，玩家至少得站在地塊裡、或緊鄰邊緣這個距離內（像素）。
 /// 權威伺服器用它擋掉「人根本不在農地卻送座標隔空遙控」的客戶端。
 pub const FARM_REACH: f32 = TILE_SIZE;
