@@ -57,6 +57,11 @@
   // 收成得乙太時的「+N 乙太」飄字（純表現，從權威 ether 差值推得，不嵌任何遊戲規則）。
   // 每筆 { wx, wy, gain, born }：以世界座標固定在收成當下的玩家位置上方，隨時間上飄淡出。
   const etherFloaters = [];
+  // 互動確認漣漪（純表現）：點/輕點田格送出農作意圖時，在該格畫一圈短暫擴張淡出的亮環，
+  // 讓玩家「按下就有回饋」——尤其手機沒有桌面的 hover 高亮,輕點後到下一個快照回來前
+  // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
+  // 遊戲規則:做不做得成仍由權威伺服器決定,這裡只確認「這一下送出去了」。
+  const tapFlashes = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -235,6 +240,44 @@
       ctx.fillText(`+${f.gain} 乙太 ✨`, sx + 1, sy + 1); // 描影,任何地表上都讀得到
       ctx.fillStyle = `rgba(255,210,74,${alpha.toFixed(3)})`;
       ctx.fillText(`+${f.gain} 乙太 ✨`, sx, sy);
+    }
+  }
+
+  // 送出農作意圖時記一筆確認漣漪。落在田格內就吸附到該格中心(漣漪剛好框住整格);
+  // 否則(腳下沒田格的邊角點)就用原始點。座標為世界座標,鏡頭移動也黏在原處。
+  function spawnTapFlash(wx, wy) {
+    let cx = wx, cy = wy;
+    if (field) {
+      const ts = field.tile_size;
+      const col = Math.floor((wx - field.origin_x) / ts);
+      const row = Math.floor((wy - field.origin_y) / ts);
+      if (col >= 0 && row >= 0 && col < field.cols && row < field.rows) {
+        cx = field.origin_x + (col + 0.5) * ts;
+        cy = field.origin_y + (row + 0.5) * ts;
+      }
+    }
+    tapFlashes.push({ wx: cx, wy: cy, born: performance.now() });
+  }
+
+  // 漣漪：由小擴張到約一格大、同時淡出。畫在日夜染色之後（當回饋 HUD,不被夜色蓋暗）。
+  const TAP_MS = 360;
+  function drawTapFlashes(camX, camY, now) {
+    const ts = field ? field.tile_size : 24;
+    for (let i = tapFlashes.length - 1; i >= 0; i--) {
+      const f = tapFlashes[i];
+      const age = now - f.born;
+      if (age >= TAP_MS) { tapFlashes.splice(i, 1); continue; }
+      const t = age / TAP_MS;
+      const sx = f.wx - camX;
+      const sy = f.wy - camY;
+      const r = ts * (0.28 + t * 0.42); // 由小擴張到約半格半徑
+      ctx.save();
+      ctx.lineWidth = 2.5 * (1 - t * 0.5);
+      ctx.strokeStyle = `rgba(255,210,74,${(0.85 * (1 - t)).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -551,6 +594,9 @@
 
     // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawEtherFloaters(camX, camY, performance.now());
+
+    // 互動確認漣漪：同在日夜染色之後畫，點/輕點田格的當下回饋不被夜色蓋暗。
+    drawTapFlashes(camX, camY, performance.now());
 
     // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
     drawFarmPointer(camX, camY);
@@ -958,6 +1004,7 @@
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
     ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+    spawnTapFlash(wx, wy); // 純確認回饋:這一下已送出
   }
   // 純鍵盤/無滑鼠玩家:對「自己腳下這格」送農作意圖(空白鍵 / E / F)。玩家回饋
   // 「不一定有滑鼠」——走得動卻點不到田格。這裡只挑目標格(自己的位置)送原始世界
@@ -975,6 +1022,7 @@
       return;
     }
     ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
+    spawnTapFlash(me.x, me.y); // 純確認回饋:這一下已送出
   }
   // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
   canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
