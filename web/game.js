@@ -209,10 +209,20 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     const me = myId ? players.get(myId) : null;
-    // 插值所有玩家位置，讓 15Hz 快照看起來平滑
+    // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
+    // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
     for (const p of players.values()) {
-      p.rx += (p.x - p.rx) * 0.3;
-      p.ry += (p.y - p.ry) * 0.3;
+      const ddx = p.x - p.rx;
+      const ddy = p.y - p.ry;
+      const speed = Math.hypot(ddx, ddy);
+      p.moving = speed > 0.6;
+      if (p.moving) {
+        p.facing = Math.atan2(ddy, ddx); // 朝移動方向（弧度）
+        p.walk = (p.walk || 0) + Math.min(speed, 12) * 0.06; // 越快踏步越快
+      }
+      if (p.facing === undefined) p.facing = Math.PI / 2; // 預設面向下方
+      p.rx += ddx * 0.3;
+      p.ry += ddy * 0.3;
     }
 
     // 鏡頭跟隨自己
@@ -229,14 +239,32 @@
       const sx = p.rx - camX;
       const sy = p.ry - camY;
       const isMe = p.id === myId;
+      // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動
+      const bob = p.moving ? Math.abs(Math.sin(p.walk)) * 3 : 0;
+      const by = sy - bob;
 
+      // 腳下陰影（固定在地面，賣出彈跳的踏地感）
       ctx.beginPath();
-      ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+      ctx.ellipse(sx, sy + 12, 11, 4, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.fill();
+
+      // 身體
+      ctx.beginPath();
+      ctx.arc(sx, by, 14, 0, Math.PI * 2);
       ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "rgba(0,0,0,0.4)";
       ctx.stroke();
+
+      // 朝向指示：往移動方向放一顆黃銅小護目鏡點（蒸汽龐克味、又讓人看出面向哪）
+      const fx = sx + Math.cos(p.facing) * 8;
+      const fy = by + Math.sin(p.facing) * 8;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
+      ctx.fill();
 
       ctx.fillStyle = "#e8e0cf";
       ctx.font = "13px system-ui, sans-serif";
