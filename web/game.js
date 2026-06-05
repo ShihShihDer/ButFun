@@ -1269,6 +1269,8 @@
     rock: { icon: "🪨", tint: "#5b5f63", act: "採石頭" },
     ether_ore: { icon: "✨", tint: "#3a4a78", act: "採乙太礦" },
   };
+  // 報讀器用的節點中文名（採空播報時念名字而非 emoji,對齊背包的 ITEM_NAME 作法）。
+  const NODE_NAME = { tree: "樹", rock: "石礦", ether_ore: "乙太礦" };
 
   // 回傳「玩家搆得到(GATHER_REACH 內)的最近可採節點」,沒有就 null。採集判定與伺服器一致。
   function nearestHarvestable(me) {
@@ -1385,6 +1387,8 @@
     if (!inv || inv.length === 0) {
       el.textContent = "背包：空";
       el.setAttribute("aria-label", "背包：空");
+      // title:滑鼠停在 HUD 上的原生提示。空背包也標一句,讓還沒採過的玩家知道這格是背包。
+      el.setAttribute("title", "背包：空");
       return;
     }
     // 可見文字用 emoji（看得到的玩家一眼分品項）;但 emoji 對報讀器無意義(會亂念或跳過),
@@ -1394,6 +1398,13 @@
       "背包：" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
     el.setAttribute(
       "aria-label",
+      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
+    );
+    // 可見文字只有 emoji（🪵🪨✨）,看得到但不熟圖示的玩家未必一眼分得出是什麼。補一個原生 title
+    // 提示(滑鼠停留即顯示中文品項名),沿用報讀器 aria-label 的 ITEM_NAME,讓看得到的玩家也能
+    // 一眼確認「採到的是木材還石頭」。延續背包無障礙弧線,給滑鼠玩家對稱的那一半。
+    el.setAttribute(
+      "title",
       "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
     );
   }
@@ -1762,6 +1773,19 @@
       ws.send(JSON.stringify({ type: "gather" }));
       markGatheredOnce();
       spawnTapFlash(me.x, me.y);
+      return;
+    }
+    // 沒有可採的:若就站在採空節點旁,鏡像視覺的「已採空」標,播一句給報讀器玩家。
+    // 看不到那行字的玩家原本只會聽到下面誤導的「走進農地」提示(或按了全無回饋),
+    // 卻對著按不動的節點乾按。延續採集播報/背包 aria-label 的無障礙弧線,只在真的
+    // 站在採空節點旁時報,並用 lastReachHint 同套節流避免連按重複朗讀。
+    const depleted = nearestDepleted(me);
+    if (depleted) {
+      const now = Date.now();
+      if (now - lastReachHint > 2500) {
+        announce(`這裡的${NODE_NAME[depleted.kind] || "資源"}已採空`);
+        lastReachHint = now;
+      }
       return;
     }
     const f = myField();

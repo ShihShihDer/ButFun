@@ -254,7 +254,7 @@
     <div id="hudEther" class="brass">乙太：0</div>
     <!-- 背包 HUD:可見文字用 emoji（🪵🪨✨）給看得到的玩家;aria-label 由 game.js 隨快照
          同步成中文品項名,讓報讀器玩家也讀得出背包現況（emoji 會被亂念／跳過）。 -->
-    <div id="hudBag" aria-label="背包：空">背包：空</div>
+    <div id="hudBag" aria-label="背包：空" title="背包：空">背包：空</div>
     <div id="hudTime">—</div>
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
@@ -266,6 +266,7 @@
     <div id="helpBody">
       <div>WASD / 方向鍵 / 手把 · 手機任處拖曳走動 · Enter 聊天（Esc 退出）· M 收合地圖</div>
       <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E / 手把臉鈕</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
+      <div>走到 🌳 樹 / 🪨 石 / ✨ 乙太礦旁,<b>空白鍵 / E / 點一下</b>採進背包</div>
     </div>
   </div>
 
