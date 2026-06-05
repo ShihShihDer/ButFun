@@ -22,7 +22,6 @@ base64 = "0.22"
 rand = "0.8"
 dotenvy = "0.15"
 urlencoding = "2"
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid"] }
 
 [profile.dev]
 opt-level = 1

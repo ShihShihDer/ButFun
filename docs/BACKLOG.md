@@ -135,6 +135,17 @@
   - 加 migration 建 `players` 表（id, name, species, x, y, updated_at）。
   - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
   - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
+  - ♻️ 撤回外洩進 main 的 0-E 地基(2026-06-05):一個純前端「田地可見」熱修 commit(7460edd)
+    意外把 0-E 的 sqlx 依賴(+Cargo.lock 741 行)、`migrations/0001_players_positions.sql`、
+    `positions.rs` 一行 unused `use sqlx::Row;`、以及一段謊稱「設了 `DATABASE_URL` 走 Postgres
+    (跨重啟仍在)」的文件註解一起帶進 main——但 main 上**完全沒有**任何 Postgres 程式碼
+    (`grep sqlx src/` 只剩那行 unused import,無 `PgPool`/`migrate`/`DATABASE_URL`),只剩一個
+    build warning + 一段對不上實作的謊稱註解 + 一個沒人跑的孤兒 migration + 一個未使用的重依賴
+    拖慢編譯。這是「devloop 共用工作樹、未提交編輯外洩進別人 commit」風險的實例。本輪把這批外洩
+    內容撤回、讓 main 回到誠實的「記憶體前置」狀態(positions.rs 文件改回「Phase 0-E 的記憶體前置」),
+    sqlx/migration/Postgres 留給正式的 PR #11(`feat/0e-pg-foundation`,3d9f3a3「sqlx + players
+    migration」)引入。**不碰玩家資料**(migration 從未在任何地方執行過,刪檔不 drop 任何資料表)。
+    `cargo build` 無 warning、`cargo test` 122 綠、clippy 乾淨、伺服器二進位啟動正常(埠被正式服務占用屬預期)。
   - ✅ **DB 已就緒(2026-06-05,使用者授權後人工裝)**:PostgreSQL 17、`butfun` 資料庫已建、
     `shihshih` 為 superuser、Unix socket peer auth(免密碼);
     `DATABASE_URL=postgresql://shihshih@/butfun?host=/var/run/postgresql` 已寫入 `.env`
