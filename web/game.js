@@ -582,6 +582,12 @@
     if (e.key === " " || e.key === "e" || e.key === "E" || e.key === "f" || e.key === "F") {
       if (!e.repeat) farmAtPlayer();
       e.preventDefault();
+      return;
+    }
+    // M:收起／展開小地圖(給鍵盤玩家一條與 canvas 收合鈕等效的入口,觸控/滑鼠點鈕亦可)。
+    if (e.key === "m" || e.key === "M") {
+      if (!e.repeat) toggleMinimap();
+      e.preventDefault();
     }
   });
   window.addEventListener("keyup", (e) => {
@@ -771,6 +777,18 @@
   // 右下角畫一張固定大小的世界縮圖：世界邊界、農地位置、自己（亮點）、其他玩家（暗點）。
   // 純螢幕座標、每幀依最新快照重畫，不參與鏡頭換算。
   const MM = { maxSize: 150, minSize: 96, margin: 16, pad: 6 };
+  // 小地圖可收合:手機螢幕小,右下角縮圖會吃掉空間(窄直式螢幕還會跟左下聊天框
+  // 在底部邊緣相鄰),給玩家一鍵收起的選擇——沿用說明/聊天收合的語彙(點切換、
+  // 狀態存 localStorage)。收起時只留一顆小「展開地圖」鈕,點它或按 M 重新展開。
+  // 預設展開(維持既有行為,大世界容易迷路靠它定位),只在玩家自己收過才記住。
+  let minimapHidden = false;
+  try { minimapHidden = localStorage.getItem("butfun.minimapHidden") === "1"; } catch {}
+  // 收合鈕在螢幕上的熱區(每幀於 drawMinimap 更新);點擊命中即切換,不當作農作。
+  let mmToggleHit = null;
+  function toggleMinimap() {
+    minimapHidden = !minimapHidden;
+    try { localStorage.setItem("butfun.minimapHidden", minimapHidden ? "1" : "0"); } catch {}
+  }
   // 小地圖邊長依畫面自適應:手機直式窄螢幕縮小(別吃掉太多空間、也少跟左下聊天框
   // 在底部重疊),平板/桌面維持上限。取畫面短邊的一個比例,夾在 min/max 之間。
   function minimapSize() {
@@ -779,6 +797,25 @@
   }
   function drawMinimap() {
     if (!world || !world.width || !world.height) return;
+    // 收合狀態:只畫一顆小「展開地圖」鈕在右下角,省下整塊縮圖的空間。
+    if (minimapHidden) {
+      const bw = 34, bh = 26;
+      const bx = viewW - MM.margin - bw;
+      const by = viewH - MM.margin - bh;
+      ctx.fillStyle = "rgba(10,16,30,0.7)";
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = "rgba(201,162,75,0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.fillStyle = "#c9a24b";
+      ctx.font = "16px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🗺", bx + bw / 2, by + bh / 2 + 1);
+      ctx.textBaseline = "alphabetic";
+      mmToggleHit = { x: bx, y: by, w: bw, h: bh };
+      return;
+    }
     const w = world.width, h = world.height;
     // 等比縮到 size 方框內，長寬各自映射（世界目前是正方，但不假設）。
     const size = minimapSize();
@@ -832,6 +869,36 @@
       ctx.fillStyle = isMe ? "#ffd24a" : "rgba(111,168,220,0.7)";
       ctx.fill();
     }
+
+    // 收合鈕:面板右上角一顆小「–」,點它(或按 M)把小地圖收起。畫在最後蓋在縮圖上。
+    const tb = 18;
+    const tx = ox + mw + MM.pad - tb;
+    const ty = oy - MM.pad;
+    ctx.fillStyle = "rgba(10,16,30,0.85)";
+    ctx.fillRect(tx, ty, tb, tb);
+    ctx.strokeStyle = "rgba(201,162,75,0.7)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(tx, ty, tb, tb);
+    ctx.fillStyle = "#c9a24b";
+    ctx.font = "14px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("–", tx + tb / 2, ty + tb / 2 + 1);
+    ctx.textBaseline = "alphabetic";
+    mmToggleHit = { x: tx, y: ty, w: tb, h: tb };
+  }
+
+  // 命中小地圖收合鈕的熱區?(螢幕座標)命中即切換顯示並回 true,讓點擊不被當作農作。
+  function minimapToggleHit(clientX, clientY) {
+    if (!mmToggleHit) return false;
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left, sy = clientY - rect.top;
+    const t = mmToggleHit;
+    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h) {
+      toggleMinimap();
+      return true;
+    }
+    return false;
   }
 
   // 畫地面 + 世界邊界。有像素 tileset 就鋪草地瓦片,否則退回程式草叢紋理。
@@ -1135,6 +1202,8 @@
   let lastReachHint = 0;
   // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
   function farmAtScreen(clientX, clientY) {
+    // 先看是不是點到小地圖收合鈕(純 UI 切換,不需連線、也不該被當成農作意圖)。
+    if (minimapToggleHit(clientX, clientY)) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     // 自己離農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
     const me = myId ? players.get(myId) : null;
