@@ -757,10 +757,24 @@
     requestAnimationFrame(render);
   }
 
+  // 訪客新玩家也配個與主題相襯的隨機代號(玩家建議:新玩家用隨機角色名稱)。
+  // 過去訪客不打字就一律叫「拓荒者」,單調又容易撞名;這裡前端自備一份同語彙池
+  // (蒸汽龐克太空歌劇:材質/天象 + 角色職),預填進名字欄、玩家可改可重骰。
+  // 與後端 users.rs 的 codename 池各自獨立(原生前端不共用 Rust),語彙刻意對齊。
+  const CODENAME_ADJ = ["黃銅", "霧鏽", "星塵", "發條", "蒸汽", "月光", "琥珀", "雲頂", "銅環", "微光", "漂浮", "齒輪"];
+  const CODENAME_NOUN = ["拓荒者", "領航員", "技師", "夢行者", "旅人", "園丁", "信使", "觀星人", "拾荒者", "鐘錶匠"];
+  function randomCodename() {
+    const adj = CODENAME_ADJ[(Math.random() * CODENAME_ADJ.length) | 0];
+    const noun = CODENAME_NOUN[(Math.random() * CODENAME_NOUN.length) | 0];
+    const num = 100 + ((Math.random() * 900) | 0); // 100..=999,降低撞名
+    return `${adj}${noun}-${num}`;
+  }
+
   // 在這台裝置上記住名字與種族,refresh 不用重打(訪客流程才用)
   try {
     const savedName = localStorage.getItem("butfun.name");
-    if (savedName) document.getElementById("nameInput").value = savedName;
+    // 有存過名字就帶回;沒有(全新訪客)就預填一個隨機代號,不再一律「拓荒者」。
+    document.getElementById("nameInput").value = savedName || randomCodename();
     const savedSpecies = localStorage.getItem("butfun.species");
     if (savedSpecies) {
       const sel = document.getElementById("speciesInput");
@@ -781,6 +795,10 @@
   });
   document.getElementById("nameInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") document.getElementById("joinBtn").click();
+  });
+  // 🎲 重骰:換一個隨機代號(玩家想骰到喜歡的為止)。
+  document.getElementById("rerollBtn").addEventListener("click", () => {
+    document.getElementById("nameInput").value = randomCodename();
   });
 
   // 開頁就查 /auth/me:已登入就跳過進場畫面、直接連線(同一帳號跨裝置同一玩家)
