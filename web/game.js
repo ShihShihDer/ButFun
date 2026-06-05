@@ -1760,6 +1760,12 @@
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
     }
+    // 初次進場播給報讀器:登入表單一被隱藏、焦點掉回 body,世界與 HUD 只是視覺上冒出來——
+    // 看不到畫面的玩家陷入靜默,不知道進來了沒、怎麼走。重連成功有「已重新連上」可聽(見
+    // welcome),唯獨初次進場無聲。enterGame 已用 started 守衛只跑一次(重連走 welcome 但
+    // started 為真會提早 return),故這裡天然只在初次進場播報。給一句到場確認 + 移動提示,
+    // 延續斷線/收成/缺水/日夜的無障礙弧線。
+    announce("已進入邊境星地表。用 WASD、方向鍵或拖曳畫面走動;走到田邊按空白鍵照顧作物。");
     requestAnimationFrame(render);
   }
 
