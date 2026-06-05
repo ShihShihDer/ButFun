@@ -9,6 +9,7 @@ mod crafting;
 mod crops;
 mod daynight;
 mod db;
+mod economy;
 mod field;
 mod game;
 mod gather;
