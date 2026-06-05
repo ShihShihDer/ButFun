@@ -167,6 +167,9 @@
       }
       // 進場後才顯示持續橫幅（登入畫面自己會處理初次連線，不需要橫幅）。
       if (started) showConnStatus();
+      // 還沒進場就斷＝初次連線沒成功（伺服器慢／剛重啟／網路抖）。登入畫面沒有橫幅,
+      // 改在登入狀態列說明「還在重試」,玩家才知道按鈕沒壞、不必狂點。
+      else setLoginStatus("連線不太順，重試中…");
       scheduleReconnect();
     };
     ws.onerror = () => { try { ws.close(); } catch {} }; // 統一走 onclose 的重連路徑
@@ -188,6 +191,12 @@
   // 也即時知道(脈動橫幅/飄字對他們無效)。只在「狀態真的變了」時呼叫,避免重複朗讀。
   function announce(text) {
     const el = document.getElementById("srStatus");
+    if (el) el.textContent = text;
+  }
+  // 登入畫面的連線回饋（按進場到收到 welcome 之間）。enterGame 會整塊隱藏登入畫面,
+  // 狀態字隨之消失,不必另外清空。
+  function setLoginStatus(text) {
+    const el = document.getElementById("loginStatus");
     if (el) el.textContent = text;
   }
 
@@ -1582,12 +1591,18 @@
   } catch {}
 
   document.getElementById("joinBtn").addEventListener("click", () => {
+    const btn = document.getElementById("joinBtn");
+    // 已在連線就忽略重複點擊：否則每點一次都 new 一條 WebSocket＋一條重連鏈,疊出
+    // 多條平行連線。連線一旦成功 welcome→enterGame 會隱藏整個登入畫面,不必解鎖。
+    if (btn.disabled) return;
     const name = document.getElementById("nameInput").value.trim() || "拓荒者";
     const species = document.getElementById("speciesInput").value;
     try {
       localStorage.setItem("butfun.name", name);
       localStorage.setItem("butfun.species", species);
     } catch {}
+    btn.disabled = true;
+    setLoginStatus("連線中…");
     connect(name, species);
   });
   document.getElementById("nameInput").addEventListener("keydown", (e) => {

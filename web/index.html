@@ -168,6 +168,11 @@
       <option value="lumen" disabled>燐光族（乙太霧星）— 即將開放</option>
     </select>
     <button id="joinBtn">以訪客進場</button>
+    <!-- 進場連線回饋:按下進場到收到 welcome 之間,登入畫面原本毫無動靜——伺服器慢或
+         連不上時(手機網路一抖很常見)按鈕看起來像壞了,玩家會狂點、疊出多條連線。
+         這條 aria-live 狀態列在連線中／重試中顯示文字,讓視覺與報讀器玩家都知道「正在連、
+         別急著重按」。延續重連橫幅 / srStatus 的韌性回饋弧線。 -->
+    <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
   </div>
 
   <div id="hud" class="hidden">
@@ -226,6 +231,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-chatsr"></script>
+  <script src="game.js?v=20260605-joinfb"></script>
 </body>
 </html>
