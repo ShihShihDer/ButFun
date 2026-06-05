@@ -511,6 +511,10 @@
   // 探索時也知道作物渴了該回去澆水。缺水格的判定刻意對齊 drawTile 畫藍點的條件
   //（state 2~4 且 dry），HUD 數字與看得到的提示點一致；沒有缺水格時隱藏整行。
   // 純從權威快照數得的表現層回饋，不嵌任何遊戲規則（將來 WebXR renderer 可各自實作）。
+  // 缺水播報基準：避免進場/重連把既有缺水狀態當成「剛變缺水」洗一句（對齊 etherKnown／
+  // presenceKnown／lastPhase 的首份快照防洗）。farmHadDry 記上一份快照是否有缺水格。
+  let farmDryKnown = false;
+  let farmHadDry = false;
   function updateFarmHud(f) {
     const el = document.getElementById("hudFarm");
     if (!el) return;
@@ -527,6 +531,16 @@
     } else {
       el.classList.add("hidden");
     }
+    // 報讀器：作物從「都澆過水」變成「有渴的」時報一句——#hudFarm 這顆視覺提示正是給
+    // 「離田探索、看不到田」的情境，看不到畫面的玩家卻完全收不到，補上同等的無障礙播報。
+    // 只在 0→>0 跨界時報（多格陸續變乾不重複洗），且過了首份快照基準（進場/重連不報），
+    // 對齊 lastPhase／presenceKnown 的防洗處理。延續 srStatus 的無障礙弧線。
+    const hasDry = dry > 0;
+    if (farmDryKnown && hasDry && !farmHadDry) {
+      announce("你的作物渴了，該回去澆水了 💧");
+    }
+    farmHadDry = hasDry;
+    farmDryKnown = true;
   }
 
   // ---- 離田時的「回農地」邊緣指標 ----
