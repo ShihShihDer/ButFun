@@ -339,4 +339,56 @@ mod tests {
         let back: Enemy = serde_json::from_str(&json).unwrap();
         assert_eq!(e, back);
     }
+
+    // ── Phase 1 戰鬥掉落咬進共同資源經濟的組合測試 ─────────────────────────
+    // 本模組刻意「掉落沿用既有 `ItemKind`、不另開物品變體」，好讓戰鬥自包含又直接咬進
+    // 採集 / 合成已有的資源經濟（見模組頂註）。但「打怪掉的礦石／乙太，真的疊進採集填的
+    // 同一個背包格」這條跨 combat→inventory→gather 的接縫此前沒有測試保證。這個組合測試
+    // 走一遍：先採一點資源進背包，再打倒敵人、把掉落 `add` 進**同一個** `Inventory`，
+    // 驗證兩條來源落在同一個 `ItemKind` 槽位、數量相加——鎖住「戰鬥不是孤島，而是同一套
+    // 經濟的另一條供給」這個設計契約，任一邊的物品型別漂移都會在此斷掉。
+
+    use crate::gather::{NodeKind, ResourceNode};
+    use crate::inventory::Inventory;
+
+    /// 把一隻敵人逐下打到倒，回傳致命那下的掉落（必有）。
+    fn defeat(kind: EnemyKind) -> (ItemKind, u32) {
+        let mut e = Enemy::new(kind);
+        let mut loot = None;
+        while e.is_alive() {
+            if let Some(dropped) = e.attack(2) {
+                loot = Some(dropped);
+            }
+        }
+        loot.expect("致命那下一定掉落")
+    }
+
+    #[test]
+    fn combat_loot_stacks_into_the_same_gathered_inventory() {
+        let mut inv = Inventory::new();
+
+        // 採集得來的礦石與乙太先進背包。
+        let mut rock = ResourceNode::new(NodeKind::Rock);
+        inv.add(NodeKind::Rock.into(), rock.gather().unwrap());
+        let mut ore = ResourceNode::new(NodeKind::EtherOre);
+        inv.add(NodeKind::EtherOre.into(), ore.gather().unwrap());
+        assert_eq!(inv.count(ItemKind::Stone), 1); // Rock 每下 1
+        assert_eq!(inv.count(ItemKind::Ether), 2); // EtherOre 每下 2
+
+        // 打倒銹蝕巡邏機掉 (Stone, 2)，疊進採集得來的同一個礦石槽。
+        let (drone_item, drone_qty) = defeat(EnemyKind::ScrapDrone);
+        assert_eq!((drone_item, drone_qty), (ItemKind::Stone, 2));
+        inv.add(drone_item, drone_qty);
+        assert_eq!(inv.count(ItemKind::Stone), 1 + 2);
+
+        // 打倒迷途乙太靈掉 (Ether, 1)，疊進同一個乙太槽。
+        let (wisp_item, wisp_qty) = defeat(EnemyKind::EtherWisp);
+        assert_eq!((wisp_item, wisp_qty), (ItemKind::Ether, 1));
+        inv.add(wisp_item, wisp_qty);
+        assert_eq!(inv.count(ItemKind::Ether), 2 + 1);
+
+        // 掉落全是既有採集 / 經濟資源，戰鬥沒有自立一套平行物品。
+        assert!(matches!(drone_item, ItemKind::Stone));
+        assert!(matches!(wisp_item, ItemKind::Ether));
+    }
 }

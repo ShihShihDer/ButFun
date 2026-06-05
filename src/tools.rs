@@ -156,4 +156,65 @@ mod tests {
         assert_eq!(speed_multiplier(&inv, ToolTask::Gather), TOOL_MULTIPLIER);
         assert_eq!(speed_multiplier(&inv, ToolTask::Till), TOOL_MULTIPLIER);
     }
+
+    // ── Phase 1 玩法垂直迴圈組合測試 ───────────────────────────────────────
+    // 各模組（gather / inventory / crafting / tools）都各有扎實的單元測試，但「採集
+    // → 進背包 → 合成工具 → 工具回頭讓採集更快」這條跨模組接縫——正是接線層要組裝、
+    // 也正是 bug 最愛藏身的地方——此前沒有任何一個測試保證它合得起來。這個組合測試走
+    // 一遍純邏輯層的完整經濟迴圈，鎖住各模組契約能對接：任一模組契約日後漂移
+    // （`gather_times` 語意、`NodeKind→ItemKind` 映射、`speed_multiplier` 倍率…）
+    // 都會在此處整條斷掉、而非等接線上線才在 ws 裡爆。放在 `tools.rs` 是因為這條迴圈的
+    // 高潮正是工具效用本身——「合出的鎬子確實讓真實節點採得更快」是本模組的端到端契約。
+
+    use crate::crafting::PICKAXE;
+    use crate::gather::{NodeKind, ResourceNode};
+
+    #[test]
+    fn phase1_loop_crafted_pickaxe_speeds_real_gathering() {
+        let mut inv = Inventory::new();
+
+        // 一開始徒手：採集一次動作只採 speed_multiplier(=1) 下。
+        assert_eq!(speed_multiplier(&inv, ToolTask::Gather), FIST_MULTIPLIER);
+
+        // 徒手採木：鎬子配方要木×3。Tree 每下 1 木，一次動作（徒手＝1 下）採 1 木。
+        let mut tree = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..3 {
+            let got = tree.gather_times(speed_multiplier(&inv, ToolTask::Gather));
+            inv.add(NodeKind::Tree.into(), got);
+        }
+        assert_eq!(inv.count(ItemKind::Wood), 3);
+
+        // 徒手採石：配方要石×2。
+        let mut rock = ResourceNode::new(NodeKind::Rock);
+        for _ in 0..2 {
+            let got = rock.gather_times(speed_multiplier(&inv, ToolTask::Gather));
+            inv.add(NodeKind::Rock.into(), got);
+        }
+        assert_eq!(inv.count(ItemKind::Stone), 2);
+
+        // 合成鎬子：材料剛好夠，扣光木石、得到一支鎬子。
+        assert!(PICKAXE.craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Pickaxe), 1);
+        assert_eq!(inv.count(ItemKind::Wood), 0);
+        assert_eq!(inv.count(ItemKind::Stone), 0);
+
+        // 關鍵：背包裡有鎬子後，採集一次動作的倍率自動升到 TOOL_MULTIPLIER(=3)。
+        assert_eq!(speed_multiplier(&inv, ToolTask::Gather), TOOL_MULTIPLIER);
+
+        // 帶鎬子採乙太礦：EtherOre 滿耐久 3、每下產 2 乙太，一次動作（3 下）正好把整座
+        // 礦採乾＝3×2＝6 乙太，並進入重生。對照下面徒手版可見鎬子確實 3 倍快。
+        let mut ore = ResourceNode::new(NodeKind::EtherOre);
+        let with_pickaxe = ore.gather_times(speed_multiplier(&inv, ToolTask::Gather));
+        inv.add(NodeKind::EtherOre.into(), with_pickaxe);
+        assert_eq!(with_pickaxe, 6);
+        assert_eq!(inv.count(ItemKind::Ether), 6);
+        assert!(ore.is_depleted(), "一次動作就把整座乙太礦採乾、進重生");
+
+        // 對照組：徒手一次動作只採 1 下＝2 乙太，礦還剩耐久（鎬子確實快、且不超採）。
+        let mut bare_ore = ResourceNode::new(NodeKind::EtherOre);
+        let by_hand = bare_ore.gather_times(FIST_MULTIPLIER);
+        assert_eq!(by_hand, 2);
+        assert!(bare_ore.is_harvestable(), "徒手一次只採一下，礦還沒採乾");
+        assert_eq!(with_pickaxe, by_hand * TOOL_MULTIPLIER);
+    }
 }
