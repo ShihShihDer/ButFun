@@ -100,6 +100,13 @@
   // 會被第二指的按下重設原點、第二指一放開就整個停止移動——即使主控手指還按著。
   // 鎖定第一根落下的手指,其餘手指的 start/move/end 一律不干擾它。
   let touchId = null;
+  // 這次觸碰是否已「成為拖曳」(超過 TAP_SLOP 就再也回不去當點按)。先前用「按下到放開
+  // 的直線位移 < 22px」當點按判定,留了個尷尬縫:位移 14~21px 時,setTouchKeys 的方向
+  // 死區(14)已讓角色抽動一下走幾格,放開又因 <22 被算成點按去農作——想點田卻先讓角色
+  // 顫一下。改用「這次觸碰是否曾拖過 TAP_SLOP」當單一真實來源:沒拖過就純點按(角色全程
+  // 不動),拖過才是搖桿。連「拖遠又滑回原點附近」也正確算成移動而非誤判點按。
+  let touchDragged = false;
+  const TAP_SLOP = 22; // 點按/拖曳的分水嶺(px):>移動死區 14,手指自然微滑不會被當拖曳
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
   // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
@@ -112,10 +119,31 @@
   let viewW = window.innerWidth;
   let viewH = window.innerHeight;
   let dpr = 1; // 裝置像素比,resize 時更新
+  // 螢幕安全區內距(瀏海/圓角/底部手勢條)。DOM HUD 已用 CSS env(safe-area-inset-*) 讓開被
+  // 切的邊,但 canvas 內畫的小地圖／農地指標是用 viewW/viewH 從邊緣定位、讀不到那些 inset,
+  // 在 notched 手機(尤其橫式或底部手勢條)會被瀏海/圓角/手勢條切掉一角。用一顆隱形探針把
+  // 四邊 inset 量成數字(getComputedStyle 讀 env() 解出的 padding),resize 時更新,讓 canvas
+  // HUD 跟 DOM 面板共用同一套安全區、一起讓邊。一般螢幕 inset 恆為 0,無副作用。延續 HUD
+  // safe-area 修復家族到 canvas 層,不碰任何遊戲規則(WebXR renderer 可各自實作)。
+  const safeArea = { top: 0, right: 0, bottom: 0, left: 0 };
+  const saProbe = document.createElement("div");
+  saProbe.style.cssText =
+    "position:fixed;visibility:hidden;pointer-events:none;top:0;left:0;width:0;height:0;" +
+    "padding-top:env(safe-area-inset-top);padding-right:env(safe-area-inset-right);" +
+    "padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);";
+  document.body.appendChild(saProbe);
+  function readSafeArea() {
+    const cs = getComputedStyle(saProbe);
+    safeArea.top = parseFloat(cs.paddingTop) || 0;
+    safeArea.right = parseFloat(cs.paddingRight) || 0;
+    safeArea.bottom = parseFloat(cs.paddingBottom) || 0;
+    safeArea.left = parseFloat(cs.paddingLeft) || 0;
+  }
   function resize() {
     dpr = window.devicePixelRatio || 1;
     viewW = window.innerWidth;
     viewH = window.innerHeight;
+    readSafeArea();
     // 背景緩衝放大成裝置實體像素、CSS 尺寸維持邏輯像素,成像在 retina／手機高解析
     // 螢幕上不再被瀏覽器整張放大糊掉(此前 canvas.width=邏輯像素,DPR>1 時被拉伸)。
     // 繪圖座標系以 dpr 縮放,讓所有繪製碼照舊用邏輯像素——成像更銳利,純客戶端品質,
@@ -461,9 +489,25 @@
     dusk: "🌇 黃昏",
     night: "🌙 夜晚",
   };
+  // 階段「換場」時播給報讀器的整句（不帶 emoji——報讀器唸 emoji 名稱常突兀）。
+  // 視覺上日夜變化已有 HUD 文字＋夜晚乙太微光,看不到畫面的玩家卻完全收不到時段切換,
+  // 補上這條讓報讀器在天色轉換時報一句,延續 srStatus(連線/聊天)的無障礙弧線。
+  const PHASE_ANNOUNCE = {
+    dawn: "破曉了，天色漸亮",
+    day: "天亮了",
+    dusk: "黃昏了，天色漸暗",
+    night: "入夜了",
+  };
+  // 首份快照只建基準、不報(比照 presenceKnown:進場/重連不該把「現在的時段」當成切換)。
+  let lastPhase = null;
   function updateDayNightHud(dn) {
     const el = document.getElementById("hudTime");
     if (el) el.textContent = PHASE_LABELS[dn.phase] || "—";
+    // 只在階段真的變了、且已過基準時報讀器播一句,避免每幀重唸。
+    if (dn.phase !== lastPhase) {
+      if (lastPhase !== null && PHASE_ANNOUNCE[dn.phase]) announce(PHASE_ANNOUNCE[dn.phase]);
+      lastPhase = dn.phase;
+    }
   }
 
   // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
@@ -510,8 +554,9 @@
     const ccx = viewW / 2, ccy = viewH / 2;
     const ang = Math.atan2(sy - ccy, sx - ccx);
     const m = 46; // 邊緣留白，避開 HUD / 小地圖最外圈
-    const px = Math.max(m, Math.min(viewW - m, sx));
-    const py = Math.max(m, Math.min(viewH - m, sy));
+    // 邊緣框再加安全區內距,指標不躲到瀏海/圓角/手勢條底下(與小地圖同套安全區)。
+    const px = Math.max(m + safeArea.left, Math.min(viewW - m - safeArea.right, sx));
+    const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, sy));
 
     const dry = farmDryCount > 0;
     // 缺水時用田格藍色澆水語彙 + 顯示格數，催玩家回去澆水；不缺水用低調黃銅。
@@ -705,6 +750,7 @@
       touchId = t.identifier;
       touchOrigin = { x: t.clientX, y: t.clientY };
       touchCurrent = { x: t.clientX, y: t.clientY };
+      touchDragged = false; // 每次新觸碰先當點按,拖過 TAP_SLOP 才升級成搖桿
     }
     e.preventDefault();
   }, { passive: false });
@@ -713,23 +759,26 @@
     const t = findTouch(e.touches);
     if (!t) return; // 這次 move 不含搖桿那根手指(別根手指在動),不理
     touchCurrent = { x: t.clientX, y: t.clientY };
-    setTouchKeys(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
+    const dx = t.clientX - touchOrigin.x;
+    const dy = t.clientY - touchOrigin.y;
+    // 還沒拖過分水嶺前不送任何方向——點按(含手指自然微滑)時角色全程不抽動;
+    // 一旦拖過就鎖定成搖桿,之後即使滑回原點附近仍持續吃方向。
+    if (!touchDragged && Math.hypot(dx, dy) >= TAP_SLOP) touchDragged = true;
+    if (touchDragged) setTouchKeys(dx, dy);
     e.preventDefault();
   }, { passive: false });
   function endTouch(e) {
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
     const t = touchId === null ? null : findTouch(e.changedTouches);
     if (!t) return;
-    // 幾乎沒移動的觸碰當成「輕點」→ 農地互動（拖曳則是搖桿移動，不互動）。
-    // 容差 22px(>移動死區 14px):手指按下自然會稍微滑動,先前 12px 太嚴,
-    // 玩家想點田格常被誤判成搖桿微動、整個 tap 被吃掉。
-    if (touchOrigin) {
-      const moved = Math.hypot(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
-      if (moved < 22) farmAtScreen(t.clientX, t.clientY);
-    }
+    // 從沒拖過分水嶺(TAP_SLOP)的觸碰當成「輕點」→ 農地互動;拖過的是搖桿移動,不互動。
+    // 用「是否曾拖過」而非「放開瞬間的直線位移」判定:拖遠又滑回原點附近也正確算成移動,
+    // 不會在放手那刻因離原點近被誤判成點按。
+    if (touchOrigin && !touchDragged) farmAtScreen(t.clientX, t.clientY);
     touchId = null;
     touchOrigin = null;
     touchCurrent = null;
+    touchDragged = false;
     setTouchKeys(0, 0);
     e.preventDefault();
   }
@@ -900,8 +949,8 @@
     // 收合狀態:只畫一顆小「展開地圖」鈕在右下角,省下整塊縮圖的空間。
     if (minimapHidden) {
       const bw = 34, bh = 26;
-      const bx = viewW - MM.margin - bw;
-      const by = viewH - MM.margin - bh;
+      const bx = viewW - MM.margin - safeArea.right - bw;
+      const by = viewH - MM.margin - safeArea.bottom - bh;
       ctx.fillStyle = "rgba(10,16,30,0.7)";
       ctx.fillRect(bx, by, bw, bh);
       ctx.strokeStyle = "rgba(201,162,75,0.7)";
@@ -921,8 +970,9 @@
     const size = minimapSize();
     const scale = size / Math.max(w, h);
     const mw = w * scale, mh = h * scale;
-    const ox = viewW - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
-    const oy = viewH - MM.margin - mh;
+    // 右下錨點扣掉安全區內距,notched 手機不被瀏海/圓角/手勢條切到。
+    const ox = viewW - MM.margin - safeArea.right - mw;   // 縮圖內容左上角（螢幕座標）
+    const oy = viewH - MM.margin - safeArea.bottom - mh;
     const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
 
     // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。
