@@ -138,11 +138,14 @@ async fn google_callback(
     };
 
     // 3) find-or-create user
+    //    刻意不拿 Google 回傳的真實姓名（info.name）當顯示名——那會把本名公開廣播給所有
+    //    玩家（聊天 from / HUD），是隱私問題（玩家建議 at=1780631336007）。新帳號改配一個
+    //    隨機角色代號；既有帳號 find_or_create 命中即早回，不會走到這個名字。
     let user = app.users.find_or_create(
         "google",
         &info.sub,
         info.email.clone(),
-        info.name.as_deref().unwrap_or("拓荒者"),
+        &crate::users::random_codename(),
     );
 
     // 4) 種 session cookie + 清掉 state cookie + 導回 /
@@ -214,6 +217,9 @@ struct TokenResponse {
 struct GoogleUserInfo {
     sub: String,
     email: Option<String>,
+    /// Google 會回傳真實姓名,但我們刻意不拿來當顯示名(隱私,見上方 find-or-create
+    /// 註解);保留欄位是為了文件化「收得到、但不採用」這件事。
+    #[allow(dead_code)]
     name: Option<String>,
 }
 

@@ -140,6 +140,36 @@ pub fn sanitize_species(raw: &str) -> String {
     }
 }
 
+/// 隨機角色名的形容詞池（材質／天象，呼應蒸汽龐克太空歌劇語彙）。
+const CODENAME_ADJ: &[&str] = &[
+    "黃銅", "霧鏽", "星塵", "發條", "蒸汽", "月光", "琥珀", "雲頂", "銅環", "微光", "漂浮", "齒輪",
+];
+/// 隨機角色名的名詞池（角色職）。
+const CODENAME_NOUN: &[&str] = &[
+    "拓荒者", "領航員", "技師", "夢行者", "旅人", "園丁", "信使", "觀星人", "拾荒者", "鐘錶匠",
+];
+
+/// 由 seed 決定一個隨機角色名，形如「黃銅領航員-417」。純函式以便測試。
+///
+/// 為什麼要這個：Google 登入會帶回真實姓名，過去直接拿來當顯示名（廣播成聊天 `from` /
+/// HUD 名），等於把本名公開給所有玩家——隱私問題（玩家建議 at=1780631336007）。新帳號改
+/// 配一個與主題相襯的隨機代號，玩家日後仍可自訂；既有帳號不受影響（`find_or_create` 命中
+/// 即早回，根本不會走到產名）。尾碼數字降低撞名機率。
+pub fn codename_from_seed(seed: u64) -> String {
+    let adj = CODENAME_ADJ[(seed % CODENAME_ADJ.len() as u64) as usize];
+    let noun =
+        CODENAME_NOUN[((seed / CODENAME_ADJ.len() as u64) % CODENAME_NOUN.len() as u64) as usize];
+    let combos = CODENAME_ADJ.len() as u64 * CODENAME_NOUN.len() as u64;
+    let num = 100 + (seed / combos) % 900; // 100..=999
+    format!("{adj}{noun}-{num}")
+}
+
+/// 抽一個隨機角色名給新帳號用（種子取自系統亂源）。
+pub fn random_codename() -> String {
+    use rand::Rng;
+    codename_from_seed(rand::thread_rng().gen::<u64>())
+}
+
 fn now_millis() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -206,12 +236,44 @@ fn append_to_disk(u: &User) {
 // ============= 純邏輯單元測試(無 IO) =============
 #[cfg(test)]
 mod tests {
-    use super::{parse_and_sanitize, sanitize_name, sanitize_species, DEFAULT_SPECIES};
+    use super::{
+        codename_from_seed, parse_and_sanitize, sanitize_name, sanitize_species, DEFAULT_SPECIES,
+    };
     use uuid::Uuid;
 
     #[test]
     fn keeps_normal_name() {
         assert_eq!(sanitize_name("施育群"), "施育群");
+    }
+
+    #[test]
+    fn codename_has_expected_shape() {
+        // 形如「<形容詞><名詞>-<100..=999>」,且尾碼在合法範圍。
+        let name = codename_from_seed(0);
+        let (head, num) = name.rsplit_once('-').expect("應含 '-' 尾碼");
+        assert!(!head.is_empty());
+        let n: u64 = num.parse().expect("尾碼應為數字");
+        assert!((100..=999).contains(&n), "尾碼 {n} 不在 100..=999");
+    }
+
+    #[test]
+    fn codename_survives_sanitize_unchanged() {
+        // 隨機代號會被當顯示名存下,必須能原樣通過 sanitize_name(無控制字元、≤24 字元)。
+        for seed in [0u64, 1, 42, 999, u64::MAX] {
+            let name = codename_from_seed(seed);
+            assert_eq!(sanitize_name(&name), name, "seed={seed} 被 sanitize 改動了");
+            assert!(name.chars().count() <= 24);
+        }
+    }
+
+    #[test]
+    fn codename_varies_with_seed() {
+        // 不同 seed 至少產生多種代號(否則撞名嚴重、失去意義)。
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..200u64 {
+            seen.insert(codename_from_seed(seed));
+        }
+        assert!(seen.len() > 50, "代號變化太少: 僅 {}", seen.len());
     }
 
     #[test]
