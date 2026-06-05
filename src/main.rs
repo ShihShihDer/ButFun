@@ -9,6 +9,7 @@ mod crops;
 mod daynight;
 mod field;
 mod game;
+mod plots;
 mod positions;
 mod protocol;
 mod state;
