@@ -112,6 +112,8 @@
         addChat("系統", "與伺服器的連線中斷了，正在自動重新連線…");
         announcedDrop = true;
       }
+      // 進場後才顯示持續橫幅（登入畫面自己會處理初次連線，不需要橫幅）。
+      if (started) showConnStatus();
       scheduleReconnect();
     };
     ws.onerror = () => { try { ws.close(); } catch {} }; // 統一走 onclose 的重連路徑
@@ -119,6 +121,17 @@
 
   // 指數退避重連：0.5s、1s、2s…上限 8s。低頻、足以撐過短暫斷網又不狂打伺服器。
   // 一次只排一個 timer，避免多次 onclose／onerror 疊出重連風暴。
+  // 重連橫幅:斷線到接回之間持續顯示,給玩家「正在重連、別急著重整」的回饋。
+  // 純客戶端韌性 UI——不碰任何遊戲規則,將來 WebXR renderer 可各自實作。
+  function showConnStatus() {
+    const el = document.getElementById("connStatus");
+    if (el) el.classList.remove("hidden");
+  }
+  function hideConnStatus() {
+    const el = document.getElementById("connStatus");
+    if (el) el.classList.add("hidden");
+  }
+
   function scheduleReconnect() {
     if (reconnectTimer !== null) return;
     const delay = Math.min(8000, 500 * Math.pow(2, reconnectAttempts));
@@ -141,6 +154,7 @@
           announcedDrop = false;
           etherKnown = false;
         }
+        hideConnStatus(); // 接回（或初次連上）就收掉重連橫幅
         enterGame();
         break;
       case "snapshot": {

@@ -82,6 +82,18 @@
     .modal .row { display: flex; gap: 8px; justify-content: flex-end; }
     .modal button { cursor: pointer; }
     #suggestStatus { font-size: 0.85rem; min-height: 1.2em; }
+
+    /* 連線狀態橫幅:斷線自動重連期間持續顯示,接回就消失。手機網路一抖／切背景
+       回來時給玩家持續的回饋(不只聊天裡閃過一行),讓他知道「正在重連、別急著
+       重整頁面」。純客戶端韌性 UI,不碰任何遊戲規則。 */
+    #connStatus {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 8; font-size: 0.85rem; padding: 7px 14px; border-radius: 999px;
+      background: rgba(60, 30, 10, 0.92); color: var(--brass);
+      border: 1px solid var(--brass); box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+      animation: connpulse 1.4s ease-in-out infinite; pointer-events: none;
+    }
+    @keyframes connpulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -119,6 +131,8 @@
 
   <div id="suggestBtn" class="hidden"><button>💡 給點建議</button></div>
 
+  <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
+
   <div id="chat" class="hidden">
     <div id="chatLog"></div>
     <form id="chatForm" autocomplete="off">
@@ -140,6 +154,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605v"></script>
+  <script src="game.js?v=20260605w"></script>
 </body>
 </html>
