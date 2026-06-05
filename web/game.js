@@ -1515,26 +1515,24 @@
     const hud = document.getElementById("hud");
     const toggle = document.getElementById("helpToggle");
     if (!hud || !toggle) return;
-    let collapsed;
-    try { collapsed = localStorage.getItem("butfun.helpCollapsed"); } catch {}
-    if (collapsed === null || collapsed === undefined) {
-      // 窄(手機直式)或矮(手機橫式:寬而矮,667×375 之類)都預設收起。橫式手機寬度過關卻
-      // 只有一點垂直空間,展開的多行說明會把矮螢幕的地表擠掉——垂直才是橫式的稀缺資源,
-      // 故寬高任一不足就收起。
-      const tooNarrow = window.innerWidth < 560;
-      const tooShort = window.innerHeight < 480;
-      collapsed = tooNarrow || tooShort ? "1" : "0";
-    }
+    // 沒選過時的預設依視窗大小算:窄(手機直式)或矮(手機橫式:寬而矮,667×375 之類)都收起。
+    // 橫式手機寬度過關卻只有一點垂直空間,展開的多行說明會把矮螢幕的地表擠掉——垂直才是橫式
+    // 的稀缺資源,故寬高任一不足就收起。抽成純函式,好在轉螢幕/改視窗時重算。
+    const defaultCollapsed = () =>
+      (window.innerWidth < 560 || window.innerHeight < 480) ? "1" : "0";
+    let chosen; // 玩家手動選過的值(localStorage 有值或本次 session 內按過);沒有則為 null
+    try { chosen = localStorage.getItem("butfun.helpCollapsed"); } catch {}
     const apply = (v) => {
       const isCollapsed = v === "1";
       hud.classList.toggle("help-collapsed", isCollapsed);
       // 收起＝內容隱藏＝aria-expanded false,讓螢幕報讀器報出展開/收合狀態
       toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
     };
-    apply(collapsed);
+    apply(chosen === null || chosen === undefined ? defaultCollapsed() : chosen);
     const flip = () => {
       const next = hud.classList.contains("help-collapsed") ? "0" : "1";
       apply(next);
+      chosen = next; // 標記玩家已自選——之後轉螢幕不再自動覆蓋(localStorage 寫不進也成立)
       try { localStorage.setItem("butfun.helpCollapsed", next); } catch {}
     };
     toggle.addEventListener("click", flip);
@@ -1542,6 +1540,11 @@
     // 免得空白被當「採腳下格」、Enter 被搶去 focus 聊天。
     toggle.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
+    });
+    // 玩家還沒手動選過前,轉螢幕/改視窗大小就重算預設:直式(窄→收)轉成寬高都夠的橫式該展開、
+    // 桌機窄窗放大成寬高足夠時也該展開,反之亦然。一旦玩家手動收/展就完全尊重他、不再覆蓋。
+    window.addEventListener("resize", () => {
+      if (chosen === null || chosen === undefined) apply(defaultCollapsed());
     });
   }
 
