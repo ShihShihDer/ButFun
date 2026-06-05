@@ -118,6 +118,11 @@ pub struct AppState {
     pub connections: ConnectionCounts,
     /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
     pub auth: Option<AuthConfig>,
+    /// Phase 0-E:Postgres 連線池。沒設 `DATABASE_URL` 時為 `None`(退回記憶體模式)。
+    /// 連線在 `main` 啟動時非同步建立後塞入(`AppState::new` 保持 sync 以利測試);
+    /// 本切片只是連線地基,store 接線留待後續 incremental(故暫標 `allow(dead_code)`)。
+    #[allow(dead_code)]
+    pub db: Option<sqlx::postgres::PgPool>,
 }
 
 impl AppState {
@@ -136,6 +141,9 @@ impl AppState {
             positions: PositionStore::new(),
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
+            // DB 連線是非同步的,不在 sync 的 new() 連;預設無 DB(記憶體模式),
+            // 由 main 啟動時連好再塞進來。測試一律走這個 None 路徑、不碰 DB。
+            db: None,
         }
     }
 

@@ -22,6 +22,15 @@ base64 = "0.22"
 rand = "0.8"
 dotenvy = "0.15"
 urlencoding = "2"
+# Phase 0-E:Postgres 持久化(非同步)。沒設 DATABASE_URL 時退回記憶體模式,不連 DB。
+# 用 runtime query API(非 query! 巨集),故 build 不依賴 live DB、測試免連線。
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "migrate",
+    "macros",
+    "uuid",
+] }
 
 [profile.dev]
 opt-level = 1

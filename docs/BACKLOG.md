@@ -173,6 +173,20 @@
     `from_tiles` 當載入閘門），`ether` 是 `u32`、型別本身就擋掉 `NaN`／`Inf`／負值。加 2 個測試
     （round-trip、壞座標仍經 `spawn_at` 守門），`cargo test` 122 綠、clippy 乾淨、伺服器二進位
     啟動正常（埠被正式服務占用屬預期）。
+  - 🔵 **Postgres 連線地基（PR 待審，2026-06-05）**：跨重啟持久化的第一個 incremental 切片——
+    只接「連線 + migration」這層地基，刻意**不碰任何玩家資料寫入路徑**（store 接線留待後續一輪
+    一個 store，避免單一巨大 PR）。加 `sqlx`(0.8, runtime-tokio-rustls/postgres/migrate/macros/uuid)；
+    新增 `migrations/0001_players.sql`（`players(id,name,species,x,y,ether,updated_at)`，對齊驗收規格
+    並含記憶體前置 `Saved` 已記住的乙太）；新增 `src/db.rs`：純函式 `normalize_database_url`（空／全空白
+    視為沒設 DB、退回記憶體模式）與 `to_sqlx_url`（把維護者 `.env` 的 libpq Unix socket 寫法
+    `…@/db?host=/var/run/postgresql` 轉成 sqlx 認得的 percent-encode host 形式，**不必改維護者既有
+    `.env`**），非同步 `connect`（有 `DATABASE_URL` 才連、套 `migrations/`、回連線池；migration 失敗
+    直接 panic 不默默跑壞 schema）。`AppState` 加 `db: Option<PgPool>` 欄位（`new()` 維持 sync 預設
+    `None`，由 `main` 啟動時連好塞入；本切片尚未取用故 `allow(dead_code)`）。沒設 `DATABASE_URL` 一律
+    退回現有記憶體模式，測試免連 DB。加 8 個純函式測試，`cargo test` 130 綠、clippy 乾淨；用維護者
+    `.env` 實際啟動：`Postgres 已連線、migration 已套用`、`players`／`_sqlx_migrations` 表建立成功。
+    **架構級＋大相依故走 PR 不自走 merge**。仍待：把 `PositionStore` 等 store 逐一接到 Postgres、
+    跨重啟讀回位置（0-E 驗收主體）。
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、

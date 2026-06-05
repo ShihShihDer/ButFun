@@ -7,6 +7,7 @@ mod auth;
 mod connections;
 mod crops;
 mod daynight;
+mod db;
 mod field;
 mod game;
 mod positions;
@@ -41,11 +42,24 @@ async fn main() {
         )
         .init();
 
-    let app_state = AppState::new();
+    let mut app_state = AppState::new();
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
     } else {
         tracing::warn!("Google OAuth 未設定;走訪客模式(設好 GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI/BUTFUN_SESSION_SECRET 即啟用)");
+    }
+
+    // Phase 0-E:有設 DATABASE_URL 就連 Postgres 並套 migration;沒設則走記憶體模式。
+    // migration 失敗(schema 對不上)視為設定錯誤、直接 panic,不默默退回記憶體跑壞 schema。
+    match db::connect().await {
+        Ok(Some(pool)) => {
+            tracing::info!("Postgres 已連線、migration 已套用(Phase 0-E 持久化地基就緒)");
+            app_state.db = Some(pool);
+        }
+        Ok(None) => {
+            tracing::info!("未設 DATABASE_URL;走記憶體模式(重啟後玩家狀態會歸零)");
+        }
+        Err(e) => panic!("Postgres 連線/migration 失敗: {e}"),
     }
 
     // 啟動權威遊戲迴圈。
