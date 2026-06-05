@@ -915,12 +915,21 @@
   }
 
   // 命中小地圖收合鈕的熱區?(螢幕座標)命中即切換顯示並回 true,讓點擊不被當作農作。
+  // 收合「–」鈕畫得很小(18px)、展開「🗺」鈕也才 34x26,手指在手機上很難精準點到
+  // (低於 WCAG 2.5.5 建議的 44px 觸控目標)。命中判定刻意比畫出來的方框外擴一圈,
+  // 讓「點在鈕附近」也算命中——視覺不變、只放寬熱區,改善手機操作手感。鈕固定在右下
+  // 角(遠離通常置中的農地),外擴不會誤吃田格的輕點。純表現層,不嵌任何遊戲規則。
+  const MM_TAP_MIN = 44; // 觸控目標的最小邊長(邏輯像素)
   function minimapToggleHit(clientX, clientY) {
     if (!mmToggleHit) return false;
     const rect = canvas.getBoundingClientRect();
     const sx = clientX - rect.left, sy = clientY - rect.top;
     const t = mmToggleHit;
-    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h) {
+    // 把熱區從中心放大到至少 MM_TAP_MIN 見方(鈕本來就更大時不縮)。
+    const padX = Math.max(0, (MM_TAP_MIN - t.w) / 2);
+    const padY = Math.max(0, (MM_TAP_MIN - t.h) / 2);
+    if (sx >= t.x - padX && sx <= t.x + t.w + padX &&
+        sy >= t.y - padY && sy <= t.y + t.h + padY) {
       toggleMinimap();
       return true;
     }
