@@ -147,6 +147,17 @@
     @media (prefers-reduced-motion: reduce) {
       #connStatus { animation: none; opacity: 1; }
     }
+    /* 沒有 JavaScript 時的告示:整個遊戲(canvas 世界、進場、農作)都靠 JS,關掉 JS
+       的玩家(隱私瀏覽器/擋腳本的擴充/受限網路)只會看到登入畫面、按「以訪客進場」毫無
+       反應卻不知為何。這層全屏告示蓋過登入畫面,明說需要開 JavaScript——只有在 JS 沒跑
+       時才會被瀏覽器渲染出來(有 JS 的玩家完全看不到)。純靜態降級告示,不碰任何遊戲規則。 */
+    #noscript {
+      position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 14px; padding: 24px;
+      text-align: center; background: radial-gradient(circle at 50% 30%, #1a2230, #0b0d12 70%);
+    }
+    #noscript h1 { color: var(--brass); margin: 0; font-size: 2rem; letter-spacing: 2px; }
+    #noscript p { margin: 0; max-width: 340px; line-height: 1.7; opacity: 0.85; }
     .hidden { display: none !important; }
     /* 螢幕報讀器專用:視覺上完全隱藏,但仍被報讀器朗讀。給「只有畫面才看得到」的
        狀態(如重連橫幅)一條無障礙的播報管道。 */
@@ -158,6 +169,13 @@
 </head>
 <body>
   <canvas id="game"></canvas>
+
+  <noscript>
+    <div id="noscript">
+      <h1>ButFun</h1>
+      <p>這個邊境星世界需要瀏覽器的 JavaScript 才能進場。請開啟 JavaScript(或關掉擋腳本的擴充)後重新整理頁面。</p>
+    </div>
+  </noscript>
 
   <div id="login">
     <h1>ButFun</h1>
