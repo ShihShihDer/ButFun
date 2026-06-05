@@ -516,6 +516,17 @@
       case "s": case "S": case "ArrowDown": return "down";
       case "a": case "A": case "ArrowLeft": return "left";
       case "d": case "D": case "ArrowRight": return "right";
+    }
+    // 退回實體鍵位:非 QWERTY 鍵盤(AZERTY/QWERTZ/Dvorak…)上,WASD 字母落在別處——
+    // 法文鍵盤按左手那叢實體鍵送出的是 z/q/s/d,上面的 e.key 比對會落空,玩家照說明按
+    // 「W」卻不動。e.code 是與鍵盤布局無關的實體位置,讓「按 WASD 鍵位移動」對所有布局
+    // 成立(方向鍵本就無此問題)。keydown/keyup 共用本函式,同一次實體按放一律對到同一向,
+    // 不會出現按下/放開比對到不同鍵的卡鍵。
+    switch (e.code) {
+      case "KeyW": return "up";
+      case "KeyS": return "down";
+      case "KeyA": return "left";
+      case "KeyD": return "right";
       default: return null;
     }
   }
