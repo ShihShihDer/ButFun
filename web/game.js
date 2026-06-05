@@ -325,6 +325,11 @@
     ctx.fillStyle = "#12331f";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    // 草地紋理:在世界座標上撒固定位置的小草叢,讓大面積不再是死板純色。
+    // 位置與色階由座標雜湊決定(deterministic,不靠 random),所以鏡頭移動時
+    // 草「貼」在地上不會閃爍。玩家回饋:視覺仍是綠底+小圓點,太平。
+    drawGrassTexture(camX, camY);
+
     ctx.strokeStyle = "rgba(255,255,255,0.05)";
     ctx.lineWidth = 1;
     const startX = -((camX % grid) + grid) % grid;
@@ -340,6 +345,41 @@
     ctx.strokeStyle = "rgba(201,162,75,0.6)";
     ctx.lineWidth = 4;
     ctx.strokeRect(-camX, -camY, world.width, world.height);
+  }
+
+  // 32-bit 整數雜湊:給定世界格座標,回傳穩定的 [0,1) 偽亂數。
+  // 同一格永遠得到同一值——草叢才不會在移動時亂跳。
+  function grassHash(ix, iy) {
+    let h = (Math.imul(ix | 0, 374761393) + Math.imul(iy | 0, 668265263)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177) | 0;
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+
+  // 依世界座標撒草叢:對齊美術色票(苔綠明暗三階),只畫可見範圍內、世界界內的格。
+  const GRASS_CELL = 30; // 草叢取樣格(世界 px)
+  const GRASS_SHADES = ["#2d4d2a", "#3e6a3a", "#173b22"];
+  function drawGrassTexture(camX, camY) {
+    const cell = GRASS_CELL;
+    const gx0 = Math.floor(camX / cell) - 1;
+    const gy0 = Math.floor(camY / cell) - 1;
+    const gx1 = Math.floor((camX + canvas.width) / cell) + 1;
+    const gy1 = Math.floor((camY + canvas.height) / cell) + 1;
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const r = grassHash(gx, gy);
+        if (r < 0.45) continue; // 留白,別每格都長草
+        const wxp = gx * cell + grassHash(gx + 101, gy) * (cell - 6);
+        const wyp = gy * cell + grassHash(gx, gy + 211) * (cell - 6);
+        if (wxp < 0 || wyp < 0 || wxp > world.width || wyp > world.height) continue;
+        const sx = wxp - camX;
+        const sy = wyp - camY;
+        ctx.fillStyle = GRASS_SHADES[(r * 1000) % GRASS_SHADES.length | 0];
+        const len = 3 + r * 3; // 一叢三根短草,輕量(fillRect)
+        ctx.fillRect(sx, sy - len, 1.5, len);
+        ctx.fillRect(sx - 2, sy - len * 0.7, 1.5, len * 0.7);
+        ctx.fillRect(sx + 2, sy - len * 0.8, 1.5, len * 0.8);
+      }
+    }
   }
 
   // ---- 農地（Phase 0-G 種田起源）----
