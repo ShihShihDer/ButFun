@@ -12,6 +12,22 @@
        選單與 #chatLog 捲軸自動走深色,跟整個 HUD 一致(過去在淺色系統上會冒白底白軸)。 -->
   <meta name="theme-color" content="#0b0d12" />
   <meta name="color-scheme" content="dark" />
+  <!-- 社群分享預覽(外殼適配的下一塊):這個「瀏覽器即玩」的世界靠玩家把連結貼進聊天／
+       社群擴散,但過去頁面沒有任何 description / Open Graph,貼出去只剩一條冷冰冰的網址、
+       不會展開成帶標題與介紹的卡片。補上 meta description 與 OG／Twitter card,讓連結在
+       Slack／Discord／iMessage／社群平台上自動展開成「ButFun — 邊境星拓荒 + 一句世界觀」。
+       刻意不放 og:image／og:url:正式網域由使用者自配(見 docs/DEPLOY_CLOUDFLARE_TUNNEL.md)、
+       這裡寫死會指向錯網址或破圖;純文字卡片在各平台仍會顯示標題與描述。純靜態 meta,
+       不碰任何遊戲規則。 -->
+  <meta name="description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。「大靜默」之後乙太緩緩回流——回到邊境星,在廢墟上重建家園、種田、和其他拓荒者相遇。" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="ButFun" />
+  <meta property="og:locale" content="zh_TW" />
+  <meta property="og:title" content="ButFun — 邊境星拓荒" />
+  <meta property="og:description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。「大靜默」之後乙太緩緩回流——回到邊境星,在廢墟上重建家園、種田、和其他拓荒者相遇。" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="ButFun — 邊境星拓荒" />
+  <meta name="twitter:description" content="蒸汽龐克太空歌劇風的療癒多人小世界,瀏覽器即玩。在邊境星重建家園、種田、和其他拓荒者相遇。" />
   <!-- 內嵌 SVG favicon(零額外素材檔):深底黃銅環的小行星——對齊蒸汽龐克太空歌劇主題與
        黃銅品牌色,讓分頁有識別圖示,同時消掉瀏覽器對 /favicon.ico 的 404 請求。 -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d12'/%3E%3Ccircle cx='16' cy='16' r='8' fill='none' stroke='%23c9a24b' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23c9a24b'/%3E%3C/svg%3E" />
