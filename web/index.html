@@ -61,6 +61,18 @@
 
     /* 聊天 */
     #chat { position: fixed; left: 12px; bottom: 12px; width: min(360px, 70vw); z-index: 5; }
+    /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
+       手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
+       收起時仍保留輸入列可發言;有新訊息進來會在標題列冒未讀數,收著也不漏訊息。
+       預設不收(維持既有行為),只在玩家自己收過才記住。初次有訊息才顯示這條標題列。 */
+    #chatToggle { display: none; background: var(--panel); border-radius: 8px;
+      padding: 4px 10px; margin-bottom: 6px; font-size: 0.8rem; cursor: pointer;
+      user-select: none; opacity: 0.7; }
+    #chatToggle:hover { opacity: 1; }
+    #chatCaret { display: inline-block; transition: transform 0.15s; }
+    #chat.chat-collapsed #chatCaret { transform: rotate(-90deg); }
+    #chat.chat-collapsed #chatLog { display: none !important; }
+    #chatUnread { color: var(--brass); font-weight: 700; margin-left: 4px; }
     #chatLog { max-height: 30vh; overflow-y: auto; background: var(--panel); border-radius: 8px;
       padding: 8px 10px; margin-bottom: 6px; font-size: 0.85rem; line-height: 1.5; display: none; }
     #chatLog .who { color: var(--brass); font-weight: 600; }
@@ -140,6 +152,7 @@
   <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
 
   <div id="chat" class="hidden">
+    <div id="chatToggle">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
     <div id="chatLog"></div>
     <form id="chatForm" autocomplete="off">
       <input id="chatText" maxlength="200" placeholder="說點什麼…（Enter 送出）" />
@@ -160,6 +173,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-hidpi"></script>
+  <script src="game.js?v=20260605-chatcollapse"></script>
 </body>
 </html>

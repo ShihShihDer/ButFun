@@ -1062,9 +1062,20 @@
 
   // ---- 聊天 ----
   const MAX_CHAT_LINES = 60;
+  let chatUnread = 0; // 收合狀態下累積的未讀數,展開即清零
+  // 收合時有新訊息就在標題列冒未讀數,讓收著的玩家知道有人說話、不漏訊息。
+  function bumpChatUnread() {
+    chatUnread++;
+    const badge = document.getElementById("chatUnread");
+    if (badge) badge.textContent = `(${chatUnread})`;
+  }
   function addChat(who, text) {
     const log = document.getElementById("chatLog");
     log.style.display = "block";
+    // 第一次有訊息才顯示「聊天」標題列(沒人說話時不佔位);收合中則累計未讀。
+    const toggle = document.getElementById("chatToggle");
+    if (toggle) toggle.style.display = "block";
+    if (document.getElementById("chat").classList.contains("chat-collapsed")) bumpChatUnread();
     // 加新行「之前」先量玩家是否已捲在底部附近:玩家往上捲讀舊訊息時,新訊息不該把他
     // 硬拉回底部(讀不完歷史是聊天介面經典 bug)。容差 24px 吸收次像素誤差與行高。
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
@@ -1158,11 +1169,37 @@
     });
   }
 
+  // ---- 聊天紀錄可收合 ----
+  // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設不收(維持
+  // 既有行為,新手看得到聊天);展開時清零未讀並捲到最新。收著時 addChat 會累計未讀數。
+  function initChatToggle() {
+    const chat = document.getElementById("chat");
+    const toggle = document.getElementById("chatToggle");
+    if (!chat || !toggle) return;
+    let collapsed = "0";
+    try {
+      const v = localStorage.getItem("butfun.chatCollapsed");
+      if (v !== null && v !== undefined) collapsed = v;
+    } catch {}
+    chat.classList.toggle("chat-collapsed", collapsed === "1");
+    toggle.addEventListener("click", () => {
+      const nowCollapsed = chat.classList.toggle("chat-collapsed");
+      try { localStorage.setItem("butfun.chatCollapsed", nowCollapsed ? "1" : "0"); } catch {}
+      if (!nowCollapsed) {
+        chatUnread = 0;
+        document.getElementById("chatUnread").textContent = "";
+        const log = document.getElementById("chatLog");
+        log.scrollTop = log.scrollHeight; // 展開直接看到最新
+      }
+    });
+  }
+
   // ---- 進場流程 ----
   function enterGame() {
     if (started) return; // 自動重連時 welcome 會再來一次，別重複初始化、別啟動第二個 render 迴圈
     started = true;
     initHelpToggle();
+    initChatToggle();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
