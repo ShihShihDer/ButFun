@@ -54,6 +54,9 @@
   const etherFloaters = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
+  // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
+  // 用它擋住重複初始化／重啟第二個 render 迴圈。
+  let started = false;
 
   // ---- 觸控搖桿狀態(手機沒鍵盤,用拖曳設方向) ----
   let touchOrigin = null;   // 手指按下的初始位置
@@ -72,13 +75,28 @@
   window.addEventListener("resize", resize);
   resize();
 
-  // ---- 連線 ----
+  // ---- 連線（含斷線自動重連）----
+  // 手機網路一抖／分頁切背景／伺服器換版重啟都會斷 WS。對「瀏覽器即玩的療癒多人世界」
+  // 來說，要玩家自己重新整理頁面太傷——這裡斷線後以指數退避自動重連，回來就接著玩。
+  // 伺服器本就支援重新 join（登入者靠 cookie 認回同一玩家、訪客用記住的名字／物種），
+  // 此層純屬客戶端韌性，不碰任何遊戲規則（將來 WebXR renderer 連同一後端時可各自實作）。
+  let reconnectTimer = null;
+  let reconnectAttempts = 0;
+  let lastSpecies = "terran";
+  let announcedDrop = false; // 斷線提示只報一次，重連風暴不洗聊天視窗
+
   function connect(name, species) {
     myName = name;
+    lastSpecies = species;
+    // 每條新連線都重置「屬於這條連線」的輸入同步狀態：新連線伺服器不知道我們按著什麼，
+    // 清掉移動鍵並把 lastSentInput 清空，下次 sendInputIfChanged 會重新把意圖送給新連線。
+    lastSentInput = "";
+    keys.up = keys.down = keys.left = keys.right = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
 
     ws.onopen = () => {
+      reconnectAttempts = 0; // 連上就重置退避
       ws.send(JSON.stringify({ type: "join", name, species }));
     };
 
@@ -89,8 +107,26 @@
     };
 
     ws.onclose = () => {
-      addChat("系統", "與伺服器的連線中斷了，重新整理頁面再試。");
+      // 還沒進場就斷（如初次連線就被拒）也照樣重連退避，不卡死在登入後空畫面。
+      if (started && !announcedDrop) {
+        addChat("系統", "與伺服器的連線中斷了，正在自動重新連線…");
+        announcedDrop = true;
+      }
+      scheduleReconnect();
     };
+    ws.onerror = () => { try { ws.close(); } catch {} }; // 統一走 onclose 的重連路徑
+  }
+
+  // 指數退避重連：0.5s、1s、2s…上限 8s。低頻、足以撐過短暫斷網又不狂打伺服器。
+  // 一次只排一個 timer，避免多次 onclose／onerror 疊出重連風暴。
+  function scheduleReconnect() {
+    if (reconnectTimer !== null) return;
+    const delay = Math.min(8000, 500 * Math.pow(2, reconnectAttempts));
+    reconnectAttempts++;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect(myName, lastSpecies);
+    }, delay);
   }
 
   function handleServerMsg(msg) {
@@ -98,6 +134,13 @@
       case "welcome":
         myId = msg.id;
         world = msg.world;
+        // 重連成功：先前報過斷線就回報已接回，並把乙太基準重置——否則重連後第一份快照
+        // 會把「持久化存量」當成一次大獲得、噴一串飄字。
+        if (announcedDrop) {
+          addChat("系統", "已重新連上，繼續吧。");
+          announcedDrop = false;
+          etherKnown = false;
+        }
         enterGame();
         break;
       case "snapshot": {
@@ -887,6 +930,8 @@
 
   // ---- 進場流程 ----
   function enterGame() {
+    if (started) return; // 自動重連時 welcome 會再來一次，別重複初始化、別啟動第二個 render 迴圈
+    started = true;
     initHelpToggle();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {
