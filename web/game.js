@@ -8,6 +8,33 @@
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
 
+  // ---- 像素素材(peregrine-assets)。載好才用 sprite,沒載好/載失敗都退回原本的
+  //      程式繪製,確保遊戲一定能玩。規格見 docs/ASSET_INTEGRATION.md。----
+  const TS = 32;
+  const ART = {};
+  let artReady = false;
+  (function loadArt() {
+    const names = ["tileset_a", "field", "player", "tree", "rock", "ship", "workshop", "fence"];
+    let remaining = names.length;
+    for (const n of names) {
+      const img = new Image();
+      const done = () => { if (--remaining === 0) artReady = true; };
+      img.onload = done;
+      img.onerror = done; // 缺一張也不卡住整體
+      img.src = `assets/${n}.png?v=1`;
+      ART[n] = img;
+    }
+  })();
+  const artOk = (n) => artReady && ART[n] && ART[n].complete && ART[n].naturalWidth > 0;
+  // 朝向弧度 → player.png 的列(0 下 / 1 左 / 2 右 / 3 上)。
+  function facingToDir(rad) {
+    const deg = (rad * 180) / Math.PI; // -180..180
+    if (deg >= -45 && deg < 45) return 2;   // 右
+    if (deg >= 45 && deg < 135) return 0;   // 下
+    if (deg >= -135 && deg < -45) return 3; // 上
+    return 1;                                // 左
+  }
+
   // ---- 狀態 ----
   let ws = null;
   let myId = null;
@@ -206,6 +233,7 @@
 
   // ---- 渲染迴圈 ----
   function render() {
+    ctx.imageSmoothingEnabled = false; // 像素風禁止插值放大,否則糊邊
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     const me = myId ? players.get(myId) : null;
@@ -249,27 +277,38 @@
       ctx.fillStyle = "rgba(0,0,0,0.22)";
       ctx.fill();
 
-      // 身體
-      ctx.beginPath();
-      ctx.arc(sx, by, 14, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(0,0,0,0.4)";
-      ctx.stroke();
+      if (artOk("player")) {
+        // 像素角色:列=朝向(0下1左2右3上)、欄=走路影格(0-3);靜止用第 0 格。
+        const dir = facingToDir(p.facing);
+        const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
+        // sprite 32x32,放大成 36 比較好看;腳對齊 sy(陰影位置)。
+        const dw = 36, dh = 36;
+        ctx.drawImage(
+          ART.player, frame * TS, dir * TS, TS, TS,
+          Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
+        );
+      } else {
+        // fallback:程式畫的圓 + 朝向小護目鏡點
+        ctx.beginPath();
+        ctx.arc(sx, by, 14, 0, Math.PI * 2);
+        ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.stroke();
+        const fx = sx + Math.cos(p.facing) * 8;
+        const fy = by + Math.sin(p.facing) * 8;
+        ctx.beginPath();
+        ctx.arc(fx, fy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
+        ctx.fill();
+      }
 
-      // 朝向指示：往移動方向放一顆黃銅小護目鏡點（蒸汽龐克味、又讓人看出面向哪）
-      const fx = sx + Math.cos(p.facing) * 8;
-      const fy = by + Math.sin(p.facing) * 8;
-      ctx.beginPath();
-      ctx.arc(fx, fy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
-      ctx.fill();
-
-      ctx.fillStyle = "#e8e0cf";
+      // 自己的名字描金,讓玩家一眼找到自己。
+      ctx.fillStyle = isMe ? "#ffd24a" : "#e8e0cf";
       ctx.font = "13px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(p.name, sx, sy - 22);
+      ctx.fillText(p.name, sx, sy - 24);
     }
 
     // 日夜染色：亮度越低，疊越濃的夜色（蓋住世界與玩家，但不蓋觸控搖桿）。
@@ -347,32 +386,65 @@
     }
   }
 
-  // 畫一張帶網格的地面 + 世界邊界，給空間感
+  // 畫地面 + 世界邊界。有像素 tileset 就鋪草地瓦片,否則退回程式草叢紋理。
   function drawGround(camX, camY) {
-    const grid = 80;
     ctx.fillStyle = "#12331f";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 草地紋理:在世界座標上撒固定位置的小草叢,讓大面積不再是死板純色。
-    // 位置與色階由座標雜湊決定(deterministic,不靠 random),所以鏡頭移動時
-    // 草「貼」在地上不會閃爍。玩家回饋:視覺仍是綠底+小圓點,太平。
-    drawGrassTexture(camX, camY);
-
-    ctx.strokeStyle = "rgba(255,255,255,0.05)";
-    ctx.lineWidth = 1;
-    const startX = -((camX % grid) + grid) % grid;
-    const startY = -((camY % grid) + grid) % grid;
-    for (let x = startX; x < canvas.width; x += grid) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-    }
-    for (let y = startY; y < canvas.height; y += grid) {
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+    if (artOk("tileset_a")) {
+      // 鋪草地瓦片(tileset 第 0 列 = 草地,4 個變體靠座標雜湊挑,免機械重複)。
+      const tx0 = Math.floor(camX / TS) - 1;
+      const ty0 = Math.floor(camY / TS) - 1;
+      const tx1 = Math.floor((camX + canvas.width) / TS) + 1;
+      const ty1 = Math.floor((camY + canvas.height) / TS) + 1;
+      for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const variant = (grassHash(tx, ty) * 4) | 0; // 0..3
+          const dx = Math.round(tx * TS - camX);
+          const dy = Math.round(ty * TS - camY);
+          ctx.drawImage(ART.tileset_a, variant * TS, 0, TS, TS, dx, dy, TS, TS);
+        }
+      }
+      drawDecorations(camX, camY);
+    } else {
+      // fallback:程式草叢紋理 + 網格
+      drawGrassTexture(camX, camY);
+      const grid = 80;
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      const startX = -((camX % grid) + grid) % grid;
+      const startY = -((camY % grid) + grid) % grid;
+      for (let x = startX; x < canvas.width; x += grid) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      for (let y = startY; y < canvas.height; y += grid) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
     }
 
     // 世界邊界
     ctx.strokeStyle = "rgba(201,162,75,0.6)";
     ctx.lineWidth = 4;
     ctx.strokeRect(-camX, -camY, world.width, world.height);
+  }
+
+  // 把「繼承的工坊農莊」氛圍擺出來:工坊與墜毀飛船放在農地附近(固定世界座標)。
+  // 飛船就是 GDD 的星際北極星勾子(玩家看得到、知道未來能飛出去)。
+  function drawDecorations(camX, camY) {
+    if (!field) return;
+    const place = (img, wx, wy) => {
+      if (!img || !img.complete || !img.naturalWidth) return;
+      const dw = img.naturalWidth, dh = img.naturalHeight;
+      const dx = Math.round(wx - camX - dw / 2);
+      const dy = Math.round(wy - camY - dh); // 底部對齊 wy
+      if (dx + dw < 0 || dy + dh < 0 || dx > canvas.width || dy > canvas.height) return;
+      ctx.drawImage(img, dx, dy);
+    };
+    const fx = field.origin_x, fy = field.origin_y;
+    place(ART.workshop, fx - 70, fy + 10);             // 工坊在田地左邊
+    place(ART.ship, fx + field.cols * field.tile_size + 80, fy + 40); // 飛船在田地右邊
+    place(ART.tree, fx - 30, fy - 40);
+    place(ART.rock, fx + field.cols * field.tile_size + 20, fy - 20);
   }
 
   // 32-bit 整數雜湊:給定世界格座標,回傳穩定的 [0,1) 偽亂數。
@@ -481,7 +553,41 @@
     }
   }
 
+  // 我方狀態 → field.png 欄位(0 未翻 1 翻土 2 澆水 3 種子 4 發芽 5 成長 6 成熟 7 缺水疊圖)。
+  function fieldColumn(cell) {
+    switch (cell.state) {
+      case 0: return 0;
+      case 1: return cell.dry === false ? 2 : 1;
+      case 2: return 3;
+      case 3: return 4;
+      case 4: return 6;
+      default: return 0;
+    }
+  }
+
   function drawTile(sx, sy, ts, cell) {
+    if (artOk("field")) {
+      const dx = Math.round(sx), dy = Math.round(sy);
+      ctx.drawImage(ART.field, fieldColumn(cell) * TS, 0, TS, TS, dx, dy, ts, ts);
+      // 缺水疊圖(藍點 overlay,欄 7),只在有作物且缺水時。
+      if (cell.dry && cell.state >= 2 && cell.state <= 4) {
+        ctx.drawImage(ART.field, 7 * TS, 0, TS, TS, dx, dy, ts, ts);
+      }
+      // 成熟再疊一層 additive 金光,夜裡更亮(療癒、乙太味)。
+      if (cell.state === 4) {
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        const g = ctx.createRadialGradient(sx + ts / 2, sy + ts / 2, 1, sx + ts / 2, sy + ts / 2, ts / 2);
+        g.addColorStop(0, "rgba(255,210,74,0.5)");
+        g.addColorStop(1, "rgba(255,210,74,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(sx, sy, ts, ts);
+        ctx.restore();
+      }
+      return;
+    }
+
+    // ---- 以下為無 sprite 時的程式繪製 fallback ----
     // 底色:未翻土 = 暖土黃(像未開墾的乾土);翻好的 = 深咖啡(翻過的潮土)。
     // 兩者都跟草地(深綠)明顯不同,玩家一眼看得到「這裡是一塊田」。
     ctx.fillStyle = cell.state === 0 ? "#7a5f3c" : "#5b4636";
