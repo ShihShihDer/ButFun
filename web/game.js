@@ -639,6 +639,7 @@
   // 用「邊緣觸發」:只在方向有變化的那一幀寫 keys(像 keydown/keyup),空檔不覆寫 keys,
   // 才不會每幀把鍵盤/觸控正按住的方向硬清成 false、彼此打架。
   const gpPrev = { up: false, down: false, left: false, right: false };
+  let gpPrevAct = false; // 採集鍵的上一幀按壓狀態,用來做邊緣觸發(一次按一次,不長按連發)
   function pollGamepad() {
     if (!navigator.getGamepads) return;
     let pad = null;
@@ -658,10 +659,17 @@
       if (cur[d] !== gpPrev[d]) { keys[d] = cur[d]; gpPrev[d] = cur[d]; changed = true; }
     }
     if (changed) sendInputIfChanged();
+    // 採集鍵:標準佈局臉鈕(A=0 / B=1 / X=2 / Y=3)任一按下都對腳下田格互動,等同鍵盤的
+    // 空白·E·F——手把支援先前只接了走動,玩家(尤其無滑鼠/鍵盤者)走到田邊卻沒鈕能翻土／
+    // 播種／澆水／收成。邊緣觸發(只在 false→true 那一幀)讓一次按一次、不長按連發,跟鍵盤
+    // 的 !e.repeat 與滑鼠單擊一致。純客戶端輸入源,農作規則仍只在(權威)伺服器。
+    const act = btn(0) || btn(1) || btn(2) || btn(3);
+    if (act && !gpPrevAct) farmAtPlayer();
+    gpPrevAct = act;
   }
   // 手把接上時報一聲:玩家(尤其無滑鼠/報讀器使用者)知道可以直接用手把走動。
   window.addEventListener("gamepadconnected", () =>
-    announce("已連接遊戲手把,可用左類比搖桿或十字鍵走動"));
+    announce("已連接遊戲手把,可用左類比搖桿或十字鍵走動,按臉鈕(A／B／X／Y)照顧腳下作物"));
 
   // ---- 觸控:任何地方按下拖曳當搖桿,放開即停止 ----
   function setTouchKeys(dx, dy) {
