@@ -40,6 +40,8 @@
   let myId = null;
   let world = { width: 2000, height: 2000 };
   let myName = "";
+  // 已登入者另有「已登入：X · 登出」標籤、不必重複;只有訪客需要在 HUD 看到自己的代號。
+  let isGuest = true;
   // id -> { name, species, x, y (目標), rx, ry (渲染中插值位置) }
   const players = new Map();
   const keys = { up: false, down: false, left: false, right: false };
@@ -190,6 +192,12 @@
           myEther = me.ether;
           etherKnown = true;
           document.getElementById("hudEther").textContent = `乙太：${myEther}`;
+          // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
+          if (isGuest) {
+            const nameEl = document.getElementById("hudName");
+            nameEl.textContent = `你：${me.name}`;
+            nameEl.classList.remove("hidden");
+          }
         }
         break;
       }
@@ -1076,6 +1084,7 @@
     .then((r) => (r.ok ? r.json() : null))
     .then((me) => {
       if (!me) return; // 訪客流程,維持顯示登入畫面
+      isGuest = false; // 已登入 → 用下方「已登入：X · 登出」標籤,不另顯示 hudName
       // 顯示登入狀態 + 一鍵登出
       const hud = document.getElementById("hud");
       const tag = document.createElement("div");
