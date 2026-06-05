@@ -1489,12 +1489,37 @@
     const badge = document.getElementById("chatUnread");
     if (badge) badge.textContent = `(${chatUnread})`;
   }
+
+  // ---- 背景分頁未讀(切走分頁時把真人發言記進瀏覽器分頁標題) ----
+  // 這個療癒世界常被在手機／分頁間切換(已為此擋移動鍵殘留、抬聊天面板)。但玩家切到別的
+  // 分頁時,別人發言只更新到看不見的聊天框,瀏覽器分頁標題毫無動靜——回到前不知道有人講話
+  // (聊天框未讀數那條只在面板收合時冒,且都要分頁看得見才有用)。分頁隱藏期間累積真人發言
+  // 數寫進 document.title(「(3) ButFun…」),回到分頁就清掉。純客戶端、不碰遊戲規則;只記
+  // 真人社交發言(系統訊息如連線中斷/進出場不計),延續 srStatus/聊天未讀的「別漏掉社交」弧線。
+  const BASE_TITLE = document.title;
+  let tabUnread = 0;
+  function bumpTabTitle() {
+    if (!document.hidden) return; // 分頁就在眼前,不必標題提示
+    tabUnread++;
+    document.title = `(${tabUnread}) ${BASE_TITLE}`;
+  }
+  function clearTabTitle() {
+    tabUnread = 0;
+    document.title = BASE_TITLE;
+  }
+  // 回到分頁就清掉未讀標記(與第 702 行擋移動鍵殘留的 visibilitychange 各司其職,分開掛不互擾)
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) clearTabTitle();
+  });
   function addChat(who, text) {
     const log = document.getElementById("chatLog");
     log.style.display = "block";
     // 第一次有訊息才顯示「聊天」標題列(沒人說話時不佔位);收合中則累計未讀。
     const toggle = document.getElementById("chatToggle");
     if (toggle) toggle.style.display = "block";
+    // 分頁切走時,真人發言記進分頁標題未讀(系統訊息不計;bumpTabTitle 內部自判分頁是否隱藏)。
+    // 與下方「面板收合」未讀獨立:一個管分頁不在眼前、一個管面板收著,可同時成立各自清零。
+    if (who !== "系統") bumpTabTitle();
     const collapsed = document.getElementById("chat").classList.contains("chat-collapsed");
     if (collapsed) {
       bumpChatUnread();
