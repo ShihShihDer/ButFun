@@ -124,6 +124,12 @@
       #connStatus { animation: none; opacity: 1; }
     }
     .hidden { display: none !important; }
+    /* 螢幕報讀器專用:視覺上完全隱藏,但仍被報讀器朗讀。給「只有畫面才看得到」的
+       狀態(如重連橫幅)一條無障礙的播報管道。 */
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
   </style>
 </head>
 <body>
@@ -167,6 +173,11 @@
 
   <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
 
+  <!-- 螢幕報讀器即時播報區:上方重連橫幅是純視覺(脈動色塊),看不到畫面的玩家斷線時
+       毫無回饋。這條視覺隱藏的 aria-live 區只在斷線／接回等重要切換時更新文字,讓報讀器
+       即時報出連線狀況。polite=等當前朗讀的空檔再播,不打斷玩家正在聽的內容。 -->
+  <div id="srStatus" class="sr-only" role="status" aria-live="polite"></div>
+
   <div id="chat" class="hidden">
     <div id="chatToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="chatLog">💬 聊天 <span id="chatCaret">▾</span><span id="chatUnread"></span></div>
     <div id="chatLog"></div>
@@ -189,6 +200,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-a11ytoggle"></script>
+  <script src="game.js?v=20260605-a11yconn"></script>
 </body>
 </html>

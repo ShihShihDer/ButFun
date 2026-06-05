@@ -150,6 +150,7 @@
       // 還沒進場就斷（如初次連線就被拒）也照樣重連退避，不卡死在登入後空畫面。
       if (started && !announcedDrop) {
         addChat("系統", "與伺服器的連線中斷了，正在自動重新連線…");
+        announce("與伺服器的連線中斷了，正在自動重新連線…"); // 同步播給報讀器
         announcedDrop = true;
       }
       // 進場後才顯示持續橫幅（登入畫面自己會處理初次連線，不需要橫幅）。
@@ -171,6 +172,12 @@
     const el = document.getElementById("connStatus");
     if (el) el.classList.add("hidden");
   }
+  // 螢幕報讀器播報:把重要狀態切換寫進視覺隱藏的 aria-live 區,讓看不到畫面的玩家
+  // 也即時知道(脈動橫幅/飄字對他們無效)。只在「狀態真的變了」時呼叫,避免重複朗讀。
+  function announce(text) {
+    const el = document.getElementById("srStatus");
+    if (el) el.textContent = text;
+  }
 
   function scheduleReconnect() {
     if (reconnectTimer !== null) return;
@@ -191,6 +198,7 @@
         // 會把「持久化存量」當成一次大獲得、噴一串飄字。
         if (announcedDrop) {
           addChat("系統", "已重新連上，繼續吧。");
+          announce("已重新連上，繼續吧。"); // 同步播給報讀器
           announcedDrop = false;
           etherKnown = false;
         }
