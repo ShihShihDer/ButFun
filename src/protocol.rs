@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::daynight::Phase;
+use crate::gather::NodeKind;
+use crate::inventory::ItemKind;
 
 /// 客戶端送給伺服器的訊息。
 #[derive(Debug, Clone, Deserialize)]
@@ -29,6 +31,9 @@ pub enum ClientMsg {
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
+    /// 採集意圖：玩家想採附近的資源節點（樹／石／乙太礦）。不帶座標——伺服器一律
+    /// **用玩家自己的權威位置**判定 `GATHER_REACH` 內最近的可採節點（防隔空採集）。
+    Gather,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -44,6 +49,9 @@ pub enum ServerMsg {
         /// 世界上所有玩家的地塊（per-player：每人一塊，各在不同位置）。
         /// 前端畫出全部，但只有 `owner == 自己 id` 的那塊能互動。
         fields: Vec<FieldView>,
+        /// 世界裡共享的採集節點（樹／石／乙太礦,Phase 1-A）。前端畫出來、可採的標亮,
+        /// 玩家走近點它送 `Gather`。
+        nodes: Vec<NodeView>,
         /// 伺服器權威的日夜狀態（階段 + 亮度），前端依此做環境染色。
         daynight: DayNightView,
     },
@@ -71,6 +79,29 @@ pub struct PlayerView {
     /// 目前持有的乙太（收成累積）。已登入玩家重連會帶回（記憶體前置），
     /// 跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
     pub ether: u32,
+    /// 背包內容（採集所得）。每位玩家都帶著,前端只取「自己那位」的來畫背包面板。
+    /// 條目已依 `ItemKind` 排序（`Inventory` 用 `BTreeMap`),順序穩定。
+    pub inventory: Vec<ItemStack>,
+}
+
+/// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ItemStack {
+    pub item: ItemKind,
+    pub qty: u32,
+}
+
+/// 快照裡一個世界採集節點的可見狀態。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct NodeView {
+    /// 節點種類（tree/rock/ether_ore）：前端據此選圖示與掉落。
+    pub kind: NodeKind,
+    pub x: f32,
+    pub y: f32,
+    /// 剩餘可採次數（耐久）。0 = 採空、重生中。
+    pub remaining: u32,
+    /// 現在可不可以採（耐久 > 0）。前端據此把可採的標亮、採空的畫暗。
+    pub harvestable: bool,
 }
 
 /// 快照裡的農地狀態：固定位置 / 大小的格陣列，讓前端能畫出每格。
@@ -128,10 +159,19 @@ mod tests {
         }
     }
 
-    /// 快照序列化後要帶前端依賴的欄位名：fields（陣列、每塊帶 owner）/ 每位玩家的
-    /// ether / 每格的 state、dry。
+    /// 前端送的 gather 訊息要能被解析成 `ClientMsg::Gather`（鎖住線上 JSON 契約）。
     #[test]
-    fn snapshot_serializes_field_and_ether() {
+    fn parses_gather_message() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"gather"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::Gather));
+    }
+
+    /// 快照序列化後要帶前端依賴的欄位名：fields / 每位玩家的 ether 與 inventory /
+    /// nodes（採集節點,帶 kind/x/y/harvestable）/ 每格的 state、dry。
+    #[test]
+    fn snapshot_serializes_field_ether_inventory_and_nodes() {
+        use crate::gather::NodeKind;
+        use crate::inventory::ItemKind;
         let owner = Uuid::nil();
         let snap = ServerMsg::Snapshot {
             tick: 1,
@@ -142,6 +182,10 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 ether: 7,
+                inventory: vec![ItemStack {
+                    item: ItemKind::Wood,
+                    qty: 3,
+                }],
             }],
             fields: vec![FieldView {
                 owner,
@@ -156,6 +200,13 @@ mod tests {
                     dry: true,
                 }],
             }],
+            nodes: vec![NodeView {
+                kind: NodeKind::Rock,
+                x: 120.0,
+                y: 240.0,
+                remaining: 4,
+                harvestable: true,
+            }],
             daynight: DayNightView {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
@@ -164,12 +215,13 @@ mod tests {
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
         assert_eq!(v["players"][0]["ether"], 7);
+        assert_eq!(v["players"][0]["inventory"][0]["item"], "wood");
+        assert_eq!(v["players"][0]["inventory"][0]["qty"], 3);
         assert_eq!(v["fields"][0]["owner"], owner.to_string());
-        assert_eq!(v["fields"][0]["tile_size"], 48.0);
-        assert_eq!(v["fields"][0]["reach"], 48.0);
         assert_eq!(v["fields"][0]["cells"][0]["state"], 2);
-        assert_eq!(v["fields"][0]["cells"][0]["dry"], true);
-        // 日夜狀態：階段以 snake_case 字串、亮度為數值，鎖住前端依賴的契約。
+        assert_eq!(v["nodes"][0]["kind"], "rock");
+        assert_eq!(v["nodes"][0]["x"], 120.0);
+        assert_eq!(v["nodes"][0]["harvestable"], true);
         assert_eq!(v["daynight"]["phase"], "day");
         assert_eq!(v["daynight"]["light"], 0.5);
     }

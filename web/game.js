@@ -72,6 +72,10 @@
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
   let fields = [];
+  // 伺服器廣播的世界採集節點（樹/石/乙太礦,每個含 kind/x/y/remaining/harvestable）;進場前為空。
+  let nodes = [];
+  // 採集判定半徑(像素),與伺服器 GATHER_REACH 對齊:玩家離節點這麼近才採得到。
+  const GATHER_REACH = 56;
   // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
   // 給離田時的「回農地」邊緣指標決定要不要強調缺水，數字與 HUD 一致、不另外再數一遍。
   let farmDryCount = 0;
@@ -310,8 +314,9 @@
         }
         presenceKnown = true;
         document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
-        // 各玩家農地狀態（per-player）+ 我的乙太 + 日夜
+        // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
+        nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         updateFarmHud(myField());
@@ -324,6 +329,8 @@
           myEther = me.ether;
           etherKnown = true;
           document.getElementById("hudEther").textContent = `乙太：${myEther}`;
+          updateBagHud(me.inventory || []); // 防呆:舊版沒這欄 → 空背包
+
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
@@ -910,6 +917,7 @@
 
     drawGround(camX, camY);
     drawField(camX, camY);
+    drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
     // 與角色仍蓋在最上層,不被別人的 sprite／名字遮住,「一眼找到自己」才真的成立。
@@ -1213,6 +1221,77 @@
   // 別人的地照常畫、標上地主名，但點不動（伺服器也只接受對自己地的動作）。
   function drawField(camX, camY) {
     for (const f of fields) drawOnePlot(camX, camY, f);
+  }
+
+  // ---- 採集節點（Phase 1-A：樹/石/乙太礦）----
+  // 每種節點的外觀(emoji + 底色),純程式畫,沒美術素材也讀得懂。
+  const NODE_LOOK = {
+    tree: { icon: "🌳", tint: "#2f5d34" },
+    rock: { icon: "🪨", tint: "#5b5f63" },
+    ether_ore: { icon: "✨", tint: "#3a4a78" },
+  };
+
+  // 回傳「玩家搆得到(GATHER_REACH 內)的最近可採節點」,沒有就 null。採集判定與伺服器一致。
+  function nearestHarvestable(me) {
+    if (!me) return null;
+    let best = null;
+    let bestD = GATHER_REACH * GATHER_REACH;
+    for (const n of nodes) {
+      if (!n.harvestable) continue;
+      const dx = n.x - me.x;
+      const dy = n.y - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  // 畫世界上的採集節點。可採的亮、採空(重生中)的壓暗;玩家搆得到的那顆描一圈亮環提示「可採」。
+  function drawNodes(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const reachable = nearestHarvestable(me);
+    for (const n of nodes) {
+      const sx = n.x - camX;
+      const sy = n.y - camY;
+      if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
+      const look = NODE_LOOK[n.kind] || { icon: "❔", tint: "#555" };
+      ctx.save();
+      ctx.globalAlpha = n.harvestable ? 1 : 0.4; // 採空的畫淡(重生中)
+      // 底盤圓,讓圖示在任何地表上都讀得到。
+      ctx.beginPath();
+      ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+      ctx.fillStyle = look.tint;
+      ctx.fill();
+      ctx.font = "20px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(look.icon, sx, sy + 1);
+      // 玩家搆得到的那顆:描一圈黃環,提示「走到了、可以採」。
+      if (n === reachable) {
+        ctx.strokeStyle = "rgba(255,210,74,0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 19, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
+  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨" };
+  function updateBagHud(inv) {
+    const el = document.getElementById("hudBag");
+    if (!el) return;
+    if (!inv || inv.length === 0) {
+      el.textContent = "背包：空";
+      return;
+    }
+    el.textContent =
+      "背包：" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
@@ -1526,6 +1605,24 @@
     const me = myId ? players.get(myId) : null;
     const f = myField();
     const now = Date.now();
+    // 先判採集:點到「玩家搆得到的可採節點」就送採集——要擺在「不在自己農地就早退」的守衛
+    // 之前(採集發生在離田的節點旁)。伺服器一律用玩家權威位置採最近的,客戶端只判「點到節點」當觸發。
+    {
+      const gn = nearestHarvestable(me);
+      if (gn) {
+        const rect = canvas.getBoundingClientRect();
+        const twx = clientX - rect.left + lastCam.x;
+        const twy = clientY - rect.top + lastCam.y;
+        const dx = gn.x - twx;
+        const dy = gn.y - twy;
+        if (dx * dx + dy * dy <= 34 * 34) {
+          ws.send(JSON.stringify({ type: "gather" }));
+          markTendedOnce();
+          spawnTapFlash(gn.x, gn.y);
+          return;
+        }
+      }
+    }
     // 沒有自己的地（訪客 / 尚未分到）：伺服器只接受對自己地的動作，先給回饋、不白送一則。
     if (me && !f) {
       if (now - lastReachHint > 2500) {
@@ -1556,7 +1653,15 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
-    if (field && !withinFieldReach(me.x, me.y)) {
+    // 先判採集:站在搆得到的可採節點旁,按動作鍵就採集。
+    if (nearestHarvestable(me)) {
+      ws.send(JSON.stringify({ type: "gather" }));
+      markTendedOnce();
+      spawnTapFlash(me.x, me.y);
+      return;
+    }
+    const f = myField();
+    if (f && !withinFieldReach(f, me.x, me.y)) {
       const now = Date.now();
       if (now - lastReachHint > 2500) {
         addChat("系統", "走進農地再按採集鍵照顧作物哦。");

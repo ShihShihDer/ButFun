@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::protocol::{FieldView, ServerMsg};
+use crate::protocol::{FieldView, NodeView, ServerMsg};
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
@@ -43,6 +43,23 @@ pub fn spawn(app: AppState) {
                     .collect()
             };
 
+            // 推進採集節點重生（採空的倒數補耐久,其餘 no-op）並轉成快照。短暫持鎖,不跨 await。
+            let node_views: Vec<NodeView> = {
+                let mut nodes = app.nodes.write().unwrap();
+                nodes.tick(dt);
+                nodes
+                    .nodes()
+                    .iter()
+                    .map(|p| NodeView {
+                        kind: p.node.kind(),
+                        x: p.x,
+                        y: p.y,
+                        remaining: p.node.remaining(),
+                        harvestable: p.node.is_harvestable(),
+                    })
+                    .collect()
+            };
+
             // 整合位置並建立快照（短暫持鎖，不跨 await）。
             let snapshot = {
                 let mut players = app.players.write().unwrap();
@@ -54,6 +71,7 @@ pub fn spawn(app: AppState) {
                     tick,
                     players: players.values().map(|p| p.view()).collect(),
                     fields: field_views,
+                    nodes: node_views,
                     daynight: daynight_view,
                 }
             };

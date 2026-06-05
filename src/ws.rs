@@ -100,6 +100,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             y: WORLD_HEIGHT / 2.0,
             input: Input::default(),
             ether: 0,
+            inventory: crate::inventory::Inventory::new(),
         }
     } else {
         // 等 Join
@@ -127,6 +128,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             y: WORLD_HEIGHT / 2.0,
             input: Input::default(),
             ether: 0,
+            inventory: crate::inventory::Inventory::new(),
         }
     };
     let id = player.id;
@@ -270,6 +272,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             p.ether = p.ether.saturating_add(ether);
                             tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                        }
+                    }
+                }
+                Ok(ClientMsg::Gather) => {
+                    // 採集：用玩家**自己的權威位置**判定 GATHER_REACH 內最近的可採節點(防隔空採集,
+                    // 客戶端送的座標只是觸發點、不採信)。採到的種類 `.into()` 轉成背包物品加進背包。
+                    // 每把鎖各自取各自放(先讀玩家位置、再寫節點、再寫玩家背包),同時至多持一把,不互鎖。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let gathered = player_pos
+                        .and_then(|(px, py)| app.nodes.write().unwrap().gather_near(px, py));
+                    if let Some((kind, amount)) = gathered {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            let item: crate::inventory::ItemKind = kind.into();
+                            let added = p.inventory.add(item, amount);
+                            tracing::info!(player = %p.name, ?item, added, "採集入背包");
                         }
                     }
                 }
