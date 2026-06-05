@@ -49,6 +49,8 @@
     #hud { position: fixed; left: 12px; top: 12px; z-index: 5; font-size: 0.85rem;
       background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5; }
     #hud .brass { color: var(--brass); }
+    /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
+    #hudFarm { color: #7fbfff; }
     /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
     #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
     #helpToggle:hover { opacity: 0.85; }
@@ -122,6 +124,9 @@
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
     <div id="hudTime">—</div>
+    <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
+         不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
+    <div id="hudFarm" class="hidden"></div>
     <div id="helpToggle">操作說明 <span id="helpCaret">▾</span></div>
     <div id="helpBody">
       <div>WASD / 方向鍵 · 手機任處長按拖曳 · Enter 聊天</div>
@@ -154,6 +159,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605w"></script>
+  <script src="game.js?v=20260605x"></script>
 </body>
 </html>

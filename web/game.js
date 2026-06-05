@@ -180,6 +180,7 @@
         field = msg.field;
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
+        updateFarmHud(field);
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
           // 乙太變多 → 收成回饋飄字（首次同步不噴，否則進場/重連會把存量當成一次大獲得）。
@@ -260,6 +261,27 @@
   function updateDayNightHud(dn) {
     const el = document.getElementById("hudTime");
     if (el) el.textContent = PHASE_LABELS[dn.phase] || "—";
+  }
+
+  // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
+  // 探索時也知道作物渴了該回去澆水。缺水格的判定刻意對齊 drawTile 畫藍點的條件
+  //（state 2~4 且 dry），HUD 數字與看得到的提示點一致；沒有缺水格時隱藏整行。
+  // 純從權威快照數得的表現層回饋，不嵌任何遊戲規則（將來 WebXR renderer 可各自實作）。
+  function updateFarmHud(f) {
+    const el = document.getElementById("hudFarm");
+    if (!el) return;
+    let dry = 0;
+    if (f && f.cells) {
+      for (const cell of f.cells) {
+        if (cell.dry && cell.state >= 2 && cell.state <= 4) dry++;
+      }
+    }
+    if (dry > 0) {
+      el.textContent = `🌱 ${dry} 格作物缺水`;
+      el.classList.remove("hidden");
+    } else {
+      el.classList.add("hidden");
+    }
   }
 
   // ---- 輸入 ----
