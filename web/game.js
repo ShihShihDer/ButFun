@@ -320,6 +320,64 @@
     }
   }
 
+  // ---- 夜晚漂浮的乙太微光（純表現）----
+  // 日夜系統目前只把夜晚畫暗,抵達夜晚沒有任何視覺「回饋」。配合登入畫面的世界觀
+  //「大靜默之後,乙太緩緩回流」,在夜色濃時讓畫面浮起一層緩緩飄動、微微明滅的金色
+  // 乙太微光——讓已建好的日夜循環在夜裡有療癒感的呈現,而非只是變暗。亮度越低（越
+  // 接近午夜）浮現越明顯,白天完全不畫。座標走螢幕比例、自有極緩漂移（當作飄在鏡頭
+  // 與地表之間的空中微塵,刻意不跟地面捲動,resize 也不會跑掉）,不嵌任何遊戲規則
+  //（將來 WebXR renderer 自有環境呈現,這層只屬 2D 客戶端）。
+  const NIGHT_MOTES = [];
+  function initNightMotes() {
+    if (NIGHT_MOTES.length) return;
+    for (let i = 0; i < 30; i++) {
+      NIGHT_MOTES.push({
+        x: Math.random(),                    // 螢幕寬的比例 [0,1)
+        y: Math.random(),                    // 螢幕高的比例 [0,1)
+        vx: (Math.random() - 0.5) * 0.006,   // 每秒漂移（比例/秒）,極緩、左右隨機
+        vy: -0.004 - Math.random() * 0.006,  // 緩緩上飄
+        r: 1.2 + Math.random() * 1.8,        // 半徑（邏輯像素）
+        tw: Math.random() * Math.PI * 2,     // 明滅相位
+        tws: 0.8 + Math.random() * 1.2,      // 明滅速度
+      });
+    }
+  }
+  let lastMoteT = 0;
+  function drawNightMotes(now) {
+    if (!daynight) return;
+    const dark = Math.max(0, Math.min(1, 1 - daynight.light));
+    // 白天／接近白天不畫;同步推進 lastMoteT,讓再次入夜時從當下續飄、不因停畫期間
+    // 累積出一大段 dt 造成瞬移。
+    if (dark < 0.12) { lastMoteT = now; return; }
+    initNightMotes();
+    let dt = (now - lastMoteT) / 1000;
+    lastMoteT = now;
+    if (!(dt > 0) || dt > 0.1) dt = 0.016; // 首幀／分頁切回的大跳用固定步,避免瞬移
+    ctx.save();
+    for (const m of NIGHT_MOTES) {
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      // 飄出邊界就從另一側繞回（無限飄,畫面永遠均勻散著微光）。
+      if (m.x < 0) m.x += 1; else if (m.x >= 1) m.x -= 1;
+      if (m.y < 0) m.y += 1; else if (m.y >= 1) m.y -= 1;
+      m.tw += m.tws * dt;
+      const twinkle = 0.55 + 0.45 * Math.sin(m.tw); // 0.1..1 之間明滅
+      const alpha = dark * twinkle * 0.5;           // 夜越濃越亮,最濃也僅半透不刺眼
+      if (alpha < 0.02) continue;
+      const px = m.x * viewW;
+      const py = m.y * viewH;
+      // 柔光暈（中心金、外緣透明）讓微光看起來像漂浮的乙太,不是硬邊圓點。
+      const g = ctx.createRadialGradient(px, py, 0, px, py, m.r * 3);
+      g.addColorStop(0, `rgba(255,224,150,${alpha.toFixed(3)})`);
+      g.addColorStop(1, "rgba(255,224,150,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px, py, m.r * 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   // 日夜階段 → HUD 顯示文字（emoji + 繁中），讓玩家一眼知道現在是一天的哪個時段。
   const PHASE_LABELS = {
     dawn: "🌅 破曉",
@@ -608,6 +666,10 @@
 
     // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
     drawDayNightTint();
+
+    // 夜晚漂浮的乙太微光：在日夜染色「之後」畫（浮在變暗的世界上），但在飄字／漣漪／
+    // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
+    drawNightMotes(performance.now());
 
     // 收成乙太飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawEtherFloaters(camX, camY, performance.now());
