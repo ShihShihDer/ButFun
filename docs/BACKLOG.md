@@ -413,6 +413,20 @@
   節點空了會在固定時間後重生。
   - 驗收:看得到節點、按一下採到、伺服器 log 顯示「採到 X」、可重複採直到節點空、
     重生計時運作;`cargo test` 涵蓋採集純邏輯(扣耐久、回滿、節點上限)。
+  - ✅ 前置(採集節點純邏輯地基,2026-06-05):Phase 1 第一個垂直切片開工——新增
+    `src/gather.rs` `ResourceNode`(`NodeKind` 樹/石/乙太礦,各帶 `max_durability`/
+    `yield_per_gather`/`respawn_secs` 調校常數)。狀態只有「剩餘耐久」+「重生倒數」兩欄,
+    可採/採空皆由耐久推導(單一真實來源,比照 `Crop` 以 `growth`/`moisture` 推導階段)。
+    `gather()` 還有耐久就扣 1 並回產出、扣到 0 啟動重生倒數、採空回 `None`(比照
+    `Crop::harvest`);`tick(dt)` 只對採空節點倒數、到點補滿耐久再次可採(擋非正 dt)。
+    延續本專案「純邏輯可測、無 IO、不碰 ws/遊戲迴圈、標 `allow(dead_code)` 待接線」的前置慣例,
+    並沿用載入防線:`is_loadable`(耐久不超上限、重生倒數有限非負,`remaining` 為 `u32` 型別本身
+    擋掉 NaN/負值)供接 0-E 載入時驗證,`NodeKind`/`ResourceNode` 衍生 serde 為持久化格式地基。
+    加 10 個單元測試(滿耐久可採、採空進重生、採空再採無效、倒數重生、`tick` 對可採節點 no-op、
+    非正 dt no-op、整圈採→空→重生→再採、載入防線收壞值、serde round-trip),`cargo test` 154 綠、
+    `cargo build`/clippy 無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線
+    (世界撒佈節點+ws 走近按鍵採集進背包+遊戲迴圈每 tick 推進重生+前端畫節點/採集回饋)屬動 live
+    廣播 shape 的架構級接線,留待後續輪/PR;背包持久化接 Phase 1-B / 0-E。
 
 - [ ] **Phase 1-B：背包系統 + 持久化**
   伺服器端 player.inventory(item_id → count),客戶端按 I 開背包面板顯示。
