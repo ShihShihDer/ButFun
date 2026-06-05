@@ -1204,6 +1204,33 @@
     }
   }
 
+  // 生長階段小標記:在格子右上角畫 1~3 顆對比色圓點,顆數 = 階段(種子1 / 發芽2 / 成熟3)。
+  // 顆數本身就能分辨,不必只靠色相——回應玩家「種田狀態顏色有些好近,不好分辨」。深描邊讓
+  // 它在任何底色(sprite 或程式 fallback)上都看得清。純表現層:階段一律讀權威伺服器快照的
+  // cell.state,不嵌任何遊戲規則,將來換 WebXR renderer 也是各自照同一份 state 自己畫。
+  function drawStagePips(sx, sy, ts, cell) {
+    const STAGE = {
+      2: { n: 1, color: "#d8b25a" }, // 種子:土黃
+      3: { n: 2, color: "#7ee06a" }, // 發芽:嫩綠
+      4: { n: 3, color: "#ffd24a" }, // 成熟:亮金
+    };
+    const s = STAGE[cell.state];
+    if (!s) return;
+    const r = Math.max(2, ts * 0.05);
+    const gap = r * 2 + 2;
+    const x0 = sx + ts - 4 - r; // 靠右上角,由右往左排,不蓋掉左上常用的角落視覺
+    const y0 = sy + 4 + r;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    for (let i = 0; i < s.n; i++) {
+      ctx.beginPath();
+      ctx.arc(x0 - i * gap, y0, r, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
   function drawTile(sx, sy, ts, cell) {
     if (artOk("field")) {
       const dx = Math.round(sx), dy = Math.round(sy);
@@ -1223,6 +1250,7 @@
         ctx.fillRect(sx, sy, ts, ts);
         ctx.restore();
       }
+      drawStagePips(sx, sy, ts, cell);
       return;
     }
 
@@ -1264,6 +1292,7 @@
       ctx.strokeRect(sx + 2, sy + 2, ts - 4, ts - 4);
       ctx.setLineDash([]);
     }
+    drawStagePips(sx, sy, ts, cell);
   }
 
   // 木柵欄:在田四邊立等距木樁,兩條橫桿把樁串起來。樁位由邊長算出固定間距,
