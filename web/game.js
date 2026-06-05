@@ -254,6 +254,9 @@
       }
     }
 
+    // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
+    drawMinimap();
+
     // 觸控搖桿視覺(只在按住時出現)
     if (touchOrigin && touchCurrent) {
       const dx = touchCurrent.x - touchOrigin.x;
@@ -269,6 +272,51 @@
     }
 
     requestAnimationFrame(render);
+  }
+
+  // ---- 小地圖（玩家建議：2000x2000 大世界容易迷路）----
+  // 右下角畫一張固定大小的世界縮圖：世界邊界、農地位置、自己（亮點）、其他玩家（暗點）。
+  // 純螢幕座標、每幀依最新快照重畫，不參與鏡頭換算。
+  const MM = { size: 150, margin: 16, pad: 6 };
+  function drawMinimap() {
+    if (!world || !world.width || !world.height) return;
+    const w = world.width, h = world.height;
+    // 等比縮到 size 方框內，長寬各自映射（世界目前是正方，但不假設）。
+    const scale = MM.size / Math.max(w, h);
+    const mw = w * scale, mh = h * scale;
+    const ox = canvas.width - MM.margin - mw;   // 縮圖內容左上角（螢幕座標）
+    const oy = canvas.height - MM.margin - mh;
+    const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
+
+    // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。
+    ctx.fillStyle = "rgba(10,16,30,0.55)";
+    ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM.pad * 2);
+
+    // 農地位置（黃銅外框前先畫，免得被框線蓋住）。
+    if (field) {
+      const fx = ox + clampUnit(field.origin_x, w) * scale;
+      const fy = oy + clampUnit(field.origin_y, h) * scale;
+      const fw = field.cols * field.tile_size * scale;
+      const fh = field.rows * field.tile_size * scale;
+      ctx.fillStyle = "rgba(123,80,40,0.95)";
+      ctx.fillRect(fx, fy, Math.max(3, fw), Math.max(3, fh));
+    }
+
+    // 世界邊界（沿用世界邊框的黃銅設計語彙）。
+    ctx.strokeStyle = "rgba(201,162,75,0.7)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ox, oy, mw, mh);
+
+    // 玩家：自己亮、其他人暗。用渲染插值座標 rx/ry，跟主畫面同步不跳動。
+    for (const p of players.values()) {
+      const isMe = p.id === myId;
+      const px = ox + clampUnit(p.rx, w) * scale;
+      const py = oy + clampUnit(p.ry, h) * scale;
+      ctx.beginPath();
+      ctx.arc(px, py, isMe ? 4 : 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = isMe ? "#ffd24a" : "rgba(111,168,220,0.7)";
+      ctx.fill();
+    }
   }
 
   // 畫一張帶網格的地面 + 世界邊界，給空間感
