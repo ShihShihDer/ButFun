@@ -1373,14 +1373,32 @@
       3: { n: 2, color: "#5ad94f" }, // 發芽:鮮綠
       4: { n: 3, color: "#ffd24a" }, // 成熟:亮金
     };
-    const s = STAGE[cell.state];
-    if (!s) return;
     const r = Math.max(2, ts * 0.05);
     const gap = r * 2 + 2;
     const x0 = sx + ts - 4 - r; // 靠右上角,由右往左排,不蓋掉左上常用的角落視覺
     const y0 = sy + 4 + r;
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(0,0,0,0.55)";
+
+    // state 1=翻好待播的空土:畫一顆「空心環」。先前只標 2~4 的作物階段,翻好的空土
+    // 與未翻的自然地(state 0,無標記)在兩路徑都是相近棕、難分——玩家反映種田狀態
+    // 顏色太近。空心環讀作「翻好的空播種位」,跟生地(無環)和已播的填色點都分得開,
+    // 也接上 無環→空環→1棕→2綠→3金 的清楚進程。用較粗的 stroke 畫環,中心透出底下
+    // 背景(art sprite 或 fallback 土色皆通用),不必猜底色去填中心。
+    if (cell.state === 1) {
+      ctx.beginPath();
+      ctx.arc(x0, y0, r * 0.7, 0, Math.PI * 2);
+      ctx.lineWidth = Math.max(1.5, r * 0.45);
+      ctx.strokeStyle = "rgba(0,0,0,0.55)"; // 先描深底,環在亮土上仍讀得到
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(232,224,207,0.95)"; // 淺米白環,讀作翻鬆待播的空位
+      ctx.lineWidth = Math.max(1, r * 0.32);
+      ctx.stroke();
+      return;
+    }
+
+    const s = STAGE[cell.state];
+    if (!s) return;
     for (let i = 0; i < s.n; i++) {
       ctx.beginPath();
       ctx.arc(x0 - i * gap, y0, r, 0, Math.PI * 2);
