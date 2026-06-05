@@ -629,6 +629,24 @@
     serde round-trip),`cargo test` 266 綠、`cargo build`/clippy 無警告。**仍待**:接線(比照
     `gather_field.rs` 另立 `enemy_field` 管敵人佈置與自動鎖定最近敵人+ws 自動攻擊進背包+遊戲迴圈
     推進重生+快照廣播+前端畫敵人/戰鬥回饋)屬動 live 廣播 shape 的架構級接線,留待後續輪/PR。
+  - ✅ 前置之二(敵人世界佈置與自動鎖定純邏輯,2026-06-05):`combat.rs` 解了「一隻敵人怎麼被打」,
+    接線還缺另一半「敵人擺世界哪裡、玩家走近自動鎖定哪一隻」——比照 `gather_field.rs` 之於
+    `gather.rs`。新增 `src/enemy_field.rs` `EnemyField`(一組散佈的 `PlacedEnemy`=座標+`Enemy`):
+    `new()` 用確定性雜湊(splitmix64 風格、不靠亂數/時鐘,種子刻意與節點不同避免疊在同點)把敵人散在
+    比採集節點**更外一圈**的曠野(中央家園→內圈採集→外圈打怪的漸進探索節奏),座標由序號推導故重啟
+    後落同處;`tick(dt)` 一次推進全部敵人重生;`attack_nearest(x,y,power)` 在 `ATTACK_REACH` 內鎖定
+    **最近且仍存活**的那隻打一下——回 `(種類, 掉落)`:範圍內無存活敵人回 `None`,打中未致命回
+    `(kind, None)`(供前端受擊回饋),致命那下回 `(kind, Some(loot))`(沿用 `Enemy::attack` 掉落只給
+    一次,權威由伺服器判定、客戶端只送「我在攻擊」意圖)。沿用載入防線:`attack_nearest` 擋非有限座標
+    (比照 `gather_near`)、`from_saved` 比照 `gather_field::from_saved` 驗敵人數/種類對齊序號/逐隻
+    `is_loadable`,壞檔整組拒收讓呼叫端退回全新一組;敵人不像載具會被移動(位置固定可由序號重算),故
+    只存讀會變的生命/重生狀態、座標一律重推。延續「純函式、無 IO、不碰 ws/遊戲迴圈/廣播 shape、標
+    `allow(dead_code)` 待接線」的前置慣例。加 12 個單元測試(滿員皆存活、佈置確定性、避開中央淨空且在
+    世界內、兩種齊全、最近鎖定扣血、遠處/非有限回 None、致命掉落且 tick 重生、被打倒不再被鎖定、
+    from_saved round-trip、拒數量不符、拒種類不符/壞值),`cargo test` 278 綠、`cargo build`/clippy
+    無警告、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:接線(AppState 持有 `EnemyField`
+    +遊戲迴圈 tick+ws 自動攻擊進背包+快照廣播+前端畫敵人/戰鬥回饋)屬動 live 廣播 shape 的架構級接線,
+    留待後續輪/PR。
 
 ## 玩家回饋處理區(devloop 從 data/suggestions.jsonl 進來的)
 
