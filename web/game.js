@@ -1387,6 +1387,8 @@
     if (!inv || inv.length === 0) {
       el.textContent = "背包：空";
       el.setAttribute("aria-label", "背包：空");
+      // title:滑鼠停在 HUD 上的原生提示。空背包也標一句,讓還沒採過的玩家知道這格是背包。
+      el.setAttribute("title", "背包：空");
       return;
     }
     // 可見文字用 emoji（看得到的玩家一眼分品項）;但 emoji 對報讀器無意義(會亂念或跳過),
@@ -1396,6 +1398,13 @@
       "背包：" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
     el.setAttribute(
       "aria-label",
+      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
+    );
+    // 可見文字只有 emoji（🪵🪨✨）,看得到但不熟圖示的玩家未必一眼分得出是什麼。補一個原生 title
+    // 提示(滑鼠停留即顯示中文品項名),沿用報讀器 aria-label 的 ITEM_NAME,讓看得到的玩家也能
+    // 一眼確認「採到的是木材還石頭」。延續背包無障礙弧線,給滑鼠玩家對稱的那一半。
+    el.setAttribute(
+      "title",
       "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
     );
   }
