@@ -121,6 +121,26 @@ impl ResourceNode {
         Some(self.kind.yield_per_gather())
     }
 
+    /// 連採 `times` 下，回傳這幾下的總產出量。供工具加速接線用：Phase 1-D 的
+    /// `tools::speed_multiplier` 算出倍率 `m`（鎬子採礦 `m == 3`、徒手 `m == 1`），
+    /// 「一次採集動作相當於採 `m` 下」即 `node.gather_times(m)`。
+    ///
+    /// 關鍵語意「不能超採」：採到一半節點空了就停（採空後的每一下都 `gather()` 落空），
+    /// 故節點只剩 2 耐久、卻拿 3 倍鎬子來採，也只採得 2 下的量、不會憑空多挖——
+    /// 採空的那一下照常啟動重生倒數。`times == 0` 回 `0`、不動狀態（比照 `gather()`
+    /// 對採空節點的 no-op）。整數倍率與整數耐久咬合，全程不引入浮點。
+    pub fn gather_times(&mut self, times: u32) -> u32 {
+        let mut total = 0;
+        for _ in 0..times {
+            match self.gather() {
+                Some(yielded) => total += yielded,
+                // 採空了，後面幾下都白採——停手，回累積到此的產出。
+                None => break,
+            }
+        }
+        total
+    }
+
     /// 推進 `dt` 秒。只有採空的節點在倒數；倒數到 0 補滿耐久、再次可採。
     /// 未採空或非正 `dt` 皆為 no-op（比照 `Crop::grow` 擋非正 dt）。
     pub fn tick(&mut self, dt: f32) {
@@ -253,6 +273,46 @@ mod tests {
         assert!(n.is_harvestable());
         // 重生後又能再採一輪。
         assert_eq!(n.gather(), Some(NodeKind::Tree.yield_per_gather()));
+    }
+
+    #[test]
+    fn gather_times_accumulates_yield_within_durability() {
+        // 滿耐久的樹採 3 下（如鎬子倍率）：拿到 3 下的量、耐久扣 3、仍可採。
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        let yielded = n.gather_times(3);
+        assert_eq!(yielded, 3 * NodeKind::Tree.yield_per_gather());
+        assert_eq!(n.remaining(), NodeKind::Tree.max_durability() - 3);
+        assert!(n.is_harvestable());
+    }
+
+    #[test]
+    fn gather_times_cannot_over_gather_a_thinning_node() {
+        // 乙太礦只 3 耐久，卻拿 5 倍來採：只採得 3 下的量、不會超採，且採空進重生。
+        let mut n = ResourceNode::new(NodeKind::EtherOre);
+        let max = NodeKind::EtherOre.max_durability();
+        let yielded = n.gather_times(max + 2);
+        assert_eq!(yielded, max * NodeKind::EtherOre.yield_per_gather());
+        assert!(n.is_depleted());
+        // 採空後再連採任意下都白採。
+        assert_eq!(n.gather_times(10), 0);
+    }
+
+    #[test]
+    fn gather_times_zero_is_noop() {
+        let mut n = ResourceNode::new(NodeKind::Rock);
+        let before = n.clone();
+        assert_eq!(n.gather_times(0), 0);
+        assert_eq!(n, before);
+    }
+
+    #[test]
+    fn gather_times_one_matches_single_gather() {
+        // 倍率 1（徒手）等同採一下。
+        let mut once = ResourceNode::new(NodeKind::Rock);
+        let mut multi = ResourceNode::new(NodeKind::Rock);
+        let single = once.gather().unwrap();
+        assert_eq!(multi.gather_times(1), single);
+        assert_eq!(once, multi);
     }
 
     #[test]
