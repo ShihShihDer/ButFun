@@ -329,6 +329,9 @@
             const nameEl = document.getElementById("hudName");
             nameEl.textContent = `你：${me.name}`;
             nameEl.classList.remove("hidden");
+            // 訪客回饋最大宗是「一進來沒農地、不知道下一步」——進場就亮出明確的下一步
+            // (登入即有專屬田)。登入者 isGuest=false 永不顯示,不打擾老玩家。
+            document.getElementById("hudGuestHint").classList.remove("hidden");
           }
         }
         break;
