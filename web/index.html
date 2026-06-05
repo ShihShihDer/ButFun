@@ -187,8 +187,8 @@
   </div>
 
   <div id="suggestModal" class="modal-bg">
-    <div class="modal">
-      <h2>給點建議</h2>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="suggestTitle">
+      <h2 id="suggestTitle">給點建議</h2>
       <p>你希望這個世界長成什麼樣子？我會收到，然後改版。</p>
       <input id="suggestFrom" maxlength="24" placeholder="你的稱呼（可留空）" />
       <textarea id="suggestText" maxlength="1000" placeholder="想加什麼、哪裡卡卡的、什麼好玩…"></textarea>
@@ -200,6 +200,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260605-a11yconn"></script>
+  <script src="game.js?v=20260605-a11ymodal"></script>
 </body>
 </html>

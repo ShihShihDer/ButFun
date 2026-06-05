@@ -1194,24 +1194,43 @@
 
   // ---- 建議箱 ----
   const modal = document.getElementById("suggestModal");
-  document.querySelector("#suggestBtn button").addEventListener("click", () => {
+  // 記住開啟建議箱前焦點所在的元素(通常是那顆「💡 給點建議」鈕),關閉時把焦點還回去。
+  // 用鍵盤/報讀器的玩家關掉對話框後不會掉到 body 從頭找,焦點回到他原本的位置。
+  let suggestOpener = null;
+  function openSuggestModal() {
+    suggestOpener = document.activeElement;
     modal.style.display = "flex";
     document.getElementById("suggestFrom").value = myName;
-  });
-  // 關閉建議箱(收掉 modal、清掉殘留狀態字)。集中成一個函式,讓「取消鈕／點背景
-  // 遮罩／按 Esc」三條關閉路徑行為一致。
+    // 開啟即把焦點移進對話框的主要欄位,鍵盤玩家不必先盲目 Tab 穿過遮罩才開始打字。
+    document.getElementById("suggestText").focus();
+  }
+  document.querySelector("#suggestBtn button").addEventListener("click", openSuggestModal);
+  // 關閉建議箱(收掉 modal、清掉殘留狀態字、把焦點還回開啟者)。集中成一個函式,
+  // 讓「取消鈕／點背景遮罩／按 Esc」三條關閉路徑行為一致。
   function closeSuggestModal() {
     modal.style.display = "none";
     document.getElementById("suggestStatus").textContent = "";
+    if (suggestOpener && suggestOpener.focus) suggestOpener.focus();
+    suggestOpener = null;
   }
   document.getElementById("suggestCancel").addEventListener("click", closeSuggestModal);
   // 點 modal 外的暗色遮罩關閉(只在點到遮罩本身、非點到內層面板時)——對話框「點外面
   // 關掉」是普遍預期,少一步找取消鈕。
   modal.addEventListener("click", (e) => { if (e.target === modal) closeSuggestModal(); });
-  // Esc 關閉:即使焦點正在建議箱的輸入欄/文字框內也要能關(故獨立監聽,不受遊戲
-  // 按鍵守衛影響);只在 modal 開著時作用,不干擾平常的遊戲操作。
+  // Esc 關閉 + Tab 焦點環:即使焦點正在建議箱的輸入欄/文字框內也要能關(故獨立監聽,
+  // 不受遊戲按鍵守衛影響);只在 modal 開著時作用,不干擾平常的遊戲操作。
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && modal.style.display === "flex") closeSuggestModal();
+    if (modal.style.display !== "flex") return;
+    if (e.key === "Escape") { closeSuggestModal(); return; }
+    // 焦點留在對話框內:Tab 到最後一個可聚焦元素再按會繞回第一個,Shift+Tab 反之。
+    // 沒有這個環,Tab 會跑到對話框背後被遮罩蓋住、看不見焦點的元素上。
+    if (e.key === "Tab") {
+      const f = modal.querySelectorAll("input, textarea, button");
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
   });
   document.getElementById("suggestSend").addEventListener("click", async () => {
     const text = document.getElementById("suggestText").value.trim();
@@ -1228,7 +1247,7 @@
       if (res.ok) {
         status.textContent = "收到了，謝謝你！🙏";
         document.getElementById("suggestText").value = "";
-        setTimeout(() => { modal.style.display = "none"; status.textContent = ""; }, 1200);
+        setTimeout(closeSuggestModal, 1200); // 一併把焦點還回開啟者
       } else {
         status.textContent = "送出失敗，稍後再試。";
       }
