@@ -99,6 +99,13 @@
   // 會被第二指的按下重設原點、第二指一放開就整個停止移動——即使主控手指還按著。
   // 鎖定第一根落下的手指,其餘手指的 start/move/end 一律不干擾它。
   let touchId = null;
+  // 這次觸碰是否已「成為拖曳」(超過 TAP_SLOP 就再也回不去當點按)。先前用「按下到放開
+  // 的直線位移 < 22px」當點按判定,留了個尷尬縫:位移 14~21px 時,setTouchKeys 的方向
+  // 死區(14)已讓角色抽動一下走幾格,放開又因 <22 被算成點按去農作——想點田卻先讓角色
+  // 顫一下。改用「這次觸碰是否曾拖過 TAP_SLOP」當單一真實來源:沒拖過就純點按(角色全程
+  // 不動),拖過才是搖桿。連「拖遠又滑回原點附近」也正確算成移動而非誤判點按。
+  let touchDragged = false;
+  const TAP_SLOP = 22; // 點按/拖曳的分水嶺(px):>移動死區 14,手指自然微滑不會被當拖曳
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
   // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
@@ -723,6 +730,7 @@
       touchId = t.identifier;
       touchOrigin = { x: t.clientX, y: t.clientY };
       touchCurrent = { x: t.clientX, y: t.clientY };
+      touchDragged = false; // 每次新觸碰先當點按,拖過 TAP_SLOP 才升級成搖桿
     }
     e.preventDefault();
   }, { passive: false });
@@ -731,23 +739,26 @@
     const t = findTouch(e.touches);
     if (!t) return; // 這次 move 不含搖桿那根手指(別根手指在動),不理
     touchCurrent = { x: t.clientX, y: t.clientY };
-    setTouchKeys(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
+    const dx = t.clientX - touchOrigin.x;
+    const dy = t.clientY - touchOrigin.y;
+    // 還沒拖過分水嶺前不送任何方向——點按(含手指自然微滑)時角色全程不抽動;
+    // 一旦拖過就鎖定成搖桿,之後即使滑回原點附近仍持續吃方向。
+    if (!touchDragged && Math.hypot(dx, dy) >= TAP_SLOP) touchDragged = true;
+    if (touchDragged) setTouchKeys(dx, dy);
     e.preventDefault();
   }, { passive: false });
   function endTouch(e) {
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
     const t = touchId === null ? null : findTouch(e.changedTouches);
     if (!t) return;
-    // 幾乎沒移動的觸碰當成「輕點」→ 農地互動（拖曳則是搖桿移動，不互動）。
-    // 容差 22px(>移動死區 14px):手指按下自然會稍微滑動,先前 12px 太嚴,
-    // 玩家想點田格常被誤判成搖桿微動、整個 tap 被吃掉。
-    if (touchOrigin) {
-      const moved = Math.hypot(t.clientX - touchOrigin.x, t.clientY - touchOrigin.y);
-      if (moved < 22) farmAtScreen(t.clientX, t.clientY);
-    }
+    // 從沒拖過分水嶺(TAP_SLOP)的觸碰當成「輕點」→ 農地互動;拖過的是搖桿移動,不互動。
+    // 用「是否曾拖過」而非「放開瞬間的直線位移」判定:拖遠又滑回原點附近也正確算成移動,
+    // 不會在放手那刻因離原點近被誤判成點按。
+    if (touchOrigin && !touchDragged) farmAtScreen(t.clientX, t.clientY);
     touchId = null;
     touchOrigin = null;
     touchCurrent = null;
+    touchDragged = false;
     setTouchKeys(0, 0);
     e.preventDefault();
   }
