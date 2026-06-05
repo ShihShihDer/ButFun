@@ -135,6 +135,14 @@
   - 加 migration 建 `players` 表（id, name, species, x, y, updated_at）。
   - 玩家進場時若 DB 有舊紀錄就載入；定期 / 離線時寫回。
   - 驗收：設好 `DATABASE_URL` 跑起來，移動後重啟伺服器，重新進場位置仍在；`cargo test` 全綠。
+  - ✅ **DB 已就緒(2026-06-05,使用者授權後人工裝)**:PostgreSQL 17、`butfun` 資料庫已建、
+    `shihshih` 為 superuser、Unix socket peer auth(免密碼);
+    `DATABASE_URL=postgresql://shihshih@/butfun?host=/var/run/postgresql` 已寫入 `.env`
+    (gitignored),`butfun.service` 透過 `EnvironmentFile` 載入。**可直接 `cargo add sqlx`
+    開始接,不需停下來問人**。建議步驟:加 sqlx 依賴 → 寫 migrations → 把現有
+    `PositionStore`(以及 `UserStore`/`SuggestionStore`/`Field`/`DayNight` 那些既有序列化
+    結構)依序接到 Postgres;無 `DATABASE_URL` 仍退回記憶體模式以利測試。一次一個 store
+    incremental 接,避免單一巨大 PR。
   - ✅ 前置（記憶體版抽換點，2026-06-05）：新增 `src/positions.rs` `PositionStore`
     （`recall` / `remember` + 純函式 `spawn_at`），已登入玩家離線時記下位置、
     重連 `spawn_at(recall)` 回到原位（訪客 id 隨機故不記，避免 map 無界成長）。
