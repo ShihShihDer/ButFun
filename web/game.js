@@ -419,6 +419,21 @@
     ctx.lineWidth = 2;
     ctx.strokeRect(ox, oy, mw, mh);
 
+    // 目前畫面看得到的範圍（鏡頭視野框）：在 2000x2000 大世界裡，光看自己的點還
+    // 不知道「這一眼看到多大一塊」。用最近一次 render 的鏡頭左上角 lastCam + 畫布
+    // 尺寸推出可見世界矩形（夾在世界界內），畫成細白框。純表現、純從鏡頭狀態推得，
+    // 不嵌任何遊戲規則。畫在玩家點之前，讓玩家點疊在最上層仍醒目。
+    const vx0 = clampUnit(lastCam.x, w);
+    const vy0 = clampUnit(lastCam.y, h);
+    const vx1 = clampUnit(lastCam.x + canvas.width, w);
+    const vy1 = clampUnit(lastCam.y + canvas.height, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      ox + vx0 * scale, oy + vy0 * scale,
+      Math.max(2, (vx1 - vx0) * scale), Math.max(2, (vy1 - vy0) * scale)
+    );
+
     // 玩家：自己亮、其他人暗。用渲染插值座標 rx/ry，跟主畫面同步不跳動。
     for (const p of players.values()) {
       const isMe = p.id === myId;
