@@ -274,7 +274,14 @@
     // 回饋時打到這些字就壞掉——而建議箱正是 devloop 收回饋的主要管道。
     const el = document.activeElement;
     if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
-    if (e.key === "Enter") { document.getElementById("chatText").focus(); return; }
+    if (e.key === "Enter") {
+      // 開聊天打字＝玩家從操控移動切換到打字。比照失焦/切背景的修復家族：先放開所有
+      // 移動鍵並送出「停止」，免得按著方向鍵開聊天時，角色在你打字的整段時間持續亂走
+      //（keydown 守衛此時已不再更新 keys，物理按著的鍵會卡在 true 直到放開）。
+      releaseAllKeys();
+      document.getElementById("chatText").focus();
+      return;
+    }
     const dir = keyToDir(e);
     if (dir) { keys[dir] = true; sendInputIfChanged(); e.preventDefault(); return; }
     // 採集鍵:空白鍵 / E / F 對腳下田格互動,讓沒滑鼠的玩家也能農作。
