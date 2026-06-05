@@ -129,6 +129,15 @@
     tendedOnce = true;
     try { localStorage.setItem("butfun.tendedOnce", "1"); } catch {}
   }
+  // 採集是後來才上的新玩法,跟農作分開記:已農過田的回訪玩家(tendedOnce=1)沒採過,
+  // 仍該在第一次走到節點旁時看到「怎麼採」。採過一次就不再提示,不長期擾人。
+  let gatheredOnce = false;
+  try { gatheredOnce = localStorage.getItem("butfun.gatheredOnce") === "1"; } catch {}
+  function markGatheredOnce() {
+    if (gatheredOnce) return;
+    gatheredOnce = true;
+    try { localStorage.setItem("butfun.gatheredOnce", "1"); } catch {}
+  }
 
   // ---- 畫布尺寸 ----
   // viewW/viewH 是「邏輯像素」的視窗尺寸,所有繪製碼一律用這兩個值(鏡頭置中、視野
@@ -1226,9 +1235,9 @@
   // ---- 採集節點（Phase 1-A：樹/石/乙太礦）----
   // 每種節點的外觀(emoji + 底色),純程式畫,沒美術素材也讀得懂。
   const NODE_LOOK = {
-    tree: { icon: "🌳", tint: "#2f5d34" },
-    rock: { icon: "🪨", tint: "#5b5f63" },
-    ether_ore: { icon: "✨", tint: "#3a4a78" },
+    tree: { icon: "🌳", tint: "#2f5d34", act: "採木材" },
+    rock: { icon: "🪨", tint: "#5b5f63", act: "採石頭" },
+    ether_ore: { icon: "✨", tint: "#3a4a78", act: "採乙太礦" },
   };
 
   // 回傳「玩家搆得到(GATHER_REACH 內)的最近可採節點」,沒有就 null。採集判定與伺服器一致。
@@ -1276,6 +1285,25 @@
         ctx.beginPath();
         ctx.arc(sx, sy, 19, 0, Math.PI * 2);
         ctx.stroke();
+        // 光描黃環,沒採過的玩家仍不知道那是要按鍵的——在節點正上方標出「採什麼」,
+        // 第一次再多帶一行「怎麼按」(鏡像農地腳下格提示)。採過一次(gatheredOnce)
+        // 就只留動作詞,不長期擾人。動作詞純讀節點 kind,不在前端判規則。
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        const ty = sy - 24; // 貼在圖示上方
+        ctx.lineWidth = 3; // 深色描邊讓字在任何地表上都讀得清
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText(look.act, sx, ty);
+        ctx.fillStyle = "rgba(255,235,180,0.95)";
+        ctx.fillText(look.act, sx, ty);
+        if (!gatheredOnce) {
+          ctx.font = "10px system-ui, sans-serif";
+          const hint = "按空白鍵或點一下";
+          const hy = ty - 13; // 疊在動作詞正上方
+          ctx.strokeText(hint, sx, hy);
+          ctx.fillStyle = "rgba(255,235,180,0.8)";
+          ctx.fillText(hint, sx, hy);
+        }
       }
       ctx.restore();
     }
@@ -1617,7 +1645,7 @@
         const dy = gn.y - twy;
         if (dx * dx + dy * dy <= 34 * 34) {
           ws.send(JSON.stringify({ type: "gather" }));
-          markTendedOnce();
+          markGatheredOnce();
           spawnTapFlash(gn.x, gn.y);
           return;
         }
@@ -1656,7 +1684,7 @@
     // 先判採集:站在搆得到的可採節點旁,按動作鍵就採集。
     if (nearestHarvestable(me)) {
       ws.send(JSON.stringify({ type: "gather" }));
-      markTendedOnce();
+      markGatheredOnce();
       spawnTapFlash(me.x, me.y);
       return;
     }
