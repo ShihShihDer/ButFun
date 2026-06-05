@@ -81,6 +81,16 @@
     #helpToggle:focus-visible, #chatToggle:focus-visible {
       outline: 2px solid var(--brass); outline-offset: 2px; opacity: 1;
     }
+    /* 同一套黃銅焦點框延伸到所有自訂深色互動控件:進場按鈕／Google 連結／訪客欄位／
+       種族下拉、💡 建議鈕、聊天輸入、建議箱欄位與按鈕。這些控件都覆寫了背景與邊框,
+       瀏覽器預設的 focus ring 在深色主題上常被吃掉、低對比,只用鍵盤(Tab)的玩家看不清
+       焦點落在哪。focus-visible 只在鍵盤導航時亮,滑鼠點擊不會多冒框——延續收合鈕的
+       焦點可見弧線,讓整個鍵盤動線一致。 */
+    #login input:focus-visible, #login select:focus-visible, #login button:focus-visible,
+    #login .primary-link:focus-visible, #suggestBtn button:focus-visible, #chatText:focus-visible,
+    .modal input:focus-visible, .modal textarea:focus-visible, .modal button:focus-visible {
+      outline: 2px solid var(--brass); outline-offset: 2px;
+    }
     #helpCaret { display: inline-block; transition: transform 0.15s; }
     #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
     #hud.help-collapsed #helpBody { display: none; }
