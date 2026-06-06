@@ -1286,14 +1286,17 @@
     const size = minimapSize();
     const scale = size / Math.max(w, h);
     const mw = w * scale, mh = h * scale;
+    // 縮圖正下方再留一條圖例帶(兩行三欄色點＋標籤)。整組往上挪 legendH,讓「縮圖＋圖例」
+    // 合起來仍貼著右下安全區內、不被瀏海/圓角/手勢條切到——只是把錨點抬高一條圖例的厚度。
+    const MM_LEGEND_H = 30;
     // 右下錨點扣掉安全區內距,notched 手機不被瀏海/圓角/手勢條切到。
     const ox = viewW - MM.margin - safeArea.right - mw;   // 縮圖內容左上角（螢幕座標）
-    const oy = viewH - MM.margin - safeArea.bottom - mh;
+    const oy = viewH - MM.margin - safeArea.bottom - mh - MM_LEGEND_H;
     const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
 
-    // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。
+    // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。底色往下多包住圖例帶。
     ctx.fillStyle = "rgba(10,16,30,0.55)";
-    ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM.pad * 2);
+    ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM_LEGEND_H + MM.pad * 2);
 
     // 各玩家農地位置（黃銅外框前先畫，免得被框線蓋住）。自己那塊畫亮、別人的暗。
     for (const f of fields) {
@@ -1365,6 +1368,24 @@
       ctx.fillStyle = isMe ? "#ffd24a" : "rgba(111,168,220,0.7)";
       ctx.fill();
     }
+
+    // 圖例帶:縮圖下方兩行三欄,每格「色點＋中文」。色與上面各點層一一對應,讓玩家把縮圖上的
+    // 彩點對得回「那是樹/石/乙太礦/敵人/我/夥伴」。畫在縮圖之下、收合鈕之前;純表現、不嵌規則。
+    const mmColW = mw / 3;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = "9px system-ui, sans-serif";
+    MM_LEGEND.forEach((it, i) => {
+      const lx = ox + (i % 3) * mmColW + 2;
+      const ly = oy + mh + 9 + Math.floor(i / 3) * 12;
+      ctx.beginPath();
+      ctx.arc(lx + 2, ly, 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = `rgb(${it.c})`;
+      ctx.fill();
+      ctx.fillStyle = "rgba(230,232,238,0.92)";
+      ctx.fillText(it.t, lx + 7, ly + 0.5);
+    });
+    ctx.textBaseline = "alphabetic";
 
     // 收合鈕:面板右上角一顆小「–」,點它(或按 M)把小地圖收起。畫在最後蓋在縮圖上。
     const tb = 18;
@@ -1603,6 +1624,18 @@
     rock: "170,175,180",
     ether_ore: "165,140,240",
   };
+  // 小地圖圖例:縮圖把樹/石/乙太礦/敵人/自己/夥伴都點成彩點了,但「哪個色是什麼」全靠猜——
+  // 新手分不出綠點是樹還是夥伴、紫點是乙太礦還是敵人,上一輪「一眼看出資源聚在哪」其實看不懂。
+  // 補一排迷你圖例(色點＋中文),色直接沿用上面各點層的同一組,讓縮圖真的一眼讀懂。乙太礦給
+  // 最跳的紫、敵人沿用受擊紅、自己用亮黃——和點層完全一致,圖例與實點不會對不上。純表現、不嵌規則。
+  const MM_LEGEND = [
+    { c: "120,190,110", t: "樹" },
+    { c: "170,175,180", t: "石" },
+    { c: "165,140,240", t: "乙太" },
+    { c: "255,210,74", t: "我" },
+    { c: "111,168,220", t: "夥伴" },
+    { c: "214,90,90", t: "敵" },
+  ];
   // 節點 kind → 現成 sprite 名（assets/*.png）。有圖就畫真的樹/石(不再是圓點 emoji);
   // 乙太礦沒專屬圖,留 emoji 發光。圖還沒載入也自動退回 emoji(artOk 把關)。
   const NODE_SPRITE = { tree: "tree", rock: "rock" };
