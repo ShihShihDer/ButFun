@@ -436,4 +436,50 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn enemy_table_is_well_formed() {
+        // 敵人表健全性（與戰鬥平衡的調校數值無關的最小不變式，防日後加敵人時打錯），
+        // 對照 `crafting::recipe_table_is_well_formed` 之於配方表。此前每個 `EnemyKind`
+        // 常數（`max_hp` / `respawn_secs` / `threat`）都只被**寫死特定種類**的測試零星
+        // 覆蓋，沒有一條遍歷整張敵人表、守住「每一種敵人的這些常數都落在合法範圍」的不變式。
+        // PLAN 自己就指向再加敵人，屆時這正是會踩的坑：
+        //   - `max_hp == 0` 的敵人一出生 `remaining_hp == 0` 即被判為「已被打倒」，`attack`
+        //     的 `remaining_hp == 0` 早退讓它**永遠打不倒、永遠不掉落**，`tick` 又把它「復活」
+        //     回 0 血——一隻玩家永遠碰不到的鬼敵人。
+        //   - `respawn_secs` 非有限（NaN / Inf）或 <= 0：被打倒後 `respawn_timer` 被種成壞值，
+        //     `Inf` 永遠倒數不完（再也不重生）、`NaN` 毒化比較、<= 0 則下一 tick 即「瞬間重生」，
+        //     全都壞掉重生節奏（模組頂註白紙黑字「打完一處得換地方或等它重生，給世界一點節奏」）。
+        //   - `threat == 0`：模組頂註明言戰鬥要「雙向有來有回」、`threat` 是敵人反擊的傷害；
+        //     反擊為 0 等於零風險白嫖、破壞戰鬥的風險／回報。若日後有意設計「無害的敵人」，
+        //     在此紅燈逼人確認是有意設計再更新本不變式（比照工具／配方／掉落家族的逃生口）。
+
+        // 窮舉守衛：新增 EnemyKind 變體卻忘了加進 KINDS 時，此 match 不窮舉、編譯失敗，
+        // 逼人回來把新種類納入本遍歷（比照 `every_enemy_drop_is_a_usable_economic_resource`）。
+        for kind in KINDS {
+            match kind {
+                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+            }
+        }
+
+        for kind in KINDS {
+            // 生命為正：否則一出生即被判定打倒、永遠無法被攻擊／掉落。
+            assert!(
+                kind.max_hp() > 0,
+                "敵人 {kind:?} 的 max_hp 應 > 0，否則一出生即被判定打倒、玩家永遠打不倒它"
+            );
+            // 重生秒數有限且為正：否則被打倒後重生節奏壞掉（永不重生／瞬間重生／NaN 毒化）。
+            let respawn = kind.respawn_secs();
+            assert!(
+                respawn.is_finite() && respawn > 0.0,
+                "敵人 {kind:?} 的 respawn_secs（{respawn}）應為有限正數，否則重生節奏壞掉"
+            );
+            // 反擊傷害為正：維持模組頂註承諾的「雙向有來有回」戰鬥風險。
+            assert!(
+                kind.threat() > 0,
+                "敵人 {kind:?} 的 threat 應 > 0，否則戰鬥零風險、可無傷白嫖；若有意設計無害\
+                 敵人，再更新本不變式"
+            );
+        }
+    }
 }
