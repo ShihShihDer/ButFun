@@ -1325,6 +1325,21 @@
       Math.max(2, (vx1 - vx0) * scale), Math.max(2, (vy1 - vy0) * scale)
     );
 
+    // 採集節點:世界 2000x2000,主畫面只看得到視野內那幾棵樹/石/礦,玩家不知道遠處哪裡
+    // 成群、該往哪走才有得採。小地圖點出每個節點(色依 kind),讓「資源聚在哪」一眼可讀——
+    // 採乙太礦、找木石的探索動線都靠這層導航。採空(重生中)的畫淡,只標當下真能採的。
+    // 畫在敵人/玩家之前當最底層,讓威脅紅點與玩家點疊在上面仍醒目。純表現、純讀既有快照。
+    for (const n of nodes) {
+      const col = MM_NODE_COLOR[n.kind];
+      if (!col) continue; // 未知 kind 不亂點
+      const nx = ox + clampUnit(n.x, w) * scale;
+      const ny = oy + clampUnit(n.y, h) * scale;
+      ctx.beginPath();
+      ctx.arc(nx, ny, 1.8, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${col},${n.harvestable ? 0.9 : 0.3})`;
+      ctx.fill();
+    }
+
     // 敵人:戰鬥(1-F)已上線、世界又大(2000x2000),光看主畫面只知道身邊有沒有怪,
     // 不知道遠處哪裡成群。小地圖畫出活著的敵人(紅點),讓玩家一眼看出威脅聚在哪、
     // 要避開還是去刷。被打倒(重生中)的不畫——只標當下真正的威脅。沿用敵人血條/
@@ -1579,6 +1594,14 @@
     tree: { icon: "🌳", tint: "#2f5d34", act: "採木材" },
     rock: { icon: "🪨", tint: "#5b5f63", act: "採石頭" },
     ether_ore: { icon: "✨", tint: "#3a4a78", act: "採乙太礦" },
+  };
+  // 小地圖上的節點點色:NODE_LOOK 的 tint 偏暗(縮圖深底上糊掉、乙太礦深藍又跟其他玩家的
+  // 藍點混),這裡另給一組較亮、彼此可分的點色。樹綠/石灰/乙太礦亮紫——乙太礦是經濟核心資源,
+  // 給它最跳的色好讓玩家一眼找到「該去哪採乙太」。純表現、只讀既有快照,不嵌任何規則。
+  const MM_NODE_COLOR = {
+    tree: "120,190,110",
+    rock: "170,175,180",
+    ether_ore: "165,140,240",
   };
   // 節點 kind → 現成 sprite 名（assets/*.png）。有圖就畫真的樹/石(不再是圓點 emoji);
   // 乙太礦沒專屬圖,留 emoji 發光。圖還沒載入也自動退回 emoji(artOk 把關)。
