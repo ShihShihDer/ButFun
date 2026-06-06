@@ -1598,31 +1598,40 @@
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74" };
   function updateBagHud(inv) {
-    const el = document.getElementById("hudBag");
-    if (!el) return;
+    // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
+    // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
+    const toggle = document.getElementById("bagToggle");
+    const summary = document.getElementById("bagSummary");
+    const body = document.getElementById("bagBody");
+    if (!toggle || !summary || !body) return;
     if (!inv || inv.length === 0) {
-      el.textContent = "背包：空";
-      el.setAttribute("aria-label", "背包：空");
-      // title:滑鼠停在 HUD 上的原生提示。空背包也標一句,讓還沒採過的玩家知道這格是背包。
-      el.setAttribute("title", "背包：空");
+      summary.textContent = "：空";
+      body.textContent = "背包是空的——走到 🌳 / 🪨 / ✨ 旁採集吧";
+      // 無障礙標籤掛在常駐可見的標題鈕上(收起時 body 被 display:none、報讀器讀不到),
+      // 空背包也標一句,讓還沒採過的玩家知道這顆鈕是背包。title 為滑鼠停留的原生提示。
+      toggle.setAttribute("aria-label", "背包：空");
+      toggle.setAttribute("title", "背包：空");
       return;
     }
-    // 可見文字用 emoji（看得到的玩家一眼分品項）;但 emoji 對報讀器無意義(會亂念或跳過),
-    // 同步補一個中文 aria-label,沿用採集播報的 ITEM_NAME。延續日夜/連線/採集的無障礙弧線,
-    // 讓盲人玩家「採到那瞬間」聽過播報後,之後想查背包現況時也讀得出來,而非只剩亂念的圖示。
-    el.textContent =
-      "背包：" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
-    el.setAttribute(
-      "aria-label",
-      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
-    );
-    // 可見文字只有 emoji（🪵🪨✨）,看得到但不熟圖示的玩家未必一眼分得出是什麼。補一個原生 title
-    // 提示(滑鼠停留即顯示中文品項名),沿用報讀器 aria-label 的 ITEM_NAME,讓看得到的玩家也能
-    // 一眼確認「採到的是木材還石頭」。延續背包無障礙弧線,給滑鼠玩家對稱的那一半。
-    el.setAttribute(
-      "title",
-      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、")
-    );
+    // 標題列摘要用 emoji（看得到的玩家收起時也一眼分品項、看到存量,沿用舊那行的快速一瞥）。
+    summary.textContent =
+      "　" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
+    // 展開的明細:每項素材一行 emoji + 中文名 + 數量。素材從採集/打怪/農地三方湧入、堆積得快,
+    // 明細列讓「手上有什麼、各多少」清楚可讀(item 是伺服器列舉字串、非玩家文字,無注入風險)。
+    body.innerHTML = inv
+      .map((s) => {
+        const icon = ITEM_LOOK[s.item] || "";
+        const name = ITEM_NAME[s.item] || s.item;
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span></div>`;
+      })
+      .join("");
+    // emoji 對報讀器無意義(會亂念或跳過),把中文品項名同步成標題鈕的 aria-label,讓盲人玩家
+    // 「採到那瞬間」聽過播報後,之後想查背包現況時也讀得出來。title 給滑鼠玩家對稱的那一半。
+    // 延續日夜/連線/採集的背包無障礙弧線。
+    const label =
+      "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、");
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
@@ -2218,6 +2227,36 @@
     });
   }
 
+  // ---- 背包面板可收合 ----
+  // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設收起——標題列的摘要
+  // 計數(updateBagHud 寫的 #bagSummary)收著時仍看得到存量,等於沿用舊那行的快速一瞥、不損失
+  // 資訊;想看每項中文名明細再展開。鍵盤(Tab→Enter/空白)可達,焦點框語彙與其他收合鈕一致。
+  function initBagToggle() {
+    const bag = document.getElementById("hudBag");
+    const toggle = document.getElementById("bagToggle");
+    if (!bag || !toggle) return;
+    let chosen;
+    try { chosen = localStorage.getItem("butfun.bagCollapsed"); } catch {}
+    const apply = (v) => {
+      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示計數),只有顯式選過展開才為 "0"
+      bag.classList.toggle("bag-collapsed", isCollapsed);
+      // 收起＝明細隱藏＝aria-expanded false,讓螢幕報讀器報出展開/收合狀態
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    };
+    apply(chosen === null || chosen === undefined ? "1" : chosen);
+    const flip = () => {
+      const next = bag.classList.contains("bag-collapsed") ? "0" : "1";
+      apply(next);
+      try { localStorage.setItem("butfun.bagCollapsed", next); } catch {}
+    };
+    toggle.addEventListener("click", flip);
+    // 鍵盤可達:Tab 聚焦後 Enter / 空白鍵也能收合。stopPropagation 擋掉全域 keydown,
+    // 免得空白被當「採腳下格」、Enter 被搶去 focus 聊天。比照操作說明/聊天收合鈕。
+    toggle.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
+    });
+  }
+
   // ---- 聊天紀錄可收合 ----
   // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設不收(維持
   // 既有行為,新手看得到聊天);展開時清零未讀並捲到最新。收著時 addChat 會累計未讀數。
@@ -2278,6 +2317,7 @@
     started = true;
     initHelpToggle();
     initChatToggle();
+    initBagToggle();
     initChatKeyboardLift();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {

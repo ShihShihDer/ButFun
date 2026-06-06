@@ -122,6 +122,19 @@
     #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
     #hud.help-collapsed #helpBody { display: none; }
     #helpBody > div { opacity: 0.6; }
+    /* 可收合的背包面板:跟操作說明同一套語彙(點標題列收/展、箭頭旋轉、鍵盤焦點框)。
+       收起時只剩標題列+摘要計數,展開列出每項素材明細。 */
+    #bagToggle { cursor: pointer; user-select: none; }
+    #bagToggle:hover { opacity: 0.85; }
+    #bagToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    #bagSummary { color: var(--ink); }
+    #bagCaret { display: inline-block; transition: transform 0.15s; }
+    #hudBag.bag-collapsed #bagCaret { transform: rotate(-90deg); }
+    #hudBag.bag-collapsed #bagBody { display: none; }
+    #bagBody { margin: 2px 0 0 2px; opacity: 0.85; }
+    #bagBody .bag-row { display: flex; align-items: center; gap: 6px; }
+    #bagBody .bag-ico { width: 1.4em; text-align: center; }
+    #bagBody .bag-qty { color: var(--brass); margin-left: auto; padding-left: 10px; }
 
     /* 聊天 */
     #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
@@ -131,7 +144,7 @@
        + aria-expanded 傳達,不靠箭頭轉)。比照連線橫幅脈動/遊戲內踏步微光,在系統「減少動態」
        偏好下一併關掉——前庭敏感的玩家收/展面板時不再有旋轉動效,狀態切換照舊即時生效。 */
     @media (prefers-reduced-motion: reduce) {
-      #chat, #helpCaret, #chatCaret { transition: none; }
+      #chat, #helpCaret, #chatCaret, #bagCaret { transition: none; }
     }
     /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
        手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
@@ -254,9 +267,17 @@
     <div id="hudEther" class="brass">乙太：0</div>
     <!-- 生命 HUD（戰鬥 1-F）:走近敵人會自動開打,敵人反擊扣血。低血變紅、被打趴顯示休息中。 -->
     <div id="hudHp">生命：—</div>
-    <!-- 背包 HUD:可見文字用 emoji（🪵🪨✨）給看得到的玩家;aria-label 由 game.js 隨快照
-         同步成中文品項名,讓報讀器玩家也讀得出背包現況（emoji 會被亂念／跳過）。 -->
-    <div id="hudBag" aria-label="背包：空" title="背包：空">背包：空</div>
+    <!-- 背包：可收合面板（與操作說明/聊天同一套語彙:點標題列收/展、狀態存 localStorage）。
+         標題列常駐,收起時 #bagSummary 仍顯示 emoji 計數(沿用舊那行的快速一瞥、不損失資訊);
+         展開則由 #bagBody 列出每項素材的中文名與數量——素材從採集/打怪/農地三方湧入,給堆積的
+         素材一個清楚可讀的「家」,也是日後合成台(1-C)要嵌進來的面板。aria-label / title 由
+         game.js 隨快照同步成中文品項名掛在標題鈕上(emoji 對報讀器無意義),延續背包無障礙弧線。
+         純前端、零契約變更:只呈現既有快照的 inventory,不嵌任何遊戲規則。 -->
+    <div id="hudBag">
+      <div id="bagToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="bagBody"
+           aria-label="背包：空" title="背包：空"><span id="bagCaret">▾</span> 🎒 背包<span id="bagSummary">：空</span></div>
+      <div id="bagBody">背包是空的</div>
+    </div>
     <div id="hudTime">—</div>
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
@@ -315,6 +336,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-node-sprites"></script>
+  <script src="game.js?v=20260606-bag-panel"></script>
 </body>
 </html>
