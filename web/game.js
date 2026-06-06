@@ -1199,6 +1199,21 @@
       Math.max(2, (vx1 - vx0) * scale), Math.max(2, (vy1 - vy0) * scale)
     );
 
+    // 敵人:戰鬥(1-F)已上線、世界又大(2000x2000),光看主畫面只知道身邊有沒有怪,
+    // 不知道遠處哪裡成群。小地圖畫出活著的敵人(紅點),讓玩家一眼看出威脅聚在哪、
+    // 要避開還是去刷。被打倒(重生中)的不畫——只標當下真正的威脅。沿用敵人血條/
+    // 受擊回饋的紅(#d65a5a)當「危險」色語彙,跟玩家點(亮黃/暗藍)區隔。畫在玩家點
+    // 之前,讓自己的點疊在最上層仍醒目。純表現、純讀既有快照,不嵌任何戰鬥判定。
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const ex = ox + clampUnit(e.x, w) * scale;
+      const ey = oy + clampUnit(e.y, h) * scale;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(214,90,90,0.85)";
+      ctx.fill();
+    }
+
     // 玩家：自己亮、其他人暗。用渲染插值座標 rx/ry，跟主畫面同步不跳動。
     for (const p of players.values()) {
       const isMe = p.id === myId;
