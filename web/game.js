@@ -76,6 +76,15 @@
   let nodes = [];
   // 伺服器廣播的世界敵人（戰鬥 1-F,每個含 kind/x/y/hp/max_hp/alive）;進場前為空。
   let enemies = [];
+  // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
+  // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
+  // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
+  // 以固定順序輸出同一批敵人(spawn 槽位穩定、被打倒只是原地重生),同槽同 kind 才比對,
+  // 避免序變誤觸。只在血量下降／轉被打倒時觸發,不在前端判任何戰鬥規則(伺服器權威)。
+  let enemyFx = []; // 每槽 { until:ms, lethal:bool };render 依剩餘時間淡出
+  // 是否已同步過初始敵人快照。和乙太/背包/血量同理:進場/重連的第一份快照不拿來比 hp 差值
+  // (伺服器若換版重啟,敵人血量可能不同,會誤閃一輪),之後的快照差值才是真的受擊。
+  let enemiesSynced = false;
   // 採集判定半徑(像素),與伺服器 GATHER_REACH 對齊:玩家離節點這麼近才採得到。
   const GATHER_REACH = 56;
   // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
@@ -302,6 +311,7 @@
           etherKnown = false;
           hpKnown = false; // 同乙太:重連後第一份快照重建血量基準,別把既有血量當成一次受擊/回血
           presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
+          enemiesSynced = false; // 同上:重連後第一份快照重建敵人基準,別把換版後的血量差當成受擊
         }
         hideConnStatus(); // 接回（或初次連上）就收掉重連橫幅
         enterGame();
@@ -349,7 +359,25 @@
         // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
-        enemies = msg.enemies || []; // 同上防呆
+        // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
+        // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
+        const prevEnemies = enemies;
+        const nextEnemies = msg.enemies || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
+        if (enemiesSynced) {
+          const fxNow = performance.now();
+          for (let i = 0; i < nextEnemies.length; i++) {
+            const ne = nextEnemies[i];
+            const oe = prevEnemies[i];
+            // 同槽同 kind 才比(避免敵人組成變動時誤觸);hp 下降或被打倒才閃
+            if (!oe || oe.kind !== ne.kind) continue;
+            const died = oe.alive && !ne.alive;
+            if (died || (ne.alive && ne.hp < oe.hp)) {
+              enemyFx[i] = { until: fxNow + (died ? 480 : 280), lethal: died };
+            }
+          }
+        }
+        enemies = nextEnemies;
+        enemiesSynced = true;
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         updateFarmHud(myField());
@@ -1550,11 +1578,18 @@
   };
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
-    for (const e of enemies) {
+    const fxNow = performance.now();
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
       const sx = e.x - camX;
       const sy = e.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
       const look = ENEMY_LOOK[e.kind] || { icon: "❔", tint: "#555" };
+      // 受擊／被打倒一閃:t 1→0 隨剩餘時間淡出。被打倒(lethal)閃得更白更大,當作擊倒確認。
+      const fx = enemyFx[i];
+      const fxT = fx && fxNow < fx.until
+        ? Math.max(0, Math.min(1, (fx.until - fxNow) / (fx.lethal ? 480 : 280)))
+        : 0;
       ctx.save();
       if (!e.alive) ctx.globalAlpha = 0.25; // 被打倒、重生中
       ctx.beginPath();
@@ -1565,6 +1600,19 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(look.icon, sx, sy + 1);
+      // 受擊閃光疊在敵人身上:一圈往外擴張淡出的亮環(被打倒時更白更大),純表現。
+      // reduceMotion 時不做擴張動畫,只畫一圈靜態亮邊——仍傳遞「打中了」的資訊但不晃動。
+      if (fxT > 0) {
+        const base = fx.lethal ? 20 : 17;
+        const r = reduceMotion ? base : base + (1 - fxT) * (fx.lethal ? 16 : 10);
+        ctx.globalAlpha = (e.alive ? 1 : 0.25) * fxT;
+        ctx.lineWidth = fx.lethal ? 3 : 2;
+        ctx.strokeStyle = fx.lethal ? "#fff" : "#ffd9a0";
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = e.alive ? 1 : 0.25;
+      }
       // 血條:活著且不滿血才畫。
       if (e.alive && e.hp < e.max_hp) {
         const bw = 28;
