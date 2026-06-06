@@ -114,7 +114,7 @@ async fn main() {
         // 其餘路徑交給靜態前端（web/）。
         .fallback_service(ServeDir::new("web"))
         .layer(TraceLayer::new_for_http())
-        .with_state(app_state);
+        .with_state(app_state.clone());
 
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -127,9 +127,44 @@ async fn main() {
         .expect("無法綁定連接埠");
     tracing::info!("ButFun 伺服器啟動於 http://{addr}");
 
+    // 優雅關機:收到 SIGTERM(deploy 重啟)或 Ctrl-C 時,先停收新連線,再把全部狀態最後
+    // flush 一次,才退出。否則換版重啟會丟掉上次週期 flush 之後、線上玩家最多約 10 秒的進度
+    // (見 game::flush_all)。flush 是冪等 upsert,多寫一次永遠安全。
+    let flush_state = app_state.clone();
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("伺服器執行失敗");
+    tracing::info!("收到關機訊號;退出前最後一次落地玩家狀態…");
+    game::flush_all(&flush_state).await;
+    tracing::info!("狀態已落地,伺服器關閉");
+}
+
+/// 等待關機訊號:Unix 上同時聽 SIGTERM(systemd/deploy 重啟用)與 Ctrl-C;
+/// 非 Unix 只聽 Ctrl-C。任一觸發即返回,交還主流程做最後 flush。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            // 裝不上 SIGTERM 處理器極罕見;退而只靠 Ctrl-C,別讓伺服器起不來。
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
 
 async fn health() -> &'static str {

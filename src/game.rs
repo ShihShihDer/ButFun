@@ -156,59 +156,64 @@ pub fn spawn(app: AppState) {
             // 這裡讓線上玩家的狀態也持續落地,重啟後重連即帶回。
             // 只記已登入玩家（id 在 users 裡）；訪客 id 隨機、不記,避免 cache 無界成長。
             if tick % (TICK_HZ as u64 * 10) == 0 {
-                // 同一把 read 鎖內一併收位置與背包,兩者快照來自同一瞬間、不會錯位。
-                let (online, inventories): (
-                    Vec<(uuid::Uuid, String, String, f32, f32, u32)>,
-                    Vec<(uuid::Uuid, crate::inventory::Inventory)>,
-                ) = {
-                    let players = app.players.read().unwrap();
-                    let authed: Vec<_> = players
-                        .values()
-                        .filter(|p| app.users.get(p.id).is_some())
-                        .collect();
-                    (
-                        authed
-                            .iter()
-                            .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether))
-                            .collect(),
-                        authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
-                    )
-                };
-                if !online.is_empty() {
-                    // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
-                    app.positions.remember_all(
-                        online.iter().map(|(id, _, _, x, y, e)| (*id, *x, *y, *e)),
-                    );
-                    app.positions.flush_online(&online).await;
-                    app.inventories.remember_all(inventories.iter().cloned());
-                    app.inventories.flush_online(&inventories).await;
-                }
-
-                // 農地一併落地（Phase 0-E）。與位置/背包不同:離線玩家的地仍在世界裡繼續長
-                // （上面 field tick 推進「全部」地），所以這裡快照**全部**農地、不限線上,讓離線
-                // 期間的成長也撐得過重啟。量級＝歷來已登入玩家數（有界,同 positions）。每塊地的
-                // plot 序號由 PlotRegistry 查、一起存好,重啟才能用 reseat 安置回正確 origin、
-                // 並用 from_saved 重建序號歸屬。
-                let field_rows: Vec<(uuid::Uuid, usize, crate::field::Field)> = {
-                    let fields = app.fields.read().unwrap();
-                    fields
-                        .iter()
-                        .filter_map(|(uid, f)| {
-                            app.plots.index_of(*uid).map(|idx| (*uid, idx, f.clone()))
-                        })
-                        .collect()
-                };
-                if !field_rows.is_empty() {
-                    app.field_store.remember_all(field_rows.iter().cloned());
-                    app.field_store.flush_online(&field_rows).await;
-                }
-
-                // 日夜時刻一併落地（Phase 0-E）。與玩家狀態不同:時鐘不分玩家、沒人在線也持續走,
-                // 故**無條件** flush（不像位置/背包/農地只在有對象時才寫）。讀當下時刻（短暫持鎖、
-                // 不跨 await）再非同步寫出,重啟後從同一個時刻接續、不跳回破曉。
-                let daynight_now = *app.daynight.read().unwrap();
-                app.daynight_store.flush(&daynight_now).await;
+                flush_all(&app).await;
             }
         }
     });
+}
+
+/// 把全部需跨重啟保留的狀態落地一次:已登入玩家的位置/背包/乙太、全部農地、日夜時刻。
+/// 由遊戲迴圈每 10 秒呼叫一次,也由優雅關機(收到 SIGTERM/Ctrl-C)在退出前最後呼叫一次——
+/// 否則換版重啟(deploy 送 SIGTERM)會丟掉上次週期 flush 之後、線上玩家最多約 10 秒的進度
+/// (新賺的乙太、移動、剛採/合成的道具、農地成長)。多 flush 永遠安全:寫的是當下快照、冪等 upsert。
+pub async fn flush_all(app: &AppState) {
+    // 同一把 read 鎖內一併收位置與背包,兩者快照來自同一瞬間、不會錯位。
+    let (online, inventories): (
+        Vec<(uuid::Uuid, String, String, f32, f32, u32)>,
+        Vec<(uuid::Uuid, crate::inventory::Inventory)>,
+    ) = {
+        let players = app.players.read().unwrap();
+        let authed: Vec<_> = players
+            .values()
+            .filter(|p| app.users.get(p.id).is_some())
+            .collect();
+        (
+            authed
+                .iter()
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether))
+                .collect(),
+            authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
+        )
+    };
+    if !online.is_empty() {
+        // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
+        app.positions
+            .remember_all(online.iter().map(|(id, _, _, x, y, e)| (*id, *x, *y, *e)));
+        app.positions.flush_online(&online).await;
+        app.inventories.remember_all(inventories.iter().cloned());
+        app.inventories.flush_online(&inventories).await;
+    }
+
+    // 農地一併落地（Phase 0-E）。與位置/背包不同:離線玩家的地仍在世界裡繼續長
+    // （上面 field tick 推進「全部」地），所以這裡快照**全部**農地、不限線上,讓離線
+    // 期間的成長也撐得過重啟。量級＝歷來已登入玩家數（有界,同 positions）。每塊地的
+    // plot 序號由 PlotRegistry 查、一起存好,重啟才能用 reseat 安置回正確 origin、
+    // 並用 from_saved 重建序號歸屬。
+    let field_rows: Vec<(uuid::Uuid, usize, crate::field::Field)> = {
+        let fields = app.fields.read().unwrap();
+        fields
+            .iter()
+            .filter_map(|(uid, f)| app.plots.index_of(*uid).map(|idx| (*uid, idx, f.clone())))
+            .collect()
+    };
+    if !field_rows.is_empty() {
+        app.field_store.remember_all(field_rows.iter().cloned());
+        app.field_store.flush_online(&field_rows).await;
+    }
+
+    // 日夜時刻一併落地（Phase 0-E）。與玩家狀態不同:時鐘不分玩家、沒人在線也持續走,
+    // 故**無條件** flush（不像位置/背包/農地只在有對象時才寫）。讀當下時刻（短暫持鎖、
+    // 不跨 await）再非同步寫出,重啟後從同一個時刻接續、不跳回破曉。
+    let daynight_now = *app.daynight.read().unwrap();
+    app.daynight_store.flush(&daynight_now).await;
 }
