@@ -35,6 +35,10 @@ pub enum ClientMsg {
     /// 採集意圖：玩家想採附近的資源節點（樹／石／乙太礦）。不帶座標——伺服器一律
     /// **用玩家自己的權威位置**判定 `GATHER_REACH` 內最近的可採節點（防隔空採集）。
     Gather,
+    /// 合成意圖(1-C)：玩家點合成台某配方的合成鈕。`recipe_id` 是產物 `ItemKind` 的 snake_case
+    /// 名(如 "pickaxe")。伺服器查 `crafting::RECIPES`、在玩家自己背包上全有全無地扣料+產出,
+    /// 產物隨既有背包快照回來(零契約變更)。
+    Craft { recipe_id: String },
 }
 
 /// 伺服器送給客戶端的訊息。

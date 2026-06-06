@@ -310,8 +310,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if let Some((kind, amount)) = gathered {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let item: crate::inventory::ItemKind = kind.into();
-                            let added = p.inventory.add(item, amount);
-                            tracing::info!(player = %p.name, ?item, added, "採集入背包");
+                            // 工具效用(1-D):背包有鎬子/強化鎬就採更多(乘工具倍率)——
+                            // 給合成出的工具一個用處,接上「採集→合成工具→採更快」迴圈。
+                            let mult = crate::tools::gather_speed_multiplier(&p.inventory);
+                            let added = p.inventory.add(item, amount * mult);
+                            tracing::info!(player = %p.name, ?item, added, mult, "採集入背包");
+                        }
+                    }
+                }
+                Ok(ClientMsg::Craft { recipe_id }) => {
+                    // 合成(1-C):查 RECIPES 找出 recipe_id(產物 ItemKind 的 snake_case 名)對應配方,
+                    // 在玩家自己背包上全有全無地合成(夠料才扣料+產出)。產物隨下一張快照回前端。
+                    let recipe = crate::crafting::RECIPES.iter().find(|r| {
+                        serde_json::to_value(r.output)
+                            .ok()
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .as_deref()
+                            == Some(recipe_id.as_str())
+                    });
+                    if let Some(recipe) = recipe {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            if recipe.craft(&mut p.inventory) {
+                                tracing::info!(player = %p.name, recipe = %recipe_id, "合成成功");
+                            }
                         }
                     }
                 }
