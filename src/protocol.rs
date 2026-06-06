@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::combat::EnemyKind;
 use crate::daynight::Phase;
 use crate::gather::NodeKind;
 use crate::inventory::ItemKind;
@@ -52,6 +53,8 @@ pub enum ServerMsg {
         /// 世界裡共享的採集節點（樹／石／乙太礦,Phase 1-A）。前端畫出來、可採的標亮,
         /// 玩家走近點它送 `Gather`。
         nodes: Vec<NodeView>,
+        /// 世界裡共享的敵人（戰鬥 1-F）。前端畫出來 + 血條;玩家走近會自動開打(伺服器每秒結算)。
+        enemies: Vec<EnemyView>,
         /// 伺服器權威的日夜狀態（階段 + 亮度），前端依此做環境染色。
         daynight: DayNightView,
     },
@@ -82,6 +85,22 @@ pub struct PlayerView {
     /// 背包內容（採集所得）。每位玩家都帶著,前端只取「自己那位」的來畫背包面板。
     /// 條目已依 `ItemKind` 排序（`Inventory` 用 `BTreeMap`),順序穩定。
     pub inventory: Vec<ItemStack>,
+    /// 目前生命值與上限（戰鬥 1-F）。前端畫血條;0 = 被打趴休息中。
+    pub hp: u32,
+    pub max_hp: u32,
+}
+
+/// 快照裡一個世界敵人的可見狀態。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct EnemyView {
+    /// 敵人種類（scrap_drone / ether_wisp）：前端據此選圖示與血色。
+    pub kind: EnemyKind,
+    pub x: f32,
+    pub y: f32,
+    /// 剩餘血量 / 上限（畫血條）。`alive=false` 表示被打倒、重生中(畫淡或不畫)。
+    pub hp: u32,
+    pub max_hp: u32,
+    pub alive: bool,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -186,6 +205,8 @@ mod tests {
                     item: ItemKind::Wood,
                     qty: 3,
                 }],
+                hp: 18,
+                max_hp: 20,
             }],
             fields: vec![FieldView {
                 owner,
@@ -207,6 +228,14 @@ mod tests {
                 remaining: 4,
                 harvestable: true,
             }],
+            enemies: vec![EnemyView {
+                kind: EnemyKind::ScrapDrone,
+                x: 300.0,
+                y: 400.0,
+                hp: 5,
+                max_hp: 6,
+                alive: true,
+            }],
             daynight: DayNightView {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
@@ -217,10 +246,15 @@ mod tests {
         assert_eq!(v["players"][0]["ether"], 7);
         assert_eq!(v["players"][0]["inventory"][0]["item"], "wood");
         assert_eq!(v["players"][0]["inventory"][0]["qty"], 3);
+        assert_eq!(v["players"][0]["hp"], 18);
+        assert_eq!(v["players"][0]["max_hp"], 20);
         assert_eq!(v["fields"][0]["owner"], owner.to_string());
         assert_eq!(v["fields"][0]["cells"][0]["state"], 2);
         assert_eq!(v["nodes"][0]["kind"], "rock");
         assert_eq!(v["nodes"][0]["x"], 120.0);
+        assert_eq!(v["enemies"][0]["kind"], "scrap_drone");
+        assert_eq!(v["enemies"][0]["hp"], 5);
+        assert_eq!(v["enemies"][0]["alive"], true);
         assert_eq!(v["nodes"][0]["harvestable"], true);
         assert_eq!(v["daynight"]["phase"], "day");
         assert_eq!(v["daynight"]["light"], 0.5);

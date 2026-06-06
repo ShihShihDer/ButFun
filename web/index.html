@@ -252,6 +252,8 @@
     <div id="hudGuestHint" class="hidden">👋 探索中 · <b>登入</b>即可獲得專屬乙太田開始種田</div>
     <div id="hudPlayers">線上：—</div>
     <div id="hudEther" class="brass">乙太：0</div>
+    <!-- 生命 HUD（戰鬥 1-F）:走近敵人會自動開打,敵人反擊扣血。低血變紅、被打趴顯示休息中。 -->
+    <div id="hudHp">生命：—</div>
     <!-- 背包 HUD:可見文字用 emoji（🪵🪨✨）給看得到的玩家;aria-label 由 game.js 隨快照
          同步成中文品項名,讓報讀器玩家也讀得出背包現況（emoji 會被亂念／跳過）。 -->
     <div id="hudBag" aria-label="背包：空" title="背包：空">背包：空</div>
@@ -312,6 +314,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-rename"></script>
+  <script src="game.js?v=20260606-combat"></script>
 </body>
 </html>

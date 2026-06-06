@@ -101,6 +101,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             input: Input::default(),
             ether: 0,
             inventory: crate::inventory::Inventory::new(),
+            vitals: crate::vitals::Vitals::new(),
         }
     } else {
         // 等 Join
@@ -129,6 +130,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             input: Input::default(),
             ether: 0,
             inventory: crate::inventory::Inventory::new(),
+            vitals: crate::vitals::Vitals::new(),
         }
     };
     let id = player.id;
