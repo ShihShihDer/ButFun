@@ -2100,8 +2100,9 @@
     ctx.lineWidth = 3;
     ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
-    // 木柵欄:沿田邊立等距木樁 + 兩條橫桿,讓田看起來像「圈起來的農莊」。純程式畫。
-    drawFence(fx, fy, fw, fh);
+    // 柵欄:把田圈成「圍起來的農莊」。有 fence.png(蒸汽龐克 sprite)就沿田邊圍一圈、
+    // 底邊中段留柵門缺口;沒載好退回程式木樁(artOk 把關,跟 tree/rock 同一套 fallback)。
+    drawFence(fx, fy, fw, fh, ts);
 
     // 田地名字標籤：自己的標「你的乙太田」，別人的標地主名。
     const owner = players.get(f.owner);
@@ -2259,9 +2260,53 @@
     drawStagePips(sx, sy, ts, cell);
   }
 
-  // 木柵欄:在田四邊立等距木樁,兩條橫桿把樁串起來。樁位由邊長算出固定間距,
-  // 所以鏡頭移動時柵欄「貼」在田邊不會抖。柵欄畫在田框外側一點,不蓋到作物格。
-  function drawFence(fx, fy, fw, fh) {
+  // fence.png:192×32 = 6 件×32px autotile(欄 0 水平 rail / 1 垂直 rail / 2 角=連 E+S,
+  // 靠旋轉處理四個方向,規格見 docs/ASSET_INTEGRATION.md §3)。一律是純繪製、不嵌任何規則,
+  // 將來 WebXR renderer 可各自決定怎麼把「同一塊地」圍起來。
+  const FENCE_TS = 32;
+  // 在 (cx,cy) 畫一件柵欄(以中心對齊,可旋轉),放大成 size 對齊田格(48)。
+  function fencePiece(cx, cy, piece, rotDeg, size) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (rotDeg) ctx.rotate((rotDeg * Math.PI) / 180);
+    ctx.drawImage(ART.fence, piece * FENCE_TS, 0, FENCE_TS, FENCE_TS, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+  // sprite 版:沿田邊外圍一圈柵欄(每件一格、底部對齊田格線),底邊中段留一格柵門缺口,
+  // 像星露谷把農地圈起來、留個入口。四角用 index 2 旋轉接圖。
+  function drawFenceSprite(fx, fy, fw, fh, ts) {
+    const cols = Math.round(fw / ts);
+    const rows = Math.round(fh / ts);
+    const gateCol = Math.floor(cols / 2); // 底邊中段留柵門缺口(有入口才像家園,不是全封死)
+    const left = fx - ts / 2, right = fx + fw + ts / 2;
+    const top = fy - ts / 2, bottom = fy + fh + ts / 2;
+    // 上下橫桿(底邊跳過柵門那格)
+    for (let i = 0; i < cols; i++) {
+      const cx = fx + (i + 0.5) * ts;
+      fencePiece(cx, top, 0, 0, ts);
+      if (i !== gateCol) fencePiece(cx, bottom, 0, 0, ts);
+    }
+    // 左右直桿
+    for (let j = 0; j < rows; j++) {
+      const cy = fy + (j + 0.5) * ts;
+      fencePiece(left, cy, 1, 0, ts);
+      fencePiece(right, cy, 1, 0, ts);
+    }
+    // 四角:piece 2(基準連 E+S),依方向旋轉——左上 0、右上 90、右下 180、左下 270。
+    fencePiece(left, top, 2, 0, ts);
+    fencePiece(right, top, 2, 90, ts);
+    fencePiece(right, bottom, 2, 180, ts);
+    fencePiece(left, bottom, 2, 270, ts);
+  }
+
+  // 柵欄入口:有 fence.png 走 sprite,沒載好退回下面程式畫的木樁(永遠有得畫,不卡玩)。
+  function drawFence(fx, fy, fw, fh, ts) {
+    if (artOk("fence")) { drawFenceSprite(fx, fy, fw, fh, ts); return; }
+    drawFencePosts(fx, fy, fw, fh);
+  }
+
+  // fallback:沒美術素材時程式畫的木樁 + 兩條橫桿,沿田邊立等距木樁,讓田看起來像圈起來的農莊。
+  function drawFencePosts(fx, fy, fw, fh) {
     const POST_GAP = 26;   // 木樁間距(畫面 px)
     const POST_W = 4;      // 木樁寬
     const POST_H = 14;     // 木樁高(往田外長)
