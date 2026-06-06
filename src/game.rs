@@ -37,63 +37,90 @@ pub fn spawn(app: AppState) {
             interval.tick().await;
             tick += 1;
 
+            // 這個 tick 到底要不要建構快照?在 tick 開頭一次決定,讓底下農地/節點/敵人/日夜的
+            // view 建構全都據此跳過——沒人連線的離峰時段,世界照常推進,但不再每 tick 白白配置
+            // 那幾個 view Vec + clone(上一輪的離峰優化只省了最後的 JSON 序列化,view 卻照建)。
+            // 新訂閱者本就等下一個 tick 才收第一筆快照,故此處一次判定不改變既有延遲語意。
+            let want_broadcast = should_broadcast(app.tx.receiver_count());
+
             // 先推進日夜時鐘，取得當下亮度決定作物成長速度（短暫持鎖，不跨 await）。
+            // 時鐘無條件前進;view 只在要廣播時才取。
             let (daynight_view, growth_rate) = {
                 let mut daynight = app.daynight.write().unwrap();
                 daynight.advance(dt);
-                (daynight.view(), daynight.growth_rate())
+                let view = if want_broadcast {
+                    Some(daynight.view())
+                } else {
+                    None
+                };
+                (view, daynight.growth_rate())
             };
 
             // 推進所有玩家農地的成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、
             // 放慢（0-G「隨日夜成長」）。濕度也一併縮放，故每次澆水的總成長量不變、
             // 只有牆鐘速度隨日夜變化。同時把每塊地轉成快照、並戳上擁有者 id（`Field`
             // 自己不知道屬於誰，由這層持有的 `user_id → Field` 對映補上）。短暫持鎖，不跨 await。
+            // 成長無條件推進(每塊地 tick);view 只在要廣播時才在同一把鎖內多走一趟建。
             let field_views: Vec<FieldView> = {
                 let mut fields = app.fields.write().unwrap();
-                fields
-                    .iter_mut()
-                    .map(|(owner, field)| {
-                        field.tick(dt * growth_rate);
-                        let mut v = field.view();
-                        v.owner = *owner;
-                        v
-                    })
-                    .collect()
+                for (_owner, field) in fields.iter_mut() {
+                    field.tick(dt * growth_rate);
+                }
+                if want_broadcast {
+                    fields
+                        .iter()
+                        .map(|(owner, field)| {
+                            let mut v = field.view();
+                            v.owner = *owner;
+                            v
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             };
 
-            // 推進採集節點重生（採空的倒數補耐久,其餘 no-op）並轉成快照。短暫持鎖,不跨 await。
+            // 推進採集節點重生（採空的倒數補耐久,其餘 no-op）。重生無條件跑;view 只在廣播時建。
             let node_views: Vec<NodeView> = {
                 let mut nodes = app.nodes.write().unwrap();
                 nodes.tick(dt);
-                nodes
-                    .nodes()
-                    .iter()
-                    .map(|p| NodeView {
-                        kind: p.node.kind(),
-                        x: p.x,
-                        y: p.y,
-                        remaining: p.node.remaining(),
-                        harvestable: p.node.is_harvestable(),
-                    })
-                    .collect()
+                if want_broadcast {
+                    nodes
+                        .nodes()
+                        .iter()
+                        .map(|p| NodeView {
+                            kind: p.node.kind(),
+                            x: p.x,
+                            y: p.y,
+                            remaining: p.node.remaining(),
+                            harvestable: p.node.is_harvestable(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             };
 
-            // 推進敵人重生(被打倒的倒數復活)並轉成快照。短暫持鎖,不跨 await。
+            // 推進敵人重生(被打倒的倒數復活)。重生無條件跑;view 只在廣播時建。
             let enemy_views: Vec<EnemyView> = {
                 let mut enemies = app.enemies.write().unwrap();
                 enemies.tick(dt);
-                enemies
-                    .enemies()
-                    .iter()
-                    .map(|p| EnemyView {
-                        kind: p.enemy.kind(),
-                        x: p.x,
-                        y: p.y,
-                        hp: p.enemy.remaining_hp(),
-                        max_hp: p.enemy.kind().max_hp(),
-                        alive: p.enemy.is_alive(),
-                    })
-                    .collect()
+                if want_broadcast {
+                    enemies
+                        .enemies()
+                        .iter()
+                        .map(|p| EnemyView {
+                            kind: p.enemy.kind(),
+                            x: p.x,
+                            y: p.y,
+                            hp: p.enemy.remaining_hp(),
+                            max_hp: p.enemy.kind().max_hp(),
+                            alive: p.enemy.is_alive(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
             };
 
             // 戰鬥結算(每秒一次):玩家自動打最近的敵人、敵人反擊。**自動打怪**——不需客戶端輸入。
@@ -151,10 +178,11 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 廣播快照——只在有訂閱者時才建構並序列化。沒人連線的離峰時段跳過,省下每 tick
-            // 把整個世界轉 JSON 的 CPU(上面的世界推進照常跑、狀態不停)。新訂閱者本來就是等
-            // 下一個 tick 才收到第一筆快照,故下一個有人連上的 tick 會立刻送出完整快照,延遲不變。
-            if should_broadcast(app.tx.receiver_count()) {
+            // 廣播快照——只在有訂閱者時(tick 開頭已判定的 want_broadcast)才建構並序列化。
+            // 沒人連線的離峰時段,上面的世界推進照常跑、狀態不停,但連 view 都不建、更不序列化。
+            // 新訂閱者本來就是等下一個 tick 才收到第一筆快照,故下一個有人連上的 tick 會立刻送出
+            // 完整快照,延遲不變。`daynight_view` 在不廣播時為 None,故此處能直接 unwrap。
+            if want_broadcast {
                 let snapshot = {
                     let players = app.players.read().unwrap();
                     ServerMsg::Snapshot {
@@ -163,7 +191,7 @@ pub fn spawn(app: AppState) {
                         fields: field_views,
                         nodes: node_views,
                         enemies: enemy_views,
-                        daynight: daynight_view,
+                        daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                     }
                 };
                 // 沒有訂閱者時 send 會回 Err（這裡已 receiver_count>0,正常路徑），忽略即可。
