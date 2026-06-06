@@ -326,6 +326,10 @@
             existing.species = p.species;
             existing.x = p.x;
             existing.y = p.y;
+            // 戰鬥(1-F)血量也要逐快照更新,否則 map 裡的 hp 會停在進場那一刻——
+            // drawPlayer 的「被打趴變淡」要靠它讀到每位玩家當下的權威血量。
+            existing.hp = p.hp;
+            existing.max_hp = p.max_hp;
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y });
           }
@@ -957,9 +961,15 @@
     const sx = p.rx - camX;
     const sy = p.ry - camY;
     const isMe = p.id === myId;
+    // 被打趴(hp<=0,休息復原中):純讀權威快照血量,不在前端判任何戰鬥規則。被打趴的玩家
+    // 在世界上要看得出來——HUD 只有自己看得到,其他玩家被打趴在畫面上原本和站著沒兩樣。
+    // 鏡像敵人被打倒變淡(globalAlpha 0.25)的對稱面:整個角色壓暗、頭上掛 💤,讓「誰趴下了
+    // /休息中」一眼可讀。hp 缺值(訪客或舊伺服器)時當沒打趴,不影響原行為。
+    const downed = typeof p.hp === "number" && p.max_hp > 0 && p.hp <= 0;
     // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動。
     // 開「減少動態」時不彈跳（避免持續上下晃造成不適），sprite 仍逐格切換不受影響。
-    const bob = (p.moving && !reduceMotion) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
+    // 被打趴時不彈跳(在地上休息,不該還在踏步)。
+    const bob = (p.moving && !reduceMotion && !downed) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
     const by = sy - bob;
 
     // 腳下陰影（固定在地面，賣出彈跳的踏地感）
@@ -968,6 +978,8 @@
     ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.fill();
 
+    // 被打趴的角色整個壓暗(連同 sprite/fallback),畫完角色再還原,名字保持清晰好認。
+    if (downed) ctx.globalAlpha = 0.4;
     if (artOk("player")) {
       // 像素角色:列=朝向(0下1左2右3上)、欄=走路影格(0-3);靜止用第 0 格。
       const dir = facingToDir(p.facing);
@@ -993,6 +1005,14 @@
       ctx.arc(fx, fy, 4, 0, Math.PI * 2);
       ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
       ctx.fill();
+    }
+    // 角色畫完還原透明度,名字與 💤 標記保持滿不透明、清晰好認。
+    if (downed) {
+      ctx.globalAlpha = 1;
+      // 頭上掛 💤:被打趴/休息復原中的持續標記(對稱敵人被打倒的一閃,這個是長駐狀態)。
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("💤", sx + 12, sy - 26);
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
