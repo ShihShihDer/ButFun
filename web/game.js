@@ -1603,7 +1603,7 @@
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
-  // 接線後 client 送 { type:"craft", recipe:id },產物隨既有背包快照回來,零契約變更。
+  // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
   const CRAFT_RECIPES = [
     { id: "pickaxe", out: "pickaxe", outQty: 1, inputs: [["wood", 3], ["stone", 2]] },
   ];
@@ -1653,7 +1653,7 @@
 
   // 合成台:把背包快照(品項→數量)對照配方表,畫出每條「產物 ← 素材」與一顆合成鈕。
   // 缺料的素材標紅、合成鈕反灰停用——這只是前端提示,讓玩家一眼知道差什麼;扣不扣得成
-  // 仍由伺服器查表決定。點鈕送 { type:"craft", recipe:id } 意圖,產物隨既有背包快照回來。
+  // 仍由伺服器查表決定。點鈕送 { type:"craft", recipe_id:id } 意圖,產物隨既有背包快照回來。
   function updateCraftPanel(inv) {
     const summary = document.getElementById("craftSummary");
     const body = document.getElementById("craftBody");
@@ -1697,7 +1697,9 @@
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
         // 只送意圖:伺服器查配方扣料、產物隨既有背包快照回來(規則只在伺服器,前端不自行加道具)。
-        try { ws.send(JSON.stringify({ type: "craft", recipe: r.id })); } catch {}
+        // 欄位用 recipe_id 對齊伺服器 ClientMsg::Craft{recipe_id}——serde 的 rename_all="snake_case"
+        // 只改 variant 名、不串到 struct 欄位(既有 name/species/text 皆原 Rust 名),故欄位即 recipe_id。
+        try { ws.send(JSON.stringify({ type: "craft", recipe_id: r.id })); } catch {}
         announce(`合成 ${outName}`);
       });
       row.appendChild(desc);
