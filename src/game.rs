@@ -17,6 +17,15 @@ type OnlinePlayerRow = (uuid::Uuid, String, String, f32, f32, u32);
 /// 配合「每秒結算一次」:銹蝕機(6hp)約 3 秒、乙太靈(4hp)約 2 秒打倒。
 const PLAYER_ATTACK_POWER: u32 = 2;
 
+/// 這個 tick 要不要建構並廣播世界快照。
+/// 沒有任何訂閱者（連線的客戶端）時回 false——自走營運的離峰時段沒人連線,
+/// 每 tick 把整個世界轉成 JSON 純屬浪費。判斷抽成純函式以便測試(同 `ws::forward_action` 慣例)。
+/// 注意:世界本身的推進(日夜/農地/節點/敵人/玩家位置與生命)與此無關、每 tick 必跑,
+/// 這裡只決定「要不要序列化送出」。
+fn should_broadcast(receiver_count: usize) -> bool {
+    receiver_count > 0
+}
+
 /// 啟動遊戲迴圈，常駐執行。
 pub fn spawn(app: AppState) {
     tokio::spawn(async move {
@@ -133,27 +142,34 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 整合位置 + 推進生命回復,並建立快照（短暫持鎖，不跨 await）。
-            let snapshot = {
+            // 整合位置 + 推進生命回復（權威模擬,每 tick 必跑,與有無觀眾無關;短暫持鎖,不跨 await）。
+            {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
                     p.step(dt);
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                 }
+            }
 
-                ServerMsg::Snapshot {
-                    tick,
-                    players: players.values().map(|p| p.view()).collect(),
-                    fields: field_views,
-                    nodes: node_views,
-                    enemies: enemy_views,
-                    daynight: daynight_view,
+            // 廣播快照——只在有訂閱者時才建構並序列化。沒人連線的離峰時段跳過,省下每 tick
+            // 把整個世界轉 JSON 的 CPU(上面的世界推進照常跑、狀態不停)。新訂閱者本來就是等
+            // 下一個 tick 才收到第一筆快照,故下一個有人連上的 tick 會立刻送出完整快照,延遲不變。
+            if should_broadcast(app.tx.receiver_count()) {
+                let snapshot = {
+                    let players = app.players.read().unwrap();
+                    ServerMsg::Snapshot {
+                        tick,
+                        players: players.values().map(|p| p.view()).collect(),
+                        fields: field_views,
+                        nodes: node_views,
+                        enemies: enemy_views,
+                        daynight: daynight_view,
+                    }
+                };
+                // 沒有訂閱者時 send 會回 Err（這裡已 receiver_count>0,正常路徑），忽略即可。
+                if let Ok(json) = serde_json::to_string(&snapshot) {
+                    let _ = app.tx.send(json);
                 }
-            };
-
-            // 沒有訂閱者時 send 會回 Err，忽略即可。
-            if let Ok(json) = serde_json::to_string(&snapshot) {
-                let _ = app.tx.send(json);
             }
 
             // 定期把「線上已登入玩家」的位置 + 乙太快照落地（每 ~10 秒一次）。
@@ -221,4 +237,20 @@ pub async fn flush_all(app: &AppState) {
     // 不跨 await）再非同步寫出,重啟後從同一個時刻接續、不跳回破曉。
     let daynight_now = *app.daynight.read().unwrap();
     app.daynight_store.flush(&daynight_now).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_broadcast;
+
+    #[test]
+    fn 沒有訂閱者時不廣播() {
+        assert!(!should_broadcast(0));
+    }
+
+    #[test]
+    fn 有任一訂閱者就廣播() {
+        assert!(should_broadcast(1));
+        assert!(should_broadcast(42));
+    }
 }
