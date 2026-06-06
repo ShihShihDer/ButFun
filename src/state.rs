@@ -174,10 +174,11 @@ impl AppState {
             FieldStore::new(),
             DayNightStore::new(),
             UserStore::new(),
+            SuggestionStore::new(),
         )
     }
 
-    /// 用已備好的位置 / 背包 / 農地 / 日夜 / 帳號 store 建狀態。`main` 連好 Postgres 後會傳入
+    /// 用已備好的位置 / 背包 / 農地 / 日夜 / 帳號 / 建議 store 建狀態。`main` 連好 Postgres 後會傳入
     /// DB-backed 的 store（見各自的 `from_pool`）,其餘狀態不變。農地 store 同時種回兩份權威狀態:`fields`
     /// （每塊地、origin 已 reseat 好）與 `plots`（序號歸屬），讓重啟後農地與地塊歸屬都還在；
     /// 日夜 store 種回上次的世界時刻（沒存檔時為破曉）。
@@ -187,6 +188,7 @@ impl AppState {
         field_store: FieldStore,
         daynight_store: DayNightStore,
         users: UserStore,
+        suggestions: SuggestionStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -205,7 +207,7 @@ impl AppState {
             enemies: Arc::new(RwLock::new(EnemyField::new())),
             tx,
             tx_chat,
-            suggestions: SuggestionStore::new(),
+            suggestions,
             users,
             positions,
             inventories,

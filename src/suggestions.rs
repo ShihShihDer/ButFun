@@ -1,14 +1,26 @@
 //! 遊戲內建議箱 —— 玩家回饋迴圈的伺服器端。
 //!
 //! 這直接服務「玩家在遊戲裡送建議 → 我收到 → 改版 → 發佈」的營運迴圈。
-//! 建議同時存在記憶體（即時列出）與附加到 `data/suggestions.jsonl`（重啟後仍在、
-//! 方便直接讀）。之後可無痛換成 Postgres 資料表。
+//! 建議同時存在記憶體（即時列出）與附加到耐久層（重啟後仍在）。建議是真實玩家資料,
+//! 耐久層在記憶體 Vec 後面可抽換(沿 `users.rs` 同一套 0-E 結構):
+//!   - `Postgres`：設了 `DATABASE_URL` 時,啟動載回全部建議、新增時非同步 insert(正式上線走這條)。
+//!   - `Jsonl`：沒設 `DATABASE_URL`(本機 `cargo run`)時 append 寫穿 `data/suggestions.jsonl`。
+//!   - `Memory`：測試用,不碰磁碟也不碰 DB。
+//!
+//! 延續其他 store 的設計權衡(DB 為主、JSONL 補洞;寫入失敗只記 log 不中斷送出;載入時
+//! 一律過 sanitizer 驗壞值)。建議是 append-only、無更新語意,故沒有 upsert,只有 insert。
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPool;
+use sqlx::Row;
 
+/// 無 `DATABASE_URL` 時的退回持久化檔(執行期產生、已 gitignore)。接 Postgres 後這個檔
+/// 退為「遷移種子」：啟動時 DB 還沒有的建議仍會從這裡補回記憶體並一次性 insert 進 DB,
+/// 讓換版(從 JSONL 版切到 Postgres 版)不會把既有建議丟掉。
 const LOG_PATH: &str = "data/suggestions.jsonl";
 
 /// 建議署名最長字元數（與玩家名 `sanitize_name` 的上限一致）。
@@ -81,29 +93,99 @@ fn sanitize(from: &str, text: &str, at: u64) -> Option<Suggestion> {
     })
 }
 
+/// 記憶體 Vec 後面的耐久層。
+#[derive(Clone)]
+enum Backend {
+    /// 測試用：不載入、不寫。只在 `#[cfg(test)]` 的 `in_memory()` 建構,故非測試建置標 allow。
+    #[cfg_attr(not(test), allow(dead_code))]
+    Memory,
+    /// 沒設 `DATABASE_URL`：append 寫穿到此 JSONL 檔。
+    Jsonl(&'static str),
+    /// 設了 `DATABASE_URL`：啟動載回全部建議、新增時 insert 到 `suggestions` 表。
+    Postgres(PgPool),
+}
+
 /// 建議的存放處。可被複製（內部共享）。
 #[derive(Clone)]
 pub struct SuggestionStore {
     items: Arc<Mutex<Vec<Suggestion>>>,
+    backend: Backend,
 }
 
 impl SuggestionStore {
+    /// 無 DB 模式(測試、本機 `cargo run`)：記憶體從 JSONL 載入,新增時 append 寫穿 JSONL。
     pub fn new() -> Self {
         let items = load_from_disk();
         Self {
             items: Arc::new(Mutex::new(items)),
+            backend: Backend::Jsonl(LOG_PATH),
+        }
+    }
+
+    /// Postgres 模式(正式上線)：啟動時把 `suggestions` 表全部載回,再用既有 JSONL 補齊
+    /// DB 還沒有的建議——並把這些補進來的建議**一次性 insert 進 DB**,讓換版(從 JSONL 版
+    /// 切到 Postgres 版)時既有建議不會丟。建議無自然主鍵(append-only),回填用
+    /// `(from, text, at)` 三元組去重保證冪等：已在 DB 的同內容同毫秒建議不會重插,重啟
+    /// 多次也不會把 JSONL 的舊建議灌成重複列。這個「DB 為主、JSONL 補洞」順序與
+    /// `UserStore::from_pool` 等一致。
+    pub async fn from_pool(pool: PgPool) -> Self {
+        let mut items = load_from_db(&pool).await;
+        let known: HashSet<(String, String, u64)> = items
+            .iter()
+            .map(|s| (s.from.clone(), s.text.clone(), s.at))
+            .collect();
+        // JSONL 裡 DB 還沒有的建議:補進記憶體,並一次性回填進 DB。
+        for s in load_from_disk() {
+            if !known.contains(&(s.from.clone(), s.text.clone(), s.at)) {
+                if let Err(e) = insert_suggestion(&pool, &s).await {
+                    tracing::warn!("JSONL 建議回填 Postgres 失敗(仍保留在記憶體):{e}");
+                }
+                items.push(s);
+            }
+        }
+        Self {
+            items: Arc::new(Mutex::new(items)),
+            backend: Backend::Postgres(pool),
+        }
+    }
+
+    /// 純記憶體版(測試用)：不載入、不寫磁碟、不碰 DB。
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        Self {
+            items: Arc::new(Mutex::new(Vec::new())),
+            backend: Backend::Memory,
         }
     }
 
     /// 新增一則建議；清乾淨後內容變空(全空白 / 全控制字元)回 `None`、不存任何東西，
     /// 否則回存好的紀錄。把「擋空」收斂到實際會被存下的內容上，避免空建議垃圾進檔。
-    pub fn add(&self, new: NewSuggestion) -> Option<Suggestion> {
+    ///
+    /// 耐久寫入在**放開鎖之後** await(DB insert 是 async,不在持鎖路徑上 await——避免跨
+    /// await 持 `Mutex`,沿 `UserStore::find_or_create` 的鎖／await 切分)。
+    pub async fn add(&self, new: NewSuggestion) -> Option<Suggestion> {
         let suggestion = sanitize(&new.from, &new.text, now_millis())?;
-        append_to_disk(&suggestion);
-        let mut items = self.items.lock().unwrap();
-        items.push(suggestion.clone());
+        self.persist(&suggestion).await;
+        {
+            let mut items = self.items.lock().unwrap();
+            items.push(suggestion.clone());
+        }
         tracing::info!(from = %suggestion.from, "收到玩家建議：{}", suggestion.text);
         Some(suggestion)
+    }
+
+    /// 把一則建議落地到耐久層。Jsonl 模式 append 一行;Postgres 模式 insert 一列;Memory 無動作。
+    /// 寫入失敗只記 log、不中斷送出(記憶體仍是行程內權威,GET 仍看得到)。
+    async fn persist(&self, s: &Suggestion) {
+        match &self.backend {
+            Backend::Memory => {}
+            Backend::Jsonl(path) => append_to_disk_at(path, s),
+            Backend::Postgres(pool) => {
+                if let Err(e) = insert_suggestion(pool, s).await {
+                    tracing::warn!("Postgres suggestions insert 失敗:{e}");
+                }
+            }
+        }
     }
 
     /// 列出所有建議（最新的在前）。
@@ -160,22 +242,58 @@ fn parse_and_sanitize(contents: &str) -> Vec<Suggestion> {
         .collect()
 }
 
-fn append_to_disk(s: &Suggestion) {
-    if let Some(parent) = std::path::Path::new(LOG_PATH).parent() {
+fn append_to_disk_at(path: &str, s: &Suggestion) {
+    if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(LOG_PATH)
-    {
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
         Ok(mut file) => {
             if let Ok(line) = serde_json::to_string(s) {
                 let _ = writeln!(file, "{line}");
             }
         }
-        Err(e) => tracing::warn!("無法寫入建議檔 {LOG_PATH}: {e}"),
+        Err(e) => tracing::warn!("無法寫入建議檔 {path}: {e}"),
     }
+}
+
+/// insert 一則建議到 `suggestions` 表。走 runtime query API(非 `query!` 巨集),故 build/test
+/// 不需 live DB。`id` 由 BIGSERIAL 自動配;`at` 是 Unix 毫秒(對齊 `Suggestion.at: u64`)。
+async fn insert_suggestion(pool: &PgPool, s: &Suggestion) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO suggestions (from_name, text, at) VALUES ($1, $2, $3)")
+        .bind(&s.from)
+        .bind(&s.text)
+        .bind(s.at as i64)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 啟動時把 `suggestions` 表全部載回(依 `at`、再 `id` 排序保住送出順序,讓 `list` 的 `rev()`
+/// 仍是最新在前)。顯示用欄位(`from` / `text`)一律過 sanitizer,與 JSONL 載入路徑
+/// (`parse_and_sanitize`)同一道防線——磁碟被竄改也不會把控制字元帶進 GET 輸出。清乾淨後
+/// 變空的列丟掉(比照寫入路徑「空建議不存」)。載入失敗(DB 連線剛斷等)回空清單,讓伺服器
+/// 仍能起來、之後再寫回。
+async fn load_from_db(pool: &PgPool) -> Vec<Suggestion> {
+    let rows = match sqlx::query("SELECT from_name, text, at FROM suggestions ORDER BY at ASC, id ASC")
+        .fetch_all(pool)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("從 Postgres 載入 suggestions 失敗(先以空清單起來):{e}");
+            return Vec::new();
+        }
+    };
+    rows.into_iter()
+        .filter_map(|r| {
+            let at: i64 = r.get("at");
+            sanitize(
+                &r.get::<String, _>("from_name"),
+                &r.get::<String, _>("text"),
+                at as u64,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -303,6 +421,57 @@ mod tests {
         assert_eq!(out[0].from, "拓荒者");
         assert_eq!(out[0].text, "多一點花");
         assert_eq!(out[0].at, 100);
+    }
+
+    // ===== store 行為（純記憶體 backend，不碰磁碟 / DB）=====
+
+    #[tokio::test]
+    async fn add_stores_and_lists_newest_first() {
+        // add 成功後該則建議進記憶體;list 最新在前(後加的先列)。純記憶體 backend 不碰磁碟/DB。
+        let store = SuggestionStore::in_memory();
+        let a = store
+            .add(NewSuggestion {
+                from: "甲".into(),
+                text: "第一則".into(),
+            })
+            .await
+            .expect("有內容應存下");
+        let b = store
+            .add(NewSuggestion {
+                from: "乙".into(),
+                text: "第二則".into(),
+            })
+            .await
+            .expect("有內容應存下");
+        // 兩則都過 sanitize 存下。
+        assert_eq!(a.text, "第一則");
+        assert_eq!(b.text, "第二則");
+        let listed = store.list();
+        assert_eq!(listed.len(), 2);
+        // list 最新在前：後加的「第二則」排第一。
+        assert_eq!(listed[0].text, "第二則");
+        assert_eq!(listed[1].text, "第一則");
+    }
+
+    #[tokio::test]
+    async fn add_rejects_empty_after_sanitize_and_stores_nothing() {
+        // 清乾淨後變空的內容(全控制字元 / 全空白)回 None、不進記憶體,不留空建議垃圾。
+        let store = SuggestionStore::in_memory();
+        assert!(store
+            .add(NewSuggestion {
+                from: "我".into(),
+                text: "\0\u{1b}\t".into(),
+            })
+            .await
+            .is_none());
+        assert!(store
+            .add(NewSuggestion {
+                from: "我".into(),
+                text: "   ".into(),
+            })
+            .await
+            .is_none());
+        assert!(store.list().is_empty(), "被拒的建議不該進記憶體");
     }
 
     #[test]
