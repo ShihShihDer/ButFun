@@ -8,6 +8,11 @@ use crate::state::AppState;
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
 
+/// flush 時從玩家快照收下的「線上已登入玩家狀態列」:id、名字、物種、座標、乙太。
+/// 與 `PositionStore::flush_online` 收的列型別逐欄對齊(同一瞬間的快照),集中這串否則
+/// 會在 `flush_all` 觸發 clippy `type_complexity` 警告的長 tuple,讓該處標註更易讀。
+type OnlinePlayerRow = (uuid::Uuid, String, String, f32, f32, u32);
+
 /// 玩家每次自動攻擊的傷害(戰鬥 1-F)。固定值,將來武器/技能可加倍(1-D 工具倍率同款)。
 /// 配合「每秒結算一次」:銹蝕機(6hp)約 3 秒、乙太靈(4hp)約 2 秒打倒。
 const PLAYER_ATTACK_POWER: u32 = 2;
@@ -169,7 +174,7 @@ pub fn spawn(app: AppState) {
 pub async fn flush_all(app: &AppState) {
     // 同一把 read 鎖內一併收位置與背包,兩者快照來自同一瞬間、不會錯位。
     let (online, inventories): (
-        Vec<(uuid::Uuid, String, String, f32, f32, u32)>,
+        Vec<OnlinePlayerRow>,
         Vec<(uuid::Uuid, crate::inventory::Inventory)>,
     ) = {
         let players = app.players.read().unwrap();
