@@ -84,8 +84,10 @@ impl PlotRegistry {
     /// 要防的災難。比照 `positions::spawn_at`／`field::from_tiles`／`daynight::at`
     /// 那條「每個存檔又重載的結構都在載入路徑驗證自身不變式」的硬化弧線。
     ///
-    /// 重複的 `user_id` 取後見者（`HashMap` 覆蓋語意）；重複的**序號**不在這層擋
-    /// （持久化端以 UNIQUE 保證唯一），這裡只負責 `next` 絕不回頭。空輸入＝全新登記表
+    /// 重複的 `user_id` 取後見者（`HashMap` 覆蓋語意）；重複的**序號**不在這層擋——持久化端
+    /// 保證序號唯一（Postgres 走 `fields_plot_index_key` UNIQUE 約束；JSONL 走
+    /// `field_store::load_from_disk`／`merge_seed` 的載入時撞號去重），這裡只負責 `next` 絕不
+    /// 回頭。空輸入＝全新登記表
     /// （`next` 為 0，第一個玩家仍拿序號 0、對齊現有全域農地）。
     /// 0-E 接線後：`AppState::with_stores` 啟動時用 `field_store.saved_plots()` 餵這裡重建歸屬。
     pub fn from_saved(saved: impl IntoIterator<Item = (Uuid, usize)>) -> Self {

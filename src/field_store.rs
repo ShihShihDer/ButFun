@@ -19,7 +19,7 @@
 //! 載入逐列過 `Field::reseated`（格數正確 + 每株作物健全）驗證，壞檔（格數錯、作物 NaN/Inf/
 //! 負成長、被竄改）整列丟棄，不把壞值帶進世界。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::{Arc, RwLock};
 
@@ -87,10 +87,7 @@ impl FieldStore {
     /// 沒有的 id。「DB 為主、JSONL 補洞」的順序與 `InventoryStore::from_pool` 一致——換版時
     /// DB 可能還空，不從 JSONL 種回會讓 returning 玩家重啟後丟掉整塊地。
     pub async fn from_pool(pool: PgPool) -> Self {
-        let mut cache = load_fields_from_db(&pool).await;
-        for (id, stored) in load_from_disk(STORE_PATH) {
-            cache.entry(id).or_insert(stored); // DB 沒有的才用 JSONL 補，DB 優先
-        }
+        let cache = merge_seed(load_fields_from_db(&pool).await, load_from_disk(STORE_PATH));
         Self {
             inner: Arc::new(RwLock::new(cache)),
             backend: Backend::Postgres(pool),
@@ -262,21 +259,70 @@ async fn load_fields_from_db(pool: &PgPool) -> HashMap<Uuid, Stored> {
     map
 }
 
+/// 把 JSONL 種子併入從 DB 載回的 cache：**DB 為主**。DB 已有的玩家不被種子覆蓋；種子裡 DB 還
+/// 沒有的玩家才補進來,且其序號不得撞到任何已被占用的序號（DB 的、或先補進的種子列），撞到就跳過。
+///
+/// 為何需要這道防線:`PlotRegistry::from_saved` 的招牌不變式是「一塊地一個地主」,它倚賴「持久化
+/// 端保證序號唯一」。Postgres 端有 `fields_plot_index_key` UNIQUE 約束撐著,但 JSONL 種子**沒有**
+/// ——壞檔/手改、或換版遷移窗口裡 DB 與舊種子各記了同一序號的不同玩家,天真合併會讓兩個 id 帶同一
+/// 序號流進 `loaded_fields()`／`saved_plots()`,造成「同一塊地兩個地主、作物歸屬錯亂」。延續本專案
+/// `field::reseated`／`users::parse_and_sanitize` 那條「存檔又重載一律在載入路徑驗證不變式」的硬化弧線。
+///
+/// 種子 `HashMap` 迭代序不定,故先依 `(序號, id)` 排序,讓撞號時保留誰具決定性（不依賴雜湊隨機序）。
+fn merge_seed(
+    mut db: HashMap<Uuid, Stored>,
+    seed: HashMap<Uuid, Stored>,
+) -> HashMap<Uuid, Stored> {
+    let mut used: HashSet<usize> = db.values().map(|s| s.plot_index).collect();
+    let mut rows: Vec<(Uuid, Stored)> = seed.into_iter().collect();
+    rows.sort_by_key(|(id, s)| (s.plot_index, *id));
+    for (id, stored) in rows {
+        if db.contains_key(&id) {
+            continue; // DB 已有此玩家,以 DB 為準（不被舊種子覆蓋）。
+        }
+        if !used.insert(stored.plot_index) {
+            tracing::warn!(
+                "JSONL 補洞跳過 player {id} 的地塊:序號 {} 已被占用（避免同一塊地兩個地主）",
+                stored.plot_index
+            );
+            continue;
+        }
+        db.insert(id, stored);
+    }
+    db
+}
+
 fn load_from_disk(path: &str) -> HashMap<Uuid, Stored> {
     let mut map = HashMap::new();
+    // 守住「一塊地一個地主」:JSONL 沒有 DB 的 UNIQUE 約束,壞檔/手改可能讓兩列不同 id 撞同一序號。
+    // 依檔案順序先到先得,後到的撞號列跳過（同一 id 更新同序號仍放行）。
+    let mut owner_of_index: HashMap<usize, Uuid> = HashMap::new();
     if let Ok(contents) = std::fs::read_to_string(path) {
         for line in contents.lines() {
             if let Ok(r) = serde_json::from_str::<DiskRow>(line) {
                 // 同 DB 載入：經 reseated 安置回序號的 origin 並驗證；壞檔（格數/作物）一律跳過。
-                if let Some(field) = r.field.reseated(r.plot_index) {
-                    map.insert(
-                        r.id,
-                        Stored {
-                            plot_index: r.plot_index,
-                            field,
-                        },
-                    );
+                let Some(field) = r.field.reseated(r.plot_index) else {
+                    continue;
+                };
+                if let Some(&owner) = owner_of_index.get(&r.plot_index) {
+                    if owner != r.id {
+                        tracing::warn!(
+                            "載入 fields.jsonl 跳過 player {} 的地塊:序號 {} 已屬 {}（壞檔/手改撞號,避免重複地主）",
+                            r.id,
+                            r.plot_index,
+                            owner
+                        );
+                        continue;
+                    }
                 }
+                owner_of_index.insert(r.plot_index, r.id);
+                map.insert(
+                    r.id,
+                    Stored {
+                        plot_index: r.plot_index,
+                        field,
+                    },
+                );
             }
         }
     }
@@ -359,6 +405,100 @@ mod tests {
         assert_eq!(back.plot_index, 4);
         // serde 還原的 field origin 退回 (0,0)；reseat 回序號 4 後整塊一致。
         assert_eq!(back.field.reseated(4), Some(f));
+    }
+
+    fn stored(index: usize) -> Stored {
+        Stored {
+            plot_index: index,
+            field: Field::for_plot(index),
+        }
+    }
+
+    #[test]
+    fn merge_seed_db_wins_for_same_player() {
+        // DB 已有此玩家:種子裡同 id 的舊紀錄不得覆蓋 DB（即使序號不同）。
+        let id = Uuid::new_v4();
+        let db = HashMap::from([(id, stored(0))]);
+        let seed = HashMap::from([(id, stored(5))]);
+        let merged = merge_seed(db, seed);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged.get(&id).unwrap().plot_index, 0, "DB 序號為準");
+    }
+
+    #[test]
+    fn merge_seed_fills_only_new_players() {
+        // 種子裡 DB 還沒有、且序號不撞的玩家才補進來（換版遷移:DB 還空時從 JSONL 種回）。
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let db = HashMap::from([(a, stored(0))]);
+        let seed = HashMap::from([(b, stored(1))]);
+        let merged = merge_seed(db, seed);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get(&a).unwrap().plot_index, 0);
+        assert_eq!(merged.get(&b).unwrap().plot_index, 1);
+    }
+
+    #[test]
+    fn merge_seed_skips_seed_row_colliding_with_db_index() {
+        // 招牌防線:種子裡某玩家的序號已被 DB 的別人占用 → 跳過,避免「同一塊地兩個地主」。
+        let db_owner = Uuid::new_v4();
+        let seed_owner = Uuid::new_v4();
+        let fresh = Uuid::new_v4();
+        let db = HashMap::from([(db_owner, stored(0))]);
+        let seed = HashMap::from([(seed_owner, stored(0)), (fresh, stored(1))]);
+        let merged = merge_seed(db, seed);
+        // 序號 0 仍只屬 DB 的地主;撞號的種子列被丟,不撞號的 fresh 照補。
+        assert_eq!(merged.get(&db_owner).unwrap().plot_index, 0);
+        assert!(!merged.contains_key(&seed_owner), "撞 DB 序號的種子列應跳過");
+        assert_eq!(merged.get(&fresh).unwrap().plot_index, 1);
+        // 每個序號至多一個地主（招牌不變式）。
+        let indices: Vec<usize> = merged.values().map(|s| s.plot_index).collect();
+        let unique: HashSet<usize> = indices.iter().copied().collect();
+        assert_eq!(indices.len(), unique.len(), "不得有兩個地主共用同一序號");
+    }
+
+    #[test]
+    fn merge_seed_dedups_within_seed_deterministically() {
+        // DB 空、種子裡兩個不同 id 撞同一序號:保留依 (序號,id) 排序的前者,且結果具決定性。
+        let mut lo = Uuid::new_v4();
+        let mut hi = Uuid::new_v4();
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        let seed = HashMap::from([(lo, stored(0)), (hi, stored(0))]);
+        let merged = merge_seed(HashMap::new(), seed);
+        assert_eq!(merged.len(), 1, "撞號只留一個地主");
+        assert!(merged.contains_key(&lo), "依 (序號,id) 排序保留較小 id");
+    }
+
+    #[test]
+    fn load_from_disk_skips_duplicate_plot_index() {
+        // 壞檔/手改:兩列不同 id 撞同一序號。載入後該序號只能有一個地主（先到先得）。
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!("butfun_fieldstore_dup_{a}.jsonl"));
+        let path = path.to_str().unwrap();
+        let rows = [
+            DiskRow {
+                id: a,
+                plot_index: 0,
+                field: Field::for_plot(0),
+            },
+            DiskRow {
+                id: b,
+                plot_index: 0, // 撞號:同序號不同玩家
+                field: Field::for_plot(0),
+            },
+        ];
+        let body: Vec<String> = rows.iter().map(|r| serde_json::to_string(r).unwrap()).collect();
+        std::fs::write(path, body.join("\n")).unwrap();
+
+        let map = load_from_disk(path);
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(map.len(), 1, "撞號的第二列應被跳過");
+        assert!(map.contains_key(&a), "先到的 a 保住序號 0");
+        assert!(!map.contains_key(&b), "後到撞號的 b 被丟");
     }
 
     #[tokio::test]
