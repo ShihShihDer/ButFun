@@ -1027,6 +1027,21 @@
     // 自己恆金色(一眼找到自己);別人依代號材質詞(族群)上色,讓不同族群在名牌就分得開。
     ctx.fillStyle = isMe ? "#ffd24a" : kinAccent(p.name);
     ctx.fillText(p.name, sx, sy - 24);
+
+    // 玩家血條:活著但不滿血才畫,畫在腳下。鏡像敵人血條(走近會自動開打、敵我都該一眼看出血量)
+    // 的對稱面——原本只有敵人頭上有條,玩家自己/別人挨打後即使站著也看不出血量,只剩 HUD 一個小數字
+    // (移動中很容易漏看,見受擊播報/紅光的同一動機)和一閃即逝的紅光。補這條長駐血條,讓「誰受傷了
+    // /我血剩多少」在世界上持續可讀。被打趴(hp<=0)另有 💤+壓暗,故只在 0<hp<max 時畫。純讀權威快照
+    // 血量、純表現,不嵌任何戰鬥規則(伺服器權威);hp 缺值(訪客/舊伺服器)時不畫,不影響原行為。
+    if (typeof p.hp === "number" && p.max_hp > 0 && p.hp > 0 && p.hp < p.max_hp) {
+      const bw = 24;
+      const bx = sx - bw / 2;
+      const hby = sy + 18; // 腳下陰影(sy+12)之下,不蓋到角色與名字
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(bx - 1, hby - 1, bw + 2, 6);
+      ctx.fillStyle = "#d65a5a"; // 與敵人血條同一危險紅,語彙一致
+      ctx.fillRect(bx, hby, bw * (p.hp / p.max_hp), 4);
+    }
   }
 
   function render() {
