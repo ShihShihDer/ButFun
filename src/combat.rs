@@ -393,4 +393,47 @@ mod tests {
         assert!(matches!(drone_item, ItemKind::Stone));
         assert!(matches!(wisp_item, ItemKind::Ether));
     }
+
+    #[test]
+    fn every_enemy_drop_is_a_usable_economic_resource() {
+        // 跨模組不變式（1-F 戰鬥 × 1-B 物品 × 1-C 合成 × 0-G-O2 經濟），與 `crafting` 的
+        // `every_recipe_input_is_obtainable`、`tools` 的 `every_tool_item_is_obtainable` 同屬
+        // 「無死路」守則家族，但方向是**掉落側**：每一種敵人打倒後掉的東西，玩家都要有地方
+        // 用掉，否則就是「打了半天掉一堆沒去處的垃圾」的死掉落。
+        //
+        // 本模組頂註白紙黑字：掉落「沿用既有 `ItemKind`、不另開物品變體」「直接咬進採集 /
+        // 合成已有的資源經濟」——掉落該是能再投入經濟的**原料或乙太**。此前
+        // `each_kind_drops_an_existing_resource` 只**寫死**現有兩種掉落的具體值，察覺不到日後
+        // 新增的第三種敵人掉了個沒去處的東西。PLAN 自己就指向再加敵人 / 掉落，屆時這正是會踩
+        // 的坑。趁敵人種類還少，把「凡掉落必有去處」鎖成遍歷所有 `EnemyKind` 的組合測試：日後
+        // 加敵人時若讓它掉一個沒人消耗的死物品，當場紅燈。
+        //
+        // 「有去處」＝該物品被某條配方當素材消耗（合成原料），**或**它是乙太（`economy` 的擴地
+        // 消耗點吃掉它）。日後若有意讓敵人掉「成品工具」之類非原料的東西，會在此紅燈，逼人確認
+        // 是有意設計再更新本不變式（比照工具 / 配方家族遇到漂移時的做法）。
+        use crate::crafting::RECIPES;
+
+        // 窮舉守衛：新增 EnemyKind 變體卻忘了加進 KINDS 時，此 match 不窮舉、編譯失敗，
+        // 逼人回來把新種類納入本遍歷（比照 crafting 對 NodeKind 的窮舉守衛）。
+        for kind in KINDS {
+            match kind {
+                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+            }
+        }
+
+        for kind in KINDS {
+            let (item, qty) = kind.drop_loot();
+            assert!(qty > 0, "敵人 {kind:?} 的掉落數量應 > 0");
+            let is_crafting_input = RECIPES
+                .iter()
+                .any(|r| r.inputs.iter().any(|&(i, _)| i == item));
+            let is_currency = item == ItemKind::Ether;
+            assert!(
+                is_crafting_input || is_currency,
+                "敵人 {kind:?} 掉落 {item:?}，但它既不是任何配方的素材、也不是乙太貨幣——\
+                 玩家打倒它拿到的是沒有去處的死掉落；請讓掉落沿用能再投入合成 / 經濟的原料或\
+                 乙太，或若有意讓敵人掉成品，再更新本不變式"
+            );
+        }
+    }
 }
