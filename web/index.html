@@ -168,6 +168,31 @@
     }
     #craftBody .craft-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
+    /* 擴地面板:沿用合成台同一套收合/反灰語彙(乙太夠亮黃銅、不夠或達上限反灰停用)。
+       「下一格要多少乙太」佔滿剩餘寬度,乙太不足時價格標紅讓玩家一眼知道還差多少。 */
+    #expandToggle { cursor: pointer; user-select: none; }
+    #expandToggle:hover { opacity: 0.85; }
+    #expandToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    #expandSummary { color: var(--ink); }
+    #expandCaret { display: inline-block; transition: transform 0.15s; }
+    #hudExpand.expand-collapsed #expandCaret { transform: rotate(-90deg); }
+    #hudExpand.expand-collapsed #expandBody { display: none; }
+    #expandBody { margin: 2px 0 0 2px; opacity: 0.9; }
+    #expandBody .expand-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+    #expandBody .expand-desc { flex: 1; }
+    #expandBody .expand-cost { color: var(--brass); }
+    #expandBody .expand-cost.lack { color: #e0795f; }
+    #expandBody .expand-btn {
+      font: inherit; cursor: pointer; padding: 3px 12px; font-size: 0.85rem; white-space: nowrap;
+      border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
+    }
+    #expandBody .expand-btn:hover:not(:disabled) { filter: brightness(1.1); }
+    #expandBody .expand-btn:disabled {
+      cursor: default; background: #161b22; color: var(--ink);
+      border: 1px solid #3a4250; font-weight: 400; opacity: 0.55;
+    }
+    #expandBody .expand-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+
     /* 聊天 */
     #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
       /* 軟鍵盤彈起時整塊抬到鍵盤之上(見 game.js initChatKeyboardLift),平滑移動不跳。 */
@@ -320,6 +345,18 @@
            aria-label="合成台" title="合成台"><span id="craftCaret">▾</span> 🔧 合成台<span id="craftSummary"></span></div>
       <div id="craftBody"></div>
     </div>
+    <!-- 擴地:可收合面板（與合成台/背包同一套語彙）。收成的乙太只進不出、數字一直變大卻沒
+         去處——擴地給乙太一個「花掉」的長期目標:花乙太把自己那塊農地多開一格,愈擴愈貴。
+         展開顯示「下一格要多少乙太」與一顆「擴地」鈕,乙太夠才亮、達上限改顯示「已達上限」。
+         點鈕送 buy_expansion 意圖,伺服器查餘額扣乙太、農地多開一格,新地塊隨既有 fields 快照
+         回來;夠不夠的反灰只是前端提示,扣款/開格規則仍只在伺服器(權威)。價格與上限對齊
+         src/economy.rs（基準 10、逐格漲、上限 12）。已購格數走快照未來欄位 expansions（沒有
+         就當 0,防呆),接線落地即生效——純前端、不嵌任何遊戲規則。 -->
+    <div id="hudExpand">
+      <div id="expandToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="expandBody"
+           aria-label="擴地" title="擴地"><span id="expandCaret">▾</span> 🌱 擴地<span id="expandSummary"></span></div>
+      <div id="expandBody"></div>
+    </div>
     <div id="hudTime">—</div>
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
@@ -378,6 +415,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-craft-panel"></script>
+  <script src="game.js?v=20260606-expand-panel"></script>
 </body>
 </html>
