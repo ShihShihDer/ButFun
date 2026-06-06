@@ -192,4 +192,33 @@ mod tests {
             "配方表裡找不到任何會產出工具的配方——1-C→1-D 的『合成出工具』玩法鏈斷了"
         );
     }
+
+    #[test]
+    fn every_tool_item_is_obtainable() {
+        // 跨模組不變式（1-B 物品 × 1-C 合成 × 1-D 工具效用），與
+        // `every_craftable_tool_is_worth_crafting` **互補的另一個方向**：那條守「配方→產物
+        // 採集更快」（每條工具配方都值得合）；這條守「工具→拿得到」（每個工具都有來源）。
+        //
+        // 兩者是不同的失敗模式：加了新工具配方卻忘了在 `tool_from_item` 補映射 / 設錯倍率，
+        // 前者紅燈；但若加了工具 `ItemKind` 變體＋`tool_from_item` 映射、**卻忘了給它配方**，
+        // 前者察覺不到——而工具不可採集（`From<NodeKind>` 只把採集節點映成 Wood/Stone/Ether
+        // 三種資源，見 `inventory.rs`），合成是唯一取得途徑，少了配方該工具就成為玩家**永遠
+        // 拿不到的死物品**。PLAN 自己就指向再加工具（斧／鋤），屆時這正是會踩的坑。趁物品宇宙
+        // 還小，把「凡工具必有來源」鎖成遍歷 `ItemKind::ALL` 的組合測試。
+        use crate::crafting::RECIPES;
+        use crate::inventory::ItemKind;
+
+        for &item in ItemKind::ALL {
+            // 只看「是工具」的物品；資源原料（木／石／乙太）靠採集取得，不在此不變式內。
+            if tool_from_item(item).is_some() {
+                let craftable = RECIPES.iter().any(|r| r.output == item);
+                assert!(
+                    craftable,
+                    "工具物品 {item:?} 沒有任何配方產出它——工具不可採集（gather 只產資源），\
+                     合成是唯一來源，少了配方它就是玩家永遠拿不到的死物品；請給它加一條合成\
+                     配方，或若改設計成採集／起始道具取得，再更新本不變式",
+                );
+            }
+        }
+    }
 }
