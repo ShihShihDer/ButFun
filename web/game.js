@@ -385,6 +385,7 @@
           invKnown = true;
           updateBagHud(inv);
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
+          updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -1606,6 +1607,13 @@
   const CRAFT_RECIPES = [
     { id: "pickaxe", out: "pickaxe", outQty: 1, inputs: [["wood", 3], ["stone", 2]] },
   ];
+  // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
+  // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
+  const EXPANSION_BASE_COST = 10;
+  const MAX_EXPANSIONS = 12;
+  // 已購 owned 格時,下一格要多少乙太。對齊 economy::expansion_cost——前端只算來顯示,
+  // 真正扣款/開格仍由伺服器查餘額決定。
+  const expansionCost = (owned) => EXPANSION_BASE_COST * (owned + 1);
   function updateBagHud(inv) {
     // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
     // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
@@ -1699,6 +1707,68 @@
     summary.textContent = craftable > 0 ? `：${craftable} 可合成` : "";
     // 標題鈕的無障礙標籤同步可合成數(收起時 body 被 display:none、報讀器讀不到)。
     const label = craftable > 0 ? `合成台：${craftable} 項可合成` : "合成台：素材不足";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+  }
+
+  // 擴地面板:依「我的乙太」與「已購擴張格數」算下一格價,畫出價格提示與一顆「擴地」鈕。
+  // owned 走快照未來欄位 expansions(伺服器接線後才有,沒有就當 0 防呆);乙太夠才亮鈕、
+  // 達上限改顯示「已達上限」並反灰。點鈕只送 buy_expansion 意圖,伺服器查餘額扣乙太、農地
+  // 多開一格,新地塊隨既有 fields 快照回來(零契約變更);夠不夠的反灰只是前端提示,扣款/
+  // 開格規則仍只在伺服器(權威),前端不自行改地塊。me 缺欄位一律防呆,接線落地即生效。
+  function updateExpandPanel(me) {
+    const summary = document.getElementById("expandSummary");
+    const body = document.getElementById("expandBody");
+    const toggle = document.getElementById("expandToggle");
+    if (!summary || !body || !toggle) return;
+    const ether = (me && me.ether) || 0;
+    const owned = (me && me.expansions) || 0; // 防呆:伺服器還沒接擴地 → 視為一格都還沒買
+    const atMax = owned >= MAX_EXPANSIONS;
+    const cost = expansionCost(owned);
+    const canBuy = !atMax && ether >= cost;
+    body.innerHTML = "";
+
+    const row = document.createElement("div");
+    row.className = "expand-row";
+    const desc = document.createElement("div");
+    desc.className = "expand-desc";
+    if (atMax) {
+      desc.textContent = "農地已擴到最大";
+    } else {
+      const lack = ether < cost;
+      // item 字串非玩家輸入,無注入風險;價格不足標紅讓玩家一眼知道還差多少乙太。
+      desc.innerHTML = `下一格 <span class="expand-cost${lack ? " lack" : ""}">✨ ${cost}</span>`;
+    }
+    row.appendChild(desc);
+
+    if (!atMax) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "expand-btn";
+      btn.textContent = "擴地";
+      btn.disabled = !canBuy;
+      btn.setAttribute(
+        "aria-label",
+        `花 ${cost} 乙太擴一格農地${canBuy ? "" : "（乙太不足）"}`
+      );
+      btn.title = canBuy ? `花 ${cost} 乙太擴一格` : "乙太不足";
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        // 只送意圖:伺服器查餘額扣乙太、農地多開一格,結果隨既有快照回來(規則只在伺服器)。
+        try { ws.send(JSON.stringify({ type: "buy_expansion" })); } catch {}
+        announce(`花 ${cost} 乙太擴地`);
+      });
+      row.appendChild(btn);
+    }
+    body.appendChild(row);
+
+    // 標題列摘要 + 無障礙標籤(收起時 body 被 display:none、報讀器讀不到,摘要掛常駐標題鈕上)。
+    summary.textContent = atMax ? "：已滿" : canBuy ? "：可擴" : "";
+    const label = atMax
+      ? "擴地：農地已擴到最大"
+      : canBuy
+        ? `擴地：可花 ${cost} 乙太擴一格`
+        : `擴地：下一格 ${cost} 乙太（不足）`;
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
   }
@@ -2353,6 +2423,32 @@
     });
   }
 
+  // ---- 擴地面板可收合 ----
+  // 與合成台/背包同一套語彙:點標題列收/展,狀態存 localStorage,預設收起(標題列摘要已顯示
+  // 可不可擴,收著也一眼知道)。鍵盤(Tab→Enter/空白)可達,焦點框語彙一致。
+  function initExpandToggle() {
+    const panel = document.getElementById("hudExpand");
+    const toggle = document.getElementById("expandToggle");
+    if (!panel || !toggle) return;
+    let chosen;
+    try { chosen = localStorage.getItem("butfun.expandCollapsed"); } catch {}
+    const apply = (v) => {
+      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示可不可擴),只有顯式展開才為 "0"
+      panel.classList.toggle("expand-collapsed", isCollapsed);
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    };
+    apply(chosen === null || chosen === undefined ? "1" : chosen);
+    const flip = () => {
+      const next = panel.classList.contains("expand-collapsed") ? "0" : "1";
+      apply(next);
+      try { localStorage.setItem("butfun.expandCollapsed", next); } catch {}
+    };
+    toggle.addEventListener("click", flip);
+    toggle.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
+    });
+  }
+
   // ---- 聊天紀錄可收合 ----
   // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設不收(維持
   // 既有行為,新手看得到聊天);展開時清零未讀並捲到最新。收著時 addChat 會累計未讀數。
@@ -2415,6 +2511,7 @@
     initChatToggle();
     initBagToggle();
     initCraftToggle();
+    initExpandToggle();
     updateCraftPanel([]); // 首個背包快照前先畫出配方(全反灰),不留空面板
     initChatKeyboardLift();
     document.getElementById("login").classList.add("hidden");
