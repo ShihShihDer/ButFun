@@ -12,9 +12,8 @@
 //!   - `recipe_by_id(id)`：接線時 client 送 `Craft{ recipe: "pickaxe" }`，伺服器查表。
 //!
 //! additive、不動廣播 shape：背包已隨快照廣播（見 `protocol::InventoryView`），合成只是
-//! 多扣／多加背包內容，前端只需多一個合成面板，零契約變更。延續 `inventory.rs` /
-//! `gather.rs` / `field.rs` 的前置慣例：純邏輯先落地、標 `allow(dead_code)`，接線輪
-//! （ws 收 `Craft` → `recipe_by_id` → `craft` → 背包走既有快照）才有呼叫端。
+//! 多扣／多加背包內容，前端只需多一個合成面板，零契約變更。接線已落地：`ws` 收
+//! `Craft` → `recipe_by_id` → `craft` → 背包走既有快照（見 `ws.rs` 的 `Craft` handler）。
 
 use crate::inventory::{Inventory, ItemKind, MAX_STACK};
 
@@ -61,9 +60,6 @@ pub const RECIPES: &[Recipe] = &[
     },
 ];
 
-// 整個模組是前置地基：接線輪（ws 收 `Craft` → 查表 → `craft` → 背包隨快照廣播）才有
-// 呼叫端，在此之前公開項目皆無外部呼叫，比照 `inventory.rs` / `gather.rs` 標 `allow(dead_code)`。
-#[allow(dead_code)]
 impl Recipe {
     /// 此刻能否合成：每種素材都夠，**且**產物加得進背包（不會撞 `MAX_STACK`）。
     /// 把「產物放得下」一併納入，是為了讓 `craft` 的全有全無語意成立——否則素材被扣、
@@ -93,8 +89,7 @@ impl Recipe {
     }
 }
 
-/// 依字串 id 查配方（接線時伺服器收到 client 的 `Craft` 意圖後用）。未知 id 回 `None`。
-#[allow(dead_code)]
+/// 依字串 id 查配方（伺服器收到 client 的 `Craft` 意圖後，用它查回權威配方）。未知 id 回 `None`。
 pub fn recipe_by_id(id: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.id == id)
 }

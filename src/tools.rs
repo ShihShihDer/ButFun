@@ -5,12 +5,11 @@
 //! 沒有就慢**——讓「採集 → 合成 → 更快採」閉成第一個完整正回饋圈（PLAN slice 2）。
 //!
 //! 這層只管「玩家身上有什麼工具、拿來採集能加速多少」，是純資料 + 純函式，無 IO、
-//! 不碰 WebSocket／遊戲迴圈，便於自動測試。延續 `crafting.rs` / `inventory.rs` /
-//! `gather.rs` 的前置慣例：純邏輯先落地、標 `allow(dead_code)`，接線輪才有呼叫端。
+//! 不碰 WebSocket／遊戲迴圈，便於自動測試。
 //!
-//! 之後接上（接線輪，動 live 廣播屬架構級、由維護者一次一條 land）：
-//!   - ws 採集：玩家採集（Phase 1-A `ResourceNode::gather`）時，依背包 `gather_speed_multiplier`
-//!     算出加速倍率 `m`——一次採集動作相當於採 `m` 下，採礦更快；沒鎬子就用拳頭（`m == 1`）。
+//! 採集接線已落地：玩家採集（Phase 1-A `ResourceNode::gather`）時，`ws` 依背包
+//! `gather_speed_multiplier` 算出加速倍率 `m`——一次採集動作相當於採 `m` 下，採礦更快；
+//! 沒鎬子就用拳頭（`m == 1`）。見 `ws.rs` 的 `Gather` handler。
 //!   - 前端：HUD 顯示手上的工具與它對採集的效用。
 //!
 //! 薄切片刻意**先只做鎬子×採礦一條**（對齊 PLAN slice 2「先只做鎬子×採礦一條」）：
@@ -40,9 +39,6 @@ pub const PICKAXE_GATHER_MULTIPLIER: u32 = 3;
 /// 強化鎬採集的加速倍率：嚴格高於普通鎬子，讓「升級」這條配方鏈真的有感、值得攢素材去合。
 pub const REINFORCED_PICKAXE_GATHER_MULTIPLIER: u32 = 5;
 
-// 整個模組是前置地基：接線輪（採集依工具加速）才有呼叫端，在此之前公開項目皆無外部
-// 呼叫，比照 `crafting.rs` / `inventory.rs` / `gather.rs` 標 `allow(dead_code)`。
-#[allow(dead_code)]
 impl ToolKind {
     /// 此工具拿來採集的速度倍率。鎬子回 `PICKAXE_GATHER_MULTIPLIER`，徒手回基礎
     /// `FIST_MULTIPLIER`。
@@ -58,7 +54,6 @@ impl ToolKind {
 /// 某個背包物品若是採集工具，回對應的 `ToolKind`；不是工具（資源原料）回 `None`。
 /// 刻意用窮舉 `match`（不寫 `_` 萬用分支）：日後在 `ItemKind` 加新工具變體（如鋤頭）時，
 /// 編譯器會強制回來補上它對應的工具，避免漏接。
-#[allow(dead_code)]
 pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
     match item {
         ItemKind::Pickaxe => Some(ToolKind::Pickaxe),
@@ -68,8 +63,7 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
 }
 
 /// 玩家背包裡採集最有效的工具：挑出持有工具中採集倍率最高者；都沒有就回 `Fist`。
-/// 供採集接線時決定加速倍率。
-#[allow(dead_code)]
+/// 採集接線據此決定加速倍率。
 pub fn best_gather_tool(inv: &Inventory) -> ToolKind {
     inv.entries()
         .filter_map(|(item, _)| tool_from_item(item))
@@ -78,8 +72,7 @@ pub fn best_gather_tool(inv: &Inventory) -> ToolKind {
 }
 
 /// 玩家採集的速度倍率（自動取背包裡最好的工具）。`1`＝徒手基礎速度。
-/// 接線時：一次採集動作相當於連採 `gather_speed_multiplier` 下（有鎬子更快）。
-#[allow(dead_code)]
+/// 採集接線：一次採集動作相當於連採 `gather_speed_multiplier` 下（有鎬子更快）。
 pub fn gather_speed_multiplier(inv: &Inventory) -> u32 {
     best_gather_tool(inv).gather_multiplier()
 }
