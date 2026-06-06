@@ -119,6 +119,11 @@
   // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
   // 遊戲規則:做不做得成仍由權威伺服器決定,這裡只確認「這一下送出去了」。
   const tapFlashes = [];
+  // 採集「動作」特效（治「點擊沒有採集動作」）:每次採集在目標節點記一筆揮擊 { wx, wy, born, kind },
+  // 用來畫衝擊星芒 + 讓那顆節點短暫晃動;同時噴出資源碎屑(下方 gatherParticles)。
+  const gatherHits = [];
+  // 採集碎屑:每筆 { wx, wy, vx, vy, born, color } 從節點向外飛、受重力、淡出。純表現。
+  const gatherParticles = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -529,6 +534,78 @@
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  // ---- 採集「動作」特效（治「點擊沒有採集動作」）----
+  const NODE_PARTICLE_COLOR = { tree: "150,210,140", rock: "200,205,210", ether_ore: "255,210,74" };
+  const HIT_MS = 260;
+  const PARTICLE_MS = 520;
+  // 採集時在目標節點記一筆揮擊 + 噴出資源碎屑。reduceMotion 下不噴碎屑(只留命中星芒)。
+  function spawnGatherHit(node) {
+    if (!node) return;
+    const now = performance.now();
+    gatherHits.push({ wx: node.x, wy: node.y, born: now, kind: node.kind });
+    if (reduceMotion) return;
+    const color = NODE_PARTICLE_COLOR[node.kind] || "220,220,220";
+    for (let i = 0; i < 7; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2;
+      const sp = 60 + Math.random() * 90;
+      gatherParticles.push({
+        wx: node.x,
+        wy: node.y - 14,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 40,
+        born: now,
+        color,
+      });
+    }
+  }
+
+  // 畫採集特效:命中星芒 + 飛散碎屑(受重力、淡出)。畫在節點之上、當回饋層。
+  function drawGatherFx(camX, camY, now) {
+    for (let i = gatherHits.length - 1; i >= 0; i--) {
+      const h = gatherHits[i];
+      const age = now - h.born;
+      if (age >= HIT_MS) { gatherHits.splice(i, 1); continue; }
+      const t = age / HIT_MS;
+      const sx = h.wx - camX;
+      const sy = h.wy - camY - 14;
+      ctx.save();
+      const r = 6 + t * 18;
+      ctx.strokeStyle = `rgba(255,255,255,${(0.9 * (1 - t)).toFixed(3)})`;
+      ctx.lineWidth = 2.5 * (1 - t);
+      for (let k = 0; k < 4; k++) {
+        const ang = (k * Math.PI) / 2 + 0.4;
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(ang) * r * 0.4, sy + Math.sin(ang) * r * 0.4);
+        ctx.lineTo(sx + Math.cos(ang) * r, sy + Math.sin(ang) * r);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    for (let i = gatherParticles.length - 1; i >= 0; i--) {
+      const p = gatherParticles[i];
+      const age = now - p.born;
+      if (age >= PARTICLE_MS) { gatherParticles.splice(i, 1); continue; }
+      const tt = age / 1000;
+      const t = age / PARTICLE_MS;
+      const px = p.wx + p.vx * tt - camX;
+      const py = p.wy + p.vy * tt + 240 * tt * tt - camY; // 重力
+      ctx.fillStyle = `rgba(${p.color},${(1 - t).toFixed(3)})`;
+      ctx.fillRect(px - 2, py - 2, 4, 4);
+    }
+  }
+
+  // 某節點剛被採時的晃動強度 [0,1)（剛命中=1、HIT_MS 內漸消）。給 drawNodes 讓被打的樹石抖一下。
+  function nodeHitWobble(node, now) {
+    let best = 0;
+    for (const h of gatherHits) {
+      if (Math.abs(h.wx - node.x) < 12 && Math.abs(h.wy - node.y) < 12) {
+        const t = (now - h.born) / HIT_MS;
+        if (t < 1) best = Math.max(best, 1 - t);
+      }
+    }
+    return best;
   }
 
   // 日夜染色（純表現，色相由權威 phase、濃度由權威 light 推得，不嵌任何遊戲規則；
@@ -1087,6 +1164,9 @@
     // 互動確認漣漪：同在日夜染色之後畫，點/輕點田格的當下回饋不被夜色蓋暗。
     drawTapFlashes(camX, camY, performance.now());
 
+    // 採集動作特效（命中星芒 + 飛散碎屑）：同在日夜染色之後畫,當回饋不被夜色蓋暗。
+    drawGatherFx(camX, camY, performance.now());
+
     // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
     drawFarmPointer(camX, camY);
 
@@ -1477,6 +1557,8 @@
   // 節點 kind → 現成 sprite 名（assets/*.png）。有圖就畫真的樹/石(不再是圓點 emoji);
   // 乙太礦沒專屬圖,留 emoji 發光。圖還沒載入也自動退回 emoji(artOk 把關)。
   const NODE_SPRITE = { tree: "tree", rock: "rock" };
+  // 各 kind 滿耐久(鏡像伺服器 NodeKind::max_durability):畫「還要幾下」進程點。
+  const NODE_MAX = { tree: 5, rock: 4, ether_ore: 3 };
   // 報讀器用的節點中文名（採空播報時念名字而非 emoji,對齊背包的 ITEM_NAME 作法）。
   const NODE_NAME = { tree: "樹", rock: "石礦", ether_ore: "乙太礦" };
 
@@ -1521,6 +1603,7 @@
   function drawNodes(camX, camY) {
     const me = myId ? players.get(myId) : null;
     const reachable = nearestHarvestable(me);
+    const now = performance.now();
     // 沒有可採的在搆得到範圍內時,才標最近的採空節點為「已採空」——有可採的就不打擾,
     // 引導玩家去採那顆。純讀快照,不在前端判規則。
     const depleted = reachable ? null : nearestDepleted(me);
@@ -1529,6 +1612,9 @@
       const sy = n.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
       const look = NODE_LOOK[n.kind] || { icon: "❔", tint: "#555" };
+      // 剛被採的節點橫向抖一下(被砍/被敲的反應),強度隨時間漸消。
+      const wob = nodeHitWobble(n, now);
+      const dx = wob > 0 ? Math.sin(now * 0.045) * 5 * wob : 0;
       ctx.save();
       ctx.globalAlpha = n.harvestable ? 1 : 0.4; // 採空的畫淡(重生中)
       const spriteName = NODE_SPRITE[n.kind];
@@ -1536,17 +1622,30 @@
         // 有對應 sprite(樹/石)→ 畫真的 pixel art,底部對齊節點位置、放大些好看清。
         const img = ART[spriteName];
         const s = 44;
-        ctx.drawImage(img, sx - s / 2, sy - s + 8, s, s);
+        ctx.drawImage(img, sx + dx - s / 2, sy - s + 8, s, s);
       } else {
         // 沒 sprite(乙太礦)或圖還沒載入 → 退回圓盤 + emoji。
         ctx.beginPath();
-        ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+        ctx.arc(sx + dx, sy, 16, 0, Math.PI * 2);
         ctx.fillStyle = look.tint;
         ctx.fill();
         ctx.font = "20px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(look.icon, sx, sy + 1);
+        ctx.fillText(look.icon, sx + dx, sy + 1);
+      }
+      // 進程點:被採過(remaining < 滿耐久)且還可採時,在腳下畫一排小點顯示「還要幾下」。
+      const max = NODE_MAX[n.kind];
+      if (n.harvestable && max && n.remaining < max) {
+        const pipR = 2;
+        const gap = 7;
+        const totalW = (max - 1) * gap;
+        for (let k = 0; k < max; k++) {
+          ctx.beginPath();
+          ctx.arc(sx - totalW / 2 + k * gap, sy + 12, pipR, 0, Math.PI * 2);
+          ctx.fillStyle = k < n.remaining ? "rgba(255,235,180,0.95)" : "rgba(0,0,0,0.4)";
+          ctx.fill();
+        }
       }
       // 玩家搆得到的那顆:描一圈黃環,提示「走到了、可以採」。
       if (n === reachable) {
@@ -2202,7 +2301,7 @@
         if (dx * dx + dy * dy <= 34 * 34) {
           ws.send(JSON.stringify({ type: "gather" }));
           markGatheredOnce();
-          spawnTapFlash(gn.x, gn.y);
+          spawnGatherHit(gn); // 揮擊命中 + 碎屑噴出(治「沒有採集動作」)
           return;
         }
       }
@@ -2238,11 +2337,14 @@
     const me = myId ? players.get(myId) : null;
     if (!me) return;
     // 先判採集:站在搆得到的可採節點旁,按動作鍵就採集。
-    if (nearestHarvestable(me)) {
-      ws.send(JSON.stringify({ type: "gather" }));
-      markGatheredOnce();
-      spawnTapFlash(me.x, me.y);
-      return;
+    {
+      const gn = nearestHarvestable(me);
+      if (gn) {
+        ws.send(JSON.stringify({ type: "gather" }));
+        markGatheredOnce();
+        spawnGatherHit(gn); // 揮擊命中 + 碎屑噴出
+        return;
+      }
     }
     // 沒有可採的:若就站在採空節點旁,鏡像視覺的「已採空」標,播一句給報讀器玩家。
     // 看不到那行字的玩家原本只會聽到下面誤導的「走進農地」提示(或按了全無回饋),
