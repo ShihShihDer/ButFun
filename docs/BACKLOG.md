@@ -192,6 +192,22 @@
     `from_tiles` 當載入閘門），`ether` 是 `u32`、型別本身就擋掉 `NaN`／`Inf`／負值。加 2 個測試
     （round-trip、壞座標仍經 `spawn_at` 守門），`cargo test` 122 綠、clippy 乾淨、伺服器二進位
     啟動正常（埠被正式服務占用屬預期）。
+  - ✅ 日夜時刻接 PG（singleton store，2026-06-06）：0-G 全程反覆標注「仍待：日夜時刻持久化
+    （接 0-E）」——位置／背包／農地都接好 PG 了（0001-0003），日夜時鐘是最後一個還只活在記憶體、
+    每次換版重啟都歸零回破曉的 0-E store。部署窗在深夜（03:00–05:00），沒持久化時每次換版都把
+    世界從夜晚硬跳回破曉。新增 `migrations/0004_daynight.sql`（**singleton 一列**表：固定主鍵
+    `id = 1` + `CHECK` 鎖死只會有一列、`elapsed` 存 REAL，對齊 `daynight.rs` 的 f32）與
+    `src/daynight_store.rs` `DayNightStore`，沿 `positions`／`inventory_store` 同一套抽換結構
+    （Postgres／Jsonl／Memory 三後端、DB 為主 JSONL 補洞、flush 失敗只記 log 不中斷迴圈）。
+    與其他 store 不同：日夜不分玩家，故沒有 per-id cache map——權威時鐘就是 `AppState.daynight`，
+    這層只「啟動載入一次種回時鐘」＋「遊戲迴圈每 10s **無條件** flush」（時鐘沒人在線也持續走）。
+    載入一律經 `DayNight::at` 還原驗證（非有限退回破曉、界外／負值繞回），壞值不會把時鐘帶成 NaN；
+    給 `DayNight` 補 `elapsed()` getter 供存值。`with_stores` 多收一個 `DayNightStore`、種回權威
+    時鐘，`main` 連好 Postgres 後 `from_pool` 接上。加 4 個測試（破曉種子、flush noop without PG、
+    JSONL round-trip、缺檔回 None），`cargo test` 281 綠、`cargo build` 乾淨、伺服器二進位啟動正常
+    （JSONL 退回模式 + 埠被正式服務占用屬預期）。**0-E 的玩家面 store（位置/背包/農地）與世界面
+    時鐘已全數接 PG**；剩 `users`／`suggestions` 視需要再接（users 為身分關鍵資料、sync API→async
+    DB 屬架構級，宜走 PR）。
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、

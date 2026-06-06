@@ -202,6 +202,12 @@ pub fn spawn(app: AppState) {
                     app.field_store.remember_all(field_rows.iter().cloned());
                     app.field_store.flush_online(&field_rows).await;
                 }
+
+                // 日夜時刻一併落地（Phase 0-E）。與玩家狀態不同:時鐘不分玩家、沒人在線也持續走,
+                // 故**無條件** flush（不像位置/背包/農地只在有對象時才寫）。讀當下時刻（短暫持鎖、
+                // 不跨 await）再非同步寫出,重啟後從同一個時刻接續、不跳回破曉。
+                let daynight_now = *app.daynight.read().unwrap();
+                app.daynight_store.flush(&daynight_now).await;
             }
         }
     });
