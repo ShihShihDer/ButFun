@@ -83,24 +83,49 @@
       text-align: center; line-height: 1.5;
     }
 
-    /* HUD */
-    /* 上限寬度:操作說明是長句,沒有上限時在寬螢幕會橫向拉滿一整行、難讀,在中寬螢幕更會
-       往右延伸逼近右上角的建議鈕。約束成一個可讀窄欄(手機上 78vw 仍給右上鈕留白),
-       長句自然換行而非溢出。overflow-wrap 確保超長 token(如網址)也不會撐破面板。 */
-    /* 邊距用 env(safe-area-inset-*) 疊加:一般螢幕 inset 為 0、維持 12px;notched 手機
-       橫式時自動讓開瀏海/圓角,固定面板不被切到。沒有 cover 時 inset 恆為 0,無副作用。 */
-    /* 高度上限 + 內捲:HUD 是固定在左上的單一直欄,堆了乙太/生命/背包/合成台/操作說明等可收合面板。
-       面板都展開時(尤其手機直式短螢幕,加上合成台列出配方後更高)整欄會長過視窗高度,底部的合成鈕/
-       說明溢出到螢幕外又因 position:fixed 不能捲、點不到看不到。限高到「視窗高 - 上下邊距 - safe-area」
-       並 overflow-y:auto:超過才在面板內捲動,桌面/內容沒超過時不出現捲軸、常態零變化。
-       高度單位用 dvh(動態視窗高)、留 vh 當舊瀏覽器後備:手機網址列展開時 100vh 仍算「列縮起」的大高度,
-       會高估可視範圍,把限高撐過實際看得到的高、底部合成鈕/說明又落到工具列底下點不到——正是上面要治的病。
-       dvh 跟著工具列收放即時縮放,限高永遠貼齊當下真正看得到的視窗高。不懂 dvh 的舊瀏覽器忽略後一行、退回 vh。 */
-    #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; font-size: 0.85rem;
-      background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
-      max-width: min(340px, 78vw); overflow-wrap: break-word;
+    /* HUD（星露谷風）*/
+    /* 總監定調:左上常駐欄太佔空間,改成「精簡狀態列 + 一排小圖示(dock)」。常駐只留乙太/生命/
+       線上/時段的小圖示+數字(藥丸橫排)與會自動隱藏的訪客引導/缺水/收成提醒;背包/合成台/擴地/
+       操作說明都收進 dock 點開的專屬視窗(見 .hud-window)。#hud 不再是塞滿可收合面板的高欄,因此
+       拿掉了原本的限高內捲——剩下的都是短行,自然不會長過視窗。safe-area 疊加讓 notched 手機橫式不
+       被瀏海切到(沒有 cover 時 inset 恆 0、無副作用)。 */
+    #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top));
+      z-index: 5; font-size: 0.85rem; max-width: min(340px, 88vw); overflow-wrap: break-word; }
+    /* 狀態列:小圖示+數字橫排成藥丸,省空間、一眼可讀;窄螢幕放不下會自動換行。 */
+    #hud .hud-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    #hud .hud-pill { background: var(--panel); padding: 4px 9px; border-radius: 999px; line-height: 1.4; white-space: nowrap; }
+    #hud .hud-pill.brass { color: var(--brass); }
+    /* 會自動隱藏的小提醒(訪客引導/缺水/收成)各自成一行,藥丸底以便在地表上讀得清。 */
+    #hud .hud-sub { background: var(--panel); padding: 3px 9px; border-radius: 8px; margin-top: 4px; display: inline-block; }
+
+    /* dock:星露谷風一排小圖示鈕,點開對應視窗。觸控尺寸 40×38,手機桌面都好按。 */
+    #hudDock { display: flex; gap: 6px; margin-top: 6px; }
+    #hudDock .dock-btn { font-size: 1.15rem; width: 40px; height: 38px; line-height: 1; cursor: pointer;
+      background: var(--panel); border: 1px solid #3a4250; border-radius: 9px; color: var(--ink);
+      display: flex; align-items: center; justify-content: center; position: relative; padding: 0; }
+    #hudDock .dock-btn:hover { border-color: var(--brass); }
+    /* 開著的視窗對應的圖示亮黃銅框,讓玩家知道現在開的是哪個。 */
+    #hudDock .dock-btn[aria-expanded="true"] { border-color: var(--brass); background: rgba(201,162,75,0.18); }
+    #hudDock .dock-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 可合成/可擴時對應圖示右上點一顆黃銅小點,不開窗也知道「現在能做點什麼」(由 game.js 隨快照加 .dock-active)。 */
+    #hudDock .dock-btn.dock-active::after { content: ""; position: absolute; top: 3px; right: 3px;
+      width: 8px; height: 8px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 4px var(--brass); }
+    /* 尊重「減少動態」:小點不脈動(本就靜態),這裡保留語彙位置不另加動效。 */
+
+    /* dock 點開的視窗:浮在左上(蓋過狀態列),同時只開一個,點 ✕／按 Esc／點世界任一處可關。
+       沿用面板深底+陰影+關閉鈕。限高內捲:配方/背包列多時不超出視窗高(dvh 跟著手機工具列縮放,
+       留 vh 給舊瀏覽器後備——vh 先、dvh 後覆寫,懂 dvh 的取後者)。手機桌面共用,寬度自適應。 */
+    #hudWindows { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 7; }
+    .hud-window { background: var(--panel); border: 1px solid #3a4250; border-radius: 10px;
+      padding: 8px 12px 10px; width: min(320px, 88vw); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
       max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
       max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; }
+    .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .hud-window .win-title { color: var(--brass); font-weight: 600; flex: 1; }
+    .hud-window .win-close { font: inherit; cursor: pointer; width: 28px; height: 28px; line-height: 1;
+      border-radius: 7px; border: 1px solid #3a4250; background: #161b22; color: var(--ink); padding: 0; flex: none; }
+    .hud-window .win-close:hover { border-color: var(--brass); }
+    .hud-window .win-close:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
     #hud .brass { color: var(--brass); }
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
@@ -109,12 +134,9 @@
     #hudGuestHint { color: var(--brass); margin: 2px 0; padding: 3px 7px; border: 1px solid var(--brass);
       border-radius: 6px; opacity: 0.92; }
     #hudGuestHint b { color: #ffd24a; }
-    /* 可收合的操作說明:點標題列收起／展開,省手機直式的螢幕空間 */
-    #helpToggle { cursor: pointer; opacity: 0.6; user-select: none; margin-top: 2px; }
-    #helpToggle:hover { opacity: 0.85; }
-    /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作收合的玩家看得到焦點落在哪。
+    /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作聊天收合的玩家看得到焦點落在哪。
        focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
-    #helpToggle:focus-visible, #chatToggle:focus-visible {
+    #chatToggle:focus-visible {
       outline: 2px solid var(--brass); outline-offset: 2px; opacity: 1;
     }
     /* 同一套黃銅焦點框延伸到所有自訂深色互動控件:進場按鈕／Google 連結／訪客欄位／
@@ -127,33 +149,18 @@
     .modal input:focus-visible, .modal textarea:focus-visible, .modal button:focus-visible {
       outline: 2px solid var(--brass); outline-offset: 2px;
     }
-    #helpCaret { display: inline-block; transition: transform 0.15s; }
-    #hud.help-collapsed #helpCaret { transform: rotate(-90deg); }
-    #hud.help-collapsed #helpBody { display: none; }
-    #helpBody > div { opacity: 0.6; }
-    /* 可收合的背包面板:跟操作說明同一套語彙(點標題列收/展、箭頭旋轉、鍵盤焦點框)。
-       收起時只剩標題列+摘要計數,展開列出每項素材明細。 */
-    #bagToggle { cursor: pointer; user-select: none; }
-    #bagToggle:hover { opacity: 0.85; }
-    #bagToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 操作說明視窗的條目:稍淡,跟標題分層次。 */
+    #helpBody > div { opacity: 0.6; margin: 2px 0; }
+    /* 背包視窗:標題列的摘要計數(updateBagHud 寫的 #bagSummary)用 ink 色與標題黃銅分層;
+       明細由 #bagBody 列出每項素材的中文名與數量。 */
     #bagSummary { color: var(--ink); }
-    #bagCaret { display: inline-block; transition: transform 0.15s; }
-    #hudBag.bag-collapsed #bagCaret { transform: rotate(-90deg); }
-    #hudBag.bag-collapsed #bagBody { display: none; }
     #bagBody { margin: 2px 0 0 2px; opacity: 0.85; }
     #bagBody .bag-row { display: flex; align-items: center; gap: 6px; }
     #bagBody .bag-ico { width: 1.4em; text-align: center; }
     #bagBody .bag-qty { color: var(--brass); margin-left: auto; padding-left: 10px; }
-    /* 可收合的合成台面板:跟背包/操作說明同一套語彙(點標題列收/展、箭頭旋轉、鍵盤焦點框)。
-       展開列出配方:產物 ← 素材,夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包快照
-       回來(零契約變更),規則扣料仍由伺服器說了算。 */
-    #craftToggle { cursor: pointer; user-select: none; }
-    #craftToggle:hover { opacity: 0.85; }
-    #craftToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 合成台視窗:列出配方(產物 ← 素材),夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包
+       快照回來(零契約變更),規則扣料仍由伺服器說了算。摘要(#craftSummary)用 ink 與標題分層。 */
     #craftSummary { color: var(--ink); }
-    #craftCaret { display: inline-block; transition: transform 0.15s; }
-    #hudCraft.craft-collapsed #craftCaret { transform: rotate(-90deg); }
-    #hudCraft.craft-collapsed #craftBody { display: none; }
     #craftBody { margin: 2px 0 0 2px; opacity: 0.9; }
     #craftBody .craft-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
     /* 配方描述「產物 ← 素材」佔滿剩餘寬度,缺料的素材標紅讓玩家一眼知道差什麼。 */
@@ -172,15 +179,9 @@
     }
     #craftBody .craft-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
-    /* 擴地面板:沿用合成台同一套收合/反灰語彙(乙太夠亮黃銅、不夠或達上限反灰停用)。
-       「下一格要多少乙太」佔滿剩餘寬度,乙太不足時價格標紅讓玩家一眼知道還差多少。 */
-    #expandToggle { cursor: pointer; user-select: none; }
-    #expandToggle:hover { opacity: 0.85; }
-    #expandToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 擴地視窗:沿用合成台反灰語彙(乙太夠亮黃銅、不夠或達上限反灰停用)。「下一格要多少乙太」
+       佔滿剩餘寬度,乙太不足時價格標紅讓玩家一眼知道還差多少。摘要(#expandSummary)用 ink 分層。 */
     #expandSummary { color: var(--ink); }
-    #expandCaret { display: inline-block; transition: transform 0.15s; }
-    #hudExpand.expand-collapsed #expandCaret { transform: rotate(-90deg); }
-    #hudExpand.expand-collapsed #expandBody { display: none; }
     #expandBody { margin: 2px 0 0 2px; opacity: 0.9; }
     #expandBody .expand-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
     #expandBody .expand-desc { flex: 1; }
@@ -201,11 +202,11 @@
     #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
       /* 軟鍵盤彈起時整塊抬到鍵盤之上(見 game.js initChatKeyboardLift),平滑移動不跳。 */
       transition: transform 0.18s ease; }
-    /* 收合面板位移與兩顆箭頭旋轉都屬「純裝飾、不傳遞資訊」的動態(收合狀態由 display:none
-       + aria-expanded 傳達,不靠箭頭轉)。比照連線橫幅脈動/遊戲內踏步微光,在系統「減少動態」
-       偏好下一併關掉——前庭敏感的玩家收/展面板時不再有旋轉動效,狀態切換照舊即時生效。 */
+    /* 聊天面板的位移與箭頭旋轉屬「純裝飾、不傳遞資訊」的動態(收合狀態由 display:none +
+       aria-expanded 傳達,不靠箭頭轉)。比照連線橫幅脈動/遊戲內踏步微光,在系統「減少動態」
+       偏好下一併關掉——前庭敏感的玩家收/展聊天時不再有位移/旋轉動效,狀態切換照舊即時生效。 */
     @media (prefers-reduced-motion: reduce) {
-      #chat, #helpCaret, #chatCaret, #bagCaret, #craftCaret, #expandCaret { transition: none; }
+      #chat, #chatCaret { transition: none; }
     }
     /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
        手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
@@ -317,63 +318,81 @@
     <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
   </div>
 
+  <!-- 星露谷風 HUD（總監定調:左上常駐欄太佔空間,改成「精簡狀態列 + 一排小圖示」）。
+       常駐只留乙太/生命/線上/時段的小圖示+數字(藥丸橫排),加上會自動隱藏的訪客引導與農地
+       缺水/收成提醒;背包/合成台/擴地/操作說明都改成下方 dock 的一排小圖示,點圖示才開對應視窗
+       (同時只開一個、可關)。純前端重排版:資料全取自既有快照(inventory/hp/ether/fields),
+       不嵌任何遊戲規則(將來 WebXR renderer 可各自實作 HUD)。 -->
   <div id="hud" class="hidden">
-    <div><span class="brass">ButFun</span> · 邊境星地表</div>
-    <div id="hudName" class="hidden">你：—</div>
+    <div class="hud-row">
+      <span class="hud-pill brass" id="hudEther" title="乙太">✨ 0</span>
+      <!-- 生命（戰鬥 1-F）:走近敵人自動開打、反擊扣血。低血變紅、被打趴顯示休息中(由 game.js 設色)。 -->
+      <span class="hud-pill" id="hudHp" title="生命">❤ —</span>
+      <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
+      <span class="hud-pill" id="hudTime">—</span>
+    </div>
+    <!-- dock:一排小圖示,點開對應視窗。背包/合成/擴地的「現在能做點什麼」由 game.js 隨快照加 .dock-active 微亮黃點。 -->
+    <div id="hudDock">
+      <button type="button" class="dock-btn" id="dockBag" data-win="winBag" aria-haspopup="dialog" aria-expanded="false" aria-label="背包">🎒</button>
+      <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-haspopup="dialog" aria-expanded="false" aria-label="合成台">🔧</button>
+      <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="擴地">🌱</button>
+      <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-label="操作說明">📖</button>
+    </div>
+    <div id="hudName" class="hud-sub hidden">你：—</div>
     <!-- 訪客引導:玩家回饋最大宗是「訪客一進來沒農地、不知道下一步」(suggestions.jsonl)。
          給訪客(且只給訪客)一行明確的「下一步」——登入即有專屬田、可開始種田——直擊新手
          茫然,登入者不顯示、不打擾。純前端提示,不嵌任何遊戲規則。 -->
     <div id="hudGuestHint" class="hidden">👋 探索中 · <b>登入</b>即可獲得專屬乙太田開始種田</div>
-    <div id="hudPlayers">線上：—</div>
-    <div id="hudEther" class="brass">乙太：0</div>
-    <!-- 生命 HUD（戰鬥 1-F）:走近敵人會自動開打,敵人反擊扣血。低血變紅、被打趴顯示休息中。 -->
-    <div id="hudHp">生命：—</div>
-    <!-- 背包：可收合面板（與操作說明/聊天同一套語彙:點標題列收/展、狀態存 localStorage）。
-         標題列常駐,收起時 #bagSummary 仍顯示 emoji 計數(沿用舊那行的快速一瞥、不損失資訊);
-         展開則由 #bagBody 列出每項素材的中文名與數量——素材從採集/打怪/農地三方湧入,給堆積的
-         素材一個清楚可讀的「家」,也是日後合成台(1-C)要嵌進來的面板。aria-label / title 由
-         game.js 隨快照同步成中文品項名掛在標題鈕上(emoji 對報讀器無意義),延續背包無障礙弧線。
-         純前端、零契約變更:只呈現既有快照的 inventory,不嵌任何遊戲規則。 -->
-    <div id="hudBag">
-      <div id="bagToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="bagBody"
-           aria-label="背包：空" title="背包：空"><span id="bagCaret">▾</span> 🎒 背包<span id="bagSummary">：空</span></div>
+    <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,不嵌規則)。沒有缺水格時隱藏。 -->
+    <div id="hudFarm" class="hud-sub hidden"></div>
+    <!-- 收成提醒:有成熟格時提示「去收乙太」,把種田迴圈的回報那步顯到 HUD(純從快照每格 state 數得)。沒有可收成格時隱藏。 -->
+    <div id="hudRipe" class="hud-sub hidden"></div>
+  </div>
+
+  <!-- dock 點開的專屬視窗:同時只開一個,點 ✕／按 Esc／點世界任一處可關(見 game.js initDock)。
+       視窗內容(背包明細／合成配方／擴地價格／操作說明)沿用既有渲染函式
+       (updateBagHud / updateCraftPanel / updateExpandPanel),靠視窗標題列保留的
+       #bagToggle / #craftToggle / #expandToggle 當無障礙標籤掛點(render 隨快照寫 aria-label),
+       零渲染邏輯改動。aria-labelledby 指到該標題,開窗時報讀器念出「背包：木材 3、石頭 2」等現況。 -->
+  <div id="hudWindows">
+    <!-- 背包:採集/打怪/農地三方湧入的素材,展開列出每項中文名與數量(item 為伺服器列舉字串、無注入風險)。 -->
+    <div id="winBag" class="hud-window hidden" role="dialog" aria-labelledby="bagToggle">
+      <div class="win-head">
+        <span class="win-title" id="bagToggle" aria-label="背包：空" title="背包：空">🎒 背包<span id="bagSummary">：空</span></span>
+        <button type="button" class="win-close" data-close="winBag" aria-label="關閉背包">✕</button>
+      </div>
       <div id="bagBody">背包是空的</div>
     </div>
-    <!-- 合成台:可收合面板（與背包/操作說明同一套語彙）。採集/打怪/農地三方湧入的素材
-         (木/石/廢料)只進不出、純囤積——合成給它們一個「去處」。展開列出配方:產物 ← 素材,
-         夠料才亮「合成」鈕。點鈕送 craft 意圖,伺服器查配方扣料、產物隨既有背包快照回來
-         (零契約變更);夠不夠料的反灰只是前端提示,扣料規則仍只在伺服器(權威)。
-         aria-label / title 由 game.js 隨快照同步成中文(emoji 對報讀器無意義),延續背包無障礙弧線。 -->
-    <div id="hudCraft">
-      <div id="craftToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="craftBody"
-           aria-label="合成台" title="合成台"><span id="craftCaret">▾</span> 🔧 合成台<span id="craftSummary"></span></div>
+    <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
+         產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->
+    <div id="winCraft" class="hud-window hidden" role="dialog" aria-labelledby="craftToggle">
+      <div class="win-head">
+        <span class="win-title" id="craftToggle" aria-label="合成台" title="合成台">🔧 合成台<span id="craftSummary"></span></span>
+        <button type="button" class="win-close" data-close="winCraft" aria-label="關閉合成台">✕</button>
+      </div>
       <div id="craftBody"></div>
     </div>
-    <!-- 擴地:可收合面板（與合成台/背包同一套語彙）。收成的乙太只進不出、數字一直變大卻沒
-         去處——擴地給乙太一個「花掉」的長期目標:花乙太把自己那塊農地多開一格,愈擴愈貴。
-         展開顯示「下一格要多少乙太」與一顆「擴地」鈕,乙太夠才亮、達上限改顯示「已達上限」。
-         點鈕送 buy_expansion 意圖,伺服器查餘額扣乙太、農地多開一格,新地塊隨既有 fields 快照
-         回來;夠不夠的反灰只是前端提示,扣款/開格規則仍只在伺服器(權威)。價格與上限對齊
-         src/economy.rs（基準 10、逐格漲、上限 12）。已購格數走快照未來欄位 expansions（沒有
-         就當 0,防呆),接線落地即生效——純前端、不嵌任何遊戲規則。 -->
-    <div id="hudExpand">
-      <div id="expandToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="expandBody"
-           aria-label="擴地" title="擴地"><span id="expandCaret">▾</span> 🌱 擴地<span id="expandSummary"></span></div>
+    <!-- 擴地:乙太的「去處」。顯示下一格價與「擴地」鈕(乙太夠才亮、達上限反灰)。點鈕送 buy_expansion
+         意圖,伺服器查餘額扣乙太、農地多開一格,新地塊隨既有 fields 快照回來;反灰只是前端提示。 -->
+    <div id="winExpand" class="hud-window hidden" role="dialog" aria-labelledby="expandToggle">
+      <div class="win-head">
+        <span class="win-title" id="expandToggle" aria-label="擴地" title="擴地">🌱 擴地<span id="expandSummary"></span></span>
+        <button type="button" class="win-close" data-close="winExpand" aria-label="關閉擴地">✕</button>
+      </div>
       <div id="expandBody"></div>
     </div>
-    <div id="hudTime">—</div>
-    <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
-         不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
-    <div id="hudFarm" class="hidden"></div>
-    <!-- 收成提醒:有成熟格時提示「去收乙太」,讓種田迴圈的回報那步跟缺水雜務一樣一眼可讀
-         (純從快照每格 state 數得,不嵌任何遊戲規則)。沒有可收成格時隱藏。 -->
-    <div id="hudRipe" class="hidden"></div>
-    <div id="helpToggle" role="button" tabindex="0" aria-expanded="true" aria-controls="helpBody">操作說明 <span id="helpCaret">▾</span></div>
-    <div id="helpBody">
-      <div>WASD / 方向鍵 / 手把 · 手機任處拖曳走動 · Enter 聊天（Esc 退出）· M 收合地圖</div>
-      <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E / 手把臉鈕</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
-      <div>走到 🌳 樹 / 🪨 石 / ✨ 乙太礦旁,<b>空白鍵 / E / 點一下</b>採進背包</div>
-      <div>世界上有 🤖 / 👻 等敵人,<b>走近會自動開打</b>:留意上方的<b>生命</b>,被打趴會原地休息一下</div>
+    <!-- 操作說明:新手怎麼動/種田/採集/打怪的提示,收進 dock 不再常佔左上空間。 -->
+    <div id="winHelp" class="hud-window hidden" role="dialog" aria-labelledby="winHelpTitle">
+      <div class="win-head">
+        <span class="win-title" id="winHelpTitle">📖 操作說明</span>
+        <button type="button" class="win-close" data-close="winHelp" aria-label="關閉操作說明">✕</button>
+      </div>
+      <div id="helpBody">
+        <div>WASD / 方向鍵 / 手把 · 手機任處拖曳走動 · Enter 聊天（Esc 退出）· M 收合地圖</div>
+        <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E / 手把臉鈕</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
+        <div>走到 🌳 樹 / 🪨 石 / ✨ 乙太礦旁,<b>空白鍵 / E / 點一下</b>採進背包</div>
+        <div>世界上有 🤖 / 👻 等敵人,<b>走近會自動開打</b>:留意上方的<b>生命</b>,被打趴會原地休息一下</div>
+      </div>
     </div>
   </div>
 
@@ -419,6 +438,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-gather-juice"></script>
+  <script src="game.js?v=20260606-stardew-hud"></script>
 </body>
 </html>
