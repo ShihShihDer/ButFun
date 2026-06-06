@@ -1288,7 +1288,10 @@
     const mw = w * scale, mh = h * scale;
     // 縮圖正下方再留一條圖例帶(兩行三欄色點＋標籤)。整組往上挪 legendH,讓「縮圖＋圖例」
     // 合起來仍貼著右下安全區內、不被瀏海/圓角/手勢條切到——只是把錨點抬高一條圖例的厚度。
-    const MM_LEGEND_H = 30;
+    // 圖例帶高度依列數自適應(每列三欄):加品項時不必手動改常數,也不會讓最後一列
+    // 溢出半透明底框外。每列約 12px、頭尾再各留一點內距。
+    const MM_LEGEND_ROWS = Math.ceil(MM_LEGEND.length / 3);
+    const MM_LEGEND_H = MM_LEGEND_ROWS * 12 + 8;
     // 右下錨點扣掉安全區內距,notched 手機不被瀏海/圓角/手勢條切到。
     const ox = viewW - MM.margin - safeArea.right - mw;   // 縮圖內容左上角（螢幕座標）
     const oy = viewH - MM.margin - safeArea.bottom - mh - MM_LEGEND_H;
@@ -1369,8 +1372,9 @@
       ctx.fill();
     }
 
-    // 圖例帶:縮圖下方兩行三欄,每格「色點＋中文」。色與上面各點層一一對應,讓玩家把縮圖上的
-    // 彩點對得回「那是樹/石/乙太礦/敵人/我/夥伴」。畫在縮圖之下、收合鈕之前;純表現、不嵌規則。
+    // 圖例帶:縮圖下方每列三欄(列數依品項自適應),每格「色 swatch＋中文」。色與上面各點層
+    // 一一對應,讓玩家把縮圖上的彩點/方塊對得回「那是樹/石/乙太礦/敵人/我/夥伴/田」。畫在縮圖
+    // 之下、收合鈕之前;純表現、不嵌規則。
     const mmColW = mw / 3;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
@@ -1378,10 +1382,15 @@
     MM_LEGEND.forEach((it, i) => {
       const lx = ox + (i % 3) * mmColW + 2;
       const ly = oy + mh + 9 + Math.floor(i / 3) * 12;
-      ctx.beginPath();
-      ctx.arc(lx + 2, ly, 2.2, 0, Math.PI * 2);
       ctx.fillStyle = `rgb(${it.c})`;
-      ctx.fill();
+      if (it.sq) {
+        // 方塊 swatch:對齊農地在地圖上本是方塊(而非圓點),語彙一致、也跟「我」的黃圓點分得開。
+        ctx.fillRect(lx, ly - 2.2, 4.4, 4.4);
+      } else {
+        ctx.beginPath();
+        ctx.arc(lx + 2, ly, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.fillStyle = "rgba(230,232,238,0.92)";
       ctx.fillText(it.t, lx + 7, ly + 0.5);
     });
@@ -1628,6 +1637,10 @@
   // 新手分不出綠點是樹還是夥伴、紫點是乙太礦還是敵人,上一輪「一眼看出資源聚在哪」其實看不懂。
   // 補一排迷你圖例(色點＋中文),色直接沿用上面各點層的同一組,讓縮圖真的一眼讀懂。乙太礦給
   // 最跳的紫、敵人沿用受擊紅、自己用亮黃——和點層完全一致,圖例與實點不會對不上。純表現、不嵌規則。
+  // 田:小地圖把農地畫成黃銅／棕色「方塊」(自己亮、別人暗,見 drawMinimap 的 fields 迴圈),
+  // 但上一輪圖例只列了點狀實體(樹/石/礦/敵/我/夥伴),沒解釋那塊黃銅方塊是什麼——登入有地的
+  // 玩家看到方塊只能猜。補一格「田」:色用自己那塊的黃銅,swatch 刻意畫成方塊(sq)而非圓點,
+  // 對齊它在地圖上本就是方塊的視覺語彙(點＝實體、方塊＝地塊),也跟相鄰「我」的亮黃圓點區隔開。
   const MM_LEGEND = [
     { c: "120,190,110", t: "樹" },
     { c: "170,175,180", t: "石" },
@@ -1635,6 +1648,7 @@
     { c: "255,210,74", t: "我" },
     { c: "111,168,220", t: "夥伴" },
     { c: "214,90,90", t: "敵" },
+    { c: "201,162,75", t: "田", sq: true },
   ];
   // 節點 kind → 現成 sprite 名（assets/*.png）。有圖就畫真的樹/石(不再是圓點 emoji);
   // 乙太礦沒專屬圖,留 emoji 發光。圖還沒載入也自動退回 emoji(artOk 把關)。
