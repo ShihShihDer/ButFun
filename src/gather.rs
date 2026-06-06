@@ -279,4 +279,51 @@ mod tests {
         let back: ResourceNode = serde_json::from_str(&json).unwrap();
         assert_eq!(n, back);
     }
+
+    #[test]
+    fn every_gathered_resource_has_a_sink() {
+        // 跨模組不變式（1-A 採集 × 1-B 物品 × 1-C 合成 × 0-G-O2 經濟），與 `combat` 的
+        // `every_enemy_drop_is_a_usable_economic_resource` **對稱的另一條生產線**：那條守
+        // 「打怪掉的東西有去處」（戰鬥這條供給源），這條守「採集採到的東西有去處」——而採集
+        // 是 Phase 1-A、最早也最主要的生產源。GDD／PLAN 白紙黑字的紀律「有產出也要有去處」
+        // 在掉落側已上鎖，採集側這條更大的供給源此前卻沒有對應守則。
+        //
+        // 失敗模式：日後加一種 `NodeKind`（新採集資源），卻讓它的產出物品**既不被任何配方
+        // 當素材消耗、也不是乙太貨幣**，玩家就會一直採到一堆沒地方花的素材——正是 PLAN 點名
+        // 「素材沒去處」這個當前最大缺口的源頭。`gather` 既有測試只**寫死**現有三種節點的產出
+        // 值，察覺不到第四種採集資源變成只進不出的死素材。趁節點種類還少，把「凡採得到必有
+        // 去處」鎖成遍歷所有 `NodeKind` 的組合測試：日後加採集資源時若沒給它去處，當場紅燈。
+        //
+        // 「有去處」＝該物品被某條配方當素材消耗（合成原料），**或**它是乙太（`economy` 的
+        // 擴地消耗點吃掉它）。日後若有意讓採集產出非原料的東西，會在此紅燈，逼人確認是有意
+        // 設計再更新本不變式（比照工具／配方／掉落家族的逃生口）。
+        use crate::crafting::RECIPES;
+        use crate::inventory::ItemKind;
+
+        // 窮舉守衛：新增 NodeKind 變體卻忘了加進 KINDS 時，此 match 不窮舉、編譯失敗，
+        // 逼人回來把新種類納入本遍歷（比照 combat 對 EnemyKind 的窮舉守衛）。
+        for kind in KINDS {
+            match kind {
+                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+            }
+        }
+
+        for kind in KINDS {
+            assert!(
+                kind.yield_per_gather() > 0,
+                "採集節點 {kind:?} 的產出量應 > 0"
+            );
+            let item = ItemKind::from(kind);
+            let is_crafting_input = RECIPES
+                .iter()
+                .any(|r| r.inputs.iter().any(|&(i, _)| i == item));
+            let is_currency = item == ItemKind::Ether;
+            assert!(
+                is_crafting_input || is_currency,
+                "採集節點 {kind:?} 產出 {item:?}，但它既不是任何配方的素材、也不是乙太貨幣——\
+                 玩家採到的是沒有去處的死素材；請讓它能再投入合成 / 經濟，或若有意如此設計，\
+                 再更新本不變式"
+            );
+        }
+    }
 }
