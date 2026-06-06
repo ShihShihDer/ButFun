@@ -89,9 +89,14 @@
        長句自然換行而非溢出。overflow-wrap 確保超長 token(如網址)也不會撐破面板。 */
     /* 邊距用 env(safe-area-inset-*) 疊加:一般螢幕 inset 為 0、維持 12px;notched 手機
        橫式時自動讓開瀏海/圓角,固定面板不被切到。沒有 cover 時 inset 恆為 0,無副作用。 */
+    /* 高度上限 + 內捲:HUD 是固定在左上的單一直欄,堆了乙太/生命/背包/合成台/操作說明等可收合面板。
+       面板都展開時(尤其手機直式短螢幕,加上合成台列出配方後更高)整欄會長過視窗高度,底部的合成鈕/
+       說明溢出到螢幕外又因 position:fixed 不能捲、點不到看不到。限高到「視窗高 - 上下邊距 - safe-area」
+       並 overflow-y:auto:超過才在面板內捲動,桌面/內容沒超過時不出現捲軸、常態零變化。 */
     #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; font-size: 0.85rem;
       background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
-      max-width: min(340px, 78vw); overflow-wrap: break-word; }
+      max-width: min(340px, 78vw); overflow-wrap: break-word;
+      max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; }
     #hud .brass { color: var(--brass); }
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
