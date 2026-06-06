@@ -135,6 +135,33 @@
     #bagBody .bag-row { display: flex; align-items: center; gap: 6px; }
     #bagBody .bag-ico { width: 1.4em; text-align: center; }
     #bagBody .bag-qty { color: var(--brass); margin-left: auto; padding-left: 10px; }
+    /* 可收合的合成台面板:跟背包/操作說明同一套語彙(點標題列收/展、箭頭旋轉、鍵盤焦點框)。
+       展開列出配方:產物 ← 素材,夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包快照
+       回來(零契約變更),規則扣料仍由伺服器說了算。 */
+    #craftToggle { cursor: pointer; user-select: none; }
+    #craftToggle:hover { opacity: 0.85; }
+    #craftToggle:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    #craftSummary { color: var(--ink); }
+    #craftCaret { display: inline-block; transition: transform 0.15s; }
+    #hudCraft.craft-collapsed #craftCaret { transform: rotate(-90deg); }
+    #hudCraft.craft-collapsed #craftBody { display: none; }
+    #craftBody { margin: 2px 0 0 2px; opacity: 0.9; }
+    #craftBody .craft-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+    /* 配方描述「產物 ← 素材」佔滿剩餘寬度,缺料的素材標紅讓玩家一眼知道差什麼。 */
+    #craftBody .craft-desc { flex: 1; }
+    #craftBody .craft-out { color: var(--brass); }
+    #craftBody .craft-need.lack { color: #e0795f; }
+    /* 合成鈕:夠料亮黃銅、缺料反灰停用(disabled),套深色主題語彙(同登入/建議鈕)。 */
+    #craftBody .craft-btn {
+      font: inherit; cursor: pointer; padding: 3px 12px; font-size: 0.85rem; white-space: nowrap;
+      border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
+    }
+    #craftBody .craft-btn:hover:not(:disabled) { filter: brightness(1.1); }
+    #craftBody .craft-btn:disabled {
+      cursor: default; background: #161b22; color: var(--ink);
+      border: 1px solid #3a4250; font-weight: 400; opacity: 0.55;
+    }
+    #craftBody .craft-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
     /* 聊天 */
     #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
@@ -144,7 +171,7 @@
        + aria-expanded 傳達,不靠箭頭轉)。比照連線橫幅脈動/遊戲內踏步微光,在系統「減少動態」
        偏好下一併關掉——前庭敏感的玩家收/展面板時不再有旋轉動效,狀態切換照舊即時生效。 */
     @media (prefers-reduced-motion: reduce) {
-      #chat, #helpCaret, #chatCaret, #bagCaret { transition: none; }
+      #chat, #helpCaret, #chatCaret, #bagCaret, #craftCaret { transition: none; }
     }
     /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
        手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
@@ -278,6 +305,16 @@
            aria-label="背包：空" title="背包：空"><span id="bagCaret">▾</span> 🎒 背包<span id="bagSummary">：空</span></div>
       <div id="bagBody">背包是空的</div>
     </div>
+    <!-- 合成台:可收合面板（與背包/操作說明同一套語彙）。採集/打怪/農地三方湧入的素材
+         (木/石/廢料)只進不出、純囤積——合成給它們一個「去處」。展開列出配方:產物 ← 素材,
+         夠料才亮「合成」鈕。點鈕送 craft 意圖,伺服器查配方扣料、產物隨既有背包快照回來
+         (零契約變更);夠不夠料的反灰只是前端提示,扣料規則仍只在伺服器(權威)。
+         aria-label / title 由 game.js 隨快照同步成中文(emoji 對報讀器無意義),延續背包無障礙弧線。 -->
+    <div id="hudCraft">
+      <div id="craftToggle" role="button" tabindex="0" aria-expanded="false" aria-controls="craftBody"
+           aria-label="合成台" title="合成台"><span id="craftCaret">▾</span> 🔧 合成台<span id="craftSummary"></span></div>
+      <div id="craftBody"></div>
+    </div>
     <div id="hudTime">—</div>
     <!-- 農地缺水提醒:離開田去探索時也知道作物渴了該回去澆水(純從快照每格 dry 數得,
          不嵌任何遊戲規則)。沒有缺水格時隱藏,不在沒事時佔一行。 -->
@@ -336,6 +373,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260606-bag-panel"></script>
+  <script src="game.js?v=20260606-craft-panel"></script>
 </body>
 </html>

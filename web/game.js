@@ -384,6 +384,7 @@
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
           updateBagHud(inv);
+          updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -1592,11 +1593,19 @@
   }
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
-  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨" };
+  // pickaxe 是合成產物(1-C/1-D),會隨背包快照回來;補進這三張表,讓合成出的鎬子在
+  // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
+  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨", pickaxe: "⛏️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太" };
+  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120" };
+  // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
+  // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
+  // 接線後 client 送 { type:"craft", recipe:id },產物隨既有背包快照回來,零契約變更。
+  const CRAFT_RECIPES = [
+    { id: "pickaxe", out: "pickaxe", outQty: 1, inputs: [["wood", 3], ["stone", 2]] },
+  ];
   function updateBagHud(inv) {
     // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
     // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
@@ -1630,6 +1639,66 @@
     // 延續日夜/連線/採集的背包無障礙弧線。
     const label =
       "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、");
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+  }
+
+  // 合成台:把背包快照(品項→數量)對照配方表,畫出每條「產物 ← 素材」與一顆合成鈕。
+  // 缺料的素材標紅、合成鈕反灰停用——這只是前端提示,讓玩家一眼知道差什麼;扣不扣得成
+  // 仍由伺服器查表決定。點鈕送 { type:"craft", recipe:id } 意圖,產物隨既有背包快照回來。
+  function updateCraftPanel(inv) {
+    const summary = document.getElementById("craftSummary");
+    const body = document.getElementById("craftBody");
+    const toggle = document.getElementById("craftToggle");
+    if (!summary || !body || !toggle) return;
+    const have = new Map((inv || []).map((s) => [s.item, s.qty]));
+    let craftable = 0; // 此刻夠料的配方數,寫進標題列摘要(收著時也一眼知道能不能合)
+    body.innerHTML = "";
+    for (const r of CRAFT_RECIPES) {
+      const ok = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
+      if (ok) craftable++;
+      const row = document.createElement("div");
+      row.className = "craft-row";
+      // 素材描述:每項「emoji×需求」,不夠的標紅(.lack)。item 是伺服器列舉字串、非玩家文字,無注入風險。
+      const needs = r.inputs
+        .map(([item, qty]) => {
+          const lack = (have.get(item) || 0) < qty;
+          const ico = ITEM_LOOK[item] || item;
+          return `<span class="craft-need${lack ? " lack" : ""}">${ico}×${qty}</span>`;
+        })
+        .join(" ");
+      const outIco = ITEM_LOOK[r.out] || r.out;
+      const outName = ITEM_NAME[r.out] || r.out;
+      const desc = document.createElement("div");
+      desc.className = "craft-desc";
+      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "craft-btn";
+      btn.textContent = "合成";
+      btn.disabled = !ok;
+      // 報讀器把整條配方念清楚:夠料念「合成 鎬子,需要 木材×3、石頭×2」,缺料補「(素材不足)」。
+      const needLabel = r.inputs
+        .map(([item, qty]) => `${ITEM_NAME[item] || item}×${qty}`)
+        .join("、");
+      btn.setAttribute(
+        "aria-label",
+        `合成 ${outName},需要 ${needLabel}${ok ? "" : "（素材不足）"}`
+      );
+      btn.title = ok ? `合成 ${outName}` : "素材不足";
+      btn.addEventListener("click", () => {
+        if (btn.disabled) return;
+        // 只送意圖:伺服器查配方扣料、產物隨既有背包快照回來(規則只在伺服器,前端不自行加道具)。
+        try { ws.send(JSON.stringify({ type: "craft", recipe: r.id })); } catch {}
+        announce(`合成 ${outName}`);
+      });
+      row.appendChild(desc);
+      row.appendChild(btn);
+      body.appendChild(row);
+    }
+    summary.textContent = craftable > 0 ? `：${craftable} 可合成` : "";
+    // 標題鈕的無障礙標籤同步可合成數(收起時 body 被 display:none、報讀器讀不到)。
+    const label = craftable > 0 ? `合成台：${craftable} 項可合成` : "合成台：素材不足";
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
   }
@@ -2257,6 +2326,33 @@
     });
   }
 
+  // ---- 合成台面板可收合 ----
+  // 與背包同一套語彙:點標題列收/展,狀態存 localStorage,預設收起(標題列摘要已顯示
+  // 「N 可合成」,收著也一眼知道能不能合)。鍵盤(Tab→Enter/空白)可達,焦點框語彙一致。
+  function initCraftToggle() {
+    const panel = document.getElementById("hudCraft");
+    const toggle = document.getElementById("craftToggle");
+    if (!panel || !toggle) return;
+    let chosen;
+    try { chosen = localStorage.getItem("butfun.craftCollapsed"); } catch {}
+    const apply = (v) => {
+      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示可合成數),只有顯式展開才為 "0"
+      panel.classList.toggle("craft-collapsed", isCollapsed);
+      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    };
+    apply(chosen === null || chosen === undefined ? "1" : chosen);
+    const flip = () => {
+      const next = panel.classList.contains("craft-collapsed") ? "0" : "1";
+      apply(next);
+      try { localStorage.setItem("butfun.craftCollapsed", next); } catch {}
+    };
+    toggle.addEventListener("click", flip);
+    // 鍵盤可達:同背包/聊天收合鈕,Enter/空白收合並擋掉全域 keydown(免空白被當採集)。
+    toggle.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
+    });
+  }
+
   // ---- 聊天紀錄可收合 ----
   // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設不收(維持
   // 既有行為,新手看得到聊天);展開時清零未讀並捲到最新。收著時 addChat 會累計未讀數。
@@ -2318,6 +2414,8 @@
     initHelpToggle();
     initChatToggle();
     initBagToggle();
+    initCraftToggle();
+    updateCraftPanel([]); // 首個背包快照前先畫出配方(全反灰),不留空面板
     initChatKeyboardLift();
     document.getElementById("login").classList.add("hidden");
     for (const id of ["hud", "suggestBtn", "chat"]) {
