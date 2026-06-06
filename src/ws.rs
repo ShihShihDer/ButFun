@@ -319,16 +319,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Craft { recipe_id }) => {
-                    // 合成(1-C):查 RECIPES 找出 recipe_id(產物 ItemKind 的 snake_case 名)對應配方,
+                    // 合成(1-C):用配方自己的穩定 `id` 欄位(crafting 的權威 wire key)查 recipe_id,
                     // 在玩家自己背包上全有全無地合成(夠料才扣料+產出)。產物隨下一張快照回前端。
-                    let recipe = crate::crafting::RECIPES.iter().find(|r| {
-                        serde_json::to_value(r.output)
-                            .ok()
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .as_deref()
-                            == Some(recipe_id.as_str())
-                    });
-                    if let Some(recipe) = recipe {
+                    // 走既有 `recipe_by_id`(已測)而非每訊息 serde 重組產物名:免每筆配料一次 Value 配置,
+                    // 也不把查找耦死在「id 必等於產物序列化名」上(同產物不同配料就會抓錯)。
+                    if let Some(recipe) = crate::crafting::recipe_by_id(&recipe_id) {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             if recipe.craft(&mut p.inventory) {
                                 tracing::info!(player = %p.name, recipe = %recipe_id, "合成成功");
