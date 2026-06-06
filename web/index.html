@@ -92,11 +92,15 @@
     /* 高度上限 + 內捲:HUD 是固定在左上的單一直欄,堆了乙太/生命/背包/合成台/操作說明等可收合面板。
        面板都展開時(尤其手機直式短螢幕,加上合成台列出配方後更高)整欄會長過視窗高度,底部的合成鈕/
        說明溢出到螢幕外又因 position:fixed 不能捲、點不到看不到。限高到「視窗高 - 上下邊距 - safe-area」
-       並 overflow-y:auto:超過才在面板內捲動,桌面/內容沒超過時不出現捲軸、常態零變化。 */
+       並 overflow-y:auto:超過才在面板內捲動,桌面/內容沒超過時不出現捲軸、常態零變化。
+       高度單位用 dvh(動態視窗高)、留 vh 當舊瀏覽器後備:手機網址列展開時 100vh 仍算「列縮起」的大高度,
+       會高估可視範圍,把限高撐過實際看得到的高、底部合成鈕/說明又落到工具列底下點不到——正是上面要治的病。
+       dvh 跟著工具列收放即時縮放,限高永遠貼齊當下真正看得到的視窗高。不懂 dvh 的舊瀏覽器忽略後一行、退回 vh。 */
     #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; font-size: 0.85rem;
       background: var(--panel); padding: 8px 12px; border-radius: 8px; line-height: 1.5;
       max-width: min(340px, 78vw); overflow-wrap: break-word;
-      max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; }
+      max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+      max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; }
     #hud .brass { color: var(--brass); }
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
@@ -215,7 +219,7 @@
     #chat.chat-collapsed #chatCaret { transform: rotate(-90deg); }
     #chat.chat-collapsed #chatLog { display: none !important; }
     #chatUnread { color: var(--brass); font-weight: 700; margin-left: 4px; }
-    #chatLog { max-height: 30vh; overflow-y: auto; background: var(--panel); border-radius: 8px;
+    #chatLog { max-height: 30vh; max-height: 30dvh; overflow-y: auto; background: var(--panel); border-radius: 8px;
       padding: 8px 10px; margin-bottom: 6px; font-size: 0.85rem; line-height: 1.5; display: none; }
     #chatLog .who { color: var(--brass); font-weight: 600; }
     #chatLog .sys { opacity: 0.6; font-style: italic; }
