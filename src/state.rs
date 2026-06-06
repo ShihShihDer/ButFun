@@ -16,6 +16,7 @@ use crate::enemy_field::EnemyField;
 use crate::field::Field;
 use crate::gather_field::NodeField;
 use crate::inventory::Inventory;
+use crate::inventory_store::InventoryStore;
 use crate::vitals::Vitals;
 use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
@@ -141,6 +142,8 @@ pub struct AppState {
     pub users: UserStore,
     /// 玩家最後位置記憶(Phase 0-E 記憶體前置):已登入玩家重連回到離線前位置。
     pub positions: PositionStore,
+    /// 玩家背包記憶(Phase 0-E):已登入玩家重連帶回採集/打怪/收成囤積的素材。
+    pub inventories: InventoryStore,
     /// 每個玩家 id 當前的在線連線數。同帳號多分頁/多裝置共用同一玩家 id,靠這個計數
     /// 讓「先離線的那條連線」不會把另一條還在線的 session 一起從世界移除。
     pub connections: ConnectionCounts,
@@ -149,14 +152,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// 無 DB 模式（測試、本機 `cargo run`）：位置走 JSONL 退回層（見 `PositionStore::new`）。
+    /// 無 DB 模式（測試、本機 `cargo run`）：位置與背包走 JSONL 退回層（見各自的 `new`）。
     pub fn new() -> Self {
-        Self::with_positions(PositionStore::new())
+        Self::with_stores(PositionStore::new(), InventoryStore::new())
     }
 
-    /// 用已備好的位置 store 建狀態。`main` 連好 Postgres 後會傳入 DB-backed 的 store
-    /// （見 `PositionStore::from_pool`）,其餘狀態不變。
-    pub fn with_positions(positions: PositionStore) -> Self {
+    /// 用已備好的位置 / 背包 store 建狀態。`main` 連好 Postgres 後會傳入 DB-backed 的 store
+    /// （見 `PositionStore::from_pool` / `InventoryStore::from_pool`）,其餘狀態不變。
+    pub fn with_stores(positions: PositionStore, inventories: InventoryStore) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
         let (tx_chat, _rx_chat) = broadcast::channel(256);
@@ -172,6 +175,7 @@ impl AppState {
             suggestions: SuggestionStore::new(),
             users: UserStore::new(),
             positions,
+            inventories,
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
         }

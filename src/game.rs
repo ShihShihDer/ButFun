@@ -156,13 +156,23 @@ pub fn spawn(app: AppState) {
             // 這裡讓線上玩家的狀態也持續落地,重啟後重連即帶回。
             // 只記已登入玩家（id 在 users 裡）；訪客 id 隨機、不記,避免 cache 無界成長。
             if tick % (TICK_HZ as u64 * 10) == 0 {
-                let online: Vec<(uuid::Uuid, String, String, f32, f32, u32)> = {
+                // 同一把 read 鎖內一併收位置與背包,兩者快照來自同一瞬間、不會錯位。
+                let (online, inventories): (
+                    Vec<(uuid::Uuid, String, String, f32, f32, u32)>,
+                    Vec<(uuid::Uuid, crate::inventory::Inventory)>,
+                ) = {
                     let players = app.players.read().unwrap();
-                    players
+                    let authed: Vec<_> = players
                         .values()
                         .filter(|p| app.users.get(p.id).is_some())
-                        .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether))
-                        .collect()
+                        .collect();
+                    (
+                        authed
+                            .iter()
+                            .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether))
+                            .collect(),
+                        authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
+                    )
                 };
                 if !online.is_empty() {
                     // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
@@ -170,6 +180,8 @@ pub fn spawn(app: AppState) {
                         online.iter().map(|(id, _, _, x, y, e)| (*id, *x, *y, *e)),
                     );
                     app.positions.flush_online(&online).await;
+                    app.inventories.remember_all(inventories.iter().cloned());
+                    app.inventories.flush_online(&inventories).await;
                 }
             }
         }

@@ -16,6 +16,7 @@ mod game;
 mod gather;
 mod gather_field;
 mod inventory;
+mod inventory_store;
 mod vitals;
 mod plot_registry;
 mod plots;
@@ -55,18 +56,28 @@ async fn main() {
     // Phase 0-E 跨重啟持久化：有 DATABASE_URL 就連 Postgres、套 migration、把玩家位置
     // 載回；沒設則退回 JSONL/記憶體模式（見 db.rs / positions.rs）。連得到但 migration 失敗
     // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
-    let positions = match db::connect().await.expect("Postgres 連線或 migration 失敗") {
+    // 位置與背包共用同一個連線池（PgPool 內部是 Arc,clone 便宜）：兩個 store 各自獨立
+    // 載回 / flush,沒有寫入順序耦合（見 0002_inventories.sql 為何不設外鍵）。
+    let (positions, inventories) = match db::connect()
+        .await
+        .expect("Postgres 連線或 migration 失敗")
+    {
         Some(pool) => {
-            tracing::info!("Postgres 已連線、migration 已套用；玩家位置走 DB 持久化");
-            positions::PositionStore::from_pool(pool).await
+            tracing::info!("Postgres 已連線、migration 已套用；玩家位置與背包走 DB 持久化");
+            let positions = positions::PositionStore::from_pool(pool.clone()).await;
+            let inventories = inventory_store::InventoryStore::from_pool(pool).await;
+            (positions, inventories)
         }
         None => {
-            tracing::warn!("未設 DATABASE_URL；玩家位置走 JSONL 退回層（本機/測試模式）");
-            positions::PositionStore::new()
+            tracing::warn!("未設 DATABASE_URL；玩家位置與背包走 JSONL 退回層（本機/測試模式）");
+            (
+                positions::PositionStore::new(),
+                inventory_store::InventoryStore::new(),
+            )
         }
     };
 
-    let app_state = AppState::with_positions(positions);
+    let app_state = AppState::with_stores(positions, inventories);
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
     } else {

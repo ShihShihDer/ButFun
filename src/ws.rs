@@ -150,6 +150,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             // 第一條連線:讀記憶位置(已登入玩家才記),把占位 Player 的位置/乙太覆寫掉。
             let mut p = player.clone();
             if let Some(uid) = authed_uid {
+                // 背包與位置各自獨立記憶:有存檔就帶回採集/打怪/收成囤的素材,沒有就維持空背包。
+                if let Some(inv) = app.inventories.recall(uid) {
+                    p.inventory = inv;
+                }
                 let saved = app.positions.recall(uid);
                 match saved {
                     // 有歷史位置 → 回到離線前的地方(大世界裡 spawn_at 仍夾進界內)。
@@ -340,6 +344,9 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             if let Some(ref player) = p {
                 if persist_pos {
                     app.positions.remember(id, player.x, player.y, player.ether);
+                    // 背包同樣在鎖內更新 cache,跟新連線的 recall 用同一把 players 鎖排序,
+                    // 消除 refresh race（理由同 positions）。
+                    app.inventories.remember(id, &player.inventory);
                 }
             }
             p
@@ -355,6 +362,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             app.positions
                 .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether)
                 .await;
+            app.inventories.flush_one(id, &player.inventory).await;
         }
     }
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
