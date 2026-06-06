@@ -141,6 +141,20 @@ mod tests {
     }
 
     #[test]
+    fn expansion_cost_saturates_instead_of_panicking_on_overflow() {
+        // doc 承諾「載入壞值時飽和到上限總比 panic 好」（`expansion_cost` 用 `saturating_mul`/
+        // `saturating_add`），但此前無測試把關這條 panic-safety 不變式。接 0-E 從 Postgres
+        // 讀回的 `owned` 若被竄改 / 改版灌成超大值，`expansion_cost` 仍可能在某些路徑被呼叫
+        // （`is_loadable` 是另一道防線、不保證每個呼叫端都先驗）。把「乘法飽和、絕不 overflow
+        // panic」鎖成測試：日後有人把 `saturating_mul` 改回裸 `*`，debug build 的 cargo test
+        // 會當場紅燈，而不是接線後在線上載入壞檔時炸開。
+        // owned = u32::MAX 時：owned+1 先飽和到 u32::MAX、再 ×基準價仍飽和到 u32::MAX，不 panic。
+        assert_eq!(expansion_cost(u32::MAX), u32::MAX);
+        // 逼近溢位邊界同樣不 panic，且飽和後封頂、不會回繞變小（維持「不遞減」）。
+        assert!(expansion_cost(u32::MAX) >= expansion_cost(u32::MAX - 1));
+    }
+
+    #[test]
     fn new_wallet_starts_empty_and_can_expand() {
         let w = PlotWallet::new();
         assert_eq!(w.expansions(), 0);
