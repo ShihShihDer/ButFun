@@ -858,6 +858,10 @@
     }
   }
 
+  // dock 視窗的鍵盤開關鉤子:由 initDock 設定(把 openWinFor 暴露給全域 keydown)。
+  // 用 null 起手,dock 還沒初始化(進場前)時鍵盤捷徑自動失效,不會 ReferenceError。
+  let toggleDockWin = null;
+
   window.addEventListener("keydown", (e) => {
     // 建議箱對話框開著時，完全不攔截遊戲按鍵——背景遮罩雖設了 inert（封閉滑鼠/報讀器），
     // 但這個監聽掛在 window 上、inert 擋不住，焦點落在對話框的按鈕（取消/送出，activeElement
@@ -900,6 +904,21 @@
     if (e.key === "m" || e.key === "M") {
       if (!e.repeat) toggleMinimap();
       e.preventDefault();
+      return;
+    }
+    // B/C/H:鍵盤開對應 dock 視窗(背包/合成台/操作說明),與點 dock 圖示等效——延續
+    // M 開地圖的鍵盤平權,讓沒滑鼠的玩家也能一鍵叫出面板。再按同鍵或 Esc 關(由 initDock
+    // 的 openWinFor 自帶 toggle 與焦點歸還)。這些字母不與 WASD/EF/M 衝突。擴地(🌱)還沒接線、
+    // 暫不給捷徑,待 BuyExpansion 落地再補。
+    if (toggleDockWin) {
+      const winBtn =
+        (e.key === "b" || e.key === "B") ? "dockBag" :
+        (e.key === "c" || e.key === "C") ? "dockCraft" :
+        (e.key === "h" || e.key === "H") ? "dockHelp" : null;
+      if (winBtn) {
+        if (!e.repeat) toggleDockWin(winBtn);
+        e.preventDefault();
+      }
     }
   });
   window.addEventListener("keyup", (e) => {
@@ -2720,6 +2739,12 @@
     for (const btn of dock.querySelectorAll(".dock-btn")) {
       btn.addEventListener("click", () => openWinFor(btn));
     }
+    // 把「依 dock 鈕 id 切換視窗」暴露給全域 keydown(B/C/H 捷徑用)。走 openWinFor 同一條路,
+    // 因此 toggle 開關、同時只開一個、焦點移到關閉鈕等行為全與點圖示完全一致。
+    toggleDockWin = (btnId) => {
+      const btn = document.getElementById(btnId);
+      if (btn) openWinFor(btn);
+    };
     // 每個視窗右上的 ✕ 關閉自己。
     for (const x of document.querySelectorAll(".hud-window .win-close")) {
       x.addEventListener("click", () => closeWin());

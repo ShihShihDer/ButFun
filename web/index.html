@@ -333,10 +333,10 @@
     </div>
     <!-- dock:一排小圖示,點開對應視窗。背包/合成/擴地的「現在能做點什麼」由 game.js 隨快照加 .dock-active 微亮黃點。 -->
     <div id="hudDock">
-      <button type="button" class="dock-btn" id="dockBag" data-win="winBag" aria-haspopup="dialog" aria-expanded="false" aria-label="背包">🎒</button>
-      <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-haspopup="dialog" aria-expanded="false" aria-label="合成台">🔧</button>
-      <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="擴地">🌱</button>
-      <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-label="操作說明">📖</button>
+      <button type="button" class="dock-btn" id="dockBag" data-win="winBag" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="B" aria-label="背包（B）" title="背包（B）">🎒</button>
+      <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="C" aria-label="合成台（C）" title="合成台（C）">🔧</button>
+      <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="擴地" title="擴地">🌱</button>
+      <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="H" aria-label="操作說明（H）" title="操作說明（H）">📖</button>
     </div>
     <div id="hudName" class="hud-sub hidden">你：—</div>
     <!-- 訪客引導:玩家回饋最大宗是「訪客一進來沒農地、不知道下一步」(suggestions.jsonl)。
@@ -389,6 +389,7 @@
       </div>
       <div id="helpBody">
         <div>WASD / 方向鍵 / 手把 · 手機任處拖曳走動 · Enter 聊天（Esc 退出）· M 收合地圖</div>
+        <div>鍵盤捷徑:<b>B</b> 背包 · <b>C</b> 合成台 · <b>H</b> 本說明（再按一次或 Esc 關）</div>
         <div>走到田邊,<b>滑鼠點 / 手機輕點</b>格子,或<b>空白鍵 / E / 手把臉鈕</b>採腳下格:翻土 → 播種 → 澆水 → 收成</div>
         <div>走到 🌳 樹 / 🪨 石 / ✨ 乙太礦旁,<b>空白鍵 / E / 點一下</b>採進背包</div>
         <div>世界上有 🤖 / 👻 等敵人,<b>走近會自動開打</b>:留意上方的<b>生命</b>,被打趴會原地休息一下</div>
