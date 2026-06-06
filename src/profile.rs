@@ -6,8 +6,9 @@
 //! 因 `ws.rs` 連線時即時讀 `UserStore`(authed 路徑 `user.name`),改名後**重連**即生效、
 //! 重啟也還在(append last-wins,見 `users::index_users`)。
 //!
-//! 「目前線上、不重連就即時反映 HUD / 聊天 / 快照」的 live 廣播刻意留給 backend lane,
-//! 那會動 live 廣播 shape、屬架構級接線(依 PLAN.md 分工),本 lane 不搶那段。
+//! 此外,改名成功後會呼叫 `AppState::apply_live_rename` 把**目前線上**那位玩家的權威
+//! `Player.name` 即時改掉——下一張快照就帶新名,HUD／世界名牌／聊天 from 不必重連即更新。
+//! 不動快照 shape(`PlayerView` 早有 `name` 欄),只是改寫既有欄位的值,additive 零契約變更。
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -61,10 +62,8 @@ async fn patch_profile(
         Some(u) => {
             // 即時反映到線上世界:若該玩家此刻在線,更新其權威 Player 的 name,下一張快照就帶新名
             // (HUD / 世界名牌 / 聊天 from 都讀這個)——不必重連。離線玩家下次進場時 ws.rs 從
-            // UserStore 讀到新名,同樣生效。
-            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                p.name = u.name.clone();
-            }
+            // UserStore 讀到新名,同樣生效(見 apply_live_rename 的契約說明與測試)。
+            app.apply_live_rename(uid, &u.name);
             Json(ProfileResponse {
                 id: u.id,
                 name: u.name,
