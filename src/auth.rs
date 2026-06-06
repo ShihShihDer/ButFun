@@ -108,7 +108,7 @@ async fn ai_register(State(app): State<AppState>, Json(req): Json<AiRegisterReq>
         .species
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| crate::users::DEFAULT_SPECIES.to_string());
-    let user = app.users.create_ai(&name, &species);
+    let user = app.users.create_ai(&name, &species).await;
     let token = sign_session(&user.id, &cfg.session_secret);
     Json(AiRegisterResp {
         user_id: user.id,
@@ -203,12 +203,15 @@ async fn google_callback(
     //    刻意不拿 Google 回傳的真實姓名（info.name）當顯示名——那會把本名公開廣播給所有
     //    玩家（聊天 from / HUD），是隱私問題（玩家建議 at=1780631336007）。新帳號改配一個
     //    隨機角色代號；既有帳號 find_or_create 命中即早回，不會走到這個名字。
-    let user = app.users.find_or_create(
-        "google",
-        &info.sub,
-        info.email.clone(),
-        &crate::users::random_codename(),
-    );
+    let user = app
+        .users
+        .find_or_create(
+            "google",
+            &info.sub,
+            info.email.clone(),
+            &crate::users::random_codename(),
+        )
+        .await;
 
     // 4) 種 session cookie + 清掉 state cookie + 導回 /
     let session_token = sign_session(&user.id, &cfg.session_secret);
