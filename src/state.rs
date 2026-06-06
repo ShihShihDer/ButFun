@@ -222,6 +222,20 @@ impl AppState {
             height: WORLD_HEIGHT,
         }
     }
+
+    /// 把線上玩家的權威顯示名即時改掉(若該玩家此刻在線),讓下一張快照就帶新名——不必重連
+    /// (HUD／世界名牌／聊天 from 都讀權威 `Player.name`)。改名 API 持久化成功後呼叫;
+    /// 回傳是否命中線上玩家(離線者回 `false`,其下次進場時 `ws.rs` 自會從 `UserStore` 讀到新名)。
+    /// 抽成具名方法以便迴歸測試鎖住「改名即時反映線上世界」這條契約。
+    pub fn apply_live_rename(&self, uid: Uuid, new_name: &str) -> bool {
+        match self.players.write().unwrap().get_mut(&uid) {
+            Some(p) => {
+                p.name = new_name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Default for AppState {
@@ -318,5 +332,44 @@ mod tests {
         // 快照訂閱者只拿到快照，沒有聊天混進來。
         assert_eq!(rx_snap.try_recv().unwrap(), "快照");
         assert!(rx_snap.try_recv().is_err());
+    }
+
+    #[test]
+    fn live_rename_updates_online_player_snapshot_name() {
+        // 改名 API 持久化成功後呼叫 apply_live_rename:線上玩家的權威 Player.name 立刻換,
+        // 下一張快照(view)就帶新名,不必重連。鎖住「改名即時反映線上世界」這條契約。
+        let app = AppState::new();
+        let mut p = player_at(100.0, 100.0, Input::default());
+        let uid = p.id;
+        p.name = "舊名".into();
+        app.players.write().unwrap().insert(uid, p);
+
+        let hit = app.apply_live_rename(uid, "新名");
+
+        assert!(hit, "玩家在線應命中");
+        assert_eq!(
+            app.players.read().unwrap().get(&uid).unwrap().view().name,
+            "新名",
+            "下一張快照應帶新名"
+        );
+    }
+
+    #[test]
+    fn live_rename_for_offline_player_is_noop() {
+        // 改名者此刻不在線(查無此 id):apply_live_rename 回 false、不 panic、不誤改別人。
+        // (離線者改名仍持久化在 UserStore,下次進場時 ws.rs 自會讀到新名。)
+        let app = AppState::new();
+        let online = player_at(0.0, 0.0, Input::default());
+        let online_id = online.id;
+        app.players.write().unwrap().insert(online_id, online);
+
+        let hit = app.apply_live_rename(Uuid::new_v4(), "幽靈");
+
+        assert!(!hit, "查無此線上玩家應回 false");
+        assert_eq!(
+            app.players.read().unwrap().get(&online_id).unwrap().name,
+            "測試",
+            "不該誤改到其他線上玩家"
+        );
     }
 }
