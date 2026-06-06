@@ -97,6 +97,11 @@
   // 但看不到畫面的玩家完全收不到受擊——補這條把無障礙弧線延伸到戰鬥(連線/採集/收成/日夜之後)。
   let myHp = 0;
   let hpKnown = false;
+  // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
+  // 移動中很容易漏看「我正在挨打」。報讀器那條已補受擊播報(給看不到畫面的玩家),這條是它對稱的
+  // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
+  let damageFlashUntil = 0;
+  let damageFlashLethal = false; // 被打趴(hp<=0)時閃得更重一點
   // 收成得乙太、採集進背包時的「+N」飄字（純表現，從權威數值差值推得，不嵌任何遊戲規則）。
   // 每筆 { wx, wy, text, color, born }：以世界座標固定在獲得當下的玩家位置上方，隨時間上飄淡出。
   const floaters = [];
@@ -386,6 +391,8 @@
           if (hpKnown && me.hp !== myHp) {
             if (me.hp < myHp) {
               announce(me.hp <= 0 ? "你被打趴了" : `受到攻擊,生命 ${me.hp}/${me.max_hp}`);
+              damageFlashLethal = me.hp <= 0; // 被打趴閃得更重
+              damageFlashUntil = performance.now() + (damageFlashLethal ? 600 : 380); // 一閃即逝、隨即淡出
             } else {
               announce(`恢復生命 ${me.hp}/${me.max_hp}`);
             }
@@ -1050,7 +1057,29 @@
       ctx.beginPath(); ctx.arc(touchOrigin.x + dx * r, touchOrigin.y + dy * r, 18, 0, Math.PI * 2); ctx.fill();
     }
 
+    // 受擊紅光:畫在最上層(連搖桿/小地圖之上),受擊的當下不被任何東西蓋住,一眼就知道在挨打。
+    drawDamageFlash(performance.now());
+
     requestAnimationFrame(render);
+  }
+
+  // 受擊時的全螢幕邊緣紅光:四周往中心淡出的紅暈(中央保持透明、不擋視線),依剩餘時間淡出。
+  // 純螢幕座標、純表現——觸發來自權威 HP 差值,這裡只負責畫,不參與任何戰鬥判定。
+  function drawDamageFlash(now) {
+    if (now >= damageFlashUntil) return;
+    const dur = damageFlashLethal ? 600 : 380;
+    const t = (damageFlashUntil - now) / dur; // 1→0 隨時間淡出
+    const peak = damageFlashLethal ? 0.55 : 0.38;
+    const alpha = peak * Math.max(0, Math.min(1, t));
+    const cx = viewW / 2;
+    const cy = viewH / 2;
+    const inner = Math.min(viewW, viewH) * 0.35; // 中央留一塊透明、不擋視線
+    const outer = Math.hypot(viewW, viewH) / 2;
+    const g = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    g.addColorStop(0, "rgba(200,30,30,0)");
+    g.addColorStop(1, `rgba(200,30,30,${alpha.toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, viewW, viewH);
   }
 
   // ---- 小地圖（玩家建議：2000x2000 大世界容易迷路）----
