@@ -115,8 +115,6 @@ impl Field {
     /// 而不是吃進一塊長度或內容錯誤的 `tiles`。
     /// origin 不入存檔，故載入時由 `for_plot` 同源的 `plot_origin(index)` 供入：
     /// 接線輪每塊地的 origin 永遠由「該玩家的序號」決定，不靠磁碟值。
-    /// 接 0-E 載入路徑時移除此 `allow`（沿用本檔前置地基的慣例）。
-    #[allow(dead_code)]
     pub fn from_tiles(index: usize, tiles: Vec<Tile>) -> Option<Self> {
         if tiles.len() != FIELD_COLS * FIELD_ROWS {
             return None;
@@ -133,6 +131,15 @@ impl Field {
             origin_x,
             origin_y,
         })
+    }
+
+    /// 把（serde 還原後 origin 退回 (0,0) 的）農地安置回第 `index` 塊地——持久化載入入口
+    /// （DB / JSONL 都走它，見 `field_store.rs`）。先把 tiles 交給 `from_tiles` 做「格數正確
+    /// ＋每株作物健全」雙重驗證，再由序號（而非磁碟上的 origin）定出位置：與 `for_plot` 同源，
+    /// 確保載回的地永遠落在該玩家序號該在的格點。驗證不過（舊版／壞檔／被竄改）回 `None`，
+    /// 呼叫端可丟棄這一列、退回讓玩家進場時重建全新地。
+    pub fn reseated(self, index: usize) -> Option<Self> {
+        Self::from_tiles(index, self.tiles)
     }
 
     /// (col,row) → tiles 陣列索引；超出範圍回 `None`。純函式。
@@ -655,6 +662,34 @@ mod tests {
         assert_eq!(back.crop_stage(1, 0), Some(CropStage::Seed));
         assert_eq!(back.crop_stage(2, 0), Some(CropStage::Sprout));
         assert_eq!(back.tile(3, 0), Some(&Tile::Untilled));
+    }
+
+    #[test]
+    fn reseated_round_trips_through_serde_with_origin_from_index() {
+        // 持久化載入入口:一塊種到一半的地序列化 →(origin 退回 0,0)→ reseated(index) 安置回
+        // 該序號的 origin,整塊地(含中段 growth/moisture)原封不動。與 from_tiles 同驗證,
+        // 但走「整個 Field」進出,鏡像 field_store 的實際載入路徑。
+        let mut f = Field::for_plot(2);
+        f.till(0, 0);
+        f.plant(0, 0);
+        f.water(0, 0);
+        f.tick(SPROUT_AT + 3.0);
+
+        let json = serde_json::to_string(&f).unwrap();
+        let raw: Field = serde_json::from_str(&json).unwrap();
+        assert_eq!(raw.origin(), (0.0, 0.0)); // origin 不入存檔
+        let back = raw.reseated(2).unwrap();
+        assert_eq!(back, f); // 序號 2 的 origin 重建後整塊一致
+        assert_eq!(back.origin(), crate::plots::plot_origin(2));
+    }
+
+    #[test]
+    fn reseated_rejects_corrupt_field() {
+        // reseated 套用 from_tiles 的雙重驗證:壞檔(作物 NaN)整塊拒收,呼叫端可丟棄該列。
+        // 直接組壞 tiles（NaN 經 JSON 會被序列化成 null、進不了 f32,故不走 serde 路徑）。
+        let mut bad = Field::new();
+        bad.tiles[0] = Tile::Planted(crate::crops::Crop::from_raw(f32::NAN, 0.0));
+        assert!(bad.reseated(0).is_none());
     }
 
     #[test]

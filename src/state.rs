@@ -14,6 +14,7 @@ use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
 use crate::enemy_field::EnemyField;
 use crate::field::Field;
+use crate::field_store::FieldStore;
 use crate::gather_field::NodeField;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
@@ -112,9 +113,12 @@ pub struct AppState {
     /// 值是那塊地（origin 由其地塊序號決定，互不重疊）。玩家（已登入者）進場時建立、
     /// 之後整個伺服器生命週期都留著——人離線了作物仍在自己的地裡繼續長，重連看得到
     /// 自己離開時的進度（記憶體量級＝歷來已登入玩家數，比照 `plots`／`positions` 有界）。
-    /// 持久化待 Phase 0-E，重啟會回到全自然地。
+    /// Phase 0-E：啟動時由 `field_store` 把上次存的地灌回來，重啟後種田進度（翻土/播種/澆水/
+    /// 成長）還在。
     pub fields: Arc<RwLock<HashMap<Uuid, Field>>>,
     /// 地塊歸屬登記：哪個玩家擁有第幾塊地（決定其農地 origin、往外排不重疊）。
+    /// Phase 0-E：啟動時由 `field_store` 存的序號重建（`from_saved`），returning 玩家拿回原地塊、
+    /// 續發序號不撞既有地塊。
     pub plots: PlotRegistry,
     /// 伺服器權威的日夜時鐘（Phase 0-G 療癒核心）。遊戲迴圈每 tick 推進、隨快照廣播；
     /// 目前存記憶體，持久化待 Phase 0-E（重啟會回到破曉）。
@@ -144,6 +148,9 @@ pub struct AppState {
     pub positions: PositionStore,
     /// 玩家背包記憶(Phase 0-E):已登入玩家重連帶回採集/打怪/收成囤積的素材。
     pub inventories: InventoryStore,
+    /// 玩家農地記憶(Phase 0-E):啟動載回、定期/離線落地整塊地與其序號。權威的 `fields`／`plots`
+    /// 由它在 `with_stores` 種回;遊戲迴圈與離線清理再把當下進度寫回它(見 game.rs／ws.rs)。
+    pub field_store: FieldStore,
     /// 每個玩家 id 當前的在線連線數。同帳號多分頁/多裝置共用同一玩家 id,靠這個計數
     /// 讓「先離線的那條連線」不會把另一條還在線的 session 一起從世界移除。
     pub connections: ConnectionCounts,
@@ -152,21 +159,29 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// 無 DB 模式（測試、本機 `cargo run`）：位置與背包走 JSONL 退回層（見各自的 `new`）。
+    /// 無 DB 模式（測試、本機 `cargo run`）：位置/背包/農地走 JSONL 退回層（見各自的 `new`）。
     pub fn new() -> Self {
-        Self::with_stores(PositionStore::new(), InventoryStore::new())
+        Self::with_stores(PositionStore::new(), InventoryStore::new(), FieldStore::new())
     }
 
-    /// 用已備好的位置 / 背包 store 建狀態。`main` 連好 Postgres 後會傳入 DB-backed 的 store
-    /// （見 `PositionStore::from_pool` / `InventoryStore::from_pool`）,其餘狀態不變。
-    pub fn with_stores(positions: PositionStore, inventories: InventoryStore) -> Self {
+    /// 用已備好的位置 / 背包 / 農地 store 建狀態。`main` 連好 Postgres 後會傳入 DB-backed 的
+    /// store（見各自的 `from_pool`）,其餘狀態不變。農地 store 同時種回兩份權威狀態:`fields`
+    /// （每塊地、origin 已 reseat 好）與 `plots`（序號歸屬），讓重啟後農地與地塊歸屬都還在。
+    pub fn with_stores(
+        positions: PositionStore,
+        inventories: InventoryStore,
+        field_store: FieldStore,
+    ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
         let (tx_chat, _rx_chat) = broadcast::channel(256);
+        // 啟動時把上次存的農地與地塊歸屬種回權威狀態（無存檔時等同全新的空 map / next=0）。
+        let plots = PlotRegistry::from_saved(field_store.saved_plots());
+        let fields = field_store.loaded_fields();
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
-            fields: Arc::new(RwLock::new(HashMap::new())),
-            plots: PlotRegistry::new(),
+            fields: Arc::new(RwLock::new(fields)),
+            plots,
             daynight: Arc::new(RwLock::new(DayNight::new())),
             nodes: Arc::new(RwLock::new(NodeField::new())),
             enemies: Arc::new(RwLock::new(EnemyField::new())),
@@ -176,6 +191,7 @@ impl AppState {
             users: UserStore::new(),
             positions,
             inventories,
+            field_store,
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
         }

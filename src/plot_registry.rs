@@ -40,6 +40,9 @@ struct Inner {
 }
 
 impl PlotRegistry {
+    /// 全新空登記表（＝`from_saved(空)`）。0-E 接線後正式路徑改走 `from_saved`（啟動時用存檔
+    /// 種回），這個建構子留給測試與「等同空存檔」的語意對照。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new() -> Self {
         Self::default()
     }
@@ -58,7 +61,7 @@ impl PlotRegistry {
     }
 
     /// `user_id` 目前擁有的地塊序號；還沒分配過回 `None`。
-    #[allow(dead_code)] // 同上，待接線（前端畫「我的地」、鏡頭定位用）。
+    /// 0-E 接線後：農地落地（game.rs／ws.rs）查每塊地的序號好一起存。
     pub fn index_of(&self, user_id: Uuid) -> Option<usize> {
         self.inner.lock().unwrap().by_user.get(&user_id).copied()
     }
@@ -81,7 +84,7 @@ impl PlotRegistry {
     /// 重複的 `user_id` 取後見者（`HashMap` 覆蓋語意）；重複的**序號**不在這層擋
     /// （持久化端以 UNIQUE 保證唯一），這裡只負責 `next` 絕不回頭。空輸入＝全新登記表
     /// （`next` 為 0，第一個玩家仍拿序號 0、對齊現有全域農地）。
-    #[allow(dead_code)] // 接 0-E 從 Postgres 載回時才有呼叫端；沿用本專案載入入口的前置慣例。
+    /// 0-E 接線後：`AppState::with_stores` 啟動時用 `field_store.saved_plots()` 餵這裡重建歸屬。
     pub fn from_saved(saved: impl IntoIterator<Item = (Uuid, usize)>) -> Self {
         let mut by_user = HashMap::new();
         let mut next = 0usize;

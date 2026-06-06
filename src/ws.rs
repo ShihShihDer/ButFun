@@ -363,6 +363,16 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
                 .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
+            // 農地離線落地（Phase 0-E）。玩家移出世界後,他的地仍留在 `app.fields` 繼續長,所以
+            // 從那裡取當下狀態（不是已移除的 player）。序號由 PlotRegistry 查,一起存好讓重啟能
+            // reseat 回正確 origin。補上「最後一次 10s flush 到離線之間」種/澆/收的進度。
+            if let Some(index) = app.plots.index_of(id) {
+                let field = app.fields.read().unwrap().get(&id).cloned();
+                if let Some(field) = field {
+                    app.field_store.remember(id, index, &field);
+                    app.field_store.flush_one(id, index, &field).await;
+                }
+            }
         }
     }
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，

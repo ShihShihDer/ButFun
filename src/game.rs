@@ -183,6 +183,25 @@ pub fn spawn(app: AppState) {
                     app.inventories.remember_all(inventories.iter().cloned());
                     app.inventories.flush_online(&inventories).await;
                 }
+
+                // 農地一併落地（Phase 0-E）。與位置/背包不同:離線玩家的地仍在世界裡繼續長
+                // （上面 field tick 推進「全部」地），所以這裡快照**全部**農地、不限線上,讓離線
+                // 期間的成長也撐得過重啟。量級＝歷來已登入玩家數（有界,同 positions）。每塊地的
+                // plot 序號由 PlotRegistry 查、一起存好,重啟才能用 reseat 安置回正確 origin、
+                // 並用 from_saved 重建序號歸屬。
+                let field_rows: Vec<(uuid::Uuid, usize, crate::field::Field)> = {
+                    let fields = app.fields.read().unwrap();
+                    fields
+                        .iter()
+                        .filter_map(|(uid, f)| {
+                            app.plots.index_of(*uid).map(|idx| (*uid, idx, f.clone()))
+                        })
+                        .collect()
+                };
+                if !field_rows.is_empty() {
+                    app.field_store.remember_all(field_rows.iter().cloned());
+                    app.field_store.flush_online(&field_rows).await;
+                }
             }
         }
     });
