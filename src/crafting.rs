@@ -35,14 +35,31 @@ pub struct Recipe {
     pub inputs: &'static [(ItemKind, u32)],
 }
 
-/// 全部配方表（單一真實來源）。薄切片先只有鎬子一條：木×3 + 石×2 → 鎬子×1，
-/// 把採集／打怪堆起來的木石導向第一件工具。日後加配方只要往這個陣列加一筆。
-pub const RECIPES: &[Recipe] = &[Recipe {
-    id: "pickaxe",
-    output: ItemKind::Pickaxe,
-    output_qty: 1,
-    inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
-}];
+/// 全部配方表（單一真實來源）。兩條工具進程配方，由淺到深：
+/// 鎬子（木×3 + 石×2 → 鎬子×1）把採集／打怪堆起來的木石導向第一件工具；強化鎬
+/// （鎬子×1 + 木×2 + 石×4 → 強化鎬×1）則是「工具＋素材→升級工具」配方鏈的第一條，
+/// 給已合成的鎬子一個新去處、讓玩家攢素材有第二層進程目標（採礦又更快）。
+/// 日後加配方只要往這個陣列加一筆。
+pub const RECIPES: &[Recipe] = &[
+    Recipe {
+        id: "pickaxe",
+        output: ItemKind::Pickaxe,
+        output_qty: 1,
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
+    },
+    Recipe {
+        id: "reinforced_pickaxe",
+        output: ItemKind::ReinforcedPickaxe,
+        output_qty: 1,
+        // 以一把已合成的鎬子當素材升級——`recipe_by_id("pickaxe")` 先合出鎬子，再投入這條。
+        // 產物與素材不相交（強化鎬 ≠ 鎬子），故 `can_craft` 的「產物放得下」捷徑仍精確。
+        inputs: &[
+            (ItemKind::Pickaxe, 1),
+            (ItemKind::Wood, 2),
+            (ItemKind::Stone, 4),
+        ],
+    },
+];
 
 // 整個模組是前置地基：接線輪（ws 收 `Craft` → 查表 → `craft` → 背包隨快照廣播）才有
 // 呼叫端，在此之前公開項目皆無外部呼叫，比照 `inventory.rs` / `gather.rs` 標 `allow(dead_code)`。
@@ -182,6 +199,45 @@ mod tests {
         inv.add(NodeKind::Rock.into(), 1);
         assert!(pickaxe().craft(&mut inv));
         assert_eq!(inv.count(ItemKind::Pickaxe), 1);
+    }
+
+    #[test]
+    fn reinforced_pickaxe_upgrades_a_crafted_pickaxe() {
+        // 端到端配方鏈：先採素材合出鎬子，再投入鎬子＋更多素材升級成強化鎬。
+        // 鎖住「工具＋素材→升級工具」這條鏈：升級配方把當素材的鎬子吃掉、產出強化鎬。
+        let mut inv = Inventory::new();
+        // 先湊第一條鎬子配方的料並合出鎬子。
+        inv.add(ItemKind::Wood, 3);
+        inv.add(ItemKind::Stone, 2);
+        assert!(recipe_by_id("pickaxe").unwrap().craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Pickaxe), 1);
+
+        // 再湊升級配方額外要的木×2、石×4（鎬子已在背包）。
+        inv.add(ItemKind::Wood, 2);
+        inv.add(ItemKind::Stone, 4);
+        let upgrade = recipe_by_id("reinforced_pickaxe").expect("強化鎬配方應存在");
+        assert!(upgrade.can_craft(&inv));
+        assert!(upgrade.craft(&mut inv));
+
+        // 鎬子被當素材消耗掉、換得一把強化鎬，素材也扣光。
+        assert_eq!(inv.count(ItemKind::Pickaxe), 0);
+        assert_eq!(inv.count(ItemKind::ReinforcedPickaxe), 1);
+        assert_eq!(inv.count(ItemKind::Wood), 0);
+        assert_eq!(inv.count(ItemKind::Stone), 0);
+    }
+
+    #[test]
+    fn reinforced_pickaxe_needs_a_pickaxe_first() {
+        // 沒有鎬子（只有散裝素材）湊不齊升級料：全有全無、整筆失敗、不動背包。
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Wood, 2);
+        inv.add(ItemKind::Stone, 4);
+        let upgrade = recipe_by_id("reinforced_pickaxe").unwrap();
+        assert!(!upgrade.can_craft(&inv));
+        assert!(!upgrade.craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Wood), 2);
+        assert_eq!(inv.count(ItemKind::Stone), 4);
+        assert_eq!(inv.count(ItemKind::ReinforcedPickaxe), 0);
     }
 
     #[test]
