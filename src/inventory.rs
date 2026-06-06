@@ -320,4 +320,60 @@ mod tests {
         let back: Inventory = serde_json::from_str(&json).unwrap();
         assert_eq!(inv, back);
     }
+
+    #[test]
+    fn every_item_has_a_source() {
+        // 「無死路」跨模組不變式家族的 capstone（總綱）。家族前幾條各守**某張表裡**的東西：
+        //   - gather 的 `every_gathered_resource_has_a_sink`、combat 的
+        //     `every_enemy_drop_is_a_usable_economic_resource` 守「產出側有去處」；
+        //   - crafting 的 `every_recipe_input_is_obtainable` 守「配方素材有來源」；
+        //   - tools 的 `every_tool_item_is_obtainable` 守「工具有配方來源」。
+        // 但它們**都只遍歷已落在某張表裡的物品**，獨缺一條遍歷**整個物品宇宙 `ItemKind::ALL`**、
+        // 守住「凡玩家可能持有的物品，都至少有一條取得途徑」的總綱。
+        //
+        // 這條才補得到的縫隙：日後在 `ItemKind` 加一個變體（PLAN 自己就指向再加工具／合成產物），
+        // 若它既不可採集、也不是任何配方的產物、也不是敵人掉落——它就是個玩家**永遠拿不到的死
+        // 物品**，前端面板可能列它卻無從取得。`every_tool_item_is_obtainable` 只在該物品**是工具**
+        // 時才檢查（且要求更強：工具必須有配方）；一個**非工具**的新物品會從所有 per-table 守則
+        // 的縫隙裡一起漏掉。`item_kind_all_lists_every_variant` 只保證 `ALL` 不漏列變體、不保證每
+        // 個變體有來源。趁物品宇宙還小，把「凡物品必有來源」鎖成遍歷 `ALL` 的總綱：日後加物品卻
+        // 忘了給來源時當場紅燈，而非接線後玩家對著一個拿不到的物品困惑。
+        //
+        // 「有來源」＝可採集（某 `NodeKind` 映成它）**或**可合成（某配方產出它）**或**敵人掉落。
+        use crate::combat::EnemyKind;
+        use crate::crafting::RECIPES;
+
+        // 採集可得的物品集合。窮舉守衛：新增 `NodeKind` 變體卻忘了納入時，此 match 不窮舉、
+        // 編譯失敗，逼人回來把新採集資源納入本遍歷（比照 crafting/combat 同家族的守衛）。
+        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree, NodeKind::Rock, NodeKind::EtherOre];
+        for &n in NODE_KINDS {
+            match n {
+                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+            }
+        }
+        let gatherable: std::collections::BTreeSet<ItemKind> =
+            NODE_KINDS.iter().map(|&n| ItemKind::from(n)).collect();
+
+        // 敵人掉落可得的物品集合。窮舉守衛同上：新增 `EnemyKind` 變體未納入即編譯失敗。
+        const ENEMY_KINDS: &[EnemyKind] = &[EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+        for &e in ENEMY_KINDS {
+            match e {
+                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+            }
+        }
+        let droppable: std::collections::BTreeSet<ItemKind> =
+            ENEMY_KINDS.iter().map(|&e| e.drop_loot().0).collect();
+
+        for &item in ItemKind::ALL {
+            let gatherable_src = gatherable.contains(&item);
+            let craftable_src = RECIPES.iter().any(|r| r.output == item);
+            let droppable_src = droppable.contains(&item);
+            assert!(
+                gatherable_src || craftable_src || droppable_src,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落）——它是玩家\
+                 永遠拿不到的死物品；請給它一條來源（採集／合成／掉落），或若有意設計成起始道具等\
+                 其他途徑，再更新本不變式"
+            );
+        }
+    }
 }
