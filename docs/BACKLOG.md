@@ -415,6 +415,17 @@
     進 main。加 3 個測試(空輸入如新、載回保留地主、稀疏跳號續發＝最大+1 不撞既有地主),`cargo test`
     144 綠、clippy 乾淨、伺服器二進位啟動正常(埠被正式服務占用屬預期)。**仍待**:0-E 真正把這張表
     存讀 Postgres(架構級,留待 0-E)。
+  - ✅ 載入防線補洞(JSONL 路徑也守序號唯一,2026-06-06):上一條前置補了 `from_saved` 的 `next`
+    不變式,但 `from_saved` 文件聲稱「重複序號倚賴持久化端 UNIQUE 保證唯一」——這只對 Postgres
+    成立(`fields_plot_index_key`),`field_store` 的 **JSONL 載入路徑完全沒有此保證**。壞檔/手改的
+    `data/fields.jsonl`、或換版遷移窗口裡 DB 與舊種子各記同一序號的不同玩家,天真合併會讓兩個 id 帶
+    同一 `plot_index` 同時流進 `loaded_fields()`/`saved_plots()`,正是觸發「同一塊地兩個地主、作物
+    歸屬錯亂」那條災難。延續 `field::reseated`/`users::parse_and_sanitize` 的載入時驗證弧線,把序號
+    唯一性防線補到 JSONL 端:`load_from_disk` 同檔撞號先到先得(同 id 更新放行);新增純函式
+    `merge_seed` 取代 `from_pool` 的天真 `entry().or_insert` 補洞(DB 為主、種子撞已占用序號就跳過、
+    依 `(序號,id)` 排序讓取捨具決定性);更新 `from_saved` 文件讓唯一性聲明對兩後端都成立。純載入
+    過濾、不改寫/刪除磁碟、不動 ws/game/protocol/快照 shape。加 5 個測試,`cargo test` 313 綠、
+    clippy 乾淨(`game.rs` 既有警告非本輪)、伺服器二進位啟動正常(埠被正式服務占用屬預期)。
 
 - [ ] **Phase 0-G-O2:地圖擴張 + 用乙太購買土地**
   家園區可隨玩家數往外長;玩家用收成的乙太**購買**擴充地塊(乙太的消耗去處,接上經濟)。
