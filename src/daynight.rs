@@ -11,9 +11,9 @@
 //!   - 作物成長（2026-06-05）：`growth_rate_for(light)` 把當前亮度映成成長倍率，
 //!     遊戲迴圈用它縮放餵給 `field.tick` 的 `dt`——白天亮、長得快，夜裡暗、放慢，
 //!     把 0-G 的「隨日夜成長」收尾。
-//!
-//! 仍待：
-//!   - 持久化（接 0-E）：把 `elapsed` 序列化存回，重啟後從同一個時刻接續。
+//!   - 持久化（0-E，2026-06-06 驗證已落地）：`daynight_store` 啟動把上次 `elapsed`
+//!     種回權威時鐘、遊戲迴圈定期 flush，重啟後從同一時刻接續（見 `daynight_store.rs`
+//!     與 `main.rs` 的 `from_pool` 接線）。
 
 use serde::{Deserialize, Deserializer, Serialize};
 
