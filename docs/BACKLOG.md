@@ -128,7 +128,7 @@
 
 ## 進行中 / 下一步（由上往下）
 
-- [ ] **Phase 0-E：串接 PostgreSQL 持久化（backend lane 最高優先,使用者明確要求）**
+- [x] **Phase 0-E：串接 PostgreSQL 持久化（backend lane 最高優先,使用者明確要求）**
   > 現況:位置+乙太已用 `PositionStore` 寫穿到 `data/positions.jsonl`(commit 8a18a84),
   > 重啟不掉了。**這份 JSONL 版正好是 Postgres 版的模板與 fallback。** DB 已就緒
   > (PostgreSQL 17、`butfun` 庫、`DATABASE_URL` 在 `.env`/EnvironmentFile)。
@@ -208,6 +208,18 @@
     （JSONL 退回模式 + 埠被正式服務占用屬預期）。**0-E 的玩家面 store（位置/背包/農地）與世界面
     時鐘已全數接 PG**；剩 `users`／`suggestions` 視需要再接（users 為身分關鍵資料、sync API→async
     DB 屬架構級，宜走 PR）。
+  - ✅ 帳號接 PG，0-E 核心收尾（2026-06-06，commit 0bef4d6）：users 是位置／背包／農地／日夜
+    之後最後一個還在 JSONL 的核心 store，本輪接上 Postgres——新增 `migrations/0005_users.sql`
+    （`id` 為主鍵、`(provider, external_id)` UNIQUE 鎖死「同一外部身分只對到一個內部帳號」、
+    `name`/`species` 寫入與載入都過 sanitizer），`UserStore` 沿其他 store 同一套三後端結構
+    （`Backend::Postgres`/`Jsonl`/`Memory`）：`from_pool` 啟動載回全表、用既有 `data/users.jsonl`
+    補齊 DB 還沒有的帳號並一次性 `upsert` 回填（讓換版不丟既有帳號）；`find_or_create`／`rename`
+    在鎖內同步改記憶體索引、放鎖後再 async `upsert`（不跨 await 持鎖）。`main.rs` 連好 Postgres
+    後 `UserStore::from_pool` 接上。**至此 0-E 五個核心 store（位置／背包／農地／日夜／帳號）全數
+    接 PG，跨重啟持久化完整**，故主項打勾。`suggestions` 刻意**不**接 PG、續留 append-only
+    `data/suggestions.jsonl`（玩家回饋、維護者直接讀檔三角化，見 0-C；非核心遊戲狀態，不影響
+    跨重啟玩法），這是設計決定、非待辦缺口。`cargo test` 全綠（301）、`cargo build`/clippy 乾淨、
+    伺服器二進位啟動正常（JSONL 退回模式 + 埠被正式服務占用屬預期）。
 
 - [x] **Phase 0-F-1：補 auth 純邏輯單元測試**
   `sign_session` / `verify_session`(含偽造 token 拒絕)、`read_cookie`(多 cookie、
