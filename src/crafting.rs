@@ -202,4 +202,41 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn recipe_ids_are_wire_safe_snake_case() {
+        // 線協定契約：`id` 是 client 送 `Craft{ recipe: id }` 跟前端 keying 用的穩定字串，
+        // doc 言明「snake_case，對齊 `ItemKind` 的序列化命名」。此前只驗 id 唯一/非空意涵，
+        // **沒驗格式**——接線輪（ws 收 `Craft` → `recipe_by_id`）一旦加第二條配方，一個帶
+        // 空格／大寫／unicode 的壞 id 會悄悄破壞 JSON 協定或前端對應，且 `recipe_by_id`
+        // 只做字串相等比對、不會察覺。趁配方表還小，把這個契約鎖成測試，日後加配方時
+        // 打錯 id 當場紅燈，而不是接線後才在線上炸開。
+        for r in RECIPES {
+            assert!(!r.id.is_empty(), "配方 id 不可為空");
+            // 僅允許小寫 ASCII 字母／數字／底線：與 `#[serde(rename_all = "snake_case")]`
+            // 產出的 `ItemKind` 名稱同一套字元集，確保跨 ws／快照／前端的字串 key 一致。
+            assert!(
+                r.id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "配方 id `{}` 含非 snake_case 字元（只允許 a-z 0-9 _）",
+                r.id
+            );
+            // 不以底線開頭／結尾：避免 `_pickaxe`／`pickaxe_` 這類醜陋又易撞的 key。
+            assert!(
+                !r.id.starts_with('_') && !r.id.ends_with('_'),
+                "配方 id `{}` 不該以底線開頭或結尾",
+                r.id
+            );
+            // 自洽：用自己的 id 查回來必定是同一條配方（鎖住 `recipe_by_id` 是接線用的反查
+            // 入口；id 唯一已由 `recipe_table_is_well_formed` 把關，故 id 相等即同一條）。
+            let looked_up = recipe_by_id(r.id).expect("自己的 id 應查得到");
+            assert_eq!(looked_up.id, r.id, "配方 `{}` 用自身 id 查回的不是自己", r.id);
+            assert_eq!(
+                looked_up.output, r.output,
+                "配方 `{}` 反查到的產物不一致",
+                r.id
+            );
+        }
+    }
 }
