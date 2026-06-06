@@ -144,7 +144,11 @@
   // 顫一下。改用「這次觸碰是否曾拖過 TAP_SLOP」當單一真實來源:沒拖過就純點按(角色全程
   // 不動),拖過才是搖桿。連「拖遠又滑回原點附近」也正確算成移動而非誤判點按。
   let touchDragged = false;
-  const TAP_SLOP = 22; // 點按/拖曳的分水嶺(px):>移動死區 14,手指自然微滑不會被當拖曳
+  // 觸控搖桿的方向死區(px):推桿離原點每軸超過此量,該軸方向才送出。判定(setTouchKeys)與
+  // 視覺(死區內圈/推桿亮暗)共用這一個值,讓玩家看到的「亮起=在動」與實際送出的方向恆一致——
+  // 死區是客戶端把觸控折算成方向布林的事,非伺服器規則,不嵌進權威遊戲邏輯。
+  const TOUCH_DEAD = 14;
+  const TAP_SLOP = 22; // 點按/拖曳的分水嶺(px):> 移動死區 TOUCH_DEAD,手指自然微滑不會被當拖曳
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
   // 滑鼠在畫面上的位置（螢幕座標），用來在桌面高亮「游標所指的田格」做操作回饋。
@@ -956,11 +960,10 @@
 
   // ---- 觸控:任何地方按下拖曳當搖桿,放開即停止 ----
   function setTouchKeys(dx, dy) {
-    const dead = 14;
-    keys.up = dy < -dead;
-    keys.down = dy > dead;
-    keys.left = dx < -dead;
-    keys.right = dx > dead;
+    keys.up = dy < -TOUCH_DEAD;
+    keys.down = dy > TOUCH_DEAD;
+    keys.left = dx < -TOUCH_DEAD;
+    keys.right = dx > TOUCH_DEAD;
     sendInputIfChanged();
   }
   // 從 TouchList 取出搖桿那根手指(依 identifier);找不到回 null。
@@ -1188,17 +1191,25 @@
     // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
     drawMinimap();
 
-    // 觸控搖桿視覺(只在按住時出現)
+    // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
+    // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。
+    // 先前只畫外圈+恆亮推桿,玩家在死區內推卻不動會困惑。現在加一圈死區內環當參考,並讓推桿
+    // 只在「真的在動」(已升級成搖桿且至少一軸出死區)時亮起金色、否則維持暗灰提示「還沒到」。
     if (touchOrigin && touchCurrent) {
       const dx = touchCurrent.x - touchOrigin.x;
       const dy = touchCurrent.y - touchOrigin.y;
       const dist = Math.hypot(dx, dy);
       const cap = 50;
       const r = dist > 0 ? Math.min(dist, cap) / dist : 0;
+      // 與 setTouchKeys 同一判定:已升級成搖桿、且任一軸超過死區,角色此刻才真的在移動。
+      const active = touchDragged && (Math.abs(dx) > TOUCH_DEAD || Math.abs(dy) > TOUCH_DEAD);
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
       ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(touchOrigin.x, touchOrigin.y, cap, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = "rgba(201,162,75,0.9)";
+      // 死區內環:推桿落在這圈內代表角色不動,給玩家「推超過這圈才會動」的直觀參考。
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.beginPath(); ctx.arc(touchOrigin.x, touchOrigin.y, TOUCH_DEAD, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = active ? "rgba(201,162,75,0.9)" : "rgba(150,156,168,0.55)";
       ctx.beginPath(); ctx.arc(touchOrigin.x + dx * r, touchOrigin.y + dy * r, 18, 0, Math.PI * 2); ctx.fill();
     }
 
