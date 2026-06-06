@@ -41,9 +41,11 @@ pub struct Player {
     pub x: f32,
     pub y: f32,
     pub input: Input,
-    /// 收成累積的乙太。已登入玩家重連會帶回（記憶體前置），跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
+    /// 收成累積的乙太。已登入玩家重連帶回、跨伺服器重啟也撐得過（Phase 0-E 已落地：隨
+    /// `positions` 存進 players 表的 ether 欄；見 `positions.rs`／game.rs flush／ws.rs recall）。
     pub ether: u32,
-    /// 採集到的物品。記憶體前置（重連不帶回、重啟歸零,待持久化）——薄切片先讓「採到 → 進背包 → 看得見」成立。
+    /// 採集到的物品。已登入玩家重連帶回、跨伺服器重啟也撐得過（Phase 0-E 已落地：隨
+    /// `inventories` 存進 inventories 表;見 `inventory_store.rs`／game.rs flush／ws.rs recall）。
     pub inventory: Inventory,
     /// 生命值（戰鬥 1-F）。敵人反擊扣血、離戰一陣子自動回復;歸零會「被打趴」短暫休息。記憶體前置。
     pub vitals: Vitals,
@@ -146,7 +148,7 @@ pub struct AppState {
     pub suggestions: SuggestionStore,
     /// 使用者帳號(provider 無關)。
     pub users: UserStore,
-    /// 玩家最後位置記憶(Phase 0-E 記憶體前置):已登入玩家重連回到離線前位置。
+    /// 玩家最後位置記憶(Phase 0-E,已接 PG):已登入玩家重連回到離線前位置、重啟也撐得過。
     pub positions: PositionStore,
     /// 玩家背包記憶(Phase 0-E):已登入玩家重連帶回採集/打怪/收成囤積的素材。
     pub inventories: InventoryStore,
