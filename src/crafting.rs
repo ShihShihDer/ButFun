@@ -224,6 +224,53 @@ mod tests {
         }
     }
 
+    /// 防漂移：窮舉所有採集節點種類 → 對應產出的物品，當作「可採集物品」的單一真實來源。
+    /// 日後在 `NodeKind` 加變體（新採集資源）時，下面的窮舉 `match` 會**編譯失敗**，逼人
+    /// 回來把它補進這份清單——確保 `every_recipe_input_is_obtainable` 賴以判斷的「可採集集合」
+    /// 不會與 `NodeKind` 漂移（比照 `inventory.rs` 的 `ItemKind::ALL` 窮舉 match 守則）。
+    fn gatherable_items() -> std::collections::BTreeSet<ItemKind> {
+        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree, NodeKind::Rock, NodeKind::EtherOre];
+        // 窮舉守衛：新增 NodeKind 變體卻忘了加進 NODE_KINDS 時，此 match 不窮舉、編譯失敗。
+        for &n in NODE_KINDS {
+            match n {
+                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+            }
+        }
+        NODE_KINDS.iter().map(|&n| ItemKind::from(n)).collect()
+    }
+
+    #[test]
+    fn every_recipe_input_is_obtainable() {
+        // 跨模組不變式（1-A 採集 × 1-B 物品 × 1-C 合成），與 `tools.rs` 的
+        // `every_tool_item_is_obtainable` **互補的另一個方向**：那條守「配方產物（工具）
+        // 拿得到」（輸出側——每個工具都有配方）；這條守「配方素材湊得齊」（輸入側——每條
+        // 配方需要的每樣素材，玩家都有來源取得）。
+        //
+        // 失敗模式不同：加一條新配方、卻讓它需要一種**既不可採集**（`From<NodeKind>` 只把
+        // 採集節點映成 Wood/Stone/Ether 三種資源）、**也沒有任何配方產出**的素材，玩家就
+        // 永遠湊不齊料——前端合成面板會把它列出來、卻因 `can_craft` 永遠為否而恆反灰，是條
+        // 玩家看得到卻永遠合不出的**死配方**。`recipe_table_is_well_formed` 只驗素材數量為正、
+        // 彼此不重複，察覺不到「這素材根本拿不到」。PLAN 自己就指向再加配方（斧／鋤），屆時
+        // 這正是會踩的坑。趁配方表還小，把「凡配方素材必有來源」鎖成遍歷整張表的組合測試：
+        // 日後加配方時若引用了拿不到的素材當場紅燈，而非接線後玩家對著恆反灰的合成鈕困惑。
+        //
+        // 「有來源」＝可採集（某 `NodeKind` 產出它）**或**可合成（某條配方產出它，允許
+        // 「工具＋素材→升級工具」這類以合成中間物當素材的配方鏈）。
+        let gatherable = gatherable_items();
+        for r in RECIPES {
+            for &(item, _) in r.inputs {
+                let craftable = RECIPES.iter().any(|other| other.output == item);
+                assert!(
+                    gatherable.contains(&item) || craftable,
+                    "配方 `{}` 需要素材 {:?}，但它既不可採集（沒有 NodeKind 產出它）、也沒有任何\
+                     配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
+                     能由採集／合成取得，或為它補上來源",
+                    r.id, item
+                );
+            }
+        }
+    }
+
     #[test]
     fn recipe_ids_are_wire_safe_snake_case() {
         // 線協定契約：`id` 是 client 送 `Craft{ recipe: id }` 跟前端 keying 用的穩定字串，
