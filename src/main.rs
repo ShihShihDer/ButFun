@@ -10,6 +10,7 @@ mod crafting;
 mod crops;
 mod daynight;
 mod db;
+mod economy;
 mod enemy_field;
 mod field;
 mod game;
