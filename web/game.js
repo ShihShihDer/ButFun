@@ -1788,8 +1788,11 @@
     const fy = f.origin_y - camY;
     const fw = f.cols * ts;
     const fh = f.rows * ts;
-    // 整塊在畫面外就略過（多塊地時省繪製）。
-    if (fx + fw < -40 || fy + fh < -40 || fx > canvas.width + 40 || fy > canvas.height + 40) return;
+    // 整塊在畫面外就略過（多塊地時省繪製）。右/下界用 viewW/viewH（邏輯像素）而非
+    // canvas.width/height（DPR 放大後的實體像素緩衝）：fx/fy 是邏輯像素,DPR>1 的手機/平板
+    // 上若拿實體像素當界,右/下邊的界會大上一個 DPR 倍、捲出畫面的地塊culling 不掉、白跑
+    // row×col 繪製迴圈。對齊本檔「繪製一律用 viewW/viewH」的約定（見上方畫布尺寸註解）。
+    if (fx + fw < -40 || fy + fh < -40 || fx > viewW + 40 || fy > viewH + 40) return;
 
     ctx.save();
     if (!reachable) ctx.globalAlpha = 0.55;
