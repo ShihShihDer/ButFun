@@ -157,12 +157,11 @@ mod tests {
     #[test]
     fn craft_fails_and_keeps_materials_when_output_would_overflow() {
         // 產物已堆到上限：素材雖夠也不該合（否則扣了料、產物被 MAX_STACK 夾掉而平白損失）。
-        let mut inv = stocked();
         let mut full = std::collections::BTreeMap::new();
         full.insert(ItemKind::Wood, 3);
         full.insert(ItemKind::Stone, 2);
         full.insert(ItemKind::Pickaxe, MAX_STACK);
-        inv = Inventory::from_raw(full);
+        let mut inv = Inventory::from_raw(full);
         let r = pickaxe();
         assert!(!r.can_craft(&inv));
         assert!(!r.craft(&mut inv));

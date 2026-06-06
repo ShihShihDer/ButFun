@@ -25,6 +25,7 @@ mod profile;
 mod protocol;
 mod state;
 mod suggestions;
+mod tools;
 mod users;
 mod ws;
 
