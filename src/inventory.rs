@@ -376,4 +376,62 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn every_item_has_a_sink() {
+        // 「無死路」家族的**去處側總綱**，與上面的 `every_item_has_a_source`（來源側總綱）
+        // 嚴格對偶、湊成完整的一對。GDD／PLAN 白紙黑字的紀律是雙向的：「有產出**也**要有
+        // 去處」。來源側已有 capstone 守住「凡物品都拿得到」；去處側此前卻只有 per-table 守則
+        //   - gather 的 `every_gathered_resource_has_a_sink`、combat 的
+        //     `every_enemy_drop_is_a_usable_economic_resource`
+        // ——它們**都只遍歷某張產出表裡的原料**（採集物／掉落物），獨缺一條遍歷**整個物品宇宙
+        // `ItemKind::ALL`**、守住「凡玩家可能持有的物品，都至少有一個去處」的總綱。
+        //
+        // 這條才補得到、且 per-table 守則**結構上碰不到**的縫隙：成品工具（如 `Pickaxe`）
+        // 既不是任何配方的素材、也不是乙太貨幣，兩條 per-table sink 守則都把它排除在外
+        // （它們只看採集／掉落出的**原料**有沒有去處，從不檢查工具本身）。一個工具的「去處」
+        // 是它**拿來用有效用**——若日後加一個既不被消耗、又不能花、效用倍率卻沒比徒手快的
+        // 「死道具」工具，per-table 守則全數放行、只有這條總綱攔得下。同理，一個**非工具、
+        // 非原料、非貨幣**的新物品（例如純裝飾品）也只會在這裡紅燈。
+        //
+        // 「有去處」＝下列任一：
+        //   1. 被某條配方當素材消耗（合成原料的去處）；
+        //   2. 是有效用的工具（採集倍率嚴格快過徒手——`tools` 的
+        //      `every_craftable_tool_is_worth_crafting` 也守同一條「工具必須真有用」）；
+        //   3. 是乙太貨幣（`economy` 的擴地消耗點花掉它）。
+        // 日後若有意加「終端收藏品」之類刻意沒有機械去處的物品，會在此紅燈，逼人確認是有意
+        // 設計再更新本不變式（比照來源側總綱與工具／配方家族的逃生口）。
+        //
+        // 物品宇宙的窮舉由 `item_kind_all_lists_every_variant`（窮舉 match + 筆數斷言）守住：
+        // 新增 `ItemKind` 變體必先補進 `ALL`，本總綱隨即遍歷到它、要求它有去處——故無需在此
+        // 另立 NodeKind/EnemyKind 式的窮舉守衛。
+        use crate::crafting::RECIPES;
+        use crate::economy::EXPANSION_BASE_COST;
+        use crate::tools::{tool_from_item, FIST_MULTIPLIER};
+
+        // 乙太去處（擴地消耗點）真實存在的編譯期錨點：直接引用 `economy` 的擴地基準價，
+        // 使「乙太是有去處的貨幣」這個論斷不是空話——若日後 `economy` 連同擴地 sink 一起被
+        // 移除，本測試會編譯失敗，逼人為乙太另尋去處或更新本不變式。
+        const _: () = assert!(EXPANSION_BASE_COST > 0);
+
+        for &item in ItemKind::ALL {
+            // 1. 被某條配方當素材消耗。
+            let consumed_by_recipe = RECIPES
+                .iter()
+                .any(|r| r.inputs.iter().any(|&(i, _)| i == item));
+            // 2. 是有效用的工具（嚴格快過徒手；沒效用的「工具」不算有去處）。
+            let useful_tool =
+                tool_from_item(item).is_some_and(|t| t.gather_multiplier() > FIST_MULTIPLIER);
+            // 3. 是乙太貨幣（擴地消耗點花掉它）。
+            let spendable_currency = item == ItemKind::Ether;
+
+            assert!(
+                consumed_by_recipe || useful_tool || spendable_currency,
+                "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣）——\
+                 玩家持有它卻無處可用，是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；\
+                 請給它一個去處（當合成素材／當有用工具／當可花的貨幣），或若有意設計成終端收藏品，\
+                 再更新本不變式"
+            );
+        }
+    }
 }
