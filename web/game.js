@@ -1702,12 +1702,20 @@
   // 合成台:把背包快照(品項→數量)對照配方表,畫出每條「產物 ← 素材」與一顆合成鈕。
   // 缺料的素材標紅、合成鈕反灰停用——這只是前端提示,讓玩家一眼知道差什麼;扣不扣得成
   // 仍由伺服器查表決定。點鈕送 { type:"craft", recipe_id:id } 意圖,產物隨既有背包快照回來。
+  let lastCraftSig = null; // 上次重建用的「相關背包」簽章——沒變就不重建,保住焦點與效能
   function updateCraftPanel(inv) {
     const summary = document.getElementById("craftSummary");
     const body = document.getElementById("craftBody");
     const toggle = document.getElementById("craftToggle");
     if (!summary || !body || !toggle) return;
     const have = new Map((inv || []).map((s) => [s.item, s.qty]));
+    // 世界快照每個 tick 都來,但合成台只取決於「配方用到的素材數量」。沒變就提早返回:
+    // 否則每拍 innerHTML 重建會把鍵盤/報讀器停在「合成」鈕上的焦點打掉、手機也白耗電。
+    const sig = CRAFT_RECIPES.map((r) =>
+      r.inputs.map(([item, qty]) => have.get(item) || 0).join(",")
+    ).join("|");
+    if (sig === lastCraftSig) return;
+    lastCraftSig = sig;
     let craftable = 0; // 此刻夠料的配方數,寫進標題列摘要(收著時也一眼知道能不能合)
     body.innerHTML = "";
     for (const r of CRAFT_RECIPES) {
@@ -1766,6 +1774,7 @@
   // 達上限改顯示「已達上限」並反灰。點鈕只送 buy_expansion 意圖,伺服器查餘額扣乙太、農地
   // 多開一格,新地塊隨既有 fields 快照回來(零契約變更);夠不夠的反灰只是前端提示,扣款/
   // 開格規則仍只在伺服器(權威),前端不自行改地塊。me 缺欄位一律防呆,接線落地即生效。
+  let lastExpandSig = null; // 上次重建用的「乙太|已購格數」簽章——沒變就不重建,保住焦點與效能
   function updateExpandPanel(me) {
     const summary = document.getElementById("expandSummary");
     const body = document.getElementById("expandBody");
@@ -1773,6 +1782,11 @@
     if (!summary || !body || !toggle) return;
     const ether = (me && me.ether) || 0;
     const owned = (me && me.expansions) || 0; // 防呆:伺服器還沒接擴地 → 視為一格都還沒買
+    // 同合成台:快照每拍都來,但擴地面板只取決於乙太與已購格數。沒變就提早返回,
+    // 免得每拍重建把停在「擴地」鈕上的焦點打掉、手機白耗電。
+    const sig = `${ether}|${owned}`;
+    if (sig === lastExpandSig) return;
+    lastExpandSig = sig;
     const atMax = owned >= MAX_EXPANSIONS;
     const cost = expansionCost(owned);
     const canBuy = !atMax && ether >= cost;
