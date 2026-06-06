@@ -1227,10 +1227,69 @@
       }
     }
 
+    // 滿世界的裝飾(草叢 + 偶爾的樹/石),填滿大世界的空曠感。畫在地表之上、農地/節點/玩家之下。
+    drawScenery(camX, camY);
+
     // 世界邊界
     ctx.strokeStyle = "rgba(201,162,75,0.6)";
     ctx.lineWidth = 4;
     ctx.strokeRect(-camX, -camY, world.width, world.height);
+  }
+
+  // 確定性雜湊 [0,1)，給裝飾佈置用（同格座標永遠同結果,不隨鏡頭閃爍）。
+  function sceneryHash(a, b) {
+    let n = (Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663)) >>> 0;
+    n = (n ^ (n >>> 13)) >>> 0;
+    n = Math.imul(n, 1274126177) >>> 0;
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+  }
+
+  // 一小撮程式草叢（純畫,不需素材）。
+  function drawGrassTuft(sx, sy, h) {
+    ctx.strokeStyle = `rgba(${(90 + h * 70) | 0}, ${(140 + h * 60) | 0}, 80, 0.45)`;
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      const ang = -Math.PI / 2 + (i - 1) * 0.45;
+      const len = 5 + h * 7;
+      const bx = sx + (i - 1) * 2.5;
+      ctx.beginPath();
+      ctx.moveTo(bx, sy);
+      ctx.lineTo(bx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+      ctx.stroke();
+    }
+  }
+
+  // 滿世界撒裝飾:每個格子靠雜湊決定有沒有、是什麼(草叢居多、偶爾樹/石)。只畫視野內的。
+  function drawScenery(camX, camY) {
+    const cell = 120;
+    const tx0 = Math.floor(camX / cell) - 1;
+    const ty0 = Math.floor(camY / cell) - 1;
+    const tx1 = Math.floor((camX + viewW) / cell) + 1;
+    const ty1 = Math.floor((camY + viewH) / cell) + 1;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const h = sceneryHash(tx, ty);
+        if (h < 0.4) continue; // 這格留白
+        const wx = tx * cell + sceneryHash(tx * 7 + 1, ty * 3) * cell;
+        const wy = ty * cell + sceneryHash(tx * 3, ty * 7 + 1) * cell;
+        if (wx < 0 || wy < 0 || wx > world.width || wy > world.height) continue;
+        const sx = wx - camX;
+        const sy = wy - camY;
+        ctx.save();
+        if (h > 0.93 && artOk("tree")) {
+          const s = 30;
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(ART.tree, sx - s / 2, sy - s + 6, s, s);
+        } else if (h > 0.86 && artOk("rock")) {
+          const s = 24;
+          ctx.globalAlpha = 0.9;
+          ctx.drawImage(ART.rock, sx - s / 2, sy - s + 5, s, s);
+        } else {
+          drawGrassTuft(sx, sy, h);
+        }
+        ctx.restore();
+      }
+    }
   }
 
   // 把「繼承的工坊農莊」氛圍擺出來:工坊與墜毀飛船放在農地附近(固定世界座標)。
@@ -1321,6 +1380,9 @@
     rock: { icon: "🪨", tint: "#5b5f63", act: "採石頭" },
     ether_ore: { icon: "✨", tint: "#3a4a78", act: "採乙太礦" },
   };
+  // 節點 kind → 現成 sprite 名（assets/*.png）。有圖就畫真的樹/石(不再是圓點 emoji);
+  // 乙太礦沒專屬圖,留 emoji 發光。圖還沒載入也自動退回 emoji(artOk 把關)。
+  const NODE_SPRITE = { tree: "tree", rock: "rock" };
   // 報讀器用的節點中文名（採空播報時念名字而非 emoji,對齊背包的 ITEM_NAME 作法）。
   const NODE_NAME = { tree: "樹", rock: "石礦", ether_ore: "乙太礦" };
 
@@ -1375,15 +1437,23 @@
       const look = NODE_LOOK[n.kind] || { icon: "❔", tint: "#555" };
       ctx.save();
       ctx.globalAlpha = n.harvestable ? 1 : 0.4; // 採空的畫淡(重生中)
-      // 底盤圓,讓圖示在任何地表上都讀得到。
-      ctx.beginPath();
-      ctx.arc(sx, sy, 16, 0, Math.PI * 2);
-      ctx.fillStyle = look.tint;
-      ctx.fill();
-      ctx.font = "20px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(look.icon, sx, sy + 1);
+      const spriteName = NODE_SPRITE[n.kind];
+      if (spriteName && artOk(spriteName)) {
+        // 有對應 sprite(樹/石)→ 畫真的 pixel art,底部對齊節點位置、放大些好看清。
+        const img = ART[spriteName];
+        const s = 44;
+        ctx.drawImage(img, sx - s / 2, sy - s + 8, s, s);
+      } else {
+        // 沒 sprite(乙太礦)或圖還沒載入 → 退回圓盤 + emoji。
+        ctx.beginPath();
+        ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+        ctx.fillStyle = look.tint;
+        ctx.fill();
+        ctx.font = "20px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(look.icon, sx, sy + 1);
+      }
       // 玩家搆得到的那顆:描一圈黃環,提示「走到了、可以採」。
       if (n === reachable) {
         ctx.strokeStyle = "rgba(255,210,74,0.9)";
