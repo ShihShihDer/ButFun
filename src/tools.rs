@@ -152,4 +152,44 @@ mod tests {
         // 合成後：採集變快——閉合「素材→合成→更快採」第一個正回饋圈。
         assert_eq!(gather_speed_multiplier(&inv), PICKAXE_GATHER_MULTIPLIER);
     }
+
+    #[test]
+    fn every_craftable_tool_is_worth_crafting() {
+        // 跨模組不變式（1-C 合成 × 1-D 工具效用的核心承諾）：配方表裡**每一條**會產出
+        // 工具的配方，其產物拿來採集都必須**嚴格快過徒手**。這正是 PLAN 給合成定的存在
+        // 理由——給素材一個「去處」、閉合「素材→合成→更快採」正回饋圈；一條合出來卻不比
+        // 拳頭快的「工具」配方等於讓玩家白花木石，是條死合成。
+        //
+        // 此前唯一守這條的 `crafted_pickaxe_then_gathers_faster_end_to_end` **寫死鎬子**，
+        // 察覺不到第二把工具的回歸。PLAN 自己就指向再加工具（斧／鋤），屆時若忘了給新工具
+        // 設加速倍率、或漏在 `tool_from_item` 補上對應映射（產物對不到 `ToolKind`、被當資源、
+        // 採集不加速），會變成「合得出來卻沒用」的線上靜默 bug。趁配方表還小，把「合成出的
+        // 工具一定值得合」鎖成遍歷整張表的組合測試：日後加工具配方時打錯倍率／漏接映射當場
+        // 紅燈，而非接線後玩家才發現新工具沒用。
+        use crate::crafting::RECIPES;
+
+        let mut saw_tool_recipe = false;
+        for r in RECIPES {
+            // 只看「產物是工具」的配方；產出資源／材料的配方（若日後有）不在此不變式內。
+            if let Some(tool) = tool_from_item(r.output) {
+                saw_tool_recipe = true;
+                assert!(
+                    tool.gather_multiplier() > FIST_MULTIPLIER,
+                    "配方 `{}` 的產物 {:?} 是工具，但採集倍率 {} 沒比徒手 {} 快——合出來卻沒用，\
+                     是條死合成；請給它設 > {} 的倍率，或確認 `tool_from_item` 映射正確",
+                    r.id,
+                    r.output,
+                    tool.gather_multiplier(),
+                    FIST_MULTIPLIER,
+                    FIST_MULTIPLIER
+                );
+            }
+        }
+        // 至少要有一條工具配方守住這條鏈——否則整個不變式空轉、悄悄失去意義
+        // （例如有人把唯一的鎬子配方刪了還讓本測試綠燈）。
+        assert!(
+            saw_tool_recipe,
+            "配方表裡找不到任何會產出工具的配方——1-C→1-D 的『合成出工具』玩法鏈斷了"
+        );
+    }
 }
