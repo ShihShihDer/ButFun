@@ -43,6 +43,20 @@ pub enum ItemKind {
     Pickaxe,
 }
 
+impl ItemKind {
+    /// 全部物品種類（測試用單一真實來源，供跨模組不變式遍歷整個物品宇宙）。
+    /// 仿照 `gather.rs` 測試的 `KINDS` 陣列：只在測試建置存在，不增生產面 / dead_code。
+    /// 加新變體時，`item_kind_all_lists_every_variant` 的窮舉 match 會編譯失敗、`len`
+    /// 斷言會紅燈，逼人同步更新此清單——確保 ALL 與 enum 不漂移。
+    #[cfg(test)]
+    pub(crate) const ALL: &'static [ItemKind] = &[
+        ItemKind::Wood,
+        ItemKind::Stone,
+        ItemKind::Ether,
+        ItemKind::Pickaxe,
+    ];
+}
+
 /// 採集節點種類 → 對應的背包物品。把「採到什麼」與「背包存什麼」綁在型別層，
 /// 接線時 `gather_near` 的產出種類直接 `.into()`，不會對錯資源。
 impl From<NodeKind> for ItemKind {
@@ -224,6 +238,24 @@ mod tests {
         assert!(inv.has(ItemKind::Wood, 3));
         assert!(!inv.has(ItemKind::Wood, 4));
         assert!(inv.has(ItemKind::Wood, 0)); // 任何背包都「有 0 個」
+    }
+
+    #[test]
+    fn item_kind_all_lists_every_variant() {
+        // ALL 是跨模組不變式（如 tools.rs「每個工具都拿得到」）遍歷物品宇宙的依據，
+        // 必須涵蓋 enum 全部變體、且不重複。窮舉 match 是強制同步的核心：日後在
+        // `ItemKind` 加變體（如鋤頭）時，下面的 match 會因不窮舉而**編譯失敗**，逼人回來
+        // 把新變體加進這個 match（連帶提醒加進 ALL）；`len` 斷言則擋住「加了 enum 卻忘了
+        // 加進 ALL」——少一筆 len 不等於變體數即紅燈。
+        for &k in ItemKind::ALL {
+            match k {
+                ItemKind::Wood | ItemKind::Stone | ItemKind::Ether | ItemKind::Pickaxe => {}
+            }
+        }
+        let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
+        assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
+        // 目前共 4 種（木／石／乙太／鎬子）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 4, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
