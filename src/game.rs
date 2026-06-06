@@ -26,6 +26,21 @@ fn should_broadcast(receiver_count: usize) -> bool {
     receiver_count > 0
 }
 
+/// 落地(flush)節律,以 tick 數表示。有客戶端連線時每 10 秒一次,如常保住線上玩家進度。
+/// 沒人連線的離峰時段拉長到每 60 秒一次——此時只有背景世界(離線玩家農地成長、日夜時鐘)
+/// 在變,把 checkpoint 拉疏 6× 省離峰 CPU+DB 寫(`flush_all` 每次都 clone 全部歷來農地再
+/// upsert、外加寫日夜)。代價僅是離峰重啟最多丟約 60 秒的離線成長/時鐘 granularity,沒人在看、
+/// 返場玩家也察覺不到。**線上玩家進度不受影響**:只要有人連線(`want_broadcast` 為真)就是
+/// 10 秒節律。延續「沒人看就別白做」的離峰優化路線(同 `should_broadcast`),抽成純函式以便測試。
+fn flush_interval_ticks(has_subscribers: bool) -> u64 {
+    let base = TICK_HZ as u64;
+    if has_subscribers {
+        base * 10
+    } else {
+        base * 60
+    }
+}
+
 /// 啟動遊戲迴圈，常駐執行。
 pub fn spawn(app: AppState) {
     tokio::spawn(async move {
@@ -200,11 +215,13 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 定期把「線上已登入玩家」的位置 + 乙太快照落地（每 ~10 秒一次）。
+            // 定期把「線上已登入玩家」的位置 + 乙太快照落地。
             // 先前只有玩家離線時才記,線上玩家撐不過 server 重啟（換版）——乙太會歸零。
             // 這裡讓線上玩家的狀態也持續落地,重啟後重連即帶回。
             // 只記已登入玩家（id 在 users 裡）；訪客 id 隨機、不記,避免 cache 無界成長。
-            if tick % (TICK_HZ as u64 * 10) == 0 {
+            // 節律隨有無連線變化(`flush_interval_ticks`):有人連線維持 10 秒,離峰無人連線
+            // 拉長到 60 秒,省離峰白做的 clone+upsert(同上面只在有觀眾才建 view 的思路)。
+            if tick % flush_interval_ticks(want_broadcast) == 0 {
                 flush_all(&app).await;
             }
         }
@@ -269,7 +286,7 @@ pub async fn flush_all(app: &AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_broadcast;
+    use super::{flush_interval_ticks, should_broadcast, TICK_HZ};
 
     #[test]
     fn 沒有訂閱者時不廣播() {
@@ -280,5 +297,24 @@ mod tests {
     fn 有任一訂閱者就廣播() {
         assert!(should_broadcast(1));
         assert!(should_broadcast(42));
+    }
+
+    #[test]
+    fn 有連線時每十秒落地一次() {
+        assert_eq!(flush_interval_ticks(true), (TICK_HZ as u64) * 10);
+    }
+
+    #[test]
+    fn 離峰無連線時落地拉長到每六十秒() {
+        assert_eq!(flush_interval_ticks(false), (TICK_HZ as u64) * 60);
+    }
+
+    #[test]
+    fn 離峰節律是有連線節律的整數倍_轉場乾淨() {
+        // 拉疏後的落地點必落在原 10 秒節律的邊界上,有人連上恢復 10 秒節律時不會錯位漏拍。
+        assert_eq!(
+            flush_interval_ticks(false) % flush_interval_ticks(true),
+            0
+        );
     }
 }
