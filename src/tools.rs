@@ -27,6 +27,8 @@ pub enum ToolKind {
     Fist,
     /// 鎬子（合成產物）：採礦更快。
     Pickaxe,
+    /// 強化鎬（以鎬子＋素材升級而成）：採礦比普通鎬子又更快，是工具進程的第二層。
+    ReinforcedPickaxe,
 }
 
 /// 徒手的基礎採集倍率（單位速度）。沒有鎬子就是這個。
@@ -34,6 +36,9 @@ pub const FIST_MULTIPLIER: u32 = 1;
 
 /// 鎬子採集的加速倍率。對應驗收「採礦速度提升 X 倍」的 X：一次採集動作相當於採這麼多下。
 pub const PICKAXE_GATHER_MULTIPLIER: u32 = 3;
+
+/// 強化鎬採集的加速倍率：嚴格高於普通鎬子，讓「升級」這條配方鏈真的有感、值得攢素材去合。
+pub const REINFORCED_PICKAXE_GATHER_MULTIPLIER: u32 = 5;
 
 // 整個模組是前置地基：接線輪（採集依工具加速）才有呼叫端，在此之前公開項目皆無外部
 // 呼叫，比照 `crafting.rs` / `inventory.rs` / `gather.rs` 標 `allow(dead_code)`。
@@ -43,6 +48,7 @@ impl ToolKind {
     /// `FIST_MULTIPLIER`。
     pub fn gather_multiplier(self) -> u32 {
         match self {
+            ToolKind::ReinforcedPickaxe => REINFORCED_PICKAXE_GATHER_MULTIPLIER,
             ToolKind::Pickaxe => PICKAXE_GATHER_MULTIPLIER,
             ToolKind::Fist => FIST_MULTIPLIER,
         }
@@ -56,6 +62,7 @@ impl ToolKind {
 pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
     match item {
         ItemKind::Pickaxe => Some(ToolKind::Pickaxe),
+        ItemKind::ReinforcedPickaxe => Some(ToolKind::ReinforcedPickaxe),
         ItemKind::Wood | ItemKind::Stone | ItemKind::Ether => None,
     }
 }
@@ -97,6 +104,10 @@ mod tests {
     #[test]
     fn only_tools_map_from_items() {
         assert_eq!(tool_from_item(ItemKind::Pickaxe), Some(ToolKind::Pickaxe));
+        assert_eq!(
+            tool_from_item(ItemKind::ReinforcedPickaxe),
+            Some(ToolKind::ReinforcedPickaxe)
+        );
         // 資源原料不是工具。
         assert_eq!(tool_from_item(ItemKind::Wood), None);
         assert_eq!(tool_from_item(ItemKind::Stone), None);
@@ -116,6 +127,34 @@ mod tests {
         inv.add(ItemKind::Pickaxe, 1);
         assert_eq!(best_gather_tool(&inv), ToolKind::Pickaxe);
         assert_eq!(gather_speed_multiplier(&inv), PICKAXE_GATHER_MULTIPLIER);
+    }
+
+    // 編譯期不變式：強化鎬一定嚴格快過普通鎬子，否則升級配方鏈白費素材。
+    const _: () = assert!(REINFORCED_PICKAXE_GATHER_MULTIPLIER > PICKAXE_GATHER_MULTIPLIER);
+
+    #[test]
+    fn reinforced_pickaxe_is_faster_than_pickaxe() {
+        assert_eq!(
+            ToolKind::ReinforcedPickaxe.gather_multiplier(),
+            REINFORCED_PICKAXE_GATHER_MULTIPLIER
+        );
+        assert!(
+            ToolKind::ReinforcedPickaxe.gather_multiplier()
+                > ToolKind::Pickaxe.gather_multiplier()
+        );
+    }
+
+    #[test]
+    fn best_tool_prefers_reinforced_over_plain_pickaxe() {
+        // 背包同時有鎬子與強化鎬：採集自動取最快的強化鎬。
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Pickaxe, 1);
+        inv.add(ItemKind::ReinforcedPickaxe, 1);
+        assert_eq!(best_gather_tool(&inv), ToolKind::ReinforcedPickaxe);
+        assert_eq!(
+            gather_speed_multiplier(&inv),
+            REINFORCED_PICKAXE_GATHER_MULTIPLIER
+        );
     }
 
     #[test]

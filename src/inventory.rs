@@ -41,6 +41,11 @@ pub enum ItemKind {
     /// 工具也是背包物品（沿用同一個容器），故只在此 enum 加一個變體即可——背包、序列化、
     /// 前端面板都不必為「工具」另開資料結構。放在採集三資源之後，既有 `entries` 排序不動。
     Pickaxe,
+    /// 強化鎬（升級工具配方產物，Phase 1-C／1-D）：以一把鎬子＋素材升級而成，採礦比
+    /// 普通鎬子更快。它是「工具＋素材→升級工具」配方鏈的第一個產物——既給已合成的鎬子
+    /// 一個新去處（被升級配方消耗），也讓玩家攢素材有第二層進程目標。放在 `Pickaxe` 之後，
+    /// 既有 `entries` 排序不動。
+    ReinforcedPickaxe,
 }
 
 impl ItemKind {
@@ -54,6 +59,7 @@ impl ItemKind {
         ItemKind::Stone,
         ItemKind::Ether,
         ItemKind::Pickaxe,
+        ItemKind::ReinforcedPickaxe,
     ];
 }
 
@@ -249,13 +255,17 @@ mod tests {
         // 加進 ALL」——少一筆 len 不等於變體數即紅燈。
         for &k in ItemKind::ALL {
             match k {
-                ItemKind::Wood | ItemKind::Stone | ItemKind::Ether | ItemKind::Pickaxe => {}
+                ItemKind::Wood
+                | ItemKind::Stone
+                | ItemKind::Ether
+                | ItemKind::Pickaxe
+                | ItemKind::ReinforcedPickaxe => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 4 種（木／石／乙太／鎬子）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 4, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 5 種（木／石／乙太／鎬子／強化鎬）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 5, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
