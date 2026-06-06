@@ -62,32 +62,35 @@ async fn main() {
     // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
     // 位置、背包、農地共用同一個連線池（PgPool 內部是 Arc,clone 便宜）：三個 store 各自獨立
     // 載回 / flush,沒有寫入順序耦合（見 0002_inventories.sql / 0003_fields.sql 為何不設外鍵）。
-    let (positions, inventories, fields, daynight_store, users) = match db::connect()
+    let (positions, inventories, fields, daynight_store, users, suggestions) = match db::connect()
         .await
         .expect("Postgres 連線或 migration 失敗")
     {
         Some(pool) => {
-            tracing::info!("Postgres 已連線、migration 已套用；玩家位置/背包/農地/日夜時刻/帳號走 DB 持久化");
+            tracing::info!("Postgres 已連線、migration 已套用；玩家位置/背包/農地/日夜時刻/帳號/建議走 DB 持久化");
             let positions = positions::PositionStore::from_pool(pool.clone()).await;
             let inventories = inventory_store::InventoryStore::from_pool(pool.clone()).await;
             let fields = field_store::FieldStore::from_pool(pool.clone()).await;
             let daynight_store = daynight_store::DayNightStore::from_pool(pool.clone()).await;
-            let users = users::UserStore::from_pool(pool).await;
-            (positions, inventories, fields, daynight_store, users)
+            let users = users::UserStore::from_pool(pool.clone()).await;
+            let suggestions = suggestions::SuggestionStore::from_pool(pool).await;
+            (positions, inventories, fields, daynight_store, users, suggestions)
         }
         None => {
-            tracing::warn!("未設 DATABASE_URL；玩家位置/背包/農地/日夜時刻/帳號走 JSONL 退回層（本機/測試模式）");
+            tracing::warn!("未設 DATABASE_URL；玩家位置/背包/農地/日夜時刻/帳號/建議走 JSONL 退回層（本機/測試模式）");
             (
                 positions::PositionStore::new(),
                 inventory_store::InventoryStore::new(),
                 field_store::FieldStore::new(),
                 daynight_store::DayNightStore::new(),
                 users::UserStore::new(),
+                suggestions::SuggestionStore::new(),
             )
         }
     };
 
-    let app_state = AppState::with_stores(positions, inventories, fields, daynight_store, users);
+    let app_state =
+        AppState::with_stores(positions, inventories, fields, daynight_store, users, suggestions);
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
     } else {
@@ -177,7 +180,7 @@ async fn post_suggestion(
     State(app): State<AppState>,
     Json(new): Json<NewSuggestion>,
 ) -> impl IntoResponse {
-    match app.suggestions.add(new) {
+    match app.suggestions.add(new).await {
         Some(saved) => (StatusCode::CREATED, Json(saved)).into_response(),
         None => (StatusCode::BAD_REQUEST, "建議內容不可為空").into_response(),
     }
