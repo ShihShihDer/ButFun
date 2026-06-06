@@ -92,6 +92,11 @@
   // 既有存量不算「採到」,不噴飄字;之後某品項數量變多才是真的採進來,才噴「+N 🪵」。
   let myInv = new Map();
   let invKnown = false;
+  // 上一次快照的生命值 + 是否已同步過初始生命。和乙太/背包同理:進場/重連時不把既有血量
+  // 當成「掉血/回血」播報;之後血量變化才是真的受擊或恢復。戰鬥(1-F)剛上線、HP 有 HUD
+  // 但看不到畫面的玩家完全收不到受擊——補這條把無障礙弧線延伸到戰鬥(連線/採集/收成/日夜之後)。
+  let myHp = 0;
+  let hpKnown = false;
   // 收成得乙太、採集進背包時的「+N」飄字（純表現，從權威數值差值推得，不嵌任何遊戲規則）。
   // 每筆 { wx, wy, text, color, born }：以世界座標固定在獲得當下的玩家位置上方，隨時間上飄淡出。
   const floaters = [];
@@ -290,6 +295,7 @@
           announce("已重新連上，繼續吧。"); // 同步播給報讀器
           announcedDrop = false;
           etherKnown = false;
+          hpKnown = false; // 同乙太:重連後第一份快照重建血量基準,別把既有血量當成一次受擊/回血
           presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
         }
         hideConnStatus(); // 接回（或初次連上）就收掉重連橫幅
@@ -374,6 +380,18 @@
           invKnown = true;
           updateBagHud(inv);
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
+          // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
+          // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
+          // 差值推得、不嵌任何規則,延續採集/收成/日夜/連線的無障礙弧線。首次同步不報。
+          if (hpKnown && me.hp !== myHp) {
+            if (me.hp < myHp) {
+              announce(me.hp <= 0 ? "你被打趴了" : `受到攻擊,生命 ${me.hp}/${me.max_hp}`);
+            } else {
+              announce(`恢復生命 ${me.hp}/${me.max_hp}`);
+            }
+          }
+          myHp = me.hp;
+          hpKnown = true;
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
