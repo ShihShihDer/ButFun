@@ -6,6 +6,7 @@
 mod auth;
 mod combat;
 mod connections;
+mod crafting;
 mod crops;
 mod daynight;
 mod db;
