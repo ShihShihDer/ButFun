@@ -4,15 +4,18 @@
 //! 詳見 docs/GAME_DESIGN.md。
 
 mod auth;
+mod combat;
 mod connections;
 mod crops;
 mod daynight;
 mod db;
+mod enemy_field;
 mod field;
 mod game;
 mod gather;
 mod gather_field;
 mod inventory;
+mod vitals;
 mod plot_registry;
 mod plots;
 mod positions;

@@ -2,11 +2,15 @@
 
 use std::time::Duration;
 
-use crate::protocol::{FieldView, NodeView, ServerMsg};
+use crate::protocol::{EnemyView, FieldView, NodeView, ServerMsg};
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
+
+/// 玩家每次自動攻擊的傷害(戰鬥 1-F)。固定值,將來武器/技能可加倍(1-D 工具倍率同款)。
+/// 配合「每秒結算一次」:銹蝕機(6hp)約 3 秒、乙太靈(4hp)約 2 秒打倒。
+const PLAYER_ATTACK_POWER: u32 = 2;
 
 /// 啟動遊戲迴圈，常駐執行。
 pub fn spawn(app: AppState) {
@@ -60,11 +64,76 @@ pub fn spawn(app: AppState) {
                     .collect()
             };
 
-            // 整合位置並建立快照（短暫持鎖，不跨 await）。
+            // 推進敵人重生(被打倒的倒數復活)並轉成快照。短暫持鎖,不跨 await。
+            let enemy_views: Vec<EnemyView> = {
+                let mut enemies = app.enemies.write().unwrap();
+                enemies.tick(dt);
+                enemies
+                    .enemies()
+                    .iter()
+                    .map(|p| EnemyView {
+                        kind: p.enemy.kind(),
+                        x: p.x,
+                        y: p.y,
+                        hp: p.enemy.remaining_hp(),
+                        max_hp: p.enemy.kind().max_hp(),
+                        alive: p.enemy.is_alive(),
+                    })
+                    .collect()
+            };
+
+            // 戰鬥結算(每秒一次):玩家自動打最近的敵人、敵人反擊。**自動打怪**——不需客戶端輸入。
+            // 避免巢狀鎖:先讀玩家位置 → 對敵人結算 → 把戰果(掉落/傷害)套回玩家,三步各持一把鎖。
+            if tick % (TICK_HZ as u64) == 0 {
+                let positions: Vec<(uuid::Uuid, f32, f32, bool)> = {
+                    let players = app.players.read().unwrap();
+                    players
+                        .values()
+                        .map(|p| (p.id, p.x, p.y, p.vitals.is_downed()))
+                        .collect()
+                };
+                let mut loots: Vec<(uuid::Uuid, crate::inventory::ItemKind, u32)> = Vec::new();
+                let mut dmgs: Vec<(uuid::Uuid, u32)> = Vec::new();
+                {
+                    let mut enemies = app.enemies.write().unwrap();
+                    for (pid, px, py, downed) in &positions {
+                        if *downed {
+                            continue; // 被打趴的玩家不攻擊、也不再挨打(休息中)
+                        }
+                        if let Some((_kind, Some((item, qty)))) =
+                            enemies.attack_nearest(*px, *py, PLAYER_ATTACK_POWER)
+                        {
+                            loots.push((*pid, item, qty)); // 打倒 → 掉落進背包
+                        }
+                        let threat = enemies.threat_at(*px, *py);
+                        if threat > 0 {
+                            dmgs.push((*pid, threat)); // 範圍內敵人反擊的威脅總和
+                        }
+                    }
+                }
+                if !loots.is_empty() || !dmgs.is_empty() {
+                    let mut players = app.players.write().unwrap();
+                    for (pid, item, qty) in loots {
+                        if let Some(p) = players.get_mut(&pid) {
+                            p.inventory.add(item, qty);
+                        }
+                    }
+                    for (pid, dmg) in dmgs {
+                        if let Some(p) = players.get_mut(&pid) {
+                            if p.vitals.take_damage(dmg) {
+                                tracing::info!(player = %p.name, "被敵人打趴,休息復原中");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 整合位置 + 推進生命回復,並建立快照（短暫持鎖，不跨 await）。
             let snapshot = {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
                     p.step(dt);
+                    p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                 }
 
                 ServerMsg::Snapshot {
@@ -72,6 +141,7 @@ pub fn spawn(app: AppState) {
                     players: players.values().map(|p| p.view()).collect(),
                     fields: field_views,
                     nodes: node_views,
+                    enemies: enemy_views,
                     daynight: daynight_view,
                 }
             };

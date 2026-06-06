@@ -74,6 +74,8 @@
   let fields = [];
   // 伺服器廣播的世界採集節點（樹/石/乙太礦,每個含 kind/x/y/remaining/harvestable）;進場前為空。
   let nodes = [];
+  // 伺服器廣播的世界敵人（戰鬥 1-F,每個含 kind/x/y/hp/max_hp/alive）;進場前為空。
+  let enemies = [];
   // 採集判定半徑(像素),與伺服器 GATHER_REACH 對齊:玩家離節點這麼近才採得到。
   const GATHER_REACH = 56;
   // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
@@ -336,6 +338,7 @@
         // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
+        enemies = msg.enemies || []; // 同上防呆
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         updateFarmHud(myField());
@@ -370,6 +373,7 @@
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
           updateBagHud(inv);
+          updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
@@ -985,6 +989,7 @@
     drawGround(camX, camY);
     drawField(camX, camY);
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
+    drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -1417,6 +1422,56 @@
     if (n) announce(gatheredOnce
       ? `走到${NODE_NAME[n.kind] || "資源"}旁,可採`
       : `走到${NODE_NAME[n.kind] || "資源"}旁,可採——按空白鍵或點一下採集`);
+  }
+
+  // ---- 敵人（戰鬥 1-F）----
+  const ENEMY_LOOK = {
+    scrap_drone: { icon: "🤖", tint: "#6b4a3a" },
+    ether_wisp: { icon: "👻", tint: "#46407a" },
+  };
+  // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
+  function drawEnemies(camX, camY) {
+    for (const e of enemies) {
+      const sx = e.x - camX;
+      const sy = e.y - camY;
+      if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
+      const look = ENEMY_LOOK[e.kind] || { icon: "❔", tint: "#555" };
+      ctx.save();
+      if (!e.alive) ctx.globalAlpha = 0.25; // 被打倒、重生中
+      ctx.beginPath();
+      ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+      ctx.fillStyle = look.tint;
+      ctx.fill();
+      ctx.font = "20px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(look.icon, sx, sy + 1);
+      // 血條:活著且不滿血才畫。
+      if (e.alive && e.hp < e.max_hp) {
+        const bw = 28;
+        const bx = sx - bw / 2;
+        const by = sy - 22;
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(bx - 1, by - 1, bw + 2, 6);
+        ctx.fillStyle = "#d65a5a";
+        ctx.fillRect(bx, by, bw * (e.hp / e.max_hp), 4);
+      }
+      ctx.restore();
+    }
+  }
+
+  // 生命 HUD:顯示「生命：hp/max」,低血/被打趴變紅。
+  function updateHpHud(hp, maxHp) {
+    const el = document.getElementById("hudHp");
+    if (!el) return;
+    if (hp <= 0) {
+      el.textContent = "💀 被打趴,休息復原中…";
+      el.style.color = "#f88";
+    } else {
+      el.textContent = `生命：${hp}/${maxHp}`;
+      el.style.color = hp < maxHp * 0.35 ? "#f88" : "";
+    }
+    el.setAttribute("aria-label", el.textContent);
   }
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
