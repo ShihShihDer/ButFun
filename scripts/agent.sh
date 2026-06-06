@@ -24,8 +24,18 @@ fi
 git checkout --quiet "$BRANCH" 2>/dev/null || git checkout --quiet -b "$BRANCH"
 if ! git rebase --quiet origin/main; then
   git rebase --abort 2>/dev/null || true
-  echo "[$LANE] rebase 與 main 衝突,跳過本輪(等 integrator/人處理)"
-  exit 0
+  # 自癒:lane 偶爾 rebase 衝突就跳過、等下輪;但若已嚴重落後 main(>25 commit)還是衝突,
+  # 代表這條分支跟 main 無望地分歧了(它手上多半是已被別處上線/取代的舊版),永遠合不進去、
+  # 只會一直卡。這時重置回最新 main 重新開始——別讓一條卡死的線拖住全速自走。
+  # 注意:重置丟掉的是「合不進去的本地 commit」;真有價值、已推上 origin/PR 的不受影響(可再撈)。
+  behind=$(git rev-list --count "HEAD..origin/main" 2>/dev/null || echo 0)
+  if [ "$behind" -gt 25 ]; then
+    echo "[$LANE] 與 main 嚴重分歧(落後 $behind)且 rebase 衝突 → 重置回 origin/main 重新開始(自癒)"
+    git reset --hard origin/main >/dev/null 2>&1 || true
+  else
+    echo "[$LANE] rebase 與 main 衝突,跳過本輪(落後 $behind,等下輪/integrator/人處理)"
+    exit 0
+  fi
 fi
 
 # 各 lane 的焦點(界線清楚 → 合併衝突最少)。
