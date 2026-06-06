@@ -204,6 +204,27 @@ mod tests {
     }
 
     #[test]
+    fn recipe_output_is_disjoint_from_its_own_inputs() {
+        // `can_craft` 的「產物放得下」檢查（`inv.count(output) + output_qty <= MAX_STACK`）
+        // 刻意用**扣素材前**的當前數量，其正確性靠那行 doc 明言的不變式：「現有配方產物
+        // （工具）與素材（資源）不相交」。此前無測試把關這條假設——日後若有人加一條自反
+        // 配方（產物同時列在自己的素材裡，如「鎬子+木 → 升級鎬子」），那個捷徑會用「還沒扣
+        // 素材的舊量」誤判產物放不放得下（偏保守、可能平白反灰一筆其實做得成的合成），而
+        // `recipe_table_is_well_formed` 只驗素材彼此不重複、察覺不到產物撞素材。趁配方表還
+        // 只有一條，把 `can_craft` 倚賴的這條前提鎖成測試：日後加自反配方當場紅燈，逼人回去
+        // 把那個捷徑改成「扣素材後的餘量」再放行，而不是接線後在線上靜默誤判。
+        for r in RECIPES {
+            assert!(
+                !r.inputs.iter().any(|&(item, _)| item == r.output),
+                "配方 `{}` 的產物 {:?} 出現在自己的素材裡——`can_craft` 的產物容量捷徑會失準，\
+                 需改用扣素材後的餘量檢查",
+                r.id,
+                r.output
+            );
+        }
+    }
+
+    #[test]
     fn recipe_ids_are_wire_safe_snake_case() {
         // 線協定契約：`id` 是 client 送 `Craft{ recipe: id }` 跟前端 keying 用的穩定字串，
         // doc 言明「snake_case，對齊 `ItemKind` 的序列化命名」。此前只驗 id 唯一/非空意涵，
