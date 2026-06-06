@@ -326,4 +326,46 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn node_table_is_well_formed() {
+        // 節點表健全性（與採集平衡的調校數值無關的最小不變式，防日後加節點時打錯），是
+        // `combat::enemy_table_is_well_formed` **對稱的另一條生產線**：那條守敵人表的生命週期
+        // 常數（`max_hp` / `respawn_secs` / `threat`），這條守採集節點表的對應常數。此前每個
+        // `NodeKind` 常數（`max_durability` / `respawn_secs`）都只被**寫死特定種類**的測試零星
+        // 覆蓋，沒有一條遍歷整張節點表、守住「每一種節點的這些常數都落在合法範圍」的不變式
+        // （`yield_per_gather > 0` 已由 `every_gathered_resource_has_a_sink` 守住、不在此重複，
+        // 比照敵人側「掉落量」歸 `every_enemy_drop_*` 守、不在敵人表健全性裡重複）。
+        // PLAN 自己就指向再加採集資源，屆時這正是會踩的坑：
+        //   - `max_durability == 0` 的節點一出生 `remaining == 0` 即被判為「已採空」，`gather`
+        //     的 `remaining == 0` 早退讓它**永遠採不到、永遠不產出**，`tick` 又把它「補滿」
+        //     回 0 耐久——一個玩家永遠碰不到的鬼節點（與敵人 `max_hp == 0` 的退化完全孿生）。
+        //   - `respawn_secs` 非有限（NaN / Inf）或 <= 0：採空後 `respawn_timer` 被種成壞值，
+        //     `Inf` 永遠倒數不完（再也不重生）、`NaN` 毒化比較、<= 0 則下一 tick 即「瞬間重生」，
+        //     全都壞掉重生節奏（模組頂註白紙黑字「採完一處得換地方或等它長回來，給世界一點節奏」）。
+        // 採集節點沒有敵人那樣的反擊，故無 `threat` 對應項——只守上述兩個生命週期常數。
+
+        // 窮舉守衛：新增 NodeKind 變體卻忘了加進 KINDS 時，此 match 不窮舉、編譯失敗，逼人
+        // 回來把新種類納入本遍歷（比照 `every_gathered_resource_has_a_sink` 的窮舉守衛）。
+        for kind in KINDS {
+            match kind {
+                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+            }
+        }
+
+        for kind in KINDS {
+            // 耐久為正：否則一出生即被判定採空、玩家永遠採不到、永遠不產出。
+            assert!(
+                kind.max_durability() > 0,
+                "採集節點 {kind:?} 的 max_durability 應 > 0，否則一出生即被判定採空、\
+                 玩家永遠採不到它"
+            );
+            // 重生秒數有限且為正：否則採空後重生節奏壞掉（永不重生／瞬間重生／NaN 毒化）。
+            let respawn = kind.respawn_secs();
+            assert!(
+                respawn.is_finite() && respawn > 0.0,
+                "採集節點 {kind:?} 的 respawn_secs（{respawn}）應為有限正數，否則重生節奏壞掉"
+            );
+        }
+    }
 }
