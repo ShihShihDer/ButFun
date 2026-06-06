@@ -11,8 +11,10 @@
 //!     貼合「先來的在家園核心、地圖往外長」與 O2「序號只增不減地往外排」的方向；也避免回收
 //!     造成「同一塊地換人耕種、作物歸屬錯亂」。代價是從不回訪的玩家會占住序號，屬可接受
 //!     （量級＝歷來玩家數，與 `positions.rs` 只記已登入玩家、不無界成長同理）。
-//!   - **記憶體版**：連同 `positions.rs`／`field.rs` 的農地狀態，跨重啟持久化一律留待 0-E
-//!     （那時把這張 user_id → 序號 表也存進 Postgres，returning 玩家重啟後仍拿回原地塊）。
+//!   - **跨重啟持久化（0-E，2026-06-06 驗證已落地）**：序號隨農地一起存——`field_store`
+//!     把每塊地的 `(user_id, plot_index)` 落進 Postgres，啟動時 `saved_plots()` 餵
+//!     `from_saved` 重建這張歸屬表，returning 玩家重啟後仍拿回原地塊（見 `state.rs` 的
+//!     `plots` 種回路徑）。本模組維持純記憶體權威，持久化在 `field_store` 那層。
 //!   - 比照 `connections.rs`／`positions.rs` 做成可測的小 store；分配與歸屬判斷都是無 IO 的
 //!     純粹方法，便於單元測試。
 //!
@@ -25,7 +27,8 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
-/// 記錄每個玩家 id 擁有的地塊序號。MVP：記憶體（跨重啟持久化留待 0-E）。
+/// 記錄每個玩家 id 擁有的地塊序號。記憶體權威；跨重啟持久化由 `field_store` 連同農地一起存
+/// （啟動經 `saved_plots()` → `from_saved` 種回，見模組註解）。
 #[derive(Clone, Default)]
 pub struct PlotRegistry {
     inner: Arc<Mutex<Inner>>,
