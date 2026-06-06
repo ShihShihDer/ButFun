@@ -364,7 +364,7 @@
           if (p.id !== myId) knownPlayers.set(p.id, p.name);
         }
         presenceKnown = true;
-        document.getElementById("hudPlayers").textContent = `線上：${msg.players.length}`;
+        document.getElementById("hudPlayers").textContent = `🌐 ${msg.players.length}`;
         // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
@@ -401,7 +401,7 @@
           }
           myEther = me.ether;
           etherKnown = true;
-          document.getElementById("hudEther").textContent = `乙太：${myEther}`;
+          document.getElementById("hudEther").textContent = `✨ ${myEther}`;
           const inv = me.inventory || []; // 防呆:舊版沒這欄 → 空背包
           // 背包某品項變多 → 採集回饋飄字（首次同步不噴,否則進場/重連會把存量當成一次大採）。
           if (invKnown) {
@@ -1781,13 +1781,14 @@
     const el = document.getElementById("hudHp");
     if (!el) return;
     if (hp <= 0) {
-      el.textContent = "💀 被打趴,休息復原中…";
+      el.textContent = "💀 休息中…";
       el.style.color = "#f88";
+      el.setAttribute("aria-label", "被打趴,休息復原中");
     } else {
-      el.textContent = `生命：${hp}/${maxHp}`;
+      el.textContent = `❤ ${hp}/${maxHp}`;
       el.style.color = hp < maxHp * 0.35 ? "#f88" : "";
+      el.setAttribute("aria-label", `生命 ${hp}/${maxHp}`);
     }
-    el.setAttribute("aria-label", el.textContent);
   }
 
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
@@ -1919,6 +1920,9 @@
     const label = craftable > 0 ? `合成台：${craftable} 項可合成` : "合成台：素材不足";
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
+    // dock 圖示:有可合成的就點一顆黃點,玩家不開窗也知道「現在能合東西了」。
+    const dock = document.getElementById("dockCraft");
+    if (dock) dock.classList.toggle("dock-active", craftable > 0);
   }
 
   // 擴地面板:依「我的乙太」與「已購擴張格數」算下一格價,畫出價格提示與一顆「擴地」鈕。
@@ -1987,6 +1991,9 @@
         : `擴地：下一格 ${cost} 乙太（不足）`;
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
+    // dock 圖示:乙太夠擴一格就點一顆黃點,不開窗也知道「現在能擴地了」。
+    const dockE = document.getElementById("dockExpand");
+    if (dockE) dockE.classList.toggle("dock-active", canBuy);
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
@@ -2548,127 +2555,57 @@
     }
   });
 
-  // ---- 操作說明可收合 ----
-  // 點標題列收起／展開;狀態存 localStorage,玩家選過就尊重他的選擇。
-  // 沒選過時依視窗大小給預設:小畫面預設收起省空間,大畫面預設展開讓新手看得到。
-  function initHelpToggle() {
-    const hud = document.getElementById("hud");
-    const toggle = document.getElementById("helpToggle");
-    if (!hud || !toggle) return;
-    // 沒選過時的預設依視窗大小算:窄(手機直式)或矮(手機橫式:寬而矮,667×375 之類)都收起。
-    // 橫式手機寬度過關卻只有一點垂直空間,展開的多行說明會把矮螢幕的地表擠掉——垂直才是橫式
-    // 的稀缺資源,故寬高任一不足就收起。抽成純函式,好在轉螢幕/改視窗時重算。
-    const defaultCollapsed = () =>
-      (window.innerWidth < 560 || window.innerHeight < 480) ? "1" : "0";
-    let chosen; // 玩家手動選過的值(localStorage 有值或本次 session 內按過);沒有則為 null
-    try { chosen = localStorage.getItem("butfun.helpCollapsed"); } catch {}
-    const apply = (v) => {
-      const isCollapsed = v === "1";
-      hud.classList.toggle("help-collapsed", isCollapsed);
-      // 收起＝內容隱藏＝aria-expanded false,讓螢幕報讀器報出展開/收合狀態
-      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-    };
-    apply(chosen === null || chosen === undefined ? defaultCollapsed() : chosen);
-    const flip = () => {
-      const next = hud.classList.contains("help-collapsed") ? "0" : "1";
-      apply(next);
-      chosen = next; // 標記玩家已自選——之後轉螢幕不再自動覆蓋(localStorage 寫不進也成立)
-      try { localStorage.setItem("butfun.helpCollapsed", next); } catch {}
-    };
-    toggle.addEventListener("click", flip);
-    // 鍵盤可達:Tab 聚焦後 Enter / 空白鍵也能收合。stopPropagation 擋掉全域 keydown,
-    // 免得空白被當「採腳下格」、Enter 被搶去 focus 聊天。
-    toggle.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
-    });
-    // 玩家還沒手動選過前,轉螢幕/改視窗大小就重算預設:直式(窄→收)轉成寬高都夠的橫式該展開、
-    // 桌機窄窗放大成寬高足夠時也該展開,反之亦然。一旦玩家手動收/展就完全尊重他、不再覆蓋。
-    window.addEventListener("resize", () => {
-      if (chosen === null || chosen === undefined) apply(defaultCollapsed());
-    });
-  }
+  // ---- 星露谷風工具列(dock)+ 可開關視窗 ----
+  // 總監定調:左上常駐欄太佔空間。常駐只留精簡狀態(乙太/生命/線上/時段);背包/合成/擴地/操作說明
+  // 改成 dock 一排小圖示,點圖示才開對應視窗。規則:同時只開一個;再點同一顆、按 ✕、按 Esc、
+  // 點世界任一處都關。視窗內容沿用既有渲染(updateBagHud / updateCraftPanel / updateExpandPanel
+  // 寫進 #bagBody / #craftBody / #expandBody),這裡只管「哪個視窗開著」。純前端互動,不碰遊戲規則。
+  function initDock() {
+    const dock = document.getElementById("hudDock");
+    if (!dock) return;
+    let openWin = null; // 目前開著的視窗元素
+    let openBtn = null; // 開它的 dock 鈕(關閉時把鍵盤焦點還回去)
 
-  // ---- 背包面板可收合 ----
-  // 同操作說明:點標題列收/展,狀態存 localStorage,尊重玩家選擇。預設收起——標題列的摘要
-  // 計數(updateBagHud 寫的 #bagSummary)收著時仍看得到存量,等於沿用舊那行的快速一瞥、不損失
-  // 資訊;想看每項中文名明細再展開。鍵盤(Tab→Enter/空白)可達,焦點框語彙與其他收合鈕一致。
-  function initBagToggle() {
-    const bag = document.getElementById("hudBag");
-    const toggle = document.getElementById("bagToggle");
-    if (!bag || !toggle) return;
-    let chosen;
-    try { chosen = localStorage.getItem("butfun.bagCollapsed"); } catch {}
-    const apply = (v) => {
-      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示計數),只有顯式選過展開才為 "0"
-      bag.classList.toggle("bag-collapsed", isCollapsed);
-      // 收起＝明細隱藏＝aria-expanded false,讓螢幕報讀器報出展開/收合狀態
-      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-    };
-    apply(chosen === null || chosen === undefined ? "1" : chosen);
-    const flip = () => {
-      const next = bag.classList.contains("bag-collapsed") ? "0" : "1";
-      apply(next);
-      try { localStorage.setItem("butfun.bagCollapsed", next); } catch {}
-    };
-    toggle.addEventListener("click", flip);
-    // 鍵盤可達:Tab 聚焦後 Enter / 空白鍵也能收合。stopPropagation 擋掉全域 keydown,
-    // 免得空白被當「採腳下格」、Enter 被搶去 focus 聊天。比照操作說明/聊天收合鈕。
-    toggle.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
-    });
-  }
+    function closeWin(returnFocus = true) {
+      if (!openWin) return;
+      openWin.classList.add("hidden");
+      const btn = openBtn;
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      openWin = null;
+      openBtn = null;
+      // 用鍵盤開的才把焦點還回圖示;點世界關的別硬搶焦點(玩家正在操作地表)。
+      if (returnFocus && btn) btn.focus();
+    }
 
-  // ---- 合成台面板可收合 ----
-  // 與背包同一套語彙:點標題列收/展,狀態存 localStorage,預設收起(標題列摘要已顯示
-  // 「N 可合成」,收著也一眼知道能不能合)。鍵盤(Tab→Enter/空白)可達,焦點框語彙一致。
-  function initCraftToggle() {
-    const panel = document.getElementById("hudCraft");
-    const toggle = document.getElementById("craftToggle");
-    if (!panel || !toggle) return;
-    let chosen;
-    try { chosen = localStorage.getItem("butfun.craftCollapsed"); } catch {}
-    const apply = (v) => {
-      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示可合成數),只有顯式展開才為 "0"
-      panel.classList.toggle("craft-collapsed", isCollapsed);
-      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-    };
-    apply(chosen === null || chosen === undefined ? "1" : chosen);
-    const flip = () => {
-      const next = panel.classList.contains("craft-collapsed") ? "0" : "1";
-      apply(next);
-      try { localStorage.setItem("butfun.craftCollapsed", next); } catch {}
-    };
-    toggle.addEventListener("click", flip);
-    // 鍵盤可達:同背包/聊天收合鈕,Enter/空白收合並擋掉全域 keydown(免空白被當採集)。
-    toggle.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
-    });
-  }
+    function openWinFor(btn) {
+      const win = document.getElementById(btn.dataset.win);
+      if (!win) return;
+      if (openWin === win) { closeWin(); return; } // 再點同一顆 = 關
+      closeWin(false); // 先收掉別的(同時只開一個)
+      win.classList.remove("hidden");
+      btn.setAttribute("aria-expanded", "true");
+      openWin = win;
+      openBtn = btn;
+      // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
+      const closeBtn = win.querySelector(".win-close");
+      if (closeBtn) closeBtn.focus();
+    }
 
-  // ---- 擴地面板可收合 ----
-  // 與合成台/背包同一套語彙:點標題列收/展,狀態存 localStorage,預設收起(標題列摘要已顯示
-  // 可不可擴,收著也一眼知道)。鍵盤(Tab→Enter/空白)可達,焦點框語彙一致。
-  function initExpandToggle() {
-    const panel = document.getElementById("hudExpand");
-    const toggle = document.getElementById("expandToggle");
-    if (!panel || !toggle) return;
-    let chosen;
-    try { chosen = localStorage.getItem("butfun.expandCollapsed"); } catch {}
-    const apply = (v) => {
-      const isCollapsed = v !== "0"; // 預設收起(摘要已顯示可不可擴),只有顯式展開才為 "0"
-      panel.classList.toggle("expand-collapsed", isCollapsed);
-      toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
-    };
-    apply(chosen === null || chosen === undefined ? "1" : chosen);
-    const flip = () => {
-      const next = panel.classList.contains("expand-collapsed") ? "0" : "1";
-      apply(next);
-      try { localStorage.setItem("butfun.expandCollapsed", next); } catch {}
-    };
-    toggle.addEventListener("click", flip);
-    toggle.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); flip(); }
+    for (const btn of dock.querySelectorAll(".dock-btn")) {
+      btn.addEventListener("click", () => openWinFor(btn));
+    }
+    // 每個視窗右上的 ✕ 關閉自己。
+    for (const x of document.querySelectorAll(".hud-window .win-close")) {
+      x.addEventListener("click", () => closeWin());
+    }
+    // Esc 關掉開著的視窗(沒開窗時不攔,留給聊天等既有 Esc 行為)。
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && openWin) { e.preventDefault(); closeWin(); }
     });
+    // 點世界任一處關掉視窗(星露谷手感:點地表收選單)。capture 階段先收掉、不 preventDefault——
+    // 走動/採集等地表操作照常觸發,只是順手把選單關了。
+    const canvas = document.getElementById("game");
+    if (canvas) canvas.addEventListener("pointerdown", () => closeWin(false), true);
   }
 
   // ---- 聊天紀錄可收合 ----
@@ -2729,11 +2666,8 @@
   function enterGame() {
     if (started) return; // 自動重連時 welcome 會再來一次，別重複初始化、別啟動第二個 render 迴圈
     started = true;
-    initHelpToggle();
     initChatToggle();
-    initBagToggle();
-    initCraftToggle();
-    initExpandToggle();
+    initDock(); // 星露谷風 dock + 視窗(取代原本 help/bag/craft/expand 的 inline 收合)
     updateCraftPanel([]); // 首個背包快照前先畫出配方(全反灰),不留空面板
     initChatKeyboardLift();
     document.getElementById("login").classList.add("hidden");
