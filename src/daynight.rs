@@ -138,6 +138,13 @@ impl DayNight {
         self.elapsed / DAY_LENGTH_SECS
     }
 
+    /// 目前循環內已經過的秒數（恆落在 `[0, DAY_LENGTH_SECS)`）。持久化用：把此值存回，
+    /// 重啟載入時一律經 `at()` 還原並驗證（界外／非有限會被夾回／繞回），故存讀兩端共用
+    /// 同一道守門。
+    pub fn elapsed(&self) -> f32 {
+        self.elapsed
+    }
+
     /// 目前階段。
     pub fn phase(&self) -> Phase {
         phase_for(self.fraction())
