@@ -57,7 +57,7 @@ async fn patch_profile(
     let Some(uid) = user_id_from_cookies(&headers, &cfg.session_secret) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    match app.users.rename(uid, &update.name) {
+    match app.users.rename(uid, &update.name).await {
         Some(u) => {
             // 即時反映到線上世界:若該玩家此刻在線,更新其權威 Player 的 name,下一張快照就帶新名
             // (HUD / 世界名牌 / 聊天 from 都讀這個)——不必重連。離線玩家下次進場時 ws.rs 從

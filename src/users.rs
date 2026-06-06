@@ -1,17 +1,28 @@
 //! 使用者帳號模型(provider 無關)。
 //!
 //! 內部以 UUID 為主鍵；外部登入(目前只有 Google)用 `(provider, external_id)`
-//! 連結到內部 user。資料以 JSONL 形式存在 `data/users.jsonl`,啟動時整檔讀進記憶體、
-//! 變更時 append 一行 + 更新記憶體索引。之後接 Phase 0-E Postgres 時,把這層後面
-//! 換成 `PgStore` 即可,不動上層。
+//! 連結到內部 user。行程內維護一份 `by_id` / `by_external` 的記憶體索引當權威來源,
+//! 讓 `get` / `find_or_create` 在登入熱路徑上同步、不被 DB 往返卡住;耐久層在索引後面
+//! 可抽換(沿 `inventory_store.rs` 同一套 0-E 結構):
+//!   - `Postgres`：設了 `DATABASE_URL` 時,啟動載回全部帳號、變更時非同步 upsert(正式上線走這條)。
+//!   - `Jsonl`：沒設 `DATABASE_URL`(本機 `cargo run`)時 append 寫穿 `data/users.jsonl`。
+//!   - `Memory`：測試用,不碰磁碟也不碰 DB。
+//!
+//! 延續其他 store 的設計權衡(DB 為主、JSONL 補洞;寫入失敗只記 log 不中斷登入;載入時
+//! 一律過 sanitizer 驗壞值)。帳號是「已登入」狀態的根,位置／背包／農地都以這個穩定 id 為鍵。
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPool;
+use sqlx::Row;
 use uuid::Uuid;
 
+/// 無 `DATABASE_URL` 時的退回持久化檔(執行期產生、已 gitignore)。接 Postgres 後這個檔
+/// 退為「遷移種子」：啟動時 DB 還沒有的帳號仍會從這裡補回索引並一次性 upsert 進 DB,
+/// 讓換版(從 JSONL 版切到 Postgres 版)不會把既有帳號丟掉。
 const STORE_PATH: &str = "data/users.jsonl";
 
 /// 一個內部使用者帳號。
@@ -30,10 +41,23 @@ pub struct User {
     pub created_at: u64,
 }
 
+/// 索引後面的耐久層。
+#[derive(Clone)]
+enum Backend {
+    /// 測試用：不載入、不寫。只在 `#[cfg(test)]` 的 `in_memory()` 建構,故非測試建置標 allow。
+    #[cfg_attr(not(test), allow(dead_code))]
+    Memory,
+    /// 沒設 `DATABASE_URL`：append 寫穿到此 JSONL 檔。
+    Jsonl(&'static str),
+    /// 設了 `DATABASE_URL`：啟動載回全部帳號、變更時 upsert 到 `users` 表。
+    Postgres(PgPool),
+}
+
 /// 使用者儲存層的內部狀態。可被多執行緒共用。
 #[derive(Clone)]
 pub struct UserStore {
     inner: Arc<Mutex<Inner>>,
+    backend: Backend,
 }
 
 struct Inner {
@@ -43,40 +67,85 @@ struct Inner {
 }
 
 impl UserStore {
+    /// 無 DB 模式(測試、本機 `cargo run`)：索引從 JSONL 載入,變更時 append 寫穿 JSONL。
     pub fn new() -> Self {
         let (by_id, by_external) = index_users(load_from_disk());
         Self {
             inner: Arc::new(Mutex::new(Inner { by_id, by_external })),
+            backend: Backend::Jsonl(STORE_PATH),
+        }
+    }
+
+    /// Postgres 模式(正式上線)：啟動時把 `users` 表全部載回索引,再用既有 JSONL 補齊
+    /// DB 還沒有的帳號——並把這些補進來的帳號**一次性 upsert 進 DB**,讓換版(從 JSONL 版
+    /// 切到 Postgres 版)時既有帳號不會因為「returning 玩家 find_or_create 命中即早回、永遠
+    /// 不觸發寫入」而一直只活在 JSONL、最終隨 JSONL 淘汰丟失。已在 DB 的 id 以 DB 為準。
+    /// 這個「DB 為主、JSONL 補洞」順序與 `InventoryStore::from_pool` 等一致。
+    pub async fn from_pool(pool: PgPool) -> Self {
+        let mut users = load_from_db(&pool).await;
+        let known: std::collections::HashSet<Uuid> = users.iter().map(|u| u.id).collect();
+        // JSONL 裡 DB 還沒有的帳號:補進記憶體,並一次性回填進 DB(冪等 upsert)。
+        for u in load_from_disk() {
+            if !known.contains(&u.id) {
+                if let Err(e) = upsert_user(&pool, &u).await {
+                    tracing::warn!(user_id = %u.id, "JSONL 帳號回填 Postgres 失敗(仍保留在記憶體):{e}");
+                }
+                users.push(u);
+            }
+        }
+        let (by_id, by_external) = index_users(users);
+        Self {
+            inner: Arc::new(Mutex::new(Inner { by_id, by_external })),
+            backend: Backend::Postgres(pool),
+        }
+    }
+
+    /// 純記憶體版(測試用)：不載入、不寫磁碟、不碰 DB。
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Inner {
+                by_id: HashMap::new(),
+                by_external: HashMap::new(),
+            })),
+            backend: Backend::Memory,
         }
     }
 
     /// 用 provider+external_id 找;沒有就新建一個。回傳該 user。
-    pub fn find_or_create(
+    ///
+    /// 記憶體索引的「查找或插入」在鎖內同步完成(避免兩個同 external_id 的登入競態各建一筆);
+    /// 耐久寫入在**放開鎖之後** await(DB 是 async,不在持鎖路徑上 await——避免跨 await 持鎖)。
+    /// returning 玩家命中索引即早回、不寫入(身分不變,沒東西要落地)。
+    pub async fn find_or_create(
         &self,
         provider: &str,
         external_id: &str,
         email: Option<String>,
         name: &str,
     ) -> User {
-        let mut inner = self.inner.lock().unwrap();
-        let key = (provider.to_string(), external_id.to_string());
-        if let Some(uid) = inner.by_external.get(&key).copied() {
-            if let Some(u) = inner.by_id.get(&uid) {
-                return u.clone();
+        let user = {
+            let mut inner = self.inner.lock().unwrap();
+            let key = (provider.to_string(), external_id.to_string());
+            if let Some(uid) = inner.by_external.get(&key).copied() {
+                if let Some(u) = inner.by_id.get(&uid) {
+                    return u.clone();
+                }
             }
-        }
-        let user = User {
-            id: Uuid::new_v4(),
-            provider: provider.to_string(),
-            external_id: external_id.to_string(),
-            email,
-            name: sanitize_name(name),
-            species: DEFAULT_SPECIES.to_string(),
-            created_at: now_millis(),
+            let user = User {
+                id: Uuid::new_v4(),
+                provider: provider.to_string(),
+                external_id: external_id.to_string(),
+                email,
+                name: sanitize_name(name),
+                species: DEFAULT_SPECIES.to_string(),
+                created_at: now_millis(),
+            };
+            inner.by_external.insert(key, user.id);
+            inner.by_id.insert(user.id, user.clone());
+            user
         };
-        append_to_disk(&user);
-        inner.by_external.insert(key, user.id);
-        inner.by_id.insert(user.id, user.clone());
+        self.persist(&user).await;
         tracing::info!(user_id = %user.id, %provider, "新使用者建立: {}", user.name);
         user
     }
@@ -89,44 +158,64 @@ impl UserStore {
     /// (新 uuid、固定身分),其遊戲進度(位置/乙太)會比照其他登入玩家持久化。`external_id`
     /// 用 uuid 自身保證唯一(AI 居民沒有外部 provider)。`provider="ai"` 標記方便日後把這些
     /// 帳號轉成遊戲內 AI NPC。名字/物種一律過既有 sanitizer(與 Google 帳號同一道輸入邊界)。
-    pub fn create_ai(&self, name: &str, species: &str) -> User {
-        let mut inner = self.inner.lock().unwrap();
-        let id = Uuid::new_v4();
-        let user = User {
-            id,
-            provider: "ai".to_string(),
-            external_id: id.to_string(),
-            email: None,
-            name: sanitize_name(name),
-            species: sanitize_species(species),
-            created_at: now_millis(),
+    pub async fn create_ai(&self, name: &str, species: &str) -> User {
+        let user = {
+            let mut inner = self.inner.lock().unwrap();
+            let id = Uuid::new_v4();
+            let user = User {
+                id,
+                provider: "ai".to_string(),
+                external_id: id.to_string(),
+                email: None,
+                name: sanitize_name(name),
+                species: sanitize_species(species),
+                created_at: now_millis(),
+            };
+            inner
+                .by_external
+                .insert(("ai".to_string(), user.external_id.clone()), user.id);
+            inner.by_id.insert(user.id, user.clone());
+            user
         };
-        append_to_disk(&user);
-        inner
-            .by_external
-            .insert(("ai".to_string(), user.external_id.clone()), user.id);
-        inner.by_id.insert(user.id, user.clone());
+        self.persist(&user).await;
         tracing::info!(user_id = %user.id, "新 AI 居民帳號建立: {}", user.name);
         user
     }
 
-    /// 改顯示名:把該 user 的 `name` 換成清理後的新名,更新記憶體索引並 append 一行到磁碟。
+    /// 改顯示名:把該 user 的 `name` 換成清理後的新名,更新記憶體索引並落地到耐久層。
     /// 回傳更新後的 `User`;查無此人回 `None`。
     ///
-    /// 刻意走 **append**(不重寫整檔):沿用本檔既有的 append-only JSONL 路數,不做破壞性
-    /// 改寫 / 刪除——舊行留著,載入時被後出現的同 `id` 行覆蓋(last-wins,見 `index_users`)。
-    /// 因 `ws.rs` 連線時即時讀 `UserStore`(authed 路徑 `user.name`),改名後**重連**即生效,
-    /// 重啟也還在。名字一律過 `sanitize_name`(濾控制字元、截 24 字、空退「拓荒者」),與帳號
-    /// 建立、訪客進場共用同一道公開輸入邊界。`provider` / `external_id`(登入比對鍵)不動,
-    /// 故 `by_external` 無需更新。
-    pub fn rename(&self, id: Uuid, new_name: &str) -> Option<User> {
-        let mut inner = self.inner.lock().unwrap();
-        let mut user = inner.by_id.get(&id)?.clone();
-        user.name = sanitize_name(new_name);
-        append_to_disk(&user);
-        inner.by_id.insert(id, user.clone());
+    /// 耐久層用「同 `id` 覆蓋」語意落地:Postgres 走 `ON CONFLICT (id) DO UPDATE`;JSONL 走
+    /// **append**(不重寫整檔)——舊行留著,載入時被後出現的同 `id` 行覆蓋(last-wins,見
+    /// `index_users`),不做破壞性改寫 / 刪除。因 `ws.rs` 連線時即時讀 `UserStore`(authed 路徑
+    /// `user.name`),改名後**重連**即生效,重啟也還在。名字一律過 `sanitize_name`(濾控制字元、
+    /// 截 24 字、空退「拓荒者」),與帳號建立、訪客進場共用同一道公開輸入邊界。`provider` /
+    /// `external_id`(登入比對鍵)不動,故 `by_external` 無需更新。
+    pub async fn rename(&self, id: Uuid, new_name: &str) -> Option<User> {
+        let user = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut user = inner.by_id.get(&id)?.clone();
+            user.name = sanitize_name(new_name);
+            inner.by_id.insert(id, user.clone());
+            user
+        };
+        self.persist(&user).await;
         tracing::info!(user_id = %id, "玩家改名為: {}", user.name);
         Some(user)
+    }
+
+    /// 把一個帳號落地到耐久層(新建 / 改名共用)。Jsonl 模式 append 一行;Postgres 模式 upsert
+    /// 同 `id` 列;Memory 無動作。寫入失敗只記 log、不中斷登入(索引仍是行程內權威,下次變更再試)。
+    async fn persist(&self, user: &User) {
+        match &self.backend {
+            Backend::Memory => {}
+            Backend::Jsonl(path) => append_to_disk_at(path, user),
+            Backend::Postgres(pool) => {
+                if let Err(e) = upsert_user(pool, user).await {
+                    tracing::warn!(user_id = %user.id, "Postgres users upsert 失敗:{e}");
+                }
+            }
+        }
     }
 }
 
@@ -267,22 +356,72 @@ fn parse_and_sanitize(contents: &str) -> Vec<User> {
         .collect()
 }
 
-fn append_to_disk(u: &User) {
-    if let Some(parent) = std::path::Path::new(STORE_PATH).parent() {
+fn append_to_disk_at(path: &str, u: &User) {
+    if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(STORE_PATH)
-    {
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
         Ok(mut file) => {
             if let Ok(line) = serde_json::to_string(u) {
                 let _ = writeln!(file, "{line}");
             }
         }
-        Err(e) => tracing::warn!("無法寫入 users 檔 {STORE_PATH}: {e}"),
+        Err(e) => tracing::warn!("無法寫入 users 檔 {path}: {e}"),
     }
+}
+
+/// upsert 一個帳號到 `users` 表(同 `id` 覆蓋:新建即插入、改名即更新 name)。走 runtime query
+/// API(非 `query!` 巨集),故 build/test 不需 live DB。`provider` / `external_id` 是登入比對鍵,
+/// 一併寫入但衝突時不改(沿 `id` 為準);`updated_at` 每次更新為 now()。
+async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users (id, provider, external_id, email, name, species, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
+         ON CONFLICT (id) DO UPDATE SET \
+           email = EXCLUDED.email, name = EXCLUDED.name, species = EXCLUDED.species, updated_at = now()",
+    )
+    .bind(u.id)
+    .bind(&u.provider)
+    .bind(&u.external_id)
+    .bind(&u.email)
+    .bind(&u.name)
+    .bind(&u.species)
+    .bind(u.created_at as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 啟動時把 `users` 表全部載回。顯示用欄位(`name` / `species`)一律過 sanitizer,與 JSONL
+/// 載入路徑(`parse_and_sanitize`)同一道防線——磁碟被竄改也不會把控制字元帶進廣播。
+/// 載入失敗(DB 連線剛斷等)回空清單,讓伺服器仍能起來、之後再寫回。
+async fn load_from_db(pool: &PgPool) -> Vec<User> {
+    let rows = match sqlx::query(
+        "SELECT id, provider, external_id, email, name, species, created_at FROM users",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!("從 Postgres 載入 users 失敗(先以空索引起來):{e}");
+            return Vec::new();
+        }
+    };
+    rows.into_iter()
+        .map(|r| {
+            let created_at: i64 = r.get("created_at");
+            User {
+                id: r.get("id"),
+                provider: r.get("provider"),
+                external_id: r.get("external_id"),
+                email: r.get("email"),
+                name: sanitize_name(&r.get::<String, _>("name")),
+                species: sanitize_species(&r.get::<String, _>("species")),
+                created_at: created_at as u64,
+            }
+        })
+        .collect()
 }
 
 // ============= 純邏輯單元測試(無 IO) =============
@@ -290,7 +429,7 @@ fn append_to_disk(u: &User) {
 mod tests {
     use super::{
         codename_from_seed, index_users, parse_and_sanitize, sanitize_name, sanitize_species, User,
-        DEFAULT_SPECIES,
+        UserStore, DEFAULT_SPECIES,
     };
     use uuid::Uuid;
 
@@ -482,6 +621,48 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "拓荒者");
         assert_eq!(out[0].species, DEFAULT_SPECIES);
+    }
+
+    // ===== store 行為（純記憶體 backend，不碰磁碟 / DB）=====
+
+    #[tokio::test]
+    async fn find_or_create_returns_same_user_for_same_external_id() {
+        // returning 玩家（同 provider+external_id）必須拿回同一個內部帳號，不是每次新建。
+        let store = UserStore::in_memory();
+        let a = store
+            .find_or_create("google", "sub-1", Some("a@b.com".into()), "甲")
+            .await;
+        let b = store
+            .find_or_create("google", "sub-1", None, "改了名也不該影響")
+            .await;
+        assert_eq!(a.id, b.id, "同 external_id 應命中既有帳號");
+        assert_eq!(b.name, "甲", "命中既有帳號時不覆蓋既有顯示名");
+    }
+
+    #[tokio::test]
+    async fn create_ai_makes_distinct_accounts() {
+        // 每次 create_ai 都是一個新居民（新 uuid、provider=ai、external_id=自身 uuid）。
+        let store = UserStore::in_memory();
+        let a = store.create_ai("機器人", "terran").await;
+        let b = store.create_ai("機器人", "terran").await;
+        assert_ne!(a.id, b.id);
+        assert_eq!(a.provider, "ai");
+        assert_eq!(a.external_id, a.id.to_string());
+        // 名字過 sanitizer 後可由 get 取回。
+        assert_eq!(store.get(a.id).unwrap().name, "機器人");
+    }
+
+    #[tokio::test]
+    async fn rename_updates_name_and_persists_in_index() {
+        // 改名後 get 立即反映新名（過 sanitizer）；查無此人回 None。
+        let store = UserStore::in_memory();
+        let u = store
+            .find_or_create("google", "sub-2", None, "舊名")
+            .await;
+        let renamed = store.rename(u.id, "  新名\n ").await.expect("應改名成功");
+        assert_eq!(renamed.name, "新名", "新名應過 sanitize（去空白／控制字元）");
+        assert_eq!(store.get(u.id).unwrap().name, "新名");
+        assert!(store.rename(Uuid::new_v4(), "x").await.is_none(), "查無此人回 None");
     }
 
     #[test]
