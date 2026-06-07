@@ -1894,11 +1894,13 @@
   // 背包 HUD:把 [{item,qty}] 顯示成「🪵 N　🪨 N　✨ N」。空背包就只留標頭。
   // pickaxe 是合成產物(1-C/1-D),會隨背包快照回來;補進這三張表,讓合成出的鎬子在
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
-  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️" };
+  // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
+  // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
+  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬" };
-  // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90" };
+  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
+  // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -1907,6 +1909,9 @@
     // 升級配方鏈第一條:已合成的鎬子 + 素材 → 強化鎬(對齊伺服器 crafting.rs 的 reinforced_pickaxe)。
     // 鎬子本身當素材,給「採礦更快」攢出第二層進程目標;規則仍由伺服器查表扣料,前端只呈現。
     { id: "reinforced_pickaxe", out: "reinforced_pickaxe", outQty: 1, inputs: [["pickaxe", 1], ["wood", 2], ["stone", 4]] },
+    // 武器:閉合「採集→合成→變強打怪」的合成側。與伺服器 crafting.rs 的 "weapon" 配方對齊
+    // (stone×4 + ether×2 → weapon)。合出後拿不拿得到傷害加成由伺服器 combat 說了算,前端只呈現配方。
+    { id: "weapon", out: "weapon", outQty: 1, inputs: [["stone", 4], ["ether", 2]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
