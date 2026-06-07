@@ -1,16 +1,17 @@
-//! 敵人模型（Phase 1 戰鬥 MVP「自動打怪」的純邏輯地基）。
+//! 敵人模型（Phase 1 戰鬥 MVP「自動打怪」的純邏輯層）。
 //!
 //! 這層只管「一隻敵人怎麼被打、被打倒後掉什麼、之後怎麼重生」，是純資料 + 純函式，
-//! 無 IO、不碰 WebSocket / 遊戲迴圈，便於自動測試。延續 `gather.rs` / `crops.rs` /
-//! `vehicle.rs` 的前置慣例：純邏輯先落地、標 `allow(dead_code)`，接線輪（世界撒佈敵人、
-//! 角色自動攻擊附近敵人、掉落物進背包、遊戲迴圈每 tick 推進重生）才有呼叫端。
-//!
-//! 之後接上：
-//!   - 世界：在曠野撒佈若干 `Enemy`（比照 `gather_field.rs` 之於 `gather.rs`，
-//!     另立一層 `enemy_field` 管「敵人擺哪、角色自動鎖定最近的哪一隻」）。
-//!   - ws / 遊戲迴圈：角色靠近時自動攻擊 → `attack(power)`；打倒回傳掉落 → `add` 進背包。
+//! 無 IO、不碰 WebSocket / 遊戲迴圈，便於自動測試。延續 `gather.rs` / `crops.rs` 的
+//! 慣例：純邏輯獨立可測，由上層接線餵呼叫。**戰鬥已接線上線**，呼叫鏈如下：
+//!   - 世界：`enemy_field` 在曠野撒佈若干 `Enemy`（比照 `gather_field.rs` 之於
+//!     `gather.rs`），並管「敵人擺哪、角色自動鎖定最近的哪一隻」。
+//!   - ws / 遊戲迴圈：角色靠近時自動攻擊 → `Enemy::attack(power)`（見 `game.rs`，攻擊力
+//!     目前是寫死常數 `PLAYER_ATTACK_POWER`，待武器接線後改查表）；打倒回傳掉落 → `add`
+//!     進背包；快照把 `remaining_hp` 廣播給前端畫血條。
 //!   - 遊戲迴圈：每 tick 對被打倒的敵人呼叫 `tick(dt)` 倒數重生。
-//!   - 持久化（接 0-E）：把敵人狀態序列化（載入時走 `is_loadable` 驗證）。
+//!   - 載入：`enemy_field::from_saved` 收存檔敵人時逐隻走 `is_loadable` 驗證。
+//!
+//! 唯一尚未接的是「敵人狀態進 0-E 持久化」（目前 `EnemyField` 每次啟動重新撒佈）。
 //!
 //! 戰鬥迴圈刻意鏡像採集（`ResourceNode`）：敵人有「生命」（像耐久），每次攻擊扣血、
 //! 打到 0 即被打倒並**一次性**掉落戰利品，接著進入重生倒數，倒數到了滿血復活再次可打——
@@ -35,9 +36,6 @@ pub enum EnemyKind {
     EtherWisp,
 }
 
-// 整個模組是前置地基：接線輪（世界撒佈敵人、ws 自動攻擊、遊戲迴圈推進重生）才有呼叫端，
-// 在此之前公開項目皆無外部呼叫，比照 `gather.rs` / `plots.rs` 逐項標 `allow(dead_code)`。
-#[allow(dead_code)]
 impl EnemyKind {
     /// 此種類滿血時的生命值（要扣到 0 才算打倒）。
     pub fn max_hp(self) -> u32 {
@@ -92,7 +90,6 @@ pub struct Enemy {
     respawn_timer: f32,
 }
 
-#[allow(dead_code)] // 同上：前置地基，接線輪才有呼叫端。
 impl Enemy {
     /// 生出一隻滿血、可立即被攻擊的新敵人。
     pub fn new(kind: EnemyKind) -> Self {
@@ -113,7 +110,9 @@ impl Enemy {
         self.remaining_hp
     }
 
-    /// 是否已被打倒（需等重生）。
+    /// 是否已被打倒（需等重生）。接線層的判斷都走對稱的 `is_alive()`，這個版本目前只剩
+    /// 測試用到，故單獨保留 `allow(dead_code)`（同 impl 的其餘方法皆有 production 呼叫端）。
+    #[allow(dead_code)]
     pub fn is_defeated(&self) -> bool {
         self.remaining_hp == 0
     }
@@ -165,8 +164,8 @@ impl Enemy {
     /// 這是與調校常數無關的最小不變式——正常流程（`new` 滿血、`attack` 只遞減、
     /// `tick` 倒數一律夾在 `>= 0`）絕不會產生界外生命或 `NaN`/`Inf`/負倒數，所以這些
     /// 只會來自壞檔或被竄改的存檔。`remaining_hp` 是 `u32`、型別本身就擋掉 `NaN`/負值，
-    /// 故只需驗上界。延續 `gather::is_loadable` / `field::from_tiles` 的載入時驗證脈絡；
-    /// 接 0-E 載入路徑時，連同本 impl 區塊的 `allow(dead_code)` 一併移除。
+    /// 故只需驗上界。延續 `gather::is_loadable` / `field::from_tiles` 的載入時驗證脈絡，
+    /// 已由 `enemy_field::from_saved` 逐隻呼叫把關（敵人狀態接 0-E 持久化後即沿用同一道防線）。
     pub fn is_loadable(&self) -> bool {
         self.respawn_timer.is_finite()
             && self.respawn_timer >= 0.0
