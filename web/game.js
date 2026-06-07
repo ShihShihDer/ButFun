@@ -425,6 +425,7 @@
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
           updateBagHud(inv);
+          updateWeaponHud(inv);  // 手上武器 pill（有武器才亮）+「合武器更痛」一行引導
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
@@ -1955,6 +1956,41 @@
       "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、");
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
+  }
+
+  // 手上武器 HUD（接 PLAN「①手上武器小圖示 ②怎麼合武器一行提示」）:
+  // 武器是合成產物（伺服器 crafting.rs "weapon" 配方 → ItemKind::Weapon），隨背包快照帶 qty 回來。
+  // 伺服器 combat 接線後「身上有武器→自動戰鬥傷害更高」,前端只把「有沒有武器」如實畫出來,
+  // 不在繪製碼算任何傷害（規則只在伺服器、為將來 WebXR 同後端留路）。
+  // 有武器 → 上排 🗡️ pill 亮起、隱藏引導行;沒武器 → pill 收起、顯示一行合成引導。
+  let weaponKnown = false; // 首次同步不把既有武器當「剛合出」播報（比照背包/乙太/血量的進場防誤報）
+  let hadWeapon = false;   // 上一次快照是否持有武器,用來偵測「首次到手」只播報一次
+  function updateWeaponHud(inv) {
+    const pill = document.getElementById("hudWeapon");
+    const hint = document.getElementById("hudWeaponHint");
+    if (!pill || !hint) return;
+    // 背包可能多筆 weapon 堆疊(防呆全部加總);item 是伺服器列舉字串,非玩家文字、無注入風險。
+    const qty = (inv || []).reduce((n, s) => (s.item === "weapon" ? n + s.qty : n), 0);
+    const has = qty > 0;
+    if (has) {
+      pill.textContent = qty > 1 ? `🗡️ 武器 ×${qty}` : "🗡️ 武器";
+      // emoji 對報讀器無意義,pill 的 aria-label/title 給「手持武器」的中文(對齊背包無障礙作法)。
+      const label = qty > 1 ? `手持武器 ${qty} 把,打怪更痛` : "手持武器,打怪更痛";
+      pill.setAttribute("aria-label", label);
+      pill.setAttribute("title", label);
+      pill.classList.remove("hidden");
+      hint.classList.add("hidden"); // 已有武器,不再顯示合成引導
+    } else {
+      pill.classList.add("hidden");
+      // 還沒武器:一行引導,把「採集→合成→變強打怪」那步顯到 HUD（配方與合成台/伺服器 crafting.rs 一致）。
+      hint.textContent = "🗡️ 合一把武器（🪨×4 ✨×2）打怪更痛";
+      hint.classList.remove("hidden");
+    }
+    // 首次到手補一句 aria-live:pill 亮是純視覺,看不到畫面的玩家收不到「武器合出來了」。
+    // 首次同步不報(進場/重連時既有武器不是剛合出)。延續採集/收成/血量的無障礙弧線。
+    if (weaponKnown && has && !hadWeapon) announce("武器到手,打怪更痛了");
+    hadWeapon = has;
+    weaponKnown = true;
   }
 
   // 合成台:把背包快照(品項→數量)對照配方表,畫出每條「產物 ← 素材」與一顆合成鈕。

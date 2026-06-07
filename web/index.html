@@ -130,6 +130,9 @@
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
     #hudRipe { color: #ffd24a; }
+    /* 武器:pill 與引導行都走攻擊紅(呼應背包/飄字的武器色 232,96,84),跟乙太黃、缺水藍一眼分得開 */
+    #hudWeapon { color: #ff9d8f; }
+    #hudWeaponHint { color: #e8847a; }
     /* 訪客「下一步」引導:用黃銅色 + 微微邊框框出,讓茫然的新手第一眼就看到該怎麼開始 */
     #hudGuestHint { color: var(--brass); margin: 2px 0; padding: 3px 7px; border: 1px solid var(--brass);
       border-radius: 6px; opacity: 0.92; }
@@ -328,6 +331,9 @@
       <span class="hud-pill brass" id="hudEther" title="乙太">✨ 0</span>
       <!-- 生命（戰鬥 1-F）:走近敵人自動開打、反擊扣血。低血變紅、被打趴顯示休息中(由 game.js 設色)。 -->
       <span class="hud-pill" id="hudHp" title="生命">❤ —</span>
+      <!-- 手上武器（接 PLAN「手上武器小圖示」）:背包有 weapon 才亮。伺服器 combat 接線後
+           身上有武器→自動戰鬥傷害更高,這裡只如實畫出「有沒有武器」,不在繪製碼算傷害(規則只在伺服器)。 -->
+      <span class="hud-pill hidden" id="hudWeapon" title="武器">🗡️ 武器</span>
       <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
       <span class="hud-pill" id="hudTime">—</span>
     </div>
@@ -347,6 +353,9 @@
     <div id="hudFarm" class="hud-sub hidden"></div>
     <!-- 收成提醒:有成熟格時提示「去收乙太」,把種田迴圈的回報那步顯到 HUD(純從快照每格 state 數得)。沒有可收成格時隱藏。 -->
     <div id="hudRipe" class="hud-sub hidden"></div>
+    <!-- 武器引導:還沒合出武器時一行提示「合一把更痛」,把「採集→合成→變強打怪」那步顯到 HUD;
+         合出後改由上面的 🗡️ pill 亮起、這行隱藏(純前端引導,配方與合成台/伺服器一致,不嵌規則)。 -->
+    <div id="hudWeaponHint" class="hud-sub hidden"></div>
   </div>
 
   <!-- dock 點開的專屬視窗:同時只開一個,點 ✕／按 Esc／點世界任一處可關(見 game.js initDock)。
