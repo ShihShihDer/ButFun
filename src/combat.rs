@@ -24,7 +24,80 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::inventory::ItemKind;
+use crate::inventory::{Inventory, ItemKind};
+
+// ───────────────────────── 武器（Phase 1 武器 MVP，純邏輯查表）─────────────────────────
+//
+// 戰鬥的「裝備」這環：採集那側 `tools::gather_speed_multiplier` 依背包工具決定採集倍率，
+// 戰鬥這側鏡像它——`weapon_power` 依背包武器決定每下攻擊力。`game.rs` 的攻擊接線目前寫死
+// 常數 `PLAYER_ATTACK_POWER`（徒手值 2），接線輪只要把那一行換成 `weapon_power(&inv)`：
+// 身上有武器回高攻擊力、沒有回徒手值。無 IO、無新 protocol、不動廣播 shape——背包已隨快照
+// 廣播，武器只是多一種背包物品。本層純資料 + 純函式，便於自動測試。
+
+/// 玩家用來戰鬥的武器。`Unarmed` 是身上沒武器時的退路（只有徒手攻擊力）。
+/// 鏡像 `tools::ToolKind`：日後加新武器階級（強化武器…）時，往這個 enum 加一個變體、
+/// 補進 `attack_power` 與 `weapon_from_item` 的窮舉 `match` 即可。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponKind {
+    /// 徒手——任何人都能打，但只有基礎攻擊力。
+    Unarmed,
+    /// 武器（合成產物）：每下攻擊更痛。
+    Blade,
+}
+
+/// 徒手的基礎攻擊力。沒有武器就是這個——刻意等於 `game.rs` 現行寫死的 `PLAYER_ATTACK_POWER`，
+/// 讓接線（把常數換成 `weapon_power` 查表）對「沒武器」的玩家行為零變化、純加法。
+pub const UNARMED_ATTACK_POWER: u32 = 2;
+
+/// 武器的攻擊力：嚴格高於徒手，讓「合成武器」這條配方鏈真的有感、值得攢素材去合
+/// （對齊 PLAN 驗收「合成出的武器真的讓打怪明顯變強」）。
+pub const WEAPON_ATTACK_POWER: u32 = 5;
+
+impl WeaponKind {
+    /// 此武器每下攻擊造成的傷害。武器回 `WEAPON_ATTACK_POWER`，徒手回 `UNARMED_ATTACK_POWER`。
+    pub fn attack_power(self) -> u32 {
+        match self {
+            WeaponKind::Blade => WEAPON_ATTACK_POWER,
+            WeaponKind::Unarmed => UNARMED_ATTACK_POWER,
+        }
+    }
+}
+
+/// 某個背包物品若是武器，回對應的 `WeaponKind`；不是武器（資源／採集工具）回 `None`。
+/// 刻意用窮舉 `match`（不寫 `_` 萬用分支）：日後在 `ItemKind` 加新武器變體時，編譯器會
+/// 強制回來補上它對應的武器，避免漏接（比照 `tools::tool_from_item`）。
+// 接線前無生產面呼叫端（接線輪 game.rs 才會呼叫 `weapon_power`），比照 `inventory.rs` /
+// `gather.rs` 等前置地基標 `allow(dead_code)`；測試已覆蓋這三個函式。
+#[allow(dead_code)]
+pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
+    match item {
+        ItemKind::Weapon => Some(WeaponKind::Blade),
+        // 資源原料與採集工具都不是武器。
+        ItemKind::Wood
+        | ItemKind::Stone
+        | ItemKind::Ether
+        | ItemKind::Pickaxe
+        | ItemKind::ReinforcedPickaxe => None,
+    }
+}
+
+/// 玩家背包裡攻擊力最高的武器：挑出持有武器中攻擊力最高者；都沒有就回 `Unarmed`。
+/// 戰鬥接線據此決定每下傷害（比照 `tools::best_gather_tool`）。
+#[allow(dead_code)]
+pub fn best_weapon(inv: &Inventory) -> WeaponKind {
+    inv.entries()
+        .filter_map(|(item, _)| weapon_from_item(item))
+        .max_by_key(|w| w.attack_power())
+        .unwrap_or(WeaponKind::Unarmed)
+}
+
+/// 玩家每下攻擊的傷害（自動取背包裡最好的武器）。`UNARMED_ATTACK_POWER`＝徒手基礎攻擊力。
+/// 戰鬥接線：`game.rs` 把寫死的 `PLAYER_ATTACK_POWER` 換成 `weapon_power(&inv)` 即可
+/// （有武器更痛、沒武器與現行一致）。
+#[allow(dead_code)]
+pub fn weapon_power(inv: &Inventory) -> u32 {
+    best_weapon(inv).attack_power()
+}
 
 /// 敵人的種類。種類決定生命多寡、掉落什麼、危險度、重生多久。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +261,82 @@ mod tests {
     use super::*;
 
     const KINDS: [EnemyKind; 2] = [EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+
+    // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
+
+    // 編譯期不變式：武器一定比徒手痛，否則「合成武器讓打怪變強」這條閉環不成立。
+    const _: () = assert!(WEAPON_ATTACK_POWER > UNARMED_ATTACK_POWER);
+
+    #[test]
+    fn weapon_hits_harder_than_fist() {
+        assert_eq!(WeaponKind::Blade.attack_power(), WEAPON_ATTACK_POWER);
+        assert_eq!(WeaponKind::Unarmed.attack_power(), UNARMED_ATTACK_POWER);
+    }
+
+    #[test]
+    fn only_weapons_map_from_items() {
+        assert_eq!(weapon_from_item(ItemKind::Weapon), Some(WeaponKind::Blade));
+        // 資源與採集工具都不是武器。
+        assert_eq!(weapon_from_item(ItemKind::Wood), None);
+        assert_eq!(weapon_from_item(ItemKind::Stone), None);
+        assert_eq!(weapon_from_item(ItemKind::Ether), None);
+        assert_eq!(weapon_from_item(ItemKind::Pickaxe), None);
+        assert_eq!(weapon_from_item(ItemKind::ReinforcedPickaxe), None);
+    }
+
+    #[test]
+    fn empty_inventory_fights_unarmed() {
+        let inv = Inventory::new();
+        assert_eq!(best_weapon(&inv), WeaponKind::Unarmed);
+        assert_eq!(weapon_power(&inv), UNARMED_ATTACK_POWER);
+    }
+
+    #[test]
+    fn weapon_in_inventory_raises_attack_power() {
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Weapon, 1);
+        assert_eq!(best_weapon(&inv), WeaponKind::Blade);
+        assert_eq!(weapon_power(&inv), WEAPON_ATTACK_POWER);
+        // 有武器嚴格比徒手痛——這是 MVP 驗收「武器讓打怪明顯變強」的數值面。
+        assert!(weapon_power(&inv) > UNARMED_ATTACK_POWER);
+    }
+
+    #[test]
+    fn carrying_only_a_pickaxe_still_fights_unarmed() {
+        // 採集工具不是武器：只揹鎬子打怪仍是徒手攻擊力（守工具／武器兩條查表互不串味）。
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Pickaxe, 1);
+        assert_eq!(weapon_power(&inv), UNARMED_ATTACK_POWER);
+    }
+
+    #[test]
+    fn weapon_actually_downs_an_enemy_faster() {
+        // 端到端把查表接上 `Enemy::attack`：同一隻敵人，持武器所需的攻擊次數不多於徒手，
+        // 鎖住「武器→每下更痛→更快打趴」這條因果（接線輪 game.rs 餵 `weapon_power` 即得此效果）。
+        fn hits_to_down(power: u32, kind: EnemyKind) -> u32 {
+            let mut e = Enemy::new(kind);
+            let mut hits = 0;
+            while e.is_alive() {
+                e.attack(power);
+                hits += 1;
+            }
+            hits
+        }
+        let mut armed = Inventory::new();
+        armed.add(ItemKind::Weapon, 1);
+        let unarmed = Inventory::new();
+        for kind in KINDS {
+            let armed_hits = hits_to_down(weapon_power(&armed), kind);
+            let fist_hits = hits_to_down(weapon_power(&unarmed), kind);
+            assert!(
+                armed_hits <= fist_hits,
+                "{:?}：持武器 {} 下、徒手 {} 下——武器不該更慢",
+                kind,
+                armed_hits,
+                fist_hits
+            );
+        }
+    }
 
     #[test]
     fn new_enemy_is_full_hp_and_alive() {

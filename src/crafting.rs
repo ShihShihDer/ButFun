@@ -34,10 +34,11 @@ pub struct Recipe {
     pub inputs: &'static [(ItemKind, u32)],
 }
 
-/// 全部配方表（單一真實來源）。兩條工具進程配方，由淺到深：
+/// 全部配方表（單一真實來源）。兩條工具進程配方＋一條武器配方，由淺到深：
 /// 鎬子（木×3 + 石×2 → 鎬子×1）把採集／打怪堆起來的木石導向第一件工具；強化鎬
 /// （鎬子×1 + 木×2 + 石×4 → 強化鎬×1）則是「工具＋素材→升級工具」配方鏈的第一條，
-/// 給已合成的鎬子一個新去處、讓玩家攢素材有第二層進程目標（採礦又更快）。
+/// 給已合成的鎬子一個新去處、讓玩家攢素材有第二層進程目標（採礦又更快）；武器
+/// （石×4 + 乙太×2 → 武器×1）是戰鬥那條鏈的第一件裝備，把礦石與乙太導向「打怪更痛」。
 /// 日後加配方只要往這個陣列加一筆。
 pub const RECIPES: &[Recipe] = &[
     Recipe {
@@ -57,6 +58,16 @@ pub const RECIPES: &[Recipe] = &[
             (ItemKind::Wood, 2),
             (ItemKind::Stone, 4),
         ],
+    },
+    Recipe {
+        id: "weapon",
+        output: ItemKind::Weapon,
+        output_qty: 1,
+        // 武器 MVP：礦石×4 + 乙太×2 → 武器。素材兩者皆可採集（Stone／Ether 都有 NodeKind 來源），
+        // 故 `every_recipe_input_is_obtainable` 過得了關。產物（武器）與素材（資源）不相交，
+        // `can_craft` 的「產物放得下」捷徑仍精確。它把採集／打怪堆起的礦石與乙太導向「變強打怪」，
+        // 鏡像鎬子把木石導向「採礦更快」——閉合「採集→合成→戰鬥變強」正回饋圈。
+        inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
     },
 ];
 
@@ -233,6 +244,39 @@ mod tests {
         assert_eq!(inv.count(ItemKind::Wood), 2);
         assert_eq!(inv.count(ItemKind::Stone), 4);
         assert_eq!(inv.count(ItemKind::ReinforcedPickaxe), 0);
+    }
+
+    #[test]
+    fn weapon_recipe_crafts_from_gathered_materials() {
+        // 端到端武器鏈：採石得礦石、採乙太礦得乙太 → 合成出武器。鎖住「採集→背包→合成武器」
+        // 走的是同一套物品槽，且武器配方所需素材都拿得到。
+        let mut inv = Inventory::new();
+        for _ in 0..4 {
+            inv.add(NodeKind::Rock.into(), 1); // 採石得礦石
+        }
+        inv.add(NodeKind::EtherOre.into(), 1); // 採乙太礦得乙太
+        inv.add(NodeKind::EtherOre.into(), 1);
+        let weapon = recipe_by_id("weapon").expect("武器配方應存在");
+        assert!(weapon.can_craft(&inv));
+        assert!(weapon.craft(&mut inv));
+        // 素材扣光、得一把武器。
+        assert_eq!(inv.count(ItemKind::Stone), 0);
+        assert_eq!(inv.count(ItemKind::Ether), 0);
+        assert_eq!(inv.count(ItemKind::Weapon), 1);
+    }
+
+    #[test]
+    fn weapon_recipe_is_all_or_nothing_when_short() {
+        // 石夠乙太差一個：全有全無，整筆失敗、礦石原封不動。
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Stone, 4);
+        inv.add(ItemKind::Ether, 1);
+        let weapon = recipe_by_id("weapon").unwrap();
+        assert!(!weapon.can_craft(&inv));
+        assert!(!weapon.craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Stone), 4);
+        assert_eq!(inv.count(ItemKind::Ether), 1);
+        assert_eq!(inv.count(ItemKind::Weapon), 0);
     }
 
     #[test]

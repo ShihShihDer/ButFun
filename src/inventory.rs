@@ -46,6 +46,12 @@ pub enum ItemKind {
     /// 一個新去處（被升級配方消耗），也讓玩家攢素材有第二層進程目標。放在 `Pickaxe` 之後，
     /// 既有 `entries` 排序不動。
     ReinforcedPickaxe,
+    /// 武器（合成產物，Phase 1 武器 MVP）：背包裡的第一件戰鬥裝備。鎬子之於採集，武器之於
+    /// 戰鬥——身上有它打怪每下更痛（`combat::weapon_power` 查表，鏡像 `tools` 的採集倍率），
+    /// 沒有就維持徒手攻擊力。它給合成素材（礦石／乙太）開出「變強打怪」這條新去處，閉合
+    /// 「採集→合成→戰鬥變強」正回饋圈。工具也好、武器也好都只是背包物品（沿用同一容器），
+    /// 故只在此 enum 加一個變體即可。放在工具之後，既有 `entries` 排序不動。
+    Weapon,
 }
 
 impl ItemKind {
@@ -60,6 +66,7 @@ impl ItemKind {
         ItemKind::Ether,
         ItemKind::Pickaxe,
         ItemKind::ReinforcedPickaxe,
+        ItemKind::Weapon,
     ];
 }
 
@@ -259,13 +266,14 @@ mod tests {
                 | ItemKind::Stone
                 | ItemKind::Ether
                 | ItemKind::Pickaxe
-                | ItemKind::ReinforcedPickaxe => {}
+                | ItemKind::ReinforcedPickaxe
+                | ItemKind::Weapon => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 5 種（木／石／乙太／鎬子／強化鎬）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 5, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 6 種（木／石／乙太／鎬子／強化鎬／武器）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 6, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -408,13 +416,16 @@ mod tests {
         //   1. 被某條配方當素材消耗（合成原料的去處）；
         //   2. 是有效用的工具（採集倍率嚴格快過徒手——`tools` 的
         //      `every_craftable_tool_is_worth_crafting` 也守同一條「工具必須真有用」）；
-        //   3. 是乙太貨幣（`economy` 的擴地消耗點花掉它）。
+        //   3. 是乙太貨幣（`economy` 的擴地消耗點花掉它）；
+        //   4. 是有效用的武器（攻擊力嚴格高過徒手——`combat::weapon_power` 拿它打怪更痛；
+        //      與第 2 類對偶，武器之於戰鬥猶如工具之於採集）。
         // 日後若有意加「終端收藏品」之類刻意沒有機械去處的物品，會在此紅燈，逼人確認是有意
         // 設計再更新本不變式（比照來源側總綱與工具／配方家族的逃生口）。
         //
         // 物品宇宙的窮舉由 `item_kind_all_lists_every_variant`（窮舉 match + 筆數斷言）守住：
         // 新增 `ItemKind` 變體必先補進 `ALL`，本總綱隨即遍歷到它、要求它有去處——故無需在此
         // 另立 NodeKind/EnemyKind 式的窮舉守衛。
+        use crate::combat::{weapon_from_item, UNARMED_ATTACK_POWER};
         use crate::crafting::RECIPES;
         use crate::economy::EXPANSION_BASE_COST;
         use crate::tools::{tool_from_item, FIST_MULTIPLIER};
@@ -434,13 +445,16 @@ mod tests {
                 tool_from_item(item).is_some_and(|t| t.gather_multiplier() > FIST_MULTIPLIER);
             // 3. 是乙太貨幣（擴地消耗點花掉它）。
             let spendable_currency = item == ItemKind::Ether;
+            // 4. 是有效用的武器（攻擊力嚴格高過徒手；沒效用的「武器」不算有去處）。
+            let useful_weapon = weapon_from_item(item)
+                .is_some_and(|w| w.attack_power() > UNARMED_ATTACK_POWER);
 
             assert!(
-                consumed_by_recipe || useful_tool || spendable_currency,
-                "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣）——\
-                 玩家持有它卻無處可用，是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；\
-                 請給它一個去處（當合成素材／當有用工具／當可花的貨幣），或若有意設計成終端收藏品，\
-                 再更新本不變式"
+                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon,
+                "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
+                 不是有效用的武器）——玩家持有它卻無處可用，是只進不出的死庫存，違反 GDD「有產出\
+                 也要有去處」紀律；請給它一個去處（當合成素材／當有用工具／當可花的貨幣／當有用武器），\
+                 或若有意設計成終端收藏品，再更新本不變式"
             );
         }
     }
