@@ -39,6 +39,18 @@ const EDGE_MARGIN: f32 = 60.0;
 /// 戰鬥是「靠近自動打」而非「站到正上方採」）。
 pub const ATTACK_REACH: f32 = 64.0;
 
+/// 敵人察覺玩家、開始追擊的半徑：玩家進到這麼近，敵人就盯上並追過來（遠大於 `ATTACK_REACH`，
+/// 先發現再追近開打——給「怪會動、會撲上來」的感覺，治「敵人站著不動」）。
+pub const AGGRO_RADIUS: f32 = 260.0;
+
+/// 追擊速度（像素/秒）。**刻意低於玩家速度**（`state::PLAYER_SPEED` 320），玩家想跑就拉得開——
+/// 這就是 RO 式「拉怪 / 風箏」的空間：站著打會被圍、邊跑邊打能放風箏。
+const CHASE_SPEED: f32 = 105.0;
+
+/// 沒有玩家在附近時，敵人緩緩漂回自己的出生點（序號決定的家）。慢於追擊，像悠閒巡邏；
+/// 也避免敵人追了一段後散落各地、把中央家園圈擠爆。
+const RETURN_SPEED: f32 = 48.0;
+
 /// 世界裡一隻有座標的敵人。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedEnemy {
@@ -84,6 +96,62 @@ impl EnemyField {
     pub fn tick(&mut self, dt: f32) {
         for placed in &mut self.enemies {
             placed.enemy.tick(dt);
+        }
+    }
+
+    /// 推進 `dt` 秒的**移動**（與 `tick` 的「生死重生」分工：這層只管位置）。活著的敵人：
+    ///   - 有任一玩家進入 `AGGRO_RADIUS` → 追**最近**那位（`CHASE_SPEED`，低於玩家可被拉開）。
+    ///   - 附近沒玩家 → 緩緩漂回自己的出生點（`RETURN_SPEED`，序號推導的家），不會越追越散。
+    ///
+    /// 被打倒（重生中）的敵人不移動。`players` 由接線層先讀好傳入（玩家權威座標的快照），
+    /// 避免在持 `EnemyField` 寫鎖時再去鎖玩家表造成巢狀鎖。非有限玩家座標一律略過（延續
+    /// `attack_nearest` 的載入防線脈絡）；非正 `dt` 為 no-op（比照 `Enemy::tick`）。
+    ///
+    /// 接線層每 tick 緊接 `tick(dt)` 之後呼叫，世界因此「活起來」：怪會巡邏、會撲上來，
+    /// 戰鬥不再是站樁收割，而有了走位、拉怪、被圍的張力。
+    pub fn advance(&mut self, dt: f32, players: &[(f32, f32)]) {
+        if dt <= 0.0 {
+            return;
+        }
+        let aggro_sq = AGGRO_RADIUS * AGGRO_RADIUS;
+        for (i, placed) in self.enemies.iter_mut().enumerate() {
+            // 重生中的敵人不動（牠此刻不在場）。
+            if !placed.enemy.is_alive() {
+                continue;
+            }
+            // 找最近、座標有限的玩家（接線層只會傳沒被打趴的玩家）。
+            let mut nearest: Option<(f32, f32, f32)> = None; // (x, y, dist_sq)
+            for &(tx, ty) in players {
+                if !tx.is_finite() || !ty.is_finite() {
+                    continue;
+                }
+                let dx = tx - placed.x;
+                let dy = ty - placed.y;
+                let d2 = dx * dx + dy * dy;
+                if d2 <= aggro_sq && nearest.is_none_or(|(_, _, b)| d2 < b) {
+                    nearest = Some((tx, ty, d2));
+                }
+            }
+            // 有目標就追玩家、沒有就漂回家。
+            let (target_x, target_y, speed) = match nearest {
+                Some((tx, ty, _)) => (tx, ty, CHASE_SPEED),
+                None => {
+                    let (hx, hy) = scatter_position(i);
+                    (hx, hy, RETURN_SPEED)
+                }
+            };
+            let dx = target_x - placed.x;
+            let dy = target_y - placed.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            // 已經貼著目標就別抖動；移動量夾在剩餘距離內（不衝過頭、不繞著目標打轉）。
+            if dist > 2.0 {
+                let step = (speed * dt).min(dist);
+                placed.x += dx / dist * step;
+                placed.y += dy / dist * step;
+            }
+            // 夾進世界邊界內（同佈置的邊距），永遠不會被推出世界。
+            placed.x = placed.x.clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN);
+            placed.y = placed.y.clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN);
         }
     }
 
@@ -161,8 +229,9 @@ impl EnemyField {
     /// 的載入時驗證——存檔敵人數必須與目前佈置一致、種類對齊序號、且每隻都 `is_loadable`，
     /// 否則整組拒收回 `None`，呼叫端退回 `EnemyField::new()`（全新一組）。
     ///
-    /// 敵人不像載具會被移動（位置固定可由序號重算），故比照 `gather_field` 只信存檔的
-    /// 生命 / 重生狀態、座標一律重推，不像 `vehicle_field` 要信存檔位置。
+    /// 敵人**執行期會移動**（`advance` 的巡邏 / 追擊），但移動後的位置**不入存檔**：座標一律
+    /// 由序號重推（重啟後敵人回到出生點重新巡邏）。敵人不持久化位置（`EnemyField` 本就每次啟動
+    /// 重新撒佈），故比照 `gather_field` 只信存檔的生命 / 重生狀態、座標一律重算。
     pub fn from_saved(saved: Vec<Enemy>) -> Option<Self> {
         if saved.len() != ENEMY_COUNT {
             return None;
@@ -526,5 +595,112 @@ mod tests {
         let after = field.threat_at(px, py);
         assert!(after < before, "打倒敵人後承受的威脅應下降");
         assert_eq!(after, EnemyKind::EtherWisp.threat());
+    }
+
+    // ── Phase 1 戰鬥「敵人會動」（巡邏 / 追擊）的移動測試 ──────────────────────
+    // `advance` 是讓世界活起來的那一步：怪不再站樁，會撲向走近的玩家、沒人時漂回家。
+    // 下面鎖住它的核心契約——追擊朝玩家、閒時回家、倒下不動、永不出界、追速可被拉開。
+
+    #[test]
+    fn aggro_enemy_moves_toward_nearby_player() {
+        // 一隻活敵人 + 一位玩家在 AGGRO_RADIUS 內：推進後敵人離玩家更近（追上去了）。
+        let mut field = EnemyField {
+            enemies: vec![PlacedEnemy {
+                x: 1000.0,
+                y: 1000.0,
+                enemy: Enemy::new(EnemyKind::ScrapDrone),
+            }],
+        };
+        let player = (1000.0, 1000.0 + AGGRO_RADIUS - 20.0); // 在察覺範圍內
+        let dist_to_player = |e: &PlacedEnemy| {
+            let dx = player.0 - e.x;
+            let dy = player.1 - e.y;
+            (dx * dx + dy * dy).sqrt()
+        };
+        let before = dist_to_player(&field.enemies()[0]);
+        field.advance(0.5, &[player]);
+        let after = dist_to_player(&field.enemies()[0]);
+        assert!(after < before, "敵人應朝玩家移動、距離縮短：{before} → {after}");
+    }
+
+    #[test]
+    fn enemy_outside_aggro_drifts_back_home() {
+        // 沒有玩家在附近：敵人朝出生點（序號 0 的家）漂回去。
+        let (hx, hy) = scatter_position(0);
+        let start_x = (hx + 200.0).min(WORLD_WIDTH - EDGE_MARGIN);
+        let mut field = EnemyField {
+            enemies: vec![PlacedEnemy {
+                x: start_x,
+                y: hy,
+                enemy: Enemy::new(kind_for(0)),
+            }],
+        };
+        let home_dist = |e: &PlacedEnemy| {
+            let dx = hx - e.x;
+            let dy = hy - e.y;
+            (dx * dx + dy * dy).sqrt()
+        };
+        let before = home_dist(&field.enemies()[0]);
+        field.advance(1.0, &[]); // 沒有任何玩家
+        let after = home_dist(&field.enemies()[0]);
+        assert!(after < before, "閒置敵人應漂回家、離家更近：{before} → {after}");
+    }
+
+    #[test]
+    fn defeated_enemy_does_not_move() {
+        // 重生中的敵人不在場，不該被移動（就算玩家貼著牠）。
+        let mut enemy = Enemy::new(EnemyKind::EtherWisp);
+        enemy.attack(EnemyKind::EtherWisp.max_hp()); // 打倒
+        assert!(!enemy.is_alive());
+        let mut field = EnemyField {
+            enemies: vec![PlacedEnemy {
+                x: 500.0,
+                y: 500.0,
+                enemy,
+            }],
+        };
+        field.advance(1.0, &[(505.0, 500.0)]); // 玩家就在旁邊
+        assert_eq!(field.enemies()[0].x, 500.0);
+        assert_eq!(field.enemies()[0].y, 500.0);
+    }
+
+    #[test]
+    fn advance_keeps_enemies_in_world() {
+        // 真實佈置、玩家站在世界角落狂拉，多步推進後所有敵人仍在世界邊界內（clamp 生效）。
+        let mut field = EnemyField::new();
+        for _ in 0..2000 {
+            field.advance(1.0 / 15.0, &[(EDGE_MARGIN, EDGE_MARGIN)]);
+        }
+        for p in field.enemies() {
+            assert!((EDGE_MARGIN..=WORLD_WIDTH - EDGE_MARGIN).contains(&p.x));
+            assert!((EDGE_MARGIN..=WORLD_HEIGHT - EDGE_MARGIN).contains(&p.y));
+        }
+    }
+
+    #[test]
+    fn non_positive_dt_does_not_move() {
+        let mut field = EnemyField {
+            enemies: vec![PlacedEnemy {
+                x: 300.0,
+                y: 300.0,
+                enemy: Enemy::new(EnemyKind::ScrapDrone),
+            }],
+        };
+        field.advance(0.0, &[(310.0, 300.0)]);
+        field.advance(-1.0, &[(310.0, 300.0)]);
+        assert_eq!(field.enemies()[0].x, 300.0);
+        assert_eq!(field.enemies()[0].y, 300.0);
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)] // 刻意斷言兩個調校常數的關係不變式
+    fn chase_speed_is_slower_than_player_so_kiting_works() {
+        // 設計不變式：追擊速度必須低於玩家速度，否則玩家永遠拉不開、無法風箏——
+        // 戰鬥就退化成「被黏死」而非「走位拉怪」。日後誰把追速調得 >= 玩家速度會在此紅燈。
+        assert!(
+            CHASE_SPEED < crate::state::PLAYER_SPEED,
+            "追擊速度（{CHASE_SPEED}）應低於玩家速度（{}），否則拉不開怪",
+            crate::state::PLAYER_SPEED
+        );
     }
 }

@@ -116,10 +116,24 @@ pub fn spawn(app: AppState) {
                 }
             };
 
-            // 推進敵人重生(被打倒的倒數復活)。重生無條件跑;view 只在廣播時建。
+            // 敵人移動需要玩家座標:先讀 players(短暫讀鎖)收集**沒被打趴**的玩家位置快照,
+            // 放開後再持 enemies 寫鎖推進——避免在敵人寫鎖內再去鎖玩家表造成巢狀鎖。
+            // 只餵非倒下玩家(倒下玩家休息中、不被追擊,比照下方戰鬥結算略過倒下者)。
+            let chase_targets: Vec<(f32, f32)> = {
+                let players = app.players.read().unwrap();
+                players
+                    .values()
+                    .filter(|p| !p.vitals.is_downed())
+                    .map(|p| (p.x, p.y))
+                    .collect()
+            };
+
+            // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
+            // view 只在廣播時建。怪會動起來——撲向玩家、沒人時漂回家,世界因此活起來。
             let enemy_views: Vec<EnemyView> = {
                 let mut enemies = app.enemies.write().unwrap();
                 enemies.tick(dt);
+                enemies.advance(dt, &chase_targets);
                 if want_broadcast {
                     enemies
                         .enemies()

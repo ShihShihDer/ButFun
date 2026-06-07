@@ -37,6 +37,10 @@ pub struct PlacedNode {
     pub y: f32,
     /// 節點本身（耐久 / 重生狀態）。
     pub node: ResourceNode,
+    /// 已重生次數。每次採空→重生時 +1，並用它當搬遷種子讓節點換到新位置
+    /// （像麥塊的資源在別處重新長出來，而非原地補滿）。初次佈置為 0。
+    /// 不入存檔（位置一律由序號重推，重啟回到初始佈置），故不參與序列化。
+    pub respawns: u32,
 }
 
 /// 散佈在世界裡的一整組採集節點。
@@ -58,6 +62,7 @@ impl NodeField {
                     x,
                     y,
                     node: ResourceNode::new(kind),
+                    respawns: 0,
                 }
             })
             .collect();
@@ -70,9 +75,21 @@ impl NodeField {
     }
 
     /// 推進 `dt` 秒：對全部節點呼叫 `tick`（採空的倒數重生，其餘 no-op）。
+    ///
+    /// **採空 → 重生的那一刻，節點會搬到新位置**（像麥塊的資源在別處重新長出來），而不是
+    /// 原地補滿——資源因此在世界各處游移，採完一處得去別處找，世界更動態。搬遷種子隨重生
+    /// 次數遞增（每次落在不同點）、仍由序號決定大致散佈。位置不入存檔（重啟回初始佈置）。
     pub fn tick(&mut self, dt: f32) {
-        for placed in &mut self.nodes {
+        for (i, placed) in self.nodes.iter_mut().enumerate() {
+            let was_harvestable = placed.node.is_harvestable();
             placed.node.tick(dt);
+            if !was_harvestable && placed.node.is_harvestable() {
+                // 剛從採空狀態重生：換一個新位置長出來。
+                placed.respawns = placed.respawns.wrapping_add(1);
+                let (x, y) = scatter_position_n(i, placed.respawns);
+                placed.x = x;
+                placed.y = y;
+            }
         }
     }
 
@@ -117,7 +134,12 @@ impl NodeField {
                 return None;
             }
             let (x, y) = scatter_position(i);
-            nodes.push(PlacedNode { x, y, node });
+            nodes.push(PlacedNode {
+                x,
+                y,
+                node,
+                respawns: 0,
+            });
         }
         Some(Self { nodes })
     }
@@ -138,15 +160,25 @@ fn kind_for(i: usize) -> NodeKind {
     }
 }
 
-/// 第 `i` 個節點的世界座標：以序號雜湊出一個極座標（半徑、角度），落在家園淨空圈外的
-/// 一圈曠野裡，再夾進世界邊界內。確定性（同序號永遠同位置）、不靠亂數 / 時鐘，故重啟後
-/// 節點落在同一處。
+/// 第 `i` 個節點的**初始**世界座標（重生次數 0）：撒滿整張大圖。確定性（同序號永遠同位置）、
+/// 不靠亂數 / 時鐘，故重啟後初始佈置落在同一處。重生搬遷走 `scatter_position_n`。
 fn scatter_position(i: usize) -> (f32, f32) {
-    // 大世界:把節點撒滿整張圖(不再只繞中心一圈)。兩個獨立雜湊流決定 x、y,夾進世界邊界內。
-    // 確定性(同序號永遠同位置),重啟後落在同一處。
-    let x = EDGE_MARGIN + hash01(i as u64) * (WORLD_WIDTH - 2.0 * EDGE_MARGIN);
-    let y = EDGE_MARGIN
-        + hash01((i as u64).wrapping_mul(2).wrapping_add(1)) * (WORLD_HEIGHT - 2.0 * EDGE_MARGIN);
+    scatter_position_n(i, 0)
+}
+
+/// 第 `i` 個節點、第 `n` 次重生後的世界座標：撒滿整張圖，夾進世界邊界內。
+/// `n == 0` 刻意維持**原本的序號佈置**（確定性、重啟一致、既有散開性質不變）；
+/// `n > 0` 把重生次數攪進種子，每次重生落在不同新點——資源因此在世界各處游移生長。
+fn scatter_position_n(i: usize, n: u32) -> (f32, f32) {
+    // n=0 用原種子（i 與 2i+1）保證初始佈置與重生搬遷前完全一致；n>0 才混入重生次數。
+    let (sx, sy) = if n == 0 {
+        (i as u64, (i as u64).wrapping_mul(2).wrapping_add(1))
+    } else {
+        let base = (i as u64).wrapping_add((n as u64).wrapping_mul(0x1F12_3BB5_9E37_79B1));
+        (base, base.wrapping_mul(2).wrapping_add(1))
+    };
+    let x = EDGE_MARGIN + hash01(sx) * (WORLD_WIDTH - 2.0 * EDGE_MARGIN);
+    let y = EDGE_MARGIN + hash01(sy) * (WORLD_HEIGHT - 2.0 * EDGE_MARGIN);
     (
         x.clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN),
         y.clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN),
@@ -294,5 +326,61 @@ mod tests {
             (0..NODE_COUNT).map(|i| ResourceNode::new(kind_for(i))).collect();
         corrupt[1] = ResourceNode::from_raw(kind_for(1), 999, 0.0);
         assert!(NodeField::from_saved(corrupt).is_none());
+    }
+
+    // ── Phase 1 採集「重生換位」（麥塊式資源游移）的測試 ──────────────────────
+    // 採空的節點重生時不再原地補滿，而是搬到新點長出來；下面鎖住「真的換了位置」與
+    // 「不管搬到哪都還在世界內」這兩條契約。
+
+    #[test]
+    fn node_relocates_to_a_new_spot_after_respawn() {
+        let mut f = NodeField::new();
+        let p = f.nodes()[0].clone();
+        let kind = p.node.kind();
+        let (old_x, old_y) = (p.x, p.y);
+        // 在節點原位把它採空。
+        for _ in 0..kind.max_durability() {
+            assert!(f.gather_near(old_x, old_y).is_some());
+        }
+        assert!(f.nodes()[0].node.is_depleted());
+        // 推進到重生：節點重生並**搬到新位置**（不在原地補滿）。
+        f.tick(kind.respawn_secs());
+        assert!(f.nodes()[0].node.is_harvestable());
+        let moved = f.nodes()[0].x != old_x || f.nodes()[0].y != old_y;
+        assert!(moved, "重生後節點應換到新位置，({old_x},{old_y}) 不該原地不動");
+        assert_eq!(f.nodes()[0].respawns, 1, "重生一次，respawns 應為 1");
+    }
+
+    #[test]
+    fn relocated_nodes_stay_in_world() {
+        let mut f = NodeField::new();
+        // 反覆「對每個節點原位猛採到空 + 大步推進重生」數輪，逼出多次重生搬遷。
+        for _ in 0..5 {
+            let positions: Vec<(f32, f32)> = f.nodes().iter().map(|p| (p.x, p.y)).collect();
+            for (x, y) in positions {
+                for _ in 0..9 {
+                    let _ = f.gather_near(x, y); // 採到空（9 > 任一種 max_durability）
+                }
+            }
+            f.tick(1.0e6); // 大步推進，所有採空的都重生（換位）
+        }
+        // 不管搬到哪，所有節點都該還在世界邊界內。
+        for p in f.nodes() {
+            assert!(
+                (EDGE_MARGIN..=WORLD_WIDTH - EDGE_MARGIN).contains(&p.x),
+                "節點 x 出界: {}",
+                p.x
+            );
+            assert!(
+                (EDGE_MARGIN..=WORLD_HEIGHT - EDGE_MARGIN).contains(&p.y),
+                "節點 y 出界: {}",
+                p.y
+            );
+        }
+        // 至少發生過搬遷（有節點 respawns > 0）。
+        assert!(
+            f.nodes().iter().any(|p| p.respawns > 0),
+            "應至少發生一次重生搬遷"
+        );
     }
 }
