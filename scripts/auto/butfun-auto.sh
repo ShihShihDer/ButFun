@@ -63,11 +63,10 @@ if [ -n "$over_budget" ]; then
 fi
 
 cd "$REPO"
+# 只 git fetch 更新 ref，**絕不**動主工作樹的 checkout/merge：worker 與 reviewer 各自用隔離
+# worktree、都直接接 origin/main，主樹永遠保持不變 → 不會跟「在主樹編輯/commit 的人」競態
+# （踩過雷：在主樹 checkout 跟人撞，commit 被倒回、檔案消失）。
 git fetch --quiet origin main || true
-# 盡力把主工作樹同步到最新 main，讓 gemini -w 開出的隔離 worktree 接在最新 main 上
-# （髒了或分歧就跳過、不破壞——worker 在自己 worktree 內還會再 rebase origin/main 一次）
-git checkout main --quiet 2>/dev/null || true
-git merge --ff-only --quiet origin/main 2>/dev/null || true
 turn="$(cat "$TURN_FILE" 2>/dev/null || echo work)"
 log "turn=$turn"
 # 離開 human 狀態就清掉推播去重旗標（下次再升級會再推一次）
@@ -91,7 +90,9 @@ case "$turn" in
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
-    cd "$REPO"
+    RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
+    git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$RWT" >/dev/null 2>&1 || true
+    cd "$RWT" 2>/dev/null || cd "$REPO"
     exec claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")"
     ;;
   human)
