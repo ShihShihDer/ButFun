@@ -1,48 +1,86 @@
 #!/usr/bin/env bash
 # ButFun 半自動營運迴圈（單一 systemd user timer 驅動，每 ~20 分一輪）。
 #
-# 設計：單一 worker + 一個 review 把關，用一個「交接旗標」(turn) 二選一，永不重疊：
-#   - turn=work   → 跑 worker：推進下一切片 / 處理 review 的退回；開 PR 不自 merge。
-#   - turn=review → 跑 reviewer：審 PR；綠+安全就 merge、有問題退回、要人決策就升級。
-#   - turn=human  → 升級給人，閒置等人；人處理完 `echo work > ~/.cache/butfun-auto/turn` 恢復。
-#   - turn=done   → 切片全做完，閒置。
+# 省 token 結構：
+#   - dev worker = Gemini CLI（另一份額度，--yolo -w 自走、自動隔離 worktree）→ Claude 不做苦力。
+#   - reviewer/總監 = Claude（Sonnet，低頻；judgment 值錢處）→ 只在有 PR 待審時跑。
+#   - 閘門 = 純 shell：沒事不喚醒任何 LLM（事件驅動、零 token）。
+#   - 本機 cargo 全綠才開 PR（編譯/測試在地端攔，不燒 LLM 試錯）。
+#   - 預算守衛：Claude 週花費逼近上限就轉「省電」（暫停自走、通知人）。
 #
-# 安全：worker/reviewer 都用普通帳號跑、碰不到 sudo/上線；**部署永不自動**
-#   （prod 上線是維護窗 deploy.sh + 人）。merge 後 staging 會自動更新供你玩。
+# 方向：worker 照 docs/ROADMAP.md 主軸由上往下，不准漂去補洞（治「只優化小問題不長主軸」）。
+# 部署：永不自動。prod 上線是 deploy.sh + 人；merge 後 staging 自動更新供玩。
 #
-# 一鍵停：  systemctl --user disable --now butfun-auto.timer
-# 暫停一下：touch ~/.cache/butfun-auto/paused   （刪掉即恢復）
-# 看它做了什麼：journalctl --user -u butfun-auto -n 100 ；GitHub PR ；butfun-coord/for_human.md
+# 一鍵停： systemctl --user disable --now butfun-auto.timer
+# 暫停：   touch ~/.cache/butfun-auto/paused（刪掉即恢復）
+# 看紀錄： journalctl --user -u butfun-auto -n 100 ; butfun-coord/for_human.md ; GitHub PR
 set -euo pipefail
 
 REPO="${BUTFUN_REPO:-/home/shihshih/ButFun}"
+COORD="${BUTFUN_COORD:-/home/shihshih/butfun-coord}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE="$HOME/.cache/butfun-auto"; mkdir -p "$STATE"
 TURN_FILE="$STATE/turn"
 PAUSE="$STATE/paused"
+# 預算守衛門檻。優先用「真實週額度%」（Claude Code 注入 statusline 的 rate_limits.seven_day，
+# 由 statusline-expo.sh 快取到 ~/.cache/butfun-auto/seven_day_pct）；拿不到才退回 $ 代理。
+BUDGET_WEEKLY_PCT="${BUTFUN_BUDGET_WEEKLY_PCT:-80}"      # 你的目標：週用量壓在 80% 以下
+BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%過期時用）
+REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"
+
+log(){ echo "[auto $(date '+%H:%M')] $*"; }
+
+[ -f "$PAUSE" ] && { log "paused（$PAUSE 存在），本輪不動"; exit 0; }
+
+# 互斥：同一時間只准一輪
+exec 9>/tmp/butfun-auto.lock
+flock -n 9 || { log "上一輪還在跑，本輪讓位"; exit 0; }
+
+# ── 預算守衛：優先真實週額度%，退回 $ 代理 ──────────────────────
+over_budget=""; budget_reason=""
+pct_line="$(cat "$STATE/seven_day_pct" 2>/dev/null || true)"
+seven_pct="${pct_line%% *}"; pct_ts="${pct_line##* }"; now="$(date +%s)"
+if [ -n "$seven_pct" ] && [ -n "$pct_ts" ] && [ "$((now - pct_ts))" -lt 43200 ]; then
+  log "週額度 ${seven_pct}% / 上限 ${BUDGET_WEEKLY_PCT}%（Claude 真實 7d%）"
+  awk "BEGIN{exit !(${seven_pct}+0 >= ${BUDGET_WEEKLY_PCT}+0)}" 2>/dev/null \
+    && { over_budget=1; budget_reason="週額度 ${seven_pct}% ≥ ${BUDGET_WEEKLY_PCT}%（Claude 真實 7d%）"; }
+else
+  week_cost="$(ccusage weekly --json 2>/dev/null | jq -r '.weekly | last | .totalCost // 0' 2>/dev/null || echo 0)"
+  log "本週等值花費 \$$week_cost / \$$BUDGET_WEEKLY_USD（\$代理；真實%快取過期或缺）"
+  awk "BEGIN{exit !(${week_cost:-0}+0 >= ${BUDGET_WEEKLY_USD}+0)}" 2>/dev/null \
+    && { over_budget=1; budget_reason="本週等值花費 \$$week_cost ≥ \$$BUDGET_WEEKLY_USD（\$代理）"; }
+fi
+if [ -n "$over_budget" ]; then
+  log "省電模式：$budget_reason → 暫停自走"
+  cd "$COORD" && git pull --rebase -q || true
+  printf '\n## [%s] 系統 | 省電模式\n%s，自走已暫停。新的一週會自動降回，或 `rm ~/.cache/butfun-auto/paused` 強制續跑。\n' \
+    "$(date '+%Y-%m-%d %H:%M')" "$budget_reason" >> for_human.md
+  git add for_human.md && git commit -q -m "chore: 省電模式（週預算達標，暫停自走）" && git push -q || true
+  touch "$PAUSE"
+  exit 0
+fi
 
 cd "$REPO"
-
-[ -f "$PAUSE" ] && { echo "[auto] paused（$PAUSE 存在），本輪不動"; exit 0; }
-
-# 互斥：同一時間只准一輪（worker 或 reviewer），搶不到就讓位
-exec 9>/tmp/butfun-auto.lock
-if ! flock -n 9; then echo "[auto] 上一輪還在跑，本輪讓位"; exit 0; fi
-
 git fetch --quiet origin main || true
-
+# 盡力把主工作樹同步到最新 main，讓 gemini -w 開出的隔離 worktree 接在最新 main 上
+# （髒了或分歧就跳過、不破壞——worker 在自己 worktree 內還會再 rebase origin/main 一次）
+git checkout main --quiet 2>/dev/null || true
+git merge --ff-only --quiet origin/main 2>/dev/null || true
 turn="$(cat "$TURN_FILE" 2>/dev/null || echo work)"
-echo "[auto] turn=$turn"
-
-run_claude() {  # $1 = prompt 檔
-  cd "$REPO"
-  exec claude -p --dangerously-skip-permissions "$(cat "$1")"
-}
+log "turn=$turn"
 
 case "$turn" in
-  review) run_claude "$HERE/reviewer.prompt" ;;
-  work)   run_claude "$HERE/worker.prompt" ;;
-  human)  echo "[auto] turn=human：等人處理 butfun-coord/for_human.md，本輪閒置"; exit 0 ;;
-  done)   echo "[auto] turn=done：切片全做完，本輪閒置"; exit 0 ;;
-  *)      echo "[auto] 未知 turn=$turn，當 work 處理"; run_claude "$HERE/worker.prompt" ;;
+  work)
+    log "worker（Gemini）推進主軸"
+    cd "$REPO"
+    exec gemini -p --yolo -w "$(cat "$HERE/worker.prompt")"
+    ;;
+  review)
+    log "reviewer（Claude $REVIEW_MODEL）把關"
+    cd "$REPO"
+    exec claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")"
+    ;;
+  human) log "turn=human：等人處理 for_human.md，閒置"; exit 0 ;;
+  done)  log "turn=done：主軸都做完，閒置"; exit 0 ;;
+  *)     log "未知 turn=$turn，當 work"; cd "$REPO"; exec gemini -p --yolo -w "$(cat "$HERE/worker.prompt")" ;;
 esac
