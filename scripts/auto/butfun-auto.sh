@@ -92,8 +92,16 @@ case "$turn" in
     log "reviewer（Claude $REVIEW_MODEL）把關"
     RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
     git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$RWT" >/dev/null 2>&1 || true
+    before="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
     cd "$RWT" 2>/dev/null || cd "$REPO"
-    exec claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")"
+    claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")"
+    # 版本更新通知（backstop，不靠 reviewer 記得）：本輪若 origin/main 前進＝有 PR 被 merge → 推 update
+    git -C "$REPO" fetch -q origin main 2>/dev/null || true
+    after="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
+    if [ -n "${before:-}" ] && [ "$before" != "${after:-}" ]; then
+      merged="$(git -C "$REPO" log --oneline "${before}..${after}" 2>/dev/null | grep -iE "Merge pull request|切片" | head -1)"
+      "$HERE/notify.sh" update "已 merge：${merged:-main 有新進度}，staging 自動更新中" >/dev/null 2>&1 || true
+    fi
     ;;
   human)
     if [ ! -f "$STATE/human_notified" ]; then
