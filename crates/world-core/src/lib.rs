@@ -102,6 +102,29 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
     biome_at(x, y).code()
 }
 
+/// 滑動碰撞:從 `(cur)` 朝 `(new)` 移動,遇到 `blocked` 區域沿牆滑(render-agnostic 純邏輯,
+/// 供伺服器移動接線用——例如水域擋路時 `blocked = |x,y| biome_at==Water && 不在農地內`)。
+/// 規則:已在 blocked 內 → 放行(讓受困者能逃脫);否則目標可走就走;不行就試只走 X、再試只走 Y;
+/// 全擋就不動。(草擬 gemini-cli、Claude 審校:修了未用變數 lint。)
+pub fn resolve_move<F: Fn(f32, f32) -> bool>(
+    cur_x: f32,
+    cur_y: f32,
+    new_x: f32,
+    new_y: f32,
+    blocked: F,
+) -> (f32, f32) {
+    // 已在 blocked 內(放行逃脫)或目標可走 → 直接到目標。
+    if blocked(cur_x, cur_y) || !blocked(new_x, new_y) {
+        (new_x, new_y)
+    } else if !blocked(new_x, cur_y) {
+        (new_x, cur_y) // 沿 X 滑
+    } else if !blocked(cur_x, new_y) {
+        (cur_x, new_y) // 沿 Y 滑
+    } else {
+        (cur_x, cur_y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +180,35 @@ mod tests {
         assert_eq!(Biome::Meadow.code(), 2);
         assert_eq!(Biome::Forest.code(), 3);
         assert_eq!(Biome::Rocky.code(), 4);
+    }
+
+    // ── resolve_move 滑動碰撞(gemini 草擬、Claude 審校)──
+    #[test]
+    fn move_open_target_moves_fully() {
+        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, |_, _| false), (1.0, 1.0));
+    }
+
+    #[test]
+    fn move_blocked_target_slides_on_x() {
+        let blocked = |x: f32, y: f32| x > 0.5 && y > 0.5;
+        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (1.0, 0.0));
+    }
+
+    #[test]
+    fn move_blocked_target_slides_on_y() {
+        let blocked = |x: f32, _y: f32| x > 0.5;
+        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (0.0, 1.0));
+    }
+
+    #[test]
+    fn move_fully_blocked_stays_put() {
+        let blocked = |x: f32, y: f32| !(-0.5..=0.5).contains(&x) || !(-0.5..=0.5).contains(&y);
+        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (0.0, 0.0));
+    }
+
+    #[test]
+    fn move_starting_inside_blocked_escapes() {
+        let blocked = |x: f32, y: f32| x < 0.5 && y < 0.5;
+        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (1.0, 1.0));
     }
 }
