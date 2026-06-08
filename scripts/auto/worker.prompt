@@ -9,8 +9,11 @@
 - 切片細節見 docs/PLAN_INFINITE_WORLD.md。也讀 CLAUDE.md（邊界/品質閘門）。
 
 # 這一輪先判斷狀態
-0. 你在一個剛從最新 main 開出的**隔離 worktree** 裡。**別 `git checkout main`**（會跟主工作樹打架）；
-   要對齊最新就 `git fetch origin && git rebase origin/main`，然後**全程在這個 worktree 內工作**。
+0. 你在一個 worker 專用的**隔離 worktree**（可能殘留上一輪的分支）。**別 `git checkout main`**
+   （主工作樹占用 main，切不過去會報錯）。先 `git fetch origin`，然後依情況開分支：
+   - 做**新切片** → `git checkout -B feat/<切片名> origin/main`（從最新 main 開新分支）。
+   - **修既有 PR** → `git checkout <該 PR 分支> && git rebase origin/<該 PR 分支>`。
+   全程在這個 worktree 內工作。
 1. 看我上一個 PR：`gh pr list --author @me --state all -L 5`。
    - 上一個 PR **已 merged** → 做 ROADMAP 下一個主軸項。
    - 上一個 PR **還 open，且 review 在 PR 上留了「要改」的 comment（比我最後 commit 新）** → 切到該分支改好它。

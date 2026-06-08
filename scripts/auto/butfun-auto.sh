@@ -72,8 +72,10 @@ log "turn=$turn"
 case "$turn" in
   work)
     log "worker（Gemini）推進主軸"
-    cd "$REPO"
-    exec gemini -p --yolo -w "$(cat "$HERE/worker.prompt")"
+    WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
+    git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
+    cd "$WT" 2>/dev/null || cd "$REPO"
+    exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")"
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
@@ -82,5 +84,5 @@ case "$turn" in
     ;;
   human) log "turn=human：等人處理 for_human.md，閒置"; exit 0 ;;
   done)  log "turn=done：主軸都做完，閒置"; exit 0 ;;
-  *)     log "未知 turn=$turn，當 work"; cd "$REPO"; exec gemini -p --yolo -w "$(cat "$HERE/worker.prompt")" ;;
+  *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true; cd "$WT" 2>/dev/null || cd "$REPO"; exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" ;;
 esac
