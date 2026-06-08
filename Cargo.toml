@@ -34,3 +34,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 
 [profile.dev]
 opt-level = 1
+
+# 世界核心(與渲染無關的確定性世界邏輯):同時供伺服器(原生 lib)與前端(wasm32 cdylib)。
+# root package(butfun-server)本身自動是工作區成員,這裡只需多列 world-core。
+[workspace]
+members = ["crates/world-core"]

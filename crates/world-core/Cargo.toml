@@ -1,0 +1,11 @@
+[package]
+name = "world-core"
+version = "0.1.0"
+edition = "2021"
+description = "ButFun 世界核心:與渲染無關的確定性世界邏輯(噪聲/生態域…)。同時編進伺服器(原生 lib)與前端(wasm32 cdylib),前後端共用同一份碼 → 逐位元一致、AR/VR-ready。"
+
+[lib]
+# lib:給伺服器當原生相依;cdylib:給前端編成 .wasm(瀏覽器直接 instantiate 呼叫)。
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
