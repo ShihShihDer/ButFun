@@ -40,15 +40,13 @@ pub fn default_spawn() -> (f32, f32) {
 
 /// 依「是否有記住的歷史位置」決定進場座標。純函式，便於測試。
 ///
-/// 契約：回傳的座標一定有限且落在世界範圍內。這層刻意防住「載入被竄改/壞掉的
-/// 持久化位置」——Postgres 的 `REAL` 欄位可能存進 `NaN`/`Inf`/界外值,
-/// 不檢查就會把玩家生在地圖外、或讓座標變非有限。非有限一律退回地圖中央,
-/// 界外則夾回邊界。
+/// 契約：回傳的座標一定有限。這層刻意防住「載入被竄改/壞掉的
+/// 持久化位置」——Postgres 的 `REAL` 欄位可能存進 `NaN`/`Inf`,
+/// 不檢查就可能讓玩家座標變非有限。非有限一律退回地圖中央。
+/// 在無限世界中，有限的「界外」座標應原樣保留。
 pub fn spawn_at(recalled: Option<(f32, f32)>) -> (f32, f32) {
     match recalled {
-        Some((x, y)) if x.is_finite() && y.is_finite() => {
-            (x.clamp(0.0, WORLD_WIDTH), y.clamp(0.0, WORLD_HEIGHT))
-        }
+        Some((x, y)) if x.is_finite() && y.is_finite() => (x, y),
         _ => default_spawn(),
     }
 }
@@ -301,12 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn spawn_clamps_out_of_bounds_into_world() {
-        // 界外的歷史位置夾回世界邊界，而不是把玩家生在地圖外。
-        assert_eq!(spawn_at(Some((-50.0, -50.0))), (0.0, 0.0));
+    fn spawn_preserves_out_of_bounds_finite_coordinates() {
+        // 在無限世界中，界外的有限座標應原樣保留，不被夾回邊界。
+        assert_eq!(spawn_at(Some((-50.0, -50.0))), (-50.0, -50.0));
         assert_eq!(
             spawn_at(Some((WORLD_WIDTH + 999.0, WORLD_HEIGHT + 999.0))),
-            (WORLD_WIDTH, WORLD_HEIGHT)
+            (WORLD_WIDTH + 999.0, WORLD_HEIGHT + 999.0)
         );
     }
 
@@ -371,16 +369,23 @@ mod tests {
 
     #[test]
     fn loaded_bad_position_still_gated_by_spawn_at() {
-        // 即使耐久層存進非有限 / 界外座標，進場仍一律經 spawn_at 驗證、不會把玩家生到
-        // 非有限或界外位置。ether 是 u32，型別本身就擋掉壞值。
+        // 即使耐久層存進非有限座標，進場仍一律經 spawn_at 驗證、會退回地圖中央。
+        // 有限的「界外」座標則原樣保留。
         let bad = Saved {
             x: f32::INFINITY,
             y: WORLD_HEIGHT + 9999.0,
             ether: 1,
         };
         let (x, y) = spawn_at(Some((bad.x, bad.y)));
-        assert!(x.is_finite() && y.is_finite());
-        assert!((0.0..=WORLD_WIDTH).contains(&x) && (0.0..=WORLD_HEIGHT).contains(&y));
+        assert_eq!((x, y), default_spawn());
+
+        let out_of_bounds = Saved {
+            x: -100.0,
+            y: WORLD_HEIGHT + 100.0,
+            ether: 1,
+        };
+        let (x, y) = spawn_at(Some((out_of_bounds.x, out_of_bounds.y)));
+        assert_eq!((x, y), (-100.0, WORLD_HEIGHT + 100.0));
     }
 
     #[test]
