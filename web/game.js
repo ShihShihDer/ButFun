@@ -80,6 +80,9 @@
   let listings = [];
   // 伺服器廣播的 NPC（目前只有新手村商人，含 x/y/buy_list/sell_list）。
   let npcs = [];
+  // 地形格 delta（玩家挖/建後偏離確定性生成的差異）：Map<"cx,cy,tx,ty" → kind>。
+  // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
+  const tileDeltaMap = new Map();
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
   // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
@@ -379,6 +382,11 @@
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
         listings = msg.listings || [];
         npcs = msg.npcs || [];
+        // 地形 delta 更新：把伺服器廣播的差異覆蓋進 tileDeltaMap。
+        // C-1 terrain 永遠為空；C-2 起有玩家挖掘的格才進這裡。
+        for (const d of (msg.terrain || [])) {
+          tileDeltaMap.set(`${d.cx},${d.cy},${d.tx},${d.ty}`, d.kind);
+        }
         // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
         // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
         const prevEnemies = enemies;
@@ -1197,6 +1205,7 @@
     lastCam.y = camY;
 
     drawGround(camX, camY);
+    drawTerrain(camX, camY); // 可挖地形方塊（C-1 純顯示，在地表之上、農地之下）
     drawField(camX, camY);
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
@@ -1564,6 +1573,108 @@
   }
   // 各生態域地表底色(非草地生態域 / 無 tileset 時用)。
   const BIOME_GROUND = { water: "#27566f", sand: "#b3a06a", meadow: "#16361f", forest: "#102a18", rocky: "#4f4a44" };
+
+  // ── 地形格生成（與 world-core tile_kind_at 逐位元對齊）──────────────────────────
+  // 對齊 Rust 版：grass_hash(gx*1031 ^ gy*2053, gx ^ gy*1009)
+  function tileHash(gx, gy) {
+    const ix = (Math.imul(gx | 0, 1031) ^ Math.imul(gy | 0, 2053)) | 0;
+    const iy = ((gx | 0) ^ Math.imul(gy | 0, 1009)) | 0;
+    return grassHash(ix, iy);
+  }
+
+  // 世界像素座標 → 地形格種類（"empty"/"dirt"/"stone"/"ore"）。
+  // 確定性生成：前端本地計算，與伺服器 tile_kind_at 邏輯相同（零帶寬）；
+  // C-2 起若 tileDeltaMap 有覆蓋則回覆蓋值。
+  function tileKindAt(wx, wy) {
+    // 格索引（整數）
+    const gx = Math.floor(wx / TS) | 0;
+    const gy = Math.floor(wy / TS) | 0;
+    // 先查 delta 覆蓋
+    const CHUNK_T = 16; // TILES_PER_CHUNK
+    const cx = Math.floor(gx / CHUNK_T);
+    const cy = Math.floor(gy / CHUNK_T);
+    const tx = ((gx % CHUNK_T) + CHUNK_T) % CHUNK_T;
+    const ty = ((gy % CHUNK_T) + CHUNK_T) % CHUNK_T;
+    const delta = tileDeltaMap.get(`${cx},${cy},${tx},${ty}`);
+    if (delta !== undefined) return delta;
+    // 確定性生成
+    const b = biomeAt(wx, wy);
+    if (b === "water") return "empty";
+    const h = tileHash(gx, gy);
+    if (b === "rocky") {
+      if (h < 0.05) return "ore";
+      if (h < 0.40) return "stone";
+      return "empty";
+    }
+    if (b === "forest") {
+      if (h < 0.08) return "stone";
+      if (h < 0.22) return "dirt";
+      return "empty";
+    }
+    if (b === "meadow") {
+      if (h < 0.06) return "stone";
+      if (h < 0.12) return "dirt";
+      return "empty";
+    }
+    // sand
+    if (h < 0.04) return "stone";
+    if (h < 0.08) return "dirt";
+    return "empty";
+  }
+
+  // 畫可挖地形方塊（C-1：純顯示，在生態域底色之上、農地/節點之下）。
+  // 前端本地生成（tileKindAt），零帶寬；C-2 起有挖掘 delta 才需後端同步。
+  function drawTerrain(camX, camY) {
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const wx = tx * TS + TS / 2;
+        const wy = ty * TS + TS / 2;
+        const kind = tileKindAt(wx, wy);
+        if (kind === "empty") continue;
+        const sx = Math.round(tx * TS - camX);
+        const sy = Math.round(ty * TS - camY);
+        // 基底顏色
+        if (kind === "ore") {
+          ctx.fillStyle = "#6a5030";
+        } else if (kind === "stone") {
+          ctx.fillStyle = "#5a5450";
+        } else { // dirt
+          ctx.fillStyle = "#7a5c3a";
+        }
+        ctx.fillRect(sx, sy, TS, TS);
+        // 每格固定微抖動紋理（同 grassHash 邏輯，不隨鏡頭閃爍）
+        const jitter = grassHash(tx * 5 + 3, ty * 7 + 1);
+        if (jitter > 0.72) {
+          ctx.fillStyle = "rgba(255,255,255,0.07)";
+          ctx.fillRect(sx, sy, TS, TS);
+        } else if (jitter < 0.18) {
+          ctx.fillStyle = "rgba(0,0,0,0.10)";
+          ctx.fillRect(sx, sy, TS, TS);
+        }
+        // 頂邊/左邊亮邊（立體感）
+        const edgeLight = kind === "stone" ? "rgba(255,255,255,0.13)"
+                        : kind === "ore"   ? "rgba(220,170,80,0.20)"
+                        :                    "rgba(220,180,120,0.16)";
+        ctx.fillStyle = edgeLight;
+        ctx.fillRect(sx, sy, TS, 2);
+        ctx.fillRect(sx, sy, 2, TS);
+        // 底邊/右邊暗邊
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
+        ctx.fillRect(sx, sy + TS - 2, TS, 2);
+        ctx.fillRect(sx + TS - 2, sy, 2, TS);
+        // 礦脈中央加一個亮點
+        if (kind === "ore") {
+          ctx.fillStyle = "rgba(180,140,55,0.50)";
+          const s = 8;
+          ctx.fillRect(sx + TS / 2 - s / 2, sy + TS / 2 - s / 2, s, s);
+        }
+      }
+    }
+  }
 
   // 畫地面(程序生態域)+ 世界邊界。草原/森林保留草地瓦片(森林壓暗一階拉層次),
   // 水/沙/岩改用生態域底色 → 走到哪、場景就不同,無接縫。

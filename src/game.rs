@@ -295,6 +295,9 @@ pub fn spawn(app: AppState) {
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
                         npcs: vec![npc_view],
+                        // C-1：地形由前端確定性生成（tileKindAt），delta 為空；
+                        // C-2 起挖掘後才廣播非空 delta 陣列。
+                        terrain: vec![],
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

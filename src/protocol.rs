@@ -9,6 +9,42 @@ use crate::combat::EnemyKind;
 use crate::daynight::Phase;
 use crate::gather::NodeKind;
 use crate::inventory::ItemKind;
+use world_core::TileKind;
+
+/// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TileKindView {
+    Empty,
+    Dirt,
+    Stone,
+    Ore,
+}
+
+impl From<TileKind> for TileKindView {
+    fn from(k: TileKind) -> Self {
+        match k {
+            TileKind::Empty => TileKindView::Empty,
+            TileKind::Dirt  => TileKindView::Dirt,
+            TileKind::Stone => TileKindView::Stone,
+            TileKind::Ore   => TileKindView::Ore,
+        }
+    }
+}
+
+/// 玩家挖 / 建造後與確定性生成的差異（delta-save）。
+/// C-1 快照裡此陣列為空；C-2 挖掘後才開始廣播真實差異。
+/// 前端收到後應覆蓋 `tileKindAt` 的本地計算，讓挖掘視覺即時反映。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TileDeltaView {
+    /// 所在 chunk 的格座標（世界像素 / 512 取 floor）。
+    pub cx: i32,
+    pub cy: i32,
+    /// Chunk 內格座標（0..=15）。
+    pub tx: u8,
+    pub ty: u8,
+    pub kind: TileKindView,
+}
 
 /// 客戶端送給伺服器的訊息。
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +121,10 @@ pub enum ServerMsg {
         listings: Vec<ListingView>,
         /// 世界裡的 NPC（目前只有新手村商人）。前端畫出 NPC 圖示、靠近時顯示商店面板。
         npcs: Vec<NpcView>,
+        /// 玩家挖 / 建造後偏離確定性生成的地形差異（delta-save）。
+        /// C-1：永遠為空陣列；C-2 起有挖掘記錄時才非空。
+        /// 前端本地用 `tileKindAt` 生成初始地形，收到 delta 後覆蓋對應格子。
+        terrain: Vec<TileDeltaView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -313,6 +353,7 @@ mod tests {
                 buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1 }],
                 sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15 }],
             }],
+            terrain: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

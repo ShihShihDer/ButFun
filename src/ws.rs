@@ -233,7 +233,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -256,6 +256,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         listings: listings.iter().filter(|l| filter_pos(l.x, l.y)).cloned().collect(),
                                         // NPC 全部送出（靜態且位置固定在新手村，一定在 AOI 內）
                                         npcs: npcs.clone(),
+                                        // 地形 delta：C-1 永遠為空；C-2 起依 AOI 剔除後廣播。
+                                        terrain: terrain.clone(),
                                     }
                                 }
                                 other => other.clone(),
