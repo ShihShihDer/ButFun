@@ -1274,6 +1274,19 @@
     minimapHidden = !minimapHidden;
     try { localStorage.setItem("butfun.minimapHidden", minimapHidden ? "1" : "0"); } catch {}
   }
+  // 小地圖縮放:身邊顯示半徑可選(近/中/遠/廣),點地圖左上的 🔍 鈕循環、記住選擇。
+  const MM_RADIUS_LEVELS = [650, 1100, 1900, 3200];
+  const MM_ZOOM_LABEL = ["近", "中", "遠", "廣"];
+  let minimapZoom = 1; // 預設「中」(1100,與原本一致)
+  try {
+    const z = parseInt(localStorage.getItem("butfun.minimapZoom"), 10);
+    if (z >= 0 && z < MM_RADIUS_LEVELS.length) minimapZoom = z;
+  } catch {}
+  let mmZoomHit = null;
+  function cycleMinimapZoom() {
+    minimapZoom = (minimapZoom + 1) % MM_RADIUS_LEVELS.length;
+    try { localStorage.setItem("butfun.minimapZoom", String(minimapZoom)); } catch {}
+  }
   // 小地圖邊長依畫面自適應:手機直式窄螢幕縮小(別吃掉太多空間、也少跟左下聊天框
   // 在底部重疊),平板/桌面維持上限。取畫面短邊的一個比例,夾在 min/max 之間。
   function minimapSize() {
@@ -1305,7 +1318,7 @@
     // 身邊範圍小地圖:不再縮整張世界,而是以玩家為中心、只畫周圍 MM_RADIUS 世界半徑那一圈
     // (玩家點名要「就身邊」)。方框 size×size,玩家永遠在正中央,北朝上。
     const size = minimapSize();
-    const MM_RADIUS = 1100; // 顯示半徑(世界 px);身邊一圈
+    const MM_RADIUS = MM_RADIUS_LEVELS[minimapZoom]; // 顯示半徑(世界 px),可由左上 🔍 鈕切換
     const scale = size / (2 * MM_RADIUS);
     // 中心=玩家(用渲染插值 rx/ry 跟主畫面同步);沒有自己的玩家(訪客剛進)就退回世界中心。
     const meP = myId ? players.get(myId) : null;
@@ -1442,6 +1455,24 @@
     ctx.fillText("–", tx + tb / 2, ty + tb / 2 + 1);
     ctx.textBaseline = "alphabetic";
     mmToggleHit = { x: tx, y: ty, w: tb, h: tb };
+
+    // 縮放鈕:面板左上角一顆「🔍近/中/遠/廣」,點它循環身邊顯示半徑(記住選擇)。
+    const zw = 30, zh = 18;
+    const zx = ox - MM.pad;
+    const zy = oy - MM.pad;
+    ctx.fillStyle = "rgba(10,16,30,0.85)";
+    ctx.fillRect(zx, zy, zw, zh);
+    ctx.strokeStyle = "rgba(201,162,75,0.7)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(zx, zy, zw, zh);
+    ctx.fillStyle = "#c9a24b";
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🔍" + MM_ZOOM_LABEL[minimapZoom], zx + zw / 2, zy + zh / 2 + 1);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    mmZoomHit = { x: zx, y: zy, w: zw, h: zh };
   }
 
   // 命中小地圖收合鈕的熱區?(螢幕座標)命中即切換顯示並回 true,讓點擊不被當作農作。
@@ -1461,6 +1492,22 @@
     if (sx >= t.x - padX && sx <= t.x + t.w + padX &&
         sy >= t.y - padY && sy <= t.y + t.h + padY) {
       toggleMinimap();
+      return true;
+    }
+    return false;
+  }
+
+  // 命中小地圖縮放鈕的熱區?命中即循環顯示半徑並回 true(同 toggle:外擴熱區、不被當農作)。
+  function minimapZoomHit(clientX, clientY) {
+    if (!mmZoomHit) return false;
+    const rect = canvas.getBoundingClientRect();
+    const sx = clientX - rect.left, sy = clientY - rect.top;
+    const t = mmZoomHit;
+    const padX = Math.max(0, (MM_TAP_MIN - t.w) / 2);
+    const padY = Math.max(0, (MM_TAP_MIN - t.h) / 2);
+    if (sx >= t.x - padX && sx <= t.x + t.w + padX &&
+        sy >= t.y - padY && sy <= t.y + t.h + padY) {
+      cycleMinimapZoom();
       return true;
     }
     return false;
@@ -2584,8 +2631,9 @@
   let lastReachHint = 0;
   // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
   function farmAtScreen(clientX, clientY) {
-    // 先看是不是點到小地圖收合鈕(純 UI 切換,不需連線、也不該被當成農作意圖)。
+    // 先看是不是點到小地圖收合鈕 / 縮放鈕(純 UI 切換,不需連線、也不該被當成農作意圖)。
     if (minimapToggleHit(clientX, clientY)) return;
+    if (minimapZoomHit(clientX, clientY)) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     const f = myField();
