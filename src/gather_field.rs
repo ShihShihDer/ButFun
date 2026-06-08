@@ -57,7 +57,7 @@ impl NodeField {
         let nodes = (0..NODE_COUNT)
             .map(|i| {
                 let kind = kind_for(i);
-                let (x, y) = scatter_position(i);
+                let (x, y) = place_for_kind(i, kind, 0);
                 PlacedNode {
                     x,
                     y,
@@ -86,7 +86,7 @@ impl NodeField {
             if !was_harvestable && placed.node.is_harvestable() {
                 // 剛從採空狀態重生：換一個新位置長出來。
                 placed.respawns = placed.respawns.wrapping_add(1);
-                let (x, y) = scatter_position_n(i, placed.respawns);
+                let (x, y) = place_for_kind(i, placed.node.kind(), placed.respawns);
                 placed.x = x;
                 placed.y = y;
             }
@@ -133,7 +133,7 @@ impl NodeField {
             if node.kind() != kind_for(i) || !node.is_loadable() {
                 return None;
             }
-            let (x, y) = scatter_position(i);
+            let (x, y) = place_for_kind(i, node.kind(), 0);
             nodes.push(PlacedNode {
                 x,
                 y,
@@ -160,12 +160,6 @@ fn kind_for(i: usize) -> NodeKind {
     }
 }
 
-/// 第 `i` 個節點的**初始**世界座標（重生次數 0）：撒滿整張大圖。確定性（同序號永遠同位置）、
-/// 不靠亂數 / 時鐘，故重啟後初始佈置落在同一處。重生搬遷走 `scatter_position_n`。
-fn scatter_position(i: usize) -> (f32, f32) {
-    scatter_position_n(i, 0)
-}
-
 /// 第 `i` 個節點、第 `n` 次重生後的世界座標：撒滿整張圖，夾進世界邊界內。
 /// `n == 0` 刻意維持**原本的序號佈置**（確定性、重啟一致、既有散開性質不變）；
 /// `n > 0` 把重生次數攪進種子，每次重生落在不同新點——資源因此在世界各處游移生長。
@@ -183,6 +177,43 @@ fn scatter_position_n(i: usize, n: u32) -> (f32, f32) {
         x.clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN),
         y.clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN),
     )
+}
+
+/// 某生態域適不適合長這種資源(生態域決定內容):木在森林/草原、石在岩地/沙地、乙太礦在岩地深處;
+/// **水域不長任何資源**。生態域由 `world_core::biome_at` 判定——與前端畫的地貌同一份噪聲、逐位元一致,
+/// 所以「樹長在前端畫成森林的地」這件事前後端必然對齊。
+fn biome_suits_kind(biome: world_core::Biome, kind: NodeKind) -> bool {
+    use world_core::Biome;
+    match (kind, biome) {
+        (_, Biome::Water) => false,
+        (NodeKind::Tree, Biome::Forest | Biome::Meadow) => true,
+        (NodeKind::Rock, Biome::Rocky | Biome::Sand) => true,
+        (NodeKind::EtherOre, Biome::Rocky) => true,
+        _ => false,
+    }
+}
+
+/// 第 `i` 個節點(種類 `kind`、第 `salt` 次擺放)該落在哪:在一串候選座標裡挑「生態域吻合且非水」
+/// 的第一個 → 樹進森林、礦進岩地、水域空。找不到吻合就退而求其次(只求非水),再不行用原始座標。
+/// 確定性(同 i/kind/salt 永遠同結果):`salt` 給不同擺放批次(初始=0、每次重生遞增)不同候選序列。
+fn place_for_kind(i: usize, kind: NodeKind, salt: u32) -> (f32, f32) {
+    let candidate = |k: u32| scatter_position_n(i, salt.wrapping_mul(64).wrapping_add(k));
+    // 1) 生態域吻合 + 非水
+    for k in 0..24 {
+        let (x, y) = candidate(k);
+        if biome_suits_kind(world_core::biome_at(x as f64, y as f64), kind) {
+            return (x, y);
+        }
+    }
+    // 2) 退一步:只要非水
+    for k in 24..48 {
+        let (x, y) = candidate(k);
+        if world_core::biome_at(x as f64, y as f64) != world_core::Biome::Water {
+            return (x, y);
+        }
+    }
+    // 3) 最後手段:原始座標(幾乎不會走到)
+    scatter_position_n(i, salt)
 }
 
 /// 確定性雜湊：把序號攪成 `[0, 1)` 的浮點（splitmix64 風格），佈置用。
@@ -381,6 +412,32 @@ mod tests {
         assert!(
             f.nodes().iter().any(|p| p.respawns > 0),
             "應至少發生一次重生搬遷"
+        );
+    }
+
+    #[test]
+    fn nodes_avoid_water_and_mostly_match_biome() {
+        // 生態域決定內容:節點不該長在水上,且多數落在吻合的生態域(樹在森林/草原、礦在岩地)。
+        // 少數因吻合生態域附近難找而退求非水,允許;但水上=0、吻合應過半。
+        let f = NodeField::new();
+        let mut matched = 0usize;
+        for p in f.nodes() {
+            let b = world_core::biome_at(p.x as f64, p.y as f64);
+            assert_ne!(
+                b,
+                world_core::Biome::Water,
+                "節點長在水上了:({},{})",
+                p.x,
+                p.y
+            );
+            if biome_suits_kind(b, p.node.kind()) {
+                matched += 1;
+            }
+        }
+        let total = f.nodes().len();
+        assert!(
+            matched * 2 >= total,
+            "吻合生態域的節點太少:{matched}/{total}"
         );
     }
 }
