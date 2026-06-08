@@ -78,6 +78,8 @@
   let enemies = [];
   // 伺服器廣播的市場掛單（AOI 剔除後附近的掛單，含 id/seller_id/seller_name/item/qty/price_per/x/y）。
   let listings = [];
+  // 伺服器廣播的 NPC（目前只有新手村商人，含 x/y/buy_list/sell_list）。
+  let npcs = [];
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
   // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
@@ -376,6 +378,7 @@
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
         listings = msg.listings || [];
+        npcs = msg.npcs || [];
         // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
         // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
         const prevEnemies = enemies;
@@ -433,6 +436,7 @@
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
+          updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -1196,6 +1200,7 @@
     drawField(camX, camY);
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
+    drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -1969,6 +1974,55 @@
     ctx.beginPath(); ctx.arc(cx + 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
   }
 
+  // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
+  function drawNpcs(camX, camY) {
+    const t = performance.now() / 1000;
+    for (const npc of npcs) {
+      const sx = npc.x - camX;
+      const sy = npc.y - camY;
+      if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
+
+      // 輕微上下浮動（呼吸感，與敵人對稱）
+      const bob = reduceMotion ? 0 : Math.sin(t * 1.2 + npc.x * 0.01) * 2;
+      const by = sy + bob;
+
+      ctx.save();
+      // 身體（棕色斗篷）
+      ctx.fillStyle = "#7b4f2e";
+      ctx.beginPath();
+      ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 頭（黃銅色）
+      ctx.fillStyle = "#c9a24b";
+      ctx.beginPath();
+      ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+      ctx.fill();
+      // 帽子
+      ctx.fillStyle = "#5c3d1e";
+      ctx.fillRect(sx - 11, by - 17, 22, 6);
+      ctx.fillRect(sx - 6, by - 24, 12, 8);
+      // 商店小旗（右上角）
+      ctx.strokeStyle = "#c9a24b";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(sx + 12, by - 20);
+      ctx.lineTo(sx + 12, by - 8);
+      ctx.stroke();
+      ctx.fillStyle = "#e8c055";
+      ctx.beginPath();
+      ctx.moveTo(sx + 12, by - 20);
+      ctx.lineTo(sx + 20, by - 16);
+      ctx.lineTo(sx + 12, by - 12);
+      ctx.fill();
+      // 商人名牌
+      ctx.font = "bold 10px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#c9a24b";
+      ctx.fillText("🧑‍💼 商人", sx, by - 30);
+      ctx.restore();
+    }
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
@@ -2499,6 +2553,108 @@
     }
     const dockM = document.getElementById("dockMarket");
     if (dockM) dockM.classList.toggle("dock-active", hasNearby);
+  }
+
+  // NPC 商店面板：靠近商人才能互動（伺服器同樣驗距離）。
+  // 顯示收購清單（我賣→NPC買）和販售清單（NPC賣→我買），各有數量輸入與按鈕。
+  let lastShopSig = null;
+  function updateShopPanel(npcList, me) {
+    const body = document.getElementById("shopBody");
+    const summary = document.getElementById("shopSummary");
+    const dockBtn = document.getElementById("dockShop");
+    if (!body || !summary) return;
+
+    const SHOP_REACH_SQ = 96 * 96; // 對齊後端 SHOP_REACH = 96.0
+    const nearNpc = me && npcList.find((npc) => {
+      const dx = me.x - npc.x;
+      const dy = me.y - npc.y;
+      return dx * dx + dy * dy <= SHOP_REACH_SQ;
+    });
+
+    const isGuest_ = isGuest; // 訪客只能看，不能交易
+
+    // 簽章：近/遠 + 乙太 + 背包 hash（控制重建頻率）
+    const invSig = me ? (me.inventory || []).map((s) => `${s.item}:${s.qty}`).join(",") : "";
+    const sig = `${!!nearNpc}|${me ? me.ether : 0}|${invSig}`;
+    if (sig === lastShopSig) return;
+    lastShopSig = sig;
+
+    // dock 活躍點（靠近時亮）
+    if (dockBtn) dockBtn.classList.toggle("dock-active", !!nearNpc);
+    summary.textContent = nearNpc ? "：商人在附近" : "";
+
+    if (!nearNpc) {
+      body.innerHTML = '<div style="opacity:0.6;font-size:0.85em">走近公共農地旁的 🧑‍💼 商人才能使用商店</div>';
+      return;
+    }
+
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
+    const myEther_ = me ? me.ether : 0;
+    const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
+
+    let html = "";
+
+    // —— 賣給商人（NPC 收購）——
+    html += `<div style="color:var(--brass);font-weight:bold;margin:2px 0 4px">📤 賣給商人（換乙太）</div>`;
+    for (const entry of nearNpc.buy_list) {
+      const name = ITEM_NAME_[entry.item] || entry.item;
+      const have = invMap.get(entry.item) || 0;
+      const maxSell = have;
+      const canSell = !isGuest_ && have > 0;
+      html += `<div class="craft-row" style="margin:3px 0;display:flex;align-items:center;gap:6px">
+        <span style="flex:1">${name} ×<input id="shopSellQty_${entry.item}" type="number" min="1" max="${maxSell || 1}" value="1"
+          style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
+          ${!canSell ? "disabled" : ""}></span>
+        <span style="color:var(--brass)">+${entry.price_per}✨/個</span>
+        <span style="opacity:0.7;font-size:0.82em">(持有：${have})</span>
+        <button class="craft-btn" id="shopSellBtn_${entry.item}" ${!canSell ? "disabled" : ""}
+          style="padding:2px 8px;font-size:0.85em">賣出</button>
+      </div>`;
+    }
+
+    // —— 向商人購買（NPC 販售）——
+    html += `<div style="color:var(--brass);font-weight:bold;margin:8px 0 4px">📥 向商人購買（花乙太）</div>`;
+    for (const entry of nearNpc.sell_list) {
+      const name = ITEM_NAME_[entry.item] || entry.item;
+      const canAfford1 = myEther_ >= entry.price_per;
+      const canBuy = !isGuest_ && canAfford1;
+      html += `<div class="craft-row" style="margin:3px 0;display:flex;align-items:center;gap:6px">
+        <span style="flex:1">${name} ×<input id="shopBuyQty_${entry.item}" type="number" min="1" max="99" value="1"
+          style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
+          ${!canBuy ? "disabled" : ""}></span>
+        <span style="color:#e0795f">-${entry.price_per}✨/個</span>
+        <span style="opacity:0.7;font-size:0.82em">(餘額：${myEther_}✨)</span>
+        <button class="craft-btn" id="shopBuyBtn_${entry.item}" ${!canBuy ? "disabled" : ""}
+          style="padding:2px 8px;font-size:0.85em">購買</button>
+      </div>`;
+    }
+
+    body.innerHTML = html;
+
+    // 賣出按鈕事件
+    for (const entry of nearNpc.buy_list) {
+      const btn = document.getElementById(`shopSellBtn_${entry.item}`);
+      if (!btn) continue;
+      btn.addEventListener("click", () => {
+        const qtyEl = document.getElementById(`shopSellQty_${entry.item}`);
+        const qty = Math.max(1, parseInt(qtyEl?.value || "1", 10));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "shop_sell", item: entry.item, qty }));
+        }
+      });
+    }
+    // 購買按鈕事件
+    for (const entry of nearNpc.sell_list) {
+      const btn = document.getElementById(`shopBuyBtn_${entry.item}`);
+      if (!btn) continue;
+      btn.addEventListener("click", () => {
+        const qtyEl = document.getElementById(`shopBuyQty_${entry.item}`);
+        const qty = Math.max(1, parseInt(qtyEl?.value || "1", 10));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "shop_buy", item: entry.item, qty }));
+        }
+      });
+    }
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。

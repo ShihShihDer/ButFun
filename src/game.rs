@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, ServerMsg};
+use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, merchant_pos};
+use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry};
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
@@ -277,6 +278,14 @@ pub fn spawn(app: AppState) {
             if want_broadcast {
                 let snapshot = {
                     let players = app.players.read().unwrap();
+                    // 每次快照帶上靜態 NPC 目錄（新手村商人）。
+                    let (mx, my) = merchant_pos();
+                    let npc_view = NpcView {
+                        x: mx,
+                        y: my,
+                        buy_list: NPC_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        sell_list: NPC_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                    };
                     ServerMsg::Snapshot {
                         tick,
                         players: players.values().map(|p| p.view()).collect(),
@@ -285,6 +294,7 @@ pub fn spawn(app: AppState) {
                         enemies: enemy_views,
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
+                        npcs: vec![npc_view],
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
