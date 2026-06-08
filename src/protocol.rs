@@ -53,6 +53,12 @@ pub enum ClientMsg {
     BuyListing { listing_id: Uuid },
     /// 取消自己的掛單：托管物品退還背包（非本人掛單靜默忽略）。
     CancelListing { listing_id: Uuid },
+    /// 向新手村商人 NPC 賣出 qty 個 item（背包扣物品 → 得乙太）。
+    /// 伺服器驗距離、物品在收購清單、背包有貨；失敗靜默忽略。
+    ShopSell { item: ItemKind, qty: u32 },
+    /// 向新手村商人 NPC 購買 qty 個 item（花乙太 → 背包加物品）。
+    /// 伺服器驗距離、物品在販售清單、乙太足夠；失敗靜默忽略。
+    ShopBuy { item: ItemKind, qty: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -77,6 +83,8 @@ pub enum ServerMsg {
         daynight: DayNightView,
         /// 附近玩家的市場掛單（AOI 剔除後，距離內才送）。
         listings: Vec<ListingView>,
+        /// 世界裡的 NPC（目前只有新手村商人）。前端畫出 NPC 圖示、靠近時顯示商店面板。
+        npcs: Vec<NpcView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -182,6 +190,24 @@ pub struct ListingView {
     pub y: f32,
 }
 
+/// NPC 商店目錄的單筆條目（物品 + 每單位乙太價）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ShopCatalogEntry {
+    pub item: ItemKind,
+    pub price_per: u32,
+}
+
+/// 快照裡的 NPC 可見狀態：位置 + 商品目錄（收購 / 販售），讓前端繪製並顯示商店面板。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct NpcView {
+    pub x: f32,
+    pub y: f32,
+    /// NPC 願意收購的物品（玩家賣給 NPC）。
+    pub buy_list: Vec<ShopCatalogEntry>,
+    /// NPC 願意販售的物品（玩家向 NPC 買）。
+    pub sell_list: Vec<ShopCatalogEntry>,
+}
+
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DayNightView {
@@ -281,6 +307,12 @@ mod tests {
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
             },
             listings: vec![],
+            npcs: vec![NpcView {
+                x: 100.0,
+                y: 200.0,
+                buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1 }],
+                sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15 }],
+            }],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
@@ -299,5 +331,11 @@ mod tests {
         assert_eq!(v["nodes"][0]["harvestable"], true);
         assert_eq!(v["daynight"]["phase"], "day");
         assert_eq!(v["daynight"]["light"], 0.5);
+        // NPC 商人：確認序列化結構讓前端能讀 buy/sell 目錄。
+        assert_eq!(v["npcs"][0]["x"], 100.0);
+        assert_eq!(v["npcs"][0]["buy_list"][0]["item"], "wood");
+        assert_eq!(v["npcs"][0]["buy_list"][0]["price_per"], 1);
+        assert_eq!(v["npcs"][0]["sell_list"][0]["item"], "pickaxe");
+        assert_eq!(v["npcs"][0]["sell_list"][0]["price_per"], 15);
     }
 }

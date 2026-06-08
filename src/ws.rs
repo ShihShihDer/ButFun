@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::auth::user_id_from_cookies;
 use crate::field::{FarmOutcome, Field};
 use crate::market::MarketListing;
+use crate::npc;
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -232,7 +233,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -253,6 +254,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         enemies: enemies.iter().filter(|e| filter_pos(e.x, e.y)).cloned().collect(),
                                         daynight: daynight.clone(),
                                         listings: listings.iter().filter(|l| filter_pos(l.x, l.y)).cloned().collect(),
+                                        // NPC 全部送出（靜態且位置固定在新手村，一定在 AOI 內）
+                                        npcs: npcs.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -581,6 +584,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if let Some(p) = players.get_mut(&uid) {
                                 p.inventory.add(item, qty);
                                 tracing::info!(player = %p.name, ?item, qty, "市場取消掛單，物品歸還");
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::ShopSell { item, qty }) => {
+                    // 向 NPC 商人賣出物品：驗距離 + 未倒地 + 在收購清單 + 背包有貨 → 換乙太。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
+                    if let Some((px, py, downed)) = player_pos {
+                        if !downed && npc::is_within_shop_reach(px, py) {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if let Some(new_ether) = npc::sell_to_npc(&mut p.inventory, p.ether, item, qty) {
+                                    tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "NPC 收購");
+                                    p.ether = new_ether;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::ShopBuy { item, qty }) => {
+                    // 向 NPC 商人購買物品：驗距離 + 未倒地 + 在販售清單 + 乙太足夠 → 取得物品。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
+                    if let Some((px, py, downed)) = player_pos {
+                        if !downed && npc::is_within_shop_reach(px, py) {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                let old_ether = p.ether;
+                                if let Some(new_ether) = npc::buy_from_npc(&mut p.inventory, p.ether, item, qty) {
+                                    tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, "NPC 販售");
+                                    p.ether = new_ether;
+                                }
                             }
                         }
                     }
