@@ -5,6 +5,8 @@ edition = "2021"
 description = "ButFun — 蒸汽龐克太空歌劇療癒多人世界（Phase 0 權威伺服器骨架）"
 
 [dependencies]
+# 世界核心(與渲染無關的確定性世界邏輯):伺服器用它的 biome_at 判定地形 → 生態域決定內容。
+world-core = { path = "crates/world-core" }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
