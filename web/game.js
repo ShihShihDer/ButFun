@@ -462,6 +462,13 @@
       case "player_left":
         players.delete(msg.id);
         break;
+      case "claim_plot_ok":
+        // 只有購買者自己才顯示提示；其他玩家收到後忽略。
+        if (msg.owner === myId) {
+          announce("🏡 領地購買成功！走近農地開始耕作吧。");
+          addChat("系統", "🏡 領地購買成功！走近農地開始耕作吧。");
+        }
+        break;
     }
   }
 
@@ -2041,6 +2048,8 @@
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
   const EXPANSION_BASE_COST = 10;
   const MAX_EXPANSIONS = 12;
+  // 購買第一塊領地的乙太費用——對齊 economy::PLOT_COST；前端只作顯示/反灰,扣款由伺服器決定。
+  const CLAIM_PLOT_COST = 20;
   // 已購 owned 格時,下一格要多少乙太。對齊 economy::expansion_cost——前端只算來顯示,
   // 真正扣款/開格仍由伺服器查餘額決定。
   const expansionCost = (owned) => EXPANSION_BASE_COST * (owned + 1);
@@ -2194,7 +2203,7 @@
   // 達上限改顯示「已達上限」並反灰。點鈕只送 buy_expansion 意圖,伺服器查餘額扣乙太、農地
   // 多開一格,新地塊隨既有 fields 快照回來(零契約變更);夠不夠的反灰只是前端提示,扣款/
   // 開格規則仍只在伺服器(權威),前端不自行改地塊。me 缺欄位一律防呆,接線落地即生效。
-  let lastExpandSig = null; // 上次重建用的「乙太|已購格數」簽章——沒變就不重建,保住焦點與效能
+  let lastExpandSig = null; // 上次重建用的「乙太|已購格數|有無領地」簽章——沒變就不重建,保住焦點與效能
   function updateExpandPanel(me) {
     const summary = document.getElementById("expandSummary");
     const body = document.getElementById("expandBody");
@@ -2202,15 +2211,60 @@
     if (!summary || !body || !toggle) return;
     const ether = (me && me.ether) || 0;
     const owned = (me && me.expansions) || 0; // 防呆:伺服器還沒接擴地 → 視為一格都還沒買
-    // 同合成台:快照每拍都來,但擴地面板只取決於乙太與已購格數。沒變就提早返回,
-    // 免得每拍重建把停在「擴地」鈕上的焦點打掉、手機白耗電。
-    const sig = `${ether}|${owned}`;
+    const hasField = !!myField(); // 已有領地才顯示擴地；尚無領地則先顯示「購買領地」按鈕
+    // 同合成台:快照每拍都來,但擴地面板只取決於乙太、已購格數、有無領地。沒變就提早返回,
+    // 免得每拍重建把停在按鈕上的焦點打掉、手機白耗電。
+    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}`;
     if (sig === lastExpandSig) return;
     lastExpandSig = sig;
+    body.innerHTML = "";
+
+    // ── 購買領地（第一次取地）────────────────────────────────────────────────
+    // 已登入且尚無領地：先買地才能擴地。隱藏擴地列、改顯示「購買領地」入口。
+    if (myId && !hasField) {
+      const canClaim = ether >= CLAIM_PLOT_COST;
+      const claimRow = document.createElement("div");
+      claimRow.className = "expand-row";
+      const claimDesc = document.createElement("div");
+      claimDesc.className = "expand-desc";
+      const lack = !canClaim;
+      // 文字說明費用；不足時價格標紅，與擴地缺錢一致。
+      claimDesc.innerHTML = `購買領地 <span class="expand-cost${lack ? " lack" : ""}">✨ ${CLAIM_PLOT_COST}</span>`;
+      claimRow.appendChild(claimDesc);
+      const claimBtn = document.createElement("button");
+      claimBtn.type = "button";
+      claimBtn.className = "expand-btn";
+      claimBtn.textContent = "購買領地";
+      claimBtn.disabled = !canClaim;
+      claimBtn.setAttribute(
+        "aria-label",
+        `花 ${CLAIM_PLOT_COST} 乙太購買第一塊領地${canClaim ? "" : "（乙太不足）"}`
+      );
+      claimBtn.title = canClaim ? `花 ${CLAIM_PLOT_COST} 乙太購買領地` : "需要 20 乙太";
+      claimBtn.addEventListener("click", () => {
+        if (claimBtn.disabled) return;
+        // 只送意圖；伺服器驗餘額、扣乙太、分配序號，結果走 claim_plot_ok 廣播回來。
+        try { ws.send(JSON.stringify({ type: "claim_plot" })); } catch {}
+        announce(`花 ${CLAIM_PLOT_COST} 乙太購買領地`);
+      });
+      claimRow.appendChild(claimBtn);
+      body.appendChild(claimRow);
+
+      summary.textContent = canClaim ? "：可購地" : "";
+      const claimLabel = canClaim
+        ? `農地：可花 ${CLAIM_PLOT_COST} 乙太購買領地`
+        : `農地：購買領地需要 ${CLAIM_PLOT_COST} 乙太`;
+      toggle.setAttribute("aria-label", claimLabel);
+      toggle.setAttribute("title", claimLabel);
+      const dockE = document.getElementById("dockExpand");
+      if (dockE) dockE.classList.toggle("dock-active", canClaim);
+      return;
+    }
+
+    // ── 擴地（已有領地、繼續買格）──────────────────────────────────────────
     const atMax = owned >= MAX_EXPANSIONS;
     const cost = expansionCost(owned);
     const canBuy = !atMax && ether >= cost;
-    body.innerHTML = "";
 
     const row = document.createElement("div");
     row.className = "expand-row";

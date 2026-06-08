@@ -28,6 +28,10 @@ use serde::{Deserialize, Serialize};
 /// 有「攢乙太換東西」的手感；接線後可依實際收成節奏再調。
 pub const EXPANSION_BASE_COST: u32 = 10;
 
+/// 購買「第一塊農地」的基準價（乙太）。對齊 ③ Slice D「自己攢乙太買地」。
+/// 設為 20，讓玩家在世界採集幾輪（Ether Ore / Wisp）後就能買得起第一塊地。
+pub const PLOT_COST: u32 = 20;
+
 /// 一塊地最多能買幾格擴張。世界與農地語意都不該無限長大，故設上限；確切值是調校常數，
 /// 接線（`Field` 實際多開格）時再依農地成長收斂。
 pub const MAX_EXPANSIONS: u32 = 12;
@@ -160,6 +164,11 @@ mod tests {
         assert_eq!(w.expansions(), 0);
         assert!(w.can_expand());
         assert_eq!(w.next_cost(), Some(EXPANSION_BASE_COST));
+    }
+
+    #[test]
+    fn plot_cost_is_positive() {
+        assert!(PLOT_COST > 0);
     }
 
     #[test]

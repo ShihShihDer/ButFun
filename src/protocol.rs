@@ -39,6 +39,9 @@ pub enum ClientMsg {
     /// 名(如 "pickaxe")。伺服器查 `crafting::RECIPES`、在玩家自己背包上全有全無地扣料+產出,
     /// 產物隨既有背包快照回來(零契約變更)。
     Craft { recipe_id: String },
+    /// 領地購買意圖（③ Slice D）：玩家點擊購買第一塊地。
+    /// 伺服器驗證乙太足夠（PLOT_COST）且尚未擁有地塊後分配序號。
+    ClaimPlot,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -66,6 +69,9 @@ pub enum ServerMsg {
     Chat { from: String, text: String },
     /// 有玩家離線。
     PlayerLeft { id: Uuid },
+    /// 某玩家成功購買第一塊領地（③ Slice D）。廣播給全部客戶端；
+    /// 前端取 owner == myId 才顯示購買成功提示，其餘忽略即可。
+    ClaimPlotOk { owner: Uuid, plot_index: usize },
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。
