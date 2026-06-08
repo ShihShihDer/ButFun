@@ -232,13 +232,13 @@ impl Default for EnemyField {
     }
 }
 
-fn kind_for(id: (i32, i32, usize)) -> EnemyKind {
-    let mut s = (id.0 as u64).wrapping_mul(0x7F4A_7C15_9E37_79B9);
-    s = s.wrapping_add((id.1 as u64).wrapping_mul(0x1CE4_E5B9_BF58_476D));
-    s = s.wrapping_add(id.2 as u64);
-    match s % 2 {
-        0 => EnemyKind::ScrapDrone,
-        _ => EnemyKind::EtherWisp,
+/// 依生態域決定敵人種類：自然靈境（草地/森林）孕育迷途乙太靈，
+/// 廢棄機械殘骸（岩地/沙漠）藏著銹蝕巡邏機。
+fn kind_for_biome(biome: world_core::Biome) -> EnemyKind {
+    use world_core::Biome;
+    match biome {
+        Biome::Meadow | Biome::Forest => EnemyKind::EtherWisp,
+        Biome::Rocky | Biome::Sand | Biome::Water => EnemyKind::ScrapDrone,
     }
 }
 
@@ -246,8 +246,9 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     let mut enemies = Vec::new();
     for i in 0..ENEMIES_PER_CHUNK {
         let id = (cx, cy, i);
-        let kind = kind_for(id);
         let (x, y) = spawn_position(id);
+        let biome = world_core::biome_at(x as f64, y as f64);
+        let kind = kind_for_biome(biome);
         enemies.push(PlacedEnemy {
             id,
             x,
@@ -258,19 +259,17 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     enemies
 }
 
+/// 在區塊內找一個非水域的落點（所有生態域都能出現敵人）。
 fn spawn_position(id: (i32, i32, usize)) -> (f32, f32) {
     let mut salt = 0;
     loop {
         let (x, y) = scatter_position(id, salt);
         let biome = world_core::biome_at(x as f64, y as f64);
-        if matches!(biome, world_core::Biome::Rocky | world_core::Biome::Sand) {
+        if biome != world_core::Biome::Water {
             return (x, y);
         }
         salt += 1;
-        if salt > 20 {
-            if biome != world_core::Biome::Water { return (x, y); }
-        }
-        if salt > 40 { return (x, y); }
+        if salt > 40 { return (x, y); } // 防呆
     }
 }
 
