@@ -51,6 +51,8 @@ pub struct Player {
     pub inventory: Inventory,
     /// 生命值（戰鬥 1-F）。敵人反擊扣血、離戰一陣子自動回復;歸零會「被打趴」短暫休息。記憶體前置。
     pub vitals: Vitals,
+    /// 農地擴張狀態（已購格數）。跨重啟持久化於 players.wallet_expansions。
+    pub wallet: crate::economy::PlotWallet,
 }
 
 impl Player {
@@ -62,6 +64,7 @@ impl Player {
             x: self.x,
             y: self.y,
             ether: self.ether,
+            expansions: self.wallet.expansions(),
             inventory: self
                 .inventory
                 .entries()
@@ -267,6 +270,7 @@ mod tests {
             ether: 0,
             inventory: Inventory::new(),
             vitals: Vitals::new(),
+            wallet: crate::economy::PlotWallet::new(),
         }
     }
 

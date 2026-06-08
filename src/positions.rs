@@ -31,6 +31,8 @@ struct DiskRow {
     x: f32,
     y: f32,
     ether: u32,
+    #[serde(default)]
+    wallet_expansions: u32,
 }
 
 /// 玩家進場時的預設位置（地圖中央）。沒有歷史位置時用它。
@@ -51,15 +53,17 @@ pub fn spawn_at(recalled: Option<(f32, f32)>) -> (f32, f32) {
     }
 }
 
-/// 某玩家離線時記下的最後狀態：位置 + 收成累積的乙太。
+/// 某玩家離線時記下的最後狀態：位置 + 乙太 + 農地擴張格數。
 ///
-/// 載入時的防線沿用既有入口、不在此重複：位置一律經 `spawn_at` 驗證（非有限退回地圖中央、
-/// 界外夾回邊界），`ether` 是 `u32`、型別本身就擋掉 `NaN` / `Inf` / 負值。
+/// 載入時的防線沿用既有入口；`wallet_expansions` 是 `u32`、型別本身擋壞值，
+/// 超上限由 `PlotWallet::is_loadable` 驗、不過退回 0（全新地起算）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Saved {
     pub x: f32,
     pub y: f32,
     pub ether: u32,
+    #[serde(default)]
+    pub wallet_expansions: u32,
 }
 
 /// cache 後面的耐久層。
@@ -126,18 +130,18 @@ impl PositionStore {
     }
 
     /// 記住某玩家目前狀態（更新 cache,同步）。Jsonl 模式順手寫穿磁碟;Postgres 模式只動
-    /// cache,耐久寫入交給非同步的 `flush_online`/`flush_one`（DB 是 async,不在同步路徑上 await）。
-    pub fn remember(&self, id: Uuid, x: f32, y: f32, ether: u32) {
-        self.inner.write().unwrap().insert(id, Saved { x, y, ether });
+    /// cache,耐久寫入交給非同步的 `flush_online`/`flush_one`。
+    pub fn remember(&self, id: Uuid, x: f32, y: f32, ether: u32, wallet_expansions: u32) {
+        self.inner.write().unwrap().insert(id, Saved { x, y, ether, wallet_expansions });
         self.persist_jsonl();
     }
 
     /// 批次記住多名玩家（給遊戲迴圈定期快照線上玩家用）：更新 cache 一次。
-    pub fn remember_all<I: IntoIterator<Item = (Uuid, f32, f32, u32)>>(&self, items: I) {
+    pub fn remember_all<I: IntoIterator<Item = (Uuid, f32, f32, u32, u32)>>(&self, items: I) {
         {
             let mut m = self.inner.write().unwrap();
-            for (id, x, y, ether) in items {
-                m.insert(id, Saved { x, y, ether });
+            for (id, x, y, ether, wallet_expansions) in items {
+                m.insert(id, Saved { x, y, ether, wallet_expansions });
             }
         }
         self.persist_jsonl();
@@ -145,7 +149,7 @@ impl PositionStore {
 
     /// 把線上已登入玩家批次 upsert 到 Postgres（遊戲迴圈每 ~10 秒呼叫）。非 Postgres 模式無動作。
     /// 失敗只記 log、不中斷遊戲迴圈（下一輪再試;cache 仍是行程內權威）。
-    pub async fn flush_online(&self, rows: &[(Uuid, String, String, f32, f32, u32)]) {
+    pub async fn flush_online(&self, rows: &[(Uuid, String, String, f32, f32, u32, u32)]) {
         let Backend::Postgres(pool) = &self.backend else {
             return;
         };
@@ -157,13 +161,12 @@ impl PositionStore {
         }
     }
 
-    /// 玩家離線時把其最後狀態 upsert 到 Postgres（補上「最後一次 10s flush 後到離線之間」的
-    /// 移動,離線後就不再進線上快照了）。非 Postgres 模式無動作。
-    pub async fn flush_one(&self, id: Uuid, name: &str, species: &str, x: f32, y: f32, ether: u32) {
+    /// 玩家離線時把其最後狀態 upsert 到 Postgres（補離線前最後進度）。非 Postgres 模式無動作。
+    pub async fn flush_one(&self, id: Uuid, name: &str, species: &str, x: f32, y: f32, ether: u32, wallet_expansions: u32) {
         let Backend::Postgres(pool) = &self.backend else {
             return;
         };
-        let row = [(id, name.to_string(), species.to_string(), x, y, ether)];
+        let row = [(id, name.to_string(), species.to_string(), x, y, ether, wallet_expansions)];
         if let Err(e) = upsert_rows(pool, &row).await {
             tracing::warn!("Postgres flush_one 失敗：{e}");
         }
@@ -183,6 +186,7 @@ impl PositionStore {
                         x: s.x,
                         y: s.y,
                         ether: s.ether,
+                        wallet_expansions: s.wallet_expansions,
                     })
                     .ok()
                 })
@@ -206,35 +210,37 @@ impl PositionStore {
 /// 走 runtime query API（非 `query!` 巨集），故 build/test 不需 live DB。
 async fn upsert_rows(
     pool: &PgPool,
-    rows: &[(Uuid, String, String, f32, f32, u32)],
+    rows: &[(Uuid, String, String, f32, f32, u32, u32)],
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    for (id, name, species, x, y, ether) in rows {
+    for (id, name, species, x, y, ether, wallet_expansions) in rows {
         sqlx::query(
-            "INSERT INTO players (id, name, species, x, y, ether, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, now()) \
+            "INSERT INTO players (id, name, species, x, y, ether, wallet_expansions, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
              ON CONFLICT (id) DO UPDATE SET \
                name = EXCLUDED.name, species = EXCLUDED.species, \
-               x = EXCLUDED.x, y = EXCLUDED.y, ether = EXCLUDED.ether, updated_at = now()",
+               x = EXCLUDED.x, y = EXCLUDED.y, ether = EXCLUDED.ether, \
+               wallet_expansions = EXCLUDED.wallet_expansions, updated_at = now()",
         )
         .bind(id)
         .bind(name)
         .bind(species)
         .bind(x)
         .bind(y)
-        .bind(*ether as i64) // ether 欄位是 BIGINT(i64);u32 一定塞得下、不會溢位
+        .bind(*ether as i64)
+        .bind(*wallet_expansions as i64)
         .execute(&mut *tx)
         .await?;
     }
     tx.commit().await
 }
 
-/// 啟動時把 `players` 表載回 cache（只取位置 + 乙太,recall 不需要 name/species）。
+/// 啟動時把 `players` 表載回 cache（只取位置 + 乙太 + 擴張格數）。
 /// 位置一律過 `spawn_at` 驗證,DB 即使存進壞值也不會把玩家生到非法位置。
 /// 載入失敗（DB 連線剛斷等）回空 map,讓伺服器仍能起來、之後再寫回。
 async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
     let mut map = HashMap::new();
-    let rows = match sqlx::query("SELECT id, x, y, ether FROM players")
+    let rows = match sqlx::query("SELECT id, x, y, ether, wallet_expansions FROM players")
         .fetch_all(pool)
         .await
     {
@@ -249,13 +255,15 @@ async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
         let x: f32 = r.get("x");
         let y: f32 = r.get("y");
         let ether: i64 = r.get("ether");
+        let wallet_expansions: i64 = r.get("wallet_expansions");
         let (x, y) = spawn_at(Some((x, y)));
         map.insert(
             id,
             Saved {
                 x,
                 y,
-                ether: ether.max(0) as u32, // BIGINT 理論可負;夾回非負再轉 u32
+                ether: ether.max(0) as u32,
+                wallet_expansions: wallet_expansions.max(0) as u32,
             },
         );
     }
@@ -267,9 +275,8 @@ fn load_from_disk(path: &str) -> HashMap<Uuid, Saved> {
     if let Ok(contents) = std::fs::read_to_string(path) {
         for line in contents.lines() {
             if let Ok(r) = serde_json::from_str::<DiskRow>(line) {
-                // 位置經 spawn_at 驗證（壞值退回中央/夾邊界）;ether 型別本身擋壞值。
                 let (x, y) = spawn_at(Some((r.x, r.y)));
-                map.insert(r.id, Saved { x, y, ether: r.ether });
+                map.insert(r.id, Saved { x, y, ether: r.ether, wallet_expansions: r.wallet_expansions });
             }
         }
     }
@@ -318,13 +325,14 @@ mod tests {
     fn remember_then_recall_round_trips() {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 10.0, 20.0, 5);
+        store.remember(id, 10.0, 20.0, 5, 0);
         assert_eq!(
             store.recall(id),
             Some(Saved {
                 x: 10.0,
                 y: 20.0,
-                ether: 5
+                ether: 5,
+                wallet_expansions: 0,
             })
         );
     }
@@ -333,34 +341,35 @@ mod tests {
     fn remember_overwrites_previous_state() {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 10.0, 20.0, 1);
-        store.remember(id, 30.0, 40.0, 9);
+        store.remember(id, 10.0, 20.0, 1, 0);
+        store.remember(id, 30.0, 40.0, 9, 2);
         assert_eq!(
             store.recall(id),
             Some(Saved {
                 x: 30.0,
                 y: 40.0,
-                ether: 9
+                ether: 9,
+                wallet_expansions: 2,
             })
         );
     }
 
     #[test]
     fn recalled_ether_survives_round_trip() {
-        // 收成的乙太要能跟著重連回來，不被歸零。
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 0.0, 0.0, 42);
+        store.remember(id, 0.0, 0.0, 42, 3);
         assert_eq!(store.recall(id).map(|s| s.ether), Some(42));
+        assert_eq!(store.recall(id).map(|s| s.wallet_expansions), Some(3));
     }
 
     #[test]
     fn saved_round_trips_through_serde() {
-        // 持久化格式地基：玩家最後狀態序列化再讀回要一模一樣。
         let s = Saved {
             x: 123.5,
             y: 678.25,
             ether: 7,
+            wallet_expansions: 2,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Saved = serde_json::from_str(&json).unwrap();
@@ -369,12 +378,11 @@ mod tests {
 
     #[test]
     fn loaded_bad_position_still_gated_by_spawn_at() {
-        // 即使耐久層存進非有限座標，進場仍一律經 spawn_at 驗證、會退回地圖中央。
-        // 有限的「界外」座標則原樣保留。
         let bad = Saved {
             x: f32::INFINITY,
             y: WORLD_HEIGHT + 9999.0,
             ether: 1,
+            wallet_expansions: 0,
         };
         let (x, y) = spawn_at(Some((bad.x, bad.y)));
         assert_eq!((x, y), default_spawn());
@@ -383,6 +391,7 @@ mod tests {
             x: -100.0,
             y: WORLD_HEIGHT + 100.0,
             ether: 1,
+            wallet_expansions: 0,
         };
         let (x, y) = spawn_at(Some((out_of_bounds.x, out_of_bounds.y)));
         assert_eq!((x, y), (-100.0, WORLD_HEIGHT + 100.0));
@@ -393,28 +402,27 @@ mod tests {
         let store = PositionStore::in_memory();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
-        store.remember(a, 1.0, 1.0, 3);
+        store.remember(a, 1.0, 1.0, 3, 0);
         assert_eq!(store.recall(b), None);
         assert_eq!(
             store.recall(a),
             Some(Saved {
                 x: 1.0,
                 y: 1.0,
-                ether: 3
+                ether: 3,
+                wallet_expansions: 0,
             })
         );
     }
 
     #[tokio::test]
     async fn flush_is_noop_without_postgres() {
-        // 非 Postgres 模式（測試）下,flush_* 不該 panic、也不需 DB。
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
         store
-            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3)])
+            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3, 0)])
             .await;
-        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3).await;
-        // cache 不受 flush 影響（flush 只負責耐久寫出,不改 cache）。
+        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3, 0).await;
         assert_eq!(store.recall(id), None);
     }
 }
