@@ -7,6 +7,18 @@
 > **純補洞、重構、輸入加固、效能微調都不算主軸**；只有「**擋住主軸**」或「**線上真的壞了**
 > （`journalctl -u butfun` 有 error/panic）」才做，做完立刻回主軸。
 
+## 🔴 先做這個（可靠性 — 2026-06-09 prod 事故後，擋在主軸 feature 前）
+0. **建 e2e 冒煙閘（最高優先；做完打勾、才回下面的主軸 feature）**
+   - 事故：full-clean 後 prod「上線成功但沒角色」。真因是 hot-path 的 `.unwrap()`（敵人攻擊/採集
+     查找，查不到就 panic）**靜默炸死整條遊戲迴圈的 tokio task**——但 `/healthz` 還回 200，
+     `cargo test`（純邏輯）與 AI 審查都沒擋住。這類「迴圈死了但 HTTP 還活」是最難抓的一型。
+   - 做一支冒煙測試：**真的起 server → 連 `/ws` → 斷言收到「含自己 id」的快照 → 斷言遊戲迴圈活著**
+     （連兩幀 snapshot 的 tick/實體有推進，或啟動後一小段 log 無 `panicked`）。放 `tests/` 或
+     `scripts/auto/smoke.*` 皆可，要能在 CI/部署/審查腳本裡無頭跑。
+   - **接進兩處**：① `scripts/deploy.sh` 健康檢查（除了 healthz，再跑這支冒煙，過了才算上線成功、
+     沒過就回滾舊 binary）；② reviewer 硬閘（`cargo test` 之外，合併前在 PR 分支跑過冒煙才准 merge）。
+   - 屬「線上真的壞了」類，照本檔規則**優先於 feature**。做完回主軸。
+
 ## 現在做
 3. **領地 + 經濟**
    - ✅ 買斷地（ClaimPlot，花 20 乙太獲得保護 + 所有權）

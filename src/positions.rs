@@ -18,8 +18,6 @@ use sqlx::postgres::PgPool;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
-
 /// 無 `DATABASE_URL` 時的退回持久化檔（執行期產生、已 gitignore）。接 Postgres 後這個檔
 /// 退為「遷移種子」：啟動時 DB 沒有的 id 仍會從這裡補回 cache,讓換版不會把人洗回中央。
 const STORE_PATH: &str = "data/positions.jsonl";
@@ -35,9 +33,17 @@ struct DiskRow {
     wallet_expansions: u32,
 }
 
-/// 玩家進場時的預設位置（地圖中央）。沒有歷史位置時用它。
+/// 玩家進場時的預設位置——刻意生在「公共農地」正中央。沒有歷史位置(新玩家/全清後)時用它。
+/// 動機:全清後大家 0 乙太,而種田要先有地、買地又要乙太 → 死結。讓新玩家一落地就站在
+/// **可耕種的無主公共地**上,先種田攢第一桶乙太、再買自己的地(配「沒買的地一樣能種、
+/// 買地是為了保護」的設計)。
 pub fn default_spawn() -> (f32, f32) {
-    (WORLD_WIDTH / 2.0, WORLD_HEIGHT / 2.0)
+    use crate::field::{FIELD_COLS, FIELD_ROWS, TILE_SIZE};
+    use crate::state::{PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y};
+    (
+        PUB_FIELD_ORIGIN_X + FIELD_COLS as f32 * TILE_SIZE / 2.0,
+        PUB_FIELD_ORIGIN_Y + FIELD_ROWS as f32 * TILE_SIZE / 2.0,
+    )
 }
 
 /// 依「是否有記住的歷史位置」決定進場座標。純函式，便於測試。
@@ -286,6 +292,7 @@ fn load_from_disk(path: &str) -> HashMap<Uuid, Saved> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
 
     #[test]
     fn spawn_falls_back_to_center_when_no_history() {
