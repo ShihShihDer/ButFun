@@ -1302,109 +1302,119 @@
       return;
     }
     const w = world.width, h = world.height;
-    // 等比縮到 size 方框內，長寬各自映射（世界目前是正方，但不假設）。
+    // 身邊範圍小地圖:不再縮整張世界,而是以玩家為中心、只畫周圍 MM_RADIUS 世界半徑那一圈
+    // (玩家點名要「就身邊」)。方框 size×size,玩家永遠在正中央,北朝上。
     const size = minimapSize();
-    const scale = size / Math.max(w, h);
-    const mw = w * scale, mh = h * scale;
-    // 縮圖正下方再留一條圖例帶(兩行三欄色點＋標籤)。整組往上挪 legendH,讓「縮圖＋圖例」
-    // 合起來仍貼著右下安全區內、不被瀏海/圓角/手勢條切到——只是把錨點抬高一條圖例的厚度。
-    // 圖例帶高度依列數自適應(每列三欄):加品項時不必手動改常數,也不會讓最後一列
-    // 溢出半透明底框外。每列約 12px、頭尾再各留一點內距。
+    const MM_RADIUS = 1100; // 顯示半徑(世界 px);身邊一圈
+    const scale = size / (2 * MM_RADIUS);
+    // 中心=玩家(用渲染插值 rx/ry 跟主畫面同步);沒有自己的玩家(訪客剛進)就退回世界中心。
+    const meP = myId ? players.get(myId) : null;
+    const cx = meP ? meP.rx : w / 2;
+    const cy = meP ? meP.ry : h / 2;
+    // 世界座標 → 小地圖螢幕座標(玩家置中)。
+    const toMiniX = (wx) => ox + size / 2 + (wx - cx) * scale;
+    const toMiniY = (wy) => oy + size / 2 + (wy - cy) * scale;
+    // 縮圖正下方留一條圖例帶(每列三欄,列數自適應)。整組往上挪 legendH,貼右下安全區內。
     const MM_LEGEND_ROWS = Math.ceil(MM_LEGEND.length / 3);
     const MM_LEGEND_H = MM_LEGEND_ROWS * 12 + 8;
     // 右下錨點扣掉安全區內距,notched 手機不被瀏海/圓角/手勢條切到。
-    const ox = viewW - MM.margin - safeArea.right - mw;   // 縮圖內容左上角（螢幕座標）
-    const oy = viewH - MM.margin - safeArea.bottom - mh - MM_LEGEND_H;
-    const clampUnit = (v, hi) => Math.max(0, Math.min(v, hi));
+    const ox = viewW - MM.margin - safeArea.right - size;
+    const oy = viewH - MM.margin - safeArea.bottom - size - MM_LEGEND_H;
 
-    // 半透明深底面板（對齊夜色色調），讓縮圖在任何地表上都讀得到。底色往下多包住圖例帶。
+    // 半透明深底面板(對齊夜色),底色往下多包住圖例帶。
     ctx.fillStyle = "rgba(10,16,30,0.55)";
-    ctx.fillRect(ox - MM.pad, oy - MM.pad, mw + MM.pad * 2, mh + MM_LEGEND_H + MM.pad * 2);
+    ctx.fillRect(ox - MM.pad, oy - MM.pad, size + MM.pad * 2, size + MM_LEGEND_H + MM.pad * 2);
 
-    // 各玩家農地位置（黃銅外框前先畫，免得被框線蓋住）。自己那塊畫亮、別人的暗。
+    // 以下內容裁切在方框內(身邊以外不畫)。
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, size, size);
+    ctx.clip();
+
+    // 生態域背景:粗格取樣 biomeAt,把身邊地貌(草原/森林/岩/沙/水)用底色畫出來——
+    // 跟主畫面同一套確定性噪聲,小地圖因此「看得到地形」。世界界外畫暗(void),自然標出邊界。
+    const MM_STEP = 8; // 每格 mini px(粗取樣,夠看地貌又省效能;之後切片3 改離屏快取)
+    for (let yy = 0; yy < size; yy += MM_STEP) {
+      for (let xx = 0; xx < size; xx += MM_STEP) {
+        const wx = cx + (xx + MM_STEP / 2 - size / 2) / scale;
+        const wy = cy + (yy + MM_STEP / 2 - size / 2) / scale;
+        if (wx < 0 || wy < 0 || wx > w || wy > h) ctx.fillStyle = "rgba(6,9,18,0.92)";
+        else ctx.fillStyle = BIOME_GROUND[biomeAt(wx, wy)];
+        ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
+      }
+    }
+
+    // 各玩家農地(在範圍內才畫)。自己那塊畫亮、別人的暗。
     for (const f of fields) {
-      const fx = ox + clampUnit(f.origin_x, w) * scale;
-      const fy = oy + clampUnit(f.origin_y, h) * scale;
+      const fx = toMiniX(f.origin_x);
+      const fy = toMiniY(f.origin_y);
       const fw = f.cols * f.tile_size * scale;
       const fh = f.rows * f.tile_size * scale;
+      if (fx + fw < ox || fx > ox + size || fy + fh < oy || fy > oy + size) continue;
       ctx.fillStyle = f.owner === myId ? "rgba(201,162,75,0.95)" : "rgba(123,80,40,0.85)";
       ctx.fillRect(fx, fy, Math.max(3, fw), Math.max(3, fh));
     }
 
-    // 世界邊界（沿用世界邊框的黃銅設計語彙）。
-    ctx.strokeStyle = "rgba(201,162,75,0.7)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(ox, oy, mw, mh);
-
-    // 目前畫面看得到的範圍（鏡頭視野框）：在 2000x2000 大世界裡，光看自己的點還
-    // 不知道「這一眼看到多大一塊」。用最近一次 render 的鏡頭左上角 lastCam + 畫布
-    // 尺寸推出可見世界矩形（夾在世界界內），畫成細白框。純表現、純從鏡頭狀態推得，
-    // 不嵌任何遊戲規則。畫在玩家點之前，讓玩家點疊在最上層仍醒目。
-    const vx0 = clampUnit(lastCam.x, w);
-    const vy0 = clampUnit(lastCam.y, h);
-    const vx1 = clampUnit(lastCam.x + viewW, w);
-    const vy1 = clampUnit(lastCam.y + viewH, h);
+    // 目前畫面看得到的範圍(鏡頭視野框):用最近一次 render 的鏡頭 lastCam + 畫布尺寸推得,
+    // 細白框。身邊地圖上仍標出「這一眼看多大」。clip 已限制不溢出方框。
     ctx.strokeStyle = "rgba(255,255,255,0.5)";
     ctx.lineWidth = 1;
     ctx.strokeRect(
-      ox + vx0 * scale, oy + vy0 * scale,
-      Math.max(2, (vx1 - vx0) * scale), Math.max(2, (vy1 - vy0) * scale)
+      toMiniX(lastCam.x), toMiniY(lastCam.y),
+      Math.max(2, viewW * scale), Math.max(2, viewH * scale)
     );
 
-    // 採集節點:世界 2000x2000,主畫面只看得到視野內那幾棵樹/石/礦,玩家不知道遠處哪裡
-    // 成群、該往哪走才有得採。小地圖點出每個節點(色依 kind),讓「資源聚在哪」一眼可讀——
-    // 採乙太礦、找木石的探索動線都靠這層導航。採空(重生中)的畫淡,只標當下真能採的。
-    // 畫在敵人/玩家之前當最底層,讓威脅紅點與玩家點疊在上面仍醒目。純表現、純讀既有快照。
+    // 採集節點(範圍內才點,色依 kind;採空畫淡)。
     for (const n of nodes) {
       const col = MM_NODE_COLOR[n.kind];
-      if (!col) continue; // 未知 kind 不亂點
-      const nx = ox + clampUnit(n.x, w) * scale;
-      const ny = oy + clampUnit(n.y, h) * scale;
+      if (!col) continue;
+      const nx = toMiniX(n.x), ny = toMiniY(n.y);
+      if (nx < ox || nx > ox + size || ny < oy || ny > oy + size) continue;
       ctx.beginPath();
       ctx.arc(nx, ny, 1.8, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(${col},${n.harvestable ? 0.9 : 0.3})`;
       ctx.fill();
     }
 
-    // 敵人:戰鬥(1-F)已上線、世界又大(2000x2000),光看主畫面只知道身邊有沒有怪,
-    // 不知道遠處哪裡成群。小地圖畫出活著的敵人(紅點),讓玩家一眼看出威脅聚在哪、
-    // 要避開還是去刷。被打倒(重生中)的不畫——只標當下真正的威脅。沿用敵人血條/
-    // 受擊回饋的紅(#d65a5a)當「危險」色語彙,跟玩家點(亮黃/暗藍)區隔。畫在玩家點
-    // 之前,讓自己的點疊在最上層仍醒目。純表現、純讀既有快照,不嵌任何戰鬥判定。
+    // 敵人(活著的紅點,範圍內才畫)。
     for (const e of enemies) {
       if (!e.alive) continue;
-      const ex = ox + clampUnit(e.x, w) * scale;
-      const ey = oy + clampUnit(e.y, h) * scale;
+      const ex = toMiniX(e.x), ey = toMiniY(e.y);
+      if (ex < ox || ex > ox + size || ey < oy || ey > oy + size) continue;
       ctx.beginPath();
       ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(214,90,90,0.85)";
       ctx.fill();
     }
 
-    // 玩家：自己亮、其他人暗。用渲染插值座標 rx/ry，跟主畫面同步不跳動。
+    // 玩家:自己亮(永遠在正中央)、其他人暗(範圍內才畫)。用 rx/ry 跟主畫面同步不跳動。
     for (const p of players.values()) {
       const isMe = p.id === myId;
-      const px = ox + clampUnit(p.rx, w) * scale;
-      const py = oy + clampUnit(p.ry, h) * scale;
+      const px = toMiniX(p.rx), py = toMiniY(p.ry);
+      if (!isMe && (px < ox || px > ox + size || py < oy || py > oy + size)) continue;
       ctx.beginPath();
       ctx.arc(px, py, isMe ? 4 : 2.5, 0, Math.PI * 2);
       ctx.fillStyle = isMe ? "#ffd24a" : "rgba(111,168,220,0.7)";
       ctx.fill();
     }
 
-    // 圖例帶:縮圖下方每列三欄(列數依品項自適應),每格「色 swatch＋中文」。色與上面各點層
-    // 一一對應,讓玩家把縮圖上的彩點/方塊對得回「那是樹/石/乙太礦/敵人/我/夥伴/田」。畫在縮圖
-    // 之下、收合鈕之前;純表現、不嵌規則。
-    const mmColW = mw / 3;
+    ctx.restore(); // 解除裁切
+
+    // 方框外框(黃銅語彙)。
+    ctx.strokeStyle = "rgba(201,162,75,0.7)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ox, oy, size, size);
+
+    // 圖例帶:縮圖下方每列三欄,每格「色 swatch＋中文」。畫在縮圖之下、收合鈕之前。
+    const mmColW = size / 3;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.font = "9px system-ui, sans-serif";
     MM_LEGEND.forEach((it, i) => {
       const lx = ox + (i % 3) * mmColW + 2;
-      const ly = oy + mh + 9 + Math.floor(i / 3) * 12;
+      const ly = oy + size + 9 + Math.floor(i / 3) * 12;
       ctx.fillStyle = `rgb(${it.c})`;
       if (it.sq) {
-        // 方塊 swatch:對齊農地在地圖上本是方塊(而非圓點),語彙一致、也跟「我」的黃圓點分得開。
         ctx.fillRect(lx, ly - 2.2, 4.4, 4.4);
       } else {
         ctx.beginPath();
@@ -1418,7 +1428,7 @@
 
     // 收合鈕:面板右上角一顆小「–」,點它(或按 M)把小地圖收起。畫在最後蓋在縮圖上。
     const tb = 18;
-    const tx = ox + mw + MM.pad - tb;
+    const tx = ox + size + MM.pad - tb;
     const ty = oy - MM.pad;
     ctx.fillStyle = "rgba(10,16,30,0.85)";
     ctx.fillRect(tx, ty, tb, tb);
