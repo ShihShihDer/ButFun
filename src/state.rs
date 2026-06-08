@@ -85,6 +85,10 @@ impl Player {
     /// 依目前輸入意圖，把位置往前推進 `dt` 秒（權威整合，含邊界夾制）。
     /// 抽成純函式以便自動測試。
     pub fn step(&mut self, dt: f32) {
+        // 被打趴（倒地）期間定身：等待復原計時器跑完，不接受任何移動輸入。
+        if self.vitals.is_downed() {
+            return;
+        }
         let mut dx = 0.0;
         let mut dy = 0.0;
         if self.input.up {
@@ -343,6 +347,20 @@ mod tests {
         p.step(1.0);
         assert_eq!(p.x, 300.0);
         assert_eq!(p.y, 300.0);
+    }
+
+    #[test]
+    fn downed_player_cannot_move() {
+        // 被打趴後按方向鍵也不能移動（倒地定身）。
+        let mut p = player_at(300.0, 300.0, Input {
+            right: true,
+            ..Default::default()
+        });
+        p.vitals.take_damage(crate::vitals::MAX_HP);
+        assert!(p.vitals.is_downed());
+        p.step(1.0);
+        assert_eq!(p.x, 300.0, "被打趴後不應移動");
+        assert_eq!(p.y, 300.0, "被打趴後不應移動");
     }
 
     #[test]

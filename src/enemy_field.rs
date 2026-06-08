@@ -10,6 +10,7 @@ use world_core::{chunk_key, CHUNK_SIZE};
 
 use crate::combat::{Enemy, EnemyKind};
 use crate::inventory::ItemKind;
+use crate::positions::is_in_safe_zone;
 
 /// 每區塊平均生成的敵人數。
 const ENEMIES_PER_CHUNK: usize = 1;
@@ -262,6 +263,10 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     for i in 0..ENEMIES_PER_CHUNK {
         let id = (cx, cy, i);
         let (x, y) = spawn_position(id);
+        // 新手村安全區不生成敵人，讓新玩家有緩衝時間熟悉遊戲。
+        if is_in_safe_zone(x, y) {
+            continue;
+        }
         let biome = world_core::biome_at(x as f64, y as f64);
         let kind = kind_for_biome(biome);
         enemies.push(PlacedEnemy {

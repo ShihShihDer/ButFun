@@ -326,6 +326,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {
+                    // 被打趴時不能耕種——倒地定身，等復原傳回新手村再繼續。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
                     // 農地互動：先嘗試自己的私有農地；座標不在私有地內則嘗試公共農地。
                     // 私有地：只有擁有者能互動（`id` 即 uid，訪客沒有地塊 → 取不到 → 不能耕種）。
                     // 公共地：任何已登入玩家均可互動（軟劫掠：誰先採誰得）。
@@ -378,6 +382,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Gather) => {
+                    // 被打趴時不能採集——倒地定身，等復原傳回新手村再繼續。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
                     // 採集：用玩家**自己的權威位置**判定 GATHER_REACH 內最近的可採節點(防隔空採集,
                     // 客戶端送的座標只是觸發點、不採信)。採到的種類 `.into()` 轉成背包物品加進背包。
                     // 每把鎖各自取各自放(先讀玩家位置、再寫節點、再寫玩家背包),同時至多持一把,不互鎖。
