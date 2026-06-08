@@ -150,7 +150,9 @@ impl EnemyField {
         self.ensure_chunks_around(px, py, ATTACK_REACH);
 
         let (cx, cy) = chunk_key(px, py);
-        let mut best: Option<((i32, i32, usize), f32)> = None;
+        // 記住敵人「實際被找到的 chunk」——別從 id.0/id.1 推導 chunk：敵人會移動跨 chunk,
+        // 其 id 內含的原始 chunk 欄位可能對不上現在所在的 chunk,事後重查就會 None。
+        let mut best: Option<((i32, i32), (i32, i32, usize), f32)> = None; // (找到的 chunk, 敵人 id, dist²)
         let reach_sq = ATTACK_REACH * ATTACK_REACH;
 
         for dy in -1..=1 {
@@ -164,8 +166,8 @@ impl EnemyField {
                         let dist_y = placed.y - py;
                         let dist_sq = dist_x * dist_x + dist_y * dist_y;
                         if dist_sq <= reach_sq {
-                            if best.as_ref().map_or(true, |(_, b)| dist_sq < *b) {
-                                best = Some((placed.id, dist_sq));
+                            if best.as_ref().map_or(true, |(_, _, b)| dist_sq < *b) {
+                                best = Some(((cx + dx, cy + dy), placed.id, dist_sq));
                             }
                         }
                     }
@@ -173,13 +175,17 @@ impl EnemyField {
             }
         }
 
-        if let Some((id, _)) = best {
-            let key = (id.0, id.1);
-            let enemies = self.chunks.get_mut(&key).unwrap();
-            let placed = enemies.iter_mut().find(|e| e.id == id).unwrap();
-            let kind = placed.enemy.kind();
-            let loot = placed.enemy.attack(power);
-            Some((kind, loot))
+        // 用「實際找到的 chunk」重查;查不到一律回 None——**絕不 unwrap**:None 一 unwrap 整個
+        // 遊戲迴圈 panic 死掉、全服收不到快照(玩家進去只有場景沒角色),就是這次踩的雷。
+        if let Some((found_chunk, id, _)) = best {
+            if let Some(enemies) = self.chunks.get_mut(&found_chunk) {
+                if let Some(placed) = enemies.iter_mut().find(|e| e.id == id) {
+                    let kind = placed.enemy.kind();
+                    let loot = placed.enemy.attack(power);
+                    return Some((kind, loot));
+                }
+            }
+            None
         } else {
             None
         }
