@@ -94,7 +94,8 @@ impl NodeField {
         self.ensure_chunks_around(px, py, GATHER_REACH);
 
         let (cx, cy) = chunk_key(px, py);
-        let mut best: Option<( (i32, i32, usize), f32 )> = None;
+        // 記住節點「實際被找到的 chunk」——別從 id 推:節點重生會換位,id 內含的原 chunk 可能對不上。
+        let mut best: Option<((i32, i32), (i32, i32, usize), f32)> = None; // (找到的 chunk, 節點 id, dist²)
         let reach_sq = GATHER_REACH * GATHER_REACH;
 
         for dy in -1..=1 {
@@ -108,8 +109,8 @@ impl NodeField {
                         let dist_y = placed.y - py;
                         let dist_sq = dist_x * dist_x + dist_y * dist_y;
                         if dist_sq <= reach_sq {
-                            if best.as_ref().map_or(true, |(_, b)| dist_sq < *b) {
-                                best = Some((placed.id, dist_sq));
+                            if best.as_ref().map_or(true, |(_, _, b)| dist_sq < *b) {
+                                best = Some(((cx + dx, cy + dy), placed.id, dist_sq));
                             }
                         }
                     }
@@ -117,12 +118,15 @@ impl NodeField {
             }
         }
 
-        if let Some((id, _)) = best {
-            let chunk_pos = (id.0, id.1);
-            let nodes = self.chunks.get_mut(&chunk_pos).unwrap();
-            let placed = nodes.iter_mut().find(|n| n.id == id).unwrap();
-            let kind = placed.node.kind();
-            placed.node.gather().map(|amount| (kind, amount))
+        if let Some((found_chunk, id, _)) = best {
+            // 用實際 chunk 重查;查不到回 None,**絕不 unwrap**(None 一 unwrap 會炸死遊戲迴圈、全服沒快照)。
+            if let Some(nodes) = self.chunks.get_mut(&found_chunk) {
+                if let Some(placed) = nodes.iter_mut().find(|n| n.id == id) {
+                    let kind = placed.node.kind();
+                    return placed.node.gather().map(|amount| (kind, amount));
+                }
+            }
+            None
         } else {
             None
         }
