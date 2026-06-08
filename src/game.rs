@@ -77,15 +77,31 @@ pub fn spawn(app: AppState) {
                 for (_owner, field) in fields.iter_mut() {
                     field.tick(dt * growth_rate);
                 }
+                // 公共農地與個人地塊同步成長，廣播時以 owner=nil 加入列表讓前端辨識。
+                let pub_view = {
+                    let mut pf = app.pub_field.write().unwrap();
+                    pf.tick(dt * growth_rate);
+                    if want_broadcast {
+                        let mut v = pf.view();
+                        v.owner = uuid::Uuid::nil();
+                        Some(v)
+                    } else {
+                        None
+                    }
+                };
                 if want_broadcast {
-                    fields
+                    let mut views: Vec<FieldView> = fields
                         .iter()
                         .map(|(owner, field)| {
                             let mut v = field.view();
                             v.owner = *owner;
                             v
                         })
-                        .collect()
+                        .collect();
+                    if let Some(pv) = pub_view {
+                        views.push(pv);
+                    }
+                    views
                 } else {
                     Vec::new()
                 }

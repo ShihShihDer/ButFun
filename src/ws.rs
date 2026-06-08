@@ -324,14 +324,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {
-                    // per-player：玩家只能照顧**自己**那塊地。用自己的 id 取自己的 `Field`
-                    // （訪客沒有地塊 → 取不到 → 一律不能耕種），歸屬由此建構性保證：
-                    // 路過別人的地時送來的座標落在別人 plot，但 `cell_at` 是對「自己這塊」
-                    // 算的 → 回 `None` → 無效，無從隔空動到別人的地。
-                    // 仍保留「人要近到搆得著自己這塊」的權威檢查。每把鎖各自取各自放，
-                    // 同一時間至多持一把，沿用原先「不互鎖」的鎖序。
+                    // 農地互動：先嘗試自己的私有農地；座標不在私有地內則嘗試公共農地。
+                    // 私有地：只有擁有者能互動（`id` 即 uid，訪客沒有地塊 → 取不到 → 不能耕種）。
+                    // 公共地：任何已登入玩家均可互動（軟劫掠：誰先採誰得）。
+                    // 每把鎖各自取各自放，同一時間至多持一把，沿用「不互鎖」的鎖序。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
-                    let outcome = {
+
+                    // 嘗試私有農地（若座標在其中回 Some(outcome)，否則 None）。
+                    let own_outcome: Option<FarmOutcome> = {
                         let mut fields = app.fields.write().unwrap();
                         match fields.get_mut(&id) {
                             Some(field) => match field.cell_at(x, y) {
@@ -340,17 +340,38 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         .map(|(px, py)| field.within_reach(px, py))
                                         .unwrap_or(false) =>
                                 {
-                                    field.interact(col, row)
+                                    Some(field.interact(col, row))
                                 }
-                                _ => FarmOutcome::Nothing,
+                                // 座標不在私有地（或太遠）→ 留給公共農地試試。
+                                _ => None,
                             },
-                            None => FarmOutcome::Nothing,
+                            None => None,
                         }
                     };
+
+                    // 若私有地沒命中，且玩家已登入，嘗試公共農地。
+                    let outcome = if let Some(o) = own_outcome {
+                        o
+                    } else if authed_uid.is_some() {
+                        let mut pf = app.pub_field.write().unwrap();
+                        match pf.cell_at(x, y) {
+                            Some((col, row))
+                                if player_pos
+                                    .map(|(px, py)| pf.within_reach(px, py))
+                                    .unwrap_or(false) =>
+                            {
+                                pf.interact(col, row)
+                            }
+                            _ => FarmOutcome::Nothing,
+                        }
+                    } else {
+                        FarmOutcome::Nothing
+                    };
+
                     if let FarmOutcome::Harvested(ether) = outcome {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             p.ether = p.ether.saturating_add(ether);
-                            tracing::info!(player = %p.name, ether = p.ether, "收成乙太");
+                            tracing::info!(player = %p.name, ether = p.ether, "農地收成乙太");
                         }
                     }
                 }

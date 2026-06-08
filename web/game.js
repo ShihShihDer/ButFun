@@ -1371,7 +1371,9 @@
       const fw = f.cols * f.tile_size * scale;
       const fh = f.rows * f.tile_size * scale;
       if (fx + fw < ox || fx > ox + size || fy + fh < oy || fy > oy + size) continue;
-      ctx.fillStyle = f.owner === myId ? "rgba(201,162,75,0.95)" : "rgba(123,80,40,0.85)";
+      ctx.fillStyle = f.owner === myId ? "rgba(201,162,75,0.95)"
+          : f.owner === PUB_FIELD_OWNER ? "rgba(74,184,160,0.9)"
+          : "rgba(123,80,40,0.85)";
       ctx.fillRect(fx, fy, Math.max(3, fw), Math.max(3, fh));
     }
 
@@ -1707,6 +1709,12 @@
   // 自己擁有的那塊地（owner === myId）；訪客或尚未分到地時為 null。
   function myField() {
     return myId ? fields.find((f) => f.owner === myId) : null;
+  }
+
+  // 公共農地（owner === nil UUID）；伺服器啟動後一直存在。
+  const PUB_FIELD_OWNER = "00000000-0000-0000-0000-000000000000";
+  function pubField() {
+    return fields.find((f) => f.owner === PUB_FIELD_OWNER) || null;
   }
 
   // 玩家(權威座標 px,py)是否近到能照顧**指定的**那塊地：鏡像伺服器的 within_reach，
@@ -2319,10 +2327,15 @@
     if (!f || !f.cells) return;
     const ts = f.tile_size;
     const mine = f.owner === myId;
-    // 自己離自己的農地太遠時把整塊地畫淡，並提示走近——讓伺服器「太遠就拒絕照顧」
-    // 不再表現成「點了沒反應像壞掉」。別人的地不套這個（本就不能由你照顧）。
+    const isPublic = f.owner === PUB_FIELD_OWNER;
     const me = myId ? players.get(myId) : null;
-    const reachable = mine ? (me ? withinFieldReach(f, me.x, me.y) : true) : true;
+
+    // 可互動：自己的地（私有），或公共農地（已登入均可）。
+    const canInteract = mine || (isPublic && !!myId);
+    // 夠近 = 已登入 + 可互動 + 在觸及範圍內；不可互動的地一律算「夠近」（反正點不動，不需淡出）。
+    const reachable = canInteract
+        ? (me ? withinFieldReach(f, me.x, me.y) : true)
+        : true;
     const fx = f.origin_x - camX;
     const fy = f.origin_y - camY;
     const fw = f.cols * ts;
@@ -2334,8 +2347,8 @@
     if (fx + fw < -40 || fy + fh < -40 || fx > viewW + 40 || fy > viewH + 40) return;
 
     ctx.save();
-    if (!reachable) ctx.globalAlpha = 0.55;
-    else if (!mine) ctx.globalAlpha = 0.82; // 別人的地稍微壓一點，凸顯自己的
+    if (!reachable && canInteract) ctx.globalAlpha = 0.55; // 可互動但太遠 → 淡出提示走近
+    else if (!canInteract) ctx.globalAlpha = 0.82; // 別人的地（或未登入看公共地）壓一點
 
     // 整塊田的「土底」墊一層深褐色,讓它跟草地一眼分得開。
     ctx.fillStyle = "#3a2818";
@@ -2351,18 +2364,21 @@
       }
     }
 
-    // hover 高亮 + 腳下格指示:只在「自己的地」且夠近時畫——互動只作用在自己的地,
-    // 別人的地點不動,自然不需要這些「點下去會作用在這格」的目標回饋。
-    if (mine && reachable) {
+    // hover 高亮 + 腳下格指示:在「可互動且夠近」的農地（私有或公共）上畫——
+    // 讓玩家知道「點下去會作用在這格」。公共農地用青綠色系與私有地黃銅區分。
+    const hFill   = isPublic ? "rgba(74,184,160,0.12)"  : "rgba(255,210,74,0.12)";
+    const hStroke = isPublic ? "rgba(74,184,160,0.9)"   : "rgba(255,210,74,0.9)";
+    const fStroke = isPublic ? "rgba(74,184,160,0.55)"  : "rgba(255,210,74,0.55)";
+    if (canInteract && reachable) {
       // 桌面 hover 高亮:游標所指的田格描一圈亮框 + 淡填。手機無 hover 自然不畫。
       if (hoverScreen) {
-        const t = fieldTileAtScreen(hoverScreen.x, hoverScreen.y);
+        const t = fieldTileAtScreen(hoverScreen.x, hoverScreen.y, f);
         if (t) {
           const hx = f.origin_x + t.col * ts - camX;
           const hy = f.origin_y + t.row * ts - camY;
-          ctx.fillStyle = "rgba(255,210,74,0.12)";
+          ctx.fillStyle = hFill;
           ctx.fillRect(hx + 1, hy + 1, ts - 2, ts - 2);
-          ctx.strokeStyle = "rgba(255,210,74,0.9)";
+          ctx.strokeStyle = hStroke;
           ctx.lineWidth = 2;
           ctx.strokeRect(hx + 1, hy + 1, ts - 2, ts - 2);
         }
@@ -2376,7 +2392,7 @@
           const ex = f.origin_x + fcol * ts - camX;
           const ey = f.origin_y + frow * ts - camY;
           ctx.save();
-          ctx.strokeStyle = "rgba(255,210,74,0.55)";
+          ctx.strokeStyle = fStroke;
           ctx.lineWidth = 1.5;
           ctx.setLineDash([4, 3]); // 虛線:跟滑鼠 hover 的實線亮框一眼分得開
           ctx.strokeRect(ex + 2, ey + 2, ts - 4, ts - 4);
@@ -2413,8 +2429,8 @@
       }
     }
 
-    // 周圍畫一圈邊框：自己的黃銅亮框、別人的暗一點，一眼分得出哪塊是自己的。
-    ctx.strokeStyle = mine ? "#c9a24b" : "#8a7340";
+    // 周圍畫一圈邊框：自己的黃銅亮框、公共農地青綠框、別人的暗一點。
+    ctx.strokeStyle = mine ? "#c9a24b" : isPublic ? "#4ab8a0" : "#8a7340";
     ctx.lineWidth = 3;
     ctx.strokeRect(fx - 2, fy - 2, fw + 4, fh + 4);
 
@@ -2422,21 +2438,24 @@
     // 底邊中段留柵門缺口;沒載好退回程式木樁(artOk 把關,跟 tree/rock 同一套 fallback)。
     drawFence(fx, fy, fw, fh, ts);
 
-    // 田地名字標籤：自己的標「你的乙太田」，別人的標地主名。
+    // 田地名字標籤：自己的→「你的乙太田」，公共→「公共農地」，別人的→地主名。
     const owner = players.get(f.owner);
-    const label = mine ? "你的乙太田 🌱" : `${owner ? owner.name : "拓荒者"} 的乙太田`;
-    ctx.fillStyle = mine ? "rgba(232,224,207,0.9)" : "rgba(232,224,207,0.7)";
+    const label = mine ? "你的乙太田 🌱"
+        : isPublic ? "公共農地 🌿（誰種誰得）"
+        : `${owner ? owner.name : "拓荒者"} 的乙太田`;
+    ctx.fillStyle = (mine || isPublic) ? "rgba(232,224,207,0.9)" : "rgba(232,224,207,0.7)";
     ctx.font = "13px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(label, fx + fw / 2, fy - 8);
 
     ctx.restore();
 
-    if (mine && !reachable) {
+    if (canInteract && !reachable) {
       ctx.fillStyle = "rgba(232,224,207,0.85)";
       ctx.font = "12px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("(走近一點才能照顧)", fx + fw / 2, fy + fh + 18);
+      const hintText = mine ? "(走近一點才能照顧)" : "(走近公共農地才能耕作)";
+      ctx.fillText(hintText, fx + fw / 2, fy + fh + 18);
     }
   }
 
@@ -2692,10 +2711,30 @@
         }
       }
     }
-    // 沒有自己的地（訪客 / 尚未分到）：伺服器只接受對自己地的動作，先給回饋、不白送一則。
+    const rect = canvas.getBoundingClientRect();
+    const wx = clientX - rect.left + lastCam.x;
+    const wy = clientY - rect.top + lastCam.y;
+    const pf = myId ? pubField() : null; // 已登入才有公共農地互動資格
+
+    // 點在公共農地格內且已登入且夠近 → 直接送（不管有沒有自己的地）。
+    if (me && pf && withinFieldReach(pf, me.x, me.y)) {
+      const inPub = wx >= pf.origin_x && wx < pf.origin_x + pf.cols * pf.tile_size
+          && wy >= pf.origin_y && wy < pf.origin_y + pf.rows * pf.tile_size;
+      if (inPub) {
+        ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+        markTendedOnce();
+        spawnTapFlash(wx, wy);
+        return;
+      }
+    }
+
+    // 沒有自己的地（訪客 / 尚未購買）：提示可用公共農地或購買。
     if (me && !f) {
       if (now - lastReachHint > 2500) {
-        addChat("系統", "登入後就有自己的乙太田可以照顧哦。");
+        const hint = myId
+            ? "花乙太購買農地，或走到公共農地（🌿）耕作哦。"
+            : "登入後就有自己的乙太田可以照顧哦。";
+        addChat("系統", hint);
         lastReachHint = now;
       }
       return;
@@ -2708,9 +2747,6 @@
       }
       return;
     }
-    const rect = canvas.getBoundingClientRect();
-    const wx = clientX - rect.left + lastCam.x;
-    const wy = clientY - rect.top + lastCam.y;
     ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
     markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(wx, wy); // 純確認回饋:這一下已送出
@@ -2746,6 +2782,16 @@
       return;
     }
     const f = myField();
+    const pf = myId ? pubField() : null;
+
+    // 站在公共農地旁（已登入）→ 允許動作（私有地取不到或太遠時也適用）。
+    if (pf && withinFieldReach(pf, me.x, me.y)) {
+      ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
+      markTendedOnce();
+      spawnTapFlash(me.x, me.y);
+      return;
+    }
+
     if (f && !withinFieldReach(f, me.x, me.y)) {
       const now = Date.now();
       if (now - lastReachHint > 2500) {
@@ -2766,8 +2812,8 @@
 
   // 螢幕座標 → 農地格 {col,row};落在田格範圍內才回傳,否則 null。純表現用
   // (高亮游標所指格),不參與任何互動判定——互動仍送原始世界座標給權威伺服器決定。
-  function fieldTileAtScreen(sx, sy) {
-    const f = myField();
+  function fieldTileAtScreen(sx, sy, f) {
+    if (!f) f = myField();
     if (!f) return null;
     const rect = canvas.getBoundingClientRect();
     const wx = sx - rect.left + lastCam.x;
