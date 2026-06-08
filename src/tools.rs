@@ -58,8 +58,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
     match item {
         ItemKind::Pickaxe => Some(ToolKind::Pickaxe),
         ItemKind::ReinforcedPickaxe => Some(ToolKind::ReinforcedPickaxe),
-        // 武器是戰鬥裝備、不是採集工具：採集查表回 None（戰鬥那側由 `combat::weapon_power` 查表）。
-        ItemKind::Wood | ItemKind::Stone | ItemKind::Ether | ItemKind::Weapon => None,
+        // 資源材料與武器不是採集工具（戰鬥那側由 `combat::weapon_power` 查表）。
+        ItemKind::Wood | ItemKind::Dirt | ItemKind::Stone | ItemKind::Ether | ItemKind::Weapon => None,
     }
 }
 

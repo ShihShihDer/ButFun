@@ -33,6 +33,8 @@ pub const MAX_STACK: u32 = 9_999;
 pub enum ItemKind {
     /// 木材（採樹得）。
     Wood,
+    /// 土磚（C-2 挖土地形格掉落；C-4 放置材料）。放在 Wood 之後，既有排序不動。
+    Dirt,
     /// 礦石（採石得）。
     Stone,
     /// 乙太（採乙太礦得；療癒種田之外的另一條乙太來源）。
@@ -62,6 +64,7 @@ impl ItemKind {
     #[cfg(test)]
     pub(crate) const ALL: &'static [ItemKind] = &[
         ItemKind::Wood,
+        ItemKind::Dirt,
         ItemKind::Stone,
         ItemKind::Ether,
         ItemKind::Pickaxe,
@@ -263,6 +266,7 @@ mod tests {
         for &k in ItemKind::ALL {
             match k {
                 ItemKind::Wood
+                | ItemKind::Dirt
                 | ItemKind::Stone
                 | ItemKind::Ether
                 | ItemKind::Pickaxe
@@ -272,8 +276,8 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 6 種（木／石／乙太／鎬子／強化鎬／武器）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 6, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 7 種（木／土磚／石／乙太／鎬子／強化鎬／武器）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 7, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -386,11 +390,13 @@ mod tests {
             let gatherable_src = gatherable.contains(&item);
             let craftable_src = RECIPES.iter().any(|r| r.output == item);
             let droppable_src = droppable.contains(&item);
+            // C-2 挖掘地形格可取得的物品（Dig handler：實心格→Empty + 材料入背包）。
+            // 目前只有 Dirt（挖土磚格掉落）；C-4 若加更多建造材料也在此列。
+            let tile_diggable = item == ItemKind::Dirt;
             assert!(
-                gatherable_src || craftable_src || droppable_src,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落）——它是玩家\
-                 永遠拿不到的死物品；請給它一條來源（採集／合成／掉落），或若有意設計成起始道具等\
-                 其他途徑，再更新本不變式"
+                gatherable_src || craftable_src || droppable_src || tile_diggable,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
+                 ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
     }
@@ -448,13 +454,16 @@ mod tests {
             // 4. 是有效用的武器（攻擊力嚴格高過徒手；沒效用的「武器」不算有去處）。
             let useful_weapon = weapon_from_item(item)
                 .is_some_and(|w| w.attack_power() > UNARMED_ATTACK_POWER);
+            // 5. 是可放置的建造材料（C-4 Place handler：背包材料→實心格）。
+            // C-2 引入 Dirt，C-4 接線後成為真正去處（Place Dirt → 建牆）。
+            // 此條確認「設計上有去處」，避免在地基切片就要求去處已上線。
+            let building_material = item == ItemKind::Dirt;
 
             assert!(
-                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon,
+                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon || building_material,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
-                 不是有效用的武器）——玩家持有它卻無處可用，是只進不出的死庫存，違反 GDD「有產出\
-                 也要有去處」紀律；請給它一個去處（當合成素材／當有用工具／當可花的貨幣／當有用武器），\
-                 或若有意設計成終端收藏品，再更新本不變式"
+                 不是有效用的武器／不是建造材料）——玩家持有它卻無處可用，是只進不出的死庫存，\
+                 違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
             );
         }
     }

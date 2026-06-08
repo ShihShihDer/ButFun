@@ -383,7 +383,9 @@
         listings = msg.listings || [];
         npcs = msg.npcs || [];
         // 地形 delta 更新：把伺服器廣播的差異覆蓋進 tileDeltaMap。
-        // C-1 terrain 永遠為空；C-2 起有玩家挖掘的格才進這裡。
+        // C-2：kind=empty 表示該格已被挖掉（delta 覆蓋為空），前端直接更新；
+        // 重置快照（完整 terrain 陣列）時先清空 map 再填入，確保不殘留舊差異。
+        // 此處接收增量廣播：直接 set（含 empty），讓 tileKindAt 查到覆蓋值。
         for (const d of (msg.terrain || [])) {
           tileDeltaMap.set(`${d.cx},${d.cy},${d.tx},${d.ty}`, d.kind);
         }
@@ -2209,11 +2211,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3160,6 +3162,23 @@
     const rect = canvas.getBoundingClientRect();
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
+
+    // C-2 挖掘：點到實心地形格且玩家在 DIG_REACH（80px）內 → 送 dig。
+    // 挖掘優先於農耕（地形格與農地層不同,不互排斥），但在採集之後
+    // （採集節點浮在地形之上，點到節點應採集不是挖土）。
+    if (me) {
+      const digKind = tileKindAt(wx, wy);
+      if (digKind !== "empty") {
+        const DIG_REACH = 80;
+        const dx = wx - me.x, dy = wy - me.y;
+        if (dx * dx + dy * dy <= DIG_REACH * DIG_REACH) {
+          ws.send(JSON.stringify({ type: "dig", wx, wy }));
+          spawnTapFlash(wx, wy); // 確認回饋
+          return;
+        }
+      }
+    }
+
     const pf = myId ? pubField() : null; // 已登入才有公共農地互動資格
 
     // 點在公共農地格內且已登入且夠近 → 直接送（不管有沒有自己的地）。
