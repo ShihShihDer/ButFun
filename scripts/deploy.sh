@@ -84,8 +84,7 @@ for _ in $(seq 1 10); do
   sleep 2
 done
 
-if [ "$ok" != 1 ]; then
-  echo "[deploy] 健康檢查失敗 → 回滾到前一版。"
+rollback() {
   if [ -x "$BACKUP" ]; then
     cp -f "$BACKUP" "$BIN"
     sudo systemctl restart "$SERVICE"
@@ -94,6 +93,21 @@ if [ "$ok" != 1 ]; then
     echo "[deploy] 沒有可回滾的備份，服務可能異常，請人工介入。"
   fi
   exit 1
+}
+
+if [ "$ok" != 1 ]; then
+  echo "[deploy] /healthz 健康檢查失敗 → 回滾。"
+  rollback
+fi
+
+# /healthz 只驗 HTTP 活著，無法偵測「遊戲迴圈 tokio task 靜默炸死」這一型事故。
+# 再跑 WS 冒煙閘：連 /ws → 斷言快照含自身 id → 斷言兩幀 tick 有推進。
+echo "[deploy] WS 遊戲迴圈冒煙閘…"
+WS_PORT=$(echo "$HEALTH_URL" | sed 's|.*localhost:\([0-9]*\).*|\1|;t;s|.*|3000|')
+WS_URL="ws://localhost:${WS_PORT}/ws"
+if ! node "$REPO/scripts/e2e/gameloop-smoke.mjs" "$WS_URL"; then
+  echo "[deploy] WS 冒煙閘失敗（遊戲迴圈可能已死）→ 回滾。"
+  rollback
 fi
 
 git rev-parse HEAD > "$DEPLOYED_FILE"
