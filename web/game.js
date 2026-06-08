@@ -76,6 +76,8 @@
   let nodes = [];
   // 伺服器廣播的世界敵人（戰鬥 1-F,每個含 kind/x/y/hp/max_hp/alive）;進場前為空。
   let enemies = [];
+  // 伺服器廣播的市場掛單（AOI 剔除後附近的掛單，含 id/seller_id/seller_name/item/qty/price_per/x/y）。
+  let listings = [];
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
   // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
@@ -372,6 +374,7 @@
         // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
+        listings = msg.listings || [];
         // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
         // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
         const prevEnemies = enemies;
@@ -428,6 +431,7 @@
           updateWeaponHud(inv);  // 手上武器 pill（有武器才亮）+「合武器更痛」一行引導
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
+          updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -2320,6 +2324,176 @@
     // dock 圖示:乙太夠擴一格就點一顆黃點,不開窗也知道「現在能擴地了」。
     const dockE = document.getElementById("dockExpand");
     if (dockE) dockE.classList.toggle("dock-active", canBuy);
+  }
+
+  // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
+  // listings = AOI 剔除後的快照；inv = 背包快照；ether = 我的乙太；uid = 我的 id。
+  let lastMarketSig = null; // 快照簽章，內容未變就不重建面板（保住焦點、省 DOM 操作）。
+  function updateMarketPanel(nearListings, inv, ether, uid) {
+    const body = document.getElementById("marketBody");
+    const summary = document.getElementById("marketSummary");
+    const toggle = document.getElementById("marketTitle");
+    if (!body || !summary) return;
+
+    const others = nearListings.filter((l) => l.seller_id !== uid);
+    const mine   = nearListings.filter((l) => l.seller_id === uid);
+
+    // 簽章：掛單 id 集合 + 我的乙太（影響「夠不夠買」反灰）+ 我的背包（影響「能不能掛單」）。
+    const sig = nearListings.map((l) => `${l.id}:${l.qty}`).join(",")
+              + "|" + ether + "|" + (inv || []).map((s) => `${s.item}:${s.qty}`).join(",");
+    if (sig === lastMarketSig) return;
+    lastMarketSig = sig;
+    body.innerHTML = "";
+
+    // ── 附近掛單（其他玩家）─────────────────────────────────────────────────────
+    const othersHead = document.createElement("div");
+    othersHead.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:4px;font-size:.85rem;";
+    othersHead.textContent = others.length ? `附近掛單（${others.length}）` : "附近暫無掛單";
+    body.appendChild(othersHead);
+
+    for (const l of others) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;";
+      const icon = ITEM_LOOK[l.item] || "?";
+      const name = ITEM_NAME[l.item] || l.item;
+      const total = Math.min(4294967295, l.price_per * l.qty); // 防溢位
+      const canAfford = uid && ether >= total;
+      const info = document.createElement("span");
+      info.style.cssText = "flex:1;font-size:.8rem;";
+      info.textContent = `${icon} ${name} ×${l.qty}  ✨ ${l.price_per}/個 (共 ${total})  by ${l.seller_name}`;
+      row.appendChild(info);
+      if (uid) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "expand-btn";
+        btn.textContent = "購買";
+        btn.disabled = !canAfford;
+        btn.title = canAfford ? `花 ${total} 乙太買` : "乙太不足";
+        btn.addEventListener("click", () => {
+          if (btn.disabled) return;
+          try { ws.send(JSON.stringify({ type: "buy_listing", listing_id: l.id })); } catch {}
+          announce(`購買 ${name} ×${l.qty}`);
+        });
+        row.appendChild(btn);
+      }
+      body.appendChild(row);
+    }
+
+    // ── 我的掛單（取消退貨）─────────────────────────────────────────────────────
+    if (mine.length) {
+      const sep = document.createElement("div");
+      sep.style.cssText = "border-top:1px solid #3a4250;margin:6px 0 4px;";
+      body.appendChild(sep);
+      const mineHead = document.createElement("div");
+      mineHead.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:4px;font-size:.85rem;";
+      mineHead.textContent = `我的掛單（${mine.length}）`;
+      body.appendChild(mineHead);
+      for (const l of mine) {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px;";
+        const icon = ITEM_LOOK[l.item] || "?";
+        const name = ITEM_NAME[l.item] || l.item;
+        const info = document.createElement("span");
+        info.style.cssText = "flex:1;font-size:.8rem;";
+        info.textContent = `${icon} ${name} ×${l.qty}  ✨ ${l.price_per}/個`;
+        row.appendChild(info);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "expand-btn";
+        btn.textContent = "取消";
+        btn.title = "取消掛單，物品歸還背包";
+        btn.addEventListener("click", () => {
+          try { ws.send(JSON.stringify({ type: "cancel_listing", listing_id: l.id })); } catch {}
+          announce(`取消 ${name} 掛單`);
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // ── 張貼掛單（已登入才顯示）─────────────────────────────────────────────────
+    if (uid) {
+      const postItems = (inv || []).filter((s) => s.qty > 0);
+      const sep2 = document.createElement("div");
+      sep2.style.cssText = "border-top:1px solid #3a4250;margin:6px 0 4px;";
+      body.appendChild(sep2);
+      const postHead = document.createElement("div");
+      postHead.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:4px;font-size:.85rem;";
+      postHead.textContent = "張貼掛單";
+      body.appendChild(postHead);
+
+      if (!postItems.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "font-size:.8rem;color:#888;";
+        empty.textContent = "背包是空的，無可掛單物品";
+        body.appendChild(empty);
+      } else {
+        // 物品選擇
+        const postRow = document.createElement("div");
+        postRow.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;align-items:center;";
+
+        const selItem = document.createElement("select");
+        selItem.style.cssText = "background:#1a2030;color:#c8d0e0;border:1px solid #3a4250;border-radius:4px;padding:2px 4px;font-size:.8rem;";
+        for (const s of postItems) {
+          const opt = document.createElement("option");
+          opt.value = s.item;
+          opt.textContent = `${ITEM_LOOK[s.item] || "?"} ${ITEM_NAME[s.item] || s.item}（有 ${s.qty}）`;
+          selItem.appendChild(opt);
+        }
+        postRow.appendChild(selItem);
+
+        const numQty = document.createElement("input");
+        numQty.type = "number";
+        numQty.min = "1";
+        numQty.max = "9999";
+        numQty.value = "1";
+        numQty.placeholder = "數量";
+        numQty.style.cssText = "width:54px;background:#1a2030;color:#c8d0e0;border:1px solid #3a4250;border-radius:4px;padding:2px 4px;font-size:.8rem;";
+        postRow.appendChild(numQty);
+
+        const numPrice = document.createElement("input");
+        numPrice.type = "number";
+        numPrice.min = "0";
+        numPrice.max = "9999";
+        numPrice.value = "1";
+        numPrice.placeholder = "✨/個";
+        numPrice.style.cssText = "width:54px;background:#1a2030;color:#c8d0e0;border:1px solid #3a4250;border-radius:4px;padding:2px 4px;font-size:.8rem;";
+        postRow.appendChild(numPrice);
+
+        const postBtn = document.createElement("button");
+        postBtn.type = "button";
+        postBtn.className = "expand-btn";
+        postBtn.textContent = "掛單";
+        postBtn.title = "張貼掛單，物品從背包移出";
+        postBtn.addEventListener("click", () => {
+          const item = selItem.value;
+          const qty = Math.max(1, Math.min(9999, parseInt(numQty.value, 10) || 1));
+          const price_per = Math.max(0, Math.min(9999, parseInt(numPrice.value, 10) || 0));
+          try {
+            ws.send(JSON.stringify({ type: "post_listing", item, qty, price_per }));
+          } catch {}
+          const name = ITEM_NAME[item] || item;
+          announce(`掛單 ${name} ×${qty} ✨${price_per}/個`);
+        });
+        postRow.appendChild(postBtn);
+        body.appendChild(postRow);
+      }
+    } else {
+      // 訪客提示
+      const hint = document.createElement("div");
+      hint.style.cssText = "font-size:.8rem;color:#888;margin-top:6px;";
+      hint.textContent = "登入後才能掛單或購買";
+      body.appendChild(hint);
+    }
+
+    // 標題列摘要 + dock 活躍點
+    const hasNearby = others.length > 0;
+    summary.textContent = hasNearby ? `：${others.length} 筆` : "";
+    if (toggle) {
+      toggle.setAttribute("aria-label", hasNearby ? `市場：${others.length} 筆附近掛單` : "市場：無附近掛單");
+    }
+    const dockM = document.getElementById("dockMarket");
+    if (dockM) dockM.classList.toggle("dock-active", hasNearby);
   }
 
   // 依伺服器廣播的每格 state/dry 畫出一塊地的耕地與作物階段。
