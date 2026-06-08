@@ -26,7 +26,8 @@ PAUSE="$STATE/paused"
 # 由 statusline-expo.sh 快取到 ~/.cache/butfun-auto/seven_day_pct）；拿不到才退回 $ 代理。
 BUDGET_WEEKLY_PCT="${BUTFUN_BUDGET_WEEKLY_PCT:-80}"      # 你的目標：週用量壓在 80% 以下
 BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%過期時用）
-REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"
+REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"          # 把關用（Sonnet，比 Opus 省）
+WORKER_FALLBACK_MODEL="${BUTFUN_WORKER_FALLBACK_MODEL:-claude-sonnet-4-6}"  # Gemini 沒額度時的備胎 worker
 
 log(){ echo "[auto $(date '+%H:%M')] $*"; }
 
@@ -71,19 +72,18 @@ log "turn=$turn"
 
 case "$turn" in
   work)
-    log "worker（Gemini）推進主軸"
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
+    log "worker：先試 Gemini（免費額度、不吃 Claude）"
     gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)"; grc=$?
-    printf '%s\n' "$gout" | tail -30
-    # Gemini 額度「真的用光」（重試後仍失敗）→ 優雅暫停 + 通知人，不每 20 分空轉
+    printf '%s\n' "$gout" | tail -25
+    # Gemini 額度用光（重試後仍失敗）→ fallback 改用 Claude Sonnet 當 worker（一樣 agentic、比 Opus 省；
+    # 頂端 80% 預算守衛已保護，所以備胎不會爆 Claude 週額度）。免裝 aider、可靠度比地端高。
     if [ "$grc" -ne 0 ] && printf '%s' "$gout" | grep -qiE "exhausted|quota|RESOURCE_EXHAUSTED|\b429\b"; then
-      log "Gemini 額度用盡（rc=$grc）→ 暫停自走、通知人"
-      cd "$COORD" && git pull --rebase -q || true
-      printf '\n## [%s] 系統 | Gemini 額度用盡\nGemini 這份額度用完了，worker 暫停。額度重置後 `rm ~/.cache/butfun-auto/paused` 即恢復。\n（若要免額度續跑，可改用地端 agentic fallback——見下方「地端 worker」TODO。）\n' "$(date '+%Y-%m-%d %H:%M')" >> for_human.md
-      git add for_human.md && git commit -q -m "chore: Gemini 額度用盡，暫停自走" && git push -q || true
-      touch "$PAUSE"
+      log "Gemini 額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
+      cd "$WT" 2>/dev/null || cd "$REPO"
+      exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
     fi
     ;;
   review)
