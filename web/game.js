@@ -1806,10 +1806,9 @@
     const me = myId ? players.get(myId) : null;
     const reachable = nearestHarvestable(me);
     const now = performance.now();
-    // 沒有可採的在搆得到範圍內時,才標最近的採空節點為「已採空」——有可採的就不打擾,
-    // 引導玩家去採那顆。純讀快照,不在前端判規則。
-    const depleted = reachable ? null : nearestDepleted(me);
     for (const n of nodes) {
+      // 採空即「消失」(麥塊式:挖完不見、稍後在他處重生)——重生倒數中的節點不畫。
+      if (!n.harvestable) continue;
       const sx = n.x - camX;
       const sy = n.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
@@ -1818,7 +1817,6 @@
       const wob = nodeHitWobble(n, now);
       const dx = wob > 0 ? Math.sin(now * 0.045) * 5 * wob : 0;
       ctx.save();
-      ctx.globalAlpha = n.harvestable ? 1 : 0.4; // 採空的畫淡(重生中)
       const spriteName = NODE_SPRITE[n.kind];
       if (spriteName && artOk(spriteName)) {
         // 有對應 sprite(樹/石)→ 畫真的 pixel art,底部對齊節點位置、放大些好看清。
@@ -1875,18 +1873,6 @@
           ctx.fillStyle = "rgba(255,235,180,0.8)";
           ctx.fillText(hint, sx, hy);
         }
-      } else if (n === depleted) {
-        // 玩家就站在採空節點旁、附近又沒有可採的:標一行淡「已採空」,解釋為何按鍵沒反應,
-        // 別讓人對著按不動的節點乾按。alpha 已壓暗,字提到 1 才讀得清。
-        ctx.globalAlpha = 1;
-        ctx.font = "11px system-ui, sans-serif";
-        ctx.textAlign = "center";
-        const ty = sy - 24;
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = "rgba(0,0,0,0.6)";
-        ctx.strokeText("已採空", sx, ty);
-        ctx.fillStyle = "rgba(220,220,220,0.85)";
-        ctx.fillText("已採空", sx, ty);
       }
       ctx.restore();
     }
