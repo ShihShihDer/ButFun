@@ -18,6 +18,7 @@ use crate::daynight_store::DayNightStore;
 use crate::enemy_field::EnemyField;
 use crate::field::Field;
 use crate::field_store::FieldStore;
+use crate::market::Market;
 use crate::gather_field::NodeField;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
@@ -181,6 +182,8 @@ pub struct AppState {
     /// 公共農地：任何已登入玩家均可種植與收割。owner = Uuid::nil() 廣播給前端，
     /// 與個人地塊（owner = user_id）視覺上明顯區分，並允許多人互動（軟劫掠）。
     pub pub_field: Arc<RwLock<Field>>,
+    /// 玩家對玩家的世界市場掛單（記憶體，v1；重啟後清空）。
+    pub market: Arc<RwLock<Market>>,
 }
 
 impl AppState {
@@ -234,6 +237,7 @@ impl AppState {
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
             pub_field: Arc::new(RwLock::new(Field::at(PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y))),
+            market: Arc::new(RwLock::new(Market::new())),
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::protocol::{EnemyView, FieldView, NodeView, ServerMsg};
+use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, ServerMsg};
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
@@ -243,6 +243,27 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
+            let listing_views: Vec<ListingView> = if want_broadcast {
+                app.market
+                    .read()
+                    .unwrap()
+                    .all()
+                    .map(|l| ListingView {
+                        id: l.id,
+                        seller_id: l.seller_id,
+                        seller_name: l.seller_name.clone(),
+                        item: l.item,
+                        qty: l.qty,
+                        price_per: l.price_per,
+                        x: l.x,
+                        y: l.y,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
             // 廣播快照——只在有訂閱者時(tick 開頭已判定的 want_broadcast)才建構。
             // ③ 無限世界（切片 C）：傳出 Arc<ServerMsg> 原始結構，不在此序列化。
             if want_broadcast {
@@ -255,6 +276,7 @@ pub fn spawn(app: AppState) {
                         nodes: node_views,
                         enemies: enemy_views,
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
+                        listings: listing_views,
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

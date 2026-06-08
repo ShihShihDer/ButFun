@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
 use crate::field::{FarmOutcome, Field};
+use crate::market::MarketListing;
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -231,13 +232,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
                                     };
                                     const AOI_RADIUS_SQ: f32 = 2000.0 * 2000.0;
-                                    
+
                                     let filter_pos = |x: f32, y: f32| {
                                         let dx = x - px;
                                         let dy = y - py;
@@ -251,6 +252,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         nodes: nodes.iter().filter(|n| filter_pos(n.x, n.y)).cloned().collect(),
                                         enemies: enemies.iter().filter(|e| filter_pos(e.x, e.y)).cloned().collect(),
                                         daynight: daynight.clone(),
+                                        listings: listings.iter().filter(|l| filter_pos(l.x, l.y)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -457,6 +459,120 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         .entry(uid)
                                         .and_modify(|f| f.grow());
                                 }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::PostListing { item, qty, price_per }) => {
+                    // 掛單：已登入 + 背包夠量才執行。扣背包→建掛單，原子操作（同一把 players 鎖）。
+                    if let Some(uid) = authed_uid {
+                        let pos = app.players.read().unwrap().get(&uid).map(|p| (p.x, p.y, p.name.clone()));
+                        if let Some((px, py, name)) = pos {
+                            let ok = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    // qty=0 或量不足都拒絕
+                                    qty > 0 && p.inventory.take(item, qty)
+                                } else { false }
+                            };
+                            if ok {
+                                let listing = MarketListing {
+                                    id: Uuid::new_v4(),
+                                    seller_id: uid,
+                                    seller_name: name,
+                                    item,
+                                    qty,
+                                    price_per,
+                                    x: px,
+                                    y: py,
+                                };
+                                tracing::info!(player = %listing.seller_name, ?item, qty, price_per, "市場掛單");
+                                app.market.write().unwrap().post(listing);
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::BuyListing { listing_id }) => {
+                    // 購買掛單：已登入 + 乙太足夠 + 不買自己掛單。
+                    if let Some(uid) = authed_uid {
+                        // 先讀掛單資訊（不持 market 鎖跨持 players 鎖）
+                        let listing_info = {
+                            let market = app.market.read().unwrap();
+                            let found = market.all()
+                                .find(|l| l.id == listing_id)
+                                .map(|l| (l.seller_id, l.item, l.qty, l.price_per, l.seller_name.clone()));
+                            found
+                        };
+                        if let Some((seller_id, item, qty, price_per, seller_name)) = listing_info {
+                            if seller_id == uid {
+                                // 不能買自己的掛單，靜默忽略
+                            } else {
+                                let total = price_per.saturating_mul(qty);
+                                // 從買家扣乙太
+                                let buyer_ok = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        if p.ether >= total {
+                                            p.ether -= total;
+                                            true
+                                        } else { false }
+                                    } else { false }
+                                };
+                                if buyer_ok {
+                                    // 從 market 移除掛單（確認掛單還存在才算成功）
+                                    let bought = app.market.write().unwrap().buy(listing_id);
+                                    if let Some(l) = bought {
+                                        // 物品給買家背包
+                                        {
+                                            let mut players = app.players.write().unwrap();
+                                            if let Some(p) = players.get_mut(&uid) {
+                                                p.inventory.add(l.item, l.qty);
+                                                tracing::info!(buyer = %p.name, ?item, qty, "市場購買成功");
+                                            }
+                                        }
+                                        // 乙太給賣家（在線或離線都要補）
+                                        let seller_online = {
+                                            let mut players = app.players.write().unwrap();
+                                            if let Some(sp) = players.get_mut(&seller_id) {
+                                                sp.ether = sp.ether.saturating_add(total);
+                                                tracing::info!(seller = %sp.name, ether = sp.ether, "市場售出獲得乙太");
+                                                true
+                                            } else { false }
+                                        };
+                                        if !seller_online {
+                                            // 賣家離線：直接更新持久化 store 裡的乙太
+                                            if let Some(saved) = app.positions.recall(seller_id) {
+                                                let new_ether = saved.ether.saturating_add(total);
+                                                app.positions.remember(
+                                                    seller_id,
+                                                    saved.x, saved.y,
+                                                    new_ether,
+                                                    saved.wallet_expansions,
+                                                );
+                                                tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
+                                            }
+                                        }
+                                    } else {
+                                        // 掛單已消失（競態），把乙太退回買家
+                                        let mut players = app.players.write().unwrap();
+                                        if let Some(p) = players.get_mut(&uid) {
+                                            p.ether = p.ether.saturating_add(total);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::CancelListing { listing_id }) => {
+                    // 取消掛單（只有賣家本人有效）：退回物品至背包。
+                    if let Some(uid) = authed_uid {
+                        let returned = app.market.write().unwrap().cancel(listing_id, uid);
+                        if let Some((item, qty)) = returned {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                p.inventory.add(item, qty);
+                                tracing::info!(player = %p.name, ?item, qty, "市場取消掛單，物品歸還");
                             }
                         }
                     }

@@ -45,6 +45,14 @@ pub enum ClientMsg {
     /// 農地擴張意圖：玩家點「擴地」按鈕，花乙太把自己農地多開一列。
     /// 伺服器驗餘額（economy::expansion_cost）、扣乙太、農地 grow()；結果隨下一次快照回來。
     BuyExpansion,
+    /// 市場掛單：從背包取出 qty 個 item 以每單位 price_per 乙太掛單出售。
+    /// 伺服器驗背包庫存後移出物品並建立掛單；失敗靜默忽略（量不夠 / 未登入）。
+    PostListing { item: ItemKind, qty: u32, price_per: u32 },
+    /// 購買掛單：花 total = qty * price_per 乙太換取掛單內物品。
+    /// 乙太不足 / 掛單不存在靜默忽略。不能買自己的掛單。
+    BuyListing { listing_id: Uuid },
+    /// 取消自己的掛單：托管物品退還背包（非本人掛單靜默忽略）。
+    CancelListing { listing_id: Uuid },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -67,6 +75,8 @@ pub enum ServerMsg {
         enemies: Vec<EnemyView>,
         /// 伺服器權威的日夜狀態（階段 + 亮度），前端依此做環境染色。
         daynight: DayNightView,
+        /// 附近玩家的市場掛單（AOI 剔除後，距離內才送）。
+        listings: Vec<ListingView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -155,6 +165,21 @@ pub struct FieldView {
     pub reach: f32,
     /// row-major 的每格狀態，長度為 `cols * rows`。
     pub cells: Vec<TileView>,
+}
+
+/// 快照裡的一筆市場掛單（玩家對玩家交易）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ListingView {
+    pub id: Uuid,
+    pub seller_id: Uuid,
+    pub seller_name: String,
+    pub item: ItemKind,
+    pub qty: u32,
+    /// 每單位乙太價格（0 = 贈送）。
+    pub price_per: u32,
+    /// 掛單時賣家的世界座標（AOI + 世界地圖渲染用）。
+    pub x: f32,
+    pub y: f32,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -255,6 +280,7 @@ mod tests {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
             },
+            listings: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

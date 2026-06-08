@@ -18,6 +18,7 @@ mod field_store;
 mod game;
 mod gather;
 mod gather_field;
+mod market;
 mod inventory;
 mod inventory_store;
 mod vitals;
