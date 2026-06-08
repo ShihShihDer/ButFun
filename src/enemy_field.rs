@@ -263,16 +263,42 @@ fn kind_for(i: usize) -> EnemyKind {
     }
 }
 
-/// 第 `i` 隻敵人的世界座標：以序號雜湊出一個極座標（半徑、角度），落在比採集節點更外
-/// 一圈的曠野裡，再夾進世界邊界內。確定性（同序號永遠同位置）、不靠亂數 / 時鐘，故重啟
-/// 後敵人落在同一處。雜湊種子刻意與 `gather_field` 不同，避免敵人剛好疊在採集節點上。
+/// 第 `i` 隻敵人的「家」(spawn = `advance` 巡邏歸位點):**偏好危險荒野(岩地/沙地=洞穴感)**、
+/// **避開水**,仍落在比採集節點更外一圈的曠野(極座標,半徑 >= `CLEARING_RADIUS` → 家園中心安全)。
+/// 配上「岩地多礦」→ 形成「闖危險岩區換礦」的風險/回報。生態域由 `world_core::biome_at` 判定
+/// (與前端同一份噪聲、逐位元一致)。確定性:同序號永遠同家(同搜尋序列、不靠亂數/時鐘)。
 fn scatter_position(i: usize) -> (f32, f32) {
+    // 1) 偏好:岩地/沙地(危險荒野)且非水。
+    for salt in 0..24u64 {
+        let (x, y) = scatter_polar(i, salt);
+        if matches!(
+            world_core::biome_at(x as f64, y as f64),
+            world_core::Biome::Rocky | world_core::Biome::Sand
+        ) {
+            return (x, y);
+        }
+    }
+    // 2) 退一步:只要非水。
+    for salt in 24..48u64 {
+        let (x, y) = scatter_polar(i, salt);
+        if world_core::biome_at(x as f64, y as f64) != world_core::Biome::Water {
+            return (x, y);
+        }
+    }
+    // 3) 最後手段:原始極座標(幾乎不會走到)。
+    scatter_polar(i, 0)
+}
+
+/// 第 `i` 隻、第 `salt` 個候選的極座標:半徑/角度由序號雜湊,落在外圈曠野、夾進世界邊界。
+/// `salt == 0` 即原始佈置(種子與舊版一致),故搜尋先試原點;`salt > 0` 給不同候選。
+/// 雜湊種子刻意與 `gather_field` 不同,避免敵人剛好疊在採集節點上。
+fn scatter_polar(i: usize, salt: u64) -> (f32, f32) {
     let cx = WORLD_WIDTH / 2.0;
     let cy = WORLD_HEIGHT / 2.0;
-    // 兩個獨立的雜湊流：一個決定半徑、一個決定角度（種子加偏移與節點區隔）。
-    let r = CLEARING_RADIUS + hash01((i as u64).wrapping_add(0x5151)) * (SCATTER_OUTER_RADIUS - CLEARING_RADIUS);
-    let theta =
-        hash01((i as u64).wrapping_mul(2).wrapping_add(0x9090)) * std::f32::consts::TAU;
+    let s = (i as u64).wrapping_add(salt.wrapping_mul(0x9E37_79B9));
+    let r =
+        CLEARING_RADIUS + hash01(s.wrapping_add(0x5151)) * (SCATTER_OUTER_RADIUS - CLEARING_RADIUS);
+    let theta = hash01(s.wrapping_mul(2).wrapping_add(0x9090)) * std::f32::consts::TAU;
     let x = (cx + r * theta.cos()).clamp(EDGE_MARGIN, WORLD_WIDTH - EDGE_MARGIN);
     let y = (cy + r * theta.sin()).clamp(EDGE_MARGIN, WORLD_HEIGHT - EDGE_MARGIN);
     (x, y)
@@ -702,5 +728,21 @@ mod tests {
             "追擊速度（{CHASE_SPEED}）應低於玩家速度（{}），否則拉不開怪",
             crate::state::PLAYER_SPEED
         );
+    }
+
+    #[test]
+    fn enemies_avoid_water_and_prefer_wilds() {
+        // 生態域化:敵人不該生在水上,且多數落在危險荒野(岩地/沙地=洞穴感),配「岩地多礦」成風險/回報。
+        let f = EnemyField::new();
+        let mut wild = 0usize;
+        for p in f.enemies() {
+            let b = world_core::biome_at(p.x as f64, p.y as f64);
+            assert_ne!(b, world_core::Biome::Water, "敵人生在水上了:({},{})", p.x, p.y);
+            if matches!(b, world_core::Biome::Rocky | world_core::Biome::Sand) {
+                wild += 1;
+            }
+        }
+        let total = f.enemies().len();
+        assert!(wild * 2 >= total, "落在危險荒野的敵人太少:{wild}/{total}");
     }
 }
