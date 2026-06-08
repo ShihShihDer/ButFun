@@ -77,32 +77,32 @@ case "$turn" in
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
-    "$HERE/notify.sh" update "🔨 $(date '+%H:%M') worker 開工中（推進主軸切片）…" >/dev/null 2>&1 || true
-    log "worker：先試 Gemini（獨立額度、不吃 Claude，但也有限會見底）"
-    gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)"; grc=$?
+    "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
+    log "worker：先試 Gemini（獨立額度，但也有限會見底）"
+    # 注意：set -e 下「gout=$(gemini…)」失敗會直接 kill 腳本、根本跑不到 fallback——故用 && / || 保住 grc
+    gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)" && grc=0 || grc=$?
     printf '%s\n' "$gout" | tail -25
-    # Gemini 額度用光（重試後仍失敗）→ fallback 改用 Claude Sonnet 當 worker（一樣 agentic、比 Opus 省；
-    # 頂端 80% 預算守衛已保護，所以備胎不會爆 Claude 週額度）。免裝 aider、可靠度比地端高。
-    if [ "$grc" -ne 0 ] && printf '%s' "$gout" | grep -qiE "exhausted|quota|RESOURCE_EXHAUSTED|\b429\b"; then
-      log "Gemini 額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
+    # Gemini 失敗（額度用盡 429 或任何錯）→ fallback 改用 Claude Sonnet（agentic、比 Opus 省、受 80% 守衛保護）
+    if [ "$grc" -ne 0 ]; then
+      log "Gemini 失敗/額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
       cd "$WT" 2>/dev/null || cd "$REPO"
       exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
     fi
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
-    "$HERE/notify.sh" update "🔍 $(date '+%H:%M') reviewer 審查 PR 中（冷編譯+跑測試,約 5-8 分）…" >/dev/null 2>&1 || true
+    "$HERE/notify.sh" beat "🔍 $(date '+%H:%M') 正在檢查剛做好的東西（跑測試,約 5-8 分）…" >/dev/null 2>&1 || true
     RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
     git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$RWT" >/dev/null 2>&1 || true
     before="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
     cd "$RWT" 2>/dev/null || cd "$REPO"
-    claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")"
+    claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")" || true
     # 版本更新通知（backstop，不靠 reviewer 記得）：本輪若 origin/main 前進＝有 PR 被 merge → 推 update
     git -C "$REPO" fetch -q origin main 2>/dev/null || true
     after="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
     if [ -n "${before:-}" ] && [ "$before" != "${after:-}" ]; then
-      merged="$(git -C "$REPO" log --oneline "${before}..${after}" 2>/dev/null | grep -iE "Merge pull request|切片" | head -1)"
-      "$HERE/notify.sh" update "已 merge：${merged:-main 有新進度}，staging 自動更新中" >/dev/null 2>&1 || true
+      merged="$(git -C "$REPO" log --oneline "${before}..${after}" 2>/dev/null | grep -iE "切片|Merge pull request" | head -1 | sed -E 's/^[0-9a-f]+ //; s/Merge pull request #[0-9]+ from \S+//')"
+      "$HERE/notify.sh" update "🎮 新功能做好上 staging 了，可以去玩：${merged:-（看 for_human.md）}" >/dev/null 2>&1 || true
     fi
     ;;
   human)
