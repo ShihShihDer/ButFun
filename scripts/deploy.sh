@@ -17,13 +17,17 @@
 
 set -euo pipefail
 
-REPO="${BUTFUN_REPO:-/opt/butfun}"
+REPO="${BUTFUN_REPO:-/home/shihshih/ButFun}"
 BRANCH="${BUTFUN_DEPLOY_BRANCH:-main}"
 SERVICE="${BUTFUN_SERVICE:-butfun}"
 HEALTH_URL="${BUTFUN_HEALTH_URL:-http://localhost:3000/healthz}"
 
 BIN="$REPO/target/release/butfun-server"
 BACKUP="$REPO/target/release/butfun-server.prev"
+# 記錄「實際已部署的 commit」。不能用工作樹 HEAD 判斷——HEAD 會被 push / 別的 actor ff 前進，
+# 但 binary 沒重建，會誤判「已最新」而跳過真正的換版（踩過這個雷）。
+DEPLOYED_FILE="${BUTFUN_DEPLOYED_FILE:-$HOME/.cache/butfun-last-deployed}"
+mkdir -p "$(dirname "$DEPLOYED_FILE")" 2>/dev/null || true
 
 cd "$REPO"
 
@@ -36,10 +40,10 @@ notify() {
 
 echo "[deploy] 取得最新版本（origin/$BRANCH）…"
 git fetch --quiet origin "$BRANCH"
-LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/$BRANCH")"
-if [ "$LOCAL" = "$REMOTE" ] && [ -x "$BIN" ]; then
-  echo "[deploy] 已是最新版且 binary 存在，無需上線。"
+DEPLOYED="$(cat "$DEPLOYED_FILE" 2>/dev/null || echo none)"
+if [ "$DEPLOYED" = "$REMOTE" ] && [ -x "$BIN" ]; then
+  echo "[deploy] 已部署過此版（$REMOTE）且 binary 存在，無需上線。"
   exit 0
 fi
 
@@ -55,17 +59,19 @@ if ! git merge --ff-only --quiet "origin/$BRANCH"; then
   exit 1
 fi
 
+# 先備份「目前正在跑的舊 binary」以便回滾——一定要在 build 之前，
+# 否則 cargo 覆寫 $BIN 後備到的是新版、回滾等於沒回滾（踩過這個雷）。
+if [ -x "$BIN" ]; then
+  cp -f "$BIN" "$BACKUP"
+fi
+
 echo "[deploy] 建置…"
 cargo build --release
 
 echo "[deploy] 測試（沒全綠就中止、不上線）…"
 cargo test --release
 
-# 備份目前可用的 binary，以便回滾。
-if [ -x "$BIN" ]; then
-  cp -f "$BIN" "$BACKUP"
-fi
-# 把剛建好的版本放到上線位置（cargo 會直接覆寫 $BIN，這裡確保存在）。
+# 確保上線位置有 binary（cargo 已覆寫 $BIN 為新版）。
 test -x "$BIN"
 
 echo "[deploy] 重啟服務 $SERVICE …"
@@ -90,5 +96,6 @@ if [ "$ok" != 1 ]; then
   exit 1
 fi
 
+git rev-parse HEAD > "$DEPLOYED_FILE"
 echo "[deploy] 上線成功：$(git rev-parse --short HEAD)"
 notify "玩家現在玩到的就是這版：$(git log -1 --format=%s)"
