@@ -227,10 +227,8 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 廣播快照——只在有訂閱者時(tick 開頭已判定的 want_broadcast)才建構並序列化。
-            // 沒人連線的離峰時段,上面的世界推進照常跑、狀態不停,但連 view 都不建、更不序列化。
-            // 新訂閱者本來就是等下一個 tick 才收到第一筆快照,故下一個有人連上的 tick 會立刻送出
-            // 完整快照,延遲不變。`daynight_view` 在不廣播時為 None,故此處能直接 unwrap。
+            // 廣播快照——只在有訂閱者時(tick 開頭已判定的 want_broadcast)才建構。
+            // ③ 無限世界（切片 C）：傳出 Arc<ServerMsg> 原始結構，不在此序列化。
             if want_broadcast {
                 let snapshot = {
                     let players = app.players.read().unwrap();
@@ -243,10 +241,7 @@ pub fn spawn(app: AppState) {
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                     }
                 };
-                // 沒有訂閱者時 send 會回 Err（這裡已 receiver_count>0,正常路徑），忽略即可。
-                if let Ok(json) = serde_json::to_string(&snapshot) {
-                    let _ = app.tx.send(json);
-                }
+                let _ = app.tx.send(std::sync::Arc::new(snapshot));
             }
 
             // 定期把「線上已登入玩家」的位置 + 乙太快照落地。

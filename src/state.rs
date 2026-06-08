@@ -22,7 +22,7 @@ use crate::inventory_store::InventoryStore;
 use crate::vitals::Vitals;
 use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
-use crate::protocol::{ItemStack, PlayerView, WorldInfo};
+use crate::protocol::{ItemStack, PlayerView, WorldInfo, ServerMsg};
 use crate::suggestions::SuggestionStore;
 use crate::users::UserStore;
 
@@ -136,11 +136,10 @@ pub struct AppState {
     /// 世界裡共享的敵人（戰鬥 1-F：銹蝕巡邏機 / 迷途乙太靈）。遊戲迴圈每 tick 推進重生、
     /// 每秒結算戰鬥(玩家自動打最近的、敵人反擊),隨快照廣播。目前存記憶體,重啟回到全滿一組。
     pub enemies: Arc<RwLock<EnemyField>>,
-    /// 廣播頻道：高頻 tick 快照與 `PlayerLeft` 走這裡，內容是已序列化的 JSON 字串
-    /// （只序列化一次，再扇出給所有連線）。這條會被 15Hz 快照灌滿，跟不上的客戶端
-    /// 收到 `Lagged` 時丟掉舊快照繼續追即可——快照本身自我修正（含「移除缺席玩家」），
-    /// 漏幾張無害。
-    pub tx: broadcast::Sender<String>,
+    /// 廣播頻道：高頻 tick 快照與 `PlayerLeft` 走這裡。
+    /// ③ 無限世界（切片 C）：改傳 `Arc<ServerMsg>` 而非已序列化的 JSON，讓連線層
+    /// （ws.rs）能依玩家位置做 AOI 剔除後才序列化，避免無限世界爆廣播頻寬。
+    pub tx: broadcast::Sender<Arc<ServerMsg>>,
     /// 聊天專用廣播頻道，刻意與高頻快照分開。聊天是「一次性事件」：客戶端漏掉就永久
     /// 看不到那行。先前聊天和快照共用一條，手機 Lagged（網路抖／分頁背景）追快照時
     /// 會把同段時間捲過的聊天一起丟掉——延續「Lagged 不踢人」修復後浮現的缺口。
@@ -331,12 +330,15 @@ mod tests {
         let mut rx_snap = app.tx.subscribe();
         let mut rx_chat = app.tx_chat.subscribe();
         app.tx_chat.send("聊天".to_string()).unwrap();
-        app.tx.send("快照".to_string()).unwrap();
+        app.tx.send(Arc::new(ServerMsg::PlayerLeft { id: Uuid::nil() })).unwrap();
         // 聊天訂閱者只拿到聊天，沒有快照混進來。
         assert_eq!(rx_chat.try_recv().unwrap(), "聊天");
         assert!(rx_chat.try_recv().is_err());
-        // 快照訂閱者只拿到快照，沒有聊天混進來。
-        assert_eq!(rx_snap.try_recv().unwrap(), "快照");
+        // 快照訂閱者只拿到快照（Arc 包著的列舉），沒有聊天混進來。
+        match &*rx_snap.try_recv().unwrap() {
+            ServerMsg::PlayerLeft { .. } => {}
+            _ => panic!("應拿到 PlayerLeft"),
+        }
         assert!(rx_snap.try_recv().is_err());
     }
 

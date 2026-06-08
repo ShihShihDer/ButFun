@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
@@ -208,25 +209,68 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
     // 判斷 Lagged（跳過、不踢人）/ Closed（結束）。
+    // ③ 無限世界（切片 C）：從 tx 收到的是 Arc<ServerMsg>，依玩家當下位置做 AOI 剔除後才序列化。
     let mut rx = app.tx.subscribe();
     let mut rx_chat = app.tx_chat.subscribe();
+    let app_for_forward = app.clone();
     let forward = tokio::spawn(async move {
         loop {
-            let received = tokio::select! {
-                r = rx.recv() => r,
-                r = rx_chat.recv() => r,
-            };
-            match received {
-                Ok(msg) => {
-                    if sender.send(Message::Text(msg)).await.is_err() {
-                        break; // 客戶端已斷
+            tokio::select! {
+                r = rx.recv() => {
+                    match r {
+                        Ok(msg) => {
+                            // 依玩家權威位置做 AOI 剔除。
+                            let filtered = match &*msg {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight } => {
+                                    let (px, py) = {
+                                        let ps = app_for_forward.players.read().unwrap();
+                                        ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
+                                    };
+                                    const AOI_RADIUS_SQ: f32 = 2000.0 * 2000.0;
+                                    
+                                    let filter_pos = |x: f32, y: f32| {
+                                        let dx = x - px;
+                                        let dy = y - py;
+                                        dx * dx + dy * dy <= AOI_RADIUS_SQ
+                                    };
+
+                                    ServerMsg::Snapshot {
+                                        tick: *tick,
+                                        players: players.iter().filter(|p| p.id == id || filter_pos(p.x, p.y)).cloned().collect(),
+                                        fields: fields.iter().filter(|f| f.owner == id || filter_pos(f.origin_x + (f.cols as f32 * f.tile_size)/2.0, f.origin_y + (f.rows as f32 * f.tile_size)/2.0)).cloned().collect(),
+                                        nodes: nodes.iter().filter(|n| filter_pos(n.x, n.y)).cloned().collect(),
+                                        enemies: enemies.iter().filter(|e| filter_pos(e.x, e.y)).cloned().collect(),
+                                        daynight: daynight.clone(),
+                                    }
+                                }
+                                other => other.clone(),
+                            };
+                            
+                            match serde_json::to_string(&filtered) {
+                                Ok(json) => {
+                                    if sender.send(Message::Text(json)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => continue,
+                            }
+                        }
+                        Err(e) => match forward_action(&e) {
+                            ForwardAction::Skip => continue,
+                            ForwardAction::Stop => break,
+                        },
                     }
                 }
-                // 落後（Lagged）只是這客戶端一時跟不上，跳過繼續轉、別踢人下線；
-                // 只有頻道關閉（Closed）才結束。判斷集中在 forward_action（可測）。
-                Err(e) => match forward_action(&e) {
-                    ForwardAction::Skip => continue,
-                    ForwardAction::Stop => break,
+                r = rx_chat.recv() => match r {
+                    Ok(msg) => {
+                        if sender.send(Message::Text(msg)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => match forward_action(&e) {
+                        ForwardAction::Skip => continue,
+                        ForwardAction::Stop => break,
+                    },
                 },
             }
         }
@@ -394,10 +438,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
     // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
     if removed.is_some() {
-        let left = ServerMsg::PlayerLeft { id };
-        if let Ok(json) = serde_json::to_string(&left) {
-            let _ = app.tx.send(json);
-        }
+        let _ = app.tx.send(Arc::new(ServerMsg::PlayerLeft { id }));
     }
 }
 
