@@ -58,20 +58,18 @@ pub enum FarmOutcome {
     Nothing,
 }
 
-/// 一塊固定大小的農地（row-major 的格子陣列），知道自己在世界裡的左上角 origin。
+/// 一塊可擴張農地（row-major 的格子陣列），知道自己在世界裡的左上角 origin。
 ///
-/// 衍生 serde 作為持久化格式地基（接 0-E）：每格 `Tile` 可序列化存回、重啟載入，
-/// 達成驗收標準「重啟後農地狀態還在」。格線尺寸（cols/rows）是編譯期常數、不入存檔；
-/// **origin 也不入存檔**（`#[serde(skip)]`）——它由地塊序號決定（見 `for_plot`），
-/// 載入時由呼叫端依該玩家的序號重建供入，不靠磁碟上的值（O1 per-player 的關鍵：
-/// 同一份 `tiles` 擺到哪塊地，由序號說了算）。載入時以 `from_tiles` 驗證長度，
-/// 格線改版不會吃進壞檔。
+/// 衍生 serde 作為持久化格式地基（接 0-E）：每格 `Tile` 可序列化存回、重啟載入。
+/// 列數由 `tiles.len() / FIELD_COLS` 動態決定（初始 `FIELD_ROWS`，`grow()` 每次加一列）；
+/// **origin 不入存檔**（`#[serde(skip)]`）——它由地塊序號決定（見 `for_plot`），
+/// 載入時由呼叫端依序號重建供入。載入時以 `from_tiles` 驗證格數，壞檔一律拒收。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
-    /// 長度固定為 `FIELD_COLS * FIELD_ROWS`，以 `index` 對映 (col,row)。
+    /// 長度為 `FIELD_COLS * actual_rows`，以 row-major index 對映 (col,row)。
+    /// 初始 `FIELD_COLS * FIELD_ROWS`；每次 `grow()` 加 `FIELD_COLS` 個 `Untilled` 格。
     tiles: Vec<Tile>,
-    /// 這塊地左上角在世界中的座標（像素）。不入存檔；由建構子（`new` / `for_plot` /
-    /// `from_tiles`）供入。`cell_at` / `within_reach` / `view` 都以它為原點。
+    /// 這塊地左上角在世界中的座標（像素）。不入存檔；由建構子供入。
     #[serde(skip)]
     origin_x: f32,
     #[serde(skip)]
@@ -95,28 +93,44 @@ impl Field {
 
     /// 建第 `index` 塊地（per-player 用）：origin 由 `plots::plot_origin` 依序號決定，
     /// 一圈一圈往外排、互不重疊；序號 0 正好對齊現有全域農地（與 `new()` 同位置）。
-    /// O1 接線：玩家進場拿到自己的序號後，用這個建他那塊地（見 `ws.rs` 進場處）。
     pub fn for_plot(index: usize) -> Self {
         let (origin_x, origin_y) = crate::plots::plot_origin(index);
         Self::fresh_at(origin_x, origin_y)
     }
 
-    /// 這塊地左上角在世界中的座標（像素）。接線輪：快照帶各塊 origin 給前端畫多塊。
-    #[allow(dead_code)] // 接線輪才有呼叫端。
+    /// 建第 `index` 塊已擴張的地（帶 `expansions` 格擴張，每格 = 多一列 FIELD_COLS 自然地）。
+    pub fn for_plot_expanded(index: usize, expansions: u32) -> Self {
+        let mut f = Self::for_plot(index);
+        for _ in 0..expansions {
+            f.grow();
+        }
+        f
+    }
+
+    /// 擴張一列（FIELD_COLS 格自然地）；即 `buy_expansion` 成功後呼叫。
+    pub fn grow(&mut self) {
+        self.tiles.extend(vec![Tile::Untilled; FIELD_COLS]);
+    }
+
+    /// 目前列數（初始 FIELD_ROWS；每次 `grow()` +1）。
+    pub fn rows(&self) -> usize {
+        self.tiles.len() / FIELD_COLS
+    }
+
+    /// 這塊地左上角在世界中的座標（像素）。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn origin(&self) -> (f32, f32) {
         (self.origin_x, self.origin_y)
     }
 
-    /// 從存檔的格子陣列重建農地（持久化載入入口，接 0-E）。兩道防線都過才收：
-    /// 其一，格數必須正好等於目前格線（`FIELD_COLS * FIELD_ROWS`），擋舊版 / 被截斷的存檔；
-    /// 其二，每株種下的作物成長值都得健全（見 `Crop::is_loadable`），擋格數對、卻含
-    /// `NaN` / `Inf` / 負成長的被竄改存檔，否則一格壞值會毒化整塊地的成長與顯示。
-    /// 任一不符（舊版、壞檔、被竄改）回 `None`，讓呼叫端可退回 `new()` 的全新地，
-    /// 而不是吃進一塊長度或內容錯誤的 `tiles`。
-    /// origin 不入存檔，故載入時由 `for_plot` 同源的 `plot_origin(index)` 供入：
-    /// 接線輪每塊地的 origin 永遠由「該玩家的序號」決定，不靠磁碟值。
+    /// 從存檔的格子陣列重建農地（持久化載入入口）。兩道防線都過才收：
+    /// 其一，格數必須是 FIELD_COLS 的倍數且 ≥ 初始格數（支援已擴張的農地）；
+    /// 其二，每株作物成長值都得健全，擋壞檔 / 被竄改的存檔。
+    /// 任一不符回 `None`，呼叫端可退回全新地。
     pub fn from_tiles(index: usize, tiles: Vec<Tile>) -> Option<Self> {
-        if tiles.len() != FIELD_COLS * FIELD_ROWS {
+        let min = FIELD_COLS * FIELD_ROWS;
+        let max = FIELD_COLS * (FIELD_ROWS + crate::economy::MAX_EXPANSIONS as usize);
+        if tiles.len() < min || tiles.len() > max || tiles.len() % FIELD_COLS != 0 {
             return None;
         }
         if tiles
@@ -133,18 +147,15 @@ impl Field {
         })
     }
 
-    /// 把（serde 還原後 origin 退回 (0,0) 的）農地安置回第 `index` 塊地——持久化載入入口
-    /// （DB / JSONL 都走它，見 `field_store.rs`）。先把 tiles 交給 `from_tiles` 做「格數正確
-    /// ＋每株作物健全」雙重驗證，再由序號（而非磁碟上的 origin）定出位置：與 `for_plot` 同源，
-    /// 確保載回的地永遠落在該玩家序號該在的格點。驗證不過（舊版／壞檔／被竄改）回 `None`，
-    /// 呼叫端可丟棄這一列、退回讓玩家進場時重建全新地。
+    /// 把（serde 還原後 origin 退回 (0,0) 的）農地安置回第 `index` 塊地——持久化載入入口。
+    /// 驗證不過（壞檔）回 `None`，呼叫端可退回全新地。
     pub fn reseated(self, index: usize) -> Option<Self> {
         Self::from_tiles(index, self.tiles)
     }
 
-    /// (col,row) → tiles 陣列索引；超出範圍回 `None`。純函式。
-    fn index(col: usize, row: usize) -> Option<usize> {
-        if col < FIELD_COLS && row < FIELD_ROWS {
+    /// (col,row) → tiles 陣列索引；超出範圍（含超過目前列數）回 `None`。
+    fn index_at(&self, col: usize, row: usize) -> Option<usize> {
+        if col < FIELD_COLS && row < self.rows() {
             Some(row * FIELD_COLS + col)
         } else {
             None
@@ -167,7 +178,7 @@ impl Field {
         }
         let col = (local_x / TILE_SIZE) as usize;
         let row = (local_y / TILE_SIZE) as usize;
-        if col < FIELD_COLS && row < FIELD_ROWS {
+        if col < FIELD_COLS && row < self.rows() {
             Some((col, row))
         } else {
             None
@@ -175,11 +186,10 @@ impl Field {
     }
 
     /// 讀某格狀態（唯讀）；超出範圍回 `None`。
-    /// 生產端走 `view()` 取整塊地，單格查詢目前只用於測試斷言；
-    /// 之後接持久化逐格存取時再放開。
+    /// 生產端走 `view()` 取整塊地，單格查詢目前只用於測試斷言。
     #[cfg(test)]
     pub fn tile(&self, col: usize, row: usize) -> Option<&Tile> {
-        Self::index(col, row).map(|i| &self.tiles[i])
+        self.index_at(col, row).map(|i| &self.tiles[i])
     }
 
     /// 某格作物目前的成長階段；該格沒種東西或超出範圍回 `None`。
@@ -193,7 +203,7 @@ impl Field {
 
     /// 翻土：只有自然地能翻成空土。成功回 `true`，否則（已翻 / 已種 / 越界）回 `false`。
     pub fn till(&mut self, col: usize, row: usize) -> bool {
-        match Self::index(col, row) {
+        match self.index_at(col, row) {
             Some(i) if self.tiles[i] == Tile::Untilled => {
                 self.tiles[i] = Tile::Tilled;
                 true
@@ -204,7 +214,7 @@ impl Field {
 
     /// 播種：只有翻好的空土能播。成功回 `true`，否則回 `false`。
     pub fn plant(&mut self, col: usize, row: usize) -> bool {
-        match Self::index(col, row) {
+        match self.index_at(col, row) {
             Some(i) if self.tiles[i] == Tile::Tilled => {
                 self.tiles[i] = Tile::Planted(Crop::plant());
                 true
@@ -215,7 +225,7 @@ impl Field {
 
     /// 澆水：只有種了作物的格能澆。成功回 `true`，否則回 `false`。
     pub fn water(&mut self, col: usize, row: usize) -> bool {
-        match Self::index(col, row) {
+        match self.index_at(col, row) {
             Some(i) => {
                 if let Tile::Planted(c) = &mut self.tiles[i] {
                     c.water();
@@ -230,7 +240,7 @@ impl Field {
     /// 收成：成熟才給乙太，並把該格回復成翻好的空土（可直接再播種）。
     /// 未成熟 / 沒種 / 越界回 `None`、不改變狀態。
     pub fn harvest(&mut self, col: usize, row: usize) -> Option<u32> {
-        let i = Self::index(col, row)?;
+        let i = self.index_at(col, row)?;
         if let Tile::Planted(c) = &mut self.tiles[i] {
             // 先借出可變參考收成；成熟才會回 Some 並消費這格。
             if let Some(ether) = c.harvest() {
@@ -255,7 +265,7 @@ impl Field {
     /// 自然地→翻土、空土→播種、未熟作物→澆水、成熟作物→收成。
     /// 越界回 `Nothing`。把「該做哪個動作」的判斷集中在這裡，前端只要送座標。
     pub fn interact(&mut self, col: usize, row: usize) -> FarmOutcome {
-        let Some(i) = Self::index(col, row) else {
+        let Some(i) = self.index_at(col, row) else {
             return FarmOutcome::Nothing;
         };
         // 先唯讀地決定動作，放掉借用後再做可變操作（避免 borrow 衝突）。
@@ -290,8 +300,7 @@ impl Field {
     }
 
     /// 把整塊地轉成給前端的可見快照（origin 用這塊地自己的，前端據此畫在世界對的位置）。
-    /// `owner` 先填 `nil`——`Field` 本身不知道自己屬於誰；由廣播層（持有 `user_id → Field`
-    /// 對映）在送出快照前戳上真正的擁有者（見 `game.rs` 建快照處）。
+    /// `owner` 先填 `nil`——`Field` 本身不知道自己屬於誰；由廣播層在送出快照前戳上。
     pub fn view(&self) -> FieldView {
         FieldView {
             owner: uuid::Uuid::nil(),
@@ -299,7 +308,7 @@ impl Field {
             origin_y: self.origin_y,
             tile_size: TILE_SIZE,
             cols: FIELD_COLS,
-            rows: FIELD_ROWS,
+            rows: self.rows(),
             reach: FARM_REACH,
             cells: self.tiles.iter().map(tile_view).collect(),
         }
@@ -312,7 +321,7 @@ impl Field {
     /// 都算，不必貼著某一格。以這塊地自己的 origin 為基準（per-player：各塊地各算各的）。
     pub fn within_reach(&self, px: f32, py: f32) -> bool {
         let right = self.origin_x + FIELD_COLS as f32 * TILE_SIZE;
-        let bottom = self.origin_y + FIELD_ROWS as f32 * TILE_SIZE;
+        let bottom = self.origin_y + self.rows() as f32 * TILE_SIZE;
         // 把玩家座標夾到農地矩形上，得到矩形上的最近點。
         let nx = px.clamp(self.origin_x, right);
         let ny = py.clamp(self.origin_y, bottom);
@@ -694,11 +703,38 @@ mod tests {
 
     #[test]
     fn from_tiles_rejects_wrong_cell_count() {
-        // 舊版存檔 / 壞檔 / 被竄改的長度一律拒絕，呼叫端才好退回全新地。
+        // 初始格數（FIELD_COLS * FIELD_ROWS）可接受。
         assert!(Field::from_tiles(0, vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS]).is_some());
+        // 擴張後的格數（+1~+MAX_EXPANSIONS 列）也可接受。
+        assert!(Field::from_tiles(0, vec![Tile::Untilled; FIELD_COLS * (FIELD_ROWS + 1)]).is_some());
+        let max = FIELD_COLS * (FIELD_ROWS + crate::economy::MAX_EXPANSIONS as usize);
+        assert!(Field::from_tiles(0, vec![Tile::Untilled; max]).is_some());
+        // 空、比初始少 1、格數非 FIELD_COLS 的倍數、超過上限，一律拒絕。
         assert!(Field::from_tiles(0, vec![]).is_none());
         assert!(Field::from_tiles(0, vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS - 1]).is_none());
         assert!(Field::from_tiles(0, vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS + 1]).is_none());
+        assert!(Field::from_tiles(0, vec![Tile::Untilled; max + FIELD_COLS]).is_none());
+    }
+
+    #[test]
+    fn grow_adds_one_row_of_untilled_tiles() {
+        let mut f = Field::for_plot(0);
+        assert_eq!(f.rows(), FIELD_ROWS);
+        f.grow();
+        assert_eq!(f.rows(), FIELD_ROWS + 1);
+        // 新格全是自然地，且可正常翻土。
+        assert_eq!(f.tile(0, FIELD_ROWS), Some(&Tile::Untilled));
+        assert!(f.till(0, FIELD_ROWS));
+    }
+
+    #[test]
+    fn for_plot_expanded_starts_with_right_size() {
+        let f = Field::for_plot_expanded(0, 3);
+        assert_eq!(f.rows(), FIELD_ROWS + 3);
+        // 全部格都是自然地，都搆得到（within_reach 覆蓋到擴張格）。
+        let (ox, oy) = f.origin();
+        let bottom_center_y = oy + (f.rows() as f32 - 0.5) * TILE_SIZE;
+        assert!(f.within_reach(ox + TILE_SIZE, bottom_center_y));
     }
 
     /// 載入時 origin 由序號決定（不靠磁碟值）：同一份 tiles、不同序號 → 不同 origin，

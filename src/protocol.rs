@@ -42,6 +42,9 @@ pub enum ClientMsg {
     /// 領地購買意圖（③ Slice D）：玩家點擊購買第一塊地。
     /// 伺服器驗證乙太足夠（PLOT_COST）且尚未擁有地塊後分配序號。
     ClaimPlot,
+    /// 農地擴張意圖：玩家點「擴地」按鈕，花乙太把自己農地多開一列。
+    /// 伺服器驗餘額（economy::expansion_cost）、扣乙太、農地 grow()；結果隨下一次快照回來。
+    BuyExpansion,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -89,9 +92,10 @@ pub struct PlayerView {
     pub species: String,
     pub x: f32,
     pub y: f32,
-    /// 目前持有的乙太（收成累積）。已登入玩家重連會帶回（記憶體前置），
-    /// 跨伺服器重啟才歸零（待 Phase 0-E 持久化）。
+    /// 目前持有的乙太（收成累積）。已登入玩家重連會帶回，跨重啟持久化。
     pub ether: u32,
+    /// 已購買的農地擴張格數。前端擴地面板用它算下一格費用 + 顯示進度。
+    pub expansions: u32,
     /// 背包內容（採集所得）。每位玩家都帶著,前端只取「自己那位」的來畫背包面板。
     /// 條目已依 `ItemKind` 排序（`Inventory` 用 `BTreeMap`),順序穩定。
     pub inventory: Vec<ItemStack>,
@@ -211,6 +215,7 @@ mod tests {
                 x: 0.0,
                 y: 0.0,
                 ether: 7,
+                expansions: 0,
                 inventory: vec![ItemStack {
                     item: ItemKind::Wood,
                     qty: 3,

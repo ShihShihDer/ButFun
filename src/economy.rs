@@ -41,8 +41,6 @@ pub const MAX_EXPANSIONS: u32 = 12;
 ///
 /// 用 `checked_sub` 一行表達這個不變式：所有乙太消耗點（擴地、日後買種子 / 商店）都
 /// 該走這個單一真實來源，而不是各自手寫 `if balance >= cost` 容易漏掉的比較。
-// 前置地基：接線輪才有呼叫端，比照本模組其他項標 `allow(dead_code)`。
-#[allow(dead_code)]
 pub fn spend(balance: u32, cost: u32) -> Option<u32> {
     balance.checked_sub(cost)
 }
@@ -52,7 +50,6 @@ pub fn spend(balance: u32, cost: u32) -> Option<u32> {
 ///
 /// 用 `saturating` 算術防溢位（`owned` 已被 `MAX_EXPANSIONS` 上限與型別夾住，
 /// 正常範圍內不會接近溢位，但載入壞值時飽和到上限總比 panic 好）。
-#[allow(dead_code)]
 pub fn expansion_cost(owned: u32) -> u32 {
     EXPANSION_BASE_COST.saturating_mul(owned.saturating_add(1))
 }
@@ -68,12 +65,15 @@ pub struct PlotWallet {
     expansions: u32,
 }
 
-// 整個型別是前置地基：接線輪（ws 購買意圖、Field 多開格、前端購買鈕）才有呼叫端。
-#[allow(dead_code)]
 impl PlotWallet {
     /// 全新玩家：一格都還沒買。
     pub fn new() -> Self {
         Self { expansions: 0 }
+    }
+
+    /// 從持久化的擴張格數重建（recall 路徑用）。
+    pub fn from_expansions(expansions: u32) -> Self {
+        Self { expansions }
     }
 
     /// 目前已購買的擴張格數。

@@ -103,6 +103,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             ether: 0,
             inventory: crate::inventory::Inventory::new(),
             vitals: crate::vitals::Vitals::new(),
+            wallet: crate::economy::PlotWallet::new(),
         }
     } else {
         // 等 Join
@@ -132,6 +133,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             ether: 0,
             inventory: crate::inventory::Inventory::new(),
             vitals: crate::vitals::Vitals::new(),
+            wallet: crate::economy::PlotWallet::new(),
         }
     };
     let id = player.id;
@@ -156,15 +158,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 let saved = app.positions.recall(uid);
                 match saved {
-                    // 有歷史位置 → 回到離線前的地方(大世界裡 spawn_at 仍夾進界內)。
+                    // 有歷史位置 → 回到離線前的地方。
                     Some(s) => {
                         let (x, y) = crate::positions::spawn_at(Some((s.x, s.y)));
                         p.x = x;
                         p.y = y;
                         p.ether = s.ether;
+                        // 農地擴張格數：超上限時視為無效，重設為 0（載入防線）。
+                        let mut w = crate::economy::PlotWallet::from_expansions(s.wallet_expansions);
+                        if !w.is_loadable() {
+                            w = crate::economy::PlotWallet::new();
+                        }
+                        p.wallet = w;
                     }
-                    // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心:大世界裡各自散開、
-                    // 一進來就站在自家農場上,而不是全擠在世界中央。
+                    // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心。
                     None => {
                         if let Some(idx) = plot_index {
                             let (ox, oy) = crate::plots::plot_origin(idx);
@@ -180,14 +187,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         // 不是第一條連線:既有玩家記錄保留(同帳號其他分頁仍在用),不動。
     }
 
-    // 已登入玩家擁有自己的一塊地（Phase 0-G-O1 per-player）：依上面分到的序號建立那塊地。
+    // 已登入玩家擁有自己的一塊地（Phase 0-G-O1 per-player）：依序號與已購擴張格數建立那塊地。
     // `entry` 冪等,多分頁/重連重複呼叫不會覆蓋既有作物。訪客(隨機 id、不持久)刻意不分地。
     if let (Some(uid), Some(index)) = (authed_uid, plot_index) {
+        let expansions = app.players.read().unwrap()
+            .get(&uid)
+            .map(|p| p.wallet.expansions())
+            .unwrap_or(0);
         app.fields
             .write()
             .unwrap()
             .entry(uid)
-            .or_insert_with(|| Field::for_plot(index));
+            .or_insert_with(|| Field::for_plot_expanded(index, expansions));
     }
 
     tracing::info!(player = %player.name, %id, "玩家進場");
@@ -399,6 +410,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::BuyExpansion) => {
+                    // 農地擴張：已登入 + 已有地塊 + 乙太夠，才扣款並讓農地多開一列。
+                    if let Some(uid) = authed_uid {
+                        if app.plots.index_of(uid).is_some() {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                if let Some(new_ether) = p.wallet.buy_expansion(p.ether) {
+                                    p.ether = new_ether;
+                                    let expansions = p.wallet.expansions();
+                                    tracing::info!(player = %p.name, expansions, "擴地成功");
+                                    // 農地 grow（在 fields 鎖內，不持 players 鎖跨鎖）。
+                                    drop(players);
+                                    app.fields.write().unwrap()
+                                        .entry(uid)
+                                        .and_modify(|f| f.grow());
+                                }
+                            }
+                        }
+                    }
+                }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
@@ -427,9 +458,8 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether);
-                    // 背包同樣在鎖內更新 cache,跟新連線的 recall 用同一把 players 鎖排序,
-                    // 消除 refresh race（理由同 positions）。
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions());
+                    // 背包同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                 }
             }
@@ -444,7 +474,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions())
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             // 農地離線落地（Phase 0-E）。玩家移出世界後,他的地仍留在 `app.fields` 繼續長,所以
