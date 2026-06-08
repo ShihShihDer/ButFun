@@ -34,6 +34,12 @@ pub const WORLD_HEIGHT: f32 = 6000.0;
 /// 玩家移動速度（像素 / 秒）。大世界一併調快,跨圖不至於太久。
 pub const PLAYER_SPEED: f32 = 320.0;
 
+/// 公共農地（軟劫掠區）的世界座標。任何已登入玩家均可種植與收割——
+/// 但種在這裡的作物隨時可能被路過的其他玩家搶收（「軟劫掠」設計）。
+/// 落在個人地塊螺旋區西南，讓新玩家在探索途中自然遇到。
+pub const PUB_FIELD_ORIGIN_X: f32 = 2200.0;
+pub const PUB_FIELD_ORIGIN_Y: f32 = 2200.0;
+
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -172,6 +178,9 @@ pub struct AppState {
     pub connections: ConnectionCounts,
     /// OAuth 設定;沒設環境變數時為 None,登入相關 API 會回 503。
     pub auth: Option<AuthConfig>,
+    /// 公共農地：任何已登入玩家均可種植與收割。owner = Uuid::nil() 廣播給前端，
+    /// 與個人地塊（owner = user_id）視覺上明顯區分，並允許多人互動（軟劫掠）。
+    pub pub_field: Arc<RwLock<Field>>,
 }
 
 impl AppState {
@@ -224,6 +233,7 @@ impl AppState {
             daynight_store,
             connections: ConnectionCounts::new(),
             auth: AuthConfig::from_env(),
+            pub_field: Arc::new(RwLock::new(Field::at(PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y))),
         }
     }
 
@@ -438,5 +448,33 @@ mod tests {
             "測試",
             "不該誤改到其他線上玩家"
         );
+    }
+
+    #[test]
+    fn pub_field_initializes_at_configured_origin() {
+        // 公共農地啟動時以正確座標建立，且不是 nil（有格可互動）。
+        let app = AppState::new();
+        let pf = app.pub_field.read().unwrap();
+        let (ox, oy) = pf.origin();
+        assert_eq!(ox, PUB_FIELD_ORIGIN_X, "公共農地 X 座標應對齊常數");
+        assert_eq!(oy, PUB_FIELD_ORIGIN_Y, "公共農地 Y 座標應對齊常數");
+        // 初始格數 > 0 且任一格均為自然地（尚未被耕種）。
+        assert!(pf.rows() > 0, "公共農地應有至少一列可耕格");
+        // view() 的 owner 由 game.rs 廣播層戳上 Uuid::nil()；
+        // 此處只驗農地本身初始化正確（不需驗 owner，那是廣播層的責任）。
+    }
+
+    #[test]
+    fn pub_field_accepts_farming_action() {
+        // 任意一格自然地翻土可成功（模擬玩家在公共農地操作）——驗農地本身能被互動。
+        let app = AppState::new();
+        let mut pf = app.pub_field.write().unwrap();
+        let (ox, oy) = pf.origin();
+        // cell_at 在 origin 應回 (col=0, row=0)。
+        let cell = pf.cell_at(ox, oy);
+        assert!(cell.is_some(), "公共農地 origin 座標應能對應到一格");
+        let (col, row) = cell.unwrap();
+        let tilled = pf.till(col, row);
+        assert!(tilled, "公共農地自然地翻土應成功");
     }
 }

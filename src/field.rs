@@ -82,6 +82,11 @@ impl Field {
         Self::fresh_at(FIELD_ORIGIN_X, FIELD_ORIGIN_Y)
     }
 
+    /// 在任意世界座標蓋一塊全自然地的新農地（公共農地或特殊用途）。
+    pub fn at(origin_x: f32, origin_y: f32) -> Self {
+        Self::fresh_at(origin_x, origin_y)
+    }
+
     /// 內部共用建構入口：在指定 origin 蓋一塊全自然地的新農地。
     fn fresh_at(origin_x: f32, origin_y: f32) -> Self {
         Self {
