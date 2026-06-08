@@ -22,6 +22,8 @@ use crate::market::Market;
 use crate::gather_field::NodeField;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
+use crate::tiles::TileWorld;
+use crate::tile_store::TileStore;
 use crate::vitals::Vitals;
 use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
@@ -188,10 +190,15 @@ pub struct AppState {
     pub pub_field: Arc<RwLock<Field>>,
     /// 玩家對玩家的世界市場掛單（記憶體，v1；重啟後清空）。
     pub market: Arc<RwLock<Market>>,
+    /// 地形格世界（delta-save）：記憶體前置、非同步落地到 `TileStore`。
+    /// C-1 只有確定性生成（deltas 為空）；C-2 起 Dig 時寫入 deltas。
+    pub tile_world: Arc<RwLock<TileWorld>>,
+    /// 地形差異的持久化 store：啟動時載回、C-2 挖掘時非同步落地。
+    pub tile_store: TileStore,
 }
 
 impl AppState {
-    /// 無 DB 模式（測試、本機 `cargo run`）：位置/背包/農地/日夜走 JSONL 退回層（見各自的 `new`）。
+    /// 無 DB 模式（測試、本機 `cargo run`）：位置/背包/農地/日夜/地形走記憶體退回層。
     pub fn new() -> Self {
         Self::with_stores(
             PositionStore::new(),
@@ -200,13 +207,14 @@ impl AppState {
             DayNightStore::new(),
             UserStore::new(),
             SuggestionStore::new(),
+            TileStore::new(),
         )
     }
 
-    /// 用已備好的位置 / 背包 / 農地 / 日夜 / 帳號 / 建議 store 建狀態。`main` 連好 Postgres 後會傳入
-    /// DB-backed 的 store（見各自的 `from_pool`）,其餘狀態不變。農地 store 同時種回兩份權威狀態:`fields`
-    /// （每塊地、origin 已 reseat 好）與 `plots`（序號歸屬），讓重啟後農地與地塊歸屬都還在；
-    /// 日夜 store 種回上次的世界時刻（沒存檔時為破曉）。
+    /// 用已備好的位置 / 背包 / 農地 / 日夜 / 帳號 / 建議 / 地形 store 建狀態。`main` 連好 Postgres 後
+    /// 會傳入 DB-backed 的 store（見各自的 `from_pool`），其餘狀態不變。農地 store 同時種回兩份
+    /// 權威狀態：`fields`（每塊地）與 `plots`（序號歸屬）；日夜 store 種回上次的世界時刻；
+    /// tile_store 把上次存的地形差異種回 `tile_world`。
     pub fn with_stores(
         positions: PositionStore,
         inventories: InventoryStore,
@@ -214,6 +222,7 @@ impl AppState {
         daynight_store: DayNightStore,
         users: UserStore,
         suggestions: SuggestionStore,
+        tile_store: TileStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -223,6 +232,8 @@ impl AppState {
         let fields = field_store.loaded_fields();
         // 把上次存的世界時刻種回權威時鐘（無存檔時等同破曉 `DayNight::new()`）。
         let daynight = daynight_store.loaded();
+        // 把 DB 載回的地形差異種進 tile_world（C-1 通常為空，C-2+ 才有真實 delta）。
+        let tile_world = TileWorld::with_deltas(tile_store.loaded_deltas());
         Self {
             players: Arc::new(RwLock::new(HashMap::new())),
             fields: Arc::new(RwLock::new(fields)),
@@ -242,6 +253,8 @@ impl AppState {
             auth: AuthConfig::from_env(),
             pub_field: Arc::new(RwLock::new(Field::at(PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y))),
             market: Arc::new(RwLock::new(Market::new())),
+            tile_world: Arc::new(RwLock::new(tile_world)),
+            tile_store,
         }
     }
 

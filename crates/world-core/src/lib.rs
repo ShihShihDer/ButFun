@@ -12,6 +12,11 @@
 
 pub const CHUNK_SIZE: f32 = 512.0;
 
+/// 一個地形格的邊長（像素）。CHUNK_SIZE / TILE_PX = 16 格 / chunk。
+pub const TILE_PX: f32 = 32.0;
+/// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
+pub const TILES_PER_CHUNK: usize = 16;
+
 /// 座標 → 區塊鍵。
 pub fn chunk_key(x: f32, y: f32) -> (i32, i32) {
     (
@@ -110,6 +115,74 @@ pub fn biome_at(wx: f64, wy: f64) -> Biome {
 #[no_mangle]
 pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
     biome_at(x, y).code()
+}
+
+/// 地形格種類（可挖 / 可建）。
+///
+/// 穩定整數編碼（別重排，前端與 DB 靠它）：
+///   0 = Empty（空氣/可通行）
+///   1 = Dirt（泥土）
+///   2 = Stone（石塊）
+///   3 = Ore（礦脈）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TileKind {
+    Empty,
+    Dirt,
+    Stone,
+    Ore,
+}
+
+impl TileKind {
+    pub fn code(self) -> u8 {
+        match self {
+            TileKind::Empty => 0,
+            TileKind::Dirt  => 1,
+            TileKind::Stone => 2,
+            TileKind::Ore   => 3,
+        }
+    }
+}
+
+/// 座標（世界像素）→ 確定性地形格種類。
+///
+/// 同 `biome_at`：同座標必定同結果、不靠亂數/時鐘。使用與生態域相同的 `grass_hash`
+/// 雜湊函式，故前端可用 JS `grassHash` 精確對齊（見 `web/game.js` 的 `tileKindAt`）。
+/// 水域一律回 `Empty`（水面沒有可挖的實心格）。
+pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
+    let biome = biome_at(wx, wy);
+    if biome == Biome::Water {
+        return TileKind::Empty;
+    }
+    // 格索引（整數）→ 穩定雜湊值 [0,1)
+    let gx = (wx / TILE_PX as f64).floor() as i32;
+    let gy = (wy / TILE_PX as f64).floor() as i32;
+    let h = grass_hash(
+        gx.wrapping_mul(1031) ^ gy.wrapping_mul(2053),
+        gx ^ gy.wrapping_mul(1009),
+    );
+    match biome {
+        Biome::Rocky => {
+            if h < 0.05 { TileKind::Ore }
+            else if h < 0.40 { TileKind::Stone }
+            else { TileKind::Empty }
+        }
+        Biome::Forest => {
+            if h < 0.08 { TileKind::Stone }
+            else if h < 0.22 { TileKind::Dirt }
+            else { TileKind::Empty }
+        }
+        Biome::Meadow => {
+            if h < 0.06 { TileKind::Stone }
+            else if h < 0.12 { TileKind::Dirt }
+            else { TileKind::Empty }
+        }
+        Biome::Sand => {
+            if h < 0.04 { TileKind::Stone }
+            else if h < 0.08 { TileKind::Dirt }
+            else { TileKind::Empty }
+        }
+        Biome::Water => TileKind::Empty,
+    }
 }
 
 /// 滑動碰撞:從 `(cur)` 朝 `(new)` 移動,遇到 `blocked` 區域沿牆滑(render-agnostic 純邏輯,
@@ -220,5 +293,63 @@ mod tests {
     fn move_starting_inside_blocked_escapes() {
         let blocked = |x: f32, y: f32| x < 0.5 && y < 0.5;
         assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (1.0, 1.0));
+    }
+
+    #[test]
+    fn tile_kind_at_is_deterministic() {
+        // 同座標永遠同結果（不靠亂數/時鐘）。
+        for &(x, y) in &[(0.0, 0.0), (1024.5, 512.0), (5000.0, 3000.0), (-64.0, 128.0)] {
+            assert_eq!(tile_kind_at(x, y), tile_kind_at(x, y));
+        }
+    }
+
+    #[test]
+    fn water_biome_is_always_empty() {
+        // 找一個水域座標，確認 tile_kind_at 回 Empty（水面無實心格）。
+        let mut found = false;
+        'outer: for gy in 0..50i32 {
+            for gx in 0..50i32 {
+                let x = gx as f64 * 200.0;
+                let y = gy as f64 * 200.0;
+                if biome_at(x, y) == Biome::Water {
+                    assert_eq!(tile_kind_at(x, y), TileKind::Empty, "水域應回 Empty");
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "掃描範圍內應存在至少一個水域座標");
+    }
+
+    #[test]
+    fn rocky_biome_has_stone_tiles() {
+        // 岩地生態域應有一定比例的 Stone/Ore 格（確認生成邏輯有效，不是全 Empty）。
+        let mut stone_count = 0usize;
+        let mut total = 0usize;
+        for gy in 0..50i32 {
+            for gx in 0..50i32 {
+                let x = gx as f64 * 64.0;
+                let y = gy as f64 * 64.0;
+                if biome_at(x, y) == Biome::Rocky {
+                    total += 1;
+                    let k = tile_kind_at(x + 16.0, y + 16.0); // tile 中心
+                    if k == TileKind::Stone || k == TileKind::Ore {
+                        stone_count += 1;
+                    }
+                }
+            }
+        }
+        if total > 0 {
+            let ratio = stone_count as f64 / total as f64;
+            assert!(ratio > 0.1, "岩地應有>10%實心格，實際={:.1}%", ratio * 100.0);
+        }
+    }
+
+    #[test]
+    fn tile_code_round_trips() {
+        assert_eq!(TileKind::Empty.code(), 0);
+        assert_eq!(TileKind::Dirt.code(),  1);
+        assert_eq!(TileKind::Stone.code(), 2);
+        assert_eq!(TileKind::Ore.code(),   3);
     }
 }
