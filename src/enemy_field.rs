@@ -130,10 +130,15 @@ impl EnemyField {
         }
 
         // 處理跨區塊移動 (從後往前移以保持索引有效)
+        // 同時更新 id 讓 (id.0, id.1) 永遠與實際所在區塊一致，
+        // 避免 attack_nearest 用舊 chunk 座標找不到而 unwrap panic。
         to_move.sort_by_key(|&(_, idx, _)| std::cmp::Reverse(idx));
         for (old_key, idx, new_key) in to_move {
-            let enemy = self.chunks.get_mut(&old_key).unwrap().remove(idx);
-            self.chunks.entry(new_key).or_default().push(enemy);
+            let mut enemy = self.chunks.get_mut(&old_key).unwrap().remove(idx);
+            let target = self.chunks.entry(new_key).or_default();
+            let new_idx = target.len();
+            enemy.id = (new_key.0, new_key.1, new_idx);
+            target.push(enemy);
         }
     }
 
@@ -314,23 +319,48 @@ mod tests {
         let mut f = EnemyField::new();
         // 生成 (0,0) 區塊，敵人座標約在 (0..512, 0..512)
         f.ensure_chunks_around(256.0, 256.0, 10.0);
-        let target_id = f.enemies()[0].id;
-        
+
         // 把敵人瞬移到區塊邊界 (511, 256)
         {
             let nodes = f.chunks.get_mut(&(0,0)).unwrap();
             nodes[0].x = 511.0;
             nodes[0].y = 256.0;
         }
-        
+
         // 玩家在 (520, 256) 誘敵 (在 AGGRO_RADIUS 260 內)
         let player = (520.0, 256.0);
         f.advance(1.0, &[player]);
-        
-        // 敵人應已移入 (1,0) 區塊
-        assert!(f.chunks.get(&(1,0)).is_some());
-        assert!(f.chunks.get(&(1,0)).unwrap().iter().any(|e| e.id == target_id));
-        assert!(f.chunks.get(&(0,0)).unwrap().iter().all(|e| e.id != target_id));
+
+        // 敵人應已移入 (1,0) 區塊，且 id 隨之更新（id.0 == 1）
+        let new_chunk = f.chunks.get(&(1,0)).expect("敵人應在 (1,0) 區塊");
+        assert!(!new_chunk.is_empty());
+        // 跨區塊後 id 必須與所在區塊一致（這是核心不變式）
+        for e in new_chunk {
+            assert_eq!(e.id.0, 1);
+            assert_eq!(e.id.1, 0);
+        }
+        // 舊區塊不再有任何 id.0==0 且 id.1==0 的活著敵人
+        let old_chunk = f.chunks.get(&(0,0)).expect("舊區塊仍應存在");
+        assert!(old_chunk.is_empty());
+    }
+
+    #[test]
+    fn attack_nearest_after_cross_chunk_does_not_panic() {
+        // 重現 panic：敵人跨區塊後 attack_nearest 不應 unwrap 失敗
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(256.0, 256.0, 10.0);
+
+        // 瞬移到邊界，讓 advance 把牠送進 (1,0)
+        {
+            let chunk = f.chunks.get_mut(&(0, 0)).unwrap();
+            chunk[0].x = 511.0;
+            chunk[0].y = 256.0;
+        }
+        f.advance(1.0, &[(520.0, 256.0)]);
+
+        // 在新位置附近攻擊，不應 panic
+        let result = f.attack_nearest(516.0, 256.0, 1);
+        assert!(result.is_some());
     }
 
     #[test]
