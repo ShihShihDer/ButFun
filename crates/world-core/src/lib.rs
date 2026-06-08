@@ -10,6 +10,16 @@
 //!
 //! 之後:碰撞查詢、生態域內容、Delta-Save 等都往這裡長,伺服器與前端共用。
 
+pub const CHUNK_SIZE: f32 = 512.0;
+
+/// 座標 → 區塊鍵。
+pub fn chunk_key(x: f32, y: f32) -> (i32, i32) {
+    (
+        (x / CHUNK_SIZE).floor() as i32,
+        (y / CHUNK_SIZE).floor() as i32,
+    )
+}
+
 /// 生態域種類。`code()` 是給 wasm/前端的穩定整數編碼(別重排,前端對應顏色靠它)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Biome {
