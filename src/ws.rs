@@ -389,6 +389,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         .unwrap()
                                         .insert(uid, Field::for_plot(index));
                                     tracing::info!(player = %p.name, index, "成功購買第一塊領地");
+                                    // 即時通知客戶端購買結果，不用等下一次快照廣播。
+                                    let _ = app.tx.send(Arc::new(ServerMsg::ClaimPlotOk {
+                                        owner: uid,
+                                        plot_index: index,
+                                    }));
                                 }
                             }
                         }

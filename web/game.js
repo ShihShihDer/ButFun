@@ -462,6 +462,13 @@
       case "player_left":
         players.delete(msg.id);
         break;
+      case "claim_plot_ok":
+        // 只有購買者自己才顯示提示；其他玩家收到後忽略。
+        if (msg.owner === myId) {
+          announce("🏡 領地購買成功！走近農地開始耕作吧。");
+          addChat("系統", "🏡 領地購買成功！走近農地開始耕作吧。");
+        }
+        break;
     }
   }
 

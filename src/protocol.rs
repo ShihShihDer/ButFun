@@ -69,6 +69,9 @@ pub enum ServerMsg {
     Chat { from: String, text: String },
     /// 有玩家離線。
     PlayerLeft { id: Uuid },
+    /// 某玩家成功購買第一塊領地（③ Slice D）。廣播給全部客戶端；
+    /// 前端取 owner == myId 才顯示購買成功提示，其餘忽略即可。
+    ClaimPlotOk { owner: Uuid, plot_index: usize },
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。

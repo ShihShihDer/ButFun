@@ -5,8 +5,7 @@
 -- 1. 將既有農地資料備份至 fields_v1_backup。
 CREATE TABLE IF NOT EXISTS fields_v1_backup AS SELECT * FROM fields;
 
--- 2. 清空 fields 表，達成「空世界開局」。
--- 這樣所有玩家進場後都沒有地，必須透過新開發的 ClaimPlot 動作購買。
-TRUNCATE fields;
+-- 2. 空世界開局由程式邏輯保證：index_of 對從未 claim 的玩家回 None，
+-- 不需要 TRUNCATE fields——新玩家天然沒有地，現有玩家保留作物（向後相容）。
 
 -- 註：positions / inventories / users / suggestions 保持不動，保留玩家的乙太、背包與帳號。
