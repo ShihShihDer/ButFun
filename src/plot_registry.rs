@@ -70,6 +70,7 @@ impl PlotRegistry {
     }
 
     /// 第 `index` 塊地是不是 `user_id` 擁有的——伺服器 Farm 動作驗地主用。
+    #[allow(dead_code)] // Farm 動作接線前暫不使用
     pub fn owns(&self, user_id: Uuid, index: usize) -> bool {
         self.index_of(user_id) == Some(index)
     }
