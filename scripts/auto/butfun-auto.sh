@@ -75,7 +75,16 @@ case "$turn" in
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
-    exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")"
+    gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)"; grc=$?
+    printf '%s\n' "$gout" | tail -30
+    # Gemini 額度「真的用光」（重試後仍失敗）→ 優雅暫停 + 通知人，不每 20 分空轉
+    if [ "$grc" -ne 0 ] && printf '%s' "$gout" | grep -qiE "exhausted|quota|RESOURCE_EXHAUSTED|\b429\b"; then
+      log "Gemini 額度用盡（rc=$grc）→ 暫停自走、通知人"
+      cd "$COORD" && git pull --rebase -q || true
+      printf '\n## [%s] 系統 | Gemini 額度用盡\nGemini 這份額度用完了，worker 暫停。額度重置後 `rm ~/.cache/butfun-auto/paused` 即恢復。\n（若要免額度續跑，可改用地端 agentic fallback——見下方「地端 worker」TODO。）\n' "$(date '+%Y-%m-%d %H:%M')" >> for_human.md
+      git add for_human.md && git commit -q -m "chore: Gemini 額度用盡，暫停自走" && git push -q || true
+      touch "$PAUSE"
+    fi
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
