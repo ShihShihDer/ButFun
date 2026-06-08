@@ -92,8 +92,15 @@ pub fn spawn(app: AppState) {
             };
 
             // 推進採集節點重生（採空的倒數補耐久,其餘 no-op）。重生無條件跑;view 只在廣播時建。
+            // ③ 無限世界: 先確保玩家周圍區塊已載入。
             let node_views: Vec<NodeView> = {
                 let mut nodes = app.nodes.write().unwrap();
+                {
+                    let players = app.players.read().unwrap();
+                    for p in players.values() {
+                        nodes.ensure_chunks_around(p.x, p.y, 1000.0);
+                    }
+                }
                 nodes.tick(dt);
                 if want_broadcast {
                     nodes
@@ -126,8 +133,15 @@ pub fn spawn(app: AppState) {
 
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
             // view 只在廣播時建。怪會動起來——撲向玩家、沒人時漂回家,世界因此活起來。
+            // ③ 無限世界: 先確保玩家周圍區塊已載入。
             let enemy_views: Vec<EnemyView> = {
                 let mut enemies = app.enemies.write().unwrap();
+                {
+                    let players = app.players.read().unwrap();
+                    for p in players.values() {
+                        enemies.ensure_chunks_around(p.x, p.y, 1000.0);
+                    }
+                }
                 enemies.tick(dt);
                 enemies.advance(dt, &chase_targets);
                 if want_broadcast {
