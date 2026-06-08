@@ -1456,43 +1456,71 @@
     return false;
   }
 
-  // 畫地面 + 世界邊界。有像素 tileset 就鋪草地瓦片,否則退回程式草叢紋理。
+  // ── 程序生成生態域(biome)──────────────────────────────────────────────
+  // biome 是「世界座標的確定性函式」:同座標永遠同結果、平滑過渡、無接縫,而且不必傳一張
+  // 大地圖(避開 tilemap 那套 netcode)。先做純前端視覺(各式各樣的場景);切片 3 後端會用
+  // 同一套門檻放「生態域專屬的節點/怪」時再對齊。
+  // 平滑 value noise:格點雜湊(重用 grassHash)+ smoothstep 雙線性內插。scale 越大、區塊越大。
+  function biomeNoise(wx, wy, scale, seed) {
+    const gx = wx / scale, gy = wy / scale;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const fx = gx - x0, fy = gy - y0;
+    const h = (a, b) => grassHash((a | 0) * 1009 + seed, (b | 0) * 9176 + seed * 31);
+    const v00 = h(x0, y0), v10 = h(x0 + 1, y0), v01 = h(x0, y0 + 1), v11 = h(x0 + 1, y0 + 1);
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy); // smoothstep
+    const a = v00 + (v10 - v00) * sx;
+    const b = v01 + (v11 - v01) * sx;
+    return a + (b - a) * sy; // [0,1)
+  }
+  // 座標 → 生態域種類。海拔 e 決定水/沙/高地、濕度 m 在中海拔分森林/草原。
+  // scale ~1500 → 走得到成片場景(不是雜訊碎點)。
+  function biomeAt(wx, wy) {
+    const e = biomeNoise(wx, wy, 1500, 7);
+    const m = biomeNoise(wx, wy, 1200, 137);
+    if (e < 0.30) return "water";
+    if (e < 0.355) return "sand";
+    if (e > 0.76) return "rocky";
+    return m > 0.56 ? "forest" : "meadow";
+  }
+  // 各生態域地表底色(非草地生態域 / 無 tileset 時用)。
+  const BIOME_GROUND = { water: "#27566f", sand: "#b3a06a", meadow: "#16361f", forest: "#102a18", rocky: "#4f4a44" };
+
+  // 畫地面(程序生態域)+ 世界邊界。草原/森林保留草地瓦片(森林壓暗一階拉層次),
+  // 水/沙/岩改用生態域底色 → 走到哪、場景就不同,無接縫。
   function drawGround(camX, camY) {
     ctx.fillStyle = "#12331f";
     ctx.fillRect(0, 0, viewW, viewH);
 
-    if (artOk("tileset_a")) {
-      // 鋪草地瓦片(tileset 第 0 列 = 草地,4 個變體靠座標雜湊挑,免機械重複)。
-      const tx0 = Math.floor(camX / TS) - 1;
-      const ty0 = Math.floor(camY / TS) - 1;
-      const tx1 = Math.floor((camX + viewW) / TS) + 1;
-      const ty1 = Math.floor((camY + viewH) / TS) + 1;
-      for (let ty = ty0; ty <= ty1; ty++) {
-        for (let tx = tx0; tx <= tx1; tx++) {
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+    const hasTiles = artOk("tileset_a");
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const b = biomeAt(tx * TS + TS / 2, ty * TS + TS / 2);
+        const dx = Math.round(tx * TS - camX);
+        const dy = Math.round(ty * TS - camY);
+        if (hasTiles && (b === "meadow" || b === "forest")) {
           const variant = (grassHash(tx, ty) * 4) | 0; // 0..3
-          const dx = Math.round(tx * TS - camX);
-          const dy = Math.round(ty * TS - camY);
           ctx.drawImage(ART.tileset_a, variant * TS, 0, TS, TS, dx, dy, TS, TS);
+          if (b === "forest") { // 森林壓暗,與草原拉出層次
+            ctx.fillStyle = "rgba(8,26,14,0.42)";
+            ctx.fillRect(dx, dy, TS + 1, TS + 1);
+          }
+        } else {
+          ctx.fillStyle = BIOME_GROUND[b];
+          ctx.fillRect(dx, dy, TS + 1, TS + 1);
+          // 同格固定的微亮/暗抖動,給點質感(不隨鏡頭閃爍)。
+          const j = grassHash(tx * 3 + 5, ty * 7 + 2);
+          if (j > 0.8) { ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(dx, dy, TS + 1, TS + 1); }
+          else if (j < 0.16) { ctx.fillStyle = "rgba(0,0,0,0.10)"; ctx.fillRect(dx, dy, TS + 1, TS + 1); }
         }
       }
-      drawDecorations(camX, camY);
-    } else {
-      // fallback:程式草叢紋理 + 網格
-      drawGrassTexture(camX, camY);
-      const grid = 80;
-      ctx.strokeStyle = "rgba(255,255,255,0.05)";
-      ctx.lineWidth = 1;
-      const startX = -((camX % grid) + grid) % grid;
-      const startY = -((camY % grid) + grid) % grid;
-      for (let x = startX; x < viewW; x += grid) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, viewH); ctx.stroke();
-      }
-      for (let y = startY; y < viewH; y += grid) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(viewW, y); ctx.stroke();
-      }
     }
+    if (hasTiles) drawDecorations(camX, camY);
 
-    // 滿世界的裝飾(草叢 + 偶爾的樹/石),填滿大世界的空曠感。畫在地表之上、農地/節點/玩家之下。
+    // 裝飾(草叢/樹/石)。畫在地表之上、農地/節點/玩家之下。水域不長草(drawScenery 內跳過)。
     drawScenery(camX, camY);
 
     // 世界邊界
@@ -1538,6 +1566,7 @@
         const wx = tx * cell + sceneryHash(tx * 7 + 1, ty * 3) * cell;
         const wy = ty * cell + sceneryHash(tx * 3, ty * 7 + 1) * cell;
         if (wx < 0 || wy < 0 || wx > world.width || wy > world.height) continue;
+        if (biomeAt(wx, wy) === "water") continue; // 水域不長草/樹
         const sx = wx - camX;
         const sy = wy - camY;
         ctx.save();
