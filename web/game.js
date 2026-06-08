@@ -1862,51 +1862,106 @@
 
   // ---- 敵人（戰鬥 1-F）----
   const ENEMY_LOOK = {
-    scrap_drone: { icon: "🤖", tint: "#6b4a3a" },
-    ether_wisp: { icon: "👻", tint: "#46407a" },
+    scrap_drone: { tint: "#6b4a3a" },
+    ether_wisp: { tint: "#46407a" },
   };
+
+  // 銹蝕巡邏機:懸浮的故障舊機械。金屬殼 + 脈動紅色感測眼 + 頂端閃燈 + 側鰭。純 canvas 畫。
+  function drawScrapDrone(cx, cy, t, phase) {
+    const x = cx - 13, y = cy - 9, w = 26, h = 18, r = 7;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    ctx.fillStyle = "#5a4636";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#2c211a";
+    ctx.stroke();
+    ctx.fillStyle = "#46362a";
+    ctx.beginPath(); ctx.moveTo(cx - 13, cy - 2); ctx.lineTo(cx - 19, cy + 1); ctx.lineTo(cx - 13, cy + 5); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx + 13, cy - 2); ctx.lineTo(cx + 19, cy + 1); ctx.lineTo(cx + 13, cy + 5); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#3a2c22"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 9); ctx.lineTo(cx, cy - 15); ctx.stroke();
+    const blink = Math.sin(t * 6 + phase) > 0 ? 1 : 0.3;
+    ctx.fillStyle = `rgba(255,120,60,${blink})`;
+    ctx.beginPath(); ctx.arc(cx, cy - 16, 2, 0, Math.PI * 2); ctx.fill();
+    const pulse = 0.7 + 0.3 * Math.sin(t * 4 + phase);
+    ctx.fillStyle = "#1a0f0a"; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,90,50,${pulse})`; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,210,180,0.9)"; ctx.beginPath(); ctx.arc(cx - 1.2, cy - 1.2, 1.3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 迷途乙太靈:野化的乙太生靈。柔光球 + 下垂飄帶 + 兩顆小眼,整體脈動漂浮。純 canvas 畫。
+  function drawEtherWisp(cx, cy, t, phase) {
+    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 16);
+    glow.addColorStop(0, "rgba(150,130,230,0.55)");
+    glow.addColorStop(1, "rgba(70,64,122,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, 16, 0, Math.PI * 2); ctx.fill();
+    for (let k = 1; k <= 3; k++) {
+      const ty = cy + 6 + k * 5;
+      const tx = cx + Math.sin(t * 3 + phase + k * 0.8) * 4;
+      ctx.fillStyle = `rgba(139,127,214,${0.5 - k * 0.13})`;
+      ctx.beginPath(); ctx.arc(tx, ty, 5 - k * 1.2, 0, Math.PI * 2); ctx.fill();
+    }
+    const pulse = 0.85 + 0.15 * Math.sin(t * 4 + phase);
+    ctx.fillStyle = `rgba(159,147,224,${pulse})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(20,16,40,0.9)";
+    ctx.beginPath(); ctx.arc(cx - 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
+    const t = fxNow / 1000;
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       const sx = e.x - camX;
       const sy = e.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
-      const look = ENEMY_LOOK[e.kind] || { icon: "❔", tint: "#555" };
-      // 受擊／被打倒一閃:t 1→0 隨剩餘時間淡出。被打倒(lethal)閃得更白更大,當作擊倒確認。
+      // 每隻用座標當相位 → 動作不同步;上下浮動給生命感(reduceMotion 不動)。
+      const phase = e.x * 0.7 + e.y * 0.3;
+      const ey = sy + (reduceMotion ? 0 : Math.sin(t * 3 + phase) * 2.5);
       const fx = enemyFx[i];
       const fxT = fx && fxNow < fx.until
         ? Math.max(0, Math.min(1, (fx.until - fxNow) / (fx.lethal ? 480 : 280)))
         : 0;
       ctx.save();
-      if (!e.alive) ctx.globalAlpha = 0.25; // 被打倒、重生中
-      ctx.beginPath();
-      ctx.arc(sx, sy, 16, 0, Math.PI * 2);
-      ctx.fillStyle = look.tint;
-      ctx.fill();
-      ctx.font = "20px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(look.icon, sx, sy + 1);
-      // 受擊閃光疊在敵人身上:一圈往外擴張淡出的亮環(被打倒時更白更大),純表現。
-      // reduceMotion 時不做擴張動畫,只畫一圈靜態亮邊——仍傳遞「打中了」的資訊但不晃動。
+      if (!e.alive) ctx.globalAlpha = 0.22; // 被打倒、重生中
+      // 影子(定在地面、不隨浮動)
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+      // 生物造型(走近會動、會追——這層只負責長相)
+      if (e.kind === "scrap_drone") drawScrapDrone(sx, ey, t, phase);
+      else if (e.kind === "ether_wisp") drawEtherWisp(sx, ey, t, phase);
+      else {
+        const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
+        ctx.fillStyle = look.tint;
+        ctx.beginPath(); ctx.arc(sx, ey, 12, 0, Math.PI * 2); ctx.fill();
+      }
+      // 受擊閃光:往外擴張淡出的亮環(被打倒時更白更大)。reduceMotion 只畫靜態亮邊。
       if (fxT > 0) {
         const base = fx.lethal ? 20 : 17;
         const r = reduceMotion ? base : base + (1 - fxT) * (fx.lethal ? 16 : 10);
-        ctx.globalAlpha = (e.alive ? 1 : 0.25) * fxT;
+        ctx.globalAlpha = (e.alive ? 1 : 0.22) * fxT;
         ctx.lineWidth = fx.lethal ? 3 : 2;
         ctx.strokeStyle = fx.lethal ? "#fff" : "#ffd9a0";
         ctx.beginPath();
-        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.arc(sx, ey, r, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.globalAlpha = e.alive ? 1 : 0.25;
+        ctx.globalAlpha = e.alive ? 1 : 0.22;
       }
-      // 血條:活著且不滿血才畫。
+      // 血條:活著且不滿血才畫(定在頭上)。
       if (e.alive && e.hp < e.max_hp) {
         const bw = 28;
         const bx = sx - bw / 2;
-        const by = sy - 22;
+        const by = sy - 24;
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         ctx.fillRect(bx - 1, by - 1, bw + 2, 6);
         ctx.fillStyle = "#d65a5a";
