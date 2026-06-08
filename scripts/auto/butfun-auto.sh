@@ -101,8 +101,8 @@ case "$turn" in
     git -C "$REPO" fetch -q origin main 2>/dev/null || true
     after="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
     if [ -n "${before:-}" ] && [ "$before" != "${after:-}" ]; then
-      merged="$(git -C "$REPO" log --oneline "${before}..${after}" 2>/dev/null | grep -iE "切片|Merge pull request" | head -1 | sed -E 's/^[0-9a-f]+ //; s/Merge pull request #[0-9]+ from \S+//')"
-      "$HERE/notify.sh" update "🎮 新功能做好上 staging 了，可以去玩：${merged:-（看 for_human.md）}" >/dev/null 2>&1 || true
+      merged="$(git -C "$REPO" log --oneline "${before}..${after}" 2>/dev/null | grep -viE "Merge (pull request|branch)" | head -1 | sed -E 's/^[0-9a-f]+ //')"
+      "$HERE/notify.sh" update "🎮 新功能上 staging 可以玩了：${merged:-（看 for_human.md）}" >/dev/null 2>&1 || true
     fi
     ;;
   human)
