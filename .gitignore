@@ -14,6 +14,7 @@
 .DS_Store
 .idea/
 .vscode/
+.claude/
 *.iml
 node_modules/
 package-lock.json
