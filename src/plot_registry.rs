@@ -18,7 +18,7 @@
 //!   - 比照 `connections.rs`／`positions.rs` 做成可測的小 store；分配與歸屬判斷都是無 IO 的
 //!     純粹方法，便於單元測試。
 //!
-//! 接線輪（標 `allow(dead_code)` 在此之前不刪）會把它接上：玩家進場 `assign` 取得序號 →
+//! 接線輪（標 `allow(dead_code)` 在此之前不刪）會把它接上：玩家進場 `claim` 取得序號 →
 //! `plots::plot_origin(序號)` 決定他那塊 `Field` 的 origin；ws 的 `Farm` 動作先用 `owns`
 //! 驗證「玩家操作的地塊序號屬於他自己」才放行，路過別人的地看得到、點不動。
 
@@ -50,9 +50,15 @@ impl PlotRegistry {
         Self::default()
     }
 
-    /// 取得 `user_id` 的地塊序號；還沒有就分配下一個未用序號並記住。
-    /// 同一玩家重複呼叫（重連／多分頁）一律拿回**同一個**序號，不會多吃地塊。
-    pub fn assign(&self, user_id: Uuid) -> usize {
+    /// 取得 `user_id` 的地塊序號；還沒有回 `None`。
+    /// 不再自動分配，對齊 ③ Slice D「進場不送地、自己攢乙太買地」。
+    pub fn index_of(&self, user_id: Uuid) -> Option<usize> {
+        self.inner.lock().unwrap().by_user.get(&user_id).copied()
+    }
+
+    /// 為 `user_id` 分配下一個未用序號。
+    /// 若玩家已有地塊，則回傳現有序號而不重新分配（冪等）。
+    pub fn claim(&self, user_id: Uuid) -> usize {
         let mut inner = self.inner.lock().unwrap();
         if let Some(&idx) = inner.by_user.get(&user_id) {
             return idx;
@@ -63,15 +69,7 @@ impl PlotRegistry {
         idx
     }
 
-    /// `user_id` 目前擁有的地塊序號；還沒分配過回 `None`。
-    /// 0-E 接線後：農地落地（game.rs／ws.rs）查每塊地的序號好一起存。
-    pub fn index_of(&self, user_id: Uuid) -> Option<usize> {
-        self.inner.lock().unwrap().by_user.get(&user_id).copied()
-    }
-
     /// 第 `index` 塊地是不是 `user_id` 擁有的——伺服器 Farm 動作驗地主用。
-    /// 玩家還沒分配地塊（`index_of` 為 `None`）時對任何序號都回 `false`。
-    #[allow(dead_code)] // 同上，待接線（ws `Farm` 動作驗「這塊地屬於你」）。
     pub fn owns(&self, user_id: Uuid, index: usize) -> bool {
         self.index_of(user_id) == Some(index)
     }
@@ -79,7 +77,7 @@ impl PlotRegistry {
     /// 從持久化的 `(user_id, 序號)` 對重建登記表——0-E 跨重啟載入入口。
     ///
     /// **關鍵不變式**：`next` 一律重建成「已用最大序號 + 1」。若天真載入把 `next`
-    /// 設回 0，重啟後 `assign` 會把序號 0（或任何已發出的序號）再發給新玩家，
+    /// 設回 0，重啟後 `claim` 會把序號 0（或任何已發出的序號）再發給新玩家，
     /// 造成「同一塊地兩個地主、作物歸屬錯亂」——正是本模組「序號只增不減、不回收」
     /// 要防的災難。比照 `positions::spawn_at`／`field::from_tiles`／`daynight::at`
     /// 那條「每個存檔又重載的結構都在載入路徑驗證自身不變式」的硬化弧線。
@@ -110,25 +108,25 @@ mod tests {
 
     /// 第一個玩家拿序號 0（接線時對齊現有全域農地），後續玩家依序往外拿。
     #[test]
-    fn assigns_sequential_indices_from_zero() {
+    fn claims_sequential_indices_from_zero() {
         let reg = PlotRegistry::new();
-        assert_eq!(reg.assign(Uuid::new_v4()), 0);
-        assert_eq!(reg.assign(Uuid::new_v4()), 1);
-        assert_eq!(reg.assign(Uuid::new_v4()), 2);
+        assert_eq!(reg.claim(Uuid::new_v4()), 0);
+        assert_eq!(reg.claim(Uuid::new_v4()), 1);
+        assert_eq!(reg.claim(Uuid::new_v4()), 2);
     }
 
-    /// 同一玩家重複 `assign`（重連／多分頁）永遠拿回同一塊地，不會多吃序號。
+    /// 同一玩家重複 `claim`（重連／多分頁）永遠拿回同一塊地，不會多吃序號。
     #[test]
     fn same_user_keeps_same_plot() {
         let reg = PlotRegistry::new();
         let id = Uuid::new_v4();
-        let first = reg.assign(id);
-        assert_eq!(reg.assign(id), first, "同玩家重連應拿回同一塊地");
-        assert_eq!(reg.assign(id), first);
+        let first = reg.claim(id);
+        assert_eq!(reg.claim(id), first, "同玩家重連應拿回同一塊地");
+        assert_eq!(reg.claim(id), first);
         // 中間插入別的玩家不影響原玩家的序號。
-        let other = reg.assign(Uuid::new_v4());
+        let other = reg.claim(Uuid::new_v4());
         assert_ne!(other, first, "不同玩家不該分到同一塊");
-        assert_eq!(reg.assign(id), first, "插入他人後原玩家仍是同一塊");
+        assert_eq!(reg.claim(id), first, "插入他人後原玩家仍是同一塊");
     }
 
     /// 不同玩家分到互異的序號（每人一塊、不重疊；對齊 `plots` 的互異保證）。
@@ -137,7 +135,7 @@ mod tests {
         let reg = PlotRegistry::new();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..50 {
-            let idx = reg.assign(Uuid::new_v4());
+            let idx = reg.claim(Uuid::new_v4());
             assert!(seen.insert(idx), "序號 {idx} 重複分配給了兩個玩家");
         }
     }
@@ -147,19 +145,19 @@ mod tests {
     #[test]
     fn indices_only_grow() {
         let reg = PlotRegistry::new();
-        let a = reg.assign(Uuid::new_v4());
-        let b = reg.assign(Uuid::new_v4());
-        let c = reg.assign(Uuid::new_v4());
+        let a = reg.claim(Uuid::new_v4());
+        let b = reg.claim(Uuid::new_v4());
+        let c = reg.claim(Uuid::new_v4());
         assert!(a < b && b < c, "序號應單調遞增：{a} < {b} < {c}");
     }
 
     /// `index_of`：分配前回 `None`，分配後回該序號。
     #[test]
-    fn index_of_reflects_assignment() {
+    fn index_of_reflects_claimment() {
         let reg = PlotRegistry::new();
         let id = Uuid::new_v4();
         assert_eq!(reg.index_of(id), None, "分配前不該有地塊");
-        let idx = reg.assign(id);
+        let idx = reg.claim(id);
         assert_eq!(reg.index_of(id), Some(idx));
     }
 
@@ -169,8 +167,8 @@ mod tests {
         let reg = PlotRegistry::new();
         let owner = Uuid::new_v4();
         let stranger = Uuid::new_v4();
-        let mine = reg.assign(owner);
-        let theirs = reg.assign(stranger);
+        let mine = reg.claim(owner);
+        let theirs = reg.claim(stranger);
 
         assert!(reg.owns(owner, mine), "地主對自己的地該回 true");
         assert!(!reg.owns(owner, theirs), "不能聲稱擁有別人的地");
@@ -186,7 +184,7 @@ mod tests {
     #[test]
     fn from_saved_empty_behaves_like_new() {
         let reg = PlotRegistry::from_saved(std::iter::empty());
-        assert_eq!(reg.assign(Uuid::new_v4()), 0);
+        assert_eq!(reg.claim(Uuid::new_v4()), 0);
     }
 
     /// 載回後保留每個玩家原本的地塊（returning 玩家重啟仍拿回同一塊）。
@@ -199,7 +197,7 @@ mod tests {
         assert_eq!(reg.index_of(b), Some(3));
         assert!(reg.owns(b, 3));
         // 重連也拿回原序號、不重新分配。
-        assert_eq!(reg.assign(a), 0);
+        assert_eq!(reg.claim(a), 0);
     }
 
     /// 招牌不變式：續發的序號＝已用最大序號 + 1，**絕不**把已發出的序號再給新玩家。
@@ -209,7 +207,7 @@ mod tests {
         let owner0 = Uuid::new_v4();
         // 稀疏／跳號的歷史：最大序號是 10，續發必須從 11 起，而非填補 1..=9 的空洞。
         let reg = PlotRegistry::from_saved([(owner0, 0), (Uuid::new_v4(), 10)]);
-        let fresh = reg.assign(Uuid::new_v4());
+        let fresh = reg.claim(Uuid::new_v4());
         assert_eq!(fresh, 11, "續發序號應為最大序號+1，不得回頭撞既有地塊");
         assert_ne!(fresh, 0);
         // 序號 0 的既有地主未被頂掉。

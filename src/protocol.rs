@@ -39,6 +39,9 @@ pub enum ClientMsg {
     /// 名(如 "pickaxe")。伺服器查 `crafting::RECIPES`、在玩家自己背包上全有全無地扣料+產出,
     /// 產物隨既有背包快照回來(零契約變更)。
     Craft { recipe_id: String },
+    /// 領地購買意圖（③ Slice D）：玩家點擊購買第一塊地。
+    /// 伺服器驗證乙太足夠（PLOT_COST）且尚未擁有地塊後分配序號。
+    ClaimPlot,
 }
 
 /// 伺服器送給客戶端的訊息。

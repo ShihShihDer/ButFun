@@ -142,9 +142,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     //
     // recall 也在這裡(鎖內)做，跟 cleanup 的 remember 用同一把 players 寫鎖排序，
     // 消除 refresh 時「新連線 recall 早於舊連線 remember」的 race window。
-    // 先決定地塊序號(已登入才有),好讓「沒有歷史位置的玩家一進來就落在自己那塊地」。
-    // `assign` 冪等:同帳號重連永遠拿回同一塊、不會多吃序號。
-    let plot_index = authed_uid.map(|uid| app.plots.assign(uid));
+    // 讀取既有地塊序號(已登入才有)。不再進場就自動分配,對齊 ③ Slice D「自己攢乙太買地」。
+    let plot_index = authed_uid.and_then(|uid| app.plots.index_of(uid));
     {
         let mut players = app.players.write().unwrap();
         if app.connections.acquire(id) {
@@ -371,6 +370,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             if recipe.craft(&mut p.inventory) {
                                 tracing::info!(player = %p.name, recipe = %recipe_id, "合成成功");
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::ClaimPlot) => {
+                    // 領地購買(③ Slice D)：已登入玩家可用乙太購買第一塊地。
+                    if let Some(uid) = authed_uid {
+                        let has_plot = app.plots.index_of(uid).is_some();
+                        if !has_plot {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                if p.ether >= crate::economy::PLOT_COST {
+                                    p.ether -= crate::economy::PLOT_COST;
+                                    let index = app.plots.claim(uid);
+                                    app.fields
+                                        .write()
+                                        .unwrap()
+                                        .insert(uid, Field::for_plot(index));
+                                    tracing::info!(player = %p.name, index, "成功購買第一塊領地");
+                                }
                             }
                         }
                     }
