@@ -27,7 +27,9 @@ Claude Sonnet 跑——對你沒差，照下面做即可）。你在一個 **wor
   - 卡編譯卡超過 ~4 次試不出來 → 別硬燒：還原本輪改動、在 /home/shihshih/butfun-coord/for_human.md
     記一筆、旗標設 human、結束。
 - **護欄**：不抄外部遊戲碼（只吸收概念寫原創）；不碰密鑰、不提交 data/；
-  **動玩家資料/migration 要向後相容**（領地重置只重置地塊歸屬，**保留**乙太/背包/帳號/作物，絕不 DROP 既有資料）。
+  **migration**：一般要向後相容、不破壞玩家資料。**例外（使用者授權）：③ 切片 D 領地重置是 full clean**——
+  **可清空地塊/作物/乙太/背包等所有玩家遊戲狀態**（TRUNCATE OK，世界重生從零攢、不留包袱），
+  **唯一保留 `users` 帳號表**（讓玩家登得回來）。切片 D 以外不可破壞玩家資料。
 - **開 PR（`gh pr create`），不要自己 merge**（merge 由 review 把關）。
 
 # 信箱（/home/shihshih/butfun-coord，git repo，寫前 pull --rebase、寫後 push）

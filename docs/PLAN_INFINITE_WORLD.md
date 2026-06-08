@@ -55,8 +55,11 @@
 - **切片 C — 離屏剔除 / AOI（最重的一塊，netcode）**：快照從「全世界實體」改成「**以玩家為中心、
   附近區塊內的實體**」（interest management / area-of-interest），前端只渲染可見區塊。這是讓無限世界
   不會 O(世界) 爆廣播的關鍵，也是 ③ 風險最高、最該開 PR 審的部分。
-- **切片 D — 領地重置 + 空世界開局**：清掉現有 plots 自動配置，改「**進場不送地、自己攢乙太買地**」。
-  ⚠️ data-safety：用 migration、**只重置地塊配置/歸屬**，別 drop 乙太/背包/帳號/作物。
+- **切片 D — 領地重置 + 空世界開局**：改「**進場不送地、自己攢乙太買地**」。
+  ✅ **重置範圍 = FULL CLEAN（使用者 2026-06-08 明確拍板，理由：clean slate、不留包袱不用一直閃舊資料）**：
+  migration **可清空所有玩家遊戲狀態**——地塊/作物/乙太/背包（TRUNCATE 那些表 OK），讓世界重生、大家從零開始攢。
+  **唯一必須保留 `users` 帳號表**（provider/external_id/name/species，讓玩家登得回來）。
+  先在 staging（`butfun_staging` DB）跑、施大玩過再按 `deploy.sh` 上 prod（`butfun` DB）——兩庫隔離，prod 等人。
 - **（⑤ 水擋路接線）**：排在 D 之後——plots 落陸地後，把 `resolve_move` 用
   `biome_at(..)==Water → blocked` 接上移動，玩家就不會被鎖在水田裡。碰撞「料」已備好。
 
