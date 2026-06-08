@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, merchant_pos};
-use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry};
+use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry, TileDeltaView};
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
@@ -295,9 +295,14 @@ pub fn spawn(app: AppState) {
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
                         npcs: vec![npc_view],
-                        // C-1：地形由前端確定性生成（tileKindAt），delta 為空；
-                        // C-2 起挖掘後才廣播非空 delta 陣列。
-                        terrain: vec![],
+                        // C-2 起：把 TileWorld 中所有玩家挖掘後的差異帶入快照。
+                        // delta 稀疏（只存偏離確定性生成的格），ws.rs 轉發時再依 AOI 剔除。
+                        terrain: {
+                            let tw = app.tile_world.read().unwrap();
+                            tw.deltas().iter().map(|(&(cx, cy, tx, ty), &kind)| {
+                                TileDeltaView { cx, cy, tx, ty, kind: kind.into() }
+                            }).collect()
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

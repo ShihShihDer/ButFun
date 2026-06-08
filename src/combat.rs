@@ -72,8 +72,9 @@ impl WeaponKind {
 pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
     match item {
         ItemKind::Weapon => Some(WeaponKind::Blade),
-        // 資源原料與採集工具都不是武器。
+        // 資源原料、建造材料與採集工具都不是武器。
         ItemKind::Wood
+        | ItemKind::Dirt
         | ItemKind::Stone
         | ItemKind::Ether
         | ItemKind::Pickaxe

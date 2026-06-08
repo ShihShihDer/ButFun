@@ -95,6 +95,10 @@ pub enum ClientMsg {
     /// 向新手村商人 NPC 購買 qty 個 item（花乙太 → 背包加物品）。
     /// 伺服器驗距離、物品在販售清單、乙太足夠；失敗靜默忽略。
     ShopBuy { item: ItemKind, qty: u32 },
+    /// 挖掘地形格（C-2）：玩家點擊世界座標 (wx, wy)。
+    /// 伺服器換算成 cell 座標，驗可及距離（DIG_REACH）、目標為實心格後：
+    /// delta 設 Empty、對應材料入背包、廣播差異（随下一次快照帶出）。
+    Dig { wx: f32, wy: f32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -288,6 +292,20 @@ mod tests {
     fn parses_gather_message() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"gather"}"#).unwrap();
         assert!(matches!(msg, ClientMsg::Gather));
+    }
+
+    /// 前端送的 dig 訊息要能被解析成 `ClientMsg::Dig`（C-2 wire contract）。
+    #[test]
+    fn parses_dig_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"dig","wx":320.5,"wy":-64.0}"#).unwrap();
+        match msg {
+            ClientMsg::Dig { wx, wy } => {
+                assert_eq!(wx, 320.5);
+                assert_eq!(wy, -64.0);
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
     }
 
     /// 快照序列化後要帶前端依賴的欄位名：fields / 每位玩家的 ether 與 inventory /

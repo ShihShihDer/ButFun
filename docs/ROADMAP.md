@@ -26,12 +26,20 @@
    - 給新手穩定的「第一桶乙太」出口，不必等農地收成或玩家市場。
    - 前端：繪製商人圖示、靠近自動亮 dock 點、商店面板顯示買賣目錄與數量輸入。
 
-## 現在做
-6a. **可挖地形 C-1：tile 層地基**（PR 開發中）
-   - `world-core`：`TileKind` enum + `tile_kind_at` 確定性生成（Rocky→石/礦、Forest→土/石、Meadow→稀疏石/土、Sand→極稀疏）。
+## ✅ 已完成（可挖地形地基 — 2026-06-09）
+6a. ✅ **可挖地形 C-1：tile 層地基**（PR #58）
+   - `world-core`：`TileKind` enum + `tile_kind_at` 確定性生成。
    - `tiles.rs` + `tile_store.rs`：記憶體 delta map + DB 持久化層（`tile_deltas` 表）。
    - `protocol.rs`：`TileDeltaView` + Snapshot 加 `terrain` 欄位（C-1 永遠空）。
-   - 前端：`tileKindAt` 本地確定性生成（零帶寬）+ `drawTerrain` 畫色塊地形（地表之上、農地之下）。
+   - 前端：`tileKindAt` 本地確定性生成（零帶寬）+ `drawTerrain` 畫色塊地形。
+
+## 現在做
+6b. **可挖地形 C-2：Dig handler**（PR 開發中）
+   - 後端：`ClientMsg::Dig { wx, wy }` + ws.rs handler（可及性 80px、實心→Empty + 材料入背包 + 持久化）。
+   - `ItemKind::Dirt`（土磚，C-2 掉落 + C-4 建造材料）加入物品宇宙。
+   - `game.rs`：快照的 `terrain` 欄位從 TileWorld deltas 填充（C-1 時永遠為空）。
+   - ws.rs AOI 過濾：地形 delta 依格中心距離剔除。
+   - 前端：點實心地形格→送 dig + 接收 terrain delta（含 empty 覆蓋）。
 
 ## 已完成
 1. ✅ **③ 無限世界**（切片 A~D 全進 main：拿掉邊界、區塊確定性生成、AOI 剔除、領地重置）

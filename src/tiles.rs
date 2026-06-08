@@ -4,12 +4,32 @@
 //! 玩家挖 / 建後偏離預設的格子才進 `deltas`（稀疏 Map），持久化到 `tile_deltas` 表。
 //!
 //! C-1（本切片）：只有讀取路徑（生成 + delta 覆蓋）；`apply_delta` 在 C-2 挖掘才用到。
+//! C-2 挖掘：`dig_reach` 距離判定 + `drop_for_tile` 掉落材料 + `apply_delta` 設 Empty。
 //! C-3 碰撞：`is_solid` 判定實心格擋移動。
 //! C-4 建造：`apply_delta` 從 Empty → 實心格。
 
 use std::collections::HashMap;
 
 use world_core::{tile_kind_at, TileKind, CHUNK_SIZE, TILE_PX, TILES_PER_CHUNK};
+
+use crate::inventory::ItemKind;
+
+/// 玩家能挖掘地形格的最大距離（像素，格中心距玩家位置）。
+/// 約 2.5 格寬，比採集（56px）略寬，讓挖掘手感不要太精準難操作。
+pub const DIG_REACH: f32 = 80.0;
+
+/// 挖掘一格後掉落的物品種類與數量。
+/// `Empty` 不可挖（回 None）；其餘對應各自的建造材料。
+///
+/// 純函式，便於測試；接線在 ws.rs 的 `Dig` handler。
+pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
+    match kind {
+        TileKind::Empty => None,
+        TileKind::Dirt  => Some((ItemKind::Dirt, 1)),
+        TileKind::Stone => Some((ItemKind::Stone, 1)),
+        TileKind::Ore   => Some((ItemKind::Ether, 1)),
+    }
+}
 
 /// 記憶體裡的地形格世界（記憶體前置、寫後非同步落地到 `TileStore`）。
 pub struct TileWorld {
@@ -84,6 +104,18 @@ pub fn cell_center(cx: i32, cy: i32, tx: u8, ty: u8) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drop_for_tile_empty_returns_none() {
+        assert_eq!(drop_for_tile(TileKind::Empty), None);
+    }
+
+    #[test]
+    fn drop_for_tile_solid_tiles_return_materials() {
+        assert_eq!(drop_for_tile(TileKind::Dirt),  Some((ItemKind::Dirt,  1)));
+        assert_eq!(drop_for_tile(TileKind::Stone), Some((ItemKind::Stone, 1)));
+        assert_eq!(drop_for_tile(TileKind::Ore),   Some((ItemKind::Ether, 1)));
+    }
 
     #[test]
     fn world_to_cell_origin() {

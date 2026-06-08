@@ -18,6 +18,7 @@ use crate::market::MarketListing;
 use crate::npc;
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::state::{AppState, Input, Player, WORLD_HEIGHT, WORLD_WIDTH};
+use world_core;
 
 /// 一則聊天訊息的最長字元數。聊天會廣播給所有玩家，這條是「公開輸入邊界」的集中
 /// 常數（對齊建議內容 1000 / 署名 24 / 玩家名 24 的同類上限）。
@@ -256,8 +257,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         listings: listings.iter().filter(|l| filter_pos(l.x, l.y)).cloned().collect(),
                                         // NPC 全部送出（靜態且位置固定在新手村，一定在 AOI 內）
                                         npcs: npcs.clone(),
-                                        // 地形 delta：C-1 永遠為空；C-2 起依 AOI 剔除後廣播。
-                                        terrain: terrain.clone(),
+                                        // C-2：依格中心世界座標做 AOI 剔除，不廣播超出視野的挖掘差異。
+                                        terrain: terrain.iter().filter(|d| {
+                                            let (wx, wy) = crate::tiles::cell_center(d.cx, d.cy, d.tx, d.ty);
+                                            filter_pos(wx, wy)
+                                        }).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -616,6 +620,37 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     p.ether = new_ether;
                                 }
                             }
+                        }
+                    }
+                }
+                Ok(ClientMsg::Dig { wx, wy }) => {
+                    // C-2 挖掘地形格：倒地中不可挖（與採集/耕種同規則）。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
+                    // 換算格座標，計算格中心世界像素座標，驗可及距離。
+                    let (cx, cy, tx, ty) = crate::tiles::world_to_cell(wx, wy);
+                    let (ccx, ccy) = crate::tiles::cell_center(cx, cy, tx, ty);
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let Some((px, py)) = player_pos else { continue; };
+                    let dist_sq = (ccx - px) * (ccx - px) + (ccy - py) * (ccy - py);
+                    let reach = crate::tiles::DIG_REACH;
+                    if dist_sq > reach * reach { continue; }
+                    // 查當前格種類；只能挖實心格（Empty 靜默忽略）。
+                    let kind = app.tile_world.read().unwrap().tile_kind(cx, cy, tx, ty);
+                    if kind == world_core::TileKind::Empty { continue; }
+                    // 挖掘：更新記憶體 delta（記為 Empty），非同步落地到 DB。
+                    app.tile_world.write().unwrap().apply_delta(cx, cy, tx, ty, world_core::TileKind::Empty);
+                    let store = app.tile_store.clone();
+                    tokio::spawn(async move {
+                        store.upsert_delta(cx, cy, tx, ty, world_core::TileKind::Empty).await;
+                    });
+                    // 掉落材料入背包（工具加速倍率與採集一致）。
+                    if let Some((item, qty)) = crate::tiles::drop_for_tile(kind) {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            let mult = crate::tools::gather_speed_multiplier(&p.inventory);
+                            let added = p.inventory.add(item, qty * mult);
+                            tracing::info!(player = %p.name, ?item, added, "挖掘掉落");
                         }
                     }
                 }
