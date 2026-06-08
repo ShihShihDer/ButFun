@@ -154,25 +154,37 @@ impl Default for NodeField {
     }
 }
 
-/// 依 ID 決定種類。
-fn kind_for(id: (i32, i32, usize)) -> NodeKind {
-    let mut s = (id.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    s = s.wrapping_add((id.1 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9));
-    s = s.wrapping_add(id.2 as u64);
-    match s % 3 {
-        0 => NodeKind::Tree,
-        1 => NodeKind::Rock,
-        _ => NodeKind::EtherOre,
+/// 依生態域決定資源種類：森林/草地多木材，岩地富礦石，沙漠散落石塊。
+/// `slot` 用於同一生態域內的變化（如岩地交替礦石與普通石塊）。
+fn kind_for_biome(biome: world_core::Biome, slot: u64) -> NodeKind {
+    use world_core::Biome;
+    match biome {
+        Biome::Forest | Biome::Meadow => NodeKind::Tree,
+        Biome::Rocky => {
+            // 岩地交替：一半乙太礦、一半普通石塊，探索時才有驚喜感
+            if slot % 2 == 0 { NodeKind::EtherOre } else { NodeKind::Rock }
+        }
+        Biome::Sand | Biome::Water => NodeKind::Rock,
     }
 }
 
-/// 區塊內節點生成。
+/// 區塊內節點生成：先找非水域落點，再依生態域決定種類。
 fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedNode> {
     let mut nodes = Vec::new();
     for i in 0..NODES_PER_CHUNK {
         let id = (cx, cy, i);
-        let kind = kind_for(id);
-        let (x, y) = place_for_id(id, kind, 0);
+        // 位置先行：找非水域落點（最多 41 次），再看那裡的生態域決定種類
+        let mut pos = None;
+        for salt in 0u32..=40 {
+            let (x, y) = scatter_position(id, 0, salt);
+            if world_core::biome_at(x as f64, y as f64) != world_core::Biome::Water {
+                pos = Some((x, y));
+                break;
+            }
+        }
+        let (x, y) = pos.unwrap_or_else(|| scatter_position(id, 0, 0)); // 防呆
+        let biome = world_core::biome_at(x as f64, y as f64);
+        let kind = kind_for_biome(biome, i as u64);
         nodes.push(PlacedNode {
             id,
             x,

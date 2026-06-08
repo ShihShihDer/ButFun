@@ -9,6 +9,8 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use world_core::{biome_at, resolve_move, Biome};
+
 use crate::auth::AuthConfig;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
@@ -93,10 +95,13 @@ impl Player {
             dx *= inv;
             dy *= inv;
         }
-        // ③ 無限世界（切片 A）：不再 clamp 到世界邊界。`biome_at` 本就對任意座標
-        // （含負）確定性生成、無接縫，地表會自然往四面八方延伸，玩家可以一直走。
-        self.x += dx * PLAYER_SPEED * dt;
-        self.y += dy * PLAYER_SPEED * dt;
+        // ③ 無限世界：不再 clamp 到世界邊界，但水域擋路——用 resolve_move 做滑動碰撞，
+        // 玩家撞到水邊能沿岸滑行；已在水裡（如舊存檔）仍可逃出（resolve_move 的「受困放行」保證）。
+        let new_x = self.x + dx * PLAYER_SPEED * dt;
+        let new_y = self.y + dy * PLAYER_SPEED * dt;
+        (self.x, self.y) = resolve_move(self.x, self.y, new_x, new_y, |x, y| {
+            biome_at(x as f64, y as f64) == Biome::Water
+        });
     }
 }
 
@@ -320,6 +325,56 @@ mod tests {
         p.step(1.0);
         assert_eq!(p.x, 300.0);
         assert_eq!(p.y, 300.0);
+    }
+
+    #[test]
+    fn player_cannot_walk_into_water() {
+        // 掃描找一個水域座標（biome_at 確定性，多次呼叫結果相同）
+        let mut water: Option<(f32, f32)> = None;
+        'outer: for gy in 0..30i32 {
+            for gx in 0..30i32 {
+                let x = gx as f32 * 200.0;
+                let y = gy as f32 * 200.0;
+                if biome_at(x as f64, y as f64) == Biome::Water {
+                    water = Some((x, y));
+                    break 'outer;
+                }
+            }
+        }
+        let (wx, wy) = match water {
+            Some(p) => p,
+            None => return, // 掃描範圍內沒有水域，跳過（世界生成之後極罕見）
+        };
+        // 從一個肯定不是水的位置出發，朝水域方向持續走幾步
+        // 找非水域起點（水域座標附近、往外偏移一點）
+        let offsets = [(-400.0, 0.0), (400.0, 0.0), (0.0, -400.0), (0.0, 400.0)];
+        for (ox, oy) in offsets {
+            let sx = wx + ox;
+            let sy = wy + oy;
+            if biome_at(sx as f64, sy as f64) != Biome::Water {
+                // 找到陸地起點，朝水域方向走
+                let dir_x = (wx - sx).signum();
+                let dir_y = (wy - sy).signum();
+                let input = Input {
+                    right: dir_x > 0.0,
+                    left: dir_x < 0.0,
+                    down: dir_y > 0.0,
+                    up: dir_y < 0.0,
+                };
+                let mut p = player_at(sx, sy, input);
+                for _ in 0..10 {
+                    p.step(0.1); // 共一秒
+                }
+                // 最終位置不應在水裡（水域擋路）
+                assert!(
+                    biome_at(p.x as f64, p.y as f64) != Biome::Water,
+                    "玩家走進了水域 ({}, {})，水域碰撞應阻擋",
+                    p.x, p.y
+                );
+                return;
+            }
+        }
+        // 所有方向都是水域，跳過
     }
 
     #[test]
