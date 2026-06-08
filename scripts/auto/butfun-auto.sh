@@ -77,6 +77,7 @@ case "$turn" in
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
+    "$HERE/notify.sh" update "🔨 $(date '+%H:%M') worker 開工中（推進主軸切片）…" >/dev/null 2>&1 || true
     log "worker：先試 Gemini（獨立額度、不吃 Claude，但也有限會見底）"
     gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)"; grc=$?
     printf '%s\n' "$gout" | tail -25
@@ -90,6 +91,7 @@ case "$turn" in
     ;;
   review)
     log "reviewer（Claude $REVIEW_MODEL）把關"
+    "$HERE/notify.sh" update "🔍 $(date '+%H:%M') reviewer 審查 PR 中（冷編譯+跑測試,約 5-8 分）…" >/dev/null 2>&1 || true
     RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
     git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$RWT" >/dev/null 2>&1 || true
     before="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
