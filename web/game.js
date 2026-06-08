@@ -1345,14 +1345,14 @@
     ctx.clip();
 
     // 生態域背景:粗格取樣 biomeAt,把身邊地貌(草原/森林/岩/沙/水)用底色畫出來——
-    // 跟主畫面同一套確定性噪聲,小地圖因此「看得到地形」。世界界外畫暗(void),自然標出邊界。
+    // 跟主畫面同一套確定性噪聲,小地圖因此「看得到地形」。
+    // ③ 無限世界（切片 A）：世界無邊界了,身邊一律照 biomeAt 畫,不再有界外 void。
     const MM_STEP = 8; // 每格 mini px(粗取樣,夠看地貌又省效能;之後切片3 改離屏快取)
     for (let yy = 0; yy < size; yy += MM_STEP) {
       for (let xx = 0; xx < size; xx += MM_STEP) {
         const wx = cx + (xx + MM_STEP / 2 - size / 2) / scale;
         const wy = cy + (yy + MM_STEP / 2 - size / 2) / scale;
-        if (wx < 0 || wy < 0 || wx > w || wy > h) ctx.fillStyle = "rgba(6,9,18,0.92)";
-        else ctx.fillStyle = BIOME_GROUND[biomeAt(wx, wy)];
+        ctx.fillStyle = BIOME_GROUND[biomeAt(wx, wy)];
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
     }
@@ -1579,11 +1579,7 @@
 
     // 裝飾(草叢/樹/石)。畫在地表之上、農地/節點/玩家之下。水域不長草(drawScenery 內跳過)。
     drawScenery(camX, camY);
-
-    // 世界邊界
-    ctx.strokeStyle = "rgba(201,162,75,0.6)";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(-camX, -camY, world.width, world.height);
+    // ③ 無限世界（切片 A）：拿掉世界邊框——世界不再有邊，往哪走都有地表延伸。
   }
 
   // 確定性雜湊 [0,1)，給裝飾佈置用（同格座標永遠同結果,不隨鏡頭閃爍）。
@@ -1622,7 +1618,7 @@
         if (h < 0.4) continue; // 這格留白
         const wx = tx * cell + sceneryHash(tx * 7 + 1, ty * 3) * cell;
         const wy = ty * cell + sceneryHash(tx * 3, ty * 7 + 1) * cell;
-        if (wx < 0 || wy < 0 || wx > world.width || wy > world.height) continue;
+        // ③ 無限世界（切片 A）：不再剔除世界界外——裝飾跟著 biomeAt 無接縫延伸。
         if (biomeAt(wx, wy) === "water") continue; // 水域不長草/樹
         const sx = wx - camX;
         const sy = wy - camY;
@@ -1688,7 +1684,7 @@
         if (r < 0.45) continue; // 留白,別每格都長草
         const wxp = gx * cell + grassHash(gx + 101, gy) * (cell - 6);
         const wyp = gy * cell + grassHash(gx, gy + 211) * (cell - 6);
-        if (wxp < 0 || wyp < 0 || wxp > world.width || wyp > world.height) continue;
+        // ③ 無限世界（切片 A）：不再剔除世界界外,草地紋理隨鏡頭無接縫延伸。
         const sx = wxp - camX;
         const sy = wyp - camY;
         ctx.fillStyle = GRASS_SHADES[(r * 1000) % GRASS_SHADES.length | 0];

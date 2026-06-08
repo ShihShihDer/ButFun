@@ -93,8 +93,10 @@ impl Player {
             dx *= inv;
             dy *= inv;
         }
-        self.x = (self.x + dx * PLAYER_SPEED * dt).clamp(0.0, WORLD_WIDTH);
-        self.y = (self.y + dy * PLAYER_SPEED * dt).clamp(0.0, WORLD_HEIGHT);
+        // ③ 無限世界（切片 A）：不再 clamp 到世界邊界。`biome_at` 本就對任意座標
+        // （含負）確定性生成、無接縫，地表會自然往四面八方延伸，玩家可以一直走。
+        self.x += dx * PLAYER_SPEED * dt;
+        self.y += dy * PLAYER_SPEED * dt;
     }
 }
 
@@ -297,7 +299,9 @@ mod tests {
     }
 
     #[test]
-    fn clamped_to_world_bounds() {
+    fn walks_past_world_edge_into_negative() {
+        // ③ 無限世界（切片 A）：邊界 clamp 已拿掉，從原點附近往左上走應該能跨進負座標，
+        // 不再被夾在 0。地表（biome_at）對任意座標都生成，所以走出去仍有場景。
         let mut p = player_at(
             5.0,
             5.0,
@@ -308,7 +312,7 @@ mod tests {
             },
         );
         p.step(1.0);
-        assert!(p.x >= 0.0 && p.y >= 0.0);
+        assert!(p.x < 0.0 && p.y < 0.0, "應跨過邊界進入負座標: ({}, {})", p.x, p.y);
     }
 
     #[test]
