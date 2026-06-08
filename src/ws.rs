@@ -411,22 +411,32 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if let Some(uid) = authed_uid {
                         let has_plot = app.plots.index_of(uid).is_some();
                         if !has_plot {
-                            let mut players = app.players.write().unwrap();
-                            if let Some(p) = players.get_mut(&uid) {
-                                if p.ether >= crate::economy::PLOT_COST {
-                                    p.ether -= crate::economy::PLOT_COST;
-                                    let index = app.plots.claim(uid);
-                                    app.fields
-                                        .write()
-                                        .unwrap()
-                                        .insert(uid, Field::for_plot(index));
-                                    tracing::info!(player = %p.name, index, "成功購買第一塊領地");
-                                    // 即時通知客戶端購買結果，不用等下一次快照廣播。
-                                    let _ = app.tx.send(Arc::new(ServerMsg::ClaimPlotOk {
-                                        owner: uid,
-                                        plot_index: index,
-                                    }));
+                            // 先在 players 鎖內只扣乙太/判斷，**放掉 players 鎖後**再碰 plots/fields。
+                            // 絕不持 players 鎖跨去拿 fields/plots——會和遊戲迴圈的 nodes/enemies→players
+                            // 鎖序顛倒，整個遊戲迴圈死鎖凍住、全服收不到快照（玩家進去只有場景沒角色）。
+                            // 比照下方 BuyExpansion 已採用的「先 drop(players) 再碰 fields」做法。
+                            let buyer = {
+                                let mut players = app.players.write().unwrap();
+                                match players.get_mut(&uid) {
+                                    Some(p) if p.ether >= crate::economy::PLOT_COST => {
+                                        p.ether -= crate::economy::PLOT_COST;
+                                        Some(p.name.clone())
+                                    }
+                                    _ => None,
                                 }
+                            }; // players 鎖到此放掉
+                            if let Some(name) = buyer {
+                                let index = app.plots.claim(uid);
+                                app.fields
+                                    .write()
+                                    .unwrap()
+                                    .insert(uid, Field::for_plot(index));
+                                tracing::info!(player = %name, index, "成功購買第一塊領地");
+                                // 即時通知客戶端購買結果，不用等下一次快照廣播。
+                                let _ = app.tx.send(Arc::new(ServerMsg::ClaimPlotOk {
+                                    owner: uid,
+                                    plot_index: index,
+                                }));
                             }
                         }
                     }
