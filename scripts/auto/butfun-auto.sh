@@ -57,7 +57,7 @@ if [ -n "$over_budget" ]; then
   printf '\n## [%s] 系統 | 省電模式\n%s，自走已暫停。新的一週會自動降回，或 `rm ~/.cache/butfun-auto/paused` 強制續跑。\n' \
     "$(date '+%Y-%m-%d %H:%M')" "$budget_reason" >> for_human.md
   git add for_human.md && git commit -q -m "chore: 省電模式（週預算達標，暫停自走）" && git push -q || true
-  "$HERE/notify.sh" "省電模式：$budget_reason，自走已暫停" >/dev/null 2>&1 || true
+  "$HERE/notify.sh" alert "省電模式：$budget_reason，自走已暫停" >/dev/null 2>&1 || true
   touch "$PAUSE"
   exit 0
 fi
@@ -97,7 +97,7 @@ case "$turn" in
     ;;
   human)
     if [ ! -f "$STATE/human_notified" ]; then
-      "$HERE/notify.sh" "需要你決策 — 看 butfun-coord/for_human.md" >/dev/null 2>&1 || true
+      "$HERE/notify.sh" alert "需要你決策 — 看 butfun-coord/for_human.md" >/dev/null 2>&1 || true
       touch "$STATE/human_notified"
     fi
     log "turn=human：(已推播) 等人處理 for_human.md，閒置"; exit 0 ;;
