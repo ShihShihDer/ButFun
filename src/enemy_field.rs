@@ -29,8 +29,9 @@ const ENEMY_COUNT: usize = 12;
 /// 比 `gather_field` 的淨空半徑更大，讓敵人散在採集節點更外一圈。
 const CLEARING_RADIUS: f32 = 480.0;
 
-/// 敵人散佈的外圈半徑上限（距世界中心）。再往外會貼到世界邊界，留點邊距。
-const SCATTER_OUTER_RADIUS: f32 = 940.0;
+/// 敵人散佈的外圈半徑上限（距世界中心）。涵蓋幾乎整張 6000² 世界(半世界≈3000,留邊距)——
+/// 讓敵人鋪到遠方的岩地礦區、與礦同處,形成「深入危險岩區換礦」的風險/回報(而非全擠在家附近)。
+const SCATTER_OUTER_RADIUS: f32 = 2700.0;
 
 /// 敵人距世界邊界至少留這麼多，免得卡在邊上打不到。
 const EDGE_MARGIN: f32 = 60.0;
