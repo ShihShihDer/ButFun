@@ -108,6 +108,7 @@
   // 但看不到畫面的玩家完全收不到受擊——補這條把無障礙弧線延伸到戰鬥(連線/採集/收成/日夜之後)。
   let myHp = 0;
   let hpKnown = false;
+  let wasDownedLastTick = false; // 上一快照是否倒地，用於偵測「傳回新手村」瞬間
   // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
   // 移動中很容易漏看「我正在挨打」。報讀器那條已補受擊播報(給看不到畫面的玩家),這條是它對稱的
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
@@ -438,13 +439,17 @@
           // 差值推得、不嵌任何規則,延續採集/收成/日夜/連線的無障礙弧線。首次同步不報。
           if (hpKnown && me.hp !== myHp) {
             if (me.hp < myHp) {
-              announce(me.hp <= 0 ? "你被打趴了" : `受到攻擊,生命 ${me.hp}/${me.max_hp}`);
+              announce(me.hp <= 0 ? "你被打趴了！休息片刻後將傳回新手村…" : `受到攻擊,生命 ${me.hp}/${me.max_hp}`);
               damageFlashLethal = me.hp <= 0; // 被打趴閃得更重
               damageFlashUntil = performance.now() + (damageFlashLethal ? 600 : 380); // 一閃即逝、隨即淡出
+            } else if (wasDownedLastTick && me.hp >= me.max_hp) {
+              // 從倒地滿血復原 = 傳回新手村
+              announce("已傳回新手村，繼續加油！");
             } else {
               announce(`恢復生命 ${me.hp}/${me.max_hp}`);
             }
           }
+          wasDownedLastTick = me.hp <= 0;
           myHp = me.hp;
           hpKnown = true;
 

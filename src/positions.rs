@@ -46,6 +46,18 @@ pub fn default_spawn() -> (f32, f32) {
     )
 }
 
+/// 新手村安全半徑（像素）。圓心為 `default_spawn()`；圓內不生成敵人。
+/// 640 約等於 1.25 個 CHUNK_SIZE（512），讓整個公共農地周圍有一圈緩衝。
+pub const SAFE_SPAWN_RADIUS: f32 = 640.0;
+
+/// 是否在新手村安全區內。純函式，無 IO、可測試。
+pub fn is_in_safe_zone(x: f32, y: f32) -> bool {
+    let (cx, cy) = default_spawn();
+    let dx = x - cx;
+    let dy = y - cy;
+    dx * dx + dy * dy <= SAFE_SPAWN_RADIUS * SAFE_SPAWN_RADIUS
+}
+
 /// 依「是否有記住的歷史位置」決定進場座標。純函式，便於測試。
 ///
 /// 契約：回傳的座標一定有限。這層刻意防住「載入被竄改/壞掉的
@@ -293,6 +305,27 @@ fn load_from_disk(path: &str) -> HashMap<Uuid, Saved> {
 mod tests {
     use super::*;
     use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
+
+    #[test]
+    fn default_spawn_is_in_safe_zone() {
+        let (cx, cy) = default_spawn();
+        assert!(is_in_safe_zone(cx, cy), "新手村生成點本身必定在安全區內");
+    }
+
+    #[test]
+    fn safe_zone_excludes_distant_point() {
+        let (cx, cy) = default_spawn();
+        // 比安全半徑遠一倍的點不在安全區。
+        assert!(!is_in_safe_zone(cx + SAFE_SPAWN_RADIUS * 2.0, cy));
+        assert!(!is_in_safe_zone(cx, cy + SAFE_SPAWN_RADIUS * 2.0));
+    }
+
+    #[test]
+    fn safe_zone_edge_is_inside() {
+        let (cx, cy) = default_spawn();
+        // 剛好在半徑上的點算在安全區內（`<=`）。
+        assert!(is_in_safe_zone(cx + SAFE_SPAWN_RADIUS, cy));
+    }
 
     #[test]
     fn spawn_falls_back_to_center_when_no_history() {

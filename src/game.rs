@@ -239,7 +239,15 @@ pub fn spawn(app: AppState) {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
                     p.step(dt);
+                    let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
+                    // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
+                    if was_downed && p.vitals.is_alive() {
+                        let (sx, sy) = crate::positions::default_spawn();
+                        p.x = sx;
+                        p.y = sy;
+                        tracing::info!(player = %p.name, "從倒地復原，傳回新手村");
+                    }
                 }
             }
 
