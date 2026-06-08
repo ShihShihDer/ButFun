@@ -75,7 +75,7 @@ case "$turn" in
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
-    log "worker：先試 Gemini（免費額度、不吃 Claude）"
+    log "worker：先試 Gemini（獨立額度、不吃 Claude，但也有限會見底）"
     gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)"; grc=$?
     printf '%s\n' "$gout" | tail -25
     # Gemini 額度用光（重試後仍失敗）→ fallback 改用 Claude Sonnet 當 worker（一樣 agentic、比 Opus 省；
