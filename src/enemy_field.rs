@@ -134,7 +134,11 @@ impl EnemyField {
         // 避免 attack_nearest 用舊 chunk 座標找不到而 unwrap panic。
         to_move.sort_by_key(|&(_, idx, _)| std::cmp::Reverse(idx));
         for (old_key, idx, new_key) in to_move {
-            let mut enemy = self.chunks.get_mut(&old_key).unwrap().remove(idx);
+            // 防護:chunk 不在或索引失效就跳過,**絕不 unwrap**(別讓單一壞索引 panic 炸死整個遊戲迴圈)。
+            let mut enemy = match self.chunks.get_mut(&old_key) {
+                Some(src) if idx < src.len() => src.remove(idx),
+                _ => continue,
+            };
             let target = self.chunks.entry(new_key).or_default();
             let new_idx = target.len();
             enemy.id = (new_key.0, new_key.1, new_idx);
