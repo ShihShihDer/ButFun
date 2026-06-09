@@ -956,8 +956,9 @@
     if (!me) return;
     const VX = 2344, VY = 2296; // 新手村中心（與後端 SAFE_ZONE / default_spawn 對齊）
     const sx = VX - camX, sy = VY - camY;
-    const R = 640; // 安全區半徑：村子有一塊在畫面內就不畫
-    if (sx + R >= 0 && sx - R <= viewW && sy + R >= 0 && sy - R <= viewH) return;
+    // 村子中心進到畫面內（含一點邊距）才不畫箭頭——你已經看得到地標/站在村子了。
+    // （先前用安全區半徑 640 當判定太大，離村子很遠箭頭就不顯，等於常常看不到。）
+    if (sx > -40 && sx < viewW + 40 && sy > -40 && sy < viewH + 40) return;
     const ccx = viewW / 2, ccy = viewH / 2;
     const ang = Math.atan2(sy - ccy, sx - ccx);
     const m = 52;
@@ -1451,6 +1452,7 @@
     drawField(camX, camY);
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
+    drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
@@ -2424,6 +2426,52 @@
     ctx.fillStyle = "rgba(20,16,40,0.9)";
     ctx.beginPath(); ctx.arc(cx - 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(cx + 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
+  // 讓玩家在畫面內一眼認出「這就是村子」（搭配離畫面時的 drawVillagePointer 邊緣箭頭遠距導航）。
+  function drawVillageLandmark(camX, camY) {
+    const VX = 2344, VY = 2296;
+    const sx = VX - camX, sy = VY - camY;
+    if (sx < -70 || sx > viewW + 70 || sy < -140 || sy > viewH + 70) return; // 不在畫面就不畫
+    const t = performance.now() / 1000;
+    const pulse = reduceMotion ? 0.55 : 0.55 + 0.35 * Math.sin(t * 2);
+    ctx.save();
+    ctx.lineCap = "round";
+    // 旗桿
+    ctx.strokeStyle = "#caa86a";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx, sy - 52);
+    ctx.stroke();
+    // 旗
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 48);
+    ctx.lineTo(sx + 26, sy - 42);
+    ctx.lineTo(sx, sy - 36);
+    ctx.closePath();
+    ctx.fillStyle = "#7fcf9a";
+    ctx.fill();
+    // 頂端發光球(遠看得到的脈動亮點)
+    ctx.beginPath();
+    ctx.arc(sx, sy - 56, 9, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,224,120,${0.45 + pulse * 0.55})`;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,240,180,0.9)";
+    ctx.stroke();
+    // 名牌
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeText("🏠 新手村", sx, sy - 70);
+    ctx.fillStyle = "#eef7e9";
+    ctx.fillText("🏠 新手村", sx, sy - 70);
+    ctx.restore();
   }
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
