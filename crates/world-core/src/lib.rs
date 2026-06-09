@@ -166,6 +166,14 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
     if biome == Biome::Water {
         return TileKind::Empty;
     }
+
+    // D-2 天然洞窟：使用低頻 value_noise 在實心中挖出連通空間。
+    // scale 160.0 約 5 格寬的走廊/房間；threshold 0.38 約 38% 為空（62% 實心）。
+    let cave = value_noise(wx, wy, 160.0, 123);
+    if cave < 0.38 {
+        return TileKind::Empty;
+    }
+
     // 格索引（整數）→ 穩定雜湊值 [0,1)
     let gx = (wx / TILE_PX as f64).floor() as i32;
     let gy = (wy / TILE_PX as f64).floor() as i32;
@@ -175,24 +183,24 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
     );
     match biome {
         Biome::Rocky => {
-            if h < 0.05 { TileKind::Ore }
-            else if h < 0.40 { TileKind::Stone }
-            else { TileKind::Empty }
+            // 岩域：礦脈較多(12%)，其餘皆為岩石。
+            if h < 0.12 { TileKind::Ore }
+            else { TileKind::Stone }
         }
         Biome::Forest => {
-            if h < 0.08 { TileKind::Stone }
-            else if h < 0.22 { TileKind::Dirt }
-            else { TileKind::Empty }
+            // 森林：偶爾有岩石(10%)，其餘為泥土。
+            if h < 0.10 { TileKind::Stone }
+            else { TileKind::Dirt }
         }
         Biome::Meadow => {
-            if h < 0.06 { TileKind::Stone }
-            else if h < 0.12 { TileKind::Dirt }
-            else { TileKind::Empty }
+            // 草原：主要為泥土。
+            if h < 0.05 { TileKind::Stone }
+            else { TileKind::Dirt }
         }
         Biome::Sand => {
-            if h < 0.04 { TileKind::Stone }
-            else if h < 0.08 { TileKind::Dirt }
-            else { TileKind::Empty }
+            // 沙漠：主要為泥土（沙下層）。
+            if h < 0.05 { TileKind::Stone }
+            else { TileKind::Dirt }
         }
         Biome::Water => TileKind::Empty,
     }
@@ -364,5 +372,42 @@ mod tests {
         assert_eq!(TileKind::Dirt.code(),  1);
         assert_eq!(TileKind::Stone.code(), 2);
         assert_eq!(TileKind::Ore.code(),   3);
+    }
+}
+
+#[cfg(test)]
+mod d2_tests {
+    use super::*;
+
+    #[test]
+    fn safe_zone_stays_empty() {
+        // 新手村中心應為 Empty
+        assert_eq!(tile_kind_at(SAFE_ZONE_CX, SAFE_ZONE_CY), TileKind::Empty);
+        // 邊緣也應為 Empty
+        assert_eq!(tile_kind_at(SAFE_ZONE_CX + SAFE_ZONE_RADIUS - 1.0, SAFE_ZONE_CY), TileKind::Empty);
+    }
+
+    #[test]
+    fn outside_safe_zone_has_solid_world() {
+        // 找一塊遠離安全區的岩地或森林，確認實心格比例大幅提升（~60%）。
+        let mut solid_count = 0usize;
+        let mut total = 0usize;
+        // 避開安全區 (2344, 2296)
+        for gy in 0..100 {
+            for gx in 0..100 {
+                let x = gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                let b = biome_at(x, y);
+                if b != Biome::Water {
+                    total += 1;
+                    if tile_kind_at(x + 16.0, y + 16.0) != TileKind::Empty {
+                        solid_count += 1;
+                    }
+                }
+            }
+        }
+        let ratio = solid_count as f64 / total as f64;
+        // D-2 反轉後，實心比例應接近 1.0 - 0.38 = 0.62
+        assert!(ratio > 0.5 && ratio < 0.75, "實心比例應在 50%~75% 之間，實際={:.1}%", ratio * 100.0);
     }
 }
