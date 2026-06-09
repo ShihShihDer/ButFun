@@ -77,7 +77,14 @@ impl EnemyField {
         }
     }
 
-    pub fn advance(&mut self, dt: f32, players: &[(f32, f32)]) {
+    /// 推進敵人移動。`tile_solid(x, y)` 回傳該世界像素座標是否為實心地形格（C-3 碰撞，
+    /// 傳 `|_, _| false` 可關閉、保留舊行為）。敵人撞牆會沿單軸滑行、不穿牆也不整個卡死。
+    pub fn advance<F: Fn(f32, f32) -> bool>(
+        &mut self,
+        dt: f32,
+        players: &[(f32, f32)],
+        tile_solid: F,
+    ) {
         if dt <= 0.0 {
             return;
         }
@@ -119,8 +126,20 @@ impl EnemyField {
 
                 if dist > 2.0 {
                     let step = (speed * dt).min(dist);
-                    placed.x += dx / dist * step;
-                    placed.y += dy / dist * step;
+                    let mvx = dx / dist * step;
+                    let mvy = dy / dist * step;
+                    // C-3 碰撞:不穿實心地形。先試整步,撞牆就沿單軸滑行(能繞牆、別整個卡死)。
+                    if !tile_solid(placed.x + mvx, placed.y + mvy) {
+                        placed.x += mvx;
+                        placed.y += mvy;
+                    } else {
+                        if !tile_solid(placed.x + mvx, placed.y) {
+                            placed.x += mvx;
+                        }
+                        if !tile_solid(placed.x, placed.y + mvy) {
+                            placed.y += mvy;
+                        }
+                    }
                     
                     let new_key = chunk_key(placed.x, placed.y);
                     if new_key != (cx, cy) {
@@ -344,7 +363,7 @@ mod tests {
 
         // 玩家在 (520, 256) 誘敵 (在 AGGRO_RADIUS 260 內)
         let player = (520.0, 256.0);
-        f.advance(1.0, &[player]);
+        f.advance(1.0, &[player], |_, _| false);
 
         // 敵人應已移入 (1,0) 區塊，且 id 隨之更新（id.0 == 1）
         let new_chunk = f.chunks.get(&(1,0)).expect("敵人應在 (1,0) 區塊");
@@ -360,6 +379,24 @@ mod tests {
     }
 
     #[test]
+    fn enemy_blocked_by_solid_tile_does_not_pass_through() {
+        // C-3:敵人撞到實心地形不該穿牆。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(256.0, 256.0, 10.0);
+        let ey = {
+            let chunk = f.chunks.get_mut(&(0, 0)).unwrap();
+            chunk[0].x = 200.0;
+            chunk[0].y = 256.0;
+            chunk[0].y
+        };
+        // 牆:x >= 240 一律實心。敵人被右邊玩家 (400,256) 誘往 +x,應被牆擋下、不穿過。
+        f.advance(1.0, &[(400.0, 256.0)], |x, _y| x >= 240.0);
+        let e = &f.chunks.get(&(0, 0)).unwrap()[0];
+        assert!(e.x < 240.0, "敵人不該穿牆進實心格, x={}", e.x);
+        assert_eq!(e.y, ey, "本例目標同 y,滑行時 y 不該漂");
+    }
+
+    #[test]
     fn attack_nearest_after_cross_chunk_does_not_panic() {
         // 重現 panic：敵人跨區塊後 attack_nearest 不應 unwrap 失敗
         let mut f = EnemyField::new();
@@ -371,7 +408,7 @@ mod tests {
             chunk[0].x = 511.0;
             chunk[0].y = 256.0;
         }
-        f.advance(1.0, &[(520.0, 256.0)]);
+        f.advance(1.0, &[(520.0, 256.0)], |_, _| false);
 
         // 在新位置附近攻擊，不應 panic
         let result = f.attack_nearest(516.0, 256.0, 1);

@@ -17,6 +17,13 @@ pub const TILE_PX: f32 = 32.0;
 /// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
 pub const TILES_PER_CHUNK: usize = 16;
 
+/// 新手村安全區（圓心 / 半徑，世界像素）。圈內地形一律挖空（Empty），不讓確定性生成把
+/// 新手村 / 出生點埋進實心土。**數值與主 crate 的 `positions::default_spawn()` +
+/// `SAFE_SPAWN_RADIUS` 對齊；主 crate 有測試 `world_core_safe_zone_matches_game` 守著兩邊一致。**
+pub const SAFE_ZONE_CX: f64 = 2344.0;
+pub const SAFE_ZONE_CY: f64 = 2296.0;
+pub const SAFE_ZONE_RADIUS: f64 = 640.0;
+
 /// 座標 → 區塊鍵。
 pub fn chunk_key(x: f32, y: f32) -> (i32, i32) {
     (
@@ -149,6 +156,12 @@ impl TileKind {
 /// 雜湊函式，故前端可用 JS `grassHash` 精確對齊（見 `web/game.js` 的 `tileKindAt`）。
 /// 水域一律回 `Empty`（水面沒有可挖的實心格）。
 pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
+    // 新手村安全區內一律乾淨地（Empty）——不讓地形生成把城鎮 / 出生點埋住、害玩家卡在土裡。
+    let sdx = wx - SAFE_ZONE_CX;
+    let sdy = wy - SAFE_ZONE_CY;
+    if sdx * sdx + sdy * sdy <= SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS {
+        return TileKind::Empty;
+    }
     let biome = biome_at(wx, wy);
     if biome == Biome::Water {
         return TileKind::Empty;

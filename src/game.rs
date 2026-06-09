@@ -136,6 +136,13 @@ pub fn spawn(app: AppState) {
                 }
             };
 
+            // C-3 碰撞:先快照 tile deltas（取讀鎖即放），供敵人與玩家移動共用，且不與
+            // Dig handler（tile.write→players.write）的鎖序衝突（這裡 tile 讀鎖先放，再各自取寫鎖）。
+            let tile_deltas_snap: std::collections::HashMap<(i32, i32, u8, u8), world_core::TileKind> = {
+                let tw = app.tile_world.read().unwrap();
+                tw.deltas().clone()
+            };
+
             // 敵人移動需要玩家座標:先讀 players(短暫讀鎖)收集**沒被打趴**的玩家位置快照,
             // 放開後再持 enemies 寫鎖推進——避免在敵人寫鎖內再去鎖玩家表造成巢狀鎖。
             // 只餵非倒下玩家(倒下玩家休息中、不被追擊,比照下方戰鬥結算略過倒下者)。
@@ -160,7 +167,15 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 enemies.tick(dt);
-                enemies.advance(dt, &chase_targets);
+                // C-3:敵人也吃地形碰撞（用同一份 tile deltas 快照），不再穿牆。
+                enemies.advance(dt, &chase_targets, |x: f32, y: f32| {
+                    let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
+                    tile_deltas_snap
+                        .get(&(cx, cy, tx, ty))
+                        .copied()
+                        .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64))
+                        != world_core::TileKind::Empty
+                });
                 if want_broadcast {
                     enemies
                         .enemies()
@@ -235,14 +250,8 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // C-3：先快照 tile deltas（先取讀鎖再放），再持 players 寫鎖——兩把鎖不同時持有，
-            // 避免與 ws.rs Dig handler（tile_world.write → players.write）的鎖序死鎖。
-            let tile_deltas_snap: std::collections::HashMap<(i32, i32, u8, u8), world_core::TileKind> = {
-                let tw = app.tile_world.read().unwrap();
-                tw.deltas().clone()
-            };
-
             // 整合位置 + 推進生命回復（權威模擬,每 tick 必跑,與有無觀眾無關;短暫持鎖,不跨 await）。
+            // （tile_deltas_snap 已在敵人段前快照，玩家碰撞沿用同一份。）
             {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
