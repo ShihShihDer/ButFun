@@ -1652,8 +1652,8 @@
         if (kind === "empty") {
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
-          // 實心牆色:依材質分(土/石/礦/晶石),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          // 實心牆色:依材質分(土/石/礦/晶石/蕈菇),比地表暗且飽和,呈現「牆」的感覺。
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -1907,7 +1907,14 @@
       return "stone";
     }
     if (b === "forest") {
-      // 森林：偶爾有岩石(10%)，其餘為泥土。
+      // 蕈菇聚落判定：對齊 Rust tile_kind_at 的蕈菇洞邏輯（scale 80, seed 456）。
+      const mushroomN = biomeNoise(wx, wy, 80, 456);
+      if (mushroomN > 0.82) {
+        // 蕈菇洞：50% mushroom，50% dirt——探索者挖進來會看到整片翠綠蕈菇。
+        if (h < 0.50) return "mushroom";
+        return "dirt";
+      }
+      // 普通森林：偶爾有岩石(10%)，其餘為泥土。
       if (h < 0.10) return "stone";
       return "dirt";
     }
@@ -1946,6 +1953,7 @@
         const sy = Math.round(ty * TS - camY);
         // 基底色（調飽和、彼此分得開，別都糊成灰褐）。
         ctx.fillStyle = kind === "crystal" ? "#2a1f52"
+          : kind === "mushroom" ? "#1a3a1e"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -1983,6 +1991,27 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(180,120,255,0.30)");
             g.addColorStop(1, "rgba(180,120,255,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 蕈菇：露出才發出翠綠亮光，埋深處隱約綠暈；提示「挖進蕈菇洞有孢子可採」。
+        if (kind === "mushroom") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 蕈菇傘帽：半圓代表蕈菇頂，露出時顏色更亮更飽和。
+          ctx.fillStyle = exposed ? "rgba(80,220,120,0.88)" : "rgba(50,160,80,0.45)";
+          const capR = exposed ? 7 : 5;
+          ctx.beginPath();
+          ctx.arc(cx_, cy_ - 2, capR, Math.PI, 0);
+          ctx.closePath(); ctx.fill();
+          // 菇柄：小矩形
+          ctx.fillRect(cx_ - 2, cy_ - 2, 4, exposed ? 6 : 5);
+          if (exposed) {
+            // 發光暈——讓蕈菇洞牆面隱約散發翠綠光暈，玩家一眼認出「這裡不一樣」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(80,220,120,0.28)");
+            g.addColorStop(1, "rgba(80,220,120,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -2598,11 +2627,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3122,7 +3151,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 

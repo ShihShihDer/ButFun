@@ -16,21 +16,23 @@ use world_core::TileKind;
 
 fn kind_str(k: TileKind) -> &'static str {
     match k {
-        TileKind::Empty   => "empty",
-        TileKind::Dirt    => "dirt",
-        TileKind::Stone   => "stone",
-        TileKind::Ore     => "ore",
-        TileKind::Crystal => "crystal",
+        TileKind::Empty    => "empty",
+        TileKind::Dirt     => "dirt",
+        TileKind::Stone    => "stone",
+        TileKind::Ore      => "ore",
+        TileKind::Crystal  => "crystal",
+        TileKind::Mushroom => "mushroom",
     }
 }
 
 fn parse_kind(s: &str) -> TileKind {
     match s {
-        "dirt"    => TileKind::Dirt,
-        "stone"   => TileKind::Stone,
-        "ore"     => TileKind::Ore,
-        "crystal" => TileKind::Crystal,
-        _         => TileKind::Empty,
+        "dirt"     => TileKind::Dirt,
+        "stone"    => TileKind::Stone,
+        "ore"      => TileKind::Ore,
+        "crystal"  => TileKind::Crystal,
+        "mushroom" => TileKind::Mushroom,
+        _          => TileKind::Empty,
     }
 }
 
