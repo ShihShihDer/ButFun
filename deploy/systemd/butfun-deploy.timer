@@ -1,11 +1,12 @@
-# 維護窗：每日 03:00 上線（你選的 3–5 點窗）。
-# RandomizedDelaySec 讓它落在 03:00–05:00 之間，避開整點尖峰。
+# prod 自動上線排程：啟用後約 2 分跑第一次，之後每 15 分一次。
+# deploy.sh 沒新 commit 會自動跳過，所以這只是「最多多常重啟一次」（重啟會短暫踢線上玩家）。
+# 改頻率就動 OnUnitActiveSec，重跑 scripts/deploy-enable.sh 生效。
 [Unit]
-Description=Run ButFun deploy daily in the 03:00-05:00 maintenance window
+Description=ButFun prod 自動上線（每 15 分，沒新 commit 自動跳過）
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
-RandomizedDelaySec=2h
+OnActiveSec=2min
+OnUnitActiveSec=15min
 Persistent=true
 
 [Install]
