@@ -271,13 +271,21 @@ impl Default for EnemyField {
     }
 }
 
-/// 依生態域決定敵人種類：自然靈境（草地/森林）孕育迷途乙太靈，
-/// 廢棄機械殘骸（岩地/沙漠）藏著銹蝕巡邏機。
+/// 依生態域決定敵人種類：每個生態域有專屬守護者，打倒後掉落該生態域特產，
+/// 讓「戰鬥」成為「採礦挖掘」之外獲取特產的第二條路。
 fn kind_for_biome(biome: world_core::Biome) -> EnemyKind {
     use world_core::Biome;
     match biome {
-        Biome::Meadow | Biome::Forest => EnemyKind::EtherWisp,
-        Biome::Rocky | Biome::Sand | Biome::Water => EnemyKind::ScrapDrone,
+        // 草原——飄舞精靈守護野花叢，脆弱但溫和。
+        Biome::Meadow => EnemyKind::FlutterSprite,
+        // 森林——蕈菇潛行者潛伏在蕈菇洞，中等威脅。
+        Biome::Forest => EnemyKind::MushroomStalker,
+        // 岩地晶洞——晶石傀儡守衛晶洞，最堅硬的守門者。
+        Biome::Rocky => EnemyKind::CrystalGolem,
+        // 沙漠遺跡——古代符文守衛，沉睡千年被探索者驚醒。
+        Biome::Sand => EnemyKind::RuneGuardian,
+        // 水域珊瑚礁——珊瑚蟹藏身礁石之間，守著稀有珍珠。
+        Biome::Water => EnemyKind::CoralCrab,
     }
 }
 

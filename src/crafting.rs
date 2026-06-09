@@ -348,11 +348,25 @@ mod tests {
         items.insert(ItemKind::DeepSeaPearl);
         items.insert(ItemKind::WildflowerSeed);
 
-        // 加入敵人掉落
-        const ENEMY_KINDS: &[EnemyKind] = &[EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+        // 加入敵人掉落（窮舉守衛：新增 EnemyKind 未納入即編譯失敗）。
+        const ENEMY_KINDS: &[EnemyKind] = &[
+            EnemyKind::ScrapDrone,
+            EnemyKind::EtherWisp,
+            EnemyKind::FlutterSprite,
+            EnemyKind::MushroomStalker,
+            EnemyKind::CrystalGolem,
+            EnemyKind::RuneGuardian,
+            EnemyKind::CoralCrab,
+        ];
         for &e in ENEMY_KINDS {
             match e {
-                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+                EnemyKind::ScrapDrone
+                | EnemyKind::EtherWisp
+                | EnemyKind::FlutterSprite
+                | EnemyKind::MushroomStalker
+                | EnemyKind::CrystalGolem
+                | EnemyKind::RuneGuardian
+                | EnemyKind::CoralCrab => {}
             }
             items.insert(e.drop_loot().0);
         }
