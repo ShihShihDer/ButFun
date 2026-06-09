@@ -79,7 +79,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::Ether
         | ItemKind::Pickaxe
         | ItemKind::ReinforcedPickaxe
-        | ItemKind::CrystalShard => None,
+        | ItemKind::CrystalShard
+        | ItemKind::MushroomSpore => None,
     }
 }
 

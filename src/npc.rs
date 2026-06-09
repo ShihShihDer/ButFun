@@ -33,12 +33,14 @@ pub struct ShopEntry {
 /// NPC **收購**清單（玩家 → NPC，換乙太）。
 /// 給採集素材一個現金出口，新玩家不需等農地就能攢起第一桶乙太。
 /// 晶石碎片（深層晶洞掉落）以 3 倍溢價收購，鼓勵探索型玩家深入岩地。
+/// 蕈菇孢子（森林蕈菇洞掉落）以 2 倍溢價收購，鼓勵探索型玩家深入森林。
 pub const NPC_BUY_LIST: &[ShopEntry] = &[
-    ShopEntry { item: ItemKind::Wood,         price_per: 1 },
-    ShopEntry { item: ItemKind::Stone,        price_per: 1 },
-    ShopEntry { item: ItemKind::Ether,        price_per: 2 },
-    ShopEntry { item: ItemKind::Dirt,         price_per: 1 },
-    ShopEntry { item: ItemKind::CrystalShard, price_per: 3 },
+    ShopEntry { item: ItemKind::Wood,          price_per: 1 },
+    ShopEntry { item: ItemKind::Stone,         price_per: 1 },
+    ShopEntry { item: ItemKind::Ether,         price_per: 2 },
+    ShopEntry { item: ItemKind::Dirt,          price_per: 1 },
+    ShopEntry { item: ItemKind::CrystalShard,  price_per: 3 },
+    ShopEntry { item: ItemKind::MushroomSpore, price_per: 2 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -201,7 +203,10 @@ mod tests {
     #[test]
     fn npc_buy_list_covers_important_items() {
         // 採集物與重要物資（木／石／乙太）都在收購清單裡——不會有辛勤勞動卻一毛不值的情況。
-        let important_items = [ItemKind::Wood, ItemKind::Stone, ItemKind::Ether, ItemKind::Dirt, ItemKind::CrystalShard];
+        let important_items = [
+            ItemKind::Wood, ItemKind::Stone, ItemKind::Ether,
+            ItemKind::Dirt, ItemKind::CrystalShard, ItemKind::MushroomSpore,
+        ];
         for item in important_items {
             assert!(
                 NPC_BUY_LIST.iter().any(|e| e.item == item),
@@ -218,6 +223,16 @@ mod tests {
         let ether_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::Ether);
         assert!(crystal_entry.unwrap().price_per > ether_entry.unwrap().price_per,
             "晶石碎片應比乙太礦石更值錢");
+    }
+
+    #[test]
+    fn mushroom_spore_has_premium_price() {
+        // 蕈菇孢子溢價應高於木材（1 乙太/個），體現「探索森林有額外回報」。
+        let spore_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::MushroomSpore);
+        assert!(spore_entry.is_some(), "蕈菇孢子應在收購清單");
+        let wood_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::Wood);
+        assert!(spore_entry.unwrap().price_per > wood_entry.unwrap().price_per,
+            "蕈菇孢子應比木材更值錢");
     }
 
     #[test]
