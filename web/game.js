@@ -1650,8 +1650,8 @@
         if (kind === "empty") {
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
-          // 實心牆色:依材質分(土/石/礦),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          // 實心牆色:依材質分(土/石/礦/晶石),比地表暗且飽和,呈現「牆」的感覺。
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -1893,7 +1893,14 @@
 
     const h = tileHash(gx, gy);
     if (b === "rocky") {
-      // 岩域：礦脈較多(12%)，其餘皆為岩石。
+      // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
+      const crystalN = biomeNoise(wx, wy, 80, 777);
+      if (crystalN > 0.85) {
+        // 晶洞：60% crystal，40% stone——探索者挖進來會看到整片紫藍晶體。
+        if (h < 0.60) return "crystal";
+        return "stone";
+      }
+      // 普通岩域：礦脈較多(12%)，其餘皆為岩石。
       if (h < 0.12) return "ore";
       return "stone";
     }
@@ -1936,7 +1943,10 @@
         const sx = Math.round(tx * TS - camX);
         const sy = Math.round(ty * TS - camY);
         // 基底色（調飽和、彼此分得開，別都糊成灰褐）。
-        ctx.fillStyle = kind === "ore" ? "#7a6533" : kind === "stone" ? "#6d6a66" : "#6e4f30";
+        ctx.fillStyle = kind === "crystal" ? "#2a1f52"
+          : kind === "ore" ? "#7a6533"
+          : kind === "stone" ? "#6d6a66"
+          : "#6e4f30";
         ctx.fillRect(sx, sy, TS, TS);
         // 每格固定微抖動紋理（土感，不隨鏡頭閃爍）。
         const jitter = grassHash(tx * 5 + 3, ty * 7 + 1);
@@ -1955,6 +1965,25 @@
           ctx.fillStyle = (up || down || left || right) ? "rgba(255,212,92,0.78)" : "rgba(205,165,70,0.40)";
           const s = 9;
           ctx.fillRect(sx + TS / 2 - s / 2, sy + TS / 2 - s / 2, s, s);
+        }
+        // 晶石：露出才發出藍紫亮光，埋深處隱約紫暈；提示「挖進晶洞有珍貴回報」。
+        if (kind === "crystal") {
+          const exposed = up || down || left || right;
+          ctx.fillStyle = exposed ? "rgba(160,100,255,0.85)" : "rgba(100,60,200,0.40)";
+          // 晶石內部畫兩個錯開的小菱形，視覺上像寶石切面。
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2, r = exposed ? 7 : 5;
+          ctx.beginPath();
+          ctx.moveTo(cx_, cy_ - r); ctx.lineTo(cx_ + r, cy_);
+          ctx.lineTo(cx_, cy_ + r); ctx.lineTo(cx_ - r, cy_);
+          ctx.closePath(); ctx.fill();
+          if (exposed) {
+            // 發光暈——讓晶洞牆面隱約散發紫色光暈，玩家一眼認出「這裡不一樣」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(180,120,255,0.30)");
+            g.addColorStop(1, "rgba(180,120,255,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
         }
       }
     }
@@ -2521,11 +2550,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3045,7 +3074,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 

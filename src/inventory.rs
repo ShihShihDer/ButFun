@@ -54,6 +54,9 @@ pub enum ItemKind {
     /// 「採集→合成→戰鬥變強」正回饋圈。工具也好、武器也好都只是背包物品（沿用同一容器），
     /// 故只在此 enum 加一個變體即可。放在工具之後，既有 `entries` 排序不動。
     Weapon,
+    /// 晶石碎片（挖掘 Crystal 地形格掉落，ROADMAP 10 深層晶洞生態域）。
+    /// 可賣給 NPC 換取高額乙太（premium 素材），給探索型玩家一條「深挖有額外回報」的路線。
+    CrystalShard,
 }
 
 impl ItemKind {
@@ -70,6 +73,7 @@ impl ItemKind {
         ItemKind::Pickaxe,
         ItemKind::ReinforcedPickaxe,
         ItemKind::Weapon,
+        ItemKind::CrystalShard,
     ];
 }
 
@@ -269,13 +273,14 @@ mod tests {
                 | ItemKind::Ether
                 | ItemKind::Pickaxe
                 | ItemKind::ReinforcedPickaxe
-                | ItemKind::Weapon => {}
+                | ItemKind::Weapon
+                | ItemKind::CrystalShard => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 7 種（木／土磚／石／乙太／鎬子／強化鎬／武器）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 7, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 8 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 8, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -387,8 +392,9 @@ mod tests {
             let craftable_src = RECIPES.iter().any(|r| r.output == item);
             let droppable_src = droppable.contains(&item);
             // C-2 挖掘地形格可取得的物品（Dig handler：實心格→Empty + 材料入背包）。
-            // 目前 Dirt/Stone/Ether 均由挖掘對應 tile 取得。
-            let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone || item == ItemKind::Ether;
+            // Dirt/Stone/Ether 由挖掘對應 tile 取得；CrystalShard 挖 Crystal 晶洞格取得。
+            let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone
+                || item == ItemKind::Ether || item == ItemKind::CrystalShard;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
@@ -430,6 +436,7 @@ mod tests {
         use crate::combat::{weapon_from_item, UNARMED_ATTACK_POWER};
         use crate::crafting::RECIPES;
         use crate::economy::EXPANSION_BASE_COST;
+        use crate::npc::NPC_BUY_LIST;
         use crate::tools::{tool_from_item, FIST_MULTIPLIER};
 
         // 乙太去處（擴地消耗點）真實存在的編譯期錨點：直接引用 `economy` 的擴地基準價，
@@ -454,12 +461,16 @@ mod tests {
             // C-2 引入 Dirt，C-4 接線後成為真正去處（Place Dirt → 建牆）。
             // 此條確認「設計上有去處」，避免在地基切片就要求去處已上線。
             let building_material = item == ItemKind::Dirt;
+            // 6. 可賣給 NPC 商人換乙太（NPC_BUY_LIST 中的素材資源）。
+            // 「賣出換乙太」是合法的經濟去處——稀有資源（如晶石碎片）給 NPC 高價收購，
+            // 讓探索型玩家有把成果兌換乙太的管道。
+            let npc_sellable = NPC_BUY_LIST.iter().any(|e| e.item == item);
 
             assert!(
-                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon || building_material,
+                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon || building_material || npc_sellable,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
-                 不是有效用的武器／不是建造材料）——玩家持有它卻無處可用，是只進不出的死庫存，\
-                 違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
+                 不是有效用的武器／不是建造材料／不可賣給 NPC）——玩家持有它卻無處可用，\
+                 是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
             );
         }
     }

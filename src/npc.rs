@@ -32,11 +32,13 @@ pub struct ShopEntry {
 
 /// NPC **收購**清單（玩家 → NPC，換乙太）。
 /// 給採集素材一個現金出口，新玩家不需等農地就能攢起第一桶乙太。
+/// 晶石碎片（深層晶洞掉落）以 3 倍溢價收購，鼓勵探索型玩家深入岩地。
 pub const NPC_BUY_LIST: &[ShopEntry] = &[
-    ShopEntry { item: ItemKind::Wood, price_per: 1 },
-    ShopEntry { item: ItemKind::Stone, price_per: 1 },
-    ShopEntry { item: ItemKind::Ether, price_per: 2 },
-    ShopEntry { item: ItemKind::Dirt, price_per: 1 },
+    ShopEntry { item: ItemKind::Wood,         price_per: 1 },
+    ShopEntry { item: ItemKind::Stone,        price_per: 1 },
+    ShopEntry { item: ItemKind::Ether,        price_per: 2 },
+    ShopEntry { item: ItemKind::Dirt,         price_per: 1 },
+    ShopEntry { item: ItemKind::CrystalShard, price_per: 3 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -199,13 +201,23 @@ mod tests {
     #[test]
     fn npc_buy_list_covers_important_items() {
         // 採集物與重要物資（木／石／乙太）都在收購清單裡——不會有辛勤勞動卻一毛不值的情況。
-        let important_items = [ItemKind::Wood, ItemKind::Stone, ItemKind::Ether, ItemKind::Dirt];
+        let important_items = [ItemKind::Wood, ItemKind::Stone, ItemKind::Ether, ItemKind::Dirt, ItemKind::CrystalShard];
         for item in important_items {
             assert!(
                 NPC_BUY_LIST.iter().any(|e| e.item == item),
                 "物資 {item:?} 不在 NPC 收購清單，玩家賣不出去"
             );
         }
+    }
+
+    #[test]
+    fn crystal_shard_has_premium_price() {
+        // 晶石碎片應比普通礦石（乙太 2 乙太/個）更高價，體現探索溢價。
+        let crystal_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::CrystalShard);
+        assert!(crystal_entry.is_some(), "晶石碎片應在收購清單");
+        let ether_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::Ether);
+        assert!(crystal_entry.unwrap().price_per > ether_entry.unwrap().price_per,
+            "晶石碎片應比乙太礦石更值錢");
     }
 
     #[test]
