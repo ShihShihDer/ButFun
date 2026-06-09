@@ -1635,47 +1635,40 @@
     const ty0 = Math.floor(camY / TS) - 1;
     const tx1 = Math.floor((camX + viewW) / TS) + 1;
     const ty1 = Math.floor((camY + viewH) / TS) + 1;
-    for (let ty = ty0; ty <= ty1; ty++) {
-      for (let tx = tx0; tx <= tx1; tx++) {
-        const wx = tx * TS + TS / 2;
-        const wy = ty * TS + TS / 2;
-        const kind = tileKindAt(wx, wy);
+    const W = tx1 - tx0 + 1, H = ty1 - ty0 + 1;
+    // 先把可視範圍每格種類算一遍（含外圈一格供鄰居判斷），避免每格重複呼叫 tileKindAt（手機效能）。
+    const grid = new Array(W * H);
+    for (let j = 0; j < H; j++)
+      for (let i = 0; i < W; i++)
+        grid[j * W + i] = tileKindAt((tx0 + i) * TS + TS / 2, (ty0 + j) * TS + TS / 2);
+    const isEmpty = (i, j) =>
+      i < 0 || j < 0 || i >= W || j >= H || grid[j * W + i] === "empty";
+    for (let j = 0; j < H; j++) {
+      for (let i = 0; i < W; i++) {
+        const kind = grid[j * W + i];
         if (kind === "empty") continue;
+        const tx = tx0 + i, ty = ty0 + j;
         const sx = Math.round(tx * TS - camX);
         const sy = Math.round(ty * TS - camY);
-        // 基底顏色
-        if (kind === "ore") {
-          ctx.fillStyle = "#6a5030";
-        } else if (kind === "stone") {
-          ctx.fillStyle = "#5a5450";
-        } else { // dirt
-          ctx.fillStyle = "#7a5c3a";
-        }
+        // 基底色（調飽和、彼此分得開，別都糊成灰褐）。
+        ctx.fillStyle = kind === "ore" ? "#7a6533" : kind === "stone" ? "#6d6a66" : "#6e4f30";
         ctx.fillRect(sx, sy, TS, TS);
-        // 每格固定微抖動紋理（同 grassHash 邏輯，不隨鏡頭閃爍）
+        // 每格固定微抖動紋理（土感，不隨鏡頭閃爍）。
         const jitter = grassHash(tx * 5 + 3, ty * 7 + 1);
-        if (jitter > 0.72) {
-          ctx.fillStyle = "rgba(255,255,255,0.07)";
-          ctx.fillRect(sx, sy, TS, TS);
-        } else if (jitter < 0.18) {
-          ctx.fillStyle = "rgba(0,0,0,0.10)";
-          ctx.fillRect(sx, sy, TS, TS);
-        }
-        // 頂邊/左邊亮邊（立體感）
-        const edgeLight = kind === "stone" ? "rgba(255,255,255,0.13)"
-                        : kind === "ore"   ? "rgba(220,170,80,0.20)"
-                        :                    "rgba(220,180,120,0.16)";
-        ctx.fillStyle = edgeLight;
-        ctx.fillRect(sx, sy, TS, 2);
-        ctx.fillRect(sx, sy, 2, TS);
-        // 底邊/右邊暗邊
-        ctx.fillStyle = "rgba(0,0,0,0.22)";
-        ctx.fillRect(sx, sy + TS - 2, TS, 2);
-        ctx.fillRect(sx + TS - 2, sy, 2, TS);
-        // 礦脈中央加一個亮點
+        if (jitter > 0.74) { ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(sx, sy, TS, TS); }
+        else if (jitter < 0.16) { ctx.fillStyle = "rgba(0,0,0,0.10)"; ctx.fillRect(sx, sy, TS, TS); }
+        // 立體邊**只畫在碰到空格的交界**：內部實心連成一片乾淨土石，挖出的隧道牆才有亮/暗邊
+        // （這是修「整片實心變醜網格」的關鍵）。
+        const up = isEmpty(i, j - 1), down = isEmpty(i, j + 1);
+        const left = isEmpty(i - 1, j), right = isEmpty(i + 1, j);
+        if (up) { ctx.fillStyle = "rgba(255,255,255,0.16)"; ctx.fillRect(sx, sy, TS, 3); }
+        if (left) { ctx.fillStyle = "rgba(255,255,255,0.10)"; ctx.fillRect(sx, sy, 3, TS); }
+        if (down) { ctx.fillStyle = "rgba(0,0,0,0.30)"; ctx.fillRect(sx, sy + TS - 3, TS, 3); }
+        if (right) { ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.fillRect(sx + TS - 3, sy, 3, TS); }
+        // 礦脈：露出（碰到空格）才亮，提示「挖這裡有礦」；埋在深處只隱約。
         if (kind === "ore") {
-          ctx.fillStyle = "rgba(180,140,55,0.50)";
-          const s = 8;
+          ctx.fillStyle = (up || down || left || right) ? "rgba(255,212,92,0.78)" : "rgba(205,165,70,0.40)";
+          const s = 9;
           ctx.fillRect(sx + TS / 2 - s / 2, sy + TS / 2 - s / 2, s, s);
         }
       }
