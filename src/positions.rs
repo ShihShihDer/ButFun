@@ -307,6 +307,20 @@ mod tests {
     use crate::state::{WORLD_HEIGHT, WORLD_WIDTH};
 
     #[test]
+    fn world_core_safe_zone_matches_game() {
+        // world-core 地形挖空圈必須對齊遊戲出生點 + 安全半徑,否則新手村會被埋 / 挖空錯位。
+        let (cx, cy) = default_spawn();
+        assert_eq!(world_core::SAFE_ZONE_CX as f32, cx);
+        assert_eq!(world_core::SAFE_ZONE_CY as f32, cy);
+        assert_eq!(world_core::SAFE_ZONE_RADIUS as f32, SAFE_SPAWN_RADIUS);
+        // 出生點該是乾淨地（被挖空），玩家不會一進場就卡在土裡。
+        assert_eq!(
+            world_core::tile_kind_at(cx as f64, cy as f64),
+            world_core::TileKind::Empty
+        );
+    }
+
+    #[test]
     fn default_spawn_is_in_safe_zone() {
         let (cx, cy) = default_spawn();
         assert!(is_in_safe_zone(cx, cy), "新手村生成點本身必定在安全區內");

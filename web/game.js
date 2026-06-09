@@ -1603,6 +1603,11 @@
     const ty = ((gy % CHUNK_T) + CHUNK_T) % CHUNK_T;
     const delta = tileDeltaMap.get(`${cx},${cy},${tx},${ty}`);
     if (delta !== undefined) return delta;
+    // 新手村安全區一律乾淨地（與後端 world-core SAFE_ZONE_* 對齊，改一邊要改另一邊）。
+    {
+      const sdx = wx - 2344, sdy = wy - 2296;
+      if (sdx * sdx + sdy * sdy <= 640 * 640) return "empty";
+    }
     // 確定性生成
     const b = biomeAt(wx, wy);
     if (b === "water") return "empty";
