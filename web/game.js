@@ -74,26 +74,6 @@
   let actionTouchId = null;
   let lastSmartAction = 0;
   const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
-  // 手機/搖桿挖掘輔助:朝實心地形走就自動挖（Core Keeper 式鑿隧道），免得在手機上「移動」與
-  // 「點擊挖」互搶同一根手指、只能擇一。你照常用搖桿走，撞到牆就會自動一格一格挖開。
-  let lastAutoDig = 0;
-  function maybeAutoDig(me) {
-    if (!me || !ws || ws.readyState !== 1) return;
-    // 目前移動方向（鍵盤/搖桿/手把共用同一組 keys）。沒在移動就不自動挖。
-    let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-    let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
-    if (dx === 0 && dy === 0) return;
-    const len = Math.hypot(dx, dy);
-    dx /= len; dy /= len;
-    // 探測你正前方那一格（玩家半徑 + 半格 ≈ 26px）；只有「擋住你的那格是實心」才挖。
-    const px = me.x + dx * 26, py = me.y + dy * 26;
-    if (tileKindAt(px, py) === "empty") return; // 前方不是實心地形,不挖（開放地正常走）
-    const now = performance.now();
-    if (now - lastAutoDig < 170) return;        // 節流:約每 0.17 秒鑿一格
-    lastAutoDig = now;
-    ws.send(JSON.stringify({ type: "dig", wx: px, wy: py }));
-    spawnTapFlash(px, py);
-  }
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
   let fields = [];
@@ -890,6 +870,55 @@
     ctx.textBaseline = "alphabetic"; // 復原預設，免得影響其後文字繪製
   }
 
+  // 「往新手村」邊緣指標：村子（出生點 / 安全區中心）離開畫面時，永遠在畫面邊緣指出方向 + 距離，
+  // 讓人不管跑多遠都找得到回家的路（小地圖的家標記只在靠近時看得到，這個補遠距導航）。
+  function drawVillagePointer(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    if (!me) return;
+    const VX = 2344, VY = 2296; // 新手村中心（與後端 SAFE_ZONE / default_spawn 對齊）
+    const sx = VX - camX, sy = VY - camY;
+    const R = 640; // 安全區半徑：村子有一塊在畫面內就不畫
+    if (sx + R >= 0 && sx - R <= viewW && sy + R >= 0 && sy - R <= viewH) return;
+    const ccx = viewW / 2, ccy = viewH / 2;
+    const ang = Math.atan2(sy - ccy, sx - ccx);
+    const m = 52;
+    const px = Math.max(m + safeArea.left, Math.min(viewW - m - safeArea.right, sx));
+    const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, sy));
+    const dist = Math.round(Math.hypot(VX - me.x, VY - me.y));
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(px, py, 16, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,20,14,0.62)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(130,210,150,0.85)";
+    ctx.stroke();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-5, -6);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
+    ctx.fillStyle = "#86e6a6";
+    ctx.fill();
+    ctx.restore();
+    // 「🏠＋距離」標籤擺在箭頭背向村子那側，不擋指向。
+    const lx = px - Math.cos(ang) * 26;
+    const ly = py - Math.sin(ang) * 26;
+    ctx.save();
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeText("🏠" + dist, lx, ly);
+    ctx.fillStyle = "#d6f5de";
+    ctx.fillText("🏠" + dist, lx, ly);
+    ctx.restore();
+  }
+
   // ---- 輸入 ----
   function sendInputIfChanged() {
     const sig = `${keys.up}${keys.down}${keys.left}${keys.right}`;
@@ -1305,7 +1334,6 @@
     pollGamepad();
 
     const me = myId ? players.get(myId) : null;
-    maybeAutoDig(me); // 朝牆走自動挖（手機免抬指點，移動即可鑿隧道）
     // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
     // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
     for (const p of players.values()) {
@@ -1361,6 +1389,8 @@
 
     // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
     drawFarmPointer(camX, camY);
+    // 「往新手村」邊緣指標：村子離開畫面時永遠指出方向 + 距離（遠距導航，補小地圖只在近處顯家）。
+    drawVillagePointer(camX, camY);
 
     // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
     drawMinimap();
