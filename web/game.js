@@ -1990,10 +1990,10 @@
       return "empty";
     }
 
-    // 地形空曠度（與後端 tile_kind_at 對齊）：threshold 0.82 → 約 82% 空地、18% 實心集中。
-    // （原本 0.38＝62% 實心會到處卡，玩家要求降密度。）
+    // 地形空曠度（與後端 tile_kind_at 對齊）：礦區(rocky) 0.50＝約 50% 實心(礦石多可深挖)，
+    // 其餘生態域 0.82＝約 18% 實心(開闊好走)。
     const cave = biomeNoise(wx, wy, 160, 123);
-    if (cave < 0.82) return "empty";
+    if (cave < (b === "rocky" ? 0.50 : 0.82)) return "empty";
     if (b === "rocky") {
       // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
       const crystalN = biomeNoise(wx, wy, 80, 777);

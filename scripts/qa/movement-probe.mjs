@@ -51,7 +51,7 @@ function tileKindAt(wx, wy) {
   // 地形空曠度（對齊後端 tile_kind_at：cave < 門檻 → 空地）。實心格的細分種類(crystal/mushroom…)
   // 這裡一律當「實心」（stone/dirt），夠用來偵測「卡住 vs 走得動」。
   const cave = biomeNoise(wx, wy, 160, 123);
-  if (cave < 0.82) return "empty";
+  if (cave < (b === "rocky" ? 0.50 : 0.82)) return "empty"; // 礦區密、其餘疏（對齊後端）
   const h = tileHash(gx, gy);
   if (b === "rocky") return h < 0.12 ? "ore" : "stone";
   if (b === "forest") return h < 0.10 ? "stone" : "dirt";
