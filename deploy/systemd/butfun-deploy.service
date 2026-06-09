@@ -1,16 +1,22 @@
-# 維護窗上線——oneshot，由 butfun-deploy.timer 每日觸發。
-# 跑確定性的 scripts/deploy.sh：測試綠才換版、失敗自動回滾。
+# ButFun prod 自動上線——oneshot，由 butfun-deploy.timer 觸發（預設每 15 分）。
+# 跑 scripts/deploy.sh：測試綠 + healthz + WS 冒煙閘才換版，任一關失敗自動回滾。
+#
+# 這是 systemd **user** 單元（systemctl --user），由 scripts/deploy-enable.sh 安裝到
+# ~/.config/systemd/user/。deploy.sh 內部的 `sudo systemctl restart butfun` 走既有的
+# passwordless 規則（與 staging 同一套）。@NTFY_TOPIC@ 由 enable 腳本從本機 cache 注入
+# （上線推播用，秘密不入 repo）。
 [Unit]
-Description=ButFun nightly deploy (test-gated, auto-rollback)
-After=network.target
+Description=ButFun prod deploy (test-gated, healthz + WS smoke, auto-rollback)
+After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/butfun
-Environment=BUTFUN_REPO=/opt/butfun
+WorkingDirectory=/home/shihshih/ButFun
+Environment=BUTFUN_REPO=/home/shihshih/ButFun
 Environment=BUTFUN_DEPLOY_BRANCH=main
 Environment=BUTFUN_SERVICE=butfun
 Environment=BUTFUN_HEALTH_URL=http://localhost:3000/healthz
-ExecStart=/opt/butfun/scripts/deploy.sh
-User=butfun
+Environment=NTFY_TOPIC=@NTFY_TOPIC@
+Environment=PATH=/home/shihshih/.local/bin:/home/shihshih/.cargo/bin:/home/shihshih/.nvm/versions/node/v22.16.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/shihshih/ButFun/scripts/deploy.sh
 TimeoutStartSec=1800
