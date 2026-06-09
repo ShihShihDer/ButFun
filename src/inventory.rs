@@ -66,6 +66,9 @@ pub enum ItemKind {
     /// 深海珍珠（挖掘 CoralReef 地形格掉落，ROADMAP 13 水域珊瑚礁生態域）。
     /// 海底珊瑚礁孕育的稀世珍珠，NPC 以最高溢價收購，給在海岸邊挖珊瑚的玩家第四條乙太路線。
     DeepSeaPearl,
+    /// 野花種子（挖掘 WildFlower 地形格掉落，ROADMAP 14 草原野花叢生態域）。
+    /// 草原深處野花叢孕育的種子，NPC 溢價收購，給穿梭草原的玩家補上第五條乙太路線。
+    WildflowerSeed,
 }
 
 impl ItemKind {
@@ -86,6 +89,7 @@ impl ItemKind {
         ItemKind::MushroomSpore,
         ItemKind::AncientFragment,
         ItemKind::DeepSeaPearl,
+        ItemKind::WildflowerSeed,
     ];
 }
 
@@ -289,13 +293,14 @@ mod tests {
                 | ItemKind::CrystalShard
                 | ItemKind::MushroomSpore
                 | ItemKind::AncientFragment
-                | ItemKind::DeepSeaPearl => {}
+                | ItemKind::DeepSeaPearl
+                | ItemKind::WildflowerSeed => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 11 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 11, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 12 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 12, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -409,11 +414,12 @@ mod tests {
             // C-2 挖掘地形格可取得的物品（Dig handler：實心格→Empty + 材料入背包）。
             // Dirt/Stone/Ether 由挖掘對應 tile 取得；CrystalShard 挖 Crystal 晶洞格取得；
             // MushroomSpore 挖 Mushroom 蕈菇洞格取得；AncientFragment 挖 AncientRuin 遺跡格取得；
-            // DeepSeaPearl 挖 CoralReef 珊瑚礁格取得（水域岸邊 80px 挖掘範圍內可達）。
+            // DeepSeaPearl 挖 CoralReef 珊瑚礁格取得（水域岸邊 80px 挖掘範圍內可達）；
+            // WildflowerSeed 挖 WildFlower 野花叢格取得（草原特產，ROADMAP 14）。
             let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone
                 || item == ItemKind::Ether || item == ItemKind::CrystalShard
                 || item == ItemKind::MushroomSpore || item == ItemKind::AncientFragment
-                || item == ItemKind::DeepSeaPearl;
+                || item == ItemKind::DeepSeaPearl || item == ItemKind::WildflowerSeed;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\

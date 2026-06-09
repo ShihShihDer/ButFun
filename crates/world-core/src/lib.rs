@@ -135,6 +135,7 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   5 = Mushroom（蕈菇，Forest 生態域蕈菇聚落特有）
 ///   6 = AncientRuin（古代遺跡，Sand 生態域沙漠遺跡聚落特有）
 ///   7 = CoralReef（珊瑚礁，Water 生態域海底特產）
+///   8 = WildFlower（野花叢，Meadow 生態域草原特產）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
@@ -152,6 +153,9 @@ pub enum TileKind {
     /// 珊瑚礁——只生在水域（Water）生態域的珊瑚聚落中，挖後掉深海珍珠，
     /// NPC 以最高溢價收購，鼓勵玩家在海岸邊挖掘水下珍寶。
     CoralReef,
+    /// 野花叢——只生在草原（Meadow）生態域的野花聚落中，挖後掉野花種子，
+    /// NPC 以溢價收購，給穿梭草原的玩家補上第五條乙太路線。
+    WildFlower,
 }
 
 impl TileKind {
@@ -165,6 +169,7 @@ impl TileKind {
             TileKind::Mushroom    => 5,
             TileKind::AncientRuin => 6,
             TileKind::CoralReef   => 7,
+            TileKind::WildFlower  => 8,
         }
     }
 }
@@ -243,9 +248,17 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
             }
         }
         Biome::Meadow => {
-            // 草原：主要為泥土。
-            if h < 0.05 { TileKind::Stone }
-            else { TileKind::Dirt }
+            // 野花聚落判定：次級噪聲（scale 75, seed 222）高於 0.81 的區域（約 19% 的草原）形成野花田。
+            // 野花田內：55% WildFlower，45% Dirt——挖進去才看見繽紛野花叢，給探索草原的玩家視覺驚喜。
+            let flower_n = value_noise(wx, wy, 75.0, 222);
+            if flower_n > 0.81 {
+                if h < 0.55 { TileKind::WildFlower }
+                else { TileKind::Dirt }
+            } else {
+                // 普通草原：偶爾有石塊(5%)，其餘為泥土。
+                if h < 0.05 { TileKind::Stone }
+                else { TileKind::Dirt }
+            }
         }
         Biome::Sand => {
             // 沙漠遺跡判定：次級噪聲（scale 90, seed 333）高於 0.83 的區域（約 17% 的沙漠）形成遺跡聚落。
@@ -559,12 +572,15 @@ mod tests {
 
     #[test]
     fn tile_code_round_trips() {
-        assert_eq!(TileKind::Empty.code(),    0);
-        assert_eq!(TileKind::Dirt.code(),     1);
-        assert_eq!(TileKind::Stone.code(),    2);
-        assert_eq!(TileKind::Ore.code(),      3);
-        assert_eq!(TileKind::Crystal.code(),  4);
-        assert_eq!(TileKind::Mushroom.code(), 5);
+        assert_eq!(TileKind::Empty.code(),       0);
+        assert_eq!(TileKind::Dirt.code(),        1);
+        assert_eq!(TileKind::Stone.code(),       2);
+        assert_eq!(TileKind::Ore.code(),         3);
+        assert_eq!(TileKind::Crystal.code(),     4);
+        assert_eq!(TileKind::Mushroom.code(),    5);
+        assert_eq!(TileKind::AncientRuin.code(), 6);
+        assert_eq!(TileKind::CoralReef.code(),   7);
+        assert_eq!(TileKind::WildFlower.code(),  8);
     }
 
     #[test]
@@ -670,6 +686,44 @@ mod tests {
     #[test]
     fn tile_code_includes_ancient_ruin() {
         assert_eq!(TileKind::AncientRuin.code(), 6);
+    }
+
+    #[test]
+    fn wild_flower_exists_in_meadow_biome() {
+        // 掃草原範圍，確認確實能生成野花叢格（不是機率設太低全找不到）。
+        let mut found = false;
+        'outer: for gy in 0..300i32 {
+            for gx in 0..300i32 {
+                let x = gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) == Biome::Meadow && tile_kind_at(x + 16.0, y + 16.0) == TileKind::WildFlower {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "草原生態域中應存在野花叢格");
+    }
+
+    #[test]
+    fn wild_flower_only_in_meadow_biome() {
+        // WildFlower 格不應出現在非草原生態域（rocky/forest/sand）。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0;
+                let y = gy as f64 * 64.0 + 16.0;
+                let b = biome_at(x, y);
+                if b != Biome::Meadow && b != Biome::Water {
+                    let k = tile_kind_at(x, y);
+                    assert_ne!(k, TileKind::WildFlower, "非草原生態域 {:?} 不應生野花叢，座標=({x},{y})", b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tile_code_includes_wild_flower() {
+        assert_eq!(TileKind::WildFlower.code(), 8);
     }
 }
 

@@ -36,6 +36,7 @@ pub struct ShopEntry {
 /// 蕈菇孢子（森林蕈菇洞掉落）以 2 乙太/個溢價收購，鼓勵探索型玩家深入森林。
 /// 古代碎片（沙漠遺跡掉落）以 4 乙太/個高溢價收購，回報最遠、最危險的沙漠探索。
 /// 深海珍珠（水域珊瑚礁掉落）以 5 乙太/個最高溢價收購，是所有生態特產中最稀有的。
+/// 野花種子（草原野花叢掉落）以 2 乙太/個溢價收購，給穿梭草原的玩家第五條乙太路線。
 pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::Wood,             price_per: 1 },
     ShopEntry { item: ItemKind::Stone,            price_per: 1 },
@@ -45,6 +46,7 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::MushroomSpore,    price_per: 2 },
     ShopEntry { item: ItemKind::AncientFragment,  price_per: 4 },
     ShopEntry { item: ItemKind::DeepSeaPearl,     price_per: 5 },
+    ShopEntry { item: ItemKind::WildflowerSeed,   price_per: 2 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -210,7 +212,7 @@ mod tests {
         let important_items = [
             ItemKind::Wood, ItemKind::Stone, ItemKind::Ether,
             ItemKind::Dirt, ItemKind::CrystalShard, ItemKind::MushroomSpore,
-            ItemKind::AncientFragment, ItemKind::DeepSeaPearl,
+            ItemKind::AncientFragment, ItemKind::DeepSeaPearl, ItemKind::WildflowerSeed,
         ];
         for item in important_items {
             assert!(

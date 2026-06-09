@@ -32,6 +32,7 @@ pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
         TileKind::Mushroom    => Some((ItemKind::MushroomSpore,   1)),
         TileKind::AncientRuin => Some((ItemKind::AncientFragment, 1)),
         TileKind::CoralReef   => Some((ItemKind::DeepSeaPearl,    1)),
+        TileKind::WildFlower  => Some((ItemKind::WildflowerSeed,  1)),
     }
 }
 
@@ -145,6 +146,7 @@ mod tests {
         assert_eq!(drop_for_tile(TileKind::Mushroom),    Some((ItemKind::MushroomSpore,   1)));
         assert_eq!(drop_for_tile(TileKind::AncientRuin), Some((ItemKind::AncientFragment, 1)));
         assert_eq!(drop_for_tile(TileKind::CoralReef),   Some((ItemKind::DeepSeaPearl,    1)));
+        assert_eq!(drop_for_tile(TileKind::WildFlower),  Some((ItemKind::WildflowerSeed,  1)));
     }
 
     #[test]
