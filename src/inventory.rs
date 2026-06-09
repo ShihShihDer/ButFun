@@ -63,6 +63,9 @@ pub enum ItemKind {
     /// 古代碎片（挖掘 AncientRuin 地形格掉落，ROADMAP 12 沙漠遺跡生態域）。
     /// 殘留古老文明的銘刻，NPC 以高溢價收購，給探索沙漠的玩家第三條乙太路線。
     AncientFragment,
+    /// 深海珍珠（挖掘 CoralReef 地形格掉落，ROADMAP 13 水域珊瑚礁生態域）。
+    /// 海底珊瑚礁孕育的稀世珍珠，NPC 以最高溢價收購，給在海岸邊挖珊瑚的玩家第四條乙太路線。
+    DeepSeaPearl,
 }
 
 impl ItemKind {
@@ -82,6 +85,7 @@ impl ItemKind {
         ItemKind::CrystalShard,
         ItemKind::MushroomSpore,
         ItemKind::AncientFragment,
+        ItemKind::DeepSeaPearl,
     ];
 }
 
@@ -284,13 +288,14 @@ mod tests {
                 | ItemKind::Weapon
                 | ItemKind::CrystalShard
                 | ItemKind::MushroomSpore
-                | ItemKind::AncientFragment => {}
+                | ItemKind::AncientFragment
+                | ItemKind::DeepSeaPearl => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 10 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 10, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 11 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 11, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -403,10 +408,12 @@ mod tests {
             let droppable_src = droppable.contains(&item);
             // C-2 挖掘地形格可取得的物品（Dig handler：實心格→Empty + 材料入背包）。
             // Dirt/Stone/Ether 由挖掘對應 tile 取得；CrystalShard 挖 Crystal 晶洞格取得；
-            // MushroomSpore 挖 Mushroom 蕈菇洞格取得；AncientFragment 挖 AncientRuin 遺跡格取得。
+            // MushroomSpore 挖 Mushroom 蕈菇洞格取得；AncientFragment 挖 AncientRuin 遺跡格取得；
+            // DeepSeaPearl 挖 CoralReef 珊瑚礁格取得（水域岸邊 80px 挖掘範圍內可達）。
             let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone
                 || item == ItemKind::Ether || item == ItemKind::CrystalShard
-                || item == ItemKind::MushroomSpore || item == ItemKind::AncientFragment;
+                || item == ItemKind::MushroomSpore || item == ItemKind::AncientFragment
+                || item == ItemKind::DeepSeaPearl;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\

@@ -23,6 +23,7 @@ fn kind_str(k: TileKind) -> &'static str {
         TileKind::Crystal     => "crystal",
         TileKind::Mushroom    => "mushroom",
         TileKind::AncientRuin => "ancient_ruin",
+        TileKind::CoralReef   => "coral_reef",
     }
 }
 
@@ -34,6 +35,7 @@ fn parse_kind(s: &str) -> TileKind {
         "crystal"      => TileKind::Crystal,
         "mushroom"     => TileKind::Mushroom,
         "ancient_ruin" => TileKind::AncientRuin,
+        "coral_reef"   => TileKind::CoralReef,
         _              => TileKind::Empty,
     }
 }
@@ -156,7 +158,7 @@ mod tests {
 
     #[test]
     fn kind_str_and_parse_kind_round_trip() {
-        for &k in &[TileKind::Empty, TileKind::Dirt, TileKind::Stone, TileKind::Ore, TileKind::Crystal] {
+        for &k in &[TileKind::Empty, TileKind::Dirt, TileKind::Stone, TileKind::Ore, TileKind::Crystal, TileKind::Mushroom, TileKind::AncientRuin, TileKind::CoralReef] {
             assert_eq!(parse_kind(kind_str(k)), k);
         }
     }
