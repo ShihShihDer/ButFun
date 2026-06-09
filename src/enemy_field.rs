@@ -79,17 +79,21 @@ impl EnemyField {
 
     /// 推進敵人移動。`tile_solid(x, y)` 回傳該世界像素座標是否為實心地形格（C-3 碰撞，
     /// 傳 `|_, _| false` 可關閉、保留舊行為）。敵人撞牆會沿單軸滑行、不穿牆也不整個卡死。
+    /// `is_night` 為 true 時，追擊速度乘以 1.4——夜間怪物更具侵略性，給玩家危機感。
     pub fn advance<F: Fn(f32, f32) -> bool>(
         &mut self,
         dt: f32,
         players: &[(f32, f32)],
+        is_night: bool,
         tile_solid: F,
     ) {
         if dt <= 0.0 {
             return;
         }
         let aggro_sq = AGGRO_RADIUS * AGGRO_RADIUS;
-        
+        // 夜間追擊速度加成：讓玩家感受到夜裡的危機感。
+        let night_mult = if is_night { 1.4_f32 } else { 1.0_f32 };
+
         // 收集所有需要移動的敵人
         let mut to_move = Vec::new();
 
@@ -113,7 +117,7 @@ impl EnemyField {
                 }
 
                 let (target_x, target_y, speed) = match nearest {
-                    Some((tx, ty, _)) => (tx, ty, CHASE_SPEED),
+                    Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult),
                     None => {
                         let (hx, hy) = spawn_position(placed.id);
                         (hx, hy, RETURN_SPEED)
@@ -365,7 +369,7 @@ mod tests {
 
         // 玩家在 (520, 256) 誘敵 (在 AGGRO_RADIUS 260 內)
         let player = (520.0, 256.0);
-        f.advance(1.0, &[player], |_, _| false);
+        f.advance(1.0, &[player], false, |_, _| false);
 
         // 敵人應已移入 (1,0) 區塊，且 id 隨之更新（id.0 == 1）
         let new_chunk = f.chunks.get(&(1,0)).expect("敵人應在 (1,0) 區塊");
@@ -392,7 +396,7 @@ mod tests {
             chunk[0].y
         };
         // 牆:x >= 240 一律實心。敵人被右邊玩家 (400,256) 誘往 +x,應被牆擋下、不穿過。
-        f.advance(1.0, &[(400.0, 256.0)], |x, _y| x >= 240.0);
+        f.advance(1.0, &[(400.0, 256.0)], false, |x, _y| x >= 240.0);
         let e = &f.chunks.get(&(0, 0)).unwrap()[0];
         assert!(e.x < 240.0, "敵人不該穿牆進實心格, x={}", e.x);
         assert_eq!(e.y, ey, "本例目標同 y,滑行時 y 不該漂");
@@ -410,7 +414,7 @@ mod tests {
             chunk[0].x = 511.0;
             chunk[0].y = 256.0;
         }
-        f.advance(1.0, &[(520.0, 256.0)], |_, _| false);
+        f.advance(1.0, &[(520.0, 256.0)], false, |_, _| false);
 
         // 在新位置附近攻擊，不應 panic
         let result = f.attack_nearest(516.0, 256.0, 1);
@@ -425,5 +429,40 @@ mod tests {
         let got = f.attack_nearest(target.x, target.y, 1);
         assert!(got.is_some());
         assert_eq!(got.unwrap().0, target.enemy.kind());
+    }
+
+    #[test]
+    fn night_enemies_chase_faster_than_day() {
+        // 夜間（is_night=true）在同樣 dt 內追擊速度應比白天（is_night=false）快。
+        // 直接驗算：以小 dt 讓速度×dt 遠小於目標距離，避免 min(step,dist) 截斷。
+        // 白天 CHASE_SPEED=105，夜間 CHASE_SPEED*1.4=147，dt=0.1 => 10.5 vs 14.7 px。
+        // 只要敵人在 AGGRO_RADIUS 內並離玩家夠遠（>147 px），兩者差距就能量出來。
+        fn measure_chase(is_night: bool) -> f32 {
+            let mut f = EnemyField::new();
+            f.ensure_chunks_around(0.0, 0.0, CHUNK_SIZE + 10.0);
+            let before_enemies = f.enemies();
+            let before = before_enemies.iter().find(|e| e.enemy.is_alive()).expect("should have enemy");
+            // 在 AGGRO_RADIUS(260) 內但距離 > 147（夜間速度×dt 的最大值）。
+            let player = (before.x + 200.0, before.y);
+            let bx = before.x;
+            let by = before.y;
+            f.advance(0.1, &[player], is_night, |_, _| false);
+            // 在原位置附近找最近的存活敵人（用距離匹配，避免 enemies() 順序問題）。
+            let after = f.enemies().into_iter().filter(|e| e.enemy.is_alive())
+                .min_by(|a, b| {
+                    let da = (a.x-bx).powi(2)+(a.y-by).powi(2);
+                    let db = (b.x-bx).powi(2)+(b.y-by).powi(2);
+                    da.partial_cmp(&db).unwrap()
+                }).expect("still alive");
+            let dx = after.x - bx;
+            let dy = after.y - by;
+            (dx * dx + dy * dy).sqrt()
+        }
+        let moved_day = measure_chase(false);
+        let moved_night = measure_chase(true);
+        assert!(
+            moved_night > moved_day,
+            "夜間移動距離（{moved_night:.2}）應大於白天（{moved_day:.2}）"
+        );
     }
 }

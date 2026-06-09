@@ -776,12 +776,54 @@
     ctx.restore();
   }
 
+  // 夜間危機暈輪：phase==night 時，畫面四周出現脈動深紅暈輪，給玩家「夜很危險」的直覺感。
+  // 純表現，從伺服器廣播的 night_danger 旗標觸發，不嵌任何遊戲規則。
+  function drawNightDangerVignette(now) {
+    if (!daynight || !daynight.night_danger) return;
+    const pulse = 0.55 + 0.45 * Math.sin(now / 1000 * 1.2); // 約每 5 秒一個呼吸週期
+    const alpha = 0.22 * pulse;
+    const g = ctx.createRadialGradient(
+      viewW / 2, viewH / 2, Math.min(viewW, viewH) * 0.35,
+      viewW / 2, viewH / 2, Math.max(viewW, viewH) * 0.85
+    );
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(1, `rgba(180,0,30,${alpha.toFixed(3)})`);
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+  }
+
+  // 燐光族夜視：自己是 lumen 種族且是夜晚時，對敵人畫一層發光外環，讓敵人在暗處更醒目。
+  // 純表現，在一般敵人繪製之上疊加，不影響其他種族的視角。
+  function drawLumenNightGlow(camX, camY, now) {
+    if (!daynight || !daynight.night_danger) return;
+    const me = players.get(myId);
+    if (!me || me.species !== "lumen") return;
+    const pulse = 0.6 + 0.4 * Math.sin(now / 700);
+    ctx.save();
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const sx = e.x - camX;
+      const sy = e.y - camY;
+      const r = 22;
+      const g = ctx.createRadialGradient(sx, sy, r * 0.5, sx, sy, r * 2.2);
+      g.addColorStop(0, `rgba(100,220,255,${(0.35 * pulse).toFixed(3)})`);
+      g.addColorStop(1, "rgba(100,220,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   // 日夜階段 → HUD 顯示文字（emoji + 繁中），讓玩家一眼知道現在是一天的哪個時段。
   const PHASE_LABELS = {
     dawn: "🌅 破曉",
     day: "☀️ 白天",
     dusk: "🌇 黃昏",
-    night: "🌙 夜晚",
+    night: "🌙 夜晚 ⚠️",
   };
   // 階段「換場」時播給報讀器的整句（不帶 emoji——報讀器唸 emoji 名稱常突兀）。
   // 視覺上日夜變化已有 HUD 文字＋夜晚乙太微光,看不到畫面的玩家卻完全收不到時段切換,
@@ -790,7 +832,7 @@
     dawn: "破曉了，天色漸亮",
     day: "天亮了",
     dusk: "黃昏了，天色漸暗",
-    night: "入夜了",
+    night: "入夜了，怪物加速，小心！",
   };
   // 首份快照只建基準、不報(比照 presenceKnown:進場/重連不該把「現在的時段」當成切換)。
   let lastPhase = null;
@@ -1425,6 +1467,12 @@
     // 夜晚漂浮的乙太微光：在日夜染色「之後」畫（浮在變暗的世界上），但在飄字／漣漪／
     // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
     drawNightMotes(performance.now());
+
+    // 燐光族夜視光環：夜間對敵人疊一層藍白發光外環，讓 lumen 種族玩家在暗處更容易找到敵人。
+    drawLumenNightGlow(camX, camY, performance.now());
+
+    // 夜間危機暈輪：夜晚在螢幕四周加脈動深紅暈輪，傳達「夜裡危險、怪物加速」的氣氛。
+    drawNightDangerVignette(performance.now());
 
     // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawFloaters(camX, camY, performance.now());

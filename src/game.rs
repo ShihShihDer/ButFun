@@ -57,15 +57,16 @@ pub fn spawn(app: AppState) {
 
             // 先推進日夜時鐘，取得當下亮度決定作物成長速度（短暫持鎖，不跨 await）。
             // 時鐘無條件前進;view 只在要廣播時才取。
-            let (daynight_view, growth_rate) = {
+            let (daynight_view, growth_rate, is_night) = {
                 let mut daynight = app.daynight.write().unwrap();
                 daynight.advance(dt);
+                let is_night = daynight.phase() == crate::daynight::Phase::Night;
                 let view = if want_broadcast {
                     Some(daynight.view())
                 } else {
                     None
                 };
-                (view, daynight.growth_rate())
+                (view, daynight.growth_rate(), is_night)
             };
 
             // 推進所有玩家農地的成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、
@@ -168,7 +169,8 @@ pub fn spawn(app: AppState) {
                 }
                 enemies.tick(dt);
                 // C-3:敵人也吃地形碰撞（用同一份 tile deltas 快照），不再穿牆。
-                enemies.advance(dt, &chase_targets, |x: f32, y: f32| {
+                // 夜間危機：夜裡敵人追擊速度加成（is_night）。
+                enemies.advance(dt, &chase_targets, is_night, |x: f32, y: f32| {
                     let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
                     tile_deltas_snap
                         .get(&(cx, cy, tx, ty))

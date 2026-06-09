@@ -161,10 +161,12 @@ impl DayNight {
         growth_rate_for(self.light_level())
     }
 
-    /// 對前端的可見狀態（階段 + 亮度）。隨快照廣播，比照 `Field::view` / `Player::view`。
+    /// 對前端的可見狀態（階段 + 亮度 + 夜間危機旗標）。隨快照廣播，比照 `Field::view` / `Player::view`。
     pub fn view(&self) -> DayNightView {
+        let phase = self.phase();
         DayNightView {
-            phase: self.phase(),
+            night_danger: phase == Phase::Night,
+            phase,
             light: self.light_level(),
         }
     }
