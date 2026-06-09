@@ -265,8 +265,11 @@ pub fn sanitize_name(raw: &str) -> String {
     }
 }
 
-/// 清理玩家輸入的物種：先濾掉控制字元、去頭尾空白、空字串退回預設物種。
-/// 物種同樣是訪客完全可控、會顯示出來的單行身分欄位，比照名字濾控制字元。
+/// 目前開放的物種清單（與前端 index.html speciesInput 同步）。
+pub const VALID_SPECIES: &[&str] = &["terran", "shilaya", "busi", "lumen"];
+
+/// 清理玩家輸入的物種：先濾掉控制字元、去頭尾空白、再驗證是否為已開放物種；
+/// 不合法或空字串皆退回預設物種 "terran"。
 pub fn sanitize_species(raw: &str) -> String {
     let s: String = raw
         .chars()
@@ -274,10 +277,10 @@ pub fn sanitize_species(raw: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string();
-    if s.is_empty() {
-        DEFAULT_SPECIES.to_string()
-    } else {
+    if VALID_SPECIES.contains(&s.as_str()) {
         s
+    } else {
+        DEFAULT_SPECIES.to_string()
     }
 }
 
@@ -559,8 +562,19 @@ mod tests {
     }
 
     #[test]
-    fn species_keeps_normal_value() {
-        assert_eq!(sanitize_species("celestial"), "celestial");
+    fn species_keeps_valid_values() {
+        // 四個已開放種族都應保留原值。
+        assert_eq!(sanitize_species("terran"), "terran");
+        assert_eq!(sanitize_species("shilaya"), "shilaya");
+        assert_eq!(sanitize_species("busi"), "busi");
+        assert_eq!(sanitize_species("lumen"), "lumen");
+    }
+
+    #[test]
+    fn species_rejects_unknown_value() {
+        // 非白名單的種族（包含舊測試的 "celestial"）一律退回預設物種。
+        assert_eq!(sanitize_species("celestial"), DEFAULT_SPECIES);
+        assert_eq!(sanitize_species("alien"), DEFAULT_SPECIES);
     }
 
     #[test]
@@ -576,9 +590,8 @@ mod tests {
 
     #[test]
     fn species_strips_control_chars() {
-        // 物種同樣是顯示用的單行身分欄位，控制字元一律濾掉。
+        // 控制字元清除後若還是合法種族就保留，否則退回預設。
         assert_eq!(sanitize_species("ter\nr\0an"), "terran");
-        // 清乾淨後變空 → 退回預設物種。
         assert_eq!(sanitize_species("\n\0\t"), DEFAULT_SPECIES);
     }
 

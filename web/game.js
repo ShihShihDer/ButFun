@@ -499,7 +499,9 @@
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
-            nameEl.textContent = `你：${me.name}`;
+            const speciesEmoji = { terran:"🌾", shilaya:"🚀", busi:"⚙️", lumen:"✨" };
+            const sEmoji = speciesEmoji[me.species] || "";
+            nameEl.textContent = `你：${me.name}${sEmoji ? ` · ${sEmoji}` : ""}`;
             nameEl.classList.remove("hidden");
             // 訪客回饋最大宗是「一進來沒農地、不知道下一步」——進場就亮出明確的下一步
             // (登入即有專屬田)。登入者 isGuest=false 永不顯示,不打擾老玩家。
@@ -1180,7 +1182,19 @@
   }
 
   // ---- 渲染迴圈 ----
-  // 畫單一玩家(角色 sprite／fallback 圓 + 頭上名字)。抽成獨立函式,讓 render 能
+  // 種族外觀參數：body 是 fallback 圓的顏色；ring 是光環顏色（sprite 模式也會畫）；
+  // eye 是 fallback 護目鏡點的顏色。自己的顏色另由 isMe 覆蓋。
+  const SPECIES_STYLE = {
+    terran:  { body: "#c9a24b", ring: "rgba(201,162,75,0.55)",  eye: "#3a2818" },
+    shilaya: { body: "#7abeff", ring: "rgba(100,168,255,0.55)", eye: "#1a2c4a" },
+    busi:    { body: "#d4783a", ring: "rgba(212,120,58,0.55)",  eye: "#3a1a08" },
+    lumen:   { body: "#c0f0ff", ring: "rgba(180,240,255,0.65)", eye: "#1a3a40" },
+  };
+  function speciesStyle(sp) {
+    return SPECIES_STYLE[sp] || SPECIES_STYLE.terran;
+  }
+
+  // 畫單一玩家(角色 sprite／fallback 圓 + 種族光環 + 頭上名字)。抽成獨立函式,讓 render 能
   // 控制畫的順序——別人先畫、自己最後畫,確保自己永遠在最上層。純表現層,不嵌任何
   // 遊戲規則(將來 WebXR renderer 自有角色呈現,這層只屬 2D 客戶端)。
   function drawPlayer(p, camX, camY) {
@@ -1197,12 +1211,23 @@
     // 被打趴時不彈跳(在地上休息,不該還在踏步)。
     const bob = (p.moving && !reduceMotion && !downed) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
     const by = sy - bob;
+    const sty = speciesStyle(p.species);
 
     // 腳下陰影（固定在地面，賣出彈跳的踏地感）
     ctx.beginPath();
     ctx.ellipse(sx, sy + 12, 11, 4, 0, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(0,0,0,0.22)";
     ctx.fill();
+
+    // 種族光環：在陰影上方、角色本體下方，讓各族玩家一眼分辨。
+    // 自己不畫（自己已有金色名牌 + 鏡頭跟隨，夠清晰）。
+    if (!isMe) {
+      ctx.beginPath();
+      ctx.arc(sx, by, 19, 0, Math.PI * 2);
+      ctx.strokeStyle = sty.ring;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
 
     // 被打趴的角色整個壓暗(連同 sprite/fallback),畫完角色再還原,名字保持清晰好認。
     if (downed) ctx.globalAlpha = 0.4;
@@ -1217,10 +1242,10 @@
         Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
       );
     } else {
-      // fallback:程式畫的圓 + 朝向小護目鏡點
+      // fallback:程式畫的圓 + 朝向小護目鏡點；使用種族色。
       ctx.beginPath();
       ctx.arc(sx, by, 14, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#c9a24b" : "#6fa8dc";
+      ctx.fillStyle = isMe ? "#c9a24b" : sty.body;
       ctx.fill();
       ctx.lineWidth = 2;
       ctx.strokeStyle = "rgba(0,0,0,0.4)";
@@ -1229,7 +1254,7 @@
       const fy = by + Math.sin(p.facing) * 8;
       ctx.beginPath();
       ctx.arc(fx, fy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#3a2818" : "#23415c";
+      ctx.fillStyle = isMe ? "#3a2818" : sty.eye;
       ctx.fill();
     }
     // 角色畫完還原透明度,名字與 💤 標記保持滿不透明、清晰好認。
