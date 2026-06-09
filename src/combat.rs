@@ -53,6 +53,12 @@ pub const UNARMED_ATTACK_POWER: u32 = 2;
 /// （對齊 PLAN 驗收「合成出的武器真的讓打怪明顯變強」）。
 pub const WEAPON_ATTACK_POWER: u32 = 5;
 
+/// 等級攻擊加成：每升兩級 +1 傷害，讓玩家感受到成長但不至於破壞早期平衡。
+/// Lv.2 = +1, Lv.4 = +2, Lv.10 = +5, Lv.20 = +10。
+pub fn level_attack_bonus(level: u32) -> u32 {
+    level / 2
+}
+
 impl WeaponKind {
     /// 此武器每下攻擊造成的傷害。武器回 `WEAPON_ATTACK_POWER`，徒手回 `UNARMED_ATTACK_POWER`。
     pub fn attack_power(self) -> u32 {

@@ -28,6 +28,11 @@ pub const REGEN_DELAY_SECS: f32 = 5.0;
 /// 脫離戰鬥後每秒自然回復的生命值。
 pub const REGEN_PER_SEC: f32 = 1.0;
 
+/// 依等級計算玩家的最大血量（基礎 20，每升一級 +2）。純函式，可測試。
+pub fn level_max_hp(level: u32) -> u32 {
+    MAX_HP + level * 2
+}
+
 /// 玩家的生命狀態。
 ///
 /// 狀態以「剩餘生命」為單一真實來源：存活 / 被打趴皆由 `hp` 推導（比照 `Enemy` 以
@@ -37,6 +42,9 @@ pub const REGEN_PER_SEC: f32 = 1.0;
 pub struct Vitals {
     /// 剩餘生命。歸零＝被打趴（需休息復原）。
     hp: u32,
+    /// 目前有效的最大血量（依等級縮放；`#[serde(default)]` 確保舊格式向後相容）。
+    #[serde(default = "default_max_hp")]
+    max_hp: u32,
     /// 被打趴後的復原倒數（秒）。只有 `hp == 0` 時才有意義；倒數到 0 滿血復原。
     recovery_timer: f32,
     /// 最後一次受擊後的回血冷卻（秒）。`> 0` 時暫停自然回血（剛挨打不會立刻回血）。
@@ -44,6 +52,10 @@ pub struct Vitals {
     /// 自然回血的小數累積。`hp` 是整數，靠它把每秒不足 1 點的回血量湊滿 1 才加上去，
     /// 恆落在 `[0, 1)`（湊滿就減掉整數部分）。
     regen_accum: f32,
+}
+
+fn default_max_hp() -> u32 {
+    MAX_HP
 }
 
 impl Default for Vitals {
@@ -56,13 +68,32 @@ impl Default for Vitals {
 // 在此之前公開項目皆無外部呼叫，比照 `combat.rs` / `gather.rs` 逐項標 `allow(dead_code)`。
 #[allow(dead_code)]
 impl Vitals {
-    /// 生出一個滿血、未受傷的玩家生命狀態。
+    /// 生出一個滿血、未受傷的玩家生命狀態（最大血量預設為等級 0 的基礎值）。
     pub fn new() -> Self {
         Self {
             hp: MAX_HP,
+            max_hp: MAX_HP,
             recovery_timer: 0.0,
             regen_cooldown: 0.0,
             regen_accum: 0.0,
+        }
+    }
+
+    /// 重連 / 出生時設定等級對應的最大血量，並補滿至新上限。
+    /// Vitals 不做持久化，每次連線都從 `new()` 開始再呼叫此函式校正等級加成。
+    pub fn set_max_hp_full(&mut self, new_max: u32) {
+        self.max_hp = new_max.max(MAX_HP); // 最低不低於基礎值
+        self.hp = self.max_hp;             // 重連給滿血
+    }
+
+    /// 升級時呼叫：更新上限，並將新增的 HP 直接補給玩家（升級獎勵感）。
+    pub fn on_level_up(&mut self, new_level: u32) {
+        let new_max = level_max_hp(new_level);
+        if new_max > self.max_hp {
+            let bonus = new_max - self.max_hp;
+            self.max_hp = new_max;
+            // 升級補 HP，不超過新上限。
+            self.hp = (self.hp + bonus).min(self.max_hp);
         }
     }
 
@@ -71,14 +102,15 @@ impl Vitals {
         self.hp
     }
 
-    /// 滿血生命（供前端畫血條的分母，常數的取值入口、不另定一套）。
+    /// 目前有效的最大血量（隨等級縮放）。
     pub fn max_hp(&self) -> u32 {
-        MAX_HP
+        self.max_hp
     }
 
     /// 血量比例 `[0, 1]`，供前端畫血條。
     pub fn fraction(&self) -> f32 {
-        self.hp as f32 / MAX_HP as f32
+        if self.max_hp == 0 { return 0.0; }
+        self.hp as f32 / self.max_hp as f32
     }
 
     /// 是否還站得住（還能行動、會被敵人攻擊）。
@@ -129,14 +161,14 @@ impl Vitals {
         self.regen_accum = 0.0;
     }
 
-    /// 道具回血（活力藥水等）：立即恢復 `amount` HP，不超過上限。
+    /// 道具回血（活力藥水等）：立即恢復 `amount` HP，不超過 `self.max_hp`。
     /// 倒地（hp == 0）時無效，回傳 0。正常回傳實際回復量（可能因接近上限而小於 amount）。
     pub fn heal(&mut self, amount: u32) -> u32 {
         if self.hp == 0 {
             return 0;
         }
         let before = self.hp;
-        self.hp = (self.hp + amount).min(MAX_HP);
+        self.hp = (self.hp + amount).min(self.max_hp);
         self.hp - before
     }
 
@@ -150,7 +182,7 @@ impl Vitals {
             // 被打趴：休息倒數，到點滿血復原、清掉所有過程量。
             self.recovery_timer -= dt;
             if self.recovery_timer <= 0.0 {
-                self.hp = MAX_HP;
+                self.hp = self.max_hp;
                 self.recovery_timer = 0.0;
                 self.regen_cooldown = 0.0;
                 self.regen_accum = 0.0;
@@ -163,15 +195,15 @@ impl Vitals {
             return;
         }
         // 脫離戰鬥、未滿血：累積自然回血，湊滿整數點數才加上去。
-        if self.hp < MAX_HP {
+        if self.hp < self.max_hp {
             self.regen_accum += REGEN_PER_SEC * dt;
             let whole = self.regen_accum.floor();
             if whole >= 1.0 {
-                self.hp = (self.hp + whole as u32).min(MAX_HP);
+                self.hp = (self.hp + whole as u32).min(self.max_hp);
                 self.regen_accum -= whole;
             }
             // 滿血後清掉殘餘累積，維持 `regen_accum` 落在 `[0, 1)` 的不變式。
-            if self.hp >= MAX_HP {
+            if self.hp >= self.max_hp {
                 self.regen_accum = 0.0;
             }
         }
@@ -184,7 +216,8 @@ impl Vitals {
     /// 延續 `combat::is_loadable` / `field::from_tiles` 的載入時驗證脈絡；接 0-E 載入路徑時，
     /// 連同本 impl 區塊的 `allow(dead_code)` 一併移除。
     pub fn is_loadable(&self) -> bool {
-        self.hp <= MAX_HP
+        self.max_hp >= MAX_HP
+            && self.hp <= self.max_hp
             && self.recovery_timer.is_finite()
             && self.recovery_timer >= 0.0
             && self.regen_cooldown.is_finite()
@@ -198,6 +231,7 @@ impl Vitals {
     pub fn from_raw(hp: u32, recovery_timer: f32, regen_cooldown: f32, regen_accum: f32) -> Self {
         Self {
             hp,
+            max_hp: MAX_HP,
             recovery_timer,
             regen_cooldown,
             regen_accum,
@@ -469,5 +503,58 @@ mod tests {
         v.tick(RECOVERY_SECS);
         assert!(v.is_alive(), "倒地後仍能正常復原");
         let _ = before;
+    }
+
+    // ── 升級加成（ROADMAP 18）測試 ───────────────────────────────────────
+
+    #[test]
+    fn level_max_hp_scales_with_level() {
+        assert_eq!(level_max_hp(0), 20);
+        assert_eq!(level_max_hp(1), 22);
+        assert_eq!(level_max_hp(5), 30);
+        assert_eq!(level_max_hp(10), 40);
+    }
+
+    #[test]
+    fn set_max_hp_full_gives_full_health_at_new_max() {
+        let mut v = Vitals::new();
+        v.take_damage(5); // 15/20 hp
+        v.set_max_hp_full(level_max_hp(5)); // Lv.5 → max = 30
+        assert_eq!(v.max_hp(), 30);
+        assert_eq!(v.hp(), 30, "重連給滿血");
+        assert!(v.is_loadable());
+    }
+
+    #[test]
+    fn on_level_up_increases_max_and_gives_bonus_hp() {
+        let mut v = Vitals::new(); // 20/20
+        v.on_level_up(1);          // max → 22, hp → 22（+2 bonus）
+        assert_eq!(v.max_hp(), 22);
+        assert_eq!(v.hp(), 22);
+        v.take_damage(5);          // 17/22
+        v.on_level_up(2);          // max → 24, hp → 19（+2 bonus）
+        assert_eq!(v.max_hp(), 24);
+        assert_eq!(v.hp(), 19);
+    }
+
+    #[test]
+    fn heal_respects_level_max_hp() {
+        let mut v = Vitals::new();
+        v.set_max_hp_full(level_max_hp(5)); // max = 30, hp = 30
+        v.take_damage(15);                   // 15/30
+        let gained = v.heal(100);            // 試圖超量回血，應夾在 30
+        assert_eq!(v.hp(), 30);
+        assert_eq!(gained, 15);
+    }
+
+    #[test]
+    fn tick_recovery_restores_to_level_max_hp() {
+        let mut v = Vitals::new();
+        v.set_max_hp_full(level_max_hp(5)); // max = 30, hp = 30
+        v.take_damage(30);                   // 倒地
+        assert!(v.is_downed());
+        v.tick(RECOVERY_SECS);
+        assert!(v.is_alive());
+        assert_eq!(v.hp(), 30, "復原後應回滿等級對應的最大血量");
     }
 }

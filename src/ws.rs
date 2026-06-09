@@ -178,6 +178,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                         p.wallet = w;
                         p.exp = s.exp;
+                        // 根據存檔等級校正最大血量（Vitals 不持久化，重連給滿血）。
+                        p.vitals.set_max_hp_full(crate::vitals::level_max_hp(p.level()));
                     }
                     // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心。
                     None => {
@@ -413,9 +415,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 給合成出的工具一個用處,接上「採集→合成工具→採更快」迴圈。
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
                             let added = p.inventory.add(item, amount * mult);
-                            // 採集得 exp（鼓勵探索）。
+                            // 採集得 exp（鼓勵探索）；偵測升級並更新血量上限。
+                            let old_level = p.level();
                             p.exp = p.exp.saturating_add(5);
-                            tracing::info!(player = %p.name, ?item, added, mult, "採集入背包+exp");
+                            if p.level() > old_level {
+                                p.vitals.on_level_up(p.level());
+                            }
+                            tracing::info!(player = %p.name, ?item, added, mult, level = p.level(), "採集入背包+exp");
                         }
                     }
                 }
@@ -701,7 +707,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     const ATTACK_COOLDOWN_SECS: f32 = 0.6;
                     let info = app.players.read().unwrap().get(&id).map(|p| {
                         (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown,
-                         crate::combat::weapon_power(&p.inventory))
+                         crate::combat::weapon_power(&p.inventory)
+                             + crate::combat::level_attack_bonus(p.level()))
                     });
                     let Some((px, py, downed, cooldown, power)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
@@ -710,10 +717,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
                         if let Some((kind, Some((item, qty)))) = result {
                             p.inventory.add(item, qty);
-                            // 殺怪得 exp（依敵人難度決定獎勵量）。
+                            // 殺怪得 exp（依敵人難度決定獎勵量）；偵測升級並更新血量上限。
                             let reward = kind.exp_reward();
+                            let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
-                            tracing::info!(player = %p.name, ?item, qty, reward, "主動攻擊戰利品+exp");
+                            if p.level() > old_level {
+                                p.vitals.on_level_up(p.level());
+                            }
+                            tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), "主動攻擊戰利品+exp");
                         }
                     }
                 }
@@ -729,7 +740,6 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::UseItem { item }) => {
                     // 使用道具：消耗一個指定道具，觸發對應效果。倒地 / 背包不足靜默忽略。
                     use crate::inventory::ItemKind;
-                    use crate::vitals::MAX_HP;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         match item {
                             ItemKind::HealingPotion => {
@@ -762,9 +772,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                             ItemKind::PearlPotion => {
-                                // 珍珠復原藥：回復至滿血（最稀有材料換來最強效果）。
+                                // 珍珠復原藥：回復至等級對應的滿血（最稀有材料換最強效果）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
-                                    let gained = p.vitals.heal(MAX_HP);
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
                                     tracing::info!(player = %p.name, ?item, gained, "使用道具滿血復原");
                                 }
                             }

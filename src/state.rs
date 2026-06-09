@@ -96,6 +96,8 @@ impl Player {
             max_hp: self.vitals.max_hp(),
             exp: self.exp,
             level: self.level(),
+            attack: crate::combat::weapon_power(&self.inventory)
+                + crate::combat::level_attack_bonus(self.level()),
         }
     }
 
