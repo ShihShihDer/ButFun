@@ -1218,7 +1218,13 @@
     // 附近有敵人時優先攻擊。
     if (nearestEnemy(me)) { sendAttack(); return; }
     const rect = canvas.getBoundingClientRect();
-    const f = me.facing === undefined ? Math.PI / 2 : me.facing;
+    // 挖/放的方向：優先用「正在按的方向」(keys)——在隧道裡你被牆擋住、無法轉身改 facing，
+    // 但按左就該能挖左牆/側壁。沒按方向才退回 facing（朝向）。
+    const idx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    const idy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    const f = (idx !== 0 || idy !== 0)
+      ? Math.atan2(idy, idx)
+      : (me.facing === undefined ? Math.PI / 2 : me.facing);
     const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
     farmAtScreen(wx - lastCam.x + rect.left, wy - lastCam.y + rect.top);
   }
@@ -3991,6 +3997,16 @@
       optDig.addEventListener("change", () => {
         settings.smartAutoDig = optDig.checked;
         try { localStorage.setItem("butfun.smartAutoDig", optDig.checked ? "1" : "0"); } catch {}
+      });
+    }
+    // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
+    const recallBtn = document.getElementById("recallBtn");
+    if (recallBtn) {
+      recallBtn.addEventListener("click", () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "return_home" }));
+          announce("回城：傳回新手村");
+        }
       });
     }
     // 把「依 dock 鈕 id 切換視窗」暴露給全域 keydown(B/C/H 捷徑用)。走 openWinFor 同一條路,
