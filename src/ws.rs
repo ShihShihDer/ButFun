@@ -778,6 +778,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, ?item, gained, "使用道具滿血復原");
                                 }
                             }
+                            ItemKind::StarChart => {
+                                // 星圖：展開遠方星球快照——多星球旅程的序章（ROADMAP 19）。
+                                // 消耗星圖，並廣播一條僅本玩家看到的系統訊息。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    tracing::info!(player = %p.name, "展開星圖，多星球序章觸發");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }

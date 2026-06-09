@@ -222,8 +222,11 @@ pub fn spawn(app: AppState) {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
                         if let Some(p) = players.get_mut(&pid) {
-                            if p.vitals.take_damage(dmg) {
-                                tracing::info!(player = %p.name, "被敵人打趴，休息復原中");
+                            // 護甲減傷：先扣去防禦值，最低歸零（不倒扣）。
+                            let defense = crate::combat::armor_defense(&p.inventory);
+                            let actual_dmg = dmg.saturating_sub(defense);
+                            if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
+                                tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");
                             }
                         }
                     }

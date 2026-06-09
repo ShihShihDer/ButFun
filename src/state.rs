@@ -98,6 +98,7 @@ impl Player {
             level: self.level(),
             attack: crate::combat::weapon_power(&self.inventory)
                 + crate::combat::level_attack_bonus(self.level()),
+            defense: crate::combat::armor_defense(&self.inventory),
         }
     }
 

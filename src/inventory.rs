@@ -85,6 +85,21 @@ pub enum ItemKind {
     /// 珍珠復原藥（合成產物：深海珍珠×1 → 珍珠復原藥×1）。
     /// 使用後回復到滿血——深海孕育的頂級珍珠，完整恢復生命力，最稀有材料換來最強效果。
     PearlPotion,
+    /// 晶石之刃（合成產物：晶石碎片×6 → 晶石之刃×1）。
+    /// 持有此武器攻擊力 +8，強過基礎武器（+5），Deep Rocky 探索的進階武器。
+    CrystalBlade,
+    /// 珊瑚矛（合成產物：深海珍珠×3 → 珊瑚矛×1）。
+    /// 持有此武器攻擊力 +12，全遊戲最高傷害，最稀有材料換來最強攻擊。
+    CoralLance,
+    /// 草原護符（合成產物：野花種子×8 → 草原護符×1）。
+    /// 持有此護符每次受傷減 1 點傷害——讓採集草原的玩家有防禦出路。
+    MeadowAmulet,
+    /// 晶石護盾（合成產物：晶石碎片×8 + 石頭×4 → 晶石護盾×1）。
+    /// 持有此護盾每次受傷減 2 點傷害——更稀有的材料換更高防禦。
+    CrystalShield,
+    /// 星圖（合成產物：古代碎片×5 → 星圖×1）。
+    /// 使用後展示遠方星球的星圖快照，是多星球旅程的序章。
+    StarChart,
 }
 
 impl ItemKind {
@@ -111,6 +126,11 @@ impl ItemKind {
         ItemKind::MushroomElixir,
         ItemKind::EtherPill,
         ItemKind::PearlPotion,
+        ItemKind::CrystalBlade,
+        ItemKind::CoralLance,
+        ItemKind::MeadowAmulet,
+        ItemKind::CrystalShield,
+        ItemKind::StarChart,
     ];
 }
 
@@ -320,13 +340,18 @@ mod tests {
                 | ItemKind::CrystalPotion
                 | ItemKind::MushroomElixir
                 | ItemKind::EtherPill
-                | ItemKind::PearlPotion => {}
+                | ItemKind::PearlPotion
+                | ItemKind::CrystalBlade
+                | ItemKind::CoralLance
+                | ItemKind::MeadowAmulet
+                | ItemKind::CrystalShield
+                | ItemKind::StarChart => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 17 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子／活力藥水／晶石強化液／蕈菇活化液／古代乙太丸／珍珠復原藥）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 17, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 22 種（含 ROADMAP 19 裝備：晶石之刃/珊瑚矛/草原護符/晶石護盾/星圖）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 22, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -498,7 +523,7 @@ mod tests {
         // 物品宇宙的窮舉由 `item_kind_all_lists_every_variant`（窮舉 match + 筆數斷言）守住：
         // 新增 `ItemKind` 變體必先補進 `ALL`，本總綱隨即遍歷到它、要求它有去處——故無需在此
         // 另立 NodeKind/EnemyKind 式的窮舉守衛。
-        use crate::combat::{weapon_from_item, UNARMED_ATTACK_POWER};
+        use crate::combat::{armor_from_item, weapon_from_item, UNARMED_ATTACK_POWER};
         use crate::crafting::RECIPES;
         use crate::economy::EXPANSION_BASE_COST;
         use crate::npc::NPC_BUY_LIST;
@@ -519,9 +544,10 @@ mod tests {
                 tool_from_item(item).is_some_and(|t| t.gather_multiplier() > FIST_MULTIPLIER);
             // 3. 是乙太貨幣（擴地消耗點花掉它）。
             let spendable_currency = item == ItemKind::Ether;
-            // 4. 是有效用的武器（攻擊力嚴格高過徒手；沒效用的「武器」不算有去處）。
+            // 4. 是有效用的武器（攻擊力嚴格高過徒手）或防具（持有可減傷）。
             let useful_weapon = weapon_from_item(item)
                 .is_some_and(|w| w.attack_power() > UNARMED_ATTACK_POWER);
+            let useful_armor = armor_from_item(item).is_some_and(|a| a.defense() > 0);
             // 5. 是可放置的建造材料（C-4 Place handler：背包材料→實心格）。
             // C-2 引入 Dirt，C-4 接線後成為真正去處（Place Dirt → 建牆）。
             // 此條確認「設計上有去處」，避免在地基切片就要求去處已上線。
@@ -531,7 +557,7 @@ mod tests {
             // 讓探索型玩家有把成果兌換乙太的管道。
             let npc_sellable = NPC_BUY_LIST.iter().any(|e| e.item == item);
             // 7. 是可主動使用的消耗品（UseItem 觸發即消耗，直接對玩家產生效果）。
-            // 活力藥水為第一個；各生態特產合成藥水同屬此類。
+            // 活力藥水為第一個；各生態特產合成藥水同屬此類；星圖展開後消耗。
             let usable_consumable = matches!(
                 item,
                 ItemKind::HealingPotion
@@ -539,13 +565,14 @@ mod tests {
                     | ItemKind::MushroomElixir
                     | ItemKind::EtherPill
                     | ItemKind::PearlPotion
+                    | ItemKind::StarChart
             );
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
-                    || building_material || npc_sellable || usable_consumable,
+                    || building_material || npc_sellable || usable_consumable || useful_armor,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
-                 不是有效用的武器／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
+                 不是有效用的武器或防具／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
             );
         }

@@ -195,6 +195,8 @@ pub struct PlayerView {
     pub level: u32,
     /// 目前有效攻擊力（基礎武器力 + 等級加成，ROADMAP 18）。前端 HUD 顯示，讓玩家感受成長。
     pub attack: u32,
+    /// 目前護甲減傷值（持有護甲時，每次受傷减去此值，ROADMAP 19）。
+    pub defense: u32,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -390,6 +392,7 @@ mod tests {
                 exp: 0,
                 level: 0,
                 attack: 2,
+                defense: 0,
             }],
             fields: vec![FieldView {
                 owner,
