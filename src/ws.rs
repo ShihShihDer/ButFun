@@ -619,7 +619,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::ShopSell { item, qty }) => {
-                    // 向 NPC 商人賣出物品：支援故鄉商人與翠幽星商人兩處。
+                    // 向 NPC 商人賣出物品：支援故鄉、翠幽星、赤焰星、虛空星商人四處。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
                         if !downed {
@@ -644,6 +644,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_crimson_npc(&mut p.inventory, p.ether, item, qty) {
                                         tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "赤焰星 NPC 收購");
+                                        p.ether = new_ether;
+                                    }
+                                }
+                            } else if npc::is_within_void_shop_reach(px, py) {
+                                // 虛空星商人
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    if let Some(new_ether) = npc::sell_to_void_npc(&mut p.inventory, p.ether, item, qty) {
+                                        tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "虛空星 NPC 收購");
                                         p.ether = new_ether;
                                     }
                                 }
@@ -823,6 +831,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, ?item, gained, "使用蒸汽精粹滿血+獲得8乙太");
                                 }
                             }
+                            ItemKind::VoidElixir => {
+                                // 虛空精粹：回復至滿血 + 獲得 10 乙太——虛空星宇宙深淵能量轉換，比蒸汽精粹更強。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.ether = p.ether.saturating_add(10);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用虛空精粹滿血+獲得10乙太");
+                                }
+                            }
                             ItemKind::StarChart => {
                                 // 星圖：展開遠方星球快照——道具本身不消耗（是導航工具而非消耗品）。
                                 // 前端收到背包快照後本地彈出星圖彈窗；伺服器只記日誌。
@@ -837,10 +853,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::TravelToPlanet { planet }) => {
                     // 星際旅行（ROADMAP 20/22）：傳送玩家到指定星球。
                     use crate::state::{
-                        PLANET_HOME, PLANET_VERDANT, PLANET_CRIMSON,
+                        PLANET_HOME, PLANET_VERDANT, PLANET_CRIMSON, PLANET_VOID,
                         VERDANT_SPAWN_X, VERDANT_SPAWN_Y,
                         CRIMSON_SPAWN_X, CRIMSON_SPAWN_Y,
-                        TRAVEL_ETHER_COST, TRAVEL_ETHER_COST_CRIMSON,
+                        VOID_SPAWN_X, VOID_SPAWN_Y,
+                        TRAVEL_ETHER_COST, TRAVEL_ETHER_COST_CRIMSON, TRAVEL_ETHER_COST_VOID,
                     };
                     use crate::protocol::ServerMsg;
                     let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
@@ -872,6 +889,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     ok: true,
                                     planet: PLANET_CRIMSON.to_string(),
                                     message: "歡迎來到赤焰星！熔岩與蒸汽的氣息撲面——古代機械的低鳴迴盪遠方⋯⋯".to_string(),
+                                })
+                            }
+                            Ok(()) if planet == PLANET_VOID => {
+                                p.ether -= TRAVEL_ETHER_COST_VOID;
+                                p.planet = PLANET_VOID.to_string();
+                                p.x = VOID_SPAWN_X;
+                                p.y = VOID_SPAWN_Y;
+                                tracing::info!(player = %p.name, "星際旅行：抵達虛空星");
+                                Some(ServerMsg::TravelResult {
+                                    ok: true,
+                                    planet: PLANET_VOID.to_string(),
+                                    message: "歡迎來到虛空星⋯⋯宇宙深淵的黑暗靜默將你環繞，虛空晶體在暗中低語。".to_string(),
                                 })
                             }
                             Ok(()) => {

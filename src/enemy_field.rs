@@ -291,9 +291,11 @@ fn kind_for_biome(biome: world_core::Biome) -> EnemyKind {
 
 fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     let mut enemies = Vec::new();
-    // 星球判定：區塊中心 X ≥ VERDANT_ZONE_MIN_X 為翠幽星；X ≤ CRIMSON_ZONE_MAX_X 為赤焰星。
+    // 星球判定：區塊中心 X ≥ VOID_ZONE_MIN_X 為虛空星；X ≥ VERDANT_ZONE_MIN_X 為翠幽星；
+    // X ≤ CRIMSON_ZONE_MAX_X 為赤焰星。虛空星優先（其 X 範圍包含翠幽星範圍）。
     let chunk_center_x = (cx as f64 + 0.5) * (world_core::CHUNK_SIZE as f64);
-    let is_verdant = chunk_center_x >= world_core::VERDANT_ZONE_MIN_X;
+    let is_void    = chunk_center_x >= world_core::VOID_ZONE_MIN_X;
+    let is_verdant = !is_void && chunk_center_x >= world_core::VERDANT_ZONE_MIN_X;
     let is_crimson = chunk_center_x <= world_core::CRIMSON_ZONE_MAX_X;
     for i in 0..ENEMIES_PER_CHUNK {
         let id = (cx, cy, i);
@@ -302,7 +304,10 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
         if is_in_safe_zone(x, y) {
             continue;
         }
-        let kind = if is_verdant {
+        let kind = if is_void {
+            // 虛空星：一律生成虛空幽靈（整個虛空星都是宇宙深淵領域，無視地表生態域）。
+            EnemyKind::VoidPhantom
+        } else if is_verdant {
             // 翠幽星：一律生成翠幽魅影（整個翠幽星都是異星領域，無視地表生態域）。
             EnemyKind::JadeWraith
         } else if is_crimson {

@@ -52,16 +52,23 @@ pub const PLANET_HOME: &str = "home";
 pub const PLANET_VERDANT: &str = "verdant";
 /// 赤焰星（ROADMAP 22）星球 ID，位於主世界遠西方（X-18000）。
 pub const PLANET_CRIMSON: &str = "crimson";
+/// 虛空星（ROADMAP 23）星球 ID，位於主世界遠東方（X+42000，比翠幽星更遠）。
+pub const PLANET_VOID: &str = "void";
 /// 翠幽星出生點（對應公共農地在故鄉的相對位置，讓玩家一到就有地標可找）。
 pub const VERDANT_SPAWN_X: f32 = 22_400.0;
 pub const VERDANT_SPAWN_Y: f32 = 3_000.0;
 /// 赤焰星出生點（故鄉遠西方，與翠幽星對稱方向）。
 pub const CRIMSON_SPAWN_X: f32 = -18_000.0;
 pub const CRIMSON_SPAWN_Y: f32 = 3_000.0;
-/// 故鄉 ↔ 翠幽星 / 赤焰星 → 故鄉的乙太燃料費（單程 30）。
+/// 虛空星出生點（比翠幽星更遠的東方，宇宙邊界）。
+pub const VOID_SPAWN_X: f32 = 42_000.0;
+pub const VOID_SPAWN_Y: f32 = 3_000.0;
+/// 故鄉 ↔ 翠幽星 / 赤焰星 / 虛空星 → 故鄉的乙太燃料費（單程 30）。
 pub const TRAVEL_ETHER_COST: u32 = 30;
 /// 故鄉 → 赤焰星的乙太燃料費（第二顆星球，需要更多乙太）。
 pub const TRAVEL_ETHER_COST_CRIMSON: u32 = 50;
+/// 故鄉 / 赤焰星 → 虛空星的乙太燃料費（第三顆星球，宇宙深淵，需要最多乙太）。
+pub const TRAVEL_ETHER_COST_VOID: u32 = 80;
 
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]
@@ -86,8 +93,8 @@ pub struct Player {
     pub attack_cooldown: f32,
     /// 累積經驗值（ROADMAP 17 升級系統）。殺怪 / 採礦得 exp，等級由 exp 推算。
     pub exp: u32,
-    /// 玩家目前所在星球（ROADMAP 20/22 多星球旅程）。
-    /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星。
+    /// 玩家目前所在星球（ROADMAP 20/22/23 多星球旅程）。
+    /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星。
     /// 執行期狀態，重連回 home 起算（不持久化，跨重啟無礙）。
     pub planet: String,
 }
@@ -146,8 +153,8 @@ impl Player {
                 return Err("需要五大生態武裝全套才能啟動星際旅行".into());
             }
             Ok(())
-        } else if dest == PLANET_HOME && (self.planet == PLANET_VERDANT || self.planet == PLANET_CRIMSON) {
-            // 翠幽星 / 赤焰星 → 故鄉：只需 30 乙太。
+        } else if dest == PLANET_HOME && (self.planet == PLANET_VERDANT || self.planet == PLANET_CRIMSON || self.planet == PLANET_VOID) {
+            // 翠幽星 / 赤焰星 / 虛空星 → 故鄉：只需 30 乙太。
             if self.ether < TRAVEL_ETHER_COST {
                 return Err(format!("乙太不足（返回故鄉需要 {} 乙太）", TRAVEL_ETHER_COST));
             }
@@ -159,6 +166,15 @@ impl Player {
             }
             if self.inventory.count(ItemKind::JadeShard) == 0 {
                 return Err("需要持有翠幽碎片才能找到赤焰星的星際航道（先探索翠幽星）".into());
+            }
+            Ok(())
+        } else if dest == PLANET_VOID && (self.planet == PLANET_HOME || self.planet == PLANET_CRIMSON) {
+            // 故鄉 / 赤焰星 → 虛空星：需持有熔晶碎片（證明踏上過赤焰星）+ 80 乙太。
+            if self.ether < TRAVEL_ETHER_COST_VOID {
+                return Err(format!("乙太不足（前往虛空星需要 {} 乙太）", TRAVEL_ETHER_COST_VOID));
+            }
+            if self.inventory.count(ItemKind::LavaCrystal) == 0 {
+                return Err("需要持有熔晶碎片才能找到虛空星的星際航道（先探索赤焰星）".into());
             }
             Ok(())
         } else {

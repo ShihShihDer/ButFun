@@ -27,6 +27,7 @@ fn kind_str(k: TileKind) -> &'static str {
         TileKind::WildFlower  => "wild_flower",
         TileKind::JadeVine    => "jade_vine",
         TileKind::LavaRock    => "lava_rock",
+        TileKind::VoidCrystal => "void_crystal",
     }
 }
 
@@ -42,6 +43,7 @@ fn parse_kind(s: &str) -> TileKind {
         "wild_flower"  => TileKind::WildFlower,
         "jade_vine"    => TileKind::JadeVine,
         "lava_rock"    => TileKind::LavaRock,
+        "void_crystal" => TileKind::VoidCrystal,
         _              => TileKind::Empty,
     }
 }

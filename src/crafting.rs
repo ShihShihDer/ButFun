@@ -242,6 +242,22 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::CrimsonBlade,
         output_qty: 1,
     },
+    /// 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至等級滿血，同時獲得 10 乙太。
+    /// 虛空星宇宙深淵能量轉換器——比蒸汽精粹（+8 乙太）更強，終極異星精華。
+    Recipe {
+        id: "void_elixir",
+        inputs: &[(ItemKind::VoidShard, 2)],
+        output: ItemKind::VoidElixir,
+        output_qty: 1,
+    },
+    /// 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，全遊戲最強武器。
+    /// 虛空星獨有，超越赤焰刃（+20），宇宙深淵能量凝聚的終極武裝。
+    Recipe {
+        id: "void_blade",
+        inputs: &[(ItemKind::VoidShard, 6)],
+        output: ItemKind::VoidBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -430,6 +446,10 @@ mod tests {
         items.insert(ItemKind::AncientFragment);
         items.insert(ItemKind::DeepSeaPearl);
         items.insert(ItemKind::WildflowerSeed);
+        // 加入跨星球特產地形挖掘（ROADMAP 21-23）：挖對應星球格掉落。
+        items.insert(ItemKind::JadeShard);
+        items.insert(ItemKind::LavaCrystal);
+        items.insert(ItemKind::VoidShard);
 
         // 加入敵人掉落（窮舉守衛：新增 EnemyKind 未納入即編譯失敗）。
         const ENEMY_KINDS: &[EnemyKind] = &[
@@ -442,6 +462,7 @@ mod tests {
             EnemyKind::CoralCrab,
             EnemyKind::JadeWraith,
             EnemyKind::SteamConstruct,
+            EnemyKind::VoidPhantom,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -453,7 +474,8 @@ mod tests {
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
-                | EnemyKind::SteamConstruct => {}
+                | EnemyKind::SteamConstruct
+                | EnemyKind::VoidPhantom => {}
             }
             items.insert(e.drop_loot().0);
         }
