@@ -120,6 +120,10 @@ pub enum ClientMsg {
     Attack,
     /// 回城：把玩家傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。
     ReturnHome,
+    /// 使用道具：消耗背包裡一個 `item` 並立即觸發其效果。
+    /// 目前支援：`HealingPotion`（活力藥水）→ 立即回復 6 HP。
+    /// 倒地中 / 背包不足靜默忽略。
+    UseItem { item: ItemKind },
 }
 
 /// 伺服器送給客戶端的訊息。

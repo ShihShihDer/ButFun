@@ -2777,11 +2777,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -2793,6 +2793,8 @@
     // 武器:閉合「採集→合成→變強打怪」的合成側。與伺服器 crafting.rs 的 "weapon" 配方對齊
     // (stone×4 + ether×2 → weapon)。合出後拿不拿得到傷害加成由伺服器 combat 說了算,前端只呈現配方。
     { id: "weapon", out: "weapon", outQty: 1, inputs: [["stone", 4], ["ether", 2]] },
+    // 活力藥水：野花種子×3 → 活力藥水×1。使用後回復 6 HP。對齊伺服器 crafting.rs healing_potion 配方。
+    { id: "healing_potion", out: "healing_potion", outQty: 1, inputs: [["wildflower_seed", 3]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -2825,7 +2827,9 @@
     // 展開的明細:每項素材一行 emoji + 中文名 + 數量。素材從採集/打怪/農地三方湧入、堆積得快,
     // 明細列讓「手上有什麼、各多少」清楚可讀(item 是伺服器列舉字串、非玩家文字,無注入風險)。
     // C-4：可放置材料（dirt/stone）在每行右側多一個「🏗️選取」鈕，點後切換 selectedBuildMaterial。
+    // ROADMAP 14：消耗品（healing_potion）在每行右側多一個「🧪使用」鈕，點後送 use_item 訊息。
     const PLACEABLE = new Set(["dirt", "stone"]);
+    const CONSUMABLE = new Set(["healing_potion"]);
     body.innerHTML = inv
       .map((s) => {
         const icon = ITEM_LOOK[s.item] || "";
@@ -2834,7 +2838,10 @@
         const placeBtn = PLACEABLE.has(s.item)
           ? `<button class="bag-place-btn${isSelected ? " selected" : ""}" data-material="${s.item}" title="${isSelected ? "取消放置選取" : "選取放置此材料"}">${isSelected ? "✅放置" : "🏗️選取"}</button>`
           : "";
-        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}</div>`;
+        const useBtn = CONSUMABLE.has(s.item)
+          ? `<button class="bag-use-btn" data-item="${s.item}" title="使用${ITEM_NAME[s.item] || s.item}（回復 HP）">🧪使用</button>`
+          : "";
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}</div>`;
       })
       .join("");
     // 綁定 bag-place-btn 點擊事件（動態 HTML，每次重繪後重綁）。
@@ -2845,6 +2852,14 @@
         selectedBuildMaterial = selectedBuildMaterial === mat ? null : mat;
         updatePlaceModeHud();
         updateBagHud(inv); // 重繪以同步選取狀態
+      });
+    });
+    // 綁定 bag-use-btn 點擊事件：送 use_item 訊息，伺服器扣一個道具並回血。
+    body.querySelectorAll(".bag-use-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const item = btn.dataset.item;
+        try { ws.send(JSON.stringify({ type: "use_item", item })); } catch {}
       });
     });
     // emoji 對報讀器無意義(會亂念或跳過),把中文品項名同步成標題鈕的 aria-label,讓盲人玩家
@@ -3301,7 +3316,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 

@@ -12,6 +12,7 @@
 //!   - 鎬子 (pickaxe)：木×3 + 石×2 -> 鎬子×1
 //!   - 強化鎬 (reinforced_pickaxe)：鎬子×1 + 木×2 + 石×4 -> 強化鎬×1
 //!   - 武器 (weapon)：石×4 + 乙太×2 -> 武器×1 (Phase 1 武器 MVP)
+//!   - 活力藥水 (healing_potion)：野花種子×3 -> 活力藥水×1 (ROADMAP 14 生態資源合成)
 
 use crate::inventory::{Inventory, ItemKind, MAX_STACK};
 
@@ -117,6 +118,13 @@ pub const RECIPES: &[Recipe] = &[
         id: "weapon",
         inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
         output: ItemKind::Weapon,
+        output_qty: 1,
+    },
+    /// 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
+    Recipe {
+        id: "healing_potion",
+        inputs: &[(ItemKind::WildflowerSeed, 3)],
+        output: ItemKind::HealingPotion,
         output_qty: 1,
     },
 ];
@@ -235,6 +243,22 @@ mod tests {
     }
 
     #[test]
+    fn healing_potion_requires_wildflower_seeds_and_produces_potion() {
+        let mut inv = Inventory::new();
+        let recipe = recipe_by_id("healing_potion").expect("活力藥水配方應存在");
+        // 種子不夠——湊不了料。
+        inv.add(ItemKind::WildflowerSeed, 2);
+        assert!(!recipe.can_craft(&inv));
+        // 補齊第三個種子——剛好湊齊。
+        inv.add(ItemKind::WildflowerSeed, 1);
+        assert!(recipe.can_craft(&inv));
+        assert!(recipe.craft(&mut inv));
+        // 種子全消耗、得一瓶活力藥水。
+        assert_eq!(inv.count(ItemKind::WildflowerSeed), 0);
+        assert_eq!(inv.count(ItemKind::HealingPotion), 1);
+    }
+
+    #[test]
     fn recipe_table_is_well_formed() {
         // 配方表健全性（與調校數值無關的不變式，防日後加配方時打錯）：
         let mut seen_ids = std::collections::BTreeSet::new();
@@ -284,6 +308,13 @@ mod tests {
         items.insert(ItemKind::Dirt);
         items.insert(ItemKind::Stone);
         items.insert(ItemKind::Ether);
+
+        // 加入生態域特殊地形挖掘可得（ROADMAP 10-14）：挖對應格掉落。
+        items.insert(ItemKind::CrystalShard);
+        items.insert(ItemKind::MushroomSpore);
+        items.insert(ItemKind::AncientFragment);
+        items.insert(ItemKind::DeepSeaPearl);
+        items.insert(ItemKind::WildflowerSeed);
 
         // 加入敵人掉落
         const ENEMY_KINDS: &[EnemyKind] = &[EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
