@@ -108,6 +108,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             vitals: crate::vitals::Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
+            exp: 0,
         }
     } else {
         // 等 Join
@@ -139,6 +140,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             vitals: crate::vitals::Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
+            exp: 0,
         }
     };
     let id = player.id;
@@ -175,6 +177,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             w = crate::economy::PlotWallet::new();
                         }
                         p.wallet = w;
+                        p.exp = s.exp;
                     }
                     // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心。
                     None => {
@@ -410,7 +413,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 給合成出的工具一個用處,接上「採集→合成工具→採更快」迴圈。
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
                             let added = p.inventory.add(item, amount * mult);
-                            tracing::info!(player = %p.name, ?item, added, mult, "採集入背包");
+                            // 採集得 exp（鼓勵探索）。
+                            p.exp = p.exp.saturating_add(5);
+                            tracing::info!(player = %p.name, ?item, added, mult, "採集入背包+exp");
                         }
                     }
                 }
@@ -567,6 +572,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     saved.x, saved.y,
                                                     new_ether,
                                                     saved.wallet_expansions,
+                                                    saved.exp,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -702,9 +708,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
-                        if let Some((_kind, Some((item, qty)))) = result {
+                        if let Some((kind, Some((item, qty)))) = result {
                             p.inventory.add(item, qty);
-                            tracing::info!(player = %p.name, ?item, qty, "主動攻擊戰利品");
+                            // 殺怪得 exp（依敵人難度決定獎勵量）。
+                            let reward = kind.exp_reward();
+                            p.exp = p.exp.saturating_add(reward);
+                            tracing::info!(player = %p.name, ?item, qty, reward, "主動攻擊戰利品+exp");
                         }
                     }
                 }
@@ -791,7 +800,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions());
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp);
                     // 背包同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                 }
@@ -807,7 +816,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions())
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             // 農地離線落地（Phase 0-E）。玩家移出世界後,他的地仍留在 `app.fields` 繼續長,所以

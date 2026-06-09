@@ -193,6 +193,19 @@ impl EnemyKind {
         }
     }
 
+    /// 打倒這隻敵人獲得的經驗值（難度越高給越多）。
+    pub fn exp_reward(self) -> u32 {
+        match self {
+            EnemyKind::FlutterSprite => 8,
+            EnemyKind::EtherWisp => 10,
+            EnemyKind::ScrapDrone => 12,
+            EnemyKind::MushroomStalker => 15,
+            EnemyKind::RuneGuardian => 20,
+            EnemyKind::CrystalGolem => 22,
+            EnemyKind::CoralCrab => 28,
+        }
+    }
+
     /// 被打倒後到滿血復活所需的重生秒數。
     pub fn respawn_secs(self) -> f32 {
         match self {
@@ -710,6 +723,19 @@ mod tests {
                 "敵人 {kind:?} 的 threat 應 > 0，否則戰鬥零風險、可無傷白嫖；若有意設計無害\
                  敵人，再更新本不變式"
             );
+            // 擊殺 exp 獎勵為正：打倒敵人應有進度感，0 獎勵破壞升級閉環。
+            assert!(
+                kind.exp_reward() > 0,
+                "敵人 {kind:?} 的 exp_reward 應 > 0，擊殺應推進升級進度"
+            );
         }
+    }
+
+    #[test]
+    fn harder_enemies_give_more_exp() {
+        // 難度較高的敵人（threat 較大）應給較多 exp，驗查最大與最小的相對關係。
+        let max_exp = KINDS.iter().map(|k| k.exp_reward()).max().unwrap();
+        let min_exp = KINDS.iter().map(|k| k.exp_reward()).min().unwrap();
+        assert!(max_exp > min_exp, "不同難度的敵人 exp 獎勵應有差異，給玩家挑戰動機");
     }
 }

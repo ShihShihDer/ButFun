@@ -155,6 +155,7 @@
   let myHp = 0;
   let hpKnown = false;
   let wasDownedLastTick = false; // 上一快照是否倒地，用於偵測「傳回新手村」瞬間
+  let myLevel = null; // 上一快照等級，用於偵測升級
   // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
   // 移動中很容易漏看「我正在挨打」。報讀器那條已補受擊播報(給看不到畫面的玩家),這條是它對稱的
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
@@ -370,6 +371,7 @@
           announcedDrop = false;
           etherKnown = false;
           hpKnown = false; // 同乙太:重連後第一份快照重建血量基準,別把既有血量當成一次受擊/回血
+          myLevel = null; // 重連後重建等級基準,避免把既有等級當升級公告
           presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
           enemiesSynced = false; // 同上:重連後第一份快照重建敵人基準,別把換版後的血量差當成受擊
         }
@@ -515,6 +517,23 @@
           wasDownedLastTick = me.hp <= 0;
           myHp = me.hp;
           hpKnown = true;
+
+          // 等級 HUD（ROADMAP 17）:顯示 Lv.N 與 exp 進度條;升級時公告。
+          if (typeof me.level === "number") {
+            const lvEl = document.getElementById("hudLevel");
+            if (lvEl) {
+              const nextExp = (me.level + 1) * 100;
+              const curExp = me.exp % 100;
+              lvEl.textContent = `⭐ Lv.${me.level} (${curExp}/100)`;
+              lvEl.title = `等級 ${me.level}・累積 ${me.exp} exp・下一級還需 ${nextExp - me.exp} exp`;
+            }
+            // 升級偵測:前一幀 level 比現在小 → 升級了。
+            if (typeof myLevel === "number" && me.level > myLevel) {
+              announce(`恭喜升到 ${me.level} 級！`);
+              addChat("系統", `✨ ${me.name} 升到 ${me.level} 級！`);
+            }
+            myLevel = me.level;
+          }
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
@@ -1423,6 +1442,20 @@
       ctx.font = "14px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("💤", sx + 12, sy - 26);
+    }
+
+    // 等級徽章：在名字左側小字顯示 Lv.N，讓其他玩家也能一眼看出角色成長進度。
+    // level 缺值（訪客/舊快照）時不畫，向後相容。
+    if (typeof p.level === "number" && p.level >= 0) {
+      const lvText = "Lv." + p.level;
+      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "rgba(0,0,0,0.7)";
+      ctx.strokeText(lvText, sx, sy - 36);
+      ctx.fillStyle = isMe ? "#ffe066" : "#aad4ff";
+      ctx.fillText(lvText, sx, sy - 36);
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
