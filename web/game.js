@@ -529,10 +529,19 @@
             }
             // 升級偵測:前一幀 level 比現在小 → 升級了。
             if (typeof myLevel === "number" && me.level > myLevel) {
-              announce(`恭喜升到 ${me.level} 級！`);
+              announce(`恭喜升到 ${me.level} 級！⚔️+${Math.floor(me.level/2)} ❤️+${me.level * 2}`);
               addChat("系統", `✨ ${me.name} 升到 ${me.level} 級！`);
             }
             myLevel = me.level;
+          }
+
+          // 攻擊力 HUD（ROADMAP 18 升級加成）:顯示等級對應的總攻擊力。
+          if (typeof me.attack === "number") {
+            const atkEl = document.getElementById("hudAttack");
+            if (atkEl) {
+              atkEl.textContent = `⚔️ ${me.attack}`;
+              atkEl.title = `攻擊力 ${me.attack}（武器基礎 + 等級加成 +${Math.floor(me.level/2)}）`;
+            }
           }
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。

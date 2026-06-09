@@ -193,6 +193,8 @@ pub struct PlayerView {
     pub exp: u32,
     /// 目前等級（由 exp 推算，server 算好送來省前端重算）。
     pub level: u32,
+    /// 目前有效攻擊力（基礎武器力 + 等級加成，ROADMAP 18）。前端 HUD 顯示，讓玩家感受成長。
+    pub attack: u32,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -387,6 +389,7 @@ mod tests {
                 max_hp: 20,
                 exp: 0,
                 level: 0,
+                attack: 2,
             }],
             fields: vec![FieldView {
                 owner,
