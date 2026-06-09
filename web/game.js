@@ -3220,6 +3220,22 @@
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
 
+    // C-4 建造（手機/觸控放置）：選了材料時，點「搆得到的空格」就放回去（右鍵只有桌面能用，
+    // 手機靠這條，否則挖了放不回去）。擺在挖掘之前：空格才放、實心格仍走下面的挖掘。
+    if (me && selectedBuildMaterial) {
+      const DIG_REACH = 80;
+      const dxp = wx - me.x, dyp = wy - me.y;
+      if (
+        tileKindAt(wx, wy) === "empty" &&
+        dxp * dxp + dyp * dyp <= DIG_REACH * DIG_REACH &&
+        (myInv.get(selectedBuildMaterial) || 0) > 0
+      ) {
+        ws.send(JSON.stringify({ type: "place", wx, wy, material: selectedBuildMaterial }));
+        spawnTapFlash(wx, wy);
+        return;
+      }
+    }
+
     // C-2 挖掘：點到實心地形格且玩家在 DIG_REACH（80px）內 → 送 dig。
     // 挖掘優先於農耕（地形格與農地層不同,不互排斥），但在採集之後
     // （採集節點浮在地形之上，點到節點應採集不是挖土）。
