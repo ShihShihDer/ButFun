@@ -250,12 +250,27 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::VoidElixir,
         output_qty: 1,
     },
-    /// 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，全遊戲最強武器。
-    /// 虛空星獨有，超越赤焰刃（+20），宇宙深淵能量凝聚的終極武裝。
+    /// 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，超越赤焰刃（+20），宇宙深淵高階武裝。
     Recipe {
         id: "void_blade",
         inputs: &[(ItemKind::VoidShard, 6)],
         output: ItemKind::VoidBlade,
+        output_qty: 1,
+    },
+    /// 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復至等級滿血，同時獲得 15 乙太。
+    /// 霧醚星乙太迷霧高密度能量轉換——四大星球最強補給，乙太迷霧比宇宙深淵更富饒。
+    Recipe {
+        id: "aether_essence",
+        inputs: &[(ItemKind::AetherShard, 2)],
+        output: ItemKind::AetherEssence,
+        output_qty: 1,
+    },
+    /// 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，全遊戲最強武器。
+    /// 霧醚星獨有，超越虛空刃（+25），乙太迷霧凝結的終極宇宙武裝。
+    Recipe {
+        id: "aether_blade",
+        inputs: &[(ItemKind::AetherShard, 8)],
+        output: ItemKind::AetherBlade,
         output_qty: 1,
     },
 ];
@@ -463,6 +478,7 @@ mod tests {
             EnemyKind::JadeWraith,
             EnemyKind::SteamConstruct,
             EnemyKind::VoidPhantom,
+            EnemyKind::AetherSpecter,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -475,7 +491,8 @@ mod tests {
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
-                | EnemyKind::VoidPhantom => {}
+                | EnemyKind::VoidPhantom
+                | EnemyKind::AetherSpecter => {}
             }
             items.insert(e.drop_loot().0);
         }
