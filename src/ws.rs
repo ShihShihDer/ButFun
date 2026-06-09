@@ -109,6 +109,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            planet: crate::state::PLANET_HOME.to_string(),
         }
     } else {
         // 等 Join
@@ -141,6 +142,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            planet: crate::state::PLANET_HOME.to_string(),
         }
     };
     let id = player.id;
@@ -230,6 +232,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
     // 判斷 Lagged（跳過、不踢人）/ Closed（結束）。
     // ③ 無限世界（切片 C）：從 tx 收到的是 Arc<ServerMsg>，依玩家當下位置做 AOI 剔除後才序列化。
+    // tx_direct：單播通道——讓讀取迴圈把僅給本玩家看的訊息（如 TravelResult）推給 forward task。
+    let (tx_direct, mut rx_direct) = tokio::sync::mpsc::channel::<String>(16);
     let mut rx = app.tx.subscribe();
     let mut rx_chat = app.tx_chat.subscribe();
     let app_for_forward = app.clone();
@@ -299,6 +303,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         ForwardAction::Skip => continue,
                         ForwardAction::Stop => break,
                     },
+                },
+                // 單播直達訊息（如 TravelResult）：由讀取迴圈產生後透過 tx_direct 推來。
+                Some(json) = rx_direct.recv() => {
+                    if sender.send(Message::Text(json)).await.is_err() {
+                        break;
+                    }
                 },
             }
         }
@@ -779,14 +789,64 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                             ItemKind::StarChart => {
-                                // 星圖：展開遠方星球快照——多星球旅程的序章（ROADMAP 19）。
-                                // 消耗星圖，並廣播一條僅本玩家看到的系統訊息。
-                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
-                                    tracing::info!(player = %p.name, "展開星圖，多星球序章觸發");
+                                // 星圖：展開遠方星球快照——道具本身不消耗（是導航工具而非消耗品）。
+                                // 前端收到背包快照後本地彈出星圖彈窗；伺服器只記日誌。
+                                if !p.vitals.is_downed() && p.inventory.count(item) > 0 {
+                                    tracing::info!(player = %p.name, "展開星圖");
                                 }
                             }
                             _ => {} // 非消耗品，忽略
                         }
+                    }
+                }
+                Ok(ClientMsg::TravelToPlanet { planet }) => {
+                    // 星際旅行（ROADMAP 20）：傳送玩家到指定星球。
+                    use crate::state::{
+                        PLANET_HOME, PLANET_VERDANT,
+                        VERDANT_SPAWN_X, VERDANT_SPAWN_Y,
+                        TRAVEL_ETHER_COST,
+                    };
+                    use crate::protocol::ServerMsg;
+                    let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        match p.can_travel_to(&planet) {
+                            Err(msg) => Some(ServerMsg::TravelResult {
+                                ok: false,
+                                planet: p.planet.clone(),
+                                message: msg,
+                            }),
+                            Ok(()) if planet == PLANET_VERDANT => {
+                                p.ether -= TRAVEL_ETHER_COST;
+                                p.planet = PLANET_VERDANT.to_string();
+                                p.x = VERDANT_SPAWN_X;
+                                p.y = VERDANT_SPAWN_Y;
+                                tracing::info!(player = %p.name, "星際旅行：抵達翠幽星");
+                                Some(ServerMsg::TravelResult {
+                                    ok: true,
+                                    planet: PLANET_VERDANT.to_string(),
+                                    message: "歡迎來到翠幽星！茂密叢林的古老氣息撲面而來⋯⋯".to_string(),
+                                })
+                            }
+                            Ok(()) => {
+                                p.ether -= TRAVEL_ETHER_COST;
+                                p.planet = PLANET_HOME.to_string();
+                                let (hx, hy) = crate::positions::default_spawn();
+                                p.x = hx;
+                                p.y = hy;
+                                tracing::info!(player = %p.name, "星際旅行：返回故鄉");
+                                Some(ServerMsg::TravelResult {
+                                    ok: true,
+                                    planet: PLANET_HOME.to_string(),
+                                    message: "安全返回故鄉星球！新手村的燈塔在遠方閃爍⋯⋯".to_string(),
+                                })
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(msg) = result {
+                        let _ = tx_direct.send(
+                            serde_json::to_string(&msg).unwrap_or_default(),
+                        ).await;
                     }
                 }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
