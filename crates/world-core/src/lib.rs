@@ -207,10 +207,11 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
     }
 
     // 地形空曠度：低頻 value_noise 決定哪裡是開闊空地、哪裡是實心。
-    // threshold 0.82 → 約 82% 為空地（可自由走動），約 18% 實心集中成礦脈/岩體/洞窟供挖掘。
-    // （原本 0.38＝62% 實心是「正宗 Core Keeper」，但自動挖預設關時到處卡，玩家要求降密度。）
+    // 礦區（Rocky）門檻 0.50 → 約 50% 實心（礦石多、像個礦坑可深挖）；其餘生態域 0.82 → 約 18%
+    // 實心（開闊好走，實心集中成礦脈/岩體）。（原本全域 0.38＝62% 實心會到處卡，已按玩家要求降。）
     let cave = value_noise(wx, wy, 160.0, 123);
-    if cave < 0.82 {
+    let cave_threshold = if biome == Biome::Rocky { 0.50 } else { 0.82 };
+    if cave < cave_threshold {
         return TileKind::Empty;
     }
 
