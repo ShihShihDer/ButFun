@@ -206,10 +206,11 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         return TileKind::Empty;
     }
 
-    // D-2 天然洞窟：使用低頻 value_noise 在實心中挖出連通空間。
-    // scale 160.0 約 5 格寬的走廊/房間；threshold 0.38 約 38% 為空（62% 實心）。
+    // 地形空曠度：低頻 value_noise 決定哪裡是開闊空地、哪裡是實心。
+    // threshold 0.82 → 約 82% 為空地（可自由走動），約 18% 實心集中成礦脈/岩體/洞窟供挖掘。
+    // （原本 0.38＝62% 實心是「正宗 Core Keeper」，但自動挖預設關時到處卡，玩家要求降密度。）
     let cave = value_noise(wx, wy, 160.0, 123);
-    if cave < 0.38 {
+    if cave < 0.82 {
         return TileKind::Empty;
     }
 

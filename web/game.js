@@ -1981,10 +1981,10 @@
       return "empty";
     }
 
-    // D-2 天然洞窟：使用低頻 biomeNoise 在實心中挖出連通空間。
-    // scale 160.0 約 5 格寬的走廊/房間；threshold 0.38 約 38% 為空（62% 實心）。
+    // 地形空曠度（與後端 tile_kind_at 對齊）：threshold 0.82 → 約 82% 空地、18% 實心集中。
+    // （原本 0.38＝62% 實心會到處卡，玩家要求降密度。）
     const cave = biomeNoise(wx, wy, 160, 123);
-    if (cave < 0.38) return "empty";
+    if (cave < 0.82) return "empty";
     if (b === "rocky") {
       // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
       const crystalN = biomeNoise(wx, wy, 80, 777);
