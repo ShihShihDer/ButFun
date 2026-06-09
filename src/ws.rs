@@ -708,6 +708,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::ReturnHome) => {
+                    // 回城：傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        let (sx, sy) = crate::positions::default_spawn();
+                        p.x = sx;
+                        p.y = sy;
+                        tracing::info!(player = %p.name, "回城（傳回新手村）");
+                    }
+                }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
