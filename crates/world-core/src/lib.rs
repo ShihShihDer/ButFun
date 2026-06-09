@@ -17,6 +17,11 @@ pub const CHUNK_SIZE: f32 = 512.0;
 /// 與 `crate::state::VERDANT_SPAWN_X`（22400）一致——翠幽星出生點深在此邊界內側。
 pub const VERDANT_ZONE_MIN_X: f64 = 20_000.0;
 
+/// 赤焰星（Crimson Star）在主世界的 X 最大座標。
+/// X ≤ 此值視為赤焰星領域，tile_kind_at 會生成熔岩石聚落。
+/// 與 `crate::state::CRIMSON_SPAWN_X`（-18000）一致——赤焰星出生點深在此邊界內側。
+pub const CRIMSON_ZONE_MAX_X: f64 = -15_000.0;
+
 /// 一個地形格的邊長（像素）。CHUNK_SIZE / TILE_PX = 16 格 / chunk。
 pub const TILE_PX: f32 = 32.0;
 /// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
@@ -142,6 +147,7 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   7 = CoralReef（珊瑚礁，Water 生態域海底特產）
 ///   8 = WildFlower（野花叢，Meadow 生態域草原特產）
 ///   9 = JadeVine（翠玉藤，翠幽星 X≥20000 特有聚落，挖後掉翠幽碎片）
+///  10 = LavaRock（熔岩石，赤焰星 X≤-15000 特有聚落，挖後掉熔晶碎片）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
@@ -165,6 +171,9 @@ pub enum TileKind {
     /// 翠玉藤——只生在翠幽星（X ≥ VERDANT_ZONE_MIN_X）的聚落中，挖後掉翠幽碎片，
     /// 翠幽星 NPC 以高溢價收購，是首個跨星球特產，鼓勵玩家深入探索異星。
     JadeVine,
+    /// 熔岩石——只生在赤焰星（X ≤ CRIMSON_ZONE_MAX_X）的聚落中，挖後掉熔晶碎片，
+    /// 赤焰星 NPC 以最高溢價收購，蒸汽龐克異星的核心礦產，鼓勵玩家深入高溫熔岩地帶。
+    LavaRock,
 }
 
 impl TileKind {
@@ -180,6 +189,7 @@ impl TileKind {
             TileKind::CoralReef   => 7,
             TileKind::WildFlower  => 8,
             TileKind::JadeVine    => 9,
+            TileKind::LavaRock    => 10,
         }
     }
 }
@@ -241,6 +251,17 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         let jade_n = value_noise(wx, wy, 85.0, 999);
         if jade_n > 0.80 && h < 0.65 {
             return TileKind::JadeVine;
+        }
+    }
+
+    // 赤焰星特有：熔岩石聚落。所有 wx ≤ CRIMSON_ZONE_MAX_X 的實心格都可能生熔岩石，
+    // 覆蓋所有非水域生態的普通材質，讓整個赤焰星到處都有熔晶可挖。
+    // 次級噪聲（scale 90, seed 1337）決定聚落邊界（約 25% 的赤焰星實心格形成熔岩聚落）；
+    // 聚落內 70% 為 LavaRock，30% 保留原有材質，維持地形多樣性。
+    if wx <= CRIMSON_ZONE_MAX_X && biome != Biome::Water {
+        let lava_n = value_noise(wx, wy, 90.0, 1337);
+        if lava_n > 0.75 && h < 0.70 {
+            return TileKind::LavaRock;
         }
     }
 
@@ -818,5 +839,40 @@ mod d2_tests {
         let ratio = solid_count as f64 / total as f64;
         // D-2 反轉後，實心比例應接近 1.0 - 0.38 = 0.62
         assert!(ratio > 0.5 && ratio < 0.75, "實心比例應在 50%~75% 之間，實際={:.1}%", ratio * 100.0);
+    }
+
+    #[test]
+    fn tile_code_includes_lava_rock() {
+        assert_eq!(TileKind::LavaRock.code(), 10);
+    }
+
+    #[test]
+    fn lava_rock_exists_in_crimson_zone() {
+        // 赤焰星（X ≤ -15000）應存在熔岩石格。
+        let mut found = false;
+        'outer: for gy in 0..200i32 {
+            for gx in 0..200i32 {
+                let x = CRIMSON_ZONE_MAX_X - gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) != Biome::Water && tile_kind_at(x + 16.0, y + 16.0) == TileKind::LavaRock {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "赤焰星應存在熔岩石格（LavaRock）");
+    }
+
+    #[test]
+    fn lava_rock_only_in_crimson_zone() {
+        // LavaRock 不應出現在 X > -15000 的普通世界（故鄉 / 翠幽星）。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0;
+                let y = gy as f64 * 64.0 + 16.0;
+                let k = tile_kind_at(x, y);
+                assert_ne!(k, TileKind::LavaRock, "普通世界 ({x},{y}) 不應生熔岩石");
+            }
+        }
     }
 }

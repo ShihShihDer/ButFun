@@ -7,7 +7,7 @@
 //! 這層只管純邏輯（距離判斷、交易驗證），無 IO、不碰 WebSocket，便於自動測試。
 
 use crate::inventory::{Inventory, ItemKind};
-use crate::state::{PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y, VERDANT_SPAWN_X, VERDANT_SPAWN_Y};
+use crate::state::{PUB_FIELD_ORIGIN_X, PUB_FIELD_ORIGIN_Y, VERDANT_SPAWN_X, VERDANT_SPAWN_Y, CRIMSON_SPAWN_X, CRIMSON_SPAWN_Y};
 use crate::field::{FIELD_ROWS, TILE_SIZE};
 
 /// 玩家離商人多近才能互動（像素）。
@@ -86,6 +86,50 @@ pub const VERDANT_BUY_LIST: &[ShopEntry] = &[
 
 /// 翠幽星商人不販售（玩家需自行合成翠幽裝備；沒有販售清單）。
 pub const VERDANT_SELL_LIST: &[ShopEntry] = &[];
+
+/// 赤焰星商人在世界上的位置：赤焰星出生點附近偏右，讓玩家傳送後立刻看得到商人。
+pub fn crimson_merchant_pos() -> (f32, f32) {
+    (CRIMSON_SPAWN_X + 120.0, CRIMSON_SPAWN_Y)
+}
+
+/// 赤焰星商人互動範圍判定。
+pub fn is_within_crimson_shop_reach(px: f32, py: f32) -> bool {
+    let (mx, my) = crimson_merchant_pos();
+    let dx = px - mx;
+    let dy = py - my;
+    dx * dx + dy * dy <= SHOP_REACH * SHOP_REACH
+}
+
+/// 赤焰星 NPC **收購**清單（玩家 → NPC，換乙太）。
+/// 赤焰星商人以最高溢價收購熔晶碎片，鼓勵玩家深入赤焰星探索。
+/// 也收購故鄉與翠幽星生態特產（給帶著舊存貨來赤焰星的玩家出路）。
+pub const CRIMSON_BUY_LIST: &[ShopEntry] = &[
+    ShopEntry { item: ItemKind::LavaCrystal,     price_per: 10 },
+    ShopEntry { item: ItemKind::JadeShard,        price_per: 8 },
+    ShopEntry { item: ItemKind::CrystalShard,     price_per: 3 },
+    ShopEntry { item: ItemKind::AncientFragment,  price_per: 4 },
+    ShopEntry { item: ItemKind::DeepSeaPearl,     price_per: 5 },
+    ShopEntry { item: ItemKind::Wood,             price_per: 1 },
+    ShopEntry { item: ItemKind::Stone,            price_per: 1 },
+    ShopEntry { item: ItemKind::Ether,            price_per: 2 },
+];
+
+/// 赤焰星商人不販售（玩家需自行合成赤焰裝備；沒有販售清單）。
+pub const CRIMSON_SELL_LIST: &[ShopEntry] = &[];
+
+/// 玩家向赤焰星商人**賣出** qty 個 item。
+/// 純函式，便於測試（caller 負責驗距離）。
+pub fn sell_to_crimson_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
+    if qty == 0 {
+        return None;
+    }
+    let price = CRIMSON_BUY_LIST.iter().find(|e| e.item == item)?.price_per;
+    if !inv.take(item, qty) {
+        return None;
+    }
+    let earned = price.saturating_mul(qty);
+    Some(ether.saturating_add(earned))
+}
 
 /// 玩家向翠幽星商人**賣出** qty 個 item。
 /// 純函式，便於測試（caller 負責驗距離）。
