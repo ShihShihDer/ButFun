@@ -24,10 +24,11 @@ pub const DIG_REACH: f32 = 80.0;
 /// 純函式，便於測試；接線在 ws.rs 的 `Dig` handler。
 pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
     match kind {
-        TileKind::Empty => None,
-        TileKind::Dirt  => Some((ItemKind::Dirt, 1)),
-        TileKind::Stone => Some((ItemKind::Stone, 1)),
-        TileKind::Ore   => Some((ItemKind::Ether, 1)),
+        TileKind::Empty   => None,
+        TileKind::Dirt    => Some((ItemKind::Dirt,         1)),
+        TileKind::Stone   => Some((ItemKind::Stone,        1)),
+        TileKind::Ore     => Some((ItemKind::Ether,        1)),
+        TileKind::Crystal => Some((ItemKind::CrystalShard, 1)),
     }
 }
 
@@ -134,9 +135,10 @@ mod tests {
 
     #[test]
     fn drop_for_tile_solid_tiles_return_materials() {
-        assert_eq!(drop_for_tile(TileKind::Dirt),  Some((ItemKind::Dirt,  1)));
-        assert_eq!(drop_for_tile(TileKind::Stone), Some((ItemKind::Stone, 1)));
-        assert_eq!(drop_for_tile(TileKind::Ore),   Some((ItemKind::Ether, 1)));
+        assert_eq!(drop_for_tile(TileKind::Dirt),    Some((ItemKind::Dirt,         1)));
+        assert_eq!(drop_for_tile(TileKind::Stone),   Some((ItemKind::Stone,        1)));
+        assert_eq!(drop_for_tile(TileKind::Ore),     Some((ItemKind::Ether,        1)));
+        assert_eq!(drop_for_tile(TileKind::Crystal), Some((ItemKind::CrystalShard, 1)));
     }
 
     #[test]

@@ -131,21 +131,25 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   1 = Dirt（泥土）
 ///   2 = Stone（石塊）
 ///   3 = Ore（礦脈）
+///   4 = Crystal（晶石，Deep Rocky 特有稀有礦）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
     Dirt,
     Stone,
     Ore,
+    /// 晶石礦脈——只生在岩地（Rocky）生態域的晶洞聚落中，挖後掉晶石碎片，可高價賣給 NPC。
+    Crystal,
 }
 
 impl TileKind {
     pub fn code(self) -> u8 {
         match self {
-            TileKind::Empty => 0,
-            TileKind::Dirt  => 1,
-            TileKind::Stone => 2,
-            TileKind::Ore   => 3,
+            TileKind::Empty   => 0,
+            TileKind::Dirt    => 1,
+            TileKind::Stone   => 2,
+            TileKind::Ore     => 3,
+            TileKind::Crystal => 4,
         }
     }
 }
@@ -183,9 +187,17 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
     );
     match biome {
         Biome::Rocky => {
-            // 岩域：礦脈較多(12%)，其餘皆為岩石。
-            if h < 0.12 { TileKind::Ore }
-            else { TileKind::Stone }
+            // 晶洞判定：次級噪聲（scale 80, seed 777）高於 0.85 的聚落（約 15% 的岩地）形成晶洞。
+            // 晶洞內：60% Crystal，40% Stone——挖進去才亮紫，提供「深入探索有回報」的感受。
+            let crystal_n = value_noise(wx, wy, 80.0, 777);
+            if crystal_n > 0.85 {
+                if h < 0.60 { TileKind::Crystal }
+                else { TileKind::Stone }
+            } else {
+                // 普通岩域：礦脈較多(12%)，其餘皆為岩石。
+                if h < 0.12 { TileKind::Ore }
+                else { TileKind::Stone }
+            }
         }
         Biome::Forest => {
             // 森林：偶爾有岩石(10%)，其餘為泥土。
@@ -368,10 +380,44 @@ mod tests {
 
     #[test]
     fn tile_code_round_trips() {
-        assert_eq!(TileKind::Empty.code(), 0);
-        assert_eq!(TileKind::Dirt.code(),  1);
-        assert_eq!(TileKind::Stone.code(), 2);
-        assert_eq!(TileKind::Ore.code(),   3);
+        assert_eq!(TileKind::Empty.code(),   0);
+        assert_eq!(TileKind::Dirt.code(),    1);
+        assert_eq!(TileKind::Stone.code(),   2);
+        assert_eq!(TileKind::Ore.code(),     3);
+        assert_eq!(TileKind::Crystal.code(), 4);
+    }
+
+    #[test]
+    fn crystal_cave_exists_in_rocky_biome() {
+        // 掃岩地範圍，確認確實能生成晶石格（不是機率設太低全找不到）。
+        let mut found_crystal = false;
+        'outer: for gy in 0..200i32 {
+            for gx in 0..200i32 {
+                let x = gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) == Biome::Rocky && tile_kind_at(x + 16.0, y + 16.0) == TileKind::Crystal {
+                    found_crystal = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found_crystal, "岩地生態域中應存在晶石格");
+    }
+
+    #[test]
+    fn crystal_only_in_rocky_biome() {
+        // Crystal 格不應出現在非岩地生態域（forest/meadow/sand）。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0;
+                let y = gy as f64 * 64.0;
+                let b = biome_at(x, y);
+                if b != Biome::Rocky && b != Biome::Water {
+                    let k = tile_kind_at(x + 16.0, y + 16.0);
+                    assert_ne!(k, TileKind::Crystal, "非岩地生態域 {:?} 不應生晶石，座標=({x},{y})", b);
+                }
+            }
+        }
     }
 }
 

@@ -16,19 +16,21 @@ use world_core::TileKind;
 
 fn kind_str(k: TileKind) -> &'static str {
     match k {
-        TileKind::Empty => "empty",
-        TileKind::Dirt  => "dirt",
-        TileKind::Stone => "stone",
-        TileKind::Ore   => "ore",
+        TileKind::Empty   => "empty",
+        TileKind::Dirt    => "dirt",
+        TileKind::Stone   => "stone",
+        TileKind::Ore     => "ore",
+        TileKind::Crystal => "crystal",
     }
 }
 
 fn parse_kind(s: &str) -> TileKind {
     match s {
-        "dirt"  => TileKind::Dirt,
-        "stone" => TileKind::Stone,
-        "ore"   => TileKind::Ore,
-        _       => TileKind::Empty,
+        "dirt"    => TileKind::Dirt,
+        "stone"   => TileKind::Stone,
+        "ore"     => TileKind::Ore,
+        "crystal" => TileKind::Crystal,
+        _         => TileKind::Empty,
     }
 }
 
@@ -150,7 +152,7 @@ mod tests {
 
     #[test]
     fn kind_str_and_parse_kind_round_trip() {
-        for &k in &[TileKind::Empty, TileKind::Dirt, TileKind::Stone, TileKind::Ore] {
+        for &k in &[TileKind::Empty, TileKind::Dirt, TileKind::Stone, TileKind::Ore, TileKind::Crystal] {
             assert_eq!(parse_kind(kind_str(k)), k);
         }
     }
