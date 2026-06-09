@@ -1480,17 +1480,39 @@
     ctx.rect(ox, oy, size, size);
     ctx.clip();
 
-    // 生態域背景:粗格取樣 biomeAt,把身邊地貌(草原/森林/岩/沙/水)用底色畫出來——
-    // 跟主畫面同一套確定性噪聲,小地圖因此「看得到地形」。
-    // ③ 無限世界（切片 A）：世界無邊界了,身邊一律照 biomeAt 畫,不再有界外 void。
+    // 生態域背景:粗格取樣 biomeAt + tileKindAt,把身邊地貌(草原/森林/岩/沙/水)與
+    // 實心牆/洞穴(D-3)用底色畫出來——跟主畫面同一套確定性噪聲,小地圖因此「看得到地形」。
     const MM_STEP = 8; // 每格 mini px(粗取樣,夠看地貌又省效能;之後切片3 改離屏快取)
+    const worldStep = MM_STEP / scale;
     for (let yy = 0; yy < size; yy += MM_STEP) {
       for (let xx = 0; xx < size; xx += MM_STEP) {
-        const wx = cx + (xx + MM_STEP / 2 - size / 2) / scale;
-        const wy = cy + (yy + MM_STEP / 2 - size / 2) / scale;
-        ctx.fillStyle = BIOME_GROUND[biomeAt(wx, wy)];
+        // 次像素對齊(D-3):取樣點對齊 worldStep 格點,避免隨玩家移動產生像素抖動。
+        const rawWx = cx + (xx + MM_STEP / 2 - size / 2) / scale;
+        const rawWy = cy + (yy + MM_STEP / 2 - size / 2) / scale;
+        const wx = Math.floor(rawWx / worldStep) * worldStep + worldStep / 2;
+        const wy = Math.floor(rawWy / worldStep) * worldStep + worldStep / 2;
+
+        const b = biomeAt(wx, wy);
+        const kind = tileKindAt(wx, wy);
+
+        if (kind === "empty") {
+          ctx.fillStyle = BIOME_GROUND[b];
+        } else {
+          // 實心牆色:依材質分(土/石/礦),比地表暗且飽和,呈現「牆」的感覺。
+          ctx.fillStyle = kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+        }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
+    }
+
+    // 新手村「家」標記(D-3):在安全區中心標一顆小房子或 H,方便在隧道迷宮裡找路。
+    const hx = toMiniX(2344), hy = toMiniY(2296);
+    if (hx > ox && hx < ox + size && hy > oy && hy < oy + size) {
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🏠", hx, hy);
+      ctx.textBaseline = "alphabetic";
     }
 
     // 各玩家農地(在範圍內才畫)。自己那塊畫亮、別人的暗。
@@ -1711,26 +1733,32 @@
     // 確定性生成
     const b = biomeAt(wx, wy);
     if (b === "water") return "empty";
+
+    // D-2 天然洞窟：使用低頻 biomeNoise 在實心中挖出連通空間。
+    // scale 160.0 約 5 格寬的走廊/房間；threshold 0.38 約 38% 為空（62% 實心）。
+    const cave = biomeNoise(wx, wy, 160, 123);
+    if (cave < 0.38) return "empty";
+
     const h = tileHash(gx, gy);
     if (b === "rocky") {
-      if (h < 0.05) return "ore";
-      if (h < 0.40) return "stone";
-      return "empty";
+      // 岩域：礦脈較多(12%)，其餘皆為岩石。
+      if (h < 0.12) return "ore";
+      return "stone";
     }
     if (b === "forest") {
-      if (h < 0.08) return "stone";
-      if (h < 0.22) return "dirt";
-      return "empty";
+      // 森林：偶爾有岩石(10%)，其餘為泥土。
+      if (h < 0.10) return "stone";
+      return "dirt";
     }
     if (b === "meadow") {
-      if (h < 0.06) return "stone";
-      if (h < 0.12) return "dirt";
-      return "empty";
+      // 草原：主要為泥土。
+      if (h < 0.05) return "stone";
+      return "dirt";
     }
     // sand
-    if (h < 0.04) return "stone";
-    if (h < 0.08) return "dirt";
-    return "empty";
+    // 沙漠：主要為泥土（沙下層）。
+    if (h < 0.05) return "stone";
+    return "dirt";
   }
 
   // 畫可挖地形方塊（C-1：純顯示，在生態域底色之上、農地/節點之下）。
