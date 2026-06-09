@@ -235,11 +235,25 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // C-3：先快照 tile deltas（先取讀鎖再放），再持 players 寫鎖——兩把鎖不同時持有，
+            // 避免與 ws.rs Dig handler（tile_world.write → players.write）的鎖序死鎖。
+            let tile_deltas_snap: std::collections::HashMap<(i32, i32, u8, u8), world_core::TileKind> = {
+                let tw = app.tile_world.read().unwrap();
+                tw.deltas().clone()
+            };
+
             // 整合位置 + 推進生命回復（權威模擬,每 tick 必跑,與有無觀眾無關;短暫持鎖,不跨 await）。
             {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
-                    p.step(dt);
+                    p.step(dt, |x: f32, y: f32| {
+                        let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
+                        let kind = tile_deltas_snap
+                            .get(&(cx, cy, tx, ty))
+                            .copied()
+                            .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64));
+                        kind != world_core::TileKind::Empty
+                    });
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。

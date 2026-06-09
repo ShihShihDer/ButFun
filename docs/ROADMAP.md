@@ -34,7 +34,13 @@
    - 前端：`tileKindAt` 本地確定性生成（零帶寬）+ `drawTerrain` 畫色塊地形。
 
 ## 現在做
-6b. **可挖地形 C-2：Dig handler**（PR 開發中）
+6c. **可挖地形 C-3：tile 碰撞**（PR 開發中）
+   - `Player::step` 加入 `tile_solid` 閉包參數，以中心判逃脫 + 四角判碰牆的兩層策略。
+   - `game.rs`：每 tick 快照 tile deltas（先釋放讀鎖再取 players 寫鎖，避免死鎖）。
+   - 3 個純邏輯測試：擋住直線移動、沿牆滑行、受困逃脫。
+
+## 已完成（C-2 以前）
+6b. ✅ **可挖地形 C-2：Dig handler**（PR #59）
    - 後端：`ClientMsg::Dig { wx, wy }` + ws.rs handler（可及性 80px、實心→Empty + 材料入背包 + 持久化）。
    - `ItemKind::Dirt`（土磚，C-2 掉落 + C-4 建造材料）加入物品宇宙。
    - `game.rs`：快照的 `terrain` 欄位從 TileWorld deltas 填充（C-1 時永遠為空）。

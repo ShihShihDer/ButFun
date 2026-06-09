@@ -37,6 +37,10 @@ pub const WORLD_HEIGHT: f32 = 6000.0;
 /// 玩家移動速度（像素 / 秒）。大世界一併調快,跨圖不至於太久。
 pub const PLAYER_SPEED: f32 = 320.0;
 
+/// 玩家 tile 碰撞半徑（像素）。用四角檢查確保玩家不嵌入格子；
+/// 略小於半格（16px），讓玩家能穿過單格寬走廊（C-3 碰撞）。
+pub const PLAYER_TILE_RADIUS: f32 = 10.0;
+
 /// 公共農地（軟劫掠區）的世界座標。任何已登入玩家均可種植與收割——
 /// 但種在這裡的作物隨時可能被路過的其他玩家搶收（「軟劫掠」設計）。
 /// 落在個人地塊螺旋區西南，讓新玩家在探索途中自然遇到。
@@ -84,9 +88,12 @@ impl Player {
         }
     }
 
-    /// 依目前輸入意圖，把位置往前推進 `dt` 秒（權威整合，含邊界夾制）。
+    /// 依目前輸入意圖，把位置往前推進 `dt` 秒（權威整合，含碰撞解算）。
     /// 抽成純函式以便自動測試。
-    pub fn step(&mut self, dt: f32) {
+    ///
+    /// `tile_solid(x, y)` 回傳該世界像素座標是否為實心地形格（C-3 碰撞）。
+    /// 傳 `|_, _| false` 可關閉 tile 碰撞（向下相容）。
+    pub fn step<F: Fn(f32, f32) -> bool>(&mut self, dt: f32, tile_solid: F) {
         // 被打趴（倒地）期間定身：等待復原計時器跑完，不接受任何移動輸入。
         if self.vitals.is_downed() {
             return;
@@ -113,10 +120,25 @@ impl Player {
         }
         // ③ 無限世界：不再 clamp 到世界邊界，但水域擋路——用 resolve_move 做滑動碰撞，
         // 玩家撞到水邊能沿岸滑行；已在水裡（如舊存檔）仍可逃出（resolve_move 的「受困放行」保證）。
+        // C-3：實心格也擋路。策略：
+        //   - 「中心落在實心格」→ 受困（傳送/生成落地等罕見情況），以中心點判斷逃脫、允許自由移動。
+        //   - 一般走路時用碰撞盒四角（半徑 PLAYER_TILE_RADIUS）判斷是否碰牆，精準阻擋、可沿牆滑行。
+        // 重點：不能讓四角落到牆上就觸發「受困逃脫」，否則玩家靠近牆即可穿牆。
         let new_x = self.x + dx * PLAYER_SPEED * dt;
         let new_y = self.y + dy * PLAYER_SPEED * dt;
+        let r = PLAYER_TILE_RADIUS;
+        let is_center_stuck = tile_solid(self.x, self.y);
+        let any_corner = |cx: f32, cy: f32| {
+            [(r, r), (-r, r), (r, -r), (-r, -r)]
+                .iter()
+                .any(|&(ox, oy)| tile_solid(cx + ox, cy + oy))
+        };
         (self.x, self.y) = resolve_move(self.x, self.y, new_x, new_y, |x, y| {
-            biome_at(x as f64, y as f64) == Biome::Water
+            if biome_at(x as f64, y as f64) == Biome::Water {
+                return true;
+            }
+            // 受困時以中心點判定（保留逃脫通道）；一般時以四角判定（精準碰牆）。
+            if is_center_stuck { tile_solid(x, y) } else { any_corner(x, y) }
         });
     }
 }
@@ -315,7 +337,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        p.step(1.0); // 一秒
+        p.step(1.0, |_, _| false); // 一秒
         assert!((p.x - (100.0 + PLAYER_SPEED)).abs() < 0.001);
         assert!((p.y - 100.0).abs() < 0.001);
     }
@@ -331,7 +353,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        p.step(1.0);
+        p.step(1.0, |_, _| false);
         let dist = (((p.x - 500.0).powi(2)) + ((p.y - 500.0).powi(2))).sqrt();
         // 對角線位移量應約等於單軸速度，而非 sqrt(2) 倍。
         assert!((dist - PLAYER_SPEED).abs() < 0.01, "dist={dist}");
@@ -350,14 +372,14 @@ mod tests {
                 ..Default::default()
             },
         );
-        p.step(1.0);
+        p.step(1.0, |_, _| false);
         assert!(p.x < 0.0 && p.y < 0.0, "應跨過邊界進入負座標: ({}, {})", p.x, p.y);
     }
 
     #[test]
     fn idle_player_stays_put() {
         let mut p = player_at(300.0, 300.0, Input::default());
-        p.step(1.0);
+        p.step(1.0, |_, _| false);
         assert_eq!(p.x, 300.0);
         assert_eq!(p.y, 300.0);
     }
@@ -371,7 +393,7 @@ mod tests {
         });
         p.vitals.take_damage(crate::vitals::MAX_HP);
         assert!(p.vitals.is_downed());
-        p.step(1.0);
+        p.step(1.0, |_, _| false);
         assert_eq!(p.x, 300.0, "被打趴後不應移動");
         assert_eq!(p.y, 300.0, "被打趴後不應移動");
     }
@@ -412,7 +434,7 @@ mod tests {
                 };
                 let mut p = player_at(sx, sy, input);
                 for _ in 0..10 {
-                    p.step(0.1); // 共一秒
+                    p.step(0.1, |_, _| false); // 共一秒
                 }
                 // 最終位置不應在水裡（水域擋路）
                 assert!(
@@ -511,5 +533,56 @@ mod tests {
         let (col, row) = cell.unwrap();
         let tilled = pf.till(col, row);
         assert!(tilled, "公共農地自然地翻土應成功");
+    }
+
+    // ── C-3 tile 碰撞測試 ──
+    // 注意：座標要在陸地（非水域）；否則 step 的水域 blocked 優先觸發，干擾 tile 碰撞邏輯。
+    // 使用距公共農地中心不遠的安全陸地區（biome 確定性，與前端一致），省去動態掃描。
+    const LAND_X: f32 = 2200.0;
+    const LAND_Y: f32 = 2200.0;
+
+    #[test]
+    fn tile_collision_blocks_direct_movement() {
+        // 玩家往右走，右側有牆；應被擋在牆外（含碰撞半徑）。
+        let wall_x: f32 = LAND_X + 50.0;
+        let mut p = player_at(LAND_X, LAND_Y, Input { right: true, ..Default::default() });
+        for _ in 0..20 {
+            p.step(0.1, |x, _y| x > wall_x);
+        }
+        // 玩家中心 + 碰撞半徑不得超過牆。
+        assert!(
+            p.x + PLAYER_TILE_RADIUS <= wall_x + 1.0,
+            "應被牆擋住, x={} r={} wall_x={}",
+            p.x,
+            PLAYER_TILE_RADIUS,
+            wall_x
+        );
+    }
+
+    #[test]
+    fn tile_collision_slides_along_wall() {
+        // 玩家往右下走，右側有牆；應沿 Y 方向滑動（X 被擋住、Y 自由）。
+        let wall_x: f32 = LAND_X + 30.0;
+        let mut p = player_at(LAND_X, LAND_Y, Input { right: true, down: true, ..Default::default() });
+        for _ in 0..10 {
+            p.step(0.1, |x, _y| x > wall_x);
+        }
+        assert!(p.x + PLAYER_TILE_RADIUS <= wall_x + 1.0, "X 應被牆擋住");
+        assert!(p.y > LAND_Y, "Y 方向應能沿牆滑行");
+    }
+
+    #[test]
+    fn tile_collision_escape_from_inside_solid() {
+        // 玩家生成在實心格內（如傳送後落地），應能逃出（受困時以中心判定、允許逃脫）。
+        let start_x = LAND_X;
+        let start_y = LAND_Y;
+        let mut p = player_at(start_x, start_y, Input { right: true, ..Default::default() });
+        // 以玩家中心為圓心的 40px 範圍全為實心格（模擬傳送落地在格內）。
+        let tile_solid = |x: f32, y: f32| {
+            (start_x - 40.0..=start_x + 40.0).contains(&x)
+                && (start_y - 40.0..=start_y + 40.0).contains(&y)
+        };
+        p.step(0.1, tile_solid);
+        assert!(p.x > start_x, "受困玩家應能逃出實心格，x={}", p.x);
     }
 }
