@@ -88,6 +88,34 @@
   // 地形格 delta（玩家挖/建後偏離確定性生成的差異）：Map<"cx,cy,tx,ty" → kind>。
   // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
   const tileDeltaMap = new Map();
+  // 玩家設定（⚙ 面板，localStorage 持久化）。
+  const settings = { smartAutoDig: false };
+  try { settings.smartAutoDig = localStorage.getItem("butfun.smartAutoDig") === "1"; } catch {}
+  // 智慧自動挖（⚙ 開關，預設關）：朝牆走自動挖開「天然岩石」鑿隧道，但**永遠不挖你放置的牆/建築**
+  // （在 tileDeltaMap 裡＝你動過的格子，跳過），所以撞到自己蓋的房子也不會壞。
+  let lastAutoDig = 0;
+  function maybeAutoDig(me) {
+    if (!settings.smartAutoDig) return;
+    if (!me || !ws || ws.readyState !== 1) return;
+    let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (dx === 0 && dy === 0) return;
+    const len = Math.hypot(dx, dy);
+    dx /= len; dy /= len;
+    const px = me.x + dx * 26, py = me.y + dy * 26;
+    // 你放置/挖過的格子（在 deltaMap）永遠不自動挖——保護建築。
+    const gx = Math.floor(px / TS) | 0, gy = Math.floor(py / TS) | 0;
+    const CT = 16;
+    const ccx = Math.floor(gx / CT), ccy = Math.floor(gy / CT);
+    const tx = ((gx % CT) + CT) % CT, ty = ((gy % CT) + CT) % CT;
+    if (tileDeltaMap.has(`${ccx},${ccy},${tx},${ty}`)) return;
+    if (tileKindAt(px, py) === "empty") return; // 前方不是天然實心,不挖
+    const now = performance.now();
+    if (now - lastAutoDig < 170) return; // 節流:約每 0.17 秒鑿一格
+    lastAutoDig = now;
+    ws.send(JSON.stringify({ type: "dig", wx: px, wy: py }));
+    spawnTapFlash(px, py);
+  }
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
   // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
@@ -1425,6 +1453,7 @@
     pollGamepad();
 
     const me = myId ? players.get(myId) : null;
+    maybeAutoDig(me); // 智慧自動挖（⚙ 開才生效，只挖天然岩石、不挖你蓋的牆）
     // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
     // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
     for (const p of players.values()) {
@@ -3954,6 +3983,15 @@
 
     for (const btn of dock.querySelectorAll(".dock-btn")) {
       btn.addEventListener("click", () => openWinFor(btn));
+    }
+    // ⚙ 設定：智慧自動挖開關（localStorage 持久化）。
+    const optDig = document.getElementById("optSmartAutoDig");
+    if (optDig) {
+      optDig.checked = settings.smartAutoDig;
+      optDig.addEventListener("change", () => {
+        settings.smartAutoDig = optDig.checked;
+        try { localStorage.setItem("butfun.smartAutoDig", optDig.checked ? "1" : "0"); } catch {}
+      });
     }
     // 把「依 dock 鈕 id 切換視窗」暴露給全域 keydown(B/C/H 捷徑用)。走 openWinFor 同一條路,
     // 因此 toggle 開關、同時只開一個、焦點移到關閉鈕等行為全與點圖示完全一致。
