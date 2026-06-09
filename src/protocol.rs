@@ -99,6 +99,11 @@ pub enum ClientMsg {
     /// 伺服器換算成 cell 座標，驗可及距離（DIG_REACH）、目標為實心格後：
     /// delta 設 Empty、對應材料入背包、廣播差異（随下一次快照帶出）。
     Dig { wx: f32, wy: f32 },
+    /// 建造——放置地形格（C-4）：玩家右鍵點擊世界座標 (wx, wy)。
+    /// `material` 為 ItemKind 的 snake_case 名（目前可放：`"dirt"` / `"stone"`）。
+    /// 伺服器驗可及距離、目標為 Empty、背包有該材料後：
+    /// 背包扣 1、delta 設對應 TileKind、廣播差異。
+    Place { wx: f32, wy: f32, material: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -303,6 +308,22 @@ mod tests {
             ClientMsg::Dig { wx, wy } => {
                 assert_eq!(wx, 320.5);
                 assert_eq!(wy, -64.0);
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// 前端送的 place 訊息要能被解析成 `ClientMsg::Place`（C-4 wire contract）。
+    #[test]
+    fn parses_place_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"place","wx":128.0,"wy":64.0,"material":"dirt"}"#)
+                .unwrap();
+        match msg {
+            ClientMsg::Place { wx, wy, material } => {
+                assert_eq!(wx, 128.0);
+                assert_eq!(wy, 64.0);
+                assert_eq!(material, "dirt");
             }
             other => panic!("解析成非預期變體：{other:?}"),
         }

@@ -108,6 +108,9 @@
   // 既有存量不算「採到」,不噴飄字;之後某品項數量變多才是真的採進來,才噴「+N 🪵」。
   let myInv = new Map();
   let invKnown = false;
+  // C-4 建造：玩家從背包選取的放置材料（"dirt"/"stone" 或 null 表示未選）。
+  // 右鍵點空格時若有選取材料且背包有貨則送 place；按 Escape 或再次點同項取消選取。
+  let selectedBuildMaterial = null;
   // 上一次快照的生命值 + 是否已同步過初始生命。和乙太/背包同理:進場/重連時不把既有血量
   // 當成「掉血/回血」播報;之後血量變化才是真的受擊或恢復。戰鬥(1-F)剛上線、HP 有 HUD
   // 但看不到畫面的玩家完全收不到受擊——補這條把無障礙弧線延伸到戰鬥(連線/採集/收成/日夜之後)。
@@ -443,6 +446,7 @@
           invKnown = true;
           updateBagHud(inv);
           updateWeaponHud(inv);  // 手上武器 pill（有武器才亮）+「合武器更痛」一行引導
+          updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
@@ -2258,13 +2262,29 @@
       "　" + inv.map((s) => `${ITEM_LOOK[s.item] || s.item} ${s.qty}`).join("　");
     // 展開的明細:每項素材一行 emoji + 中文名 + 數量。素材從採集/打怪/農地三方湧入、堆積得快,
     // 明細列讓「手上有什麼、各多少」清楚可讀(item 是伺服器列舉字串、非玩家文字,無注入風險)。
+    // C-4：可放置材料（dirt/stone）在每行右側多一個「🏗️選取」鈕，點後切換 selectedBuildMaterial。
+    const PLACEABLE = new Set(["dirt", "stone"]);
     body.innerHTML = inv
       .map((s) => {
         const icon = ITEM_LOOK[s.item] || "";
         const name = ITEM_NAME[s.item] || s.item;
-        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span></div>`;
+        const isSelected = selectedBuildMaterial === s.item;
+        const placeBtn = PLACEABLE.has(s.item)
+          ? `<button class="bag-place-btn${isSelected ? " selected" : ""}" data-material="${s.item}" title="${isSelected ? "取消放置選取" : "選取放置此材料"}">${isSelected ? "✅放置" : "🏗️選取"}</button>`
+          : "";
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}</div>`;
       })
       .join("");
+    // 綁定 bag-place-btn 點擊事件（動態 HTML，每次重繪後重綁）。
+    body.querySelectorAll(".bag-place-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const mat = btn.dataset.material;
+        selectedBuildMaterial = selectedBuildMaterial === mat ? null : mat;
+        updatePlaceModeHud();
+        updateBagHud(inv); // 重繪以同步選取狀態
+      });
+    });
     // emoji 對報讀器無意義(會亂念或跳過),把中文品項名同步成標題鈕的 aria-label,讓盲人玩家
     // 「採到那瞬間」聽過播報後,之後想查背包現況時也讀得出來。title 給滑鼠玩家對稱的那一半。
     // 延續日夜/連線/採集的背包無障礙弧線。
@@ -2307,6 +2327,24 @@
     if (weaponKnown && has && !hadWeapon) announce("武器到手,打怪更痛了");
     hadWeapon = has;
     weaponKnown = true;
+  }
+
+  // C-4 放置模式 HUD：選取建造材料時亮起 pill；清除時隱藏。
+  // pill 本身也是取消鈕（點擊 selectedBuildMaterial = null）。
+  function updatePlaceModeHud() {
+    const pill = document.getElementById("hudBuildMode");
+    if (!pill) return;
+    if (selectedBuildMaterial) {
+      const icon = ITEM_LOOK[selectedBuildMaterial] || selectedBuildMaterial;
+      const name = ITEM_NAME[selectedBuildMaterial] || selectedBuildMaterial;
+      pill.textContent = `🏗️ ${icon} ${name}（右鍵放置 · 點此取消）`;
+      pill.setAttribute("aria-label", `放置模式：${name}，右鍵點空格放置，點此取消`);
+      pill.classList.remove("hidden");
+      pill.onclick = () => { selectedBuildMaterial = null; updatePlaceModeHud(); };
+    } else {
+      pill.classList.add("hidden");
+      pill.onclick = null;
+    }
   }
 
   // 合成台:把背包快照(品項→數量)對照配方表,畫出每條「產物 ← 素材」與一顆合成鈕。
@@ -3271,6 +3309,24 @@
   }
   // 桌面：滑鼠點擊即互動（移動走鍵盤，不衝突）。
   canvas.addEventListener("click", (e) => farmAtScreen(e.clientX, e.clientY));
+  // C-4 建造：右鍵點擊在選取材料且目標為空格時放置。
+  canvas.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const me = myId ? players.get(myId) : null;
+    if (!me || !selectedBuildMaterial) return;
+    const rect = canvas.getBoundingClientRect();
+    const wx = e.clientX - rect.left + lastCam.x;
+    const wy = e.clientY - rect.top + lastCam.y;
+    const targetKind = tileKindAt(wx, wy);
+    if (targetKind !== "empty") return; // 只能放在空格
+    const DIG_REACH = 80;
+    const dx = wx - me.x, dy = wy - me.y;
+    if (dx * dx + dy * dy > DIG_REACH * DIG_REACH) return; // 太遠
+    if ((myInv.get(selectedBuildMaterial) || 0) <= 0) return; // 背包空了
+    ws.send(JSON.stringify({ type: "place", wx, wy, material: selectedBuildMaterial }));
+    spawnTapFlash(wx, wy);
+  });
   // 桌面 hover:記住游標位置以高亮所指田格;移出畫布就清掉(別留個鬼影高亮)。
   canvas.addEventListener("mousemove", (e) => { hoverScreen = { x: e.clientX, y: e.clientY }; });
   canvas.addEventListener("mouseleave", () => { hoverScreen = null; });

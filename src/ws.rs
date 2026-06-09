@@ -654,6 +654,39 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::Place { wx, wy, material }) => {
+                    // C-4 建造：倒地中不可放置（與挖掘同規則）。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
+                    // 換算格座標，計算格中心世界像素座標，驗可及距離。
+                    let (cx, cy, tx, ty) = crate::tiles::world_to_cell(wx, wy);
+                    let (ccx, ccy) = crate::tiles::cell_center(cx, cy, tx, ty);
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let Some((px, py)) = player_pos else { continue; };
+                    let dist_sq = (ccx - px) * (ccx - px) + (ccy - py) * (ccy - py);
+                    if dist_sq > crate::tiles::DIG_REACH * crate::tiles::DIG_REACH { continue; }
+                    // 只能放在 Empty 格（不可疊建）。
+                    let current_kind = app.tile_world.read().unwrap().tile_kind(cx, cy, tx, ty);
+                    if current_kind != world_core::TileKind::Empty { continue; }
+                    // 驗材料字串是否合法且可放置。
+                    let Some(tile_kind) = crate::tiles::tile_for_item(&material) else { continue; };
+                    let Some(item_kind) = crate::tiles::item_for_placeable_tile(tile_kind) else { continue; };
+                    // 扣背包（背包不足則靜默忽略）；同時取得玩家名供日誌。
+                    let player_name = {
+                        let mut players = app.players.write().unwrap();
+                        let Some(p) = players.get_mut(&id) else { continue; };
+                        if !p.inventory.take(item_kind, 1) { continue; }
+                        p.name.clone()
+                    };
+                    // 更新記憶體 delta（設為實心格），非同步落地到 DB。
+                    app.tile_world.write().unwrap().apply_delta(cx, cy, tx, ty, tile_kind);
+                    let store = app.tile_store.clone();
+                    tokio::spawn(async move {
+                        store.upsert_delta(cx, cy, tx, ty, tile_kind).await;
+                    });
+                    tracing::info!(player = %player_name, ?tile_kind, "建造放置");
+                }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
