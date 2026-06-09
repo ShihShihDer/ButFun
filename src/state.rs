@@ -834,4 +834,38 @@ mod tests {
         p.ether = TRAVEL_ETHER_COST;
         assert!(p.can_travel_to(PLANET_HOME).is_ok(), "赤焰星→故鄉只需 30 乙太");
     }
+
+    #[test]
+    fn travel_home_to_aether_fails_with_insufficient_ether() {
+        use crate::inventory::ItemKind;
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_AETHER - 1;
+        p.inventory.add(ItemKind::VoidShard, 1);
+        assert!(p.can_travel_to(PLANET_AETHER).is_err(), "乙太不足應拒絕霧醚星旅行");
+    }
+
+    #[test]
+    fn travel_home_to_aether_fails_without_void_shard() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_AETHER;
+        assert!(p.can_travel_to(PLANET_AETHER).is_err(), "無虛空碎片應拒絕霧醚星旅行");
+    }
+
+    #[test]
+    fn travel_void_to_aether_succeeds_with_void_shard_and_ether() {
+        use crate::inventory::ItemKind;
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.planet = PLANET_VOID.to_string();
+        p.ether = TRAVEL_ETHER_COST_AETHER;
+        p.inventory.add(ItemKind::VoidShard, 1);
+        assert!(p.can_travel_to(PLANET_AETHER).is_ok(), "虛空碎片 + 乙太足應允許霧醚星旅行");
+    }
+
+    #[test]
+    fn travel_aether_to_home_only_requires_ether() {
+        let mut p = player_at(AETHER_SPAWN_X, AETHER_SPAWN_Y, Input::default());
+        p.planet = PLANET_AETHER.to_string();
+        p.ether = TRAVEL_ETHER_COST;
+        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "霧醚星→故鄉只需 30 乙太");
+    }
 }
