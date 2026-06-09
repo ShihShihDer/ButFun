@@ -130,13 +130,27 @@ impl Player {
         let new_y = self.y + dy * PLAYER_SPEED * dt;
         let r = PLAYER_TILE_RADIUS;
         let is_center_stuck = tile_solid(self.x, self.y);
+        // 是否已身陷水中（中心在水）——舊存檔/被推入等罕見情況，保留逃脫通道。
+        let is_on_water = biome_at(self.x as f64, self.y as f64) == Biome::Water;
+        let corners = [(r, r), (-r, r), (r, -r), (-r, -r)];
         let any_corner = |cx: f32, cy: f32| {
-            [(r, r), (-r, r), (r, -r), (-r, -r)]
+            corners.iter().any(|&(ox, oy)| tile_solid(cx + ox, cy + oy))
+        };
+        // 水域也用四角判定（與地形碰撞一致）：身體邊緣碰到水就擋，不再讓玩家中心壓到水邊、
+        // 露出半個身體站在水上（先前水域只判中心 → 身體會凸進水裡，看起來像走在水上）。
+        let water_corner = |cx: f32, cy: f32| {
+            corners
                 .iter()
-                .any(|&(ox, oy)| tile_solid(cx + ox, cy + oy))
+                .any(|&(ox, oy)| biome_at((cx + ox) as f64, (cy + oy) as f64) == Biome::Water)
         };
         (self.x, self.y) = resolve_move(self.x, self.y, new_x, new_y, |x, y| {
-            if biome_at(x as f64, y as f64) == Biome::Water {
+            // 一般時水域用四角；已陷在水裡時改用中心，留逃脫通道、不卡死。
+            let water_blocked = if is_on_water {
+                biome_at(x as f64, y as f64) == Biome::Water
+            } else {
+                water_corner(x, y)
+            };
+            if water_blocked {
                 return true;
             }
             // 受困時以中心點判定（保留逃脫通道）；一般時以四角判定（精準碰牆）。
