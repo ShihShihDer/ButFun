@@ -82,7 +82,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::CrystalShard
         | ItemKind::MushroomSpore
         | ItemKind::AncientFragment
-        | ItemKind::DeepSeaPearl => None,
+        | ItemKind::DeepSeaPearl
+        | ItemKind::WildflowerSeed => None,
     }
 }
 
