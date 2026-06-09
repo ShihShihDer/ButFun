@@ -32,15 +32,17 @@ pub struct ShopEntry {
 
 /// NPC **收購**清單（玩家 → NPC，換乙太）。
 /// 給採集素材一個現金出口，新玩家不需等農地就能攢起第一桶乙太。
-/// 晶石碎片（深層晶洞掉落）以 3 倍溢價收購，鼓勵探索型玩家深入岩地。
-/// 蕈菇孢子（森林蕈菇洞掉落）以 2 倍溢價收購，鼓勵探索型玩家深入森林。
+/// 晶石碎片（深層晶洞掉落）以 3 乙太/個溢價收購，鼓勵探索型玩家深入岩地。
+/// 蕈菇孢子（森林蕈菇洞掉落）以 2 乙太/個溢價收購，鼓勵探索型玩家深入森林。
+/// 古代碎片（沙漠遺跡掉落）以 4 乙太/個最高溢價收購，回報最遠、最危險的沙漠探索。
 pub const NPC_BUY_LIST: &[ShopEntry] = &[
-    ShopEntry { item: ItemKind::Wood,          price_per: 1 },
-    ShopEntry { item: ItemKind::Stone,         price_per: 1 },
-    ShopEntry { item: ItemKind::Ether,         price_per: 2 },
-    ShopEntry { item: ItemKind::Dirt,          price_per: 1 },
-    ShopEntry { item: ItemKind::CrystalShard,  price_per: 3 },
-    ShopEntry { item: ItemKind::MushroomSpore, price_per: 2 },
+    ShopEntry { item: ItemKind::Wood,             price_per: 1 },
+    ShopEntry { item: ItemKind::Stone,            price_per: 1 },
+    ShopEntry { item: ItemKind::Ether,            price_per: 2 },
+    ShopEntry { item: ItemKind::Dirt,             price_per: 1 },
+    ShopEntry { item: ItemKind::CrystalShard,     price_per: 3 },
+    ShopEntry { item: ItemKind::MushroomSpore,    price_per: 2 },
+    ShopEntry { item: ItemKind::AncientFragment,  price_per: 4 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

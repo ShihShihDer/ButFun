@@ -28,8 +28,9 @@ pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
         TileKind::Dirt     => Some((ItemKind::Dirt,          1)),
         TileKind::Stone    => Some((ItemKind::Stone,         1)),
         TileKind::Ore      => Some((ItemKind::Ether,         1)),
-        TileKind::Crystal  => Some((ItemKind::CrystalShard,  1)),
-        TileKind::Mushroom => Some((ItemKind::MushroomSpore, 1)),
+        TileKind::Crystal     => Some((ItemKind::CrystalShard,    1)),
+        TileKind::Mushroom    => Some((ItemKind::MushroomSpore,   1)),
+        TileKind::AncientRuin => Some((ItemKind::AncientFragment, 1)),
     }
 }
 
@@ -139,8 +140,9 @@ mod tests {
         assert_eq!(drop_for_tile(TileKind::Dirt),     Some((ItemKind::Dirt,          1)));
         assert_eq!(drop_for_tile(TileKind::Stone),    Some((ItemKind::Stone,         1)));
         assert_eq!(drop_for_tile(TileKind::Ore),      Some((ItemKind::Ether,         1)));
-        assert_eq!(drop_for_tile(TileKind::Crystal),  Some((ItemKind::CrystalShard,  1)));
-        assert_eq!(drop_for_tile(TileKind::Mushroom), Some((ItemKind::MushroomSpore, 1)));
+        assert_eq!(drop_for_tile(TileKind::Crystal),     Some((ItemKind::CrystalShard,    1)));
+        assert_eq!(drop_for_tile(TileKind::Mushroom),    Some((ItemKind::MushroomSpore,   1)));
+        assert_eq!(drop_for_tile(TileKind::AncientRuin), Some((ItemKind::AncientFragment, 1)));
     }
 
     #[test]

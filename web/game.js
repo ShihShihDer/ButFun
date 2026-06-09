@@ -1707,7 +1707,7 @@
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
           // 實心牆色:依材質分(土/石/礦/晶石/蕈菇),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -1978,8 +1978,15 @@
       return "dirt";
     }
     // sand
-    // 沙漠：主要為泥土（沙下層）。
-    if (h < 0.05) return "stone";
+    // 沙漠遺跡判定：對齊 Rust tile_kind_at 的遺跡邏輯（scale 90, seed 333）。
+    const ruinN = biomeNoise(wx, wy, 90, 333);
+    if (ruinN > 0.83) {
+      // 遺跡聚落：55% ancient_ruin，45% stone——探索者挖進來看見古代石刻。
+      if (h < 0.55) return "ancient_ruin";
+      return "stone";
+    }
+    // 普通沙漠：偶爾有石塊(8%)，其餘為泥土（沙下層）。
+    if (h < 0.08) return "stone";
     return "dirt";
   }
 
@@ -2008,6 +2015,7 @@
         // 基底色（調飽和、彼此分得開，別都糊成灰褐）。
         ctx.fillStyle = kind === "crystal" ? "#2a1f52"
           : kind === "mushroom" ? "#1a3a1e"
+          : kind === "ancient_ruin" ? "#5a4520"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -2066,6 +2074,29 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(80,220,120,0.28)");
             g.addColorStop(1, "rgba(80,220,120,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 古代遺跡：露出才發出沙金色光暈，埋深處隱約暗金紋；提示「挖進遺跡有古物可取」。
+        if (kind === "ancient_ruin") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 遺跡刻紋：兩條交叉短線模擬古代文字符號，露出時顏色更亮。
+          ctx.strokeStyle = exposed ? "rgba(220,185,80,0.90)" : "rgba(160,130,50,0.45)";
+          ctx.lineWidth = exposed ? 2 : 1.5;
+          const r = exposed ? 6 : 4;
+          ctx.beginPath();
+          ctx.moveTo(cx_ - r, cy_ - r); ctx.lineTo(cx_ + r, cy_ + r);
+          ctx.moveTo(cx_ + r, cy_ - r); ctx.lineTo(cx_ - r, cy_ + r);
+          ctx.stroke();
+          // 中心小方框，象徵銘刻石板
+          ctx.strokeRect(cx_ - 3, cy_ - 3, 6, 6);
+          if (exposed) {
+            // 沙金光暈——讓遺跡牆面隱約散發溫暖金色光暈，玩家一眼認出「這裡不一樣」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(220,185,80,0.28)");
+            g.addColorStop(1, "rgba(220,185,80,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -2681,11 +2712,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3205,7 +3236,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 

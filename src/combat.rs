@@ -80,7 +80,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::Pickaxe
         | ItemKind::ReinforcedPickaxe
         | ItemKind::CrystalShard
-        | ItemKind::MushroomSpore => None,
+        | ItemKind::MushroomSpore
+        | ItemKind::AncientFragment => None,
     }
 }
 
