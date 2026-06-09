@@ -349,6 +349,7 @@
       <button type="button" class="dock-btn" id="dockMarket" data-win="winMarket" aria-haspopup="dialog" aria-expanded="false" aria-label="市場" title="市場">🏪</button>
       <button type="button" class="dock-btn" id="dockShop" data-win="winShop" aria-haspopup="dialog" aria-expanded="false" aria-label="商店（靠近新手村商人才能開）" title="商店">🧑‍💼</button>
       <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="H" aria-label="操作說明（H）" title="操作說明（H）">📖</button>
+      <button type="button" class="dock-btn" id="dockSettings" data-win="winSettings" aria-haspopup="dialog" aria-expanded="false" aria-label="設定" title="設定">⚙️</button>
     </div>
     <div id="hudName" class="hud-sub hidden">你：—</div>
     <!-- 訪客引導:玩家回饋最大宗是「訪客一進來沒農地、不知道下一步」(suggestions.jsonl)。
@@ -427,6 +428,18 @@
         <div>狀態列下方一排圖示開面板:🎒<b>背包</b>看手上素材 · 🔧<b>合成台</b>把木材＋石頭做成<b>鎬子</b>(採礦更快) · 🌱<b>擴地</b> · 🏪<b>市場</b>張貼或購買物品 · 📖本說明</div>
         <div>公共農地旁有一名 🧑‍💼 <b>商人 NPC</b>：走近可<b>賣出</b>採集素材換乙太，或<b>購買</b>鎬子／武器；點上方 🧑‍💼 圖示開商店面板</div>
         <div>登入後點狀態列的 <b>✏️改名</b> 可換顯示名(世界名牌即時更新);訪客先在進場畫面取個名字</div>
+      </div>
+    </div>
+    <div id="winSettings" class="hud-window hidden" role="dialog" aria-labelledby="winSettingsTitle">
+      <div class="win-head">
+        <span class="win-title" id="winSettingsTitle">⚙️ 設定</span>
+        <button type="button" class="win-close" data-close="winSettings" aria-label="關閉設定">✕</button>
+      </div>
+      <div id="settingsBody">
+        <label class="setting-row" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 0;">
+          <input type="checkbox" id="optSmartAutoDig" style="margin-top:3px;flex:none;">
+          <span>智慧自動挖<br><small style="opacity:.8">朝牆走自動挖開「天然岩石」鑿隧道；<b>永遠不會挖到你親手蓋的牆／建築</b>。關掉則挖一律用萬用鈕（單按／長按）。</small></span>
+        </label>
       </div>
     </div>
   </div>
