@@ -20,19 +20,21 @@ fn kind_str(k: TileKind) -> &'static str {
         TileKind::Dirt     => "dirt",
         TileKind::Stone    => "stone",
         TileKind::Ore      => "ore",
-        TileKind::Crystal  => "crystal",
-        TileKind::Mushroom => "mushroom",
+        TileKind::Crystal     => "crystal",
+        TileKind::Mushroom    => "mushroom",
+        TileKind::AncientRuin => "ancient_ruin",
     }
 }
 
 fn parse_kind(s: &str) -> TileKind {
     match s {
-        "dirt"     => TileKind::Dirt,
-        "stone"    => TileKind::Stone,
-        "ore"      => TileKind::Ore,
-        "crystal"  => TileKind::Crystal,
-        "mushroom" => TileKind::Mushroom,
-        _          => TileKind::Empty,
+        "dirt"         => TileKind::Dirt,
+        "stone"        => TileKind::Stone,
+        "ore"          => TileKind::Ore,
+        "crystal"      => TileKind::Crystal,
+        "mushroom"     => TileKind::Mushroom,
+        "ancient_ruin" => TileKind::AncientRuin,
+        _              => TileKind::Empty,
     }
 }
 

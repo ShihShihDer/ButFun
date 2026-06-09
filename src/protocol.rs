@@ -21,17 +21,19 @@ pub enum TileKindView {
     Ore,
     Crystal,
     Mushroom,
+    AncientRuin,
 }
 
 impl From<TileKind> for TileKindView {
     fn from(k: TileKind) -> Self {
         match k {
-            TileKind::Empty    => TileKindView::Empty,
-            TileKind::Dirt     => TileKindView::Dirt,
-            TileKind::Stone    => TileKindView::Stone,
-            TileKind::Ore      => TileKindView::Ore,
-            TileKind::Crystal  => TileKindView::Crystal,
-            TileKind::Mushroom => TileKindView::Mushroom,
+            TileKind::Empty       => TileKindView::Empty,
+            TileKind::Dirt        => TileKindView::Dirt,
+            TileKind::Stone       => TileKindView::Stone,
+            TileKind::Ore         => TileKindView::Ore,
+            TileKind::Crystal     => TileKindView::Crystal,
+            TileKind::Mushroom    => TileKindView::Mushroom,
+            TileKind::AncientRuin => TileKindView::AncientRuin,
         }
     }
 }

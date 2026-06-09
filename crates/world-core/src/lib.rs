@@ -133,6 +133,7 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   3 = Ore（礦脈）
 ///   4 = Crystal（晶石，Deep Rocky 特有稀有礦）
 ///   5 = Mushroom（蕈菇，Forest 生態域蕈菇聚落特有）
+///   6 = AncientRuin（古代遺跡，Sand 生態域沙漠遺跡聚落特有）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
@@ -144,17 +145,21 @@ pub enum TileKind {
     /// 蕈菇叢——只生在森林（Forest）生態域的蕈菇聚落中，挖後掉蕈菇孢子，
     /// 孢子散發異星氣息，NPC 以溢價收購，是探索型玩家的第二條乙太路線。
     Mushroom,
+    /// 古代遺跡石——只生在沙漠（Sand）生態域的遺跡聚落中，挖後掉古代碎片，
+    /// NPC 以高溢價收購，給探索沙漠的玩家開出第三條乙太路線。
+    AncientRuin,
 }
 
 impl TileKind {
     pub fn code(self) -> u8 {
         match self {
-            TileKind::Empty    => 0,
-            TileKind::Dirt     => 1,
-            TileKind::Stone    => 2,
-            TileKind::Ore      => 3,
-            TileKind::Crystal  => 4,
-            TileKind::Mushroom => 5,
+            TileKind::Empty       => 0,
+            TileKind::Dirt        => 1,
+            TileKind::Stone       => 2,
+            TileKind::Ore         => 3,
+            TileKind::Crystal     => 4,
+            TileKind::Mushroom    => 5,
+            TileKind::AncientRuin => 6,
         }
     }
 }
@@ -223,9 +228,17 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
             else { TileKind::Dirt }
         }
         Biome::Sand => {
-            // 沙漠：主要為泥土（沙下層）。
-            if h < 0.05 { TileKind::Stone }
-            else { TileKind::Dirt }
+            // 沙漠遺跡判定：次級噪聲（scale 90, seed 333）高於 0.83 的區域（約 17% 的沙漠）形成遺跡聚落。
+            // 遺跡內：55% AncientRuin，45% Stone——挖進去才看見古代石刻，給探索型玩家視覺驚喜。
+            let ruin_n = value_noise(wx, wy, 90.0, 333);
+            if ruin_n > 0.83 {
+                if h < 0.55 { TileKind::AncientRuin }
+                else { TileKind::Stone }
+            } else {
+                // 普通沙漠：偶爾有石塊(8%)，其餘為泥土（沙下層）。
+                if h < 0.08 { TileKind::Stone }
+                else { TileKind::Dirt }
+            }
         }
         Biome::Water => TileKind::Empty,
     }
@@ -465,6 +478,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn ancient_ruin_exists_in_sand_biome() {
+        // 掃沙漠範圍，確認確實能生成古代遺跡格（不是機率設太低全找不到）。
+        let mut found = false;
+        'outer: for gy in 0..200i32 {
+            for gx in 0..200i32 {
+                let x = gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) == Biome::Sand && tile_kind_at(x + 16.0, y + 16.0) == TileKind::AncientRuin {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "沙漠生態域中應存在古代遺跡格");
+    }
+
+    #[test]
+    fn ancient_ruin_only_in_sand_biome() {
+        // AncientRuin 格不應出現在非沙漠生態域（forest/rocky/meadow）。
+        // 用格中心同一點同時查 biome 和 tile，避免跨生態域邊界的假陽性。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0; // 格中心
+                let y = gy as f64 * 64.0 + 16.0;
+                let b = biome_at(x, y);
+                if b != Biome::Sand && b != Biome::Water {
+                    let k = tile_kind_at(x, y);
+                    assert_ne!(k, TileKind::AncientRuin, "非沙漠生態域 {:?} 不應生遺跡，座標=({x},{y})", b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tile_code_includes_ancient_ruin() {
+        assert_eq!(TileKind::AncientRuin.code(), 6);
     }
 }
 
