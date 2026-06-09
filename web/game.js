@@ -384,14 +384,19 @@
           if (existing) {
             existing.name = p.name;
             existing.species = p.species;
+            // 時間插值：記住「上一個快照位置」與「這個快照到達時刻」，render 在兩者間等速內插
+            //（取代原本每幀追 30% 的指數平滑——那在 15Hz 快照上會每 66ms 衝一下又減速、看起來頓）。
+            existing.px = existing.x;
+            existing.py = existing.y;
             existing.x = p.x;
             existing.y = p.y;
+            existing.tArrive = performance.now();
             // 戰鬥(1-F)血量也要逐快照更新,否則 map 裡的 hp 會停在進場那一刻——
             // drawPlayer 的「被打趴變淡」要靠它讀到每位玩家當下的權威血量。
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
           } else {
-            players.set(p.id, { ...p, rx: p.x, ry: p.y });
+            players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
           }
         }
         // 移除快照中已不存在的玩家
@@ -1454,25 +1459,39 @@
 
     const me = myId ? players.get(myId) : null;
     maybeAutoDig(me); // 智慧自動挖（⚙ 開才生效，只挖天然岩石、不挖你蓋的牆）
-    // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
-    // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
+    // 時間插值所有玩家位置：在「上一個快照位置 px,py」與「這個快照位置 x,y」之間，依到達後
+    // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
+    // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
+    const renderNow = performance.now();
+    const SNAP_MS = 75;
     for (const p of players.values()) {
-      const ddx = p.x - p.rx;
-      const ddy = p.y - p.ry;
+      let nrx, nry;
+      if (p.tArrive === undefined || p.px === undefined) {
+        nrx = p.x; nry = p.y;
+      } else {
+        let f = (renderNow - p.tArrive) / SNAP_MS;
+        if (f > 1) f = 1;
+        nrx = p.px + (p.x - p.px) * f;
+        nry = p.py + (p.y - p.py) * f;
+      }
+      // 朝向 / 走路相位用「本幀實際位移」推（平滑插值 → 朝向也穩）。
+      const ddx = nrx - p.rx;
+      const ddy = nry - p.ry;
       const speed = Math.hypot(ddx, ddy);
-      p.moving = speed > 0.6;
+      p.moving = speed > 0.3;
       if (p.moving) {
-        p.facing = Math.atan2(ddy, ddx); // 朝移動方向（弧度）
-        p.walk = (p.walk || 0) + Math.min(speed, 12) * 0.06; // 越快踏步越快
+        p.facing = Math.atan2(ddy, ddx);
+        p.walk = (p.walk || 0) + Math.min(speed * 60, 12) * 0.06; // 越快踏步越快(換算每秒)
       }
       if (p.facing === undefined) p.facing = Math.PI / 2; // 預設面向下方
-      p.rx += ddx * 0.3;
-      p.ry += ddy * 0.3;
+      p.rx = nrx;
+      p.ry = nry;
     }
 
-    // 鏡頭跟隨自己
-    const camX = me ? me.rx - viewW / 2 : world.width / 2 - viewW / 2;
-    const camY = me ? me.ry - viewH / 2 : world.height / 2 - viewH / 2;
+    // 鏡頭跟隨自己。**取整數像素**：地形/實體都相對 camX,camY 繪製，相機是整數時整個世界
+    // 一起以整像素位移，不會因浮點相機 + 每格 Math.round 而讓格線隨移動抖 1px（像素風的 crawl）。
+    const camX = Math.round(me ? me.rx - viewW / 2 : world.width / 2 - viewW / 2);
+    const camY = Math.round(me ? me.ry - viewH / 2 : world.height / 2 - viewH / 2);
     lastCam.x = camX;
     lastCam.y = camY;
 
