@@ -69,6 +69,26 @@
   let presenceKnown = false;
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
+  // 手機/搖桿挖掘輔助:朝實心地形走就自動挖（Core Keeper 式鑿隧道），免得在手機上「移動」與
+  // 「點擊挖」互搶同一根手指、只能擇一。你照常用搖桿走，撞到牆就會自動一格一格挖開。
+  let lastAutoDig = 0;
+  function maybeAutoDig(me) {
+    if (!me || !ws || ws.readyState !== 1) return;
+    // 目前移動方向（鍵盤/搖桿/手把共用同一組 keys）。沒在移動就不自動挖。
+    let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+    let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+    if (dx === 0 && dy === 0) return;
+    const len = Math.hypot(dx, dy);
+    dx /= len; dy /= len;
+    // 探測你正前方那一格（玩家半徑 + 半格 ≈ 26px）；只有「擋住你的那格是實心」才挖。
+    const px = me.x + dx * 26, py = me.y + dy * 26;
+    if (tileKindAt(px, py) === "empty") return; // 前方不是實心地形,不挖（開放地正常走）
+    const now = performance.now();
+    if (now - lastAutoDig < 170) return;        // 節流:約每 0.17 秒鑿一格
+    lastAutoDig = now;
+    ws.send(JSON.stringify({ type: "dig", wx: px, wy: py }));
+    spawnTapFlash(px, py);
+  }
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
   let fields = [];
@@ -1188,6 +1208,7 @@
     pollGamepad();
 
     const me = myId ? players.get(myId) : null;
+    maybeAutoDig(me); // 朝牆走自動挖（手機免抬指點，移動即可鑿隧道）
     // 插值所有玩家位置，讓 15Hz 快照看起來平滑；
     // 順手從位移量推出「朝向」與「走路相位」，給角色一點走動感（無美術素材的程式替代）。
     for (const p of players.values()) {
