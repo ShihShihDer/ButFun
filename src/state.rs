@@ -346,24 +346,26 @@ mod tests {
 
     #[test]
     fn moves_right_at_expected_speed() {
+        // (1360,200)：方圓 700px 內無水的陸地，純測速度（掃掠碰撞不再穿水，故須避開水域路徑）。
         let mut p = player_at(
-            100.0,
-            100.0,
+            1360.0,
+            200.0,
             Input {
                 right: true,
                 ..Default::default()
             },
         );
         p.step(1.0, |_, _| false); // 一秒
-        assert!((p.x - (100.0 + PLAYER_SPEED)).abs() < 0.001);
-        assert!((p.y - 100.0).abs() < 0.001);
+        assert!((p.x - (1360.0 + PLAYER_SPEED)).abs() < 0.001);
+        assert!((p.y - 200.0).abs() < 0.001);
     }
 
     #[test]
     fn diagonal_is_not_faster() {
+        // (1360,200)：方圓 700px 無水陸地（掃掠碰撞不穿水，純測對角線速度需避水）。
         let mut p = player_at(
-            500.0,
-            500.0,
+            1360.0,
+            200.0,
             Input {
                 right: true,
                 down: true,
@@ -371,18 +373,18 @@ mod tests {
             },
         );
         p.step(1.0, |_, _| false);
-        let dist = (((p.x - 500.0).powi(2)) + ((p.y - 500.0).powi(2))).sqrt();
+        let dist = (((p.x - 1360.0).powi(2)) + ((p.y - 200.0).powi(2))).sqrt();
         // 對角線位移量應約等於單軸速度，而非 sqrt(2) 倍。
         assert!((dist - PLAYER_SPEED).abs() < 0.01, "dist={dist}");
     }
 
     #[test]
     fn walks_past_world_edge_into_negative() {
-        // ③ 無限世界（切片 A）：邊界 clamp 已拿掉，從原點附近往左上走應該能跨進負座標，
-        // 不再被夾在 0。地表（biome_at）對任意座標都生成，所以走出去仍有場景。
+        // ③ 無限世界（切片 A）：邊界 clamp 已拿掉，往上走應能跨過 y=0 進入負座標、不被夾在 0。
+        // 從 (1360,200) 陸地往左上走 226px → y 跨進負值（避開原點附近的水，掃掠碰撞不穿水）。
         let mut p = player_at(
-            5.0,
-            5.0,
+            1360.0,
+            200.0,
             Input {
                 up: true,
                 left: true,
@@ -390,7 +392,7 @@ mod tests {
             },
         );
         p.step(1.0, |_, _| false);
-        assert!(p.x < 0.0 && p.y < 0.0, "應跨過邊界進入負座標: ({}, {})", p.x, p.y);
+        assert!(p.y < 0.0, "應跨過 y=0 邊界進入負座標: ({}, {})", p.x, p.y);
     }
 
     #[test]

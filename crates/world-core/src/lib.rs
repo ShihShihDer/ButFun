@@ -275,16 +275,85 @@ pub fn resolve_move<F: Fn(f32, f32) -> bool>(
     new_y: f32,
     blocked: F,
 ) -> (f32, f32) {
-    // 已在 blocked 內(放行逃脫)或目標可走 → 直接到目標。
-    if blocked(cur_x, cur_y) || !blocked(new_x, new_y) {
-        (new_x, new_y)
-    } else if !blocked(new_x, cur_y) {
-        (new_x, cur_y) // 沿 X 滑
-    } else if !blocked(cur_x, new_y) {
-        (cur_x, new_y) // 沿 Y 滑
-    } else {
-        (cur_x, cur_y)
+    // 分軸、**小步掃掠**推進（swept）：把一步拆成 STEP 大小的小步，一路貼到牆前才停——
+    // 不會像「整步會撞就整個不動」那樣卡在離牆一整步遠、或在窄路完全卡死（治「移動被卡住」）。
+    // 撞到牆角時做**轉角修正**（corner correction，Celeste 那類大型遊戲的招）：往垂直方向
+    // 微推一點點（最多 CORNER）看能不能繞過，治「窄隧道偏中線就被牆角卡住」。
+    const STEP: f32 = 2.0;
+    const CORNER: f32 = 6.0;
+    // 已陷在 blocked 內（生成/傳送落在實心格、被推入水等）→ 放行逃脫，直接到目標、不卡死。
+    if blocked(cur_x, cur_y) {
+        return (new_x, new_y);
     }
+    let mut x = cur_x;
+    let mut y = cur_y;
+
+    // X 軸
+    let dx = new_x - cur_x;
+    let nsx = (dx.abs() / STEP).ceil() as i32;
+    if nsx > 0 {
+        let inc = dx / nsx as f32;
+        for _ in 0..nsx {
+            if !blocked(x + inc, y) {
+                x += inc;
+                continue;
+            }
+            // 轉角修正：往 ±y 微推，找最近一個能讓這小步通過的偏移；繞不過就停（貼牆）。
+            let mut slipped = false;
+            let mut off = STEP;
+            while off <= CORNER {
+                for cand in [y - off, y + off] {
+                    if !blocked(x + inc, cand) && !blocked(x, cand) {
+                        y = cand;
+                        x += inc;
+                        slipped = true;
+                        break;
+                    }
+                }
+                if slipped {
+                    break;
+                }
+                off += STEP;
+            }
+            if !slipped {
+                break;
+            }
+        }
+    }
+
+    // Y 軸（先 X 後 Y → 撞牆自動沿牆滑）
+    let dy = new_y - cur_y;
+    let nsy = (dy.abs() / STEP).ceil() as i32;
+    if nsy > 0 {
+        let inc = dy / nsy as f32;
+        for _ in 0..nsy {
+            if !blocked(x, y + inc) {
+                y += inc;
+                continue;
+            }
+            let mut slipped = false;
+            let mut off = STEP;
+            while off <= CORNER {
+                for cand in [x - off, x + off] {
+                    if !blocked(cand, y + inc) && !blocked(cand, y) {
+                        x = cand;
+                        y += inc;
+                        slipped = true;
+                        break;
+                    }
+                }
+                if slipped {
+                    break;
+                }
+                off += STEP;
+            }
+            if !slipped {
+                break;
+            }
+        }
+    }
+
+    (x, y)
 }
 
 #[cfg(test)]
@@ -344,28 +413,44 @@ mod tests {
         assert_eq!(Biome::Rocky.code(), 4);
     }
 
-    // ── resolve_move 滑動碰撞(gemini 草擬、Claude 審校)──
+    // ── resolve_move：分軸小步掃掠 + 轉角修正 ──
     #[test]
     fn move_open_target_moves_fully() {
-        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, |_, _| false), (1.0, 1.0));
+        let r = resolve_move(0.0, 0.0, 20.0, 0.0, |_, _| false);
+        assert!((r.0 - 20.0).abs() < 0.01 && r.1.abs() < 0.01, "{:?}", r);
     }
 
     #[test]
-    fn move_blocked_target_slides_on_x() {
-        let blocked = |x: f32, y: f32| x > 0.5 && y > 0.5;
-        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (1.0, 0.0));
+    fn creeps_right_up_to_wall() {
+        // 牆在 x>=10：玩家從 0 想衝到 20，應「貼到牆前」(≈8~10)，而不是停在原地或老遠。
+        let blocked = |x: f32, _y: f32| x >= 10.0;
+        let r = resolve_move(0.0, 0.0, 20.0, 0.0, blocked);
+        assert!(r.0 >= 8.0 && r.0 < 10.0, "應貼到牆前, got {:?}", r);
     }
 
     #[test]
-    fn move_blocked_target_slides_on_y() {
-        let blocked = |x: f32, _y: f32| x > 0.5;
-        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (0.0, 1.0));
+    fn slides_along_wall() {
+        // 牆在 x>=10，同時想往 +x +y：x 被擋貼牆，y 仍應照走。
+        let blocked = |x: f32, _y: f32| x >= 10.0;
+        let r = resolve_move(0.0, 0.0, 20.0, 20.0, blocked);
+        assert!(r.0 >= 8.0 && r.0 < 10.0, "x 應貼牆, got {:?}", r);
+        assert!((r.1 - 20.0).abs() < 0.01, "y 應照滑, got {:?}", r);
     }
 
     #[test]
-    fn move_fully_blocked_stays_put() {
-        let blocked = |x: f32, y: f32| !(-0.5..=0.5).contains(&x) || !(-0.5..=0.5).contains(&y);
-        assert_eq!(resolve_move(0.0, 0.0, 1.0, 1.0, blocked), (0.0, 0.0));
+    fn corner_correction_slips_past_small_nub() {
+        // 一小塊凸起 (x∈[10,13), y<5) 擋路，玩家在 y=4 往右走：轉角修正應往下微推繞過、越過凸起。
+        let blocked = |x: f32, y: f32| x >= 10.0 && x < 13.0 && y < 5.0;
+        let r = resolve_move(0.0, 4.0, 20.0, 4.0, blocked);
+        assert!(r.0 > 13.0, "應繞過小凸起、x 越過 13, got {:?}", r);
+    }
+
+    #[test]
+    fn long_wall_does_not_teleport_through() {
+        // 一道長牆(x>=10)，轉角修正(最多 CORNER)繞不過 → 停在牆前，不穿牆。
+        let blocked = |x: f32, _y: f32| x >= 10.0;
+        let r = resolve_move(0.0, 0.0, 40.0, 0.0, blocked);
+        assert!(r.0 < 10.0, "不該穿牆, got {:?}", r);
     }
 
     #[test]
