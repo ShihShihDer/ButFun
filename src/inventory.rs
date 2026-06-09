@@ -424,10 +424,24 @@ mod tests {
             NODE_KINDS.iter().map(|&n| ItemKind::from(n)).collect();
 
         // 敵人掉落可得的物品集合。窮舉守衛同上：新增 `EnemyKind` 變體未納入即編譯失敗。
-        const ENEMY_KINDS: &[EnemyKind] = &[EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+        const ENEMY_KINDS: &[EnemyKind] = &[
+            EnemyKind::ScrapDrone,
+            EnemyKind::EtherWisp,
+            EnemyKind::FlutterSprite,
+            EnemyKind::MushroomStalker,
+            EnemyKind::CrystalGolem,
+            EnemyKind::RuneGuardian,
+            EnemyKind::CoralCrab,
+        ];
         for &e in ENEMY_KINDS {
             match e {
-                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+                EnemyKind::ScrapDrone
+                | EnemyKind::EtherWisp
+                | EnemyKind::FlutterSprite
+                | EnemyKind::MushroomStalker
+                | EnemyKind::CrystalGolem
+                | EnemyKind::RuneGuardian
+                | EnemyKind::CoralCrab => {}
             }
         }
         let droppable: std::collections::BTreeSet<ItemKind> =

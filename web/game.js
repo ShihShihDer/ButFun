@@ -2553,8 +2553,13 @@
 
   // ---- 敵人（戰鬥 1-F）----
   const ENEMY_LOOK = {
-    scrap_drone: { tint: "#6b4a3a" },
-    ether_wisp: { tint: "#46407a" },
+    scrap_drone:       { tint: "#6b4a3a" },
+    ether_wisp:        { tint: "#46407a" },
+    flutter_sprite:    { tint: "#7dca5a" },
+    mushroom_stalker:  { tint: "#3a7a5c" },
+    crystal_golem:     { tint: "#7070d0" },
+    rune_guardian:     { tint: "#a08040" },
+    coral_crab:        { tint: "#2aa0b0" },
   };
 
   // 銹蝕巡邏機:懸浮的故障舊機械。金屬殼 + 脈動紅色感測眼 + 頂端閃燈 + 側鰭。純 canvas 畫。
@@ -2605,6 +2610,222 @@
     ctx.fillStyle = "rgba(20,16,40,0.9)";
     ctx.beginPath(); ctx.arc(cx - 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(cx + 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 飄舞精靈（草原）：輕盈的花粉光球，花瓣翅膀 + 溫柔光暈 + 閃爍花粉點。草原嫩綠色調。
+  function drawFlutterSprite(cx, cy, t, phase) {
+    const pulse = 0.8 + 0.2 * Math.sin(t * 5 + phase);
+    // 外層柔光暈
+    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 14);
+    glow.addColorStop(0, `rgba(180,240,120,${0.5 * pulse})`);
+    glow.addColorStop(1, "rgba(125,202,90,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI * 2); ctx.fill();
+    // 花瓣翅膀（四片橢圓，旋轉飄動）
+    for (let k = 0; k < 4; k++) {
+      const angle = (k / 4) * Math.PI * 2 + Math.sin(t * 2 + phase) * 0.15;
+      const wx = cx + Math.cos(angle) * 9;
+      const wy = cy + Math.sin(angle) * 9;
+      ctx.save();
+      ctx.translate(wx, wy);
+      ctx.rotate(angle);
+      ctx.fillStyle = `rgba(170,230,100,0.55)`;
+      ctx.beginPath(); ctx.ellipse(0, 0, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // 中心光核
+    ctx.fillStyle = `rgba(220,255,170,${pulse})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
+    // 眼睛（小綠點）
+    ctx.fillStyle = "#1a3a10";
+    ctx.beginPath(); ctx.arc(cx - 2, cy - 1, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 2, cy - 1, 1.2, 0, Math.PI * 2); ctx.fill();
+    // 漂浮花粉小點
+    for (let k = 0; k < 3; k++) {
+      const px = cx + Math.cos(t * 1.5 + phase + k * 2.1) * 14;
+      const py = cy + Math.sin(t * 1.5 + phase + k * 2.1) * 8 - k * 3;
+      ctx.fillStyle = `rgba(255,255,180,${0.5 - k * 0.12})`;
+      ctx.beginPath(); ctx.arc(px, py, 1.3 - k * 0.3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // 蕈菇潛行者（森林）：蕈菇形輪廓，厚蓋帽 + 下垂菌褶條 + 孢子噴發。深翠綠色調。
+  function drawMushroomStalker(cx, cy, t, phase) {
+    const bob = Math.sin(t * 2.5 + phase) * 1.5;
+    // 蕈菇柄（身體）
+    ctx.fillStyle = "#3a6a4e";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 6 + bob, 6, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 蕈菇蓋（大帽子）
+    ctx.fillStyle = "#2a6040";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - 4 + bob, 13, 8, 0, 0, Math.PI, true);
+    ctx.fill();
+    ctx.fillStyle = "#3a8058";
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - 3 + bob, 13, 8, 0, 0, Math.PI, false);
+    ctx.fill();
+    // 蓋子外緣發光（孢子光）
+    const sg = ctx.createRadialGradient(cx, cy - 4 + bob, 6, cx, cy - 4 + bob, 16);
+    sg.addColorStop(0, "rgba(80,200,130,0.25)");
+    sg.addColorStop(1, "rgba(40,100,70,0)");
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(cx, cy - 4 + bob, 16, 0, Math.PI * 2); ctx.fill();
+    // 菌褶條紋
+    for (let k = -2; k <= 2; k++) {
+      ctx.strokeStyle = "rgba(30,80,50,0.7)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + k * 4, cy - 3 + bob);
+      ctx.lineTo(cx + k * 4 + Math.sin(t + k) * 1.5, cy + 4 + bob);
+      ctx.stroke();
+    }
+    // 小眼睛（發光）
+    const ep = 0.7 + 0.3 * Math.sin(t * 4 + phase);
+    ctx.fillStyle = `rgba(100,255,160,${ep})`;
+    ctx.beginPath(); ctx.arc(cx - 3, cy + 2 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3, cy + 2 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 晶石傀儡（岩地）：幾何晶柱身軀，六角晶面 + 內部光核 + 碎裂感稜線。紫藍銀色調。
+  function drawCrystalGolem(cx, cy, t, phase) {
+    const pulse = 0.6 + 0.4 * Math.sin(t * 3 + phase);
+    // 內核光暈
+    const ig = ctx.createRadialGradient(cx, cy, 2, cx, cy, 18);
+    ig.addColorStop(0, `rgba(150,140,255,${0.5 * pulse})`);
+    ig.addColorStop(1, "rgba(80,60,180,0)");
+    ctx.fillStyle = ig;
+    ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.fill();
+    // 晶柱主體（六角形）
+    ctx.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2 - Math.PI / 6;
+      const r = 12 + Math.sin(t * 2 + phase + k) * 1.5;
+      if (k === 0) ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      else ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fillStyle = "#6060c0";
+    ctx.fill();
+    ctx.strokeStyle = "#c0c0ff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // 稜線（碎裂感）
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2;
+      ctx.strokeStyle = `rgba(200,200,255,0.5)`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * 12, cy + Math.sin(a) * 12);
+      ctx.stroke();
+    }
+    // 中心發光眼（單眼）
+    ctx.fillStyle = `rgba(220,210,255,${pulse})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1a1040";
+    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 符文守衛（沙漠）：古代銘刻石柱，方正厚重 + 發光符文線 + 沙漠琥珀色調。
+  function drawRuneGuardian(cx, cy, t, phase) {
+    const rp = 0.5 + 0.5 * Math.sin(t * 2.5 + phase);
+    // 石柱主體（矩形）
+    ctx.fillStyle = "#7a6030";
+    ctx.fillRect(cx - 11, cy - 14, 22, 24);
+    ctx.strokeStyle = "#4a3818";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cx - 11, cy - 14, 22, 24);
+    // 頂部裝飾（梯形）
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 14);
+    ctx.lineTo(cx + 8, cy - 14);
+    ctx.lineTo(cx + 11, cy - 20);
+    ctx.lineTo(cx - 11, cy - 20);
+    ctx.closePath();
+    ctx.fillStyle = "#8a7038";
+    ctx.fill();
+    // 發光符文線（Z 字形交叉）
+    ctx.strokeStyle = `rgba(255,200,80,${rp})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 7, cy - 10); ctx.lineTo(cx + 7, cy - 10);
+    ctx.moveTo(cx + 7, cy - 10); ctx.lineTo(cx - 7, cy - 2);
+    ctx.moveTo(cx - 7, cy - 2);  ctx.lineTo(cx + 7, cy - 2);
+    ctx.stroke();
+    // 下方符文點
+    ctx.fillStyle = `rgba(255,220,100,${rp * 0.8})`;
+    ctx.beginPath(); ctx.arc(cx, cy + 5, 2.5, 0, Math.PI * 2); ctx.fill();
+    // 眼睛（兩個琥珀色發光縫）
+    const ep = 0.6 + 0.4 * Math.sin(t * 6 + phase);
+    ctx.fillStyle = `rgba(255,180,40,${ep})`;
+    ctx.beginPath(); ctx.ellipse(cx - 4, cy - 6, 2.5, 1.2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 4, cy - 6, 2.5, 1.2, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 珊瑚蟹（水域）：寬扁甲殼 + 兩隻大螯 + 多足 + 青藍色珊瑚紋路。
+  function drawCoralCrab(cx, cy, t, phase) {
+    const scuttle = Math.sin(t * 4 + phase) * 1.5; // 橫移感
+    // 甲殼主體（扁圓）
+    ctx.fillStyle = "#2090a0";
+    ctx.beginPath();
+    ctx.ellipse(cx + scuttle, cy, 15, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#1a6070";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 珊瑚紋路（甲殼上的斑紋）
+    ctx.strokeStyle = "rgba(100,220,230,0.5)";
+    ctx.lineWidth = 1;
+    for (let k = -1; k <= 1; k++) {
+      ctx.beginPath();
+      ctx.arc(cx + scuttle + k * 5, cy, 5, 0.3, Math.PI - 0.3);
+      ctx.stroke();
+    }
+    // 左螯
+    ctx.fillStyle = "#1a7888";
+    ctx.save();
+    ctx.translate(cx + scuttle - 16, cy - 2);
+    ctx.rotate(-0.4 + Math.sin(t * 3 + phase) * 0.15);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#0f5060";
+    ctx.beginPath();
+    ctx.moveTo(6, -3); ctx.lineTo(10, -6); ctx.lineTo(10, 0); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // 右螯
+    ctx.fillStyle = "#1a7888";
+    ctx.save();
+    ctx.translate(cx + scuttle + 16, cy - 2);
+    ctx.rotate(0.4 + Math.sin(t * 3 + phase + 1) * 0.15);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#0f5060";
+    ctx.beginPath();
+    ctx.moveTo(-6, -3); ctx.lineTo(-10, -6); ctx.lineTo(-10, 0); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // 眼柄（突起小眼）
+    ctx.fillStyle = "#0a4050";
+    ctx.beginPath(); ctx.arc(cx + scuttle - 5, cy - 8, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + scuttle + 5, cy - 8, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(60,220,240,0.9)";
+    ctx.beginPath(); ctx.arc(cx + scuttle - 5, cy - 9, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + scuttle + 5, cy - 9, 1.2, 0, Math.PI * 2); ctx.fill();
+    // 腳（四對）
+    ctx.strokeStyle = "#1a6070";
+    ctx.lineWidth = 1.5;
+    for (let k = 0; k < 4; k++) {
+      const legPhase = Math.sin(t * 4 + phase + k * 0.7) * 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + scuttle - 10 + k * 6, cy + 8);
+      ctx.lineTo(cx + scuttle - 14 + k * 6, cy + 16 + legPhase);
+      ctx.stroke();
+    }
   }
 
   // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
@@ -2724,8 +2945,13 @@
       ctx.fillStyle = "rgba(0,0,0,0.22)";
       ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
       // 生物造型(走近會動、會追——這層只負責長相)
-      if (e.kind === "scrap_drone") drawScrapDrone(sx, ey, t, phase);
-      else if (e.kind === "ether_wisp") drawEtherWisp(sx, ey, t, phase);
+      if      (e.kind === "scrap_drone")      drawScrapDrone(sx, ey, t, phase);
+      else if (e.kind === "ether_wisp")       drawEtherWisp(sx, ey, t, phase);
+      else if (e.kind === "flutter_sprite")   drawFlutterSprite(sx, ey, t, phase);
+      else if (e.kind === "mushroom_stalker") drawMushroomStalker(sx, ey, t, phase);
+      else if (e.kind === "crystal_golem")    drawCrystalGolem(sx, ey, t, phase);
+      else if (e.kind === "rune_guardian")    drawRuneGuardian(sx, ey, t, phase);
+      else if (e.kind === "coral_crab")       drawCoralCrab(sx, ey, t, phase);
       else {
         const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
         ctx.fillStyle = look.tint;

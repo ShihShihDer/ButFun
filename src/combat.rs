@@ -118,6 +118,16 @@ pub enum EnemyKind {
     ScrapDrone,
     /// 迷途乙太靈：野化的乙太生靈，較脆、安撫後散出乙太（種田之外的另一條乙太來源）。
     EtherWisp,
+    /// 飄舞精靈（草原）：輕盈的花粉生靈，安撫後散落野花種子——草原生態最脆弱的守護者。
+    FlutterSprite,
+    /// 蕈菇潛行者（森林）：由孢子凝聚而成的生靈，打倒後釋放蕈菇孢子——森林深處的隱匿者。
+    MushroomStalker,
+    /// 晶石傀儡（岩地）：被晶洞乙太灌入的礦石傀儡，堅不可摧，碎裂後留下晶石碎片——深層晶洞的看守。
+    CrystalGolem,
+    /// 符文守衛（沙漠）：古代遺跡自動啟動的機械守衛，被制伏後掉落古代碎片——沙漠遺跡的最後防線。
+    RuneGuardian,
+    /// 珊瑚蟹（水域）：珊瑚礁叢生的甲殼生物，拆殼後取出深海珍珠——四大生態最稀有的守門者。
+    CoralCrab,
 }
 
 impl EnemyKind {
@@ -126,18 +136,40 @@ impl EnemyKind {
         match self {
             EnemyKind::ScrapDrone => 6,
             EnemyKind::EtherWisp => 4,
+            // 草原精靈最脆——草原是新手區、生態門檻最低。
+            EnemyKind::FlutterSprite => 3,
+            // 森林潛行者中等。
+            EnemyKind::MushroomStalker => 5,
+            // 晶石傀儡最硬——晶洞是深層探索才碰得到的敵人。
+            EnemyKind::CrystalGolem => 8,
+            // 符文守衛皮厚，守著高價值古代碎片。
+            EnemyKind::RuneGuardian => 7,
+            // 珊瑚蟹最難打——守著最稀有的深海珍珠。
+            EnemyKind::CoralCrab => 9,
         }
     }
 
     /// 打倒後掉落的戰利品 `(物品, 數量)`。刻意沿用既有 `ItemKind`，不另開新物品
     /// 變體——戰鬥因此自包含、不動 backend 正在接線的 `inventory.rs`，掉落也直接咬進
     /// 採集 / 合成已有的資源經濟。
+    ///
+    /// 生態域敵人掉落與挖掘相同的特產，提供「戰鬥」與「採礦」兩條平行獲取路線。
     pub fn drop_loot(self) -> (ItemKind, u32) {
         match self {
             // 銹蝕機械拆出廢鐵（礦石）。
             EnemyKind::ScrapDrone => (ItemKind::Stone, 2),
             // 乙太靈散出乙太，但量少、貼合「稀有資源」手感。
             EnemyKind::EtherWisp => (ItemKind::Ether, 1),
+            // 草原精靈安撫後散落野花種子（與採野花叢相同）。
+            EnemyKind::FlutterSprite => (ItemKind::WildflowerSeed, 1),
+            // 森林潛行者碎裂釋放蕈菇孢子（與挖蕈菇叢相同）。
+            EnemyKind::MushroomStalker => (ItemKind::MushroomSpore, 1),
+            // 晶石傀儡碎成晶石碎片（與挖晶洞相同）。
+            EnemyKind::CrystalGolem => (ItemKind::CrystalShard, 1),
+            // 符文守衛被制伏後掉落古代碎片（與挖遺跡相同）。
+            EnemyKind::RuneGuardian => (ItemKind::AncientFragment, 1),
+            // 珊瑚蟹拆殼取出深海珍珠（與挖珊瑚礁相同）。
+            EnemyKind::CoralCrab => (ItemKind::DeepSeaPearl, 1),
         }
     }
 
@@ -148,6 +180,16 @@ impl EnemyKind {
         match self {
             EnemyKind::ScrapDrone => 2,
             EnemyKind::EtherWisp => 1,
+            // 草原精靈最溫和——療癒向、新手友善。
+            EnemyKind::FlutterSprite => 1,
+            // 森林潛行者中等威脅。
+            EnemyKind::MushroomStalker => 2,
+            // 晶石傀儡最危險——深層探索的風險代價。
+            EnemyKind::CrystalGolem => 3,
+            // 符文守衛高威脅，對應高價值掉落。
+            EnemyKind::RuneGuardian => 3,
+            // 珊瑚蟹最強——最稀有材料理應最難打。
+            EnemyKind::CoralCrab => 4,
         }
     }
 
@@ -156,6 +198,11 @@ impl EnemyKind {
         match self {
             EnemyKind::ScrapDrone => 50.0,
             EnemyKind::EtherWisp => 35.0,
+            EnemyKind::FlutterSprite => 28.0,
+            EnemyKind::MushroomStalker => 38.0,
+            EnemyKind::CrystalGolem => 55.0,
+            EnemyKind::RuneGuardian => 50.0,
+            EnemyKind::CoralCrab => 62.0,
         }
     }
 }
@@ -271,7 +318,15 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 2] = [EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+    const KINDS: [EnemyKind; 7] = [
+        EnemyKind::ScrapDrone,
+        EnemyKind::EtherWisp,
+        EnemyKind::FlutterSprite,
+        EnemyKind::MushroomStalker,
+        EnemyKind::CrystalGolem,
+        EnemyKind::RuneGuardian,
+        EnemyKind::CoralCrab,
+    ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
 
@@ -476,6 +531,12 @@ mod tests {
         // 掉落沿用既有採集 / 經濟資源，戰鬥自包含、不另開物品變體。
         assert_eq!(EnemyKind::ScrapDrone.drop_loot(), (ItemKind::Stone, 2));
         assert_eq!(EnemyKind::EtherWisp.drop_loot(), (ItemKind::Ether, 1));
+        // 生態域敵人——各掉對應生態特產（與挖掘路線相同素材，戰鬥是另一條供給管道）。
+        assert_eq!(EnemyKind::FlutterSprite.drop_loot(), (ItemKind::WildflowerSeed, 1));
+        assert_eq!(EnemyKind::MushroomStalker.drop_loot(), (ItemKind::MushroomSpore, 1));
+        assert_eq!(EnemyKind::CrystalGolem.drop_loot(), (ItemKind::CrystalShard, 1));
+        assert_eq!(EnemyKind::RuneGuardian.drop_loot(), (ItemKind::AncientFragment, 1));
+        assert_eq!(EnemyKind::CoralCrab.drop_loot(), (ItemKind::DeepSeaPearl, 1));
     }
 
     #[test]
@@ -574,7 +635,13 @@ mod tests {
         // 逼人回來把新種類納入本遍歷（比照 crafting 對 NodeKind 的窮舉守衛）。
         for kind in KINDS {
             match kind {
-                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+                EnemyKind::ScrapDrone
+                | EnemyKind::EtherWisp
+                | EnemyKind::FlutterSprite
+                | EnemyKind::MushroomStalker
+                | EnemyKind::CrystalGolem
+                | EnemyKind::RuneGuardian
+                | EnemyKind::CoralCrab => {}
             }
         }
 
@@ -615,7 +682,13 @@ mod tests {
         // 逼人回來把新種類納入本遍歷（比照 `every_enemy_drop_is_a_usable_economic_resource`）。
         for kind in KINDS {
             match kind {
-                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+                EnemyKind::ScrapDrone
+                | EnemyKind::EtherWisp
+                | EnemyKind::FlutterSprite
+                | EnemyKind::MushroomStalker
+                | EnemyKind::CrystalGolem
+                | EnemyKind::RuneGuardian
+                | EnemyKind::CoralCrab => {}
             }
         }
 
