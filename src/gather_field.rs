@@ -158,44 +158,46 @@ impl Default for NodeField {
     }
 }
 
-/// 依生態域決定資源種類：森林/草地多木材，岩地富礦石，沙漠散落石塊。
-/// `slot` 用於同一生態域內的變化（如岩地交替礦石與普通石塊）。
-fn kind_for_biome(biome: world_core::Biome, slot: u64) -> NodeKind {
+/// 依生態域決定資源種類：目前僅保留「樹」作為採集節點，石/礦已統一至地形挖掘。
+fn kind_for_biome(biome: world_core::Biome) -> Option<NodeKind> {
     use world_core::Biome;
     match biome {
-        Biome::Forest | Biome::Meadow => NodeKind::Tree,
-        Biome::Rocky => {
-            // 岩地交替：一半乙太礦、一半普通石塊，探索時才有驚喜感
-            if slot % 2 == 0 { NodeKind::EtherOre } else { NodeKind::Rock }
-        }
-        Biome::Sand | Biome::Water => NodeKind::Rock,
+        Biome::Forest | Biome::Meadow => Some(NodeKind::Tree),
+        _ => None,
     }
 }
 
-/// 區塊內節點生成：先找非水域落點，再依生態域決定種類。
+/// 區塊內節點生成：先找非水域且非實心落點，再依生態域決定種類。
 fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedNode> {
     let mut nodes = Vec::new();
     for i in 0..NODES_PER_CHUNK {
         let id = (cx, cy, i);
-        // 位置先行：找非水域落點（最多 41 次），再看那裡的生態域決定種類
+        // 位置先行：找非水域且非實心（Empty）落點（最多 41 次），再看那裡的生態域決定種類
         let mut pos = None;
         for salt in 0u32..=40 {
             let (x, y) = scatter_position(id, 0, salt);
-            if world_core::biome_at(x as f64, y as f64) != world_core::Biome::Water {
+            let wx = x as f64;
+            let wy = y as f64;
+            if world_core::biome_at(wx, wy) != world_core::Biome::Water
+               && world_core::tile_kind_at(wx, wy) == world_core::TileKind::Empty {
                 pos = Some((x, y));
                 break;
             }
         }
-        let (x, y) = pos.unwrap_or_else(|| scatter_position(id, 0, 0)); // 防呆
+        let (x, y) = match pos {
+            Some(p) => p,
+            None => continue, // 找不著合適落點則本槽位不生成（D-1：不准生在實心格）
+        };
         let biome = world_core::biome_at(x as f64, y as f64);
-        let kind = kind_for_biome(biome, i as u64);
-        nodes.push(PlacedNode {
-            id,
-            x,
-            y,
-            node: ResourceNode::new(kind),
-            respawns: 0,
-        });
+        if let Some(kind) = kind_for_biome(biome) {
+            nodes.push(PlacedNode {
+                id,
+                x,
+                y,
+                node: ResourceNode::new(kind),
+                respawns: 0,
+            });
+        }
     }
     nodes
 }
@@ -205,8 +207,10 @@ fn place_for_id(id: (i32, i32, usize), kind: NodeKind, respawns: u32) -> (f32, f
     let mut salt = 0;
     loop {
         let (x, y) = scatter_position(id, respawns, salt);
-        let biome = world_core::biome_at(x as f64, y as f64);
-        if biome_suits_kind(biome, kind) {
+        let wx = x as f64;
+        let wy = y as f64;
+        let biome = world_core::biome_at(wx, wy);
+        if biome_suits_kind(biome, kind) && world_core::tile_kind_at(wx, wy) == world_core::TileKind::Empty {
             return (x, y);
         }
         salt += 1;
@@ -229,10 +233,7 @@ fn scatter_position(id: (i32, i32, usize), respawns: u32, salt: u32) -> (f32, f3
 fn biome_suits_kind(biome: world_core::Biome, kind: NodeKind) -> bool {
     use world_core::Biome;
     match (kind, biome) {
-        (_, Biome::Water) => false,
         (NodeKind::Tree, Biome::Forest | Biome::Meadow) => true,
-        (NodeKind::Rock, Biome::Rocky | Biome::Sand) => true,
-        (NodeKind::EtherOre, Biome::Rocky) => true,
         _ => false,
     }
 }
@@ -258,24 +259,27 @@ mod tests {
     #[test]
     fn ensure_chunks_generates_nodes() {
         let mut f = NodeField::new();
-        f.ensure_chunks_around(0.0, 0.0, 100.0);
-        assert!(f.nodes().len() >= NODES_PER_CHUNK);
+        // 確保範圍大一點，增加遇到適合生態域（Meadow/Forest）且非實心的機率。
+        f.ensure_chunks_around(0.0, 0.0, 2000.0);
+        assert!(f.nodes().len() > 0);
     }
 
     #[test]
     fn placement_is_deterministic() {
         let mut a = NodeField::new();
-        a.ensure_chunks_around(1000.0, 1000.0, 100.0);
+        a.ensure_chunks_around(1000.0, 1000.0, 1000.0);
         let mut b = NodeField::new();
-        b.ensure_chunks_around(1000.0, 1000.0, 100.0);
+        b.ensure_chunks_around(1000.0, 1000.0, 1000.0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn gather_near_picks_correct_node() {
         let mut f = NodeField::new();
-        f.ensure_chunks_around(0.0, 0.0, 100.0);
-        let target = f.nodes()[0].clone();
+        f.ensure_chunks_around(0.0, 0.0, 2000.0);
+        let nodes = f.nodes();
+        assert!(nodes.len() > 0, "應至少生成一個節點");
+        let target = nodes[0].clone();
         let got = f.gather_near(target.x, target.y);
         assert!(got.is_some());
         assert_eq!(got.unwrap().0, target.node.kind());
@@ -284,8 +288,10 @@ mod tests {
     #[test]
     fn node_respawns_and_moves() {
         let mut f = NodeField::new();
-        f.ensure_chunks_around(0.0, 0.0, 100.0);
-        let target = f.nodes()[0].clone();
+        f.ensure_chunks_around(0.0, 0.0, 2000.0);
+        let nodes = f.nodes();
+        assert!(nodes.len() > 0, "應至少生成一個節點");
+        let target = nodes[0].clone();
         let kind = target.node.kind();
         
         // 採空

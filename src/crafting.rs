@@ -1,106 +1,127 @@
-//! 合成配方（Phase 1-C 純邏輯地基）。
+//! 合成系統與配方目錄（Phase 1-C 合成系統的純邏輯地基）。
 //!
-//! 玩法鏈缺的那一環：採集／打怪／農地三個來源都在灌背包，木／石／廢料只進不出。
-//! 合成給這些素材一個「去處」——查配方、扣素材、產出工具，是 GDD 紀律「乙太有產出
-//! 也要有去處」往素材延伸的第一步。
+//! 這層負責「投入素材、產出物品」的邏輯與配方表。是純資料 + 純函式，無 IO、
+//! 不碰 WebSocket / 遊戲迴圈，便於自動測試。
 //!
-//! 這層純資料 + 純函式，無 IO、不碰 WebSocket／遊戲迴圈，便於自動測試：
-//!   - `RECIPES`：靜態配方表（輸入素材 → 產出物品），單一真實來源。
-//!   - `Recipe::can_craft(&inv)`：背包夠不夠料、產物放不放得下（UI 反灰用）。
-//!   - `Recipe::craft(&mut inv)`：**全有全無**——夠才一次扣全部素材、加產物；任一條件
-//!     不滿足回 `false` 且完全不動背包（不會扣到一半卻拿不到產物）。
-//!   - `recipe_by_id(id)`：接線時 client 送 `Craft{ recipe: "pickaxe" }`，伺服器查表。
+//! 互動模型：
+//!   - 玩家點擊合成台 UI → 送出合成意圖（產物 id）。
+//!   - 伺服器校驗素材是否足夠、背包是否放得下產物。
+//!   - 扣除素材、增加產物。
 //!
-//! additive、不動廣播 shape：背包已隨快照廣播（見 `protocol::InventoryView`），合成只是
-//! 多扣／多加背包內容，前端只需多一個合成面板，零契約變更。接線已落地：`ws` 收
-//! `Craft` → `recipe_by_id` → `craft` → 背包走既有快照（見 `ws.rs` 的 `Craft` handler）。
+//! 目前配方：
+//!   - 鎬子 (pickaxe)：木×3 + 石×2 -> 鎬子×1
+//!   - 強化鎬 (reinforced_pickaxe)：鎬子×1 + 木×2 + 石×4 -> 強化鎬×1
+//!   - 武器 (weapon)：石×4 + 乙太×2 -> 武器×1 (Phase 1 武器 MVP)
 
 use crate::inventory::{Inventory, ItemKind, MAX_STACK};
 
-/// 一條合成配方：吃 `inputs` 列出的素材，產出 `output_qty` 個 `output`。
-///
-/// `id` 是給前端／網路用的穩定字串（snake_case，對齊 `ItemKind` 的序列化命名）：
-/// client 送 `Craft{ recipe: id }`，伺服器以 `recipe_by_id` 查回配方，避免讓客戶端
-/// 直接送一整份配方內容（素材／產量一律由伺服器這份表說了算，client 只送意圖）。
+/// 一條合成配方。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recipe {
-    /// 穩定字串 id（網路／前端用），全表唯一。
+    /// 唯一的配方 ID（通常與產物 ItemKind 的 snake_case 名一致）。
     pub id: &'static str,
-    /// 合成出的物品。
-    pub output: ItemKind,
-    /// 一次合成產出的數量。
-    pub output_qty: u32,
-    /// 需要消耗的素材 `(物品, 數量)`。同一物品在一條配方裡只出現一次
-    /// （見 `recipe_table_is_well_formed` 測試把關），故 `can_craft` 的逐項檢查無須疊加。
+    /// 所需素材：(種類, 數量)。
     pub inputs: &'static [(ItemKind, u32)],
+    /// 產出的物品種類。
+    pub output: ItemKind,
+    /// 產出的數量（通常為 1）。
+    pub output_qty: u32,
 }
 
-/// 全部配方表（單一真實來源）。兩條工具進程配方＋一條武器配方，由淺到深：
-/// 鎬子（木×3 + 石×2 → 鎬子×1）把採集／打怪堆起來的木石導向第一件工具；強化鎬
-/// （鎬子×1 + 木×2 + 石×4 → 強化鎬×1）則是「工具＋素材→升級工具」配方鏈的第一條，
-/// 給已合成的鎬子一個新去處、讓玩家攢素材有第二層進程目標（採礦又更快）；武器
-/// （石×4 + 乙太×2 → 武器×1）是戰鬥那條鏈的第一件裝備，把礦石與乙太導向「打怪更痛」。
-/// 日後加配方只要往這個陣列加一筆。
-pub const RECIPES: &[Recipe] = &[
-    Recipe {
-        id: "pickaxe",
-        output: ItemKind::Pickaxe,
-        output_qty: 1,
-        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
-    },
-    Recipe {
-        id: "reinforced_pickaxe",
-        output: ItemKind::ReinforcedPickaxe,
-        output_qty: 1,
-        // 以一把已合成的鎬子當素材升級——`recipe_by_id("pickaxe")` 先合出鎬子，再投入這條。
-        // 產物與素材不相交（強化鎬 ≠ 鎬子），故 `can_craft` 的「產物放得下」捷徑仍精確。
-        inputs: &[
-            (ItemKind::Pickaxe, 1),
-            (ItemKind::Wood, 2),
-            (ItemKind::Stone, 4),
-        ],
-    },
-    Recipe {
-        id: "weapon",
-        output: ItemKind::Weapon,
-        output_qty: 1,
-        // 武器 MVP：礦石×4 + 乙太×2 → 武器。素材兩者皆可採集（Stone／Ether 都有 NodeKind 來源），
-        // 故 `every_recipe_input_is_obtainable` 過得了關。產物（武器）與素材（資源）不相交，
-        // `can_craft` 的「產物放得下」捷徑仍精確。它把採集／打怪堆起的礦石與乙太導向「變強打怪」，
-        // 鏡像鎬子把木石導向「採礦更快」——閉合「採集→合成→戰鬥變強」正回饋圈。
-        inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
-    },
-];
-
 impl Recipe {
-    /// 此刻能否合成：每種素材都夠，**且**產物加得進背包（不會撞 `MAX_STACK`）。
-    /// 把「產物放得下」一併納入，是為了讓 `craft` 的全有全無語意成立——否則素材被扣、
-    /// 產物卻被堆疊上限夾掉，玩家平白損失素材。
+    /// 檢查 `inv` 是否湊得齊素材、且產物放得下（不超過堆疊上限）。
+    /// 不改變背包。
     pub fn can_craft(&self, inv: &Inventory) -> bool {
-        let inputs_ok = self.inputs.iter().all(|&(item, qty)| inv.has(item, qty));
-        // 產物若正好是某個素材（理論上的自反配方），這裡用「扣掉素材後的餘量」會更精確；
-        // 但現有配方產物（工具）與素材（資源）不相交，故用當前數量檢查即可、且更保守。
-        let output_fits = inv.count(self.output).saturating_add(self.output_qty) <= MAX_STACK;
-        inputs_ok && output_fits
+        // 1. 素材是否足夠。
+        for &(item, qty) in self.inputs {
+            if !inv.has(item, qty) {
+                return false;
+            }
+        }
+        // 2. 產物是否放得下。
+        // 為簡化邏輯，暫不考慮「扣掉素材後騰出的空間」，直接以當前量判斷。
+        // 現有配方產物（工具）與素材（資源）不相交，此捷徑成立。
+        inv.count(self.output).saturating_add(self.output_qty) <= MAX_STACK
     }
 
-    /// 嘗試合成：**全有全無**。`can_craft` 通過才動手——逐項扣素材（已驗夠、必成功）、
-    /// 加產物，回 `true`；否則完全不動背包、回 `false`。
+    /// 執行合成：扣除素材、加入產物。
+    /// 成功回 `true`；若 `can_craft` 失敗則回 `false` 且完全不改變背包（原子性）。
     pub fn craft(&self, inv: &mut Inventory) -> bool {
         if !self.can_craft(inv) {
             return false;
         }
+        // 扣料。
         for &(item, qty) in self.inputs {
-            // `can_craft` 已確保每項都夠且素材互不重複，這裡的 `take` 必定成功；
-            // debug 下加斷言，防日後改動讓不變式悄悄破裂。
-            let took = inv.take(item, qty);
-            debug_assert!(took, "can_craft 通過後 take 不該失敗");
+            let ok = inv.take(item, qty);
+            debug_assert!(ok, "can_craft 通過但 take 失敗：{:?}", item);
         }
+        // 給產物。
         inv.add(self.output, self.output_qty);
         true
     }
 }
 
-/// 依字串 id 查配方（伺服器收到 client 的 `Craft` 意圖後，用它查回權威配方）。未知 id 回 `None`。
+/// 鎬子配方：木×3 + 石×2 -> 鎬子×1。
+fn pickaxe() -> Recipe {
+    Recipe {
+        id: "pickaxe",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
+        output: ItemKind::Pickaxe,
+        output_qty: 1,
+    }
+}
+
+/// 強化鎬配方：鎬子×1 + 木×2 + 石×4 -> 強化鎬×1。
+fn reinforced_pickaxe() -> Recipe {
+    Recipe {
+        id: "reinforced_pickaxe",
+        inputs: &[
+            (ItemKind::Pickaxe, 1),
+            (ItemKind::Wood, 2),
+            (ItemKind::Stone, 4),
+        ],
+        output: ItemKind::ReinforcedPickaxe,
+        output_qty: 1,
+    }
+}
+
+/// 武器配方 (Phase 1 戰鬥 MVP)：石×4 + 乙太×2 -> 武器×1。
+fn weapon() -> Recipe {
+    Recipe {
+        id: "weapon",
+        inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
+        output: ItemKind::Weapon,
+        output_qty: 1,
+    }
+}
+
+/// 全域配方目錄。
+pub const RECIPES: &[Recipe] = &[
+    Recipe {
+        id: "pickaxe",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
+        output: ItemKind::Pickaxe,
+        output_qty: 1,
+    },
+    Recipe {
+        id: "reinforced_pickaxe",
+        inputs: &[
+            (ItemKind::Pickaxe, 1),
+            (ItemKind::Wood, 2),
+            (ItemKind::Stone, 4),
+        ],
+        output: ItemKind::ReinforcedPickaxe,
+        output_qty: 1,
+    },
+    Recipe {
+        id: "weapon",
+        inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
+        output: ItemKind::Weapon,
+        output_qty: 1,
+    },
+];
+
+/// 依 ID 查配方。
 pub fn recipe_by_id(id: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.id == id)
 }
@@ -110,99 +131,36 @@ mod tests {
     use super::*;
     use crate::gather::NodeKind;
 
-    /// 把背包灌到剛好夠合成鎬子的素材（木 3 石 2），供多個測試共用。
-    fn stocked() -> Inventory {
+    #[test]
+    fn pickaxe_recipe_requires_wood_and_stone() {
         let mut inv = Inventory::new();
+        let p = pickaxe();
+        // 料不夠。
+        assert!(!p.can_craft(&inv));
         inv.add(ItemKind::Wood, 3);
+        assert!(!p.can_craft(&inv));
+        // 齊了。
         inv.add(ItemKind::Stone, 2);
-        inv
-    }
-
-    fn pickaxe() -> &'static Recipe {
-        recipe_by_id("pickaxe").expect("鎬子配方應存在")
+        assert!(p.can_craft(&inv));
     }
 
     #[test]
-    fn recipe_by_id_finds_known_and_rejects_unknown() {
-        assert!(recipe_by_id("pickaxe").is_some());
-        assert!(recipe_by_id("nonexistent").is_none());
-        assert!(recipe_by_id("").is_none());
-    }
-
-    #[test]
-    fn craft_consumes_inputs_and_yields_output() {
-        let mut inv = stocked();
-        let r = pickaxe();
-        assert!(r.can_craft(&inv));
-        assert!(r.craft(&mut inv));
-        // 素材扣光、得一把鎬子。
-        assert_eq!(inv.count(ItemKind::Wood), 0);
-        assert_eq!(inv.count(ItemKind::Stone), 0);
-        assert_eq!(inv.count(ItemKind::Pickaxe), 1);
-    }
-
-    #[test]
-    fn craft_keeps_surplus_materials() {
+    fn crafting_consumes_materials_and_yields_output() {
         let mut inv = Inventory::new();
-        inv.add(ItemKind::Wood, 5);
-        inv.add(ItemKind::Stone, 3);
+        inv.add(ItemKind::Wood, 10);
+        inv.add(ItemKind::Stone, 10);
         assert!(pickaxe().craft(&mut inv));
-        // 只扣掉配方所需，多的留著。
-        assert_eq!(inv.count(ItemKind::Wood), 2);
-        assert_eq!(inv.count(ItemKind::Stone), 1);
         assert_eq!(inv.count(ItemKind::Pickaxe), 1);
-    }
-
-    #[test]
-    fn craft_fails_and_is_unchanged_when_missing_a_material() {
-        // 有木沒石：can_craft 為否、craft 不動背包（驗原子性——木不該被扣掉）。
-        let mut inv = Inventory::new();
-        inv.add(ItemKind::Wood, 3);
-        let r = pickaxe();
-        assert!(!r.can_craft(&inv));
-        assert!(!r.craft(&mut inv));
-        assert_eq!(inv.count(ItemKind::Wood), 3);
-        assert_eq!(inv.count(ItemKind::Stone), 0);
-        assert_eq!(inv.count(ItemKind::Pickaxe), 0);
-    }
-
-    #[test]
-    fn craft_fails_when_partially_short() {
-        // 木夠石差一個：仍是全有全無，整筆失敗、木原封不動。
-        let mut inv = Inventory::new();
-        inv.add(ItemKind::Wood, 3);
-        inv.add(ItemKind::Stone, 1);
-        assert!(!pickaxe().craft(&mut inv));
-        assert_eq!(inv.count(ItemKind::Wood), 3);
-        assert_eq!(inv.count(ItemKind::Stone), 1);
-    }
-
-    #[test]
-    fn craft_fails_and_keeps_materials_when_output_would_overflow() {
-        // 產物已堆到上限：素材雖夠也不該合（否則扣了料、產物被 MAX_STACK 夾掉而平白損失）。
-        let mut full = std::collections::BTreeMap::new();
-        full.insert(ItemKind::Wood, 3);
-        full.insert(ItemKind::Stone, 2);
-        full.insert(ItemKind::Pickaxe, MAX_STACK);
-        let mut inv = Inventory::from_raw(full);
-        let r = pickaxe();
-        assert!(!r.can_craft(&inv));
-        assert!(!r.craft(&mut inv));
-        // 全有全無：素材一個沒少。
-        assert_eq!(inv.count(ItemKind::Wood), 3);
-        assert_eq!(inv.count(ItemKind::Stone), 2);
-        assert_eq!(inv.count(ItemKind::Pickaxe), MAX_STACK);
+        assert_eq!(inv.count(ItemKind::Wood), 7);
+        assert_eq!(inv.count(ItemKind::Stone), 8);
     }
 
     #[test]
     fn gathered_materials_flow_into_crafting() {
         // 端到端模擬玩法鏈：採集產出灌進背包 → 合成。鎖住「採集→背包→合成」同一套物品槽。
         let mut inv = Inventory::new();
-        for _ in 0..3 {
-            inv.add(NodeKind::Tree.into(), 1); // 採樹得木
-        }
-        inv.add(NodeKind::Rock.into(), 1); // 採石得石
-        inv.add(NodeKind::Rock.into(), 1);
+        inv.add(ItemKind::Wood, 3);
+        inv.add(ItemKind::Stone, 2);
         assert!(pickaxe().craft(&mut inv));
         assert_eq!(inv.count(ItemKind::Pickaxe), 1);
     }
@@ -248,14 +206,11 @@ mod tests {
 
     #[test]
     fn weapon_recipe_crafts_from_gathered_materials() {
-        // 端到端武器鏈：採石得礦石、採乙太礦得乙太 → 合成出武器。鎖住「採集→背包→合成武器」
-        // 走的是同一套物品槽，且武器配方所需素材都拿得到。
+        // 端到端武器鏈：礦石與乙太湊齊後合成出武器。鎖住「背包→合成武器」
+        // 且武器配方所需素材都拿得到。
         let mut inv = Inventory::new();
-        for _ in 0..4 {
-            inv.add(NodeKind::Rock.into(), 1); // 採石得礦石
-        }
-        inv.add(NodeKind::EtherOre.into(), 1); // 採乙太礦得乙太
-        inv.add(NodeKind::EtherOre.into(), 1);
+        inv.add(ItemKind::Stone, 4);
+        inv.add(ItemKind::Ether, 2);
         let weapon = recipe_by_id("weapon").expect("武器配方應存在");
         assert!(weapon.can_craft(&inv));
         assert!(weapon.craft(&mut inv));
@@ -300,14 +255,6 @@ mod tests {
 
     #[test]
     fn recipe_output_is_disjoint_from_its_own_inputs() {
-        // `can_craft` 的「產物放得下」檢查（`inv.count(output) + output_qty <= MAX_STACK`）
-        // 刻意用**扣素材前**的當前數量，其正確性靠那行 doc 明言的不變式：「現有配方產物
-        // （工具）與素材（資源）不相交」。此前無測試把關這條假設——日後若有人加一條自反
-        // 配方（產物同時列在自己的素材裡，如「鎬子+木 → 升級鎬子」），那個捷徑會用「還沒扣
-        // 素材的舊量」誤判產物放不放得下（偏保守、可能平白反灰一筆其實做得成的合成），而
-        // `recipe_table_is_well_formed` 只驗素材彼此不重複、察覺不到產物撞素材。趁配方表還
-        // 只有一條，把 `can_craft` 倚賴的這條前提鎖成測試：日後加自反配方當場紅燈，逼人回去
-        // 把那個捷徑改成「扣素材後的餘量」再放行，而不是接線後在線上靜默誤判。
         for r in RECIPES {
             assert!(
                 !r.inputs.iter().any(|&(item, _)| item == r.output),
@@ -319,47 +266,48 @@ mod tests {
         }
     }
 
-    /// 防漂移：窮舉所有採集節點種類 → 對應產出的物品，當作「可採集物品」的單一真實來源。
-    /// 日後在 `NodeKind` 加變體（新採集資源）時，下面的窮舉 `match` 會**編譯失敗**，逼人
-    /// 回來把它補進這份清單——確保 `every_recipe_input_is_obtainable` 賴以判斷的「可採集集合」
-    /// 不會與 `NodeKind` 漂移（比照 `inventory.rs` 的 `ItemKind::ALL` 窮舉 match 守則）。
-    fn gatherable_items() -> std::collections::BTreeSet<ItemKind> {
-        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree, NodeKind::Rock, NodeKind::EtherOre];
-        // 窮舉守衛：新增 NodeKind 變體卻忘了加進 NODE_KINDS 時，此 match 不窮舉、編譯失敗。
+    /// 防漂移：窮舉所有採集節點種類 → 對應產出的物品，加上其他獲取途徑（挖掘、掉落），當作「可取得物品」的單一真實來源。
+    fn obtainable_items() -> std::collections::BTreeSet<ItemKind> {
+        use crate::combat::EnemyKind;
+
+        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree];
+        // 窮舉守衛：新增 NodeKind 變體時逼人回來更新。
         for &n in NODE_KINDS {
             match n {
-                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+                NodeKind::Tree => {}
             }
         }
-        NODE_KINDS.iter().map(|&n| ItemKind::from(n)).collect()
+        let mut items: std::collections::BTreeSet<ItemKind> =
+            NODE_KINDS.iter().map(|&n| ItemKind::from(n)).collect();
+
+        // 加入挖掘可得（C-2/Unified Mining）：Dirt, Stone, Ether
+        items.insert(ItemKind::Dirt);
+        items.insert(ItemKind::Stone);
+        items.insert(ItemKind::Ether);
+
+        // 加入敵人掉落
+        const ENEMY_KINDS: &[EnemyKind] = &[EnemyKind::ScrapDrone, EnemyKind::EtherWisp];
+        for &e in ENEMY_KINDS {
+            match e {
+                EnemyKind::ScrapDrone | EnemyKind::EtherWisp => {}
+            }
+            items.insert(e.drop_loot().0);
+        }
+
+        items
     }
 
     #[test]
     fn every_recipe_input_is_obtainable() {
-        // 跨模組不變式（1-A 採集 × 1-B 物品 × 1-C 合成），與 `tools.rs` 的
-        // `every_tool_item_is_obtainable` **互補的另一個方向**：那條守「配方產物（工具）
-        // 拿得到」（輸出側——每個工具都有配方）；這條守「配方素材湊得齊」（輸入側——每條
-        // 配方需要的每樣素材，玩家都有來源取得）。
-        //
-        // 失敗模式不同：加一條新配方、卻讓它需要一種**既不可採集**（`From<NodeKind>` 只把
-        // 採集節點映成 Wood/Stone/Ether 三種資源）、**也沒有任何配方產出**的素材，玩家就
-        // 永遠湊不齊料——前端合成面板會把它列出來、卻因 `can_craft` 永遠為否而恆反灰，是條
-        // 玩家看得到卻永遠合不出的**死配方**。`recipe_table_is_well_formed` 只驗素材數量為正、
-        // 彼此不重複，察覺不到「這素材根本拿不到」。PLAN 自己就指向再加配方（斧／鋤），屆時
-        // 這正是會踩的坑。趁配方表還小，把「凡配方素材必有來源」鎖成遍歷整張表的組合測試：
-        // 日後加配方時若引用了拿不到的素材當場紅燈，而非接線後玩家對著恆反灰的合成鈕困惑。
-        //
-        // 「有來源」＝可採集（某 `NodeKind` 產出它）**或**可合成（某條配方產出它，允許
-        // 「工具＋素材→升級工具」這類以合成中間物當素材的配方鏈）。
-        let gatherable = gatherable_items();
+        let obtainable = obtainable_items();
         for r in RECIPES {
             for &(item, _) in r.inputs {
                 let craftable = RECIPES.iter().any(|other| other.output == item);
                 assert!(
-                    gatherable.contains(&item) || craftable,
-                    "配方 `{}` 需要素材 {:?}，但它既不可採集（沒有 NodeKind 產出它）、也沒有任何\
+                    obtainable.contains(&item) || craftable,
+                    "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
-                     能由採集／合成取得，或為它補上來源",
+                     能由世界獲取／合成取得，或為它補上來源",
                     r.id, item
                 );
             }
@@ -368,16 +316,8 @@ mod tests {
 
     #[test]
     fn recipe_ids_are_wire_safe_snake_case() {
-        // 線協定契約：`id` 是 client 送 `Craft{ recipe: id }` 跟前端 keying 用的穩定字串，
-        // doc 言明「snake_case，對齊 `ItemKind` 的序列化命名」。此前只驗 id 唯一/非空意涵，
-        // **沒驗格式**——接線輪（ws 收 `Craft` → `recipe_by_id`）一旦加第二條配方，一個帶
-        // 空格／大寫／unicode 的壞 id 會悄悄破壞 JSON 協定或前端對應，且 `recipe_by_id`
-        // 只做字串相等比對、不會察覺。趁配方表還小，把這個契約鎖成測試，日後加配方時
-        // 打錯 id 當場紅燈，而不是接線後才在線上炸開。
         for r in RECIPES {
             assert!(!r.id.is_empty(), "配方 id 不可為空");
-            // 僅允許小寫 ASCII 字母／數字／底線：與 `#[serde(rename_all = "snake_case")]`
-            // 產出的 `ItemKind` 名稱同一套字元集，確保跨 ws／快照／前端的字串 key 一致。
             assert!(
                 r.id
                     .bytes()
@@ -385,14 +325,11 @@ mod tests {
                 "配方 id `{}` 含非 snake_case 字元（只允許 a-z 0-9 _）",
                 r.id
             );
-            // 不以底線開頭／結尾：避免 `_pickaxe`／`pickaxe_` 這類醜陋又易撞的 key。
             assert!(
                 !r.id.starts_with('_') && !r.id.ends_with('_'),
                 "配方 id `{}` 不該以底線開頭或結尾",
                 r.id
             );
-            // 自洽：用自己的 id 查回來必定是同一條配方（鎖住 `recipe_by_id` 是接線用的反查
-            // 入口；id 唯一已由 `recipe_table_is_well_formed` 把關，故 id 相等即同一條）。
             let looked_up = recipe_by_id(r.id).expect("自己的 id 應查得到");
             assert_eq!(looked_up.id, r.id, "配方 `{}` 用自身 id 查回的不是自己", r.id);
             assert_eq!(

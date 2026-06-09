@@ -23,10 +23,6 @@ use serde::{Deserialize, Serialize};
 pub enum NodeKind {
     /// 樹：採集得木材。
     Tree,
-    /// 石：採集得礦石。
-    Rock,
-    /// 乙太礦：採集得乙太（療癒種田之外，採集也是乙太來源）。
-    EtherOre,
 }
 
 // 整個模組是前置地基：接線輪（世界撒佈節點、ws 採集、遊戲迴圈推進重生）才有呼叫端，
@@ -37,8 +33,6 @@ impl NodeKind {
     pub fn max_durability(self) -> u32 {
         match self {
             NodeKind::Tree => 5,
-            NodeKind::Rock => 4,
-            NodeKind::EtherOre => 3,
         }
     }
 
@@ -46,9 +40,6 @@ impl NodeKind {
     pub fn yield_per_gather(self) -> u32 {
         match self {
             NodeKind::Tree => 1,
-            NodeKind::Rock => 1,
-            // 乙太礦耐久低、但每下產出多一點，貼合「稀有資源」的手感。
-            NodeKind::EtherOre => 2,
         }
     }
 
@@ -56,8 +47,6 @@ impl NodeKind {
     pub fn respawn_secs(self) -> f32 {
         match self {
             NodeKind::Tree => 30.0,
-            NodeKind::Rock => 45.0,
-            NodeKind::EtherOre => 60.0,
         }
     }
 }
@@ -161,7 +150,7 @@ impl ResourceNode {
 mod tests {
     use super::*;
 
-    const KINDS: [NodeKind; 3] = [NodeKind::Tree, NodeKind::Rock, NodeKind::EtherOre];
+    const KINDS: [NodeKind; 1] = [NodeKind::Tree];
 
     #[test]
     fn new_node_is_full_and_harvestable() {
@@ -182,8 +171,8 @@ mod tests {
 
     #[test]
     fn gathering_to_zero_depletes_and_starts_respawn() {
-        let mut n = ResourceNode::new(NodeKind::Rock);
-        let max = NodeKind::Rock.max_durability();
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        let max = NodeKind::Tree.max_durability();
         for _ in 0..max {
             assert!(n.gather().is_some());
         }
@@ -193,8 +182,8 @@ mod tests {
 
     #[test]
     fn gathering_a_depleted_node_yields_nothing() {
-        let mut n = ResourceNode::new(NodeKind::EtherOre);
-        for _ in 0..NodeKind::EtherOre.max_durability() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
             n.gather();
         }
         let depleted = n.clone();
@@ -221,7 +210,7 @@ mod tests {
 
     #[test]
     fn tick_on_harvestable_node_is_noop() {
-        let mut n = ResourceNode::new(NodeKind::Rock);
+        let mut n = ResourceNode::new(NodeKind::Tree);
         let before = n.clone();
         n.tick(100.0);
         assert_eq!(n, before);
@@ -229,8 +218,8 @@ mod tests {
 
     #[test]
     fn zero_or_negative_dt_is_noop() {
-        let mut n = ResourceNode::new(NodeKind::EtherOre);
-        for _ in 0..NodeKind::EtherOre.max_durability() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
             n.gather();
         }
         let depleted = n.clone();
@@ -259,13 +248,13 @@ mod tests {
     fn is_loadable_accepts_normal_and_rejects_corrupt() {
         // 正常流程產出的狀態都該可載入。
         assert!(ResourceNode::new(NodeKind::Tree).is_loadable());
-        let mut n = ResourceNode::new(NodeKind::Rock);
-        for _ in 0..NodeKind::Rock.max_durability() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
             n.gather();
         }
         assert!(n.is_loadable()); // 採空且帶重生倒數，仍健全
         // 壞值：耐久超過上限、NaN / Inf / 負重生倒數。
-        assert!(!ResourceNode::from_raw(NodeKind::EtherOre, 99, 0.0).is_loadable());
+        assert!(!ResourceNode::from_raw(NodeKind::Tree, 99, 0.0).is_loadable());
         assert!(!ResourceNode::from_raw(NodeKind::Tree, 0, f32::NAN).is_loadable());
         assert!(!ResourceNode::from_raw(NodeKind::Tree, 0, f32::INFINITY).is_loadable());
         assert!(!ResourceNode::from_raw(NodeKind::Tree, 0, -1.0).is_loadable());
@@ -273,7 +262,7 @@ mod tests {
 
     #[test]
     fn serde_round_trip_preserves_state() {
-        let mut n = ResourceNode::new(NodeKind::EtherOre);
+        let mut n = ResourceNode::new(NodeKind::Tree);
         n.gather(); // 採一下，留個半採狀態
         let json = serde_json::to_string(&n).unwrap();
         let back: ResourceNode = serde_json::from_str(&json).unwrap();
@@ -304,7 +293,7 @@ mod tests {
         // 逼人回來把新種類納入本遍歷（比照 combat 對 EnemyKind 的窮舉守衛）。
         for kind in KINDS {
             match kind {
-                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+                NodeKind::Tree => {}
             }
         }
 
@@ -349,7 +338,7 @@ mod tests {
         // 回來把新種類納入本遍歷（比照 `every_gathered_resource_has_a_sink` 的窮舉守衛）。
         for kind in KINDS {
             match kind {
-                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+                NodeKind::Tree => {}
             }
         }
 

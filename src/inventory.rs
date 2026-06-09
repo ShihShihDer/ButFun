@@ -79,8 +79,6 @@ impl From<NodeKind> for ItemKind {
     fn from(kind: NodeKind) -> Self {
         match kind {
             NodeKind::Tree => ItemKind::Wood,
-            NodeKind::Rock => ItemKind::Stone,
-            NodeKind::EtherOre => ItemKind::Ether,
         }
     }
 }
@@ -283,17 +281,15 @@ mod tests {
     #[test]
     fn node_kind_maps_to_item_kind() {
         assert_eq!(ItemKind::from(NodeKind::Tree), ItemKind::Wood);
-        assert_eq!(ItemKind::from(NodeKind::Rock), ItemKind::Stone);
-        assert_eq!(ItemKind::from(NodeKind::EtherOre), ItemKind::Ether);
     }
 
     #[test]
     fn gather_yield_flows_into_inventory_via_into() {
         // 模擬接線：採到 (種類, 量) 直接灌進背包。
         let mut inv = Inventory::new();
-        let (kind, qty) = (NodeKind::EtherOre, 2u32);
+        let (kind, qty) = (NodeKind::Tree, 1u32);
         inv.add(kind.into(), qty);
-        assert_eq!(inv.count(ItemKind::Ether), 2);
+        assert_eq!(inv.count(ItemKind::Wood), 1);
     }
 
     #[test]
@@ -367,10 +363,10 @@ mod tests {
 
         // 採集可得的物品集合。窮舉守衛：新增 `NodeKind` 變體卻忘了納入時，此 match 不窮舉、
         // 編譯失敗，逼人回來把新採集資源納入本遍歷（比照 crafting/combat 同家族的守衛）。
-        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree, NodeKind::Rock, NodeKind::EtherOre];
+        const NODE_KINDS: &[NodeKind] = &[NodeKind::Tree];
         for &n in NODE_KINDS {
             match n {
-                NodeKind::Tree | NodeKind::Rock | NodeKind::EtherOre => {}
+                NodeKind::Tree => {}
             }
         }
         let gatherable: std::collections::BTreeSet<ItemKind> =
@@ -391,8 +387,8 @@ mod tests {
             let craftable_src = RECIPES.iter().any(|r| r.output == item);
             let droppable_src = droppable.contains(&item);
             // C-2 挖掘地形格可取得的物品（Dig handler：實心格→Empty + 材料入背包）。
-            // 目前只有 Dirt（挖土磚格掉落）；C-4 若加更多建造材料也在此列。
-            let tile_diggable = item == ItemKind::Dirt;
+            // 目前 Dirt/Stone/Ether 均由挖掘對應 tile 取得。
+            let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone || item == ItemKind::Ether;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
