@@ -26,15 +26,8 @@
    - 給新手穩定的「第一桶乙太」出口，不必等農地收成或玩家市場。
    - 前端：繪製商人圖示、靠近自動亮 dock 點、商店面板顯示買賣目錄與數量輸入。
 
-## ✅ 已完成（可挖地形地基 — 2026-06-09）
-6a. ✅ **可挖地形 C-1：tile 層地基**（PR #58）
-   - `world-core`：`TileKind` enum + `tile_kind_at` 確定性生成。
-   - `tiles.rs` + `tile_store.rs`：記憶體 delta map + DB 持久化層（`tile_deltas` 表）。
-   - `protocol.rs`：`TileDeltaView` + Snapshot 加 `terrain` 欄位（C-1 永遠空）。
-   - 前端：`tileKindAt` 本地確定性生成（零帶寬）+ `drawTerrain` 畫色塊地形。
-
-## 現在做
-6d. **可挖地形 C-4：建造（Place handler）**（PR 開發中）
+## ✅ 已完成（可挖地形建造 — 2026-06-09）
+6d. ✅ **可挖地形 C-4：建造（Place handler）**（PR #63）
    - `ClientMsg::Place { wx, wy, material }` + ws.rs handler（可及性 80px、空格才放、背包扣 1 + delta 設實心 + 持久化）。
    - `tiles::tile_for_item` / `item_for_placeable_tile` 純函式（dirt / stone 可放；ore / ether 不可放）。
    - 前端：背包行加 🏗️選取鈕 → 右鍵點空格放置；HUD 放置模式 pill。
@@ -46,18 +39,19 @@
    - 動機：玩家實測「開放地 + 散落土塊」是兩邊缺點；要 Core Keeper 那種「整片實心、主動挖隧道」。
      **別跳序**：先讓怪/資源避開實心（D-1），再反轉地形（D-2），否則怪會被埋進石頭被碰撞卡死。
 
-## 已完成（C-2、C-3）
-6c. ✅ **可挖地形 C-3：tile 碰撞**（PR #61）
-   - `Player::step` 加入 `tile_solid` 閉包參數，以中心判逃脫 + 四角判碰牆的兩層策略。
-   - `game.rs`：每 tick 快照 tile deltas（先釋放讀鎖再取 players 寫鎖，避免死鎖）。
-   - 3 個純邏輯測試：擋住直線移動、沿牆滑行、受困逃脫。
+## 現在做（Core Keeper Phase 2 / D 系列 — 2026-06-09）
+D-1. **怪/資源只生在開放格 + 統一到 tile 採礦**（PR 開發中）
+   - 移除/淘汰重複的 gather **礦石節點**(rock / ether_ore)，礦改成挖 Ore tile；**樹(wood)節點保留**。
+   - 修正 `generate_chunk` 邏輯，確保敵人與採集節點只生在 `Empty` 地形格，避免被埋住。
+   - 純邏輯（落點判定、生態域適配）抽成可測函式。
 
+## 已完成（C-1、C-2、C-3）
+6a. ✅ **可挖地形 C-1：tile 層地基**（PR #58）
+...
+6c. ✅ **可挖地形 C-3：tile 碰撞**（PR #61）
+...
 6b. ✅ **可挖地形 C-2：Dig handler**（PR #59）
-   - 後端：`ClientMsg::Dig { wx, wy }` + ws.rs handler（可及性 80px、實心→Empty + 材料入背包 + 持久化）。
-   - `ItemKind::Dirt`（土磚，C-2 掉落 + C-4 建造材料）加入物品宇宙。
-   - `game.rs`：快照的 `terrain` 欄位從 TileWorld deltas 填充（C-1 時永遠為空）。
-   - ws.rs AOI 過濾：地形 delta 依格中心距離剔除。
-   - 前端：點實心地形格→送 dig + 接收 terrain delta（含 empty 覆蓋）。
+...
 
 ## 已完成
 1. ✅ **③ 無限世界**（切片 A~D 全進 main：拿掉邊界、區塊確定性生成、AOI 剔除、領地重置）

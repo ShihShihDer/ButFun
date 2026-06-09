@@ -175,8 +175,8 @@ mod tests {
         for _ in 0..3 {
             inv.add(NodeKind::Tree.into(), 1);
         }
-        inv.add(NodeKind::Rock.into(), 1);
-        inv.add(NodeKind::Rock.into(), 1);
+        inv.add(ItemKind::Stone, 1);
+        inv.add(ItemKind::Stone, 1);
 
         // 合出鎬子。
         assert!(recipe_by_id("pickaxe").unwrap().craft(&mut inv));

@@ -518,13 +518,11 @@ mod tests {
     fn combat_loot_stacks_into_the_same_gathered_inventory() {
         let mut inv = Inventory::new();
 
-        // 採集得來的礦石與乙太先進背包。
-        let mut rock = ResourceNode::new(NodeKind::Rock);
-        inv.add(NodeKind::Rock.into(), rock.gather().unwrap());
-        let mut ore = ResourceNode::new(NodeKind::EtherOre);
-        inv.add(NodeKind::EtherOre.into(), ore.gather().unwrap());
-        assert_eq!(inv.count(ItemKind::Stone), 1); // Rock 每下 1
-        assert_eq!(inv.count(ItemKind::Ether), 2); // EtherOre 每下 2
+        // 預先在背包放入一些礦石與乙太。
+        inv.add(ItemKind::Stone, 1);
+        inv.add(ItemKind::Ether, 2);
+        assert_eq!(inv.count(ItemKind::Stone), 1);
+        assert_eq!(inv.count(ItemKind::Ether), 2);
 
         // 打倒銹蝕巡邏機掉 (Stone, 2)，疊進採集得來的同一個礦石槽。
         let (drone_item, drone_qty) = defeat(EnemyKind::ScrapDrone);

@@ -298,13 +298,15 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     enemies
 }
 
-/// 在區塊內找一個非水域的落點（所有生態域都能出現敵人）。
+/// 在區塊內找一個非水域且非實心的落點（所有生態域都能出現敵人）。
 fn spawn_position(id: (i32, i32, usize)) -> (f32, f32) {
     let mut salt = 0;
     loop {
         let (x, y) = scatter_position(id, salt);
-        let biome = world_core::biome_at(x as f64, y as f64);
-        if biome != world_core::Biome::Water {
+        let wx = x as f64;
+        let wy = y as f64;
+        let biome = world_core::biome_at(wx, wy);
+        if biome != world_core::Biome::Water && world_core::tile_kind_at(wx, wy) == world_core::TileKind::Empty {
             return (x, y);
         }
         salt += 1;

@@ -367,10 +367,10 @@ mod tests {
                 }],
             }],
             nodes: vec![NodeView {
-                kind: NodeKind::Rock,
+                kind: NodeKind::Tree,
                 x: 120.0,
                 y: 240.0,
-                remaining: 4,
+                remaining: 5,
                 harvestable: true,
             }],
             enemies: vec![EnemyView {
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(v["players"][0]["max_hp"], 20);
         assert_eq!(v["fields"][0]["owner"], owner.to_string());
         assert_eq!(v["fields"][0]["cells"][0]["state"], 2);
-        assert_eq!(v["nodes"][0]["kind"], "rock");
+        assert_eq!(v["nodes"][0]["kind"], "tree");
         assert_eq!(v["nodes"][0]["x"], 120.0);
         assert_eq!(v["enemies"][0]["kind"], "scrap_drone");
         assert_eq!(v["enemies"][0]["hp"], 5);
