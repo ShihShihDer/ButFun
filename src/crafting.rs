@@ -218,12 +218,28 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::JadeElixir,
         output_qty: 1,
     },
-    /// 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，全遊戲最強武器。
-    /// 翠幽星獨有，超越珊瑚矛（+12），象徵星際探索者的最高武裝。
+    /// 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，翠幽星域強力武器。
+    /// 翠幽星獨有，超越珊瑚矛（+12），鼓勵玩家深入翠幽星探索。
     Recipe {
         id: "jade_blade",
         inputs: &[(ItemKind::JadeShard, 5)],
         output: ItemKind::JadeBlade,
+        output_qty: 1,
+    },
+    /// 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至等級滿血，同時獲得 8 乙太。
+    /// 赤焰星蒸汽燃料轉換器——異星能量凝聚而成，結合滿血與乙太雙重獎勵。
+    Recipe {
+        id: "steam_elixir",
+        inputs: &[(ItemKind::LavaCrystal, 2)],
+        output: ItemKind::SteamElixir,
+        output_qty: 1,
+    },
+    /// 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，全遊戲最強武器。
+    /// 赤焰星獨有，超越翠幽刃（+15），蒸汽龐克文明的最高武裝結晶。
+    Recipe {
+        id: "crimson_blade",
+        inputs: &[(ItemKind::LavaCrystal, 6)],
+        output: ItemKind::CrimsonBlade,
         output_qty: 1,
     },
 ];
@@ -425,6 +441,7 @@ mod tests {
             EnemyKind::RuneGuardian,
             EnemyKind::CoralCrab,
             EnemyKind::JadeWraith,
+            EnemyKind::SteamConstruct,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -435,7 +452,8 @@ mod tests {
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
-                | EnemyKind::JadeWraith => {}
+                | EnemyKind::JadeWraith
+                | EnemyKind::SteamConstruct => {}
             }
             items.insert(e.drop_loot().0);
         }

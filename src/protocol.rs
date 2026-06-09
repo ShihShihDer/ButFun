@@ -25,6 +25,7 @@ pub enum TileKindView {
     CoralReef,
     WildFlower,
     JadeVine,
+    LavaRock,
 }
 
 impl From<TileKind> for TileKindView {
@@ -40,6 +41,7 @@ impl From<TileKind> for TileKindView {
             TileKind::CoralReef   => TileKindView::CoralReef,
             TileKind::WildFlower  => TileKindView::WildFlower,
             TileKind::JadeVine    => TileKindView::JadeVine,
+            TileKind::LavaRock    => TileKindView::LavaRock,
         }
     }
 }
@@ -126,9 +128,11 @@ pub enum ClientMsg {
     /// 目前支援：`HealingPotion`（活力藥水）→ 立即回復 6 HP。
     /// 倒地中 / 背包不足靜默忽略。
     UseItem { item: ItemKind },
-    /// 星際旅行（ROADMAP 20）：玩家在星圖彈窗點「出發」，請求傳送到指定星球。
-    /// `planet` 目前支援 "verdant"（翠幽星）和 "home"（返回故鄉）。
-    /// 需要：故鄉 → 翠幽星 須持五大生態武裝全套 + 30 乙太；翠幽星 → 故鄉 只需 30 乙太。
+    /// 星際旅行（ROADMAP 20/22）：玩家在星圖彈窗點「出發」，請求傳送到指定星球。
+    /// `planet` 支援 "verdant"（翠幽星）、"crimson"（赤焰星）和 "home"（返回故鄉）。
+    /// 故鄉 → 翠幽星 須持五大生態武裝全套 + 30 乙太；
+    /// 故鄉 → 赤焰星 須持翠幽碎片（有探索翠幽星的證明）+ 50 乙太；
+    /// 各星球 → 故鄉 只需 30 乙太。
     TravelToPlanet { planet: String },
 }
 
@@ -207,7 +211,7 @@ pub struct PlayerView {
     pub attack: u32,
     /// 目前護甲減傷值（持有護甲時，每次受傷减去此值，ROADMAP 19）。
     pub defense: u32,
-    /// 玩家目前所在星球（ROADMAP 20）。"home" = 故鄉，"verdant" = 翠幽星。
+    /// 玩家目前所在星球（ROADMAP 20/22）。"home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星。
     pub planet: String,
 }
 
@@ -517,5 +521,31 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
+    }
+
+    /// 赤焰星旅行 wire contract：travel_to_planet crimson 可被解析。
+    #[test]
+    fn parses_travel_to_crimson_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"travel_to_planet","planet":"crimson"}"#).unwrap();
+        match msg {
+            ClientMsg::TravelToPlanet { planet } => assert_eq!(planet, "crimson"),
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// 赤焰星旅行結果序列化含正確欄位。
+    #[test]
+    fn travel_result_crimson_serializes_correctly() {
+        let msg = ServerMsg::TravelResult {
+            ok: true,
+            planet: "crimson".into(),
+            message: "歡迎來到赤焰星！".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "travel_result");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["planet"], "crimson");
+        assert!(v["message"].as_str().unwrap().contains("赤焰星"));
     }
 }

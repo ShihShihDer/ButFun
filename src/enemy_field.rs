@@ -291,9 +291,10 @@ fn kind_for_biome(biome: world_core::Biome) -> EnemyKind {
 
 fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     let mut enemies = Vec::new();
-    // 翠幽星判定：區塊中心 X ≥ VERDANT_ZONE_MIN_X 則為翠幽星領域。
+    // 星球判定：區塊中心 X ≥ VERDANT_ZONE_MIN_X 為翠幽星；X ≤ CRIMSON_ZONE_MAX_X 為赤焰星。
     let chunk_center_x = (cx as f64 + 0.5) * (world_core::CHUNK_SIZE as f64);
     let is_verdant = chunk_center_x >= world_core::VERDANT_ZONE_MIN_X;
+    let is_crimson = chunk_center_x <= world_core::CRIMSON_ZONE_MAX_X;
     for i in 0..ENEMIES_PER_CHUNK {
         let id = (cx, cy, i);
         let (x, y) = spawn_position(id);
@@ -304,6 +305,9 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
         let kind = if is_verdant {
             // 翠幽星：一律生成翠幽魅影（整個翠幽星都是異星領域，無視地表生態域）。
             EnemyKind::JadeWraith
+        } else if is_crimson {
+            // 赤焰星：一律生成蒸汽構裝（整個赤焰星都是古代蒸汽文明領域，無視地表生態域）。
+            EnemyKind::SteamConstruct
         } else {
             let biome = world_core::biome_at(x as f64, y as f64);
             kind_for_biome(biome)

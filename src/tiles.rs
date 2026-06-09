@@ -34,6 +34,7 @@ pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
         TileKind::CoralReef   => Some((ItemKind::DeepSeaPearl,    1)),
         TileKind::WildFlower  => Some((ItemKind::WildflowerSeed,  1)),
         TileKind::JadeVine    => Some((ItemKind::JadeShard,        1)),
+        TileKind::LavaRock    => Some((ItemKind::LavaCrystal,      1)),
     }
 }
 

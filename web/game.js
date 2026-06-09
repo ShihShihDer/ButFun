@@ -570,7 +570,7 @@
             if (planetEl) {
               const planet = me.planet || "home";
               if (planet !== "home") {
-                const PLANET_NAMES = { verdant: "🌿 翠幽星" };
+                const PLANET_NAMES = { verdant: "🌿 翠幽星", crimson: "🔴 赤焰星" };
                 planetEl.textContent = PLANET_NAMES[planet] || `🌐 ${planet}`;
                 planetEl.classList.remove("hidden");
               } else {
@@ -633,7 +633,9 @@
     const t = age / dur;
     // 前半閃亮（0→1），後半淡出（1→0）。
     const alpha = t < 0.5 ? t * 2 : (1 - t) * 2;
-    const col = travelFlash.planet === "verdant" ? "80,255,160" : "220,240,255";
+    const col = travelFlash.planet === "verdant" ? "80,255,160"
+               : travelFlash.planet === "crimson" ? "255,120,60"
+               : "220,240,255";
     ctx.save();
     ctx.fillStyle = `rgba(${col},${(alpha * 0.55).toFixed(3)})`;
     ctx.fillRect(0, 0, viewW, viewH);
@@ -648,6 +650,18 @@
     const alpha = 0.10 * pulse;
     ctx.save();
     ctx.fillStyle = `rgba(40,200,100,${alpha.toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+  }
+
+  // 赤焰星大氣染色：在赤焰星時，畫面疊一層微弱橘紅暈（熔岩與蒸汽的異星氛圍）。
+  function drawCrimsonAtmosphere(now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me || me.planet !== "crimson") return;
+    const pulse = 0.6 + 0.4 * Math.sin(now / 2800);
+    const alpha = 0.12 * pulse;
+    ctx.save();
+    ctx.fillStyle = `rgba(220,80,30,${alpha.toFixed(3)})`;
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.restore();
   }
@@ -997,25 +1011,40 @@
     }).join("");
     const myPlanet = curMe ? (curMe.planet || "home") : "home";
     const myEther = curMe ? (curMe.ether || 0) : 0;
-    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；翠幽星→故鄉只需乙太。費用 30 乙太。
+    const hasJadeShard = invSet.has("jade_shard");
+    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；故鄉→赤焰星需持有翠幽碎片；返回故鄉費 30 乙太。
     const TRAVEL_COST = 30;
+    const CRIMSON_TRAVEL_COST = 50;
     let travelBtn = "";
-    if (allCollected && myPlanet === "home") {
+    if (myPlanet === "home" && allCollected) {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(40,160,80,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0ffd8" : "#888"};border:1px solid ${canAfford ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
-        🚀 前往翠幽星（${TRAVEL_COST} 乙太）${canAfford ? "" : ` — 乙太不足`}
+        🚀 前往翠幽星（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
+      if (hasJadeShard) {
+        const canAfford2 = myEther >= CRIMSON_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelCrimson" style="margin-top:8px;padding:9px 20px;background:${canAfford2 ? "rgba(180,60,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford2 ? "#ffe0c0" : "#888"};border:1px solid ${canAfford2 ? "#d07040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford2 ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🔴 前往赤焰星（${CRIMSON_TRAVEL_COST} 乙太）${canAfford2 ? "" : " — 乙太不足"}
+        </button>`;
+      }
     } else if (myPlanet === "verdant") {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
-        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : ` — 乙太不足`}
+        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
+      </button>`;
+    } else if (myPlanet === "crimson") {
+      const canAfford = myEther >= TRAVEL_COST;
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
     }
-    const footer = allCollected && myPlanet === "home"
-      ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
-      : myPlanet === "verdant"
-        ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
-        : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
+    const footer = myPlanet === "crimson"
+      ? `<div style="color:#ff9060;font-size:0.9em;margin-top:4px;">🔴 你目前在赤焰星。</div>${travelBtn}`
+      : allCollected && myPlanet === "home"
+        ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
+        : myPlanet === "verdant"
+          ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
+          : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;";
@@ -1039,10 +1068,18 @@
     // 旅行按鈕事件（點按鈕不關閉彈窗，點其他地方才關）。
     overlay.addEventListener("click", (e) => {
       const btnV = overlay.querySelector("#btnTravelVerdant");
+      const btnC = overlay.querySelector("#btnTravelCrimson");
       const btnH = overlay.querySelector("#btnTravelHome");
       if (btnV && btnV.contains(e.target)) {
         if (myEther >= TRAVEL_COST) {
           ws.send(JSON.stringify({ type: "travel_to_planet", planet: "verdant" }));
+          overlay.remove();
+        }
+        return;
+      }
+      if (btnC && btnC.contains(e.target)) {
+        if (myEther >= CRIMSON_TRAVEL_COST) {
+          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "crimson" }));
           overlay.remove();
         }
         return;
@@ -1800,6 +1837,7 @@
 
     // 翠幽星大氣染色（ROADMAP 20）：在翠幽星時，畫面疊一層微翠綠暈，強化星球身份感。
     drawVerdantAtmosphere(performance.now());
+    drawCrimsonAtmosphere(performance.now());
 
     // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
     drawTravelFlash(performance.now());
@@ -1981,7 +2019,7 @@
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
           // 實心牆色:依材質分(土/石/礦/晶石/蕈菇/珊瑚礁/野花),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -2231,6 +2269,11 @@
       const jadeN = biomeNoise(wx, wy, 85, 999);
       if (jadeN > 0.80 && h < 0.65) return "jade_vine";
     }
+    // 赤焰星覆蓋：CRIMSON_ZONE_MAX_X = -15000，對齊 Rust world_core（scale 90, seed 1337）。
+    if (wx <= -15000) {
+      const lavaN = biomeNoise(wx, wy, 90, 1337);
+      if (lavaN > 0.75 && h < 0.70) return "lava_rock";
+    }
     if (b === "rocky") {
       // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
       const crystalN = biomeNoise(wx, wy, 80, 777);
@@ -2309,6 +2352,7 @@
           : kind === "coral_reef" ? "#0a3a4a"
           : kind === "wild_flower" ? "#3a5020"
           : kind === "jade_vine" ? "#0d3d28"
+          : kind === "lava_rock" ? "#6a1a05"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -2442,6 +2486,34 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(255,210,60,0.28)");
             g.addColorStop(1, "rgba(255,210,60,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 熔岩石：露出才發橘紅光暈，埋深處隱約深紅；提示「赤焰星獨有、挖取可得熔晶碎片」。
+        if (kind === "lava_rock") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 熔岩裂縫：V 形龜裂，模擬熔岩冷卻後的裂縫紋。
+          ctx.strokeStyle = exposed ? "rgba(255,140,40,0.90)" : "rgba(180,60,20,0.45)";
+          ctx.lineWidth = exposed ? 2 : 1;
+          ctx.beginPath();
+          ctx.moveTo(sx + 4, cy_);
+          ctx.lineTo(cx_, cy_ - 5);
+          ctx.lineTo(sx + TS - 4, cy_);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx_, cy_ - 5);
+          ctx.lineTo(cx_, cy_ + 6);
+          ctx.stroke();
+          // 岩漿圓核：中心橘紅熔點
+          ctx.fillStyle = exposed ? "rgba(255,100,20,0.75)" : "rgba(200,50,10,0.40)";
+          ctx.beginPath(); ctx.arc(cx_, cy_, exposed ? 3.5 : 2.5, 0, Math.PI * 2); ctx.fill();
+          if (exposed) {
+            // 熔岩光暈——讓熔岩石在赤焰星暗地中散發橘紅色熱焰光暈，玩家一眼認出「這是赤焰星特有資源」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(255,120,30,0.28)");
+            g.addColorStop(1, "rgba(255,80,10,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -3180,6 +3252,44 @@
     ctx.globalAlpha = ctx.globalAlpha / pulse; // 還原透明度（save/restore 在外層）
   }
 
+  // 蒸汽機械（赤焰星）：鋼鐵方身 + 排氣管冒煙 + 機械紅眼，工業感。
+  function drawSteamConstruct(cx, cy, t, phase) {
+    const bob = Math.sin(t * 2.2 + phase) * 1.5; // 輕微上下機械震動
+    // 機械主體（深灰鋼板）
+    ctx.fillStyle = "#5a5050";
+    ctx.beginPath();
+    ctx.roundRect(cx - 10, cy - 12 + bob, 20, 22, 3);
+    ctx.fill();
+    // 鋼板高光
+    ctx.fillStyle = "rgba(180,160,150,0.30)";
+    ctx.fillRect(cx - 8, cy - 10 + bob, 5, 8);
+    // 左右排氣管
+    ctx.fillStyle = "#3a3030";
+    ctx.fillRect(cx - 13, cy - 16 + bob, 4, 10);
+    ctx.fillRect(cx + 9, cy - 16 + bob, 4, 10);
+    // 排氣管蒸汽（隨時間漂散的小圓圈）
+    const steamAlpha = 0.3 + 0.2 * Math.sin(t * 5 + phase);
+    ctx.fillStyle = `rgba(210,180,170,${steamAlpha})`;
+    ctx.beginPath(); ctx.arc(cx - 11 + Math.sin(t * 3) * 1.5, cy - 20 + bob - Math.sin(t * 3) * 3, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 11 + Math.sin(t * 2.7 + 1) * 1.5, cy - 20 + bob - Math.sin(t * 2.7 + 1) * 3, 2.5, 0, Math.PI * 2); ctx.fill();
+    // 機械紅眼（一左一右）
+    ctx.fillStyle = "#cc2200";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 5 + bob, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 5 + bob, 3, 0, Math.PI * 2); ctx.fill();
+    // 眼睛紅光
+    const eyeGrd = ctx.createRadialGradient(cx, cy - 5 + bob, 0, cx, cy - 5 + bob, 10);
+    eyeGrd.addColorStop(0, "rgba(255,60,0,0.35)");
+    eyeGrd.addColorStop(1, "rgba(255,60,0,0)");
+    ctx.fillStyle = eyeGrd;
+    ctx.beginPath(); ctx.arc(cx, cy - 5 + bob, 10, 0, Math.PI * 2); ctx.fill();
+    // 底部踏板（梯形）
+    ctx.fillStyle = "#4a4040";
+    ctx.beginPath();
+    ctx.moveTo(cx - 12, cy + 10 + bob); ctx.lineTo(cx + 12, cy + 10 + bob);
+    ctx.lineTo(cx + 9, cy + 14 + bob); ctx.lineTo(cx - 9, cy + 14 + bob);
+    ctx.closePath(); ctx.fill();
+  }
+
   // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
   // 讓玩家在畫面內一眼認出「這就是村子」（搭配離畫面時的 drawVillagePointer 邊緣箭頭遠距導航）。
   function drawVillageLandmark(camX, camY) {
@@ -3305,6 +3415,7 @@
       else if (e.kind === "rune_guardian")    drawRuneGuardian(sx, ey, t, phase);
       else if (e.kind === "coral_crab")       drawCoralCrab(sx, ey, t, phase);
       else if (e.kind === "jade_wraith")      drawJadeWraith(sx, ey, t, phase);
+      else if (e.kind === "steam_construct")  drawSteamConstruct(sx, ey, t, phase);
       else {
         const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
         ctx.fillStyle = look.tint;
@@ -3356,11 +3467,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3404,6 +3515,11 @@
     { id: "jade_elixir", out: "jade_elixir", outQty: 1, inputs: [["jade_shard", 2]] },
     // 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，全遊戲最強武器。
     { id: "jade_blade", out: "jade_blade", outQty: 1, inputs: [["jade_shard", 5]] },
+    // ROADMAP 22 赤焰星合成路線：熔晶碎片（挖熔岩石或打蒸汽機械可得）合出強力消耗品與最強武器。
+    // 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至滿血並獲得 8 乙太。
+    { id: "steam_elixir", out: "steam_elixir", outQty: 1, inputs: [["lava_crystal", 2]] },
+    // 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，赤焰星專屬武器。
+    { id: "crimson_blade", out: "crimson_blade", outQty: 1, inputs: [["lava_crystal", 6]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -3446,6 +3562,7 @@
       ether_pill: "獲得 10 乙太",
       pearl_potion: "回復至滿血",
       star_chart: "展開遠方星球星圖（多星球前奏）",
+      steam_elixir: "回復至滿血 + 獲得 8 乙太",
     };
     // 裝備/護甲的持有說明（持有即被動生效，無需點使用）。
     const GEAR_DESC = {
@@ -3456,6 +3573,8 @@
       coral_lance: "攻擊力 +12（持有即生效）🌊 水域生態",
       meadow_amulet: "防禦 -1（每次受傷減 1 傷害）🌸 草原生態",
       crystal_shield: "防禦 -2（每次受傷減 2 傷害）💎 岩地生態",
+      jade_blade: "攻擊力 +15（持有即生效）🟢 翠幽星",
+      crimson_blade: "攻擊力 +20（持有即生效）🔴 赤焰星",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv

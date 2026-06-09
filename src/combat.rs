@@ -51,9 +51,12 @@ pub enum WeaponKind {
     MushroomStaff,
     /// 符文刃（ROADMAP 19 續）：古代碎片鑄造的符文刀刃，攻擊力 +10，沙漠生態專屬武器。
     RuneBlade,
-    /// 翠幽刃（ROADMAP 21）：翠幽碎片鑄造的異星刀刃，攻擊力 +15，全遊戲最強武器，
-    /// 翠幽星特有，象徵星際探索的最高戰鬥獎賞。
+    /// 翠幽刃（ROADMAP 21）：翠幽碎片鑄造的異星刀刃，攻擊力 +15，
+    /// 翠幽星特有，象徵星際探索的高級戰鬥獎賞。
     JadeBlade,
+    /// 赤焰刃（ROADMAP 22）：熔晶碎片鑄造的蒸汽龐克刀刃，攻擊力 +20，全遊戲最強武器，
+    /// 赤焰星特有，超越翠幽刃（+15），蒸汽文明的最高武裝結晶。
+    CrimsonBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -90,6 +93,7 @@ impl WeaponKind {
             WeaponKind::MushroomStaff => 7,
             WeaponKind::RuneBlade => 10,
             WeaponKind::JadeBlade => 15,
+            WeaponKind::CrimsonBlade => 20,
         }
     }
 }
@@ -137,7 +141,10 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::CrystalShield
         | ItemKind::StarChart
         | ItemKind::JadeShard
-        | ItemKind::JadeElixir => None,
+        | ItemKind::JadeElixir
+        | ItemKind::LavaCrystal
+        | ItemKind::SteamElixir => None,
+        ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
     }
 }
 
@@ -171,7 +178,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::StarChart
         | ItemKind::JadeShard
         | ItemKind::JadeElixir
-        | ItemKind::JadeBlade => None,
+        | ItemKind::JadeBlade
+        | ItemKind::LavaCrystal
+        | ItemKind::SteamElixir
+        | ItemKind::CrimsonBlade => None,
     }
 }
 
@@ -224,6 +234,9 @@ pub enum EnemyKind {
     /// 翠幽魅影（翠幽星）：異星乙太凝聚的幽靈生靈，半透明翠色身形，
     /// 擊散後留下翠幽碎片——翠幽星的第一道守護者，強度超越故鄉所有敵人。
     JadeWraith,
+    /// 蒸汽構裝（赤焰星）：赤焰星古代文明打造的蒸汽動力機械戰士，全身熔岩裝甲，
+    /// 解體後留下熔晶碎片——赤焰星的鋼鐵守護者，強度超越翠幽魅影，全遊戲最難的敵人。
+    SteamConstruct,
 }
 
 impl EnemyKind {
@@ -242,8 +255,10 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 7,
             // 珊瑚蟹最難打——守著最稀有的深海珍珠。
             EnemyKind::CoralCrab => 9,
-            // 翠幽魅影最強——異星守護者，超越故鄉所有敵人。
+            // 翠幽魅影強——異星守護者，超越故鄉所有敵人。
             EnemyKind::JadeWraith => 11,
+            // 蒸汽構裝最強——赤焰星鋼鐵守衛，全遊戲最硬的敵人。
+            EnemyKind::SteamConstruct => 15,
         }
     }
 
@@ -270,6 +285,8 @@ impl EnemyKind {
             EnemyKind::CoralCrab => (ItemKind::DeepSeaPearl, 1),
             // 翠幽魅影擊散後結晶成翠幽碎片（與挖翠玉藤相同，異星能量的精華）。
             EnemyKind::JadeWraith => (ItemKind::JadeShard, 1),
+            // 蒸汽構裝解體後留下熔晶碎片（與挖熔岩石相同，赤焰星熔爐的結晶）。
+            EnemyKind::SteamConstruct => (ItemKind::LavaCrystal, 1),
         }
     }
 
@@ -290,8 +307,10 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 3,
             // 珊瑚蟹最強——最稀有材料理應最難打。
             EnemyKind::CoralCrab => 4,
-            // 翠幽魅影威脅最高——異星守護者，對應最高戰鬥獎賞。
+            // 翠幽魅影威脅高——異星守護者，對應高戰鬥風險。
             EnemyKind::JadeWraith => 5,
+            // 蒸汽構裝威脅最高——赤焰星最強守衛，鋼鐵熔岩裝甲。
+            EnemyKind::SteamConstruct => 6,
         }
     }
 
@@ -305,8 +324,10 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 20,
             EnemyKind::CrystalGolem => 22,
             EnemyKind::CoralCrab => 28,
-            // 翠幽魅影給予最多 exp——異星最強守護者應有最豐厚獎賞。
+            // 翠幽魅影給予豐厚 exp——異星強守護者的獎賞。
             EnemyKind::JadeWraith => 35,
+            // 蒸汽構裝給予最多 exp——全遊戲最難敵人應有最豐厚獎賞。
+            EnemyKind::SteamConstruct => 45,
         }
     }
 
@@ -320,8 +341,10 @@ impl EnemyKind {
             EnemyKind::CrystalGolem => 55.0,
             EnemyKind::RuneGuardian => 50.0,
             EnemyKind::CoralCrab => 62.0,
-            // 翠幽魅影重生時間最長——擊散最強守護者，讓玩家充分享受戰果。
+            // 翠幽魅影重生時間長——擊散強守護者，讓玩家享受戰果。
             EnemyKind::JadeWraith => 75.0,
+            // 蒸汽構裝重生時間最長——全遊戲最難敵人，擊倒後充分獎勵。
+            EnemyKind::SteamConstruct => 90.0,
         }
     }
 }
@@ -437,7 +460,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 8] = [
+    const KINDS: [EnemyKind; 9] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -446,6 +469,7 @@ mod tests {
         EnemyKind::RuneGuardian,
         EnemyKind::CoralCrab,
         EnemyKind::JadeWraith,
+        EnemyKind::SteamConstruct,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -763,7 +787,8 @@ mod tests {
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
-                | EnemyKind::JadeWraith => {}
+                | EnemyKind::JadeWraith
+                | EnemyKind::SteamConstruct => {}
             }
         }
 
@@ -811,7 +836,8 @@ mod tests {
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
-                | EnemyKind::JadeWraith => {}
+                | EnemyKind::JadeWraith
+                | EnemyKind::SteamConstruct => {}
             }
         }
 
