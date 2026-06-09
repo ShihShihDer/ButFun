@@ -68,9 +68,16 @@ pub struct Player {
     pub wallet: crate::economy::PlotWallet,
     /// 主動攻擊冷卻剩餘秒數（0.0 = 可攻擊；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
     pub attack_cooldown: f32,
+    /// 累積經驗值（ROADMAP 17 升級系統）。殺怪 / 採礦得 exp，等級由 exp 推算。
+    pub exp: u32,
 }
 
 impl Player {
+    /// 由 exp 推算等級（每 100 exp 升一級，無上限）。
+    pub fn level(&self) -> u32 {
+        self.exp / 100
+    }
+
     pub fn view(&self) -> PlayerView {
         PlayerView {
             id: self.id,
@@ -87,6 +94,8 @@ impl Player {
                 .collect(),
             hp: self.vitals.hp(),
             max_hp: self.vitals.max_hp(),
+            exp: self.exp,
+            level: self.level(),
         }
     }
 
@@ -341,6 +350,7 @@ mod tests {
             vitals: Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
+            exp: 0,
         }
     }
 
@@ -603,5 +613,25 @@ mod tests {
         };
         p.step(0.1, tile_solid);
         assert!(p.x > start_x, "受困玩家應能逃出實心格，x={}", p.x);
+    }
+
+    #[test]
+    fn level_is_zero_at_start() {
+        let p = player_at(0.0, 0.0, Input::default());
+        assert_eq!(p.level(), 0);
+        assert_eq!(p.exp, 0);
+    }
+
+    #[test]
+    fn level_increments_every_100_exp() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.exp = 99;
+        assert_eq!(p.level(), 0, "99 exp 仍是 0 級");
+        p.exp = 100;
+        assert_eq!(p.level(), 1, "100 exp 升至 1 級");
+        p.exp = 399;
+        assert_eq!(p.level(), 3, "399 exp 升至 3 級");
+        p.exp = 500;
+        assert_eq!(p.level(), 5, "500 exp 升至 5 級");
     }
 }

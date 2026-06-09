@@ -189,6 +189,10 @@ pub struct PlayerView {
     /// 目前生命值與上限（戰鬥 1-F）。前端畫血條;0 = 被打趴休息中。
     pub hp: u32,
     pub max_hp: u32,
+    /// 累積經驗值（ROADMAP 17）。前端由此推算等級（level = exp / 100）。
+    pub exp: u32,
+    /// 目前等級（由 exp 推算，server 算好送來省前端重算）。
+    pub level: u32,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -381,6 +385,8 @@ mod tests {
                 }],
                 hp: 18,
                 max_hp: 20,
+                exp: 0,
+                level: 0,
             }],
             fields: vec![FieldView {
                 owner,
