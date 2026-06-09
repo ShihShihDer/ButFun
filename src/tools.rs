@@ -69,7 +69,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::MushroomStaff | ItemKind::RuneBlade
         | ItemKind::JadeShard | ItemKind::JadeElixir | ItemKind::JadeBlade
         | ItemKind::LavaCrystal | ItemKind::SteamElixir | ItemKind::CrimsonBlade
-        | ItemKind::VoidShard | ItemKind::VoidElixir | ItemKind::VoidBlade => None,
+        | ItemKind::VoidShard | ItemKind::VoidElixir | ItemKind::VoidBlade
+        | ItemKind::AetherShard | ItemKind::AetherEssence | ItemKind::AetherBlade => None,
     }
 }
 

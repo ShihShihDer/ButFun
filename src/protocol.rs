@@ -27,6 +27,7 @@ pub enum TileKindView {
     JadeVine,
     LavaRock,
     VoidCrystal,
+    AetherMist,
 }
 
 impl From<TileKind> for TileKindView {
@@ -44,6 +45,7 @@ impl From<TileKind> for TileKindView {
             TileKind::JadeVine    => TileKindView::JadeVine,
             TileKind::LavaRock    => TileKindView::LavaRock,
             TileKind::VoidCrystal => TileKindView::VoidCrystal,
+            TileKind::AetherMist  => TileKindView::AetherMist,
         }
     }
 }

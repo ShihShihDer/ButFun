@@ -135,9 +135,19 @@ pub enum ItemKind {
     /// 使用後回復至等級滿血，同時獲得 10 乙太（宇宙深淵能量轉換，雙效加成更強）。
     VoidElixir,
     /// 虛空刃（合成產物：虛空碎片×6 → 虛空刃×1）。
-    /// 持有此刃攻擊力 +25，全遊戲最強武器，超越赤焰刃（+20），
-    /// 只有踏上虛空星才能鑄造，宇宙深淵能量凝聚的終極武裝。
+    /// 持有此刃攻擊力 +25，全遊戲目前最強武器，超越赤焰刃（+20），
+    /// 只有踏上虛空星才能鑄造，宇宙深淵能量凝聚的高階武裝。
     VoidBlade,
+    /// 霧醚碎片（挖掘 AetherMist 地形格掉落，或擊倒霧醚幻靈；ROADMAP 24 霧醚星特產）。
+    /// 霧醚星獨有，NPC 以最高溢價收購；也是霧醚精粹 / 霧醚之刃的合成原料。
+    AetherShard,
+    /// 霧醚精粹（合成產物：霧醚碎片×2 → 霧醚精粹×1）。
+    /// 使用後回復至等級滿血，同時獲得 15 乙太（乙太迷霧高密度轉換，四星最強補給）。
+    AetherEssence,
+    /// 霧醚之刃（合成產物：霧醚碎片×8 → 霧醚之刃×1）。
+    /// 持有此刃攻擊力 +30，全遊戲最強武器，超越虛空刃（+25），
+    /// 只有踏上霧醚星才能鑄造，乙太迷霧凝結的終極宇宙武裝。
+    AetherBlade,
 }
 
 impl ItemKind {
@@ -180,6 +190,9 @@ impl ItemKind {
         ItemKind::VoidShard,
         ItemKind::VoidElixir,
         ItemKind::VoidBlade,
+        ItemKind::AetherShard,
+        ItemKind::AetherEssence,
+        ItemKind::AetherBlade,
     ];
 }
 
@@ -405,13 +418,16 @@ mod tests {
                 | ItemKind::CrimsonBlade
                 | ItemKind::VoidShard
                 | ItemKind::VoidElixir
-                | ItemKind::VoidBlade => {}
+                | ItemKind::VoidBlade
+                | ItemKind::AetherShard
+                | ItemKind::AetherEssence
+                | ItemKind::AetherBlade => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 33 種（含 ROADMAP 23 虛空星：虛空碎片/虛空精粹/虛空刃）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 33, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 36 種（含 ROADMAP 24 霧醚星：霧醚碎片/霧醚精粹/霧醚之刃）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 36, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -520,6 +536,7 @@ mod tests {
             EnemyKind::JadeWraith,
             EnemyKind::SteamConstruct,
             EnemyKind::VoidPhantom,
+            EnemyKind::AetherSpecter,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -532,7 +549,8 @@ mod tests {
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
-                | EnemyKind::VoidPhantom => {}
+                | EnemyKind::VoidPhantom
+                | EnemyKind::AetherSpecter => {}
             }
         }
         let droppable: std::collections::BTreeSet<ItemKind> =
@@ -549,13 +567,14 @@ mod tests {
             // WildflowerSeed 挖 WildFlower 野花叢格取得（草原特產，ROADMAP 14）；
             // JadeShard 挖 JadeVine 翠玉藤格取得（翠幽星特產，ROADMAP 21）；
             // LavaCrystal 挖 LavaRock 熔岩石格取得（赤焰星特產，ROADMAP 22）；
-            // VoidShard 挖 VoidCrystal 虛空晶體格取得（虛空星特產，ROADMAP 23）。
+            // VoidShard 挖 VoidCrystal 虛空晶體格取得（虛空星特產，ROADMAP 23）；
+            // AetherShard 挖 AetherMist 霧醚晶霧格取得（霧醚星特產，ROADMAP 24）。
             let tile_diggable = item == ItemKind::Dirt || item == ItemKind::Stone
                 || item == ItemKind::Ether || item == ItemKind::CrystalShard
                 || item == ItemKind::MushroomSpore || item == ItemKind::AncientFragment
                 || item == ItemKind::DeepSeaPearl || item == ItemKind::WildflowerSeed
                 || item == ItemKind::JadeShard || item == ItemKind::LavaCrystal
-                || item == ItemKind::VoidShard;
+                || item == ItemKind::VoidShard || item == ItemKind::AetherShard;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
@@ -639,6 +658,7 @@ mod tests {
                     | ItemKind::JadeElixir
                     | ItemKind::SteamElixir
                     | ItemKind::VoidElixir
+                    | ItemKind::AetherEssence
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

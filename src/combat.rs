@@ -57,9 +57,12 @@ pub enum WeaponKind {
     /// 赤焰刃（ROADMAP 22）：熔晶碎片鑄造的蒸汽龐克刀刃，攻擊力 +20，
     /// 赤焰星特有，超越翠幽刃（+15），蒸汽文明的最高武裝結晶。
     CrimsonBlade,
-    /// 虛空刃（ROADMAP 23）：虛空碎片凝聚的宇宙深淵刀刃，攻擊力 +25，全遊戲最強武器，
-    /// 虛空星特有，超越赤焰刃（+20），宇宙邊界能量的終極武裝。
+    /// 虛空刃（ROADMAP 23）：虛空碎片凝聚的宇宙深淵刀刃，攻擊力 +25，
+    /// 虛空星特有，超越赤焰刃（+20），宇宙邊界能量的高階武裝。
     VoidBlade,
+    /// 霧醚之刃（ROADMAP 24）：霧醚碎片凝聚的乙太迷霧刀刃，攻擊力 +30，全遊戲最強武器，
+    /// 霧醚星特有，超越虛空刃（+25），乙太迷霧終極武裝。
+    AetherBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -98,6 +101,7 @@ impl WeaponKind {
             WeaponKind::JadeBlade => 15,
             WeaponKind::CrimsonBlade => 20,
             WeaponKind::VoidBlade => 25,
+            WeaponKind::AetherBlade => 30,
         }
     }
 }
@@ -149,9 +153,12 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::LavaCrystal
         | ItemKind::SteamElixir
         | ItemKind::VoidShard
-        | ItemKind::VoidElixir => None,
+        | ItemKind::VoidElixir
+        | ItemKind::AetherShard
+        | ItemKind::AetherEssence => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
+        ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
     }
 }
 
@@ -191,7 +198,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::CrimsonBlade
         | ItemKind::VoidShard
         | ItemKind::VoidElixir
-        | ItemKind::VoidBlade => None,
+        | ItemKind::VoidBlade
+        | ItemKind::AetherShard
+        | ItemKind::AetherEssence
+        | ItemKind::AetherBlade => None,
     }
 }
 
@@ -248,8 +258,11 @@ pub enum EnemyKind {
     /// 解體後留下熔晶碎片——赤焰星的鋼鐵守護者，強度超越翠幽魅影，全遊戲最難的敵人。
     SteamConstruct,
     /// 虛空幽靈（虛空星）：宇宙深淵能量凝聚而成的黑暗幽靈，半透明紫黑身形，
-    /// 碎滅後留下虛空碎片——虛空星的黑暗守護者，強度超越蒸汽構裝，宇宙邊界的終極威脅。
+    /// 碎滅後留下虛空碎片——虛空星的黑暗守護者，強度超越蒸汽構裝，宇宙邊界的高階威脅。
     VoidPhantom,
+    /// 霧醚幻靈（霧醚星）：乙太迷霧深處凝聚而成的迷幻幽靈，半透明青白身形，
+    /// 消散後留下霧醚碎片——霧醚星的神秘守護者，強度超越虛空幽靈，宇宙遠西的終極威脅。
+    AetherSpecter,
 }
 
 impl EnemyKind {
@@ -272,8 +285,10 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 11,
             // 蒸汽構裝最強——赤焰星鋼鐵守衛，全遊戲最硬的敵人。
             EnemyKind::SteamConstruct => 15,
-            // 虛空幽靈超強——虛空星宇宙深淵守衛，超越蒸汽構裝的終極敵人。
+            // 虛空幽靈超強——虛空星宇宙深淵守衛，超越蒸汽構裝的高階敵人。
             EnemyKind::VoidPhantom => 20,
+            // 霧醚幻靈最強——霧醚星乙太迷霧守衛，超越虛空幽靈，全遊戲最硬的敵人。
+            EnemyKind::AetherSpecter => 28,
         }
     }
 
@@ -304,6 +319,8 @@ impl EnemyKind {
             EnemyKind::SteamConstruct => (ItemKind::LavaCrystal, 1),
             // 虛空幽靈碎滅後凝聚成虛空碎片（與挖虛空晶體相同，宇宙深淵的能量結晶）。
             EnemyKind::VoidPhantom => (ItemKind::VoidShard, 1),
+            // 霧醚幻靈消散後結晶成霧醚碎片（與挖霧醚晶霧相同，乙太迷霧的終極精華）。
+            EnemyKind::AetherSpecter => (ItemKind::AetherShard, 1),
         }
     }
 
@@ -328,8 +345,10 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 5,
             // 蒸汽構裝威脅最高——赤焰星最強守衛，鋼鐵熔岩裝甲。
             EnemyKind::SteamConstruct => 6,
-            // 虛空幽靈威脅超高——宇宙深淵守衛，存在即危險的終極威脅。
+            // 虛空幽靈威脅超高——宇宙深淵守衛，存在即危險的高階威脅。
             EnemyKind::VoidPhantom => 8,
+            // 霧醚幻靈威脅最高——霧醚星乙太迷霧守衛，全遊戲最強敵人的終極威脅。
+            EnemyKind::AetherSpecter => 11,
         }
     }
 
@@ -347,8 +366,10 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 35,
             // 蒸汽構裝給予最多 exp——全遊戲最難敵人應有最豐厚獎賞。
             EnemyKind::SteamConstruct => 45,
-            // 虛空幽靈給予最多 exp——超越蒸汽構裝的終極敵人，最豐厚的 exp 獎賞。
+            // 虛空幽靈給予豐厚 exp——宇宙深淵高階敵人的獎賞。
             EnemyKind::VoidPhantom => 55,
+            // 霧醚幻靈給予最多 exp——全遊戲最難敵人，應有最豐厚的 exp 獎賞。
+            EnemyKind::AetherSpecter => 70,
         }
     }
 
@@ -366,8 +387,10 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 75.0,
             // 蒸汽構裝重生時間最長——全遊戲最難敵人，擊倒後充分獎勵。
             EnemyKind::SteamConstruct => 90.0,
-            // 虛空幽靈重生時間最長——宇宙深淵終極守衛，碎滅後充分享受戰果。
+            // 虛空幽靈重生時間長——宇宙深淵高階守衛，碎滅後享受戰果。
             EnemyKind::VoidPhantom => 110.0,
+            // 霧醚幻靈重生時間最長——霧醚星終極守衛，消散後充分享受最豐厚的戰果。
+            EnemyKind::AetherSpecter => 130.0,
         }
     }
 }
@@ -483,7 +506,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 10] = [
+    const KINDS: [EnemyKind; 11] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -494,6 +517,7 @@ mod tests {
         EnemyKind::JadeWraith,
         EnemyKind::SteamConstruct,
         EnemyKind::VoidPhantom,
+        EnemyKind::AetherSpecter,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -706,6 +730,7 @@ mod tests {
         assert_eq!(EnemyKind::RuneGuardian.drop_loot(), (ItemKind::AncientFragment, 1));
         assert_eq!(EnemyKind::CoralCrab.drop_loot(), (ItemKind::DeepSeaPearl, 1));
         assert_eq!(EnemyKind::JadeWraith.drop_loot(), (ItemKind::JadeShard, 1));
+        assert_eq!(EnemyKind::AetherSpecter.drop_loot(), (ItemKind::AetherShard, 1));
     }
 
     #[test]
@@ -813,7 +838,8 @@ mod tests {
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
-                | EnemyKind::VoidPhantom => {}
+                | EnemyKind::VoidPhantom
+                | EnemyKind::AetherSpecter => {}
             }
         }
 
@@ -863,7 +889,8 @@ mod tests {
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
-                | EnemyKind::VoidPhantom => {}
+                | EnemyKind::VoidPhantom
+                | EnemyKind::AetherSpecter => {}
             }
         }
 

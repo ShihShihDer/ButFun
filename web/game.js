@@ -570,7 +570,7 @@
             if (planetEl) {
               const planet = me.planet || "home";
               if (planet !== "home") {
-                const PLANET_NAMES = { verdant: "🌿 翠幽星", crimson: "🔴 赤焰星", void: "🌑 虛空星" };
+                const PLANET_NAMES = { verdant: "🌿 翠幽星", crimson: "🔴 赤焰星", void: "🌑 虛空星", aether: "🌫️ 霧醚星" };
                 planetEl.textContent = PLANET_NAMES[planet] || `🌐 ${planet}`;
                 planetEl.classList.remove("hidden");
               } else {
@@ -636,6 +636,7 @@
     const col = travelFlash.planet === "verdant" ? "80,255,160"
                : travelFlash.planet === "crimson" ? "255,120,60"
                : travelFlash.planet === "void" ? "160,80,255"
+               : travelFlash.planet === "aether" ? "80,200,255"
                : "220,240,255";
     ctx.save();
     ctx.fillStyle = `rgba(${col},${(alpha * 0.55).toFixed(3)})`;
@@ -675,6 +676,18 @@
     const alpha = 0.15 * pulse;
     ctx.save();
     ctx.fillStyle = `rgba(80,20,180,${alpha.toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+  }
+
+  // 霧醚星大氣染色：在霧醚星時，畫面疊一層微弱青白暈（乙太迷霧的輕柔氛圍）。
+  function drawAetherAtmosphere(now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me || me.planet !== "aether") return;
+    const pulse = 0.6 + 0.4 * Math.sin(now / 4000);
+    const alpha = 0.11 * pulse;
+    ctx.save();
+    ctx.fillStyle = `rgba(60,180,240,${alpha.toFixed(3)})`;
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.restore();
   }
@@ -1026,11 +1039,13 @@
     const myEther = curMe ? (curMe.ether || 0) : 0;
     const hasJadeShard = invSet.has("jade_shard");
     const hasLavaCrystal = invSet.has("lava_crystal");
+    const hasVoidShard = invSet.has("void_shard");
     // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；故鄉→赤焰星需持有翠幽碎片；
-    // 故鄉/赤焰星→虛空星需持有熔晶碎片；返回故鄉費 30 乙太。
+    // 故鄉/赤焰星/虛空星→虛空星需持有熔晶碎片；→霧醚星需持有虛空碎片；返回故鄉費 30 乙太。
     const TRAVEL_COST = 30;
     const CRIMSON_TRAVEL_COST = 50;
     const VOID_TRAVEL_COST = 80;
+    const AETHER_TRAVEL_COST = 120;
     let travelBtn = "";
     if (myPlanet === "home" && allCollected) {
       const canAfford = myEther >= TRAVEL_COST;
@@ -1049,6 +1064,12 @@
           🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
         </button>`;
       }
+      if (hasVoidShard) {
+        const canAffordAether = myEther >= AETHER_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
+        </button>`;
+      }
     } else if (myPlanet === "verdant") {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
@@ -1065,7 +1086,24 @@
           🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
         </button>`;
       }
+      if (hasVoidShard) {
+        const canAffordAether = myEther >= AETHER_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
+        </button>`;
+      }
     } else if (myPlanet === "void") {
+      const canAfford = myEther >= TRAVEL_COST;
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
+      </button>`;
+      if (hasVoidShard) {
+        const canAffordAether = myEther >= AETHER_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
+        </button>`;
+      }
+    } else if (myPlanet === "aether") {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
@@ -1075,11 +1113,13 @@
       ? `<div style="color:#ff9060;font-size:0.9em;margin-top:4px;">🔴 你目前在赤焰星。</div>${travelBtn}`
       : myPlanet === "void"
         ? `<div style="color:#c080ff;font-size:0.9em;margin-top:4px;">🌑 你目前在虛空星。</div>${travelBtn}`
-        : allCollected && myPlanet === "home"
-          ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
-          : myPlanet === "verdant"
-            ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
-            : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
+        : myPlanet === "aether"
+          ? `<div style="color:#60c8ff;font-size:0.9em;margin-top:4px;">🌫️ 你目前在霧醚星。</div>${travelBtn}`
+          : allCollected && myPlanet === "home"
+            ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
+            : myPlanet === "verdant"
+              ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
+              : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;";
@@ -1090,7 +1130,8 @@
         <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:12px;">
           <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:#aaa;">超巨型生態系，古老樹靈守護著星球意識。</span></div>
           <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
-          <div>🌑 <b>虛空星</b> — <span style="color:#c080ff;">宇宙深淵邊界。</span><br><span style="font-size:0.9em;color:#aaa;">黑暗晶石遍布，虛空幽靈在深淵中低語。</span></div>
+          <div style="margin-bottom:8px;">🌑 <b>虛空星</b> — <span style="color:#c080ff;">宇宙深淵邊界。</span><br><span style="font-size:0.9em;color:#aaa;">黑暗晶石遍布，虛空幽靈在深淵中低語。</span></div>
+          <div>🌫️ <b>霧醚星</b> — <span style="color:#60c8ff;">乙太迷霧世界。</span><br><span style="font-size:0.9em;color:#aaa;">青白晶霧飄盪，霧醚幽靈在薄霧中若隱若現。</span></div>
         </div>
         <div style="text-align:left;background:rgba(0,0,0,0.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;">
           <div style="color:#c8d8ff;font-size:0.88em;margin-bottom:6px;font-weight:bold;">⚔️ 五大生態武裝 ${collected}/${biomeGear.length}</div>
@@ -1105,6 +1146,7 @@
       const btnV = overlay.querySelector("#btnTravelVerdant");
       const btnC = overlay.querySelector("#btnTravelCrimson");
       const btnVoid = overlay.querySelector("#btnTravelVoid");
+      const btnAether = overlay.querySelector("#btnTravelAether");
       const btnH = overlay.querySelector("#btnTravelHome");
       if (btnV && btnV.contains(e.target)) {
         if (myEther >= TRAVEL_COST) {
@@ -1123,6 +1165,13 @@
       if (btnVoid && btnVoid.contains(e.target)) {
         if (myEther >= VOID_TRAVEL_COST) {
           ws.send(JSON.stringify({ type: "travel_to_planet", planet: "void" }));
+          overlay.remove();
+        }
+        return;
+      }
+      if (btnAether && btnAether.contains(e.target)) {
+        if (myEther >= AETHER_TRAVEL_COST) {
+          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "aether" }));
           overlay.remove();
         }
         return;
@@ -1882,6 +1931,7 @@
     drawVerdantAtmosphere(performance.now());
     drawCrimsonAtmosphere(performance.now());
     drawVoidAtmosphere(performance.now());
+    drawAetherAtmosphere(performance.now());
 
     // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
     drawTravelFlash(performance.now());
@@ -2063,7 +2113,7 @@
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
           // 實心牆色:依材質分(土/石/礦/晶石/蕈菇/珊瑚礁/野花),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "void_crystal" ? "#2a0a4a" : kind === "aether_mist" ? "#0a3a5a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -2318,8 +2368,13 @@
       const jadeN = biomeNoise(wx, wy, 85, 999);
       if (jadeN > 0.80 && h < 0.65) return "jade_vine";
     }
+    // 霧醚星覆蓋：AETHER_ZONE_MAX_X = -30000，對齊 Rust world_core（scale 85, seed 2077）。
+    // 霧醚星比赤焰星更深的遠西方，優先判斷（else if 避免赤焰星邏輯在霧醚星區域觸發）。
+    if (wx <= -30000) {
+      const aetherN = biomeNoise(wx, wy, 85, 2077);
+      if (aetherN > 0.77 && h < 0.72) return "aether_mist";
     // 赤焰星覆蓋：CRIMSON_ZONE_MAX_X = -15000，對齊 Rust world_core（scale 90, seed 1337）。
-    if (wx <= -15000) {
+    } else if (wx <= -15000) {
       const lavaN = biomeNoise(wx, wy, 90, 1337);
       if (lavaN > 0.75 && h < 0.70) return "lava_rock";
     }
@@ -2403,6 +2458,7 @@
           : kind === "jade_vine" ? "#0d3d28"
           : kind === "lava_rock" ? "#6a1a05"
           : kind === "void_crystal" ? "#1a0535"
+          : kind === "aether_mist" ? "#0a2a3a"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -2597,6 +2653,34 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(60,220,140,0.30)");
             g.addColorStop(1, "rgba(60,220,140,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 霧醚晶霧：露出才散發青白色乙太光暈；提示「霧醚星獨有、挖取可得霧醚碎片」。
+        if (kind === "aether_mist") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 霧醚晶體：六角形輪廓，模擬乙太結晶化。
+          ctx.strokeStyle = exposed ? "rgba(140,220,255,0.92)" : "rgba(80,150,200,0.45)";
+          ctx.lineWidth = exposed ? 1.5 : 1;
+          ctx.beginPath();
+          const r = exposed ? 5.5 : 4;
+          for (let i = 0; i < 6; i++) {
+            const ang = (i * Math.PI) / 3 - Math.PI / 6;
+            const px = cx_ + Math.cos(ang) * r, py = cy_ + Math.sin(ang) * r;
+            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.closePath(); ctx.stroke();
+          // 晶核：中心青白小圓點
+          ctx.fillStyle = exposed ? "rgba(180,240,255,0.85)" : "rgba(100,180,220,0.45)";
+          ctx.beginPath(); ctx.arc(cx_, cy_, exposed ? 2.5 : 1.8, 0, Math.PI * 2); ctx.fill();
+          if (exposed) {
+            // 乙太光暈——讓霧醚晶霧在宇宙暗地中散發夢幻青白色光暈，玩家一眼認出「這是霧醚星特有資源」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.68);
+            g.addColorStop(0, "rgba(140,220,255,0.32)");
+            g.addColorStop(0.6, "rgba(100,180,255,0.12)");
+            g.addColorStop(1, "rgba(80,160,255,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -3340,6 +3424,44 @@
     ctx.closePath(); ctx.fill();
   }
 
+  // 霧醚幽靈：青白色半透明幽靈，邊緣暈散如乙太迷霧，眼睛散發冷光。
+  function drawAetherSpecter(cx, cy, t, phase) {
+    const bob = Math.sin(t * 1.8 + phase) * 3; // 輕柔上下飄浮
+    const alpha = 0.72 + 0.18 * Math.sin(t * 2.5 + phase); // 透明度脈動
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // 幽靈主體（青白半透明橢圓）
+    const grad = ctx.createRadialGradient(cx, cy - 4 + bob, 2, cx, cy + 2 + bob, 14);
+    grad.addColorStop(0, "rgba(180,240,255,0.90)");
+    grad.addColorStop(0.5, "rgba(100,200,240,0.70)");
+    grad.addColorStop(1, "rgba(60,160,220,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + bob, 12, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 底部拖尾（飄散的霧絲）
+    for (let i = 0; i < 3; i++) {
+      const ox = cx + (i - 1) * 5;
+      const tailA = 0.22 + 0.12 * Math.sin(t * 3 + i * 1.2 + phase);
+      ctx.fillStyle = `rgba(100,200,240,${tailA})`;
+      ctx.beginPath();
+      ctx.ellipse(ox, cy + 14 + bob + Math.sin(t * 4 + i) * 2, 2.5, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 發光雙眼（冷青光）
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(160,240,255,0.95)";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 4 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 4 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    // 眼睛光暈
+    const eyeGrd = ctx.createRadialGradient(cx, cy - 4 + bob, 0, cx, cy - 4 + bob, 11);
+    eyeGrd.addColorStop(0, "rgba(120,220,255,0.35)");
+    eyeGrd.addColorStop(1, "rgba(80,180,255,0)");
+    ctx.fillStyle = eyeGrd;
+    ctx.beginPath(); ctx.arc(cx, cy - 4 + bob, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
   // 讓玩家在畫面內一眼認出「這就是村子」（搭配離畫面時的 drawVillagePointer 邊緣箭頭遠距導航）。
   function drawVillageLandmark(camX, camY) {
@@ -3466,6 +3588,7 @@
       else if (e.kind === "coral_crab")       drawCoralCrab(sx, ey, t, phase);
       else if (e.kind === "jade_wraith")      drawJadeWraith(sx, ey, t, phase);
       else if (e.kind === "steam_construct")  drawSteamConstruct(sx, ey, t, phase);
+      else if (e.kind === "aether_specter")   drawAetherSpecter(sx, ey, t, phase);
       else {
         const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
         ctx.fillStyle = look.tint;
@@ -3517,11 +3640,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3575,6 +3698,11 @@
     { id: "void_elixir", out: "void_elixir", outQty: 1, inputs: [["void_shard", 2]] },
     // 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，虛空星專屬最強武器。
     { id: "void_blade", out: "void_blade", outQty: 1, inputs: [["void_shard", 6]] },
+    // ROADMAP 24 霧醚星合成路線：霧醚碎片（挖霧醚晶霧或打霧醚幽靈可得）合出精粹與終極武器。
+    // 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復滿血並獲得 15 乙太。
+    { id: "aether_essence", out: "aether_essence", outQty: 1, inputs: [["aether_shard", 2]] },
+    // 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，霧醚星終極武器。
+    { id: "aether_blade", out: "aether_blade", outQty: 1, inputs: [["aether_shard", 8]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。

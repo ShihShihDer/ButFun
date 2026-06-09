@@ -22,6 +22,11 @@ pub const VERDANT_ZONE_MIN_X: f64 = 20_000.0;
 /// 與 `crate::state::CRIMSON_SPAWN_X`（-18000）一致——赤焰星出生點深在此邊界內側。
 pub const CRIMSON_ZONE_MAX_X: f64 = -15_000.0;
 
+/// 霧醚星（Aether Star）在主世界的 X 最大座標。
+/// X ≤ 此值視為霧醚星領域（比赤焰星更深的遠西方），tile_kind_at 會生成霧醚晶霧聚落（覆蓋赤焰星邏輯）。
+/// 與 `crate::state::AETHER_SPAWN_X`（-32000）一致——霧醚星出生點深在此邊界內側。
+pub const AETHER_ZONE_MAX_X: f64 = -30_000.0;
+
 /// 虛空星（Void Star）在主世界的 X 最小座標。
 /// X ≥ 此值視為虛空星領域，tile_kind_at 會生成虛空晶體聚落（覆蓋翠幽星邏輯）。
 /// 與 `crate::state::VOID_SPAWN_X`（42000）一致——虛空星出生點深在此邊界內側。
@@ -182,6 +187,9 @@ pub enum TileKind {
     /// 虛空晶體——只生在虛空星（X ≥ VOID_ZONE_MIN_X）的聚落中，挖後掉虛空碎片，
     /// 虛空星 NPC 以最高溢價收購，宇宙深淵凝聚的黑暗晶石，鼓勵玩家探索宇宙邊界。
     VoidCrystal,
+    /// 霧醚晶霧——只生在霧醚星（X ≤ AETHER_ZONE_MAX_X）的聚落中，挖後掉霧醚碎片，
+    /// 霧醚星 NPC 以最高溢價收購，乙太迷霧凝結的神秘晶石，鼓勵玩家深入宇宙遠西。
+    AetherMist,
 }
 
 impl TileKind {
@@ -199,6 +207,7 @@ impl TileKind {
             TileKind::JadeVine    => 9,
             TileKind::LavaRock    => 10,
             TileKind::VoidCrystal => 11,
+            TileKind::AetherMist  => 12,
         }
     }
 }
@@ -273,11 +282,20 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         }
     }
 
-    // 赤焰星特有：熔岩石聚落。所有 wx ≤ CRIMSON_ZONE_MAX_X 的實心格都可能生熔岩石，
+    // 霧醚星特有：霧醚晶霧聚落。所有 wx ≤ AETHER_ZONE_MAX_X 的實心格都可能生霧醚晶霧，
+    // 覆蓋赤焰星及所有非水域生態的普通材質（霧醚星比赤焰星更遠的遠西方）。
+    // 次級噪聲（scale 85, seed 2077）決定聚落邊界（約 23% 的霧醚星實心格形成霧醚聚落）；
+    // 聚落內 72% 為 AetherMist，28% 保留原有材質，維持地形多樣性。
+    if wx <= AETHER_ZONE_MAX_X && biome != Biome::Water {
+        let aether_n = value_noise(wx, wy, 85.0, 2077);
+        if aether_n > 0.77 && h < 0.72 {
+            return TileKind::AetherMist;
+        }
+    // 赤焰星特有：熔岩石聚落。所有 AETHER_ZONE_MAX_X < wx ≤ CRIMSON_ZONE_MAX_X 的實心格都可能生熔岩石，
     // 覆蓋所有非水域生態的普通材質，讓整個赤焰星到處都有熔晶可挖。
     // 次級噪聲（scale 90, seed 1337）決定聚落邊界（約 25% 的赤焰星實心格形成熔岩聚落）；
     // 聚落內 70% 為 LavaRock，30% 保留原有材質，維持地形多樣性。
-    if wx <= CRIMSON_ZONE_MAX_X && biome != Biome::Water {
+    } else if wx <= CRIMSON_ZONE_MAX_X && biome != Biome::Water {
         let lava_n = value_noise(wx, wy, 90.0, 1337);
         if lava_n > 0.75 && h < 0.70 {
             return TileKind::LavaRock;
@@ -893,5 +911,56 @@ mod d2_tests {
                 assert_ne!(k, TileKind::LavaRock, "普通世界 ({x},{y}) 不應生熔岩石");
             }
         }
+    }
+
+    #[test]
+    fn tile_code_includes_aether_mist() {
+        assert_eq!(TileKind::AetherMist.code(), 12);
+    }
+
+    #[test]
+    fn aether_mist_exists_in_aether_zone() {
+        // 霧醚星（X ≤ -30000）應存在霧醚晶霧格。
+        let mut found = false;
+        'outer: for gy in 0..200i32 {
+            for gx in 0..200i32 {
+                let x = AETHER_ZONE_MAX_X - gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) != Biome::Water && tile_kind_at(x + 16.0, y + 16.0) == TileKind::AetherMist {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "霧醚星應存在霧醚晶霧格（AetherMist）");
+    }
+
+    #[test]
+    fn aether_mist_only_in_aether_zone() {
+        // AetherMist 不應出現在 X > -30000 的普通世界（故鄉 / 翠幽星 / 赤焰星）。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0;
+                let y = gy as f64 * 64.0 + 16.0;
+                let k = tile_kind_at(x, y);
+                assert_ne!(k, TileKind::AetherMist, "普通世界 ({x},{y}) 不應生霧醚晶霧");
+            }
+        }
+    }
+
+    #[test]
+    fn lava_rock_not_in_aether_zone() {
+        // 霧醚星區域（X ≤ -30000）內不應生成熔岩石（AetherMist 已覆蓋赤焰星邏輯）。
+        let mut lava_count = 0usize;
+        for gy in 0..50i32 {
+            for gx in 0..50i32 {
+                let x = AETHER_ZONE_MAX_X - 2000.0 - gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if tile_kind_at(x + 16.0, y + 16.0) == TileKind::LavaRock {
+                    lava_count += 1;
+                }
+            }
+        }
+        assert_eq!(lava_count, 0, "霧醚星區域不應生成熔岩石格");
     }
 }
