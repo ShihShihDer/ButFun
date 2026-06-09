@@ -13,6 +13,10 @@
 //!   - 強化鎬 (reinforced_pickaxe)：鎬子×1 + 木×2 + 石×4 -> 強化鎬×1
 //!   - 武器 (weapon)：石×4 + 乙太×2 -> 武器×1 (Phase 1 武器 MVP)
 //!   - 活力藥水 (healing_potion)：野花種子×3 -> 活力藥水×1 (ROADMAP 14 生態資源合成)
+//!   - 晶石強化液 (crystal_potion)：晶石碎片×5 -> 晶石強化液×1 (ROADMAP 15 更多生態玩法)
+//!   - 蕈菇活化液 (mushroom_elixir)：蕈菇孢子×4 -> 蕈菇活化液×1 (ROADMAP 15)
+//!   - 古代乙太丸 (ether_pill)：古代碎片×3 -> 古代乙太丸×1 (ROADMAP 15)
+//!   - 珍珠復原藥 (pearl_potion)：深海珍珠×1 -> 珍珠復原藥×1 (ROADMAP 15)
 
 use crate::inventory::{Inventory, ItemKind, MAX_STACK};
 
@@ -125,6 +129,34 @@ pub const RECIPES: &[Recipe] = &[
         id: "healing_potion",
         inputs: &[(ItemKind::WildflowerSeed, 3)],
         output: ItemKind::HealingPotion,
+        output_qty: 1,
+    },
+    /// 晶石強化液：晶石碎片×5 → 晶石強化液×1。回復 12 HP，深層晶洞探索的 Premium 回報。
+    Recipe {
+        id: "crystal_potion",
+        inputs: &[(ItemKind::CrystalShard, 5)],
+        output: ItemKind::CrystalPotion,
+        output_qty: 1,
+    },
+    /// 蕈菇活化液：蕈菇孢子×4 → 蕈菇活化液×1。回復 8 HP 並重置回血冷卻，讓回血立刻開始。
+    Recipe {
+        id: "mushroom_elixir",
+        inputs: &[(ItemKind::MushroomSpore, 4)],
+        output: ItemKind::MushroomElixir,
+        output_qty: 1,
+    },
+    /// 古代乙太丸：古代碎片×3 → 古代乙太丸×1。使用即得 10 乙太，在野外兌換遺跡能量。
+    Recipe {
+        id: "ether_pill",
+        inputs: &[(ItemKind::AncientFragment, 3)],
+        output: ItemKind::EtherPill,
+        output_qty: 1,
+    },
+    /// 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
+    Recipe {
+        id: "pearl_potion",
+        inputs: &[(ItemKind::DeepSeaPearl, 1)],
+        output: ItemKind::PearlPotion,
         output_qty: 1,
     },
 ];

@@ -72,7 +72,7 @@ impl WeaponKind {
 pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
     match item {
         ItemKind::Weapon => Some(WeaponKind::Blade),
-        // 資源原料、建造材料與採集工具都不是武器。
+        // 資源原料、建造材料、採集工具與消耗品都不是武器。
         ItemKind::Wood
         | ItemKind::Dirt
         | ItemKind::Stone
@@ -84,7 +84,11 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::AncientFragment
         | ItemKind::DeepSeaPearl
         | ItemKind::WildflowerSeed
-        | ItemKind::HealingPotion => None,
+        | ItemKind::HealingPotion
+        | ItemKind::CrystalPotion
+        | ItemKind::MushroomElixir
+        | ItemKind::EtherPill
+        | ItemKind::PearlPotion => None,
     }
 }
 
