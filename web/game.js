@@ -146,6 +146,7 @@
   // 既有存量不算「採到」,不噴飄字;之後某品項數量變多才是真的採進來,才噴「+N 🪵」。
   let myInv = new Map();
   let invKnown = false;
+  let lastBagSig = ""; // 背包面板上次重繪時的內容簽章——只在變了才重繪，避免每幀砍掉重建按鈕
   // C-4 建造：玩家從背包選取的放置材料（"dirt"/"stone" 或 null 表示未選）。
   // 右鍵點空格時若有選取材料且背包有貨則送 place；按 Escape 或再次點同項取消選取。
   let selectedBuildMaterial = null;
@@ -491,7 +492,11 @@
           }
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
-          updateBagHud(inv);
+          // 只在背包內容真的變了才重繪面板——原本每幀(15Hz)都重建 innerHTML + 重綁按鈕，
+          // 害「🏗️選取 點得到但不一定勾選」(點擊剛好遇到重建就掉了)。選取材料不改背包內容，
+          // 故選取期間不會被快照重繪打斷；按鈕點擊自己會重繪一次同步選取狀態。
+          const bagSig = inv.map((s) => `${s.item}:${s.qty}`).join(",");
+          if (bagSig !== lastBagSig) { lastBagSig = bagSig; updateBagHud(inv); }
           updateWeaponHud(inv);  // 手上武器 pill（有武器才亮）+「合武器更痛」一行引導
           updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
