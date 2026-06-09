@@ -104,6 +104,10 @@ pub enum ClientMsg {
     /// 伺服器驗可及距離、目標為 Empty、背包有該材料後：
     /// 背包扣 1、delta 設對應 TileKind、廣播差異。
     Place { wx: f32, wy: f32, material: String },
+    /// 主動攻擊：玩家按下攻擊鍵，打 ATTACK_REACH 內最近的存活敵人。
+    /// 伺服器驗：未倒地、冷卻已到期（ATTACK_COOLDOWN_SECS），再結算傷害 + 掉落。
+    /// 冷卻期間送出靜默忽略（不懲罰多按）。
+    Attack,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -311,6 +315,13 @@ mod tests {
             }
             other => panic!("解析成非預期變體：{other:?}"),
         }
+    }
+
+    /// 前端送的 attack 訊息要能被解析成 `ClientMsg::Attack`（主動攻擊 wire contract）。
+    #[test]
+    fn parses_attack_message() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"attack"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::Attack));
     }
 
     /// 前端送的 place 訊息要能被解析成 `ClientMsg::Place`（C-4 wire contract）。

@@ -66,6 +66,8 @@ pub struct Player {
     pub vitals: Vitals,
     /// 農地擴張狀態（已購格數）。跨重啟持久化於 players.wallet_expansions。
     pub wallet: crate::economy::PlotWallet,
+    /// 主動攻擊冷卻剩餘秒數（0.0 = 可攻擊；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
+    pub attack_cooldown: f32,
 }
 
 impl Player {
@@ -324,6 +326,7 @@ mod tests {
             inventory: Inventory::new(),
             vitals: Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
+            attack_cooldown: 0.0,
         }
     }
 

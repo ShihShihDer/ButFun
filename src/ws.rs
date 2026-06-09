@@ -107,6 +107,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             inventory: crate::inventory::Inventory::new(),
             vitals: crate::vitals::Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
+            attack_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -137,6 +138,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             inventory: crate::inventory::Inventory::new(),
             vitals: crate::vitals::Vitals::new(),
             wallet: crate::economy::PlotWallet::new(),
+            attack_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -686,6 +688,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         store.upsert_delta(cx, cy, tx, ty, tile_kind).await;
                     });
                     tracing::info!(player = %player_name, ?tile_kind, "建造放置");
+                }
+                Ok(ClientMsg::Attack) => {
+                    // 主動攻擊：驗未倒地、冷卻已到期，再打 ATTACK_REACH 內最近的存活敵人。
+                    // 鎖序：讀 players（取位置+冷卻） → 寫 enemies（attack_nearest） → 寫 players（設冷卻+掉落）。
+                    const ATTACK_COOLDOWN_SECS: f32 = 0.6;
+                    let info = app.players.read().unwrap().get(&id).map(|p| {
+                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown,
+                         crate::combat::weapon_power(&p.inventory))
+                    });
+                    let Some((px, py, downed, cooldown, power)) = info else { continue; };
+                    if downed || cooldown > 0.0 { continue; }
+                    let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        p.attack_cooldown = ATTACK_COOLDOWN_SECS;
+                        if let Some((_kind, Some((item, qty)))) = result {
+                            p.inventory.add(item, qty);
+                            tracing::info!(player = %p.name, ?item, qty, "主動攻擊戰利品");
+                        }
+                    }
                 }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
