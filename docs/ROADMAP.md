@@ -34,12 +34,18 @@
    - 前端：`tileKindAt` 本地確定性生成（零帶寬）+ `drawTerrain` 畫色塊地形。
 
 ## 現在做
-6c. **可挖地形 C-3：tile 碰撞**（PR 開發中）
+6d. **可挖地形 C-4：建造（Place handler）**（PR 開發中）
+   - `ClientMsg::Place { wx, wy, material }` + ws.rs handler（可及性 80px、空格才放、背包扣 1 + delta 設實心 + 持久化）。
+   - `tiles::tile_for_item` / `item_for_placeable_tile` 純函式（dirt / stone 可放；ore / ether 不可放）。
+   - 前端：背包行加 🏗️選取鈕 → 右鍵點空格放置；HUD 放置模式 pill。
+   - 至此玩家可「挖通地形 → 把材料堆回去蓋洞穴家 / 洞穴城堡」。
+
+## 已完成（C-2、C-3）
+6c. ✅ **可挖地形 C-3：tile 碰撞**（PR #61）
    - `Player::step` 加入 `tile_solid` 閉包參數，以中心判逃脫 + 四角判碰牆的兩層策略。
    - `game.rs`：每 tick 快照 tile deltas（先釋放讀鎖再取 players 寫鎖，避免死鎖）。
    - 3 個純邏輯測試：擋住直線移動、沿牆滑行、受困逃脫。
 
-## 已完成（C-2 以前）
 6b. ✅ **可挖地形 C-2：Dig handler**（PR #59）
    - 後端：`ClientMsg::Dig { wx, wy }` + ws.rs handler（可及性 80px、實心→Empty + 材料入背包 + 持久化）。
    - `ItemKind::Dirt`（土磚，C-2 掉落 + C-4 建造材料）加入物品宇宙。

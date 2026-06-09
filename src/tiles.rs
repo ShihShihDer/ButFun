@@ -31,6 +31,27 @@ pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
     }
 }
 
+/// C-4 建造：把材料字串（前端 snake_case ItemKind 名）轉換成可放置的 TileKind。
+/// 礦石（ore）不可人工放置，ether 等工具類亦不可；只有 dirt / stone 可堆建。
+///
+/// 純函式，便於測試；接線在 ws.rs 的 `Place` handler。
+pub fn tile_for_item(material: &str) -> Option<TileKind> {
+    match material {
+        "dirt"  => Some(TileKind::Dirt),
+        "stone" => Some(TileKind::Stone),
+        _       => None,
+    }
+}
+
+/// C-4 建造：把可放置的 TileKind 轉換回對應 ItemKind（供背包扣料用）。
+pub fn item_for_placeable_tile(kind: TileKind) -> Option<ItemKind> {
+    match kind {
+        TileKind::Dirt  => Some(ItemKind::Dirt),
+        TileKind::Stone => Some(ItemKind::Stone),
+        _               => None,
+    }
+}
+
 /// 記憶體裡的地形格世界（記憶體前置、寫後非同步落地到 `TileStore`）。
 pub struct TileWorld {
     /// 玩家修改的差異：鍵 = (chunk_cx, chunk_cy, cell_x, cell_y)，值 = 覆蓋材質。
@@ -116,6 +137,30 @@ mod tests {
         assert_eq!(drop_for_tile(TileKind::Dirt),  Some((ItemKind::Dirt,  1)));
         assert_eq!(drop_for_tile(TileKind::Stone), Some((ItemKind::Stone, 1)));
         assert_eq!(drop_for_tile(TileKind::Ore),   Some((ItemKind::Ether, 1)));
+    }
+
+    #[test]
+    fn tile_for_item_dirt_stone_roundtrip() {
+        // dirt/stone 可放置
+        assert_eq!(tile_for_item("dirt"),  Some(TileKind::Dirt));
+        assert_eq!(tile_for_item("stone"), Some(TileKind::Stone));
+    }
+
+    #[test]
+    fn tile_for_item_rejects_non_placeable() {
+        // 礦石材料及工具類不可放置
+        assert_eq!(tile_for_item("ether"),   None);
+        assert_eq!(tile_for_item("pickaxe"), None);
+        assert_eq!(tile_for_item("ore"),     None);
+        assert_eq!(tile_for_item(""),        None);
+    }
+
+    #[test]
+    fn item_for_placeable_tile_roundtrip() {
+        assert_eq!(item_for_placeable_tile(TileKind::Dirt),  Some(ItemKind::Dirt));
+        assert_eq!(item_for_placeable_tile(TileKind::Stone), Some(ItemKind::Stone));
+        assert_eq!(item_for_placeable_tile(TileKind::Ore),   None);
+        assert_eq!(item_for_placeable_tile(TileKind::Empty), None);
     }
 
     #[test]
