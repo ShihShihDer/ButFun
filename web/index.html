@@ -116,10 +116,13 @@
        沿用面板深底+陰影+關閉鈕。限高內捲:配方/背包列多時不超出視窗高(dvh 跟著手機工具列縮放,
        留 vh 給舊瀏覽器後備——vh 先、dvh 後覆寫,懂 dvh 的取後者)。手機桌面共用,寬度自適應。 */
     #hudWindows { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 7; }
-    .hud-window { background: var(--panel); border: 1px solid #3a4250; border-radius: 10px;
-      padding: 8px 12px 10px; width: min(320px, 88vw); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
-      max-height: calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
-      max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-y: auto; }
+    /* 視窗別佔滿視野:再透一點 + 毛玻璃模糊(看得到後面遊戲、字仍清楚),
+       高度限到約 2/3 螢幕(內部捲動),寬度略收;手機上不再蓋住整片畫面。 */
+    .hud-window { background: rgba(18, 22, 30, 0.7); border: 1px solid #3a4250; border-radius: 10px;
+      backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+      padding: 8px 12px 10px; width: min(300px, 84vw); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+      max-height: min(66vh, calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+      max-height: min(66dvh, calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); overflow-y: auto; }
     .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
     .hud-window .win-title { color: var(--brass); font-weight: 600; flex: 1; }
     .hud-window .win-close { font: inherit; cursor: pointer; width: 28px; height: 28px; line-height: 1;
