@@ -34,7 +34,8 @@ pub struct ShopEntry {
 /// 給採集素材一個現金出口，新玩家不需等農地就能攢起第一桶乙太。
 /// 晶石碎片（深層晶洞掉落）以 3 乙太/個溢價收購，鼓勵探索型玩家深入岩地。
 /// 蕈菇孢子（森林蕈菇洞掉落）以 2 乙太/個溢價收購，鼓勵探索型玩家深入森林。
-/// 古代碎片（沙漠遺跡掉落）以 4 乙太/個最高溢價收購，回報最遠、最危險的沙漠探索。
+/// 古代碎片（沙漠遺跡掉落）以 4 乙太/個高溢價收購，回報最遠、最危險的沙漠探索。
+/// 深海珍珠（水域珊瑚礁掉落）以 5 乙太/個最高溢價收購，是所有生態特產中最稀有的。
 pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::Wood,             price_per: 1 },
     ShopEntry { item: ItemKind::Stone,            price_per: 1 },
@@ -43,6 +44,7 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::CrystalShard,     price_per: 3 },
     ShopEntry { item: ItemKind::MushroomSpore,    price_per: 2 },
     ShopEntry { item: ItemKind::AncientFragment,  price_per: 4 },
+    ShopEntry { item: ItemKind::DeepSeaPearl,     price_per: 5 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -208,6 +210,7 @@ mod tests {
         let important_items = [
             ItemKind::Wood, ItemKind::Stone, ItemKind::Ether,
             ItemKind::Dirt, ItemKind::CrystalShard, ItemKind::MushroomSpore,
+            ItemKind::AncientFragment, ItemKind::DeepSeaPearl,
         ];
         for item in important_items {
             assert!(
@@ -235,6 +238,16 @@ mod tests {
         let wood_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::Wood);
         assert!(spore_entry.unwrap().price_per > wood_entry.unwrap().price_per,
             "蕈菇孢子應比木材更值錢");
+    }
+
+    #[test]
+    fn deep_sea_pearl_has_highest_premium_price() {
+        // 深海珍珠應是所有生態特產中收購價最高，反映水域探索的珍稀性。
+        let pearl_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::DeepSeaPearl);
+        assert!(pearl_entry.is_some(), "深海珍珠應在收購清單");
+        let ancient_entry = NPC_BUY_LIST.iter().find(|e| e.item == ItemKind::AncientFragment);
+        assert!(pearl_entry.unwrap().price_per > ancient_entry.unwrap().price_per,
+            "深海珍珠應比古代碎片更值錢（最高生態特產溢價）");
     }
 
     #[test]

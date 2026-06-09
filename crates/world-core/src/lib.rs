@@ -134,6 +134,7 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   4 = Crystal（晶石，Deep Rocky 特有稀有礦）
 ///   5 = Mushroom（蕈菇，Forest 生態域蕈菇聚落特有）
 ///   6 = AncientRuin（古代遺跡，Sand 生態域沙漠遺跡聚落特有）
+///   7 = CoralReef（珊瑚礁，Water 生態域海底特產）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
@@ -148,6 +149,9 @@ pub enum TileKind {
     /// 古代遺跡石——只生在沙漠（Sand）生態域的遺跡聚落中，挖後掉古代碎片，
     /// NPC 以高溢價收購，給探索沙漠的玩家開出第三條乙太路線。
     AncientRuin,
+    /// 珊瑚礁——只生在水域（Water）生態域的珊瑚聚落中，挖後掉深海珍珠，
+    /// NPC 以最高溢價收購，鼓勵玩家在海岸邊挖掘水下珍寶。
+    CoralReef,
 }
 
 impl TileKind {
@@ -160,6 +164,7 @@ impl TileKind {
             TileKind::Crystal     => 4,
             TileKind::Mushroom    => 5,
             TileKind::AncientRuin => 6,
+            TileKind::CoralReef   => 7,
         }
     }
 }
@@ -177,7 +182,22 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         return TileKind::Empty;
     }
     let biome = biome_at(wx, wy);
+
+    // 水域特例：珊瑚礁聚落（海底特產），其餘水格一律 Empty（水面可通行）。
+    // 玩家無法進入水域，但可從岸邊 80px 距離挖掘珊瑚礁取得深海珍珠。
     if biome == Biome::Water {
+        let gx = (wx / TILE_PX as f64).floor() as i32;
+        let gy = (wy / TILE_PX as f64).floor() as i32;
+        let h = grass_hash(
+            gx.wrapping_mul(1031) ^ gy.wrapping_mul(2053),
+            gx ^ gy.wrapping_mul(1009),
+        );
+        // 珊瑚礁聚落：次級噪聲（scale 70, seed 555）高於 0.80 的水域（約 20%）形成珊瑚礁。
+        // 珊瑚礁內：50% CoralReef，50% Empty——保留水面空間，不讓水域完全堵死。
+        let coral_n = value_noise(wx, wy, 70.0, 555);
+        if coral_n > 0.80 && h < 0.50 {
+            return TileKind::CoralReef;
+        }
         return TileKind::Empty;
     }
 
@@ -363,21 +383,69 @@ mod tests {
     }
 
     #[test]
-    fn water_biome_is_always_empty() {
-        // 找一個水域座標，確認 tile_kind_at 回 Empty（水面無實心格）。
-        let mut found = false;
-        'outer: for gy in 0..50i32 {
-            for gx in 0..50i32 {
-                let x = gx as f64 * 200.0;
-                let y = gy as f64 * 200.0;
+    fn water_biome_non_coral_is_empty() {
+        // 水域裡大部分格應為 Empty（珊瑚礁只佔少數，水面整體可通行）。
+        let mut empty_count = 0usize;
+        let mut total = 0usize;
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0;
+                let y = gy as f64 * 64.0;
                 if biome_at(x, y) == Biome::Water {
-                    assert_eq!(tile_kind_at(x, y), TileKind::Empty, "水域應回 Empty");
+                    total += 1;
+                    if tile_kind_at(x + 16.0, y + 16.0) == TileKind::Empty {
+                        empty_count += 1;
+                    }
+                }
+            }
+        }
+        if total > 0 {
+            // 珊瑚礁佔比約 10%（20% 聚落 × 50% 密度），故 Empty 應 > 80%。
+            let empty_ratio = empty_count as f64 / total as f64;
+            assert!(
+                empty_ratio > 0.75,
+                "水域應有>75%空格保持可通行，實際={:.1}%",
+                empty_ratio * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn coral_reef_exists_in_water_biome() {
+        // 掃水域範圍，確認確實能生成珊瑚礁格（不是機率設太低全找不到）。
+        let mut found = false;
+        'outer: for gy in 0..300i32 {
+            for gx in 0..300i32 {
+                let x = gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) == Biome::Water && tile_kind_at(x + 16.0, y + 16.0) == TileKind::CoralReef {
                     found = true;
                     break 'outer;
                 }
             }
         }
-        assert!(found, "掃描範圍內應存在至少一個水域座標");
+        assert!(found, "水域生態域中應存在珊瑚礁格");
+    }
+
+    #[test]
+    fn coral_reef_only_in_water_biome() {
+        // CoralReef 格不應出現在非水域生態域（rocky/forest/meadow/sand）。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0;
+                let y = gy as f64 * 64.0 + 16.0;
+                let b = biome_at(x, y);
+                if b != Biome::Water {
+                    let k = tile_kind_at(x, y);
+                    assert_ne!(k, TileKind::CoralReef, "非水域生態域 {:?} 不應生珊瑚礁，座標=({x},{y})", b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tile_code_includes_coral_reef() {
+        assert_eq!(TileKind::CoralReef.code(), 7);
     }
 
     #[test]

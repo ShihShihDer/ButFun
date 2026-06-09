@@ -1706,8 +1706,8 @@
         if (kind === "empty") {
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
-          // 實心牆色:依材質分(土/石/礦/晶石/蕈菇),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          // 實心牆色:依材質分(土/石/礦/晶石/蕈菇/珊瑚礁),比地表暗且飽和,呈現「牆」的感覺。
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -1940,14 +1940,18 @@
     }
     // 確定性生成
     const b = biomeAt(wx, wy);
-    if (b === "water") return "empty";
+    const h = tileHash(gx, gy);
+    // 水域特例：珊瑚礁聚落（對齊 Rust tile_kind_at 水域邏輯，scale 70, seed 555）。
+    if (b === "water") {
+      const coralN = biomeNoise(wx, wy, 70, 555);
+      if (coralN > 0.80 && h < 0.50) return "coral_reef";
+      return "empty";
+    }
 
     // D-2 天然洞窟：使用低頻 biomeNoise 在實心中挖出連通空間。
     // scale 160.0 約 5 格寬的走廊/房間；threshold 0.38 約 38% 為空（62% 實心）。
     const cave = biomeNoise(wx, wy, 160, 123);
     if (cave < 0.38) return "empty";
-
-    const h = tileHash(gx, gy);
     if (b === "rocky") {
       // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
       const crystalN = biomeNoise(wx, wy, 80, 777);
@@ -2016,6 +2020,7 @@
         ctx.fillStyle = kind === "crystal" ? "#2a1f52"
           : kind === "mushroom" ? "#1a3a1e"
           : kind === "ancient_ruin" ? "#5a4520"
+          : kind === "coral_reef" ? "#0a3a4a"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -2097,6 +2102,31 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(220,185,80,0.28)");
             g.addColorStop(1, "rgba(220,185,80,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 珊瑚礁：露出才發出青藍色亮光，埋深處隱約深藍紋；提示「岸邊有珍珠可挖」。
+        if (kind === "coral_reef") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 珊瑚枝叉：Y 形分叉線模擬珊瑚礁形狀，露出時顏色更鮮豔。
+          ctx.strokeStyle = exposed ? "rgba(80,220,210,0.90)" : "rgba(40,140,160,0.45)";
+          ctx.lineWidth = exposed ? 2 : 1.5;
+          const r = exposed ? 6 : 4;
+          ctx.beginPath();
+          // 主幹
+          ctx.moveTo(cx_, cy_ + r); ctx.lineTo(cx_, cy_);
+          // 左叉
+          ctx.moveTo(cx_, cy_); ctx.lineTo(cx_ - r, cy_ - r);
+          // 右叉
+          ctx.moveTo(cx_, cy_); ctx.lineTo(cx_ + r, cy_ - r);
+          ctx.stroke();
+          if (exposed) {
+            // 青藍光暈——讓珊瑚礁在水域邊發出迷幻藍綠光，玩家一眼認出「這裡有珍寶」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(80,220,210,0.30)");
+            g.addColorStop(1, "rgba(80,220,210,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -2712,11 +2742,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3236,7 +3266,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 
