@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, VERDANT_BUY_LIST, VERDANT_SELL_LIST, CRIMSON_BUY_LIST, CRIMSON_SELL_LIST, merchant_pos, verdant_merchant_pos, crimson_merchant_pos};
+use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, VERDANT_BUY_LIST, VERDANT_SELL_LIST, CRIMSON_BUY_LIST, CRIMSON_SELL_LIST, VOID_BUY_LIST, VOID_SELL_LIST, merchant_pos, verdant_merchant_pos, crimson_merchant_pos, void_merchant_pos};
 use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry, TileDeltaView};
 use crate::state::AppState;
 
@@ -310,6 +310,13 @@ pub fn spawn(app: AppState) {
                         buy_list: CRIMSON_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
                         sell_list: CRIMSON_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
                     };
+                    let (vmx2, vmy2) = void_merchant_pos();
+                    let void_npc = NpcView {
+                        x: vmx2,
+                        y: vmy2,
+                        buy_list: VOID_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        sell_list: VOID_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                    };
                     ServerMsg::Snapshot {
                         tick,
                         players: players.values().map(|p| p.view()).collect(),
@@ -318,7 +325,7 @@ pub fn spawn(app: AppState) {
                         enemies: enemy_views,
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
-                        npcs: vec![home_npc, verdant_npc, crimson_npc],
+                        npcs: vec![home_npc, verdant_npc, crimson_npc, void_npc],
                         // C-2 起：把 TileWorld 中所有玩家挖掘後的差異帶入快照。
                         // delta 稀疏（只存偏離確定性生成的格），ws.rs 轉發時再依 AOI 剔除。
                         terrain: {

@@ -570,7 +570,7 @@
             if (planetEl) {
               const planet = me.planet || "home";
               if (planet !== "home") {
-                const PLANET_NAMES = { verdant: "🌿 翠幽星", crimson: "🔴 赤焰星" };
+                const PLANET_NAMES = { verdant: "🌿 翠幽星", crimson: "🔴 赤焰星", void: "🌑 虛空星" };
                 planetEl.textContent = PLANET_NAMES[planet] || `🌐 ${planet}`;
                 planetEl.classList.remove("hidden");
               } else {
@@ -635,6 +635,7 @@
     const alpha = t < 0.5 ? t * 2 : (1 - t) * 2;
     const col = travelFlash.planet === "verdant" ? "80,255,160"
                : travelFlash.planet === "crimson" ? "255,120,60"
+               : travelFlash.planet === "void" ? "160,80,255"
                : "220,240,255";
     ctx.save();
     ctx.fillStyle = `rgba(${col},${(alpha * 0.55).toFixed(3)})`;
@@ -662,6 +663,18 @@
     const alpha = 0.12 * pulse;
     ctx.save();
     ctx.fillStyle = `rgba(220,80,30,${alpha.toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+  }
+
+  // 虛空星大氣染色：在虛空星時，畫面疊一層微弱深紫暈（宇宙深淵的黑暗靜默）。
+  function drawVoidAtmosphere(now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me || me.planet !== "void") return;
+    const pulse = 0.5 + 0.5 * Math.sin(now / 3600);
+    const alpha = 0.15 * pulse;
+    ctx.save();
+    ctx.fillStyle = `rgba(80,20,180,${alpha.toFixed(3)})`;
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.restore();
   }
@@ -1012,9 +1025,12 @@
     const myPlanet = curMe ? (curMe.planet || "home") : "home";
     const myEther = curMe ? (curMe.ether || 0) : 0;
     const hasJadeShard = invSet.has("jade_shard");
-    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；故鄉→赤焰星需持有翠幽碎片；返回故鄉費 30 乙太。
+    const hasLavaCrystal = invSet.has("lava_crystal");
+    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；故鄉→赤焰星需持有翠幽碎片；
+    // 故鄉/赤焰星→虛空星需持有熔晶碎片；返回故鄉費 30 乙太。
     const TRAVEL_COST = 30;
     const CRIMSON_TRAVEL_COST = 50;
+    const VOID_TRAVEL_COST = 80;
     let travelBtn = "";
     if (myPlanet === "home" && allCollected) {
       const canAfford = myEther >= TRAVEL_COST;
@@ -1027,6 +1043,12 @@
           🔴 前往赤焰星（${CRIMSON_TRAVEL_COST} 乙太）${canAfford2 ? "" : " — 乙太不足"}
         </button>`;
       }
+      if (hasLavaCrystal) {
+        const canAffordVoid = myEther >= VOID_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "#888"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
+        </button>`;
+      }
     } else if (myPlanet === "verdant") {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
@@ -1037,25 +1059,38 @@
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
+      if (hasLavaCrystal) {
+        const canAffordVoid = myEther >= VOID_TRAVEL_COST;
+        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "#888"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
+          🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
+        </button>`;
+      }
+    } else if (myPlanet === "void") {
+      const canAfford = myEther >= TRAVEL_COST;
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
+      </button>`;
     }
     const footer = myPlanet === "crimson"
       ? `<div style="color:#ff9060;font-size:0.9em;margin-top:4px;">🔴 你目前在赤焰星。</div>${travelBtn}`
-      : allCollected && myPlanet === "home"
-        ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
-        : myPlanet === "verdant"
-          ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
-          : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
+      : myPlanet === "void"
+        ? `<div style="color:#c080ff;font-size:0.9em;margin-top:4px;">🌑 你目前在虛空星。</div>${travelBtn}`
+        : allCollected && myPlanet === "home"
+          ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
+          : myPlanet === "verdant"
+            ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
+            : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;";
     overlay.innerHTML = `
       <div style="max-width:400px;padding:24px 28px;background:rgba(14,20,52,0.96);border:1px solid rgba(160,140,220,0.4);border-radius:12px;text-align:center;color:#e0e8ff;font-size:14px;line-height:1.7;">
         <div style="font-size:2.2em;margin-bottom:8px;">🗺️ 星圖展開</div>
-        <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:14px;">你的星圖記錄了三顆遠方星球的訊號⋯⋯</div>
+        <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:14px;">你的星圖記錄了四顆遠方星球的訊號⋯⋯</div>
         <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:12px;">
-          <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
           <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:#aaa;">超巨型生態系，古老樹靈守護著星球意識。</span></div>
-          <div>🔵 <b>靈光星</b> — <span style="color:#a080e0;">乙太能量行星。</span><br><span style="font-size:0.9em;color:#aaa;">純粹的乙太結晶體，傳說中乙太的源頭。</span></div>
+          <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
+          <div>🌑 <b>虛空星</b> — <span style="color:#c080ff;">宇宙深淵邊界。</span><br><span style="font-size:0.9em;color:#aaa;">黑暗晶石遍布，虛空幽靈在深淵中低語。</span></div>
         </div>
         <div style="text-align:left;background:rgba(0,0,0,0.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;">
           <div style="color:#c8d8ff;font-size:0.88em;margin-bottom:6px;font-weight:bold;">⚔️ 五大生態武裝 ${collected}/${biomeGear.length}</div>
@@ -1069,6 +1104,7 @@
     overlay.addEventListener("click", (e) => {
       const btnV = overlay.querySelector("#btnTravelVerdant");
       const btnC = overlay.querySelector("#btnTravelCrimson");
+      const btnVoid = overlay.querySelector("#btnTravelVoid");
       const btnH = overlay.querySelector("#btnTravelHome");
       if (btnV && btnV.contains(e.target)) {
         if (myEther >= TRAVEL_COST) {
@@ -1080,6 +1116,13 @@
       if (btnC && btnC.contains(e.target)) {
         if (myEther >= CRIMSON_TRAVEL_COST) {
           ws.send(JSON.stringify({ type: "travel_to_planet", planet: "crimson" }));
+          overlay.remove();
+        }
+        return;
+      }
+      if (btnVoid && btnVoid.contains(e.target)) {
+        if (myEther >= VOID_TRAVEL_COST) {
+          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "void" }));
           overlay.remove();
         }
         return;
@@ -1838,6 +1881,7 @@
     // 翠幽星大氣染色（ROADMAP 20）：在翠幽星時，畫面疊一層微翠綠暈，強化星球身份感。
     drawVerdantAtmosphere(performance.now());
     drawCrimsonAtmosphere(performance.now());
+    drawVoidAtmosphere(performance.now());
 
     // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
     drawTravelFlash(performance.now());
@@ -2264,8 +2308,13 @@
     // 其餘生態域 0.82＝約 18% 實心(開闊好走)。
     const cave = biomeNoise(wx, wy, 160, 123);
     if (cave < (b === "rocky" ? 0.50 : 0.82)) return "empty";
-    // 翠幽星覆蓋：VERDANT_ZONE_MIN_X = 20000，對齊 Rust world_core（scale 85, seed 999）。
-    if (wx >= 20000) {
+    // 虛空星覆蓋：VOID_ZONE_MIN_X = 38000，對齊 Rust world_core（scale 80, seed 2023）。
+    // 用 else if 避免翠玉藤出現在虛空星範圍（VOID_ZONE_MIN_X ≥ VERDANT_ZONE_MIN_X）。
+    if (wx >= 38000) {
+      const voidN = biomeNoise(wx, wy, 80, 2023);
+      if (voidN > 0.78 && h < 0.68) return "void_crystal";
+    } else if (wx >= 20000) {
+      // 翠幽星覆蓋：VERDANT_ZONE_MIN_X = 20000，對齊 Rust world_core（scale 85, seed 999）。
       const jadeN = biomeNoise(wx, wy, 85, 999);
       if (jadeN > 0.80 && h < 0.65) return "jade_vine";
     }
@@ -2353,6 +2402,7 @@
           : kind === "wild_flower" ? "#3a5020"
           : kind === "jade_vine" ? "#0d3d28"
           : kind === "lava_rock" ? "#6a1a05"
+          : kind === "void_crystal" ? "#1a0535"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -3467,11 +3517,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3520,6 +3570,11 @@
     { id: "steam_elixir", out: "steam_elixir", outQty: 1, inputs: [["lava_crystal", 2]] },
     // 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，赤焰星專屬武器。
     { id: "crimson_blade", out: "crimson_blade", outQty: 1, inputs: [["lava_crystal", 6]] },
+    // ROADMAP 23 虛空星合成路線：虛空碎片（挖虛空晶石或打虛空幽靈可得）合出強力消耗品與最強武器。
+    // 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至滿血並獲得 10 乙太。
+    { id: "void_elixir", out: "void_elixir", outQty: 1, inputs: [["void_shard", 2]] },
+    // 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，虛空星專屬最強武器。
+    { id: "void_blade", out: "void_blade", outQty: 1, inputs: [["void_shard", 6]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。

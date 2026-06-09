@@ -54,9 +54,12 @@ pub enum WeaponKind {
     /// 翠幽刃（ROADMAP 21）：翠幽碎片鑄造的異星刀刃，攻擊力 +15，
     /// 翠幽星特有，象徵星際探索的高級戰鬥獎賞。
     JadeBlade,
-    /// 赤焰刃（ROADMAP 22）：熔晶碎片鑄造的蒸汽龐克刀刃，攻擊力 +20，全遊戲最強武器，
+    /// 赤焰刃（ROADMAP 22）：熔晶碎片鑄造的蒸汽龐克刀刃，攻擊力 +20，
     /// 赤焰星特有，超越翠幽刃（+15），蒸汽文明的最高武裝結晶。
     CrimsonBlade,
+    /// 虛空刃（ROADMAP 23）：虛空碎片凝聚的宇宙深淵刀刃，攻擊力 +25，全遊戲最強武器，
+    /// 虛空星特有，超越赤焰刃（+20），宇宙邊界能量的終極武裝。
+    VoidBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -94,6 +97,7 @@ impl WeaponKind {
             WeaponKind::RuneBlade => 10,
             WeaponKind::JadeBlade => 15,
             WeaponKind::CrimsonBlade => 20,
+            WeaponKind::VoidBlade => 25,
         }
     }
 }
@@ -143,8 +147,11 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::JadeShard
         | ItemKind::JadeElixir
         | ItemKind::LavaCrystal
-        | ItemKind::SteamElixir => None,
+        | ItemKind::SteamElixir
+        | ItemKind::VoidShard
+        | ItemKind::VoidElixir => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
+        ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
     }
 }
 
@@ -181,7 +188,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::JadeBlade
         | ItemKind::LavaCrystal
         | ItemKind::SteamElixir
-        | ItemKind::CrimsonBlade => None,
+        | ItemKind::CrimsonBlade
+        | ItemKind::VoidShard
+        | ItemKind::VoidElixir
+        | ItemKind::VoidBlade => None,
     }
 }
 
@@ -237,6 +247,9 @@ pub enum EnemyKind {
     /// 蒸汽構裝（赤焰星）：赤焰星古代文明打造的蒸汽動力機械戰士，全身熔岩裝甲，
     /// 解體後留下熔晶碎片——赤焰星的鋼鐵守護者，強度超越翠幽魅影，全遊戲最難的敵人。
     SteamConstruct,
+    /// 虛空幽靈（虛空星）：宇宙深淵能量凝聚而成的黑暗幽靈，半透明紫黑身形，
+    /// 碎滅後留下虛空碎片——虛空星的黑暗守護者，強度超越蒸汽構裝，宇宙邊界的終極威脅。
+    VoidPhantom,
 }
 
 impl EnemyKind {
@@ -259,6 +272,8 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 11,
             // 蒸汽構裝最強——赤焰星鋼鐵守衛，全遊戲最硬的敵人。
             EnemyKind::SteamConstruct => 15,
+            // 虛空幽靈超強——虛空星宇宙深淵守衛，超越蒸汽構裝的終極敵人。
+            EnemyKind::VoidPhantom => 20,
         }
     }
 
@@ -287,6 +302,8 @@ impl EnemyKind {
             EnemyKind::JadeWraith => (ItemKind::JadeShard, 1),
             // 蒸汽構裝解體後留下熔晶碎片（與挖熔岩石相同，赤焰星熔爐的結晶）。
             EnemyKind::SteamConstruct => (ItemKind::LavaCrystal, 1),
+            // 虛空幽靈碎滅後凝聚成虛空碎片（與挖虛空晶體相同，宇宙深淵的能量結晶）。
+            EnemyKind::VoidPhantom => (ItemKind::VoidShard, 1),
         }
     }
 
@@ -311,6 +328,8 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 5,
             // 蒸汽構裝威脅最高——赤焰星最強守衛，鋼鐵熔岩裝甲。
             EnemyKind::SteamConstruct => 6,
+            // 虛空幽靈威脅超高——宇宙深淵守衛，存在即危險的終極威脅。
+            EnemyKind::VoidPhantom => 8,
         }
     }
 
@@ -328,6 +347,8 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 35,
             // 蒸汽構裝給予最多 exp——全遊戲最難敵人應有最豐厚獎賞。
             EnemyKind::SteamConstruct => 45,
+            // 虛空幽靈給予最多 exp——超越蒸汽構裝的終極敵人，最豐厚的 exp 獎賞。
+            EnemyKind::VoidPhantom => 55,
         }
     }
 
@@ -345,6 +366,8 @@ impl EnemyKind {
             EnemyKind::JadeWraith => 75.0,
             // 蒸汽構裝重生時間最長——全遊戲最難敵人，擊倒後充分獎勵。
             EnemyKind::SteamConstruct => 90.0,
+            // 虛空幽靈重生時間最長——宇宙深淵終極守衛，碎滅後充分享受戰果。
+            EnemyKind::VoidPhantom => 110.0,
         }
     }
 }
@@ -460,7 +483,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 9] = [
+    const KINDS: [EnemyKind; 10] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -470,6 +493,7 @@ mod tests {
         EnemyKind::CoralCrab,
         EnemyKind::JadeWraith,
         EnemyKind::SteamConstruct,
+        EnemyKind::VoidPhantom,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -788,7 +812,8 @@ mod tests {
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
-                | EnemyKind::SteamConstruct => {}
+                | EnemyKind::SteamConstruct
+                | EnemyKind::VoidPhantom => {}
             }
         }
 
@@ -837,7 +862,8 @@ mod tests {
                 | EnemyKind::RuneGuardian
                 | EnemyKind::CoralCrab
                 | EnemyKind::JadeWraith
-                | EnemyKind::SteamConstruct => {}
+                | EnemyKind::SteamConstruct
+                | EnemyKind::VoidPhantom => {}
             }
         }
 

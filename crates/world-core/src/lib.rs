@@ -22,6 +22,11 @@ pub const VERDANT_ZONE_MIN_X: f64 = 20_000.0;
 /// 與 `crate::state::CRIMSON_SPAWN_X`（-18000）一致——赤焰星出生點深在此邊界內側。
 pub const CRIMSON_ZONE_MAX_X: f64 = -15_000.0;
 
+/// 虛空星（Void Star）在主世界的 X 最小座標。
+/// X ≥ 此值視為虛空星領域，tile_kind_at 會生成虛空晶體聚落（覆蓋翠幽星邏輯）。
+/// 與 `crate::state::VOID_SPAWN_X`（42000）一致——虛空星出生點深在此邊界內側。
+pub const VOID_ZONE_MIN_X: f64 = 38_000.0;
+
 /// 一個地形格的邊長（像素）。CHUNK_SIZE / TILE_PX = 16 格 / chunk。
 pub const TILE_PX: f32 = 32.0;
 /// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
@@ -168,12 +173,15 @@ pub enum TileKind {
     /// 野花叢——只生在草原（Meadow）生態域的野花聚落中，挖後掉野花種子，
     /// NPC 以溢價收購，給穿梭草原的玩家補上第五條乙太路線。
     WildFlower,
-    /// 翠玉藤——只生在翠幽星（X ≥ VERDANT_ZONE_MIN_X）的聚落中，挖後掉翠幽碎片，
+    /// 翠玉藤——只生在翠幽星（VERDANT_ZONE_MIN_X ≤ X < VOID_ZONE_MIN_X）的聚落中，挖後掉翠幽碎片，
     /// 翠幽星 NPC 以高溢價收購，是首個跨星球特產，鼓勵玩家深入探索異星。
     JadeVine,
     /// 熔岩石——只生在赤焰星（X ≤ CRIMSON_ZONE_MAX_X）的聚落中，挖後掉熔晶碎片，
     /// 赤焰星 NPC 以最高溢價收購，蒸汽龐克異星的核心礦產，鼓勵玩家深入高溫熔岩地帶。
     LavaRock,
+    /// 虛空晶體——只生在虛空星（X ≥ VOID_ZONE_MIN_X）的聚落中，挖後掉虛空碎片，
+    /// 虛空星 NPC 以最高溢價收購，宇宙深淵凝聚的黑暗晶石，鼓勵玩家探索宇宙邊界。
+    VoidCrystal,
 }
 
 impl TileKind {
@@ -190,6 +198,7 @@ impl TileKind {
             TileKind::WildFlower  => 8,
             TileKind::JadeVine    => 9,
             TileKind::LavaRock    => 10,
+            TileKind::VoidCrystal => 11,
         }
     }
 }
@@ -243,11 +252,21 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         gx ^ gy.wrapping_mul(1009),
     );
 
-    // 翠幽星特有：翠玉藤聚落。所有 wx ≥ VERDANT_ZONE_MIN_X 的實心格都可能長翠玉藤，
-    // 覆蓋所有非水域生態的普通材質，讓整個翠幽星到處都有特產可挖。
-    // 次級噪聲（scale 85, seed 999）決定聚落邊界（約 20% 的翠幽星實心格形成聚落）；
-    // 聚落內 65% 為 JadeVine，35% 保留原有材質，維持地形多樣性。
-    if wx >= VERDANT_ZONE_MIN_X && biome != Biome::Water {
+    // 虛空星特有：虛空晶體聚落。所有 wx ≥ VOID_ZONE_MIN_X 的實心格都可能生虛空晶體，
+    // 覆蓋翠幽星及所有非水域生態的普通材質，讓整個虛空星充滿宇宙深淵晶石。
+    // 次級噪聲（scale 80, seed 2023）決定聚落邊界（約 22% 的虛空星實心格形成聚落）；
+    // 聚落內 68% 為 VoidCrystal，32% 保留原有材質，維持地形多樣性。
+    // 注意：用 `else if` 避免翠玉藤出現在虛空星範圍（VOID_ZONE_MIN_X ≥ VERDANT_ZONE_MIN_X）。
+    if wx >= VOID_ZONE_MIN_X && biome != Biome::Water {
+        let void_n = value_noise(wx, wy, 80.0, 2023);
+        if void_n > 0.78 && h < 0.68 {
+            return TileKind::VoidCrystal;
+        }
+    } else if wx >= VERDANT_ZONE_MIN_X && biome != Biome::Water {
+        // 翠幽星特有：翠玉藤聚落。所有 VERDANT_ZONE_MIN_X ≤ wx < VOID_ZONE_MIN_X 的實心格都可能長翠玉藤，
+        // 覆蓋所有非水域生態的普通材質，讓整個翠幽星到處都有特產可挖。
+        // 次級噪聲（scale 85, seed 999）決定聚落邊界（約 20% 的翠幽星實心格形成聚落）；
+        // 聚落內 65% 為 JadeVine，35% 保留原有材質，維持地形多樣性。
         let jade_n = value_noise(wx, wy, 85.0, 999);
         if jade_n > 0.80 && h < 0.65 {
             return TileKind::JadeVine;
