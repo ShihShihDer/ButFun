@@ -194,56 +194,34 @@ pub fn spawn(app: AppState) {
                 }
             };
 
-            // 戰鬥結算(每秒一次):玩家自動打最近的敵人、敵人反擊。**自動打怪**——不需客戶端輸入。
-            // 避免巢狀鎖:先讀玩家位置 → 對敵人結算 → 把戰果(掉落/傷害)套回玩家,三步各持一把鎖。
+            // 敵人反擊（每秒一次）：玩家在攻擊範圍內時，敵人自動造成傷害——
+            // 站著不動不打怪也會被打，逼玩家主動出擊或趕緊走開。
+            // 避免巢狀鎖：先讀玩家位置 → 查敵人威脅 → 把傷害套回玩家，三步各持一把鎖。
             if tick % (TICK_HZ as u64) == 0 {
-                // 每位玩家的攻擊力依背包武器查表(combat::weapon_power):有武器更痛、沒武器=徒手值。
-                // 在讀 players 鎖內一併算好、連同位置帶出,結算時就不必再回鎖玩家表(避免巢狀鎖)。
-                let positions: Vec<(uuid::Uuid, f32, f32, bool, u32)> = {
+                let positions: Vec<(uuid::Uuid, f32, f32, bool)> = {
                     let players = app.players.read().unwrap();
                     players
                         .values()
-                        .map(|p| {
-                            (
-                                p.id,
-                                p.x,
-                                p.y,
-                                p.vitals.is_downed(),
-                                crate::combat::weapon_power(&p.inventory),
-                            )
-                        })
+                        .map(|p| (p.id, p.x, p.y, p.vitals.is_downed()))
                         .collect()
                 };
-                let mut loots: Vec<(uuid::Uuid, crate::inventory::ItemKind, u32)> = Vec::new();
                 let mut dmgs: Vec<(uuid::Uuid, u32)> = Vec::new();
                 {
-                    let mut enemies = app.enemies.write().unwrap();
-                    for (pid, px, py, downed, power) in &positions {
-                        if *downed {
-                            continue; // 被打趴的玩家不攻擊、也不再挨打(休息中)
-                        }
-                        if let Some((_kind, Some((item, qty)))) =
-                            enemies.attack_nearest(*px, *py, *power)
-                        {
-                            loots.push((*pid, item, qty)); // 打倒 → 掉落進背包
-                        }
+                    let enemies = app.enemies.read().unwrap();
+                    for (pid, px, py, downed) in &positions {
+                        if *downed { continue; }
                         let threat = enemies.threat_at(*px, *py);
                         if threat > 0 {
-                            dmgs.push((*pid, threat)); // 範圍內敵人反擊的威脅總和
+                            dmgs.push((*pid, threat));
                         }
                     }
                 }
-                if !loots.is_empty() || !dmgs.is_empty() {
+                if !dmgs.is_empty() {
                     let mut players = app.players.write().unwrap();
-                    for (pid, item, qty) in loots {
-                        if let Some(p) = players.get_mut(&pid) {
-                            p.inventory.add(item, qty);
-                        }
-                    }
                     for (pid, dmg) in dmgs {
                         if let Some(p) = players.get_mut(&pid) {
                             if p.vitals.take_damage(dmg) {
-                                tracing::info!(player = %p.name, "被敵人打趴,休息復原中");
+                                tracing::info!(player = %p.name, "被敵人打趴，休息復原中");
                             }
                         }
                     }
@@ -263,6 +241,10 @@ pub fn spawn(app: AppState) {
                             .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64));
                         kind != world_core::TileKind::Empty
                     });
+                    // 主動攻擊冷卻倒數：每 tick 遞減，讓下次攻擊請求能被接受。
+                    if p.attack_cooldown > 0.0 {
+                        p.attack_cooldown = (p.attack_cooldown - dt).max(0.0);
+                    }
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。

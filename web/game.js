@@ -99,6 +99,11 @@
   let enemiesSynced = false;
   // 採集判定半徑(像素),與伺服器 GATHER_REACH 對齊:玩家離節點這麼近才採得到。
   const GATHER_REACH = 56;
+  // 主動攻擊判定半徑(像素),與伺服器 ATTACK_REACH 對齊。
+  const ATTACK_REACH = 64;
+  // 主動攻擊客戶端冷卻(毫秒):與伺服器 ATTACK_COOLDOWN_SECS 對齊,避免多按狂送。
+  const ATTACK_COOLDOWN_MS = 600;
+  let lastAttackTime = 0;
   // 最近一次快照數到「自己那塊」有作物且缺水的格數（updateFarmHud 算好順手記下）；
   // 給離田時的「回農地」邊緣指標決定要不要強調缺水，數字與 HUD 一致、不另外再數一遍。
   let farmDryCount = 0;
@@ -140,6 +145,8 @@
   const gatherHits = [];
   // 採集碎屑:每筆 { wx, wy, vx, vy, born, color } 從節點向外飛、受重力、淡出。純表現。
   const gatherParticles = [];
+  // 主動攻擊命中特效:每筆 { wx, wy, born } 在敵人位置畫一下紅色衝擊圈。純表現。
+  const attackHits = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -642,6 +649,36 @@
     }
   }
 
+  // 畫主動攻擊命中特效：擴散紅圈，從敵人位置爆開。純表現，不影響判定。
+  function drawAttackFx(camX, camY, now) {
+    const ATTACK_HIT_MS = 300;
+    for (let i = attackHits.length - 1; i >= 0; i--) {
+      const h = attackHits[i];
+      const age = now - h.born;
+      if (age >= ATTACK_HIT_MS) { attackHits.splice(i, 1); continue; }
+      const t = age / ATTACK_HIT_MS;
+      const sx = h.wx - camX;
+      const sy = h.wy - camY;
+      const r = 8 + t * 28;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,80,80,${(0.85 * (1 - t)).toFixed(3)})`;
+      ctx.lineWidth = 3 * (1 - t);
+      ctx.stroke();
+      // 十字衝擊短線
+      for (let k = 0; k < 4; k++) {
+        const ang = k * Math.PI / 2;
+        const r0 = r * 0.3, r1 = r * 0.85;
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(ang) * r0, sy + Math.sin(ang) * r0);
+        ctx.lineTo(sx + Math.cos(ang) * r1, sy + Math.sin(ang) * r1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
   // 某節點剛被採時的晃動強度 [0,1)（剛命中=1、HIT_MS 內漸消）。給 drawNodes 讓被打的樹石抖一下。
   function nodeHitWobble(node, now) {
     let best = 0;
@@ -1093,6 +1130,7 @@
   // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
   function currentActionKind(me) {
     if (!me) return "farm";
+    if (nearestEnemy(me)) return "attack";
     if (nearestHarvestable(me)) return "gather";
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
     const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
@@ -1106,6 +1144,8 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
+    // 附近有敵人時優先攻擊。
+    if (nearestEnemy(me)) { sendAttack(); return; }
     const rect = canvas.getBoundingClientRect();
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
     const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
@@ -1118,12 +1158,20 @@
     ctx.save();
     ctx.beginPath();
     ctx.arc(b.cx, b.cy, b.r, 0, Math.PI * 2);
-    ctx.fillStyle = actionTouchId !== null ? "rgba(70,120,90,0.55)" : "rgba(28,36,46,0.42)";
+    const isAttacking = currentActionKind(me) === "attack";
+    const attackCoolPct = isAttacking ? Math.max(0, 1 - (performance.now() - lastAttackTime) / ATTACK_COOLDOWN_MS) : 0;
+    if (actionTouchId !== null) {
+      ctx.fillStyle = "rgba(70,120,90,0.55)";
+    } else if (isAttacking && attackCoolPct > 0) {
+      ctx.fillStyle = `rgba(160,40,40,${(0.35 + attackCoolPct * 0.2).toFixed(3)})`;
+    } else {
+      ctx.fillStyle = "rgba(28,36,46,0.42)";
+    }
     ctx.fill();
     ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(220,230,240,0.5)";
+    ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
-    const icon = { gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱" }[currentActionKind(me)] || "✋";
+    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱" }[currentActionKind(me)] || "✋";
     ctx.font = "30px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -1386,6 +1434,7 @@
 
     // 採集動作特效（命中星芒 + 飛散碎屑）：同在日夜染色之後畫,當回饋不被夜色蓋暗。
     drawGatherFx(camX, camY, performance.now());
+    drawAttackFx(camX, camY, performance.now());
 
     // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
     drawFarmPointer(camX, camY);
@@ -2122,6 +2171,34 @@
       }
     }
     return best;
+  }
+
+  // 回傳「玩家攻擊範圍(ATTACK_REACH)內最近的存活敵人」，沒有就 null。
+  function nearestEnemy(me) {
+    if (!me) return null;
+    let best = null;
+    let bestD = ATTACK_REACH * ATTACK_REACH;
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      const dx = e.x - me.x;
+      const dy = e.y - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = e; }
+    }
+    return best;
+  }
+
+  // 送主動攻擊訊息。客戶端也做冷卻節流，避免狂送（伺服器仍有最終驗証）。
+  function sendAttack() {
+    const now = performance.now();
+    if (now - lastAttackTime < ATTACK_COOLDOWN_MS) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const me = myId ? players.get(myId) : null;
+    const target = nearestEnemy(me);
+    if (!target) return;
+    lastAttackTime = now;
+    ws.send(JSON.stringify({ type: "attack" }));
+    attackHits.push({ wx: target.x, wy: target.y, born: now });
   }
 
   // 畫世界上的採集節點。可採的亮、採空(重生中)的壓暗;玩家搆得到的那顆描一圈亮環提示「可採」。
@@ -3458,7 +3535,9 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
-    // 先判採集:站在搆得到的可採節點旁,按動作鍵就採集。
+    // 最優先：附近有存活敵人就主動攻擊。
+    if (nearestEnemy(me)) { sendAttack(); return; }
+    // 次判採集:站在搆得到的可採節點旁,按動作鍵就採集。
     {
       const gn = nearestHarvestable(me);
       if (gn) {
