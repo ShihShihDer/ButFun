@@ -47,6 +47,16 @@ pub const PLAYER_TILE_RADIUS: f32 = 8.0;
 pub const PUB_FIELD_ORIGIN_X: f32 = 2200.0;
 pub const PUB_FIELD_ORIGIN_Y: f32 = 2200.0;
 
+/// 翠幽星（ROADMAP 20）的星球 ID 與出生座標。
+/// 位於主世界遠東方（X+20000），`biome_at` 確定性雜湊在此坐標自然產生不同生態分布。
+pub const PLANET_HOME: &str = "home";
+pub const PLANET_VERDANT: &str = "verdant";
+/// 翠幽星出生點（對應公共農地在故鄉的相對位置，讓玩家一到就有地標可找）。
+pub const VERDANT_SPAWN_X: f32 = 22_400.0;
+pub const VERDANT_SPAWN_Y: f32 = 3_000.0;
+/// 星際旅行的乙太燃料費（單程）。
+pub const TRAVEL_ETHER_COST: u32 = 30;
+
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -70,6 +80,9 @@ pub struct Player {
     pub attack_cooldown: f32,
     /// 累積經驗值（ROADMAP 17 升級系統）。殺怪 / 採礦得 exp，等級由 exp 推算。
     pub exp: u32,
+    /// 玩家目前所在星球（ROADMAP 20 多星球旅程）。"home" = 故鄉，"verdant" = 翠幽星。
+    /// 執行期狀態，重連回 home 起算（不持久化，跨重啟無礙）。
+    pub planet: String,
 }
 
 impl Player {
@@ -99,6 +112,36 @@ impl Player {
             attack: crate::combat::weapon_power(&self.inventory)
                 + crate::combat::level_attack_bonus(self.level()),
             defense: crate::combat::armor_defense(&self.inventory),
+            planet: self.planet.clone(),
+        }
+    }
+
+    /// 星際旅行可行性驗證（純函式，供 ws.rs 呼叫與測試）。
+    /// 回傳 `Ok(())` = 可以旅行；`Err(msg)` = 失敗原因字串。
+    pub fn can_travel_to(&self, dest: &str) -> Result<(), String> {
+        use crate::inventory::ItemKind;
+        if self.vitals.is_downed() {
+            return Err("倒地中無法旅行".into());
+        }
+        if self.ether < TRAVEL_ETHER_COST {
+            return Err(format!("乙太不足（需要 {} 乙太作為燃料）", TRAVEL_ETHER_COST));
+        }
+        if dest == PLANET_VERDANT && self.planet == PLANET_HOME {
+            let biome_weapons = [
+                ItemKind::MeadowAmulet,
+                ItemKind::MushroomStaff,
+                ItemKind::CrystalBlade,
+                ItemKind::RuneBlade,
+                ItemKind::CoralLance,
+            ];
+            if !biome_weapons.iter().all(|w| self.inventory.count(*w) > 0) {
+                return Err("需要五大生態武裝全套才能啟動星際旅行".into());
+            }
+            Ok(())
+        } else if dest == PLANET_HOME && self.planet == PLANET_VERDANT {
+            Ok(())
+        } else {
+            Err("未知星球或已在該星球".into())
         }
     }
 
@@ -354,6 +397,7 @@ mod tests {
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            planet: PLANET_HOME.to_string(),
         }
     }
 
@@ -636,5 +680,61 @@ mod tests {
         assert_eq!(p.level(), 3, "399 exp 升至 3 級");
         p.exp = 500;
         assert_eq!(p.level(), 5, "500 exp 升至 5 級");
+    }
+
+    // ROADMAP 20 — 星際旅行條件測試。
+    fn all_biome_weapons() -> [crate::inventory::ItemKind; 5] {
+        use crate::inventory::ItemKind;
+        [
+            ItemKind::MeadowAmulet,
+            ItemKind::MushroomStaff,
+            ItemKind::CrystalBlade,
+            ItemKind::RuneBlade,
+            ItemKind::CoralLance,
+        ]
+    }
+
+    #[test]
+    fn travel_home_to_verdant_requires_ether() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST - 1;
+        for w in all_biome_weapons() { p.inventory.add(w, 1); }
+        assert!(p.can_travel_to(PLANET_VERDANT).is_err(), "乙太不足應拒絕旅行");
+    }
+
+    #[test]
+    fn travel_home_to_verdant_requires_all_biome_weapons() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST + 100;
+        // 只放 4 件，少 1 件。
+        let weapons = all_biome_weapons();
+        for w in &weapons[..4] { p.inventory.add(*w, 1); }
+        assert!(p.can_travel_to(PLANET_VERDANT).is_err(), "武裝未齊應拒絕旅行");
+    }
+
+    #[test]
+    fn travel_home_to_verdant_succeeds_with_weapons_and_ether() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST;
+        for w in all_biome_weapons() { p.inventory.add(w, 1); }
+        assert!(p.can_travel_to(PLANET_VERDANT).is_ok(), "武裝齊 + 乙太足應允許旅行");
+    }
+
+    #[test]
+    fn travel_verdant_to_home_only_requires_ether() {
+        let mut p = player_at(VERDANT_SPAWN_X, VERDANT_SPAWN_Y, Input::default());
+        p.planet = PLANET_VERDANT.to_string();
+        p.ether = TRAVEL_ETHER_COST;
+        // 不需要武器即可返回。
+        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "翠幽星→故鄉只需乙太");
+    }
+
+    #[test]
+    fn travel_already_on_same_planet_is_error() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST + 100;
+        for w in all_biome_weapons() { p.inventory.add(w, 1); }
+        // 已在故鄉，嘗試去故鄉。
+        assert!(p.can_travel_to(PLANET_HOME).is_err(), "已在故鄉不能再去故鄉");
     }
 }

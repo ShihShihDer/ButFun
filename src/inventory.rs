@@ -569,7 +569,7 @@ mod tests {
             // 讓探索型玩家有把成果兌換乙太的管道。
             let npc_sellable = NPC_BUY_LIST.iter().any(|e| e.item == item);
             // 7. 是可主動使用的消耗品（UseItem 觸發即消耗，直接對玩家產生效果）。
-            // 活力藥水為第一個；各生態特產合成藥水同屬此類；星圖展開後消耗。
+            // 活力藥水為第一個；各生態特產合成藥水同屬此類。
             let usable_consumable = matches!(
                 item,
                 ItemKind::HealingPotion
@@ -577,12 +577,15 @@ mod tests {
                     | ItemKind::MushroomElixir
                     | ItemKind::EtherPill
                     | ItemKind::PearlPotion
-                    | ItemKind::StarChart
             );
+            // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
+            // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。
+            let navigation_tool = item == ItemKind::StarChart;
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
-                    || building_material || npc_sellable || usable_consumable || useful_armor,
+                    || building_material || npc_sellable || usable_consumable || useful_armor
+                    || navigation_tool,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
                  不是有效用的武器或防具／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"

@@ -124,6 +124,10 @@ pub enum ClientMsg {
     /// 目前支援：`HealingPotion`（活力藥水）→ 立即回復 6 HP。
     /// 倒地中 / 背包不足靜默忽略。
     UseItem { item: ItemKind },
+    /// 星際旅行（ROADMAP 20）：玩家在星圖彈窗點「出發」，請求傳送到指定星球。
+    /// `planet` 目前支援 "verdant"（翠幽星）和 "home"（返回故鄉）。
+    /// 需要：故鄉 → 翠幽星 須持五大生態武裝全套 + 30 乙太；翠幽星 → 故鄉 只需 30 乙太。
+    TravelToPlanet { planet: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -162,6 +166,10 @@ pub enum ServerMsg {
     /// 某玩家成功購買第一塊領地（③ Slice D）。廣播給全部客戶端；
     /// 前端取 owner == myId 才顯示購買成功提示，其餘忽略即可。
     ClaimPlotOk { owner: Uuid, plot_index: usize },
+    /// 星際旅行結果（ROADMAP 20）：僅送給發起旅行的玩家。
+    /// `ok=true`：旅行成功，前端播放傳送動畫並更新 HUD 行星指示。
+    /// `ok=false`：旅行失敗（乙太不足 / 武裝未齊），`message` 給前端顯示原因。
+    TravelResult { ok: bool, planet: String, message: String },
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。
@@ -197,6 +205,8 @@ pub struct PlayerView {
     pub attack: u32,
     /// 目前護甲減傷值（持有護甲時，每次受傷减去此值，ROADMAP 19）。
     pub defense: u32,
+    /// 玩家目前所在星球（ROADMAP 20）。"home" = 故鄉，"verdant" = 翠幽星。
+    pub planet: String,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -393,6 +403,7 @@ mod tests {
                 level: 0,
                 attack: 2,
                 defense: 0,
+                planet: "home".into(),
             }],
             fields: vec![FieldView {
                 owner,
@@ -460,5 +471,49 @@ mod tests {
         assert_eq!(v["npcs"][0]["buy_list"][0]["price_per"], 1);
         assert_eq!(v["npcs"][0]["sell_list"][0]["item"], "pickaxe");
         assert_eq!(v["npcs"][0]["sell_list"][0]["price_per"], 15);
+    }
+
+    /// 前端送的 travel_to_planet 訊息要能被解析成 `ClientMsg::TravelToPlanet`（ROADMAP 20 wire contract）。
+    #[test]
+    fn parses_travel_to_planet_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"travel_to_planet","planet":"verdant"}"#).unwrap();
+        match msg {
+            ClientMsg::TravelToPlanet { planet } => assert_eq!(planet, "verdant"),
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// 伺服器 TravelResult 序列化後帶前端依賴的欄位。
+    #[test]
+    fn travel_result_serializes_correctly() {
+        let msg = ServerMsg::TravelResult {
+            ok: true,
+            planet: "verdant".into(),
+            message: "歡迎來到翠幽星！".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "travel_result");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["planet"], "verdant");
+        assert!(v["message"].as_str().unwrap().contains("翠幽星"));
+    }
+
+    /// PlayerView 快照含 planet 欄位（前端需要以判斷 HUD 星球指示器）。
+    #[test]
+    fn player_view_includes_planet_field() {
+        use crate::inventory::ItemKind;
+        let pv = PlayerView {
+            id: Uuid::nil(),
+            name: "測試".into(),
+            species: "terran".into(),
+            x: 0.0, y: 0.0,
+            ether: 0, expansions: 0,
+            inventory: vec![ItemStack { item: ItemKind::Wood, qty: 1 }],
+            hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
+            planet: "verdant".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert_eq!(v["planet"], "verdant");
     }
 }

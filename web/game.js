@@ -398,6 +398,7 @@
             // drawPlayer 的「被打趴變淡」要靠它讀到每位玩家當下的權威血量。
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
+            existing.planet = p.planet || "home";
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
           }
@@ -563,6 +564,21 @@
             }
           }
 
+          // 行星 HUD（ROADMAP 20）：不在故鄉時顯示目前所在星球。
+          {
+            const planetEl = document.getElementById("hudPlanet");
+            if (planetEl) {
+              const planet = me.planet || "home";
+              if (planet !== "home") {
+                const PLANET_NAMES = { verdant: "🌿 翠幽星" };
+                planetEl.textContent = PLANET_NAMES[planet] || `🌐 ${planet}`;
+                planetEl.classList.remove("hidden");
+              } else {
+                planetEl.classList.add("hidden");
+              }
+            }
+          }
+
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
@@ -590,7 +606,50 @@
           addChat("系統", "🏡 領地購買成功！走近農地開始耕作吧。");
         }
         break;
+      case "travel_result":
+        // 星際旅行結果（ROADMAP 20）。
+        if (msg.ok) {
+          addChat("系統", `🚀 ${msg.message}`);
+          announce(msg.message);
+          showTravelFlash(msg.planet);
+        } else {
+          addChat("系統", `❌ 旅行失敗：${msg.message}`);
+          announce(`旅行失敗：${msg.message}`);
+        }
+        break;
     }
+  }
+
+  // 星際旅行傳送特效（ROADMAP 20）：畫面閃白/綠後淡出，給玩家「穿越蟲洞」的視覺回饋。
+  let travelFlash = null; // { born: ms, planet: "verdant"|"home" }
+  function showTravelFlash(planet) {
+    travelFlash = { born: performance.now(), planet };
+  }
+  function drawTravelFlash(now) {
+    if (!travelFlash) return;
+    const age = now - travelFlash.born;
+    const dur = 1400;
+    if (age > dur) { travelFlash = null; return; }
+    const t = age / dur;
+    // 前半閃亮（0→1），後半淡出（1→0）。
+    const alpha = t < 0.5 ? t * 2 : (1 - t) * 2;
+    const col = travelFlash.planet === "verdant" ? "80,255,160" : "220,240,255";
+    ctx.save();
+    ctx.fillStyle = `rgba(${col},${(alpha * 0.55).toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+  }
+
+  // 翠幽星大氣染色：在翠幽星時，畫面疊一層微弱翠綠暈（類似夜間暈輪機制）。
+  function drawVerdantAtmosphere(now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me || me.planet !== "verdant") return;
+    const pulse = 0.7 + 0.3 * Math.sin(now / 3200);
+    const alpha = 0.10 * pulse;
+    ctx.save();
+    ctx.fillStyle = `rgba(40,200,100,${alpha.toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
   }
 
   // 收成得乙太時，在玩家當下位置上方記一筆金色飄字（世界座標，鏡頭移動也黏在原地飄起）。
@@ -936,12 +995,30 @@
         <span style="margin-left:auto;font-size:0.85em">${have ? "✅ 持有" : "❌ 未得"}</span>
       </div>`;
     }).join("");
-    const footer = allCollected
-      ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星圖訊號更強了⋯⋯</div><div style="color:#8090c0;font-size:0.82em;margin-top:6px;">點擊任意處關閉</div>`
-      : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">點擊任意處關閉 · 多星球旅程尚未開始⋯⋯</div>`;
+    const myPlanet = curMe ? (curMe.planet || "home") : "home";
+    const myEther = curMe ? (curMe.ether || 0) : 0;
+    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；翠幽星→故鄉只需乙太。費用 30 乙太。
+    const TRAVEL_COST = 30;
+    let travelBtn = "";
+    if (allCollected && myPlanet === "home") {
+      const canAfford = myEther >= TRAVEL_COST;
+      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(40,160,80,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0ffd8" : "#888"};border:1px solid ${canAfford ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+        🚀 前往翠幽星（${TRAVEL_COST} 乙太）${canAfford ? "" : ` — 乙太不足`}
+      </button>`;
+    } else if (myPlanet === "verdant") {
+      const canAfford = myEther >= TRAVEL_COST;
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+        🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : ` — 乙太不足`}
+      </button>`;
+    }
+    const footer = allCollected && myPlanet === "home"
+      ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
+      : myPlanet === "verdant"
+        ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
+        : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
-    overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;cursor:pointer;";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;";
     overlay.innerHTML = `
       <div style="max-width:400px;padding:24px 28px;background:rgba(14,20,52,0.96);border:1px solid rgba(160,140,220,0.4);border-radius:12px;text-align:center;color:#e0e8ff;font-size:14px;line-height:1.7;">
         <div style="font-size:2.2em;margin-bottom:8px;">🗺️ 星圖展開</div>
@@ -956,9 +1033,30 @@
           ${gearRows}
         </div>
         ${footer}
+        <div style="color:#8090c0;font-size:0.78em;margin-top:10px;">點擊任意空白處關閉</div>
       </div>
     `;
-    overlay.addEventListener("click", () => overlay.remove());
+    // 旅行按鈕事件（點按鈕不關閉彈窗，點其他地方才關）。
+    overlay.addEventListener("click", (e) => {
+      const btnV = overlay.querySelector("#btnTravelVerdant");
+      const btnH = overlay.querySelector("#btnTravelHome");
+      if (btnV && btnV.contains(e.target)) {
+        if (myEther >= TRAVEL_COST) {
+          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "verdant" }));
+          overlay.remove();
+        }
+        return;
+      }
+      if (btnH && btnH.contains(e.target)) {
+        if (myEther >= TRAVEL_COST) {
+          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "home" }));
+          overlay.remove();
+        }
+        return;
+      }
+      // 點按鈕之外任意處關閉。
+      if (!e.target.closest("button")) overlay.remove();
+    });
     document.body.appendChild(overlay);
   }
 
@@ -1699,6 +1797,12 @@
 
     // 夜間危機暈輪：夜晚在螢幕四周加脈動深紅暈輪，傳達「夜裡危險、怪物加速」的氣氛。
     drawNightDangerVignette(performance.now());
+
+    // 翠幽星大氣染色（ROADMAP 20）：在翠幽星時，畫面疊一層微翠綠暈，強化星球身份感。
+    drawVerdantAtmosphere(performance.now());
+
+    // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
+    drawTravelFlash(performance.now());
 
     // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawFloaters(camX, camY, performance.now());
