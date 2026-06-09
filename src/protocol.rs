@@ -268,6 +268,8 @@ pub struct DayNightView {
     pub phase: Phase,
     /// 環境亮度，落在 `[daynight::MIN_LIGHT, 1.0]`：前端依此疊夜色，越暗疊越濃。
     pub light: f32,
+    /// 夜間危機旗標（phase == Night 時為 true）：前端用來顯示危機暈輪 + 燐光族夜視效果。
+    pub night_danger: bool,
 }
 
 /// 一格耕地對前端的可見狀態。
@@ -395,6 +397,7 @@ mod tests {
             daynight: DayNightView {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
+                night_danger: false,
             },
             listings: vec![],
             npcs: vec![NpcView {
@@ -422,6 +425,7 @@ mod tests {
         assert_eq!(v["nodes"][0]["harvestable"], true);
         assert_eq!(v["daynight"]["phase"], "day");
         assert_eq!(v["daynight"]["light"], 0.5);
+        assert_eq!(v["daynight"]["night_danger"], false);
         // NPC 商人：確認序列化結構讓前端能讀 buy/sell 目錄。
         assert_eq!(v["npcs"][0]["x"], 100.0);
         assert_eq!(v["npcs"][0]["buy_list"][0]["item"], "wood");
