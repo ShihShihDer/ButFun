@@ -69,6 +69,11 @@
   let presenceKnown = false;
   const keys = { up: false, down: false, left: false, right: false };
   let lastSentInput = "";
+  // 萬用動作鈕（手機雙操作）：左半搖桿移動 + 右手一顆鈕，依「面前是什麼」自動挑動作
+  // （旁邊有節點就採、面前是牆就挖、空格+選材料就放、其餘照顧田）。按住連發。
+  let actionTouchId = null;
+  let lastSmartAction = 0;
+  const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
   // 手機/搖桿挖掘輔助:朝實心地形走就自動挖（Core Keeper 式鑿隧道），免得在手機上「移動」與
   // 「點擊挖」互搶同一根手指、只能擇一。你照常用搖桿走，撞到牆就會自動一格一格挖開。
   let lastAutoDig = 0;
@@ -1047,14 +1052,75 @@
     }
     return null;
   }
+  // ── 萬用動作鈕（手機雙操作） ─────────────────────────────────────────────
+  // 鈕在畫面右下角（拇指好按）。回傳畫布內中心座標 + 半徑。
+  function actionButtonRect() {
+    const r = 46;
+    // 右側中下，避開右下角的小地圖，仍在右拇指好按的範圍。
+    return { cx: viewW - r - 26, cy: Math.round(viewH * 0.58), r };
+  }
+  // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
+  function currentActionKind(me) {
+    if (!me) return "farm";
+    if (nearestHarvestable(me)) return "gather";
+    const f = me.facing === undefined ? Math.PI / 2 : me.facing;
+    const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
+    if (tileKindAt(wx, wy) !== "empty") return "dig";
+    if (selectedBuildMaterial && (myInv.get(selectedBuildMaterial) || 0) > 0) return "build";
+    return "farm";
+  }
+  // 按下萬用鈕：把「玩家面前那一格」當成一次點擊餵給既有互動邏輯（farmAtScreen），自動解析成
+  // 採/挖/放/照顧——不重寫一套規則，與點擊一致。
+  function smartAction() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const me = myId ? players.get(myId) : null;
+    if (!me) return;
+    const rect = canvas.getBoundingClientRect();
+    const f = me.facing === undefined ? Math.PI / 2 : me.facing;
+    const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
+    farmAtScreen(wx - lastCam.x + rect.left, wy - lastCam.y + rect.top);
+  }
+  // 畫萬用鈕（只在觸控裝置）。圖示隨情境變，讓人知道這下會做什麼。
+  function drawActionButton(me) {
+    if (!isTouch) return;
+    const b = actionButtonRect();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.cx, b.cy, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = actionTouchId !== null ? "rgba(70,120,90,0.55)" : "rgba(28,36,46,0.42)";
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(220,230,240,0.5)";
+    ctx.stroke();
+    const icon = { gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱" }[currentActionKind(me)] || "✋";
+    ctx.font = "30px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(icon, b.cx, b.cy + 1);
+    ctx.restore();
+  }
+
   canvas.addEventListener("touchstart", (e) => {
-    // 已有手指在當搖桿就不被後續手指接管(避免第二指重設原點、跳動搖桿)。
-    if (touchId === null && e.changedTouches.length) {
-      const t = e.changedTouches[0];
-      touchId = t.identifier;
-      touchOrigin = { x: t.clientX, y: t.clientY };
-      touchCurrent = { x: t.clientX, y: t.clientY };
-      touchDragged = false; // 每次新觸碰先當點按,拖過 TAP_SLOP 才升級成搖桿
+    const rect = canvas.getBoundingClientRect();
+    const b = actionButtonRect();
+    for (const t of e.changedTouches) {
+      // 按到萬用鈕 → 當「動作手指」：立刻做一次、之後按住連發；不當搖桿。
+      if (actionTouchId === null) {
+        const lx = t.clientX - rect.left, ly = t.clientY - rect.top;
+        if ((lx - b.cx) * (lx - b.cx) + (ly - b.cy) * (ly - b.cy) <= b.r * b.r) {
+          actionTouchId = t.identifier;
+          smartAction();
+          lastSmartAction = performance.now();
+          continue;
+        }
+      }
+      // 其餘手指：第一根當搖桿（已有搖桿手指就不接管，避免第二指跳動原點）。
+      if (touchId === null) {
+        touchId = t.identifier;
+        touchOrigin = { x: t.clientX, y: t.clientY };
+        touchCurrent = { x: t.clientX, y: t.clientY };
+        touchDragged = false; // 每次新觸碰先當點按,拖過 TAP_SLOP 才升級成搖桿
+      }
     }
     e.preventDefault();
   }, { passive: false });
@@ -1072,6 +1138,12 @@
     e.preventDefault();
   }, { passive: false });
   function endTouch(e) {
+    // 萬用動作鈕的手指抬起／取消 → 停止連發。
+    if (actionTouchId !== null) {
+      for (const ct of e.changedTouches) {
+        if (ct.identifier === actionTouchId) { actionTouchId = null; break; }
+      }
+    }
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
     const t = touchId === null ? null : findTouch(e.changedTouches);
     if (!t) return;
@@ -1267,6 +1339,13 @@
 
     // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
     drawMinimap();
+
+    // 萬用動作鈕：按住時連發（約每 0.2 秒一次），再把鈕畫在 HUD 層（蓋在世界上）。
+    if (actionTouchId !== null) {
+      const nowA = performance.now();
+      if (nowA - lastSmartAction >= 200) { lastSmartAction = nowA; smartAction(); }
+    }
+    drawActionButton(me);
 
     // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
     // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。
