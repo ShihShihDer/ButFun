@@ -59,7 +59,8 @@ impl TileWorld {
         tile_kind_at(wx, wy)
     }
 
-    /// 這一格是否為實心（擋移動）。C-3 碰撞時使用。
+    /// 這一格是否為實心（擋移動）。C-3 遊戲迴圈用快照接線；此方法供 C-4 Place 等單點查詢用。
+    #[allow(dead_code)]
     pub fn is_solid(&self, cx: i32, cy: i32, tx: u8, ty: u8) -> bool {
         self.tile_kind(cx, cy, tx, ty) != TileKind::Empty
     }
