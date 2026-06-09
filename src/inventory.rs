@@ -148,6 +148,16 @@ pub enum ItemKind {
     /// 持有此刃攻擊力 +30，全遊戲最強武器，超越虛空刃（+25），
     /// 只有踏上霧醚星才能鑄造，乙太迷霧凝結的終極宇宙武裝。
     AetherBlade,
+    /// 源晶碎片（挖掘 OriginCrystal 地形格掉落，或擊倒源晶守護者；ROADMAP 25 星源星特產）。
+    /// 星源星獨有，NPC 以最高溢價收購；也是源晶精粹 / 源晶之刃的合成原料。
+    OriginShard,
+    /// 源晶精粹（合成產物：源晶碎片×2 → 源晶精粹×1）。
+    /// 使用後回復至等級滿血，同時獲得 20 乙太（宇宙源頭能量轉換，五星最強補給）。
+    OriginEssence,
+    /// 源晶之刃（合成產物：源晶碎片×10 → 源晶之刃×1）。
+    /// 持有此刃攻擊力 +40，全遊戲最強武器，超越霧醚之刃（+30），
+    /// 只有踏上星源星才能鑄造，宇宙起源之力凝聚的終極武裝。
+    OriginBlade,
 }
 
 impl ItemKind {
@@ -193,6 +203,9 @@ impl ItemKind {
         ItemKind::AetherShard,
         ItemKind::AetherEssence,
         ItemKind::AetherBlade,
+        ItemKind::OriginShard,
+        ItemKind::OriginEssence,
+        ItemKind::OriginBlade,
     ];
 }
 
@@ -421,13 +434,16 @@ mod tests {
                 | ItemKind::VoidBlade
                 | ItemKind::AetherShard
                 | ItemKind::AetherEssence
-                | ItemKind::AetherBlade => {}
+                | ItemKind::AetherBlade
+                | ItemKind::OriginShard
+                | ItemKind::OriginEssence
+                | ItemKind::OriginBlade => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 36 種（含 ROADMAP 24 霧醚星：霧醚碎片/霧醚精粹/霧醚之刃）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 36, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 39 種（含 ROADMAP 25 星源星：源晶碎片/源晶精粹/源晶之刃）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 39, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -537,6 +553,7 @@ mod tests {
             EnemyKind::SteamConstruct,
             EnemyKind::VoidPhantom,
             EnemyKind::AetherSpecter,
+            EnemyKind::OriginGuardian,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -550,7 +567,8 @@ mod tests {
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
-                | EnemyKind::AetherSpecter => {}
+                | EnemyKind::AetherSpecter
+                | EnemyKind::OriginGuardian => {}
             }
         }
         let droppable: std::collections::BTreeSet<ItemKind> =
@@ -574,7 +592,8 @@ mod tests {
                 || item == ItemKind::MushroomSpore || item == ItemKind::AncientFragment
                 || item == ItemKind::DeepSeaPearl || item == ItemKind::WildflowerSeed
                 || item == ItemKind::JadeShard || item == ItemKind::LavaCrystal
-                || item == ItemKind::VoidShard || item == ItemKind::AetherShard;
+                || item == ItemKind::VoidShard || item == ItemKind::AetherShard
+                || item == ItemKind::OriginShard;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
@@ -659,6 +678,7 @@ mod tests {
                     | ItemKind::SteamElixir
                     | ItemKind::VoidElixir
                     | ItemKind::AetherEssence
+                    | ItemKind::OriginEssence
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

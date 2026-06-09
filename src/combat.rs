@@ -63,6 +63,9 @@ pub enum WeaponKind {
     /// 霧醚之刃（ROADMAP 24）：霧醚碎片凝聚的乙太迷霧刀刃，攻擊力 +30，全遊戲最強武器，
     /// 霧醚星特有，超越虛空刃（+25），乙太迷霧終極武裝。
     AetherBlade,
+    /// 源晶之刃（ROADMAP 25）：源晶碎片鑄造的宇宙源頭刀刃，攻擊力 +40，全遊戲最強武器，
+    /// 星源星特有，超越霧醚之刃（+30），乙太文明起源之力凝聚的終極武裝。
+    OriginBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -102,6 +105,7 @@ impl WeaponKind {
             WeaponKind::CrimsonBlade => 20,
             WeaponKind::VoidBlade => 25,
             WeaponKind::AetherBlade => 30,
+            WeaponKind::OriginBlade => 40,
         }
     }
 }
@@ -155,10 +159,13 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::VoidShard
         | ItemKind::VoidElixir
         | ItemKind::AetherShard
-        | ItemKind::AetherEssence => None,
+        | ItemKind::AetherEssence
+        | ItemKind::OriginShard
+        | ItemKind::OriginEssence => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
+        ItemKind::OriginBlade => Some(WeaponKind::OriginBlade),
     }
 }
 
@@ -201,7 +208,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::VoidBlade
         | ItemKind::AetherShard
         | ItemKind::AetherEssence
-        | ItemKind::AetherBlade => None,
+        | ItemKind::AetherBlade
+        | ItemKind::OriginShard
+        | ItemKind::OriginEssence
+        | ItemKind::OriginBlade => None,
     }
 }
 
@@ -263,6 +273,9 @@ pub enum EnemyKind {
     /// 霧醚幻靈（霧醚星）：乙太迷霧深處凝聚而成的迷幻幽靈，半透明青白身形，
     /// 消散後留下霧醚碎片——霧醚星的神秘守護者，強度超越虛空幽靈，宇宙遠西的終極威脅。
     AetherSpecter,
+    /// 源晶守護者（星源星）：乙太文明源頭凝聚而成的黃金晶石巨靈，六角巨型源晶身形，
+    /// 碎裂後留下源晶碎片——星源星的終極守護者，強度超越所有前者，宇宙起源之地的最後守衛。
+    OriginGuardian,
 }
 
 impl EnemyKind {
@@ -289,6 +302,8 @@ impl EnemyKind {
             EnemyKind::VoidPhantom => 20,
             // 霧醚幻靈最強——霧醚星乙太迷霧守衛，超越虛空幽靈，全遊戲最硬的敵人。
             EnemyKind::AetherSpecter => 28,
+            // 源晶守護者最強——星源星宇宙源頭守衛，超越霧醚幻靈，全遊戲最終極的守門者。
+            EnemyKind::OriginGuardian => 40,
         }
     }
 
@@ -321,6 +336,8 @@ impl EnemyKind {
             EnemyKind::VoidPhantom => (ItemKind::VoidShard, 1),
             // 霧醚幻靈消散後結晶成霧醚碎片（與挖霧醚晶霧相同，乙太迷霧的終極精華）。
             EnemyKind::AetherSpecter => (ItemKind::AetherShard, 1),
+            // 源晶守護者碎裂後留下源晶碎片（與挖源晶格相同，宇宙起源之地的原初結晶）。
+            EnemyKind::OriginGuardian => (ItemKind::OriginShard, 1),
         }
     }
 
@@ -349,6 +366,8 @@ impl EnemyKind {
             EnemyKind::VoidPhantom => 8,
             // 霧醚幻靈威脅最高——霧醚星乙太迷霧守衛，全遊戲最強敵人的終極威脅。
             EnemyKind::AetherSpecter => 11,
+            // 源晶守護者威脅最高——星源星終極守衛，全遊戲最終極的傷害威脅。
+            EnemyKind::OriginGuardian => 15,
         }
     }
 
@@ -370,6 +389,8 @@ impl EnemyKind {
             EnemyKind::VoidPhantom => 55,
             // 霧醚幻靈給予最多 exp——全遊戲最難敵人，應有最豐厚的 exp 獎賞。
             EnemyKind::AetherSpecter => 70,
+            // 源晶守護者給予最多 exp——全遊戲最終極守衛，超越所有前者的 exp 獎賞。
+            EnemyKind::OriginGuardian => 90,
         }
     }
 
@@ -391,6 +412,8 @@ impl EnemyKind {
             EnemyKind::VoidPhantom => 110.0,
             // 霧醚幻靈重生時間最長——霧醚星終極守衛，消散後充分享受最豐厚的戰果。
             EnemyKind::AetherSpecter => 130.0,
+            // 源晶守護者重生時間最長——星源星終極守衛，碎裂後充分享受最豐厚的戰果。
+            EnemyKind::OriginGuardian => 150.0,
         }
     }
 }
@@ -506,7 +529,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 11] = [
+    const KINDS: [EnemyKind; 12] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -518,6 +541,7 @@ mod tests {
         EnemyKind::SteamConstruct,
         EnemyKind::VoidPhantom,
         EnemyKind::AetherSpecter,
+        EnemyKind::OriginGuardian,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -839,7 +863,8 @@ mod tests {
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
-                | EnemyKind::AetherSpecter => {}
+                | EnemyKind::AetherSpecter
+                | EnemyKind::OriginGuardian => {}
             }
         }
 
@@ -890,7 +915,8 @@ mod tests {
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
-                | EnemyKind::AetherSpecter => {}
+                | EnemyKind::AetherSpecter
+                | EnemyKind::OriginGuardian => {}
             }
         }
 

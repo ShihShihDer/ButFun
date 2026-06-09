@@ -292,13 +292,15 @@ fn kind_for_biome(biome: world_core::Biome) -> EnemyKind {
 fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
     let mut enemies = Vec::new();
     // 星球判定：區塊中心 X ≥ VOID_ZONE_MIN_X 為虛空星；X ≥ VERDANT_ZONE_MIN_X 為翠幽星；
-    // X ≤ AETHER_ZONE_MAX_X 為霧醚星（優先於赤焰星）；X ≤ CRIMSON_ZONE_MAX_X 為赤焰星。
-    // 虛空星優先（其 X 範圍包含翠幽星範圍）；霧醚星優先於赤焰星（更深的遠西方）。
+    // X ≤ ORIGIN_ZONE_MAX_X 為星源星（優先於霧醚星）；X ≤ AETHER_ZONE_MAX_X 為霧醚星（優先於赤焰星）；
+    // X ≤ CRIMSON_ZONE_MAX_X 為赤焰星。
+    // 虛空星優先（其 X 範圍包含翠幽星範圍）；星源星優先於霧醚星（更深的極西境）；霧醚星優先於赤焰星。
     let chunk_center_x = (cx as f64 + 0.5) * (world_core::CHUNK_SIZE as f64);
     let is_void    = chunk_center_x >= world_core::VOID_ZONE_MIN_X;
     let is_verdant = !is_void && chunk_center_x >= world_core::VERDANT_ZONE_MIN_X;
-    let is_aether  = chunk_center_x <= world_core::AETHER_ZONE_MAX_X;
-    let is_crimson = !is_aether && chunk_center_x <= world_core::CRIMSON_ZONE_MAX_X;
+    let is_origin  = chunk_center_x <= world_core::ORIGIN_ZONE_MAX_X;
+    let is_aether  = !is_origin && chunk_center_x <= world_core::AETHER_ZONE_MAX_X;
+    let is_crimson = !is_origin && !is_aether && chunk_center_x <= world_core::CRIMSON_ZONE_MAX_X;
     for i in 0..ENEMIES_PER_CHUNK {
         let id = (cx, cy, i);
         let (x, y) = spawn_position(id);
@@ -312,6 +314,9 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
         } else if is_verdant {
             // 翠幽星：一律生成翠幽魅影（整個翠幽星都是異星領域，無視地表生態域）。
             EnemyKind::JadeWraith
+        } else if is_origin {
+            // 星源星：一律生成源晶守護者（整個星源星都是宇宙源頭領域，無視地表生態域）。
+            EnemyKind::OriginGuardian
         } else if is_aether {
             // 霧醚星：一律生成霧醚幻靈（整個霧醚星都是乙太迷霧領域，無視地表生態域）。
             EnemyKind::AetherSpecter

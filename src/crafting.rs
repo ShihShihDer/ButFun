@@ -273,6 +273,22 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::AetherBlade,
         output_qty: 1,
     },
+    /// 源晶精粹：源晶碎片×2 → 源晶精粹×1。使用後回復至等級滿血，同時獲得 20 乙太。
+    /// 星源星宇宙源頭能量轉換——五大星球最強補給，起源之力比乙太迷霧更為深邃。
+    Recipe {
+        id: "origin_essence",
+        inputs: &[(ItemKind::OriginShard, 2)],
+        output: ItemKind::OriginEssence,
+        output_qty: 1,
+    },
+    /// 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
+    /// 星源星獨有，超越霧醚之刃（+30），宇宙起源之力凝聚的終極武裝，只有踏上星源星才能鑄造。
+    Recipe {
+        id: "origin_blade",
+        inputs: &[(ItemKind::OriginShard, 10)],
+        output: ItemKind::OriginBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -461,10 +477,12 @@ mod tests {
         items.insert(ItemKind::AncientFragment);
         items.insert(ItemKind::DeepSeaPearl);
         items.insert(ItemKind::WildflowerSeed);
-        // 加入跨星球特產地形挖掘（ROADMAP 21-23）：挖對應星球格掉落。
+        // 加入跨星球特產地形挖掘（ROADMAP 21-25）：挖對應星球格掉落。
         items.insert(ItemKind::JadeShard);
         items.insert(ItemKind::LavaCrystal);
         items.insert(ItemKind::VoidShard);
+        items.insert(ItemKind::AetherShard);
+        items.insert(ItemKind::OriginShard);
 
         // 加入敵人掉落（窮舉守衛：新增 EnemyKind 未納入即編譯失敗）。
         const ENEMY_KINDS: &[EnemyKind] = &[
@@ -479,6 +497,7 @@ mod tests {
             EnemyKind::SteamConstruct,
             EnemyKind::VoidPhantom,
             EnemyKind::AetherSpecter,
+            EnemyKind::OriginGuardian,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -492,7 +511,8 @@ mod tests {
                 | EnemyKind::JadeWraith
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
-                | EnemyKind::AetherSpecter => {}
+                | EnemyKind::AetherSpecter
+                | EnemyKind::OriginGuardian => {}
             }
             items.insert(e.drop_loot().0);
         }
