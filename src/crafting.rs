@@ -194,6 +194,22 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::StarChart,
         output_qty: 1,
     },
+    /// 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，補足森林生態的武器空缺。
+    /// 比基礎武器（+5）強、比晶石之刃（+8）稍弱——蕈菇孢子比晶石碎片更容易取得。
+    Recipe {
+        id: "mushroom_staff",
+        inputs: &[(ItemKind::MushroomSpore, 6)],
+        output: ItemKind::MushroomStaff,
+        output_qty: 1,
+    },
+    /// 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠文明鍛造的精英刃。
+    /// 比晶石之刃（+8）更強、比珊瑚矛（+12）略弱——沙漠探索的中段武器升段。
+    Recipe {
+        id: "rune_blade",
+        inputs: &[(ItemKind::AncientFragment, 4)],
+        output: ItemKind::RuneBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。

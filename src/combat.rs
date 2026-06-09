@@ -47,6 +47,10 @@ pub enum WeaponKind {
     CrystalBlade,
     /// 珊瑚矛（ROADMAP 19）：深海珍珠打磨的長矛，攻擊力 +12，全遊戲最強武器。
     CoralLance,
+    /// 蕈菇杖（ROADMAP 19 續）：蕈菇孢子凝聚的魔杖，攻擊力 +7，森林生態專屬武器。
+    MushroomStaff,
+    /// 符文刃（ROADMAP 19 續）：古代碎片鑄造的符文刀刃，攻擊力 +10，沙漠生態專屬武器。
+    RuneBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -80,6 +84,8 @@ impl WeaponKind {
             WeaponKind::Blade => WEAPON_ATTACK_POWER,
             WeaponKind::CrystalBlade => 8,
             WeaponKind::CoralLance => 12,
+            WeaponKind::MushroomStaff => 7,
+            WeaponKind::RuneBlade => 10,
         }
     }
 }
@@ -103,6 +109,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::Weapon => Some(WeaponKind::Blade),
         ItemKind::CrystalBlade => Some(WeaponKind::CrystalBlade),
         ItemKind::CoralLance => Some(WeaponKind::CoralLance),
+        ItemKind::MushroomStaff => Some(WeaponKind::MushroomStaff),
+        ItemKind::RuneBlade => Some(WeaponKind::RuneBlade),
         // 資源原料、建造材料、採集工具、消耗品、護甲都不是武器。
         ItemKind::Wood
         | ItemKind::Dirt
@@ -151,6 +159,8 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::PearlPotion
         | ItemKind::CrystalBlade
         | ItemKind::CoralLance
+        | ItemKind::MushroomStaff
+        | ItemKind::RuneBlade
         | ItemKind::StarChart => None,
     }
 }
