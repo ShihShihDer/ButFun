@@ -159,6 +159,41 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::PearlPotion,
         output_qty: 1,
     },
+    /// 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8，Rocky 探索的進階武器。
+    Recipe {
+        id: "crystal_blade",
+        inputs: &[(ItemKind::CrystalShard, 6)],
+        output: ItemKind::CrystalBlade,
+        output_qty: 1,
+    },
+    /// 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
+    Recipe {
+        id: "coral_lance",
+        inputs: &[(ItemKind::DeepSeaPearl, 3)],
+        output: ItemKind::CoralLance,
+        output_qty: 1,
+    },
+    /// 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
+    Recipe {
+        id: "meadow_amulet",
+        inputs: &[(ItemKind::WildflowerSeed, 8)],
+        output: ItemKind::MeadowAmulet,
+        output_qty: 1,
+    },
+    /// 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
+    Recipe {
+        id: "crystal_shield",
+        inputs: &[(ItemKind::CrystalShard, 8), (ItemKind::Stone, 4)],
+        output: ItemKind::CrystalShield,
+        output_qty: 1,
+    },
+    /// 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球的星圖快照，多星球旅程的序章。
+    Recipe {
+        id: "star_chart",
+        inputs: &[(ItemKind::AncientFragment, 5)],
+        output: ItemKind::StarChart,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。

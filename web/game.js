@@ -544,6 +544,20 @@
             }
           }
 
+          // 防禦力 HUD（ROADMAP 19 生態裝備）：持有護甲時顯示減傷值。
+          if (typeof me.defense === "number") {
+            const defEl = document.getElementById("hudDefense");
+            if (defEl) {
+              if (me.defense > 0) {
+                defEl.textContent = `🛡️ -${me.defense}`;
+                defEl.title = `防禦 ${me.defense}（每次受傷減少 ${me.defense} 點傷害）`;
+                defEl.classList.remove("hidden");
+              } else {
+                defEl.classList.add("hidden");
+              }
+            }
+          }
+
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
@@ -835,6 +849,83 @@
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  // 夜空星星 + 遠方星球（ROADMAP 19 多星球前奏）：夜越深星越清晰，畫面三顆彩色行星
+  // 暗示ButFun宇宙中的遠方世界。純表現層，不嵌任何遊戲規則。
+  const NIGHT_STARS = [];
+  function initNightStars() {
+    if (NIGHT_STARS.length) return;
+    // 用確定性 hash 產出星星位置（不用 Math.random 確保重繪一致）。
+    for (let i = 0; i < 80; i++) {
+      const h1 = ((i * 2654435761) >>> 0) / 0xFFFFFFFF;
+      const h2 = ((i * 1234567891 + 7) >>> 0) / 0xFFFFFFFF;
+      const h3 = ((i * 987654321 + 13) >>> 0) / 0xFFFFFFFF;
+      NIGHT_STARS.push({ rx: h1, ry: h2, r: 0.5 + h3 * 1.2, tw: h3 * Math.PI * 2 });
+    }
+  }
+  function drawNightStars(now) {
+    if (!daynight) return;
+    const dark = Math.max(0, Math.min(1, 1 - daynight.light));
+    if (dark < 0.4) return;
+    initNightStars();
+    const alpha = (dark - 0.4) / 0.6;
+    ctx.save();
+    for (const s of NIGHT_STARS) {
+      const twinkle = reduceMotion ? 0.85 : 0.7 + 0.3 * Math.sin(now / 1200 + s.tw);
+      const a = alpha * twinkle * 0.9;
+      if (a < 0.05) continue;
+      ctx.beginPath();
+      ctx.arc(s.rx * viewW, s.ry * viewH * 0.6, s.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(230,235,255,${a.toFixed(3)})`;
+      ctx.fill();
+    }
+    // 三顆遠方行星：固定在畫面上方，夜間可見，象徵ButFun宇宙的多星球未來。
+    const planets = [
+      { rx: 0.18, ry: 0.08, r: 4, color: "rgba(200,120,80,", name: "赤焰星" },  // 類火星・蒸汽龐克工業世界
+      { rx: 0.72, ry: 0.12, r: 5.5, color: "rgba(100,200,160,", name: "翠幽星" }, // 翡翠叢林星球
+      { rx: 0.50, ry: 0.06, r: 3, color: "rgba(160,140,220,", name: "靈光星" },  // 乙太能量行星
+    ];
+    for (const p of planets) {
+      const pa = alpha * 0.85;
+      const glow = ctx.createRadialGradient(p.rx * viewW, p.ry * viewH, 0, p.rx * viewW, p.ry * viewH, p.r * 4);
+      glow.addColorStop(0, `${p.color}${pa.toFixed(3)})`);
+      glow.addColorStop(0.4, `${p.color}${(pa * 0.4).toFixed(3)})`);
+      glow.addColorStop(1, `${p.color}0)`);
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(p.rx * viewW, p.ry * viewH, p.r * 4, 0, Math.PI * 2);
+      ctx.fill();
+      // 行星核心實心點。
+      ctx.beginPath();
+      ctx.arc(p.rx * viewW, p.ry * viewH, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `${p.color}${Math.min(1, pa * 1.2).toFixed(3)})`;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // 星圖彈窗：使用星圖道具後展示，揭開多星球旅程的序章。
+  function showStarChartDialog() {
+    // 如果已存在就不重複建立。
+    if (document.getElementById("starChartDialog")) return;
+    const overlay = document.createElement("div");
+    overlay.id = "starChartDialog";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;cursor:pointer;";
+    overlay.innerHTML = `
+      <div style="max-width:380px;padding:24px 28px;background:rgba(14,20,52,0.96);border:1px solid rgba(160,140,220,0.4);border-radius:12px;text-align:center;color:#e0e8ff;font-size:14px;line-height:1.7;">
+        <div style="font-size:2.2em;margin-bottom:8px;">🗺️ 星圖展開</div>
+        <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:16px;">你的星圖記錄了三顆遠方星球的訊號⋯⋯</div>
+        <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+          <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
+          <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:#aaa;">超巨型生態系，古老樹靈守護著星球意識。</span></div>
+          <div>🔵 <b>靈光星</b> — <span style="color:#a080e0;">乙太能量行星。</span><br><span style="font-size:0.9em;color:#aaa;">純粹的乙太結晶體，傳說中乙太的源頭。</span></div>
+        </div>
+        <div style="color:#8090c0;font-size:0.88em;">點擊任意處關閉 · 多星球旅程尚未開始⋯⋯</div>
+      </div>
+    `;
+    overlay.addEventListener("click", () => overlay.remove());
+    document.body.appendChild(overlay);
   }
 
   // 夜間危機暈輪：phase==night 時，畫面四周出現脈動深紅暈輪，給玩家「夜很危險」的直覺感。
@@ -1561,6 +1652,9 @@
 
     // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
     drawDayNightTint();
+
+    // 夜空星星 + 遠方行星（ROADMAP 19）：在日夜染色之後畫，夜越深越清晰。
+    drawNightStars(performance.now());
 
     // 夜晚漂浮的乙太微光：在日夜染色「之後」畫（浮在變暗的世界上），但在飄字／漣漪／
     // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
@@ -3045,11 +3139,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3072,6 +3166,17 @@
     { id: "ether_pill", out: "ether_pill", outQty: 1, inputs: [["ancient_fragment", 3]] },
     // 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
     { id: "pearl_potion", out: "pearl_potion", outQty: 1, inputs: [["deep_sea_pearl", 1]] },
+    // ROADMAP 19 生態裝備：生態特產打造武器/護甲，持有即被動生效。
+    // 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8（比基礎武器更強）。
+    { id: "crystal_blade", out: "crystal_blade", outQty: 1, inputs: [["crystal_shard", 6]] },
+    // 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
+    { id: "coral_lance", out: "coral_lance", outQty: 1, inputs: [["deep_sea_pearl", 3]] },
+    // 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
+    { id: "meadow_amulet", out: "meadow_amulet", outQty: 1, inputs: [["wildflower_seed", 8]] },
+    // 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
+    { id: "crystal_shield", out: "crystal_shield", outQty: 1, inputs: [["crystal_shard", 8], ["stone", 4]] },
+    // 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球星圖，多星球旅程的序章。
+    { id: "star_chart", out: "star_chart", outQty: 1, inputs: [["ancient_fragment", 5]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -3113,6 +3218,15 @@
       mushroom_elixir: "回復 8 HP + 立即開始回血",
       ether_pill: "獲得 10 乙太",
       pearl_potion: "回復至滿血",
+      star_chart: "展開遠方星球星圖（多星球前奏）",
+    };
+    // 裝備/護甲的持有說明（持有即被動生效，無需點使用）。
+    const GEAR_DESC = {
+      weapon: "攻擊力 +5（持有即生效）",
+      crystal_blade: "攻擊力 +8（持有即生效）",
+      coral_lance: "攻擊力 +12（持有即生效）",
+      meadow_amulet: "防禦 -1（每次受傷減 1 傷害）",
+      crystal_shield: "防禦 -2（每次受傷減 2 傷害）",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
@@ -3127,7 +3241,11 @@
         const useBtn = CONSUMABLE.has(s.item)
           ? `<button class="bag-use-btn" data-item="${s.item}" title="使用${ITEM_NAME[s.item] || s.item}（${desc}）">🧪使用</button>`
           : "";
-        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}</div>`;
+        // 裝備/護甲顯示「持有中」說明標籤。
+        const gearTag = GEAR_DESC[s.item]
+          ? `<span class="bag-gear-tag" title="${GEAR_DESC[s.item]}">✨持有</span>`
+          : "";
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}${gearTag}</div>`;
       })
       .join("");
     // 綁定 bag-place-btn 點擊事件（動態 HTML，每次重繪後重綁）。
@@ -3146,6 +3264,8 @@
         e.stopPropagation();
         const item = btn.dataset.item;
         try { ws.send(JSON.stringify({ type: "use_item", item })); } catch {}
+        // 星圖：本地展示多星球前奏彈窗（消耗由伺服器扣，這邊只負責視覺饗宴）。
+        if (item === "star_chart") showStarChartDialog();
       });
     });
     // emoji 對報讀器無意義(會亂念或跳過),把中文品項名同步成標題鈕的 aria-label,讓盲人玩家

@@ -43,6 +43,19 @@ pub enum WeaponKind {
     Unarmed,
     /// 武器（合成產物）：每下攻擊更痛。
     Blade,
+    /// 晶石之刃（ROADMAP 19）：晶石碎片鑄造的利刃，攻擊力 +8。
+    CrystalBlade,
+    /// 珊瑚矛（ROADMAP 19）：深海珍珠打磨的長矛，攻擊力 +12，全遊戲最強武器。
+    CoralLance,
+}
+
+/// 持有某類護甲所提供的防禦加成。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmorKind {
+    /// 草原護符：每次受傷減 1 點傷害。
+    Meadow,
+    /// 晶石護盾：每次受傷減 2 點傷害。
+    Crystal,
 }
 
 /// 徒手的基礎攻擊力。沒有武器就是這個——刻意等於 `game.rs` 現行寫死的 `PLAYER_ATTACK_POWER`，
@@ -60,11 +73,23 @@ pub fn level_attack_bonus(level: u32) -> u32 {
 }
 
 impl WeaponKind {
-    /// 此武器每下攻擊造成的傷害。武器回 `WEAPON_ATTACK_POWER`，徒手回 `UNARMED_ATTACK_POWER`。
+    /// 此武器每下攻擊造成的傷害。
     pub fn attack_power(self) -> u32 {
         match self {
-            WeaponKind::Blade => WEAPON_ATTACK_POWER,
             WeaponKind::Unarmed => UNARMED_ATTACK_POWER,
+            WeaponKind::Blade => WEAPON_ATTACK_POWER,
+            WeaponKind::CrystalBlade => 8,
+            WeaponKind::CoralLance => 12,
+        }
+    }
+}
+
+impl ArmorKind {
+    /// 此護甲每次受傷減少的傷害點數。
+    pub fn defense(self) -> u32 {
+        match self {
+            ArmorKind::Meadow => 1,
+            ArmorKind::Crystal => 2,
         }
     }
 }
@@ -72,13 +97,13 @@ impl WeaponKind {
 /// 某個背包物品若是武器，回對應的 `WeaponKind`；不是武器（資源／採集工具）回 `None`。
 /// 刻意用窮舉 `match`（不寫 `_` 萬用分支）：日後在 `ItemKind` 加新武器變體時，編譯器會
 /// 強制回來補上它對應的武器，避免漏接（比照 `tools::tool_from_item`）。
-// 接線前無生產面呼叫端（接線輪 game.rs 才會呼叫 `weapon_power`），比照 `inventory.rs` /
-// `gather.rs` 等前置地基標 `allow(dead_code)`；測試已覆蓋這三個函式。
 #[allow(dead_code)]
 pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
     match item {
         ItemKind::Weapon => Some(WeaponKind::Blade),
-        // 資源原料、建造材料、採集工具與消耗品都不是武器。
+        ItemKind::CrystalBlade => Some(WeaponKind::CrystalBlade),
+        ItemKind::CoralLance => Some(WeaponKind::CoralLance),
+        // 資源原料、建造材料、採集工具、消耗品、護甲都不是武器。
         ItemKind::Wood
         | ItemKind::Dirt
         | ItemKind::Stone
@@ -94,8 +119,50 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::CrystalPotion
         | ItemKind::MushroomElixir
         | ItemKind::EtherPill
-        | ItemKind::PearlPotion => None,
+        | ItemKind::PearlPotion
+        | ItemKind::MeadowAmulet
+        | ItemKind::CrystalShield
+        | ItemKind::StarChart => None,
     }
+}
+
+/// 某個背包物品若是護甲，回對應的 `ArmorKind`；不是護甲回 `None`。
+#[allow(dead_code)]
+pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
+    match item {
+        ItemKind::MeadowAmulet => Some(ArmorKind::Meadow),
+        ItemKind::CrystalShield => Some(ArmorKind::Crystal),
+        ItemKind::Wood
+        | ItemKind::Dirt
+        | ItemKind::Stone
+        | ItemKind::Ether
+        | ItemKind::Pickaxe
+        | ItemKind::ReinforcedPickaxe
+        | ItemKind::Weapon
+        | ItemKind::CrystalShard
+        | ItemKind::MushroomSpore
+        | ItemKind::AncientFragment
+        | ItemKind::DeepSeaPearl
+        | ItemKind::WildflowerSeed
+        | ItemKind::HealingPotion
+        | ItemKind::CrystalPotion
+        | ItemKind::MushroomElixir
+        | ItemKind::EtherPill
+        | ItemKind::PearlPotion
+        | ItemKind::CrystalBlade
+        | ItemKind::CoralLance
+        | ItemKind::StarChart => None,
+    }
+}
+
+/// 玩家背包裡最高防禦護甲的減傷值（累加所有護甲的防禦）。
+/// 敵人攻擊時先扣去此值再扣血，最低歸零不倒扣。
+#[allow(dead_code)]
+pub fn armor_defense(inv: &Inventory) -> u32 {
+    inv.entries()
+        .filter_map(|(item, _)| armor_from_item(item))
+        .map(|a| a.defense())
+        .sum()
 }
 
 /// 玩家背包裡攻擊力最高的武器：挑出持有武器中攻擊力最高者；都沒有就回 `Unarmed`。
