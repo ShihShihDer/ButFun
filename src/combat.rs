@@ -51,6 +51,9 @@ pub enum WeaponKind {
     MushroomStaff,
     /// 符文刃（ROADMAP 19 續）：古代碎片鑄造的符文刀刃，攻擊力 +10，沙漠生態專屬武器。
     RuneBlade,
+    /// 翠幽刃（ROADMAP 21）：翠幽碎片鑄造的異星刀刃，攻擊力 +15，全遊戲最強武器，
+    /// 翠幽星特有，象徵星際探索的最高戰鬥獎賞。
+    JadeBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -86,6 +89,7 @@ impl WeaponKind {
             WeaponKind::CoralLance => 12,
             WeaponKind::MushroomStaff => 7,
             WeaponKind::RuneBlade => 10,
+            WeaponKind::JadeBlade => 15,
         }
     }
 }
@@ -111,6 +115,7 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::CoralLance => Some(WeaponKind::CoralLance),
         ItemKind::MushroomStaff => Some(WeaponKind::MushroomStaff),
         ItemKind::RuneBlade => Some(WeaponKind::RuneBlade),
+        ItemKind::JadeBlade => Some(WeaponKind::JadeBlade),
         // 資源原料、建造材料、採集工具、消耗品、護甲都不是武器。
         ItemKind::Wood
         | ItemKind::Dirt
@@ -130,7 +135,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::PearlPotion
         | ItemKind::MeadowAmulet
         | ItemKind::CrystalShield
-        | ItemKind::StarChart => None,
+        | ItemKind::StarChart
+        | ItemKind::JadeShard
+        | ItemKind::JadeElixir => None,
     }
 }
 
@@ -161,7 +168,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::CoralLance
         | ItemKind::MushroomStaff
         | ItemKind::RuneBlade
-        | ItemKind::StarChart => None,
+        | ItemKind::StarChart
+        | ItemKind::JadeShard
+        | ItemKind::JadeElixir
+        | ItemKind::JadeBlade => None,
     }
 }
 
@@ -211,6 +221,9 @@ pub enum EnemyKind {
     RuneGuardian,
     /// 珊瑚蟹（水域）：珊瑚礁叢生的甲殼生物，拆殼後取出深海珍珠——四大生態最稀有的守門者。
     CoralCrab,
+    /// 翠幽魅影（翠幽星）：異星乙太凝聚的幽靈生靈，半透明翠色身形，
+    /// 擊散後留下翠幽碎片——翠幽星的第一道守護者，強度超越故鄉所有敵人。
+    JadeWraith,
 }
 
 impl EnemyKind {
@@ -229,6 +242,8 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 7,
             // 珊瑚蟹最難打——守著最稀有的深海珍珠。
             EnemyKind::CoralCrab => 9,
+            // 翠幽魅影最強——異星守護者，超越故鄉所有敵人。
+            EnemyKind::JadeWraith => 11,
         }
     }
 
@@ -253,6 +268,8 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => (ItemKind::AncientFragment, 1),
             // 珊瑚蟹拆殼取出深海珍珠（與挖珊瑚礁相同）。
             EnemyKind::CoralCrab => (ItemKind::DeepSeaPearl, 1),
+            // 翠幽魅影擊散後結晶成翠幽碎片（與挖翠玉藤相同，異星能量的精華）。
+            EnemyKind::JadeWraith => (ItemKind::JadeShard, 1),
         }
     }
 
@@ -273,6 +290,8 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 3,
             // 珊瑚蟹最強——最稀有材料理應最難打。
             EnemyKind::CoralCrab => 4,
+            // 翠幽魅影威脅最高——異星守護者，對應最高戰鬥獎賞。
+            EnemyKind::JadeWraith => 5,
         }
     }
 
@@ -286,6 +305,8 @@ impl EnemyKind {
             EnemyKind::RuneGuardian => 20,
             EnemyKind::CrystalGolem => 22,
             EnemyKind::CoralCrab => 28,
+            // 翠幽魅影給予最多 exp——異星最強守護者應有最豐厚獎賞。
+            EnemyKind::JadeWraith => 35,
         }
     }
 
@@ -299,6 +320,8 @@ impl EnemyKind {
             EnemyKind::CrystalGolem => 55.0,
             EnemyKind::RuneGuardian => 50.0,
             EnemyKind::CoralCrab => 62.0,
+            // 翠幽魅影重生時間最長——擊散最強守護者，讓玩家充分享受戰果。
+            EnemyKind::JadeWraith => 75.0,
         }
     }
 }
@@ -414,7 +437,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 7] = [
+    const KINDS: [EnemyKind; 8] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -422,6 +445,7 @@ mod tests {
         EnemyKind::CrystalGolem,
         EnemyKind::RuneGuardian,
         EnemyKind::CoralCrab,
+        EnemyKind::JadeWraith,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -633,6 +657,7 @@ mod tests {
         assert_eq!(EnemyKind::CrystalGolem.drop_loot(), (ItemKind::CrystalShard, 1));
         assert_eq!(EnemyKind::RuneGuardian.drop_loot(), (ItemKind::AncientFragment, 1));
         assert_eq!(EnemyKind::CoralCrab.drop_loot(), (ItemKind::DeepSeaPearl, 1));
+        assert_eq!(EnemyKind::JadeWraith.drop_loot(), (ItemKind::JadeShard, 1));
     }
 
     #[test]
@@ -737,7 +762,8 @@ mod tests {
                 | EnemyKind::MushroomStalker
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
-                | EnemyKind::CoralCrab => {}
+                | EnemyKind::CoralCrab
+                | EnemyKind::JadeWraith => {}
             }
         }
 
@@ -784,7 +810,8 @@ mod tests {
                 | EnemyKind::MushroomStalker
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
-                | EnemyKind::CoralCrab => {}
+                | EnemyKind::CoralCrab
+                | EnemyKind::JadeWraith => {}
             }
         }
 

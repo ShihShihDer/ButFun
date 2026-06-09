@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, merchant_pos};
+use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, VERDANT_BUY_LIST, VERDANT_SELL_LIST, merchant_pos, verdant_merchant_pos};
 use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry, TileDeltaView};
 use crate::state::AppState;
 
@@ -288,13 +288,20 @@ pub fn spawn(app: AppState) {
             if want_broadcast {
                 let snapshot = {
                     let players = app.players.read().unwrap();
-                    // 每次快照帶上靜態 NPC 目錄（新手村商人）。
+                    // 每次快照帶上靜態 NPC 目錄（新手村商人 + 翠幽星商人）。
                     let (mx, my) = merchant_pos();
-                    let npc_view = NpcView {
+                    let home_npc = NpcView {
                         x: mx,
                         y: my,
                         buy_list: NPC_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
                         sell_list: NPC_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                    };
+                    let (vmx, vmy) = verdant_merchant_pos();
+                    let verdant_npc = NpcView {
+                        x: vmx,
+                        y: vmy,
+                        buy_list: VERDANT_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        sell_list: VERDANT_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
                     };
                     ServerMsg::Snapshot {
                         tick,
@@ -304,7 +311,7 @@ pub fn spawn(app: AppState) {
                         enemies: enemy_views,
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
-                        npcs: vec![npc_view],
+                        npcs: vec![home_npc, verdant_npc],
                         // C-2 起：把 TileWorld 中所有玩家挖掘後的差異帶入快照。
                         // delta 稀疏（只存偏離確定性生成的格），ws.rs 轉發時再依 AOI 剔除。
                         terrain: {

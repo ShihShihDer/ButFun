@@ -24,6 +24,7 @@ pub enum TileKindView {
     AncientRuin,
     CoralReef,
     WildFlower,
+    JadeVine,
 }
 
 impl From<TileKind> for TileKindView {
@@ -38,6 +39,7 @@ impl From<TileKind> for TileKindView {
             TileKind::AncientRuin => TileKindView::AncientRuin,
             TileKind::CoralReef   => TileKindView::CoralReef,
             TileKind::WildFlower  => TileKindView::WildFlower,
+            TileKind::JadeVine    => TileKindView::JadeVine,
         }
     }
 }

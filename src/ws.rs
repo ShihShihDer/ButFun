@@ -619,21 +619,32 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::ShopSell { item, qty }) => {
-                    // 向 NPC 商人賣出物品：驗距離 + 未倒地 + 在收購清單 + 背包有貨 → 換乙太。
+                    // 向 NPC 商人賣出物品：支援故鄉商人與翠幽星商人兩處。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
-                        if !downed && npc::is_within_shop_reach(px, py) {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                if let Some(new_ether) = npc::sell_to_npc(&mut p.inventory, p.ether, item, qty) {
-                                    tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "NPC 收購");
-                                    p.ether = new_ether;
+                        if !downed {
+                            if npc::is_within_shop_reach(px, py) {
+                                // 故鄉商人
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    if let Some(new_ether) = npc::sell_to_npc(&mut p.inventory, p.ether, item, qty) {
+                                        tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "故鄉 NPC 收購");
+                                        p.ether = new_ether;
+                                    }
+                                }
+                            } else if npc::is_within_verdant_shop_reach(px, py) {
+                                // 翠幽星商人
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    if let Some(new_ether) = npc::sell_to_verdant_npc(&mut p.inventory, p.ether, item, qty) {
+                                        tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "翠幽星 NPC 收購");
+                                        p.ether = new_ether;
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 Ok(ClientMsg::ShopBuy { item, qty }) => {
-                    // 向 NPC 商人購買物品：驗距離 + 未倒地 + 在販售清單 + 乙太足夠 → 取得物品。
+                    // 向 NPC 商人購買物品：目前只有故鄉商人有販售清單。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
                         if !downed && npc::is_within_shop_reach(px, py) {
@@ -786,6 +797,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(p.vitals.max_hp());
                                     tracing::info!(player = %p.name, ?item, gained, "使用道具滿血復原");
+                                }
+                            }
+                            ItemKind::JadeElixir => {
+                                // 翠幽精露：回復至滿血並重置回血冷卻——翠幽星頂級精華，雙效加成。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.vitals.reset_regen_cooldown();
+                                    tracing::info!(player = %p.name, ?item, gained, "使用翠幽精露滿血+重置回血");
                                 }
                             }
                             ItemKind::StarChart => {
