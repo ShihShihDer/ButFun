@@ -65,7 +65,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::HealingPotion | ItemKind::CrystalPotion | ItemKind::MushroomElixir
         | ItemKind::EtherPill | ItemKind::PearlPotion
         | ItemKind::CrystalBlade | ItemKind::CoralLance
-        | ItemKind::MeadowAmulet | ItemKind::CrystalShield | ItemKind::StarChart => None,
+        | ItemKind::MeadowAmulet | ItemKind::CrystalShield | ItemKind::StarChart
+        | ItemKind::MushroomStaff | ItemKind::RuneBlade => None,
     }
 }
 

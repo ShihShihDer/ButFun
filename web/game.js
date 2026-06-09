@@ -911,22 +911,51 @@
   }
 
   // 星圖彈窗：使用星圖道具後展示，揭開多星球旅程的序章。
+  // 同時顯示玩家的五大生態武裝收集進度——讓星圖成為「征服這顆星球的成就板」。
   function showStarChartDialog() {
-    // 如果已存在就不重複建立。
     if (document.getElementById("starChartDialog")) return;
+    // 讀取玩家背包，判斷五大生態武裝收集狀態。
+    const curMe = myId ? players.get(myId) : null;
+    const curInv = curMe ? (curMe.inventory || []) : [];
+    const invSet = new Set(curInv.map((s) => s.item));
+    const biomeGear = [
+      { item: "meadow_amulet", name: "草原護符", biome: "草原", icon: "🍀" },
+      { item: "mushroom_staff", name: "蕈菇杖",  biome: "森林", icon: "🪄" },
+      { item: "crystal_blade", name: "晶石之刃", biome: "岩地", icon: "🔪" },
+      { item: "rune_blade",    name: "符文刃",   biome: "沙漠", icon: "⚜️" },
+      { item: "coral_lance",   name: "珊瑚矛",   biome: "水域", icon: "🔱" },
+    ];
+    const collected = biomeGear.filter((g) => invSet.has(g.item)).length;
+    const allCollected = collected === biomeGear.length;
+    const gearRows = biomeGear.map((g) => {
+      const have = invSet.has(g.item);
+      return `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;${have ? "" : "opacity:0.45;"}">
+        <span>${g.icon}</span>
+        <span style="color:${have ? "#c0ffd0" : "#888"}">${g.name}</span>
+        <span style="font-size:0.8em;color:#778">${g.biome}</span>
+        <span style="margin-left:auto;font-size:0.85em">${have ? "✅ 持有" : "❌ 未得"}</span>
+      </div>`;
+    }).join("");
+    const footer = allCollected
+      ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星圖訊號更強了⋯⋯</div><div style="color:#8090c0;font-size:0.82em;margin-top:6px;">點擊任意處關閉</div>`
+      : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">點擊任意處關閉 · 多星球旅程尚未開始⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;cursor:pointer;";
     overlay.innerHTML = `
-      <div style="max-width:380px;padding:24px 28px;background:rgba(14,20,52,0.96);border:1px solid rgba(160,140,220,0.4);border-radius:12px;text-align:center;color:#e0e8ff;font-size:14px;line-height:1.7;">
+      <div style="max-width:400px;padding:24px 28px;background:rgba(14,20,52,0.96);border:1px solid rgba(160,140,220,0.4);border-radius:12px;text-align:center;color:#e0e8ff;font-size:14px;line-height:1.7;">
         <div style="font-size:2.2em;margin-bottom:8px;">🗺️ 星圖展開</div>
-        <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:16px;">你的星圖記錄了三顆遠方星球的訊號⋯⋯</div>
-        <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+        <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:14px;">你的星圖記錄了三顆遠方星球的訊號⋯⋯</div>
+        <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:12px;">
           <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
           <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:#aaa;">超巨型生態系，古老樹靈守護著星球意識。</span></div>
           <div>🔵 <b>靈光星</b> — <span style="color:#a080e0;">乙太能量行星。</span><br><span style="font-size:0.9em;color:#aaa;">純粹的乙太結晶體，傳說中乙太的源頭。</span></div>
         </div>
-        <div style="color:#8090c0;font-size:0.88em;">點擊任意處關閉 · 多星球旅程尚未開始⋯⋯</div>
+        <div style="text-align:left;background:rgba(0,0,0,0.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;">
+          <div style="color:#c8d8ff;font-size:0.88em;margin-bottom:6px;font-weight:bold;">⚔️ 五大生態武裝 ${collected}/${biomeGear.length}</div>
+          ${gearRows}
+        </div>
+        ${footer}
       </div>
     `;
     overlay.addEventListener("click", () => overlay.remove());
@@ -3144,11 +3173,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3182,6 +3211,11 @@
     { id: "crystal_shield", out: "crystal_shield", outQty: 1, inputs: [["crystal_shard", 8], ["stone", 4]] },
     // 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球星圖，多星球旅程的序章。
     { id: "star_chart", out: "star_chart", outQty: 1, inputs: [["ancient_fragment", 5]] },
+    // ROADMAP 19 續：森林/沙漠生態武器，補完五大生態全覆蓋。
+    // 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，森林生態秘密武器。
+    { id: "mushroom_staff", out: "mushroom_staff", outQty: 1, inputs: [["mushroom_spore", 6]] },
+    // 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠遺跡精英武器。
+    { id: "rune_blade", out: "rune_blade", outQty: 1, inputs: [["ancient_fragment", 4]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -3228,10 +3262,12 @@
     // 裝備/護甲的持有說明（持有即被動生效，無需點使用）。
     const GEAR_DESC = {
       weapon: "攻擊力 +5（持有即生效）",
-      crystal_blade: "攻擊力 +8（持有即生效）",
-      coral_lance: "攻擊力 +12（持有即生效）",
-      meadow_amulet: "防禦 -1（每次受傷減 1 傷害）",
-      crystal_shield: "防禦 -2（每次受傷減 2 傷害）",
+      mushroom_staff: "攻擊力 +7（持有即生效）🌿 森林生態",
+      crystal_blade: "攻擊力 +8（持有即生效）💎 岩地生態",
+      rune_blade: "攻擊力 +10（持有即生效）⚜️ 沙漠生態",
+      coral_lance: "攻擊力 +12（持有即生效）🌊 水域生態",
+      meadow_amulet: "防禦 -1（每次受傷減 1 傷害）🌸 草原生態",
+      crystal_shield: "防禦 -2（每次受傷減 2 傷害）💎 岩地生態",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv

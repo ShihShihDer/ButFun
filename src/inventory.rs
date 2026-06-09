@@ -100,6 +100,14 @@ pub enum ItemKind {
     /// 星圖（合成產物：古代碎片×5 → 星圖×1）。
     /// 使用後展示遠方星球的星圖快照，是多星球旅程的序章。
     StarChart,
+    /// 蕈菇杖（合成產物：蕈菇孢子×6 → 蕈菇杖×1）。
+    /// 持有此魔杖攻擊力 +7，森林生態域探索的秘密武器，菌絲能量凝聚而成。
+    /// 填補森林生態的武器空缺——對稱岩地晶石之刃（+8）的前一階。
+    MushroomStaff,
+    /// 符文刃（合成產物：古代碎片×4 → 符文刃×1）。
+    /// 持有此刃攻擊力 +10，古代沙漠文明的符文鍛造技術，強過晶石之刃（+8）。
+    /// 填補沙漠生態的武器空缺——對稱珊瑚矛（+12）的前一階，沙漠探索者的精英裝備。
+    RuneBlade,
 }
 
 impl ItemKind {
@@ -131,6 +139,8 @@ impl ItemKind {
         ItemKind::MeadowAmulet,
         ItemKind::CrystalShield,
         ItemKind::StarChart,
+        ItemKind::MushroomStaff,
+        ItemKind::RuneBlade,
     ];
 }
 
@@ -345,13 +355,15 @@ mod tests {
                 | ItemKind::CoralLance
                 | ItemKind::MeadowAmulet
                 | ItemKind::CrystalShield
-                | ItemKind::StarChart => {}
+                | ItemKind::StarChart
+                | ItemKind::MushroomStaff
+                | ItemKind::RuneBlade => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 22 種（含 ROADMAP 19 裝備：晶石之刃/珊瑚矛/草原護符/晶石護盾/星圖）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 22, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 24 種（含 ROADMAP 19 續裝備：蕈菇杖/符文刃補完森林/沙漠生態武器）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 24, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
