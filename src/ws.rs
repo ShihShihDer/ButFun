@@ -717,6 +717,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         tracing::info!(player = %p.name, "回城（傳回新手村）");
                     }
                 }
+                Ok(ClientMsg::UseItem { item }) => {
+                    // 使用道具：消耗一個指定道具，觸發對應效果。
+                    // 目前只有活力藥水（HealingPotion）→ 回血 6 HP。
+                    // 倒地狀態 / 背包不足靜默忽略，不懲罰誤觸。
+                    use crate::inventory::ItemKind;
+                    const HEAL_AMOUNT: u32 = 6;
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        let consumable = matches!(item, ItemKind::HealingPotion);
+                        if consumable && !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                            let gained = p.vitals.heal(HEAL_AMOUNT);
+                            tracing::info!(
+                                player = %p.name, ?item, gained,
+                                "使用道具回血"
+                            );
+                        }
+                    }
+                }
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },

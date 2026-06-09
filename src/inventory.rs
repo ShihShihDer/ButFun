@@ -69,6 +69,10 @@ pub enum ItemKind {
     /// 野花種子（挖掘 WildFlower 地形格掉落，ROADMAP 14 草原野花叢生態域）。
     /// 草原深處野花叢孕育的種子，NPC 溢價收購，給穿梭草原的玩家補上第五條乙太路線。
     WildflowerSeed,
+    /// 活力藥水（合成產物：野花種子×3 → 活力藥水×1）。
+    /// 使用後立即回復 6 HP——讓生態資源從「只賣 NPC」多一條「自用保命」的路線，
+    /// 閉合「探索草原 → 採野花種子 → 合成藥水 → 戰鬥續航」正回饋圈。
+    HealingPotion,
 }
 
 impl ItemKind {
@@ -90,6 +94,7 @@ impl ItemKind {
         ItemKind::AncientFragment,
         ItemKind::DeepSeaPearl,
         ItemKind::WildflowerSeed,
+        ItemKind::HealingPotion,
     ];
 }
 
@@ -294,13 +299,14 @@ mod tests {
                 | ItemKind::MushroomSpore
                 | ItemKind::AncientFragment
                 | ItemKind::DeepSeaPearl
-                | ItemKind::WildflowerSeed => {}
+                | ItemKind::WildflowerSeed
+                | ItemKind::HealingPotion => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 12 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 12, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 13 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子／活力藥水）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 13, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -490,11 +496,15 @@ mod tests {
             // 「賣出換乙太」是合法的經濟去處——稀有資源（如晶石碎片）給 NPC 高價收購，
             // 讓探索型玩家有把成果兌換乙太的管道。
             let npc_sellable = NPC_BUY_LIST.iter().any(|e| e.item == item);
+            // 7. 是可主動使用的消耗品（UseItem 觸發即消耗，直接對玩家產生效果）。
+            // 活力藥水（HealingPotion）是第一個；日後加新消耗品需同步更新此處。
+            let usable_consumable = matches!(item, ItemKind::HealingPotion);
 
             assert!(
-                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon || building_material || npc_sellable,
+                consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
+                    || building_material || npc_sellable || usable_consumable,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
-                 不是有效用的武器／不是建造材料／不可賣給 NPC）——玩家持有它卻無處可用，\
+                 不是有效用的武器／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
             );
         }

@@ -119,6 +119,17 @@ impl Vitals {
         }
     }
 
+    /// 道具回血（活力藥水等）：立即恢復 `amount` HP，不超過上限。
+    /// 倒地（hp == 0）時無效，回傳 0。正常回傳實際回復量（可能因接近上限而小於 amount）。
+    pub fn heal(&mut self, amount: u32) -> u32 {
+        if self.hp == 0 {
+            return 0;
+        }
+        let before = self.hp;
+        self.hp = (self.hp + amount).min(MAX_HP);
+        self.hp - before
+    }
+
     /// 推進 `dt` 秒：被打趴時倒數復原，存活且脫離戰鬥時自然回血。
     /// 非正 / 非有限 `dt` 皆為 no-op（比照 `Enemy::tick` / `Vehicle::step` 擋壞 dt）。
     pub fn tick(&mut self, dt: f32) {
@@ -391,5 +402,36 @@ mod tests {
             assert!(blows < 1000, "正傷害應在有限下數內把玩家打趴");
         }
         assert!(v.is_downed());
+    }
+
+    #[test]
+    fn heal_restores_hp_up_to_max() {
+        let mut v = Vitals::new();
+        v.take_damage(8);
+        assert_eq!(v.hp(), MAX_HP - 8);
+        // 回復 6 HP。
+        let gained = v.heal(6);
+        assert_eq!(gained, 6);
+        assert_eq!(v.hp(), MAX_HP - 2);
+    }
+
+    #[test]
+    fn heal_clamps_at_max_hp() {
+        let mut v = Vitals::new();
+        v.take_damage(2);
+        // 試圖回復 10，但只剩 2 HP 的缺口。
+        let gained = v.heal(10);
+        assert_eq!(gained, 2);
+        assert_eq!(v.hp(), MAX_HP);
+    }
+
+    #[test]
+    fn heal_does_nothing_when_downed() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        let gained = v.heal(10);
+        assert_eq!(gained, 0);
+        assert_eq!(v.hp(), 0);
     }
 }
