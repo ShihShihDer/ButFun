@@ -1981,7 +1981,7 @@
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
           // 實心牆色:依材質分(土/石/礦/晶石/蕈菇/珊瑚礁/野花),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -2226,6 +2226,11 @@
     // 其餘生態域 0.82＝約 18% 實心(開闊好走)。
     const cave = biomeNoise(wx, wy, 160, 123);
     if (cave < (b === "rocky" ? 0.50 : 0.82)) return "empty";
+    // 翠幽星覆蓋：VERDANT_ZONE_MIN_X = 20000，對齊 Rust world_core（scale 85, seed 999）。
+    if (wx >= 20000) {
+      const jadeN = biomeNoise(wx, wy, 85, 999);
+      if (jadeN > 0.80 && h < 0.65) return "jade_vine";
+    }
     if (b === "rocky") {
       // 晶洞判定：對齊 Rust tile_kind_at 的晶洞邏輯（scale 80, seed 777）。
       const crystalN = biomeNoise(wx, wy, 80, 777);
@@ -2303,6 +2308,7 @@
           : kind === "ancient_ruin" ? "#5a4520"
           : kind === "coral_reef" ? "#0a3a4a"
           : kind === "wild_flower" ? "#3a5020"
+          : kind === "jade_vine" ? "#0d3d28"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -2436,6 +2442,39 @@
             const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
             g.addColorStop(0, "rgba(255,210,60,0.28)");
             g.addColorStop(1, "rgba(255,210,60,0)");
+            ctx.fillStyle = g;
+            ctx.fillRect(sx, sy, TS, TS);
+          }
+        }
+        // 翠幽藤：露出才發翠玉色光暈，埋深處隱約深綠；提示「翠幽星獨有、挖取可得碎片」。
+        if (kind === "jade_vine") {
+          const exposed = up || down || left || right;
+          const cx_ = sx + TS / 2, cy_ = sy + TS / 2;
+          // 藤蔓主幹：S 形曲線，模擬星際蔓生植物。
+          ctx.strokeStyle = exposed ? "rgba(60,220,140,0.90)" : "rgba(30,140,80,0.45)";
+          ctx.lineWidth = exposed ? 2.5 : 1.5;
+          ctx.beginPath();
+          ctx.moveTo(cx_ - 5, cy_ + 6);
+          ctx.bezierCurveTo(cx_ - 2, cy_, cx_ + 2, cy_, cx_ + 5, cy_ - 6);
+          ctx.stroke();
+          // 藤葉：主幹兩側各一片橢圓小葉。
+          ctx.fillStyle = exposed ? "rgba(80,230,160,0.88)" : "rgba(40,160,90,0.45)";
+          const leafR = exposed ? 4 : 3;
+          ctx.save();
+          ctx.translate(cx_ - 3, cy_ + 1);
+          ctx.rotate(-0.7);
+          ctx.beginPath(); ctx.ellipse(0, 0, leafR, leafR * 0.55, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          ctx.save();
+          ctx.translate(cx_ + 3, cy_ - 1);
+          ctx.rotate(0.7);
+          ctx.beginPath(); ctx.ellipse(0, 0, leafR, leafR * 0.55, 0, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
+          if (exposed) {
+            // 翠玉光暈——讓翠幽藤在星際暗地中散發神秘綠色光暈，玩家一眼認出「這是翠幽星特有資源」。
+            const g = ctx.createRadialGradient(cx_, cy_, 1, cx_, cy_, TS * 0.6);
+            g.addColorStop(0, "rgba(60,220,140,0.30)");
+            g.addColorStop(1, "rgba(60,220,140,0)");
             ctx.fillStyle = g;
             ctx.fillRect(sx, sy, TS, TS);
           }
@@ -3102,6 +3141,45 @@
     }
   }
 
+  // 翠幽鬼：翠幽星獨有幽靈型敵人，半透明玉綠飄行體 + 脈動光暈。
+  function drawJadeWraith(cx, cy, t, phase) {
+    const drift = Math.sin(t * 2.5 + phase) * 3; // 水平漂移感
+    const pulse = 0.55 + 0.30 * Math.sin(t * 3.5 + phase); // 透明度脈動
+    ctx.globalAlpha *= pulse;
+    // 主體：半透明翠玉橢圓
+    ctx.fillStyle = "rgba(60,220,150,0.72)";
+    ctx.beginPath();
+    ctx.ellipse(cx + drift, cy, 13, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 外層光暈
+    const grd = ctx.createRadialGradient(cx + drift, cy, 4, cx + drift, cy, 20);
+    grd.addColorStop(0, "rgba(80,240,160,0.40)");
+    grd.addColorStop(1, "rgba(80,240,160,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.ellipse(cx + drift, cy, 20, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 幽靈眼：兩顆深翠玉瞳（無瞳孔，增加詭異感）
+    ctx.fillStyle = "rgba(10,80,50,0.90)";
+    ctx.beginPath(); ctx.arc(cx + drift - 4, cy - 4, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4, cy - 4, 3.5, 0, Math.PI * 2); ctx.fill();
+    // 瞳高光
+    ctx.fillStyle = "rgba(180,255,220,0.80)";
+    ctx.beginPath(); ctx.arc(cx + drift - 3.5, cy - 5, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4.5, cy - 5, 1.2, 0, Math.PI * 2); ctx.fill();
+    // 下擺破裂飄散（三片透明條紋）
+    ctx.strokeStyle = "rgba(60,220,150,0.50)";
+    ctx.lineWidth = 2;
+    for (let k = -1; k <= 1; k++) {
+      const waveY = cy + 12 + Math.sin(t * 4 + phase + k) * 3;
+      ctx.beginPath();
+      ctx.moveTo(cx + drift + k * 4, cy + 10);
+      ctx.lineTo(cx + drift + k * 5, waveY);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = ctx.globalAlpha / pulse; // 還原透明度（save/restore 在外層）
+  }
+
   // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
   // 讓玩家在畫面內一眼認出「這就是村子」（搭配離畫面時的 drawVillagePointer 邊緣箭頭遠距導航）。
   function drawVillageLandmark(camX, camY) {
@@ -3226,6 +3304,7 @@
       else if (e.kind === "crystal_golem")    drawCrystalGolem(sx, ey, t, phase);
       else if (e.kind === "rune_guardian")    drawRuneGuardian(sx, ey, t, phase);
       else if (e.kind === "coral_crab")       drawCoralCrab(sx, ey, t, phase);
+      else if (e.kind === "jade_wraith")      drawJadeWraith(sx, ey, t, phase);
       else {
         const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
         ctx.fillStyle = look.tint;
@@ -3277,11 +3356,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -3320,6 +3399,11 @@
     { id: "mushroom_staff", out: "mushroom_staff", outQty: 1, inputs: [["mushroom_spore", 6]] },
     // 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠遺跡精英武器。
     { id: "rune_blade", out: "rune_blade", outQty: 1, inputs: [["ancient_fragment", 4]] },
+    // ROADMAP 21 翠幽星合成路線：翠幽碎片（採藤或打翠幽鬼可得）合出強力消耗品與最強武器。
+    // 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後滿血並重置自然回血冷卻。
+    { id: "jade_elixir", out: "jade_elixir", outQty: 1, inputs: [["jade_shard", 2]] },
+    // 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，全遊戲最強武器。
+    { id: "jade_blade", out: "jade_blade", outQty: 1, inputs: [["jade_shard", 5]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。

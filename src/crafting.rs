@@ -210,6 +210,22 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::RuneBlade,
         output_qty: 1,
     },
+    /// 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後回復至等級滿血並重置回血冷卻。
+    /// 翠幽星異星植物萃取，結合珍珠復原藥（滿血）與蕈菇活化液（重置回血）的雙重效果。
+    Recipe {
+        id: "jade_elixir",
+        inputs: &[(ItemKind::JadeShard, 2)],
+        output: ItemKind::JadeElixir,
+        output_qty: 1,
+    },
+    /// 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，全遊戲最強武器。
+    /// 翠幽星獨有，超越珊瑚矛（+12），象徵星際探索者的最高武裝。
+    Recipe {
+        id: "jade_blade",
+        inputs: &[(ItemKind::JadeShard, 5)],
+        output: ItemKind::JadeBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -408,6 +424,7 @@ mod tests {
             EnemyKind::CrystalGolem,
             EnemyKind::RuneGuardian,
             EnemyKind::CoralCrab,
+            EnemyKind::JadeWraith,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -417,7 +434,8 @@ mod tests {
                 | EnemyKind::MushroomStalker
                 | EnemyKind::CrystalGolem
                 | EnemyKind::RuneGuardian
-                | EnemyKind::CoralCrab => {}
+                | EnemyKind::CoralCrab
+                | EnemyKind::JadeWraith => {}
             }
             items.insert(e.drop_loot().0);
         }

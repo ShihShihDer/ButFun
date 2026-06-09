@@ -12,6 +12,11 @@
 
 pub const CHUNK_SIZE: f32 = 512.0;
 
+/// 翠幽星（Verdant Star）在主世界的 X 最小座標。
+/// X ≥ 此值視為翠幽星領域，tile_kind_at 會改變地形生成邏輯（生成翠玉藤聚落）。
+/// 與 `crate::state::VERDANT_SPAWN_X`（22400）一致——翠幽星出生點深在此邊界內側。
+pub const VERDANT_ZONE_MIN_X: f64 = 20_000.0;
+
 /// 一個地形格的邊長（像素）。CHUNK_SIZE / TILE_PX = 16 格 / chunk。
 pub const TILE_PX: f32 = 32.0;
 /// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
@@ -136,6 +141,7 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
 ///   6 = AncientRuin（古代遺跡，Sand 生態域沙漠遺跡聚落特有）
 ///   7 = CoralReef（珊瑚礁，Water 生態域海底特產）
 ///   8 = WildFlower（野花叢，Meadow 生態域草原特產）
+///   9 = JadeVine（翠玉藤，翠幽星 X≥20000 特有聚落，挖後掉翠幽碎片）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TileKind {
     Empty,
@@ -156,6 +162,9 @@ pub enum TileKind {
     /// 野花叢——只生在草原（Meadow）生態域的野花聚落中，挖後掉野花種子，
     /// NPC 以溢價收購，給穿梭草原的玩家補上第五條乙太路線。
     WildFlower,
+    /// 翠玉藤——只生在翠幽星（X ≥ VERDANT_ZONE_MIN_X）的聚落中，挖後掉翠幽碎片，
+    /// 翠幽星 NPC 以高溢價收購，是首個跨星球特產，鼓勵玩家深入探索異星。
+    JadeVine,
 }
 
 impl TileKind {
@@ -170,6 +179,7 @@ impl TileKind {
             TileKind::AncientRuin => 6,
             TileKind::CoralReef   => 7,
             TileKind::WildFlower  => 8,
+            TileKind::JadeVine    => 9,
         }
     }
 }
@@ -222,6 +232,18 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         gx.wrapping_mul(1031) ^ gy.wrapping_mul(2053),
         gx ^ gy.wrapping_mul(1009),
     );
+
+    // 翠幽星特有：翠玉藤聚落。所有 wx ≥ VERDANT_ZONE_MIN_X 的實心格都可能長翠玉藤，
+    // 覆蓋所有非水域生態的普通材質，讓整個翠幽星到處都有特產可挖。
+    // 次級噪聲（scale 85, seed 999）決定聚落邊界（約 20% 的翠幽星實心格形成聚落）；
+    // 聚落內 65% 為 JadeVine，35% 保留原有材質，維持地形多樣性。
+    if wx >= VERDANT_ZONE_MIN_X && biome != Biome::Water {
+        let jade_n = value_noise(wx, wy, 85.0, 999);
+        if jade_n > 0.80 && h < 0.65 {
+            return TileKind::JadeVine;
+        }
+    }
+
     match biome {
         Biome::Rocky => {
             // 晶洞判定：次級噪聲（scale 80, seed 777）高於 0.85 的聚落（約 15% 的岩地）形成晶洞。
@@ -583,6 +605,39 @@ mod tests {
         assert_eq!(TileKind::AncientRuin.code(), 6);
         assert_eq!(TileKind::CoralReef.code(),   7);
         assert_eq!(TileKind::WildFlower.code(),  8);
+        assert_eq!(TileKind::JadeVine.code(),    9);
+    }
+
+    #[test]
+    fn jade_vine_exists_in_verdant_zone() {
+        // 翠幽星（X ≥ 20000）應存在翠玉藤格。
+        let mut found = false;
+        'outer: for gy in 0..200i32 {
+            for gx in 0..200i32 {
+                let x = VERDANT_ZONE_MIN_X + gx as f64 * 32.0;
+                let y = gy as f64 * 32.0;
+                if biome_at(x, y) != Biome::Water && tile_kind_at(x + 16.0, y + 16.0) == TileKind::JadeVine {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(found, "翠幽星應存在翠玉藤格（JadeVine）");
+    }
+
+    #[test]
+    fn jade_vine_only_in_verdant_zone() {
+        // JadeVine 不應出現在 X < 20000 的普通世界。
+        for gy in 0..100i32 {
+            for gx in 0..100i32 {
+                let x = gx as f64 * 64.0 + 16.0;
+                let y = gy as f64 * 64.0 + 16.0;
+                // 只掃 X < VERDANT_ZONE_MIN_X 的區域
+                assert!(x < VERDANT_ZONE_MIN_X, "測試設計錯誤：掃到翠幽星了");
+                let k = tile_kind_at(x, y);
+                assert_ne!(k, TileKind::JadeVine, "普通世界 ({x},{y}) 不應生翠玉藤");
+            }
+        }
     }
 
     #[test]
