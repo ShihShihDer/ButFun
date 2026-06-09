@@ -73,6 +73,18 @@ pub enum ItemKind {
     /// 使用後立即回復 6 HP——讓生態資源從「只賣 NPC」多一條「自用保命」的路線，
     /// 閉合「探索草原 → 採野花種子 → 合成藥水 → 戰鬥續航」正回饋圈。
     HealingPotion,
+    /// 晶石強化液（合成產物：晶石碎片×5 → 晶石強化液×1）。
+    /// 使用後立即回復 12 HP——是活力藥水的兩倍，Premium 探索深層晶洞的回報。
+    CrystalPotion,
+    /// 蕈菇活化液（合成產物：蕈菇孢子×4 → 蕈菇活化液×1）。
+    /// 使用後回復 8 HP 並重置自然回血冷卻，讓回血立刻開始。森林菌絲的生命力。
+    MushroomElixir,
+    /// 古代乙太丸（合成產物：古代碎片×3 → 古代乙太丸×1）。
+    /// 使用後直接獲得 10 乙太——讓沙漠探索者在野外就能轉換遺跡能量，省去回城賣材料的腳程。
+    EtherPill,
+    /// 珍珠復原藥（合成產物：深海珍珠×1 → 珍珠復原藥×1）。
+    /// 使用後回復到滿血——深海孕育的頂級珍珠，完整恢復生命力，最稀有材料換來最強效果。
+    PearlPotion,
 }
 
 impl ItemKind {
@@ -95,6 +107,10 @@ impl ItemKind {
         ItemKind::DeepSeaPearl,
         ItemKind::WildflowerSeed,
         ItemKind::HealingPotion,
+        ItemKind::CrystalPotion,
+        ItemKind::MushroomElixir,
+        ItemKind::EtherPill,
+        ItemKind::PearlPotion,
     ];
 }
 
@@ -300,13 +316,17 @@ mod tests {
                 | ItemKind::AncientFragment
                 | ItemKind::DeepSeaPearl
                 | ItemKind::WildflowerSeed
-                | ItemKind::HealingPotion => {}
+                | ItemKind::HealingPotion
+                | ItemKind::CrystalPotion
+                | ItemKind::MushroomElixir
+                | ItemKind::EtherPill
+                | ItemKind::PearlPotion => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 13 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子／活力藥水）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 13, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 17 種（木／土磚／石／乙太／鎬子／強化鎬／武器／晶石碎片／蕈菇孢子／古代碎片／深海珍珠／野花種子／活力藥水／晶石強化液／蕈菇活化液／古代乙太丸／珍珠復原藥）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 17, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -497,8 +517,15 @@ mod tests {
             // 讓探索型玩家有把成果兌換乙太的管道。
             let npc_sellable = NPC_BUY_LIST.iter().any(|e| e.item == item);
             // 7. 是可主動使用的消耗品（UseItem 觸發即消耗，直接對玩家產生效果）。
-            // 活力藥水（HealingPotion）是第一個；日後加新消耗品需同步更新此處。
-            let usable_consumable = matches!(item, ItemKind::HealingPotion);
+            // 活力藥水為第一個；各生態特產合成藥水同屬此類。
+            let usable_consumable = matches!(
+                item,
+                ItemKind::HealingPotion
+                    | ItemKind::CrystalPotion
+                    | ItemKind::MushroomElixir
+                    | ItemKind::EtherPill
+                    | ItemKind::PearlPotion
+            );
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon

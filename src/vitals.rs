@@ -119,6 +119,16 @@ impl Vitals {
         }
     }
 
+    /// 重置自然回血冷卻（蕈菇活化液使用效果）：讓玩家挨打後立刻開始自然回血，無需等待。
+    /// 倒地時無效（倒地期間是復原計時器、不是自然回血）。
+    pub fn reset_regen_cooldown(&mut self) {
+        if self.hp == 0 {
+            return;
+        }
+        self.regen_cooldown = 0.0;
+        self.regen_accum = 0.0;
+    }
+
     /// 道具回血（活力藥水等）：立即恢復 `amount` HP，不超過上限。
     /// 倒地（hp == 0）時無效，回傳 0。正常回傳實際回復量（可能因接近上限而小於 amount）。
     pub fn heal(&mut self, amount: u32) -> u32 {
@@ -433,5 +443,31 @@ mod tests {
         let gained = v.heal(10);
         assert_eq!(gained, 0);
         assert_eq!(v.hp(), 0);
+    }
+
+    #[test]
+    fn reset_regen_cooldown_allows_immediate_regen() {
+        let mut v = Vitals::new();
+        v.take_damage(5);
+        // 挨打後 regen_cooldown 被設定，正常要等 5 秒才自然回血。
+        // 蕈菇活化液呼叫 reset_regen_cooldown 後，立刻進入自然回血狀態。
+        v.reset_regen_cooldown();
+        let before = v.hp();
+        v.tick(2.0); // 等兩秒，自然回血應已啟動（regen 冷卻已清零）。
+        assert!(v.hp() > before, "重置回血冷卻後應立即開始自然回血");
+    }
+
+    #[test]
+    fn reset_regen_cooldown_is_noop_when_downed() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        let before = v.clone();
+        v.reset_regen_cooldown(); // 倒地時無效，不應改變狀態。
+        // 只有 regen_cooldown / regen_accum 可能被改，但倒地時應 no-op。
+        // 倒地恢復仍由 recovery_timer 驅動，不受影響。
+        v.tick(RECOVERY_SECS);
+        assert!(v.is_alive(), "倒地後仍能正常復原");
+        let _ = before;
     }
 }

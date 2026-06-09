@@ -718,19 +718,48 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::UseItem { item }) => {
-                    // 使用道具：消耗一個指定道具，觸發對應效果。
-                    // 目前只有活力藥水（HealingPotion）→ 回血 6 HP。
-                    // 倒地狀態 / 背包不足靜默忽略，不懲罰誤觸。
+                    // 使用道具：消耗一個指定道具，觸發對應效果。倒地 / 背包不足靜默忽略。
                     use crate::inventory::ItemKind;
-                    const HEAL_AMOUNT: u32 = 6;
+                    use crate::vitals::MAX_HP;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                        let consumable = matches!(item, ItemKind::HealingPotion);
-                        if consumable && !p.vitals.is_downed() && p.inventory.take(item, 1) {
-                            let gained = p.vitals.heal(HEAL_AMOUNT);
-                            tracing::info!(
-                                player = %p.name, ?item, gained,
-                                "使用道具回血"
-                            );
+                        match item {
+                            ItemKind::HealingPotion => {
+                                // 活力藥水：回復 6 HP。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(6);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用道具回血");
+                                }
+                            }
+                            ItemKind::CrystalPotion => {
+                                // 晶石強化液：回復 12 HP（Premium 晶洞探索回報）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(12);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用道具回血");
+                                }
+                            }
+                            ItemKind::MushroomElixir => {
+                                // 蕈菇活化液：回復 8 HP 並重置回血冷卻，讓回血立刻開始。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(8);
+                                    p.vitals.reset_regen_cooldown();
+                                    tracing::info!(player = %p.name, ?item, gained, "使用道具回血+重置回血冷卻");
+                                }
+                            }
+                            ItemKind::EtherPill => {
+                                // 古代乙太丸：直接獲得 10 乙太（沙漠探索野外兌換遺跡能量）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    p.inventory.add(ItemKind::Ether, 10);
+                                    tracing::info!(player = %p.name, ?item, "使用道具獲得乙太");
+                                }
+                            }
+                            ItemKind::PearlPotion => {
+                                // 珍珠復原藥：回復至滿血（最稀有材料換來最強效果）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(MAX_HP);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用道具滿血復原");
+                                }
+                            }
+                            _ => {} // 非消耗品，忽略
                         }
                     }
                 }

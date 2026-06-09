@@ -2777,11 +2777,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -2795,6 +2795,15 @@
     { id: "weapon", out: "weapon", outQty: 1, inputs: [["stone", 4], ["ether", 2]] },
     // 活力藥水：野花種子×3 → 活力藥水×1。使用後回復 6 HP。對齊伺服器 crafting.rs healing_potion 配方。
     { id: "healing_potion", out: "healing_potion", outQty: 1, inputs: [["wildflower_seed", 3]] },
+    // ROADMAP 15 生態特產合成：四種生態域特產各有一條合成路線。
+    // 晶石強化液：晶石碎片×5 → 晶石強化液×1。使用後回復 12 HP。
+    { id: "crystal_potion", out: "crystal_potion", outQty: 1, inputs: [["crystal_shard", 5]] },
+    // 蕈菇活化液：蕈菇孢子×4 → 蕈菇活化液×1。使用後回復 8 HP 並立即開始自然回血。
+    { id: "mushroom_elixir", out: "mushroom_elixir", outQty: 1, inputs: [["mushroom_spore", 4]] },
+    // 古代乙太丸：古代碎片×3 → 古代乙太丸×1。使用後直接獲得 10 乙太，在野外兌換遺跡能量。
+    { id: "ether_pill", out: "ether_pill", outQty: 1, inputs: [["ancient_fragment", 3]] },
+    // 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
+    { id: "pearl_potion", out: "pearl_potion", outQty: 1, inputs: [["deep_sea_pearl", 1]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -2827,9 +2836,17 @@
     // 展開的明細:每項素材一行 emoji + 中文名 + 數量。素材從採集/打怪/農地三方湧入、堆積得快,
     // 明細列讓「手上有什麼、各多少」清楚可讀(item 是伺服器列舉字串、非玩家文字,無注入風險)。
     // C-4：可放置材料（dirt/stone）在每行右側多一個「🏗️選取」鈕，點後切換 selectedBuildMaterial。
-    // ROADMAP 14：消耗品（healing_potion）在每行右側多一個「🧪使用」鈕，點後送 use_item 訊息。
+    // ROADMAP 14+15：消耗品在每行右側多一個使用鈕，點後送 use_item 訊息。
     const PLACEABLE = new Set(["dirt", "stone"]);
-    const CONSUMABLE = new Set(["healing_potion"]);
+    // 各消耗品的使用說明（對齊伺服器 ws.rs UseItem 的效果）。
+    const CONSUMABLE_DESC = {
+      healing_potion: "回復 6 HP",
+      crystal_potion: "回復 12 HP",
+      mushroom_elixir: "回復 8 HP + 立即開始回血",
+      ether_pill: "獲得 10 乙太",
+      pearl_potion: "回復至滿血",
+    };
+    const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
       .map((s) => {
         const icon = ITEM_LOOK[s.item] || "";
@@ -2838,8 +2855,9 @@
         const placeBtn = PLACEABLE.has(s.item)
           ? `<button class="bag-place-btn${isSelected ? " selected" : ""}" data-material="${s.item}" title="${isSelected ? "取消放置選取" : "選取放置此材料"}">${isSelected ? "✅放置" : "🏗️選取"}</button>`
           : "";
+        const desc = CONSUMABLE_DESC[s.item] || "";
         const useBtn = CONSUMABLE.has(s.item)
-          ? `<button class="bag-use-btn" data-item="${s.item}" title="使用${ITEM_NAME[s.item] || s.item}（回復 HP）">🧪使用</button>`
+          ? `<button class="bag-use-btn" data-item="${s.item}" title="使用${ITEM_NAME[s.item] || s.item}（${desc}）">🧪使用</button>`
           : "";
         return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}</div>`;
       })
