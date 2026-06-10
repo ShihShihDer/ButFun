@@ -2191,6 +2191,54 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
 
+                // ── 會動腦的 NPC 對話（第一塊：會聊天、會記得你；見 npc_chat.rs）──
+                Ok(ClientMsg::TalkToNpc { npc, text }) => {
+                    let text: String = text.chars().take(300).collect(); // 輸入上限
+                    if !text.trim().is_empty() {
+                        if let Some(persona) = crate::npc_chat::find_npc(&npc) {
+                            // 取玩家名 + 對這位玩家的既有印象（個人記憶）
+                            let player_name = app
+                                .players
+                                .read()
+                                .unwrap()
+                                .get(&id)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_default();
+                            let key = (id, npc.clone());
+                            let impression = app
+                                .npc_memory
+                                .read()
+                                .unwrap()
+                                .get(&key)
+                                .cloned()
+                                .unwrap_or_default();
+                            // 非同步：呼叫地端 LLM 要數秒，絕不能卡住 15Hz 迴圈。
+                            let tx = tx_direct.clone();
+                            let app2 = app.clone();
+                            tokio::spawn(async move {
+                                let reply =
+                                    crate::npc_chat::reply(persona, &impression, &text).await;
+                                if let Ok(json) = serde_json::to_string(
+                                    &crate::protocol::ServerMsg::NpcReply {
+                                        npc: persona.id.to_string(),
+                                        display: persona.display.to_string(),
+                                        text: reply.clone(),
+                                    },
+                                ) {
+                                    let _ = tx.send(json).await; // 單播回該玩家
+                                }
+                                // 對話後更新印象（隔離：只影響 NPC 對這位玩家的口吻）
+                                let new_imp = crate::npc_chat::update_impression(
+                                    persona, &impression, &text, &reply,
+                                )
+                                .await;
+                                app2.npc_memory.write().unwrap().insert(key, new_imp);
+                                tracing::info!(player = %player_name, npc = persona.id, "NPC 對話");
+                            });
+                        }
+                    }
+                }
+
                 // ── 公會系統（ROADMAP 29）──────────────────────────────────────────
                 Ok(ClientMsg::CreateGuild { name, tag }) => {
                     // 建立公會：需登入 + 乙太 ≥ 50；成功後從玩家扣乙太、更新 guild_tag。
