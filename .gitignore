@@ -4,6 +4,9 @@
 # wasm 建置產物（scripts/build-wasm.sh 產生；deploy.sh 每次上線重建，不入 repo）
 /web/wasm/
 
+# 官網更新日誌（scripts/site/gen-news.mjs 從 git 歷史產生；deploy.sh 每次上線重建）
+/web/site/news.json
+
 # Environment / secrets
 .env
 

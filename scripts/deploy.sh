@@ -75,6 +75,13 @@ if ! bash "$REPO/scripts/build-wasm.sh"; then
   echo "[deploy] ⚠️ wasm 建置失敗（前端將用 JS 後備地形），繼續上線。"
 fi
 
+# 官網更新日誌：從 git 歷史產生 web/site/news.json（零 token，AI 合的 PR 自動上官網）。
+# 軟降級：失敗只是官網日誌停在舊檔，不擋遊戲上線。
+echo "[deploy] 產生官網更新日誌…"
+if ! node "$REPO/scripts/site/gen-news.mjs"; then
+  echo "[deploy] ⚠️ news.json 產生失敗（官網日誌維持舊檔），繼續上線。"
+fi
+
 echo "[deploy] 測試（沒全綠就中止、不上線）…"
 cargo test --release
 

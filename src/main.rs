@@ -54,6 +54,9 @@ use suggestions::NewSuggestion;
 async fn main() {
     // 開發/正式上線都從 .env 載入秘密(systemd 會用 EnvironmentFile,本機 cargo run 用 dotenvy)。
     let _ = dotenvy::dotenv();
+    // 在啟動當下定錨 uptime 起點（LazyLock 首次存取才初始化，不在這摸一下會變成「第一次
+    // 有人打 /api/status 才開始計時」）。
+    let _ = *SERVER_START;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -130,6 +133,9 @@ async fn main() {
         // `curl` 撈走所有玩家回饋（含自填署名）的資料曝露點。移除以收口；日後若要做
         // 後台檢視，再走驗身（見 `SuggestionStore::list`）。
         .route("/api/suggestions", post(post_suggestion))
+        // 官網（/site/）的伺服器狀態小工具：只吐「線上人數 + 開機秒數」兩個彙總數字，
+        // 不含任何玩家身分/位置資訊（公開端點，最小揭露原則）。
+        .route("/api/status", get(api_status))
         // 登入相關路由
         .merge(auth::auth_router())
         // 個人資料編輯(改顯示名)——需登入,見 profile.rs
@@ -192,6 +198,20 @@ async fn shutdown_signal() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// 行程啟動時刻（算 uptime 用）。`LazyLock` 在 main 啟動早期第一次被讀到時定錨。
+static SERVER_START: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
+/// 官網狀態小工具用的公開彙總：線上人數 + 開機秒數。刻意不含玩家名單/位置等
+/// 任何個體資訊（公開端點，最小揭露）。
+async fn api_status(State(app): State<AppState>) -> impl IntoResponse {
+    let online = app.players.read().map(|p| p.len()).unwrap_or(0);
+    Json(serde_json::json!({
+        "online": online,
+        "uptime_secs": SERVER_START.elapsed().as_secs(),
+    }))
 }
 
 /// 收到一則玩家建議。內容清乾淨後若為空（全空白 / 全控制字元）回 400、不存——
