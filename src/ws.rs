@@ -2263,13 +2263,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, clean) = crate::npc_chat::extract_gift_decision(&raw);
                                 let granted = if gift_available && wants_gift {
-                                    let mut stk = app2.npc_gift_stock.write().unwrap();
-                                    let s = stk.entry(persona.id.to_string()).or_insert(0);
-                                    if *s > 0 {
-                                        *s -= 1;
+                                    let new_stock = {
+                                        let mut stk = app2.npc_gift_stock.write().unwrap();
+                                        let s = stk.entry(persona.id.to_string()).or_insert(0);
+                                        if *s > 0 {
+                                            *s -= 1;
+                                            Some(*s)
+                                        } else {
+                                            None // 餘裕剛好被別人用完了
+                                        }
+                                    };
+                                    if let Some(s) = new_stock {
+                                        // 餘裕扣減後立刻持久化（fire-and-forget）。
+                                        app2.npc_memory_store.save_gift_stock(persona.id.to_string(), s);
                                         true
                                     } else {
-                                        false // 餘裕剛好被別人用完了
+                                        false
                                     }
                                 } else {
                                     false
@@ -2294,14 +2303,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     persona, &rel.impression, &text, &clean,
                                 )
                                 .await;
-                                {
+                                let updated_rel = {
                                     let mut mem = app2.npc_memory.write().unwrap();
-                                    let r = mem.entry(key).or_default();
+                                    let r = mem.entry(key.clone()).or_default();
                                     r.impression = new_imp;
                                     if granted {
                                         r.gifted = true;
                                     }
-                                }
+                                    r.clone()
+                                };
+                                // 對話後立刻持久化關係狀態（fire-and-forget）。
+                                app2.npc_memory_store.save_rel(key.0, key.1, updated_rel);
                                 tracing::info!(player = %player_name, npc = persona.id, "NPC 對話");
                             });
                         }

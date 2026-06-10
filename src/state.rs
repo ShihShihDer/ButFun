@@ -35,6 +35,7 @@ use crate::tile_store::TileStore;
 use crate::vitals::Vitals;
 use crate::land_plot::LandPlotRegistry;
 use crate::land_plot_store::LandPlotStore;
+use crate::npc_memory_store::NpcMemoryStore;
 use crate::plot_registry::PlotRegistry;
 use crate::ranching::RanchRegistry;
 use crate::farm_crops::FarmCropRegistry;
@@ -676,6 +677,9 @@ pub struct AppState {
     /// 玩家對各 NPC 的上次對話時間（(player_id, npc_id) → Instant）。
     /// 同一玩家對同一 NPC 需間隔 PER_PLAYER_NPC_COOLDOWN_SECS 秒。
     pub npc_last_chat: Arc<RwLock<HashMap<(Uuid, String), Instant>>>,
+    /// NPC 個人記憶 + 送禮餘裕持久化 store（ROADMAP 60）。
+    /// Postgres 模式下，對話後 fire-and-forget upsert；記憶體模式重啟歸零。
+    pub npc_memory_store: NpcMemoryStore,
 }
 
 impl AppState {
@@ -690,6 +694,7 @@ impl AppState {
             SuggestionStore::new(),
             TileStore::new(),
             LandPlotStore::new(),
+            NpcMemoryStore::new(),
         )
     }
 
@@ -706,6 +711,7 @@ impl AppState {
         suggestions: SuggestionStore,
         tile_store: TileStore,
         land_plot_store: LandPlotStore,
+        npc_memory_store: NpcMemoryStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -751,10 +757,25 @@ impl AppState {
             star_crystals: Arc::new(RwLock::new(StarCrystalField::new())),
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
-            npc_memory: Arc::new(RwLock::new(HashMap::new())),
-            npc_gift_stock: Arc::new(RwLock::new(crate::npc_chat::initial_gift_stock())),
+            npc_memory: Arc::new(RwLock::new({
+                // 從持久化載回個人記憶；無 DB 或首次啟動時為空，等同全新狀態。
+                let mut m = HashMap::new();
+                for (player_id, npc_id, rel) in npc_memory_store.saved_memory() {
+                    m.insert((player_id, npc_id), rel);
+                }
+                m
+            })),
+            npc_gift_stock: Arc::new(RwLock::new({
+                // 從持久化載回 NPC 餘裕；未出現在 DB 的 NPC 用初始值補齊（首次啟動）。
+                let mut stock = crate::npc_chat::initial_gift_stock();
+                for (npc_id, s) in npc_memory_store.saved_gift_stock() {
+                    stock.insert(npc_id, s);
+                }
+                stock
+            })),
             npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::MAX_CONCURRENT_LLM)),
             npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
+            npc_memory_store,
         }
     }
 

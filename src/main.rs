@@ -60,6 +60,7 @@ mod bounty_board;
 mod expedition;
 mod procurement;
 mod farm_fair;
+mod npc_memory_store;
 
 use std::net::SocketAddr;
 
@@ -94,7 +95,7 @@ async fn main() {
     // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
     // 位置、背包、農地共用同一個連線池（PgPool 內部是 Arc,clone 便宜）：三個 store 各自獨立
     // 載回 / flush,沒有寫入順序耦合（見 0002_inventories.sql / 0003_fields.sql 為何不設外鍵）。
-    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store) =
+    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store) =
         match db::connect()
             .await
             .expect("Postgres 連線或 migration 失敗")
@@ -102,7 +103,7 @@ async fn main() {
             Some(pool) => {
                 tracing::info!(
                     "Postgres 已連線、migration 已套用；\
-                     玩家位置/背包/農地/日夜時刻/帳號/建議/地形差異走 DB 持久化"
+                     玩家位置/背包/農地/日夜時刻/帳號/建議/地形差異/NPC記憶走 DB 持久化"
                 );
                 let positions = positions::PositionStore::from_pool(pool.clone()).await;
                 let inventories = inventory_store::InventoryStore::from_pool(pool.clone()).await;
@@ -111,12 +112,13 @@ async fn main() {
                 let users = users::UserStore::from_pool(pool.clone()).await;
                 let suggestions = suggestions::SuggestionStore::from_pool(pool.clone()).await;
                 let tile_store = tile_store::TileStore::from_pool(pool.clone()).await;
-                let land_plot_store = land_plot_store::LandPlotStore::from_pool(pool).await;
-                (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store)
+                let land_plot_store = land_plot_store::LandPlotStore::from_pool(pool.clone()).await;
+                let npc_memory_store = npc_memory_store::NpcMemoryStore::from_pool(pool).await;
+                (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store)
             }
             None => {
                 tracing::warn!(
-                    "未設 DATABASE_URL；玩家位置/背包/農地/日夜時刻/帳號/建議/地形差異走記憶體模式"
+                    "未設 DATABASE_URL；玩家位置/背包/農地/日夜時刻/帳號/建議/地形差異/NPC記憶走記憶體模式"
                 );
                 (
                     positions::PositionStore::new(),
@@ -127,6 +129,7 @@ async fn main() {
                     suggestions::SuggestionStore::new(),
                     tile_store::TileStore::new(),
                     land_plot_store::LandPlotStore::new(),
+                    npc_memory_store::NpcMemoryStore::new(),
                 )
             }
         };
@@ -140,6 +143,7 @@ async fn main() {
         suggestions,
         tile_store,
         land_plot_store,
+        npc_memory_store,
     );
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
