@@ -9,6 +9,7 @@
 //! 呼叫流程在 ws.rs：收到 TalkToNpc → tokio::spawn（不卡 15Hz 迴圈）→ 本模組 →
 //! 把 NpcReply 透過 tx_direct 單播回該玩家 → 更新印象。
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::inventory::ItemKind;
@@ -31,6 +32,14 @@ pub const GIFT_QTY: u32 = 3;
 /// NPC 決定送禮時，會在回話裡夾這個暗號（玩家看不到，引擎攔下後抽掉）。
 /// 引擎只在「還沒送過」時才認帳 → 就算被操弄狂夾，最多也只觸發那一份一次性小禮。
 pub const GIFT_TOKEN: &str = "[GIFT]";
+
+/// 每個 NPC 初始「餘裕」（還能送出的小禮份數）。約束＝稀缺：送完就沒了（v1 不自動補；
+/// 之後可隨遊戲時間慢慢回補＝商人補貨）。商人一開始手邊有 5 份餘料可送人。
+pub fn initial_gift_stock() -> HashMap<String, u32> {
+    let mut m = HashMap::new();
+    m.insert("merchant".to_string(), 5);
+    m
+}
 
 /// ollama 對話 API 端點（可用環境變數覆寫，預設本機）。
 fn ollama_url() -> String {
@@ -79,7 +88,7 @@ pub fn canned_reply(npc: &NpcPersona) -> String {
 
 /// 組 system prompt：世界觀 + 人設 + 對這位玩家的印象 + 客觀往來統計（當「資料」給他判斷）。
 /// **沒有寫死規則**——熱不熱、送不送，由 NPC 看著這些資料自己決定（自然發展）。
-fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool) -> String {
+fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32) -> String {
     let imp = if rel.impression.trim().is_empty() {
         "你還不認識這位拓荒者，這是第一次見面。".to_string()
     } else {
@@ -90,7 +99,8 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool) -> String
     // 送禮：給 NPC「選擇權」而非「指令」。只有他還沒送過時才開放這個選項。
     let gift = if gift_available {
         format!(
-            "\n\n你手邊有些餘裕。**如果**你看著你們的往來、真心覺得這位拓荒者值得一份小小心意，你可以**自己決定**送他一點木材——就在回話裡自然地提一下，並在句末加上暗號 {tok}。但這完全看你，多數萍水相逢的人並不會收到；不想送就別加那個暗號。",
+            "\n\n你手邊還剩大約 {stock} 份可分送的餘料（**有限、送完就沒了**）。**如果**你看著你們的往來、真心覺得這位拓荒者值得一份小小心意，你可以**自己決定**送他一點木材——就在回話裡自然地提一下，並在句末加上暗號 {tok}。但這完全看你：餘裕不多時你自然會更謹慎，多數萍水相逢的人並不會收到；不想送就別加那個暗號。",
+            stock = gift_stock,
             tok = GIFT_TOKEN
         )
     } else {
@@ -142,11 +152,11 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
 }
 
 /// 生成 NPC 對玩家這句話的回應。LLM 沒啟用或失敗 → 罐頭句（永遠回得出東西）。
-pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, player_msg: &str) -> String {
+pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32, player_msg: &str) -> String {
     if !llm_enabled() {
         return canned_reply(npc);
     }
-    match ollama_chat(&system_prompt(npc, rel, gift_available), player_msg).await {
+    match ollama_chat(&system_prompt(npc, rel, gift_available, gift_stock), player_msg).await {
         Some(t) => t,
         None => canned_reply(npc),
     }
@@ -189,7 +199,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_persona_and_impression() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false}, true);
+        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false}, true, 5);
         assert!(s.contains("薇拉"));
         assert!(s.contains("阿凱"));
         assert!(s.contains("乙太")); // 世界觀有餵進去
@@ -198,7 +208,7 @@ mod tests {
     #[test]
     fn first_meeting_prompt_has_no_impression_label() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel::default(), false);
+        let s = system_prompt(n, &NpcRel::default(), false, 5);
         assert!(s.contains("第一次見面"));
     }
 }

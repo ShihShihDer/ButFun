@@ -667,6 +667,9 @@ pub struct AppState {
     /// 會動腦的 NPC 對每位玩家的「印象」（個人記憶，記憶體 v1）：(玩家 id, NPC id) → 一句話印象。
     /// 隔離設計：A 對某 NPC 的印象只影響 NPC 對 A 的口吻（見 npc_chat.rs / 願景文件）。
     pub npc_memory: Arc<RwLock<HashMap<(Uuid, String), crate::npc_chat::NpcRel>>>,
+    /// 每個 NPC「自己有限的餘裕」（npc id → 還能送出的小禮份數）。約束＝真實稀缺：
+    /// NPC 的好意來自他實際擁有的東西，送完就沒了（不能無中生有）。見 npc_chat.rs。
+    pub npc_gift_stock: Arc<RwLock<HashMap<String, u32>>>,
 }
 
 impl AppState {
@@ -743,6 +746,7 @@ impl AppState {
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
             npc_memory: Arc::new(RwLock::new(HashMap::new())),
+            npc_gift_stock: Arc::new(RwLock::new(crate::npc_chat::initial_gift_stock())),
         }
     }
 
