@@ -77,7 +77,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::GrilledFish | ItemKind::StarSashimi | ItemKind::DeepBroth
         | ItemKind::Egg | ItemKind::FriedEgg
         | ItemKind::WheatGrain | ItemKind::Carrot | ItemKind::Potato
-        | ItemKind::Bread | ItemKind::CarrotSoup | ItemKind::PotatoGratin => None,
+        | ItemKind::Bread | ItemKind::CarrotSoup | ItemKind::PotatoGratin
+        | ItemKind::StarCrystalShard | ItemKind::NightPotion => None,
     }
 }
 

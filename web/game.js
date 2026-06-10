@@ -284,6 +284,7 @@
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
   let farmCropPlots = []; // ROADMAP 49 農作狀態 [{plot_id, crops:[{kind,ripe}]}]
+  let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -579,6 +580,7 @@
         landPlots = msg.land_plots || [];
         ranchPlots = msg.ranch_plots || [];
         farmCropPlots = msg.farm_crop_plots || [];
+        starCrystals = msg.star_crystals || [];
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -632,6 +634,7 @@
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
+          updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1863,7 +1866,8 @@
         (e.key === "p" || e.key === "P") ? "dockPet" :
         (e.key === "f" || e.key === "F") ? "dockFish" :
         (e.key === "n" || e.key === "N") ? "dockRanch" :
-        (e.key === "t" || e.key === "T") ? "dockFarmCrop" : null;
+        (e.key === "t" || e.key === "T") ? "dockFarmCrop" :
+        (e.key === "x" || e.key === "X") ? "dockStarCrystal" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -4362,6 +4366,26 @@
       }
     }
     ctx.restore();
+
+    // 夜採星晶礦脈（ROADMAP 50）：夜間才渲染，閃爍藍紫光點。
+    if (starCrystals.length) {
+      const t = performance.now() / 1000;
+      for (const sc of starCrystals) {
+        const sx = sc.x - camX;
+        const sy = sc.y - camY;
+        if (sx < -30 || sy < -30 || sx > viewW + 30 || sy > viewH + 30) continue;
+        // 脈動效果：大小在 0.7~1.3 之間震盪
+        const pulse = 0.7 + 0.3 * Math.sin(t * 2.5 + sc.x * 0.05 + sc.y * 0.03);
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.scale(pulse, pulse);
+        ctx.font = "20px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("✨", 0, 0);
+        ctx.restore();
+      }
+    }
   }
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
@@ -6077,6 +6101,76 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
     tip.textContent = "作物 90 秒成熟，收割給農夫熟練度 +10 XP。小麥→麵包（回血12）、胡蘿蔔→蔬菜湯（回血10）、馬鈴薯→焗烤馬鈴薯（回血15）。";
+    body.appendChild(tip);
+  }
+
+  // ── 夜採星晶面板（ROADMAP 50）─────────────────────────────────────────────
+  let lastStarCrystalSig = null;
+  function updateStarCrystalPanel(me, isGuestUser) {
+    const body = document.getElementById("starCrystalBody");
+    if (!body) return;
+    const isNight = starCrystals.length > 0;
+    const nearCrystal = isNight && me
+      ? starCrystals.some(sc => Math.hypot(sc.x - me.x, sc.y - me.y) <= 80)
+      : false;
+    const remaining = starCrystals.length;
+    const sig = [isGuestUser, isNight, nearCrystal, remaining].join("|");
+    if (sig === lastStarCrystalSig) return;
+    lastStarCrystalSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能採集星晶";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 採集按鈕。
+    const gatherBtn = document.createElement("button");
+    gatherBtn.type = "button";
+    gatherBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #8060d0;border-radius:8px;background:transparent;color:#c8a0ff;cursor:pointer;font-size:.95rem;margin-bottom:8px;";
+    if (!isNight) {
+      gatherBtn.textContent = "✨ 等待夜晚降臨…";
+      gatherBtn.disabled = true;
+      gatherBtn.style.color = "#666";
+      gatherBtn.style.borderColor = "#444";
+      gatherBtn.style.cursor = "default";
+    } else if (!nearCrystal) {
+      gatherBtn.textContent = `✨ 走近星晶礦脈才能採集（剩 ${remaining} 個）`;
+      gatherBtn.disabled = true;
+      gatherBtn.style.color = "#666";
+      gatherBtn.style.borderColor = "#444";
+      gatherBtn.style.cursor = "default";
+    } else {
+      gatherBtn.textContent = `✨ 採集星晶（剩 ${remaining} 個）`;
+      gatherBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "GatherStarCrystal" }));
+      });
+    }
+    body.appendChild(gatherBtn);
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.8rem;line-height:1.6;";
+    info.innerHTML = `
+      <div style="padding:4px 0;border-bottom:1px solid #222;">
+        <b style="color:#c8a0ff;">✨ 星晶碎片</b>
+        <span style="color:#aaa;"> — 夜間星晶礦脈採集可得</span><br>
+        <span style="color:#888;">賣 NPC: 5 乙太 ／ 合成: 夜幻藥水（×3 → 回血 20）</span>
+      </div>
+      <div style="padding:4px 0;border-bottom:1px solid #222;">
+        <b style="color:#9080ff;">🌙 夜幻藥水</b>
+        <span style="color:#aaa;"> — 星晶碎片×3 合成</span><br>
+        <span style="color:#888;">使用後回復 20 HP——夜間探索最強效補給</span>
+      </div>
+    `;
+    body.appendChild(info);
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
+    tip.textContent = "星晶礦脈每夜生成 20 個，天亮消失。採集給探索者熟練度 +15 XP，鼓勵夜間競速探索。";
     body.appendChild(tip);
   }
 

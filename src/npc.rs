@@ -59,6 +59,8 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::WheatGrain,       price_per: 2  },
     ShopEntry { item: ItemKind::Carrot,           price_per: 3  },
     ShopEntry { item: ItemKind::Potato,           price_per: 4  },
+    // 星晶碎片（ROADMAP 50）：夜間限定採集，溢價 5 乙太/顆，鼓勵夜間探索。
+    ShopEntry { item: ItemKind::StarCrystalShard, price_per: 5  },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

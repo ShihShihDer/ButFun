@@ -37,6 +37,7 @@ use crate::land_plot_store::LandPlotStore;
 use crate::plot_registry::PlotRegistry;
 use crate::ranching::RanchRegistry;
 use crate::farm_crops::FarmCropRegistry;
+use crate::star_crystal::StarCrystalField;
 use crate::positions::PositionStore;
 use crate::protocol::{ItemStack, PlayerView, WorldInfo, ServerMsg};
 use crate::suggestions::SuggestionStore;
@@ -447,6 +448,8 @@ pub struct AppState {
     pub ranch: Arc<RwLock<RanchRegistry>>,
     /// 農田地塊作物狀態（ROADMAP 49）：記憶體模式，重啟歸零。
     pub farm_crops: Arc<RwLock<FarmCropRegistry>>,
+    /// 夜採星晶礦脈（ROADMAP 50）：夜間生成、白天清除；記憶體模式。
+    pub star_crystals: Arc<RwLock<StarCrystalField>>,
     /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
     pub land_plot_store: LandPlotStore,
     /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
@@ -527,6 +530,7 @@ impl AppState {
             land_plot_store,
             ranch: Arc::new(RwLock::new(RanchRegistry::new())),
             farm_crops: Arc::new(RwLock::new(FarmCropRegistry::new())),
+            star_crystals: Arc::new(RwLock::new(StarCrystalField::new())),
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
         }

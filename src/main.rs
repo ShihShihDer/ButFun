@@ -52,6 +52,7 @@ mod pet;
 mod fishing;
 mod ranching;
 mod farm_crops;
+mod star_crystal;
 
 use std::net::SocketAddr;
 

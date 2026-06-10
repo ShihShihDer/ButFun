@@ -66,6 +66,8 @@ pub fn spawn(app: AppState) {
         let dt = 1.0 / TICK_HZ;
         let mut interval = tokio::time::interval(Duration::from_secs_f32(dt));
         let mut tick: u64 = 0;
+        // 追蹤上一 tick 是否為夜間，用來偵測「剛進夜」和「剛出夜」事件。
+        let mut prev_is_night = false;
 
         loop {
             interval.tick().await;
@@ -90,6 +92,16 @@ pub fn spawn(app: AppState) {
                 };
                 (view, daynight.growth_rate(), is_night)
             };
+
+            // 夜採星晶（ROADMAP 50）：偵測日夜轉換事件，生成或清除星晶礦脈。
+            if is_night && !prev_is_night {
+                // 剛進入夜間：生成本夜礦脈。
+                app.star_crystals.write().unwrap().spawn_for_night();
+            } else if !is_night && prev_is_night {
+                // 剛退出夜間：清除所有礦脈。
+                app.star_crystals.write().unwrap().clear();
+            }
+            prev_is_night = is_night;
 
             // 推進所有玩家農地的成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、
             // 放慢（0-G「隨日夜成長」）。濕度也一併縮放，故每次澆水的總成長量不變、
@@ -523,6 +535,8 @@ pub fn spawn(app: AppState) {
                         ranch_plots: app.ranch.read().unwrap().all_active_views(),
                         // 農地作物狀態（ROADMAP 49）：只送有種植作物的地塊。
                         farm_crop_plots: app.farm_crops.read().unwrap().all_active_views(),
+                        // 夜採星晶礦脈（ROADMAP 50）：夜間有節點，白天空陣列。
+                        star_crystals: app.star_crystals.read().unwrap().views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

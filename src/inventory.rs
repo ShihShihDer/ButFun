@@ -200,6 +200,12 @@ pub enum ItemKind {
     CarrotSoup,
     /// 焗烤馬鈴薯🥙（合成：馬鈴薯×2 → 焗烤馬鈴薯×1）。使用後回復 15 HP。
     PotatoGratin,
+
+    // ── 夜採星晶（ROADMAP 50 夜間限定採集）──────────────────────────────────
+    /// 星晶碎片✨（夜間在世界採集星晶礦脈可得）。可賣 NPC 5 乙太，或 ×3 合成夜幻藥水。
+    StarCrystalShard,
+    /// 夜幻藥水🌙（合成：星晶碎片×3 → 夜幻藥水×1）。使用後回復 20 HP——夜間探索的強效補給。
+    NightPotion,
 }
 
 impl ItemKind {
@@ -264,6 +270,8 @@ impl ItemKind {
         ItemKind::Bread,
         ItemKind::CarrotSoup,
         ItemKind::PotatoGratin,
+        ItemKind::StarCrystalShard,
+        ItemKind::NightPotion,
     ];
 }
 
@@ -511,13 +519,15 @@ mod tests {
                 | ItemKind::Potato
                 | ItemKind::Bread
                 | ItemKind::CarrotSoup
-                | ItemKind::PotatoGratin => {}
+                | ItemKind::PotatoGratin
+                | ItemKind::StarCrystalShard
+                | ItemKind::NightPotion => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 55 種（含 ROADMAP 49 農地作物：WheatGrain/Carrot/Potato/Bread/CarrotSoup/PotatoGratin）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 55, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 57 種（含 ROADMAP 50 夜採星晶：StarCrystalShard/NightPotion）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 57, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -682,9 +692,11 @@ mod tests {
                 item,
                 ItemKind::WheatGrain | ItemKind::Carrot | ItemKind::Potato
             );
+            // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
+            let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植）\
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
@@ -777,6 +789,8 @@ mod tests {
                     | ItemKind::Bread
                     | ItemKind::CarrotSoup
                     | ItemKind::PotatoGratin
+                    // 夜幻藥水（ROADMAP 50）：夜採星晶合成，食用回血 20。
+                    | ItemKind::NightPotion
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

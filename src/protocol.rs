@@ -223,6 +223,11 @@ pub enum ClientMsg {
     /// `plot_id`：目標農田地塊（必須是本人擁有的地塊且有成熟作物）。
     /// 無成熟作物 / 非本人地塊 / 倒地中靜默忽略。
     HarvestCrops { plot_id: u32 },
+    /// 採集星晶礦脈（ROADMAP 50）：在夜間採集附近的星晶礦脈。
+    /// 伺服器驗：目前是夜間、玩家在礦脈 80px 內、礦脈未被採集、未倒地。
+    /// 成功：背包加 1 個星晶碎片、給 15 點探索者熟練度 XP。
+    /// 白天 / 太遠 / 礦脈已採 / 倒地中靜默忽略。
+    GatherStarCrystal,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -270,6 +275,9 @@ pub enum ServerMsg {
         /// 農田地塊作物狀態（ROADMAP 49）：只送有種植作物的地塊（稀疏）。
         /// 前端在農田地塊上繪製作物 emoji 與成熟狀態。
         farm_crop_plots: Vec<crate::farm_crops::FarmCropPlotView>,
+        /// 夜間星晶礦脈（ROADMAP 50）：只有夜晚才有節點，白天空陣列。
+        /// 前端在夜間地圖上渲染閃爍的星晶礦脈 ✨，靠近可採集。
+        star_crystals: Vec<crate::star_crystal::StarCrystalView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -723,6 +731,7 @@ mod tests {
             land_plots: vec![],
             ranch_plots: vec![],
             farm_crop_plots: vec![],
+            star_crystals: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
