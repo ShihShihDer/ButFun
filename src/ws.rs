@@ -123,6 +123,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_precision: false,
             pending_haggle: false,
             pet: None,
+            fish_cooldown: 0.0,
+            fish_attempt_count: 0,
         }
     } else {
         // 等 Join
@@ -168,6 +170,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_precision: false,
             pending_haggle: false,
             pet: None,
+            fish_cooldown: 0.0,
+            fish_attempt_count: 0,
         }
     };
     let id = player.id;
@@ -1124,6 +1128,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, "展開星圖");
                                 }
                             }
+                            // ── 料理（ROADMAP 47 釣魚與烹飪）────────────────────────
+                            ItemKind::GrilledFish => {
+                                // 烤魚：回復 8 HP（小魚×2 烹飪而成，基礎療癒食物）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(8);
+                                    tracing::info!(player = %p.name, gained, "食用烤魚回血");
+                                }
+                            }
+                            ItemKind::StarSashimi => {
+                                // 星燦刺身：回復 15 HP（星星魚烹飪，稀有漁獲料理）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(15);
+                                    tracing::info!(player = %p.name, gained, "食用星燦刺身回血");
+                                }
+                            }
+                            ItemKind::DeepBroth => {
+                                // 深海濃湯：回復至等級滿血（最稀有漁獲換最強效果）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    tracing::info!(player = %p.name, gained, "飲用深海濃湯滿血復原");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }
@@ -1494,6 +1520,34 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         if let Some(old_pet) = p.pet.take() {
                             tracing::info!(player = %p.name, pet = old_pet.display_name(), "放生寵物");
+                        }
+                    }
+                }
+
+                // ── 釣魚（ROADMAP 47）──────────────────────────────────────────────
+                Ok(ClientMsg::Fish) => {
+                    // 1. 驗：未倒地、冷卻到期、站在水邊（80px 內有 Water biome）。
+                    // 2. 偽隨機上鉤魚種（小魚 70%/星星魚 25%/深海魚 5%）。
+                    // 3. 給魚進背包 + 農夫熟練度 +10 XP。
+                    use crate::fishing::{is_near_water, roll_fish, FISH_COOLDOWN_SECS, FISH_FARMER_XP};
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if !p.vitals.is_downed()
+                            && p.fish_cooldown <= 0.0
+                            && is_near_water(p.x, p.y)
+                        {
+                            // 種子：player id 低 64 位 XOR fish_attempt_count
+                            let seed = {
+                                let id_bytes = p.id.as_u128();
+                                ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+                                    ^ p.fish_attempt_count
+                            };
+                            let fish = roll_fish(seed);
+                            p.fish_attempt_count = p.fish_attempt_count.wrapping_add(1);
+                            p.fish_cooldown = FISH_COOLDOWN_SECS;
+                            p.inventory.add(fish, 1);
+                            // 農夫熟練度 XP（讓農夫路線不只是種田）。
+                            p.masteries.gain_farmer(FISH_FARMER_XP);
+                            tracing::info!(player = %p.name, fish = ?fish, "釣到魚");
                         }
                     }
                 }

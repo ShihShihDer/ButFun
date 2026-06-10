@@ -201,6 +201,11 @@ pub enum ClientMsg {
     TamePet,
     /// 放生寵物（ROADMAP 46）：解除目前的寵物（加成一併取消）。無寵物靜默忽略。
     ReleasePet,
+    /// 釣魚（ROADMAP 47）：站在水域邊緣（80px 內有 Water biome）垂釣。
+    /// 伺服器驗距離、冷卻是否到期；成功後依機率（小魚 70%/星星魚 25%/深海魚 5%）
+    /// 加一條魚進背包，並給 10 點農夫熟練度 XP。
+    /// 不在水邊 / 冷卻中 / 倒地中靜默忽略。
+    Fish,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -356,10 +361,22 @@ pub struct PlayerView {
     /// 前端用來在玩家旁邊顯示寵物 emoji，以及在 HUD 顯示寵物加成。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pet_kind: Option<String>,
+
+    // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
+    /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub fish_cooldown: f32,
+    /// 玩家是否站在水域邊緣（80px 內有 Water biome）。前端釣魚按鈕依此啟用/禁用。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_water: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
     *v == 0
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v <= 0.0
 }
 
 fn is_false(v: &bool) -> bool {
@@ -631,6 +648,8 @@ mod tests {
                 skill_cooldowns: std::collections::HashMap::new(),
                 active_skill_flags: vec![],
                 pet_kind: None,
+                fish_cooldown: 0.0,
+                near_water: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -760,6 +779,8 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             pet_kind: None,
+            fish_cooldown: 0.0,
+            near_water: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

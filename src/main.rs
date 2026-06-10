@@ -49,6 +49,7 @@ mod users;
 mod world_event;
 mod ws;
 mod pet;
+mod fishing;
 
 use std::net::SocketAddr;
 

@@ -625,6 +625,7 @@
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
+          updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1853,7 +1854,8 @@
         (e.key === "l" || e.key === "L") ? "dockLeaderboard" :
         (e.key === "h" || e.key === "H") ? "dockHelp" :
         (e.key === "z" || e.key === "Z") ? "dockSkill" :
-        (e.key === "p" || e.key === "P") ? "dockPet" : null;
+        (e.key === "p" || e.key === "P") ? "dockPet" :
+        (e.key === "f" || e.key === "F") ? "dockFish" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -5759,6 +5761,75 @@
       "一次只能攜帶一隻；馴化新寵物會自動釋放舊的。",
     ].join("<br>");
     body.appendChild(howTo);
+  }
+
+  // 釣魚面板（ROADMAP 47）：顯示釣魚說明、垂釣按鈕（近水才亮）、魚類介紹。
+  let lastFishSig = null;
+  const FISH_INFO = [
+    { item: "fish_small", emoji: "🐟", name: "小魚",   pct: "70%", npc: 2,  recipe: "烤魚（×2）→ 回 8 HP" },
+    { item: "fish_star",  emoji: "⭐", name: "星星魚", pct: "25%", npc: 5,  recipe: "星燦刺身（×1）→ 回 15 HP" },
+    { item: "fish_deep",  emoji: "🦈", name: "深海魚", pct: "5%",  npc: 10, recipe: "深海濃湯（×1）→ 回滿血" },
+  ];
+  function updateFishPanel(me, isGuestUser) {
+    const body = document.getElementById("fishBody");
+    if (!body) return;
+    const cooldown = me ? (me.fish_cooldown || 0) : 0;
+    const nearWater = me ? !!me.near_water : false;
+    const sig = [isGuestUser, cooldown > 0, nearWater].join("|");
+    if (sig === lastFishSig) return;
+    lastFishSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能釣魚";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 垂釣按鈕（近水才可用）。
+    const castBtn = document.createElement("button");
+    castBtn.type = "button";
+    castBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #4080d0;border-radius:8px;background:transparent;color:#88c4ff;cursor:pointer;font-size:.95rem;margin-bottom:8px;";
+    if (nearWater && cooldown <= 0) {
+      castBtn.textContent = "🎣 垂釣（站在水邊）";
+      castBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "fish" }));
+      });
+    } else if (cooldown > 0) {
+      castBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
+      castBtn.disabled = true;
+      castBtn.style.color = "#666";
+      castBtn.style.borderColor = "#444";
+      castBtn.style.cursor = "default";
+    } else {
+      castBtn.textContent = "🎣 走近水邊才能垂釣";
+      castBtn.disabled = true;
+      castBtn.style.color = "#666";
+      castBtn.style.borderColor = "#444";
+      castBtn.style.cursor = "default";
+    }
+    body.appendChild(castBtn);
+
+    // 魚種介紹表。
+    const table = document.createElement("div");
+    table.style.cssText = "font-size:.8rem;line-height:1.6;";
+    FISH_INFO.forEach(f => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:flex-start;gap:6px;padding:4px 0;border-bottom:1px solid #222;";
+      row.innerHTML = `<span style="font-size:1.1rem;">${f.emoji}</span>`
+        + `<div style="flex:1;"><b style="color:#eee;">${f.name}</b>`
+        + `<span style="color:#666;"> (${f.pct})</span><br>`
+        + `<span style="color:#aaa;">賣 NPC: ${f.npc} 乙太 ／ 烹飪: ${f.recipe}</span></div>`;
+      table.appendChild(row);
+    });
+    body.appendChild(table);
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;";
+    tip.textContent = "垂釣每 5 秒可一次，每次給農夫熟練度 +10 XP。烹飪配方見合成台。";
+    body.appendChild(tip);
   }
 
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。

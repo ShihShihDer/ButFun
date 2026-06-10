@@ -72,7 +72,9 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::VoidShard | ItemKind::VoidElixir | ItemKind::VoidBlade
         | ItemKind::AetherShard | ItemKind::AetherEssence | ItemKind::AetherBlade
         | ItemKind::OriginShard | ItemKind::OriginEssence | ItemKind::OriginBlade
-        | ItemKind::RiftShard | ItemKind::CosmicShield => None,
+        | ItemKind::RiftShard | ItemKind::CosmicShield
+        | ItemKind::FishSmall | ItemKind::FishStar | ItemKind::FishDeep
+        | ItemKind::GrilledFish | ItemKind::StarSashimi | ItemKind::DeepBroth => None,
     }
 }
 

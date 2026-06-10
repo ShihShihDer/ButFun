@@ -312,6 +312,29 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::CosmicShield,
         output_qty: 1,
     },
+
+    // ── 烹飪配方（ROADMAP 47 釣魚與烹飪）────────────────────────────────────
+    /// 烤魚：小魚×2 → 烤魚×1。使用後回復 8 HP。把最普通的漁獲轉成療癒食物。
+    Recipe {
+        id: "grilled_fish",
+        inputs: &[(ItemKind::FishSmall, 2)],
+        output: ItemKind::GrilledFish,
+        output_qty: 1,
+    },
+    /// 星燦刺身：星星魚×1 → 星燦刺身×1。使用後回復 15 HP。稀有魚的精緻料理。
+    Recipe {
+        id: "star_sashimi",
+        inputs: &[(ItemKind::FishStar, 1)],
+        output: ItemKind::StarSashimi,
+        output_qty: 1,
+    },
+    /// 深海濃湯：深海魚×1 → 深海濃湯×1。使用後回復至等級滿血——最稀有漁獲換最強效果。
+    Recipe {
+        id: "deep_broth",
+        inputs: &[(ItemKind::FishDeep, 1)],
+        output: ItemKind::DeepBroth,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -506,6 +529,11 @@ mod tests {
         items.insert(ItemKind::VoidShard);
         items.insert(ItemKind::AetherShard);
         items.insert(ItemKind::OriginShard);
+
+        // 加入釣魚可得（ROADMAP 47）：站水邊垂釣，三種魚依機率上鉤。
+        items.insert(ItemKind::FishSmall);
+        items.insert(ItemKind::FishStar);
+        items.insert(ItemKind::FishDeep);
 
         // 加入敵人掉落（窮舉守衛：新增 EnemyKind 未納入即編譯失敗）。
         const ENEMY_KINDS: &[EnemyKind] = &[

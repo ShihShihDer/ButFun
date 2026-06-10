@@ -213,7 +213,13 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::OriginShard
         | ItemKind::OriginEssence
         | ItemKind::RiftShard
-        | ItemKind::CosmicShield => None,
+        | ItemKind::CosmicShield
+        | ItemKind::FishSmall
+        | ItemKind::FishStar
+        | ItemKind::FishDeep
+        | ItemKind::GrilledFish
+        | ItemKind::StarSashimi
+        | ItemKind::DeepBroth => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -265,7 +271,13 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::OriginShard
         | ItemKind::OriginEssence
         | ItemKind::OriginBlade
-        | ItemKind::RiftShard => None,
+        | ItemKind::RiftShard
+        | ItemKind::FishSmall
+        | ItemKind::FishStar
+        | ItemKind::FishDeep
+        | ItemKind::GrilledFish
+        | ItemKind::StarSashimi
+        | ItemKind::DeepBroth => None,
     }
 }
 
