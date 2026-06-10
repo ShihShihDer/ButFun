@@ -325,19 +325,35 @@ pub fn sell_to_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) ->
 /// 若物品不在販售清單、乙太不足或背包滿則回 None。
 /// 純函式，便於測試（caller 負責驗距離與 downed 狀態）。
 pub fn buy_from_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: u32) -> Option<u32> {
+    buy_from_npc_discounted(inv, ether, item, qty, 0)
+}
+
+/// 與 buy_from_npc 相同，但套用 `discount_percent`（0–100）的折扣。
+/// 熟客折扣路徑（ROADMAP 63）：商人自主給折扣，引擎確保不超過上限、不低於 0 乙太。
+/// discount_percent = 15 → 總價 × 85% → 玩家實際少付（商人真實讓利）。
+pub fn buy_from_npc_discounted(
+    inv: &mut Inventory,
+    ether: u32,
+    item: ItemKind,
+    qty: u32,
+    discount_percent: u32,
+) -> Option<u32> {
     if qty == 0 {
         return None;
     }
     let price = NPC_SELL_LIST.iter().find(|e| e.item == item)?.price_per;
-    let total = price.saturating_mul(qty);
-    if ether < total {
+    let base_total = price.saturating_mul(qty);
+    // 折扣計算：上限 100%（不能倒貼），結果至少 0（saturating_sub 避免溢位）。
+    let discount_pct = discount_percent.min(100);
+    let discounted_total = base_total.saturating_sub(base_total * discount_pct / 100);
+    if ether < discounted_total {
         return None; // 乙太不足
     }
     let added = inv.add(item, qty);
     if added == 0 {
         return None; // 背包滿
     }
-    Some(ether - total)
+    Some(ether - discounted_total)
 }
 
 #[cfg(test)]
@@ -502,5 +518,51 @@ mod tests {
         let pickaxe = NPC_SELL_LIST.iter().find(|e| e.item == ItemKind::Pickaxe);
         assert!(pickaxe.is_some());
         assert!(pickaxe.unwrap().price_per > 5, "鎬子售價應高於自行採集合成的機會成本");
+    }
+
+    // ── 熟客折扣（ROADMAP 63）────────────────────────────────────────────────
+
+    #[test]
+    fn buy_discounted_reduces_cost() {
+        let mut inv = Inventory::new();
+        // 鎬子原價 15，15% 折扣 → 15 × 85% = 12（floor integer 取整）
+        let new_ether = buy_from_npc_discounted(&mut inv, 20, ItemKind::Pickaxe, 1, 15);
+        // 折後應≤ 原價（玩家付得更少）
+        let baseline = buy_from_npc(&mut Inventory::new(), 20, ItemKind::Pickaxe, 1);
+        assert!(new_ether.is_some());
+        assert!(new_ether.unwrap() >= baseline.unwrap(), "折扣後玩家手上乙太應≥無折扣");
+        assert_eq!(inv.count(ItemKind::Pickaxe), 1);
+    }
+
+    #[test]
+    fn buy_discounted_zero_percent_equals_normal() {
+        let mut inv1 = Inventory::new();
+        let mut inv2 = Inventory::new();
+        let r1 = buy_from_npc_discounted(&mut inv1, 20, ItemKind::Pickaxe, 1, 0);
+        let r2 = buy_from_npc(&mut inv2, 20, ItemKind::Pickaxe, 1);
+        assert_eq!(r1, r2, "0% 折扣應與正常購買等價");
+    }
+
+    #[test]
+    fn buy_discounted_100_percent_free() {
+        let mut inv = Inventory::new();
+        // 100% 折扣 → 免費（0 乙太）
+        let r = buy_from_npc_discounted(&mut inv, 5, ItemKind::Pickaxe, 1, 100);
+        assert_eq!(r, Some(5), "100% 折扣後乙太不扣");
+    }
+
+    #[test]
+    fn buy_discounted_fails_if_even_discounted_price_insufficient() {
+        let mut inv = Inventory::new();
+        // 鎬子原價 15，10% 折扣 → 13；持有 5 乙太仍不夠
+        let r = buy_from_npc_discounted(&mut inv, 5, ItemKind::Pickaxe, 1, 10);
+        assert!(r.is_none(), "即使打折，乙太仍不足時應失敗");
+    }
+
+    #[test]
+    fn buy_discounted_unlisted_fails() {
+        let mut inv = Inventory::new();
+        let r = buy_from_npc_discounted(&mut inv, 100, ItemKind::Wood, 1, 15);
+        assert!(r.is_none(), "不在販售清單的物品打折後也應失敗");
     }
 }

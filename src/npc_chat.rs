@@ -42,6 +42,16 @@ pub const GIFT_QTY: u32 = 3;
 /// 引擎只在「還沒送過」時才認帳 → 就算被操弄狂夾，最多也只觸發那一份一次性小禮。
 pub const GIFT_TOKEN: &str = "[GIFT]";
 
+/// 熟客折扣：商人自主決定送出「下一次購買打折」的優惠（AI NPC 成長第 5 步）。
+/// **沒有寫死門檻**——折不折、何時折，由商人看往來統計自己判斷；引擎只管上限與有效期。
+/// 折扣比例上限（百分比）：15%，商人讓出真實利潤，不能無中生有。
+pub const DISCOUNT_PERCENT: u32 = 15;
+/// 折扣有效期（秒）：10 分鐘內使用，過期自動消失（防囤積）。
+pub const DISCOUNT_DURATION_SECS: u64 = 600;
+/// NPC 決定給折扣時，會在回話裡夾這個暗號（玩家看不到，引擎攔截後抽掉）。
+/// 引擎取得後存入「待用折扣」（每人限一張），下次向故鄉商人購買時自動套用。
+pub const DISCOUNT_TOKEN: &str = "[DISCOUNT]";
+
 /// NPC 餘裕上限：每人最多累積這麼多份可分送餘料。
 pub const MAX_GIFT_STOCK: u32 = 10;
 
@@ -180,10 +190,22 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
     } else {
         String::new()
     };
+    // 折扣（僅商人）：給熟客「下次購買打折」是商人的另一隻手，讓真實利潤給出去。
+    // 只有商人 NPC 有這個選項（其他工職 NPC 沒有售價可讓利）。
+    let discount_hint = if npc.id == "merchant" && rel.buy_count >= 1 {
+        format!(
+            "\n\n另外，**如果**你真心覺得這位常客值得多一份照顧，你也可以自己決定給他「下次購買九折優惠」（{pct}% 折扣，限一次、10 分鐘內有效）——只需在回話句末自然提一句「特別給你打個折」之類，並加上暗號 {tok}。但這完全看你：不是每個熟客都能收到，折不折由你自己衡量往來決定；不想給就別加那個暗號。",
+            pct = DISCOUNT_PERCENT,
+            tok = DISCOUNT_TOKEN
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
+        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}{discount}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
         lore = WORLD_LORE,
         persona = npc.persona,
+        discount = discount_hint,
     )
 }
 
@@ -191,6 +213,16 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
 pub fn extract_gift_decision(raw: &str) -> (bool, String) {
     if raw.contains(GIFT_TOKEN) {
         (true, raw.replace(GIFT_TOKEN, "").trim().to_string())
+    } else {
+        (false, raw.to_string())
+    }
+}
+
+/// 偵測商人 NPC 是否在回話裡決定給折扣（夾了 DISCOUNT_TOKEN），並回傳乾淨回話。
+/// 引擎偵測後抽掉暗號，把折扣存入「待用折扣」；下次購買時自動套用一次。
+pub fn extract_discount_decision(raw: &str) -> (bool, String) {
+    if raw.contains(DISCOUNT_TOKEN) {
+        (true, raw.replace(DISCOUNT_TOKEN, "").trim().to_string())
     } else {
         (false, raw.to_string())
     }
@@ -385,5 +417,68 @@ mod tests {
         let s = system_prompt(n, &NpcRel::default(), true, 5);
         // 補貨提示應出現在 prompt 中
         assert!(s.contains("補貨"), "有庫存時 prompt 應提到補貨機制：{s}");
+    }
+
+    // ── 熟客折扣（ROADMAP 63）─────────────────────────────────────────────────
+
+    #[test]
+    fn extract_discount_decision_detects_token() {
+        let raw = format!("歡迎光臨！特別給你打個折哦。{}", DISCOUNT_TOKEN);
+        let (got, clean) = extract_discount_decision(&raw);
+        assert!(got, "含暗號時應偵測到折扣意圖");
+        assert!(!clean.contains(DISCOUNT_TOKEN), "乾淨回話不應含暗號");
+        assert!(clean.contains("特別給你打個折哦"), "乾淨回話應保留對話文字");
+    }
+
+    #[test]
+    fn extract_discount_decision_no_token() {
+        let raw = "歡迎光臨，有什麼需要嗎？";
+        let (got, clean) = extract_discount_decision(raw);
+        assert!(!got, "無暗號時不應偵測到折扣");
+        assert_eq!(clean, raw);
+    }
+
+    #[test]
+    fn discount_token_differs_from_gift_token() {
+        assert_ne!(DISCOUNT_TOKEN, GIFT_TOKEN, "折扣暗號與送禮暗號不能相同");
+    }
+
+    #[test]
+    fn discount_percent_is_reasonable() {
+        // 折扣不能是 0（沒意義）或 ≥100（免費）
+        assert!(DISCOUNT_PERCENT > 0);
+        assert!(DISCOUNT_PERCENT < 100);
+    }
+
+    #[test]
+    fn discount_duration_at_least_one_minute() {
+        // 有效期至少 1 分鐘，不然玩家來不及用
+        assert!(DISCOUNT_DURATION_SECS >= 60);
+    }
+
+    #[test]
+    fn merchant_prompt_contains_discount_hint_when_has_purchase() {
+        let n = find_npc("merchant").unwrap();
+        let rel = NpcRel { buy_count: 2, ..NpcRel::default() };
+        let s = system_prompt(n, &rel, false, 0);
+        assert!(s.contains(DISCOUNT_TOKEN), "有購買紀錄時商人 prompt 應含折扣暗號說明：{s}");
+    }
+
+    #[test]
+    fn merchant_prompt_no_discount_hint_when_no_purchase() {
+        let n = find_npc("merchant").unwrap();
+        let s = system_prompt(n, &NpcRel::default(), false, 0);
+        // 無購買紀錄時不提折扣選項
+        assert!(!s.contains(DISCOUNT_TOKEN), "無購買紀錄時 prompt 不應含折扣暗號：{s}");
+    }
+
+    #[test]
+    fn non_merchant_npc_prompt_has_no_discount_hint() {
+        // 其他工職 NPC 沒有折扣選項
+        for n in NPCS.iter().filter(|n| n.id != "merchant") {
+            let rel = NpcRel { buy_count: 5, ..NpcRel::default() };
+            let s = system_prompt(n, &rel, false, 0);
+            assert!(!s.contains(DISCOUNT_TOKEN), "非商人 NPC {} 不應有折扣暗號：{s}", n.id);
+        }
     }
 }
