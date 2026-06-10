@@ -692,6 +692,9 @@ pub struct AppState {
     /// 村落節慶加成的到期時刻（ROADMAP 64）。`None` = 無活躍加成；`Some(t)` = t 前全服 EXP +30%。
     /// 記憶體模式（重啟清空，加成重來，行為正確）。
     pub village_buff_until: Arc<RwLock<Option<Instant>>>,
+    /// 引擎世界事件公共記憶（ROADMAP 65）：NPC 對話可自然提及近期大事。
+    /// **只有引擎能寫**（玩家文字永遠進不來）；記憶體模式，重啟清空（近況快訊不需持久化）。
+    pub world_log: Arc<RwLock<crate::world_log::WorldLog>>,
 }
 
 impl AppState {
@@ -791,6 +794,7 @@ impl AppState {
             npc_pending_discount: Arc::new(RwLock::new(HashMap::new())),
             village_treasury: Arc::new(RwLock::new(crate::village_chief::INITIAL_TREASURY)),
             village_buff_until: Arc::new(RwLock::new(None)),
+            world_log: Arc::new(RwLock::new(crate::world_log::WorldLog::new())),
         }
     }
 

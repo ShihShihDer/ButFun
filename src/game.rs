@@ -369,6 +369,11 @@ pub fn spawn(app: AppState) {
                         rx, ry
                     );
                     let _ = app.tx_chat.send(msg);
+                    // 世界事件記憶（ROADMAP 65）：裂縫是引擎事實，NPC 可自然提及。
+                    app.world_log.write().unwrap().push(format!(
+                        "宇宙裂縫在座標 ({:.0}, {:.0}) 附近開啟，裂縫守護者現身",
+                        rx, ry
+                    ));
                     tracing::info!(x = rx, y = ry, "宇宙裂縫觸發，裂縫守護者注入");
                 }
             }
@@ -390,12 +395,19 @@ pub fn spawn(app: AppState) {
                                 enemies.inject_event_enemy(wx, wy, kind);
                                 injected += 1;
                             }
+                            drop(enemies);
                             tracing::info!(site = site_label, injected, "獸潮廣播＋注入第一波怪物");
                             let _ = app.tx_chat.send(format!(
                                 "⚔️ 獸潮來襲！大批怪物正聚集在{}！\
                                  30 秒後衝擊城門——出城迎戰或守在城牆輸出！",
                                 site_label
                             ));
+                            // 世界事件記憶（ROADMAP 65）：獸潮集結是重要世界事件。
+                            app.world_log.write().unwrap().push(format!(
+                                "獸潮集結在{}城門外，怪物大軍蓄勢衝擊——拓荒者們嚴陣以待",
+                                site_label
+                            ));
+                            let _ = (site_x, site_y); // 座標已廣播至聊天，此處無需記憶
                         }
                         crate::director::DirectorCmd::SiegeStart { site_label } => {
                             tracing::info!(site = site_label, "獸潮攻城開始");
@@ -410,6 +422,11 @@ pub fn spawn(app: AppState) {
                                 "🎉 玩家們成功打退{}的獸潮！（共斬殺 {} 隻）\
                                  全服每位登入玩家獲得 {} 乙太！",
                                 site_label, kills, crate::director::HORDE_VICTORY_ETHER
+                            ));
+                            // 世界事件記憶（ROADMAP 65）：獸潮退守是值得 NPC 提及的大事。
+                            app.world_log.write().unwrap().push(format!(
+                                "拓荒者們在{}成功打退獸潮（斬殺 {} 隻），英勇守護了村落",
+                                site_label, kills
                             ));
                             // 全服所有線上玩家各得勝利獎勵乙太（與社群任務獎勵機制相同）。
                             for p in app.players.write().unwrap().values_mut() {

@@ -167,7 +167,8 @@ pub fn canned_reply(npc: &NpcPersona) -> String {
 
 /// 組 system prompt：世界觀 + 人設 + 對這位玩家的印象 + 客觀往來統計（當「資料」給他判斷）。
 /// **沒有寫死規則**——熱不熱、送不送，由 NPC 看著這些資料自己決定（自然發展）。
-fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32) -> String {
+/// `world_news`：引擎世界事件段落（ROADMAP 65）；空字串表示無近況，不汙染 prompt。
+fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32, world_news: &str) -> String {
     let imp = if rel.impression.trim().is_empty() {
         "你還不認識這位拓荒者，這是第一次見面。".to_string()
     } else {
@@ -208,10 +209,11 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
         String::new()
     };
     format!(
-        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}{discount}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
+        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}{discount}{world_news}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
         lore = WORLD_LORE,
         persona = npc.persona,
         discount = discount_hint,
+        world_news = world_news,
     )
 }
 
@@ -264,11 +266,12 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
 }
 
 /// 生成 NPC 對玩家這句話的回應。LLM 沒啟用或失敗 → 罐頭句（永遠回得出東西）。
-pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32, player_msg: &str) -> String {
+/// `world_news`：引擎世界事件段落（ROADMAP 65），空字串表示無近況。
+pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stock: u32, player_msg: &str, world_news: &str) -> String {
     if !llm_enabled() {
         return canned_reply(npc);
     }
-    match ollama_chat(&system_prompt(npc, rel, gift_available, gift_stock), player_msg).await {
+    match ollama_chat(&system_prompt(npc, rel, gift_available, gift_stock, world_news), player_msg).await {
         Some(t) => t,
         None => canned_reply(npc),
     }
@@ -323,7 +326,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_persona_and_impression() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false,sell_count:3,buy_count:1}, true, 5);
+        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false,sell_count:3,buy_count:1}, true, 5, "");
         assert!(s.contains("薇拉"));
         assert!(s.contains("阿凱"));
         assert!(s.contains("乙太")); // 世界觀有餵進去
@@ -332,7 +335,7 @@ mod tests {
     #[test]
     fn first_meeting_prompt_has_no_impression_label() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel::default(), false, 5);
+        let s = system_prompt(n, &NpcRel::default(), false, 5, "");
         assert!(s.contains("第一次見面"));
     }
 
@@ -376,7 +379,7 @@ mod tests {
         let s = system_prompt(
             n,
             &NpcRel { impression: String::new(), talks: 2, gifted: false, sell_count: 5, buy_count: 2 },
-            false, 0,
+            false, 0, "",
         );
         assert!(s.contains("賣東西給你 5 次"), "sell_count 應出現在 prompt：{s}");
         assert!(s.contains("跟你買過 2 次"), "buy_count 應出現在 prompt：{s}");
@@ -388,7 +391,7 @@ mod tests {
         let s = system_prompt(
             n,
             &NpcRel::default(),
-            false, 0,
+            false, 0, "",
         );
         assert!(s.contains("還沒有任何交易紀錄"), "零交易時應顯示無紀錄：{s}");
     }
@@ -432,7 +435,7 @@ mod tests {
     #[test]
     fn system_prompt_mentions_restock_when_stock_available() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel::default(), true, 5);
+        let s = system_prompt(n, &NpcRel::default(), true, 5, "");
         // 補貨提示應出現在 prompt 中
         assert!(s.contains("補貨"), "有庫存時 prompt 應提到補貨機制：{s}");
     }
@@ -478,14 +481,14 @@ mod tests {
     fn merchant_prompt_contains_discount_hint_when_has_purchase() {
         let n = find_npc("merchant").unwrap();
         let rel = NpcRel { buy_count: 2, ..NpcRel::default() };
-        let s = system_prompt(n, &rel, false, 0);
+        let s = system_prompt(n, &rel, false, 0, "");
         assert!(s.contains(DISCOUNT_TOKEN), "有購買紀錄時商人 prompt 應含折扣暗號說明：{s}");
     }
 
     #[test]
     fn merchant_prompt_no_discount_hint_when_no_purchase() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel::default(), false, 0);
+        let s = system_prompt(n, &NpcRel::default(), false, 0, "");
         // 無購買紀錄時不提折扣選項
         assert!(!s.contains(DISCOUNT_TOKEN), "無購買紀錄時 prompt 不應含折扣暗號：{s}");
     }
@@ -495,8 +498,26 @@ mod tests {
         // 其他工職 NPC 沒有折扣選項
         for n in NPCS.iter().filter(|n| n.id != "merchant") {
             let rel = NpcRel { buy_count: 5, ..NpcRel::default() };
-            let s = system_prompt(n, &rel, false, 0);
+            let s = system_prompt(n, &rel, false, 0, "");
             assert!(!s.contains(DISCOUNT_TOKEN), "非商人 NPC {} 不應有折扣暗號：{s}", n.id);
         }
+    }
+
+    // ── 世界近況注入（ROADMAP 65）──────────────────────────────────────────────
+
+    #[test]
+    fn world_news_appears_in_prompt_when_non_empty() {
+        let n = find_npc("merchant").unwrap();
+        let news = "\n\n【近期世界大事（引擎紀錄・純事實，你可自然提及）】\n・裂縫在東北方開啟\n";
+        let s = system_prompt(n, &NpcRel::default(), false, 0, news);
+        assert!(s.contains("近期世界大事"), "世界近況段落應出現在 prompt：{s}");
+        assert!(s.contains("裂縫在東北方開啟"), "事件文字應出現在 prompt：{s}");
+    }
+
+    #[test]
+    fn empty_world_news_does_not_pollute_prompt() {
+        let n = find_npc("merchant").unwrap();
+        let s = system_prompt(n, &NpcRel::default(), false, 0, "");
+        assert!(!s.contains("近期世界大事"), "無近況時 prompt 不應出現世界大事段落：{s}");
     }
 }
