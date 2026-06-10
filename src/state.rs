@@ -189,6 +189,12 @@ pub struct Player {
     pub expedition_active: Option<crate::expedition::ActiveExpedition>,
     /// 探勘完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
     pub expedition_cooldown: f32,
+
+    // ── 星際採購令（ROADMAP 55）──────────────────────────────────────────
+    /// 目前接取的採購任務。None = 無任務；Some = 進行中（含剩餘秒）。記憶體前置，重啟清空。
+    pub procurement_active: Option<crate::procurement::ActiveProcurement>,
+    /// 採購完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
+    pub procurement_cooldown: f32,
 }
 
 impl Player {
@@ -356,6 +362,36 @@ impl Player {
             expedition_cooldown: self.expedition_cooldown,
             near_expedition_board: self.planet == PLANET_HOME
                 && crate::expedition::is_near_expedition_board(self.x, self.y),
+            // ── 星際採購令（ROADMAP 55）
+            procurement_orders: {
+                use crate::procurement::PROCUREMENT_ORDERS;
+                use crate::protocol::ProcurementOrderBrief;
+                PROCUREMENT_ORDERS.iter().map(|o| ProcurementOrderBrief {
+                    order_id: o.id,
+                    name: o.name.to_string(),
+                    item: o.required_item,
+                    item_name: o.item_name.to_string(),
+                    required_qty: o.required_qty,
+                    reward: o.reward,
+                    xp: o.xp,
+                }).collect()
+            },
+            procurement_active: self.procurement_active.as_ref().and_then(|a| {
+                use crate::procurement::find_order;
+                use crate::protocol::ProcurementActiveView;
+                find_order(a.order_id).map(|o| ProcurementActiveView {
+                    order_id: a.order_id,
+                    name: o.name.to_string(),
+                    item: o.required_item,
+                    item_name: o.item_name.to_string(),
+                    required_qty: o.required_qty,
+                    reward: o.reward,
+                    remaining_secs: a.remaining_secs,
+                })
+            }),
+            procurement_cooldown: self.procurement_cooldown,
+            near_procurement_agent: self.planet == PLANET_HOME
+                && crate::procurement::is_near_procurement_agent(self.x, self.y),
         }
     }
 
@@ -736,6 +772,8 @@ mod tests {
             bounty_cooldown: 0.0,
             expedition_active: None,
             expedition_cooldown: 0.0,
+            procurement_active: None,
+            procurement_cooldown: 0.0,
         }
     }
 

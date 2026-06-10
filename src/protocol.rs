@@ -68,6 +68,30 @@ pub struct BountyActiveView {
     pub remaining_secs: f32,
 }
 
+/// 星際採購令摘要（靜態，前端列表用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProcurementOrderBrief {
+    pub order_id: u8,
+    pub name: String,
+    pub item: ItemKind,
+    pub item_name: String,
+    pub required_qty: u32,
+    pub reward: u32,
+    pub xp: u32,
+}
+
+/// 玩家目前接取的採購任務狀態（含剩餘秒數）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProcurementActiveView {
+    pub order_id: u8,
+    pub name: String,
+    pub item: ItemKind,
+    pub item_name: String,
+    pub required_qty: u32,
+    pub reward: u32,
+    pub remaining_secs: f32,
+}
+
 /// 古蹟探勘令摘要（靜態，前端列表用）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ExpeditionOrderBrief {
@@ -336,6 +360,19 @@ pub enum ClientMsg {
     SurveyExpedition,
     /// 放棄探勘任務（ROADMAP 54）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
     AbandonExpedition,
+
+    // ── 星際採購令（ROADMAP 55）
+    /// 接取採購令：在主城採購代理人接取一張採購令。
+    /// `order_id`：要接取的令編號（1-5）。需故鄉、未倒地、無進行中任務、不在冷卻中。
+    #[serde(rename = "accept_procurement")]
+    AcceptProcurement { order_id: u8 },
+    /// 交付採購令：靠近代理人且背包碎片足夠時送出交付請求。
+    /// 伺服器驗：有進行中任務、靠近 NPC、背包碎片 >= required_qty。成功消耗碎片並發獎。
+    #[serde(rename = "deliver_procurement")]
+    DeliverProcurement,
+    /// 放棄採購任務（ROADMAP 55）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
+    #[serde(rename = "abandon_procurement")]
+    AbandonProcurement,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -558,6 +595,20 @@ pub struct PlayerView {
     /// 玩家是否靠近主城探勘公告欄 NPC（故鄉限定）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_expedition_board: bool,
+
+    // ── 星際採購令（ROADMAP 55）──────────────────────────────────────────
+    /// 代理人目前提供的 5 張採購令（靜態，前端面板列表用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procurement_orders: Vec<ProcurementOrderBrief>,
+    /// 玩家目前接取的採購任務（None = 無任務）。含剩餘秒數。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub procurement_active: Option<ProcurementActiveView>,
+    /// 採購完成後的冷卻秒數（0 = 可接取）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub procurement_cooldown: f32,
+    /// 玩家是否靠近主城採購代理人 NPC（故鄉限定）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_procurement_agent: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -853,6 +904,10 @@ mod tests {
                 expedition_active: None,
                 expedition_cooldown: 0.0,
                 near_expedition_board: false,
+                procurement_orders: vec![],
+                procurement_active: None,
+                procurement_cooldown: 0.0,
+                near_procurement_agent: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1001,6 +1056,10 @@ mod tests {
             expedition_active: None,
             expedition_cooldown: 0.0,
             near_expedition_board: false,
+            procurement_orders: vec![],
+            procurement_active: None,
+            procurement_cooldown: 0.0,
+            near_procurement_agent: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

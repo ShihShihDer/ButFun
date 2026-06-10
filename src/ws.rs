@@ -133,6 +133,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             bounty_cooldown: 0.0,
             expedition_active: None,
             expedition_cooldown: 0.0,
+            procurement_active: None,
+            procurement_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -188,6 +190,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             bounty_cooldown: 0.0,
             expedition_active: None,
             expedition_cooldown: 0.0,
+            procurement_active: None,
+            procurement_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -2036,6 +2040,75 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             if p.expedition_active.take().is_some() {
                                 tracing::info!(player = %p.name, "放棄探勘任務");
+                            }
+                        }
+                    }
+                }
+
+                // ── 星際採購令（ROADMAP 55）────────────────────────────────────────
+                Ok(ClientMsg::AcceptProcurement { order_id }) => {
+                    // 接取採購令：需故鄉、未倒地、靠近代理人、無進行中任務、不在冷卻。
+                    use crate::procurement::{try_accept, is_near_procurement_agent};
+                    if let Some(uid) = authed_uid {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&uid) {
+                            if !p.vitals.is_downed()
+                                && p.planet == crate::state::PLANET_HOME
+                                && is_near_procurement_agent(p.x, p.y)
+                            {
+                                if let Some(active) = try_accept(order_id, &p.procurement_active, p.procurement_cooldown) {
+                                    p.procurement_active = Some(active);
+                                    tracing::info!(player = %p.name, order_id, "接取採購令");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::DeliverProcurement) => {
+                    // 交付採購令：靠近代理人、背包碎片足夠時完成任務並發獎。
+                    use crate::procurement::{try_deliver, is_near_procurement_agent};
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                if p.vitals.is_downed() || p.planet != crate::state::PLANET_HOME {
+                                    None
+                                } else if !is_near_procurement_agent(p.x, p.y) {
+                                    None
+                                } else {
+                                    let inv_qty = if let Some(a) = &p.procurement_active {
+                                        if let Some(o) = crate::procurement::find_order(a.order_id) {
+                                            p.inventory.count(o.required_item)
+                                        } else { 0 }
+                                    } else { 0 };
+                                    try_deliver(&p.procurement_active, inv_qty).map(|(reward, xp, item, qty)| {
+                                        p.procurement_active = None;
+                                        p.procurement_cooldown = crate::procurement::PROCUREMENT_COOLDOWN_SECS;
+                                        p.inventory.take(item, qty);
+                                        p.ether = p.ether.saturating_add(reward);
+                                        p.masteries.gain_merchant(xp);
+                                        tracing::info!(player = %p.name, reward, xp, "星際採購令交付完成");
+                                        (p.name.clone(), reward, xp)
+                                    })
+                                }
+                            } else { None }
+                        };
+                        if let Some((pname, reward, xp)) = result {
+                            let _ = app.tx_chat.send(format!(
+                                "📦 {} 完成星際採購令！獲得 {} 乙太 + {} 商人 XP！",
+                                pname, reward, xp
+                            ));
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::AbandonProcurement) => {
+                    // 放棄採購任務：取消進行中任務，無懲罰（不啟動冷卻）。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.procurement_active.take().is_some() {
+                                tracing::info!(player = %p.name, "放棄採購任務");
                             }
                         }
                     }

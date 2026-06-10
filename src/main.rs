@@ -57,6 +57,7 @@ mod trade_route;
 mod workshop;
 mod bounty_board;
 mod expedition;
+mod procurement;
 
 use std::net::SocketAddr;
 

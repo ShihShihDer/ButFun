@@ -464,6 +464,7 @@
         <button type="button" class="dock-btn" id="dockWorkshop" data-win="winWorkshop" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="K" aria-label="工匠工坊（K）" title="工匠工坊（K）">🔨</button>
         <button type="button" class="dock-btn" id="dockBounty" data-win="winBounty" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="U" aria-label="懸賞告示板（U）" title="懸賞告示板（U）">📜</button>
         <button type="button" class="dock-btn" id="dockExpedition" data-win="winExpedition" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="Y" aria-label="古蹟探勘（Y）" title="古蹟探勘（Y）">🗺️</button>
+        <button type="button" class="dock-btn" id="dockProcurement" data-win="winProcurement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="O" aria-label="星際採購（O）" title="星際採購（O）">📦</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -594,6 +595,14 @@
         <button type="button" class="win-close" data-close="winExpedition" aria-label="關閉探勘面板">✕</button>
       </div>
       <div id="expeditionBody"></div>
+    </div>
+    <!-- 星際採購面板（ROADMAP 55）：商人熟練度第十路線；O 鍵開關。 -->
+    <div id="winProcurement" class="hud-window hidden" role="dialog" aria-labelledby="procurementTitle">
+      <div class="win-head">
+        <span class="win-title" id="procurementTitle">📦 星際採購</span>
+        <button type="button" class="win-close" data-close="winProcurement" aria-label="關閉採購面板">✕</button>
+      </div>
+      <div id="procurementBody"></div>
     </div>
     <!-- 工匠工坊面板（ROADMAP 52）：工匠熟練度第七路線；K 鍵開關。 -->
     <div id="winWorkshop" class="hud-window hidden" role="dialog" aria-labelledby="workshopTitle">
