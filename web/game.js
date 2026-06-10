@@ -6197,6 +6197,34 @@
       btn.addEventListener("click", () => openWinFor(btn));
     }
 
+    // ── dock 分類二層：點分類鈕展開該組（同時收其他組），再點一次收合 ──
+    const dockCats = dock.querySelectorAll(".dock-cat");
+    const dockGroups = dock.querySelectorAll(".dock-group");
+    for (const cat of dockCats) {
+      cat.addEventListener("click", () => {
+        const g = document.getElementById(cat.dataset.group);
+        const opening = g.classList.contains("hidden");
+        for (const grp of dockGroups) grp.classList.add("hidden");
+        for (const c of dockCats) c.setAttribute("aria-expanded", "false");
+        if (opening) {
+          g.classList.remove("hidden");
+          cat.setAttribute("aria-expanded", "true");
+        }
+      });
+    }
+    // 子鈕的「可做事」黃點（dock-active，由快照邏輯加在子鈕上）bubble 到分類鈕——
+    // 組收合時也看得到「裡面有事可做」。只觀察子組，避免回寫分類鈕自觸發。
+    const syncCatDots = () => {
+      for (const cat of dockCats) {
+        const g = document.getElementById(cat.dataset.group);
+        cat.classList.toggle("dock-active", !!g.querySelector(".dock-btn.dock-active"));
+      }
+    };
+    for (const g of dockGroups) {
+      new MutationObserver(syncCatDots).observe(g, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    }
+    syncCatDots();
+
     // ── 🗺️ 世界地圖：星球帶 + 本星鳥瞰（生態底色/城鎮/你的位置/裂縫）+ 旅行入口 ──
     // 解玩家痛點「不知道自己在哪、其他星球怎麼去」——旅行原本埋在「合成星圖→背包使用」
     // 兩層深，這裡給一個 dock 一鍵的總覽窗，並把旅行入口接出來。
