@@ -742,6 +742,10 @@
         updateDailyQuestHud(msg.done_count || 0);
         updateDailyQuestPanel(msg.tasks || [], msg.done_count || 0);
         break;
+      case "leaderboard":
+        // 排行榜（ROADMAP 33）：收到資料後更新面板。
+        renderLeaderboard(msg.level_top || [], msg.ether_top || [], msg.kills_top || []);
+        break;
     }
   }
 
@@ -1729,6 +1733,7 @@
         (e.key === "g" || e.key === "G") ? "dockGuild" :
         (e.key === "a" || e.key === "A") ? "dockAchievement" :
         (e.key === "d" || e.key === "D") ? "dockDailyQuest" :
+        (e.key === "l" || e.key === "L") ? "dockLeaderboard" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -4687,6 +4692,64 @@
   const DAILY_ETHER_REWARD = 15;
   const DAILY_EXP_REWARD   = 80;
 
+  // ─── 排行榜（ROADMAP 33）────────────────────────────────────────────────
+  // 最新一批排行榜資料（等待伺服器回應時保留舊資料）。
+  let lbData = { level_top: [], ether_top: [], kills_top: [] };
+  // 目前顯示的分頁："level" | "ether" | "kills"
+  let lbTab = "level";
+
+  function renderLeaderboard(levelTop, etherTop, killsTop) {
+    lbData = { level_top: levelTop, ether_top: etherTop, kills_top: killsTop };
+    renderLbTab();
+  }
+
+  function renderLbTab() {
+    const body = document.getElementById("leaderboardBody");
+    if (!body) return;
+    const list = lbTab === "level" ? lbData.level_top
+               : lbTab === "ether" ? lbData.ether_top
+               : lbData.kills_top;
+    const unit = lbTab === "level" ? "級" : lbTab === "ether" ? "乙太" : "擊殺";
+    if (!list || list.length === 0) {
+      body.innerHTML = '<div style="color:#888;font-size:.85rem;text-align:center;padding:16px">暫無資料（連線後將更新）</div>';
+      return;
+    }
+    const medals = ["🥇","🥈","🥉"];
+    let html = "";
+    for (const e of list) {
+      const m = medals[e.rank - 1] || `${e.rank}.`;
+      const isSelf = e.name === myName;
+      const bg = isSelf ? "background:#1a2a1a;border:1px solid #4a7a4a" : "background:#141820;border:1px solid #2a3040";
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-radius:5px;margin-bottom:4px;${bg}">`;
+      html += `<span style="min-width:28px;font-size:.85rem">${m}</span>`;
+      html += `<span style="flex:1;color:${isSelf ? "#7ec87e" : "#c8d0e0"};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0 6px;font-size:.85rem">${escHtml(e.name)}</span>`;
+      html += `<span style="color:#ffd700;font-size:.82rem;min-width:40px;text-align:right">${e.value} ${unit}</span>`;
+      html += `</div>`;
+    }
+    // 殺怪榜加一行說明（僅顯示線上玩家）
+    if (lbTab === "kills") {
+      html += `<div style="color:#555;font-size:.72rem;margin-top:6px;text-align:right">僅顯示線上玩家（重啟後重計）</div>`;
+    }
+    body.innerHTML = html;
+  }
+
+  // 排行榜標籤切換
+  function initLeaderboardTabs() {
+    for (const btn of document.querySelectorAll(".lb-tab")) {
+      btn.addEventListener("click", () => {
+        lbTab = btn.id === "lbTabLevel" ? "level" : btn.id === "lbTabEther" ? "ether" : "kills";
+        for (const b of document.querySelectorAll(".lb-tab")) {
+          b.classList.toggle("dock-active", b.id === btn.id);
+        }
+        renderLbTab();
+        // 重新請求最新資料
+        try { ws.send(JSON.stringify({ type: "request_leaderboard" })); } catch {}
+      });
+    }
+  }
+  initLeaderboardTabs();
+  // ─── 排行榜 end ─────────────────────────────────────────────────────────
+
   // 更新公會面板：顯示當前公會資訊（若有）或公會瀏覽清單。
   // guild = myGuild 或 null；guildList = 伺服器傳來的列表（null 代表尚未請求）。
   function updateGuildPanel(guild, guildList, isGuestUser) {
@@ -5954,6 +6017,10 @@
       // 公會面板開啟時自動請求最新列表（無公會時才需要瀏覽）。
       if (btnId === "dockGuild" && !myGuild) {
         try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
+      }
+      // 排行榜面板開啟時請求最新資料。
+      if (btnId === "dockLeaderboard") {
+        try { ws.send(JSON.stringify({ type: "request_leaderboard" })); } catch {}
       }
     };
     // 成就 HUD pill 點擊時開啟成就面板。

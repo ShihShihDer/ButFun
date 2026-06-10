@@ -394,6 +394,7 @@
       <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
       <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
       <button type="button" class="dock-btn" id="dockDailyQuest" data-win="winDailyQuest" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="D" aria-label="每日任務（D）" title="每日任務（D）">📅</button>
+      <button type="button" class="dock-btn" id="dockLeaderboard" data-win="winLeaderboard" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="L" aria-label="排行榜（L）" title="排行榜（L）">🏅</button>
       <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="H" aria-label="操作說明（H）" title="操作說明（H）">📖</button>
       <button type="button" class="dock-btn" id="dockSettings" data-win="winSettings" aria-haspopup="dialog" aria-expanded="false" aria-label="設定" title="設定">⚙️</button>
     </div>
@@ -495,6 +496,20 @@
       <div id="dailyQuestBody" style="font-size:13px;min-width:260px">載入中…</div>
     </div>
 
+    <!-- 排行榜面板（ROADMAP 33）：等級 / 乙太 / 殺怪三榜，各前 20 名。按 L 開啟。 -->
+    <div id="winLeaderboard" class="hud-window hidden" role="dialog" aria-labelledby="leaderboardTitle">
+      <div class="win-head">
+        <span class="win-title" id="leaderboardTitle">🏅 排行榜</span>
+        <button type="button" class="win-close" data-close="winLeaderboard" aria-label="關閉排行榜">✕</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:6px">
+        <button type="button" class="lb-tab dock-btn dock-active" id="lbTabLevel" style="flex:1;font-size:12px">⭐ 等級</button>
+        <button type="button" class="lb-tab dock-btn" id="lbTabEther" style="flex:1;font-size:12px">💎 乙太</button>
+        <button type="button" class="lb-tab dock-btn" id="lbTabKills" style="flex:1;font-size:12px">⚔️ 殺怪</button>
+      </div>
+      <div id="leaderboardBody" style="font-size:13px;min-width:240px;max-height:320px;overflow-y:auto">載入中…</div>
+    </div>
+
     <!-- 公會面板（ROADMAP 29）：建立 / 加入 / 管理公會、向金庫捐贈乙太、公會聊天提示。 -->
     <div id="winGuild" class="hud-window hidden" role="dialog" aria-labelledby="guildTitle">
       <div class="win-head">
@@ -581,6 +596,6 @@
     </div>
   </div>
 
-  <script src="game.js?v=20260610-guild-system"></script>
+  <script src="game.js?v=20260610-leaderboard"></script>
 </body>
 </html>

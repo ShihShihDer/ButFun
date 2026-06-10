@@ -1321,6 +1321,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 每日任務系統 end ─────────────────────────────────────────────
 
+                // ── 排行榜系統（ROADMAP 33）──────────────────────────────────────
+                Ok(ClientMsg::RequestLeaderboard) => {
+                    let level_top = app.positions.leaderboard_top_level(20).await;
+                    let ether_top = app.positions.leaderboard_top_ether(20).await;
+
+                    // 等級/乙太：Postgres 模式已含離線玩家；記憶體模式以線上玩家補底。
+                    let level_top = if level_top.is_empty() {
+                        let players = app.players.read().unwrap();
+                        let mut v: Vec<(String, u32)> = players.values()
+                            .map(|p| (p.name.clone(), p.level()))
+                            .collect();
+                        v.sort_by(|a, b| b.1.cmp(&a.1));
+                        v.truncate(20);
+                        v
+                    } else { level_top };
+                    let ether_top = if ether_top.is_empty() {
+                        let players = app.players.read().unwrap();
+                        let mut v: Vec<(String, u32)> = players.values()
+                            .map(|p| (p.name.clone(), p.ether))
+                            .collect();
+                        v.sort_by(|a, b| b.1.cmp(&a.1));
+                        v.truncate(20);
+                        v
+                    } else { ether_top };
+
+                    // 殺怪榜：線上玩家即時數（kill_count 不持久化）。
+                    let kills_top: Vec<(String, u32)> = {
+                        let players = app.players.read().unwrap();
+                        let mut v: Vec<(String, u32)> = players.values()
+                            .map(|p| (p.name.clone(), p.kill_count))
+                            .collect();
+                        v.sort_by(|a, b| b.1.cmp(&a.1));
+                        v.truncate(20);
+                        v
+                    };
+
+                    let to_entries = |v: Vec<(String, u32)>| -> Vec<crate::protocol::LeaderboardEntry> {
+                        v.into_iter().enumerate().map(|(i, (name, value))| {
+                            crate::protocol::LeaderboardEntry { rank: (i + 1) as u32, name, value }
+                        }).collect()
+                    };
+
+                    let msg = ServerMsg::Leaderboard {
+                        level_top: to_entries(level_top),
+                        ether_top: to_entries(ether_top),
+                        kills_top: to_entries(kills_top),
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                // ── 排行榜系統 end ───────────────────────────────────────────────
+
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },

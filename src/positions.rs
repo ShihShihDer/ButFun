@@ -195,6 +195,47 @@ impl PositionStore {
         }
     }
 
+    /// 排行榜：依等級（exp）降冪取前 N 名，回傳 `(name, level)`。
+    /// Postgres 模式查 DB（含離線玩家）；其他模式回空向量（呼叫端自行用線上玩家補底）。
+    pub async fn leaderboard_top_level(&self, limit: i64) -> Vec<(String, u32)> {
+        let Backend::Postgres(pool) = &self.backend else { return vec![]; };
+        let rows = sqlx::query(
+            "SELECT name, COALESCE(exp, 0) AS exp FROM players ORDER BY exp DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter()
+            .map(|r| {
+                let name: String = r.get("name");
+                let exp: i64 = r.get("exp");
+                let level = (exp.max(0) as u32) / 100;
+                (name, level)
+            })
+            .collect()
+    }
+
+    /// 排行榜：依乙太降冪取前 N 名，回傳 `(name, ether)`。
+    /// Postgres 模式查 DB（含離線玩家）；其他模式回空向量。
+    pub async fn leaderboard_top_ether(&self, limit: i64) -> Vec<(String, u32)> {
+        let Backend::Postgres(pool) = &self.backend else { return vec![]; };
+        let rows = sqlx::query(
+            "SELECT name, COALESCE(ether, 0) AS ether FROM players ORDER BY ether DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        rows.into_iter()
+            .map(|r| {
+                let name: String = r.get("name");
+                let ether: i64 = r.get("ether");
+                (name, ether.max(0) as u32)
+            })
+            .collect()
+    }
+
     /// Jsonl 模式才寫：把整份 cache 快照覆寫到磁碟。其餘模式無動作。
     fn persist_jsonl(&self) {
         let Backend::Jsonl(path) = self.backend else {
