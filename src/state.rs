@@ -35,6 +35,7 @@ use crate::vitals::Vitals;
 use crate::land_plot::LandPlotRegistry;
 use crate::land_plot_store::LandPlotStore;
 use crate::plot_registry::PlotRegistry;
+use crate::ranching::RanchRegistry;
 use crate::positions::PositionStore;
 use crate::protocol::{ItemStack, PlayerView, WorldInfo, ServerMsg};
 use crate::suggestions::SuggestionStore;
@@ -441,6 +442,8 @@ pub struct AppState {
     /// 城外產權地塊（ROADMAP 34）：20 塊預定義地塊的地主歸屬。
     /// 購買後鎖住該地塊的 Dig/Place 只讓地主操作。
     pub land_plots: Arc<RwLock<LandPlotRegistry>>,
+    /// 農田地塊牧場狀態（ROADMAP 48）：記憶體模式，重啟歸零。
+    pub ranch: Arc<RwLock<RanchRegistry>>,
     /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
     pub land_plot_store: LandPlotStore,
     /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
@@ -519,6 +522,7 @@ impl AppState {
             daily_quests: Arc::new(RwLock::new(HashMap::new())),
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,
+            ranch: Arc::new(RwLock::new(RanchRegistry::new())),
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
         }

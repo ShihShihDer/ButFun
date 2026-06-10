@@ -413,6 +413,9 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
+            app.ranch.write().unwrap().tick(dt);
+
             // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
             let listing_views: Vec<ListingView> = if want_broadcast {
                 app.market
@@ -514,6 +517,8 @@ pub fn spawn(app: AppState) {
                                     .or_else(|| app.users.get(uid).map(|u| u.name))
                             })
                         },
+                        // 牧場狀態（ROADMAP 48）：只送有雞或有蛋的地塊。
+                        ranch_plots: app.ranch.read().unwrap().all_active_views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

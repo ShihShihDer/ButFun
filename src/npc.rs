@@ -53,6 +53,8 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::FishSmall,        price_per: 2  },
     ShopEntry { item: ItemKind::FishStar,         price_per: 5  },
     ShopEntry { item: ItemKind::FishDeep,         price_per: 10 },
+    // 牧場產物（ROADMAP 48）：雞蛋 2 乙太/顆，確保死蛋有出口。
+    ShopEntry { item: ItemKind::Egg,              price_per: 2  },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
