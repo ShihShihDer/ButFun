@@ -2211,21 +2211,40 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 r.talks = r.talks.saturating_add(1);
                                 r.clone()
                             };
-                            // 一次性小禮還沒送過 → 開放「選項」給 NPC（送不送他自己判斷）。
-                            let gift_available = !rel.gifted;
+                            // NPC 自己有限的餘裕（送完就沒了＝真實稀缺）。
+                            let stock = app
+                                .npc_gift_stock
+                                .read()
+                                .unwrap()
+                                .get(persona.id)
+                                .copied()
+                                .unwrap_or(0);
+                            // 送禮選項：這位玩家還沒收過 且 NPC 手邊還有餘裕。
+                            let gift_available = !rel.gifted && stock > 0;
                             // 非同步：呼叫地端 LLM 要數秒，絕不能卡住 15Hz 迴圈。
                             let tx = tx_direct.clone();
                             let app2 = app.clone();
                             tokio::spawn(async move {
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, &text).await;
-                                // NPC 自己決定的送禮（暗號）。引擎只在「還沒送過」時認帳並發放（手有界）。
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text).await;
+                                // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, clean) = crate::npc_chat::extract_gift_decision(&raw);
-                                let granted = gift_available && wants_gift;
+                                let granted = if gift_available && wants_gift {
+                                    let mut stk = app2.npc_gift_stock.write().unwrap();
+                                    let s = stk.entry(persona.id.to_string()).or_insert(0);
+                                    if *s > 0 {
+                                        *s -= 1;
+                                        true
+                                    } else {
+                                        false // 餘裕剛好被別人用完了
+                                    }
+                                } else {
+                                    false
+                                };
                                 if granted {
                                     if let Some(p) = app2.players.write().unwrap().get_mut(&id) {
                                         p.inventory.add(crate::npc_chat::GIFT_ITEM, crate::npc_chat::GIFT_QTY);
                                     }
-                                    tracing::info!(player = %player_name, npc = persona.id, "NPC 自主送了熟客小禮");
+                                    tracing::info!(player = %player_name, npc = persona.id, "NPC 自主送了熟客小禮（餘裕扣減）");
                                 }
                                 if let Ok(json) = serde_json::to_string(
                                     &crate::protocol::ServerMsg::NpcReply {
