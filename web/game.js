@@ -580,7 +580,7 @@
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
-          updateClassPanel(me.job_class || null, isGuest); // 職業選擇（ROADMAP 28）
+          updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -5309,10 +5309,12 @@
   }
 
   let lastClassSig = null;
-  function updateClassPanel(currentClass, isGuestUser) {
+  // masteries = { warrior, farmer, artisan, explorer, merchant }（XP 值），titleClass = 頭銜職業字串或 null
+  function updateClassPanel(masteries, titleClass, isGuestUser) {
     const body = document.getElementById("classBody");
     if (!body) return;
-    const sig = `${currentClass}|${isGuestUser}`;
+    const m = masteries || {};
+    const sig = [m.warrior,m.farmer,m.artisan,m.explorer,m.merchant,titleClass,isGuestUser].join("|");
     if (sig === lastClassSig) return;
     lastClassSig = sig;
     body.innerHTML = "";
@@ -5320,48 +5322,68 @@
     if (isGuestUser) {
       const hint = document.createElement("div");
       hint.style.cssText = "color:#888;font-size:.8rem;";
-      hint.textContent = "登入後才能選擇職業";
+      hint.textContent = "登入後才能解鎖熟練度";
       body.appendChild(hint);
       return;
     }
 
     const intro = document.createElement("div");
-    intro.style.cssText = "color:#aaa;font-size:.8rem;margin-bottom:8px;";
-    intro.textContent = currentClass
-      ? `目前職業：${CLASS_INFO[currentClass]?.label || currentClass}`
-      : "尚未選擇職業。選一個職業獲得獨特加成！";
+    intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
+    intro.textContent = "做什麼練什麼，五條同時生效。每 10 XP 升一級即解鎖加成。";
     body.appendChild(intro);
 
-    for (const [key, info] of Object.entries(CLASS_INFO)) {
+    const XP_PER_LEVEL = 10;
+    const tracks = [
+      { key: "warrior",  label: "⚔️ 戰士",  desc: "攻擊 +5、最大 HP +10",        color: "#e06060" },
+      { key: "farmer",   label: "🌾 農夫",   desc: "收割 +3 乙太、NPC 收購 +25%", color: "#80c060" },
+      { key: "artisan",  label: "🔧 工匠",   desc: "合成素材 -1（最少 1）",        color: "#80a0e0" },
+      { key: "explorer", label: "🧭 探索者", desc: "旅行費 -10 乙太",              color: "#d0a040" },
+      { key: "merchant", label: "💰 商人",   desc: "NPC 所有收購 +50%",           color: "#c080e0" },
+    ];
+
+    for (const t of tracks) {
+      const xp    = (m[t.key] || 0);
+      const lv    = Math.floor(xp / XP_PER_LEVEL);
+      const prog  = xp % XP_PER_LEVEL;
+      const isTitle = titleClass === t.key;
+
       const row = document.createElement("div");
-      row.style.cssText = `display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${key === currentClass ? "#253040" : "#1a2030"};border:1px solid ${key === currentClass ? "var(--brass)" : "#2a3040"};`;
-      row.addEventListener("mouseenter", () => { if (key !== currentClass) row.style.background = "#1e2840"; });
-      row.addEventListener("mouseleave", () => { if (key !== currentClass) row.style.background = "#1a2030"; });
+      row.style.cssText = `margin-bottom:8px;padding:6px 8px;border-radius:6px;background:#1a2030;border:1px solid ${isTitle ? "var(--brass)" : "#2a3040"};`;
 
-      const info_div = document.createElement("div");
-      info_div.style.cssText = "flex:1;";
-      const lbl = document.createElement("div");
-      lbl.style.cssText = "font-weight:600;font-size:.85rem;color:" + (key === currentClass ? "var(--brass)" : "#c8d0e0") + ";";
-      lbl.textContent = info.label + (key === currentClass ? "  ✓ 已選擇" : "");
-      const desc = document.createElement("div");
-      desc.style.cssText = "font-size:.75rem;color:#8899aa;margin-top:2px;";
-      desc.textContent = info.desc;
-      info_div.appendChild(lbl);
-      info_div.appendChild(desc);
+      // 標頭行：名稱 + 等級 + 頭銜標記
+      const head = document.createElement("div");
+      head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:3px;";
+      const lblEl = document.createElement("span");
+      lblEl.style.cssText = `font-weight:600;font-size:.83rem;color:${isTitle ? "var(--brass)" : "#c8d0e0"};flex:1;`;
+      lblEl.textContent = t.label + (isTitle ? "  ★ 頭銜" : "");
+      const lvEl = document.createElement("span");
+      lvEl.style.cssText = "font-size:.78rem;color:#8899aa;";
+      lvEl.textContent = lv > 0 ? `Lv.${lv}` : "未解鎖";
+      head.appendChild(lblEl);
+      head.appendChild(lvEl);
+      row.appendChild(head);
 
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "expand-btn";
-      btn.textContent = key === currentClass ? "已選擇" : "選擇";
-      btn.disabled = key === currentClass;
-      btn.addEventListener("click", () => {
-        try { ws.send(JSON.stringify({ type: "set_class", class: key })); } catch {}
-        announce(`選擇職業：${info.label}`);
-        lastClassSig = null; // 強制下次快照重建面板
-      });
+      // XP 進度條
+      const barWrap = document.createElement("div");
+      barWrap.style.cssText = "background:#111820;border-radius:4px;height:6px;overflow:hidden;margin-bottom:3px;";
+      const barFill = document.createElement("div");
+      const fillPct = lv > 0 ? (prog / XP_PER_LEVEL * 100) : (xp / XP_PER_LEVEL * 100);
+      barFill.style.cssText = `width:${Math.min(100, fillPct)}%;height:100%;background:${t.color};border-radius:4px;transition:width .3s;`;
+      barWrap.appendChild(barFill);
+      row.appendChild(barWrap);
 
-      row.appendChild(info_div);
-      row.appendChild(btn);
+      // XP 文字 + 加成說明
+      const foot = document.createElement("div");
+      foot.style.cssText = "display:flex;justify-content:space-between;font-size:.72rem;color:#8899aa;";
+      const xpText = document.createElement("span");
+      xpText.textContent = lv > 0 ? `${prog}/${XP_PER_LEVEL} XP → Lv.${lv+1}` : `${xp}/${XP_PER_LEVEL} XP → Lv.1`;
+      const descEl = document.createElement("span");
+      descEl.style.cssText = `color:${lv > 0 ? t.color : "#556070"};`;
+      descEl.textContent = t.desc;
+      foot.appendChild(xpText);
+      foot.appendChild(descEl);
+      row.appendChild(foot);
+
       body.appendChild(row);
     }
   }

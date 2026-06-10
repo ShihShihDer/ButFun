@@ -13,7 +13,7 @@ use world_core::{biome_at, resolve_move, Biome};
 
 use crate::achievement::AchievementSet;
 use crate::auth::AuthConfig;
-use crate::class::JobClass;
+use crate::class::Masteries;
 use crate::guild::GuildStore;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
@@ -121,9 +121,8 @@ pub struct Player {
     /// "aether" = 霧醚星，"origin" = 星源星。
     /// 執行期狀態，重連回 home 起算（不持久化，跨重啟無礙）。
     pub planet: String,
-    /// 玩家選擇的職業（ROADMAP 28）。None = 未選職業。
-    /// 執行期狀態；重連不持久化（下輪可加 Postgres 欄位）。
-    pub job_class: Option<JobClass>,
+    /// 玩家五條熟練度 XP（ROADMAP 38 兼修熟練度）。重連從 DB 載回；每次活動自動累積。
+    pub masteries: crate::class::Masteries,
     /// 玩家所屬公會的標籤快取（ROADMAP 29）。None = 不在任何公會。
     /// 公會建立 / 加入 / 離開時由 ws.rs 同步更新，PlayerView 直接讀此欄位。
     pub guild_tag: Option<String>,
@@ -162,10 +161,11 @@ impl Player {
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
-                + crate::class::combat_bonus(self.job_class),
+                + crate::class::combat_bonus(&self.masteries),
             defense: crate::equipment::equipped_armor_defense(&self.equipment),
             planet: self.planet.clone(),
-            job_class: self.job_class.map(|c| c.as_str().to_string()),
+            job_class: self.masteries.title_class().map(|c| c.as_str().to_string()),
+            masteries: self.masteries,
             guild_tag: self.guild_tag.clone(),
             achievement_count: self.achievements.count() as u32,
             achievements: self.achievements.as_wire_keys().into_iter().map(|s| s.to_string()).collect(),
@@ -510,7 +510,7 @@ mod tests {
             attack_cooldown: 0.0,
             exp: 0,
             planet: PLANET_HOME.to_string(),
-            job_class: None,
+            masteries: crate::class::Masteries::new(),
             guild_tag: None,
             achievements: AchievementSet::new(),
             kill_count: 0,

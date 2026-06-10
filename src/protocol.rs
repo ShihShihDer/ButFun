@@ -301,8 +301,10 @@ pub struct PlayerView {
     pub defense: u32,
     /// 玩家目前所在星球（ROADMAP 20/22）。"home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星。
     pub planet: String,
-    /// 玩家職業（ROADMAP 28）。None = 未選。"warrior" / "farmer" / "artisan" / "explorer" / "merchant"。
+    /// 玩家頭銜職業（ROADMAP 38 兼修熟練度；最高熟練度那條，None = 全部 0 尚未解鎖）。
     pub job_class: Option<String>,
+    /// 五條熟練度累積 XP（ROADMAP 38）。前端由此計算等級（= xp / 10）與進度條。
+    pub masteries: crate::class::Masteries,
     /// 玩家公會標籤（ROADMAP 29）。None = 不在任何公會。如 "STA"、"龍"。
     pub guild_tag: Option<String>,
     /// 已解鎖成就數（ROADMAP 31）。前端 HUD 顯示 「🏆 N/12」。
@@ -576,6 +578,7 @@ mod tests {
                 defense: 0,
                 planet: "home".into(),
                 job_class: None,
+                masteries: crate::class::Masteries::default(),
                 guild_tag: None,
                 achievement_count: 0,
                 achievements: vec![],
@@ -697,6 +700,7 @@ mod tests {
             hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
             planet: "verdant".into(),
             job_class: None,
+            masteries: crate::class::Masteries::default(),
             guild_tag: None,
             achievement_count: 0,
             achievements: vec![],

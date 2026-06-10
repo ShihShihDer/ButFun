@@ -110,7 +110,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             attack_cooldown: 0.0,
             exp: 0,
             planet: crate::state::PLANET_HOME.to_string(),
-            job_class: None,
+            masteries: crate::class::Masteries::new(),
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
@@ -148,7 +148,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             attack_cooldown: 0.0,
             exp: 0,
             planet: crate::state::PLANET_HOME.to_string(),
-            job_class: None,
+            masteries: crate::class::Masteries::new(),
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
@@ -200,8 +200,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                         p.wallet = w;
                         p.exp = s.exp;
-                        // 根據存檔等級校正最大血量（Vitals 不持久化，重連給滿血）。
-                        p.vitals.set_max_hp_full(crate::vitals::level_max_hp(p.level()));
+                        // 五條熟練度從 DB 還原（ROADMAP 38）。
+                        p.masteries = s.masteries;
+                        // 根據存檔等級 + 戰士熟練度校正最大血量（Vitals 不持久化，重連給滿血）。
+                        let base_hp = crate::vitals::level_max_hp(p.level());
+                        let warrior_bonus = crate::class::hp_bonus(&p.masteries);
+                        p.vitals.set_max_hp_full(base_hp + warrior_bonus);
                     }
                     // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心。
                     None => {
@@ -448,8 +452,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                     if let FarmOutcome::Harvested(ether) = outcome {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            let bonus = crate::class::harvest_ether_bonus(p.job_class);
+                            let bonus = crate::class::harvest_ether_bonus(&p.masteries);
                             p.ether = p.ether.saturating_add(ether).saturating_add(bonus);
+                            p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
                             tracing::info!(player = %p.name, ether = p.ether, bonus, "農地收成乙太");
                         }
                     }
@@ -478,6 +483,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if p.level() > old_level {
                                 p.vitals.on_level_up(p.level());
                             }
+                            p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, mult, level = p.level(), "採集入背包+exp");
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
@@ -497,8 +503,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 也不把查找耦死在「id 必等於產物序列化名」上(同產物不同配料就會抓錯)。
                     if let Some(recipe) = crate::crafting::recipe_by_id(&recipe_id) {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            let discount = crate::class::crafting_reduction(p.job_class);
+                            let discount = crate::class::crafting_reduction(&p.masteries);
                             if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
                                 tracing::info!(player = %p.name, recipe = %recipe_id, discount, "合成成功");
                             }
                         }
@@ -645,6 +652,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     new_ether,
                                                     saved.wallet_expansions,
                                                     saved.exp,
+                                                    saved.masteries,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -685,9 +693,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "故鄉 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                     }
                                 }
                             } else if npc::is_within_verdant_shop_reach(px, py) {
@@ -695,9 +704,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_verdant_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "翠幽星 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1);
                                     }
                                 }
                             } else if npc::is_within_crimson_shop_reach(px, py) {
@@ -705,9 +715,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_crimson_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "赤焰星 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1);
                                     }
                                 }
                             } else if npc::is_within_void_shop_reach(px, py) {
@@ -715,9 +726,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_void_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "虛空星 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1);
                                     }
                                 }
                             } else if npc::is_within_aether_shop_reach(px, py) {
@@ -725,9 +737,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_aether_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "霧醚星 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1);
                                     }
                                 }
                             } else if npc::is_within_origin_shop_reach(px, py) {
@@ -735,9 +748,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     if let Some(new_ether) = npc::sell_to_origin_npc(&mut p.inventory, p.ether, item, qty) {
                                         let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(p.job_class, earned) - earned;
+                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                         tracing::info!(player = %p.name, ?item, qty, earned, bonus, "星源星 NPC 收購");
                                         p.ether = new_ether.saturating_add(bonus);
+                                        p.masteries.gain_merchant(1);
                                     }
                                 }
                             }
@@ -799,6 +813,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
                             let added = p.inventory.add(item, qty * mult);
+                            p.masteries.gain_artisan(1); // 工匠熟練度：挖礦（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, "挖掘掉落");
                         }
                     }
@@ -859,7 +874,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let attempt = p.kill_count as u64;
                         let base_power = crate::equipment::equipped_weapon_power(&p.equipment)
                             + crate::combat::level_attack_bonus(p.level())
-                            + crate::class::combat_bonus(p.job_class)
+                            + crate::class::combat_bonus(&p.masteries)
                             + enchant_extra_damage(enchant);
                         // 暴擊：每 5 次攻擊有一次雙倍傷害。
                         let power = if enchant == Some(crate::refinement::EnchantKind::CritStrike)
@@ -889,6 +904,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 吸血：擊殺後回復 2 HP。
                             let ls = crate::refinement::enchant_lifesteal_hp(enchant);
                             if ls > 0 { p.vitals.heal(ls); }
+                            // 戰士熟練度（ROADMAP 38）：殺怪得 1 XP；首次升到 1 級時補 HP 加成。
+                            if p.masteries.gain_warrior(1) && p.masteries.warrior_level() == 1 {
+                                let bonus = crate::class::hp_bonus(&p.masteries);
+                                if bonus > 0 {
+                                    p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
+                                }
+                            }
                             tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), "主動攻擊戰利品+exp");
                         }
                     }
@@ -1149,7 +1171,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     };
                     use crate::protocol::ServerMsg;
                     let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                        let travel_discount = crate::class::travel_cost_reduction(p.job_class);
+                        let travel_discount = crate::class::travel_cost_reduction(&p.masteries);
                         match p.can_travel_to(&planet, travel_discount) {
                             Err(msg) => Some(ServerMsg::TravelResult {
                                 ok: false,
@@ -1157,11 +1179,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 message: msg,
                             }),
                             Ok(()) if planet == PLANET_VERDANT => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST);
                                 p.ether -= cost;
                                 p.planet = PLANET_VERDANT.to_string();
                                 p.x = VERDANT_SPAWN_X;
                                 p.y = VERDANT_SPAWN_Y;
+                                p.masteries.gain_explorer(10); // 探索者熟練度（ROADMAP 38）
                                 tracing::info!(player = %p.name, cost, "星際旅行：抵達翠幽星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
@@ -1170,11 +1193,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_CRIMSON => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST_CRIMSON);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_CRIMSON);
                                 p.ether -= cost;
                                 p.planet = PLANET_CRIMSON.to_string();
                                 p.x = CRIMSON_SPAWN_X;
                                 p.y = CRIMSON_SPAWN_Y;
+                                p.masteries.gain_explorer(10);
                                 tracing::info!(player = %p.name, cost, "星際旅行：抵達赤焰星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
@@ -1183,11 +1207,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_VOID => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST_VOID);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_VOID);
                                 p.ether -= cost;
                                 p.planet = PLANET_VOID.to_string();
                                 p.x = VOID_SPAWN_X;
                                 p.y = VOID_SPAWN_Y;
+                                p.masteries.gain_explorer(10);
                                 tracing::info!(player = %p.name, cost, "星際旅行：抵達虛空星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
@@ -1196,11 +1221,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_AETHER => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST_AETHER);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_AETHER);
                                 p.ether -= cost;
                                 p.planet = PLANET_AETHER.to_string();
                                 p.x = AETHER_SPAWN_X;
                                 p.y = AETHER_SPAWN_Y;
+                                p.masteries.gain_explorer(10);
                                 tracing::info!(player = %p.name, cost, "星際旅行：抵達霧醚星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
@@ -1209,11 +1235,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_ORIGIN => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST_ORIGIN);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_ORIGIN);
                                 p.ether -= cost;
                                 p.planet = PLANET_ORIGIN.to_string();
                                 p.x = ORIGIN_SPAWN_X;
                                 p.y = ORIGIN_SPAWN_Y;
+                                p.masteries.gain_explorer(10);
                                 tracing::info!(player = %p.name, cost, "星際旅行：抵達星源星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
@@ -1222,7 +1249,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) => {
-                                let cost = crate::class::apply_travel_discount(p.job_class, TRAVEL_ETHER_COST);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST);
                                 p.ether -= cost;
                                 p.planet = PLANET_HOME.to_string();
                                 let (hx, hy) = crate::positions::default_spawn();
@@ -1271,24 +1298,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         ).await;
                     }
                 }
-                Ok(ClientMsg::SetClass { class }) => {
-                    // 職業選擇（ROADMAP 28）：解析 class 字串，更新玩家職業；
-                    // 戰士需立即同步最大 HP 加成（其他職業加成在計算時動態套用）。
-                    if let Some(uid) = authed_uid {
-                        if let Some(job) = crate::class::JobClass::from_str(&class) {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                p.job_class = Some(job);
-                                // 戰士：立即把 HP 上限撐到基礎 + 10，不滿血時補差量。
-                                let bonus = crate::class::hp_bonus(p.job_class);
-                                if bonus > 0 {
-                                    let new_max = p.vitals.max_hp() + bonus;
-                                    p.vitals.set_max_hp_full(new_max);
-                                }
-                                tracing::info!(player = %p.name, ?job, "選擇職業");
-                            }
-                        }
-                    }
-                }
+                // ROADMAP 38：職業改兼修熟練度，SetClass 已不再使用；舊客戶端訊息靜默忽略。
+                Ok(ClientMsg::SetClass { .. }) => {}
+
                 // ── 公會系統（ROADMAP 29）──────────────────────────────────────────
                 Ok(ClientMsg::CreateGuild { name, tag }) => {
                     // 建立公會：需登入 + 乙太 ≥ 50；成功後從玩家扣乙太、更新 guild_tag。
@@ -1758,7 +1770,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp);
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries);
                     // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                     app.inventories.remember_equipment(id, &player.equipment);
@@ -1775,7 +1787,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             app.inventories.flush_equipment_one(id, &player.equipment).await;

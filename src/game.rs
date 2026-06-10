@@ -10,10 +10,8 @@ use crate::state::AppState;
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
 
-/// flush 時從玩家快照收下的「線上已登入玩家狀態列」:id、名字、物種、座標、乙太、擴張格數。
-/// 與 `PositionStore::flush_online` 收的列型別逐欄對齊(同一瞬間的快照),集中這串否則
-/// 會在 `flush_all` 觸發 clippy `type_complexity` 警告的長 tuple,讓該處標註更易讀。
-type OnlinePlayerRow = (uuid::Uuid, String, String, f32, f32, u32, u32, u32);
+/// flush 時從玩家快照收下的「線上已登入玩家狀態列」。與 `PositionStore::OnlinePlayerRow` 完全對齊。
+type OnlinePlayerRow = crate::positions::OnlinePlayerRow;
 
 /// 這個 tick 要不要建構並廣播世界快照。
 /// 沒有任何訂閱者（連線的客戶端）時回 false——自走營運的離峰時段沒人連線,
@@ -432,7 +430,7 @@ pub async fn flush_all(app: &AppState) {
         (
             authed
                 .iter()
-                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp))
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
             authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
@@ -441,7 +439,7 @@ pub async fn flush_all(app: &AppState) {
     if !online.is_empty() {
         // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
         app.positions
-            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp)| (*id, *x, *y, *e, *we, *exp)));
+            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m)| (*id, *x, *y, *e, *we, *exp, *m)));
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;
