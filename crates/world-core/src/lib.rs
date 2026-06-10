@@ -480,6 +480,168 @@ pub fn resolve_move<F: Fn(f32, f32) -> bool>(
     (x, y)
 }
 
+// ── 共用玩家移動物理（伺服器權威 + 前端 wasm 預測都呼叫這一份）─────────────────
+//
+// 客戶端移動預測要能成立，前提是「預測用的物理 == 伺服器的物理」，否則預測會常常
+// 猜錯、角色被拉回去（橡皮筋感）。所以把 Player::step 的整段移動數學搬到這裡：
+// 主 crate 的 `Player::step` 與下方 wasm 出口 `step_player` 都是薄包裝。
+
+/// 玩家移動速度（px/s）。主 crate `state::PLAYER_SPEED` re-export 這份。
+pub const PLAYER_SPEED: f32 = 320.0;
+/// 玩家碰撞盒半徑（px）。四角判定用；略小於半格（16px）讓走 32px 隧道不卡。
+pub const PLAYER_TILE_RADIUS: f32 = 8.0;
+
+/// 世界像素座標 → (chunk x, chunk y, 格 x, 格 y)。與主 crate `tiles::world_to_cell`
+/// 同一份（主 crate re-export 這份）——f32 除法語意，伺服器與 wasm 逐位元一致。
+pub fn world_to_cell(wx: f32, wy: f32) -> (i32, i32, u8, u8) {
+    let gx = (wx / TILE_PX).floor() as i32;
+    let gy = (wy / TILE_PX).floor() as i32;
+    let n = TILES_PER_CHUNK as i32;
+    (
+        gx.div_euclid(n),
+        gy.div_euclid(n),
+        gx.rem_euclid(n) as u8,
+        gy.rem_euclid(n) as u8,
+    )
+}
+
+/// 依方向鍵把位置往前推進 `dt` 秒（含對角線正規化、水域阻擋、實心格碰撞解算）。
+/// `tile_solid(x, y)`：該世界像素座標是否為實心地形格（呼叫端決定 delta 來源）。
+///
+/// 規則（原 `Player::step`，逐行搬移、行為不變）：
+/// - 「中心落在實心格」→ 受困（傳送落地等罕見情況），以中心點判斷逃脫、允許自由移動；
+///   一般走路用碰撞盒四角（半徑 `PLAYER_TILE_RADIUS`）精準阻擋、可沿牆滑行。
+/// - 水域同樣四角判定；已陷在水裡（中心在水）改用中心判定，保留逃脫通道。
+pub fn step_with_keys<F: Fn(f32, f32) -> bool>(
+    x: f32,
+    y: f32,
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    dt: f32,
+    tile_solid: F,
+) -> (f32, f32) {
+    let mut dx = 0.0_f32;
+    let mut dy = 0.0_f32;
+    if up {
+        dy -= 1.0;
+    }
+    if down {
+        dy += 1.0;
+    }
+    if left {
+        dx -= 1.0;
+    }
+    if right {
+        dx += 1.0;
+    }
+    // 對角線正規化，避免斜走變快。
+    if dx != 0.0 && dy != 0.0 {
+        let inv = 1.0 / (2.0_f32).sqrt();
+        dx *= inv;
+        dy *= inv;
+    }
+    let new_x = x + dx * PLAYER_SPEED * dt;
+    let new_y = y + dy * PLAYER_SPEED * dt;
+    let r = PLAYER_TILE_RADIUS;
+    let is_center_stuck = tile_solid(x, y);
+    let is_on_water = biome_at(x as f64, y as f64) == Biome::Water;
+    let corners = [(r, r), (-r, r), (r, -r), (-r, -r)];
+    let any_corner = |cx: f32, cy: f32| corners.iter().any(|&(ox, oy)| tile_solid(cx + ox, cy + oy));
+    let water_corner = |cx: f32, cy: f32| {
+        corners
+            .iter()
+            .any(|&(ox, oy)| biome_at((cx + ox) as f64, (cy + oy) as f64) == Biome::Water)
+    };
+    resolve_move(x, y, new_x, new_y, |px, py| {
+        // 一般時水域用四角；已陷在水裡時改用中心，留逃脫通道、不卡死。
+        let water_blocked = if is_on_water {
+            biome_at(px as f64, py as f64) == Biome::Water
+        } else {
+            water_corner(px, py)
+        };
+        if water_blocked {
+            return true;
+        }
+        // 受困時以中心點判定（保留逃脫通道）；一般時以四角判定（精準碰牆）。
+        if is_center_stuck {
+            tile_solid(px, py)
+        } else {
+            any_corner(px, py)
+        }
+    })
+}
+
+// ── wasm 出口：地形差異儲存 + 移動預測 ────────────────────────────────────────
+//
+// 前端把伺服器廣播的地形差異（挖/放過的格）餵進 `tile_delta_set`，`step_player` 的
+// 碰撞就跟伺服器看到同一個世界（含玩家蓋的牆/挖開的洞），預測才不會在自家門口撞鬼。
+// wasm 單執行緒，thread_local 即可；BTreeMap（不用 HashMap）避免 wasm32 取亂數種子問題。
+
+use std::cell::{Cell, RefCell};
+
+thread_local! {
+    /// (chunk x, chunk y, 格 x, 格 y) → TileKind::code()。
+    static TILE_DELTAS: RefCell<std::collections::BTreeMap<(i32, i32, u8, u8), u8>> =
+        RefCell::new(std::collections::BTreeMap::new());
+    /// step_player 的輸出（extern "C" 不便回傳 tuple，用 getter 取）。
+    static STEP_OUT: Cell<(f64, f64)> = Cell::new((0.0, 0.0));
+}
+
+/// wasm/前端入口：記錄一筆地形差異（挖=code 0 / 放=非 0）。同格重複呼叫＝覆蓋。
+#[no_mangle]
+pub extern "C" fn tile_delta_set(cx: i32, cy: i32, tx: u32, ty: u32, kind_code: u32) {
+    TILE_DELTAS.with(|m| {
+        m.borrow_mut()
+            .insert((cx, cy, tx as u8, ty as u8), kind_code as u8);
+    });
+}
+
+/// wasm/前端入口：清空全部地形差異（重連重播前呼叫，避免殘留舊世界）。
+#[no_mangle]
+pub extern "C" fn tile_delta_clear() {
+    TILE_DELTAS.with(|m| m.borrow_mut().clear());
+}
+
+/// wasm/前端入口：客戶端移動預測一步。`keys` 位元旗標：1=上 2=下 4=左 8=右。
+/// 碰撞判定與伺服器 `Player::step` 完全相同（同一份 `step_with_keys` + 同款 delta 查表）。
+/// 結果經 `step_out_x` / `step_out_y` 取回。
+#[no_mangle]
+pub extern "C" fn step_player(x: f64, y: f64, keys: u32, dt: f64) {
+    let solid = |px: f32, py: f32| {
+        let key = world_to_cell(px, py);
+        let delta = TILE_DELTAS.with(|m| m.borrow().get(&key).copied());
+        match delta {
+            Some(code) => code != 0, // 0 = Empty
+            None => tile_kind_at(px as f64, py as f64) != TileKind::Empty,
+        }
+    };
+    let (nx, ny) = step_with_keys(
+        x as f32,
+        y as f32,
+        keys & 1 != 0,
+        keys & 2 != 0,
+        keys & 4 != 0,
+        keys & 8 != 0,
+        dt as f32,
+        solid,
+    );
+    STEP_OUT.with(|c| c.set((nx as f64, ny as f64)));
+}
+
+/// 取回最近一次 `step_player` 的結果 X。
+#[no_mangle]
+pub extern "C" fn step_out_x() -> f64 {
+    STEP_OUT.with(|c| c.get().0)
+}
+
+/// 取回最近一次 `step_player` 的結果 Y。
+#[no_mangle]
+pub extern "C" fn step_out_y() -> f64 {
+    STEP_OUT.with(|c| c.get().1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -991,6 +1153,66 @@ mod d2_tests {
             }
         }
         assert_eq!(lava_count, 0, "霧醚星區域不應生成熔岩石格");
+    }
+
+    #[test]
+    fn step_with_keys_moves_at_player_speed() {
+        // 開闊地直走 1 秒 = PLAYER_SPEED px；斜走有正規化、總位移相同。
+        // (1360, 200) 是已驗證的無水開闊地（state.rs 速度測試同款座標）。
+        let (nx, ny) = step_with_keys(1360.0, 200.0, false, false, false, true, 1.0, |_, _| false);
+        assert!((nx - (1360.0 + PLAYER_SPEED)).abs() < 0.001, "nx={nx}");
+        assert_eq!(ny, 200.0);
+        let (dx, dy) = step_with_keys(1360.0, 200.0, false, true, false, true, 1.0, |_, _| false);
+        let dist = ((dx - 1360.0).powi(2) + (dy - 200.0).powi(2)).sqrt();
+        assert!((dist - PLAYER_SPEED).abs() < 0.01, "斜走位移 {dist} 應等於 PLAYER_SPEED");
+    }
+
+    #[test]
+    fn wasm_step_player_blocked_by_delta_wall_and_freed_by_dig() {
+        // wasm 預測必須看得到前端餵入的地形差異：玩家放一格牆 → step_player 被擋；
+        // 「挖掉」該格（delta 設 0）→ 立刻能通過。出發點取新手村安全區（保證無天然實心）。
+        tile_delta_clear();
+        let (sx, sy) = (SAFE_ZONE_CX as f32, SAFE_ZONE_CY as f32);
+        // 右方兩格放一面牆（kind=2 Stone）
+        let wall_x = sx + TILE_PX * 2.0;
+        let (cx, cy, tx, ty) = world_to_cell(wall_x, sy);
+        tile_delta_set(cx, cy, tx as u32, ty as u32, 2);
+        // 往右走 1 秒（足以撞上）：應被牆擋下（碰撞盒右緣不越過牆左緣）。
+        step_player(sx as f64, sy as f64, 8, 1.0);
+        let bx = step_out_x() as f32;
+        let wall_left = (wall_x / TILE_PX).floor() * TILE_PX;
+        assert!(
+            bx + PLAYER_TILE_RADIUS <= wall_left + 1.0,
+            "應被 delta 牆擋下：bx={bx} 牆左緣={wall_left}"
+        );
+        assert!(bx > sx, "撞牆前應該有前進（沿路滑到牆邊）");
+        // 挖掉那格 → 同樣輸入應走得遠超過牆位置。
+        tile_delta_set(cx, cy, tx as u32, ty as u32, 0);
+        step_player(sx as f64, sy as f64, 8, 1.0);
+        let fx = step_out_x() as f32;
+        assert!(fx > wall_left + TILE_PX, "挖開後應通過：fx={fx}");
+        tile_delta_clear();
+    }
+
+    #[test]
+    fn wasm_step_player_matches_step_with_keys() {
+        // 無 delta 時，wasm 出口必須與原生 step_with_keys 完全等價（同一份碰撞閉包語意）。
+        tile_delta_clear();
+        let solid = |px: f32, py: f32| tile_kind_at(px as f64, py as f64) != TileKind::Empty;
+        for (x, y, keys) in [
+            (2344.0_f32, 2296.0_f32, 8_u32), // 村中心往右
+            (1360.0, 200.0, 2 | 8),          // 開闊地右下斜走
+            (3000.0, 3000.0, 1),             // 世界中心往上
+        ] {
+            let (ex, ey) = step_with_keys(
+                x, y,
+                keys & 1 != 0, keys & 2 != 0, keys & 4 != 0, keys & 8 != 0,
+                0.5, solid,
+            );
+            step_player(x as f64, y as f64, keys, 0.5);
+            assert_eq!(step_out_x() as f32, ex, "x 不等價 @({x},{y},keys={keys})");
+            assert_eq!(step_out_y() as f32, ey, "y 不等價 @({x},{y},keys={keys})");
+        }
     }
 
     #[test]
