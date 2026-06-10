@@ -131,6 +131,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             workshop_cooldown: 0.0,
             bounty_active: None,
             bounty_cooldown: 0.0,
+            expedition_active: None,
+            expedition_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -184,6 +186,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             workshop_cooldown: 0.0,
             bounty_active: None,
             bounty_cooldown: 0.0,
+            expedition_active: None,
+            expedition_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -1973,6 +1977,65 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             if p.bounty_active.take().is_some() {
                                 tracing::info!(player = %p.name, "放棄懸賞任務");
+                            }
+                        }
+                    }
+                }
+
+                // ── 古蹟探勘（ROADMAP 54）──────────────────────────────────────────
+                Ok(ClientMsg::AcceptExpedition { order_id }) => {
+                    use crate::expedition::{try_accept, is_near_expedition_board};
+                    if let Some(uid) = authed_uid {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&uid) {
+                            if !p.vitals.is_downed()
+                                && p.planet == crate::state::PLANET_HOME
+                                && is_near_expedition_board(p.x, p.y)
+                            {
+                                if let Some(active) = try_accept(order_id, &p.expedition_active, p.expedition_cooldown) {
+                                    p.expedition_active = Some(active);
+                                    tracing::info!(player = %p.name, order_id, "接取探勘令");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::SurveyExpedition) => {
+                    // 採樣：驗生態域 + 距主城距離，成功立即發獎並進入冷卻。
+                    use crate::expedition::try_survey;
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                if p.vitals.is_downed() { None }
+                                else {
+                                    try_survey(&p.expedition_active, p.x, p.y).map(|(reward, xp)| {
+                                        p.expedition_active = None;
+                                        p.expedition_cooldown = crate::expedition::EXPEDITION_COOLDOWN_SECS;
+                                        p.ether = p.ether.saturating_add(reward);
+                                        p.masteries.gain_explorer(xp);
+                                        tracing::info!(player = %p.name, reward, xp, "探勘採樣完成");
+                                        (p.name.clone(), reward, xp)
+                                    })
+                                }
+                            } else { None }
+                        };
+                        if let Some((pname, reward, xp)) = result {
+                            let _ = app.tx_chat.send(format!(
+                                "🗺️ {} 完成探勘採樣！獲得 {} 乙太 + {} 探索者 XP！",
+                                pname, reward, xp
+                            ));
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::AbandonExpedition) => {
+                    // 放棄探勘任務：取消進行中任務，無懲罰（不啟動冷卻）。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.expedition_active.take().is_some() {
+                                tracing::info!(player = %p.name, "放棄探勘任務");
                             }
                         }
                     }

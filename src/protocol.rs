@@ -68,6 +68,28 @@ pub struct BountyActiveView {
     pub remaining_secs: f32,
 }
 
+/// 古蹟探勘令摘要（靜態，前端列表用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ExpeditionOrderBrief {
+    pub order_id: u8,
+    pub name: String,
+    pub biome_name: String,
+    pub min_dist: u32,
+    pub reward: u32,
+    pub xp: u32,
+}
+
+/// 玩家目前接取的探勘任務狀態（含剩餘秒數）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ExpeditionActiveView {
+    pub order_id: u8,
+    pub name: String,
+    pub biome_name: String,
+    pub min_dist: u32,
+    pub reward: u32,
+    pub remaining_secs: f32,
+}
+
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -306,6 +328,14 @@ pub enum ClientMsg {
     AcceptBounty { card_id: u8 },
     /// 放棄懸賞任務（ROADMAP 53）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
     AbandonBounty,
+    /// 接取探勘任務（ROADMAP 54）：在主城探勘公告欄接取一張探勘令。
+    /// `order_id`：要接取的令編號（1-5）。需故鄉、未倒地、無進行中任務、不在冷卻中。
+    AcceptExpedition { order_id: u8 },
+    /// 採樣（ROADMAP 54）：在目標生態域且距主城達 min_dist 的地點送出採樣請求。
+    /// 伺服器驗：有進行中任務、生態域正確、距離足夠。成功立即發獎並進入冷卻。
+    SurveyExpedition,
+    /// 放棄探勘任務（ROADMAP 54）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
+    AbandonExpedition,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -514,6 +544,20 @@ pub struct PlayerView {
     /// 玩家是否靠近主城懸賞告示板 NPC（故鄉限定）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_bounty_board: bool,
+
+    // ── 古蹟探勘（ROADMAP 54）──────────────────────────────────────────
+    /// 公告欄目前提供的 5 張探勘令（靜態，前端面板列表用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expedition_orders: Vec<ExpeditionOrderBrief>,
+    /// 玩家目前接取的探勘任務（None = 無任務）。含剩餘秒數。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expedition_active: Option<ExpeditionActiveView>,
+    /// 探勘完成後的冷卻秒數（0 = 可接取）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub expedition_cooldown: f32,
+    /// 玩家是否靠近主城探勘公告欄 NPC（故鄉限定）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_expedition_board: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -805,6 +849,10 @@ mod tests {
                 bounty_active: None,
                 bounty_cooldown: 0.0,
                 near_bounty_board: false,
+                expedition_orders: vec![],
+                expedition_active: None,
+                expedition_cooldown: 0.0,
+                near_expedition_board: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -949,6 +997,10 @@ mod tests {
             bounty_active: None,
             bounty_cooldown: 0.0,
             near_bounty_board: false,
+            expedition_orders: vec![],
+            expedition_active: None,
+            expedition_cooldown: 0.0,
+            near_expedition_board: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
