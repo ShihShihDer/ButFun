@@ -312,7 +312,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -354,6 +354,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         farm_crop_plots: farm_crop_plots.clone(),
                                         // 夜採星晶礦脈：夜間節點依 AOI 剔除，白天空陣列直接傳。
                                         star_crystals: star_crystals.iter().filter(|c| filter_pos(c.x, c.y)).cloned().collect(),
+                                        // 村落節慶加成全服廣播（直接轉送原值）。
+                                        village_buff_remaining_secs: *village_buff_remaining_secs,
+                                        // 村庫餘額全服廣播（里長面板需要）。
+                                        village_treasury: *village_treasury,
                                     }
                                 }
                                 other => other.clone(),
@@ -535,9 +539,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
                             let added = p.inventory.add(item, amount * mult + bounty_bonus + pet_gather);
-                            // 採集得 exp（鼓勵探索）；偵測升級並更新血量上限。
+                            // 採集得 exp（鼓勵探索）；村落節慶加成期間 +30%（ROADMAP 64）。
+                            let village_gather_pct = {
+                                let lock = app.village_buff_until.read().unwrap();
+                                lock.as_ref()
+                                    .map(|&expiry| if std::time::Instant::now() < expiry { crate::village_chief::EVENT_EXP_BONUS_PCT } else { 0 })
+                                    .unwrap_or(0)
+                            };
+                            let gather_exp = 5u32 + 5 * village_gather_pct / 100;
                             let old_level = p.level();
-                            p.exp = p.exp.saturating_add(5);
+                            p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
                                 p.vitals.on_level_up(p.level());
                             }
@@ -1024,10 +1035,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 寵物經驗加成（ROADMAP 46）：珊瑚蟹 +20% 擊殺經驗。
                             let pet_exp_pct = p.pet.map(|pk| pk.bonus_exp_pct()).unwrap_or(0);
                             let pet_mult = 1.0_f32 + pet_exp_pct as f32 / 100.0;
+                            // 村落節慶加成（ROADMAP 64）：里長辦活動期間全服 EXP +30%。
+                            let village_buff_pct = {
+                                let lock = app.village_buff_until.read().unwrap();
+                                lock.as_ref()
+                                    .map(|&expiry| if std::time::Instant::now() < expiry { crate::village_chief::EVENT_EXP_BONUS_PCT } else { 0 })
+                                    .unwrap_or(0)
+                            };
+                            let village_mult = 1.0_f32 + village_buff_pct as f32 / 100.0;
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult
-                                * pet_mult) as u32;
+                                * pet_mult
+                                * village_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
@@ -2276,6 +2296,96 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 r.talks = r.talks.saturating_add(1);
                                 r.clone()
                             };
+
+                            // ── 里長：特殊路徑（村落金庫 + 活動暗號，ROADMAP 64）────
+                            if persona.id == "village_chief" {
+                                let treasury = *app.village_treasury.read().unwrap();
+                                let chief_prompt = crate::village_chief::system_prompt(&rel, treasury);
+                                let tx = tx_direct.clone();
+                                let app2 = app.clone();
+                                let sem = app.npc_llm_sem.clone();
+                                tokio::spawn(async move {
+                                    let _permit = match tokio::time::timeout(
+                                        std::time::Duration::from_secs(2),
+                                        sem.acquire_owned(),
+                                    ).await {
+                                        Ok(Ok(p)) => p,
+                                        _ => {
+                                            if let Ok(json) = serde_json::to_string(
+                                                &crate::protocol::ServerMsg::NpcReply {
+                                                    npc: persona.id.to_string(),
+                                                    display: persona.display.to_string(),
+                                                    text: crate::village_chief::canned_reply(),
+                                                },
+                                            ) {
+                                                let _ = tx.send(json).await;
+                                            }
+                                            return;
+                                        }
+                                    };
+                                    let raw = crate::npc_chat::reply_with_custom_prompt(persona, &chief_prompt, &text).await;
+                                    // 里長的「手」：偵測活動暗號，引擎原子扣減金庫。
+                                    let (wants_event, clean) = crate::village_chief::extract_event_decision(&raw);
+                                    let event_triggered = if wants_event {
+                                        let new_treasury = {
+                                            let mut t = app2.village_treasury.write().unwrap();
+                                            if let Some(after) = crate::village_chief::spend_on_event(*t) {
+                                                *t = after;
+                                                Some(after)
+                                            } else {
+                                                None // 金庫在並發中被用完，本次作罷
+                                            }
+                                        };
+                                        if let Some(new_t) = new_treasury {
+                                            // 節慶加成開始計時。
+                                            {
+                                                let expiry = std::time::Instant::now()
+                                                    + std::time::Duration::from_secs(crate::village_chief::EVENT_DURATION_SECS);
+                                                *app2.village_buff_until.write().unwrap() = Some(expiry);
+                                            }
+                                            // 廣播全服公告。
+                                            let msg = crate::protocol::ServerMsg::VillageEvent {
+                                                message: "🎉 凱爾長老宣布舉辦村落節慶！未來 10 分鐘全服殺怪/採集 EXP +30%！".to_string(),
+                                                duration_secs: crate::village_chief::EVENT_DURATION_SECS,
+                                                new_treasury: new_t,
+                                            };
+                                            if let Ok(json) = serde_json::to_string(&msg) {
+                                                let _ = app2.tx_chat.send(json);
+                                            }
+                                            tracing::info!(player = %player_name, new_treasury = new_t, "里長自主辦村落節慶，金庫扣減");
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    };
+                                    let _ = event_triggered; // 已處理
+                                    if let Ok(json) = serde_json::to_string(
+                                        &crate::protocol::ServerMsg::NpcReply {
+                                            npc: persona.id.to_string(),
+                                            display: persona.display.to_string(),
+                                            text: clean.clone(),
+                                        },
+                                    ) {
+                                        let _ = tx.send(json).await;
+                                    }
+                                    // 更新印象。
+                                    let new_imp = crate::npc_chat::update_impression(
+                                        persona, &rel.impression, &text, &clean,
+                                    ).await;
+                                    let updated_rel = {
+                                        let mut mem = app2.npc_memory.write().unwrap();
+                                        let r = mem.entry(key.clone()).or_default();
+                                        r.impression = new_imp;
+                                        r.clone()
+                                    };
+                                    app2.npc_memory_store.save_rel(key.0, key.1, updated_rel);
+                                    tracing::info!(player = %player_name, "里長對話");
+                                });
+                                continue; // 跳過一般 NPC 路徑
+                            }
+
                             // NPC 自己有限的餘裕（送完就沒了＝真實稀缺）。
                             let stock = app
                                 .npc_gift_stock
@@ -2385,6 +2495,44 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 app2.npc_memory_store.save_rel(key.0, key.1, updated_rel);
                                 tracing::info!(player = %player_name, npc = persona.id, "NPC 對話");
                             });
+                        }
+                    }
+                }
+
+                // ── 里長 NPC：村落金庫捐獻（ROADMAP 64）───────────────────────────
+                Ok(ClientMsg::DonateToVillage) => {
+                    if let Some(uid) = authed_uid {
+                        let player_name = app.players.read().unwrap()
+                            .get(&uid).map(|p| p.name.clone()).unwrap_or_default();
+                        let (pos_x, pos_y) = app.players.read().unwrap()
+                            .get(&uid).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0));
+                        // 必須在里長互動範圍內。
+                        if !crate::village_chief::is_within_reach(pos_x, pos_y) {
+                            // 不在範圍內，靜默忽略（前端應先確認）。
+                        } else {
+                            let amount = crate::village_chief::DONATE_AMOUNT;
+                            let new_treasury = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    if p.ether >= amount {
+                                        p.ether -= amount;
+                                        let mut t = app.village_treasury.write().unwrap();
+                                        *t = crate::village_chief::donate_to_treasury(*t, amount);
+                                        Some(*t)
+                                    } else {
+                                        None // 乙太不足
+                                    }
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(new_t) = new_treasury {
+                                let _ = app.tx_chat.send(format!(
+                                    "💛 {} 向村落金庫捐獻了 {} 乙太（金庫：{} 乙太）",
+                                    player_name, amount, new_t
+                                ));
+                                tracing::info!(player = %player_name, amount, new_treasury = new_t, "玩家捐獻村落金庫");
+                            }
                         }
                     }
                 }

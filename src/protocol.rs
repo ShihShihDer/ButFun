@@ -415,6 +415,9 @@ pub enum ClientMsg {
     /// 跟會動腦的 NPC 對話（見 npc_chat.rs）。`npc` 是 NPC 穩定 id（如 "merchant"）。
     /// 伺服器非同步呼叫地端 LLM，回 `NpcReply`（不卡遊戲迴圈）。
     TalkToNpc { npc: String, text: String },
+    /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
+    /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
+    DonateToVillage,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -465,6 +468,11 @@ pub enum ServerMsg {
         /// 夜間星晶礦脈（ROADMAP 50）：只有夜晚才有節點，白天空陣列。
         /// 前端在夜間地圖上渲染閃爍的星晶礦脈 ✨，靠近可採集。
         star_crystals: Vec<crate::star_crystal::StarCrystalView>,
+        /// 村落節慶加成剩餘秒數（ROADMAP 64）。0 表示無活躍加成；>0 表示全服 EXP +30%。
+        /// 前端依此顯示 HUD 計時器。
+        village_buff_remaining_secs: u32,
+        /// 村庫乙太現值（ROADMAP 64）。前端里長面板顯示給靠近玩家。
+        village_treasury: u32,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -499,6 +507,9 @@ pub enum ServerMsg {
     SkillActivated { player_id: Uuid, kind: String },
     /// 會動腦的 NPC 對玩家說的話（單播，非同步生成後才送）。
     NpcReply { npc: String, display: String, text: String },
+    /// 里長自主決定辦「村落節慶」——廣播給所有連線玩家。
+    /// 收到後前端顯示公告橫幅 + 金色光暈；`duration_secs` 秒內 EXP 加成 +30%。
+    VillageEvent { message: String, duration_secs: u64, new_treasury: u32 },
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。
@@ -665,6 +676,9 @@ pub struct PlayerView {
     /// 玩家是否靠近農展評審 NPC（false 時省略節省流量）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_fair_judge: bool,
+    /// 玩家是否靠近里長 NPC（ROADMAP 64）（false 時省略節省流量）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_village_chief: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -968,6 +982,7 @@ mod tests {
                 farm_fair_active: None,
                 farm_fair_cooldown: 0.0,
                 near_fair_judge: false,
+                near_village_chief: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1019,6 +1034,8 @@ mod tests {
             ranch_plots: vec![],
             farm_crop_plots: vec![],
             star_crystals: vec![],
+            village_buff_remaining_secs: 0,
+            village_treasury: 0,
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
@@ -1124,6 +1141,7 @@ mod tests {
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
             near_fair_judge: false,
+            near_village_chief: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
