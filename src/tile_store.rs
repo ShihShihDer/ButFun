@@ -30,6 +30,7 @@ fn kind_str(k: TileKind) -> &'static str {
         TileKind::VoidCrystal => "void_crystal",
         TileKind::AetherMist    => "aether_mist",
         TileKind::OriginCrystal => "origin_crystal",
+        TileKind::TownWall      => "town_wall",
     }
 }
 
@@ -47,6 +48,7 @@ fn parse_kind(s: &str) -> TileKind {
         "lava_rock"    => TileKind::LavaRock,
         "void_crystal" => TileKind::VoidCrystal,
         "aether_mist"    => TileKind::AetherMist,
+        "town_wall"     => TileKind::TownWall,
         "origin_crystal" => TileKind::OriginCrystal,
         _                => TileKind::Empty,
     }

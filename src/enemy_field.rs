@@ -132,15 +132,25 @@ impl EnemyField {
                     let step = (speed * dt).min(dist);
                     let mvx = dx / dist * step;
                     let mvy = dy / dist * step;
+                    // 城鎮保護圈是敵人的絕對禁區：不只不在裡面生成，追擊也不得踏入
+                    // （含城門口緩衝——否則玩家一出城門就被圍毆，跟沒有城一樣）。
+                    // 已在禁區內的（例如保護圈擴大前的舊個體）放行，讓牠走得出去。
+                    let self_in_protected =
+                        world_core::town_protected_at(placed.x as f64, placed.y as f64);
+                    let blocked = |x: f32, y: f32| {
+                        tile_solid(x, y)
+                            || (!self_in_protected
+                                && world_core::town_protected_at(x as f64, y as f64))
+                    };
                     // C-3 碰撞:不穿實心地形。先試整步,撞牆就沿單軸滑行(能繞牆、別整個卡死)。
-                    if !tile_solid(placed.x + mvx, placed.y + mvy) {
+                    if !blocked(placed.x + mvx, placed.y + mvy) {
                         placed.x += mvx;
                         placed.y += mvy;
                     } else {
-                        if !tile_solid(placed.x + mvx, placed.y) {
+                        if !blocked(placed.x + mvx, placed.y) {
                             placed.x += mvx;
                         }
-                        if !tile_solid(placed.x, placed.y + mvy) {
+                        if !blocked(placed.x, placed.y + mvy) {
                             placed.y += mvy;
                         }
                     }
@@ -450,6 +460,34 @@ mod tests {
         let e = &f.chunks.get(&(0, 0)).unwrap()[0];
         assert!(e.x < 240.0, "敵人不該穿牆進實心格, x={}", e.x);
         assert_eq!(e.y, ey, "本例目標同 y,滑行時 y 不該漂");
+    }
+
+    #[test]
+    fn enemy_never_enters_town_protected_zone() {
+        // 圍牆城鎮：玩家在主城內當餌，城外敵人追擊也不得踏入保護圈（牆外 8 格緩衝）。
+        // 把敵人放在主城東側保護圈邊界外，多 tick 朝城內玩家追，每步檢查都沒踏進去。
+        let (tcx, tcy) = (2344.0_f32, 2272.0_f32); // 主城中心格(73,71)附近
+        let edge_x = (73 + 34 + 8) as f32 * 32.0; // 保護圈外緣（格）→ px
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(edge_x + 300.0, tcy, 10.0);
+        let key = chunk_key(edge_x + 300.0, tcy);
+        let chunk = f.chunks.get_mut(&key).unwrap();
+        chunk[0].x = edge_x + 300.0;
+        chunk[0].y = tcy;
+        // 追 10 秒（怪追速遠超過 300px/10s），無地形阻擋——唯一能擋牠的是保護圈。
+        for _ in 0..150 {
+            f.advance(1.0 / 15.0, &[(tcx, tcy)], true, |_x, _y| false);
+        }
+        for enemies in f.chunks.values() {
+            for e in enemies {
+                assert!(
+                    !world_core::town_protected_at(e.x as f64, e.y as f64),
+                    "敵人踏進了城鎮保護圈：({}, {})",
+                    e.x,
+                    e.y
+                );
+            }
+        }
     }
 
     #[test]

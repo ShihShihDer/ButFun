@@ -31,6 +31,7 @@ pub enum TileKindView {
     VoidCrystal,
     AetherMist,
     OriginCrystal,
+    TownWall,
 }
 
 impl From<TileKind> for TileKindView {
@@ -50,6 +51,7 @@ impl From<TileKind> for TileKindView {
             TileKind::VoidCrystal   => TileKindView::VoidCrystal,
             TileKind::AetherMist    => TileKindView::AetherMist,
             TileKind::OriginCrystal => TileKindView::OriginCrystal,
+            TileKind::TownWall      => TileKindView::TownWall,
         }
     }
 }

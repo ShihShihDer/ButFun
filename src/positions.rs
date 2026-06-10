@@ -52,12 +52,11 @@ pub fn default_spawn() -> (f32, f32) {
 /// 640 約等於 1.25 個 CHUNK_SIZE（512），讓整個公共農地周圍有一圈緩衝。
 pub const SAFE_SPAWN_RADIUS: f32 = 640.0;
 
-/// 是否在新手村安全區內。純函式，無 IO、可測試。
+/// 是否在「城鎮保護圈」內（主城＋各星球據點，牆內＋牆外 8 格緩衝）。
+/// 敵人不在此生成、也不踏入。實作在 world-core（圍牆城鎮幾何的單一真相，
+/// 與前端 wasm 同一份）；舊的圓形判斷由主城方形範圍完整涵蓋。純函式可測試。
 pub fn is_in_safe_zone(x: f32, y: f32) -> bool {
-    let (cx, cy) = default_spawn();
-    let dx = x - cx;
-    let dy = y - cy;
-    dx * dx + dy * dy <= SAFE_SPAWN_RADIUS * SAFE_SPAWN_RADIUS
+    world_core::town_protected_at(x as f64, y as f64)
 }
 
 /// 依「是否有記住的歷史位置」決定進場座標。純函式，便於測試。
@@ -379,9 +378,10 @@ mod tests {
     #[test]
     fn safe_zone_excludes_distant_point() {
         let (cx, cy) = default_spawn();
-        // 比安全半徑遠一倍的點不在安全區。
-        assert!(!is_in_safe_zone(cx + SAFE_SPAWN_RADIUS * 2.0, cy));
-        assert!(!is_in_safe_zone(cx, cy + SAFE_SPAWN_RADIUS * 2.0));
+        // 主城保護圈＝牆內 34 格＋緩衝 8 格 ≈ 1344px（Chebyshev）。取明顯更遠的點驗證圈外。
+        // （圍牆城鎮後保護圈比舊圓形 640px 大——這是刻意的：城變大、怪離城門更遠。）
+        assert!(!is_in_safe_zone(cx + SAFE_SPAWN_RADIUS * 3.0, cy));
+        assert!(!is_in_safe_zone(cx, cy + SAFE_SPAWN_RADIUS * 3.0));
     }
 
     #[test]

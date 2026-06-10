@@ -2165,6 +2165,7 @@
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
+    drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
@@ -2381,7 +2382,7 @@
           ctx.fillStyle = BIOME_GROUND[b];
         } else {
           // 實心牆色:依材質分(土/石/礦/晶石/蕈菇/珊瑚礁/野花),比地表暗且飽和,呈現「牆」的感覺。
-          ctx.fillStyle = kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "void_crystal" ? "#2a0a4a" : kind === "aether_mist" ? "#0a3a5a" : kind === "origin_crystal" ? "#5a4a0a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
+          ctx.fillStyle = kind === "town_wall" ? "#8a6d35" : kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "void_crystal" ? "#2a0a4a" : kind === "aether_mist" ? "#0a3a5a" : kind === "origin_crystal" ? "#5a4a0a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
       }
@@ -2581,9 +2582,19 @@
   const WASM_TILE_NAMES = [
     "empty", "dirt", "stone", "ore", "crystal", "mushroom", "ancient_ruin",
     "coral_reef", "wild_flower", "jade_vine", "lava_rock", "void_crystal",
-    "aether_mist", "origin_crystal",
+    "aether_mist", "origin_crystal", "town_wall",
   ];
   const WASM_BIOME_NAMES = ["water", "sand", "meadow", "forest", "rocky"];
+  // 城鎮定義（格座標；對齊 world-core TOWNS，改一邊要改另一邊）。
+  // 渲染（JS 後備地形、守衛、地標）共用；遊戲規則（禁建/禁怪/不可挖）全在伺服器。
+  const TOWNS = [
+    { cgx: 73,    cgy: 71, half: 34, name: "新手村主城" },
+    { cgx: 700,   cgy: 93, half: 14, name: "翠幽據點" },
+    { cgx: -563,  cgy: 93, half: 14, name: "赤焰據點" },
+    { cgx: 1312,  cgy: 93, half: 14, name: "虛空據點" },
+    { cgx: -1000, cgy: 93, half: 14, name: "霧醚據點" },
+    { cgx: -1625, cgy: 93, half: 14, name: "星源據點" },
+  ];
   // 協定字串名 → 整數編碼（餵地形差異進 wasm 用）。
   const WASM_TILE_CODES = Object.fromEntries(WASM_TILE_NAMES.map((n, i) => [n, i]));
   // 把一筆地形差異同步進 wasm（移動預測的碰撞要看得到玩家挖的洞/蓋的牆）。
@@ -2697,10 +2708,17 @@
   function tileKindGenJS(wx, wy) {
     const gx = Math.floor(wx / TS) | 0;
     const gy = Math.floor(wy / TS) | 0;
-    // 新手村安全區一律乾淨地（與後端 world-core SAFE_ZONE_* 對齊，改一邊要改另一邊）。
-    {
-      const sdx = wx - 2344, sdy = wy - 2296;
-      if (sdx * sdx + sdy * sdy <= 640 * 640) return "empty";
+    // 城鎮幾何最優先（對齊 world-core TOWNS——改一邊要改另一邊）：
+    // 牆圈=town_wall（門口缺口除外）、牆圈含門以內一律淨空。
+    for (const t of TOWNS) {
+      const dx = gx - t.cgx, dy = gy - t.cgy;
+      const cheb = Math.max(Math.abs(dx), Math.abs(dy));
+      if (cheb > t.half) continue;
+      if (cheb === t.half) {
+        const perp = Math.abs(dx) === cheb ? Math.abs(dy) : Math.abs(dx);
+        if (perp > 1) return "town_wall"; // gate_half_tiles = 1
+      }
+      return "empty";
     }
     // 確定性生成
     const b = biomeAtJS(wx, wy);
@@ -2823,6 +2841,7 @@
           : kind === "void_crystal" ? "#1a0535"
           : kind === "aether_mist" ? "#0a2a3a"
           : kind === "origin_crystal" ? "#3a3010"
+          : kind === "town_wall" ? "#7d6230"
           : kind === "ore" ? "#7a6533"
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
@@ -3987,6 +4006,60 @@
     ctx.fillStyle = "#eef7e9";
     ctx.fillText("🏠 新手村", sx, sy - 70);
     ctx.restore();
+  }
+
+  // 城鎮裝飾（純前端表現，規則全在伺服器）：據點名牌 + 城門守衛。
+  // 位置從 TOWNS 幾何推導（與 world-core 同一份定義），零協定、零快照成本。
+  function drawTownDecor(camX, camY) {
+    for (let ti = 0; ti < TOWNS.length; ti++) {
+      const t = TOWNS[ti];
+      const cx = (t.cgx + 0.5) * TS, cy = (t.cgy + 0.5) * TS;
+      // 據點名牌（主城已有獨立燈塔地標，跳過）
+      if (ti > 0) {
+        const sx = cx - camX, sy = cy - camY;
+        if (sx > -80 && sx < viewW + 80 && sy > -120 && sy < viewH + 80) {
+          ctx.save();
+          ctx.lineCap = "round";
+          ctx.strokeStyle = "#caa86a"; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx, sy - 38); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(sx, sy - 35); ctx.lineTo(sx + 20, sy - 30); ctx.lineTo(sx, sy - 25); ctx.closePath();
+          ctx.fillStyle = "#8fb8d8"; ctx.fill();
+          ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
+          ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.strokeText(`🏘️ ${t.name}`, sx, sy - 46);
+          ctx.fillStyle = "#dfe8f0"; ctx.fillText(`🏘️ ${t.name}`, sx, sy - 46);
+          ctx.restore();
+        }
+      }
+      // 城門守衛：四門各一名，站門內側偏旁（不擋路）。
+      const h = t.half;
+      const posts = [
+        [t.cgx - 2, t.cgy - h + 2], // 北門
+        [t.cgx + 2, t.cgy + h - 2], // 南門
+        [t.cgx - h + 2, t.cgy + 2], // 西門
+        [t.cgx + h - 2, t.cgy - 2], // 東門
+      ];
+      for (const [ggx, ggy] of posts) {
+        const gx = (ggx + 0.5) * TS - camX, gy = (ggy + 0.5) * TS - camY;
+        if (gx < -30 || gx > viewW + 30 || gy < -40 || gy > viewH + 30) continue;
+        ctx.save();
+        // 戟（先畫,在身後）：桿 + 斧刃
+        ctx.strokeStyle = "#9a8a6a"; ctx.lineWidth = 2; ctx.lineCap = "round";
+        ctx.beginPath(); ctx.moveTo(gx + 7, gy + 8); ctx.lineTo(gx + 7, gy - 18); ctx.stroke();
+        ctx.fillStyle = "#c9cdd4";
+        ctx.beginPath(); ctx.moveTo(gx + 7, gy - 18); ctx.lineTo(gx + 13, gy - 14); ctx.lineTo(gx + 7, gy - 10); ctx.closePath(); ctx.fill();
+        // 身體（深制服 + 黃銅胸甲）
+        ctx.fillStyle = "#33405c";
+        ctx.fillRect(gx - 5, gy - 6, 10, 14);
+        ctx.fillStyle = "#c9a24b";
+        ctx.fillRect(gx - 5, gy - 4, 10, 5);
+        // 頭（黃銅頭盔）
+        ctx.beginPath(); ctx.arc(gx, gy - 10, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = "#d8b96a"; ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.restore();
+      }
+    }
   }
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。

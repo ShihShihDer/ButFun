@@ -1,7 +1,7 @@
 // 功能 QA 機器人：連 /ws、以訪客進場，實測各核心動作（回城 / 採集 / 挖掘 / 建造 / 商店），
 // 每項用快照變化驗證 PASS / FAIL，給開發者 ground truth。用法： node /tmp/functional-qa.mjs [ws-url]
 import { WebSocket } from "ws";
-import { loadWasmTerrain } from "./world-core-wasm.mjs";
+import { loadWasmTerrain, TOWNS } from "./world-core-wasm.mjs";
 const URL = process.argv[2] || "ws://localhost:3000/ws";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const VILLAGE = [2344, 2296];
@@ -56,11 +56,12 @@ async function moveTo(tx, ty, maxMs = 4000) {
   send({ type: "input", up: false, down: false, left: false, right: false }); await sleep(200);
   return Math.hypot(tx - S.x, ty - S.y);
 }
-function nearestSolid() { // 掃 player 周圍 ~400px 找最近實心格中心
+const isTownWall = (wx, wy) => wasm ? wasm.tileKindCode(wx, wy) === 14 : false; // 城牆不可挖
+function nearestSolid() { // 掃 player 周圍 ~400px 找最近「可挖」實心格中心（跳過城牆）
   let best = null, bd = 1e9;
   for (let r = 40; r <= 400; r += 16) for (let a = 0; a < 360; a += 30) {
     const x = S.x + Math.cos(a * Math.PI / 180) * r, y = S.y + Math.sin(a * Math.PI / 180) * r;
-    if (isSolid(x, y)) { const cx = (Math.floor(x / 32) + 0.5) * 32, cy = (Math.floor(y / 32) + 0.5) * 32; const d = Math.hypot(cx - S.x, cy - S.y); if (d < bd) { bd = d; best = [cx, cy]; } }
+    if (isSolid(x, y) && !isTownWall(x, y)) { const cx = (Math.floor(x / 32) + 0.5) * 32, cy = (Math.floor(y / 32) + 0.5) * 32; const d = Math.hypot(cx - S.x, cy - S.y); if (d < bd) { bd = d; best = [cx, cy]; } }
   }
   return best;
 }
@@ -70,6 +71,38 @@ const check = (name, ok, detail) => { results.push([ok, name, detail]); const ta
 async function main() {
   console.log(`連線 ${URL} …`); const ws = await connect();
   console.log(`進場 (${S.x.toFixed(0)},${S.y.toFixed(0)})  乙太=${S.ether} HP=${S.hp} 背包=${JSON.stringify(S.inv)}\n`);
+
+  // 1. 採集（出生附近就有節點——要在出城前測，出城後最近節點常隔著城牆走不到）
+  const node = S.nodes.filter((n) => n.harvestable).sort((a, b) => Math.hypot(a.x - S.x, a.y - S.y) - Math.hypot(b.x - S.x, b.y - S.y))[0];
+  if (node) {
+    await moveTo(node.x, node.y); const before = invTotal();
+    const distToNode = Math.hypot(node.x - S.x, node.y - S.y); // 採集判定半徑 GATHER_REACH=56
+    send({ type: "gather" }); await sleep(700);
+    const ok = invTotal() > before;
+    check("採集 gather", ok || distToNode > 56 ? ok : false,
+      `${node.kind} 距節點 ${distToNode.toFixed(0)}px(需<56) 背包 ${before}→${invTotal()}` + (!ok && distToNode > 56 ? " ← 機器人沒走到，非採集 bug" : ""));
+  } else check("採集 gather", null, "附近沒有可採節點，跳過");
+
+  // 0. 出生點在城內的話（城內無地形、城牆不可挖），先走出最近的城門再測挖掘。
+  const inTown = () => TOWNS.find((t) =>
+    Math.max(Math.abs(Math.floor(S.x / 32) - t.cgx), Math.abs(Math.floor(S.y / 32) - t.cgy)) <= t.half);
+  const town = inTown();
+  if (town) {
+    const gates = [
+      [town.cgx, town.cgy - town.half], [town.cgx, town.cgy + town.half],
+      [town.cgx - town.half, town.cgy], [town.cgx + town.half, town.cgy],
+    ];
+    let gate = gates[0], bd = 1e9;
+    for (const [ggx, ggy] of gates) {
+      const d = Math.hypot((ggx + 0.5) * 32 - S.x, (ggy + 0.5) * 32 - S.y);
+      if (d < bd) { bd = d; gate = [ggx, ggy]; }
+    }
+    const dirx = Math.sign(gate[0] - town.cgx), diry = Math.sign(gate[1] - town.cgy);
+    console.log(`出生在 ${town.name} 內 → 走出最近城門再測挖掘…`);
+    await moveTo((gate[0] + 0.5) * 32 - dirx * 64, (gate[1] + 0.5) * 32 - diry * 64, 10000); // 門內側
+    await moveTo((gate[0] + dirx * 3 + 0.5) * 32, (gate[1] + diry * 3 + 0.5) * 32, 6000);    // 門外 3 格
+    console.log(`出城 → (${S.x.toFixed(0)},${S.y.toFixed(0)})`);
+  }
 
   // 1. 挖掘（在出生野外、有實心格時測；走到最近實心格、挖、驗背包+1 且格變空）
   const solid = nearestSolid();
@@ -85,17 +118,6 @@ async function main() {
     const before = S.inv[mat]; send({ type: "place", wx: solid[0], wy: solid[1], material: mat }); await sleep(700);
     check("建造 place", isSolid(solid[0], solid[1]) && (S.inv[mat] || 0) < before, `放 ${mat}：格變實心=${isSolid(solid[0], solid[1])}，${mat} ${before}→${S.inv[mat] || 0}`);
   } else check("建造 place", null, "背包沒有可放材料（沒挖到 dirt/stone），跳過");
-
-  // 3. 採集（出生附近有節點就採）
-  const node = S.nodes.filter((n) => n.harvestable).sort((a, b) => Math.hypot(a.x - S.x, a.y - S.y) - Math.hypot(b.x - S.x, b.y - S.y))[0];
-  if (node) {
-    await moveTo(node.x, node.y); const before = invTotal();
-    const distToNode = Math.hypot(node.x - S.x, node.y - S.y); // 採集判定半徑 GATHER_REACH=56
-    send({ type: "gather" }); await sleep(700);
-    const ok = invTotal() > before;
-    check("採集 gather", ok || distToNode > 56 ? ok : false,
-      `${node.kind} 距節點 ${distToNode.toFixed(0)}px(需<56) 背包 ${before}→${invTotal()}` + (!ok && distToNode > 56 ? " ← 機器人沒走到，非採集 bug" : ""));
-  } else check("採集 gather", null, "附近沒有可採節點，跳過");
 
   // 4. 回城
   send({ type: "return_home" }); await sleep(1200);
