@@ -42,12 +42,34 @@ pub const GIFT_QTY: u32 = 3;
 /// 引擎只在「還沒送過」時才認帳 → 就算被操弄狂夾，最多也只觸發那一份一次性小禮。
 pub const GIFT_TOKEN: &str = "[GIFT]";
 
-/// 每個 NPC 初始「餘裕」（還能送出的小禮份數）。約束＝稀缺：送完就沒了（v1 不自動補；
-/// 之後可隨遊戲時間慢慢回補＝商人補貨）。商人一開始手邊有 5 份餘料可送人。
+/// NPC 餘裕上限：每人最多累積這麼多份可分送餘料。
+pub const MAX_GIFT_STOCK: u32 = 10;
+
+/// 時間回補間隔（秒）：每隔這段真實時間，所有 NPC 餘裕 +1（直到上限）。
+/// 讓送完餘裕的 NPC 慢慢恢復，玩家多跑幾趟就有機會再收到禮。
+pub const RESTOCK_INTERVAL_SECS: u64 = 300; // 5 分鐘
+
+/// 商人貿易補貨門檻：玩家每向故鄉商人賣出這麼多次，商人就多獲得 1 份餘裕。
+/// 體現「商人靠自己賺到的才有能力慷慨」的設計。
+pub const TRADE_STOCK_EARN_INTERVAL: u32 = 4;
+
+/// 每個 NPC 初始「餘裕」（還能送出的小禮份數）。約束＝稀缺：送完後隨時間慢慢回補。
+/// 商人 5 份起手（主要 AI NPC）；其餘五大工職 NPC 各 3 份。
 pub fn initial_gift_stock() -> HashMap<String, u32> {
     let mut m = HashMap::new();
     m.insert("merchant".to_string(), 5);
+    m.insert("workshop_npc".to_string(), 3);
+    m.insert("bounty_npc".to_string(), 3);
+    m.insert("expedition_npc".to_string(), 3);
+    m.insert("procurement_npc".to_string(), 3);
+    m.insert("farm_fair_npc".to_string(), 3);
     m
+}
+
+/// 對單個 NPC 執行一次時間回補：若未達上限則 +1。
+/// 純函式，供 game.rs tick 和測試呼叫。
+pub fn restock_npc_stock(current: u32) -> u32 {
+    (current + 1).min(MAX_GIFT_STOCK)
 }
 
 /// ollama 對話 API 端點（可用環境變數覆寫，預設本機）。
@@ -150,8 +172,9 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
     // 送禮：給 NPC「選擇權」而非「指令」。只有他還沒送過時才開放這個選項。
     let gift = if gift_available {
         format!(
-            "\n\n你手邊還剩大約 {stock} 份可分送的餘料（**有限、送完就沒了**）。**如果**你看著你們的往來、真心覺得這位拓荒者值得一份小小心意，你可以**自己決定**送他一點木材——就在回話裡自然地提一下，並在句末加上暗號 {tok}。但這完全看你：餘裕不多時你自然會更謹慎，多數萍水相逢的人並不會收到；不想送就別加那個暗號。",
+            "\n\n你手邊還剩大約 {stock}/{max} 份可分送的餘料（平時會慢慢補貨；生意興隆時補得快一些）。**如果**你看著你們的往來、真心覺得這位拓荒者值得一份小小心意，你可以**自己決定**送他一點木材——就在回話裡自然地提一下，並在句末加上暗號 {tok}。但這完全看你：餘裕不多時你自然會更謹慎，多數萍水相逢的人並不會收到；不想送就別加那個暗號。",
             stock = gift_stock,
+            max = MAX_GIFT_STOCK,
             tok = GIFT_TOKEN
         )
     } else {
@@ -325,5 +348,42 @@ mod tests {
         let rel = NpcRel::default();
         assert_eq!(rel.sell_count, 0);
         assert_eq!(rel.buy_count, 0);
+    }
+
+    #[test]
+    fn initial_gift_stock_covers_all_npcs() {
+        // 所有已上線 NPC 都應在 initial_gift_stock 取得初始庫存。
+        let stock = initial_gift_stock();
+        for n in NPCS {
+            assert!(stock.contains_key(n.id), "NPC {} 缺少初始庫存", n.id);
+            assert!(*stock.get(n.id).unwrap() > 0, "NPC {} 初始庫存不得為 0", n.id);
+        }
+    }
+
+    #[test]
+    fn restock_npc_stock_increments_and_caps() {
+        // 正常補貨：+1
+        assert_eq!(restock_npc_stock(3), 4);
+        // 已在上限：不超過 MAX_GIFT_STOCK
+        assert_eq!(restock_npc_stock(MAX_GIFT_STOCK), MAX_GIFT_STOCK);
+        // 上限 -1 → 恰好達到上限
+        assert_eq!(restock_npc_stock(MAX_GIFT_STOCK - 1), MAX_GIFT_STOCK);
+    }
+
+    #[test]
+    fn max_gift_stock_and_trade_interval_are_reasonable() {
+        // MAX_GIFT_STOCK ≥ 1（有意義）、TRADE_STOCK_EARN_INTERVAL ≥ 2（不能太容易）
+        assert!(MAX_GIFT_STOCK >= 1);
+        assert!(TRADE_STOCK_EARN_INTERVAL >= 2);
+        // RESTOCK_INTERVAL_SECS 至少 1 分鐘（防止過快補滿失去稀缺感）
+        assert!(RESTOCK_INTERVAL_SECS >= 60);
+    }
+
+    #[test]
+    fn system_prompt_mentions_restock_when_stock_available() {
+        let n = find_npc("merchant").unwrap();
+        let s = system_prompt(n, &NpcRel::default(), true, 5);
+        // 補貨提示應出現在 prompt 中
+        assert!(s.contains("補貨"), "有庫存時 prompt 應提到補貨機制：{s}");
     }
 }

@@ -817,6 +817,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     r.sell_count = r.sell_count.saturating_add(1);
                                                     r.clone()
                                                 };
+                                                // 貿易補貨（ROADMAP 62）：玩家每賣 TRADE_STOCK_EARN_INTERVAL 次給故鄉商人，
+                                                // 商人就多獲得 1 份餘裕（「靠自己賺到的才能慷慨」），上限 MAX_GIFT_STOCK。
+                                                if updated_rel.sell_count % crate::npc_chat::TRADE_STOCK_EARN_INTERVAL == 0 {
+                                                    let new_stock = {
+                                                        let mut stk = app.npc_gift_stock.write().unwrap();
+                                                        let s = stk.entry("merchant".to_string()).or_insert(0);
+                                                        *s = crate::npc_chat::restock_npc_stock(*s);
+                                                        *s
+                                                    };
+                                                    app.npc_memory_store.save_gift_stock("merchant".to_string(), new_stock);
+                                                    tracing::debug!(sell_count = updated_rel.sell_count, new_stock, "貿易補貨：商人餘裕 +1");
+                                                }
                                                 app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
                                             }
                                         }

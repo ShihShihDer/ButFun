@@ -442,6 +442,29 @@ pub fn spawn(app: AppState) {
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器。
             app.farm_crops.write().unwrap().tick(dt);
 
+            // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
+            // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
+            {
+                let restock_ticks = crate::npc_chat::RESTOCK_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % restock_ticks == 0 {
+                    let mut restocked: Vec<(String, u32)> = Vec::new();
+                    {
+                        let mut stock = app.npc_gift_stock.write().unwrap();
+                        for npc in crate::npc_chat::NPCS {
+                            let e = stock.entry(npc.id.to_string()).or_insert(0);
+                            let new_val = crate::npc_chat::restock_npc_stock(*e);
+                            if new_val != *e {
+                                *e = new_val;
+                                restocked.push((npc.id.to_string(), new_val));
+                            }
+                        }
+                    }
+                    for (npc_id, s) in restocked {
+                        app.npc_memory_store.save_gift_stock(npc_id, s);
+                    }
+                }
+            }
+
             // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
             let listing_views: Vec<ListingView> = if want_broadcast {
                 app.market

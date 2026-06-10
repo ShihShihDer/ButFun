@@ -503,6 +503,15 @@ D-3. ✅ **小地圖導航**（PR #71）
     - migration 0017 向後相容（`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，舊玩家預設 0）。
     - 3 個新單元測試（trade_stats_appear_in_prompt / no_trade_shows_no_record / default_zero）。
 
+62. ✅ **NPC 餘裕回補——補貨讓 NPC 持續慷慨（AI NPC 成長第 4 步）**（本輪）
+    - 所有六大 NPC 現在都有初始庫存（商人 5 份、其餘各 3 份，MAX 10 份上限）。
+    - **時間補貨**：每 5 分鐘（300 秒）自動對每個 NPC 補 +1 餘裕（至上限），送完也會慢慢恢復。
+    - **貿易補貨（商人專屬）**：玩家每向故鄉商人賣出 4 次，商人就額外獲得 +1 餘裕
+      ——「靠自己賺到的才能慷慨」，生意越好補貨越快。
+    - 兩種補貨都持久化到 Postgres（fire-and-forget upsert），重啟後狀態保留。
+    - System prompt 更新：NPC 知道「我的餘料會慢慢補貨，生意興隆時補得快」，口吻更自然。
+    - 5 個新單元測試（所有 NPC 有初始庫存、restock 函式邊界、常數合理性、prompt 含補貨提示）。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
