@@ -896,7 +896,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let base_power = crate::equipment::equipped_weapon_power(&p.equipment)
                             + crate::combat::level_attack_bonus(p.level())
                             + crate::class::combat_bonus(&p.masteries)
-                            + enchant_extra_damage(enchant);
+                            + enchant_extra_damage(enchant)
+                            + p.pet.map(|pk| pk.bonus_attack()).unwrap_or(0);
                         // 暴擊：每 5 次攻擊有一次雙倍傷害。
                         let power = if enchant == Some(crate::refinement::EnchantKind::CritStrike)
                             && is_crit_tick(attempt) {
@@ -1448,23 +1449,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         .get(&id).map(|p| p.vitals.is_downed()).unwrap_or(true);
                     if downed { continue; }
 
-                    // 讀玩家位置（需要持鎖前先取出）。
-                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
-                    let Some((px, py)) = player_pos else { continue; };
+                    // 讀玩家位置與現有乙太值（先讀出來，才能在 predicate 裡判斷是否足夠）。
+                    let player_info = app.players.read().unwrap()
+                        .get(&id).map(|p| (p.x, p.y, p.ether));
+                    let Some((px, py, cur_ether)) = player_info else { continue; };
 
-                    // 嘗試馴化：在 ATTACK_REACH 內找 HP < 25% 的最近怪物並從世界移除。
-                    let tamed_kind = {
+                    // 嘗試馴化：只有「可馴化種類 + 乙太足夠」才移除敵人，避免不符條件時敵人無聲消失。
+                    let tamed = {
                         let mut enemies = app.enemies.write().unwrap();
-                        enemies.try_tame_nearest(px, py, crate::enemy_field::ATTACK_REACH)
+                        enemies.try_tame_nearest(px, py, crate::enemy_field::ATTACK_REACH, |kind| {
+                            let Some(pk) = crate::pet::pet_from_enemy_kind(kind) else { return false; };
+                            cur_ether >= pk.tame_cost()
+                        })
+                        .and_then(|enemy_kind| {
+                            crate::pet::pet_from_enemy_kind(enemy_kind).map(|pk| (enemy_kind, pk))
+                        })
                     };
-                    let Some(enemy_kind) = tamed_kind else { continue; };
+                    let Some((_enemy_kind, pet_kind)) = tamed else { continue; };
 
-                    // 判斷是否可馴化 + 扣乙太 + 設寵物。
-                    let Some(pet_kind) = crate::pet::pet_from_enemy_kind(enemy_kind) else { continue; };
+                    // 扣乙太 + 設寵物（再次確認乙太以防極罕見的 race，雖然同 session 不太可能）。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         let cost = pet_kind.tame_cost();
                         if p.ether < cost {
-                            tracing::debug!(player = %p.name, ?pet_kind, cost, "馴化失敗：乙太不足");
+                            tracing::debug!(player = %p.name, ?pet_kind, cost, "馴化失敗：乙太不足（race）");
                             continue;
                         }
                         p.ether -= cost;

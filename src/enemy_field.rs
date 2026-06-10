@@ -614,7 +614,12 @@ impl EnemyField {
     /// 嘗試馴化（ROADMAP 46）：在 `reach` 範圍內找最近的存活且 HP < 25% 的敵人，
     /// 從世界移除並回傳其種類。若無符合條件的敵人回 None。
     /// 呼叫端負責根據種類判斷是否可馴化（`pet::pet_from_enemy_kind`）並扣乙太。
-    pub fn try_tame_nearest(&mut self, px: f32, py: f32, reach: f32) -> Option<EnemyKind> {
+    /// 嘗試馴化：找最近的瀕死（HP < 25%）敵人，只有在 `accept(kind)` 為 true 時才移除並回傳。
+    /// 若 `accept` 回傳 false（不可馴化種類或乙太不足），敵人保持原樣不會消失。
+    pub fn try_tame_nearest<F>(&mut self, px: f32, py: f32, reach: f32, accept: F) -> Option<EnemyKind>
+    where
+        F: Fn(EnemyKind) -> bool,
+    {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
@@ -622,7 +627,8 @@ impl EnemyField {
         let (cx, cy) = chunk_key(px, py);
         let reach_sq = reach * reach;
         // 找最近、存活、瀕死（HP < 25%）的敵人，記錄其 chunk key 與索引。
-        let mut best: Option<((i32, i32), usize, f32)> = None;
+        let mut best: Option<((i32, i32), usize, EnemyKind)> = None;
+        let mut best_dist_sq = f32::MAX;
 
         for dy in -1..=1 {
             for dx in -1..=1 {
@@ -636,21 +642,23 @@ impl EnemyField {
                         let ddx = placed.x - px;
                         let ddy = placed.y - py;
                         let dist_sq = ddx * ddx + ddy * ddy;
-                        if dist_sq <= reach_sq {
-                            if best.as_ref().map_or(true, |(_, _, b)| dist_sq < *b) {
-                                best = Some((ck, idx, dist_sq));
-                            }
+                        if dist_sq <= reach_sq && dist_sq < best_dist_sq {
+                            best_dist_sq = dist_sq;
+                            best = Some((ck, idx, placed.enemy.kind()));
                         }
                     }
                 }
             }
         }
 
-        if let Some((ck, idx, _)) = best {
-            if let Some(enemies) = self.chunks.get_mut(&ck) {
-                if idx < enemies.len() {
-                    let removed = enemies.remove(idx);
-                    return Some(removed.enemy.kind());
+        // 先確認種類可馴化且條件符合，才實際移除敵人，避免不可馴化種類無聲消失。
+        if let Some((ck, idx, kind)) = best {
+            if accept(kind) {
+                if let Some(enemies) = self.chunks.get_mut(&ck) {
+                    if idx < enemies.len() {
+                        enemies.remove(idx);
+                        return Some(kind);
+                    }
                 }
             }
         }
