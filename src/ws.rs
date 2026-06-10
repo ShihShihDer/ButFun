@@ -127,6 +127,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_attempt_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
+            workshop_active: None,
+            workshop_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -176,6 +178,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_attempt_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
+            workshop_active: None,
+            workshop_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -1817,6 +1821,83 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             if p.trade_cargo.take().is_some() {
                                 tracing::info!(player = %p.name, "取消貿易任務");
+                            }
+                        }
+                    }
+                }
+
+                // ── 工匠工坊訂單（ROADMAP 52）─────────────────────────────────────
+                Ok(ClientMsg::TakeWorkshopOrder { order_id }) => {
+                    // 接取工坊訂單：需登入、故鄉、未倒地、靠近工坊 NPC、無進行中訂單、無冷卻。
+                    use crate::workshop::{try_take, is_near_workshop, WORKSHOP_COOLDOWN_SECS};
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let players = app.players.read().unwrap();
+                            if let Some(p) = players.get(&uid) {
+                                if p.vitals.is_downed()
+                                    || p.planet != crate::state::PLANET_HOME
+                                    || !is_near_workshop(p.x, p.y)
+                                {
+                                    None
+                                } else {
+                                    try_take(order_id, &p.workshop_active, p.workshop_cooldown)
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(active) = result {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                tracing::info!(player = %p.name, order_id, "接取工坊訂單");
+                                p.workshop_active = Some(active);
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::FulfillWorkshopOrder) => {
+                    // 交付工坊訂單：需登入、靠近工坊 NPC、有進行中訂單、背包有足夠物品。
+                    use crate::workshop::{try_fulfill, is_near_workshop, WORKSHOP_COOLDOWN_SECS};
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let players = app.players.read().unwrap();
+                            if let Some(p) = players.get(&uid) {
+                                if p.vitals.is_downed()
+                                    || p.planet != crate::state::PLANET_HOME
+                                    || !is_near_workshop(p.x, p.y)
+                                {
+                                    None
+                                } else {
+                                    try_fulfill(&p.workshop_active, &p.inventory)
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some((reward, xp)) = result {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                // 從背包扣除所需物品。
+                                if let Some(ref active) = p.workshop_active.clone() {
+                                    if let Some(order) = crate::workshop::find_order(active.order_id) {
+                                        p.inventory.take(order.required_item, order.required_qty);
+                                    }
+                                }
+                                p.ether = p.ether.saturating_add(reward);
+                                p.masteries.gain_artisan(xp);
+                                p.workshop_active = None;
+                                p.workshop_cooldown = WORKSHOP_COOLDOWN_SECS;
+                                tracing::info!(player = %p.name, reward, xp, "交付工坊訂單");
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::AbandonWorkshopOrder) => {
+                    // 放棄工坊訂單：取消進行中訂單，無懲罰（不啟動冷卻）。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.workshop_active.take().is_some() {
+                                tracing::info!(player = %p.name, "放棄工坊訂單");
                             }
                         }
                     }

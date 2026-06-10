@@ -171,6 +171,12 @@ pub struct Player {
     pub trade_cargo: Option<crate::trade_route::TradeCargo>,
     /// 各條貿易路線的接取冷卻剩餘秒數（Key = route_id）。由 game.rs 每 tick 推進。
     pub trade_cooldowns: crate::trade_route::TradeCooldowns,
+
+    // ── 工匠工坊訂單（ROADMAP 52）────────────────────────────────────────
+    /// 目前接取的工坊訂單。None = 無任務；Some = 進行中（含剩餘秒）。記憶體前置，重啟清空。
+    pub workshop_active: Option<crate::workshop::ActiveOrder>,
+    /// 工坊完成冷卻剩餘秒數（0 = 可接新訂單）。由 game.rs 每 tick 推進。
+    pub workshop_cooldown: f32,
 }
 
 impl Player {
@@ -254,6 +260,34 @@ impl Player {
                 let dist = (dx * dx + dy * dy).sqrt();
                 dist <= SHOP_REACH && !routes_for_planet(&self.planet).is_empty()
             },
+            // ── 工匠工坊訂單（ROADMAP 52）
+            workshop_orders: {
+                use crate::workshop::WORKSHOP_ORDERS;
+                use crate::protocol::{WorkshopOrderBrief};
+                WORKSHOP_ORDERS.iter().map(|o| WorkshopOrderBrief {
+                    order_id: o.id,
+                    name: o.name.to_string(),
+                    item: o.required_item,
+                    qty: o.required_qty,
+                    reward: o.reward,
+                    xp: o.xp,
+                }).collect()
+            },
+            workshop_active: self.workshop_active.as_ref().and_then(|a| {
+                use crate::workshop::find_order;
+                use crate::protocol::WorkshopActiveView;
+                find_order(a.order_id).map(|o| WorkshopActiveView {
+                    order_id: a.order_id,
+                    name: o.name.to_string(),
+                    item: o.required_item,
+                    qty: o.required_qty,
+                    reward: o.reward,
+                    remaining_secs: a.remaining_secs,
+                })
+            }),
+            workshop_cooldown: self.workshop_cooldown,
+            near_workshop: self.planet == PLANET_HOME
+                && crate::workshop::is_near_workshop(self.x, self.y),
         }
     }
 
@@ -628,6 +662,8 @@ mod tests {
             fish_attempt_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
+            workshop_active: None,
+            workshop_cooldown: 0.0,
         }
     }
 

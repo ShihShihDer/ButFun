@@ -23,6 +23,28 @@ pub struct TradeCargoBrief {
     pub reward: u32,
 }
 
+/// 工坊訂單摘要（送進快照，前端面板顯示用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WorkshopOrderBrief {
+    pub order_id: u8,
+    pub name: String,
+    pub item: ItemKind,
+    pub qty: u32,
+    pub reward: u32,
+    pub xp: u32,
+}
+
+/// 玩家目前接取的工坊訂單狀態（含剩餘秒數）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WorkshopActiveView {
+    pub order_id: u8,
+    pub name: String,
+    pub item: ItemKind,
+    pub qty: u32,
+    pub reward: u32,
+    pub remaining_secs: f32,
+}
+
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -248,6 +270,14 @@ pub enum ClientMsg {
     /// 取消貿易任務（ROADMAP 51）：丟棄目前攜帶的包裹，無懲罰。
     /// 無包裹時靜默忽略。
     CancelTrade,
+    /// 接取工坊訂單（ROADMAP 52）：在主城工坊 NPC 接取一張加急訂單。
+    /// `order_id`：要接取的訂單編號（1-5）。需故鄉、未倒地、無進行中訂單、不在冷卻中。
+    TakeWorkshopOrder { order_id: u8 },
+    /// 交付工坊訂單（ROADMAP 52）：在工坊 NPC 交付所需物品，換取乙太 + 工匠熟練度 XP。
+    /// 伺服器驗：有進行中訂單 + 背包有足夠物品 + 靠近工坊 NPC。不符靜默忽略。
+    FulfillWorkshopOrder,
+    /// 放棄工坊訂單（ROADMAP 52）：取消目前進行中的訂單，無懲罰（不啟動冷卻）。
+    AbandonWorkshopOrder,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -428,6 +458,20 @@ pub struct PlayerView {
     /// 玩家是否靠近本星球商人（且本星球有可接取路線）。前端據此顯示接取 UI。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_trade_npc: bool,
+
+    // ── 工匠工坊訂單（ROADMAP 52）────────────────────────────────────────────
+    /// 工坊目前提供的 5 張訂單（靜態，前端面板列表用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workshop_orders: Vec<WorkshopOrderBrief>,
+    /// 玩家目前接取的工坊訂單（None = 無任務）。含剩餘秒數。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workshop_active: Option<WorkshopActiveView>,
+    /// 工坊訂單完成後的冷卻秒數（0 = 可接取）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub workshop_cooldown: f32,
+    /// 玩家是否靠近主城工坊 NPC（故鄉限定）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_workshop: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -711,6 +755,10 @@ mod tests {
                 near_water: false,
                 trade_cargo: None,
                 near_trade_npc: false,
+                workshop_orders: vec![],
+                workshop_active: None,
+                workshop_cooldown: 0.0,
+                near_workshop: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -847,6 +895,10 @@ mod tests {
             near_water: false,
             trade_cargo: None,
             near_trade_npc: false,
+            workshop_orders: vec![],
+            workshop_active: None,
+            workshop_cooldown: 0.0,
+            near_workshop: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

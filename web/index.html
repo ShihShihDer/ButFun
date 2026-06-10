@@ -461,6 +461,7 @@
         <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="T" aria-label="農作（T）" title="農作（T）">🌾</button>
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="X" aria-label="夜採星晶（X）" title="夜採星晶（X）">✨</button>
         <button type="button" class="dock-btn" id="dockTrade" data-win="winTrade" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="V" aria-label="星際貿易（V）" title="星際貿易（V）">📦</button>
+        <button type="button" class="dock-btn" id="dockWorkshop" data-win="winWorkshop" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="K" aria-label="工匠工坊（K）" title="工匠工坊（K）">🔨</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -575,6 +576,14 @@
         <button type="button" class="win-close" data-close="winTrade" aria-label="關閉星際貿易面板">✕</button>
       </div>
       <div id="tradeBody"></div>
+    </div>
+    <!-- 工匠工坊面板（ROADMAP 52）：工匠熟練度第七路線；K 鍵開關。 -->
+    <div id="winWorkshop" class="hud-window hidden" role="dialog" aria-labelledby="workshopTitle">
+      <div class="win-head">
+        <span class="win-title" id="workshopTitle">🔨 工匠工坊</span>
+        <button type="button" class="win-close" data-close="winWorkshop" aria-label="關閉工坊面板">✕</button>
+      </div>
+      <div id="workshopBody"></div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->
