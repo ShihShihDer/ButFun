@@ -179,6 +179,7 @@
   const attackHits = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
+  let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -462,6 +463,7 @@
         enemiesSynced = true;
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
+        worldEvent = msg.world_event || null;
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -2038,6 +2040,30 @@
       ctx.beginPath(); ctx.arc(touchOrigin.x + dx * r, touchOrigin.y + dy * r, 18, 0, Math.PI * 2); ctx.fill();
     }
 
+    // 宇宙裂縫事件橫幅：裂縫活躍時在畫面頂部中央顯示剩餘秒數與位置提示。
+    if (worldEvent) {
+      const rem = Math.ceil(worldEvent.remaining_secs);
+      const bx = viewW / 2, by = safeArea.top + 52;
+      ctx.save();
+      ctx.globalAlpha = 0.88;
+      ctx.fillStyle = "rgba(40,0,60,0.82)";
+      const tw = 280, th = 30;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(bx - tw / 2, by - th / 2, tw, th, 8)
+                    : ctx.rect(bx - tw / 2, by - th / 2, tw, th);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(200,80,255,0.70)";
+      ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#e080ff";
+      ctx.font = "bold 13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(`🌀 宇宙裂縫開啟！剩餘 ${rem}s  (${Math.round(worldEvent.x)}, ${Math.round(worldEvent.y)})`, bx, by);
+      ctx.textBaseline = "alphabetic";
+      ctx.restore();
+    }
+
     // 受擊紅光:畫在最上層(連搖桿/小地圖之上),受擊的當下不被任何東西蓋住,一眼就知道在挨打。
     drawDamageFlash(performance.now());
 
@@ -2227,6 +2253,21 @@
       ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(214,90,90,0.85)";
       ctx.fill();
+    }
+
+    // 宇宙裂縫位置：活躍時在小地圖標一個脈動紫色漩渦符號。
+    if (worldEvent) {
+      const rx = toMiniX(worldEvent.x), ry = toMiniY(worldEvent.y);
+      if (rx >= ox && rx <= ox + size && ry >= oy && ry <= oy + size) {
+        const pulse2 = 0.55 + 0.35 * Math.sin(performance.now() / 400);
+        ctx.globalAlpha = pulse2;
+        ctx.font = "13px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("🌀", rx, ry);
+        ctx.globalAlpha = 1;
+        ctx.textBaseline = "alphabetic";
+      }
     }
 
     // 玩家:自己亮(永遠在正中央)、其他人暗(範圍內才畫)。用 rx/ry 跟主畫面同步不跳動。
@@ -3647,6 +3688,55 @@
     ctx.restore();
   }
 
+  // 裂縫守護者：宇宙裂縫召喚的最強精英敵，暗紫裂縫幽靈體＋迸射的能量裂痕＋赤眼。
+  function drawRiftGuardian(cx, cy, t, phase) {
+    const bob = Math.sin(t * 1.2 + phase) * 3;
+    const pulse = 0.65 + 0.25 * Math.sin(t * 2.5 + phase);
+    ctx.save();
+    // 外層裂縫光暈（深紫）
+    const grd = ctx.createRadialGradient(cx, cy + bob, 3, cx, cy + bob, 28 * pulse);
+    grd.addColorStop(0, "rgba(160,40,255,0.45)");
+    grd.addColorStop(0.5, "rgba(100,0,200,0.20)");
+    grd.addColorStop(1, "rgba(60,0,120,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 28 * pulse, 0, Math.PI * 2); ctx.fill();
+    // 裂縫射線（4條放射能量裂痕）
+    ctx.strokeStyle = "rgba(200,80,255,0.70)";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 4; i++) {
+      const ang = (i * Math.PI) / 2 + t * 0.6 + phase;
+      const len = 10 + 4 * Math.sin(t * 3 + phase + i);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(ang) * 8, cy + bob + Math.sin(ang) * 8);
+      ctx.lineTo(cx + Math.cos(ang) * len, cy + bob + Math.sin(ang) * len);
+      ctx.stroke();
+    }
+    // 主體：不規則裂縫幽靈（六角形 + 扭曲）
+    const r = 13;
+    ctx.fillStyle = "rgba(50,0,80,0.92)";
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const ang = (i * Math.PI) / 3 + Math.sin(t * 0.8 + phase + i) * 0.15;
+      const rr = r + Math.sin(t * 2 + i * 1.2 + phase) * 2;
+      const px = cx + Math.cos(ang) * rr, py = cy + bob + Math.sin(ang) * rr;
+      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(180,50,255,0.85)";
+    ctx.lineWidth = 1.5; ctx.stroke();
+    // 中心裂縫核（亮紫）
+    ctx.fillStyle = "rgba(220,100,255,0.95)";
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    // 雙眼：猩紅色，裂縫異界的惡意凝視
+    ctx.fillStyle = "rgba(255,20,20,0.95)";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,180,180,0.9)";
+    ctx.beginPath(); ctx.arc(cx - 3.5, cy - 3.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4.5, cy - 3.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
   // 新手村燈塔地標：村子中心一根旗桿 + 會脈動的發光球 + 旗 + 「🏠 新手村」名牌，
   // 讓玩家在畫面內一眼認出「這就是村子」（搭配離畫面時的 drawVillagePointer 邊緣箭頭遠距導航）。
   function drawVillageLandmark(camX, camY) {
@@ -3775,6 +3865,7 @@
       else if (e.kind === "steam_construct")  drawSteamConstruct(sx, ey, t, phase);
       else if (e.kind === "aether_specter")   drawAetherSpecter(sx, ey, t, phase);
       else if (e.kind === "origin_guardian")  drawOriginGuardian(sx, ey, t, phase);
+      else if (e.kind === "rift_guardian")    drawRiftGuardian(sx, ey, t, phase);
       else {
         const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
         ctx.fillStyle = look.tint;

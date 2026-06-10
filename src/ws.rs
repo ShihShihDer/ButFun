@@ -245,7 +245,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -273,6 +273,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             let (wx, wy) = crate::tiles::cell_center(d.cx, d.cy, d.tx, d.ty);
                                             filter_pos(wx, wy)
                                         }).cloned().collect(),
+                                        // 世界事件全服廣播（裂縫座標不做 AOI 剔除，讓玩家知道在哪裡）。
+                                        world_event: world_event.clone(),
                                     }
                                 }
                                 other => other.clone(),

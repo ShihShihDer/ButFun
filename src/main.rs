@@ -34,6 +34,7 @@ mod state;
 mod suggestions;
 mod tools;
 mod users;
+mod world_event;
 mod ws;
 
 use std::net::SocketAddr;
