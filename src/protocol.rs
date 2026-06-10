@@ -45,6 +45,29 @@ pub struct WorkshopActiveView {
     pub remaining_secs: f32,
 }
 
+/// 懸賞令摘要（送進快照，前端面板列表用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BountyCardBrief {
+    pub card_id: u8,
+    pub name: String,
+    pub target_name: String,
+    pub required_kills: u32,
+    pub reward: u32,
+    pub xp: u32,
+}
+
+/// 玩家目前接取的懸賞任務狀態（含擊殺進度+剩餘秒數）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BountyActiveView {
+    pub card_id: u8,
+    pub name: String,
+    pub target_name: String,
+    pub required_kills: u32,
+    pub kills_done: u32,
+    pub reward: u32,
+    pub remaining_secs: f32,
+}
+
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -278,6 +301,11 @@ pub enum ClientMsg {
     FulfillWorkshopOrder,
     /// 放棄工坊訂單（ROADMAP 52）：取消目前進行中的訂單，無懲罰（不啟動冷卻）。
     AbandonWorkshopOrder,
+    /// 接取懸賞任務（ROADMAP 53）：在主城懸賞告示板接取一張狩獵令。
+    /// `card_id`：要接取的懸賞令編號（1-5）。需故鄉、未倒地、無進行中任務、不在冷卻中。
+    AcceptBounty { card_id: u8 },
+    /// 放棄懸賞任務（ROADMAP 53）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
+    AbandonBounty,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -472,6 +500,20 @@ pub struct PlayerView {
     /// 玩家是否靠近主城工坊 NPC（故鄉限定）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_workshop: bool,
+
+    // ── 懸賞告示板（ROADMAP 53）──────────────────────────────────────────
+    /// 告示板目前提供的 5 張懸賞令（靜態，前端面板列表用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bounty_cards: Vec<BountyCardBrief>,
+    /// 玩家目前接取的懸賞任務（None = 無任務）。含擊殺進度+剩餘秒數。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bounty_active: Option<BountyActiveView>,
+    /// 懸賞完成後的冷卻秒數（0 = 可接取）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub bounty_cooldown: f32,
+    /// 玩家是否靠近主城懸賞告示板 NPC（故鄉限定）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_bounty_board: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -759,6 +801,10 @@ mod tests {
                 workshop_active: None,
                 workshop_cooldown: 0.0,
                 near_workshop: false,
+                bounty_cards: vec![],
+                bounty_active: None,
+                bounty_cooldown: 0.0,
+                near_bounty_board: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -899,6 +945,10 @@ mod tests {
             workshop_active: None,
             workshop_cooldown: 0.0,
             near_workshop: false,
+            bounty_cards: vec![],
+            bounty_active: None,
+            bounty_cooldown: 0.0,
+            near_bounty_board: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

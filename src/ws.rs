@@ -129,6 +129,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
             workshop_cooldown: 0.0,
+            bounty_active: None,
+            bounty_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -180,6 +182,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
             workshop_cooldown: 0.0,
+            bounty_active: None,
+            bounty_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -1028,6 +1032,37 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 每日任務：擊殺事件（ROADMAP 32）。
                     if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
                         advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                    }
+                    // 懸賞告示板：擊殺事件（ROADMAP 53）。
+                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                        let bounty_result = {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                crate::bounty_board::on_kill(&mut p.bounty_active, kill_kind)
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some((reward, xp)) = bounty_result {
+                            let pname = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    p.ether = p.ether.saturating_add(reward);
+                                    p.masteries.gain_warrior(xp);
+                                    p.bounty_active = None;
+                                    p.bounty_cooldown = crate::bounty_board::BOUNTY_COOLDOWN_SECS;
+                                    tracing::info!(player = %p.name, reward, xp, "完成懸賞任務");
+                                    p.name.clone()
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            if !pname.is_empty() {
+                                let _ = tx_direct.send(format!(
+                                    "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
+                                ));
+                            }
+                        }
                     }
                     // 獸潮攻城（ROADMAP 44）：通知導演統計攻城點附近的擊殺數，達標即全服勝利。
                     if let Some((_, _, _, Some(_))) = result {
@@ -1898,6 +1933,46 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             if p.workshop_active.take().is_some() {
                                 tracing::info!(player = %p.name, "放棄工坊訂單");
+                            }
+                        }
+                    }
+                }
+
+                // ── 懸賞告示板（ROADMAP 53）────────────────────────────────────────
+                Ok(ClientMsg::AcceptBounty { card_id }) => {
+                    // 接取懸賞任務：需登入、故鄉、未倒地、靠近告示板 NPC、無進行中任務、無冷卻。
+                    use crate::bounty_board::{try_accept, is_near_bounty_board};
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let players = app.players.read().unwrap();
+                            if let Some(p) = players.get(&uid) {
+                                if p.vitals.is_downed()
+                                    || p.planet != crate::state::PLANET_HOME
+                                    || !is_near_bounty_board(p.x, p.y)
+                                {
+                                    None
+                                } else {
+                                    try_accept(card_id, &p.bounty_active, p.bounty_cooldown)
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(active) = result {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                tracing::info!(player = %p.name, card_id, "接取懸賞任務");
+                                p.bounty_active = Some(active);
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::AbandonBounty) => {
+                    // 放棄懸賞任務：取消進行中任務，無懲罰（不啟動冷卻）。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.bounty_active.take().is_some() {
+                                tracing::info!(player = %p.name, "放棄懸賞任務");
                             }
                         }
                     }

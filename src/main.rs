@@ -55,6 +55,7 @@ mod farm_crops;
 mod star_crystal;
 mod trade_route;
 mod workshop;
+mod bounty_board;
 
 use std::net::SocketAddr;
 

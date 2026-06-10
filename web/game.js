@@ -637,6 +637,7 @@
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
           updateTradePanel(me, isGuest); // 星際貿易面板（ROADMAP 51）
           updateWorkshopPanel(me, isGuest); // 工匠工坊面板（ROADMAP 52）
+          updateBountyPanel(me, isGuest);   // 懸賞告示板面板（ROADMAP 53）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1871,7 +1872,8 @@
         (e.key === "t" || e.key === "T") ? "dockFarmCrop" :
         (e.key === "x" || e.key === "X") ? "dockStarCrystal" :
         (e.key === "v" || e.key === "V") ? "dockTrade" :
-        (e.key === "k" || e.key === "K") ? "dockWorkshop" : null;
+        (e.key === "k" || e.key === "K") ? "dockWorkshop" :
+        (e.key === "u" || e.key === "U") ? "dockBounty" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2317,6 +2319,7 @@
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     drawWorkshopNpc(camX, camY); // 工坊 NPC（ROADMAP 52）
+    drawBountyBoardNpc(camX, camY); // 懸賞告示板 NPC（ROADMAP 53）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4497,6 +4500,50 @@
     ctx.restore();
   }
 
+  // 懸賞告示板 NPC（ROADMAP 53）：固定於故鄉 (2240, 2080)，僅在故鄉且視野內繪製。
+  const BOUNTY_NPC_WX = 2240;
+  const BOUNTY_NPC_WY = 2080;
+  function drawBountyBoardNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = BOUNTY_NPC_WX - camX;
+    const sy = BOUNTY_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 0.9 + 11) * 2;
+    const by = sy + bob;
+    ctx.save();
+    // 身體（暗紅獵人斗篷）
+    ctx.fillStyle = "#5a2020";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭（曬黑膚色）
+    ctx.fillStyle = "#a06030";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 獵人寬邊帽
+    ctx.fillStyle = "#3a2010";
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 16, 13, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(sx - 6, by - 20, 12, 6);
+    // 告示板（木牌，NPC 左側）
+    ctx.fillStyle = "#7a5020";
+    ctx.fillRect(sx - 24, by - 14, 14, 18);
+    ctx.fillStyle = "#c8a060";
+    ctx.fillRect(sx - 23, by - 13, 12, 7);
+    ctx.fillRect(sx - 23, by - 4, 12, 6);
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffb060";
+    ctx.fillText("📜 懸賞", sx, by - 30);
+    ctx.restore();
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
@@ -6505,6 +6552,119 @@
     const info = document.createElement("div");
     info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
     info.textContent = "在主城工坊 NPC 接取加急訂單，收集指定材料後回來交付，換取乙太 + 工匠熟練度 XP。完成後 8 分鐘冷卻。";
+    body.appendChild(info);
+  }
+
+  // ── 懸賞告示板面板（ROADMAP 53）────────────────────────────────────────────
+  let lastBountySig = null;
+  function updateBountyPanel(me, isGuestUser) {
+    const body = document.getElementById("bountyBody");
+    if (!body) return;
+
+    const active = me ? (me.bounty_active || null) : null;
+    const cooldown = me ? (me.bounty_cooldown || 0) : 0;
+    const nearBoard = me ? !!me.near_bounty_board : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const cards = me ? (me.bounty_cards || []) : [];
+
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearBoard, planet].join("|");
+    if (sig === lastBountySig) return;
+    lastBountySig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser || planet !== "home") {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = isGuestUser ? "登入後才能使用懸賞告示板" : "懸賞告示板只在故鄉星球提供服務。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 進行中懸賞任務。
+    if (active) {
+      const mins = Math.floor(active.remaining_secs / 60);
+      const secs = Math.floor(active.remaining_secs % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+      const progress = active.kills_done;
+      const total = active.required_kills;
+
+      const activeDiv = document.createElement("div");
+      activeDiv.style.cssText = "background:#1a1a10;border:1px solid #806020;border-radius:8px;padding:10px;margin-bottom:10px;";
+      activeDiv.innerHTML = `
+        <div style="color:#ffc060;font-weight:600;margin-bottom:4px;">📜 進行中：${active.name}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">目標：${active.target_name}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">進度：<b style="color:${progress >= total ? "#80ff80" : "#ffe080"}">${progress} / ${total}</b></div>
+        <div style="background:#333;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px;">
+          <div style="background:#c08030;height:100%;width:${Math.min(100, progress / total * 100)}%;transition:width .3s;"></div>
+        </div>
+        <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 戰士 XP</div>
+        <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
+      `;
+      body.appendChild(activeDiv);
+
+      const abandonBtn = document.createElement("button");
+      abandonBtn.type = "button";
+      abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
+      abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      abandonBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "AbandonBounty" }));
+      });
+      body.appendChild(abandonBtn);
+
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.textContent = "提示：去外頭獵殺目標怪物，擊殺後自動計進度，達標即自動完成並發放獎勵！";
+      body.appendChild(note);
+      return;
+    }
+
+    // 冷卻中。
+    if (cooldown > 0) {
+      const mins = Math.floor(cooldown / 60);
+      const secs = Math.floor(cooldown % 60);
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
+      body.appendChild(hint);
+      return;
+    }
+
+    // 顯示可接取的 5 張懸賞令。
+    if (!nearBoard) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = "靠近主城懸賞告示板（📜）才能接取任務。";
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = "📜 可接取懸賞令（選一張）";
+      body.appendChild(head);
+
+      for (const c of cards) {
+        const row = document.createElement("div");
+        row.style.cssText = `background:#1a1a10;border:1px solid #604020;border-radius:8px;padding:8px;margin-bottom:6px;`;
+        row.innerHTML = `
+          <div style="color:#ffc060;margin-bottom:4px;">${c.name}</div>
+          <div style="color:#aaa;font-size:.8rem;">目標：<b style="color:#ffb060">${c.target_name}</b> × ${c.required_kills} 隻</div>
+          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${c.reward} 乙太</b> + 戰士 XP ${c.xp}</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "📜 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #806030;border-radius:6px;background:transparent;color:#c8a060;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "AcceptBounty", card_id: c.card_id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在主城懸賞告示板接取狩獵令，出城獵殺指定怪物，達標後自動完成並獲得乙太 + 戰士熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
 
