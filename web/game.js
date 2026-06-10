@@ -556,6 +556,7 @@
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
+          updateClassPanel(me.job_class || null, isGuest); // 職業選擇（ROADMAP 28）
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -627,6 +628,21 @@
                 planetEl.classList.remove("hidden");
               } else {
                 planetEl.classList.add("hidden");
+              }
+            }
+          }
+
+          // 職業 HUD（ROADMAP 28）：已選職業時在左下角顯示職業 pill。
+          {
+            const classEl = document.getElementById("hudClass");
+            if (classEl) {
+              if (me.job_class) {
+                const CLASS_LABELS = { warrior:"⚔️ 戰士", farmer:"🌾 農夫", artisan:"🔧 工匠", explorer:"🧭 探索者", merchant:"💰 商人" };
+                classEl.textContent = CLASS_LABELS[me.job_class] || `🎭 ${me.job_class}`;
+                classEl.classList.remove("hidden");
+              } else {
+                classEl.textContent = "🎭 按 J 選職業";
+                classEl.classList.remove("hidden");
               }
             }
           }
@@ -1652,6 +1668,7 @@
         (e.key === "b" || e.key === "B") ? "dockBag" :
         (e.key === "c" || e.key === "C") ? "dockCraft" :
         (e.key === "q" || e.key === "Q") ? "dockQuest" :
+        (e.key === "j" || e.key === "J") ? "dockClass" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -1971,6 +1988,16 @@
       ctx.strokeText(lvText, sx, sy - 36);
       ctx.fillStyle = isMe ? "#ffe066" : "#aad4ff";
       ctx.fillText(lvText, sx, sy - 36);
+    }
+
+    // 職業標誌（ROADMAP 28）：在等級徽章右側畫職業 emoji，讓其他玩家也知道誰選了什麼職業。
+    if (p.job_class) {
+      const classEmoji = { warrior:"⚔️", farmer:"🌾", artisan:"🔧", explorer:"🧭", merchant:"💰" }[p.job_class];
+      if (classEmoji) {
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(classEmoji, sx + 20, sy - 36);
+      }
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
@@ -4451,6 +4478,73 @@
     // dock 圖示:乙太夠擴一格就點一顆黃點,不開窗也知道「現在能擴地了」。
     const dockE = document.getElementById("dockExpand");
     if (dockE) dockE.classList.toggle("dock-active", canBuy);
+  }
+
+  // 職業選擇面板（ROADMAP 28）。
+  // currentClass = 快照裡 me.job_class（"warrior"/"farmer"/...）或 null。
+  const CLASS_INFO = {
+    warrior:  { label: "⚔️ 戰士",  desc: "攻擊力 +5、最大 HP +10。正面硬打型，最能扛傷害。" },
+    farmer:   { label: "🌾 農夫",  desc: "農地收割 +3 乙太/次、NPC 收購 +25%。資源積累型，乙太滾得快。" },
+    artisan:  { label: "🔧 工匠",  desc: "合成每項素材 -1（最少 1）。省料型，更快合出強裝。" },
+    explorer: { label: "🧭 探索者", desc: "星際旅行費 -10 乙太。走遍五星不花冤枉路費。" },
+    merchant: { label: "💰 商人",  desc: "NPC 所有收購 +50%。販賣型，賣什麼都賺更多。" },
+  };
+  let lastClassSig = null;
+  function updateClassPanel(currentClass, isGuestUser) {
+    const body = document.getElementById("classBody");
+    if (!body) return;
+    const sig = `${currentClass}|${isGuestUser}`;
+    if (sig === lastClassSig) return;
+    lastClassSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能選擇職業";
+      body.appendChild(hint);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#aaa;font-size:.8rem;margin-bottom:8px;";
+    intro.textContent = currentClass
+      ? `目前職業：${CLASS_INFO[currentClass]?.label || currentClass}`
+      : "尚未選擇職業。選一個職業獲得獨特加成！";
+    body.appendChild(intro);
+
+    for (const [key, info] of Object.entries(CLASS_INFO)) {
+      const row = document.createElement("div");
+      row.style.cssText = `display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${key === currentClass ? "#253040" : "#1a2030"};border:1px solid ${key === currentClass ? "var(--brass)" : "#2a3040"};`;
+      row.addEventListener("mouseenter", () => { if (key !== currentClass) row.style.background = "#1e2840"; });
+      row.addEventListener("mouseleave", () => { if (key !== currentClass) row.style.background = "#1a2030"; });
+
+      const info_div = document.createElement("div");
+      info_div.style.cssText = "flex:1;";
+      const lbl = document.createElement("div");
+      lbl.style.cssText = "font-weight:600;font-size:.85rem;color:" + (key === currentClass ? "var(--brass)" : "#c8d0e0") + ";";
+      lbl.textContent = info.label + (key === currentClass ? "  ✓ 已選擇" : "");
+      const desc = document.createElement("div");
+      desc.style.cssText = "font-size:.75rem;color:#8899aa;margin-top:2px;";
+      desc.textContent = info.desc;
+      info_div.appendChild(lbl);
+      info_div.appendChild(desc);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "expand-btn";
+      btn.textContent = key === currentClass ? "已選擇" : "選擇";
+      btn.disabled = key === currentClass;
+      btn.addEventListener("click", () => {
+        try { ws.send(JSON.stringify({ type: "set_class", class: key })); } catch {}
+        announce(`選擇職業：${info.label}`);
+        lastClassSig = null; // 強制下次快照重建面板
+      });
+
+      row.appendChild(info_div);
+      row.appendChild(btn);
+      body.appendChild(row);
+    }
   }
 
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
