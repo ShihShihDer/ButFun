@@ -190,6 +190,10 @@ pub enum ClientMsg {
     /// `shard`：翠幽碎片/熔晶碎片/虛空碎片/霧醚碎片/源晶碎片——各自對應一種附魔。
     /// 武器槽空 / 碎片不是附魔碎片 / 背包無此碎片靜默忽略；可覆蓋舊附魔。
     EnchantEquip { shard: ItemKind },
+    /// 主動技能（ROADMAP 45）：玩家點擊技能面板或按快捷鍵觸發。
+    /// `kind`：`"warcry"` / `"bounty"` / `"precision"` / `"gale"` / `"haggle"`。
+    /// 熟練度未達 Lv.5 / 冷卻中 / 未登入靜默忽略。
+    UseSkill { kind: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -260,6 +264,9 @@ pub enum ServerMsg {
         ether_top: Vec<LeaderboardEntry>,
         kills_top: Vec<LeaderboardEntry>,
     },
+    /// 主動技能觸發廣播（ROADMAP 45）：廣播給所有連線客戶端，供前端播放技能特效動畫。
+    /// `player_id`：施法玩家 id；`kind`：技能 snake_case 名稱。
+    SkillActivated { player_id: Uuid, kind: String },
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。
@@ -333,6 +340,11 @@ pub struct PlayerView {
     /// 護甲精煉等級（ROADMAP 37）。0 = 未精煉。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub armor_refine: u8,
+    /// 五技能的冷卻剩餘秒數（ROADMAP 45）。key = skill kind，value = 秒（0 = 可用）。
+    /// 前端 HUD 技能面板顯示倒數。
+    pub skill_cooldowns: std::collections::HashMap<String, u32>,
+    /// 目前掛起的一次性技能旗標（ROADMAP 45）。前端顯示待發光效（"warcry", "bounty"...）。
+    pub active_skill_flags: Vec<String>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -605,6 +617,8 @@ mod tests {
                 weapon_refine: 0,
                 weapon_enchant: None,
                 armor_refine: 0,
+                skill_cooldowns: std::collections::HashMap::new(),
+                active_skill_flags: vec![],
             }],
             fields: vec![FieldView {
                 owner,
@@ -731,6 +745,8 @@ mod tests {
             weapon_refine: 0,
             weapon_enchant: None,
             armor_refine: 0,
+            skill_cooldowns: std::collections::HashMap::new(),
+            active_skill_flags: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

@@ -117,6 +117,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             kill_count: 0,
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
+            skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
+            pending_warcry: false,
+            pending_bounty: false,
+            pending_precision: false,
+            pending_haggle: false,
         }
     } else {
         // 等 Join
@@ -156,6 +161,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             kill_count: 0,
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
+            skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
+            pending_warcry: false,
+            pending_bounty: false,
+            pending_precision: false,
+            pending_haggle: false,
         }
     };
     let id = player.id;
@@ -481,7 +491,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 工具效用(1-D):背包有鎬子/強化鎬就採更多(乘工具倍率)——
                             // 給合成出的工具一個用處,接上「採集→合成工具→採更快」迴圈。
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
-                            let added = p.inventory.add(item, amount * mult);
+                            // 豐饒術（ROADMAP 45）：下次採集額外 +3 個。
+                            let bounty_bonus = if p.pending_bounty {
+                                p.pending_bounty = false;
+                                crate::active_skill::BOUNTY_BONUS_QTY
+                            } else { 0 };
+                            let added = p.inventory.add(item, amount * mult + bounty_bonus);
                             // 採集得 exp（鼓勵探索）；偵測升級並更新血量上限。
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(5);
@@ -489,7 +504,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.vitals.on_level_up(p.level());
                             }
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
-                            tracing::info!(player = %p.name, ?item, added, mult, level = p.level(), "採集入背包+exp");
+                            tracing::info!(player = %p.name, ?item, added, mult, bounty_bonus, level = p.level(), "採集入背包+exp");
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
                         let item: crate::inventory::ItemKind = kind.into();
@@ -510,8 +525,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let discount = crate::class::crafting_reduction(&p.masteries);
                             if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品。
+                                let used_precision = p.pending_precision;
+                                if used_precision {
+                                    p.pending_precision = false;
+                                    p.inventory.add(recipe.output, 1);
+                                }
                                 p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
-                                tracing::info!(player = %p.name, recipe = %recipe_id, discount, "合成成功");
+                                tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
                             }
                         }
                     }
@@ -726,9 +747,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         if let Some(p) = players.get_mut(&id) {
                                             if p.inventory.take(item, qty) {
                                                 let earned = dynamic_price.saturating_mul(qty);
-                                                let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                                tracing::info!(player = %p.name, ?item, qty, earned, bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
-                                                p.ether = p.ether.saturating_add(earned).saturating_add(bonus);
+                                                let class_bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
+                                                // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
+                                                let haggle_bonus = if p.pending_haggle {
+                                                    p.pending_haggle = false;
+                                                    earned.saturating_add(class_bonus) // 疊在含職業加成的總收益上
+                                                } else { 0 };
+                                                tracing::info!(player = %p.name, ?item, qty, earned, class_bonus, haggle_bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
+                                                p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus);
                                                 p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                 true
                                             } else {
@@ -878,17 +904,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     });
                     let Some((px, py, downed, cooldown, power, enchant)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
-                    let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
-                    // 追蹤討伐的兇名資訊（ROADMAP 42），供後續廣播用
-                    let was_notorious = result.as_ref().map(|(_, _, n, _)| *n).unwrap_or(false);
+
+                    // 戰吼（ROADMAP 45）：讀取旗標、決定單攻或群攻，然後清旗。
+                    let use_warcry = app.players.read().unwrap()
+                        .get(&id).map(|p| p.pending_warcry).unwrap_or(false);
+                    let results: Vec<_> = if use_warcry {
+                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power)
+                    } else {
+                        app.enemies.write().unwrap().attack_nearest(px, py, power)
+                            .into_iter().collect()
+                    };
+                    // 取第一筆的兇名狀態（單攻時只有最多一筆，群攻取第一隻兇名）
+                    let was_notorious = results.iter().any(|(_, _, n, _)| *n);
+                    let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>)> =
+                        results.iter().find(|(_, _, _, loot)| loot.is_some()).cloned();
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
-                        if let Some((kind, enemy_level, _, Some((item, qty)))) = result {
-                            p.inventory.add(item, qty);
-                            // 殺怪得 exp（依敵人等級縮放後的難度決定獎勵量；附魔增幅加成）。
-                            let base_reward = crate::combat::scaled_exp(kind.exp_reward(), enemy_level);
-                            // 討伐兇名精英：exp 翻倍（ROADMAP 42）。
-                            let notorious_mult = if was_notorious { 2.0_f32 } else { 1.0_f32 };
+                        if use_warcry { p.pending_warcry = false; }
+                        // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
+                        let mut had_kill = false;
+                        for (kind, enemy_level, notorious, loot) in &results {
+                            let Some((item, qty)) = loot else { continue; };
+                            had_kill = true;
+                            p.inventory.add(*item, *qty);
+                            let base_reward = crate::combat::scaled_exp(kind.exp_reward(), *enemy_level);
+                            let notorious_mult = if *notorious { 2.0_f32 } else { 1.0_f32 };
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult) as u32;
@@ -900,14 +940,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 吸血：擊殺後回復 2 HP。
                             let ls = crate::refinement::enchant_lifesteal_hp(enchant);
                             if ls > 0 { p.vitals.heal(ls); }
-                            // 戰士熟練度（ROADMAP 38）：殺怪得 1 XP；首次升到 1 級時補 HP 加成。
-                            if p.masteries.gain_warrior(1) && p.masteries.warrior_level() == 1 {
-                                let bonus = crate::class::hp_bonus(&p.masteries);
-                                if bonus > 0 {
-                                    p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
-                                }
+                            tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), notorious, "主動攻擊戰利品+exp");
+                        }
+                        // 戰士熟練度（ROADMAP 38）：有擊殺才得 1 XP（每次攻擊一次，非每隻）。
+                        if had_kill && p.masteries.gain_warrior(1) && p.masteries.warrior_level() == 1 {
+                            let bonus = crate::class::hp_bonus(&p.masteries);
+                            if bonus > 0 {
+                                p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
                             }
-                            tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), notorious = was_notorious, "主動攻擊戰利品+exp");
                         }
                     }
                     // 討伐兇名精英全服廣播（ROADMAP 42）
@@ -1334,6 +1374,64 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ROADMAP 38：職業改兼修熟練度，SetClass 已不再使用；舊客戶端訊息靜默忽略。
                 Ok(ClientMsg::SetClass { .. }) => {}
+
+                // ── 主動技能（ROADMAP 45）─────────────────────────────────────────
+                Ok(ClientMsg::UseSkill { kind }) => {
+                    use crate::active_skill::{ActiveSkillKind, GALE_DASH_PX};
+                    use crate::state::{WORLD_WIDTH, WORLD_HEIGHT};
+
+                    let Some(skill_kind) = ActiveSkillKind::from_str(&kind) else { continue; };
+
+                    // 讀取玩家狀態（未登入 / 倒地 / 冷卻中 / 熟練度不足均靜默忽略）。
+                    let info = app.players.read().unwrap().get(&id).map(|p| {
+                        let cd = p.skill_cooldowns.get(skill_kind);
+                        let unlocked = skill_kind.is_unlocked(&p.masteries);
+                        let downed = p.vitals.is_downed();
+                        (cd, unlocked, downed, p.x, p.y, p.input.up, p.input.down, p.input.left, p.input.right)
+                    });
+                    let Some((cd, unlocked, downed, px, py, inp_up, inp_down, inp_left, inp_right)) = info else { continue; };
+                    if downed || !unlocked || cd > 0.0 { continue; }
+
+                    // 風之步：立即瞬移（不設 pending 旗）。
+                    if skill_kind == ActiveSkillKind::Gale {
+                        let mut dx = 0.0_f32;
+                        let mut dy = 0.0_f32;
+                        if inp_up    { dy -= 1.0; }
+                        if inp_down  { dy += 1.0; }
+                        if inp_left  { dx -= 1.0; }
+                        if inp_right { dx += 1.0; }
+                        // 若無輸入方向，預設向上（不讓技能無效）。
+                        if dx == 0.0 && dy == 0.0 { dy = -1.0; }
+                        let len = (dx * dx + dy * dy).sqrt();
+                        dx /= len;
+                        dy /= len;
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.x = (p.x + dx * GALE_DASH_PX).clamp(0.0, WORLD_WIDTH);
+                            p.y = (p.y + dy * GALE_DASH_PX).clamp(0.0, WORLD_HEIGHT);
+                            p.skill_cooldowns.set(skill_kind, skill_kind.cooldown_secs());
+                            tracing::info!(player = %p.name, dx, dy, "風之步瞬移");
+                        }
+                    } else {
+                        // 其餘技能：設 pending 旗 + 進冷卻。
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            match skill_kind {
+                                ActiveSkillKind::Warcry    => p.pending_warcry    = true,
+                                ActiveSkillKind::Bounty    => p.pending_bounty    = true,
+                                ActiveSkillKind::Precision => p.pending_precision = true,
+                                ActiveSkillKind::Haggle    => p.pending_haggle    = true,
+                                ActiveSkillKind::Gale      => unreachable!(),
+                            }
+                            p.skill_cooldowns.set(skill_kind, skill_kind.cooldown_secs());
+                            tracing::info!(player = %p.name, ?skill_kind, "主動技能準備就緒");
+                        }
+                    }
+
+                    // 廣播技能動畫（SkillActivated）給所有連線客戶端。
+                    let _ = app.tx.send(Arc::new(ServerMsg::SkillActivated {
+                        player_id: id,
+                        kind: kind.clone(),
+                    }));
+                }
 
                 // ── 公會系統（ROADMAP 29）──────────────────────────────────────────
                 Ok(ClientMsg::CreateGuild { name, tag }) => {

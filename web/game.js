@@ -623,6 +623,7 @@
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
+          updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -795,6 +796,57 @@
         // 排行榜（ROADMAP 33）：收到資料後更新面板。
         renderLeaderboard(msg.level_top || [], msg.ether_top || [], msg.kills_top || []);
         break;
+      case "skill_activated":
+        // 主動技能觸發（ROADMAP 45）：播放技能視覺特效。
+        showSkillFlash(msg.player_id, msg.kind);
+        break;
+    }
+  }
+
+  // 主動技能特效（ROADMAP 45）：技能觸發時，在施法者頭上顯示短暫特效。
+  const skillFlashes = []; // [{ playerId, kind, born }]
+  function showSkillFlash(playerId, kind) {
+    skillFlashes.push({ playerId, kind, born: performance.now() });
+    // 最多保留 8 個（避免堆積）
+    if (skillFlashes.length > 8) skillFlashes.shift();
+  }
+  function drawSkillFlashes(now, camX, camY) {
+    const SKILL_COLORS = {
+      warcry:    "255,80,80",
+      bounty:    "100,220,100",
+      precision: "80,160,255",
+      gale:      "220,200,80",
+      haggle:    "200,100,220",
+    };
+    const SKILL_EMOJIS = {
+      warcry: "⚔️", bounty: "🌾", precision: "🔧", gale: "🧭", haggle: "💰",
+    };
+    const dur = 1200;
+    for (let i = skillFlashes.length - 1; i >= 0; i--) {
+      const f = skillFlashes[i];
+      const age = now - f.born;
+      if (age > dur) { skillFlashes.splice(i, 1); continue; }
+      // 找到這位玩家的目前位置（players 是 Map<id, playerView>）
+      const target = players.get(f.playerId);
+      if (!target) continue;
+      const sx = target.x - camX;
+      const sy = target.y - camY;
+      const t = age / dur;
+      const alpha = t < 0.4 ? t / 0.4 : (1 - t) / 0.6;
+      const col = SKILL_COLORS[f.kind] || "255,255,255";
+      const radius = 20 + t * 40;
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.strokeStyle = `rgb(${col})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(sx, sy - 20, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = alpha;
+      ctx.font = "1.2rem sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(SKILL_EMOJIS[f.kind] || "✨", sx, sy - 20 - radius - 4);
+      ctx.restore();
     }
   }
 
@@ -1798,7 +1850,8 @@
         (e.key === "a" || e.key === "A") ? "dockAchievement" :
         (e.key === "d" || e.key === "D") ? "dockDailyQuest" :
         (e.key === "l" || e.key === "L") ? "dockLeaderboard" :
-        (e.key === "h" || e.key === "H") ? "dockHelp" : null;
+        (e.key === "h" || e.key === "H") ? "dockHelp" :
+        (e.key === "z" || e.key === "Z") ? "dockSkill" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2266,6 +2319,8 @@
 
     // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
     drawTravelFlash(performance.now());
+    // 主動技能圈形特效（ROADMAP 45）：施法者頭上短暫圈形發光。
+    drawSkillFlashes(performance.now(), camX, camY);
 
     // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawFloaters(camX, camY, performance.now());
@@ -5499,6 +5554,111 @@
       foot.appendChild(descEl);
       row.appendChild(foot);
 
+      body.appendChild(row);
+    }
+  }
+
+  // 主動技能面板（ROADMAP 45）：顯示五個主動技能、解鎖狀態與冷卻倒數。
+  const SKILL_DEFS = [
+    { kind: "warcry",    emoji: "⚔️", name: "戰吼",   mastery: "warrior",  lv: 5,
+      desc: "下次攻擊打中範圍內所有存活敵人（群攻）。60 秒冷卻。" },
+    { kind: "bounty",   emoji: "🌾", name: "豐饒術",  mastery: "farmer",   lv: 5,
+      desc: "下次採集額外得 +3 個物品。120 秒冷卻。" },
+    { kind: "precision",emoji: "🔧", name: "精密合成",mastery: "artisan",  lv: 5,
+      desc: "下次合成額外產出 +1 個成品。180 秒冷卻。" },
+    { kind: "gale",     emoji: "🧭", name: "風之步",  mastery: "explorer", lv: 5,
+      desc: "立即朝當前移動方向瞬移 256px。90 秒冷卻。" },
+    { kind: "haggle",   emoji: "💰", name: "議價術",  mastery: "merchant", lv: 5,
+      desc: "下次 NPC 賣出額外多得等額乙太（總收入 ×2）。150 秒冷卻。" },
+  ];
+  const XP_PER_MASTERY_LEVEL = 10;
+  let lastSkillSig = null;
+  function updateSkillPanel(me, isGuestUser) {
+    const body = document.getElementById("skillBody");
+    if (!body) return;
+    const masteries = me.masteries || {};
+    const cds = me.skill_cooldowns || {};
+    const flags = me.active_skill_flags || [];
+    const sig = JSON.stringify({ masteries, cds, flags, isGuestUser });
+    if (sig === lastSkillSig) return;
+    lastSkillSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能使用主動技能";
+      body.appendChild(hint);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
+    intro.textContent = "各熟練度 Lv.5 解鎖對應主動技能。每個技能觸發後進入冷卻，冷卻完畢即可再次使用。";
+    body.appendChild(intro);
+
+    for (const def of SKILL_DEFS) {
+      const masteryXp = masteries[def.mastery] || 0;
+      const masteryLv = Math.floor(masteryXp / XP_PER_MASTERY_LEVEL);
+      const unlocked = masteryLv >= def.lv;
+      const cd = cds[def.kind] || 0;
+      const ready = unlocked && cd === 0;
+      const isPending = flags.includes(def.kind);
+
+      const row = document.createElement("div");
+      row.style.cssText = `
+        display:flex; align-items:center; gap:8px; padding:8px 0;
+        border-bottom:1px solid #333; opacity:${unlocked ? 1 : 0.45};
+      `;
+
+      const emojiEl = document.createElement("span");
+      emojiEl.style.cssText = "font-size:1.4rem;min-width:2rem;text-align:center;";
+      emojiEl.textContent = def.emoji;
+      row.appendChild(emojiEl);
+
+      const info = document.createElement("div");
+      info.style.cssText = "flex:1;";
+
+      const nameEl = document.createElement("div");
+      nameEl.style.cssText = `font-size:.9rem;font-weight:bold;color:${unlocked ? "#eee" : "#888"};`;
+      nameEl.textContent = `${def.name}${isPending ? " ✨" : ""}`;
+      info.appendChild(nameEl);
+
+      const descEl = document.createElement("div");
+      descEl.style.cssText = "color:#aaa;font-size:.75rem;margin-top:2px;line-height:1.3;";
+      descEl.textContent = def.desc;
+      info.appendChild(descEl);
+
+      const statusEl = document.createElement("div");
+      statusEl.style.cssText = "color:#888;font-size:.72rem;margin-top:2px;";
+      if (!unlocked) {
+        statusEl.textContent = `熟練度 Lv.${def.lv} 解鎖（目前 Lv.${masteryLv}）`;
+      } else if (cd > 0) {
+        statusEl.textContent = `冷卻中 ${cd} 秒`;
+      } else if (isPending) {
+        statusEl.textContent = "✅ 準備就緒，下次行動觸發";
+      } else {
+        statusEl.textContent = "🟢 可用";
+      }
+      info.appendChild(statusEl);
+      row.appendChild(info);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.style.cssText = `
+        padding:6px 12px; border:none; border-radius:6px; cursor:pointer;
+        font-size:.8rem; min-width:56px;
+        background:${ready ? "#5080f0" : "#333"};
+        color:${ready ? "#fff" : "#666"};
+      `;
+      btn.textContent = cd > 0 ? `${cd}s` : (unlocked ? "施放" : "未解鎖");
+      btn.disabled = !ready;
+      if (ready) {
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "use_skill", kind: def.kind }));
+        });
+      }
+      row.appendChild(btn);
       body.appendChild(row);
     }
   }

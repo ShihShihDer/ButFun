@@ -4,6 +4,7 @@
 //! 詳見 docs/GAME_DESIGN.md。
 
 mod achievement;
+mod active_skill;
 mod auth;
 mod class;
 mod director;
