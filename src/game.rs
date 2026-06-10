@@ -342,6 +342,60 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // AI 導演層＋獸潮攻城（ROADMAP 44）：低頻導演 tick，觸發時注入怪波＋廣播公告。
+            {
+                let cmds = app.director.write().unwrap().tick(dt);
+                for cmd in cmds {
+                    match cmd {
+                        crate::director::DirectorCmd::AnnounceHorde { site_x, site_y, site_label, wave } => {
+                            // 注入第一波怪物（全部在保護圈外確認）。
+                            let mut enemies = app.enemies.write().unwrap();
+                            let mut injected = 0u32;
+                            for (wx, wy, kind) in wave {
+                                if world_core::town_protected_at(wx as f64, wy as f64) {
+                                    tracing::warn!(x = wx, y = wy, "獸潮波次位置在保護圈內，跳過");
+                                    continue;
+                                }
+                                enemies.inject_event_enemy(wx, wy, kind);
+                                injected += 1;
+                            }
+                            tracing::info!(site = site_label, injected, "獸潮廣播＋注入第一波怪物");
+                            let _ = app.tx_chat.send(format!(
+                                "⚔️ 獸潮來襲！大批怪物正聚集在{}！\
+                                 30 秒後衝擊城門——出城迎戰或守在城牆輸出！",
+                                site_label
+                            ));
+                        }
+                        crate::director::DirectorCmd::SiegeStart { site_label } => {
+                            tracing::info!(site = site_label, "獸潮攻城開始");
+                            let _ = app.tx_chat.send(format!(
+                                "⚔️ 獸潮衝擊{}！打倒 {} 隻怪物可為全服贏得獎勵！",
+                                site_label, crate::director::HORDE_VICTORY_KILLS
+                            ));
+                        }
+                        crate::director::DirectorCmd::HordeVictory { site_label, kills } => {
+                            tracing::info!(site = site_label, kills, "獸潮被玩家打退，全服獎勵");
+                            let _ = app.tx_chat.send(format!(
+                                "🎉 玩家們成功打退{}的獸潮！（共斬殺 {} 隻）\
+                                 全服每位登入玩家獲得 {} 乙太！",
+                                site_label, kills, crate::director::HORDE_VICTORY_ETHER
+                            ));
+                            // 全服所有線上玩家各得勝利獎勵乙太（與社群任務獎勵機制相同）。
+                            for p in app.players.write().unwrap().values_mut() {
+                                p.ether = p.ether.saturating_add(crate::director::HORDE_VICTORY_ETHER);
+                            }
+                        }
+                        crate::director::DirectorCmd::HordeRetreat { site_label } => {
+                            tracing::info!(site = site_label, "獸潮時間耗盡，自行退去");
+                            let _ = app.tx_chat.send(format!(
+                                "😔 {}的獸潮自行退去了…下次要更快打退！",
+                                site_label
+                            ));
+                        }
+                    }
+                }
+            }
+
             // 全服社群任務（ROADMAP 27）：推進計時器；換輪時廣播公告。
             {
                 let reset = app.quests.write().unwrap().tick(dt);
@@ -442,6 +496,7 @@ pub fn spawn(app: AppState) {
                             }).collect()
                         },
                         world_event: app.world_event.read().unwrap().view(),
+                        horde_event: app.director.read().unwrap().view(),
                         quests: crate::protocol::quests_view(&app.quests.read().unwrap()),
                         land_plots: {
                             let registry = app.land_plots.read().unwrap();

@@ -226,6 +226,8 @@
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
   // 裂縫事件 → 狀態列小 pill（取代會壓到血量列的頂部大橫幅）。同字不重寫 DOM。
   let lastEventPillText = null;
+  let hordeEvent = null; // { phase, site_x, site_y, site_label, secs_left } | null — 獸潮攻城（ROADMAP 44）
+  let lastHordeBannerText = null; // 防止重複 DOM 操作
   function updateWorldEventPill(ev) {
     const pill = document.getElementById("hudEvent");
     if (!pill) return;
@@ -240,6 +242,44 @@
       pill.classList.add("hidden");
     }
   }
+  // 獸潮攻城橫幅（ROADMAP 44）：廣播倒數或攻城進行中時顯示頂部橫幅。
+  function updateHordeBanner(ev) {
+    let banner = document.getElementById("hordeBanner");
+    if (!ev) {
+      if (banner) { banner.style.display = "none"; }
+      lastHordeBannerText = null;
+      return;
+    }
+    const label = ev.site_label || "";
+    const secs  = ev.secs_left || 0;
+    let text, bgColor;
+    if (ev.phase === "announcing") {
+      text    = `⚔️ 獸潮即將衝擊 ${label}！${secs}s 後開始`;
+      bgColor = "#7a2020";
+    } else {
+      text    = `⚔️ 獸潮攻城 ${label}！迎戰剩餘 ${secs}s（打退 6 隻贏全服獎勵）`;
+      bgColor = "#5a1010";
+    }
+    if (text === lastHordeBannerText) return;
+    lastHordeBannerText = text;
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "hordeBanner";
+      banner.style.cssText = [
+        "position:fixed", "top:0", "left:0", "right:0",
+        "z-index:9990", "text-align:center",
+        "font-size:.85rem", "font-weight:600",
+        "padding:5px 12px", "pointer-events:none",
+        "letter-spacing:.02em",
+      ].join(";");
+      document.body.appendChild(banner);
+    }
+    banner.style.background  = bgColor;
+    banner.style.color        = "#f8d0a0";
+    banner.style.display      = "block";
+    banner.textContent        = text;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -530,6 +570,8 @@
         if (daynight) updateDayNightHud(daynight);
         worldEvent = msg.world_event || null;
         updateWorldEventPill(worldEvent);
+        hordeEvent = msg.horde_event || null;
+        updateHordeBanner(hordeEvent);
         quests = msg.quests || [];
         updateQuestPanel();
         landPlots = msg.land_plots || [];
@@ -2476,6 +2518,21 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("🌀", rx, ry);
+        ctx.globalAlpha = 1;
+        ctx.textBaseline = "alphabetic";
+      }
+    }
+
+    // 獸潮攻城點（ROADMAP 44）：廣播或攻城中在小地圖標脈動紅色⚔️符號。
+    if (hordeEvent) {
+      const hx = toMiniX(hordeEvent.site_x), hy = toMiniY(hordeEvent.site_y);
+      if (hx >= ox && hx <= ox + size && hy >= oy && hy <= oy + size) {
+        const pulse3 = 0.5 + 0.4 * Math.sin(performance.now() / 300);
+        ctx.globalAlpha = pulse3;
+        ctx.font = "13px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("⚔️", hx, hy);
         ctx.globalAlpha = 1;
         ctx.textBaseline = "alphabetic";
       }

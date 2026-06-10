@@ -6,6 +6,7 @@
 mod achievement;
 mod auth;
 mod class;
+mod director;
 mod combat;
 mod connections;
 mod equipment;
