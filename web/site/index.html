@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ButFun — 邊境星拓荒 | 官方網站</title>
+  <meta name="description" content="ButFun 官方網站：蒸汽龐克太空歌劇風的療癒多人小世界，瀏覽器即玩免下載。遊戲介紹、即時伺服器狀態、更新日誌與社群入口。" />
+  <meta property="og:title" content="ButFun — 邊境星拓荒" />
+  <meta property="og:description" content="「大靜默」之後乙太緩緩回流——回到邊境星，挖掘、建造、種田，和其他拓荒者一起重建家園。瀏覽器即玩。" />
+  <meta property="og:image" content="/assets/icon-512.png" />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="/assets/icon-192.png" />
+  <style>
+    /* 與遊戲同一套色票：深空底 + 黃銅，蒸汽龐克太空歌劇調。 */
+    :root {
+      --bg: #0b0d12; --panel: rgba(18, 22, 30, 0.82); --brass: #c9a24b;
+      --brass-dim: rgba(201, 162, 75, 0.55); --text: #d8dce6; --dim: #9aa1ad;
+      --green: #7fd08a; --red: #e07a6a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: "Noto Sans TC", system-ui, -apple-system, sans-serif;
+      line-height: 1.75;
+    }
+    a { color: var(--brass); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+    /* ── Hero ── */
+    header {
+      text-align: center; padding: 64px 16px 48px;
+      background:
+        radial-gradient(ellipse 60% 50% at 50% 0%, rgba(201,162,75,0.10), transparent),
+        radial-gradient(ellipse 40% 30% at 80% 20%, rgba(100,140,220,0.06), transparent);
+      border-bottom: 1px solid rgba(201,162,75,0.25);
+    }
+    header img { width: 96px; height: 96px; image-rendering: pixelated; }
+    h1 { margin: 12px 0 4px; color: var(--brass); letter-spacing: 6px; font-size: 2.2rem; }
+    .tagline { color: var(--dim); margin: 0 0 28px; }
+    .play-btn {
+      display: inline-block; padding: 14px 44px; border-radius: 10px;
+      background: linear-gradient(180deg, #d9b35c, #b08a38); color: #1a1408;
+      font-weight: 700; font-size: 1.15rem; letter-spacing: 2px;
+      box-shadow: 0 4px 18px rgba(201,162,75,0.35);
+    }
+    .play-btn:hover { text-decoration: none; filter: brightness(1.08); }
+    .play-note { color: var(--dim); font-size: 0.85rem; margin-top: 10px; }
+    /* ── 區塊 ── */
+    section { padding: 36px 0 8px; }
+    h2 {
+      color: var(--brass); font-size: 1.25rem; letter-spacing: 3px;
+      border-bottom: 1px solid rgba(201,162,75,0.25); padding-bottom: 8px;
+    }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .card { background: var(--panel); border: 1px solid rgba(201,162,75,0.18); border-radius: 10px; padding: 14px 16px; }
+    .card b { color: var(--brass); }
+    .card .ico { font-size: 1.6rem; }
+    /* ── 狀態 ── */
+    #status { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; }
+    .stat { background: var(--panel); border: 1px solid rgba(201,162,75,0.18); border-radius: 10px; padding: 12px 22px; }
+    .stat .num { font-size: 1.6rem; color: var(--brass); font-weight: 700; }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+    .on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .off { background: var(--red); }
+    /* ── 更新日誌 ── */
+    #news li { margin: 8px 0; }
+    #news .date { color: var(--dim); font-size: 0.85rem; margin-right: 8px; white-space: nowrap; }
+    #news .kind { font-size: 0.8rem; border: 1px solid var(--brass-dim); border-radius: 6px; padding: 1px 7px; margin-right: 8px; color: var(--brass); white-space: nowrap; }
+    footer { color: var(--dim); text-align: center; padding: 36px 16px 48px; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/assets/icon-192.png" alt="ButFun 標誌" />
+    <h1>ButFun</h1>
+    <p class="tagline">邊境星拓荒 — 蒸汽龐克太空歌劇風的療癒多人小世界</p>
+    <a class="play-btn" href="/">▶ 立即遊玩</a>
+    <p class="play-note">瀏覽器即玩、免下載免安裝；手機可「加入主畫面」當 App 玩</p>
+  </header>
+
+  <div class="wrap">
+    <section>
+      <h2>📖 故事</h2>
+      <p>「大靜默」讓星際航路沉寂了一個世代——乙太枯竭，文明退回各自的星球。
+      如今乙太緩緩回流，邊境星上的廢墟再次亮起黃銅色的燈火。
+      你是最早回來的拓荒者之一：開墾農地、深入礦穴、用挖出的土石築起自己的家，
+      和其他拓荒者在新手村的安全燈塔下相遇。宇宙的更遠處——翠幽星、赤焰星、
+      虛空星、霧醚星、星源星——正等著乙太航路重新點亮。</p>
+    </section>
+
+    <section>
+      <h2>✨ 玩法特色</h2>
+      <div class="cards">
+        <div class="card"><span class="ico">⛏️</span><br><b>挖掘與建造</b><br>整個世界都能挖：鑿隧道、採礦脈、把挖出的材料堆回去蓋洞穴家園。</div>
+        <div class="card"><span class="ico">🌱</span><br><b>農場生活</b><br>登入就有自己的農地，種植、澆水、收成換乙太，擴建你的領地。</div>
+        <div class="card"><span class="ico">🤝</span><br><b>多人同行</b><br>權威伺服器即時同步，和朋友在同一片星球上拓荒、交易、互相支援。</div>
+        <div class="card"><span class="ico">🚀</span><br><b>星際遠征</b><br>越往宇宙深處特產越稀有：翠玉藤、熔岩石、虛空晶、霧醚、源晶……</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>📡 伺服器狀態</h2>
+      <div id="status"><div class="stat">讀取中…</div></div>
+    </section>
+
+    <section>
+      <h2>📰 更新日誌 <small style="color:var(--dim);font-size:0.75rem;letter-spacing:0">（由 AI 開發迴圈自動更新）</small></h2>
+      <ul id="news"><li>讀取中…</li></ul>
+    </section>
+
+    <section>
+      <h2>💬 社群</h2>
+      <div class="cards">
+        <div class="card"><span class="ico">🗣️</span><br><b><a href="https://github.com/ShihShihDer/ButFun/discussions" target="_blank" rel="noopener">玩家論壇（GitHub Discussions）</a></b><br>提問、許願、分享你的洞穴豪宅。</div>
+        <div class="card"><span class="ico">💡</span><br><b>遊戲內建議箱</b><br>進遊戲點「💡 給點建議」，回饋直達開發迴圈。</div>
+        <div class="card"><span class="ico">🔧</span><br><b><a href="https://github.com/ShihShihDer/ButFun" target="_blank" rel="noopener">原始碼（GitHub）</a></b><br>本遊戲由 AI 開發迴圈持續打造，全程開放。</div>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    ButFun · 邊境星拓荒 — 一個由 AI 持續開發、玩家回饋驅動的實驗性小世界<br>
+    <a href="/">回到遊戲</a>
+  </footer>
+
+  <script>
+    // ── 伺服器狀態（/api/status 只吐彙總數字，無個資）──
+    (async () => {
+      const box = document.getElementById("status");
+      try {
+        const r = await fetch("/api/status", { cache: "no-store" });
+        if (!r.ok) throw new Error();
+        const s = await r.json();
+        const up = s.uptime_secs | 0;
+        const d = Math.floor(up / 86400), h = Math.floor(up % 86400 / 3600), m = Math.floor(up % 3600 / 60);
+        const uptime = (d ? `${d} 天 ` : "") + (h ? `${h} 時 ` : "") + `${m} 分`;
+        box.innerHTML =
+          `<div class="stat"><span class="dot on"></span>伺服器運作中</div>` +
+          `<div class="stat"><span class="num">${s.online}</span> 位拓荒者線上</div>` +
+          `<div class="stat">本次開機 <span class="num" style="font-size:1.1rem">${uptime}</span></div>`;
+      } catch {
+        box.innerHTML = `<div class="stat"><span class="dot off"></span>暫時連不上伺服器（稍後再試）</div>`;
+      }
+    })();
+
+    // ── 更新日誌（news.json 由部署時的 gen-news.mjs 從 git 歷史自動產生）──
+    (async () => {
+      const ul = document.getElementById("news");
+      const KIND = { feat: "✨ 新功能", fix: "🔧 修正", perf: "⚡ 效能", other: "🛠️ 更新" };
+      try {
+        const r = await fetch("news.json", { cache: "no-store" });
+        if (!r.ok) throw new Error();
+        const data = await r.json();
+        if (!data.items || !data.items.length) throw new Error();
+        ul.innerHTML = data.items.slice(0, 25).map((it) => {
+          const scope = it.scope ? `<b>${esc(it.scope)}</b>：` : "";
+          return `<li><span class="date">${esc(it.date)}</span><span class="kind">${KIND[it.kind] || KIND.other}</span>${scope}${esc(it.text)}</li>`;
+        }).join("");
+      } catch {
+        ul.innerHTML = "<li>更新日誌將於下次部署後出現。</li>";
+      }
+      function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    })();
+  </script>
+</body>
+</html>
