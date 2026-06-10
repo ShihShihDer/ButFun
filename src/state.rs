@@ -13,6 +13,7 @@ use world_core::{biome_at, resolve_move, Biome};
 
 use crate::auth::AuthConfig;
 use crate::class::JobClass;
+use crate::guild::GuildStore;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
 use crate::daynight_store::DayNightStore;
@@ -119,6 +120,9 @@ pub struct Player {
     /// 玩家選擇的職業（ROADMAP 28）。None = 未選職業。
     /// 執行期狀態；重連不持久化（下輪可加 Postgres 欄位）。
     pub job_class: Option<JobClass>,
+    /// 玩家所屬公會的標籤快取（ROADMAP 29）。None = 不在任何公會。
+    /// 公會建立 / 加入 / 離開時由 ws.rs 同步更新，PlayerView 直接讀此欄位。
+    pub guild_tag: Option<String>,
 }
 
 impl Player {
@@ -151,6 +155,7 @@ impl Player {
             defense: crate::combat::armor_defense(&self.inventory),
             planet: self.planet.clone(),
             job_class: self.job_class.map(|c| c.as_str().to_string()),
+            guild_tag: self.guild_tag.clone(),
         }
     }
 
@@ -351,6 +356,9 @@ pub struct AppState {
     /// 全服社群探索任務（ROADMAP 27）。遊戲迴圈每 tick 推進計時，
     /// kill/gather/travel 事件推進進度；完成時全員分潤乙太並廣播公告。
     pub quests: Arc<RwLock<QuestState>>,
+    /// 公會管理器（ROADMAP 29）：記憶體前置，重啟清空。
+    /// 玩家建立 / 加入 / 離開 / 捐贈公會由 ws.rs 操作此 store。
+    pub guilds: Arc<RwLock<GuildStore>>,
 }
 
 impl AppState {
@@ -413,6 +421,7 @@ impl AppState {
             tile_store,
             world_event: Arc::new(RwLock::new(WorldEvent::new())),
             quests: Arc::new(RwLock::new(QuestState::new())),
+            guilds: Arc::new(RwLock::new(GuildStore::new())),
         }
     }
 
@@ -464,6 +473,7 @@ mod tests {
             exp: 0,
             planet: PLANET_HOME.to_string(),
             job_class: None,
+            guild_tag: None,
         }
     }
 
