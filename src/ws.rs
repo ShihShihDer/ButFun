@@ -13,6 +13,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use crate::auth::user_id_from_cookies;
+use crate::dynamic_price::unix_secs;
 use crate::field::{FarmOutcome, Field};
 use crate::market::MarketListing;
 use crate::npc;
@@ -683,75 +684,61 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::ShopSell { item, qty }) => {
-                    // 向 NPC 商人賣出物品：支援故鄉、翠幽星、赤焰星、虛空星、霧醚星商人五處。
-                    // 農夫/商人職業加成：sell_to_xxx_npc 回傳新乙太後再 apply_npc_bonus 補差額。
+                    // 向 NPC 商人賣出物品（浮動收購價，ROADMAP 40）。
+                    // 支援故鄉、翠幽星、赤焰星、虛空星、霧醚星、星源星商人六處。
+                    // 農夫/商人職業加成在浮動有效收購價上再疊。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
-                        if !downed {
-                            if npc::is_within_shop_reach(px, py) {
-                                // 故鄉商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "故鄉 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
-                                    }
-                                }
-                            } else if npc::is_within_verdant_shop_reach(px, py) {
-                                // 翠幽星商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_verdant_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "翠幽星 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1);
-                                    }
-                                }
-                            } else if npc::is_within_crimson_shop_reach(px, py) {
-                                // 赤焰星商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_crimson_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "赤焰星 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1);
-                                    }
-                                }
-                            } else if npc::is_within_void_shop_reach(px, py) {
-                                // 虛空星商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_void_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "虛空星 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1);
-                                    }
-                                }
-                            } else if npc::is_within_aether_shop_reach(px, py) {
-                                // 霧醚星商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_aether_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "霧醚星 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1);
-                                    }
-                                }
-                            } else if npc::is_within_origin_shop_reach(px, py) {
-                                // 星源星商人
-                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                    if let Some(new_ether) = npc::sell_to_origin_npc(&mut p.inventory, p.ether, item, qty) {
-                                        let earned = new_ether - p.ether;
-                                        let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                        tracing::info!(player = %p.name, ?item, qty, earned, bonus, "星源星 NPC 收購");
-                                        p.ether = new_ether.saturating_add(bonus);
-                                        p.masteries.gain_merchant(1);
+                        if !downed && qty > 0 {
+                            // 決定最近的商人收購清單
+                            let maybe_buy_list: Option<(&[npc::ShopEntry], &str)> =
+                                if npc::is_within_shop_reach(px, py) {
+                                    Some((npc::NPC_BUY_LIST, "故鄉"))
+                                } else if npc::is_within_verdant_shop_reach(px, py) {
+                                    Some((npc::VERDANT_BUY_LIST, "翠幽星"))
+                                } else if npc::is_within_crimson_shop_reach(px, py) {
+                                    Some((npc::CRIMSON_BUY_LIST, "赤焰星"))
+                                } else if npc::is_within_void_shop_reach(px, py) {
+                                    Some((npc::VOID_BUY_LIST, "虛空星"))
+                                } else if npc::is_within_aether_shop_reach(px, py) {
+                                    Some((npc::AETHER_BUY_LIST, "霧醚星"))
+                                } else if npc::is_within_origin_shop_reach(px, py) {
+                                    Some((npc::ORIGIN_BUY_LIST, "星源星"))
+                                } else {
+                                    None
+                                };
+
+                            if let Some((buy_list, merchant_name)) = maybe_buy_list {
+                                // 查基準收購價（確認物品在清單內）
+                                if let Some(base_price) = buy_list.iter().find(|e| e.item == item).map(|e| e.price_per) {
+                                    // 查當前浮動收購價（read lock，用完立即釋放）
+                                    let now_secs = unix_secs();
+                                    let dynamic_price = app.dynamic_prices.read().unwrap()
+                                        .current_price(item, base_price, now_secs);
+
+                                    // 扣除背包物品、結算乙太（write lock）
+                                    let did_sell = {
+                                        let mut players = app.players.write().unwrap();
+                                        if let Some(p) = players.get_mut(&id) {
+                                            if p.inventory.take(item, qty) {
+                                                let earned = dynamic_price.saturating_mul(qty);
+                                                let bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
+                                                tracing::info!(player = %p.name, ?item, qty, earned, bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
+                                                p.ether = p.ether.saturating_add(earned).saturating_add(bonus);
+                                                p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    }; // players write lock 在此釋放
+
+                                    // 記錄賣出量，更新浮動收購價（write lock，與 players 鎖無交疊）
+                                    if did_sell {
+                                        app.dynamic_prices.write().unwrap()
+                                            .record_sale(item, qty, now_secs);
                                     }
                                 }
                             }

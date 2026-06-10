@@ -2,10 +2,33 @@
 
 use std::time::Duration;
 
+use crate::dynamic_price::{DynamicPriceMarket, unix_secs};
 use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, VERDANT_BUY_LIST, VERDANT_SELL_LIST, CRIMSON_BUY_LIST, CRIMSON_SELL_LIST, VOID_BUY_LIST, VOID_SELL_LIST, AETHER_BUY_LIST, AETHER_SELL_LIST, ORIGIN_BUY_LIST, ORIGIN_SELL_LIST, merchant_pos, verdant_merchant_pos, crimson_merchant_pos, void_merchant_pos, aether_merchant_pos, origin_merchant_pos};
 use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry, TileDeltaView};
 use crate::combat::EnemyKind;
 use crate::state::AppState;
+
+/// 把一個商人的收購清單轉成帶浮動收購價的 ShopCatalogEntry 列表。
+fn build_dynamic_buy_list(
+    buy_list: &[crate::npc::ShopEntry],
+    market: &DynamicPriceMarket,
+    now_secs: u64,
+) -> Vec<ShopCatalogEntry> {
+    buy_list.iter().map(|e| {
+        let price_per = market.current_price(e.item, e.price_per, now_secs);
+        let trend = market.current_trend(e.item, now_secs).to_string();
+        ShopCatalogEntry { item: e.item, price_per, trend }
+    }).collect()
+}
+
+/// 把販售清單轉成 ShopCatalogEntry（販售價固定不浮動，趨勢固定 stable）。
+fn build_static_sell_list(sell_list: &[crate::npc::ShopEntry]) -> Vec<ShopCatalogEntry> {
+    sell_list.iter().map(|e| ShopCatalogEntry {
+        item: e.item,
+        price_per: e.price_per,
+        trend: "stable".to_string(),
+    }).collect()
+}
 
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
@@ -322,49 +345,52 @@ pub fn spawn(app: AppState) {
             if want_broadcast {
                 let snapshot = {
                     let players = app.players.read().unwrap();
-                    // 每次快照帶上靜態 NPC 目錄（新手村商人 + 翠幽星商人 + 赤焰星商人 + 虛空星商人 + 霧醚星商人 + 星源星商人）。
+                    // 每次快照帶上 NPC 目錄（六大商人，收購價套用浮動市場價格）。
+                    let now_secs = unix_secs();
+                    let dm = app.dynamic_prices.read().unwrap();
                     let (mx, my) = merchant_pos();
                     let home_npc = NpcView {
                         x: mx,
                         y: my,
-                        buy_list: NPC_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: NPC_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(NPC_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(NPC_SELL_LIST),
                     };
                     let (vmx, vmy) = verdant_merchant_pos();
                     let verdant_npc = NpcView {
                         x: vmx,
                         y: vmy,
-                        buy_list: VERDANT_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: VERDANT_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(VERDANT_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(VERDANT_SELL_LIST),
                     };
                     let (cmx, cmy) = crimson_merchant_pos();
                     let crimson_npc = NpcView {
                         x: cmx,
                         y: cmy,
-                        buy_list: CRIMSON_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: CRIMSON_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(CRIMSON_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(CRIMSON_SELL_LIST),
                     };
                     let (vmx2, vmy2) = void_merchant_pos();
                     let void_npc = NpcView {
                         x: vmx2,
                         y: vmy2,
-                        buy_list: VOID_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: VOID_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(VOID_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(VOID_SELL_LIST),
                     };
                     let (amx, amy) = aether_merchant_pos();
                     let aether_npc = NpcView {
                         x: amx,
                         y: amy,
-                        buy_list: AETHER_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: AETHER_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(AETHER_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(AETHER_SELL_LIST),
                     };
                     let (omx, omy) = origin_merchant_pos();
                     let origin_npc = NpcView {
                         x: omx,
                         y: omy,
-                        buy_list: ORIGIN_BUY_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
-                        sell_list: ORIGIN_SELL_LIST.iter().map(|e| ShopCatalogEntry { item: e.item, price_per: e.price_per }).collect(),
+                        buy_list: build_dynamic_buy_list(ORIGIN_BUY_LIST, &dm, now_secs),
+                        sell_list: build_static_sell_list(ORIGIN_SELL_LIST),
                     };
+                    drop(dm);
                     ServerMsg::Snapshot {
                         tick,
                         players: players.values().map(|p| p.view()).collect(),

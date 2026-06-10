@@ -15,6 +15,7 @@ mod crops;
 mod daynight;
 mod daynight_store;
 mod db;
+mod dynamic_price;
 mod economy;
 mod enemy_field;
 mod field;

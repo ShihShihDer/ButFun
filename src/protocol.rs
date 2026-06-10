@@ -403,11 +403,15 @@ pub struct ListingView {
     pub y: f32,
 }
 
-/// NPC 商店目錄的單筆條目（物品 + 每單位乙太價）。
+/// NPC 商店目錄的單筆條目（物品 + 每單位乙太價 + 收購趨勢）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ShopCatalogEntry {
     pub item: ItemKind,
+    /// 當前有效收購價（已套用浮動倍率，ROADMAP 40）。
     pub price_per: u32,
+    /// 收購趨勢："stable"（基準價）或 "down"（被大量賣出壓低中）。
+    /// 前端顯示 ↘ 指示讓玩家知道市場供給過剩。
+    pub trend: String,
 }
 
 /// 快照裡的 NPC 可見狀態：位置 + 商品目錄（收購 / 販售），讓前端繪製並顯示商店面板。
@@ -626,8 +630,8 @@ mod tests {
             npcs: vec![NpcView {
                 x: 100.0,
                 y: 200.0,
-                buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1 }],
-                sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15 }],
+                buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1, trend: "stable".to_string() }],
+                sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15, trend: "stable".to_string() }],
             }],
             terrain: vec![],
             world_event: None,

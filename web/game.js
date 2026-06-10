@@ -5589,9 +5589,10 @@
 
     const isGuest_ = isGuest; // 訪客只能看，不能交易
 
-    // 簽章：近/遠 + 乙太 + 背包 hash（控制重建頻率）
+    // 簽章：近/遠 + 乙太 + 背包 hash + 商品當前收購價（控制重建頻率）
     const invSig = me ? (me.inventory || []).map((s) => `${s.item}:${s.qty}`).join(",") : "";
-    const sig = `${!!nearNpc}|${me ? me.ether : 0}|${invSig}`;
+    const priceSig = nearNpc ? nearNpc.buy_list.map((e) => `${e.item}:${e.price_per}:${e.trend || ""}`).join(",") : "";
+    const sig = `${!!nearNpc}|${me ? me.ether : 0}|${invSig}|${priceSig}`;
     if (sig === lastShopSig) return;
     lastShopSig = sig;
 
@@ -5621,7 +5622,7 @@
         <span style="flex:1">${name} ×<input id="shopSellQty_${entry.item}" type="number" min="1" max="${maxSell || 1}" value="1"
           style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
           ${!canSell ? "disabled" : ""}></span>
-        <span style="color:var(--brass)">+${entry.price_per}✨/個</span>
+        <span style="color:var(--brass)">+${entry.price_per}✨/個${entry.trend === "down" ? ' <span style="color:#ff9966;font-size:0.82em">↘市場供給過剩</span>' : ""}</span>
         <span style="opacity:0.7;font-size:0.82em">(持有：${have})</span>
         <button class="craft-btn" id="shopSellBtn_${entry.item}" ${!canSell ? "disabled" : ""}
           style="padding:2px 8px;font-size:0.85em">賣出</button>
