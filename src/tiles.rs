@@ -114,17 +114,9 @@ impl Default for TileWorld {
 }
 
 /// 世界像素座標 → (chunk_cx, chunk_cy, cell_x, cell_y)。
-/// 供 Dig / Place handler 換算輸入座標。
-pub fn world_to_cell(wx: f32, wy: f32) -> (i32, i32, u8, u8) {
-    let gx = (wx / TILE_PX).floor() as i32;
-    let gy = (wy / TILE_PX).floor() as i32;
-    let n = TILES_PER_CHUNK as i32;
-    let cx = gx.div_euclid(n);
-    let cy = gy.div_euclid(n);
-    let tx = gx.rem_euclid(n) as u8;
-    let ty = gy.rem_euclid(n) as u8;
-    (cx, cy, tx, ty)
-}
+/// 供 Dig / Place handler 換算輸入座標。實作移到 world-core（前端 wasm 預測的
+/// delta 查表要用同一份換算），這裡 re-export 保持既有呼叫點不動。
+pub use world_core::world_to_cell;
 
 /// cell 座標 → 格中心的世界像素座標（給可及性範圍檢查）。
 pub fn cell_center(cx: i32, cy: i32, tx: u8, ty: u8) -> (f32, f32) {

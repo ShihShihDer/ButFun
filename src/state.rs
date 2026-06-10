@@ -35,12 +35,13 @@ use crate::users::UserStore;
 /// 世界大小（像素）。放大成大世界,讓玩家散得開、各自有空間(回應「農地都擠中央、地圖太小」)。
 pub const WORLD_WIDTH: f32 = 6000.0;
 pub const WORLD_HEIGHT: f32 = 6000.0;
-/// 玩家移動速度（像素 / 秒）。大世界一併調快,跨圖不至於太久。
-pub const PLAYER_SPEED: f32 = 320.0;
+/// 玩家移動速度（像素 / 秒）。值定義在 world-core（前端 wasm 預測要用同一份）。
+pub const PLAYER_SPEED: f32 = world_core::PLAYER_SPEED;
 
 /// 玩家 tile 碰撞半徑（像素）。用四角檢查確保玩家不嵌入格子；
 /// 明顯小於半格（16px），讓玩家在單格寬隧道裡有餘裕、不會稍微偏離中線就被牆角卡住。
-pub const PLAYER_TILE_RADIUS: f32 = 8.0;
+/// 值定義在 world-core（前端 wasm 預測要用同一份）。
+pub const PLAYER_TILE_RADIUS: f32 = world_core::PLAYER_TILE_RADIUS;
 
 /// 公共農地（軟劫掠區）的世界座標。任何已登入玩家均可種植與收割——
 /// 但種在這裡的作物隨時可能被路過的其他玩家搶收（「軟劫掠」設計）。
@@ -241,62 +242,18 @@ impl Player {
         if self.vitals.is_downed() {
             return;
         }
-        let mut dx = 0.0;
-        let mut dy = 0.0;
-        if self.input.up {
-            dy -= 1.0;
-        }
-        if self.input.down {
-            dy += 1.0;
-        }
-        if self.input.left {
-            dx -= 1.0;
-        }
-        if self.input.right {
-            dx += 1.0;
-        }
-        // 對角線正規化，避免斜走變快。
-        if dx != 0.0 && dy != 0.0 {
-            let inv = 1.0 / (2.0_f32).sqrt();
-            dx *= inv;
-            dy *= inv;
-        }
-        // ③ 無限世界：不再 clamp 到世界邊界，但水域擋路——用 resolve_move 做滑動碰撞，
-        // 玩家撞到水邊能沿岸滑行；已在水裡（如舊存檔）仍可逃出（resolve_move 的「受困放行」保證）。
-        // C-3：實心格也擋路。策略：
-        //   - 「中心落在實心格」→ 受困（傳送/生成落地等罕見情況），以中心點判斷逃脫、允許自由移動。
-        //   - 一般走路時用碰撞盒四角（半徑 PLAYER_TILE_RADIUS）判斷是否碰牆，精準阻擋、可沿牆滑行。
-        // 重點：不能讓四角落到牆上就觸發「受困逃脫」，否則玩家靠近牆即可穿牆。
-        let new_x = self.x + dx * PLAYER_SPEED * dt;
-        let new_y = self.y + dy * PLAYER_SPEED * dt;
-        let r = PLAYER_TILE_RADIUS;
-        let is_center_stuck = tile_solid(self.x, self.y);
-        // 是否已身陷水中（中心在水）——舊存檔/被推入等罕見情況，保留逃脫通道。
-        let is_on_water = biome_at(self.x as f64, self.y as f64) == Biome::Water;
-        let corners = [(r, r), (-r, r), (r, -r), (-r, -r)];
-        let any_corner = |cx: f32, cy: f32| {
-            corners.iter().any(|&(ox, oy)| tile_solid(cx + ox, cy + oy))
-        };
-        // 水域也用四角判定（與地形碰撞一致）：身體邊緣碰到水就擋，不再讓玩家中心壓到水邊、
-        // 露出半個身體站在水上（先前水域只判中心 → 身體會凸進水裡，看起來像走在水上）。
-        let water_corner = |cx: f32, cy: f32| {
-            corners
-                .iter()
-                .any(|&(ox, oy)| biome_at((cx + ox) as f64, (cy + oy) as f64) == Biome::Water)
-        };
-        (self.x, self.y) = resolve_move(self.x, self.y, new_x, new_y, |x, y| {
-            // 一般時水域用四角；已陷在水裡時改用中心，留逃脫通道、不卡死。
-            let water_blocked = if is_on_water {
-                biome_at(x as f64, y as f64) == Biome::Water
-            } else {
-                water_corner(x, y)
-            };
-            if water_blocked {
-                return true;
-            }
-            // 受困時以中心點判定（保留逃脫通道）；一般時以四角判定（精準碰牆）。
-            if is_center_stuck { tile_solid(x, y) } else { any_corner(x, y) }
-        });
+        // 移動數學整段在 world_core::step_with_keys（對角線正規化、水域阻擋、
+        // 實心格四角碰撞、受困逃脫）——前端 wasm 預測呼叫同一份，預測==權威。
+        (self.x, self.y) = world_core::step_with_keys(
+            self.x,
+            self.y,
+            self.input.up,
+            self.input.down,
+            self.input.left,
+            self.input.right,
+            dt,
+            tile_solid,
+        );
     }
 }
 

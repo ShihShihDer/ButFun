@@ -89,8 +89,10 @@
   // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
   const tileDeltaMap = new Map();
   // 玩家設定（⚙ 面板，localStorage 持久化）。
-  const settings = { smartAutoDig: false };
+  // predict：客戶端移動預測（按下立刻動、不等伺服器），預設開；關掉＝舊的純內插行為。
+  const settings = { smartAutoDig: false, predict: true };
   try { settings.smartAutoDig = localStorage.getItem("butfun.smartAutoDig") === "1"; } catch {}
+  try { settings.predict = localStorage.getItem("butfun.predict") !== "0"; } catch {}
   // 智慧自動挖（⚙ 開關，預設關）：朝牆走自動挖開「天然岩石」鑿隧道，但**永遠不挖你放置的牆/建築**
   // （在 tileDeltaMap 裡＝你動過的格子，跳過），所以撞到自己蓋的房子也不會壞。
   let lastAutoDig = 0;
@@ -116,6 +118,48 @@
     ws.send(JSON.stringify({ type: "dig", wx: px, wy: py }));
     spawnTapFlash(px, py);
   }
+
+  // ── 客戶端移動預測（⚙ 可關）────────────────────────────────────────────
+  // 不等伺服器：按下方向鍵的那一幀就用 wasm 的 step_player（與伺服器 Player::step
+  // 同一份 Rust 物理）把自己往前推，畫面立刻跟手；伺服器快照到達時溫和校正。
+  // 因為物理同一份、地形差異也餵進了 wasm，預測幾乎永遠與權威一致——校正量通常
+  // 只有方向切換時 1 個來回延遲的小偏移，弱拉回看不出來。wasm 沒載到或設定關閉
+  // 時，自己跟其他玩家一樣走純內插（舊行為）。
+  const pred = { x: 0, y: 0, has: false, lastT: 0 };
+  function predictionOn() {
+    return settings.predict && !!(wasmTerrain && wasmTerrain.step_player);
+  }
+  // 每幀：用「現在按住的鍵」推進預測位置。
+  function stepPrediction(now) {
+    if (!pred.has) return;
+    if (!pred.lastT) { pred.lastT = now; return; }
+    let dt = (now - pred.lastT) / 1000;
+    pred.lastT = now;
+    if (dt <= 0) return;
+    if (dt > 0.1) dt = 0.1; // 分頁切回等長空檔別瞬移
+    const mask = (keys.up ? 1 : 0) | (keys.down ? 2 : 0) | (keys.left ? 4 : 0) | (keys.right ? 8 : 0);
+    if (!mask) return;
+    wasmTerrain.step_player(pred.x, pred.y, mask, dt);
+    pred.x = wasmTerrain.step_out_x();
+    pred.y = wasmTerrain.step_out_y();
+  }
+  // 每個快照：拿伺服器權威位置校正預測。
+  function reconcilePrediction(sx, sy, hp) {
+    if (!pred.has || !predictionOn()) {
+      pred.x = sx; pred.y = sy; pred.has = true;
+      return;
+    }
+    const ex = sx - pred.x, ey = sy - pred.y;
+    const err = Math.hypot(ex, ey);
+    // 大幅偏差＝伺服器主導的位移（回城/倒地復原傳送），倒地時也不該預測 → 直接跳權威位置。
+    if (err > 256 || hp <= 0) { pred.x = sx; pred.y = sy; return; }
+    // 小偏差溫和拉回：移動中弱拉（肉眼不可見）、靜止時快收斂。
+    const moving = keys.up || keys.down || keys.left || keys.right;
+    const pull = moving ? 0.08 : 0.3;
+    pred.x += ex * pull;
+    pred.y += ey * pull;
+  }
+
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
   // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
@@ -400,8 +444,10 @@
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
             existing.planet = p.planet || "home";
+            if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
+            if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp);
           }
         }
         // 移除快照中已不存在的玩家
@@ -441,6 +487,7 @@
         // 此處接收增量廣播：直接 set（含 empty），讓 tileKindAt 查到覆蓋值。
         for (const d of (msg.terrain || [])) {
           tileDeltaMap.set(`${d.cx},${d.cy},${d.tx},${d.ty}`, d.kind);
+          wasmTileDeltaSet(d.cx, d.cy, d.tx, d.ty, d.kind); // 預測碰撞同步看到挖/放
         }
         // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
         // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
@@ -1922,7 +1969,11 @@
     const SNAP_MS = 75;
     for (const p of players.values()) {
       let nrx, nry;
-      if (p.tArrive === undefined || p.px === undefined) {
+      if (p.id === myId && predictionOn() && pred.has) {
+        // 自己：客戶端預測（按下立刻動）。其他玩家仍走快照內插。
+        stepPrediction(renderNow);
+        nrx = pred.x; nry = pred.y;
+      } else if (p.tArrive === undefined || p.px === undefined) {
         nrx = p.x; nry = p.y;
       } else {
         let f = (renderNow - p.tArrive) / SNAP_MS;
@@ -2397,6 +2448,14 @@
     "aether_mist", "origin_crystal",
   ];
   const WASM_BIOME_NAMES = ["water", "sand", "meadow", "forest", "rocky"];
+  // 協定字串名 → 整數編碼（餵地形差異進 wasm 用）。
+  const WASM_TILE_CODES = Object.fromEntries(WASM_TILE_NAMES.map((n, i) => [n, i]));
+  // 把一筆地形差異同步進 wasm（移動預測的碰撞要看得到玩家挖的洞/蓋的牆）。
+  function wasmTileDeltaSet(cx, cy, tx, ty, kind) {
+    if (wasmTerrain && wasmTerrain.tile_delta_set) {
+      wasmTerrain.tile_delta_set(cx, cy, tx, ty, WASM_TILE_CODES[kind] ?? 0);
+    }
+  }
   (async function loadWorldCoreWasm() {
     try {
       const resp = await fetch("wasm/world_core.wasm");
@@ -2415,10 +2474,21 @@
         if (WASM_TILE_NAMES[ex.tile_kind_code(x, y)] !== tileKindGenJS(x, y)) drift++;
       }
       wasmTerrain = ex;
+      // wasm 載好前可能已收到地形差異（快照先到）：整份重播進 wasm，預測碰撞才完整。
+      if (ex.tile_delta_clear && ex.tile_delta_set) {
+        ex.tile_delta_clear();
+        for (const [key, kind] of tileDeltaMap) {
+          const [cx, cy, tx, ty] = key.split(",").map(Number);
+          wasmTileDeltaSet(cx, cy, tx, ty, kind);
+        }
+      }
       if (drift > 0) {
         console.warn(`[world-core] JS 後備與 wasm 漂移 ${drift}/400 點（已以 wasm 為準，請同步 JS 後備）`);
       } else {
         console.log("[world-core] wasm 地形已啟用（前後端同一份實作）");
+      }
+      if (typeof ex.step_player === "function") {
+        console.log("[world-core] 移動預測可用（按下立刻動，⚙ 設定可關）");
       }
     } catch (err) {
       console.warn("[world-core] wasm 載入失敗，改用 JS 後備地形:", err && err.message ? err.message : err);
@@ -5347,6 +5417,15 @@
       optDig.addEventListener("change", () => {
         settings.smartAutoDig = optDig.checked;
         try { localStorage.setItem("butfun.smartAutoDig", optDig.checked ? "1" : "0"); } catch {}
+      });
+    }
+    // ⚙ 設定：移動預測開關（預設開；存 "0" 表示玩家主動關掉）。
+    const optPredict = document.getElementById("optPredict");
+    if (optPredict) {
+      optPredict.checked = settings.predict;
+      optPredict.addEventListener("change", () => {
+        settings.predict = optPredict.checked;
+        try { localStorage.setItem("butfun.predict", optPredict.checked ? "1" : "0"); } catch {}
       });
     }
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
