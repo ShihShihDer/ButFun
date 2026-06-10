@@ -14,6 +14,11 @@ use std::time::Duration;
 
 use crate::inventory::ItemKind;
 
+/// 全域 LLM 並發上限：同時最多這麼多條 ollama 呼叫（防 CPU 被打滿）。
+pub const MAX_CONCURRENT_LLM: usize = 5;
+/// 每位玩家對同一個 NPC 的對話冷卻（秒）。防單人狂送吃掉所有許可。
+pub const PER_PLAYER_NPC_COOLDOWN_SECS: u64 = 8;
+
 /// NPC 對某玩家的關係狀態（個人記憶，隔離）。
 #[derive(Default, Clone)]
 pub struct NpcRel {
@@ -267,5 +272,13 @@ mod tests {
         for n in NPCS {
             assert!(!canned_reply(n).contains(GIFT_TOKEN));
         }
+    }
+
+    #[test]
+    fn rate_limit_constants_are_reasonable() {
+        // 並發上限 ≥ 1，否則永遠拿不到許可
+        assert!(MAX_CONCURRENT_LLM >= 1);
+        // 冷卻 ≥ 1 秒（防零除 / 過短失去意義）
+        assert!(PER_PLAYER_NPC_COOLDOWN_SECS >= 1);
     }
 }

@@ -482,6 +482,13 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 前端：各 NPC 視窗底部新增聊天欄；伺服器回話路由到正確面板（依 msg.npc 字段區分）。
     - `src/npc_chat.rs` 新增 5 個 NpcPersona + 5 個罐頭句；JS 泛化 appendNpcChat/npcChatThinking/sendNpcChat（依 npcId 路由）；3 個新單元測試。零 migration。
 
+59. ✅ **LLM 限流佇列——NPC 扛得住多人同時聊**（本輪）
+    - 全域並發信號量（`Semaphore(5)`）：同時最多 5 條 ollama 呼叫，超限等待 2 秒後回罐頭句。
+    - 每人每 NPC 冷卻 8 秒（`npc_last_chat` HashMap）：防單人瘋狂傳訊佔滿所有許可。
+    - 兩層保護純後端（`state.rs` + `ws.rs`），LLM 降級路徑不變，前端零改動。
+    - `npc_chat.rs` 新增 `MAX_CONCURRENT_LLM` / `PER_PLAYER_NPC_COOLDOWN_SECS` 常數 + 1 個新測試。
+    - 對應 `docs/PLAN_AI_NPC_GROWTH.md` 建造順序第 1 步。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
