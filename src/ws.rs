@@ -115,6 +115,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
         }
     } else {
@@ -153,6 +154,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
         }
     };
@@ -1120,8 +1122,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let cost = refine_cost_qty(meta.refine);
                                 if p.inventory.has(mat, cost) {
                                     p.inventory.take(mat, cost);
-                                    // 以玩家 kill_count 作為 attempt_index（單調遞增，防操控）。
-                                    let attempt = p.kill_count as u64;
+                                    // 用 refine_attempt_count（每次嘗試遞增）確保連續精煉得到不同偽隨機結果。
+                                    let attempt = p.refine_attempt_count;
+                                    p.refine_attempt_count = p.refine_attempt_count.wrapping_add(1);
                                     if refine_fails(meta.refine, attempt) {
                                         meta.refine = meta.refine.saturating_sub(1);
                                         tracing::info!(player = %p.name, ?item, slot, refine = meta.refine, "精煉失敗");

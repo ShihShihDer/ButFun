@@ -134,6 +134,9 @@ pub struct Player {
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
     pub kill_count: u32,
+    /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
+    /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
+    pub refine_attempt_count: u64,
     /// 三槽裝備（ROADMAP 36）：🗡️ 武器 / 🛡️ 防具 / 📿 飾品。
     /// 持久化於 inventories 表的 equipment 欄；首次登入由 `auto_equip_best` 遷移。
     pub equipment: crate::equipment::EquipmentSlots,
@@ -532,6 +535,7 @@ mod tests {
             guild_tag: None,
             achievements: AchievementSet::new(),
             kill_count: 0,
+            refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
         }
     }
