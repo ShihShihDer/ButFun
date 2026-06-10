@@ -68,6 +68,13 @@ fi
 echo "[deploy] 建置…"
 cargo build --release
 
+# wasm 地形（空氣牆根治）：world-core 編成 .wasm 供前端載入，前後端同一份實作。
+# 軟降級：wasm 建置失敗不擋遊戲上線——前端載不到 .wasm 會自動退回 JS 後備地形。
+echo "[deploy] 建置 world-core wasm…"
+if ! bash "$REPO/scripts/build-wasm.sh"; then
+  echo "[deploy] ⚠️ wasm 建置失敗（前端將用 JS 後備地形），繼續上線。"
+fi
+
 echo "[deploy] 測試（沒全綠就中止、不上線）…"
 cargo test --release
 

@@ -1,11 +1,14 @@
 // 功能 QA 機器人：連 /ws、以訪客進場，實測各核心動作（回城 / 採集 / 挖掘 / 建造 / 商店），
 // 每項用快照變化驗證 PASS / FAIL，給開發者 ground truth。用法： node /tmp/functional-qa.mjs [ws-url]
 import { WebSocket } from "ws";
+import { loadWasmTerrain } from "./world-core-wasm.mjs";
 const URL = process.argv[2] || "ws://localhost:3000/ws";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const VILLAGE = [2344, 2296];
 
-// ── 地形重算（對齊後端，判斷哪裡是實心好挖）──
+// ── 地形判定：優先用 world-core wasm（伺服器同一份實作，永不漂移）──
+// 沒建置 wasm 才退回下面的 JS 副本（副本可能過期，僅供應急）。
+const wasm = await loadWasmTerrain();
 const imul = Math.imul;
 function grassHash(ix, iy) { let h = (imul(ix | 0, 374761393) + imul(iy | 0, 668265263)) | 0; h = imul(h ^ (h >>> 13), 1274126177) | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
 function bn(wx, wy, s, sd) { const gx = wx / s, gy = wy / s, x0 = Math.floor(gx), y0 = Math.floor(gy), fx = gx - x0, fy = gy - y0; const h = (a, b) => grassHash((imul(a | 0, 1009) + sd) | 0, (imul(b | 0, 9176) + imul(sd, 31)) | 0); const v00 = h(x0, y0), v10 = h(x0 + 1, y0), v01 = h(x0, y0 + 1), v11 = h(x0 + 1, y0 + 1); const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy); const a = v00 + (v10 - v00) * sx, b = v01 + (v11 - v01) * sx; return a + (b - a) * sy; }
@@ -15,10 +18,11 @@ function isSolid(wx, wy) {
   const gx = Math.floor(wx / 32), gy = Math.floor(wy / 32), CT = 16;
   const cx = Math.floor(gx / CT), cy = Math.floor(gy / CT), tx = ((gx % CT) + CT) % CT, ty = ((gy % CT) + CT) % CT;
   const d = deltaMap.get(`${cx},${cy},${tx},${ty}`); if (d !== undefined) return d !== "empty";
+  if (wasm) return wasm.tileKindCode(wx, wy) !== 0;
   const sdx = wx - 2344, sdy = wy - 2296; if (sdx * sdx + sdy * sdy <= 640 * 640) return false;
   const b = biomeAt(wx, wy); if (b === "water") return false;
-  if (bn(wx, wy, 160, 123) < 0.82) return false;
-  return true; // 18% 實心
+  if (bn(wx, wy, 160, 123) < (b === "rocky" ? 0.50 : 0.82)) return false;
+  return true;
 }
 
 const S = { x: 0, y: 0, ether: 0, hp: 0, inv: {}, nodes: [], npcs: [], enemies: [], ready: false };

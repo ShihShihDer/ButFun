@@ -2,11 +2,15 @@
 // 回報精確卡點座標 + 該處地形（本地重算 biome / tile，跟前後端同一套），給開發者 ground truth。
 // 用法： node /tmp/movement-probe.mjs [ws-url]
 import { WebSocket } from "ws";
+import { loadWasmTerrain, TILE_NAMES, BIOME_NAMES } from "./world-core-wasm.mjs";
 
 const URL = process.argv[2] || "ws://localhost:3000/ws";
 const SPEED = 320; // PLAYER_SPEED（px/s），與後端一致
 
-// ── 地形重算（複製自 web/game.js，與前後端逐位元一致）──
+// ── 地形判定：優先用 world-core wasm（伺服器同一份實作，永不漂移）──
+const wasm = await loadWasmTerrain();
+
+// ── JS 後備（複製自 web/game.js；wasm 沒建置才用，副本可能過期）──
 const imul = Math.imul;
 function grassHash(ix, iy) {
   let h = (imul(ix | 0, 374761393) + imul(iy | 0, 668265263)) | 0;
@@ -24,6 +28,7 @@ function biomeNoise(wx, wy, scale, seed) {
   return a + (b - a) * sy;
 }
 function biomeAt(wx, wy) {
+  if (wasm) return BIOME_NAMES[wasm.biomeCode(wx, wy)];
   const e = biomeNoise(wx, wy, 1500, 7), m = biomeNoise(wx, wy, 1200, 137);
   if (e < 0.30) return "water";
   if (e < 0.355) return "sand";
@@ -44,6 +49,7 @@ function tileKindAt(wx, wy) {
   const tx = ((gx % CT) + CT) % CT, ty = ((gy % CT) + CT) % CT;
   const d = deltaMap.get(`${cx},${cy},${tx},${ty}`);
   if (d !== undefined) return d;
+  if (wasm) return TILE_NAMES[wasm.tileKindCode(wx, wy)];
   const sdx = wx - 2344, sdy = wy - 2296;
   if (sdx * sdx + sdy * sdy <= 640 * 640) return "empty"; // 安全區
   const b = biomeAt(wx, wy);
