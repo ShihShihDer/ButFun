@@ -125,6 +125,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            trade_cargo: None,
+            trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
         }
     } else {
         // 等 Join
@@ -172,6 +174,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            trade_cargo: None,
+            trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
         }
     };
     let id = player.id;
@@ -1715,6 +1719,104 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         tracing::info!(player = %p.name, "採集星晶碎片");
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // ── 星際貿易（ROADMAP 51）──────────────────────────────────────────
+                Ok(ClientMsg::PickupTrade { route_id }) => {
+                    // 接取貿易任務：需登入、未倒地、在本星球商人 SHOP_REACH 內、無包裹、路線不在冷卻。
+                    use crate::trade_route::{try_pickup, TRADE_COOLDOWN_SECS};
+                    use crate::npc::SHOP_REACH;
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let players = app.players.read().unwrap();
+                            if let Some(p) = players.get(&uid) {
+                                if p.vitals.is_downed() {
+                                    None
+                                } else {
+                                    // 驗距離（靠近本星球商人）。
+                                    let merchant_xy = match p.planet.as_str() {
+                                        "verdant" => crate::npc::verdant_merchant_pos(),
+                                        "crimson" => crate::npc::crimson_merchant_pos(),
+                                        "void"    => crate::npc::void_merchant_pos(),
+                                        "aether"  => crate::npc::aether_merchant_pos(),
+                                        "origin"  => crate::npc::origin_merchant_pos(),
+                                        _         => crate::npc::merchant_pos(),
+                                    };
+                                    let dx = p.x - merchant_xy.0;
+                                    let dy = p.y - merchant_xy.1;
+                                    if (dx * dx + dy * dy).sqrt() > SHOP_REACH {
+                                        None // 離商人太遠
+                                    } else {
+                                        try_pickup(route_id, &p.planet, &p.trade_cargo, &p.trade_cooldowns)
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some(cargo) = result {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                let rid = cargo.route_id;
+                                p.trade_cargo = Some(cargo);
+                                p.trade_cooldowns.insert(rid, TRADE_COOLDOWN_SECS);
+                                tracing::info!(player = %p.name, route_id, "接取貿易任務");
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::DeliverTrade) => {
+                    // 交付貿易包裹：需登入、在目標星球、靠近目標商人。
+                    use crate::trade_route::{try_deliver, TRADE_MERCHANT_XP};
+                    use crate::npc::SHOP_REACH;
+                    if let Some(uid) = authed_uid {
+                        let reward = {
+                            let players = app.players.read().unwrap();
+                            if let Some(p) = players.get(&uid) {
+                                if p.vitals.is_downed() {
+                                    0
+                                } else {
+                                    // 驗距離（靠近目標星球商人）。
+                                    let merchant_xy = match p.planet.as_str() {
+                                        "verdant" => crate::npc::verdant_merchant_pos(),
+                                        "crimson" => crate::npc::crimson_merchant_pos(),
+                                        "void"    => crate::npc::void_merchant_pos(),
+                                        "aether"  => crate::npc::aether_merchant_pos(),
+                                        "origin"  => crate::npc::origin_merchant_pos(),
+                                        _         => crate::npc::merchant_pos(),
+                                    };
+                                    let dx = p.x - merchant_xy.0;
+                                    let dy = p.y - merchant_xy.1;
+                                    if (dx * dx + dy * dy).sqrt() > SHOP_REACH {
+                                        0 // 離商人太遠
+                                    } else {
+                                        try_deliver(&p.planet, &p.trade_cargo)
+                                    }
+                                }
+                            } else {
+                                0
+                            }
+                        };
+                        if reward > 0 {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                p.ether = p.ether.saturating_add(reward);
+                                p.trade_cargo = None;
+                                p.masteries.gain_merchant(TRADE_MERCHANT_XP);
+                                tracing::info!(player = %p.name, reward, "交付貿易包裹");
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::CancelTrade) => {
+                    // 取消貿易任務：丟棄包裹，無懲罰。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.trade_cargo.take().is_some() {
+                                tracing::info!(player = %p.name, "取消貿易任務");
                             }
                         }
                     }

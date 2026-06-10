@@ -14,6 +14,15 @@ use crate::inventory::ItemKind;
 use crate::quest::QuestState;
 use world_core::TileKind;
 
+/// 玩家正在攜帶的貿易包裹摘要（送進快照，前端 HUD 顯示用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TradeCargoBrief {
+    pub route_id: u8,
+    pub cargo_name: String,
+    pub dest: String,
+    pub reward: u32,
+}
+
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -228,6 +237,17 @@ pub enum ClientMsg {
     /// 成功：背包加 1 個星晶碎片、給 15 點探索者熟練度 XP。
     /// 白天 / 太遠 / 礦脈已採 / 倒地中靜默忽略。
     GatherStarCrystal,
+    /// 接取貿易任務（ROADMAP 51）：在當前星球商人處接取一個貿易包裹。
+    /// `route_id`：要接取的路線編號（需在本星球且未在冷卻中且未持有其他包裹）。
+    /// 一次只能攜帶一個包裹；同路線有 5 分鐘冷卻。倒地中靜默忽略。
+    PickupTrade { route_id: u8 },
+    /// 交付貿易包裹（ROADMAP 51）：在目標星球商人處交付包裹，換取乙太 + 商人熟練度 XP。
+    /// 伺服器驗：持有包裹、當前星球 == 包裹目標星球、靠近目標商人（SHOP_REACH）。
+    /// 不符條件靜默忽略。
+    DeliverTrade,
+    /// 取消貿易任務（ROADMAP 51）：丟棄目前攜帶的包裹，無懲罰。
+    /// 無包裹時靜默忽略。
+    CancelTrade,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -400,6 +420,14 @@ pub struct PlayerView {
     /// 玩家是否站在水域邊緣（80px 內有 Water biome）。前端釣魚按鈕依此啟用/禁用。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_water: bool,
+
+    // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────────
+    /// 目前攜帶的貿易包裹摘要（None = 無任務）。前端 HUD 顯示「📦 攜帶中 → 目標星球」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trade_cargo: Option<TradeCargoBrief>,
+    /// 玩家是否靠近本星球商人（且本星球有可接取路線）。前端據此顯示接取 UI。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_trade_npc: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -681,6 +709,8 @@ mod tests {
                 pet_kind: None,
                 fish_cooldown: 0.0,
                 near_water: false,
+                trade_cargo: None,
+                near_trade_npc: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -815,6 +845,8 @@ mod tests {
             pet_kind: None,
             fish_cooldown: 0.0,
             near_water: false,
+            trade_cargo: None,
+            near_trade_npc: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

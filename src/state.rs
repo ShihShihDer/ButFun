@@ -165,6 +165,12 @@ pub struct Player {
     pub fish_cooldown: f32,
     /// 釣魚嘗試計數（確保每次釣魚偽隨機結果不同；記憶體前置，重啟清空）。
     pub fish_attempt_count: u64,
+
+    // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────
+    /// 目前攜帶的貿易包裹。None = 無任務；Some = 正在跑商途中。記憶體前置，重啟清空。
+    pub trade_cargo: Option<crate::trade_route::TradeCargo>,
+    /// 各條貿易路線的接取冷卻剩餘秒數（Key = route_id）。由 game.rs 每 tick 推進。
+    pub trade_cooldowns: crate::trade_route::TradeCooldowns,
 }
 
 impl Player {
@@ -225,6 +231,29 @@ impl Player {
             pet_kind: self.pet.map(|p| p.as_str().to_string()),
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
+            trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
+                route_id: c.route_id,
+                cargo_name: c.cargo_name.clone(),
+                dest: c.dest.clone(),
+                reward: c.reward,
+            }),
+            near_trade_npc: {
+                use crate::npc::*;
+                use crate::trade_route::routes_for_planet;
+                // 玩家是否靠近當前星球的商人（有可接取路線時才顯示接取 UI）。
+                let merchant_xy = match self.planet.as_str() {
+                    "verdant" => verdant_merchant_pos(),
+                    "crimson" => crimson_merchant_pos(),
+                    "void"    => void_merchant_pos(),
+                    "aether"  => aether_merchant_pos(),
+                    "origin"  => origin_merchant_pos(),
+                    _         => merchant_pos(),
+                };
+                let dx = self.x - merchant_xy.0;
+                let dy = self.y - merchant_xy.1;
+                let dist = (dx * dx + dy * dy).sqrt();
+                dist <= SHOP_REACH && !routes_for_planet(&self.planet).is_empty()
+            },
         }
     }
 
@@ -597,6 +626,8 @@ mod tests {
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            trade_cargo: None,
+            trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
         }
     }
 
