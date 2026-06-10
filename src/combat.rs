@@ -336,6 +336,25 @@ pub enum EnemyKind {
 }
 
 impl EnemyKind {
+    /// 顯示用中文名稱，用於聊天廣播等字串。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            EnemyKind::ScrapDrone       => "廢鐵無人機",
+            EnemyKind::EtherWisp        => "乙太鬼火",
+            EnemyKind::FlutterSprite    => "飄舞精靈",
+            EnemyKind::MushroomStalker  => "蕈菇潛行者",
+            EnemyKind::CrystalGolem     => "晶石傀儡",
+            EnemyKind::RuneGuardian     => "符文守衛",
+            EnemyKind::CoralCrab        => "珊瑚蟹",
+            EnemyKind::JadeWraith       => "翠幽魅影",
+            EnemyKind::SteamConstruct   => "蒸汽構裝",
+            EnemyKind::VoidPhantom      => "虛空幽靈",
+            EnemyKind::AetherSpecter    => "霧醚幻靈",
+            EnemyKind::OriginGuardian   => "源晶守護者",
+            EnemyKind::RiftGuardian     => "裂縫守護者",
+        }
+    }
+
     /// 此種類滿血時的生命值（要扣到 0 才算打倒）。
     pub fn max_hp(self) -> u32 {
         match self {
@@ -585,6 +604,22 @@ impl Enemy {
             && self.respawn_timer >= 0.0
             && self.max_hp > 0
             && self.remaining_hp <= self.max_hp
+    }
+
+    /// 敵人升一級時同步調整 max_hp（等比例縮放當前血量，不讓升級瞬間滿血也不斷腿）。
+    pub fn update_max_hp_for_level(&mut self, new_level: u32) {
+        let new_max = scaled_max_hp(self.kind.max_hp(), new_level);
+        if self.remaining_hp > 0 && self.max_hp > 0 {
+            let ratio = self.remaining_hp as f32 / self.max_hp as f32;
+            self.remaining_hp = ((new_max as f32 * ratio).round() as u32).max(1);
+        }
+        self.max_hp = new_max;
+    }
+
+    /// 被玩家擊殺後，重置 max_hp 為基準等級的值（重生時回滿基準血量，而非精英血量）。
+    /// 此時 remaining_hp 已為 0、respawn_timer 已設定，tick() 倒數後以新 max_hp 滿血復活。
+    pub fn reset_max_hp_to_base_level(&mut self, base_level: u32) {
+        self.max_hp = scaled_max_hp(self.kind.max_hp(), base_level);
     }
 
     /// 測試用：直接組出指定狀態（含壞值）的敵人，驗證載入防線。

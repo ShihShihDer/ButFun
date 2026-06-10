@@ -335,6 +335,10 @@ fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// 快照裡一個世界敵人的可見狀態。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct EnemyView {
@@ -348,6 +352,9 @@ pub struct EnemyView {
     pub hp: u32,
     pub max_hp: u32,
     pub alive: bool,
+    /// 兇名精英（ROADMAP 42）：level >= base_level+3，名牌加「兇名」前綴、體型微大、全服通告過。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notorious: bool,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -623,6 +630,7 @@ mod tests {
                 hp: 5,
                 max_hp: 6,
                 alive: true,
+                notorious: false,
             }],
             daynight: DayNightView {
                 phase: Phase::Day,

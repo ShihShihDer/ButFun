@@ -212,6 +212,7 @@ pub fn spawn(app: AppState) {
                             hp: p.enemy.remaining_hp(),
                             max_hp: p.enemy.max_hp(),
                             alive: p.enemy.is_alive(),
+                            notorious: p.level >= p.base_level.saturating_add(3),
                         })
                         .collect()
                 } else {
@@ -241,6 +242,10 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+                // 位置→玩家的對映，供後續步驟查找倒地玩家座標
+                let mut pos_map: std::collections::HashMap<uuid::Uuid, (f32, f32)> = positions
+                    .iter().map(|(id, x, y, _)| (*id, (*x, *y))).collect();
+                let mut downed_positions: Vec<(f32, f32)> = Vec::new();
                 if !dmgs.is_empty() {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
@@ -250,10 +255,37 @@ pub fn spawn(app: AppState) {
                             let actual_dmg = dmg.saturating_sub(defense);
                             if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
                                 tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");
+                                if let Some(&(px, py)) = pos_map.get(&pid) {
+                                    downed_positions.push((px, py));
+                                }
                             }
                         }
                     }
                 }
+                // 玩家倒地 → 最近敵人升一級（ROADMAP 42）。
+                // 分開持 enemies 寫鎖，避免與上方 players 寫鎖同時持有。
+                if !downed_positions.is_empty() {
+                    let mut newly_notorious: Vec<crate::enemy_field::EnemyLevelUpResult> = Vec::new();
+                    {
+                        let mut enemies = app.enemies.write().unwrap();
+                        for (px, py) in downed_positions {
+                            if let Some(r) = enemies.level_up_nearest_killer(px, py) {
+                                if r.newly_notorious {
+                                    newly_notorious.push(r);
+                                }
+                            }
+                        }
+                    }
+                    for r in newly_notorious {
+                        let name = r.kind.display_name();
+                        let _ = app.tx_chat.send(format!(
+                            "⚠️ 一隻兇名 Lv.{} {} 正在肆虐！勇者可前往討伐，擊倒有豐厚獎勵！",
+                            r.new_level, name
+                        ));
+                    }
+                }
+                // 清理暫時用的 pos_map 避免 unused 警告
+                let _ = pos_map.drain();
             }
 
             // 整合位置 + 推進生命回復（權威模擬,每 tick 必跑,與有無觀眾無關;短暫持鎖,不跨 await）。

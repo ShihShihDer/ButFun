@@ -36,10 +36,21 @@ pub struct PlacedEnemy {
     pub x: f32,
     /// 世界座標 Y。
     pub y: f32,
-    /// 怪物基準等級（確定性，由位置計算，不持久化）。
+    /// 地理基準等級（確定性，由位置計算，不持久化；死後重置到此值）。
+    pub base_level: u32,
+    /// 當前等級（可因擊倒玩家成長，死後回 base_level；顯示與縮放皆用此值）。
     pub level: u32,
     /// 敵人本身（生命 / 重生狀態）。
     pub enemy: Enemy,
+}
+
+/// `level_up_nearest_killer` 的回傳值，供呼叫端決定是否廣播兇名精英通告。
+#[derive(Debug)]
+pub struct EnemyLevelUpResult {
+    pub kind: crate::combat::EnemyKind,
+    pub new_level: u32,
+    /// true = 剛剛跨過「基準+3」門檻，本輪才成為兇名精英。
+    pub newly_notorious: bool,
 }
 
 /// 散佈在世界裡的一整組敵人。
@@ -185,13 +196,14 @@ impl EnemyField {
         }
     }
 
-    /// 回傳 `(種類, 等級, 掉落)`；等級用於呼叫端縮放 exp。
+    /// 回傳 `(種類, 等級, 擊殺前是否兇名精英, 掉落)`；等級用於呼叫端縮放 exp。
+    /// 若敵人被打倒（掉落 = Some），其等級重置為 base_level、HP 上限也同步回撥。
     pub fn attack_nearest(
         &mut self,
         px: f32,
         py: f32,
         power: u32,
-    ) -> Option<(EnemyKind, u32, Option<(ItemKind, u32)>)> {
+    ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
@@ -230,15 +242,70 @@ impl EnemyField {
             if let Some(enemies) = self.chunks.get_mut(&found_chunk) {
                 if let Some(placed) = enemies.iter_mut().find(|e| e.id == id) {
                     let kind = placed.enemy.kind();
-                    let level = placed.level;
+                    let pre_kill_level = placed.level;
+                    let was_notorious = placed.level >= placed.base_level.saturating_add(3);
                     let loot = placed.enemy.attack(power);
-                    return Some((kind, level, loot));
+                    if loot.is_some() {
+                        // 被打倒：等級重置為地理基準值，HP 上限同步回撥（重生時滿基準血）。
+                        placed.level = placed.base_level;
+                        placed.enemy.reset_max_hp_to_base_level(placed.base_level);
+                    }
+                    return Some((kind, pre_kill_level, was_notorious, loot));
                 }
             }
             None
         } else {
             None
         }
+    }
+
+    /// 最近擊倒玩家的敵人升一級（ROADMAP 42）。
+    /// 在玩家被打趴後呼叫，找 ATTACK_REACH 內最近的存活敵人，讓牠 +1 級（硬上限 base_level+5）。
+    /// 若本次升級使其跨過「base_level+3」門檻，回傳含 newly_notorious=true 的結果供呼叫端廣播。
+    pub fn level_up_nearest_killer(&mut self, px: f32, py: f32) -> Option<EnemyLevelUpResult> {
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        let mut best: Option<((i32, i32), (i32, i32, usize), f32)> = None;
+
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(enemies) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for placed in enemies {
+                        if !placed.enemy.is_alive() { continue; }
+                        let dist_x = placed.x - px;
+                        let dist_y = placed.y - py;
+                        let dist_sq = dist_x * dist_x + dist_y * dist_y;
+                        if dist_sq <= reach_sq {
+                            if best.as_ref().map_or(true, |(_, _, b)| dist_sq < *b) {
+                                best = Some(((cx + dx, cy + dy), placed.id, dist_sq));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((found_chunk, id, _)) = best {
+            if let Some(enemies) = self.chunks.get_mut(&found_chunk) {
+                if let Some(placed) = enemies.iter_mut().find(|e| e.id == id) {
+                    let was_notorious = placed.level >= placed.base_level.saturating_add(3);
+                    let cap = placed.base_level.saturating_add(5);
+                    placed.level = (placed.level + 1).min(cap);
+                    let newly_notorious = !was_notorious && placed.level >= placed.base_level.saturating_add(3);
+                    // 同步 HP 上限（等比例縮放當前血）
+                    placed.enemy.update_max_hp_for_level(placed.level);
+                    return Some(EnemyLevelUpResult {
+                        kind: placed.enemy.kind(),
+                        new_level: placed.level,
+                        newly_notorious,
+                    });
+                }
+            }
+        }
+        None
     }
 
     pub fn threat_at(&self, px: f32, py: f32) -> u32 {
@@ -276,13 +343,14 @@ impl EnemyField {
         let key = chunk_key(x, y);
         let chunk = self.chunks.entry(key).or_default();
         let idx = chunk.len() + RIFT_ID_OFFSET;
-        let level = crate::combat::monster_level_at(x, y);
+        let base_level = crate::combat::monster_level_at(x, y);
         chunk.push(PlacedEnemy {
             id: (key.0, key.1, idx),
             x,
             y,
-            level,
-            enemy: Enemy::new_leveled(kind, level),
+            base_level,
+            level: base_level,
+            enemy: Enemy::new_leveled(kind, base_level),
         });
     }
 
@@ -292,9 +360,11 @@ impl EnemyField {
             if !enemy.is_loadable() { continue; }
             let id = (0, 0, i);
             let (x, y) = spawn_position(id);
-            let level = crate::combat::monster_level_at(x, y);
+            let base_level = crate::combat::monster_level_at(x, y);
             let key = chunk_key(x, y);
-            field.chunks.entry(key).or_default().push(PlacedEnemy { x, y, level, enemy, id });
+            field.chunks.entry(key).or_default().push(PlacedEnemy {
+                x, y, base_level, level: base_level, enemy, id
+            });
         }
         Some(field)
     }
@@ -362,13 +432,14 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             let biome = world_core::biome_at(x as f64, y as f64);
             kind_for_biome(biome)
         };
-        let level = crate::combat::monster_level_at(x, y);
+        let base_level = crate::combat::monster_level_at(x, y);
         enemies.push(PlacedEnemy {
             id,
             x,
             y,
-            level,
-            enemy: Enemy::new_leveled(kind, level),
+            base_level,
+            level: base_level,
+            enemy: Enemy::new_leveled(kind, base_level),
         });
     }
     enemies
@@ -596,5 +667,96 @@ mod tests {
             moved_night > moved_day,
             "夜間移動距離（{moved_night:.2}）應大於白天（{moved_day:.2}）"
         );
+    }
+
+    // ───── ROADMAP 42 怪物成長生態測試 ─────
+
+    #[test]
+    fn enemy_level_resets_on_kill() {
+        // 被玩家殺死後，等級應重置為 base_level。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        // 手動調高等級
+        let key = *f.chunks.keys().next().unwrap();
+        {
+            let chunk = f.chunks.get_mut(&key).unwrap();
+            assert!(!chunk.is_empty());
+            chunk[0].level = chunk[0].base_level + 4;
+        }
+        let (ex, ey, base) = {
+            let e = &f.chunks[&key][0];
+            (e.x, e.y, e.base_level)
+        };
+        // 用一萬點傷害確保一擊必殺
+        let result = f.attack_nearest(ex, ey, 10000);
+        assert!(result.is_some(), "應能攻擊到敵人");
+        let (_, _, was_notorious, loot) = result.unwrap();
+        assert!(loot.is_some(), "應有掉落（代表擊殺）");
+        assert!(was_notorious, "等級為 base+4 應為兇名精英");
+        // 擊殺後 level 應重置為 base_level
+        let cur_level = f.chunks[&key][0].level;
+        assert_eq!(cur_level, base, "擊殺後等級應回歸 base_level");
+    }
+
+    #[test]
+    fn level_up_nearest_killer_increments_level() {
+        // 模擬玩家被打趴，最近敵人升一級。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        let key = *f.chunks.keys().next().unwrap();
+        let (ex, ey, before_level) = {
+            let e = &f.chunks[&key][0];
+            (e.x, e.y, e.level)
+        };
+        let result = f.level_up_nearest_killer(ex, ey);
+        assert!(result.is_some(), "應找到敵人升級");
+        let after_level = f.chunks[&key][0].level;
+        assert_eq!(after_level, before_level + 1, "敵人應升一級");
+    }
+
+    #[test]
+    fn level_up_capped_at_base_plus_5() {
+        // 等級上限：base_level + 5，超過不再升。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        let key = *f.chunks.keys().next().unwrap();
+        let base = f.chunks[&key][0].base_level;
+        // 先將等級調至上限
+        f.chunks.get_mut(&key).unwrap()[0].level = base + 5;
+        let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
+        f.level_up_nearest_killer(ex, ey);
+        assert_eq!(f.chunks[&key][0].level, base + 5, "上限 base+5 不應再升");
+    }
+
+    #[test]
+    fn newly_notorious_triggers_at_base_plus_3() {
+        // 從 base+2 升到 base+3 時 newly_notorious 應為 true。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        let key = *f.chunks.keys().next().unwrap();
+        let base = f.chunks[&key][0].base_level;
+        f.chunks.get_mut(&key).unwrap()[0].level = base + 2;
+        let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
+        let result = f.level_up_nearest_killer(ex, ey);
+        let r = result.unwrap();
+        assert_eq!(r.new_level, base + 3);
+        assert!(r.newly_notorious, "跨過 base+3 門檻時 newly_notorious 應為 true");
+    }
+
+    #[test]
+    fn attack_nearest_returns_notorious_status() {
+        // attack_nearest 第三個元素反映擊殺前是否為兇名精英。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        let key = *f.chunks.keys().next().unwrap();
+        {
+            let chunk = f.chunks.get_mut(&key).unwrap();
+            chunk[0].level = chunk[0].base_level + 3;
+        }
+        let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
+        let result = f.attack_nearest(ex, ey, 10000);
+        let (_, _, was_notorious, loot) = result.unwrap();
+        assert!(loot.is_some());
+        assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
     }
 }

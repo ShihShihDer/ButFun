@@ -4280,17 +4280,29 @@
         ctx.fillStyle = "#d65a5a";
         ctx.fillRect(bx, by, bw * (e.hp / e.max_hp), 4);
       }
-      // 怪物等級名牌（ROADMAP 41）：Lv.N 名字，顏色相對玩家等級。
+      // 兇名精英光環（ROADMAP 42）：紅色脈動外環，體型微大。
+      if (e.alive && e.notorious) {
+        const pulse = 0.5 + 0.5 * Math.sin(t * 4 + e.x * 0.01);
+        ctx.globalAlpha = 0.30 + 0.20 * pulse;
+        ctx.strokeStyle = "#ff2222";
+        ctx.lineWidth = 3 + pulse * 2;
+        ctx.beginPath();
+        ctx.arc(sx, ey, 20 + pulse * 4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // 怪物等級名牌（ROADMAP 41/42）：Lv.N 名字；兇名精英加「兇名」前綴。
       if (e.alive && typeof e.level === "number") {
         const plvl = myLevel || 1;
         const diff = e.level - plvl;
         // 綠=比玩家弱，黃=勢均，紅=危險
-        const lvColor = diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
+        const lvColor = e.notorious ? "#ff4444" : diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
         const kindName = ENEMY_NAME[e.kind] || e.kind;
-        const tag = `Lv.${e.level} ${kindName}`;
-        ctx.font = "bold 9px sans-serif";
+        const prefix = e.notorious ? "兇名 " : "";
+        const tag = `${prefix}Lv.${e.level} ${kindName}`;
+        ctx.font = e.notorious ? "bold 10px sans-serif" : "bold 9px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : "rgba(0,0,0,0.55)";
         ctx.fillText(tag, sx + 1, sy - 29);
         ctx.fillStyle = lvColor;
         ctx.fillText(tag, sx, sy - 30);
