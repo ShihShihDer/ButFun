@@ -4,6 +4,7 @@
 //! 詳見 docs/GAME_DESIGN.md。
 
 mod auth;
+mod class;
 mod combat;
 mod connections;
 mod crafting;

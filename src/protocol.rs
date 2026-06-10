@@ -142,6 +142,10 @@ pub enum ClientMsg {
     /// 故鄉 → 赤焰星 須持翠幽碎片（有探索翠幽星的證明）+ 50 乙太；
     /// 各星球 → 故鄉 只需 30 乙太。
     TravelToPlanet { planet: String },
+    /// 設定職業（ROADMAP 28）：玩家在職業選擇視窗點選職業。
+    /// `class` 為職業 wire key（"warrior" / "farmer" / "artisan" / "explorer" / "merchant"）。
+    /// 未登入 / 無效職業靜默忽略；可隨時更換職業（職業加成立即生效）。
+    SetClass { class: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -226,6 +230,8 @@ pub struct PlayerView {
     pub defense: u32,
     /// 玩家目前所在星球（ROADMAP 20/22）。"home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星。
     pub planet: String,
+    /// 玩家職業（ROADMAP 28）。None = 未選。"warrior" / "farmer" / "artisan" / "explorer" / "merchant"。
+    pub job_class: Option<String>,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -446,6 +452,7 @@ mod tests {
                 attack: 2,
                 defense: 0,
                 planet: "home".into(),
+                job_class: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -556,6 +563,7 @@ mod tests {
             inventory: vec![ItemStack { item: ItemKind::Wood, qty: 1 }],
             hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
             planet: "verdant".into(),
+            job_class: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

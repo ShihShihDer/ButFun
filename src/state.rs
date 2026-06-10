@@ -12,6 +12,7 @@ use uuid::Uuid;
 use world_core::{biome_at, resolve_move, Biome};
 
 use crate::auth::AuthConfig;
+use crate::class::JobClass;
 use crate::connections::ConnectionCounts;
 use crate::daynight::DayNight;
 use crate::daynight_store::DayNightStore;
@@ -115,6 +116,9 @@ pub struct Player {
     /// "aether" = 霧醚星，"origin" = 星源星。
     /// 執行期狀態，重連回 home 起算（不持久化，跨重啟無礙）。
     pub planet: String,
+    /// 玩家選擇的職業（ROADMAP 28）。None = 未選職業。
+    /// 執行期狀態；重連不持久化（下輪可加 Postgres 欄位）。
+    pub job_class: Option<JobClass>,
 }
 
 impl Player {
@@ -142,23 +146,27 @@ impl Player {
             exp: self.exp,
             level: self.level(),
             attack: crate::combat::weapon_power(&self.inventory)
-                + crate::combat::level_attack_bonus(self.level()),
+                + crate::combat::level_attack_bonus(self.level())
+                + crate::class::combat_bonus(self.job_class),
             defense: crate::combat::armor_defense(&self.inventory),
             planet: self.planet.clone(),
+            job_class: self.job_class.map(|c| c.as_str().to_string()),
         }
     }
 
     /// 星際旅行可行性驗證（純函式，供 ws.rs 呼叫與測試）。
+    /// `discount` 為探索者職業折扣（`crate::class::travel_cost_reduction`），無職業傳 0。
     /// 回傳 `Ok(())` = 可以旅行；`Err(msg)` = 失敗原因字串。
-    pub fn can_travel_to(&self, dest: &str) -> Result<(), String> {
+    pub fn can_travel_to(&self, dest: &str, discount: u32) -> Result<(), String> {
         use crate::inventory::ItemKind;
         if self.vitals.is_downed() {
             return Err("倒地中無法旅行".into());
         }
         if dest == PLANET_VERDANT && self.planet == PLANET_HOME {
             // 故鄉 → 翠幽星：需五大生態武裝全套 + 30 乙太。
-            if self.ether < TRAVEL_ETHER_COST {
-                return Err(format!("乙太不足（前往翠幽星需要 {} 乙太）", TRAVEL_ETHER_COST));
+            let cost = TRAVEL_ETHER_COST.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（前往翠幽星需要 {} 乙太）", cost));
             }
             let biome_weapons = [
                 ItemKind::MeadowAmulet,
@@ -179,14 +187,16 @@ impl Player {
                 || self.planet == PLANET_ORIGIN)
         {
             // 翠幽星 / 赤焰星 / 虛空星 / 霧醚星 / 星源星 → 故鄉：只需 30 乙太。
-            if self.ether < TRAVEL_ETHER_COST {
-                return Err(format!("乙太不足（返回故鄉需要 {} 乙太）", TRAVEL_ETHER_COST));
+            let cost = TRAVEL_ETHER_COST.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（返回故鄉需要 {} 乙太）", cost));
             }
             Ok(())
         } else if dest == PLANET_CRIMSON && self.planet == PLANET_HOME {
             // 故鄉 → 赤焰星：需持有翠幽碎片（證明踏上過翠幽星）+ 50 乙太。
-            if self.ether < TRAVEL_ETHER_COST_CRIMSON {
-                return Err(format!("乙太不足（前往赤焰星需要 {} 乙太）", TRAVEL_ETHER_COST_CRIMSON));
+            let cost = TRAVEL_ETHER_COST_CRIMSON.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（前往赤焰星需要 {} 乙太）", cost));
             }
             if self.inventory.count(ItemKind::JadeShard) == 0 {
                 return Err("需要持有翠幽碎片才能找到赤焰星的星際航道（先探索翠幽星）".into());
@@ -194,8 +204,9 @@ impl Player {
             Ok(())
         } else if dest == PLANET_VOID && (self.planet == PLANET_HOME || self.planet == PLANET_CRIMSON) {
             // 故鄉 / 赤焰星 → 虛空星：需持有熔晶碎片（證明踏上過赤焰星）+ 80 乙太。
-            if self.ether < TRAVEL_ETHER_COST_VOID {
-                return Err(format!("乙太不足（前往虛空星需要 {} 乙太）", TRAVEL_ETHER_COST_VOID));
+            let cost = TRAVEL_ETHER_COST_VOID.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（前往虛空星需要 {} 乙太）", cost));
             }
             if self.inventory.count(ItemKind::LavaCrystal) == 0 {
                 return Err("需要持有熔晶碎片才能找到虛空星的星際航道（先探索赤焰星）".into());
@@ -207,8 +218,9 @@ impl Player {
                 || self.planet == PLANET_VOID)
         {
             // 故鄉 / 赤焰星 / 虛空星 → 霧醚星：需持有虛空碎片（證明踏上過虛空星）+ 120 乙太。
-            if self.ether < TRAVEL_ETHER_COST_AETHER {
-                return Err(format!("乙太不足（前往霧醚星需要 {} 乙太）", TRAVEL_ETHER_COST_AETHER));
+            let cost = TRAVEL_ETHER_COST_AETHER.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（前往霧醚星需要 {} 乙太）", cost));
             }
             if self.inventory.count(ItemKind::VoidShard) == 0 {
                 return Err("需要持有虛空碎片才能找到霧醚星的星際航道（先探索虛空星）".into());
@@ -221,8 +233,9 @@ impl Player {
                 || self.planet == PLANET_AETHER)
         {
             // 故鄉 / 赤焰星 / 虛空星 / 霧醚星 → 星源星：需持有霧醚碎片（證明踏上過霧醚星）+ 150 乙太。
-            if self.ether < TRAVEL_ETHER_COST_ORIGIN {
-                return Err(format!("乙太不足（前往星源星需要 {} 乙太）", TRAVEL_ETHER_COST_ORIGIN));
+            let cost = TRAVEL_ETHER_COST_ORIGIN.saturating_sub(discount).max(10);
+            if self.ether < cost {
+                return Err(format!("乙太不足（前往星源星需要 {} 乙太）", cost));
             }
             if self.inventory.count(ItemKind::AetherShard) == 0 {
                 return Err("需要持有霧醚碎片才能找到星源星的星際航道（先探索霧醚星）".into());
@@ -450,6 +463,7 @@ mod tests {
             attack_cooldown: 0.0,
             exp: 0,
             planet: PLANET_HOME.to_string(),
+            job_class: None,
         }
     }
 
@@ -751,7 +765,7 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST - 1;
         for w in all_biome_weapons() { p.inventory.add(w, 1); }
-        assert!(p.can_travel_to(PLANET_VERDANT).is_err(), "乙太不足應拒絕旅行");
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_err(), "乙太不足應拒絕旅行");
     }
 
     #[test]
@@ -761,7 +775,7 @@ mod tests {
         // 只放 4 件，少 1 件。
         let weapons = all_biome_weapons();
         for w in &weapons[..4] { p.inventory.add(*w, 1); }
-        assert!(p.can_travel_to(PLANET_VERDANT).is_err(), "武裝未齊應拒絕旅行");
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_err(), "武裝未齊應拒絕旅行");
     }
 
     #[test]
@@ -769,7 +783,7 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST;
         for w in all_biome_weapons() { p.inventory.add(w, 1); }
-        assert!(p.can_travel_to(PLANET_VERDANT).is_ok(), "武裝齊 + 乙太足應允許旅行");
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_ok(), "武裝齊 + 乙太足應允許旅行");
     }
 
     #[test]
@@ -778,7 +792,7 @@ mod tests {
         p.planet = PLANET_VERDANT.to_string();
         p.ether = TRAVEL_ETHER_COST;
         // 不需要武器即可返回。
-        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "翠幽星→故鄉只需乙太");
+        assert!(p.can_travel_to(PLANET_HOME, 0).is_ok(), "翠幽星→故鄉只需乙太");
     }
 
     #[test]
@@ -787,7 +801,7 @@ mod tests {
         p.ether = TRAVEL_ETHER_COST + 100;
         for w in all_biome_weapons() { p.inventory.add(w, 1); }
         // 已在故鄉，嘗試去故鄉。
-        assert!(p.can_travel_to(PLANET_HOME).is_err(), "已在故鄉不能再去故鄉");
+        assert!(p.can_travel_to(PLANET_HOME, 0).is_err(), "已在故鄉不能再去故鄉");
     }
 
     // ROADMAP 22 — 赤焰星旅行條件測試。
@@ -797,7 +811,7 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_CRIMSON - 1;
         p.inventory.add(ItemKind::JadeShard, 1);
-        assert!(p.can_travel_to(PLANET_CRIMSON).is_err(), "赤焰星乙太不足應拒絕旅行");
+        assert!(p.can_travel_to(PLANET_CRIMSON, 0).is_err(), "赤焰星乙太不足應拒絕旅行");
     }
 
     #[test]
@@ -805,7 +819,7 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_CRIMSON + 10;
         // 沒有翠幽碎片（未探索過翠幽星）。
-        assert!(p.can_travel_to(PLANET_CRIMSON).is_err(), "無翠幽碎片應拒絕赤焰星旅行");
+        assert!(p.can_travel_to(PLANET_CRIMSON, 0).is_err(), "無翠幽碎片應拒絕赤焰星旅行");
     }
 
     #[test]
@@ -814,7 +828,7 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_CRIMSON;
         p.inventory.add(ItemKind::JadeShard, 1);
-        assert!(p.can_travel_to(PLANET_CRIMSON).is_ok(), "翠幽碎片 + 乙太足應允許赤焰星旅行");
+        assert!(p.can_travel_to(PLANET_CRIMSON, 0).is_ok(), "翠幽碎片 + 乙太足應允許赤焰星旅行");
     }
 
     #[test]
@@ -822,7 +836,7 @@ mod tests {
         let mut p = player_at(CRIMSON_SPAWN_X, CRIMSON_SPAWN_Y, Input::default());
         p.planet = PLANET_CRIMSON.to_string();
         p.ether = TRAVEL_ETHER_COST;
-        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "赤焰星→故鄉只需 30 乙太");
+        assert!(p.can_travel_to(PLANET_HOME, 0).is_ok(), "赤焰星→故鄉只需 30 乙太");
     }
 
     #[test]
@@ -831,14 +845,14 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_AETHER - 1;
         p.inventory.add(ItemKind::VoidShard, 1);
-        assert!(p.can_travel_to(PLANET_AETHER).is_err(), "乙太不足應拒絕霧醚星旅行");
+        assert!(p.can_travel_to(PLANET_AETHER, 0).is_err(), "乙太不足應拒絕霧醚星旅行");
     }
 
     #[test]
     fn travel_home_to_aether_fails_without_void_shard() {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_AETHER;
-        assert!(p.can_travel_to(PLANET_AETHER).is_err(), "無虛空碎片應拒絕霧醚星旅行");
+        assert!(p.can_travel_to(PLANET_AETHER, 0).is_err(), "無虛空碎片應拒絕霧醚星旅行");
     }
 
     #[test]
@@ -848,7 +862,7 @@ mod tests {
         p.planet = PLANET_VOID.to_string();
         p.ether = TRAVEL_ETHER_COST_AETHER;
         p.inventory.add(ItemKind::VoidShard, 1);
-        assert!(p.can_travel_to(PLANET_AETHER).is_ok(), "虛空碎片 + 乙太足應允許霧醚星旅行");
+        assert!(p.can_travel_to(PLANET_AETHER, 0).is_ok(), "虛空碎片 + 乙太足應允許霧醚星旅行");
     }
 
     #[test]
@@ -856,7 +870,7 @@ mod tests {
         let mut p = player_at(AETHER_SPAWN_X, AETHER_SPAWN_Y, Input::default());
         p.planet = PLANET_AETHER.to_string();
         p.ether = TRAVEL_ETHER_COST;
-        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "霧醚星→故鄉只需 30 乙太");
+        assert!(p.can_travel_to(PLANET_HOME, 0).is_ok(), "霧醚星→故鄉只需 30 乙太");
     }
 
     #[test]
@@ -865,14 +879,14 @@ mod tests {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_ORIGIN - 1;
         p.inventory.add(ItemKind::AetherShard, 1);
-        assert!(p.can_travel_to(PLANET_ORIGIN).is_err(), "乙太不足應拒絕星源星旅行");
+        assert!(p.can_travel_to(PLANET_ORIGIN, 0).is_err(), "乙太不足應拒絕星源星旅行");
     }
 
     #[test]
     fn travel_to_origin_fails_without_aether_shard() {
         let mut p = player_at(0.0, 0.0, Input::default());
         p.ether = TRAVEL_ETHER_COST_ORIGIN;
-        assert!(p.can_travel_to(PLANET_ORIGIN).is_err(), "無霧醚碎片應拒絕星源星旅行");
+        assert!(p.can_travel_to(PLANET_ORIGIN, 0).is_err(), "無霧醚碎片應拒絕星源星旅行");
     }
 
     #[test]
@@ -882,7 +896,7 @@ mod tests {
         p.planet = PLANET_AETHER.to_string();
         p.ether = TRAVEL_ETHER_COST_ORIGIN;
         p.inventory.add(ItemKind::AetherShard, 1);
-        assert!(p.can_travel_to(PLANET_ORIGIN).is_ok(), "霧醚碎片 + 乙太足應允許星源星旅行");
+        assert!(p.can_travel_to(PLANET_ORIGIN, 0).is_ok(), "霧醚碎片 + 乙太足應允許星源星旅行");
     }
 
     #[test]
@@ -890,6 +904,6 @@ mod tests {
         let mut p = player_at(ORIGIN_SPAWN_X, ORIGIN_SPAWN_Y, Input::default());
         p.planet = PLANET_ORIGIN.to_string();
         p.ether = TRAVEL_ETHER_COST;
-        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "星源星→故鄉只需 30 乙太");
+        assert!(p.can_travel_to(PLANET_HOME, 0).is_ok(), "星源星→故鄉只需 30 乙太");
     }
 }

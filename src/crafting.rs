@@ -52,13 +52,28 @@ impl Recipe {
     /// 執行合成：扣除素材、加入產物。
     /// 成功回 `true`；若 `can_craft` 失敗則回 `false` 且完全不改變背包（原子性）。
     pub fn craft(&self, inv: &mut Inventory) -> bool {
-        if !self.can_craft(inv) {
+        self.craft_with_discount(inv, 0)
+    }
+
+    /// 工匠折扣合成：每項素材減 `input_reduction`（最少取 1）。
+    /// 成功回 `true`；材料不足或產物放不下回 `false`（背包不變）。
+    pub fn craft_with_discount(&self, inv: &mut Inventory, input_reduction: u32) -> bool {
+        // 1. 素材是否足夠（套用折扣後的需求量）。
+        for &(item, qty) in self.inputs {
+            let needed = qty.saturating_sub(input_reduction).max(1);
+            if !inv.has(item, needed) {
+                return false;
+            }
+        }
+        // 2. 產物是否放得下。
+        if inv.count(self.output).saturating_add(self.output_qty) > MAX_STACK {
             return false;
         }
         // 扣料。
         for &(item, qty) in self.inputs {
-            let ok = inv.take(item, qty);
-            debug_assert!(ok, "can_craft 通過但 take 失敗：{:?}", item);
+            let needed = qty.saturating_sub(input_reduction).max(1);
+            let ok = inv.take(item, needed);
+            debug_assert!(ok, "craft_with_discount 通過但 take 失敗：{:?}", item);
         }
         // 給產物。
         inv.add(self.output, self.output_qty);
