@@ -104,6 +104,14 @@
     </section>
 
     <section>
+      <h2>🌍 即時世界 <small style="color:var(--dim);font-size:0.75rem;letter-spacing:0">（每 2 秒更新；看得到誰在線上拓荒）</small></h2>
+      <a href="/" title="點我進入這個世界" style="display:block;text-decoration:none">
+        <canvas id="liveView" width="640" height="360" style="width:100%;max-width:640px;border-radius:10px;background:#0d1018;display:block;cursor:pointer"></canvas>
+      </a>
+      <div id="liveCaption" style="color:var(--dim);font-size:0.8rem;margin-top:6px">讀取中…</div>
+    </section>
+
+    <section>
       <h2>📰 更新日誌 <small style="color:var(--dim);font-size:0.75rem;letter-spacing:0">（由 AI 開發迴圈自動更新）</small></h2>
       <ul id="news"><li>讀取中…</li></ul>
     </section>
@@ -160,6 +168,96 @@
         ul.innerHTML = "<li>更新日誌將於下次部署後出現。</li>";
       }
       function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    })();
+
+    // ── 即時世界（/api/worldview 只給去識別化座標，無玩家身分）──
+    // 每 2 秒拉一次，畫俯瞰活地圖：城鎮黃銅框 + 線上玩家畫成「畫的小人」(不用 emoji，
+    // 任何裝置都顯示得出來，不會變空方框)。鏡頭：有人時放大框住玩家群，沒人時看主城。
+    (() => {
+      const cv = document.getElementById("liveView");
+      if (!cv) return;
+      const ctx = cv.getContext("2d");
+      const cap = document.getElementById("liveCaption");
+      // 渲染端記住上一幀座標，補間讓小人平滑移動（2 秒拉一次之間插值）。
+      let prev = [], next = [], lastFetch = 0, towns = [];
+
+      async function pull() {
+        try {
+          const r = await fetch("/api/worldview", { cache: "no-store" });
+          const d = await r.json();
+          towns = d.towns || [];
+          prev = next.length ? next : (d.players || []);
+          next = d.players || [];
+          lastFetch = performance.now();
+          cap.textContent = next.length
+            ? `🟢 現在有 ${next.length} 位拓荒者在邊境星上 — 點畫面進去找他們`
+            : "目前沒有人在線。點畫面成為此刻唯一的拓荒者。";
+        } catch {
+          cap.textContent = "暫時連不上世界。";
+        }
+      }
+
+      function draw() {
+        // 視野：有玩家→框住所有玩家(留邊)，至少 1600px 寬避免過度放大；沒玩家→主城。
+        let minX, minY, maxX, maxY;
+        if (next.length) {
+          minX = minY = Infinity; maxX = maxY = -Infinity;
+          for (const [x, y] of next) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+          const padX = 600, padY = 340;
+          minX -= padX; maxX += padX; minY -= padY; maxY += padY;
+          if (maxX - minX < 1600) { const c = (minX + maxX) / 2; minX = c - 800; maxX = c + 800; }
+          if (maxY - minY < 900) { const c = (minY + maxY) / 2; minY = c - 450; maxY = c + 450; }
+        } else {
+          const t = towns[0] || { x: 2352, y: 2288, half: 1088 };
+          minX = t.x - t.half - 500; maxX = t.x + t.half + 500;
+          minY = t.y - t.half - 280; maxY = t.y + t.half + 280;
+        }
+        const s = Math.min(cv.width / (maxX - minX), cv.height / (maxY - minY));
+        const offX = (cv.width - (maxX - minX) * s) / 2;
+        const offY = (cv.height - (maxY - minY) * s) / 2;
+        const X = (wx) => (wx - minX) * s + offX;
+        const Y = (wy) => (wy - minY) * s + offY;
+
+        ctx.fillStyle = "#0d1018"; ctx.fillRect(0, 0, cv.width, cv.height);
+        // 城鎮黃銅框 + 名牌
+        ctx.textAlign = "center"; ctx.font = "11px system-ui, sans-serif";
+        for (const t of towns) {
+          const h = t.half * s;
+          ctx.strokeStyle = "rgba(201,162,75,0.55)"; ctx.lineWidth = 1.5;
+          ctx.strokeRect(X(t.x) - h, Y(t.y) - h, h * 2, h * 2);
+          ctx.fillStyle = "rgba(201,162,75,0.85)";
+          ctx.fillText(t.name, X(t.x), Y(t.y) - h - 4);
+        }
+        // 補間係數（上次拉取後經過的時間 / 2 秒）
+        const k = Math.max(0, Math.min(1, (performance.now() - lastFetch) / 2000));
+        const n = Math.max(prev.length, next.length);
+        for (let i = 0; i < n; i++) {
+          const a = prev[i] || next[i], b = next[i] || prev[i];
+          if (!b) continue;
+          const wx = a[0] + (b[0] - a[0]) * k, wy = a[1] + (b[1] - a[1]) * k;
+          drawPerson(X(wx), Y(wy));
+        }
+        requestAnimationFrame(draw);
+      }
+
+      // 畫的小人（黃銅色）：頭(圓) + 身體(梯形)。純 canvas、零字形依賴，絕不變空方框。
+      function drawPerson(x, y) {
+        ctx.save();
+        // 腳下光暈
+        ctx.beginPath(); ctx.arc(x, y + 2, 7, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,211,77,0.18)"; ctx.fill();
+        // 身體
+        ctx.fillStyle = "#c9a24b";
+        ctx.beginPath();
+        ctx.moveTo(x - 4, y + 4); ctx.lineTo(x + 4, y + 4);
+        ctx.lineTo(x + 3, y - 3); ctx.lineTo(x - 3, y - 3); ctx.closePath(); ctx.fill();
+        // 頭
+        ctx.beginPath(); ctx.arc(x, y - 6, 3.2, 0, Math.PI * 2);
+        ctx.fillStyle = "#e8c873"; ctx.fill();
+        ctx.restore();
+      }
+
+      pull(); setInterval(pull, 2000); requestAnimationFrame(draw);
     })();
   </script>
 </body>
