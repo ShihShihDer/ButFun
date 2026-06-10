@@ -787,9 +787,9 @@
         }
         break;
       case "npc_reply":
-        // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。
-        npcChatThinking(false);
-        appendNpcChat(msg.display || "商人", msg.text, "npc");
+        // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。路由到對應 NPC 的聊天欄。
+        npcChatThinking(msg.npc || "merchant", false);
+        appendNpcChat(msg.npc || "merchant", msg.display || "NPC", msg.text, "npc");
         break;
       case "guild_update":
         // 公會狀態更新（ROADMAP 29）：建立/加入/離開後由伺服器推送。
@@ -8095,39 +8095,53 @@
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
 
-  // ── 會動腦的 NPC 對話接線（商店視窗內）──
-  function appendNpcChat(who, text, cls) {
-    const log = document.getElementById("npcChatLog");
+  // ── 會動腦的 NPC 對話接線（六大 NPC 全家桶，ROADMAP 57/58）──
+  // NPC ID → 顯示名稱（前端本地映射，送禮/思考動畫用）
+  const NPC_DISPLAY_MAP = {
+    merchant: "商人薇拉",
+    workshop_npc: "工匠老胡",
+    bounty_npc: "獵手蘭卡",
+    expedition_npc: "探勘員芙利亞",
+    procurement_npc: "採購代理人吉爾",
+    farm_fair_npc: "評審老農",
+  };
+  // 依 npcId 找對應的 DOM element ID（merchant 保持舊 ID 向後相容）
+  function npcElemId(npcId, kind) {
+    return npcId === "merchant" ? `npcChat${kind[0].toUpperCase()}${kind.slice(1)}` : `npcChat${kind[0].toUpperCase()}${kind.slice(1)}_${npcId}`;
+  }
+  function appendNpcChat(npcId, who, text, cls) {
+    const log = document.getElementById(npcElemId(npcId, "log"));
     if (!log) return;
     const div = document.createElement("div");
     div.style.margin = "2px 0";
     if (cls === "npc") div.innerHTML = `<b style="color:#c9a24b">${who}：</b>${escapeHtmlNpc(text)}`;
-    else if (cls === "thinking") { div.id = "npcThinking"; div.style.opacity = "0.6"; div.textContent = `${who} 正在思考…`; }
+    else if (cls === "thinking") { div.id = `npcThinking_${npcId}`; div.style.opacity = "0.6"; div.textContent = `${who} 正在思考…`; }
     else div.innerHTML = `<b style="color:#8ec4f0">你：</b>${escapeHtmlNpc(text)}`;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
   }
-  function npcChatThinking(on) {
-    const old = document.getElementById("npcThinking");
+  function npcChatThinking(npcId, on) {
+    const old = document.getElementById(`npcThinking_${npcId}`);
     if (old) old.remove();
-    if (on) appendNpcChat("商人", "", "thinking");
+    if (on) appendNpcChat(npcId, NPC_DISPLAY_MAP[npcId] || "NPC", "", "thinking");
   }
   function escapeHtmlNpc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-  function sendNpcChat() {
-    const input = document.getElementById("npcChatInput");
+  function sendNpcChat(npcId) {
+    const input = document.getElementById(npcElemId(npcId, "input"));
     if (!input || !ws || ws.readyState !== 1) return;
     const text = input.value.trim();
     if (!text) return;
-    appendNpcChat("你", text, "me");
-    ws.send(JSON.stringify({ type: "talk_to_npc", npc: "merchant", text }));
+    appendNpcChat(npcId, "你", text, "me");
+    ws.send(JSON.stringify({ type: "talk_to_npc", npc: npcId, text }));
     input.value = "";
-    npcChatThinking(true);
+    npcChatThinking(npcId, true);
   }
-  {
-    const sendBtn = document.getElementById("npcChatSend");
-    const input = document.getElementById("npcChatInput");
-    if (sendBtn) sendBtn.addEventListener("click", sendNpcChat);
-    if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendNpcChat(); } });
+  // 為所有六大 NPC 綁定按鈕與 Enter 鍵
+  for (const npcId of ["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc"]) {
+    const sendBtn = document.getElementById(npcElemId(npcId, "send"));
+    const input = document.getElementById(npcElemId(npcId, "input"));
+    if (sendBtn) sendBtn.addEventListener("click", () => sendNpcChat(npcId));
+    if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendNpcChat(npcId); } });
   }
 
   document.getElementById("chatForm").addEventListener("submit", (e) => {

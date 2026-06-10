@@ -475,6 +475,13 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 第一隻手：商人**自己判斷**要不要善待玩家（無寫死門檻）——統計資料只當料餵給 LLM，送禮與否由他自己決定；引擎偵測暗號後抽掉、一次性上限（就算被操弄也只觸發那一份小禮）。
     - `src/npc_chat.rs` 純邏輯模組（4 個單元測試）；ws.rs TalkToNpc handler；state.rs npc_memory 欄位。零 migration。
 
+58. ✅ **AI NPC 全家桶——六大 NPC 都活起來**（本輪）
+    - 工匠老胡（workshop_npc）、獵手蘭卡（bounty_npc）、探勘員芙利亞（expedition_npc）、採購代理人吉爾（procurement_npc）、評審老農（farm_fair_npc）全數加入 AI 對話。
+    - 每個 NPC 有獨特人設與世界觀，對話口吻反映職業個性；各自有罐頭句降級（prod 安全）。
+    - 個人記憶系統一樣套用：每位玩家對每個 NPC 各有一句印象，互相隔離。
+    - 前端：各 NPC 視窗底部新增聊天欄；伺服器回話路由到正確面板（依 msg.npc 字段區分）。
+    - `src/npc_chat.rs` 新增 5 個 NpcPersona + 5 個罐頭句；JS 泛化 appendNpcChat/npcChatThinking/sendNpcChat（依 npcId 路由）；3 個新單元測試。零 migration。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。

@@ -57,12 +57,39 @@ pub struct NpcPersona {
     pub persona: &'static str,
 }
 
-/// 目前的 NPC 名冊（第一塊只有商人；之後一個一個加）。
-pub const NPCS: &[NpcPersona] = &[NpcPersona {
-    id: "merchant",
-    display: "商人",
-    persona: "你是新手村主城公共農地旁的商人，名叫薇拉。你務實、熱心、有生意人的精明，但對常照顧生意的熟客會多點人情味。你收購拓荒者採集的素材、也賣鎬子與武器。",
-}];
+/// 目前的 NPC 名冊（商人 + 五大工職 NPC）。
+pub const NPCS: &[NpcPersona] = &[
+    NpcPersona {
+        id: "merchant",
+        display: "商人薇拉",
+        persona: "你是新手村主城公共農地旁的商人，名叫薇拉。你務實、熱心、有生意人的精明，但對常照顧生意的熟客會多點人情味。你收購拓荒者採集的素材、也賣鎬子與武器。",
+    },
+    NpcPersona {
+        id: "workshop_npc",
+        display: "工匠老胡",
+        persona: "你是主城工坊的老師傅，名叫老胡。你話不多，但每句話都有分量。你最愛看到拓荒者帶著原料來、帶著成品走——這才是工匠的驕傲。對於努力完成加急訂單的拓荒者，你特別惜才。你用詞簡短有力，偶爾抱怨材料不夠精，但骨子裡是個熱心人。",
+    },
+    NpcPersona {
+        id: "bounty_npc",
+        display: "獵手蘭卡",
+        persona: "你是主城懸賞告示板前的赤甲獵手，名叫蘭卡。你曾獨自討伐過兇名精英，渾身是傷卻引以為傲。你評估拓荒者的實力精準，喜歡分享狩獵訣竅，對新手有點嘮叨但真心希望他們活著回來。說話直接，偶爾用「這群怪」稱呼敵人，帶著一股職業殺手的隨意。",
+    },
+    NpcPersona {
+        id: "expedition_npc",
+        display: "探勘員芙利亞",
+        persona: "你是主城探勘公告欄前的深綠探索家，名叫芙利亞。你對世界充滿好奇，走遍每一個生態域，對各地地形、資源分布如數家珍。你語氣輕快、充滿熱情，最喜歡聽拓荒者分享在遠方看到的奇景。面對第一次接探勘令的新手，你會溫柔地說「去看看吧，世界比你想的更大」。",
+    },
+    NpcPersona {
+        id: "procurement_npc",
+        display: "採購代理人吉爾",
+        persona: "你是主城星際採購站的採購代理人，名叫吉爾。你身披深藍紫商人袍，走遍多個星球做跨星貿易。你語氣從容、世故，對星球間物價差異瞭若指掌。你把拓荒者當夥伴，喜歡分享各星球的趣聞，偶爾透露一些你才知道的市場小秘密——但從不說太多。",
+    },
+    NpcPersona {
+        id: "farm_fair_npc",
+        display: "評審老農",
+        persona: "你是農產品展覽會的草帽評審，大家叫你老農。你種了一輩子的田，對作物品質有近乎苛刻的標準，但對真心務農的拓荒者極其溫柔。你喜歡聞剛收成的菜香，看到漂亮的農產品眼睛會亮起來。說話帶著鄉土味，偶爾引用老農諺，滿肚子關於種田、釣魚、養雞的私房心得。",
+    },
+];
 
 /// 依 id 找 NPC 人設。
 pub fn find_npc(id: &str) -> Option<&'static NpcPersona> {
@@ -73,6 +100,11 @@ pub fn find_npc(id: &str) -> Option<&'static NpcPersona> {
 pub fn canned_reply(npc: &NpcPersona) -> String {
     match npc.id {
         "merchant" => "歡迎光臨，拓荒者！要賣點採集的素材、還是看看鎬子和武器呢？".to_string(),
+        "workshop_npc" => "帶材料來就能接單。廢話少說，動手最實在。".to_string(),
+        "bounty_npc" => "看看告示板，選張狩獵令，去解決那群傢伙。別死在外面。".to_string(),
+        "expedition_npc" => "探勘令就掛在那兒！踏出城牆，去看看這個世界吧！".to_string(),
+        "procurement_npc" => "星際採購單隨時備著。跨星跑一趟，報酬絕對值得。".to_string(),
+        "farm_fair_npc" => "農展委託在這裡。好農產品說話，展給我看吧。".to_string(),
         _ => format!("{}向你點了點頭。", npc.display),
     }
 }
@@ -200,5 +232,30 @@ mod tests {
         let n = find_npc("merchant").unwrap();
         let s = system_prompt(n, &NpcRel::default(), false);
         assert!(s.contains("第一次見面"));
+    }
+
+    #[test]
+    fn all_five_new_npcs_exist() {
+        for id in ["workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc"] {
+            assert!(find_npc(id).is_some(), "找不到 NPC：{}", id);
+        }
+    }
+
+    #[test]
+    fn all_npcs_have_canned_reply() {
+        for n in NPCS {
+            let r = canned_reply(n);
+            assert!(!r.is_empty(), "NPC {} 罐頭句為空", n.id);
+            // 罐頭句不應觸發送禮暗號
+            assert!(!r.contains(GIFT_TOKEN), "NPC {} 罐頭句含送禮暗號", n.id);
+        }
+    }
+
+    #[test]
+    fn gift_token_only_in_system_prompt_not_canned() {
+        // 所有新 NPC 的 canned reply 都不含暗號
+        for n in NPCS {
+            assert!(!canned_reply(n).contains(GIFT_TOKEN));
+        }
     }
 }
