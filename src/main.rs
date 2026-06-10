@@ -28,6 +28,8 @@ mod inventory_store;
 mod tile_store;
 mod tiles;
 mod vitals;
+mod land_plot;
+mod land_plot_store;
 mod plot_registry;
 mod plots;
 mod daily_quest;
@@ -75,7 +77,7 @@ async fn main() {
     // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
     // 位置、背包、農地共用同一個連線池（PgPool 內部是 Arc,clone 便宜）：三個 store 各自獨立
     // 載回 / flush,沒有寫入順序耦合（見 0002_inventories.sql / 0003_fields.sql 為何不設外鍵）。
-    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store) =
+    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store) =
         match db::connect()
             .await
             .expect("Postgres 連線或 migration 失敗")
@@ -91,8 +93,9 @@ async fn main() {
                 let daynight_store = daynight_store::DayNightStore::from_pool(pool.clone()).await;
                 let users = users::UserStore::from_pool(pool.clone()).await;
                 let suggestions = suggestions::SuggestionStore::from_pool(pool.clone()).await;
-                let tile_store = tile_store::TileStore::from_pool(pool).await;
-                (positions, inventories, fields, daynight_store, users, suggestions, tile_store)
+                let tile_store = tile_store::TileStore::from_pool(pool.clone()).await;
+                let land_plot_store = land_plot_store::LandPlotStore::from_pool(pool).await;
+                (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store)
             }
             None => {
                 tracing::warn!(
@@ -106,6 +109,7 @@ async fn main() {
                     users::UserStore::new(),
                     suggestions::SuggestionStore::new(),
                     tile_store::TileStore::new(),
+                    land_plot_store::LandPlotStore::new(),
                 )
             }
         };
@@ -118,6 +122,7 @@ async fn main() {
         users,
         suggestions,
         tile_store,
+        land_plot_store,
     );
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");

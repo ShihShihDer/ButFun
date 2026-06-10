@@ -386,7 +386,7 @@
     <div id="hudDock">
       <button type="button" class="dock-btn" id="dockBag" data-win="winBag" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="B" aria-label="背包（B）" title="背包（B）">🎒</button>
       <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="C" aria-label="合成台（C）" title="合成台（C）">🔧</button>
-      <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="擴地" title="擴地">🌱</button>
+      <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="購地" title="購地">🌱</button>
       <button type="button" class="dock-btn" id="dockMarket" data-win="winMarket" aria-haspopup="dialog" aria-expanded="false" aria-label="市場" title="市場">🏪</button>
       <button type="button" class="dock-btn" id="dockShop" data-win="winShop" aria-haspopup="dialog" aria-expanded="false" aria-label="商店（靠近新手村商人才能開）" title="商店">🧑‍💼</button>
       <button type="button" class="dock-btn" id="dockQuest" data-win="winQuest" aria-haspopup="dialog" aria-expanded="false" aria-label="全服任務（Q）" title="全服任務（Q）">📋</button>
@@ -435,12 +435,11 @@
       </div>
       <div id="craftBody"></div>
     </div>
-    <!-- 擴地:乙太的「去處」。顯示下一格價與「擴地」鈕(乙太夠才亮、達上限反灰)。點鈕送 buy_expansion
-         意圖,伺服器查餘額扣乙太、農地多開一格,新地塊隨既有 fields 快照回來;反灰只是前端提示。 -->
+    <!-- 購地面板：農地擴張 + 城外產權地塊（ROADMAP 34）。 -->
     <div id="winExpand" class="hud-window hidden" role="dialog" aria-labelledby="expandToggle">
       <div class="win-head">
-        <span class="win-title" id="expandToggle" aria-label="擴地" title="擴地">🌱 擴地<span id="expandSummary"></span></span>
-        <button type="button" class="win-close" data-close="winExpand" aria-label="關閉擴地">✕</button>
+        <span class="win-title" id="expandToggle" aria-label="購地" title="購地">🌱 購地<span id="expandSummary"></span></span>
+        <button type="button" class="win-close" data-close="winExpand" aria-label="關閉購地">✕</button>
       </div>
       <div id="expandBody"></div>
     </div>

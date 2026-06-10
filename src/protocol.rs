@@ -170,6 +170,10 @@ pub enum ClientMsg {
     /// 請求排行榜（ROADMAP 33）：前端開啟排行榜面板時送出，
     /// 伺服器回 `Leaderboard`（等級/乙太/殺怪三榜前 20 名）。
     RequestLeaderboard,
+    /// 購買城外地塊（ROADMAP 34）：玩家在「購地」面板點選並確認。
+    /// 伺服器驗：已登入、乙太足夠（LAND_PLOT_COST=60）、地塊未被他人購走、自己尚無地塊。
+    /// 結果隨快照廣播（land_plots 欄位更新）；失敗靜默忽略（前端依乙太/狀態已灰掉按鈕）。
+    BuyLandPlot { plot_id: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -205,6 +209,9 @@ pub enum ServerMsg {
         world_event: Option<WorldEventView>,
         /// 全服社群探索任務（ROADMAP 27）：三條任務的說明、進度、完成狀態。
         quests: Vec<QuestView>,
+        /// 城外產權地塊（ROADMAP 34）：20 塊預定義地塊的幾何 + 地主資訊。
+        /// 全部送（量小，20 × ~80 bytes）；前端繪製邊界樁與地主名牌。
+        land_plots: Vec<crate::land_plot::LandPlotSnapshot>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -579,6 +586,7 @@ mod tests {
             terrain: vec![],
             world_event: None,
             quests: vec![],
+            land_plots: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
