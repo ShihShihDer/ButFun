@@ -666,7 +666,7 @@ pub struct AppState {
     pub director: Arc<RwLock<crate::director::DirectorState>>,
     /// 會動腦的 NPC 對每位玩家的「印象」（個人記憶，記憶體 v1）：(玩家 id, NPC id) → 一句話印象。
     /// 隔離設計：A 對某 NPC 的印象只影響 NPC 對 A 的口吻（見 npc_chat.rs / 願景文件）。
-    pub npc_memory: Arc<RwLock<HashMap<(Uuid, String), String>>>,
+    pub npc_memory: Arc<RwLock<HashMap<(Uuid, String), crate::npc_chat::NpcRel>>>,
 }
 
 impl AppState {
