@@ -381,6 +381,15 @@ pub fn spawn(app: AppState) {
                         },
                         world_event: app.world_event.read().unwrap().view(),
                         quests: crate::protocol::quests_view(&app.quests.read().unwrap()),
+                        land_plots: {
+                            let registry = app.land_plots.read().unwrap();
+                            let players = app.players.read().unwrap();
+                            // 查名字：先從線上玩家找，再從 UserStore 找（含離線玩家）
+                            registry.all_plots_view(|uid| {
+                                players.get(&uid).map(|p| p.name.clone())
+                                    .or_else(|| app.users.get(uid).map(|u| u.name))
+                            })
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

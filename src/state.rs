@@ -31,6 +31,8 @@ use crate::inventory_store::InventoryStore;
 use crate::tiles::TileWorld;
 use crate::tile_store::TileStore;
 use crate::vitals::Vitals;
+use crate::land_plot::LandPlotRegistry;
+use crate::land_plot_store::LandPlotStore;
 use crate::plot_registry::PlotRegistry;
 use crate::positions::PositionStore;
 use crate::protocol::{ItemStack, PlayerView, WorldInfo, ServerMsg};
@@ -370,6 +372,11 @@ pub struct AppState {
     /// 每位玩家的每日任務狀態（ROADMAP 32）：記憶體前置，重啟從當天重新生成。
     /// key = 玩家 Uuid（已登入玩家才有每日任務）。
     pub daily_quests: Arc<RwLock<HashMap<Uuid, PlayerDailyState>>>,
+    /// 城外產權地塊（ROADMAP 34）：20 塊預定義地塊的地主歸屬。
+    /// 購買後鎖住該地塊的 Dig/Place 只讓地主操作。
+    pub land_plots: Arc<RwLock<LandPlotRegistry>>,
+    /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
+    pub land_plot_store: LandPlotStore,
 }
 
 impl AppState {
@@ -383,6 +390,7 @@ impl AppState {
             UserStore::new(),
             SuggestionStore::new(),
             TileStore::new(),
+            LandPlotStore::new(),
         )
     }
 
@@ -398,12 +406,15 @@ impl AppState {
         users: UserStore,
         suggestions: SuggestionStore,
         tile_store: TileStore,
+        land_plot_store: LandPlotStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
         let (tx_chat, _rx_chat) = broadcast::channel(256);
         // 啟動時把上次存的農地與地塊歸屬種回權威狀態（無存檔時等同全新的空 map / next=0）。
         let plots = PlotRegistry::from_saved(field_store.saved_plots());
+        // 城外產權地塊：從持久化載入歸屬（無 DB 時重啟後清空，行為正確）。
+        let land_plot_registry = LandPlotRegistry::from_saved(land_plot_store.saved_ownerships());
         let fields = field_store.loaded_fields();
         // 把上次存的世界時刻種回權威時鐘（無存檔時等同破曉 `DayNight::new()`）。
         let daynight = daynight_store.loaded();
@@ -434,6 +445,8 @@ impl AppState {
             quests: Arc::new(RwLock::new(QuestState::new())),
             guilds: Arc::new(RwLock::new(GuildStore::new())),
             daily_quests: Arc::new(RwLock::new(HashMap::new())),
+            land_plots: Arc::new(RwLock::new(land_plot_registry)),
+            land_plot_store,
         }
     }
 

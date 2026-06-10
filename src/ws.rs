@@ -253,7 +253,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, quests } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, quests, land_plots } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -285,6 +285,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         world_event: world_event.clone(),
                                         // 社群任務全服廣播（所有玩家看同一套任務進度）。
                                         quests: quests.clone(),
+                                        // 城外地塊全部送出（20 塊量小；地塊都在主城附近）。
+                                        land_plots: land_plots.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -763,6 +765,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if kind == world_core::TileKind::Empty { continue; }
                     // 城牆是不可挖結構（玩家安全區的硬邊界），拒挖。
                     if kind == world_core::TileKind::TownWall { continue; }
+                    // 產權保護（ROADMAP 34）：若此格在他人購買的城外地塊內，拒絕。
+                    if let Some(uid) = authed_uid {
+                        if app.land_plots.read().unwrap().is_protected_from(ccx, ccy, uid) {
+                            continue;
+                        }
+                    } else {
+                        // 訪客：只要格子在任何已購地塊內就拒絕（無身份無法判地主）。
+                        if app.land_plots.read().unwrap().is_protected_from(ccx, ccy, uuid::Uuid::nil()) {
+                            continue;
+                        }
+                    }
                     // 挖掘：更新記憶體 delta（記為 Empty），非同步落地到 DB。
                     app.tile_world.write().unwrap().apply_delta(cx, cy, tx, ty, world_core::TileKind::Empty);
                     let store = app.tile_store.clone();
@@ -793,6 +806,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 城內禁止放置方塊：保護城鎮動線（不准把出生點/城門/NPC 圍死）。
                     let (pcx, pcy) = crate::tiles::cell_center(cx, cy, tx, ty);
                     if world_core::town_interior_at(pcx as f64, pcy as f64) { continue; }
+                    // 產權保護（ROADMAP 34）：若此格在他人已購城外地塊內，拒絕放置。
+                    if let Some(uid) = authed_uid {
+                        if app.land_plots.read().unwrap().is_protected_from(pcx, pcy, uid) {
+                            continue;
+                        }
+                    } else {
+                        if app.land_plots.read().unwrap().is_protected_from(pcx, pcy, uuid::Uuid::nil()) {
+                            continue;
+                        }
+                    }
                     // 只能放在 Empty 格（不可疊建）。
                     let current_kind = app.tile_world.read().unwrap().tile_kind(cx, cy, tx, ty);
                     if current_kind != world_core::TileKind::Empty { continue; }
@@ -1378,6 +1401,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 排行榜系統 end ───────────────────────────────────────────────
+
+                Ok(ClientMsg::BuyLandPlot { plot_id }) => {
+                    // ROADMAP 34：購買城外地塊。需：已登入、乙太足夠、地塊可購、自己尚無地塊。
+                    let Some(uid) = authed_uid else { continue; };
+                    // 一次讀鎖取乙太
+                    let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether);
+                    let Some(ether) = ether else { continue; };
+                    if ether < crate::land_plot::LAND_PLOT_COST { continue; }
+                    // 嘗試登記產權（LandPlotRegistry 內部驗地塊合法、未售、玩家限一塊）。
+                    let ok = app.land_plots.write().unwrap().buy(plot_id, uid);
+                    if !ok { continue; }
+                    // 扣乙太
+                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                        p.ether = p.ether.saturating_sub(crate::land_plot::LAND_PLOT_COST);
+                    }
+                    // 持久化（fire-and-forget）
+                    app.land_plot_store.save_purchase(plot_id, uid);
+                    tracing::info!(%uid, plot_id, "玩家購買城外地塊");
+                }
+                // ── 城外地塊購買 end ─────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),

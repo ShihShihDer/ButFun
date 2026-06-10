@@ -241,6 +241,7 @@
     }
   }
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
+  let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -531,6 +532,7 @@
         updateWorldEventPill(worldEvent);
         quests = msg.quests || [];
         updateQuestPanel();
+        landPlots = msg.land_plots || [];
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -2166,6 +2168,7 @@
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
+    drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
@@ -4062,6 +4065,64 @@
     }
   }
 
+  // ROADMAP 34：畫城外產權地塊邊界。
+  // 未購地塊：淡灰虛線邊框；已購（他人）：橙色實線+地主名；已購（自己）：亮綠實線+「你的地」。
+  const TILE_PX = 32;
+  function drawLandPlots(camX, camY) {
+    if (!landPlots.length) return;
+    ctx.save();
+    for (const p of landPlots) {
+      const wx = p.min_gx * TILE_PX;
+      const wy = p.min_gy * TILE_PX;
+      const w  = (p.max_gx - p.min_gx + 1) * TILE_PX;
+      const h  = (p.max_gy - p.min_gy + 1) * TILE_PX;
+      const sx = wx - camX;
+      const sy = wy - camY;
+      // 畫面外略過
+      if (sx + w < -20 || sy + h < -20 || sx > viewW + 20 || sy > viewH + 20) continue;
+
+      const isMine = myId && p.owner_id === myId;
+      const isOwnedByOther = p.owner_id && !isMine;
+
+      ctx.lineWidth = 2;
+      if (isMine) {
+        ctx.strokeStyle = "rgba(80,255,100,0.85)";
+        ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(80,255,100,0.07)";
+      } else if (isOwnedByOther) {
+        ctx.strokeStyle = "rgba(255,180,60,0.75)";
+        ctx.setLineDash([]);
+        ctx.fillStyle = "rgba(255,180,60,0.05)";
+      } else {
+        ctx.strokeStyle = "rgba(180,180,180,0.4)";
+        ctx.setLineDash([6, 5]);
+        ctx.fillStyle = "rgba(180,180,180,0.04)";
+      }
+      ctx.beginPath();
+      ctx.rect(sx, sy, w, h);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 地主名牌或「空地」標籤
+      const cx2 = sx + w / 2;
+      const cy2 = sy + h / 2;
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (isMine) {
+        ctx.fillStyle = "rgba(80,255,100,0.9)";
+        ctx.fillText("你的地", cx2, cy2);
+      } else if (isOwnedByOther && p.owner_name) {
+        ctx.fillStyle = "rgba(255,210,100,0.9)";
+        // 長名截斷
+        const nm = p.owner_name.length > 8 ? p.owner_name.slice(0, 7) + "…" : p.owner_name;
+        ctx.fillText(nm, cx2, cy2);
+      }
+    }
+    ctx.restore();
+  }
+
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
   function drawNpcs(camX, camY) {
     const t = performance.now() / 1000;
@@ -4500,7 +4561,7 @@
   // 達上限改顯示「已達上限」並反灰。點鈕只送 buy_expansion 意圖,伺服器查餘額扣乙太、農地
   // 多開一格,新地塊隨既有 fields 快照回來(零契約變更);夠不夠的反灰只是前端提示,扣款/
   // 開格規則仍只在伺服器(權威),前端不自行改地塊。me 缺欄位一律防呆,接線落地即生效。
-  let lastExpandSig = null; // 上次重建用的「乙太|已購格數|有無領地」簽章——沒變就不重建,保住焦點與效能
+  let lastExpandSig = null; // 上次重建用的簽章——沒變就不重建,保住焦點與效能
   function updateExpandPanel(me) {
     const summary = document.getElementById("expandSummary");
     const body = document.getElementById("expandBody");
@@ -4509,9 +4570,11 @@
     const ether = (me && me.ether) || 0;
     const owned = (me && me.expansions) || 0; // 防呆:伺服器還沒接擴地 → 視為一格都還沒買
     const hasField = !!myField(); // 已有領地才顯示擴地；尚無領地則先顯示「購買領地」按鈕
-    // 同合成台:快照每拍都來,但擴地面板只取決於乙太、已購格數、有無領地。沒變就提早返回,
-    // 免得每拍重建把停在按鈕上的焦點打掉、手機白耗電。
-    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}`;
+    // 城外地塊：我已有哪塊、有多少可買
+    const myLandPlot = myId ? landPlots.find(p => p.owner_id === myId) : null;
+    const availCount = landPlots.filter(p => !p.owner_id).length;
+    // 簽章把城外地塊狀態也納入，讓購買後立刻更新面板。
+    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}|${myLandPlot ? myLandPlot.plot_id : "none"}|${availCount}`;
     if (sig === lastExpandSig) return;
     lastExpandSig = sig;
     body.innerHTML = "";
@@ -4597,6 +4660,81 @@
     }
     body.appendChild(row);
 
+    // ── 城外產權地塊（ROADMAP 34）──────────────────────────────────────────
+    const sep = document.createElement("hr");
+    sep.style.cssText = "margin:6px 0;opacity:0.3;";
+    body.appendChild(sep);
+    const landTitle = document.createElement("div");
+    landTitle.style.cssText = "font-size:0.75em;opacity:0.75;margin-bottom:4px;";
+    landTitle.textContent = "🏡 城外產權地塊";
+    body.appendChild(landTitle);
+
+    if (!myId) {
+      const info = document.createElement("div");
+      info.className = "expand-desc";
+      info.textContent = "登入後可購買城外地塊（60 ✨）";
+      body.appendChild(info);
+    } else if (myLandPlot) {
+      // 已有地塊：顯示哪一塊
+      const SIDE = ["北","北","北","北","北","南","南","南","南","南","西","西","西","西","西","東","東","東","東","東"];
+      const info = document.createElement("div");
+      info.className = "expand-desc";
+      info.style.color = "#7fff7f";
+      info.textContent = `你擁有 ${SIDE[myLandPlot.plot_id] || ""}環 #${myLandPlot.plot_id} 號地塊`;
+      body.appendChild(info);
+      const hint = document.createElement("div");
+      hint.className = "expand-desc";
+      hint.style.cssText = "font-size:0.7em;opacity:0.7;margin-top:2px;";
+      hint.textContent = "此地塊內只有你能挖/放方塊";
+      body.appendChild(hint);
+    } else if (availCount === 0) {
+      const info = document.createElement("div");
+      info.className = "expand-desc";
+      info.textContent = "目前 20 塊地皆已被購買";
+      body.appendChild(info);
+    } else {
+      // 顯示可購數量與最近一塊的購買按鈕
+      const SIDE = ["北","北","北","北","北","南","南","南","南","南","西","西","西","西","西","東","東","東","東","東"];
+      const LAND_PLOT_BUY_COST = 60;
+      const canBuyPlot = ether >= LAND_PLOT_BUY_COST;
+      const info = document.createElement("div");
+      info.className = "expand-desc";
+      const lack = !canBuyPlot;
+      info.innerHTML = `尚有 ${availCount} 塊可購，每塊 <span class="expand-cost${lack ? " lack" : ""}">✨ ${LAND_PLOT_BUY_COST}</span>`;
+      body.appendChild(info);
+      const hint = document.createElement("div");
+      hint.className = "expand-desc";
+      hint.style.cssText = "font-size:0.7em;opacity:0.7;margin-top:2px;margin-bottom:4px;";
+      hint.textContent = "地圖上綠框即地塊位置，每人限購一塊";
+      body.appendChild(hint);
+      // 列出前 5 塊可購地塊
+      const avail = landPlots.filter(p => !p.owner_id).slice(0, 5);
+      for (const plot of avail) {
+        const prow = document.createElement("div");
+        prow.className = "expand-row";
+        prow.style.marginBottom = "3px";
+        const pdesc = document.createElement("div");
+        pdesc.className = "expand-desc";
+        pdesc.style.fontSize = "0.78em";
+        pdesc.textContent = `${SIDE[plot.plot_id] || ""}環 #${plot.plot_id}`;
+        prow.appendChild(pdesc);
+        const pbtn = document.createElement("button");
+        pbtn.type = "button";
+        pbtn.className = "expand-btn";
+        pbtn.textContent = "購買";
+        pbtn.disabled = !canBuyPlot;
+        pbtn.title = canBuyPlot ? `花 ${LAND_PLOT_BUY_COST} 乙太購買地塊 #${plot.plot_id}` : "乙太不足";
+        pbtn.setAttribute("aria-label", pbtn.title);
+        pbtn.addEventListener("click", () => {
+          if (pbtn.disabled) return;
+          try { ws.send(JSON.stringify({ type: "buy_land_plot", plot_id: plot.plot_id })); } catch {}
+          announce(`花 ${LAND_PLOT_BUY_COST} 乙太購買 ${SIDE[plot.plot_id] || ""}環 #${plot.plot_id} 地塊`);
+        });
+        prow.appendChild(pbtn);
+        body.appendChild(prow);
+      }
+    }
+
     // 標題列摘要 + 無障礙標籤(收起時 body 被 display:none、報讀器讀不到,摘要掛常駐標題鈕上)。
     summary.textContent = atMax ? "：已滿" : canBuy ? "：可擴" : "";
     const label = atMax
@@ -4606,9 +4744,9 @@
         : `擴地：下一格 ${cost} 乙太（不足）`;
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
-    // dock 圖示:乙太夠擴一格就點一顆黃點,不開窗也知道「現在能擴地了」。
+    // dock 圖示:乙太夠擴一格或可購城外地塊就亮黃點
     const dockE = document.getElementById("dockExpand");
-    if (dockE) dockE.classList.toggle("dock-active", canBuy);
+    if (dockE) dockE.classList.toggle("dock-active", canBuy || (!myLandPlot && ether >= 60 && availCount > 0));
   }
 
   // 職業選擇面板（ROADMAP 28）。
