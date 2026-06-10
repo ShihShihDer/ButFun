@@ -4684,6 +4684,7 @@
 
   // 距離提示節流：太遠時只偶爾提醒一次，不洗聊天視窗。
   let lastReachHint = 0;
+  let farmHintShown = false; // 「走近農地才能照顧」一個 session 只提示一次——萬用鈕長按會反覆觸發、會洗版
   // 點/輕觸地表某點 → 換算世界座標 → 送農地互動意圖（伺服器決定做什麼）。
   function farmAtScreen(clientX, clientY) {
     // 先看是不是點到小地圖收合鈕 / 縮放鈕(純 UI 切換,不需連線、也不該被當成農作意圖)。
@@ -4763,20 +4764,20 @@
 
     // 沒有自己的地（訪客 / 尚未購買）：提示可用公共農地或購買。
     if (me && !f) {
-      if (now - lastReachHint > 2500) {
+      if (!farmHintShown) {
         const hint = myId
             ? "花乙太購買農地，或走到公共農地（🌿）耕作哦。"
             : "登入後就有自己的乙太田可以照顧哦。";
         addChat("系統", hint);
-        lastReachHint = now;
+        farmHintShown = true;
       }
       return;
     }
     // 自己離自己的農地太遠：伺服器一律拒絕，這裡先給回饋、不白送一則。
     if (me && f && !withinFieldReach(f, me.x, me.y)) {
-      if (now - lastReachHint > 2500) {
+      if (!farmHintShown) {
         addChat("系統", "走近你的農地才能照顧作物哦。");
-        lastReachHint = now;
+        farmHintShown = true;
       }
       return;
     }
@@ -5074,6 +5075,24 @@
           ws.send(JSON.stringify({ type: "return_home" }));
           announce("回城：傳回新手村");
         }
+      });
+    }
+    // HUD 收合鈕：收起狀態列 + dock，把版面讓出來（狀態存 localStorage、跨重開記得）。
+    const hudEl = document.getElementById("hud");
+    const hudToggle = document.getElementById("hudToggle");
+    if (hudEl && hudToggle) {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem("butfun.hudCollapsed") === "1"; } catch {}
+      const applyHud = () => {
+        hudEl.classList.toggle("collapsed", collapsed);
+        hudToggle.textContent = collapsed ? "▸ HUD" : "▾ HUD";
+        hudToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      };
+      applyHud();
+      hudToggle.addEventListener("click", () => {
+        collapsed = !collapsed;
+        try { localStorage.setItem("butfun.hudCollapsed", collapsed ? "1" : "0"); } catch {}
+        applyHud();
       });
     }
     // 把「依 dock 鈕 id 切換視窗」暴露給全域 keydown(B/C/H 捷徑用)。走 openWinFor 同一條路,

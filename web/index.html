@@ -91,6 +91,12 @@
        被瀏海切到(沒有 cover 時 inset 恆 0、無副作用)。 */
     #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top));
       z-index: 5; font-size: 0.85rem; max-width: min(340px, 88vw); overflow-wrap: break-word; }
+    /* HUD 收合鈕：點一下收起狀態列 + dock + 提示，只留這顆鈕，把版面讓出來。狀態存 localStorage。 */
+    #hudToggle { background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; color: var(--ink);
+      cursor: pointer; font: inherit; padding: 3px 9px; margin-bottom: 5px; line-height: 1.2; }
+    #hudToggle:hover { border-color: var(--brass); }
+    #hud.collapsed > .hud-row, #hud.collapsed > #hudDock, #hud.collapsed > .hud-sub,
+    #hud.collapsed > #hudGuestHint { display: none !important; }
     /* 狀態列:小圖示+數字橫排成藥丸,省空間、一眼可讀;窄螢幕放不下會自動換行。 */
     #hud .hud-row { display: flex; flex-wrap: wrap; gap: 6px; }
     #hud .hud-pill { background: var(--panel); padding: 4px 9px; border-radius: 999px; line-height: 1.4; white-space: nowrap; }
@@ -336,6 +342,7 @@
        (同時只開一個、可關)。純前端重排版:資料全取自既有快照(inventory/hp/ether/fields),
        不嵌任何遊戲規則(將來 WebXR renderer 可各自實作 HUD)。 -->
   <div id="hud" class="hidden">
+    <button type="button" id="hudToggle" aria-expanded="true" title="收合 / 展開狀態列" aria-label="收合或展開狀態列">▾ HUD</button>
     <div class="hud-row">
       <span class="hud-pill brass" id="hudEther" title="乙太">✨ 0</span>
       <!-- 生命（戰鬥 1-F）:走近敵人自動開打、反擊扣血。低血變紅、被打趴顯示休息中(由 game.js 設色)。 -->
