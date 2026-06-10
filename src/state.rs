@@ -20,6 +20,7 @@ use crate::field::Field;
 use crate::field_store::FieldStore;
 use crate::market::Market;
 use crate::gather_field::NodeField;
+use crate::quest::QuestState;
 use crate::world_event::WorldEvent;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
@@ -334,6 +335,9 @@ pub struct AppState {
     /// 宇宙裂縫世界事件狀態（ROADMAP 26）。遊戲迴圈每 tick 推進；
     /// 觸發時注入裂縫守護者並廣播聊天公告，前端據此渲染裂縫視覺效果。
     pub world_event: Arc<RwLock<WorldEvent>>,
+    /// 全服社群探索任務（ROADMAP 27）。遊戲迴圈每 tick 推進計時，
+    /// kill/gather/travel 事件推進進度；完成時全員分潤乙太並廣播公告。
+    pub quests: Arc<RwLock<QuestState>>,
 }
 
 impl AppState {
@@ -395,6 +399,7 @@ impl AppState {
             tile_world: Arc::new(RwLock::new(tile_world)),
             tile_store,
             world_event: Arc::new(RwLock::new(WorldEvent::new())),
+            quests: Arc::new(RwLock::new(QuestState::new())),
         }
     }
 

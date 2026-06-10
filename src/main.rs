@@ -30,6 +30,7 @@ mod plots;
 mod positions;
 mod profile;
 mod protocol;
+mod quest;
 mod state;
 mod suggestions;
 mod tools;

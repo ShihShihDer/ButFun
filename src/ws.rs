@@ -245,7 +245,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, quests } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -275,6 +275,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         }).cloned().collect(),
                                         // 世界事件全服廣播（裂縫座標不做 AOI 剔除，讓玩家知道在哪裡）。
                                         world_event: world_event.clone(),
+                                        // 社群任務全服廣播（所有玩家看同一套任務進度）。
+                                        quests: quests.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -435,6 +437,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                             tracing::info!(player = %p.name, ?item, added, mult, level = p.level(), "採集入背包+exp");
                         }
+                        // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
+                        let item: crate::inventory::ItemKind = kind.into();
+                        let completed = app.quests.write().unwrap().on_gather(item);
+                        notify_quest_complete(&app, completed);
                     }
                 }
                 Ok(ClientMsg::Craft { recipe_id }) => {
@@ -782,6 +788,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), "主動攻擊戰利品+exp");
                         }
                     }
+                    // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
+                    if let Some((kind, Some(_))) = result {
+                        let completed = app.quests.write().unwrap().on_kill(kind);
+                        notify_quest_complete(&app, completed);
+                    }
                 }
                 Ok(ClientMsg::ReturnHome) => {
                     // 回城：傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。
@@ -982,6 +993,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         None
                     };
                     if let Some(msg) = result {
+                        // 通知社群任務（ROADMAP 27）：成功旅行到非故鄉星球時推進任務進度。
+                        if let crate::protocol::ServerMsg::TravelResult { ok: true, planet: ref p, .. } = msg {
+                            if p != "home" {
+                                let completed = app.quests.write().unwrap().on_travel(p);
+                                notify_quest_complete(&app, completed);
+                            }
+                        }
                         let _ = tx_direct.send(
                             serde_json::to_string(&msg).unwrap_or_default(),
                         ).await;
@@ -1001,6 +1019,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 }
 
 /// 玩家離線清理。先放掉這條連線；只有當這是該玩家的**最後一條**連線（同帳號其餘分頁
+/// 社群任務完成時：廣播公告 + 給全員在線玩家乙太獎勵（ROADMAP 27）。
+fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
+    if completed_descs.is_empty() { return; }
+    for desc in &completed_descs {
+        let msg = format!(
+            "🎉 全服任務達成！「{}」完成！所有在線玩家各得 {} 乙太！",
+            desc,
+            crate::quest::QUEST_COMPLETE_REWARD,
+        );
+        let _ = app.tx_chat.send(msg);
+    }
+    // 全員分潤乙太。
+    let mut players = app.players.write().unwrap();
+    for p in players.values_mut() {
+        p.ether = p.ether.saturating_add(
+            crate::quest::QUEST_COMPLETE_REWARD * completed_descs.len() as u32
+        );
+    }
+}
+
 /// 都離線）時，才真正把玩家移出世界——避免關掉一個分頁順手把另一個還連著的同帳號
 /// session 一起踢掉。`persist_pos` 為真（已登入玩家）時，移除前先把最後位置與乙太記
 /// 下來，讓同帳號下次重連回到原位、保有收成。鎖序固定「先 players 再 conns」。

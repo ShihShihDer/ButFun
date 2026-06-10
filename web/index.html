@@ -379,6 +379,7 @@
       <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="擴地" title="擴地">🌱</button>
       <button type="button" class="dock-btn" id="dockMarket" data-win="winMarket" aria-haspopup="dialog" aria-expanded="false" aria-label="市場" title="市場">🏪</button>
       <button type="button" class="dock-btn" id="dockShop" data-win="winShop" aria-haspopup="dialog" aria-expanded="false" aria-label="商店（靠近新手村商人才能開）" title="商店">🧑‍💼</button>
+      <button type="button" class="dock-btn" id="dockQuest" data-win="winQuest" aria-haspopup="dialog" aria-expanded="false" aria-label="全服任務（Q）" title="全服任務（Q）">📋</button>
       <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="H" aria-label="操作說明（H）" title="操作說明（H）">📖</button>
       <button type="button" class="dock-btn" id="dockSettings" data-win="winSettings" aria-haspopup="dialog" aria-expanded="false" aria-label="設定" title="設定">⚙️</button>
     </div>
@@ -445,6 +446,15 @@
       <div id="shopBody"><div style="opacity:0.6;font-size:0.85em">走近商人才能使用商店</div></div>
     </div>
     <!-- 操作說明:新手怎麼動/種田/採集/打怪的提示,收進 dock 不再常佔左上空間。 -->
+    <!-- 全服社群任務（ROADMAP 27）：三條任務讓所有玩家共同推進，完成時全員分潤乙太。 -->
+    <div id="winQuest" class="hud-window hidden" role="dialog" aria-labelledby="questTitle">
+      <div class="win-head">
+        <span class="win-title" id="questTitle">📋 全服探索任務</span>
+        <button type="button" class="win-close" data-close="winQuest" aria-label="關閉任務">✕</button>
+      </div>
+      <div id="questBody" style="font-size:13px;min-width:220px">載入中…</div>
+    </div>
+
     <div id="winHelp" class="hud-window hidden" role="dialog" aria-labelledby="winHelpTitle">
       <div class="win-head">
         <span class="win-title" id="winHelpTitle">📖 操作說明</span>
