@@ -21,6 +21,7 @@ use crate::daynight_store::DayNightStore;
 use crate::enemy_field::EnemyField;
 use crate::field::Field;
 use crate::field_store::FieldStore;
+use crate::dynamic_price::DynamicPriceMarket;
 use crate::market::Market;
 use crate::gather_field::NodeField;
 use crate::daily_quest::PlayerDailyState;
@@ -403,6 +404,9 @@ pub struct AppState {
     pub land_plots: Arc<RwLock<LandPlotRegistry>>,
     /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
     pub land_plot_store: LandPlotStore,
+    /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
+    /// 賣越多收購價越低（地板 30%）；每小時自動回升 5%。
+    pub dynamic_prices: Arc<RwLock<DynamicPriceMarket>>,
 }
 
 impl AppState {
@@ -473,6 +477,7 @@ impl AppState {
             daily_quests: Arc::new(RwLock::new(HashMap::new())),
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,
+            dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
         }
     }
 
