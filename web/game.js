@@ -4339,7 +4339,7 @@
       ctx.font = "bold 10px sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = "#c9a24b";
-      ctx.fillText("🧑‍💼 商人", sx, by - 30);
+      ctx.fillText("💰 商人", sx, by - 30);
       ctx.restore();
     }
   }
@@ -5961,7 +5961,7 @@
     summary.textContent = nearNpc ? "：商人在附近" : "";
 
     if (!nearNpc) {
-      body.innerHTML = '<div style="opacity:0.6;font-size:0.85em">走近公共農地旁的 🧑‍💼 商人才能使用商店</div>';
+      body.innerHTML = '<div style="opacity:0.6;font-size:0.85em">走近公共農地旁的 💰 商人才能使用商店</div>';
       return;
     }
 
