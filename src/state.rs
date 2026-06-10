@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use tokio::sync::broadcast;
+use std::time::Instant;
+use tokio::sync::{broadcast, Semaphore};
 use uuid::Uuid;
 
 use world_core::{biome_at, resolve_move, Biome};
@@ -670,6 +671,11 @@ pub struct AppState {
     /// 每個 NPC「自己有限的餘裕」（npc id → 還能送出的小禮份數）。約束＝真實稀缺：
     /// NPC 的好意來自他實際擁有的東西，送完就沒了（不能無中生有）。見 npc_chat.rs。
     pub npc_gift_stock: Arc<RwLock<HashMap<String, u32>>>,
+    /// LLM 並發信號量（全域上限 MAX_CONCURRENT_LLM）。超限等待 2 秒 → 逾時回罐頭句。
+    pub npc_llm_sem: Arc<Semaphore>,
+    /// 玩家對各 NPC 的上次對話時間（(player_id, npc_id) → Instant）。
+    /// 同一玩家對同一 NPC 需間隔 PER_PLAYER_NPC_COOLDOWN_SECS 秒。
+    pub npc_last_chat: Arc<RwLock<HashMap<(Uuid, String), Instant>>>,
 }
 
 impl AppState {
@@ -747,6 +753,8 @@ impl AppState {
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
             npc_memory: Arc::new(RwLock::new(HashMap::new())),
             npc_gift_stock: Arc::new(RwLock::new(crate::npc_chat::initial_gift_stock())),
+            npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::MAX_CONCURRENT_LLM)),
+            npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

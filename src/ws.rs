@@ -2196,6 +2196,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let text: String = text.chars().take(300).collect(); // 輸入上限
                     if !text.trim().is_empty() {
                         if let Some(persona) = crate::npc_chat::find_npc(&npc) {
+                            // 每人每 NPC 冷卻：防單人狂送吃掉所有許可。
+                            let chat_key = (id, npc.clone());
+                            {
+                                let mut last = app.npc_last_chat.write().unwrap();
+                                let now = std::time::Instant::now();
+                                if let Some(t) = last.get(&chat_key) {
+                                    if t.elapsed().as_secs() < crate::npc_chat::PER_PLAYER_NPC_COOLDOWN_SECS {
+                                        continue; // 冷卻中，靜默丟棄
+                                    }
+                                }
+                                last.insert(chat_key, now);
+                            }
                             let player_name = app
                                 .players
                                 .read()
@@ -2224,7 +2236,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 非同步：呼叫地端 LLM 要數秒，絕不能卡住 15Hz 迴圈。
                             let tx = tx_direct.clone();
                             let app2 = app.clone();
+                            let sem = app.npc_llm_sem.clone();
                             tokio::spawn(async move {
+                                // 等全域並發許可（上限 MAX_CONCURRENT_LLM）。
+                                // 等超 2 秒仍拿不到 → 回罐頭句，避免佇列無限堆積。
+                                let _permit = match tokio::time::timeout(
+                                    std::time::Duration::from_secs(2),
+                                    sem.acquire_owned(),
+                                ).await {
+                                    Ok(Ok(p)) => p,
+                                    _ => {
+                                        // LLM 太忙，回罐頭讓玩家感知最小（不要噴錯誤）。
+                                        if let Ok(json) = serde_json::to_string(
+                                            &crate::protocol::ServerMsg::NpcReply {
+                                                npc: persona.id.to_string(),
+                                                display: persona.display.to_string(),
+                                                text: crate::npc_chat::canned_reply(persona),
+                                            },
+                                        ) {
+                                            let _ = tx.send(json).await;
+                                        }
+                                        return;
+                                    }
+                                };
                                 let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, clean) = crate::npc_chat::extract_gift_decision(&raw);
