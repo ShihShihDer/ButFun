@@ -863,6 +863,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, ?item, gained, "使用霧醚精粹滿血+獲得15乙太");
                                 }
                             }
+                            ItemKind::OriginEssence => {
+                                // 源晶精粹：回復至滿血 + 獲得 20 乙太——星源星宇宙源頭能量轉換，五星最強補給。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.ether = p.ether.saturating_add(20);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用源晶精粹滿血+獲得20乙太");
+                                }
+                            }
                             ItemKind::StarChart => {
                                 // 星圖：展開遠方星球快照——道具本身不消耗（是導航工具而非消耗品）。
                                 // 前端收到背包快照後本地彈出星圖彈窗；伺服器只記日誌。
