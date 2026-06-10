@@ -5679,11 +5679,11 @@
   // 寵物夥伴面板（ROADMAP 46）：顯示目前的寵物加成、釋放鈕、馴化操作說明。
   let lastPetSig = null;
   const PET_INFO = {
-    flutter_sprite:  { emoji: "🧚", name: "飄靈精",   desc: "採集額外 +1 個物品。馴化費 10 乙太。" },
-    crystal_golem:   { emoji: "💠", name: "水晶魔偶",  desc: "防禦 +3。馴化費 20 乙太。" },
-    coral_crab:      { emoji: "🦀", name: "珊瑚蟹",   desc: "擊殺經驗 +20%。馴化費 25 乙太。" },
-    jade_wraith:     { emoji: "👻", name: "翡翠靈影",  desc: "攻擊力 +4。馴化費 35 乙太。" },
-    origin_guardian: { emoji: "🌟", name: "星源守衛",  desc: "攻擊力 +6、防禦 +3。馴化費 60 乙太（最強）。" },
+    flutter_sprite:  { emoji: "🧚", name: "飄舞精靈",   desc: "採集額外 +1 個物品。馴化費 10 乙太。" },
+    crystal_golem:   { emoji: "💠", name: "晶石傀儡",   desc: "防禦 +3。馴化費 20 乙太。" },
+    coral_crab:      { emoji: "🦀", name: "珊瑚蟹",    desc: "擊殺經驗 +20%。馴化費 25 乙太。" },
+    jade_wraith:     { emoji: "👻", name: "翠幽魅影",   desc: "攻擊力 +4。馴化費 35 乙太。" },
+    origin_guardian: { emoji: "🌟", name: "源晶守護者", desc: "攻擊力 +6、防禦 +3。馴化費 60 乙太（最強）。" },
   };
   function updatePetPanel(me, isGuestUser) {
     const body = document.getElementById("petBody");
@@ -5755,7 +5755,7 @@
     howTo.innerHTML = [
       "<b style='color:#c9a24b'>馴化方法</b>",
       "將怪物打到 HP &lt; 25%，靠近後點上方「馴化」鈕。",
-      "消耗乙太：飄靈精 10、水晶魔偶 20、珊瑚蟹 25、翡翠靈影 35、星源守衛 60。",
+      "消耗乙太：飄舞精靈 10、晶石傀儡 20、珊瑚蟹 25、翠幽魅影 35、源晶守護者 60。",
       "一次只能攜帶一隻；馴化新寵物會自動釋放舊的。",
     ].join("<br>");
     body.appendChild(howTo);
