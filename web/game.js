@@ -558,6 +558,11 @@
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.job_class || null, isGuest); // 職業選擇（ROADMAP 28）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
+          // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
+          if (!isGuest && !dailyQuestsRequested) {
+            dailyQuestsRequested = true;
+            try { ws.send(JSON.stringify({ type: "request_daily_quests" })); } catch {}
+          }
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -714,6 +719,11 @@
         if (myGuild && msg.guild_tag === myGuild.tag) {
           addChat(`⚜️[${msg.guild_tag}] ${msg.from}`, msg.text);
         }
+        break;
+      case "daily_quests_update":
+        // 每日任務更新（ROADMAP 32）：收到任務狀態後更新 HUD 和面板。
+        updateDailyQuestHud(msg.done_count || 0);
+        updateDailyQuestPanel(msg.tasks || [], msg.done_count || 0);
         break;
     }
   }
@@ -1701,6 +1711,7 @@
         (e.key === "j" || e.key === "J") ? "dockClass" :
         (e.key === "g" || e.key === "G") ? "dockGuild" :
         (e.key === "a" || e.key === "A") ? "dockAchievement" :
+        (e.key === "d" || e.key === "D") ? "dockDailyQuest" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -4543,6 +4554,7 @@
   // 公會系統（ROADMAP 29）狀態變數。
   let myGuild = null;       // { id, name, tag, is_founder, member_count, treasury } 或 null
   let lastGuildSig = null;  // 面板簽章，未變就不重建
+  let dailyQuestsRequested = false; // 每次連線只請求一次，避免重複
 
   function updateGuildHud(guild) {
     const el = document.getElementById("hudGuild");
@@ -4615,6 +4627,69 @@
     }
     body.innerHTML = html;
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 每日任務 HUD + 面板（ROADMAP 32）
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // 更新每日任務 HUD pill：📅 N/3
+  function updateDailyQuestHud(doneCount) {
+    const el = document.getElementById("hudDailyQuest");
+    if (!el) return;
+    el.classList.remove("hidden");
+    el.textContent = `📅 ${doneCount}/3`;
+    el.title = `每日任務 ${doneCount}/3（按 D 開啟每日任務面板）`;
+    if (doneCount >= 3) {
+      el.style.color = "#ffd700"; // 全完金色
+    } else {
+      el.style.color = "#80e8ff";
+    }
+    // 更新 dock 按鈕摘要文字。
+    const summary = document.getElementById("dailyQuestSummary");
+    if (summary) summary.textContent = ` ${doneCount}/3`;
+  }
+
+  // 更新每日任務面板：列出 3 條任務進度條。
+  let lastDQSig = null;
+  function updateDailyQuestPanel(tasks, doneCount) {
+    const body   = document.getElementById("dailyQuestBody");
+    const summary = document.getElementById("dailyQuestSummary");
+    if (!body) return;
+    const sig = JSON.stringify(tasks);
+    if (sig === lastDQSig) return;
+    lastDQSig = sig;
+    if (summary) summary.textContent = ` ${doneCount}/3`;
+
+    if (!tasks || tasks.length === 0) {
+      body.innerHTML = '<div style="color:#888;font-size:.85rem">請先登入才有每日任務</div>';
+      return;
+    }
+
+    let html = `<div style="color:#80e8ff;font-size:.78rem;margin-bottom:8px">每天 3 條任務，各完成可得 ${DAILY_ETHER_REWARD} 乙太 + ${DAILY_EXP_REWARD} EXP</div>`;
+    for (let i = 0; i < tasks.length; i++) {
+      const t = tasks[i];
+      const pct = Math.min(100, Math.round((t.progress / t.goal) * 100));
+      const done = t.completed;
+      html += `<div style="margin-bottom:10px;padding:8px;border-radius:6px;border:1px solid ${done ? "#5a8a5a" : "#2a3040"};background:${done ? "#1a2a1a" : "#141820"}">`;
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">`;
+      html += `<span style="font-weight:${done ? "600" : "400"};color:${done ? "#7ec87e" : "#c8d0e0"};font-size:.88rem">${escHtml(t.description)}</span>`;
+      html += `<span style="font-size:.8rem;color:${done ? "#7ec87e" : "#888"};margin-left:8px">${t.progress}/${t.goal}${done ? " ✓" : ""}</span>`;
+      html += `</div>`;
+      // 進度條
+      html += `<div style="height:5px;border-radius:3px;background:#2a3040;overflow:hidden">`;
+      html += `<div style="height:100%;width:${pct}%;background:${done ? "#7ec87e" : "#80e8ff"};transition:width .3s"></div>`;
+      html += `</div>`;
+      html += `</div>`;
+    }
+    if (doneCount >= 3) {
+      html += `<div style="text-align:center;color:#ffd700;font-weight:600;margin-top:4px">🌟 今日任務全部完成！</div>`;
+    }
+    html += `<div style="color:#555;font-size:.72rem;margin-top:8px;text-align:right">任務每 24 小時自動重置</div>`;
+    body.innerHTML = html;
+  }
+
+  const DAILY_ETHER_REWARD = 15;
+  const DAILY_EXP_REWARD   = 80;
 
   // 更新公會面板：顯示當前公會資訊（若有）或公會瀏覽清單。
   // guild = myGuild 或 null；guildList = 伺服器傳來的列表（null 代表尚未請求）。
@@ -5893,6 +5968,22 @@
         if (dockBtn && toggleDockWin) toggleDockWin("dockAchievement");
       });
       achHudEl.style.cursor = "pointer";
+    }
+    // 每日任務 HUD pill 點擊時開啟面板並觸發請求。
+    const dqHudEl = document.getElementById("hudDailyQuest");
+    if (dqHudEl) {
+      dqHudEl.addEventListener("click", () => {
+        const dockBtn = document.getElementById("dockDailyQuest");
+        if (dockBtn && toggleDockWin) toggleDockWin("dockDailyQuest");
+        try { ws.send(JSON.stringify({ type: "request_daily_quests" })); } catch {}
+      });
+    }
+    // 每日任務 dock 按鈕點擊時請求任務狀態。
+    const dqDockBtn = document.getElementById("dockDailyQuest");
+    if (dqDockBtn) {
+      dqDockBtn.addEventListener("click", () => {
+        try { ws.send(JSON.stringify({ type: "request_daily_quests" })); } catch {}
+      });
     }
     // 公會 dock 按鈕點擊時也請求列表。
     const guildDockBtn = document.getElementById("dockGuild");
