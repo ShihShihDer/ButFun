@@ -2304,10 +2304,36 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 世界近況（ROADMAP 65）：引擎事實，只有引擎能寫；空字串 = 無近況。
                             let world_news = app.world_log.read().unwrap().to_prompt_section();
 
+                            // NPC 生命週期（ROADMAP 66）：老年語境 + 繼承人首次登場語境 + 動態顯示名。
+                            let (elder_context, heir_context_opt, lifecycle_display) = {
+                                let mut lc = app.npc_lifecycle.write().unwrap();
+                                let elder = lc.elder_context(persona.id);
+                                let heir = lc.take_heir_context(persona.id);
+                                let disp = lc.current_display(persona.id).to_string();
+                                (elder, heir, disp)
+                            };
+                            // 合成完整老年語境：繼承人首次登場時注入「前任記憶」框架。
+                            let full_elder_context = if let Some(heir) = heir_context_opt {
+                                format!("\n\n【繼承記憶】{heir}{elder_context}")
+                            } else {
+                                elder_context.clone()
+                            };
+                            // 顯示名：若 lifecycle 有值則用動態名，否則 fallback 到靜態 persona.display。
+                            let display_name = if lifecycle_display.is_empty() {
+                                persona.display.to_string()
+                            } else {
+                                lifecycle_display
+                            };
+
                             // ── 里長：特殊路徑（村落金庫 + 活動暗號，ROADMAP 64）────
                             if persona.id == "village_chief" {
                                 let treasury = *app.village_treasury.read().unwrap();
-                                let chief_prompt = crate::village_chief::system_prompt(&rel, treasury, &world_news);
+                                // 將生命週期老年語境注入到 chief_prompt 末尾。
+                                let chief_prompt = {
+                                    let base = crate::village_chief::system_prompt(&rel, treasury, &world_news);
+                                    if full_elder_context.is_empty() { base } else { format!("{base}{full_elder_context}") }
+                                };
+                                let display_name_chief = display_name.clone();
                                 let tx = tx_direct.clone();
                                 let app2 = app.clone();
                                 let sem = app.npc_llm_sem.clone();
@@ -2321,7 +2347,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             if let Ok(json) = serde_json::to_string(
                                                 &crate::protocol::ServerMsg::NpcReply {
                                                     npc: persona.id.to_string(),
-                                                    display: persona.display.to_string(),
+                                                    display: display_name_chief.clone(),
                                                     text: crate::village_chief::canned_reply(),
                                                 },
                                             ) {
@@ -2375,7 +2401,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     if let Ok(json) = serde_json::to_string(
                                         &crate::protocol::ServerMsg::NpcReply {
                                             npc: persona.id.to_string(),
-                                            display: persona.display.to_string(),
+                                            display: display_name_chief.clone(),
                                             text: clean.clone(),
                                         },
                                     ) {
@@ -2411,6 +2437,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let tx = tx_direct.clone();
                             let app2 = app.clone();
                             let sem = app.npc_llm_sem.clone();
+                            let display_name_npc = display_name.clone();
                             tokio::spawn(async move {
                                 // 等全域並發許可（上限 MAX_CONCURRENT_LLM）。
                                 // 等超 2 秒仍拿不到 → 回罐頭句，避免佇列無限堆積。
@@ -2424,7 +2451,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         if let Ok(json) = serde_json::to_string(
                                             &crate::protocol::ServerMsg::NpcReply {
                                                 npc: persona.id.to_string(),
-                                                display: persona.display.to_string(),
+                                                display: display_name_npc.clone(),
                                                 text: crate::npc_chat::canned_reply(persona),
                                             },
                                         ) {
@@ -2433,7 +2460,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         return;
                                     }
                                 };
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news).await;
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
@@ -2482,7 +2509,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Ok(json) = serde_json::to_string(
                                     &crate::protocol::ServerMsg::NpcReply {
                                         npc: persona.id.to_string(),
-                                        display: persona.display.to_string(),
+                                        display: display_name_npc.clone(),
                                         text: clean.clone(),
                                     },
                                 ) {

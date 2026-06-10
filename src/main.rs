@@ -60,6 +60,7 @@ mod bounty_board;
 mod expedition;
 mod procurement;
 mod farm_fair;
+mod npc_lifecycle;
 mod npc_memory_store;
 mod village_chief;
 mod world_log;

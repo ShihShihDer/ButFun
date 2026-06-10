@@ -482,6 +482,31 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 生命週期 tick（ROADMAP 66）：推進壽命計時器，廣播老年 / 退休事件。
+            {
+                let events = app.npc_lifecycle.write().unwrap().tick(dt as f64);
+                for event in events {
+                    use crate::npc_lifecycle::LifecycleEvent;
+                    match event {
+                        LifecycleEvent::ElderPhase { .. } => {
+                            // 老年期靜靜體現在 prompt 中，不廣播（避免每次 tick 一直刷頻道）。
+                        }
+                        LifecycleEvent::RetirementSoon { display: _, msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
+                        LifecycleEvent::RetiredToEther { npc_id, old_display, new_display, farewell_msg, arrival_msg } => {
+                            let _ = app.tx_chat.send(farewell_msg.clone());
+                            let _ = app.tx_chat.send(arrival_msg);
+                            app.world_log.write().unwrap().push(format!(
+                                "{}回歸乙太，{}接任。",
+                                old_display, new_display
+                            ));
+                            tracing::info!(npc = %npc_id, old = %old_display, new = %new_display, "NPC 回歸乙太，繼承人登場");
+                        }
+                    }
+                }
+            }
+
             // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
             let listing_views: Vec<ListingView> = if want_broadcast {
                 app.market
