@@ -837,7 +837,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let completed = app.quests.write().unwrap().on_kill(kind);
                         notify_quest_complete(&app, completed);
                     }
-                    // 成就：擊殺計數里程碑（ROADMAP 30）。
+                    // 成就：擊殺計數里程碑（ROADMAP 31）。
                     if let Some((_, Some(_))) = result {
                         let (kill_count, new_level, pname, newly_unlocked) = {
                             let mut players = app.players.write().unwrap();
@@ -1079,7 +1079,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if p != "home" {
                                 let completed = app.quests.write().unwrap().on_travel(p);
                                 notify_quest_complete(&app, completed);
-                                // 成就：首次踏上該星球（ROADMAP 30）。
+                                // 成就：首次踏上該星球（ROADMAP 31）。
                                 if let Some(uid) = authed_uid {
                                     if let Some(ach) = crate::achievement::achievement_for_planet(p) {
                                         let is_new = app.players.write().unwrap()
@@ -1136,7 +1136,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         match result {
                             Ok(gid) => {
                                 let guild_tag = app.guilds.read().unwrap().tag_of(uid);
-                                // 扣乙太，更新 guild_tag；成就：建立公會=加入公會（ROADMAP 30）。
+                                // 扣乙太，更新 guild_tag；成就：建立公會=加入公會（ROADMAP 31）。
                                 let (is_new_ach, pname) = {
                                     let mut players = app.players.write().unwrap();
                                     if let Some(p) = players.get_mut(&uid) {
@@ -1180,7 +1180,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         match result {
                             Ok(()) => {
                                 let guild_tag = app.guilds.read().unwrap().tag_of(uid);
-                                // 成就：加入公會（ROADMAP 30）。
+                                // 成就：加入公會（ROADMAP 31）。
                                 let (is_new_ach, pname) = {
                                     let mut players = app.players.write().unwrap();
                                     if let Some(p) = players.get_mut(&uid) {
@@ -1325,7 +1325,7 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
         );
         let _ = app.tx_chat.send(msg);
     }
-    // 全員分潤乙太 + 成就：任務英雄（ROADMAP 30）。
+    // 全員分潤乙太 + 成就：任務英雄（ROADMAP 31）。
     let mut newly_heroes: Vec<(String, bool)> = Vec::new();
     let mut players = app.players.write().unwrap();
     for p in players.values_mut() {

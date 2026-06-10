@@ -257,9 +257,9 @@ pub struct PlayerView {
     pub job_class: Option<String>,
     /// 玩家公會標籤（ROADMAP 29）。None = 不在任何公會。如 "STA"、"龍"。
     pub guild_tag: Option<String>,
-    /// 已解鎖成就數（ROADMAP 30）。前端 HUD 顯示 「🏆 N/12」。
+    /// 已解鎖成就數（ROADMAP 31）。前端 HUD 顯示 「🏆 N/12」。
     pub achievement_count: u32,
-    /// 已解鎖成就的 wire key 清單（ROADMAP 30）。前端成就面板顯示解鎖狀態。
+    /// 已解鎖成就的 wire key 清單（ROADMAP 31）。前端成就面板顯示解鎖狀態。
     pub achievements: Vec<String>,
 }
 
