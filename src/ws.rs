@@ -2374,6 +2374,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let needs_context = app.npc_needs.read().unwrap().to_prompt_section(&npc);
                             // NPC 人際關係網（ROADMAP 70）：讀取此 NPC 對其他居民的好惡，注入 prompt 讓談到彼此時語氣自然。
                             let relations_context = app.npc_relations.read().unwrap().to_prompt_section(&npc);
+                            // NPC 派系自主湧現（ROADMAP 71）：讀取此 NPC 已公開的結盟/競爭關係，注入 prompt 讓口吻自然反映派系立場。
+                            let faction_context = app.npc_factions.read().unwrap().to_prompt_section(&npc);
 
                             // NPC 生命週期（ROADMAP 66）：老年語境 + 繼承人首次登場語境 + 動態顯示名。
                             let (elder_context, heir_context_opt, lifecycle_display) = {
@@ -2404,7 +2406,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     let base = crate::village_chief::system_prompt(&rel, treasury, &world_news, &player_activity);
                                     let with_elder = if full_elder_context.is_empty() { base } else { format!("{base}{full_elder_context}") };
                                     let with_needs = if needs_context.is_empty() { with_elder } else { format!("{with_elder}{needs_context}") };
-                                    if relations_context.is_empty() { with_needs } else { format!("{with_needs}{relations_context}") }
+                                    let with_rel = if relations_context.is_empty() { with_needs } else { format!("{with_needs}{relations_context}") };
+                                    if faction_context.is_empty() { with_rel } else { format!("{with_rel}{faction_context}") }
                                 };
                                 let display_name_chief = display_name.clone();
                                 let tx = tx_direct.clone();
@@ -2553,7 +2556,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         return;
                                     }
                                 };
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context, &player_activity, &needs_context, &relations_context).await;
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context, &player_activity, &needs_context, &relations_context, &faction_context).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。

@@ -713,6 +713,9 @@ pub struct AppState {
     /// 世界事件影響關係（共患難加深信任），對話時注入 system prompt 讓 NPC 談到彼此時語氣自然。
     /// 記憶體模式，重啟清零。
     pub npc_relations: Arc<RwLock<crate::npc_relations::NpcRelationsState>>,
+    /// NPC 派系自主湧現（ROADMAP 71）：追蹤已公開的結盟/競爭對，偵測派系事件並廣播到聊天頻道；
+    /// 對話時注入 system prompt 讓 NPC 自然流露對盟友/對手的口吻。記憶體模式，重啟清零。
+    pub npc_factions: Arc<RwLock<crate::npc_factions::NpcFactionState>>,
 }
 
 impl AppState {
@@ -818,6 +821,7 @@ impl AppState {
             npc_proactive: Arc::new(RwLock::new(crate::npc_proactive::NpcProactiveCooldowns::new())),
             npc_needs: Arc::new(RwLock::new(crate::npc_needs::NpcNeedsState::new())),
             npc_relations: Arc::new(RwLock::new(crate::npc_relations::NpcRelationsState::new())),
+            npc_factions: Arc::new(RwLock::new(crate::npc_factions::NpcFactionState::new())),
         }
     }
 

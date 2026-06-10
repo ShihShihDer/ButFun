@@ -62,6 +62,7 @@ mod procurement;
 mod farm_fair;
 mod npc_lifecycle;
 mod npc_memory_store;
+mod npc_factions;
 mod npc_needs;
 mod npc_proactive;
 mod npc_relations;

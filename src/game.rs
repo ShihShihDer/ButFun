@@ -541,6 +541,23 @@ pub fn spawn(app: AppState) {
                     app.npc_relations.write().unwrap().tick_decay_all();
                 }
             }
+            // NPC 派系自主湧現（ROADMAP 71）：在關係網衰減後，偵測是否有 NPC 對的好惡值越過
+            // 結盟（≥80）或競爭（≤22）門檻，廣播派系事件到全服聊天頻道。
+            // 同週期（5 分鐘）：關係剛衰減完，是最佳時機偵測狀態變化。
+            {
+                let faction_ticks = crate::npc_relations::DECAY_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % faction_ticks == 0 && tick > 0 {
+                    let relations_snapshot = app.npc_relations.read().unwrap();
+                    let faction_events = app.npc_factions.write().unwrap().detect_changes(&relations_snapshot);
+                    drop(relations_snapshot);
+                    for ev in faction_events {
+                        let text = ev.announce_text();
+                        if !text.is_empty() {
+                            let _ = app.tx_chat.send(text);
+                        }
+                    }
+                }
+            }
 
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
