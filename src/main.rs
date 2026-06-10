@@ -48,6 +48,7 @@ mod tools;
 mod users;
 mod world_event;
 mod ws;
+mod pet;
 
 use std::net::SocketAddr;
 

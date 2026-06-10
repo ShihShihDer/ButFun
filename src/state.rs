@@ -152,6 +152,10 @@ pub struct Player {
     pub pending_precision: bool,
     /// 議價術旗：true 時下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
     pub pending_haggle: bool,
+
+    // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
+    /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
+    pub pet: Option<crate::pet::PetKind>,
 }
 
 impl Player {
@@ -180,8 +184,10 @@ impl Player {
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
-                + crate::class::combat_bonus(&self.masteries),
-            defense: crate::equipment::equipped_armor_defense(&self.equipment),
+                + crate::class::combat_bonus(&self.masteries)
+                + self.pet.map(|p| p.bonus_attack()).unwrap_or(0),
+            defense: crate::equipment::equipped_armor_defense(&self.equipment)
+                + self.pet.map(|p| p.bonus_defense()).unwrap_or(0),
             planet: self.planet.clone(),
             job_class: self.masteries.title_class().map(|c| c.as_str().to_string()),
             masteries: self.masteries,
@@ -207,6 +213,7 @@ impl Player {
                 if self.pending_haggle    { flags.push("haggle".to_string()); }
                 flags
             },
+            pet_kind: self.pet.map(|p| p.as_str().to_string()),
         }
     }
 
@@ -567,6 +574,7 @@ mod tests {
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            pet: None,
         }
     }
 

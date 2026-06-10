@@ -250,8 +250,9 @@ pub fn spawn(app: AppState) {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
                         if let Some(p) = players.get_mut(&pid) {
-                            // 護甲減傷：改讀裝備槽（ROADMAP 36），不再掃整個背包。
-                            let defense = crate::equipment::equipped_armor_defense(&p.equipment);
+                            // 護甲減傷：讀裝備槽（ROADMAP 36）+ 寵物加成（ROADMAP 46）。
+                            let defense = crate::equipment::equipped_armor_defense(&p.equipment)
+                                + p.pet.map(|pk| pk.bonus_defense()).unwrap_or(0);
                             let actual_dmg = dmg.saturating_sub(defense);
                             if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
                                 tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");

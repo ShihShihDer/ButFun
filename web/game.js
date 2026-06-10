@@ -624,6 +624,7 @@
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
+          updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1851,7 +1852,8 @@
         (e.key === "d" || e.key === "D") ? "dockDailyQuest" :
         (e.key === "l" || e.key === "L") ? "dockLeaderboard" :
         (e.key === "h" || e.key === "H") ? "dockHelp" :
-        (e.key === "z" || e.key === "Z") ? "dockSkill" : null;
+        (e.key === "z" || e.key === "Z") ? "dockSkill" :
+        (e.key === "p" || e.key === "P") ? "dockPet" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2222,6 +2224,17 @@
       ctx.fillRect(bx - 1, hby - 1, bw + 2, 6);
       ctx.fillStyle = "#d65a5a"; // 與敵人血條同一危險紅,語彙一致
       ctx.fillRect(bx, hby, bw * (p.hp / p.max_hp), 4);
+    }
+
+    // 寵物夥伴（ROADMAP 46）：玩家右下角顯示寵物 emoji，一眼看出誰有夥伴
+    if (p.pet_kind) {
+      const PET_EMOJI = {
+        flutter_sprite: "🧚", crystal_golem: "💠",
+        coral_crab: "🦀", jade_wraith: "👻", origin_guardian: "🌟"
+      };
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", sx + 16, sy + 6);
     }
   }
 
@@ -5661,6 +5674,91 @@
       row.appendChild(btn);
       body.appendChild(row);
     }
+  }
+
+  // 寵物夥伴面板（ROADMAP 46）：顯示目前的寵物加成、釋放鈕、馴化操作說明。
+  let lastPetSig = null;
+  const PET_INFO = {
+    flutter_sprite:  { emoji: "🧚", name: "飄舞精靈",   desc: "採集額外 +1 個物品。馴化費 10 乙太。" },
+    crystal_golem:   { emoji: "💠", name: "晶石傀儡",   desc: "防禦 +3。馴化費 20 乙太。" },
+    coral_crab:      { emoji: "🦀", name: "珊瑚蟹",    desc: "擊殺經驗 +20%。馴化費 25 乙太。" },
+    jade_wraith:     { emoji: "👻", name: "翠幽魅影",   desc: "攻擊力 +4。馴化費 35 乙太。" },
+    origin_guardian: { emoji: "🌟", name: "源晶守護者", desc: "攻擊力 +6、防禦 +3。馴化費 60 乙太（最強）。" },
+  };
+  function updatePetPanel(me, isGuestUser) {
+    const body = document.getElementById("petBody");
+    if (!body) return;
+    const petKind = me ? me.pet_kind : null;
+    const sig = [petKind, isGuestUser].join("|");
+    if (sig === lastPetSig) return;
+    lastPetSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能馴化寵物";
+      body.appendChild(hint);
+      return;
+    }
+
+    if (petKind) {
+      const info = PET_INFO[petKind] || { emoji: "🐾", name: petKind, desc: "" };
+      const card = document.createElement("div");
+      card.style.cssText = "display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #333;";
+
+      const emojiEl = document.createElement("span");
+      emojiEl.style.cssText = "font-size:2rem;";
+      emojiEl.textContent = info.emoji;
+      card.appendChild(emojiEl);
+
+      const textDiv = document.createElement("div");
+      textDiv.style.cssText = "flex:1;";
+      const nameEl = document.createElement("div");
+      nameEl.style.cssText = "font-size:.95rem;font-weight:bold;color:#eee;";
+      nameEl.textContent = info.name;
+      textDiv.appendChild(nameEl);
+      const descEl = document.createElement("div");
+      descEl.style.cssText = "color:#aaa;font-size:.8rem;margin-top:2px;line-height:1.4;";
+      descEl.textContent = info.desc;
+      textDiv.appendChild(descEl);
+      card.appendChild(textDiv);
+
+      const releaseBtn = document.createElement("button");
+      releaseBtn.type = "button";
+      releaseBtn.style.cssText = "padding:6px 10px;border:1px solid #c05050;border-radius:6px;background:transparent;color:#e07070;cursor:pointer;font-size:.8rem;";
+      releaseBtn.textContent = "釋放";
+      releaseBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "release_pet" }));
+      });
+      card.appendChild(releaseBtn);
+      body.appendChild(card);
+    } else {
+      const none = document.createElement("div");
+      none.style.cssText = "color:#888;font-size:.85rem;margin-bottom:8px;";
+      none.textContent = "尚無寵物夥伴";
+      body.appendChild(none);
+    }
+
+    const tameBtn = document.createElement("button");
+    tameBtn.type = "button";
+    tameBtn.style.cssText = "margin-top:10px;width:100%;padding:8px 0;border:1px solid #5080f0;border-radius:8px;background:transparent;color:#8ab4f8;cursor:pointer;font-size:.9rem;";
+    tameBtn.textContent = "🐾 馴化最近的低血量怪物";
+    tameBtn.title = "靠近血量低於 25% 的怪物後點此馴化（消耗乙太）";
+    tameBtn.addEventListener("click", () => {
+      ws.send(JSON.stringify({ type: "tame_pet" }));
+    });
+    body.appendChild(tameBtn);
+
+    const howTo = document.createElement("div");
+    howTo.style.cssText = "color:#aaa;font-size:.78rem;margin-top:8px;line-height:1.5;";
+    howTo.innerHTML = [
+      "<b style='color:#c9a24b'>馴化方法</b>",
+      "將怪物打到 HP &lt; 25%，靠近後點上方「馴化」鈕。",
+      "消耗乙太：飄舞精靈 10、晶石傀儡 20、珊瑚蟹 25、翠幽魅影 35、源晶守護者 60。",
+      "一次只能攜帶一隻；馴化新寵物會自動釋放舊的。",
+    ].join("<br>");
+    body.appendChild(howTo);
   }
 
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
