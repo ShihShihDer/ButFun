@@ -200,14 +200,19 @@ impl EnemyField {
 
                 // 目標與速度決策（ROADMAP 43 狼群包夾 / 殘血逃跑）
                 let (target_x, target_y, speed) = if is_fleeing {
-                    // 殘血逃跑：朝玩家反方向移動。
-                    let (tx, ty, _) = nearest.unwrap();
-                    let fdx = placed.x - tx;
-                    let fdy = placed.y - ty;
-                    let fdist = (fdx * fdx + fdy * fdy).sqrt().max(1.0);
-                    let flee_x = placed.x + fdx / fdist * 300.0;
-                    let flee_y = placed.y + fdy / fdist * 300.0;
-                    (flee_x, flee_y, CHASE_SPEED * 0.85 * night_mult * speed_boost)
+                    // 殘血逃跑：朝玩家反方向移動（is_fleeing 已確認 nearest.is_some()，
+                    // 用 if let 保底而非 unwrap，防止競態條件炸死遊戲迴圈）。
+                    if let Some((tx, ty, _)) = nearest {
+                        let fdx = placed.x - tx;
+                        let fdy = placed.y - ty;
+                        let fdist = (fdx * fdx + fdy * fdy).sqrt().max(1.0);
+                        let flee_x = placed.x + fdx / fdist * 300.0;
+                        let flee_y = placed.y + fdy / fdist * 300.0;
+                        (flee_x, flee_y, CHASE_SPEED * 0.85 * night_mult * speed_boost)
+                    } else {
+                        let (hx, hy) = spawn_position(placed.id);
+                        (hx, hy, RETURN_SPEED)
+                    }
                 } else if placed.pack_target_timer > 0.0 {
                     if let Some((ptx, pty)) = placed.pack_target {
                         // 狼群包夾：用 ID 雜湊給每隻怪不同的進攻角度，不疊在同一點。
@@ -986,27 +991,27 @@ mod tests {
         // 殘血同種怪的呼救信號應讓附近怪獲得加速計時器（ROADMAP 43）。
         let mut f = EnemyField::new();
         f.ensure_chunks_around(6100.0, 6100.0, PACK_AGGRO_RADIUS + 200.0);
-        // 找第一隻怪當「殘血怪」，另找第二隻同種怪驗證是否被加速
-        let all_alive: Vec<_> = f.chunks.values().flat_map(|v| v.iter())
-            .filter(|e| e.enemy.is_alive())
+        // 找一隻 max_hp >= 5 的怪：唯有這類怪能「留 1 HP = HP < 25%」同時存活，
+        // max_hp <= 4 的怪（FlutterSprite=3, EtherWisp=4）HP 25% < 1 → 只能死，不能進殘血狀態。
+        let (first_kind, fx, fy) = match f.chunks.values().flat_map(|v| v.iter())
+            .filter(|e| e.enemy.is_alive() && e.enemy.max_hp() >= 5)
             .map(|e| (e.enemy.kind(), e.x, e.y))
-            .collect();
-        // 只在有多隻同種怪的情況下才有意義
-        if all_alive.len() < 2 { return; }
-        let first_kind = all_alive[0].0;
-        let (fx, fy) = (all_alive[0].1, all_alive[0].2);
+            .next() {
+            Some(t) => t,
+            None => return, // 區域內無可進入殘血狀態的怪，跳過測試
+        };
 
-        // 把第一隻怪打到殘血（10% HP）
+        // 打到剩 1 HP（確保 hp_ratio = 1/max_hp < 25%，且仍存活）
         let max_hp = f.chunks.values().flat_map(|v| v.iter())
             .find(|e| e.x == fx && e.y == fy)
             .map(|e| e.enemy.max_hp()).unwrap_or(10);
-        let damage = max_hp - max_hp / 10;
+        let damage = max_hp - 1; // 留 1 HP
         if damage > 0 { f.attack_nearest(fx, fy, damage); }
 
         // 在殘血怪旁邊放一個玩家，讓 advance 的前置掃描觸發呼救信號
         f.advance(0.05, &[(fx + 50.0, fy)], false, |_, _| false);
 
-        // 附近同種怪應有 flee_boost_timer > 0
+        // 殘血怪本身或附近同種怪應有 flee_boost_timer > 0
         let boosted = f.chunks.values().flat_map(|v| v.iter()).any(|e| {
             e.enemy.is_alive() && e.enemy.kind() == first_kind && e.flee_boost_timer > 0.0
         });
