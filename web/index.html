@@ -588,6 +588,14 @@
         <button type="button" class="win-close" data-close="winBounty" aria-label="關閉懸賞面板">✕</button>
       </div>
       <div id="bountyBody"></div>
+      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟獵手蘭卡聊聊（他會記得你）</div>
+        <div id="npcChatLog_bounty_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_bounty_npc" type="text" maxlength="200" placeholder="跟蘭卡說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_bounty_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+        </div>
+      </div>
     </div>
     <!-- 古蹟探勘面板（ROADMAP 54）：探索者熟練度第九路線；Y 鍵開關。 -->
     <div id="winExpedition" class="hud-window hidden" role="dialog" aria-labelledby="expeditionTitle">
@@ -596,6 +604,14 @@
         <button type="button" class="win-close" data-close="winExpedition" aria-label="關閉探勘面板">✕</button>
       </div>
       <div id="expeditionBody"></div>
+      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟探勘員芙利亞聊聊（她會記得你）</div>
+        <div id="npcChatLog_expedition_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_expedition_npc" type="text" maxlength="200" placeholder="跟芙利亞說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_expedition_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+        </div>
+      </div>
     </div>
     <!-- 星際採購面板（ROADMAP 55）：商人熟練度第十路線；O 鍵開關。 -->
     <div id="winProcurement" class="hud-window hidden" role="dialog" aria-labelledby="procurementTitle">
@@ -604,6 +620,14 @@
         <button type="button" class="win-close" data-close="winProcurement" aria-label="關閉採購面板">✕</button>
       </div>
       <div id="procurementBody"></div>
+      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟採購代理人吉爾聊聊（他會記得你）</div>
+        <div id="npcChatLog_procurement_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_procurement_npc" type="text" maxlength="200" placeholder="跟吉爾說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_procurement_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+        </div>
+      </div>
     </div>
     <!-- 農產品展覽會面板（ROADMAP 56）：農夫熟練度第十一路線；1 鍵開關。 -->
     <div id="winFarmFair" class="hud-window hidden" role="dialog" aria-labelledby="farmFairTitle">
@@ -612,6 +636,14 @@
         <button type="button" class="win-close" data-close="winFarmFair" aria-label="關閉農展面板">✕</button>
       </div>
       <div id="farmFairBody"></div>
+      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟評審老農聊聊（他會記得你）</div>
+        <div id="npcChatLog_farm_fair_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_farm_fair_npc" type="text" maxlength="200" placeholder="跟老農說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_farm_fair_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+        </div>
+      </div>
     </div>
     <!-- 工匠工坊面板（ROADMAP 52）：工匠熟練度第七路線；K 鍵開關。 -->
     <div id="winWorkshop" class="hud-window hidden" role="dialog" aria-labelledby="workshopTitle">
@@ -620,6 +652,14 @@
         <button type="button" class="win-close" data-close="winWorkshop" aria-label="關閉工坊面板">✕</button>
       </div>
       <div id="workshopBody"></div>
+      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟工匠老胡聊聊（他會記得你）</div>
+        <div id="npcChatLog_workshop_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_workshop_npc" type="text" maxlength="200" placeholder="跟老胡說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_workshop_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+        </div>
+      </div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->
