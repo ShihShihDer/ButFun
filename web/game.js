@@ -639,6 +639,7 @@
           updateWorkshopPanel(me, isGuest); // 工匠工坊面板（ROADMAP 52）
           updateBountyPanel(me, isGuest);   // 懸賞告示板面板（ROADMAP 53）
           updateExpeditionPanel(me, isGuest); // 古蹟探勘面板（ROADMAP 54）
+          updateProcurementPanel(me, isGuest); // 星際採購面板（ROADMAP 55）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1875,7 +1876,8 @@
         (e.key === "v" || e.key === "V") ? "dockTrade" :
         (e.key === "k" || e.key === "K") ? "dockWorkshop" :
         (e.key === "u" || e.key === "U") ? "dockBounty" :
-        (e.key === "y" || e.key === "Y") ? "dockExpedition" : null;
+        (e.key === "y" || e.key === "Y") ? "dockExpedition" :
+        (e.key === "o" || e.key === "O") ? "dockProcurement" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2323,6 +2325,7 @@
     drawWorkshopNpc(camX, camY); // 工坊 NPC（ROADMAP 52）
     drawBountyBoardNpc(camX, camY); // 懸賞告示板 NPC（ROADMAP 53）
     drawExpeditionBoardNpc(camX, camY); // 探勘公告欄 NPC（ROADMAP 54）
+    drawProcurementAgentNpc(camX, camY); // 採購代理人 NPC（ROADMAP 55）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4599,6 +4602,58 @@
     ctx.restore();
   }
 
+  // 採購代理人 NPC（ROADMAP 55）：固定於故鄉 (2480, 2080)，僅在故鄉且視野內繪製。
+  const PROCUREMENT_NPC_WX = 2480;
+  const PROCUREMENT_NPC_WY = 2080;
+  function drawProcurementAgentNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = PROCUREMENT_NPC_WX - camX;
+    const sy = PROCUREMENT_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 0.9 + 2) * 2;
+    const by = sy + bob;
+    ctx.save();
+    // 身體（採購商人西裝，深藍紫色）
+    ctx.fillStyle = "#2a1a4a";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭（亮膚色）
+    ctx.fillStyle = "#d4a870";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 商人帽（圓頂高帽）
+    ctx.fillStyle = "#1a0a3a";
+    ctx.fillRect(sx - 5, by - 20, 10, 8);
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 20, 8, 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 包裹（NPC 左手抱著）
+    ctx.fillStyle = "#8060c0";
+    ctx.fillRect(sx - 18, by - 4, 12, 10);
+    ctx.fillStyle = "#6040a0";
+    ctx.beginPath();
+    ctx.moveTo(sx - 12, by - 6); ctx.lineTo(sx - 6, by - 4); ctx.lineTo(sx - 12, by - 2); ctx.closePath();
+    ctx.fill();
+    // 飄帶絲帶（包裹繫帶）
+    ctx.strokeStyle = "#e0c060";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx - 18, by + 1); ctx.lineTo(sx - 6, by + 1);
+    ctx.moveTo(sx - 12, by - 4); ctx.lineTo(sx - 12, by + 6);
+    ctx.stroke();
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#a0a0ff";
+    ctx.fillText("📦 採購", sx, by - 30);
+    ctx.restore();
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
@@ -6838,6 +6893,131 @@
     const info = document.createElement("div");
     info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
     info.textContent = "在主城探勘公告欄接取探勘令，前往指定生態域的遠處採樣，完成後立即獲得乙太 + 探索者熟練度 XP。完成後 8 分鐘冷卻。";
+    body.appendChild(info);
+  }
+
+  // 星際採購面板（ROADMAP 55）：商人熟練度第十路線，接令→前往指定星球採集碎片→交付→得乙太+XP。
+  let lastProcurementSig = null;
+  function updateProcurementPanel(me, isGuestUser) {
+    const body = document.getElementById("procurementBody");
+    if (!body) return;
+
+    const active = me ? (me.procurement_active || null) : null;
+    const cooldown = me ? (me.procurement_cooldown || 0) : 0;
+    const nearAgent = me ? !!me.near_procurement_agent : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const orders = me ? (me.procurement_orders || []) : [];
+    const inv = me ? (me.inventory || []) : [];
+
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearAgent, planet].join("|");
+    if (sig === lastProcurementSig) return;
+    lastProcurementSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser || planet !== "home") {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = isGuestUser ? "登入後才能使用採購代理人" : "採購代理人只在故鄉星球提供服務。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 進行中採購任務。
+    if (active) {
+      const mins = Math.floor(active.remaining_secs / 60);
+      const secs = Math.floor(active.remaining_secs % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+      const itemInv = inv.find(s => s.item === active.item);
+      const haveQty = itemInv ? itemInv.qty : 0;
+      const canDeliver = nearAgent && haveQty >= active.required_qty;
+
+      const activeDiv = document.createElement("div");
+      activeDiv.style.cssText = "background:#0a0a1a;border:1px solid #404080;border-radius:8px;padding:10px;margin-bottom:10px;";
+      activeDiv.innerHTML = `
+        <div style="color:#8080ff;font-weight:600;margin-bottom:4px;">📦 進行中：${active.name}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0a0ff">${active.item_name}</b> × ${active.required_qty}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">背包：<b style="color:${haveQty >= active.required_qty ? "#80ffa0" : "#ff8080"}">${haveQty} / ${active.required_qty}</b></div>
+        <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 商人 XP</div>
+        <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
+      `;
+      body.appendChild(activeDiv);
+
+      const deliverBtn = document.createElement("button");
+      deliverBtn.type = "button";
+      deliverBtn.textContent = canDeliver ? "📬 交付採購令" : nearAgent ? `📦 碎片不足（${haveQty}/${active.required_qty}）` : "📬 靠近代理人才能交付";
+      deliverBtn.disabled = !canDeliver;
+      deliverBtn.style.cssText = `width:100%;padding:7px 0;border:1px solid #404080;border-radius:8px;background:transparent;color:${canDeliver ? "#8080ff" : "#555"};cursor:${canDeliver ? "pointer" : "default"};font-size:.85rem;margin-bottom:6px;`;
+      deliverBtn.addEventListener("click", () => {
+        if (!deliverBtn.disabled) ws.send(JSON.stringify({ type: "deliver_procurement" }));
+      });
+      body.appendChild(deliverBtn);
+
+      const abandonBtn = document.createElement("button");
+      abandonBtn.type = "button";
+      abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
+      abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      abandonBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "abandon_procurement" }));
+      });
+      body.appendChild(abandonBtn);
+
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.textContent = "提示：前往指定星球採集或擊殺怪物取得碎片，返回主城靠近代理人後點「交付」即完成！";
+      body.appendChild(note);
+      return;
+    }
+
+    // 冷卻中。
+    if (cooldown > 0) {
+      const mins = Math.floor(cooldown / 60);
+      const secs = Math.floor(cooldown % 60);
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
+      body.appendChild(hint);
+      return;
+    }
+
+    // 顯示可接取的 5 張採購令。
+    if (!nearAgent) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = "靠近主城採購代理人（📦）才能接取任務。";
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:#8080ff;font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = "📦 可接取採購令（選一張）";
+      body.appendChild(head);
+
+      for (const o of orders) {
+        const row = document.createElement("div");
+        row.style.cssText = `background:#0a0a1a;border:1px solid #303060;border-radius:8px;padding:8px;margin-bottom:6px;`;
+        const itemInv = inv.find(s => s.item === o.item);
+        const haveQty = itemInv ? itemInv.qty : 0;
+        row.innerHTML = `
+          <div style="color:#8080ff;margin-bottom:4px;">${o.name}</div>
+          <div style="color:#aaa;font-size:.8rem;">需要：<b style="color:#a0a0ff">${o.item_name}</b> × ${o.required_qty}</div>
+          <div style="color:#aaa;font-size:.8rem;">手上碎片：<b style="color:${haveQty >= o.required_qty ? "#80ffa0" : "#aaa"}">${haveQty} 個</b></div>
+          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 商人 XP ${o.xp}</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "📦 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #404080;border-radius:6px;background:transparent;color:#8080ff;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "accept_procurement", order_id: o.order_id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在主城採購代理人接取採購令，前往指定星球採集特產碎片，返回主城靠近代理人交付，立即獲得乙太 + 商人熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
 

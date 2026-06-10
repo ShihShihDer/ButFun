@@ -332,6 +332,8 @@ pub fn spawn(app: AppState) {
                     crate::bounty_board::tick(&mut p.bounty_active, &mut p.bounty_cooldown, dt);
                     // 古蹟探勘計時（ROADMAP 54）。
                     crate::expedition::tick(&mut p.expedition_active, &mut p.expedition_cooldown, dt);
+                    // 星際採購令計時（ROADMAP 55）。
+                    crate::procurement::tick(&mut p.procurement_active, &mut p.procurement_cooldown, dt);
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
