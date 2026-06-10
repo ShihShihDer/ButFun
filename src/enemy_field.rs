@@ -391,6 +391,85 @@ impl EnemyField {
         result
     }
 
+    /// 戰吼（ROADMAP 45）：打中 ATTACK_REACH 內所有存活敵人，回傳全部戰利品清單。
+    /// 與 `attack_nearest` 語意相同，差別在不只打最近的那隻。
+    pub fn attack_all_in_reach(
+        &mut self,
+        px: f32,
+        py: f32,
+        power: u32,
+    ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
+        if !px.is_finite() || !py.is_finite() {
+            return Vec::new();
+        }
+        self.ensure_chunks_around(px, py, ATTACK_REACH);
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+
+        // 收集所有在範圍內且存活的敵人 id + 所在 chunk
+        let mut targets: Vec<((i32, i32), (i32, i32, usize))> = Vec::new();
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let ck = (cx + dx, cy + dy);
+                if let Some(enemies) = self.chunks.get(&ck) {
+                    for placed in enemies {
+                        if !placed.enemy.is_alive() { continue; }
+                        let ddx = placed.x - px;
+                        let ddy = placed.y - py;
+                        if ddx * ddx + ddy * ddy <= reach_sq {
+                            targets.push((ck, placed.id));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for (ck, eid) in targets {
+            let mut pack_flee = false;
+            let mut pack_kind: Option<EnemyKind> = None;
+            if let Some(enemies) = self.chunks.get_mut(&ck) {
+                if let Some(placed) = enemies.iter_mut().find(|e| e.id == eid) {
+                    let kind = placed.enemy.kind();
+                    let pre_kill_level = placed.level;
+                    let was_notorious = placed.level >= placed.base_level.saturating_add(3);
+                    let loot = placed.enemy.attack(power);
+                    if loot.is_some() {
+                        placed.level = placed.base_level;
+                        placed.enemy.reset_max_hp_to_base_level(placed.base_level);
+                    }
+                    pack_kind = Some(kind);
+                    if placed.enemy.is_alive() {
+                        let hp_ratio = placed.enemy.remaining_hp() as f32
+                            / placed.enemy.max_hp().max(1) as f32;
+                        pack_flee = hp_ratio < LOW_HP_THRESHOLD;
+                    }
+                    results.push((kind, pre_kill_level, was_notorious, loot));
+                }
+            }
+            // 狼群警報（與 attack_nearest 一致）
+            if let Some(kind) = pack_kind {
+                let pack_sq = PACK_AGGRO_RADIUS * PACK_AGGRO_RADIUS;
+                for enemies in self.chunks.values_mut() {
+                    for e in enemies.iter_mut() {
+                        if e.enemy.is_alive() && e.enemy.kind() == kind {
+                            let dx = e.x - px;
+                            let dy = e.y - py;
+                            if dx * dx + dy * dy <= pack_sq {
+                                e.pack_target = Some((px, py));
+                                e.pack_target_timer = PACK_TARGET_DURATION;
+                                if pack_flee {
+                                    e.flee_boost_timer = FLEE_BOOST_DURATION;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
     /// 最近擊倒玩家的敵人升一級（ROADMAP 42）。
     /// 在玩家被打趴後呼叫，找 ATTACK_REACH 內最近的存活敵人，讓牠 +1 級（硬上限 base_level+5）。
     /// 若本次升級使其跨過「base_level+3」門檻，回傳含 newly_notorious=true 的結果供呼叫端廣播。

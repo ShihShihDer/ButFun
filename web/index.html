@@ -452,6 +452,7 @@
       <div class="dock-group hidden" id="dgChar">
         <button type="button" class="dock-btn" id="dockEquip" data-win="winEquip" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I" aria-label="裝備（I）" title="裝備（I）">⚔️</button>
         <button type="button" class="dock-btn" id="dockRefine" data-win="winRefine" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="R" aria-label="精煉附魔（R）" title="精煉附魔（R）">⚒️</button>
+        <button type="button" class="dock-btn" id="dockSkill" data-win="winSkill" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="Z" aria-label="主動技能（Z）" title="主動技能（Z）">🔮</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -510,6 +511,14 @@
         <button type="button" class="win-close" data-close="winRefine" aria-label="關閉精煉面板">✕</button>
       </div>
       <div id="refineBody"></div>
+    </div>
+    <!-- 主動技能面板（ROADMAP 45）：各熟練度 Lv.5 解鎖對應主動技能。 -->
+    <div id="winSkill" class="hud-window hidden" role="dialog" aria-labelledby="skillTitle">
+      <div class="win-head">
+        <span class="win-title" id="skillTitle">🔮 主動技能</span>
+        <button type="button" class="win-close" data-close="winSkill" aria-label="關閉技能面板">✕</button>
+      </div>
+      <div id="skillBody"></div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->

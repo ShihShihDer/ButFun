@@ -305,6 +305,8 @@ pub fn spawn(app: AppState) {
                     if p.attack_cooldown > 0.0 {
                         p.attack_cooldown = (p.attack_cooldown - dt).max(0.0);
                     }
+                    // 主動技能冷卻倒數（ROADMAP 45）。
+                    p.skill_cooldowns.tick(dt);
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。

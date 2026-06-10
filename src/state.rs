@@ -140,6 +140,18 @@ pub struct Player {
     /// 三槽裝備（ROADMAP 36）：🗡️ 武器 / 🛡️ 防具 / 📿 飾品。
     /// 持久化於 inventories 表的 equipment 欄；首次登入由 `auto_equip_best` 遷移。
     pub equipment: crate::equipment::EquipmentSlots,
+
+    // ── 主動技能（ROADMAP 45）─────────────────────────────────────────────
+    /// 五技能的冷卻倒數（記憶體前置，重啟清空）。
+    pub skill_cooldowns: crate::active_skill::SkillCooldowns,
+    /// 戰吼旗：true 時下次攻擊打中 ATTACK_REACH 內**所有**存活敵人（群攻）。
+    pub pending_warcry: bool,
+    /// 豐饒術旗：true 時下次採集額外得 +3 個物品。
+    pub pending_bounty: bool,
+    /// 精密合成旗：true 時下次合成額外產出 +1 個成品。
+    pub pending_precision: bool,
+    /// 議價術旗：true 時下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
+    pub pending_haggle: bool,
 }
 
 impl Player {
@@ -186,6 +198,15 @@ impl Player {
             weapon_enchant: self.equipment.weapon_meta.enchant
                 .map(|e| e.wire_key().to_string()),
             armor_refine: self.equipment.armor_meta.refine,
+            skill_cooldowns: self.skill_cooldowns.as_wire_map(),
+            active_skill_flags: {
+                let mut flags = Vec::new();
+                if self.pending_warcry    { flags.push("warcry".to_string()); }
+                if self.pending_bounty    { flags.push("bounty".to_string()); }
+                if self.pending_precision { flags.push("precision".to_string()); }
+                if self.pending_haggle    { flags.push("haggle".to_string()); }
+                flags
+            },
         }
     }
 
@@ -541,6 +562,11 @@ mod tests {
             kill_count: 0,
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
+            skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
+            pending_warcry: false,
+            pending_bounty: false,
+            pending_precision: false,
+            pending_haggle: false,
         }
     }
 
