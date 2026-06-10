@@ -154,6 +154,9 @@ async fn main() {
         // 官網（/site/）的伺服器狀態小工具：只吐「線上人數 + 開機秒數」兩個彙總數字，
         // 不含任何玩家身分/位置資訊（公開端點，最小揭露原則）。
         .route("/api/status", get(api_status))
+        // 官網即時世界小窗：吐「故鄉星球玩家的去識別化座標 + 城鎮幾何」，讓官網畫
+        // 俯瞰活地圖（看得到有人在動）。只回座標數字、不含任何玩家身分（最小揭露）。
+        .route("/api/worldview", get(api_worldview))
         // 登入相關路由
         .merge(auth::auth_router())
         // 個人資料編輯(改顯示名)——需登入,見 profile.rs
@@ -230,6 +233,32 @@ async fn api_status(State(app): State<AppState>) -> impl IntoResponse {
         "online": online,
         "uptime_secs": SERVER_START.elapsed().as_secs(),
     }))
+}
+
+/// 官網即時世界小窗的資料源。回故鄉星球（home）線上玩家的「去識別化座標」
+/// （只有 x/y 數字，**不含 id / 名字 / 任何身分**——多人公開世界裡位置本就互相可見，
+/// 這裡比照最小揭露只給點）＋ 城鎮幾何（世界像素的中心與半徑），讓官網畫俯瞰活地圖。
+async fn api_worldview(State(app): State<AppState>) -> impl IntoResponse {
+    let players: Vec<[f32; 2]> = app
+        .players
+        .read()
+        .map(|m| {
+            m.values()
+                .filter(|p| p.planet == state::PLANET_HOME)
+                .map(|p| [p.x, p.y])
+                .collect()
+        })
+        .unwrap_or_default();
+    let towns: Vec<serde_json::Value> = world_core::TOWNS
+        .iter()
+        .map(|t| {
+            let px = (t.cgx as f32 + 0.5) * world_core::TILE_PX;
+            let py = (t.cgy as f32 + 0.5) * world_core::TILE_PX;
+            let half = t.half_tiles as f32 * world_core::TILE_PX;
+            serde_json::json!({ "x": px, "y": py, "half": half, "name": t.name })
+        })
+        .collect();
+    Json(serde_json::json!({ "players": players, "towns": towns }))
 }
 
 /// 收到一則玩家建議。內容清乾淨後若為空（全空白 / 全控制字元）回 400、不存——
