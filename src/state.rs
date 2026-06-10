@@ -92,6 +92,9 @@ pub const TRAVEL_ETHER_COST_VOID: u32 = 80;
 pub const TRAVEL_ETHER_COST_AETHER: u32 = 120;
 /// 任意星球 → 星源星的乙太燃料費（第五顆星球，宇宙源頭極西境，需要最多乙太）。
 pub const TRAVEL_ETHER_COST_ORIGIN: u32 = 150;
+/// 故鄉 → 翠幽星「乙太直購航票」費用（跳過五大生態武裝收集條件，純乙太直接出發）。
+/// ROADMAP 39：肝的路便宜（30），錢的路直接（300），玩家自選。
+pub const TRAVEL_ETHER_COST_VERDANT_DIRECT: u32 = 300;
 
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]
@@ -191,11 +194,9 @@ impl Player {
             return Err("倒地中無法旅行".into());
         }
         if dest == PLANET_VERDANT && self.planet == PLANET_HOME {
-            // 故鄉 → 翠幽星：需五大生態武裝全套 + 30 乙太。
-            let cost = TRAVEL_ETHER_COST.saturating_sub(discount).max(10);
-            if self.ether < cost {
-                return Err(format!("乙太不足（前往翠幽星需要 {} 乙太）", cost));
-            }
+            // 故鄉 → 翠幽星：兩條路徑（ROADMAP 39）。
+            // 武裝路：集齊五大生態武裝 + 30 乙太（享探索者折扣）。
+            // 直購路：300 乙太直接購票（跳過武裝條件，享探索者折扣）。
             let biome_weapons = [
                 ItemKind::MeadowAmulet,
                 ItemKind::MushroomStaff,
@@ -203,8 +204,20 @@ impl Player {
                 ItemKind::RuneBlade,
                 ItemKind::CoralLance,
             ];
-            if !biome_weapons.iter().all(|w| self.inventory.count(*w) > 0) {
-                return Err("需要五大生態武裝全套才能啟動星際旅行".into());
+            let has_all_weapons = biome_weapons.iter().all(|w| self.inventory.count(*w) > 0);
+            if has_all_weapons {
+                let cost = TRAVEL_ETHER_COST.saturating_sub(discount).max(10);
+                if self.ether < cost {
+                    return Err(format!("乙太不足（五大武裝路前往翠幽星需要 {} 乙太）", cost));
+                }
+            } else {
+                let cost = TRAVEL_ETHER_COST_VERDANT_DIRECT.saturating_sub(discount).max(30);
+                if self.ether < cost {
+                    return Err(format!(
+                        "乙太不足（直購航票需 {} 乙太，或集齊五大生態武裝僅需 {} 乙太）",
+                        cost, TRAVEL_ETHER_COST
+                    ));
+                }
             }
             Ok(())
         } else if dest == PLANET_HOME
@@ -853,6 +866,33 @@ mod tests {
         for w in all_biome_weapons() { p.inventory.add(w, 1); }
         // 已在故鄉，嘗試去故鄉。
         assert!(p.can_travel_to(PLANET_HOME, 0).is_err(), "已在故鄉不能再去故鄉");
+    }
+
+    // ROADMAP 39 — 翠幽星直購路測試。
+    #[test]
+    fn travel_verdant_direct_purchase_succeeds_with_300_ether() {
+        // 無武裝但有 300 乙太 → 直購路應通過。
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_VERDANT_DIRECT;
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_ok(), "300 乙太直購路應允許旅行");
+    }
+
+    #[test]
+    fn travel_verdant_direct_purchase_fails_with_insufficient_ether() {
+        // 無武裝且乙太不足 300 → 兩條路都不通，應拒絕。
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_VERDANT_DIRECT - 1;
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_err(), "299 乙太直購路應拒絕旅行");
+    }
+
+    #[test]
+    fn travel_verdant_weapons_path_cheaper_when_armed() {
+        use crate::inventory::ItemKind;
+        // 武裝齊 + 30 乙太（少於 300）→ 武裝路應通過。
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST;
+        for w in all_biome_weapons() { p.inventory.add(w, 1); }
+        assert!(p.can_travel_to(PLANET_VERDANT, 0).is_ok(), "武裝路 30 乙太應通過");
     }
 
     // ROADMAP 22 — 赤焰星旅行條件測試。

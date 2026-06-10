@@ -1168,6 +1168,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         ORIGIN_SPAWN_X, ORIGIN_SPAWN_Y,
                         TRAVEL_ETHER_COST, TRAVEL_ETHER_COST_CRIMSON, TRAVEL_ETHER_COST_VOID,
                         TRAVEL_ETHER_COST_AETHER, TRAVEL_ETHER_COST_ORIGIN,
+                        TRAVEL_ETHER_COST_VERDANT_DIRECT,
                     };
                     use crate::protocol::ServerMsg;
                     let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
@@ -1179,13 +1180,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 message: msg,
                             }),
                             Ok(()) if planet == PLANET_VERDANT => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST);
+                                // 依武裝狀態決定費用（ROADMAP 39 雙路徑）。
+                                use crate::inventory::ItemKind;
+                                let biome_weapons = [
+                                    ItemKind::MeadowAmulet, ItemKind::MushroomStaff,
+                                    ItemKind::CrystalBlade, ItemKind::RuneBlade, ItemKind::CoralLance,
+                                ];
+                                let has_all_weapons = biome_weapons.iter().all(|w| p.inventory.count(*w) > 0);
+                                let base_cost = if has_all_weapons { TRAVEL_ETHER_COST } else { TRAVEL_ETHER_COST_VERDANT_DIRECT };
+                                let cost = crate::class::apply_travel_discount(&p.masteries, base_cost);
                                 p.ether -= cost;
                                 p.planet = PLANET_VERDANT.to_string();
                                 p.x = VERDANT_SPAWN_X;
                                 p.y = VERDANT_SPAWN_Y;
                                 p.masteries.gain_explorer(10); // 探索者熟練度（ROADMAP 38）
-                                tracing::info!(player = %p.name, cost, "星際旅行：抵達翠幽星");
+                                tracing::info!(player = %p.name, cost, has_all_weapons, "星際旅行：抵達翠幽星");
                                 Some(ServerMsg::TravelResult {
                                     ok: true,
                                     planet: PLANET_VERDANT.to_string(),

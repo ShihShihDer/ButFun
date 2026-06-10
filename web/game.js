@@ -1190,9 +1190,11 @@
     const hasLavaCrystal = invSet.has("lava_crystal");
     const hasVoidShard = invSet.has("void_shard");
     const hasAetherShard = invSet.has("aether_shard");
-    // 旅行按鈕邏輯：故鄉→翠幽星需五大武裝全套；故鄉→赤焰星需持有翠幽碎片；
-    // 故鄉/赤焰星/虛空星→虛空星需持有熔晶碎片；→霧醚星需持有虛空碎片；→星源星需持有霧醚碎片；返回故鄉費 30 乙太。
+    // 旅行按鈕邏輯：故鄉→翠幽星：武裝路（30 乙太）或直購路（300 乙太）；
+    // 故鄉→赤焰星需持有翠幽碎片；故鄉/赤焰星/虛空星→虛空星需持有熔晶碎片；
+    // →霧醚星需持有虛空碎片；→星源星需持有霧醚碎片；返回故鄉費 30 乙太。
     const TRAVEL_COST = 30;
+    const VERDANT_DIRECT_COST = 300; // ROADMAP 39 直購路
     const CRIMSON_TRAVEL_COST = 50;
     const VOID_TRAVEL_COST = 80;
     const AETHER_TRAVEL_COST = 120;
@@ -1227,6 +1229,13 @@
           🌟 前往星源星（${ORIGIN_TRAVEL_COST} 乙太）${canAffordOrigin ? "" : " — 乙太不足"}
         </button>`;
       }
+    } else if (myPlanet === "home") {
+      // 武裝未齊但在故鄉：顯示直購路按鈕（ROADMAP 39）。
+      const canAffordDirect = myEther >= VERDANT_DIRECT_COST;
+      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAffordDirect ? "rgba(40,160,80,0.7)" : "rgba(60,60,60,0.6)"};color:${canAffordDirect ? "#d0ffd8" : "#888"};border:1px solid ${canAffordDirect ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordDirect ? "pointer" : "default"};width:100%;">
+        🎫 直購航票前往翠幽星（${VERDANT_DIRECT_COST} 乙太）${canAffordDirect ? "" : " — 乙太不足"}
+      </button>
+      <div style="color:#8090c0;font-size:0.8em;margin-top:5px;text-align:center;">或收集五大生態武裝，僅需 ${TRAVEL_COST} 乙太出發</div>`;
     } else if (myPlanet === "verdant") {
       const canAfford = myEther >= TRAVEL_COST;
       travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
@@ -1301,7 +1310,9 @@
               ? `<div style="color:#80ffa0;font-size:0.9em;margin-top:4px;">✨ 五大生態武裝齊全！星際引擎已就緒⋯⋯</div>${travelBtn}`
               : myPlanet === "verdant"
                 ? `<div style="color:#60e090;font-size:0.9em;margin-top:4px;">🌿 你目前在翠幽星。</div>${travelBtn}`
-                : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
+                : myPlanet === "home"
+                  ? `<div style="color:#a0c8ff;font-size:0.88em;margin-top:4px;">⚔️ 五大生態武裝 ${collected}/${biomeGear.length} — 蒐集齊全只需 ${TRAVEL_COST} 乙太；或直購航票（${VERDANT_DIRECT_COST} 乙太）</div>${travelBtn}`
+                  : `<div style="color:#8090c0;font-size:0.88em;margin-top:4px;">蒐集五大生態武裝，啟動星際引擎⋯⋯</div>`;
     const overlay = document.createElement("div");
     overlay.id = "starChartDialog";
     overlay.style.cssText = "position:fixed;inset:0;background:rgba(8,12,32,0.92);display:flex;align-items:center;justify-content:center;z-index:2000;";
@@ -1332,7 +1343,9 @@
       const btnOrigin = overlay.querySelector("#btnTravelOrigin");
       const btnH = overlay.querySelector("#btnTravelHome");
       if (btnV && btnV.contains(e.target)) {
-        if (myEther >= TRAVEL_COST) {
+        // 武裝路（30 乙太）或直購路（300 乙太）任一滿足即可出發。
+        const canGoVerdant = (allCollected && myEther >= TRAVEL_COST) || myEther >= VERDANT_DIRECT_COST;
+        if (canGoVerdant) {
           ws.send(JSON.stringify({ type: "travel_to_planet", planet: "verdant" }));
           overlay.remove();
         }
@@ -6513,7 +6526,7 @@
       const hasChart = (myInv.get("star_chart") || 0) > 0;
       document.getElementById("wmTravel").innerHTML = hasChart
         ? `<button id="wmTravelBtn" style="width:100%;padding:9px;background:rgba(120,100,200,0.5);border:1px solid #a08ce0;border-radius:8px;color:#e0d8ff;font:inherit;cursor:pointer">🗺️ 展開星圖（星際旅行）</button>`
-        : `🚀 <b>想去其他星球？</b><br><small style="opacity:0.85">① 到 🔧 合成台做一張 🗺️ <b>星圖</b> ② 從 🎒 背包點「使用」展開星圖即可選星球出發（跨星航行需 30～150 乙太；首航翠幽星需集滿五大生態武裝）。</small>`;
+        : `🚀 <b>想去其他星球？</b><br><small style="opacity:0.85">① 到 🔧 合成台做一張 🗺️ <b>星圖</b> ② 從 🎒 背包點「使用」展開星圖即可選星球出發（跨星航行需 30～150 乙太；首航翠幽星：集滿五大生態武裝需 30 乙太，或直購航票需 300 乙太）。</small>`;
     }
     const wmWin = document.getElementById("winWorldMap");
     document.getElementById("dockWorldMap").addEventListener("click", () => renderWorldMap());
