@@ -16,9 +16,19 @@ const CANDIDATES = [
 export const TILE_NAMES = [
   "empty", "dirt", "stone", "ore", "crystal", "mushroom", "ancient_ruin",
   "coral_reef", "wild_flower", "jade_vine", "lava_rock", "void_crystal",
-  "aether_mist", "origin_crystal",
+  "aether_mist", "origin_crystal", "town_wall",
 ];
 export const BIOME_NAMES = ["water", "sand", "meadow", "forest", "rocky"];
+
+// 城鎮幾何鏡像（對齊 world-core TOWNS；QA 機器人靠它判斷「在城內→先出城門」）。
+export const TOWNS = [
+  { cgx: 73,    cgy: 71, half: 34, name: "新手村主城" },
+  { cgx: 700,   cgy: 93, half: 14, name: "翠幽據點" },
+  { cgx: -563,  cgy: 93, half: 14, name: "赤焰據點" },
+  { cgx: 1312,  cgy: 93, half: 14, name: "虛空據點" },
+  { cgx: -1000, cgy: 93, half: 14, name: "霧醚據點" },
+  { cgx: -1625, cgy: 93, half: 14, name: "星源據點" },
+];
 
 /** 回 { tileKindCode, biomeCode }（f64,f64→u32）或 null（沒建置過 wasm）。 */
 export async function loadWasmTerrain() {

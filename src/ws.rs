@@ -761,6 +761,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 查當前格種類；只能挖實心格（Empty 靜默忽略）。
                     let kind = app.tile_world.read().unwrap().tile_kind(cx, cy, tx, ty);
                     if kind == world_core::TileKind::Empty { continue; }
+                    // 城牆是不可挖結構（玩家安全區的硬邊界），拒挖。
+                    if kind == world_core::TileKind::TownWall { continue; }
                     // 挖掘：更新記憶體 delta（記為 Empty），非同步落地到 DB。
                     app.tile_world.write().unwrap().apply_delta(cx, cy, tx, ty, world_core::TileKind::Empty);
                     let store = app.tile_store.clone();
@@ -788,6 +790,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let Some((px, py)) = player_pos else { continue; };
                     let dist_sq = (ccx - px) * (ccx - px) + (ccy - py) * (ccy - py);
                     if dist_sq > crate::tiles::DIG_REACH * crate::tiles::DIG_REACH { continue; }
+                    // 城內禁止放置方塊：保護城鎮動線（不准把出生點/城門/NPC 圍死）。
+                    let (pcx, pcy) = crate::tiles::cell_center(cx, cy, tx, ty);
+                    if world_core::town_interior_at(pcx as f64, pcy as f64) { continue; }
                     // 只能放在 Empty 格（不可疊建）。
                     let current_kind = app.tile_world.read().unwrap().tile_kind(cx, cy, tx, ty);
                     if current_kind != world_core::TileKind::Empty { continue; }

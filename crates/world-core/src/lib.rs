@@ -49,6 +49,82 @@ pub const SAFE_ZONE_CX: f64 = 2344.0;
 pub const SAFE_ZONE_CY: f64 = 2296.0;
 pub const SAFE_ZONE_RADIUS: f64 = 640.0;
 
+// ── 城鎮（圍牆主城＋各星球據點）────────────────────────────────────────────
+//
+// 城鎮是「**格座標上的確定性幾何**」：方形城牆（TownWall，不可挖）圍住淨空的城內，
+// 四邊正中留城門。全部判定走整數格座標（floor(wx/32)）——碰撞、渲染、wasm 預測、
+// JS 後備取樣同一個函式就逐位元一致，不會有「畫起來是門、撞起來是牆」的半格鬼牆。
+// 城規（伺服器強制）：城內不生地形、不生怪、怪不得踏入、禁放置方塊；城牆挖不掉。
+
+/// 一座城鎮的定義（格座標）。
+pub struct TownDef {
+    /// 中心格座標（floor(世界px / 32)）。
+    pub cgx: i32,
+    pub cgy: i32,
+    /// 城牆所在的 Chebyshev 半徑（格）。牆內（< half）全淨空。
+    pub half_tiles: i32,
+    /// 城門開口半寬（格）：每邊正中 `2*gate_half+1` 格寬的缺口。
+    pub gate_half_tiles: i32,
+    /// 顯示名（前端地標/官網用；遊戲規則不讀它）。
+    pub name: &'static str,
+}
+
+/// 全部城鎮。主城在新手村（出生點 2344,2296 → 格 73,71）；各星球據點設在該星球
+/// 出生點（與 `state::*_SPAWN_*` 對齊：x/32 向下取整，y=3000 → 格 93）。
+pub const TOWNS: &[TownDef] = &[
+    // 新手村主城：68×68 格（約 2176px 見方），涵蓋公共農地與商人。
+    TownDef { cgx: 73, cgy: 71, half_tiles: 34, gate_half_tiles: 1, name: "新手村主城" },
+    // 各星球據點：28×28 格，圍住該星球出生點與駐站商人。
+    TownDef { cgx: 700, cgy: 93, half_tiles: 14, gate_half_tiles: 1, name: "翠幽據點" },   // 22400,3000
+    TownDef { cgx: -563, cgy: 93, half_tiles: 14, gate_half_tiles: 1, name: "赤焰據點" },  // -18000,3000
+    TownDef { cgx: 1312, cgy: 93, half_tiles: 14, gate_half_tiles: 1, name: "虛空據點" },  // 42000,3000
+    TownDef { cgx: -1000, cgy: 93, half_tiles: 14, gate_half_tiles: 1, name: "霧醚據點" }, // -32000,3000
+    TownDef { cgx: -1625, cgy: 93, half_tiles: 14, gate_half_tiles: 1, name: "星源據點" }, // -52000,3000
+];
+
+/// 該格是否為城牆（含城門判斷：門口缺口不是牆）。
+pub fn town_wall_at_tile(gx: i32, gy: i32) -> bool {
+    TOWNS.iter().any(|t| {
+        let dx = gx - t.cgx;
+        let dy = gy - t.cgy;
+        let cheb = dx.abs().max(dy.abs());
+        if cheb != t.half_tiles {
+            return false;
+        }
+        // 在牆圈上：取「沿牆方向」的偏移當 perp；邊正中 |perp| ≤ gate_half 是城門缺口。
+        // 角落兩軸都 == cheb → perp == cheb > gate_half，必為牆（門只開在邊正中）。
+        let perp = if dx.abs() == cheb { dy.abs() } else { dx.abs() };
+        perp > t.gate_half_tiles
+    })
+}
+
+/// 該格是否在某座城鎮**範圍內**（含牆圈本身：淨空區不生地形、禁放置）。
+/// 取 `<=`（含牆圈）而非 `<`：城門格在牆圈上但不是牆，必須一樣淨空＋禁放置，
+/// 否則自然地形會在門口長出土塊、或玩家能用方塊把城門堵死。
+pub fn town_interior_at_tile(gx: i32, gy: i32) -> bool {
+    TOWNS.iter().any(|t| {
+        (gx - t.cgx).abs().max((gy - t.cgy).abs()) <= t.half_tiles
+    })
+}
+
+/// 世界像素 → 是否在城鎮牆內（淨空區）。
+pub fn town_interior_at(wx: f64, wy: f64) -> bool {
+    town_interior_at_tile(
+        (wx / TILE_PX as f64).floor() as i32,
+        (wy / TILE_PX as f64).floor() as i32,
+    )
+}
+
+/// 世界像素 → 是否在城鎮保護圈內（牆內＋牆外 8 格緩衝）。
+/// 敵人**不生成也不踏入**這個範圍——不只擋在牆外，連城門口都不准堵。
+pub fn town_protected_at(wx: f64, wy: f64) -> bool {
+    let gx = (wx / TILE_PX as f64).floor() as i32;
+    let gy = (wy / TILE_PX as f64).floor() as i32;
+    TOWNS.iter().any(|t| {
+        (gx - t.cgx).abs().max((gy - t.cgy).abs()) <= t.half_tiles + 8
+    })
+}
+
 /// 座標 → 區塊鍵。
 pub fn chunk_key(x: f32, y: f32) -> (i32, i32) {
     (
@@ -209,6 +285,9 @@ pub enum TileKind {
     /// 源晶——只生在星源星（X ≤ ORIGIN_ZONE_MAX_X）的聚落中，挖後掉源晶碎片，
     /// 星源星 NPC 以最高溢價收購，乙太文明源頭的原初結晶，鼓勵玩家深入宇宙最遠西境。
     OriginCrystal,
+    /// 城牆——城鎮的圍牆結構（見 `TOWNS`）。**不可挖、不掉落、不可放置**，
+    /// 由確定性幾何生成（不吃 delta），是玩家安全區的硬邊界。
+    TownWall,
 }
 
 impl TileKind {
@@ -228,6 +307,7 @@ impl TileKind {
             TileKind::VoidCrystal    => 11,
             TileKind::AetherMist     => 12,
             TileKind::OriginCrystal  => 13,
+            TileKind::TownWall       => 14,
         }
     }
 }
@@ -238,11 +318,17 @@ impl TileKind {
 /// 雜湊函式，故前端可用 JS `grassHash` 精確對齊（見 `web/game.js` 的 `tileKindAt`）。
 /// 水域一律回 `Empty`（水面沒有可挖的實心格）。
 pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
-    // 新手村安全區內一律乾淨地（Empty）——不讓地形生成把城鎮 / 出生點埋住、害玩家卡在土裡。
-    let sdx = wx - SAFE_ZONE_CX;
-    let sdy = wy - SAFE_ZONE_CY;
-    if sdx * sdx + sdy * sdy <= SAFE_ZONE_RADIUS * SAFE_ZONE_RADIUS {
-        return TileKind::Empty;
+    // 城鎮幾何最優先：城牆是不可挖結構、牆內一律淨空（取代舊的圓形安全區判斷——
+    // 主城方形範圍完整涵蓋原 SAFE_ZONE 圓，出生點/公共農地照樣乾淨）。
+    {
+        let gx = (wx / TILE_PX as f64).floor() as i32;
+        let gy = (wy / TILE_PX as f64).floor() as i32;
+        if town_wall_at_tile(gx, gy) {
+            return TileKind::TownWall;
+        }
+        if town_interior_at_tile(gx, gy) {
+            return TileKind::Empty;
+        }
     }
     let biome = biome_at(wx, wy);
 
@@ -1156,6 +1242,63 @@ mod d2_tests {
     }
 
     #[test]
+    fn town_walls_gates_and_interior() {
+        // 主城（格 73,71、half 34）：牆格=TownWall、城門格=Empty、牆內=Empty、
+        // 城門上下兩格仍是牆（門只開正中 2*gate_half+1=3 格）。
+        let t = &TOWNS[0];
+        let px = |gx: i32, gy: i32| (gx as f64 * 32.0 + 16.0, gy as f64 * 32.0 + 16.0);
+        // 北牆（門外 5 格處）是牆
+        let (wx, wy) = px(t.cgx + 5, t.cgy - t.half_tiles);
+        assert_eq!(tile_kind_at(wx, wy), TileKind::TownWall, "北牆應為城牆");
+        // 北門正中是開口
+        let (gx2, gy2) = px(t.cgx, t.cgy - t.half_tiles);
+        assert_eq!(tile_kind_at(gx2, gy2), TileKind::Empty, "城門開口應淨空");
+        // 門邊第 2 格（perp=2 > gate_half=1）回到牆
+        let (ex, ey) = px(t.cgx + 2, t.cgy - t.half_tiles);
+        assert_eq!(tile_kind_at(ex, ey), TileKind::TownWall, "門邊第 2 格應為牆");
+        // 牆內任意格淨空
+        let (ix, iy) = px(t.cgx + 10, t.cgy - 10);
+        assert_eq!(tile_kind_at(ix, iy), TileKind::Empty, "牆內應淨空");
+        // 角落必為牆（門不開在角落）
+        let (cx2, cy2) = px(t.cgx + t.half_tiles, t.cgy + t.half_tiles);
+        assert_eq!(tile_kind_at(cx2, cy2), TileKind::TownWall, "角落應為牆");
+        // 每座城鎮都有牆＋淨空中心
+        for t in TOWNS {
+            let (wx, wy) = px(t.cgx + 5, t.cgy - t.half_tiles);
+            assert_eq!(tile_kind_at(wx, wy), TileKind::TownWall, "{} 北牆", t.name);
+            let (mx, my) = px(t.cgx, t.cgy);
+            assert_eq!(tile_kind_at(mx, my), TileKind::Empty, "{} 中心", t.name);
+        }
+    }
+
+    #[test]
+    fn town_protected_covers_interior_plus_margin() {
+        let t = &TOWNS[0];
+        let c = |gx: i32| gx as f64 * 32.0 + 16.0;
+        assert!(town_protected_at(c(t.cgx), c(t.cgy)), "城中心在保護圈");
+        assert!(
+            town_protected_at(c(t.cgx + t.half_tiles + 8), c(t.cgy)),
+            "牆外 8 格緩衝仍在保護圈"
+        );
+        assert!(
+            !town_protected_at(c(t.cgx + t.half_tiles + 9), c(t.cgy)),
+            "緩衝外不在保護圈"
+        );
+    }
+
+    #[test]
+    fn old_safe_zone_circle_is_inside_main_town() {
+        // 舊圓形安全區（640px）必須被主城方形完整涵蓋——出生點/公共農地的「乾淨地」
+        // 保證不因改制而縮水（改一邊要想到另一邊的相容）。
+        for a in 0..72 {
+            let th = a as f64 * std::f64::consts::PI / 36.0;
+            let x = SAFE_ZONE_CX + SAFE_ZONE_RADIUS * th.cos();
+            let y = SAFE_ZONE_CY + SAFE_ZONE_RADIUS * th.sin();
+            assert!(town_interior_at(x, y), "舊安全圓邊界點 ({x:.0},{y:.0}) 應仍在主城內");
+        }
+    }
+
+    #[test]
     fn step_with_keys_moves_at_player_speed() {
         // 開闊地直走 1 秒 = PLAYER_SPEED px；斜走有正規化、總位移相同。
         // (1360, 200) 是已驗證的無水開闊地（state.rs 速度測試同款座標）。
@@ -1263,6 +1406,7 @@ mod d2_tests {
         assert_eq!(TileKind::VoidCrystal.code(), 11);
         assert_eq!(TileKind::AetherMist.code(), 12);
         assert_eq!(TileKind::OriginCrystal.code(), 13);
+        assert_eq!(TileKind::TownWall.code(), 14);
         assert_eq!(Biome::Water.code(), 0);
         assert_eq!(Biome::Sand.code(), 1);
         assert_eq!(Biome::Meadow.code(), 2);

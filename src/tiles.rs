@@ -38,6 +38,8 @@ pub fn drop_for_tile(kind: TileKind) -> Option<(ItemKind, u32)> {
         TileKind::VoidCrystal => Some((ItemKind::VoidShard,         1)),
         TileKind::AetherMist    => Some((ItemKind::AetherShard,  1)),
         TileKind::OriginCrystal => Some((ItemKind::OriginShard, 1)),
+        // 城牆：不可挖結構，永不掉落（ws Dig handler 另有拒挖硬閘）。
+        TileKind::TownWall      => None,
     }
 }
 
