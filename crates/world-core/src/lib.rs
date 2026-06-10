@@ -149,6 +149,17 @@ pub extern "C" fn biome_code(x: f64, y: f64) -> u32 {
     biome_at(x, y).code()
 }
 
+/// wasm/前端入口:座標 → 地形格種類整數編碼(見 `TileKind::code`)。與 `biome_code` 同款
+/// 純數值介面——前端載入本 crate 的 .wasm 後改呼叫這支,地貌就跟伺服器**同一份實作**,
+/// 從根本消滅「JS 鏡像漂移 → 隱形空氣牆」一整類 bug(JS 版僅留作載入失敗的後備)。
+///
+/// # Safety
+/// 純值計算、無指標、無共享狀態;`extern "C"` 僅為 wasm 匯出穩定符號。
+#[no_mangle]
+pub extern "C" fn tile_kind_code(x: f64, y: f64) -> u32 {
+    tile_kind_at(x, y).code() as u32
+}
+
 /// 地形格種類（可挖 / 可建）。
 ///
 /// 穩定整數編碼（別重排，前端與 DB 靠它）：
@@ -980,5 +991,60 @@ mod d2_tests {
             }
         }
         assert_eq!(lava_count, 0, "霧醚星區域不應生成熔岩石格");
+    }
+
+    #[test]
+    fn wasm_exports_match_native_logic() {
+        // wasm 出口（biome_code / tile_kind_code）必須與原生 API 完全等價——
+        // 前端載入 .wasm 後呼叫的就是這兩支，等價性是「前後端同一份地形」的根基。
+        // 取樣涵蓋安全區、各生態域、各星區（含負座標）與非整數座標。
+        let pts: [(f64, f64); 9] = [
+            (2344.0, 2296.0),       // 新手村安全區中心
+            (1360.5, 200.25),       // 一般陸地（非整數座標）
+            (3000.0, 3000.0),       // 世界中心
+            (25000.0, 1234.0),      // 翠幽星
+            (40000.0, -500.0),      // 虛空星
+            (-16000.0, 800.0),      // 赤焰星
+            (-31000.0, -2500.0),    // 霧醚星
+            (-51000.0, 999.0),      // 星源星
+            (-123.75, 456.5),       // 負座標
+        ];
+        for (x, y) in pts {
+            assert_eq!(
+                biome_code(x, y),
+                biome_at(x, y).code(),
+                "biome_code 與 biome_at 不一致 @({x},{y})"
+            );
+            assert_eq!(
+                tile_kind_code(x, y),
+                tile_kind_at(x, y).code() as u32,
+                "tile_kind_code 與 tile_kind_at 不一致 @({x},{y})"
+            );
+        }
+    }
+
+    #[test]
+    fn tile_kind_codes_are_stable() {
+        // 整數編碼是 wasm 邊界 / 前端對照表 / DB 的穩定契約——別重排。
+        // 前端 web/game.js 的 WASM_TILE_NAMES 順序靠這份編碼；改一邊必改另一邊。
+        assert_eq!(TileKind::Empty.code(), 0);
+        assert_eq!(TileKind::Dirt.code(), 1);
+        assert_eq!(TileKind::Stone.code(), 2);
+        assert_eq!(TileKind::Ore.code(), 3);
+        assert_eq!(TileKind::Crystal.code(), 4);
+        assert_eq!(TileKind::Mushroom.code(), 5);
+        assert_eq!(TileKind::AncientRuin.code(), 6);
+        assert_eq!(TileKind::CoralReef.code(), 7);
+        assert_eq!(TileKind::WildFlower.code(), 8);
+        assert_eq!(TileKind::JadeVine.code(), 9);
+        assert_eq!(TileKind::LavaRock.code(), 10);
+        assert_eq!(TileKind::VoidCrystal.code(), 11);
+        assert_eq!(TileKind::AetherMist.code(), 12);
+        assert_eq!(TileKind::OriginCrystal.code(), 13);
+        assert_eq!(Biome::Water.code(), 0);
+        assert_eq!(Biome::Sand.code(), 1);
+        assert_eq!(Biome::Meadow.code(), 2);
+        assert_eq!(Biome::Forest.code(), 3);
+        assert_eq!(Biome::Rocky.code(), 4);
     }
 }

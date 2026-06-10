@@ -2342,6 +2342,48 @@
     return false;
   }
 
+  // ── WASM 地形（空氣牆根治）──────────────────────────────────────────────
+  // 載入 crates/world-core 編成的 .wasm：地貌改用「伺服器同一份 Rust 實作」計算，
+  // 從根本消滅「JS 鏡像漂移 → 前端畫空地、伺服器判實心」的隱形空氣牆 bug 類。
+  // 載入失敗（檔案不在 / 舊瀏覽器）時自動退回下方的 JS 後備版，遊戲一定能玩。
+  // .wasm 不入 repo——由 scripts/build-wasm.sh 建到 web/wasm/（deploy.sh 會自動跑）。
+  let wasmTerrain = null; // 載入成功後 = wasm instance.exports
+  // 整數編碼 → 協定字串名。順序是穩定契約，對齊 world-core `TileKind::code` /
+  // `Biome::code`（Rust 測試 tile_kind_codes_are_stable 守著；改一邊必改另一邊）。
+  const WASM_TILE_NAMES = [
+    "empty", "dirt", "stone", "ore", "crystal", "mushroom", "ancient_ruin",
+    "coral_reef", "wild_flower", "jade_vine", "lava_rock", "void_crystal",
+    "aether_mist", "origin_crystal",
+  ];
+  const WASM_BIOME_NAMES = ["water", "sand", "meadow", "forest", "rocky"];
+  (async function loadWorldCoreWasm() {
+    try {
+      const resp = await fetch("wasm/world_core.wasm");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(), {});
+      const ex = instance.exports;
+      if (typeof ex.tile_kind_code !== "function" || typeof ex.biome_code !== "function") {
+        throw new Error("缺 tile_kind_code/biome_code 出口");
+      }
+      // 啟用前自我檢查：抽樣比對 wasm 與 JS 後備。不一致＝JS 鏡像已漂移（過去空氣牆
+      // 的根源）——一律以 wasm（=伺服器）為準，僅在主控台警告提醒開發者修 JS 後備。
+      let drift = 0;
+      for (let i = 0; i < 400; i++) {
+        const x = (grassHash(i, 7) - 0.5) * 120000;
+        const y = (grassHash(i, 13) - 0.5) * 24000;
+        if (WASM_TILE_NAMES[ex.tile_kind_code(x, y)] !== tileKindGenJS(x, y)) drift++;
+      }
+      wasmTerrain = ex;
+      if (drift > 0) {
+        console.warn(`[world-core] JS 後備與 wasm 漂移 ${drift}/400 點（已以 wasm 為準，請同步 JS 後備）`);
+      } else {
+        console.log("[world-core] wasm 地形已啟用（前後端同一份實作）");
+      }
+    } catch (err) {
+      console.warn("[world-core] wasm 載入失敗，改用 JS 後備地形:", err && err.message ? err.message : err);
+    }
+  })();
+
   // ── 程序生成生態域(biome)──────────────────────────────────────────────
   // biome 是「世界座標的確定性函式」:同座標永遠同結果、平滑過渡、無接縫,而且不必傳一張
   // 大地圖(避開 tilemap 那套 netcode)。先做純前端視覺(各式各樣的場景);切片 3 後端會用
@@ -2358,9 +2400,14 @@
     const b = v01 + (v11 - v01) * sx;
     return a + (b - a) * sy; // [0,1)
   }
-  // 座標 → 生態域種類。海拔 e 決定水/沙/高地、濕度 m 在中海拔分森林/草原。
-  // scale ~1500 → 走得到成片場景(不是雜訊碎點)。
+  // 座標 → 生態域種類。wasm 載好就用伺服器同一份 Rust 實作；否則用 JS 後備。
   function biomeAt(wx, wy) {
+    if (wasmTerrain) return WASM_BIOME_NAMES[wasmTerrain.biome_code(wx, wy)];
+    return biomeAtJS(wx, wy);
+  }
+  // JS 後備：海拔 e 決定水/沙/高地、濕度 m 在中海拔分森林/草原。
+  // scale ~1500 → 走得到成片場景(不是雜訊碎點)。與 world-core `biome_at` 對齊。
+  function biomeAtJS(wx, wy) {
     const e = biomeNoise(wx, wy, 1500, 7);
     const m = biomeNoise(wx, wy, 1200, 137);
     if (e < 0.30) return "water";
@@ -2379,9 +2426,9 @@
     return grassHash(ix, iy);
   }
 
-  // 世界像素座標 → 地形格種類（"empty"/"dirt"/"stone"/"ore"）。
-  // 確定性生成：前端本地計算，與伺服器 tile_kind_at 邏輯相同（零帶寬）；
-  // C-2 起若 tileDeltaMap 有覆蓋則回覆蓋值。
+  // 世界像素座標 → 地形格種類（"empty"/"dirt"/"stone"/…）。
+  // 優先序：① 伺服器 delta 覆蓋（挖/放過的格＝絕對真相）② wasm（伺服器同一份實作）
+  // ③ JS 後備生成。確定性生成零帶寬，前端本地即可算出全世界地貌。
   function tileKindAt(wx, wy) {
     // 格索引（整數）
     const gx = Math.floor(wx / TS) | 0;
@@ -2394,13 +2441,22 @@
     const ty = ((gy % CHUNK_T) + CHUNK_T) % CHUNK_T;
     const delta = tileDeltaMap.get(`${cx},${cy},${tx},${ty}`);
     if (delta !== undefined) return delta;
+    if (wasmTerrain) return WASM_TILE_NAMES[wasmTerrain.tile_kind_code(wx, wy)];
+    return tileKindGenJS(wx, wy);
+  }
+
+  // JS 後備生成（wasm 載入失敗才會用到）。邏輯對齊 world-core `tile_kind_at`——
+  // 後端改生成規則時，這裡要跟著改（wasm 啟用時的開機自我檢查會抓漂移並警告）。
+  function tileKindGenJS(wx, wy) {
+    const gx = Math.floor(wx / TS) | 0;
+    const gy = Math.floor(wy / TS) | 0;
     // 新手村安全區一律乾淨地（與後端 world-core SAFE_ZONE_* 對齊，改一邊要改另一邊）。
     {
       const sdx = wx - 2344, sdy = wy - 2296;
       if (sdx * sdx + sdy * sdy <= 640 * 640) return "empty";
     }
     // 確定性生成
-    const b = biomeAt(wx, wy);
+    const b = biomeAtJS(wx, wy);
     const h = tileHash(gx, gy);
     // 水域特例：珊瑚礁聚落（對齊 Rust tile_kind_at 水域邏輯，scale 70, seed 555）。
     if (b === "water") {

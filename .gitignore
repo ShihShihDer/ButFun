@@ -1,6 +1,9 @@
 # ButFun — Rust backend build artifacts
 /target
 
+# wasm 建置產物（scripts/build-wasm.sh 產生；deploy.sh 每次上線重建，不入 repo）
+/web/wasm/
+
 # Environment / secrets
 .env
 
