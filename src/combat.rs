@@ -75,6 +75,8 @@ pub enum ArmorKind {
     Meadow,
     /// 晶石護盾：每次受傷減 2 點傷害。
     Crystal,
+    /// 合金護盾：每次受傷減 4 點傷害——工作台鑄造的中階防具，ROADMAP 36。
+    Alloy,
     /// 宇宙護盾：每次受傷減 6 點傷害——全遊戲最強防禦，宇宙裂縫能量鍛造。
     Cosmic,
 }
@@ -118,6 +120,7 @@ impl ArmorKind {
         match self {
             ArmorKind::Meadow => 1,
             ArmorKind::Crystal => 2,
+            ArmorKind::Alloy => 4,
             ArmorKind::Cosmic => 6,
         }
     }
@@ -166,7 +169,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::OriginShard
         | ItemKind::OriginEssence
         | ItemKind::RiftShard
-        | ItemKind::CosmicShield => None,
+        | ItemKind::CosmicShield
+        | ItemKind::AlloyShield
+        | ItemKind::WorkshopElixir => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -180,6 +185,7 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
     match item {
         ItemKind::MeadowAmulet => Some(ArmorKind::Meadow),
         ItemKind::CrystalShield => Some(ArmorKind::Crystal),
+        ItemKind::AlloyShield => Some(ArmorKind::Alloy),
         ItemKind::CosmicShield => Some(ArmorKind::Cosmic),
         ItemKind::Wood
         | ItemKind::Dirt
@@ -218,7 +224,8 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::OriginShard
         | ItemKind::OriginEssence
         | ItemKind::OriginBlade
-        | ItemKind::RiftShard => None,
+        | ItemKind::RiftShard
+        | ItemKind::WorkshopElixir => None,
     }
 }
 

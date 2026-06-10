@@ -413,8 +413,9 @@ impl AppState {
         let (tx_chat, _rx_chat) = broadcast::channel(256);
         // 啟動時把上次存的農地與地塊歸屬種回權威狀態（無存檔時等同全新的空 map / next=0）。
         let plots = PlotRegistry::from_saved(field_store.saved_plots());
-        // 城外產權地塊：從持久化載入歸屬（無 DB 時重啟後清空，行為正確）。
-        let land_plot_registry = LandPlotRegistry::from_saved(land_plot_store.saved_ownerships());
+        // 城外產權地塊：從持久化載入歸屬 + 工作台標記（無 DB 時重啟後清空，行為正確）。
+        let mut land_plot_registry = LandPlotRegistry::from_saved(land_plot_store.saved_ownerships());
+        land_plot_registry.mark_workbenches(land_plot_store.saved_workbenches());
         let fields = field_store.loaded_fields();
         // 把上次存的世界時刻種回權威時鐘（無存檔時等同破曉 `DayNight::new()`）。
         let daynight = daynight_store.loaded();

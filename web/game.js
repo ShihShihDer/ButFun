@@ -2169,6 +2169,7 @@
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
+    if (me) drawWorkbenchHint(me, camX, camY); // ROADMAP 36 工作台鄰近提示
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
@@ -4129,7 +4130,47 @@
         const nm = p.owner_name ? (p.owner_name.length > 7 ? p.owner_name.slice(0, 6) + "…" : p.owner_name) : "";
         ctx.fillText(`${plotPurposeEmoji(purpose)} ${nm}`, cx2, cy2);
       }
+      // 工作台圖示（ROADMAP 36）
+      if (p.has_workbench) {
+        ctx.font = "16px sans-serif";
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.fillText("⚙️", cx2, cy2 + 16);
+      }
     }
+    ctx.restore();
+  }
+
+  // 工作台鄰近提示（ROADMAP 36）：玩家進入工作台 160px 範圍內時，在角色頭上顯示提示文字。
+  const WORKBENCH_REACH = 160;
+  function drawWorkbenchHint(me, camX, camY) {
+    if (!me || !landPlots.length) return;
+    const TILE = 32;
+    let nearest = null, nearestDist = Infinity;
+    for (const p of landPlots) {
+      if (!p.has_workbench) continue;
+      const plotCx = (p.min_gx + p.max_gx + 1) * TILE / 2;
+      const plotCy = (p.min_gy + p.max_gy + 1) * TILE / 2;
+      const d = Math.hypot(me.x - plotCx, me.y - plotCy);
+      // 擴展到地塊邊界外 160px
+      const innerR = Math.hypot((p.max_gx - p.min_gx + 1) * TILE / 2, (p.max_gy - p.min_gy + 1) * TILE / 2);
+      if (d < innerR + WORKBENCH_REACH && d < nearestDist) {
+        nearestDist = d;
+        nearest = p;
+      }
+    }
+    if (!nearest) return;
+    const sx = me.x - camX;
+    const sy = me.y - camY - 44;
+    ctx.save();
+    ctx.font = "bold 11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const text = "⚙️ 工作台 — 開啟合成台可合進階道具";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.strokeText(text, sx, sy);
+    ctx.fillStyle = "rgba(180,230,255,0.95)";
+    ctx.fillText(text, sx, sy);
     ctx.restore();
   }
 
@@ -4267,11 +4308,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", alloy_shield: "🛡️", workshop_elixir: "⚗️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", alloy_shield: "合金護盾", workshop_elixir: "工坊活化液" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", alloy_shield: "170,200,255", workshop_elixir: "100,230,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -4335,6 +4376,11 @@
     { id: "origin_essence", out: "origin_essence", outQty: 1, inputs: [["origin_shard", 2]] },
     // 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
     { id: "origin_blade", out: "origin_blade", outQty: 1, inputs: [["origin_shard", 10]] },
+    // ROADMAP 36 工作台限定食譜（自由建地工作台附近才能合成）：
+    // 合金護盾：石頭×8 + 晶石碎片×4 → 合金護盾×1。持有後每次受傷減 4 點傷害。
+    { id: "alloy_shield", out: "alloy_shield", outQty: 1, inputs: [["stone", 8], ["crystal_shard", 4]], requiresWorkbench: true },
+    // 工坊活化液：活力藥水×2 + 蕈菇活化液×1 + 晶石碎片×2 → 工坊活化液×1。使用後滿血+自然回血+12乙太。
+    { id: "workshop_elixir", out: "workshop_elixir", outQty: 1, inputs: [["healing_potion", 2], ["mushroom_elixir", 1], ["crystal_shard", 2]], requiresWorkbench: true },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -4378,6 +4424,7 @@
       pearl_potion: "回復至滿血",
       star_chart: "展開遠方星球星圖（多星球前奏）",
       steam_elixir: "回復至滿血 + 獲得 8 乙太",
+      workshop_elixir: "回復至滿血 + 立即開始回血 + 獲得 12 乙太",
     };
     // 裝備/護甲的持有說明（持有即被動生效，無需點使用）。
     const GEAR_DESC = {
@@ -4388,6 +4435,7 @@
       coral_lance: "攻擊力 +12（持有即生效）🌊 水域生態",
       meadow_amulet: "防禦 -1（每次受傷減 1 傷害）🌸 草原生態",
       crystal_shield: "防禦 -2（每次受傷減 2 傷害）💎 岩地生態",
+      alloy_shield: "防禦 -4（每次受傷減 4 傷害）⚙️ 工作台",
       jade_blade: "攻擊力 +15（持有即生效）🟢 翠幽星",
       crimson_blade: "攻擊力 +20（持有即生效）🔴 赤焰星",
     };
@@ -4503,20 +4551,40 @@
     const toggle = document.getElementById("craftToggle");
     if (!summary || !body || !toggle) return;
     const have = new Map((inv || []).map((s) => [s.item, s.qty]));
-    // 世界快照每個 tick 都來,但合成台只取決於「配方用到的素材數量」。沒變就提早返回:
-    // 否則每拍 innerHTML 重建會把鍵盤/報讀器停在「合成」鈕上的焦點打掉、手機也白耗電。
+    // 判斷玩家是否靠近工作台（ROADMAP 36）
+    const playerNow = players.get(myId);
+    let nearWorkbench = false;
+    if (playerNow) {
+      const TILE = 32, WB_REACH = 160;
+      for (const p of landPlots) {
+        if (!p.has_workbench) continue;
+        const cx = (p.min_gx + p.max_gx + 1) * TILE / 2;
+        const cy = (p.min_gy + p.max_gy + 1) * TILE / 2;
+        const innerR = Math.hypot((p.max_gx - p.min_gx + 1) * TILE / 2, (p.max_gy - p.min_gy + 1) * TILE / 2);
+        if (Math.hypot(playerNow.x - cx, playerNow.y - cy) < innerR + WB_REACH) { nearWorkbench = true; break; }
+      }
+    }
+    // 世界快照每個 tick 都來,但合成台只取決於「配方用到的素材數量」與工作台鄰近狀態。
     const sig = CRAFT_RECIPES.map((r) =>
       r.inputs.map(([item, qty]) => have.get(item) || 0).join(",")
-    ).join("|");
+    ).join("|") + "|wb:" + nearWorkbench;
     if (sig === lastCraftSig) return;
     lastCraftSig = sig;
     let craftable = 0; // 此刻夠料的配方數,寫進標題列摘要(收著時也一眼知道能不能合)
     body.innerHTML = "";
     for (const r of CRAFT_RECIPES) {
-      const ok = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
+      const materialOk = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
+      const wbOk = !r.requiresWorkbench || nearWorkbench;
+      const ok = materialOk && wbOk;
       if (ok) craftable++;
       const row = document.createElement("div");
       row.className = "craft-row";
+      // 工作台限定標示
+      if (r.requiresWorkbench) {
+        row.style.cssText = nearWorkbench
+          ? "border-left:2px solid #aaddff;padding-left:4px;"
+          : "opacity:0.5;border-left:2px solid #556677;padding-left:4px;";
+      }
       // 素材描述:每項「emoji×需求」,不夠的標紅(.lack)。item 是伺服器列舉字串、非玩家文字,無注入風險。
       const needs = r.inputs
         .map(([item, qty]) => {
@@ -4527,9 +4595,10 @@
         .join(" ");
       const outIco = ITEM_LOOK[r.out] || r.out;
       const outName = ITEM_NAME[r.out] || r.out;
+      const wbTag = r.requiresWorkbench ? ` <span style="font-size:0.8em;color:${nearWorkbench ? "#aaddff" : "#778899"}">⚙️工作台</span>` : "";
       const desc = document.createElement("div");
       desc.className = "craft-desc";
-      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}`;
+      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span>${wbTag} ← ${needs}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "craft-btn";
@@ -4539,11 +4608,12 @@
       const needLabel = r.inputs
         .map(([item, qty]) => `${ITEM_NAME[item] || item}×${qty}`)
         .join("、");
+      const wbNote = r.requiresWorkbench && !nearWorkbench ? "（需靠近工作台）" : "";
       btn.setAttribute(
         "aria-label",
-        `合成 ${outName},需要 ${needLabel}${ok ? "" : "（素材不足）"}`
+        `合成 ${outName},需要 ${needLabel}${wbNote || (ok ? "" : "（素材不足）")}`
       );
-      btn.title = ok ? `合成 ${outName}` : "素材不足";
+      btn.title = ok ? `合成 ${outName}` : (r.requiresWorkbench && !nearWorkbench ? "需靠近工作台" : "素材不足");
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
         // 只送意圖:伺服器查配方扣料、產物隨既有背包快照回來(規則只在伺服器,前端不自行加道具)。
@@ -4699,6 +4769,43 @@
       hint.style.cssText = "font-size:0.7em;opacity:0.7;margin-top:2px;";
       hint.textContent = "此地塊內只有你能挖/放方塊";
       body.appendChild(hint);
+      // 工作台按鈕（ROADMAP 36：自由建地才能放，每塊限一個，花費 25 乙太）
+      if (myLandPlot.purpose === "free_build") {
+        const wbRow = document.createElement("div");
+        wbRow.className = "expand-row";
+        wbRow.style.cssText = "margin-top:6px;";
+        if (myLandPlot.has_workbench) {
+          const wbInfo = document.createElement("div");
+          wbInfo.className = "expand-desc";
+          wbInfo.style.cssText = "font-size:0.78em;color:#aaddff;";
+          wbInfo.textContent = "⚙️ 已有工作台——靠近即可合成進階道具";
+          wbRow.appendChild(wbInfo);
+        } else {
+          const WORKBENCH_COST = 25;
+          const canAfford = ether >= WORKBENCH_COST;
+          const wbBtn = document.createElement("button");
+          wbBtn.type = "button";
+          wbBtn.className = "expand-btn";
+          wbBtn.textContent = "⚙️ 放置工作台";
+          wbBtn.disabled = !canAfford;
+          wbBtn.style.cssText = `font-size:0.82em;${canAfford ? "border-color:#aaddff;" : ""}`;
+          wbBtn.title = canAfford ? `花 ${WORKBENCH_COST} 乙太在地塊上放置工作台` : "乙太不足（需 25）";
+          wbBtn.setAttribute("aria-label", wbBtn.title);
+          if (!canAfford) {
+            const wbLack = document.createElement("span");
+            wbLack.className = "expand-cost lack";
+            wbLack.textContent = ` ✨${WORKBENCH_COST}`;
+            wbBtn.appendChild(wbLack);
+          }
+          wbBtn.addEventListener("click", () => {
+            if (wbBtn.disabled) return;
+            try { ws.send(JSON.stringify({ type: "place_workbench", plot_id: myLandPlot.plot_id })); } catch {}
+            announce("花 25 乙太放置工作台");
+          });
+          wbRow.appendChild(wbBtn);
+        }
+        body.appendChild(wbRow);
+      }
     } else if (availCount === 0) {
       const info = document.createElement("div");
       info.className = "expand-desc";

@@ -175,6 +175,9 @@ pub enum ClientMsg {
     /// 伺服器驗：已登入、乙太足夠（LAND_PLOT_COST=60）、地塊未被他人購走、自己尚無地塊。
     /// 結果隨快照廣播（land_plots 欄位更新）；失敗靜默忽略（前端依乙太/狀態已灰掉按鈕）。
     BuyLandPlot { plot_id: u32, purpose: Option<String> },
+    /// 在自由建地上放置工作台（ROADMAP 36）：玩家已擁有 FreeBuild 地塊、乙太足夠且尚無工作台。
+    /// 消耗 WORKBENCH_COST=25 乙太；結果隨快照廣播（has_workbench 更新）；失敗靜默忽略。
+    PlaceWorkbench { plot_id: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。

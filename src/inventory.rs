@@ -164,6 +164,12 @@ pub enum ItemKind {
     /// 宇宙護盾（合成產物：裂縫碎片×3 → 宇宙護盾×1）。
     /// 持有此護盾每次受傷減 6 點傷害——全遊戲最強防禦裝備，宇宙裂縫能量鍛造。
     CosmicShield,
+    /// 合金護盾（工作台配方：礦石×8 + 晶石碎片×4 → 合金護盾×1，ROADMAP 36）。
+    /// 持有後每次受傷減 4 點傷害——介於晶石護盾(2)與宇宙護盾(6)之間，工作台特有的中階防具。
+    AlloyShield,
+    /// 工坊精粹（工作台配方：活力藥水×2 + 蕈菇活化液×1 + 晶石碎片×2 → 工坊精粹×1，ROADMAP 36）。
+    /// 使用後回復至等級滿血，同時重置回血冷卻並獲得 12 乙太——工匠將多種材料凝煉的全效補給。
+    WorkshopElixir,
 }
 
 impl ItemKind {
@@ -214,6 +220,8 @@ impl ItemKind {
         ItemKind::OriginBlade,
         ItemKind::RiftShard,
         ItemKind::CosmicShield,
+        ItemKind::AlloyShield,
+        ItemKind::WorkshopElixir,
     ];
 }
 
@@ -447,13 +455,15 @@ mod tests {
                 | ItemKind::OriginEssence
                 | ItemKind::OriginBlade
                 | ItemKind::RiftShard
-                | ItemKind::CosmicShield => {}
+                | ItemKind::CosmicShield
+                | ItemKind::AlloyShield
+                | ItemKind::WorkshopElixir => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 41 種（含 ROADMAP 26 宇宙裂縫：裂縫碎片/宇宙護盾）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 41, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 43 種（含 ROADMAP 36 工作台：合金護盾/工坊精粹）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 43, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -691,6 +701,7 @@ mod tests {
                     | ItemKind::VoidElixir
                     | ItemKind::AetherEssence
                     | ItemKind::OriginEssence
+                    | ItemKind::WorkshopElixir
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

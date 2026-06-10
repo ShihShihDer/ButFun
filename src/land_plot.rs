@@ -101,6 +101,8 @@ pub struct LandPlotRegistry {
     ownership: HashMap<u32, Uuid>,
     /// plot_id → 地塊用途（ROADMAP 35）。
     purpose: HashMap<u32, PlotPurpose>,
+    /// 已放置工作台的地塊集合（ROADMAP 36）。
+    workbenches: std::collections::HashSet<u32>,
 }
 
 impl LandPlotRegistry {
@@ -116,7 +118,7 @@ impl LandPlotRegistry {
             ownership.insert(pid, uid);
             purpose.insert(pid, pur);
         }
-        Self { ownership, purpose }
+        Self { ownership, purpose, workbenches: std::collections::HashSet::new() }
     }
 
     /// 查詢地塊地主。若地塊不存在或未購買回 `None`。
@@ -143,6 +145,28 @@ impl LandPlotRegistry {
         self.ownership.insert(plot_id, user_id);
         self.purpose.insert(plot_id, plot_purpose);
         true
+    }
+
+    /// 在指定地塊放置工作台（ROADMAP 36）。
+    /// 失敗條件（回 `false`）：地塊不存在 / 地主不是 user_id / 用途不是 FreeBuild / 已有工作台。
+    pub fn place_workbench(&mut self, plot_id: u32, user_id: Uuid) -> bool {
+        if self.ownership.get(&plot_id) != Some(&user_id) { return false; }
+        if self.purpose.get(&plot_id) != Some(&PlotPurpose::FreeBuild) { return false; }
+        if self.workbenches.contains(&plot_id) { return false; }
+        self.workbenches.insert(plot_id);
+        true
+    }
+
+    /// 查詢地塊是否有工作台（ROADMAP 36）。
+    pub fn has_workbench(&self, plot_id: u32) -> bool {
+        self.workbenches.contains(&plot_id)
+    }
+
+    /// 從持久化資料補充工作台標記（啟動載入路徑）。
+    pub fn mark_workbenches(&mut self, plot_ids: impl IntoIterator<Item = u32>) {
+        for id in plot_ids {
+            self.workbenches.insert(id);
+        }
     }
 
     /// 世界像素座標是否在「他人已購」的地塊內（Dig/Place 保護檢查）。
@@ -176,6 +200,7 @@ impl LandPlotRegistry {
             let owner_id = self.ownership.get(&p.plot_id).copied();
             let owner_name = owner_id.and_then(|uid| get_name(uid));
             let purpose = self.purpose.get(&p.plot_id).copied();
+            let has_workbench = self.workbenches.contains(&p.plot_id);
             LandPlotSnapshot {
                 plot_id: p.plot_id,
                 min_gx: p.min_gx,
@@ -185,6 +210,7 @@ impl LandPlotRegistry {
                 owner_id,
                 owner_name,
                 purpose,
+                has_workbench,
             }
         }).collect()
     }
@@ -210,6 +236,8 @@ pub struct LandPlotSnapshot {
     pub owner_name: Option<String>,
     /// 地塊用途（ROADMAP 35）。未購地塊為 `None`。
     pub purpose: Option<PlotPurpose>,
+    /// 是否已放置工作台（ROADMAP 36）。
+    pub has_workbench: bool,
 }
 
 #[cfg(test)]
@@ -367,5 +395,69 @@ mod tests {
                 assert!(gap >= 4, "東環地塊 {} min_gx={} 與東牆距離僅 {}", p.plot_id, p.min_gx, gap);
             }
         }
+    }
+
+    // ── ROADMAP 36 工作台 ────────────────────────────────────────────
+
+    #[test]
+    fn has_workbench_returns_false_before_placing() {
+        let reg = LandPlotRegistry::new();
+        assert!(!reg.has_workbench(0), "未放工作台應回傳 false");
+        assert!(!reg.has_workbench(999), "不存在的地塊也應回傳 false");
+    }
+
+    #[test]
+    fn place_workbench_requires_ownership() {
+        let mut reg = LandPlotRegistry::new();
+        let owner = uid();
+        assert!(reg.buy(0, owner, FREE));
+        // 非地主嘗試放工作台應失敗
+        assert!(!reg.place_workbench(0, uid()), "非地主不能放工作台");
+        // 地主可以放
+        assert!(reg.place_workbench(0, owner), "地主可以放工作台");
+    }
+
+    #[test]
+    fn place_workbench_requires_free_build() {
+        let mut reg = LandPlotRegistry::new();
+        let owner = uid();
+        assert!(reg.buy(0, owner, FARM));
+        // 農田不能放工作台
+        assert!(!reg.place_workbench(0, owner), "農田用途不能放工作台");
+    }
+
+    #[test]
+    fn place_workbench_prevents_duplicate() {
+        let mut reg = LandPlotRegistry::new();
+        let owner = uid();
+        assert!(reg.buy(0, owner, FREE));
+        assert!(reg.place_workbench(0, owner), "第一次應成功");
+        assert!(!reg.place_workbench(0, owner), "重複放置應被拒");
+        assert!(reg.has_workbench(0), "工作台狀態應保留");
+    }
+
+    #[test]
+    fn mark_workbenches_restores_on_startup() {
+        let owner = uid();
+        let mut reg = LandPlotRegistry::from_saved([(3, owner, FREE)]);
+        assert!(!reg.has_workbench(3), "重建前無工作台");
+        reg.mark_workbenches([3u32]);
+        assert!(reg.has_workbench(3), "mark 後應有工作台");
+    }
+
+    #[test]
+    fn all_plots_view_includes_workbench_field() {
+        let mut reg = LandPlotRegistry::new();
+        let owner = uid();
+        assert!(reg.buy(1, owner, FREE));
+        assert!(reg.place_workbench(1, owner));
+        let views = reg.all_plots_view(|_| None);
+        let snap = views.iter().find(|s| s.plot_id == 1).unwrap();
+        assert!(snap.has_workbench, "快照應包含 has_workbench = true");
+        // 未放工作台的地塊
+        assert!(reg.buy(2, uid(), FREE));
+        let views2 = reg.all_plots_view(|_| None);
+        let snap2 = views2.iter().find(|s| s.plot_id == 2).unwrap();
+        assert!(!snap2.has_workbench, "未放工作台快照應為 false");
     }
 }

@@ -25,6 +25,8 @@ pub struct LandPlotStore {
     backend: Backend,
     /// 啟動時從 DB 載入的歸屬紀錄，供重建 `LandPlotRegistry`（含用途）。
     loaded: Vec<(u32, Uuid, PlotPurpose)>,
+    /// 啟動時從 DB 載入的有工作台地塊 id 清單（ROADMAP 36）。
+    loaded_workbenches: Vec<u32>,
 }
 
 impl Default for LandPlotStore {
@@ -36,18 +38,23 @@ impl Default for LandPlotStore {
 impl LandPlotStore {
     /// 記憶體模式（測試 / 無 DB）。
     pub fn new() -> Self {
-        Self { backend: Backend::Memory, loaded: Vec::new() }
+        Self { backend: Backend::Memory, loaded: Vec::new(), loaded_workbenches: Vec::new() }
     }
 
-    /// Postgres 模式：啟動時把 `land_plots` 表所有紀錄載入（含 purpose）。
+    /// Postgres 模式：啟動時把 `land_plots` 表所有紀錄載入（含 purpose + has_workbench）。
     pub async fn from_pool(pool: sqlx::postgres::PgPool) -> Self {
-        let loaded = load_from_db(&pool).await;
-        Self { backend: Backend::Postgres(pool), loaded }
+        let (loaded, loaded_workbenches) = load_from_db(&pool).await;
+        Self { backend: Backend::Postgres(pool), loaded, loaded_workbenches }
     }
 
     /// 取回啟動時載入的歸屬紀錄，供重建 `LandPlotRegistry`（ROADMAP 35：含用途）。
     pub fn saved_ownerships(&self) -> Vec<(u32, Uuid, PlotPurpose)> {
         self.loaded.clone()
+    }
+
+    /// 取回啟動時載入的有工作台地塊清單（ROADMAP 36）。
+    pub fn saved_workbenches(&self) -> Vec<u32> {
+        self.loaded_workbenches.clone()
     }
 
     /// 玩家購買地塊後立刻持久化（fire-and-forget；失敗只記 log）。
@@ -64,23 +71,45 @@ impl LandPlotStore {
             }
         }
     }
+
+    /// 放置工作台後立刻持久化（fire-and-forget；失敗只記 log）。
+    pub fn save_workbench(&self, plot_id: u32) {
+        match &self.backend {
+            Backend::Memory => {}
+            Backend::Postgres(pool) => {
+                let pool = pool.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = set_workbench_flag(&pool, plot_id, true).await {
+                        tracing::error!(%e, plot_id, "地塊工作台 flag 寫入失敗");
+                    }
+                });
+            }
+        }
+    }
 }
 
-async fn load_from_db(pool: &sqlx::postgres::PgPool) -> Vec<(u32, Uuid, PlotPurpose)> {
-    let rows = sqlx::query("SELECT plot_id, owner_id, purpose FROM land_plots")
+async fn load_from_db(pool: &sqlx::postgres::PgPool) -> (Vec<(u32, Uuid, PlotPurpose)>, Vec<u32>) {
+    let rows = sqlx::query("SELECT plot_id, owner_id, purpose, has_workbench FROM land_plots")
         .fetch_all(pool)
         .await;
     match rows {
-        Ok(rows) => rows.iter().map(|r| {
-            let plot_id: i32 = sqlx::Row::try_get(r, "plot_id").unwrap_or(0);
-            let owner_id: Uuid = sqlx::Row::try_get(r, "owner_id").unwrap_or(Uuid::nil());
-            let purpose_str: String = sqlx::Row::try_get(r, "purpose").unwrap_or_default();
-            let purpose = PlotPurpose::from_str(&purpose_str);
-            (plot_id as u32, owner_id, purpose)
-        }).collect(),
+        Ok(rows) => {
+            let mut ownerships = Vec::new();
+            let mut workbenches = Vec::new();
+            for r in &rows {
+                let plot_id: i32 = sqlx::Row::try_get(r, "plot_id").unwrap_or(0);
+                let owner_id: Uuid = sqlx::Row::try_get(r, "owner_id").unwrap_or(Uuid::nil());
+                let purpose_str: String = sqlx::Row::try_get(r, "purpose").unwrap_or_default();
+                let purpose = PlotPurpose::from_str(&purpose_str);
+                let has_wb: bool = sqlx::Row::try_get(r, "has_workbench").unwrap_or(false);
+                ownerships.push((plot_id as u32, owner_id, purpose));
+                if has_wb { workbenches.push(plot_id as u32); }
+            }
+            (ownerships, workbenches)
+        }
         Err(e) => {
             tracing::error!(%e, "載入地塊產權失敗");
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     }
 }
@@ -100,5 +129,18 @@ async fn upsert_ownership(
     .bind(purpose.as_str())
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+async fn set_workbench_flag(
+    pool: &sqlx::postgres::PgPool,
+    plot_id: u32,
+    flag: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE land_plots SET has_workbench = $1 WHERE plot_id = $2")
+        .bind(flag)
+        .bind(plot_id as i32)
+        .execute(pool)
+        .await?;
     Ok(())
 }

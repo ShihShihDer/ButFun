@@ -282,6 +282,16 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 快照中的 `LandPlotSnapshot.purpose` 隨每幀廣播，已購地塊面板顯示用途標籤。
     - 留未來擴充：商店攤位（市場掛單實體化）、牧場。
 
+36. ✅ **地塊工作台（FreeBuild Workbench）**（本輪 PR）
+    - 自由建地地主可花 25 乙太在地塊上放置工作台（每塊限一個）。
+    - 工作台解鎖 2 個進階合成食譜：合金護盾（石×8＋晶石碎片×4，防禦-4）、
+      工坊活化液（活力藥水×2＋蕈菇活化液×1＋晶石碎片×2，滿血+回血+12乙太）。
+    - 玩家靠近工作台（160px 範圍）才能合成工作台限定食譜，否則按鈕反灰。
+    - migration 0014 向後相容加 `has_workbench BOOLEAN NOT NULL DEFAULT FALSE`；
+      後端 `LandPlotRegistry.place_workbench()` 驗權限；前端地塊面板顯示放置按鈕與狀態、
+      合成台工作台食譜加 ⚙️ 標籤、畫布渲染 ⚙️ 圖示在有工作台的地塊上。
+    - 新增 6 個單元測試（place_workbench/has_workbench/mark_workbenches/all_plots_view），全 478 測試通過。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

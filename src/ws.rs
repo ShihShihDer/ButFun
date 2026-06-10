@@ -484,10 +484,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 走既有 `recipe_by_id`(已測)而非每訊息 serde 重組產物名:免每筆配料一次 Value 配置,
                     // 也不把查找耦死在「id 必等於產物序列化名」上(同產物不同配料就會抓錯)。
                     if let Some(recipe) = crate::crafting::recipe_by_id(&recipe_id) {
-                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            let discount = crate::class::crafting_reduction(p.job_class);
-                            if recipe.craft_with_discount(&mut p.inventory, discount) {
-                                tracing::info!(player = %p.name, recipe = %recipe_id, discount, "合成成功");
+                        // 需要工作台的配方：驗玩家是否在某個有工作台的地塊 160px 以內（ROADMAP 36）。
+                        let workbench_ok = if recipe.requires_workbench {
+                            let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                            if let Some((px, py)) = player_pos {
+                                near_any_workbench(px, py, &app.land_plots.read().unwrap())
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        };
+                        if workbench_ok {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                let discount = crate::class::crafting_reduction(p.job_class);
+                                if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                    tracing::info!(player = %p.name, recipe = %recipe_id, discount, "合成成功");
+                                }
                             }
                         }
                     }
@@ -994,6 +1007,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, ?item, gained, "使用源晶精粹滿血+獲得20乙太");
                                 }
                             }
+                            ItemKind::WorkshopElixir => {
+                                // 工坊精粹：回復至等級滿血 + 重置回血冷卻 + 獲得 12 乙太——工作台多效合一補給。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.vitals.reset_regen_cooldown();
+                                    p.ether = p.ether.saturating_add(12);
+                                    tracing::info!(player = %p.name, gained, "使用工坊精粹滿血+重置回血+獲得12乙太");
+                                }
+                            }
                             ItemKind::StarChart => {
                                 // 星圖：展開遠方星球快照——道具本身不消耗（是導航工具而非消耗品）。
                                 // 前端收到背包快照後本地彈出星圖彈窗；伺服器只記日誌。
@@ -1424,7 +1446,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     app.land_plot_store.save_purchase(plot_id, uid, plot_purpose);
                     tracing::info!(%uid, plot_id, ?plot_purpose, "玩家購買城外地塊");
                 }
-                // ── 城外地塊購買 end ─────────────────────────────────────────────
+
+                Ok(ClientMsg::PlaceWorkbench { plot_id }) => {
+                    // ROADMAP 36：在自由建地放置工作台。需：已登入、是該地塊地主、FreeBuild 用途、尚無工作台、乙太足夠。
+                    const WORKBENCH_COST: u32 = 25;
+                    let Some(uid) = authed_uid else { continue; };
+                    let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether);
+                    let Some(ether) = ether else { continue; };
+                    if ether < WORKBENCH_COST { continue; }
+                    let ok = app.land_plots.write().unwrap().place_workbench(plot_id, uid);
+                    if !ok { continue; }
+                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                        p.ether = p.ether.saturating_sub(WORKBENCH_COST);
+                    }
+                    app.land_plot_store.save_workbench(plot_id);
+                    tracing::info!(%uid, plot_id, "玩家在地塊放置工作台");
+                }
+                // ── 城外地塊 end ─────────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
@@ -1437,6 +1475,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     forward.abort();
     cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");
+}
+
+/// 玩家是否在某個有工作台的自由建地 160px 以內（ROADMAP 36 工作台合成鄰近檢查）。
+fn near_any_workbench(px: f32, py: f32, land_plots: &crate::land_plot::LandPlotRegistry) -> bool {
+    use crate::land_plot::LAND_PLOTS;
+    const TILE_PX: f32 = world_core::TILE_PX;
+    const REACH: f32 = 160.0;
+    for p in LAND_PLOTS {
+        if !land_plots.has_workbench(p.plot_id) { continue; }
+        let min_x = p.min_gx as f32 * TILE_PX - REACH;
+        let max_x = (p.max_gx + 1) as f32 * TILE_PX + REACH;
+        let min_y = p.min_gy as f32 * TILE_PX - REACH;
+        let max_y = (p.max_gy + 1) as f32 * TILE_PX + REACH;
+        if px >= min_x && px <= max_x && py >= min_y && py <= max_y {
+            return true;
+        }
+    }
+    false
 }
 
 /// 依 guild_id 與 player_id 建立 GuildView（ROADMAP 29）。

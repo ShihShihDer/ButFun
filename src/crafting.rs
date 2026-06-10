@@ -31,6 +31,8 @@ pub struct Recipe {
     pub output: ItemKind,
     /// 產出的數量（通常為 1）。
     pub output_qty: u32,
+    /// 是否需要在工作台旁才能合成（ROADMAP 36）。玩家需站在有工作台的自由建地附近（160px 以內）。
+    pub requires_workbench: bool,
 }
 
 impl Recipe {
@@ -88,6 +90,7 @@ fn pickaxe() -> Recipe {
         inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
         output: ItemKind::Pickaxe,
         output_qty: 1,
+        requires_workbench: false,
     }
 }
 
@@ -102,6 +105,7 @@ fn reinforced_pickaxe() -> Recipe {
         ],
         output: ItemKind::ReinforcedPickaxe,
         output_qty: 1,
+        requires_workbench: false,
     }
 }
 
@@ -112,206 +116,45 @@ fn weapon() -> Recipe {
         inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
         output: ItemKind::Weapon,
         output_qty: 1,
+        requires_workbench: false,
     }
 }
 
 /// 全域配方目錄。
 pub const RECIPES: &[Recipe] = &[
-    Recipe {
-        id: "pickaxe",
-        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)],
-        output: ItemKind::Pickaxe,
-        output_qty: 1,
-    },
-    Recipe {
-        id: "reinforced_pickaxe",
-        inputs: &[
-            (ItemKind::Pickaxe, 1),
-            (ItemKind::Wood, 2),
-            (ItemKind::Stone, 4),
-        ],
-        output: ItemKind::ReinforcedPickaxe,
-        output_qty: 1,
-    },
-    Recipe {
-        id: "weapon",
-        inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
-        output: ItemKind::Weapon,
-        output_qty: 1,
-    },
-    /// 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
-    Recipe {
-        id: "healing_potion",
-        inputs: &[(ItemKind::WildflowerSeed, 3)],
-        output: ItemKind::HealingPotion,
-        output_qty: 1,
-    },
-    /// 晶石強化液：晶石碎片×5 → 晶石強化液×1。回復 12 HP，深層晶洞探索的 Premium 回報。
-    Recipe {
-        id: "crystal_potion",
-        inputs: &[(ItemKind::CrystalShard, 5)],
-        output: ItemKind::CrystalPotion,
-        output_qty: 1,
-    },
-    /// 蕈菇活化液：蕈菇孢子×4 → 蕈菇活化液×1。回復 8 HP 並重置回血冷卻，讓回血立刻開始。
-    Recipe {
-        id: "mushroom_elixir",
-        inputs: &[(ItemKind::MushroomSpore, 4)],
-        output: ItemKind::MushroomElixir,
-        output_qty: 1,
-    },
-    /// 古代乙太丸：古代碎片×3 → 古代乙太丸×1。使用即得 10 乙太，在野外兌換遺跡能量。
-    Recipe {
-        id: "ether_pill",
-        inputs: &[(ItemKind::AncientFragment, 3)],
-        output: ItemKind::EtherPill,
-        output_qty: 1,
-    },
-    /// 珍珠復原藥：深海珍珠×1 → 珍珠復原藥×1。使用後回復至滿血，最稀有材料換來最強效果。
-    Recipe {
-        id: "pearl_potion",
-        inputs: &[(ItemKind::DeepSeaPearl, 1)],
-        output: ItemKind::PearlPotion,
-        output_qty: 1,
-    },
-    /// 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8，Rocky 探索的進階武器。
-    Recipe {
-        id: "crystal_blade",
-        inputs: &[(ItemKind::CrystalShard, 6)],
-        output: ItemKind::CrystalBlade,
-        output_qty: 1,
-    },
-    /// 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
-    Recipe {
-        id: "coral_lance",
-        inputs: &[(ItemKind::DeepSeaPearl, 3)],
-        output: ItemKind::CoralLance,
-        output_qty: 1,
-    },
-    /// 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
-    Recipe {
-        id: "meadow_amulet",
-        inputs: &[(ItemKind::WildflowerSeed, 8)],
-        output: ItemKind::MeadowAmulet,
-        output_qty: 1,
-    },
-    /// 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
-    Recipe {
-        id: "crystal_shield",
-        inputs: &[(ItemKind::CrystalShard, 8), (ItemKind::Stone, 4)],
-        output: ItemKind::CrystalShield,
-        output_qty: 1,
-    },
-    /// 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球的星圖快照，多星球旅程的序章。
-    Recipe {
-        id: "star_chart",
-        inputs: &[(ItemKind::AncientFragment, 5)],
-        output: ItemKind::StarChart,
-        output_qty: 1,
-    },
-    /// 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，補足森林生態的武器空缺。
-    /// 比基礎武器（+5）強、比晶石之刃（+8）稍弱——蕈菇孢子比晶石碎片更容易取得。
-    Recipe {
-        id: "mushroom_staff",
-        inputs: &[(ItemKind::MushroomSpore, 6)],
-        output: ItemKind::MushroomStaff,
-        output_qty: 1,
-    },
-    /// 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠文明鍛造的精英刃。
-    /// 比晶石之刃（+8）更強、比珊瑚矛（+12）略弱——沙漠探索的中段武器升段。
-    Recipe {
-        id: "rune_blade",
-        inputs: &[(ItemKind::AncientFragment, 4)],
-        output: ItemKind::RuneBlade,
-        output_qty: 1,
-    },
-    /// 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後回復至等級滿血並重置回血冷卻。
-    /// 翠幽星異星植物萃取，結合珍珠復原藥（滿血）與蕈菇活化液（重置回血）的雙重效果。
-    Recipe {
-        id: "jade_elixir",
-        inputs: &[(ItemKind::JadeShard, 2)],
-        output: ItemKind::JadeElixir,
-        output_qty: 1,
-    },
-    /// 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，翠幽星域強力武器。
-    /// 翠幽星獨有，超越珊瑚矛（+12），鼓勵玩家深入翠幽星探索。
-    Recipe {
-        id: "jade_blade",
-        inputs: &[(ItemKind::JadeShard, 5)],
-        output: ItemKind::JadeBlade,
-        output_qty: 1,
-    },
-    /// 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至等級滿血，同時獲得 8 乙太。
-    /// 赤焰星蒸汽燃料轉換器——異星能量凝聚而成，結合滿血與乙太雙重獎勵。
-    Recipe {
-        id: "steam_elixir",
-        inputs: &[(ItemKind::LavaCrystal, 2)],
-        output: ItemKind::SteamElixir,
-        output_qty: 1,
-    },
-    /// 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，全遊戲最強武器。
-    /// 赤焰星獨有，超越翠幽刃（+15），蒸汽龐克文明的最高武裝結晶。
-    Recipe {
-        id: "crimson_blade",
-        inputs: &[(ItemKind::LavaCrystal, 6)],
-        output: ItemKind::CrimsonBlade,
-        output_qty: 1,
-    },
-    /// 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至等級滿血，同時獲得 10 乙太。
-    /// 虛空星宇宙深淵能量轉換器——比蒸汽精粹（+8 乙太）更強，終極異星精華。
-    Recipe {
-        id: "void_elixir",
-        inputs: &[(ItemKind::VoidShard, 2)],
-        output: ItemKind::VoidElixir,
-        output_qty: 1,
-    },
-    /// 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，超越赤焰刃（+20），宇宙深淵高階武裝。
-    Recipe {
-        id: "void_blade",
-        inputs: &[(ItemKind::VoidShard, 6)],
-        output: ItemKind::VoidBlade,
-        output_qty: 1,
-    },
-    /// 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復至等級滿血，同時獲得 15 乙太。
-    /// 霧醚星乙太迷霧高密度能量轉換——四大星球最強補給，乙太迷霧比宇宙深淵更富饒。
-    Recipe {
-        id: "aether_essence",
-        inputs: &[(ItemKind::AetherShard, 2)],
-        output: ItemKind::AetherEssence,
-        output_qty: 1,
-    },
-    /// 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，全遊戲最強武器。
-    /// 霧醚星獨有，超越虛空刃（+25），乙太迷霧凝結的終極宇宙武裝。
-    Recipe {
-        id: "aether_blade",
-        inputs: &[(ItemKind::AetherShard, 8)],
-        output: ItemKind::AetherBlade,
-        output_qty: 1,
-    },
-    /// 源晶精粹：源晶碎片×2 → 源晶精粹×1。使用後回復至等級滿血，同時獲得 20 乙太。
-    /// 星源星宇宙源頭能量轉換——五大星球最強補給，起源之力比乙太迷霧更為深邃。
-    Recipe {
-        id: "origin_essence",
-        inputs: &[(ItemKind::OriginShard, 2)],
-        output: ItemKind::OriginEssence,
-        output_qty: 1,
-    },
-    /// 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
-    /// 星源星獨有，超越霧醚之刃（+30），宇宙起源之力凝聚的終極武裝，只有踏上星源星才能鑄造。
-    Recipe {
-        id: "origin_blade",
-        inputs: &[(ItemKind::OriginShard, 10)],
-        output: ItemKind::OriginBlade,
-        output_qty: 1,
-    },
-    /// 宇宙護盾：裂縫碎片×3 → 宇宙護盾×1。持有後每次受傷減 6 點傷害——全遊戲最強防禦裝備。
-    /// 宇宙裂縫事件限定材料，收集裂縫碎片並鍛造，遊歷宇宙的終極護盾。
-    Recipe {
-        id: "cosmic_shield",
-        inputs: &[(ItemKind::RiftShard, 3)],
-        output: ItemKind::CosmicShield,
-        output_qty: 1,
-    },
+    Recipe { id: "pickaxe", inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 2)], output: ItemKind::Pickaxe, output_qty: 1, requires_workbench: false },
+    Recipe { id: "reinforced_pickaxe", inputs: &[(ItemKind::Pickaxe, 1), (ItemKind::Wood, 2), (ItemKind::Stone, 4)], output: ItemKind::ReinforcedPickaxe, output_qty: 1, requires_workbench: false },
+    Recipe { id: "weapon", inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)], output: ItemKind::Weapon, output_qty: 1, requires_workbench: false },
+    Recipe { id: "healing_potion", inputs: &[(ItemKind::WildflowerSeed, 3)], output: ItemKind::HealingPotion, output_qty: 1, requires_workbench: false },
+    Recipe { id: "crystal_potion", inputs: &[(ItemKind::CrystalShard, 5)], output: ItemKind::CrystalPotion, output_qty: 1, requires_workbench: false },
+    Recipe { id: "mushroom_elixir", inputs: &[(ItemKind::MushroomSpore, 4)], output: ItemKind::MushroomElixir, output_qty: 1, requires_workbench: false },
+    Recipe { id: "ether_pill", inputs: &[(ItemKind::AncientFragment, 3)], output: ItemKind::EtherPill, output_qty: 1, requires_workbench: false },
+    Recipe { id: "pearl_potion", inputs: &[(ItemKind::DeepSeaPearl, 1)], output: ItemKind::PearlPotion, output_qty: 1, requires_workbench: false },
+    Recipe { id: "crystal_blade", inputs: &[(ItemKind::CrystalShard, 6)], output: ItemKind::CrystalBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "coral_lance", inputs: &[(ItemKind::DeepSeaPearl, 3)], output: ItemKind::CoralLance, output_qty: 1, requires_workbench: false },
+    Recipe { id: "meadow_amulet", inputs: &[(ItemKind::WildflowerSeed, 8)], output: ItemKind::MeadowAmulet, output_qty: 1, requires_workbench: false },
+    Recipe { id: "crystal_shield", inputs: &[(ItemKind::CrystalShard, 8), (ItemKind::Stone, 4)], output: ItemKind::CrystalShield, output_qty: 1, requires_workbench: false },
+    Recipe { id: "star_chart", inputs: &[(ItemKind::AncientFragment, 5)], output: ItemKind::StarChart, output_qty: 1, requires_workbench: false },
+    Recipe { id: "mushroom_staff", inputs: &[(ItemKind::MushroomSpore, 6)], output: ItemKind::MushroomStaff, output_qty: 1, requires_workbench: false },
+    Recipe { id: "rune_blade", inputs: &[(ItemKind::AncientFragment, 4)], output: ItemKind::RuneBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "jade_elixir", inputs: &[(ItemKind::JadeShard, 2)], output: ItemKind::JadeElixir, output_qty: 1, requires_workbench: false },
+    Recipe { id: "jade_blade", inputs: &[(ItemKind::JadeShard, 5)], output: ItemKind::JadeBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "steam_elixir", inputs: &[(ItemKind::LavaCrystal, 2)], output: ItemKind::SteamElixir, output_qty: 1, requires_workbench: false },
+    Recipe { id: "crimson_blade", inputs: &[(ItemKind::LavaCrystal, 6)], output: ItemKind::CrimsonBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "void_elixir", inputs: &[(ItemKind::VoidShard, 2)], output: ItemKind::VoidElixir, output_qty: 1, requires_workbench: false },
+    Recipe { id: "void_blade", inputs: &[(ItemKind::VoidShard, 6)], output: ItemKind::VoidBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "aether_essence", inputs: &[(ItemKind::AetherShard, 2)], output: ItemKind::AetherEssence, output_qty: 1, requires_workbench: false },
+    Recipe { id: "aether_blade", inputs: &[(ItemKind::AetherShard, 8)], output: ItemKind::AetherBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "origin_essence", inputs: &[(ItemKind::OriginShard, 2)], output: ItemKind::OriginEssence, output_qty: 1, requires_workbench: false },
+    Recipe { id: "origin_blade", inputs: &[(ItemKind::OriginShard, 10)], output: ItemKind::OriginBlade, output_qty: 1, requires_workbench: false },
+    Recipe { id: "cosmic_shield", inputs: &[(ItemKind::RiftShard, 3)], output: ItemKind::CosmicShield, output_qty: 1, requires_workbench: false },
+    /// 合金護盾（工作台）：礦石×8 + 晶石碎片×4 → 合金護盾×1。每次受傷減 4 點，介於晶石護盾(2)與宇宙護盾(6)之間。
+    /// 不需星際材料，只要挖夠礦石和晶石，工作台就能鑄造——給中期玩家一條防禦升段路線。
+    Recipe { id: "alloy_shield", inputs: &[(ItemKind::Stone, 8), (ItemKind::CrystalShard, 4)], output: ItemKind::AlloyShield, output_qty: 1, requires_workbench: true },
+    /// 工坊精粹（工作台）：活力藥水×2 + 蕈菇活化液×1 + 晶石碎片×2 → 工坊精粹×1。
+    /// 使用後回復至等級滿血，同時重置回血冷卻並獲得 12 乙太——多材料凝煉的全效補給，
+    /// 比翠幽精露（滿血+回血重置）更強，是工作台特有的多效合一消耗品。
+    Recipe { id: "workshop_elixir", inputs: &[(ItemKind::HealingPotion, 2), (ItemKind::MushroomElixir, 1), (ItemKind::CrystalShard, 2)], output: ItemKind::WorkshopElixir, output_qty: 1, requires_workbench: true },
 ];
 
 /// 依 ID 查配方。
