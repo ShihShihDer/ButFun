@@ -186,6 +186,20 @@ pub enum ItemKind {
     Egg,
     /// 煎蛋🍳（合成：雞蛋×2 → 煎蛋×1）。使用後回復 10 HP。
     FriedEgg,
+
+    // ── 農地作物（ROADMAP 49 農田地塊種作物）────────────────────────────────
+    /// 小麥🌾（農田地塊種植收割）。可賣 NPC 2 乙太，或 ×3 合成麵包。
+    WheatGrain,
+    /// 胡蘿蔔🥕（農田地塊種植收割）。可賣 NPC 3 乙太，或 ×2 合成蔬菜湯。
+    Carrot,
+    /// 馬鈴薯🥔（農田地塊種植收割）。可賣 NPC 4 乙太，或 ×2 合成焗烤馬鈴薯。
+    Potato,
+    /// 麵包🍞（合成：小麥×3 → 麵包×1）。使用後回復 12 HP。
+    Bread,
+    /// 蔬菜湯🍲（合成：胡蘿蔔×2 → 蔬菜湯×1）。使用後回復 10 HP 並啟動自然回血。
+    CarrotSoup,
+    /// 焗烤馬鈴薯🥙（合成：馬鈴薯×2 → 焗烤馬鈴薯×1）。使用後回復 15 HP。
+    PotatoGratin,
 }
 
 impl ItemKind {
@@ -244,6 +258,12 @@ impl ItemKind {
         ItemKind::DeepBroth,
         ItemKind::Egg,
         ItemKind::FriedEgg,
+        ItemKind::WheatGrain,
+        ItemKind::Carrot,
+        ItemKind::Potato,
+        ItemKind::Bread,
+        ItemKind::CarrotSoup,
+        ItemKind::PotatoGratin,
     ];
 }
 
@@ -485,13 +505,19 @@ mod tests {
                 | ItemKind::StarSashimi
                 | ItemKind::DeepBroth
                 | ItemKind::Egg
-                | ItemKind::FriedEgg => {}
+                | ItemKind::FriedEgg
+                | ItemKind::WheatGrain
+                | ItemKind::Carrot
+                | ItemKind::Potato
+                | ItemKind::Bread
+                | ItemKind::CarrotSoup
+                | ItemKind::PotatoGratin => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 49 種（含 ROADMAP 48 牧場：Egg/FriedEgg）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 49, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 55 種（含 ROADMAP 49 農地作物：WheatGrain/Carrot/Potato/Bread/CarrotSoup/PotatoGratin）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 55, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -651,9 +677,14 @@ mod tests {
             );
             // 牧場可得（ROADMAP 48）：農田地塊養雞，雞自動產蛋。
             let egg_ranchable = item == ItemKind::Egg;
+            // 農地種植可得（ROADMAP 49）：農田地塊種作物，成熟後收割。
+            let farm_croppable = matches!(
+                item,
+                ItemKind::WheatGrain | ItemKind::Carrot | ItemKind::Potato
+            );
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場）\
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
@@ -742,6 +773,10 @@ mod tests {
                     | ItemKind::DeepBroth
                     // 牧場料理（ROADMAP 48 煎蛋）：食用即消耗，回血 10。
                     | ItemKind::FriedEgg
+                    // 農地料理（ROADMAP 49）：食用即消耗，各自回血。
+                    | ItemKind::Bread
+                    | ItemKind::CarrotSoup
+                    | ItemKind::PotatoGratin
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

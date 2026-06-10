@@ -51,6 +51,7 @@ mod ws;
 mod pet;
 mod fishing;
 mod ranching;
+mod farm_crops;
 
 use std::net::SocketAddr;
 

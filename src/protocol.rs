@@ -214,6 +214,15 @@ pub enum ClientMsg {
     /// `plot_id`：目標農田地塊（必須是本人擁有的地塊且有雞蛋）。
     /// 無蛋 / 非本人地塊 / 倒地中靜默忽略。
     CollectEggs { plot_id: u32 },
+    /// 種植作物（ROADMAP 49）：在自己的農田地塊種植作物，花乙太購入種苗。
+    /// `plot_id`：目標農田地塊（必須是本人擁有的 Farm 類型地塊）。
+    /// `crop_type`：作物種類 wire key（"wheat"/"carrot"/"potato"）。
+    /// 乙太不足 / 非農田 / 非本人地塊 / 已達上限 / 倒地中靜默忽略。
+    PlantCrop { plot_id: u32, crop_type: String },
+    /// 收割作物（ROADMAP 49）：收取農田地塊所有成熟作物進背包，並給農夫熟練度 XP。
+    /// `plot_id`：目標農田地塊（必須是本人擁有的地塊且有成熟作物）。
+    /// 無成熟作物 / 非本人地塊 / 倒地中靜默忽略。
+    HarvestCrops { plot_id: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -258,6 +267,9 @@ pub enum ServerMsg {
         /// 農田地塊牧場狀態（ROADMAP 48）：只送有雞或有蛋的地塊（稀疏）。
         /// 前端在農田地塊上繪製雞 emoji 🐔 與蛋計數。
         ranch_plots: Vec<crate::ranching::RanchPlotView>,
+        /// 農田地塊作物狀態（ROADMAP 49）：只送有種植作物的地塊（稀疏）。
+        /// 前端在農田地塊上繪製作物 emoji 與成熟狀態。
+        farm_crop_plots: Vec<crate::farm_crops::FarmCropPlotView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -710,6 +722,7 @@ mod tests {
             quests: vec![],
             land_plots: vec![],
             ranch_plots: vec![],
+            farm_crop_plots: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

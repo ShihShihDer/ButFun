@@ -36,6 +36,7 @@ use crate::land_plot::LandPlotRegistry;
 use crate::land_plot_store::LandPlotStore;
 use crate::plot_registry::PlotRegistry;
 use crate::ranching::RanchRegistry;
+use crate::farm_crops::FarmCropRegistry;
 use crate::positions::PositionStore;
 use crate::protocol::{ItemStack, PlayerView, WorldInfo, ServerMsg};
 use crate::suggestions::SuggestionStore;
@@ -444,6 +445,8 @@ pub struct AppState {
     pub land_plots: Arc<RwLock<LandPlotRegistry>>,
     /// 農田地塊牧場狀態（ROADMAP 48）：記憶體模式，重啟歸零。
     pub ranch: Arc<RwLock<RanchRegistry>>,
+    /// 農田地塊作物狀態（ROADMAP 49）：記憶體模式，重啟歸零。
+    pub farm_crops: Arc<RwLock<FarmCropRegistry>>,
     /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
     pub land_plot_store: LandPlotStore,
     /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
@@ -523,6 +526,7 @@ impl AppState {
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,
             ranch: Arc::new(RwLock::new(RanchRegistry::new())),
+            farm_crops: Arc::new(RwLock::new(FarmCropRegistry::new())),
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
         }
