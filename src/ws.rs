@@ -272,7 +272,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, quests, land_plots } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -302,6 +302,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         }).cloned().collect(),
                                         // 世界事件全服廣播（裂縫座標不做 AOI 剔除，讓玩家知道在哪裡）。
                                         world_event: world_event.clone(),
+                                        // 獸潮攻城事件全服廣播（攻城點座標讓所有玩家知道）。
+                                        horde_event: horde_event.clone(),
                                         // 社群任務全服廣播（所有玩家看同一套任務進度）。
                                         quests: quests.clone(),
                                         // 城外地塊全部送出（20 塊量小；地塊都在主城附近）。
@@ -959,6 +961,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 每日任務：擊殺事件（ROADMAP 32）。
                     if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
                         advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                    }
+                    // 獸潮攻城（ROADMAP 44）：通知導演統計攻城點附近的擊殺數，達標即全服勝利。
+                    if let Some((_, _, _, Some(_))) = result {
+                        if let Some(cmd) = app.director.write().unwrap().register_kill_near_site(px, py) {
+                            if let crate::director::DirectorCmd::HordeVictory { site_label, kills } = cmd {
+                                let _ = app.tx_chat.send(format!(
+                                    "🎉 玩家們成功打退{}的獸潮！（共斬殺 {} 隻）\
+                                     全服每位登入玩家獲得 {} 乙太！",
+                                    site_label, kills, crate::director::HORDE_VICTORY_ETHER
+                                ));
+                                for p in app.players.write().unwrap().values_mut() {
+                                    p.ether = p.ether.saturating_add(crate::director::HORDE_VICTORY_ETHER);
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(ClientMsg::ReturnHome) => {

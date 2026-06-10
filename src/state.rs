@@ -410,6 +410,9 @@ pub struct AppState {
     /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
     /// 賣越多收購價越低（地板 30%）；每小時自動回升 5%。
     pub dynamic_prices: Arc<RwLock<DynamicPriceMarket>>,
+    /// AI 導演層：獸潮攻城計時與狀態機（ROADMAP 44）。
+    /// 遊戲迴圈每 tick 推進；觸發時注入怪波並廣播公告。
+    pub director: Arc<RwLock<crate::director::DirectorState>>,
 }
 
 impl AppState {
@@ -481,6 +484,7 @@ impl AppState {
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
+            director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
         }
     }
 

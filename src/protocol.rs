@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::combat::EnemyKind;
 use crate::world_event::WorldEventView;
+use crate::director::HordeView;
 use crate::daynight::Phase;
 use crate::gather::NodeKind;
 use crate::inventory::ItemKind;
@@ -222,6 +223,9 @@ pub enum ServerMsg {
         /// 目前開啟中的宇宙裂縫事件（ROADMAP 26）；`None` 表示無事件。
         /// 前端用來在小地圖顯示裂縫標記 + 畫面上渲染裂縫光效。
         world_event: Option<WorldEventView>,
+        /// 獸潮攻城事件（ROADMAP 44）；`None` 表示目前無獸潮。
+        /// 前端用來顯示倒數橫幅 + 小地圖紅色標記。
+        horde_event: Option<HordeView>,
         /// 全服社群探索任務（ROADMAP 27）：三條任務的說明、進度、完成狀態。
         quests: Vec<QuestView>,
         /// 城外產權地塊（ROADMAP 34）：20 塊預定義地塊的幾何 + 地主資訊。
@@ -646,6 +650,7 @@ mod tests {
             }],
             terrain: vec![],
             world_event: None,
+            horde_event: None,
             quests: vec![],
             land_plots: vec![],
         };
