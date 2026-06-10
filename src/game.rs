@@ -283,6 +283,16 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 全服社群任務（ROADMAP 27）：推進計時器；換輪時廣播公告。
+            {
+                let reset = app.quests.write().unwrap().tick(dt);
+                if reset {
+                    let _ = app.tx_chat.send(
+                        "📋 任務換輪！三條新的全服探索任務已開啟，快去完成吧！".to_string()
+                    );
+                }
+            }
+
             // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
             let listing_views: Vec<ListingView> = if want_broadcast {
                 app.market
@@ -370,6 +380,7 @@ pub fn spawn(app: AppState) {
                             }).collect()
                         },
                         world_event: app.world_event.read().unwrap().view(),
+                        quests: crate::protocol::quests_view(&app.quests.read().unwrap()),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

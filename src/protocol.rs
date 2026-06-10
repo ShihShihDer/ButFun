@@ -10,6 +10,7 @@ use crate::world_event::WorldEventView;
 use crate::daynight::Phase;
 use crate::gather::NodeKind;
 use crate::inventory::ItemKind;
+use crate::quest::QuestState;
 use world_core::TileKind;
 
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
@@ -174,6 +175,8 @@ pub enum ServerMsg {
         /// 目前開啟中的宇宙裂縫事件（ROADMAP 26）；`None` 表示無事件。
         /// 前端用來在小地圖顯示裂縫標記 + 畫面上渲染裂縫光效。
         world_event: Option<WorldEventView>,
+        /// 全服社群探索任務（ROADMAP 27）：三條任務的說明、進度、完成狀態。
+        quests: Vec<QuestView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -322,6 +325,29 @@ pub struct DayNightView {
     pub night_danger: bool,
 }
 
+/// 一條全服社群任務的可見狀態（ROADMAP 27）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuestView {
+    /// 前端顯示用說明（繁中）。
+    pub description: String,
+    /// 任務目標數量。
+    pub goal: u32,
+    /// 目前進度（全員累積）。
+    pub progress: u32,
+    /// 是否已完成。
+    pub completed: bool,
+}
+
+/// 把 QuestState 轉成前端快照用的 Vec<QuestView>。
+pub fn quests_view(qs: &QuestState) -> Vec<QuestView> {
+    qs.quests.iter().map(|q| QuestView {
+        description: q.description.clone(),
+        goal: q.goal(),
+        progress: q.progress,
+        completed: q.completed,
+    }).collect()
+}
+
 /// 一格耕地對前端的可見狀態。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TileView {
@@ -463,6 +489,7 @@ mod tests {
             }],
             terrain: vec![],
             world_event: None,
+            quests: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

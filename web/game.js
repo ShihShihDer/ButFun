@@ -224,6 +224,7 @@
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
+  let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -511,6 +512,8 @@
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         worldEvent = msg.world_event || null;
+        quests = msg.quests || [];
+        updateQuestPanel();
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -1399,6 +1402,53 @@
     }
   }
 
+  // ---- 全服社群任務面板（ROADMAP 27）----
+  // 每次收到快照（quests 更新）時呼叫，把三條任務的說明/進度/完成狀態寫進 #questBody。
+  function updateQuestPanel() {
+    const el = document.getElementById("questBody");
+    if (!el) return;
+    if (!quests || quests.length === 0) {
+      el.textContent = "載入中…";
+      return;
+    }
+    el.innerHTML = "";
+    quests.forEach((q) => {
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:10px;padding:8px;background:rgba(255,255,255,0.04);border-radius:6px;border:1px solid rgba(255,255,255,0.08)";
+      // 標題行
+      const title = document.createElement("div");
+      title.style.cssText = "font-weight:600;margin-bottom:4px;color:" + (q.completed ? "#7fbfff" : "#c9a24b");
+      title.textContent = (q.completed ? "✅ " : "📌 ") + q.description;
+      row.appendChild(title);
+      // 進度列
+      if (!q.completed) {
+        const barWrap = document.createElement("div");
+        barWrap.style.cssText = "background:rgba(255,255,255,0.08);border-radius:4px;height:8px;overflow:hidden;margin-bottom:3px";
+        const bar = document.createElement("div");
+        const pct = q.goal > 0 ? Math.min(100, Math.round(q.progress / q.goal * 100)) : 0;
+        bar.style.cssText = `height:100%;width:${pct}%;background:#c9a24b;border-radius:4px;transition:width 0.3s`;
+        barWrap.appendChild(bar);
+        row.appendChild(barWrap);
+        const prog = document.createElement("div");
+        prog.style.cssText = "font-size:11px;color:#9aa0ac";
+        prog.textContent = `進度：${q.progress} / ${q.goal}`;
+        row.appendChild(prog);
+      }
+      el.appendChild(row);
+    });
+    // 獎勵說明
+    const note = document.createElement("div");
+    note.style.cssText = "font-size:11px;color:#9aa0ac;margin-top:4px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08)";
+    note.textContent = "每條任務完成時，所有在線玩家各得 15 乙太 🎉";
+    el.appendChild(note);
+    // dock 圖示微亮（有未完成任務時加 dock-active）
+    const dockBtn = document.getElementById("dockQuest");
+    if (dockBtn) {
+      const anyPending = quests.some((q) => !q.completed);
+      dockBtn.classList.toggle("dock-active", anyPending);
+    }
+  }
+
   // ---- 離田時的「回農地」邊緣指標 ----
   // 農地完全移出畫面時，在螢幕邊緣畫一個指向農地的小箭頭，讓玩家走遠探索後一眼知道
   // 「我的田在哪個方向」、要回去澆水時不必先開小地圖對位。農地在畫面內時不畫（不打擾）。
@@ -1601,6 +1651,7 @@
       const winBtn =
         (e.key === "b" || e.key === "B") ? "dockBag" :
         (e.key === "c" || e.key === "C") ? "dockCraft" :
+        (e.key === "q" || e.key === "Q") ? "dockQuest" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
