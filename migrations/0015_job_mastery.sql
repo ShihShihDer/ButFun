@@ -1,0 +1,8 @@
+-- ROADMAP 38：職業改兼修熟練度（五條各自獨立累積，做什麼練什麼）。
+-- 向後相容：預設 0（所有既有玩家起點相同，等同「尚未開始練任何熟練度」）。
+
+ALTER TABLE players ADD COLUMN IF NOT EXISTS mastery_warrior  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS mastery_farmer   BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS mastery_artisan  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS mastery_explorer BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS mastery_merchant BIGINT NOT NULL DEFAULT 0;
