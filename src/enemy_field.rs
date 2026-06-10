@@ -27,6 +27,25 @@ const CHASE_SPEED: f32 = 105.0;
 /// 沒有玩家在附近時，敵人緩緩漂回自己的出生點。
 const RETURN_SPEED: f32 = 48.0;
 
+// ───── ROADMAP 43 狼群戰術常數 ─────
+
+/// 同種怪響應狼群警報的半徑（像素）。
+const PACK_AGGRO_RADIUS: f32 = 400.0;
+/// 狼群共同目標持續秒數，過期後清零回正常邏輯。
+const PACK_TARGET_DURATION: f32 = 6.0;
+/// 殘血呼救加速計時器長度（秒）。
+const FLEE_BOOST_DURATION: f32 = 3.5;
+/// 呼救加速倍率（+28% 速度，讓救援感受明顯）。
+const FLEE_BOOST_MULT: f32 = 1.28;
+/// 包夾偏移半徑：各只怪從不同角度逼近，不疊在同一點。
+const FLANK_RADIUS: f32 = 32.0;
+/// 殘血閾值：HP 低於此比例視為殘血，改逃跑並呼救。
+const LOW_HP_THRESHOLD: f32 = 0.25;
+/// 兇名精英光環半徑：半徑內同種小怪受到傷害加成。
+const NOTORIOUS_AURA_RADIUS: f32 = 240.0;
+/// 兇名精英光環傷害加成比例（+15%）。
+const NOTORIOUS_DAMAGE_BONUS: f32 = 0.15;
+
 /// 世界裡一隻有座標的敵人。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedEnemy {
@@ -42,6 +61,12 @@ pub struct PlacedEnemy {
     pub level: u32,
     /// 敵人本身（生命 / 重生狀態）。
     pub enemy: Enemy,
+    /// 狼群共同目標（玩家位置）：同種被攻擊時廣播，計時結束清零（ROADMAP 43）。
+    pub pack_target: Option<(f32, f32)>,
+    /// pack_target 剩餘有效秒數。
+    pub pack_target_timer: f32,
+    /// 呼救加速剩餘秒數（殘血同種怪呼救時設定）。
+    pub flee_boost_timer: f32,
 }
 
 /// `level_up_nearest_killer` 的回傳值，供呼叫端決定是否廣播兇名精英通告。
@@ -86,6 +111,16 @@ impl EnemyField {
         for nodes in self.chunks.values_mut() {
             for placed in nodes {
                 placed.enemy.tick(dt);
+                // 狼群計時器倒數（ROADMAP 43）
+                if placed.pack_target_timer > 0.0 {
+                    placed.pack_target_timer = (placed.pack_target_timer - dt).max(0.0);
+                    if placed.pack_target_timer <= 0.0 {
+                        placed.pack_target = None;
+                    }
+                }
+                if placed.flee_boost_timer > 0.0 {
+                    placed.flee_boost_timer = (placed.flee_boost_timer - dt).max(0.0);
+                }
             }
         }
     }
@@ -106,6 +141,25 @@ impl EnemyField {
         let aggro_sq = AGGRO_RADIUS * AGGRO_RADIUS;
         // 夜間追擊速度加成：讓玩家感受到夜裡的危機感。
         let night_mult = if is_night { 1.4_f32 } else { 1.0_f32 };
+
+        // 狼群前置掃描（ROADMAP 43）：先用不可變借用收集殘血怪的位置，
+        // 作為「呼救信號」，主迴圈再設定附近同種怪的加速計時器。
+        // 此借用在 collect() 後立即釋放，讓後續 iter_mut 可正常借用。
+        let pack_sq = PACK_AGGRO_RADIUS * PACK_AGGRO_RADIUS;
+        let flee_signals: Vec<(EnemyKind, f32, f32)> = self.chunks.values()
+            .flat_map(|v| v.iter())
+            .filter(|e| {
+                if !e.enemy.is_alive() { return false; }
+                let hp_ratio = e.enemy.remaining_hp() as f32 / e.enemy.max_hp().max(1) as f32;
+                if hp_ratio >= LOW_HP_THRESHOLD { return false; }
+                players.iter().any(|&(px, py)| {
+                    if !px.is_finite() || !py.is_finite() { return false; }
+                    let dx = px - e.x; let dy = py - e.y;
+                    dx * dx + dy * dy <= aggro_sq
+                })
+            })
+            .map(|e| (e.enemy.kind(), e.x, e.y))
+            .collect();
 
         // 收集所有需要移動的敵人
         let mut to_move = Vec::new();
@@ -129,11 +183,53 @@ impl EnemyField {
                     }
                 }
 
-                let (target_x, target_y, speed) = match nearest {
-                    Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult),
-                    None => {
-                        let (hx, hy) = spawn_position(placed.id);
-                        (hx, hy, RETURN_SPEED)
+                // 呼救加速（ROADMAP 43）：若附近有殘血同種怪正在逃跑，設定加速計時器。
+                for &(sig_kind, sig_x, sig_y) in &flee_signals {
+                    if sig_kind == placed.enemy.kind() {
+                        let dx = sig_x - placed.x; let dy = sig_y - placed.y;
+                        if dx * dx + dy * dy <= pack_sq {
+                            placed.flee_boost_timer = FLEE_BOOST_DURATION;
+                        }
+                    }
+                }
+                let speed_boost = if placed.flee_boost_timer > 0.0 { FLEE_BOOST_MULT } else { 1.0_f32 };
+
+                // 殘血判定（ROADMAP 43）：HP < 25% 且玩家在追擊範圍內 → 逃跑。
+                let hp_ratio = placed.enemy.remaining_hp() as f32 / placed.enemy.max_hp().max(1) as f32;
+                let is_fleeing = hp_ratio < LOW_HP_THRESHOLD && nearest.is_some();
+
+                // 目標與速度決策（ROADMAP 43 狼群包夾 / 殘血逃跑）
+                let (target_x, target_y, speed) = if is_fleeing {
+                    // 殘血逃跑：朝玩家反方向移動。
+                    let (tx, ty, _) = nearest.unwrap();
+                    let fdx = placed.x - tx;
+                    let fdy = placed.y - ty;
+                    let fdist = (fdx * fdx + fdy * fdy).sqrt().max(1.0);
+                    let flee_x = placed.x + fdx / fdist * 300.0;
+                    let flee_y = placed.y + fdy / fdist * 300.0;
+                    (flee_x, flee_y, CHASE_SPEED * 0.85 * night_mult * speed_boost)
+                } else if placed.pack_target_timer > 0.0 {
+                    if let Some((ptx, pty)) = placed.pack_target {
+                        // 狼群包夾：用 ID 雜湊給每隻怪不同的進攻角度，不疊在同一點。
+                        let id_hash = (placed.id.0 as u64)
+                            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                            .wrapping_add((placed.id.1 as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
+                            .wrapping_add(placed.id.2 as u64);
+                        let angle = (id_hash >> 11) as f32 / (1u64 << 53) as f32
+                            * std::f32::consts::TAU;
+                        let fx = ptx + FLANK_RADIUS * angle.cos();
+                        let fy = pty + FLANK_RADIUS * angle.sin();
+                        (fx, fy, CHASE_SPEED * night_mult * speed_boost)
+                    } else {
+                        match nearest {
+                            Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult * speed_boost),
+                            None => { let (hx, hy) = spawn_position(placed.id); (hx, hy, RETURN_SPEED) }
+                        }
+                    }
+                } else {
+                    match nearest {
+                        Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult * speed_boost),
+                        None => { let (hx, hy) = spawn_position(placed.id); (hx, hy, RETURN_SPEED) }
                     }
                 };
 
@@ -238,6 +334,10 @@ impl EnemyField {
 
         // 用「實際找到的 chunk」重查;查不到一律回 None——**絕不 unwrap**:None 一 unwrap 整個
         // 遊戲迴圈 panic 死掉、全服收不到快照(玩家進去只有場景沒角色),就是這次踩的雷。
+        let mut result: Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> = None;
+        let mut pack_kind: Option<EnemyKind> = None;
+        let mut trigger_flee_cry = false;
+
         if let Some((found_chunk, id, _)) = best {
             if let Some(enemies) = self.chunks.get_mut(&found_chunk) {
                 if let Some(placed) = enemies.iter_mut().find(|e| e.id == id) {
@@ -250,13 +350,40 @@ impl EnemyField {
                         placed.level = placed.base_level;
                         placed.enemy.reset_max_hp_to_base_level(placed.base_level);
                     }
-                    return Some((kind, pre_kill_level, was_notorious, loot));
+                    // 收集狼群警報資料（借用釋放後才能掃描其他 chunk）（ROADMAP 43）
+                    pack_kind = Some(kind);
+                    if placed.enemy.is_alive() {
+                        let hp_ratio = placed.enemy.remaining_hp() as f32
+                            / placed.enemy.max_hp().max(1) as f32;
+                        trigger_flee_cry = hp_ratio < LOW_HP_THRESHOLD;
+                    }
+                    result = Some((kind, pre_kill_level, was_notorious, loot));
                 }
             }
-            None
-        } else {
-            None
         }
+
+        // 狼群警報（ROADMAP 43）：攻擊事件廣播給附近同種怪，讓牠們包夾攻擊者。
+        // 若被打怪殘血，同時設定附近同種的呼救加速計時器。
+        if let Some(kind) = pack_kind {
+            let pack_sq = PACK_AGGRO_RADIUS * PACK_AGGRO_RADIUS;
+            for enemies in self.chunks.values_mut() {
+                for e in enemies.iter_mut() {
+                    if e.enemy.is_alive() && e.enemy.kind() == kind {
+                        let dx = e.x - px;
+                        let dy = e.y - py;
+                        if dx * dx + dy * dy <= pack_sq {
+                            e.pack_target = Some((px, py));
+                            e.pack_target_timer = PACK_TARGET_DURATION;
+                            if trigger_flee_cry {
+                                e.flee_boost_timer = FLEE_BOOST_DURATION;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// 最近擊倒玩家的敵人升一級（ROADMAP 42）。
@@ -312,9 +439,10 @@ impl EnemyField {
         if !px.is_finite() || !py.is_finite() {
             return 0;
         }
-        
+
         let (cx, cy) = chunk_key(px, py);
         let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        let aura_sq = NOTORIOUS_AURA_RADIUS * NOTORIOUS_AURA_RADIUS;
         let mut total = 0;
 
         for dy in -1..=1 {
@@ -327,7 +455,33 @@ impl EnemyField {
                         let dist_x = placed.x - px;
                         let dist_y = placed.y - py;
                         if dist_x * dist_x + dist_y * dist_y <= reach_sq {
-                            total += crate::combat::scaled_threat(placed.enemy.kind().threat(), placed.level);
+                            let base = crate::combat::scaled_threat(placed.enemy.kind().threat(), placed.level);
+                            // 兇名精英光環（ROADMAP 43）：非精英的小怪若附近有同種精英，
+                            // 受光環加持造成 +15% 傷害。精英本身不疊加自己的光環。
+                            let is_notorious = placed.level >= placed.base_level.saturating_add(3);
+                            let threat = if !is_notorious {
+                                let has_aura = self.chunks.values()
+                                    .flat_map(|v| v.iter())
+                                    .any(|e| {
+                                        e.enemy.is_alive()
+                                            && e.enemy.kind() == placed.enemy.kind()
+                                            && e.level >= e.base_level.saturating_add(3)
+                                            && {
+                                                let ex = e.x - placed.x;
+                                                let ey = e.y - placed.y;
+                                                ex * ex + ey * ey <= aura_sq
+                                            }
+                                    });
+                                if has_aura {
+                                    ((base as f32 * (1.0 + NOTORIOUS_DAMAGE_BONUS)).round() as u32)
+                                        .max(base)
+                                } else {
+                                    base
+                                }
+                            } else {
+                                base
+                            };
+                            total += threat;
                         }
                     }
                 }
@@ -351,6 +505,9 @@ impl EnemyField {
             base_level,
             level: base_level,
             enemy: Enemy::new_leveled(kind, base_level),
+            pack_target: None,
+            pack_target_timer: 0.0,
+            flee_boost_timer: 0.0,
         });
     }
 
@@ -363,7 +520,8 @@ impl EnemyField {
             let base_level = crate::combat::monster_level_at(x, y);
             let key = chunk_key(x, y);
             field.chunks.entry(key).or_default().push(PlacedEnemy {
-                x, y, base_level, level: base_level, enemy, id
+                x, y, base_level, level: base_level, enemy, id,
+                pack_target: None, pack_target_timer: 0.0, flee_boost_timer: 0.0,
             });
         }
         Some(field)
@@ -440,6 +598,9 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             base_level,
             level: base_level,
             enemy: Enemy::new_leveled(kind, base_level),
+            pack_target: None,
+            pack_target_timer: 0.0,
+            flee_boost_timer: 0.0,
         });
     }
     enemies
@@ -758,5 +919,137 @@ mod tests {
         let (_, _, was_notorious, loot) = result.unwrap();
         assert!(loot.is_some());
         assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
+    }
+
+    // ───── ROADMAP 43 狼群戰術測試 ─────
+
+    #[test]
+    fn pack_aggro_triggered_on_attack() {
+        // 攻擊一隻怪後，附近同種怪應收到 pack_target（ROADMAP 43）。
+        let mut f = EnemyField::new();
+        // 生成兩個相鄰區塊的怪，確保有同種同星球（世界中心：草原 FlutterSprite）
+        f.ensure_chunks_around(6100.0, 6100.0, PACK_AGGRO_RADIUS + 200.0);
+        // 找第一隻活著的怪當攻擊目標
+        let target_pos = {
+            f.chunks.values().flat_map(|v| v.iter())
+                .find(|e| e.enemy.is_alive())
+                .map(|e| (e.x, e.y))
+                .expect("應有敵人")
+        };
+        let target_kind = {
+            f.chunks.values().flat_map(|v| v.iter())
+                .find(|e| e.enemy.is_alive() && e.x == target_pos.0 && e.y == target_pos.1)
+                .map(|e| e.enemy.kind())
+                .unwrap()
+        };
+        // 只打 1 點傷害，不擊殺，確保仍能廣播狼群警報
+        let _result = f.attack_nearest(target_pos.0, target_pos.1, 1);
+        // 附近同種怪應有 pack_target
+        let any_pack = f.chunks.values().flat_map(|v| v.iter()).any(|e| {
+            e.enemy.is_alive() && e.enemy.kind() == target_kind && e.pack_target.is_some()
+        });
+        assert!(any_pack, "攻擊後附近同種怪應收到 pack_target");
+    }
+
+    #[test]
+    fn enemy_flees_when_low_hp() {
+        // 殘血怪（HP < 25%）在玩家追擊範圍內應逃離，而非追向玩家（ROADMAP 43）。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0);
+        let key = *f.chunks.keys().next().unwrap();
+        // 取得敵人位置
+        let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
+        // 把 HP 降到 10%（殘血）——直接 attack 打到快死
+        let max_hp = f.chunks[&key][0].enemy.max_hp();
+        let damage = max_hp - max_hp / 10; // 留 10% HP
+        f.attack_nearest(ex, ey, damage);
+        assert!(f.chunks[&key][0].enemy.is_alive(), "怪應仍存活");
+
+        // 玩家在怪的右側（ex + 150，在 AGGRO_RADIUS 260 內）
+        let player_x = ex + 150.0;
+        let player_y = ey;
+        let before_x = f.chunks[&key][0].x;
+        f.advance(1.0, &[(player_x, player_y)], false, |_, _| false);
+        let after_x = f.chunks[&key].iter()
+            .find(|e| e.enemy.is_alive())
+            .map(|e| e.x)
+            .unwrap_or(before_x);
+        // 逃跑方向應遠離玩家（往左，after_x < before_x）
+        assert!(
+            after_x < before_x,
+            "殘血怪應遠離玩家（逃跑），before_x={before_x:.1} after_x={after_x:.1}"
+        );
+    }
+
+    #[test]
+    fn flee_boost_timer_set_by_flee_signal() {
+        // 殘血同種怪的呼救信號應讓附近怪獲得加速計時器（ROADMAP 43）。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6100.0, 6100.0, PACK_AGGRO_RADIUS + 200.0);
+        // 找第一隻怪當「殘血怪」，另找第二隻同種怪驗證是否被加速
+        let all_alive: Vec<_> = f.chunks.values().flat_map(|v| v.iter())
+            .filter(|e| e.enemy.is_alive())
+            .map(|e| (e.enemy.kind(), e.x, e.y))
+            .collect();
+        // 只在有多隻同種怪的情況下才有意義
+        if all_alive.len() < 2 { return; }
+        let first_kind = all_alive[0].0;
+        let (fx, fy) = (all_alive[0].1, all_alive[0].2);
+
+        // 把第一隻怪打到殘血（10% HP）
+        let max_hp = f.chunks.values().flat_map(|v| v.iter())
+            .find(|e| e.x == fx && e.y == fy)
+            .map(|e| e.enemy.max_hp()).unwrap_or(10);
+        let damage = max_hp - max_hp / 10;
+        if damage > 0 { f.attack_nearest(fx, fy, damage); }
+
+        // 在殘血怪旁邊放一個玩家，讓 advance 的前置掃描觸發呼救信號
+        f.advance(0.05, &[(fx + 50.0, fy)], false, |_, _| false);
+
+        // 附近同種怪應有 flee_boost_timer > 0
+        let boosted = f.chunks.values().flat_map(|v| v.iter()).any(|e| {
+            e.enemy.is_alive() && e.enemy.kind() == first_kind && e.flee_boost_timer > 0.0
+        });
+        assert!(boosted, "殘血怪呼救後，附近同種怪應有 flee_boost_timer > 0");
+    }
+
+    #[test]
+    fn notorious_aura_increases_threat() {
+        // 附近有兇名精英時，同種小怪造成的傷害應多 15%（ROADMAP 43）。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 200.0);
+        let key = *f.chunks.keys().next().unwrap();
+        // 確保至少有一隻存活怪
+        let e = &f.chunks[&key][0];
+        assert!(e.enemy.is_alive());
+        let (ex, ey) = (e.x, e.y);
+
+        // 量基準威脅（無精英）
+        let base_threat = f.threat_at(ex, ey);
+
+        // 在同位置注入一隻同種兇名精英（level = base + 3）
+        let kind = f.chunks[&key][0].enemy.kind();
+        let base_level = f.chunks[&key][0].base_level;
+        let chunk = f.chunks.get_mut(&key).unwrap();
+        let idx = chunk.len() + 5000;
+        chunk.push(PlacedEnemy {
+            id: (key.0, key.1, idx),
+            x: ex + 10.0, // 距小怪 10px，在光環範圍內
+            y: ey,
+            base_level,
+            level: base_level + 3,
+            enemy: crate::combat::Enemy::new_leveled(kind, base_level + 3),
+            pack_target: None,
+            pack_target_timer: 0.0,
+            flee_boost_timer: 0.0,
+        });
+
+        // 精英本身也在 ATTACK_REACH 內（10px），會加入 threat；
+        // 關注的是小怪受光環加成後總威脅應高於純基準。
+        let aura_threat = f.threat_at(ex, ey);
+        assert!(
+            aura_threat > base_threat,
+            "兇名精英光環應使附近同種怪威脅提升，base={base_threat} aura={aura_threat}"
+        );
     }
 }
