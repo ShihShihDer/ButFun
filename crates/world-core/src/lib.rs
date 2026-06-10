@@ -903,8 +903,8 @@ mod d2_tests {
             }
         }
         let ratio = solid_count as f64 / total as f64;
-        // D-2 反轉後，實心比例應接近 1.0 - 0.38 = 0.62
-        assert!(ratio > 0.5 && ratio < 0.75, "實心比例應在 50%~75% 之間，實際={:.1}%", ratio * 100.0);
+        // D-2 反轉後原本預期 62%，但為了移動流暢度已調降（Rocky 50%、其餘 18%）。
+        assert!(ratio > 0.05 && ratio < 0.60, "實心比例偏離預期，實際={:.1}%", ratio * 100.0);
     }
 
     #[test]
