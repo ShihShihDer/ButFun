@@ -557,6 +557,16 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 守護鐵律：玩家文字永遠進不來（引擎寫入），per-player 隔離，記憶體模式無 migration；降級安全（日誌空時不注入，不汙染 prompt）。
     - `src/player_log.rs` 純邏輯模組（6 個單元測試）；state.rs 新增 `player_logs` 欄位；ws.rs 5 個活動完成點埋針；`npc_chat.rs` + `village_chief.rs` system_prompt 接收 `player_activity` 參數。
 
+68. ✅ **NPC 主動世界評論——重大事件發生時 NPC 自動在聊天頻道表達看法（AI NPC 成長第 10 步）**（本輪）
+    - 當裂縫開啟、獸潮集結/打退、全服任務完成、兇名精英討伐、村落節慶 5 類重大事件發生時，
+      相關 NPC 自動在聊天頻道發表看法——不再只是被動回應玩家，而是主動關注世界動態。
+    - 事件親和性分配（哪個 NPC 最可能反應）：裂縫→獵手/商人；獸潮→長老/獵手/商人；
+      任務完成→長老/老農；精英討伐→獵手/長老；節慶→長老/老農/探勘員。
+    - 防洗頻：每個 NPC 每 10 分鐘最多主動說一次（`NpcProactiveCooldowns`）；同事件只選第一個不在冷卻的 NPC 發言。
+    - LLM 生成（BUTFUN_NPC_LLM=1）：短 prompt 讓 NPC 以自身口吻評論，不超過 25 字；降級回罐頭評論，prod 安全。
+    - 非同步：tokio::spawn 包裝，永不阻塞 15Hz 迴圈；記憶體模式，重啟清空；零 migration；不破壞玩家資料。
+    - `src/npc_proactive.rs` 純邏輯模組（7 個單元測試）；game.rs 3 個觸發點；ws.rs 3 個觸發點；`npc_chat.rs` 新增 `raw_llm_call` 公開介面；state.rs 新增 `npc_proactive` 欄位。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。

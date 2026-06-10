@@ -374,6 +374,24 @@ pub fn spawn(app: AppState) {
                         "宇宙裂縫在座標 ({:.0}, {:.0}) 附近開啟，裂縫守護者現身",
                         rx, ry
                     ));
+                    // NPC 主動評論（ROADMAP 68）：裂縫開啟觸發相關 NPC 在聊天頻道表態。
+                    {
+                        let event_kind = crate::npc_proactive::WorldEventKind::RiftOpened {
+                            desc: format!("({:.0}, {:.0}) 附近", rx, ry),
+                        };
+                        let app2 = app.clone();
+                        tokio::spawn(async move {
+                            let now = std::time::Instant::now();
+                            let maybe_npc = {
+                                let mut cd = app2.npc_proactive.write().unwrap();
+                                crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                            };
+                            if let Some(npc_id) = maybe_npc {
+                                let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                let _ = app2.tx_chat.send(reaction);
+                            }
+                        });
+                    }
                     tracing::info!(x = rx, y = ry, "宇宙裂縫觸發，裂縫守護者注入");
                 }
             }
@@ -407,6 +425,24 @@ pub fn spawn(app: AppState) {
                                 "獸潮集結在{}城門外，怪物大軍蓄勢衝擊——拓荒者們嚴陣以待",
                                 site_label
                             ));
+                            // NPC 主動評論（ROADMAP 68）：獸潮警報觸發 NPC 聊天頻道表態。
+                            {
+                                let event_kind = crate::npc_proactive::WorldEventKind::HordeArriving {
+                                    site: site_label.to_string(),
+                                };
+                                let app2 = app.clone();
+                                tokio::spawn(async move {
+                                    let now = std::time::Instant::now();
+                                    let maybe_npc = {
+                                        let mut cd = app2.npc_proactive.write().unwrap();
+                                        crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                    };
+                                    if let Some(npc_id) = maybe_npc {
+                                        let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                        let _ = app2.tx_chat.send(reaction);
+                                    }
+                                });
+                            }
                             let _ = (site_x, site_y); // 座標已廣播至聊天，此處無需記憶
                         }
                         crate::director::DirectorCmd::SiegeStart { site_label } => {
@@ -428,6 +464,24 @@ pub fn spawn(app: AppState) {
                                 "拓荒者們在{}成功打退獸潮（斬殺 {} 隻），英勇守護了村落",
                                 site_label, kills
                             ));
+                            // NPC 主動評論（ROADMAP 68）：獸潮打退，NPC 慶祝。
+                            {
+                                let event_kind = crate::npc_proactive::WorldEventKind::HordeRepelled {
+                                    site: site_label.to_string(),
+                                };
+                                let app2 = app.clone();
+                                tokio::spawn(async move {
+                                    let now = std::time::Instant::now();
+                                    let maybe_npc = {
+                                        let mut cd = app2.npc_proactive.write().unwrap();
+                                        crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                    };
+                                    if let Some(npc_id) = maybe_npc {
+                                        let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                        let _ = app2.tx_chat.send(reaction);
+                                    }
+                                });
+                            }
                             // 全服所有線上玩家各得勝利獎勵乙太（與社群任務獎勵機制相同）。
                             for p in app.players.write().unwrap().values_mut() {
                                 p.ether = p.ether.saturating_add(crate::director::HORDE_VICTORY_ETHER);
