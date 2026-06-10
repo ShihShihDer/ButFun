@@ -374,6 +374,8 @@ pub fn spawn(app: AppState) {
                         "宇宙裂縫在座標 ({:.0}, {:.0}) 附近開啟，裂縫守護者現身",
                         rx, ry
                     ));
+                    // NPC 需求驅力（ROADMAP 69）：裂縫開啟 → 安全感下降。
+                    app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::RiftOpened);
                     // NPC 主動評論（ROADMAP 68）：裂縫開啟觸發相關 NPC 在聊天頻道表態。
                     {
                         let event_kind = crate::npc_proactive::WorldEventKind::RiftOpened {
@@ -425,6 +427,8 @@ pub fn spawn(app: AppState) {
                                 "獸潮集結在{}城門外，怪物大軍蓄勢衝擊——拓荒者們嚴陣以待",
                                 site_label
                             ));
+                            // NPC 需求驅力（ROADMAP 69）：獸潮集結 → 全員安全感大跌。
+                            app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::HordeArriving);
                             // NPC 主動評論（ROADMAP 68）：獸潮警報觸發 NPC 聊天頻道表態。
                             {
                                 let event_kind = crate::npc_proactive::WorldEventKind::HordeArriving {
@@ -464,6 +468,8 @@ pub fn spawn(app: AppState) {
                                 "拓荒者們在{}成功打退獸潮（斬殺 {} 隻），英勇守護了村落",
                                 site_label, kills
                             ));
+                            // NPC 需求驅力（ROADMAP 69）：獸潮打退 → 安全感回升，社群歸屬感大升。
+                            app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::HordeRepelled);
                             // NPC 主動評論（ROADMAP 68）：獸潮打退，NPC 慶祝。
                             {
                                 let event_kind = crate::npc_proactive::WorldEventKind::HordeRepelled {
@@ -512,6 +518,15 @@ pub fn spawn(app: AppState) {
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器。
             app.farm_crops.write().unwrap().tick(dt);
+
+            // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
+            // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
+            {
+                let decay_ticks = crate::npc_needs::DECAY_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % decay_ticks == 0 && tick > 0 {
+                    app.npc_needs.write().unwrap().tick_decay_all();
+                }
+            }
 
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
