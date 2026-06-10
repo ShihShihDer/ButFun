@@ -164,6 +164,22 @@ pub enum ItemKind {
     /// 宇宙護盾（合成產物：裂縫碎片×3 → 宇宙護盾×1）。
     /// 持有此護盾每次受傷減 6 點傷害——全遊戲最強防禦裝備，宇宙裂縫能量鍛造。
     CosmicShield,
+
+    // ── 釣魚素材（ROADMAP 47）────────────────────────────────────────────────
+    /// 小魚🐟（釣魚掉落，最常見 70%）。可賣 NPC 2 乙太，或 ×2 合成烤魚。
+    FishSmall,
+    /// 星星魚⭐（釣魚掉落，稀有 25%）。可賣 NPC 5 乙太，或 ×1 合成星燦刺身。
+    FishStar,
+    /// 深海魚🦈（釣魚掉落，罕見 5%）。可賣 NPC 10 乙太，或 ×1 合成深海濃湯。
+    FishDeep,
+
+    // ── 料理（ROADMAP 47 烹飪）───────────────────────────────────────────────
+    /// 烤魚（合成：小魚×2 → 烤魚×1）。使用後回復 8 HP。
+    GrilledFish,
+    /// 星燦刺身（合成：星星魚×1 → 星燦刺身×1）。使用後回復 15 HP。
+    StarSashimi,
+    /// 深海濃湯（合成：深海魚×1 → 深海濃湯×1）。使用後回復至等級滿血（最稀有魚換最強效果）。
+    DeepBroth,
 }
 
 impl ItemKind {
@@ -214,6 +230,12 @@ impl ItemKind {
         ItemKind::OriginBlade,
         ItemKind::RiftShard,
         ItemKind::CosmicShield,
+        ItemKind::FishSmall,
+        ItemKind::FishStar,
+        ItemKind::FishDeep,
+        ItemKind::GrilledFish,
+        ItemKind::StarSashimi,
+        ItemKind::DeepBroth,
     ];
 }
 
@@ -447,13 +469,19 @@ mod tests {
                 | ItemKind::OriginEssence
                 | ItemKind::OriginBlade
                 | ItemKind::RiftShard
-                | ItemKind::CosmicShield => {}
+                | ItemKind::CosmicShield
+                | ItemKind::FishSmall
+                | ItemKind::FishStar
+                | ItemKind::FishDeep
+                | ItemKind::GrilledFish
+                | ItemKind::StarSashimi
+                | ItemKind::DeepBroth => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 41 種（含 ROADMAP 26 宇宙裂縫：裂縫碎片/宇宙護盾）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 41, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 47 種（含 ROADMAP 47 釣魚：FishSmall/FishStar/FishDeep/GrilledFish/StarSashimi/DeepBroth）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 47, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -606,8 +634,13 @@ mod tests {
                 || item == ItemKind::JadeShard || item == ItemKind::LavaCrystal
                 || item == ItemKind::VoidShard || item == ItemKind::AetherShard
                 || item == ItemKind::OriginShard;
+            // 釣魚可得（ROADMAP 47）：站水邊垂釣上鉤。
+            let fish_catchable = matches!(
+                item,
+                ItemKind::FishSmall | ItemKind::FishStar | ItemKind::FishDeep
+            );
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable,
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
@@ -691,6 +724,10 @@ mod tests {
                     | ItemKind::VoidElixir
                     | ItemKind::AetherEssence
                     | ItemKind::OriginEssence
+                    // 料理（ROADMAP 47 釣魚與烹飪）：食用即消耗，直接回血。
+                    | ItemKind::GrilledFish
+                    | ItemKind::StarSashimi
+                    | ItemKind::DeepBroth
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

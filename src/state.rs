@@ -156,6 +156,12 @@ pub struct Player {
     // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
     /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
     pub pet: Option<crate::pet::PetKind>,
+
+    // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────
+    /// 釣魚冷卻剩餘秒數（0.0 = 可釣；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
+    pub fish_cooldown: f32,
+    /// 釣魚嘗試計數（確保每次釣魚偽隨機結果不同；記憶體前置，重啟清空）。
+    pub fish_attempt_count: u64,
 }
 
 impl Player {
@@ -214,6 +220,8 @@ impl Player {
                 flags
             },
             pet_kind: self.pet.map(|p| p.as_str().to_string()),
+            fish_cooldown: self.fish_cooldown,
+            near_water: crate::fishing::is_near_water(self.x, self.y),
         }
     }
 
@@ -575,6 +583,8 @@ mod tests {
             pending_precision: false,
             pending_haggle: false,
             pet: None,
+            fish_cooldown: 0.0,
+            fish_attempt_count: 0,
         }
     }
 

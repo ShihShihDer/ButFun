@@ -49,6 +49,10 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::WildflowerSeed,   price_per: 2 },
     // 裂縫碎片（宇宙裂縫事件限定）：12 乙太/個，全故鄉商人最高溢價。
     ShopEntry { item: ItemKind::RiftShard,        price_per: 12 },
+    // 釣魚三素材（ROADMAP 47）：按稀有度遞增溢價。
+    ShopEntry { item: ItemKind::FishSmall,        price_per: 2  },
+    ShopEntry { item: ItemKind::FishStar,         price_per: 5  },
+    ShopEntry { item: ItemKind::FishDeep,         price_per: 10 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -442,6 +446,8 @@ mod tests {
             ItemKind::Wood, ItemKind::Stone, ItemKind::Ether,
             ItemKind::Dirt, ItemKind::CrystalShard, ItemKind::MushroomSpore,
             ItemKind::AncientFragment, ItemKind::DeepSeaPearl, ItemKind::WildflowerSeed,
+            // ROADMAP 47 釣魚素材
+            ItemKind::FishSmall, ItemKind::FishStar, ItemKind::FishDeep,
         ];
         for item in important_items {
             assert!(
