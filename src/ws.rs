@@ -1402,23 +1402,27 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 排行榜系統 end ───────────────────────────────────────────────
 
-                Ok(ClientMsg::BuyLandPlot { plot_id }) => {
-                    // ROADMAP 34：購買城外地塊。需：已登入、乙太足夠、地塊可購、自己尚無地塊。
+                Ok(ClientMsg::BuyLandPlot { plot_id, purpose }) => {
+                    // ROADMAP 35：購買城外地塊（含用途）。需：已登入、乙太足夠、地塊可購、自己尚無地塊。
                     let Some(uid) = authed_uid else { continue; };
+                    // 解析用途（未帶預設 FreeBuild）
+                    let plot_purpose = purpose.as_deref()
+                        .map(crate::land_plot::PlotPurpose::from_str)
+                        .unwrap_or(crate::land_plot::PlotPurpose::FreeBuild);
                     // 一次讀鎖取乙太
                     let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether);
                     let Some(ether) = ether else { continue; };
                     if ether < crate::land_plot::LAND_PLOT_COST { continue; }
                     // 嘗試登記產權（LandPlotRegistry 內部驗地塊合法、未售、玩家限一塊）。
-                    let ok = app.land_plots.write().unwrap().buy(plot_id, uid);
+                    let ok = app.land_plots.write().unwrap().buy(plot_id, uid, plot_purpose);
                     if !ok { continue; }
                     // 扣乙太
                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                         p.ether = p.ether.saturating_sub(crate::land_plot::LAND_PLOT_COST);
                     }
                     // 持久化（fire-and-forget）
-                    app.land_plot_store.save_purchase(plot_id, uid);
-                    tracing::info!(%uid, plot_id, "玩家購買城外地塊");
+                    app.land_plot_store.save_purchase(plot_id, uid, plot_purpose);
+                    tracing::info!(%uid, plot_id, ?plot_purpose, "玩家購買城外地塊");
                 }
                 // ── 城外地塊購買 end ─────────────────────────────────────────────
 

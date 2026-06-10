@@ -170,10 +170,11 @@ pub enum ClientMsg {
     /// 請求排行榜（ROADMAP 33）：前端開啟排行榜面板時送出，
     /// 伺服器回 `Leaderboard`（等級/乙太/殺怪三榜前 20 名）。
     RequestLeaderboard,
-    /// 購買城外地塊（ROADMAP 34）：玩家在「購地」面板點選並確認。
+    /// 購買城外地塊（ROADMAP 35）：玩家在「購地」面板選用途並確認。
+    /// `purpose`：`"farm"` = 農田地塊、`"free_build"` = 自由建地（未知字串預設 free_build）。
     /// 伺服器驗：已登入、乙太足夠（LAND_PLOT_COST=60）、地塊未被他人購走、自己尚無地塊。
     /// 結果隨快照廣播（land_plots 欄位更新）；失敗靜默忽略（前端依乙太/狀態已灰掉按鈕）。
-    BuyLandPlot { plot_id: u32 },
+    BuyLandPlot { plot_id: u32, purpose: Option<String> },
 }
 
 /// 伺服器送給客戶端的訊息。

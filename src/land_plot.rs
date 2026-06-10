@@ -1,7 +1,10 @@
-//! 城外產權地塊（ROADMAP 34）——純邏輯層。
+//! 城外產權地塊（ROADMAP 34/35）——純邏輯層。
 //!
 //! 主城（新手村）城牆外環帶預定義 20 塊 8×8 格地塊（每塊 256×256 像素），供登入玩家花乙太購買。
 //! 購買後地塊進入「產權保護」：只有地主可在其範圍內挖/放，外人的 Dig/Place 一律拒絕。
+//!
+//! ROADMAP 35 新增「地塊用途」：購買時選 Farm（農田）或 FreeBuild（自由建地），
+//! 用途記入 DB、前端以不同邊框顏色呈現，供未來功能分化做基礎。
 //!
 //! 設計取捨：
 //!   - **幾何靜態、所有權動態**：20 塊地的幾何在編譯期決定（`LAND_PLOTS`），只有「誰擁有哪塊」
@@ -16,6 +19,34 @@ use uuid::Uuid;
 
 /// 每塊地塊的購買價格（乙太）。比農地（20）貴，因為有產權保護、用途更廣。
 pub const LAND_PLOT_COST: u32 = 60;
+
+/// 地塊用途（ROADMAP 35）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlotPurpose {
+    /// 農田地塊：現有農地玩法（未來遷入）。
+    Farm,
+    /// 自由建地：玩家可任意挖/放方塊。
+    FreeBuild,
+}
+
+impl PlotPurpose {
+    /// 從字串解析（DB 儲存格式）。未知字串預設 FreeBuild。
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "farm" => Self::Farm,
+            _ => Self::FreeBuild,
+        }
+    }
+
+    /// 轉為 DB 儲存字串。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Farm => "farm",
+            Self::FreeBuild => "free_build",
+        }
+    }
+}
 
 /// 地形格邊長（像素）——與 world_core::TILE_PX 一致，不 import 以避免循環依賴。
 const TILE_PX: f32 = 32.0;
@@ -68,6 +99,8 @@ pub const LAND_PLOTS: &[PlotGeom] = &[
 pub struct LandPlotRegistry {
     /// plot_id → 地主 user_id。
     ownership: HashMap<u32, Uuid>,
+    /// plot_id → 地塊用途（ROADMAP 35）。
+    purpose: HashMap<u32, PlotPurpose>,
 }
 
 impl LandPlotRegistry {
@@ -76,8 +109,14 @@ impl LandPlotRegistry {
     }
 
     /// 從持久化資料重建（啟動載入路徑）。
-    pub fn from_saved(saved: impl IntoIterator<Item = (u32, Uuid)>) -> Self {
-        Self { ownership: saved.into_iter().collect() }
+    pub fn from_saved(saved: impl IntoIterator<Item = (u32, Uuid, PlotPurpose)>) -> Self {
+        let mut ownership = HashMap::new();
+        let mut purpose = HashMap::new();
+        for (pid, uid, pur) in saved {
+            ownership.insert(pid, uid);
+            purpose.insert(pid, pur);
+        }
+        Self { ownership, purpose }
     }
 
     /// 查詢地塊地主。若地塊不存在或未購買回 `None`。
@@ -85,18 +124,24 @@ impl LandPlotRegistry {
         self.ownership.get(&plot_id).copied()
     }
 
+    /// 查詢地塊用途。未購買地塊回 `None`。
+    pub fn purpose_of(&self, plot_id: u32) -> Option<PlotPurpose> {
+        self.purpose.get(&plot_id).copied()
+    }
+
     /// 查詢玩家擁有的地塊 id。每玩家限一塊；未購回 `None`。
     pub fn plot_of(&self, user_id: Uuid) -> Option<u32> {
         self.ownership.iter().find(|(_, &uid)| uid == user_id).map(|(&pid, _)| pid)
     }
 
-    /// 嘗試購買地塊。
+    /// 嘗試購買地塊（ROADMAP 35：需傳入用途）。
     /// 失敗條件（靜默回 `false`）：地塊不存在 / 已被他人買走 / 玩家已有地塊。
-    pub fn buy(&mut self, plot_id: u32, user_id: Uuid) -> bool {
+    pub fn buy(&mut self, plot_id: u32, user_id: Uuid, plot_purpose: PlotPurpose) -> bool {
         if !LAND_PLOTS.iter().any(|p| p.plot_id == plot_id) { return false; }
         if self.ownership.contains_key(&plot_id) { return false; }
         if self.plot_of(user_id).is_some() { return false; }
         self.ownership.insert(plot_id, user_id);
+        self.purpose.insert(plot_id, plot_purpose);
         true
     }
 
@@ -130,6 +175,7 @@ impl LandPlotRegistry {
         LAND_PLOTS.iter().map(|p| {
             let owner_id = self.ownership.get(&p.plot_id).copied();
             let owner_name = owner_id.and_then(|uid| get_name(uid));
+            let purpose = self.purpose.get(&p.plot_id).copied();
             LandPlotSnapshot {
                 plot_id: p.plot_id,
                 min_gx: p.min_gx,
@@ -138,13 +184,17 @@ impl LandPlotRegistry {
                 max_gy: p.max_gy,
                 owner_id,
                 owner_name,
+                purpose,
             }
         }).collect()
     }
 
-    /// 匯出持久化所需的全部地塊歸屬紀錄。
-    pub fn all_ownerships(&self) -> Vec<(u32, Uuid)> {
-        self.ownership.iter().map(|(&pid, &uid)| (pid, uid)).collect()
+    /// 匯出持久化所需的全部地塊歸屬與用途紀錄（ROADMAP 35）。
+    pub fn all_ownerships(&self) -> Vec<(u32, Uuid, PlotPurpose)> {
+        self.ownership.iter().map(|(&pid, &uid)| {
+            let pur = self.purpose.get(&pid).copied().unwrap_or(PlotPurpose::FreeBuild);
+            (pid, uid, pur)
+        }).collect()
     }
 }
 
@@ -158,6 +208,8 @@ pub struct LandPlotSnapshot {
     pub max_gy: i32,
     pub owner_id: Option<Uuid>,
     pub owner_name: Option<String>,
+    /// 地塊用途（ROADMAP 35）。未購地塊為 `None`。
+    pub purpose: Option<PlotPurpose>,
 }
 
 #[cfg(test)]
@@ -165,14 +217,17 @@ mod tests {
     use super::*;
 
     fn uid() -> Uuid { Uuid::new_v4() }
+    const FARM: PlotPurpose = PlotPurpose::Farm;
+    const FREE: PlotPurpose = PlotPurpose::FreeBuild;
 
     #[test]
     fn buy_success_and_protection() {
         let mut reg = LandPlotRegistry::new();
         let buyer = uid();
-        assert!(reg.buy(0, buyer), "首次購買應成功");
+        assert!(reg.buy(0, buyer, FREE), "首次購買應成功");
         assert_eq!(reg.owner_of(0), Some(buyer));
         assert_eq!(reg.plot_of(buyer), Some(0));
+        assert_eq!(reg.purpose_of(0), Some(FREE));
 
         // 地塊中心像素：min_gx=43, min_gy=26 → 中心 = (43+4)*32 = 1504, (26+4)*32 = 960
         let (cx, cy) = (47.0 * 32.0, 30.0 * 32.0);
@@ -182,26 +237,38 @@ mod tests {
     }
 
     #[test]
+    fn purpose_stored_correctly() {
+        let mut reg = LandPlotRegistry::new();
+        let a = uid();
+        let b = uid();
+        assert!(reg.buy(0, a, FARM));
+        assert!(reg.buy(1, b, FREE));
+        assert_eq!(reg.purpose_of(0), Some(FARM));
+        assert_eq!(reg.purpose_of(1), Some(FREE));
+        assert_eq!(reg.purpose_of(2), None, "未購地塊無用途");
+    }
+
+    #[test]
     fn cannot_buy_already_owned_plot() {
         let mut reg = LandPlotRegistry::new();
         let a = uid();
         let b = uid();
-        assert!(reg.buy(1, a));
-        assert!(!reg.buy(1, b), "已有地主的地塊不能再賣");
+        assert!(reg.buy(1, a, FREE));
+        assert!(!reg.buy(1, b, FREE), "已有地主的地塊不能再賣");
     }
 
     #[test]
     fn one_plot_per_player() {
         let mut reg = LandPlotRegistry::new();
         let player = uid();
-        assert!(reg.buy(2, player));
-        assert!(!reg.buy(3, player), "同一玩家限購一塊");
+        assert!(reg.buy(2, player, FREE));
+        assert!(!reg.buy(3, player, FARM), "同一玩家限購一塊");
     }
 
     #[test]
     fn invalid_plot_id_is_rejected() {
         let mut reg = LandPlotRegistry::new();
-        assert!(!reg.buy(999, uid()), "不存在的 id 應被拒");
+        assert!(!reg.buy(999, uid(), FREE), "不存在的 id 應被拒");
     }
 
     #[test]
@@ -216,20 +283,36 @@ mod tests {
     fn world_outside_plots_is_not_protected() {
         let mut reg = LandPlotRegistry::new();
         let owner = uid();
-        assert!(reg.buy(0, owner));
+        assert!(reg.buy(0, owner, FREE));
         // 世界完全不在任何地塊的位置（wx=0, wy=0）
         assert!(!reg.is_protected_from(0.0, 0.0, uid()));
     }
 
     #[test]
-    fn from_saved_restores_ownership() {
+    fn from_saved_restores_ownership_and_purpose() {
         let player = uid();
-        let reg = LandPlotRegistry::from_saved([(5, player)]);
+        let reg = LandPlotRegistry::from_saved([(5, player, FARM)]);
         assert_eq!(reg.owner_of(5), Some(player));
         assert_eq!(reg.plot_of(player), Some(5));
+        assert_eq!(reg.purpose_of(5), Some(FARM));
         // 重建後不能再買
         let mut reg = reg;
-        assert!(!reg.buy(5, uid()));
+        assert!(!reg.buy(5, uid(), FREE));
+    }
+
+    #[test]
+    fn all_ownerships_includes_purpose() {
+        let mut reg = LandPlotRegistry::new();
+        let p1 = uid();
+        let p2 = uid();
+        assert!(reg.buy(0, p1, FARM));
+        assert!(reg.buy(1, p2, FREE));
+        let list = reg.all_ownerships();
+        assert_eq!(list.len(), 2);
+        let farm_entry = list.iter().find(|(pid, _, _)| *pid == 0).unwrap();
+        assert_eq!(farm_entry.2, FARM);
+        let free_entry = list.iter().find(|(pid, _, _)| *pid == 1).unwrap();
+        assert_eq!(free_entry.2, FREE);
     }
 
     #[test]
