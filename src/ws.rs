@@ -1076,6 +1076,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     "⚔️ {} 討伐了兇名 {}！全服向英雄致敬！",
                                     pname, kind.display_name()
                                 ));
+                                // 世界事件記憶（ROADMAP 65）：兇名精英討伐是值得 NPC 提及的大事。
+                                app.world_log.write().unwrap().push(format!(
+                                    "勇者 {} 討伐了兇名精英 {}，全服英雄讚頌",
+                                    pname, kind.display_name()
+                                ));
                             }
                         }
                     }
@@ -2296,11 +2301,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 r.talks = r.talks.saturating_add(1);
                                 r.clone()
                             };
+                            // 世界近況（ROADMAP 65）：引擎事實，只有引擎能寫；空字串 = 無近況。
+                            let world_news = app.world_log.read().unwrap().to_prompt_section();
 
                             // ── 里長：特殊路徑（村落金庫 + 活動暗號，ROADMAP 64）────
                             if persona.id == "village_chief" {
                                 let treasury = *app.village_treasury.read().unwrap();
-                                let chief_prompt = crate::village_chief::system_prompt(&rel, treasury);
+                                let chief_prompt = crate::village_chief::system_prompt(&rel, treasury, &world_news);
                                 let tx = tx_direct.clone();
                                 let app2 = app.clone();
                                 let sem = app.npc_llm_sem.clone();
@@ -2352,6 +2359,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             if let Ok(json) = serde_json::to_string(&msg) {
                                                 let _ = app2.tx_chat.send(json);
                                             }
+                                            // 世界事件記憶（ROADMAP 65）：節慶是全服大事，NPC 應知道。
+                                            app2.world_log.write().unwrap().push(
+                                                "凱爾長老動用村落金庫舉辦村落節慶，全服 EXP +30%（持續 10 分鐘）"
+                                            );
                                             tracing::info!(player = %player_name, new_treasury = new_t, "里長自主辦村落節慶，金庫扣減");
                                             true
                                         } else {
@@ -2422,7 +2433,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         return;
                                     }
                                 };
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text).await;
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
@@ -2842,6 +2853,10 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
             crate::quest::QUEST_COMPLETE_REWARD,
         );
         let _ = app.tx_chat.send(msg);
+        // 世界事件記憶（ROADMAP 65）：全服任務完成是重大里程碑，NPC 值得提及。
+        app.world_log.write().unwrap().push(format!(
+            "全服社群任務「{}」完成，全體拓荒者共同達成壯舉", desc
+        ));
     }
     // 全員分潤乙太 + 成就：任務英雄（ROADMAP 31）。
     let mut newly_heroes: Vec<(String, bool)> = Vec::new();

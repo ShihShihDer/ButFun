@@ -61,9 +61,10 @@ pub fn extract_event_decision(raw: &str) -> (bool, String) {
     }
 }
 
-/// 組里長專屬 system prompt：世界觀 + 人設 + 玩家印象 + 金庫現況。
+/// 組里長專屬 system prompt：世界觀 + 人設 + 玩家印象 + 金庫現況 + 世界近況。
 /// 金庫充足時告訴里長有「村落節慶」選項（回話夾暗號）；不足時改鼓勵捐獻。
-pub fn system_prompt(rel: &NpcRel, treasury: u32) -> String {
+/// `world_news`：引擎世界事件段落（ROADMAP 65），空字串表示無近況。
+pub fn system_prompt(rel: &NpcRel, treasury: u32, world_news: &str) -> String {
     const WORLD_LORE: &str = "這是 ButFun，一個蒸汽龐克交織太空歌劇的療癒世界。「大靜默」之後，乙太能量緩緩回流，拓荒者們回到邊境星，在文明的廢墟上重建家園。新手村主城有黃銅城牆、怪物進不來；城外有危險也有資源。";
     const PERSONA: &str = "你是新手村的里長，大家都叫你凱爾長老。你德高望重、溫暖而威嚴，見過大靜默前後的興衰，把守護這個村落視為畢生使命。你平時說話緩慢而有力，喜歡引用老格言，對每一位拓荒者都像看待自己的後輩。村落金庫是全體居民共同積累的信任，你花每一枚乙太都非常謹慎。";
 
@@ -100,11 +101,12 @@ pub fn system_prompt(rel: &NpcRel, treasury: u32) -> String {
     };
 
     format!(
-        "{lore}\n\n{persona}\n\n{imp}\n{stats}\n{treasury}{hint}\n\n用繁體中文回話，2 到 3 句，口吻慈祥威嚴、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
+        "{lore}\n\n{persona}\n\n{imp}\n{stats}\n{treasury}{hint}{world_news}\n\n用繁體中文回話，2 到 3 句，口吻慈祥威嚴、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
         lore = WORLD_LORE,
         persona = PERSONA,
         treasury = treasury_info,
         hint = event_hint,
+        world_news = world_news,
     )
 }
 
@@ -172,16 +174,30 @@ mod tests {
 
     #[test]
     fn system_prompt_shows_treasury_and_event_hint_when_affordable() {
-        let s = system_prompt(&NpcRel::default(), 50);
+        let s = system_prompt(&NpcRel::default(), 50, "");
         assert!(s.contains("50"), "prompt 應包含金庫餘額 50");
         assert!(s.contains(EVENT_TOKEN), "金庫充足時 prompt 應包含活動暗號說明");
     }
 
     #[test]
     fn system_prompt_no_event_hint_when_treasury_insufficient() {
-        let s = system_prompt(&NpcRel::default(), EVENT_COST - 1);
+        let s = system_prompt(&NpcRel::default(), EVENT_COST - 1, "");
         assert!(!s.contains(EVENT_TOKEN), "金庫不足時 prompt 不應含活動暗號");
         assert!(s.contains("捐獻"), "金庫不足時應鼓勵捐獻");
+    }
+
+    #[test]
+    fn system_prompt_includes_world_news_when_provided() {
+        let news = "\n\n【近期世界大事（引擎紀錄・純事實，你可自然提及）】\n・村落節慶剛剛結束\n";
+        let s = system_prompt(&NpcRel::default(), 50, news);
+        assert!(s.contains("近期世界大事"), "世界近況應注入里長 prompt：{s}");
+        assert!(s.contains("節慶剛剛結束"), "事件文字應在 prompt 中：{s}");
+    }
+
+    #[test]
+    fn system_prompt_no_world_news_when_empty() {
+        let s = system_prompt(&NpcRel::default(), 50, "");
+        assert!(!s.contains("近期世界大事"), "無世界近況時 prompt 不應含此段落：{s}");
     }
 
     #[test]
