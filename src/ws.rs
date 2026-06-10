@@ -828,6 +828,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     r.sell_count = r.sell_count.saturating_add(1);
                                                     r.clone()
                                                 };
+                                                // 需求驅力（ROADMAP 69）：玩家賣東西給商人，商人繁榮感提升。
+                                                app.npc_needs.write().unwrap().apply_trade(true);
                                                 // 貿易補貨（ROADMAP 62）：玩家每賣 TRADE_STOCK_EARN_INTERVAL 次給故鄉商人，
                                                 // 商人就多獲得 1 份餘裕（「靠自己賺到的才能慷慨」），上限 MAX_GIFT_STOCK。
                                                 if updated_rel.sell_count % crate::npc_chat::TRADE_STOCK_EARN_INTERVAL == 0 {
@@ -878,6 +880,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 tracing::info!(player_id = %id, "熟客折扣已套用並清除");
                             }
                             // 關係綁真實交易（ROADMAP 61）：向故鄉商人購買時累積 buy_count。
+                            // 需求驅力（ROADMAP 69）：玩家向商人購買，商人繁榮感微升。
                             if did_buy {
                                 if let Some(uid) = authed_uid {
                                     let updated_rel = {
@@ -888,6 +891,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     };
                                     app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
                                 }
+                                app.npc_needs.write().unwrap().apply_trade(false);
                             }
                         }
                     }
@@ -1081,6 +1085,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     "勇者 {} 討伐了兇名精英 {}，全服英雄讚頌",
                                     pname, kind.display_name()
                                 ));
+                                // NPC 需求驅力（ROADMAP 69）：精英被討伐 → 安全感回升，獵手/里長歸屬感大升。
+                                app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::EliteSlain);
                                 // NPC 主動評論（ROADMAP 68）：精英討伐，NPC 表達讚嘆。
                                 {
                                     let event_kind = crate::npc_proactive::WorldEventKind::EliteSlain {
@@ -2362,6 +2368,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let logs = app.player_logs.read().unwrap();
                                 logs.get(&id).map(|l| l.to_prompt_section()).unwrap_or_default()
                             };
+                            // NPC 需求驅力（ROADMAP 69）：讀取此 NPC 目前的心情狀態，注入 prompt 影響語氣。
+                            let needs_context = app.npc_needs.read().unwrap().to_prompt_section(&npc);
 
                             // NPC 生命週期（ROADMAP 66）：老年語境 + 繼承人首次登場語境 + 動態顯示名。
                             let (elder_context, heir_context_opt, lifecycle_display) = {
@@ -2387,10 +2395,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // ── 里長：特殊路徑（村落金庫 + 活動暗號，ROADMAP 64）────
                             if persona.id == "village_chief" {
                                 let treasury = *app.village_treasury.read().unwrap();
-                                // 將生命週期老年語境注入到 chief_prompt 末尾。
+                                // 將生命週期老年語境與需求驅力注入到 chief_prompt 末尾。
                                 let chief_prompt = {
                                     let base = crate::village_chief::system_prompt(&rel, treasury, &world_news, &player_activity);
-                                    if full_elder_context.is_empty() { base } else { format!("{base}{full_elder_context}") }
+                                    let with_elder = if full_elder_context.is_empty() { base } else { format!("{base}{full_elder_context}") };
+                                    if needs_context.is_empty() { with_elder } else { format!("{with_elder}{needs_context}") }
                                 };
                                 let display_name_chief = display_name.clone();
                                 let tx = tx_direct.clone();
@@ -2448,6 +2457,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             app2.world_log.write().unwrap().push(
                                                 "凱爾長老動用村落金庫舉辦村落節慶，全服 EXP +30%（持續 10 分鐘）"
                                             );
+                                            // NPC 需求驅力（ROADMAP 69）：節慶 → 歸屬感大升，商人繁榮感也大升。
+                                            app2.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::VillageFestival);
                                             // NPC 主動評論（ROADMAP 68）：節慶開始，NPC 熱鬧回應。
                                             {
                                                 let app3 = app2.clone();
@@ -2535,7 +2546,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         return;
                                     }
                                 };
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context, &player_activity).await;
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context, &player_activity, &needs_context).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
@@ -2959,6 +2970,8 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
         app.world_log.write().unwrap().push(format!(
             "全服社群任務「{}」完成，全體拓荒者共同達成壯舉", desc
         ));
+        // NPC 需求驅力（ROADMAP 69）：任務完成 → 社群歸屬感升高，里長/老農特別高興。
+        app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::QuestCompleted);
         // NPC 主動評論（ROADMAP 68）：任務完成，NPC 在聊天頻道慶賀。
         {
             let event_kind = crate::npc_proactive::WorldEventKind::QuestComplete {

@@ -705,6 +705,10 @@ pub struct AppState {
     /// NPC 主動評論冷卻追蹤器（ROADMAP 68）：世界事件發生時 NPC 主動在聊天頻道表達看法；
     /// 每個 NPC 每 10 分鐘最多主動說一次。記憶體模式，重啟清空。
     pub npc_proactive: Arc<RwLock<crate::npc_proactive::NpcProactiveCooldowns>>,
+    /// NPC 需求驅力狀態（ROADMAP 69）：每個 NPC 有安全感/歸屬感/繁榮感三個需求值（0~100）；
+    /// 世界事件影響數值，對話時注入 system prompt 讓 NPC 語氣自然反映情緒狀態。
+    /// 記憶體模式，重啟清零（世界換季，NPC 重新出發）。
+    pub npc_needs: Arc<RwLock<crate::npc_needs::NpcNeedsState>>,
 }
 
 impl AppState {
@@ -808,6 +812,7 @@ impl AppState {
             npc_lifecycle: Arc::new(RwLock::new(crate::npc_lifecycle::NpcLifecycle::new())),
             player_logs: Arc::new(RwLock::new(HashMap::new())),
             npc_proactive: Arc::new(RwLock::new(crate::npc_proactive::NpcProactiveCooldowns::new())),
+            npc_needs: Arc::new(RwLock::new(crate::npc_needs::NpcNeedsState::new())),
         }
     }
 
