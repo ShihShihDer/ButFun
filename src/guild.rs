@@ -224,7 +224,10 @@ impl GuildStore {
         }
         let guild_id = self.guild_of(player_id)
             .ok_or_else(|| "你不在任何公會中".to_string())?;
-        let guild = self.guilds.get_mut(&guild_id).expect("索引一致性");
+        let guild = match self.guilds.get_mut(&guild_id) {
+            Some(g) => g,
+            None => return Err("公會資料異常，請重試".into()),
+        };
         guild.treasury = guild.treasury.saturating_add(amount);
         Ok(guild.treasury)
     }
