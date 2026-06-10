@@ -134,11 +134,14 @@ impl EnemyField {
                     let mvy = dy / dist * step;
                     // 城鎮保護圈是敵人的絕對禁區：不只不在裡面生成，追擊也不得踏入
                     // （含城門口緩衝——否則玩家一出城門就被圍毆，跟沒有城一樣）。
-                    // 已在禁區內的（例如保護圈擴大前的舊個體）放行，讓牠走得出去。
+                    // 已在禁區內的（例如事件注入點失誤的個體）放行走出去，**但城內
+                    // （牆圈以內）無條件禁入**——否則圈內出生的怪能一路漫遊穿過城門
+                    // 進城打人（線上真實事故：裂縫守護者在城裡現身）。
                     let self_in_protected =
                         world_core::town_protected_at(placed.x as f64, placed.y as f64);
                     let blocked = |x: f32, y: f32| {
                         tile_solid(x, y)
+                            || world_core::town_interior_at(x as f64, y as f64)
                             || (!self_in_protected
                                 && world_core::town_protected_at(x as f64, y as f64))
                     };
@@ -460,6 +463,38 @@ mod tests {
         let e = &f.chunks.get(&(0, 0)).unwrap()[0];
         assert!(e.x < 240.0, "敵人不該穿牆進實心格, x={}", e.x);
         assert_eq!(e.y, ey, "本例目標同 y,滑行時 y 不該漂");
+    }
+
+    #[test]
+    fn enemy_inside_ring_cannot_enter_town_interior() {
+        // 在保護圈內出生的怪（事件注入失誤等情況）放行走動讓牠能離開——但**城內
+        // 無條件禁入**：把怪放在主城東門正前方（圈內、與門同列），玩家在城中心當餌，
+        // 直線追擊路徑正對城門開口，也絕不准穿門進城。
+        let east_wall_gx = 73 + 34;
+        let ring_x = (east_wall_gx + 3) as f32 * 32.0 + 16.0; // 牆外 3 格＝保護圈內
+        let gate_y = 71.5 * 32.0; // 與東門同列
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6000.0, 6000.0, 10.0); // 圈外某 chunk 取得個體
+        let key = f.chunks.keys().copied().next().expect("應有 chunk");
+        {
+            let chunk = f.chunks.get_mut(&key).unwrap();
+            assert!(!chunk.is_empty(), "測試 chunk 應有敵人");
+            chunk[0].x = ring_x;
+            chunk[0].y = gate_y;
+        }
+        for _ in 0..150 {
+            f.advance(1.0 / 15.0, &[(2344.0, gate_y)], true, |_x, _y| false);
+        }
+        for enemies in f.chunks.values() {
+            for e in enemies {
+                assert!(
+                    !world_core::town_interior_at(e.x as f64, e.y as f64),
+                    "圈內怪穿過城門進了城內：({}, {})",
+                    e.x,
+                    e.y
+                );
+            }
+        }
     }
 
     #[test]
