@@ -288,7 +288,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -324,6 +324,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         quests: quests.clone(),
                                         // 城外地塊全部送出（20 塊量小；地塊都在主城附近）。
                                         land_plots: land_plots.clone(),
+                                        // 牧場狀態全部送出（稀疏，通常很少地塊有雞）。
+                                        ranch_plots: ranch_plots.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1150,6 +1152,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, gained, "飲用深海濃湯滿血復原");
                                 }
                             }
+                            // ── 牧場料理（ROADMAP 48）────────────────────────────────
+                            ItemKind::FriedEgg => {
+                                // 煎蛋：回復 10 HP（雞蛋×2 烹飪，農田地塊自產療癒食物）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(10);
+                                    tracing::info!(player = %p.name, gained, "食用煎蛋回血");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }
@@ -1548,6 +1558,49 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 農夫熟練度 XP（讓農夫路線不只是種田）。
                             p.masteries.gain_farmer(FISH_FARMER_XP);
                             tracing::info!(player = %p.name, fish = ?fish, "釣到魚");
+                        }
+                    }
+                }
+
+                // ── 牧場系統（ROADMAP 48）──────────────────────────────────────────
+                Ok(ClientMsg::BuyChicken { plot_id }) => {
+                    // 購雞：需登入、玩家是農田地塊地主、乙太 ≥ BUY_CHICKEN_COST、未達 MAX_CHICKENS。
+                    use crate::ranching::BUY_CHICKEN_COST;
+                    use crate::land_plot::PlotPurpose;
+                    if let Some(uid) = authed_uid {
+                        let plot_owner = app.land_plots.read().unwrap().owner_of(plot_id);
+                        let plot_purpose = app.land_plots.read().unwrap().purpose_of(plot_id);
+                        if plot_owner == Some(uid) && plot_purpose == Some(PlotPurpose::Farm) {
+                            let player_ether = app.players.read().unwrap().get(&uid).map(|p| p.ether).unwrap_or(0);
+                            if player_ether >= BUY_CHICKEN_COST {
+                                let ok = app.ranch.write().unwrap().buy_chicken(plot_id);
+                                if ok {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.ether = p.ether.saturating_sub(BUY_CHICKEN_COST);
+                                        tracing::info!(player = %p.name, plot_id, "購雞");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::CollectEggs { plot_id }) => {
+                    // 收雞蛋：需登入、是地主、未倒地、有蛋。
+                    if let Some(uid) = authed_uid {
+                        let is_owner = app.land_plots.read().unwrap().owner_of(plot_id) == Some(uid);
+                        if is_owner {
+                            let downed = app.players.read().unwrap().get(&uid).map(|p| p.vitals.is_downed()).unwrap_or(true);
+                            if !downed {
+                                let (eggs, xp) = app.ranch.write().unwrap().collect_eggs(plot_id);
+                                if eggs > 0 {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.inventory.add(crate::inventory::ItemKind::Egg, eggs);
+                                        p.masteries.gain_farmer(xp);
+                                        tracing::info!(player = %p.name, eggs, "收雞蛋");
+                                    }
+                                }
+                            }
                         }
                     }
                 }

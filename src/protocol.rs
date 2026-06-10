@@ -206,6 +206,14 @@ pub enum ClientMsg {
     /// 加一條魚進背包，並給 10 點農夫熟練度 XP。
     /// 不在水邊 / 冷卻中 / 倒地中靜默忽略。
     Fish,
+    /// 購入雞（ROADMAP 48）：在自己的農田地塊花乙太購入一隻雞。
+    /// `plot_id`：要購雞的農田地塊編號（必須是本人擁有的 Farm 類型地塊）。
+    /// 乙太不足（BUY_CHICKEN_COST=15）/ 非農田 / 非本人地塊 / 達 MAX_CHICKENS 靜默忽略。
+    BuyChicken { plot_id: u32 },
+    /// 收雞蛋（ROADMAP 48）：收取農田地塊堆積的雞蛋進背包，並給農夫熟練度 XP。
+    /// `plot_id`：目標農田地塊（必須是本人擁有的地塊且有雞蛋）。
+    /// 無蛋 / 非本人地塊 / 倒地中靜默忽略。
+    CollectEggs { plot_id: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -247,6 +255,9 @@ pub enum ServerMsg {
         /// 城外產權地塊（ROADMAP 34）：20 塊預定義地塊的幾何 + 地主資訊。
         /// 全部送（量小，20 × ~80 bytes）；前端繪製邊界樁與地主名牌。
         land_plots: Vec<crate::land_plot::LandPlotSnapshot>,
+        /// 農田地塊牧場狀態（ROADMAP 48）：只送有雞或有蛋的地塊（稀疏）。
+        /// 前端在農田地塊上繪製雞 emoji 🐔 與蛋計數。
+        ranch_plots: Vec<crate::ranching::RanchPlotView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -698,6 +709,7 @@ mod tests {
             horde_event: None,
             quests: vec![],
             land_plots: vec![],
+            ranch_plots: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

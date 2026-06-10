@@ -74,7 +74,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::OriginShard | ItemKind::OriginEssence | ItemKind::OriginBlade
         | ItemKind::RiftShard | ItemKind::CosmicShield
         | ItemKind::FishSmall | ItemKind::FishStar | ItemKind::FishDeep
-        | ItemKind::GrilledFish | ItemKind::StarSashimi | ItemKind::DeepBroth => None,
+        | ItemKind::GrilledFish | ItemKind::StarSashimi | ItemKind::DeepBroth
+        | ItemKind::Egg | ItemKind::FriedEgg => None,
     }
 }
 

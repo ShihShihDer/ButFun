@@ -50,6 +50,7 @@ mod world_event;
 mod ws;
 mod pet;
 mod fishing;
+mod ranching;
 
 use std::net::SocketAddr;
 

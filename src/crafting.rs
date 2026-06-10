@@ -335,6 +335,15 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::DeepBroth,
         output_qty: 1,
     },
+
+    // ── 牧場料理（ROADMAP 48 牧場系統）──────────────────────────────────────
+    /// 煎蛋：雞蛋×2 → 煎蛋×1。使用後回復 10 HP。農田地塊養雞的第一道料理。
+    Recipe {
+        id: "fried_egg",
+        inputs: &[(ItemKind::Egg, 2)],
+        output: ItemKind::FriedEgg,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -534,6 +543,9 @@ mod tests {
         items.insert(ItemKind::FishSmall);
         items.insert(ItemKind::FishStar);
         items.insert(ItemKind::FishDeep);
+
+        // 加入牧場可得（ROADMAP 48）：農田地塊養雞自動產蛋。
+        items.insert(ItemKind::Egg);
 
         // 加入敵人掉落（窮舉守衛：新增 EnemyKind 未納入即編譯失敗）。
         const ENEMY_KINDS: &[EnemyKind] = &[

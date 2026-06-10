@@ -219,7 +219,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::FishDeep
         | ItemKind::GrilledFish
         | ItemKind::StarSashimi
-        | ItemKind::DeepBroth => None,
+        | ItemKind::DeepBroth
+        | ItemKind::Egg
+        | ItemKind::FriedEgg => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -277,7 +279,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::FishDeep
         | ItemKind::GrilledFish
         | ItemKind::StarSashimi
-        | ItemKind::DeepBroth => None,
+        | ItemKind::DeepBroth
+        | ItemKind::Egg
+        | ItemKind::FriedEgg => None,
     }
 }
 

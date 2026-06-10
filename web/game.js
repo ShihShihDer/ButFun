@@ -282,6 +282,7 @@
 
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
+  let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -575,6 +576,7 @@
         quests = msg.quests || [];
         updateQuestPanel();
         landPlots = msg.land_plots || [];
+        ranchPlots = msg.ranch_plots || [];
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -626,6 +628,7 @@
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
+          updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1855,7 +1858,8 @@
         (e.key === "h" || e.key === "H") ? "dockHelp" :
         (e.key === "z" || e.key === "Z") ? "dockSkill" :
         (e.key === "p" || e.key === "P") ? "dockPet" :
-        (e.key === "f" || e.key === "F") ? "dockFish" : null;
+        (e.key === "f" || e.key === "F") ? "dockFish" :
+        (e.key === "n" || e.key === "N") ? "dockRanch" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -4294,6 +4298,35 @@
         ctx.fillText(`${plotPurposeEmoji(purpose)} ${nm}`, cx2, cy2);
       }
     }
+
+    // 農田地塊上的雞（ROADMAP 48）：在有雞的農田地塊中央畫 🐔 + 蛋計數。
+    if (ranchPlots.length) {
+      for (const rp of ranchPlots) {
+        if (!rp.chicken_count) continue;
+        // 找對應的地塊幾何
+        const lp = landPlots.find(l => l.plot_id === rp.plot_id);
+        if (!lp) continue;
+        const wx = lp.min_gx * TILE_PX;
+        const wy = lp.min_gy * TILE_PX;
+        const w  = (lp.max_gx - lp.min_gx + 1) * TILE_PX;
+        const h  = (lp.max_gy - lp.min_gy + 1) * TILE_PX;
+        const sx = wx - camX + w / 2;
+        const sy = wy - camY + h / 2;
+        if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
+        ctx.save();
+        ctx.font = "22px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        // 雞 emoji（微微抖動提示有生命）
+        ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 3)), sx, sy - 10);
+        if (rp.egg_count > 0) {
+          ctx.font = "bold 11px sans-serif";
+          ctx.fillStyle = "#fffde0";
+          ctx.fillText(`🥚×${rp.egg_count}`, sx, sy + 14);
+        }
+        ctx.restore();
+      }
+    }
     ctx.restore();
   }
 
@@ -5829,6 +5862,91 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;";
     tip.textContent = "垂釣每 5 秒可一次，每次給農夫熟練度 +10 XP。烹飪配方見合成台。";
+    body.appendChild(tip);
+  }
+
+  // ── 牧場面板（ROADMAP 48）──────────────────────────────────────────────────
+  let lastRanchSig = null;
+  function updateRanchPanel(me, isGuestUser) {
+    const body = document.getElementById("ranchBody");
+    if (!body) return;
+    const myPlot = myId ? landPlots.find(l => l.owner_id === myId && l.purpose === "farm") : null;
+    const ranch = myPlot ? ranchPlots.find(r => r.plot_id === myPlot.plot_id) : null;
+    const chickens = ranch ? ranch.chicken_count : 0;
+    const eggs = ranch ? ranch.egg_count : 0;
+    const ether = me ? me.ether : 0;
+    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, ether].join("|");
+    if (sig === lastRanchSig) return;
+    lastRanchSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能使用牧場";
+      body.appendChild(hint);
+      return;
+    }
+
+    if (!myPlot) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.5;";
+      hint.textContent = "你還沒有農田地塊。請先在「購地」面板購買農田類型地塊，才能養雞。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 狀態區
+    const status = document.createElement("div");
+    status.style.cssText = "margin-bottom:10px;font-size:.9rem;line-height:1.6;";
+    status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
+      + `<div>🐔 雞隻數：<b style="color:#ffe066;">${chickens} / 3</b></div>`
+      + `<div>🥚 待收蛋：<b style="color:#ffe066;">${eggs}</b>（最多堆積 10 顆）</div>`;
+    body.appendChild(status);
+
+    // 購雞按鈕
+    if (chickens < 3) {
+      const buyBtn = document.createElement("button");
+      buyBtn.type = "button";
+      buyBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #50b87a;border-radius:8px;background:transparent;color:#90e8b0;cursor:pointer;font-size:.9rem;margin-bottom:8px;";
+      const canBuy = ether >= 15;
+      buyBtn.textContent = `🐔 購入一隻雞（15 乙太）`;
+      if (!canBuy) {
+        buyBtn.disabled = true;
+        buyBtn.style.color = "#555";
+        buyBtn.style.borderColor = "#333";
+        buyBtn.style.cursor = "default";
+      } else {
+        buyBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "buy_chicken", plot_id: myPlot.plot_id }));
+        });
+      }
+      body.appendChild(buyBtn);
+    }
+
+    // 收蛋按鈕
+    {
+      const collectBtn = document.createElement("button");
+      collectBtn.type = "button";
+      collectBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #c09030;border-radius:8px;background:transparent;color:#ffe066;cursor:pointer;font-size:.9rem;margin-bottom:8px;";
+      if (eggs > 0) {
+        collectBtn.textContent = `🥚 收雞蛋（${eggs} 顆）`;
+        collectBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "collect_eggs", plot_id: myPlot.plot_id }));
+        });
+      } else {
+        collectBtn.textContent = "🥚 目前無蛋可收";
+        collectBtn.disabled = true;
+        collectBtn.style.color = "#555";
+        collectBtn.style.borderColor = "#333";
+        collectBtn.style.cursor = "default";
+      }
+      body.appendChild(collectBtn);
+    }
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
+    tip.textContent = "雞每 60 秒產 1~2 顆蛋（視雞數）。每次收蛋給農夫熟練度 +8 XP。雞蛋可賣 NPC（2 乙太/顆）或合成台做煎蛋（回血 10）。";
     body.appendChild(tip);
   }
 
