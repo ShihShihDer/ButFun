@@ -36,6 +36,8 @@ pub struct PlacedEnemy {
     pub x: f32,
     /// 世界座標 Y。
     pub y: f32,
+    /// 怪物基準等級（確定性，由位置計算，不持久化）。
+    pub level: u32,
     /// 敵人本身（生命 / 重生狀態）。
     pub enemy: Enemy,
 }
@@ -183,12 +185,13 @@ impl EnemyField {
         }
     }
 
+    /// 回傳 `(種類, 等級, 掉落)`；等級用於呼叫端縮放 exp。
     pub fn attack_nearest(
         &mut self,
         px: f32,
         py: f32,
         power: u32,
-    ) -> Option<(EnemyKind, Option<(ItemKind, u32)>)> {
+    ) -> Option<(EnemyKind, u32, Option<(ItemKind, u32)>)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
@@ -227,8 +230,9 @@ impl EnemyField {
             if let Some(enemies) = self.chunks.get_mut(&found_chunk) {
                 if let Some(placed) = enemies.iter_mut().find(|e| e.id == id) {
                     let kind = placed.enemy.kind();
+                    let level = placed.level;
                     let loot = placed.enemy.attack(power);
-                    return Some((kind, loot));
+                    return Some((kind, level, loot));
                 }
             }
             None
@@ -256,7 +260,7 @@ impl EnemyField {
                         let dist_x = placed.x - px;
                         let dist_y = placed.y - py;
                         if dist_x * dist_x + dist_y * dist_y <= reach_sq {
-                            total += placed.enemy.kind().threat();
+                            total += crate::combat::scaled_threat(placed.enemy.kind().threat(), placed.level);
                         }
                     }
                 }
@@ -272,11 +276,13 @@ impl EnemyField {
         let key = chunk_key(x, y);
         let chunk = self.chunks.entry(key).or_default();
         let idx = chunk.len() + RIFT_ID_OFFSET;
+        let level = crate::combat::monster_level_at(x, y);
         chunk.push(PlacedEnemy {
             id: (key.0, key.1, idx),
             x,
             y,
-            enemy: Enemy::new(kind),
+            level,
+            enemy: Enemy::new_leveled(kind, level),
         });
     }
 
@@ -286,8 +292,9 @@ impl EnemyField {
             if !enemy.is_loadable() { continue; }
             let id = (0, 0, i);
             let (x, y) = spawn_position(id);
+            let level = crate::combat::monster_level_at(x, y);
             let key = chunk_key(x, y);
-            field.chunks.entry(key).or_default().push(PlacedEnemy { x, y, enemy, id });
+            field.chunks.entry(key).or_default().push(PlacedEnemy { x, y, level, enemy, id });
         }
         Some(field)
     }
@@ -355,11 +362,13 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             let biome = world_core::biome_at(x as f64, y as f64);
             kind_for_biome(biome)
         };
+        let level = crate::combat::monster_level_at(x, y);
         enemies.push(PlacedEnemy {
             id,
             x,
             y,
-            enemy: Enemy::new(kind),
+            level,
+            enemy: Enemy::new_leveled(kind, level),
         });
     }
     enemies
