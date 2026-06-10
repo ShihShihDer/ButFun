@@ -252,6 +252,21 @@ impl EnemyField {
         total
     }
 
+    /// 在指定世界座標注入一隻事件敵人（如宇宙裂縫守護者）。
+    /// 使用 `index + RIFT_ID_OFFSET` 確保 ID 不與確定性生成的 ID 衝突。
+    pub fn inject_event_enemy(&mut self, x: f32, y: f32, kind: EnemyKind) {
+        const RIFT_ID_OFFSET: usize = 10000;
+        let key = chunk_key(x, y);
+        let chunk = self.chunks.entry(key).or_default();
+        let idx = chunk.len() + RIFT_ID_OFFSET;
+        chunk.push(PlacedEnemy {
+            id: (key.0, key.1, idx),
+            x,
+            y,
+            enemy: Enemy::new(kind),
+        });
+    }
+
     pub fn from_saved(saved: Vec<Enemy>) -> Option<Self> {
         let mut field = Self::new();
         for (i, enemy) in saved.into_iter().enumerate() {

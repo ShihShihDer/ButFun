@@ -75,6 +75,8 @@ pub enum ArmorKind {
     Meadow,
     /// 晶石護盾：每次受傷減 2 點傷害。
     Crystal,
+    /// 宇宙護盾：每次受傷減 6 點傷害——全遊戲最強防禦，宇宙裂縫能量鍛造。
+    Cosmic,
 }
 
 /// 徒手的基礎攻擊力。沒有武器就是這個——刻意等於 `game.rs` 現行寫死的 `PLAYER_ATTACK_POWER`，
@@ -116,6 +118,7 @@ impl ArmorKind {
         match self {
             ArmorKind::Meadow => 1,
             ArmorKind::Crystal => 2,
+            ArmorKind::Cosmic => 6,
         }
     }
 }
@@ -161,7 +164,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::AetherShard
         | ItemKind::AetherEssence
         | ItemKind::OriginShard
-        | ItemKind::OriginEssence => None,
+        | ItemKind::OriginEssence
+        | ItemKind::RiftShard
+        | ItemKind::CosmicShield => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -175,6 +180,7 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
     match item {
         ItemKind::MeadowAmulet => Some(ArmorKind::Meadow),
         ItemKind::CrystalShield => Some(ArmorKind::Crystal),
+        ItemKind::CosmicShield => Some(ArmorKind::Cosmic),
         ItemKind::Wood
         | ItemKind::Dirt
         | ItemKind::Stone
@@ -211,7 +217,8 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::AetherBlade
         | ItemKind::OriginShard
         | ItemKind::OriginEssence
-        | ItemKind::OriginBlade => None,
+        | ItemKind::OriginBlade
+        | ItemKind::RiftShard => None,
     }
 }
 
@@ -276,6 +283,9 @@ pub enum EnemyKind {
     /// 源晶守護者（星源星）：乙太文明源頭凝聚而成的黃金晶石巨靈，六角巨型源晶身形，
     /// 碎裂後留下源晶碎片——星源星的終極守護者，強度超越所有前者，宇宙起源之地的最後守衛。
     OriginGuardian,
+    /// 裂縫守護者（宇宙裂縫事件，ROADMAP 26）：宇宙裂縫中湧現的次元巨靈，
+    /// 全身環繞扭曲次元光弧，碎滅後留下裂縫碎片——全宇宙最危險的臨時訪客，強度超越星源守護者。
+    RiftGuardian,
 }
 
 impl EnemyKind {
@@ -304,6 +314,8 @@ impl EnemyKind {
             EnemyKind::AetherSpecter => 28,
             // 源晶守護者最強——星源星宇宙源頭守衛，超越霧醚幻靈，全遊戲最終極的守門者。
             EnemyKind::OriginGuardian => 40,
+            // 裂縫守護者最強——宇宙裂縫限定訪客，超越星源守護者，罕見而危險的次元巨靈。
+            EnemyKind::RiftGuardian => 60,
         }
     }
 
@@ -338,6 +350,8 @@ impl EnemyKind {
             EnemyKind::AetherSpecter => (ItemKind::AetherShard, 1),
             // 源晶守護者碎裂後留下源晶碎片（與挖源晶格相同，宇宙起源之地的原初結晶）。
             EnemyKind::OriginGuardian => (ItemKind::OriginShard, 1),
+            // 裂縫守護者碎滅後凝聚成裂縫碎片（宇宙裂縫特有，不對應任何地形挖掘）。
+            EnemyKind::RiftGuardian => (ItemKind::RiftShard, 2),
         }
     }
 
@@ -368,6 +382,8 @@ impl EnemyKind {
             EnemyKind::AetherSpecter => 11,
             // 源晶守護者威脅最高——星源星終極守衛，全遊戲最終極的傷害威脅。
             EnemyKind::OriginGuardian => 15,
+            // 裂縫守護者威脅最高——宇宙裂縫次元巨靈，超越星源守護者的極高威脅。
+            EnemyKind::RiftGuardian => 20,
         }
     }
 
@@ -391,6 +407,8 @@ impl EnemyKind {
             EnemyKind::AetherSpecter => 70,
             // 源晶守護者給予最多 exp——全遊戲最終極守衛，超越所有前者的 exp 獎賞。
             EnemyKind::OriginGuardian => 90,
+            // 裂縫守護者給予最多 exp——宇宙裂縫次元巨靈，擊倒後的最豐厚 exp 獎賞。
+            EnemyKind::RiftGuardian => 150,
         }
     }
 
@@ -414,6 +432,8 @@ impl EnemyKind {
             EnemyKind::AetherSpecter => 130.0,
             // 源晶守護者重生時間最長——星源星終極守衛，碎裂後充分享受最豐厚的戰果。
             EnemyKind::OriginGuardian => 150.0,
+            // 裂縫守護者重生時間極長——次元事件敵人，碎滅後有足夠時間享受戰果（由世界事件計時控制再生）。
+            EnemyKind::RiftGuardian => 3600.0,
         }
     }
 }
@@ -529,7 +549,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 12] = [
+    const KINDS: [EnemyKind; 13] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -542,6 +562,7 @@ mod tests {
         EnemyKind::VoidPhantom,
         EnemyKind::AetherSpecter,
         EnemyKind::OriginGuardian,
+        EnemyKind::RiftGuardian,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -864,7 +885,8 @@ mod tests {
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
-                | EnemyKind::OriginGuardian => {}
+                | EnemyKind::OriginGuardian
+                | EnemyKind::RiftGuardian => {}
             }
         }
 
@@ -916,7 +938,8 @@ mod tests {
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
-                | EnemyKind::OriginGuardian => {}
+                | EnemyKind::OriginGuardian
+                | EnemyKind::RiftGuardian => {}
             }
         }
 

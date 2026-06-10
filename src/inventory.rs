@@ -158,6 +158,12 @@ pub enum ItemKind {
     /// 持有此刃攻擊力 +40，全遊戲最強武器，超越霧醚之刃（+30），
     /// 只有踏上星源星才能鑄造，宇宙起源之力凝聚的終極武裝。
     OriginBlade,
+    /// 裂縫碎片（擊倒裂縫守護者掉落，ROADMAP 26 宇宙裂縫動態世界事件）。
+    /// 宇宙裂縫開啟時的限定掉落，NPC 以 12 乙太收購；也是宇宙護盾的合成原料。
+    RiftShard,
+    /// 宇宙護盾（合成產物：裂縫碎片×3 → 宇宙護盾×1）。
+    /// 持有此護盾每次受傷減 6 點傷害——全遊戲最強防禦裝備，宇宙裂縫能量鍛造。
+    CosmicShield,
 }
 
 impl ItemKind {
@@ -206,6 +212,8 @@ impl ItemKind {
         ItemKind::OriginShard,
         ItemKind::OriginEssence,
         ItemKind::OriginBlade,
+        ItemKind::RiftShard,
+        ItemKind::CosmicShield,
     ];
 }
 
@@ -437,13 +445,15 @@ mod tests {
                 | ItemKind::AetherBlade
                 | ItemKind::OriginShard
                 | ItemKind::OriginEssence
-                | ItemKind::OriginBlade => {}
+                | ItemKind::OriginBlade
+                | ItemKind::RiftShard
+                | ItemKind::CosmicShield => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 39 種（含 ROADMAP 25 星源星：源晶碎片/源晶精粹/源晶之刃）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 39, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 41 種（含 ROADMAP 26 宇宙裂縫：裂縫碎片/宇宙護盾）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 41, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -554,6 +564,7 @@ mod tests {
             EnemyKind::VoidPhantom,
             EnemyKind::AetherSpecter,
             EnemyKind::OriginGuardian,
+            EnemyKind::RiftGuardian,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -568,7 +579,8 @@ mod tests {
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
-                | EnemyKind::OriginGuardian => {}
+                | EnemyKind::OriginGuardian
+                | EnemyKind::RiftGuardian => {}
             }
         }
         let droppable: std::collections::BTreeSet<ItemKind> =

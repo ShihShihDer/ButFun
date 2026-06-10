@@ -47,6 +47,8 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::AncientFragment,  price_per: 4 },
     ShopEntry { item: ItemKind::DeepSeaPearl,     price_per: 5 },
     ShopEntry { item: ItemKind::WildflowerSeed,   price_per: 2 },
+    // 裂縫碎片（宇宙裂縫事件限定）：12 乙太/個，全故鄉商人最高溢價。
+    ShopEntry { item: ItemKind::RiftShard,        price_per: 12 },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

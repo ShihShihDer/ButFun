@@ -289,6 +289,14 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::OriginBlade,
         output_qty: 1,
     },
+    /// 宇宙護盾：裂縫碎片×3 → 宇宙護盾×1。持有後每次受傷減 6 點傷害——全遊戲最強防禦裝備。
+    /// 宇宙裂縫事件限定材料，收集裂縫碎片並鍛造，遊歷宇宙的終極護盾。
+    Recipe {
+        id: "cosmic_shield",
+        inputs: &[(ItemKind::RiftShard, 3)],
+        output: ItemKind::CosmicShield,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -498,6 +506,7 @@ mod tests {
             EnemyKind::VoidPhantom,
             EnemyKind::AetherSpecter,
             EnemyKind::OriginGuardian,
+            EnemyKind::RiftGuardian,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -512,7 +521,8 @@ mod tests {
                 | EnemyKind::SteamConstruct
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
-                | EnemyKind::OriginGuardian => {}
+                | EnemyKind::OriginGuardian
+                | EnemyKind::RiftGuardian => {}
             }
             items.insert(e.drop_loot().0);
         }

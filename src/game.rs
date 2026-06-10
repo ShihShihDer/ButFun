@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::npc::{NPC_BUY_LIST, NPC_SELL_LIST, VERDANT_BUY_LIST, VERDANT_SELL_LIST, CRIMSON_BUY_LIST, CRIMSON_SELL_LIST, VOID_BUY_LIST, VOID_SELL_LIST, AETHER_BUY_LIST, AETHER_SELL_LIST, ORIGIN_BUY_LIST, ORIGIN_SELL_LIST, merchant_pos, verdant_merchant_pos, crimson_merchant_pos, void_merchant_pos, aether_merchant_pos, origin_merchant_pos};
 use crate::protocol::{EnemyView, FieldView, ListingView, NodeView, NpcView, ServerMsg, ShopCatalogEntry, TileDeltaView};
+use crate::combat::EnemyKind;
 use crate::state::AppState;
 
 /// 每秒 tick 數（伺服器模擬頻率）。
@@ -262,6 +263,26 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 宇宙裂縫事件（ROADMAP 26）：推進事件計時器；觸發時注入守護者 + 廣播聊天公告。
+            {
+                let triggered = {
+                    let mut we = app.world_event.write().unwrap();
+                    we.tick(dt)
+                };
+                if let Some((rx, ry)) = triggered {
+                    // 注入裂縫守護者到事件座標。
+                    app.enemies.write().unwrap()
+                        .inject_event_enemy(rx, ry, EnemyKind::RiftGuardian);
+                    // 全服廣播聊天公告。
+                    let msg = format!(
+                        "🌀 宇宙裂縫在 ({:.0}, {:.0}) 附近開啟！裂縫守護者現身！快去獵殺！",
+                        rx, ry
+                    );
+                    let _ = app.tx_chat.send(msg);
+                    tracing::info!(x = rx, y = ry, "宇宙裂縫觸發，裂縫守護者注入");
+                }
+            }
+
             // 收集市場掛單（AOI 剔除在 ws.rs 做，這裡只收全部）。
             let listing_views: Vec<ListingView> = if want_broadcast {
                 app.market
@@ -348,6 +369,7 @@ pub fn spawn(app: AppState) {
                                 TileDeltaView { cx, cy, tx, ty, kind: kind.into() }
                             }).collect()
                         },
+                        world_event: app.world_event.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
