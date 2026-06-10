@@ -270,9 +270,14 @@ pub fn spawn(app: AppState) {
                     we.tick(dt)
                 };
                 if let Some((rx, ry)) = triggered {
-                    // 注入裂縫守護者到事件座標。
-                    app.enemies.write().unwrap()
-                        .inject_event_enemy(rx, ry, EnemyKind::RiftGuardian);
+                    // 防呆：事件座標若落在城鎮保護圈內就不注入怪（座標清單有測試釘住
+                    // 在圈外，這裡是最後一道防線——城裡絕不能憑空冒出怪，線上踩過）。
+                    if world_core::town_protected_at(rx as f64, ry as f64) {
+                        tracing::warn!(x = rx, y = ry, "事件座標在城鎮保護圈內，跳過注入守護者");
+                    } else {
+                        app.enemies.write().unwrap()
+                            .inject_event_enemy(rx, ry, EnemyKind::RiftGuardian);
+                    }
                     // 全服廣播聊天公告。
                     let msg = format!(
                         "🌀 宇宙裂縫在 ({:.0}, {:.0}) 附近開啟！裂縫守護者現身！快去獵殺！",
