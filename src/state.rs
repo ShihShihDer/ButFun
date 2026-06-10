@@ -183,6 +183,12 @@ pub struct Player {
     pub bounty_active: Option<crate::bounty_board::ActiveBounty>,
     /// 懸賞完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
     pub bounty_cooldown: f32,
+
+    // ── 古蹟探勘（ROADMAP 54）────────────────────────────────────────────
+    /// 目前接取的探勘任務。None = 無任務；Some = 進行中（含剩餘秒）。記憶體前置，重啟清空。
+    pub expedition_active: Option<crate::expedition::ActiveExpedition>,
+    /// 探勘完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
+    pub expedition_cooldown: f32,
 }
 
 impl Player {
@@ -322,6 +328,34 @@ impl Player {
             bounty_cooldown: self.bounty_cooldown,
             near_bounty_board: self.planet == PLANET_HOME
                 && crate::bounty_board::is_near_bounty_board(self.x, self.y),
+            // ── 古蹟探勘（ROADMAP 54）
+            expedition_orders: {
+                use crate::expedition::EXPEDITION_ORDERS;
+                use crate::protocol::ExpeditionOrderBrief;
+                EXPEDITION_ORDERS.iter().map(|o| ExpeditionOrderBrief {
+                    order_id: o.id,
+                    name: o.name.to_string(),
+                    biome_name: o.biome_name.to_string(),
+                    min_dist: o.min_dist,
+                    reward: o.reward,
+                    xp: o.xp,
+                }).collect()
+            },
+            expedition_active: self.expedition_active.as_ref().and_then(|a| {
+                use crate::expedition::find_order;
+                use crate::protocol::ExpeditionActiveView;
+                find_order(a.order_id).map(|o| ExpeditionActiveView {
+                    order_id: a.order_id,
+                    name: o.name.to_string(),
+                    biome_name: o.biome_name.to_string(),
+                    min_dist: o.min_dist,
+                    reward: o.reward,
+                    remaining_secs: a.remaining_secs,
+                })
+            }),
+            expedition_cooldown: self.expedition_cooldown,
+            near_expedition_board: self.planet == PLANET_HOME
+                && crate::expedition::is_near_expedition_board(self.x, self.y),
         }
     }
 
@@ -700,6 +734,8 @@ mod tests {
             workshop_cooldown: 0.0,
             bounty_active: None,
             bounty_cooldown: 0.0,
+            expedition_active: None,
+            expedition_cooldown: 0.0,
         }
     }
 

@@ -638,6 +638,7 @@
           updateTradePanel(me, isGuest); // 星際貿易面板（ROADMAP 51）
           updateWorkshopPanel(me, isGuest); // 工匠工坊面板（ROADMAP 52）
           updateBountyPanel(me, isGuest);   // 懸賞告示板面板（ROADMAP 53）
+          updateExpeditionPanel(me, isGuest); // 古蹟探勘面板（ROADMAP 54）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1873,7 +1874,8 @@
         (e.key === "x" || e.key === "X") ? "dockStarCrystal" :
         (e.key === "v" || e.key === "V") ? "dockTrade" :
         (e.key === "k" || e.key === "K") ? "dockWorkshop" :
-        (e.key === "u" || e.key === "U") ? "dockBounty" : null;
+        (e.key === "u" || e.key === "U") ? "dockBounty" :
+        (e.key === "y" || e.key === "Y") ? "dockExpedition" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2320,6 +2322,7 @@
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
     drawWorkshopNpc(camX, camY); // 工坊 NPC（ROADMAP 52）
     drawBountyBoardNpc(camX, camY); // 懸賞告示板 NPC（ROADMAP 53）
+    drawExpeditionBoardNpc(camX, camY); // 探勘公告欄 NPC（ROADMAP 54）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4544,6 +4547,58 @@
     ctx.restore();
   }
 
+  // 探勘公告欄 NPC（ROADMAP 54）：固定於故鄉 (2360, 2080)，僅在故鄉且視野內繪製。
+  const EXPEDITION_NPC_WX = 2360;
+  const EXPEDITION_NPC_WY = 2080;
+  function drawExpeditionBoardNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = EXPEDITION_NPC_WX - camX;
+    const sy = EXPEDITION_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 0.8 + 5) * 2;
+    const by = sy + bob;
+    ctx.save();
+    // 身體（探勘員大衣，深綠色）
+    ctx.fillStyle = "#1a4a2a";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭（健康膚色）
+    ctx.fillStyle = "#c08050";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 探勘帽（卡其帽沿）
+    ctx.fillStyle = "#6a5010";
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 16, 12, 3.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#8a7020";
+    ctx.fillRect(sx - 5, by - 20, 10, 6);
+    // 捲軸地圖（NPC 右手拿著）
+    ctx.fillStyle = "#d4a850";
+    ctx.fillRect(sx + 10, by - 8, 10, 14);
+    ctx.fillStyle = "#b08830";
+    ctx.fillRect(sx + 10, by - 9, 10, 3);
+    ctx.fillRect(sx + 10, by + 4, 10, 3);
+    // 地圖上的路線標示（細線）
+    ctx.strokeStyle = "#3a1a00";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(sx + 12, by - 4);
+    ctx.lineTo(sx + 18, by + 2);
+    ctx.stroke();
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#80e080";
+    ctx.fillText("🗺️ 探勘", sx, by - 30);
+    ctx.restore();
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
@@ -6665,6 +6720,124 @@
     const info = document.createElement("div");
     info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
     info.textContent = "在主城懸賞告示板接取狩獵令，出城獵殺指定怪物，達標後自動完成並獲得乙太 + 戰士熟練度 XP。完成後 8 分鐘冷卻。";
+    body.appendChild(info);
+  }
+
+  // 古蹟探勘面板（ROADMAP 54）：探索者熟練度第九路線，接令→前往指定生態域→採樣→得乙太+XP。
+  let lastExpeditionSig = null;
+  function updateExpeditionPanel(me, isGuestUser) {
+    const body = document.getElementById("expeditionBody");
+    if (!body) return;
+
+    const active = me ? (me.expedition_active || null) : null;
+    const cooldown = me ? (me.expedition_cooldown || 0) : 0;
+    const nearBoard = me ? !!me.near_expedition_board : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const orders = me ? (me.expedition_orders || []) : [];
+
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearBoard, planet].join("|");
+    if (sig === lastExpeditionSig) return;
+    lastExpeditionSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser || planet !== "home") {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = isGuestUser ? "登入後才能使用探勘公告欄" : "探勘公告欄只在故鄉星球提供服務。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 進行中探勘任務。
+    if (active) {
+      const mins = Math.floor(active.remaining_secs / 60);
+      const secs = Math.floor(active.remaining_secs % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+
+      const activeDiv = document.createElement("div");
+      activeDiv.style.cssText = "background:#0a1a0a;border:1px solid #208040;border-radius:8px;padding:10px;margin-bottom:10px;";
+      activeDiv.innerHTML = `
+        <div style="color:#80e080;font-weight:600;margin-bottom:4px;">🗺️ 進行中：${active.name}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">目標生態域：<b style="color:#80ffa0">${active.biome_name}</b></div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">與主城距離：至少 <b style="color:#ffe080">${active.min_dist} 像素</b></div>
+        <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 探索者 XP</div>
+        <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
+      `;
+      body.appendChild(activeDiv);
+
+      const surveyBtn = document.createElement("button");
+      surveyBtn.type = "button";
+      surveyBtn.textContent = "📍 採樣（在目標生態域且足夠遠時可用）";
+      surveyBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #208040;border-radius:8px;background:transparent;color:#80e080;cursor:pointer;font-size:.85rem;margin-bottom:6px;";
+      surveyBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "SurveyExpedition" }));
+      });
+      body.appendChild(surveyBtn);
+
+      const abandonBtn = document.createElement("button");
+      abandonBtn.type = "button";
+      abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
+      abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      abandonBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "AbandonExpedition" }));
+      });
+      body.appendChild(abandonBtn);
+
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.textContent = "提示：前往指定生態域的深處（遠離主城），到達後按「採樣」即完成！";
+      body.appendChild(note);
+      return;
+    }
+
+    // 冷卻中。
+    if (cooldown > 0) {
+      const mins = Math.floor(cooldown / 60);
+      const secs = Math.floor(cooldown % 60);
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
+      body.appendChild(hint);
+      return;
+    }
+
+    // 顯示可接取的 5 張探勘令。
+    if (!nearBoard) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = "靠近主城探勘公告欄（🗺️）才能接取任務。";
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:#80e080;font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = "🗺️ 可接取探勘令（選一張）";
+      body.appendChild(head);
+
+      for (const o of orders) {
+        const row = document.createElement("div");
+        row.style.cssText = `background:#0a1a0a;border:1px solid #206040;border-radius:8px;padding:8px;margin-bottom:6px;`;
+        row.innerHTML = `
+          <div style="color:#80e080;margin-bottom:4px;">${o.name}</div>
+          <div style="color:#aaa;font-size:.8rem;">目標：<b style="color:#80ffa0">${o.biome_name}</b> 生態域</div>
+          <div style="color:#aaa;font-size:.8rem;">最小距離：<b style="color:#ffe080">${o.min_dist} 像素</b></div>
+          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 探索者 XP ${o.xp}</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "🗺️ 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #208040;border-radius:6px;background:transparent;color:#80e080;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "AcceptExpedition", order_id: o.order_id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在主城探勘公告欄接取探勘令，前往指定生態域的遠處採樣，完成後立即獲得乙太 + 探索者熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
 

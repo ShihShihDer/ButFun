@@ -56,6 +56,7 @@ mod star_crystal;
 mod trade_route;
 mod workshop;
 mod bounty_board;
+mod expedition;
 
 use std::net::SocketAddr;
 
