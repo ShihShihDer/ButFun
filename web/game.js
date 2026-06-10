@@ -224,6 +224,22 @@
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
+  // 裂縫事件 → 狀態列小 pill（取代會壓到血量列的頂部大橫幅）。同字不重寫 DOM。
+  let lastEventPillText = null;
+  function updateWorldEventPill(ev) {
+    const pill = document.getElementById("hudEvent");
+    if (!pill) return;
+    const text = ev ? `🌀 ${Math.ceil(ev.remaining_secs)}s` : null;
+    if (text === lastEventPillText) return;
+    lastEventPillText = text;
+    if (text) {
+      pill.textContent = text;
+      pill.title = `宇宙裂縫開啟！(${Math.round(ev.x)}, ${Math.round(ev.y)})——看小地圖 🌀 標記`;
+      pill.classList.remove("hidden");
+    } else {
+      pill.classList.add("hidden");
+    }
+  }
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
@@ -512,6 +528,7 @@
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
         worldEvent = msg.world_event || null;
+        updateWorldEventPill(worldEvent);
         quests = msg.quests || [];
         updateQuestPanel();
         updateFarmHud(myField());
@@ -647,8 +664,8 @@
                 classEl.textContent = CLASS_LABELS[me.job_class] || `🎭 ${me.job_class}`;
                 classEl.classList.remove("hidden");
               } else {
-                classEl.textContent = "🎭 按 J 選職業";
-                classEl.classList.remove("hidden");
+                // 未選職業不佔 HUD 位（手機太擠）：入口在 dock 🎭 與快捷鍵 J，說明見 📖。
+                classEl.classList.add("hidden");
               }
             }
           }
@@ -2226,29 +2243,8 @@
       ctx.beginPath(); ctx.arc(touchOrigin.x + dx * r, touchOrigin.y + dy * r, 18, 0, Math.PI * 2); ctx.fill();
     }
 
-    // 宇宙裂縫事件橫幅：裂縫活躍時在畫面頂部中央顯示剩餘秒數與位置提示。
-    if (worldEvent) {
-      const rem = Math.ceil(worldEvent.remaining_secs);
-      const bx = viewW / 2, by = safeArea.top + 52;
-      ctx.save();
-      ctx.globalAlpha = 0.88;
-      ctx.fillStyle = "rgba(40,0,60,0.82)";
-      const tw = 280, th = 30;
-      ctx.beginPath();
-      ctx.roundRect ? ctx.roundRect(bx - tw / 2, by - th / 2, tw, th, 8)
-                    : ctx.rect(bx - tw / 2, by - th / 2, tw, th);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(200,80,255,0.70)";
-      ctx.lineWidth = 1.5; ctx.stroke();
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = "#e080ff";
-      ctx.font = "bold 13px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(`🌀 宇宙裂縫開啟！剩餘 ${rem}s  (${Math.round(worldEvent.x)}, ${Math.round(worldEvent.y)})`, bx, by);
-      ctx.textBaseline = "alphabetic";
-      ctx.restore();
-    }
+    // 宇宙裂縫事件改用狀態列小 pill（hudEvent，於快照更新）+ 小地圖 🌀 標記 + 聊天廣播，
+    // 不再畫頂部大橫幅——原橫幅會疊在血量/等級 pill 上，手機版面直接撞爛（玩家回報）。
 
     // 受擊紅光:畫在最上層(連搖桿/小地圖之上),受擊的當下不被任何東西蓋住,一眼就知道在挨打。
     drawDamageFlash(performance.now());
@@ -4563,8 +4559,8 @@
       el.textContent = `⚜️ [${guild.tag}]`;
       el.classList.remove("hidden");
     } else {
-      el.textContent = "⚜️ 按 G 加入公會";
-      el.classList.remove("hidden");
+      // 未入公會不佔 HUD 位（手機太擠）：入口在 dock ⚜️ 與快捷鍵 G。
+      el.classList.add("hidden");
     }
   }
 
@@ -6139,13 +6135,14 @@
       // 延續登入連線回饋(loginStatus / connStatus / srStatus)的韌性弧線。
       document.getElementById("joinBtn").disabled = true;
       setLoginStatus("連線中…");
-      // 顯示登入狀態 + 一鍵登出
-      const hud = document.getElementById("hud");
+      // 顯示登入狀態 + 一鍵登出。放 ⚙ 設定視窗（不常駐 HUD——手機版面太擠，
+      // 「我是誰/改名/登出」屬低頻操作，收進設定即可）。
+      const settingsBody = document.getElementById("settingsBody") || document.getElementById("hud");
       const tag = document.createElement("div");
-      tag.style.opacity = "0.7";
+      tag.style.cssText = "opacity:0.85;padding:8px 0;border-top:1px solid rgba(201,162,75,0.25);margin-top:6px";
       tag.innerHTML = `已登入：<b></b> · <a href="#" id="renameLink" style="color:#c9a24b">✏️改名</a> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
       tag.querySelector("b").textContent = me.name;
-      hud.appendChild(tag);
+      settingsBody.appendChild(tag);
       // 改名:輸入新顯示名 → PATCH /api/profile → 成功即更新標籤(世界名牌/HUD 靠下一張快照即時換)。
       tag.querySelector("#renameLink").addEventListener("click", async (e) => {
         e.preventDefault();
