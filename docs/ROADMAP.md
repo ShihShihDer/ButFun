@@ -489,6 +489,13 @@ D-3. ✅ **小地圖導航**（PR #71）
     - `npc_chat.rs` 新增 `MAX_CONCURRENT_LLM` / `PER_PLAYER_NPC_COOLDOWN_SECS` 常數 + 1 個新測試。
     - 對應 `docs/PLAN_AI_NPC_GROWTH.md` 建造順序第 1 步。
 
+60. ✅ **NPC 記憶 + 餘裕持久化（AI NPC 成長第 2 步）**（本輪）
+    - `NpcRel`（印象、對話次數、是否已送禮）與 `npc_gift_stock`（NPC 餘裕）從記憶體 v1 升級為 Postgres 持久化。
+    - migration 0016 新增 `npc_memory`（per player_id × npc_id）與 `npc_gift_stock`（per npc_id）兩張表，向後相容、不動既有玩家資料。
+    - 新 `src/npc_memory_store.rs`（仿 land_plot_store 模式）：啟動時載入全部記憶，對話後 fire-and-forget upsert；無 DB 時退回記憶體模式，重啟歸零（行為正確）。
+    - 玩家感知：NPC 現在「記得你」——重啟後薇拉還知道你叫過她幾次、送沒送過你小禮；餘裕扣減也跨重啟生效。
+    - 對應 `docs/PLAN_AI_NPC_GROWTH.md` 建造順序第 2 步。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
