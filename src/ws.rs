@@ -843,16 +843,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
                         if !downed && npc::is_within_shop_reach(px, py) {
+                            // 熟客折扣（ROADMAP 63）：取出待用折扣票（若有效期未過）。
+                            // 票只在成功購買後才消耗；失敗不扣票（讓玩家有機會補足乙太再試）。
+                            let discount_pct = {
+                                let pending = app.npc_pending_discount.read().unwrap();
+                                pending.get(&id).and_then(|(pct, expiry)| {
+                                    if std::time::Instant::now() < *expiry { Some(*pct) } else { None }
+                                }).unwrap_or(0)
+                            };
                             let did_buy = {
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     let old_ether = p.ether;
-                                    if let Some(new_ether) = npc::buy_from_npc(&mut p.inventory, p.ether, item, qty) {
-                                        tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, "NPC 販售");
+                                    if let Some(new_ether) = npc::buy_from_npc_discounted(&mut p.inventory, p.ether, item, qty, discount_pct) {
+                                        tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, discount_pct, "NPC 販售");
                                         p.ether = new_ether;
                                         true
                                     } else { false }
                                 } else { false }
                             };
+                            // 購買成功後：清除折扣票（已使用）。
+                            if did_buy && discount_pct > 0 {
+                                app.npc_pending_discount.write().unwrap().remove(&id);
+                                tracing::info!(player_id = %id, "熟客折扣已套用並清除");
+                            }
                             // 關係綁真實交易（ROADMAP 61）：向故鄉商人購買時累積 buy_count。
                             if did_buy {
                                 if let Some(uid) = authed_uid {
@@ -2301,7 +2314,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 };
                                 let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
-                                let (wants_gift, clean) = crate::npc_chat::extract_gift_decision(&raw);
+                                let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
+                                // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
+                                // 只有商人 NPC 才有折扣選項（其他工職 NPC 沒有售價可讓利）。
+                                let (wants_discount, clean) = if persona.id == "merchant" {
+                                    crate::npc_chat::extract_discount_decision(&after_gift)
+                                } else {
+                                    (false, after_gift)
+                                };
                                 let granted = if gift_available && wants_gift {
                                     let new_stock = {
                                         let mut stk = app2.npc_gift_stock.write().unwrap();
@@ -2328,6 +2348,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.inventory.add(crate::npc_chat::GIFT_ITEM, crate::npc_chat::GIFT_QTY);
                                     }
                                     tracing::info!(player = %player_name, npc = persona.id, "NPC 自主送了熟客小禮（餘裕扣減）");
+                                }
+                                // 折扣存入：商人決定打折 → 存入待用票（限時 DISCOUNT_DURATION_SECS 秒）。
+                                // 下次 ShopBuy 套用一次後清除。每人限一張，舊票被新票覆蓋（取最新惠）。
+                                if wants_discount {
+                                    let expiry = std::time::Instant::now()
+                                        + std::time::Duration::from_secs(crate::npc_chat::DISCOUNT_DURATION_SECS);
+                                    app2.npc_pending_discount.write().unwrap()
+                                        .insert(id, (crate::npc_chat::DISCOUNT_PERCENT, expiry));
+                                    tracing::info!(player = %player_name, discount = crate::npc_chat::DISCOUNT_PERCENT, "商人自主給出熟客折扣票");
                                 }
                                 if let Ok(json) = serde_json::to_string(
                                     &crate::protocol::ServerMsg::NpcReply {

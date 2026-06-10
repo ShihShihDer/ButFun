@@ -680,6 +680,10 @@ pub struct AppState {
     /// NPC 個人記憶 + 送禮餘裕持久化 store（ROADMAP 60）。
     /// Postgres 模式下，對話後 fire-and-forget upsert；記憶體模式重啟歸零。
     pub npc_memory_store: NpcMemoryStore,
+    /// 商人熟客折扣待用票（ROADMAP 63）：玩家 id → (折扣百分比, 到期時刻)。
+    /// 商人自主送出後存入；下次 ShopBuy 套用一次後清除；到期自動失效。
+    /// 記憶體模式，重啟清空（折扣本就限時，重啟等同過期，行為正確）。
+    pub npc_pending_discount: Arc<RwLock<HashMap<Uuid, (u32, Instant)>>>,
 }
 
 impl AppState {
@@ -776,6 +780,7 @@ impl AppState {
             npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::MAX_CONCURRENT_LLM)),
             npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
             npc_memory_store,
+            npc_pending_discount: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
