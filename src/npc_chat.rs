@@ -240,6 +240,15 @@ pub fn extract_discount_decision(raw: &str) -> (bool, String) {
     }
 }
 
+/// 低級別 LLM 呼叫（供 npc_proactive 等外部模組使用）。
+/// LLM 未啟用時回 None；呼叫方負責在 None 時退回罐頭降級。
+pub async fn raw_llm_call(system: &str, user: &str) -> Option<String> {
+    if !llm_enabled() {
+        return None;
+    }
+    ollama_chat(system, user).await
+}
+
 /// 呼叫 ollama 生成回話。失敗（連不到 / 逾時 / 解析錯）一律回 None，由呼叫端退罐頭。
 async fn ollama_chat(system: &str, user: &str) -> Option<String> {
     let client = reqwest::Client::builder()

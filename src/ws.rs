@@ -1081,6 +1081,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     "勇者 {} 討伐了兇名精英 {}，全服英雄讚頌",
                                     pname, kind.display_name()
                                 ));
+                                // NPC 主動評論（ROADMAP 68）：精英討伐，NPC 表達讚嘆。
+                                {
+                                    let event_kind = crate::npc_proactive::WorldEventKind::EliteSlain {
+                                        name: kind.display_name().to_string(),
+                                        slayer: pname.clone(),
+                                    };
+                                    let app2 = app.clone();
+                                    tokio::spawn(async move {
+                                        let now = std::time::Instant::now();
+                                        let maybe_npc = {
+                                            let mut cd = app2.npc_proactive.write().unwrap();
+                                            crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                        };
+                                        if let Some(npc_id) = maybe_npc {
+                                            let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                            let _ = app2.tx_chat.send(reaction);
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
@@ -2429,6 +2448,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             app2.world_log.write().unwrap().push(
                                                 "凱爾長老動用村落金庫舉辦村落節慶，全服 EXP +30%（持續 10 分鐘）"
                                             );
+                                            // NPC 主動評論（ROADMAP 68）：節慶開始，NPC 熱鬧回應。
+                                            {
+                                                let app3 = app2.clone();
+                                                tokio::spawn(async move {
+                                                    let now = std::time::Instant::now();
+                                                    let event_kind = crate::npc_proactive::WorldEventKind::VillageFestival;
+                                                    let maybe_npc = {
+                                                        let mut cd = app3.npc_proactive.write().unwrap();
+                                                        crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                                    };
+                                                    if let Some(npc_id) = maybe_npc {
+                                                        let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                                        let _ = app3.tx_chat.send(reaction);
+                                                    }
+                                                });
+                                            }
                                             tracing::info!(player = %player_name, new_treasury = new_t, "里長自主辦村落節慶，金庫扣減");
                                             true
                                         } else {
@@ -2924,6 +2959,24 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
         app.world_log.write().unwrap().push(format!(
             "全服社群任務「{}」完成，全體拓荒者共同達成壯舉", desc
         ));
+        // NPC 主動評論（ROADMAP 68）：任務完成，NPC 在聊天頻道慶賀。
+        {
+            let event_kind = crate::npc_proactive::WorldEventKind::QuestComplete {
+                name: desc.clone(),
+            };
+            let app2 = app.clone();
+            tokio::spawn(async move {
+                let now = std::time::Instant::now();
+                let maybe_npc = {
+                    let mut cd = app2.npc_proactive.write().unwrap();
+                    crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                };
+                if let Some(npc_id) = maybe_npc {
+                    let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                    let _ = app2.tx_chat.send(reaction);
+                }
+            });
+        }
     }
     // 全員分潤乙太 + 成就：任務英雄（ROADMAP 31）。
     let mut newly_heroes: Vec<(String, bool)> = Vec::new();

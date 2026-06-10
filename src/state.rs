@@ -702,6 +702,9 @@ pub struct AppState {
     /// NPC 生命週期管理器（ROADMAP 66）：每個 NPC 有壽命計時器，老年期注入語境，
     /// 壽命到時觸發「回歸乙太」→ 繼承人接手。記憶體模式，重啟歸零（「世界換季」）。
     pub npc_lifecycle: Arc<RwLock<crate::npc_lifecycle::NpcLifecycle>>,
+    /// NPC 主動評論冷卻追蹤器（ROADMAP 68）：世界事件發生時 NPC 主動在聊天頻道表達看法；
+    /// 每個 NPC 每 10 分鐘最多主動說一次。記憶體模式，重啟清空。
+    pub npc_proactive: Arc<RwLock<crate::npc_proactive::NpcProactiveCooldowns>>,
 }
 
 impl AppState {
@@ -804,6 +807,7 @@ impl AppState {
             world_log: Arc::new(RwLock::new(crate::world_log::WorldLog::new())),
             npc_lifecycle: Arc::new(RwLock::new(crate::npc_lifecycle::NpcLifecycle::new())),
             player_logs: Arc::new(RwLock::new(HashMap::new())),
+            npc_proactive: Arc::new(RwLock::new(crate::npc_proactive::NpcProactiveCooldowns::new())),
         }
     }
 
