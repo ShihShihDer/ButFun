@@ -3,6 +3,7 @@
 //!
 //! 詳見 docs/GAME_DESIGN.md。
 
+mod achievement;
 mod auth;
 mod class;
 mod combat;
