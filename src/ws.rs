@@ -875,14 +875,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let Some((px, py, downed, cooldown, power, enchant)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
                     let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
+                    // 追蹤討伐的兇名資訊（ROADMAP 42），供後續廣播用
+                    let was_notorious = result.as_ref().map(|(_, _, n, _)| *n).unwrap_or(false);
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
-                        if let Some((kind, enemy_level, Some((item, qty)))) = result {
+                        if let Some((kind, enemy_level, _, Some((item, qty)))) = result {
                             p.inventory.add(item, qty);
                             // 殺怪得 exp（依敵人等級縮放後的難度決定獎勵量；附魔增幅加成）。
                             let base_reward = crate::combat::scaled_exp(kind.exp_reward(), enemy_level);
+                            // 討伐兇名精英：exp 翻倍（ROADMAP 42）。
+                            let notorious_mult = if was_notorious { 2.0_f32 } else { 1.0_f32 };
                             let reward = (base_reward as f32
-                                * crate::refinement::enchant_exp_multiplier(enchant)) as u32;
+                                * crate::refinement::enchant_exp_multiplier(enchant)
+                                * notorious_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
@@ -898,16 +903,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
                                 }
                             }
-                            tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), "主動攻擊戰利品+exp");
+                            tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), notorious = was_notorious, "主動攻擊戰利品+exp");
+                        }
+                    }
+                    // 討伐兇名精英全服廣播（ROADMAP 42）
+                    if was_notorious {
+                        if let Some((kind, _, _, Some(_))) = result {
+                            let pname = app.players.read().unwrap()
+                                .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            if !pname.is_empty() {
+                                let _ = app.tx_chat.send(format!(
+                                    "⚔️ {} 討伐了兇名 {}！全服向英雄致敬！",
+                                    pname, kind.display_name()
+                                ));
+                            }
                         }
                     }
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
-                    if let Some((kind, _, Some(_))) = result {
+                    if let Some((kind, _, _, Some(_))) = result {
                         let completed = app.quests.write().unwrap().on_kill(kind);
                         notify_quest_complete(&app, completed);
                     }
                     // 成就：擊殺計數里程碑（ROADMAP 31）。
-                    if let Some((_, _, Some(_))) = result {
+                    if let Some((_, _, _, Some(_))) = result {
                         let (kill_count, new_level, pname, newly_unlocked) = {
                             let mut players = app.players.write().unwrap();
                             if let Some(p) = players.get_mut(&id) {
@@ -937,7 +955,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
-                    if let (Some(uid), Some((kill_kind, _, Some(_)))) = (authed_uid, result) {
+                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
                         advance_daily_kill(&app, uid, kill_kind, &tx_direct);
                     }
                 }
