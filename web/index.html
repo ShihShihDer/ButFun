@@ -197,6 +197,20 @@
     .bag-use-btn { margin-left: 6px; padding: 8px 12px; min-height: 36px; border-radius: 8px; border: 1px solid #ff79a8; background: transparent; color: #ff79a8; cursor: pointer; font-size: 0.92em; }
     .bag-use-btn:hover { background: #ff79a8; color: #1a1008; }
     .bag-gear-tag { margin-left: 6px; padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(160,200,255,0.4); background: rgba(100,150,255,0.12); color: #8ec4f0; font-size: 0.82em; white-space: nowrap; }
+    .bag-gear-tag.equipped { border-color: rgba(100,255,160,0.5); background: rgba(60,180,100,0.15); color: #7dffb0; }
+    .bag-equip-btn { margin-left: 6px; padding: 8px 12px; min-height: 36px; border-radius: 8px; border: 1px solid #f0c060; background: transparent; color: #f0c060; cursor: pointer; font-size: 0.92em; }
+    .bag-equip-btn:hover { background: #f0c060; color: #1a1008; }
+    /* 裝備面板（ROADMAP 36）：三槽顯示 + ATK/DEF 數值。 */
+    #equipBody { padding: 4px 0; }
+    .equip-slot { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .equip-slot.empty { opacity: 0.5; }
+    .equip-slot-label { min-width: 52px; font-size: 0.85em; color: var(--ink); }
+    .equip-slot-ico { font-size: 1.3em; }
+    .equip-slot-name { flex: 1; }
+    .equip-slot-empty { flex: 1; color: var(--ink); font-size: 0.85em; }
+    .equip-unequip-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,120,120,0.5); background: transparent; color: #ff9090; cursor: pointer; font-size: 0.85em; }
+    .equip-unequip-btn:hover { background: rgba(255,120,120,0.2); }
+    .equip-stats { display: flex; gap: 20px; padding: 10px 6px 4px; color: var(--brass); font-size: 0.9em; }
     /* 合成台視窗:列出配方(產物 ← 素材),夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包
        快照回來(零契約變更),規則扣料仍由伺服器說了算。摘要(#craftSummary)用 ink 與標題分層。 */
     #craftSummary { color: var(--ink); }
@@ -414,6 +428,7 @@
         <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="購地" title="購地">🌱</button>
       </div>
       <div class="dock-group hidden" id="dgChar">
+        <button type="button" class="dock-btn" id="dockEquip" data-win="winEquip" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I" aria-label="裝備（I）" title="裝備（I）">⚔️</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -456,6 +471,14 @@
         <button type="button" class="win-close" data-close="winBag" aria-label="關閉背包">✕</button>
       </div>
       <div id="bagBody">背包是空的</div>
+    </div>
+    <!-- 裝備面板（ROADMAP 36）：三槽顯式裝備——武器／防具／飾品，點槽位卸下，ATK/DEF 即時顯示。 -->
+    <div id="winEquip" class="hud-window hidden" role="dialog" aria-labelledby="equipTitle">
+      <div class="win-head">
+        <span class="win-title" id="equipTitle">⚔️ 裝備</span>
+        <button type="button" class="win-close" data-close="winEquip" aria-label="關閉裝備面板">✕</button>
+      </div>
+      <div id="equipBody"></div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->

@@ -223,8 +223,8 @@ pub fn spawn(app: AppState) {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
                         if let Some(p) = players.get_mut(&pid) {
-                            // 護甲減傷：先扣去防禦值，最低歸零（不倒扣）。
-                            let defense = crate::combat::armor_defense(&p.inventory);
+                            // 護甲減傷：改讀裝備槽（ROADMAP 36），不再掃整個背包。
+                            let defense = crate::equipment::equipped_armor_defense(&p.equipment);
                             let actual_dmg = dmg.saturating_sub(defense);
                             if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
                                 tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");
@@ -419,9 +419,10 @@ pub fn spawn(app: AppState) {
 /// (新賺的乙太、移動、剛採/合成的道具、農地成長)。多 flush 永遠安全:寫的是當下快照、冪等 upsert。
 pub async fn flush_all(app: &AppState) {
     // 同一把 read 鎖內一併收位置與背包,兩者快照來自同一瞬間、不會錯位。
-    let (online, inventories): (
+    let (online, inventories, equipment_rows): (
         Vec<OnlinePlayerRow>,
         Vec<(uuid::Uuid, crate::inventory::Inventory)>,
+        Vec<(uuid::Uuid, crate::equipment::EquipmentSlots)>,
     ) = {
         let players = app.players.read().unwrap();
         let authed: Vec<_> = players
@@ -434,6 +435,7 @@ pub async fn flush_all(app: &AppState) {
                 .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
+            authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
         )
     };
     if !online.is_empty() {
@@ -443,6 +445,9 @@ pub async fn flush_all(app: &AppState) {
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;
+        // 裝備槽定期落地（ROADMAP 36）。
+        app.inventories.remember_all_equipment(equipment_rows.iter().cloned());
+        app.inventories.flush_equipment_online(&equipment_rows).await;
     }
 
     // 農地一併落地（Phase 0-E）。與位置/背包不同:離線玩家的地仍在世界裡繼續長

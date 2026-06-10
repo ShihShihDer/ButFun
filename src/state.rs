@@ -131,6 +131,9 @@ pub struct Player {
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
     pub kill_count: u32,
+    /// 三槽裝備（ROADMAP 36）：🗡️ 武器 / 🛡️ 防具 / 📿 飾品。
+    /// 持久化於 inventories 表的 equipment 欄；首次登入由 `auto_equip_best` 遷移。
+    pub equipment: crate::equipment::EquipmentSlots,
 }
 
 impl Player {
@@ -157,15 +160,21 @@ impl Player {
             max_hp: self.vitals.max_hp(),
             exp: self.exp,
             level: self.level(),
-            attack: crate::combat::weapon_power(&self.inventory)
+            attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
                 + crate::class::combat_bonus(self.job_class),
-            defense: crate::combat::armor_defense(&self.inventory),
+            defense: crate::equipment::equipped_armor_defense(&self.equipment),
             planet: self.planet.clone(),
             job_class: self.job_class.map(|c| c.as_str().to_string()),
             guild_tag: self.guild_tag.clone(),
             achievement_count: self.achievements.count() as u32,
             achievements: self.achievements.as_wire_keys().into_iter().map(|s| s.to_string()).collect(),
+            equipped_weapon: self.equipment.weapon
+                .map(crate::equipment::item_to_wire_key),
+            equipped_armor: self.equipment.armor
+                .map(crate::equipment::item_to_wire_key),
+            equipped_accessory: self.equipment.accessory
+                .map(crate::equipment::item_to_wire_key),
         }
     }
 
@@ -501,6 +510,7 @@ mod tests {
             guild_tag: None,
             achievements: AchievementSet::new(),
             kill_count: 0,
+            equipment: crate::equipment::EquipmentSlots::default(),
         }
     }
 
