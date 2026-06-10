@@ -6174,6 +6174,104 @@
     for (const btn of dock.querySelectorAll(".dock-btn")) {
       btn.addEventListener("click", () => openWinFor(btn));
     }
+
+    // ── 🗺️ 世界地圖：星球帶 + 本星鳥瞰（生態底色/城鎮/你的位置/裂縫）+ 旅行入口 ──
+    // 解玩家痛點「不知道自己在哪、其他星球怎麼去」——旅行原本埋在「合成星圖→背包使用」
+    // 兩層深，這裡給一個 dock 一鍵的總覽窗，並把旅行入口接出來。
+    const PLANETS = [
+      { id: "origin",  name: "星源星", icon: "🌟", x: -52000 },
+      { id: "aether",  name: "霧醚星", icon: "🌫️", x: -32000 },
+      { id: "crimson", name: "赤焰星", icon: "🔴", x: -18000 },
+      { id: "home",    name: "邊境星", icon: "🏠", x: 2344 },
+      { id: "verdant", name: "翠幽星", icon: "🟢", x: 22400 },
+      { id: "void",    name: "虛空星", icon: "🌑", x: 42000 },
+    ];
+    const WM_BIOME_RGB = { water: [39,86,111], sand: [179,160,106], meadow: [22,54,31], forest: [16,42,24], rocky: [79,74,68] };
+    function renderWorldMap() {
+      const me = myId ? players.get(myId) : null;
+      const meX = me ? me.x : 3000, meY = me ? me.y : 3000;
+      const planet = me ? (me.planet || "home") : "home";
+      // 星球帶（西→東一條鏈，目前所在亮黃銅）
+      const chips = PLANETS.map((p) => {
+        const cur = p.id === planet;
+        return `<span style="padding:2px 8px;border-radius:8px;white-space:nowrap;${cur ? "border:1px solid #c9a24b;color:#c9a24b;font-weight:bold" : "opacity:0.6"}">${p.icon}${p.name}</span>`;
+      }).join(`<span style="opacity:0.4">→</span>`);
+      document.getElementById("wmPlanets").innerHTML =
+        `<span style="opacity:0.55;white-space:nowrap">遠西</span>${chips}<span style="opacity:0.55;white-space:nowrap">遠東</span>`;
+      // 本星鳥瞰：1 圖素 = 1 格（32px），畫面寬 280 格 ≈ 9000 世界px，以玩家為中心。
+      const cv = document.getElementById("wmCanvas");
+      const c2 = cv.getContext("2d");
+      const S = 32;
+      const ox = meX - (cv.width / 2) * S, oy = meY - (cv.height / 2) * S;
+      const img = c2.createImageData(cv.width, cv.height);
+      const d = img.data;
+      for (let py = 0; py < cv.height; py++) {
+        for (let px = 0; px < cv.width; px++) {
+          const rgb = WM_BIOME_RGB[biomeAt(ox + px * S + 16, oy + py * S + 16)] || [20, 24, 32];
+          const o = (py * cv.width + px) * 4;
+          d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
+        }
+      }
+      c2.putImageData(img, 0, 0);
+      const toMap = (wx, wy) => [(wx - ox) / S, (wy - oy) / S];
+      // 城鎮框＋名字
+      c2.font = "10px system-ui, sans-serif";
+      c2.textAlign = "center";
+      for (const t of TOWNS) {
+        const [mx, my] = toMap(t.cgx * TS + 16, t.cgy * TS + 16);
+        const half = t.half; // 1 圖素 = 1 格
+        if (mx + half < 0 || mx - half > cv.width || my + half < 0 || my - half > cv.height) continue;
+        c2.strokeStyle = "#c9a24b";
+        c2.lineWidth = 1.5;
+        c2.strokeRect(mx - half, my - half, half * 2, half * 2);
+        c2.fillStyle = "#ffe9b3";
+        c2.fillText(t.name, mx, my - half - 3);
+      }
+      // 宇宙裂縫
+      if (worldEvent) {
+        const [rx2, ry2] = toMap(worldEvent.x, worldEvent.y);
+        if (rx2 > 0 && rx2 < cv.width && ry2 > 0 && ry2 < cv.height) {
+          c2.fillStyle = "#e080ff";
+          c2.beginPath(); c2.arc(rx2, ry2, 4, 0, Math.PI * 2); c2.fill();
+          c2.fillText("🌀", rx2, ry2 - 6);
+        }
+      }
+      // 你的位置（中心金點＋圈）
+      c2.beginPath(); c2.arc(cv.width / 2, cv.height / 2, 3, 0, Math.PI * 2);
+      c2.fillStyle = "#ffd34d"; c2.fill();
+      c2.beginPath(); c2.arc(cv.width / 2, cv.height / 2, 6, 0, Math.PI * 2);
+      c2.strokeStyle = "rgba(255,211,77,0.7)"; c2.lineWidth = 1.5; c2.stroke();
+      // 文字定位：在哪座城內 / 離最近城鎮多遠往哪走
+      const gx = Math.floor(meX / TS), gy = Math.floor(meY / TS);
+      const inTown = TOWNS.find((t) => Math.max(Math.abs(gx - t.cgx), Math.abs(gy - t.cgy)) <= t.half);
+      let locTxt;
+      if (inTown) {
+        locTxt = `📍 (${Math.round(meX)}, ${Math.round(meY)})・你在 <b style="color:#c9a24b">${inTown.name}</b> 內`;
+      } else {
+        let best = TOWNS[0], bd = Infinity;
+        for (const t of TOWNS) {
+          const dd = Math.hypot(t.cgx * TS - meX, t.cgy * TS - meY);
+          if (dd < bd) { bd = dd; best = t; }
+        }
+        const ang = Math.atan2(best.cgy * TS - meY, best.cgx * TS - meX);
+        const DIRS = ["東", "東南", "南", "西南", "西", "西北", "北", "東北"];
+        const dir = DIRS[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8];
+        locTxt = `📍 (${Math.round(meX)}, ${Math.round(meY)})・離 <b style="color:#c9a24b">${best.name}</b> 約 ${Math.round(bd / TS)} 格，往<b>${dir}</b>走`;
+      }
+      document.getElementById("wmWhere").innerHTML = locTxt;
+      // 旅行入口：有星圖直接展開；沒有就教怎麼做一張。
+      const hasChart = (myInv.get("star_chart") || 0) > 0;
+      document.getElementById("wmTravel").innerHTML = hasChart
+        ? `<button id="wmTravelBtn" style="width:100%;padding:9px;background:rgba(120,100,200,0.5);border:1px solid #a08ce0;border-radius:8px;color:#e0d8ff;font:inherit;cursor:pointer">🗺️ 展開星圖（星際旅行）</button>`
+        : `🚀 <b>想去其他星球？</b><br><small style="opacity:0.85">① 到 🔧 合成台做一張 🗺️ <b>星圖</b> ② 從 🎒 背包點「使用」展開星圖即可選星球出發（跨星航行需 30～150 乙太；首航翠幽星需集滿五大生態武裝）。</small>`;
+    }
+    const wmWin = document.getElementById("winWorldMap");
+    document.getElementById("dockWorldMap").addEventListener("click", () => renderWorldMap());
+    document.getElementById("wmTravel").addEventListener("click", (e) => {
+      if (e.target && e.target.id === "wmTravelBtn") { closeWin(false); showStarChartDialog(); }
+    });
+    // 開著時每 1.2 秒刷新（位置/裂縫會動）；關著零成本。
+    setInterval(() => { if (wmWin && !wmWin.classList.contains("hidden")) renderWorldMap(); }, 1200);
     // ⚙ 設定：智慧自動挖開關（localStorage 持久化）。
     const optDig = document.getElementById("optSmartAutoDig");
     if (optDig) {
