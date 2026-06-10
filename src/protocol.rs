@@ -194,6 +194,13 @@ pub enum ClientMsg {
     /// `kind`：`"warcry"` / `"bounty"` / `"precision"` / `"gale"` / `"haggle"`。
     /// 熟練度未達 Lv.5 / 冷卻中 / 未登入靜默忽略。
     UseSkill { kind: String },
+    /// 馴化寵物（ROADMAP 46）：嘗試馴化 ATTACK_REACH 內 HP < 25% 的最近怪物。
+    /// 不帶座標參數——伺服器以玩家自己的位置判定（防隔空馴化）。
+    /// 乙太不足 / 無符合條件怪物 / 不可馴化種類 / 倒地中靜默忽略。
+    /// 成功後舊寵物自動放生；一次只能帶一隻。
+    TamePet,
+    /// 放生寵物（ROADMAP 46）：解除目前的寵物（加成一併取消）。無寵物靜默忽略。
+    ReleasePet,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -345,6 +352,10 @@ pub struct PlayerView {
     pub skill_cooldowns: std::collections::HashMap<String, u32>,
     /// 目前掛起的一次性技能旗標（ROADMAP 45）。前端顯示待發光效（"warcry", "bounty"...）。
     pub active_skill_flags: Vec<String>,
+    /// 目前的寵物種類 wire key（ROADMAP 46）。None = 沒有寵物。
+    /// 前端用來在玩家旁邊顯示寵物 emoji，以及在 HUD 顯示寵物加成。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pet_kind: Option<String>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -619,6 +630,7 @@ mod tests {
                 armor_refine: 0,
                 skill_cooldowns: std::collections::HashMap::new(),
                 active_skill_flags: vec![],
+                pet_kind: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -747,6 +759,7 @@ mod tests {
             armor_refine: 0,
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
+            pet_kind: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

@@ -122,6 +122,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            pet: None,
         }
     } else {
         // 等 Join
@@ -166,6 +167,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            pet: None,
         }
     };
     let id = player.id;
@@ -496,7 +498,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.pending_bounty = false;
                                 crate::active_skill::BOUNTY_BONUS_QTY
                             } else { 0 };
-                            let added = p.inventory.add(item, amount * mult + bounty_bonus);
+                            // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
+                            let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
+                            let added = p.inventory.add(item, amount * mult + bounty_bonus + pet_gather);
                             // 採集得 exp（鼓勵探索）；偵測升級並更新血量上限。
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(5);
@@ -929,9 +933,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.inventory.add(*item, *qty);
                             let base_reward = crate::combat::scaled_exp(kind.exp_reward(), *enemy_level);
                             let notorious_mult = if *notorious { 2.0_f32 } else { 1.0_f32 };
+                            // 寵物經驗加成（ROADMAP 46）：珊瑚蟹 +20% 擊殺經驗。
+                            let pet_exp_pct = p.pet.map(|pk| pk.bonus_exp_pct()).unwrap_or(0);
+                            let pet_mult = 1.0_f32 + pet_exp_pct as f32 / 100.0;
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
-                                * notorious_mult) as u32;
+                                * notorious_mult
+                                * pet_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
@@ -1431,6 +1439,56 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         player_id: id,
                         kind: kind.clone(),
                     }));
+                }
+
+                // ── 寵物系統（ROADMAP 46）──────────────────────────────────────────
+                Ok(ClientMsg::TamePet) => {
+                    // 倒地時無法馴化。
+                    let downed = app.players.read().unwrap()
+                        .get(&id).map(|p| p.vitals.is_downed()).unwrap_or(true);
+                    if downed { continue; }
+
+                    // 讀玩家位置（需要持鎖前先取出）。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let Some((px, py)) = player_pos else { continue; };
+
+                    // 嘗試馴化：在 ATTACK_REACH 內找 HP < 25% 的最近怪物並從世界移除。
+                    let tamed_kind = {
+                        let mut enemies = app.enemies.write().unwrap();
+                        enemies.try_tame_nearest(px, py, crate::enemy_field::ATTACK_REACH)
+                    };
+                    let Some(enemy_kind) = tamed_kind else { continue; };
+
+                    // 判斷是否可馴化 + 扣乙太 + 設寵物。
+                    let Some(pet_kind) = crate::pet::pet_from_enemy_kind(enemy_kind) else { continue; };
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        let cost = pet_kind.tame_cost();
+                        if p.ether < cost {
+                            tracing::debug!(player = %p.name, ?pet_kind, cost, "馴化失敗：乙太不足");
+                            continue;
+                        }
+                        p.ether -= cost;
+                        let old_pet = p.pet.replace(pet_kind);
+                        tracing::info!(
+                            player = %p.name,
+                            new_pet = pet_kind.display_name(),
+                            old_pet = old_pet.map(|k| k.display_name()).unwrap_or("無"),
+                            "馴化寵物成功"
+                        );
+                        // 廣播聊天，讓其他玩家知道有新寵物加入。
+                        let _ = app.tx_chat.send(format!(
+                            "🐾 {} 馴化了 {} {} 成為寵物！",
+                            p.name, pet_kind.emoji(), pet_kind.display_name()
+                        ));
+                    }
+                }
+
+                Ok(ClientMsg::ReleasePet) => {
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if let Some(old_pet) = p.pet.take() {
+                            tracing::info!(player = %p.name, pet = old_pet.display_name(), "放生寵物");
+                        }
+                    }
                 }
 
                 // ── 公會系統（ROADMAP 29）──────────────────────────────────────────

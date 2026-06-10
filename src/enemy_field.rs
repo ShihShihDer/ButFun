@@ -610,6 +610,52 @@ impl EnemyField {
         }
         Some(field)
     }
+
+    /// 嘗試馴化（ROADMAP 46）：在 `reach` 範圍內找最近的存活且 HP < 25% 的敵人，
+    /// 從世界移除並回傳其種類。若無符合條件的敵人回 None。
+    /// 呼叫端負責根據種類判斷是否可馴化（`pet::pet_from_enemy_kind`）並扣乙太。
+    pub fn try_tame_nearest(&mut self, px: f32, py: f32, reach: f32) -> Option<EnemyKind> {
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        self.ensure_chunks_around(px, py, reach);
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = reach * reach;
+        // 找最近、存活、瀕死（HP < 25%）的敵人，記錄其 chunk key 與索引。
+        let mut best: Option<((i32, i32), usize, f32)> = None;
+
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let ck = (cx + dx, cy + dy);
+                if let Some(enemies) = self.chunks.get(&ck) {
+                    for (idx, placed) in enemies.iter().enumerate() {
+                        if !placed.enemy.is_alive() { continue; }
+                        let hp_ratio = placed.enemy.remaining_hp() as f32
+                            / placed.enemy.max_hp().max(1) as f32;
+                        if hp_ratio >= LOW_HP_THRESHOLD { continue; }
+                        let ddx = placed.x - px;
+                        let ddy = placed.y - py;
+                        let dist_sq = ddx * ddx + ddy * ddy;
+                        if dist_sq <= reach_sq {
+                            if best.as_ref().map_or(true, |(_, _, b)| dist_sq < *b) {
+                                best = Some((ck, idx, dist_sq));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((ck, idx, _)) = best {
+            if let Some(enemies) = self.chunks.get_mut(&ck) {
+                if idx < enemies.len() {
+                    let removed = enemies.remove(idx);
+                    return Some(removed.enemy.kind());
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Default for EnemyField {
