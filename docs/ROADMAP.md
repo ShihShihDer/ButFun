@@ -467,6 +467,14 @@ D-3. ✅ **小地圖導航**（PR #71）
     - HUD dock 🏅 按鈕（1 鍵）開啟農展面板；多物品需求各自顯示背包數量與是否足夠。
     - 後端：`src/farm_fair.rs` 純邏輯模組（18 個單元測試）；ws.rs 接入 AcceptFairOrder / SubmitFairOrder / AbandonFairOrder；game.rs tick 計時。記憶體模式，零 migration。
 
+57. ✅ **會動腦的 NPC（AI 聊天・商人第一塊）——主城 NPC 有生命感**（本輪）
+    - 商人薇拉（merchant）走近可打字聊天；地端 LLM（qwen2.5:3b，`BUTFUN_NPC_LLM=1` gate）非同步回話、不卡 15Hz 迴圈。
+    - 降級：ollama 連不到或 gate 關閉 → 罐頭句，prod 安全（預設關）。
+    - 個人記憶：NPC 對每位玩家維持一句「印象」（120 字上限），記憶體 v1，重啟清空；對話後自動濃縮更新。
+    - 腦子自由、手有界：LLM 只生成文字，碰不到任何遊戲狀態。
+    - 第一隻手：商人**自己判斷**要不要善待玩家（無寫死門檻）——統計資料只當料餵給 LLM，送禮與否由他自己決定；引擎偵測暗號後抽掉、一次性上限（就算被操弄也只觸發那一份小禮）。
+    - `src/npc_chat.rs` 純邏輯模組（4 個單元測試）；ws.rs TalkToNpc handler；state.rs npc_memory 欄位。零 migration。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。

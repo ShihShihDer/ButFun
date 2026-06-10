@@ -28,6 +28,7 @@ mod gather_field;
 mod guild;
 mod market;
 mod npc;
+mod npc_chat;
 mod inventory;
 mod inventory_store;
 mod tile_store;

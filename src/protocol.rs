@@ -410,6 +410,11 @@ pub enum ClientMsg {
     /// 放棄農展委託（ROADMAP 56）：取消目前進行中的委託，無懲罰（不啟動冷卻）。
     #[serde(rename = "abandon_fair_order")]
     AbandonFairOrder,
+
+    // ── 會動腦的 NPC（ROADMAP 57）
+    /// 跟會動腦的 NPC 對話（見 npc_chat.rs）。`npc` 是 NPC 穩定 id（如 "merchant"）。
+    /// 伺服器非同步呼叫地端 LLM，回 `NpcReply`（不卡遊戲迴圈）。
+    TalkToNpc { npc: String, text: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -492,6 +497,8 @@ pub enum ServerMsg {
     /// 主動技能觸發廣播（ROADMAP 45）：廣播給所有連線客戶端，供前端播放技能特效動畫。
     /// `player_id`：施法玩家 id；`kind`：技能 snake_case 名稱。
     SkillActivated { player_id: Uuid, kind: String },
+    /// 會動腦的 NPC 對玩家說的話（單播，非同步生成後才送）。
+    NpcReply { npc: String, display: String, text: String },
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。

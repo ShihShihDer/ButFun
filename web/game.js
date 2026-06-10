@@ -786,6 +786,11 @@
           announce(`旅行失敗：${msg.message}`);
         }
         break;
+      case "npc_reply":
+        // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。
+        npcChatThinking(false);
+        appendNpcChat(msg.display || "商人", msg.text, "npc");
+        break;
       case "guild_update":
         // 公會狀態更新（ROADMAP 29）：建立/加入/離開後由伺服器推送。
         myGuild = msg.guild || null;
@@ -8088,6 +8093,41 @@
     while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
     // 只有本來就貼著底部(在追最新)才自動捲到底;正在讀舊訊息就保持原位不打擾。
     if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  // ── 會動腦的 NPC 對話接線（商店視窗內）──
+  function appendNpcChat(who, text, cls) {
+    const log = document.getElementById("npcChatLog");
+    if (!log) return;
+    const div = document.createElement("div");
+    div.style.margin = "2px 0";
+    if (cls === "npc") div.innerHTML = `<b style="color:#c9a24b">${who}：</b>${escapeHtmlNpc(text)}`;
+    else if (cls === "thinking") { div.id = "npcThinking"; div.style.opacity = "0.6"; div.textContent = `${who} 正在思考…`; }
+    else div.innerHTML = `<b style="color:#8ec4f0">你：</b>${escapeHtmlNpc(text)}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+  function npcChatThinking(on) {
+    const old = document.getElementById("npcThinking");
+    if (old) old.remove();
+    if (on) appendNpcChat("商人", "", "thinking");
+  }
+  function escapeHtmlNpc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+  function sendNpcChat() {
+    const input = document.getElementById("npcChatInput");
+    if (!input || !ws || ws.readyState !== 1) return;
+    const text = input.value.trim();
+    if (!text) return;
+    appendNpcChat("你", text, "me");
+    ws.send(JSON.stringify({ type: "talk_to_npc", npc: "merchant", text }));
+    input.value = "";
+    npcChatThinking(true);
+  }
+  {
+    const sendBtn = document.getElementById("npcChatSend");
+    const input = document.getElementById("npcChatInput");
+    if (sendBtn) sendBtn.addEventListener("click", sendNpcChat);
+    if (input) input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendNpcChat(); } });
   }
 
   document.getElementById("chatForm").addEventListener("submit", (e) => {

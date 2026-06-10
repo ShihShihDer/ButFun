@@ -2191,6 +2191,70 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
 
+                // ── 會動腦的 NPC 對話（第一塊：會聊天、會記得你、會自己判斷要不要善待你）──
+                Ok(ClientMsg::TalkToNpc { npc, text }) => {
+                    let text: String = text.chars().take(300).collect(); // 輸入上限
+                    if !text.trim().is_empty() {
+                        if let Some(persona) = crate::npc_chat::find_npc(&npc) {
+                            let player_name = app
+                                .players
+                                .read()
+                                .unwrap()
+                                .get(&id)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_default();
+                            let key = (id, npc.clone());
+                            // 讀關係、累積往來統計（talks 是「資料」，不是觸發規則）。
+                            let rel = {
+                                let mut mem = app.npc_memory.write().unwrap();
+                                let r = mem.entry(key.clone()).or_default();
+                                r.talks = r.talks.saturating_add(1);
+                                r.clone()
+                            };
+                            // 一次性小禮還沒送過 → 開放「選項」給 NPC（送不送他自己判斷）。
+                            let gift_available = !rel.gifted;
+                            // 非同步：呼叫地端 LLM 要數秒，絕不能卡住 15Hz 迴圈。
+                            let tx = tx_direct.clone();
+                            let app2 = app.clone();
+                            tokio::spawn(async move {
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, &text).await;
+                                // NPC 自己決定的送禮（暗號）。引擎只在「還沒送過」時認帳並發放（手有界）。
+                                let (wants_gift, clean) = crate::npc_chat::extract_gift_decision(&raw);
+                                let granted = gift_available && wants_gift;
+                                if granted {
+                                    if let Some(p) = app2.players.write().unwrap().get_mut(&id) {
+                                        p.inventory.add(crate::npc_chat::GIFT_ITEM, crate::npc_chat::GIFT_QTY);
+                                    }
+                                    tracing::info!(player = %player_name, npc = persona.id, "NPC 自主送了熟客小禮");
+                                }
+                                if let Ok(json) = serde_json::to_string(
+                                    &crate::protocol::ServerMsg::NpcReply {
+                                        npc: persona.id.to_string(),
+                                        display: persona.display.to_string(),
+                                        text: clean.clone(),
+                                    },
+                                ) {
+                                    let _ = tx.send(json).await; // 單播回該玩家
+                                }
+                                // 對話後更新印象 + 落定送禮狀態（隔離：只影響 NPC 對這位玩家）。
+                                let new_imp = crate::npc_chat::update_impression(
+                                    persona, &rel.impression, &text, &clean,
+                                )
+                                .await;
+                                {
+                                    let mut mem = app2.npc_memory.write().unwrap();
+                                    let r = mem.entry(key).or_default();
+                                    r.impression = new_imp;
+                                    if granted {
+                                        r.gifted = true;
+                                    }
+                                }
+                                tracing::info!(player = %player_name, npc = persona.id, "NPC 對話");
+                            });
+                        }
+                    }
+                }
+
                 // ── 公會系統（ROADMAP 29）──────────────────────────────────────────
                 Ok(ClientMsg::CreateGuild { name, tag }) => {
                     // 建立公會：需登入 + 乙太 ≥ 50；成功後從玩家扣乙太、更新 guild_tag。
