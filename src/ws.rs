@@ -807,6 +807,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     if did_sell {
                                         app.dynamic_prices.write().unwrap()
                                             .record_sale(item, qty, now_secs);
+                                        // 關係綁真實交易（ROADMAP 61）：向故鄉商人賣出時累積 sell_count。
+                                        // 只在登入玩家 + 故鄉商人（merchant NPC）才更新，星球商人無 AI 聊天不需追蹤。
+                                        if let Some(uid) = authed_uid {
+                                            if npc::is_within_shop_reach(px, py) {
+                                                let updated_rel = {
+                                                    let mut mem = app.npc_memory.write().unwrap();
+                                                    let r = mem.entry((uid, "merchant".to_string())).or_default();
+                                                    r.sell_count = r.sell_count.saturating_add(1);
+                                                    r.clone()
+                                                };
+                                                app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -818,11 +831,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
                         if !downed && npc::is_within_shop_reach(px, py) {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                let old_ether = p.ether;
-                                if let Some(new_ether) = npc::buy_from_npc(&mut p.inventory, p.ether, item, qty) {
-                                    tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, "NPC 販售");
-                                    p.ether = new_ether;
+                            let did_buy = {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    let old_ether = p.ether;
+                                    if let Some(new_ether) = npc::buy_from_npc(&mut p.inventory, p.ether, item, qty) {
+                                        tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, "NPC 販售");
+                                        p.ether = new_ether;
+                                        true
+                                    } else { false }
+                                } else { false }
+                            };
+                            // 關係綁真實交易（ROADMAP 61）：向故鄉商人購買時累積 buy_count。
+                            if did_buy {
+                                if let Some(uid) = authed_uid {
+                                    let updated_rel = {
+                                        let mut mem = app.npc_memory.write().unwrap();
+                                        let r = mem.entry((uid, "merchant".to_string())).or_default();
+                                        r.buy_count = r.buy_count.saturating_add(1);
+                                        r.clone()
+                                    };
+                                    app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
                                 }
                             }
                         }

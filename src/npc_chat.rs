@@ -24,10 +24,14 @@ pub const PER_PLAYER_NPC_COOLDOWN_SECS: u64 = 8;
 pub struct NpcRel {
     /// 一句話印象（對話後濃縮更新）。
     pub impression: String,
-    /// 跟這位玩家對話過幾次（v1 的熟識度來源；之後會改綁真實交易次數＝更硬的引擎事實）。
+    /// 跟這位玩家對話過幾次。
     pub talks: u32,
     /// 是否已送過「熟客小禮」（一次性，防重複）。
     pub gifted: bool,
+    /// 玩家賣給這個 NPC 幾次（引擎事實：ShopSell 成交才累積，不靠對話計數）。
+    pub sell_count: u32,
+    /// 玩家向這個 NPC 買過幾次（引擎事實：ShopBuy 成交才累積）。
+    pub buy_count: u32,
 }
 
 /// 熟客小禮：少量木材（在地材料、經濟影響極小；商人「清庫存送熟客」的人情味）。
@@ -131,8 +135,18 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
     } else {
         format!("【你對這位拓荒者的印象】{}", rel.impression)
     };
-    // 往來統計＝客觀資料，不是規則。讓 NPC 自己解讀「這算不算常客、值不值得親近」。
-    let stats = format!("【你和這位拓荒者的往來】到目前為止聊過大約 {} 次。", rel.talks);
+    // 往來統計＝引擎客觀資料，不是規則。讓 NPC 自己解讀「這算不算常客、值不值得親近」。
+    let stats = {
+        let trade_line = if rel.sell_count == 0 && rel.buy_count == 0 {
+            "還沒有任何交易紀錄".to_string()
+        } else {
+            format!("賣東西給你 {} 次、跟你買過 {} 次", rel.sell_count, rel.buy_count)
+        };
+        format!(
+            "【你和這位拓荒者的往來】聊過大約 {} 次；交易紀錄：{}。",
+            rel.talks, trade_line
+        )
+    };
     // 送禮：給 NPC「選擇權」而非「指令」。只有他還沒送過時才開放這個選項。
     let gift = if gift_available {
         format!(
@@ -236,7 +250,7 @@ mod tests {
     #[test]
     fn system_prompt_includes_persona_and_impression() {
         let n = find_npc("merchant").unwrap();
-        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false}, true, 5);
+        let s = system_prompt(n, &NpcRel{impression:"阿凱是常來照顧生意的熟客".into(),talks:5,gifted:false,sell_count:3,buy_count:1}, true, 5);
         assert!(s.contains("薇拉"));
         assert!(s.contains("阿凱"));
         assert!(s.contains("乙太")); // 世界觀有餵進去
@@ -280,5 +294,36 @@ mod tests {
         assert!(MAX_CONCURRENT_LLM >= 1);
         // 冷卻 ≥ 1 秒（防零除 / 過短失去意義）
         assert!(PER_PLAYER_NPC_COOLDOWN_SECS >= 1);
+    }
+
+    #[test]
+    fn trade_stats_appear_in_system_prompt() {
+        let n = find_npc("merchant").unwrap();
+        // 有交易紀錄時，prompt 應包含 sell/buy 次數。
+        let s = system_prompt(
+            n,
+            &NpcRel { impression: String::new(), talks: 2, gifted: false, sell_count: 5, buy_count: 2 },
+            false, 0,
+        );
+        assert!(s.contains("賣東西給你 5 次"), "sell_count 應出現在 prompt：{s}");
+        assert!(s.contains("跟你買過 2 次"), "buy_count 應出現在 prompt：{s}");
+    }
+
+    #[test]
+    fn no_trade_shows_no_trade_record() {
+        let n = find_npc("merchant").unwrap();
+        let s = system_prompt(
+            n,
+            &NpcRel::default(),
+            false, 0,
+        );
+        assert!(s.contains("還沒有任何交易紀錄"), "零交易時應顯示無紀錄：{s}");
+    }
+
+    #[test]
+    fn npc_rel_default_has_zero_trade_counts() {
+        let rel = NpcRel::default();
+        assert_eq!(rel.sell_count, 0);
+        assert_eq!(rel.buy_count, 0);
     }
 }

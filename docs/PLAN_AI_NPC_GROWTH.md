@@ -32,8 +32,8 @@
 1. ✅ **LLM 呼叫限流 / 佇列**（ROADMAP 59 已完成）：全域 Semaphore(5) + 每人每 NPC 冷卻 8 秒。
 2. ✅ **記憶 + 餘裕持久化**（ROADMAP 60 已完成）：`NpcRel` 與 `npc_gift_stock` 升到 Postgres 持久化。
    migration 0016 向後相容；`src/npc_memory_store.rs` 仿 land_plot_store 模式；啟動時載回、對話後 fire-and-forget upsert。
-3. **關係綁真實交易**（玩家明確要求）：往來統計改從 `ShopSell`/`ShopBuy` 成交累積（引擎事實），
-   不只對話次數。交易歷史當資料餵 NPC（「他常跟你賣木材、很少買武器」）。
+3. ✅ **關係綁真實交易**（ROADMAP 61 已完成）：`NpcRel` 新增 `sell_count`/`buy_count` 引擎事實統計；
+   `ShopSell`/`ShopBuy` 成交後累積，持久化 Postgres（migration 0017）；`system_prompt` 餵真實交易統計給 NPC。
 4. **餘裕回補=補貨**：`npc_gift_stock` 隨遊戲時間慢慢回補；進階：餘裕來自商人**實際賺到的**
    乙太/庫存（給出去的是他賺來的），讓慷慨有真實來源與代價。
 5. **更多手（每隻都綁真實資源）**：商人自己決定要不要給熟客折扣（他少賺）、要不要進某種貨。

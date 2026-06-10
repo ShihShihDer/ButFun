@@ -88,7 +88,7 @@ impl NpcMemoryStore {
 
 async fn load_memory(pool: &sqlx::postgres::PgPool) -> Vec<(Uuid, String, NpcRel)> {
     let rows = sqlx::query(
-        "SELECT player_id, npc_id, impression, talks, gifted FROM npc_memory",
+        "SELECT player_id, npc_id, impression, talks, gifted, sell_count, buy_count FROM npc_memory",
     )
     .fetch_all(pool)
     .await;
@@ -101,6 +101,8 @@ async fn load_memory(pool: &sqlx::postgres::PgPool) -> Vec<(Uuid, String, NpcRel
                 let impression: String = sqlx::Row::try_get(r, "impression").unwrap_or_default();
                 let talks: i32 = sqlx::Row::try_get(r, "talks").unwrap_or(0);
                 let gifted: bool = sqlx::Row::try_get(r, "gifted").unwrap_or(false);
+                let sell_count: i32 = sqlx::Row::try_get(r, "sell_count").unwrap_or(0);
+                let buy_count: i32 = sqlx::Row::try_get(r, "buy_count").unwrap_or(0);
                 (
                     player_id,
                     npc_id,
@@ -108,6 +110,8 @@ async fn load_memory(pool: &sqlx::postgres::PgPool) -> Vec<(Uuid, String, NpcRel
                         impression,
                         talks: talks as u32,
                         gifted,
+                        sell_count: sell_count.max(0) as u32,
+                        buy_count: buy_count.max(0) as u32,
                     },
                 )
             })
@@ -146,18 +150,22 @@ async fn upsert_rel(
     rel: &NpcRel,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO npc_memory (player_id, npc_id, impression, talks, gifted)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO npc_memory (player_id, npc_id, impression, talks, gifted, sell_count, buy_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (player_id, npc_id) DO UPDATE
-         SET impression = EXCLUDED.impression,
-             talks      = EXCLUDED.talks,
-             gifted     = EXCLUDED.gifted",
+         SET impression  = EXCLUDED.impression,
+             talks       = EXCLUDED.talks,
+             gifted      = EXCLUDED.gifted,
+             sell_count  = EXCLUDED.sell_count,
+             buy_count   = EXCLUDED.buy_count",
     )
     .bind(player_id)
     .bind(npc_id)
     .bind(&rel.impression)
     .bind(rel.talks as i32)
     .bind(rel.gifted)
+    .bind(rel.sell_count as i32)
+    .bind(rel.buy_count as i32)
     .execute(pool)
     .await?;
     Ok(())
