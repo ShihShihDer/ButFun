@@ -28,24 +28,26 @@ pub enum TileKindView {
     LavaRock,
     VoidCrystal,
     AetherMist,
+    OriginCrystal,
 }
 
 impl From<TileKind> for TileKindView {
     fn from(k: TileKind) -> Self {
         match k {
-            TileKind::Empty       => TileKindView::Empty,
-            TileKind::Dirt        => TileKindView::Dirt,
-            TileKind::Stone       => TileKindView::Stone,
-            TileKind::Ore         => TileKindView::Ore,
-            TileKind::Crystal     => TileKindView::Crystal,
-            TileKind::Mushroom    => TileKindView::Mushroom,
-            TileKind::AncientRuin => TileKindView::AncientRuin,
-            TileKind::CoralReef   => TileKindView::CoralReef,
-            TileKind::WildFlower  => TileKindView::WildFlower,
-            TileKind::JadeVine    => TileKindView::JadeVine,
-            TileKind::LavaRock    => TileKindView::LavaRock,
-            TileKind::VoidCrystal => TileKindView::VoidCrystal,
-            TileKind::AetherMist  => TileKindView::AetherMist,
+            TileKind::Empty         => TileKindView::Empty,
+            TileKind::Dirt          => TileKindView::Dirt,
+            TileKind::Stone         => TileKindView::Stone,
+            TileKind::Ore           => TileKindView::Ore,
+            TileKind::Crystal       => TileKindView::Crystal,
+            TileKind::Mushroom      => TileKindView::Mushroom,
+            TileKind::AncientRuin   => TileKindView::AncientRuin,
+            TileKind::CoralReef     => TileKindView::CoralReef,
+            TileKind::WildFlower    => TileKindView::WildFlower,
+            TileKind::JadeVine      => TileKindView::JadeVine,
+            TileKind::LavaRock      => TileKindView::LavaRock,
+            TileKind::VoidCrystal   => TileKindView::VoidCrystal,
+            TileKind::AetherMist    => TileKindView::AetherMist,
+            TileKind::OriginCrystal => TileKindView::OriginCrystal,
         }
     }
 }

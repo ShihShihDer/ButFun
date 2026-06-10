@@ -56,6 +56,8 @@ pub const PLANET_CRIMSON: &str = "crimson";
 pub const PLANET_VOID: &str = "void";
 /// 霧醚星（ROADMAP 24）星球 ID，位於主世界遠西方（X-32000，比赤焰星更深的遠西方）。
 pub const PLANET_AETHER: &str = "aether";
+/// 星源星（ROADMAP 25）星球 ID，位於主世界極西境（X-52000，比霧醚星更深的宇宙源頭）。
+pub const PLANET_ORIGIN: &str = "origin";
 /// 翠幽星出生點（對應公共農地在故鄉的相對位置，讓玩家一到就有地標可找）。
 pub const VERDANT_SPAWN_X: f32 = 22_400.0;
 pub const VERDANT_SPAWN_Y: f32 = 3_000.0;
@@ -68,6 +70,9 @@ pub const VOID_SPAWN_Y: f32 = 3_000.0;
 /// 霧醚星出生點（比赤焰星更深的遠西方，乙太迷霧宇宙邊際）。
 pub const AETHER_SPAWN_X: f32 = -32_000.0;
 pub const AETHER_SPAWN_Y: f32 = 3_000.0;
+/// 星源星出生點（比霧醚星更深的極西境，乙太文明的宇宙源頭）。
+pub const ORIGIN_SPAWN_X: f32 = -52_000.0;
+pub const ORIGIN_SPAWN_Y: f32 = 3_000.0;
 /// 故鄉 ↔ 翠幽星 / 赤焰星 / 虛空星 / 霧醚星 → 故鄉的乙太燃料費（單程 30）。
 pub const TRAVEL_ETHER_COST: u32 = 30;
 /// 故鄉 → 赤焰星的乙太燃料費（第二顆星球，需要更多乙太）。
@@ -76,6 +81,8 @@ pub const TRAVEL_ETHER_COST_CRIMSON: u32 = 50;
 pub const TRAVEL_ETHER_COST_VOID: u32 = 80;
 /// 虛空星 / 赤焰星 / 故鄉 → 霧醚星的乙太燃料費（第四顆星球，乙太迷霧邊際，需要最多乙太）。
 pub const TRAVEL_ETHER_COST_AETHER: u32 = 120;
+/// 任意星球 → 星源星的乙太燃料費（第五顆星球，宇宙源頭極西境，需要最多乙太）。
+pub const TRAVEL_ETHER_COST_ORIGIN: u32 = 150;
 
 /// 一名玩家在伺服器上的權威狀態。
 #[derive(Debug, Clone)]
@@ -100,8 +107,9 @@ pub struct Player {
     pub attack_cooldown: f32,
     /// 累積經驗值（ROADMAP 17 升級系統）。殺怪 / 採礦得 exp，等級由 exp 推算。
     pub exp: u32,
-    /// 玩家目前所在星球（ROADMAP 20/22/23/24 多星球旅程）。
-    /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，"aether" = 霧醚星。
+    /// 玩家目前所在星球（ROADMAP 20/22/23/24/25 多星球旅程）。
+    /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，
+    /// "aether" = 霧醚星，"origin" = 星源星。
     /// 執行期狀態，重連回 home 起算（不持久化，跨重啟無礙）。
     pub planet: String,
 }
@@ -164,9 +172,10 @@ impl Player {
             && (self.planet == PLANET_VERDANT
                 || self.planet == PLANET_CRIMSON
                 || self.planet == PLANET_VOID
-                || self.planet == PLANET_AETHER)
+                || self.planet == PLANET_AETHER
+                || self.planet == PLANET_ORIGIN)
         {
-            // 翠幽星 / 赤焰星 / 虛空星 / 霧醚星 → 故鄉：只需 30 乙太。
+            // 翠幽星 / 赤焰星 / 虛空星 / 霧醚星 / 星源星 → 故鄉：只需 30 乙太。
             if self.ether < TRAVEL_ETHER_COST {
                 return Err(format!("乙太不足（返回故鄉需要 {} 乙太）", TRAVEL_ETHER_COST));
             }
@@ -200,6 +209,20 @@ impl Player {
             }
             if self.inventory.count(ItemKind::VoidShard) == 0 {
                 return Err("需要持有虛空碎片才能找到霧醚星的星際航道（先探索虛空星）".into());
+            }
+            Ok(())
+        } else if dest == PLANET_ORIGIN
+            && (self.planet == PLANET_HOME
+                || self.planet == PLANET_CRIMSON
+                || self.planet == PLANET_VOID
+                || self.planet == PLANET_AETHER)
+        {
+            // 故鄉 / 赤焰星 / 虛空星 / 霧醚星 → 星源星：需持有霧醚碎片（證明踏上過霧醚星）+ 150 乙太。
+            if self.ether < TRAVEL_ETHER_COST_ORIGIN {
+                return Err(format!("乙太不足（前往星源星需要 {} 乙太）", TRAVEL_ETHER_COST_ORIGIN));
+            }
+            if self.inventory.count(ItemKind::AetherShard) == 0 {
+                return Err("需要持有霧醚碎片才能找到星源星的星際航道（先探索霧醚星）".into());
             }
             Ok(())
         } else {
@@ -867,5 +890,39 @@ mod tests {
         p.planet = PLANET_AETHER.to_string();
         p.ether = TRAVEL_ETHER_COST;
         assert!(p.can_travel_to(PLANET_HOME).is_ok(), "霧醚星→故鄉只需 30 乙太");
+    }
+
+    #[test]
+    fn travel_to_origin_fails_with_insufficient_ether() {
+        use crate::inventory::ItemKind;
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_ORIGIN - 1;
+        p.inventory.add(ItemKind::AetherShard, 1);
+        assert!(p.can_travel_to(PLANET_ORIGIN).is_err(), "乙太不足應拒絕星源星旅行");
+    }
+
+    #[test]
+    fn travel_to_origin_fails_without_aether_shard() {
+        let mut p = player_at(0.0, 0.0, Input::default());
+        p.ether = TRAVEL_ETHER_COST_ORIGIN;
+        assert!(p.can_travel_to(PLANET_ORIGIN).is_err(), "無霧醚碎片應拒絕星源星旅行");
+    }
+
+    #[test]
+    fn travel_aether_to_origin_succeeds_with_aether_shard_and_ether() {
+        use crate::inventory::ItemKind;
+        let mut p = player_at(AETHER_SPAWN_X, AETHER_SPAWN_Y, Input::default());
+        p.planet = PLANET_AETHER.to_string();
+        p.ether = TRAVEL_ETHER_COST_ORIGIN;
+        p.inventory.add(ItemKind::AetherShard, 1);
+        assert!(p.can_travel_to(PLANET_ORIGIN).is_ok(), "霧醚碎片 + 乙太足應允許星源星旅行");
+    }
+
+    #[test]
+    fn travel_origin_to_home_only_requires_ether() {
+        let mut p = player_at(ORIGIN_SPAWN_X, ORIGIN_SPAWN_Y, Input::default());
+        p.planet = PLANET_ORIGIN.to_string();
+        p.ether = TRAVEL_ETHER_COST;
+        assert!(p.can_travel_to(PLANET_HOME).is_ok(), "星源星→故鄉只需 30 乙太");
     }
 }

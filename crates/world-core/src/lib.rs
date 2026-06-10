@@ -32,6 +32,11 @@ pub const AETHER_ZONE_MAX_X: f64 = -30_000.0;
 /// 與 `crate::state::VOID_SPAWN_X`（42000）一致——虛空星出生點深在此邊界內側。
 pub const VOID_ZONE_MIN_X: f64 = 38_000.0;
 
+/// 星源星（Origin Star）在主世界的 X 最大座標。
+/// X ≤ 此值視為星源星領域（比霧醚星更深的遠西方），tile_kind_at 會生成源晶聚落（覆蓋霧醚星邏輯）。
+/// 與 `crate::state::ORIGIN_SPAWN_X`（-52000）一致——星源星出生點深在此邊界內側。
+pub const ORIGIN_ZONE_MAX_X: f64 = -50_000.0;
+
 /// 一個地形格的邊長（像素）。CHUNK_SIZE / TILE_PX = 16 格 / chunk。
 pub const TILE_PX: f32 = 32.0;
 /// 每個 chunk 在單一軸上的格數（512 / 32 = 16）。
@@ -190,6 +195,9 @@ pub enum TileKind {
     /// 霧醚晶霧——只生在霧醚星（X ≤ AETHER_ZONE_MAX_X）的聚落中，挖後掉霧醚碎片，
     /// 霧醚星 NPC 以最高溢價收購，乙太迷霧凝結的神秘晶石，鼓勵玩家深入宇宙遠西。
     AetherMist,
+    /// 源晶——只生在星源星（X ≤ ORIGIN_ZONE_MAX_X）的聚落中，挖後掉源晶碎片，
+    /// 星源星 NPC 以最高溢價收購，乙太文明源頭的原初結晶，鼓勵玩家深入宇宙最遠西境。
+    OriginCrystal,
 }
 
 impl TileKind {
@@ -206,8 +214,9 @@ impl TileKind {
             TileKind::WildFlower  => 8,
             TileKind::JadeVine    => 9,
             TileKind::LavaRock    => 10,
-            TileKind::VoidCrystal => 11,
-            TileKind::AetherMist  => 12,
+            TileKind::VoidCrystal    => 11,
+            TileKind::AetherMist     => 12,
+            TileKind::OriginCrystal  => 13,
         }
     }
 }
@@ -282,11 +291,20 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         }
     }
 
-    // 霧醚星特有：霧醚晶霧聚落。所有 wx ≤ AETHER_ZONE_MAX_X 的實心格都可能生霧醚晶霧，
+    // 星源星特有：源晶聚落。所有 wx ≤ ORIGIN_ZONE_MAX_X 的實心格都可能生源晶，
+    // 覆蓋霧醚星及所有非水域生態的普通材質（星源星比霧醚星更遠的極西境）。
+    // 次級噪聲（scale 80, seed 3141）決定聚落邊界（約 25% 的星源星實心格形成源晶聚落）；
+    // 聚落內 75% 為 OriginCrystal，25% 保留原有材質，維持地形多樣性。
+    if wx <= ORIGIN_ZONE_MAX_X && biome != Biome::Water {
+        let origin_n = value_noise(wx, wy, 80.0, 3141);
+        if origin_n > 0.75 && h < 0.75 {
+            return TileKind::OriginCrystal;
+        }
+    // 霧醚星特有：霧醚晶霧聚落。所有 ORIGIN_ZONE_MAX_X < wx ≤ AETHER_ZONE_MAX_X 的實心格都可能生霧醚晶霧，
     // 覆蓋赤焰星及所有非水域生態的普通材質（霧醚星比赤焰星更遠的遠西方）。
     // 次級噪聲（scale 85, seed 2077）決定聚落邊界（約 23% 的霧醚星實心格形成霧醚聚落）；
     // 聚落內 72% 為 AetherMist，28% 保留原有材質，維持地形多樣性。
-    if wx <= AETHER_ZONE_MAX_X && biome != Biome::Water {
+    } else if wx <= AETHER_ZONE_MAX_X && biome != Biome::Water {
         let aether_n = value_noise(wx, wy, 85.0, 2077);
         if aether_n > 0.77 && h < 0.72 {
             return TileKind::AetherMist;

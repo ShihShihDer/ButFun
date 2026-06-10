@@ -663,6 +663,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.ether = new_ether;
                                     }
                                 }
+                            } else if npc::is_within_origin_shop_reach(px, py) {
+                                // 星源星商人
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    if let Some(new_ether) = npc::sell_to_origin_npc(&mut p.inventory, p.ether, item, qty) {
+                                        tracing::info!(player = %p.name, ?item, qty, earned = new_ether - p.ether, "星源星 NPC 收購");
+                                        p.ether = new_ether;
+                                    }
+                                }
                             }
                         }
                     }
@@ -855,6 +863,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, ?item, gained, "使用霧醚精粹滿血+獲得15乙太");
                                 }
                             }
+                            ItemKind::OriginEssence => {
+                                // 源晶精粹：回復至滿血 + 獲得 20 乙太——星源星宇宙源頭能量轉換，五星最強補給。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.ether = p.ether.saturating_add(20);
+                                    tracing::info!(player = %p.name, ?item, gained, "使用源晶精粹滿血+獲得20乙太");
+                                }
+                            }
                             ItemKind::StarChart => {
                                 // 星圖：展開遠方星球快照——道具本身不消耗（是導航工具而非消耗品）。
                                 // 前端收到背包快照後本地彈出星圖彈窗；伺服器只記日誌。
@@ -867,15 +883,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::TravelToPlanet { planet }) => {
-                    // 星際旅行（ROADMAP 20/22/24）：傳送玩家到指定星球。
+                    // 星際旅行（ROADMAP 20/22/24/25）：傳送玩家到指定星球。
                     use crate::state::{
-                        PLANET_HOME, PLANET_VERDANT, PLANET_CRIMSON, PLANET_VOID, PLANET_AETHER,
+                        PLANET_HOME, PLANET_VERDANT, PLANET_CRIMSON, PLANET_VOID, PLANET_AETHER, PLANET_ORIGIN,
                         VERDANT_SPAWN_X, VERDANT_SPAWN_Y,
                         CRIMSON_SPAWN_X, CRIMSON_SPAWN_Y,
                         VOID_SPAWN_X, VOID_SPAWN_Y,
                         AETHER_SPAWN_X, AETHER_SPAWN_Y,
+                        ORIGIN_SPAWN_X, ORIGIN_SPAWN_Y,
                         TRAVEL_ETHER_COST, TRAVEL_ETHER_COST_CRIMSON, TRAVEL_ETHER_COST_VOID,
-                        TRAVEL_ETHER_COST_AETHER,
+                        TRAVEL_ETHER_COST_AETHER, TRAVEL_ETHER_COST_ORIGIN,
                     };
                     use crate::protocol::ServerMsg;
                     let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
@@ -931,6 +948,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     ok: true,
                                     planet: PLANET_AETHER.to_string(),
                                     message: "歡迎來到霧醚星⋯⋯乙太迷霧輕柔地將你環繞，霧醚晶霧在薄霧中閃爍著青白色的光芒。".to_string(),
+                                })
+                            }
+                            Ok(()) if planet == PLANET_ORIGIN => {
+                                p.ether -= TRAVEL_ETHER_COST_ORIGIN;
+                                p.planet = PLANET_ORIGIN.to_string();
+                                p.x = ORIGIN_SPAWN_X;
+                                p.y = ORIGIN_SPAWN_Y;
+                                tracing::info!(player = %p.name, "星際旅行：抵達星源星");
+                                Some(ServerMsg::TravelResult {
+                                    ok: true,
+                                    planet: PLANET_ORIGIN.to_string(),
+                                    message: "歡迎來到星源星⋯⋯乙太文明的源頭在此沉默等候，源晶的金白光芒照亮了宇宙的起源之地。".to_string(),
                                 })
                             }
                             Ok(()) => {
