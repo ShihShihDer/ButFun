@@ -112,6 +112,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             planet: crate::state::PLANET_HOME.to_string(),
             job_class: None,
             guild_tag: None,
+            achievements: crate::achievement::AchievementSet::new(),
+            kill_count: 0,
         }
     } else {
         // 等 Join
@@ -147,6 +149,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             planet: crate::state::PLANET_HOME.to_string(),
             job_class: None,
             guild_tag: None,
+            achievements: crate::achievement::AchievementSet::new(),
+            kill_count: 0,
         }
     };
     let id = player.id;
@@ -833,6 +837,36 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let completed = app.quests.write().unwrap().on_kill(kind);
                         notify_quest_complete(&app, completed);
                     }
+                    // 成就：擊殺計數里程碑（ROADMAP 30）。
+                    if let Some((_, Some(_))) = result {
+                        let (kill_count, new_level, pname, newly_unlocked) = {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&id) {
+                                p.kill_count = p.kill_count.saturating_add(1);
+                                let kc = p.kill_count;
+                                let lv = p.level();
+                                let pn = p.name.clone();
+                                // 擊殺里程碑成就
+                                let mut newly: Vec<crate::achievement::Achievement> = Vec::new();
+                                if let Some(ach) = crate::achievement::achievement_for_kill_count(kc) {
+                                    if p.achievements.unlock(ach) { newly.push(ach); }
+                                }
+                                // 升級里程碑成就（跟隨 exp 升級一起檢查）
+                                for ach in crate::achievement::achievements_for_level(lv) {
+                                    if p.achievements.unlock(ach) { newly.push(ach); }
+                                }
+                                (kc, lv, pn, newly)
+                            } else {
+                                (0, 0, String::new(), Vec::new())
+                            }
+                        };
+                        let _ = (kill_count, new_level); // 避免 unused 警告
+                        for ach in newly_unlocked {
+                            let _ = app.tx_chat.send(format!(
+                                "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
+                            ));
+                        }
+                    }
                 }
                 Ok(ClientMsg::ReturnHome) => {
                     // 回城：傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。
@@ -1045,6 +1079,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if p != "home" {
                                 let completed = app.quests.write().unwrap().on_travel(p);
                                 notify_quest_complete(&app, completed);
+                                // 成就：首次踏上該星球（ROADMAP 30）。
+                                if let Some(uid) = authed_uid {
+                                    if let Some(ach) = crate::achievement::achievement_for_planet(p) {
+                                        let is_new = app.players.write().unwrap()
+                                            .get_mut(&uid)
+                                            .map(|pl| pl.achievements.unlock(ach))
+                                            .unwrap_or(false);
+                                        if is_new {
+                                            let pname = app.players.read().unwrap()
+                                                .get(&uid).map(|pl| pl.name.clone()).unwrap_or_default();
+                                            let _ = app.tx_chat.send(format!(
+                                                "🏆 {} 解鎖成就「{}」！",
+                                                pname, ach.display_name()
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                         }
                         let _ = tx_direct.send(
@@ -1085,10 +1136,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         match result {
                             Ok(gid) => {
                                 let guild_tag = app.guilds.read().unwrap().tag_of(uid);
-                                // 扣乙太，更新 guild_tag。
-                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                    p.ether = p.ether.saturating_sub(crate::guild::GUILD_CREATE_COST);
-                                    p.guild_tag = guild_tag.clone();
+                                // 扣乙太，更新 guild_tag；成就：建立公會=加入公會（ROADMAP 30）。
+                                let (is_new_ach, pname) = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.ether = p.ether.saturating_sub(crate::guild::GUILD_CREATE_COST);
+                                        p.guild_tag = guild_tag.clone();
+                                        let new = p.achievements.unlock(crate::achievement::Achievement::GuildMember);
+                                        (new, p.name.clone())
+                                    } else {
+                                        (false, String::new())
+                                    }
+                                };
+                                if is_new_ach {
+                                    let _ = app.tx_chat.send(format!(
+                                        "🏆 {} 解鎖成就「{}」！",
+                                        pname,
+                                        crate::achievement::Achievement::GuildMember.display_name()
+                                    ));
                                 }
                                 // 回傳公會詳情給本人。
                                 let view = build_guild_view(&app, uid, gid);
@@ -1115,8 +1180,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         match result {
                             Ok(()) => {
                                 let guild_tag = app.guilds.read().unwrap().tag_of(uid);
-                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                    p.guild_tag = guild_tag;
+                                // 成就：加入公會（ROADMAP 30）。
+                                let (is_new_ach, pname) = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.guild_tag = guild_tag;
+                                        let new = p.achievements.unlock(crate::achievement::Achievement::GuildMember);
+                                        (new, p.name.clone())
+                                    } else {
+                                        (false, String::new())
+                                    }
+                                };
+                                if is_new_ach {
+                                    let _ = app.tx_chat.send(format!(
+                                        "🏆 {} 解鎖成就「{}」！",
+                                        pname,
+                                        crate::achievement::Achievement::GuildMember.display_name()
+                                    ));
                                 }
                                 let view = build_guild_view(&app, uid, guild_id);
                                 let msg = ServerMsg::GuildUpdate { guild: view };
@@ -1245,12 +1325,25 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
         );
         let _ = app.tx_chat.send(msg);
     }
-    // 全員分潤乙太。
+    // 全員分潤乙太 + 成就：任務英雄（ROADMAP 30）。
+    let mut newly_heroes: Vec<(String, bool)> = Vec::new();
     let mut players = app.players.write().unwrap();
     for p in players.values_mut() {
         p.ether = p.ether.saturating_add(
             crate::quest::QUEST_COMPLETE_REWARD * completed_descs.len() as u32
         );
+        let is_new = p.achievements.unlock(crate::achievement::Achievement::QuestHero);
+        newly_heroes.push((p.name.clone(), is_new));
+    }
+    drop(players);
+    for (pname, is_new) in newly_heroes {
+        if is_new {
+            let _ = app.tx_chat.send(format!(
+                "🏆 {} 解鎖成就「{}」！",
+                pname,
+                crate::achievement::Achievement::QuestHero.display_name()
+            ));
+        }
     }
 }
 

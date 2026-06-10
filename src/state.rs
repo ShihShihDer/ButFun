@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use world_core::{biome_at, resolve_move, Biome};
 
+use crate::achievement::AchievementSet;
 use crate::auth::AuthConfig;
 use crate::class::JobClass;
 use crate::guild::GuildStore;
@@ -123,6 +124,10 @@ pub struct Player {
     /// 玩家所屬公會的標籤快取（ROADMAP 29）。None = 不在任何公會。
     /// 公會建立 / 加入 / 離開時由 ws.rs 同步更新，PlayerView 直接讀此欄位。
     pub guild_tag: Option<String>,
+    /// 玩家已解鎖的成就（ROADMAP 30）。記憶體前置，重啟清空。
+    pub achievements: AchievementSet,
+    /// 累計擊殺敵人數（ROADMAP 30 成就觸發用）。記憶體前置，重啟清空。
+    pub kill_count: u32,
 }
 
 impl Player {
@@ -156,6 +161,8 @@ impl Player {
             planet: self.planet.clone(),
             job_class: self.job_class.map(|c| c.as_str().to_string()),
             guild_tag: self.guild_tag.clone(),
+            achievement_count: self.achievements.count() as u32,
+            achievements: self.achievements.as_wire_keys().into_iter().map(|s| s.to_string()).collect(),
         }
     }
 
@@ -474,6 +481,8 @@ mod tests {
             planet: PLANET_HOME.to_string(),
             job_class: None,
             guild_tag: None,
+            achievements: AchievementSet::new(),
+            kill_count: 0,
         }
     }
 

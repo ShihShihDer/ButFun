@@ -653,6 +653,12 @@
             updateGuildHud(me.guild_tag ? { tag: me.guild_tag } : null);
           }
 
+          // 成就 HUD（ROADMAP 30）：更新成就計數器，偵測新成就解鎖。
+          if (typeof me.achievement_count === "number") {
+            updateAchievementHud(me.achievement_count, me.achievements || []);
+            updateAchievementPanel(me.achievements || []);
+          }
+
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
@@ -1694,6 +1700,7 @@
         (e.key === "q" || e.key === "Q") ? "dockQuest" :
         (e.key === "j" || e.key === "J") ? "dockClass" :
         (e.key === "g" || e.key === "G") ? "dockGuild" :
+        (e.key === "a" || e.key === "A") ? "dockAchievement" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -4549,6 +4556,66 @@
     }
   }
 
+  // 成就系統（ROADMAP 30）：12 個成就定義。
+  const ACHIEVEMENTS = [
+    { key: "travel_verdant", icon: "🌿", name: "翠幽先驅者",   desc: "首次前往翠幽星",              cat: "探索" },
+    { key: "travel_crimson", icon: "🔴", name: "赤焰先驅者",   desc: "首次前往赤焰星",              cat: "探索" },
+    { key: "travel_void",    icon: "🌑", name: "虛空先驅者",   desc: "首次前往虛空星",              cat: "探索" },
+    { key: "travel_aether",  icon: "🌫️", name: "霧醚先驅者",  desc: "首次前往霧醚星",              cat: "探索" },
+    { key: "travel_origin",  icon: "🌟", name: "星源先驅者",   desc: "首次前往星源星",              cat: "探索" },
+    { key: "first_kill",     icon: "⚔️", name: "初次獵殺",    desc: "擊殺第一個敵人",              cat: "戰鬥" },
+    { key: "hunter",         icon: "🗡️", name: "老練獵人",    desc: "累積擊殺 50 個敵人",          cat: "戰鬥" },
+    { key: "level_five",     icon: "⭐", name: "Lv.5 冒險者", desc: "達到 5 級",                   cat: "成長" },
+    { key: "level_ten",      icon: "💫", name: "Lv.10 精英",  desc: "達到 10 級",                  cat: "成長" },
+    { key: "level_twenty",   icon: "✨", name: "Lv.20 傳說",  desc: "達到 20 級",                  cat: "成長" },
+    { key: "guild_member",   icon: "⚜️", name: "公會成員",    desc: "加入或建立一個公會",           cat: "社交" },
+    { key: "quest_hero",     icon: "🎉", name: "任務英雄",    desc: "參與完成一次全服任務",         cat: "社交" },
+  ];
+
+  let lastAchievements = [];  // 上一幀成就清單，用來偵測新解鎖
+  let lastAchSig = null;       // 面板簽章，未變就不重建
+
+  // 更新成就 HUD pill：🏆 N/12
+  function updateAchievementHud(count, unlocked) {
+    const el = document.getElementById("hudAchievement");
+    if (!el) return;
+    el.textContent = `🏆 ${count}/12`;
+    el.title = `成就 ${count}/12（按 A 開啟成就面板）`;
+    if (count >= 12) {
+      el.style.color = "#ffd700";  // 全成就金色
+    }
+  }
+
+  // 更新成就面板：列出 12 個成就的解鎖狀態。
+  function updateAchievementPanel(unlocked) {
+    const body = document.getElementById("achievementBody");
+    const summary = document.getElementById("achievementSummary");
+    if (!body) return;
+    const sig = unlocked.slice().sort().join(",");
+    if (sig === lastAchSig) return;
+    lastAchSig = sig;
+    const unlockedSet = new Set(unlocked);
+    const count = unlockedSet.size;
+    if (summary) summary.textContent = `：${count}/12`;
+    // 依分類分組顯示。
+    const cats = ["探索", "戰鬥", "成長", "社交"];
+    let html = "";
+    for (const cat of cats) {
+      const catAchs = ACHIEVEMENTS.filter(a => a.cat === cat);
+      html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${cat}</div>`;
+      for (const a of catAchs) {
+        const done = unlockedSet.has(a.key);
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:${done ? "1" : "0.4"}">`;
+        html += `<span style="font-size:1.2em;width:1.4em;text-align:center">${a.icon}</span>`;
+        html += `<div><div style="font-weight:${done ? "600" : "400"};color:${done ? "#e8d5a0" : "#888"}">${escHtml(a.name)}</div>`;
+        html += `<div style="font-size:.78em;color:#888">${escHtml(a.desc)}</div></div>`;
+        if (done) html += `<span style="margin-left:auto;color:#7ec87e;font-size:.85em">✓</span>`;
+        html += `</div>`;
+      }
+    }
+    body.innerHTML = html;
+  }
+
   // 更新公會面板：顯示當前公會資訊（若有）或公會瀏覽清單。
   // guild = myGuild 或 null；guildList = 伺服器傳來的列表（null 代表尚未請求）。
   function updateGuildPanel(guild, guildList, isGuestUser) {
@@ -5818,6 +5885,15 @@
         try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
       }
     };
+    // 成就 HUD pill 點擊時開啟成就面板。
+    const achHudEl = document.getElementById("hudAchievement");
+    if (achHudEl) {
+      achHudEl.addEventListener("click", () => {
+        const dockBtn = document.getElementById("dockAchievement");
+        if (dockBtn && toggleDockWin) toggleDockWin("dockAchievement");
+      });
+      achHudEl.style.cursor = "pointer";
+    }
     // 公會 dock 按鈕點擊時也請求列表。
     const guildDockBtn = document.getElementById("dockGuild");
     if (guildDockBtn) {
