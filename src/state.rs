@@ -695,6 +695,10 @@ pub struct AppState {
     /// 引擎世界事件公共記憶（ROADMAP 65）：NPC 對話可自然提及近期大事。
     /// **只有引擎能寫**（玩家文字永遠進不來）；記憶體模式，重啟清空（近況快訊不需持久化）。
     pub world_log: Arc<RwLock<crate::world_log::WorldLog>>,
+    /// 玩家個人事跡日誌（ROADMAP 67）：每位玩家完成任務/訂單/探勘等，引擎記一條。
+    /// NPC 對話時讀取當前玩家的日誌，讓 NPC 可自然提及「你在整個村子的事跡」。
+    /// 記憶體模式，重啟清空（近況日誌，不需持久化）。
+    pub player_logs: Arc<RwLock<HashMap<Uuid, crate::player_log::PlayerLog>>>,
     /// NPC 生命週期管理器（ROADMAP 66）：每個 NPC 有壽命計時器，老年期注入語境，
     /// 壽命到時觸發「回歸乙太」→ 繼承人接手。記憶體模式，重啟歸零（「世界換季」）。
     pub npc_lifecycle: Arc<RwLock<crate::npc_lifecycle::NpcLifecycle>>,
@@ -799,6 +803,7 @@ impl AppState {
             village_buff_until: Arc::new(RwLock::new(None)),
             world_log: Arc::new(RwLock::new(crate::world_log::WorldLog::new())),
             npc_lifecycle: Arc::new(RwLock::new(crate::npc_lifecycle::NpcLifecycle::new())),
+            player_logs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

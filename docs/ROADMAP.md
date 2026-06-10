@@ -549,6 +549,14 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 純記憶體模式（重啟 = 「世界換季」，零 migration）；守住療癒調性：損失有意義但不創傷。
     - `src/npc_lifecycle.rs` 純邏輯模組（9 個單元測試）；state.rs 新增 `npc_lifecycle` 欄位；game.rs 每 tick 推進；ws.rs TalkToNpc 注入語境與動態顯示名。
 
+67. ✅ **NPC 跨角色情報網——NPC 能聊你在整個村子的事跡（AI NPC 成長第 9 步）**（本輪）
+    - 新增 `src/player_log.rs`：per-player 個人事跡日誌（記憶體模式，最近 8 條，ring buffer）。
+    - 引擎在 5 種活動完成後記一條：懸賞討伐、工坊訂單、野外探勘、星際貿易、農展委託。
+    - NPC system prompt 新增「【這位拓荒者的近期事跡（引擎紀錄）】」段落，隨每次對話注入。
+    - 玩家感知：NPC 現在可自然說出「聽說你剛在工坊完成訂單」或「你最近去探勘過遠郊」等引擎事實。
+    - 守護鐵律：玩家文字永遠進不來（引擎寫入），per-player 隔離，記憶體模式無 migration；降級安全（日誌空時不注入，不汙染 prompt）。
+    - `src/player_log.rs` 純邏輯模組（6 個單元測試）；state.rs 新增 `player_logs` 欄位；ws.rs 5 個活動完成點埋針；`npc_chat.rs` + `village_chief.rs` system_prompt 接收 `player_activity` 參數。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
