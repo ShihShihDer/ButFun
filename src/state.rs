@@ -20,6 +20,7 @@ use crate::field::Field;
 use crate::field_store::FieldStore;
 use crate::market::Market;
 use crate::gather_field::NodeField;
+use crate::world_event::WorldEvent;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
 use crate::tiles::TileWorld;
@@ -373,6 +374,9 @@ pub struct AppState {
     pub tile_world: Arc<RwLock<TileWorld>>,
     /// 地形差異的持久化 store：啟動時載回、C-2 挖掘時非同步落地。
     pub tile_store: TileStore,
+    /// 宇宙裂縫世界事件狀態（ROADMAP 26）。遊戲迴圈每 tick 推進；
+    /// 觸發時注入裂縫守護者並廣播聊天公告，前端據此渲染裂縫視覺效果。
+    pub world_event: Arc<RwLock<WorldEvent>>,
 }
 
 impl AppState {
@@ -433,6 +437,7 @@ impl AppState {
             market: Arc::new(RwLock::new(Market::new())),
             tile_world: Arc::new(RwLock::new(tile_world)),
             tile_store,
+            world_event: Arc::new(RwLock::new(WorldEvent::new())),
         }
     }
 

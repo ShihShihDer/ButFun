@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::combat::EnemyKind;
+use crate::world_event::WorldEventView;
 use crate::daynight::Phase;
 use crate::gather::NodeKind;
 use crate::inventory::ItemKind;
@@ -170,6 +171,9 @@ pub enum ServerMsg {
         /// C-1：永遠為空陣列；C-2 起有挖掘記錄時才非空。
         /// 前端本地用 `tileKindAt` 生成初始地形，收到 delta 後覆蓋對應格子。
         terrain: Vec<TileDeltaView>,
+        /// 目前開啟中的宇宙裂縫事件（ROADMAP 26）；`None` 表示無事件。
+        /// 前端用來在小地圖顯示裂縫標記 + 畫面上渲染裂縫光效。
+        world_event: Option<WorldEventView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -458,6 +462,7 @@ mod tests {
                 sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15 }],
             }],
             terrain: vec![],
+            world_event: None,
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
