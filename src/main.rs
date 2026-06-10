@@ -64,6 +64,7 @@ mod npc_lifecycle;
 mod npc_memory_store;
 mod village_chief;
 mod world_log;
+mod player_log;
 
 use std::net::SocketAddr;
 

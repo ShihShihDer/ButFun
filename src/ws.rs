@@ -1151,6 +1151,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = tx_direct.send(format!(
                                     "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
                                 ));
+                                // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
+                                app.player_logs.write().unwrap()
+                                    .entry(uid)
+                                    .or_default()
+                                    .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
                             }
                         }
                     }
@@ -1936,6 +1941,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.masteries.gain_merchant(TRADE_MERCHANT_XP);
                                 tracing::info!(player = %p.name, reward, "交付貿易包裹");
                             }
+                            // 記入玩家事跡日誌（ROADMAP 67）。
+                            app.player_logs.write().unwrap()
+                                .entry(uid)
+                                .or_default()
+                                .push(format!("完成星際貿易路線，獲得 {} 乙太", reward));
                         }
                     }
                 }
@@ -2013,6 +2023,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.workshop_cooldown = WORKSHOP_COOLDOWN_SECS;
                                 tracing::info!(player = %p.name, reward, xp, "交付工坊訂單");
                             }
+                            // 記入玩家事跡日誌（ROADMAP 67）。
+                            app.player_logs.write().unwrap()
+                                .entry(uid)
+                                .or_default()
+                                .push(format!("在工坊完成了加急訂單，獲得 {} 乙太", reward));
                         }
                     }
                 }
@@ -2112,6 +2127,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 "🗺️ {} 完成探勘採樣！獲得 {} 乙太 + {} 探索者 XP！",
                                 pname, reward, xp
                             ));
+                            // 記入玩家事跡日誌（ROADMAP 67）。
+                            app.player_logs.write().unwrap()
+                                .entry(uid)
+                                .or_default()
+                                .push(format!("完成野外探勘採樣任務，獲得 {} 乙太", reward));
+                            let _ = pname; // suppress unused warning
+                            let _ = xp;
                         }
                     }
                 }
@@ -2181,6 +2203,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 "📦 {} 完成星際採購令！獲得 {} 乙太 + {} 商人 XP！",
                                 pname, reward, xp
                             ));
+                            // 記入玩家事跡日誌（ROADMAP 67）。
+                            app.player_logs.write().unwrap()
+                                .entry(uid)
+                                .or_default()
+                                .push(format!("交付了跨星採購令，獲得 {} 乙太", reward));
+                            let _ = pname;
+                            let _ = xp;
                         }
                     }
                 }
@@ -2254,6 +2283,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         };
                         if let Some((pname, reward, order_name)) = result {
                             let _ = app.tx_chat.send(format!("🏅 {} 完成了{}！獲得 {} 乙太", pname, order_name, reward));
+                            // 記入玩家事跡日誌（ROADMAP 67）。
+                            app.player_logs.write().unwrap()
+                                .entry(uid)
+                                .or_default()
+                                .push(format!("向老農提交農展委託，獲得 {} 乙太", reward));
+                            let _ = pname;
                         }
                     }
                 }
@@ -2303,6 +2338,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             };
                             // 世界近況（ROADMAP 65）：引擎事實，只有引擎能寫；空字串 = 無近況。
                             let world_news = app.world_log.read().unwrap().to_prompt_section();
+                            // 玩家個人事跡（ROADMAP 67）：讀取當前玩家完成任務的引擎紀錄。
+                            let player_activity = {
+                                let logs = app.player_logs.read().unwrap();
+                                logs.get(&id).map(|l| l.to_prompt_section()).unwrap_or_default()
+                            };
 
                             // NPC 生命週期（ROADMAP 66）：老年語境 + 繼承人首次登場語境 + 動態顯示名。
                             let (elder_context, heir_context_opt, lifecycle_display) = {
@@ -2330,7 +2370,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let treasury = *app.village_treasury.read().unwrap();
                                 // 將生命週期老年語境注入到 chief_prompt 末尾。
                                 let chief_prompt = {
-                                    let base = crate::village_chief::system_prompt(&rel, treasury, &world_news);
+                                    let base = crate::village_chief::system_prompt(&rel, treasury, &world_news, &player_activity);
                                     if full_elder_context.is_empty() { base } else { format!("{base}{full_elder_context}") }
                                 };
                                 let display_name_chief = display_name.clone();
@@ -2460,7 +2500,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         return;
                                     }
                                 };
-                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context).await;
+                                let raw = crate::npc_chat::reply(persona, &rel, gift_available, stock, &text, &world_news, &full_elder_context, &player_activity).await;
                                 // NPC 自己決定的送禮（暗號）。引擎原子扣減餘裕：送完就真的沒了（手有界＋稀缺）。
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
