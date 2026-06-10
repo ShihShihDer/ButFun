@@ -26,11 +26,11 @@ EOF
 
 cat > ~/.config/systemd/user/butfun-auto.timer <<'EOF'
 [Unit]
-Description=每 20 分跑一輪 ButFun 半自動迴圈
+Description=ButFun 半自動迴圈心跳（每 2 分；實際節奏由 butfun-auto.sh 依週額度自適應）
 
 [Timer]
 OnBootSec=3min
-OnUnitActiveSec=20min
+OnUnitActiveSec=2min
 Persistent=true
 
 [Install]
