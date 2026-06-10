@@ -162,6 +162,9 @@ pub enum ClientMsg {
     /// 請求公會列表（ROADMAP 29）：前端開啟「加入公會」面板時送出，
     /// 伺服器回 `GuildList`。
     RequestGuildList,
+    /// 請求每日任務（ROADMAP 32）：前端開啟每日任務面板時送出，
+    /// 伺服器回 `DailyQuestsUpdate`。未登入靜默忽略。
+    RequestDailyQuests,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -216,6 +219,9 @@ pub enum ServerMsg {
     GuildList { guilds: Vec<GuildBrief> },
     /// 公會頻道聊天訊息（ROADMAP 29）：只送給同公會成員。
     GuildChat { guild_tag: String, from: String, text: String },
+    /// 玩家自己的每日任務狀態（ROADMAP 32）：回應 `RequestDailyQuests` 或任務完成後送出。
+    /// `tasks` 為 3 條任務的詳細資訊；`done_count` = 目前完成數（0-3）。
+    DailyQuestsUpdate { tasks: Vec<crate::daily_quest::DailyTaskView>, done_count: u32 },
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。

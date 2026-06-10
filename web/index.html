@@ -367,6 +367,8 @@
       <span class="hud-pill hidden" id="hudClass" title="目前職業（按 J 開啟職業選擇）" style="color:#c8b8ff">🎭 職業</span>
       <!-- 公會指示器（ROADMAP 29 公會系統）：加入公會後顯示公會標籤；按 G 開啟公會面板。 -->
       <span class="hud-pill hidden" id="hudGuild" title="目前公會（按 G 開啟公會面板）" style="color:#ffd580">⚜️ —</span>
+      <!-- 每日任務指示器（ROADMAP 32）：顯示今日完成任務數；按 D 開啟每日任務面板。 -->
+      <span class="hud-pill hidden" id="hudDailyQuest" title="每日任務（按 D 開啟）" style="color:#80e8ff;cursor:pointer">📅 0/3</span>
       <!-- 成就指示器（ROADMAP 30 成就系統）：顯示已解鎖成就數；按 A 開啟成就面板。 -->
       <span class="hud-pill" id="hudAchievement" title="成就（按 A 開啟成就面板）" style="color:#ffd580;cursor:pointer">🏆 0/12</span>
       <!-- 手上武器（接 PLAN「手上武器小圖示」）:背包有 weapon 才亮。伺服器 combat 接線後
@@ -389,6 +391,7 @@
       <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
       <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
       <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
+      <button type="button" class="dock-btn" id="dockDailyQuest" data-win="winDailyQuest" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="D" aria-label="每日任務（D）" title="每日任務（D）">📅</button>
       <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="H" aria-label="操作說明（H）" title="操作說明（H）">📖</button>
       <button type="button" class="dock-btn" id="dockSettings" data-win="winSettings" aria-haspopup="dialog" aria-expanded="false" aria-label="設定" title="設定">⚙️</button>
     </div>
@@ -479,6 +482,15 @@
         <button type="button" class="win-close" data-close="winAchievement" aria-label="關閉成就面板">✕</button>
       </div>
       <div id="achievementBody" style="font-size:13px;min-width:280px">載入中…</div>
+    </div>
+
+    <!-- 每日任務面板（ROADMAP 32）：3 條個人每日任務，24 小時後重置。 -->
+    <div id="winDailyQuest" class="hud-window hidden" role="dialog" aria-labelledby="dailyQuestTitle">
+      <div class="win-head">
+        <span class="win-title" id="dailyQuestTitle">📅 每日任務<span id="dailyQuestSummary"></span></span>
+        <button type="button" class="win-close" data-close="winDailyQuest" aria-label="關閉每日任務">✕</button>
+      </div>
+      <div id="dailyQuestBody" style="font-size:13px;min-width:260px">載入中…</div>
     </div>
 
     <!-- 公會面板（ROADMAP 29）：建立 / 加入 / 管理公會、向金庫捐贈乙太、公會聊天提示。 -->

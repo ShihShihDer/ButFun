@@ -470,6 +470,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let item: crate::inventory::ItemKind = kind.into();
                         let completed = app.quests.write().unwrap().on_gather(item);
                         notify_quest_complete(&app, completed);
+                        // 每日任務：採集事件（ROADMAP 32）。
+                        if let Some(uid) = authed_uid {
+                            advance_daily_gather(&app, uid, item, amount, &tx_direct);
+                        }
                     }
                 }
                 Ok(ClientMsg::Craft { recipe_id }) => {
@@ -867,6 +871,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             ));
                         }
                     }
+                    // 每日任務：擊殺事件（ROADMAP 32）。
+                    if let (Some(uid), Some((kill_kind, Some(_)))) = (authed_uid, result) {
+                        advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                    }
                 }
                 Ok(ClientMsg::ReturnHome) => {
                     // 回城：傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。
@@ -1095,6 +1103,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             ));
                                         }
                                     }
+                                    // 每日任務：旅行事件（ROADMAP 32）。
+                                    advance_daily_travel(&app, uid, p, &tx_direct);
                                 }
                             }
                         }
@@ -1286,6 +1296,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 公會系統 end ───────────────────────────────────────────────
+
+                // ── 每日任務系統（ROADMAP 32）────────────────────────────────────
+                Ok(ClientMsg::RequestDailyQuests) => {
+                    if let Some(uid) = authed_uid {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let seed = uid.as_u128() as u64;
+                        let mut dq = app.daily_quests.write().unwrap();
+                        let state = dq.entry(uid).or_insert_with(|| {
+                            crate::daily_quest::PlayerDailyState::new(seed, now)
+                        });
+                        state.check_reset(now, seed);
+                        let views: Vec<_> = state.tasks.iter().map(|t| t.to_view()).collect();
+                        let done = state.done_count() as u32;
+                        drop(dq);
+                        let msg = ServerMsg::DailyQuestsUpdate { tasks: views, done_count: done };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                    }
+                }
+                // ── 每日任務系統 end ─────────────────────────────────────────────
+
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
@@ -1344,6 +1379,133 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
                 crate::achievement::Achievement::QuestHero.display_name()
             ));
         }
+    }
+}
+
+// ── 每日任務輔助函式（ROADMAP 32）────────────────────────────────────────────────
+
+/// 取得或初始化玩家每日狀態後，執行閉包並回傳結果。
+/// 閉包回傳 `(completed_task_idx, views, done_count, player_name)`。
+fn with_daily_state<F, R>(app: &AppState, uid: uuid::Uuid, f: F) -> Option<R>
+where
+    F: FnOnce(&mut crate::daily_quest::PlayerDailyState) -> R,
+{
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let seed = uid.as_u128() as u64;
+    let mut dq = app.daily_quests.write().unwrap();
+    let state = dq.entry(uid).or_insert_with(|| crate::daily_quest::PlayerDailyState::new(seed, now));
+    state.check_reset(now, seed);
+    Some(f(state))
+}
+
+/// 每日任務完成時，給玩家乙太 + EXP 並送出更新。
+fn on_daily_task_completed(
+    app: &AppState,
+    uid: uuid::Uuid,
+    views: Vec<crate::daily_quest::DailyTaskView>,
+    done_count: u32,
+    all_done: bool,
+    tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    // 乙太 + EXP 獎勵。
+    let pname = {
+        let mut players = app.players.write().unwrap();
+        if let Some(p) = players.get_mut(&uid) {
+            p.ether = p.ether.saturating_add(crate::daily_quest::DAILY_TASK_ETHER_REWARD);
+            let old_level = p.level();
+            p.exp = p.exp.saturating_add(crate::daily_quest::DAILY_TASK_EXP_REWARD);
+            if p.level() > old_level {
+                p.vitals.on_level_up(p.level());
+            }
+            p.name.clone()
+        } else {
+            String::new()
+        }
+    };
+    // 送出更新給本人。
+    let msg = ServerMsg::DailyQuestsUpdate { tasks: views, done_count };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        let _ = tx.try_send(json);
+    }
+    // 三條全完：全服廣播。
+    if all_done && !pname.is_empty() {
+        let _ = app.tx_chat.send(format!("🌟 {} 完成今日全部每日任務！", pname));
+    }
+}
+
+/// 擊殺事件推進每日任務。
+fn advance_daily_kill(
+    app: &AppState,
+    uid: uuid::Uuid,
+    kind: crate::combat::EnemyKind,
+    tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    let result = with_daily_state(app, uid, |state| {
+        let completed = state.on_kill(kind);
+        if completed.is_some() {
+            let views: Vec<_> = state.tasks.iter().map(|t| t.to_view()).collect();
+            let done = state.done_count() as u32;
+            let all = state.all_complete() && !state.all_done_announced;
+            if all { state.all_done_announced = true; }
+            Some((views, done, all))
+        } else {
+            None
+        }
+    });
+    if let Some(Some((views, done, all))) = result {
+        on_daily_task_completed(app, uid, views, done, all, tx);
+    }
+}
+
+/// 採集事件推進每日任務。
+fn advance_daily_gather(
+    app: &AppState,
+    uid: uuid::Uuid,
+    item: crate::inventory::ItemKind,
+    amount: u32,
+    tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    let result = with_daily_state(app, uid, |state| {
+        let completed = state.on_gather(item, amount);
+        if completed.is_some() {
+            let views: Vec<_> = state.tasks.iter().map(|t| t.to_view()).collect();
+            let done = state.done_count() as u32;
+            let all = state.all_complete() && !state.all_done_announced;
+            if all { state.all_done_announced = true; }
+            Some((views, done, all))
+        } else {
+            None
+        }
+    });
+    if let Some(Some((views, done, all))) = result {
+        on_daily_task_completed(app, uid, views, done, all, tx);
+    }
+}
+
+/// 旅行事件推進每日任務。
+fn advance_daily_travel(
+    app: &AppState,
+    uid: uuid::Uuid,
+    planet: &str,
+    tx: &tokio::sync::mpsc::Sender<String>,
+) {
+    let result = with_daily_state(app, uid, |state| {
+        let completed = state.on_travel(planet);
+        if completed.is_some() {
+            let views: Vec<_> = state.tasks.iter().map(|t| t.to_view()).collect();
+            let done = state.done_count() as u32;
+            let all = state.all_complete() && !state.all_done_announced;
+            if all { state.all_done_announced = true; }
+            Some((views, done, all))
+        } else {
+            None
+        }
+    });
+    if let Some(Some((views, done, all))) = result {
+        on_daily_task_completed(app, uid, views, done, all, tx);
     }
 }
 

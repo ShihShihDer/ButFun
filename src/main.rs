@@ -30,6 +30,7 @@ mod tiles;
 mod vitals;
 mod plot_registry;
 mod plots;
+mod daily_quest;
 mod positions;
 mod profile;
 mod protocol;

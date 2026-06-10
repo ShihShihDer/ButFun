@@ -23,6 +23,7 @@ use crate::field::Field;
 use crate::field_store::FieldStore;
 use crate::market::Market;
 use crate::gather_field::NodeField;
+use crate::daily_quest::PlayerDailyState;
 use crate::quest::QuestState;
 use crate::world_event::WorldEvent;
 use crate::inventory::Inventory;
@@ -366,6 +367,9 @@ pub struct AppState {
     /// 公會管理器（ROADMAP 29）：記憶體前置，重啟清空。
     /// 玩家建立 / 加入 / 離開 / 捐贈公會由 ws.rs 操作此 store。
     pub guilds: Arc<RwLock<GuildStore>>,
+    /// 每位玩家的每日任務狀態（ROADMAP 32）：記憶體前置，重啟從當天重新生成。
+    /// key = 玩家 Uuid（已登入玩家才有每日任務）。
+    pub daily_quests: Arc<RwLock<HashMap<Uuid, PlayerDailyState>>>,
 }
 
 impl AppState {
@@ -429,6 +433,7 @@ impl AppState {
             world_event: Arc::new(RwLock::new(WorldEvent::new())),
             quests: Arc::new(RwLock::new(QuestState::new())),
             guilds: Arc::new(RwLock::new(GuildStore::new())),
+            daily_quests: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
