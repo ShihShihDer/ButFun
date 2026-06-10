@@ -367,6 +367,16 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::PotatoGratin,
         output_qty: 1,
     },
+
+    // ── 夜採星晶料理（ROADMAP 50 夜間限定採集）──────────────────────────────
+    /// 夜幻藥水：星晶碎片×3 → 夜幻藥水×1。使用後回復 20 HP——夜間探索最強效的補給。
+    /// 材料來自夜間採集的星晶礦脈，是探索者路線（第五活動路線）的專屬合成品。
+    Recipe {
+        id: "night_potion",
+        inputs: &[(ItemKind::StarCrystalShard, 3)],
+        output: ItemKind::NightPotion,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -619,8 +629,10 @@ mod tests {
                     item,
                     ItemKind::WheatGrain | ItemKind::Carrot | ItemKind::Potato
                 );
+                // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
+                let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
                 assert!(
-                    obtainable.contains(&item) || craftable || farm_croppable,
+                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",

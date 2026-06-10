@@ -288,7 +288,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -328,6 +328,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         ranch_plots: ranch_plots.clone(),
                                         // 農地作物狀態全部送出（稀疏，通常很少地塊有種植）。
                                         farm_crop_plots: farm_crop_plots.clone(),
+                                        // 夜採星晶礦脈：夜間節點依 AOI 剔除，白天空陣列直接傳。
+                                        star_crystals: star_crystals.iter().filter(|c| filter_pos(c.x, c.y)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1185,6 +1187,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, gained, "食用焗烤馬鈴薯回血");
                                 }
                             }
+                            ItemKind::NightPotion => {
+                                // 夜幻藥水：回復 20 HP（星晶碎片×3 合成；夜採路線最強效補給）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(20);
+                                    tracing::info!(player = %p.name, gained, "飲用夜幻藥水回血");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }
@@ -1675,6 +1684,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         }
                                         p.masteries.gain_farmer(xp);
                                         tracing::info!(player = %p.name, plot_id, items = items.len(), "收割作物");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 夜採星晶（ROADMAP 50）────────────────────────────────────────────
+                Ok(ClientMsg::GatherStarCrystal) => {
+                    // 採集星晶礦脈：需夜間、在礦脈 80px 內、未倒地、已登入。
+                    use crate::inventory::ItemKind;
+                    if let Some(uid) = authed_uid {
+                        let is_night = {
+                            app.daynight.read().unwrap().phase() == crate::daynight::Phase::Night
+                        };
+                        if is_night {
+                            let (px, py, is_downed) = {
+                                app.players.read().unwrap()
+                                    .get(&uid)
+                                    .map(|p| (p.x, p.y, p.vitals.is_downed()))
+                                    .unwrap_or((0.0, 0.0, true))
+                            };
+                            if !is_downed {
+                                let gathered = app.star_crystals.write().unwrap().gather_near(px, py);
+                                if gathered {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.inventory.add(ItemKind::StarCrystalShard, 1);
+                                        p.masteries.gain_explorer(crate::star_crystal::GATHER_EXPLORER_XP);
+                                        tracing::info!(player = %p.name, "採集星晶碎片");
                                     }
                                 }
                             }
