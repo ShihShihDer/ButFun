@@ -53,6 +53,7 @@ mod fishing;
 mod ranching;
 mod farm_crops;
 mod star_crystal;
+mod trade_route;
 
 use std::net::SocketAddr;
 

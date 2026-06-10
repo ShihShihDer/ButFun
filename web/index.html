@@ -427,6 +427,8 @@
       <span class="hud-pill hidden" id="hudWeapon" title="武器">🗡️ 武器</span>
       <!-- C-4 建造：選取材料時亮起，右鍵點空格放置；再按一次取消。 -->
       <span class="hud-pill hidden" id="hudBuildMode" title="放置模式（右鍵點空格放置；再按取消）">🏗️ —</span>
+      <!-- 貿易包裹指示器（ROADMAP 51 星際貿易）：攜帶包裹時顯示目的地；按 V 開啟面板。 -->
+      <span class="hud-pill hidden" id="hudTrade" title="攜帶中的貿易包裹（按 V 開啟面板）" style="color:#f0b060;cursor:pointer">📦 →</span>
       <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
       <span class="hud-pill" id="hudTime">—</span>
       <button type="button" class="hud-pill" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 回城</button>
@@ -458,6 +460,7 @@
         <button type="button" class="dock-btn" id="dockRanch" data-win="winRanch" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="N" aria-label="牧場（N）" title="牧場（N）">🐔</button>
         <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="T" aria-label="農作（T）" title="農作（T）">🌾</button>
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="X" aria-label="夜採星晶（X）" title="夜採星晶（X）">✨</button>
+        <button type="button" class="dock-btn" id="dockTrade" data-win="winTrade" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="V" aria-label="星際貿易（V）" title="星際貿易（V）">📦</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -564,6 +567,14 @@
         <button type="button" class="win-close" data-close="winStarCrystal" aria-label="關閉星晶面板">✕</button>
       </div>
       <div id="starCrystalBody"></div>
+    </div>
+    <!-- 星際貿易面板（ROADMAP 51）：商人熟練度第六路線；V 鍵開關。 -->
+    <div id="winTrade" class="hud-window hidden" role="dialog" aria-labelledby="tradeTitle">
+      <div class="win-head">
+        <span class="win-title" id="tradeTitle">📦 星際貿易</span>
+        <button type="button" class="win-close" data-close="winTrade" aria-label="關閉星際貿易面板">✕</button>
+      </div>
+      <div id="tradeBody"></div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->

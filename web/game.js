@@ -635,6 +635,7 @@
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
+          updateTradePanel(me, isGuest); // 星際貿易面板（ROADMAP 51）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1867,7 +1868,8 @@
         (e.key === "f" || e.key === "F") ? "dockFish" :
         (e.key === "n" || e.key === "N") ? "dockRanch" :
         (e.key === "t" || e.key === "T") ? "dockFarmCrop" :
-        (e.key === "x" || e.key === "X") ? "dockStarCrystal" : null;
+        (e.key === "x" || e.key === "X") ? "dockStarCrystal" :
+        (e.key === "v" || e.key === "V") ? "dockTrade" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -6172,6 +6174,141 @@
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
     tip.textContent = "星晶礦脈每夜生成 20 個，天亮消失。採集給探索者熟練度 +15 XP，鼓勵夜間競速探索。";
     body.appendChild(tip);
+  }
+
+  // ── 星際貿易面板（ROADMAP 51）──────────────────────────────────────────────
+  // 貿易路線資料（與 trade_route.rs 保持同步）。
+  const TRADE_ROUTES = [
+    { id: 1, origin: "home",    dest: "verdant", cargoName: "故鄉星光水晶",  reward: 15 },
+    { id: 2, origin: "verdant", dest: "home",    cargoName: "翠幽草藥精華",  reward: 12 },
+    { id: 3, origin: "home",    dest: "crimson", cargoName: "冷卻星能結晶",  reward: 18 },
+    { id: 4, origin: "crimson", dest: "home",    cargoName: "熔岩礦石精華",  reward: 15 },
+    { id: 5, origin: "crimson", dest: "verdant", cargoName: "赤焰焦晶",      reward: 22 },
+    { id: 6, origin: "void",    dest: "home",    cargoName: "虛空晶礦精華",  reward: 25 },
+  ];
+  const PLANET_NAMES = {
+    home: "故鄉", verdant: "翠幽星", crimson: "赤焰星",
+    void: "虛空星", aether: "霧醚星", origin: "星源星",
+  };
+
+  let lastTradeSig = null;
+  function updateTradePanel(me, isGuestUser) {
+    const body = document.getElementById("tradeBody");
+    if (!body) return;
+
+    const cargo = me ? (me.trade_cargo || null) : null;
+    const nearNpc = me ? !!me.near_trade_npc : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const sig = [isGuestUser, !!cargo, nearNpc, planet].join("|");
+    if (sig === lastTradeSig) return;
+    lastTradeSig = sig;
+    body.innerHTML = "";
+
+    // 更新 HUD 指示器。
+    const hudTrade = document.getElementById("hudTrade");
+    if (hudTrade) {
+      if (cargo) {
+        hudTrade.textContent = `📦 → ${PLANET_NAMES[cargo.dest] || cargo.dest}`;
+        hudTrade.classList.remove("hidden");
+      } else {
+        hudTrade.classList.add("hidden");
+      }
+    }
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能使用星際貿易";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 正在攜帶包裹。
+    if (cargo) {
+      const cargoDiv = document.createElement("div");
+      cargoDiv.style.cssText = "background:#1a1a2a;border:1px solid #8060c0;border-radius:8px;padding:10px;margin-bottom:10px;";
+      cargoDiv.innerHTML = `
+        <div style="color:#c8a0ff;font-weight:600;margin-bottom:4px;">📦 攜帶中</div>
+        <div style="color:#e8c870;margin-bottom:2px;">商品：${cargo.cargo_name}</div>
+        <div style="color:#80ffc0;margin-bottom:2px;">目的地：${PLANET_NAMES[cargo.dest] || cargo.dest}</div>
+        <div style="color:#ffd580;">報酬：${cargo.reward} 乙太 + 商人熟練度 XP</div>
+      `;
+      body.appendChild(cargoDiv);
+
+      // 靠近目標商人才能交付。
+      const isAtDest = planet === cargo.dest;
+      const deliverBtn = document.createElement("button");
+      deliverBtn.type = "button";
+      deliverBtn.style.cssText = "width:100%;padding:8px 0;border-radius:8px;font-size:.95rem;margin-bottom:6px;";
+      if (isAtDest && nearNpc) {
+        deliverBtn.textContent = `✅ 交付包裹（得 ${cargo.reward} 乙太）`;
+        deliverBtn.style.cssText += "border:1px solid #40c040;background:transparent;color:#80ff80;cursor:pointer;";
+        deliverBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "DeliverTrade" }));
+        });
+      } else if (isAtDest) {
+        deliverBtn.textContent = `靠近 ${PLANET_NAMES[cargo.dest] || cargo.dest} 商人才能交付`;
+        deliverBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        deliverBtn.disabled = true;
+      } else {
+        deliverBtn.textContent = `前往 ${PLANET_NAMES[cargo.dest] || cargo.dest} 交付`;
+        deliverBtn.style.cssText += "border:1px solid #8060c0;background:transparent;color:#a080e0;cursor:default;";
+        deliverBtn.disabled = true;
+      }
+      body.appendChild(deliverBtn);
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = "🗑️ 取消任務（無懲罰）";
+      cancelBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      cancelBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "CancelTrade" }));
+      });
+      body.appendChild(cancelBtn);
+      return;
+    }
+
+    // 沒有包裹：顯示可接取路線。
+    const routes = TRADE_ROUTES.filter(r => r.origin === planet);
+    if (!nearNpc || routes.length === 0) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      if (routes.length === 0) {
+        hint.textContent = `目前所在星球（${PLANET_NAMES[planet] || planet}）沒有可接取的貿易路線。`;
+      } else {
+        hint.textContent = "靠近本星球商人才能接取貿易任務。";
+      }
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = `📋 可接取路線（${PLANET_NAMES[planet] || planet}）`;
+      body.appendChild(head);
+
+      for (const r of routes) {
+        const row = document.createElement("div");
+        row.style.cssText = "background:#1a1a2a;border:1px solid #404060;border-radius:8px;padding:8px;margin-bottom:6px;";
+        row.innerHTML = `
+          <div style="color:#e8c870;margin-bottom:4px;">${r.cargoName}</div>
+          <div style="color:#aaa;font-size:.8rem;">目的地：<b style="color:#80ffc0">${PLANET_NAMES[r.dest] || r.dest}</b> ／ 報酬：<b style="color:#ffd580">${r.reward} 乙太</b> + 商人 XP</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "📦 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #8060c0;border-radius:6px;background:transparent;color:#c8a0ff;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "PickupTrade", route_id: r.id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在一個星球商人接取包裹，前往目標星球商人交付，換取乙太 + 商人熟練度 XP。每條路線 5 分鐘冷卻。";
+    body.appendChild(info);
   }
 
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
