@@ -9,6 +9,7 @@ mod class;
 mod combat;
 mod connections;
 mod equipment;
+mod refinement;
 mod crafting;
 mod crops;
 mod daynight;

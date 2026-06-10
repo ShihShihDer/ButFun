@@ -175,6 +175,10 @@ impl Player {
                 .map(crate::equipment::item_to_wire_key),
             equipped_accessory: self.equipment.accessory
                 .map(crate::equipment::item_to_wire_key),
+            weapon_refine: self.equipment.weapon_meta.refine,
+            weapon_enchant: self.equipment.weapon_meta.enchant
+                .map(|e| e.wire_key().to_string()),
+            armor_refine: self.equipment.armor_meta.refine,
         }
     }
 

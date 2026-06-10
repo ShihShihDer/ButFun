@@ -574,6 +574,7 @@
           }
           updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
           updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense);
+          updateRefinePanel(me, inv); // 精煉/附魔面板（ROADMAP 37）
           updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
@@ -1734,6 +1735,7 @@
       const winBtn =
         (e.key === "b" || e.key === "B") ? "dockBag" :
         (e.key === "i" || e.key === "I") ? "dockEquip" :
+        (e.key === "r" || e.key === "R") ? "dockRefine" :
         (e.key === "c" || e.key === "C") ? "dockCraft" :
         (e.key === "q" || e.key === "Q") ? "dockQuest" :
         (e.key === "j" || e.key === "J") ? "dockClass" :
@@ -4272,9 +4274,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -4523,6 +4525,130 @@
         e.stopPropagation();
         const slot = btn.dataset.slot;
         try { ws.send(JSON.stringify({ type: "unequip_item", slot })); } catch {}
+      });
+    });
+  }
+
+  // ── 精煉/附魔面板（ROADMAP 37）──────────────────────────────────────────────────
+  // 顯示已裝備武器/護甲的精煉等級、精煉按鈕（含材料成本），以及五大附魔按鈕。
+  // 所有規則（失敗率、成本、效果）仍以伺服器為權威；前端只做前置提示與送意圖。
+
+  // 精煉材料對照表（鏡像後端 refinement::refine_material）。
+  const REFINE_MATERIAL = {
+    weapon: "stone", crystal_blade: "crystal_shard", coral_lance: "deep_sea_pearl",
+    mushroom_staff: "mushroom_spore", rune_blade: "ancient_fragment",
+    jade_blade: "jade_shard", crimson_blade: "lava_crystal",
+    void_blade: "void_shard", aether_blade: "aether_shard", origin_blade: "origin_shard",
+    meadow_amulet: "wildflower_seed", crystal_shield: "crystal_shard", cosmic_shield: "rift_shard",
+  };
+
+  // 附魔碎片清單（碎片 → 附魔名/效果說明）。
+  const ENCHANT_SHARDS = [
+    { shard: "jade_shard",    name: "吸血",  desc: "擊殺時回復 2 HP（翠幽碎片）" },
+    { shard: "lava_crystal",  name: "灼燒",  desc: "命中時額外 3 點火焰傷害（熔晶碎片）" },
+    { shard: "void_shard",    name: "暴擊",  desc: "每 5 次攻擊一次雙倍傷害（虛空碎片）" },
+    { shard: "aether_shard",  name: "共鳴",  desc: "命中時額外 2 點霧醚傷害（霧醚碎片）" },
+    { shard: "origin_shard",  name: "增幅",  desc: "擊殺經驗值 +30%（源晶碎片）" },
+  ];
+
+  // 附魔 wire key → 顯示名稱。
+  const ENCHANT_NAME = {
+    lifesteal: "吸血", burn_burst: "灼燒", crit_strike: "暴擊",
+    aether_resonance: "共鳴", exp_bonus: "增幅",
+  };
+
+  let lastRefineSig = null;
+  function updateRefinePanel(me, inv) {
+    const body = document.getElementById("refineBody");
+    if (!body) return;
+    const have = new Map((inv || []).map((s) => [s.item, s.qty]));
+
+    // 簽章：裝備＋精煉等級＋附魔＋相關材料數量。
+    const relMats = Object.values(REFINE_MATERIAL);
+    const enchantMats = ENCHANT_SHARDS.map((e) => e.shard);
+    const sig = `${me.equipped_weapon||""}|${me.weapon_refine||0}|${me.weapon_enchant||""}|`
+      + `${me.equipped_armor||""}|${me.armor_refine||0}|`
+      + [...new Set([...relMats, ...enchantMats])].map((m) => have.get(m) || 0).join(",");
+    if (sig === lastRefineSig) return;
+    lastRefineSig = sig;
+
+    const MAX_REFINE = 9;
+
+    function slotSection(label, item, refine, slot) {
+      if (!item) return `<div class="refine-section"><p class="refine-empty">${label} 空槽——請先裝備</p></div>`;
+      const matKey = REFINE_MATERIAL[item];
+      const icon = ITEM_LOOK[item] || "❓";
+      const name = ITEM_NAME[item] || item;
+      const refineBar = Array.from({ length: MAX_REFINE }, (_, i) =>
+        `<span class="refine-pip${i < refine ? " filled" : ""}"></span>`).join("");
+
+      let refineBtn = "";
+      if (refine >= MAX_REFINE) {
+        refineBtn = `<span class="refine-maxed">精煉 +9（已滿）</span>`;
+      } else if (matKey) {
+        const cost = refine + 1;
+        const matIcon = ITEM_LOOK[matKey] || "❓";
+        const matName = ITEM_NAME[matKey] || matKey;
+        const hasEnough = (have.get(matKey) || 0) >= cost;
+        const failWarn = refine >= 4 ? ` ⚠️失敗率 ${(refine - 3) * 10 + 20}%` : "";
+        refineBtn = `<button class="refine-btn${hasEnough ? "" : " disabled"}" data-slot="${slot}"
+          ${hasEnough ? "" : "disabled"} title="精煉消耗 ${matName}×${cost}${failWarn}">
+          精煉 +${refine + 1}（${matIcon}${cost}）${failWarn}
+        </button>`;
+      }
+      return `<div class="refine-section">
+        <div class="refine-item-row">
+          <span class="refine-item-ico">${icon}</span>
+          <span class="refine-item-name">${name}</span>
+          <span class="refine-level">+${refine}</span>
+        </div>
+        <div class="refine-pips">${refineBar}</div>
+        ${refineBtn}
+      </div>`;
+    }
+
+    // 附魔區（武器限定）。
+    function enchantSection(item, currentEnchant) {
+      if (!item) return "";
+      const currentName = currentEnchant ? (ENCHANT_NAME[currentEnchant] || currentEnchant) : "無";
+      const rows = ENCHANT_SHARDS.map((e) => {
+        const isCurrent = e.shard.replace(/_/g, "_") &&
+          ENCHANT_SHARDS.find((x) => x.shard === e.shard && ENCHANT_NAME[currentEnchant] === x.name);
+        const matIcon = ITEM_LOOK[e.shard] || "❓";
+        const qty = have.get(e.shard) || 0;
+        const canDo = qty >= 1;
+        return `<button class="enchant-btn${canDo ? "" : " disabled"}" data-shard="${e.shard}"
+          ${canDo ? "" : "disabled"} title="${e.desc}">
+          ${matIcon} ${e.name}（消耗 ×1）
+        </button>`;
+      }).join("");
+      return `<div class="refine-section">
+        <div class="enchant-title">✨ 附魔武器<span class="enchant-current">當前：${currentName}</span></div>
+        <div class="enchant-grid">${rows}</div>
+        <p class="refine-note">附魔可覆蓋；每把武器只有一個附魔效果</p>
+      </div>`;
+    }
+
+    body.innerHTML =
+      `<h3 class="refine-head">🗡️ 武器精煉</h3>` +
+      slotSection("🗡️ 武器", me.equipped_weapon || null, me.weapon_refine || 0, "weapon") +
+      `<h3 class="refine-head">🛡️ 防具精煉</h3>` +
+      slotSection("🛡️ 防具", me.equipped_armor || null, me.armor_refine || 0, "armor") +
+      `<h3 class="refine-head">✨ 武器附魔</h3>` +
+      enchantSection(me.equipped_weapon || null, me.weapon_enchant || null);
+
+    body.querySelectorAll(".refine-btn:not(.disabled)").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const slot = btn.dataset.slot;
+        try { ws.send(JSON.stringify({ type: "refine_equip", slot })); } catch {}
+      });
+    });
+    body.querySelectorAll(".enchant-btn:not(.disabled)").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const shard = btn.dataset.shard;
+        try { ws.send(JSON.stringify({ type: "enchant_equip", shard })); } catch {}
       });
     });
   }

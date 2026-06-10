@@ -1,10 +1,12 @@
 //! 裝備槽（ROADMAP 36）：三槽顯式裝備——🗡️ 武器 / 🛡️ 防具 / 📿 飾品。
 //! 純邏輯、無 IO，取代「背包有就自動取最強」的隱式戰鬥加成。
 //! 飾品槽 MVP 保留空結構，尚無飾品種類。
+//! ROADMAP 37 擴充：精煉等級與附魔效果嵌入同一結構（向後相容，舊資料 default 為 0/None）。
 
 use serde::{Deserialize, Serialize};
 
 use crate::inventory::{Inventory, ItemKind};
+use crate::refinement::{refine_bonus_atk, refine_bonus_def, EquipmentMeta};
 
 /// 三槽裝備狀態。序列化儲存於 inventories 表的 equipment 欄（TEXT JSON）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +20,12 @@ pub struct EquipmentSlots {
     /// 📿 飾品槽：MVP 保留結構，尚無飾品種類。
     #[serde(default)]
     pub accessory: Option<ItemKind>,
+    /// 武器槽精煉／附魔元資料（ROADMAP 37；舊資料 default 為 0/None）。
+    #[serde(default)]
+    pub weapon_meta: EquipmentMeta,
+    /// 防具槽精煉元資料（ROADMAP 37；舊資料 default 為 0/None）。
+    #[serde(default)]
+    pub armor_meta: EquipmentMeta,
 }
 
 /// 一個物品對應的裝備槽名稱（"weapon" / "armor"）；不可裝備的物品回 `None`。
@@ -52,22 +60,24 @@ pub fn unequip(slots: &mut EquipmentSlots, slot: &str) -> Option<ItemKind> {
     }
 }
 
-/// 已裝備武器的攻擊力（無裝備 = 徒手 `UNARMED_ATTACK_POWER`）。
+/// 已裝備武器的攻擊力（無裝備 = 徒手 `UNARMED_ATTACK_POWER`；含精煉加成）。
 pub fn equipped_weapon_power(slots: &EquipmentSlots) -> u32 {
-    slots
+    let base = slots
         .weapon
         .and_then(crate::combat::weapon_from_item)
         .map(|w| w.attack_power())
-        .unwrap_or(crate::combat::UNARMED_ATTACK_POWER)
+        .unwrap_or(crate::combat::UNARMED_ATTACK_POWER);
+    base + refine_bonus_atk(slots.weapon_meta.refine)
 }
 
-/// 已裝備護甲的減傷值（無護甲 = 0）。
+/// 已裝備護甲的減傷值（無護甲 = 0；含精煉加成）。
 pub fn equipped_armor_defense(slots: &EquipmentSlots) -> u32 {
-    slots
+    let base = slots
         .armor
         .and_then(crate::combat::armor_from_item)
         .map(|a| a.defense())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    base + refine_bonus_def(slots.armor_meta.refine)
 }
 
 /// 既有玩家遷移：從背包自動裝上最強武器 + 最強護甲，體感零變化。
@@ -88,7 +98,7 @@ pub fn auto_equip_best(inv: &Inventory) -> EquipmentSlots {
         .max_by_key(|&(_, def)| def)
         .map(|(item, _)| item);
 
-    EquipmentSlots { weapon, armor, accessory: None }
+    EquipmentSlots { weapon, armor, accessory: None, weapon_meta: EquipmentMeta::default(), armor_meta: EquipmentMeta::default() }
 }
 
 /// ItemKind → 前端 wire key（serde snake_case，去除引號）。供 `PlayerView` 填 equipped_* 欄位。

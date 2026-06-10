@@ -181,6 +181,14 @@ pub enum ClientMsg {
     /// 卸下裝備（ROADMAP 36）：把指定槽的裝備退回背包。
     /// 槽名：`"weapon"` / `"armor"` / `"accessory"`；空槽或無效槽名靜默忽略。
     UnequipItem { slot: String },
+    /// 精煉裝備（ROADMAP 37）：消耗同系材料，提升指定槽裝備的精煉等級。
+    /// `slot`：`"weapon"` / `"armor"`；空槽 / 已達上限 / 材料不足靜默忽略。
+    /// 成功：精煉等級 +1；失敗（+4 起有機率）：精煉等級降 1（材料仍消耗，不碎裝）。
+    RefineEquip { slot: String },
+    /// 附魔（ROADMAP 37）：消耗 1 個星球碎片，賦予武器槽特效（僅武器有意義）。
+    /// `shard`：翠幽碎片/熔晶碎片/虛空碎片/霧醚碎片/源晶碎片——各自對應一種附魔。
+    /// 武器槽空 / 碎片不是附魔碎片 / 背包無此碎片靜默忽略；可覆蓋舊附魔。
+    EnchantEquip { shard: ItemKind },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -310,6 +318,19 @@ pub struct PlayerView {
     /// 📿 飾品槽（ROADMAP 36）：MVP 保留，目前恆為 `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub equipped_accessory: Option<String>,
+    /// 武器精煉等級（ROADMAP 37）。0 = 未精煉。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub weapon_refine: u8,
+    /// 武器附魔 wire key（ROADMAP 37）。`None` = 無附魔。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weapon_enchant: Option<String>,
+    /// 護甲精煉等級（ROADMAP 37）。0 = 未精煉。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub armor_refine: u8,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -561,6 +582,9 @@ mod tests {
                 equipped_weapon: None,
                 equipped_armor: None,
                 equipped_accessory: None,
+                weapon_refine: 0,
+                weapon_enchant: None,
+                armor_refine: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -679,6 +703,9 @@ mod tests {
             equipped_weapon: None,
             equipped_armor: None,
             equipped_accessory: None,
+            weapon_refine: 0,
+            weapon_enchant: None,
+            armor_refine: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
