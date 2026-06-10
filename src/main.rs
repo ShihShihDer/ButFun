@@ -19,6 +19,7 @@ mod field_store;
 mod game;
 mod gather;
 mod gather_field;
+mod guild;
 mod market;
 mod npc;
 mod inventory;

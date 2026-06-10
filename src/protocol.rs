@@ -146,6 +146,22 @@ pub enum ClientMsg {
     /// `class` 為職業 wire key（"warrior" / "farmer" / "artisan" / "explorer" / "merchant"）。
     /// 未登入 / 無效職業靜默忽略；可隨時更換職業（職業加成立即生效）。
     SetClass { class: String },
+    /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
+    /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
+    /// 未登入 / 已有公會 / 乙太不足靜默忽略。
+    CreateGuild { name: String, tag: String },
+    /// 加入公會（ROADMAP 29）：依 guild_id 加入已存在的公會。
+    /// 公會不存在 / 已滿員 / 自己已有公會靜默忽略。
+    JoinGuild { guild_id: Uuid },
+    /// 離開目前公會（ROADMAP 29）：自願退出；若是最後成員公會自動解散。
+    /// 不在任何公會靜默忽略。
+    LeaveGuild,
+    /// 向公會金庫捐贈乙太（ROADMAP 29）。
+    /// 不在公會 / 乙太不足 / 金額為 0 靜默忽略。
+    DonateToGuild { amount: u32 },
+    /// 請求公會列表（ROADMAP 29）：前端開啟「加入公會」面板時送出，
+    /// 伺服器回 `GuildList`。
+    RequestGuildList,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -193,6 +209,13 @@ pub enum ServerMsg {
     /// `ok=true`：旅行成功，前端播放傳送動畫並更新 HUD 行星指示。
     /// `ok=false`：旅行失敗（乙太不足 / 武裝未齊），`message` 給前端顯示原因。
     TravelResult { ok: bool, planet: String, message: String },
+    /// 玩家自己的公會狀態更新（ROADMAP 29）：建立 / 加入 / 離開後送給本人。
+    /// `guild = None` 表示目前不在任何公會。
+    GuildUpdate { guild: Option<GuildView> },
+    /// 公會列表（ROADMAP 29）：回應 `RequestGuildList`，供前端顯示瀏覽介面。
+    GuildList { guilds: Vec<GuildBrief> },
+    /// 公會頻道聊天訊息（ROADMAP 29）：只送給同公會成員。
+    GuildChat { guild_tag: String, from: String, text: String },
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。
@@ -232,6 +255,8 @@ pub struct PlayerView {
     pub planet: String,
     /// 玩家職業（ROADMAP 28）。None = 未選。"warrior" / "farmer" / "artisan" / "explorer" / "merchant"。
     pub job_class: Option<String>,
+    /// 玩家公會標籤（ROADMAP 29）。None = 不在任何公會。如 "STA"、"龍"。
+    pub guild_tag: Option<String>,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -354,6 +379,30 @@ pub fn quests_view(qs: &QuestState) -> Vec<QuestView> {
     }).collect()
 }
 
+/// 公會詳細資訊（ROADMAP 29）：送給公會成員本人。
+#[derive(Debug, Clone, Serialize)]
+pub struct GuildView {
+    pub id: Uuid,
+    pub name: String,
+    pub tag: String,
+    /// 是否為創始人（會長）。
+    pub is_founder: bool,
+    /// 成員人數。
+    pub member_count: usize,
+    /// 公會金庫乙太。
+    pub treasury: u32,
+}
+
+/// 公會簡介（ROADMAP 29）：供瀏覽清單使用。
+#[derive(Debug, Clone, Serialize)]
+pub struct GuildBrief {
+    pub id: Uuid,
+    pub name: String,
+    pub tag: String,
+    pub member_count: usize,
+    pub treasury: u32,
+}
+
 /// 一格耕地對前端的可見狀態。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TileView {
@@ -453,6 +502,7 @@ mod tests {
                 defense: 0,
                 planet: "home".into(),
                 job_class: None,
+                guild_tag: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -564,6 +614,7 @@ mod tests {
             hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
             planet: "verdant".into(),
             job_class: None,
+            guild_tag: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

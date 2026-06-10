@@ -111,6 +111,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             exp: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             job_class: None,
+            guild_tag: None,
         }
     } else {
         // 等 Join
@@ -145,6 +146,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             exp: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             job_class: None,
+            guild_tag: None,
         }
     };
     let id = player.id;
@@ -343,17 +345,37 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 清過控制字元 / 截長後若還有內容才廣播（集中在 sanitize_chat，可測）。
                     if let Some(text) = sanitize_chat(&text) {
                         // 讀**線上即時**名(不是進場時擷取的舊名):改名後不重連、聊天 from 也立刻是新名。
-                        let from = app
-                            .players
-                            .read()
-                            .unwrap()
-                            .get(&id)
-                            .map(|p| p.name.clone())
-                            .unwrap_or_else(|| player.name.clone());
-                        let chat = ServerMsg::Chat { from, text };
-                        if let Ok(json) = serde_json::to_string(&chat) {
-                            // 走聊天專用頻道，不與高頻快照爭緩衝、不被 Lagged 一起丟。
-                            let _ = app.tx_chat.send(json);
+                        let (from, my_guild_tag) = {
+                            let ps = app.players.read().unwrap();
+                            let (name, tag) = ps.get(&id)
+                                .map(|p| (p.name.clone(), p.guild_tag.clone()))
+                                .unwrap_or_else(|| (player.name.clone(), None));
+                            (name, tag)
+                        };
+                        // `/g ` 前綴 → 公會頻道聊天（只廣播給同公會成員，via tx_chat 帶 guild_tag）。
+                        if let Some(guild_text) = text.strip_prefix("/g ").map(str::to_string) {
+                            if let Some(ref tag) = my_guild_tag {
+                                let msg = ServerMsg::GuildChat {
+                                    guild_tag: tag.clone(),
+                                    from: from.clone(),
+                                    text: guild_text,
+                                };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = app.tx_chat.send(json);
+                                }
+                            } else {
+                                // 不在公會，提示加入。
+                                let err = ServerMsg::Chat { from: "系統".into(), text: "你目前不在任何公會（輸入 /g 文字 發送公會聊天）".into() };
+                                if let Ok(json) = serde_json::to_string(&err) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                        } else {
+                            let chat = ServerMsg::Chat { from, text };
+                            if let Ok(json) = serde_json::to_string(&chat) {
+                                // 走聊天專用頻道，不與高頻快照爭緩衝、不被 Lagged 一起丟。
+                                let _ = app.tx_chat.send(json);
+                            }
                         }
                     }
                 }
@@ -1048,6 +1070,142 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                // ── 公會系統（ROADMAP 29）──────────────────────────────────────────
+                Ok(ClientMsg::CreateGuild { name, tag }) => {
+                    // 建立公會：需登入 + 乙太 ≥ 50；成功後從玩家扣乙太、更新 guild_tag。
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether).unwrap_or(0);
+                            if ether < crate::guild::GUILD_CREATE_COST {
+                                Err(format!("乙太不足（建立公會需要 {} 乙太）", crate::guild::GUILD_CREATE_COST))
+                            } else {
+                                app.guilds.write().unwrap().create(uid, name, tag)
+                            }
+                        };
+                        match result {
+                            Ok(gid) => {
+                                let guild_tag = app.guilds.read().unwrap().tag_of(uid);
+                                // 扣乙太，更新 guild_tag。
+                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                    p.ether = p.ether.saturating_sub(crate::guild::GUILD_CREATE_COST);
+                                    p.guild_tag = guild_tag.clone();
+                                }
+                                // 回傳公會詳情給本人。
+                                let view = build_guild_view(&app, uid, gid);
+                                let msg = ServerMsg::GuildUpdate { guild: view };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                                tracing::info!(player = %id, ?gid, "建立公會");
+                            }
+                            Err(e) => {
+                                // 錯誤訊息以聊天方式通知（不增新訊息型別）。
+                                let msg = ServerMsg::Chat { from: "系統".into(), text: format!("⚠️ {e}") };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::JoinGuild { guild_id }) => {
+                    // 加入公會：需登入；公會不存在 / 已滿 / 已有公會時回錯誤訊息。
+                    if let Some(uid) = authed_uid {
+                        let result = app.guilds.write().unwrap().join(guild_id, uid);
+                        match result {
+                            Ok(()) => {
+                                let guild_tag = app.guilds.read().unwrap().tag_of(uid);
+                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                    p.guild_tag = guild_tag;
+                                }
+                                let view = build_guild_view(&app, uid, guild_id);
+                                let msg = ServerMsg::GuildUpdate { guild: view };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                            Err(e) => {
+                                let msg = ServerMsg::Chat { from: "系統".into(), text: format!("⚠️ {e}") };
+                                if let Ok(json) = serde_json::to_string(&msg) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::LeaveGuild) => {
+                    // 離開公會：需登入；若是最後成員公會自動解散。
+                    if let Some(uid) = authed_uid {
+                        let result = app.guilds.write().unwrap().leave(uid);
+                        if result.is_ok() {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                p.guild_tag = None;
+                            }
+                        }
+                        let msg = ServerMsg::GuildUpdate { guild: None };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                    }
+                }
+                Ok(ClientMsg::DonateToGuild { amount }) => {
+                    // 向公會捐贈乙太：需登入 + 在公會 + 乙太足夠。
+                    if let Some(uid) = authed_uid {
+                        let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether).unwrap_or(0);
+                        if amount == 0 || ether < amount {
+                            let text = if amount == 0 {
+                                "捐贈金額需大於 0".into()
+                            } else {
+                                format!("乙太不足（捐贈 {} 乙太，但你只有 {} 乙太）", amount, ether)
+                            };
+                            let msg = ServerMsg::Chat { from: "系統".into(), text: format!("⚠️ {}", text) };
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                let _ = tx_direct.try_send(json);
+                            }
+                        } else {
+                            let result = app.guilds.write().unwrap().donate(uid, amount);
+                            match result {
+                                Ok(_new_treasury) => {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.ether = p.ether.saturating_sub(amount);
+                                    }
+                                    let gid = app.guilds.read().unwrap().guild_of(uid);
+                                    let view = gid.and_then(|gid| build_guild_view(&app, uid, gid));
+                                    let msg = ServerMsg::GuildUpdate { guild: view };
+                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                        let _ = tx_direct.try_send(json);
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = ServerMsg::Chat { from: "系統".into(), text: format!("⚠️ {e}") };
+                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                        let _ = tx_direct.try_send(json);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::RequestGuildList) => {
+                    // 傳回全部公會簡介給請求者。
+                    let store = app.guilds.read().unwrap();
+                    let briefs: Vec<crate::protocol::GuildBrief> = store.brief_list()
+                        .into_iter()
+                        .map(|b| crate::protocol::GuildBrief {
+                            id: b.id,
+                            name: b.name,
+                            tag: b.tag,
+                            member_count: b.member_count,
+                            treasury: b.treasury,
+                        })
+                        .collect();
+                    drop(store);
+                    let msg = ServerMsg::GuildList { guilds: briefs };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                // ── 公會系統 end ───────────────────────────────────────────────
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
@@ -1059,6 +1217,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     forward.abort();
     cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");
+}
+
+/// 依 guild_id 與 player_id 建立 GuildView（ROADMAP 29）。
+fn build_guild_view(app: &AppState, player_id: Uuid, guild_id: Uuid) -> Option<crate::protocol::GuildView> {
+    let store = app.guilds.read().unwrap();
+    let g = store.get(guild_id)?;
+    Some(crate::protocol::GuildView {
+        id: g.id,
+        name: g.name.clone(),
+        tag: g.tag.clone(),
+        is_founder: g.founder_id == player_id,
+        member_count: g.member_count(),
+        treasury: g.treasury,
+    })
 }
 
 /// 玩家離線清理。先放掉這條連線；只有當這是該玩家的**最後一條**連線（同帳號其餘分頁

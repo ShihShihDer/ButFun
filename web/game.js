@@ -557,6 +557,7 @@
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.job_class || null, isGuest); // 職業選擇（ROADMAP 28）
+          updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           updateHpHud(me.hp, me.max_hp); // 戰鬥 1-F:血量 HUD
           // 血量變化 → 補一句 aria-live 播報。HP HUD 是純視覺,看不到畫面的玩家在戰鬥中
           // 完全不知道自己正在挨打;受擊最該即時知道(攸關生死),回血則報一句安心。從快照
@@ -647,6 +648,11 @@
             }
           }
 
+          // 公會 HUD（ROADMAP 29）：顯示公會標籤，從 me.guild_tag 取（快照帶回）。
+          if (me.guild_tag !== undefined) {
+            updateGuildHud(me.guild_tag ? { tag: me.guild_tag } : null);
+          }
+
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
             const nameEl = document.getElementById("hudName");
@@ -683,6 +689,24 @@
         } else {
           addChat("系統", `❌ 旅行失敗：${msg.message}`);
           announce(`旅行失敗：${msg.message}`);
+        }
+        break;
+      case "guild_update":
+        // 公會狀態更新（ROADMAP 29）：建立/加入/離開後由伺服器推送。
+        myGuild = msg.guild || null;
+        lastGuildSig = null; // 強制重建面板
+        updateGuildHud(myGuild);
+        updateGuildPanel(myGuild, null, false);
+        break;
+      case "guild_list":
+        // 公會列表（ROADMAP 29）：回應 request_guild_list。
+        lastGuildSig = null;
+        updateGuildPanel(myGuild, msg.guilds, false);
+        break;
+      case "guild_chat":
+        // 公會頻道聊天（ROADMAP 29）：只顯示屬於自己公會的訊息。
+        if (myGuild && msg.guild_tag === myGuild.tag) {
+          addChat(`⚜️[${msg.guild_tag}] ${msg.from}`, msg.text);
         }
         break;
     }
@@ -1669,6 +1693,7 @@
         (e.key === "c" || e.key === "C") ? "dockCraft" :
         (e.key === "q" || e.key === "Q") ? "dockQuest" :
         (e.key === "j" || e.key === "J") ? "dockClass" :
+        (e.key === "g" || e.key === "G") ? "dockGuild" :
         (e.key === "h" || e.key === "H") ? "dockHelp" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -1998,6 +2023,20 @@
         ctx.textAlign = "center";
         ctx.fillText(classEmoji, sx + 20, sy - 36);
       }
+    }
+
+    // 公會標籤（ROADMAP 29）：在名字左方顯示 [TAG]，讓玩家一眼看出彼此所屬公會。
+    if (p.guild_tag) {
+      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.fillStyle = "#ffd580";
+      const tagText = `[${p.guild_tag}]`;
+      const nameW = ctx.measureText(p.name).width;
+      ctx.strokeText(tagText, sx - nameW / 2 - ctx.measureText(tagText).width / 2 - 4, sy - 24);
+      ctx.fillText(tagText, sx - nameW / 2 - ctx.measureText(tagText).width / 2 - 4, sy - 24);
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
@@ -4489,6 +4528,174 @@
     explorer: { label: "🧭 探索者", desc: "星際旅行費 -10 乙太。走遍五星不花冤枉路費。" },
     merchant: { label: "💰 商人",  desc: "NPC 所有收購 +50%。販賣型，賣什麼都賺更多。" },
   };
+  // HTML 跳脫（防止 XSS，用在 innerHTML 插入使用者名稱 / 公會名）。
+  function escHtml(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  // 公會系統（ROADMAP 29）狀態變數。
+  let myGuild = null;       // { id, name, tag, is_founder, member_count, treasury } 或 null
+  let lastGuildSig = null;  // 面板簽章，未變就不重建
+
+  function updateGuildHud(guild) {
+    const el = document.getElementById("hudGuild");
+    if (!el) return;
+    if (guild && guild.tag) {
+      el.textContent = `⚜️ [${guild.tag}]`;
+      el.classList.remove("hidden");
+    } else {
+      el.textContent = "⚜️ 按 G 加入公會";
+      el.classList.remove("hidden");
+    }
+  }
+
+  // 更新公會面板：顯示當前公會資訊（若有）或公會瀏覽清單。
+  // guild = myGuild 或 null；guildList = 伺服器傳來的列表（null 代表尚未請求）。
+  function updateGuildPanel(guild, guildList, isGuestUser) {
+    const body = document.getElementById("guildBody");
+    const summary = document.getElementById("guildSummary");
+    if (!body) return;
+
+    const sig = JSON.stringify({ guild, guildList: (guildList || []).map(g => g.id + g.member_count + g.treasury), isGuestUser });
+    if (sig === lastGuildSig) return;
+    lastGuildSig = sig;
+    body.innerHTML = "";
+    if (summary) summary.textContent = guild ? ` [${guild.tag}]` : "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能建立或加入公會";
+      body.appendChild(hint);
+      return;
+    }
+
+    if (guild) {
+      // ── 已在公會：顯示公會詳情 ─────────────────────────────
+      const info = document.createElement("div");
+      info.style.cssText = "margin-bottom:10px;";
+      info.innerHTML = `<div style="color:var(--brass);font-weight:600;font-size:.95rem">⚜️ ${escHtml(guild.name)} <span style="color:#ffd580;font-size:.8rem">[${escHtml(guild.tag)}]</span></div>
+        <div style="color:#aaa;font-size:.8rem;margin-top:3px">成員 ${guild.member_count} 人 · 金庫 ${guild.treasury} ✨${guild.is_founder ? " · 你是會長" : ""}</div>`;
+      body.appendChild(info);
+
+      // 捐贈金庫。
+      const donateRow = document.createElement("div");
+      donateRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:8px;";
+      const donateInput = document.createElement("input");
+      donateInput.type = "number";
+      donateInput.min = "1";
+      donateInput.placeholder = "捐贈乙太";
+      donateInput.style.cssText = "width:90px;padding:4px 6px;background:#1a2030;border:1px solid #3a4250;color:#c8d0e0;border-radius:4px;font-size:.8rem;";
+      const donateBtn = document.createElement("button");
+      donateBtn.type = "button";
+      donateBtn.className = "expand-btn";
+      donateBtn.textContent = "✨ 捐贈";
+      donateBtn.addEventListener("click", () => {
+        const amt = parseInt(donateInput.value, 10);
+        if (!amt || amt <= 0) return;
+        try { ws.send(JSON.stringify({ type: "donate_to_guild", amount: amt })); } catch {}
+        donateInput.value = "";
+      });
+      donateRow.appendChild(donateInput);
+      donateRow.appendChild(donateBtn);
+      body.appendChild(donateRow);
+
+      // 公會聊天提示。
+      const chatHint = document.createElement("div");
+      chatHint.style.cssText = "color:#8899aa;font-size:.75rem;margin-bottom:10px;";
+      chatHint.textContent = "聊天框輸入「/g 訊息」發送公會頻道聊天";
+      body.appendChild(chatHint);
+
+      // 離開按鈕。
+      const leaveBtn = document.createElement("button");
+      leaveBtn.type = "button";
+      leaveBtn.className = "expand-btn";
+      leaveBtn.style.cssText = "color:#ff8888;border-color:#6a2020;";
+      leaveBtn.textContent = "離開公會";
+      leaveBtn.addEventListener("click", () => {
+        if (!confirm(`確定要離開「${guild.name}」公會嗎？${guild.member_count === 1 ? "（公會將自動解散）" : ""}`)) return;
+        try { ws.send(JSON.stringify({ type: "leave_guild" })); } catch {}
+      });
+      body.appendChild(leaveBtn);
+    } else {
+      // ── 未在公會：顯示建立表單 + 公會列表 ──────────────────
+      const createSection = document.createElement("div");
+      createSection.style.cssText = "margin-bottom:12px;";
+      createSection.innerHTML = `<div style="color:var(--brass);font-weight:600;margin-bottom:6px;font-size:.85rem">建立新公會（花費 50 ✨）</div>`;
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.maxLength = 20;
+      nameInput.placeholder = "公會名稱（最多 20 字）";
+      nameInput.style.cssText = "width:100%;padding:4px 6px;background:#1a2030;border:1px solid #3a4250;color:#c8d0e0;border-radius:4px;font-size:.8rem;margin-bottom:4px;box-sizing:border-box;";
+      const tagInput = document.createElement("input");
+      tagInput.type = "text";
+      tagInput.maxLength = 3;
+      tagInput.placeholder = "標籤（最多 3 字，英文自動轉大寫）";
+      tagInput.style.cssText = "width:100%;padding:4px 6px;background:#1a2030;border:1px solid #3a4250;color:#c8d0e0;border-radius:4px;font-size:.8rem;margin-bottom:4px;box-sizing:border-box;";
+      const createBtn = document.createElement("button");
+      createBtn.type = "button";
+      createBtn.className = "expand-btn";
+      createBtn.textContent = "✨ 建立公會";
+      createBtn.addEventListener("click", () => {
+        const n = nameInput.value.trim();
+        const t = tagInput.value.trim();
+        if (!n || !t) { announce("請填寫公會名稱與標籤"); return; }
+        try { ws.send(JSON.stringify({ type: "create_guild", name: n, tag: t })); } catch {}
+      });
+      createSection.appendChild(nameInput);
+      createSection.appendChild(tagInput);
+      createSection.appendChild(createBtn);
+      body.appendChild(createSection);
+
+      // 公會列表。
+      const listHead = document.createElement("div");
+      listHead.style.cssText = "color:var(--brass);font-weight:600;font-size:.85rem;margin-bottom:6px;display:flex;align-items:center;gap:6px;";
+      listHead.innerHTML = `加入既有公會`;
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.className = "expand-btn";
+      refreshBtn.style.cssText = "font-size:.7rem;padding:2px 6px;";
+      refreshBtn.textContent = "🔄 刷新";
+      refreshBtn.addEventListener("click", () => {
+        try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
+        lastGuildSig = null;
+      });
+      listHead.appendChild(refreshBtn);
+      body.appendChild(listHead);
+
+      if (!guildList) {
+        const loadHint = document.createElement("div");
+        loadHint.style.cssText = "color:#8899aa;font-size:.8rem;";
+        loadHint.textContent = "按「刷新」載入公會列表";
+        body.appendChild(loadHint);
+      } else if (guildList.length === 0) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "color:#8899aa;font-size:.8rem;";
+        empty.textContent = "目前沒有公會，快來建立第一個！";
+        body.appendChild(empty);
+      } else {
+        for (const g of guildList) {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;padding:5px 8px;background:#1a2030;border:1px solid #2a3040;border-radius:6px;";
+          const info = document.createElement("span");
+          info.style.cssText = "flex:1;font-size:.8rem;";
+          info.innerHTML = `<b style="color:#ffd580">[${escHtml(g.tag)}]</b> ${escHtml(g.name)} · ${g.member_count} 人 · 金庫 ${g.treasury} ✨`;
+          const joinBtn = document.createElement("button");
+          joinBtn.type = "button";
+          joinBtn.className = "expand-btn";
+          joinBtn.textContent = "加入";
+          joinBtn.addEventListener("click", () => {
+            if (!confirm(`確定加入「${g.name}」公會嗎？`)) return;
+            try { ws.send(JSON.stringify({ type: "join_guild", guild_id: g.id })); } catch {}
+          });
+          row.appendChild(info);
+          row.appendChild(joinBtn);
+          body.appendChild(row);
+        }
+      }
+    }
+  }
+
   let lastClassSig = null;
   function updateClassPanel(currentClass, isGuestUser) {
     const body = document.getElementById("classBody");
@@ -5606,7 +5813,20 @@
     toggleDockWin = (btnId) => {
       const btn = document.getElementById(btnId);
       if (btn) openWinFor(btn);
+      // 公會面板開啟時自動請求最新列表（無公會時才需要瀏覽）。
+      if (btnId === "dockGuild" && !myGuild) {
+        try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
+      }
     };
+    // 公會 dock 按鈕點擊時也請求列表。
+    const guildDockBtn = document.getElementById("dockGuild");
+    if (guildDockBtn) {
+      guildDockBtn.addEventListener("click", () => {
+        if (!myGuild) {
+          try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
+        }
+      });
+    }
     // 每個視窗右上的 ✕ 關閉自己。
     for (const x of document.querySelectorAll(".hud-window .win-close")) {
       x.addEventListener("click", () => closeWin());
