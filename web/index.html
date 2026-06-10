@@ -211,6 +211,28 @@
     .equip-unequip-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,120,120,0.5); background: transparent; color: #ff9090; cursor: pointer; font-size: 0.85em; }
     .equip-unequip-btn:hover { background: rgba(255,120,120,0.2); }
     .equip-stats { display: flex; gap: 20px; padding: 10px 6px 4px; color: var(--brass); font-size: 0.9em; }
+    /* 精煉/附魔面板（ROADMAP 37）。 */
+    .refine-head { font-size: 0.8em; color: var(--brass); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .refine-section { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 8px 10px; margin: 4px 0; }
+    .refine-item-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+    .refine-item-ico { font-size: 1.2em; }
+    .refine-item-name { flex: 1; font-size: 0.95em; }
+    .refine-level { font-weight: bold; color: #e8c04a; font-size: 1em; min-width: 24px; text-align: right; }
+    .refine-pips { display: flex; gap: 3px; margin: 4px 0; }
+    .refine-pip { width: 14px; height: 6px; border-radius: 2px; background: rgba(255,255,255,0.12); }
+    .refine-pip.filled { background: var(--brass); }
+    .refine-btn { margin-top: 6px; padding: 5px 10px; border: 1px solid var(--brass); border-radius: 5px; background: rgba(201,162,75,0.12); color: #eee; font-size: 0.85em; cursor: pointer; width: 100%; }
+    .refine-btn:hover:not(.disabled) { background: rgba(201,162,75,0.25); }
+    .refine-btn.disabled, .refine-btn:disabled { opacity: 0.4; cursor: default; }
+    .refine-maxed { display: block; text-align: center; color: #e8c04a; font-size: 0.85em; margin-top: 4px; }
+    .refine-empty { color: var(--ink); font-size: 0.85em; text-align: center; padding: 6px 0; }
+    .refine-note { color: var(--ink); font-size: 0.75em; margin-top: 6px; }
+    .enchant-title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.9em; }
+    .enchant-current { color: var(--brass); font-size: 0.85em; margin-left: auto; }
+    .enchant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .enchant-btn { padding: 5px 6px; border: 1px solid rgba(255,255,255,0.2); border-radius: 5px; background: rgba(255,255,255,0.06); color: #eee; font-size: 0.8em; cursor: pointer; }
+    .enchant-btn:hover:not(.disabled) { border-color: var(--brass); background: rgba(201,162,75,0.15); }
+    .enchant-btn.disabled, .enchant-btn:disabled { opacity: 0.4; cursor: default; }
     /* 合成台視窗:列出配方(產物 ← 素材),夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包
        快照回來(零契約變更),規則扣料仍由伺服器說了算。摘要(#craftSummary)用 ink 與標題分層。 */
     #craftSummary { color: var(--ink); }
@@ -429,6 +451,7 @@
       </div>
       <div class="dock-group hidden" id="dgChar">
         <button type="button" class="dock-btn" id="dockEquip" data-win="winEquip" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I" aria-label="裝備（I）" title="裝備（I）">⚔️</button>
+        <button type="button" class="dock-btn" id="dockRefine" data-win="winRefine" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="R" aria-label="精煉附魔（R）" title="精煉附魔（R）">⚒️</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -479,6 +502,14 @@
         <button type="button" class="win-close" data-close="winEquip" aria-label="關閉裝備面板">✕</button>
       </div>
       <div id="equipBody"></div>
+    </div>
+    <!-- 精煉/附魔面板（ROADMAP 37）：強化已裝備武器/護甲的精煉等級，或附魔武器特效。 -->
+    <div id="winRefine" class="hud-window hidden" role="dialog" aria-labelledby="refineTitle">
+      <div class="win-head">
+        <span class="win-title" id="refineTitle">⚒️ 精煉・附魔</span>
+        <button type="button" class="win-close" data-close="winRefine" aria-label="關閉精煉面板">✕</button>
+      </div>
+      <div id="refineBody"></div>
     </div>
     <!-- 合成台:背包素材的「去處」。列出配方(產物 ← 素材),夠料才亮「合成」鈕。點鈕送 craft 意圖,
          產物隨既有背包快照回來(零契約變更);反灰只是前端提示,扣料規則仍只在伺服器(權威)。 -->

@@ -854,25 +854,41 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 鎖序：讀 players（取位置+冷卻） → 寫 enemies（attack_nearest） → 寫 players（設冷卻+掉落）。
                     const ATTACK_COOLDOWN_SECS: f32 = 0.6;
                     let info = app.players.read().unwrap().get(&id).map(|p| {
-                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown,
-                         crate::equipment::equipped_weapon_power(&p.equipment)
-                             + crate::combat::level_attack_bonus(p.level())
-                             + crate::class::combat_bonus(p.job_class))
+                        use crate::refinement::{enchant_extra_damage, is_crit_tick};
+                        let enchant = p.equipment.weapon_meta.enchant;
+                        let attempt = p.kill_count as u64;
+                        let base_power = crate::equipment::equipped_weapon_power(&p.equipment)
+                            + crate::combat::level_attack_bonus(p.level())
+                            + crate::class::combat_bonus(p.job_class)
+                            + enchant_extra_damage(enchant);
+                        // 暴擊：每 5 次攻擊有一次雙倍傷害。
+                        let power = if enchant == Some(crate::refinement::EnchantKind::CritStrike)
+                            && is_crit_tick(attempt) {
+                            base_power * 2
+                        } else {
+                            base_power
+                        };
+                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant)
                     });
-                    let Some((px, py, downed, cooldown, power)) = info else { continue; };
+                    let Some((px, py, downed, cooldown, power, enchant)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
                     let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
                         if let Some((kind, Some((item, qty)))) = result {
                             p.inventory.add(item, qty);
-                            // 殺怪得 exp（依敵人難度決定獎勵量）；偵測升級並更新血量上限。
-                            let reward = kind.exp_reward();
+                            // 殺怪得 exp（依敵人難度決定獎勵量；附魔增幅加成）。
+                            let base_reward = kind.exp_reward();
+                            let reward = (base_reward as f32
+                                * crate::refinement::enchant_exp_multiplier(enchant)) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
                                 p.vitals.on_level_up(p.level());
                             }
+                            // 吸血：擊殺後回復 2 HP。
+                            let ls = crate::refinement::enchant_lifesteal_hp(enchant);
+                            if ls > 0 { p.vitals.heal(ls); }
                             tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), "主動攻擊戰利品+exp");
                         }
                     }
@@ -1048,6 +1064,69 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(removed) = crate::equipment::unequip(&mut p.equipment, &slot) {
                             p.inventory.add(removed, 1);
                             tracing::info!(player = %p.name, ?removed, slot = %slot, "卸下裝備");
+                        }
+                    }
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.read().unwrap().get(&id) {
+                            app.inventories.remember_equipment(uid, &p.equipment);
+                        }
+                    }
+                }
+                Ok(ClientMsg::RefineEquip { slot }) => {
+                    // 精煉裝備（ROADMAP 37）：消耗同系材料，提升裝備精煉等級。
+                    // +4 起有失敗率：失敗降一級（材料仍消耗、不碎裝）。
+                    let slot_str = slot.as_str();
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        // 取得槽內裝備（weapon 或 armor）和其元資料。
+                        let (item_opt, meta) = match slot_str {
+                            "weapon" => (p.equipment.weapon, &mut p.equipment.weapon_meta),
+                            "armor" => (p.equipment.armor, &mut p.equipment.armor_meta),
+                            _ => (None, &mut p.equipment.weapon_meta), // 無效槽，直接忽略
+                        };
+                        if slot_str != "weapon" && slot_str != "armor" {
+                            // pass
+                        } else if let Some(item) = item_opt {
+                            use crate::refinement::{refine_material, refine_cost_qty, refine_fails, MAX_REFINE};
+                            if meta.refine >= MAX_REFINE {
+                                // 已滿級，靜默忽略。
+                            } else if let Some(mat) = refine_material(item) {
+                                let cost = refine_cost_qty(meta.refine);
+                                if p.inventory.has(mat, cost) {
+                                    p.inventory.take(mat, cost);
+                                    // 以玩家 kill_count 作為 attempt_index（單調遞增，防操控）。
+                                    let attempt = p.kill_count as u64;
+                                    if refine_fails(meta.refine, attempt) {
+                                        meta.refine = meta.refine.saturating_sub(1);
+                                        tracing::info!(player = %p.name, ?item, slot, refine = meta.refine, "精煉失敗");
+                                    } else {
+                                        meta.refine += 1;
+                                        tracing::info!(player = %p.name, ?item, slot, refine = meta.refine, "精煉成功");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.read().unwrap().get(&id) {
+                            app.inventories.remember_equipment(uid, &p.equipment);
+                        }
+                    }
+                }
+                Ok(ClientMsg::EnchantEquip { shard }) => {
+                    // 附魔（ROADMAP 37）：消耗 1 個星球碎片，賦予武器槽特效。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if p.equipment.weapon.is_some() {
+                            use crate::refinement::enchant_from_shard;
+                            if let Some(enchant) = enchant_from_shard(shard) {
+                                if p.inventory.has(shard, 1) {
+                                    p.inventory.take(shard, 1);
+                                    p.equipment.weapon_meta.enchant = Some(enchant);
+                                    tracing::info!(
+                                        player = %p.name, ?shard,
+                                        enchant = enchant.display_name(), "武器附魔"
+                                    );
+                                }
+                            }
                         }
                     }
                     if let Some(uid) = authed_uid {
