@@ -201,7 +201,7 @@ impl NpcLifecycle {
         let npc_ids: Vec<String> = self.npcs.keys().cloned().collect();
 
         for npc_id in npc_ids {
-            let data = self.npcs.get_mut(&npc_id).unwrap();
+            let Some(data) = self.npcs.get_mut(&npc_id) else { continue };
             data.age_secs += dt_secs;
 
             if data.should_announce_elder() {
