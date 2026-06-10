@@ -280,11 +280,45 @@
     banner.textContent        = text;
   }
 
+  // 村落節慶加成 HUD pill（ROADMAP 64）：活躍時在 HUD 顯示金色計時器。
+  let lastVillageBuffText = null;
+  function updateVillageBuffHud() {
+    let pill = document.getElementById("hudVillageBuff");
+    const nowMs = performance.now();
+    const remainMs = villageBuffUntilMs - nowMs;
+    if (remainMs <= 0) {
+      if (pill) pill.style.display = "none";
+      lastVillageBuffText = null;
+      return;
+    }
+    const secs = Math.ceil(remainMs / 1000);
+    const text = `🎉 節慶 EXP×1.3（${secs}s）`;
+    if (text === lastVillageBuffText) return;
+    lastVillageBuffText = text;
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudVillageBuff";
+      pill.style.cssText = [
+        "position:fixed", "top:6px", "right:8px",
+        "background:#7a5a00", "color:#f0d060",
+        "border:1px solid #d4a820", "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+      ].join(";");
+      document.body.appendChild(pill);
+    }
+    pill.style.display = "block";
+    pill.textContent = text;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
   let farmCropPlots = []; // ROADMAP 49 農作狀態 [{plot_id, crops:[{kind,ripe}]}]
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
+  let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
+  let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -581,6 +615,15 @@
         ranchPlots = msg.ranch_plots || [];
         farmCropPlots = msg.farm_crop_plots || [];
         starCrystals = msg.star_crystals || [];
+        // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
+        if (msg.village_buff_remaining_secs > 0) {
+          villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
+        } else if (msg.village_buff_remaining_secs === 0 && villageBuffUntilMs > 0) {
+          // 伺服器確認加成已結束
+          villageBuffUntilMs = 0;
+        }
+        // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
+        if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -641,6 +684,7 @@
           updateExpeditionPanel(me, isGuest); // 古蹟探勘面板（ROADMAP 54）
           updateProcurementPanel(me, isGuest); // 星際採購面板（ROADMAP 55）
           updateFarmFairPanel(me, isGuest);  // 農展評審面板（ROADMAP 56）
+          updateVillageChiefPanel(me, isGuest); // 里長面板（ROADMAP 64）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -790,6 +834,11 @@
         // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。路由到對應 NPC 的聊天欄。
         npcChatThinking(msg.npc || "merchant", false);
         appendNpcChat(msg.npc || "merchant", msg.display || "NPC", msg.text, "npc");
+        break;
+      case "village_event":
+        // 里長自主辦村落節慶（ROADMAP 64）：全服廣播，顯示公告。
+        addChat("🎉 村落節慶", msg.message || "村落節慶開始！");
+        villageBuffUntilMs = performance.now() + (msg.duration_secs || 0) * 1000;
         break;
       case "guild_update":
         // 公會狀態更新（ROADMAP 29）：建立/加入/離開後由伺服器推送。
@@ -2334,6 +2383,7 @@
     drawExpeditionBoardNpc(camX, camY); // 探勘公告欄 NPC（ROADMAP 54）
     drawProcurementAgentNpc(camX, camY); // 採購代理人 NPC（ROADMAP 55）
     drawFairJudgeNpc(camX, camY); // 農展評審 NPC（ROADMAP 56）
+    drawVillageChiefNpc(camX, camY); // 里長凱爾長老（ROADMAP 64）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -2423,6 +2473,8 @@
 
     // 受擊紅光:畫在最上層(連搖桿/小地圖之上),受擊的當下不被任何東西蓋住,一眼就知道在挨打。
     drawDamageFlash(performance.now());
+    // 村落節慶加成計時器（ROADMAP 64）：每幀更新 HUD pill，加成結束自動隱藏。
+    updateVillageBuffHud();
 
     requestAnimationFrame(render);
   }
@@ -4719,6 +4771,75 @@
     ctx.textAlign = "center";
     ctx.fillStyle = "#80d060";
     ctx.fillText("🏅 農展", sx, by - 30);
+    ctx.restore();
+  }
+
+  // 里長凱爾長老（ROADMAP 64）：固定於故鄉 (2720, 2080)，僅在故鄉且視野內繪製。
+  const CHIEF_NPC_WX = 2720;
+  const CHIEF_NPC_WY = 2080;
+  function drawVillageChiefNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = CHIEF_NPC_WX - camX;
+    const sy = CHIEF_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 0.6 + 5.0) * 1.5; // 緩慢的長老動作
+    const by = sy + bob;
+    ctx.save();
+    // 身體（金褐色長袍）
+    ctx.fillStyle = "#8b6914";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 15, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 袍緣金邊
+    ctx.strokeStyle = "#d4a820";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 15, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // 頭（老人膚色，偏淡）
+    ctx.fillStyle = "#c8a068";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 白髮（頭頂弧形）
+    ctx.fillStyle = "#e8e0d0";
+    ctx.beginPath();
+    ctx.arc(sx, by - 13, 7, Math.PI, 0);
+    ctx.fill();
+    // 白鬍鬚
+    ctx.fillStyle = "#ddd8cc";
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 1, 5, 5, 0, 0, Math.PI);
+    ctx.fill();
+    // 木杖（長老手持）
+    ctx.strokeStyle = "#6b4226";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(sx + 14, by - 10);
+    ctx.lineTo(sx + 14, by + 20);
+    ctx.stroke();
+    // 杖頭圓珠（金色乙太水晶）
+    ctx.fillStyle = "#f0c030";
+    ctx.beginPath();
+    ctx.arc(sx + 14, by - 13, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#d4a020";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 杖頭光暈（柔和金光）
+    const glowAlpha = 0.15 + 0.1 * Math.sin(t * 2.5);
+    ctx.fillStyle = `rgba(240,192,48,${glowAlpha})`;
+    ctx.beginPath();
+    ctx.arc(sx + 14, by - 13, 8, 0, Math.PI * 2);
+    ctx.fill();
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#d4a820";
+    ctx.fillText("👴 里長", sx, by - 30);
     ctx.restore();
   }
 
@@ -7226,6 +7347,57 @@
     body.appendChild(info);
   }
 
+  // 村落里長面板：靠近凱爾長老才能互動；捐款入村庫、查看村莊節慶狀態。
+  let lastVillageChiefSig = null;
+  function updateVillageChiefPanel(me, isGuestUser) {
+    const win = document.getElementById("winVillageChief");
+    if (!win) return;
+    if (!me || !me.near_village_chief) {
+      win.classList.add("hidden");
+      lastVillageChiefSig = null;
+      return;
+    }
+    win.classList.remove("hidden");
+
+    const treasury = villageTreasury;
+    const buffSecs = villageBuffUntilMs > performance.now()
+      ? Math.round((villageBuffUntilMs - performance.now()) / 1000) : 0;
+    const ether   = me.ether || 0;
+    const sig = `${treasury}|${buffSecs}|${ether}|${isGuestUser}`;
+    if (sig === lastVillageChiefSig) return;
+    lastVillageChiefSig = sig;
+
+    const body = document.getElementById("villageChiefBody");
+    if (!body) return;
+    body.innerHTML = "";
+
+    // 村庫餘額。
+    const info = document.createElement("p");
+    info.style.cssText = "margin:4px 0;font-size:.9rem;";
+    info.textContent = `村庫乙太：${treasury}`;
+    body.appendChild(info);
+
+    // 節慶 buff 狀態。
+    if (buffSecs > 0) {
+      const buffEl = document.createElement("p");
+      buffEl.style.cssText = "margin:4px 0;font-size:.85rem;color:#d4af37;";
+      const mins = Math.floor(buffSecs / 60), secs = buffSecs % 60;
+      buffEl.textContent = `🎉 村慶加成 +30% EXP 中（剩 ${mins}:${secs.toString().padStart(2,"0")}）`;
+      body.appendChild(buffEl);
+    }
+
+    // 捐款按鈕（消耗 10 乙太，不能捐出超過自己持有的）。
+    if (!isGuestUser) {
+      const btn = document.createElement("button");
+      btn.textContent = `捐款 10 乙太入村庫`;
+      btn.disabled = ether < 10;
+      btn.style.cssText = "margin-top:8px;padding:4px 10px;cursor:pointer;";
+      btn.onclick = () => ws && ws.readyState === WebSocket.OPEN
+        && ws.send(JSON.stringify({ type: "donate_to_village" }));
+      body.appendChild(btn);
+    }
+  }
+
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
   // listings = AOI 剔除後的快照；inv = 背包快照；ether = 我的乙太；uid = 我的 id。
   let lastMarketSig = null; // 快照簽章，內容未變就不重建面板（保住焦點、省 DOM 操作）。
@@ -8104,6 +8276,7 @@
     expedition_npc: "探勘員芙利亞",
     procurement_npc: "採購代理人吉爾",
     farm_fair_npc: "評審老農",
+    village_chief: "凱爾長老",
   };
   // 依 npcId 找對應的 DOM element ID（merchant 保持舊 ID 向後相容）
   function npcElemId(npcId, kind) {
@@ -8136,8 +8309,8 @@
     input.value = "";
     npcChatThinking(npcId, true);
   }
-  // 為所有六大 NPC 綁定按鈕與 Enter 鍵
-  for (const npcId of ["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc"]) {
+  // 為所有 NPC（含里長）綁定按鈕與 Enter 鍵
+  for (const npcId of ["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief"]) {
     const sendBtn = document.getElementById(npcElemId(npcId, "send"));
     const input = document.getElementById(npcElemId(npcId, "input"));
     if (sendBtn) sendBtn.addEventListener("click", () => sendNpcChat(npcId));

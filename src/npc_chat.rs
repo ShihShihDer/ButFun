@@ -139,6 +139,11 @@ pub const NPCS: &[NpcPersona] = &[
         display: "評審老農",
         persona: "你是農產品展覽會的草帽評審，大家叫你老農。你種了一輩子的田，對作物品質有近乎苛刻的標準，但對真心務農的拓荒者極其溫柔。你喜歡聞剛收成的菜香，看到漂亮的農產品眼睛會亮起來。說話帶著鄉土味，偶爾引用老農諺，滿肚子關於種田、釣魚、養雞的私房心得。",
     },
+    NpcPersona {
+        id: "village_chief",
+        display: "凱爾長老",
+        persona: "你是新手村的里長，大家都叫你凱爾長老。你德高望重、溫暖而威嚴，見過大靜默前後的興衰，把守護這個村落視為畢生使命。說話緩慢有力，喜歡引用老格言，對每一位拓荒者都像看待自己的後輩。村落金庫是全體居民的信任，你花每一枚乙太都非常謹慎。",
+    },
 ];
 
 /// 依 id 找 NPC 人設。
@@ -155,6 +160,7 @@ pub fn canned_reply(npc: &NpcPersona) -> String {
         "expedition_npc" => "探勘令就掛在那兒！踏出城牆，去看看這個世界吧！".to_string(),
         "procurement_npc" => "星際採購單隨時備著。跨星跑一趟，報酬絕對值得。".to_string(),
         "farm_fair_npc" => "農展委託在這裡。好農產品說話，展給我看吧。".to_string(),
+        "village_chief" => "老朽很高興你來拜訪。村落的興盛，需要每一位拓荒者的努力與信任。".to_string(),
         _ => format!("{}向你點了點頭。", npc.display),
     }
 }
@@ -268,6 +274,18 @@ pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_st
     }
 }
 
+/// 生成 NPC 對玩家這句話的回應，使用呼叫端提供的自訂 system prompt。
+/// 供里長等有特殊 prompt 需求的 NPC 使用；降級行為同 `reply()`。
+pub async fn reply_with_custom_prompt(npc: &NpcPersona, custom_prompt: &str, player_msg: &str) -> String {
+    if !llm_enabled() {
+        return canned_reply(npc);
+    }
+    match ollama_chat(custom_prompt, player_msg).await {
+        Some(t) => t,
+        None => canned_reply(npc),
+    }
+}
+
 /// 對話後，把這次互動濃縮成「對這位玩家的新印象」（一句話、第三人稱）。
 /// LLM 沒啟用 / 失敗 → 沿用舊印象（不更新，也不出錯）。
 pub async fn update_impression(npc: &NpcPersona, prev: &str, player_msg: &str, reply: &str) -> String {
@@ -320,7 +338,7 @@ mod tests {
 
     #[test]
     fn all_five_new_npcs_exist() {
-        for id in ["workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc"] {
+        for id in ["workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief"] {
             assert!(find_npc(id).is_some(), "找不到 NPC：{}", id);
         }
     }
@@ -384,9 +402,9 @@ mod tests {
 
     #[test]
     fn initial_gift_stock_covers_all_npcs() {
-        // 所有已上線 NPC 都應在 initial_gift_stock 取得初始庫存。
+        // 有個人送禮機制的 NPC 都應有初始庫存；village_chief 用村落金庫，不在此清單。
         let stock = initial_gift_stock();
-        for n in NPCS {
+        for n in NPCS.iter().filter(|n| n.id != "village_chief") {
             assert!(stock.contains_key(n.id), "NPC {} 缺少初始庫存", n.id);
             assert!(*stock.get(n.id).unwrap() > 0, "NPC {} 初始庫存不得為 0", n.id);
         }

@@ -61,6 +61,7 @@ mod expedition;
 mod procurement;
 mod farm_fair;
 mod npc_memory_store;
+mod village_chief;
 
 use std::net::SocketAddr;
 

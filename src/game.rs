@@ -572,6 +572,21 @@ pub fn spawn(app: AppState) {
                         farm_crop_plots: app.farm_crops.read().unwrap().all_active_views(),
                         // 夜採星晶礦脈（ROADMAP 50）：夜間有節點，白天空陣列。
                         star_crystals: app.star_crystals.read().unwrap().views(),
+                        // 村落節慶加成剩餘秒數（ROADMAP 64）：0 = 無加成；>0 = EXP +30%。
+                        village_buff_remaining_secs: {
+                            let lock = app.village_buff_until.read().unwrap();
+                            lock.as_ref()
+                                .map(|&expiry| {
+                                    let now = std::time::Instant::now();
+                                    if now < expiry {
+                                        expiry.duration_since(now).as_secs() as u32
+                                    } else {
+                                        0
+                                    }
+                                })
+                                .unwrap_or(0)
+                        },
+                        village_treasury: *app.village_treasury.read().unwrap(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

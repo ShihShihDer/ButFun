@@ -433,6 +433,8 @@ impl Player {
             farm_fair_cooldown: self.farm_fair_cooldown,
             near_fair_judge: self.planet == PLANET_HOME
                 && crate::farm_fair::is_near_fair_judge(self.x, self.y),
+            near_village_chief: self.planet == PLANET_HOME
+                && crate::village_chief::is_within_reach(self.x, self.y),
         }
     }
 
@@ -684,6 +686,12 @@ pub struct AppState {
     /// 商人自主送出後存入；下次 ShopBuy 套用一次後清除；到期自動失效。
     /// 記憶體模式，重啟清空（折扣本就限時，重啟等同過期，行為正確）。
     pub npc_pending_discount: Arc<RwLock<HashMap<Uuid, (u32, Instant)>>>,
+    /// 村落金庫餘額（乙太，ROADMAP 64）。玩家捐獻後增加；里長辦活動後扣減。
+    /// 記憶體模式（重啟從 INITIAL_TREASURY 重設，行為正確——金庫代表「當前活躍信任」）。
+    pub village_treasury: Arc<RwLock<u32>>,
+    /// 村落節慶加成的到期時刻（ROADMAP 64）。`None` = 無活躍加成；`Some(t)` = t 前全服 EXP +30%。
+    /// 記憶體模式（重啟清空，加成重來，行為正確）。
+    pub village_buff_until: Arc<RwLock<Option<Instant>>>,
 }
 
 impl AppState {
@@ -781,6 +789,8 @@ impl AppState {
             npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
             npc_memory_store,
             npc_pending_discount: Arc::new(RwLock::new(HashMap::new())),
+            village_treasury: Arc::new(RwLock::new(crate::village_chief::INITIAL_TREASURY)),
+            village_buff_until: Arc::new(RwLock::new(None)),
         }
     }
 
