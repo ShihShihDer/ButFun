@@ -208,8 +208,9 @@ pub fn spawn(app: AppState) {
                             kind: p.enemy.kind(),
                             x: p.x,
                             y: p.y,
+                            level: p.level,
                             hp: p.enemy.remaining_hp(),
-                            max_hp: p.enemy.kind().max_hp(),
+                            max_hp: p.enemy.max_hp(),
                             alive: p.enemy.is_alive(),
                         })
                         .collect()

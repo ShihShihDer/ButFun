@@ -93,6 +93,53 @@ pub fn level_attack_bonus(level: u32) -> u32 {
     level / 2
 }
 
+// ─────────────────── 怪物等級（ROADMAP 41）───────────────────
+//
+// 確定性、不持久化：依位置計算，同座標永遠同等級。
+// 公式：1 + 距最近城鎮邊緣環帶 + 星球基礎等級。
+
+/// 確定性計算位置 (x, y) 的怪物基準等級。
+/// 城邊 Lv.1、每 500px 距城牆 +1；星球基礎等級再疊加。
+pub fn monster_level_at(x: f32, y: f32) -> u32 {
+    // 最近城鎮邊緣距離（Chebyshev，像素）
+    let min_dist = world_core::TOWNS.iter().map(|t| {
+        let cx = t.cgx as f32 * world_core::TILE_PX;
+        let cy = t.cgy as f32 * world_core::TILE_PX;
+        let half = t.half_tiles as f32 * world_core::TILE_PX;
+        let cheb = (x - cx).abs().max((y - cy).abs());
+        (cheb - half).max(0.0)
+    }).fold(f32::MAX, f32::min);
+
+    // 星球基礎等級（越深遠的星球底線越高）
+    let xd = x as f64;
+    let planet_base: u32 = if xd >= world_core::VOID_ZONE_MIN_X { 10 }
+        else if xd >= world_core::VERDANT_ZONE_MIN_X { 5 }
+        else if xd <= world_core::ORIGIN_ZONE_MAX_X { 15 }
+        else if xd <= world_core::AETHER_ZONE_MAX_X { 13 }
+        else if xd <= world_core::CRIMSON_ZONE_MAX_X { 8 }
+        else { 0 };
+
+    1 + (min_dist / 500.0) as u32 + planet_base
+}
+
+/// HP 縮放：每 +1 等級 +15%（成長感明顯，但傷害係數更低，怪變肉不變秒殺）。
+pub fn scaled_max_hp(base: u32, level: u32) -> u32 {
+    let factor = 1.0_f32 + 0.15 * level.saturating_sub(1) as f32;
+    (base as f32 * factor).round() as u32
+}
+
+/// 威脅縮放：每 +1 等級 +8%（成長比 HP 慢，防玩家被高等怪秒殺）。
+pub fn scaled_threat(base: u32, level: u32) -> u32 {
+    let factor = 1.0_f32 + 0.08 * level.saturating_sub(1) as f32;
+    (base as f32 * factor).max(1.0).round() as u32
+}
+
+/// 經驗縮放：每 +1 等級 +10%（高等怪值得挑戰）。
+pub fn scaled_exp(base: u32, level: u32) -> u32 {
+    let factor = 1.0_f32 + 0.10 * level.saturating_sub(1) as f32;
+    (base as f32 * factor).round() as u32
+}
+
 impl WeaponKind {
     /// 此武器每下攻擊造成的傷害。
     pub fn attack_power(self) -> u32 {
@@ -440,27 +487,32 @@ impl EnemyKind {
 
 /// 世界裡一隻可被打倒、之後會重生的敵人。
 ///
-/// 狀態只有「剩餘生命」與「重生倒數」兩個欄位，階段（存活 / 被打倒）皆由生命推導，
-/// 維持單一真實來源——比照 `ResourceNode` 以剩餘耐久推導可採 / 採空。
+/// `max_hp` 儲存等級縮放後的生命上限（Lv.1 怪 = 種類基礎值；高等怪更高），
+/// 重生時回滿的也是這個值，而非種類基礎值。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Enemy {
-    /// 敵人種類（決定生命 / 掉落 / 危險度 / 重生時間）。
     kind: EnemyKind,
-    /// 剩餘生命（可再承受的傷害量）。歸零＝被打倒。
     remaining_hp: u32,
-    /// 重生倒數（秒）。只有被打倒（`remaining_hp == 0`）時才有意義；倒數到 0 滿血復活。
+    /// 等級縮放後的最大生命（含 scaled_max_hp 加成）。
+    max_hp: u32,
     respawn_timer: f32,
 }
 
 impl Enemy {
-    /// 生出一隻滿血、可立即被攻擊的新敵人。
+    /// 生出一隻滿血、Lv.1（基礎值）的新敵人。
     pub fn new(kind: EnemyKind) -> Self {
-        Self {
-            kind,
-            remaining_hp: kind.max_hp(),
-            respawn_timer: 0.0,
-        }
+        let hp = kind.max_hp();
+        Self { kind, remaining_hp: hp, max_hp: hp, respawn_timer: 0.0 }
     }
+
+    /// 生出一隻等級縮放後滿血的新敵人。
+    pub fn new_leveled(kind: EnemyKind, level: u32) -> Self {
+        let hp = scaled_max_hp(kind.max_hp(), level);
+        Self { kind, remaining_hp: hp, max_hp: hp, respawn_timer: 0.0 }
+    }
+
+    /// 等級縮放後的最大生命。
+    pub fn max_hp(&self) -> u32 { self.max_hp }
 
     /// 敵人種類。
     pub fn kind(&self) -> EnemyKind {
@@ -517,7 +569,7 @@ impl Enemy {
         }
         self.respawn_timer -= dt;
         if self.respawn_timer <= 0.0 {
-            self.remaining_hp = self.kind.max_hp();
+            self.remaining_hp = self.max_hp; // 回滿等級縮放後的上限，而非種類基礎值
             self.respawn_timer = 0.0;
         }
     }
@@ -531,17 +583,15 @@ impl Enemy {
     pub fn is_loadable(&self) -> bool {
         self.respawn_timer.is_finite()
             && self.respawn_timer >= 0.0
-            && self.remaining_hp <= self.kind.max_hp()
+            && self.max_hp > 0
+            && self.remaining_hp <= self.max_hp
     }
 
     /// 測試用：直接組出指定狀態（含壞值）的敵人，驗證載入防線。
     #[cfg(test)]
     pub fn from_raw(kind: EnemyKind, remaining_hp: u32, respawn_timer: f32) -> Self {
-        Self {
-            kind,
-            remaining_hp,
-            respawn_timer,
-        }
+        let max_hp = kind.max_hp();
+        Self { kind, remaining_hp, max_hp, respawn_timer }
     }
 }
 
@@ -975,5 +1025,71 @@ mod tests {
         let max_exp = KINDS.iter().map(|k| k.exp_reward()).max().unwrap();
         let min_exp = KINDS.iter().map(|k| k.exp_reward()).min().unwrap();
         assert!(max_exp > min_exp, "不同難度的敵人 exp 獎勵應有差異，給玩家挑戰動機");
+    }
+
+    // ─── 怪物等級測試（ROADMAP 41）───
+
+    #[test]
+    fn monster_level_safe_zone_is_one() {
+        // 新手村安全區中心 Lv.1（距城牆 0，planet_base=0）
+        let lv = monster_level_at(
+            world_core::SAFE_ZONE_CX as f32,
+            world_core::SAFE_ZONE_CY as f32,
+        );
+        assert_eq!(lv, 1, "安全區中心應為 Lv.1");
+    }
+
+    #[test]
+    fn monster_level_increases_with_distance() {
+        // 距主城 1500px 應比 500px 等級高
+        let cx = world_core::SAFE_ZONE_CX as f32;
+        let cy = world_core::SAFE_ZONE_CY as f32;
+        let lv_near = monster_level_at(cx + 500.0, cy);
+        let lv_far  = monster_level_at(cx + 1500.0, cy);
+        assert!(lv_far >= lv_near, "距城越遠等級應越高或相等");
+    }
+
+    #[test]
+    fn monster_level_verdant_has_planet_base() {
+        // 翠幽星（X=22000）基礎等級應比故鄉同距離高 5
+        let home_lv   = monster_level_at(5000.0, 2296.0);
+        let verdant_cx = 22400.0_f32; // 翠幽據點中心 X
+        let verdant_lv = monster_level_at(verdant_cx, 2976.0); // 據點內應 Lv = 1 + 5 = 6
+        // 翠幽星 planet_base=5，城內距牆 0 → Lv=6
+        assert_eq!(verdant_lv, 6, "翠幽據點城內應為 Lv.6（planet_base=5）");
+        // 故鄉距主城同樣「在城牆內」→ Lv=1
+        assert!(verdant_lv > home_lv, "翠幽星等級應高於故鄉同位置");
+    }
+
+    #[test]
+    fn scaled_hp_grows_with_level() {
+        let base = 10;
+        assert_eq!(scaled_max_hp(base, 1), 10);        // Lv.1 = 基礎
+        let lv5 = scaled_max_hp(base, 5);
+        let lv10 = scaled_max_hp(base, 10);
+        assert!(lv5 > base, "Lv.5 HP 應高於基礎");
+        assert!(lv10 > lv5, "Lv.10 HP 應高於 Lv.5");
+    }
+
+    #[test]
+    fn scaled_threat_grows_slower_than_hp() {
+        let base_hp = 10;
+        let base_threat = 5;
+        let lv = 10;
+        let hp_ratio = scaled_max_hp(base_hp, lv) as f32 / base_hp as f32;
+        let threat_ratio = scaled_threat(base_threat, lv) as f32 / base_threat as f32;
+        assert!(
+            threat_ratio < hp_ratio,
+            "威脅成長係數({:.2}) 應小於 HP 成長係數({:.2})，防玩家被秒殺",
+            threat_ratio, hp_ratio
+        );
+    }
+
+    #[test]
+    fn enemy_new_leveled_has_correct_max_hp() {
+        let base = EnemyKind::FlutterSprite.max_hp(); // 3
+        let lv5 = Enemy::new_leveled(EnemyKind::FlutterSprite, 5);
+        assert_eq!(lv5.max_hp(), scaled_max_hp(base, 5));
+        assert_eq!(lv5.remaining_hp(), lv5.max_hp(), "新生怪物應滿血");
     }
 }

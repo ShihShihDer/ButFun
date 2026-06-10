@@ -877,10 +877,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let result = app.enemies.write().unwrap().attack_nearest(px, py, power);
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
-                        if let Some((kind, Some((item, qty)))) = result {
+                        if let Some((kind, enemy_level, Some((item, qty)))) = result {
                             p.inventory.add(item, qty);
-                            // 殺怪得 exp（依敵人難度決定獎勵量；附魔增幅加成）。
-                            let base_reward = kind.exp_reward();
+                            // 殺怪得 exp（依敵人等級縮放後的難度決定獎勵量；附魔增幅加成）。
+                            let base_reward = crate::combat::scaled_exp(kind.exp_reward(), enemy_level);
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)) as u32;
                             let old_level = p.level();
@@ -902,12 +902,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
-                    if let Some((kind, Some(_))) = result {
+                    if let Some((kind, _, Some(_))) = result {
                         let completed = app.quests.write().unwrap().on_kill(kind);
                         notify_quest_complete(&app, completed);
                     }
                     // 成就：擊殺計數里程碑（ROADMAP 31）。
-                    if let Some((_, Some(_))) = result {
+                    if let Some((_, _, Some(_))) = result {
                         let (kill_count, new_level, pname, newly_unlocked) = {
                             let mut players = app.players.write().unwrap();
                             if let Some(p) = players.get_mut(&id) {
@@ -937,7 +937,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
-                    if let (Some(uid), Some((kill_kind, Some(_)))) = (authed_uid, result) {
+                    if let (Some(uid), Some((kill_kind, _, Some(_)))) = (authed_uid, result) {
                         advance_daily_kill(&app, uid, kill_kind, &tx_direct);
                     }
                 }

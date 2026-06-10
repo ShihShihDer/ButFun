@@ -3515,6 +3515,23 @@
     coral_crab:        { tint: "#2aa0b0" },
   };
 
+  // 怪物等級名牌用的中文名（ROADMAP 41）
+  const ENEMY_NAME = {
+    scrap_drone:       "廢鐵無人機",
+    ether_wisp:        "乙太鬼火",
+    flutter_sprite:    "飄舞精靈",
+    mushroom_stalker:  "蕈菇潛行者",
+    crystal_golem:     "晶石傀儡",
+    rune_guardian:     "符文守衛",
+    coral_crab:        "珊瑚蟹",
+    jade_wraith:       "翠幽魅影",
+    steam_construct:   "蒸汽構裝",
+    void_phantom:      "虛空幽靈",
+    aether_specter:    "霧醚幻靈",
+    origin_guardian:   "源晶守護者",
+    rift_guardian:     "裂縫守護者",
+  };
+
   // 銹蝕巡邏機:懸浮的故障舊機械。金屬殼 + 脈動紅色感測眼 + 頂端閃燈 + 側鰭。純 canvas 畫。
   function drawScrapDrone(cx, cy, t, phase) {
     const x = cx - 13, y = cy - 9, w = 26, h = 18, r = 7;
@@ -4262,6 +4279,22 @@
         ctx.fillRect(bx - 1, by - 1, bw + 2, 6);
         ctx.fillStyle = "#d65a5a";
         ctx.fillRect(bx, by, bw * (e.hp / e.max_hp), 4);
+      }
+      // 怪物等級名牌（ROADMAP 41）：Lv.N 名字，顏色相對玩家等級。
+      if (e.alive && typeof e.level === "number") {
+        const plvl = myLevel || 1;
+        const diff = e.level - plvl;
+        // 綠=比玩家弱，黃=勢均，紅=危險
+        const lvColor = diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
+        const kindName = ENEMY_NAME[e.kind] || e.kind;
+        const tag = `Lv.${e.level} ${kindName}`;
+        ctx.font = "bold 9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.fillText(tag, sx + 1, sy - 29);
+        ctx.fillStyle = lvColor;
+        ctx.fillText(tag, sx, sy - 30);
+        ctx.textAlign = "left";
       }
       ctx.restore();
     }

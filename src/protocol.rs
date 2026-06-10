@@ -342,6 +342,8 @@ pub struct EnemyView {
     pub kind: EnemyKind,
     pub x: f32,
     pub y: f32,
+    /// 怪物等級（ROADMAP 41）：前端據此顯示 Lv.N 名牌並以顏色相對玩家等級標危險度。
+    pub level: u32,
     /// 剩餘血量 / 上限（畫血條）。`alive=false` 表示被打倒、重生中(畫淡或不畫)。
     pub hp: u32,
     pub max_hp: u32,
@@ -617,6 +619,7 @@ mod tests {
                 kind: EnemyKind::ScrapDrone,
                 x: 300.0,
                 y: 400.0,
+                level: 1,
                 hp: 5,
                 max_hp: 6,
                 alive: true,
@@ -650,6 +653,7 @@ mod tests {
         assert_eq!(v["nodes"][0]["kind"], "tree");
         assert_eq!(v["nodes"][0]["x"], 120.0);
         assert_eq!(v["enemies"][0]["kind"], "scrap_drone");
+        assert_eq!(v["enemies"][0]["level"], 1);
         assert_eq!(v["enemies"][0]["hp"], 5);
         assert_eq!(v["enemies"][0]["alive"], true);
         assert_eq!(v["nodes"][0]["harvestable"], true);
