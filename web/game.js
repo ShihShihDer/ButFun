@@ -4065,9 +4065,18 @@
     }
   }
 
-  // ROADMAP 34：畫城外產權地塊邊界。
-  // 未購地塊：淡灰虛線邊框；已購（他人）：橙色實線+地主名；已購（自己）：亮綠實線+「你的地」。
+  // ROADMAP 34/35：畫城外產權地塊邊界。
+  // 用途色碼：farm=翠綠、free_build=天藍；他人=橙；未購=淡灰虛線。
   const TILE_PX = 32;
+  // 依用途取主色（自己的地用飽和色；他人的地降透明度）
+  function plotColor(purpose, alpha) {
+    if (purpose === "farm") return `rgba(80,230,80,${alpha})`;
+    return `rgba(80,200,255,${alpha})`; // free_build 預設天藍
+  }
+  // 依用途取圖示 emoji
+  function plotPurposeEmoji(purpose) {
+    return purpose === "farm" ? "🌾" : "🏗️";
+  }
   function drawLandPlots(camX, camY) {
     if (!landPlots.length) return;
     ctx.save();
@@ -4083,12 +4092,13 @@
 
       const isMine = myId && p.owner_id === myId;
       const isOwnedByOther = p.owner_id && !isMine;
+      const purpose = p.purpose || "free_build";
 
       ctx.lineWidth = 2;
       if (isMine) {
-        ctx.strokeStyle = "rgba(80,255,100,0.85)";
+        ctx.strokeStyle = plotColor(purpose, 0.85);
         ctx.setLineDash([]);
-        ctx.fillStyle = "rgba(80,255,100,0.07)";
+        ctx.fillStyle = plotColor(purpose, 0.07);
       } else if (isOwnedByOther) {
         ctx.strokeStyle = "rgba(255,180,60,0.75)";
         ctx.setLineDash([]);
@@ -4111,13 +4121,13 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       if (isMine) {
-        ctx.fillStyle = "rgba(80,255,100,0.9)";
-        ctx.fillText("你的地", cx2, cy2);
-      } else if (isOwnedByOther && p.owner_name) {
+        ctx.fillStyle = plotColor(purpose, 0.9);
+        ctx.fillText(`${plotPurposeEmoji(purpose)} 你的地`, cx2, cy2);
+      } else if (isOwnedByOther) {
         ctx.fillStyle = "rgba(255,210,100,0.9)";
-        // 長名截斷
-        const nm = p.owner_name.length > 8 ? p.owner_name.slice(0, 7) + "…" : p.owner_name;
-        ctx.fillText(nm, cx2, cy2);
+        // 用途圖示 + 地主名（長名截斷）
+        const nm = p.owner_name ? (p.owner_name.length > 7 ? p.owner_name.slice(0, 6) + "…" : p.owner_name) : "";
+        ctx.fillText(`${plotPurposeEmoji(purpose)} ${nm}`, cx2, cy2);
       }
     }
     ctx.restore();
@@ -4573,8 +4583,8 @@
     // 城外地塊：我已有哪塊、有多少可買
     const myLandPlot = myId ? landPlots.find(p => p.owner_id === myId) : null;
     const availCount = landPlots.filter(p => !p.owner_id).length;
-    // 簽章把城外地塊狀態也納入，讓購買後立刻更新面板。
-    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}|${myLandPlot ? myLandPlot.plot_id : "none"}|${availCount}`;
+    // 簽章把城外地塊狀態（含用途）納入，讓購買後立刻更新面板。
+    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}|${myLandPlot ? myLandPlot.plot_id + ":" + (myLandPlot.purpose || "") : "none"}|${availCount}`;
     if (sig === lastExpandSig) return;
     lastExpandSig = sig;
     body.innerHTML = "";
@@ -4675,12 +4685,14 @@
       info.textContent = "登入後可購買城外地塊（60 ✨）";
       body.appendChild(info);
     } else if (myLandPlot) {
-      // 已有地塊：顯示哪一塊
+      // 已有地塊：顯示哪一塊與用途
       const SIDE = ["北","北","北","北","北","南","南","南","南","南","西","西","西","西","西","東","東","東","東","東"];
+      const purposeLabel = myLandPlot.purpose === "farm" ? "🌾 農田地塊" : "🏗️ 自由建地";
+      const purposeColor = myLandPlot.purpose === "farm" ? "#7fff7f" : "#7fcfff";
       const info = document.createElement("div");
       info.className = "expand-desc";
-      info.style.color = "#7fff7f";
-      info.textContent = `你擁有 ${SIDE[myLandPlot.plot_id] || ""}環 #${myLandPlot.plot_id} 號地塊`;
+      info.style.color = purposeColor;
+      info.textContent = `你擁有 ${SIDE[myLandPlot.plot_id] || ""}環 #${myLandPlot.plot_id} 號地塊（${purposeLabel}）`;
       body.appendChild(info);
       const hint = document.createElement("div");
       hint.className = "expand-desc";
@@ -4693,7 +4705,7 @@
       info.textContent = "目前 20 塊地皆已被購買";
       body.appendChild(info);
     } else {
-      // 顯示可購數量與最近一塊的購買按鈕
+      // 顯示可購數量，列出前 5 塊可購地塊（ROADMAP 35：每塊附用途選擇器）
       const SIDE = ["北","北","北","北","北","南","南","南","南","南","西","西","西","西","西","東","東","東","東","東"];
       const LAND_PLOT_BUY_COST = 60;
       const canBuyPlot = ether >= LAND_PLOT_BUY_COST;
@@ -4705,32 +4717,42 @@
       const hint = document.createElement("div");
       hint.className = "expand-desc";
       hint.style.cssText = "font-size:0.7em;opacity:0.7;margin-top:2px;margin-bottom:4px;";
-      hint.textContent = "地圖上綠框即地塊位置，每人限購一塊";
+      hint.textContent = "選用途後購買，每人限購一塊";
       body.appendChild(hint);
-      // 列出前 5 塊可購地塊
+      // 列出前 5 塊可購地塊，每塊附「🌾農田」／「🏗️建地」雙按鈕
       const avail = landPlots.filter(p => !p.owner_id).slice(0, 5);
       for (const plot of avail) {
         const prow = document.createElement("div");
         prow.className = "expand-row";
-        prow.style.marginBottom = "3px";
+        prow.style.cssText = "margin-bottom:5px;flex-wrap:wrap;gap:3px;";
         const pdesc = document.createElement("div");
         pdesc.className = "expand-desc";
-        pdesc.style.fontSize = "0.78em";
+        pdesc.style.cssText = "font-size:0.78em;width:100%;";
         pdesc.textContent = `${SIDE[plot.plot_id] || ""}環 #${plot.plot_id}`;
         prow.appendChild(pdesc);
-        const pbtn = document.createElement("button");
-        pbtn.type = "button";
-        pbtn.className = "expand-btn";
-        pbtn.textContent = "購買";
-        pbtn.disabled = !canBuyPlot;
-        pbtn.title = canBuyPlot ? `花 ${LAND_PLOT_BUY_COST} 乙太購買地塊 #${plot.plot_id}` : "乙太不足";
-        pbtn.setAttribute("aria-label", pbtn.title);
-        pbtn.addEventListener("click", () => {
-          if (pbtn.disabled) return;
-          try { ws.send(JSON.stringify({ type: "buy_land_plot", plot_id: plot.plot_id })); } catch {}
-          announce(`花 ${LAND_PLOT_BUY_COST} 乙太購買 ${SIDE[plot.plot_id] || ""}環 #${plot.plot_id} 地塊`);
-        });
-        prow.appendChild(pbtn);
+        // 農田 / 自由建地 雙按鈕
+        const purposes = [
+          { key: "farm",       label: "🌾 農田",  color: "#7fff7f" },
+          { key: "free_build", label: "🏗️ 建地",  color: "#7fcfff" },
+        ];
+        for (const pur of purposes) {
+          const pbtn = document.createElement("button");
+          pbtn.type = "button";
+          pbtn.className = "expand-btn";
+          pbtn.textContent = pur.label;
+          pbtn.disabled = !canBuyPlot;
+          pbtn.style.cssText = `font-size:0.82em;padding:2px 6px;${canBuyPlot ? `border-color:${pur.color};` : ""}`;
+          pbtn.title = canBuyPlot
+            ? `花 ${LAND_PLOT_BUY_COST} 乙太購買 ${SIDE[plot.plot_id] || ""}環 #${plot.plot_id}（${pur.label}）`
+            : "乙太不足";
+          pbtn.setAttribute("aria-label", pbtn.title);
+          pbtn.addEventListener("click", () => {
+            if (pbtn.disabled) return;
+            try { ws.send(JSON.stringify({ type: "buy_land_plot", plot_id: plot.plot_id, purpose: pur.key })); } catch {}
+            announce(`花 ${LAND_PLOT_BUY_COST} 乙太購買 ${SIDE[plot.plot_id] || ""}環 #${plot.plot_id}（${pur.label}）`);
+          });
+          prow.appendChild(pbtn);
+        }
         body.appendChild(prow);
       }
     }
