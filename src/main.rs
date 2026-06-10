@@ -58,6 +58,7 @@ mod workshop;
 mod bounty_board;
 mod expedition;
 mod procurement;
+mod farm_fair;
 
 use std::net::SocketAddr;
 

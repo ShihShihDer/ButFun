@@ -195,6 +195,12 @@ pub struct Player {
     pub procurement_active: Option<crate::procurement::ActiveProcurement>,
     /// 採購完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
     pub procurement_cooldown: f32,
+
+    // ── 農產品展覽會（ROADMAP 56）────────────────────────────────────────
+    /// 目前接取的展覽委託。None = 無委託；Some = 進行中（含剩餘秒）。記憶體前置，重啟清空。
+    pub farm_fair_active: Option<crate::farm_fair::ActiveFairOrder>,
+    /// 展覽委託完成冷卻剩餘秒數（0 = 可接新委託）。由 game.rs 每 tick 推進。
+    pub farm_fair_cooldown: f32,
 }
 
 impl Player {
@@ -392,6 +398,39 @@ impl Player {
             procurement_cooldown: self.procurement_cooldown,
             near_procurement_agent: self.planet == PLANET_HOME
                 && crate::procurement::is_near_procurement_agent(self.x, self.y),
+            farm_fair_orders: {
+                use crate::farm_fair::FAIR_ORDERS;
+                use crate::protocol::{FairOrderBrief, FairReqView};
+                FAIR_ORDERS.iter().map(|o| FairOrderBrief {
+                    order_id: o.id,
+                    name: o.name.to_string(),
+                    reqs: o.reqs.iter().map(|r| FairReqView {
+                        item: r.item,
+                        item_name: r.item_name.to_string(),
+                        qty: r.qty,
+                    }).collect(),
+                    reward: o.reward,
+                    xp: o.xp,
+                }).collect()
+            },
+            farm_fair_active: self.farm_fair_active.as_ref().and_then(|a| {
+                use crate::farm_fair::find_order;
+                use crate::protocol::{FairActiveView, FairReqView};
+                find_order(a.order_id).map(|o| FairActiveView {
+                    order_id: a.order_id,
+                    name: o.name.to_string(),
+                    reqs: o.reqs.iter().map(|r| FairReqView {
+                        item: r.item,
+                        item_name: r.item_name.to_string(),
+                        qty: r.qty,
+                    }).collect(),
+                    reward: o.reward,
+                    remaining_secs: a.remaining_secs,
+                })
+            }),
+            farm_fair_cooldown: self.farm_fair_cooldown,
+            near_fair_judge: self.planet == PLANET_HOME
+                && crate::farm_fair::is_near_fair_judge(self.x, self.y),
         }
     }
 
@@ -774,6 +813,8 @@ mod tests {
             expedition_cooldown: 0.0,
             procurement_active: None,
             procurement_cooldown: 0.0,
+            farm_fair_active: None,
+            farm_fair_cooldown: 0.0,
         }
     }
 

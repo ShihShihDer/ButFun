@@ -135,6 +135,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             expedition_cooldown: 0.0,
             procurement_active: None,
             procurement_cooldown: 0.0,
+            farm_fair_active: None,
+            farm_fair_cooldown: 0.0,
         }
     } else {
         // 等 Join
@@ -192,6 +194,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             expedition_cooldown: 0.0,
             procurement_active: None,
             procurement_cooldown: 0.0,
+            farm_fair_active: None,
+            farm_fair_cooldown: 0.0,
         }
     };
     let id = player.id;
@@ -2109,6 +2113,79 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             if p.procurement_active.take().is_some() {
                                 tracing::info!(player = %p.name, "放棄採購任務");
+                            }
+                        }
+                    }
+                }
+
+                // ── 農產品展覽會（ROADMAP 56）──────────────────────────────────────
+                Ok(ClientMsg::AcceptFairOrder { order_id }) => {
+                    // 接取展覽委託：需登入 + 故鄉星球 + 靠近評審 + 無進行中委託 + 無冷卻。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            use crate::farm_fair::{try_accept, is_near_fair_judge};
+                            if p.planet == crate::state::PLANET_HOME
+                                && is_near_fair_judge(p.x, p.y)
+                            {
+                                if let Some(active) = try_accept(order_id, &p.farm_fair_active, p.farm_fair_cooldown) {
+                                    let order_name = crate::farm_fair::find_order(order_id)
+                                        .map(|o| o.name).unwrap_or("?");
+                                    tracing::info!(player = %p.name, order = order_name, "接取農展委託");
+                                    p.farm_fair_active = Some(active);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::SubmitFairOrder) => {
+                    // 提交展覽委託：需登入 + 故鄉 + 靠近評審 + 有進行中委託 + 背包物品足夠。
+                    if let Some(uid) = authed_uid {
+                        let result = {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                use crate::farm_fair::{try_submit, is_near_fair_judge};
+                                if p.planet != crate::state::PLANET_HOME {
+                                    None
+                                } else if !is_near_fair_judge(p.x, p.y) {
+                                    None
+                                } else {
+                                    let inv = p.inventory.clone();
+                                    let sub = try_submit(&p.farm_fair_active, |item| inv.count(item));
+                                    if let Some((reward, xp, deductions)) = sub {
+                                        // 先記錄委託名稱（active 清除前）
+                                        let order_name = p.farm_fair_active.as_ref()
+                                            .and_then(|a| crate::farm_fair::find_order(a.order_id))
+                                            .map(|o| o.name)
+                                            .unwrap_or("農展委託");
+                                        for (item, qty) in &deductions {
+                                            p.inventory.take(*item, *qty);
+                                        }
+                                        p.ether += reward;
+                                        p.masteries.gain_farmer(xp);
+                                        p.farm_fair_active = None;
+                                        p.farm_fair_cooldown = crate::farm_fair::FAIR_COOLDOWN_SECS;
+                                        Some((p.name.clone(), reward, order_name))
+                                    } else {
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        if let Some((pname, reward, order_name)) = result {
+                            let _ = app.tx_chat.send(format!("🏅 {} 完成了{}！獲得 {} 乙太", pname, order_name, reward));
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::AbandonFairOrder) => {
+                    // 放棄展覽委託：取消進行中委託，無懲罰（不啟動冷卻）。
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            if p.farm_fair_active.take().is_some() {
+                                tracing::info!(player = %p.name, "放棄農展委託");
                             }
                         }
                     }

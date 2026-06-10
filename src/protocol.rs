@@ -114,6 +114,34 @@ pub struct ExpeditionActiveView {
     pub remaining_secs: f32,
 }
 
+/// 農產品展覽委託中單一物品需求的視圖（前端顯示用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FairReqView {
+    pub item: ItemKind,
+    pub item_name: String,
+    pub qty: u32,
+}
+
+/// 農產品展覽委託摘要（靜態，前端列表用）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FairOrderBrief {
+    pub order_id: u8,
+    pub name: String,
+    pub reqs: Vec<FairReqView>,
+    pub reward: u32,
+    pub xp: u32,
+}
+
+/// 玩家目前接取的展覽委託狀態（含剩餘秒數）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FairActiveView {
+    pub order_id: u8,
+    pub name: String,
+    pub reqs: Vec<FairReqView>,
+    pub reward: u32,
+    pub remaining_secs: f32,
+}
+
 /// 地形格種類的協定表示（序列化為小寫字串，與 world-core TileKind 對齊）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -373,6 +401,15 @@ pub enum ClientMsg {
     /// 放棄採購任務（ROADMAP 55）：取消目前進行中的任務，無懲罰（不啟動冷卻）。
     #[serde(rename = "abandon_procurement")]
     AbandonProcurement,
+    /// 接取農展委託（ROADMAP 56）：接取指定 id 的展覽委託，開始備料計時。
+    #[serde(rename = "accept_fair_order")]
+    AcceptFairOrder { order_id: u8 },
+    /// 提交農展委託（ROADMAP 56）：備齊物品後靠近評審 NPC 提交，發放獎勵。
+    #[serde(rename = "submit_fair_order")]
+    SubmitFairOrder,
+    /// 放棄農展委託（ROADMAP 56）：取消目前進行中的委託，無懲罰（不啟動冷卻）。
+    #[serde(rename = "abandon_fair_order")]
+    AbandonFairOrder,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -609,6 +646,18 @@ pub struct PlayerView {
     /// 玩家是否靠近主城採購代理人 NPC（故鄉限定）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_procurement_agent: bool,
+    /// 農展評審同時提供的 5 張展覽委託（靜態定義，每幀廣播）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub farm_fair_orders: Vec<FairOrderBrief>,
+    /// 玩家目前進行中的展覽委託（無任務時省略）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm_fair_active: Option<FairActiveView>,
+    /// 展覽委託完成後的冷卻剩餘秒數（0 時省略）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub farm_fair_cooldown: f32,
+    /// 玩家是否靠近農展評審 NPC（false 時省略節省流量）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_fair_judge: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -908,6 +957,10 @@ mod tests {
                 procurement_active: None,
                 procurement_cooldown: 0.0,
                 near_procurement_agent: false,
+                farm_fair_orders: vec![],
+                farm_fair_active: None,
+                farm_fair_cooldown: 0.0,
+                near_fair_judge: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1060,6 +1113,10 @@ mod tests {
             procurement_active: None,
             procurement_cooldown: 0.0,
             near_procurement_agent: false,
+            farm_fair_orders: vec![],
+            farm_fair_active: None,
+            farm_fair_cooldown: 0.0,
+            near_fair_judge: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

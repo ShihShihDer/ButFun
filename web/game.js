@@ -640,6 +640,7 @@
           updateBountyPanel(me, isGuest);   // 懸賞告示板面板（ROADMAP 53）
           updateExpeditionPanel(me, isGuest); // 古蹟探勘面板（ROADMAP 54）
           updateProcurementPanel(me, isGuest); // 星際採購面板（ROADMAP 55）
+          updateFarmFairPanel(me, isGuest);  // 農展評審面板（ROADMAP 56）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1877,7 +1878,8 @@
         (e.key === "k" || e.key === "K") ? "dockWorkshop" :
         (e.key === "u" || e.key === "U") ? "dockBounty" :
         (e.key === "y" || e.key === "Y") ? "dockExpedition" :
-        (e.key === "o" || e.key === "O") ? "dockProcurement" : null;
+        (e.key === "o" || e.key === "O") ? "dockProcurement" :
+        (e.key === "1") ? "dockFarmFair" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2326,6 +2328,7 @@
     drawBountyBoardNpc(camX, camY); // 懸賞告示板 NPC（ROADMAP 53）
     drawExpeditionBoardNpc(camX, camY); // 探勘公告欄 NPC（ROADMAP 54）
     drawProcurementAgentNpc(camX, camY); // 採購代理人 NPC（ROADMAP 55）
+    drawFairJudgeNpc(camX, camY); // 農展評審 NPC（ROADMAP 56）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4651,6 +4654,66 @@
     ctx.textAlign = "center";
     ctx.fillStyle = "#a0a0ff";
     ctx.fillText("📦 採購", sx, by - 30);
+    ctx.restore();
+  }
+
+  // 農展評審 NPC（ROADMAP 56）：固定於故鄉 (2600, 2080)，僅在故鄉且視野內繪製。
+  const FAIR_NPC_WX = 2600;
+  const FAIR_NPC_WY = 2080;
+  function drawFairJudgeNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = FAIR_NPC_WX - camX;
+    const sy = FAIR_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 0.8 + 3.5) * 2;
+    const by = sy + bob;
+    ctx.save();
+    // 身體（農評外衣，淺棕色）
+    ctx.fillStyle = "#7a5a30";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭（亮膚色）
+    ctx.fillStyle = "#d4a870";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 草帽（寬邊帽，稻草黃）
+    ctx.fillStyle = "#d4b040";
+    ctx.fillRect(sx - 5, by - 18, 10, 6); // 帽頂
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 18, 13, 3, 0, 0, Math.PI * 2); // 帽緣
+    ctx.fill();
+    ctx.strokeStyle = "#a08020";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(sx, by - 18, 13, 3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // 蔬果籃（左手持）
+    ctx.fillStyle = "#8b5e3c";
+    ctx.beginPath();
+    ctx.roundRect(sx - 20, by - 2, 14, 10, 3);
+    ctx.fill();
+    ctx.fillStyle = "#e0522b"; // 紅蘿蔔
+    ctx.beginPath();
+    ctx.arc(sx - 17, by - 1, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#2da84e"; // 綠菜
+    ctx.beginPath();
+    ctx.arc(sx - 13, by - 2, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f5c542"; // 黃穗
+    ctx.beginPath();
+    ctx.arc(sx - 9, by - 1, 3, 0, Math.PI * 2);
+    ctx.fill();
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#80d060";
+    ctx.fillText("🏅 農展", sx, by - 30);
     ctx.restore();
   }
 
@@ -7018,6 +7081,143 @@
     const info = document.createElement("div");
     info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
     info.textContent = "在主城採購代理人接取採購令，前往指定星球採集特產碎片，返回主城靠近代理人交付，立即獲得乙太 + 商人熟練度 XP。完成後 8 分鐘冷卻。";
+    body.appendChild(info);
+  }
+
+  // 農產品展覽會面板（ROADMAP 56）：農夫熟練度第十一路線，接委託→備齊農產品→交付→得乙太+XP。
+  let lastFarmFairSig = null;
+  function updateFarmFairPanel(me, isGuestUser) {
+    const body = document.getElementById("farmFairBody");
+    if (!body) return;
+
+    const active = me ? (me.farm_fair_active || null) : null;
+    const cooldown = me ? (me.farm_fair_cooldown || 0) : 0;
+    const nearJudge = me ? !!me.near_fair_judge : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const orders = me ? (me.farm_fair_orders || []) : [];
+    const inv = me ? (me.inventory || []) : [];
+
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearJudge, planet].join("|");
+    if (sig === lastFarmFairSig) return;
+    lastFarmFairSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser || planet !== "home") {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = isGuestUser ? "登入後才能使用農展評審" : "農展評審只在故鄉星球提供服務。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 進行中展覽委託。
+    if (active) {
+      const mins = Math.floor(active.remaining_secs / 60);
+      const secs = Math.floor(active.remaining_secs % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+      // 檢查所有需求是否都滿足
+      const reqs = active.reqs || [];
+      const allSatisfied = reqs.every(r => {
+        const found = inv.find(s => s.item === r.item);
+        return (found ? found.qty : 0) >= r.qty;
+      });
+      const canSubmit = nearJudge && allSatisfied;
+
+      const activeDiv = document.createElement("div");
+      activeDiv.style.cssText = "background:#0a1a0a;border:1px solid #408040;border-radius:8px;padding:10px;margin-bottom:10px;";
+      const reqHtml = reqs.map(r => {
+        const have = (inv.find(s => s.item === r.item) || {}).qty || 0;
+        const ok = have >= r.qty;
+        return `<div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
+          <span style="color:${ok ? "#80ffa0" : "#ff8080"}">（背包：${have}）</span></div>`;
+      }).join("");
+      activeDiv.innerHTML = `
+        <div style="color:#80d060;font-weight:600;margin-bottom:4px;">🏅 進行中：${active.name}</div>
+        ${reqHtml}
+        <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 農夫 XP</div>
+        <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
+      `;
+      body.appendChild(activeDiv);
+
+      const submitBtn = document.createElement("button");
+      submitBtn.type = "button";
+      submitBtn.textContent = canSubmit ? "🏅 提交展品" : nearJudge ? "📦 備料不足，無法提交" : "🏅 靠近評審才能提交";
+      submitBtn.disabled = !canSubmit;
+      submitBtn.style.cssText = `width:100%;padding:7px 0;border:1px solid #408040;border-radius:8px;background:transparent;color:${canSubmit ? "#80d060" : "#555"};cursor:${canSubmit ? "pointer" : "default"};font-size:.85rem;margin-bottom:6px;`;
+      submitBtn.addEventListener("click", () => {
+        if (!submitBtn.disabled) ws.send(JSON.stringify({ type: "submit_fair_order" }));
+      });
+      body.appendChild(submitBtn);
+
+      const abandonBtn = document.createElement("button");
+      abandonBtn.type = "button";
+      abandonBtn.textContent = "🗑️ 放棄委託（無懲罰）";
+      abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      abandonBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "abandon_fair_order" }));
+      });
+      body.appendChild(abandonBtn);
+
+      const note = document.createElement("div");
+      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.textContent = "提示：備齊所有展品後靠近農展評審，點「提交展品」即完成！";
+      body.appendChild(note);
+      return;
+    }
+
+    // 冷卻中。
+    if (cooldown > 0) {
+      const mins = Math.floor(cooldown / 60);
+      const secs = Math.floor(cooldown % 60);
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新委託。`;
+      body.appendChild(hint);
+      return;
+    }
+
+    // 顯示可接取的 5 張展覽委託。
+    if (!nearJudge) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = "靠近主城農展評審（🏅）才能接取委託。";
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:#80d060;font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = "🏅 可接取展覽委託（選一張）";
+      body.appendChild(head);
+
+      for (const o of orders) {
+        const row = document.createElement("div");
+        row.style.cssText = "background:#0a1a0a;border:1px solid #305030;border-radius:8px;padding:8px;margin-bottom:6px;";
+        const reqHtml = (o.reqs || []).map(r => {
+          const have = (inv.find(s => s.item === r.item) || {}).qty || 0;
+          const ok = have >= r.qty;
+          return `<div style="color:#aaa;font-size:.8rem;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
+            <span style="color:${ok ? "#80ffa0" : "#aaa"}">（背包：${have}）</span></div>`;
+        }).join("");
+        row.innerHTML = `
+          <div style="color:#80d060;margin-bottom:4px;">${o.name}</div>
+          ${reqHtml}
+          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 農夫 XP ${o.xp}</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "🏅 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #408040;border-radius:6px;background:transparent;color:#80d060;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "accept_fair_order", order_id: o.order_id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在主城農展評審接取展覽委託，備齊指定農產品（可從釣魚、牧場、農田種植取得），靠近評審提交即得乙太 + 農夫熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
 
