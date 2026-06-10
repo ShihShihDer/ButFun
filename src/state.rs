@@ -709,6 +709,10 @@ pub struct AppState {
     /// 世界事件影響數值，對話時注入 system prompt 讓 NPC 語氣自然反映情緒狀態。
     /// 記憶體模式，重啟清零（世界換季，NPC 重新出發）。
     pub npc_needs: Arc<RwLock<crate::npc_needs::NpcNeedsState>>,
+    /// NPC 人際關係網（ROADMAP 70）：每對 NPC 之間有好惡值（0~100），
+    /// 世界事件影響關係（共患難加深信任），對話時注入 system prompt 讓 NPC 談到彼此時語氣自然。
+    /// 記憶體模式，重啟清零。
+    pub npc_relations: Arc<RwLock<crate::npc_relations::NpcRelationsState>>,
 }
 
 impl AppState {
@@ -813,6 +817,7 @@ impl AppState {
             player_logs: Arc::new(RwLock::new(HashMap::new())),
             npc_proactive: Arc::new(RwLock::new(crate::npc_proactive::NpcProactiveCooldowns::new())),
             npc_needs: Arc::new(RwLock::new(crate::npc_needs::NpcNeedsState::new())),
+            npc_relations: Arc::new(RwLock::new(crate::npc_relations::NpcRelationsState::new())),
         }
     }
 

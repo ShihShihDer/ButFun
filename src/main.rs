@@ -64,6 +64,7 @@ mod npc_lifecycle;
 mod npc_memory_store;
 mod npc_needs;
 mod npc_proactive;
+mod npc_relations;
 mod village_chief;
 mod world_log;
 mod player_log;

@@ -376,6 +376,8 @@ pub fn spawn(app: AppState) {
                     ));
                     // NPC 需求驅力（ROADMAP 69）：裂縫開啟 → 安全感下降。
                     app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::RiftOpened);
+                    // NPC 人際關係網（ROADMAP 70）：裂縫開啟影響 NPC 對之間的關係。
+                    app.npc_relations.write().unwrap().apply_world_event(crate::npc_relations::RelationsEvent::RiftOpened);
                     // NPC 主動評論（ROADMAP 68）：裂縫開啟觸發相關 NPC 在聊天頻道表態。
                     {
                         let event_kind = crate::npc_proactive::WorldEventKind::RiftOpened {
@@ -429,6 +431,8 @@ pub fn spawn(app: AppState) {
                             ));
                             // NPC 需求驅力（ROADMAP 69）：獸潮集結 → 全員安全感大跌。
                             app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::HordeArriving);
+                            // NPC 人際關係網（ROADMAP 70）：獸潮壓力帶出小摩擦。
+                            app.npc_relations.write().unwrap().apply_world_event(crate::npc_relations::RelationsEvent::HordeArriving);
                             // NPC 主動評論（ROADMAP 68）：獸潮警報觸發 NPC 聊天頻道表態。
                             {
                                 let event_kind = crate::npc_proactive::WorldEventKind::HordeArriving {
@@ -470,6 +474,8 @@ pub fn spawn(app: AppState) {
                             ));
                             // NPC 需求驅力（ROADMAP 69）：獸潮打退 → 安全感回升，社群歸屬感大升。
                             app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::HordeRepelled);
+                            // NPC 人際關係網（ROADMAP 70）：共患難加深信任。
+                            app.npc_relations.write().unwrap().apply_world_event(crate::npc_relations::RelationsEvent::HordeRepelled);
                             // NPC 主動評論（ROADMAP 68）：獸潮打退，NPC 慶祝。
                             {
                                 let event_kind = crate::npc_proactive::WorldEventKind::HordeRepelled {
@@ -525,6 +531,14 @@ pub fn spawn(app: AppState) {
                 let decay_ticks = crate::npc_needs::DECAY_INTERVAL_SECS * TICK_HZ as u64;
                 if tick % decay_ticks == 0 && tick > 0 {
                     app.npc_needs.write().unwrap().tick_decay_all();
+                }
+            }
+            // NPC 人際關係網衰減（ROADMAP 70）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 對的好惡值向中性緩慢靠近。
+            // 關係比情緒更持久（5 分鐘一次），確保共患難的信任不會瞬間消散。
+            {
+                let rel_decay_ticks = crate::npc_relations::DECAY_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % rel_decay_ticks == 0 && tick > 0 {
+                    app.npc_relations.write().unwrap().tick_decay_all();
                 }
             }
 
