@@ -165,6 +165,9 @@ pub enum ClientMsg {
     /// 請求每日任務（ROADMAP 32）：前端開啟每日任務面板時送出，
     /// 伺服器回 `DailyQuestsUpdate`。未登入靜默忽略。
     RequestDailyQuests,
+    /// 請求排行榜（ROADMAP 33）：前端開啟排行榜面板時送出，
+    /// 伺服器回 `Leaderboard`（等級/乙太/殺怪三榜前 20 名）。
+    RequestLeaderboard,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -222,6 +225,21 @@ pub enum ServerMsg {
     /// 玩家自己的每日任務狀態（ROADMAP 32）：回應 `RequestDailyQuests` 或任務完成後送出。
     /// `tasks` 為 3 條任務的詳細資訊；`done_count` = 目前完成數（0-3）。
     DailyQuestsUpdate { tasks: Vec<crate::daily_quest::DailyTaskView>, done_count: u32 },
+    /// 排行榜（ROADMAP 33）：回應 `RequestLeaderboard`。
+    /// 三榜各含前 20 名（Postgres 模式含離線玩家；記憶體模式線上玩家補底）。
+    Leaderboard {
+        level_top: Vec<LeaderboardEntry>,
+        ether_top: Vec<LeaderboardEntry>,
+        kills_top: Vec<LeaderboardEntry>,
+    },
+}
+
+/// 排行榜單筆條目（ROADMAP 33）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LeaderboardEntry {
+    pub rank: u32,
+    pub name: String,
+    pub value: u32,
 }
 
 /// 世界的基本參數，讓客戶端知道地圖邊界。
@@ -658,5 +676,29 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert_eq!(v["planet"], "crimson");
         assert!(v["message"].as_str().unwrap().contains("赤焰星"));
+    }
+
+    /// ROADMAP 33 排行榜 wire contract：request_leaderboard 可被解析。
+    #[test]
+    fn parses_request_leaderboard_message() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"request_leaderboard"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::RequestLeaderboard));
+    }
+
+    /// ROADMAP 33 排行榜回應序列化含正確欄位。
+    #[test]
+    fn leaderboard_response_serializes_correctly() {
+        let msg = ServerMsg::Leaderboard {
+            level_top: vec![LeaderboardEntry { rank: 1, name: "Alice".into(), value: 10 }],
+            ether_top: vec![LeaderboardEntry { rank: 1, name: "Bob".into(), value: 500 }],
+            kills_top: vec![],
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "leaderboard");
+        assert_eq!(v["level_top"][0]["rank"], 1);
+        assert_eq!(v["level_top"][0]["name"], "Alice");
+        assert_eq!(v["level_top"][0]["value"], 10);
+        assert_eq!(v["ether_top"][0]["name"], "Bob");
+        assert_eq!(v["kills_top"].as_array().unwrap().len(), 0);
     }
 }
