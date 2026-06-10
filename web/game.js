@@ -636,6 +636,7 @@
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
           updateTradePanel(me, isGuest); // 星際貿易面板（ROADMAP 51）
+          updateWorkshopPanel(me, isGuest); // 工匠工坊面板（ROADMAP 52）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1869,7 +1870,8 @@
         (e.key === "n" || e.key === "N") ? "dockRanch" :
         (e.key === "t" || e.key === "T") ? "dockFarmCrop" :
         (e.key === "x" || e.key === "X") ? "dockStarCrystal" :
-        (e.key === "v" || e.key === "V") ? "dockTrade" : null;
+        (e.key === "v" || e.key === "V") ? "dockTrade" :
+        (e.key === "k" || e.key === "K") ? "dockWorkshop" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -2314,6 +2316,7 @@
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
+    drawWorkshopNpc(camX, camY); // 工坊 NPC（ROADMAP 52）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4439,6 +4442,61 @@
     }
   }
 
+  // 工坊 NPC（ROADMAP 52）：固定於故鄉 (2120, 2080)，僅在故鄉且視野內繪製。
+  const WORKSHOP_NPC_WX = 2120;
+  const WORKSHOP_NPC_WY = 2080;
+  function drawWorkshopNpc(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
+    if (myPlanet !== "home") return;
+    const sx = WORKSHOP_NPC_WX - camX;
+    const sy = WORKSHOP_NPC_WY - camY;
+    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
+    const t = performance.now() / 1000;
+    const bob = reduceMotion ? 0 : Math.sin(t * 1.0 + 42) * 2;
+    const by = sy + bob;
+    ctx.save();
+    // 身體（深藍工匠外套）
+    ctx.fillStyle = "#2a4a6a";
+    ctx.beginPath();
+    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭（銅皮色）
+    ctx.fillStyle = "#c08a3a";
+    ctx.beginPath();
+    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
+    ctx.fill();
+    // 工匠護目鏡（深色眼鏡）
+    ctx.fillStyle = "#1a2a3a";
+    ctx.beginPath();
+    ctx.ellipse(sx - 3, by - 9, 3, 2.5, -0.3, 0, Math.PI * 2);
+    ctx.ellipse(sx + 3, by - 9, 3, 2.5, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭巾
+    ctx.fillStyle = "#3a3a5a";
+    ctx.fillRect(sx - 10, by - 17, 20, 5);
+    ctx.fillRect(sx - 5, by - 22, 10, 6);
+    // 工具小旗（右上角：🔨 符號）
+    ctx.strokeStyle = "#c08a3a";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx + 12, by - 20);
+    ctx.lineTo(sx + 12, by - 8);
+    ctx.stroke();
+    ctx.fillStyle = "#4a80c0";
+    ctx.beginPath();
+    ctx.moveTo(sx + 12, by - 20);
+    ctx.lineTo(sx + 20, by - 16);
+    ctx.lineTo(sx + 12, by - 12);
+    ctx.fill();
+    // 名牌
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#80b8e8";
+    ctx.fillText("🔨 工坊", sx, by - 30);
+    ctx.restore();
+  }
+
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
   function drawEnemies(camX, camY) {
     const fxNow = performance.now();
@@ -6308,6 +6366,145 @@
     const info = document.createElement("div");
     info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
     info.textContent = "在一個星球商人接取包裹，前往目標星球商人交付，換取乙太 + 商人熟練度 XP。每條路線 5 分鐘冷卻。";
+    body.appendChild(info);
+  }
+
+  // ── 工匠工坊面板（ROADMAP 52）──────────────────────────────────────────────
+  const ITEM_DISPLAY_NAME = {
+    wood: "木材🪵", stone: "石頭🪨", ether: "乙太礦石⚡",
+    crystal_shard: "晶石碎片💎", jade_shard: "翠幽碎片🌿",
+  };
+
+  let lastWorkshopSig = null;
+  function updateWorkshopPanel(me, isGuestUser) {
+    const body = document.getElementById("workshopBody");
+    if (!body) return;
+
+    const active = me ? (me.workshop_active || null) : null;
+    const cooldown = me ? (me.workshop_cooldown || 0) : 0;
+    const nearWorkshop = me ? !!me.near_workshop : false;
+    const planet = me ? (me.planet || "home") : "home";
+    const orders = me ? (me.workshop_orders || []) : [];
+    const inv = me ? (me.inventory || []) : [];
+
+    // 背包物品索引。
+    const invMap = {};
+    for (const s of inv) invMap[s.item] = (invMap[s.item] || 0) + s.qty;
+
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearWorkshop, planet].join("|");
+    if (sig === lastWorkshopSig) return;
+    lastWorkshopSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser || planet !== "home") {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = isGuestUser ? "登入後才能使用工匠工坊" : "工匠工坊只在故鄉星球提供服務。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 進行中訂單。
+    if (active) {
+      const order = orders.find(o => o.order_id === active.order_id);
+      const itemName = ITEM_DISPLAY_NAME[active.item] || active.item;
+      const mins = Math.floor(active.remaining_secs / 60);
+      const secs = Math.floor(active.remaining_secs % 60);
+      const timeStr = `${mins}:${secs.toString().padStart(2, "0")}`;
+      const haveCnt = invMap[active.item] || 0;
+      const canFulfill = nearWorkshop && haveCnt >= active.qty;
+
+      const activeDiv = document.createElement("div");
+      activeDiv.style.cssText = "background:#1a2a1a;border:1px solid #408040;border-radius:8px;padding:10px;margin-bottom:10px;";
+      activeDiv.innerHTML = `
+        <div style="color:#80ff80;font-weight:600;margin-bottom:4px;">🔨 進行中：${active.name}</div>
+        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：${itemName} × ${active.qty}（背包：${haveCnt}）</div>
+        <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 工匠 XP</div>
+        <div style="color:${active.remaining_secs < 30 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
+      `;
+      body.appendChild(activeDiv);
+
+      const fulfillBtn = document.createElement("button");
+      fulfillBtn.type = "button";
+      fulfillBtn.style.cssText = "width:100%;padding:8px 0;border-radius:8px;font-size:.95rem;margin-bottom:6px;";
+      if (canFulfill) {
+        fulfillBtn.textContent = `✅ 交付訂單（得 ${active.reward} 乙太）`;
+        fulfillBtn.style.cssText += "border:1px solid #40c040;background:transparent;color:#80ff80;cursor:pointer;";
+        fulfillBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "FulfillWorkshopOrder" }));
+        });
+      } else if (!nearWorkshop) {
+        fulfillBtn.textContent = "靠近工坊 NPC 才能交付";
+        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        fulfillBtn.disabled = true;
+      } else {
+        fulfillBtn.textContent = `背包不足（還需 ${active.qty - haveCnt} 個 ${itemName}）`;
+        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        fulfillBtn.disabled = true;
+      }
+      body.appendChild(fulfillBtn);
+
+      const abandonBtn = document.createElement("button");
+      abandonBtn.type = "button";
+      abandonBtn.textContent = "🗑️ 放棄訂單（無懲罰）";
+      abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
+      abandonBtn.addEventListener("click", () => {
+        ws.send(JSON.stringify({ type: "AbandonWorkshopOrder" }));
+      });
+      body.appendChild(abandonBtn);
+      return;
+    }
+
+    // 冷卻中。
+    if (cooldown > 0) {
+      const mins = Math.floor(cooldown / 60);
+      const secs = Math.floor(cooldown % 60);
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新訂單。`;
+      body.appendChild(hint);
+      return;
+    }
+
+    // 顯示可接取的 5 張訂單。
+    if (!nearWorkshop) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.textContent = "靠近主城工坊 NPC（🔨）才能接取訂單。";
+      body.appendChild(hint);
+    } else {
+      const head = document.createElement("div");
+      head.style.cssText = "color:var(--brass);font-weight:600;margin-bottom:8px;font-size:.85rem;";
+      head.textContent = "📋 可接取訂單（選一張）";
+      body.appendChild(head);
+
+      for (const o of orders) {
+        const itemName = ITEM_DISPLAY_NAME[o.item] || o.item;
+        const haveCnt = invMap[o.item] || 0;
+        const enough = haveCnt >= o.qty;
+        const row = document.createElement("div");
+        row.style.cssText = `background:#1a1a2a;border:1px solid #404060;border-radius:8px;padding:8px;margin-bottom:6px;`;
+        row.innerHTML = `
+          <div style="color:#e8c870;margin-bottom:4px;">${o.name}</div>
+          <div style="color:#aaa;font-size:.8rem;">需要：<b style="color:${enough ? "#80ff80" : "#ff8080"}">${itemName} × ${o.qty}</b>（背包：${haveCnt}）</div>
+          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 工匠 XP ${o.xp}</div>
+        `;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "🔨 接取";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #806040;border-radius:6px;background:transparent;color:#c8a070;cursor:pointer;font-size:.85rem;";
+        btn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "TakeWorkshopOrder", order_id: o.order_id }));
+        });
+        row.appendChild(btn);
+        body.appendChild(row);
+      }
+    }
+
+    // 說明。
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.textContent = "在主城工坊 NPC 接取加急訂單，收集指定材料後回來交付，換取乙太 + 工匠熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
 

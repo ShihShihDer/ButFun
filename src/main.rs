@@ -54,6 +54,7 @@ mod ranching;
 mod farm_crops;
 mod star_crystal;
 mod trade_route;
+mod workshop;
 
 use std::net::SocketAddr;
 
