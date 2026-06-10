@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ButFun 半自動營運迴圈（單一 systemd user timer 驅動，每 ~20 分一輪）。
+# ButFun 半自動營運迴圈（單一 systemd user timer 每 2 分心跳驅動；實際節奏自適應：
+# 週額度 <50% 全速接力、≥50% 降回每 20 分巡航、≥80% 省電暫停——見下方守衛/節奏段）。
 #
 # 省 token 結構：
 #   - dev worker = Gemini CLI（另一份額度，--yolo -w 自走、自動隔離 worktree）→ Claude 不做苦力。
@@ -61,6 +62,30 @@ if [ -n "$over_budget" ]; then
   touch "$PAUSE"
   exit 0
 fi
+
+# ── 自適應節奏（timer 只是每 2 分的心跳，真正節奏這裡決定；純 shell、零 token）──
+#   週額度 < THROTTLE_PCT（預設 50%）→ 全速：每次心跳都跑，上一輪結束即接力。
+#   週額度 ≥ THROTTLE_PCT          → 巡航：至少隔 THROTTLE_INTERVAL_MIN（預設 20 分）一輪。
+#   （≥ BUDGET_WEEKLY_PCT 80% 的省電暫停在上面，照舊是最後防線。）
+#   真實 % 拿不到（快取過期）→ 保守視同已過半，走巡航節奏。
+THROTTLE_PCT="${BUTFUN_THROTTLE_PCT:-50}"
+THROTTLE_INTERVAL_MIN="${BUTFUN_THROTTLE_INTERVAL_MIN:-20}"
+LAST_START_FILE="$STATE/last_turn_start"
+full_speed=""
+if [ -n "$seven_pct" ] && [ -n "$pct_ts" ] && [ "$((now - pct_ts))" -lt 43200 ]; then
+  awk "BEGIN{exit !(${seven_pct}+0 < ${THROTTLE_PCT}+0)}" 2>/dev/null && full_speed=1
+fi
+if [ -z "$full_speed" ]; then
+  last_start="$(cat "$LAST_START_FILE" 2>/dev/null || echo 0)"
+  if [ "$((now - last_start))" -lt "$((THROTTLE_INTERVAL_MIN * 60))" ]; then
+    log "巡航節奏（週額度 ${seven_pct:-?}% ≥ ${THROTTLE_PCT}% 或真實%不可得）：距上輪 $(((now - last_start) / 60)) 分 < ${THROTTLE_INTERVAL_MIN} 分，本輪略過"
+    exit 0
+  fi
+  log "巡航節奏：距上輪已滿 ${THROTTLE_INTERVAL_MIN} 分，開跑"
+else
+  log "全速接力（週額度 ${seven_pct}% < ${THROTTLE_PCT}%）"
+fi
+date +%s > "$LAST_START_FILE"
 
 cd "$REPO"
 # 只 git fetch 更新 ref，**絕不**動主工作樹的 checkout/merge：worker 與 reviewer 各自用隔離
