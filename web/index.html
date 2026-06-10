@@ -462,6 +462,7 @@
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="X" aria-label="夜採星晶（X）" title="夜採星晶（X）">✨</button>
         <button type="button" class="dock-btn" id="dockTrade" data-win="winTrade" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="V" aria-label="星際貿易（V）" title="星際貿易（V）">📦</button>
         <button type="button" class="dock-btn" id="dockWorkshop" data-win="winWorkshop" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="K" aria-label="工匠工坊（K）" title="工匠工坊（K）">🔨</button>
+        <button type="button" class="dock-btn" id="dockBounty" data-win="winBounty" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="U" aria-label="懸賞告示板（U）" title="懸賞告示板（U）">📜</button>
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="J" aria-label="職業選擇（J）" title="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="G" aria-label="公會（G）" title="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="A" aria-label="成就（A）" title="成就（A）">🏆</button>
@@ -576,6 +577,14 @@
         <button type="button" class="win-close" data-close="winTrade" aria-label="關閉星際貿易面板">✕</button>
       </div>
       <div id="tradeBody"></div>
+    </div>
+    <!-- 懸賞告示板面板（ROADMAP 53）：戰士熟練度第八路線；U 鍵開關。 -->
+    <div id="winBounty" class="hud-window hidden" role="dialog" aria-labelledby="bountyTitle">
+      <div class="win-head">
+        <span class="win-title" id="bountyTitle">📜 懸賞告示板</span>
+        <button type="button" class="win-close" data-close="winBounty" aria-label="關閉懸賞面板">✕</button>
+      </div>
+      <div id="bountyBody"></div>
     </div>
     <!-- 工匠工坊面板（ROADMAP 52）：工匠熟練度第七路線；K 鍵開關。 -->
     <div id="winWorkshop" class="hud-window hidden" role="dialog" aria-labelledby="workshopTitle">

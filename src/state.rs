@@ -177,6 +177,12 @@ pub struct Player {
     pub workshop_active: Option<crate::workshop::ActiveOrder>,
     /// 工坊完成冷卻剩餘秒數（0 = 可接新訂單）。由 game.rs 每 tick 推進。
     pub workshop_cooldown: f32,
+
+    // ── 懸賞告示板（ROADMAP 53）──────────────────────────────────────────
+    /// 目前接取的懸賞任務。None = 無任務；Some = 進行中（含擊殺進度+剩餘秒）。記憶體前置，重啟清空。
+    pub bounty_active: Option<crate::bounty_board::ActiveBounty>,
+    /// 懸賞完成冷卻剩餘秒數（0 = 可接新任務）。由 game.rs 每 tick 推進。
+    pub bounty_cooldown: f32,
 }
 
 impl Player {
@@ -288,6 +294,34 @@ impl Player {
             workshop_cooldown: self.workshop_cooldown,
             near_workshop: self.planet == PLANET_HOME
                 && crate::workshop::is_near_workshop(self.x, self.y),
+            bounty_cards: {
+                use crate::bounty_board::BOUNTY_CARDS;
+                use crate::protocol::BountyCardBrief;
+                BOUNTY_CARDS.iter().map(|c| BountyCardBrief {
+                    card_id: c.id,
+                    name: c.name.to_string(),
+                    target_name: c.target_kind.display_name().to_string(),
+                    required_kills: c.required_kills,
+                    reward: c.reward,
+                    xp: c.xp,
+                }).collect()
+            },
+            bounty_active: self.bounty_active.as_ref().and_then(|a| {
+                use crate::bounty_board::find_card;
+                use crate::protocol::BountyActiveView;
+                find_card(a.card_id).map(|c| BountyActiveView {
+                    card_id: a.card_id,
+                    name: c.name.to_string(),
+                    target_name: c.target_kind.display_name().to_string(),
+                    required_kills: c.required_kills,
+                    kills_done: a.kills_done,
+                    reward: c.reward,
+                    remaining_secs: a.remaining_secs,
+                })
+            }),
+            bounty_cooldown: self.bounty_cooldown,
+            near_bounty_board: self.planet == PLANET_HOME
+                && crate::bounty_board::is_near_bounty_board(self.x, self.y),
         }
     }
 
@@ -664,6 +698,8 @@ mod tests {
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
             workshop_cooldown: 0.0,
+            bounty_active: None,
+            bounty_cooldown: 0.0,
         }
     }
 

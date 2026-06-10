@@ -328,6 +328,8 @@ pub fn spawn(app: AppState) {
                     crate::trade_route::tick_cooldowns(&mut p.trade_cooldowns, dt);
                     // 工匠工坊訂單計時（ROADMAP 52）。
                     crate::workshop::tick(&mut p.workshop_active, &mut p.workshop_cooldown, dt);
+                    // 懸賞告示板計時（ROADMAP 53）。
+                    crate::bounty_board::tick(&mut p.bounty_active, &mut p.bounty_cooldown, dt);
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
