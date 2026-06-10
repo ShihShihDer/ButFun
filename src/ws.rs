@@ -288,7 +288,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -326,6 +326,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         land_plots: land_plots.clone(),
                                         // 牧場狀態全部送出（稀疏，通常很少地塊有雞）。
                                         ranch_plots: ranch_plots.clone(),
+                                        // 農地作物狀態全部送出（稀疏，通常很少地塊有種植）。
+                                        farm_crop_plots: farm_crop_plots.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1160,6 +1162,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, gained, "食用煎蛋回血");
                                 }
                             }
+                            // ── 農地料理（ROADMAP 49）────────────────────────────
+                            ItemKind::Bread => {
+                                // 麵包：回復 12 HP（小麥×3 烹飪）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(12);
+                                    tracing::info!(player = %p.name, gained, "食用麵包回血");
+                                }
+                            }
+                            ItemKind::CarrotSoup => {
+                                // 蔬菜湯：回復 10 HP 並重置自然回血冷卻（胡蘿蔔×2 烹飪）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(10);
+                                    p.vitals.reset_regen_cooldown();
+                                    tracing::info!(player = %p.name, gained, "食用蔬菜湯回血+重置回血冷卻");
+                                }
+                            }
+                            ItemKind::PotatoGratin => {
+                                // 焗烤馬鈴薯：回復 15 HP（馬鈴薯×2 烹飪，農地料理最豐盛）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(15);
+                                    tracing::info!(player = %p.name, gained, "食用焗烤馬鈴薯回血");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }
@@ -1598,6 +1623,58 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.inventory.add(crate::inventory::ItemKind::Egg, eggs);
                                         p.masteries.gain_farmer(xp);
                                         tracing::info!(player = %p.name, eggs, "收雞蛋");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 農地作物系統（ROADMAP 49）──────────────────────────────────────
+                Ok(ClientMsg::PlantCrop { plot_id, crop_type }) => {
+                    // 種植作物：需登入、是農田地主、未倒地、乙太足夠、未達作物上限。
+                    use crate::land_plot::PlotPurpose;
+                    use crate::farm_crops::CropKind;
+                    if let Some(uid) = authed_uid {
+                        let plot_owner = app.land_plots.read().unwrap().owner_of(plot_id);
+                        let plot_purpose = app.land_plots.read().unwrap().purpose_of(plot_id);
+                        if plot_owner == Some(uid) && plot_purpose == Some(PlotPurpose::Farm) {
+                            if let Some(kind) = CropKind::from_str(&crop_type) {
+                                let cost = kind.plant_cost();
+                                let downed = app.players.read().unwrap().get(&uid)
+                                    .map(|p| p.vitals.is_downed()).unwrap_or(true);
+                                let ether = app.players.read().unwrap().get(&uid)
+                                    .map(|p| p.ether).unwrap_or(0);
+                                if !downed && ether >= cost {
+                                    let ok = app.farm_crops.write().unwrap().plant(plot_id, kind);
+                                    if ok {
+                                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                            p.ether = p.ether.saturating_sub(cost);
+                                            tracing::info!(player = %p.name, ?kind, plot_id, "種植作物");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::HarvestCrops { plot_id }) => {
+                    // 收割作物：需登入、是地主、未倒地、有成熟作物。
+                    if let Some(uid) = authed_uid {
+                        let is_owner = app.land_plots.read().unwrap().owner_of(plot_id) == Some(uid);
+                        if is_owner {
+                            let downed = app.players.read().unwrap().get(&uid)
+                                .map(|p| p.vitals.is_downed()).unwrap_or(true);
+                            if !downed {
+                                let (items, xp) = app.farm_crops.write().unwrap().harvest(plot_id);
+                                if !items.is_empty() {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        for (item, qty) in &items {
+                                            p.inventory.add(*item, *qty);
+                                        }
+                                        p.masteries.gain_farmer(xp);
+                                        tracing::info!(player = %p.name, plot_id, items = items.len(), "收割作物");
                                     }
                                 }
                             }

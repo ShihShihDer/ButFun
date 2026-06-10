@@ -221,7 +221,13 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::StarSashimi
         | ItemKind::DeepBroth
         | ItemKind::Egg
-        | ItemKind::FriedEgg => None,
+        | ItemKind::FriedEgg
+        | ItemKind::WheatGrain
+        | ItemKind::Carrot
+        | ItemKind::Potato
+        | ItemKind::Bread
+        | ItemKind::CarrotSoup
+        | ItemKind::PotatoGratin => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -281,7 +287,13 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::StarSashimi
         | ItemKind::DeepBroth
         | ItemKind::Egg
-        | ItemKind::FriedEgg => None,
+        | ItemKind::FriedEgg
+        | ItemKind::WheatGrain
+        | ItemKind::Carrot
+        | ItemKind::Potato
+        | ItemKind::Bread
+        | ItemKind::CarrotSoup
+        | ItemKind::PotatoGratin => None,
     }
 }
 

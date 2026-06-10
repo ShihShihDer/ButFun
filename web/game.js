@@ -283,6 +283,7 @@
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
+  let farmCropPlots = []; // ROADMAP 49 農作狀態 [{plot_id, crops:[{kind,ripe}]}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -577,6 +578,7 @@
         updateQuestPanel();
         landPlots = msg.land_plots || [];
         ranchPlots = msg.ranch_plots || [];
+        farmCropPlots = msg.farm_crop_plots || [];
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -629,6 +631,7 @@
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
+          updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -1859,7 +1862,8 @@
         (e.key === "z" || e.key === "Z") ? "dockSkill" :
         (e.key === "p" || e.key === "P") ? "dockPet" :
         (e.key === "f" || e.key === "F") ? "dockFish" :
-        (e.key === "n" || e.key === "N") ? "dockRanch" : null;
+        (e.key === "n" || e.key === "N") ? "dockRanch" :
+        (e.key === "t" || e.key === "T") ? "dockFarmCrop" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -4327,6 +4331,36 @@
         ctx.restore();
       }
     }
+
+    // 農田地塊上的作物（ROADMAP 49）：在有作物的農田地塊畫出種類 emoji + 成熟標示。
+    if (farmCropPlots.length) {
+      const CROP_EMOJI = { wheat: "🌾", carrot: "🥕", potato: "🥔" };
+      for (const fp of farmCropPlots) {
+        if (!fp.crops || !fp.crops.length) continue;
+        const lp = landPlots.find(l => l.plot_id === fp.plot_id);
+        if (!lp) continue;
+        const wx = lp.min_gx * TILE_PX;
+        const wy = lp.min_gy * TILE_PX;
+        const w  = (lp.max_gx - lp.min_gx + 1) * TILE_PX;
+        const h  = (lp.max_gy - lp.min_gy + 1) * TILE_PX;
+        const sx = wx - camX + w / 2;
+        const sy = wy - camY + h / 2;
+        if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
+        ctx.save();
+        ctx.font = "18px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const emojis = fp.crops.map(c => (CROP_EMOJI[c.kind] || "🌱") + (c.ripe ? "✅" : "")).join(" ");
+        ctx.fillText(emojis, sx, sy - 12);
+        const ripeCount = fp.crops.filter(c => c.ripe).length;
+        if (ripeCount > 0) {
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillStyle = "#90ffb0";
+          ctx.fillText(`成熟 ${ripeCount}`, sx, sy + 10);
+        }
+        ctx.restore();
+      }
+    }
     ctx.restore();
   }
 
@@ -5947,6 +5981,102 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
     tip.textContent = "雞每 60 秒產 1~2 顆蛋（視雞數）。每次收蛋給農夫熟練度 +8 XP。雞蛋可賣 NPC（2 乙太/顆）或合成台做煎蛋（回血 10）。";
+    body.appendChild(tip);
+  }
+
+  // ── 農作面板（ROADMAP 49）─────────────────────────────────────────────────
+  const CROP_DEFS = [
+    { key: "wheat",  label: "小麥", cost: 10, emoji: "🌾" },
+    { key: "carrot", label: "胡蘿蔔", cost: 12, emoji: "🥕" },
+    { key: "potato", label: "馬鈴薯", cost: 15, emoji: "🥔" },
+  ];
+  let lastFarmCropSig = null;
+  function updateFarmCropPanel(me, isGuestUser) {
+    const body = document.getElementById("farmCropBody");
+    if (!body) return;
+    const myPlot = myId ? landPlots.find(l => l.owner_id === myId && l.purpose === "farm") : null;
+    const plotCrops = myPlot ? (farmCropPlots.find(fp => fp.plot_id === myPlot.plot_id) || { crops: [] }) : { crops: [] };
+    const ether = me ? me.ether : 0;
+    const cropSig = plotCrops.crops.map(c => `${c.kind}:${c.ripe}`).join(",");
+    const sig = [isGuestUser, myPlot?.plot_id, cropSig, ether].join("|");
+    if (sig === lastFarmCropSig) return;
+    lastFarmCropSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能使用農作";
+      body.appendChild(hint);
+      return;
+    }
+
+    if (!myPlot) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.5;";
+      hint.textContent = "你還沒有農田地塊。請先在「購地」面板購買農田類型地塊，才能種作物。";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 作物狀態區
+    const status = document.createElement("div");
+    status.style.cssText = "margin-bottom:10px;font-size:.9rem;line-height:1.7;";
+    const cropDesc = plotCrops.crops.length === 0
+      ? "（空）"
+      : plotCrops.crops.map(c => {
+          const def = CROP_DEFS.find(d => d.key === c.kind);
+          return `${def ? def.emoji : "🌱"}${def ? def.label : c.kind}${c.ripe ? " <b style='color:#90ffb0;'>成熟</b>" : ""}`;
+        }).join("、");
+    status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
+      + `<div>作物（${plotCrops.crops.length}/3）：${cropDesc}</div>`;
+    body.appendChild(status);
+
+    // 種植按鈕（剩餘空槽才顯示）
+    if (plotCrops.crops.length < 3) {
+      for (const def of CROP_DEFS) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.style.cssText = "width:100%;padding:6px 0;border:1px solid #50b87a;border-radius:8px;background:transparent;color:#90e8b0;cursor:pointer;font-size:.85rem;margin-bottom:6px;";
+        btn.textContent = `${def.emoji} 種${def.label}（${def.cost} 乙太）`;
+        if (ether < def.cost) {
+          btn.disabled = true;
+          btn.style.color = "#555";
+          btn.style.borderColor = "#333";
+          btn.style.cursor = "default";
+        } else {
+          btn.addEventListener("click", () => {
+            ws.send(JSON.stringify({ type: "plant_crop", plot_id: myPlot.plot_id, crop_type: def.key }));
+          });
+        }
+        body.appendChild(btn);
+      }
+    }
+
+    // 收割按鈕
+    {
+      const ripeCount = plotCrops.crops.filter(c => c.ripe).length;
+      const harvestBtn = document.createElement("button");
+      harvestBtn.type = "button";
+      harvestBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #c09030;border-radius:8px;background:transparent;color:#ffe066;cursor:pointer;font-size:.9rem;margin-top:2px;";
+      if (ripeCount > 0) {
+        harvestBtn.textContent = `🌾 收割成熟作物（${ripeCount} 株）`;
+        harvestBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "harvest_crops", plot_id: myPlot.plot_id }));
+        });
+      } else {
+        harvestBtn.textContent = "🌾 目前無作物可收割";
+        harvestBtn.disabled = true;
+        harvestBtn.style.color = "#555";
+        harvestBtn.style.borderColor = "#333";
+        harvestBtn.style.cursor = "default";
+      }
+      body.appendChild(harvestBtn);
+    }
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
+    tip.textContent = "作物 90 秒成熟，收割給農夫熟練度 +10 XP。小麥→麵包（回血12）、胡蘿蔔→蔬菜湯（回血10）、馬鈴薯→焗烤馬鈴薯（回血15）。";
     body.appendChild(tip);
   }
 

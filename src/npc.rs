@@ -55,6 +55,10 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::FishDeep,         price_per: 10 },
     // 牧場產物（ROADMAP 48）：雞蛋 2 乙太/顆，確保死蛋有出口。
     ShopEntry { item: ItemKind::Egg,              price_per: 2  },
+    // 農地作物（ROADMAP 49）：按種植成本遞增溢價，讓農田路線有穩定乙太出口。
+    ShopEntry { item: ItemKind::WheatGrain,       price_per: 2  },
+    ShopEntry { item: ItemKind::Carrot,           price_per: 3  },
+    ShopEntry { item: ItemKind::Potato,           price_per: 4  },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

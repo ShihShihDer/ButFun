@@ -344,6 +344,29 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::FriedEgg,
         output_qty: 1,
     },
+
+    // ── 農地料理（ROADMAP 49 農田地塊種作物）────────────────────────────────
+    /// 麵包：小麥×3 → 麵包×1。使用後回復 12 HP。農田種植最基礎的糧食，比煎蛋多兩滴血。
+    Recipe {
+        id: "bread",
+        inputs: &[(ItemKind::WheatGrain, 3)],
+        output: ItemKind::Bread,
+        output_qty: 1,
+    },
+    /// 蔬菜湯：胡蘿蔔×2 → 蔬菜湯×1。使用後回復 10 HP 並立即啟動自然回血。
+    Recipe {
+        id: "carrot_soup",
+        inputs: &[(ItemKind::Carrot, 2)],
+        output: ItemKind::CarrotSoup,
+        output_qty: 1,
+    },
+    /// 焗烤馬鈴薯：馬鈴薯×2 → 焗烤馬鈴薯×1。使用後回復 15 HP——農地料理最豐盛的一道。
+    Recipe {
+        id: "potato_gratin",
+        inputs: &[(ItemKind::Potato, 2)],
+        output: ItemKind::PotatoGratin,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -591,8 +614,13 @@ mod tests {
         for r in RECIPES {
             for &(item, _) in r.inputs {
                 let craftable = RECIPES.iter().any(|other| other.output == item);
+                // 農地種植可得（ROADMAP 49）：農田地塊種作物，成熟後收割。
+                let farm_croppable = matches!(
+                    item,
+                    ItemKind::WheatGrain | ItemKind::Carrot | ItemKind::Potato
+                );
                 assert!(
-                    obtainable.contains(&item) || craftable,
+                    obtainable.contains(&item) || craftable || farm_croppable,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",
