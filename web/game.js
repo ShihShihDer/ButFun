@@ -564,12 +564,16 @@
           }
           myInv = new Map(inv.map((s) => [s.item, s.qty]));
           invKnown = true;
-          // 只在背包內容真的變了才重繪面板——原本每幀(15Hz)都重建 innerHTML + 重綁按鈕，
-          // 害「🏗️選取 點得到但不一定勾選」(點擊剛好遇到重建就掉了)。選取材料不改背包內容，
-          // 故選取期間不會被快照重繪打斷；按鈕點擊自己會重繪一次同步選取狀態。
-          const bagSig = inv.map((s) => `${s.item}:${s.qty}`).join(",");
-          if (bagSig !== lastBagSig) { lastBagSig = bagSig; updateBagHud(inv); }
-          updateWeaponHud(inv);  // 手上武器 pill（有武器才亮）+「合武器更痛」一行引導
+          // 只在背包內容或裝備狀態真的變了才重繪面板——避免每幀重建 innerHTML + 重綁按鈕，
+          // 害「🏗️選取 點得到但不一定勾選」(點擊剛好遇到重建就掉了)。
+          const bagSig = inv.map((s) => `${s.item}:${s.qty}`).join(",") +
+            `|${me.equipped_weapon || ""}|${me.equipped_armor || ""}|${me.equipped_accessory || ""}`;
+          if (bagSig !== lastBagSig) {
+            lastBagSig = bagSig;
+            updateBagHud(inv, me.equipped_weapon, me.equipped_armor, me.equipped_accessory);
+          }
+          updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
+          updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense);
           updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
           updateExpandPanel(me); // 擴地:下一格價/夠不夠買隨乙太(與未來 expansions)快照更新
@@ -1729,6 +1733,7 @@
     if (toggleDockWin) {
       const winBtn =
         (e.key === "b" || e.key === "B") ? "dockBag" :
+        (e.key === "i" || e.key === "I") ? "dockEquip" :
         (e.key === "c" || e.key === "C") ? "dockCraft" :
         (e.key === "q" || e.key === "Q") ? "dockQuest" :
         (e.key === "j" || e.key === "J") ? "dockClass" :
@@ -4345,7 +4350,7 @@
   // 已購 owned 格時,下一格要多少乙太。對齊 economy::expansion_cost——前端只算來顯示,
   // 真正扣款/開格仍由伺服器查餘額決定。
   const expansionCost = (owned) => EXPANSION_BASE_COST * (owned + 1);
-  function updateBagHud(inv) {
+  function updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory) {
     // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
     // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
     const toggle = document.getElementById("bagToggle");
@@ -4379,17 +4384,21 @@
       star_chart: "展開遠方星球星圖（多星球前奏）",
       steam_elixir: "回復至滿血 + 獲得 8 乙太",
     };
-    // 裝備/護甲的持有說明（持有即被動生效，無需點使用）。
+    // 裝備/護甲的說明（點⚔️裝備後生效，顯示已裝備狀態）。
     const GEAR_DESC = {
-      weapon: "攻擊力 +5（持有即生效）",
-      mushroom_staff: "攻擊力 +7（持有即生效）🌿 森林生態",
-      crystal_blade: "攻擊力 +8（持有即生效）💎 岩地生態",
-      rune_blade: "攻擊力 +10（持有即生效）⚜️ 沙漠生態",
-      coral_lance: "攻擊力 +12（持有即生效）🌊 水域生態",
-      meadow_amulet: "防禦 -1（每次受傷減 1 傷害）🌸 草原生態",
-      crystal_shield: "防禦 -2（每次受傷減 2 傷害）💎 岩地生態",
-      jade_blade: "攻擊力 +15（持有即生效）🟢 翠幽星",
-      crimson_blade: "攻擊力 +20（持有即生效）🔴 赤焰星",
+      weapon: "攻擊力 +5",
+      mushroom_staff: "攻擊力 +7 🌿 森林生態",
+      crystal_blade: "攻擊力 +8 💎 岩地生態",
+      rune_blade: "攻擊力 +10 ⚜️ 沙漠生態",
+      coral_lance: "攻擊力 +12 🌊 水域生態",
+      jade_blade: "攻擊力 +15 🟢 翠幽星",
+      crimson_blade: "攻擊力 +20 🔴 赤焰星",
+      void_blade: "攻擊力 +25 🔮 虛空星",
+      aether_blade: "攻擊力 +30 🌫️ 霧醚星",
+      origin_blade: "攻擊力 +40 ✨ 起源星",
+      meadow_amulet: "防禦 -1（減 1 傷）🌸 草原生態",
+      crystal_shield: "防禦 -2（減 2 傷）💎 岩地生態",
+      cosmic_shield: "防禦 -6（減 6 傷）🌌 宇宙星",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
@@ -4404,10 +4413,14 @@
         const useBtn = CONSUMABLE.has(s.item)
           ? `<button class="bag-use-btn" data-item="${s.item}" title="使用${ITEM_NAME[s.item] || s.item}（${desc}）">🧪使用</button>`
           : "";
-        // 裝備/護甲顯示「持有中」說明標籤。
-        const gearTag = GEAR_DESC[s.item]
-          ? `<span class="bag-gear-tag" title="${GEAR_DESC[s.item]}">✨持有</span>`
-          : "";
+        // 裝備/護甲：已裝備顯示標籤，未裝備顯示「⚔️裝備」按鈕。
+        let gearTag = "";
+        if (GEAR_DESC[s.item]) {
+          const isEquipped = s.item === equippedWeapon || s.item === equippedArmor || s.item === equippedAccessory;
+          gearTag = isEquipped
+            ? `<span class="bag-gear-tag equipped" title="${GEAR_DESC[s.item]}">✅已裝備</span>`
+            : `<button class="bag-equip-btn" data-item="${s.item}" title="${GEAR_DESC[s.item]}">⚔️裝備</button>`;
+        }
         return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}${gearTag}</div>`;
       })
       .join("");
@@ -4418,7 +4431,7 @@
         const mat = btn.dataset.material;
         selectedBuildMaterial = selectedBuildMaterial === mat ? null : mat;
         updatePlaceModeHud();
-        updateBagHud(inv); // 重繪以同步選取狀態
+        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory); // 重繪以同步選取狀態
       });
     });
     // 綁定 bag-use-btn 點擊事件：送 use_item 訊息，伺服器扣一個道具並回血。
@@ -4431,6 +4444,14 @@
         if (item === "star_chart") showStarChartDialog();
       });
     });
+    // 綁定 bag-equip-btn 點擊事件：送 equip_item 訊息，伺服器把背包物品移至裝備槽。
+    body.querySelectorAll(".bag-equip-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const item = btn.dataset.item;
+        try { ws.send(JSON.stringify({ type: "equip_item", item })); } catch {}
+      });
+    });
     // emoji 對報讀器無意義(會亂念或跳過),把中文品項名同步成標題鈕的 aria-label,讓盲人玩家
     // 「採到那瞬間」聽過播報後,之後想查背包現況時也讀得出來。title 給滑鼠玩家對稱的那一半。
     // 延續日夜/連線/採集的背包無障礙弧線。
@@ -4440,39 +4461,70 @@
     toggle.setAttribute("title", label);
   }
 
-  // 手上武器 HUD（接 PLAN「①手上武器小圖示 ②怎麼合武器一行提示」）:
-  // 武器是合成產物（伺服器 crafting.rs "weapon" 配方 → ItemKind::Weapon），隨背包快照帶 qty 回來。
-  // 伺服器 combat 接線後「身上有武器→自動戰鬥傷害更高」,前端只把「有沒有武器」如實畫出來,
-  // 不在繪製碼算任何傷害（規則只在伺服器、為將來 WebXR 同後端留路）。
-  // 有武器 → 上排 🗡️ pill 亮起、隱藏引導行;沒武器 → pill 收起、顯示一行合成引導。
-  let weaponKnown = false; // 首次同步不把既有武器當「剛合出」播報（比照背包/乙太/血量的進場防誤報）
-  let hadWeapon = false;   // 上一次快照是否持有武器,用來偵測「首次到手」只播報一次
-  function updateWeaponHud(inv) {
+  // 裝備武器 HUD（ROADMAP 36 顯式裝備槽）:顯示已裝備的武器圖示；未裝備則顯示合成引導。
+  // 改用 me.equipped_weapon（伺服器廣播的裝備槽）取代掃背包計數，對齊顯式裝備語意。
+  let weaponKnown = false; // 首次同步不把既有武器當「剛裝備」播報（比照背包/乙太/血量的進場防誤報）
+  let hadWeapon = false;   // 上一次快照是否裝備武器,用來偵測「首次裝備」只播報一次
+  function updateWeaponHud(me) {
     const pill = document.getElementById("hudWeapon");
     const hint = document.getElementById("hudWeaponHint");
     if (!pill || !hint) return;
-    // 背包可能多筆 weapon 堆疊(防呆全部加總);item 是伺服器列舉字串,非玩家文字、無注入風險。
-    const qty = (inv || []).reduce((n, s) => (s.item === "weapon" ? n + s.qty : n), 0);
-    const has = qty > 0;
+    const equippedWeapon = me && me.equipped_weapon;
+    const has = !!equippedWeapon;
     if (has) {
-      pill.textContent = qty > 1 ? `🗡️ 武器 ×${qty}` : "🗡️ 武器";
-      // emoji 對報讀器無意義,pill 的 aria-label/title 給「手持武器」的中文(對齊背包無障礙作法)。
-      const label = qty > 1 ? `手持武器 ${qty} 把,打怪更痛` : "手持武器,打怪更痛";
+      const icon = ITEM_LOOK[equippedWeapon] || "🗡️";
+      const name = ITEM_NAME[equippedWeapon] || equippedWeapon;
+      pill.textContent = `${icon} ${name}`;
+      const label = `已裝備 ${name}，打怪更痛`;
       pill.setAttribute("aria-label", label);
       pill.setAttribute("title", label);
       pill.classList.remove("hidden");
-      hint.classList.add("hidden"); // 已有武器,不再顯示合成引導
+      hint.classList.add("hidden");
     } else {
       pill.classList.add("hidden");
-      // 還沒武器:一行引導,把「採集→合成→變強打怪」那步顯到 HUD（配方與合成台/伺服器 crafting.rs 一致）。
       hint.textContent = "🗡️ 合一把武器（🪨×4 ✨×2）打怪更痛";
       hint.classList.remove("hidden");
     }
-    // 首次到手補一句 aria-live:pill 亮是純視覺,看不到畫面的玩家收不到「武器合出來了」。
-    // 首次同步不報(進場/重連時既有武器不是剛合出)。延續採集/收成/血量的無障礙弧線。
-    if (weaponKnown && has && !hadWeapon) announce("武器到手,打怪更痛了");
+    if (weaponKnown && has && !hadWeapon) announce("武器裝備完成，打怪更痛了");
     hadWeapon = has;
     weaponKnown = true;
+  }
+
+  // 裝備面板（ROADMAP 36）：顯示三槽裝備狀態、ATK/DEF 數值；點「卸下」退回背包。
+  function updateEquipPanel(equippedWeapon, equippedArmor, equippedAccessory, attack, defense) {
+    const body = document.getElementById("equipBody");
+    if (!body) return;
+    const slotHtml = (label, item, slotKey) => {
+      if (item) {
+        const icon = ITEM_LOOK[item] || "❓";
+        const name = ITEM_NAME[item] || item;
+        return `<div class="equip-slot filled">` +
+          `<span class="equip-slot-label">${label}</span>` +
+          `<span class="equip-slot-ico">${icon}</span>` +
+          `<span class="equip-slot-name">${name}</span>` +
+          `<button class="equip-unequip-btn" data-slot="${slotKey}" title="卸下 ${name}">卸下</button>` +
+          `</div>`;
+      }
+      return `<div class="equip-slot empty">` +
+        `<span class="equip-slot-label">${label}</span>` +
+        `<span class="equip-slot-empty">（空）</span>` +
+        `</div>`;
+    };
+    body.innerHTML =
+      slotHtml("🗡️ 武器", equippedWeapon, "weapon") +
+      slotHtml("🛡️ 防具", equippedArmor, "armor") +
+      slotHtml("📿 飾品", equippedAccessory, "accessory") +
+      `<div class="equip-stats">` +
+        `<span>⚔️ 攻擊 ${typeof attack === "number" ? attack : "—"}</span>` +
+        `<span>🛡️ 防禦 ${typeof defense === "number" && defense > 0 ? defense : "—"}</span>` +
+      `</div>`;
+    body.querySelectorAll(".equip-unequip-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const slot = btn.dataset.slot;
+        try { ws.send(JSON.stringify({ type: "unequip_item", slot })); } catch {}
+      });
+    });
   }
 
   // C-4 放置模式 HUD：選取建造材料時亮起 pill；清除時隱藏。

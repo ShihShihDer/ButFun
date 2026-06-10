@@ -114,6 +114,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            equipment: crate::equipment::EquipmentSlots::default(),
         }
     } else {
         // 等 Join
@@ -151,6 +152,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guild_tag: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            equipment: crate::equipment::EquipmentSlots::default(),
         }
     };
     let id = player.id;
@@ -173,6 +175,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 if let Some(inv) = app.inventories.recall(uid) {
                     p.inventory = inv;
                 }
+                // 裝備槽（ROADMAP 36）：有存檔就帶回；否則依背包自動裝最強（向後相容遷移）。
+                // 首次遷移時必須同步從背包扣除，否則 unequip 後會複製道具。
+                p.equipment = app.inventories.recall_equipment(uid)
+                    .unwrap_or_else(|| {
+                        let slots = crate::equipment::auto_equip_best(&p.inventory);
+                        if let Some(w) = slots.weapon   { p.inventory.take(w, 1); }
+                        if let Some(a) = slots.armor    { p.inventory.take(a, 1); }
+                        if let Some(ac) = slots.accessory { p.inventory.take(ac, 1); }
+                        slots
+                    });
                 let saved = app.positions.recall(uid);
                 match saved {
                     // 有歷史位置 → 回到離線前的地方。
@@ -843,7 +855,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     const ATTACK_COOLDOWN_SECS: f32 = 0.6;
                     let info = app.players.read().unwrap().get(&id).map(|p| {
                         (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown,
-                         crate::combat::weapon_power(&p.inventory)
+                         crate::equipment::equipped_weapon_power(&p.equipment)
                              + crate::combat::level_attack_bonus(p.level())
                              + crate::class::combat_bonus(p.job_class))
                     });
@@ -1002,6 +1014,45 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                             _ => {} // 非消耗品，忽略
+                        }
+                    }
+                }
+                Ok(ClientMsg::EquipItem { item }) => {
+                    // 裝備道具（ROADMAP 36）：把背包裡的武器/護甲裝進對應槽。
+                    // 背包無此物品 / 不可裝備 → 靜默忽略。換裝時舊裝備退回背包。
+                    let mut old_item: Option<crate::inventory::ItemKind> = None;
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if crate::equipment::slot_for_item(item).is_some()
+                            && p.inventory.count(item) > 0
+                        {
+                            old_item = crate::equipment::equip(&mut p.equipment, item);
+                            // 從背包扣除剛裝上的道具，維持「slot 裡的 ≠ 背包裡的」不變式
+                            p.inventory.take(item, 1);
+                            if let Some(old) = old_item {
+                                // 換裝：舊裝備退回背包
+                                p.inventory.add(old, 1);
+                            }
+                            tracing::info!(player = %p.name, ?item, "裝備道具");
+                        }
+                    }
+                    let _ = old_item;
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.read().unwrap().get(&id) {
+                            app.inventories.remember_equipment(uid, &p.equipment);
+                        }
+                    }
+                }
+                Ok(ClientMsg::UnequipItem { slot }) => {
+                    // 卸下裝備（ROADMAP 36）：把指定槽的裝備退回背包。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if let Some(removed) = crate::equipment::unequip(&mut p.equipment, &slot) {
+                            p.inventory.add(removed, 1);
+                            tracing::info!(player = %p.name, ?removed, slot = %slot, "卸下裝備");
+                        }
+                    }
+                    if let Some(uid) = authed_uid {
+                        if let Some(p) = app.players.read().unwrap().get(&id) {
+                            app.inventories.remember_equipment(uid, &p.equipment);
                         }
                     }
                 }
@@ -1629,8 +1680,9 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             if let Some(ref player) = p {
                 if persist_pos {
                     app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp);
-                    // 背包同樣在鎖內更新 cache。
+                    // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
+                    app.inventories.remember_equipment(id, &player.equipment);
                 }
             }
             p
@@ -1647,6 +1699,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
                 .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
+            app.inventories.flush_equipment_one(id, &player.equipment).await;
             // 農地離線落地（Phase 0-E）。玩家移出世界後,他的地仍留在 `app.fields` 繼續長,所以
             // 從那裡取當下狀態（不是已移除的 player）。序號由 PlotRegistry 查,一起存好讓重啟能
             // reseat 回正確 origin。補上「最後一次 10s flush 到離線之間」種/澆/收的進度。

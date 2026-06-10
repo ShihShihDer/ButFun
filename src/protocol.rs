@@ -175,6 +175,12 @@ pub enum ClientMsg {
     /// 伺服器驗：已登入、乙太足夠（LAND_PLOT_COST=60）、地塊未被他人購走、自己尚無地塊。
     /// 結果隨快照廣播（land_plots 欄位更新）；失敗靜默忽略（前端依乙太/狀態已灰掉按鈕）。
     BuyLandPlot { plot_id: u32, purpose: Option<String> },
+    /// 裝備道具（ROADMAP 36）：把背包裡的武器或護甲裝進對應槽。
+    /// 背包無此物品 / 物品不可裝備靜默忽略；換裝時舊裝備退回背包。
+    EquipItem { item: ItemKind },
+    /// 卸下裝備（ROADMAP 36）：把指定槽的裝備退回背包。
+    /// 槽名：`"weapon"` / `"armor"` / `"accessory"`；空槽或無效槽名靜默忽略。
+    UnequipItem { slot: String },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -295,6 +301,15 @@ pub struct PlayerView {
     pub achievement_count: u32,
     /// 已解鎖成就的 wire key 清單（ROADMAP 31）。前端成就面板顯示解鎖狀態。
     pub achievements: Vec<String>,
+    /// 🗡️ 武器槽（ROADMAP 36）：已裝備武器的 snake_case ItemKind，`None` = 空槽。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equipped_weapon: Option<String>,
+    /// 🛡️ 防具槽（ROADMAP 36）：已裝備護甲的 snake_case ItemKind，`None` = 空槽。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equipped_armor: Option<String>,
+    /// 📿 飾品槽（ROADMAP 36）：MVP 保留，目前恆為 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equipped_accessory: Option<String>,
 }
 
 /// 快照裡一個世界敵人的可見狀態。
@@ -543,6 +558,9 @@ mod tests {
                 guild_tag: None,
                 achievement_count: 0,
                 achievements: vec![],
+                equipped_weapon: None,
+                equipped_armor: None,
+                equipped_accessory: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -658,6 +676,9 @@ mod tests {
             guild_tag: None,
             achievement_count: 0,
             achievements: vec![],
+            equipped_weapon: None,
+            equipped_armor: None,
+            equipped_accessory: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

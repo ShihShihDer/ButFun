@@ -8,6 +8,7 @@ mod auth;
 mod class;
 mod combat;
 mod connections;
+mod equipment;
 mod crafting;
 mod crops;
 mod daynight;
