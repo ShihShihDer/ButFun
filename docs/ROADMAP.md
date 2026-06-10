@@ -489,12 +489,19 @@ D-3. ✅ **小地圖導航**（PR #71）
     - `npc_chat.rs` 新增 `MAX_CONCURRENT_LLM` / `PER_PLAYER_NPC_COOLDOWN_SECS` 常數 + 1 個新測試。
     - 對應 `docs/PLAN_AI_NPC_GROWTH.md` 建造順序第 1 步。
 
-60. ✅ **NPC 記憶 + 餘裕持久化（AI NPC 成長第 2 步）**（本輪）
+60. ✅ **NPC 記憶 + 餘裕持久化（AI NPC 成長第 2 步）**（PR #157）
     - `NpcRel`（印象、對話次數、是否已送禮）與 `npc_gift_stock`（NPC 餘裕）從記憶體 v1 升級為 Postgres 持久化。
     - migration 0016 新增 `npc_memory`（per player_id × npc_id）與 `npc_gift_stock`（per npc_id）兩張表，向後相容、不動既有玩家資料。
     - 新 `src/npc_memory_store.rs`（仿 land_plot_store 模式）：啟動時載入全部記憶，對話後 fire-and-forget upsert；無 DB 時退回記憶體模式，重啟歸零（行為正確）。
     - 玩家感知：NPC 現在「記得你」——重啟後薇拉還知道你叫過她幾次、送沒送過你小禮；餘裕扣減也跨重啟生效。
     - 對應 `docs/PLAN_AI_NPC_GROWTH.md` 建造順序第 2 步。
+
+61. ✅ **關係綁真實交易（AI NPC 成長第 3 步）**（本輪）
+    - `NpcRel` 新增 `sell_count`/`buy_count` 兩欄引擎事實統計，與對話次數分開。
+    - `ShopSell` 成交（故鄉商人範圍）→ merchant NPC 的 `sell_count` +1；`ShopBuy` 成交 → `buy_count` +1；持久化入 Postgres。
+    - `system_prompt` 改成「賣東西給你 N 次、跟你買過 M 次」，讓薇拉能說「你常來賣木材」等真實口吻。
+    - migration 0017 向後相容（`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，舊玩家預設 0）。
+    - 3 個新單元測試（trade_stats_appear_in_prompt / no_trade_shows_no_record / default_zero）。
 
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
