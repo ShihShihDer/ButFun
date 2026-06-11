@@ -212,6 +212,9 @@ async fn main() {
         // 官網即時世界小窗：吐「故鄉星球玩家的去識別化座標 + 城鎮幾何」，讓官網畫
         // 俯瞰活地圖（看得到有人在動）。只回座標數字、不含任何玩家身分（最小揭露）。
         .route("/api/worldview", get(api_worldview))
+        // 經濟儀表（ROADMAP 108）：商隊金庫餘額 + 注入/支付累計統計；
+        // 只彙總數字、不含個資（公開端點，供維護者調參）。
+        .route("/api/economy", get(api_economy))
         // 登入相關路由
         .merge(auth::auth_router())
         // 個人資料編輯(改顯示名)——需登入,見 profile.rs
@@ -289,6 +292,46 @@ async fn api_status(State(app): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "online": online,
         "uptime_secs": SERVER_START.elapsed().as_secs(),
+    }))
+}
+
+/// 經濟儀表（ROADMAP 108）：彙總商隊金庫與乙太流量資訊，供維護者調參用。
+/// 只回彙總數字，不含玩家身分或個別玩家乙太（最小揭露原則）。
+async fn api_economy(State(app): State<AppState>) -> impl IntoResponse {
+    let snap = app.npc_treasury.read().unwrap().snapshot();
+    let online = app.players.read().map(|p| p.len()).unwrap_or(0);
+    // 線上玩家乙太總量（匿名加總，不含身分）
+    let online_ether_total: u64 = app.players.read()
+        .map(|p| p.values().map(|pl| pl.ether as u64).sum())
+        .unwrap_or(0);
+    let uptime_secs = SERVER_START.elapsed().as_secs();
+
+    let treasury: serde_json::Value = {
+        let mut m = serde_json::Map::new();
+        for (name, balance, max) in &snap.merchants {
+            m.insert(name.to_string(), serde_json::json!({ "balance": balance, "max": max }));
+        }
+        m.into()
+    };
+
+    let net = snap.lifetime_injected as i64
+        - snap.lifetime_paid_to_players as i64
+        - snap.lifetime_supply_cost as i64;
+
+    Json(serde_json::json!({
+        "treasury": treasury,
+        "faucet": {
+            "lifetime_injected": snap.lifetime_injected,
+            "restock_interval_secs": crate::npc_treasury::RESTOCK_INTERVAL_SECS,
+        },
+        "drain": {
+            "lifetime_paid_to_players": snap.lifetime_paid_to_players,
+            "lifetime_supply_cost": snap.lifetime_supply_cost,
+        },
+        "net_ether_delta": net,
+        "online_players": online,
+        "online_ether_total": online_ether_total,
+        "uptime_secs": uptime_secs,
     }))
 }
 
