@@ -266,6 +266,18 @@ impl Field {
         }
     }
 
+    /// 降雨自動澆灌：對所有缺水的作物格補滿濕度（ROADMAP 109）。
+    /// 呼叫前不需判斷生態域——由遊戲迴圈負責只在草原細雨時呼叫。
+    pub fn water_all_planted(&mut self) {
+        for t in &mut self.tiles {
+            if let Tile::Planted(c) = t {
+                if c.needs_water() {
+                    c.water();
+                }
+            }
+        }
+    }
+
     /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
     /// 自然地→翻土、空土→播種、未熟作物→澆水、成熟作物→收成。
     /// 越界回 `Nothing`。把「該做哪個動作」的判斷集中在這裡，前端只要送座標。
@@ -782,5 +794,27 @@ mod tests {
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         // 成熟即使濕度耗盡也不該再叫玩家澆水。
         assert_eq!(f.view().cells[0], TileView { state: 4, dry: false });
+    }
+
+    #[test]
+    fn water_all_planted_waters_dry_crops(){
+        let mut f = Field::new();
+        // 種兩株，一株已澆水、一株乾。
+        f.till(0, 0); f.plant(0, 0); // 乾
+        f.till(1, 0); f.plant(1, 0); f.water(1, 0); // 已澆水
+        f.water_all_planted();
+        // 兩株都應能繼續成長（有濕度）；tick(SPROUT_AT) 後應達到發芽 state=3。
+        f.tick(SPROUT_AT);
+        let cells = f.view().cells;
+        assert_eq!(cells[0].state, 3, "乾種子被雨水澆後 tick 到 SPROUT_AT 應成為發芽");
+        assert_eq!(cells[1].state, 3, "已澆水的 tick 到 SPROUT_AT 也應成為發芽");
+    }
+
+    #[test]
+    fn water_all_planted_skips_non_crop_tiles() {
+        let mut f = Field::new();
+        // 只有翻土格和未翻土格，不應 panic。
+        f.till(0, 0);
+        f.water_all_planted(); // 不應 panic
     }
 }

@@ -103,6 +103,9 @@ pub fn spawn(app: AppState) {
             }
             prev_is_night = is_night;
 
+            // 下雨澆田（ROADMAP 109）：在農田 tick 前讀取當前天氣狀態，草原細雨時自動澆灌。
+            let is_raining = app.weather.read().unwrap().is_raining();
+
             // 推進所有玩家農地的成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、
             // 放慢（0-G「隨日夜成長」）。濕度也一併縮放，故每次澆水的總成長量不變、
             // 只有牆鐘速度隨日夜變化。同時把每塊地轉成快照、並戳上擁有者 id（`Field`
@@ -123,11 +126,18 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 for (_owner, field) in fields.iter_mut() {
+                    // 草原細雨時先替所有缺水作物補水，再正常 tick 成長。
+                    if is_raining {
+                        field.water_all_planted();
+                    }
                     field.tick(dt * growth_rate);
                 }
                 // 公共農地與個人地塊同步成長，廣播時以 owner=nil 加入列表讓前端辨識。
                 let pub_view = {
                     let mut pf = app.pub_field.write().unwrap();
+                    if is_raining {
+                        pf.water_all_planted();
+                    }
                     pf.tick(dt * growth_rate);
                     if want_broadcast {
                         let mut v = pf.view();
@@ -571,8 +581,8 @@ pub fn spawn(app: AppState) {
             app.npc_level_greet.write().unwrap().tick(dt);
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
-            // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器。
-            app.farm_crops.write().unwrap().tick(dt);
+            // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器；下雨時給 1.5x 加成。
+            app.farm_crops.write().unwrap().tick(dt, is_raining);
             // NPC 作息與移動（ROADMAP 73）：推進 NPC 位置。
             {
                 let daynight = app.daynight.read().unwrap();
@@ -767,10 +777,17 @@ pub fn spawn(app: AppState) {
             }
 
             // 天氣系統（ROADMAP 93）：推進天氣計時器，切換時廣播聊天公告。
+            // 下雨澆田（ROADMAP 109）：雨停時提示玩家農地需手動澆水。
             {
                 let switched = app.weather.write().unwrap().advance(dt);
                 if let Some(new_type) = switched {
                     let _ = app.tx_chat.send(new_type.announce_text().to_string());
+                    // 從草原細雨轉換至其他天氣時，補一則「雨停了」提示。
+                    if is_raining {
+                        let _ = app.tx_chat.send(
+                            "🌤️ 雨停了！農地恢復乾燥，記得幫作物澆水喔！".to_string()
+                        );
+                    }
                 }
             }
 

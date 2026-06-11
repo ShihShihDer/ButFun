@@ -38,7 +38,7 @@ impl WeatherType {
     pub fn announce_text(&self) -> &'static str {
         match self {
             WeatherType::Clear => "☀️ [世界天氣] 天氣恢復晴朗，微風宜人。",
-            WeatherType::GrasslandRain => "🌧️ [世界天氣] 草原細雨降臨！在草原/森林採集有額外收穫！（持續 8 分鐘）",
+            WeatherType::GrasslandRain => "🌧️ [世界天氣] 草原細雨降臨！草原/森林採集加成 + ☔ 露天農地自動澆灌中！（持續 8 分鐘）",
             WeatherType::DesertSandstorm => "🌪️ [世界天氣] 沙漠風沙肆虐！在沙漠探索採集有額外收穫！（持續 8 分鐘）",
             WeatherType::RockyCrystalDust => "✨ [世界天氣] 岩地晶塵飄揚！在岩地採集有額外收穫！（持續 8 分鐘）",
             WeatherType::WaterSeaMist => "🌊 [世界天氣] 水域海霧瀰漫！在水域採集有額外收穫！（持續 8 分鐘）",
@@ -109,6 +109,11 @@ impl WeatherState {
         } else {
             1.0
         }
+    }
+
+    /// 目前是否正在下雨（草原細雨）——用來決定露天農地是否自動澆灌。
+    pub fn is_raining(&self) -> bool {
+        self.weather_type == WeatherType::GrasslandRain
     }
 
     /// 判斷指定的 `biome_name`（前端 biome 字串）是否在本次天氣的加成範圍內。
@@ -260,5 +265,15 @@ mod tests {
         assert!(w.advance(-5.0).is_none());
         assert!(w.advance(f32::NAN).is_none());
         assert_eq!(w.weather_type, WeatherType::Clear);
+    }
+
+    #[test]
+    fn is_raining_only_during_grassland_rain() {
+        let mut w = WeatherState::new();
+        assert!(!w.is_raining(), "晴天不算下雨");
+        w.advance(WEATHER_DURATION_SECS); // → GrasslandRain
+        assert!(w.is_raining(), "草原細雨時應返回 true");
+        w.advance(WEATHER_DURATION_SECS); // → DesertSandstorm
+        assert!(!w.is_raining(), "沙漠風沙不算下雨");
     }
 }
