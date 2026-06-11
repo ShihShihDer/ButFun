@@ -524,6 +524,10 @@ pub enum ServerMsg {
         wx: f32,
         wy: f32,
     },
+    /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
+    /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
+    /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
+    Whisper { from: String, to: String, text: String },
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。
@@ -1229,5 +1233,20 @@ mod tests {
         assert_eq!(v["level_top"][0]["value"], 10);
         assert_eq!(v["ether_top"][0]["name"], "Bob");
         assert_eq!(v["kills_top"].as_array().unwrap().len(), 0);
+    }
+
+    /// ROADMAP 95 密語回應序列化含正確欄位（wire contract）。
+    #[test]
+    fn whisper_response_serializes_correctly() {
+        let msg = ServerMsg::Whisper {
+            from: "Alice".into(),
+            to: "Bob".into(),
+            text: "哈囉 Bob！".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "whisper");
+        assert_eq!(v["from"], "Alice");
+        assert_eq!(v["to"], "Bob");
+        assert_eq!(v["text"], "哈囉 Bob！");
     }
 }

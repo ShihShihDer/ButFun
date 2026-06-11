@@ -301,6 +301,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // ③ 無限世界（切片 C）：從 tx 收到的是 Arc<ServerMsg>，依玩家當下位置做 AOI 剔除後才序列化。
     // tx_direct：單播通道——讓讀取迴圈把僅給本玩家看的訊息（如 TravelResult）推給 forward task。
     let (tx_direct, mut rx_direct) = tokio::sync::mpsc::channel::<String>(16);
+    // ROADMAP 95 密語路由：登記本連線的直達通道，讓其他玩家的密語可精準單播。
+    app.whisper_senders.write().unwrap().insert(id, tx_direct.clone());
     let mut rx = app.tx.subscribe();
     let mut rx_chat = app.tx_chat.subscribe();
     let app_for_forward = app.clone();
@@ -447,6 +449,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let err = ServerMsg::Chat { from: "系統".into(), text: "你目前不在任何公會（輸入 /g 文字 發送公會聊天）".into() };
                                 if let Ok(json) = serde_json::to_string(&err) {
                                     let _ = tx_direct.try_send(json);
+                                }
+                            }
+                        } else if let Some(rest) = text.strip_prefix("/w ") {
+                            // `/w 名字 訊息` → 密語（ROADMAP 95）：只送寄件人+收件人，不廣播全服。
+                            let mut parts = rest.splitn(2, ' ');
+                            let to_name = parts.next().unwrap_or("").trim().to_string();
+                            let whisper_text = parts.next().unwrap_or("").trim().to_string();
+                            if to_name.is_empty() || whisper_text.is_empty() {
+                                let err = ServerMsg::Chat {
+                                    from: "系統".into(),
+                                    text: "用法：/w 玩家名字 訊息".into(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&err) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            } else if to_name == from {
+                                let err = ServerMsg::Chat {
+                                    from: "系統".into(),
+                                    text: "不能密語自己哦".into(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&err) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            } else {
+                                // 依顯示名找目標玩家 id（線上才找得到）。
+                                let target_id = app.players.read().unwrap()
+                                    .iter()
+                                    .find(|(_, p)| p.name == to_name)
+                                    .map(|(uid, _)| *uid);
+                                if let Some(target_id) = target_id {
+                                    let msg = ServerMsg::Whisper {
+                                        from: from.clone(),
+                                        to: to_name.clone(),
+                                        text: whisper_text,
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                        // 送給收件人（在線才有 sender）。
+                                        let target_tx = app.whisper_senders.read().unwrap()
+                                            .get(&target_id).cloned();
+                                        if let Some(target_tx) = target_tx {
+                                            let _ = target_tx.try_send(json.clone());
+                                        }
+                                        // 回顯給寄件人（讓他確認訊息送出）。
+                                        let _ = tx_direct.try_send(json);
+                                    }
+                                } else {
+                                    let err = ServerMsg::Chat {
+                                        from: "系統".into(),
+                                        text: format!("「{to_name}」目前不在線"),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&err) {
+                                        let _ = tx_direct.try_send(json);
+                                    }
                                 }
                             }
                         } else {
@@ -3176,6 +3231,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // ROADMAP 95 密語路由：離線時從 map 移除，後續密語嘗試會正確回報「不在線」。
+    app.whisper_senders.write().unwrap().remove(&id);
     forward.abort();
     cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");

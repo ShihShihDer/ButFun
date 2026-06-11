@@ -797,7 +797,7 @@ D-3. ✅ **小地圖導航**（PR #71）
 
 ## 接著（戰鬥視覺回饋 — AI 自主提案 2026-06-11）
 
-94. **戰鬥傷害數字飄字——命中反饋從「螢幕閃紅」升級成「數字飛起」，打怪有感了**（本輪）
+94. ✅ **戰鬥傷害數字飄字——命中反饋從「螢幕閃紅」升級成「數字飛起」，打怪有感了**（PR #197）
     - 純前端 Canvas 2D，零後端改動、零 migration，`cargo test` 全綠。
     - **敵人受傷飄字**：快照比對 enemy HP 下降時，在敵人頭頂噴出橙紅色 `-N` 數字；
       被打倒（alive=false）時改噴更大的深紅 `💀-N`，同時保留現有閃光特效。
@@ -812,8 +812,11 @@ D-3. ✅ **小地圖導航**（PR #71）
 
 > 現況：社交層只有世界頻道 + 工會頻道(`/g`，ROADMAP 29)。鐵律：好友持久化要**向後相容 migration、編號別撞**(reviewer 複核)、i18n、訪客 vs 登入、走 review。
 
-95. **一對一私聊（密語 /w）——私訊某玩家，不經世界頻道**（最小、先做）
-    - `/w 名字 訊息`（或 UI 點玩家→私訊）→ 新增 `ServerMsg::Whisper{from,to,text}`，只送目標+回顯自己；**不持久化、零 migration**；目標離線回提示。沿用 `/g` 模式。
+95. ✅ **一對一私聊（密語 /w）——私訊某玩家，不經世界頻道**（本輪 PR）
+    - `/w 名字 訊息` → `ServerMsg::Whisper{from,to,text}`，只送目標+回顯自己；不持久化、零 migration；目標離線回系統提示。
+    - 後端：`whisper_senders: HashMap<Uuid, mpsc::Sender<String>>` 在 AppState，連線時插入、離線時移除；Chat handler 解析 `/w` 前綴後查名字→精準單播，不廣播全服。
+    - 前端：新增 `addWhisperLine` 函式，密語以紫色泡泡顯示 `💬 from → to: text`，用 CSS `.whisper` 類別視覺區隔。
+    - wire contract 測試：`whisper_response_serializes_correctly`。
 
 96. **好友系統——加/刪好友、好友清單、誰在線**（接私聊，可一鍵密語好友）
     - 加/刪好友、好友清單顯示**在線狀態**、一鍵私聊；**持久化**(PG，向後相容 migration、沒撞過的編號)；需登入帳號；入口配合 HUD 重設計(#188)。
