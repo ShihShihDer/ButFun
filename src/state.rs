@@ -211,7 +211,7 @@ impl Player {
         self.exp / 100
     }
 
-    pub fn view(&self) -> PlayerView {
+    pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager) -> PlayerView {
         PlayerView {
             id: self.id,
             name: self.name.clone(),
@@ -279,7 +279,7 @@ impl Player {
                     "void"    => void_merchant_pos(),
                     "aether"  => aether_merchant_pos(),
                     "origin"  => origin_merchant_pos(),
-                    _         => merchant_pos(),
+                    _         => sch.get_pos("merchant").unwrap_or(merchant_pos()),
                 };
                 let dx = self.x - merchant_xy.0;
                 let dy = self.y - merchant_xy.1;
@@ -313,7 +313,11 @@ impl Player {
             }),
             workshop_cooldown: self.workshop_cooldown,
             near_workshop: self.planet == PLANET_HOME
-                && crate::workshop::is_near_workshop(self.x, self.y),
+                && sch.get_pos("workshop_npc").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::npc::SHOP_REACH * crate::npc::SHOP_REACH
+                }).unwrap_or(false),
             bounty_cards: {
                 use crate::bounty_board::BOUNTY_CARDS;
                 use crate::protocol::BountyCardBrief;
@@ -341,7 +345,11 @@ impl Player {
             }),
             bounty_cooldown: self.bounty_cooldown,
             near_bounty_board: self.planet == PLANET_HOME
-                && crate::bounty_board::is_near_bounty_board(self.x, self.y),
+                && sch.get_pos("bounty_npc").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::npc::SHOP_REACH * crate::npc::SHOP_REACH
+                }).unwrap_or(false),
             // ── 古蹟探勘（ROADMAP 54）
             expedition_orders: {
                 use crate::expedition::EXPEDITION_ORDERS;
@@ -369,7 +377,11 @@ impl Player {
             }),
             expedition_cooldown: self.expedition_cooldown,
             near_expedition_board: self.planet == PLANET_HOME
-                && crate::expedition::is_near_expedition_board(self.x, self.y),
+                && sch.get_pos("expedition_npc").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::npc::SHOP_REACH * crate::npc::SHOP_REACH
+                }).unwrap_or(false),
             // ── 星際採購令（ROADMAP 55）
             procurement_orders: {
                 use crate::procurement::PROCUREMENT_ORDERS;
@@ -399,7 +411,11 @@ impl Player {
             }),
             procurement_cooldown: self.procurement_cooldown,
             near_procurement_agent: self.planet == PLANET_HOME
-                && crate::procurement::is_near_procurement_agent(self.x, self.y),
+                && sch.get_pos("procurement_npc").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::npc::SHOP_REACH * crate::npc::SHOP_REACH
+                }).unwrap_or(false),
             farm_fair_orders: {
                 use crate::farm_fair::FAIR_ORDERS;
                 use crate::protocol::{FairOrderBrief, FairReqView};
@@ -432,9 +448,17 @@ impl Player {
             }),
             farm_fair_cooldown: self.farm_fair_cooldown,
             near_fair_judge: self.planet == PLANET_HOME
-                && crate::farm_fair::is_near_fair_judge(self.x, self.y),
+                && sch.get_pos("farm_fair_npc").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::npc::SHOP_REACH * crate::npc::SHOP_REACH
+                }).unwrap_or(false),
             near_village_chief: self.planet == PLANET_HOME
-                && crate::village_chief::is_within_reach(self.x, self.y),
+                && sch.get_pos("village_chief").map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    (dx * dx + dy * dy).sqrt() <= crate::village_chief::CHIEF_REACH
+                }).unwrap_or(false),
         }
     }
 
@@ -716,6 +740,8 @@ pub struct AppState {
     /// NPC 派系自主湧現（ROADMAP 71）：追蹤已公開的結盟/競爭對，偵測派系事件並廣播到聊天頻道；
     /// 對話時注入 system prompt 讓 NPC 自然流露對盟友/對手的口吻。記憶體模式，重啟清零。
     pub npc_factions: Arc<RwLock<crate::npc_factions::NpcFactionState>>,
+    /// NPC 作息與移動管理器（ROADMAP 73）。
+    pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
 }
 
 impl AppState {
@@ -822,6 +848,7 @@ impl AppState {
             npc_needs: Arc::new(RwLock::new(crate::npc_needs::NpcNeedsState::new())),
             npc_relations: Arc::new(RwLock::new(crate::npc_relations::NpcRelationsState::new())),
             npc_factions: Arc::new(RwLock::new(crate::npc_factions::NpcFactionState::new())),
+            npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
         }
     }
 
@@ -843,6 +870,23 @@ impl AppState {
                 true
             }
             None => false,
+        }
+    }
+
+    /// 檢查玩家是否在特定 NPC 的互動範圍內（ROADMAP 73：支援動態位置）。
+    pub fn is_near_npc(&self, px: f32, py: f32, npc_id: &str) -> bool {
+        let sch = self.npc_schedule.read().unwrap();
+        if let Some((nx, ny)) = sch.get_pos(npc_id) {
+            let dx = px - nx;
+            let dy = py - ny;
+            let reach = if npc_id == "village_chief" {
+                crate::village_chief::CHIEF_REACH
+            } else {
+                crate::npc::SHOP_REACH
+            };
+            dx * dx + dy * dy <= reach * reach
+        } else {
+            false
         }
     }
 }
@@ -1057,8 +1101,9 @@ mod tests {
         let hit = app.apply_live_rename(uid, "新名");
 
         assert!(hit, "玩家在線應命中");
+        let sch = app.npc_schedule.read().unwrap();
         assert_eq!(
-            app.players.read().unwrap().get(&uid).unwrap().view().name,
+            app.players.read().unwrap().get(&uid).unwrap().view(&sch).name,
             "新名",
             "下一張快照應帶新名"
         );

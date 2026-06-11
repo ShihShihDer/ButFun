@@ -780,6 +780,8 @@ pub struct ShopCatalogEntry {
 /// 快照裡的 NPC 可見狀態：位置 + 商品目錄（收購 / 販售），讓前端繪製並顯示商店面板。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct NpcView {
+    pub id: String,
+    pub name: String,
     pub x: f32,
     pub y: f32,
     /// NPC 願意收購的物品（玩家賣給 NPC）。
@@ -1021,6 +1023,8 @@ mod tests {
             },
             listings: vec![],
             npcs: vec![NpcView {
+                id: "merchant".to_string(),
+                name: "商人薇拉".to_string(),
                 x: 100.0,
                 y: 200.0,
                 buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1, trend: "stable".to_string() }],
@@ -1057,6 +1061,7 @@ mod tests {
         assert_eq!(v["daynight"]["light"], 0.5);
         assert_eq!(v["daynight"]["night_danger"], false);
         // NPC 商人：確認序列化結構讓前端能讀 buy/sell 目錄。
+        assert_eq!(v["npcs"][0]["id"], "merchant");
         assert_eq!(v["npcs"][0]["x"], 100.0);
         assert_eq!(v["npcs"][0]["buy_list"][0]["item"], "wood");
         assert_eq!(v["npcs"][0]["buy_list"][0]["price_per"], 1);

@@ -766,7 +766,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if !downed && qty > 0 {
                             // 決定最近的商人收購清單
                             let maybe_buy_list: Option<(&[npc::ShopEntry], &str)> =
-                                if npc::is_within_shop_reach(px, py) {
+                                if app.is_near_npc(px, py, "merchant") {
                                     Some((npc::NPC_BUY_LIST, "故鄉"))
                                 } else if npc::is_within_verdant_shop_reach(px, py) {
                                     Some((npc::VERDANT_BUY_LIST, "翠幽星"))
@@ -821,7 +821,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // 關係綁真實交易（ROADMAP 61）：向故鄉商人賣出時累積 sell_count。
                                         // 只在登入玩家 + 故鄉商人（merchant NPC）才更新，星球商人無 AI 聊天不需追蹤。
                                         if let Some(uid) = authed_uid {
-                                            if npc::is_within_shop_reach(px, py) {
+                                            if app.is_near_npc(px, py, "merchant") {
                                                 let updated_rel = {
                                                     let mut mem = app.npc_memory.write().unwrap();
                                                     let r = mem.entry((uid, "merchant".to_string())).or_default();
@@ -855,7 +855,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 向 NPC 商人購買物品：目前只有故鄉商人有販售清單。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
-                        if !downed && npc::is_within_shop_reach(px, py) {
+                        if !downed && app.is_near_npc(px, py, "merchant") {
                             // 熟客折扣（ROADMAP 63）：取出待用折扣票（若有效期未過）。
                             // 票只在成功購買後才消耗；失敗不扣票（讓玩家有機會補足乙太再試）。
                             let discount_pct = {
@@ -1991,14 +1991,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 // ── 工匠工坊訂單（ROADMAP 52）─────────────────────────────────────
                 Ok(ClientMsg::TakeWorkshopOrder { order_id }) => {
                     // 接取工坊訂單：需登入、故鄉、未倒地、靠近工坊 NPC、無進行中訂單、無冷卻。
-                    use crate::workshop::{try_take, is_near_workshop, WORKSHOP_COOLDOWN_SECS};
+                    use crate::workshop::{try_take, WORKSHOP_COOLDOWN_SECS};
                     if let Some(uid) = authed_uid {
                         let result = {
                             let players = app.players.read().unwrap();
                             if let Some(p) = players.get(&uid) {
                                 if p.vitals.is_downed()
                                     || p.planet != crate::state::PLANET_HOME
-                                    || !is_near_workshop(p.x, p.y)
+                                    || !app.is_near_npc(p.x, p.y, "workshop_npc")
                                 {
                                     None
                                 } else {
@@ -2019,14 +2019,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 Ok(ClientMsg::FulfillWorkshopOrder) => {
                     // 交付工坊訂單：需登入、靠近工坊 NPC、有進行中訂單、背包有足夠物品。
-                    use crate::workshop::{try_fulfill, is_near_workshop, WORKSHOP_COOLDOWN_SECS};
+                    use crate::workshop::{try_fulfill, WORKSHOP_COOLDOWN_SECS};
                     if let Some(uid) = authed_uid {
                         let result = {
                             let players = app.players.read().unwrap();
                             if let Some(p) = players.get(&uid) {
                                 if p.vitals.is_downed()
                                     || p.planet != crate::state::PLANET_HOME
-                                    || !is_near_workshop(p.x, p.y)
+                                    || !app.is_near_npc(p.x, p.y, "workshop_npc")
                                 {
                                     None
                                 } else {
@@ -2073,14 +2073,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 // ── 懸賞告示板（ROADMAP 53）────────────────────────────────────────
                 Ok(ClientMsg::AcceptBounty { card_id }) => {
                     // 接取懸賞任務：需登入、故鄉、未倒地、靠近告示板 NPC、無進行中任務、無冷卻。
-                    use crate::bounty_board::{try_accept, is_near_bounty_board};
+                    use crate::bounty_board::{try_accept};
                     if let Some(uid) = authed_uid {
                         let result = {
                             let players = app.players.read().unwrap();
                             if let Some(p) = players.get(&uid) {
                                 if p.vitals.is_downed()
                                     || p.planet != crate::state::PLANET_HOME
-                                    || !is_near_bounty_board(p.x, p.y)
+                                    || !app.is_near_npc(p.x, p.y, "bounty_npc")
                                 {
                                     None
                                 } else {
@@ -2112,13 +2112,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 // ── 古蹟探勘（ROADMAP 54）──────────────────────────────────────────
                 Ok(ClientMsg::AcceptExpedition { order_id }) => {
-                    use crate::expedition::{try_accept, is_near_expedition_board};
+                    use crate::expedition::{try_accept};
                     if let Some(uid) = authed_uid {
                         let mut players = app.players.write().unwrap();
                         if let Some(p) = players.get_mut(&uid) {
                             if !p.vitals.is_downed()
                                 && p.planet == crate::state::PLANET_HOME
-                                && is_near_expedition_board(p.x, p.y)
+                                && app.is_near_npc(p.x, p.y, "expedition_npc")
                             {
                                 if let Some(active) = try_accept(order_id, &p.expedition_active, p.expedition_cooldown) {
                                     p.expedition_active = Some(active);
@@ -2185,7 +2185,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = players.get_mut(&uid) {
                             if !p.vitals.is_downed()
                                 && p.planet == crate::state::PLANET_HOME
-                                && is_near_procurement_agent(p.x, p.y)
+                                && app.is_near_npc(p.x, p.y, "procurement_npc")
                             {
                                 if let Some(active) = try_accept(order_id, &p.procurement_active, p.procurement_cooldown) {
                                     p.procurement_active = Some(active);
@@ -2205,7 +2205,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if let Some(p) = players.get_mut(&uid) {
                                 if p.vitals.is_downed() || p.planet != crate::state::PLANET_HOME {
                                     None
-                                } else if !is_near_procurement_agent(p.x, p.y) {
+                                } else if !app.is_near_npc(p.x, p.y, "procurement_npc") {
                                     None
                                 } else {
                                     let inv_qty = if let Some(a) = &p.procurement_active {
@@ -2259,7 +2259,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                             use crate::farm_fair::{try_accept, is_near_fair_judge};
                             if p.planet == crate::state::PLANET_HOME
-                                && is_near_fair_judge(p.x, p.y)
+                                && app.is_near_npc(p.x, p.y, "farm_fair_npc")
                             {
                                 if let Some(active) = try_accept(order_id, &p.farm_fair_active, p.farm_fair_cooldown) {
                                     let order_name = crate::farm_fair::find_order(order_id)
@@ -2281,7 +2281,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 use crate::farm_fair::{try_submit, is_near_fair_judge};
                                 if p.planet != crate::state::PLANET_HOME {
                                     None
-                                } else if !is_near_fair_judge(p.x, p.y) {
+                                } else if !app.is_near_npc(p.x, p.y, "farm_fair_npc") {
                                     None
                                 } else {
                                     let inv = p.inventory.clone();
@@ -2335,6 +2335,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::TalkToNpc { npc, text }) => {
                     let text: String = text.chars().take(300).collect(); // 輸入上限
                     if !text.trim().is_empty() {
+                        // 驗證距離（ROADMAP 73）：必須靠近 NPC 才能交談。
+                        let is_near = {
+                            let players = app.players.read().unwrap();
+                            players.get(&id).map(|p| app.is_near_npc(p.x, p.y, &npc)).unwrap_or(false)
+                        };
+                        if !is_near {
+                            continue;
+                        }
+
                         if let Some(persona) = crate::npc_chat::find_npc(&npc) {
                             // 每人每 NPC 冷卻：防單人狂送吃掉所有許可。
                             let chat_key = (id, npc.clone());

@@ -524,6 +524,11 @@ pub fn spawn(app: AppState) {
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器。
             app.farm_crops.write().unwrap().tick(dt);
+            // NPC 作息與移動（ROADMAP 73）：推進 NPC 位置。
+            {
+                let daynight = app.daynight.read().unwrap();
+                app.npc_schedule.write().unwrap().tick(dt, &daynight);
+            }
 
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
@@ -636,58 +641,88 @@ pub fn spawn(app: AppState) {
                     // 每次快照帶上 NPC 目錄（六大商人，收購價套用浮動市場價格）。
                     let now_secs = unix_secs();
                     let dm = app.dynamic_prices.read().unwrap();
-                    let (mx, my) = merchant_pos();
-                    let home_npc = NpcView {
-                        x: mx,
-                        y: my,
-                        buy_list: build_dynamic_buy_list(NPC_BUY_LIST, &dm, now_secs),
-                        sell_list: build_static_sell_list(NPC_SELL_LIST),
-                    };
+                    let sch = app.npc_schedule.read().unwrap();
+
+                    let mut npc_views = Vec::new();
+
+                    // —— 故鄉村落 NPC（會移動）——
+                    let lc = app.npc_lifecycle.read().unwrap();
+                    for s in crate::npc_schedule::VILLAGE_NPCS {
+                        let pos = sch.get_pos(s.id).unwrap_or((s.station_pos.x, s.station_pos.y));
+                        let (buy_list, sell_list) = match s.id {
+                            "merchant" => (
+                                build_dynamic_buy_list(NPC_BUY_LIST, &dm, now_secs),
+                                build_static_sell_list(NPC_SELL_LIST),
+                            ),
+                            _ => (Vec::new(), Vec::new()), // 其他 NPC 暫無商店功能
+                        };
+                        npc_views.push(NpcView {
+                            id: s.id.to_string(),
+                            name: lc.current_display(s.id).to_string(),
+                            x: pos.0,
+                            y: pos.1,
+                            buy_list,
+                            sell_list,
+                        });
+                    }
+                    drop(lc);
+
+                    // —— 其他星球商人（固定位置）——
                     let (vmx, vmy) = verdant_merchant_pos();
-                    let verdant_npc = NpcView {
+                    npc_views.push(NpcView {
+                        id: "verdant_merchant".to_string(),
+                        name: "🌿 翠幽商人".to_string(),
                         x: vmx,
                         y: vmy,
                         buy_list: build_dynamic_buy_list(VERDANT_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(VERDANT_SELL_LIST),
-                    };
+                    });
                     let (cmx, cmy) = crimson_merchant_pos();
-                    let crimson_npc = NpcView {
+                    npc_views.push(NpcView {
+                        id: "crimson_merchant".to_string(),
+                        name: "🔴 赤焰商人".to_string(),
                         x: cmx,
                         y: cmy,
                         buy_list: build_dynamic_buy_list(CRIMSON_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(CRIMSON_SELL_LIST),
-                    };
+                    });
                     let (vmx2, vmy2) = void_merchant_pos();
-                    let void_npc = NpcView {
+                    npc_views.push(NpcView {
+                        id: "void_merchant".to_string(),
+                        name: "🌑 虛空商人".to_string(),
                         x: vmx2,
                         y: vmy2,
                         buy_list: build_dynamic_buy_list(VOID_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(VOID_SELL_LIST),
-                    };
+                    });
                     let (amx, amy) = aether_merchant_pos();
-                    let aether_npc = NpcView {
+                    npc_views.push(NpcView {
+                        id: "aether_merchant".to_string(),
+                        name: "🌫️ 霧醚商人".to_string(),
                         x: amx,
                         y: amy,
                         buy_list: build_dynamic_buy_list(AETHER_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(AETHER_SELL_LIST),
-                    };
+                    });
                     let (omx, omy) = origin_merchant_pos();
-                    let origin_npc = NpcView {
+                    npc_views.push(NpcView {
+                        id: "origin_merchant".to_string(),
+                        name: "🌟 星源商人".to_string(),
                         x: omx,
                         y: omy,
                         buy_list: build_dynamic_buy_list(ORIGIN_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(ORIGIN_SELL_LIST),
-                    };
-                    drop(dm);
+                    });
+
                     ServerMsg::Snapshot {
                         tick,
-                        players: players.values().map(|p| p.view()).collect(),
+                        players: players.values().map(|p| p.view(&sch)).collect(),
                         fields: field_views,
                         nodes: node_views,
                         enemies: enemy_views,
                         daynight: daynight_view.expect("want_broadcast 時必有 daynight_view"),
                         listings: listing_views,
-                        npcs: vec![home_npc, verdant_npc, crimson_npc, void_npc, aether_npc, origin_npc],
+                        npcs: npc_views,
                         // C-2 起：把 TileWorld 中所有玩家挖掘後的差異帶入快照。
                         // delta 稀疏（只存偏離確定性生成的格），ws.rs 轉發時再依 AOI 剔除。
                         terrain: {
