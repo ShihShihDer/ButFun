@@ -2475,15 +2475,27 @@
     return SPECIES_STYLE[sp] || SPECIES_STYLE.terran;
   }
 
+  // ROADMAP 98 捏臉：膚色五選（0 = 預設古銅金）。
+  const SKIN_TONES = ["#c9a24b", "#f0d090", "#d4906a", "#8b5e3c", "#5c3620"];
+  // 護目鏡鏡片色五選（0 = 藍預設）。
+  const GOGGLE_COLORS = [
+    "rgba(140,220,255,0.9)",  // 藍（預設）
+    "rgba(255,120,100,0.9)",  // 紅
+    "rgba(255,200,60,0.9)",   // 金
+    "rgba(100,240,160,0.9)",  // 綠
+    "rgba(200,140,255,0.9)",  // 紫
+  ];
+
   // 蒸汽龐克探險家程式繪製（ROADMAP 88 — 角色精緻化）。
   // cx/cy = 角色螢幕座標（已含踏步彈跳的 by）。
   // dir: 0下/1左/2右/3上；walk: p.walk 弧度；moving: 是否走路中；isMe: 本機玩家；sty: 種族外觀。
   // 弱機或 artOk("player") 已成立時不進此路徑（sprite 優先）；
   // 全路徑都失敗時退回 drawPlayer 的簡圖圓圈。
-  function drawSteampunkHero(cx, cy, dir, walk, moving, isMe, sty) {
+  function drawSteampunkHero(cx, cy, dir, walk, moving, isMe, sty, hairStyle, skinTone, goggleColor) {
     const COPPER = "#b87333";
     const DARK   = "#2a1c10";
-    const bodyCol = isMe ? "#c9a24b" : sty.body;
+    // 捏臉：skinTone 決定膚色，未設則用種族預設色。
+    const bodyCol = SKIN_TONES[skinTone ?? 0] || sty.body;
     // 走路時左右腳前後交替（平滑 sin 波，幅度 ±3px）。
     const swing = (moving && !reduceMotion) ? Math.sin(walk * 2) * 3 : 0;
 
@@ -2559,12 +2571,49 @@
     ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.arc(cx, cy - 10, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
 
-    // ── 蒸汽頂帽 ──（畫在頭之後蓋住頭頂）
-    ctx.fillStyle = DARK;
-    ctx.fillRect(cx - 11, cy - 17, 22, 3);   // 帽沿
-    ctx.fillRect(cx - 7,  cy - 24, 14, 8);   // 帽身
-    ctx.fillStyle = COPPER;
-    ctx.fillRect(cx - 7,  cy - 17, 14, 2.5); // 銅色帽帶
+    // ── 帽型（ROADMAP 98 捏臉：hairStyle 0~4 五選）──
+    const hs = hairStyle ?? 0;
+    if (hs === 0) {
+      // 0：頂帽（預設蒸汽龐克高禮帽）
+      ctx.fillStyle = DARK;
+      ctx.fillRect(cx - 11, cy - 17, 22, 3);
+      ctx.fillRect(cx - 7,  cy - 24, 14, 8);
+      ctx.fillStyle = COPPER;
+      ctx.fillRect(cx - 7,  cy - 17, 14, 2.5);
+    } else if (hs === 1) {
+      // 1：平頂帽（短圓帽，灰褐）
+      ctx.fillStyle = "#5a4030";
+      ctx.fillRect(cx - 10, cy - 16, 20, 2.5);
+      ctx.fillRect(cx - 7,  cy - 21, 14, 6);
+      ctx.fillStyle = "#a07840";
+      ctx.fillRect(cx - 7,  cy - 16, 14, 1.5);
+    } else if (hs === 2) {
+      // 2：牛仔帽（寬帽沿，焦糖棕）
+      ctx.fillStyle = "#7a4a18";
+      ctx.fillRect(cx - 13, cy - 17, 26, 3);
+      ctx.fillRect(cx - 7,  cy - 23, 14, 7);
+      ctx.fillStyle = "#c8a050";
+      ctx.fillRect(cx - 7,  cy - 17, 14, 2);
+    } else if (hs === 3) {
+      // 3：露髮（頭頂不戴帽，改畫短髮）
+      ctx.fillStyle = bodyCol === "#c9a24b" ? "#3a1c08" : "#2a1408";
+      ctx.beginPath();
+      ctx.arc(cx, cy - 16, 7, Math.PI, 0); // 半圓頭髮
+      ctx.fill();
+      ctx.fillRect(cx - 7, cy - 16, 14, 4);
+    } else {
+      // 4：船長帽（深藍+金帽帶）
+      ctx.fillStyle = "#1a2860";
+      ctx.fillRect(cx - 11, cy - 17, 22, 3);
+      ctx.fillRect(cx - 7,  cy - 24, 14, 8);
+      ctx.fillStyle = "#d4a830";
+      ctx.fillRect(cx - 7,  cy - 17, 14, 2.5);
+      // 船錨徽章
+      ctx.fillStyle = "#d4a830";
+      ctx.font = "6px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("⚓", cx, cy - 19);
+    }
 
     // ── 護目鏡（朝向感知：朝上/背面不畫）──
     if (dir !== 3) {
@@ -2575,8 +2624,9 @@
       ctx.fillStyle = COPPER;
       ctx.beginPath(); ctx.arc(gx1, gy, 3.2, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(gx2, gy, 3.2, 0, Math.PI * 2); ctx.fill();
-      // 鏡面（自己鏡片更亮）
-      ctx.fillStyle = isMe ? "rgba(140,220,255,0.9)" : "rgba(100,200,240,0.75)";
+      // 鏡面（捏臉：goggleColor 決定顏色；自己略亮，他人略暗）
+      const gc = GOGGLE_COLORS[goggleColor ?? 0] || GOGGLE_COLORS[0];
+      ctx.fillStyle = isMe ? gc : gc.replace(/[\d.]+\)$/, "0.75)");
       ctx.beginPath(); ctx.arc(gx1, gy, 2.2, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.arc(gx2, gy, 2.2, 0, Math.PI * 2); ctx.fill();
       // 高光
@@ -2643,7 +2693,7 @@
       // 程式繪製路徑（ROADMAP 88）：蒸汽龐克分件角色。
       // artReady 前或圖片載入失敗時，退回最底層的簡圖圓圈。
       if (artReady) {
-        drawSteampunkHero(sx, by, dir, p.walk, p.moving, isMe, sty);
+        drawSteampunkHero(sx, by, dir, p.walk, p.moving, isMe, sty, p.hair_style, p.skin_tone, p.goggle_color);
       } else {
         // 弱機 / 圖片未就緒退回簡圖（現有簡圖保留作保底）。
         ctx.beginPath();
@@ -9974,7 +10024,7 @@
       const settingsBody = document.getElementById("settingsBody") || document.getElementById("hud");
       const tag = document.createElement("div");
       tag.style.cssText = "opacity:0.85;padding:8px 0;border-top:1px solid rgba(201,162,75,0.25);margin-top:6px";
-      tag.innerHTML = `已登入：<b></b> · <a href="#" id="renameLink" style="color:#c9a24b">✏️改名</a> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
+      tag.innerHTML = `已登入：<b></b> · <a href="#" id="renameLink" style="color:#c9a24b">✏️改名</a> · <a href="#" id="appearanceLink" style="color:#c9a24b">🎨外觀</a> · <a href="#" id="logoutLink" style="color:#c9a24b">登出</a>`;
       tag.querySelector("b").textContent = me.name;
       settingsBody.appendChild(tag);
       // 改名:輸入新顯示名 → PATCH /api/profile → 成功即更新標籤(世界名牌/HUD 靠下一張快照即時換)。
@@ -10000,6 +10050,11 @@
           addChat("系統", "改名失敗(連線問題)。");
         }
       });
+      // 捏臉外觀：彈出自訂面板，選帽型 / 膚色 / 鏡片色，即時預覽，PATCH /api/appearance 存檔。
+      tag.querySelector("#appearanceLink").addEventListener("click", (e) => {
+        e.preventDefault();
+        openAppearancePanel();
+      });
       tag.querySelector("#logoutLink").addEventListener("click", async (e) => {
         e.preventDefault();
         await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
@@ -10010,4 +10065,114 @@
       connect(me.name, me.species || "terran");
     })
     .catch(() => {});
-})();
+
+  // ── ROADMAP 98 捏臉面板（定義在 IIFE 內以存取 players / myId）──
+  // eslint-disable-next-line no-inner-declarations
+  function openAppearancePanel() {
+    // 移除舊面板（防重複）。
+    const old = document.getElementById("appearanceModal");
+    if (old) old.remove();
+
+  const HAT_LABELS  = ["頂帽","平頂帽","牛仔帽","露髮","船長帽"];
+  const SKIN_LABELS = ["古銅金","金麥色","焦糖棕","皮革棕","黑檀"];
+  const GOG_LABELS  = ["藍","紅","金","綠","紫"];
+  const SKIN_HEX    = ["#c9a24b","#f0d090","#d4906a","#8b5e3c","#5c3620"];
+  const GOG_HEX     = ["#8cf","#f88","#fc0","#4e8","#c8f"];
+
+  // 讀目前自己的外觀值（從 players map）。
+  const myPlayer = players.get(myId) || {};
+  let selHat  = myPlayer.hair_style  ?? 0;
+  let selSkin = myPlayer.skin_tone   ?? 0;
+  let selGog  = myPlayer.goggle_color ?? 0;
+
+  const modal = document.createElement("div");
+  modal.id = "appearanceModal";
+  modal.style.cssText = `
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:rgba(14,20,52,0.97);border:1px solid rgba(201,162,75,0.5);
+    border-radius:12px;padding:20px 24px;z-index:9999;color:#e0e8ff;
+    font-family:system-ui,sans-serif;font-size:14px;min-width:280px;
+    box-shadow:0 4px 32px rgba(0,0,0,0.7);`;
+  modal.innerHTML = `
+    <div style="font-size:1.1em;font-weight:bold;margin-bottom:14px;color:#c9a24b">🎨 捏臉外觀</div>
+    <div style="margin-bottom:10px">
+      <div style="color:#a0b0d0;margin-bottom:6px">帽型</div>
+      <div id="ap-hat" style="display:flex;gap:6px;flex-wrap:wrap">${HAT_LABELS.map((l,i) => `
+        <button data-idx="${i}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(201,162,75,0.4);
+          background:${i===selHat?"rgba(201,162,75,0.25)":"rgba(255,255,255,0.06)"};
+          color:#e0e8ff;cursor:pointer;font-size:0.85em">${l}</button>`).join("")}
+      </div>
+    </div>
+    <div style="margin-bottom:10px">
+      <div style="color:#a0b0d0;margin-bottom:6px">膚色</div>
+      <div id="ap-skin" style="display:flex;gap:6px;flex-wrap:wrap">${SKIN_HEX.map((c,i) => `
+        <button data-idx="${i}" title="${SKIN_LABELS[i]}" style="width:30px;height:30px;border-radius:50%;
+          border:${i===selSkin?"3px solid #c9a24b":"2px solid rgba(255,255,255,0.2)"};
+          background:${c};cursor:pointer"></button>`).join("")}
+      </div>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="color:#a0b0d0;margin-bottom:6px">護目鏡鏡片</div>
+      <div id="ap-gog" style="display:flex;gap:6px;flex-wrap:wrap">${GOG_HEX.map((c,i) => `
+        <button data-idx="${i}" title="${GOG_LABELS[i]}" style="width:30px;height:30px;border-radius:6px;
+          border:${i===selGog?"3px solid #c9a24b":"2px solid rgba(255,255,255,0.2)"};
+          background:${c};cursor:pointer"></button>`).join("")}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="ap-cancel" style="padding:7px 18px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.07);color:#c8d8ff;cursor:pointer">取消</button>
+      <button id="ap-save"   style="padding:7px 18px;border-radius:8px;border:none;background:rgba(201,162,75,0.8);color:#1a1000;font-weight:bold;cursor:pointer">儲存</button>
+    </div>`;
+  document.body.appendChild(modal);
+
+  // 高亮選中項的共用函式。
+  function highlightGroup(groupId, selIdx, isCircle) {
+    modal.querySelector(`#${groupId}`).querySelectorAll("button").forEach(b => {
+      const i = +b.dataset.idx;
+      if (isCircle) {
+        b.style.border = i === selIdx ? "3px solid #c9a24b" : "2px solid rgba(255,255,255,0.2)";
+      } else {
+        b.style.background = i === selIdx ? "rgba(201,162,75,0.25)" : "rgba(255,255,255,0.06)";
+        b.style.border = i === selIdx ? "1px solid rgba(201,162,75,0.8)" : "1px solid rgba(201,162,75,0.4)";
+      }
+    });
+  }
+
+  modal.querySelector("#ap-hat").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    selHat = +b.dataset.idx; highlightGroup("ap-hat", selHat, false);
+  });
+  modal.querySelector("#ap-skin").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    selSkin = +b.dataset.idx; highlightGroup("ap-skin", selSkin, true);
+  });
+  modal.querySelector("#ap-gog").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    selGog = +b.dataset.idx; highlightGroup("ap-gog", selGog, true);
+  });
+
+  modal.querySelector("#ap-cancel").addEventListener("click", () => modal.remove());
+
+  modal.querySelector("#ap-save").addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/appearance", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hair_style: selHat, skin_tone: selSkin, goggle_color: selGog }),
+      });
+      if (res.ok) {
+        // 樂觀更新本機 players map，下一幀快照也會覆蓋。
+        const p = players.get(myId);
+        if (p) { p.hair_style = selHat; p.skin_tone = selSkin; p.goggle_color = selGog; }
+        addChat("系統", "外觀已更新，世界上其他玩家也能看到你的新造型！");
+        modal.remove();
+      } else {
+        addChat("系統", "外觀更新失敗，請稍後再試。");
+      }
+    } catch {
+      addChat("系統", "外觀更新失敗（連線問題）。");
+    }
+  });
+  } // end openAppearancePanel
+})(); // end IIFE

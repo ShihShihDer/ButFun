@@ -39,6 +39,15 @@ pub struct User {
     pub species: String,
     /// Unix 毫秒。
     pub created_at: u64,
+    /// 帽型選項（ROADMAP 98 捏臉）：0~4，0 = 預設頂帽。
+    #[serde(default)]
+    pub hair_style: u8,
+    /// 膚色選項（ROADMAP 98 捏臉）：0~4，0 = 預設古銅金。
+    #[serde(default)]
+    pub skin_tone: u8,
+    /// 護目鏡鏡片色（ROADMAP 98 捏臉）：0~4，0 = 預設藍。
+    #[serde(default)]
+    pub goggle_color: u8,
 }
 
 /// 索引後面的耐久層。
@@ -140,6 +149,9 @@ impl UserStore {
                 name: sanitize_name(name),
                 species: DEFAULT_SPECIES.to_string(),
                 created_at: now_millis(),
+                hair_style: 0,
+                skin_tone: 0,
+                goggle_color: 0,
             };
             inner.by_external.insert(key, user.id);
             inner.by_id.insert(user.id, user.clone());
@@ -182,6 +194,9 @@ impl UserStore {
                 name: sanitize_name(name),
                 species: sanitize_species(species),
                 created_at: now_millis(),
+                hair_style: 0,
+                skin_tone: 0,
+                goggle_color: 0,
             };
             inner
                 .by_external
@@ -213,6 +228,28 @@ impl UserStore {
         };
         self.persist(&user).await;
         tracing::info!(user_id = %id, "玩家改名為: {}", user.name);
+        Some(user)
+    }
+
+    /// 更新外觀（ROADMAP 98 捏臉）：hair_style / skin_tone / goggle_color 各截到 0~4。
+    /// 回傳更新後的 User；查無此人回 None。
+    pub async fn update_appearance(
+        &self,
+        id: Uuid,
+        hair_style: u8,
+        skin_tone: u8,
+        goggle_color: u8,
+    ) -> Option<User> {
+        let user = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut user = inner.by_id.get(&id)?.clone();
+            user.hair_style = hair_style.min(4);
+            user.skin_tone = skin_tone.min(4);
+            user.goggle_color = goggle_color.min(4);
+            inner.by_id.insert(id, user.clone());
+            user
+        };
+        self.persist(&user).await;
         Some(user)
     }
 
@@ -390,10 +427,13 @@ fn append_to_disk_at(path: &str, u: &User) {
 /// 一併寫入但衝突時不改(沿 `id` 為準);`updated_at` 每次更新為 now()。
 async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO users (id, provider, external_id, email, name, species, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
+        "INSERT INTO users (id, provider, external_id, email, name, species, created_at, updated_at, \
+           hair_style, skin_tone, goggle_color) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9, $10) \
          ON CONFLICT (id) DO UPDATE SET \
-           email = EXCLUDED.email, name = EXCLUDED.name, species = EXCLUDED.species, updated_at = now()",
+           email = EXCLUDED.email, name = EXCLUDED.name, species = EXCLUDED.species, \
+           hair_style = EXCLUDED.hair_style, skin_tone = EXCLUDED.skin_tone, \
+           goggle_color = EXCLUDED.goggle_color, updated_at = now()",
     )
     .bind(u.id)
     .bind(&u.provider)
@@ -402,6 +442,9 @@ async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
     .bind(&u.name)
     .bind(&u.species)
     .bind(u.created_at as i64)
+    .bind(u.hair_style as i16)
+    .bind(u.skin_tone as i16)
+    .bind(u.goggle_color as i16)
     .execute(pool)
     .await?;
     Ok(())
@@ -412,7 +455,11 @@ async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
 /// 載入失敗(DB 連線剛斷等)回空清單,讓伺服器仍能起來、之後再寫回。
 async fn load_from_db(pool: &PgPool) -> Vec<User> {
     let rows = match sqlx::query(
-        "SELECT id, provider, external_id, email, name, species, created_at FROM users",
+        "SELECT id, provider, external_id, email, name, species, created_at, \
+           COALESCE(hair_style,0) AS hair_style, \
+           COALESCE(skin_tone,0) AS skin_tone, \
+           COALESCE(goggle_color,0) AS goggle_color \
+         FROM users",
     )
     .fetch_all(pool)
     .await
@@ -426,6 +473,9 @@ async fn load_from_db(pool: &PgPool) -> Vec<User> {
     rows.into_iter()
         .map(|r| {
             let created_at: i64 = r.get("created_at");
+            let hair_style: i16 = r.get("hair_style");
+            let skin_tone: i16 = r.get("skin_tone");
+            let goggle_color: i16 = r.get("goggle_color");
             User {
                 id: r.get("id"),
                 provider: r.get("provider"),
@@ -434,6 +484,9 @@ async fn load_from_db(pool: &PgPool) -> Vec<User> {
                 name: sanitize_name(&r.get::<String, _>("name")),
                 species: sanitize_species(&r.get::<String, _>("species")),
                 created_at: created_at as u64,
+                hair_style: (hair_style as u8).min(4),
+                skin_tone: (skin_tone as u8).min(4),
+                goggle_color: (goggle_color as u8).min(4),
             }
         })
         .collect()
@@ -458,6 +511,9 @@ mod tests {
             name: name.to_string(),
             species: "terran".to_string(),
             created_at: 1,
+            hair_style: 0,
+            skin_tone: 0,
+            goggle_color: 0,
         }
     }
 
