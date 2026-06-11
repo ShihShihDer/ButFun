@@ -910,6 +910,10 @@
         // 排行榜（ROADMAP 33）：收到資料後更新面板。
         renderLeaderboard(msg.level_top || [], msg.ether_top || [], msg.kills_top || []);
         break;
+      case "friend_list":
+        // 好友清單（ROADMAP 96）：收到後更新好友面板。
+        updateFriendPanel(msg.friends || []);
+        break;
       case "skill_activated":
         // 主動技能觸發（ROADMAP 45）：播放技能視覺特效。
         showSkillFlash(msg.player_id, msg.kind);
@@ -6748,6 +6752,145 @@
     }
   }
 
+  // ── 好友面板（ROADMAP 96）────────────────────────────────────────────────
+  let lastFriendSig = null;
+
+  function updateFriendPanel(friends) {
+    const body = document.getElementById("friendBody");
+    const countEl = document.getElementById("friendOnlineCount");
+    if (!body) return;
+
+    const sig = JSON.stringify(friends.map(f => f.id + f.name + f.online));
+    if (sig === lastFriendSig) return;
+    lastFriendSig = sig;
+
+    const onlineCount = friends.filter(f => f.online).length;
+    if (countEl) countEl.textContent = onlineCount > 0 ? ` (${onlineCount} 在線)` : "";
+
+    body.innerHTML = "";
+
+    if (isGuest) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能加好友";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 加好友輸入框。
+    const addRow = document.createElement("div");
+    addRow.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:10px;";
+    const addInput = document.createElement("input");
+    addInput.type = "text";
+    addInput.maxLength = 24;
+    addInput.placeholder = "玩家名稱";
+    addInput.style.cssText = "flex:1;min-width:0;padding:4px 6px;background:#1a2030;border:1px solid #3a4250;color:#c8d0e0;border-radius:4px;font-size:.8rem;";
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "expand-btn";
+    addBtn.textContent = "＋ 加好友";
+    addBtn.addEventListener("click", () => {
+      const name = addInput.value.trim();
+      if (!name) return;
+      try { ws.send(JSON.stringify({ type: "add_friend", name })); } catch {}
+      addInput.value = "";
+    });
+    addInput.addEventListener("keydown", e => { if (e.key === "Enter") addBtn.click(); });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addBtn);
+    body.appendChild(addRow);
+
+    if (friends.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color:#888;font-size:.8rem;margin-top:4px;";
+      empty.textContent = "還沒有好友，輸入名字加入吧！";
+      body.appendChild(empty);
+      return;
+    }
+
+    // 好友列表：在線在前，依名字排序。
+    const sorted = [...friends].sort((a, b) => {
+      if (a.online !== b.online) return a.online ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    // 分隔標籤。
+    if (sorted.some(f => f.online)) {
+      const sec = document.createElement("div");
+      sec.style.cssText = "color:#5a9;font-size:.75rem;font-weight:600;margin-bottom:4px;";
+      sec.textContent = "● 在線";
+      body.appendChild(sec);
+    }
+    let shownOfflineLabel = false;
+
+    for (const f of sorted) {
+      if (!f.online && !shownOfflineLabel) {
+        shownOfflineLabel = true;
+        const sec = document.createElement("div");
+        sec.style.cssText = "color:#666;font-size:.75rem;font-weight:600;margin-top:6px;margin-bottom:4px;";
+        sec.textContent = "○ 離線";
+        body.appendChild(sec);
+      }
+
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:5px;padding:4px 6px;border-radius:4px;background:rgba(255,255,255,0.03);";
+
+      const dot = document.createElement("span");
+      dot.textContent = f.online ? "🟢" : "⚫";
+      dot.style.fontSize = ".7rem";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.style.cssText = "flex:1;color:#c8d0e0;font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      nameSpan.textContent = f.name;
+
+      // 一鍵密語按鈕（只有在線才能密語）。
+      const whisperBtn = document.createElement("button");
+      whisperBtn.type = "button";
+      whisperBtn.className = "expand-btn";
+      whisperBtn.style.cssText = "padding:2px 6px;font-size:.75rem;" + (f.online ? "" : "opacity:.4;pointer-events:none;");
+      whisperBtn.textContent = "💬";
+      whisperBtn.title = f.online ? `對 ${f.name} 密語` : `${f.name} 不在線`;
+      if (f.online) {
+        whisperBtn.addEventListener("click", () => {
+          const input = document.getElementById("chatText");
+          if (input) { input.value = `/w ${f.name} `; input.focus(); }
+          // 同時關閉好友面板，讓玩家直接看到聊天框。
+          const win = document.getElementById("winFriend");
+          if (win) win.classList.add("hidden");
+        });
+      }
+
+      // 刪除好友按鈕。
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "expand-btn";
+      removeBtn.style.cssText = "padding:2px 6px;font-size:.75rem;color:#ff8888;border-color:#6a2020;";
+      removeBtn.textContent = "✕";
+      removeBtn.title = `移除好友 ${f.name}`;
+      removeBtn.addEventListener("click", () => {
+        if (!confirm(`確定要移除好友「${f.name}」嗎？`)) return;
+        try { ws.send(JSON.stringify({ type: "remove_friend", name: f.name })); } catch {}
+      });
+
+      row.appendChild(dot);
+      row.appendChild(nameSpan);
+      row.appendChild(whisperBtn);
+      row.appendChild(removeBtn);
+      body.appendChild(row);
+    }
+
+    // 刷新提示。
+    const refresh = document.createElement("div");
+    refresh.style.cssText = "color:#5a8;font-size:.75rem;cursor:pointer;margin-top:8px;text-align:center;";
+    refresh.textContent = "⟳ 重新整理在線狀態";
+    refresh.addEventListener("click", () => {
+      lastFriendSig = null;
+      try { ws.send(JSON.stringify({ type: "request_friend_list" })); } catch {}
+    });
+    body.appendChild(refresh);
+  }
+  // ── 好友面板 end ─────────────────────────────────────────────────────────
+
   let lastClassSig = null;
   // masteries = { warrior, farmer, artisan, explorer, merchant }（XP 值），titleClass = 頭銜職業字串或 null
   function updateClassPanel(masteries, titleClass, isGuestUser) {
@@ -9496,6 +9639,14 @@
         if (!myGuild) {
           try { ws.send(JSON.stringify({ type: "request_guild_list" })); } catch {}
         }
+      });
+    }
+    // 好友 dock 按鈕點擊時請求最新好友清單（含在線狀態）。
+    const friendDockBtn = document.getElementById("dockFriend");
+    if (friendDockBtn) {
+      friendDockBtn.addEventListener("click", () => {
+        lastFriendSig = null; // 強制重建面板（在線狀態可能變了）
+        try { ws.send(JSON.stringify({ type: "request_friend_list" })); } catch {}
       });
     }
     // 每個視窗右上的 ✕ 關閉自己。

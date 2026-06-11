@@ -294,6 +294,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 登入玩家：進場後立刻送一次好友清單（讓前端開好友面板即可看到資料）。
+    if let Some(uid) = authed_uid {
+        let friend_msg = build_friend_list_msg(&app, uid);
+        if let Ok(text) = serde_json::to_string(&friend_msg) {
+            // 連線剛建立、forward task 尚未啟動，直接透過 sender 送。
+            let _ = sender.send(Message::Text(text)).await;
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
@@ -3223,6 +3232,61 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 城外地塊購買 end ─────────────────────────────────────────────
 
+                // ── 好友系統（ROADMAP 96）───────────────────────────────────────
+                Ok(ClientMsg::AddFriend { name }) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    // 找目標帳號（線上或離線都可以，依名字查 UserStore）。
+                    let target = app.users.find_by_name(&name);
+                    let Some(target) = target else {
+                        let err = ServerMsg::Chat {
+                            from: "系統".into(),
+                            text: format!("找不到玩家「{name}」"),
+                        };
+                        if let Ok(json) = serde_json::to_string(&err) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                        continue;
+                    };
+                    if target.id == uid {
+                        let err = ServerMsg::Chat {
+                            from: "系統".into(),
+                            text: "不能加自己為好友哦".into(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&err) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                        continue;
+                    }
+                    let added = app.friends.add(uid, target.id);
+                    if added {
+                        tracing::info!(%uid, friend_id=%target.id, name, "加好友");
+                    }
+                    // 不管是否已存在，回傳最新清單。
+                    let msg = build_friend_list_msg(&app, uid);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                Ok(ClientMsg::RemoveFriend { name }) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    let target = app.users.find_by_name(&name);
+                    let Some(target) = target else { continue; };
+                    app.friends.remove(uid, target.id);
+                    tracing::info!(%uid, friend_id=%target.id, name, "刪好友");
+                    let msg = build_friend_list_msg(&app, uid);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                Ok(ClientMsg::RequestFriendList) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    let msg = build_friend_list_msg(&app, uid);
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                // ── 好友系統 end ─────────────────────────────────────────────────
+
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
@@ -3236,6 +3300,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     forward.abort();
     cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");
+}
+
+/// 組裝 `ServerMsg::FriendList`：查好友 UUID → 查名字（UserStore）→ 判斷在線（players map）。
+fn build_friend_list_msg(app: &AppState, user_id: Uuid) -> ServerMsg {
+    use crate::protocol::FriendEntry;
+    let friend_ids = app.friends.get_friends(user_id);
+    let online_ids: std::collections::HashSet<Uuid> = app.players.read().unwrap().keys().copied().collect();
+    let friends: Vec<FriendEntry> = friend_ids
+        .into_iter()
+        .filter_map(|fid| {
+            let user = app.users.get(fid)?;
+            Some(FriendEntry {
+                id: fid,
+                name: user.name,
+                online: online_ids.contains(&fid),
+            })
+        })
+        .collect();
+    ServerMsg::FriendList { friends }
 }
 
 /// 依 guild_id 與 player_id 建立 GuildView（ROADMAP 29）。

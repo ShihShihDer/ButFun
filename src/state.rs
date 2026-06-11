@@ -36,6 +36,7 @@ use crate::vitals::Vitals;
 use crate::land_plot::LandPlotRegistry;
 use crate::land_plot_store::LandPlotStore;
 use crate::npc_memory_store::NpcMemoryStore;
+use crate::friends::FriendStore;
 use crate::plot_registry::PlotRegistry;
 use crate::ranching::RanchRegistry;
 use crate::farm_crops::FarmCropRegistry;
@@ -799,6 +800,8 @@ pub struct AppState {
     /// 每條線上連線的直達單播通道（ROADMAP 95 私聊密語）：player_id → tx_direct。
     /// 連線建立時插入、離線時移除；讓密語可直達目標而不廣播全服。
     pub whisper_senders: Arc<RwLock<HashMap<Uuid, tokio::sync::mpsc::Sender<String>>>>,
+    /// 好友關係持久化 store（ROADMAP 96）：單向 follow；Postgres 模式下跨重啟保留。
+    pub friends: FriendStore,
 }
 
 impl AppState {
@@ -814,6 +817,7 @@ impl AppState {
             TileStore::new(),
             LandPlotStore::new(),
             NpcMemoryStore::new(),
+            FriendStore::new(),
         )
     }
 
@@ -831,6 +835,7 @@ impl AppState {
         tile_store: TileStore,
         land_plot_store: LandPlotStore,
         npc_memory_store: NpcMemoryStore,
+        friends: FriendStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -930,6 +935,7 @@ impl AppState {
             npc_workshop_boost: Arc::new(RwLock::new(crate::npc_workshop_boost::NpcWorkshopBoostState::new())),
             weather: Arc::new(RwLock::new(crate::weather::WeatherState::new())),
             whisper_senders: Arc::new(RwLock::new(HashMap::new())),
+            friends,
         }
     }
 
