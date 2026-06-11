@@ -85,6 +85,7 @@ mod npc_expedition_boost;
 mod npc_workshop_boost;
 mod npc_treasury;
 mod npc_deal;
+mod npc_stock;
 mod world_log;
 mod player_log;
 mod weather;

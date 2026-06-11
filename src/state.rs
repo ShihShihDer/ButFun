@@ -831,6 +831,9 @@ pub struct AppState {
     /// 每人只能有一筆待確認議價（新的覆蓋舊的）；超過 DEAL_EXPIRE_SECS 秒後自動失效。
     /// 記憶體模式，重啟清空（議價本就限時，重啟等同過期，行為正確）。
     pub npc_pending_deal: Arc<RwLock<HashMap<Uuid, crate::npc_deal::PendingDeal>>>,
+    /// NPC 販售庫存（ROADMAP 104）：賣商有庫存上限、賣完缺貨、定期補貨。
+    /// 記憶體模式（重啟從初始滿庫開始——相當於商隊補完貨才開門）。
+    pub npc_stock: Arc<RwLock<crate::npc_stock::NpcStockState>>,
 }
 
 impl AppState {
@@ -978,6 +981,7 @@ impl AppState {
             sprinkler_persist,
             npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
             npc_pending_deal: Arc::new(RwLock::new(HashMap::new())),
+            npc_stock: Arc::new(RwLock::new(crate::npc_stock::NpcStockState::new())),
         }
     }
 

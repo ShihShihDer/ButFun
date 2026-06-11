@@ -1071,6 +1071,45 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y, p.vitals.is_downed()));
                     if let Some((px, py, downed)) = player_pos {
                         if !downed && app.is_near_npc(px, py, "merchant") {
+                            // ROADMAP 104：庫存檢查——先確認物品在販售清單且有庫存。
+                            let base_price = npc::NPC_SELL_LIST.iter()
+                                .find(|e| e.item == item)
+                                .map(|e| e.price_per);
+                            let Some(base_price) = base_price else { continue; };
+                            // 取有效價（含稀缺溢價）。
+                            let effective_price = app.npc_stock.read().unwrap()
+                                .effective_sell_price(
+                                    crate::npc_treasury::MERCHANT_HOME,
+                                    item,
+                                    base_price,
+                                );
+                            // 嘗試從庫存扣除（若庫存不足則傳送提示後中止）。
+                            let stock_result = app.npc_stock.write().unwrap()
+                                .try_purchase(crate::npc_treasury::MERCHANT_HOME, item, qty);
+                            if stock_result.actual_qty == 0 {
+                                // 完全缺貨。
+                                if let Some(notice) = stock_result.notice {
+                                    let chat = crate::protocol::ServerMsg::Chat {
+                                        from: "商人薇拉".to_string(),
+                                        text: format!("💤 {notice}"),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&chat) {
+                                        let _ = tx_direct.send(json).await;
+                                    }
+                                }
+                                continue;
+                            }
+                            // 若只能部分成交：通知玩家，以實際可買量繼續。
+                            let actual_qty = stock_result.actual_qty;
+                            if let Some(notice) = stock_result.notice {
+                                let chat = crate::protocol::ServerMsg::Chat {
+                                    from: "商人薇拉".to_string(),
+                                    text: format!("📦 {notice}"),
+                                };
+                                if let Ok(json) = serde_json::to_string(&chat) {
+                                    let _ = tx_direct.send(json).await;
+                                }
+                            }
                             // 熟客折扣（ROADMAP 63）：取出待用折扣票（若有效期未過）。
                             // 票只在成功購買後才消耗；失敗不扣票（讓玩家有機會補足乙太再試）。
                             let discount_pct = {
@@ -1082,12 +1121,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let did_buy = {
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     let old_ether = p.ether;
-                                    if let Some(new_ether) = npc::buy_from_npc_discounted(&mut p.inventory, p.ether, item, qty, discount_pct) {
-                                        tracing::info!(player = %p.name, ?item, qty, spent = old_ether - new_ether, discount_pct, "NPC 販售");
+                                    // 使用有效價（含稀缺溢價）完成購買。
+                                    if let Some(new_ether) = npc::buy_from_npc_at_price(
+                                        &mut p.inventory, p.ether, item, actual_qty, effective_price, discount_pct
+                                    ) {
+                                        tracing::info!(
+                                            player = %p.name, ?item, actual_qty,
+                                            spent = old_ether - new_ether,
+                                            effective_price, discount_pct,
+                                            "NPC 販售（庫存扣除）"
+                                        );
                                         p.ether = new_ether;
                                         true
-                                    } else { false }
-                                } else { false }
+                                    } else {
+                                        // 乙太不足：退還庫存（補回扣除的數量）。
+                                        drop(p);
+                                        app.npc_stock.write().unwrap()
+                                            .refund(crate::npc_treasury::MERCHANT_HOME, item, actual_qty);
+                                        false
+                                    }
+                                } else {
+                                    // 玩家不在線：退還庫存。
+                                    app.npc_stock.write().unwrap()
+                                        .refund(crate::npc_treasury::MERCHANT_HOME, item, actual_qty);
+                                    false
+                                }
                             };
                             // 購買成功後：清除折扣票（已使用）。
                             if did_buy && discount_pct > 0 {

@@ -17,16 +17,35 @@ fn build_dynamic_buy_list(
     buy_list.iter().map(|e| {
         let price_per = market.current_price(e.item, e.price_per, now_secs);
         let trend = market.current_trend(e.item, now_secs).to_string();
-        ShopCatalogEntry { item: e.item, price_per, trend }
+        ShopCatalogEntry { item: e.item, price_per, trend, stock: None, max_stock: None }
     }).collect()
 }
 
 /// 把販售清單轉成 ShopCatalogEntry（販售價固定不浮動，趨勢固定 stable）。
+/// 不含庫存資訊——對沒有庫存設定的商人（翠幽星等）使用。
 fn build_static_sell_list(sell_list: &[crate::npc::ShopEntry]) -> Vec<ShopCatalogEntry> {
     sell_list.iter().map(|e| ShopCatalogEntry {
         item: e.item,
         price_per: e.price_per,
         trend: "stable".to_string(),
+        stock: None,
+        max_stock: None,
+    }).collect()
+}
+
+/// 把故鄉商人販售清單轉成含庫存資訊的 ShopCatalogEntry（ROADMAP 104）。
+/// effective_price 已含稀缺溢價，stock / max_stock 供前端顯示缺貨狀況。
+fn build_home_sell_list_with_stock(
+    sell_list: &[crate::npc::ShopEntry],
+    stock_state: &crate::npc_stock::NpcStockState,
+) -> Vec<ShopCatalogEntry> {
+    sell_list.iter().map(|e| {
+        let price_per = stock_state.effective_sell_price(
+            crate::npc_treasury::MERCHANT_HOME, e.item, e.price_per
+        );
+        let stock = Some(stock_state.available(crate::npc_treasury::MERCHANT_HOME, e.item));
+        let max_stock = Some(stock_state.max_stock(crate::npc_treasury::MERCHANT_HOME, e.item));
+        ShopCatalogEntry { item: e.item, price_per, trend: "stable".to_string(), stock, max_stock }
     }).collect()
 }
 
@@ -1002,6 +1021,14 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 商人販售庫存補貨（ROADMAP 104）：每 STOCK_RESTOCK_INTERVAL_SECS 秒補充各品項庫存。
+            {
+                let restock_ticks = crate::npc_stock::STOCK_RESTOCK_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % restock_ticks == 0 && tick > 0 {
+                    app.npc_stock.write().unwrap().tick_restock();
+                }
+            }
+
             // NPC 生命週期 tick（ROADMAP 66）：推進壽命計時器，廣播老年 / 退休事件。
             {
                 let events = app.npc_lifecycle.write().unwrap().tick(dt as f64);
@@ -1067,7 +1094,8 @@ pub fn spawn(app: AppState) {
                         let (buy_list, sell_list) = match s.id {
                             "merchant" => (
                                 build_dynamic_buy_list(NPC_BUY_LIST, &dm, now_secs),
-                                build_static_sell_list(NPC_SELL_LIST),
+                                // ROADMAP 104：故鄉商人販售清單含庫存資訊（稀缺溢價 + 剩餘數量）。
+                                build_home_sell_list_with_stock(NPC_SELL_LIST, &app.npc_stock.read().unwrap()),
                             ),
                             _ => (Vec::new(), Vec::new()), // 其他 NPC 暫無商店功能
                         };

@@ -374,7 +374,24 @@ pub fn buy_from_npc_discounted(
         return None;
     }
     let price = NPC_SELL_LIST.iter().find(|e| e.item == item)?.price_per;
-    let base_total = price.saturating_mul(qty);
+    buy_from_npc_at_price(inv, ether, item, qty, price, discount_percent)
+}
+
+/// 以明確售價（含稀缺溢價，ROADMAP 104）購買——caller 從 npc_stock 計算後傳入。
+/// 此函式不查 NPC_SELL_LIST，由 caller 確認物品在販售清單中再呼叫。
+/// discount_percent = 0 → 無折扣；純函式，便於測試。
+pub fn buy_from_npc_at_price(
+    inv: &mut Inventory,
+    ether: u32,
+    item: ItemKind,
+    qty: u32,
+    price_per: u32,
+    discount_percent: u32,
+) -> Option<u32> {
+    if qty == 0 {
+        return None;
+    }
+    let base_total = price_per.saturating_mul(qty);
     // 折扣計算：上限 100%（不能倒貼），結果至少 0（saturating_sub 避免溢位）。
     let discount_pct = discount_percent.min(100);
     let discounted_total = base_total.saturating_sub(base_total * discount_pct / 100);
