@@ -1111,6 +1111,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                         }
                     }
+                    // NPC 自主懸賞令：兇名精英討伐 → 檢查是否符合蘭卡通緝目標（ROADMAP 82）。
+                    if was_notorious {
+                        // 取第一筆兇名擊殺的種類名稱。
+                        if let Some((nk, _, _, _)) = results.iter().find(|(_, _, n, _)| *n) {
+                            let kind_name_str = nk.display_name();
+                            if let Some(reward) = app.npc_bounty.write().unwrap()
+                                .on_notorious_killed(kind_name_str, true)
+                            {
+                                let pname = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&id) {
+                                        p.ether = p.ether.saturating_add(reward);
+                                        p.name.clone()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
+                                if !pname.is_empty() {
+                                    let _ = tx_direct.send(format!(
+                                        "🎯 你討伐了蘭卡的通緝目標，獲得懸賞 {reward} 乙太！"
+                                    ));
+                                    let _ = app.tx_chat.send(format!(
+                                        "🎯 [獵手蘭卡] 廣播：「通緝目標已被 {} 討伐！感謝這位勇者！」",
+                                        pname
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
                     if let Some((kind, _, _, Some(_))) = result {
                         let completed = app.quests.write().unwrap().on_kill(kind);

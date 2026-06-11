@@ -779,6 +779,8 @@ pub struct AppState {
     pub daytime_talk: Arc<RwLock<crate::daytime_talk::DaytimeTalkState>>,
     /// 白日工位對話專屬 Semaphore（容量 1）：同時最多一個 AI 對話呼叫，不佔用 NPC LLM 配額。
     pub daytime_talk_sem: Arc<Semaphore>,
+    /// NPC 自主懸賞系統（ROADMAP 82）：蘭卡根據安全感發布通緝令，討伐者得獎。
+    pub npc_bounty: Arc<RwLock<crate::npc_bounty::NpcBountyState>>,
 }
 
 impl AppState {
@@ -901,6 +903,7 @@ impl AppState {
             night_watch_sem: Arc::new(Semaphore::new(crate::npc_night_watch::MAX_CONCURRENT_CALLS)),
             daytime_talk: Arc::new(RwLock::new(crate::daytime_talk::DaytimeTalkState::new())),
             daytime_talk_sem: Arc::new(Semaphore::new(crate::daytime_talk::MAX_CONCURRENT_TALKS)),
+            npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
         }
     }
 

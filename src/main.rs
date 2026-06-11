@@ -76,6 +76,7 @@ mod npc_dusk_call;
 mod npc_noon_bell;
 mod npc_night_watch;
 mod daytime_talk;
+mod npc_bounty;
 mod world_log;
 mod player_log;
 
