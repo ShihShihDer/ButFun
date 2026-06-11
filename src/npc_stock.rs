@@ -166,10 +166,18 @@ impl NpcStockState {
     }
 
     /// 商隊補貨：所有商品補充 restock_per_tick 數量（至各自上限）。
-    pub fn tick_restock(&mut self) {
-        for stock in self.stocks.values_mut() {
+    /// 回傳本次實際補入的 (ItemKind, 補入量) 列表（供呼叫方計算供應鏈成本）。
+    pub fn tick_restock(&mut self) -> Vec<(ItemKind, u32)> {
+        let mut delta = Vec::new();
+        for ((_, item), stock) in self.stocks.iter_mut() {
+            let before = stock.current;
             stock.current = (stock.current + stock.restock_per_tick).min(stock.max);
+            let added = stock.current - before;
+            if added > 0 {
+                delta.push((*item, added));
+            }
         }
+        delta
     }
 
     /// 取得故鄉商人所有在售商品的庫存快照（用於廣播給前端顯示）。

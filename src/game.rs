@@ -1064,10 +1064,17 @@ pub fn spawn(app: AppState) {
             }
 
             // 商人販售庫存補貨（ROADMAP 104）：每 STOCK_RESTOCK_INTERVAL_SECS 秒補充各品項庫存。
+            // 供應鏈進貨成本（ROADMAP 107）：補貨時向上游付進貨成本，乙太從商人金庫流出。
             {
                 let restock_ticks = crate::npc_stock::STOCK_RESTOCK_INTERVAL_SECS * TICK_HZ as u64;
                 if tick % restock_ticks == 0 && tick > 0 {
-                    app.npc_stock.write().unwrap().tick_restock();
+                    let delta = app.npc_stock.write().unwrap().tick_restock();
+                    let supply_cost = crate::supply_chain::total_supply_cost(&delta);
+                    if supply_cost > 0 {
+                        app.npc_treasury.write().unwrap()
+                            .deduct(crate::npc_treasury::MERCHANT_HOME, supply_cost);
+                        tracing::debug!(supply_cost, "供應鏈進貨成本：故鄉商人金庫 -{}", supply_cost);
+                    }
                 }
             }
 
