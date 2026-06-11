@@ -767,6 +767,10 @@ pub struct AppState {
     pub dusk_call: Arc<RwLock<crate::npc_dusk_call::DuskCallState>>,
     /// 暮告專屬 Semaphore（容量 1）：同時最多一個 AI 暮告呼叫，不佔用 NPC LLM 配額。
     pub dusk_call_sem: Arc<Semaphore>,
+    /// 午鐘廣播狀態（ROADMAP 79）：偵測黎明→白天轉換並觸發工匠老胡開工令，純記憶體模式，重啟清零。
+    pub noon_bell: Arc<RwLock<crate::npc_noon_bell::NoonBellState>>,
+    /// 午鐘廣播專屬 Semaphore（容量 1）：同時最多一個 AI 午鐘呼叫，不佔用 NPC LLM 配額。
+    pub noon_bell_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -883,6 +887,8 @@ impl AppState {
             dawn_call_sem: Arc::new(Semaphore::new(crate::npc_dawn_call::MAX_CONCURRENT_CALLS)),
             dusk_call: Arc::new(RwLock::new(crate::npc_dusk_call::DuskCallState::new())),
             dusk_call_sem: Arc::new(Semaphore::new(crate::npc_dusk_call::MAX_CONCURRENT_CALLS)),
+            noon_bell: Arc::new(RwLock::new(crate::npc_noon_bell::NoonBellState::new())),
+            noon_bell_sem: Arc::new(Semaphore::new(crate::npc_noon_bell::MAX_CONCURRENT_CALLS)),
         }
     }
 
