@@ -787,6 +787,8 @@ pub struct AppState {
     pub npc_defeat_reaction_sem: Arc<Semaphore>,
     /// NPC 升等賀詞系統（ROADMAP 84）：玩家升等時凱爾長老私信賀詞、里程碑全服廣播，純記憶體模式。
     pub npc_level_greet: Arc<RwLock<crate::npc_level_greet::NpcLevelGreetState>>,
+    /// NPC 主動資材委託系統（ROADMAP 85）：繁榮感低時商人薇拉發急收令、玩家賣出加價，純記憶體模式。
+    pub npc_commission: Arc<RwLock<crate::npc_commission::NpcCommissionState>>,
 }
 
 impl AppState {
@@ -913,6 +915,7 @@ impl AppState {
             npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
             npc_level_greet: Arc::new(RwLock::new(crate::npc_level_greet::NpcLevelGreetState::new())),
+            npc_commission: Arc::new(RwLock::new(crate::npc_commission::NpcCommissionState::new())),
         }
     }
 
