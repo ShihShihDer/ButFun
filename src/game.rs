@@ -710,23 +710,20 @@ pub fn spawn(app: AppState) {
             // 怪物王咆哮（ROADMAP 75）：每 tick 推進各菁英精英的咆哮冷卻計時；
             // 冷卻歸零時非同步呼叫 LLM（Groq→ollama→罐頭），結果廣播至全服聊天頻道。
             // 成本紀律：Semaphore(1) 限制同時只有一個 AI 咆哮呼叫。
+            // ROADMAP 114：0 玩家時仍持續運轉，讓世界有生命感。
             {
                 let player_count = app.players.read().unwrap().len();
-                let candidate = if player_count > 0 {
-                    // 收集所有菁英精英（notorious = level >= base_level + 3）。
-                    let notorious: Vec<_> = app
-                        .enemies
-                        .read()
-                        .unwrap()
-                        .enemies()
-                        .into_iter()
-                        .filter(|e| e.level >= e.base_level.saturating_add(3))
-                        .map(|e| (e.id, e.enemy.kind().display_name(), e.level))
-                        .collect();
-                    app.boss_roar.write().unwrap().tick(dt, &notorious)
-                } else {
-                    None
-                };
+                // 收集所有菁英精英（notorious = level >= base_level + 3）。
+                let notorious: Vec<_> = app
+                    .enemies
+                    .read()
+                    .unwrap()
+                    .enemies()
+                    .into_iter()
+                    .filter(|e| e.level >= e.base_level.saturating_add(3))
+                    .map(|e| (e.id, e.enemy.kind().display_name(), e.level))
+                    .collect();
+                let candidate = app.boss_roar.write().unwrap().tick(dt, &notorious);
                 if let Some(c) = candidate {
                     let tx_chat = app.tx_chat.clone();
                     let sem = app.boss_roar_sem.clone();
@@ -745,24 +742,20 @@ pub fn spawn(app: AppState) {
 
             // NPC 自主懸賞令（ROADMAP 82）：蘭卡安全感低且兇名精英存在時自主發布通緝令。
             // 成本紀律：15 分鐘冷卻、純罐頭降級可運作、無 Semaphore（state 機保證最多一筆）。
+            // ROADMAP 114：0 玩家時仍持續運轉。
             {
-                let player_count = app.players.read().unwrap().len();
-                let candidate = if player_count > 0 {
-                    // 收集所有兇名精英（同 boss_roar 邏輯）。
-                    let notorious: Vec<_> = app
-                        .enemies
-                        .read()
-                        .unwrap()
-                        .enemies()
-                        .into_iter()
-                        .filter(|e| e.level >= e.base_level.saturating_add(3))
-                        .map(|e| (e.enemy.kind().display_name(), e.level))
-                        .collect();
-                    let lanca_safety = app.npc_needs.read().unwrap().get("bounty_npc").safety;
-                    app.npc_bounty.write().unwrap().tick(dt, &notorious, lanca_safety, player_count)
-                } else {
-                    None
-                };
+                // 收集所有兇名精英（同 boss_roar 邏輯）。
+                let notorious: Vec<_> = app
+                    .enemies
+                    .read()
+                    .unwrap()
+                    .enemies()
+                    .into_iter()
+                    .filter(|e| e.level >= e.base_level.saturating_add(3))
+                    .map(|e| (e.enemy.kind().display_name(), e.level))
+                    .collect();
+                let lanca_safety = app.npc_needs.read().unwrap().get("bounty_npc").safety;
+                let candidate = app.npc_bounty.write().unwrap().tick(dt, &notorious, lanca_safety);
                 if let Some((kind_name, level)) = candidate {
                     let tx_chat = app.tx_chat.clone();
                     tokio::spawn(async move {
@@ -775,11 +768,11 @@ pub fn spawn(app: AppState) {
             }
 
             // NPC 主動資材委託（ROADMAP 85）：繁榮感低時商人薇拉自動發急收令。
+            // ROADMAP 114：0 玩家時仍持續運轉。
             {
-                let online_count = app.players.read().unwrap().len();
                 let merchant_prosperity = app.npc_needs.read().unwrap().get("merchant").prosperity;
                 let commission_event = app.npc_commission.write().unwrap()
-                    .tick(dt, merchant_prosperity, online_count);
+                    .tick(dt, merchant_prosperity);
                 if let Some(event) = commission_event {
                     let tx_chat = app.tx_chat.clone();
                     let merchant = crate::npc_commission::MERCHANT_DISPLAY_NAME;
@@ -796,11 +789,11 @@ pub fn spawn(app: AppState) {
             }
 
             // NPC 探勘加碼令（ROADMAP 86）：安全感高時芙利亞自動發加碼令。
+            // ROADMAP 114：0 玩家時仍持續運轉。
             {
-                let online_count = app.players.read().unwrap().len();
                 let expedition_safety = app.npc_needs.read().unwrap().get("expedition_npc").safety;
                 let boost_event = app.npc_expedition_boost.write().unwrap()
-                    .tick(dt, expedition_safety, online_count);
+                    .tick(dt, expedition_safety);
                 if let Some(event) = boost_event {
                     let tx_chat = app.tx_chat.clone();
                     let npc = crate::npc_expedition_boost::EXPEDITION_NPC_NAME;
@@ -817,11 +810,11 @@ pub fn spawn(app: AppState) {
             }
 
             // NPC 工坊加成令（ROADMAP 87）：歸屬感高時老胡自動發急修加成令。
+            // ROADMAP 114：0 玩家時仍持續運轉。
             {
-                let online_count = app.players.read().unwrap().len();
                 let workshop_belonging = app.npc_needs.read().unwrap().get("workshop_npc").belonging;
                 let boost_event = app.npc_workshop_boost.write().unwrap()
-                    .tick(dt, workshop_belonging, online_count);
+                    .tick(dt, workshop_belonging);
                 if let Some(event) = boost_event {
                     let tx_chat = app.tx_chat.clone();
                     let npc = crate::npc_workshop_boost::WORKSHOP_NPC_NAME;
@@ -852,14 +845,9 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
+            // 廣場夜談（ROADMAP 76）：夜間 NPC 在廣場閒聊（ROADMAP 114：0 玩家也持續）。
             {
-                let online_count = app.players.read().unwrap().len();
-                let talk_pair = if online_count > 0 {
-                    app.plaza_talk.write().unwrap().tick(dt, is_night)
-                } else {
-                    None
-                };
+                let talk_pair = app.plaza_talk.write().unwrap().tick(dt, is_night);
                 if let Some(pair) = talk_pair {
                     let tx_chat = app.tx_chat.clone();
                     let tx = app.tx.clone();
@@ -892,15 +880,10 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 白日工位對話（ROADMAP 81）：白天有玩家在線時，NPC 偶爾在工位互相閒聊。
+            // 白日工位對話（ROADMAP 81）：白天 NPC 在工位互相閒聊（ROADMAP 114：0 玩家也持續）。
             {
-                let online_count = app.players.read().unwrap().len();
                 let is_day = app.daynight.read().unwrap().phase() == crate::daynight::Phase::Day;
-                let talk_pair = if online_count > 0 {
-                    app.daytime_talk.write().unwrap().tick(dt, is_day)
-                } else {
-                    None
-                };
+                let talk_pair = app.daytime_talk.write().unwrap().tick(dt, is_day);
                 if let Some(pair) = talk_pair {
                     let tx_chat = app.tx_chat.clone();
                     let tx = app.tx.clone();
@@ -934,14 +917,11 @@ pub fn spawn(app: AppState) {
             }
 
             // 晨喚（ROADMAP 77）：日夜循環進入黎明時，凱爾長老廣播晨間致辭。
+            // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
             {
                 let online_count = app.players.read().unwrap().len();
                 let current_phase = app.daynight.read().unwrap().phase();
-                let should_call = if online_count > 0 {
-                    app.dawn_call.write().unwrap().tick(dt, current_phase)
-                } else {
-                    false
-                };
+                let should_call = app.dawn_call.write().unwrap().tick(dt, current_phase);
                 if should_call {
                     let tx_chat = app.tx_chat.clone();
                     let sem = app.dawn_call_sem.clone();
@@ -959,14 +939,11 @@ pub fn spawn(app: AppState) {
 
             // NPC 午鐘廣播（ROADMAP 79）：黎明→白天轉換時，工匠老胡廣播開工令。
             // 與晨喚（凱爾長老）和暮告（薇拉）形成三時段節律：黎明/日出/黃昏。
+            // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
             {
                 let online_count = app.players.read().unwrap().len();
                 let current_phase = app.daynight.read().unwrap().phase();
-                let should_call = if online_count > 0 {
-                    app.noon_bell.write().unwrap().tick(dt, current_phase)
-                } else {
-                    false
-                };
+                let should_call = app.noon_bell.write().unwrap().tick(dt, current_phase);
                 if should_call {
                     let tx_chat = app.tx_chat.clone();
                     let sem = app.noon_bell_sem.clone();
@@ -984,14 +961,11 @@ pub fn spawn(app: AppState) {
 
             // NPC 暮告（ROADMAP 78）：白天→黃昏轉換時，商人薇拉廣播傍晚感言。
             // 與晨喚形成完整日夜節律——黎明有凱爾長老，黃昏有商人薇拉。
+            // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
             {
                 let online_count = app.players.read().unwrap().len();
                 let current_phase = app.daynight.read().unwrap().phase();
-                let should_call = if online_count > 0 {
-                    app.dusk_call.write().unwrap().tick(dt, current_phase)
-                } else {
-                    false
-                };
+                let should_call = app.dusk_call.write().unwrap().tick(dt, current_phase);
                 if should_call {
                     let tx_chat = app.tx_chat.clone();
                     let sem = app.dusk_call_sem.clone();
@@ -1009,14 +983,11 @@ pub fn spawn(app: AppState) {
 
             // NPC 入夜守衛令（ROADMAP 80）：黃昏→夜晚轉換時，獵手蘭卡廣播守衛令。
             // 與晨喚（凱爾長老）、午鐘（老胡）及暮告（薇拉）形成四時段節律。
+            // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
             {
                 let online_count = app.players.read().unwrap().len();
                 let current_phase = app.daynight.read().unwrap().phase();
-                let should_call = if online_count > 0 {
-                    app.night_watch.write().unwrap().tick(dt, current_phase)
-                } else {
-                    false
-                };
+                let should_call = app.night_watch.write().unwrap().tick(dt, current_phase);
                 if should_call {
                     let tx_chat = app.tx_chat.clone();
                     let sem = app.night_watch_sem.clone();

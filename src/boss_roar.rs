@@ -101,9 +101,11 @@ pub fn canned_roar(kind_name: &str) -> &'static str {
 /// 為純 async 函式，由 game.rs tokio::spawn 呼叫，不阻塞遊戲迴圈。
 pub async fn generate_roar(kind_name: &str, level: u32, player_count: usize) -> String {
     let system = build_system_prompt(kind_name, level);
-    let user = format!(
-        "附近有 {player_count} 個人類玩家入侵你的領地，現在發出你的怒吼！"
-    );
+    let user = if player_count > 0 {
+        format!("附近有 {player_count} 個人類玩家入侵你的領地，現在發出你的怒吼！")
+    } else {
+        "世界暫時平靜，但你的威名依然響徹四方——展現你的存在感！".to_string()
+    };
     match crate::npc_chat::raw_llm_call(&system, &user).await {
         Some(text) => {
             let trimmed = text.trim().to_string();

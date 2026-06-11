@@ -64,7 +64,6 @@ impl NpcBountyState {
     /// - `dt`：本幀秒數
     /// - `notorious`：當前所有兇名精英的 `(kind_name, level)` 列表
     /// - `lanca_safety`：蘭卡當前安全感值（0~100）
-    /// - `players_online`：當前在線玩家數（0 時不觸發，避免無人空轉）
     ///
     /// 回傳 `Some((kind_name, level))` 表示「發布此懸賞並廣播」，呼叫端負責廣播。
     pub fn tick(
@@ -72,7 +71,6 @@ impl NpcBountyState {
         dt: f32,
         notorious: &[(&'static str, u32)],
         lanca_safety: i32,
-        players_online: usize,
     ) -> Option<(String, u32)> {
         // 推進活躍懸賞的有效期倒數，過期則清除。
         if let Some(ref mut b) = self.active {
@@ -87,9 +85,8 @@ impl NpcBountyState {
             self.announce_cooldown -= dt;
         }
 
-        // 觸發條件：有兇名精英 + 蘭卡安全感低 + 無活躍懸賞 + 冷卻結束 + 有玩家在線。
-        if players_online == 0
-            || lanca_safety >= LANCA_SAFETY_THRESHOLD
+        // 觸發條件：有兇名精英 + 蘭卡安全感低 + 無活躍懸賞 + 冷卻結束。
+        if lanca_safety >= LANCA_SAFETY_THRESHOLD
             || self.active.is_some()
             || self.announce_cooldown > 0.0
             || notorious.is_empty()
@@ -180,20 +177,13 @@ mod tests {
         s
     }
 
-    #[test]
-    fn no_trigger_without_players() {
-        let mut s = ready_state();
-        let notorious = vec![("晶石傀儡", 7u32)];
-        let result = s.tick(1.0, &notorious, 30, 0);
-        assert!(result.is_none(), "無玩家在線時不應觸發懸賞");
-    }
 
     #[test]
     fn no_trigger_when_safety_high() {
         let mut s = ready_state();
         let notorious = vec![("晶石傀儡", 7u32)];
         // 安全感恰好等於閾值（>= 則不觸發）
-        let result = s.tick(1.0, &notorious, LANCA_SAFETY_THRESHOLD, 1);
+        let result = s.tick(1.0, &notorious, LANCA_SAFETY_THRESHOLD);
         assert!(result.is_none(), "安全感達閾值時不應觸發懸賞");
     }
 
@@ -203,7 +193,7 @@ mod tests {
         // 冷卻還剩 100 秒
         s.announce_cooldown = 100.0;
         let notorious = vec![("晶石傀儡", 7u32)];
-        let result = s.tick(1.0, &notorious, 30, 2);
+        let result = s.tick(1.0, &notorious, 30);
         assert!(result.is_none(), "冷卻中不應觸發懸賞");
     }
 
@@ -211,7 +201,7 @@ mod tests {
     fn triggers_when_all_conditions_met() {
         let mut s = ready_state();
         let notorious = vec![("晶石傀儡", 7u32)];
-        let result = s.tick(1.0, &notorious, 30, 2);
+        let result = s.tick(1.0, &notorious, 30);
         assert!(result.is_some(), "條件全部成立時應觸發懸賞");
         let (kind, level) = result.unwrap();
         assert_eq!(kind, "晶石傀儡");
@@ -222,11 +212,11 @@ mod tests {
     fn active_bounty_blocks_new_announcement() {
         let mut s = ready_state();
         let notorious = vec![("晶石傀儡", 7u32)];
-        let r1 = s.tick(1.0, &notorious, 30, 2);
+        let r1 = s.tick(1.0, &notorious, 30);
         assert!(r1.is_some(), "第一次應觸發");
         // 強制清零冷卻，但 active 仍在
         s.announce_cooldown = 0.0;
-        let r2 = s.tick(1.0, &notorious, 30, 2);
+        let r2 = s.tick(1.0, &notorious, 30);
         assert!(r2.is_none(), "已有活躍懸賞時不應再觸發");
     }
 
@@ -234,7 +224,7 @@ mod tests {
     fn picks_highest_level_notorious() {
         let mut s = ready_state();
         let notorious = vec![("飄舞精靈", 4u32), ("晶石傀儡", 9u32), ("珊瑚蟹", 6u32)];
-        let (kind, level) = s.tick(1.0, &notorious, 30, 2).unwrap();
+        let (kind, level) = s.tick(1.0, &notorious, 30).unwrap();
         assert_eq!(kind, "晶石傀儡", "應選等級最高的兇名精英");
         assert_eq!(level, 9);
     }
@@ -243,11 +233,11 @@ mod tests {
     fn bounty_expires_after_lifetime() {
         let mut s = ready_state();
         let notorious = vec![("蕈菇潛行者", 5u32)];
-        let _ = s.tick(1.0, &notorious, 30, 1);
+        let _ = s.tick(1.0, &notorious, 30);
         assert!(s.active.is_some());
 
         // 推進至超過有效期
-        s.tick(BOUNTY_DURATION_SECS + 1.0, &[], 60, 1);
+        s.tick(BOUNTY_DURATION_SECS + 1.0, &[], 60);
         assert!(s.active.is_none(), "懸賞到期後應自動清除");
     }
 
@@ -255,7 +245,7 @@ mod tests {
     fn claim_rewards_on_matching_notorious_kill() {
         let mut s = ready_state();
         let notorious = vec![("符文守衛", 8u32)];
-        let _ = s.tick(1.0, &notorious, 30, 1);
+        let _ = s.tick(1.0, &notorious, 30);
         assert!(s.active.is_some());
 
         let reward = s.on_notorious_killed("符文守衛", true);
@@ -267,7 +257,7 @@ mod tests {
     fn no_reward_for_non_notorious_kill() {
         let mut s = ready_state();
         let notorious = vec![("符文守衛", 8u32)];
-        let _ = s.tick(1.0, &notorious, 30, 1);
+        let _ = s.tick(1.0, &notorious, 30);
 
         // 同種類但非兇名狀態
         let reward = s.on_notorious_killed("符文守衛", false);
@@ -279,7 +269,7 @@ mod tests {
     fn no_reward_for_wrong_kind() {
         let mut s = ready_state();
         let notorious = vec![("符文守衛", 8u32)];
-        let _ = s.tick(1.0, &notorious, 30, 1);
+        let _ = s.tick(1.0, &notorious, 30);
 
         // 擊殺不同種類
         let reward = s.on_notorious_killed("晶石傀儡", true);

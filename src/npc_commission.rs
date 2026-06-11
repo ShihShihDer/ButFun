@@ -101,7 +101,6 @@ impl NpcCommissionState {
     ///
     /// - `dt`：本幀秒數
     /// - `merchant_prosperity`：商人當前繁榮感（0~100）
-    /// - `players_online`：在線玩家數
     ///
     /// 回傳：
     /// - `CommissionEvent::NewCommission { item_name }` — 剛觸發新委託（呼叫端負責廣播）
@@ -111,7 +110,6 @@ impl NpcCommissionState {
         &mut self,
         dt: f32,
         merchant_prosperity: i32,
-        players_online: usize,
     ) -> Option<CommissionEvent> {
         // 推進活躍委託的剩餘時間；過期則清除並回傳 Expired。
         if let Some(ref mut c) = self.active {
@@ -128,9 +126,8 @@ impl NpcCommissionState {
             self.announce_cooldown -= dt;
         }
 
-        // 觸發條件：繁榮感低 + 無活躍委託 + 冷卻結束 + 有玩家在線。
-        if players_online == 0
-            || merchant_prosperity >= PROSPERITY_THRESHOLD
+        // 觸發條件：繁榮感低 + 無活躍委託 + 冷卻結束。
+        if merchant_prosperity >= PROSPERITY_THRESHOLD
             || self.active.is_some()
             || self.announce_cooldown > 0.0
         {
@@ -228,17 +225,11 @@ mod tests {
         s
     }
 
-    #[test]
-    fn no_trigger_without_players() {
-        let mut s = ready_state();
-        let result = s.tick(1.0, 10, 0);
-        assert!(result.is_none(), "無玩家在線時不應觸發委託");
-    }
 
     #[test]
     fn no_trigger_when_prosperity_high() {
         let mut s = ready_state();
-        let result = s.tick(1.0, PROSPERITY_THRESHOLD, 2);
+        let result = s.tick(1.0, PROSPERITY_THRESHOLD);
         assert!(result.is_none(), "繁榮感達閾值時不應觸發委託");
     }
 
@@ -246,14 +237,14 @@ mod tests {
     fn no_trigger_during_cooldown() {
         let mut s = NpcCommissionState::new();
         // 保持初始等待冷卻
-        let result = s.tick(1.0, 10, 2);
+        let result = s.tick(1.0, 10);
         assert!(result.is_none(), "冷卻期間不應觸發委託");
     }
 
     #[test]
     fn triggers_when_all_conditions_met() {
         let mut s = ready_state();
-        let result = s.tick(1.0, 10, 2);
+        let result = s.tick(1.0, 10);
         assert!(result.is_some(), "條件全部成立時應觸發委託");
         match result.unwrap() {
             CommissionEvent::NewCommission { bonus, quota, .. } => {
@@ -267,10 +258,10 @@ mod tests {
     #[test]
     fn active_commission_blocks_new_trigger() {
         let mut s = ready_state();
-        let r1 = s.tick(1.0, 10, 2);
+        let r1 = s.tick(1.0, 10);
         assert!(r1.is_some(), "第一次應觸發");
         s.announce_cooldown = 0.0;
-        let r2 = s.tick(1.0, 10, 2);
+        let r2 = s.tick(1.0, 10);
         assert!(r2.is_none(), "已有活躍委託時不應再觸發");
     }
 
@@ -278,28 +269,28 @@ mod tests {
     fn commission_cycles_through_items() {
         let mut s = ready_state();
         // 第 1 次 → Wood
-        let r1 = s.tick(1.0, 10, 1).unwrap();
+        let r1 = s.tick(1.0, 10).unwrap();
         let name1 = match r1 { CommissionEvent::NewCommission { item_name, .. } => item_name, _ => panic!() };
         assert_eq!(name1, "木材");
 
         // 手動完成委託並清除冷卻，觸發第 2 次
         s.active = None;
         s.announce_cooldown = 0.0;
-        let r2 = s.tick(1.0, 10, 1).unwrap();
+        let r2 = s.tick(1.0, 10).unwrap();
         let name2 = match r2 { CommissionEvent::NewCommission { item_name, .. } => item_name, _ => panic!() };
         assert_eq!(name2, "石頭");
 
         // 第 3 次 → Ether
         s.active = None;
         s.announce_cooldown = 0.0;
-        let r3 = s.tick(1.0, 10, 1).unwrap();
+        let r3 = s.tick(1.0, 10).unwrap();
         let name3 = match r3 { CommissionEvent::NewCommission { item_name, .. } => item_name, _ => panic!() };
         assert_eq!(name3, "乙太礦");
 
         // 第 4 次 → 回到 Wood
         s.active = None;
         s.announce_cooldown = 0.0;
-        let r4 = s.tick(1.0, 10, 1).unwrap();
+        let r4 = s.tick(1.0, 10).unwrap();
         let name4 = match r4 { CommissionEvent::NewCommission { item_name, .. } => item_name, _ => panic!() };
         assert_eq!(name4, "木材");
     }
@@ -307,10 +298,10 @@ mod tests {
     #[test]
     fn commission_expires_after_lifetime() {
         let mut s = ready_state();
-        let _ = s.tick(1.0, 10, 1);
+        let _ = s.tick(1.0, 10);
         assert!(s.active.is_some());
         // 推進超過有效期
-        let r = s.tick(COMMISSION_DURATION_SECS + 1.0, 10, 1);
+        let r = s.tick(COMMISSION_DURATION_SECS + 1.0, 10);
         assert_eq!(r, Some(CommissionEvent::Expired));
         assert!(s.active.is_none());
     }
@@ -318,7 +309,7 @@ mod tests {
     #[test]
     fn on_sold_gives_bonus_for_matching_item() {
         let mut s = ready_state();
-        s.tick(1.0, 10, 1); // 觸發 Wood 委託
+        s.tick(1.0, 10); // 觸發 Wood 委託
         let result = s.on_sold(ItemKind::Wood, 3);
         assert_eq!(result.bonus, BONUS_PER_UNIT * 3, "應得到 3 份加成");
         assert!(!result.fulfilled, "3 份未達配額，委託應仍存在");
@@ -327,7 +318,7 @@ mod tests {
     #[test]
     fn on_sold_no_bonus_for_wrong_item() {
         let mut s = ready_state();
-        s.tick(1.0, 10, 1); // 觸發 Wood 委託
+        s.tick(1.0, 10); // 觸發 Wood 委託
         let result = s.on_sold(ItemKind::Stone, 5);
         assert_eq!(result.bonus, 0, "賣錯物品不應有加成");
         assert!(!result.fulfilled);
@@ -336,7 +327,7 @@ mod tests {
     #[test]
     fn on_sold_fulfills_when_quota_reached() {
         let mut s = ready_state();
-        s.tick(1.0, 10, 1); // 觸發 Wood 委託
+        s.tick(1.0, 10); // 觸發 Wood 委託
         let result = s.on_sold(ItemKind::Wood, COMMISSION_QUOTA);
         assert_eq!(result.bonus, BONUS_PER_UNIT * COMMISSION_QUOTA);
         assert!(result.fulfilled, "達配額時應回傳 fulfilled");
