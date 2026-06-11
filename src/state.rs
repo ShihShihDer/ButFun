@@ -145,6 +145,8 @@ pub struct Player {
     pub skin_tone: u8,
     /// 護目鏡鏡片色（ROADMAP 98 捏臉）：0~4，0 = 藍（預設）。進場時從 UserStore 載入。
     pub goggle_color: u8,
+    /// 服裝造型（ROADMAP 99 衣櫥）：0~5，0 = 探險家套裝（預設）。進場時從 UserStore 載入。
+    pub costume: u8,
     /// 玩家已解鎖的成就（ROADMAP 31）。記憶體前置，重啟清空。
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
@@ -480,6 +482,7 @@ impl Player {
             hair_style: self.hair_style,
             skin_tone: self.skin_tone,
             goggle_color: self.goggle_color,
+            costume: self.costume,
         }
     }
 
@@ -1025,6 +1028,7 @@ mod tests {
             hair_style: 0,
             skin_tone: 0,
             goggle_color: 0,
+            costume: 0,
             achievements: AchievementSet::new(),
             kill_count: 0,
             refine_attempt_count: 0,

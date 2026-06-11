@@ -1,7 +1,7 @@
-//! 外觀自訂端點（ROADMAP 98 捏臉系統）。
+//! 外觀自訂端點（ROADMAP 98 捏臉 / ROADMAP 99 衣櫥）。
 //!
-//! `PATCH /api/appearance`：已登入玩家更新帽型 / 膚色 / 護目鏡鏡片色。
-//! 三個選項各 0~4 共五選；伺服器截到合法值（min(v, 4)）後持久化到 users 表，
+//! `PATCH /api/appearance`：已登入玩家更新帽型 / 膚色 / 護目鏡鏡片色 / 服裝造型。
+//! 帽型/膚色/護目鏡各 0~4 五選，造型 0~5 六選；伺服器截到合法值後持久化，
 //! 並即時更新在線玩家的 Player 狀態，讓下一幀快照就帶新外觀——不必重連。
 
 use axum::extract::State;
@@ -18,12 +18,14 @@ pub fn appearance_router() -> Router<AppState> {
     Router::new().route("/api/appearance", patch(patch_appearance))
 }
 
-/// 外觀更新請求 body。
+/// 外觀更新請求 body。`costume` 選填，未帶時維持現有造型（向後相容舊前端）。
 #[derive(Deserialize)]
 struct AppearanceUpdate {
     hair_style: u8,
     skin_tone: u8,
     goggle_color: u8,
+    #[serde(default)]
+    costume: u8,
 }
 
 /// 成功回應：回傳更新後的值（前端可直接用這個更新 UI 而不必等下一幀快照）。
@@ -32,9 +34,10 @@ struct AppearanceResponse {
     hair_style: u8,
     skin_tone: u8,
     goggle_color: u8,
+    costume: u8,
 }
 
-/// `PATCH /api/appearance` — 更新自己的角色外觀。
+/// `PATCH /api/appearance` — 更新自己的角色外觀（捏臉 + 衣櫥）。
 ///
 /// - 未設 OAuth → 503。
 /// - 未登入 / session 無效 → 401。
@@ -53,7 +56,13 @@ async fn patch_appearance(
     };
     let Some(user) = app
         .users
-        .update_appearance(uid, update.hair_style, update.skin_tone, update.goggle_color)
+        .update_appearance(
+            uid,
+            update.hair_style,
+            update.skin_tone,
+            update.goggle_color,
+            update.costume,
+        )
         .await
     else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -65,6 +74,7 @@ async fn patch_appearance(
                 p.hair_style = user.hair_style;
                 p.skin_tone = user.skin_tone;
                 p.goggle_color = user.goggle_color;
+                p.costume = user.costume;
             }
         }
     }
@@ -72,6 +82,7 @@ async fn patch_appearance(
         hair_style: user.hair_style,
         skin_tone: user.skin_tone,
         goggle_color: user.goggle_color,
+        costume: user.costume,
     })
     .into_response()
 }

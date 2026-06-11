@@ -2485,22 +2485,39 @@
     "rgba(100,240,160,0.9)",  // 綠
     "rgba(200,140,255,0.9)",  // 紫
   ];
+  // 服裝造型六套（ROADMAP 99 衣櫥）。
+  // 每套 [胸甲色, 褲管色, 靴子色, 腰帶色, 鉚釘色] — 原創蒸汽龐克設計，非抄外部美術。
+  const COSTUMES = [
+    { body: null,      pants: "#3a2810", boots: "#3a2010", belt: "#b87333", rivet: "#b87333", name: "探險家套裝" }, // 0 預設（膚色身體）
+    { body: "#6b3d1e", pants: "#4a2e10", boots: "#2e1808", belt: "#c87820", rivet: "#c87820", name: "工匠皮甲" },   // 1 棕皮革
+    { body: "#2d5038", pants: "#1e3828", boots: "#162818", belt: "#7ab848", rivet: "#7ab848", name: "商人馬甲" },   // 2 墨綠
+    { body: "#5a1c2c", pants: "#3c1018", belt: "#d04848", rivet: "#d04848", boots: "#280c10", name: "旅人斗篷" },   // 3 深紅
+    { body: "#8b7040", pants: "#6a5830", boots: "#4a3818", belt: "#d0a840", rivet: "#d0a840", name: "農夫工作服" }, // 4 卡其
+    { body: "#505868", pants: "#383e4a", boots: "#202830", belt: "#a0b8d0", rivet: "#d0e8f8", name: "武士鎧甲" },   // 5 銀灰金屬
+  ];
 
   // 蒸汽龐克探險家程式繪製（ROADMAP 88 — 角色精緻化）。
   // cx/cy = 角色螢幕座標（已含踏步彈跳的 by）。
   // dir: 0下/1左/2右/3上；walk: p.walk 弧度；moving: 是否走路中；isMe: 本機玩家；sty: 種族外觀。
   // 弱機或 artOk("player") 已成立時不進此路徑（sprite 優先）；
   // 全路徑都失敗時退回 drawPlayer 的簡圖圓圈。
-  function drawSteampunkHero(cx, cy, dir, walk, moving, isMe, sty, hairStyle, skinTone, goggleColor) {
+  function drawSteampunkHero(cx, cy, dir, walk, moving, isMe, sty, hairStyle, skinTone, goggleColor, costume) {
     const COPPER = "#b87333";
     const DARK   = "#2a1c10";
     // 捏臉：skinTone 決定膚色，未設則用種族預設色。
-    const bodyCol = SKIN_TONES[skinTone ?? 0] || sty.body;
+    const skinCol = SKIN_TONES[skinTone ?? 0] || sty.body;
+    // 服裝造型：覆蓋胸甲色；body=null 時退回膚色（探險家套裝風格）。
+    const cs = COSTUMES[costume ?? 0] || COSTUMES[0];
+    const bodyCol = cs.body || skinCol;
+    const pantsCol = cs.pants;
+    const bootsCol = cs.boots;
+    const beltCol  = cs.belt;
+    const rivetCol = cs.rivet;
     // 走路時左右腳前後交替（平滑 sin 波，幅度 ±3px）。
     const swing = (moving && !reduceMotion) ? Math.sin(walk * 2) * 3 : 0;
 
     // ── 靴子 ──
-    ctx.fillStyle = "#3a2010";
+    ctx.fillStyle = bootsCol;
     if (dir === 0 || dir === 3) {           // 正面 / 背面
       ctx.beginPath(); ctx.ellipse(cx - 5, cy + 13 - swing * 0.4, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
       ctx.beginPath(); ctx.ellipse(cx + 5, cy + 13 + swing * 0.4, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
@@ -2513,7 +2530,7 @@
     }
 
     // ── 褲管 ──
-    ctx.fillStyle = "#3a2810";
+    ctx.fillStyle = pantsCol;
     if (dir === 0 || dir === 3) {
       ctx.fillRect(cx - 7, cy + 5, 5, 9);
       ctx.fillRect(cx + 2, cy + 5, 5, 9);
@@ -2542,8 +2559,8 @@
     // 胸甲中板（立體感）
     ctx.fillStyle = "rgba(0,0,0,0.25)";
     ctx.fillRect(cx - 3, cy - 1, 6, 8);
-    // 銅色鉚釘
-    ctx.fillStyle = COPPER;
+    // 鉚釘（造型顏色）
+    ctx.fillStyle = rivetCol;
     for (const [dx, dy] of [[-6, 0], [-6, 4.5], [5, 0], [5, 4.5]]) {
       if (dir !== 0 && dir !== 3 && dx === 5) continue; // 側面右鉚釘不可見
       ctx.beginPath(); ctx.arc(cx + dx, cy + dy, 1.3, 0, Math.PI * 2); ctx.fill();
@@ -2553,11 +2570,11 @@
     if (dir === 0 || dir === 3) {
       ctx.save();
       ctx.translate(cx + 6, cy + 5.5);
-      ctx.fillStyle = COPPER;
+      ctx.fillStyle = beltCol;
       ctx.beginPath(); ctx.arc(0, 0, 3.2, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#7a4c18";
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
       ctx.beginPath(); ctx.arc(0, 0, 1.6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = COPPER;
+      ctx.fillStyle = beltCol;
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
         ctx.beginPath(); ctx.arc(Math.cos(a) * 4, Math.sin(a) * 4, 1.2, 0, Math.PI * 2); ctx.fill();
@@ -2565,8 +2582,8 @@
       ctx.restore();
     }
 
-    // ── 頭部 ──
-    ctx.fillStyle = bodyCol;
+    // ── 頭部（用膚色，造型不影響頭部皮膚）──
+    ctx.fillStyle = skinCol;
     ctx.strokeStyle = "rgba(0,0,0,0.3)";
     ctx.lineWidth = 1.2;
     ctx.beginPath(); ctx.arc(cx, cy - 10, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -2693,7 +2710,7 @@
       // 程式繪製路徑（ROADMAP 88）：蒸汽龐克分件角色。
       // artReady 前或圖片載入失敗時，退回最底層的簡圖圓圈。
       if (artReady) {
-        drawSteampunkHero(sx, by, dir, p.walk, p.moving, isMe, sty, p.hair_style, p.skin_tone, p.goggle_color);
+        drawSteampunkHero(sx, by, dir, p.walk, p.moving, isMe, sty, p.hair_style, p.skin_tone, p.goggle_color, p.costume);
       } else {
         // 弱機 / 圖片未就緒退回簡圖（現有簡圖保留作保底）。
         ctx.beginPath();
@@ -10073,17 +10090,22 @@
     const old = document.getElementById("appearanceModal");
     if (old) old.remove();
 
-  const HAT_LABELS  = ["頂帽","平頂帽","牛仔帽","露髮","船長帽"];
-  const SKIN_LABELS = ["古銅金","金麥色","焦糖棕","皮革棕","黑檀"];
-  const GOG_LABELS  = ["藍","紅","金","綠","紫"];
-  const SKIN_HEX    = ["#c9a24b","#f0d090","#d4906a","#8b5e3c","#5c3620"];
-  const GOG_HEX     = ["#8cf","#f88","#fc0","#4e8","#c8f"];
+  const HAT_LABELS     = ["頂帽","平頂帽","牛仔帽","露髮","船長帽"];
+  const SKIN_LABELS    = ["古銅金","金麥色","焦糖棕","皮革棕","黑檀"];
+  const GOG_LABELS     = ["藍","紅","金","綠","紫"];
+  const SKIN_HEX       = ["#c9a24b","#f0d090","#d4906a","#8b5e3c","#5c3620"];
+  const GOG_HEX        = ["#8cf","#f88","#fc0","#4e8","#c8f"];
+  // 衣櫥造型名稱（對應後端 COSTUMES 陣列，ROADMAP 99）
+  const COSTUME_LABELS = ["探險家套裝","工匠皮甲","商人馬甲","旅人斗篷","農夫工作服","武士鎧甲"];
+  // 每套造型的代表色（胸甲色；0 號用膚色代表色）
+  const COSTUME_HEX    = ["#c9a24b","#6b3d1e","#2d5038","#5a1c2c","#8b7040","#505868"];
 
   // 讀目前自己的外觀值（從 players map）。
   const myPlayer = players.get(myId) || {};
-  let selHat  = myPlayer.hair_style  ?? 0;
-  let selSkin = myPlayer.skin_tone   ?? 0;
-  let selGog  = myPlayer.goggle_color ?? 0;
+  let selHat     = myPlayer.hair_style   ?? 0;
+  let selSkin    = myPlayer.skin_tone    ?? 0;
+  let selGog     = myPlayer.goggle_color ?? 0;
+  let selCostume = myPlayer.costume      ?? 0;
 
   const modal = document.createElement("div");
   modal.id = "appearanceModal";
@@ -10091,10 +10113,11 @@
     position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
     background:rgba(14,20,52,0.97);border:1px solid rgba(201,162,75,0.5);
     border-radius:12px;padding:20px 24px;z-index:9999;color:#e0e8ff;
-    font-family:system-ui,sans-serif;font-size:14px;min-width:280px;
+    font-family:system-ui,sans-serif;font-size:14px;min-width:320px;max-width:92vw;
     box-shadow:0 4px 32px rgba(0,0,0,0.7);`;
   modal.innerHTML = `
-    <div style="font-size:1.1em;font-weight:bold;margin-bottom:14px;color:#c9a24b">🎨 捏臉外觀</div>
+    <div style="font-size:1.1em;font-weight:bold;margin-bottom:14px;color:#c9a24b">🎨 外觀 &amp; 衣櫥</div>
+    <div style="color:#7a9fc0;font-size:0.78em;margin-bottom:10px;letter-spacing:0.05em">── 捏臉 ──</div>
     <div style="margin-bottom:10px">
       <div style="color:#a0b0d0;margin-bottom:6px">帽型</div>
       <div id="ap-hat" style="display:flex;gap:6px;flex-wrap:wrap">${HAT_LABELS.map((l,i) => `
@@ -10111,12 +10134,24 @@
           background:${c};cursor:pointer"></button>`).join("")}
       </div>
     </div>
-    <div style="margin-bottom:16px">
+    <div style="margin-bottom:14px">
       <div style="color:#a0b0d0;margin-bottom:6px">護目鏡鏡片</div>
       <div id="ap-gog" style="display:flex;gap:6px;flex-wrap:wrap">${GOG_HEX.map((c,i) => `
         <button data-idx="${i}" title="${GOG_LABELS[i]}" style="width:30px;height:30px;border-radius:6px;
           border:${i===selGog?"3px solid #c9a24b":"2px solid rgba(255,255,255,0.2)"};
           background:${c};cursor:pointer"></button>`).join("")}
+      </div>
+    </div>
+    <div style="color:#7a9fc0;font-size:0.78em;margin-bottom:10px;letter-spacing:0.05em">── 衣櫥（服裝造型）──</div>
+    <div style="margin-bottom:16px">
+      <div id="ap-costume" style="display:flex;gap:6px;flex-wrap:wrap">${COSTUME_LABELS.map((l,i) => `
+        <button data-idx="${i}" title="${l}" style="display:flex;align-items:center;gap:5px;
+          padding:5px 10px;border-radius:8px;border:1px solid rgba(201,162,75,0.4);
+          background:${i===selCostume?"rgba(201,162,75,0.2)":"rgba(255,255,255,0.05)"};
+          color:#e0e8ff;cursor:pointer;font-size:0.82em">
+          <span style="display:inline-block;width:14px;height:14px;border-radius:3px;
+            background:${COSTUME_HEX[i]};border:1px solid rgba(255,255,255,0.2);flex-shrink:0"></span>
+          ${l}</button>`).join("")}
       </div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -10137,6 +10172,14 @@
       }
     });
   }
+  // 衣櫥選中高亮（帶色塊的按鈕，背景略亮）。
+  function highlightCostume(selIdx) {
+    modal.querySelector("#ap-costume").querySelectorAll("button").forEach(b => {
+      const i = +b.dataset.idx;
+      b.style.background = i === selIdx ? "rgba(201,162,75,0.2)" : "rgba(255,255,255,0.05)";
+      b.style.border = i === selIdx ? "1px solid rgba(201,162,75,0.8)" : "1px solid rgba(201,162,75,0.4)";
+    });
+  }
 
   modal.querySelector("#ap-hat").addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
@@ -10150,6 +10193,10 @@
     const b = e.target.closest("button"); if (!b) return;
     selGog = +b.dataset.idx; highlightGroup("ap-gog", selGog, true);
   });
+  modal.querySelector("#ap-costume").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    selCostume = +b.dataset.idx; highlightCostume(selCostume);
+  });
 
   modal.querySelector("#ap-cancel").addEventListener("click", () => modal.remove());
 
@@ -10159,13 +10206,16 @@
         method: "PATCH",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hair_style: selHat, skin_tone: selSkin, goggle_color: selGog }),
+        body: JSON.stringify({ hair_style: selHat, skin_tone: selSkin, goggle_color: selGog, costume: selCostume }),
       });
       if (res.ok) {
         // 樂觀更新本機 players map，下一幀快照也會覆蓋。
         const p = players.get(myId);
-        if (p) { p.hair_style = selHat; p.skin_tone = selSkin; p.goggle_color = selGog; }
-        addChat("系統", "外觀已更新，世界上其他玩家也能看到你的新造型！");
+        if (p) {
+          p.hair_style = selHat; p.skin_tone = selSkin; p.goggle_color = selGog;
+          p.costume = selCostume;
+        }
+        addChat("系統", `外觀已更新！造型「${COSTUME_LABELS[selCostume]}」套用中，世界上其他玩家也能看到你的新造型！`);
         modal.remove();
       } else {
         addChat("系統", "外觀更新失敗，請稍後再試。");

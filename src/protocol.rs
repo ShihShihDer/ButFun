@@ -764,6 +764,9 @@ pub struct PlayerView {
     /// 護目鏡鏡片色：0~4，0 = 藍（預設）。0 時省略。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub goggle_color: u8,
+    /// 服裝造型（ROADMAP 99 衣櫥）：0~5，0 = 探險家套裝（預設）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub costume: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1084,6 +1087,7 @@ mod tests {
                 hair_style: 0,
                 skin_tone: 0,
                 goggle_color: 0,
+                costume: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1252,6 +1256,7 @@ mod tests {
             hair_style: 0,
             skin_tone: 0,
             goggle_color: 0,
+            costume: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1442,6 +1447,7 @@ mod tests {
             hair_style: 0,
             skin_tone: 0,
             goggle_color: 0,
+            costume: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1477,6 +1483,7 @@ mod tests {
             hair_style: 0,
             skin_tone: 0,
             goggle_color: 0,
+            costume: 0,
         }
     }
 
@@ -1501,5 +1508,18 @@ mod tests {
         assert_eq!(v2["hair_style"], 2);
         assert_eq!(v2["skin_tone"], 3);
         assert_eq!(v2["goggle_color"], 4);
+    }
+
+    #[test]
+    fn costume_zero_omitted_nonzero_present() {
+        // costume=0（預設探險家套裝）時省略節省流量，非零才出現（ROADMAP 99 衣櫥）。
+        let mut pv = make_base_player_view();
+        pv.costume = 0;
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert!(v.get("costume").is_none(), "costume=0 時不應出現在 JSON");
+
+        pv.costume = 3;
+        let v2: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert_eq!(v2["costume"], 3, "costume=3 應出現在 JSON");
     }
 }
