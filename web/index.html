@@ -661,6 +661,22 @@
         </div>
       </div>
     </div>
+    <!-- 城外旅人面板（ROADMAP 74）：旅人到訪時靠近才顯示。 -->
+    <div id="winTraveler" class="hud-window hidden" role="dialog" aria-labelledby="travelerTitle">
+      <div class="win-head">
+        <span class="win-title" id="travelerTitle">🧳 旅人</span>
+        <button type="button" class="win-close" data-close="winTraveler" aria-label="關閉旅人面板">✕</button>
+      </div>
+      <div id="travelerOrigin" style="font-size:0.85em;opacity:0.75;margin-bottom:8px">走近的旅人正在廣場歇息，可以跟他說說話。</div>
+      <div style="margin-top:4px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
+        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟旅人聊聊（他不久就要繼續上路了）</div>
+        <div id="npcChatLog_traveler" style="max-height:110px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
+        <div style="display:flex;gap:6px">
+          <input id="npcChatInput_traveler" type="text" maxlength="200" placeholder="跟旅人說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
+          <button type="button" id="npcChatSend_traveler" class="hud-pill" style="cursor:pointer;border:1px solid #d4a820">送出</button>
+        </div>
+      </div>
+    </div>
     <!-- 工匠工坊面板（ROADMAP 52）：工匠熟練度第七路線；K 鍵開關。 -->
     <div id="winWorkshop" class="hud-window hidden" role="dialog" aria-labelledby="workshopTitle">
       <div class="win-head">

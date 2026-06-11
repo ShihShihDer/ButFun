@@ -679,6 +679,9 @@ pub struct PlayerView {
     /// 玩家是否靠近里長 NPC（ROADMAP 64）（false 時省略節省流量）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_village_chief: bool,
+    /// 玩家是否靠近目前在場的旅人 NPC（ROADMAP 74）（false 時省略節省流量）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_traveler: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -985,6 +988,7 @@ mod tests {
                 farm_fair_cooldown: 0.0,
                 near_fair_judge: false,
                 near_village_chief: false,
+                near_traveler: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1147,6 +1151,7 @@ mod tests {
             farm_fair_cooldown: 0.0,
             near_fair_judge: false,
             near_village_chief: false,
+            near_traveler: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");

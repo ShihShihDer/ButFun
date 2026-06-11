@@ -400,6 +400,42 @@ pub async fn update_impression(npc: &NpcPersona, prev: &str, player_msg: &str, r
     }
 }
 
+/// 旅人罐頭回話（LLM 關閉或連不到時降級用）。
+/// 以名字雜湊選取不同句子，增加多樣性。
+pub fn traveler_canned_reply(name: &str) -> String {
+    let replies = [
+        "旅途中見過很多地方，但每座城都有自己的味道。這裡讓人感覺很有活力！",
+        "走了好長的路才到這裡，先歇歇腳。有什麼有趣的故事嗎？",
+        "星際旅行最有意思的，就是每個地方的人都不一樣。你是這裡的老拓荒者嗎？",
+        "我不久就得繼續上路了。旅途的故事說也說不完！",
+        "這片天地真奇妙，每走一步都有新發現。你來這裡多久了？",
+    ];
+    let idx = name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % replies.len();
+    replies[idx].to_string()
+}
+
+/// 組旅人 system prompt（動態身份，不走 NpcPersona 常數）。
+fn traveler_system_prompt(name: &str, origin: &str, talk_count: u32) -> String {
+    format!(
+        "你是一位名叫「{name}」的旅行者，{origin}。你剛走進一座多星球文明的主城廣場稍作歇息，正在和當地拓荒者閒聊。\n\
+        【你和這位拓荒者的往來】這次路過期間聊過大約 {talk_count} 次。\n\n\
+        重要：你只是路過的旅行者，不久後就要繼續上路；回話簡短（不超過 40 字）、親切自然，聊聊旅途見聞或好奇地問問拓荒者的冒險；繁體中文。",
+    )
+}
+
+/// 生成旅人對玩家這句話的回應。
+/// 降級鏈：Groq → ollama → 罐頭句（無 LLM 時秒回罐頭）。
+pub async fn reply_traveler(name: &str, origin: &str, talk_count: u32, player_msg: &str) -> String {
+    if !llm_enabled() {
+        return traveler_canned_reply(name);
+    }
+    let sys = traveler_system_prompt(name, origin, talk_count);
+    match llm_chat(&sys, player_msg).await {
+        Some(t) => t,
+        None => traveler_canned_reply(name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +659,25 @@ mod tests {
             let s = system_prompt(n, &rel, false, 0, "", "", "", "", "", "");
             assert!(!s.contains(DISCOUNT_TOKEN), "非商人 NPC {} 不應有折扣暗號：{s}", n.id);
         }
+    }
+
+    // ── 城外旅人（ROADMAP 74）─────────────────────────────────────────────────
+
+    #[test]
+    fn traveler_canned_reply_is_non_empty_for_all_profiles() {
+        for (name, _) in crate::traveler_npc::TRAVELER_PROFILES {
+            let r = traveler_canned_reply(name);
+            assert!(!r.is_empty(), "旅人 {} 罐頭句不能為空", name);
+            assert!(!r.contains(GIFT_TOKEN), "旅人罐頭句不應含送禮暗號");
+        }
+    }
+
+    #[test]
+    fn traveler_system_prompt_contains_name_and_origin() {
+        let s = traveler_system_prompt("歐爾", "星際旅行商人", 3);
+        assert!(s.contains("歐爾"), "prompt 應含旅人名字");
+        assert!(s.contains("星際旅行商人"), "prompt 應含身份描述");
+        assert!(s.contains('3'), "prompt 應含對話次數");
     }
 
     // ── 世界近況注入（ROADMAP 65）──────────────────────────────────────────────

@@ -685,6 +685,7 @@
           updateProcurementPanel(me, isGuest); // 星際採購面板（ROADMAP 55）
           updateFarmFairPanel(me, isGuest);  // 農展評審面板（ROADMAP 56）
           updateVillageChiefPanel(me, isGuest); // 里長面板（ROADMAP 64）
+          updateTravelerPanel(me); // 城外旅人面板（ROADMAP 74）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -4488,6 +4489,8 @@
         drawFairLook(sx, by, t, npc.name);
       } else if (npc.id === "village_chief" && myPlanet === "home") {
         drawChiefLook(sx, by, t, npc.name);
+      } else if (npc.id === "traveler") {
+        drawTravelerLook(sx, by, t, npc.name);
       } else {
         // 未知 NPC：退回通用外觀
         ctx.fillStyle = "#777";
@@ -4605,6 +4608,38 @@
     ctx.fillStyle = "#f0c030"; ctx.beginPath(); ctx.arc(sx+14, by-13, 4, 0, Math.PI*2); ctx.fill();
     const glowAlpha = 0.15 + 0.1 * Math.sin(t * 2.5); ctx.fillStyle = `rgba(240,192,48,${glowAlpha})`; ctx.beginPath(); ctx.arc(sx+14, by-13, 8, 0, Math.PI*2); ctx.fill();
     ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
+  }
+
+  // 城外旅人（ROADMAP 74）：行腳探險家外觀——深棕風衣、斗笠、行囊、旅途風塵感。
+  function drawTravelerLook(sx, by, t, name) {
+    // 行囊（右後背）
+    ctx.fillStyle = "#6b4c2a";
+    ctx.beginPath(); ctx.ellipse(sx + 10, by + 5, 6, 8, 0.3, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#4a3118"; ctx.lineWidth = 1; ctx.stroke();
+    // 身體（深棕風衣）
+    ctx.fillStyle = "#5c3d1e";
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 10, 14, 0, 0, Math.PI * 2); ctx.fill();
+    // 風衣翻領（旅途感）
+    ctx.strokeStyle = "#7a5530"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(sx - 4, by + 1); ctx.lineTo(sx, by + 5); ctx.lineTo(sx + 4, by + 1); ctx.stroke();
+    // 頭（橙棕膚色）
+    ctx.fillStyle = "#c8905a";
+    ctx.beginPath(); ctx.arc(sx, by - 8, 8, 0, Math.PI * 2); ctx.fill();
+    // 旅人斗笠（大圓邊帽）
+    ctx.fillStyle = "#8b6914";
+    ctx.beginPath(); ctx.ellipse(sx, by - 13, 13, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#6b4c0a";
+    ctx.beginPath(); ctx.ellipse(sx, by - 15, 7, 5, 0, 0, Math.PI * 2); ctx.fill();
+    // 手杖（登山杖感）
+    ctx.strokeStyle = "#7a5530"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(sx - 12, by - 5); ctx.lineTo(sx - 10, by + 22); ctx.stroke();
+    // 旅途塵埃光暈（淡黃溫暖感）
+    const glowA = 0.1 + 0.08 * Math.sin(t * 1.8 + sx * 0.02);
+    ctx.fillStyle = `rgba(200,160,60,${glowA})`;
+    ctx.beginPath(); ctx.arc(sx, by, 18, 0, Math.PI * 2); ctx.fill();
+    // 名字（旅人顯示帶 🧳）
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center";
+    ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
   }
 
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
@@ -7162,6 +7197,36 @@
     }
   }
 
+  // 城外旅人面板（ROADMAP 74）：靠近旅人時顯示身份 + 聊天欄。
+  let lastTravelerSig = null;
+  // 當前旅人名字（從 npcs 陣列取得，用來更新面板標題）。
+  let currentTravelerName = "";
+  function updateTravelerPanel(me) {
+    const win = document.getElementById("winTraveler");
+    if (!win) return;
+    if (!me || !me.near_traveler) {
+      win.classList.add("hidden");
+      lastTravelerSig = null;
+      return;
+    }
+    win.classList.remove("hidden");
+    // 從 npcs 陣列取旅人名字（快照驅動）。
+    const travNpc = npcs.find((n) => n.id === "traveler");
+    const travName = travNpc ? travNpc.name : "🧳 旅人";
+    const sig = travName;
+    if (sig === lastTravelerSig) return;
+    lastTravelerSig = sig;
+    // 更新旅人面板標題。
+    const titleEl = document.getElementById("travelerTitle");
+    if (titleEl) titleEl.textContent = travName;
+    const originEl = document.getElementById("travelerOrigin");
+    if (originEl && travNpc) {
+      // 名字後的括號內容是 origin（後端 name = "🧳 科拿"，origin 不在 NpcView 裡）
+      // 所以這裡顯示提示文字即可。
+      originEl.textContent = "走近的旅人正在廣場歇息，可以跟他說說話。";
+    }
+  }
+
   // 市場面板：附近掛單 + 自己的掛單管理 + 張貼新掛單。
   // listings = AOI 剔除後的快照；inv = 背包快照；ether = 我的乙太；uid = 我的 id。
   let lastMarketSig = null; // 快照簽章，內容未變就不重建面板（保住焦點、省 DOM 操作）。
@@ -8041,6 +8106,7 @@
     procurement_npc: "採購代理人吉爾",
     farm_fair_npc: "評審老農",
     village_chief: "凱爾長老",
+    traveler: "旅人",
   };
   // 依 npcId 找對應的 DOM element ID（merchant 保持舊 ID 向後相容）
   function npcElemId(npcId, kind) {
@@ -8074,7 +8140,7 @@
     npcChatThinking(npcId, true);
   }
   // 為所有 NPC（含里長）綁定按鈕與 Enter 鍵
-  for (const npcId of ["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief"]) {
+  for (const npcId of ["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "procurement_npc", "farm_fair_npc", "village_chief", "traveler"]) {
     const sendBtn = document.getElementById(npcElemId(npcId, "send"));
     const input = document.getElementById(npcElemId(npcId, "input"));
     if (sendBtn) sendBtn.addEventListener("click", () => sendNpcChat(npcId));

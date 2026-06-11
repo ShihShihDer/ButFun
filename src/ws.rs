@@ -2335,6 +2335,63 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::TalkToNpc { npc, text }) => {
                     let text: String = text.chars().take(300).collect(); // 輸入上限
                     if !text.trim().is_empty() {
+                        // —— 城外旅人分支（ROADMAP 74）—— 旅人不走 NpcPersona 路線。
+                        if npc == "traveler" {
+                            let (is_near, traveler_name, traveler_origin, talk_count) = {
+                                let players = app.players.read().unwrap();
+                                let tv = app.traveler.read().unwrap();
+                                let near = players.get(&id).map(|p| {
+                                    if !tv.is_visible() { return false; }
+                                    let dx = p.x - tv.x;
+                                    let dy = p.y - tv.y;
+                                    dx * dx + dy * dy <= crate::traveler_npc::TRAVELER_REACH * crate::traveler_npc::TRAVELER_REACH
+                                }).unwrap_or(false);
+                                let name = tv.name();
+                                let origin = tv.origin();
+                                let tc = tv.talk_count_for(id);
+                                (near, name, origin, tc)
+                            };
+                            if !is_near {
+                                continue;
+                            }
+                            // 冷卻：8 秒（同其他 NPC）。
+                            let chat_key = (id, "traveler".to_string());
+                            {
+                                let mut last = app.npc_last_chat.write().unwrap();
+                                let now = std::time::Instant::now();
+                                if let Some(t) = last.get(&chat_key) {
+                                    if t.elapsed().as_secs() < crate::npc_chat::PER_PLAYER_NPC_COOLDOWN_SECS {
+                                        continue;
+                                    }
+                                }
+                                last.insert(chat_key, now);
+                            }
+                            // 記錄對話次數。
+                            app.traveler.write().unwrap().record_talk(id);
+                            let player_text = text.clone();
+                            let tx = tx_direct.clone();
+                            let sem = app.npc_llm_sem.clone();
+                            let name_s = traveler_name.to_string();
+                            let origin_s = traveler_origin.to_string();
+                            tokio::spawn(async move {
+                                let _permit = tokio::time::timeout(
+                                    std::time::Duration::from_secs(2),
+                                    sem.acquire_owned(),
+                                ).await.ok().and_then(|r| r.ok());
+                                let reply = crate::npc_chat::reply_traveler(
+                                    &name_s, &origin_s, talk_count, &player_text
+                                ).await;
+                                if let Ok(json) = serde_json::to_string(&crate::protocol::ServerMsg::NpcReply {
+                                    npc: "traveler".to_string(),
+                                    display: format!("🧳 {name_s}"),
+                                    text: reply,
+                                }) {
+                                    let _ = tx.send(json).await;
+                                }
+                            });
+                            continue;
+                        }
+
                         // 驗證距離（ROADMAP 73）：必須靠近 NPC 才能交談。
                         let is_near = {
                             let players = app.players.read().unwrap();
