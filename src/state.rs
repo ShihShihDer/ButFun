@@ -775,6 +775,10 @@ pub struct AppState {
     pub night_watch: Arc<RwLock<crate::npc_night_watch::NightWatchState>>,
     /// 入夜守衛令專屬 Semaphore（容量 1）：同時最多一個 AI 守衛令呼叫，不佔用 NPC LLM 配額。
     pub night_watch_sem: Arc<Semaphore>,
+    /// 白日工位對話狀態（ROADMAP 81）：白天 NPC 在各自崗位輪流閒聊，純記憶體模式，重啟清零。
+    pub daytime_talk: Arc<RwLock<crate::daytime_talk::DaytimeTalkState>>,
+    /// 白日工位對話專屬 Semaphore（容量 1）：同時最多一個 AI 對話呼叫，不佔用 NPC LLM 配額。
+    pub daytime_talk_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -895,6 +899,8 @@ impl AppState {
             noon_bell_sem: Arc::new(Semaphore::new(crate::npc_noon_bell::MAX_CONCURRENT_CALLS)),
             night_watch: Arc::new(RwLock::new(crate::npc_night_watch::NightWatchState::new())),
             night_watch_sem: Arc::new(Semaphore::new(crate::npc_night_watch::MAX_CONCURRENT_CALLS)),
+            daytime_talk: Arc::new(RwLock::new(crate::daytime_talk::DaytimeTalkState::new())),
+            daytime_talk_sem: Arc::new(Semaphore::new(crate::daytime_talk::MAX_CONCURRENT_TALKS)),
         }
     }
 
