@@ -114,7 +114,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             masteries: crate::class::Masteries::new(),
             // 重連還原：工會成員資料 keyed by uid 存在 GuildStore，登入玩家重連時從中還原
             // 工會標籤——否則一刷新就「看起來不在工會」（guild_tag 被建成 None，已知 bug）。
-            guild_tag: app.guilds.read().unwrap().tag_of(user.id),
+            guild_tag: app.guilds.tag_of(user.id),
             party_id: None,
             hair_style: user.hair_style,
             skin_tone: user.skin_tone,
@@ -3299,12 +3299,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if ether < crate::guild::GUILD_CREATE_COST {
                                 Err(format!("乙太不足（建立公會需要 {} 乙太）", crate::guild::GUILD_CREATE_COST))
                             } else {
-                                app.guilds.write().unwrap().create(uid, name, tag)
+                                app.guilds.create(uid, name, tag)
                             }
                         };
                         match result {
                             Ok(gid) => {
-                                let guild_tag = app.guilds.read().unwrap().tag_of(uid);
+                                let guild_tag = app.guilds.tag_of(uid);
                                 // 扣乙太，更新 guild_tag；成就：建立公會=加入公會（ROADMAP 31）。
                                 let (is_new_ach, pname) = {
                                     let mut players = app.players.write().unwrap();
@@ -3345,10 +3345,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::JoinGuild { guild_id }) => {
                     // 加入公會：需登入；公會不存在 / 已滿 / 已有公會時回錯誤訊息。
                     if let Some(uid) = authed_uid {
-                        let result = app.guilds.write().unwrap().join(guild_id, uid);
+                        let result = app.guilds.join(guild_id, uid);
                         match result {
                             Ok(()) => {
-                                let guild_tag = app.guilds.read().unwrap().tag_of(uid);
+                                let guild_tag = app.guilds.tag_of(uid);
                                 // 成就：加入公會（ROADMAP 31）。
                                 let (is_new_ach, pname) = {
                                     let mut players = app.players.write().unwrap();
@@ -3385,7 +3385,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::LeaveGuild) => {
                     // 離開公會：需登入；若是最後成員公會自動解散。
                     if let Some(uid) = authed_uid {
-                        let result = app.guilds.write().unwrap().leave(uid);
+                        let result = app.guilds.leave(uid);
                         if result.is_ok() {
                             if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                                 p.guild_tag = None;
@@ -3412,13 +3412,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = tx_direct.try_send(json);
                             }
                         } else {
-                            let result = app.guilds.write().unwrap().donate(uid, amount);
+                            let result = app.guilds.donate(uid, amount);
                             match result {
                                 Ok(_new_treasury) => {
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                                         p.ether = p.ether.saturating_sub(amount);
                                     }
-                                    let gid = app.guilds.read().unwrap().guild_of(uid);
+                                    let gid = app.guilds.guild_of(uid);
                                     let view = gid.and_then(|gid| build_guild_view(&app, uid, gid));
                                     let msg = ServerMsg::GuildUpdate { guild: view };
                                     if let Ok(json) = serde_json::to_string(&msg) {
@@ -3437,8 +3437,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 Ok(ClientMsg::RequestGuildList) => {
                     // 傳回全部公會簡介給請求者。
-                    let store = app.guilds.read().unwrap();
-                    let briefs: Vec<crate::protocol::GuildBrief> = store.brief_list()
+                    let briefs: Vec<crate::protocol::GuildBrief> = app.guilds.brief_list()
                         .into_iter()
                         .map(|b| crate::protocol::GuildBrief {
                             id: b.id,
@@ -3448,7 +3447,6 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             treasury: b.treasury,
                         })
                         .collect();
-                    drop(store);
                     let msg = ServerMsg::GuildList { guilds: briefs };
                     if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = tx_direct.try_send(json);
@@ -3924,8 +3922,7 @@ fn build_friend_list_msg(app: &AppState, user_id: Uuid) -> ServerMsg {
 
 /// 依 guild_id 與 player_id 建立 GuildView（ROADMAP 29）。
 fn build_guild_view(app: &AppState, player_id: Uuid, guild_id: Uuid) -> Option<crate::protocol::GuildView> {
-    let store = app.guilds.read().unwrap();
-    let g = store.get(guild_id)?;
+    let g = app.guilds.get(guild_id)?;
     Some(crate::protocol::GuildView {
         id: g.id,
         name: g.name.clone(),

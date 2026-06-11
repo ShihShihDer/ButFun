@@ -776,9 +776,9 @@ pub struct AppState {
     /// 全服社群探索任務（ROADMAP 27）。遊戲迴圈每 tick 推進計時，
     /// kill/gather/travel 事件推進進度；完成時全員分潤乙太並廣播公告。
     pub quests: Arc<RwLock<QuestState>>,
-    /// 公會管理器（ROADMAP 29）：記憶體前置，重啟清空。
+    /// 公會管理器（ROADMAP 29 + 113）：Postgres 模式下跨重啟保留；記憶體模式重啟清空。
     /// 玩家建立 / 加入 / 離開 / 捐贈公會由 ws.rs 操作此 store。
-    pub guilds: Arc<RwLock<GuildStore>>,
+    pub guilds: GuildStore,
     /// 每位玩家的每日任務狀態（ROADMAP 32）：記憶體前置，重啟從當天重新生成。
     /// key = 玩家 Uuid（已登入玩家才有每日任務）。
     pub daily_quests: Arc<RwLock<HashMap<Uuid, PlayerDailyState>>>,
@@ -933,6 +933,7 @@ impl AppState {
             LandPlotStore::new(),
             NpcMemoryStore::new(),
             FriendStore::new(),
+            GuildStore::new(),
             crate::sprinkler::SprinklerPersist::new(),
             vec![],
         )
@@ -953,6 +954,7 @@ impl AppState {
         land_plot_store: LandPlotStore,
         npc_memory_store: NpcMemoryStore,
         friends: FriendStore,
+        guilds: GuildStore,
         sprinkler_persist: crate::sprinkler::SprinklerPersist,
         sprinkler_preload: Vec<(uuid::Uuid, crate::sprinkler::SprinklerData)>,
     ) -> Self {
@@ -991,7 +993,7 @@ impl AppState {
             tile_store,
             world_event: Arc::new(RwLock::new(WorldEvent::new())),
             quests: Arc::new(RwLock::new(QuestState::new())),
-            guilds: Arc::new(RwLock::new(GuildStore::new())),
+            guilds,
             daily_quests: Arc::new(RwLock::new(HashMap::new())),
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,

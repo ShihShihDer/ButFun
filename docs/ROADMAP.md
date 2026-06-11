@@ -914,11 +914,11 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 與「下雨澆田(109)」共用同一套 `Field::water(col, row)` 介面；純邏輯可測、持久化走 Postgres migration 0021_sprinklers.sql（向後相容）。
     - 前端：背包顯示「💧放置」按鈕，進入放置模式後點地圖送 `place_sprinkler`；灑水器在農地上以 💧 圖示呈現。
 
-113. **工會持久化——工會跨伺服器重啟也不消失（玩家實機 bug：建了工會、伺服器一重啟就沒了）**
-    - 現況:`GuildStore` 純記憶體、無 migration。重連已修(fix/guild-reconnect-restore 從記憶體還原 guild_tag),但**伺服器重啟(部署/watchdog 很頻繁)整個工會就沒**。
-    - 做法:加 `guilds` + `guild_members` 表(參考 0018_friends 的持久化模式),啟動載回 GuildStore、create/join/leave/donate 時 flush。
-    - **資料安全(今天才出過 migration 包)**:用**沒撞過的下一個 migration 編號**、向後相容、reviewer 複核編號;不破壞既有玩家資料。
-    - 玩家感知:建的工會、加入的工會、金庫,重連與重啟後都還在。
+113. ✅ **工會持久化——工會跨伺服器重啟也不消失（玩家實機 bug：建了工會、伺服器一重啟就沒了）**（PR #226）
+    - 加 `guilds` + `guild_members` 兩張表（migration 0022），以 FriendStore 相同模式持久化。
+    - `GuildStore` 重構為 `Arc<Mutex<GuildInner>>` + `Backend`（Clone 安全，取消 `Arc<RwLock<>>` 外包裝）。
+    - 啟動時從 DB 載回全部公會；`create/join/leave/donate` 時 fire-and-forget 落地；記憶體模式不變（測試/無 DB）。
+    - 玩家感知：建的工會、加入的工會、金庫，重連與重啟後都還在。
 
 114. **NPC 不再因無人而凍結——沒玩家世界也持續運轉**
     - 移除 `game.rs` 那 17 處「`online_count > 0` 才動」的門檻:NPC 照樣作息走動、彼此交易、需求/關係/派系演化。
