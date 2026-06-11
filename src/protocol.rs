@@ -248,6 +248,10 @@ pub enum ClientMsg {
     /// 向新手村商人 NPC 購買 qty 個 item（花乙太 → 背包加物品）。
     /// 伺服器驗距離、物品在販售清單、乙太足夠；失敗靜默忽略。
     ShopBuy { item: ItemKind, qty: u32 },
+    /// 確認 / 拒絕商人議價（ROADMAP 101）：前端確認對話框的回應。
+    /// `accept = true` → 引擎執行交易（背包扣物品、加乙太、金庫扣）。
+    /// `accept = false` → 靜默清除 PendingDeal，不執行任何交易。
+    ConfirmDeal { accept: bool },
     /// 挖掘地形格（C-2）：玩家點擊世界座標 (wx, wy)。
     /// 伺服器換算成 cell 座標，驗可及距離（DIG_REACH）、目標為實心格後：
     /// delta 設 Empty、對應材料入背包、廣播差異（随下一次快照帶出）。
@@ -574,6 +578,17 @@ pub enum ServerMsg {
     PartyDisbanded,
     /// 隊伍頻道聊天（ROADMAP 97）：`/p 訊息` → 僅發給隊伍成員。
     PartyChat { from: String, text: String },
+    /// 商人 AI 議價提案（ROADMAP 101）：商人 LLM 自主夾暗號後，引擎驗證通過時單播給玩家。
+    /// 玩家看到確認對話框：顯示物品名/數量/每個價/總計；可接受或拒絕。
+    /// `item_display`：中文顯示名（如「木材」）供前端直接顯示，無需前端做對映。
+    DealOffer {
+        npc: String,
+        display: String,
+        item_display: String,
+        qty: u32,
+        price_per: u32,
+        total: u32,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
