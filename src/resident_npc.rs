@@ -51,6 +51,17 @@ fn departed_msg(name: &str) -> String {
 }
 
 // ── 生命週期事件（ROADMAP 116）───────────────────────────────────────────────
+/// 居民思想泡泡事件（ROADMAP 118）：居民自發浮出思想泡泡，由 game.rs 廣播 NpcSpeech。
+pub struct ResidentThoughtEvent {
+    pub id: String,
+    pub name: &'static str,
+    pub persona: ResidentPersona,
+    pub x: f32,
+    pub y: f32,
+    /// 供模板選取的種子。
+    pub seed: usize,
+}
+
 /// 居民生命週期事件，由 game.rs 廣播至世界聊天。
 pub enum ResidentLifecycleEvent {
     /// 居民即將回歸乙太（90% 壽命），廣播告別公告。
@@ -78,6 +89,14 @@ const WAIT_SECS_MAX: f32 = 12.0;
 
 /// 抵達目標的判定半徑（像素）。
 const ARRIVE_DIST: f32 = 8.0;
+
+// ── 思想泡泡計時器常數（ROADMAP 118）──────────────────────────────────────────
+/// 思想泡泡最短間隔（秒）。
+pub const THOUGHT_TIMER_MIN: f32 = 120.0;
+/// 思想泡泡最長間隔（秒）。
+pub const THOUGHT_TIMER_MAX: f32 = 300.0;
+/// 居民互動距離（像素）：玩家在此範圍內才可搭話。
+pub const RESIDENT_REACH: f32 = 80.0;
 
 /// 人口下限：世界最冷清時至少這麼多人。
 pub const MIN_POPULATION: usize = 2;
@@ -163,6 +182,11 @@ pub struct ResidentNpc {
     pub lifespan_secs: f32,
     /// 退休公告是否已發送（防重複廣播）。
     retirement_announced: bool,
+    // ── 思想泡泡（ROADMAP 118）──────────────────────────
+    /// 下次思想泡泡倒數計時（秒）。
+    pub thought_timer: f32,
+    /// 思想計數（用於模板種子，每次發射遞增）。
+    pub thought_count: usize,
 }
 
 impl ResidentNpc {
@@ -175,6 +199,8 @@ impl ResidentNpc {
         let tx = rng.gen_range(x0..=x1);
         let ty = rng.gen_range(y0..=y1);
         let name = NAME_POOL[index % NAME_POOL.len()];
+        // 錯開初始思想計時器，避免所有居民同時噴泡泡。
+        let thought_offset = rng.gen_range(0.0..THOUGHT_TIMER_MAX);
         Self {
             id: format!("resident_{}", index),
             name,
@@ -187,6 +213,8 @@ impl ResidentNpc {
             age_secs: 0.0,
             lifespan_secs: resident_lifespan_secs(),
             retirement_announced: false,
+            thought_timer: THOUGHT_TIMER_MIN + thought_offset,
+            thought_count: index,
         }
     }
 
@@ -250,15 +278,30 @@ impl ResidentManager {
         }
     }
 
-    /// 每幀推進：移動所有居民 + 生命週期 + 人口增減。
-    /// 回傳本幀發生的生命週期事件，供 game.rs 廣播至世界聊天。
-    pub fn tick(&mut self, dt: f32, avg_prosperity: i32) -> Vec<ResidentLifecycleEvent> {
+    /// 每幀推進：移動所有居民 + 生命週期 + 人口增減 + 思想泡泡計時。
+    /// 回傳 (lifecycle_events, thought_events)，供 game.rs 廣播。
+    pub fn tick(&mut self, dt: f32, avg_prosperity: i32) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
         let mut events = Vec::new();
+        let mut thoughts = Vec::new();
 
-        // 1. 推進每位居民的年齡與移動
+        // 1. 推進每位居民的年齡、移動、思想計時
         for r in &mut self.residents {
             r.age_secs += dt;
             r.tick(dt, &mut self.rng);
+            // 思想泡泡計時（ROADMAP 118）
+            r.thought_timer -= dt;
+            if r.thought_timer <= 0.0 {
+                thoughts.push(ResidentThoughtEvent {
+                    id: r.id.clone(),
+                    name: r.name,
+                    persona: r.persona,
+                    x: r.x,
+                    y: r.y,
+                    seed: r.thought_count,
+                });
+                r.thought_count += 1;
+                r.thought_timer = self.rng.gen_range(THOUGHT_TIMER_MIN..=THOUGHT_TIMER_MAX);
+            }
         }
 
         // 2. 退休公告（90% 壽命，防重複）
@@ -312,7 +355,7 @@ impl ResidentManager {
             }
         }
 
-        events
+        (events, thoughts)
     }
 
     /// 回傳目前最年長居民的名字（供 AI NPC 收徒時點名使用）。
@@ -321,6 +364,13 @@ impl ResidentManager {
             .iter()
             .max_by(|a, b| a.age_secs.partial_cmp(&b.age_secs).unwrap_or(std::cmp::Ordering::Equal))
             .map(|r| r.name)
+    }
+
+    /// 依 id 找居民，回傳 (persona, name, x, y)；找不到回 None。
+    pub fn find_by_id(&self, resident_id: &str) -> Option<(ResidentPersona, &'static str, f32, f32)> {
+        self.residents.iter()
+            .find(|r| r.id == resident_id)
+            .map(|r| (r.persona, r.name, r.x, r.y))
     }
 
     /// 回傳所有居民的 (id, name, x, y)，供快照組裝用。
@@ -352,7 +402,7 @@ mod tests {
         let initial = mgr.population();
         // 直接觸發人口檢查（把計時器歸零）
         mgr.population_timer = 0.0;
-        let events = mgr.tick(0.01, GROW_THRESHOLD + 1);
+        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1);
         assert_eq!(mgr.population(), (initial + 1).min(MAX_POPULATION));
         // 繁榮帶來移民事件
         if initial < MAX_POPULATION {
@@ -370,7 +420,7 @@ mod tests {
         mgr.tick(0.01, GROW_THRESHOLD + 1);
         let before = mgr.population();
         mgr.population_timer = 0.0;
-        let events = mgr.tick(0.01, SHRINK_THRESHOLD - 1);
+        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1);
         assert_eq!(mgr.population(), (before - 1).max(MIN_POPULATION));
         if before > MIN_POPULATION {
             assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::Departed { .. })));
@@ -421,13 +471,13 @@ mod tests {
         mgr.residents[0].lifespan_secs = 100.0;
         mgr.residents[0].age_secs = 88.0; // 89% < 90%
         // tick 一下，不應觸發
-        let ev = mgr.tick(0.5, 50);
+        let (ev, _) = mgr.tick(0.5, 50);
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 再 tick 過 90%
-        let ev2 = mgr.tick(2.0, 50);
+        let (ev2, _) = mgr.tick(2.0, 50);
         assert!(ev2.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 已標記，再 tick 不重複
-        let ev3 = mgr.tick(0.5, 50);
+        let (ev3, _) = mgr.tick(0.5, 50);
         assert!(!ev3.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
     }
 
@@ -440,7 +490,7 @@ mod tests {
             mgr.residents[0].age_secs = 100.0; // 壽命到期
             mgr.residents[0].name
         };
-        let ev = mgr.tick(0.01, 50);
+        let (ev, _) = mgr.tick(0.01, 50);
         // 人口不變（退休 + 新居民）
         assert_eq!(mgr.population(), before);
         // 事件應存在

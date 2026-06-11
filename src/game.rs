@@ -683,7 +683,7 @@ pub fn spawn(app: AppState) {
                         .sum();
                     total / VILLAGE_NPCS.len().max(1) as i32
                 };
-                let resident_events = app.residents.write().unwrap().tick(dt, avg_prosperity);
+                let (resident_events, thought_events) = app.residents.write().unwrap().tick(dt, avg_prosperity);
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {
@@ -703,6 +703,26 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::Departed { msg, .. } => {
                             let _ = app.tx_chat.send(msg);
                         }
+                    }
+                }
+                // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
+                if !thought_events.is_empty() {
+                    let (phase, weather) = {
+                        let dn = app.daynight.read().unwrap();
+                        let wx = app.weather.read().unwrap();
+                        (dn.phase(), wx.weather_type)
+                    };
+                    let ctx = crate::resident_chat::ResidentContext { phase, weather };
+                    for ev in thought_events {
+                        let text = crate::resident_chat::get_thought(ev.persona, &ctx, ev.seed);
+                        let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id: ev.id,
+                            npc_name: format!("居民 {}", ev.name),
+                            text: text.to_string(),
+                            display_secs: 5,
+                            wx: ev.x,
+                            wy: ev.y,
+                        }));
                     }
                 }
             }

@@ -952,6 +952,13 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 成本：AI 只用於生成台詞，戰術邏輯用罐頭即時決定；Semaphore(1) 防多 boss 同燒。
     - 新模組 `src/boss_ai.rs`；`enemy_field.rs` 新增 `retreat_timer`、`broadcast_boss_command`；`game.rs` 接線。
 
+118. ✅ **居民搭話 + 思想泡泡——路人居民從「走路背景」變成「真的有人在」**（本輪 PR）
+    - 路人居民（ROADMAP 115-116）每 2~5 分鐘隨機浮出一條思想泡泡（NpcSpeech），各初始計時錯開，不同時噴。
+    - 四種 persona × 三種情境（白天/夜晚/下雨）共 56 條繁中模板；夜晚/黃昏 → 夜間池、草原細雨 → 雨天池，語境自然接地。
+    - 玩家走近居民 80px 內：HUD 亮出「💬 搭話」按鈕，點擊即得居民回應——私信顯示於世界聊天欄 + NpcSpeech 泡泡同場廣播給周圍玩家。
+    - **純模板零 LLM**：`src/resident_chat.rs` 純邏輯模組（8 個單元測試）；`resident_npc.rs` 新增 `thought_timer`/`thought_count` + `find_by_id()`；`protocol.rs` 新增 `TalkToResident`；`ws.rs` 接 handler；`game.rs` 思想泡泡廣播；HTML/JS 按鈕顯隱 + 點擊發送。零 migration，記憶體模式，不破壞玩家資料。
+    - 玩家感知：走進主城看到居民頭頂偶爾冒出思想泡泡；走近搭話，居民自然回應當下情境——城鎮從「走路的背景」變成「真的有人在生活」。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。
