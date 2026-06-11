@@ -1132,7 +1132,9 @@ pub fn spawn(app: AppState) {
                         quests: crate::protocol::quests_view(&app.quests.read().unwrap()),
                         land_plots: {
                             let registry = app.land_plots.read().unwrap();
-                            let players = app.players.read().unwrap();
+                            // ⚠️ 死鎖修正：這裡**沿用** Snapshot 起頭(本函式上方)已持有的 `players` read guard，
+                            // **絕不可**對同一把 `app.players`(std RwLock)同執行緒二次上鎖——glibc 寫者優先下，
+                            // 若此刻有玩家動作的 writer 正在等鎖，第二次 read 會被擋住、外層 guard 永遠放不掉 → 永久死鎖。
                             // 查名字：先從線上玩家找，再從 UserStore 找（含離線玩家）
                             registry.all_plots_view(|uid| {
                                 players.get(&uid).map(|p| p.name.clone())
