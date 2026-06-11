@@ -791,6 +791,8 @@ pub struct AppState {
     pub npc_commission: Arc<RwLock<crate::npc_commission::NpcCommissionState>>,
     /// NPC 探勘加碼令系統（ROADMAP 86）：安全感高時芙利亞宣告加碼、探勘採樣額外得獎，純記憶體模式。
     pub npc_expedition_boost: Arc<RwLock<crate::npc_expedition_boost::NpcExpeditionBoostState>>,
+    /// NPC 工坊加成令系統（ROADMAP 87）：歸屬感高時老胡宣告急修加成、工坊訂單完成額外得獎，純記憶體模式。
+    pub npc_workshop_boost: Arc<RwLock<crate::npc_workshop_boost::NpcWorkshopBoostState>>,
 }
 
 impl AppState {
@@ -919,6 +921,7 @@ impl AppState {
             npc_level_greet: Arc::new(RwLock::new(crate::npc_level_greet::NpcLevelGreetState::new())),
             npc_commission: Arc::new(RwLock::new(crate::npc_commission::NpcCommissionState::new())),
             npc_expedition_boost: Arc::new(RwLock::new(crate::npc_expedition_boost::NpcExpeditionBoostState::new())),
+            npc_workshop_boost: Arc::new(RwLock::new(crate::npc_workshop_boost::NpcWorkshopBoostState::new())),
         }
     }
 

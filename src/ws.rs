@@ -2134,24 +2134,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                         };
                         if let Some((reward, xp)) = result {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                // 從背包扣除所需物品。
-                                if let Some(ref active) = p.workshop_active.clone() {
-                                    if let Some(order) = crate::workshop::find_order(active.order_id) {
-                                        p.inventory.take(order.required_item, order.required_qty);
+                            let player_name;
+                            let total_reward;
+                            {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    // 從背包扣除所需物品。
+                                    if let Some(ref active) = p.workshop_active.clone() {
+                                        if let Some(order) = crate::workshop::find_order(active.order_id) {
+                                            p.inventory.take(order.required_item, order.required_qty);
+                                        }
+                                    }
+                                    p.ether = p.ether.saturating_add(reward);
+                                    p.masteries.gain_artisan(xp);
+                                    p.workshop_active = None;
+                                    p.workshop_cooldown = WORKSHOP_COOLDOWN_SECS;
+                                    player_name = p.name.clone();
+                                    total_reward = reward;
+                                    tracing::info!(player = %p.name, reward, xp, "交付工坊訂單");
+                                } else {
+                                    player_name = String::new();
+                                    total_reward = reward;
+                                }
+                            }
+                            // 急修加成令（ROADMAP 87）：工坊訂單完成時檢查是否有加成。
+                            if !player_name.is_empty() {
+                                let boost_result = app.npc_workshop_boost.write().unwrap().on_order_fulfilled();
+                                if boost_result.bonus > 0 {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.ether = p.ether.saturating_add(boost_result.bonus);
+                                    }
+                                    let npc = crate::npc_workshop_boost::WORKSHOP_NPC_NAME;
+                                    if boost_result.fulfilled {
+                                        // 達到配額，只廣播完成公告。
+                                        let txt = crate::npc_workshop_boost::fulfilled_text();
+                                        let _ = app.tx_chat.send(format!("✅ [{npc}] 宣告：「{txt}」"));
+                                    } else {
+                                        // 未達配額，顯示剩餘份數。
+                                        let remaining = app.npc_workshop_boost.read().unwrap()
+                                            .active.as_ref()
+                                            .map(|b| b.quota.saturating_sub(b.filled))
+                                            .unwrap_or(0);
+                                        let _ = app.tx_chat.send(format!(
+                                            "🔨 [{npc}] 補充：「好手藝！{player_name} 今天的工坊活兒做得漂亮，多給你 {} 乙太！（還剩 {} 份加成）」",
+                                            boost_result.bonus, remaining
+                                        ));
                                     }
                                 }
-                                p.ether = p.ether.saturating_add(reward);
-                                p.masteries.gain_artisan(xp);
-                                p.workshop_active = None;
-                                p.workshop_cooldown = WORKSHOP_COOLDOWN_SECS;
-                                tracing::info!(player = %p.name, reward, xp, "交付工坊訂單");
                             }
                             // 記入玩家事跡日誌（ROADMAP 67）。
                             app.player_logs.write().unwrap()
                                 .entry(uid)
                                 .or_default()
-                                .push(format!("在工坊完成了加急訂單，獲得 {} 乙太", reward));
+                                .push(format!("在工坊完成了加急訂單，獲得 {} 乙太", total_reward));
                         }
                     }
                 }
