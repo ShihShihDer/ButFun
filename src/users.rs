@@ -48,6 +48,9 @@ pub struct User {
     /// 護目鏡鏡片色（ROADMAP 98 捏臉）：0~4，0 = 預設藍。
     #[serde(default)]
     pub goggle_color: u8,
+    /// 服裝造型（ROADMAP 99 衣櫥）：0~5 六套蒸汽龐克原創造型，0 = 探險家套裝（預設）。
+    #[serde(default)]
+    pub costume: u8,
 }
 
 /// 索引後面的耐久層。
@@ -152,6 +155,7 @@ impl UserStore {
                 hair_style: 0,
                 skin_tone: 0,
                 goggle_color: 0,
+                costume: 0,
             };
             inner.by_external.insert(key, user.id);
             inner.by_id.insert(user.id, user.clone());
@@ -197,6 +201,7 @@ impl UserStore {
                 hair_style: 0,
                 skin_tone: 0,
                 goggle_color: 0,
+                costume: 0,
             };
             inner
                 .by_external
@@ -231,7 +236,8 @@ impl UserStore {
         Some(user)
     }
 
-    /// 更新外觀（ROADMAP 98 捏臉）：hair_style / skin_tone / goggle_color 各截到 0~4。
+    /// 更新外觀（ROADMAP 98 捏臉 / ROADMAP 99 衣櫥）：
+    /// hair_style / skin_tone / goggle_color 各截到 0~4，costume 截到 0~5。
     /// 回傳更新後的 User；查無此人回 None。
     pub async fn update_appearance(
         &self,
@@ -239,6 +245,7 @@ impl UserStore {
         hair_style: u8,
         skin_tone: u8,
         goggle_color: u8,
+        costume: u8,
     ) -> Option<User> {
         let user = {
             let mut inner = self.inner.lock().unwrap();
@@ -246,6 +253,7 @@ impl UserStore {
             user.hair_style = hair_style.min(4);
             user.skin_tone = skin_tone.min(4);
             user.goggle_color = goggle_color.min(4);
+            user.costume = costume.min(5);
             inner.by_id.insert(id, user.clone());
             user
         };
@@ -428,12 +436,12 @@ fn append_to_disk_at(path: &str, u: &User) {
 async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO users (id, provider, external_id, email, name, species, created_at, updated_at, \
-           hair_style, skin_tone, goggle_color) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9, $10) \
+           hair_style, skin_tone, goggle_color, costume) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9, $10, $11) \
          ON CONFLICT (id) DO UPDATE SET \
            email = EXCLUDED.email, name = EXCLUDED.name, species = EXCLUDED.species, \
            hair_style = EXCLUDED.hair_style, skin_tone = EXCLUDED.skin_tone, \
-           goggle_color = EXCLUDED.goggle_color, updated_at = now()",
+           goggle_color = EXCLUDED.goggle_color, costume = EXCLUDED.costume, updated_at = now()",
     )
     .bind(u.id)
     .bind(&u.provider)
@@ -445,6 +453,7 @@ async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
     .bind(u.hair_style as i16)
     .bind(u.skin_tone as i16)
     .bind(u.goggle_color as i16)
+    .bind(u.costume as i16)
     .execute(pool)
     .await?;
     Ok(())
@@ -458,7 +467,8 @@ async fn load_from_db(pool: &PgPool) -> Vec<User> {
         "SELECT id, provider, external_id, email, name, species, created_at, \
            COALESCE(hair_style,0) AS hair_style, \
            COALESCE(skin_tone,0) AS skin_tone, \
-           COALESCE(goggle_color,0) AS goggle_color \
+           COALESCE(goggle_color,0) AS goggle_color, \
+           COALESCE(costume,0) AS costume \
          FROM users",
     )
     .fetch_all(pool)
@@ -476,6 +486,7 @@ async fn load_from_db(pool: &PgPool) -> Vec<User> {
             let hair_style: i16 = r.get("hair_style");
             let skin_tone: i16 = r.get("skin_tone");
             let goggle_color: i16 = r.get("goggle_color");
+            let costume: i16 = r.get("costume");
             User {
                 id: r.get("id"),
                 provider: r.get("provider"),
@@ -487,6 +498,7 @@ async fn load_from_db(pool: &PgPool) -> Vec<User> {
                 hair_style: (hair_style as u8).min(4),
                 skin_tone: (skin_tone as u8).min(4),
                 goggle_color: (goggle_color as u8).min(4),
+                costume: (costume as u8).min(5),
             }
         })
         .collect()
@@ -514,6 +526,7 @@ mod tests {
             hair_style: 0,
             skin_tone: 0,
             goggle_color: 0,
+            costume: 0,
         }
     }
 
