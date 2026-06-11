@@ -1,4 +1,5 @@
 // ROADMAP 100: 商人有限金庫——收購從金庫付，終結無限印鈔（經濟地基）
+// ROADMAP 108: 加入商隊收入累計統計，供經濟儀表 /api/economy 讀取。
 // 每個收購 NPC 有一個乙太金庫，ShopSell 從金庫扣；金庫不足→部分收或婉拒；
 // 商隊收入每 RESTOCK_INTERVAL_SECS 秒緩慢回補，不超過各自上限。
 
@@ -11,6 +12,12 @@ pub const MERCHANT_CRIMSON: &str = "赤焰星";
 pub const MERCHANT_VOID:    &str = "虛空星";
 pub const MERCHANT_AETHER:  &str = "霧醚星";
 pub const MERCHANT_ORIGIN:  &str = "星源星";
+
+/// 所有商人鍵（排序固定，供儀表快照迭代用）。
+pub const ALL_MERCHANTS: &[&str] = &[
+    MERCHANT_HOME, MERCHANT_VERDANT, MERCHANT_CRIMSON,
+    MERCHANT_VOID, MERCHANT_AETHER,  MERCHANT_ORIGIN,
+];
 
 /// 各商人初始金庫（乙太）。故鄉業務最繁，初始最豐。
 const INITIAL: &[(&str, u32)] = &[
@@ -48,9 +55,27 @@ pub struct TreasuryPayResult {
     pub notice: Option<&'static str>,
 }
 
-/// 商人收購金庫狀態（ROADMAP 100）。
+/// 經濟儀表快照（ROADMAP 108）：彙總數字，不含個資。
+pub struct TreasurySnapshot {
+    /// 每個商人的 (名稱, 當前餘額, 上限)。
+    pub merchants: Vec<(&'static str, u32, u32)>,
+    /// 商隊累計注入乙太（水龍頭總量）。
+    pub lifetime_injected: u32,
+    /// 商人累計支付給玩家的乙太（ShopSell 排水孔）。
+    pub lifetime_paid_to_players: u32,
+    /// 供應鏈進貨累計成本（從金庫流出）。
+    pub lifetime_supply_cost: u32,
+}
+
+/// 商人收購金庫狀態（ROADMAP 100 + ROADMAP 108 統計）。
 pub struct NpcTreasuryState {
     treasury: HashMap<&'static str, u32>,
+    /// 商隊累計注入乙太（每次 tick_restock 積累）。
+    lifetime_injected: u32,
+    /// 累計支付給玩家乙太（每次 try_pay 成功積累）。
+    lifetime_paid_to_players: u32,
+    /// 供應鏈進貨累計成本（每次 deduct 由 game.rs 傳入）。
+    lifetime_supply_cost: u32,
 }
 
 impl NpcTreasuryState {
@@ -59,7 +84,12 @@ impl NpcTreasuryState {
         for (key, amount) in INITIAL {
             treasury.insert(*key, *amount);
         }
-        Self { treasury }
+        Self {
+            treasury,
+            lifetime_injected: 0,
+            lifetime_paid_to_players: 0,
+            lifetime_supply_cost: 0,
+        }
     }
 
     /// 查詢金庫餘額。
@@ -88,6 +118,8 @@ impl NpcTreasuryState {
         let actual_paid = actual_qty * price_per;
         let e = self.treasury.entry(npc_key).or_insert(0);
         *e = e.saturating_sub(actual_paid);
+        // 累計支付統計（ROADMAP 108）
+        self.lifetime_paid_to_players = self.lifetime_paid_to_players.saturating_add(actual_paid);
         let notice = if actual_qty < qty {
             Some("現金快見底了，只收了部分！改天再來吧。")
         } else {
@@ -96,11 +128,13 @@ impl NpcTreasuryState {
         TreasuryPayResult { actual_qty, actual_paid, notice }
     }
 
-    /// 從金庫扣減指定金額（saturating，不能變負）。確認交易成功後呼叫。
+    /// 從金庫扣減指定金額（saturating，不能變負）。供應鏈進貨成本時呼叫。
     pub fn deduct(&mut self, npc_key: &str, amount: u32) {
         if let Some(e) = self.treasury.get_mut(npc_key) {
             *e = e.saturating_sub(amount);
         }
+        // 累計供應鏈成本統計（ROADMAP 108）
+        self.lifetime_supply_cost = self.lifetime_supply_cost.saturating_add(amount);
     }
 
     /// 查金庫能承擔的最大收購數量（qty 個、單價 price_per）。
@@ -117,10 +151,33 @@ impl NpcTreasuryState {
     }
 
     /// 商隊回補：所有商人金庫補充 RESTOCK_PER_TICK 乙太（至各自上限）。
+    /// 累計注入統計（ROADMAP 108）。
     pub fn tick_restock(&mut self) {
+        let mut injected = 0u32;
         for (key, max) in MAX_TREASURY {
             let e = self.treasury.entry(key).or_insert(0);
+            let before = *e;
             *e = (*e + RESTOCK_PER_TICK).min(*max);
+            injected = injected.saturating_add(*e - before);
+        }
+        self.lifetime_injected = self.lifetime_injected.saturating_add(injected);
+    }
+
+    /// 取得經濟儀表快照（ROADMAP 108）：彙總數字，不含個資。
+    pub fn snapshot(&self) -> TreasurySnapshot {
+        let merchants = ALL_MERCHANTS.iter().map(|key| {
+            let balance = self.treasury.get(key).copied().unwrap_or(0);
+            let max = MAX_TREASURY.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, m)| *m)
+                .unwrap_or(0);
+            (*key, balance, max)
+        }).collect();
+        TreasurySnapshot {
+            merchants,
+            lifetime_injected: self.lifetime_injected,
+            lifetime_paid_to_players: self.lifetime_paid_to_players,
+            lifetime_supply_cost: self.lifetime_supply_cost,
         }
     }
 }
@@ -214,9 +271,72 @@ mod tests {
     #[test]
     fn unknown_npc_key_treated_as_empty() {
         let mut t = make();
-        // 若用不存在的鍵，應視作金庫為零，婉拒收購
-        // 注意：實際 ws.rs 只會用已知鍵，這是防衛性測試
-        // 這個測試驗 balance() 回 0
         assert_eq!(t.balance("不存在的商人"), 0);
+    }
+
+    // ─── ROADMAP 108：累計統計測試 ──────────────────────────────────────────
+
+    #[test]
+    fn restock_accumulates_lifetime_injected() {
+        let mut t = make();
+        // 清空一個金庫讓 restock 有實際注入量
+        *t.treasury.entry(MERCHANT_HOME).or_insert(0) = 0;
+        let before = t.lifetime_injected;
+        t.tick_restock();
+        assert!(t.lifetime_injected > before, "每次 tick_restock 應累計注入量");
+    }
+
+    #[test]
+    fn try_pay_accumulates_lifetime_paid() {
+        let mut t = make();
+        assert_eq!(t.lifetime_paid_to_players, 0, "初始支付統計應為零");
+        let r = t.try_pay(MERCHANT_HOME, 5, 4);
+        assert_eq!(r.actual_paid, 20);
+        assert_eq!(t.lifetime_paid_to_players, 20, "支付後應累計");
+        // 再付一次，累加
+        let r2 = t.try_pay(MERCHANT_HOME, 3, 2);
+        assert_eq!(t.lifetime_paid_to_players, 20 + r2.actual_paid);
+    }
+
+    #[test]
+    fn deduct_accumulates_supply_cost() {
+        let mut t = make();
+        assert_eq!(t.lifetime_supply_cost, 0, "初始供應鏈成本應為零");
+        t.deduct(MERCHANT_HOME, 50);
+        assert_eq!(t.lifetime_supply_cost, 50);
+        t.deduct(MERCHANT_HOME, 30);
+        assert_eq!(t.lifetime_supply_cost, 80);
+    }
+
+    #[test]
+    fn snapshot_contains_all_merchants_and_stats() {
+        let mut t = make();
+        *t.treasury.entry(MERCHANT_HOME).or_insert(0) = 0;
+        t.tick_restock();
+        t.try_pay(MERCHANT_HOME, 2, 10);
+        t.deduct(MERCHANT_HOME, 5);
+        let snap = t.snapshot();
+        assert_eq!(snap.merchants.len(), ALL_MERCHANTS.len(), "應含全部商人");
+        assert!(snap.lifetime_injected > 0, "快照應反映注入統計");
+        assert!(snap.lifetime_paid_to_players > 0, "快照應反映支付統計");
+        assert_eq!(snap.lifetime_supply_cost, 5, "快照應反映供應鏈成本");
+        // 每個商人有餘額和上限
+        for (name, balance, max) in &snap.merchants {
+            assert!(!name.is_empty());
+            assert!(*max > 0, "{name} 的上限應 > 0");
+            assert!(*balance <= *max, "{name} 餘額不應超過上限");
+        }
+    }
+
+    #[test]
+    fn restock_cap_not_counted_as_injected() {
+        let mut t = make();
+        // 把所有金庫填滿，tick_restock 注入量應為 0（已滿，沒有實際空間）
+        for (key, max) in MAX_TREASURY {
+            *t.treasury.entry(key).or_insert(0) = *max;
+        }
+        let before = t.lifetime_injected;
+        t.tick_restock();
+        assert_eq!(t.lifetime_injected, before, "金庫滿了不應計入注入統計");
     }
 }

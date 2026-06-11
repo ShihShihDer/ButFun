@@ -887,8 +887,11 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 純賣商有利潤不變式測試：工具售價 > 進貨成本（15 > 6、25 > 10），長期有餘裕；素材類進貨成本 0（商人自行收購轉手）。
     - 10 個新單元測試（supply_chain）；總計 1093 tests 全綠。零 migration、記憶體模式、不動玩家資料。
 
-108. **商隊收入平衡 + 經濟儀表——受控注入旋鈕 + 監測平衡**
-    - 緩慢商隊收入回補金庫(唯一受控新乙太來源);彙總儀表監測水龍頭/排水孔平衡,好調參(只彙總數字、不含個資)。
+108. ✅ **商隊收入平衡 + 經濟儀表——受控注入旋鈕 + 監測平衡**（本輪 PR）
+    - `npc_treasury.rs` 新增三個累計統計欄位：`lifetime_injected`（商隊注入）、`lifetime_paid_to_players`（收購支出）、`lifetime_supply_cost`（進貨成本）；`tick_restock()` / `try_pay()` / `deduct()` 各自累積，重啟歸零（現金流量是瞬時概念，不需跨重啟）。
+    - `snapshot()` 方法回傳 `TreasurySnapshot`：含所有商人的（名稱, 餘額, 上限）清單 + 三個累計統計。
+    - 新端點 `GET /api/economy`：彙總商隊金庫餘額 + 水龍頭（`lifetime_injected`）+ 排水孔（`lifetime_paid_to_players` + `lifetime_supply_cost`）+ 淨差值 + 線上人數 + 匿名乙太總量；只回彙總數字、不含任何個資。
+    - 6 個新單元測試（注入累計、支付累計、供應成本累計、快照完整性、金庫滿時不計注入），1098 tests 全綠；零 migration，記憶體模式，不動玩家資料。
 
 109. ✅ **下雨澆田——天氣與農田接起來，讓世界有連貫感（玩家實機發現的破綻）**（PR #214）
     - 草原細雨（GrasslandRain）時：`Field::water_all_planted()` 每 tick 對所有缺水作物補水；`FarmCropRegistry::tick()` 給 1.5x 成長加成。
