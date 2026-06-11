@@ -86,7 +86,6 @@ impl NpcWorkshopBoostState {
     ///
     /// - `dt`：本幀秒數
     /// - `workshop_belonging`：工匠老胡當前歸屬感（0~100）
-    /// - `players_online`：在線玩家數
     ///
     /// 回傳：
     /// - `BoostEvent::NewBoost { bonus, quota }` — 剛觸發新加成令（呼叫端負責廣播）
@@ -96,7 +95,6 @@ impl NpcWorkshopBoostState {
         &mut self,
         dt: f32,
         workshop_belonging: i32,
-        players_online: usize,
     ) -> Option<BoostEvent> {
         // 推進活躍加成令的剩餘時間；過期則清除並回傳 Expired。
         if let Some(ref mut b) = self.active {
@@ -113,9 +111,8 @@ impl NpcWorkshopBoostState {
             self.announce_cooldown -= dt;
         }
 
-        // 觸發條件：歸屬感高 + 無活躍加成令 + 冷卻結束 + 有玩家在線。
-        if players_online == 0
-            || workshop_belonging < BELONGING_THRESHOLD
+        // 觸發條件：歸屬感高 + 無活躍加成令 + 冷卻結束。
+        if workshop_belonging < BELONGING_THRESHOLD
             || self.active.is_some()
             || self.announce_cooldown > 0.0
         {
@@ -195,37 +192,31 @@ mod tests {
         s
     }
 
-    #[test]
-    fn no_trigger_without_players() {
-        let mut s = ready_state();
-        let result = s.tick(1.0, 80, 0);
-        assert!(result.is_none(), "無玩家在線時不應觸發加成令");
-    }
 
     #[test]
     fn no_trigger_when_belonging_low() {
         let mut s = ready_state();
-        let result = s.tick(1.0, BELONGING_THRESHOLD - 1, 2);
+        let result = s.tick(1.0, BELONGING_THRESHOLD - 1);
         assert!(result.is_none(), "歸屬感未達閾值時不應觸發加成令");
     }
 
     #[test]
     fn no_trigger_at_exact_threshold_minus_one() {
         let mut s = ready_state();
-        assert!(s.tick(1.0, 64, 1).is_none(), "歸屬感 64 不應觸發");
+        assert!(s.tick(1.0, 64).is_none(), "歸屬感 64 不應觸發");
     }
 
     #[test]
     fn no_trigger_during_cooldown() {
         let mut s = NpcWorkshopBoostState::new();
-        let result = s.tick(1.0, 80, 2);
+        let result = s.tick(1.0, 80);
         assert!(result.is_none(), "初始等待冷卻期間不應觸發加成令");
     }
 
     #[test]
     fn triggers_when_all_conditions_met() {
         let mut s = ready_state();
-        let result = s.tick(1.0, BELONGING_THRESHOLD, 2);
+        let result = s.tick(1.0, BELONGING_THRESHOLD);
         assert!(result.is_some(), "條件全部成立時應觸發加成令");
         match result.unwrap() {
             BoostEvent::NewBoost { bonus, quota } => {
@@ -239,19 +230,19 @@ mod tests {
     #[test]
     fn active_boost_blocks_new_trigger() {
         let mut s = ready_state();
-        let r1 = s.tick(1.0, 80, 2);
+        let r1 = s.tick(1.0, 80);
         assert!(r1.is_some(), "第一次應觸發");
         s.announce_cooldown = 0.0;
-        let r2 = s.tick(1.0, 80, 2);
+        let r2 = s.tick(1.0, 80);
         assert!(r2.is_none(), "已有活躍加成令時不應再觸發");
     }
 
     #[test]
     fn boost_expires_after_lifetime() {
         let mut s = ready_state();
-        let _ = s.tick(1.0, 80, 1);
+        let _ = s.tick(1.0, 80);
         assert!(s.active.is_some());
-        let r = s.tick(BOOST_DURATION_SECS + 1.0, 80, 1);
+        let r = s.tick(BOOST_DURATION_SECS + 1.0, 80);
         assert_eq!(r, Some(BoostEvent::Expired));
         assert!(s.active.is_none());
     }
@@ -259,7 +250,7 @@ mod tests {
     #[test]
     fn on_order_fulfilled_gives_bonus_when_active() {
         let mut s = ready_state();
-        s.tick(1.0, 80, 1); // 觸發加成令
+        s.tick(1.0, 80); // 觸發加成令
         let result = s.on_order_fulfilled();
         assert_eq!(result.bonus, BONUS_PER_ORDER, "應得到加成");
         assert!(!result.fulfilled, "一份未達配額");
@@ -276,7 +267,7 @@ mod tests {
     #[test]
     fn on_order_fulfilled_completes_when_quota_reached() {
         let mut s = ready_state();
-        s.tick(1.0, 80, 1); // 觸發加成令
+        s.tick(1.0, 80); // 觸發加成令
         // 連續完成到配額
         for _ in 0..BOOST_QUOTA - 1 {
             let r = s.on_order_fulfilled();
