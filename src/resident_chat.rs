@@ -317,6 +317,51 @@ pub fn get_mini_event(persona: ResidentPersona, name: &str, seed: usize) -> Stri
     pool[seed % pool.len()].replace("{name}", name)
 }
 
+// ── 居民主動搭話模板（ROADMAP 123）──────────────────────────────────────────
+
+/// 農夫主動向玩家打招呼（帶居民名字與玩家名字）。
+static FARM_PLAYER_GREET: &[&str] = &[
+    "🌾 {name}從田埂抬起頭，看到{player}走近，笑著揮手：「{player}，你來了！農活真辛苦，來幫個忙？」",
+    "🪣 {name}正在澆水，瞥見{player}，眼睛一亮：「{player}！最近有種田嗎？我這裡作物剛熟，要不要看看？」",
+    "🌿 {name}擦了擦手，朝{player}點頭：「{player}，你懂農事嗎？今天的土壤狀態不錯，感謝天公啊。」",
+];
+
+/// 市場客主動向玩家打招呼。
+static MARKET_PLAYER_GREET: &[&str] = &[
+    "🛒 {name}在攤位旁回頭，瞧見{player}，立刻招手：「{player}！過來看看，我剛找到好東西！」",
+    "💰 {name}比完價格，抬頭看到{player}笑道：「{player}，你買東西了嗎？薇拉那邊有些不錯的貨。」",
+    "🏷️ {name}攔住路過的{player}：「{player}！你知不知道乙太最近漲了？要囤貨的話現在進場！」",
+];
+
+/// 廣場閒人主動向玩家打招呼。
+static SQUARE_PLAYER_GREET: &[&str] = &[
+    "☕ {name}悠哉地坐在石凳上，見到{player}就招手：「{player}！過來坐坐！廣場風景好，急什麼嘛。」",
+    "🌸 {name}在廣場閒晃，碰見{player}笑道：「{player}，你也出來逛逛啊？今天人挺多的。」",
+    "📖 {name}看到{player}，比了比旁邊的位置：「{player}，凱爾長老剛說了什麼，你有聽到嗎？」",
+];
+
+/// 遊走者主動向玩家打招呼。
+static WANDER_PLAYER_GREET: &[&str] = &[
+    "🧭 {name}從小巷轉出來，一眼看到{player}，點頭道：「{player}，你好啊！最近走了哪條路線？」",
+    "🌙 {name}停下腳步望向{player}：「{player}！你不是也愛到處走嗎？城鎮東邊最近有奇怪的光，去看過嗎？」",
+    "🗺️ {name}走近{player}低聲說：「{player}，告訴你個秘密——南邊有個角落沒人注意到，特別有趣。」",
+];
+
+/// 取得居民主動向玩家打招呼的文字（ROADMAP 123）。
+///
+/// `resident_name` 為居民顯示名；`player_name` 為玩家名；`seed` 供模板輪替。
+pub fn get_player_greeting(persona: ResidentPersona, resident_name: &str, player_name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_PLAYER_GREET,
+        ResidentPersona::MarketBrowser => MARKET_PLAYER_GREET,
+        ResidentPersona::TownSquare    => SQUARE_PLAYER_GREET,
+        ResidentPersona::Wanderer      => WANDER_PLAYER_GREET,
+    };
+    pool[seed % pool.len()]
+        .replace("{name}", resident_name)
+        .replace("{player}", player_name)
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -563,6 +608,79 @@ mod tests {
                 assert!(template.contains("{name}"), "模板應含 {{name}} 佔位符: {template}");
                 let filled = template.replace("{name}", "測試名");
                 assert!(!filled.contains("{name}"), "替換後不應殘留 {{name}}: {filled}");
+            }
+        }
+    }
+
+    // ── ROADMAP 123 玩家搭話測試 ──────────────────────────────────────────────
+
+    #[test]
+    fn player_greeting_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_player_greeting(persona, "阿土", "冒險者甲", 0);
+            assert!(!text.is_empty(), "persona {:?} 打招呼不應為空", persona);
+        }
+    }
+
+    #[test]
+    fn player_greeting_contains_both_names() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_player_greeting(persona, "小花", "英雄乙", 0);
+            assert!(text.contains("小花"), "persona {:?} 應含居民名 '小花'：{text}", persona);
+            assert!(text.contains("英雄乙"), "persona {:?} 應含玩家名 '英雄乙'：{text}", persona);
+        }
+    }
+
+    #[test]
+    fn player_greeting_no_leftover_placeholders() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            for seed in 0..3 {
+                let text = get_player_greeting(persona, "居民名", "玩家名", seed);
+                assert!(!text.contains("{name}"), "不應殘留 {{name}}：{text}");
+                assert!(!text.contains("{player}"), "不應殘留 {{player}}：{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn player_greeting_seed_wraps_without_panic() {
+        let _ = get_player_greeting(ResidentPersona::Wanderer, "老根", "測試玩家", 9999);
+    }
+
+    #[test]
+    fn player_greeting_different_seeds_produce_variety() {
+        // 同 persona 不同 seed 至少有 2 種不同模板（每個 persona 有 3 條）。
+        let texts: Vec<_> = (0..3)
+            .map(|s| get_player_greeting(ResidentPersona::FarmWorker, "小麥", "玩家X", s))
+            .collect();
+        let unique: std::collections::HashSet<_> = texts.iter().collect();
+        assert!(unique.len() >= 2, "FarmWorker 打招呼至少應有 2 種不同模板");
+    }
+
+    #[test]
+    fn player_greeting_all_templates_check() {
+        // 確保所有 persona 的所有 3 條模板都含兩個佔位符且可正常替換。
+        for pool in [FARM_PLAYER_GREET, MARKET_PLAYER_GREET, SQUARE_PLAYER_GREET, WANDER_PLAYER_GREET] {
+            for template in pool {
+                assert!(template.contains("{name}"), "模板應含 {{name}}：{template}");
+                assert!(template.contains("{player}"), "模板應含 {{player}}：{template}");
+                let filled = template.replace("{name}", "A").replace("{player}", "B");
+                assert!(!filled.contains('{'), "替換後不應殘留佔位符：{filled}");
             }
         }
     }

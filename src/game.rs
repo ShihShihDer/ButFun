@@ -684,7 +684,16 @@ pub fn spawn(app: AppState) {
                     total / VILLAGE_NPCS.len().max(1) as i32
                 };
                 let current_phase = app.daynight.read().unwrap().phase();
-                let (resident_events, thought_events) = app.residents.write().unwrap().tick(dt, avg_prosperity, current_phase);
+                // 收集玩家座標快照（ROADMAP 123）：先取讀鎖收集、再取居民寫鎖，避免死鎖。
+                let player_positions: Vec<(String, f32, f32)> = {
+                    let players = app.players.read().unwrap();
+                    players.values()
+                        .filter(|p| !p.vitals.is_downed())
+                        .map(|p| (p.name.clone(), p.x, p.y))
+                        .collect()
+                };
+                let (resident_events, thought_events) = app.residents.write().unwrap()
+                    .tick(dt, avg_prosperity, current_phase, &player_positions);
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {
@@ -713,6 +722,20 @@ pub fn spawn(app: AppState) {
                         }
                         // ROADMAP 122：居民隨機小事件——廣播至世界聊天，0 玩家也持續累積。
                         ResidentLifecycleEvent::MiniEvent { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                        // ROADMAP 123：居民主動向玩家打招呼——廣播 NpcSpeech 泡泡 + 世界聊天通知。
+                        ResidentLifecycleEvent::PlayerGreeting {
+                            resident_id, resident_name, x, y, player_name: _, text,
+                        } => {
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: resident_id,
+                                npc_name: format!("居民 {}", resident_name),
+                                text: text.clone(),
+                                display_secs: 7,
+                                wx: x,
+                                wy: y,
+                            }));
                             let _ = app.tx_chat.send(text);
                         }
                         // ROADMAP 121：兩位居民相遇打招呼——廣播雙方 NpcSpeech 泡泡。
