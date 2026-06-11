@@ -2377,13 +2377,7 @@
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
-    drawNpcs(camX, camY);   // NPC 商人畫在敵人同層
-    drawWorkshopNpc(camX, camY); // 工坊 NPC（ROADMAP 52）
-    drawBountyBoardNpc(camX, camY); // 懸賞告示板 NPC（ROADMAP 53）
-    drawExpeditionBoardNpc(camX, camY); // 探勘公告欄 NPC（ROADMAP 54）
-    drawProcurementAgentNpc(camX, camY); // 採購代理人 NPC（ROADMAP 55）
-    drawFairJudgeNpc(camX, camY); // 農展評審 NPC（ROADMAP 56）
-    drawVillageChiefNpc(camX, camY); // 里長凱爾長老（ROADMAP 64）
+    drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -4464,383 +4458,153 @@
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
   function drawNpcs(camX, camY) {
+    const me = myId ? players.get(myId) : null;
+    const myPlanet = me ? (me.planet || "home") : "home";
     const t = performance.now() / 1000;
+
     for (const npc of npcs) {
       const sx = npc.x - camX;
       const sy = npc.y - camY;
       if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
 
-      // 輕微上下浮動（呼吸感，與敵人對稱）
+      // 輕微上下浮動（呼吸感）
       const bob = reduceMotion ? 0 : Math.sin(t * 1.2 + npc.x * 0.01) * 2;
       const by = sy + bob;
 
       ctx.save();
-      // 身體（棕色斗篷）
-      ctx.fillStyle = "#7b4f2e";
-      ctx.beginPath();
-      ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // 頭（黃銅色）
-      ctx.fillStyle = "#c9a24b";
-      ctx.beginPath();
-      ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-      ctx.fill();
-      // 帽子
-      ctx.fillStyle = "#5c3d1e";
-      ctx.fillRect(sx - 11, by - 17, 22, 6);
-      ctx.fillRect(sx - 6, by - 24, 12, 8);
-      // 商店小旗（右上角）
-      ctx.strokeStyle = "#c9a24b";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(sx + 12, by - 20);
-      ctx.lineTo(sx + 12, by - 8);
-      ctx.stroke();
-      ctx.fillStyle = "#e8c055";
-      ctx.beginPath();
-      ctx.moveTo(sx + 12, by - 20);
-      ctx.lineTo(sx + 20, by - 16);
-      ctx.lineTo(sx + 12, by - 12);
-      ctx.fill();
-      // 商人名牌
-      ctx.font = "bold 10px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillStyle = "#c9a24b";
-      ctx.fillText("💰 商人", sx, by - 30);
+
+      // 依 ID 路由繪製邏輯
+      if (npc.id === "merchant" || npc.id.endsWith("_merchant")) {
+        drawMerchantLook(sx, by, npc.id, npc.name);
+      } else if (npc.id === "workshop_npc" && myPlanet === "home") {
+        drawWorkshopLook(sx, by, t, npc.name);
+      } else if (npc.id === "bounty_npc" && myPlanet === "home") {
+        drawBountyLook(sx, by, t, npc.name);
+      } else if (npc.id === "expedition_npc" && myPlanet === "home") {
+        drawExpeditionLook(sx, by, t, npc.name);
+      } else if (npc.id === "procurement_npc" && myPlanet === "home") {
+        drawProcurementLook(sx, by, t, npc.name);
+      } else if (npc.id === "farm_fair_npc" && myPlanet === "home") {
+        drawFairLook(sx, by, t, npc.name);
+      } else if (npc.id === "village_chief" && myPlanet === "home") {
+        drawChiefLook(sx, by, t, npc.name);
+      } else {
+        // 未知 NPC：退回通用外觀
+        ctx.fillStyle = "#777";
+        ctx.beginPath(); ctx.arc(sx, by, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(npc.id, sx, by - 15);
+      }
+
       ctx.restore();
     }
   }
 
-  // 工坊 NPC（ROADMAP 52）：固定於故鄉 (2120, 2080)，僅在故鄉且視野內繪製。
-  const WORKSHOP_NPC_WX = 2120;
-  const WORKSHOP_NPC_WY = 2080;
-  function drawWorkshopNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = WORKSHOP_NPC_WX - camX;
-    const sy = WORKSHOP_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 1.0 + 42) * 2;
-    const by = sy + bob;
-    ctx.save();
-    // 身體（深藍工匠外套）
-    ctx.fillStyle = "#2a4a6a";
+  function drawMerchantLook(sx, by, id, name) {
+    // 身體（棕色斗篷）
+    ctx.fillStyle = "#7b4f2e";
     ctx.beginPath();
     ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
     ctx.fill();
-    // 頭（銅皮色）
-    ctx.fillStyle = "#c08a3a";
+    // 頭（黃銅色）
+    ctx.fillStyle = "#c9a24b";
     ctx.beginPath();
     ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
     ctx.fill();
-    // 工匠護目鏡（深色眼鏡）
-    ctx.fillStyle = "#1a2a3a";
-    ctx.beginPath();
-    ctx.ellipse(sx - 3, by - 9, 3, 2.5, -0.3, 0, Math.PI * 2);
-    ctx.ellipse(sx + 3, by - 9, 3, 2.5, 0.3, 0, Math.PI * 2);
-    ctx.fill();
-    // 頭巾
-    ctx.fillStyle = "#3a3a5a";
-    ctx.fillRect(sx - 10, by - 17, 20, 5);
-    ctx.fillRect(sx - 5, by - 22, 10, 6);
-    // 工具小旗（右上角：🔨 符號）
-    ctx.strokeStyle = "#c08a3a";
+    // 帽子
+    ctx.fillStyle = "#5c3d1e";
+    ctx.fillRect(sx - 11, by - 17, 22, 6);
+    ctx.fillRect(sx - 6, by - 24, 12, 8);
+    // 商店小旗（右上角）
+    ctx.strokeStyle = "#c9a24b";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(sx + 12, by - 20);
     ctx.lineTo(sx + 12, by - 8);
     ctx.stroke();
-    ctx.fillStyle = "#4a80c0";
+    ctx.fillStyle = "#e8c055";
     ctx.beginPath();
     ctx.moveTo(sx + 12, by - 20);
     ctx.lineTo(sx + 20, by - 16);
     ctx.lineTo(sx + 12, by - 12);
     ctx.fill();
-    // 名牌
+    // 商人名牌
     ctx.font = "bold 10px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillStyle = "#80b8e8";
-    ctx.fillText("🔨 工坊", sx, by - 30);
-    ctx.restore();
+    ctx.fillStyle = "#c9a24b";
+    ctx.fillText(name, sx, by - 30);
   }
 
-  // 懸賞告示板 NPC（ROADMAP 53）：固定於故鄉 (2240, 2080)，僅在故鄉且視野內繪製。
-  const BOUNTY_NPC_WX = 2240;
-  const BOUNTY_NPC_WY = 2080;
-  function drawBountyBoardNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = BOUNTY_NPC_WX - camX;
-    const sy = BOUNTY_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 0.9 + 11) * 2;
-    const by = sy + bob;
-    ctx.save();
-    // 身體（暗紅獵人斗篷）
+  function drawWorkshopLook(sx, by, t, name) {
+    ctx.fillStyle = "#2a4a6a";
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#c08a3a";
+    ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1a2a3a";
+    ctx.beginPath(); ctx.ellipse(sx-3, by-9, 3, 2.5, -0.3, 0, Math.PI*2); ctx.ellipse(sx+3, by-9, 3, 2.5, 0.3, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#3a3a5a";
+    ctx.fillRect(sx-10, by-17, 20, 5); ctx.fillRect(sx-5, by-22, 10, 6);
+    ctx.strokeStyle = "#c08a3a"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sx+12, by-20); ctx.lineTo(sx+12, by-8); ctx.stroke();
+    ctx.fillStyle = "#4a80c0"; ctx.beginPath(); ctx.moveTo(sx+12, by-20); ctx.lineTo(sx+20, by-16); ctx.lineTo(sx+12, by-12); ctx.fill();
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80b8e8"; ctx.fillText(name, sx, by - 30);
+  }
+
+  function drawBountyLook(sx, by, t, name) {
     ctx.fillStyle = "#5a2020";
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 頭（曬黑膚色）
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#a06030";
-    ctx.beginPath();
-    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-    ctx.fill();
-    // 獵人寬邊帽
-    ctx.fillStyle = "#3a2010";
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 16, 13, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillRect(sx - 6, by - 20, 12, 6);
-    // 告示板（木牌，NPC 左側）
-    ctx.fillStyle = "#7a5020";
-    ctx.fillRect(sx - 24, by - 14, 14, 18);
-    ctx.fillStyle = "#c8a060";
-    ctx.fillRect(sx - 23, by - 13, 12, 7);
-    ctx.fillRect(sx - 23, by - 4, 12, 6);
-    // 名牌
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#ffb060";
-    ctx.fillText("📜 懸賞", sx, by - 30);
-    ctx.restore();
+    ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#3a2010"; ctx.beginPath(); ctx.ellipse(sx, by - 16, 13, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(sx - 6, by - 20, 12, 6);
+    ctx.fillStyle = "#7a5020"; ctx.fillRect(sx - 24, by - 14, 14, 18); ctx.fillStyle = "#c8a060"; ctx.fillRect(sx - 23, by - 13, 12, 7); ctx.fillRect(sx - 23, by - 4, 12, 6);
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#ffb060"; ctx.fillText(name, sx, by - 30);
   }
 
-  // 探勘公告欄 NPC（ROADMAP 54）：固定於故鄉 (2360, 2080)，僅在故鄉且視野內繪製。
-  const EXPEDITION_NPC_WX = 2360;
-  const EXPEDITION_NPC_WY = 2080;
-  function drawExpeditionBoardNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = EXPEDITION_NPC_WX - camX;
-    const sy = EXPEDITION_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 0.8 + 5) * 2;
-    const by = sy + bob;
-    ctx.save();
-    // 身體（探勘員大衣，深綠色）
+  function drawExpeditionLook(sx, by, t, name) {
     ctx.fillStyle = "#1a4a2a";
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 頭（健康膚色）
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#c08050";
-    ctx.beginPath();
-    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-    ctx.fill();
-    // 探勘帽（卡其帽沿）
-    ctx.fillStyle = "#6a5010";
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 16, 12, 3.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#8a7020";
-    ctx.fillRect(sx - 5, by - 20, 10, 6);
-    // 捲軸地圖（NPC 右手拿著）
-    ctx.fillStyle = "#d4a850";
-    ctx.fillRect(sx + 10, by - 8, 10, 14);
-    ctx.fillStyle = "#b08830";
-    ctx.fillRect(sx + 10, by - 9, 10, 3);
-    ctx.fillRect(sx + 10, by + 4, 10, 3);
-    // 地圖上的路線標示（細線）
-    ctx.strokeStyle = "#3a1a00";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(sx + 12, by - 4);
-    ctx.lineTo(sx + 18, by + 2);
-    ctx.stroke();
-    // 名牌
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#80e080";
-    ctx.fillText("🗺️ 探勘", sx, by - 30);
-    ctx.restore();
+    ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#6a5010"; ctx.beginPath(); ctx.ellipse(sx, by - 16, 12, 3.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = "#8a7020"; ctx.fillRect(sx - 5, by - 20, 10, 6);
+    ctx.fillStyle = "#d4a850"; ctx.fillRect(sx + 10, by - 8, 10, 14); ctx.fillStyle = "#b08830"; ctx.fillRect(sx + 10, by - 9, 10, 3); ctx.fillRect(sx + 10, by + 4, 10, 3);
+    ctx.strokeStyle = "#3a1a00"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(sx + 12, by - 4); ctx.lineTo(sx + 18, by + 2); ctx.stroke();
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80e080"; ctx.fillText(name, sx, by - 30);
   }
 
-  // 採購代理人 NPC（ROADMAP 55）：固定於故鄉 (2480, 2080)，僅在故鄉且視野內繪製。
-  const PROCUREMENT_NPC_WX = 2480;
-  const PROCUREMENT_NPC_WY = 2080;
-  function drawProcurementAgentNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = PROCUREMENT_NPC_WX - camX;
-    const sy = PROCUREMENT_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 0.9 + 2) * 2;
-    const by = sy + bob;
-    ctx.save();
-    // 身體（採購商人西裝，深藍紫色）
+  function drawProcurementLook(sx, by, t, name) {
     ctx.fillStyle = "#2a1a4a";
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 頭（亮膚色）
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#d4a870";
-    ctx.beginPath();
-    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-    ctx.fill();
-    // 商人帽（圓頂高帽）
-    ctx.fillStyle = "#1a0a3a";
-    ctx.fillRect(sx - 5, by - 20, 10, 8);
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 20, 8, 2.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 包裹（NPC 左手抱著）
-    ctx.fillStyle = "#8060c0";
-    ctx.fillRect(sx - 18, by - 4, 12, 10);
-    ctx.fillStyle = "#6040a0";
-    ctx.beginPath();
-    ctx.moveTo(sx - 12, by - 6); ctx.lineTo(sx - 6, by - 4); ctx.lineTo(sx - 12, by - 2); ctx.closePath();
-    ctx.fill();
-    // 飄帶絲帶（包裹繫帶）
-    ctx.strokeStyle = "#e0c060";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(sx - 18, by + 1); ctx.lineTo(sx - 6, by + 1);
-    ctx.moveTo(sx - 12, by - 4); ctx.lineTo(sx - 12, by + 6);
-    ctx.stroke();
-    // 名牌
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#a0a0ff";
-    ctx.fillText("📦 採購", sx, by - 30);
-    ctx.restore();
+    ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1a0a3a"; ctx.fillRect(sx - 5, by - 20, 10, 8); ctx.beginPath(); ctx.ellipse(sx, by - 20, 8, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#8060c0"; ctx.fillRect(sx - 18, by - 4, 12, 10); ctx.fillStyle = "#6040a0"; ctx.beginPath(); ctx.moveTo(sx-12, by-6); ctx.lineTo(sx-6, by-4); ctx.lineTo(sx-12, by-2); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#e0c060"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sx-18, by+1); ctx.lineTo(sx-6, by+1); ctx.moveTo(sx-12, by-4); ctx.lineTo(sx-12, by+6); ctx.stroke();
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#a0a0ff"; ctx.fillText(name, sx, by - 30);
   }
 
-  // 農展評審 NPC（ROADMAP 56）：固定於故鄉 (2600, 2080)，僅在故鄉且視野內繪製。
-  const FAIR_NPC_WX = 2600;
-  const FAIR_NPC_WY = 2080;
-  function drawFairJudgeNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = FAIR_NPC_WX - camX;
-    const sy = FAIR_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 0.8 + 3.5) * 2;
-    const by = sy + bob;
-    ctx.save();
-    // 身體（農評外衣，淺棕色）
+  function drawFairLook(sx, by, t, name) {
     ctx.fillStyle = "#7a5a30";
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 頭（亮膚色）
+    ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#d4a870";
-    ctx.beginPath();
-    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-    ctx.fill();
-    // 草帽（寬邊帽，稻草黃）
-    ctx.fillStyle = "#d4b040";
-    ctx.fillRect(sx - 5, by - 18, 10, 6); // 帽頂
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 18, 13, 3, 0, 0, Math.PI * 2); // 帽緣
-    ctx.fill();
-    ctx.strokeStyle = "#a08020";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 18, 13, 3, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    // 蔬果籃（左手持）
-    ctx.fillStyle = "#8b5e3c";
-    ctx.beginPath();
-    ctx.roundRect(sx - 20, by - 2, 14, 10, 3);
-    ctx.fill();
-    ctx.fillStyle = "#e0522b"; // 紅蘿蔔
-    ctx.beginPath();
-    ctx.arc(sx - 17, by - 1, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#2da84e"; // 綠菜
-    ctx.beginPath();
-    ctx.arc(sx - 13, by - 2, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#f5c542"; // 黃穗
-    ctx.beginPath();
-    ctx.arc(sx - 9, by - 1, 3, 0, Math.PI * 2);
-    ctx.fill();
-    // 名牌
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#80d060";
-    ctx.fillText("🏅 農展", sx, by - 30);
-    ctx.restore();
+    ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#d4b040"; ctx.fillRect(sx-5, by-18, 10, 6); ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = "#a08020"; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = "#8b5e3c"; ctx.beginPath(); ctx.roundRect(sx-20, by-2, 14, 10, 3); ctx.fill();
+    ctx.fillStyle = "#e0522b"; ctx.beginPath(); ctx.arc(sx-17, by-1, 3, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#2da84e"; ctx.beginPath(); ctx.arc(sx-13, by-2, 3, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#f5c542"; ctx.beginPath(); ctx.arc(sx-9, by-1, 3, 0, Math.PI*2); ctx.fill();
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80d060"; ctx.fillText(name, sx, by - 30);
   }
 
-  // 里長凱爾長老（ROADMAP 64）：固定於故鄉 (2720, 2080)，僅在故鄉且視野內繪製。
-  const CHIEF_NPC_WX = 2720;
-  const CHIEF_NPC_WY = 2080;
-  function drawVillageChiefNpc(camX, camY) {
-    const me = myId ? players.get(myId) : null;
-    const myPlanet = me ? (me.planet || "home") : "home";
-    if (myPlanet !== "home") return;
-    const sx = CHIEF_NPC_WX - camX;
-    const sy = CHIEF_NPC_WY - camY;
-    if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) return;
-    const t = performance.now() / 1000;
-    const bob = reduceMotion ? 0 : Math.sin(t * 0.6 + 5.0) * 1.5; // 緩慢的長老動作
-    const by = sy + bob;
-    ctx.save();
-    // 身體（金褐色長袍）
-    ctx.fillStyle = "#8b6914";
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 15, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 袍緣金邊
-    ctx.strokeStyle = "#d4a820";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.ellipse(sx, by + 10, 11, 15, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    // 頭（老人膚色，偏淡）
-    ctx.fillStyle = "#c8a068";
-    ctx.beginPath();
-    ctx.arc(sx, by - 8, 9, 0, Math.PI * 2);
-    ctx.fill();
-    // 白髮（頭頂弧形）
-    ctx.fillStyle = "#e8e0d0";
-    ctx.beginPath();
-    ctx.arc(sx, by - 13, 7, Math.PI, 0);
-    ctx.fill();
-    // 白鬍鬚
-    ctx.fillStyle = "#ddd8cc";
-    ctx.beginPath();
-    ctx.ellipse(sx, by - 1, 5, 5, 0, 0, Math.PI);
-    ctx.fill();
-    // 木杖（長老手持）
-    ctx.strokeStyle = "#6b4226";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(sx + 14, by - 10);
-    ctx.lineTo(sx + 14, by + 20);
-    ctx.stroke();
-    // 杖頭圓珠（金色乙太水晶）
-    ctx.fillStyle = "#f0c030";
-    ctx.beginPath();
-    ctx.arc(sx + 14, by - 13, 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#d4a020";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // 杖頭光暈（柔和金光）
-    const glowAlpha = 0.15 + 0.1 * Math.sin(t * 2.5);
-    ctx.fillStyle = `rgba(240,192,48,${glowAlpha})`;
-    ctx.beginPath();
-    ctx.arc(sx + 14, by - 13, 8, 0, Math.PI * 2);
-    ctx.fill();
-    // 名牌
-    ctx.font = "bold 10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#d4a820";
-    ctx.fillText("👴 里長", sx, by - 30);
-    ctx.restore();
+  function drawChiefLook(sx, by, t, name) {
+    ctx.fillStyle = "#8b6914"; ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 15, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#d4a820"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(sx, by+10, 11, 15, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = "#c8a068"; ctx.beginPath(); ctx.arc(sx, by-8, 9, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#e8e0d0"; ctx.beginPath(); ctx.arc(sx, by-13, 7, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = "#ddd8cc"; ctx.beginPath(); ctx.ellipse(sx, by-1, 5, 5, 0, 0, Math.PI); ctx.fill();
+    ctx.strokeStyle = "#6b4226"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx+14, by-10); ctx.lineTo(sx+14, by+20); ctx.stroke();
+    ctx.fillStyle = "#f0c030"; ctx.beginPath(); ctx.arc(sx+14, by-13, 4, 0, Math.PI*2); ctx.fill();
+    const glowAlpha = 0.15 + 0.1 * Math.sin(t * 2.5); ctx.fillStyle = `rgba(240,192,48,${glowAlpha})`; ctx.beginPath(); ctx.arc(sx+14, by-13, 8, 0, Math.PI*2); ctx.fill();
+    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
   }
 
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。

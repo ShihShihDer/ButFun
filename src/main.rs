@@ -61,6 +61,7 @@ mod expedition;
 mod procurement;
 mod farm_fair;
 mod npc_lifecycle;
+mod npc_schedule;
 mod npc_memory_store;
 mod npc_factions;
 mod npc_needs;
