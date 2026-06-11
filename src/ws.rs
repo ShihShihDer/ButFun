@@ -2247,10 +2247,27 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             } else { None }
                         };
                         if let Some((pname, reward, xp)) = result {
-                            let _ = app.tx_chat.send(format!(
-                                "🗺️ {} 完成探勘採樣！獲得 {} 乙太 + {} 探索者 XP！",
-                                pname, reward, xp
-                            ));
+                            // 探勘加碼令（ROADMAP 86）：若有活躍加碼令，扣減配額並發額外獎勵。
+                            let boost_result = app.npc_expedition_boost.write().unwrap().on_surveyed();
+                            if boost_result.bonus > 0 {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                    p.ether = p.ether.saturating_add(boost_result.bonus);
+                                }
+                                let npc = crate::npc_expedition_boost::EXPEDITION_NPC_NAME;
+                                let _ = app.tx_chat.send(format!(
+                                    "🗺️ {} 完成探勘採樣！獲得 {} 乙太 + {} 探索者 XP！（🎉 加碼 +{} 乙太！）",
+                                    pname, reward, xp, boost_result.bonus
+                                ));
+                                if boost_result.fulfilled {
+                                    let txt = crate::npc_expedition_boost::fulfilled_text();
+                                    let _ = app.tx_chat.send(format!("✅ [{npc}] 宣告：「{txt}」"));
+                                }
+                            } else {
+                                let _ = app.tx_chat.send(format!(
+                                    "🗺️ {} 完成探勘採樣！獲得 {} 乙太 + {} 探索者 XP！",
+                                    pname, reward, xp
+                                ));
+                            }
                             // 記入玩家事跡日誌（ROADMAP 67）。
                             app.player_logs.write().unwrap()
                                 .entry(uid)

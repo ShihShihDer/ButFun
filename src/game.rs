@@ -712,6 +712,27 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 探勘加碼令（ROADMAP 86）：安全感高時芙利亞自動發加碼令。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let expedition_safety = app.npc_needs.read().unwrap().get("expedition_npc").safety;
+                let boost_event = app.npc_expedition_boost.write().unwrap()
+                    .tick(dt, expedition_safety, online_count);
+                if let Some(event) = boost_event {
+                    let tx_chat = app.tx_chat.clone();
+                    let npc = crate::npc_expedition_boost::EXPEDITION_NPC_NAME;
+                    match event {
+                        crate::npc_expedition_boost::BoostEvent::NewBoost { bonus, quota } => {
+                            let text = crate::npc_expedition_boost::announce_text(bonus, quota);
+                            let _ = tx_chat.send(format!("🗺️ [{npc}] 宣告：「{text}」"));
+                        }
+                        crate::npc_expedition_boost::BoostEvent::Expired => {
+                            // 逾時靜默消失，不廣播，保持頻道乾淨。
+                        }
+                    }
+                }
+            }
+
             // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
             {
                 let online_count = app.players.read().unwrap().len();

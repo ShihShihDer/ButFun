@@ -789,6 +789,8 @@ pub struct AppState {
     pub npc_level_greet: Arc<RwLock<crate::npc_level_greet::NpcLevelGreetState>>,
     /// NPC 主動資材委託系統（ROADMAP 85）：繁榮感低時商人薇拉發急收令、玩家賣出加價，純記憶體模式。
     pub npc_commission: Arc<RwLock<crate::npc_commission::NpcCommissionState>>,
+    /// NPC 探勘加碼令系統（ROADMAP 86）：安全感高時芙利亞宣告加碼、探勘採樣額外得獎，純記憶體模式。
+    pub npc_expedition_boost: Arc<RwLock<crate::npc_expedition_boost::NpcExpeditionBoostState>>,
 }
 
 impl AppState {
@@ -916,6 +918,7 @@ impl AppState {
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
             npc_level_greet: Arc::new(RwLock::new(crate::npc_level_greet::NpcLevelGreetState::new())),
             npc_commission: Arc::new(RwLock::new(crate::npc_commission::NpcCommissionState::new())),
+            npc_expedition_boost: Arc::new(RwLock::new(crate::npc_expedition_boost::NpcExpeditionBoostState::new())),
         }
     }
 
