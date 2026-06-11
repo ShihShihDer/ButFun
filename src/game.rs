@@ -711,6 +711,28 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::WorkActivity { text } => {
                             let _ = app.tx_chat.send(text);
                         }
+                        // ROADMAP 121：兩位居民相遇打招呼——廣播雙方 NpcSpeech 泡泡。
+                        ResidentLifecycleEvent::NeighborChat {
+                            id_a, name_a, text_a, x_a, y_a,
+                            id_b, name_b, text_b, x_b, y_b,
+                        } => {
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: id_a,
+                                npc_name: format!("居民 {}", name_a),
+                                text: text_a,
+                                display_secs: 6,
+                                wx: x_a,
+                                wy: y_a,
+                            }));
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: id_b,
+                                npc_name: format!("居民 {}", name_b),
+                                text: text_b,
+                                display_secs: 6,
+                                wx: x_b,
+                                wy: y_b,
+                            }));
+                        }
                     }
                 }
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
