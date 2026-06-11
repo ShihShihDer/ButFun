@@ -587,6 +587,42 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 怪物王咆哮（ROADMAP 75）：每 tick 推進各菁英精英的咆哮冷卻計時；
+            // 冷卻歸零時非同步呼叫 LLM（Groq→ollama→罐頭），結果廣播至全服聊天頻道。
+            // 成本紀律：Semaphore(1) 限制同時只有一個 AI 咆哮呼叫。
+            {
+                let player_count = app.players.read().unwrap().len();
+                let candidate = if player_count > 0 {
+                    // 收集所有菁英精英（notorious = level >= base_level + 3）。
+                    let notorious: Vec<_> = app
+                        .enemies
+                        .read()
+                        .unwrap()
+                        .enemies()
+                        .into_iter()
+                        .filter(|e| e.level >= e.base_level.saturating_add(3))
+                        .map(|e| (e.id, e.enemy.kind().display_name(), e.level))
+                        .collect();
+                    app.boss_roar.write().unwrap().tick(dt, &notorious)
+                } else {
+                    None
+                };
+                if let Some(c) = candidate {
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.boss_roar_sem.clone();
+                    let kind_name = c.kind_name.to_string();
+                    let level = c.level;
+                    tokio::spawn(async move {
+                        // 非阻塞嘗試取得 Semaphore；若已有咆哮進行中則直接略過。
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let text = crate::boss_roar::generate_roar(&kind_name, level, player_count).await;
+                        let _ = tx_chat.send(format!(
+                            "👹 〔怪物王・{kind_name} Lv.{level}〕{text}"
+                        ));
+                    });
+                }
+            }
+
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
             {
