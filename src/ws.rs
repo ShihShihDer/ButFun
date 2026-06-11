@@ -960,87 +960,106 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     let dynamic_price = app.dynamic_prices.read().unwrap()
                                         .current_price(item, base_price, now_secs);
 
-                                    // 急收令加成（ROADMAP 85）：故鄉商人有活躍委託且物品符合時，先讀出每份加成。
-                                    // 用 read lock 預取，避免在 players write lock 期間持有 commission write lock。
-                                    let (commission_bonus, commission_item_name) = if merchant_name == "故鄉" {
-                                        let c = app.npc_commission.read().unwrap();
-                                        match &c.active {
-                                            Some(ac) if ac.item == item => {
-                                                (ac.bonus_per_unit.saturating_mul(qty), Some(ac.item_name))
-                                            }
-                                            _ => (0, None),
-                                        }
-                                    } else {
-                                        (0, None)
-                                    };
+                                    // 金庫容量預查（ROADMAP 100）：商人只能收購金庫能承擔的數量。
+                                    // 先讀取（不寫入），確認最多可收幾個；成交後再扣帳（見下方 deduct）。
+                                    let (actual_qty, treasury_notice) = app.npc_treasury.read().unwrap()
+                                        .afforded_qty(merchant_name, qty, dynamic_price);
 
-                                    // 扣除背包物品、結算乙太（write lock）
-                                    let did_sell = {
-                                        let mut players = app.players.write().unwrap();
-                                        if let Some(p) = players.get_mut(&id) {
-                                            if p.inventory.take(item, qty) {
-                                                let earned = dynamic_price.saturating_mul(qty);
-                                                let class_bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                                // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
-                                                let haggle_bonus = if p.pending_haggle {
-                                                    p.pending_haggle = false;
-                                                    earned.saturating_add(class_bonus) // 疊在含職業加成的總收益上
-                                                } else { 0 };
-                                                tracing::info!(player = %p.name, ?item, qty, earned, class_bonus, haggle_bonus, commission_bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
-                                                p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus);
-                                                p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
-                                                true
+                                    if actual_qty == 0 {
+                                        // 金庫清空，婉拒收購，私訊玩家
+                                        let _ = tx_direct.try_send(format!(
+                                            "💰 [{}商人] 婉拒道：「今天現金已見底，明天商隊回來後再來吧！」",
+                                            merchant_name
+                                        ));
+                                    } else {
+                                        // 急收令加成（ROADMAP 85）：以 actual_qty 重算，非原始 qty。
+                                        let (commission_bonus_per_unit, commission_item_name) = if merchant_name == "故鄉" {
+                                            let c = app.npc_commission.read().unwrap();
+                                            match &c.active {
+                                                Some(ac) if ac.item == item => (ac.bonus_per_unit, Some(ac.item_name)),
+                                                _ => (0, None),
+                                            }
+                                        } else {
+                                            (0, None)
+                                        };
+                                        let commission_bonus = commission_bonus_per_unit.saturating_mul(actual_qty);
+
+                                        // 扣除背包物品、結算乙太（write lock）
+                                        let did_sell = {
+                                            let mut players = app.players.write().unwrap();
+                                            if let Some(p) = players.get_mut(&id) {
+                                                if p.inventory.take(item, actual_qty) {
+                                                    let earned = dynamic_price.saturating_mul(actual_qty);
+                                                    let class_bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
+                                                    // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
+                                                    let haggle_bonus = if p.pending_haggle {
+                                                        p.pending_haggle = false;
+                                                        earned.saturating_add(class_bonus)
+                                                    } else { 0 };
+                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, dynamic_price, merchant_name, "NPC 收購（有限金庫）");
+                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus);
+                                                    p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
+                                                    true
+                                                } else {
+                                                    false
+                                                }
                                             } else {
                                                 false
                                             }
-                                        } else {
-                                            false
-                                        }
-                                    }; // players write lock 在此釋放
+                                        }; // players write lock 在此釋放
 
-                                    // 記錄賣出量，更新浮動收購價（write lock，與 players 鎖無交疊）
-                                    if did_sell {
-                                        app.dynamic_prices.write().unwrap()
-                                            .record_sale(item, qty, now_secs);
-                                        // 急收令進度追蹤（ROADMAP 85）：賣出符合委託的物品時更新配額進度。
-                                        if commission_bonus > 0 {
-                                            let sell_result = app.npc_commission.write().unwrap()
-                                                .on_sold(item, qty);
-                                            if sell_result.fulfilled {
-                                                if let Some(item_name) = commission_item_name {
-                                                    let merchant = crate::npc_commission::MERCHANT_DISPLAY_NAME;
-                                                    let _ = app.tx_chat.send(format!(
-                                                        "✅ [{merchant}] 宣告：「{}」",
-                                                        crate::npc_commission::fulfilled_text(item_name)
-                                                    ));
+                                        if did_sell {
+                                            // 金庫扣帳（ROADMAP 100）：成交後才扣，保證背包先確認有貨。
+                                            let treasury_cost = dynamic_price.saturating_mul(actual_qty);
+                                            app.npc_treasury.write().unwrap().deduct(merchant_name, treasury_cost);
+
+                                            // 通知玩家部分收購（ROADMAP 100）。
+                                            if treasury_notice {
+                                                let _ = tx_direct.try_send(format!(
+                                                    "💰 [{}商人] 說：「現金快見底了，只收了 {} 個，改天再來吧！」",
+                                                    merchant_name, actual_qty
+                                                ));
+                                            }
+
+                                            // 記錄賣出量，更新浮動收購價
+                                            app.dynamic_prices.write().unwrap()
+                                                .record_sale(item, actual_qty, now_secs);
+                                            // 急收令進度追蹤（ROADMAP 85）
+                                            if commission_bonus > 0 {
+                                                let sell_result = app.npc_commission.write().unwrap()
+                                                    .on_sold(item, actual_qty);
+                                                if sell_result.fulfilled {
+                                                    if let Some(item_name) = commission_item_name {
+                                                        let merchant = crate::npc_commission::MERCHANT_DISPLAY_NAME;
+                                                        let _ = app.tx_chat.send(format!(
+                                                            "✅ [{merchant}] 宣告：「{}」",
+                                                            crate::npc_commission::fulfilled_text(item_name)
+                                                        ));
+                                                    }
                                                 }
                                             }
-                                        }
-                                        // 關係綁真實交易（ROADMAP 61）：向故鄉商人賣出時累積 sell_count。
-                                        // 只在登入玩家 + 故鄉商人（merchant NPC）才更新，星球商人無 AI 聊天不需追蹤。
-                                        if let Some(uid) = authed_uid {
-                                            if app.is_near_npc(px, py, "merchant") {
-                                                let updated_rel = {
-                                                    let mut mem = app.npc_memory.write().unwrap();
-                                                    let r = mem.entry((uid, "merchant".to_string())).or_default();
-                                                    r.sell_count = r.sell_count.saturating_add(1);
-                                                    r.clone()
-                                                };
-                                                // 需求驅力（ROADMAP 69）：玩家賣東西給商人，商人繁榮感提升。
-                                                app.npc_needs.write().unwrap().apply_trade(true);
-                                                // 貿易補貨（ROADMAP 62）：玩家每賣 TRADE_STOCK_EARN_INTERVAL 次給故鄉商人，
-                                                // 商人就多獲得 1 份餘裕（「靠自己賺到的才能慷慨」），上限 MAX_GIFT_STOCK。
-                                                if updated_rel.sell_count % crate::npc_chat::TRADE_STOCK_EARN_INTERVAL == 0 {
-                                                    let new_stock = {
-                                                        let mut stk = app.npc_gift_stock.write().unwrap();
-                                                        let s = stk.entry("merchant".to_string()).or_insert(0);
-                                                        *s = crate::npc_chat::restock_npc_stock(*s);
-                                                        *s
+                                            // 關係綁真實交易（ROADMAP 61）
+                                            if let Some(uid) = authed_uid {
+                                                if app.is_near_npc(px, py, "merchant") {
+                                                    let updated_rel = {
+                                                        let mut mem = app.npc_memory.write().unwrap();
+                                                        let r = mem.entry((uid, "merchant".to_string())).or_default();
+                                                        r.sell_count = r.sell_count.saturating_add(1);
+                                                        r.clone()
                                                     };
-                                                    app.npc_memory_store.save_gift_stock("merchant".to_string(), new_stock);
-                                                    tracing::debug!(sell_count = updated_rel.sell_count, new_stock, "貿易補貨：商人餘裕 +1");
+                                                    app.npc_needs.write().unwrap().apply_trade(true);
+                                                    if updated_rel.sell_count % crate::npc_chat::TRADE_STOCK_EARN_INTERVAL == 0 {
+                                                        let new_stock = {
+                                                            let mut stk = app.npc_gift_stock.write().unwrap();
+                                                            let s = stk.entry("merchant".to_string()).or_insert(0);
+                                                            *s = crate::npc_chat::restock_npc_stock(*s);
+                                                            *s
+                                                        };
+                                                        app.npc_memory_store.save_gift_stock("merchant".to_string(), new_stock);
+                                                        tracing::debug!(sell_count = updated_rel.sell_count, new_stock, "貿易補貨：商人餘裕 +1");
+                                                    }
+                                                    app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
                                                 }
-                                                app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
                                             }
                                         }
                                     }

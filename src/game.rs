@@ -994,6 +994,14 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 商人金庫回補（ROADMAP 100）：每 RESTOCK_INTERVAL_SECS 秒補充商隊收入，讓金庫慢慢恢復。
+            {
+                let restock_ticks = crate::npc_treasury::RESTOCK_INTERVAL_SECS * TICK_HZ as u64;
+                if tick % restock_ticks == 0 && tick > 0 {
+                    app.npc_treasury.write().unwrap().tick_restock();
+                }
+            }
+
             // NPC 生命週期 tick（ROADMAP 66）：推進壽命計時器，廣播老年 / 退休事件。
             {
                 let events = app.npc_lifecycle.write().unwrap().tick(dt as f64);
