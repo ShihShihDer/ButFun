@@ -897,6 +897,10 @@
           addChat(`⚜️[${msg.guild_tag}] ${msg.from}`, msg.text);
         }
         break;
+      case "whisper":
+        // 密語（ROADMAP 95）：寄件人回顯或收件人收訊，以紫色泡泡區分世界頻道。
+        addWhisperLine(msg.from, msg.to, msg.text);
+        break;
       case "daily_quests_update":
         // 每日任務更新（ROADMAP 32）：收到任務狀態後更新 HUD 和面板。
         updateDailyQuestHud(msg.done_count || 0);
@@ -9020,6 +9024,28 @@
     const badge = document.getElementById("chatUnread");
     if (badge) badge.textContent = `(${chatUnread})`;
   }
+  // 密語（ROADMAP 95）：以紫色泡泡顯示私訊，區分世界頻道。
+  function addWhisperLine(from, to, text) {
+    const log = document.getElementById("chatLog");
+    log.style.display = "block";
+    const toggle = document.getElementById("chatToggle");
+    if (toggle) toggle.style.display = "block";
+    const collapsed = document.getElementById("chat").classList.contains("chat-collapsed");
+    if (collapsed) {
+      bumpChatUnread();
+      announce(`密語 ${from} → ${to}：${text}`);
+    }
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    const line = document.createElement("div");
+    line.className = "whisper";
+    line.innerHTML = `<span class="who"></span>: <span class="msg"></span>`;
+    line.querySelector(".who").textContent = `💬 ${from} → ${to}`;
+    line.querySelector(".msg").textContent = text;
+    log.appendChild(line);
+    while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
   function addChat(who, text) {
     const log = document.getElementById("chatLog");
     log.style.display = "block";
@@ -9042,7 +9068,17 @@
     // 系統訊息(連線中斷、靠近農地提示)淡化斜體,跟真人發言視覺區隔,不互相搶眼。
     if (who === "系統") line.className = "sys";
     line.innerHTML = `<span class="who"></span>: <span class="msg"></span>`;
-    line.querySelector(".who").textContent = who;
+    const whoEl = line.querySelector(".who");
+    whoEl.textContent = who;
+    // 點真人名字快速填入密語前綴（ROADMAP 95）。
+    if (who !== "系統") {
+      whoEl.style.cursor = "pointer";
+      whoEl.title = `點擊對 ${who} 密語`;
+      whoEl.addEventListener("click", () => {
+        const input = document.getElementById("chatText");
+        if (input) { input.value = `/w ${who} `; input.focus(); }
+      });
+    }
     line.querySelector(".msg").textContent = text;
     log.appendChild(line);
     // 長時間掛機聊天會無上限堆 DOM(慢慢吃記憶體、捲動也變重);只留最近 N 則,舊的移除。

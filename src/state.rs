@@ -796,6 +796,9 @@ pub struct AppState {
     /// 天氣系統（ROADMAP 93）：目前天氣類型與粒子強度，每 8 分鐘輪換一次，切換時廣播聊天公告。
     /// 對應生態域採集時給 +1 加成；記憶體模式，重啟從晴天開始（天氣不需持久化）。
     pub weather: Arc<RwLock<crate::weather::WeatherState>>,
+    /// 每條線上連線的直達單播通道（ROADMAP 95 私聊密語）：player_id → tx_direct。
+    /// 連線建立時插入、離線時移除；讓密語可直達目標而不廣播全服。
+    pub whisper_senders: Arc<RwLock<HashMap<Uuid, tokio::sync::mpsc::Sender<String>>>>,
 }
 
 impl AppState {
@@ -926,6 +929,7 @@ impl AppState {
             npc_expedition_boost: Arc::new(RwLock::new(crate::npc_expedition_boost::NpcExpeditionBoostState::new())),
             npc_workshop_boost: Arc::new(RwLock::new(crate::npc_workshop_boost::NpcWorkshopBoostState::new())),
             weather: Arc::new(RwLock::new(crate::weather::WeatherState::new())),
+            whisper_senders: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
