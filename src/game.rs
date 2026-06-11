@@ -707,6 +707,10 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::Departed { msg, .. } => {
                             let _ = app.tx_chat.send(msg);
                         }
+                        // ROADMAP 120：居民工作動態廣播——0 玩家也持續廣播，玩家回來可見城鎮活動紀錄。
+                        ResidentLifecycleEvent::WorkActivity { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
                     }
                 }
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
