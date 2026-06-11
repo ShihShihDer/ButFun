@@ -914,6 +914,25 @@
         // 好友清單（ROADMAP 96）：收到後更新好友面板。
         updateFriendPanel(msg.friends || []);
         break;
+
+      // ── 隊伍系統（ROADMAP 97）────────────────────────────────────────────
+      case "party_invite":
+        // 收到隊伍邀請：彈出橫幅通知，點擊接受或拒絕。
+        showPartyInvite(msg.from_name);
+        break;
+      case "party_update":
+        // 隊伍成員清單更新：更新隊伍面板。
+        updatePartyPanel(msg.members || [], msg.is_leader || false);
+        break;
+      case "party_disbanded":
+        // 隊伍解散 / 已離隊：清空隊伍 UI。
+        updatePartyPanel([], false);
+        break;
+      case "party_chat":
+        // 隊伍頻道聊天：在聊天欄顯示 ⚔️[隊] 前綴。
+        addPartyChat(msg.from, msg.text);
+        break;
+
       case "skill_activated":
         // 主動技能觸發（ROADMAP 45）：播放技能視覺特效。
         showSkillFlash(msg.player_id, msg.kind);
@@ -2687,6 +2706,18 @@
       const nameW = ctx.measureText(p.name).width;
       ctx.strokeText(tagText, sx - nameW / 2 - ctx.measureText(tagText).width / 2 - 4, sy - 24);
       ctx.fillText(tagText, sx - nameW / 2 - ctx.measureText(tagText).width / 2 - 4, sy - 24);
+    }
+    // 隊伍標記（ROADMAP 97）：有隊伍時在名字右方顯示 [隊]，讓隊員一眼看出組隊狀態。
+    if (p.in_party) {
+      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.fillStyle = "#7ec8f0";
+      const nameW = ctx.measureText(p.name).width;
+      ctx.strokeText("[隊]", sx + nameW / 2 + ctx.measureText("[隊]").width / 2 + 4, sy - 24);
+      ctx.fillText("[隊]", sx + nameW / 2 + ctx.measureText("[隊]").width / 2 + 4, sy - 24);
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
@@ -6872,8 +6903,22 @@
         try { ws.send(JSON.stringify({ type: "remove_friend", name: f.name })); } catch {}
       });
 
+      // 邀請入隊按鈕（ROADMAP 97）：僅線上好友才有。
+      const inviteBtn = document.createElement("button");
+      inviteBtn.type = "button";
+      inviteBtn.className = "expand-btn";
+      inviteBtn.style.cssText = "padding:2px 6px;font-size:.75rem;" + (f.online ? "" : "opacity:.4;pointer-events:none;");
+      inviteBtn.textContent = "⚔️";
+      inviteBtn.title = f.online ? `邀請 ${f.name} 加入隊伍` : `${f.name} 不在線`;
+      if (f.online) {
+        inviteBtn.addEventListener("click", () => {
+          try { ws.send(JSON.stringify({ type: "invite_to_party", name: f.name })); } catch {}
+        });
+      }
+
       row.appendChild(dot);
       row.appendChild(nameSpan);
+      row.appendChild(inviteBtn);
       row.appendChild(whisperBtn);
       row.appendChild(removeBtn);
       body.appendChild(row);
@@ -6890,6 +6935,121 @@
     body.appendChild(refresh);
   }
   // ── 好友面板 end ─────────────────────────────────────────────────────────
+
+  // ── 隊伍系統（ROADMAP 97）────────────────────────────────────────────────
+
+  let currentPartyMembers = []; // 目前隊伍成員名字清單
+  let currentPartyIsLeader = false;
+
+  function updatePartyPanel(members, isLeader) {
+    currentPartyMembers = members;
+    currentPartyIsLeader = isLeader;
+
+    const noParty = document.getElementById("partyNoParty");
+    const inParty = document.getElementById("partyInParty");
+    const membersEl = document.getElementById("partyMembers");
+    if (!noParty || !inParty || !membersEl) return;
+
+    if (!members || members.length === 0) {
+      noParty.classList.remove("hidden");
+      inParty.classList.add("hidden");
+      return;
+    }
+    noParty.classList.add("hidden");
+    inParty.classList.remove("hidden");
+    membersEl.innerHTML = "";
+    for (const name of members) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:6px;padding:3px 0;";
+      const icon = document.createElement("span");
+      icon.textContent = (isLeader && name === members[0]) ? "👑" : "🧑";
+      icon.style.fontSize = "1em";
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = name;
+      // 對隊友密語按鈕
+      const whisperBtn = document.createElement("button");
+      whisperBtn.type = "button";
+      whisperBtn.className = "expand-btn";
+      whisperBtn.style.cssText = "padding:2px 6px;font-size:.75rem;margin-left:auto;";
+      whisperBtn.textContent = "💬";
+      whisperBtn.title = `對 ${name} 密語`;
+      whisperBtn.addEventListener("click", () => {
+        const input = document.getElementById("chatInput");
+        if (input) { input.value = `/w ${name} `; input.focus(); }
+        const win = document.getElementById("winParty");
+        if (win && !win.classList.contains("hidden")) win.classList.add("hidden");
+      });
+      row.appendChild(icon);
+      row.appendChild(nameSpan);
+      row.appendChild(whisperBtn);
+      membersEl.appendChild(row);
+    }
+  }
+
+  // 顯示隊伍邀請橫幅（ROADMAP 97）
+  function showPartyInvite(fromName) {
+    // 移除舊的橫幅（若存在）
+    const old = document.getElementById("partyInviteBanner");
+    if (old) old.remove();
+
+    const banner = document.createElement("div");
+    banner.id = "partyInviteBanner";
+    banner.style.cssText = [
+      "position:fixed;top:80px;left:50%;transform:translateX(-50%);",
+      "background:rgba(20,40,80,0.96);border:1px solid #7ec8f0;border-radius:8px;",
+      "padding:10px 16px;color:#e8f4ff;font-size:.95rem;z-index:9999;",
+      "display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.5);",
+      "max-width:min(360px,90vw);",
+    ].join("");
+    banner.innerHTML = `<span>⚔️ <b>${fromName}</b> 邀請你加入隊伍！</span>`;
+
+    const acceptBtn = document.createElement("button");
+    acceptBtn.type = "button";
+    acceptBtn.className = "expand-btn";
+    acceptBtn.style.cssText = "padding:3px 10px;background:#2a6;color:#fff;border-color:#3c8;";
+    acceptBtn.textContent = "接受";
+    acceptBtn.addEventListener("click", () => {
+      try { ws.send(JSON.stringify({ type: "join_party" })); } catch {}
+      banner.remove();
+    });
+
+    const declineBtn = document.createElement("button");
+    declineBtn.type = "button";
+    declineBtn.className = "expand-btn";
+    declineBtn.style.cssText = "padding:3px 10px;";
+    declineBtn.textContent = "拒絕";
+    declineBtn.addEventListener("click", () => {
+      try { ws.send(JSON.stringify({ type: "decline_party" })); } catch {}
+      banner.remove();
+    });
+
+    banner.appendChild(acceptBtn);
+    banner.appendChild(declineBtn);
+    document.body.appendChild(banner);
+
+    // 30 秒後自動消失
+    setTimeout(() => banner.remove(), 30000);
+  }
+
+  // 在聊天欄顯示隊伍聊天（ROADMAP 97）
+  function addPartyChat(from, text) {
+    const log = document.getElementById("chatLog");
+    if (!log) return;
+    const line = document.createElement("div");
+    line.className = "chat-line";
+    line.style.color = "#7ec8f0";
+    const nameSpan = document.createElement("span");
+    nameSpan.style.cssText = "font-weight:bold;color:#5ab8e8;";
+    nameSpan.textContent = `⚔️[隊] ${from}: `;
+    const textSpan = document.createElement("span");
+    textSpan.textContent = text;
+    line.appendChild(nameSpan);
+    line.appendChild(textSpan);
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // ── 隊伍系統 end ─────────────────────────────────────────────────────────
 
   let lastClassSig = null;
   // masteries = { warrior, farmer, artisan, explorer, merchant }（XP 值），titleClass = 頭銜職業字串或 null
@@ -9647,6 +9807,21 @@
       friendDockBtn.addEventListener("click", () => {
         lastFriendSig = null; // 強制重建面板（在線狀態可能變了）
         try { ws.send(JSON.stringify({ type: "request_friend_list" })); } catch {}
+      });
+    }
+    // 隊伍面板 dock 按鈕（ROADMAP 97）：開面板時同步顯示目前隊伍狀態（已有快取，不需重新請求）。
+    const partyDockBtn = document.getElementById("dockParty");
+    if (partyDockBtn) {
+      partyDockBtn.addEventListener("click", () => {
+        updatePartyPanel(currentPartyMembers, currentPartyIsLeader);
+      });
+    }
+    // 隊伍面板的離隊按鈕。
+    const partyLeaveBtn = document.getElementById("partyLeaveBtn");
+    if (partyLeaveBtn) {
+      partyLeaveBtn.addEventListener("click", () => {
+        if (!confirm("確定要離開隊伍嗎？")) return;
+        try { ws.send(JSON.stringify({ type: "leave_party" })); } catch {}
       });
     }
     // 每個視窗右上的 ✕ 關閉自己。

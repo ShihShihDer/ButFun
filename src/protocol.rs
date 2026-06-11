@@ -432,6 +432,20 @@ pub enum ClientMsg {
     /// 未登入靜默忽略。
     #[serde(rename = "request_friend_list")]
     RequestFriendList,
+
+    // ── 隊伍系統（ROADMAP 97）───────────────────────────────────────────
+    /// 邀請玩家加入隊伍（以顯示名搜尋）。未登入 / 找不到 / 目標已在隊 → 系統通知。
+    #[serde(rename = "invite_to_party")]
+    InviteToParty { name: String },
+    /// 接受待定的隊伍邀請。無邀請時靜默忽略。
+    #[serde(rename = "join_party")]
+    JoinParty,
+    /// 離開目前所在隊伍（隊長離開 → 整隊解散）。不在任何隊時靜默忽略。
+    #[serde(rename = "leave_party")]
+    LeaveParty,
+    /// 拒絕待定的隊伍邀請。
+    #[serde(rename = "decline_party")]
+    DeclineParty,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -545,6 +559,16 @@ pub enum ServerMsg {
     /// 好友清單（ROADMAP 96）：回應 `RequestFriendList`、`AddFriend`、`RemoveFriend`。
     /// 僅送給請求者本人；`friends` 含顯示名與即時在線狀態。
     FriendList { friends: Vec<FriendEntry> },
+
+    // ── 隊伍系統（ROADMAP 97）───────────────────────────────────────────
+    /// 收到隊伍邀請（ROADMAP 97）：發給被邀請者，前端彈出邀請通知。
+    PartyInvite { from_name: String },
+    /// 隊伍成員清單更新（ROADMAP 97）：邀請成功/有人離隊/人員進出後發給所有成員。
+    PartyUpdate { members: Vec<String>, is_leader: bool },
+    /// 隊伍已解散 / 已退出（ROADMAP 97）：發給所有前成員。
+    PartyDisbanded,
+    /// 隊伍頻道聊天（ROADMAP 97）：`/p 訊息` → 僅發給隊伍成員。
+    PartyChat { from: String, text: String },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -725,6 +749,10 @@ pub struct PlayerView {
     /// 玩家是否靠近目前在場的旅人 NPC（ROADMAP 74）（false 時省略節省流量）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_traveler: bool,
+
+    /// 玩家是否在隊伍中（ROADMAP 97）。前端在名牌顯示 [隊] 標記；false 時省略節省流量。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub in_party: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1041,6 +1069,7 @@ mod tests {
                 near_fair_judge: false,
                 near_village_chief: false,
                 near_traveler: false,
+                in_party: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1205,6 +1234,7 @@ mod tests {
             near_fair_judge: false,
             near_village_chief: false,
             near_traveler: false,
+            in_party: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1304,5 +1334,97 @@ mod tests {
         assert_eq!(v["type"], "friend_list");
         assert_eq!(v["friends"][0]["name"], "Charlie");
         assert_eq!(v["friends"][0]["online"], true);
+    }
+
+    /// ROADMAP 97 隊伍系統 ClientMsg wire contract。
+    #[test]
+    fn invite_to_party_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"invite_to_party","name":"Alice"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::InviteToParty { name } if name == "Alice"));
+    }
+
+    #[test]
+    fn join_party_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"join_party"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::JoinParty));
+    }
+
+    #[test]
+    fn leave_party_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"leave_party"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::LeaveParty));
+    }
+
+    #[test]
+    fn decline_party_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"decline_party"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::DeclineParty));
+    }
+
+    #[test]
+    fn party_invite_serializes_correctly() {
+        let msg = ServerMsg::PartyInvite { from_name: "Bob".into() };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "party_invite");
+        assert_eq!(v["from_name"], "Bob");
+    }
+
+    #[test]
+    fn party_update_serializes_correctly() {
+        let msg = ServerMsg::PartyUpdate { members: vec!["Alice".into(), "Bob".into()], is_leader: true };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "party_update");
+        assert_eq!(v["members"][0], "Alice");
+        assert_eq!(v["is_leader"], true);
+    }
+
+    #[test]
+    fn party_chat_serializes_correctly() {
+        let msg = ServerMsg::PartyChat { from: "Alice".into(), text: "衝啦！".into() };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "party_chat");
+        assert_eq!(v["from"], "Alice");
+        assert_eq!(v["text"], "衝啦！");
+    }
+
+    #[test]
+    fn party_disbanded_serializes_correctly() {
+        let msg = ServerMsg::PartyDisbanded;
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "party_disbanded");
+    }
+
+    #[test]
+    fn in_party_field_absent_when_false() {
+        use crate::inventory::ItemKind;
+        let pv = super::PlayerView {
+            id: uuid::Uuid::nil(),
+            name: "測試".into(),
+            species: "terran".into(),
+            x: 0.0, y: 0.0, ether: 0, expansions: 0,
+            inventory: vec![],
+            hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
+            planet: "home".into(),
+            job_class: None,
+            masteries: crate::class::Masteries::default(),
+            guild_tag: None,
+            achievement_count: 0, achievements: vec![],
+            equipped_weapon: None, equipped_armor: None, equipped_accessory: None,
+            weapon_refine: 0, weapon_enchant: None, armor_refine: 0,
+            skill_cooldowns: std::collections::HashMap::new(),
+            active_skill_flags: vec![],
+            pet_kind: None, fish_cooldown: 0.0, near_water: false,
+            trade_cargo: None, near_trade_npc: false,
+            workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
+            bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
+            expedition_orders: vec![], expedition_active: None, expedition_cooldown: 0.0, near_expedition_board: false,
+            procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
+            farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
+            near_village_chief: false, near_traveler: false,
+            in_party: false,
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        // in_party=false 時應被 skip_serializing_if 省略，節省流量
+        assert!(v.get("in_party").is_none(), "in_party=false 時不應出現在 JSON");
     }
 }

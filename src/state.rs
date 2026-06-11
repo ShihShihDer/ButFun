@@ -136,6 +136,9 @@ pub struct Player {
     /// 玩家所屬公會的標籤快取（ROADMAP 29）。None = 不在任何公會。
     /// 公會建立 / 加入 / 離開時由 ws.rs 同步更新，PlayerView 直接讀此欄位。
     pub guild_tag: Option<String>,
+    /// 玩家目前所在隊伍 ID（ROADMAP 97 臨時隊伍，記憶體模式）。None = 無隊。
+    /// 邀請加入 / 離開 / 解散時由 ws.rs 同步更新，PlayerView 讀此欄位推算 in_party。
+    pub party_id: Option<uuid::Uuid>,
     /// 玩家已解鎖的成就（ROADMAP 31）。記憶體前置，重啟清空。
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
@@ -467,6 +470,7 @@ impl Player {
                     let dy = self.y - ny;
                     dx * dx + dy * dy <= crate::traveler_npc::TRAVELER_REACH * crate::traveler_npc::TRAVELER_REACH
                 }).unwrap_or(false),
+            in_party: self.party_id.is_some(),
         }
     }
 
@@ -802,6 +806,8 @@ pub struct AppState {
     pub whisper_senders: Arc<RwLock<HashMap<Uuid, tokio::sync::mpsc::Sender<String>>>>,
     /// 好友關係持久化 store（ROADMAP 96）：單向 follow；Postgres 模式下跨重啟保留。
     pub friends: FriendStore,
+    /// 臨時隊伍管理器（ROADMAP 97）：純記憶體、重啟清空（臨時隊伍不需持久化）。
+    pub parties: crate::party::PartyStore,
 }
 
 impl AppState {
@@ -936,6 +942,7 @@ impl AppState {
             weather: Arc::new(RwLock::new(crate::weather::WeatherState::new())),
             whisper_senders: Arc::new(RwLock::new(HashMap::new())),
             friends,
+            parties: crate::party::PartyStore::default(),
         }
     }
 
@@ -1005,6 +1012,7 @@ mod tests {
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
+            party_id: None,
             achievements: AchievementSet::new(),
             kill_count: 0,
             refine_attempt_count: 0,

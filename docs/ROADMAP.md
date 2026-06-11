@@ -823,8 +823,8 @@ D-3. ✅ **小地圖導航**（PR #71）
     - `FriendStore`（單向 follow）；`users.find_by_name`；protocol：`AddFriend`/`RemoveFriend`/`RequestFriendList`/`FriendList`；wire contract 測試 4 條 + FriendStore 單元測試 3 條。
     - 進場後自動送一次好友清單；面板點擊或刷新按鈕可更新在線狀態。
 
-97. **隊伍 + 隊伍聊天——臨時組隊 + 隊內頻道**（最大，接好友，可邀好友入隊）
-    - 臨時隊伍(比工會小、說組就組)：邀請/加入/離開、隊員清單；`/p 訊息` 隊內頻道(`ServerMsg::PartyChat`)；**純記憶體、臨時、零 migration**；名牌可顯示隊伍標記。
+97. ✅ **隊伍 + 隊伍聊天——臨時組隊 + 隊內頻道**（最大，接好友，可邀好友入隊）（本輪 PR）
+    - 臨時隊伍(比工會小、說組就組)：`/invite 名字` 或好友清單 ⚔️ 邀請；接受邀請彈出橫幅；`/p 訊息` 隊內頻道(`ServerMsg::PartyChat`)；**純記憶體、臨時、零 migration**；名牌顯示藍色 `[隊]` 標記；⚔️ dock 面板（成員清單+離隊按鈕）。
 
 ## 接著（外觀自訂 — 玩家 2026-06-11 要求；延伸 ROADMAP 19 角色外觀 + 角色 sprite 精緻化 87）
 

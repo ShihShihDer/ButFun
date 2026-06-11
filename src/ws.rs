@@ -113,6 +113,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
+            party_id: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
             refine_attempt_count: 0,
@@ -172,6 +173,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
+            party_id: None,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
             refine_attempt_count: 0,
@@ -512,6 +514,63 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         let _ = tx_direct.try_send(json);
                                     }
                                 }
+                            }
+                        } else if let Some(invite_name) = text.strip_prefix("/invite ") {
+                            // `/invite 玩家名` → 邀請加入隊伍（ROADMAP 97）的聊天捷徑。
+                            let invite_name = invite_name.trim().to_string();
+                            let Some(uid) = authed_uid else { continue; };
+                            let target_id = {
+                                let ps = app.players.read().unwrap();
+                                ps.values().find(|p| p.name == invite_name).map(|p| p.id)
+                            };
+                            let Some(target_id) = target_id else {
+                                let err = ServerMsg::Chat { from: "系統".into(), text: format!("找不到在線玩家「{invite_name}」") };
+                                if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                                continue;
+                            };
+                            if target_id == uid {
+                                let err = ServerMsg::Chat { from: "系統".into(), text: "不能邀請自己哦".into() };
+                                if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                                continue;
+                            }
+                            let my_party_id = app.parties.party_of(uid).unwrap_or_else(|| {
+                                let pid = app.parties.create(uid);
+                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) { p.party_id = Some(pid); }
+                                pid
+                            });
+                            match app.parties.invite(my_party_id, target_id) {
+                                None => {
+                                    let err = ServerMsg::Chat { from: "系統".into(), text: format!("「{invite_name}」已在隊伍中，無法邀請") };
+                                    if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                                }
+                                Some(_) => {
+                                    let invite_msg = ServerMsg::PartyInvite { from_name: from.clone() };
+                                    if let Ok(j) = serde_json::to_string(&invite_msg) {
+                                        let senders = app.whisper_senders.read().unwrap();
+                                        if let Some(tx) = senders.get(&target_id) { let _ = tx.try_send(j); }
+                                    }
+                                    let ok = ServerMsg::Chat { from: "系統".into(), text: format!("已傳送隊伍邀請給「{invite_name}」") };
+                                    if let Ok(j) = serde_json::to_string(&ok) { let _ = tx_direct.try_send(j); }
+                                }
+                            }
+                        } else if let Some(party_text) = text.strip_prefix("/p ") {
+                            // `/p 訊息` → 隊伍頻道聊天（ROADMAP 97）：只送給隊伍成員。
+                            let party_text = party_text.trim().to_string();
+                            if party_text.is_empty() {
+                                let err = ServerMsg::Chat { from: "系統".into(), text: "用法：/p 訊息（隊伍聊天）".into() };
+                                if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                            } else if let Some(pid) = authed_uid.and_then(|u| app.parties.party_of(u)) {
+                                let msg = ServerMsg::PartyChat { from: from.clone(), text: party_text };
+                                let members = app.parties.members(pid);
+                                let senders = app.whisper_senders.read().unwrap();
+                                for m in &members {
+                                    if let Some(tx) = senders.get(m) {
+                                        if let Ok(j) = serde_json::to_string(&msg) { let _ = tx.try_send(j); }
+                                    }
+                                }
+                            } else {
+                                let err = ServerMsg::Chat { from: "系統".into(), text: "你目前不在任何隊伍（輸入 /p 訊息 發送隊伍聊天）".into() };
+                                if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
                             }
                         } else {
                             let chat = ServerMsg::Chat { from, text };
@@ -3287,6 +3346,122 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 好友系統 end ─────────────────────────────────────────────────
 
+                // ── 隊伍系統（ROADMAP 97）──────────────────────────────────────
+                Ok(ClientMsg::InviteToParty { name }) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    // 查目標玩家（線上即可，離線不接受邀請）。
+                    let target_id = {
+                        let ps = app.players.read().unwrap();
+                        ps.values().find(|p| p.name == name).map(|p| p.id)
+                    };
+                    let Some(target_id) = target_id else {
+                        let err = ServerMsg::Chat { from: "系統".into(), text: format!("找不到在線玩家「{name}」") };
+                        if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                        continue;
+                    };
+                    if target_id == uid {
+                        let err = ServerMsg::Chat { from: "系統".into(), text: "不能邀請自己哦".into() };
+                        if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                        continue;
+                    }
+                    // 建立（或取得自己的現有）隊伍。
+                    let my_party_id = {
+                        app.parties.party_of(uid).unwrap_or_else(|| {
+                            let pid = app.parties.create(uid);
+                            // 同步到 Player 結構
+                            if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                p.party_id = Some(pid);
+                            }
+                            pid
+                        })
+                    };
+                    // 邀請目標。
+                    match app.parties.invite(my_party_id, target_id) {
+                        None => {
+                            let err = ServerMsg::Chat { from: "系統".into(), text: format!("「{name}」已在隊伍中，無法邀請") };
+                            if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                        }
+                        Some(_) => {
+                            let my_name = app.players.read().unwrap()
+                                .get(&uid).map(|p| p.name.clone()).unwrap_or_default();
+                            let invite_msg = ServerMsg::PartyInvite { from_name: my_name };
+                            if let Ok(j) = serde_json::to_string(&invite_msg) {
+                                let senders = app.whisper_senders.read().unwrap();
+                                if let Some(tx) = senders.get(&target_id) {
+                                    let _ = tx.try_send(j);
+                                }
+                            }
+                            let ok = ServerMsg::Chat { from: "系統".into(), text: format!("已傳送隊伍邀請給「{name}」") };
+                            if let Ok(j) = serde_json::to_string(&ok) { let _ = tx_direct.try_send(j); }
+                        }
+                    }
+                }
+                Ok(ClientMsg::JoinParty) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    if let Some((pid, leader_id, members)) = app.parties.accept_invite(uid) {
+                        // 同步所有新成員的 party_id
+                        {
+                            let mut ps = app.players.write().unwrap();
+                            for &m in &members {
+                                if let Some(p) = ps.get_mut(&m) { p.party_id = Some(pid); }
+                            }
+                        }
+                        broadcast_party_update(&app, pid, &members, leader_id);
+                        tracing::info!(%uid, %pid, "加入隊伍");
+                    } else {
+                        let err = ServerMsg::Chat { from: "系統".into(), text: "目前沒有待處理的隊伍邀請".into() };
+                        if let Ok(j) = serde_json::to_string(&err) { let _ = tx_direct.try_send(j); }
+                    }
+                }
+                Ok(ClientMsg::DeclineParty) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    app.parties.decline_invite(uid);
+                }
+                Ok(ClientMsg::LeaveParty) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    if let Some((disbanded, remaining)) = app.parties.leave(uid) {
+                        // 清除自己的 party_id
+                        if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                            p.party_id = None;
+                        }
+                        if disbanded {
+                            // 通知所有前成員解散
+                            {
+                                let mut ps = app.players.write().unwrap();
+                                for &m in &remaining {
+                                    if let Some(p) = ps.get_mut(&m) { p.party_id = None; }
+                                }
+                            }
+                            let msg = ServerMsg::PartyDisbanded;
+                            let senders = app.whisper_senders.read().unwrap();
+                            for m in &remaining {
+                                if let Some(tx) = senders.get(m) {
+                                    if let Ok(j) = serde_json::to_string(&msg) { let _ = tx.try_send(j); }
+                                }
+                            }
+                            // 自己也收到解散通知
+                            if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                        } else {
+                            // 非解散：通知剩餘成員更新列表；通知自己已離隊。
+                            if let Some(&first) = remaining.first() {
+                                if let Some(pid) = app.parties.party_of(first) {
+                                    let leader_id = app.players.read().unwrap()
+                                        .iter()
+                                        .find(|(_, p)| p.party_id == Some(pid))
+                                        .map(|(_, p)| p.id)
+                                        .unwrap_or_default();
+                                    broadcast_party_update(&app, pid, &remaining, leader_id);
+                                }
+                            }
+                            // 告知自己已離隊（清除前端 party UI）
+                            let left = ServerMsg::PartyDisbanded;
+                            if let Ok(j) = serde_json::to_string(&left) { let _ = tx_direct.try_send(j); }
+                        }
+                        tracing::info!(%uid, disbanded, "離開隊伍");
+                    }
+                }
+                // ── 隊伍系統 end ─────────────────────────────────────────────
+
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },
@@ -3297,12 +3472,60 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
     // ROADMAP 95 密語路由：離線時從 map 移除，後續密語嘗試會正確回報「不在線」。
     app.whisper_senders.write().unwrap().remove(&id);
+    // ROADMAP 97 隊伍清理：玩家離線視同離隊，通知其他成員。
+    if let Some(uid) = authed_uid {
+        if let Some((disbanded, remaining)) = app.parties.leave(uid) {
+            if let Some(p) = app.players.write().unwrap().get_mut(&uid) { p.party_id = None; }
+            if disbanded {
+                // 隊長離線或人數不足 → 解散：清除所有前成員的 party_id 並通知。
+                {
+                    let mut ps = app.players.write().unwrap();
+                    for &m in &remaining { if let Some(p) = ps.get_mut(&m) { p.party_id = None; } }
+                }
+                let disbanded_msg = ServerMsg::PartyDisbanded;
+                let senders = app.whisper_senders.read().unwrap();
+                for m in &remaining {
+                    if let Some(tx) = senders.get(m) {
+                        if let Ok(j) = serde_json::to_string(&disbanded_msg) { let _ = tx.try_send(j); }
+                    }
+                }
+            } else {
+                // 普通成員離線 → 隊伍繼續，通知剩餘成員更新名單。
+                if let Some(&first) = remaining.first() {
+                    if let Some(pid) = app.parties.party_of(first) {
+                        let leader_id = app.players.read().unwrap()
+                            .iter().find(|(_, p)| p.party_id == Some(pid))
+                            .map(|(_, p)| p.id).unwrap_or_default();
+                        broadcast_party_update(&app, pid, &remaining, leader_id);
+                    }
+                }
+            }
+        }
+    }
     forward.abort();
     cleanup(&app, id, authed_uid.is_some()).await;
     tracing::info!(player = %player.name, %id, "玩家離線");
 }
 
 /// 組裝 `ServerMsg::FriendList`：查好友 UUID → 查名字（UserStore）→ 判斷在線（players map）。
+/// 廣播 `PartyUpdate` 給隊伍所有在線成員（ROADMAP 97）。
+fn broadcast_party_update(app: &AppState, party_id: Uuid, members: &[Uuid], leader_id: Uuid) {
+    let ps = app.players.read().unwrap();
+    let member_names: Vec<String> = members.iter()
+        .filter_map(|m| ps.get(m).map(|p| p.name.clone()))
+        .collect();
+    drop(ps);
+    let senders = app.whisper_senders.read().unwrap();
+    for &m in members {
+        let is_leader = m == leader_id;
+        let msg = ServerMsg::PartyUpdate { members: member_names.clone(), is_leader };
+        if let Ok(j) = serde_json::to_string(&msg) {
+            if let Some(tx) = senders.get(&m) { let _ = tx.try_send(j); }
+        }
+    }
+    let _ = party_id; // 目前僅用 members，保留 party_id 供未來擴充
+}
+
 fn build_friend_list_msg(app: &AppState, user_id: Uuid) -> ServerMsg {
     use crate::protocol::FriendEntry;
     let friend_ids = app.friends.get_friends(user_id);
