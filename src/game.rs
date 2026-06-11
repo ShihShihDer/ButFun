@@ -673,6 +673,31 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 暮告（ROADMAP 78）：白天→黃昏轉換時，商人薇拉廣播傍晚感言。
+            // 與晨喚形成完整日夜節律——黎明有凱爾長老，黃昏有商人薇拉。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let current_phase = app.daynight.read().unwrap().phase();
+                let should_call = if online_count > 0 {
+                    app.dusk_call.write().unwrap().tick(dt, current_phase)
+                } else {
+                    false
+                };
+                if should_call {
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.dusk_call_sem.clone();
+                    tokio::spawn(async move {
+                        // 非阻塞嘗試取得 Semaphore；若已有暮告進行中則直接略過。
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let text = crate::npc_dusk_call::generate_dusk_call(online_count).await;
+                        let _ = tx_chat.send(format!(
+                            "🌇 [{vela}] 說：「{text}」",
+                            vela = crate::npc_dusk_call::VELA_DISPLAY_NAME,
+                        ));
+                    });
+                }
+            }
+
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
             {
