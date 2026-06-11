@@ -86,6 +86,7 @@ mod world_log;
 mod player_log;
 mod weather;
 mod friends;
+mod party;
 
 use std::net::SocketAddr;
 
