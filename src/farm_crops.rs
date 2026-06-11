@@ -169,11 +169,14 @@ impl FarmCropRegistry {
     }
 
     /// 每遊戲 tick 推進所有地塊的作物生長計時器。
-    pub fn tick(&mut self, dt: f32) {
+    /// `rain_bonus`：下雨時為 true，作物成長速度提升 50%（ROADMAP 109）。
+    pub fn tick(&mut self, dt: f32, rain_bonus: bool) {
+        // 雨水滋潤：成長速度提升 1.5 倍。
+        let effective = if rain_bonus { dt * 1.5 } else { dt };
         for state in self.plots.values_mut() {
             for crop in state.crops.iter_mut() {
                 if !crop.is_ripe() {
-                    crop.grow_timer = (crop.grow_timer + dt).min(GROW_TIME_SECS);
+                    crop.grow_timer = (crop.grow_timer + effective).min(GROW_TIME_SECS);
                 }
             }
         }
@@ -248,7 +251,7 @@ mod tests {
     fn tick_matures_crop() {
         let mut reg = FarmCropRegistry::new();
         assert!(reg.plant(3, CropKind::Potato));
-        reg.tick(GROW_TIME_SECS + 0.1);
+        reg.tick(GROW_TIME_SECS + 0.1, false);
         let crops = reg.state_of(3);
         assert_eq!(crops.len(), 1);
         assert!(crops[0].ripe, "tick 到期後應成熟");
@@ -259,7 +262,7 @@ mod tests {
     fn harvest_ripe_gives_items_and_xp() {
         let mut reg = FarmCropRegistry::new();
         assert!(reg.plant(4, CropKind::Carrot));
-        reg.tick(GROW_TIME_SECS);
+        reg.tick(GROW_TIME_SECS, false);
         let (items, xp) = reg.harvest(4);
         assert!(!items.is_empty(), "應有胡蘿蔔掉落");
         assert_eq!(xp, HARVEST_FARMER_XP);
@@ -301,7 +304,7 @@ mod tests {
         let mut reg = FarmCropRegistry::new();
         assert!(reg.plant(6, CropKind::Potato));
         for _ in 0..20 {
-            reg.tick(GROW_TIME_SECS);
+            reg.tick(GROW_TIME_SECS, false);
         }
         let slot = &reg.plots.get(&6).unwrap().crops[0];
         assert!(
@@ -327,5 +330,21 @@ mod tests {
             PLANT_COST_WHEAT < PLANT_COST_CARROT && PLANT_COST_CARROT < PLANT_COST_POTATO,
             "種植費用應小麥 < 胡蘿蔔 < 馬鈴薯"
         );
+    }
+
+    /// 雨水加成：相同時間下雨天作物比晴天長得更快。
+    /// 用 2/3 GROW_TIME_SECS 的 dt：有 1.5x 加成時剛好成熟，無加成時尚未成熟。
+    #[test]
+    fn rain_bonus_speeds_up_growth() {
+        let dt = GROW_TIME_SECS * 2.0 / 3.0; // = 60 秒
+        let mut reg_rain = FarmCropRegistry::new();
+        reg_rain.plant(10, CropKind::Wheat);
+        reg_rain.tick(dt, true); // 60 * 1.5 = 90 → 成熟
+        assert!(reg_rain.state_of(10)[0].ripe, "雨天加速後應已成熟");
+
+        let mut reg_dry = FarmCropRegistry::new();
+        reg_dry.plant(10, CropKind::Wheat);
+        reg_dry.tick(dt, false); // 60 < 90 → 未成熟
+        assert!(!reg_dry.state_of(10)[0].ripe, "晴天相同時間應尚未成熟");
     }
 }
