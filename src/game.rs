@@ -623,6 +623,37 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 自主懸賞令（ROADMAP 82）：蘭卡安全感低且兇名精英存在時自主發布通緝令。
+            // 成本紀律：15 分鐘冷卻、純罐頭降級可運作、無 Semaphore（state 機保證最多一筆）。
+            {
+                let player_count = app.players.read().unwrap().len();
+                let candidate = if player_count > 0 {
+                    // 收集所有兇名精英（同 boss_roar 邏輯）。
+                    let notorious: Vec<_> = app
+                        .enemies
+                        .read()
+                        .unwrap()
+                        .enemies()
+                        .into_iter()
+                        .filter(|e| e.level >= e.base_level.saturating_add(3))
+                        .map(|e| (e.enemy.kind().display_name(), e.level))
+                        .collect();
+                    let lanca_safety = app.npc_needs.read().unwrap().get("bounty_npc").safety;
+                    app.npc_bounty.write().unwrap().tick(dt, &notorious, lanca_safety, player_count)
+                } else {
+                    None
+                };
+                if let Some((kind_name, level)) = candidate {
+                    let tx_chat = app.tx_chat.clone();
+                    tokio::spawn(async move {
+                        let text = crate::npc_bounty::generate_announcement(&kind_name, level).await;
+                        let _ = tx_chat.send(format!(
+                            "🎯 [獵手蘭卡] 貼出通緝令：「{text}」"
+                        ));
+                    });
+                }
+            }
+
             // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
             {
                 let online_count = app.players.read().unwrap().len();
