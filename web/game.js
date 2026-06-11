@@ -3863,473 +3863,746 @@
     rift_guardian:     "裂縫守護者",
   };
 
-  // 銹蝕巡邏機:懸浮的故障舊機械。金屬殼 + 脈動紅色感測眼 + 頂端閃燈 + 側鰭。純 canvas 畫。
+  // 廢鐵無人機：蒸汽龐克機械偵查器。機身＋雙旋翼＋銅天線＋紅色警示核心眼。ROADMAP 89 精緻化。
   function drawScrapDrone(cx, cy, t, phase) {
-    const x = cx - 13, y = cy - 9, w = 26, h = 18, r = 7;
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
+    const bob = Math.sin(t * 8 + phase) * 0.8;
+    // 機身主體（倒梯形鋼板，比原版寬）
     ctx.fillStyle = "#5a4636";
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "#2c211a";
-    ctx.stroke();
-    ctx.fillStyle = "#46362a";
-    ctx.beginPath(); ctx.moveTo(cx - 13, cy - 2); ctx.lineTo(cx - 19, cy + 1); ctx.lineTo(cx - 13, cy + 5); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(cx + 13, cy - 2); ctx.lineTo(cx + 19, cy + 1); ctx.lineTo(cx + 13, cy + 5); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = "#3a2c22"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(cx, cy - 9); ctx.lineTo(cx, cy - 15); ctx.stroke();
-    const blink = Math.sin(t * 6 + phase) > 0 ? 1 : 0.3;
-    ctx.fillStyle = `rgba(255,120,60,${blink})`;
-    ctx.beginPath(); ctx.arc(cx, cy - 16, 2, 0, Math.PI * 2); ctx.fill();
-    const pulse = 0.7 + 0.3 * Math.sin(t * 4 + phase);
-    ctx.fillStyle = "#1a0f0a"; ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = `rgba(255,90,50,${pulse})`; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(255,210,180,0.9)"; ctx.beginPath(); ctx.arc(cx - 1.2, cy - 1.2, 1.3, 0, Math.PI * 2); ctx.fill();
-  }
-
-  // 迷途乙太靈:野化的乙太生靈。柔光球 + 下垂飄帶 + 兩顆小眼,整體脈動漂浮。純 canvas 畫。
-  function drawEtherWisp(cx, cy, t, phase) {
-    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 16);
-    glow.addColorStop(0, "rgba(150,130,230,0.55)");
-    glow.addColorStop(1, "rgba(70,64,122,0)");
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(cx, cy, 16, 0, Math.PI * 2); ctx.fill();
-    for (let k = 1; k <= 3; k++) {
-      const ty = cy + 6 + k * 5;
-      const tx = cx + Math.sin(t * 3 + phase + k * 0.8) * 4;
-      ctx.fillStyle = `rgba(139,127,214,${0.5 - k * 0.13})`;
-      ctx.beginPath(); ctx.arc(tx, ty, 5 - k * 1.2, 0, Math.PI * 2); ctx.fill();
-    }
-    const pulse = 0.85 + 0.15 * Math.sin(t * 4 + phase);
-    ctx.fillStyle = `rgba(159,147,224,${pulse})`;
-    ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(20,16,40,0.9)";
-    ctx.beginPath(); ctx.arc(cx - 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 3, cy - 1, 1.6, 0, Math.PI * 2); ctx.fill();
-  }
-
-  // 飄舞精靈（草原）：輕盈的花粉光球，花瓣翅膀 + 溫柔光暈 + 閃爍花粉點。草原嫩綠色調。
-  function drawFlutterSprite(cx, cy, t, phase) {
-    const pulse = 0.8 + 0.2 * Math.sin(t * 5 + phase);
-    // 外層柔光暈
-    const glow = ctx.createRadialGradient(cx, cy, 2, cx, cy, 14);
-    glow.addColorStop(0, `rgba(180,240,120,${0.5 * pulse})`);
-    glow.addColorStop(1, "rgba(125,202,90,0)");
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI * 2); ctx.fill();
-    // 花瓣翅膀（四片橢圓，旋轉飄動）
-    for (let k = 0; k < 4; k++) {
-      const angle = (k / 4) * Math.PI * 2 + Math.sin(t * 2 + phase) * 0.15;
-      const wx = cx + Math.cos(angle) * 9;
-      const wy = cy + Math.sin(angle) * 9;
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, cy - 7 + bob); ctx.lineTo(cx + 15, cy - 7 + bob);
+    ctx.lineTo(cx + 12, cy + 10 + bob); ctx.lineTo(cx - 12, cy + 10 + bob);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#2c211a"; ctx.lineWidth = 2; ctx.stroke();
+    // 機身高光
+    ctx.fillStyle = "rgba(200,170,140,0.22)"; ctx.fillRect(cx - 13, cy - 6 + bob, 9, 6);
+    // 中央縱槽
+    ctx.strokeStyle = "#3a2820"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 6 + bob); ctx.lineTo(cx, cy + 10 + bob); ctx.stroke();
+    // 旋翼橫桿
+    ctx.fillStyle = "#3a2c22";
+    ctx.fillRect(cx - 26, cy - 4 + bob, 13, 4);
+    ctx.fillRect(cx + 13, cy - 4 + bob, 13, 4);
+    // 旋翼槳葉（高速旋轉，左逆右順）
+    for (const [wx, spd] of [[cx - 20, 14], [cx + 20, -13]]) {
       ctx.save();
-      ctx.translate(wx, wy);
-      ctx.rotate(angle);
-      ctx.fillStyle = `rgba(170,230,100,0.55)`;
-      ctx.beginPath(); ctx.ellipse(0, 0, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(wx, cy - 2 + bob); ctx.rotate(t * spd + phase);
+      ctx.fillStyle = "rgba(180,150,100,0.70)";
+      ctx.beginPath(); ctx.ellipse(0, 0, 10, 2.8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(0, 0, 10, 2.8, Math.PI / 2, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
-    // 中心光核
-    ctx.fillStyle = `rgba(220,255,170,${pulse})`;
-    ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill();
-    // 眼睛（小綠點）
-    ctx.fillStyle = "#1a3a10";
-    ctx.beginPath(); ctx.arc(cx - 2, cy - 1, 1.2, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 2, cy - 1, 1.2, 0, Math.PI * 2); ctx.fill();
-    // 漂浮花粉小點
+    // 底部支架
+    ctx.strokeStyle = "#3a2c22"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy + 10 + bob); ctx.lineTo(cx - 11, cy + 16 + bob);
+    ctx.moveTo(cx + 8, cy + 10 + bob); ctx.lineTo(cx + 11, cy + 16 + bob);
+    ctx.stroke();
+    ctx.strokeStyle = "#2a1e14"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx - 13, cy + 15 + bob); ctx.lineTo(cx + 13, cy + 15 + bob); ctx.stroke();
+    // 核心警示眼（大、脈動）
+    const blink = Math.sin(t * 6 + phase) > 0.2 ? 1 : 0.2;
+    ctx.fillStyle = "#12090a"; ctx.beginPath(); ctx.arc(cx, cy + 1 + bob, 7.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,55,20,${blink})`; ctx.beginPath(); ctx.arc(cx, cy + 1 + bob, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,190,160,0.9)"; ctx.beginPath(); ctx.arc(cx - 2, cy - 0.5 + bob, 2, 0, Math.PI * 2); ctx.fill();
+    // 雙天線＋頂燈
+    ctx.strokeStyle = "#6a5040"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx - 5, cy - 7 + bob); ctx.lineTo(cx - 6, cy - 16 + bob); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx + 5, cy - 7 + bob); ctx.lineTo(cx + 6, cy - 16 + bob); ctx.stroke();
+    ctx.fillStyle = `rgba(255,100,40,${blink})`;
+    ctx.beginPath(); ctx.arc(cx - 6, cy - 16 + bob, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 6, cy - 16 + bob, 2.2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 迷途乙太靈：野化的乙太生靈。多層光球＋環繞飄帶＋發光雙眼＋浮動符文點。ROADMAP 89 精緻化。
+  function drawEtherWisp(cx, cy, t, phase) {
+    const pulse = 0.80 + 0.20 * Math.sin(t * 3.5 + phase);
+    // 外層大光暈
+    const outerGlow = ctx.createRadialGradient(cx, cy, 3, cx, cy, 20);
+    outerGlow.addColorStop(0, `rgba(140,120,235,${0.45 * pulse})`);
+    outerGlow.addColorStop(1, "rgba(60,50,120,0)");
+    ctx.fillStyle = outerGlow;
+    ctx.beginPath(); ctx.arc(cx, cy, 20, 0, Math.PI * 2); ctx.fill();
+    // 三條環繞飄帶（旋轉）
     for (let k = 0; k < 3; k++) {
-      const px = cx + Math.cos(t * 1.5 + phase + k * 2.1) * 14;
-      const py = cy + Math.sin(t * 1.5 + phase + k * 2.1) * 8 - k * 3;
-      ctx.fillStyle = `rgba(255,255,180,${0.5 - k * 0.12})`;
-      ctx.beginPath(); ctx.arc(px, py, 1.3 - k * 0.3, 0, Math.PI * 2); ctx.fill();
+      const ang = t * 2 + phase + k * (Math.PI * 2 / 3);
+      const bx = cx + Math.cos(ang) * 11;
+      const by = cy + Math.sin(ang) * 7;
+      ctx.fillStyle = `rgba(155,135,220,${0.50 - k * 0.1})`;
+      ctx.beginPath(); ctx.ellipse(bx, by, 5 - k * 0.8, 2.5 - k * 0.5, ang, 0, Math.PI * 2); ctx.fill();
+    }
+    // 主球體（多層）
+    ctx.fillStyle = "rgba(175,160,230,0.88)";
+    ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(210,200,255,${pulse * 0.9})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.fill();
+    // 中心亮核
+    ctx.fillStyle = "rgba(240,235,255,0.95)";
+    ctx.beginPath(); ctx.arc(cx - 1, cy - 1, 3, 0, Math.PI * 2); ctx.fill();
+    // 雙眼（空洞感）
+    ctx.fillStyle = "rgba(18,14,38,0.92)";
+    ctx.beginPath(); ctx.arc(cx - 3.5, cy - 0.5, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3.5, cy - 0.5, 2.2, 0, Math.PI * 2); ctx.fill();
+    // 浮動符文粒子
+    for (let k = 0; k < 4; k++) {
+      const a = t * 1.2 + phase + k * (Math.PI / 2);
+      const px = cx + Math.cos(a) * 16;
+      const py = cy + Math.sin(a) * 11;
+      ctx.fillStyle = `rgba(200,180,255,${0.45 - k * 0.07})`;
+      ctx.beginPath(); ctx.arc(px, py, 1.8 - k * 0.3, 0, Math.PI * 2); ctx.fill();
     }
   }
 
-  // 蕈菇潛行者（森林）：蕈菇形輪廓，厚蓋帽 + 下垂菌褶條 + 孢子噴發。深翠綠色調。
+  // 飄舞精靈（草原）：花仙子造型，蝶翼＋花冠＋精緻小臉＋花粉軌跡。ROADMAP 89 精緻化。
+  function drawFlutterSprite(cx, cy, t, phase) {
+    const flapA = Math.sin(t * 7 + phase); // 高頻翅膀拍動
+    const bob   = Math.sin(t * 2.5 + phase) * 2.5;
+    // 外層光暈
+    const glow = ctx.createRadialGradient(cx, cy + bob, 2, cx, cy + bob, 18);
+    glow.addColorStop(0, "rgba(180,250,120,0.45)");
+    glow.addColorStop(1, "rgba(120,200,80,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 18, 0, Math.PI * 2); ctx.fill();
+    // 雙翼（蝴蝶型，左右各兩片，仿真翅膀）
+    for (const [side, dir] of [[-1, 1], [1, -1]]) {
+      // 上翼
+      ctx.save();
+      ctx.translate(cx + side * 5, cy - 3 + bob);
+      ctx.rotate(side * (0.35 + flapA * 0.25));
+      ctx.fillStyle = "rgba(160,240,90,0.60)";
+      ctx.beginPath(); ctx.ellipse(0, 0, 11, 6, dir * 0.3, 0, Math.PI * 2); ctx.fill();
+      // 翼脈
+      ctx.strokeStyle = "rgba(80,160,40,0.50)"; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(side * 10, -4); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(side * 8,  2); ctx.stroke();
+      ctx.restore();
+      // 下翼（小）
+      ctx.save();
+      ctx.translate(cx + side * 4, cy + 5 + bob);
+      ctx.rotate(side * (0.55 + flapA * 0.20));
+      ctx.fillStyle = "rgba(200,255,150,0.50)";
+      ctx.beginPath(); ctx.ellipse(0, 0, 7, 4, dir * 0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    // 軀體（細長橢圓）
+    ctx.fillStyle = "#3a6a18";
+    ctx.beginPath(); ctx.ellipse(cx, cy + 2 + bob, 3.5, 8, 0, 0, Math.PI * 2); ctx.fill();
+    // 臉部（圓頭）
+    ctx.fillStyle = "#5a9a28";
+    ctx.beginPath(); ctx.arc(cx, cy - 5 + bob, 5.5, 0, Math.PI * 2); ctx.fill();
+    // 花冠（五個小圓）
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * Math.PI * 2 - Math.PI / 2;
+      ctx.fillStyle = k % 2 === 0 ? "#ffcc44" : "#ff8866";
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 6.5, cy - 5 + bob + Math.sin(a) * 6.5, 1.8, 0, Math.PI * 2); ctx.fill();
+    }
+    // 眼睛
+    const ep = 0.8 + 0.2 * Math.sin(t * 5 + phase);
+    ctx.fillStyle = "#1a3a08";
+    ctx.beginPath(); ctx.arc(cx - 2, cy - 5.5 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 2, cy - 5.5 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,200,${ep})`;
+    ctx.beginPath(); ctx.arc(cx - 1.5, cy - 6 + bob, 0.7, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 2.5, cy - 6 + bob, 0.7, 0, Math.PI * 2); ctx.fill();
+    // 花粉軌跡
+    for (let k = 0; k < 5; k++) {
+      const px = cx + Math.cos(t * 2 + phase + k * 1.26) * 18;
+      const py = cy + Math.sin(t * 2 + phase + k * 1.26) * 11 + bob;
+      ctx.fillStyle = `rgba(255,245,100,${0.55 - k * 0.09})`;
+      ctx.beginPath(); ctx.arc(px, py, 1.6 - k * 0.24, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // 蕈菇潛行者（森林）：大型斑點蕈菇帽＋多眼＋發光菌褶＋爬行根足。ROADMAP 89 精緻化。
   function drawMushroomStalker(cx, cy, t, phase) {
-    const bob = Math.sin(t * 2.5 + phase) * 1.5;
-    // 蕈菇柄（身體）
-    ctx.fillStyle = "#3a6a4e";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + 6 + bob, 6, 9, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 蕈菇蓋（大帽子）
-    ctx.fillStyle = "#2a6040";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy - 4 + bob, 13, 8, 0, 0, Math.PI, true);
-    ctx.fill();
-    ctx.fillStyle = "#3a8058";
-    ctx.beginPath();
-    ctx.ellipse(cx, cy - 3 + bob, 13, 8, 0, 0, Math.PI, false);
-    ctx.fill();
-    // 蓋子外緣發光（孢子光）
-    const sg = ctx.createRadialGradient(cx, cy - 4 + bob, 6, cx, cy - 4 + bob, 16);
-    sg.addColorStop(0, "rgba(80,200,130,0.25)");
-    sg.addColorStop(1, "rgba(40,100,70,0)");
-    ctx.fillStyle = sg;
-    ctx.beginPath(); ctx.arc(cx, cy - 4 + bob, 16, 0, Math.PI * 2); ctx.fill();
-    // 菌褶條紋
-    for (let k = -2; k <= 2; k++) {
-      ctx.strokeStyle = "rgba(30,80,50,0.7)";
-      ctx.lineWidth = 1;
+    const bob = Math.sin(t * 2.5 + phase) * 2;
+    // 蕈菇柄（厚實身體）
+    ctx.fillStyle = "#356240";
+    ctx.beginPath(); ctx.ellipse(cx, cy + 8 + bob, 7, 10, 0, 0, Math.PI * 2); ctx.fill();
+    // 柄面紋路
+    ctx.strokeStyle = "#2a4e32"; ctx.lineWidth = 1;
+    for (let k = -1; k <= 1; k++) {
       ctx.beginPath();
-      ctx.moveTo(cx + k * 4, cy - 3 + bob);
-      ctx.lineTo(cx + k * 4 + Math.sin(t + k) * 1.5, cy + 4 + bob);
+      ctx.moveTo(cx + k * 4, cy + 2 + bob);
+      ctx.lineTo(cx + k * 4, cy + 14 + bob);
       ctx.stroke();
     }
-    // 小眼睛（發光）
-    const ep = 0.7 + 0.3 * Math.sin(t * 4 + phase);
-    ctx.fillStyle = `rgba(100,255,160,${ep})`;
-    ctx.beginPath(); ctx.arc(cx - 3, cy + 2 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 3, cy + 2 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+    // 蕈菇蓋（下半弧）
+    ctx.fillStyle = "#286048";
+    ctx.beginPath(); ctx.ellipse(cx, cy - 3 + bob, 16, 10, 0, 0, Math.PI, false); ctx.fill();
+    // 蓋上緣（半圓頂部）
+    ctx.fillStyle = "#1e5038";
+    ctx.beginPath(); ctx.ellipse(cx, cy - 3 + bob, 16, 10, 0, 0, Math.PI, true); ctx.fill();
+    // 斑點（不規則亮綠圓）
+    for (const [dx, dy, r] of [[-8,-5,2.5],[3,-9,3],[10,-3,2],[-2,-11,2],[8,-8,1.8]]) {
+      ctx.fillStyle = "rgba(100,230,150,0.55)";
+      ctx.beginPath(); ctx.arc(cx + dx, cy + dy + bob, r, 0, Math.PI * 2); ctx.fill();
+    }
+    // 蓋緣孢子光
+    const sg = ctx.createRadialGradient(cx, cy - 3 + bob, 8, cx, cy - 3 + bob, 20);
+    sg.addColorStop(0, "rgba(60,200,100,0.22)");
+    sg.addColorStop(1, "rgba(30,100,60,0)");
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(cx, cy - 3 + bob, 20, 0, Math.PI * 2); ctx.fill();
+    // 菌褶（下緣條紋）
+    ctx.strokeStyle = "rgba(20,70,40,0.80)"; ctx.lineWidth = 1.2;
+    for (let k = -3; k <= 3; k++) {
+      ctx.beginPath();
+      ctx.moveTo(cx + k * 4.2, cy - 2 + bob);
+      ctx.quadraticCurveTo(cx + k * 4.5 + Math.sin(t * 2 + k) * 1.5, cy + 3 + bob, cx + k * 4 + Math.sin(t + k) * 2, cy + 6 + bob);
+      ctx.stroke();
+    }
+    // 多眼（蓋緣三顆，發光）
+    const ep = 0.65 + 0.35 * Math.sin(t * 5 + phase);
+    for (const [ex, ey_] of [[-9,-1],[0,-12],[9,-1]]) {
+      ctx.fillStyle = "rgba(10,50,25,0.9)";
+      ctx.beginPath(); ctx.arc(cx + ex, cy + ey_ + bob, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(80,255,140,${ep})`;
+      ctx.beginPath(); ctx.arc(cx + ex, cy + ey_ + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
+    // 根足（三條爬行）
+    ctx.strokeStyle = "#2a4e32"; ctx.lineWidth = 2;
+    for (let k = 0; k < 3; k++) {
+      const lx = cx - 8 + k * 8;
+      const wiggle = Math.sin(t * 3 + phase + k * 1.5) * 4;
+      ctx.beginPath();
+      ctx.moveTo(lx, cy + 16 + bob);
+      ctx.quadraticCurveTo(lx + wiggle, cy + 20 + bob, lx + wiggle * 1.5, cy + 24 + bob);
+      ctx.stroke();
+    }
   }
 
-  // 晶石傀儡（岩地）：幾何晶柱身軀，六角晶面 + 內部光核 + 碎裂感稜線。紫藍銀色調。
+  // 晶石傀儡（岩地）：多晶塔身＋核心單眼＋碎裂射線＋強烈紫藍內光。ROADMAP 89 精緻化。
   function drawCrystalGolem(cx, cy, t, phase) {
-    const pulse = 0.6 + 0.4 * Math.sin(t * 3 + phase);
-    // 內核光暈
-    const ig = ctx.createRadialGradient(cx, cy, 2, cx, cy, 18);
-    ig.addColorStop(0, `rgba(150,140,255,${0.5 * pulse})`);
-    ig.addColorStop(1, "rgba(80,60,180,0)");
-    ctx.fillStyle = ig;
-    ctx.beginPath(); ctx.arc(cx, cy, 18, 0, Math.PI * 2); ctx.fill();
-    // 晶柱主體（六角形）
+    const pulse = 0.55 + 0.45 * Math.sin(t * 2.8 + phase);
+    // 大型外光暈
+    const outerG = ctx.createRadialGradient(cx, cy, 4, cx, cy, 24);
+    outerG.addColorStop(0, `rgba(130,110,255,${0.40 * pulse})`);
+    outerG.addColorStop(1, "rgba(60,40,160,0)");
+    ctx.fillStyle = outerG;
+    ctx.beginPath(); ctx.arc(cx, cy, 24, 0, Math.PI * 2); ctx.fill();
+    // 外圍小晶柱（6根，輪流縮放）
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2 - Math.PI / 6 + t * 0.15;
+      const spike = 13 + Math.sin(t * 3 + phase + k * 1.05) * 2.5;
+      ctx.save();
+      ctx.translate(cx + Math.cos(a) * 10, cy + Math.sin(a) * 10);
+      ctx.rotate(a + Math.PI / 2);
+      ctx.fillStyle = `rgba(100,90,200,${0.7 + 0.2 * pulse})`;
+      ctx.beginPath();
+      ctx.moveTo(-2.5, 0); ctx.lineTo(2.5, 0); ctx.lineTo(0, -spike); ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = `rgba(190,180,255,0.7)`; ctx.lineWidth = 0.8; ctx.stroke();
+      ctx.restore();
+    }
+    // 主體六角形（厚實）
     ctx.beginPath();
     for (let k = 0; k < 6; k++) {
       const a = (k / 6) * Math.PI * 2 - Math.PI / 6;
-      const r = 12 + Math.sin(t * 2 + phase + k) * 1.5;
-      if (k === 0) ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-      else ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      const r = 11 + Math.sin(t * 2 + phase + k * 0.9) * 1;
+      k === 0 ? ctx.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r)
+              : ctx.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
     }
     ctx.closePath();
-    ctx.fillStyle = "#6060c0";
-    ctx.fill();
-    ctx.strokeStyle = "#c0c0ff";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    // 稜線（碎裂感）
+    ctx.fillStyle = "#5858b8"; ctx.fill();
+    ctx.strokeStyle = "#b0b0f8"; ctx.lineWidth = 1.8; ctx.stroke();
+    // 內部稜線（三叉射線）
+    ctx.strokeStyle = `rgba(190,185,255,${0.55 + 0.3 * pulse})`; ctx.lineWidth = 1.2;
     for (let k = 0; k < 3; k++) {
       const a = (k / 3) * Math.PI * 2;
-      ctx.strokeStyle = `rgba(200,200,255,0.5)`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(a) * 12, cy + Math.sin(a) * 12);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + Math.cos(a) * 10, cy + Math.sin(a) * 10); ctx.stroke();
     }
-    // 中心發光眼（單眼）
-    ctx.fillStyle = `rgba(220,210,255,${pulse})`;
-    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#1a1040";
-    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
+    // 中心單眼（大）
+    ctx.fillStyle = `rgba(215,205,255,${pulse})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#0e0a28";
+    ctx.beginPath(); ctx.arc(cx, cy, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(200,180,255,${0.9 * pulse})`;
+    ctx.beginPath(); ctx.arc(cx - 1.2, cy - 1.2, 1.5, 0, Math.PI * 2); ctx.fill();
   }
 
-  // 符文守衛（沙漠）：古代銘刻石柱，方正厚重 + 發光符文線 + 沙漠琥珀色調。
+  // 符文守衛（沙漠）：高聳石碑＋多行符文＋旋浮小石＋琥珀眼縫。ROADMAP 89 精緻化。
   function drawRuneGuardian(cx, cy, t, phase) {
-    const rp = 0.5 + 0.5 * Math.sin(t * 2.5 + phase);
-    // 石柱主體（矩形）
-    ctx.fillStyle = "#7a6030";
-    ctx.fillRect(cx - 11, cy - 14, 22, 24);
-    ctx.strokeStyle = "#4a3818";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(cx - 11, cy - 14, 22, 24);
-    // 頂部裝飾（梯形）
-    ctx.beginPath();
-    ctx.moveTo(cx - 8, cy - 14);
-    ctx.lineTo(cx + 8, cy - 14);
-    ctx.lineTo(cx + 11, cy - 20);
-    ctx.lineTo(cx - 11, cy - 20);
-    ctx.closePath();
-    ctx.fillStyle = "#8a7038";
-    ctx.fill();
-    // 發光符文線（Z 字形交叉）
-    ctx.strokeStyle = `rgba(255,200,80,${rp})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(cx - 7, cy - 10); ctx.lineTo(cx + 7, cy - 10);
-    ctx.moveTo(cx + 7, cy - 10); ctx.lineTo(cx - 7, cy - 2);
-    ctx.moveTo(cx - 7, cy - 2);  ctx.lineTo(cx + 7, cy - 2);
-    ctx.stroke();
-    // 下方符文點
-    ctx.fillStyle = `rgba(255,220,100,${rp * 0.8})`;
-    ctx.beginPath(); ctx.arc(cx, cy + 5, 2.5, 0, Math.PI * 2); ctx.fill();
-    // 眼睛（兩個琥珀色發光縫）
-    const ep = 0.6 + 0.4 * Math.sin(t * 6 + phase);
-    ctx.fillStyle = `rgba(255,180,40,${ep})`;
-    ctx.beginPath(); ctx.ellipse(cx - 4, cy - 6, 2.5, 1.2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(cx + 4, cy - 6, 2.5, 1.2, 0, 0, Math.PI * 2); ctx.fill();
-  }
-
-  // 珊瑚蟹（水域）：寬扁甲殼 + 兩隻大螯 + 多足 + 青藍色珊瑚紋路。
-  function drawCoralCrab(cx, cy, t, phase) {
-    const scuttle = Math.sin(t * 4 + phase) * 1.5; // 橫移感
-    // 甲殼主體（扁圓）
-    ctx.fillStyle = "#2090a0";
-    ctx.beginPath();
-    ctx.ellipse(cx + scuttle, cy, 15, 10, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "#1a6070";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    // 珊瑚紋路（甲殼上的斑紋）
-    ctx.strokeStyle = "rgba(100,220,230,0.5)";
-    ctx.lineWidth = 1;
-    for (let k = -1; k <= 1; k++) {
-      ctx.beginPath();
-      ctx.arc(cx + scuttle + k * 5, cy, 5, 0.3, Math.PI - 0.3);
+    const rp = 0.55 + 0.45 * Math.sin(t * 2.5 + phase);
+    // 環繞浮石（3塊，慢轉）
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2 + t * 0.5 + phase;
+      const orx = cx + Math.cos(a) * 19;
+      const ory = cy + Math.sin(a) * 12;
+      ctx.fillStyle = "rgba(140,110,50,0.75)";
+      ctx.beginPath(); ctx.arc(orx, ory, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255,200,80,${rp * 0.6})`; ctx.lineWidth = 1;
       ctx.stroke();
     }
-    // 左螯
-    ctx.fillStyle = "#1a7888";
+    // 石碑主體（較高）
+    ctx.fillStyle = "#7a6032";
+    ctx.fillRect(cx - 12, cy - 18, 24, 28);
+    ctx.strokeStyle = "#4a3818"; ctx.lineWidth = 2;
+    ctx.strokeRect(cx - 12, cy - 18, 24, 28);
+    // 石碑側面陰影（立體感）
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.fillRect(cx + 9, cy - 18, 3, 28);
+    // 頂部尖帽（梯形）
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, cy - 18); ctx.lineTo(cx + 9, cy - 18);
+    ctx.lineTo(cx + 12, cy - 25); ctx.lineTo(cx - 12, cy - 25);
+    ctx.closePath(); ctx.fillStyle = "#8a7038"; ctx.fill();
+    ctx.strokeStyle = "#4a3818"; ctx.lineWidth = 1.5; ctx.stroke();
+    // 頂尖發光點
+    ctx.fillStyle = `rgba(255,200,80,${rp})`;
+    ctx.beginPath(); ctx.arc(cx, cy - 25, 2.5, 0, Math.PI * 2); ctx.fill();
+    // 符文第一行（Z 字閃電符）
+    ctx.strokeStyle = `rgba(255,200,75,${rp})`; ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 13); ctx.lineTo(cx + 8, cy - 13);
+    ctx.moveTo(cx + 8, cy - 13); ctx.lineTo(cx - 8, cy - 6);
+    ctx.moveTo(cx - 8, cy - 6);  ctx.lineTo(cx + 8, cy - 6);
+    ctx.stroke();
+    // 符文第二行（三橫線）
+    ctx.strokeStyle = `rgba(255,185,50,${rp * 0.7})`; ctx.lineWidth = 1;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath(); ctx.moveTo(cx - 7, cy + k * 3); ctx.lineTo(cx + 7, cy + k * 3); ctx.stroke();
+    }
+    // 中心符文點
+    ctx.fillStyle = `rgba(255,220,100,${rp * 0.9})`;
+    ctx.beginPath(); ctx.arc(cx, cy + 6, 3, 0, Math.PI * 2); ctx.fill();
+    // 眼縫（琥珀色，細長）
+    const ep = 0.6 + 0.4 * Math.sin(t * 7 + phase);
+    ctx.fillStyle = `rgba(255,175,35,${ep})`;
+    ctx.beginPath(); ctx.ellipse(cx - 4.5, cy - 9, 3, 1.4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 4.5, cy - 9, 3, 1.4, 0, 0, Math.PI * 2); ctx.fill();
+    // 眼高光
+    ctx.fillStyle = "rgba(255,240,200,0.7)";
+    ctx.beginPath(); ctx.arc(cx - 5, cy - 9.5, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 9.5, 1, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 珊瑚蟹（水域）：厚甲珊瑚殼＋珊瑚礁裝飾＋大螯＋六足＋眼柄。ROADMAP 89 精緻化。
+  function drawCoralCrab(cx, cy, t, phase) {
+    const scuttle = Math.sin(t * 4 + phase) * 2;
+    // 甲殼底層光暈
+    const shellG = ctx.createRadialGradient(cx + scuttle, cy, 4, cx + scuttle, cy, 20);
+    shellG.addColorStop(0, "rgba(30,160,180,0.30)");
+    shellG.addColorStop(1, "rgba(0,80,100,0)");
+    ctx.fillStyle = shellG;
+    ctx.beginPath(); ctx.arc(cx + scuttle, cy, 20, 0, Math.PI * 2); ctx.fill();
+    // 甲殼主體（寬扁橢圓，更大）
+    ctx.fillStyle = "#1a8898";
+    ctx.beginPath(); ctx.ellipse(cx + scuttle, cy, 17, 11, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#0e5568"; ctx.lineWidth = 2; ctx.stroke();
+    // 甲殼紋路
+    ctx.strokeStyle = "rgba(80,220,235,0.50)"; ctx.lineWidth = 1.2;
+    for (let k = -1; k <= 1; k++) {
+      ctx.beginPath(); ctx.arc(cx + scuttle + k * 6, cy, 6, 0.3, Math.PI - 0.3); ctx.stroke();
+    }
+    // 甲殼珊瑚裝飾（頂部三簇）
+    for (const [dx, col] of [[-7, "#e05090"],  [0, "#e04080"], [7, "#c030a0"]]) {
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      for (let b = -1; b <= 1; b++) {
+        ctx.beginPath();
+        ctx.moveTo(cx + scuttle + dx, cy - 10);
+        ctx.lineTo(cx + scuttle + dx + b * 3, cy - 15 + Math.sin(t * 3 + phase + dx + b) * 1.5);
+        ctx.stroke();
+      }
+    }
+    // 左螯（更大，有鋸齒）
     ctx.save();
-    ctx.translate(cx + scuttle - 16, cy - 2);
-    ctx.rotate(-0.4 + Math.sin(t * 3 + phase) * 0.15);
+    ctx.translate(cx + scuttle - 19, cy - 2);
+    ctx.rotate(-0.5 + Math.sin(t * 2.8 + phase) * 0.18);
+    ctx.fillStyle = "#1a7080";
+    ctx.beginPath(); ctx.ellipse(0, 0, 11, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#0d4a58";
     ctx.beginPath();
-    ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
+    ctx.moveTo(7, -4); ctx.lineTo(13, -7); ctx.lineTo(14, -1); ctx.lineTo(8, 2); ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = "#0f5060";
-    ctx.beginPath();
-    ctx.moveTo(6, -3); ctx.lineTo(10, -6); ctx.lineTo(10, 0); ctx.closePath();
-    ctx.fill();
+    // 螯緣鋸齒
+    ctx.strokeStyle = "#0a3848"; ctx.lineWidth = 1;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath(); ctx.moveTo(8 + k * 1.5, -5 + k); ctx.lineTo(9 + k * 1.5, -3 + k); ctx.stroke();
+    }
     ctx.restore();
     // 右螯
-    ctx.fillStyle = "#1a7888";
     ctx.save();
-    ctx.translate(cx + scuttle + 16, cy - 2);
-    ctx.rotate(0.4 + Math.sin(t * 3 + phase + 1) * 0.15);
+    ctx.translate(cx + scuttle + 19, cy - 2);
+    ctx.rotate(0.5 + Math.sin(t * 2.8 + phase + 1) * 0.18);
+    ctx.fillStyle = "#1a7080";
+    ctx.beginPath(); ctx.ellipse(0, 0, 11, 6, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#0d4a58";
     ctx.beginPath();
-    ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#0f5060";
-    ctx.beginPath();
-    ctx.moveTo(-6, -3); ctx.lineTo(-10, -6); ctx.lineTo(-10, 0); ctx.closePath();
+    ctx.moveTo(-7, -4); ctx.lineTo(-13, -7); ctx.lineTo(-14, -1); ctx.lineTo(-8, 2); ctx.closePath();
     ctx.fill();
     ctx.restore();
-    // 眼柄（突起小眼）
-    ctx.fillStyle = "#0a4050";
-    ctx.beginPath(); ctx.arc(cx + scuttle - 5, cy - 8, 2, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + scuttle + 5, cy - 8, 2, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(60,220,240,0.9)";
-    ctx.beginPath(); ctx.arc(cx + scuttle - 5, cy - 9, 1.2, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + scuttle + 5, cy - 9, 1.2, 0, Math.PI * 2); ctx.fill();
-    // 腳（四對）
-    ctx.strokeStyle = "#1a6070";
-    ctx.lineWidth = 1.5;
-    for (let k = 0; k < 4; k++) {
-      const legPhase = Math.sin(t * 4 + phase + k * 0.7) * 4;
+    // 眼柄（突出）
+    ctx.fillStyle = "#0a3848"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx + scuttle - 6, cy - 10); ctx.lineTo(cx + scuttle - 7, cy - 15); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx + scuttle + 6, cy - 10); ctx.lineTo(cx + scuttle + 7, cy - 15); ctx.stroke();
+    ctx.fillStyle = "#0a3848";
+    ctx.beginPath(); ctx.arc(cx + scuttle - 7, cy - 15, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + scuttle + 7, cy - 15, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(50,220,245,0.95)";
+    ctx.beginPath(); ctx.arc(cx + scuttle - 7, cy - 16, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + scuttle + 7, cy - 16, 1.5, 0, Math.PI * 2); ctx.fill();
+    // 六足（三對）
+    ctx.strokeStyle = "#0e5568"; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 3; k++) {
+      const legPhase = Math.sin(t * 4 + phase + k * 0.9) * 5;
       ctx.beginPath();
-      ctx.moveTo(cx + scuttle - 10 + k * 6, cy + 8);
-      ctx.lineTo(cx + scuttle - 14 + k * 6, cy + 16 + legPhase);
+      ctx.moveTo(cx + scuttle - 12 + k * 9, cy + 9);
+      ctx.quadraticCurveTo(cx + scuttle - 16 + k * 9, cy + 14, cx + scuttle - 18 + k * 9, cy + 18 + legPhase);
       ctx.stroke();
     }
   }
 
-  // 翠幽鬼：翠幽星獨有幽靈型敵人，半透明玉綠飄行體 + 脈動光暈。
+  // 翠幽鬼（翠幽星）：玉靈飄袍形＋翠玉額寶石＋飄帶觸鬚＋幽光眼。ROADMAP 89 精緻化。
   function drawJadeWraith(cx, cy, t, phase) {
-    const drift = Math.sin(t * 2.5 + phase) * 3; // 水平漂移感
-    const pulse = 0.55 + 0.30 * Math.sin(t * 3.5 + phase); // 透明度脈動
+    const drift = Math.sin(t * 2.2 + phase) * 3.5;
+    const pulse = 0.55 + 0.30 * Math.sin(t * 3.5 + phase);
+    ctx.save();
     ctx.globalAlpha *= pulse;
-    // 主體：半透明翠玉橢圓
-    ctx.fillStyle = "rgba(60,220,150,0.72)";
-    ctx.beginPath();
-    ctx.ellipse(cx + drift, cy, 13, 16, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 外層光暈
-    const grd = ctx.createRadialGradient(cx + drift, cy, 4, cx + drift, cy, 20);
-    grd.addColorStop(0, "rgba(80,240,160,0.40)");
-    grd.addColorStop(1, "rgba(80,240,160,0)");
-    ctx.fillStyle = grd;
-    ctx.beginPath();
-    ctx.ellipse(cx + drift, cy, 20, 22, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 幽靈眼：兩顆深翠玉瞳（無瞳孔，增加詭異感）
-    ctx.fillStyle = "rgba(10,80,50,0.90)";
-    ctx.beginPath(); ctx.arc(cx + drift - 4, cy - 4, 3.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + drift + 4, cy - 4, 3.5, 0, Math.PI * 2); ctx.fill();
-    // 瞳高光
-    ctx.fillStyle = "rgba(180,255,220,0.80)";
-    ctx.beginPath(); ctx.arc(cx + drift - 3.5, cy - 5, 1.2, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + drift + 4.5, cy - 5, 1.2, 0, Math.PI * 2); ctx.fill();
-    // 下擺破裂飄散（三片透明條紋）
-    ctx.strokeStyle = "rgba(60,220,150,0.50)";
-    ctx.lineWidth = 2;
-    for (let k = -1; k <= 1; k++) {
-      const waveY = cy + 12 + Math.sin(t * 4 + phase + k) * 3;
+    // 外層大光暈
+    const outerG = ctx.createRadialGradient(cx + drift, cy, 3, cx + drift, cy, 26);
+    outerG.addColorStop(0, "rgba(60,210,140,0.38)");
+    outerG.addColorStop(1, "rgba(20,100,70,0)");
+    ctx.fillStyle = outerG;
+    ctx.beginPath(); ctx.arc(cx + drift, cy, 26, 0, Math.PI * 2); ctx.fill();
+    // 下擺飄帶（五條，波浪）
+    ctx.strokeStyle = "rgba(50,200,130,0.45)"; ctx.lineWidth = 2.5;
+    for (let k = -2; k <= 2; k++) {
+      const wx = cx + drift + k * 4.5;
+      const wend = cy + 20 + Math.sin(t * 4 + phase + k * 0.9) * 5;
       ctx.beginPath();
-      ctx.moveTo(cx + drift + k * 4, cy + 10);
-      ctx.lineTo(cx + drift + k * 5, waveY);
+      ctx.moveTo(wx, cy + 13);
+      ctx.quadraticCurveTo(wx + Math.sin(t * 2.5 + k) * 4, cy + 17, wx + Math.sin(t * 3 + k) * 6, wend);
       ctx.stroke();
     }
-    ctx.globalAlpha = ctx.globalAlpha / pulse; // 還原透明度（save/restore 在外層）
+    // 飄袍主體（長橢圓）
+    ctx.fillStyle = "rgba(45,195,125,0.75)";
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy - 1, 14, 18, 0, 0, Math.PI * 2); ctx.fill();
+    // 飄袍內部玉紋
+    ctx.strokeStyle = "rgba(100,240,170,0.30)"; ctx.lineWidth = 1;
+    for (let k = -1; k <= 1; k++) {
+      ctx.beginPath(); ctx.ellipse(cx + drift + k * 4, cy - 1, 6 - Math.abs(k) * 2, 10, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    // 額頭翠玉寶石
+    ctx.globalAlpha = ctx.globalAlpha / pulse;
+    ctx.fillStyle = "#10c870";
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy - 13, 4, 5.5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#08a050"; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.fillStyle = "rgba(180,255,210,0.80)";
+    ctx.beginPath(); ctx.arc(cx + drift - 1.5, cy - 14.5, 1.5, 0, Math.PI * 2); ctx.fill();
+    // 幽靈眼（空洞翠）
+    ctx.fillStyle = "rgba(8,60,38,0.92)";
+    ctx.beginPath(); ctx.arc(cx + drift - 4.5, cy - 5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4.5, cy - 5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(160,255,200,0.85)";
+    ctx.beginPath(); ctx.arc(cx + drift - 5, cy - 6, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4, cy - 6, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
 
-  // 蒸汽機械（赤焰星）：鋼鐵方身 + 排氣管冒煙 + 機械紅眼，工業感。
+  // 蒸汽機械（赤焰星）：類人形蒸汽機器人＋大排氣管＋齒輪肩甲＋赤眼。ROADMAP 89 精緻化。
   function drawSteamConstruct(cx, cy, t, phase) {
-    const bob = Math.sin(t * 2.2 + phase) * 1.5; // 輕微上下機械震動
-    // 機械主體（深灰鋼板）
-    ctx.fillStyle = "#5a5050";
+    const bob = Math.sin(t * 2.2 + phase) * 1.8;
+    const sa = 0.35 + 0.20 * Math.sin(t * 5.5 + phase); // 蒸汽透明
+    // 肩膀齒輪（左右，慢轉）
+    for (const [gx, dir] of [[cx - 16, 1], [cx + 16, -1]]) {
+      ctx.save();
+      ctx.translate(gx, cy - 8 + bob);
+      ctx.rotate(t * dir * 1.2 + phase);
+      ctx.strokeStyle = "#7a5040"; ctx.lineWidth = 1.5;
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 5, Math.sin(a) * 5);
+        ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#5a3a28"; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    // 左右排氣管（較粗）
+    ctx.fillStyle = "#2e2424";
+    ctx.fillRect(cx - 15, cy - 20 + bob, 5, 14);
+    ctx.fillRect(cx + 10, cy - 20 + bob, 5, 14);
+    // 蒸汽（多圈，漂散）
+    for (const [gx, toff] of [[cx - 13, 0], [cx + 12, 1.2]]) {
+      for (let s = 0; s < 3; s++) {
+        const sy2 = cy - 20 + bob - s * 5 + Math.sin(t * 3 + toff) * 3;
+        const sx2 = gx + Math.sin(t * 2.5 + toff + s) * 3;
+        ctx.fillStyle = `rgba(200,175,165,${sa - s * 0.1})`;
+        ctx.beginPath(); ctx.arc(sx2, sy2, 3 + s * 0.5, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // 機械主體（圓角矩形，更高）
+    ctx.fillStyle = "#524848";
+    ctx.beginPath(); ctx.roundRect(cx - 11, cy - 16 + bob, 22, 26, 4); ctx.fill();
+    ctx.strokeStyle = "#302828"; ctx.lineWidth = 1.8; ctx.stroke();
+    // 胸甲高光
+    ctx.fillStyle = "rgba(200,170,155,0.28)";
+    ctx.fillRect(cx - 9, cy - 14 + bob, 7, 10);
+    // 胸前壓力表（圓形）
+    ctx.fillStyle = "#2a2020";
+    ctx.beginPath(); ctx.arc(cx, cy - 6 + bob, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#888"; ctx.lineWidth = 0.8; ctx.stroke();
+    const needle = t * 2.5 + phase;
+    ctx.strokeStyle = "#e03020"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, cy - 6 + bob); ctx.lineTo(cx + Math.cos(needle) * 3, cy - 6 + bob + Math.sin(needle) * 3); ctx.stroke();
+    // 機械紅眼（一對，明亮）
+    const eyeGlow = ctx.createRadialGradient(cx, cy - 10 + bob, 0, cx, cy - 10 + bob, 12);
+    eyeGlow.addColorStop(0, "rgba(255,50,0,0.38)");
+    eyeGlow.addColorStop(1, "rgba(255,50,0,0)");
+    ctx.fillStyle = eyeGlow; ctx.beginPath(); ctx.arc(cx, cy - 10 + bob, 12, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#c01c00";
+    ctx.beginPath(); ctx.arc(cx - 5, cy - 10 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 5, cy - 10 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,180,140,0.9)";
+    ctx.beginPath(); ctx.arc(cx - 5.8, cy - 11 + bob, 1.3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4.2, cy - 11 + bob, 1.3, 0, Math.PI * 2); ctx.fill();
+    // 底部踏板
+    ctx.fillStyle = "#3e3030";
     ctx.beginPath();
-    ctx.roundRect(cx - 10, cy - 12 + bob, 20, 22, 3);
-    ctx.fill();
-    // 鋼板高光
-    ctx.fillStyle = "rgba(180,160,150,0.30)";
-    ctx.fillRect(cx - 8, cy - 10 + bob, 5, 8);
-    // 左右排氣管
-    ctx.fillStyle = "#3a3030";
-    ctx.fillRect(cx - 13, cy - 16 + bob, 4, 10);
-    ctx.fillRect(cx + 9, cy - 16 + bob, 4, 10);
-    // 排氣管蒸汽（隨時間漂散的小圓圈）
-    const steamAlpha = 0.3 + 0.2 * Math.sin(t * 5 + phase);
-    ctx.fillStyle = `rgba(210,180,170,${steamAlpha})`;
-    ctx.beginPath(); ctx.arc(cx - 11 + Math.sin(t * 3) * 1.5, cy - 20 + bob - Math.sin(t * 3) * 3, 2.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 11 + Math.sin(t * 2.7 + 1) * 1.5, cy - 20 + bob - Math.sin(t * 2.7 + 1) * 3, 2.5, 0, Math.PI * 2); ctx.fill();
-    // 機械紅眼（一左一右）
-    ctx.fillStyle = "#cc2200";
-    ctx.beginPath(); ctx.arc(cx - 4, cy - 5 + bob, 3, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4, cy - 5 + bob, 3, 0, Math.PI * 2); ctx.fill();
-    // 眼睛紅光
-    const eyeGrd = ctx.createRadialGradient(cx, cy - 5 + bob, 0, cx, cy - 5 + bob, 10);
-    eyeGrd.addColorStop(0, "rgba(255,60,0,0.35)");
-    eyeGrd.addColorStop(1, "rgba(255,60,0,0)");
-    ctx.fillStyle = eyeGrd;
-    ctx.beginPath(); ctx.arc(cx, cy - 5 + bob, 10, 0, Math.PI * 2); ctx.fill();
-    // 底部踏板（梯形）
-    ctx.fillStyle = "#4a4040";
-    ctx.beginPath();
-    ctx.moveTo(cx - 12, cy + 10 + bob); ctx.lineTo(cx + 12, cy + 10 + bob);
-    ctx.lineTo(cx + 9, cy + 14 + bob); ctx.lineTo(cx - 9, cy + 14 + bob);
+    ctx.moveTo(cx - 13, cy + 10 + bob); ctx.lineTo(cx + 13, cy + 10 + bob);
+    ctx.lineTo(cx + 10, cy + 15 + bob); ctx.lineTo(cx - 10, cy + 15 + bob);
     ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#282020"; ctx.lineWidth = 1; ctx.stroke();
   }
 
-  // 霧醚幽靈：青白色半透明幽靈，邊緣暈散如乙太迷霧，眼睛散發冷光。
+  // 霧醚幽靈（霧醚星）：冰晶框架幽靈＋凍氣拖尾＋六角晶格＋冷冽青白眼。ROADMAP 89 精緻化。
   function drawAetherSpecter(cx, cy, t, phase) {
-    const bob = Math.sin(t * 1.8 + phase) * 3; // 輕柔上下飄浮
-    const alpha = 0.72 + 0.18 * Math.sin(t * 2.5 + phase); // 透明度脈動
+    const bob = Math.sin(t * 1.8 + phase) * 3.5;
+    const alpha = 0.70 + 0.20 * Math.sin(t * 2.5 + phase);
     ctx.save();
     ctx.globalAlpha = alpha;
-    // 幽靈主體（青白半透明橢圓）
-    const grad = ctx.createRadialGradient(cx, cy - 4 + bob, 2, cx, cy + 2 + bob, 14);
-    grad.addColorStop(0, "rgba(180,240,255,0.90)");
-    grad.addColorStop(0.5, "rgba(100,200,240,0.70)");
-    grad.addColorStop(1, "rgba(60,160,220,0)");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy + bob, 12, 16, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 底部拖尾（飄散的霧絲）
-    for (let i = 0; i < 3; i++) {
-      const ox = cx + (i - 1) * 5;
-      const tailA = 0.22 + 0.12 * Math.sin(t * 3 + i * 1.2 + phase);
-      ctx.fillStyle = `rgba(100,200,240,${tailA})`;
-      ctx.beginPath();
-      ctx.ellipse(ox, cy + 14 + bob + Math.sin(t * 4 + i) * 2, 2.5, 4, 0, 0, Math.PI * 2);
-      ctx.fill();
+    // 外層冰霧光暈
+    const outerG = ctx.createRadialGradient(cx, cy + bob, 3, cx, cy + bob, 24);
+    outerG.addColorStop(0, "rgba(160,235,255,0.35)");
+    outerG.addColorStop(0.6, "rgba(80,180,240,0.15)");
+    outerG.addColorStop(1, "rgba(40,120,200,0)");
+    ctx.fillStyle = outerG;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 24, 0, Math.PI * 2); ctx.fill();
+    // 六角晶格紋（幽靈主體內）
+    ctx.strokeStyle = "rgba(180,240,255,0.28)"; ctx.lineWidth = 1;
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      ctx.beginPath(); ctx.moveTo(cx, cy + bob); ctx.lineTo(cx + Math.cos(a) * 12, cy + bob + Math.sin(a) * 12); ctx.stroke();
     }
-    // 發光雙眼（冷青光）
+    // 幽靈主體（冰感梯形橢圓）
+    const grad = ctx.createRadialGradient(cx, cy - 2 + bob, 2, cx, cy + 4 + bob, 14);
+    grad.addColorStop(0, "rgba(200,248,255,0.88)");
+    grad.addColorStop(0.5, "rgba(120,210,250,0.70)");
+    grad.addColorStop(1, "rgba(70,170,230,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.ellipse(cx, cy + bob, 13, 17, 0, 0, Math.PI * 2); ctx.fill();
+    // 側翼冰晶刺（左右各2根）
+    ctx.strokeStyle = "rgba(170,240,255,0.65)"; ctx.lineWidth = 1.5;
+    for (const [side, angles] of [[-1, [-0.8, -1.3]], [1, [0.8, 1.3]]]) {
+      for (const a of angles) {
+        const len = 8 + Math.sin(t * 2.5 + a + phase) * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + side * 12, cy + bob);
+        ctx.lineTo(cx + side * (12 + len), cy + bob + Math.sin(a) * 5);
+        ctx.stroke();
+      }
+    }
+    // 凍氣拖尾
+    for (let i = 0; i < 4; i++) {
+      const ox = cx + (i - 1.5) * 5;
+      const ta = 0.25 + 0.12 * Math.sin(t * 3 + i * 1.2 + phase);
+      ctx.fillStyle = `rgba(120,215,250,${ta})`;
+      ctx.beginPath(); ctx.ellipse(ox, cy + 16 + bob + Math.sin(t * 3.5 + i) * 2.5, 3, 5, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    // 冷冽雙眼
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "rgba(160,240,255,0.95)";
-    ctx.beginPath(); ctx.arc(cx - 4, cy - 4 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4, cy - 4 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
-    // 眼睛光暈
-    const eyeGrd = ctx.createRadialGradient(cx, cy - 4 + bob, 0, cx, cy - 4 + bob, 11);
-    eyeGrd.addColorStop(0, "rgba(120,220,255,0.35)");
-    eyeGrd.addColorStop(1, "rgba(80,180,255,0)");
-    ctx.fillStyle = eyeGrd;
-    ctx.beginPath(); ctx.arc(cx, cy - 4 + bob, 11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(180,248,255,0.97)";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 5 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 5 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    // 眼中冰晶瞳
+    ctx.fillStyle = "rgba(20,60,100,0.90)";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 5 + bob, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 5 + bob, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(220,248,255,0.95)";
+    ctx.beginPath(); ctx.arc(cx - 4.8, cy - 5.8 + bob, 0.9, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3.2, cy - 5.8 + bob, 0.9, 0, Math.PI * 2); ctx.fill();
+    // 眼部冷光暈
+    const eyeG = ctx.createRadialGradient(cx, cy - 5 + bob, 0, cx, cy - 5 + bob, 13);
+    eyeG.addColorStop(0, "rgba(130,230,255,0.30)");
+    eyeG.addColorStop(1, "rgba(80,180,255,0)");
+    ctx.fillStyle = eyeG;
+    ctx.beginPath(); ctx.arc(cx, cy - 5 + bob, 13, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  // 源晶守護者（星源星）：金白色多面體結晶體，宇宙起源之力的具現，散發神聖光暈。
+  // 源晶守護者（星源星）：神聖多面體巨體＋四軌道晶石＋多眼冠＋金白神光。BOSS 等級。ROADMAP 89 精緻化。
   function drawOriginGuardian(cx, cy, t, phase) {
-    const bob = Math.sin(t * 1.5 + phase) * 2.5; // 沉穩上下漂浮
-    const pulse = 0.70 + 0.20 * Math.sin(t * 2.0 + phase); // 光暈脈動
+    const bob = Math.sin(t * 1.4 + phase) * 2.5;
+    const pulse = 0.65 + 0.25 * Math.sin(t * 2.0 + phase);
     ctx.save();
-    ctx.globalAlpha = 0.95;
-    // 主體：金白多面體（八角形近似）
-    const r = 14;
-    ctx.fillStyle = "rgba(255,240,160,0.90)";
+    ctx.globalAlpha = 0.97;
+    // 外層神聖大光暈（最大層）
+    const outerG = ctx.createRadialGradient(cx, cy + bob, 4, cx, cy + bob, 35 * pulse);
+    outerG.addColorStop(0, "rgba(255,240,140,0.42)");
+    outerG.addColorStop(0.4, "rgba(255,210,80,0.18)");
+    outerG.addColorStop(1, "rgba(220,170,40,0)");
+    ctx.fillStyle = outerG;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 35 * pulse, 0, Math.PI * 2); ctx.fill();
+    // 四個軌道晶石（慢速公轉）
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + t * 0.4 + phase;
+      const orx = cx + Math.cos(a) * 22;
+      const ory = cy + bob + Math.sin(a) * 14;
+      // 晶石光暈
+      const sg = ctx.createRadialGradient(orx, ory, 0, orx, ory, 7);
+      sg.addColorStop(0, "rgba(255,230,120,0.60)");
+      sg.addColorStop(1, "rgba(255,200,60,0)");
+      ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(orx, ory, 7, 0, Math.PI * 2); ctx.fill();
+      // 晶石本體（小八邊形）
+      ctx.fillStyle = "rgba(255,235,150,0.88)";
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const ia = (i / 6) * Math.PI * 2 + a;
+        i === 0 ? ctx.moveTo(orx + Math.cos(ia) * 4.5, ory + Math.sin(ia) * 4.5)
+                : ctx.lineTo(orx + Math.cos(ia) * 4.5, ory + Math.sin(ia) * 4.5);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "rgba(255,210,80,0.9)"; ctx.lineWidth = 1; ctx.stroke();
+    }
+    // 主體：金白八邊形（更大）
+    const R = 17;
+    ctx.fillStyle = "rgba(255,238,168,0.92)";
     ctx.beginPath();
     for (let i = 0; i < 8; i++) {
-      const ang = (i * Math.PI) / 4 - Math.PI / 8 + Math.sin(t * 0.5 + phase) * 0.04;
-      const px = cx + Math.cos(ang) * r, py = cy + bob + Math.sin(ang) * r;
+      const ang = (i * Math.PI) / 4 - Math.PI / 8 + Math.sin(t * 0.4 + phase) * 0.05;
+      const px = cx + Math.cos(ang) * R;
+      const py = cy + bob + Math.sin(ang) * R;
       i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
     }
     ctx.closePath(); ctx.fill();
-    // 邊緣描線
-    ctx.strokeStyle = "rgba(255,220,80,0.95)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    // 起源光暈
-    const grd = ctx.createRadialGradient(cx, cy + bob, 2, cx, cy + bob, 24 * pulse);
-    grd.addColorStop(0, "rgba(255,230,120,0.40)");
-    grd.addColorStop(0.5, "rgba(240,200,80,0.18)");
-    grd.addColorStop(1, "rgba(220,180,60,0)");
-    ctx.fillStyle = grd;
-    ctx.beginPath(); ctx.arc(cx, cy + bob, 24 * pulse, 0, Math.PI * 2); ctx.fill();
-    // 核心：中心金光圓點
-    ctx.fillStyle = "rgba(255,255,200,0.98)";
-    ctx.beginPath(); ctx.arc(cx, cy + bob, 4, 0, Math.PI * 2); ctx.fill();
-    // 雙眼：金色小眼，宇宙起源的古老目光
-    ctx.fillStyle = "rgba(80,60,10,0.90)";
-    ctx.beginPath(); ctx.arc(cx - 4, cy - 4 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4, cy - 4 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(255,240,160,0.95)";
-    ctx.beginPath(); ctx.arc(cx - 3.5, cy - 4.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4.5, cy - 4.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,215,70,0.95)"; ctx.lineWidth = 2; ctx.stroke();
+    // 內層幾何細節（內切四邊形旋轉）
+    ctx.save();
+    ctx.translate(cx, cy + bob);
+    ctx.rotate(t * 0.3 + phase);
+    ctx.strokeStyle = "rgba(255,245,200,0.35)"; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a2 = (i / 4) * Math.PI * 2;
+      i === 0 ? ctx.moveTo(Math.cos(a2) * 12, Math.sin(a2) * 12)
+              : ctx.lineTo(Math.cos(a2) * 12, Math.sin(a2) * 12);
+    }
+    ctx.closePath(); ctx.stroke();
+    ctx.restore();
+    // 神聖光芒線（八方向）
+    ctx.strokeStyle = `rgba(255,230,130,${0.40 * pulse})`; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2 + t * 0.12;
+      const r0 = R + 1; const r1 = R + 8 + pulse * 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * r0, cy + bob + Math.sin(a) * r0);
+      ctx.lineTo(cx + Math.cos(a) * r1, cy + bob + Math.sin(a) * r1);
+      ctx.stroke();
+    }
+    // 多眼（四隻，按菱形排列，彰顯神格）
+    const eyePulse = 0.75 + 0.25 * Math.sin(t * 3.5 + phase);
+    for (const [ex, ey_] of [[-6,-5],[6,-5],[0,-9],[0,-1]]) {
+      ctx.fillStyle = "rgba(60,45,8,0.93)";
+      ctx.beginPath(); ctx.arc(cx + ex, cy + ey_ + bob, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,240,150,${eyePulse})`;
+      ctx.beginPath(); ctx.arc(cx + ex, cy + ey_ + bob, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,220,0.95)";
+      ctx.beginPath(); ctx.arc(cx + ex - 0.8, cy + ey_ - 0.8 + bob, 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+    // 中心起源光核
+    const core = ctx.createRadialGradient(cx, cy + bob, 0, cx, cy + bob, 6);
+    core.addColorStop(0, "rgba(255,255,240,1)");
+    core.addColorStop(0.5, "rgba(255,235,160,0.85)");
+    core.addColorStop(1, "rgba(255,210,80,0)");
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 6, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  // 裂縫守護者：宇宙裂縫召喚的最強精英敵，暗紫裂縫幽靈體＋迸射的能量裂痕＋赤眼。
+  // 裂縫守護者：宇宙裂縫最強精英，巨型虛空體＋四觸手＋次元裂痕＋猩紅凝視眼。BOSS 等級。ROADMAP 89 精緻化。
   function drawRiftGuardian(cx, cy, t, phase) {
-    const bob = Math.sin(t * 1.2 + phase) * 3;
-    const pulse = 0.65 + 0.25 * Math.sin(t * 2.5 + phase);
+    const bob = Math.sin(t * 1.2 + phase) * 3.5;
+    const pulse = 0.60 + 0.30 * Math.sin(t * 2.5 + phase);
     ctx.save();
-    // 外層裂縫光暈（深紫）
-    const grd = ctx.createRadialGradient(cx, cy + bob, 3, cx, cy + bob, 28 * pulse);
-    grd.addColorStop(0, "rgba(160,40,255,0.45)");
-    grd.addColorStop(0.5, "rgba(100,0,200,0.20)");
-    grd.addColorStop(1, "rgba(60,0,120,0)");
-    ctx.fillStyle = grd;
-    ctx.beginPath(); ctx.arc(cx, cy + bob, 28 * pulse, 0, Math.PI * 2); ctx.fill();
-    // 裂縫射線（4條放射能量裂痕）
-    ctx.strokeStyle = "rgba(200,80,255,0.70)";
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 4; i++) {
-      const ang = (i * Math.PI) / 2 + t * 0.6 + phase;
-      const len = 10 + 4 * Math.sin(t * 3 + phase + i);
+    // 最外層虛空大光暈
+    const outerG = ctx.createRadialGradient(cx, cy + bob, 5, cx, cy + bob, 38 * pulse);
+    outerG.addColorStop(0, "rgba(140,30,255,0.40)");
+    outerG.addColorStop(0.4, "rgba(80,0,180,0.18)");
+    outerG.addColorStop(1, "rgba(40,0,100,0)");
+    ctx.fillStyle = outerG;
+    ctx.beginPath(); ctx.arc(cx, cy + bob, 38 * pulse, 0, Math.PI * 2); ctx.fill();
+    // 四條觸手（慢速蛇行）
+    ctx.strokeStyle = "rgba(180,50,255,0.65)"; ctx.lineWidth = 2.5;
+    for (let k = 0; k < 4; k++) {
+      const baseA = (k / 4) * Math.PI * 2 + t * 0.25 + phase;
       ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(ang) * 8, cy + bob + Math.sin(ang) * 8);
-      ctx.lineTo(cx + Math.cos(ang) * len, cy + bob + Math.sin(ang) * len);
+      const x0 = cx + Math.cos(baseA) * 13, y0 = cy + bob + Math.sin(baseA) * 13;
+      const x1 = x0 + Math.cos(baseA + Math.sin(t * 2 + k) * 0.5) * 14;
+      const y1 = y0 + Math.sin(baseA + Math.sin(t * 2 + k) * 0.5) * 14;
+      const x2 = x1 + Math.cos(baseA + Math.sin(t * 3 + k) * 0.7) * 10;
+      const y2 = y1 + Math.sin(baseA + Math.sin(t * 3 + k) * 0.7) * 10;
+      ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(x1, y1, x2, y2);
+      ctx.stroke();
+      // 觸手尖端光點
+      ctx.fillStyle = "rgba(210,80,255,0.80)";
+      ctx.beginPath(); ctx.arc(x2, y2, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    // 八條虛空射線（中距）
+    ctx.strokeStyle = `rgba(195,70,255,${0.55 + 0.25 * pulse})`; ctx.lineWidth = 1.5;
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4 + t * 0.6 + phase;
+      const len = 10 + 5 * Math.sin(t * 3.5 + phase + i);
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 9, cy + bob + Math.sin(a) * 9);
+      ctx.lineTo(cx + Math.cos(a) * len, cy + bob + Math.sin(a) * len);
       ctx.stroke();
     }
-    // 主體：不規則裂縫幽靈（六角形 + 扭曲）
-    const r = 13;
-    ctx.fillStyle = "rgba(50,0,80,0.92)";
+    // 主體：扭曲六邊形（更大，更不規則）
+    const R = 15;
+    ctx.fillStyle = "rgba(32,0,58,0.95)";
     ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const ang = (i * Math.PI) / 3 + Math.sin(t * 0.8 + phase + i) * 0.15;
-      const rr = r + Math.sin(t * 2 + i * 1.2 + phase) * 2;
-      const px = cx + Math.cos(ang) * rr, py = cy + bob + Math.sin(ang) * rr;
-      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + Math.sin(t * 0.8 + phase + i) * 0.22;
+      const r = R + Math.sin(t * 2.2 + i * 1.3 + phase) * 3;
+      i === 0 ? ctx.moveTo(cx + Math.cos(a) * r, cy + bob + Math.sin(a) * r)
+              : ctx.lineTo(cx + Math.cos(a) * r, cy + bob + Math.sin(a) * r);
     }
     ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = "rgba(180,50,255,0.85)";
-    ctx.lineWidth = 1.5; ctx.stroke();
-    // 中心裂縫核（亮紫）
-    ctx.fillStyle = "rgba(220,100,255,0.95)";
-    ctx.beginPath(); ctx.arc(cx, cy + bob, 3.5, 0, Math.PI * 2); ctx.fill();
-    // 雙眼：猩紅色，裂縫異界的惡意凝視
-    ctx.fillStyle = "rgba(255,20,20,0.95)";
-    ctx.beginPath(); ctx.arc(cx - 4, cy - 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4, cy - 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(255,180,180,0.9)";
-    ctx.beginPath(); ctx.arc(cx - 3.5, cy - 3.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(cx + 4.5, cy - 3.5 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(175,45,255,0.88)"; ctx.lineWidth = 2; ctx.stroke();
+    // 次元裂痕（主體上的能量裂紋，3條）
+    ctx.strokeStyle = `rgba(210,90,255,${0.65 * pulse})`; ctx.lineWidth = 1.2;
+    for (let k = 0; k < 3; k++) {
+      const crack_a = (k / 3) * Math.PI * 2 + Math.PI / 6 + t * 0.1;
+      const crx = cx + Math.cos(crack_a) * 6;
+      const cry = cy + bob + Math.sin(crack_a) * 6;
+      ctx.beginPath();
+      ctx.moveTo(crx, cry);
+      ctx.lineTo(crx + Math.cos(crack_a + 0.6) * 9, cry + Math.sin(crack_a + 0.6) * 9);
+      ctx.lineTo(crx + Math.cos(crack_a + 0.3) * 13, cry + Math.sin(crack_a + 0.3) * 13);
+      ctx.stroke();
+    }
+    // 中心虛空核（深紫亮核）
+    const core = ctx.createRadialGradient(cx, cy + bob, 0, cx, cy + bob, 7);
+    core.addColorStop(0, "rgba(240,110,255,1)");
+    core.addColorStop(0.5, "rgba(180,40,255,0.70)");
+    core.addColorStop(1, "rgba(120,0,200,0)");
+    ctx.fillStyle = core; ctx.beginPath(); ctx.arc(cx, cy + bob, 7, 0, Math.PI * 2); ctx.fill();
+    // 主眼（巨大猩紅凝視）
+    ctx.fillStyle = "rgba(20,0,35,0.95)";
+    ctx.beginPath(); ctx.arc(cx, cy - 2 + bob, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,15,15,${0.9 * pulse})`;
+    ctx.beginPath(); ctx.arc(cx, cy - 2 + bob, 5.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,165,155,0.88)";
+    ctx.beginPath(); ctx.arc(cx - 2.5, cy - 4 + bob, 2, 0, Math.PI * 2); ctx.fill();
+    // 小眼（左右各一）
+    ctx.fillStyle = "rgba(220,10,10,0.85)";
+    ctx.beginPath(); ctx.arc(cx - 7, cy + 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 7, cy + 3 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,160,150,0.85)";
+    ctx.beginPath(); ctx.arc(cx - 7.8, cy + 2 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 6.2, cy + 2 + bob, 1.0, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
@@ -4826,15 +5099,37 @@
         ctx.fillStyle = "#d65a5a";
         ctx.fillRect(bx, by, bw * (e.hp / e.max_hp), 4);
       }
-      // 兇名精英光環（ROADMAP 42）：紅色脈動外環，體型微大。
+      // 兇名精英光環（ROADMAP 42/89）：旋轉荊棘冠 + 雙層脈動紅暈 + 背景大光圈。
       if (e.alive && e.notorious) {
         const pulse = 0.5 + 0.5 * Math.sin(t * 4 + e.x * 0.01);
-        ctx.globalAlpha = 0.30 + 0.20 * pulse;
-        ctx.strokeStyle = "#ff2222";
-        ctx.lineWidth = 3 + pulse * 2;
-        ctx.beginPath();
-        ctx.arc(sx, ey, 20 + pulse * 4, 0, Math.PI * 2);
-        ctx.stroke();
+        // 背景大光圈（氣場感）
+        const notG = ctx.createRadialGradient(sx, ey, 8, sx, ey, 38);
+        notG.addColorStop(0, `rgba(200,20,20,${0.20 * pulse})`);
+        notG.addColorStop(1, "rgba(120,0,0,0)");
+        ctx.fillStyle = notG;
+        ctx.beginPath(); ctx.arc(sx, ey, 38, 0, Math.PI * 2); ctx.fill();
+        // 旋轉荊棘冠（8根尖刺，位於名牌下方）
+        ctx.save();
+        ctx.translate(sx, ey - 20);
+        ctx.rotate(t * 0.9 + e.x * 0.01);
+        ctx.strokeStyle = `rgba(255,50,10,${0.75 + 0.20 * pulse})`;
+        ctx.lineWidth = 1.8;
+        for (let k = 0; k < 8; k++) {
+          const a = (k / 8) * Math.PI * 2;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * 5, Math.sin(a) * 5);
+          ctx.lineTo(Math.cos(a) * (11 + pulse * 3.5), Math.sin(a) * (11 + pulse * 3.5));
+          ctx.stroke();
+        }
+        ctx.restore();
+        // 雙層外環
+        ctx.globalAlpha = 0.28 + 0.22 * pulse;
+        ctx.strokeStyle = "#ff1a1a";
+        ctx.lineWidth = 2.5 + pulse * 1.5;
+        ctx.beginPath(); ctx.arc(sx, ey, 24 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 0.15 + 0.12 * pulse;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(sx, ey, 30 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
         ctx.globalAlpha = 1;
       }
       // 怪物等級名牌（ROADMAP 41/42）：Lv.N 名字；兇名精英加「兇名」前綴。
