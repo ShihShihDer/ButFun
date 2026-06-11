@@ -252,7 +252,7 @@ pub async fn raw_llm_call(system: &str, user: &str) -> Option<String> {
     if !llm_enabled() {
         return None;
     }
-    ollama_chat(system, user).await
+    llm_chat(system, user).await
 }
 
 /// 呼叫 ollama 生成回話。失敗（連不到 / 逾時 / 解析錯）一律回 None，由呼叫端退罐頭。
@@ -284,6 +284,76 @@ async fn ollama_chat(system: &str, user: &str) -> Option<String> {
     }
 }
 
+/// Groq API key（雲端推論，OpenAI 相容）。有設且非空才啟用 Groq tier。
+/// key 一律走環境變數 / `.env`（gitignored），絕不寫進 repo。
+fn groq_key() -> Option<String> {
+    std::env::var("GROQ_API_KEY").ok().filter(|k| !k.trim().is_empty())
+}
+
+/// Groq 對話模型（可用 `BUTFUN_GROQ_MODEL` 覆寫）。預設挑免費層裡夠聰明、中文也行的。
+fn groq_model() -> String {
+    std::env::var("BUTFUN_GROQ_MODEL").unwrap_or_else(|_| "llama-3.3-70b-versatile".to_string())
+}
+
+/// 呼叫 Groq（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
+/// 一律回 None，由上層降級。雲端執行：超快、server 端天然並發、零本機 CPU——
+/// 多人同時聊也扛得住（這正是本機純 CPU ~44s/prompt 撐不住的解方）。
+async fn groq_chat(system: &str, user: &str) -> Option<String> {
+    let key = groq_key()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let body = serde_json::json!({
+        "model": groq_model(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.8,
+        "max_tokens": 400,
+    });
+    let resp = client
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .bearer_auth(key)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let text = v
+        .get("choices")?
+        .get(0)?
+        .get("message")?
+        .get("content")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// LLM 對話路由 + 降級鏈：**Groq（雲端，快/並發）→ 本機/Tailscale ollama → None（罐頭）**。
+/// 哪個 tier 沒設好（無 key / 連不到）就自動跳下一層；全失敗回 None，由呼叫端退罐頭。
+/// 永遠不卡 15Hz 迴圈、永遠回得出東西。
+///
+/// 註：ollama tier 的位址由 `BUTFUN_OLLAMA_URL` 決定——指向本機 CPU、或指向一台
+/// 有顯卡的機器（例如透過 Tailscale 的私網 IP）皆可，無需改碼即可換成 GPU 推論。
+async fn llm_chat(system: &str, user: &str) -> Option<String> {
+    if groq_key().is_some() {
+        if let Some(t) = groq_chat(system, user).await {
+            return Some(t);
+        }
+    }
+    ollama_chat(system, user).await
+}
+
 /// 生成 NPC 對玩家這句話的回應。LLM 沒啟用或失敗 → 罐頭句（永遠回得出東西）。
 /// `world_news`：引擎世界事件段落（ROADMAP 65），空字串表示無近況。
 /// `elder_context`：老年感悟語境（ROADMAP 66），空字串表示非老年。
@@ -295,7 +365,7 @@ pub async fn reply(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_st
     if !llm_enabled() {
         return canned_reply(npc);
     }
-    match ollama_chat(&system_prompt(npc, rel, gift_available, gift_stock, world_news, elder_context, player_activity, needs_context, relations_context, faction_context), player_msg).await {
+    match llm_chat(&system_prompt(npc, rel, gift_available, gift_stock, world_news, elder_context, player_activity, needs_context, relations_context, faction_context), player_msg).await {
         Some(t) => t,
         None => canned_reply(npc),
     }
@@ -307,7 +377,7 @@ pub async fn reply_with_custom_prompt(npc: &NpcPersona, custom_prompt: &str, pla
     if !llm_enabled() {
         return canned_reply(npc);
     }
-    match ollama_chat(custom_prompt, player_msg).await {
+    match llm_chat(custom_prompt, player_msg).await {
         Some(t) => t,
         None => canned_reply(npc),
     }
@@ -324,7 +394,7 @@ pub async fn update_impression(npc: &NpcPersona, prev: &str, player_msg: &str, r
         npc.display
     );
     let user = format!("玩家說：{player_msg}\n你回答：{reply}\n（你先前對他的印象：{prev}）");
-    match ollama_chat(&sys, &user).await {
+    match llm_chat(&sys, &user).await {
         Some(t) => t.chars().take(120).collect(), // 印象上限 120 字，防膨脹
         None => prev.to_string(),
     }
@@ -345,6 +415,26 @@ mod tests {
         for n in NPCS {
             assert!(!canned_reply(n).is_empty());
         }
+    }
+
+    #[test]
+    fn groq_model_has_sane_default() {
+        // 沒設 BUTFUN_GROQ_MODEL 時要有可用的免費層預設，不能空。
+        std::env::remove_var("BUTFUN_GROQ_MODEL");
+        let m = groq_model();
+        assert!(!m.is_empty());
+        assert!(m.contains("llama") || m.contains("qwen"));
+    }
+
+    #[test]
+    fn groq_key_absent_is_none() {
+        // 沒設 key（CI 預設）時 Groq tier 應被跳過——回 None，路由自動降級到 ollama。
+        std::env::remove_var("GROQ_API_KEY");
+        assert!(groq_key().is_none());
+        // 空字串也算沒設，避免誤判啟用。
+        std::env::set_var("GROQ_API_KEY", "   ");
+        assert!(groq_key().is_none());
+        std::env::remove_var("GROQ_API_KEY");
     }
 
     #[test]
