@@ -377,6 +377,16 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::NightPotion,
         output_qty: 1,
     },
+
+    // ── 農耕自動化（ROADMAP 112 灑水器）──────────────────────────────────────
+    /// 灑水器：木×3 + 石×3 → 灑水器×1。
+    /// 放在農地旁，每 30 秒自動澆灌周圍 2 格的作物，與「下雨澆田」共用同一套澆水邏輯。
+    Recipe {
+        id: "sprinkler",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 3)],
+        output: ItemKind::Sprinkler,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。

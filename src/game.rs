@@ -110,6 +110,18 @@ pub fn spawn(app: AppState) {
             // 成長無條件推進(每塊地 tick);view 只在要廣播時才在同一把鎖內多走一趟建。
             let field_views: Vec<FieldView> = {
                 let mut fields = app.fields.write().unwrap();
+                // 灑水器自動澆灌：每個灑水器對主人的農地 tick，倒數到 0 時澆周圍格。
+                // 鎖序：sprinklers 先讀，再用 fields 寫鎖（不與 ws 農地操作衝突：ws 是 Farm 鎖序）。
+                {
+                    let mut sprinklers = app.sprinklers.write().unwrap();
+                    for (owner, spr_list) in sprinklers.all_mut() {
+                        if let Some(field) = fields.get_mut(owner) {
+                            for spr in spr_list.iter_mut() {
+                                spr.tick(dt, field);
+                            }
+                        }
+                    }
+                }
                 for (_owner, field) in fields.iter_mut() {
                     field.tick(dt * growth_rate);
                 }
@@ -1163,6 +1175,7 @@ pub fn spawn(app: AppState) {
                         },
                         village_treasury: *app.village_treasury.read().unwrap(),
                         weather: app.weather.read().unwrap().view(),
+                        sprinklers: app.sprinklers.read().unwrap().views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

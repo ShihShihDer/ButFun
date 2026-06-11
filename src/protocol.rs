@@ -257,6 +257,9 @@ pub enum ClientMsg {
     /// 伺服器驗可及距離、目標為 Empty、背包有該材料後：
     /// 背包扣 1、delta 設對應 TileKind、廣播差異。
     Place { wx: f32, wy: f32, material: String },
+    /// 放置灑水器（ROADMAP 112）：玩家背包有灑水器後，點擊農地旁的世界座標放置。
+    /// 伺服器驗：背包有 Sprinkler、放置點在自己農地的 FARM_REACH 內、未倒地。
+    PlaceSprinkler { wx: f32, wy: f32 },
     /// 主動攻擊：玩家按下攻擊鍵，打 ATTACK_REACH 內最近的存活敵人。
     /// 伺服器驗：未倒地、冷卻已到期（ATTACK_COOLDOWN_SECS），再結算傷害 + 掉落。
     /// 冷卻期間送出靜默忽略（不懲罰多按）。
@@ -503,6 +506,8 @@ pub enum ServerMsg {
         village_treasury: u32,
         /// 天氣狀態（ROADMAP 93）：目前天氣類型與粒子強度。前端據此畫粒子特效。
         weather: WeatherView,
+        /// 世界上所有灑水器（ROADMAP 112）：位置與歸屬。前端在農地上畫小圖示。
+        sprinklers: Vec<crate::sprinkler::SprinklerView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1144,6 +1149,7 @@ mod tests {
             village_buff_remaining_secs: 0,
             village_treasury: 0,
             weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
+            sprinklers: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

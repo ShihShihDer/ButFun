@@ -820,6 +820,10 @@ pub struct AppState {
     pub friends: FriendStore,
     /// 臨時隊伍管理器（ROADMAP 97）：純記憶體、重啟清空（臨時隊伍不需持久化）。
     pub parties: crate::party::PartyStore,
+    /// 灑水器記憶體快照（ROADMAP 112）：放置時加入、tick 時澆水。
+    pub sprinklers: Arc<RwLock<crate::sprinkler::SprinklerStore>>,
+    /// 灑水器持久化 store（ROADMAP 112）：INSERT 到 DB + 啟動 SELECT 全載。
+    pub sprinkler_persist: crate::sprinkler::SprinklerPersist,
 }
 
 impl AppState {
@@ -836,6 +840,8 @@ impl AppState {
             LandPlotStore::new(),
             NpcMemoryStore::new(),
             FriendStore::new(),
+            crate::sprinkler::SprinklerPersist::new(),
+            vec![],
         )
     }
 
@@ -854,6 +860,8 @@ impl AppState {
         land_plot_store: LandPlotStore,
         npc_memory_store: NpcMemoryStore,
         friends: FriendStore,
+        sprinkler_persist: crate::sprinkler::SprinklerPersist,
+        sprinkler_preload: Vec<(uuid::Uuid, crate::sprinkler::SprinklerData)>,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -955,6 +963,12 @@ impl AppState {
             whisper_senders: Arc::new(RwLock::new(HashMap::new())),
             friends,
             parties: crate::party::PartyStore::default(),
+            sprinklers: {
+                let mut store = crate::sprinkler::SprinklerStore::new();
+                store.load(sprinkler_preload);
+                Arc::new(RwLock::new(store))
+            },
+            sprinkler_persist,
         }
     }
 

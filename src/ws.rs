@@ -335,7 +335,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -383,6 +383,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         village_treasury: *village_treasury,
                                         // 天氣狀態全服廣播（ROADMAP 93）。
                                         weather: weather.clone(),
+                                        // 灑水器：依農地位置做 AOI 剔除（ROADMAP 112）。
+                                        sprinklers: sprinklers.iter().filter(|s| filter_pos(s.wx, s.wy)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1182,6 +1184,46 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         store.upsert_delta(cx, cy, tx, ty, tile_kind).await;
                     });
                     tracing::info!(player = %player_name, ?tile_kind, "建造放置");
+                }
+                Ok(ClientMsg::PlaceSprinkler { wx, wy }) => {
+                    // 放置灑水器（ROADMAP 112）：背包有 Sprinkler、未倒地、放置點在自己農地 FARM_REACH 內。
+                    let uid = match authed_uid {
+                        Some(u) => u,
+                        None => continue, // 訪客不能放置
+                    };
+                    // 驗未倒地。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(true) {
+                        continue;
+                    }
+                    // 驗放置點在自己農地的 FARM_REACH 內（保護：不能隔空放到別人地塊旁）。
+                    let in_reach = {
+                        let fields = app.fields.read().unwrap();
+                        fields.get(&uid).map(|f| f.within_reach(wx, wy)).unwrap_or(false)
+                    };
+                    if !in_reach {
+                        continue;
+                    }
+                    // 扣背包 1 個 Sprinkler。
+                    let ok = {
+                        let mut players = app.players.write().unwrap();
+                        players.get_mut(&id).map(|p| p.inventory.take(crate::inventory::ItemKind::Sprinkler, 1)).unwrap_or(false)
+                    };
+                    if !ok {
+                        continue;
+                    }
+                    // 先加進記憶體（db_id=0），再非同步落地拿到真實 id。
+                    let data = crate::sprinkler::SprinklerData::new(wx, wy);
+                    app.sprinklers.write().unwrap().add(uid, data);
+                    let persist = app.sprinkler_persist.clone();
+                    let store = app.sprinklers.clone();
+                    tokio::spawn(async move {
+                        let db_id = persist.insert(uid, wx, wy).await;
+                        if db_id != 0 {
+                            // 補上真實 db_id（找到 db_id==0 且位置匹配的最後一個灑水器）。
+                            store.write().unwrap().update_db_id(uid, wx, wy, db_id);
+                        }
+                    });
+                    tracing::info!(user_id = %uid, wx, wy, "放置灑水器");
                 }
                 Ok(ClientMsg::Attack) => {
                     // 主動攻擊：驗未倒地、冷卻已到期，再打 ATTACK_REACH 內最近的存活敵人。
