@@ -2169,6 +2169,122 @@
     return SPECIES_STYLE[sp] || SPECIES_STYLE.terran;
   }
 
+  // 蒸汽龐克探險家程式繪製（ROADMAP 88 — 角色精緻化）。
+  // cx/cy = 角色螢幕座標（已含踏步彈跳的 by）。
+  // dir: 0下/1左/2右/3上；walk: p.walk 弧度；moving: 是否走路中；isMe: 本機玩家；sty: 種族外觀。
+  // 弱機或 artOk("player") 已成立時不進此路徑（sprite 優先）；
+  // 全路徑都失敗時退回 drawPlayer 的簡圖圓圈。
+  function drawSteampunkHero(cx, cy, dir, walk, moving, isMe, sty) {
+    const COPPER = "#b87333";
+    const DARK   = "#2a1c10";
+    const bodyCol = isMe ? "#c9a24b" : sty.body;
+    // 走路時左右腳前後交替（平滑 sin 波，幅度 ±3px）。
+    const swing = (moving && !reduceMotion) ? Math.sin(walk * 2) * 3 : 0;
+
+    // ── 靴子 ──
+    ctx.fillStyle = "#3a2010";
+    if (dir === 0 || dir === 3) {           // 正面 / 背面
+      ctx.beginPath(); ctx.ellipse(cx - 5, cy + 13 - swing * 0.4, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx + 5, cy + 13 + swing * 0.4, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (dir === 1) {                 // 朝左側面
+      ctx.beginPath(); ctx.ellipse(cx - 5, cy + 13 - swing * 0.3, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx + 2, cy + 12 + swing * 0.3, 4, 2,   0, 0, Math.PI * 2); ctx.fill();
+    } else {                                // 朝右側面
+      ctx.beginPath(); ctx.ellipse(cx + 4, cy + 13 + swing * 0.3, 5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(cx - 3, cy + 12 - swing * 0.3, 4, 2,   0, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // ── 褲管 ──
+    ctx.fillStyle = "#3a2810";
+    if (dir === 0 || dir === 3) {
+      ctx.fillRect(cx - 7, cy + 5, 5, 9);
+      ctx.fillRect(cx + 2, cy + 5, 5, 9);
+    } else if (dir === 1) {
+      ctx.fillRect(cx - 6, cy + 5, 5, 9);
+      ctx.fillRect(cx    , cy + 7, 4, 7);
+    } else {
+      ctx.fillRect(cx + 1, cy + 5, 5, 9);
+      ctx.fillRect(cx - 5, cy + 7, 4, 7);
+    }
+
+    // ── 身體/胸甲 ──
+    const bw = (dir === 0 || dir === 3) ? 16 : 12;
+    const bx = (dir === 0 || dir === 3) ? cx - 8 : (dir === 1 ? cx - 6 : cx - 5);
+    ctx.fillStyle = bodyCol;
+    ctx.beginPath();
+    ctx.moveTo(bx + 3, cy - 2);
+    ctx.lineTo(bx + bw - 3, cy - 2);
+    ctx.quadraticCurveTo(bx + bw, cy - 2, bx + bw, cy + 1);
+    ctx.lineTo(bx + bw, cy + 6);
+    ctx.lineTo(bx, cy + 6);
+    ctx.lineTo(bx, cy + 1);
+    ctx.quadraticCurveTo(bx, cy - 2, bx + 3, cy - 2);
+    ctx.closePath();
+    ctx.fill();
+    // 胸甲中板（立體感）
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(cx - 3, cy - 1, 6, 8);
+    // 銅色鉚釘
+    ctx.fillStyle = COPPER;
+    for (const [dx, dy] of [[-6, 0], [-6, 4.5], [5, 0], [5, 4.5]]) {
+      if (dir !== 0 && dir !== 3 && dx === 5) continue; // 側面右鉚釘不可見
+      ctx.beginPath(); ctx.arc(cx + dx, cy + dy, 1.3, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // 腰帶齒輪（正面/背面才完整顯示）
+    if (dir === 0 || dir === 3) {
+      ctx.save();
+      ctx.translate(cx + 6, cy + 5.5);
+      ctx.fillStyle = COPPER;
+      ctx.beginPath(); ctx.arc(0, 0, 3.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#7a4c18";
+      ctx.beginPath(); ctx.arc(0, 0, 1.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = COPPER;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        ctx.beginPath(); ctx.arc(Math.cos(a) * 4, Math.sin(a) * 4, 1.2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // ── 頭部 ──
+    ctx.fillStyle = bodyCol;
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(cx, cy - 10, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    // ── 蒸汽頂帽 ──（畫在頭之後蓋住頭頂）
+    ctx.fillStyle = DARK;
+    ctx.fillRect(cx - 11, cy - 17, 22, 3);   // 帽沿
+    ctx.fillRect(cx - 7,  cy - 24, 14, 8);   // 帽身
+    ctx.fillStyle = COPPER;
+    ctx.fillRect(cx - 7,  cy - 17, 14, 2.5); // 銅色帽帶
+
+    // ── 護目鏡（朝向感知：朝上/背面不畫）──
+    if (dir !== 3) {
+      let gx1 = cx - 3.5, gx2 = cx + 3.5, gy = cy - 10;
+      if (dir === 1) { gx1 = cx - 7; gx2 = cx - 2.5; gy = cy - 9.5; }
+      else if (dir === 2) { gx1 = cx + 2.5; gx2 = cx + 7; gy = cy - 9.5; }
+      // 銅框
+      ctx.fillStyle = COPPER;
+      ctx.beginPath(); ctx.arc(gx1, gy, 3.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(gx2, gy, 3.2, 0, Math.PI * 2); ctx.fill();
+      // 鏡面（自己鏡片更亮）
+      ctx.fillStyle = isMe ? "rgba(140,220,255,0.9)" : "rgba(100,200,240,0.75)";
+      ctx.beginPath(); ctx.arc(gx1, gy, 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(gx2, gy, 2.2, 0, Math.PI * 2); ctx.fill();
+      // 高光
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.beginPath(); ctx.arc(gx1 - 0.7, gy - 0.7, 0.9, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(gx2 - 0.7, gy - 0.7, 0.9, 0, Math.PI * 2); ctx.fill();
+      // 朝正面才畫鼻梁橋
+      if (dir === 0) {
+        ctx.strokeStyle = COPPER; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(gx1 + 2.5, gy); ctx.lineTo(gx2 - 2.5, gy); ctx.stroke();
+      }
+    }
+  }
+
   // 畫單一玩家(角色 sprite／fallback 圓 + 種族光環 + 頭上名字)。抽成獨立函式,讓 render 能
   // 控制畫的順序——別人先畫、自己最後畫,確保自己永遠在最上層。純表現層,不嵌任何
   // 遊戲規則(將來 WebXR renderer 自有角色呈現,這層只屬 2D 客戶端)。
@@ -2206,31 +2322,38 @@
 
     // 被打趴的角色整個壓暗(連同 sprite/fallback),畫完角色再還原,名字保持清晰好認。
     if (downed) ctx.globalAlpha = 0.4;
+    // dir/frame 提前計算，sprite 和程式繪製兩路徑都會用到。
+    const dir = facingToDir(p.facing);
+    const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
     if (artOk("player")) {
-      // 像素角色:列=朝向(0下1左2右3上)、欄=走路影格(0-3);靜止用第 0 格。
-      const dir = facingToDir(p.facing);
-      const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
-      // sprite 32x32,放大成 36 比較好看;腳對齊 sy(陰影位置)。
+      // 精靈圖路徑：新蒸汽龐克像素角色（ROADMAP 88 生成）。
+      // sprite 32x32，放大成 36 好看；腳對齊 sy（陰影位置）。
       const dw = 36, dh = 36;
       ctx.drawImage(
         ART.player, frame * TS, dir * TS, TS, TS,
         Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
       );
     } else {
-      // fallback:程式畫的圓 + 朝向小護目鏡點；使用種族色。
-      ctx.beginPath();
-      ctx.arc(sx, by, 14, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#c9a24b" : sty.body;
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(0,0,0,0.4)";
-      ctx.stroke();
-      const fx = sx + Math.cos(p.facing) * 8;
-      const fy = by + Math.sin(p.facing) * 8;
-      ctx.beginPath();
-      ctx.arc(fx, fy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = isMe ? "#3a2818" : sty.eye;
-      ctx.fill();
+      // 程式繪製路徑（ROADMAP 88）：蒸汽龐克分件角色。
+      // artReady 前或圖片載入失敗時，退回最底層的簡圖圓圈。
+      if (artReady) {
+        drawSteampunkHero(sx, by, dir, p.walk, p.moving, isMe, sty);
+      } else {
+        // 弱機 / 圖片未就緒退回簡圖（現有簡圖保留作保底）。
+        ctx.beginPath();
+        ctx.arc(sx, by, 14, 0, Math.PI * 2);
+        ctx.fillStyle = isMe ? "#c9a24b" : sty.body;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.stroke();
+        const fx = sx + Math.cos(p.facing) * 8;
+        const fy = by + Math.sin(p.facing) * 8;
+        ctx.beginPath();
+        ctx.arc(fx, fy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = isMe ? "#3a2818" : sty.eye;
+        ctx.fill();
+      }
     }
     // 角色畫完還原透明度,名字與 💤 標記保持滿不透明、清晰好認。
     if (downed) {
