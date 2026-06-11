@@ -221,6 +221,11 @@ pub struct Player {
     /// 玩家的個人倉庫：背包種類槽滿時自動溢出至此；花乙太購買容量擴充。
     /// 記憶體模式：重啟歸零（零 migration）。
     pub warehouse: Warehouse,
+
+    // ── 易腐品腐壞（ROADMAP 106）──────────────────────────────────────────
+    /// 易腐品倒數計時器（食物/作物）。
+    /// 只在玩家連線時遞減；斷線暫停、重啟歸零，不懲罰不上線。
+    pub decay_timers: crate::perishable::PerishableDecayState,
 }
 
 impl Player {
@@ -489,6 +494,18 @@ impl Player {
             skin_tone: self.skin_tone,
             goggle_color: self.goggle_color,
             costume: self.costume,
+            // ── 易腐品腐壞（ROADMAP 106）
+            decay_timers: self.decay_timers.all_timers()
+                .map(|(item, secs)| {
+                    // 序列化 key 為 snake_case（serde 約定）
+                    let key = serde_json::to_value(item)
+                        .ok()
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    (key, secs)
+                })
+                .filter(|(k, _)| !k.is_empty())
+                .collect(),
             // ── 倉庫（ROADMAP 105）
             inventory_slot_count: self.inventory.kind_count() as u32,
             inventory_slot_max: crate::warehouse::MAX_INVENTORY_ITEM_KINDS as u32,
@@ -1121,6 +1138,7 @@ mod tests {
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
             warehouse: Warehouse::default(),
+            decay_timers: crate::perishable::PerishableDecayState::new(),
         }
     }
 

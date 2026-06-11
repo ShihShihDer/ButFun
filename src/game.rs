@@ -379,6 +379,8 @@ pub fn spawn(app: AppState) {
 
             // 整合位置 + 推進生命回復（權威模擬,每 tick 必跑,與有無觀眾無關;短暫持鎖,不跨 await）。
             // （tile_deltas_snap 已在敵人段前快照，玩家碰撞沿用同一份。）
+            // 易腐品腐壞通知（ROADMAP 106）：在鎖外送訊息，避免死鎖。
+            let mut decay_notifications: Vec<(uuid::Uuid, Vec<crate::perishable::DecayEvent>)> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
                 for p in players.values_mut() {
@@ -412,6 +414,23 @@ pub fn spawn(app: AppState) {
                     crate::procurement::tick(&mut p.procurement_active, &mut p.procurement_cooldown, dt);
                     // 農產品展覽會計時（ROADMAP 56）。
                     crate::farm_fair::tick(&mut p.farm_fair_active, &mut p.farm_fair_cooldown, dt);
+                    // 易腐品腐壞計時（ROADMAP 106）：只在玩家連線（在 players map）時遞減。
+                    {
+                        // decay_timers 與 inventory/warehouse 是不同欄位，可同時借用。
+                        let events = p.decay_timers.tick(dt, &p.inventory, &p.warehouse);
+                        if !events.is_empty() {
+                            // 立即移除腐壞的物品
+                            for event in &events {
+                                if let crate::perishable::DecayEvent::Spoiled(item) = event {
+                                    let qty = p.inventory.count(*item);
+                                    if qty > 0 { let _ = p.inventory.take(*item, qty); }
+                                    let wqty = p.warehouse.count(*item);
+                                    if wqty > 0 { let _ = p.warehouse.take(*item, wqty); }
+                                }
+                            }
+                            decay_notifications.push((p.id, events));
+                        }
+                    }
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
@@ -420,6 +439,29 @@ pub fn spawn(app: AppState) {
                         p.x = sx;
                         p.y = sy;
                         tracing::info!(player = %p.name, "從倒地復原，傳回新手村");
+                    }
+                }
+            }
+
+            // 易腐品腐壞通知（ROADMAP 106）：鎖已釋放，可安全送直接訊息。
+            if !decay_notifications.is_empty() {
+                let senders = app.whisper_senders.read().unwrap();
+                for (pid, events) in decay_notifications {
+                    if let Some(tx) = senders.get(&pid) {
+                        for event in events {
+                            let msg = match &event {
+                                crate::perishable::DecayEvent::Spoiled(item) => {
+                                    let name = crate::perishable::item_display_zh(*item);
+                                    format!("🍂 你的{name}因存放過久已腐壞消失！下次請盡快使用或賣給 NPC。")
+                                }
+                                crate::perishable::DecayEvent::Warning { item, remaining_secs } => {
+                                    let name = crate::perishable::item_display_zh(*item);
+                                    let mins = remaining_secs / 60;
+                                    format!("⚠️ 你的{name}再過 {mins} 分鐘就會腐壞！請盡快使用或賣出。")
+                                }
+                            };
+                            let _ = tx.try_send(msg);
+                        }
                     }
                 }
             }

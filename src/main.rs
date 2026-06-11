@@ -93,6 +93,7 @@ mod friends;
 mod party;
 mod sprinkler;
 mod warehouse;
+mod perishable;
 
 use std::net::SocketAddr;
 

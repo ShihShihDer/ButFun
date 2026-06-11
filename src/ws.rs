@@ -145,6 +145,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
             warehouse: crate::warehouse::Warehouse::default(),
+            decay_timers: crate::perishable::PerishableDecayState::new(),
         }
     } else {
         // 等 Join
@@ -210,6 +211,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
             warehouse: crate::warehouse::Warehouse::default(),
+            decay_timers: crate::perishable::PerishableDecayState::new(),
         }
     };
     let id = player.id;

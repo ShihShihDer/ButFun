@@ -798,6 +798,13 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub costume: u8,
 
+    // ── 易腐品腐壞（ROADMAP 106）──────────────────────────────────────────────
+    /// 正在倒計時的易腐品剩餘秒數（key = ItemKind snake_case，value = 秒）。
+    /// 只包含背包/倉庫中實際存在的易腐品；空時省略流量。
+    /// 前端背包面板用此在物品旁顯示腐壞倒計時。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub decay_timers: std::collections::HashMap<String, u32>,
+
     // ── 倉庫（ROADMAP 105）───────────────────────────────────────────────────
     /// 背包目前使用的種類槽數（0~inventory_slot_max）。前端背包面板顯示 X/20。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -1145,6 +1152,7 @@ mod tests {
                 skin_tone: 0,
                 goggle_color: 0,
                 costume: 0,
+                decay_timers: std::collections::HashMap::new(),
                 inventory_slot_count: 0,
                 inventory_slot_max: 20,
                 warehouse_expansions: 0,
@@ -1320,6 +1328,7 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            decay_timers: std::collections::HashMap::new(),
             inventory_slot_count: 0,
             inventory_slot_max: 20,
             warehouse_expansions: 0,
@@ -1516,6 +1525,7 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            decay_timers: std::collections::HashMap::new(),
             inventory_slot_count: 0,
             inventory_slot_max: 20,
             warehouse_expansions: 0,
@@ -1557,6 +1567,7 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            decay_timers: std::collections::HashMap::new(),
             inventory_slot_count: 0,
             inventory_slot_max: 20,
             warehouse_expansions: 0,

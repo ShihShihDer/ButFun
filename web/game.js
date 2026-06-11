@@ -685,13 +685,17 @@
           invKnown = true;
           // 只在背包內容或裝備狀態真的變了才重繪面板——避免每幀重建 innerHTML + 重綁按鈕，
           // 害「🏗️選取 點得到但不一定勾選」(點擊剛好遇到重建就掉了)。
+          const decayTimers = me.decay_timers || {};
+          // 易腐品倒數以分鐘粒度加入 sig（每分鐘重繪一次，避免每秒重建 innerHTML）
+          const decaySig = Object.entries(decayTimers).map(([k,v]) => `${k}:${Math.floor(v/60)}`).sort().join(",");
           const bagSig = inv.map((s) => `${s.item}:${s.qty}`).join(",") +
             `|${me.equipped_weapon || ""}|${me.equipped_armor || ""}|${me.equipped_accessory || ""}` +
-            `|${me.inventory_slot_count || 0}/${me.inventory_slot_max || 0}`;
+            `|${me.inventory_slot_count || 0}/${me.inventory_slot_max || 0}` +
+            `|d:${decaySig}`;
           if (bagSig !== lastBagSig) {
             lastBagSig = bagSig;
             updateBagHud(inv, me.equipped_weapon, me.equipped_armor, me.equipped_accessory,
-              me.inventory_slot_count || 0, me.inventory_slot_max || 0);
+              me.inventory_slot_count || 0, me.inventory_slot_max || 0, decayTimers);
           }
           updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
           updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense);
@@ -5925,7 +5929,8 @@
   // 已購 owned 格時,下一格要多少乙太。對齊 economy::expansion_cost——前端只算來顯示,
   // 真正扣款/開格仍由伺服器查餘額決定。
   const expansionCost = (owned) => EXPANSION_BASE_COST * (owned + 1);
-  function updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory, slotCount, slotMax) {
+  function updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory, slotCount, slotMax, decayTimers) {
+    decayTimers = decayTimers || {};
     // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
     // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
     const toggle = document.getElementById("bagToggle");
@@ -6001,7 +6006,20 @@
             ? `<span class="bag-gear-tag equipped" title="${GEAR_DESC[s.item]}">✅已裝備</span>`
             : `<button class="bag-equip-btn" data-item="${s.item}" title="${GEAR_DESC[s.item]}">⚔️裝備</button>`;
         }
-        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${placeBtn}${useBtn}${gearTag}</div>`;
+        // 易腐品倒數標籤（ROADMAP 106）：從伺服器廣播的 decay_timers 取剩餘秒數。
+        let decayTag = "";
+        const remainSecs = decayTimers[s.item];
+        if (remainSecs !== undefined) {
+          const mins = Math.ceil(remainSecs / 60);
+          if (remainSecs <= 60) {
+            decayTag = `<span class="decay-tag critical" title="即將腐壞！剩不到 1 分鐘">💀${mins}m</span>`;
+          } else if (remainSecs <= 300) {
+            decayTag = `<span class="decay-tag warn" title="快腐壞了！剩 ${mins} 分鐘">⚠️${mins}m</span>`;
+          } else {
+            decayTag = `<span class="decay-tag" title="易腐品，剩 ${mins} 分鐘">⏰${mins}m</span>`;
+          }
+        }
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${decayTag}${placeBtn}${useBtn}${gearTag}</div>`;
       })
       .join("");
     // 綁定 bag-place-btn 點擊事件（動態 HTML，每次重繪後重綁）。
@@ -6011,7 +6029,7 @@
         const mat = btn.dataset.material;
         selectedBuildMaterial = selectedBuildMaterial === mat ? null : mat;
         updatePlaceModeHud();
-        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory); // 重繪以同步選取狀態
+        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory, slotCount, slotMax, decayTimers); // 重繪以同步選取狀態
       });
     });
     // 綁定 bag-use-btn 點擊事件：送 use_item 訊息，伺服器扣一個道具並回血。
@@ -6029,7 +6047,7 @@
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         placingSprinkler = !placingSprinkler;
-        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory);
+        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory, slotCount, slotMax, decayTimers);
       });
     });
     // 綁定 bag-equip-btn 點擊事件：送 equip_item 訊息，伺服器把背包物品移至裝備槽。
