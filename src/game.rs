@@ -774,6 +774,53 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 怪物王戰術指揮（ROADMAP 117）：菁英精英每 90 秒決策一次戰術；
+            // 戰術由罐頭邏輯即時決定（零延遲），AI 非同步生成廣播台詞。
+            // ROADMAP 114：0 玩家時仍持續運轉，讓世界不因無人而沉默。
+            {
+                let player_count = app.players.read().unwrap().len();
+                let tactic_inputs: Vec<_> = app
+                    .enemies
+                    .read()
+                    .unwrap()
+                    .enemies()
+                    .into_iter()
+                    .filter(|e| e.enemy.is_alive() && e.level >= e.base_level.saturating_add(3))
+                    .map(|e| crate::boss_ai::TacticInput {
+                        id: e.id,
+                        kind_name: e.enemy.kind().display_name(),
+                        level: e.level,
+                        x: e.x,
+                        y: e.y,
+                        hp_pct: e.enemy.remaining_hp() as f32 / e.enemy.max_hp().max(1) as f32,
+                    })
+                    .collect();
+                let candidate = app.boss_ai.write().unwrap().tick(dt, &tactic_inputs, player_count);
+                if let Some(c) = candidate {
+                    // 立即套用戰術（機制效果，同步），不等 AI 台詞。
+                    let players_pos: Vec<(f32, f32)> = app.players.read().unwrap()
+                        .values()
+                        .map(|p| (p.x, p.y))
+                        .collect();
+                    app.enemies.write().unwrap()
+                        .broadcast_boss_command(c.id, c.x, c.y, &c.tactic, &players_pos);
+                    // 非同步生成廣播台詞（AI 台詞或罐頭降級）。
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.boss_ai_sem.clone();
+                    let kind_name = c.kind_name.clone();
+                    let level = c.level;
+                    let tactic = c.tactic.clone();
+                    tokio::spawn(async move {
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let msg = crate::boss_ai::generate_tactic_message(&kind_name, level, &tactic).await;
+                        let tactic_name = tactic.display_name();
+                        let _ = tx_chat.send(format!(
+                            "⚔️ 〔怪物王・{kind_name} Lv.{level}〕下令「{tactic_name}」：{msg}"
+                        ));
+                    });
+                }
+            }
+
             // NPC 自主懸賞令（ROADMAP 82）：蘭卡安全感低且兇名精英存在時自主發布通緝令。
             // 成本紀律：15 分鐘冷卻、純罐頭降級可運作、無 Semaphore（state 機保證最多一筆）。
             // ROADMAP 114：0 玩家時仍持續運轉。

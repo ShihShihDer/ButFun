@@ -67,6 +67,8 @@ pub struct PlacedEnemy {
     pub pack_target_timer: f32,
     /// 呼救加速剩餘秒數（殘血同種怪呼救時設定）。
     pub flee_boost_timer: f32,
+    /// boss 撤退計時器：> 0 時此怪強制逃離玩家（ROADMAP 117）。
+    pub retreat_timer: f32,
 }
 
 /// `level_up_nearest_killer` 的回傳值，供呼叫端決定是否廣播兇名精英通告。
@@ -198,8 +200,22 @@ impl EnemyField {
                 let hp_ratio = placed.enemy.remaining_hp() as f32 / placed.enemy.max_hp().max(1) as f32;
                 let is_fleeing = hp_ratio < LOW_HP_THRESHOLD && nearest.is_some();
 
-                // 目標與速度決策（ROADMAP 43 狼群包夾 / 殘血逃跑）
-                let (target_x, target_y, speed) = if is_fleeing {
+                // 目標與速度決策（ROADMAP 43 狼群包夾 / 殘血逃跑 / ROADMAP 117 boss 撤退）
+                let (target_x, target_y, speed) = if placed.retreat_timer > 0.0 {
+                    // ROADMAP 117 boss 撤退：強制逃離玩家，無視 HP 門檻。
+                    placed.retreat_timer = (placed.retreat_timer - dt).max(0.0);
+                    if let Some((tx, ty, _)) = nearest {
+                        let fdx = placed.x - tx;
+                        let fdy = placed.y - ty;
+                        let fdist = (fdx * fdx + fdy * fdy).sqrt().max(1.0);
+                        let flee_x = placed.x + fdx / fdist * 320.0;
+                        let flee_y = placed.y + fdy / fdist * 320.0;
+                        (flee_x, flee_y, CHASE_SPEED * 1.2 * night_mult)
+                    } else {
+                        let (hx, hy) = spawn_position(placed.id);
+                        (hx, hy, RETURN_SPEED)
+                    }
+                } else if is_fleeing {
                     // 殘血逃跑：朝玩家反方向移動（is_fleeing 已確認 nearest.is_some()，
                     // 用 if let 保底而非 unwrap，防止競態條件炸死遊戲迴圈）。
                     if let Some((tx, ty, _)) = nearest {
@@ -592,6 +608,7 @@ impl EnemyField {
             pack_target: None,
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
+            retreat_timer: 0.0,
         });
     }
 
@@ -606,6 +623,7 @@ impl EnemyField {
             field.chunks.entry(key).or_default().push(PlacedEnemy {
                 x, y, base_level, level: base_level, enemy, id,
                 pack_target: None, pack_target_timer: 0.0, flee_boost_timer: 0.0,
+                retreat_timer: 0.0,
             });
         }
         Some(field)
@@ -663,6 +681,104 @@ impl EnemyField {
             }
         }
         None
+    }
+
+    /// 怪物王發布戰術指令（ROADMAP 117）：依 `BossTactic` 對附近的怪施加行為影響。
+    ///
+    /// - `Surround` / `FocusFire`：COMMAND_RADIUS 內所有活著的小怪設定 `pack_target`（利用現有
+    ///   包夾機制，不同 id_hash 決定進攻角度 → 自然從四面夾擊）。
+    ///   `FocusFire` 讓所有怪指向 boss 最近的玩家；`Surround` 各用自己最近的玩家。
+    /// - `Retreat`：找到 boss 本身，設定 `retreat_timer` 讓他強制逃跑。
+    /// - `Rally`：RALLY_RADIUS（600px）內**同種**怪全部設定 `pack_target`。
+    pub fn broadcast_boss_command(
+        &mut self,
+        boss_id: (i32, i32, usize),
+        boss_x: f32,
+        boss_y: f32,
+        tactic: &crate::boss_ai::BossTactic,
+        players: &[(f32, f32)],
+    ) {
+        use crate::boss_ai::{BossTactic, COMMAND_RADIUS, RALLY_RADIUS, TACTIC_DURATION_SECS};
+
+        match tactic {
+            BossTactic::Surround | BossTactic::FocusFire => {
+                // 集火時所有怪集中指向 boss 最近的玩家；包圍時各自找最近玩家。
+                let focus_target: Option<(f32, f32)> = if matches!(tactic, BossTactic::FocusFire) {
+                    players.iter()
+                        .min_by(|(ax, ay), (bx, by)| {
+                            let da = (ax - boss_x).powi(2) + (ay - boss_y).powi(2);
+                            let db = (bx - boss_x).powi(2) + (by - boss_y).powi(2);
+                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .copied()
+                } else {
+                    None
+                };
+
+                let cmd_sq = COMMAND_RADIUS * COMMAND_RADIUS;
+                for enemies in self.chunks.values_mut() {
+                    for e in enemies.iter_mut() {
+                        if !e.enemy.is_alive() || e.id == boss_id { continue; }
+                        let dx = e.x - boss_x;
+                        let dy = e.y - boss_y;
+                        if dx * dx + dy * dy > cmd_sq { continue; }
+                        let target = focus_target.or_else(|| {
+                            players.iter()
+                                .min_by(|(ax, ay), (bx, by)| {
+                                    let da = (ax - e.x).powi(2) + (ay - e.y).powi(2);
+                                    let db = (bx - e.x).powi(2) + (by - e.y).powi(2);
+                                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .copied()
+                        });
+                        if let Some((px, py)) = target {
+                            e.pack_target = Some((px, py));
+                            e.pack_target_timer = TACTIC_DURATION_SECS;
+                        }
+                    }
+                }
+            }
+            BossTactic::Retreat => {
+                // 找到 boss 本身，設定撤退計時器。
+                for enemies in self.chunks.values_mut() {
+                    for e in enemies.iter_mut() {
+                        if e.id == boss_id {
+                            e.retreat_timer = TACTIC_DURATION_SECS;
+                            return;
+                        }
+                    }
+                }
+            }
+            BossTactic::Rally => {
+                // 找到 boss 的種類，呼召同種怪湧向最近的玩家。
+                let boss_kind = self.chunks.values()
+                    .flat_map(|v| v.iter())
+                    .find(|e| e.id == boss_id)
+                    .map(|e| e.enemy.kind());
+                let Some(kind) = boss_kind else { return };
+                let nearest_player = players.iter()
+                    .min_by(|(ax, ay), (bx, by)| {
+                        let da = (ax - boss_x).powi(2) + (ay - boss_y).powi(2);
+                        let db = (bx - boss_x).powi(2) + (by - boss_y).powi(2);
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .copied();
+                let Some((px, py)) = nearest_player else { return };
+                let rally_sq = RALLY_RADIUS * RALLY_RADIUS;
+                for enemies in self.chunks.values_mut() {
+                    for e in enemies.iter_mut() {
+                        if !e.enemy.is_alive() { continue; }
+                        if e.enemy.kind() != kind { continue; }
+                        let dx = e.x - boss_x;
+                        let dy = e.y - boss_y;
+                        if dx * dx + dy * dy <= rally_sq {
+                            e.pack_target = Some((px, py));
+                            e.pack_target_timer = TACTIC_DURATION_SECS;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -739,6 +855,7 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             pack_target: None,
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
+            retreat_timer: 0.0,
         });
     }
     enemies
@@ -1180,6 +1297,7 @@ mod tests {
             pack_target: None,
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
+            retreat_timer: 0.0,
         });
 
         // 精英本身也在 ATTACK_REACH 內（10px），會加入 threat；
@@ -1188,6 +1306,69 @@ mod tests {
         assert!(
             aura_threat > base_threat,
             "兇名精英光環應使附近同種怪威脅提升，base={base_threat} aura={aura_threat}"
+        );
+    }
+
+    #[test]
+    fn broadcast_surround_sets_pack_target_on_nearby_enemies() {
+        // ROADMAP 117：broadcast_boss_command Surround 應對附近小怪設 pack_target。
+        // 直接手動注入 boss + minion，確保座標在 COMMAND_RADIUS 內，不依賴區塊生成分佈。
+        use crate::combat::{Enemy, EnemyKind};
+        use world_core::chunk_key;
+
+        let mut f = EnemyField::new();
+        let boss_x = 7000.0_f32;
+        let boss_y = 7000.0_f32;
+        let boss_id = (13i32, 13i32, 0usize);
+        let minion_id = (13i32, 13i32, 1usize);
+
+        let key = chunk_key(boss_x, boss_y);
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: boss_id, x: boss_x, y: boss_y,
+            base_level: 1, level: 4,
+            enemy: Enemy::new_leveled(EnemyKind::RuneGuardian, 4),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+        });
+        // minion 100px 旁邊，在 COMMAND_RADIUS(500px) 內。
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: minion_id, x: boss_x + 100.0, y: boss_y,
+            base_level: 1, level: 1,
+            enemy: Enemy::new_leveled(EnemyKind::RuneGuardian, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+        });
+
+        let players = vec![(boss_x + 300.0, boss_y)];
+        f.broadcast_boss_command(boss_id, boss_x, boss_y, &crate::boss_ai::BossTactic::Surround, &players);
+
+        let minion = f.chunks[&key].iter().find(|e| e.id == minion_id).unwrap();
+        assert!(
+            minion.pack_target.is_some(),
+            "Surround 指令應對 COMMAND_RADIUS 內的小怪設定 pack_target"
+        );
+    }
+
+    #[test]
+    fn retreat_timer_causes_boss_to_flee() {
+        // ROADMAP 117：retreat_timer > 0 時 boss 應遠離玩家而非追擊。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(6200.0, 6200.0, 200.0);
+        let key = *f.chunks.keys().next().unwrap();
+        // 直接設定 retreat_timer。
+        let (bx, by) = {
+            let e = &mut f.chunks.get_mut(&key).unwrap()[0];
+            e.retreat_timer = crate::boss_ai::TACTIC_DURATION_SECS;
+            (e.x, e.y)
+        };
+        // 玩家在 boss 右方 200px。
+        let player_pos = (bx + 200.0, by);
+        let before_x = bx;
+        f.advance(0.2, &[player_pos], false, |_, _| false);
+        let after_x = f.chunks.values().flat_map(|v| v.iter()).next().map(|e| e.x).unwrap_or(bx);
+        assert!(
+            after_x < before_x + 1.0,
+            "撤退計時器啟動時 boss 應遠離右方玩家，before={before_x:.1} after={after_x:.1}"
         );
     }
 }

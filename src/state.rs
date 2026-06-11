@@ -858,6 +858,10 @@ pub struct AppState {
     pub boss_roar: Arc<RwLock<crate::boss_roar::BossRoarState>>,
     /// 怪物王咆哮專屬 Semaphore（容量 1）：同時最多一個 AI 咆哮呼叫，不佔用 NPC LLM 配額。
     pub boss_roar_sem: Arc<Semaphore>,
+    /// 怪物王戰術指揮狀態（ROADMAP 117）：追蹤各菁英精英的戰術決策冷卻，純記憶體模式，重啟清零。
+    pub boss_ai: Arc<RwLock<crate::boss_ai::BossAiState>>,
+    /// 怪物王戰術指揮專屬 Semaphore（容量 1）：同時最多一個 AI 台詞呼叫。
+    pub boss_ai_sem: Arc<Semaphore>,
     /// 廣場夜談狀態（ROADMAP 76）：夜間 NPC 閒聊冷卻，純記憶體模式，重啟清零。
     pub plaza_talk: Arc<RwLock<crate::plaza_talk::PlazaTalkState>>,
     /// 廣場夜談專屬 Semaphore（容量 1）：同時最多一個 AI 閒聊呼叫，不佔用 NPC LLM 配額。
@@ -1039,6 +1043,8 @@ impl AppState {
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
             boss_roar: Arc::new(RwLock::new(crate::boss_roar::BossRoarState::new())),
             boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
+            boss_ai: Arc::new(RwLock::new(crate::boss_ai::BossAiState::new())),
+            boss_ai_sem: Arc::new(Semaphore::new(crate::boss_ai::MAX_CONCURRENT_DECISIONS)),
             plaza_talk: Arc::new(RwLock::new(crate::plaza_talk::PlazaTalkState::new())),
             plaza_talk_sem: Arc::new(Semaphore::new(crate::plaza_talk::MAX_CONCURRENT_TALKS)),
             dawn_call: Arc::new(RwLock::new(crate::npc_dawn_call::DawnCallState::new())),

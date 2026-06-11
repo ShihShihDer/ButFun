@@ -71,6 +71,7 @@ mod npc_relations;
 mod village_chief;
 mod traveler_npc;
 mod boss_roar;
+mod boss_ai;
 mod plaza_talk;
 mod npc_dawn_call;
 mod npc_dusk_call;
