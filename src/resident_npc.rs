@@ -85,6 +85,8 @@ pub enum ResidentLifecycleEvent {
     Departed { name: &'static str, msg: String },
     /// 時段切換（ROADMAP 119）：居民換到新時段對應的聚場。
     PhaseTransition { phase: Phase, msg: &'static str },
+    /// 居民工作動態廣播（ROADMAP 120）：居民在工作時段定期廣播活動。
+    WorkActivity { text: String },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -110,6 +112,12 @@ pub const THOUGHT_TIMER_MIN: f32 = 120.0;
 pub const THOUGHT_TIMER_MAX: f32 = 300.0;
 /// 居民互動距離（像素）：玩家在此範圍內才可搭話。
 pub const RESIDENT_REACH: f32 = 80.0;
+
+// ── 工作動態廣播計時器常數（ROADMAP 120）──────────────────────────────────────
+/// 工作動態廣播最短間隔（秒）= 10 分鐘。
+pub const WORK_TIMER_MIN: f32 = 600.0;
+/// 工作動態廣播最長間隔（秒）= 20 分鐘。
+pub const WORK_TIMER_MAX: f32 = 1200.0;
 
 /// 人口下限：世界最冷清時至少這麼多人。
 pub const MIN_POPULATION: usize = 2;
@@ -215,6 +223,11 @@ pub struct ResidentNpc {
     // ── 作息時段（ROADMAP 119）──────────────────────────
     /// 目前所在時段；None 表示剛初始化，下一 tick 一定更新。
     current_phase: Option<Phase>,
+    // ── 工作動態廣播（ROADMAP 120）──────────────────────
+    /// 下次工作動態廣播倒數計時（秒）。
+    work_timer: f32,
+    /// 工作廣播計數（供模板種子輪替）。
+    work_broadcast_count: usize,
 }
 
 impl ResidentNpc {
@@ -227,8 +240,9 @@ impl ResidentNpc {
         let tx = rng.gen_range(x0..=x1);
         let ty = rng.gen_range(y0..=y1);
         let name = NAME_POOL[index % NAME_POOL.len()];
-        // 錯開初始思想計時器，避免所有居民同時噴泡泡。
+        // 錯開初始計時器，避免所有居民同時噴泡泡或廣播。
         let thought_offset = rng.gen_range(0.0..THOUGHT_TIMER_MAX);
+        let work_offset = rng.gen_range(0.0..WORK_TIMER_MAX);
         Self {
             id: format!("resident_{}", index),
             name,
@@ -244,6 +258,8 @@ impl ResidentNpc {
             thought_timer: THOUGHT_TIMER_MIN + thought_offset,
             thought_count: index,
             current_phase: None,
+            work_timer: WORK_TIMER_MIN + work_offset,
+            work_broadcast_count: index,
         }
     }
 
@@ -350,6 +366,17 @@ impl ResidentManager {
                 });
                 r.thought_count += 1;
                 r.thought_timer = self.rng.gen_range(THOUGHT_TIMER_MIN..=THOUGHT_TIMER_MAX);
+            }
+            // 工作動態廣播計時（ROADMAP 120）——居民在工作時段定期廣播活動，0 玩家也持續。
+            r.work_timer -= dt;
+            if r.work_timer <= 0.0 {
+                if let Some(text) = crate::resident_chat::get_work_action(
+                    r.persona, phase, r.name, r.work_broadcast_count,
+                ) {
+                    events.push(ResidentLifecycleEvent::WorkActivity { text });
+                    r.work_broadcast_count += 1;
+                }
+                r.work_timer = self.rng.gen_range(WORK_TIMER_MIN..=WORK_TIMER_MAX);
             }
         }
 
@@ -629,5 +656,60 @@ mod tests {
             .filter(|(r, old)| (r.target_x - old.0).abs() > 1.0 || (r.target_y - old.1).abs() > 1.0)
             .count();
         assert!(changed > 0, "時段切換應讓至少一位居民更換目標");
+    }
+
+    // ── ROADMAP 120：工作動態廣播測試 ────────────────────────────────────────
+
+    #[test]
+    fn work_activity_fires_after_timer_expires() {
+        let mut mgr = ResidentManager::new();
+        // 把第一位居民的 work_timer 歸零，讓下一 tick 立刻觸發
+        mgr.residents[0].work_timer = 0.0;
+        let persona = mgr.residents[0].persona;
+        // 確保是白天（所有 persona 白天都會廣播）
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day);
+        let work_evs: Vec<_> = events.iter()
+            .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
+            .collect();
+        assert!(!work_evs.is_empty(), "work_timer=0 白天應觸發 WorkActivity（persona: {:?}）", persona);
+    }
+
+    #[test]
+    fn work_activity_not_fired_at_night() {
+        let mut mgr = ResidentManager::new();
+        // 把所有居民 work_timer 清零
+        for r in &mut mgr.residents { r.work_timer = 0.0; }
+        let (events, _) = mgr.tick(0.01, 50, Phase::Night);
+        let work_evs: usize = events.iter()
+            .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
+            .count();
+        assert_eq!(work_evs, 0, "夜間不應觸發工作動態廣播");
+    }
+
+    #[test]
+    fn work_activity_text_contains_resident_name() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].work_timer = 0.0;
+        let expected_name = mgr.residents[0].name;
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day);
+        for ev in &events {
+            if let ResidentLifecycleEvent::WorkActivity { text } = ev {
+                assert!(
+                    text.contains(expected_name),
+                    "工作廣播文字應包含居民名字「{expected_name}」，實際：{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn work_timer_resets_after_firing() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].work_timer = 0.0;
+        mgr.tick(0.01, 50, Phase::Day);
+        assert!(
+            mgr.residents[0].work_timer >= WORK_TIMER_MIN,
+            "觸發後 work_timer 應重置到最小間隔以上"
+        );
     }
 }

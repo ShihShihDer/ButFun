@@ -110,6 +110,75 @@ static WANDER_THOUGHTS_NIGHT: &[&str] = &[
     "夜色深了，還是繼續走走。",
 ];
 
+// ── 工作動態廣播模板（ROADMAP 120）──────────────────────────────────────────
+
+/// 市場攤主工作動態（白天）
+static MARKET_WORK_DAY: &[&str] = &[
+    "🛒 {name}在市場攤位前整理貨物，叫賣聲此起彼落！",
+    "🏪 {name}和顧客討價還價，笑聲不斷。",
+    "💰 {name}盤點今日收入，臉上掛著滿意的笑。",
+    "🧺 {name}把新到的貨仔細擺放好，準備迎接顧客。",
+];
+
+/// 市場攤主工作動態（黎明）
+static MARKET_WORK_DAWN: &[&str] = &[
+    "🌄 {name}早早來到市場擺攤，是今天第一個開攤的攤主。",
+    "☕ {name}喝了口熱茶，準備迎接一天的生意。",
+];
+
+/// 農夫工作動態（白天）
+static FARM_WORK_DAY: &[&str] = &[
+    "🌾 {name}揮著鋤頭翻土，田間傳來規律的勞動聲。",
+    "💧 {name}正在為作物澆水，汗珠滴落泥土。",
+    "🌱 {name}仔細查看作物長勢，臉上露出滿意的笑容。",
+    "🐔 {name}順手餵了雞，順道查看一下蛋籃。",
+];
+
+/// 農夫工作動態（黎明）
+static FARM_WORK_DAWN: &[&str] = &[
+    "🌅 {name}迎著晨曦出門，鋤頭扛在肩上，開始一天的農活。",
+    "🌿 {name}在晨霧中播下種子，輕聲哼著歌。",
+];
+
+/// 廣場居民工作動態（白天）
+static SQUARE_WORK_DAY: &[&str] = &[
+    "☕ {name}在廣場老樹下喝茶，和鄰居聊得正起勁。",
+    "📋 {name}在公告欄前張望，看看有沒有新任務。",
+    "🎵 {name}哼著小曲穿過廣場，招呼著認識的人。",
+    "💬 {name}與幾位街坊鄰居圍坐一圈，話家常說得熱鬧。",
+];
+
+/// 廣場居民工作動態（黃昏）
+static SQUARE_WORK_DUSK: &[&str] = &[
+    "🌅 {name}站在廣場看著夕陽，感嘆今天又是美好的一天。",
+    "🌇 {name}在黃昏的光暈中閒坐，與旁人分享今日見聞。",
+];
+
+/// 遊走居民工作動態（白天）
+static WANDER_WORK_DAY: &[&str] = &[
+    "🚶 {name}悠閒地在城裡四處走動，笑著跟每個人打招呼。",
+    "🔍 {name}東看看西瞧瞧，四處打聽城裡的新鮮事。",
+    "📦 {name}幫了某位攤主搬了幾箱貨，換了一小包乾糧。",
+];
+
+/// 取得居民工作動態廣播文字（ROADMAP 120）。
+///
+/// 在對應 persona 的工作時段廣播；夜晚或非工作時段回傳 `None`（不廣播）。
+/// `name` 嵌入至文字中；`seed` 供模板輪替。
+pub fn get_work_action(persona: ResidentPersona, phase: Phase, name: &str, seed: usize) -> Option<String> {
+    let template = match (persona, phase) {
+        (ResidentPersona::MarketBrowser, Phase::Day)  => MARKET_WORK_DAY[seed % MARKET_WORK_DAY.len()],
+        (ResidentPersona::MarketBrowser, Phase::Dawn) => MARKET_WORK_DAWN[seed % MARKET_WORK_DAWN.len()],
+        (ResidentPersona::FarmWorker,    Phase::Day)  => FARM_WORK_DAY[seed % FARM_WORK_DAY.len()],
+        (ResidentPersona::FarmWorker,    Phase::Dawn) => FARM_WORK_DAWN[seed % FARM_WORK_DAWN.len()],
+        (ResidentPersona::TownSquare,    Phase::Day)  => SQUARE_WORK_DAY[seed % SQUARE_WORK_DAY.len()],
+        (ResidentPersona::TownSquare,    Phase::Dusk) => SQUARE_WORK_DUSK[seed % SQUARE_WORK_DUSK.len()],
+        (ResidentPersona::Wanderer,      Phase::Day)  => WANDER_WORK_DAY[seed % WANDER_WORK_DAY.len()],
+        _ => return None,
+    };
+    Some(template.replace("{name}", name))
+}
+
 // ── 搭話回應模板（稍長，顯示為 NpcReply）─────────────────────────────────────
 
 static MARKET_CHAT: &[&str] = &[
@@ -268,5 +337,59 @@ mod tests {
         let ctx = ctx_rain();
         let t = get_thought(ResidentPersona::MarketBrowser, &ctx, 0);
         assert!(MARKET_THOUGHTS_RAIN.contains(&t), "rain should use rain pool, got: {t}");
+    }
+
+    #[test]
+    fn work_action_day_contains_name() {
+        for persona in [
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::FarmWorker,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let result = get_work_action(persona, Phase::Day, "小花", 0);
+            assert!(result.is_some(), "Day 時段 {:?} 應有工作廣播", persona);
+            assert!(result.unwrap().contains("小花"), "廣播文字應包含姓名");
+        }
+    }
+
+    #[test]
+    fn work_action_dawn_works_for_farm_and_market() {
+        for persona in [ResidentPersona::MarketBrowser, ResidentPersona::FarmWorker] {
+            let r = get_work_action(persona, Phase::Dawn, "阿土", 0);
+            assert!(r.is_some(), "{:?} 黎明應有工作廣播", persona);
+        }
+        // Wanderer 黎明不廣播
+        assert!(get_work_action(ResidentPersona::Wanderer, Phase::Dawn, "阿水", 0).is_none());
+    }
+
+    #[test]
+    fn work_action_dusk_only_for_square() {
+        let r = get_work_action(ResidentPersona::TownSquare, Phase::Dusk, "梅子", 0);
+        assert!(r.is_some(), "TownSquare 黃昏應有工作廣播");
+        // 其他 persona 黃昏不廣播
+        assert!(get_work_action(ResidentPersona::FarmWorker, Phase::Dusk, "老根", 0).is_none());
+    }
+
+    #[test]
+    fn work_action_night_always_none() {
+        for persona in [
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::FarmWorker,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            assert!(
+                get_work_action(persona, Phase::Night, "任何人", 0).is_none(),
+                "夜晚 {:?} 不應廣播工作動態",
+                persona,
+            );
+        }
+    }
+
+    #[test]
+    fn work_action_seed_wraps_without_panic() {
+        let r = get_work_action(ResidentPersona::FarmWorker, Phase::Day, "大牛", 9999);
+        assert!(r.is_some());
     }
 }
