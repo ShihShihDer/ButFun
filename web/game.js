@@ -686,10 +686,12 @@
           // 只在背包內容或裝備狀態真的變了才重繪面板——避免每幀重建 innerHTML + 重綁按鈕，
           // 害「🏗️選取 點得到但不一定勾選」(點擊剛好遇到重建就掉了)。
           const bagSig = inv.map((s) => `${s.item}:${s.qty}`).join(",") +
-            `|${me.equipped_weapon || ""}|${me.equipped_armor || ""}|${me.equipped_accessory || ""}`;
+            `|${me.equipped_weapon || ""}|${me.equipped_armor || ""}|${me.equipped_accessory || ""}` +
+            `|${me.inventory_slot_count || 0}/${me.inventory_slot_max || 0}`;
           if (bagSig !== lastBagSig) {
             lastBagSig = bagSig;
-            updateBagHud(inv, me.equipped_weapon, me.equipped_armor, me.equipped_accessory);
+            updateBagHud(inv, me.equipped_weapon, me.equipped_armor, me.equipped_accessory,
+              me.inventory_slot_count || 0, me.inventory_slot_max || 0);
           }
           updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
           updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense);
@@ -714,6 +716,7 @@
           updateFarmFairPanel(me, isGuest);  // 農展評審面板（ROADMAP 56）
           updateVillageChiefPanel(me, isGuest); // 里長面板（ROADMAP 64）
           updateTravelerPanel(me); // 城外旅人面板（ROADMAP 74）
+          updateWarehousePanel(me); // 倉庫面板（ROADMAP 105）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
           if (!isGuest && !dailyQuestsRequested) {
@@ -2249,6 +2252,7 @@
         (e.key === "u" || e.key === "U") ? "dockBounty" :
         (e.key === "y" || e.key === "Y") ? "dockExpedition" :
         (e.key === "o" || e.key === "O") ? "dockProcurement" :
+        (e.key === "w" || e.key === "W") ? "dockWarehouse" :
         (e.key === "1") ? "dockFarmFair" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
@@ -5921,13 +5925,16 @@
   // 已購 owned 格時,下一格要多少乙太。對齊 economy::expansion_cost——前端只算來顯示,
   // 真正扣款/開格仍由伺服器查餘額決定。
   const expansionCost = (owned) => EXPANSION_BASE_COST * (owned + 1);
-  function updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory) {
+  function updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory, slotCount, slotMax) {
     // 收合背包面板由三塊組成:常駐標題列(toggle，掛無障礙標籤)、收起時也看得到的摘要計數
     // (summary)、展開才顯示的明細列(body)。沿用採集飄字/播報同一套 ITEM_LOOK / ITEM_NAME。
     const toggle = document.getElementById("bagToggle");
     const summary = document.getElementById("bagSummary");
     const body = document.getElementById("bagBody");
+    const slotEl = document.getElementById("bagSlotCount");
     if (!toggle || !summary || !body) return;
+    // 格位計數（ROADMAP 105）：背包上限 20 種，顯示 X/20
+    if (slotEl && slotMax > 0) slotEl.textContent = `${slotCount}/${slotMax}`;
     if (!inv || inv.length === 0) {
       summary.textContent = "：空";
       body.textContent = "背包是空的——走到 🌳 / 🪨 / ✨ 旁採集吧";
@@ -6040,6 +6047,71 @@
       "背包：" + inv.map((s) => `${ITEM_NAME[s.item] || s.item} ${s.qty}`).join("、");
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
+  }
+
+  // 倉庫面板（ROADMAP 105）：顯示倉庫庫存、提貨按鈕、購買擴充按鈕。
+  // 背包已滿 20 格時，後續採集/撿取自動流入倉庫（伺服器 add_item_overflow 處理）。
+  const WAREHOUSE_EXPANSION_COST = 50; // 對齊 warehouse.rs
+  function updateWarehousePanel(me) {
+    const title = document.getElementById("warehouseTitle");
+    const summary = document.getElementById("warehouseSummary");
+    const body = document.getElementById("warehouseBody");
+    if (!title || !body) return;
+    const expansions = me.warehouse_expansions || 0;
+    const slotMax = me.warehouse_slot_max || 0;
+    const items = me.warehouse || [];
+    const used = items.reduce((n, s) => n + (s.qty > 0 ? 1 : 0), 0);
+    if (summary) summary.textContent = expansions > 0 ? `　${used}/${slotMax}` : "";
+    if (expansions === 0) {
+      const canBuy = (me.ether || 0) >= WAREHOUSE_EXPANSION_COST;
+      body.innerHTML =
+        `<div style="opacity:0.75;margin-bottom:8px">尚未購買倉庫擴充。背包滿後物品將自動流入倉庫。</div>` +
+        `<button class="wh-buy-btn hud-pill" ${canBuy ? "" : "disabled"} style="cursor:${canBuy ? "pointer" : "default"};border:1px solid var(--brass)">` +
+        `🗄️ 購買第一層（${WAREHOUSE_EXPANSION_COST} ✨）</button>`;
+    } else {
+      const MAX_EXPANSIONS = 3;
+      const canExpand = expansions < MAX_EXPANSIONS;
+      const canBuy = canExpand && (me.ether || 0) >= WAREHOUSE_EXPANSION_COST;
+      let html = `<div style="opacity:0.65;font-size:0.82em;margin-bottom:6px">倉庫 ${used}/${slotMax} 格已用（${expansions}/${MAX_EXPANSIONS} 層）</div>`;
+      if (items.length === 0) {
+        html += `<div style="opacity:0.6">倉庫是空的</div>`;
+      } else {
+        html += items.map((s) => {
+          const icon = ITEM_LOOK[s.item] || "";
+          const name = ITEM_NAME[s.item] || s.item;
+          return `<div class="bag-row">` +
+            `<span class="bag-ico">${icon}</span>${name}` +
+            `<span class="bag-qty">×${s.qty}</span>` +
+            `<button class="wh-withdraw-btn hud-pill" data-item="${s.item}" data-qty="${s.qty}" ` +
+            `style="cursor:pointer;border:1px solid var(--brass);font-size:0.8em">提出全部</button>` +
+            `</div>`;
+        }).join("");
+      }
+      if (canExpand) {
+        html += `<div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">` +
+          `<button class="wh-buy-btn hud-pill" ${canBuy ? "" : "disabled"} ` +
+          `style="cursor:${canBuy ? "pointer" : "default"};border:1px solid var(--brass)">` +
+          `🗄️ 擴充第 ${expansions + 1} 層（${WAREHOUSE_EXPANSION_COST} ✨）</button></div>`;
+      }
+      body.innerHTML = html;
+    }
+    // 綁定提貨按鈕
+    body.querySelectorAll(".wh-withdraw-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const item = btn.dataset.item;
+        const qty = parseInt(btn.dataset.qty, 10) || 1;
+        try { ws.send(JSON.stringify({ type: "withdraw_from_warehouse", item, qty })); } catch {}
+      });
+    });
+    // 綁定購買擴充按鈕
+    body.querySelectorAll(".wh-buy-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (btn.disabled) return;
+        try { ws.send(JSON.stringify({ type: "buy_warehouse_expansion" })); } catch {}
+      });
+    });
   }
 
   // 裝備武器 HUD（ROADMAP 36 顯式裝備槽）:顯示已裝備的武器圖示；未裝備則顯示合成引導。

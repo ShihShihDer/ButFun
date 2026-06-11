@@ -92,6 +92,7 @@ mod weather;
 mod friends;
 mod party;
 mod sprinkler;
+mod warehouse;
 
 use std::net::SocketAddr;
 
