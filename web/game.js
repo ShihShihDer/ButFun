@@ -8829,10 +8829,11 @@
 
     const isGuest_ = isGuest; // 訪客只能看，不能交易
 
-    // 簽章：近/遠 + 乙太 + 背包 hash + 商品當前收購價（控制重建頻率）
+    // 簽章：近/遠 + 乙太 + 背包 hash + 商品當前收購價 + 販售庫存（控制重建頻率）
     const invSig = me ? (me.inventory || []).map((s) => `${s.item}:${s.qty}`).join(",") : "";
     const priceSig = nearNpc ? nearNpc.buy_list.map((e) => `${e.item}:${e.price_per}:${e.trend || ""}`).join(",") : "";
-    const sig = `${!!nearNpc}|${me ? me.ether : 0}|${invSig}|${priceSig}`;
+    const stockSig = nearNpc ? (nearNpc.sell_list || []).map((e) => `${e.item}:${e.price_per}:${e.stock ?? ""}:${e.max_stock ?? ""}`).join(",") : "";
+    const sig = `${!!nearNpc}|${me ? me.ether : 0}|${invSig}|${priceSig}|${stockSig}`;
     if (sig === lastShopSig) return;
     lastShopSig = sig;
 
@@ -8875,20 +8876,34 @@
     const buyPriceMap = new Map(nearNpc.buy_list.map((e) => [e.item, e.price_per]));
     for (const entry of nearNpc.sell_list) {
       const name = ITEM_NAME_[entry.item] || entry.item;
+      const outOfStock = entry.stock != null && entry.stock === 0;
       const canAfford1 = myEther_ >= entry.price_per;
-      const canBuy = !isGuest_ && canAfford1;
+      const canBuy = !isGuest_ && canAfford1 && !outOfStock;
       // 若此物品在收購清單內，顯示買賣利差提示（讓玩家明白轉賣會虧本）
       const buyBack = buyPriceMap.get(entry.item);
       const spreadHint = buyBack != null
         ? ` <span style="color:#888;font-size:0.78em">（賣回僅 ${buyBack}✨）</span>` : "";
+      // 庫存標示（ROADMAP 104）
+      let stockHint = "";
+      if (entry.stock != null && entry.max_stock != null) {
+        if (entry.stock === 0) {
+          stockHint = ` <span style="color:#ff6666;font-size:0.82em">🚫 售罄</span>`;
+        } else {
+          const ratio = entry.stock / entry.max_stock;
+          const stockColor = ratio < 0.3 ? "#ff9966" : ratio < 0.6 ? "#ffcc66" : "#88bb66";
+          const scarceHint = ratio < 0.6 && entry.price_per > (buyBack || entry.price_per - 1)
+            ? ` <span style="color:#ff9966;font-size:0.78em">↑稀缺溢價</span>` : "";
+          stockHint = ` <span style="color:${stockColor};font-size:0.82em">庫存 ${entry.stock}/${entry.max_stock}</span>${scarceHint}`;
+        }
+      }
       html += `<div class="craft-row" style="margin:3px 0;display:flex;align-items:center;gap:6px">
-        <span style="flex:1">${name} ×<input id="shopBuyQty_${entry.item}" type="number" min="1" max="99" value="1"
+        <span style="flex:1">${name} ×<input id="shopBuyQty_${entry.item}" type="number" min="1" max="${entry.stock || 1}" value="1"
           style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
           ${!canBuy ? "disabled" : ""}></span>
-        <span style="color:#e0795f">-${entry.price_per}✨/個${spreadHint}</span>
+        <span style="color:#e0795f">-${entry.price_per}✨/個${spreadHint}${stockHint}</span>
         <span style="opacity:0.7;font-size:0.82em">(餘額：${myEther_}✨)</span>
         <button class="craft-btn" id="shopBuyBtn_${entry.item}" ${!canBuy ? "disabled" : ""}
-          style="padding:2px 8px;font-size:0.85em">購買</button>
+          style="padding:2px 8px;font-size:0.85em">${outOfStock ? "缺貨" : "購買"}</button>
       </div>`;
     }
 
