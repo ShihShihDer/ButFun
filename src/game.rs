@@ -258,6 +258,8 @@ pub fn spawn(app: AppState) {
                 let mut pos_map: std::collections::HashMap<uuid::Uuid, (f32, f32)> = positions
                     .iter().map(|(id, x, y, _)| (*id, (*x, *y))).collect();
                 let mut downed_positions: Vec<(f32, f32)> = Vec::new();
+                // ROADMAP 83：同步收集倒地玩家名稱，供 NPC 落敗反應使用。
+                let mut newly_downed_names: Vec<String> = Vec::new();
                 if !dmgs.is_empty() {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
@@ -271,6 +273,7 @@ pub fn spawn(app: AppState) {
                                 if let Some(&(px, py)) = pos_map.get(&pid) {
                                     downed_positions.push((px, py));
                                 }
+                                newly_downed_names.push(p.name.clone());
                             }
                         }
                     }
@@ -295,6 +298,38 @@ pub fn spawn(app: AppState) {
                             "⚠️ 一隻兇名 Lv.{} {} 正在肆虐！勇者可前往討伐，擊倒有豐厚獎勵！",
                             r.new_level, name
                         ));
+                    }
+                }
+                // NPC 落敗反應（ROADMAP 83）：玩家倒地時 NPC 廣播慰問 / 警示。
+                // 此段在每秒一次的戰鬥判定區塊內，tick 傳 1.0（一秒）。
+                {
+                    let npc_opt = {
+                        let mut s = app.npc_defeat_reaction.write().unwrap();
+                        s.tick(1.0);
+                        if !newly_downed_names.is_empty() {
+                            s.on_player_downed()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(npc) = npc_opt {
+                        let tx_chat = app.tx_chat.clone();
+                        let sem = app.npc_defeat_reaction_sem.clone();
+                        let player_name = newly_downed_names[0].clone();
+                        tokio::spawn(async move {
+                            let Ok(_permit) = sem.try_acquire_owned() else { return };
+                            let (npc, text) =
+                                crate::npc_defeat_reaction::generate_reaction(npc, player_name).await;
+                            let (emoji, npc_name) = match npc {
+                                crate::npc_defeat_reaction::ReactionNpc::Chief => {
+                                    ("💔", crate::npc_defeat_reaction::CHIEF_DISPLAY_NAME)
+                                }
+                                crate::npc_defeat_reaction::ReactionNpc::Lanka => {
+                                    ("⚔️", crate::npc_defeat_reaction::RANKA_DISPLAY_NAME)
+                                }
+                            };
+                            let _ = tx_chat.send(format!("{emoji} [{npc_name}] 道：「{text}」"));
+                        });
                     }
                 }
                 // 清理暫時用的 pos_map 避免 unused 警告
