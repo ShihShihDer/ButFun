@@ -723,6 +723,31 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 入夜守衛令（ROADMAP 80）：黃昏→夜晚轉換時，獵手蘭卡廣播守衛令。
+            // 與晨喚（凱爾長老）、午鐘（老胡）及暮告（薇拉）形成四時段節律。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let current_phase = app.daynight.read().unwrap().phase();
+                let should_call = if online_count > 0 {
+                    app.night_watch.write().unwrap().tick(dt, current_phase)
+                } else {
+                    false
+                };
+                if should_call {
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.night_watch_sem.clone();
+                    tokio::spawn(async move {
+                        // 非阻塞嘗試取得 Semaphore；若已有守衛令進行中則直接略過。
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let text = crate::npc_night_watch::generate_night_watch(online_count).await;
+                        let _ = tx_chat.send(format!(
+                            "🌙 [{ranka}] 低沉道：「{text}」",
+                            ranka = crate::npc_night_watch::RANKA_DISPLAY_NAME,
+                        ));
+                    });
+                }
+            }
+
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
             {
