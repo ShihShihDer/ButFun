@@ -955,15 +955,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if let Some((buy_list, merchant_name)) = maybe_buy_list {
                                 // 查基準收購價（確認物品在清單內）
                                 if let Some(base_price) = buy_list.iter().find(|e| e.item == item).map(|e| e.price_per) {
-                                    // 查當前浮動收購價（read lock，用完立即釋放）
+                                    // ROADMAP 102：單筆內批量漸降價。
+                                    // 先讀取金庫餘額，再以批量漸降價算出最大可成交量與總成本。
+                                    // 不再以「固定單價 × 數量」計算，避免批量倒貨套利。
                                     let now_secs = unix_secs();
-                                    let dynamic_price = app.dynamic_prices.read().unwrap()
-                                        .current_price(item, base_price, now_secs);
-
-                                    // 金庫容量預查（ROADMAP 100）：商人只能收購金庫能承擔的數量。
-                                    // 先讀取（不寫入），確認最多可收幾個；成交後再扣帳（見下方 deduct）。
-                                    let (actual_qty, treasury_notice) = app.npc_treasury.read().unwrap()
-                                        .afforded_qty(merchant_name, qty, dynamic_price);
+                                    let treasury_balance = app.npc_treasury.read().unwrap()
+                                        .balance(merchant_name);
+                                    let (actual_qty, bulk_cost, treasury_notice) = app.dynamic_prices.read().unwrap()
+                                        .find_bulk_affordable(item, base_price, qty, treasury_balance, now_secs);
 
                                     if actual_qty == 0 {
                                         // 金庫清空，婉拒收購，私訊玩家
@@ -989,14 +988,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             let mut players = app.players.write().unwrap();
                                             if let Some(p) = players.get_mut(&id) {
                                                 if p.inventory.take(item, actual_qty) {
-                                                    let earned = dynamic_price.saturating_mul(actual_qty);
+                                                    let earned = bulk_cost; // 批量漸降價總收益（ROADMAP 102）
                                                     let class_bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
                                                     // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
                                                     let haggle_bonus = if p.pending_haggle {
                                                         p.pending_haggle = false;
                                                         earned.saturating_add(class_bonus)
                                                     } else { 0 };
-                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, dynamic_price, merchant_name, "NPC 收購（有限金庫）");
+                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
                                                     p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus);
                                                     p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                     true
@@ -1009,9 +1008,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         }; // players write lock 在此釋放
 
                                         if did_sell {
-                                            // 金庫扣帳（ROADMAP 100）：成交後才扣，保證背包先確認有貨。
-                                            let treasury_cost = dynamic_price.saturating_mul(actual_qty);
-                                            app.npc_treasury.write().unwrap().deduct(merchant_name, treasury_cost);
+                                            // 金庫扣帳（ROADMAP 100/102）：成交後才扣；batch_cost 已含漸降價折扣。
+                                            app.npc_treasury.write().unwrap().deduct(merchant_name, bulk_cost);
 
                                             // 通知玩家部分收購（ROADMAP 100）。
                                             if treasury_notice {
