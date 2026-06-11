@@ -51,6 +51,11 @@
     else if (reduceMotionMQ.addListener) reduceMotionMQ.addListener(onRM);
   }
 
+  // ROADMAP 91: 視差背景效能感知旗標（連續低幀率時自動降級關閉）
+  let _parallaxFpsBuf = [];
+  let _parallaxEnabled = !reduceMotion;
+  let _prevRenderNow = 0;
+
   // ---- 狀態 ----
   let ws = null;
   let myId = null;
@@ -945,6 +950,107 @@
     ctx.fillStyle = `rgba(${col},${(alpha * 0.55).toFixed(3)})`;
     ctx.fillRect(0, 0, viewW, viewH);
     ctx.restore();
+  }
+
+  // ── ROADMAP 91: 生態背景視差層次 ─────────────────────────────────────────────
+  // 各生態霧氣斑與白天光帶，以不同視差速率漂移，製造遠近深度感。
+  // 畫在玩家之後、日夜大氣之前，享受日夜染色與行星大氣疊色。
+  // reduceMotion 或幀率持續低於 30 FPS 時自動關閉，效能優先。
+
+  function drawBiomeParallax(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const cx = camX + viewW / 2;
+    const cy = camY + viewH / 2;
+    const biome = biomeAt(cx, cy);
+
+    // 各生態霧氣主色 [r, g, b]
+    const fogRgb = {
+      meadow: [60, 140, 80],
+      forest: [30,  65, 38],
+      rocky:  [90, 100, 120],
+      sand:   [160, 130, 60],
+      water:  [30,  80, 160],
+    };
+    const [r, g, b] = fogRgb[biome] || fogRgb.meadow;
+
+    ctx.save();
+    // 遠景層：視差 0.15，大型霧氣斑（190px），緩慢飄移
+    _drawFogLayer(camX, camY, now, r, g, b, 0.15, 0.055, 190, 380, 0.018, 7);
+    // 中景層：視差 0.32，中型霧氣斑（118px），稍快飄移
+    _drawFogLayer(camX, camY, now, r, g, b, 0.32, 0.042, 118, 256, 0.027, 13);
+    // 白天斜向光帶（光線充足才顯示）
+    if (daynight && daynight.light > 0.62) {
+      _drawLightBands(camX, camY, now, biome, daynight.light);
+    }
+    ctx.restore();
+  }
+
+  // 在指定視差速率下繪製一組大型半透明霧氣斑塊。
+  // parallax: 0=靜止, 1=跟鏡頭同速；alpha=最大透明度；size=斑半徑；cell=格距；drift=漂移速(px/ms)；seed=層辨別種子
+  function _drawFogLayer(camX, camY, now, r, g, b, parallax, alpha, size, cell, drift, seed) {
+    // 視差基點：鏡頭移動時此座標以 parallax 比率跟隨 + 緩慢時間漂移
+    const bgX = camX * parallax + now * drift;
+    const bgY = camY * parallax;
+
+    const tx0 = Math.floor(bgX / cell) - 1;
+    const ty0 = Math.floor(bgY / cell) - 1;
+    const tx1 = Math.ceil((bgX + viewW) / cell) + 1;
+    const ty1 = Math.ceil((bgY + viewH) / cell) + 1;
+
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const h = sceneryHash(tx * 7 + seed, ty * 11 + seed * 3);
+        if (h < 0.42) continue; // 部分格留白，霧氣不均勻
+
+        // 視差世界座標 → 畫面座標
+        const wx = tx * cell + sceneryHash(tx * 5 + seed, ty * 3 + 1) * cell * 0.82;
+        const wy = ty * cell + sceneryHash(tx * 3 + 2, ty * 7 + seed) * cell * 0.82;
+        const sx = wx - bgX;
+        const sy = wy - bgY;
+
+        const blobR = size * (0.68 + h * 0.64);
+        if (sx < -blobR || sx > viewW + blobR || sy < -blobR || sy > viewH + blobR) continue;
+
+        const blobAlpha = alpha * (0.5 + h * 0.5);
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, blobR);
+        grad.addColorStop(0, `rgba(${r},${g},${b},${blobAlpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, blobR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // 白天光帶——白天場景「光線從高處灑下」的氛圍，輕描淡寫，僅在光線充足時顯示。
+  function _drawLightBands(camX, camY, now, biome, light) {
+    const bandAlpha = (light - 0.62) / 0.38 * 0.028; // 最大 2.8% 不透明
+    if (bandAlpha < 0.004) return;
+
+    // 沙漠用暖黃色，其餘用偏白光
+    const isWarm = biome === "sand";
+    const lr = isWarm ? 255 : 220;
+    const lg = isWarm ? 220 : 235;
+    const lbv = isWarm ? 150 : 255;
+
+    const BAND_W = viewW * 0.14;
+    const BAND_GAP = viewW * 0.40;
+    // 視差極慢（0.07）+ 時間漂移（3 px/s），幾乎靜止如高空光柱
+    const offsetX = ((camX * 0.07 + now * 0.003) % BAND_GAP + BAND_GAP) % BAND_GAP;
+
+    for (let i = -1; i <= 4; i++) {
+      const bx = i * BAND_GAP - offsetX;
+      if (bx > viewW + BAND_W || bx + BAND_W < 0) continue;
+      const grad = ctx.createLinearGradient(bx, 0, bx + BAND_W, 0);
+      grad.addColorStop(0,    `rgba(${lr},${lg},${lbv},0)`);
+      grad.addColorStop(0.35, `rgba(${lr},${lg},${lbv},${bandAlpha.toFixed(4)})`);
+      grad.addColorStop(0.65, `rgba(${lr},${lg},${lbv},${bandAlpha.toFixed(4)})`);
+      grad.addColorStop(1,    `rgba(${lr},${lg},${lbv},0)`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(bx, 0, BAND_W, viewH);
+    }
   }
 
   // 翠幽星大氣染色：在翠幽星時，畫面疊一層微弱翠綠暈（類似夜間暈輪機制）。
@@ -2555,6 +2661,19 @@
     // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
     // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
     const renderNow = performance.now();
+    // 視差效能感知（ROADMAP 91）：追蹤幀間距，連續低於 30 FPS 就關閉視差。
+    if (_prevRenderNow > 0) {
+      const _dt = renderNow - _prevRenderNow;
+      if (_dt > 0 && _dt < 400) {
+        _parallaxFpsBuf.push(_dt);
+        if (_parallaxFpsBuf.length > 60) _parallaxFpsBuf.shift();
+        if (_parallaxFpsBuf.length >= 20) {
+          const _avg = _parallaxFpsBuf.reduce((a, c) => a + c) / _parallaxFpsBuf.length;
+          _parallaxEnabled = !reduceMotion && _avg < 34; // ≥ 30 FPS 才開
+        }
+      }
+    }
+    _prevRenderNow = renderNow;
     const SNAP_MS = 75;
     for (const p of players.values()) {
       let nrx, nry;
@@ -2622,6 +2741,10 @@
     // 夜晚漂浮的乙太微光：在日夜染色「之後」畫（浮在變暗的世界上），但在飄字／漣漪／
     // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
     drawNightMotes(performance.now());
+
+    // 生態背景視差層次（ROADMAP 91）：霧氣斑塊 + 白天光帶，以不同視差速率漂移，帶出生態深度感。
+    // 畫在夜晚微光之後、行星大氣染色之前，讓日夜色調也覆蓋到視差背景層。
+    drawBiomeParallax(camX, camY, renderNow);
 
     // 燐光族夜視光環：夜間對敵人疊一層藍白發光外環，讓 lumen 種族玩家在暗處更容易找到敵人。
     drawLumenNightGlow(camX, camY, performance.now());
