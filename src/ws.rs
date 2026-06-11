@@ -144,6 +144,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             procurement_cooldown: 0.0,
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
+            warehouse: crate::warehouse::Warehouse::default(),
         }
     } else {
         // 等 Join
@@ -208,6 +209,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             procurement_cooldown: 0.0,
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
+            warehouse: crate::warehouse::Warehouse::default(),
         }
     };
     let id = player.id;
@@ -689,7 +691,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             } else { 0 };
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
-                            let added = p.inventory.add(item, amount * mult + bounty_bonus + pet_gather + weather_bonus);
+                            let (added, _wh, _drop) = p.add_item_overflow(item, amount * mult + bounty_bonus + pet_gather + weather_bonus);
                             // 採集得 exp（鼓勵探索）；村落節慶加成期間 +30%（ROADMAP 64）。
                             let village_gather_pct = {
                                 let lock = app.village_buff_until.read().unwrap();
@@ -748,7 +750,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let used_precision = p.pending_precision;
                                 if used_precision {
                                     p.pending_precision = false;
-                                    p.inventory.add(recipe.output, 1);
+                                    p.add_item_overflow(recipe.output, 1);
                                 }
                                 p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
                                 tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
@@ -874,7 +876,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         {
                                             let mut players = app.players.write().unwrap();
                                             if let Some(p) = players.get_mut(&uid) {
-                                                p.inventory.add(l.item, l.qty);
+                                                p.add_item_overflow(l.item, l.qty);
                                                 tracing::info!(buyer = %p.name, ?item, qty, "市場購買成功");
                                             }
                                         }
@@ -921,7 +923,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some((item, qty)) = returned {
                             let mut players = app.players.write().unwrap();
                             if let Some(p) = players.get_mut(&uid) {
-                                p.inventory.add(item, qty);
+                                p.add_item_overflow(item, qty);
                                 tracing::info!(player = %p.name, ?item, qty, "市場取消掛單，物品歸還");
                             }
                         }
@@ -1296,7 +1298,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if let Some((item, qty)) = crate::tiles::drop_for_tile(kind) {
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
-                            let added = p.inventory.add(item, qty * mult);
+                            let (added, _wh, _drop) = p.add_item_overflow(item, qty * mult);
                             p.masteries.gain_artisan(1); // 工匠熟練度：挖礦（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, "挖掘掉落");
                         }
@@ -1435,7 +1437,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         for (kind, enemy_level, notorious, loot) in &results {
                             let Some((item, qty)) = loot else { continue; };
                             had_kill = true;
-                            p.inventory.add(*item, *qty);
+                            p.add_item_overflow(*item, *qty);
                             let base_reward = crate::combat::scaled_exp(kind.exp_reward(), *enemy_level);
                             let notorious_mult = if *notorious { 2.0_f32 } else { 1.0_f32 };
                             // 寵物經驗加成（ROADMAP 46）：珊瑚蟹 +20% 擊殺經驗。
@@ -1691,7 +1693,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             ItemKind::EtherPill => {
                                 // 古代乙太丸：直接獲得 10 乙太（沙漠探索野外兌換遺跡能量）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
-                                    p.inventory.add(ItemKind::Ether, 10);
+                                    p.add_item_overflow(ItemKind::Ether, 10);
                                     tracing::info!(player = %p.name, ?item, "使用道具獲得乙太");
                                 }
                             }
@@ -1825,8 +1827,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 從背包扣除剛裝上的道具，維持「slot 裡的 ≠ 背包裡的」不變式
                             p.inventory.take(item, 1);
                             if let Some(old) = old_item {
-                                // 換裝：舊裝備退回背包
-                                p.inventory.add(old, 1);
+                                // 換裝：舊裝備退回背包（允許溢出至倉庫，不丟失裝備）
+                                p.add_item_overflow(old, 1);
                             }
                             tracing::info!(player = %p.name, ?item, "裝備道具");
                         }
@@ -1842,7 +1844,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 卸下裝備（ROADMAP 36）：把指定槽的裝備退回背包。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         if let Some(removed) = crate::equipment::unequip(&mut p.equipment, &slot) {
-                            p.inventory.add(removed, 1);
+                            p.add_item_overflow(removed, 1);
                             tracing::info!(player = %p.name, ?removed, slot = %slot, "卸下裝備");
                         }
                     }
@@ -2203,7 +2205,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let fish = roll_fish(seed);
                             p.fish_attempt_count = p.fish_attempt_count.wrapping_add(1);
                             p.fish_cooldown = FISH_COOLDOWN_SECS;
-                            p.inventory.add(fish, 1);
+                            p.add_item_overflow(fish, 1);
                             // 農夫熟練度 XP（讓農夫路線不只是種田）。
                             p.masteries.gain_farmer(FISH_FARMER_XP);
                             tracing::info!(player = %p.name, fish = ?fish, "釣到魚");
@@ -2244,7 +2246,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let (eggs, xp) = app.ranch.write().unwrap().collect_eggs(plot_id);
                                 if eggs > 0 {
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                        p.inventory.add(crate::inventory::ItemKind::Egg, eggs);
+                                        p.add_item_overflow(crate::inventory::ItemKind::Egg, eggs);
                                         p.masteries.gain_farmer(xp);
                                         tracing::info!(player = %p.name, eggs, "收雞蛋");
                                     }
@@ -2295,7 +2297,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !items.is_empty() {
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
                                         for (item, qty) in &items {
-                                            p.inventory.add(*item, *qty);
+                                            p.add_item_overflow(*item, *qty);
                                         }
                                         p.masteries.gain_farmer(xp);
                                         tracing::info!(player = %p.name, plot_id, items = items.len(), "收割作物");
@@ -2325,7 +2327,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let gathered = app.star_crystals.write().unwrap().gather_near(px, py);
                                 if gathered {
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                        p.inventory.add(ItemKind::StarCrystalShard, 1);
+                                        p.add_item_overflow(ItemKind::StarCrystalShard, 1);
                                         p.masteries.gain_explorer(crate::star_crystal::GATHER_EXPLORER_XP);
                                         tracing::info!(player = %p.name, "採集星晶碎片");
                                     }
@@ -3198,7 +3200,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 };
                                 if granted {
                                     if let Some(p) = app2.players.write().unwrap().get_mut(&id) {
-                                        p.inventory.add(crate::npc_chat::GIFT_ITEM, crate::npc_chat::GIFT_QTY);
+                                        p.add_item_overflow(crate::npc_chat::GIFT_ITEM, crate::npc_chat::GIFT_QTY);
                                     }
                                     tracing::info!(player = %player_name, npc = persona.id, "NPC 自主送了熟客小禮（餘裕扣減）");
                                 }
@@ -3713,6 +3715,74 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 隊伍系統 end ─────────────────────────────────────────────
+
+                // ── 倉庫（ROADMAP 105）───────────────────────────────────────
+                Ok(ClientMsg::BuyWarehouseExpansion) => {
+                    use crate::warehouse::{WAREHOUSE_EXPANSION_COST};
+                    let Some(_uid) = authed_uid else { continue; };
+                    let mut chat_opt = None;
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if p.ether < WAREHOUSE_EXPANSION_COST {
+                            // 乙太不足：私訊告知
+                            let msg = ServerMsg::Chat {
+                                from: "系統".into(),
+                                text: format!("倉庫擴充需要 {} 乙太，目前不足。", WAREHOUSE_EXPANSION_COST),
+                            };
+                            if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                        } else if !p.warehouse.can_buy_expansion() {
+                            let msg = ServerMsg::Chat {
+                                from: "系統".into(),
+                                text: "倉庫已達最大容量，無法再擴充。".into(),
+                            };
+                            if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                        } else {
+                            p.ether -= WAREHOUSE_EXPANSION_COST;
+                            p.warehouse.buy_expansion();
+                            let cap = p.warehouse.capacity();
+                            tracing::info!(player = %p.name, cap, "購買倉庫擴充");
+                            chat_opt = Some(format!("📦 倉庫擴充成功！現可存放最多 {} 種物品。", cap));
+                        }
+                    }
+                    if let Some(text) = chat_opt {
+                        let msg = ServerMsg::Chat { from: "系統".into(), text };
+                        if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                    }
+                }
+                Ok(ClientMsg::WithdrawFromWarehouse { item, qty }) => {
+                    use crate::warehouse::MAX_INVENTORY_ITEM_KINDS;
+                    let Some(_uid) = authed_uid else { continue; };
+                    let mut chat_opt = None;
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if p.warehouse.count(item) < qty {
+                            // 倉庫不足
+                            let msg = ServerMsg::Chat {
+                                from: "系統".into(),
+                                text: format!("倉庫中的 {:?} 不足 {} 個。", item, qty),
+                            };
+                            if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                        } else if p.inventory.is_full_for_new_kind(item, MAX_INVENTORY_ITEM_KINDS) {
+                            // 背包種類槽滿
+                            let msg = ServerMsg::Chat {
+                                from: "系統".into(),
+                                text: format!("背包種類已達 {} 種上限，取出前請先整理背包。", MAX_INVENTORY_ITEM_KINDS),
+                            };
+                            if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                        } else if p.warehouse.take(item, qty) {
+                            let added = p.inventory.add(item, qty);
+                            if added < qty {
+                                // 背包同種堆到 MAX_STACK，多餘量退回倉庫，不丟失
+                                p.warehouse.add(item, qty - added);
+                            }
+                            tracing::info!(player = %p.name, ?item, qty, added, "從倉庫取回物品");
+                            chat_opt = Some(format!("📦 已從倉庫取回 {:?} ×{}。", item, added));
+                        }
+                    }
+                    if let Some(text) = chat_opt {
+                        let msg = ServerMsg::Chat { from: "系統".into(), text };
+                        if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                    }
+                }
+                // ── 倉庫 end ─────────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),

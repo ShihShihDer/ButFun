@@ -357,6 +357,21 @@ impl Inventory {
         self.items.is_empty()
     }
 
+    /// 目前持有的物品「種類數」（不計數量，只算有幾種）。
+    pub fn kind_count(&self) -> usize {
+        self.items.len()
+    }
+
+    /// 此物品種類是否已在背包中（已有才能繼續堆疊，不算「佔用新種類槽」）。
+    pub fn has_kind(&self, item: ItemKind) -> bool {
+        self.items.contains_key(&item)
+    }
+
+    /// 背包的新種類槽是否已滿：`item` 不在背包中，且目前種類數已達 `max_kinds`。
+    pub fn is_full_for_new_kind(&self, item: ItemKind, max_kinds: usize) -> bool {
+        !self.has_kind(item) && self.kind_count() >= max_kinds
+    }
+
     /// 依物品種類排序逐一列出 `(物品, 數量)`（供前端面板顯示 / 快照）。
     /// 因不變式只存 > 0 條目，這裡每筆數量都 > 0。
     pub fn entries(&self) -> impl Iterator<Item = (ItemKind, u32)> + '_ {

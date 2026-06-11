@@ -30,6 +30,7 @@ use crate::quest::QuestState;
 use crate::world_event::WorldEvent;
 use crate::inventory::Inventory;
 use crate::inventory_store::InventoryStore;
+use crate::warehouse::Warehouse;
 use crate::tiles::TileWorld;
 use crate::tile_store::TileStore;
 use crate::vitals::Vitals;
@@ -215,6 +216,11 @@ pub struct Player {
     pub farm_fair_active: Option<crate::farm_fair::ActiveFairOrder>,
     /// 展覽委託完成冷卻剩餘秒數（0 = 可接新委託）。由 game.rs 每 tick 推進。
     pub farm_fair_cooldown: f32,
+
+    // ── 倉庫（ROADMAP 105）───────────────────────────────────────────────
+    /// 玩家的個人倉庫：背包種類槽滿時自動溢出至此；花乙太購買容量擴充。
+    /// 記憶體模式：重啟歸零（零 migration）。
+    pub warehouse: Warehouse,
 }
 
 impl Player {
@@ -483,7 +489,41 @@ impl Player {
             skin_tone: self.skin_tone,
             goggle_color: self.goggle_color,
             costume: self.costume,
+            // ── 倉庫（ROADMAP 105）
+            inventory_slot_count: self.inventory.kind_count() as u32,
+            inventory_slot_max: crate::warehouse::MAX_INVENTORY_ITEM_KINDS as u32,
+            warehouse_expansions: self.warehouse.expansions as u32,
+            warehouse_slot_max: self.warehouse.capacity() as u32,
+            warehouse: self.warehouse.entries()
+                .map(|(item, qty)| crate::protocol::ItemStack { item, qty })
+                .collect(),
         }
+    }
+
+    /// 向背包加物品；若背包種類槽已滿則自動轉存倉庫（ROADMAP 105）。
+    /// 回傳 `(added_to_inv, added_to_warehouse, dropped)`。
+    /// - `added_to_inv`：實際加入背包的量。
+    /// - `added_to_warehouse`：轉存倉庫的量。
+    /// - `dropped`：兩者皆滿而丟棄的量（實務上幾乎不會發生，因為最大容量 > 全遊戲 58 種）。
+    pub fn add_item_overflow(&mut self, item: crate::inventory::ItemKind, qty: u32) -> (u32, u32, u32) {
+        use crate::warehouse::MAX_INVENTORY_ITEM_KINDS;
+        if qty == 0 {
+            return (0, 0, 0);
+        }
+        // 背包仍可接受（已有此種類，或種類槽未滿）
+        if !self.inventory.is_full_for_new_kind(item, MAX_INVENTORY_ITEM_KINDS) {
+            let added = self.inventory.add(item, qty);
+            let remaining = qty - added;
+            if remaining == 0 {
+                return (added, 0, 0);
+            }
+            // MAX_STACK 夾住了，剩餘嘗試倉庫
+            let wh = self.warehouse.add(item, remaining);
+            return (added, wh, remaining - wh);
+        }
+        // 背包種類槽已滿 → 全部轉倉庫
+        let wh = self.warehouse.add(item, qty);
+        (0, wh, qty - wh)
     }
 
     /// 星際旅行可行性驗證（純函式，供 ws.rs 呼叫與測試）。
@@ -1080,6 +1120,7 @@ mod tests {
             procurement_cooldown: 0.0,
             farm_fair_active: None,
             farm_fair_cooldown: 0.0,
+            warehouse: Warehouse::default(),
         }
     }
 

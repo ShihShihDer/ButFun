@@ -453,6 +453,16 @@ pub enum ClientMsg {
     /// 拒絕待定的隊伍邀請。
     #[serde(rename = "decline_party")]
     DeclineParty,
+
+    // ── 倉庫（ROADMAP 105）───────────────────────────────────────────────────
+    /// 購買一次倉庫擴充（WAREHOUSE_EXPANSION_COST 乙太 → 增加 WAREHOUSE_SLOTS_PER_EXPANSION 種槽）。
+    /// 乙太不足 / 已達 MAX_WAREHOUSE_EXPANSIONS 上限靜默忽略；需登入。
+    #[serde(rename = "buy_warehouse_expansion")]
+    BuyWarehouseExpansion,
+    /// 從倉庫取出物品放回背包（背包種類槽有空間才成功）。
+    /// 背包種類槽滿 / 物品不在倉庫 / 數量不足靜默忽略；需登入。
+    #[serde(rename = "withdraw_from_warehouse")]
+    WithdrawFromWarehouse { item: ItemKind, qty: u32 },
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -787,9 +797,30 @@ pub struct PlayerView {
     /// 服裝造型（ROADMAP 99 衣櫥）：0~5，0 = 探險家套裝（預設）。0 時省略。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub costume: u8,
+
+    // ── 倉庫（ROADMAP 105）───────────────────────────────────────────────────
+    /// 背包目前使用的種類槽數（0~inventory_slot_max）。前端背包面板顯示 X/20。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub inventory_slot_count: u32,
+    /// 背包最大種類槽數（目前固定 20）。前端背包面板顯示 X/20。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub inventory_slot_max: u32,
+    /// 已購倉庫擴充次數（0 = 未解鎖，倉庫容量 0）。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub warehouse_expansions: u32,
+    /// 倉庫最大種類槽數（= expansions × 20）。0 = 未購，無法存入任何物品。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub warehouse_slot_max: u32,
+    /// 倉庫目前存放的物品清單（格式同 inventory）。空時省略流量。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warehouse: Vec<ItemStack>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
@@ -1114,6 +1145,11 @@ mod tests {
                 skin_tone: 0,
                 goggle_color: 0,
                 costume: 0,
+                inventory_slot_count: 0,
+                inventory_slot_max: 20,
+                warehouse_expansions: 0,
+                warehouse_slot_max: 0,
+                warehouse: vec![],
             }],
             fields: vec![FieldView {
                 owner,
@@ -1284,6 +1320,11 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            inventory_slot_count: 0,
+            inventory_slot_max: 20,
+            warehouse_expansions: 0,
+            warehouse_slot_max: 0,
+            warehouse: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1475,6 +1516,11 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            inventory_slot_count: 0,
+            inventory_slot_max: 20,
+            warehouse_expansions: 0,
+            warehouse_slot_max: 0,
+            warehouse: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1511,6 +1557,11 @@ mod tests {
             skin_tone: 0,
             goggle_color: 0,
             costume: 0,
+            inventory_slot_count: 0,
+            inventory_slot_max: 20,
+            warehouse_expansions: 0,
+            warehouse_slot_max: 0,
+            warehouse: vec![],
         }
     }
 

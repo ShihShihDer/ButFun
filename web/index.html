@@ -452,6 +452,7 @@
         <button type="button" class="dock-btn" id="dockMarket" data-win="winMarket" aria-haspopup="dialog" aria-expanded="false" aria-label="市場" title="市場">🏪</button>
         <button type="button" class="dock-btn" id="dockShop" data-win="winShop" aria-haspopup="dialog" aria-expanded="false" aria-label="商店（靠近新手村商人才能開）" title="商店">💰</button>
         <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-haspopup="dialog" aria-expanded="false" aria-label="購地" title="購地">🌱</button>
+        <button type="button" class="dock-btn" id="dockWarehouse" data-win="winWarehouse" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="W" aria-label="倉庫（W）" title="倉庫（W）">🗄️</button>
       </div>
       <div class="dock-group hidden" id="dgChar">
         <button type="button" class="dock-btn" id="dockEquip" data-win="winEquip" aria-haspopup="dialog" aria-expanded="false" aria-keyshortcuts="I" aria-label="裝備（I）" title="裝備（I）">⚔️</button>
@@ -509,6 +510,7 @@
     <div id="winBag" class="hud-window hidden" role="dialog" aria-labelledby="bagToggle">
       <div class="win-head">
         <span class="win-title" id="bagToggle" aria-label="背包：空" title="背包：空">🎒 背包<span id="bagSummary">：空</span></span>
+        <span id="bagSlotCount" style="font-size:0.78em;opacity:0.65;margin-left:4px"></span>
         <button type="button" class="win-close" data-close="winBag" aria-label="關閉背包">✕</button>
       </div>
       <div id="bagBody">背包是空的</div>
@@ -713,6 +715,14 @@
         <button type="button" class="win-close" data-close="winExpand" aria-label="關閉購地">✕</button>
       </div>
       <div id="expandBody"></div>
+    </div>
+    <!-- 倉庫（ROADMAP 105）：超量道具自動流入；可花乙太購買擴充、從倉庫提回背包。 -->
+    <div id="winWarehouse" class="hud-window hidden" role="dialog" aria-labelledby="warehouseTitle">
+      <div class="win-head">
+        <span class="win-title" id="warehouseTitle">🗄️ 倉庫<span id="warehouseSummary"></span></span>
+        <button type="button" class="win-close" data-close="winWarehouse" aria-label="關閉倉庫">✕</button>
+      </div>
+      <div id="warehouseBody">尚未購買倉庫擴充</div>
     </div>
     <!-- 市場:玩家對玩家交易。掛單出售背包物品、購買其他玩家的掛單。 -->
     <div id="winMarket" class="hud-window hidden" role="dialog" aria-labelledby="marketTitle">
