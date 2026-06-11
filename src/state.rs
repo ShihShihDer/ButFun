@@ -211,7 +211,8 @@ impl Player {
         self.exp / 100
     }
 
-    pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager) -> PlayerView {
+    /// `traveler_xy`：目前在場旅人的座標（None = 旅人不在場）。
+    pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager, traveler_xy: Option<(f32, f32)>) -> PlayerView {
         PlayerView {
             id: self.id,
             name: self.name.clone(),
@@ -458,6 +459,12 @@ impl Player {
                     let dx = self.x - nx;
                     let dy = self.y - ny;
                     (dx * dx + dy * dy).sqrt() <= crate::village_chief::CHIEF_REACH
+                }).unwrap_or(false),
+            near_traveler: self.planet == PLANET_HOME
+                && traveler_xy.map(|(nx, ny)| {
+                    let dx = self.x - nx;
+                    let dy = self.y - ny;
+                    dx * dx + dy * dy <= crate::traveler_npc::TRAVELER_REACH * crate::traveler_npc::TRAVELER_REACH
                 }).unwrap_or(false),
         }
     }
@@ -742,6 +749,8 @@ pub struct AppState {
     pub npc_factions: Arc<RwLock<crate::npc_factions::NpcFactionState>>,
     /// NPC 作息與移動管理器（ROADMAP 73）。
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
+    /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
+    pub traveler: Arc<RwLock<crate::traveler_npc::TravelerNpc>>,
 }
 
 impl AppState {
@@ -849,6 +858,7 @@ impl AppState {
             npc_relations: Arc::new(RwLock::new(crate::npc_relations::NpcRelationsState::new())),
             npc_factions: Arc::new(RwLock::new(crate::npc_factions::NpcFactionState::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
+            traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
         }
     }
 
@@ -1103,7 +1113,7 @@ mod tests {
         assert!(hit, "玩家在線應命中");
         let sch = app.npc_schedule.read().unwrap();
         assert_eq!(
-            app.players.read().unwrap().get(&uid).unwrap().view(&sch).name,
+            app.players.read().unwrap().get(&uid).unwrap().view(&sch, None).name,
             "新名",
             "下一張快照應帶新名"
         );

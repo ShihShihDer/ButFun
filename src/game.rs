@@ -529,6 +529,29 @@ pub fn spawn(app: AppState) {
                 let daynight = app.daynight.read().unwrap();
                 app.npc_schedule.write().unwrap().tick(dt, &daynight);
             }
+            // 城外旅人（ROADMAP 74）：推進旅人狀態並廣播到訪/離開事件。
+            {
+                let event = app.traveler.write().unwrap().tick(dt);
+                if let Some(ev) = event {
+                    use crate::traveler_npc::TravelerEvent;
+                    match ev {
+                        TravelerEvent::Arrived { name, origin } => {
+                            let msg = format!(
+                                "🧳 【旅人到訪】{name} 走進了主城廣場！（身份：{origin}）靠近可以聊天。"
+                            );
+                            let _ = app.tx_chat.send(msg);
+                            app.world_log.write().unwrap().push(format!(
+                                "旅行者 {name} 從外地走入主城，身份：{origin}"
+                            ));
+                        }
+                        TravelerEvent::Departed { name } => {
+                            let _ = app.tx_chat.send(format!(
+                                "🧳 【旅人離去】{name} 拾起行囊，繼續上路了，感謝陪伴！"
+                            ));
+                        }
+                    }
+                }
+            }
 
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
@@ -714,9 +737,27 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(ORIGIN_SELL_LIST),
                     });
 
+                    // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
+                    let traveler_xy: Option<(f32, f32)> = {
+                        let tv = app.traveler.read().unwrap();
+                        if tv.is_visible() {
+                            npc_views.push(NpcView {
+                                id: "traveler".to_string(),
+                                name: format!("🧳 {}", tv.name()),
+                                x: tv.x,
+                                y: tv.y,
+                                buy_list: Vec::new(),
+                                sell_list: Vec::new(),
+                            });
+                            Some((tv.x, tv.y))
+                        } else {
+                            None
+                        }
+                    };
+
                     ServerMsg::Snapshot {
                         tick,
-                        players: players.values().map(|p| p.view(&sch)).collect(),
+                        players: players.values().map(|p| p.view(&sch, traveler_xy)).collect(),
                         fields: field_views,
                         nodes: node_views,
                         enemies: enemy_views,
