@@ -598,7 +598,7 @@ D-3. ✅ **小地圖導航**（PR #71）
 > 完整設計與安全護欄見 `docs/PLAN_AI_NPC_GROWTH_WAVE2.md`。由上往下、一次一塊、別跳級。
 > 鐵律:湧現不寫死、背景生活不燒 LLM、美術只做原創、走審查閘非緊急不自合。
 
-72. **LLM 雲端路由 + prompt 瘦身（Wave 2 先決條件，最先做）**
+72. ✅ **LLM 雲端路由——Groq 優先、ollama 降級（已完成，PR #170）**
     - 實測:本機純 CPU 上一發豐富 NPC prompt 要 ~44s，必撞 20s 逾時退罐頭，多人更慘——本機 CPU 服務不了。
     - 在 `npc_chat.rs` 現有 `ollama_chat` 抽換點後加 provider 路由 + 降級鏈:`雲端(快/並發) → 本機 ollama → 罐頭`。
     - Provider 皆「真免費層、獨立 key」(Groq 主力 / OpenRouter `:free` 多樣化 / Cloudflare 備援；**不可借用維護者付費的 gemini CLI**)；每 tier 由 key 是否存在 env-gate，無 key 跳過，CI 無 key 也綠。
