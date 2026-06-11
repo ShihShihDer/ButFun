@@ -2918,6 +2918,7 @@
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
+    drawTownBuildings(camX, camY); // 城鎮建築外觀（ROADMAP 110）：蒸汽龐克建築結構
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
@@ -5151,6 +5152,342 @@
         ctx.restore();
       }
     }
+  }
+
+  // 城鎮建築外觀（ROADMAP 110）——原創蒸汽龐克建築，在 NPC 作息站點固定位置繪製。
+  // 位置對齊 npc_schedule.rs VILLAGE_NPCS.station_pos。建築在 NPCs 之前畫（作為背景）。
+  const TOWN_BUILDINGS = [
+    { wx: 2120, wy: 2328, type: "shop",        sign: "薇拉商店" },
+    { wx: 2120, wy: 2080, type: "workshop",    sign: "老胡工坊" },
+    { wx: 2240, wy: 2080, type: "bounty",      sign: "懸賞公所" },
+    { wx: 2360, wy: 2080, type: "expedition",  sign: "探勘站" },
+    { wx: 2480, wy: 2080, type: "procurement", sign: "星際採購" },
+    { wx: 2600, wy: 2080, type: "fair",        sign: "農展館" },
+    { wx: 2720, wy: 2080, type: "chief",       sign: "里長屋" },
+  ];
+
+  function drawTownBuildings(camX, camY) {
+    for (const b of TOWN_BUILDINGS) {
+      const sx = b.wx - camX;
+      const sy = b.wy - camY;
+      if (sx < -130 || sx > viewW + 130 || sy < -130 || sy > viewH + 60) continue;
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      _drawBuilding(sx, sy, b.type, b.sign);
+      ctx.restore();
+    }
+  }
+
+  // 每棟建築的色盤（wall=主牆色、roof=屋頂色、trim=黃銅邊飾色、win=窗玻璃色）
+  const _BLDG_COLORS = {
+    shop:        { wall: "#c8a054", roof: "#5c3d1e", trim: "#e8c068", win: "#2040a0" },
+    workshop:    { wall: "#4a5c6a", roof: "#7a6848", trim: "#c08030", win: "#182840" },
+    bounty:      { wall: "#6a3028", roof: "#4a1818", trim: "#c06820", win: "#3a1008" },
+    expedition:  { wall: "#2a5838", roof: "#1a3820", trim: "#60c868", win: "#0a2818" },
+    procurement: { wall: "#3c2860", roof: "#261840", trim: "#8060c0", win: "#180838" },
+    fair:        { wall: "#8a6838", roof: "#5a3818", trim: "#d4a840", win: "#2a1808" },
+    chief:       { wall: "#6a3808", roof: "#3a1804", trim: "#d4a820", win: "#1a0c04" },
+  };
+
+  function _drawBuilding(sx, sy, type, sign) {
+    const BW = 74;   // 建築寬度（像素）
+    const WH = 54;   // 牆壁高度
+    const RH = 26;   // 屋頂（牆頂到屋脊）高度
+    const wb = sy - 10; // 牆壁底（門台階）：NPC 站在正前方時頭部略伸進門框
+    const wt = wb - WH; // 牆壁頂
+    const rp = wt - RH; // 屋脊（最高點）
+
+    const C = _BLDG_COLORS[type] || { wall: "#607080", roof: "#404050", trim: "#a0b0b8", win: "#102030" };
+
+    // ── 地面陰影 ──
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.beginPath();
+    ctx.ellipse(sx, wb + 8, BW * 0.5, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── 主牆體 ──
+    ctx.fillStyle = C.wall;
+    ctx.beginPath();
+    ctx.roundRect(sx - BW / 2, wt, BW, WH, 4);
+    ctx.fill();
+
+    // 磚縫水平紋（輕量視覺質感）
+    ctx.strokeStyle = "rgba(0,0,0,0.10)";
+    ctx.lineWidth = 0.7;
+    for (let ly = wt + 11; ly < wb - 3; ly += 9) {
+      ctx.beginPath();
+      ctx.moveTo(sx - BW / 2 + 4, ly);
+      ctx.lineTo(sx + BW / 2 - 4, ly);
+      ctx.stroke();
+    }
+
+    // ── 屋頂（三角形） ──
+    ctx.fillStyle = C.roof;
+    ctx.beginPath();
+    ctx.moveTo(sx - BW / 2 - 7, wt + 2);
+    ctx.lineTo(sx + BW / 2 + 7, wt + 2);
+    ctx.lineTo(sx, rp);
+    ctx.closePath();
+    ctx.fill();
+
+    // 屋脊裝飾邊線
+    ctx.strokeStyle = C.trim;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(sx - BW / 2 - 7, wt + 2);
+    ctx.lineTo(sx, rp);
+    ctx.lineTo(sx + BW / 2 + 7, wt + 2);
+    ctx.stroke();
+
+    // 屋簷壓條
+    ctx.fillStyle = C.trim;
+    ctx.fillRect(sx - BW / 2 - 8, wt, BW + 16, 5);
+
+    // ── 門（圓頂） ──
+    const DW = 16, DH = 23;
+    ctx.fillStyle = "#1e1008";
+    ctx.beginPath();
+    ctx.moveTo(sx - DW / 2, wb);
+    ctx.lineTo(sx - DW / 2, wb - DH + DW / 2);
+    ctx.arc(sx, wb - DH + DW / 2, DW / 2, Math.PI, 0);
+    ctx.lineTo(sx + DW / 2, wb);
+    ctx.closePath();
+    ctx.fill();
+    // 門框
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 1.2;
+    ctx.stroke();
+    // 門把手
+    ctx.fillStyle = C.trim;
+    ctx.beginPath();
+    ctx.arc(sx + 4, wb - DH / 2 + 2, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── 左窗 ──
+    const WWS = 14, WHS = 12, wwy = wt + 15;
+    ctx.fillStyle = C.win;
+    ctx.beginPath();
+    ctx.roundRect(sx - BW / 2 + 7, wwy, WWS, WHS, 2);
+    ctx.fill();
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx - BW / 2 + 7 + WWS / 2, wwy);
+    ctx.lineTo(sx - BW / 2 + 7 + WWS / 2, wwy + WHS);
+    ctx.moveTo(sx - BW / 2 + 7, wwy + WHS / 2);
+    ctx.lineTo(sx - BW / 2 + 7 + WWS, wwy + WHS / 2);
+    ctx.stroke();
+
+    // ── 右窗 ──
+    const wx2 = sx + BW / 2 - 7 - WWS;
+    ctx.fillStyle = C.win;
+    ctx.beginPath();
+    ctx.roundRect(wx2, wwy, WWS, WHS, 2);
+    ctx.fill();
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(wx2 + WWS / 2, wwy);
+    ctx.lineTo(wx2 + WWS / 2, wwy + WHS);
+    ctx.moveTo(wx2, wwy + WHS / 2);
+    ctx.lineTo(wx2 + WWS, wwy + WHS / 2);
+    ctx.stroke();
+
+    // ── 各建築類型特色裝飾 ──
+    switch (type) {
+      case "shop":        _bldgShopDecor(sx, wb, wt, rp, C);        break;
+      case "workshop":    _bldgWorkshopDecor(sx, wb, wt, rp, C);    break;
+      case "bounty":      _bldgBountyDecor(sx, wb, wt, rp, C);      break;
+      case "expedition":  _bldgExpeditionDecor(sx, wb, wt, rp, C);  break;
+      case "procurement": _bldgProcurementDecor(sx, wb, wt, rp, C); break;
+      case "fair":        _bldgFairDecor(sx, wb, wt, rp, C);        break;
+      case "chief":       _bldgChiefDecor(sx, wb, wt, rp, C);       break;
+    }
+
+    // ── 招牌（掛在屋脊下方） ──
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    const sw = ctx.measureText(sign).width + 14;
+    ctx.fillStyle = "#241008";
+    ctx.beginPath();
+    ctx.roundRect(sx - sw / 2, rp - 17, sw, 14, 3);
+    ctx.fill();
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.fillStyle = C.trim;
+    ctx.fillText(sign, sx, rp - 6);
+  }
+
+  // 商店：遮陽棚 + 牆上乙太硬幣
+  function _bldgShopDecor(sx, wb, wt, rp, C) {
+    // 遮陽棚（門上方）
+    const AW = 38;
+    ctx.fillStyle = "#c84040";
+    ctx.beginPath();
+    ctx.moveTo(sx - AW / 2, wb - 26);
+    ctx.lineTo(sx + AW / 2, wb - 26);
+    ctx.lineTo(sx + AW / 2 + 5, wb - 20);
+    ctx.lineTo(sx - AW / 2 - 5, wb - 20);
+    ctx.closePath();
+    ctx.fill();
+    // 遮陽棚橫條紋
+    ctx.fillStyle = "#e06060";
+    for (let i = -16; i < AW / 2 + 5; i += 9) {
+      ctx.fillRect(sx + i, wb - 26, 5, 6);
+    }
+    // 牆上乙太符號
+    ctx.fillStyle = C.trim;
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.wall;
+    ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Ξ", sx, wt + 40);
+  }
+
+  // 工坊：煙囪 + 齒輪
+  function _bldgWorkshopDecor(sx, wb, wt, rp, C) {
+    // 煙囪（屋右側）
+    ctx.fillStyle = "#3a2a1a";
+    ctx.fillRect(sx + 20, rp - 4, 10, 30);
+    ctx.fillStyle = "#5a4a3a";
+    ctx.fillRect(sx + 18, rp - 8, 14, 7);
+    // 煙霧
+    ctx.fillStyle = "rgba(150,130,90,0.25)";
+    ctx.beginPath(); ctx.arc(sx + 25, rp - 14, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx + 22, rp - 22, 4, 0, Math.PI * 2); ctx.fill();
+    // 牆上齒輪符號
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 1.5;
+    for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+      ctx.beginPath();
+      ctx.moveTo(sx + Math.cos(a) * 8, wt + 36 + Math.sin(a) * 8);
+      ctx.lineTo(sx + Math.cos(a) * 12, wt + 36 + Math.sin(a) * 12);
+      ctx.stroke();
+    }
+    ctx.fillStyle = C.trim;
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 懸賞公所：牆面告示欄
+  function _bldgBountyDecor(sx, wb, wt, rp, C) {
+    // 告示欄木框
+    ctx.fillStyle = "#7a5a30";
+    ctx.beginPath(); ctx.roundRect(sx - 14, wt + 28, 28, 18, 2); ctx.fill();
+    // 紙張
+    ctx.fillStyle = "#e8d8a0";
+    ctx.beginPath(); ctx.roundRect(sx - 12, wt + 30, 24, 14, 1); ctx.fill();
+    // 文字橫條（模擬告示內容）
+    ctx.strokeStyle = "#a08040"; ctx.lineWidth = 0.8;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(sx - 9, wt + 33 + i * 3);
+      ctx.lineTo(sx + 9, wt + 33 + i * 3);
+      ctx.stroke();
+    }
+    // 上方釘子
+    ctx.fillStyle = C.trim;
+    ctx.beginPath(); ctx.arc(sx - 8, wt + 30, 2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx + 8, wt + 30, 2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 探勘站：地圖卷軸
+  function _bldgExpeditionDecor(sx, wb, wt, rp, C) {
+    // 卷軸底紙
+    ctx.fillStyle = "#d4c090";
+    ctx.beginPath(); ctx.roundRect(sx - 11, wt + 28, 22, 16, 2); ctx.fill();
+    // 卷軸兩端木棍
+    ctx.fillStyle = "#7a5030";
+    ctx.fillRect(sx - 13, wt + 27, 4, 18);
+    ctx.fillRect(sx + 9, wt + 27, 4, 18);
+    // 地圖上的 X 標記
+    ctx.strokeStyle = "#c04020"; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx - 4, wt + 32); ctx.lineTo(sx + 4, wt + 40);
+    ctx.moveTo(sx + 4, wt + 32); ctx.lineTo(sx - 4, wt + 40);
+    ctx.stroke();
+    // 羅盤小圓
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 6, 0, Math.PI * 2); ctx.stroke();
+    // 指針
+    ctx.strokeStyle = "#c04020"; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(sx, wt + 30); ctx.lineTo(sx, wt + 34); ctx.stroke();
+    ctx.strokeStyle = C.trim;
+    ctx.beginPath(); ctx.moveTo(sx, wt + 38); ctx.lineTo(sx, wt + 42); ctx.stroke();
+  }
+
+  // 星際採購：星球符號 + 星環
+  function _bldgProcurementDecor(sx, wb, wt, rp, C) {
+    // 星球
+    ctx.fillStyle = C.trim;
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#1a0840";
+    ctx.beginPath(); ctx.arc(sx, wt + 36, 5, 0, Math.PI * 2); ctx.fill();
+    // 星環（橢圓）
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(sx, wt + 36, 11, 3.5, 0, 0, Math.PI * 2); ctx.stroke();
+    // 四顆小星
+    const starAngles = [0, Math.PI / 2, Math.PI, Math.PI * 1.5];
+    for (const a of starAngles) {
+      ctx.fillStyle = C.trim;
+      ctx.beginPath();
+      ctx.arc(sx + Math.cos(a) * 13, wt + 36 + Math.sin(a) * 5, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // 農展館：收穫旗幟 + 作物圖示
+  function _bldgFairDecor(sx, wb, wt, rp, C) {
+    // 屋頂三角旗串
+    const flagPts = [{ x: sx - 30, y: wt - 4 }, { x: sx, y: rp + 6 }, { x: sx + 30, y: wt - 4 }];
+    const flagCols = ["#c04020", "#20a040", "#d4a820"];
+    flagPts.forEach((f, i) => {
+      ctx.fillStyle = flagCols[i % 3];
+      ctx.beginPath();
+      ctx.moveTo(f.x, f.y);
+      ctx.lineTo(f.x + 12, f.y - 5);
+      ctx.lineTo(f.x, f.y - 9);
+      ctx.closePath();
+      ctx.fill();
+    });
+    // 繩線串起旗幟
+    ctx.strokeStyle = "#8a6830"; ctx.lineWidth = 0.8; ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    ctx.moveTo(flagPts[0].x, flagPts[0].y - 4);
+    ctx.lineTo(flagPts[1].x, flagPts[1].y - 4);
+    ctx.lineTo(flagPts[2].x, flagPts[2].y - 4);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 牆上穀穗圖示
+    ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("🌾", sx, wt + 40);
+  }
+
+  // 里長屋：紅燈籠 + 門楣牌匾
+  function _bldgChiefDecor(sx, wb, wt, rp, C) {
+    // 左右燈籠
+    const lanX = [sx - 33, sx + 33];
+    for (const lx of lanX) {
+      // 燈籠杆
+      ctx.strokeStyle = "#5a3800"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(lx, wt - 3); ctx.lineTo(lx, wt + 22); ctx.stroke();
+      // 燈籠體
+      ctx.fillStyle = "#d02020";
+      ctx.beginPath(); ctx.ellipse(lx, wt + 14, 6, 9, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#8a1010"; ctx.lineWidth = 0.8; ctx.stroke();
+      // 燈籠橫條
+      ctx.strokeStyle = "#f04040"; ctx.lineWidth = 0.6;
+      ctx.beginPath(); ctx.moveTo(lx - 6, wt + 14); ctx.lineTo(lx + 6, wt + 14); ctx.stroke();
+      // 燈光暈
+      ctx.fillStyle = "rgba(255,170,50,0.25)";
+      ctx.beginPath(); ctx.arc(lx, wt + 14, 11, 0, Math.PI * 2); ctx.fill();
+      // 流蘇
+      ctx.strokeStyle = "#d4a820"; ctx.lineWidth = 0.7;
+      ctx.beginPath(); ctx.moveTo(lx, wt + 23); ctx.lineTo(lx, wt + 29); ctx.stroke();
+    }
+    // 門楣牌匾
+    ctx.fillStyle = "#5a2800";
+    ctx.beginPath(); ctx.roundRect(sx - 22, wb - 27, 44, 11, 2); ctx.fill();
+    ctx.strokeStyle = C.trim; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.fillStyle = C.trim;
+    ctx.font = "bold 7px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("里長屋", sx, wb - 19);
   }
 
   // ROADMAP 34/35：畫城外產權地塊邊界。
