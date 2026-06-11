@@ -8845,7 +8845,7 @@
       return;
     }
 
-    const ITEM_NAME_ = { wood: "木材", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水" };
+    const ITEM_NAME_ = { wood: "木材", stone: "石頭", dirt: "泥土", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", rift_shard: "裂縫碎片", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", wheat_grain: "小麥穗", carrot: "胡蘿蔔", potato: "馬鈴薯", star_crystal_shard: "星晶碎片" };
     const myEther_ = me ? me.ether : 0;
     const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
 
@@ -8871,15 +8871,21 @@
 
     // —— 向商人購買（NPC 販售）——
     html += `<div style="color:var(--brass);font-weight:bold;margin:8px 0 4px">📥 向商人購買（花乙太）</div>`;
+    // 建立快查：同物品的收購價（用於顯示買賣利差提示）
+    const buyPriceMap = new Map(nearNpc.buy_list.map((e) => [e.item, e.price_per]));
     for (const entry of nearNpc.sell_list) {
       const name = ITEM_NAME_[entry.item] || entry.item;
       const canAfford1 = myEther_ >= entry.price_per;
       const canBuy = !isGuest_ && canAfford1;
+      // 若此物品在收購清單內，顯示買賣利差提示（讓玩家明白轉賣會虧本）
+      const buyBack = buyPriceMap.get(entry.item);
+      const spreadHint = buyBack != null
+        ? ` <span style="color:#888;font-size:0.78em">（賣回僅 ${buyBack}✨）</span>` : "";
       html += `<div class="craft-row" style="margin:3px 0;display:flex;align-items:center;gap:6px">
         <span style="flex:1">${name} ×<input id="shopBuyQty_${entry.item}" type="number" min="1" max="99" value="1"
           style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
           ${!canBuy ? "disabled" : ""}></span>
-        <span style="color:#e0795f">-${entry.price_per}✨/個</span>
+        <span style="color:#e0795f">-${entry.price_per}✨/個${spreadHint}</span>
         <span style="opacity:0.7;font-size:0.82em">(餘額：${myEther_}✨)</span>
         <button class="craft-btn" id="shopBuyBtn_${entry.item}" ${!canBuy ? "disabled" : ""}
           style="padding:2px 8px;font-size:0.85em">購買</button>
