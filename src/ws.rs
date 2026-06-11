@@ -112,7 +112,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             exp: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
-            guild_tag: None,
+            // 重連還原：工會成員資料 keyed by uid 存在 GuildStore，登入玩家重連時從中還原
+            // 工會標籤——否則一刷新就「看起來不在工會」（guild_tag 被建成 None，已知 bug）。
+            guild_tag: app.guilds.read().unwrap().tag_of(user.id),
             party_id: None,
             hair_style: user.hair_style,
             skin_tone: user.skin_tone,
