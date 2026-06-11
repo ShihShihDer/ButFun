@@ -853,8 +853,9 @@ D-3. ✅ **小地圖導航**（PR #71）
     - LLM 談妥夾 `[DEAL 品項 數量 價]`→引擎驗證(金庫/背包/**引擎定價**)→玩家確認成交。腦自由議價、手有界(只動有限金庫=真實稀缺)。護欄:不無中生有、每筆/離譜價上限、不信 LLM 自報數字、注入防護。
     - `src/npc_deal.rs` 純邏輯模組（15 個單元測試）；`npc_pending_deal` 掛 AppState；ws.rs TalkToNpc 段解析 token→DealOffer 廣播，ConfirmDeal 處理二次驗證→轉帳；前端 showDealOffer 橫幅+三分鐘計時。1035 tests 全綠。
 
-102. **修批量倒貨套利——浮動價在單筆內也遞減**
-    - 賣 600 不再全用市價結算;單筆內價格隨量遞減，反映真實供需，堵掉「一次倒光」套利。
+102. ✅ **修批量倒貨套利——浮動價在單筆內也遞減（ROADMAP 102）**
+    - 賣 600 不再全用市價結算；`DynamicPriceMarket::find_bulk_affordable`：模擬每 20 個觸發一次跌價、單筆內隨量遞減，堵掉「一次倒光均一價」套利。
+    - `calculate_bulk_total`（純計算）+ `find_bulk_affordable`（含金庫限制）；ws.rs ShopSell 改用批量漸降價路徑；8 個新單元測試，1043 tests 全綠。
 
 103. **買賣價差——NPC 買低賣高，殺掉同 NPC 套利**
     - 每 NPC 對同物品買價 < 賣價(商人margin);轉賣同一人不再賺，斷掉洗錢循環一環。
