@@ -75,6 +75,7 @@ mod npc_dawn_call;
 mod npc_dusk_call;
 mod npc_noon_bell;
 mod npc_night_watch;
+mod daytime_talk;
 mod world_log;
 mod player_log;
 
