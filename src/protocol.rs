@@ -418,6 +418,20 @@ pub enum ClientMsg {
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
+
+    // ── 好友系統（ROADMAP 96）
+    /// 加好友：依顯示名稱加對方帳號為好友。需登入；自己加自己 / 對象不存在靜默忽略。
+    /// 成功後伺服器回 `FriendList` 更新。
+    #[serde(rename = "add_friend")]
+    AddFriend { name: String },
+    /// 刪好友：依顯示名稱移除好友關係。需登入；不在好友清單靜默忽略。
+    /// 成功後伺服器回 `FriendList` 更新。
+    #[serde(rename = "remove_friend")]
+    RemoveFriend { name: String },
+    /// 請求好友清單（ROADMAP 96）：前端開啟好友面板時送出，伺服器回 `FriendList`。
+    /// 未登入靜默忽略。
+    #[serde(rename = "request_friend_list")]
+    RequestFriendList,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -528,6 +542,17 @@ pub enum ServerMsg {
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
     /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
     Whisper { from: String, to: String, text: String },
+    /// 好友清單（ROADMAP 96）：回應 `RequestFriendList`、`AddFriend`、`RemoveFriend`。
+    /// 僅送給請求者本人；`friends` 含顯示名與即時在線狀態。
+    FriendList { friends: Vec<FriendEntry> },
+}
+
+/// 好友清單單筆條目（ROADMAP 96）。
+#[derive(Debug, Clone, Serialize)]
+pub struct FriendEntry {
+    pub id: Uuid,
+    pub name: String,
+    pub online: bool,
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。
@@ -1248,5 +1273,36 @@ mod tests {
         assert_eq!(v["from"], "Alice");
         assert_eq!(v["to"], "Bob");
         assert_eq!(v["text"], "哈囉 Bob！");
+    }
+
+    /// ROADMAP 96 好友系統 ClientMsg wire contract。
+    #[test]
+    fn add_friend_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"add_friend","name":"Alice"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::AddFriend { name } if name == "Alice"));
+    }
+
+    #[test]
+    fn remove_friend_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"remove_friend","name":"Bob"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::RemoveFriend { name } if name == "Bob"));
+    }
+
+    #[test]
+    fn request_friend_list_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"request_friend_list"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::RequestFriendList));
+    }
+
+    #[test]
+    fn friend_list_response_serializes_correctly() {
+        let id = uuid::Uuid::new_v4();
+        let msg = ServerMsg::FriendList {
+            friends: vec![super::FriendEntry { id, name: "Charlie".into(), online: true }],
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(v["type"], "friend_list");
+        assert_eq!(v["friends"][0]["name"], "Charlie");
+        assert_eq!(v["friends"][0]["online"], true);
     }
 }

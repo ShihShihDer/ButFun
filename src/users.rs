@@ -154,6 +154,18 @@ impl UserStore {
         self.inner.lock().unwrap().by_id.get(&id).cloned()
     }
 
+    /// 依顯示名稱查找帳號（用於好友系統按名字加好友）。
+    /// 若多個帳號同名，回傳任意一個；name 比對大小寫敏感（與登入顯示一致）。
+    pub fn find_by_name(&self, name: &str) -> Option<User> {
+        self.inner
+            .lock()
+            .unwrap()
+            .by_id
+            .values()
+            .find(|u| u.name == name)
+            .cloned()
+    }
+
     /// 建一個 `provider="ai"` 的居民帳號(給 AI 自助註冊端點用)。每呼叫一次就是一個新居民
     /// (新 uuid、固定身分),其遊戲進度(位置/乙太)會比照其他登入玩家持久化。`external_id`
     /// 用 uuid 自身保證唯一(AI 居民沒有外部 provider)。`provider="ai"` 標記方便日後把這些

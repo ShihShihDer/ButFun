@@ -818,8 +818,10 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 前端：新增 `addWhisperLine` 函式，密語以紫色泡泡顯示 `💬 from → to: text`，用 CSS `.whisper` 類別視覺區隔。
     - wire contract 測試：`whisper_response_serializes_correctly`。
 
-96. **好友系統——加/刪好友、好友清單、誰在線**（接私聊，可一鍵密語好友）
-    - 加/刪好友、好友清單顯示**在線狀態**、一鍵私聊；**持久化**(PG，向後相容 migration、沒撞過的編號)；需登入帳號；入口配合 HUD 重設計(#188)。
+96. ✅ **好友系統——加/刪好友、好友清單、誰在線**（接私聊，可一鍵密語好友）（本輪 PR）
+    - 加/刪好友、好友清單顯示**在線狀態**、一鍵密語；`migration 0018_friends`（向後相容）持久化（PG）；需登入帳號；HUD dock 按鈕 👥 + 面板 UI。
+    - `FriendStore`（單向 follow）；`users.find_by_name`；protocol：`AddFriend`/`RemoveFriend`/`RequestFriendList`/`FriendList`；wire contract 測試 4 條 + FriendStore 單元測試 3 條。
+    - 進場後自動送一次好友清單；面板點擊或刷新按鈕可更新在線狀態。
 
 97. **隊伍 + 隊伍聊天——臨時組隊 + 隊內頻道**（最大，接好友，可邀好友入隊）
     - 臨時隊伍(比工會小、說組就組)：邀請/加入/離開、隊員清單；`/p 訊息` 隊內頻道(`ServerMsg::PartyChat`)；**純記憶體、臨時、零 migration**；名牌可顯示隊伍標記。
