@@ -84,15 +84,28 @@ fn arrival_message(new_display: &str, predecessor_display: &str) -> String {
     )
 }
 
-// ── 繼承人 prompt 注入文字 ──────────────────────────────────────────────────
+// ── 繼承人 prompt 注入文字（ROADMAP 116：傳說記憶漂移）─────────────────────
 /// 新生代 NPC 進入對話時，注入「繼承自前任」的語境。
-/// 現有玩家記憶（npc_memory）由相同 npc_id 沿用——繼承人天然擁有前任的玩家關係資料，
-/// 但視角改為「口述歷史」：記憶模糊、像是從前任的傳說中聽說的。
+/// 第 1 代：記憶尚算清晰；第 2~3 代：開始神話化；第 4 代以上：幾乎是遠古傳說。
 pub fn heir_context_snippet(predecessor_display: &str) -> String {
-    format!(
-        "你剛接任前任「{}」的職位，繼承了她/他留下的記憶片段。你對這些拓荒者略有印象，但細節模糊，像是聽了很久的口述傳說——有些事蹟被誇大，有些漸漸淡忘。你尊重前任，但也正在形成自己的個性與判斷。",
-        predecessor_display
-    )
+    heir_context_with_legend(predecessor_display, 1)
+}
+
+pub fn heir_context_with_legend(predecessor_display: &str, generation: u32) -> String {
+    match generation {
+        1 => format!(
+            "你剛接任前任「{}」的職位，繼承了她/他留下的記憶片段。你對這些拓荒者略有印象，但細節模糊，像是聽了很久的口述傳說——有些事蹟被誇大，有些漸漸淡忘。你尊重前任，但也正在形成自己的個性與判斷。",
+            predecessor_display
+        ),
+        2 | 3 => format!(
+            "長輩說，很早以前有位叫「{}」的前輩奠定了這份職業的根基，留下許多膾炙人口的傳說。你只在故事裡聽說過她/他的事蹟，細節已如霧中花——但那份精神，你感覺自己還繼承了一些。",
+            predecessor_display
+        ),
+        _ => format!(
+            "族中老人偶爾說起，在很久很久以前的某個時代，有位叫「{}」的傳奇人物……那早已是幾代人以前的故事，真假難辨，但名字至今仍被提起，像是這份工作的守護傳說。",
+            predecessor_display
+        ),
+    }
 }
 
 // ── 主結構 ──────────────────────────────────────────────────────────────────
@@ -114,6 +127,8 @@ pub struct NpcLifecycleData {
     pub retirement_announced: bool,
     /// 繼承人語境（新生代剛接任時為 Some；首次對話後清空）。
     pub heir_context: Option<String>,
+    /// 收徒後的徒弟名字（老年期由 game.rs 從居民列表選取並設入）。
+    pub apprentice_name: Option<String>,
 }
 
 impl NpcLifecycleData {
@@ -127,6 +142,7 @@ impl NpcLifecycleData {
             elder_announced: false,
             retirement_announced: false,
             heir_context: None,
+            apprentice_name: None,
         }
     }
 
@@ -149,6 +165,7 @@ impl NpcLifecycleData {
     /// 執行世代交替：重設計時器、更新顯示名。
     fn retire_and_spawn_heir(&mut self, npc_id: &str) -> (String, String) {
         let old_display = self.display_name.clone();
+        let old_generation = self.generation;
         self.generation = self.generation.wrapping_add(1);
         let names = successor_names(npc_id);
         let new_display = names[self.generation as usize % names.len()].to_string();
@@ -157,15 +174,17 @@ impl NpcLifecycleData {
         self.lifespan_secs = lifespan_secs();
         self.elder_announced = false;
         self.retirement_announced = false;
-        self.heir_context = Some(heir_context_snippet(&old_display));
+        self.apprentice_name = None; // 繼承人自起全新，不帶前任徒弟關係
+        // 傳說記憶漂移：世代越深，記憶越像傳說（ROADMAP 116）
+        self.heir_context = Some(heir_context_with_legend(&old_display, old_generation + 1));
         (old_display, new_display)
     }
 }
 
 /// 引擎觸發的生命週期事件，由 game.rs 轉成廣播與 world_log 紀錄。
 pub enum LifecycleEvent {
-    /// NPC 進入老年期（80% 壽命），世界靜靜知曉即可（不廣播，只在 prompt 體現）。
-    ElderPhase { npc_id: String },
+    /// NPC 進入老年期（80% 壽命）。game.rs 應從居民中選徒弟並呼叫 set_apprentice()。
+    ElderPhase { npc_id: String, display: String },
     /// NPC 即將回歸乙太（90% 壽命），廣播告別倒數公告。
     RetirementSoon { npc_id: String, display: String, msg: String },
     /// NPC 正式回歸乙太，繼承人登場。廣播雙則公告 + 記入 world_log。
@@ -206,7 +225,10 @@ impl NpcLifecycle {
 
             if data.should_announce_elder() {
                 data.elder_announced = true;
-                events.push(LifecycleEvent::ElderPhase { npc_id: npc_id.clone() });
+                events.push(LifecycleEvent::ElderPhase {
+                    npc_id: npc_id.clone(),
+                    display: data.display_name.clone(),
+                });
             }
 
             if data.should_announce_retirement() {
@@ -250,12 +272,33 @@ impl NpcLifecycle {
     }
 
     /// 老年期語境字串，空字串表示非老年。
+    /// 若已設定徒弟，額外注入收徒資訊（ROADMAP 116）。
     pub fn elder_context(&self, npc_id: &str) -> String {
-        if self.is_elder(npc_id) {
-            format!("\n\n【生命感悟】{}", elder_prompt_snippet(npc_id))
-        } else {
-            String::new()
+        if !self.is_elder(npc_id) {
+            return String::new();
         }
+        let base = format!("\n\n【生命感悟】{}", elder_prompt_snippet(npc_id));
+        let apprentice_part = self.npcs
+            .get(npc_id)
+            .and_then(|d| d.apprentice_name.as_deref())
+            .map(|name| format!("\n你已收 {} 為徒弟，正在將多年心得傾囊相授，盼其日後繼承你的職責。", name))
+            .unwrap_or_default();
+        base + &apprentice_part
+    }
+
+    /// 設定 AI NPC 的徒弟名字（老年期由 game.rs 從居民列表選取後呼叫）。
+    pub fn set_apprentice(&mut self, npc_id: &str, apprentice: String) {
+        if let Some(data) = self.npcs.get_mut(npc_id) {
+            data.apprentice_name = Some(apprentice);
+        }
+    }
+
+    /// 此 NPC 是否已收徒（避免重複廣播）。
+    pub fn has_apprentice(&self, npc_id: &str) -> bool {
+        self.npcs
+            .get(npc_id)
+            .and_then(|d| d.apprentice_name.as_ref())
+            .is_some()
     }
 
     /// 繼承人語境（新生代剛登場時）；呼叫後清空，避免每次對話都重複注入。
@@ -279,6 +322,7 @@ mod tests {
             elder_announced: false,
             retirement_announced: false,
             heir_context: None,
+            apprentice_name: None,
         }
     }
 
@@ -354,8 +398,49 @@ mod tests {
 
         // tick 2 秒跨過老年閾值
         let events = lc.tick(2.0);
-        let has_elder = events.iter().any(|e| matches!(e, LifecycleEvent::ElderPhase { npc_id } if npc_id == "merchant"));
+        let has_elder = events.iter().any(|e| matches!(e, LifecycleEvent::ElderPhase { npc_id, .. } if npc_id == "merchant"));
         assert!(has_elder, "應觸發 merchant 老年事件");
+    }
+
+    #[test]
+    fn set_apprentice_shows_in_elder_context() {
+        let mut lc = NpcLifecycle::new();
+        // 強制進入老年
+        let merchant = lc.npcs.get_mut("merchant").unwrap();
+        merchant.lifespan_secs = 100.0;
+        merchant.age_secs = 85.0;
+        merchant.elder_announced = true;
+        // 設定徒弟
+        lc.set_apprentice("merchant", "阿花".to_string());
+        assert!(lc.has_apprentice("merchant"), "should have apprentice");
+        let ctx = lc.elder_context("merchant");
+        assert!(ctx.contains("阿花"), "老年語境應包含徒弟名字");
+    }
+
+    #[test]
+    fn apprentice_cleared_on_retirement() {
+        let mut lc = NpcLifecycle::new();
+        let merchant = lc.npcs.get_mut("merchant").unwrap();
+        merchant.lifespan_secs = 100.0;
+        merchant.age_secs = 100.0;
+        merchant.apprentice_name = Some("阿花".to_string());
+        // 執行退休
+        let _events = lc.tick(0.1);
+        // 繼承人不應繼承徒弟名字
+        assert!(!lc.has_apprentice("merchant"), "退休後徒弟資料應清除");
+    }
+
+    #[test]
+    fn heir_context_becomes_legend_over_generations() {
+        // 第 1 代：直接繼承，提到「剛接任」
+        let ctx1 = heir_context_with_legend("薇拉", 1);
+        assert!(ctx1.contains("剛接任") || ctx1.contains("記憶片段"), "第 1 代語境應是直接繼承");
+        // 第 2 代以上：傳說化，提到「長輩說」或「傳奇」
+        let ctx2 = heir_context_with_legend("薇拉", 2);
+        assert!(ctx2.contains("長輩說") || ctx2.contains("傳說"), "第 2 代語境應偏向傳說");
+        // 第 4 代：更神話，提到「很久很久以前」
+        let ctx4 = heir_context_with_legend("薇拉", 4);
+        assert!(ctx4.contains("很久很久以前") || ctx4.contains("遠古"), "第 4 代語境應為神話");
     }
 
     #[test]

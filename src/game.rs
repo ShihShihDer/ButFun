@@ -673,7 +673,7 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 路人居民推進（ROADMAP 115）：每幀推進走動；每 POPULATION_CHECK_SECS 依繁榮感增減人口。
+            // 路人居民推進（ROADMAP 115+116）：移動 + 生命週期 + 人口增減；廣播生命事件。
             {
                 let avg_prosperity = {
                     let needs = app.npc_needs.read().unwrap();
@@ -683,7 +683,28 @@ pub fn spawn(app: AppState) {
                         .sum();
                     total / VILLAGE_NPCS.len().max(1) as i32
                 };
-                app.residents.write().unwrap().tick(dt, avg_prosperity);
+                let resident_events = app.residents.write().unwrap().tick(dt, avg_prosperity);
+                for ev in resident_events {
+                    use crate::resident_npc::ResidentLifecycleEvent;
+                    match ev {
+                        ResidentLifecycleEvent::RetirementSoon { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
+                        ResidentLifecycleEvent::RetiredToEther { old_name, new_name, farewell_msg, arrival_msg } => {
+                            let _ = app.tx_chat.send(farewell_msg);
+                            let _ = app.tx_chat.send(arrival_msg);
+                            app.world_log.write().unwrap().push(
+                                format!("居民 {} 回歸乙太，{} 遷入接替。", old_name, new_name)
+                            );
+                        }
+                        ResidentLifecycleEvent::NewArrival { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
+                        ResidentLifecycleEvent::Departed { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
             }
 
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
@@ -1068,8 +1089,21 @@ pub fn spawn(app: AppState) {
                 for event in events {
                     use crate::npc_lifecycle::LifecycleEvent;
                     match event {
-                        LifecycleEvent::ElderPhase { .. } => {
-                            // 老年期靜靜體現在 prompt 中，不廣播（避免每次 tick 一直刷頻道）。
+                        LifecycleEvent::ElderPhase { npc_id, display } => {
+                            // 老年期：從居民中選最年長者為徒弟，廣播收徒公告（ROADMAP 116）。
+                            let already_has = app.npc_lifecycle.read().unwrap().has_apprentice(&npc_id);
+                            if !already_has {
+                                let apprentice = app.residents.read().unwrap().oldest_resident_name()
+                                    .map(|s| s.to_string());
+                                if let Some(name) = apprentice {
+                                    app.npc_lifecycle.write().unwrap().set_apprentice(&npc_id, name.clone());
+                                    let msg = format!(
+                                        "🔮 {} 感到乙太的呼喚，決定收 {} 為徒，開始傾囊傳授畢生所學。",
+                                        display, name
+                                    );
+                                    let _ = app.tx_chat.send(msg);
+                                }
+                            }
                         }
                         LifecycleEvent::RetirementSoon { display: _, msg, .. } => {
                             let _ = app.tx_chat.send(msg);

@@ -1,4 +1,4 @@
-//! 路人 / 居民 NPC 系統（ROADMAP 115）。
+//! 路人 / 居民 NPC 系統（ROADMAP 115 + 116）。
 //!
 //! 城鎮隨繁榮度自然成長一批「廉價」路人——純模板驅動，不呼叫 LLM。
 //! 每位居民在城鎮範圍內緩慢閒晃，讓世界看起來有人氣。
@@ -7,14 +7,61 @@
 //! - 少數深度 AI NPC（merchant / village_chief 等）→ 呼叫 LLM，有個性、記憶、生命週期。
 //! - 多數路人居民（本模組）→ 模板行為，零 LLM 費用，只負責讓世界「看起來熱鬧」。
 //!
-//! 人口增長規則（湧現，非寫死）：
-//! - 每 POPULATION_CHECK_SECS 秒檢查一次「全村平均繁榮感」。
-//! - 繁榮感 > GROW_THRESHOLD → 新增一個居民（不超過 MAX_POPULATION）。
-//! - 繁榮感 < SHRINK_THRESHOLD → 移除最後一個居民（不低於 MIN_POPULATION）。
+//! 人口規則（湧現，非寫死）：
+//! - 每位居民有自己的壽命計時器（ROADMAP 116）：
+//!   90% 壽命 → 廣播告別倒數；100% → 回歸乙太，新居民遷入替補。
+//! - 每 POPULATION_CHECK_SECS 秒依「全村平均繁榮感」增減人口：
+//!   > GROW_THRESHOLD → 新移民遷入（含廣播）；< SHRINK_THRESHOLD → 靜靜離去（含廣播）。
 //!
 //! 完全記憶體模式，重啟清零，零 migration。
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
+
+// ── 居民生命週期常數（ROADMAP 116）──────────────────────────────────────────
+/// 居民壽命預設（秒，真實時間）。約 45 分鐘；可用 BUTFUN_RESIDENT_LIFESPAN_SECS 覆寫。
+pub const RESIDENT_LIFESPAN_SECS_DEFAULT: f32 = 2700.0;
+const RESIDENT_RETIREMENT_FRACTION: f32 = 0.90;
+
+pub fn resident_lifespan_secs() -> f32 {
+    std::env::var("BUTFUN_RESIDENT_LIFESPAN_SECS")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(RESIDENT_LIFESPAN_SECS_DEFAULT)
+}
+
+// ── 生命週期公告文字 ──────────────────────────────────────────────────────────
+fn retirement_msg(name: &str) -> String {
+    format!("🕯️ {} 感到乙太的呼喚，即將離開這片土地……", name)
+}
+
+fn farewell_msg(name: &str) -> String {
+    format!("✨ {} 在乙太之光中安詳告別，感謝大家這段時間的陪伴。", name)
+}
+
+fn arrival_from_predecessor_msg(new_name: &str, old_name: &str) -> String {
+    format!("🌱 {} 帶著對 {} 的思念遷入村落，展開全新生活。", new_name, old_name)
+}
+
+fn new_arrival_msg(name: &str) -> String {
+    format!("🌱 {} 從遠方遷入，為村落帶來新氣象。", name)
+}
+
+fn departed_msg(name: &str) -> String {
+    format!("🍂 {} 決定離開村落，踏上新的旅途。祝一路平安。", name)
+}
+
+// ── 生命週期事件（ROADMAP 116）───────────────────────────────────────────────
+/// 居民生命週期事件，由 game.rs 廣播至世界聊天。
+pub enum ResidentLifecycleEvent {
+    /// 居民即將回歸乙太（90% 壽命），廣播告別公告。
+    RetirementSoon { name: &'static str, msg: String },
+    /// 居民完成生命週期，新居民遷入替補。
+    RetiredToEther { old_name: &'static str, new_name: &'static str, farewell_msg: String, arrival_msg: String },
+    /// 繁榮帶來新移民遷入（不是替補，是真的人口增加）。
+    NewArrival { name: &'static str, msg: String },
+    /// 凋零造成人口外移（靜靜離去）。
+    Departed { name: &'static str, msg: String },
+}
 
 /// 故鄉城鎮閒晃邊界（像素）。
 const WANDER_X_MIN: f32 = 1900.0;
@@ -109,6 +156,13 @@ pub struct ResidentNpc {
     target_y: f32,
     /// 到達目標後的等待秒數。> 0 = 在等、 <= 0 = 可選下個目標。
     wait_timer: f32,
+    // ── 生命週期（ROADMAP 116）──────────────────────────
+    /// 已活的秒數（真實時間）。
+    pub age_secs: f32,
+    /// 這一生的壽命（秒）。
+    pub lifespan_secs: f32,
+    /// 退休公告是否已發送（防重複廣播）。
+    retirement_announced: bool,
 }
 
 impl ResidentNpc {
@@ -130,7 +184,21 @@ impl ResidentNpc {
             target_x: tx,
             target_y: ty,
             wait_timer: rng.gen_range(0.0..WAIT_SECS_MAX),
+            age_secs: 0.0,
+            lifespan_secs: resident_lifespan_secs(),
+            retirement_announced: false,
         }
+    }
+
+    /// 壽命是否到了（應回歸乙太）。
+    fn should_retire(&self) -> bool {
+        self.age_secs >= self.lifespan_secs
+    }
+
+    /// 退休公告是否應發送（90% 壽命 且尚未發送）。
+    fn should_announce_retirement(&self) -> bool {
+        !self.retirement_announced
+            && self.age_secs >= self.lifespan_secs * RESIDENT_RETIREMENT_FRACTION
     }
 
     /// 每幀推進：移動 + 等待計時。
@@ -182,27 +250,77 @@ impl ResidentManager {
         }
     }
 
-    /// 每幀推進：移動所有居民 + 人口增減。
-    /// `avg_prosperity`: 所有深度 AI NPC 的繁榮感平均值（0~100）。
-    pub fn tick(&mut self, dt: f32, avg_prosperity: i32) {
-        // 移動居民
+    /// 每幀推進：移動所有居民 + 生命週期 + 人口增減。
+    /// 回傳本幀發生的生命週期事件，供 game.rs 廣播至世界聊天。
+    pub fn tick(&mut self, dt: f32, avg_prosperity: i32) -> Vec<ResidentLifecycleEvent> {
+        let mut events = Vec::new();
+
+        // 1. 推進每位居民的年齡與移動
         for r in &mut self.residents {
+            r.age_secs += dt;
             r.tick(dt, &mut self.rng);
         }
-        // 人口檢查
-        self.population_timer -= dt;
-        if self.population_timer > 0.0 {
-            return;
+
+        // 2. 退休公告（90% 壽命，防重複）
+        for r in &mut self.residents {
+            if r.should_announce_retirement() {
+                r.retirement_announced = true;
+                events.push(ResidentLifecycleEvent::RetirementSoon {
+                    name: r.name,
+                    msg: retirement_msg(r.name),
+                });
+            }
         }
-        self.population_timer = POPULATION_CHECK_SECS;
-        if avg_prosperity >= GROW_THRESHOLD && self.residents.len() < MAX_POPULATION {
-            let idx = self.next_index;
+
+        // 3. 壽命到期：回歸乙太 + 新居民遷入替補（每幀最多處理一位，防同時大量廣播）
+        if let Some(pos) = self.residents.iter().position(|r| r.should_retire()) {
+            let old = self.residents.remove(pos);
+            let new_idx = self.next_index;
             self.next_index += 1;
-            let r = ResidentNpc::new(idx, &mut self.rng);
-            self.residents.push(r);
-        } else if avg_prosperity < SHRINK_THRESHOLD && self.residents.len() > MIN_POPULATION {
-            self.residents.pop();
+            let new_r = ResidentNpc::new(new_idx, &mut self.rng);
+            let farewell = farewell_msg(old.name);
+            let arrival = arrival_from_predecessor_msg(new_r.name, old.name);
+            events.push(ResidentLifecycleEvent::RetiredToEther {
+                old_name: old.name,
+                new_name: new_r.name,
+                farewell_msg: farewell,
+                arrival_msg: arrival,
+            });
+            self.residents.push(new_r);
         }
+
+        // 4. 繁榮感驅動的人口增減（每 POPULATION_CHECK_SECS 秒一次）
+        self.population_timer -= dt;
+        if self.population_timer <= 0.0 {
+            self.population_timer = POPULATION_CHECK_SECS;
+            if avg_prosperity >= GROW_THRESHOLD && self.residents.len() < MAX_POPULATION {
+                let idx = self.next_index;
+                self.next_index += 1;
+                let r = ResidentNpc::new(idx, &mut self.rng);
+                events.push(ResidentLifecycleEvent::NewArrival {
+                    name: r.name,
+                    msg: new_arrival_msg(r.name),
+                });
+                self.residents.push(r);
+            } else if avg_prosperity < SHRINK_THRESHOLD && self.residents.len() > MIN_POPULATION {
+                if let Some(r) = self.residents.pop() {
+                    events.push(ResidentLifecycleEvent::Departed {
+                        name: r.name,
+                        msg: departed_msg(r.name),
+                    });
+                }
+            }
+        }
+
+        events
+    }
+
+    /// 回傳目前最年長居民的名字（供 AI NPC 收徒時點名使用）。
+    pub fn oldest_resident_name(&self) -> Option<&'static str> {
+        self.residents
+            .iter()
+            .max_by(|a, b| a.age_secs.partial_cmp(&b.age_secs).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|r| r.name)
     }
 
     /// 回傳所有居民的 (id, name, x, y)，供快照組裝用。
@@ -234,8 +352,12 @@ mod tests {
         let initial = mgr.population();
         // 直接觸發人口檢查（把計時器歸零）
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1);
+        let events = mgr.tick(0.01, GROW_THRESHOLD + 1);
         assert_eq!(mgr.population(), (initial + 1).min(MAX_POPULATION));
+        // 繁榮帶來移民事件
+        if initial < MAX_POPULATION {
+            assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::NewArrival { .. })));
+        }
     }
 
     #[test]
@@ -248,8 +370,11 @@ mod tests {
         mgr.tick(0.01, GROW_THRESHOLD + 1);
         let before = mgr.population();
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, SHRINK_THRESHOLD - 1);
+        let events = mgr.tick(0.01, SHRINK_THRESHOLD - 1);
         assert_eq!(mgr.population(), (before - 1).max(MIN_POPULATION));
+        if before > MIN_POPULATION {
+            assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::Departed { .. })));
+        }
     }
 
     #[test]
@@ -287,5 +412,52 @@ mod tests {
             assert!(r.y >= WANDER_Y_MIN - 1.0 && r.y <= WANDER_Y_MAX + 1.0,
                 "y out of bounds: {}", r.y);
         }
+    }
+
+    #[test]
+    fn retirement_announced_at_correct_fraction() {
+        let mut mgr = ResidentManager::new();
+        // 把第一位居民設到退休門檻前一步
+        mgr.residents[0].lifespan_secs = 100.0;
+        mgr.residents[0].age_secs = 88.0; // 89% < 90%
+        // tick 一下，不應觸發
+        let ev = mgr.tick(0.5, 50);
+        assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
+        // 再 tick 過 90%
+        let ev2 = mgr.tick(2.0, 50);
+        assert!(ev2.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
+        // 已標記，再 tick 不重複
+        let ev3 = mgr.tick(0.5, 50);
+        assert!(!ev3.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
+    }
+
+    #[test]
+    fn retired_to_ether_replaces_resident() {
+        let mut mgr = ResidentManager::new();
+        let before = mgr.population();
+        let old_name = {
+            mgr.residents[0].lifespan_secs = 100.0;
+            mgr.residents[0].age_secs = 100.0; // 壽命到期
+            mgr.residents[0].name
+        };
+        let ev = mgr.tick(0.01, 50);
+        // 人口不變（退休 + 新居民）
+        assert_eq!(mgr.population(), before);
+        // 事件應存在
+        let retired = ev.iter().find(|e| matches!(e, ResidentLifecycleEvent::RetiredToEther { .. }));
+        assert!(retired.is_some());
+        if let Some(ResidentLifecycleEvent::RetiredToEther { old_name: on, new_name: nn, .. }) = retired {
+            assert_eq!(*on, old_name);
+            assert_ne!(*nn, old_name, "新居民應使用不同名字");
+        }
+    }
+
+    #[test]
+    fn oldest_resident_name_returns_most_aged() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].age_secs = 999.0;
+        mgr.residents[1].age_secs = 1.0;
+        let oldest = mgr.oldest_resident_name().unwrap();
+        assert_eq!(oldest, mgr.residents[0].name);
     }
 }
