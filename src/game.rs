@@ -754,6 +754,14 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 天氣系統（ROADMAP 93）：推進天氣計時器，切換時廣播聊天公告。
+            {
+                let switched = app.weather.write().unwrap().advance(dt);
+                if let Some(new_type) = switched {
+                    let _ = app.tx_chat.send(new_type.announce_text().to_string());
+                }
+            }
+
             // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
             {
                 let online_count = app.players.read().unwrap().len();
@@ -1152,6 +1160,7 @@ pub fn spawn(app: AppState) {
                                 .unwrap_or(0)
                         },
                         village_treasury: *app.village_treasury.read().unwrap(),
+                        weather: app.weather.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

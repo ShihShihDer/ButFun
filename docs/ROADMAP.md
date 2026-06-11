@@ -787,6 +787,14 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 前端：`handleServerMsg` 加 `npc_speech` case 存入 `npcSpeechBubbles Map`；新增 `drawNpcSpeechBubbles(camX, camY)` 函式，每幀在說話者頭頂畫圓角白底泡泡 + 小尾巴，文字自動換行、長度上限 160px，螢幕外 NPC 不畫，8 秒後漸隱淡出。
     - 玩家感知：走到薇拉和老胡旁邊，看到他們頭頂真的在對話，而不只是聊天框的一行字。
 
+## 接著（天氣特效 — AI 自主提案 2026-06-11）
+
+93. ✅ **天氣粒子特效——生態域天氣讓世界真的動起來**（本輪）
+    - 後端：新增 `src/weather.rs`，`WeatherType` 五種天氣（Clear / GrasslandRain / DesertSandstorm / RockyCrystalDust / WaterSeaMist）；`WeatherState` 每 8 分鐘輪換、廣播聊天公告；採集加成：對應生態域採集時 +1 個物品。
+    - 協議：`WeatherView { weather_type: String, intensity: f32 }` 加入 `Snapshot`。
+    - 前端：Canvas 2D 粒子系統——雨滴（草原/森林）、沙塵（沙漠）、晶塵（岩地）、海霧氣泡（水域）；粒子池 80 個、低 FPS 自動降級；`reduceMotion` 完全關閉。
+    - 玩家感知：走進森林看到細雨飄落；走進沙漠看到沙塵捲起；岩地有晶塵漂浮；水域有霧氣泡；天氣改變時聊天頻道公告。世界有了氣候，生態域不再一成不變。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。

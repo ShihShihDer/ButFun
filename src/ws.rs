@@ -312,7 +312,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -358,6 +358,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         village_buff_remaining_secs: *village_buff_remaining_secs,
                                         // 村庫餘額全服廣播（里長面板需要）。
                                         village_treasury: *village_treasury,
+                                        // 天氣狀態全服廣播（ROADMAP 93）。
+                                        weather: weather.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -526,6 +528,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let gathered = player_pos
                         .and_then(|(px, py)| app.nodes.write().unwrap().gather_near(px, py));
                     if let Some((kind, amount)) = gathered {
+                        // 天氣採集加成（ROADMAP 93）：對應生態域的天氣條件下採集 +1。
+                        let weather_bonus: u32 = {
+                            let biome_str = player_pos.map(|(px, py)| {
+                                match world_core::biome_at(px as f64, py as f64) {
+                                    world_core::Biome::Meadow => "meadow",
+                                    world_core::Biome::Forest => "forest",
+                                    world_core::Biome::Rocky => "rocky",
+                                    world_core::Biome::Sand => "sand",
+                                    world_core::Biome::Water => "water",
+                                }
+                            }).unwrap_or("");
+                            if app.weather.read().unwrap().is_gather_bonus_biome(biome_str) { 1 } else { 0 }
+                        };
                         let mut gather_level_up: Option<(String, u32)> = None;
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let item: crate::inventory::ItemKind = kind.into();
@@ -539,7 +554,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             } else { 0 };
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
-                            let added = p.inventory.add(item, amount * mult + bounty_bonus + pet_gather);
+                            let added = p.inventory.add(item, amount * mult + bounty_bonus + pet_gather + weather_bonus);
                             // 採集得 exp（鼓勵探索）；村落節慶加成期間 +30%（ROADMAP 64）。
                             let village_gather_pct = {
                                 let lock = app.village_buff_until.read().unwrap();
