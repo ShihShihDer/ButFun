@@ -70,6 +70,7 @@ mod npc_relations;
 mod village_chief;
 mod traveler_npc;
 mod boss_roar;
+mod plaza_talk;
 mod world_log;
 mod player_log;
 

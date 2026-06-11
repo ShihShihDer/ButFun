@@ -623,6 +623,32 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let talk_pair = if online_count > 0 {
+                    app.plaza_talk.write().unwrap().tick(dt, is_night)
+                } else {
+                    None
+                };
+                if let Some(pair) = talk_pair {
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.plaza_talk_sem.clone();
+                    let speaker_id = pair.speaker_id;
+                    let listener_id = pair.listener_id;
+                    tokio::spawn(async move {
+                        // 非阻塞嘗試取得 Semaphore；若已有夜談進行中則直接略過。
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let text = crate::plaza_talk::generate_talk(speaker_id, listener_id).await;
+                        let s_name = crate::plaza_talk::display_name(speaker_id);
+                        let l_name = crate::plaza_talk::display_name(listener_id);
+                        let _ = tx_chat.send(format!(
+                            "🌙 [{s_name}] 對 [{l_name}] 說：「{text}」"
+                        ));
+                    });
+                }
+            }
+
             // NPC 餘裕回補（ROADMAP 62）：每 RESTOCK_INTERVAL_SECS 秒對所有 NPC 補 +1 庫存（至上限）。
             // 讓送完餘裕的 NPC 隨時間恢復，維持「稀缺但不永久缺貨」的體感。
             {

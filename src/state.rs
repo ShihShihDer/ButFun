@@ -755,6 +755,10 @@ pub struct AppState {
     pub boss_roar: Arc<RwLock<crate::boss_roar::BossRoarState>>,
     /// 怪物王咆哮專屬 Semaphore（容量 1）：同時最多一個 AI 咆哮呼叫，不佔用 NPC LLM 配額。
     pub boss_roar_sem: Arc<Semaphore>,
+    /// 廣場夜談狀態（ROADMAP 76）：夜間 NPC 閒聊冷卻，純記憶體模式，重啟清零。
+    pub plaza_talk: Arc<RwLock<crate::plaza_talk::PlazaTalkState>>,
+    /// 廣場夜談專屬 Semaphore（容量 1）：同時最多一個 AI 閒聊呼叫，不佔用 NPC LLM 配額。
+    pub plaza_talk_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -865,6 +869,8 @@ impl AppState {
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             boss_roar: Arc::new(RwLock::new(crate::boss_roar::BossRoarState::new())),
             boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
+            plaza_talk: Arc::new(RwLock::new(crate::plaza_talk::PlazaTalkState::new())),
+            plaza_talk_sem: Arc::new(Semaphore::new(crate::plaza_talk::MAX_CONCURRENT_TALKS)),
         }
     }
 
