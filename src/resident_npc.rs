@@ -87,6 +87,11 @@ pub enum ResidentLifecycleEvent {
     PhaseTransition { phase: Phase, msg: &'static str },
     /// 居民工作動態廣播（ROADMAP 120）：居民在工作時段定期廣播活動。
     WorkActivity { text: String },
+    /// 兩位居民相遇打招呼（ROADMAP 121）：停下互道一聲，廣播雙方 NpcSpeech。
+    NeighborChat {
+        id_a: String, name_a: &'static str, text_a: String, x_a: f32, y_a: f32,
+        id_b: String, name_b: &'static str, text_b: String, x_b: f32, y_b: f32,
+    },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -118,6 +123,14 @@ pub const RESIDENT_REACH: f32 = 80.0;
 pub const WORK_TIMER_MIN: f32 = 600.0;
 /// 工作動態廣播最長間隔（秒）= 20 分鐘。
 pub const WORK_TIMER_MAX: f32 = 1200.0;
+
+// ── 鄰里互動常數（ROADMAP 121）────────────────────────────────────────────────
+/// 相遇觸發距離（像素）：兩位居民距離 ≤ 此值才能觸發打招呼。
+pub const MEET_DIST: f32 = 60.0;
+/// 互動期間停止移動的秒數。
+pub const CHAT_DURATION: f32 = 8.0;
+/// 每位居民每次互動後的冷卻時間（秒）= 3 分鐘。
+pub const CHAT_COOLDOWN: f32 = 180.0;
 
 /// 人口下限：世界最冷清時至少這麼多人。
 pub const MIN_POPULATION: usize = 2;
@@ -228,6 +241,11 @@ pub struct ResidentNpc {
     work_timer: f32,
     /// 工作廣播計數（供模板種子輪替）。
     work_broadcast_count: usize,
+    // ── 鄰里互動（ROADMAP 121）──────────────────────────
+    /// 正在與鄰居打招呼的剩餘秒數（> 0 = 停止移動）。
+    pub chat_remaining: f32,
+    /// 上次互動結束後的冷卻秒數（> 0 = 不可再觸發）。
+    pub chat_cooldown: f32,
 }
 
 impl ResidentNpc {
@@ -260,6 +278,8 @@ impl ResidentNpc {
             current_phase: None,
             work_timer: WORK_TIMER_MIN + work_offset,
             work_broadcast_count: index,
+            chat_remaining: 0.0,
+            chat_cooldown: 0.0,
         }
     }
 
@@ -276,6 +296,15 @@ impl ResidentNpc {
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
     fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase) {
+        // 鄰里互動冷卻計時（ROADMAP 121）
+        if self.chat_cooldown > 0.0 {
+            self.chat_cooldown -= dt;
+        }
+        // 正在打招呼：停止移動，等計時結束
+        if self.chat_remaining > 0.0 {
+            self.chat_remaining -= dt;
+            return;
+        }
         // 時段切換：馬上給新目標、清除等待，居民立刻朝新區域走
         if self.current_phase != Some(phase) {
             self.current_phase = Some(phase);
@@ -380,7 +409,11 @@ impl ResidentManager {
             }
         }
 
-        // 2. 退休公告（90% 壽命，防重複）
+        // 2. 鄰里互動檢查（ROADMAP 121）：兩位居民靠近時互相打招呼。
+        let neighbor_events = self.check_neighbor_interactions();
+        events.extend(neighbor_events);
+
+        // 4. 退休公告（90% 壽命，防重複）
         for r in &mut self.residents {
             if r.should_announce_retirement() {
                 r.retirement_announced = true;
@@ -408,7 +441,7 @@ impl ResidentManager {
             self.residents.push(new_r);
         }
 
-        // 4. 繁榮感驅動的人口增減（每 POPULATION_CHECK_SECS 秒一次）
+        // 5. 繁榮感驅動的人口增減（每 POPULATION_CHECK_SECS 秒一次）
         self.population_timer -= dt;
         if self.population_timer <= 0.0 {
             self.population_timer = POPULATION_CHECK_SECS;
@@ -447,6 +480,55 @@ impl ResidentManager {
         self.residents.iter()
             .find(|r| r.id == resident_id)
             .map(|r| (r.persona, r.name, r.x, r.y))
+    }
+
+    /// 掃描所有居民配對，對靠近且無冷卻的兩人觸發相遇打招呼（ROADMAP 121）。
+    /// 每次最多觸發 2 組，避免瞬間大量廣播。
+    fn check_neighbor_interactions(&mut self) -> Vec<ResidentLifecycleEvent> {
+        let mut result = Vec::new();
+        let n = self.residents.len();
+        'outer: for i in 0..n {
+            for j in (i + 1)..n {
+                if self.residents[i].chat_remaining > 0.0
+                    || self.residents[j].chat_remaining > 0.0
+                    || self.residents[i].chat_cooldown > 0.0
+                    || self.residents[j].chat_cooldown > 0.0
+                {
+                    continue;
+                }
+                let dx = self.residents[i].x - self.residents[j].x;
+                let dy = self.residents[i].y - self.residents[j].y;
+                if dx * dx + dy * dy > MEET_DIST * MEET_DIST {
+                    continue;
+                }
+                // 提取所需資料（避免 borrow 衝突）
+                let name_a = self.residents[i].name;
+                let name_b = self.residents[j].name;
+                let id_a   = self.residents[i].id.clone();
+                let id_b   = self.residents[j].id.clone();
+                let x_a    = self.residents[i].x;
+                let y_a    = self.residents[i].y;
+                let x_b    = self.residents[j].x;
+                let y_b    = self.residents[j].y;
+                let seed_a = self.residents[i].thought_count;
+                let seed_b = self.residents[j].thought_count;
+                let text_a = crate::resident_chat::get_neighbor_greet(name_b, seed_a);
+                let text_b = crate::resident_chat::get_neighbor_reply(seed_b).to_string();
+                // 設定互動狀態
+                self.residents[i].chat_remaining = CHAT_DURATION;
+                self.residents[i].chat_cooldown  = CHAT_COOLDOWN;
+                self.residents[i].thought_count += 1;
+                self.residents[j].chat_remaining = CHAT_DURATION;
+                self.residents[j].chat_cooldown  = CHAT_COOLDOWN;
+                self.residents[j].thought_count += 1;
+                result.push(ResidentLifecycleEvent::NeighborChat {
+                    id_a, name_a, text_a, x_a, y_a,
+                    id_b, name_b, text_b, x_b, y_b,
+                });
+                if result.len() >= 2 { break 'outer; }
+            }
+        }
+        result
     }
 
     /// 回傳所有居民的 (id, name, x, y)，供快照組裝用。
@@ -711,5 +793,142 @@ mod tests {
             mgr.residents[0].work_timer >= WORK_TIMER_MIN,
             "觸發後 work_timer 應重置到最小間隔以上"
         );
+    }
+
+    // ── ROADMAP 121：鄰里互動測試 ─────────────────────────────────────────────
+
+    /// 兩人靠近且無冷卻 → 應觸發 NeighborChat 事件。
+    #[test]
+    fn neighbor_chat_triggers_when_close() {
+        let mut mgr = ResidentManager::new();
+        // 確保有至少兩位居民
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        // 把兩人放在一起
+        mgr.residents[0].x = 2400.0;
+        mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_remaining = 0.0;
+        mgr.residents[0].chat_cooldown  = 0.0;
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 0.5; // 距離 < MEET_DIST
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_remaining = 0.0;
+        mgr.residents[1].chat_cooldown  = 0.0;
+        let events = mgr.check_neighbor_interactions();
+        assert!(
+            events.iter().any(|e| matches!(e, ResidentLifecycleEvent::NeighborChat { .. })),
+            "靠近且無冷卻應觸發 NeighborChat"
+        );
+    }
+
+    /// 兩人距離 > MEET_DIST → 不應觸發。
+    #[test]
+    fn neighbor_chat_does_not_trigger_when_far() {
+        let mut mgr = ResidentManager::new();
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        mgr.residents[0].x = 2400.0;
+        mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_cooldown = 0.0;
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 2.0; // 超過觸發距離
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_cooldown = 0.0;
+        let events = mgr.check_neighbor_interactions();
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::NeighborChat { .. })),
+            "距離過遠不應觸發 NeighborChat"
+        );
+    }
+
+    /// 任一方有冷卻 → 不應觸發。
+    #[test]
+    fn neighbor_chat_does_not_trigger_on_cooldown() {
+        let mut mgr = ResidentManager::new();
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_cooldown = CHAT_COOLDOWN; // 有冷卻
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 0.5;
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_cooldown = 0.0;
+        let events = mgr.check_neighbor_interactions();
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::NeighborChat { .. })),
+            "有冷卻的居民不應觸發互動"
+        );
+    }
+
+    /// 觸發後居民停止移動（chat_remaining = CHAT_DURATION）。
+    #[test]
+    fn neighbor_chat_sets_chat_remaining() {
+        let mut mgr = ResidentManager::new();
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 0.5;
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_cooldown = 0.0; mgr.residents[1].chat_remaining = 0.0;
+        mgr.check_neighbor_interactions();
+        assert!(
+            mgr.residents[0].chat_remaining > 0.0,
+            "觸發後 chat_remaining 應 > 0（停止移動）"
+        );
+        assert!(
+            mgr.residents[1].chat_remaining > 0.0,
+            "另一居民 chat_remaining 也應 > 0"
+        );
+    }
+
+    /// 觸發後冷卻應設為 CHAT_COOLDOWN。
+    #[test]
+    fn neighbor_chat_sets_cooldown() {
+        let mut mgr = ResidentManager::new();
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 0.5;
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_cooldown = 0.0; mgr.residents[1].chat_remaining = 0.0;
+        mgr.check_neighbor_interactions();
+        assert!(
+            (mgr.residents[0].chat_cooldown - CHAT_COOLDOWN).abs() < 0.1,
+            "觸發後 chat_cooldown 應等於 CHAT_COOLDOWN"
+        );
+    }
+
+    /// 觸發事件的 name_a/name_b 應與居民真實名字一致。
+    #[test]
+    fn neighbor_chat_event_has_correct_names() {
+        let mut mgr = ResidentManager::new();
+        while mgr.residents.len() < 2 {
+            mgr.population_timer = 0.0;
+            mgr.tick(0.01, 100, Phase::Day);
+        }
+        let expected_a = mgr.residents[0].name;
+        let expected_b = mgr.residents[1].name;
+        mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
+        mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
+        mgr.residents[1].x = 2400.0 + MEET_DIST * 0.5;
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_cooldown = 0.0; mgr.residents[1].chat_remaining = 0.0;
+        let events = mgr.check_neighbor_interactions();
+        if let Some(ResidentLifecycleEvent::NeighborChat { name_a, name_b, text_a, .. }) = events.first() {
+            assert_eq!(*name_a, expected_a, "event name_a 應與居民實際名字一致");
+            assert_eq!(*name_b, expected_b, "event name_b 應與居民實際名字一致");
+            assert!(text_a.contains(expected_b), "主動招呼文字應包含對方名字 {expected_b}");
+        } else {
+            panic!("應有 NeighborChat 事件");
+        }
     }
 }

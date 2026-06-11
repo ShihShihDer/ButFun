@@ -213,6 +213,38 @@ static WANDER_CHAT: &[&str] = &[
     "今天天氣不錯，適合到處晃晃。",
 ];
 
+// ── 鄰里打招呼模板（ROADMAP 121）──────────────────────────────────────────────
+
+/// 主動打招呼（帶對方名字）
+static GREET_TEMPLATES: &[&str] = &[
+    "嘿，{other}！",
+    "{other}，你好啊！",
+    "哎，{other}，巧了！",
+    "{other}，最近怎麼樣？",
+    "{other}，這麼巧，碰上了！",
+];
+
+/// 對方回應
+static REPLY_TEMPLATES: &[&str] = &[
+    "嗯，還好！",
+    "哈，真巧！",
+    "還行啊，你呢？",
+    "忙著呢，改天再聊！",
+    "好啊好啊！",
+];
+
+/// 取得居民向鄰居主動招呼的文字（帶對方名字）。
+///
+/// `other_name` 為對方居民顯示名；`seed` 供模板輪替。
+pub fn get_neighbor_greet(other_name: &str, seed: usize) -> String {
+    GREET_TEMPLATES[seed % GREET_TEMPLATES.len()].replace("{other}", other_name)
+}
+
+/// 取得居民對招呼的回應文字。
+pub fn get_neighbor_reply(seed: usize) -> &'static str {
+    REPLY_TEMPLATES[seed % REPLY_TEMPLATES.len()]
+}
+
 /// 取得居民的思想泡泡文字。
 ///
 /// `seed` 用居民 index 加上思想計數取模，確保每次展示略有不同。
@@ -391,5 +423,24 @@ mod tests {
     fn work_action_seed_wraps_without_panic() {
         let r = get_work_action(ResidentPersona::FarmWorker, Phase::Day, "大牛", 9999);
         assert!(r.is_some());
+    }
+
+    #[test]
+    fn neighbor_greet_contains_other_name() {
+        let result = get_neighbor_greet("阿土", 0);
+        assert!(result.contains("阿土"), "招呼文字應包含對方名字");
+    }
+
+    #[test]
+    fn neighbor_greet_seed_wraps_without_panic() {
+        let r = get_neighbor_greet("梅子", 9999);
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn neighbor_reply_nonempty_for_all_seeds() {
+        for seed in [0, 1, 2, 3, 4, 9999] {
+            assert!(!get_neighbor_reply(seed).is_empty());
+        }
     }
 }
