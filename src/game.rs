@@ -711,6 +711,10 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::WorkActivity { text } => {
                             let _ = app.tx_chat.send(text);
                         }
+                        // ROADMAP 122：居民隨機小事件——廣播至世界聊天，0 玩家也持續累積。
+                        ResidentLifecycleEvent::MiniEvent { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
                         // ROADMAP 121：兩位居民相遇打招呼——廣播雙方 NpcSpeech 泡泡。
                         ResidentLifecycleEvent::NeighborChat {
                             id_a, name_a, text_a, x_a, y_a,
