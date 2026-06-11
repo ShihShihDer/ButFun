@@ -673,6 +673,19 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 路人居民推進（ROADMAP 115）：每幀推進走動；每 POPULATION_CHECK_SECS 依繁榮感增減人口。
+            {
+                let avg_prosperity = {
+                    let needs = app.npc_needs.read().unwrap();
+                    use crate::npc_schedule::VILLAGE_NPCS;
+                    let total: i32 = VILLAGE_NPCS.iter()
+                        .map(|s| needs.get(s.id).prosperity)
+                        .sum();
+                    total / VILLAGE_NPCS.len().max(1) as i32
+                };
+                app.residents.write().unwrap().tick(dt, avg_prosperity);
+            }
+
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
             {
@@ -1194,6 +1207,21 @@ pub fn spawn(app: AppState) {
                             None
                         }
                     };
+
+                    // —— 路人居民（ROADMAP 115）——：純模板 NPC，無商店功能。
+                    {
+                        let res = app.residents.read().unwrap();
+                        for (id, name, x, y) in res.views() {
+                            npc_views.push(NpcView {
+                                id: id.to_string(),
+                                name: name.to_string(),
+                                x,
+                                y,
+                                buy_list: Vec::new(),
+                                sell_list: Vec::new(),
+                            });
+                        }
+                    }
 
                     ServerMsg::Snapshot {
                         tick,
