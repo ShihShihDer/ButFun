@@ -784,6 +784,24 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 廣場聚會 tick（ROADMAP 124）：白天時段定期觸發居民聚會，全服 EXP +20%。
+            {
+                use crate::community_gathering::GatheringEvent;
+                let phase_now = app.daynight.read().unwrap().phase();
+                let gathering_events = app.community_gathering.write().unwrap()
+                    .tick(dt, phase_now);
+                for ev in gathering_events {
+                    match ev {
+                        GatheringEvent::Started { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                        GatheringEvent::Ended { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                    }
+                }
+            }
+
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
             {
@@ -1435,6 +1453,8 @@ pub fn spawn(app: AppState) {
                         village_treasury: *app.village_treasury.read().unwrap(),
                         weather: app.weather.read().unwrap().view(),
                         sprinklers: app.sprinklers.read().unwrap().views(),
+                        // 廣場聚會剩餘秒數（ROADMAP 124）：0 = 無聚會；>0 = 全服 EXP +20%。
+                        gathering_secs: app.community_gathering.read().unwrap().remaining_secs(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

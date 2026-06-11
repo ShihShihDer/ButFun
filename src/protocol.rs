@@ -533,6 +533,9 @@ pub enum ServerMsg {
         weather: WeatherView,
         /// 世界上所有灑水器（ROADMAP 112）：位置與歸屬。前端在農地上畫小圖示。
         sprinklers: Vec<crate::sprinkler::SprinklerView>,
+        /// 居民廣場聚會剩餘秒數（ROADMAP 124）。0 表示無活躍聚會；>0 時全服 EXP +20%。
+        /// 前端依此顯示 HUD 倒數 pill。
+        gathering_secs: u32,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1239,6 +1242,7 @@ mod tests {
             village_treasury: 0,
             weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
             sprinklers: vec![],
+            gathering_secs: 0,
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

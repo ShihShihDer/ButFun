@@ -854,6 +854,9 @@ pub struct AppState {
     /// 路人 / 居民 NPC 群體（ROADMAP 115）：純模板驅動（零 LLM），人口隨繁榮感自然增減。
     /// 記憶體模式，重啟清零（從最小人口重啟）。
     pub residents: Arc<RwLock<crate::resident_npc::ResidentManager>>,
+    /// 居民廣場聚會狀態（ROADMAP 124）：每 30 分鐘白天觸發一次聚會，持續 10 分鐘，全服 EXP +20%。
+    /// 純邏輯、記憶體模式，重啟清零。
+    pub community_gathering: Arc<RwLock<crate::community_gathering::CommunityGatheringState>>,
     /// 怪物王咆哮狀態（ROADMAP 75）：追蹤各菁英精英的咆哮冷卻，純記憶體模式，重啟清零。
     pub boss_roar: Arc<RwLock<crate::boss_roar::BossRoarState>>,
     /// 怪物王咆哮專屬 Semaphore（容量 1）：同時最多一個 AI 咆哮呼叫，不佔用 NPC LLM 配額。
@@ -1041,6 +1044,7 @@ impl AppState {
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
+            community_gathering: Arc::new(RwLock::new(crate::community_gathering::CommunityGatheringState::new())),
             boss_roar: Arc::new(RwLock::new(crate::boss_roar::BossRoarState::new())),
             boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
             boss_ai: Arc::new(RwLock::new(crate::boss_ai::BossAiState::new())),
