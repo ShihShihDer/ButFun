@@ -463,6 +463,12 @@ pub enum ClientMsg {
     /// 背包種類槽滿 / 物品不在倉庫 / 數量不足靜默忽略；需登入。
     #[serde(rename = "withdraw_from_warehouse")]
     WithdrawFromWarehouse { item: ItemKind, qty: u32 },
+    /// 進入自家室內（ROADMAP 111）：玩家需登入、擁有 FreeBuild 地塊、且站在地塊中心附近。
+    /// 未符合條件靜默忽略；成功後玩家 snapshot 帶 indoor_plot_id。
+    EnterHome,
+    /// 離開室內回到室外（ROADMAP 111）：玩家需在室內。
+    /// 不在室內靜默忽略；離開後玩家回到進入前的世界坐標。
+    ExitHome,
 }
 
 /// 伺服器送給客戶端的訊息。
@@ -821,6 +827,16 @@ pub struct PlayerView {
     /// 倉庫目前存放的物品清單（格式同 inventory）。空時省略流量。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warehouse: Vec<ItemStack>,
+    // ── 住家內裝（ROADMAP 111）
+    /// 玩家目前在室內的地塊 ID。None（省略）= 在室外；Some = 在該地塊的室內。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indoor_plot_id: Option<u32>,
+    /// 室內 X 位置（像素）。indoor_plot_id 有值時才送。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indoor_x: Option<f32>,
+    /// 室內 Y 位置（像素）。indoor_plot_id 有值時才送。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indoor_y: Option<f32>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1158,6 +1174,9 @@ mod tests {
                 warehouse_expansions: 0,
                 warehouse_slot_max: 0,
                 warehouse: vec![],
+                indoor_plot_id: None,
+                indoor_x: None,
+                indoor_y: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1334,6 +1353,9 @@ mod tests {
             warehouse_expansions: 0,
             warehouse_slot_max: 0,
             warehouse: vec![],
+            indoor_plot_id: None,
+            indoor_x: None,
+            indoor_y: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1531,6 +1553,9 @@ mod tests {
             warehouse_expansions: 0,
             warehouse_slot_max: 0,
             warehouse: vec![],
+            indoor_plot_id: None,
+            indoor_x: None,
+            indoor_y: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1573,6 +1598,9 @@ mod tests {
             warehouse_expansions: 0,
             warehouse_slot_max: 0,
             warehouse: vec![],
+            indoor_plot_id: None,
+            indoor_x: None,
+            indoor_y: None,
         }
     }
 

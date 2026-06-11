@@ -95,6 +95,7 @@ mod party;
 mod sprinkler;
 mod warehouse;
 mod perishable;
+mod home_interior;
 
 use std::net::SocketAddr;
 

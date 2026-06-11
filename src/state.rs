@@ -226,6 +226,15 @@ pub struct Player {
     /// 易腐品倒數計時器（食物/作物）。
     /// 只在玩家連線時遞減；斷線暫停、重啟歸零，不懲罰不上線。
     pub decay_timers: crate::perishable::PerishableDecayState,
+
+    // ── 住家內裝（ROADMAP 111）───────────────────────────────────────────
+    /// 玩家目前所在的室內地塊 ID。None = 在室外；Some(plot_id) = 在該 FreeBuild 地塊的室內。
+    /// 記憶體模式：重啟歸零（玩家重連後在室外，設計上可接受）。
+    pub indoor_plot_id: Option<u32>,
+    /// 室內 X 位置（像素，相對室內空間左上角）。indoor_plot_id 為 None 時無意義。
+    pub indoor_x: f32,
+    /// 室內 Y 位置（像素，相對室內空間左上角）。indoor_plot_id 為 None 時無意義。
+    pub indoor_y: f32,
 }
 
 impl Player {
@@ -514,6 +523,10 @@ impl Player {
             warehouse: self.warehouse.entries()
                 .map(|(item, qty)| crate::protocol::ItemStack { item, qty })
                 .collect(),
+            // ── 住家內裝（ROADMAP 111）
+            indoor_plot_id: self.indoor_plot_id,
+            indoor_x: self.indoor_plot_id.map(|_| self.indoor_x),
+            indoor_y: self.indoor_plot_id.map(|_| self.indoor_y),
         }
     }
 
@@ -653,6 +666,19 @@ impl Player {
     pub fn step<F: Fn(f32, f32) -> bool>(&mut self, dt: f32, tile_solid: F) {
         // 被打趴（倒地）期間定身：等待復原計時器跑完，不接受任何移動輸入。
         if self.vitals.is_downed() {
+            return;
+        }
+        // 室內模式：不走世界地形，改走室內邊界夾緊移動（ROADMAP 111）。
+        if self.indoor_plot_id.is_some() {
+            (self.indoor_x, self.indoor_y) = crate::home_interior::indoor_step(
+                self.indoor_x,
+                self.indoor_y,
+                self.input.up,
+                self.input.down,
+                self.input.left,
+                self.input.right,
+                dt,
+            );
             return;
         }
         // 移動數學整段在 world_core::step_with_keys（對角線正規化、水域阻擋、
@@ -1139,6 +1165,9 @@ mod tests {
             farm_fair_cooldown: 0.0,
             warehouse: Warehouse::default(),
             decay_timers: crate::perishable::PerishableDecayState::new(),
+            indoor_plot_id: None,
+            indoor_x: 0.0,
+            indoor_y: 0.0,
         }
     }
 

@@ -558,6 +558,10 @@
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
             existing.planet = p.planet || "home";
+            // 室內狀態（ROADMAP 111）
+            existing.indoor_plot_id = p.indoor_plot_id ?? null;
+            existing.indoor_x = p.indoor_x ?? 0;
+            existing.indoor_y = p.indoor_y ?? 0;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -843,6 +847,8 @@
             // (登入即有專屬田)。登入者 isGuest=false 永不顯示,不打擾老玩家。
             document.getElementById("hudGuestHint").classList.remove("hidden");
           }
+          // 住家按鈕顯示/隱藏（ROADMAP 111）
+          updateHomeBtn(me);
         }
         break;
       }
@@ -2910,6 +2916,16 @@
     lastCam.x = camX;
     lastCam.y = camY;
 
+    // 住家室內模式（ROADMAP 111）：玩家在室內時改畫室內場景，跳過戶外世界渲染。
+    if (me && me.indoor_plot_id != null) {
+      drawIndoorScene(me, renderNow);
+      drawActionButton(me);
+      drawDamageFlash(renderNow);
+      updateVillageBuffHud();
+      requestAnimationFrame(render);
+      return;
+    }
+
     drawGround(camX, camY);
     drawTerrain(camX, camY); // 可挖地形方塊（C-1 純顯示，在地表之上、農地之下）
     drawField(camX, camY);
@@ -3027,6 +3043,149 @@
 
     requestAnimationFrame(render);
   }
+
+  // ── 住家室內場景（ROADMAP 111）────────────────────────────────────────────────
+  // 8×8 格（256×256px）私人室內空間；木板地板 + 石磚牆；南面有出口門。
+  function drawIndoorScene(me, now) {
+    const TILE = 32;
+    const COLS = 8, ROWS = 8;
+    const W = COLS * TILE;   // 256px
+    const H = ROWS * TILE;   // 256px
+    const ix = (me.indoor_x != null ? me.indoor_x : W / 2);
+    const iy = (me.indoor_y != null ? me.indoor_y : H - TILE * 1.5 - 16);
+
+    // 鏡頭跟玩家，夾緊讓牆體始終可見
+    const rawCamX = ix - viewW / 2;
+    const rawCamY = iy - viewH / 2;
+    const minCamX = 0, maxCamX = Math.max(0, W - viewW);
+    const minCamY = 0, maxCamY = Math.max(0, H - viewH);
+    const iCamX = Math.round(Math.max(minCamX, Math.min(maxCamX, rawCamX)));
+    const iCamY = Math.round(Math.max(minCamY, Math.min(maxCamY, rawCamY)));
+
+    // 背景（戶外不見了）
+    ctx.fillStyle = "#1a1210";
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    // 木板地板（內部 6×6 格，去掉外圍石磚牆一格）
+    for (let r = 1; r < ROWS - 1; r++) {
+      for (let c = 1; c < COLS - 1; c++) {
+        const sx = c * TILE - iCamX;
+        const sy = r * TILE - iCamY;
+        if (sx + TILE < 0 || sx > viewW || sy + TILE < 0 || sy > viewH) continue;
+        ctx.fillStyle = (r + c) % 2 === 0 ? "#8b6347" : "#7a5838";
+        ctx.fillRect(sx, sy, TILE, TILE);
+        // 木紋橫線
+        ctx.strokeStyle = "rgba(0,0,0,0.15)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy + TILE / 3);
+        ctx.lineTo(sx + TILE, sy + TILE / 3);
+        ctx.moveTo(sx, sy + (TILE * 2) / 3);
+        ctx.lineTo(sx + TILE, sy + (TILE * 2) / 3);
+        ctx.stroke();
+      }
+    }
+
+    // 石磚牆（外圍一格邊框），南面中央格改成門
+    const doorC = Math.floor(COLS / 2) - 1; // 南牆中央格
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (r > 0 && r < ROWS - 1 && c > 0 && c < COLS - 1) continue; // 跳過內部
+        const isDoor = (r === ROWS - 1 && c === doorC); // 南牆出口
+        const sx = c * TILE - iCamX;
+        const sy = r * TILE - iCamY;
+        if (sx + TILE < 0 || sx > viewW || sy + TILE < 0 || sy > viewH) continue;
+
+        if (isDoor) {
+          // 木門：深棕色矩形 + 黃銅門把
+          ctx.fillStyle = "#3d2b1a";
+          ctx.fillRect(sx + 2, sy + 2, TILE - 4, TILE - 2);
+          // 門框
+          ctx.strokeStyle = "#6b4c2a";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(sx + 2, sy + 2, TILE - 4, TILE - 2);
+          // 黃銅門把
+          ctx.fillStyle = "#c9a24b";
+          ctx.beginPath();
+          ctx.arc(sx + 9, sy + TILE / 2 + 2, 3, 0, Math.PI * 2);
+          ctx.fill();
+          // 出口提示文字
+          ctx.fillStyle = "rgba(255,255,255,0.7)";
+          ctx.font = "9px system-ui,sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("出口", sx + TILE / 2, sy + TILE - 3);
+        } else {
+          // 石磚
+          ctx.fillStyle = "#5a5a6a";
+          ctx.fillRect(sx, sy, TILE, TILE);
+          // 磚縫橫線
+          ctx.strokeStyle = "#3a3a48";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy + TILE / 2);
+          ctx.lineTo(sx + TILE, sy + TILE / 2);
+          // 錯排縱縫
+          const off = (r % 2 === 0) ? TILE / 4 : -TILE / 4;
+          ctx.moveTo(sx + TILE / 2 + off, sy);
+          ctx.lineTo(sx + TILE / 2 + off, sy + TILE / 2);
+          ctx.moveTo(sx + TILE / 2 - off, sy + TILE / 2);
+          ctx.lineTo(sx + TILE / 2 - off, sy + TILE);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // 玩家（使用室內坐標作為世界坐標，相機 = iCamX/iCamY）
+    const pObj = players.get(myId);
+    if (pObj) {
+      drawPlayer({ ...pObj, rx: ix, ry: iy }, iCamX, iCamY);
+    }
+
+    // 室內標題 pill（左上角）
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.beginPath();
+    ctx.roundRect(6, 6, 172, 24, 6);
+    ctx.fill();
+    ctx.fillStyle = "#f0e8d0";
+    ctx.font = "bold 12px system-ui,sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(`🏠 住家室內 · 地塊 #${me.indoor_plot_id}`, 14, 23);
+
+    // 操作提示（右上角）
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.beginPath();
+    ctx.roundRect(viewW - 134, 6, 128, 24, 6);
+    ctx.fill();
+    ctx.fillStyle = "#c9c9c9";
+    ctx.font = "11px system-ui,sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("按「離開室內」返回", viewW - 10, 23);
+  }
+
+  // 住家按鈕顯示/隱藏控制（ROADMAP 111）
+  function updateHomeBtn(me) {
+    const btn = document.getElementById("homeBtn");
+    if (!btn || !me) { if (btn) btn.classList.add("hidden"); return; }
+    if (me.indoor_plot_id != null) {
+      // 在室內：顯示「離開室內」
+      btn.classList.remove("hidden");
+      btn.textContent = "🚪 離開室內";
+      btn.title = "離開室內，回到戶外";
+    } else if (!isGuest) {
+      // 在室外：有 FreeBuild 地塊才顯示「進入住家」
+      const myPlot = landPlots.find(p => p.owner_id === myId && (p.purpose || "free_build") === "free_build");
+      if (myPlot) {
+        btn.classList.remove("hidden");
+        btn.textContent = "🏠 進入住家";
+        btn.title = "進入住家（需靠近自家建地中心）";
+      } else {
+        btn.classList.add("hidden");
+      }
+    } else {
+      btn.classList.add("hidden");
+    }
+  }
+  // ── 住家室內場景 end ──────────────────────────────────────────────────────────
 
   // 受擊時的全螢幕邊緣紅光:四周往中心淡出的紅暈(中央保持透明、不擋視線),依剩餘時間淡出。
   // 純螢幕座標、純表現——觸發來自權威 HP 差值,這裡只負責畫,不參與任何戰鬥判定。
@@ -10341,6 +10500,21 @@
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "return_home" }));
           announce("回城：傳回新手村");
+        }
+      });
+    }
+    // 🏠 進入/離開住家室內（ROADMAP 111）
+    const homeBtn = document.getElementById("homeBtn");
+    if (homeBtn) {
+      homeBtn.addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const meNow = myId ? players.get(myId) : null;
+        if (meNow && meNow.indoor_plot_id != null) {
+          ws.send(JSON.stringify({ type: "exit_home" }));
+          announce("離開室內，回到戶外");
+        } else {
+          ws.send(JSON.stringify({ type: "enter_home" }));
+          announce("嘗試進入住家室內…");
         }
       });
     }

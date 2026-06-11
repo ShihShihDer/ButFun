@@ -146,6 +146,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             farm_fair_cooldown: 0.0,
             warehouse: crate::warehouse::Warehouse::default(),
             decay_timers: crate::perishable::PerishableDecayState::new(),
+            indoor_plot_id: None,
+            indoor_x: 0.0,
+            indoor_y: 0.0,
         }
     } else {
         // 等 Join
@@ -212,6 +215,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             farm_fair_cooldown: 0.0,
             warehouse: crate::warehouse::Warehouse::default(),
             decay_timers: crate::perishable::PerishableDecayState::new(),
+            indoor_plot_id: None,
+            indoor_x: 0.0,
+            indoor_y: 0.0,
         }
     };
     let id = player.id;
@@ -3785,6 +3791,56 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 倉庫 end ─────────────────────────────────────────────────
+
+                // ── 住家內裝（ROADMAP 111）────────────────────────────────────
+                Ok(ClientMsg::EnterHome) => {
+                    let Some(uid) = authed_uid else { continue; };
+                    let mut notice: Option<String> = None;
+                    {
+                        let land = app.land_plots.read().unwrap();
+                        let plot_id_opt = land.plot_of(uid).and_then(|pid| {
+                            use crate::land_plot::PlotPurpose;
+                            if land.purpose_of(pid) == Some(PlotPurpose::FreeBuild) {
+                                Some(pid)
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(plot_id) = plot_id_opt {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&id) {
+                                if p.indoor_plot_id.is_some() {
+                                    // 已在室內，忽略
+                                } else if crate::home_interior::near_home(plot_id, p.x, p.y) {
+                                    let (ix, iy) = crate::home_interior::entry_position();
+                                    p.indoor_plot_id = Some(plot_id);
+                                    p.indoor_x = ix;
+                                    p.indoor_y = iy;
+                                    tracing::info!(player = %p.name, plot_id, "進入住家室內");
+                                } else {
+                                    notice = Some("🏠 需靠近自己的建地中心才能進入室內。".to_string());
+                                }
+                            }
+                        } else {
+                            notice = Some("🏠 你還沒有 FreeBuild 建地，無法進入室內。".to_string());
+                        }
+                    }
+                    if let Some(text) = notice {
+                        let msg = ServerMsg::Chat { from: "系統".into(), text };
+                        if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                    }
+                }
+                Ok(ClientMsg::ExitHome) => {
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if p.indoor_plot_id.is_some() {
+                            p.indoor_plot_id = None;
+                            p.indoor_x = 0.0;
+                            p.indoor_y = 0.0;
+                            tracing::info!(player = %p.name, "離開住家室內");
+                        }
+                    }
+                }
+                // ── 住家內裝 end ──────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
