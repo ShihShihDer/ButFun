@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -395,6 +395,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         weather: weather.clone(),
                                         // 灑水器：依農地位置做 AOI 剔除（ROADMAP 112）。
                                         sprinklers: sprinklers.iter().filter(|s| filter_pos(s.wx, s.wy)).cloned().collect(),
+                                        // 廣場聚會剩餘秒數（ROADMAP 124）：全服廣播。
+                                        gathering_secs: *gathering_secs,
                                     }
                                 }
                                 other => other.clone(),
@@ -700,14 +702,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
                             let (added, _wh, _drop) = p.add_item_overflow(item, amount * mult + bounty_bonus + pet_gather + weather_bonus);
-                            // 採集得 exp（鼓勵探索）；村落節慶加成期間 +30%（ROADMAP 64）。
+                            // 採集得 exp（鼓勵探索）；村落節慶加成 +30%（ROADMAP 64）；廣場聚會加成 +20%（ROADMAP 124）。
                             let village_gather_pct = {
                                 let lock = app.village_buff_until.read().unwrap();
                                 lock.as_ref()
                                     .map(|&expiry| if std::time::Instant::now() < expiry { crate::village_chief::EVENT_EXP_BONUS_PCT } else { 0 })
                                     .unwrap_or(0)
                             };
-                            let gather_exp = 5u32 + 5 * village_gather_pct / 100;
+                            let gathering_pct = if app.community_gathering.read().unwrap().is_active() {
+                                crate::community_gathering::GATHERING_EXP_BONUS_PCT
+                            } else { 0 };
+                            let gather_exp = 5u32
+                                + 5 * village_gather_pct / 100
+                                + 5 * gathering_pct / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
@@ -1459,11 +1466,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     .unwrap_or(0)
                             };
                             let village_mult = 1.0_f32 + village_buff_pct as f32 / 100.0;
+                            // 廣場聚會加成（ROADMAP 124）：聚會期間全服 EXP +20%。
+                            let gathering_mult = if app.community_gathering.read().unwrap().is_active() {
+                                1.0_f32 + crate::community_gathering::GATHERING_EXP_BONUS_PCT as f32 / 100.0
+                            } else { 1.0_f32 };
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult
                                 * pet_mult
-                                * village_mult) as u32;
+                                * village_mult
+                                * gathering_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {

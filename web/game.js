@@ -329,6 +329,38 @@
     pill.textContent = text;
   }
 
+  // 廣場聚會加成 HUD pill（ROADMAP 124）：聚會期間顯示綠色倒數 pill。
+  let lastGatheringText = null;
+  function updateGatheringHud() {
+    let pill = document.getElementById("hudGathering");
+    const nowMs = performance.now();
+    const remainMs = gatheringUntilMs - nowMs;
+    if (remainMs <= 0) {
+      if (pill) pill.style.display = "none";
+      lastGatheringText = null;
+      return;
+    }
+    const secs = Math.ceil(remainMs / 1000);
+    const text = `🎊 聚會 EXP×1.2（${secs}s）`;
+    if (text === lastGatheringText) return;
+    lastGatheringText = text;
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudGathering";
+      pill.style.cssText = [
+        "position:fixed", "top:30px", "right:8px",
+        "background:#1a4a1a", "color:#70e070",
+        "border:1px solid #40a040", "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+      ].join(";");
+      document.body.appendChild(pill);
+    }
+    pill.style.display = "block";
+    pill.textContent = text;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -338,6 +370,7 @@
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
+  let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -648,6 +681,12 @@
         } else if (msg.village_buff_remaining_secs === 0 && villageBuffUntilMs > 0) {
           // 伺服器確認加成已結束
           villageBuffUntilMs = 0;
+        }
+        // 廣場聚會加成（ROADMAP 124）：從快照同步剩餘時間，確保新連線玩家也能看到。
+        if (msg.gathering_secs > 0) {
+          gatheringUntilMs = performance.now() + msg.gathering_secs * 1000;
+        } else if (msg.gathering_secs === 0 && gatheringUntilMs > 0) {
+          gatheringUntilMs = 0;
         }
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
@@ -3047,6 +3086,8 @@
     drawDamageFlash(performance.now());
     // 村落節慶加成計時器（ROADMAP 64）：每幀更新 HUD pill，加成結束自動隱藏。
     updateVillageBuffHud();
+    // 廣場聚會加成計時器（ROADMAP 124）：聚會期間在 HUD 顯示綠色倒數 pill。
+    updateGatheringHud();
 
     requestAnimationFrame(render);
   }
