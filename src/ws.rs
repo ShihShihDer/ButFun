@@ -1113,6 +1113,94 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                // ── ROADMAP 101：玩家確認 / 拒絕 AI 議價──────────────────────────────
+                Ok(ClientMsg::ConfirmDeal { accept }) => {
+                    // 必須已登入。訪客不參與議價（無購買紀錄，商人也不會提議）。
+                    let uid = match authed_uid {
+                        Some(u) => u,
+                        None => continue,
+                    };
+                    // 取出待確認議價（同時移除——每人只能用一次，不論接受或拒絕）。
+                    let pending = {
+                        let mut map = app.npc_pending_deal.write().unwrap();
+                        map.remove(&uid)
+                    };
+                    let Some(deal) = pending else { continue };
+                    if deal.is_expired() {
+                        // 到期通知（讓玩家知道為何無效）。
+                        let msg = crate::protocol::ServerMsg::Chat {
+                            from: "系統".to_string(),
+                            text: "⏰ 議價已過期，請再找商人重新洽談。".to_string(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.send(json).await;
+                        }
+                        continue;
+                    }
+                    if !accept { continue; } // 拒絕：靜默清除，已在上面 remove
+                    // ── 接受：重新驗證（防時間差）→ 執行交易 ──────────────
+                    let total = deal.total();
+                    let treasury_ok = app.npc_treasury.read().unwrap()
+                        .balance(crate::npc_treasury::MERCHANT_HOME) >= total;
+                    if !treasury_ok {
+                        let msg = crate::protocol::ServerMsg::Chat {
+                            from: "系統".to_string(),
+                            text: "💸 商人現金不足，無法成交。".to_string(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.send(json).await;
+                        }
+                        continue;
+                    }
+                    let (traded, player_name) = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&uid) {
+                            if p.inventory.take(deal.item, deal.qty) {
+                                p.ether = p.ether.saturating_add(total);
+                                (true, p.name.clone())
+                            } else {
+                                (false, p.name.clone())
+                            }
+                        } else {
+                            (false, String::new())
+                        }
+                    };
+                    if !traded {
+                        let msg = crate::protocol::ServerMsg::Chat {
+                            from: "系統".to_string(),
+                            text: "📦 背包物品不足，無法完成議價。".to_string(),
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.send(json).await;
+                        }
+                        continue;
+                    }
+                    // 金庫扣款。
+                    app.npc_treasury.write().unwrap()
+                        .deduct(crate::npc_treasury::MERCHANT_HOME, total);
+                    // 更新商人對玩家的 sell_count（引擎事實統計）。
+                    let updated_rel = {
+                        let mut mem = app.npc_memory.write().unwrap();
+                        let r = mem.entry((uid, "merchant".to_string())).or_default();
+                        r.sell_count = r.sell_count.saturating_add(1);
+                        r.clone()
+                    };
+                    app.npc_memory_store.save_rel(uid, "merchant".to_string(), updated_rel);
+                    // 需求驅力（ROADMAP 69）：成交 → 商人繁榮感升。
+                    app.npc_needs.write().unwrap().apply_trade(true);
+                    // 成交通知（私訊玩家）。
+                    let item_name = crate::npc_deal::item_display_zh(deal.item);
+                    let success_msg = crate::protocol::ServerMsg::Chat {
+                        from: "商人薇拉".to_string(),
+                        text: format!("🤝 議價成交！收了你 {} 個{}，付你 {} 乙太。感謝這筆生意！",
+                            deal.qty, item_name, total),
+                    };
+                    if let Ok(json) = serde_json::to_string(&success_msg) {
+                        let _ = tx_direct.send(json).await;
+                    }
+                    tracing::info!(player = %player_name, item = ?deal.item, qty = deal.qty, total, "議價成交");
+                }
+
                 Ok(ClientMsg::Dig { wx, wy }) => {
                     // C-2 挖掘地形格：倒地中不可挖（與採集/耕種同規則）。
                     if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
@@ -2985,11 +3073,52 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let (wants_gift, after_gift) = crate::npc_chat::extract_gift_decision(&raw);
                                 // 熟客折扣（ROADMAP 63）：商人自主決定是否給下次購買打折。
                                 // 只有商人 NPC 才有折扣選項（其他工職 NPC 沒有售價可讓利）。
-                                let (wants_discount, clean) = if persona.id == "merchant" {
+                                let (wants_discount, after_discount) = if persona.id == "merchant" {
                                     crate::npc_chat::extract_discount_decision(&after_gift)
                                 } else {
                                     (false, after_gift)
                                 };
+                                // AI 議價（ROADMAP 101）：只有故鄉商人才有議價能力。
+                                // 引擎解析 [DEAL item qty price]，驗合法後存入 PendingDeal 並送 DealOffer；
+                                // 驗證失敗（天文數字/不明物品/金庫不足）靜默忽略，不打斷對話。
+                                let (wants_deal, clean) = if persona.id == "merchant" {
+                                    let (parsed, clean2) = crate::npc_deal::extract_deal(&after_discount);
+                                    if let Some((item_str, qty, price_per)) = parsed {
+                                        let treasury_balance = app2.npc_treasury.read().unwrap()
+                                            .balance(crate::npc_treasury::MERCHANT_HOME);
+                                        match crate::npc_deal::validate_deal(&item_str, qty, price_per, treasury_balance) {
+                                            Ok(pending) => {
+                                                let item_display = crate::npc_deal::item_display_zh(pending.item).to_string();
+                                                let deal_total = pending.total();
+                                                let deal_qty = pending.qty;
+                                                let deal_price = pending.price_per;
+                                                app2.npc_pending_deal.write().unwrap().insert(id, pending);
+                                                let offer = crate::protocol::ServerMsg::DealOffer {
+                                                    npc: persona.id.to_string(),
+                                                    display: display_name_npc.clone(),
+                                                    item_display,
+                                                    qty: deal_qty,
+                                                    price_per: deal_price,
+                                                    total: deal_total,
+                                                };
+                                                if let Ok(json) = serde_json::to_string(&offer) {
+                                                    let _ = tx.send(json).await;
+                                                }
+                                                tracing::debug!(item_str, qty, price_per, "商人提出議價");
+                                                (true, clean2)
+                                            }
+                                            Err(reason) => {
+                                                tracing::debug!(reason, "商人議價驗證失敗，靜默忽略");
+                                                (false, clean2)
+                                            }
+                                        }
+                                    } else {
+                                        (false, clean2)
+                                    }
+                                } else {
+                                    (false, after_discount)
+                                };
+                                let _ = wants_deal; // 已處理
                                 let granted = if gift_available && wants_gift {
                                     let new_stock = {
                                         let mut stk = app2.npc_gift_stock.write().unwrap();

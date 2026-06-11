@@ -827,6 +827,10 @@ pub struct AppState {
     /// 商人有限金庫（ROADMAP 100）：收購從金庫付，商隊定期回補，終結無限印鈔。
     /// 記憶體模式，重啟從初始值開始（金庫代表「當前商隊現金」，重啟等同換班補貨）。
     pub npc_treasury: Arc<RwLock<crate::npc_treasury::NpcTreasuryState>>,
+    /// AI 議價待確認交易（ROADMAP 101）：玩家 id → PendingDeal（商人提議，玩家確認後才執行）。
+    /// 每人只能有一筆待確認議價（新的覆蓋舊的）；超過 DEAL_EXPIRE_SECS 秒後自動失效。
+    /// 記憶體模式，重啟清空（議價本就限時，重啟等同過期，行為正確）。
+    pub npc_pending_deal: Arc<RwLock<HashMap<Uuid, crate::npc_deal::PendingDeal>>>,
 }
 
 impl AppState {
@@ -973,6 +977,7 @@ impl AppState {
             },
             sprinkler_persist,
             npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
+            npc_pending_deal: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

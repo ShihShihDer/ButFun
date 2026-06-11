@@ -213,11 +213,14 @@ fn system_prompt(npc: &NpcPersona, rel: &NpcRel, gift_available: bool, gift_stoc
     } else {
         String::new()
     };
+    // 議價提示（ROADMAP 101）：只有故鄉商人薇拉有議價能力。
+    let deal_hint = if npc.id == "merchant" { crate::npc_deal::MERCHANT_DEAL_HINT } else { "" };
     format!(
-        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}{discount}{player_activity}{world_news}{elder}{needs}{relations}{faction}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
+        "{lore}\n\n{persona}\n\n{imp}\n{stats}{gift}{discount}{deal}{player_activity}{world_news}{elder}{needs}{relations}{faction}\n\n用繁體中文回話，2 到 3 句，口吻溫暖自然、符合世界觀，絕不跳出角色、不要提到你是 AI 或語言模型。",
         lore = WORLD_LORE,
         persona = npc.persona,
         discount = discount_hint,
+        deal = deal_hint,
         player_activity = player_activity,
         world_news = world_news,
         elder = elder_context,

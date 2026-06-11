@@ -936,6 +936,12 @@
         addPartyChat(msg.from, msg.text);
         break;
 
+      // ── AI 議價交易（ROADMAP 101）────────────────────────────────────────
+      case "deal_offer":
+        // 商人 NPC 提出議價：彈出確認橫幅，玩家點接受或拒絕。
+        showDealOffer(msg);
+        break;
+
       case "skill_activated":
         // 主動技能觸發（ROADMAP 45）：播放技能視覺特效。
         showSkillFlash(msg.player_id, msg.kind);
@@ -7127,6 +7133,54 @@
 
     // 30 秒後自動消失
     setTimeout(() => banner.remove(), 30000);
+  }
+
+  // 顯示商人議價橫幅（ROADMAP 101）
+  function showDealOffer(msg) {
+    const old = document.getElementById("dealOfferBanner");
+    if (old) old.remove();
+
+    const banner = document.createElement("div");
+    banner.id = "dealOfferBanner";
+    banner.style.cssText = [
+      "position:fixed;top:80px;left:50%;transform:translateX(-50%);",
+      "background:rgba(40,20,10,0.96);border:1px solid #c8a030;border-radius:8px;",
+      "padding:10px 16px;color:#fff8e8;font-size:.95rem;z-index:9999;",
+      "display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.5);",
+      "max-width:min(420px,92vw);flex-wrap:wrap;",
+    ].join("");
+
+    const label = document.createElement("span");
+    label.innerHTML = `🤝 <b>${msg.display}</b> 提議：收購你 <b>${msg.qty}</b> 個 <b>${msg.item_display}</b>，`
+      + `每個 <b>${msg.price_per}</b> 乙太，共 <b>${msg.total}</b> 乙太。接受？`;
+    banner.appendChild(label);
+
+    const acceptBtn = document.createElement("button");
+    acceptBtn.type = "button";
+    acceptBtn.className = "expand-btn";
+    acceptBtn.style.cssText = "padding:3px 10px;background:#2a6;color:#fff;border-color:#3c8;";
+    acceptBtn.textContent = "接受";
+    acceptBtn.addEventListener("click", () => {
+      try { ws.send(JSON.stringify({ type: "confirm_deal", accept: true })); } catch {}
+      banner.remove();
+    });
+
+    const declineBtn = document.createElement("button");
+    declineBtn.type = "button";
+    declineBtn.className = "expand-btn";
+    declineBtn.style.cssText = "padding:3px 10px;";
+    declineBtn.textContent = "拒絕";
+    declineBtn.addEventListener("click", () => {
+      try { ws.send(JSON.stringify({ type: "confirm_deal", accept: false })); } catch {}
+      banner.remove();
+    });
+
+    banner.appendChild(acceptBtn);
+    banner.appendChild(declineBtn);
+    document.body.appendChild(banner);
+
+    // 三分鐘後自動消失（對應後端 DEAL_EXPIRE_SECS=180）
+    setTimeout(() => banner.remove(), 180000);
   }
 
   // 在聊天欄顯示隊伍聊天（ROADMAP 97）
