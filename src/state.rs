@@ -763,6 +763,10 @@ pub struct AppState {
     pub dawn_call: Arc<RwLock<crate::npc_dawn_call::DawnCallState>>,
     /// 晨喚專屬 Semaphore（容量 1）：同時最多一個 AI 晨喚呼叫，不佔用 NPC LLM 配額。
     pub dawn_call_sem: Arc<Semaphore>,
+    /// 暮告狀態（ROADMAP 78）：偵測白天→黃昏轉換並觸發商人薇拉傍晚感言，純記憶體模式，重啟清零。
+    pub dusk_call: Arc<RwLock<crate::npc_dusk_call::DuskCallState>>,
+    /// 暮告專屬 Semaphore（容量 1）：同時最多一個 AI 暮告呼叫，不佔用 NPC LLM 配額。
+    pub dusk_call_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -877,6 +881,8 @@ impl AppState {
             plaza_talk_sem: Arc::new(Semaphore::new(crate::plaza_talk::MAX_CONCURRENT_TALKS)),
             dawn_call: Arc::new(RwLock::new(crate::npc_dawn_call::DawnCallState::new())),
             dawn_call_sem: Arc::new(Semaphore::new(crate::npc_dawn_call::MAX_CONCURRENT_CALLS)),
+            dusk_call: Arc::new(RwLock::new(crate::npc_dusk_call::DuskCallState::new())),
+            dusk_call_sem: Arc::new(Semaphore::new(crate::npc_dusk_call::MAX_CONCURRENT_CALLS)),
         }
     }
 
