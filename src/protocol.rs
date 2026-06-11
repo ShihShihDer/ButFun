@@ -753,6 +753,17 @@ pub struct PlayerView {
     /// 玩家是否在隊伍中（ROADMAP 97）。前端在名牌顯示 [隊] 標記；false 時省略節省流量。
     #[serde(default, skip_serializing_if = "is_false")]
     pub in_party: bool,
+
+    // ── 外觀自訂（ROADMAP 98 捏臉）────────────────────────────────────────
+    /// 帽型選項：0~4，0 = 頂帽（預設）。0 時省略節省流量。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub hair_style: u8,
+    /// 膚色選項：0~4，0 = 古銅金（預設）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub skin_tone: u8,
+    /// 護目鏡鏡片色：0~4，0 = 藍（預設）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub goggle_color: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1070,6 +1081,9 @@ mod tests {
                 near_village_chief: false,
                 near_traveler: false,
                 in_party: false,
+                hair_style: 0,
+                skin_tone: 0,
+                goggle_color: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1235,6 +1249,9 @@ mod tests {
             near_village_chief: false,
             near_traveler: false,
             in_party: false,
+            hair_style: 0,
+            skin_tone: 0,
+            goggle_color: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1422,9 +1439,67 @@ mod tests {
             farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
             near_village_chief: false, near_traveler: false,
             in_party: false,
+            hair_style: 0,
+            skin_tone: 0,
+            goggle_color: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
         assert!(v.get("in_party").is_none(), "in_party=false 時不應出現在 JSON");
+    }
+
+    fn make_base_player_view() -> super::PlayerView {
+        super::PlayerView {
+            id: uuid::Uuid::nil(),
+            name: "測試".into(),
+            species: "terran".into(),
+            x: 0.0, y: 0.0, ether: 0, expansions: 0,
+            inventory: vec![],
+            hp: 20, max_hp: 20, exp: 0, level: 0, attack: 2, defense: 0,
+            planet: "home".into(),
+            job_class: None,
+            masteries: crate::class::Masteries::default(),
+            guild_tag: None,
+            achievement_count: 0, achievements: vec![],
+            equipped_weapon: None, equipped_armor: None, equipped_accessory: None,
+            weapon_refine: 0, weapon_enchant: None, armor_refine: 0,
+            skill_cooldowns: std::collections::HashMap::new(),
+            active_skill_flags: vec![],
+            pet_kind: None, fish_cooldown: 0.0, near_water: false,
+            trade_cargo: None, near_trade_npc: false,
+            workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
+            bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
+            expedition_orders: vec![], expedition_active: None, expedition_cooldown: 0.0, near_expedition_board: false,
+            procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
+            farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
+            near_village_chief: false, near_traveler: false,
+            in_party: false,
+            hair_style: 0,
+            skin_tone: 0,
+            goggle_color: 0,
+        }
+    }
+
+    #[test]
+    fn appearance_zero_values_are_omitted_from_json() {
+        // 外觀三欄位都是 0（預設值）時，不應出現在 JSON 以節省流量。
+        // 非零時應出現。
+        let mut pv = make_base_player_view();
+        pv.hair_style = 0;
+        pv.skin_tone = 0;
+        pv.goggle_color = 0;
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert!(v.get("hair_style").is_none(), "hair_style=0 時不應出現");
+        assert!(v.get("skin_tone").is_none(), "skin_tone=0 時不應出現");
+        assert!(v.get("goggle_color").is_none(), "goggle_color=0 時不應出現");
+
+        // 非零值應出現。
+        pv.hair_style = 2;
+        pv.skin_tone = 3;
+        pv.goggle_color = 4;
+        let v2: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
+        assert_eq!(v2["hair_style"], 2);
+        assert_eq!(v2["skin_tone"], 3);
+        assert_eq!(v2["goggle_color"], 4);
     }
 }

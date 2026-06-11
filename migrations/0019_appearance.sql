@@ -1,0 +1,6 @@
+-- ROADMAP 98：捏臉系統——玩家可自訂角色外觀（帽型、膚色、鏡片色）。
+-- 三個欄位均以 SMALLINT DEFAULT 0 加入 users 表；值域 0~4，共五選。
+-- 向後相容：既有帳號 DEFAULT 0 即預設外觀，不影響任何現有資料。
+ALTER TABLE users ADD COLUMN IF NOT EXISTS hair_style  SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS skin_tone   SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS goggle_color SMALLINT NOT NULL DEFAULT 0;

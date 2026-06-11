@@ -40,6 +40,7 @@ mod plot_registry;
 mod plots;
 mod daily_quest;
 mod positions;
+mod appearance;
 mod profile;
 mod protocol;
 mod quest;
@@ -203,6 +204,8 @@ async fn main() {
         .merge(auth::auth_router())
         // 個人資料編輯(改顯示名)——需登入,見 profile.rs
         .merge(profile::profile_router())
+        // 外觀自訂(捏臉)——需登入,見 appearance.rs
+        .merge(appearance::appearance_router())
         // 其餘路徑交給靜態前端（web/）。
         .fallback_service(ServeDir::new("web"))
         .layer(TraceLayer::new_for_http())
