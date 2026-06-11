@@ -733,6 +733,27 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 工坊加成令（ROADMAP 87）：歸屬感高時老胡自動發急修加成令。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let workshop_belonging = app.npc_needs.read().unwrap().get("workshop_npc").belonging;
+                let boost_event = app.npc_workshop_boost.write().unwrap()
+                    .tick(dt, workshop_belonging, online_count);
+                if let Some(event) = boost_event {
+                    let tx_chat = app.tx_chat.clone();
+                    let npc = crate::npc_workshop_boost::WORKSHOP_NPC_NAME;
+                    match event {
+                        crate::npc_workshop_boost::BoostEvent::NewBoost { bonus, quota } => {
+                            let text = crate::npc_workshop_boost::announce_text(bonus, quota);
+                            let _ = tx_chat.send(format!("🔧 [{npc}] 喊道：「{text}」"));
+                        }
+                        crate::npc_workshop_boost::BoostEvent::Expired => {
+                            // 逾時靜默消失，不廣播，保持頻道乾淨。
+                        }
+                    }
+                }
+            }
+
             // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
             {
                 let online_count = app.players.read().unwrap().len();

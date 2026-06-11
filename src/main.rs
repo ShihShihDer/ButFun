@@ -81,6 +81,7 @@ mod npc_defeat_reaction;
 mod npc_level_greet;
 mod npc_commission;
 mod npc_expedition_boost;
+mod npc_workshop_boost;
 mod world_log;
 mod player_log;
 
