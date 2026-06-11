@@ -526,6 +526,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let gathered = player_pos
                         .and_then(|(px, py)| app.nodes.write().unwrap().gather_near(px, py));
                     if let Some((kind, amount)) = gathered {
+                        let mut gather_level_up: Option<(String, u32)> = None;
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let item: crate::inventory::ItemKind = kind.into();
                             // 工具效用(1-D):背包有鎬子/強化鎬就採更多(乘工具倍率)——
@@ -551,9 +552,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
                                 p.vitals.on_level_up(p.level());
+                                gather_level_up = Some((p.name.clone(), p.level()));
                             }
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, mult, bounty_bonus, level = p.level(), "採集入背包+exp");
+                        }
+                        // NPC 升等賀詞（ROADMAP 84）：採集升等時凱爾長老私信賀詞 / 全服廣播。
+                        if let Some((pname, new_lv)) = gather_level_up {
+                            let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
+                            match action {
+                                crate::npc_level_greet::LevelGreetAction::WorldBroadcast { message } => {
+                                    let _ = app.tx_chat.send(format!(
+                                        "🌟 [{}] 全服宣告：「{}」",
+                                        crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                                    ));
+                                }
+                                crate::npc_level_greet::LevelGreetAction::DirectMessage { message } => {
+                                    let _ = tx_direct.try_send(format!(
+                                        "💬 [{}] 悄聲道：「{}」",
+                                        crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                                    ));
+                                }
+                            }
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
                         let item: crate::inventory::ItemKind = kind.into();
@@ -1025,6 +1045,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let was_notorious = results.iter().any(|(_, _, n, _)| *n);
                     let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>)> =
                         results.iter().find(|(_, _, _, loot)| loot.is_some()).cloned();
+                    let mut combat_level_up: Option<(String, u32)> = None;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
                         if use_warcry { p.pending_warcry = false; }
@@ -1056,6 +1077,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
                                 p.vitals.on_level_up(p.level());
+                                combat_level_up = Some((p.name.clone(), p.level()));
                             }
                             // 吸血：擊殺後回復 2 HP。
                             let ls = crate::refinement::enchant_lifesteal_hp(enchant);
@@ -1067,6 +1089,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let bonus = crate::class::hp_bonus(&p.masteries);
                             if bonus > 0 {
                                 p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
+                            }
+                        }
+                    }
+                    // NPC 升等賀詞（ROADMAP 84）：戰鬥升等時凱爾長老私信賀詞 / 全服廣播。
+                    if let Some((pname, new_lv)) = combat_level_up {
+                        let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
+                        match action {
+                            crate::npc_level_greet::LevelGreetAction::WorldBroadcast { message } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🌟 [{}] 全服宣告：「{}」",
+                                    crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                                ));
+                            }
+                            crate::npc_level_greet::LevelGreetAction::DirectMessage { message } => {
+                                let _ = tx_direct.try_send(format!(
+                                    "💬 [{}] 悄聲道：「{}」",
+                                    crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                                ));
                             }
                         }
                     }
@@ -3149,20 +3189,43 @@ fn on_daily_task_completed(
     tx: &tokio::sync::mpsc::Sender<String>,
 ) {
     // 乙太 + EXP 獎勵。
-    let pname = {
+    let (pname, daily_level_up): (String, Option<u32>) = {
         let mut players = app.players.write().unwrap();
         if let Some(p) = players.get_mut(&uid) {
             p.ether = p.ether.saturating_add(crate::daily_quest::DAILY_TASK_ETHER_REWARD);
             let old_level = p.level();
             p.exp = p.exp.saturating_add(crate::daily_quest::DAILY_TASK_EXP_REWARD);
-            if p.level() > old_level {
+            let new_lv = if p.level() > old_level {
                 p.vitals.on_level_up(p.level());
-            }
-            p.name.clone()
+                Some(p.level())
+            } else {
+                None
+            };
+            (p.name.clone(), new_lv)
         } else {
-            String::new()
+            (String::new(), None)
         }
     };
+    // NPC 升等賀詞（ROADMAP 84）：每日任務升等時凱爾長老私信賀詞 / 全服廣播。
+    if let Some(new_lv) = daily_level_up {
+        if !pname.is_empty() {
+            let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
+            match action {
+                crate::npc_level_greet::LevelGreetAction::WorldBroadcast { message } => {
+                    let _ = app.tx_chat.send(format!(
+                        "🌟 [{}] 全服宣告：「{}」",
+                        crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                    ));
+                }
+                crate::npc_level_greet::LevelGreetAction::DirectMessage { message } => {
+                    let _ = tx.try_send(format!(
+                        "💬 [{}] 悄聲道：「{}」",
+                        crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
+                    ));
+                }
+            }
+        }
+    }
     // 送出更新給本人。
     let msg = ServerMsg::DailyQuestsUpdate { tasks: views, done_count };
     if let Ok(json) = serde_json::to_string(&msg) {

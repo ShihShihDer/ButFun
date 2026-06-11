@@ -555,6 +555,8 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 升等賀詞（ROADMAP 84）：推進全服廣播冷卻倒數。
+            app.npc_level_greet.write().unwrap().tick(dt);
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器。

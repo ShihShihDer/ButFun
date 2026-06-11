@@ -785,6 +785,8 @@ pub struct AppState {
     pub npc_defeat_reaction: Arc<RwLock<crate::npc_defeat_reaction::NpcDefeatReactionState>>,
     /// 落敗反應專屬 Semaphore（容量 1）：同時最多一個 AI 反應呼叫。
     pub npc_defeat_reaction_sem: Arc<Semaphore>,
+    /// NPC 升等賀詞系統（ROADMAP 84）：玩家升等時凱爾長老私信賀詞、里程碑全服廣播，純記憶體模式。
+    pub npc_level_greet: Arc<RwLock<crate::npc_level_greet::NpcLevelGreetState>>,
 }
 
 impl AppState {
@@ -910,6 +912,7 @@ impl AppState {
             npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
             npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
+            npc_level_greet: Arc::new(RwLock::new(crate::npc_level_greet::NpcLevelGreetState::new())),
         }
     }
 
