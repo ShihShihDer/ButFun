@@ -824,6 +824,9 @@ pub struct AppState {
     pub sprinklers: Arc<RwLock<crate::sprinkler::SprinklerStore>>,
     /// 灑水器持久化 store（ROADMAP 112）：INSERT 到 DB + 啟動 SELECT 全載。
     pub sprinkler_persist: crate::sprinkler::SprinklerPersist,
+    /// 商人有限金庫（ROADMAP 100）：收購從金庫付，商隊定期回補，終結無限印鈔。
+    /// 記憶體模式，重啟從初始值開始（金庫代表「當前商隊現金」，重啟等同換班補貨）。
+    pub npc_treasury: Arc<RwLock<crate::npc_treasury::NpcTreasuryState>>,
 }
 
 impl AppState {
@@ -969,6 +972,7 @@ impl AppState {
                 Arc::new(RwLock::new(store))
             },
             sprinkler_persist,
+            npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
         }
     }
 
