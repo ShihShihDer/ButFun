@@ -465,10 +465,7 @@ async fn upsert_user(pool: &PgPool, u: &User) -> Result<(), sqlx::Error> {
 async fn load_from_db(pool: &PgPool) -> Vec<User> {
     let rows = match sqlx::query(
         "SELECT id, provider, external_id, email, name, species, created_at, \
-           COALESCE(hair_style,0) AS hair_style, \
-           COALESCE(skin_tone,0) AS skin_tone, \
-           COALESCE(goggle_color,0) AS goggle_color, \
-           COALESCE(costume,0) AS costume \
+           hair_style, skin_tone, goggle_color, costume \
          FROM users",
     )
     .fetch_all(pool)
