@@ -102,6 +102,9 @@ pub async fn connect() -> Result<Option<PgPool>, sqlx::Error> {
     let pool = PgPoolOptions::new().max_connections(5).connect(&url).await?;
 
     // 套用 migrations/ 下的所有 migration（已套過的會被 sqlx 跳過，冪等）。
+    // ⚠️ `sqlx::migrate!` 在編譯期內嵌 migrations/；新增 migration 檔在增量編譯下不會自動
+    //    重新展開此巨集（deploy.sh 已加 `touch src/db.rs` 強制每次部署重新內嵌）——
+    //    若見 `Migrate(VersionMissing(N))` 開機 panic，就是 binary 內嵌的 migration 落後 DB。
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     Ok(Some(pool))

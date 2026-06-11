@@ -66,6 +66,11 @@ if [ -x "$BIN" ]; then
 fi
 
 echo "[deploy] 建置…"
+# sqlx::migrate! 在 src/db.rs 編譯期把 migrations/ 內嵌進 binary。增量編譯下，**新增**
+# migration 檔不會自動讓那個巨集重新展開 → binary 內嵌的 migration 會停在舊集合，配上
+# DB 已套用的新版本就開機 panic（Migrate(VersionMissing(N))，prod-down crash loop）。
+# 每次部署前 touch db.rs，強制重新內嵌「當前所有」migration，根治這類崩潰。
+touch "$REPO/src/db.rs"
 cargo build --release
 
 # wasm 地形（空氣牆根治）：world-core 編成 .wasm 供前端載入，前後端同一份實作。
