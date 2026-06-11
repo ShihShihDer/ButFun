@@ -64,10 +64,19 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
-/// 讓玩家能直接花乙太買工具，不一定要先湊齊合成素材（但自己合成更便宜）。
+///
+/// 設計原則（ROADMAP 103 買賣價差）：同物品「販售價 > 收購價」，
+/// 確保玩家向此 NPC 買了再賣回永遠虧本，杜絕同 NPC 套利迴圈。
+/// - 工具：合成更便宜；NPC 提供緊急備品（含合成成本溢價）。
+/// - 基礎素材（木材/石頭/泥土）：自行採集為零，NPC 販售為 3 乙太/個（收購僅 1 乙太）；
+///   玩家花錢節省時間，但不可能靠倒賣賺回來（買 3、賣 1 = 虧 2）。
 pub const NPC_SELL_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::Pickaxe, price_per: 15 },
     ShopEntry { item: ItemKind::Weapon,  price_per: 25 },
+    // 基礎素材（ROADMAP 103）：販售價 3x 收購價，提供「花錢省時間」選項，阻止同 NPC 套利。
+    ShopEntry { item: ItemKind::Wood,    price_per: 3  },
+    ShopEntry { item: ItemKind::Stone,   price_per: 3  },
+    ShopEntry { item: ItemKind::Dirt,    price_per: 3  },
 ];
 
 /// 翠幽星商人在世界上的位置：翠幽星出生點附近偏左，讓玩家傳送後立刻看得到商人。
@@ -297,6 +306,29 @@ pub fn sell_to_origin_npc(inv: &mut Inventory, ether: u32, item: ItemKind, qty: 
     Some(ether.saturating_add(earned))
 }
 
+/// 偵測 buy_list 與 sell_list 之間是否存在可套利的物品（ROADMAP 103）。
+///
+/// 「同 NPC 套利」成立條件：同一物品在兩張清單都有，且 buy_price >= sell_price。
+/// 玩家可以「向 NPC 以 sell_price 買入 → 立刻以 buy_price 賣回同 NPC」並不虧本甚至獲利。
+///
+/// 回傳所有問題項的 `(item, buy_price, sell_price)` 列表；
+/// 正常情況下應為空 Vec——守不變量的關鍵是 sell_price > buy_price。
+pub fn find_arbitrageable_items(
+    buy_list: &[ShopEntry],
+    sell_list: &[ShopEntry],
+) -> Vec<(ItemKind, u32, u32)> {
+    let mut result = Vec::new();
+    for buy_entry in buy_list {
+        if let Some(sell_entry) = sell_list.iter().find(|e| e.item == buy_entry.item) {
+            // sell_price 必須嚴格大於 buy_price；等於也是套利（至少不虧）
+            if sell_entry.price_per <= buy_entry.price_per {
+                result.push((buy_entry.item, buy_entry.price_per, sell_entry.price_per));
+            }
+        }
+    }
+    result
+}
+
 /// 玩家是否在商人互動範圍內。純函式，便於測試。
 pub fn is_within_shop_reach(px: f32, py: f32) -> bool {
     let (mx, my) = merchant_pos();
@@ -443,8 +475,8 @@ mod tests {
     #[test]
     fn buy_unlisted_item_fails() {
         let mut inv = Inventory::new();
-        // NPC 不賣木材
-        let result = buy_from_npc(&mut inv, 100, ItemKind::Wood, 1);
+        // NPC 不賣晶石碎片（只收購，不販售）
+        let result = buy_from_npc(&mut inv, 100, ItemKind::CrystalShard, 1);
         assert!(result.is_none());
         assert!(inv.is_empty());
     }
@@ -562,7 +594,106 @@ mod tests {
     #[test]
     fn buy_discounted_unlisted_fails() {
         let mut inv = Inventory::new();
-        let r = buy_from_npc_discounted(&mut inv, 100, ItemKind::Wood, 1, 15);
+        // CrystalShard 不在販售清單（只在收購清單）
+        let r = buy_from_npc_discounted(&mut inv, 100, ItemKind::CrystalShard, 1, 15);
         assert!(r.is_none(), "不在販售清單的物品打折後也應失敗");
+    }
+
+    // ── ROADMAP 103：買賣價差 ────────────────────────────────────────────────
+
+    #[test]
+    fn no_arbitrage_in_home_npc_lists() {
+        // 故鄉商人同物品：販售價必須嚴格大於收購價，否則玩家可同 NPC 套利。
+        let problems = find_arbitrageable_items(NPC_BUY_LIST, NPC_SELL_LIST);
+        assert!(
+            problems.is_empty(),
+            "故鄉商人存在可套利的物品（sell_price <= buy_price）：{:?}",
+            problems
+        );
+    }
+
+    #[test]
+    fn basic_materials_have_sell_premium_over_buy_price() {
+        // 木材、石頭、泥土的販售價應嚴格大於收購價（至少 2 倍以上）。
+        for item in [ItemKind::Wood, ItemKind::Stone, ItemKind::Dirt] {
+            let buy_price = NPC_BUY_LIST.iter().find(|e| e.item == item)
+                .expect("基礎素材應在收購清單").price_per;
+            let sell_price = NPC_SELL_LIST.iter().find(|e| e.item == item)
+                .expect("基礎素材應在販售清單").price_per;
+            assert!(
+                sell_price > buy_price,
+                "{:?} 販售價 {} 應 > 收購價 {}",
+                item, sell_price, buy_price
+            );
+            assert!(
+                sell_price >= buy_price * 2,
+                "{:?} 利差不足（販售應至少 2x 收購）：sell={} buy={}",
+                item, sell_price, buy_price
+            );
+        }
+    }
+
+    #[test]
+    fn buy_basic_material_wood_succeeds() {
+        // 玩家可以花乙太向故鄉商人購買木材（ROADMAP 103 新功能）。
+        let mut inv = Inventory::new();
+        let wood_sell_price = NPC_SELL_LIST.iter().find(|e| e.item == ItemKind::Wood)
+            .unwrap().price_per;
+        let new_ether = buy_from_npc(&mut inv, wood_sell_price + 5, ItemKind::Wood, 1);
+        assert!(new_ether.is_some(), "有足夠乙太時應可購買木材");
+        assert_eq!(inv.count(ItemKind::Wood), 1);
+        assert_eq!(new_ether.unwrap(), 5, "餘額應扣除 wood_sell_price");
+    }
+
+    #[test]
+    fn buy_and_sell_back_always_loses_money() {
+        // 同 NPC 套利驗證：以販售價買入、以收購價賣回，必定虧本。
+        for entry in NPC_SELL_LIST {
+            if let Some(buy_entry) = NPC_BUY_LIST.iter().find(|e| e.item == entry.item) {
+                // sell_price > buy_price → 買入再賣回 = 虧損
+                assert!(
+                    entry.price_per > buy_entry.price_per,
+                    "{:?} 套利迴圈未封住：買入 {} 乙太，賣回 {} 乙太",
+                    entry.item, entry.price_per, buy_entry.price_per
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrage_detector_catches_equal_price() {
+        // 偵測器應抓出 sell_price == buy_price 的情況（等於也算套利：零損失循環）。
+        let buy_list = vec![ShopEntry { item: ItemKind::Wood, price_per: 3 }];
+        let sell_list = vec![ShopEntry { item: ItemKind::Wood, price_per: 3 }]; // 等於
+        let problems = find_arbitrageable_items(&buy_list, &sell_list);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].0, ItemKind::Wood);
+    }
+
+    #[test]
+    fn arbitrage_detector_catches_sell_below_buy() {
+        // 販售價低於收購價 → 正向套利，偵測器必須抓到。
+        let buy_list = vec![ShopEntry { item: ItemKind::Stone, price_per: 5 }];
+        let sell_list = vec![ShopEntry { item: ItemKind::Stone, price_per: 3 }];
+        let problems = find_arbitrageable_items(&buy_list, &sell_list);
+        assert_eq!(problems.len(), 1);
+    }
+
+    #[test]
+    fn arbitrage_detector_passes_correct_spread() {
+        // sell_price > buy_price → 無套利，偵測器回空 Vec。
+        let buy_list = vec![ShopEntry { item: ItemKind::Wood, price_per: 1 }];
+        let sell_list = vec![ShopEntry { item: ItemKind::Wood, price_per: 3 }];
+        let problems = find_arbitrageable_items(&buy_list, &sell_list);
+        assert!(problems.is_empty(), "buy=1 sell=3 不應觸發套利警報");
+    }
+
+    #[test]
+    fn arbitrage_detector_ignores_non_overlapping_items() {
+        // 兩張清單物品各異（無重疊）→ 自然無套利，偵測器回空。
+        let buy_list = vec![ShopEntry { item: ItemKind::Wood, price_per: 1 }];
+        let sell_list = vec![ShopEntry { item: ItemKind::Pickaxe, price_per: 15 }];
+        let problems = find_arbitrageable_items(&buy_list, &sell_list);
+        assert!(problems.is_empty());
     }
 }
