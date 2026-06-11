@@ -90,6 +90,9 @@
   let listings = [];
   // 伺服器廣播的 NPC（目前只有新手村商人，含 x/y/buy_list/sell_list）。
   let npcs = [];
+  // NPC 對話泡泡（ROADMAP 92）：npc_id → { text, wx, wy, expireAt }。
+  // 收到 npc_speech 事件時寫入，drawNpcSpeechBubbles 每幀讀取並淡出。
+  const npcSpeechBubbles = new Map();
   // 地形格 delta（玩家挖/建後偏離確定性生成的差異）：Map<"cx,cy,tx,ty" → kind>。
   // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
   const tileDeltaMap = new Map();
@@ -840,6 +843,15 @@
         // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。路由到對應 NPC 的聊天欄。
         npcChatThinking(msg.npc || "merchant", false);
         appendNpcChat(msg.npc || "merchant", msg.display || "NPC", msg.text, "npc");
+        break;
+      case "npc_speech":
+        // NPC 對話泡泡（ROADMAP 92）：在說話者 NPC 頭頂顯示對話泡泡，幾秒後自動淡出。
+        npcSpeechBubbles.set(msg.npc_id, {
+          text: msg.text || "",
+          wx: msg.wx || 0,
+          wy: msg.wy || 0,
+          expireAt: performance.now() + (msg.display_secs || 8) * 1000,
+        });
         break;
       case "village_event":
         // 里長自主辦村落節慶（ROADMAP 64）：全服廣播，顯示公告。
@@ -2719,6 +2731,7 @@
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
+    drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -5123,6 +5136,114 @@
 
       ctx.restore();
     }
+  }
+
+  // NPC 對話泡泡（ROADMAP 92）：在各 NPC 頭頂畫圓角對話框，幾秒後自動淡出。
+  // 每幀清理過期泡泡，最多同時顯示 5 個（先入先出上限，防止積壓）。
+  function drawNpcSpeechBubbles(camX, camY) {
+    const now = performance.now();
+    const FADE_MS = 1200; // 最後 1.2 秒漸隱
+    const BUBBLE_W_MAX = 160;
+    const BUBBLE_PAD_X = 10;
+    const BUBBLE_PAD_Y = 6;
+    const FONT_SIZE = 11;
+    const LINE_H = FONT_SIZE + 3;
+
+    ctx.save();
+    ctx.font = `${FONT_SIZE}px sans-serif`;
+    ctx.textBaseline = "top";
+
+    for (const [npcId, b] of npcSpeechBubbles) {
+      const remaining = b.expireAt - now;
+      if (remaining <= 0) {
+        npcSpeechBubbles.delete(npcId);
+        continue;
+      }
+
+      // NPC 畫面座標（以世界座標 + 相機偏移算出）
+      const sx = b.wx - camX;
+      const sy = b.wy - camY;
+
+      // NPC 在螢幕外就不畫
+      if (sx < -BUBBLE_W_MAX - 20 || sx > viewW + BUBBLE_W_MAX + 20 ||
+          sy < -120 || sy > viewH + 60) continue;
+
+      // 淡出 alpha
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+
+      // 文字折行（最大寬度 BUBBLE_W_MAX - 2*PAD）
+      const maxTextW = BUBBLE_W_MAX - BUBBLE_PAD_X * 2;
+      const words = b.text.split("");
+      const lines = [];
+      let line = "";
+      for (const ch of words) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxTextW && line.length > 0) {
+          lines.push(line);
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) lines.push(line);
+
+      const bubbleH = BUBBLE_PAD_Y * 2 + lines.length * LINE_H;
+      const bubbleW = Math.min(
+        BUBBLE_W_MAX,
+        Math.max(...lines.map(l => ctx.measureText(l).width)) + BUBBLE_PAD_X * 2
+      );
+
+      // NPC 頭頂往上偏移（約 NPC 高度 40px + 泡泡高度 + 尾巴 8px）
+      const bx = sx - bubbleW / 2;
+      const by = sy - 45 - bubbleH - 8;
+
+      ctx.globalAlpha = alpha * 0.92;
+
+      // 泡泡背景（圓角白框 + 淺陰影）
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1.5;
+      const r = 8;
+      ctx.beginPath();
+      ctx.moveTo(bx + r, by);
+      ctx.lineTo(bx + bubbleW - r, by);
+      ctx.arcTo(bx + bubbleW, by, bx + bubbleW, by + r, r);
+      ctx.lineTo(bx + bubbleW, by + bubbleH - r);
+      ctx.arcTo(bx + bubbleW, by + bubbleH, bx + bubbleW - r, by + bubbleH, r);
+      ctx.lineTo(bx + r, by + bubbleH);
+      ctx.arcTo(bx, by + bubbleH, bx, by + bubbleH - r, r);
+      ctx.lineTo(bx, by + r);
+      ctx.arcTo(bx, by, bx + r, by, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // 小尾巴（三角指向 NPC 頭頂）
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(sx - 6, by + bubbleH);
+      ctx.lineTo(sx + 6, by + bubbleH);
+      ctx.lineTo(sx, by + bubbleH + 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(sx - 6, by + bubbleH);
+      ctx.lineTo(sx, by + bubbleH + 8);
+      ctx.lineTo(sx + 6, by + bubbleH);
+      ctx.stroke();
+
+      // 文字
+      ctx.fillStyle = "#333";
+      ctx.globalAlpha = alpha;
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], bx + BUBBLE_PAD_X, by + BUBBLE_PAD_Y + i * LINE_H);
+      }
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
   }
 
   function drawMerchantLook(sx, by, id, name) {

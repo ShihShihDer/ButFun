@@ -138,6 +138,15 @@ fn state_to_pos(n: &NpcState) -> (f32, f32) {
     (n.x, n.y)
 }
 
+/// 取得 NPC 的崗位座標作為後備（`get_pos` 找不到時使用）。
+/// 確保即使 NPC 尚未初始化，NpcSpeech 泡泡仍有合理的預設定位點。
+pub fn fallback_pos(id: &str) -> (f32, f32) {
+    VILLAGE_NPCS.iter()
+        .find(|s| s.id == id)
+        .map(|s| (s.station_pos.x, s.station_pos.y))
+        .unwrap_or((2400.0, 2200.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +182,19 @@ mod tests {
         let merchant = mgr.npcs.get("merchant").unwrap();
         assert_eq!(merchant.x, 2120.0);
         assert_eq!(merchant.y, 2328.0);
+    }
+
+    #[test]
+    fn fallback_pos_returns_station_for_known_npc() {
+        let (x, y) = fallback_pos("merchant");
+        assert_eq!(x, 2120.0);
+        assert_eq!(y, 2328.0);
+    }
+
+    #[test]
+    fn fallback_pos_returns_default_for_unknown_npc() {
+        let (x, y) = fallback_pos("unknown_npc_xyz");
+        // 預設廣場座標，保證不是 0
+        assert!(x > 0.0 && y > 0.0, "未知 NPC 後備座標應有合理預設");
     }
 }

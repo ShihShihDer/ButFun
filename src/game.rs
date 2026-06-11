@@ -764,9 +764,14 @@ pub fn spawn(app: AppState) {
                 };
                 if let Some(pair) = talk_pair {
                     let tx_chat = app.tx_chat.clone();
+                    let tx = app.tx.clone();
                     let sem = app.plaza_talk_sem.clone();
                     let speaker_id = pair.speaker_id;
                     let listener_id = pair.listener_id;
+                    // 取說話者目前世界座標（夜間位置），供 NpcSpeech 泡泡定位。
+                    let (wx, wy) = app.npc_schedule.read().unwrap()
+                        .get_pos(speaker_id)
+                        .unwrap_or_else(|| crate::npc_schedule::fallback_pos(speaker_id));
                     tokio::spawn(async move {
                         // 非阻塞嘗試取得 Semaphore；若已有夜談進行中則直接略過。
                         let Ok(_permit) = sem.try_acquire_owned() else { return };
@@ -776,6 +781,15 @@ pub fn spawn(app: AppState) {
                         let _ = tx_chat.send(format!(
                             "🌙 [{s_name}] 對 [{l_name}] 說：「{text}」"
                         ));
+                        // ROADMAP 92：同時廣播 NpcSpeech，前端在 NPC 頭頂畫對話泡泡。
+                        let _ = tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id: speaker_id.to_string(),
+                            npc_name: s_name.to_string(),
+                            text,
+                            display_secs: 8,
+                            wx,
+                            wy,
+                        }));
                     });
                 }
             }
@@ -791,9 +805,14 @@ pub fn spawn(app: AppState) {
                 };
                 if let Some(pair) = talk_pair {
                     let tx_chat = app.tx_chat.clone();
+                    let tx = app.tx.clone();
                     let sem = app.daytime_talk_sem.clone();
                     let speaker_id = pair.speaker_id;
                     let listener_id = pair.listener_id;
+                    // 取說話者目前世界座標（白天崗位），供 NpcSpeech 泡泡定位。
+                    let (wx, wy) = app.npc_schedule.read().unwrap()
+                        .get_pos(speaker_id)
+                        .unwrap_or_else(|| crate::npc_schedule::fallback_pos(speaker_id));
                     tokio::spawn(async move {
                         // 非阻塞嘗試取得 Semaphore；若已有白日對話進行中則直接略過。
                         let Ok(_permit) = sem.try_acquire_owned() else { return };
@@ -803,6 +822,15 @@ pub fn spawn(app: AppState) {
                         let _ = tx_chat.send(format!(
                             "☀️ [{s_name}] 對 [{l_name}] 說：「{text}」"
                         ));
+                        // ROADMAP 92：同時廣播 NpcSpeech，前端在 NPC 頭頂畫對話泡泡。
+                        let _ = tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id: speaker_id.to_string(),
+                            npc_name: s_name.to_string(),
+                            text,
+                            display_secs: 8,
+                            wx,
+                            wy,
+                        }));
                     });
                 }
             }

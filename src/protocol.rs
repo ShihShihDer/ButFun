@@ -510,6 +510,18 @@ pub enum ServerMsg {
     /// 里長自主決定辦「村落節慶」——廣播給所有連線玩家。
     /// 收到後前端顯示公告橫幅 + 金色光暈；`duration_secs` 秒內 EXP 加成 +30%。
     VillageEvent { message: String, duration_secs: u64, new_treasury: u32 },
+    /// NPC 對話泡泡（ROADMAP 92）：NPC 互聊時廣播，前端在說話者頭頂畫對話泡泡。
+    /// 同時保留既有 Chat 廣播（聊天頻道記錄），兩者互補。
+    /// `npc_id`：說話者穩定 id；`npc_name`：顯示名；`text`：對話內容；
+    /// `display_secs`：泡泡顯示秒數；`wx`/`wy`：說話者世界座標（讓前端定位到頭頂）。
+    NpcSpeech {
+        npc_id: String,
+        npc_name: String,
+        text: String,
+        display_secs: u32,
+        wx: f32,
+        wy: f32,
+    },
 }
 
 /// 排行榜單筆條目（ROADMAP 33）。
