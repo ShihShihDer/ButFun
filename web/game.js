@@ -1213,18 +1213,22 @@
   // 三層效果：① 全時段柔光暈圈（邊緣弱化）給世界空氣感與深度；② 黎明/黃昏天空→地面
   // 色溫梯度；③ 夜間城鎮燈籠暖光（主城中央 + 四城門），用 lighter blend 在暗色世界
   // 局部補亮。純視覺不碰遊戲狀態，效能極輕（5 個 radialGradient/幀）。
-  // 燈籠光源位置（對齊 TOWNS[0] + VillageLandmark）。
-  const LANTERNS = (() => {
-    const t = TOWNS[0]; // 主城，cgx:73 cgy:71 half:34
-    const S = TS;
-    return [
-      { wx: 2344,                              wy: 2296,                                r: 340, main: true },   // 村燈塔中心
-      { wx: (t.cgx - 2 + 0.5) * S,             wy: (t.cgy - t.half + 2 + 0.5) * S,    r: 130 }, // 北門
-      { wx: (t.cgx + 2 + 0.5) * S,             wy: (t.cgy + t.half - 2 + 0.5) * S,    r: 130 }, // 南門
-      { wx: (t.cgx - t.half + 2 + 0.5) * S,    wy: (t.cgy + 2 + 0.5) * S,             r: 130 }, // 西門
-      { wx: (t.cgx + t.half - 2 + 0.5) * S,    wy: (t.cgy - 2 + 0.5) * S,             r: 130 }, // 東門
-    ];
-  })();
+  // 燈籠光源：懶初始化（TOWNS 在檔案較後宣告，不可在此 IIFE 執行時就存取，會 TDZ crash）。
+  let _lanternsCache = null;
+  function getLanterns() {
+    if (!_lanternsCache) {
+      const t = TOWNS[0]; // 主城，cgx:73 cgy:71 half:34
+      const S = TS;
+      _lanternsCache = [
+        { wx: 2344,                              wy: 2296,                                r: 340, main: true },   // 村燈塔中心
+        { wx: (t.cgx - 2 + 0.5) * S,             wy: (t.cgy - t.half + 2 + 0.5) * S,    r: 130 }, // 北門
+        { wx: (t.cgx + 2 + 0.5) * S,             wy: (t.cgy + t.half - 2 + 0.5) * S,    r: 130 }, // 南門
+        { wx: (t.cgx - t.half + 2 + 0.5) * S,    wy: (t.cgy + 2 + 0.5) * S,             r: 130 }, // 西門
+        { wx: (t.cgx + t.half - 2 + 0.5) * S,    wy: (t.cgy - 2 + 0.5) * S,             r: 130 }, // 東門
+      ];
+    }
+    return _lanternsCache;
+  }
 
   function drawAmbientLight(camX, camY, now) {
     if (!daynight) return;
@@ -1284,7 +1288,7 @@
       const intensity = Math.min(1, (dark - 0.18) / 0.45);
       const pulse = reduceMotion ? 1 : 0.90 + 0.10 * Math.sin(now / 2000);
       ctx.globalCompositeOperation = "lighter";
-      for (const ln of LANTERNS) {
+      for (const ln of getLanterns()) {
         const sx = ln.wx - camX, sy = ln.wy - camY;
         if (sx < -ln.r * 2 || sx > viewW + ln.r * 2 || sy < -ln.r * 2 || sy > viewH + ln.r * 2) continue;
         const a = intensity * pulse * (ln.main ? 0.18 : 0.12);
