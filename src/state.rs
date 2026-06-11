@@ -781,6 +781,10 @@ pub struct AppState {
     pub daytime_talk_sem: Arc<Semaphore>,
     /// NPC 自主懸賞系統（ROADMAP 82）：蘭卡根據安全感發布通緝令，討伐者得獎。
     pub npc_bounty: Arc<RwLock<crate::npc_bounty::NpcBountyState>>,
+    /// NPC 落敗反應系統（ROADMAP 83）：玩家倒地時 NPC 廣播慰問 / 警示，純記憶體模式，重啟清零。
+    pub npc_defeat_reaction: Arc<RwLock<crate::npc_defeat_reaction::NpcDefeatReactionState>>,
+    /// 落敗反應專屬 Semaphore（容量 1）：同時最多一個 AI 反應呼叫。
+    pub npc_defeat_reaction_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -904,6 +908,8 @@ impl AppState {
             daytime_talk: Arc::new(RwLock::new(crate::daytime_talk::DaytimeTalkState::new())),
             daytime_talk_sem: Arc::new(Semaphore::new(crate::daytime_talk::MAX_CONCURRENT_TALKS)),
             npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
+            npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
+            npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
         }
     }
 
