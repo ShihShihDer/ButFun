@@ -751,6 +751,10 @@ pub struct AppState {
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
     /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
     pub traveler: Arc<RwLock<crate::traveler_npc::TravelerNpc>>,
+    /// 怪物王咆哮狀態（ROADMAP 75）：追蹤各菁英精英的咆哮冷卻，純記憶體模式，重啟清零。
+    pub boss_roar: Arc<RwLock<crate::boss_roar::BossRoarState>>,
+    /// 怪物王咆哮專屬 Semaphore（容量 1）：同時最多一個 AI 咆哮呼叫，不佔用 NPC LLM 配額。
+    pub boss_roar_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -859,6 +863,8 @@ impl AppState {
             npc_factions: Arc::new(RwLock::new(crate::npc_factions::NpcFactionState::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
+            boss_roar: Arc::new(RwLock::new(crate::boss_roar::BossRoarState::new())),
+            boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
         }
     }
 
