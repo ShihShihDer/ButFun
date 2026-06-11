@@ -334,6 +334,8 @@
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
   let farmCropPlots = []; // ROADMAP 49 農作狀態 [{plot_id, crops:[{kind,ripe}]}]
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
+  let sprinklers = []; // ROADMAP 112 灑水器 [{owner, wx, wy}]
+  let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -635,6 +637,7 @@
         ranchPlots = msg.ranch_plots || [];
         farmCropPlots = msg.farm_crop_plots || [];
         starCrystals = msg.star_crystals || [];
+        sprinklers = msg.sprinklers || [];
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -2896,6 +2899,7 @@
     drawGround(camX, camY);
     drawTerrain(camX, camY); // 可挖地形方塊（C-1 純顯示，在地表之上、農地之下）
     drawField(camX, camY);
+    drawSprinklers(camX, camY); // 灑水器（ROADMAP 112）畫在農地之上、採集節點之下
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
@@ -4048,6 +4052,23 @@
   // 別人的地照常畫、標上地主名，但點不動（伺服器也只接受對自己地的動作）。
   function drawField(camX, camY) {
     for (const f of fields) drawOnePlot(camX, camY, f);
+  }
+
+  // ---- 灑水器（ROADMAP 112）----
+  function drawSprinklers(camX, camY) {
+    if (!sprinklers.length) return;
+    ctx.save();
+    ctx.font = "18px serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const s of sprinklers) {
+      const sx = s.wx - camX;
+      const sy = s.wy - camY;
+      // 只畫在視窗範圍附近
+      if (sx < -32 || sx > canvas.width + 32 || sy < -32 || sy > canvas.height + 32) continue;
+      ctx.fillText("💧", sx, sy);
+    }
+    ctx.restore();
   }
 
   // ---- 採集節點（Phase 1-A：樹/石/乙太礦）----
@@ -5816,9 +5837,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -5952,6 +5973,8 @@
         const isSelected = selectedBuildMaterial === s.item;
         const placeBtn = PLACEABLE.has(s.item)
           ? `<button class="bag-place-btn${isSelected ? " selected" : ""}" data-material="${s.item}" title="${isSelected ? "取消放置選取" : "選取放置此材料"}">${isSelected ? "✅放置" : "🏗️選取"}</button>`
+          : s.item === "sprinkler"
+          ? `<button class="bag-sprinkler-btn${placingSprinkler ? " selected" : ""}" title="${placingSprinkler ? "取消放置灑水器" : "放置灑水器（點擊農地範圍內）"}">${placingSprinkler ? "✅選位置…" : "💧放置"}</button>`
           : "";
         const desc = CONSUMABLE_DESC[s.item] || "";
         const useBtn = CONSUMABLE.has(s.item)
@@ -5986,6 +6009,14 @@
         try { ws.send(JSON.stringify({ type: "use_item", item })); } catch {}
         // 星圖：本地展示多星球前奏彈窗（消耗由伺服器扣，這邊只負責視覺饗宴）。
         if (item === "star_chart") showStarChartDialog();
+      });
+    });
+    // 綁定 bag-sprinkler-btn：切換「放置灑水器」模式（點農地範圍內的位置後 ws 送 place_sprinkler）。
+    body.querySelectorAll(".bag-sprinkler-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        placingSprinkler = !placingSprinkler;
+        updateBagHud(inv, equippedWeapon, equippedArmor, equippedAccessory);
       });
     });
     // 綁定 bag-equip-btn 點擊事件：送 equip_item 訊息，伺服器把背包物品移至裝備槽。
@@ -9222,6 +9253,15 @@
     const rect = canvas.getBoundingClientRect();
     const wx = clientX - rect.left + lastCam.x;
     const wy = clientY - rect.top + lastCam.y;
+
+    // C-5 灑水器放置：進入 placingSprinkler 模式後，點世界任意位置送 place_sprinkler。
+    // 伺服器會驗證是否在農地 FARM_REACH 內，前端只負責送座標與重置模式。
+    if (me && placingSprinkler) {
+      ws.send(JSON.stringify({ type: "place_sprinkler", wx, wy }));
+      placingSprinkler = false;
+      spawnTapFlash(wx, wy);
+      return;
+    }
 
     // C-4 建造（手機/觸控放置）：選了材料時，點「搆得到的空格」就放回去（右鍵只有桌面能用，
     // 手機靠這條，否則挖了放不回去）。擺在挖掘之前：空格才放、實心格仍走下面的挖掘。

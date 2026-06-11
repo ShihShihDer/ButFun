@@ -206,6 +206,11 @@ pub enum ItemKind {
     StarCrystalShard,
     /// 夜幻藥水🌙（合成：星晶碎片×3 → 夜幻藥水×1）。使用後回復 20 HP——夜間探索的強效補給。
     NightPotion,
+
+    // ── 農耕自動化（ROADMAP 112 灑水器）──────────────────────────────────────
+    /// 灑水器💧（合成：木材×3 + 石頭×3 → 灑水器×1）。
+    /// 放置於農地旁，每 30 秒自動澆灌周圍 2 格的作物，省去手動跑格的重複勞動。
+    Sprinkler,
 }
 
 impl ItemKind {
@@ -272,6 +277,7 @@ impl ItemKind {
         ItemKind::PotatoGratin,
         ItemKind::StarCrystalShard,
         ItemKind::NightPotion,
+        ItemKind::Sprinkler,
     ];
 }
 
@@ -521,13 +527,14 @@ mod tests {
                 | ItemKind::CarrotSoup
                 | ItemKind::PotatoGratin
                 | ItemKind::StarCrystalShard
-                | ItemKind::NightPotion => {}
+                | ItemKind::NightPotion
+                | ItemKind::Sprinkler => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 57 種（含 ROADMAP 50 夜採星晶：StarCrystalShard/NightPotion）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 57, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 58 種（含 ROADMAP 112 灑水器：Sprinkler）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 58, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -795,11 +802,14 @@ mod tests {
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。
             let navigation_tool = item == ItemKind::StarChart;
+            // 9. 是可放置功能物件（PlaceSprinkler 之類的 handler：背包消耗一個 → 放置到世界）。
+            // 放置後在世界發揮功能（自動澆水等），非單純的地形建造材料，故獨立一條。
+            let placeable_functional = item == ItemKind::Sprinkler;
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
                     || building_material || npc_sellable || usable_consumable || useful_armor
-                    || navigation_tool,
+                    || navigation_tool || placeable_functional,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
                  不是有效用的武器或防具／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
