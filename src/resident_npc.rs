@@ -92,6 +92,8 @@ pub enum ResidentLifecycleEvent {
         id_a: String, name_a: &'static str, text_a: String, x_a: f32, y_a: f32,
         id_b: String, name_b: &'static str, text_b: String, x_b: f32, y_b: f32,
     },
+    /// 居民隨機小事件（ROADMAP 122）：偶爾廣播日常生活趣事至世界聊天。
+    MiniEvent { text: String },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -131,6 +133,12 @@ pub const MEET_DIST: f32 = 60.0;
 pub const CHAT_DURATION: f32 = 8.0;
 /// 每位居民每次互動後的冷卻時間（秒）= 3 分鐘。
 pub const CHAT_COOLDOWN: f32 = 180.0;
+
+// ── 居民隨機小事件計時器常數（ROADMAP 122）────────────────────────────────────
+/// 小事件最短間隔（秒）= 20 分鐘。
+pub const MINI_EVENT_TIMER_MIN: f32 = 1200.0;
+/// 小事件最長間隔（秒）= 40 分鐘。
+pub const MINI_EVENT_TIMER_MAX: f32 = 2400.0;
 
 /// 人口下限：世界最冷清時至少這麼多人。
 pub const MIN_POPULATION: usize = 2;
@@ -246,6 +254,11 @@ pub struct ResidentNpc {
     pub chat_remaining: f32,
     /// 上次互動結束後的冷卻秒數（> 0 = 不可再觸發）。
     pub chat_cooldown: f32,
+    // ── 隨機小事件（ROADMAP 122）────────────────────────
+    /// 下次小事件廣播倒數計時（秒）。
+    mini_event_timer: f32,
+    /// 小事件計數（供模板種子輪替）。
+    mini_event_seed: usize,
 }
 
 impl ResidentNpc {
@@ -261,6 +274,7 @@ impl ResidentNpc {
         // 錯開初始計時器，避免所有居民同時噴泡泡或廣播。
         let thought_offset = rng.gen_range(0.0..THOUGHT_TIMER_MAX);
         let work_offset = rng.gen_range(0.0..WORK_TIMER_MAX);
+        let mini_offset = rng.gen_range(0.0..MINI_EVENT_TIMER_MAX);
         Self {
             id: format!("resident_{}", index),
             name,
@@ -280,6 +294,8 @@ impl ResidentNpc {
             work_broadcast_count: index,
             chat_remaining: 0.0,
             chat_cooldown: 0.0,
+            mini_event_timer: MINI_EVENT_TIMER_MIN + mini_offset,
+            mini_event_seed: index,
         }
     }
 
@@ -406,6 +422,16 @@ impl ResidentManager {
                     r.work_broadcast_count += 1;
                 }
                 r.work_timer = self.rng.gen_range(WORK_TIMER_MIN..=WORK_TIMER_MAX);
+            }
+            // 隨機小事件計時（ROADMAP 122）——任何時段皆可觸發，廣播日常生活趣事。
+            r.mini_event_timer -= dt;
+            if r.mini_event_timer <= 0.0 {
+                let text = crate::resident_chat::get_mini_event(
+                    r.persona, r.name, r.mini_event_seed,
+                );
+                events.push(ResidentLifecycleEvent::MiniEvent { text });
+                r.mini_event_seed += 1;
+                r.mini_event_timer = self.rng.gen_range(MINI_EVENT_TIMER_MIN..=MINI_EVENT_TIMER_MAX);
             }
         }
 
@@ -930,5 +956,74 @@ mod tests {
         } else {
             panic!("應有 NeighborChat 事件");
         }
+    }
+
+    // ── ROADMAP 122：居民隨機小事件測試 ──────────────────────────────────────────
+
+    /// mini_event_timer 歸零時應觸發 MiniEvent，且文字包含居民名字。
+    #[test]
+    fn mini_event_fires_when_timer_expires() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].mini_event_timer = 0.0;
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day);
+        assert!(
+            events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
+            "mini_event_timer=0 應觸發 MiniEvent"
+        );
+    }
+
+    /// 觸發後 mini_event_timer 應重置到最小間隔以上。
+    #[test]
+    fn mini_event_timer_resets_after_firing() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].mini_event_timer = 0.0;
+        mgr.tick(0.01, 50, Phase::Day);
+        assert!(
+            mgr.residents[0].mini_event_timer >= MINI_EVENT_TIMER_MIN,
+            "觸發後 mini_event_timer 應重置到最小間隔以上"
+        );
+    }
+
+    /// MiniEvent 文字應包含居民名字。
+    #[test]
+    fn mini_event_text_contains_resident_name() {
+        let mut mgr = ResidentManager::new();
+        let expected_name = mgr.residents[0].name;
+        mgr.residents[0].mini_event_timer = 0.0;
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day);
+        if let Some(ResidentLifecycleEvent::MiniEvent { text }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })) {
+            assert!(text.contains(expected_name), "MiniEvent 文字應包含居民名字 '{expected_name}'，got: {text}");
+        } else {
+            panic!("應有 MiniEvent 事件");
+        }
+    }
+
+    /// 計時器未到時不應觸發（避免洪水廣播）。
+    #[test]
+    fn mini_event_does_not_fire_before_timer() {
+        let mut mgr = ResidentManager::new();
+        // 確保所有居民計時器都遠未到期
+        for r in &mut mgr.residents {
+            r.mini_event_timer = MINI_EVENT_TIMER_MAX;
+        }
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day);
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
+            "計時器未到不應觸發 MiniEvent"
+        );
+    }
+
+    /// 不同居民觸發後 seed 各自獨立遞增（下次會輪到不同模板）。
+    #[test]
+    fn mini_event_seed_increments_independently() {
+        let mut mgr = ResidentManager::new();
+        let seed_before = mgr.residents[0].mini_event_seed;
+        mgr.residents[0].mini_event_timer = 0.0;
+        mgr.tick(0.01, 50, Phase::Day);
+        assert_eq!(
+            mgr.residents[0].mini_event_seed,
+            seed_before + 1,
+            "觸發後 mini_event_seed 應遞增 1"
+        );
     }
 }

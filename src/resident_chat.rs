@@ -274,6 +274,49 @@ pub fn get_chat(persona: ResidentPersona, seed: usize) -> &'static str {
     pool[seed % pool.len()]
 }
 
+// ── 居民隨機小事件模板（ROADMAP 122）──────────────────────────────────────────
+
+/// 農夫隨機小事件（第三人稱敘事）。
+static FARM_MINI_EVENTS: &[&str] = &[
+    "🪨 {name}在翻土時挖到一塊形狀怪異的石頭，翻來覆去看了半天，最後輕輕放回田埂旁。",
+    "🐛 {name}突然跳開一步——原來田裡藏了一隻肥嘟嘟的蟲子。緩了口氣，繼續耕作。",
+    "🌿 {name}坐在田埂上擦汗，望著遠處的天邊出神，輕聲說了句「這片土地，真的不容易。」",
+];
+
+/// 市場客隨機小事件（第三人稱敘事）。
+static MARKET_MINI_EVENTS: &[&str] = &[
+    "🛍️ {name}在市場閒逛時停在一個攤位前，看到一件從沒見過的古怪玩意兒，問了半天價，最後搖搖頭走開。",
+    "💬 {name}跟攤主聊起最近乙太行情，兩人一問一答，聊得挺起勁，圍觀的路人都聽得入神。",
+    "🎁 {name}在市場角落發現有人擺了一捆晾乾的草藥，掂了掂重量，點頭說「不錯！」",
+];
+
+/// 廣場居民隨機小事件（第三人稱敘事）。
+static SQUARE_MINI_EVENTS: &[&str] = &[
+    "☀️ {name}找了塊向陽的大石頭坐下來曬太陽，眯起眼，臉上浮出滿足的微笑。",
+    "🕊️ {name}注意到廣場石板縫裡冒出幾株小野花，蹲下來看了許久，沒有拔掉，悄悄站起來走開了。",
+    "📣 {name}在廣場公告欄前站了一會兒，瞇眼認真讀著上面的字，邊讀邊點頭，嘴裡嘟噥著什麼。",
+];
+
+/// 遊走者隨機小事件（第三人稱敘事）。
+static WANDER_MINI_EVENTS: &[&str] = &[
+    "🗺️ {name}走到城鎮南邊角落，發現一面長滿青苔的老石牆，摸了摸，嘆了口氣，「這牆比我來得早多了。」",
+    "🌙 {name}在小巷轉角停下腳步，仰頭望了望天色，喃喃說：「日子過得真快。」",
+    "🔮 {name}在鎮邊偶然看到一道奇特的光影，左右張望了幾秒，最後搖搖頭繼續走，像什麼都沒發生。",
+];
+
+/// 取得居民隨機小事件文字（ROADMAP 122）。
+///
+/// 任何時段皆可廣播；`name` 嵌入文字；`seed` 供模板輪替。
+pub fn get_mini_event(persona: ResidentPersona, name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_MINI_EVENTS,
+        ResidentPersona::MarketBrowser => MARKET_MINI_EVENTS,
+        ResidentPersona::TownSquare    => SQUARE_MINI_EVENTS,
+        ResidentPersona::Wanderer      => WANDER_MINI_EVENTS,
+    };
+    pool[seed % pool.len()].replace("{name}", name)
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -441,6 +484,86 @@ mod tests {
     fn neighbor_reply_nonempty_for_all_seeds() {
         for seed in [0, 1, 2, 3, 4, 9999] {
             assert!(!get_neighbor_reply(seed).is_empty());
+        }
+    }
+
+    // ── ROADMAP 122 小事件測試 ────────────────────────────────────────────────
+
+    #[test]
+    fn mini_event_all_personas_contain_name() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_mini_event(persona, "小花", 0);
+            assert!(text.contains("小花"), "persona {:?} 小事件應包含姓名，got: {text}", persona);
+        }
+    }
+
+    #[test]
+    fn mini_event_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_mini_event(persona, "阿土", 0);
+            assert!(!text.is_empty(), "persona {:?} 小事件不應為空", persona);
+        }
+    }
+
+    #[test]
+    fn mini_event_seed_wraps_without_panic() {
+        // seed 超出模板長度應以取模回捲，不 panic。
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let _ = get_mini_event(persona, "二柱", 9999);
+        }
+    }
+
+    #[test]
+    fn mini_event_different_seeds_produce_variety() {
+        // 同 persona 不同 seed 至少能產出 ≥2 種不同文字（模板數 ≥ 3）。
+        let texts: Vec<_> = (0..3).map(|s| get_mini_event(ResidentPersona::FarmWorker, "梅子", s)).collect();
+        let unique: std::collections::HashSet<_> = texts.iter().collect();
+        assert!(unique.len() >= 2, "FarmWorker 小事件至少應有 2 種不同模板");
+    }
+
+    #[test]
+    fn mini_event_name_substitution_works() {
+        let text = get_mini_event(ResidentPersona::Wanderer, "老根", 1);
+        assert!(text.contains("老根"), "應正確替換姓名 '老根'");
+        assert!(!text.contains("{name}"), "模板佔位符應已被替換");
+    }
+
+    #[test]
+    fn mini_event_market_seed_1_contains_name() {
+        let text = get_mini_event(ResidentPersona::MarketBrowser, "春花", 1);
+        assert!(text.contains("春花"));
+    }
+
+    #[test]
+    fn mini_event_square_seed_2_nonempty() {
+        let text = get_mini_event(ResidentPersona::TownSquare, "阿水", 2);
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn mini_event_all_templates_contain_placeholder_filled() {
+        // 確保所有模板都有 {name} 並正確被替換。
+        for pool in [FARM_MINI_EVENTS, MARKET_MINI_EVENTS, SQUARE_MINI_EVENTS, WANDER_MINI_EVENTS] {
+            for template in pool {
+                assert!(template.contains("{name}"), "模板應含 {{name}} 佔位符: {template}");
+                let filled = template.replace("{name}", "測試名");
+                assert!(!filled.contains("{name}"), "替換後不應殘留 {{name}}: {filled}");
+            }
         }
     }
 }
