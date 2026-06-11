@@ -3840,6 +3840,52 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 住家內裝 end ──────────────────────────────────────────────
 
+                // ── 居民搭話（ROADMAP 118）────────────────────────────────────
+                Ok(ClientMsg::TalkToResident { resident_id }) => {
+                    // 驗證範圍 + 找居民
+                    let found = {
+                        let players = app.players.read().unwrap();
+                        let residents = app.residents.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            residents.find_by_id(&resident_id).and_then(|(persona, name, rx, ry)| {
+                                let dx = p.x - rx;
+                                let dy = p.y - ry;
+                                if dx * dx + dy * dy
+                                    <= crate::resident_npc::RESIDENT_REACH
+                                        * crate::resident_npc::RESIDENT_REACH
+                                {
+                                    // 種子 = 玩家 id bits XOR 居民名長度（可重現但夠隨機）
+                                    let seed = id.as_u128() as usize ^ name.len();
+                                    Some((persona, name.to_string(), rx, ry, seed))
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    };
+                    if let Some((persona, name, rx, ry, seed)) = found {
+                        let reply_text = crate::resident_chat::get_chat(persona, seed).to_string();
+                        // 私人回應（NpcReply，只有本人看到）
+                        if let Ok(json) = serde_json::to_string(&crate::protocol::ServerMsg::NpcReply {
+                            npc: resident_id.clone(),
+                            display: format!("💬 居民 {name}"),
+                            text: reply_text.clone(),
+                        }) {
+                            let _ = tx_direct.send(json).await;
+                        }
+                        // 世界可見泡泡（NpcSpeech，讓附近玩家也看到居民在說話）
+                        let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id: resident_id,
+                            npc_name: format!("居民 {name}"),
+                            text: reply_text,
+                            display_secs: 6,
+                            wx: rx,
+                            wy: ry,
+                        }));
+                    }
+                }
+                // ── 居民搭話 end ──────────────────────────────────────────────
+
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
             },

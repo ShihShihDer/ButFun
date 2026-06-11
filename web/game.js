@@ -849,6 +849,8 @@
           }
           // 住家按鈕顯示/隱藏（ROADMAP 111）
           updateHomeBtn(me);
+          // 居民搭話按鈕（ROADMAP 118）
+          updateResidentBtn(me);
         }
         break;
       }
@@ -878,8 +880,13 @@
         break;
       case "npc_reply":
         // 會動腦的 NPC 回話（地端 AI 生成，幾秒後才到）。路由到對應 NPC 的聊天欄。
-        npcChatThinking(msg.npc || "merchant", false);
-        appendNpcChat(msg.npc || "merchant", msg.display || "NPC", msg.text, "npc");
+        // 居民（resident_*）沒有專屬面板，改顯示在世界聊天欄（ROADMAP 118）。
+        if ((msg.npc || "").startsWith("resident_")) {
+          addChat(msg.display || "💬 居民", msg.text || "");
+        } else {
+          npcChatThinking(msg.npc || "merchant", false);
+          appendNpcChat(msg.npc || "merchant", msg.display || "NPC", msg.text, "npc");
+        }
         break;
       case "npc_speech":
         // NPC 對話泡泡（ROADMAP 92）：在說話者 NPC 頭頂顯示對話泡泡，幾秒後自動淡出。
@@ -3186,6 +3193,39 @@
     }
   }
   // ── 住家室內場景 end ──────────────────────────────────────────────────────────
+
+  // ── 居民搭話按鈕（ROADMAP 118）──────────────────────────────────────────────
+  // 互動距離（與後端 RESIDENT_REACH 保持一致）。
+  const RESIDENT_REACH_PX = 80;
+  // 目前最近的居民 id（供按鈕點擊用）。
+  let nearestResidentId = null;
+
+  /** 每幀更新「💬 搭話」按鈕顯示狀態：找到距玩家最近且在 RESIDENT_REACH 內的居民。 */
+  function updateResidentBtn(me) {
+    const btn = document.getElementById("residentBtn");
+    if (!btn || !me || me.indoor_plot_id != null) {
+      if (btn) btn.classList.add("hidden");
+      nearestResidentId = null;
+      return;
+    }
+    let best = null;
+    let bestDist2 = RESIDENT_REACH_PX * RESIDENT_REACH_PX;
+    for (const npc of npcs) {
+      if (!npc.id.startsWith("resident_")) continue;
+      const dx = me.x - npc.x;
+      const dy = me.y - npc.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestDist2) { bestDist2 = d2; best = npc; }
+    }
+    nearestResidentId = best ? best.id : null;
+    if (best) {
+      btn.classList.remove("hidden");
+      btn.title = `和 ${best.name} 搭話`;
+    } else {
+      btn.classList.add("hidden");
+    }
+  }
+  // ── 居民搭話按鈕 end ──────────────────────────────────────────────────────────
 
   // 受擊時的全螢幕邊緣紅光:四周往中心淡出的紅暈(中央保持透明、不擋視線),依剩餘時間淡出。
   // 純螢幕座標、純表現——觸發來自權威 HP 差值,這裡只負責畫,不參與任何戰鬥判定。
@@ -10554,6 +10594,15 @@
         }
       });
     }
+    // 💬 居民搭話按鈕（ROADMAP 118）
+    const residentBtnEl = document.getElementById("residentBtn");
+    if (residentBtnEl) {
+      residentBtnEl.addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !nearestResidentId) return;
+        ws.send(JSON.stringify({ type: "talk_to_resident", resident_id: nearestResidentId }));
+      });
+    }
+
     // HUD 收合鈕：收起狀態列 + dock，把版面讓出來（狀態存 localStorage、跨重開記得）。
     const hudEl = document.getElementById("hud");
     const hudToggle = document.getElementById("hudToggle");

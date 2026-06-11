@@ -98,6 +98,7 @@ mod warehouse;
 mod perishable;
 mod home_interior;
 mod resident_npc;
+mod resident_chat;
 
 use std::net::SocketAddr;
 

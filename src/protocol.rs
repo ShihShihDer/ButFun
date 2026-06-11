@@ -422,6 +422,11 @@ pub enum ClientMsg {
     /// 跟會動腦的 NPC 對話（見 npc_chat.rs）。`npc` 是 NPC 穩定 id（如 "merchant"）。
     /// 伺服器非同步呼叫地端 LLM，回 `NpcReply`（不卡遊戲迴圈）。
     TalkToNpc { npc: String, text: String },
+
+    // ── 居民搭話（ROADMAP 118）
+    /// 跟路人居民搭話。`resident_id` 為 "resident_N" 格式；玩家必須在互動範圍內。
+    /// 伺服器回傳 `NpcReply` 給本人、廣播 `NpcSpeech` 泡泡給周圍玩家。
+    TalkToResident { resident_id: String },
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
