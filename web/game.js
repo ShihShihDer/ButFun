@@ -99,6 +99,9 @@
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
+  // 戰鬥命中飄字（ROADMAP 94）：敵人/玩家受傷或回血時噴出的數字。與 floaters 分開，
+  // 視覺規格不同（更大更快更短命），不污染採集/乙太的飄字佇列。
+  const hitFloaters = [];
   // 地形格 delta（玩家挖/建後偏離確定性生成的差異）：Map<"cx,cy,tx,ty" → kind>。
   // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
   const tileDeltaMap = new Map();
@@ -612,6 +615,9 @@
             const died = oe.alive && !ne.alive;
             if (died || (ne.alive && ne.hp < oe.hp)) {
               enemyFx[i] = { until: fxNow + (died ? 480 : 280), lethal: died };
+              // 傷害數字飄字（ROADMAP 94）：HP 下降量 or 擊殺時剩餘 HP
+              const dmg = died ? oe.hp : (oe.hp - ne.hp);
+              if (dmg > 0) spawnEnemyDmgFloater(dmg, ne.x, ne.y, died);
             }
           }
         }
@@ -720,11 +726,15 @@
               announce(me.hp <= 0 ? "你被打趴了！休息片刻後將傳回新手村…" : `受到攻擊,生命 ${me.hp}/${me.max_hp}`);
               damageFlashLethal = me.hp <= 0; // 被打趴閃得更重
               damageFlashUntil = performance.now() + (damageFlashLethal ? 600 : 380); // 一閃即逝、隨即淡出
+              // 玩家受傷飄字（ROADMAP 94）：自己頭頂冒小紅字
+              spawnPlayerDmgFloater(myHp - me.hp, me.x, me.y);
             } else if (wasDownedLastTick && me.hp >= me.max_hp) {
               // 從倒地滿血復原 = 傳回新手村
               announce("已傳回新手村，繼續加油！");
             } else {
               announce(`恢復生命 ${me.hp}/${me.max_hp}`);
+              // 玩家回血飄字（ROADMAP 94）：藥水/技能回血時冒綠字
+              spawnPlayerHealFloater(me.hp - myHp, me.x, me.y);
             }
           }
           wasDownedLastTick = me.hp <= 0;
@@ -1147,6 +1157,48 @@
     const icon = ITEM_LOOK[item] || item;
     const color = ITEM_FLOAT_COLOR[item] || "230,230,230";
     floaters.push({ wx, wy: wy - 22 - stackIdx * 18, text: `+${gain} ${icon}`, color, born: performance.now() });
+  }
+
+  // ---- 戰鬥命中飄字（ROADMAP 94）----
+  // 在敵人頭頂噴出橙紅色傷害數字，擊殺時更大更深；玩家受傷/回血也有對應顏色。
+  // 與 floaters 分離：HIT_FLOAT_MS 較短（700ms），字型更大，上飄速度更快。
+  const HIT_FLOAT_MS = 700;
+
+  function spawnEnemyDmgFloater(dmg, wx, wy, isKill) {
+    const text = isKill ? `💀-${dmg}` : `-${dmg}`;
+    const color = isKill ? "220,50,50" : "255,140,0";  // 擊殺深紅 / 普通橙
+    const size = isKill ? 20 : 15;
+    hitFloaters.push({ wx, wy: wy - 18, text, color, size, born: performance.now() });
+  }
+
+  function spawnPlayerDmgFloater(dmg, wx, wy) {
+    hitFloaters.push({ wx, wy: wy - 24, text: `-${dmg}`, color: "255,80,80", size: 14, born: performance.now() });
+  }
+
+  function spawnPlayerHealFloater(gain, wx, wy) {
+    hitFloaters.push({ wx, wy: wy - 24, text: `+${gain} ❤️`, color: "100,220,100", size: 14, born: performance.now() });
+  }
+
+  function drawHitFloaters(camX, camY, now) {
+    for (let i = hitFloaters.length - 1; i >= 0; i--) {
+      const f = hitFloaters[i];
+      const age = now - f.born;
+      if (age >= HIT_FLOAT_MS) { hitFloaters.splice(i, 1); continue; }
+      const t = age / HIT_FLOAT_MS;
+      const alpha = Math.max(0, 1 - t * t); // 二次淡出，後段淡得快
+      const sx = f.wx - camX;
+      const sy = f.wy - camY - (reduceMotion ? 0 : t * 44); // reduceMotion 下只淡出不上飄
+      ctx.save();
+      ctx.font = `bold ${f.size}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      // 黑色描邊，確保任何背景下都可讀
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = `rgba(0,0,0,${(alpha * 0.7).toFixed(3)})`;
+      ctx.strokeText(f.text, sx, sy);
+      ctx.fillStyle = `rgba(${f.color},${alpha.toFixed(3)})`;
+      ctx.fillText(f.text, sx, sy);
+      ctx.restore();
+    }
   }
 
   // 把飄字逐一上飄、淡出，過了壽命就移除。畫在日夜染色之後（當回饋 HUD，不被夜色蓋暗）。
@@ -2793,6 +2845,8 @@
 
     // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
     drawFloaters(camX, camY, performance.now());
+    // 戰鬥傷害數字飄字（ROADMAP 94）：在 floaters 上方同層，畫完採集飄字後疊上。
+    drawHitFloaters(camX, camY, performance.now());
 
     // 互動確認漣漪：同在日夜染色之後畫，點/輕點田格的當下回饋不被夜色蓋暗。
     drawTapFlashes(camX, camY, performance.now());
