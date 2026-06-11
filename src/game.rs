@@ -691,6 +691,27 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 主動資材委託（ROADMAP 85）：繁榮感低時商人薇拉自動發急收令。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let merchant_prosperity = app.npc_needs.read().unwrap().get("merchant").prosperity;
+                let commission_event = app.npc_commission.write().unwrap()
+                    .tick(dt, merchant_prosperity, online_count);
+                if let Some(event) = commission_event {
+                    let tx_chat = app.tx_chat.clone();
+                    let merchant = crate::npc_commission::MERCHANT_DISPLAY_NAME;
+                    match event {
+                        crate::npc_commission::CommissionEvent::NewCommission { item_name, bonus, quota } => {
+                            let text = crate::npc_commission::announce_text(item_name, bonus, quota);
+                            let _ = tx_chat.send(format!("📦 [{merchant}] 發布急收令：「{text}」"));
+                        }
+                        crate::npc_commission::CommissionEvent::Expired => {
+                            // 逾時靜默消失，不廣播，保持頻道乾淨。
+                        }
+                    }
+                }
+            }
+
             // 廣場夜談（ROADMAP 76）：夜間有玩家在線時，NPC 偶爾在廣場閒聊。
             {
                 let online_count = app.players.read().unwrap().len();

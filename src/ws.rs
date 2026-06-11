@@ -810,6 +810,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     let dynamic_price = app.dynamic_prices.read().unwrap()
                                         .current_price(item, base_price, now_secs);
 
+                                    // 急收令加成（ROADMAP 85）：故鄉商人有活躍委託且物品符合時，先讀出每份加成。
+                                    // 用 read lock 預取，避免在 players write lock 期間持有 commission write lock。
+                                    let (commission_bonus, commission_item_name) = if merchant_name == "故鄉" {
+                                        let c = app.npc_commission.read().unwrap();
+                                        match &c.active {
+                                            Some(ac) if ac.item == item => {
+                                                (ac.bonus_per_unit.saturating_mul(qty), Some(ac.item_name))
+                                            }
+                                            _ => (0, None),
+                                        }
+                                    } else {
+                                        (0, None)
+                                    };
+
                                     // 扣除背包物品、結算乙太（write lock）
                                     let did_sell = {
                                         let mut players = app.players.write().unwrap();
@@ -822,8 +836,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     p.pending_haggle = false;
                                                     earned.saturating_add(class_bonus) // 疊在含職業加成的總收益上
                                                 } else { 0 };
-                                                tracing::info!(player = %p.name, ?item, qty, earned, class_bonus, haggle_bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
-                                                p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus);
+                                                tracing::info!(player = %p.name, ?item, qty, earned, class_bonus, haggle_bonus, commission_bonus, dynamic_price, merchant_name, "NPC 收購（浮動價）");
+                                                p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus);
                                                 p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                 true
                                             } else {
@@ -838,6 +852,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     if did_sell {
                                         app.dynamic_prices.write().unwrap()
                                             .record_sale(item, qty, now_secs);
+                                        // 急收令進度追蹤（ROADMAP 85）：賣出符合委託的物品時更新配額進度。
+                                        if commission_bonus > 0 {
+                                            let sell_result = app.npc_commission.write().unwrap()
+                                                .on_sold(item, qty);
+                                            if sell_result.fulfilled {
+                                                if let Some(item_name) = commission_item_name {
+                                                    let merchant = crate::npc_commission::MERCHANT_DISPLAY_NAME;
+                                                    let _ = app.tx_chat.send(format!(
+                                                        "✅ [{merchant}] 宣告：「{}」",
+                                                        crate::npc_commission::fulfilled_text(item_name)
+                                                    ));
+                                                }
+                                            }
+                                        }
                                         // 關係綁真實交易（ROADMAP 61）：向故鄉商人賣出時累積 sell_count。
                                         // 只在登入玩家 + 故鄉商人（merchant NPC）才更新，星球商人無 AI 聊天不需追蹤。
                                         if let Some(uid) = authed_uid {
