@@ -1209,6 +1209,100 @@
     }
   }
 
+  // ---- 環境光與日夜光暈（ROADMAP 90）----
+  // 三層效果：① 全時段柔光暈圈（邊緣弱化）給世界空氣感與深度；② 黎明/黃昏天空→地面
+  // 色溫梯度；③ 夜間城鎮燈籠暖光（主城中央 + 四城門），用 lighter blend 在暗色世界
+  // 局部補亮。純視覺不碰遊戲狀態，效能極輕（5 個 radialGradient/幀）。
+  // 燈籠光源位置（對齊 TOWNS[0] + VillageLandmark）。
+  const LANTERNS = (() => {
+    const t = TOWNS[0]; // 主城，cgx:73 cgy:71 half:34
+    const S = TS;
+    return [
+      { wx: 2344,                              wy: 2296,                                r: 340, main: true },   // 村燈塔中心
+      { wx: (t.cgx - 2 + 0.5) * S,             wy: (t.cgy - t.half + 2 + 0.5) * S,    r: 130 }, // 北門
+      { wx: (t.cgx + 2 + 0.5) * S,             wy: (t.cgy + t.half - 2 + 0.5) * S,    r: 130 }, // 南門
+      { wx: (t.cgx - t.half + 2 + 0.5) * S,    wy: (t.cgy + 2 + 0.5) * S,             r: 130 }, // 西門
+      { wx: (t.cgx + t.half - 2 + 0.5) * S,    wy: (t.cgy - 2 + 0.5) * S,             r: 130 }, // 東門
+    ];
+  })();
+
+  function drawAmbientLight(camX, camY, now) {
+    if (!daynight) return;
+    const light = daynight.light;
+    const dark = Math.max(0, Math.min(1, 1 - light));
+    const phase = daynight.phase;
+    ctx.save();
+
+    // ① 全時段柔光暈圈：邊緣到中心的極淡漸暗，給 Canvas 世界加一層「鏡頭邊緣」深度感。
+    //    白天 8%、夜晚因已有暗色疊層故跳過（避免重疊加深邊緣太死）。
+    if (!reduceMotion && light > 0.3) {
+      const vigA = (light - 0.3) / 0.7 * 0.09; // 0 → 0.09，白天最強
+      const vx = viewW / 2, vy = viewH / 2;
+      const vInner = Math.min(viewW, viewH) * 0.28;
+      const vOuter = Math.hypot(viewW, viewH) / 2;
+      const vig = ctx.createRadialGradient(vx, vy, vInner, vx, vy, vOuter);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, `rgba(0,4,16,${vigA.toFixed(3)})`);
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, viewW, viewH);
+    }
+
+    // ② 黎明/黃昏垂直色溫梯度：天頂偏橙粉，地面偏暖金，比純色疊加更有「光從天邊打來」的立體感。
+    if (phase === "dawn" || phase === "dusk") {
+      const warm = Math.max(0, 1 - Math.abs(light - 0.6) / 0.22);
+      if (warm > 0.01) {
+        // 天空側（上半）：橙粉暮色
+        const skyG = ctx.createLinearGradient(0, 0, 0, viewH * 0.5);
+        skyG.addColorStop(0, `rgba(230,110,50,${(warm * 0.12).toFixed(3)})`);
+        skyG.addColorStop(1, "rgba(230,110,50,0)");
+        ctx.fillStyle = skyG;
+        ctx.fillRect(0, 0, viewW, viewH * 0.5);
+        // 地面側（下半）：暖金反光
+        const gndG = ctx.createLinearGradient(0, viewH * 0.6, 0, viewH);
+        gndG.addColorStop(0, "rgba(200,140,55,0)");
+        gndG.addColorStop(1, `rgba(200,140,55,${(warm * 0.09).toFixed(3)})`);
+        ctx.fillStyle = gndG;
+        ctx.fillRect(0, viewH * 0.6, viewW, viewH * 0.4);
+      }
+    }
+
+    // ③ 白天蒸汽龐克銅色地面反光（蒸汽龐克調性：銅、黃銅、琥珀為主色）。
+    //    光線充足時（light ≥ 0.8）從畫面底部向上發一層極淡暖色，
+    //    模擬黃銅地板/草地吸熱後反射的漫反射暖光。
+    if (light > 0.8) {
+      const gw = (light - 0.8) / 0.2 * 0.055; // 最大 5.5% 不透明
+      const gndDay = ctx.createLinearGradient(0, viewH * 0.6, 0, viewH);
+      gndDay.addColorStop(0, "rgba(180,130,55,0)");
+      gndDay.addColorStop(1, `rgba(180,130,55,${gw.toFixed(3)})`);
+      ctx.fillStyle = gndDay;
+      ctx.fillRect(0, viewH * 0.6, viewW, viewH * 0.4);
+    }
+
+    // ④ 夜間城鎮燈籠暖光：dark > 0.18 才亮起，用 lighter 混合讓暗色世界局部被照亮。
+    //    燈籠脈動（reduceMotion 下靜止），與村燈塔的旗頂發光球視覺呼應。
+    if (dark > 0.18) {
+      const intensity = Math.min(1, (dark - 0.18) / 0.45);
+      const pulse = reduceMotion ? 1 : 0.90 + 0.10 * Math.sin(now / 2000);
+      ctx.globalCompositeOperation = "lighter";
+      for (const ln of LANTERNS) {
+        const sx = ln.wx - camX, sy = ln.wy - camY;
+        if (sx < -ln.r * 2 || sx > viewW + ln.r * 2 || sy < -ln.r * 2 || sy > viewH + ln.r * 2) continue;
+        const a = intensity * pulse * (ln.main ? 0.18 : 0.12);
+        const lg = ctx.createRadialGradient(sx, sy, 0, sx, sy, ln.r);
+        lg.addColorStop(0,   `rgba(255,210,100,${Math.min(0.85, a * 1.6).toFixed(3)})`);
+        lg.addColorStop(0.35,`rgba(255,180,60,${a.toFixed(3)})`);
+        lg.addColorStop(1,   "rgba(255,140,20,0)");
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.arc(sx, sy, ln.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    ctx.restore();
+  }
+
   // ---- 夜晚漂浮的乙太微光（純表現）----
   // 日夜系統目前只把夜晚畫暗,抵達夜晚沒有任何視覺「回饋」。配合登入畫面的世界觀
   //「大靜默之後,乙太緩緩回流」,在夜色濃時讓畫面浮起一層緩緩飄動、微微明滅的金色
@@ -2513,6 +2607,10 @@
 
     // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
     drawDayNightTint();
+
+    // 環境光與日夜光暈（ROADMAP 90）：日夜色溫梯度、城鎮燈籠暖光、柔光暈圈。
+    // 在日夜暗色之後畫：燈籠用 lighter 混合局部補亮暗色世界；星星/乙太微光在其上方。
+    drawAmbientLight(camX, camY, performance.now());
 
     // 夜空星星 + 遠方行星（ROADMAP 19）：在日夜染色之後畫，夜越深越清晰。
     drawNightStars(performance.now());
