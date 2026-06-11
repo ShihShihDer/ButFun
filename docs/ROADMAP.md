@@ -839,6 +839,14 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 外觀面板「🎨外觀」增加「衣櫥」區段：6 顆帶色塊按鈕、選好後儲存即套用，其他玩家的快照帶 `costume` 欄位即時可見。
     - 後端：PATCH /api/appearance 新增 `costume` 參數（向後相容，未帶時保持原造型）；migration 0020 加 `costume SMALLINT DEFAULT 0`；持久化至 users 表；快照廣播 `costume` 欄位（0 時省略節省流量）。
 
+## 接著（工會持久化 — 玩家 2026-06-11 實機 bug；高優先）
+
+113. **工會持久化——工會跨伺服器重啟也不消失（玩家實機 bug：建了工會、伺服器一重啟就沒了）**
+    - 現況:`GuildStore` 純記憶體、無 migration。重連已修(fix/guild-reconnect-restore 從記憶體還原 guild_tag),但**伺服器重啟(部署/watchdog 很頻繁)整個工會就沒**。
+    - 做法:加 `guilds` + `guild_members` 表(參考 0018_friends 的持久化模式),啟動載回 GuildStore、create/join/leave/donate 時 flush。
+    - **資料安全(今天才出過 migration 包)**:用**沒撞過的下一個 migration 編號**、向後相容、reviewer 複核編號;不破壞既有玩家資料。
+    - 玩家感知:建的工會、加入的工會、金庫,重連與重啟後都還在。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 會讓玩家**看到新東西 / 新玩法 / 更大的世界** → 主軸，做。
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
