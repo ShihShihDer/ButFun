@@ -673,6 +673,31 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // NPC 午鐘廣播（ROADMAP 79）：黎明→白天轉換時，工匠老胡廣播開工令。
+            // 與晨喚（凱爾長老）和暮告（薇拉）形成三時段節律：黎明/日出/黃昏。
+            {
+                let online_count = app.players.read().unwrap().len();
+                let current_phase = app.daynight.read().unwrap().phase();
+                let should_call = if online_count > 0 {
+                    app.noon_bell.write().unwrap().tick(dt, current_phase)
+                } else {
+                    false
+                };
+                if should_call {
+                    let tx_chat = app.tx_chat.clone();
+                    let sem = app.noon_bell_sem.clone();
+                    tokio::spawn(async move {
+                        // 非阻塞嘗試取得 Semaphore；若已有午鐘進行中則直接略過。
+                        let Ok(_permit) = sem.try_acquire_owned() else { return };
+                        let text = crate::npc_noon_bell::generate_noon_bell(online_count).await;
+                        let _ = tx_chat.send(format!(
+                            "☀️ [{hu}] 喊道：「{text}」",
+                            hu = crate::npc_noon_bell::HU_DISPLAY_NAME,
+                        ));
+                    });
+                }
+            }
+
             // NPC 暮告（ROADMAP 78）：白天→黃昏轉換時，商人薇拉廣播傍晚感言。
             // 與晨喚形成完整日夜節律——黎明有凱爾長老，黃昏有商人薇拉。
             {

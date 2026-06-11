@@ -73,6 +73,7 @@ mod boss_roar;
 mod plaza_talk;
 mod npc_dawn_call;
 mod npc_dusk_call;
+mod npc_noon_bell;
 mod world_log;
 mod player_log;
 
