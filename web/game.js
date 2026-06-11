@@ -5830,6 +5830,8 @@
         drawChiefLook(sx, by, t, npc.name);
       } else if (npc.id === "traveler") {
         drawTravelerLook(sx, by, t, npc.name);
+      } else if (npc.id.startsWith("resident_")) {
+        drawResidentLook(sx, by, t, npc.id, npc.name);
       } else {
         // 未知 NPC：退回通用外觀
         ctx.fillStyle = "#777";
@@ -6210,6 +6212,40 @@
     // 名字（旅人顯示帶 🧳）
     ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center";
     ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
+  }
+
+  // 路人居民外觀（ROADMAP 115）：簡單素人造型，4 種配色對應 4 種 persona（依 index 取餘）。
+  // 純裝飾性，不可互動，比深度 AI NPC 小一圈以示區別。
+  function drawResidentLook(sx, by, t, id, name) {
+    // 依 index 決定衣服色調（市場=橙棕、農夫=草綠、廣場=藍紫、遊民=灰褐）
+    const idx = parseInt(id.replace("resident_", ""), 10) || 0;
+    const bodyColors = ["#8b5e2a", "#4a7a3a", "#3a5a8a", "#6a6a6a"];
+    const headColors = ["#d4a06a", "#c8a06a", "#cca06a", "#c8a070"];
+    const bodyCol = bodyColors[idx % 4];
+    const headCol = headColors[idx % 4];
+    // 行走動畫：左右輕微搖擺
+    const sway = reduceMotion ? 0 : Math.sin(t * 2.2 + idx * 1.1) * 1.5;
+    // 身體（比深度 NPC 小：橢圓半徑 8×11）
+    ctx.fillStyle = bodyCol;
+    ctx.beginPath(); ctx.ellipse(sx + sway * 0.5, by + 9, 8, 11, 0, 0, Math.PI * 2); ctx.fill();
+    // 頭
+    ctx.fillStyle = headCol;
+    ctx.beginPath(); ctx.arc(sx, by - 6, 6, 0, Math.PI * 2); ctx.fill();
+    // 簡單頭飾（市場=小帽、農夫=草帽沿、廣場=髮飾點、遊民=不加）
+    if (idx % 4 === 0) {
+      ctx.fillStyle = "#5c3a10";
+      ctx.beginPath(); ctx.ellipse(sx, by - 10, 5.5, 2, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (idx % 4 === 1) {
+      ctx.fillStyle = "#8b7020";
+      ctx.beginPath(); ctx.ellipse(sx, by - 10, 8, 2, 0, 0, Math.PI * 2); ctx.fill();
+    } else if (idx % 4 === 2) {
+      ctx.fillStyle = "#9060a0";
+      ctx.beginPath(); ctx.arc(sx + 4, by - 10, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    // 名字（比深度 NPC 更小更淡，不搶鏡）
+    ctx.font = "9px sans-serif"; ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(220,200,160,0.75)";
+    ctx.fillText(name, sx, by - 18);
   }
 
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。
