@@ -3445,11 +3445,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 非解散：通知剩餘成員更新列表；通知自己已離隊。
                             if let Some(&first) = remaining.first() {
                                 if let Some(pid) = app.parties.party_of(first) {
-                                    let leader_id = app.players.read().unwrap()
-                                        .iter()
-                                        .find(|(_, p)| p.party_id == Some(pid))
-                                        .map(|(_, p)| p.id)
-                                        .unwrap_or_default();
+                                    let leader_id = app.parties.leader_of(pid).unwrap_or_default();
                                     broadcast_party_update(&app, pid, &remaining, leader_id);
                                 }
                             }
@@ -3493,9 +3489,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 // 普通成員離線 → 隊伍繼續，通知剩餘成員更新名單。
                 if let Some(&first) = remaining.first() {
                     if let Some(pid) = app.parties.party_of(first) {
-                        let leader_id = app.players.read().unwrap()
-                            .iter().find(|(_, p)| p.party_id == Some(pid))
-                            .map(|(_, p)| p.id).unwrap_or_default();
+                        let leader_id = app.parties.leader_of(pid).unwrap_or_default();
                         broadcast_party_update(&app, pid, &remaining, leader_id);
                     }
                 }

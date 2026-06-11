@@ -118,6 +118,11 @@ impl PartyStore {
         self.inner.lock().unwrap().membership.get(&player).copied()
     }
 
+    /// 查隊伍的真正隊長 ID（None = 隊伍不存在）。
+    pub fn leader_of(&self, party_id: Uuid) -> Option<Uuid> {
+        self.inner.lock().unwrap().parties.get(&party_id).map(|p| p.leader)
+    }
+
     /// 取得隊伍所有成員。
     pub fn members(&self, party_id: Uuid) -> Vec<Uuid> {
         self.inner
