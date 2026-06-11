@@ -759,6 +759,10 @@ pub struct AppState {
     pub plaza_talk: Arc<RwLock<crate::plaza_talk::PlazaTalkState>>,
     /// 廣場夜談專屬 Semaphore（容量 1）：同時最多一個 AI 閒聊呼叫，不佔用 NPC LLM 配額。
     pub plaza_talk_sem: Arc<Semaphore>,
+    /// 晨喚狀態（ROADMAP 77）：偵測黎明轉換並觸發凱爾長老致辭，純記憶體模式，重啟清零。
+    pub dawn_call: Arc<RwLock<crate::npc_dawn_call::DawnCallState>>,
+    /// 晨喚專屬 Semaphore（容量 1）：同時最多一個 AI 晨喚呼叫，不佔用 NPC LLM 配額。
+    pub dawn_call_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -871,6 +875,8 @@ impl AppState {
             boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
             plaza_talk: Arc::new(RwLock::new(crate::plaza_talk::PlazaTalkState::new())),
             plaza_talk_sem: Arc::new(Semaphore::new(crate::plaza_talk::MAX_CONCURRENT_TALKS)),
+            dawn_call: Arc::new(RwLock::new(crate::npc_dawn_call::DawnCallState::new())),
+            dawn_call_sem: Arc::new(Semaphore::new(crate::npc_dawn_call::MAX_CONCURRENT_CALLS)),
         }
     }
 
