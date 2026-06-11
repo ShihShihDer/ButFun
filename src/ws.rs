@@ -3768,9 +3768,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             };
                             if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
                         } else if p.warehouse.take(item, qty) {
-                            p.inventory.add(item, qty);
-                            tracing::info!(player = %p.name, ?item, qty, "從倉庫取回物品");
-                            chat_opt = Some(format!("📦 已從倉庫取回 {:?} ×{}。", item, qty));
+                            let added = p.inventory.add(item, qty);
+                            if added < qty {
+                                // 背包同種堆到 MAX_STACK，多餘量退回倉庫，不丟失
+                                p.warehouse.add(item, qty - added);
+                            }
+                            tracing::info!(player = %p.name, ?item, qty, added, "從倉庫取回物品");
+                            chat_opt = Some(format!("📦 已從倉庫取回 {:?} ×{}。", item, added));
                         }
                     }
                     if let Some(text) = chat_opt {
