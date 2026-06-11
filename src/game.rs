@@ -683,10 +683,14 @@ pub fn spawn(app: AppState) {
                         .sum();
                     total / VILLAGE_NPCS.len().max(1) as i32
                 };
-                let (resident_events, thought_events) = app.residents.write().unwrap().tick(dt, avg_prosperity);
+                let current_phase = app.daynight.read().unwrap().phase();
+                let (resident_events, thought_events) = app.residents.write().unwrap().tick(dt, avg_prosperity, current_phase);
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {
+                        ResidentLifecycleEvent::PhaseTransition { msg, .. } => {
+                            let _ = app.tx_chat.send(msg.to_string());
+                        }
                         ResidentLifecycleEvent::RetirementSoon { msg, .. } => {
                             let _ = app.tx_chat.send(msg);
                         }

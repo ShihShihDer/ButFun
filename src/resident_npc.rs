@@ -16,6 +16,7 @@
 //! 完全記憶體模式，重啟清零，零 migration。
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
+use crate::daynight::Phase;
 
 // ── 居民生命週期常數（ROADMAP 116）──────────────────────────────────────────
 /// 居民壽命預設（秒，真實時間）。約 45 分鐘；可用 BUTFUN_RESIDENT_LIFESPAN_SECS 覆寫。
@@ -50,6 +51,16 @@ fn departed_msg(name: &str) -> String {
     format!("🍂 {} 決定離開村落，踏上新的旅途。祝一路平安。", name)
 }
 
+// ── 時段切換廣播（ROADMAP 119）───────────────────────────────────────────────
+fn phase_transition_msg(phase: Phase) -> &'static str {
+    match phase {
+        Phase::Dawn  => "🌅 黎明來臨，居民們紛紛出門，往市集方向走去。",
+        Phase::Day   => "☀️ 白晝正盛，居民各歸崗位，各自忙碌起來。",
+        Phase::Dusk  => "🌆 夕陽西下，居民陸陸續續走向廣場閒聊。",
+        Phase::Night => "🌙 夜幕低垂，居民收起腳步，緩緩往住家方向走去。",
+    }
+}
+
 // ── 生命週期事件（ROADMAP 116）───────────────────────────────────────────────
 /// 居民思想泡泡事件（ROADMAP 118）：居民自發浮出思想泡泡，由 game.rs 廣播 NpcSpeech。
 pub struct ResidentThoughtEvent {
@@ -72,6 +83,8 @@ pub enum ResidentLifecycleEvent {
     NewArrival { name: &'static str, msg: String },
     /// 凋零造成人口外移（靜靜離去）。
     Departed { name: &'static str, msg: String },
+    /// 時段切換（ROADMAP 119）：居民換到新時段對應的聚場。
+    PhaseTransition { phase: Phase, msg: &'static str },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -135,7 +148,7 @@ pub enum ResidentPersona {
 }
 
 impl ResidentPersona {
-    /// 依 persona 決定閒晃的 x/y 邊界（可部分重疊形成自然人流）。
+    /// 依 persona 決定閒晃的 x/y 邊界（白天各司其職，可部分重疊形成自然人流）。
     fn wander_bounds(&self) -> (f32, f32, f32, f32) {
         match self {
             // 市場攤區：npc_schedule 商人附近 (2000~2700, 1950~2450)
@@ -146,6 +159,18 @@ impl ResidentPersona {
             ResidentPersona::TownSquare    => (2200.0, 2800.0, 2000.0, 2600.0),
             // 全城亂逛
             ResidentPersona::Wanderer      => (WANDER_X_MIN, WANDER_X_MAX, WANDER_Y_MIN, WANDER_Y_MAX),
+        }
+    }
+
+    /// 依時段決定閒晃邊界（ROADMAP 119）。
+    /// 黎明 → 市集聚攏；白天 → 各司其職（persona 本身邊界）；
+    /// 黃昏 → 廣場聚集；夜晚 → 南邊住宅區休息。
+    pub fn wander_bounds_for_phase(&self, phase: Phase) -> (f32, f32, f32, f32) {
+        match phase {
+            Phase::Dawn  => (2000.0, 2700.0, 1900.0, 2500.0), // 黎明：往市集方向聚攏
+            Phase::Day   => self.wander_bounds(),               // 白天：各司其職
+            Phase::Dusk  => (2200.0, 2800.0, 2000.0, 2600.0), // 黃昏：廣場聚集
+            Phase::Night => (1950.0, 2650.0, 2400.0, 3050.0), // 夜晚：往南邊住宅區走去
         }
     }
 
@@ -187,6 +212,9 @@ pub struct ResidentNpc {
     pub thought_timer: f32,
     /// 思想計數（用於模板種子，每次發射遞增）。
     pub thought_count: usize,
+    // ── 作息時段（ROADMAP 119）──────────────────────────
+    /// 目前所在時段；None 表示剛初始化，下一 tick 一定更新。
+    current_phase: Option<Phase>,
 }
 
 impl ResidentNpc {
@@ -215,6 +243,7 @@ impl ResidentNpc {
             retirement_announced: false,
             thought_timer: THOUGHT_TIMER_MIN + thought_offset,
             thought_count: index,
+            current_phase: None,
         }
     }
 
@@ -229,8 +258,16 @@ impl ResidentNpc {
             && self.age_secs >= self.lifespan_secs * RESIDENT_RETIREMENT_FRACTION
     }
 
-    /// 每幀推進：移動 + 等待計時。
-    fn tick(&mut self, dt: f32, rng: &mut impl Rng) {
+    /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
+    fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase) {
+        // 時段切換：馬上給新目標、清除等待，居民立刻朝新區域走
+        if self.current_phase != Some(phase) {
+            self.current_phase = Some(phase);
+            let (x0, x1, y0, y1) = self.persona.wander_bounds_for_phase(phase);
+            self.target_x = rng.gen_range(x0..=x1);
+            self.target_y = rng.gen_range(y0..=y1);
+            self.wait_timer = 0.0;
+        }
         if self.wait_timer > 0.0 {
             self.wait_timer -= dt;
             return;
@@ -239,9 +276,9 @@ impl ResidentNpc {
         let dy = self.target_y - self.y;
         let dist = (dx * dx + dy * dy).sqrt();
         if dist < ARRIVE_DIST {
-            // 到了，等一下再換目標
+            // 到了，等一下再換同時段內的下一個目標
             self.wait_timer = rng.gen_range(WAIT_SECS_MIN..=WAIT_SECS_MAX);
-            let (x0, x1, y0, y1) = self.persona.wander_bounds();
+            let (x0, x1, y0, y1) = self.persona.wander_bounds_for_phase(phase);
             self.target_x = rng.gen_range(x0..=x1);
             self.target_y = rng.gen_range(y0..=y1);
         } else {
@@ -261,6 +298,8 @@ pub struct ResidentManager {
     next_index: usize,
     /// 隨機源（種子固定，重啟後走同一條路但不重要）。
     rng: StdRng,
+    /// 上一次偵測到的時段（ROADMAP 119），用於偵測時段切換並廣播公告。
+    current_phase: Option<Phase>,
 }
 
 impl ResidentManager {
@@ -275,19 +314,29 @@ impl ResidentManager {
             residents,
             population_timer: POPULATION_CHECK_SECS,
             rng,
+            current_phase: None,
         }
     }
 
     /// 每幀推進：移動所有居民 + 生命週期 + 人口增減 + 思想泡泡計時。
     /// 回傳 (lifecycle_events, thought_events)，供 game.rs 廣播。
-    pub fn tick(&mut self, dt: f32, avg_prosperity: i32) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
+    pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
         let mut events = Vec::new();
         let mut thoughts = Vec::new();
+
+        // 時段切換偵測（ROADMAP 119）：廣播一條「居民換聚場」公告。
+        if self.current_phase != Some(phase) {
+            self.current_phase = Some(phase);
+            events.push(ResidentLifecycleEvent::PhaseTransition {
+                phase,
+                msg: phase_transition_msg(phase),
+            });
+        }
 
         // 1. 推進每位居民的年齡、移動、思想計時
         for r in &mut self.residents {
             r.age_secs += dt;
-            r.tick(dt, &mut self.rng);
+            r.tick(dt, &mut self.rng, phase);
             // 思想泡泡計時（ROADMAP 118）
             r.thought_timer -= dt;
             if r.thought_timer <= 0.0 {
@@ -402,7 +451,7 @@ mod tests {
         let initial = mgr.population();
         // 直接觸發人口檢查（把計時器歸零）
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1);
+        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day);
         assert_eq!(mgr.population(), (initial + 1).min(MAX_POPULATION));
         // 繁榮帶來移民事件
         if initial < MAX_POPULATION {
@@ -415,12 +464,12 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 先讓人口超過最小值
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day);
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day);
         let before = mgr.population();
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1);
+        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1, Phase::Day);
         assert_eq!(mgr.population(), (before - 1).max(MIN_POPULATION));
         if before > MIN_POPULATION {
             assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::Departed { .. })));
@@ -433,7 +482,7 @@ mod tests {
         // 多次觸發衰退
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 0);
+            mgr.tick(0.01, 0, Phase::Day);
         }
         assert!(mgr.population() >= MIN_POPULATION);
     }
@@ -443,7 +492,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100);
+            mgr.tick(0.01, 100, Phase::Day);
         }
         assert!(mgr.population() <= MAX_POPULATION);
     }
@@ -453,7 +502,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 跑 60 秒模擬
         for _ in 0..600 {
-            mgr.tick(0.1, 50);
+            mgr.tick(0.1, 50, Phase::Day);
         }
         for r in &mgr.residents {
             // 居民不該衝出全城大邊界
@@ -471,13 +520,13 @@ mod tests {
         mgr.residents[0].lifespan_secs = 100.0;
         mgr.residents[0].age_secs = 88.0; // 89% < 90%
         // tick 一下，不應觸發
-        let (ev, _) = mgr.tick(0.5, 50);
+        let (ev, _) = mgr.tick(0.5, 50, Phase::Day);
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 再 tick 過 90%
-        let (ev2, _) = mgr.tick(2.0, 50);
+        let (ev2, _) = mgr.tick(2.0, 50, Phase::Day);
         assert!(ev2.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 已標記，再 tick 不重複
-        let (ev3, _) = mgr.tick(0.5, 50);
+        let (ev3, _) = mgr.tick(0.5, 50, Phase::Day);
         assert!(!ev3.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
     }
 
@@ -490,7 +539,7 @@ mod tests {
             mgr.residents[0].age_secs = 100.0; // 壽命到期
             mgr.residents[0].name
         };
-        let (ev, _) = mgr.tick(0.01, 50);
+        let (ev, _) = mgr.tick(0.01, 50, Phase::Day);
         // 人口不變（退休 + 新居民）
         assert_eq!(mgr.population(), before);
         // 事件應存在
@@ -509,5 +558,76 @@ mod tests {
         mgr.residents[1].age_secs = 1.0;
         let oldest = mgr.oldest_resident_name().unwrap();
         assert_eq!(oldest, mgr.residents[0].name);
+    }
+
+    // ── ROADMAP 119：作息時段測試 ─────────────────────────────────────────────
+
+    #[test]
+    fn dawn_zone_is_market_for_all_personas() {
+        // 黎明：所有 persona 都往市集區（y 上半段）
+        for p in [ResidentPersona::MarketBrowser, ResidentPersona::FarmWorker,
+                  ResidentPersona::TownSquare, ResidentPersona::Wanderer] {
+            let (_, _, y0, y1) = p.wander_bounds_for_phase(Phase::Dawn);
+            assert!(y0 < 2500.0, "黎明 y0 應在市集上半段");
+            assert!(y1 <= 2500.0, "黎明 y1 應在市集上半段");
+        }
+    }
+
+    #[test]
+    fn dusk_zone_is_square_for_all_personas() {
+        // 黃昏：所有 persona 聚廣場（x 中段，y 中段）
+        for p in [ResidentPersona::MarketBrowser, ResidentPersona::FarmWorker,
+                  ResidentPersona::TownSquare, ResidentPersona::Wanderer] {
+            let (x0, x1, y0, y1) = p.wander_bounds_for_phase(Phase::Dusk);
+            assert!(x0 >= 2000.0 && x1 <= 3100.0, "黃昏 x 應在廣場範圍");
+            assert!(y0 >= 1900.0 && y1 <= 2800.0, "黃昏 y 應在廣場範圍");
+        }
+    }
+
+    #[test]
+    fn night_zone_is_south_for_all_personas() {
+        // 夜晚：所有 persona 往南邊住宅區（y 較大）
+        for p in [ResidentPersona::MarketBrowser, ResidentPersona::FarmWorker,
+                  ResidentPersona::TownSquare, ResidentPersona::Wanderer] {
+            let (_, _, y0, _) = p.wander_bounds_for_phase(Phase::Night);
+            assert!(y0 >= 2200.0, "夜晚 y0 應在南邊住宅區");
+        }
+    }
+
+    #[test]
+    fn day_zone_follows_persona() {
+        // 白天：各 persona 回各自崗位
+        let (_, _, _, market_y1) = ResidentPersona::MarketBrowser.wander_bounds_for_phase(Phase::Day);
+        let (_, _, farm_y0, _)   = ResidentPersona::FarmWorker.wander_bounds_for_phase(Phase::Day);
+        // 農田在市場南方
+        assert!(farm_y0 > market_y1 - 200.0, "白天農田 y0 應比市場 y1 更南");
+    }
+
+    #[test]
+    fn phase_transition_event_emitted_on_change() {
+        let mut mgr = ResidentManager::new();
+        // 初始 current_phase = None → 第一次 tick 任何時段都觸發轉換事件
+        let (events, _) = mgr.tick(0.01, 50, Phase::Dawn);
+        assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { phase: Phase::Dawn, .. })));
+        // 同一時段再 tick → 不重複觸發
+        let (events2, _) = mgr.tick(0.01, 50, Phase::Dawn);
+        assert!(!events2.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { .. })));
+    }
+
+    #[test]
+    fn phase_transition_changes_resident_targets() {
+        let mut mgr = ResidentManager::new();
+        // 先在白天跑幾秒讓居民穩定
+        for _ in 0..10 { mgr.tick(0.5, 50, Phase::Day); }
+        let old_targets: Vec<(f32, f32)> = mgr.residents.iter()
+            .map(|r| (r.target_x, r.target_y))
+            .collect();
+        // 切換到黃昏
+        mgr.tick(0.01, 50, Phase::Dusk);
+        // 至少部分居民的目標應已改變（在新時段邊界內）
+        let changed = mgr.residents.iter().zip(&old_targets)
+            .filter(|(r, old)| (r.target_x - old.0).abs() > 1.0 || (r.target_y - old.1).abs() > 1.0)
+            .count();
+        assert!(changed > 0, "時段切換應讓至少一位居民更換目標");
     }
 }
