@@ -93,6 +93,12 @@
   // NPC 對話泡泡（ROADMAP 92）：npc_id → { text, wx, wy, expireAt }。
   // 收到 npc_speech 事件時寫入，drawNpcSpeechBubbles 每幀讀取並淡出。
   const npcSpeechBubbles = new Map();
+  // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
+  let weatherType = "clear";   // 目前天氣類型字串
+  let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
+  // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
+  const WEATHER_MAX_PARTICLES = 80;
+  const weatherParticles = [];
   // 地形格 delta（玩家挖/建後偏離確定性生成的差異）：Map<"cx,cy,tx,ty" → kind>。
   // C-1 永遠為空（所有地形由本地 tileKindAt 生成）；C-2 挖掘後才有真實差異。
   const tileDeltaMap = new Map();
@@ -632,6 +638,11 @@
         }
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
+        // 天氣狀態（ROADMAP 93）：每幀快照同步，前端粒子系統由此驅動。
+        if (msg.weather) {
+          weatherType = msg.weather.weather_type || "clear";
+          weatherIntensity = msg.weather.intensity || 0.0;
+        }
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
@@ -2673,6 +2684,8 @@
     // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
     // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
     const renderNow = performance.now();
+    // 幀間距（秒），天氣粒子更新用；_prevRenderNow 被覆蓋前先算好。
+    const _weatherDt = _prevRenderNow > 0 ? Math.min((renderNow - _prevRenderNow) / 1000, 0.1) : 0.016;
     // 視差效能感知（ROADMAP 91）：追蹤幀間距，連續低於 30 FPS 就關閉視差。
     if (_prevRenderNow > 0) {
       const _dt = renderNow - _prevRenderNow;
@@ -2732,6 +2745,7 @@
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
+    drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -5244,6 +5258,129 @@
 
     ctx.globalAlpha = 1.0;
     ctx.restore();
+  }
+
+  // ── 天氣粒子特效（ROADMAP 93）────────────────────────────────────────────
+  // 每幀更新並繪製天氣粒子（雨滴/沙塵/晶塵/海霧泡泡）。
+  // 粒子完全由後端天氣狀態驅動，reduceMotion 或低 FPS 時關閉。
+  function drawWeatherParticles(now, dt) {
+    if (reduceMotion) return;
+    if (weatherIntensity <= 0.01) return;
+    // 低幀率自動降級
+    if (!_parallaxEnabled) return;
+
+    const W = viewW, H = viewH;
+    const spawnCount = Math.floor(weatherIntensity * 2.5); // 每幀最多生成 2 顆粒子
+
+    // 補充粒子
+    for (let i = 0; i < spawnCount && weatherParticles.length < WEATHER_MAX_PARTICLES; i++) {
+      weatherParticles.push(makeWeatherParticle(W, H));
+    }
+
+    ctx.save();
+    ctx.globalAlpha = weatherIntensity * 0.7;
+
+    for (let i = weatherParticles.length - 1; i >= 0; i--) {
+      const p = weatherParticles[i];
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+
+      if (p.life <= 0 || p.y > H + 20 || p.x < -20 || p.x > W + 20) {
+        weatherParticles.splice(i, 1);
+        continue;
+      }
+
+      const alpha = Math.min(1.0, p.life / 0.5); // 末 0.5 秒淡出
+      ctx.globalAlpha = weatherIntensity * 0.65 * alpha;
+
+      switch (weatherType) {
+        case "grassland_rain":
+          drawRainDrop(p);
+          break;
+        case "desert_sandstorm":
+          drawSandDust(p);
+          break;
+        case "rocky_crystal_dust":
+          drawCrystalFlake(p);
+          break;
+        case "water_sea_mist":
+          drawSeaBubble(p);
+          break;
+      }
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  function makeWeatherParticle(W, H) {
+    const x = Math.random() * (W + 40) - 20;
+    switch (weatherType) {
+      case "grassland_rain":
+        return { x, y: -10, vx: -1.5, vy: 220 + Math.random() * 80, life: (H + 20) / 270, size: 1 + Math.random() };
+      case "desert_sandstorm":
+        return { x, y: Math.random() * H * 0.8, vx: 90 + Math.random() * 50, vy: (Math.random() - 0.5) * 30, life: 1.5 + Math.random(), size: 2 + Math.random() * 2, angle: Math.random() * Math.PI * 2 };
+      case "rocky_crystal_dust":
+        return { x, y: -10, vx: (Math.random() - 0.5) * 20, vy: 40 + Math.random() * 40, life: 3 + Math.random() * 2, size: 3 + Math.random() * 2, angle: Math.random() * Math.PI * 2, spin: (Math.random() - 0.5) * 2 };
+      case "water_sea_mist":
+        return { x, y: H * 0.3 + Math.random() * H * 0.7, vx: (Math.random() - 0.5) * 15, vy: -(8 + Math.random() * 15), life: 2 + Math.random() * 3, size: 3 + Math.random() * 5 };
+      default:
+        return { x, y: -10, vx: 0, vy: 100, life: 1, size: 1 };
+    }
+  }
+
+  function drawRainDrop(p) {
+    // 藍綠色細斜線
+    ctx.strokeStyle = "#88ccff";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x + p.vx * 0.04, p.y + p.vy * 0.04);
+    ctx.stroke();
+  }
+
+  function drawSandDust(p) {
+    // 棕黃色橢圓粒子，帶旋轉
+    ctx.fillStyle = "#c8a060";
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle || 0);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, p.size * 1.5, p.size * 0.7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    p.angle = (p.angle || 0) + 0.05;
+  }
+
+  function drawCrystalFlake(p) {
+    // 藍白色六角晶片
+    p.angle = (p.angle || 0) + (p.spin || 0.5) * 0.03;
+    ctx.strokeStyle = "#aaddff";
+    ctx.lineWidth = 1;
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(a) * p.size, Math.sin(a) * p.size);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawSeaBubble(p) {
+    // 青白色半透明圓泡
+    ctx.strokeStyle = "#88eedd";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.stroke();
+    // 泡泡內的微弱高光
+    ctx.fillStyle = "rgba(200,255,255,0.15)";
+    ctx.fill();
   }
 
   function drawMerchantLook(sx, by, id, name) {

@@ -793,6 +793,9 @@ pub struct AppState {
     pub npc_expedition_boost: Arc<RwLock<crate::npc_expedition_boost::NpcExpeditionBoostState>>,
     /// NPC 工坊加成令系統（ROADMAP 87）：歸屬感高時老胡宣告急修加成、工坊訂單完成額外得獎，純記憶體模式。
     pub npc_workshop_boost: Arc<RwLock<crate::npc_workshop_boost::NpcWorkshopBoostState>>,
+    /// 天氣系統（ROADMAP 93）：目前天氣類型與粒子強度，每 8 分鐘輪換一次，切換時廣播聊天公告。
+    /// 對應生態域採集時給 +1 加成；記憶體模式，重啟從晴天開始（天氣不需持久化）。
+    pub weather: Arc<RwLock<crate::weather::WeatherState>>,
 }
 
 impl AppState {
@@ -922,6 +925,7 @@ impl AppState {
             npc_commission: Arc::new(RwLock::new(crate::npc_commission::NpcCommissionState::new())),
             npc_expedition_boost: Arc::new(RwLock::new(crate::npc_expedition_boost::NpcExpeditionBoostState::new())),
             npc_workshop_boost: Arc::new(RwLock::new(crate::npc_workshop_boost::NpcWorkshopBoostState::new())),
+            weather: Arc::new(RwLock::new(crate::weather::WeatherState::new())),
         }
     }
 

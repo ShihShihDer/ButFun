@@ -473,6 +473,8 @@ pub enum ServerMsg {
         village_buff_remaining_secs: u32,
         /// 村庫乙太現值（ROADMAP 64）。前端里長面板顯示給靠近玩家。
         village_treasury: u32,
+        /// 天氣狀態（ROADMAP 93）：目前天氣類型與粒子強度。前端據此畫粒子特效。
+        weather: WeatherView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -816,6 +818,15 @@ pub struct DayNightView {
     pub night_danger: bool,
 }
 
+/// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
+#[derive(Debug, Clone, Serialize)]
+pub struct WeatherView {
+    /// snake_case 天氣類型字串（clear / grassland_rain / desert_sandstorm / rocky_crystal_dust / water_sea_mist）。
+    pub weather_type: String,
+    /// 粒子強度 [0.0, 1.0]。晴天為 0，其餘淡入淡出。
+    pub intensity: f32,
+}
+
 /// 一條全服社群任務的可見狀態（ROADMAP 27）。
 #[derive(Debug, Clone, Serialize)]
 pub struct QuestView {
@@ -1056,6 +1067,7 @@ mod tests {
             star_crystals: vec![],
             village_buff_remaining_secs: 0,
             village_treasury: 0,
+            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

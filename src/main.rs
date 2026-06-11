@@ -84,6 +84,7 @@ mod npc_expedition_boost;
 mod npc_workshop_boost;
 mod world_log;
 mod player_log;
+mod weather;
 
 use std::net::SocketAddr;
 
