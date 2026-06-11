@@ -98,7 +98,7 @@ log "turn=$turn"
 [ "$turn" != "human" ] && rm -f "$STATE/human_notified" 2>/dev/null || true
 
 case "$turn" in
-  work)
+  work|done)  # done 也跑 worker：ROADMAP 主軸做完時改進自主提案模式，絕不空轉（AI 自營運）
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
     cd "$WT" 2>/dev/null || cd "$REPO"
@@ -136,6 +136,6 @@ case "$turn" in
       touch "$STATE/human_notified"
     fi
     log "turn=human：(已推播) 等人處理 for_human.md，閒置"; exit 0 ;;
-  done)  log "turn=done：主軸都做完，閒置"; exit 0 ;;
+  # 註：done 不再單獨閒置，已併入上面 work|done)＝改跑自主提案模式（AI 自營運，絕不空轉）。
   *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true; cd "$WT" 2>/dev/null || cd "$REPO"; exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" ;;
 esac
