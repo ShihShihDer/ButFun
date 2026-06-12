@@ -46,6 +46,17 @@ const NOTORIOUS_AURA_RADIUS: f32 = 240.0;
 /// 兇名精英光環傷害加成比例（+15%）。
 const NOTORIOUS_DAMAGE_BONUS: f32 = 0.15;
 
+/// 根據怪物 ID 雜湊決定此怪是否為「夜間休息型」（約 40% 的怪）。
+/// 夜間這類怪回巢靜止、AGGRO 歸零，給玩家安全喘息時段。純函式、確定性、無隨機。
+pub fn is_night_rester(id: (i32, i32, usize)) -> bool {
+    let h = (id.0 as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add((id.1 as u64).wrapping_mul(0xBF58476D1CE4E5B9))
+        .wrapping_add(id.2 as u64)
+        .wrapping_mul(0x94D049BB133111EB);
+    h % 5 < 2  // 40% 夜間休息
+}
+
 /// 世界裡一隻有座標的敵人。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedEnemy {
@@ -169,6 +180,30 @@ impl EnemyField {
         for (&(cx, cy), enemies) in self.chunks.iter_mut() {
             for (idx, placed) in enemies.iter_mut().enumerate() {
                 if !placed.enemy.is_alive() {
+                    continue;
+                }
+
+                // ROADMAP 148：夜間休息型怪物（約 40%）直接回巢靜止，不追玩家。
+                // 非休息型怪物夜間照常（含 1.4× 速度加成），給玩家「夜有危機但有空隙」的體感。
+                if is_night && is_night_rester(placed.id) {
+                    // 清除狼群狀態，以 RETURN_SPEED 返回出生點。
+                    placed.pack_target = None;
+                    placed.pack_target_timer = 0.0;
+                    placed.flee_boost_timer = 0.0;
+                    placed.retreat_timer = (placed.retreat_timer - dt).max(0.0);
+                    let (hx, hy) = spawn_position(placed.id);
+                    let dx = hx - placed.x;
+                    let dy = hy - placed.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > 2.0 {
+                        let step = (RETURN_SPEED * dt).min(dist);
+                        placed.x += dx / dist * step;
+                        placed.y += dy / dist * step;
+                        let new_key = chunk_key(placed.x, placed.y);
+                        if new_key != (cx, cy) {
+                            to_move.push(((cx, cy), idx, new_key));
+                        }
+                    }
                     continue;
                 }
 
@@ -1065,7 +1100,10 @@ mod tests {
             let mut f = EnemyField::new();
             f.ensure_chunks_around(0.0, 0.0, CHUNK_SIZE + 10.0);
             let before_enemies = f.enemies();
-            let before = before_enemies.iter().find(|e| e.enemy.is_alive()).expect("should have enemy");
+            // 找一隻夜間不休息的怪（ROADMAP 148：約 60% 的怪）確保夜間追擊速度測試不被休息行為干擾。
+            let before = before_enemies.iter()
+                .find(|e| e.enemy.is_alive() && !is_night_rester(e.id))
+                .expect("should have non-resting enemy");
             // 在 AGGRO_RADIUS(260) 內但距離 > 147（夜間速度×dt 的最大值）。
             let player = (before.x + 200.0, before.y);
             let bx = before.x;
@@ -1088,6 +1126,88 @@ mod tests {
             moved_night > moved_day,
             "夜間移動距離（{moved_night:.2}）應大於白天（{moved_day:.2}）"
         );
+    }
+
+    // ───── ROADMAP 148 怪物日夜作息測試 ─────
+
+    #[test]
+    fn is_night_rester_is_deterministic_and_40_percent() {
+        // 確保 is_night_rester 是確定性函式，且約 40% 為休息型。
+        let total = 100usize;
+        let count = (0..total as i32)
+            .filter(|&i| is_night_rester((i / 10, i % 10, (i as usize) % 3)))
+            .count();
+        // 允許 30~55% 範圍（雜湊不保證精確 40%，但應接近）。
+        assert!(count >= 30 && count <= 55, "休息型比例 {count}/{total} 超出預期範圍");
+        // 確定性：同 id 永遠相同結果。
+        assert_eq!(is_night_rester((1, 2, 3)), is_night_rester((1, 2, 3)));
+        assert_eq!(is_night_rester((0, 0, 0)), is_night_rester((0, 0, 0)));
+    }
+
+    #[test]
+    fn resting_enemy_does_not_chase_at_night() {
+        // 夜間休息型怪物不追玩家，應保持在出生點附近。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(0.0, 0.0, CHUNK_SIZE + 10.0);
+        let enemies = f.enemies();
+        // 找一隻夜間休息型怪物。
+        let rester = enemies.iter()
+            .find(|e| e.enemy.is_alive() && is_night_rester(e.id))
+            .cloned()
+            .expect("should have resting enemy");
+        // 玩家就在旁邊（AGGRO_RADIUS 內）。
+        let player = (rester.x + 50.0, rester.y);
+        let bx = rester.x;
+        let by = rester.y;
+        // 夜間追 1 秒。
+        f.advance(1.0, &[player], true, |_, _| false);
+        let after = f.enemies().into_iter()
+            .filter(|e| e.id == rester.id || {
+                let dx = e.x - bx; let dy = e.y - by;
+                dx*dx + dy*dy < 200.0*200.0
+            })
+            .filter(|e| e.enemy.is_alive())
+            .min_by(|a, b| {
+                let da = (a.x-bx).powi(2)+(a.y-by).powi(2);
+                let db = (b.x-bx).powi(2)+(b.y-by).powi(2);
+                da.partial_cmp(&db).unwrap()
+            });
+        // 休息型怪物夜間不應朝玩家方向移動。
+        if let Some(after) = after {
+            // 玩家在 +x 方向，怪若追玩家應移向 +x；休息型應往出生點（接近原位）移動。
+            // 只確認沒有顯著朝玩家衝過去（> 30px 算追）。
+            let moved_toward_player = after.x - bx;
+            assert!(moved_toward_player < 30.0,
+                "休息型怪物夜間不應追玩家，但移了 {moved_toward_player:.1}px 朝玩家方向");
+        }
+    }
+
+    #[test]
+    fn non_resting_enemy_still_chases_at_night() {
+        // 夜間非休息型怪物仍應追玩家。
+        let mut f = EnemyField::new();
+        f.ensure_chunks_around(0.0, 0.0, CHUNK_SIZE + 10.0);
+        let enemies = f.enemies();
+        // 找一隻夜間不休息的怪。
+        let active = enemies.iter()
+            .find(|e| e.enemy.is_alive() && !is_night_rester(e.id))
+            .cloned()
+            .expect("should have non-resting enemy");
+        let player = (active.x + 200.0, active.y);
+        let bx = active.x;
+        let by = active.y;
+        f.advance(1.0, &[player], true, |_, _| false);
+        let after = f.enemies().into_iter()
+            .filter(|e| e.enemy.is_alive())
+            .min_by(|a, b| {
+                let da = (a.x-bx).powi(2)+(a.y-by).powi(2);
+                let db = (b.x-bx).powi(2)+(b.y-by).powi(2);
+                da.partial_cmp(&db).unwrap()
+            })
+            .expect("enemy still alive");
+        let moved = after.x - bx;
+        // 夜間非休息型怪物應有明顯移動（CHASE_SPEED * 1.4 * 1s = 147px）。
+        assert!(moved > 50.0, "非休息型怪物夜間應追玩家，但只移了 {moved:.1}px");
     }
 
     // ───── ROADMAP 42 怪物成長生態測試 ─────
