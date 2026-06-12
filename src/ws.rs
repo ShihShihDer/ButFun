@@ -1530,7 +1530,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     tracing::info!(user_id = %uid, wx, wy, "放置灑水器");
                 }
                 Ok(ClientMsg::Attack) => {
-                    // 主動攻擊：驗未倒地、冷卻已到期，再打 ATTACK_REACH 內最近的存活敵人。
+                    // 主動攻擊：驗未倒地、冷卻已到期，再打射程內最近的存活敵人。
+                    // 遠程武器（ROADMAP 146）：射程 3 倍於近戰；在安全區內遠程攻擊不給獎勵（防龜城）。
                     // 鎖序：讀 players（取位置+冷卻） → 寫 enemies（attack_nearest） → 寫 players（設冷卻+掉落）。
                     const ATTACK_COOLDOWN_SECS: f32 = 0.6;
                     let info = app.players.read().unwrap().get(&id).map(|p| {
@@ -1549,20 +1550,42 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         } else {
                             base_power
                         };
-                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant)
+                        // 讀取裝備武器種類（遠程判斷用）。
+                        let weapon_kind = p.equipment.weapon
+                            .and_then(crate::combat::weapon_from_item)
+                            .unwrap_or(crate::combat::WeaponKind::Unarmed);
+                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant, weapon_kind)
                     });
-                    let Some((px, py, downed, cooldown, power, enchant)) = info else { continue; };
+                    let Some((px, py, downed, cooldown, power, enchant, weapon_kind)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
+
+                    // 遠程武器：使用較大射程；在安全區內時禁止給獎勵（防龜城刷怪）。
+                    let is_ranged = weapon_kind.is_ranged();
+                    let attack_reach = if is_ranged {
+                        crate::combat::RANGED_ATTACK_REACH
+                    } else {
+                        crate::enemy_field::ATTACK_REACH
+                    };
+                    let in_safe_zone = crate::positions::is_in_safe_zone(px, py);
+                    // 安全區防呆：玩家在城鎮範圍內用遠程打外面的怪不給獎勵/exp
+                    let suppress_rewards = is_ranged && in_safe_zone;
 
                     // 戰吼（ROADMAP 45）：讀取旗標、決定單攻或群攻，然後清旗。
                     let use_warcry = app.players.read().unwrap()
                         .get(&id).map(|p| p.pending_warcry).unwrap_or(false);
                     let results: Vec<_> = if use_warcry {
-                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power)
+                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power, attack_reach)
                     } else {
-                        app.enemies.write().unwrap().attack_nearest(px, py, power)
+                        app.enemies.write().unwrap().attack_nearest(px, py, power, attack_reach)
                             .into_iter().collect()
                     };
+                    // 遠程攻擊廣播：只要玩家出手就播（命中或未命中皆可），前端負責動畫。
+                    if is_ranged {
+                        let hit = !results.is_empty();
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::RangedHit { from_x: px, from_y: py, hit }
+                        ));
+                    }
                     // 取第一筆的兇名狀態（單攻時只有最多一筆，群攻取第一隻兇名）
                     let was_notorious = results.iter().any(|(_, _, n, _)| *n);
                     let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>)> =
@@ -1572,9 +1595,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.attack_cooldown = ATTACK_COOLDOWN_SECS;
                         if use_warcry { p.pending_warcry = false; }
                         // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
+                        // 安全區防呆：遠程在城內打城外怪不給獎勵。
                         let mut had_kill = false;
                         for (kind, enemy_level, notorious, loot) in &results {
                             let Some((item, qty)) = loot else { continue; };
+                            if suppress_rewards { continue; }  // 安全區遠程無獎勵
                             had_kill = true;
                             p.add_item_overflow(*item, *qty);
                             let base_reward = crate::combat::scaled_exp(kind.exp_reward(), *enemy_level);
@@ -1656,8 +1681,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                         }
                     }
-                    // 討伐兇名精英全服廣播（ROADMAP 42）
-                    if was_notorious {
+                    // 討伐兇名精英全服廣播（ROADMAP 42）；安全區遠程不觸發（防呆）。
+                    if was_notorious && !suppress_rewards {
                         if let Some((kind, _, _, Some(_))) = result {
                             let pname = app.players.read().unwrap()
                                 .get(&id).map(|p| p.name.clone()).unwrap_or_default();
@@ -1698,7 +1723,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // NPC 自主懸賞令：兇名精英討伐 → 檢查是否符合蘭卡通緝目標（ROADMAP 82）。
-                    if was_notorious {
+                    if was_notorious && !suppress_rewards {
                         // 取第一筆兇名擊殺的種類名稱。
                         if let Some((nk, _, _, _)) = results.iter().find(|(_, _, n, _)| *n) {
                             let kind_name_str = nk.display_name();
@@ -1727,77 +1752,89 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
-                    if let Some((kind, _, _, Some(_))) = result {
-                        let completed = app.quests.write().unwrap().on_kill(kind);
-                        notify_quest_complete(&app, completed);
+                    // 安全區遠程擊殺不計數，防止城內架砲刷任務（suppress_rewards 同步守衛）。
+                    if !suppress_rewards {
+                        if let Some((kind, _, _, Some(_))) = result {
+                            let completed = app.quests.write().unwrap().on_kill(kind);
+                            notify_quest_complete(&app, completed);
+                        }
                     }
                     // 成就：擊殺計數里程碑（ROADMAP 31）。
-                    if let Some((_, _, _, Some(_))) = result {
-                        let (kill_count, new_level, pname, newly_unlocked) = {
-                            let mut players = app.players.write().unwrap();
-                            if let Some(p) = players.get_mut(&id) {
-                                p.kill_count = p.kill_count.saturating_add(1);
-                                let kc = p.kill_count;
-                                let lv = p.level();
-                                let pn = p.name.clone();
-                                // 擊殺里程碑成就
-                                let mut newly: Vec<crate::achievement::Achievement> = Vec::new();
-                                if let Some(ach) = crate::achievement::achievement_for_kill_count(kc) {
-                                    if p.achievements.unlock(ach) { newly.push(ach); }
+                    // 安全區遠程擊殺不計里程碑，防城內刷牆。
+                    if !suppress_rewards {
+                        if let Some((_, _, _, Some(_))) = result {
+                            let (kill_count, new_level, pname, newly_unlocked) = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    p.kill_count = p.kill_count.saturating_add(1);
+                                    let kc = p.kill_count;
+                                    let lv = p.level();
+                                    let pn = p.name.clone();
+                                    // 擊殺里程碑成就
+                                    let mut newly: Vec<crate::achievement::Achievement> = Vec::new();
+                                    if let Some(ach) = crate::achievement::achievement_for_kill_count(kc) {
+                                        if p.achievements.unlock(ach) { newly.push(ach); }
+                                    }
+                                    // 升級里程碑成就（跟隨 exp 升級一起檢查）
+                                    for ach in crate::achievement::achievements_for_level(lv) {
+                                        if p.achievements.unlock(ach) { newly.push(ach); }
+                                    }
+                                    (kc, lv, pn, newly)
+                                } else {
+                                    (0, 0, String::new(), Vec::new())
                                 }
-                                // 升級里程碑成就（跟隨 exp 升級一起檢查）
-                                for ach in crate::achievement::achievements_for_level(lv) {
-                                    if p.achievements.unlock(ach) { newly.push(ach); }
-                                }
-                                (kc, lv, pn, newly)
-                            } else {
-                                (0, 0, String::new(), Vec::new())
+                            };
+                            let _ = (kill_count, new_level); // 避免 unused 警告
+                            for ach in newly_unlocked {
+                                let _ = app.tx_chat.send(format!(
+                                    "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
+                                ));
                             }
-                        };
-                        let _ = (kill_count, new_level); // 避免 unused 警告
-                        for ach in newly_unlocked {
-                            let _ = app.tx_chat.send(format!(
-                                "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
-                            ));
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
-                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
-                        advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                    // 安全區遠程擊殺不算每日任務進度。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                            advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                        }
                     }
                     // 懸賞告示板：擊殺事件（ROADMAP 53）。
-                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
-                        let bounty_result = {
-                            let mut players = app.players.write().unwrap();
-                            if let Some(p) = players.get_mut(&uid) {
-                                crate::bounty_board::on_kill(&mut p.bounty_active, kill_kind)
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some((reward, xp)) = bounty_result {
-                            let pname = {
+                    // 安全區遠程擊殺不結算懸賞，防止城牆龜縮刷賞。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                            let bounty_result = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&uid) {
-                                    p.ether = p.ether.saturating_add(reward);
-                                    p.masteries.gain_warrior(xp);
-                                    p.bounty_active = None;
-                                    p.bounty_cooldown = crate::bounty_board::BOUNTY_COOLDOWN_SECS;
-                                    tracing::info!(player = %p.name, reward, xp, "完成懸賞任務");
-                                    p.name.clone()
+                                    crate::bounty_board::on_kill(&mut p.bounty_active, kill_kind)
                                 } else {
-                                    String::new()
+                                    None
                                 }
                             };
-                            if !pname.is_empty() {
-                                let _ = tx_direct.send(format!(
-                                    "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
-                                ));
-                                // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
-                                app.player_logs.write().unwrap()
-                                    .entry(uid)
-                                    .or_default()
-                                    .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
+                            if let Some((reward, xp)) = bounty_result {
+                                let pname = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.ether = p.ether.saturating_add(reward);
+                                        p.masteries.gain_warrior(xp);
+                                        p.bounty_active = None;
+                                        p.bounty_cooldown = crate::bounty_board::BOUNTY_COOLDOWN_SECS;
+                                        tracing::info!(player = %p.name, reward, xp, "完成懸賞任務");
+                                        p.name.clone()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
+                                if !pname.is_empty() {
+                                    let _ = tx_direct.send(format!(
+                                        "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
+                                    ));
+                                    // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
+                                    app.player_logs.write().unwrap()
+                                        .entry(uid)
+                                        .or_default()
+                                        .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
+                                }
                             }
                         }
                     }

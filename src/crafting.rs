@@ -473,6 +473,32 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::StarCrystalArmor,
         output_qty: 1,
     },
+
+    // ── 遠程武器（ROADMAP 146 遠程武器）────────────────────────────────────────
+    /// 乙太弓：乙太×5 + 木材×4 → 乙太弓×1。遠程攻擊力 +9。
+    /// 入門遠程武器，基礎材料就能打造——讓任何玩家都能嘗試「站遠打」的戰鬥風格。
+    Recipe {
+        id: "ether_bow",
+        inputs: &[(ItemKind::Ether, 5), (ItemKind::Wood, 4)],
+        output: ItemKind::EtherBow,
+        output_qty: 1,
+    },
+    /// 晶石弩：晶石碎片×5 + 石頭×4 → 晶石弩×1。遠程攻擊力 +14。
+    /// 深層晶洞探索者的進階遠程武器，需要冒險採集晶石才能鑄造。
+    Recipe {
+        id: "crystal_ballista",
+        inputs: &[(ItemKind::CrystalShard, 5), (ItemKind::Stone, 4)],
+        output: ItemKind::CrystalBallista,
+        output_qty: 1,
+    },
+    /// 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1（需 Lv.18）。遠程攻擊力 +27。
+    /// 虛空星限定頂級遠程武器，需要踏上虛空星採集材料，配合等級門檻確保高端玩家才能使用。
+    Recipe {
+        id: "void_cannon",
+        inputs: &[(ItemKind::VoidShard, 5), (ItemKind::Stone, 3)],
+        output: ItemKind::VoidCannon,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -500,6 +526,7 @@ pub fn recipe_min_level(recipe_id: &str) -> u32 {
     match recipe_id {
         "star_crystal_blade" | "star_crystal_armor" => 10,
         "rift_blade"                                => 15,
+        "void_cannon"                               => 18,
         _                                           => 0,
     }
 }

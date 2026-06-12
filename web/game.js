@@ -1341,6 +1341,11 @@
         // 主動技能觸發（ROADMAP 45）：播放技能視覺特效。
         showSkillFlash(msg.player_id, msg.kind);
         break;
+
+      case "ranged_hit":
+        // 遠程攻擊（ROADMAP 146）：在攻擊者位置播放彈道放射特效。
+        showRangedHit(msg.from_x, msg.from_y, msg.hit);
+        break;
     }
   }
 
@@ -1387,6 +1392,48 @@
       ctx.font = "1.2rem sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(SKILL_EMOJIS[f.kind] || "✨", sx, sy - 20 - radius - 4);
+      ctx.restore();
+    }
+  }
+
+  // 遠程攻擊彈道特效（ROADMAP 146）：多方向擴散粒子，命中時顯示衝擊暈圈。
+  const rangedHits = []; // [{ wx, wy, born, hit }]
+  function showRangedHit(wx, wy, hit) {
+    rangedHits.push({ wx, wy, born: performance.now(), hit });
+    if (rangedHits.length > 12) rangedHits.shift();
+  }
+  function drawRangedHits(now, camX, camY) {
+    const DUR = 500; // 動畫總時長 ms
+    const RAYS = 6;  // 射線數量（像弓箭散射）
+    for (let i = rangedHits.length - 1; i >= 0; i--) {
+      const h = rangedHits[i];
+      const age = now - h.born;
+      if (age > DUR) { rangedHits.splice(i, 1); continue; }
+      const t = age / DUR;            // 0→1 時間比
+      const alpha = 1 - t;            // 淡出
+      const sx = h.wx - camX;
+      const sy = h.wy - camY;
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.8;
+      // 衝擊暈圈（命中或未命中皆有，命中時更亮）
+      const ringR = 10 + t * (h.hit ? 50 : 30);
+      const col = h.hit ? "120,200,255" : "200,240,255";
+      ctx.strokeStyle = `rgb(${col})`;
+      ctx.lineWidth = h.hit ? 2.5 : 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      // 射線（表現「射擊四散」感）
+      ctx.strokeStyle = h.hit ? "80,180,255" : "160,220,255";
+      ctx.lineWidth = 1.5;
+      for (let r = 0; r < RAYS; r++) {
+        const angle = (r / RAYS) * Math.PI * 2;
+        const len = 15 + t * (h.hit ? 40 : 20);
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(angle) * 6, sy + Math.sin(angle) * 6);
+        ctx.lineTo(sx + Math.cos(angle) * len, sy + Math.sin(angle) * len);
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }
@@ -2054,6 +2101,10 @@
       { item: "rune_armor",       name: "符文鎧",    biome: "沙漠",       icon: "🛡️" },
       { item: "star_crystal_blade", name: "星晶之刃", biome: "夜採 Lv.10", icon: "⚔️" },
       { item: "star_crystal_armor", name: "星晶鎧",   biome: "夜採 Lv.10", icon: "✨" },
+      // 遠程武器（ROADMAP 146）
+      { item: "ether_bow",         name: "乙太弓",   biome: "遠程入門",    icon: "🏹" },
+      { item: "crystal_ballista",  name: "晶石弩",   biome: "遠程 岩地",  icon: "🎯" },
+      { item: "void_cannon",       name: "虛空炮",   biome: "遠程 Lv.18", icon: "💥" },
     ];
     const collected = biomeGear.filter((g) => invSet.has(g.item)).length;
     const allCollected = collected === biomeGear.length;
@@ -3378,6 +3429,7 @@
     drawOriginAtmosphere(performance.now());
 
     // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
+    drawRangedHits(performance.now(), camX, camY);
     drawTravelFlash(performance.now());
     // 主動技能圈形特效（ROADMAP 45）：施法者頭上短暫圈形發光。
     drawSkillFlashes(performance.now(), camX, camY);
@@ -7674,11 +7726,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -7763,6 +7815,13 @@
     { id: "rune_armor", out: "rune_armor", outQty: 1, inputs: [["ancient_fragment", 5], ["stone", 6]] },
     // 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。防禦 -5，夜行探索者的盔甲巔峰（需 Lv.10）。
     { id: "star_crystal_armor", out: "star_crystal_armor", outQty: 1, inputs: [["star_crystal_shard", 5], ["stone", 4]], minLevel: 10 },
+    // ROADMAP 146 遠程武器：讓玩家有「站遠打」的選擇，與近戰並存。
+    // 乙太弓：乙太×5 + 木材×4 → 乙太弓×1。遠程攻擊力 +9，入門遠程武器。
+    { id: "ether_bow", out: "ether_bow", outQty: 1, inputs: [["ether", 5], ["wood", 4]] },
+    // 晶石弩：晶石碎片×5 + 石頭×4 → 晶石弩×1。遠程攻擊力 +14，進階遠程武器。
+    { id: "crystal_ballista", out: "crystal_ballista", outQty: 1, inputs: [["crystal_shard", 5], ["stone", 4]] },
+    // 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1。遠程攻擊力 +27，頂級遠程武器（需 Lv.18）。
+    { id: "void_cannon", out: "void_cannon", outQty: 1, inputs: [["void_shard", 5], ["stone", 3]], minLevel: 18 },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -7836,6 +7895,10 @@
       cosmic_shield: "防禦 -6（減 6 傷）🌌 宇宙星",
       star_amulet: "EXP +10%（採集與戰鬥）☄️ 流星雨產物",
       star_guardian_amulet: "EXP +15%（採集與戰鬥）🌠 彩虹節點合成，流星雨採集額外+1星塵",
+      // 遠程武器（ROADMAP 146）
+      ether_bow: "遠程攻擊力 +9 🏹 射程 ×3，城內使用不給獎勵",
+      crystal_ballista: "遠程攻擊力 +14 🎯 晶石精密機械弩",
+      void_cannon: "遠程攻擊力 +27 💥 虛空星限定（需 Lv.18）",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv

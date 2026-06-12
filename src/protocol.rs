@@ -690,6 +690,9 @@ pub enum ServerMsg {
     /// 主動技能觸發廣播（ROADMAP 45）：廣播給所有連線客戶端，供前端播放技能特效動畫。
     /// `player_id`：施法玩家 id；`kind`：技能 snake_case 名稱。
     SkillActivated { player_id: Uuid, kind: String },
+    /// 遠程攻擊事件廣播（ROADMAP 146）：玩家使用遠程武器攻擊時廣播，供前端播放彈道特效。
+    /// `from_x/from_y`：攻擊者世界座標；`hit`：是否命中敵人。
+    RangedHit { from_x: f32, from_y: f32, hit: bool },
     /// 會動腦的 NPC 對玩家說的話（單播，非同步生成後才送）。
     NpcReply { npc: String, display: String, text: String },
     /// 里長自主決定辦「村落節慶」——廣播給所有連線玩家。
