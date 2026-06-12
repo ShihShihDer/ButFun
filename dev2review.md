@@ -14,3 +14,7 @@
 4. `src/ws.rs` `BuyWarehouseExpansion` handler：乙太扣款 + expansion 上限 3 是否正確
 5. 前端 `updateWarehousePanel`：提貨按鈕送 `{type:"withdraw_from_warehouse", item, qty}`，購買送 `{type:"buy_warehouse_expansion"}`
 6. 1072 tests 全綠，cargo build 乾淨
+
+## [2026-06-12 09:56] dev → review | request | 243
+
+請審 PR #243（主軸切片 130，城鎮慶典配方）。已修復 review 提到的 wheat_grain 顯示問題，並確保 cargo check/test 全綠。玩家現在可以在繁榮的城鎮中解鎖限定合成品了。

@@ -475,10 +475,38 @@ pub enum ClientMsg {
     /// 進入自家室內（ROADMAP 111）：玩家需登入、擁有 FreeBuild 地塊、且站在地塊中心附近。
     /// 未符合條件靜默忽略；成功後玩家 snapshot 帶 indoor_plot_id。
     EnterHome,
-    /// 離開室內回到室外（ROADMAP 111）：玩家需在室內。
-    /// 不在室內靜默忽略；離開後玩家回到進入前的世界坐標。
-    ExitHome,
-}
+    /// 進入室內回到室外（ROADMAP 111）：玩家需在室內。
+        /// 不在室內靜默忽略；離開後玩家回到進入前的世界坐標。
+        ExitHome,
+        /// 向城鎮大工程捐獻（ROADMAP 131）。
+        /// `item = None` 表示捐乙太；`Some(ItemKind)` 表示捐材料。
+        #[serde(rename = "donate_to_project")]
+        DonateToProject { item: Option<ItemKind>, qty: u32 },
+    }
+
+    /// 快照裡的城鎮大工程狀態（ROADMAP 131）。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct TownProjectView {
+        pub project_id: String,
+        pub name: String,
+        pub status: String, // "planning", "building", "completed"
+        pub progress_pct: f32,
+        pub current_ether: u32,
+        pub target_ether: u32,
+        pub current_wood: u32,
+        pub target_wood: u32,
+        pub current_stone: u32,
+        pub target_stone: u32,
+        pub current_crystal: u32,
+        pub target_crystal: u32,
+        pub top_contributors: Vec<ContributorView>,
+    }
+
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct ContributorView {
+        pub name: String,
+        pub score: u32,
+    }
 
 /// 伺服器送給客戶端的訊息。
 #[derive(Debug, Clone, Serialize)]
@@ -548,6 +576,8 @@ pub enum ServerMsg {
         resident_moods: Vec<(String, u8)>,
         /// 城鎮繁榮等級（ROADMAP 128）：0=凋零 1=平靜 2=生機 3=繁盛。
         town_prosperity_level: u8,
+        /// 城鎮大工程狀態（ROADMAP 131）。
+        town_project: TownProjectView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1258,7 +1288,22 @@ mod tests {
             active_help_requests: vec![],
             resident_moods: vec![],
             town_prosperity_level: 1,
-        };
+            town_project: TownProjectView {
+                project_id: "test".into(),
+                name: "測試".into(),
+                status: "building".into(),
+                progress_pct: 0.5,
+                current_ether: 50,
+                target_ether: 100,
+                current_wood: 10,
+                target_wood: 20,
+                current_stone: 10,
+                target_stone: 20,
+                current_crystal: 5,
+                target_crystal: 10,
+                top_contributors: vec![],
+            },
+            };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
         assert_eq!(v["players"][0]["ether"], 7);

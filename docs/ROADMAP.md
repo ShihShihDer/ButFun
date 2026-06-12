@@ -1058,6 +1058,12 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **純邏輯零 LLM、零 migration**：`inventory.rs` 加 2 個 ItemKind；`crafting.rs` 加 `recipe_min_prosperity()` + 2 條配方；`ws.rs` Craft handler 加繁榮門檻、UseItem 加兩種效果；前端 ITEM_LOOK/ITEM_NAME/CONSUMABLE_DESC/CRAFT_RECIPES 更新、合成台顯示鎖定提示。
     - 玩家感知：合成台右下角出現灰色「🔒 城鎮特釀」，等城鎮繁榮到生機後解鎖可合——讓幫助居民這件事多了一條有遊玩意義的具體回報。
 
+131. ✅ **城鎮大工程——由里長發起「蒸汽天文台」建設，全服玩家捐獻資源，建築外觀隨進度分階段成長，最終成為永久地標**
+    - 數據持久化：`town_project` 表存儲進度，`town_project_donations` 記錄貢獻。
+    - 視覺成長：前端 `_drawObservatory` 隨 `progress_pct` 繪製圍欄、地基、鷹架或完成體。
+    - 交互：里長面板新增工程進度條、材料清單、捐獻鈕與前五大貢獻榜。
+    - 閉環：資源過剩時的有意義去處，強化「眾人拾柴火焰高」的集體成就感。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

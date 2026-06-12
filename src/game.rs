@@ -1328,6 +1328,17 @@ pub fn spawn(app: AppState) {
                 Vec::new()
             };
 
+            // 每 60 tick (約 4 秒) 更新一次大工程貢獻者名單（若有工程）。
+            if tick % 60 == 0 {
+                let project_id = app.town_project.read().unwrap().project_id.clone();
+                let store = app.town_project_store.clone();
+                let project_lock = app.town_project.clone();
+                tokio::spawn(async move {
+                    let list = store.load_top_contributors(&project_id).await;
+                    project_lock.write().unwrap().update_contributors(list);
+                });
+            }
+
             // 廣播快照——只在有訂閱者時(tick 開頭已判定的 want_broadcast)才建構。
             // ③ 無限世界（切片 C）：傳出 Arc<ServerMsg> 原始結構，不在此序列化。
             if want_broadcast {
@@ -1505,6 +1516,8 @@ pub fn spawn(app: AppState) {
                         resident_moods: app.residents.read().unwrap().moods(),
                         // 城鎮繁榮等級（ROADMAP 128）：0=凋零 1=平靜 2=生機 3=繁盛。
                         town_prosperity_level: app.residents.read().unwrap().prosperity_level(),
+                        // 城鎮大工程狀態（ROADMAP 131）。
+                        town_project: app.town_project.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
