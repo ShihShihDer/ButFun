@@ -590,19 +590,54 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // AI 導演層＋獸潮攻城（ROADMAP 44 / 139）：低頻導演 tick，觸發時注入怪波＋廣播公告。
-            // 先把居民數傳給導演，讓它依人口縮放波次（ROADMAP 139 平衡）。
+            // AI 導演層＋獸潮攻城（ROADMAP 44 / 139 / 166 湧現化）：
+            // 低頻導演 tick，獸潮從生態壓力長出（不再純計時器）。
+            // 先把居民數＋生態壓力傳給導演，讓它依狀態決定是否觸發及波次規模。
             {
                 let resident_count = app.residents.read().unwrap().population();
                 let defense_drill = app.civic_vote.read().unwrap().defense_drill_active();
+
+                // 計算生態壓力（ROADMAP 166）——純讀取，不加鎖競爭。
+                let eco_pressure = {
+                    use crate::eco_pressure::{compute_eco_pressure, ColonyPressureInput};
+                    use crate::species_relations::{HOSTILE_THRESHOLD, WARY_THRESHOLD, ALL_MONSTER_KINDS};
+                    use crate::wildlife::WildlifeKind;
+
+                    // 巢穴族群飽和度
+                    let colony_inputs: Vec<ColonyPressureInput> = app.monster_colonies.read().unwrap()
+                        .colonies.iter()
+                        .map(|c| ColonyPressureInput { population: c.population, max_population: c.max_population })
+                        .collect();
+
+                    // 怪物敵視/警覺計數
+                    let ms = app.monster_species.read().unwrap();
+                    let (hostile_count, wary_count) = ALL_MONSTER_KINDS.iter().fold((0u32, 0u32), |(h, w), &kind| {
+                        let att = ms.attitude(kind);
+                        if att < HOSTILE_THRESHOLD { (h + 1, w) }
+                        else if att < WARY_THRESHOLD { (h, w + 1) }
+                        else { (h, w) }
+                    });
+                    let monster_total = ALL_MONSTER_KINDS.len() as u32;
+                    drop(ms);
+
+                    // 野生獵物平均態度（WildBird/WildDeer/SmallCritter）
+                    let prey_kinds = [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
+                    let sr = app.species_relations.read().unwrap();
+                    let prey_avg = prey_kinds.iter().map(|&k| sr.attitude(k)).sum::<i32>() / prey_kinds.len() as i32;
+                    drop(sr);
+
+                    compute_eco_pressure(&colony_inputs, hostile_count, wary_count, monster_total, prey_avg)
+                };
+
                 let cmds = {
                     let mut director = app.director.write().unwrap();
                     director.update_population(resident_count);
+                    director.update_eco_pressure(eco_pressure);
                     director.tick(dt)
                 };
                 for cmd in cmds {
                     match cmd {
-                        crate::director::DirectorCmd::AnnounceHorde { site_x, site_y, site_label, wave } => {
+                        crate::director::DirectorCmd::AnnounceHorde { site_x, site_y, site_label, wave, eco_pressure } => {
                             // 城防演練（ROADMAP 156）：城防演練進行中，跳過怪物注入。
                             if defense_drill {
                                 let _ = app.tx_chat.send(
@@ -622,9 +657,24 @@ pub fn spawn(app: AppState) {
                                 injected += 1;
                             }
                             drop(enemies);
-                            tracing::info!(site = site_label, injected, "獸潮廣播＋注入第一波怪物");
+                            tracing::info!(site = site_label, injected, eco_pressure, "獸潮廣播＋注入第一波怪物");
+                            // 依生態壓力等級加上說明標籤（讓玩家感知生態失衡的嚴重程度）
+                            let eco_label = if eco_pressure >= crate::director::ECO_PRESSURE_HIGH {
+                                "⚠️ 生態危機！"
+                            } else if eco_pressure >= crate::director::ECO_PRESSURE_MID {
+                                "⚡ 生態緊張"
+                            } else {
+                                ""
+                            };
+                            let eco_hint = if eco_pressure >= crate::director::ECO_PRESSURE_HIGH {
+                                "（巢穴過剩＋怪物氣焰正盛，波次更大！）"
+                            } else if eco_pressure >= crate::director::ECO_PRESSURE_MID {
+                                "（生態壓力上升，比平時更猛！）"
+                            } else {
+                                ""
+                            };
                             let _ = app.tx_chat.send(format!(
-                                "⚔️ 獸潮來襲！大批怪物正聚集在{}！\
+                                "⚔️ 獸潮來襲！{eco_label}大批怪物正聚集在{}！{eco_hint}\
                                  30 秒後衝擊城門——出城迎戰或守在城牆輸出！",
                                 site_label
                             ));
@@ -2054,6 +2104,8 @@ pub fn spawn(app: AppState) {
                         monster_species_attitudes: app.monster_species.read().unwrap().views(),
                         // 怪物巢穴（ROADMAP 164）：各巢穴位置、種類、密度。
                         monster_colony_views: app.monster_colonies.read().unwrap().colony_views(),
+                        // 生態壓力值（ROADMAP 167）：director 儲存的最新生態壓力，直接讀出廣播。
+                        eco_pressure_value: app.director.read().unwrap().eco_pressure(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

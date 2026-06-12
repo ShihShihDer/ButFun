@@ -765,11 +765,18 @@
     };
   }
 
-  // 物種態度面板（ROADMAP 144）：左下角小面板，顯示 5 物種對人類的好感度。
+  // 統一物種視圖（ROADMAP 144/163/167）：左下角小面板，整合顯示生態壓力、野生物種、
+  // 怪物物種與巢穴密度——玩家看到的是一個生態系的關係網，而非「動物一欄、怪物另一套」。
   // 顏色：Friendly=#60ffb0、Neutral=#c0c8d0、Wary=#ffcc44、Hostile=#ff6060。
   const TIER_COLOR = { friendly: "#60ffb0", neutral: "#c0c8d0", wary: "#ffcc44", hostile: "#ff6060" };
   const SPECIES_ICON = { wild_bird: "🐦", wild_deer: "🦌", small_critter: "🐿️", wild_wolf: "🐺", wild_fox: "🦊" };
-  // 預設「收合成一顆小徽章」——常駐五列長條太擋視野（玩家回報）。點徽章展開完整面板、再點收回，
+  const MONSTER_ICON = {
+    scrap_drone:      "🤖", ether_wisp:      "✨", flutter_sprite:  "🦋", mushroom_stalker: "🍄",
+    crystal_golem:    "💎", rune_guardian:   "🔮", coral_crab:      "🦀", jade_wraith:      "👻",
+    steam_construct:  "⚙️", void_phantom:    "🌑", aether_specter:  "👁️", origin_guardian:  "⭐",
+    rift_guardian:    "🌀", ether_overlord:  "👑",
+  };
+  // 預設「收合成一顆小徽章」——常駐長條太擋視野（玩家回報）。點徽章展開完整面板、再點收回，
   // 偏好記在 localStorage。收合時若有 hostile/wary 物種，徽章上亮該物種圖示+⚠，重要警訊不漏看。
   let speciesHudCollapsed = true;
   try {
@@ -789,6 +796,7 @@
         "border-radius:8px", "padding:5px 8px",
         "font-size:.72rem", "font-family:monospace",
         "z-index:1000", "cursor:pointer", "user-select:none",
+        "max-height:70vh", "overflow-y:auto",
       ].join(";");
       panel.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -799,33 +807,73 @@
       document.body.appendChild(panel);
     }
     // 每幀都會被 render 呼叫:用內容簽章擋重繪,避免無謂的 innerHTML 重建(也避免吃掉點擊)。
-    const sig = `${speciesHudCollapsed}|`
+    const sig = `${speciesHudCollapsed}|${Math.round(ecoPressureValue)}|`
       + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
+      + "|" + monsterSpeciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
       + "|" + monsterColonyViews.map(c => `${c.id}${c.density}`).join(",");
     if (sig === lastSpeciesHudSig) return;
     lastSpeciesHudSig = sig;
 
     if (speciesHudCollapsed) {
-      const alert = speciesAttitudes.find(s => s.tier === "hostile") || speciesAttitudes.find(s => s.tier === "wary");
-      const alertHtml = alert
-        ? ` <span style="color:${TIER_COLOR[alert.tier]}">${SPECIES_ICON[alert.kind] || "?"}⚠</span>`
+      // 收合時：優先顯示最嚴重警訊（敵視怪物 > 敵視野生 > 警覺怪物 > 警覺野生）
+      const hostileMonster = monsterSpeciesAttitudes.find(s => s.tier === "hostile");
+      const hostileWild = speciesAttitudes.find(s => s.tier === "hostile");
+      const waryMonster = monsterSpeciesAttitudes.find(s => s.tier === "wary");
+      const waryWild = speciesAttitudes.find(s => s.tier === "wary");
+      const alert = hostileMonster || hostileWild || waryMonster || waryWild;
+      const allIcons = [hostileMonster, hostileWild, waryMonster, waryWild].filter(Boolean);
+      const iconMap = { ...MONSTER_ICON, ...SPECIES_ICON };
+      const alertHtml = allIcons.length
+        ? " " + allIcons.slice(0, 2).map(s => `<span style="color:${TIER_COLOR[s.tier]}">${iconMap[s.kind] || "?"}⚠</span>`).join("")
         : "";
+      // 生態壓力色調
+      const ep = ecoPressureValue || 0;
+      const epCol = ep >= 75 ? "#ff6060" : ep >= 50 ? "#ffcc44" : ep >= 25 ? "#88aaff" : "#778";
       panel.style.minWidth = "0";
-      panel.innerHTML = `<span style="color:#778;">🌿${alertHtml} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
+      panel.innerHTML = `<span style="color:${epCol};">🌿${alertHtml} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
       return;
     }
 
-    panel.style.minWidth = "130px";
-    const rows = speciesAttitudes.map(s => {
+    panel.style.minWidth = "145px";
+
+    // 生態壓力儀表（ROADMAP 167）
+    const ep = ecoPressureValue || 0;
+    const epFilled = Math.max(0, Math.min(10, Math.round(ep / 10)));
+    const epBar = "█".repeat(epFilled) + "░".repeat(10 - epFilled);
+    const epCol = ep >= 75 ? "#ff6060" : ep >= 50 ? "#ffcc44" : ep >= 25 ? "#88aaff" : "#60ffb0";
+    const epLabel = ep >= 75 ? "危機" : ep >= 50 ? "緊張" : ep >= 25 ? "低度" : "平衡";
+    const pressureHtml = `<div style="margin-bottom:4px;border-bottom:1px solid #334;padding-bottom:3px;">
+      <div style="color:#668;font-size:.62rem;margin-bottom:1px;">⚡ 生態壓力</div>
+      <div style="color:${epCol};font-size:.65rem;">${epBar} ${Math.round(ep)} [${epLabel}]</div>
+    </div>`;
+
+    // 野生物種區塊（ROADMAP 144）
+    const wildRows = speciesAttitudes.map(s => {
       const icon = SPECIES_ICON[s.kind] || "?";
       const color = TIER_COLOR[s.tier] || "#c0c8d0";
-      // 後端理應把 attitude clamp 在 0-100,但前端不該信任範圍:一旦收到負值或 >100,
-      // String.repeat(負數) 會丟 RangeError 殺死整個 render 迴圈。先 clamp 計數到 0-10 自保。
       const filled = Math.max(0, Math.min(10, Math.round((s.attitude || 0) / 10)));
       const bar = "█".repeat(filled) + "░".repeat(10 - filled);
-      return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.65rem;">${bar}</span> ${s.attitude}</div>`;
+      return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
     }).join("");
-    // 怪物巢穴區塊（ROADMAP 164）：顯示 5 個巢穴的密度狀態。
+    const wildSection = `<div style="color:#668;font-size:.62rem;margin:0 0 2px;">🌿 野生物種</div>${wildRows}`;
+
+    // 怪物物種區塊（ROADMAP 163/167）：依嚴重程度排序：敵視>警覺>中立>友善
+    const tierOrder = { hostile: 0, wary: 1, neutral: 2, friendly: 3 };
+    const sortedMonsters = [...monsterSpeciesAttitudes].sort((a, b) =>
+      (tierOrder[a.tier] ?? 2) - (tierOrder[b.tier] ?? 2));
+    let monsterSection = "";
+    if (sortedMonsters.length) {
+      const monsterRows = sortedMonsters.map(s => {
+        const icon = MONSTER_ICON[s.kind] || "👾";
+        const color = TIER_COLOR[s.tier] || "#c0c8d0";
+        const filled = Math.max(0, Math.min(10, Math.round((s.attitude || 0) / 10)));
+        const bar = "█".repeat(filled) + "░".repeat(10 - filled);
+        return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
+      }).join("");
+      monsterSection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">👹 怪物物種</div>${monsterRows}`;
+    }
+
+    // 怪物巢穴區塊（ROADMAP 164）
     const DENSITY_ICON = ["💀", "⚠️", "🔴", "🔥"];
     const DENSITY_TEXT = ["廢棄", "稀疏", "正常", "茂盛"];
     let colonySection = "";
@@ -837,7 +885,9 @@
       }).join("");
       colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴</div>${colonyRows}`;
     }
-    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度 <span style="font-size:.6rem;color:#556;">▾ 點此收合</span></div>${rows}${colonySection}`;
+
+    panel.innerHTML = `${pressureHtml}${wildSection}${monsterSection}${colonySection}
+      <div style="color:#445;font-size:.58rem;margin-top:4px;text-align:right;">▾ 點此收合</div>`;
   }
 
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
@@ -873,6 +923,7 @@
   let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
   let monsterSpeciesAttitudes = []; // ROADMAP 163 怪物物種態度 [{kind, name, attitude, tier}]
   let monsterColonyViews = [];      // ROADMAP 164 怪物巢穴 [{id, kind, name, cx, cy, spawn_radius, density}]
+  let ecoPressureValue = 0;         // ROADMAP 167 生態壓力值（0-100），從 Snapshot 同步
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1238,6 +1289,8 @@
         if (Array.isArray(msg.monster_species_attitudes)) monsterSpeciesAttitudes = msg.monster_species_attitudes;
         // 怪物巢穴（ROADMAP 164）：各巢穴位置與密度狀態。
         if (Array.isArray(msg.monster_colony_views)) monsterColonyViews = msg.monster_colony_views;
+        // 生態壓力值（ROADMAP 167）：0-100，供統一物種視圖顯示。
+        if (msg.eco_pressure_value != null) ecoPressureValue = msg.eco_pressure_value;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);

@@ -118,6 +118,7 @@ mod civic_vote;
 mod town_memory;
 mod invasion;
 mod monster_colony;
+mod eco_pressure;
 
 use std::net::SocketAddr;
 

@@ -1,14 +1,18 @@
-//! AI 導演層＋獸潮攻城（ROADMAP 44 / 139 平衡調整）。
+//! AI 導演層＋獸潮攻城（ROADMAP 44 / 139 平衡調整 / 166 湧現化）。
 //!
-//! 純規則導演（**不放 LLM 進遊戲迴圈**）：每 10~20 分鐘輪替觸發一次獸潮，
-//! 怪群聚集在主城四個城門外緩衝區叫陣（保護圈照舊進不來）。
-//! 全服廣播倒數 30 秒 → 衝擊開始（120 秒）→ 玩家打退足夠怪物 → 全服獎勵；
-//! 時間耗盡則廣播獸潮退去。
+//! 純規則導演（**不放 LLM 進遊戲迴圈**）：獸潮從生態壓力長出（ROADMAP 166），
+//! 不再純計時器——計時器降級為「生態讀數的觸發器」：
+//!   - 生態壓力 < ECO_PRESSURE_MIN：生態安定，計時歸零後**不觸發**，等待下一輪。
+//!   - 壓力 25-50：正常間隔（HORDE_INTERVAL_SECS）。
+//!   - 壓力 50-75：間隔縮短至 75%（生態緊張）。
+//!   - 壓力 > 75：間隔縮短至 50%，波次 +1（生態危機）。
 //!
-//! ROADMAP 139 平衡調整：
-//! - 間隔延長（10 分鐘 idle + 退去後 15 分鐘冷卻 / 勝利後 20 分鐘冷卻），
-//!   讓城鎮有喘息空間，居民繁榮度得以回升、人口得以成長。
-//! - 波次依居民人口縮放（人口少 → 波次小），避免小城鎮永久圍爆。
+//! 生態壓力由 eco_pressure::compute_eco_pressure 計算，來源：
+//!   1. 怪物巢穴族群飽和度（越滿越急於擴張）。
+//!   2. 怪物種類敵視/警覺態度（血仇累積）。
+//!   3. 野生獵物被過度獵殺（食物短缺，怪物飢餓攻城）。
+//!
+//! 波次規模：依居民人口縮放（ROADMAP 139）+ 高生態壓力再 +1（生態危機）。
 //!
 //! 導演硬邊界：
 //! - 所有怪物注入點確認在 `town_protected_at` 以外。
@@ -40,6 +44,14 @@ pub const HORDE_VICTORY_ETHER: u32 = 20;
 pub const HORDE_KILL_RADIUS: f32 = 650.0;
 /// 注入波次的散佈半徑（像素）。
 pub const HORDE_SCATTER_RADIUS: f32 = 220.0;
+/// 生態壓力觸發閾值：低於此值時計時到期不觸發獸潮（生態安定）。
+pub const ECO_PRESSURE_MIN: f32 = 25.0;
+/// 生態壓力高壓閾值：超過此值縮短 50% 間隔並加 1 波次（生態危機）。
+pub const ECO_PRESSURE_HIGH: f32 = 75.0;
+/// 生態壓力中壓閾值：超過此值縮短 25% 間隔（生態緊張）。
+pub const ECO_PRESSURE_MID: f32 = 50.0;
+/// 高壓時擴充波次種類池（在原有 6 種後補一隻較強的怪）。
+const HORDE_WAVE_SIZE_MAX: usize = HORDE_WAVE_SIZE + 1;
 
 // ─── 攻城點定義 ─────────────────────────────────────────────────────────────
 
@@ -64,13 +76,15 @@ pub const SIEGE_SITES: [(f32, f32); 4] = [
 pub const SIEGE_LABELS: [&str; 4] = ["北城門外", "南城門外", "東城門外", "西城門外"];
 
 /// 每波怪物種類池（由前往後依難度遞增；wave_size 取前 N 隻）。
-const HORDE_WAVE_KINDS: [EnemyKind; HORDE_WAVE_SIZE] = [
+/// 共 7 種：前 6 種為標準波次，第 7 種（CrystalGolem）為生態危機加強波專用。
+const HORDE_WAVE_KINDS: [EnemyKind; HORDE_WAVE_SIZE_MAX] = [
     EnemyKind::FlutterSprite,   // 1 脆弱（熱身）
     EnemyKind::FlutterSprite,   // 2 脆弱（熱身）
     EnemyKind::MushroomStalker, // 3 中等
     EnemyKind::MushroomStalker, // 4 中等
     EnemyKind::CrystalGolem,   // 5 較硬
     EnemyKind::RuneGuardian,   // 6 硬
+    EnemyKind::CrystalGolem,   // 7 生態危機加強波（高壓專用）
 ];
 
 // ─── 型別 ───────────────────────────────────────────────────────────────────
@@ -80,11 +94,13 @@ const HORDE_WAVE_KINDS: [EnemyKind; HORDE_WAVE_SIZE] = [
 pub enum DirectorCmd {
     /// 廣播「30 秒後獸潮」並注入第一波怪物到攻城點。
     AnnounceHorde {
-        site_x:     f32,
-        site_y:     f32,
-        site_label: &'static str,
+        site_x:       f32,
+        site_y:       f32,
+        site_label:   &'static str,
         /// 要注入的 (世界像素 x, y, 種類) 列表，呼叫方逐一 inject_event_enemy。
-        wave:       Vec<(f32, f32, EnemyKind)>,
+        wave:         Vec<(f32, f32, EnemyKind)>,
+        /// 觸發時的生態壓力值（供廣播訊息加說明標籤：生態緊張/危機）。
+        eco_pressure: f32,
     },
     /// 廣播「攻城開始！」（announce_timer 到 0 後）。
     SiegeStart { site_label: &'static str },
@@ -121,6 +137,9 @@ pub struct DirectorState {
     site_index:     usize,
     /// 目前城鎮居民數，用於縮放波次規模。由 game.rs 每輪更新。
     resident_count: usize,
+    /// 生態壓力值（0.0～100.0）。由 game.rs 每輪透過 update_eco_pressure 更新。
+    /// 低壓 = 生態安定，計時到也不觸發；高壓 = 加快間隔並擴大波次。
+    eco_pressure:   f32,
 }
 
 impl DirectorState {
@@ -129,6 +148,7 @@ impl DirectorState {
             phase:          HordePhase::Idle { cooldown: HORDE_INTERVAL_SECS },
             site_index:     0,
             resident_count: 0,
+            eco_pressure:   50.0, // 初始中壓，讓世界一開始正常運作
         }
     }
 
@@ -137,40 +157,84 @@ impl DirectorState {
         self.resident_count = count;
     }
 
+    /// 更新生態壓力（game.rs 在 tick 前呼叫）。
+    /// 壓力由 eco_pressure::compute_eco_pressure 計算後傳入。
+    pub fn update_eco_pressure(&mut self, pressure: f32) {
+        self.eco_pressure = pressure.clamp(0.0, 100.0);
+    }
+
+    /// 回傳目前生態壓力值（供測試 / 除錯）。
+    pub fn eco_pressure(&self) -> f32 {
+        self.eco_pressure
+    }
+
+    /// 壓力是否足以觸發獸潮（低壓 = 生態安定 = 不觸發）。
+    fn should_trigger_horde(&self) -> bool {
+        self.eco_pressure >= ECO_PRESSURE_MIN
+    }
+
+    /// 依生態壓力決定本次 Idle 倒數間隔：高壓縮短間隔、低壓延長。
+    fn effective_interval(&self) -> f32 {
+        if self.eco_pressure >= ECO_PRESSURE_HIGH {
+            HORDE_INTERVAL_SECS * 0.5
+        } else if self.eco_pressure >= ECO_PRESSURE_MID {
+            HORDE_INTERVAL_SECS * 0.75
+        } else {
+            HORDE_INTERVAL_SECS
+        }
+    }
+
     fn current_site(&self) -> (f32, f32, &'static str) {
         let (sx, sy) = SIEGE_SITES[self.site_index];
         (sx, sy, SIEGE_LABELS[self.site_index])
     }
 
-    /// 依居民人口決定本次波次大小：人口少 → 波次小，給城鎮喘息空間。
+    /// 依居民人口 + 生態壓力決定本次波次大小：
+    /// 人口少 → 波次小；生態危機（壓力 > 75）→ 額外 +1 隻。
     fn current_wave_size(&self) -> usize {
-        match self.resident_count {
+        let base = match self.resident_count {
             0..=3  => 3,
             4..=6  => 4,
             7..=9  => 5,
             _      => HORDE_WAVE_SIZE,
+        };
+        // 生態危機時加 1 隻，上限 HORDE_WAVE_SIZE_MAX（7）
+        if self.eco_pressure >= ECO_PRESSURE_HIGH {
+            (base + 1).min(HORDE_WAVE_SIZE_MAX)
+        } else {
+            base
         }
     }
 
     /// 每幀呼叫一次（dt 秒）；回傳需要執行的指令列表（通常 0~1 個）。
     pub fn tick(&mut self, dt: f32) -> Vec<DirectorCmd> {
         let mut cmds = Vec::new();
-        // 先在 match 外取好 site_index，避免不可變借用與可變借用衝突。
-        let si = self.site_index;
+        // 先在 match 外取好 site_index + 生態壓力相關值，避免不可變借用與可變借用衝突。
+        let si              = self.site_index;
+        let should_trigger  = self.should_trigger_horde();
+        let next_interval   = self.effective_interval();
+        let wave_size       = self.current_wave_size();
+        let pressure        = self.eco_pressure;
+
         match &mut self.phase {
             HordePhase::Idle { cooldown } => {
                 *cooldown -= dt;
                 if *cooldown <= 0.0 {
-                    let (sx, sy) = SIEGE_SITES[si];
-                    let label = SIEGE_LABELS[si];
-                    let wave_size = self.current_wave_size();
-                    self.phase = HordePhase::Announcing { secs_left: HORDE_ANNOUNCE_SECS };
-                    cmds.push(DirectorCmd::AnnounceHorde {
-                        site_x:     sx,
-                        site_y:     sy,
-                        site_label: label,
-                        wave:       wave_positions(sx, sy, wave_size),
-                    });
+                    if !should_trigger {
+                        // 生態安定：計時器重置（依壓力決定下次間隔），不觸發獸潮。
+                        *cooldown = next_interval;
+                    } else {
+                        let (sx, sy) = SIEGE_SITES[si];
+                        let label = SIEGE_LABELS[si];
+                        self.phase = HordePhase::Announcing { secs_left: HORDE_ANNOUNCE_SECS };
+                        cmds.push(DirectorCmd::AnnounceHorde {
+                            site_x:       sx,
+                            site_y:       sy,
+                            site_label:   label,
+                            wave:         wave_positions(sx, sy, wave_size),
+                            eco_pressure: pressure,
+                        });
+                    }
                 }
             }
             HordePhase::Announcing { secs_left } => {
@@ -415,5 +479,100 @@ mod tests {
         d.tick(HORDE_INTERVAL_SECS + 1.0);
         let v = d.view().expect("Announcing 應有 view");
         assert_eq!(v.phase, "announcing");
+    }
+
+    // ── ROADMAP 166 生態壓力觸發測試 ────────────────────────────────────────────
+
+    #[test]
+    fn low_eco_pressure_suppresses_horde() {
+        // 壓力低於 ECO_PRESSURE_MIN → 計時到也不觸發
+        let mut d = DirectorState::new();
+        d.update_eco_pressure(0.0); // 生態安定
+        let cmds = d.tick(HORDE_INTERVAL_SECS + 1.0);
+        // 計時到了但壓力低 → 不觸發 AnnounceHorde
+        assert!(
+            !cmds.iter().any(|c| matches!(c, DirectorCmd::AnnounceHorde { .. })),
+            "生態壓力 0 不應觸發獸潮"
+        );
+    }
+
+    #[test]
+    fn low_pressure_resets_timer_and_eventually_does_not_trigger() {
+        // 壓力低時重置計時器；下一輪仍然判斷壓力
+        let mut d = DirectorState::new();
+        d.update_eco_pressure(0.0);
+        // 計時超過兩個間隔——都不觸發
+        d.tick(HORDE_INTERVAL_SECS + 1.0);  // 第一次重置
+        let cmds = d.tick(HORDE_INTERVAL_SECS + 1.0); // 第二次仍低壓
+        assert!(!cmds.iter().any(|c| matches!(c, DirectorCmd::AnnounceHorde { .. })));
+    }
+
+    #[test]
+    fn sufficient_pressure_triggers_horde() {
+        // 壓力達到或超過閾值 → 計時到後觸發
+        let mut d = DirectorState::new();
+        d.update_eco_pressure(ECO_PRESSURE_MIN + 1.0); // 剛過閾值
+        let cmds = d.tick(HORDE_INTERVAL_SECS + 1.0);
+        assert!(
+            cmds.iter().any(|c| matches!(c, DirectorCmd::AnnounceHorde { .. })),
+            "壓力 >= ECO_PRESSURE_MIN 應觸發獸潮"
+        );
+    }
+
+    #[test]
+    fn high_pressure_produces_larger_wave() {
+        // 高壓（>75）時波次 +1
+        let mut d = DirectorState::new();
+        d.update_population(10);           // 確保基礎波次為 HORDE_WAVE_SIZE
+        d.update_eco_pressure(ECO_PRESSURE_HIGH + 1.0);
+        assert_eq!(d.current_wave_size(), HORDE_WAVE_SIZE_MAX,
+            "高壓時波次應為 HORDE_WAVE_SIZE_MAX");
+    }
+
+    #[test]
+    fn low_pressure_normal_wave_size() {
+        // 低壓時波次不擴充（依人口決定）
+        let mut d = DirectorState::new();
+        d.update_population(10);
+        d.update_eco_pressure(ECO_PRESSURE_MIN - 1.0);
+        assert_eq!(d.current_wave_size(), HORDE_WAVE_SIZE,
+            "低壓時波次應為標準大小");
+    }
+
+    #[test]
+    fn high_pressure_shortens_interval() {
+        // 高壓時 effective_interval < 正常間隔
+        let mut d = DirectorState::new();
+        d.update_eco_pressure(ECO_PRESSURE_HIGH + 1.0);
+        assert!(
+            d.effective_interval() < HORDE_INTERVAL_SECS,
+            "高壓時間隔應縮短"
+        );
+    }
+
+    #[test]
+    fn mid_pressure_partial_shortens_interval() {
+        // 中壓時間隔縮短到 75%
+        let mut d = DirectorState::new();
+        d.update_eco_pressure(ECO_PRESSURE_MID + 1.0);
+        let expected = HORDE_INTERVAL_SECS * 0.75;
+        assert!(
+            (d.effective_interval() - expected).abs() < 0.1,
+            "中壓時間隔應為 75%"
+        );
+    }
+
+    #[test]
+    fn announce_horde_carries_eco_pressure() {
+        // AnnounceHorde 事件攜帶 eco_pressure 值
+        let mut d = DirectorState::new();
+        let pressure = 80.0_f32;
+        d.update_eco_pressure(pressure);
+        let cmds = d.tick(HORDE_INTERVAL_SECS + 1.0);
+        let eco_p = cmds.iter().find_map(|c| {
+            if let DirectorCmd::AnnounceHorde { eco_pressure, .. } = c { Some(*eco_pressure) } else { None }
+        });
+        assert!(eco_p.is_some(), "AnnounceHorde 應攜帶 eco_pressure");
+        assert!((eco_p.unwrap() - pressure).abs() < 0.1);
     }
 }
