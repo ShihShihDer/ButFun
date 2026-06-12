@@ -710,12 +710,26 @@ pub fn spawn(app: AppState) {
                         .map(|p| (p.name.clone(), p.x, p.y))
                         .collect()
                 };
-                // 野生動物 tick（ROADMAP 140）。
+                // 野生動物 tick（ROADMAP 141 食物鏈）。
                 {
                     let positions: Vec<(f32, f32)> = player_positions.iter()
                         .map(|(_, x, y)| (*x, *y))
                         .collect();
-                    app.wildlife_manager.write().unwrap().tick(dt, &positions);
+                    let wildlife_events = app.wildlife_manager.write().unwrap().tick(dt, &positions);
+                    for ev in wildlife_events {
+                        use crate::wildlife::WildlifeEvent;
+                        match ev {
+                            WildlifeEvent::Kill { predator_kind, prey_kind, x, y } => {
+                                let msg = format!(
+                                    "🌿 城外 ({:.0},{:.0})：{} 捕獲了 {}，弱肉強食是生態的法則。",
+                                    x, y,
+                                    predator_kind.display_name(),
+                                    prey_kind.display_name()
+                                );
+                                let _ = app.tx_chat.send(msg);
+                            }
+                        }
+                    }
                 }
                 let (resident_events, thought_events) = app.residents.write().unwrap()
                     .tick(dt, avg_prosperity, current_phase, &player_positions);
@@ -1624,17 +1638,19 @@ pub fn spawn(app: AppState) {
                         // 季節循環（ROADMAP 137）。
                         current_season: app.season.read().unwrap().current.as_str().to_string(),
                         season_remaining_secs: app.season.read().unwrap().remaining_secs(),
-                        // 野生動物（ROADMAP 140）。
+                        // 野生動物（ROADMAP 141 食物鏈）：只廣播存活個體。
                         wildlife: {
                             let wm = app.wildlife_manager.read().unwrap();
-                            wm.animals.iter().map(|a| crate::protocol::WildlifeView {
-                                id: a.id,
-                                kind: a.kind.as_str().to_string(),
-                                name: a.kind.display_name().to_string(),
-                                x: a.x,
-                                y: a.y,
-                                state: a.state_str().to_string(),
-                            }).collect()
+                            wm.animals.iter()
+                                .filter(|a| a.alive)
+                                .map(|a| crate::protocol::WildlifeView {
+                                    id: a.id,
+                                    kind: a.kind.as_str().to_string(),
+                                    name: a.kind.display_name().to_string(),
+                                    x: a.x,
+                                    y: a.y,
+                                    state: a.state_str().to_string(),
+                                }).collect()
                         },
                     }
                 };
