@@ -183,6 +183,10 @@
   // 以固定順序輸出同一批敵人(spawn 槽位穩定、被打倒只是原地重生),同槽同 kind 才比對,
   // 避免序變誤觸。只在血量下降／轉被打倒時觸發,不在前端判任何戰鬥規則(伺服器權威)。
   let enemyFx = []; // 每槽 { until:ms, lethal:bool };render 依剩餘時間淡出
+  // 怪物死亡淡出（ROADMAP 150）：alive→false 的瞬間記錄淡出截止時間。
+  // 淡出期間以漸減 alpha 繪製定住的軀體；超時後完全隱藏，不再殘留幽靈。
+  const ENEMY_DEATH_FADE_MS = 600;
+  let enemyDeathFade = []; // 每槽 { until:ms } or undefined
   // 是否已同步過初始敵人快照。和乙太/背包/血量同理:進場/重連的第一份快照不拿來比 hp 差值
   // (伺服器若換版重啟,敵人血量可能不同,會誤閃一輪),之後的快照差值才是真的受擊。
   let enemiesSynced = false;
@@ -940,6 +944,8 @@
               const dmg = died ? oe.hp : (oe.hp - ne.hp);
               if (dmg > 0) spawnEnemyDmgFloater(dmg, ne.x, ne.y, died);
             }
+            // 死亡淡出（ROADMAP 150）：alive 轉 false 的瞬間啟動淡出計時。
+            if (died) enemyDeathFade[i] = { until: fxNow + ENEMY_DEATH_FADE_MS };
           }
         }
         enemies = nextEnemies;
@@ -4272,6 +4278,10 @@
       }
       return "empty";
     }
+    // 隱形牆根治：snap 到格中心，對齊 world-core tile_kind_at 的修正。
+    // 碰撞時傳入的 wx/wy 是精確角落座標，未 snap 時 biome/noise 可能跨越閾值。
+    wx = (gx + 0.5) * TS;
+    wy = (gy + 0.5) * TS;
     // 確定性生成
     const b = biomeAtJS(wx, wy);
     const h = tileHash(gx, gy);
@@ -7627,14 +7637,45 @@
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
       // 每隻用座標當相位 → 動作不同步;上下浮動給生命感(reduceMotion 不動)。
       const phase = e.x * 0.7 + e.y * 0.3;
+
+      // 死亡淡出（ROADMAP 150）：alive=false 時用淡出 alpha 繪製靜止軀體，超時完全隱藏。
+      if (!e.alive) {
+        const df = enemyDeathFade[i];
+        if (!df || fxNow >= df.until) continue; // 淡出結束，不再殘留
+        const fadeT = (df.until - fxNow) / ENEMY_DEATH_FADE_MS;
+        ctx.save();
+        ctx.globalAlpha = fadeT * fadeT; // 二次曲線：快速消失
+        // 死亡後定住，不跳動（用 sy 而非 ey）
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
+        ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+        if      (e.kind === "scrap_drone")      drawScrapDrone(sx, sy, t, phase);
+        else if (e.kind === "ether_wisp")       drawEtherWisp(sx, sy, t, phase);
+        else if (e.kind === "flutter_sprite")   drawFlutterSprite(sx, sy, t, phase);
+        else if (e.kind === "mushroom_stalker") drawMushroomStalker(sx, sy, t, phase);
+        else if (e.kind === "crystal_golem")    drawCrystalGolem(sx, sy, t, phase);
+        else if (e.kind === "rune_guardian")    drawRuneGuardian(sx, sy, t, phase);
+        else if (e.kind === "coral_crab")       drawCoralCrab(sx, sy, t, phase);
+        else if (e.kind === "jade_wraith")      drawJadeWraith(sx, sy, t, phase);
+        else if (e.kind === "steam_construct")  drawSteamConstruct(sx, sy, t, phase);
+        else if (e.kind === "aether_specter")   drawAetherSpecter(sx, sy, t, phase);
+        else if (e.kind === "origin_guardian")  drawOriginGuardian(sx, sy, t, phase);
+        else if (e.kind === "rift_guardian")    drawRiftGuardian(sx, sy, t, phase);
+        else {
+          const look = ENEMY_LOOK[e.kind] || { tint: "#555" };
+          ctx.fillStyle = look.tint;
+          ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        continue; // 死後不渲染血條/名牌/命中特效
+      }
+
       const ey = sy + (reduceMotion ? 0 : Math.sin(t * 3 + phase) * 2.5);
       const fx = enemyFx[i];
       const fxT = fx && fxNow < fx.until
         ? Math.max(0, Math.min(1, (fx.until - fxNow) / (fx.lethal ? 480 : 280)))
         : 0;
       ctx.save();
-      if (!e.alive) ctx.globalAlpha = 0.22; // 被打倒、重生中
-      else if (e.resting) ctx.globalAlpha = 0.42; // 夜間休息中（ROADMAP 148）
+      if (e.resting) ctx.globalAlpha = 0.42; // 夜間休息中（ROADMAP 148）
       // 影子(定在地面、不隨浮動)
       ctx.fillStyle = "rgba(0,0,0,0.22)";
       ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
@@ -7657,16 +7698,17 @@
         ctx.beginPath(); ctx.arc(sx, ey, 12, 0, Math.PI * 2); ctx.fill();
       }
       // 受擊閃光:往外擴張淡出的亮環(被打倒時更白更大)。reduceMotion 只畫靜態亮邊。
+      // 注意:此時 e.alive 必為 true（dead enemy 走上方 continue 分支）。
       if (fxT > 0) {
         const base = fx.lethal ? 20 : 17;
         const r = reduceMotion ? base : base + (1 - fxT) * (fx.lethal ? 16 : 10);
-        ctx.globalAlpha = (e.alive ? 1 : 0.22) * fxT;
+        ctx.globalAlpha = fxT;
         ctx.lineWidth = fx.lethal ? 3 : 2;
         ctx.strokeStyle = fx.lethal ? "#fff" : "#ffd9a0";
         ctx.beginPath();
         ctx.arc(sx, ey, r, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.globalAlpha = e.alive ? 1 : 0.22;
+        ctx.globalAlpha = 1;
       }
       // 血條:活著且不滿血才畫(定在頭上)。
       if (e.alive && e.hp < e.max_hp) {

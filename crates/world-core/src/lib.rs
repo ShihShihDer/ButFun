@@ -318,25 +318,28 @@ impl TileKind {
 /// 雜湊函式，故前端可用 JS `grassHash` 精確對齊（見 `web/game.js` 的 `tileKindAt`）。
 /// 水域一律回 `Empty`（水面沒有可挖的實心格）。
 pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
-    // 城鎮幾何最優先：城牆是不可挖結構、牆內一律淨空（取代舊的圓形安全區判斷——
-    // 主城方形範圍完整涵蓋原 SAFE_ZONE 圓，出生點/公共農地照樣乾淨）。
-    {
-        let gx = (wx / TILE_PX as f64).floor() as i32;
-        let gy = (wy / TILE_PX as f64).floor() as i32;
-        if town_wall_at_tile(gx, gy) {
-            return TileKind::TownWall;
-        }
-        if town_interior_at_tile(gx, gy) {
-            return TileKind::Empty;
-        }
+    // 格索引（整數）。城鎮幾何最優先：城牆是不可挖結構、牆內一律淨空。
+    let gx = (wx / TILE_PX as f64).floor() as i32;
+    let gy = (wy / TILE_PX as f64).floor() as i32;
+    if town_wall_at_tile(gx, gy) {
+        return TileKind::TownWall;
     }
+    if town_interior_at_tile(gx, gy) {
+        return TileKind::Empty;
+    }
+
+    // 隱形牆根治：把浮點座標 snap 到格中心，確保同格所有位置（含四個角落）返回
+    // 完全相同的地形種類。渲染層本就在格中心取樣；碰撞層以精確角落座標呼叫
+    // 此函式——未 snap 時格邊緣的 biome/noise 值可能跨越閾值，造成
+    // 「渲染=空格 + 碰撞=實心」的隱形牆。Snap 後兩者一致，隱形牆消失。
+    let wx = (gx as f64 + 0.5) * TILE_PX as f64;
+    let wy = (gy as f64 + 0.5) * TILE_PX as f64;
+
     let biome = biome_at(wx, wy);
 
     // 水域特例：珊瑚礁聚落（海底特產），其餘水格一律 Empty（水面可通行）。
     // 玩家無法進入水域，但可從岸邊 80px 距離挖掘珊瑚礁取得深海珍珠。
     if biome == Biome::Water {
-        let gx = (wx / TILE_PX as f64).floor() as i32;
-        let gy = (wy / TILE_PX as f64).floor() as i32;
         let h = grass_hash(
             gx.wrapping_mul(1031) ^ gy.wrapping_mul(2053),
             gx ^ gy.wrapping_mul(1009),
@@ -359,9 +362,7 @@ pub fn tile_kind_at(wx: f64, wy: f64) -> TileKind {
         return TileKind::Empty;
     }
 
-    // 格索引（整數）→ 穩定雜湊值 [0,1)
-    let gx = (wx / TILE_PX as f64).floor() as i32;
-    let gy = (wy / TILE_PX as f64).floor() as i32;
+    // 穩定格雜湊值 [0,1)（gx/gy 已在函式頂端算好）
     let h = grass_hash(
         gx.wrapping_mul(1031) ^ gy.wrapping_mul(2053),
         gx ^ gy.wrapping_mul(1009),
@@ -836,6 +837,36 @@ mod tests {
         // 同座標永遠同結果（不靠亂數/時鐘）。
         for &(x, y) in &[(0.0, 0.0), (1024.5, 512.0), (5000.0, 3000.0), (-64.0, 128.0)] {
             assert_eq!(tile_kind_at(x, y), tile_kind_at(x, y));
+        }
+    }
+
+    #[test]
+    fn tile_kind_same_across_tile() {
+        // 隱形牆根治：同格所有取樣點（含四角、中心）必須返回完全相同的地形種類。
+        // 若此測試失敗，表示 snap 到格中心的邏輯被破壞——渲染/碰撞再度發散。
+        let offsets: &[(f64, f64)] = &[
+            (0.5, 0.5),   // 中心
+            (0.0, 0.0),   // 左上角
+            (31.9, 0.0),  // 右上角
+            (0.0, 31.9),  // 左下角
+            (31.9, 31.9), // 右下角
+            (16.0, 0.0),  // 上邊中
+            (0.0, 16.0),  // 左邊中
+        ];
+        // 抽樣大量格（含城鎮外、各生態域、負座標）
+        for gy in (-5..=30i32).step_by(3) {
+            for gx in (-5..=30i32).step_by(3) {
+                let base_x = gx as f64 * 32.0;
+                let base_y = gy as f64 * 32.0;
+                let expected = tile_kind_at(base_x + 16.0, base_y + 16.0); // 中心
+                for &(ox, oy) in offsets {
+                    let got = tile_kind_at(base_x + ox, base_y + oy);
+                    assert_eq!(
+                        got, expected,
+                        "格({gx},{gy}) 在偏移({ox},{oy}) 返回 {got:?}，中心返回 {expected:?}——隱形牆！"
+                    );
+                }
+            }
         }
     }
 
