@@ -356,7 +356,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -438,6 +438,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         colonies: colonies.clone(),
                                         // 物種關係（ROADMAP 144）：全服廣播（量少，5 物種）。
                                         species_attitudes: species_attitudes.clone(),
+                                        // 季節性野外採集節點（ROADMAP 154）：全服廣播（量少，最多 3 顆）。
+                                        seasonal_nodes: seasonal_nodes.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2175,6 +2177,38 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, gained, "飲用繁盛精露滿血+獲得20乙太");
                                 }
                             }
+                            // ── 季節性限定合成品（ROADMAP 154）──────────────────────
+                            ItemKind::SpringSachet => {
+                                // 春日香囊：回血 25hp + 重置回血冷卻。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(25);
+                                    p.vitals.reset_regen_cooldown();
+                                    tracing::info!(player = %p.name, gained, "使用春日香囊回血+重置回血冷卻");
+                                }
+                            }
+                            ItemKind::SummerElixir => {
+                                // 夏日精粹：回血 15hp + 獲得 15 乙太。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(15);
+                                    p.ether = p.ether.saturating_add(15);
+                                    tracing::info!(player = %p.name, gained, "使用夏日精粹回血+獲得15乙太");
+                                }
+                            }
+                            ItemKind::AutumnTonic => {
+                                // 秋日補藥：回血 20hp + 農夫熟練度 +20 XP。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(20);
+                                    p.masteries.gain_farmer(20);
+                                    tracing::info!(player = %p.name, gained, "使用秋日補藥回血+農夫熟練度");
+                                }
+                            }
+                            ItemKind::WinterMedicine => {
+                                // 冬日神藥：回復至等級滿血——凜冬採集最難、效果最強。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    tracing::info!(player = %p.name, gained, "使用冬日神藥滿血復原");
+                                }
+                            }
                             _ => {} // 非消耗品，忽略
                         }
                     }
@@ -2778,6 +2812,27 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let _ = app.tx_chat.send(msg);
                         }
                     }
+                }
+
+                // ── 季節性野外採集節點（ROADMAP 154）──────────────────────────────────
+                Ok(ClientMsg::GatherSeasonalNode { node_id }) => {
+                    // 採集季節性節點：未倒地、在節點 80px 內、節點有剩餘次數。
+                    use crate::inventory::ItemKind;
+                    let (px, py, is_downed) = app.players.read().unwrap()
+                        .get(&id)
+                        .map(|p| (p.x, p.y, p.vitals.is_downed()))
+                        .unwrap_or((0.0, 0.0, true));
+                    if !is_downed {
+                        let result = app.seasonal_nodes.write().unwrap()
+                            .try_gather(node_id, px, py);
+                        if let Some(item_kind) = result {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.add_item_overflow(item_kind, 1);
+                                tracing::info!(player = %p.name, ?item_kind, "採集季節性節點");
+                            }
+                        }
+                    }
+                    let _ = (node_id, px, py);
                 }
 
                 // ── 攻擊野生動物（ROADMAP 144）──────────────────────────────────────

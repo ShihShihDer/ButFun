@@ -271,6 +271,24 @@ pub enum ItemKind {
     /// 虛空炮（合成：虛空碎片×5 + 石頭×3 → 虛空炮×1，需 Lv.18）。遠程攻擊力 +27，射程 250px。
     /// 虛空星技術結晶的頂級遠程武器，能量炮彈在空中炸開——高等冒險者的終極遠程裝備。
     VoidCannon,
+
+    // ── 季節性野外特產（ROADMAP 154）────────────────────────────────────────────
+    /// 野花（春天季節節點採集得，不同於草原 WildflowerSeed）。合成春日香囊。
+    WildFlower,
+    /// 太陽碎片（夏天季節節點採集得）。合成夏日精粹。
+    SolarShard,
+    /// 楓葉（秋天季節節點採集得）。合成秋日補藥。
+    MapleLeaf,
+    /// 冰晶碎片（冬天季節節點採集得）。合成冬日神藥。
+    IceShard,
+    /// 春日香囊（野花×2 合成）。回血 25hp + 重置回血冷卻。
+    SpringSachet,
+    /// 夏日精粹（太陽碎片×2 合成）。回血 15hp + 獲得 15 乙太。
+    SummerElixir,
+    /// 秋日補藥（楓葉×2 合成）。回血 20hp + 農夫熟練度 +20 XP。
+    AutumnTonic,
+    /// 冬日神藥（冰晶碎片×2 合成）。回復至等級滿血。
+    WinterMedicine,
 }
 
 impl ItemKind {
@@ -355,6 +373,15 @@ impl ItemKind {
         ItemKind::EtherBow,
         ItemKind::CrystalBallista,
         ItemKind::VoidCannon,
+        // ROADMAP 154 季節性野外特產
+        ItemKind::WildFlower,
+        ItemKind::SolarShard,
+        ItemKind::MapleLeaf,
+        ItemKind::IceShard,
+        ItemKind::SpringSachet,
+        ItemKind::SummerElixir,
+        ItemKind::AutumnTonic,
+        ItemKind::WinterMedicine,
     ];
 }
 
@@ -635,13 +662,22 @@ mod tests {
                 | ItemKind::StarCrystalArmor
                 | ItemKind::EtherBow
                 | ItemKind::CrystalBallista
-                | ItemKind::VoidCannon => {}
+                | ItemKind::VoidCannon
+                // ROADMAP 154 季節性野外特產
+                | ItemKind::WildFlower
+                | ItemKind::SolarShard
+                | ItemKind::MapleLeaf
+                | ItemKind::IceShard
+                | ItemKind::SpringSachet
+                | ItemKind::SummerElixir
+                | ItemKind::AutumnTonic
+                | ItemKind::WinterMedicine => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 73 種（含 ROADMAP 146：EtherBow/CrystalBallista/VoidCannon）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 73, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 81 種（含 ROADMAP 154：季節性野外特產 8 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 81, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -811,9 +847,14 @@ mod tests {
             // 流星雨採集可得（ROADMAP 133/134）：天文台完工後流星雨期間採集地面星塵節點。
             // 彩虹星塵來自彩虹節點（每場 1 個），星塵來自普通節點。
             let meteor_dust_collectible = item == ItemKind::StarDust || item == ItemKind::RainbowStarDust;
+            // 季節性野外採集節點可得（ROADMAP 154）：每季城外 3 節點，各有 3 次採集次數。
+            let seasonal_node_collectible = matches!(
+                item,
+                ItemKind::WildFlower | ItemKind::SolarShard | ItemKind::MapleLeaf | ItemKind::IceShard
+            );
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集）\
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
@@ -911,6 +952,11 @@ mod tests {
                     // 城鎮慶典配方（ROADMAP 130）：繁榮門檻合成，食用獲得特殊效果。
                     | ItemKind::TownBrew
                     | ItemKind::VibrantElixir
+                    // 季節療癒消耗品（ROADMAP 154）：季節性原料合成，食用即消耗有回血/屬性效果。
+                    | ItemKind::SpringSachet
+                    | ItemKind::SummerElixir
+                    | ItemKind::AutumnTonic
+                    | ItemKind::WinterMedicine
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。
