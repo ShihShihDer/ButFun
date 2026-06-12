@@ -217,7 +217,7 @@ pub const GREETING_DIST_PX: f32 = 120.0;
 pub const MINI_EVENT_TIMER_MAX: f32 = 2400.0;
 
 /// 人口下限：世界最冷清時至少這麼多人。
-pub const MIN_POPULATION: usize = 2;
+pub const MIN_POPULATION: usize = 4;
 
 /// 人口上限：繁榮到頂時至多這麼多人。
 pub const MAX_POPULATION: usize = 12;
@@ -1337,11 +1337,14 @@ mod tests {
     #[test]
     fn player_greeting_no_trigger_when_player_far() {
         let mut mgr = ResidentManager::new();
-        for r in &mut mgr.residents { r.greeting_cooldown = 0.0; }
-        let rx = mgr.residents[0].x;
-        let ry = mgr.residents[0].y;
-        // 玩家距離 500px，超出 GREETING_DIST_PX 120px
-        let players = vec![("冒險者".to_string(), rx + 500.0, ry)];
+        // 將所有居民集中在固定座標，避免隨機位置與玩家意外重疊。
+        for r in &mut mgr.residents {
+            r.greeting_cooldown = 0.0;
+            r.x = 2400.0;
+            r.y = 2400.0;
+        }
+        // 玩家距離 500px，超出 GREETING_DIST_PX 120px。
+        let players = vec![("冒險者".to_string(), 2900.0, 2400.0)];
         let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),

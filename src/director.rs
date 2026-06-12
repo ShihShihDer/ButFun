@@ -1,13 +1,17 @@
-//! AI 導演層＋獸潮攻城（ROADMAP 44）。
+//! AI 導演層＋獸潮攻城（ROADMAP 44 / 139 平衡調整）。
 //!
-//! 純規則導演（**不放 LLM 進遊戲迴圈**）：每 5~10 分鐘輪替觸發一次獸潮，
+//! 純規則導演（**不放 LLM 進遊戲迴圈**）：每 10~20 分鐘輪替觸發一次獸潮，
 //! 怪群聚集在主城四個城門外緩衝區叫陣（保護圈照舊進不來）。
-//! 全服廣播倒數 30 秒 → 衝擊開始（120 秒）→ 玩家打退 6 隻以上 → 全服獎勵；
+//! 全服廣播倒數 30 秒 → 衝擊開始（120 秒）→ 玩家打退足夠怪物 → 全服獎勵；
 //! 時間耗盡則廣播獸潮退去。
+//!
+//! ROADMAP 139 平衡調整：
+//! - 間隔延長（10 分鐘 idle + 退去後 15 分鐘冷卻 / 勝利後 20 分鐘冷卻），
+//!   讓城鎮有喘息空間，居民繁榮度得以回升、人口得以成長。
+//! - 波次依居民人口縮放（人口少 → 波次小），避免小城鎮永久圍爆。
 //!
 //! 導演硬邊界：
 //! - 所有怪物注入點確認在 `town_protected_at` 以外。
-//! - 事件頻率：最短冷卻 300 秒（勝利後），最長觸發間隔 600 秒（Idle）。
 //! - 兇名總數上限由 `enemy_field` 的 `level_cap` 把守，導演不再疊加。
 
 use serde::{Deserialize, Serialize};
@@ -20,14 +24,16 @@ use crate::combat::EnemyKind;
 pub const HORDE_ANNOUNCE_SECS: f32 = 30.0;
 /// 攻城持續秒數（超時獸潮退去）。
 pub const HORDE_SIEGE_SECS: f32 = 120.0;
-/// 獸潮結束後下次觸發的最短冷卻（勝利/退去都一樣）。
-pub const HORDE_COOLDOWN_SECS: f32 = 300.0;
-/// 每次觸發所需的 Idle 倒數（固定 5 分鐘）。
-pub const HORDE_INTERVAL_SECS: f32 = 300.0;
-/// 每波注入的怪物數量。
-pub const HORDE_WAVE_SIZE: usize = 8;
-/// 打退所需的最低斬殺數（6/8 = 75%）。
-pub const HORDE_VICTORY_KILLS: u32 = 6;
+/// 退去後下次觸發的冷卻（15 分鐘；讓城鎮繁榮回升、居民人口成長）。
+pub const HORDE_COOLDOWN_SECS: f32 = 900.0;
+/// 勝利後的加長冷卻（20 分鐘；獎勵玩家積極防守）。
+pub const HORDE_VICTORY_COOLDOWN_SECS: f32 = 1200.0;
+/// 每次觸發所需的 Idle 倒數（10 分鐘）。
+pub const HORDE_INTERVAL_SECS: f32 = 600.0;
+/// 每波最大注入怪物數（依人口可縮小）。
+pub const HORDE_WAVE_SIZE: usize = 6;
+/// 打退所需的最低斬殺數（4/6 ≈ 67%）。
+pub const HORDE_VICTORY_KILLS: u32 = 4;
 /// 勝利後全服每人獎勵乙太。
 pub const HORDE_VICTORY_ETHER: u32 = 20;
 /// 擊殺算入獸潮的最大距離（像素）。
@@ -57,16 +63,14 @@ pub const SIEGE_SITES: [(f32, f32); 4] = [
 /// 攻城點名稱（對應 SIEGE_SITES 索引）。
 pub const SIEGE_LABELS: [&str; 4] = ["北城門外", "南城門外", "東城門外", "西城門外"];
 
-/// 每波怪物組成：混合多種故鄉生態敵人，難度層次分明。
+/// 每波怪物種類池（由前往後依難度遞增；wave_size 取前 N 隻）。
 const HORDE_WAVE_KINDS: [EnemyKind; HORDE_WAVE_SIZE] = [
-    EnemyKind::FlutterSprite,   // 脆弱（熱身）
-    EnemyKind::FlutterSprite,   // 脆弱（熱身）
-    EnemyKind::MushroomStalker, // 中等
-    EnemyKind::MushroomStalker, // 中等
-    EnemyKind::CrystalGolem,   // 較硬
-    EnemyKind::CrystalGolem,   // 較硬
-    EnemyKind::RuneGuardian,   // 硬
-    EnemyKind::RuneGuardian,   // 硬
+    EnemyKind::FlutterSprite,   // 1 脆弱（熱身）
+    EnemyKind::FlutterSprite,   // 2 脆弱（熱身）
+    EnemyKind::MushroomStalker, // 3 中等
+    EnemyKind::MushroomStalker, // 4 中等
+    EnemyKind::CrystalGolem,   // 5 較硬
+    EnemyKind::RuneGuardian,   // 6 硬
 ];
 
 // ─── 型別 ───────────────────────────────────────────────────────────────────
@@ -113,21 +117,39 @@ enum HordePhase {
 }
 
 pub struct DirectorState {
-    phase:      HordePhase,
-    site_index: usize,
+    phase:          HordePhase,
+    site_index:     usize,
+    /// 目前城鎮居民數，用於縮放波次規模。由 game.rs 每輪更新。
+    resident_count: usize,
 }
 
 impl DirectorState {
     pub fn new() -> Self {
         Self {
-            phase:      HordePhase::Idle { cooldown: HORDE_INTERVAL_SECS },
-            site_index: 0,
+            phase:          HordePhase::Idle { cooldown: HORDE_INTERVAL_SECS },
+            site_index:     0,
+            resident_count: 0,
         }
+    }
+
+    /// 更新居民數（game.rs 在 tick 前呼叫），驅動波次縮放。
+    pub fn update_population(&mut self, count: usize) {
+        self.resident_count = count;
     }
 
     fn current_site(&self) -> (f32, f32, &'static str) {
         let (sx, sy) = SIEGE_SITES[self.site_index];
         (sx, sy, SIEGE_LABELS[self.site_index])
+    }
+
+    /// 依居民人口決定本次波次大小：人口少 → 波次小，給城鎮喘息空間。
+    fn current_wave_size(&self) -> usize {
+        match self.resident_count {
+            0..=3  => 3,
+            4..=6  => 4,
+            7..=9  => 5,
+            _      => HORDE_WAVE_SIZE,
+        }
     }
 
     /// 每幀呼叫一次（dt 秒）；回傳需要執行的指令列表（通常 0~1 個）。
@@ -141,12 +163,13 @@ impl DirectorState {
                 if *cooldown <= 0.0 {
                     let (sx, sy) = SIEGE_SITES[si];
                     let label = SIEGE_LABELS[si];
+                    let wave_size = self.current_wave_size();
                     self.phase = HordePhase::Announcing { secs_left: HORDE_ANNOUNCE_SECS };
                     cmds.push(DirectorCmd::AnnounceHorde {
                         site_x:     sx,
                         site_y:     sy,
                         site_label: label,
-                        wave:       wave_positions(sx, sy),
+                        wave:       wave_positions(sx, sy, wave_size),
                     });
                 }
             }
@@ -163,7 +186,7 @@ impl DirectorState {
                 if *secs_left <= 0.0 {
                     // 時間耗盡 → 退去。在 next_cycle 前先取出 label（避免 borrow 衝突）。
                     let label = SIEGE_LABELS[si];
-                    self.next_cycle();
+                    self.next_cycle(false);
                     cmds.push(DirectorCmd::HordeRetreat { site_label: label });
                 }
             }
@@ -192,16 +215,18 @@ impl DirectorState {
         };
         if trigger_victory {
             let label = SIEGE_LABELS[si];
-            self.next_cycle();
+            self.next_cycle(true);
             Some(DirectorCmd::HordeVictory { site_label: label, kills: kills_count })
         } else {
             None
         }
     }
 
-    /// 攻城結束（勝利或退去）：進入冷卻並輪換攻城點。
-    fn next_cycle(&mut self) {
-        self.phase = HordePhase::Idle { cooldown: HORDE_COOLDOWN_SECS };
+    /// 攻城結束：進入冷卻並輪換攻城點。
+    /// 勝利後冷卻更長（獎勵守城），退去後冷卻較短（城鎮仍需守備準備）。
+    fn next_cycle(&mut self, victory: bool) {
+        let cooldown = if victory { HORDE_VICTORY_COOLDOWN_SECS } else { HORDE_COOLDOWN_SECS };
+        self.phase = HordePhase::Idle { cooldown };
         self.site_index = (self.site_index + 1) % SIEGE_SITES.len();
     }
 
@@ -232,9 +257,9 @@ impl Default for DirectorState {
     fn default() -> Self { Self::new() }
 }
 
-/// 在攻城點周圍生成 8 個怪物的散佈位置，8 方向均勻分佈。
-fn wave_positions(site_x: f32, site_y: f32) -> Vec<(f32, f32, EnemyKind)> {
-    let n = HORDE_WAVE_SIZE;
+/// 在攻城點周圍生成指定數量怪物的散佈位置，均勻環繞分佈。
+fn wave_positions(site_x: f32, site_y: f32, wave_size: usize) -> Vec<(f32, f32, EnemyKind)> {
+    let n = wave_size.min(HORDE_WAVE_SIZE);
     (0..n).map(|i| {
         let angle = (i as f32) / (n as f32) * std::f32::consts::TAU;
         let wx = site_x + HORDE_SCATTER_RADIUS * angle.cos();
@@ -287,17 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn retreat_uses_normal_cooldown() {
+        let mut d = DirectorState::new();
+        d.tick(HORDE_INTERVAL_SECS + 1.0);
+        d.tick(HORDE_ANNOUNCE_SECS + 1.0);
+        d.tick(HORDE_SIEGE_SECS + 1.0); // → Retreat → Idle(HORDE_COOLDOWN_SECS)
+        // 在冷卻結束前 1 秒不應觸發
+        let cmds = d.tick(HORDE_COOLDOWN_SECS - 1.0);
+        assert!(cmds.is_empty(), "冷卻未到不應觸發");
+    }
+
+    #[test]
+    fn victory_uses_longer_cooldown() {
+        let mut d = DirectorState::new();
+        d.update_population(10); // 確保完整波次
+        d.tick(HORDE_INTERVAL_SECS + 1.0);
+        d.tick(HORDE_ANNOUNCE_SECS + 1.0);
+        let (sx, sy, _) = d.current_site();
+        for _ in 0..HORDE_VICTORY_KILLS {
+            d.register_kill_near_site(sx, sy);
+        }
+        // 勝利後冷卻應為 HORDE_VICTORY_COOLDOWN_SECS，一般冷卻結束後不觸發
+        let cmds = d.tick(HORDE_COOLDOWN_SECS + 1.0);
+        assert!(cmds.is_empty(), "勝利後長冷卻中不應觸發");
+    }
+
+    #[test]
     fn enough_kills_produce_victory() {
         let mut d = DirectorState::new();
+        d.update_population(10); // 確保最大波次，對應最大 VICTORY_KILLS
         d.tick(HORDE_INTERVAL_SECS + 1.0); // → Announcing
         d.tick(HORDE_ANNOUNCE_SECS + 1.0); // → Sieging
 
         let (sx, sy, _) = d.current_site();
-        // 前 5 次不勝利
+        // 前 N-1 次不勝利
         for _ in 0..(HORDE_VICTORY_KILLS - 1) {
             assert!(d.register_kill_near_site(sx, sy).is_none());
         }
-        // 第 6 次勝利
+        // 第 N 次勝利
         let result = d.register_kill_near_site(sx, sy);
         assert!(matches!(result, Some(DirectorCmd::HordeVictory { .. })));
     }
@@ -318,9 +370,22 @@ mod tests {
     }
 
     #[test]
+    fn wave_size_scales_with_population() {
+        let mut d = DirectorState::new();
+        d.update_population(0);
+        assert_eq!(d.current_wave_size(), 3, "人口 0 → 最小波次 3");
+        d.update_population(5);
+        assert_eq!(d.current_wave_size(), 4, "人口 5 → 波次 4");
+        d.update_population(8);
+        assert_eq!(d.current_wave_size(), 5, "人口 8 → 波次 5");
+        d.update_population(10);
+        assert_eq!(d.current_wave_size(), HORDE_WAVE_SIZE, "人口 ≥10 → 最大波次");
+    }
+
+    #[test]
     fn wave_positions_count_and_outside_protected() {
         let (sx, sy) = SIEGE_SITES[0];
-        let wave = wave_positions(sx, sy);
+        let wave = wave_positions(sx, sy, HORDE_WAVE_SIZE);
         assert_eq!(wave.len(), HORDE_WAVE_SIZE);
         for &(wx, wy, _) in &wave {
             assert!(
@@ -329,6 +394,13 @@ mod tests {
                 wx, wy
             );
         }
+    }
+
+    #[test]
+    fn small_wave_positions_count() {
+        let (sx, sy) = SIEGE_SITES[0];
+        let wave = wave_positions(sx, sy, 3);
+        assert_eq!(wave.len(), 3, "小波次應只有 3 隻");
     }
 
     #[test]
