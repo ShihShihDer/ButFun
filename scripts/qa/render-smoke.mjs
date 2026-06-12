@@ -1,0 +1,239 @@
+// Render-smoke：用 Proxy 假 DOM / 假 canvas / 假 WebSocket 載入「真正的」web/game.js，
+// 餵一份真實城鎮 snapshot，實際跑 render() 迴圈數幀，抓任何在繪製中拋出的例外
+// ——這正是「進城人物突然不見」的根因型態（render 一拋就停 rAF 迴圈→畫面凍結）。
+// 純 JS 例外(TypeError/RangeError…)在 Node 照樣會丟,不需要真 canvas。
+// 用法：node scripts/qa/render-smoke.mjs [snapshotJsonPath]
+import { readFileSync } from "fs";
+import vm from "vm";
+
+// 預設用 repo 內固定 fixture（自帶資料、可重現、不需先連線）；也可傳入即時撈的 snapshot 路徑。
+const SNAP_PATH = process.argv[2] || new URL("./fixtures/town-snapshot.json", import.meta.url).pathname;
+const snapshot = JSON.parse(readFileSync(SNAP_PATH, "utf8"));
+const gameSrc = readFileSync(new URL("../../web/game.js", import.meta.url), "utf8");
+
+// ── 假 canvas 2d context：全部繪製方法 no-op，回傳值方法給合理 stub ──────────────
+function makeCtx(canvasEl) {
+  const noop = () => {};
+  const store = {};
+  const base = {
+    canvas: canvasEl,
+    save: noop, restore: noop, beginPath: noop, closePath: noop, moveTo: noop, lineTo: noop,
+    arc: noop, arcTo: noop, rect: noop, roundRect: noop, ellipse: noop, fill: noop, stroke: noop,
+    fillRect: noop, strokeRect: noop, clearRect: noop, clip: noop, translate: noop, rotate: noop,
+    scale: noop, transform: noop, setTransform: noop, resetTransform: noop, fillText: noop,
+    strokeText: noop, drawImage: noop, putImageData: noop, setLineDash: noop, getLineDash: () => [],
+    quadraticCurveTo: noop, bezierCurveTo: noop, createImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    getImageData: () => ({ data: new Uint8ClampedArray(4), width: 1, height: 1 }),
+    measureText: (s) => ({ width: s == null ? 0 : String(s).length * 6 }),
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createConicGradient: () => ({ addColorStop: noop }),
+    createPattern: () => ({}),
+  };
+  return new Proxy(base, {
+    get(t, k) { if (k in t) return t[k]; if (k in store) return store[k]; return undefined; },
+    set(t, k, v) { store[k] = v; return true; },
+  });
+}
+
+// ── 假 DOM 元素：未知屬性回 no-op 函式 / 空字串，會記錄 addEventListener handler ────
+const elCache = new Map();
+function makeEl(id) {
+  if (elCache.has(id)) return elCache.get(id);
+  const handlers = {};
+  const isCanvas = id === "game" || id === "<canvas>";
+  const real = {
+    id, tagName: "DIV", __handlers: handlers,
+    width: 800, height: 600,
+    value: "", textContent: "", innerHTML: "", checked: false, disabled: false,
+    style: new Proxy({}, { get: () => "", set: () => true }),
+    dataset: new Proxy({}, { get: () => undefined, set: () => true }),
+    classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+    options: [],
+    addEventListener: (type, fn) => { (handlers[type] = handlers[type] || []).push(fn); },
+    removeEventListener: () => {},
+    getContext: isCanvas ? () => ctxSingleton : () => null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0 }),
+    appendChild: (c) => c, removeChild: () => {}, remove: () => {}, insertBefore: (c) => c,
+    setAttribute: () => {}, removeAttribute: () => {}, getAttribute: () => null, hasAttribute: () => false,
+    querySelector: () => makeEl(id + " *"), querySelectorAll: () => [],
+    focus: () => {}, blur: () => {}, click: () => fire(handlers, "click"),
+    scrollIntoView: () => {}, closest: () => null, matches: () => false,
+    cloneNode: () => makeEl(id + "#clone"),
+    __fire: (type, ev) => fire(handlers, type, ev),
+    parentElement: null, parentNode: null, firstChild: null, children: [], childNodes: [],
+  };
+  const proxy = new Proxy(real, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (typeof k === "string") return () => {}; // 未知方法 → no-op
+      return undefined;
+    },
+    set(t, k, v) { t[k] = v; return true; },
+  });
+  elCache.set(id, proxy);
+  return proxy;
+}
+function fire(handlers, type, ev = {}) {
+  for (const fn of handlers[type] || []) { try { fn(ev); } catch (e) { throw e; } }
+}
+
+// ── canvas 單例 ctx ──
+const canvasEl = makeEl("game");
+const ctxSingleton = makeCtx(canvasEl);
+
+// ── 假 WebSocket：擷取實例,手動驅動 onopen/onmessage ──
+let lastWS = null;
+class FakeWS {
+  constructor(url) { this.url = url; this.readyState = 1; lastWS = this; this.onopen = null; this.onmessage = null; this.onclose = null; this.onerror = null; }
+  send() {}
+  close() { this.readyState = 3; }
+}
+FakeWS.CONNECTING = 0; FakeWS.OPEN = 1; FakeWS.CLOSING = 2; FakeWS.CLOSED = 3;
+
+// ── requestAnimationFrame：擷取 callback,手動逐幀呼叫 ──
+let rafCb = null;
+let perfNow = 0;
+
+// ── document / window 全域 stub ──
+const documentStub = {
+  getElementById: (id) => makeEl(id),
+  createElement: (tag) => makeEl("<" + tag + ">"),
+  createElementNS: (ns, tag) => makeEl("<" + tag + ">"),
+  querySelector: () => makeEl("doc?"), querySelectorAll: () => [],
+  addEventListener: () => {}, removeEventListener: () => {},
+  body: makeEl("body"), documentElement: makeEl("html"), head: makeEl("head"),
+  hidden: false, visibilityState: "visible", cookie: "",
+  fonts: { ready: Promise.resolve(), add: () => {}, load: () => Promise.resolve() },
+  createTextNode: () => ({}),
+  activeElement: makeEl("active"),
+};
+class FakeImage { constructor() { this.onload = null; this.onerror = null; this._src = ""; } set src(v) { this._src = v; } get src() { return this._src; } addEventListener() {} }
+class FakeAudio { constructor() { return new Proxy({}, { get: () => () => ({ connect: () => {}, start: () => {}, stop: () => {} }), set: () => true }); } }
+
+const windowStub = {
+  requestAnimationFrame: (cb) => { rafCb = cb; return 1; },
+  cancelAnimationFrame: () => {},
+  performance: { now: () => (perfNow += 16) },
+  localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, clear: () => {} },
+  sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+  navigator: { getGamepads: () => [], userAgent: "node-render-smoke", language: "zh-TW", onLine: true, vibrate: () => {}, clipboard: { writeText: () => Promise.resolve() } },
+  location: { host: "localhost:3000", hostname: "localhost", protocol: "http:", href: "http://localhost:3000/", origin: "http://localhost:3000", pathname: "/", search: "", reload: () => {} },
+  devicePixelRatio: 1, innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
+  addEventListener: () => {}, removeEventListener: () => {},
+  matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {} }),
+  getComputedStyle: () => new Proxy({}, { get: () => "" }),
+  setTimeout: (fn) => { return 0; }, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+  fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}), text: () => Promise.resolve("") }),
+  scrollTo: () => {}, alert: () => {}, confirm: () => true, prompt: () => null,
+  AudioContext: FakeAudio, webkitAudioContext: FakeAudio, Image: FakeImage, WebSocket: FakeWS,
+  MutationObserver: class { observe() {} disconnect() {} takeRecords() { return []; } },
+  ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+  IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
+};
+
+// 攔截 console.error：safeRender 會把「被攔下的繪製例外」印成 console.error("[render]…")。
+// 這些例外不會往外傳(迴圈不凍結=好事),但代表底層仍有真 bug、某些東西沒畫出來,要記下來根治。
+const caughtRenderErrors = [];
+const consoleProxy = {
+  ...console,
+  error: (...args) => {
+    const first = args[0];
+    if (typeof first === "string" && first.includes("[render]")) {
+      caughtRenderErrors.push(args.map((a) => (a && a.stack) ? a.stack : String(a)).join(" "));
+    }
+    console.error(...args);
+  },
+};
+
+// 把 stub 放上 sandbox（game.js 的自由變數會解析到這裡）。vm context 本身已提供
+// Object/Array/JSON/Math 等標準內建,這裡只需補瀏覽器全域 + console + 計時器。
+const sandbox = { ...windowStub, document: documentStub, console: consoleProxy, Uint8ClampedArray, Float32Array };
+sandbox.window = sandbox;   // window === global
+sandbox.self = sandbox;
+sandbox.globalThis = sandbox;
+
+vm.createContext(sandbox);
+
+// ── 載入真正的 game.js ──
+let loadErr = null;
+try {
+  vm.runInContext(gameSrc, sandbox, { filename: "web/game.js" });
+} catch (e) {
+  loadErr = e;
+}
+if (loadErr) {
+  console.error("❌ game.js 載入即拋例外（harness 缺 stub 或 game.js 真有問題）：");
+  console.error(loadErr && loadErr.stack || loadErr);
+  process.exit(2);
+}
+console.log("✅ game.js 載入成功（IIFE 已執行、handler 已註冊）");
+
+// ── 觸發進場：點 joinBtn → connect() → new FakeWS ──
+makeEl("joinBtn").__fire("click");
+if (!lastWS) { console.error("❌ 點 joinBtn 後沒有建立 WebSocket（connect 未觸發）"); process.exit(2); }
+console.log("✅ joinBtn → connect() → WebSocket 已建立:", lastWS.url);
+
+// 模擬連線生命週期。
+const myId = (snapshot.players && snapshot.players[0] && snapshot.players[0].id) || "qa";
+if (lastWS.onopen) lastWS.onopen({});
+// world 欄位名須與後端 WorldInfo 一致（width/height），否則 me===null 那幀 camX 會 NaN。
+if (lastWS.onmessage) lastWS.onmessage({ data: JSON.stringify({ type: "welcome", id: myId, world: { width: 100000, height: 100000 } }) });
+console.log("✅ welcome 已送（myId =", myId + "）");
+
+// ── 跑 render 數幀：先空跑(無 snapshot)、再餵真實城鎮 snapshot 連跑多幀 ──
+function pump(label, frames) {
+  for (let i = 0; i < frames; i++) {
+    const cb = rafCb; rafCb = null;
+    if (!cb) { console.log(`  [${label}] 第 ${i} 幀沒有排定 rAF callback（迴圈可能已停）`); return false; }
+    try {
+      cb(perfNow);
+    } catch (e) {
+      console.error(`\n🔴 [${label}] 第 ${i} 幀 render 拋例外 —— 這就是「進城人物消失」的根因：`);
+      console.error(e && e.stack || e);
+      return e;
+    }
+  }
+  return true;
+}
+
+console.log("\n── 階段 A：welcome 後、尚無 snapshot，空跑 3 幀 ──");
+const a = pump("無snapshot", 3);
+if (a instanceof Error) process.exit(1);
+
+// 多情境：原始城鎮 snapshot ＋ 針對已知高風險狀態的合成變體（屍光 / 商人在場 / 態度越界 /
+// 居民心情 / 互助請求）。每個變體連跑數幀，安全網攔下的例外也算 FAIL（代表底層真 bug）。
+function variant(name, mutate) {
+  const s = JSON.parse(JSON.stringify(snapshot));
+  mutate(s);
+  return { name, s };
+}
+const me0 = snapshot.players[0];
+const scenarios = [
+  { name: "原始城鎮", s: snapshot },
+  variant("含屍光carion_orbs", (s) => { s.carion_orbs = [{ id: 1, x: me0.x + 40, y: me0.y }, { id: 2, x: me0.x - 30, y: me0.y + 20 }]; }),
+  variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
+  variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
+  variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
+  variant("野生動物含未知kind", (s) => { if (s.wildlife?.length) { s.wildlife[0] = { ...s.wildlife[0], kind: "mystery_beast", state: "hunting" }; } }),
+];
+
+let failed = false;
+for (const sc of scenarios) {
+  const before = caughtRenderErrors.length;
+  console.log(`── 情境：${sc.name}（連跑 6 幀）──`);
+  lastWS.onmessage({ data: JSON.stringify({ ...sc.s, type: "snapshot" }) });
+  const r = pump(sc.name, 6);
+  if (r instanceof Error) { failed = true; console.error(`  ❌ ${sc.name}：未捕捉例外`); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ ${sc.name}：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log(`  ✅ ${sc.name}：乾淨`);
+}
+
+console.log("");
+if (failed) {
+  console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
+  process.exit(1);
+}
+console.log("✅✅ render-smoke 全綠：所有情境（含屍光/商人/態度越界/未知物種）連跑多幀，render 零例外、safeRender 零攔截。");
+process.exit(0);
