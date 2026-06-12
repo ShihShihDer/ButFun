@@ -1297,6 +1297,18 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **零 migration、零 LLM、純記憶體模式**：`src/inventory.rs`（新增 EtherOverlordCore/EtherOverlordBlade + 全不變式更新 88 種）；`src/combat.rs`（EtherOverlordBlade 武器 +28、EtherOverlord 掉落改為晶核）；`src/crafting.rs`（ether_overlord_blade 配方）；`src/ws.rs`（首領擊殺時全服分發晶核）；`web/game.js`（ITEM_LOOK/NAME/GEAR_DESC/CRAFT_RECIPES/ITEM_BASE_ATK/biomeGear 全更新）。
     - 玩家感知：參與入侵後背包看到「💠 霸主晶核 ×1 來了！」；合成台看到新配方「守城戰刃」；裝備後攻擊力直接跳到 +28——「守城不只是為了城鎮，也是為了讓自己更強」。
 
+## 接著（入侵升級制度 — AI 自主提案 2026-06-13）
+
+161. **入侵升級制度——連勝守城讓入侵越來越猛，讓守城英雄感受壓力升級的刺激**（本輪 PR）
+    - 追蹤「連續成功守城次數」（首領被擊殺 +1，逃脫重置 0）；依連勝提升入侵等級。
+    - **Lv.1（0-2 連勝）**：12 怪 + 霸主，90 分鐘間隔，首領被殺 +10 乙太，分 1 顆晶核。
+    - **Lv.2（3-5 連勝）**：15 怪 + 霸主，85 分鐘間隔，首領被殺 +15 乙太，分 2 顆晶核。
+    - **Lv.3（6+ 連勝）**  ：18 怪 + 霸主，80 分鐘間隔，首領被殺 +20 乙太，分 3 顆晶核。
+    - 入侵開始廣播顯示等級標籤「[Lv.2 升級入侵]」；結束廣播顯示升級里程碑「✨連勝 3 波！已達 Lv.2」。
+    - 前端 HUD 橫幅依等級改變顏色（Lv.1 紅色 / Lv.2 橘色 / Lv.3 紫色）+ 連勝火焰指示 🔥。
+    - **零 migration、零 LLM、純記憶體模式**：`src/invasion.rs`（`consecutive_successes`、`wave_level()`、`enemy_count()`、`ether_boss_reward()`、`cores_reward()`、`next_interval()`；`InvasionEvent` 改為命名欄位；26 個單元測試全綠）；`src/protocol.rs`（`InvasionView` 新增 `wave_level`/`consecutive_successes`）；`src/game.rs`（Started/Ended 廣播帶等級/連勝資訊）；`src/ws.rs`（首領擊殺依等級分晶核）；`web/game.js`（HUD 橫幅等級樣式 + 連勝指示）。
+    - 玩家感知：第三次打倒入侵首領後廣播「✨連勝 3 波！已達 Lv.2 入侵等級！」，下波 HUD 橫幅變橘色、怪更多——「我守城打出名堂了，但壓力也更大了」；連勝一斷就重來，長期目標讓玩家持續回來。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

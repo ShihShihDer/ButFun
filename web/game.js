@@ -674,6 +674,13 @@
   }
 
   // 城鎮入侵警報 HUD（ROADMAP 158）：入侵進行中時在 HUD 顯示紅色倒數橫幅。
+  // 入侵等級對應樣式（ROADMAP 161：升級制度）。
+  const INVASION_LEVEL_STYLES = {
+    1: { border: "#ff4040", bg: "rgba(60,5,5,0.92)", glow: "rgba(255,60,60,0.5)", label: "入侵警報" },
+    2: { border: "#ff8800", bg: "rgba(60,25,0,0.92)", glow: "rgba(255,140,0,0.6)", label: "Lv.2 升級入侵" },
+    3: { border: "#cc44ff", bg: "rgba(40,0,60,0.92)", glow: "rgba(180,60,255,0.7)", label: "Lv.3 極限入侵" },
+  };
+
   function updateInvasionHud(invasion) {
     let banner = document.getElementById("hudInvasionAlert");
     if (!invasion || !invasion.active) {
@@ -685,25 +692,34 @@
     const ss = secs % 60;
     const timeStr = mins > 0 ? `${mins}m${String(ss).padStart(2,"0")}s` : `${secs}s`;
     const waveLabel = `第 ${invasion.wave_count + 1} 波`;
+    const level = invasion.wave_level || 1;
+    const style = INVASION_LEVEL_STYLES[level] || INVASION_LEVEL_STYLES[1];
+    const streak = invasion.consecutive_successes || 0;
+
     if (!banner) {
       banner = document.createElement("div");
       banner.id = "hudInvasionAlert";
-      banner.style.cssText = [
-        "position:fixed", "top:calc(8px + env(safe-area-inset-top))",
-        "left:50%", "transform:translateX(-50%)",
-        "background:rgba(60,5,5,0.92)", "border:1.5px solid #ff4040",
-        "border-radius:14px", "padding:7px 18px",
-        "z-index:1200", "min-width:180px", "text-align:center",
-        "font-family:monospace", "color:#ff8080", "font-size:.82rem",
-        "box-shadow:0 0 12px rgba(255,60,60,0.5)",
-        "pointer-events:none",
-      ].join(";");
       document.body.appendChild(banner);
     }
+    banner.style.cssText = [
+      "position:fixed", "top:calc(8px + env(safe-area-inset-top))",
+      "left:50%", "transform:translateX(-50%)",
+      `background:${style.bg}`, `border:1.5px solid ${style.border}`,
+      "border-radius:14px", "padding:7px 18px",
+      "z-index:1200", "min-width:180px", "text-align:center",
+      "font-family:monospace", "color:#ff8080", "font-size:.82rem",
+      `box-shadow:0 0 12px ${style.glow}`,
+      "pointer-events:none",
+    ].join(";");
+
     const bossStr = invasion.boss_alive
       ? `<span style="color:#ff6060;font-size:.78rem"> ▸ 首領健在</span>`
       : `<span style="color:#80ff80;font-size:.78rem"> ▸ 首領已倒</span>`;
-    banner.innerHTML = `<span style="font-size:1rem">⚔️</span> <b style="color:#ff4040">[入侵警報]</b> ${waveLabel} <span style="color:#ffb0b0">${timeStr}</span>${bossStr}`;
+    // 連勝指示（連勝 1+ 才顯示）。
+    const streakStr = streak > 0
+      ? `<span style="color:#ffd700;font-size:.75rem"> 🔥連勝${streak}</span>`
+      : "";
+    banner.innerHTML = `<span style="font-size:1rem">⚔️</span> <b style="color:${style.border}">[${style.label}]</b> ${waveLabel} <span style="color:#ffb0b0">${timeStr}</span>${bossStr}${streakStr}`;
     banner.style.display = "block";
   }
 
