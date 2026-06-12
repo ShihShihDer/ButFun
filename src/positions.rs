@@ -622,6 +622,7 @@ mod tests {
                 exp: 0,
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
+                skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             })
         );
     }
@@ -642,6 +643,7 @@ mod tests {
                 exp: 100,
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
+                skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             })
         );
     }
@@ -675,6 +677,7 @@ mod tests {
             exp: 150,
             masteries: crate::class::Masteries { warrior: 10, ..Default::default() },
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Saved = serde_json::from_str(&json).unwrap();
@@ -699,6 +702,7 @@ mod tests {
             exp: 0,
             masteries: crate::class::Masteries::default(),
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
         };
         let (x, y) = spawn_at(Some((bad.x, bad.y)));
         assert_eq!((x, y), default_spawn());
@@ -711,6 +715,7 @@ mod tests {
             exp: 0,
             masteries: crate::class::Masteries::default(),
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
         };
         let (x, y) = spawn_at(Some((out_of_bounds.x, out_of_bounds.y)));
         assert_eq!((x, y), (-100.0, WORLD_HEIGHT + 100.0));
@@ -733,6 +738,7 @@ mod tests {
                 exp: 0,
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
+                skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             })
         );
     }
@@ -743,10 +749,11 @@ mod tests {
         let id = Uuid::new_v4();
         let m = crate::class::Masteries::default();
         let s = crate::stat_points::StatPoints::default();
+        let sk = crate::skill_mastery::SkillMasteries::default();
         store
-            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3, 0, 0, m, s)])
+            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3, 0, 0, m, s, sk)])
             .await;
-        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3, 0, 0, m, s).await;
+        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3, 0, 0, m, s, sk).await;
         assert_eq!(store.recall(id), None);
     }
 }

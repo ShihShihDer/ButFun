@@ -1401,6 +1401,11 @@ mod tests {
                 stat_attack: 0,
                 stat_speed: 0,
                 stat_atk_speed: 0,
+                skill_mastery_warcry: 0,
+                skill_mastery_bounty: 0,
+                skill_mastery_precision: 0,
+                skill_mastery_gale: 0,
+                skill_mastery_haggle: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1620,6 +1625,11 @@ mod tests {
             stat_attack: 0,
             stat_speed: 0,
             stat_atk_speed: 0,
+            skill_mastery_warcry: 0,
+            skill_mastery_bounty: 0,
+            skill_mastery_precision: 0,
+            skill_mastery_gale: 0,
+            skill_mastery_haggle: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1827,6 +1837,11 @@ mod tests {
             stat_attack: 0,
             stat_speed: 0,
             stat_atk_speed: 0,
+            skill_mastery_warcry: 0,
+            skill_mastery_bounty: 0,
+            skill_mastery_precision: 0,
+            skill_mastery_gale: 0,
+            skill_mastery_haggle: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1879,6 +1894,11 @@ mod tests {
             stat_attack: 0,
             stat_speed: 0,
             stat_atk_speed: 0,
+            skill_mastery_warcry: 0,
+            skill_mastery_bounty: 0,
+            skill_mastery_precision: 0,
+            skill_mastery_gale: 0,
+            skill_mastery_haggle: 0,
         }
     }
 
