@@ -295,6 +295,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.ether = 0;
                     }
                 }
+                // 乙太寶箱背包加成（ROADMAP 155）：重連同一 session 時從 home_furnishings 重新同步，
+                // 避免 inventory_extra_kinds 停在初始值 0 而家具面板仍顯示寶箱的不一致狀態。
+                if app.home_furnishings.read().unwrap()
+                    .get(&uid).map(|h| h.has_chest()).unwrap_or(false)
+                {
+                    p.inventory_extra_kinds = crate::home_furniture::CHEST_CAPACITY_BONUS as u32;
+                }
             }
             players.insert(id, p);
         }
