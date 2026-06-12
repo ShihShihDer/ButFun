@@ -1,0 +1,6480 @@
+{
+  "type": "snapshot",
+  "tick": 22620,
+  "players": [
+    {
+      "id": "2eaeaca7-9a9d-4827-8d3a-100dd8d66d0d",
+      "name": "城測QA",
+      "species": "terran",
+      "x": 3000,
+      "y": 3000,
+      "ether": 0,
+      "expansions": 0,
+      "inventory": [],
+      "hp": 20,
+      "max_hp": 20,
+      "exp": 0,
+      "level": 0,
+      "attack": 2,
+      "defense": 0,
+      "planet": "home",
+      "job_class": null,
+      "masteries": {
+        "warrior": 0,
+        "farmer": 0,
+        "artisan": 0,
+        "explorer": 0,
+        "merchant": 0
+      },
+      "guild_tag": null,
+      "achievement_count": 0,
+      "achievements": [],
+      "skill_cooldowns": {
+        "precision": 0,
+        "gale": 0,
+        "warcry": 0,
+        "bounty": 0,
+        "haggle": 0
+      },
+      "active_skill_flags": [],
+      "workshop_orders": [
+        {
+          "order_id": 1,
+          "name": "木材補給",
+          "item": "wood",
+          "qty": 4,
+          "reward": 8,
+          "xp": 20
+        },
+        {
+          "order_id": 2,
+          "name": "石磚訂單",
+          "item": "stone",
+          "qty": 4,
+          "reward": 10,
+          "xp": 22
+        },
+        {
+          "order_id": 3,
+          "name": "礦石急件",
+          "item": "ether",
+          "qty": 3,
+          "reward": 14,
+          "xp": 25
+        },
+        {
+          "order_id": 4,
+          "name": "晶石訂單",
+          "item": "crystal_shard",
+          "qty": 2,
+          "reward": 18,
+          "xp": 28
+        },
+        {
+          "order_id": 5,
+          "name": "翠幽急料",
+          "item": "jade_shard",
+          "qty": 1,
+          "reward": 24,
+          "xp": 35
+        }
+      ],
+      "bounty_cards": [
+        {
+          "card_id": 1,
+          "name": "廢鐵清掃令",
+          "target_name": "廢鐵無人機",
+          "required_kills": 3,
+          "reward": 10,
+          "xp": 25
+        },
+        {
+          "card_id": 2,
+          "name": "精靈驅散令",
+          "target_name": "飄舞精靈",
+          "required_kills": 3,
+          "reward": 12,
+          "xp": 28
+        },
+        {
+          "card_id": 3,
+          "name": "蕈菇剿滅令",
+          "target_name": "蕈菇潛行者",
+          "required_kills": 3,
+          "reward": 16,
+          "xp": 32
+        },
+        {
+          "card_id": 4,
+          "name": "傀儡討伐令",
+          "target_name": "晶石傀儡",
+          "required_kills": 2,
+          "reward": 20,
+          "xp": 38
+        },
+        {
+          "card_id": 5,
+          "name": "守衛緝拿令",
+          "target_name": "符文守衛",
+          "required_kills": 2,
+          "reward": 24,
+          "xp": 45
+        }
+      ],
+      "expedition_orders": [
+        {
+          "order_id": 1,
+          "name": "草原野地調查令",
+          "biome_name": "草原",
+          "min_dist": 800,
+          "reward": 14,
+          "xp": 22
+        },
+        {
+          "order_id": 2,
+          "name": "森林深處探採令",
+          "biome_name": "森林",
+          "min_dist": 1100,
+          "reward": 18,
+          "xp": 28
+        },
+        {
+          "order_id": 3,
+          "name": "岩地深層探勘令",
+          "biome_name": "岩地",
+          "min_dist": 1400,
+          "reward": 23,
+          "xp": 35
+        },
+        {
+          "order_id": 4,
+          "name": "沙漠荒原考察令",
+          "biome_name": "沙漠",
+          "min_dist": 1700,
+          "reward": 28,
+          "xp": 42
+        },
+        {
+          "order_id": 5,
+          "name": "深水域探勘令",
+          "biome_name": "水域",
+          "min_dist": 2000,
+          "reward": 35,
+          "xp": 52
+        }
+      ],
+      "procurement_orders": [
+        {
+          "order_id": 1,
+          "name": "翠幽星採購令",
+          "item": "jade_shard",
+          "item_name": "翠幽碎片",
+          "required_qty": 3,
+          "reward": 28,
+          "xp": 25
+        },
+        {
+          "order_id": 2,
+          "name": "赤焰星採購令",
+          "item": "lava_crystal",
+          "item_name": "熔晶碎片",
+          "required_qty": 3,
+          "reward": 36,
+          "xp": 32
+        },
+        {
+          "order_id": 3,
+          "name": "虛空星採購令",
+          "item": "void_shard",
+          "item_name": "虛空碎片",
+          "required_qty": 2,
+          "reward": 45,
+          "xp": 40
+        },
+        {
+          "order_id": 4,
+          "name": "霧醚星採購令",
+          "item": "aether_shard",
+          "item_name": "霧醚碎片",
+          "required_qty": 2,
+          "reward": 56,
+          "xp": 48
+        },
+        {
+          "order_id": 5,
+          "name": "星源星採購令",
+          "item": "origin_shard",
+          "item_name": "源晶碎片",
+          "required_qty": 1,
+          "reward": 70,
+          "xp": 58
+        }
+      ],
+      "farm_fair_orders": [
+        {
+          "order_id": 1,
+          "name": "農村初展",
+          "reqs": [
+            {
+              "item": "egg",
+              "item_name": "雞蛋",
+              "qty": 4
+            }
+          ],
+          "reward": 14,
+          "xp": 20
+        },
+        {
+          "order_id": 2,
+          "name": "蔬果展示",
+          "reqs": [
+            {
+              "item": "carrot",
+              "item_name": "胡蘿蔔",
+              "qty": 3
+            },
+            {
+              "item": "wheat_grain",
+              "item_name": "小麥穗",
+              "qty": 2
+            }
+          ],
+          "reward": 24,
+          "xp": 30
+        },
+        {
+          "order_id": 3,
+          "name": "漁獲特展",
+          "reqs": [
+            {
+              "item": "fish_small",
+              "item_name": "小魚",
+              "qty": 4
+            },
+            {
+              "item": "fish_star",
+              "item_name": "星星魚",
+              "qty": 1
+            }
+          ],
+          "reward": 32,
+          "xp": 38
+        },
+        {
+          "order_id": 4,
+          "name": "農漁聯展",
+          "reqs": [
+            {
+              "item": "wheat_grain",
+              "item_name": "小麥穗",
+              "qty": 4
+            },
+            {
+              "item": "egg",
+              "item_name": "雞蛋",
+              "qty": 3
+            }
+          ],
+          "reward": 40,
+          "xp": 46
+        },
+        {
+          "order_id": 5,
+          "name": "頂級農展",
+          "reqs": [
+            {
+              "item": "fish_deep",
+              "item_name": "深海魚",
+              "qty": 1
+            },
+            {
+              "item": "potato",
+              "item_name": "馬鈴薯",
+              "qty": 3
+            },
+            {
+              "item": "fish_star",
+              "item_name": "星星魚",
+              "qty": 2
+            }
+          ],
+          "reward": 52,
+          "xp": 58
+        }
+      ],
+      "inventory_slot_max": 20
+    }
+  ],
+  "fields": [
+    {
+      "owner": "61046999-c10c-46bd-839c-e7d37ec095c8",
+      "origin_x": 2856,
+      "origin_y": 2904,
+      "tile_size": 48,
+      "cols": 6,
+      "rows": 6,
+      "reach": 48,
+      "cells": [
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 4,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 4,
+          "dry": false
+        },
+        {
+          "state": 1,
+          "dry": false
+        }
+      ]
+    },
+    {
+      "owner": "00000000-0000-0000-0000-000000000000",
+      "origin_x": 2200,
+      "origin_y": 2200,
+      "tile_size": 48,
+      "cols": 6,
+      "rows": 4,
+      "reach": 48,
+      "cells": [
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        },
+        {
+          "state": 0,
+          "dry": false
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "kind": "tree",
+      "x": 4070.352,
+      "y": 3932.6787,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2541.8013,
+      "y": 4863.3745,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2062.8247,
+      "y": 2377.3452,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2377.3452,
+      "y": 2530.1028,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 1383.6677,
+      "y": 1905.2057,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 1393.2057,
+      "y": 1968.7225,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3646.07,
+      "y": 3423.0925,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4066.3206,
+      "y": 4236.6646,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3724.6643,
+      "y": 4414.8975,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4095.0881,
+      "y": 4627.2344,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 1826.88,
+      "y": 2145.3972,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2693.9824,
+      "y": 3667.6,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2643.6,
+      "y": 3989.025,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 1813.7805,
+      "y": 1649.3118,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 1649.3118,
+      "y": 1793.4609,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4321.205,
+      "y": 1574.269,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4134.269,
+      "y": 1908.1836,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3161.6826,
+      "y": 3665.2998,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3153.2998,
+      "y": 3829.1104,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2574.9114,
+      "y": 4251.6743,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2715.6746,
+      "y": 4445.166,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2732.5486,
+      "y": 2718.9905,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2718.9905,
+      "y": 2964.1216,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2446.9,
+      "y": 3433.782,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2409.782,
+      "y": 3155.9785,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2978.702,
+      "y": 4984.2324,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2840.7644,
+      "y": 2334.7976,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2846.7976,
+      "y": 2164.6272,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4277.645,
+      "y": 4532.5317,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 4532.5317,
+      "y": 4224.968,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3568.2478,
+      "y": 2453.9277,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3477.9277,
+      "y": 2318.6335,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3064.963,
+      "y": 3239.9463,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2727.9463,
+      "y": 3298.4114,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2750.8147,
+      "y": 1951.4525,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3325.6216,
+      "y": 1035.7421,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3416.3755,
+      "y": 3020.5283,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3532.5283,
+      "y": 2635.8245,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3469.3086,
+      "y": 4183.929,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3159.9294,
+      "y": 4237.431,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2367.5803,
+      "y": 2696.6157,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3642.7822,
+      "y": 2061.7266,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3927.1228,
+      "y": 1536.5663,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3584.5662,
+      "y": 1839.1724,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3399.2642,
+      "y": 3479.9893,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3479.9893,
+      "y": 3156.4583,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2206.5479,
+      "y": 1339.9946,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2363.9946,
+      "y": 1426.8041,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2433.4712,
+      "y": 3790.9524,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2254.9524,
+      "y": 4054.4512,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2218.8335,
+      "y": 4222.098,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2174.0984,
+      "y": 4199.7095,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2138.4526,
+      "y": 1655.3965,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2167.3965,
+      "y": 2009.9042,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3304.645,
+      "y": 4851.09,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3315.0896,
+      "y": 4750.033,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 2000.0299,
+      "y": 1341.7035,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3774.2888,
+      "y": 1182.9437,
+      "remaining": 5,
+      "harvestable": true
+    },
+    {
+      "kind": "tree",
+      "x": 3998.1174,
+      "y": 1379.9645,
+      "remaining": 5,
+      "harvestable": true
+    }
+  ],
+  "enemies": [
+    {
+      "kind": "mushroom_stalker",
+      "x": 2695.0647,
+      "y": 3669.0508,
+      "level": 1,
+      "hp": 5,
+      "max_hp": 5,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 4277.645,
+      "y": 4532.5317,
+      "level": 3,
+      "hp": 7,
+      "max_hp": 7,
+      "alive": true
+    },
+    {
+      "kind": "coral_crab",
+      "x": 4430.9414,
+      "y": 3235.1235,
+      "level": 3,
+      "hp": 12,
+      "max_hp": 12,
+      "alive": true
+    },
+    {
+      "kind": "coral_crab",
+      "x": 4954.5127,
+      "y": 2859.5723,
+      "level": 4,
+      "hp": 13,
+      "max_hp": 13,
+      "alive": true
+    },
+    {
+      "kind": "coral_crab",
+      "x": 4593.7427,
+      "y": 2650.824,
+      "level": 3,
+      "hp": 12,
+      "max_hp": 12,
+      "alive": true
+    },
+    {
+      "kind": "coral_crab",
+      "x": 1564.5366,
+      "y": 3756.118,
+      "level": 1,
+      "hp": 9,
+      "max_hp": 9,
+      "alive": true
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 3469.3086,
+      "y": 4183.929,
+      "level": 2,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 3161.6826,
+      "y": 3665.2998,
+      "level": 1,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 2576.0112,
+      "y": 4251.0615,
+      "level": 2,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 2715.1147,
+      "y": 4444.355,
+      "level": 2,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 4321.205,
+      "y": 1574.269,
+      "level": 2,
+      "hp": 6,
+      "max_hp": 6,
+      "alive": true
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 3774.2888,
+      "y": 1182.9437,
+      "level": 1,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 4066.3206,
+      "y": 4236.6646,
+      "level": 2,
+      "hp": 6,
+      "max_hp": 6,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 3927.1228,
+      "y": 1536.5663,
+      "level": 2,
+      "hp": 6,
+      "max_hp": 6,
+      "alive": true
+    },
+    {
+      "kind": "coral_crab",
+      "x": 1806.6201,
+      "y": 4352.054,
+      "level": 2,
+      "hp": 10,
+      "max_hp": 10,
+      "alive": true
+    },
+    {
+      "kind": "rune_guardian",
+      "x": 4306.3003,
+      "y": 3953.704,
+      "level": 2,
+      "hp": 8,
+      "max_hp": 8,
+      "alive": true
+    },
+    {
+      "kind": "rift_guardian",
+      "x": 4199.2285,
+      "y": 3871.5928,
+      "level": 2,
+      "hp": 0,
+      "max_hp": 69,
+      "alive": false
+    },
+    {
+      "kind": "flutter_sprite",
+      "x": 4122.993,
+      "y": 3821.439,
+      "level": 2,
+      "hp": 3,
+      "max_hp": 3,
+      "alive": true
+    },
+    {
+      "kind": "rune_guardian",
+      "x": 3932.047,
+      "y": 3589.0596,
+      "level": 1,
+      "hp": 7,
+      "max_hp": 7,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 2255.3882,
+      "y": 4053.7478,
+      "level": 1,
+      "hp": 5,
+      "max_hp": 5,
+      "alive": true
+    },
+    {
+      "kind": "rune_guardian",
+      "x": 4078.7283,
+      "y": 2106.7822,
+      "level": 2,
+      "hp": 8,
+      "max_hp": 8,
+      "alive": true
+    },
+    {
+      "kind": "mushroom_stalker",
+      "x": 3304.645,
+      "y": 4851.09,
+      "level": 3,
+      "hp": 7,
+      "max_hp": 7,
+      "alive": true
+    },
+    {
+      "kind": "rune_guardian",
+      "x": 4097.156,
+      "y": 2077.0552,
+      "level": 2,
+      "hp": 8,
+      "max_hp": 8,
+      "alive": true
+    }
+  ],
+  "daynight": {
+    "phase": "dawn",
+    "light": 0.51988846,
+    "night_danger": false
+  },
+  "listings": [],
+  "npcs": [
+    {
+      "id": "merchant",
+      "name": "薇拉",
+      "x": 2120,
+      "y": 2328,
+      "buy_list": [
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "dirt",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "mushroom_spore",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wildflower_seed",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "rift_shard",
+          "price_per": 12,
+          "trend": "stable"
+        },
+        {
+          "item": "fish_small",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "fish_star",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "fish_deep",
+          "price_per": 10,
+          "trend": "stable"
+        },
+        {
+          "item": "egg",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "wheat_grain",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "carrot",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "potato",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "star_crystal_shard",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "star_dust",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "rainbow_star_dust",
+          "price_per": 8,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": [
+        {
+          "item": "pickaxe",
+          "price_per": 15,
+          "trend": "stable",
+          "stock": 8,
+          "max_stock": 8
+        },
+        {
+          "item": "weapon",
+          "price_per": 25,
+          "trend": "stable",
+          "stock": 8,
+          "max_stock": 8
+        },
+        {
+          "item": "wood",
+          "price_per": 3,
+          "trend": "stable",
+          "stock": 50,
+          "max_stock": 50
+        },
+        {
+          "item": "stone",
+          "price_per": 3,
+          "trend": "stable",
+          "stock": 50,
+          "max_stock": 50
+        },
+        {
+          "item": "dirt",
+          "price_per": 3,
+          "trend": "stable",
+          "stock": 50,
+          "max_stock": 50
+        }
+      ]
+    },
+    {
+      "id": "workshop_npc",
+      "name": "老胡",
+      "x": 2120,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "bounty_npc",
+      "name": "蘭卡",
+      "x": 2240,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "expedition_npc",
+      "name": "芙利亞",
+      "x": 2360,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "procurement_npc",
+      "name": "吉爾",
+      "x": 2480,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "farm_fair_npc",
+      "name": "老農",
+      "x": 2600,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "village_chief",
+      "name": "凱爾長老",
+      "x": 2720,
+      "y": 2080,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "verdant_merchant",
+      "name": "🌿 翠幽商人",
+      "x": 22280,
+      "y": 3000,
+      "buy_list": [
+        {
+          "item": "jade_shard",
+          "price_per": 8,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "mushroom_spore",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wildflower_seed",
+          "price_per": 2,
+          "trend": "stable"
+        },
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": []
+    },
+    {
+      "id": "crimson_merchant",
+      "name": "🔴 赤焰商人",
+      "x": -17880,
+      "y": 3000,
+      "buy_list": [
+        {
+          "item": "lava_crystal",
+          "price_per": 10,
+          "trend": "stable"
+        },
+        {
+          "item": "jade_shard",
+          "price_per": 8,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": []
+    },
+    {
+      "id": "void_merchant",
+      "name": "🌑 虛空商人",
+      "x": 41880,
+      "y": 3000,
+      "buy_list": [
+        {
+          "item": "void_shard",
+          "price_per": 12,
+          "trend": "stable"
+        },
+        {
+          "item": "lava_crystal",
+          "price_per": 10,
+          "trend": "stable"
+        },
+        {
+          "item": "jade_shard",
+          "price_per": 8,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": []
+    },
+    {
+      "id": "aether_merchant",
+      "name": "🌫️ 霧醚商人",
+      "x": -32120,
+      "y": 3000,
+      "buy_list": [
+        {
+          "item": "aether_shard",
+          "price_per": 15,
+          "trend": "stable"
+        },
+        {
+          "item": "void_shard",
+          "price_per": 12,
+          "trend": "stable"
+        },
+        {
+          "item": "lava_crystal",
+          "price_per": 10,
+          "trend": "stable"
+        },
+        {
+          "item": "jade_shard",
+          "price_per": 8,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": []
+    },
+    {
+      "id": "origin_merchant",
+      "name": "🌟 星源商人",
+      "x": -52120,
+      "y": 3000,
+      "buy_list": [
+        {
+          "item": "origin_shard",
+          "price_per": 18,
+          "trend": "stable"
+        },
+        {
+          "item": "aether_shard",
+          "price_per": 15,
+          "trend": "stable"
+        },
+        {
+          "item": "void_shard",
+          "price_per": 12,
+          "trend": "stable"
+        },
+        {
+          "item": "lava_crystal",
+          "price_per": 10,
+          "trend": "stable"
+        },
+        {
+          "item": "jade_shard",
+          "price_per": 8,
+          "trend": "stable"
+        },
+        {
+          "item": "crystal_shard",
+          "price_per": 3,
+          "trend": "stable"
+        },
+        {
+          "item": "ancient_fragment",
+          "price_per": 4,
+          "trend": "stable"
+        },
+        {
+          "item": "deep_sea_pearl",
+          "price_per": 5,
+          "trend": "stable"
+        },
+        {
+          "item": "wood",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "stone",
+          "price_per": 1,
+          "trend": "stable"
+        },
+        {
+          "item": "ether",
+          "price_per": 2,
+          "trend": "stable"
+        }
+      ],
+      "sell_list": []
+    },
+    {
+      "id": "resident_0",
+      "name": "阿土",
+      "x": 2577.129,
+      "y": 2206.168,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "resident_1",
+      "name": "梅子",
+      "x": 2467.1401,
+      "y": 1978.8154,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "resident_2",
+      "name": "石頭",
+      "x": 2309.3445,
+      "y": 2180.7434,
+      "buy_list": [],
+      "sell_list": []
+    },
+    {
+      "id": "resident_3",
+      "name": "阿花",
+      "x": 2412.262,
+      "y": 2396.3108,
+      "buy_list": [],
+      "sell_list": []
+    }
+  ],
+  "terrain": [
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 14,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 2,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 4,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 7,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 8,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 4,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 4,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 14,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 6,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 2,
+      "tx": 2,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 9,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 13,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 11,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 11,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 5,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 12,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 6,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 11,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 13,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 11,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 0,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 6,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 0,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 5,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 1,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 13,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 9,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 10,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 7,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 12,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 9,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 11,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 2,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 5,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 13,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 14,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 14,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 3,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 4,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 13,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 4,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 13,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 3,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 3,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 6,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 0,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 5,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 2,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 2,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 10,
+      "ty": 3,
+      "kind": "dirt"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 0,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 14,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 8,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 1,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 4,
+      "tx": 15,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 7,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 7,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 8,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 0,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 9,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 12,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 14,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 4,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 6,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 11,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 8,
+      "tx": 11,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 4,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 6,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 0,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 4,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 6,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 15,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 6,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 12,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 15,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 7,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 7,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 15,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 13,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 7,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 7,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 8,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 14,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 8,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 7,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 7,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 7,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 0,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 0,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 12,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 14,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 14,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 6,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 12,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 2,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 7,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 12,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 8,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 15,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 14,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 12,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 12,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 12,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 8,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 2,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 6,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 1,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 2,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 11,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 5,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 5,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 10,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 1,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 11,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 12,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 4,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 10,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 2,
+      "tx": 2,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 8,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 2,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 4,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 15,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 7,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 15,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 6,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 0,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 6,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 0,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 5,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 14,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 4,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 9,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 0,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 15,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 7,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 3,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 11,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 3,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 9,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 12,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 0,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 15,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 9,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 4,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 9,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 0,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 6,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 2,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 4,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 8,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 7,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 8,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 8,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 8,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 5,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 9,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 13,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 11,
+      "kind": "stone"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 8,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 1,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 2,
+      "tx": 10,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 12,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 6,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 0,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 9,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 4,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 12,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 15,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 9,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 13,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 11,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 6,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 9,
+      "kind": "stone"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 4,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 9,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 14,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 15,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 14,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 11,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 3,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 15,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 8,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 0,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 4,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 5,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 8,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 8,
+      "tx": 15,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 1,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 2,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 8,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 7,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 5,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 1,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 15,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 9,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 0,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 10,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 8,
+      "tx": 11,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 14,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 7,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 13,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 15,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 3,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 5,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 13,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 3,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 4,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 11,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 11,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 0,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 13,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 9,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 2,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 15,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 5,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 3,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 14,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 7,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 8,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 8,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 14,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 8,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 7,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 3,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 3,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 10,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 4,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 2,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 9,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 7,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 9,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 9,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 1,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 0,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 2,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 11,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 8,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 15,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 7,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 0,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 6,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 4,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 9,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 10,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 8,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 5,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 4,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 3,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 11,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 11,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 9,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 0,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 12,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 5,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 4,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 3,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 15,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 13,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 10,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 13,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 9,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 11,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 15,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 3,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 11,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 6,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 15,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 1,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 7,
+      "tx": 0,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 10,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 7,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 2,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 4,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 15,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 15,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 2,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 11,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 2,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 11,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 7,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 12,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 11,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 5,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 8,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 4,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 9,
+      "cy": 7,
+      "tx": 4,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 10,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 5,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 12,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 4,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 6,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 4,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 4,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 3,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 3,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 9,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 9,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 0,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 4,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 5,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 5,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 9,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 0,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 4,
+      "tx": 12,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 0,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 15,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 13,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 12,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 3,
+      "tx": 10,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 6,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 3,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 14,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 3,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 12,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 8,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 14,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 3,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 4,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 4,
+      "tx": 15,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 2,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 9,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 4,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 8,
+      "tx": 12,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 0,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 5,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 6,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 3,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 0,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 0,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 10,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 2,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 5,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 8,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 12,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 4,
+      "tx": 1,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 2,
+      "cy": 3,
+      "tx": 11,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 3,
+      "tx": 2,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 5,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 6,
+      "tx": 4,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 2,
+      "tx": 3,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 11,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 8,
+      "cy": 7,
+      "tx": 1,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 11,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 8,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 6,
+      "tx": 4,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 6,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 8,
+      "tx": 1,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 3,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 11,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 0,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 10,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 8,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 13,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 2,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 13,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 9,
+      "tx": 11,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 5,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 9,
+      "cy": 7,
+      "tx": 5,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 9,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 15,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 4,
+      "tx": 8,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 10,
+      "kind": "stone"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 14,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 3,
+      "tx": 9,
+      "ty": 7,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 1,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 15,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 12,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 7,
+      "tx": 14,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 3,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 8,
+      "ty": 5,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 12,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 2,
+      "tx": 3,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 12,
+      "ty": 10,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 10,
+      "ty": 8,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 15,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 1,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 6,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 2,
+      "tx": 8,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 12,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 5,
+      "tx": 5,
+      "ty": 14,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 8,
+      "tx": 15,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 15,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 8,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 14,
+      "ty": 3,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 14,
+      "ty": 11,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 10,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 9,
+      "ty": 4,
+      "kind": "empty"
+    },
+    {
+      "cx": 3,
+      "cy": 3,
+      "tx": 1,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 2,
+      "tx": 3,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 5,
+      "tx": 7,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 7,
+      "tx": 15,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 7,
+      "cy": 7,
+      "tx": 15,
+      "ty": 12,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 6,
+      "tx": 1,
+      "ty": 1,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 2,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 1,
+      "ty": 9,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 10,
+      "ty": 6,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 2,
+      "tx": 9,
+      "ty": 15,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 3,
+      "tx": 7,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 4,
+      "cy": 8,
+      "tx": 15,
+      "ty": 0,
+      "kind": "empty"
+    },
+    {
+      "cx": 6,
+      "cy": 5,
+      "tx": 8,
+      "ty": 13,
+      "kind": "empty"
+    },
+    {
+      "cx": 5,
+      "cy": 6,
+      "tx": 12,
+      "ty": 3,
+      "kind": "empty"
+    }
+  ],
+  "world_event": null,
+  "horde_event": null,
+  "quests": [
+    {
+      "description": "擊敗 8 隻迷途乙太靈",
+      "goal": 8,
+      "progress": 0,
+      "completed": false
+    },
+    {
+      "description": "採集 15 個木材",
+      "goal": 15,
+      "progress": 15,
+      "completed": true
+    },
+    {
+      "description": "星際探索：翠幽星",
+      "goal": 1,
+      "progress": 0,
+      "completed": false
+    }
+  ],
+  "land_plots": [
+    {
+      "plot_id": 0,
+      "min_gx": 43,
+      "min_gy": 26,
+      "max_gx": 50,
+      "max_gy": 33,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 1,
+      "min_gx": 53,
+      "min_gy": 26,
+      "max_gx": 60,
+      "max_gy": 33,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 2,
+      "min_gx": 63,
+      "min_gy": 26,
+      "max_gx": 70,
+      "max_gy": 33,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 3,
+      "min_gx": 73,
+      "min_gy": 26,
+      "max_gx": 80,
+      "max_gy": 33,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 4,
+      "min_gx": 83,
+      "min_gy": 26,
+      "max_gx": 90,
+      "max_gy": 33,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 5,
+      "min_gx": 43,
+      "min_gy": 110,
+      "max_gx": 50,
+      "max_gy": 117,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 6,
+      "min_gx": 53,
+      "min_gy": 110,
+      "max_gx": 60,
+      "max_gy": 117,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 7,
+      "min_gx": 63,
+      "min_gy": 110,
+      "max_gx": 70,
+      "max_gy": 117,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 8,
+      "min_gx": 73,
+      "min_gy": 110,
+      "max_gx": 80,
+      "max_gy": 117,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 9,
+      "min_gx": 83,
+      "min_gy": 110,
+      "max_gx": 90,
+      "max_gy": 117,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 10,
+      "min_gx": 27,
+      "min_gy": 43,
+      "max_gx": 34,
+      "max_gy": 50,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 11,
+      "min_gx": 27,
+      "min_gy": 53,
+      "max_gx": 34,
+      "max_gy": 60,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 12,
+      "min_gx": 27,
+      "min_gy": 63,
+      "max_gx": 34,
+      "max_gy": 70,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 13,
+      "min_gx": 27,
+      "min_gy": 73,
+      "max_gx": 34,
+      "max_gy": 80,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 14,
+      "min_gx": 27,
+      "min_gy": 83,
+      "max_gx": 34,
+      "max_gy": 90,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 15,
+      "min_gx": 112,
+      "min_gy": 43,
+      "max_gx": 119,
+      "max_gy": 50,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 16,
+      "min_gx": 112,
+      "min_gy": 53,
+      "max_gx": 119,
+      "max_gy": 60,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 17,
+      "min_gx": 112,
+      "min_gy": 63,
+      "max_gx": 119,
+      "max_gy": 70,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 18,
+      "min_gx": 112,
+      "min_gy": 73,
+      "max_gx": 119,
+      "max_gy": 80,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    },
+    {
+      "plot_id": 19,
+      "min_gx": 112,
+      "min_gy": 83,
+      "max_gx": 119,
+      "max_gy": 90,
+      "owner_id": null,
+      "owner_name": null,
+      "purpose": null
+    }
+  ],
+  "ranch_plots": [],
+  "farm_crop_plots": [],
+  "star_crystals": [],
+  "village_buff_remaining_secs": 0,
+  "village_treasury": 80,
+  "weather": {
+    "weather_type": "rocky_crystal_dust",
+    "intensity": 0.9462991
+  },
+  "sprinklers": [],
+  "gathering_secs": 0,
+  "active_help_requests": [],
+  "resident_moods": [
+    [
+      "resident_0",
+      35
+    ],
+    [
+      "resident_1",
+      35
+    ],
+    [
+      "resident_2",
+      35
+    ],
+    [
+      "resident_3",
+      35
+    ]
+  ],
+  "town_prosperity_level": 1,
+  "town_project": {
+    "project_id": "observatory",
+    "name": "蒸汽天文台",
+    "status": "building",
+    "progress_pct": 0,
+    "current_ether": 0,
+    "target_ether": 10000,
+    "current_wood": 0,
+    "target_wood": 500,
+    "current_stone": 0,
+    "target_stone": 500,
+    "current_crystal": 0,
+    "target_crystal": 200,
+    "top_contributors": []
+  },
+  "star_forecast_secs": 0,
+  "star_forecast_bonus": "",
+  "meteor_shower_secs": 0,
+  "dust_nodes": [],
+  "wandering_merchant_secs": 0,
+  "wandering_catalog": [],
+  "merchant_quests": [],
+  "current_season": "summer",
+  "season_remaining_secs": 893,
+  "wildlife": [
+    {
+      "id": 0,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 1918.2971,
+      "y": 1546.8372,
+      "state": "resting"
+    },
+    {
+      "id": 1,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 2093.9058,
+      "y": 1505.8208,
+      "state": "wandering"
+    },
+    {
+      "id": 2,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 1777.7102,
+      "y": 1747.0333,
+      "state": "wandering"
+    },
+    {
+      "id": 3,
+      "kind": "wild_deer",
+      "name": "野鹿",
+      "x": 1610.1816,
+      "y": 1926.8151,
+      "state": "wandering"
+    },
+    {
+      "id": 4,
+      "kind": "wild_deer",
+      "name": "野鹿",
+      "x": 1778.6588,
+      "y": 2100.4705,
+      "state": "wandering"
+    },
+    {
+      "id": 5,
+      "kind": "small_critter",
+      "name": "小動物",
+      "x": 1909.9335,
+      "y": 1940.7101,
+      "state": "resting"
+    },
+    {
+      "id": 7,
+      "kind": "small_critter",
+      "name": "小動物",
+      "x": 1749.2935,
+      "y": 1557.5854,
+      "state": "wandering"
+    },
+    {
+      "id": 8,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 2748.6265,
+      "y": 1711.2631,
+      "state": "wandering"
+    },
+    {
+      "id": 9,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 2896.7568,
+      "y": 1550.6161,
+      "state": "resting"
+    },
+    {
+      "id": 10,
+      "kind": "wild_deer",
+      "name": "野鹿",
+      "x": 2723.5227,
+      "y": 1970.6438,
+      "state": "wandering"
+    },
+    {
+      "id": 12,
+      "kind": "small_critter",
+      "name": "小動物",
+      "x": 2898.8013,
+      "y": 2122.9946,
+      "state": "returning"
+    },
+    {
+      "id": 14,
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "x": 2087.5422,
+      "y": 2984.6853,
+      "state": "resting"
+    },
+    {
+      "id": 15,
+      "kind": "wild_deer",
+      "name": "野鹿",
+      "x": 3178.7024,
+      "y": 1186.2441,
+      "state": "returning"
+    },
+    {
+      "id": 16,
+      "kind": "small_critter",
+      "name": "小動物",
+      "x": 2016.6921,
+      "y": 2864.0076,
+      "state": "resting"
+    },
+    {
+      "id": 17,
+      "kind": "small_critter",
+      "name": "小動物",
+      "x": 2469.7058,
+      "y": 2903.4758,
+      "state": "resting"
+    },
+    {
+      "id": 19,
+      "kind": "wild_wolf",
+      "name": "野狼",
+      "x": 2026.0354,
+      "y": 1254.2844,
+      "state": "returning"
+    }
+  ],
+  "carion_orbs": [],
+  "colonies": [
+    {
+      "id": 0,
+      "kind": "wild_bird",
+      "name": "野鳥巢穴（北方草原）",
+      "cx": 1900,
+      "cy": 1620,
+      "guard_radius": 230
+    },
+    {
+      "id": 1,
+      "kind": "wild_bird",
+      "name": "野鳥巢穴（東北森林）",
+      "cx": 2800,
+      "cy": 1640,
+      "guard_radius": 210
+    },
+    {
+      "id": 2,
+      "kind": "wild_deer",
+      "name": "野鹿棲地",
+      "cx": 1675,
+      "cy": 2000,
+      "guard_radius": 250
+    },
+    {
+      "id": 3,
+      "kind": "small_critter",
+      "name": "小動物洞穴",
+      "cx": 1985,
+      "cy": 1880,
+      "guard_radius": 200
+    },
+    {
+      "id": 4,
+      "kind": "wild_wolf",
+      "name": "狼窩",
+      "cx": 2880,
+      "cy": 2150,
+      "guard_radius": 260
+    },
+    {
+      "id": 5,
+      "kind": "wild_fox",
+      "name": "狐狸洞",
+      "cx": 2025,
+      "cy": 2060,
+      "guard_radius": 220
+    }
+  ],
+  "species_attitudes": [
+    {
+      "kind": "wild_bird",
+      "name": "野鳥",
+      "attitude": 50,
+      "tier": "neutral"
+    },
+    {
+      "kind": "wild_deer",
+      "name": "野鹿",
+      "attitude": 50,
+      "tier": "neutral"
+    },
+    {
+      "kind": "small_critter",
+      "name": "小動物",
+      "attitude": 50,
+      "tier": "neutral"
+    },
+    {
+      "kind": "wild_wolf",
+      "name": "野狼",
+      "attitude": 50,
+      "tier": "neutral"
+    },
+    {
+      "kind": "wild_fox",
+      "name": "野狐",
+      "attitude": 50,
+      "tier": "neutral"
+    }
+  ]
+}
