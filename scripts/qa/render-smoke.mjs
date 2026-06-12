@@ -209,6 +209,18 @@ function variant(name, mutate) {
   return { name, s };
 }
 const me0 = snapshot.players[0];
+// 把自己(players[0],id===myId)變成「滿裝高階玩家」——重現使用者 Lv.421 有武器/寵物/造型/
+// 隊伍/公會的狀態(render-smoke 原本用訪客,走不到這些分支)。drawPlayer(me) 在 game.js line 3412,
+// 一拋例外→safeRender 攔下→角色+其後(日夜染色/小地圖/HUD)全不畫,世界其餘照畫=「人物消失」。
+function richSelf(s, extra = {}) {
+  Object.assign(s.players[0], {
+    name: "濕濕的", level: 421, hp: 854, max_hp: 854,
+    job_class: "artisan", guild_tag: "ButFun", in_party: true,
+    pet_kind: "jade_wraith", species: "terran",
+    hair_style: 2, skin_tone: 1, goggle_color: 1, costume: 5,
+    facing: Math.PI / 2, moving: false, walk: 0,
+  }, extra);
+}
 const scenarios = [
   { name: "原始城鎮", s: snapshot },
   variant("含屍光carion_orbs", (s) => { s.carion_orbs = [{ id: 1, x: me0.x + 40, y: me0.y }, { id: 2, x: me0.x - 30, y: me0.y + 20 }]; }),
@@ -216,6 +228,14 @@ const scenarios = [
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
   variant("野生動物含未知kind", (s) => { if (s.wildlife?.length) { s.wildlife[0] = { ...s.wildlife[0], kind: "mystery_beast", state: "hunting" }; } }),
+  // ── 高階玩家自身渲染（最可能的「人物消失」根因區，drawPlayer(me)）──
+  variant("自己滿裝Lv421(武器/寵物/造型/隊伍/公會)", (s) => richSelf(s)),
+  variant("自己移動中(walk/frame 動畫)", (s) => richSelf(s, { moving: true, walk: 7.3 })),
+  variant("自己被打趴(hp<=0)", (s) => richSelf(s, { hp: 0 })),
+  variant("自己半血(顯示血條)", (s) => richSelf(s, { hp: 400 })),
+  variant("自己造型索引越界(捏臉)", (s) => richSelf(s, { costume: 99, hair_style: 99, skin_tone: 99, goggle_color: 99 })),
+  variant("自己造型索引負/字串/未知寵物職業", (s) => richSelf(s, { costume: -1, hair_style: "x", skin_tone: null, pet_kind: "unknown_pet", job_class: "unknown" })),
+  variant("自己滿裝+附近可採節點(maybeAnnounceReachable)", (s) => { richSelf(s); s.nodes = [{ kind: "tree", x: me0.x + 10, y: me0.y + 10 }, ...(s.nodes || [])]; }),
 ];
 
 let failed = false;
