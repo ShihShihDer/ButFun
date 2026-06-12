@@ -301,6 +301,29 @@
     banner.textContent        = text;
   }
 
+  // HUD 右側橫幅欄（HUD 抗重疊 v1）：過去 7 條狀態橫幅（節慶/聚會/繁榮/星象/流星雨/旅行商人/
+  // 季節）各自寫死 position:fixed;top:Npx;right:8px——隱藏時留空洞、又會跟左上「會換行的狀態列
+  // pill 牆」在窄手機上撞在一起（旅行商人蓋住夜晚/回城）。改成全部收進一個自動堆疊的 flex 直欄：
+  // 隱藏的（display:none）自動收合不留洞、整欄往右上收齊、寬度上限避免插進狀態列。各橫幅用
+  // style.order 維持穩定上下順序，與創建先後無關。
+  function _ensureBannerColumn() {
+    let col = document.getElementById("hudBanners");
+    if (!col) {
+      col = document.createElement("div");
+      col.id = "hudBanners";
+      col.style.cssText = [
+        "position:fixed",
+        "top:calc(48px + env(safe-area-inset-top))",
+        "right:calc(8px + env(safe-area-inset-right))",
+        "display:flex", "flex-direction:column", "align-items:flex-end",
+        "gap:4px", "max-width:min(72vw,260px)",
+        "z-index:1000", "pointer-events:none",
+      ].join(";");
+      document.body.appendChild(col);
+    }
+    return col;
+  }
+
   // 村落節慶加成 HUD pill（ROADMAP 64）：活躍時在 HUD 顯示金色計時器。
   let lastVillageBuffText = null;
   function updateVillageBuffHud() {
@@ -320,14 +343,13 @@
       pill = document.createElement("div");
       pill.id = "hudVillageBuff";
       pill.style.cssText = [
-        "position:fixed", "top:6px", "right:8px",
+        "order:0",
         "background:#7a5a00", "color:#f0d060",
         "border:1px solid #d4a820", "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
       ].join(";");
-      document.body.appendChild(pill);
+      _ensureBannerColumn().appendChild(pill);
     }
     pill.style.display = "block";
     pill.textContent = text;
@@ -352,14 +374,13 @@
       pill = document.createElement("div");
       pill.id = "hudGathering";
       pill.style.cssText = [
-        "position:fixed", "top:30px", "right:8px",
+        "order:1",
         "background:#1a4a1a", "color:#70e070",
         "border:1px solid #40a040", "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
       ].join(";");
-      document.body.appendChild(pill);
+      _ensureBannerColumn().appendChild(pill);
     }
     pill.style.display = "block";
     pill.textContent = text;
@@ -392,14 +413,13 @@
       const newPill = document.createElement("div");
       newPill.id = "hudStarForecast";
       newPill.style.cssText = [
-        "position:fixed", "top:78px", "right:8px",
+        "order:3",
         "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
         "transition:background .4s,color .4s",
       ].join(";");
-      document.body.appendChild(newPill);
+      _ensureBannerColumn().appendChild(newPill);
     }
     const target = document.getElementById("hudStarForecast");
     if (target) {
@@ -433,14 +453,13 @@
       pill = document.createElement("div");
       pill.id = "hudProsperity";
       pill.style.cssText = [
-        "position:fixed", "top:54px", "right:8px",
+        "order:2",
         "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
         "transition:background .4s,color .4s",
       ].join(";");
-      document.body.appendChild(pill);
+      _ensureBannerColumn().appendChild(pill);
     }
     pill.style.background = info.bg;
     pill.style.color = info.color;
@@ -467,14 +486,13 @@
       const newPill = document.createElement("div");
       newPill.id = "hudMeteorShower";
       newPill.style.cssText = [
-        "position:fixed", "top:102px", "right:8px",
+        "order:4",
         "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
         "background:#0d1a2a", "color:#88ccff", "border:1px solid #4488bb",
       ].join(";");
-      document.body.appendChild(newPill);
+      _ensureBannerColumn().appendChild(newPill);
     }
     const t = document.getElementById("hudMeteorShower");
     if (t) { t.style.display = "block"; t.textContent = text; }
@@ -502,14 +520,13 @@
       const el = document.createElement("div");
       el.id = "hudWanderingMerchant";
       el.style.cssText = [
-        "position:fixed", "top:122px", "right:8px",
+        "order:5",
         "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
         "background:#2a1800", "color:#ffcc66", "border:1px solid #aa7700",
       ].join(";");
-      document.body.appendChild(el);
+      _ensureBannerColumn().appendChild(el);
     }
     const t = document.getElementById("hudWanderingMerchant");
     if (t) { t.style.display = "block"; t.textContent = text; }
@@ -536,14 +553,13 @@
       const el = document.createElement("div");
       el.id = "hudSeason";
       el.style.cssText = [
-        "position:fixed", "top:146px", "right:8px",
+        "order:6",
         "border-radius:12px",
         "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "z-index:1000",
-        "pointer-events:none",
+        "padding:3px 10px",
         "transition:background .4s,color .4s",
       ].join(";");
-      document.body.appendChild(el);
+      _ensureBannerColumn().appendChild(el);
     }
     const t = document.getElementById("hudSeason");
     if (t) {
