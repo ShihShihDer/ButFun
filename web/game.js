@@ -476,6 +476,41 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 旅行商人 HUD pill（ROADMAP 135）。
+  let _lastWanderingText = null;
+  function updateWanderingMerchantHud() {
+    const pill = document.getElementById("hudWanderingMerchant");
+    const nowMs = performance.now();
+    const remainMs = wanderingMerchantUntilMs - nowMs;
+    if (remainMs <= 0) {
+      if (pill) pill.style.display = "none";
+      _lastWanderingText = null;
+      return;
+    }
+    const secs = Math.ceil(remainMs / 1000);
+    const mins = Math.floor(secs / 60);
+    const text = mins > 0
+      ? `🧳 旅行商人 ${mins}m${secs % 60}s（廣場北緣）`
+      : `🧳 旅行商人 ${secs}s（廣場北緣）`;
+    if (text === _lastWanderingText) return;
+    _lastWanderingText = text;
+    if (!document.getElementById("hudWanderingMerchant")) {
+      const el = document.createElement("div");
+      el.id = "hudWanderingMerchant";
+      el.style.cssText = [
+        "position:fixed", "top:122px", "right:8px",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+        "background:#2a1800", "color:#ffcc66", "border:1px solid #aa7700",
+      ].join(";");
+      document.body.appendChild(el);
+    }
+    const t = document.getElementById("hudWanderingMerchant");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -491,6 +526,8 @@
   let meteorShowerUntilMs = 0;  // ROADMAP 133 流星雨到期的 performance.now() 時刻（0=無流星雨）
   let dustNodes = [];           // ROADMAP 133 活躍星塵採集點 [{id, wx, wy}]
   let lastMeteorShowerText = null;
+  let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
+  let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
@@ -827,6 +864,13 @@
           meteorShowerUntilMs = 0;
         }
         dustNodes = Array.isArray(msg.dust_nodes) ? msg.dust_nodes : [];
+        // 旅行商人（ROADMAP 135）。
+        if (msg.wandering_merchant_secs > 0) {
+          wanderingMerchantUntilMs = performance.now() + msg.wandering_merchant_secs * 1000;
+        } else if (msg.wandering_merchant_secs === 0 && wanderingMerchantUntilMs > 0) {
+          wanderingMerchantUntilMs = 0;
+        }
+        wanderingCatalog = Array.isArray(msg.wandering_catalog) ? msg.wandering_catalog : [];
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -916,6 +960,7 @@
           updateFarmFairPanel(me, isGuest);  // 農展評審面板（ROADMAP 56）
           updateVillageChiefPanel(me, isGuest); // 里長面板（ROADMAP 64）
           updateTravelerPanel(me); // 城外旅人面板（ROADMAP 74）
+          updateWanderingMerchantPanel(me, isGuest); // 旅行商人面板（ROADMAP 135）
           updateWarehousePanel(me); // 倉庫面板（ROADMAP 105）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
@@ -3143,6 +3188,7 @@
     drawTownBuildings(camX, camY); // 城鎮建築外觀（ROADMAP 110）：蒸汽龐克建築結構
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
+    drawWanderingMerchant(camX, camY); // 旅行商人（ROADMAP 135）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
     drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
     drawMeteorParticles(renderNow, _weatherDt); // 流星雨射星特效（ROADMAP 133）
@@ -3255,6 +3301,8 @@
     updateStarForecastHud();
     // 流星雨（ROADMAP 133）：活躍流星雨顯示倒數 pill。
     updateMeteorShowerHud();
+    // 旅行商人（ROADMAP 135）：在城鎮期間顯示橙色倒數 pill。
+    updateWanderingMerchantHud();
 
     requestAnimationFrame(render);
   }
@@ -4731,40 +4779,72 @@
       const sy = n.wy - camY;
       if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
       ctx.save();
-      // 閃爍光暈（藍白，週期 1.2s）
       const pulse = 0.55 + 0.45 * Math.sin(now * 0.00524 + n.id);
-      ctx.beginPath();
-      ctx.arc(sx, sy, 22 + 4 * pulse, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(120,180,255,${(0.12 + 0.08 * pulse).toFixed(3)})`;
-      ctx.fill();
-      // 主體圓盤
-      ctx.beginPath();
-      ctx.arc(sx, sy, 14, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(60,120,220,${(0.6 + 0.3 * pulse).toFixed(3)})`;
-      ctx.fill();
-      ctx.strokeStyle = `rgba(180,220,255,${(0.7 + 0.3 * pulse).toFixed(3)})`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      // 中心 emoji
-      ctx.font = "16px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("☄️", sx, sy + 1);
-      // 近身互動環 + 提示文字
-      if (n === nearest) {
-        ctx.strokeStyle = "rgba(160,210,255,0.9)";
-        ctx.lineWidth = 2.5;
+      if (n.is_rainbow) {
+        // 彩虹節點：金色光暈 + 彩虹漸層外圈（ROADMAP 134）
+        const hue = ((now * 0.05 + n.id * 60) % 360).toFixed(0);
         ctx.beginPath();
-        ctx.arc(sx, sy, 20, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.font = "12px system-ui, sans-serif";
-        ctx.textBaseline = "alphabetic";
-        const ty = sy - 26;
+        ctx.arc(sx, sy, 26 + 5 * pulse, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${hue},100%,65%,${(0.15 + 0.08 * pulse).toFixed(3)})`;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,210,50,${(0.7 + 0.3 * pulse).toFixed(3)})`;
+        ctx.fill();
+        ctx.strokeStyle = `hsla(${hue},100%,80%,${(0.9 + 0.1 * pulse).toFixed(3)})`;
         ctx.lineWidth = 3;
-        ctx.strokeStyle = "rgba(0,0,0,0.6)";
-        ctx.strokeText("✨採集星塵", sx, ty);
-        ctx.fillStyle = "rgba(180,230,255,0.95)";
-        ctx.fillText("✨採集星塵", sx, ty);
+        ctx.stroke();
+        ctx.font = "18px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("🌈", sx, sy + 1);
+        if (n === nearest) {
+          ctx.strokeStyle = `hsla(${hue},100%,80%,0.95)`;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 24, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.font = "12px system-ui, sans-serif";
+          ctx.textBaseline = "alphabetic";
+          const ty = sy - 30;
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.strokeText("🌈採集彩虹星塵", sx, ty);
+          ctx.fillStyle = "rgba(255,240,120,0.95)";
+          ctx.fillText("🌈採集彩虹星塵", sx, ty);
+        }
+      } else {
+        // 普通星塵節點：藍白閃爍（原邏輯）
+        ctx.beginPath();
+        ctx.arc(sx, sy, 22 + 4 * pulse, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(120,180,255,${(0.12 + 0.08 * pulse).toFixed(3)})`;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(60,120,220,${(0.6 + 0.3 * pulse).toFixed(3)})`;
+        ctx.fill();
+        ctx.strokeStyle = `rgba(180,220,255,${(0.7 + 0.3 * pulse).toFixed(3)})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = "16px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("☄️", sx, sy + 1);
+        if (n === nearest) {
+          ctx.strokeStyle = "rgba(160,210,255,0.9)";
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(sx, sy, 20, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.font = "12px system-ui, sans-serif";
+          ctx.textBaseline = "alphabetic";
+          const ty = sy - 26;
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.strokeText("✨採集星塵", sx, ty);
+          ctx.fillStyle = "rgba(180,230,255,0.95)";
+          ctx.fillText("✨採集星塵", sx, ty);
+        }
       }
       ctx.restore();
     }
@@ -6522,6 +6602,49 @@
     ctx.fill();
   }
 
+  // ── 旅行商人繪製（ROADMAP 135）──────────────────────────────────────────────
+  // 旅行商人在城鎮時，在廣場北緣固定位置繪製一個橙色商旅造型 NPC。
+  const WANDERER_WX = 2380, WANDERER_WY = 2150;
+  function drawWanderingMerchant(camX, camY) {
+    if (wanderingMerchantUntilMs <= performance.now()) return;
+    const sx = WANDERER_WX - camX;
+    const sy = WANDERER_WY - camY;
+    const me = myId ? players.get(myId) : null;
+    const inRange = me
+      && Math.hypot(me.x - WANDERER_WX, me.y - WANDERER_WY) <= 100;
+    ctx.save();
+    // 身體（橙棕斗篷）
+    ctx.fillStyle = "#c87328";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 4, 9, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#e8c088";
+    ctx.beginPath();
+    ctx.arc(sx, sy - 12, 7, 0, Math.PI * 2);
+    ctx.fill();
+    // 寬邊帽
+    ctx.fillStyle = "#7a4a10";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy - 18, 10, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillRect(sx - 4, sy - 22, 8, 6);
+    // 行囊
+    ctx.fillStyle = "#8b5e2a";
+    ctx.fillRect(sx + 6, sy - 4, 8, 10);
+    // 名字與提示
+    ctx.fillStyle = "#ffcc66";
+    ctx.font = "bold 11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🧳 旅行商人", sx, sy - 28);
+    if (inRange) {
+      ctx.fillStyle = "#ffe08a";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("（點擊面板購買稀有物品）", sx, sy - 40);
+    }
+    ctx.restore();
+  }
+
   // ── 流星雨粒子特效（ROADMAP 133）────────────────────────────────────────────
   // 流星雨活躍期間在螢幕上畫射星劃痕（藍白拖尾）；平時不畫，不影響效能。
   const _meteorParticles = [];
@@ -6871,9 +6994,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -6946,6 +7069,7 @@
     { id: "vibrant_elixir", out: "vibrant_elixir", outQty: 1, inputs: [["mushroom_spore", 3], ["deep_sea_pearl", 1], ["ancient_fragment", 2]], minProsperity: 3 },
     // ROADMAP 133 流星雨：星塵×3 → 星光護符×1。
     { id: "star_amulet", out: "star_amulet", outQty: 1, inputs: [["star_dust", 3]] },
+    { id: "star_guardian_amulet", out: "star_guardian_amulet", outQty: 1, inputs: [["rainbow_star_dust", 1], ["star_dust", 4], ["star_crystal_shard", 2]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -7012,6 +7136,7 @@
       crystal_shield: "防禦 -2（減 2 傷）💎 岩地生態",
       cosmic_shield: "防禦 -6（減 6 傷）🌌 宇宙星",
       star_amulet: "EXP +10%（採集與戰鬥）☄️ 流星雨產物",
+      star_guardian_amulet: "EXP +15%（採集與戰鬥）🌠 彩虹節點合成，流星雨採集額外+1星塵",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
@@ -9844,6 +9969,98 @@
       // 名字後的括號內容是 origin（後端 name = "🧳 科拿"，origin 不在 NpcView 裡）
       // 所以這裡顯示提示文字即可。
       originEl.textContent = "走近的旅人正在廣場歇息，可以跟他說說話。";
+    }
+  }
+
+  // ── 旅行商人面板（ROADMAP 135）──────────────────────────────────────────────
+  // 靠近旅行商人（TRADE_REACH=100px）時顯示商品清單，玩家可點擊購買。
+  let _wanderingPanelSig = null;
+  function updateWanderingMerchantPanel(me, isGuest) {
+    const panelId = "wanderingMerchantPanel";
+    const active = wanderingMerchantUntilMs > performance.now();
+    const inRange = active && me
+      && Math.hypot(me.x - WANDERER_WX, me.y - WANDERER_WY) <= 100;
+
+    let panel = document.getElementById(panelId);
+    if (!inRange) {
+      if (panel) panel.style.display = "none";
+      _wanderingPanelSig = null;
+      return;
+    }
+    // 簽章：商品清單+登入狀態沒變就不重建
+    const sig = JSON.stringify(wanderingCatalog) + isGuest;
+    if (panel && sig === _wanderingPanelSig) { panel.style.display = ""; return; }
+    _wanderingPanelSig = sig;
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = panelId;
+      panel.style.cssText = [
+        "position:fixed", "left:50%", "top:55%",
+        "transform:translate(-50%,-50%)",
+        "background:#1a0f00", "border:2px solid #aa7700",
+        "border-radius:12px", "padding:16px 20px",
+        "z-index:2000", "min-width:260px",
+        "color:#ffe8aa", "font-size:.9rem",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    panel.style.display = "";
+    panel.innerHTML = "";
+
+    // 標題列
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:10px";
+    const title = document.createElement("b");
+    title.textContent = "🧳 旅行商人特賣";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:transparent;border:none;color:#888;cursor:pointer;font-size:1rem";
+    closeBtn.addEventListener("click", () => { panel.style.display = "none"; });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:#aa8844;font-size:.78rem;margin-bottom:8px";
+    hint.textContent = "離開範圍後面板自動關閉";
+    panel.appendChild(hint);
+
+    if (wanderingCatalog.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.color = "#666";
+      empty.textContent = "今日貨物已售罄";
+      panel.appendChild(empty);
+      return;
+    }
+
+    for (const e of wanderingCatalog) {
+      const icon = ITEM_LOOK[e.item] || "📦";
+      const name = ITEM_NAME[e.item] || e.item;
+      const soldOut = e.remaining <= 0;
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;margin:6px 0";
+      row.innerHTML = `<span style="font-size:1.1em">${icon}</span>
+        <span style="flex:1">${name}</span>
+        <span style="color:#aaffaa">${e.price_ether}⚡</span>
+        <span style="color:#888;font-size:.8em">剩${e.remaining}</span>`;
+      const btn = document.createElement("button");
+      btn.textContent = soldOut ? "售完" : "買1";
+      btn.disabled = soldOut || isGuest;
+      btn.style.cssText = `padding:2px 8px;border-radius:6px;border:1px solid #aa7700;
+        background:${soldOut ? "#333" : "#4a2800"};
+        color:${soldOut ? "#666" : "#ffcc66"};
+        cursor:${soldOut ? "default" : "pointer"}`;
+      if (!soldOut && !isGuest) {
+        const itemKey = e.item;
+        btn.addEventListener("click", () => {
+          if (!ws) return;
+          try { ws.send(JSON.stringify({ type: "buy_from_wanderer", item: itemKey, qty: 1 })); }
+          catch (ex) { /* 靜默忽略 */ }
+        });
+      }
+      row.appendChild(btn);
+      panel.appendChild(row);
     }
   }
 

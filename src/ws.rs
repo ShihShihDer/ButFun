@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -411,6 +411,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // 流星雨（ROADMAP 133）：全服廣播。
                                         meteor_shower_secs: *meteor_shower_secs,
                                         dust_nodes: dust_nodes.iter().filter(|n| filter_pos(n.wx, n.wy)).cloned().collect(),
+                                        // 旅行商人（ROADMAP 135）：全服廣播。
+                                        wandering_merchant_secs: *wandering_merchant_secs,
+                                        wandering_catalog: wandering_catalog.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -740,9 +743,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     crate::observatory::StarForecastBonus::exp_bonus_pct()
                                 } else { 0 }
                             };
-                            // 星光護符（ROADMAP 133）：持有時 EXP +10%。
+                            // 護符被動 EXP 加成：星際守護符 +15% > 星光護符 +10%（ROADMAP 133/134）。
                             let star_amulet_pct: u32 =
-                                if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 { 10 } else { 0 };
+                                if p.inventory.count(crate::inventory::ItemKind::StarGuardianAmulet) > 0 { 15 }
+                                else if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 { 10 }
+                                else { 0 };
                             let prosperity_pct = crate::town_prosperity::level_from_u8(
                                 app.residents.read().unwrap().prosperity_level()
                             ).exp_bonus_pct();
@@ -1531,10 +1536,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     1.0_f32 + crate::observatory::StarForecastBonus::exp_bonus_pct() as f32 / 100.0
                                 } else { 1.0_f32 }
                             };
-                            // 星光護符（ROADMAP 133）：持有時 EXP +10%。
-                            let star_amulet_mult = if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 {
-                                1.1_f32
-                            } else { 1.0_f32 };
+                            // 護符被動 EXP 加成：星際守護符 +15% > 星光護符 +10%（ROADMAP 133/134）。
+                            let star_amulet_mult =
+                                if p.inventory.count(crate::inventory::ItemKind::StarGuardianAmulet) > 0 { 1.15_f32 }
+                                else if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 { 1.1_f32 }
+                                else { 1.0_f32 };
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult
@@ -4150,21 +4156,95 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 居民互助請求 end ──────────────────────────────────────────
 
-                // ── 流星雨星塵採集（ROADMAP 133）────────────────────────────────
+                // ── 流星雨星塵採集（ROADMAP 133/134）───────────────────────────
                 Ok(ClientMsg::CollectDustNode { node_id }) => {
-                    // 驗證玩家位置在節點 COLLECT_REACH 內，成功則給 StarDust×1。
+                    // try_collect 回 Some(is_rainbow)=成功，None=失敗。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
-                    let collected = player_pos.map(|(px, py)| {
+                    let collect_result = player_pos.and_then(|(px, py)| {
                         app.meteor_shower.write().unwrap().try_collect(node_id, px, py)
-                    }).unwrap_or(false);
-                    if collected {
+                    });
+                    if let Some(is_rainbow) = collect_result {
+                        let shower_active = app.meteor_shower.read().unwrap().is_active();
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            p.add_item_overflow(crate::inventory::ItemKind::StarDust, 1);
-                            tracing::info!(player = %p.name, node_id, "採集星塵節點");
+                            // 彩虹節點給彩虹星塵，普通節點給星塵。
+                            if is_rainbow {
+                                p.add_item_overflow(crate::inventory::ItemKind::RainbowStarDust, 1);
+                                tracing::info!(player = %p.name, node_id, "採集彩虹星塵節點");
+                            } else {
+                                p.add_item_overflow(crate::inventory::ItemKind::StarDust, 1);
+                                tracing::info!(player = %p.name, node_id, "採集星塵節點");
+                            }
+                            // 流星雨期間持有星際守護符額外 +1 星塵（ROADMAP 134）。
+                            if shower_active && p.inventory.count(crate::inventory::ItemKind::StarGuardianAmulet) > 0 {
+                                p.add_item_overflow(crate::inventory::ItemKind::StarDust, 1);
+                            }
                         }
                     }
                 }
                 // ── 流星雨星塵採集 end ───────────────────────────────────────────
+
+                // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
+                Ok(ClientMsg::BuyFromWanderer { item, qty }) => {
+                    // 1. 需登入
+                    if authed_uid.is_none() {
+                        if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                            from: "系統".into(), text: "需要登入才能與旅行商人交易".into(),
+                        }) { let _ = tx_direct.try_send(j); }
+                        continue;
+                    }
+                    // 2. 玩家在範圍內
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let Some((px, py)) = player_pos else { continue; };
+                    let dx = px - crate::wandering_merchant::WANDERER_X;
+                    let dy = py - crate::wandering_merchant::WANDERER_Y;
+                    let in_range = dx * dx + dy * dy
+                        <= crate::wandering_merchant::TRADE_REACH * crate::wandering_merchant::TRADE_REACH;
+                    if !in_range {
+                        continue; // 靜默忽略（前端不應在玩家不在範圍內時送此訊息）
+                    }
+                    // 3. 嘗試購買（扣庫存、計算費用）
+                    let buy_result = app.wandering_merchant.write().unwrap().buy(item, qty);
+                    match buy_result {
+                        Ok(cost) => {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&id) {
+                                if p.ether < cost {
+                                    drop(players);
+                                    // 乙太不足：退回庫存
+                                    if let Ok(mut wm) = app.wandering_merchant.write() {
+                                        if let Some(e) = wm.catalog.iter_mut().find(|e| e.item == item) {
+                                            e.sold = e.sold.saturating_sub(qty);
+                                        }
+                                    }
+                                    if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                        from: "旅行商人".into(), text: "😅 你的乙太不夠，我也沒辦法……".into(),
+                                    }) { let _ = tx_direct.try_send(j); }
+                                } else {
+                                    p.ether -= cost;
+                                    p.add_item_overflow(item, qty);
+                                    let item_name = crate::npc_deal::item_display_zh(item);
+                                    let name = p.name.clone();
+                                    drop(players);
+                                    tracing::info!(
+                                        player = %name, ?item, qty, cost,
+                                        "向旅行商人購買商品"
+                                    );
+                                    if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                        from: "旅行商人".into(),
+                                        text: format!("✅ 賣給你 {}×{}，共 {} 乙太。一路平安！", item_name, qty, cost),
+                                    }) { let _ = tx_direct.try_send(j); }
+                                }
+                            }
+                        }
+                        Err(reason) => {
+                            if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                from: "旅行商人".into(),
+                                text: format!("😅 {}", reason),
+                            }) { let _ = tx_direct.try_send(j); }
+                        }
+                    }
+                }
+                // ── 旅行商人交易 end ─────────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
