@@ -3978,6 +3978,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         let _ = app.tx_chat.send(format!("🎊 慶賀！【{}】工程已圓滿完工！城鎮的未來更加閃耀 ✨", project_name));
                                         // 記錄世界大事
                                         app.world_log.write().unwrap().push(format!("【{}】大工程順利完工！", project_name));
+                                        // 城鎮記憶石（ROADMAP 157）：大工程完工是城鎮歷史的重要一頁。
+                                        app.town_memory.write().unwrap().push_event(
+                                            "🏗️",
+                                            format!("城鎮大工程完工——【{}】正式落成！", project_name),
+                                        );
                                     }
                                 } else {
                                     // 資源不合或已滿，全部退回
@@ -4863,6 +4868,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 已投過或無活躍投票 → 靜默忽略。
                 }
                 // ── 公民投票 end ──────────────────────────────────────────────────────
+
+                // ── 城鎮記憶石（ROADMAP 157）────────────────────────────────────────
+                Ok(ClientMsg::ReadTownMemory) => {
+                    // 無需登入、無需在保護圈；只需玩家靠近記憶石。
+                    let in_range = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).map(|p| {
+                            crate::town_memory::is_near_stone(p.x, p.y)
+                        }).unwrap_or(false)
+                    };
+                    if in_range {
+                        let entries: Vec<_> = {
+                            let mem = app.town_memory.read().unwrap();
+                            mem.recent_desc(crate::town_memory::MAX_ENTRIES)
+                                .into_iter()
+                                .cloned()
+                                .collect()
+                        };
+                        if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::TownMemoryList { entries }) {
+                            let _ = tx_direct.try_send(j);
+                        }
+                    }
+                    // 不在範圍 → 靜默忽略。
+                }
+                // ── 城鎮記憶石 end ────────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),

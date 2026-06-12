@@ -1235,6 +1235,7 @@
           updateVillageChiefPanel(me, isGuest); // 里長面板（ROADMAP 64）
           updateTravelerPanel(me); // 城外旅人面板（ROADMAP 74）
           updateWanderingMerchantPanel(me, isGuest); // 旅行商人面板（ROADMAP 135）
+          updateMemoryStoneHint(me); // 城鎮記憶石提示（ROADMAP 157）
           updateWarehousePanel(me); // 倉庫面板（ROADMAP 105）
           updateGuildPanel(myGuild, null, isGuest);       // 公會面板（ROADMAP 29）
           // 每日任務：已登入玩家第一次快照到達時請求任務狀態（ROADMAP 32）。
@@ -1493,6 +1494,10 @@
       case "kill_notify":
         // ROADMAP 147：擊殺通知——告知玩家討伐了哪隻怪、獲得了什麼。
         addKillNotify(msg.enemy_name, msg.item_display, msg.kill_total);
+        break;
+      case "town_memory_list":
+        // ROADMAP 157：城鎮記憶石——開啟記憶面板顯示世界大事。
+        openMemoryPanel(msg.entries);
         break;
     }
   }
@@ -6370,8 +6375,9 @@
     { wx: 2360, wy: 2080, type: "expedition",  sign: "探勘站" },
     { wx: 2480, wy: 2080, type: "procurement", sign: "星際採購" },
     { wx: 2600, wy: 2080, type: "fair",        sign: "農展館" },
-    { wx: 2720, wy: 2080, type: "chief",       sign: "里長屋" },
-    { wx: 2560, wy: 2328, type: "observatory", sign: "蒸汽天文台" },
+    { wx: 2720, wy: 2080, type: "chief",        sign: "里長屋" },
+    { wx: 2840, wy: 2080, type: "memory_stone", sign: "城鎮記憶石" },
+    { wx: 2560, wy: 2328, type: "observatory",  sign: "蒸汽天文台" },
   ];
 
   function drawTownBuildings(camX, camY) {
@@ -6381,9 +6387,11 @@
       if (sx < -130 || sx > viewW + 130 || sy < -130 || sy > viewH + 60) continue;
       ctx.save();
       ctx.imageSmoothingEnabled = false;
-      // observatory 走特殊繪製（隨進度成長）
+      // observatory/memory_stone 走特殊繪製
       if (b.type === "observatory") {
         _drawObservatory(sx, sy, b.sign);
+      } else if (b.type === "memory_stone") {
+        _drawMemoryStone(sx, sy, b.sign);
       } else {
         _drawBuilding(sx, sy, b.type, b.sign);
       }
@@ -6418,6 +6426,66 @@
     ctx.strokeStyle = trim; ctx.lineWidth = 0.8; ctx.stroke();
     ctx.fillStyle = trim;
     ctx.fillText(sign, sx, y + 3);
+  }
+
+  // 城鎮記憶石（ROADMAP 157）：直立石碑，刻著藍色乙太符文，記錄城鎮歷史。
+  function _drawMemoryStone(sx, sy, sign) {
+    const wb = sy - 10;
+    // 地面陰影
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.beginPath();
+    ctx.ellipse(sx, wb + 6, 22, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 底座石基
+    ctx.fillStyle = "#3a3040";
+    ctx.beginPath();
+    ctx.roundRect(sx - 18, wb - 4, 36, 8, 2);
+    ctx.fill();
+    ctx.strokeStyle = "#6a5878";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 石碑主體（錐形：下寬上窄）
+    ctx.fillStyle = "#2a2438";
+    ctx.beginPath();
+    ctx.moveTo(sx - 12, wb - 4);
+    ctx.lineTo(sx + 12, wb - 4);
+    ctx.lineTo(sx + 8, wb - 54);
+    ctx.lineTo(sx - 8, wb - 54);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "#5a4870";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 石碑頂部圓弧（半圓）
+    ctx.fillStyle = "#2a2438";
+    ctx.beginPath();
+    ctx.arc(sx, wb - 54, 8, Math.PI, 0);
+    ctx.fill();
+    ctx.strokeStyle = "#5a4870";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 石碑表面紋路（橫線裂紋感）
+    ctx.strokeStyle = "#3e3252";
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const yy = wb - 15 - i * 10;
+      ctx.beginPath();
+      ctx.moveTo(sx - 8 + i * 0.5, yy);
+      ctx.lineTo(sx + 8 - i * 0.5, yy);
+      ctx.stroke();
+    }
+    // 乙太符文（藍色輝光，中央圓形）
+    ctx.save();
+    ctx.shadowColor = "#60a8e0";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = "#a0d4f8";
+    ctx.font = "bold 14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("✦", sx, wb - 35);
+    ctx.restore();
+    // 招牌
+    _drawSign(sx, wb - 72, sign, "#a0d4f8");
   }
 
   function _drawObservatory(sx, sy, sign) {
@@ -8425,6 +8493,120 @@
     toggle.setAttribute("aria-label", label);
     toggle.setAttribute("title", label);
   }
+
+  // ── 城鎮記憶石（ROADMAP 157）──────────────────────────────────────────────
+  // 靠近記憶石時顯示「讀取」按鈕；伺服器回傳 town_memory_list 時開啟記憶面板。
+
+  let _memoryStoneHintPanel = null;
+
+  function updateMemoryStoneHint(me) {
+    const near = me && !!me.near_memory_stone;
+    if (!_memoryStoneHintPanel) {
+      _memoryStoneHintPanel = document.createElement("div");
+      _memoryStoneHintPanel.id = "memoryStoneHint";
+      _memoryStoneHintPanel.style.cssText = [
+        "position:fixed", "left:50%", "bottom:160px",
+        "transform:translateX(-50%)",
+        "background:rgba(20,12,40,0.92)", "border:1.5px solid #a0d4f8",
+        "border-radius:10px", "padding:8px 20px",
+        "z-index:1800", "display:none",
+        "color:#c8eaf8", "font-size:.85rem", "text-align:center",
+      ].join(";");
+      _memoryStoneHintPanel.innerHTML =
+        '<b>📖 城鎮記憶石</b><br>' +
+        '<button id="readMemoryBtn" style="margin-top:6px;padding:4px 14px;' +
+        'background:#1a3050;border:1px solid #60a8e0;border-radius:6px;' +
+        'color:#a0d4f8;cursor:pointer;font-size:.8rem;">讀取城鎮歷史</button>';
+      document.body.appendChild(_memoryStoneHintPanel);
+      document.getElementById("readMemoryBtn").addEventListener("click", () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "read_town_memory" }));
+        }
+      });
+    }
+    _memoryStoneHintPanel.style.display = near ? "" : "none";
+  }
+
+  // 格式化 UNIX 秒數為「N 分鐘前 / N 小時前 / N 天前」。
+  function _fmtTimeAgo(tsSecs) {
+    const diffSecs = Math.max(0, Math.floor(Date.now() / 1000) - tsSecs);
+    if (diffSecs < 60) return "剛才";
+    if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)} 分鐘前`;
+    if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)} 小時前`;
+    return `${Math.floor(diffSecs / 86400)} 天前`;
+  }
+
+  // 開啟記憶石面板（由 TownMemoryList 訊息觸發）。
+  function openMemoryPanel(entries) {
+    let panel = document.getElementById("townMemoryPanel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "townMemoryPanel";
+      panel.style.cssText = [
+        "position:fixed", "left:50%", "top:50%",
+        "transform:translate(-50%,-50%)",
+        "background:#100c1e", "border:2px solid #a0d4f8",
+        "border-radius:14px", "padding:18px 22px",
+        "z-index:2100", "width:min(380px,90vw)", "max-height:70vh",
+        "display:flex", "flex-direction:column",
+        "color:#c8eaf8", "font-size:.85rem",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    panel.innerHTML = "";
+    panel.style.display = "flex";
+
+    // 標題
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:12px";
+    const title = document.createElement("b");
+    title.style.cssText = "font-size:1rem;color:#a0d4f8;";
+    title.textContent = "📖 城鎮記憶石";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText = "background:transparent;border:none;color:#888;cursor:pointer;font-size:1rem";
+    closeBtn.addEventListener("click", () => { panel.style.display = "none"; });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    if (!entries || entries.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color:#666;text-align:center;padding:20px 0";
+      empty.textContent = "石碑沉默無語……城鎮的故事尚未開始。";
+      panel.appendChild(empty);
+      return;
+    }
+
+    // 事件列表（可捲動）
+    const list = document.createElement("div");
+    list.style.cssText = "overflow-y:auto;flex:1;padding-right:4px";
+    for (const e of entries) {
+      const row = document.createElement("div");
+      row.style.cssText = [
+        "display:flex", "align-items:flex-start", "gap:8px",
+        "padding:7px 0", "border-bottom:1px solid #1e1830",
+      ].join(";");
+      const icon = document.createElement("span");
+      icon.style.cssText = "font-size:1.1rem;min-width:20px;text-align:center";
+      icon.textContent = e.icon;
+      const body = document.createElement("div");
+      body.style.flex = "1";
+      const textLine = document.createElement("div");
+      textLine.style.cssText = "line-height:1.4";
+      textLine.textContent = e.text;
+      const timeLine = document.createElement("div");
+      timeLine.style.cssText = "color:#556;font-size:.75rem;margin-top:2px";
+      timeLine.textContent = _fmtTimeAgo(e.ts_secs);
+      body.appendChild(textLine);
+      body.appendChild(timeLine);
+      row.appendChild(icon);
+      row.appendChild(body);
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+  }
+  // ── 城鎮記憶石 end ──────────────────────────────────────────────────────
 
   // 倉庫面板（ROADMAP 105）：顯示倉庫庫存、提貨按鈕、購買擴充按鈕。
   // 背包已滿 20 格時，後續採集/撿取自動流入倉庫（伺服器 add_item_overflow 處理）。

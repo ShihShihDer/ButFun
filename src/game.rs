@@ -121,6 +121,11 @@ pub fn spawn(app: AppState) {
                     tracing::info!(season = new_season.as_str(), "季節切換");
                     // 季節性野外採集節點（ROADMAP 154）：季節切換時重置節點。
                     app.seasonal_nodes.write().unwrap().on_season_change(new_season);
+                    // 城鎮記憶石（ROADMAP 157）：季節更替是值得留存的世界大事。
+                    app.town_memory.write().unwrap().push_event(
+                        "🍂",
+                        format!("季節更替——進入{}了", new_season.display_name()),
+                    );
                 }
                 s.growth_rate_modifier()
             };
@@ -628,6 +633,11 @@ pub fn spawn(app: AppState) {
                                 "拓荒者們在{}成功打退獸潮（斬殺 {} 隻），英勇守護了村落",
                                 site_label, kills
                             ));
+                            // 城鎮記憶石（ROADMAP 157）：守城勝利永久留存。
+                            app.town_memory.write().unwrap().push_event(
+                                "⚔️",
+                                format!("守城勝利——{}獸潮被拓荒者打退（斬殺 {} 隻）", site_label, kills),
+                            );
                             // NPC 需求驅力（ROADMAP 69）：獸潮打退 → 安全感回升，社群歸屬感大升。
                             app.npc_needs.write().unwrap().apply_world_event(crate::npc_needs::NeedsEvent::HordeRepelled);
                             // NPC 人際關係網（ROADMAP 70）：共患難加深信任。
@@ -661,6 +671,11 @@ pub fn spawn(app: AppState) {
                                 "😔 {}的獸潮自行退去了…下次要更快打退！",
                                 site_label
                             ));
+                            // 城鎮記憶石（ROADMAP 157）：守城失守也值得記錄，提醒玩家。
+                            app.town_memory.write().unwrap().push_event(
+                                "😔",
+                                format!("守城失守——{}的獸潮未能在時限內打退", site_label),
+                            );
                         }
                     }
                 }
@@ -897,8 +912,14 @@ pub fn spawn(app: AppState) {
                             let _ = app.tx_chat.send(msg);
                         }
                         // 城鎮繁榮等級改變（ROADMAP 128）：廣播世界聊天讓全服玩家都知道。
-                        ResidentLifecycleEvent::ProsperityChanged { msg, .. } => {
-                            let _ = app.tx_chat.send(msg);
+                        ResidentLifecycleEvent::ProsperityChanged { msg, old_level, new_level } => {
+                            let _ = app.tx_chat.send(msg.clone());
+                            // 城鎮記憶石（ROADMAP 157）：繁榮等級升降是城鎮的重要里程碑。
+                            let icon = if new_level > old_level { "📈" } else { "📉" };
+                            app.town_memory.write().unwrap().push_event(
+                                icon,
+                                format!("城鎮繁榮{}至等級 {}", if new_level > old_level { "提升" } else { "下滑" }, new_level),
+                            );
                         }
                         // 快樂居民招待附近玩家（ROADMAP 127）：給乙太小禮 + 泡泡 + 世界聊天。
                         ResidentLifecycleEvent::PlayerGift {
@@ -979,10 +1000,14 @@ pub fn spawn(app: AppState) {
                             let _ = app.tx_chat.send(text);
                         }
                         CivicVoteEvent::ProposalPassed { text, .. } => {
-                            let _ = app.tx_chat.send(text);
+                            let _ = app.tx_chat.send(text.clone());
+                            // 城鎮記憶石（ROADMAP 157）：提案通過是城鎮歷史的一頁。
+                            app.town_memory.write().unwrap().push_event("📜", text);
                         }
                         CivicVoteEvent::ProposalRejected { text } => {
-                            let _ = app.tx_chat.send(text);
+                            let _ = app.tx_chat.send(text.clone());
+                            // 城鎮記憶石（ROADMAP 157）：提案未通過也記下來。
+                            app.town_memory.write().unwrap().push_event("🗳️", text);
                         }
                         CivicVoteEvent::AetherReward => {
                             // 乙太集資：給所有在線玩家 +AETHER_REWARD_AMOUNT 乙太。
@@ -1012,6 +1037,11 @@ pub fn spawn(app: AppState) {
                 if let Some(bonus) = forecast {
                     let app2 = app.clone();
                     let sem = app.observatory_sem.clone();
+                    // 城鎮記憶石（ROADMAP 157）：星象預報在非同步生成前先同步記下加成種類。
+                    app.town_memory.write().unwrap().push_event(
+                        "🔭",
+                        format!("天文台星象預報——今日全服加成：{}", bonus.name()),
+                    );
                     tokio::spawn(async move {
                         let _permit = sem.try_acquire();
                         let text = crate::observatory::generate_forecast(bonus).await;
@@ -1040,6 +1070,11 @@ pub fn spawn(app: AppState) {
                         dur_min,
                     );
                     let _ = app.tx_chat.send(msg);
+                    // 城鎮記憶石（ROADMAP 157）：流星雨是稀有天象，值得留存。
+                    app.town_memory.write().unwrap().push_event(
+                        "🌠",
+                        format!("流星雨降臨！城鎮周圍出現 {} 個星塵採集點", crate::meteor_shower::DUST_NODE_COUNT),
+                    );
                 }
             }
 

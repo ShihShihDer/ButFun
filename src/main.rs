@@ -114,6 +114,7 @@ mod species_relations;
 mod stat_points;
 mod skill_mastery;
 mod civic_vote;
+mod town_memory;
 
 use std::net::SocketAddr;
 
