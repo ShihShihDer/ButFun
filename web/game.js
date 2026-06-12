@@ -575,6 +575,7 @@
   let townProsperityLevel = 1; // ROADMAP 128 城鎮繁榮等級：0=凋零 1=平靜 2=生機 3=繁盛
   let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
+  let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -922,6 +923,8 @@
           seasonRemainingSecs = msg.season_remaining_secs || 0;
           updateSeasonHud();
         }
+        // 野生動物（ROADMAP 140）。
+        if (Array.isArray(msg.wildlife)) wildlifeList = msg.wildlife;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3239,6 +3242,7 @@
     drawTownBuildings(camX, camY); // 城鎮建築外觀（ROADMAP 110）：蒸汽龐克建築結構
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
+    drawWildlife(camX, camY); // 中立野生動物（ROADMAP 140）
     drawWanderingMerchant(camX, camY); // 旅行商人（ROADMAP 135）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
     drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
@@ -6421,6 +6425,219 @@
       }
 
       ctx.restore();
+    }
+  }
+
+  // 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物，友善、不攻擊玩家。
+  function drawWildlife(camX, camY) {
+    if (!wildlifeList.length) return;
+    const W = canvas.width, H = canvas.height;
+    const now = performance.now();
+
+    for (const w of wildlifeList) {
+      const sx = w.x - camX + W / 2;
+      const sy = w.y - camY + H / 2;
+      if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+
+      ctx.save();
+      const isFleeing = w.state === "fleeing";
+      // 驚逃時輕微抖動（左右搖）。
+      const wobble = isFleeing ? Math.sin(now / 60) * 2 : 0;
+      ctx.translate(sx + wobble, sy);
+
+      switch (w.kind) {
+        case "wild_bird":   _drawWildBird(isFleeing, now);    break;
+        case "wild_deer":   _drawWildDeer(isFleeing, now);    break;
+        case "small_critter": _drawSmallCritter(isFleeing, now); break;
+      }
+
+      // 名字標籤（淡綠色，對比敵人的橙紅色）。
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      const label = w.name;
+      const lw = ctx.measureText(label).width + 8;
+      ctx.fillRect(-lw / 2, -34, lw, 14);
+      ctx.fillStyle = "#a8f0a8";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(label, 0, -33);
+
+      ctx.restore();
+    }
+  }
+
+  // 野鳥：小橢圓身體＋三角翅膀，翅膀輕拍動畫。
+  function _drawWildBird(fleeing, now) {
+    const flapPhase = (now / 220) % (Math.PI * 2);
+    const flapAmt = Math.sin(flapPhase) * 5;
+    // 身體
+    ctx.fillStyle = "#c8e8a0";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 6, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#d8f0b0";
+    ctx.beginPath();
+    ctx.arc(5, -3, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // 嘴
+    ctx.fillStyle = "#f0c860";
+    ctx.beginPath();
+    ctx.moveTo(8, -3);
+    ctx.lineTo(12, -2);
+    ctx.lineTo(9, -1);
+    ctx.fill();
+    // 左翅
+    ctx.fillStyle = "#b0d890";
+    ctx.beginPath();
+    ctx.moveTo(-2, 0);
+    ctx.lineTo(-10, -4 + flapAmt);
+    ctx.lineTo(-2, -4);
+    ctx.fill();
+    // 右翅（對稱，反向拍）
+    ctx.beginPath();
+    ctx.moveTo(-2, 0);
+    ctx.lineTo(-10, 4 - flapAmt);
+    ctx.lineTo(-2, 4);
+    ctx.fill();
+    // 眼
+    ctx.fillStyle = "#333";
+    ctx.beginPath();
+    ctx.arc(6, -3.5, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 野鹿：橢圓身體＋細腿＋鹿角。
+  function _drawWildDeer(fleeing, now) {
+    // 身體
+    ctx.fillStyle = "#d4a870";
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 11, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頸
+    ctx.fillStyle = "#c8985c";
+    ctx.beginPath();
+    ctx.moveTo(7, -2);
+    ctx.lineTo(10, -8);
+    ctx.lineTo(12, -5);
+    ctx.lineTo(9, 1);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#d4a870";
+    ctx.beginPath();
+    ctx.ellipse(11, -9, 5, 4, Math.PI / 6, 0, Math.PI * 2);
+    ctx.fill();
+    // 鼻/嘴
+    ctx.fillStyle = "#b08050";
+    ctx.beginPath();
+    ctx.arc(15, -8, 2, 0, Math.PI * 2);
+    ctx.fill();
+    // 眼
+    ctx.fillStyle = "#222";
+    ctx.beginPath();
+    ctx.arc(13, -10, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 白眼點
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(13.5, -10.3, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 四條腿（稍微動畫）
+    const legPhase = fleeing ? (now / 80) % (Math.PI * 2) : 0;
+    const legSwing = fleeing ? Math.sin(legPhase) * 4 : 0;
+    ctx.strokeStyle = "#b08050";
+    ctx.lineWidth = 2;
+    const legs = [[-6, 9, -7 + legSwing, 18], [0, 9, 0, 18], [4, 9, 5 - legSwing, 18], [-3, 9, -4, 18]];
+    for (const [x1, y1, x2, y2] of legs) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+    // 鹿角
+    ctx.strokeStyle = "#8b6040";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(11, -13); ctx.lineTo(9, -19);
+    ctx.moveTo(9, -17); ctx.lineTo(6, -20);
+    ctx.moveTo(9, -15); ctx.lineTo(11, -19);
+    ctx.moveTo(13, -13); ctx.lineTo(15, -19);
+    ctx.moveTo(15, -17); ctx.lineTo(18, -20);
+    ctx.stroke();
+    // 小白尾
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(-10, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 小動物（松鼠/野兔）：圓滾滾、大耳朵。
+  function _drawSmallCritter(fleeing, now) {
+    // 身體
+    ctx.fillStyle = "#c8a878";
+    ctx.beginPath();
+    ctx.ellipse(0, 1, 8, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#d4b888";
+    ctx.beginPath();
+    ctx.arc(6, -4, 6, 0, Math.PI * 2);
+    ctx.fill();
+    // 耳朵（左）
+    ctx.fillStyle = "#c8a878";
+    ctx.beginPath();
+    ctx.ellipse(4, -11, 2.5, 5, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e8c0a0";
+    ctx.beginPath();
+    ctx.ellipse(4, -11, 1.2, 3.5, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    // 耳朵（右）
+    ctx.fillStyle = "#c8a878";
+    ctx.beginPath();
+    ctx.ellipse(8, -11, 2.5, 5, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e8c0a0";
+    ctx.beginPath();
+    ctx.ellipse(8, -11, 1.2, 3.5, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    // 眼
+    ctx.fillStyle = "#333";
+    ctx.beginPath();
+    ctx.arc(5, -4, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(5.4, -4.3, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 嘴（小Y形）
+    ctx.strokeStyle = "#a07850";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(8, -2); ctx.lineTo(8, 0); ctx.lineTo(7, 1);
+    ctx.moveTo(8, 0);  ctx.lineTo(9, 1);
+    ctx.stroke();
+    // 蓬鬆大尾巴
+    ctx.fillStyle = "#c8a878";
+    ctx.beginPath();
+    ctx.ellipse(-8, -2, 6, 4, Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e8c8a8";
+    ctx.beginPath();
+    ctx.ellipse(-8, -2, 4, 2.5, Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    // 四肢
+    ctx.fillStyle = "#b89060";
+    const legPhase = fleeing ? (now / 100) % (Math.PI * 2) : 0;
+    const ls = fleeing ? Math.sin(legPhase) * 3 : 0;
+    const limbData = [[-2, 5, -3 + ls, 10], [2, 5, 2, 10]];
+    for (const [x1, y1, x2, y2] of limbData) {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#b89060";
+      ctx.stroke();
     }
   }
 

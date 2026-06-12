@@ -955,6 +955,9 @@ pub struct AppState {
     /// 季節循環（ROADMAP 137）：春夏秋冬各 20 分鐘輪替，影響作物成長速度。
     /// 記憶體模式，重啟從春天開始（世界換季，行為合理）。
     pub season: Arc<RwLock<crate::season::SeasonState>>,
+    /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
+    /// 記憶體模式，重啟重新在固定座標生成。
+    pub wildlife_manager: Arc<RwLock<crate::wildlife::WildlifeManager>>,
 }
 
 impl AppState {
@@ -1120,6 +1123,7 @@ impl AppState {
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
+            wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
         }
     }
 
