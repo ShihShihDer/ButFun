@@ -80,7 +80,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::Bread | ItemKind::CarrotSoup | ItemKind::PotatoGratin
         | ItemKind::StarCrystalShard | ItemKind::NightPotion | ItemKind::Sprinkler
         | ItemKind::TownBrew | ItemKind::VibrantElixir
-        | ItemKind::StarDust | ItemKind::StarAmulet => None,
+        | ItemKind::StarDust | ItemKind::StarAmulet
+        | ItemKind::RainbowStarDust | ItemKind::StarGuardianAmulet => None,
     }
 }
 

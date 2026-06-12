@@ -228,6 +228,15 @@ pub enum ItemKind {
     /// 星光護符🌟（合成：星塵×3 → 星光護符×1）。
     /// 背包中持有時採集/戰鬥 EXP +10%——流星饋贈，知識隨光而來。
     StarAmulet,
+
+    // ── 彩虹星塵 + 星際守護符（ROADMAP 134）────────────────────────────────
+    /// 彩虹星塵🌈（流星雨中唯一彩虹節點採集可得，每場流星雨恰好 1 個）。
+    /// 可賣 NPC 8 乙太，或搭配星塵×4 + 星晶碎片×2 合成星際守護符。
+    RainbowStarDust,
+    /// 星際守護符🌠（合成：彩虹星塵×1 + 星塵×4 + 星晶碎片×2 → 星際守護符×1）。
+    /// 背包中持有時採集/戰鬥 EXP +15%（高於星光護符的 +10%）；
+    /// 流星雨期間每採集一個節點額外獲得 +1 顆星塵——知道哪裡有彩虹的人，才會有守護之光。
+    StarGuardianAmulet,
 }
 
 impl ItemKind {
@@ -299,6 +308,8 @@ impl ItemKind {
         ItemKind::VibrantElixir,
         ItemKind::StarDust,
         ItemKind::StarAmulet,
+        ItemKind::RainbowStarDust,
+        ItemKind::StarGuardianAmulet,
     ];
 }
 
@@ -568,13 +579,15 @@ mod tests {
                 | ItemKind::TownBrew
                 | ItemKind::VibrantElixir
                 | ItemKind::StarDust
-                | ItemKind::StarAmulet => {}
+                | ItemKind::StarAmulet
+                | ItemKind::RainbowStarDust
+                | ItemKind::StarGuardianAmulet => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 62 種（含 ROADMAP 133 流星雨：StarDust/StarAmulet）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 62, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 64 種（含 ROADMAP 134：RainbowStarDust/StarGuardianAmulet）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 64, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -741,8 +754,9 @@ mod tests {
             );
             // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
             let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
-            // 流星雨採集可得（ROADMAP 133）：天文台完工後流星雨期間採集地面星塵節點。
-            let meteor_dust_collectible = item == ItemKind::StarDust;
+            // 流星雨採集可得（ROADMAP 133/134）：天文台完工後流星雨期間採集地面星塵節點。
+            // 彩虹星塵來自彩虹節點（每場 1 個），星塵來自普通節點。
+            let meteor_dust_collectible = item == ItemKind::StarDust || item == ItemKind::RainbowStarDust;
             assert!(
                 gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集）\
@@ -851,8 +865,10 @@ mod tests {
             // 放置後在世界發揮功能（自動澆水等），非單純的地形建造材料，故獨立一條。
             let placeable_functional = item == ItemKind::Sprinkler;
             // 10. 是被動加成護符（持有時全程生效，不消耗）。
-            // 星光護符持有時採集/戰鬥 EXP +10%（ROADMAP 133）。
-            let passive_amulet = item == ItemKind::StarAmulet;
+            // 星光護符持有時採集/戰鬥 EXP +10%（ROADMAP 133）；
+            // 星際守護符持有時採集/戰鬥 EXP +15%（ROADMAP 134）。
+            let passive_amulet = item == ItemKind::StarAmulet
+                || item == ItemKind::StarGuardianAmulet;
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
