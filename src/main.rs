@@ -110,6 +110,7 @@ mod season;
 mod wildlife;
 mod species_relations;
 mod stat_points;
+mod skill_mastery;
 
 use std::net::SocketAddr;
 

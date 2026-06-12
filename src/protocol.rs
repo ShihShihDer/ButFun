@@ -1011,6 +1011,23 @@ pub struct PlayerView {
     /// 已分配到攻擊速度的點數（每點 -5% 攻擊冷卻）。0 時省略。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub stat_atk_speed: u32,
+
+    // ── 技能使用型熟練度（ROADMAP 153）────────────────────────────────────────
+    /// 戰吼使用次數（熟練度）。0 時省略流量。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skill_mastery_warcry: u32,
+    /// 豐饒術使用次數。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skill_mastery_bounty: u32,
+    /// 精密合成使用次數。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skill_mastery_precision: u32,
+    /// 風之步使用次數。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skill_mastery_gale: u32,
+    /// 議價術使用次數。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub skill_mastery_haggle: u32,
 }
 
 fn is_zero_u8(v: &u8) -> bool {

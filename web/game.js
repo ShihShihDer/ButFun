@@ -9453,7 +9453,15 @@
     const cds = me.skill_cooldowns || {};
     const flags = me.active_skill_flags || [];
     const autoSkills = me.auto_skills || [];
-    const sig = JSON.stringify({ masteries, cds, flags, autoSkills, isGuestUser });
+    // 技能使用型熟練度（ROADMAP 153）
+    const skillMastery = {
+      warcry:    me.skill_mastery_warcry    || 0,
+      bounty:    me.skill_mastery_bounty    || 0,
+      precision: me.skill_mastery_precision || 0,
+      gale:      me.skill_mastery_gale      || 0,
+      haggle:    me.skill_mastery_haggle    || 0,
+    };
+    const sig = JSON.stringify({ masteries, cds, flags, autoSkills, skillMastery, isGuestUser });
     if (sig === lastSkillSig) return;
     lastSkillSig = sig;
     body.innerHTML = "";
@@ -9505,6 +9513,33 @@
       descEl.style.cssText = "color:#aaa;font-size:.75rem;margin-top:2px;line-height:1.3;";
       descEl.textContent = def.desc;
       info.appendChild(descEl);
+
+      // 技能熟練度加成說明（ROADMAP 153）
+      const uses = skillMastery[def.kind] || 0;
+      if (uses > 0 && unlocked) {
+        const masteryEl = document.createElement("div");
+        masteryEl.style.cssText = "color:#7ecfff;font-size:.72rem;margin-top:3px;";
+        const cdReduction = Math.min(Math.floor(uses * 0.3), 30);
+        let bonusText = `熟練 ${uses} 次 · 冷卻 -${cdReduction}%`;
+        if (def.kind === "warcry") {
+          const bonusPx = Math.min(Math.floor(uses / 10) * 16, 160);
+          if (bonusPx > 0) bonusText += ` · 群攻範圍 +${bonusPx}px`;
+        } else if (def.kind === "bounty") {
+          const bonusQty = Math.min(Math.floor(uses / 15), 5);
+          if (bonusQty > 0) bonusText += ` · 額外採集 +${bonusQty}個`;
+        } else if (def.kind === "precision") {
+          const bonusOut = Math.min(Math.floor(uses / 20), 3);
+          if (bonusOut > 0) bonusText += ` · 額外產出 +${bonusOut}個`;
+        } else if (def.kind === "gale") {
+          const bonusDash = Math.min(Math.floor(uses / 10) * 24, 240);
+          if (bonusDash > 0) bonusText += ` · 瞬移 +${bonusDash}px`;
+        } else if (def.kind === "haggle") {
+          const bonusPct = Math.min(Math.floor(uses / 10) * 3, 30);
+          if (bonusPct > 0) bonusText += ` · 額外收益 +${bonusPct}%`;
+        }
+        masteryEl.textContent = bonusText;
+        info.appendChild(masteryEl);
+      }
 
       const statusEl = document.createElement("div");
       statusEl.style.cssText = "color:#888;font-size:.72rem;margin-top:2px;";

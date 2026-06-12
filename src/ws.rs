@@ -131,6 +131,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -202,6 +203,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -273,6 +275,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.masteries = s.masteries;
                         // 屬性加點從 DB 還原（ROADMAP 152）。
                         p.stats = s.stats;
+                        // 技能使用型熟練度從 DB 還原（ROADMAP 153）。
+                        p.skill_masteries = s.skill_masteries;
                         // 根據存檔等級 + 戰士熟練度 + HP 加點校正最大血量（Vitals 不持久化，重連給滿血）。
                         let base_hp = crate::vitals::level_max_hp(p.level())
                             + crate::class::hp_bonus(&p.masteries)
@@ -747,7 +751,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if should_auto {
                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                     p.pending_bounty = true;
-                                    p.skill_cooldowns.set(ActiveSkillKind::Bounty, ActiveSkillKind::Bounty.cooldown_secs());
+                                    // 自動施放：熟練度縮短冷卻（ROADMAP 153）。
+                                    let cd = p.skill_masteries.effective_cooldown(ActiveSkillKind::Bounty, ActiveSkillKind::Bounty.cooldown_secs());
+                                    p.skill_cooldowns.set(ActiveSkillKind::Bounty, cd);
+                                    p.skill_masteries.increment(ActiveSkillKind::Bounty);
                                 }
                             }
                         }
@@ -770,10 +777,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 工具效用(1-D):背包有鎬子/強化鎬就採更多(乘工具倍率)——
                             // 給合成出的工具一個用處,接上「採集→合成工具→採更快」迴圈。
                             let mult = crate::tools::gather_speed_multiplier(&p.inventory);
-                            // 豐饒術（ROADMAP 45）：下次採集額外 +3 個。
+                            // 豐饒術（ROADMAP 45）：下次採集額外 +3 個；熟練加成再加（ROADMAP 153）。
                             let bounty_bonus = if p.pending_bounty {
                                 p.pending_bounty = false;
-                                crate::active_skill::BOUNTY_BONUS_QTY
+                                crate::active_skill::BOUNTY_BONUS_QTY + p.skill_masteries.bounty_bonus_qty()
                             } else { 0 };
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
@@ -914,18 +921,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if should_auto {
                                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                         p.pending_precision = true;
-                                        p.skill_cooldowns.set(ActiveSkillKind::Precision, ActiveSkillKind::Precision.cooldown_secs());
+                                        // 自動施放：熟練度縮短冷卻（ROADMAP 153）。
+                                        let cd = p.skill_masteries.effective_cooldown(ActiveSkillKind::Precision, ActiveSkillKind::Precision.cooldown_secs());
+                                        p.skill_cooldowns.set(ActiveSkillKind::Precision, cd);
+                                        p.skill_masteries.increment(ActiveSkillKind::Precision);
                                     }
                                 }
                             }
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 let discount = crate::class::crafting_reduction(&p.masteries);
                                 if recipe.craft_with_discount(&mut p.inventory, discount) {
-                                    // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品。
+                                    // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品；熟練加成再加（ROADMAP 153）。
                                     let used_precision = p.pending_precision;
                                     if used_precision {
                                         p.pending_precision = false;
-                                        p.add_item_overflow(recipe.output, 1);
+                                        let bonus_out = p.skill_masteries.precision_bonus_output();
+                                        p.add_item_overflow(recipe.output, 1 + bonus_out);
                                     }
                                     p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
                                     tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
@@ -1077,6 +1088,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     saved.exp,
                                                     saved.masteries,
                                                     saved.stats,
+                                                    saved.skill_masteries,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -1174,7 +1186,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             if should_auto {
                                                 if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                                     p.pending_haggle = true;
-                                                    p.skill_cooldowns.set(ActiveSkillKind::Haggle, ActiveSkillKind::Haggle.cooldown_secs());
+                                                    // 自動施放：熟練度縮短冷卻（ROADMAP 153）。
+                                                    let cd = p.skill_masteries.effective_cooldown(ActiveSkillKind::Haggle, ActiveSkillKind::Haggle.cooldown_secs());
+                                                    p.skill_cooldowns.set(ActiveSkillKind::Haggle, cd);
+                                                    p.skill_masteries.increment(ActiveSkillKind::Haggle);
                                                 }
                                             }
                                         }
@@ -1185,10 +1200,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 if p.inventory.take(item, actual_qty) {
                                                     let earned = bulk_cost; // 批量漸降價總收益（ROADMAP 102）
                                                     let class_bonus = crate::class::apply_npc_bonus(&p.masteries, earned) - earned;
-                                                    // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
+                                                    // 議價術（ROADMAP 45）：下次 NPC 賣出額外多得等額乙太（總收入 ×2）；熟練加成再加%（ROADMAP 153）。
                                                     let haggle_bonus = if p.pending_haggle {
                                                         p.pending_haggle = false;
-                                                        earned.saturating_add(class_bonus)
+                                                        let base_bonus = earned.saturating_add(class_bonus);
+                                                        let mastery_extra_pct = p.skill_masteries.haggle_bonus_pct();
+                                                        let mastery_extra = earned.saturating_mul(mastery_extra_pct) / 100;
+                                                        base_bonus.saturating_add(mastery_extra)
                                                     } else { 0 };
                                                     // 星象預報金星入市（ROADMAP 132）：NPC 收購 +15%。
                                                     let forecast_npc_bonus = {
@@ -1645,14 +1663,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if should_auto {
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 p.pending_warcry = true;
-                                p.skill_cooldowns.set(ActiveSkillKind::Warcry, ActiveSkillKind::Warcry.cooldown_secs());
+                                // 自動施放：熟練度縮短冷卻（ROADMAP 153）。
+                                let cd = p.skill_masteries.effective_cooldown(ActiveSkillKind::Warcry, ActiveSkillKind::Warcry.cooldown_secs());
+                                p.skill_cooldowns.set(ActiveSkillKind::Warcry, cd);
+                                p.skill_masteries.increment(ActiveSkillKind::Warcry);
                             }
                         }
                     }
-                    let use_warcry = app.players.read().unwrap()
-                        .get(&id).map(|p| p.pending_warcry).unwrap_or(false);
+                    let (use_warcry, warcry_bonus_reach) = app.players.read().unwrap()
+                        .get(&id).map(|p| (p.pending_warcry, p.skill_masteries.warcry_bonus_reach_px())).unwrap_or((false, 0.0));
                     let results: Vec<_> = if use_warcry {
-                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power, attack_reach)
+                        // 戰吼：熟練度加成群攻範圍（ROADMAP 153）。
+                        let effective_reach = attack_reach + warcry_bonus_reach;
+                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power, effective_reach)
                     } else {
                         app.enemies.write().unwrap().attack_nearest(px, py, power, attack_reach)
                             .into_iter().collect()
@@ -2450,13 +2473,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         dx /= len;
                         dy /= len;
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            p.x = (p.x + dx * GALE_DASH_PX).clamp(0.0, WORLD_WIDTH);
-                            p.y = (p.y + dy * GALE_DASH_PX).clamp(0.0, WORLD_HEIGHT);
-                            p.skill_cooldowns.set(skill_kind, skill_kind.cooldown_secs());
-                            tracing::info!(player = %p.name, dx, dy, "風之步瞬移");
+                            // 風之步：熟練度加成瞬移距離（ROADMAP 153）。
+                            let bonus_px = p.skill_masteries.gale_bonus_dash_px();
+                            let total_dash = GALE_DASH_PX + bonus_px;
+                            p.x = (p.x + dx * total_dash).clamp(0.0, WORLD_WIDTH);
+                            p.y = (p.y + dy * total_dash).clamp(0.0, WORLD_HEIGHT);
+                            // 熟練度加成縮短冷卻（ROADMAP 153）。
+                            let cd = p.skill_masteries.effective_cooldown(skill_kind, skill_kind.cooldown_secs());
+                            p.skill_cooldowns.set(skill_kind, cd);
+                            p.skill_masteries.increment(skill_kind);
+                            tracing::info!(player = %p.name, dx, dy, bonus_px, "風之步瞬移");
                         }
                     } else {
-                        // 其餘技能：設 pending 旗 + 進冷卻。
+                        // 其餘技能：設 pending 旗 + 進冷卻 + 計數（ROADMAP 153）。
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             match skill_kind {
                                 ActiveSkillKind::Warcry    => p.pending_warcry    = true,
@@ -2465,7 +2494,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 ActiveSkillKind::Haggle    => p.pending_haggle    = true,
                                 ActiveSkillKind::Gale      => unreachable!(),
                             }
-                            p.skill_cooldowns.set(skill_kind, skill_kind.cooldown_secs());
+                            // 熟練度加成縮短冷卻（ROADMAP 153）。
+                            let cd = p.skill_masteries.effective_cooldown(skill_kind, skill_kind.cooldown_secs());
+                            p.skill_cooldowns.set(skill_kind, cd);
+                            p.skill_masteries.increment(skill_kind);
                             tracing::info!(player = %p.name, ?skill_kind, "主動技能準備就緒");
                         }
                     }
@@ -4967,7 +4999,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats);
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries);
                     // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                     app.inventories.remember_equipment(id, &player.equipment);
@@ -4984,7 +5016,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             app.inventories.flush_equipment_one(id, &player.equipment).await;

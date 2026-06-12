@@ -178,6 +178,10 @@ pub struct Player {
     /// 玩家的屬性加點分配（未分配點 + 四條已分配點）。持久化於 players 表。
     pub stats: crate::stat_points::StatPoints,
 
+    // ── 技能使用型熟練度（ROADMAP 153）───────────────────────────────────────
+    /// 五條主動技能的使用次數，越用效果越強。持久化於 players 表。
+    pub skill_masteries: crate::skill_mastery::SkillMasteries,
+
     // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
     /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
     pub pet: Option<crate::pet::PetKind>,
@@ -554,6 +558,12 @@ impl Player {
             stat_attack: self.stats.attack,
             stat_speed: self.stats.speed,
             stat_atk_speed: self.stats.atk_speed,
+            // ── 技能使用型熟練度（ROADMAP 153）
+            skill_mastery_warcry:    self.skill_masteries.warcry,
+            skill_mastery_bounty:    self.skill_masteries.bounty,
+            skill_mastery_precision: self.skill_masteries.precision,
+            skill_mastery_gale:      self.skill_masteries.gale,
+            skill_mastery_haggle:    self.skill_masteries.haggle,
         }
     }
 
@@ -1232,6 +1242,7 @@ mod tests {
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
             stats: crate::stat_points::StatPoints::default(),
+            skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
