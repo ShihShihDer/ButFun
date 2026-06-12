@@ -117,6 +117,7 @@ mod skill_mastery;
 mod civic_vote;
 mod town_memory;
 mod invasion;
+mod monster_colony;
 
 use std::net::SocketAddr;
 

@@ -799,7 +799,9 @@
       document.body.appendChild(panel);
     }
     // 每幀都會被 render 呼叫:用內容簽章擋重繪,避免無謂的 innerHTML 重建(也避免吃掉點擊)。
-    const sig = `${speciesHudCollapsed}|` + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",");
+    const sig = `${speciesHudCollapsed}|`
+      + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
+      + "|" + monsterColonyViews.map(c => `${c.id}${c.density}`).join(",");
     if (sig === lastSpeciesHudSig) return;
     lastSpeciesHudSig = sig;
 
@@ -823,7 +825,19 @@
       const bar = "█".repeat(filled) + "░".repeat(10 - filled);
       return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.65rem;">${bar}</span> ${s.attitude}</div>`;
     }).join("");
-    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度 <span style="font-size:.6rem;color:#556;">▾ 點此收合</span></div>${rows}`;
+    // 怪物巢穴區塊（ROADMAP 164）：顯示 5 個巢穴的密度狀態。
+    const DENSITY_ICON = ["💀", "⚠️", "🔴", "🔥"];
+    const DENSITY_TEXT = ["廢棄", "稀疏", "正常", "茂盛"];
+    let colonySection = "";
+    if (monsterColonyViews.length) {
+      const colonyRows = monsterColonyViews.map(c => {
+        const di = Math.min(3, c.density);
+        const col = di === 0 ? "#556" : di === 1 ? "#cc6644" : di === 2 ? "#ee4422" : "#ff2200";
+        return `<div style="color:${col};margin:1px 0;font-size:.65rem;">${DENSITY_ICON[di]} ${c.name} [${DENSITY_TEXT[di]}]</div>`;
+      }).join("");
+      colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴</div>${colonyRows}`;
+    }
+    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度 <span style="font-size:.6rem;color:#556;">▾ 點此收合</span></div>${rows}${colonySection}`;
   }
 
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
@@ -858,6 +872,7 @@
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
   let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
   let monsterSpeciesAttitudes = []; // ROADMAP 163 怪物物種態度 [{kind, name, attitude, tier}]
+  let monsterColonyViews = [];      // ROADMAP 164 怪物巢穴 [{id, kind, name, cx, cy, spawn_radius, density}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1221,6 +1236,8 @@
         if (Array.isArray(msg.species_attitudes)) speciesAttitudes = msg.species_attitudes;
         // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度。
         if (Array.isArray(msg.monster_species_attitudes)) monsterSpeciesAttitudes = msg.monster_species_attitudes;
+        // 怪物巢穴（ROADMAP 164）：各巢穴位置與密度狀態。
+        if (Array.isArray(msg.monster_colony_views)) monsterColonyViews = msg.monster_colony_views;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3636,6 +3653,7 @@
     safeDraw("landPlots", () => drawLandPlots(camX, camY)); // 城外產權地塊（ROADMAP 34）
     safeDraw("npcs", () => drawNpcs(camX, camY)); // NPC（ROADMAP 73）
     safeDraw("colonies", () => drawColonies(camX, camY)); // 物種聚落領地圓圈（ROADMAP 143）
+    safeDraw("monsterColonies", () => drawMonsterColonies(camX, camY)); // 怪物巢穴（ROADMAP 164）
     safeDraw("wildlife", () => drawWildlife(camX, camY)); // 中立野生動物（ROADMAP 140）
     safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
@@ -7288,6 +7306,62 @@
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.fillRect(lx - lw / 2, ly - 14, lw, 14);
       ctx.fillStyle = style.stroke.replace("0.40", "0.90").replace("0.42", "0.90").replace("0.35", "0.90");
+      ctx.fillText(label, lx, ly);
+      ctx.restore();
+    }
+  }
+
+  // 怪物巢穴領地（ROADMAP 164）：半透明紅色圓圈標出各怪物巢穴位置，
+  // 密度愈高圓圈顏色愈深，幫助玩家決定是否前去清剿。
+  const MONSTER_COLONY_ICON = {
+    flutter_sprite:   "🦋",
+    mushroom_stalker: "🍄",
+    scrap_drone:      "🔧",
+    crystal_golem:    "💎",
+    ether_wisp:       "🌫️",
+  };
+  const DENSITY_COLOR = [
+    null, // 0=廢棄（不繪製）
+    { fill: "rgba(180,40,40,0.06)",  stroke: "rgba(180,40,40,0.30)" }, // 1=稀疏
+    { fill: "rgba(200,50,30,0.10)",  stroke: "rgba(200,50,30,0.45)" }, // 2=正常
+    { fill: "rgba(220,30,20,0.15)",  stroke: "rgba(220,30,20,0.60)" }, // 3=茂盛
+  ];
+  const DENSITY_LABEL = ["", "稀疏", "正常", "茂盛"];
+
+  function drawMonsterColonies(camX, camY) {
+    if (!monsterColonyViews.length) return;
+    for (const c of monsterColonyViews) {
+      if (c.density === 0) continue; // 廢棄巢穴不繪製
+      const sx = c.cx - camX;
+      const sy = c.cy - camY;
+      const r  = c.spawn_radius;
+      if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
+      const style = DENSITY_COLOR[Math.min(3, c.density)] || DENSITY_COLOR[1];
+      ctx.save();
+      // 填充。
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fillStyle = style.fill;
+      ctx.fill();
+      // 虛線邊框（更短的虛線，與野生聚落區分）。
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 巢穴圖示 + 名稱 + 密度。
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      const icon = MONSTER_COLONY_ICON[c.kind] || "⚠️";
+      const label = `${icon} ${c.name} [${DENSITY_LABEL[c.density] || ""}]`;
+      const lw = ctx.measureText(label).width + 10;
+      const lx = sx, ly = sy - r - 4;
+      ctx.fillStyle = "rgba(0,0,0,0.50)";
+      ctx.fillRect(lx - lw / 2, ly - 14, lw, 14);
+      ctx.fillStyle = "rgba(255,120,100,0.90)";
       ctx.fillText(label, lx, ly);
       ctx.restore();
     }

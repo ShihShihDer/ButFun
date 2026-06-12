@@ -756,6 +756,10 @@ pub enum ServerMsg {
         /// 前端依層級在怪物名牌顯示層級色彩標記（⚠/△/♥）；空陣列=全Neutral。
         #[serde(default)]
         monster_species_attitudes: Vec<crate::species_relations::SpeciesAttitudeView>,
+        /// 怪物巢穴（ROADMAP 164）：各巢穴位置、種類、密度，供前端地圖/態度面板顯示。
+        /// 玩家可根據密度判斷該地區怪物活躍程度，清剿後密度下降。
+        #[serde(default)]
+        monster_colony_views: Vec<crate::monster_colony::MonsterColonyView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1613,6 +1617,7 @@ mod tests {
             invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false, wave_level: 1, consecutive_successes: 0 },
             night_spring_nodes: vec![],
             monster_species_attitudes: vec![],
+            monster_colony_views: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
