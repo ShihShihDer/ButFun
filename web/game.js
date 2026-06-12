@@ -670,6 +670,7 @@
   let townProject = null; // ROADMAP 132 天文台共建工程狀態 {status, progress_pct}（從快照同步；天文台繪製/面板用）
   let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
+  let seasonalNodesList = [];     // ROADMAP 154 季節性野外採集節點 [{id, wx, wy, season, charges}]
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
   let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
@@ -1023,6 +1024,8 @@
           seasonRemainingSecs = msg.season_remaining_secs || 0;
           updateSeasonHud();
         }
+        // 季節性野外採集節點（ROADMAP 154）。
+        if (Array.isArray(msg.seasonal_nodes)) seasonalNodesList = msg.seasonal_nodes;
         // 野生動物（ROADMAP 140）。
         if (Array.isArray(msg.wildlife)) wildlifeList = msg.wildlife;
         // 乙太微粒（ROADMAP 142 死亡餵養生命）。
@@ -2829,6 +2832,7 @@
     if (!me) return "farm";
     if (nearestEnemy(me)) return "attack";
     if (nearestDustNode(me)) return "collect_dust";
+    if (nearestSeasonalNode(me)) return "gather_seasonal";
     if (nearestHarvestable(me)) return "gather";
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
     const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
@@ -2847,6 +2851,9 @@
     // 附近有星塵節點時採集（ROADMAP 133）。
     const dn = nearestDustNode(me);
     if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
+    // 附近有季節性節點時採集（ROADMAP 154）。
+    const sn = nearestSeasonalNode(me);
+    if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
     const rect = canvas.getBoundingClientRect();
     // 挖/放的方向：優先用「正在按的方向」(keys)——在隧道裡你被牆擋住、無法轉身改 facing，
     // 但按左就該能挖左牆/側壁。沒按方向才退回 facing（朝向）。
@@ -3414,6 +3421,7 @@
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
+    safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
     safeDraw("villageLandmark", () => drawVillageLandmark(camX, camY)); // 新手村地標
     safeDraw("townDecor", () => drawTownDecor(camX, camY)); // 城鎮裝飾:名牌+城門守衛
@@ -4932,6 +4940,22 @@
     return best;
   }
 
+  // 回傳玩家搆得到（80px 內）的最近有餘次季節性節點，沒有就 null（ROADMAP 154）。
+  const SEASONAL_NODE_REACH = 80;
+  function nearestSeasonalNode(me) {
+    if (!me || seasonalNodesList.length === 0) return null;
+    let best = null;
+    let bestD = SEASONAL_NODE_REACH * SEASONAL_NODE_REACH;
+    for (const n of seasonalNodesList) {
+      if (n.charges <= 0) continue;
+      const dx = n.wx - me.x;
+      const dy = n.wy - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
   // 回傳玩家搆得到（80px 內）的最近活躍星塵節點，沒有就 null（ROADMAP 133）。
   const DUST_COLLECT_REACH = 80;
   function nearestDustNode(me) {
@@ -5147,6 +5171,71 @@
           ctx.fillStyle = "rgba(180,230,255,0.95)";
           ctx.fillText("✨採集星塵", sx, ty);
         }
+      }
+      ctx.restore();
+    }
+  }
+
+  // 畫季節性野外採集節點（ROADMAP 154）：季節色脈動圓 + 充能格數 + 近身提示。
+  const SEASON_NODE_COLOR = {
+    spring: { fill: "255,180,200", stroke: "255,120,160", emoji: "🌸" },
+    summer: { fill: "255,220,100", stroke: "255,180,30",  emoji: "🌞" },
+    autumn: { fill: "255,160,60",  stroke: "210,90,20",   emoji: "🍂" },
+    winter: { fill: "160,210,255", stroke: "80,160,230",  emoji: "❄️" },
+  };
+  function drawSeasonalNodes(camX, camY, now) {
+    if (seasonalNodesList.length === 0) return;
+    const me = myId ? players.get(myId) : null;
+    const nearest = nearestSeasonalNode(me);
+    for (const n of seasonalNodesList) {
+      if (n.charges <= 0) continue;
+      const sx = n.wx - camX;
+      const sy = n.wy - camY;
+      if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
+      const c = SEASON_NODE_COLOR[n.season] || SEASON_NODE_COLOR.spring;
+      ctx.save();
+      const pulse = 0.55 + 0.45 * Math.sin(now * 0.00480 + n.id * 1.3);
+      // 外光暈
+      ctx.beginPath();
+      ctx.arc(sx, sy, 24 + 6 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${c.fill},${(0.10 + 0.08 * pulse).toFixed(3)})`;
+      ctx.fill();
+      // 主圓
+      ctx.beginPath();
+      ctx.arc(sx, sy, 15, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${c.fill},${(0.60 + 0.25 * pulse).toFixed(3)})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(${c.stroke},${(0.75 + 0.25 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // 季節 emoji
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(c.emoji, sx, sy + 1);
+      // 剩餘充能格數
+      ctx.font = "bold 11px system-ui, sans-serif";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.strokeText(`×${n.charges}`, sx, sy - 19);
+      ctx.fillStyle = `rgba(${c.fill},0.95)`;
+      ctx.fillText(`×${n.charges}`, sx, sy - 19);
+      // 近身提示環
+      if (n === nearest) {
+        ctx.strokeStyle = `rgba(${c.stroke},0.90)`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.font = "12px system-ui, sans-serif";
+        const label = `${c.emoji}採集`;
+        const ty = sy - 32;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.60)";
+        ctx.strokeText(label, sx, ty);
+        ctx.fillStyle = `rgba(${c.fill},0.97)`;
+        ctx.fillText(label, sx, ty);
       }
       ctx.restore();
     }
@@ -7823,9 +7912,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -7919,6 +8008,11 @@
     { id: "crystal_ballista", out: "crystal_ballista", outQty: 1, inputs: [["crystal_shard", 5], ["stone", 4]], atk: 14 },
     // 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1。遠程攻擊力 +27，頂級遠程武器（需 Lv.18）。
     { id: "void_cannon", out: "void_cannon", outQty: 1, inputs: [["void_shard", 5], ["stone", 3]], atk: 27, minLevel: 18 },
+    // 季節性限定合成（ROADMAP 154）：各季節特產 2 個合成限定療癒品。
+    { id: "spring_sachet",    out: "spring_sachet",    outQty: 1, inputs: [["wild_flower", 2]] },
+    { id: "summer_elixir",   out: "summer_elixir",    outQty: 1, inputs: [["solar_shard", 2]] },
+    { id: "autumn_tonic",    out: "autumn_tonic",     outQty: 1, inputs: [["maple_leaf", 2]] },
+    { id: "winter_medicine", out: "winter_medicine",  outQty: 1, inputs: [["ice_shard", 2]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -7996,6 +8090,11 @@
       ether_bow: "遠程攻擊力 +9 🏹 射程 ×3，城內使用不給獎勵",
       crystal_ballista: "遠程攻擊力 +14 🎯 晶石精密機械弩",
       void_cannon: "遠程攻擊力 +27 💥 虛空星限定（需 Lv.18）",
+      // 季節性限定合成品（ROADMAP 154）
+      spring_sachet:    "回血 25hp + 重置回血冷卻 🌷 春天野花採集合成",
+      summer_elixir:    "回血 15hp + 獲得 15 乙太 ☀️ 夏天太陽碎片合成",
+      autumn_tonic:     "回血 20hp + 農夫熟練度 +20 🍂 秋天楓葉採集合成",
+      winter_medicine:  "回復至滿血 ❄️ 冬天冰晶碎片採集合成",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
@@ -11894,6 +11993,21 @@
         }
       }
     }
+    // ROADMAP 154：點到季節性節點就採集。
+    {
+      const sn = nearestSeasonalNode(me);
+      if (sn) {
+        const rect0 = canvas.getBoundingClientRect();
+        const twx = clientX - rect0.left + lastCam.x;
+        const twy = clientY - rect0.top + lastCam.y;
+        const dx = sn.wx - twx, dy = sn.wy - twy;
+        if (dx * dx + dy * dy <= 40 * 40) {
+          ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id }));
+          spawnTapFlash(sn.wx, sn.wy);
+          return;
+        }
+      }
+    }
     // ROADMAP 144：點到附近野生動物 → 送 attack_wildlife（伺服器驗距離）。
     if (me && wildlifeList.length) {
       const rect0 = canvas.getBoundingClientRect();
@@ -12020,6 +12134,11 @@
     {
       const dn = nearestDustNode(me);
       if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
+    }
+    // 次判季節性節點採集（ROADMAP 154）。
+    {
+      const sn = nearestSeasonalNode(me);
+      if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
     }
     // 次判採集:站在搆得到的可採節點旁,按動作鍵就採集。
     {

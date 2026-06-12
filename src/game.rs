@@ -119,6 +119,8 @@ pub fn spawn(app: AppState) {
                 if let Some(new_season) = s.tick(dt) {
                     let _ = app.tx_chat.send(new_season.announce_text().to_string());
                     tracing::info!(season = new_season.as_str(), "季節切換");
+                    // 季節性野外採集節點（ROADMAP 154）：季節切換時重置節點。
+                    app.seasonal_nodes.write().unwrap().on_season_change(new_season);
                 }
                 s.growth_rate_modifier()
             };
@@ -1700,6 +1702,16 @@ pub fn spawn(app: AppState) {
                         // 季節循環（ROADMAP 137）。
                         current_season: app.season.read().unwrap().current.as_str().to_string(),
                         season_remaining_secs: app.season.read().unwrap().remaining_secs(),
+                        // 季節性野外採集節點（ROADMAP 154）：只廣播有剩餘次數的節點。
+                        seasonal_nodes: app.seasonal_nodes.read().unwrap().active_nodes()
+                            .map(|n| crate::protocol::SeasonalNodeView {
+                                id: n.id,
+                                wx: n.wx,
+                                wy: n.wy,
+                                season: n.season.as_str().to_string(),
+                                charges: n.charges,
+                            })
+                            .collect(),
                         // 野生動物（ROADMAP 141 食物鏈）：只廣播存活個體。
                         wildlife: {
                             let wm = app.wildlife_manager.read().unwrap();

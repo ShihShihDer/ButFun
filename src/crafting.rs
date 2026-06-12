@@ -499,6 +499,40 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::VoidCannon,
         output_qty: 1,
     },
+
+    // ── 季節性限定合成（ROADMAP 154 季節性野外採集）────────────────────────────
+    /// 春日香囊：野花×2 → 春日香囊×1。使用後回血 25hp + 重置回血冷卻。
+    /// 春天城外野花田採集原料，春日獨有的療癒香囊。
+    Recipe {
+        id: "spring_sachet",
+        inputs: &[(ItemKind::WildFlower, 2)],
+        output: ItemKind::SpringSachet,
+        output_qty: 1,
+    },
+    /// 夏日精粹：太陽碎片×2 → 夏日精粹×1。使用後回血 15hp + 獲得 15 乙太。
+    /// 夏天城東日照強地帶採集，把太陽能量轉化為乙太。
+    Recipe {
+        id: "summer_elixir",
+        inputs: &[(ItemKind::SolarShard, 2)],
+        output: ItemKind::SummerElixir,
+        output_qty: 1,
+    },
+    /// 秋日補藥：楓葉×2 → 秋日補藥×1。使用後回血 20hp + 農夫熟練度 +20 XP。
+    /// 秋天城南楓林採集，滋養農夫的秋季補藥。
+    Recipe {
+        id: "autumn_tonic",
+        inputs: &[(ItemKind::MapleLeaf, 2)],
+        output: ItemKind::AutumnTonic,
+        output_qty: 1,
+    },
+    /// 冬日神藥：冰晶碎片×2 → 冬日神藥×1。使用後回復至等級滿血。
+    /// 冬天城西北寒地採集最難，換得最強效果——凜冬的治癒。
+    Recipe {
+        id: "winter_medicine",
+        inputs: &[(ItemKind::IceShard, 2)],
+        output: ItemKind::WinterMedicine,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -780,8 +814,13 @@ mod tests {
                 let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
                 // 流星雨採集可得（ROADMAP 133/134）：天文台完工後流星雨期間採集地面星塵節點。
                 let meteor_dust_collectible = item == ItemKind::StarDust || item == ItemKind::RainbowStarDust;
+                // 季節性野外採集節點可得（ROADMAP 154）：每季城外 3 節點，各有 3 次採集次數。
+                let seasonal_node_collectible = matches!(
+                    item,
+                    ItemKind::WildFlower | ItemKind::SolarShard | ItemKind::MapleLeaf | ItemKind::IceShard
+                );
                 assert!(
-                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
+                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",

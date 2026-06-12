@@ -281,7 +281,15 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::StarGuardianAmulet
         | ItemKind::CoralArmor
         | ItemKind::RuneArmor
-        | ItemKind::StarCrystalArmor => None,
+        | ItemKind::StarCrystalArmor
+        | ItemKind::WildFlower
+        | ItemKind::SolarShard
+        | ItemKind::MapleLeaf
+        | ItemKind::IceShard
+        | ItemKind::SpringSachet
+        | ItemKind::SummerElixir
+        | ItemKind::AutumnTonic
+        | ItemKind::WinterMedicine => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -369,7 +377,15 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::RiftBlade
         | ItemKind::EtherBow
         | ItemKind::CrystalBallista
-        | ItemKind::VoidCannon => None,
+        | ItemKind::VoidCannon
+        | ItemKind::WildFlower
+        | ItemKind::SolarShard
+        | ItemKind::MapleLeaf
+        | ItemKind::IceShard
+        | ItemKind::SpringSachet
+        | ItemKind::SummerElixir
+        | ItemKind::AutumnTonic
+        | ItemKind::WinterMedicine => None,
     }
 }
 

@@ -375,6 +375,10 @@ pub enum ClientMsg {
     /// `orb_id`：要採集的微粒 ID（前端從快照取得）。
     /// 倒地中 / 太遠 / ID 不存在 / 已被他人採集 → 靜默忽略。
     CollectCarrionOrb { orb_id: u32 },
+    /// 採集季節性野外節點（ROADMAP 154）：玩家靠近節點 80px 內可採集，得到對應季節素材。
+    /// 節點 ID 由快照 seasonal_nodes 提供；超距離 / 已耗盡 / 倒地中靜默忽略。
+    #[serde(rename = "gather_seasonal_node")]
+    GatherSeasonalNode { node_id: u32 },
     /// 攻擊野生動物（ROADMAP 144）：在攻擊距離內擊殺指定 ID 的野生動物。
     /// 未倒地、距離 ≤ ATTACK_WILDLIFE_REACH、ID 存在且存活 → 成功。
     /// 獵物物種：該物種對人類態度降低；掠食者物種：被獵獵物物種態度升高。
@@ -554,6 +558,21 @@ pub enum ClientMsg {
         pub is_rainbow: bool,
     }
 
+/// 快照裡的季節性野外採集節點（ROADMAP 154）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SeasonalNodeView {
+    /// 節點唯一 ID（跨季節不重複）。
+    pub id: u32,
+    /// 世界座標 X。
+    pub wx: f32,
+    /// 世界座標 Y。
+    pub wy: f32,
+    /// 所屬季節（"spring"/"summer"/"autumn"/"winter"）。
+    pub season: String,
+    /// 剩餘採集次數。
+    pub charges: u8,
+}
+
 /// 旅行商人商品目錄一個條目（ROADMAP 135）。
 #[derive(Debug, Clone, Serialize)]
 pub struct WanderingCatalogEntry {
@@ -654,6 +673,8 @@ pub enum ServerMsg {
         current_season: String,
         /// 目前季節剩餘秒數（ROADMAP 137）：前端顯示倒計時。
         season_remaining_secs: u32,
+        /// 季節性野外採集節點（ROADMAP 154）：當季活躍節點清單（耗盡者已過濾）。
+        seasonal_nodes: Vec<SeasonalNodeView>,
         /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
         /// 全部送出（18 隻量小；前端依 AOI 過濾）。
         wildlife: Vec<WildlifeView>,
@@ -1312,6 +1333,17 @@ mod tests {
         }
     }
 
+    /// 前端送的 gather_seasonal_node 訊息要能被解析成 `ClientMsg::GatherSeasonalNode`（ROADMAP 154 wire contract）。
+    #[test]
+    fn parses_gather_seasonal_node_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"gather_seasonal_node","node_id":2}"#).unwrap();
+        match msg {
+            ClientMsg::GatherSeasonalNode { node_id } => assert_eq!(node_id, 2),
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
     /// 快照序列化後要帶前端依賴的欄位名：fields / 每位玩家的 ether 與 inventory /
     /// nodes（採集節點,帶 kind/x/y/harvestable）/ 每格的 state、dry。
     #[test]
@@ -1496,6 +1528,7 @@ mod tests {
             carion_orbs: vec![],
             colonies: vec![],
             species_attitudes: vec![],
+            seasonal_nodes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
