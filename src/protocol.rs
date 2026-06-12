@@ -643,6 +643,9 @@ pub enum ServerMsg {
         /// 乙太微粒（ROADMAP 142）：獵物死亡後釋出的乙太節點。
         /// 玩家靠近採集可得乙太；TTL 90 秒後自動消失。
         carion_orbs: Vec<CarrionOrbView>,
+        /// 物種聚落（ROADMAP 143）：各物種的巢穴/棲地，有領地守衛行為。
+        /// 靜態資料（位置不變），前端用於渲染聚落邊界圓圈與小地圖標記。
+        colonies: Vec<crate::wildlife::ColonyView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1405,6 +1408,7 @@ mod tests {
             season_remaining_secs: 1200,
             wildlife: vec![],
             carion_orbs: vec![],
+            colonies: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

@@ -1,13 +1,18 @@
-//! 野生動物系統（ROADMAP 140 中立野生動物 + ROADMAP 141 食物鏈/獵食 + ROADMAP 142 死亡餵養生命）。
+//! 野生動物系統（ROADMAP 140~143）。
 //!
 //! ROADMAP 140：野鳥/野鹿/小動物——中立、只逃跑、不攻擊。
 //! ROADMAP 141：野狼獵野鹿、野狐獵小動物；族群此消彼長（湧現平衡）。
 //! ROADMAP 142：死亡餵養生命——獵物死亡釋出乙太微粒；玩家靠近採集得乙太，死亡是循環的一環。
+//! ROADMAP 143：物種聚落——各物種有巢穴/聚落與群體防禦，不只人類城。
+//!   - 6 個聚落分散世界（2 鳥巢・1 鹿棲地・1 小動物洞穴・1 狼窩・1 狐狸洞）。
+//!   - 玩家進入聚落守衛半徑 → 同種動物切換為 Guarding（向威脅靠近，不逃跑）。
+//!   - 每個聚落獨立冷卻（90 秒）廣播世界聊天：「🛡️ 野鹿棲地 察覺到入侵者，正在驅離！」
 //!
 //! 行為規則：
 //! - 捕食者進入 HUNT_RADIUS 內偵測到獵物 → Hunting（追獵）。
 //! - 追及 KILL_RADIUS 內 → 獵物死亡 + 捕食者進入 Digesting。
 //! - 玩家與捕食者都會令獵物 Fleeing；同種獵物見捕食者靠近也一起竄逃（群逃）。
+//! - 玩家進入聚落守衛半徑 → 附近同種動物進入 Guarding（向玩家靠近）。
 //! - 死亡獵物 ~50 秒後在家附近重生（代表族群新個體）。
 //! - 死亡時在原地生成乙太微粒；玩家靠近採集得 CARION_ETHER 乙太（死亡是循環的一環）。
 //! - 捕食者每分鐘最多廣播一次捕獵事件，不塞頻道。
@@ -58,6 +63,17 @@ const DIGEST_DURATION: f32 = 25.0;
 const PREY_RESPAWN_SECS: f32 = 50.0;
 /// 捕獵廣播最短間隔（秒），避免塞頻道。
 const KILL_BROADCAST_INTERVAL: f32 = 30.0;
+
+// ─── ROADMAP 143：物種聚落常數 ───────────────────────────────────────────────
+
+/// 守衛速度（像素/秒）——動物向威脅靠近，刻意比逃跑慢，更像「領地巡邏」。
+const GUARD_SPEED: f32 = 65.0;
+/// 守衛行為持續時間（秒），之後恢復正常。
+const GUARD_DURATION: f32 = 12.0;
+/// 每個聚落的廣播冷卻（秒）——避免玩家徘徊時刷屏。
+const COLONY_THREAT_COOLDOWN: f32 = 90.0;
+/// 進入守衛狀態的範圍倍率（相對於 guard_radius）。
+const COLONY_ACTIVATE_MULTIPLIER: f32 = 1.8;
 
 // ─── ROADMAP 142：乙太微粒常數 ───────────────────────────────────────────────
 
@@ -141,6 +157,32 @@ pub struct CarrionOrb {
     pub ttl: f32,
 }
 
+// ─── ROADMAP 143：物種聚落 ───────────────────────────────────────────────────
+
+/// 物種聚落——各物種的巢穴/棲地，有領地守衛行為。
+#[derive(Debug, Clone)]
+pub struct Colony {
+    pub id: u32,
+    pub kind: WildlifeKind,
+    /// 聚落顯示名稱（繁中）。
+    pub name: &'static str,
+    pub cx: f32,
+    pub cy: f32,
+    /// 守衛半徑（像素）——玩家進入此範圍觸發群體防禦。
+    pub guard_radius: f32,
+}
+
+/// 給協議層用的聚落視圖（靜態資料，每幀隨快照廣播）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ColonyView {
+    pub id: u32,
+    pub kind: String,
+    pub name: String,
+    pub cx: f32,
+    pub cy: f32,
+    pub guard_radius: f32,
+}
+
 // ─── 事件 ────────────────────────────────────────────────────────────────────
 
 pub enum WildlifeEvent {
@@ -150,6 +192,12 @@ pub enum WildlifeEvent {
         prey_kind: WildlifeKind,
         x: f32,
         y: f32,
+    },
+    /// ROADMAP 143：聚落偵測到入侵者，應廣播至全服聊天。
+    ColonyThreatened {
+        colony_name: &'static str,
+        cx: f32,
+        cy: f32,
     },
 }
 
@@ -165,6 +213,8 @@ enum WildlifeState {
     Hunting { target_id: u32, hunt_timer: f32 },
     /// 捕食者吃完後消化休息。
     Digesting { timer: f32 },
+    /// ROADMAP 143：聚落守衛——動物向入侵玩家靠近，不逃跑。
+    Guarding { threat_x: f32, threat_y: f32, guard_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -292,6 +342,7 @@ impl Wildlife {
             WildlifeState::Returning        => "returning",
             WildlifeState::Hunting { .. }   => "hunting",
             WildlifeState::Digesting { .. } => "digesting",
+            WildlifeState::Guarding { .. }  => "guarding",
         }
     }
 }
@@ -307,13 +358,38 @@ pub struct WildlifeManager {
     pub carion_orbs: Vec<CarrionOrb>,
     /// 微粒 ID 計數器（跨生命週期唯一）。
     orb_counter: u32,
+    /// ROADMAP 143：物種聚落定義（靜態）。
+    pub colonies: Vec<Colony>,
+    /// 每個聚落的廣播冷卻倒數（索引對應 colonies）。
+    colony_threat_cooldowns: Vec<f32>,
 }
 
 impl WildlifeManager {
     pub fn new() -> Self {
         let mut rng = StdRng::seed_from_u64(7654321);
         let animals = spawn_all_wildlife(&mut rng);
-        Self { animals, rng, kill_broadcast_cooldown: 0.0, carion_orbs: Vec::new(), orb_counter: 0 }
+        let colonies = build_colonies();
+        let n = colonies.len();
+        Self {
+            animals, rng,
+            kill_broadcast_cooldown: 0.0,
+            carion_orbs: Vec::new(),
+            orb_counter: 0,
+            colonies,
+            colony_threat_cooldowns: vec![0.0; n],
+        }
+    }
+
+    /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
+    pub fn colony_views(&self) -> Vec<ColonyView> {
+        self.colonies.iter().map(|c| ColonyView {
+            id: c.id,
+            kind: c.kind.as_str().to_string(),
+            name: c.name.to_string(),
+            cx: c.cx,
+            cy: c.cy,
+            guard_radius: c.guard_radius,
+        }).collect()
     }
 
     /// ROADMAP 142：嘗試採集距玩家最近的乙太微粒。
@@ -332,11 +408,16 @@ impl WildlifeManager {
         let mut events = Vec::new();
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
-        // ── Phase 0: 乙太微粒 TTL 倒數（ROADMAP 142）─────────────────────────
+        // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
         for orb in &mut self.carion_orbs {
             orb.ttl -= dt;
         }
         self.carion_orbs.retain(|o| o.ttl > 0.0);
+
+        // ── Phase 0b: 聚落廣播冷卻倒數（ROADMAP 143）────────────────────────
+        for cd in &mut self.colony_threat_cooldowns {
+            *cd = (*cd - dt).max(0.0);
+        }
 
         // ── Phase 1: 死亡倒數 + 重生 ──────────────────────────────────────────
         for a in &mut self.animals {
@@ -370,6 +451,65 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
+        // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
+        for (idx, col) in self.colonies.iter().enumerate() {
+            // 找出在守衛半徑內最近的玩家。
+            let threat = player_positions.iter().find(|&&(px, py)| {
+                let dx = px - col.cx;
+                let dy = py - col.cy;
+                dx * dx + dy * dy <= col.guard_radius * col.guard_radius
+            }).copied();
+
+            let Some((threat_x, threat_y)) = threat else { continue };
+
+            // 廣播世界聊天（有冷卻）。
+            if self.colony_threat_cooldowns[idx] <= 0.0 {
+                events.push(WildlifeEvent::ColonyThreatened {
+                    colony_name: col.name,
+                    cx: col.cx,
+                    cy: col.cy,
+                });
+                self.colony_threat_cooldowns[idx] = COLONY_THREAT_COOLDOWN;
+            }
+
+            // 啟動聚落範圍內同種動物的守衛行為。
+            let activate_r2 = (col.guard_radius * COLONY_ACTIVATE_MULTIPLIER).powi(2);
+            let col_kind = col.kind;
+            let col_cx = col.cx;
+            let col_cy = col.cy;
+            for a in &mut self.animals {
+                if !a.alive || a.kind != col_kind { continue; }
+                let ddx = a.x - col_cx;
+                let ddy = a.y - col_cy;
+                if ddx * ddx + ddy * ddy > activate_r2 { continue; }
+                // 不干擾正在追獵/消化/已守衛的狀態。
+                if matches!(a.state, WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
+                    continue;
+                }
+                a.state = WildlifeState::Guarding { threat_x, threat_y, guard_timer: GUARD_DURATION };
+            }
+        }
+
+        // ── Phase 2c: 守衛行為 tick（ROADMAP 143）───────────────────────────
+        // 處理所有物種（獵物與捕食者）的 Guarding 狀態。
+        for i in 0..self.animals.len() {
+            if !self.animals[i].alive { continue; }
+            let WildlifeState::Guarding { threat_x, threat_y, guard_timer } = self.animals[i].state else { continue };
+            let dx = threat_x - self.animals[i].x;
+            let dy = threat_y - self.animals[i].y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let remaining = guard_timer - dt;
+            if remaining <= 0.0 || dist < 30.0 {
+                // 計時到或已靠近，回到休息。
+                self.animals[i].state = WildlifeState::Resting { rest_timer: 2.0 };
+            } else {
+                self.animals[i].x += (dx / dist) * GUARD_SPEED * dt;
+                self.animals[i].y += (dy / dist) * GUARD_SPEED * dt;
+                self.animals[i].state = WildlifeState::Guarding { threat_x, threat_y, guard_timer: remaining };
+            }
+        }
+
         // ── Phase 3: 捕食者行為 ────────────────────────────────────────────────
         // 收集本幀的擊殺：(pred_id, prey_id, pred_kind, prey_kind, x, y)
         let mut kills: Vec<(u32, u32, WildlifeKind, WildlifeKind, f32, f32)> = Vec::new();
@@ -377,6 +517,8 @@ impl WildlifeManager {
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
             if self.animals[i].kind.trophic_level() != TrophicLevel::Predator { continue; }
+            // 守衛狀態已在 Phase 2c 處理，跳過。
+            if matches!(self.animals[i].state, WildlifeState::Guarding { .. }) { continue; }
 
             let state = self.animals[i].state.clone();
             let pred_kind = self.animals[i].kind;
@@ -453,6 +595,8 @@ impl WildlifeManager {
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
             if self.animals[i].kind.trophic_level() != TrophicLevel::Prey { continue; }
+            // 守衛狀態已在 Phase 2c 處理，跳過正常閒晃（不逃跑）。
+            if matches!(self.animals[i].state, WildlifeState::Guarding { .. }) { continue; }
 
             // 威脅 = 玩家 + 捕食者。
             let mut threats: Vec<(f32, f32)> = player_positions.to_vec();
@@ -553,6 +697,26 @@ fn spawn_all_wildlife(rng: &mut StdRng) -> Vec<Wildlife> {
     spawns.iter().enumerate().map(|(i, &(kind, hx, hy))| {
         Wildlife::new(i as u32, kind, hx, hy, rng)
     }).collect()
+}
+
+// ─── ROADMAP 143：聚落定義 ───────────────────────────────────────────────────
+
+/// 建立 6 個固定物種聚落，分散於城鎮周圍野外。
+/// 位置與 spawn_all_wildlife 的家位置對應，讓動物確實守衛自己的家域。
+fn build_colonies() -> Vec<Colony> {
+    vec![
+        // 野鳥：兩個聚落（北方草原 + 東北森林）
+        Colony { id: 0, kind: WildlifeKind::WildBird,     name: "野鳥巢穴（北方草原）", cx: 1900.0, cy: 1620.0, guard_radius: 230.0 },
+        Colony { id: 1, kind: WildlifeKind::WildBird,     name: "野鳥巢穴（東北森林）", cx: 2800.0, cy: 1640.0, guard_radius: 210.0 },
+        // 野鹿：一個聚落（西北草原鹿群）
+        Colony { id: 2, kind: WildlifeKind::WildDeer,     name: "野鹿棲地",            cx: 1675.0, cy: 2000.0, guard_radius: 250.0 },
+        // 小動物：一個洞穴（草原灌木區）
+        Colony { id: 3, kind: WildlifeKind::SmallCritter, name: "小動物洞穴",          cx: 1985.0, cy: 1880.0, guard_radius: 200.0 },
+        // 野狼：一個狼窩（東方森林）
+        Colony { id: 4, kind: WildlifeKind::WildWolf,     name: "狼窩",               cx: 2880.0, cy: 2150.0, guard_radius: 260.0 },
+        // 野狐：一個狐狸洞（草原）
+        Colony { id: 5, kind: WildlifeKind::WildFox,      name: "狐狸洞",             cx: 2025.0, cy: 2060.0, guard_radius: 220.0 },
+    ]
 }
 
 // ─── 測試 ────────────────────────────────────────────────────────────────────
@@ -775,5 +939,128 @@ mod tests {
         let ids: Vec<u32> = mgr.carion_orbs.iter().map(|o| o.id).collect();
         let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
         assert_eq!(ids.len(), unique.len(), "乙太微粒 ID 應唯一");
+    }
+
+    // ─── ROADMAP 143 測試：物種聚落與守衛行為 ─────────────────────────────────
+
+    #[test]
+    fn colony_count_is_six() {
+        let mgr = WildlifeManager::new();
+        assert_eq!(mgr.colonies.len(), 6, "應有 6 個物種聚落");
+    }
+
+    #[test]
+    fn colony_ids_are_unique() {
+        let mgr = WildlifeManager::new();
+        let ids: Vec<u32> = mgr.colonies.iter().map(|c| c.id).collect();
+        let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "聚落 ID 應唯一");
+    }
+
+    #[test]
+    fn player_in_colony_triggers_guarding() {
+        let mut mgr = WildlifeManager::new();
+        // 找野鹿聚落（id=2，位於 1675,2000）。
+        let deer_colony = mgr.colonies.iter().find(|c| c.kind == WildlifeKind::WildDeer).unwrap();
+        let (cx, cy) = (deer_colony.cx, deer_colony.cy);
+        // 把一隻野鹿放到聚落中心附近，確保在 activate 範圍內。
+        let deer_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildDeer).unwrap();
+        mgr.animals[deer_idx].x = cx + 50.0;
+        mgr.animals[deer_idx].y = cy + 50.0;
+        mgr.animals[deer_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
+        // 玩家站在聚落中心。
+        let players = vec![(cx, cy)];
+        mgr.tick(0.1, &players);
+        // 野鹿應進入 Guarding 狀態。
+        let deer = &mgr.animals[deer_idx];
+        assert!(
+            matches!(deer.state, WildlifeState::Guarding { .. }),
+            "野鹿應進入 Guarding 狀態，實際: {:?}", deer.state
+        );
+    }
+
+    #[test]
+    fn colony_threat_event_emitted_on_intrusion() {
+        let mut mgr = WildlifeManager::new();
+        let deer_colony = mgr.colonies.iter().find(|c| c.kind == WildlifeKind::WildDeer).unwrap();
+        let (cx, cy) = (deer_colony.cx, deer_colony.cy);
+        // 玩家站在聚落中心。
+        let players = vec![(cx, cy)];
+        let events = mgr.tick(0.1, &players);
+        assert!(
+            events.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
+            "玩家進入聚落應觸發 ColonyThreatened 事件"
+        );
+    }
+
+    #[test]
+    fn colony_threat_cooldown_prevents_repeat_events() {
+        let mut mgr = WildlifeManager::new();
+        let deer_colony = mgr.colonies.iter().find(|c| c.kind == WildlifeKind::WildDeer).unwrap();
+        let (cx, cy) = (deer_colony.cx, deer_colony.cy);
+        let players = vec![(cx, cy)];
+        // 第一次觸發。
+        let events1 = mgr.tick(0.1, &players);
+        assert!(events1.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })));
+        // 馬上再觸發：冷卻中，不應再發出事件。
+        let events2 = mgr.tick(0.1, &players);
+        assert!(
+            !events2.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
+            "冷卻中不應再發出 ColonyThreatened 事件"
+        );
+    }
+
+    #[test]
+    fn guard_timer_expires_and_animal_returns_to_rest() {
+        let mut mgr = WildlifeManager::new();
+        let deer_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildDeer).unwrap();
+        // 手動設定守衛狀態，計時即將到期。
+        mgr.animals[deer_idx].state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
+        // 跑超過計時。
+        mgr.tick(0.2, &[]);
+        let deer = &mgr.animals[deer_idx];
+        assert!(
+            matches!(deer.state, WildlifeState::Resting { .. }),
+            "計時到期後應回到 Resting，實際: {:?}", deer.state
+        );
+    }
+
+    #[test]
+    fn colony_views_returns_all_colonies() {
+        let mgr = WildlifeManager::new();
+        let views = mgr.colony_views();
+        assert_eq!(views.len(), 6, "colony_views 應回傳 6 個視圖");
+        assert!(views.iter().any(|v| v.kind == "wild_wolf"), "應含狼窩");
+        assert!(views.iter().any(|v| v.kind == "wild_bird"), "應含野鳥巢穴");
+    }
+
+    #[test]
+    fn different_species_not_affected_by_wrong_colony() {
+        let mut mgr = WildlifeManager::new();
+        // 找狐狸洞聚落。
+        let fox_colony = mgr.colonies.iter().find(|c| c.kind == WildlifeKind::WildFox).unwrap();
+        let (cx, cy) = (fox_colony.cx, fox_colony.cy);
+        // 找一隻野鳥（不是狐狸），放到狐狸洞附近。
+        let bird_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildBird).unwrap();
+        mgr.animals[bird_idx].x = cx + 80.0;
+        mgr.animals[bird_idx].y = cy + 80.0;
+        mgr.animals[bird_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
+        // 玩家站在狐狸洞。
+        let players = vec![(cx, cy)];
+        mgr.tick(0.1, &players);
+        // 野鳥不應受狐狸洞影響。
+        let bird = &mgr.animals[bird_idx];
+        assert!(
+            !matches!(bird.state, WildlifeState::Guarding { .. }),
+            "野鳥不應因狐狸洞的入侵而守衛，實際: {:?}", bird.state
+        );
+    }
+
+    #[test]
+    fn guard_radius_values_are_positive() {
+        let mgr = WildlifeManager::new();
+        for c in &mgr.colonies {
+            assert!(c.guard_radius > 0.0, "聚落 {} 守衛半徑應 > 0", c.name);
+        }
     }
 }
