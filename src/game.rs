@@ -710,6 +710,13 @@ pub fn spawn(app: AppState) {
                         .map(|p| (p.name.clone(), p.x, p.y))
                         .collect()
                 };
+                // 野生動物 tick（ROADMAP 140）。
+                {
+                    let positions: Vec<(f32, f32)> = player_positions.iter()
+                        .map(|(_, x, y)| (*x, *y))
+                        .collect();
+                    app.wildlife_manager.write().unwrap().tick(dt, &positions);
+                }
                 let (resident_events, thought_events) = app.residents.write().unwrap()
                     .tick(dt, avg_prosperity, current_phase, &player_positions);
                 for ev in resident_events {
@@ -1617,6 +1624,18 @@ pub fn spawn(app: AppState) {
                         // 季節循環（ROADMAP 137）。
                         current_season: app.season.read().unwrap().current.as_str().to_string(),
                         season_remaining_secs: app.season.read().unwrap().remaining_secs(),
+                        // 野生動物（ROADMAP 140）。
+                        wildlife: {
+                            let wm = app.wildlife_manager.read().unwrap();
+                            wm.animals.iter().map(|a| crate::protocol::WildlifeView {
+                                id: a.id,
+                                kind: a.kind.as_str().to_string(),
+                                name: a.kind.display_name().to_string(),
+                                x: a.x,
+                                y: a.y,
+                                state: a.state_str().to_string(),
+                            }).collect()
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

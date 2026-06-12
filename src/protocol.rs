@@ -633,6 +633,9 @@ pub enum ServerMsg {
         current_season: String,
         /// 目前季節剩餘秒數（ROADMAP 137）：前端顯示倒計時。
         season_remaining_secs: u32,
+        /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
+        /// 全部送出（18 隻量小；前端依 AOI 過濾）。
+        wildlife: Vec<WildlifeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -986,6 +989,20 @@ pub struct EnemyView {
 pub struct ItemStack {
     pub item: ItemKind,
     pub qty: u32,
+}
+
+/// 快照裡一隻野生動物的可見狀態（ROADMAP 140）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WildlifeView {
+    pub id: u32,
+    /// 種類：wild_bird / wild_deer / small_critter。
+    pub kind: String,
+    /// 顯示名稱（中文）。
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    /// 行為狀態：wandering / resting / fleeing / returning。
+    pub state: String,
 }
 
 /// 快照裡一個世界採集節點的可見狀態。
@@ -1370,6 +1387,7 @@ mod tests {
             merchant_quests: vec![],
             current_season: "spring".to_string(),
             season_remaining_secs: 1200,
+            wildlife: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
