@@ -66,6 +66,12 @@ pub enum WeaponKind {
     /// 源晶之刃（ROADMAP 25）：源晶碎片鑄造的宇宙源頭刀刃，攻擊力 +40，全遊戲最強武器，
     /// 星源星特有，超越霧醚之刃（+30），乙太文明起源之力凝聚的終極武裝。
     OriginBlade,
+    /// 硬化刃（ROADMAP 145）：石頭與乙太鍛造，不需探索就能打造，攻擊力 +7。
+    HardenedBlade,
+    /// 星晶之刃（ROADMAP 145）：夜採星晶打造，攻擊力 +14，填補珊瑚矛→翠幽刃空缺。
+    StarCrystalBlade,
+    /// 裂縫刃（ROADMAP 145）：宇宙裂縫碎片凝聚，攻擊力 +35，宇宙裂縫事件高風險回報。
+    RiftBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -77,6 +83,12 @@ pub enum ArmorKind {
     Crystal,
     /// 宇宙護盾：每次受傷減 6 點傷害——全遊戲最強防禦，宇宙裂縫能量鍛造。
     Cosmic,
+    /// 珊瑚鎧（ROADMAP 145）：每次受傷減 3 點傷害，珊瑚礁材料鍛造。
+    Coral,
+    /// 符文鎧（ROADMAP 145）：每次受傷減 4 點傷害，古代文明符文強化。
+    Rune,
+    /// 星晶鎧（ROADMAP 145）：每次受傷減 5 點傷害，夜採星晶精粹打造。
+    StarCrystal,
 }
 
 /// 徒手的基礎攻擊力。沒有武器就是這個——刻意等於 `game.rs` 現行寫死的 `PLAYER_ATTACK_POWER`，
@@ -146,14 +158,17 @@ impl WeaponKind {
         match self {
             WeaponKind::Unarmed => UNARMED_ATTACK_POWER,
             WeaponKind::Blade => WEAPON_ATTACK_POWER,
+            WeaponKind::HardenedBlade => 7,
             WeaponKind::CrystalBlade => 8,
-            WeaponKind::CoralLance => 12,
             WeaponKind::MushroomStaff => 7,
             WeaponKind::RuneBlade => 10,
+            WeaponKind::CoralLance => 12,
+            WeaponKind::StarCrystalBlade => 14,
             WeaponKind::JadeBlade => 15,
             WeaponKind::CrimsonBlade => 20,
             WeaponKind::VoidBlade => 25,
             WeaponKind::AetherBlade => 30,
+            WeaponKind::RiftBlade => 35,
             WeaponKind::OriginBlade => 40,
         }
     }
@@ -165,6 +180,9 @@ impl ArmorKind {
         match self {
             ArmorKind::Meadow => 1,
             ArmorKind::Crystal => 2,
+            ArmorKind::Coral => 3,
+            ArmorKind::Rune => 4,
+            ArmorKind::StarCrystal => 5,
             ArmorKind::Cosmic => 6,
         }
     }
@@ -182,6 +200,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::MushroomStaff => Some(WeaponKind::MushroomStaff),
         ItemKind::RuneBlade => Some(WeaponKind::RuneBlade),
         ItemKind::JadeBlade => Some(WeaponKind::JadeBlade),
+        ItemKind::HardenedBlade => Some(WeaponKind::HardenedBlade),
+        ItemKind::StarCrystalBlade => Some(WeaponKind::StarCrystalBlade),
+        ItemKind::RiftBlade => Some(WeaponKind::RiftBlade),
         // 資源原料、建造材料、採集工具、消耗品、護甲都不是武器。
         ItemKind::Wood
         | ItemKind::Dirt
@@ -236,7 +257,10 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::StarDust
         | ItemKind::StarAmulet
         | ItemKind::RainbowStarDust
-        | ItemKind::StarGuardianAmulet => None,
+        | ItemKind::StarGuardianAmulet
+        | ItemKind::CoralArmor
+        | ItemKind::RuneArmor
+        | ItemKind::StarCrystalArmor => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -250,6 +274,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
     match item {
         ItemKind::MeadowAmulet => Some(ArmorKind::Meadow),
         ItemKind::CrystalShield => Some(ArmorKind::Crystal),
+        ItemKind::CoralArmor => Some(ArmorKind::Coral),
+        ItemKind::RuneArmor => Some(ArmorKind::Rune),
+        ItemKind::StarCrystalArmor => Some(ArmorKind::StarCrystal),
         ItemKind::CosmicShield => Some(ArmorKind::Cosmic),
         ItemKind::Wood
         | ItemKind::Dirt
@@ -311,7 +338,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::StarDust
         | ItemKind::StarAmulet
         | ItemKind::RainbowStarDust
-        | ItemKind::StarGuardianAmulet => None,
+        | ItemKind::StarGuardianAmulet
+        | ItemKind::HardenedBlade
+        | ItemKind::StarCrystalBlade
+        | ItemKind::RiftBlade => None,
     }
 }
 

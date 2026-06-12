@@ -2043,11 +2043,17 @@
     const curInv = curMe ? (curMe.inventory || []) : [];
     const invSet = new Set(curInv.map((s) => s.item));
     const biomeGear = [
-      { item: "meadow_amulet", name: "草原護符", biome: "草原", icon: "🍀" },
-      { item: "mushroom_staff", name: "蕈菇杖",  biome: "森林", icon: "🪄" },
-      { item: "crystal_blade", name: "晶石之刃", biome: "岩地", icon: "🔪" },
-      { item: "rune_blade",    name: "符文刃",   biome: "沙漠", icon: "⚜️" },
-      { item: "coral_lance",   name: "珊瑚矛",   biome: "水域", icon: "🔱" },
+      { item: "meadow_amulet",    name: "草原護符",  biome: "草原",       icon: "🍀" },
+      { item: "mushroom_staff",   name: "蕈菇杖",    biome: "森林",       icon: "🪄" },
+      { item: "hardened_blade",   name: "硬化刃",    biome: "基礎材料路", icon: "🗡️" },
+      { item: "crystal_blade",    name: "晶石之刃",  biome: "岩地",       icon: "🔪" },
+      { item: "crystal_shield",   name: "晶石護盾",  biome: "岩地",       icon: "🛡️" },
+      { item: "rune_blade",       name: "符文刃",    biome: "沙漠",       icon: "⚜️" },
+      { item: "coral_lance",      name: "珊瑚矛",    biome: "水域",       icon: "🔱" },
+      { item: "coral_armor",      name: "珊瑚鎧",    biome: "水域+岩地",  icon: "🦞" },
+      { item: "rune_armor",       name: "符文鎧",    biome: "沙漠",       icon: "🛡️" },
+      { item: "star_crystal_blade", name: "星晶之刃", biome: "夜採 Lv.10", icon: "⚔️" },
+      { item: "star_crystal_armor", name: "星晶鎧",   biome: "夜採 Lv.10", icon: "✨" },
     ];
     const collected = biomeGear.filter((g) => invSet.has(g.item)).length;
     const allCollected = collected === biomeGear.length;
@@ -7668,11 +7674,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -7744,6 +7750,19 @@
     // ROADMAP 133 流星雨：星塵×3 → 星光護符×1。
     { id: "star_amulet", out: "star_amulet", outQty: 1, inputs: [["star_dust", 3]] },
     { id: "star_guardian_amulet", out: "star_guardian_amulet", outQty: 1, inputs: [["rainbow_star_dust", 1], ["star_dust", 4], ["star_crystal_shard", 2]] },
+    // ROADMAP 145 進階武器/裝備：填補進階線空缺、提供雙路選擇（資源路 / 等級路）。
+    // 硬化刃：石頭×8 + 乙太×4 → 硬化刃×1。攻擊力 +7，不需探索特殊地形的「勤勞路」。
+    { id: "hardened_blade", out: "hardened_blade", outQty: 1, inputs: [["stone", 8], ["ether", 4]] },
+    // 星晶之刃：星晶碎片×7 → 星晶之刃×1。攻擊力 +14，夜行玩家的橋接武器（需 Lv.10）。
+    { id: "star_crystal_blade", out: "star_crystal_blade", outQty: 1, inputs: [["star_crystal_shard", 7]], minLevel: 10 },
+    // 裂縫刃：裂縫碎片×4 → 裂縫刃×1。攻擊力 +35，宇宙裂縫事件限定高風險回報（需 Lv.15）。
+    { id: "rift_blade", out: "rift_blade", outQty: 1, inputs: [["rift_shard", 4]], minLevel: 15 },
+    // 珊瑚鎧：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1。防禦 -3，水域探索者的高級防具。
+    { id: "coral_armor", out: "coral_armor", outQty: 1, inputs: [["deep_sea_pearl", 2], ["crystal_shard", 6]] },
+    // 符文鎧：古代碎片×5 + 石頭×6 → 符文鎧×1。防禦 -4，沙漠文明的進階鎧甲。
+    { id: "rune_armor", out: "rune_armor", outQty: 1, inputs: [["ancient_fragment", 5], ["stone", 6]] },
+    // 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。防禦 -5，夜行探索者的盔甲巔峰（需 Lv.10）。
+    { id: "star_crystal_armor", out: "star_crystal_armor", outQty: 1, inputs: [["star_crystal_shard", 5], ["stone", 4]], minLevel: 10 },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -7797,17 +7816,23 @@
     // 裝備/護甲的說明（點⚔️裝備後生效，顯示已裝備狀態）。
     const GEAR_DESC = {
       weapon: "攻擊力 +5",
+      hardened_blade: "攻擊力 +7 🪨 基礎材料路線",
       mushroom_staff: "攻擊力 +7 🌿 森林生態",
       crystal_blade: "攻擊力 +8 💎 岩地生態",
       rune_blade: "攻擊力 +10 ⚜️ 沙漠生態",
       coral_lance: "攻擊力 +12 🌊 水域生態",
+      star_crystal_blade: "攻擊力 +14 🌙 夜採星晶（需 Lv.10）",
       jade_blade: "攻擊力 +15 🟢 翠幽星",
       crimson_blade: "攻擊力 +20 🔴 赤焰星",
       void_blade: "攻擊力 +25 🔮 虛空星",
       aether_blade: "攻擊力 +30 🌫️ 霧醚星",
+      rift_blade: "攻擊力 +35 🌀 宇宙裂縫（需 Lv.15）",
       origin_blade: "攻擊力 +40 ✨ 起源星",
       meadow_amulet: "防禦 -1（減 1 傷）🌸 草原生態",
       crystal_shield: "防禦 -2（減 2 傷）💎 岩地生態",
+      coral_armor: "防禦 -3（減 3 傷）🌊 水域+岩地",
+      rune_armor: "防禦 -4（減 4 傷）⚜️ 沙漠生態",
+      star_crystal_armor: "防禦 -5（減 5 傷）🌙 夜採星晶（需 Lv.10）",
       cosmic_shield: "防禦 -6（減 6 傷）🌌 宇宙星",
       star_amulet: "EXP +10%（採集與戰鬥）☄️ 流星雨產物",
       star_guardian_amulet: "EXP +15%（採集與戰鬥）🌠 彩虹節點合成，流星雨採集額外+1星塵",
@@ -8183,7 +8208,7 @@
     // 沒變就提早返回:否則每拍 innerHTML 重建會把鍵盤/報讀器停在「合成」鈕上的焦點打掉、手機也白耗電。
     const sig = CRAFT_RECIPES.map((r) =>
       r.inputs.map(([item, qty]) => have.get(item) || 0).join(",")
-    ).join("|") + "|p" + (townProsperityLevel || 0);
+    ).join("|") + "|p" + (townProsperityLevel || 0) + "|lv" + (myLevel || 0);
     if (sig === lastCraftSig) return;
     lastCraftSig = sig;
     // 城鎮繁榮等級名稱（對齊伺服器 town_prosperity.rs ProsperityLevel::name）。
@@ -8193,8 +8218,10 @@
     for (const r of CRAFT_RECIPES) {
       const minPros = r.minProsperity || 0;
       const prosOk = minPros === 0 || (townProsperityLevel || 0) >= minPros;
+      const minLv = r.minLevel || 0;
+      const levelOk = minLv === 0 || (myLevel || 0) >= minLv;
       const matOk = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
-      const ok = prosOk && matOk;
+      const ok = prosOk && levelOk && matOk;
       if (ok) craftable++;
       const row = document.createElement("div");
       row.className = "craft-row";
@@ -8214,7 +8241,11 @@
       const prosHint = !prosOk
         ? ` <span style="color:#e9b72b;font-size:0.85em;">🔒 需城鎮達到【${PROSPERITY_NAMES[minPros] || "繁盛"}】</span>`
         : "";
-      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}${prosHint}`;
+      // 等級鎖定提示（ROADMAP 145）：等級不足時顯示需求等級。
+      const levelHint = !levelOk
+        ? ` <span style="color:#e9b72b;font-size:0.85em;">🔒 需 Lv.${minLv}</span>`
+        : "";
+      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}${prosHint}${levelHint}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "craft-btn";
@@ -8226,6 +8257,7 @@
         .join("、");
       const disabledReason = !prosOk
         ? `（需城鎮達到${PROSPERITY_NAMES[minPros] || "繁盛"}等級）`
+        : !levelOk ? `（需達 Lv.${minLv}）`
         : !matOk ? "（素材不足）" : "";
       btn.setAttribute(
         "aria-label",
