@@ -11,6 +11,8 @@ use world_core::{chunk_key, CHUNK_SIZE};
 use crate::combat::{Enemy, EnemyKind};
 use crate::inventory::ItemKind;
 use crate::positions::is_in_safe_zone;
+// ROADMAP 165：食物鏈需要識別 WildlifeKind。
+use crate::wildlife::WildlifeKind;
 
 /// 每區塊平均生成的敵人數。
 const ENEMIES_PER_CHUNK: usize = 1;
@@ -26,6 +28,15 @@ const CHASE_SPEED: f32 = 105.0;
 
 /// 沒有玩家在附近時，敵人緩緩漂回自己的出生點。
 const RETURN_SPEED: f32 = 48.0;
+
+// ─── ROADMAP 165：食物鏈常數 ────────────────────────────────────────────────
+
+/// 怪物搜索野生動物獵食目標的半徑（像素）。
+const WILDLIFE_HUNT_RADIUS: f32 = 300.0;
+/// 怪物進入此距離觸發對野生動物的擊殺。
+const WILDLIFE_KILL_RADIUS: f32 = 24.0;
+/// 怪物追獵野生動物時的移動速度（像素/秒）。
+const WILDLIFE_HUNT_SPEED: f32 = 120.0;
 
 // ───── ROADMAP 43 狼群戰術常數 ─────
 
@@ -80,6 +91,9 @@ pub struct PlacedEnemy {
     pub flee_boost_timer: f32,
     /// boss 撤退計時器：> 0 時此怪強制逃離玩家（ROADMAP 117）。
     pub retreat_timer: f32,
+    /// ROADMAP 165：怪物食物鏈目標——此怪物正在追獵的野生動物（ID, 種類, x, y）。
+    /// 每幀由 update_wildlife_targets 更新；玩家在 aggro 範圍內時清空（玩家優先）。
+    pub hunting_wildlife_target: Option<(u32, WildlifeKind, f32, f32)>,
 }
 
 /// `level_up_nearest_killer` 的回傳值，供呼叫端決定是否廣播兇名精英通告。
@@ -112,6 +126,75 @@ impl EnemyField {
     /// 從 MonsterSpeciesRelations 快照更新 aggro 倍率（每幀在 advance 前呼叫）。
     pub fn update_aggro_multipliers(&mut self, multipliers: HashMap<EnemyKind, f32>) {
         self.aggro_multipliers = multipliers;
+    }
+
+    /// ROADMAP 165：更新各獵食種類怪物的野生動物追獵目標。
+    /// 僅對「無玩家在 aggro 範圍內」的獵食種類怪物生效，玩家優先不轉移攻擊。
+    pub fn update_wildlife_targets(
+        &mut self,
+        wildlife_snap: &[(u32, WildlifeKind, f32, f32)],
+        player_positions: &[(f32, f32)],
+    ) {
+        use crate::wildlife::monster_hunts_wildlife;
+        let aggro_sq = AGGRO_RADIUS * AGGRO_RADIUS;
+        let hunt_r2 = WILDLIFE_HUNT_RADIUS * WILDLIFE_HUNT_RADIUS;
+        for enemies in self.chunks.values_mut() {
+            for placed in enemies.iter_mut() {
+                if !placed.enemy.is_alive() {
+                    placed.hunting_wildlife_target = None;
+                    continue;
+                }
+                let prey_kind = match monster_hunts_wildlife(placed.enemy.kind()) {
+                    Some(k) => k,
+                    None => { placed.hunting_wildlife_target = None; continue; }
+                };
+                // 玩家在 aggro 範圍內時，怪物優先追玩家，不獵野生動物。
+                let player_in_range = player_positions.iter().any(|&(px, py)| {
+                    let dx = px - placed.x;
+                    let dy = py - placed.y;
+                    dx * dx + dy * dy <= aggro_sq
+                });
+                if player_in_range {
+                    placed.hunting_wildlife_target = None;
+                    continue;
+                }
+                // 在 WILDLIFE_HUNT_RADIUS 內找最近的存活獵物。
+                let target = wildlife_snap.iter()
+                    .filter(|&&(_, k, wx, wy)| {
+                        k == prey_kind && {
+                            let dx = wx - placed.x;
+                            let dy = wy - placed.y;
+                            dx * dx + dy * dy <= hunt_r2
+                        }
+                    })
+                    .min_by(|&&(_, _, ax, ay), &&(_, _, bx, by)| {
+                        let da = (ax - placed.x).powi(2) + (ay - placed.y).powi(2);
+                        let db = (bx - placed.x).powi(2) + (by - placed.y).powi(2);
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .copied();
+                placed.hunting_wildlife_target = target;
+            }
+        }
+    }
+
+    /// ROADMAP 165：收集本幀怪物已進入擊殺距離的野生動物事件。
+    /// 回傳：(monster_kind, wildlife_id, prey_kind, kill_x, kill_y) 列表。
+    pub fn collect_wildlife_kills(&self) -> Vec<(EnemyKind, u32, WildlifeKind, f32, f32)> {
+        let kill_r2 = WILDLIFE_KILL_RADIUS * WILDLIFE_KILL_RADIUS;
+        let mut kills = Vec::new();
+        for enemies in self.chunks.values() {
+            for placed in enemies {
+                if !placed.enemy.is_alive() { continue; }
+                let Some((wid, wk, wx, wy)) = placed.hunting_wildlife_target else { continue };
+                let dx = wx - placed.x;
+                let dy = wy - placed.y;
+                if dx * dx + dy * dy <= kill_r2 {
+                    kills.push((placed.enemy.kind(), wid, wk, placed.x, placed.y));
+                }
+            }
+        }
+        kills
     }
 
     pub fn enemies(&self) -> Vec<PlacedEnemy> {
@@ -294,13 +377,25 @@ impl EnemyField {
                     } else {
                         match nearest {
                             Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult * speed_boost),
-                            None => { let (hx, hy) = spawn_position(placed.id); (hx, hy, RETURN_SPEED) }
+                            // ROADMAP 165：無玩家時改追野生動物目標（若有）；否則回巢。
+                            None => if let Some((_, _, wx, wy)) = placed.hunting_wildlife_target {
+                                (wx, wy, WILDLIFE_HUNT_SPEED)
+                            } else {
+                                let (hx, hy) = spawn_position(placed.id);
+                                (hx, hy, RETURN_SPEED)
+                            }
                         }
                     }
                 } else {
                     match nearest {
                         Some((tx, ty, _)) => (tx, ty, CHASE_SPEED * night_mult * speed_boost),
-                        None => { let (hx, hy) = spawn_position(placed.id); (hx, hy, RETURN_SPEED) }
+                        // ROADMAP 165：無玩家時改追野生動物目標（若有）；否則回巢。
+                        None => if let Some((_, _, wx, wy)) = placed.hunting_wildlife_target {
+                            (wx, wy, WILDLIFE_HUNT_SPEED)
+                        } else {
+                            let (hx, hy) = spawn_position(placed.id);
+                            (hx, hy, RETURN_SPEED)
+                        }
                     }
                 };
 
@@ -664,6 +759,7 @@ impl EnemyField {
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
+            hunting_wildlife_target: None,
         });
     }
 
@@ -678,7 +774,7 @@ impl EnemyField {
             field.chunks.entry(key).or_default().push(PlacedEnemy {
                 x, y, base_level, level: base_level, enemy, id,
                 pack_target: None, pack_target_timer: 0.0, flee_boost_timer: 0.0,
-                retreat_timer: 0.0,
+                retreat_timer: 0.0, hunting_wildlife_target: None,
             });
         }
         Some(field)
@@ -911,6 +1007,7 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
+            hunting_wildlife_target: None,
         });
     }
     enemies
@@ -1440,6 +1537,7 @@ mod tests {
             pack_target_timer: 0.0,
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
+            hunting_wildlife_target: None,
         });
 
         // 精英本身也在 ATTACK_REACH 內（10px），會加入 threat；
@@ -1471,6 +1569,7 @@ mod tests {
             enemy: Enemy::new_leveled(EnemyKind::RuneGuardian, 4),
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
+            hunting_wildlife_target: None,
         });
         // minion 100px 旁邊，在 COMMAND_RADIUS(500px) 內。
         f.chunks.entry(key).or_default().push(PlacedEnemy {
@@ -1479,6 +1578,7 @@ mod tests {
             enemy: Enemy::new_leveled(EnemyKind::RuneGuardian, 1),
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
+            hunting_wildlife_target: None,
         });
 
         let players = vec![(boss_x + 300.0, boss_y)];
@@ -1512,5 +1612,116 @@ mod tests {
             after_x < before_x + 1.0,
             "撤退計時器啟動時 boss 應遠離右方玩家，before={before_x:.1} after={after_x:.1}"
         );
+    }
+
+    // ─── ROADMAP 165 測試 ────────────────────────────────────────────────────
+
+    #[test]
+    fn update_wildlife_targets_sets_target_when_in_range() {
+        // 無玩家在 aggro 範圍內，且野生動物在 WILDLIFE_HUNT_RADIUS 內，
+        // EtherWisp 應取得 WildBird 為追獵目標。
+        use crate::wildlife::WildlifeKind;
+        use world_core::chunk_key;
+
+        let mut f = EnemyField::new();
+        // 在已知座標手動注入一隻 EtherWisp。
+        let mx = 5000.0_f32;
+        let my = 5000.0_f32;
+        let key = chunk_key(mx, my);
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: (9i32, 9i32, 0usize), x: mx, y: my,
+            base_level: 1, level: 1,
+            enemy: crate::combat::Enemy::new_leveled(EnemyKind::EtherWisp, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+            hunting_wildlife_target: None,
+        });
+        // 野鳥在 200px 旁（在 WILDLIFE_HUNT_RADIUS=300 內）。
+        let snap = vec![(42u32, WildlifeKind::WildBird, mx + 200.0, my)];
+        f.update_wildlife_targets(&snap, &[]);
+        let wisp = f.chunks[&key].iter().find(|e| e.enemy.kind() == EnemyKind::EtherWisp).unwrap();
+        assert!(
+            wisp.hunting_wildlife_target.is_some(),
+            "EtherWisp 應取得 WildBird 為目標"
+        );
+        assert_eq!(wisp.hunting_wildlife_target.map(|(id, _, _, _)| id), Some(42));
+    }
+
+    #[test]
+    fn update_wildlife_targets_clears_when_player_in_aggro() {
+        // 玩家在 aggro 範圍內時，怪物不應追野生動物。
+        use crate::wildlife::WildlifeKind;
+        use world_core::chunk_key;
+
+        let mut f = EnemyField::new();
+        let mx = 5100.0_f32;
+        let my = 5100.0_f32;
+        let key = chunk_key(mx, my);
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: (9i32, 9i32, 1usize), x: mx, y: my,
+            base_level: 1, level: 1,
+            enemy: crate::combat::Enemy::new_leveled(EnemyKind::ScrapDrone, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+            hunting_wildlife_target: None,
+        });
+        // 野鹿在 200px 旁。
+        let snap = vec![(77u32, WildlifeKind::WildDeer, mx + 200.0, my)];
+        // 玩家在 100px 旁（在 AGGRO_RADIUS=260 內）。
+        let players = vec![(mx + 100.0, my)];
+        f.update_wildlife_targets(&snap, &players);
+        let drone = f.chunks[&key].iter().find(|e| e.enemy.kind() == EnemyKind::ScrapDrone).unwrap();
+        assert!(
+            drone.hunting_wildlife_target.is_none(),
+            "玩家在 aggro 範圍內時不應追野生動物"
+        );
+    }
+
+    #[test]
+    fn collect_wildlife_kills_returns_entry_when_close_enough() {
+        // 怪物已貼近野生動物（在 WILDLIFE_KILL_RADIUS 內），應收集到擊殺事件。
+        use crate::wildlife::WildlifeKind;
+        use world_core::chunk_key;
+
+        let mut f = EnemyField::new();
+        let mx = 5200.0_f32;
+        let my = 5200.0_f32;
+        let key = chunk_key(mx, my);
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: (10i32, 10i32, 0usize), x: mx, y: my,
+            base_level: 1, level: 1,
+            enemy: crate::combat::Enemy::new_leveled(EnemyKind::MushroomStalker, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+            // 野生動物在 10px 旁（在 WILDLIFE_KILL_RADIUS=24 內）。
+            hunting_wildlife_target: Some((55u32, WildlifeKind::SmallCritter, mx + 10.0, my)),
+        });
+        let kills = f.collect_wildlife_kills();
+        assert_eq!(kills.len(), 1, "應收集到一筆擊殺事件");
+        assert_eq!(kills[0].0, EnemyKind::MushroomStalker);
+        assert_eq!(kills[0].1, 55);
+    }
+
+    #[test]
+    fn collect_wildlife_kills_empty_when_too_far() {
+        // 怪物距野生動物超過 WILDLIFE_KILL_RADIUS，不應有擊殺。
+        use crate::wildlife::WildlifeKind;
+        use world_core::chunk_key;
+
+        let mut f = EnemyField::new();
+        let mx = 5300.0_f32;
+        let my = 5300.0_f32;
+        let key = chunk_key(mx, my);
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: (10i32, 10i32, 1usize), x: mx, y: my,
+            base_level: 1, level: 1,
+            enemy: crate::combat::Enemy::new_leveled(EnemyKind::EtherWisp, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+            // 野生動物在 100px 外（超過 WILDLIFE_KILL_RADIUS=24）。
+            hunting_wildlife_target: Some((66u32, WildlifeKind::WildBird, mx + 100.0, my)),
+        });
+        let kills = f.collect_wildlife_kills();
+        assert!(kills.is_empty(), "距離超過擊殺半徑時不應有擊殺事件");
     }
 }

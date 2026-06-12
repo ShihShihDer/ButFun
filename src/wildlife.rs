@@ -20,6 +20,8 @@
 //! 效能：全純算術、零 LLM、零 migration、記憶體模式，重啟全重置。
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
+// ROADMAP 165：怪物食物鏈需要識別 EnemyKind。
+use crate::combat::EnemyKind;
 
 // ─── 常數 ────────────────────────────────────────────────────────────────────
 
@@ -161,6 +163,20 @@ impl WildlifeKind {
     }
 }
 
+/// ROADMAP 165：怪物物種食物鏈配對——定義哪種怪物主動獵食哪種野生動物。
+/// 三對配對（食性與分佈合理）：
+///   - 乙太鬼火 → 野鳥（光靈追逐飛行生物）
+///   - 蕈菇潛行者 → 小動物（森林潛行者獵食小型獵物）
+///   - 廢鐵無人機 → 野鹿（機械無人機追蹤大型目標）
+pub fn monster_hunts_wildlife(kind: EnemyKind) -> Option<WildlifeKind> {
+    match kind {
+        EnemyKind::EtherWisp       => Some(WildlifeKind::WildBird),
+        EnemyKind::MushroomStalker => Some(WildlifeKind::SmallCritter),
+        EnemyKind::ScrapDrone      => Some(WildlifeKind::WildDeer),
+        _                          => None,
+    }
+}
+
 // ─── ROADMAP 142：乙太微粒 ───────────────────────────────────────────────────
 
 /// 獵物死亡時釋出的乙太微粒——死亡是循環的一環。
@@ -221,6 +237,13 @@ pub enum WildlifeEvent {
         near_x: f32,
         near_y: f32,
         damage: u32,
+    },
+    /// ROADMAP 165：怪物成功獵殺野生動物——應廣播至全服聊天並已生成乙太微粒。
+    MonsterHunted {
+        monster_kind: EnemyKind,
+        wildlife_kind: WildlifeKind,
+        x: f32,
+        y: f32,
     },
 }
 
@@ -451,6 +474,38 @@ impl WildlifeManager {
         }
     }
 
+    /// ROADMAP 165：回傳所有存活野生動物的快照（ID, 種類, x, y）。
+    /// 供怪物追獵目標計算用（取讀鎖後呼叫）。
+    pub fn alive_snapshot(&self) -> Vec<(u32, WildlifeKind, f32, f32)> {
+        self.animals.iter()
+            .filter(|a| a.alive)
+            .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect()
+    }
+
+    /// ROADMAP 165：怪物獵殺野生動物——標記獵物死亡、生成乙太微粒、回傳事件。
+    /// 若 wildlife_id 不存在或已死亡，回傳 None（冪等，安全可重呼叫）。
+    pub fn on_monster_kills_wildlife(
+        &mut self,
+        wildlife_id: u32,
+        monster_kind: EnemyKind,
+    ) -> Option<WildlifeEvent> {
+        let prey = self.animals.iter_mut().find(|a| a.id == wildlife_id && a.alive)?;
+        let wildlife_kind = prey.kind;
+        let kx = prey.x;
+        let ky = prey.y;
+        prey.alive = false;
+        prey.respawn_timer = PREY_RESPAWN_SECS;
+        prey.state = WildlifeState::Resting { rest_timer: 0.0 };
+        // 在死亡位置生成乙太微粒（死亡是循環的一環，不分陣營）。
+        if self.carion_orbs.len() < MAX_CARION_ORBS {
+            let id = self.orb_counter;
+            self.orb_counter = self.orb_counter.wrapping_add(1);
+            self.carion_orbs.push(CarrionOrb { id, x: kx, y: ky, ttl: CARION_ORB_TTL });
+        }
+        Some(WildlifeEvent::MonsterHunted { monster_kind, wildlife_kind, x: kx, y: ky })
+    }
+
     /// 每幀推進所有野生動物，回傳本幀產生的事件列表。
     ///
     /// `attitudes`：各物種目前態度值（0-100）。用於：
@@ -461,6 +516,7 @@ impl WildlifeManager {
         dt: f32,
         player_positions: &[(f32, f32)],
         attitudes: &std::collections::HashMap<WildlifeKind, i32>,
+        monster_threats: &[(EnemyKind, f32, f32)],
     ) -> Vec<WildlifeEvent> {
         let mut events = Vec::new();
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
@@ -695,9 +751,16 @@ impl WildlifeManager {
                 player_positions
             };
 
-            // 威脅 = 玩家（按態度決定）+ 捕食者。
+            // 威脅 = 玩家（按態度決定）+ 捕食者 + ROADMAP 165：怪物獵食者。
             let mut threats: Vec<(f32, f32)> = player_threats.to_vec();
             threats.extend_from_slice(&pred_positions);
+            // ROADMAP 165：把「獵食此物種的怪物」位置也加入逃跑威脅清單。
+            let animal_kind = self.animals[i].kind;
+            for &(mk, mx, my) in monster_threats {
+                if monster_hunts_wildlife(mk) == Some(animal_kind) {
+                    threats.push((mx, my));
+                }
+            }
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             a.tick_idle(dt, &threats, WANDER_SPEED, rng);
@@ -879,7 +942,7 @@ mod tests {
         mgr.animals[wolf_idx].y = mgr.animals[deer_idx].y;
         mgr.animals[wolf_idx].state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
         // 跑一幀觸發追獵。
-        mgr.tick(0.1, &[], &std::collections::HashMap::new());
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
         let wolf = &mgr.animals[wolf_idx];
         // 野狼應追獵某隻野鹿（不指定是哪隻，因附近可能有多隻）。
         assert!(
@@ -909,7 +972,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        let events = mgr.tick(0.1, &[], &std::collections::HashMap::new());
+        let events = mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
         // 野鹿應死亡。
         assert!(!mgr.animals[deer_idx].alive, "野鹿應已死亡");
         // 應有 Kill 事件。
@@ -926,7 +989,7 @@ mod tests {
         mgr.animals[deer_idx].alive = false;
         mgr.animals[deer_idx].respawn_timer = 0.1;
         // 跑超過 0.1 秒。
-        mgr.tick(0.2, &[], &std::collections::HashMap::new());
+        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[]);
         assert!(mgr.animals[deer_idx].alive, "野鹿應在計時器結束後重生");
     }
 
@@ -935,7 +998,7 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let players = vec![(2200.0f32, 2200.0)];
         for _ in 0..100 {
-            mgr.tick(0.1, &players, &std::collections::HashMap::new());
+            mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         }
         assert_eq!(mgr.animals.len(), WILDLIFE_COUNT);
     }
@@ -953,7 +1016,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[], &std::collections::HashMap::new());
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
         assert_eq!(mgr.carion_orbs.len(), 1, "擊殺後應生成一顆乙太微粒");
         let orb = &mgr.carion_orbs[0];
         let dx = orb.x - deer_x;
@@ -968,7 +1031,7 @@ mod tests {
         mgr.carion_orbs.push(CarrionOrb { id: 0, x: 2000.0, y: 2000.0, ttl: 0.05 });
         assert_eq!(mgr.carion_orbs.len(), 1);
         // 跑超過 TTL。
-        mgr.tick(0.1, &[], &std::collections::HashMap::new());
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
         assert_eq!(mgr.carion_orbs.len(), 0, "TTL 到期後應自動消失");
     }
 
@@ -1015,7 +1078,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[], &std::collections::HashMap::new());
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
         // 上限不超出。
         assert!(mgr.carion_orbs.len() <= MAX_CARION_ORBS, "乙太微粒不應超過上限");
     }
@@ -1067,7 +1130,7 @@ mod tests {
         mgr.animals[deer_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players, &std::collections::HashMap::new());
+        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         // 野鹿應進入 Guarding 狀態。
         let deer = &mgr.animals[deer_idx];
         assert!(
@@ -1083,7 +1146,7 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        let events = mgr.tick(0.1, &players, &std::collections::HashMap::new());
+        let events = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         assert!(
             events.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "玩家進入聚落應觸發 ColonyThreatened 事件"
@@ -1097,10 +1160,10 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         let players = vec![(cx, cy)];
         // 第一次觸發。
-        let events1 = mgr.tick(0.1, &players, &std::collections::HashMap::new());
+        let events1 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         assert!(events1.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })));
         // 馬上再觸發：冷卻中，不應再發出事件。
-        let events2 = mgr.tick(0.1, &players, &std::collections::HashMap::new());
+        let events2 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         assert!(
             !events2.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "冷卻中不應再發出 ColonyThreatened 事件"
@@ -1114,7 +1177,7 @@ mod tests {
         // 手動設定守衛狀態，計時即將到期。
         mgr.animals[deer_idx].state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
         // 跑超過計時。
-        mgr.tick(0.2, &[], &std::collections::HashMap::new());
+        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[]);
         let deer = &mgr.animals[deer_idx];
         assert!(
             matches!(deer.state, WildlifeState::Resting { .. }),
@@ -1144,7 +1207,7 @@ mod tests {
         mgr.animals[bird_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在狐狸洞。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players, &std::collections::HashMap::new());
+        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
         // 野鳥不應受狐狸洞影響。
         let bird = &mgr.animals[bird_idx];
         assert!(
@@ -1159,5 +1222,87 @@ mod tests {
         for c in &mgr.colonies {
             assert!(c.guard_radius > 0.0, "聚落 {} 守衛半徑應 > 0", c.name);
         }
+    }
+
+    // ─── ROADMAP 165 測試 ────────────────────────────────────────────────────
+
+    #[test]
+    fn monster_hunts_wildlife_returns_correct_pairs() {
+        use crate::combat::EnemyKind;
+        assert_eq!(monster_hunts_wildlife(EnemyKind::EtherWisp),       Some(WildlifeKind::WildBird));
+        assert_eq!(monster_hunts_wildlife(EnemyKind::MushroomStalker), Some(WildlifeKind::SmallCritter));
+        assert_eq!(monster_hunts_wildlife(EnemyKind::ScrapDrone),      Some(WildlifeKind::WildDeer));
+        assert_eq!(monster_hunts_wildlife(EnemyKind::CrystalGolem),    None);
+        assert_eq!(monster_hunts_wildlife(EnemyKind::FlutterSprite),   None);
+    }
+
+    #[test]
+    fn on_monster_kills_wildlife_marks_dead_and_creates_orb() {
+        use crate::combat::EnemyKind;
+        let mut mgr = WildlifeManager::new();
+        let bird_id = mgr.animals.iter()
+            .find(|a| a.alive && a.kind == WildlifeKind::WildBird)
+            .map(|a| a.id).unwrap();
+        let before_orbs = mgr.carion_orbs.len();
+        let ev = mgr.on_monster_kills_wildlife(bird_id, EnemyKind::EtherWisp);
+        assert!(matches!(ev, Some(WildlifeEvent::MonsterHunted { .. })), "應回傳 MonsterHunted 事件");
+        let bird = mgr.animals.iter().find(|a| a.id == bird_id).unwrap();
+        assert!(!bird.alive, "被獵殺的野鳥應標記為死亡");
+        assert_eq!(mgr.carion_orbs.len(), before_orbs + 1, "應生成一顆乙太微粒");
+    }
+
+    #[test]
+    fn on_monster_kills_wildlife_idempotent_on_dead_animal() {
+        use crate::combat::EnemyKind;
+        let mut mgr = WildlifeManager::new();
+        let bird_id = mgr.animals.iter()
+            .find(|a| a.alive && a.kind == WildlifeKind::WildBird)
+            .map(|a| a.id).unwrap();
+        let _ = mgr.on_monster_kills_wildlife(bird_id, EnemyKind::EtherWisp);
+        let ev2 = mgr.on_monster_kills_wildlife(bird_id, EnemyKind::EtherWisp);
+        assert!(ev2.is_none(), "已死亡的動物再次呼叫應回傳 None");
+    }
+
+    #[test]
+    fn alive_snapshot_counts_decrease_after_kill() {
+        use crate::combat::EnemyKind;
+        let mut mgr = WildlifeManager::new();
+        let initial_count = mgr.alive_snapshot().len();
+        assert_eq!(initial_count, WILDLIFE_COUNT);
+        let bird_id = mgr.animals.iter()
+            .find(|a| a.alive && a.kind == WildlifeKind::WildBird)
+            .map(|a| a.id).unwrap();
+        let _ = mgr.on_monster_kills_wildlife(bird_id, EnemyKind::EtherWisp);
+        assert_eq!(mgr.alive_snapshot().len(), initial_count - 1, "死亡後快照應少一隻");
+    }
+
+    #[test]
+    fn prey_flees_from_hunting_monster_in_tick() {
+        use crate::combat::EnemyKind;
+        let mut rng = make_rng();
+        // 建立一隻靜止野鳥（在 home 位置）。
+        let mut bird = Wildlife::new(0, WildlifeKind::WildBird, 2000.0, 2000.0, &mut rng);
+        bird.state = WildlifeState::Resting { rest_timer: 10.0 };
+        bird.x = 2000.0;
+        bird.y = 2000.0;
+        // 把 EtherWisp 放在 FLEE_RADIUS 內（100px）。
+        let threats = vec![(EnemyKind::EtherWisp, 2100.0_f32, 2000.0_f32)];
+        bird.tick_idle(0.1, &threats.iter().map(|&(_, x, y)| (x, y)).collect::<Vec<_>>(), WANDER_SPEED, &mut rng);
+        assert!(
+            matches!(bird.state, WildlifeState::Fleeing { .. }),
+            "怪物在 FLEE_RADIUS 內，野鳥應進入 Fleeing 狀態"
+        );
+    }
+
+    #[test]
+    fn non_prey_kind_not_affected_by_monster_threats_in_tick() {
+        use crate::combat::EnemyKind;
+        // CrystalGolem 不獵食任何野生動物，野鹿不應因它逃跑。
+        let threats = vec![(EnemyKind::CrystalGolem, 2100.0_f32, 2000.0_f32)];
+        assert!(
+            monster_hunts_wildlife(EnemyKind::CrystalGolem).is_none(),
+            "CrystalGolem 不應有食物鏈配對"
+        );
+        let _ = threats;
     }
 }

@@ -1337,8 +1337,9 @@ D-3. ✅ **小地圖導航**（PR #71）
       玩家附近擊殺同種怪 → 族群-1；巢穴歸零廣播「清剿一空」，並延長 3× 冷卻才復生；
       前端地圖繪製紅色虛線圓圈+密度標籤，態度面板列出 5 個巢穴密度（廢棄/稀疏/正常/茂盛）。
     - 後端：`monster_colony.rs`（MonsterColonyManager，13 個純邏輯測試）；接 state/game/ws/protocol。（本輪 PR）
-165. [ ] **跨物種食物鏈接線：怪物進食物鏈、死亡同一循環**
+165. [x] **跨物種食物鏈接線：怪物進食物鏈、死亡同一循環**
     - 怪物獵食野生動物（依食性配對），野生動物把怪物視為威脅逃竄/群逃；被獵殺同樣掉乙太微粒——「死亡餵養生命」整條循環統一，不分陣營。
+    - 實作：EtherWisp→野鳥、MushroomStalker→小動物、ScrapDrone→野鹿；`monster_hunts_wildlife` 純函式；`hunting_wildlife_target` 欄位；`update_wildlife_targets`/`collect_wildlife_kills`；wildlife tick 接 monster_threats；game.rs 接線；11 條新測試。（PR #305）
 166. [ ] **獸潮湧現化：從生態壓力長出，不再純計時器**
     - 巢穴族群過剩/食物短缺/人類過度獵殺其獵物 → 攻城壓力上升 → 獸潮；生態安定→無獸潮。director 的 timer 降級成「生態讀數的觸發器」。
 167. [ ] **統一物種視圖：HUD/態度面板列出所有物種（含怪物種）**

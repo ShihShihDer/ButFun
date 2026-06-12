@@ -250,10 +250,15 @@ pub fn spawn(app: AppState) {
                     .collect()
             };
 
+            // ROADMAP 165：取野生動物快照（讀鎖即放），供怪物追獵目標更新用。
+            let wildlife_snap: Vec<(u32, crate::wildlife::WildlifeKind, f32, f32)> = {
+                app.wildlife_manager.read().unwrap().alive_snapshot()
+            };
+
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
             // view 只在廣播時建。怪會動起來——撲向玩家、沒人時漂回家,世界因此活起來。
             // ③ 無限世界: 先確保玩家周圍區塊已載入。
-            let enemy_views: Vec<EnemyView> = {
+            let (enemy_views, monster_wildlife_kills): (Vec<EnemyView>, Vec<(crate::combat::EnemyKind, u32, crate::wildlife::WildlifeKind, f32, f32)>) = {
                 let mut enemies = app.enemies.write().unwrap();
                 {
                     let players = app.players.read().unwrap();
@@ -277,7 +282,10 @@ pub fn spawn(app: AppState) {
                         .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64))
                         != world_core::TileKind::Empty
                 });
-                if want_broadcast {
+                // ROADMAP 165：更新怪物追獵目標，收集本幀擊殺事件。
+                enemies.update_wildlife_targets(&wildlife_snap, &chase_targets);
+                let kills = enemies.collect_wildlife_kills();
+                let views = if want_broadcast {
                     enemies
                         .enemies()
                         .iter()
@@ -295,8 +303,28 @@ pub fn spawn(app: AppState) {
                         .collect()
                 } else {
                     Vec::new()
-                }
+                };
+                (views, kills)
             };
+
+            // ROADMAP 165：套用怪物獵殺野生動物事件（標記死亡 + 生成乙太微粒 + 廣播）。
+            {
+                let mut wm = app.wildlife_manager.write().unwrap();
+                for &(monster_kind, wildlife_id, _, _, _) in &monster_wildlife_kills {
+                    if let Some(ev) = wm.on_monster_kills_wildlife(wildlife_id, monster_kind) {
+                        use crate::wildlife::WildlifeEvent;
+                        if let WildlifeEvent::MonsterHunted { monster_kind, wildlife_kind, x, y } = ev {
+                            let msg = format!(
+                                "🌿 城外 ({:.0},{:.0})：{} 獵殺了 {}，弱肉強食是生態的法則。",
+                                x, y,
+                                monster_kind.display_name(),
+                                wildlife_kind.display_name(),
+                            );
+                            let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
+            }
 
             // 敵人反擊（每秒一次）：玩家在攻擊範圍內時，敵人自動造成傷害——
             // 站著不動不打怪也會被打，逼玩家主動出擊或趕緊走開。
@@ -767,8 +795,19 @@ pub fn spawn(app: AppState) {
                         .collect();
                     // ROADMAP 144：取得物種態度 Map，傳入 wildlife tick。
                     let attitudes = app.species_relations.read().unwrap().attitudes.clone();
+                    // ROADMAP 165：收集獵食型怪物位置，供野生動物逃跑用（讀鎖即放）。
+                    let monster_threats: Vec<(crate::combat::EnemyKind, f32, f32)> = {
+                        let enemies = app.enemies.read().unwrap();
+                        enemies.enemies().iter()
+                            .filter(|e| e.enemy.is_alive())
+                            .filter_map(|e| {
+                                crate::wildlife::monster_hunts_wildlife(e.enemy.kind())
+                                    .map(|_| (e.enemy.kind(), e.x, e.y))
+                            })
+                            .collect()
+                    };
                     let wildlife_events = app.wildlife_manager.write().unwrap()
-                        .tick(dt, &positions, &attitudes);
+                        .tick(dt, &positions, &attitudes, &monster_threats);
                     for ev in wildlife_events {
                         use crate::wildlife::WildlifeEvent;
                         match ev {
@@ -822,6 +861,10 @@ pub fn spawn(app: AppState) {
                                     }
                                 }
                             }
+                            // ROADMAP 165：MonsterHunted 由怪物擊殺路徑（on_monster_kills_wildlife）
+                            // 產生並已在上方處理；wildlife tick 不應再發出此事件，此 arm 僅防止
+                            // 非窮盡匹配的編譯錯誤。
+                            WildlifeEvent::MonsterHunted { .. } => {}
                         }
                     }
                 }
