@@ -11719,6 +11719,26 @@
     }
     syncCatDots();
 
+    // ── ROADMAP 138：☰ 選單項目接線 + syncMenuDot ──
+    // winMenu 裡每顆 .menu-item 點擊 → openWinFor 對應 dock-btn（自動收選單、開目標視窗）。
+    for (const item of document.querySelectorAll("#winMenu .menu-item")) {
+      item.addEventListener("click", () => {
+        const target = document.getElementById(item.dataset.target);
+        if (target) openWinFor(target);
+      });
+    }
+    // 隱藏容器的任一 dock-btn 有 dock-active（可做事黃點）→ ☰ 選單鈕也亮黃點。
+    const dockMenuBtnEl = document.getElementById("dockMenuBtn");
+    const dockHiddenEl = document.getElementById("dockHidden");
+    const syncMenuDot = () => {
+      if (!dockMenuBtnEl || !dockHiddenEl) return;
+      dockMenuBtnEl.classList.toggle("dock-active", !!dockHiddenEl.querySelector(".dock-btn.dock-active"));
+    };
+    if (dockHiddenEl) {
+      new MutationObserver(syncMenuDot).observe(dockHiddenEl, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    }
+    syncMenuDot();
+
     // ── 🗺️ 世界地圖：星球帶 + 本星鳥瞰（生態底色/城鎮/你的位置/裂縫）+ 旅行入口 ──
     // 解玩家痛點「不知道自己在哪、其他星球怎麼去」——旅行原本埋在「合成星圖→背包使用」
     // 兩層深，這裡給一個 dock 一鍵的總覽窗，並把旅行入口接出來。
