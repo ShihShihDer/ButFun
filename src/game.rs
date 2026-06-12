@@ -1027,6 +1027,56 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 城鎮入侵警報 tick（ROADMAP 158）：每 90 分鐘一波野怪衝向城鎮外圍，玩家攜手抵禦。
+            {
+                use crate::invasion::InvasionEvent;
+                let invasion_event = app.invasion.write().unwrap().tick(dt);
+                if let Some(ev) = invasion_event {
+                    match ev {
+                        InvasionEvent::Started(spawns) => {
+                            // 注入入侵怪物到敵人場中。
+                            {
+                                let mut enemies = app.enemies.write().unwrap();
+                                for (kind, x, y) in &spawns {
+                                    enemies.inject_event_enemy(*x, *y, *kind);
+                                }
+                            }
+                            let wave = app.invasion.read().unwrap().wave_count;
+                            let text = format!(
+                                "⚔️ [入侵警報] 第 {} 波野獸大軍從城鎮外圍逼近！12 隻怪物包圍城鎮！ (5 分鐘後波次消退)",
+                                wave + 1
+                            );
+                            let _ = app.tx_chat.send(text.clone());
+                            // 城鎮記憶石記錄入侵事件。
+                            app.town_memory.write().unwrap().push_event("⚔️", format!(
+                                "城鎮入侵警報——第 {} 波野獸大軍突襲",
+                                wave + 1
+                            ));
+                        }
+                        InvasionEvent::Ended => {
+                            let wave = app.invasion.read().unwrap().wave_count;
+                            // 波次結束全服獎勵：每位在線玩家 +5 乙太。
+                            {
+                                let mut players = app.players.write().unwrap();
+                                for p in players.values_mut() {
+                                    p.ether = p.ether.saturating_add(5);
+                                }
+                            }
+                            let text = format!(
+                                "🛡️ [入侵結束] 第 {} 波入侵已退去！城鎮守住了！全服在線玩家獲得 +5 乙太獎勵",
+                                wave
+                            );
+                            let _ = app.tx_chat.send(text.clone());
+                            // 城鎮記憶石記錄守城勝利。
+                            app.town_memory.write().unwrap().push_event("🛡️", format!(
+                                "守城勝利——第 {} 波入侵擊退，城鎮英勇守護",
+                                wave
+                            ));
+                        }
+                    }
+                }
+            }
+
             // 天文台星象預報 tick（ROADMAP 132）：天文台竣工後每個黎明廣播星象、啟用全服加成。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -1834,6 +1884,15 @@ pub fn spawn(app: AppState) {
                         civic_vote: app.civic_vote.read().unwrap().vote_view(),
                         civic_effect_secs: app.civic_vote.read().unwrap().effect_remaining_secs(),
                         civic_effect_kind: app.civic_vote.read().unwrap().active_effect_kind(),
+                        // 城鎮入侵警報（ROADMAP 158）：入侵狀態供前端 HUD 顯示倒數。
+                        invasion: {
+                            let iv = app.invasion.read().unwrap();
+                            crate::protocol::InvasionView {
+                                active: iv.active,
+                                remaining_secs: iv.remaining_secs(),
+                                wave_count: iv.wave_count,
+                            }
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

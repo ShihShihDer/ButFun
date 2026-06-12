@@ -589,6 +589,17 @@ pub struct SeasonalNodeView {
     pub charges: u8,
 }
 
+/// 城鎮入侵警報快照（ROADMAP 158）——供前端 HUD 顯示入侵狀態與倒數。
+#[derive(Debug, Clone, Serialize)]
+pub struct InvasionView {
+    /// 入侵是否進行中。
+    pub active: bool,
+    /// 入侵剩餘秒數（active = false 時為 0）。
+    pub remaining_secs: f32,
+    /// 累計已完成的入侵波次（供前端顯示「第 N 波」）。
+    pub wave_count: u32,
+}
+
 /// 旅行商人商品目錄一個條目（ROADMAP 135）。
 #[derive(Debug, Clone, Serialize)]
 pub struct WanderingCatalogEntry {
@@ -714,6 +725,9 @@ pub enum ServerMsg {
         /// 公民投票效果種類（ROADMAP 156）：空字串=無；farming_festival/night_market/defense_drill。
         /// 前端依此顯示效果標籤。
         civic_effect_kind: String,
+        /// 城鎮入侵警報（ROADMAP 158）：入侵是否進行中、剩餘秒數、累計波次。
+        /// 前端依此顯示 HUD 警報橫幅與倒數計時。
+        invasion: InvasionView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1568,6 +1582,7 @@ mod tests {
             civic_vote: None,
             civic_effect_secs: 0,
             civic_effect_kind: String::new(),
+            invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0 },
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

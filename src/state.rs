@@ -1010,6 +1010,9 @@ pub struct AppState {
     /// 城鎮記憶石（ROADMAP 157）：記錄世界大事（守城勝敗、提案、季節、大工程等），
     /// 玩家靠近記憶石可讀取。純記憶體，重啟清零，不破壞玩家資料。
     pub town_memory: Arc<RwLock<crate::town_memory::TownMemory>>,
+    /// 城鎮入侵警報（ROADMAP 158）：每 90 分鐘怪物大舉入侵城鎮外圍，玩家攜手抵禦。
+    /// 純記憶體，重啟清零，不破壞玩家資料。
+    pub invasion: Arc<RwLock<crate::invasion::InvasionState>>,
 }
 
 impl AppState {
@@ -1181,6 +1184,7 @@ impl AppState {
             home_furnishings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             civic_vote: Arc::new(RwLock::new(crate::civic_vote::CivicVoteState::new())),
             town_memory: Arc::new(RwLock::new(crate::town_memory::TownMemory::new())),
+            invasion: Arc::new(RwLock::new(crate::invasion::InvasionState::new())),
         }
     }
 
