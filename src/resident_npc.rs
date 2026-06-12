@@ -103,6 +103,14 @@ pub enum ResidentLifecycleEvent {
         player_name: String,
         text: String,
     },
+    /// 居民發出互助請求（ROADMAP 125）：廣播世界聊天 + NpcSpeech 泡泡。
+    HelpRequested {
+        resident_id: String,
+        resident_name: &'static str,
+        x: f32,
+        y: f32,
+        text: String,
+    },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -134,6 +142,16 @@ pub const RESIDENT_REACH: f32 = 80.0;
 pub const WORK_TIMER_MIN: f32 = 600.0;
 /// 工作動態廣播最長間隔（秒）= 20 分鐘。
 pub const WORK_TIMER_MAX: f32 = 1200.0;
+
+// ── 互助請求常數（ROADMAP 125）────────────────────────────────────────────────
+/// 互助請求最短觸發間隔（秒）= 12 分鐘。
+pub const HELP_REQUEST_TIMER_MIN: f32 = 720.0;
+/// 互助請求最長觸發間隔（秒）= 20 分鐘。
+pub const HELP_REQUEST_TIMER_MAX: f32 = 1200.0;
+/// 互助請求持續時間（秒）= 8 分鐘，到時自動消除。
+pub const HELP_REQUEST_DURATION_SECS: f32 = 480.0;
+/// 玩家協助居民後獲得的乙太獎勵。
+pub const HELP_REWARD_ETHER: u32 = 8;
 
 // ── 鄰里互動常數（ROADMAP 121）────────────────────────────────────────────────
 /// 相遇觸發距離（像素）：兩位居民距離 ≤ 此值才能觸發打招呼。
@@ -277,6 +295,15 @@ pub struct ResidentNpc {
     pub greeting_cooldown: f32,
     /// 搭話計數（供模板種子輪替）。
     greeting_seed: usize,
+    // ── 互助請求（ROADMAP 125）──────────────────────────
+    /// 距下次觸發互助請求的倒數計時（秒）。
+    help_request_timer: f32,
+    /// 目前是否有活躍的互助請求（等待玩家協助）。
+    pub is_requesting_help: bool,
+    /// 互助請求剩餘有效秒數（到 0 自動消除）。
+    help_active_timer: f32,
+    /// 互助請求模板種子（每次請求遞增）。
+    help_request_seed: usize,
 }
 
 impl ResidentNpc {
@@ -295,6 +322,8 @@ impl ResidentNpc {
         let mini_offset = rng.gen_range(0.0..MINI_EVENT_TIMER_MAX);
         // 搭話冷卻錯開，避免多位居民在玩家登入瞬間同時打招呼。
         let greeting_offset = rng.gen_range(0.0..GREETING_COOLDOWN_SECS);
+        // 互助請求計時錯開，避免所有居民同時廣播求助。
+        let help_offset = rng.gen_range(0.0..HELP_REQUEST_TIMER_MAX);
         Self {
             id: format!("resident_{}", index),
             name,
@@ -318,6 +347,10 @@ impl ResidentNpc {
             mini_event_seed: index,
             greeting_cooldown: greeting_offset,
             greeting_seed: index,
+            help_request_timer: HELP_REQUEST_TIMER_MIN + help_offset,
+            is_requesting_help: false,
+            help_active_timer: 0.0,
+            help_request_seed: index,
         }
     }
 
@@ -481,6 +514,31 @@ impl ResidentManager {
                     r.greeting_seed += 1;
                 }
             }
+            // 互助請求（ROADMAP 125）——計時到期後廣播求助，持續 HELP_REQUEST_DURATION_SECS 秒。
+            if !r.is_requesting_help {
+                r.help_request_timer -= dt;
+                if r.help_request_timer <= 0.0 {
+                    r.is_requesting_help = true;
+                    r.help_active_timer = HELP_REQUEST_DURATION_SECS;
+                    let text = crate::resident_chat::get_help_request(
+                        r.persona, r.name, r.help_request_seed,
+                    );
+                    events.push(ResidentLifecycleEvent::HelpRequested {
+                        resident_id: r.id.clone(),
+                        resident_name: r.name,
+                        x: r.x,
+                        y: r.y,
+                        text,
+                    });
+                }
+            } else {
+                r.help_active_timer -= dt;
+                if r.help_active_timer <= 0.0 {
+                    // 無人幫忙，請求自動過期
+                    r.is_requesting_help = false;
+                    r.help_request_timer = self.rng.gen_range(HELP_REQUEST_TIMER_MIN..=HELP_REQUEST_TIMER_MAX);
+                }
+            }
         }
 
         // 2. 鄰里互動檢查（ROADMAP 121）：兩位居民靠近時互相打招呼。
@@ -613,6 +671,36 @@ impl ResidentManager {
     /// 目前居民人數（供測試用）。
     pub fn population(&self) -> usize {
         self.residents.len()
+    }
+
+    /// 回傳目前有活躍互助請求的居民 id 清單（ROADMAP 125）。供快照廣播用。
+    pub fn requesting_ids(&self) -> Vec<String> {
+        self.residents.iter()
+            .filter(|r| r.is_requesting_help)
+            .map(|r| r.id.clone())
+            .collect()
+    }
+
+    /// 查找正在求助的指定居民（ROADMAP 125），回傳 (persona, name, x, y)。
+    /// 若居民不存在或未在求助中，回傳 None。
+    pub fn find_requesting_by_id(&self, resident_id: &str) -> Option<(ResidentPersona, &'static str, f32, f32)> {
+        self.residents.iter()
+            .find(|r| r.id == resident_id && r.is_requesting_help)
+            .map(|r| (r.persona, r.name, r.x, r.y))
+    }
+
+    /// 完成居民互助請求（ROADMAP 125）：清除 is_requesting_help，重設計時器。
+    /// 回傳 true 表示成功（居民存在且正在求助）；false 表示請求已被他人完成或不存在。
+    pub fn fulfill_help_request(&mut self, resident_id: &str) -> bool {
+        if let Some(r) = self.residents.iter_mut().find(|r| r.id == resident_id && r.is_requesting_help) {
+            r.is_requesting_help = false;
+            r.help_active_timer = 0.0;
+            r.help_request_timer = HELP_REQUEST_TIMER_MAX;
+            r.help_request_seed += 1;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -1169,5 +1257,96 @@ mod tests {
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家列表為空時不應觸發 PlayerGreeting"
         );
+    }
+
+    // ── ROADMAP 125 互助請求測試 ──────────────────────────────────────────────
+
+    /// 計時器歸零時應觸發 HelpRequested 事件。
+    #[test]
+    fn help_request_triggers_when_timer_expires() {
+        let mut mgr = ResidentManager::new();
+        // 把第一位居民的計時器設為幾乎到零
+        mgr.residents[0].help_request_timer = 0.01;
+        mgr.residents[0].is_requesting_help = false;
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        assert!(
+            events.iter().any(|e| matches!(e, ResidentLifecycleEvent::HelpRequested { .. })),
+            "help_request_timer 到期應觸發 HelpRequested 事件"
+        );
+    }
+
+    /// 觸發後 is_requesting_help 應為 true。
+    #[test]
+    fn help_request_sets_requesting_flag() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].help_request_timer = 0.01;
+        mgr.tick(0.1, 50, Phase::Day, &[]);
+        assert!(mgr.residents[0].is_requesting_help, "觸發後 is_requesting_help 應為 true");
+    }
+
+    /// 過期後 is_requesting_help 應清除。
+    #[test]
+    fn help_request_expires_after_duration() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].is_requesting_help = true;
+        mgr.residents[0].help_active_timer = 0.01;
+        mgr.tick(0.1, 50, Phase::Day, &[]);
+        assert!(!mgr.residents[0].is_requesting_help, "時限到期後 is_requesting_help 應為 false");
+    }
+
+    /// requesting_ids 應正確回傳求助居民 id。
+    #[test]
+    fn requesting_ids_returns_correct_ids() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].is_requesting_help = true;
+        let ids = mgr.requesting_ids();
+        assert!(ids.contains(&mgr.residents[0].id), "requesting_ids 應包含求助居民的 id");
+    }
+
+    /// 無求助時 requesting_ids 回傳空清單。
+    #[test]
+    fn requesting_ids_empty_when_no_requests() {
+        let mgr = ResidentManager::new();
+        assert!(mgr.requesting_ids().is_empty(), "初始狀態應無求助請求");
+    }
+
+    /// fulfill_help_request 應清除請求並回傳 true。
+    #[test]
+    fn fulfill_help_request_clears_flag() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].is_requesting_help = true;
+        mgr.residents[0].help_active_timer = 100.0;
+        let rid = mgr.residents[0].id.clone();
+        let result = mgr.fulfill_help_request(&rid);
+        assert!(result, "fulfill_help_request 應回傳 true");
+        assert!(!mgr.residents[0].is_requesting_help, "完成後 is_requesting_help 應為 false");
+    }
+
+    /// 對非求助居民呼叫 fulfill_help_request 應回傳 false。
+    #[test]
+    fn fulfill_help_request_returns_false_if_not_requesting() {
+        let mut mgr = ResidentManager::new();
+        // 確保第一位居民沒在求助
+        mgr.residents[0].is_requesting_help = false;
+        let rid = mgr.residents[0].id.clone();
+        let result = mgr.fulfill_help_request(&rid);
+        assert!(!result, "居民未求助時 fulfill_help_request 應回傳 false");
+    }
+
+    /// find_requesting_by_id 應找到求助居民。
+    #[test]
+    fn find_requesting_by_id_finds_requesting_resident() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].is_requesting_help = true;
+        let rid = mgr.residents[0].id.clone();
+        assert!(mgr.find_requesting_by_id(&rid).is_some(), "應找到正在求助的居民");
+    }
+
+    /// find_requesting_by_id 對未求助居民回傳 None。
+    #[test]
+    fn find_requesting_by_id_returns_none_if_not_requesting() {
+        let mgr = ResidentManager::new();
+        let rid = mgr.residents[0].id.clone();
+        assert!(mgr.find_requesting_by_id(&rid).is_none(), "未求助時應回傳 None");
     }
 }

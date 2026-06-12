@@ -371,6 +371,7 @@
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
+  let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -688,6 +689,10 @@
         } else if (msg.gathering_secs === 0 && gatheringUntilMs > 0) {
           gatheringUntilMs = 0;
         }
+        // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
+        if (Array.isArray(msg.active_help_requests)) {
+          helpRequestResidentIds = new Set(msg.active_help_requests);
+        }
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
         // 天氣狀態（ROADMAP 93）：每幀快照同步，前端粒子系統由此驅動。
@@ -890,6 +895,8 @@
           updateHomeBtn(me);
           // 居民搭話按鈕（ROADMAP 118）
           updateResidentBtn(me);
+          // 居民互助請求按鈕（ROADMAP 125）
+          updateHelpResidentBtn(me);
         }
         break;
       }
@@ -3267,6 +3274,37 @@
     }
   }
   // ── 居民搭話按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 居民互助請求按鈕（ROADMAP 125）──────────────────────────────────────────
+  let nearestHelpResidentId = null;
+
+  /** 每幀更新「🤝 幫忙」按鈕：找最近且在 RESIDENT_REACH 內且正在求助的居民。 */
+  function updateHelpResidentBtn(me) {
+    const btn = document.getElementById("helpResidentBtn");
+    if (!btn || !me || me.indoor_plot_id != null) {
+      if (btn) btn.classList.add("hidden");
+      nearestHelpResidentId = null;
+      return;
+    }
+    let best = null;
+    let bestDist2 = RESIDENT_REACH_PX * RESIDENT_REACH_PX;
+    for (const npc of npcs) {
+      if (!npc.id.startsWith("resident_")) continue;
+      if (!helpRequestResidentIds.has(npc.id)) continue;
+      const dx = me.x - npc.x;
+      const dy = me.y - npc.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestDist2) { bestDist2 = d2; best = npc; }
+    }
+    nearestHelpResidentId = best ? best.id : null;
+    if (best) {
+      btn.classList.remove("hidden");
+      btn.title = `幫助 ${best.name}（+8 乙太）`;
+    } else {
+      btn.classList.add("hidden");
+    }
+  }
+  // ── 居民互助請求按鈕 end ─────────────────────────────────────────────────────
 
   // 受擊時的全螢幕邊緣紅光:四周往中心淡出的紅暈(中央保持透明、不擋視線),依剩餘時間淡出。
   // 純螢幕座標、純表現——觸發來自權威 HP 差值,這裡只負責畫,不參與任何戰鬥判定。
@@ -10641,6 +10679,15 @@
       residentBtnEl.addEventListener("click", () => {
         if (!ws || ws.readyState !== WebSocket.OPEN || !nearestResidentId) return;
         ws.send(JSON.stringify({ type: "talk_to_resident", resident_id: nearestResidentId }));
+      });
+    }
+
+    // 🤝 居民互助請求按鈕（ROADMAP 125）
+    const helpResidentBtnEl = document.getElementById("helpResidentBtn");
+    if (helpResidentBtnEl) {
+      helpResidentBtnEl.addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !nearestHelpResidentId) return;
+        ws.send(JSON.stringify({ type: "help_resident", resident_id: nearestHelpResidentId }));
       });
     }
 

@@ -760,6 +760,18 @@ pub fn spawn(app: AppState) {
                                 wy: y_b,
                             }));
                         }
+                        // ROADMAP 125：居民互助請求——廣播世界聊天 + NpcSpeech 頭頂泡泡。
+                        ResidentLifecycleEvent::HelpRequested { resident_id, resident_name, x, y, text } => {
+                            let _ = app.tx_chat.send(text.clone());
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: resident_id,
+                                npc_name: format!("居民 {}", resident_name),
+                                text,
+                                display_secs: 10,
+                                wx: x,
+                                wy: y,
+                            }));
+                        }
                     }
                 }
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
@@ -1455,6 +1467,8 @@ pub fn spawn(app: AppState) {
                         sprinklers: app.sprinklers.read().unwrap().views(),
                         // 廣場聚會剩餘秒數（ROADMAP 124）：0 = 無聚會；>0 = 全服 EXP +20%。
                         gathering_secs: app.community_gathering.read().unwrap().remaining_secs(),
+                        // 目前求助中的居民 id 清單（ROADMAP 125）：前端顯示「🤝 幫忙」按鈕用。
+                        active_help_requests: app.residents.read().unwrap().requesting_ids(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

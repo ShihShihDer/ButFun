@@ -427,6 +427,10 @@ pub enum ClientMsg {
     /// 跟路人居民搭話。`resident_id` 為 "resident_N" 格式；玩家必須在互動範圍內。
     /// 伺服器回傳 `NpcReply` 給本人、廣播 `NpcSpeech` 泡泡給周圍玩家。
     TalkToResident { resident_id: String },
+    /// 協助正在求助的居民（ROADMAP 125）。玩家必須在互動範圍內且居民有活躍請求。
+    /// 成功後：清除請求、玩家獲得 HELP_REWARD_ETHER 乙太、廣播居民感謝語。
+    #[serde(rename = "help_resident")]
+    HelpResident { resident_id: String },
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
@@ -536,6 +540,9 @@ pub enum ServerMsg {
         /// 居民廣場聚會剩餘秒數（ROADMAP 124）。0 表示無活躍聚會；>0 時全服 EXP +20%。
         /// 前端依此顯示 HUD 倒數 pill。
         gathering_secs: u32,
+        /// 目前有活躍互助請求的居民 id 清單（ROADMAP 125）。
+        /// 前端依此在靠近的求助居民旁顯示「🤝 幫忙」按鈕。
+        active_help_requests: Vec<String>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1243,6 +1250,7 @@ mod tests {
             weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
             sprinklers: vec![],
             gathering_secs: 0,
+            active_help_requests: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
