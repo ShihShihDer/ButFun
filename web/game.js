@@ -576,6 +576,7 @@
   let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
+  let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -925,6 +926,8 @@
         }
         // 野生動物（ROADMAP 140）。
         if (Array.isArray(msg.wildlife)) wildlifeList = msg.wildlife;
+        // 乙太微粒（ROADMAP 142 死亡餵養生命）。
+        if (Array.isArray(msg.carion_orbs)) carionOrbs = msg.carion_orbs;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -1144,6 +1147,8 @@
           updateResidentBtn(me);
           // 居民互助請求按鈕（ROADMAP 125）
           updateHelpResidentBtn(me);
+          // 乙太微粒採集按鈕（ROADMAP 142）
+          updateCarionOrbBtn(me);
         }
         break;
       }
@@ -3243,6 +3248,7 @@
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
     drawWildlife(camX, camY); // 中立野生動物（ROADMAP 140）
+    drawCarionOrbs(camX, camY); // 乙太微粒（ROADMAP 142 死亡餵養生命）
     drawWanderingMerchant(camX, camY); // 旅行商人（ROADMAP 135）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
     drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
@@ -3570,6 +3576,32 @@
     }
   }
   // ── 居民互助請求按鈕 end ─────────────────────────────────────────────────────
+
+  let nearestCarionOrbId = null;
+
+  /** 每幀更新「🌿 採集乙太微粒」按鈕（ROADMAP 142 死亡餵養生命）。 */
+  function updateCarionOrbBtn(me) {
+    const btn = document.getElementById("carionOrbBtn");
+    if (!btn || !me || me.downed) {
+      if (btn) btn.classList.add("hidden");
+      nearestCarionOrbId = null;
+      return;
+    }
+    const REACH2 = 80 * 80;
+    let best = null, bestD2 = REACH2;
+    for (const orb of carionOrbs) {
+      const dx = me.x - orb.x, dy = me.y - orb.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { bestD2 = d2; best = orb; }
+    }
+    nearestCarionOrbId = best ? best.id : null;
+    if (best) {
+      btn.classList.remove("hidden");
+    } else {
+      btn.classList.add("hidden");
+    }
+  }
+  // ── 乙太微粒按鈕 end ─────────────────────────────────────────────────────────
 
   // 受擊時的全螢幕邊緣紅光:四周往中心淡出的紅暈(中央保持透明、不擋視線),依剩餘時間淡出。
   // 純螢幕座標、純表現——觸發來自權威 HP 差值,這裡只負責畫,不參與任何戰鬥判定。
@@ -6467,6 +6499,72 @@
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       ctx.fillText(label, 0, -33);
+
+      ctx.restore();
+    }
+  }
+
+  // 乙太微粒（ROADMAP 142 死亡餵養生命）：野生動物死亡後釋出的乙太能量球。
+  // 發光翠綠外環＋金色核心，輕微脈動——象徵「萬物皆有其歸宿，死亡是循環的一環」。
+  function drawCarionOrbs(camX, camY) {
+    if (!carionOrbs.length) return;
+    const W = canvas.width, H = canvas.height;
+    const now = performance.now();
+    const me = players.find(p => p.id === myId);
+    const COLLECT_RADIUS = 80;
+
+    for (const orb of carionOrbs) {
+      const sx = orb.x - camX + W / 2;
+      const sy = orb.y - camY + H / 2;
+      if (sx < -30 || sx > W + 30 || sy < -30 || sy > H + 30) continue;
+
+      ctx.save();
+      ctx.translate(sx, sy);
+
+      const pulse = 0.8 + 0.2 * Math.sin(now / 500);
+      const outerR = 12 * pulse;
+
+      // 外環光暈（翠綠半透明）
+      const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, outerR + 8);
+      glow.addColorStop(0, "rgba(80, 255, 120, 0.5)");
+      glow.addColorStop(0.6, "rgba(60, 220, 90, 0.25)");
+      glow.addColorStop(1, "rgba(20, 180, 60, 0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(0, 0, outerR + 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 本體（翠綠→金色漸層核心）
+      const core = ctx.createRadialGradient(0, -2, 0, 0, 0, outerR);
+      core.addColorStop(0, "#e8ffc0");
+      core.addColorStop(0.4, "#60e878");
+      core.addColorStop(1, "#28a850");
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.arc(0, 0, outerR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 乙太符文點（三個小光點旋轉）
+      for (let i = 0; i < 3; i++) {
+        const angle = (now / 800) + (i * Math.PI * 2 / 3);
+        const rx = Math.cos(angle) * (outerR * 0.65);
+        const ry = Math.sin(angle) * (outerR * 0.65);
+        ctx.fillStyle = "rgba(255,255,200,0.85)";
+        ctx.beginPath();
+        ctx.arc(rx, ry, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 標籤：顯示乙太值
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      const label = "+4✨";
+      const lw = ctx.measureText(label).width + 8;
+      ctx.fillRect(-lw / 2, -outerR - 18, lw, 14);
+      ctx.fillStyle = "#c8ffc0";
+      ctx.font = "bold 9px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText(label, 0, -outerR - 17);
 
       ctx.restore();
     }
@@ -11894,6 +11992,15 @@
       helpResidentBtnEl.addEventListener("click", () => {
         if (!ws || ws.readyState !== WebSocket.OPEN || !nearestHelpResidentId) return;
         ws.send(JSON.stringify({ type: "help_resident", resident_id: nearestHelpResidentId }));
+      });
+    }
+
+    // 🌿 乙太微粒採集按鈕（ROADMAP 142 死亡餵養生命）
+    const carionOrbBtnEl = document.getElementById("carionOrbBtn");
+    if (carionOrbBtnEl) {
+      carionOrbBtnEl.addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || nearestCarionOrbId == null) return;
+        ws.send(JSON.stringify({ type: "collect_carion_orb", orb_id: nearestCarionOrbId }));
       });
     }
 

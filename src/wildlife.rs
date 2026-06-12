@@ -1,13 +1,15 @@
-//! 野生動物系統（ROADMAP 140 中立野生動物 + ROADMAP 141 食物鏈/獵食）。
+//! 野生動物系統（ROADMAP 140 中立野生動物 + ROADMAP 141 食物鏈/獵食 + ROADMAP 142 死亡餵養生命）。
 //!
 //! ROADMAP 140：野鳥/野鹿/小動物——中立、只逃跑、不攻擊。
 //! ROADMAP 141：野狼獵野鹿、野狐獵小動物；族群此消彼長（湧現平衡）。
+//! ROADMAP 142：死亡餵養生命——獵物死亡釋出乙太微粒；玩家靠近採集得乙太，死亡是循環的一環。
 //!
 //! 行為規則：
 //! - 捕食者進入 HUNT_RADIUS 內偵測到獵物 → Hunting（追獵）。
 //! - 追及 KILL_RADIUS 內 → 獵物死亡 + 捕食者進入 Digesting。
 //! - 玩家與捕食者都會令獵物 Fleeing；同種獵物見捕食者靠近也一起竄逃（群逃）。
 //! - 死亡獵物 ~50 秒後在家附近重生（代表族群新個體）。
+//! - 死亡時在原地生成乙太微粒；玩家靠近採集得 CARION_ETHER 乙太（死亡是循環的一環）。
 //! - 捕食者每分鐘最多廣播一次捕獵事件，不塞頻道。
 //!
 //! 效能：全純算術、零 LLM、零 migration、記憶體模式，重啟全重置。
@@ -56,6 +58,17 @@ const DIGEST_DURATION: f32 = 25.0;
 const PREY_RESPAWN_SECS: f32 = 50.0;
 /// 捕獵廣播最短間隔（秒），避免塞頻道。
 const KILL_BROADCAST_INTERVAL: f32 = 30.0;
+
+// ─── ROADMAP 142：乙太微粒常數 ───────────────────────────────────────────────
+
+/// 乙太微粒採集有效距離（像素）。
+pub const CARION_COLLECT_RADIUS: f32 = 80.0;
+/// 每顆乙太微粒給予的乙太數量。
+pub const CARION_ETHER: u32 = 4;
+/// 乙太微粒存在時長（秒），逾時自動消失。
+const CARION_ORB_TTL: f32 = 90.0;
+/// 同時存在乙太微粒的上限（防止無限堆積）。
+const MAX_CARION_ORBS: usize = 8;
 
 // ─── 種類與營養階 ────────────────────────────────────────────────────────────
 
@@ -115,6 +128,17 @@ impl WildlifeKind {
             _ => None,
         }
     }
+}
+
+// ─── ROADMAP 142：乙太微粒 ───────────────────────────────────────────────────
+
+/// 獵物死亡時釋出的乙太微粒——死亡是循環的一環。
+#[derive(Debug, Clone)]
+pub struct CarrionOrb {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    pub ttl: f32,
 }
 
 // ─── 事件 ────────────────────────────────────────────────────────────────────
@@ -279,19 +303,40 @@ pub struct WildlifeManager {
     rng: StdRng,
     /// 距上次捕獵廣播的累計秒數（限流用）。
     kill_broadcast_cooldown: f32,
+    /// ROADMAP 142：活躍乙太微粒列表。
+    pub carion_orbs: Vec<CarrionOrb>,
+    /// 微粒 ID 計數器（跨生命週期唯一）。
+    orb_counter: u32,
 }
 
 impl WildlifeManager {
     pub fn new() -> Self {
         let mut rng = StdRng::seed_from_u64(7654321);
         let animals = spawn_all_wildlife(&mut rng);
-        Self { animals, rng, kill_broadcast_cooldown: 0.0 }
+        Self { animals, rng, kill_broadcast_cooldown: 0.0, carion_orbs: Vec::new(), orb_counter: 0 }
+    }
+
+    /// ROADMAP 142：嘗試採集距玩家最近的乙太微粒。
+    /// 成功回傳乙太量，並移除該微粒；否則回傳 None。
+    pub fn collect_carion_orb(&mut self, orb_id: u32, px: f32, py: f32) -> Option<u32> {
+        let r2 = CARION_COLLECT_RADIUS * CARION_COLLECT_RADIUS;
+        let idx = self.carion_orbs.iter().position(|o| {
+            o.id == orb_id && (o.x - px).powi(2) + (o.y - py).powi(2) <= r2
+        })?;
+        self.carion_orbs.swap_remove(idx);
+        Some(CARION_ETHER)
     }
 
     /// 每幀推進所有野生動物，回傳本幀產生的事件列表。
     pub fn tick(&mut self, dt: f32, player_positions: &[(f32, f32)]) -> Vec<WildlifeEvent> {
         let mut events = Vec::new();
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
+
+        // ── Phase 0: 乙太微粒 TTL 倒數（ROADMAP 142）─────────────────────────
+        for orb in &mut self.carion_orbs {
+            orb.ttl -= dt;
+        }
+        self.carion_orbs.retain(|o| o.ttl > 0.0);
 
         // ── Phase 1: 死亡倒數 + 重生 ──────────────────────────────────────────
         for a in &mut self.animals {
@@ -431,6 +476,12 @@ impl WildlifeManager {
             if self.kill_broadcast_cooldown <= 0.0 {
                 events.push(WildlifeEvent::Kill { predator_kind: pred_kind, prey_kind, x: kx, y: ky });
                 self.kill_broadcast_cooldown = KILL_BROADCAST_INTERVAL;
+            }
+            // ROADMAP 142：在死亡位置生成乙太微粒（上限 MAX_CARION_ORBS）。
+            if self.carion_orbs.len() < MAX_CARION_ORBS {
+                let id = self.orb_counter;
+                self.orb_counter = self.orb_counter.wrapping_add(1);
+                self.carion_orbs.push(CarrionOrb { id, x: kx, y: ky, ttl: CARION_ORB_TTL });
             }
         }
 
@@ -626,5 +677,103 @@ mod tests {
             mgr.tick(0.1, &players);
         }
         assert_eq!(mgr.animals.len(), WILDLIFE_COUNT);
+    }
+
+    // ─── ROADMAP 142 測試：乙太微粒生命週期 ─────────────────────────────────
+
+    #[test]
+    fn carion_orb_spawns_on_kill() {
+        let mut mgr = WildlifeManager::new();
+        let wolf_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildWolf).unwrap();
+        let deer_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildDeer).unwrap();
+        let deer_id = mgr.animals[deer_idx].id;
+        let deer_x  = mgr.animals[deer_idx].x;
+        let deer_y  = mgr.animals[deer_idx].y;
+        mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
+        mgr.animals[wolf_idx].y = deer_y;
+        mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
+        mgr.tick(0.1, &[]);
+        assert_eq!(mgr.carion_orbs.len(), 1, "擊殺後應生成一顆乙太微粒");
+        let orb = &mgr.carion_orbs[0];
+        let dx = orb.x - deer_x;
+        let dy = orb.y - deer_y;
+        assert!(dx * dx + dy * dy < 1.0, "乙太微粒應在死亡位置");
+    }
+
+    #[test]
+    fn carion_orb_expires_after_ttl() {
+        let mut mgr = WildlifeManager::new();
+        // 手動插入一顆即將到期的乙太微粒。
+        mgr.carion_orbs.push(CarrionOrb { id: 0, x: 2000.0, y: 2000.0, ttl: 0.05 });
+        assert_eq!(mgr.carion_orbs.len(), 1);
+        // 跑超過 TTL。
+        mgr.tick(0.1, &[]);
+        assert_eq!(mgr.carion_orbs.len(), 0, "TTL 到期後應自動消失");
+    }
+
+    #[test]
+    fn collect_carion_orb_in_range_succeeds() {
+        let mut mgr = WildlifeManager::new();
+        mgr.carion_orbs.push(CarrionOrb { id: 42, x: 2000.0, y: 2000.0, ttl: 60.0 });
+        let result = mgr.collect_carion_orb(42, 2020.0, 2020.0);
+        assert_eq!(result, Some(CARION_ETHER), "在範圍內採集應得到乙太");
+        assert_eq!(mgr.carion_orbs.len(), 0, "採集後微粒應消失");
+    }
+
+    #[test]
+    fn collect_carion_orb_out_of_range_fails() {
+        let mut mgr = WildlifeManager::new();
+        mgr.carion_orbs.push(CarrionOrb { id: 7, x: 2000.0, y: 2000.0, ttl: 60.0 });
+        let result = mgr.collect_carion_orb(7, 2200.0, 2200.0);
+        assert!(result.is_none(), "超出範圍不應成功採集");
+        assert_eq!(mgr.carion_orbs.len(), 1, "失敗後微粒仍存在");
+    }
+
+    #[test]
+    fn collect_carion_orb_wrong_id_fails() {
+        let mut mgr = WildlifeManager::new();
+        mgr.carion_orbs.push(CarrionOrb { id: 1, x: 2000.0, y: 2000.0, ttl: 60.0 });
+        let result = mgr.collect_carion_orb(99, 2000.0, 2000.0);
+        assert!(result.is_none(), "錯誤 ID 不應成功採集");
+    }
+
+    #[test]
+    fn max_orb_limit_is_respected() {
+        let mut mgr = WildlifeManager::new();
+        // 塞滿上限。
+        for i in 0..MAX_CARION_ORBS {
+            mgr.carion_orbs.push(CarrionOrb { id: i as u32, x: 2000.0, y: 2000.0, ttl: 60.0 });
+        }
+        assert_eq!(mgr.carion_orbs.len(), MAX_CARION_ORBS);
+        // 模擬一次擊殺（找野狼和野鹿）。
+        let wolf_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildWolf).unwrap();
+        let deer_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildDeer).unwrap();
+        let deer_id = mgr.animals[deer_idx].id;
+        let deer_x  = mgr.animals[deer_idx].x;
+        let deer_y  = mgr.animals[deer_idx].y;
+        mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
+        mgr.animals[wolf_idx].y = deer_y;
+        mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
+        mgr.tick(0.1, &[]);
+        // 上限不超出。
+        assert!(mgr.carion_orbs.len() <= MAX_CARION_ORBS, "乙太微粒不應超過上限");
+    }
+
+    #[test]
+    fn carion_ether_value_is_positive() {
+        assert!(CARION_ETHER > 0, "乙太微粒的乙太數量應 > 0");
+    }
+
+    #[test]
+    fn carion_orb_ids_are_unique() {
+        let mut mgr = WildlifeManager::new();
+        for _ in 0..3 {
+            let id = mgr.orb_counter;
+            mgr.orb_counter = mgr.orb_counter.wrapping_add(1);
+            mgr.carion_orbs.push(CarrionOrb { id, x: 0.0, y: 0.0, ttl: 60.0 });
+        }
+        let ids: Vec<u32> = mgr.carion_orbs.iter().map(|o| o.id).collect();
+        let unique: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "乙太微粒 ID 應唯一");
     }
 }
