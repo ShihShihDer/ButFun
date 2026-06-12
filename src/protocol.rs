@@ -1017,6 +1017,9 @@ pub struct EnemyView {
     /// 兇名精英（ROADMAP 42）：level >= base_level+3，名牌加「兇名」前綴、體型微大、全服通告過。
     #[serde(default, skip_serializing_if = "is_false")]
     pub notorious: bool,
+    /// 夜間休息中（ROADMAP 148）：此怪夜間回巢靜止，前端畫成半透明 + 💤 符號。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub resting: bool,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -1377,6 +1380,7 @@ mod tests {
                 max_hp: 6,
                 alive: true,
                 notorious: false,
+                resting: false,
             }],
             daynight: DayNightView {
                 phase: Phase::Day,

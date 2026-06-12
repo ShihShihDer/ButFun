@@ -7614,6 +7614,7 @@
         : 0;
       ctx.save();
       if (!e.alive) ctx.globalAlpha = 0.22; // 被打倒、重生中
+      else if (e.resting) ctx.globalAlpha = 0.42; // 夜間休息中（ROADMAP 148）
       // 影子(定在地面、不隨浮動)
       ctx.fillStyle = "rgba(0,0,0,0.22)";
       ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
@@ -7694,14 +7695,14 @@
       if (e.alive && typeof e.level === "number") {
         const plvl = myLevel || 1;
         const diff = e.level - plvl;
-        // 綠=比玩家弱，黃=勢均，紅=危險
-        const lvColor = e.notorious ? "#ff4444" : diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
+        // 綠=比玩家弱，黃=勢均，紅=危險；休息中改藍灰色
+        const lvColor = e.resting ? "#8ab" : e.notorious ? "#ff4444" : diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
         const kindName = ENEMY_NAME[e.kind] || e.kind;
-        const prefix = e.notorious ? "兇名 " : "";
+        const prefix = e.notorious ? "兇名 " : e.resting ? "💤 " : "";
         const tag = `${prefix}Lv.${e.level} ${kindName}`;
         ctx.font = e.notorious ? "bold 10px sans-serif" : "bold 9px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : "rgba(0,0,0,0.55)";
+        ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : e.resting ? "rgba(0,20,40,0.5)" : "rgba(0,0,0,0.55)";
         ctx.fillText(tag, sx + 1, sy - 29);
         ctx.fillStyle = lvColor;
         ctx.fillText(tag, sx, sy - 30);

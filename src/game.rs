@@ -278,6 +278,7 @@ pub fn spawn(app: AppState) {
                             max_hp: p.enemy.max_hp(),
                             alive: p.enemy.is_alive(),
                             notorious: p.level >= p.base_level.saturating_add(3),
+                            resting: is_night && crate::enemy_field::is_night_rester(p.id),
                         })
                         .collect()
                 } else {
