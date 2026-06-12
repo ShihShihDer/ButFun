@@ -511,6 +511,46 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
+  const SEASON_INFO = {
+    spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
+    summer: { label: "☀️ 夏", color: "#f0e060", border: "#c0a020", bg: "#1a1800" },
+    autumn: { label: "🍂 秋", color: "#e08040", border: "#a05020", bg: "#1a0c00" },
+    winter: { label: "❄️ 冬", color: "#a0c8f0", border: "#4080b0", bg: "#060e18" },
+  };
+  let lastSeasonText = null;
+  function updateSeasonHud() {
+    let pill = document.getElementById("hudSeason");
+    const info = SEASON_INFO[currentSeason] || SEASON_INFO.spring;
+    const mins = Math.floor(seasonRemainingSecs / 60);
+    const secs = seasonRemainingSecs % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const text = `${info.label}（${timeStr}）`;
+    if (text === lastSeasonText) return;
+    lastSeasonText = text;
+    if (!pill) {
+      const el = document.createElement("div");
+      el.id = "hudSeason";
+      el.style.cssText = [
+        "position:fixed", "top:146px", "right:8px",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+        "transition:background .4s,color .4s",
+      ].join(";");
+      document.body.appendChild(el);
+    }
+    const t = document.getElementById("hudSeason");
+    if (t) {
+      t.style.background = info.bg;
+      t.style.color = info.color;
+      t.style.border = `1px solid ${info.border}`;
+      t.style.display = "block";
+      t.textContent = text;
+    }
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -533,6 +573,8 @@
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
   let townProsperityLevel = 1; // ROADMAP 128 城鎮繁榮等級：0=凋零 1=平靜 2=生機 3=繁盛
+  let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
+  let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -874,6 +916,12 @@
         wanderingCatalog = Array.isArray(msg.wandering_catalog) ? msg.wandering_catalog : [];
         // 旅行商人限時委託（ROADMAP 136）。
         merchantQuests = Array.isArray(msg.merchant_quests) ? msg.merchant_quests : [];
+        // 季節循環（ROADMAP 137）：從快照同步目前季節，HUD 常駐顯示。
+        if (msg.current_season) {
+          currentSeason = msg.current_season;
+          seasonRemainingSecs = msg.season_remaining_secs || 0;
+          updateSeasonHud();
+        }
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3306,6 +3354,8 @@
     updateMeteorShowerHud();
     // 旅行商人（ROADMAP 135）：在城鎮期間顯示橙色倒數 pill。
     updateWanderingMerchantHud();
+    // 季節循環（ROADMAP 137）：常駐顯示目前季節 pill（每次快照同步一次，render 只確保初始顯示）。
+    updateSeasonHud();
 
     requestAnimationFrame(render);
   }

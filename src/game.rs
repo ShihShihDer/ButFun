@@ -112,6 +112,17 @@ pub fn spawn(app: AppState) {
                 (view, daynight.growth_rate(), is_night)
             };
 
+            // 季節循環（ROADMAP 137）：推進季節計時器，切換時廣播公告。
+            // 季節成長倍率疊乘在日夜倍率之上，獨立正交不互相侵犯。
+            let season_growth = {
+                let mut s = app.season.write().unwrap();
+                if let Some(new_season) = s.tick(dt) {
+                    let _ = app.tx_chat.send(new_season.announce_text().to_string());
+                    tracing::info!(season = new_season.as_str(), "季節切換");
+                }
+                s.growth_rate_modifier()
+            };
+
             // 夜採星晶（ROADMAP 50）：偵測日夜轉換事件，生成或清除星晶礦脈。
             if is_night && !prev_is_night {
                 // 剛進入夜間：生成本夜礦脈。
@@ -125,11 +136,12 @@ pub fn spawn(app: AppState) {
             // 下雨澆田（ROADMAP 109）：在農田 tick 前讀取當前天氣狀態，草原細雨時自動澆灌。
             let is_raining = app.weather.read().unwrap().is_raining();
 
-            // 推進所有玩家農地的成長：依日夜成長倍率縮放 dt——白天亮、長得快，夜裡暗、
-            // 放慢（0-G「隨日夜成長」）。濕度也一併縮放，故每次澆水的總成長量不變、
-            // 只有牆鐘速度隨日夜變化。同時把每塊地轉成快照、並戳上擁有者 id（`Field`
-            // 自己不知道屬於誰，由這層持有的 `user_id → Field` 對映補上）。短暫持鎖，不跨 await。
+            // 推進所有玩家農地的成長：依日夜成長倍率 × 季節倍率縮放 dt——
+            // 白天亮、長得快，夜裡暗、放慢；春天加速、冬天幾乎停滯（ROADMAP 137）。
+            // 濕度也一併縮放，故每次澆水的總成長量不變、只有牆鐘速度隨日夜/季節變化。
+            // 同時把每塊地轉成快照、並戳上擁有者 id（`Field` 自己不知道屬於誰）。短暫持鎖，不跨 await。
             // 成長無條件推進(每塊地 tick);view 只在要廣播時才在同一把鎖內多走一趟建。
+            let effective_growth = growth_rate * season_growth;
             let field_views: Vec<FieldView> = {
                 let mut fields = app.fields.write().unwrap();
                 // 灑水器自動澆灌：每個灑水器對主人的農地 tick，倒數到 0 時澆周圍格。
@@ -149,7 +161,7 @@ pub fn spawn(app: AppState) {
                     if is_raining {
                         field.water_all_planted();
                     }
-                    field.tick(dt * growth_rate);
+                    field.tick(dt * effective_growth);
                 }
                 // 公共農地與個人地塊同步成長，廣播時以 owner=nil 加入列表讓前端辨識。
                 let pub_view = {
@@ -157,7 +169,7 @@ pub fn spawn(app: AppState) {
                     if is_raining {
                         pf.water_all_planted();
                     }
-                    pf.tick(dt * growth_rate);
+                    pf.tick(dt * effective_growth);
                     if want_broadcast {
                         let mut v = pf.view();
                         v.owner = uuid::Uuid::nil();
@@ -1596,6 +1608,9 @@ pub fn spawn(app: AppState) {
                         },
                         // 旅行商人限時委託（ROADMAP 136）。
                         merchant_quests: app.wandering_merchant.read().unwrap().quest_views(),
+                        // 季節循環（ROADMAP 137）。
+                        current_season: app.season.read().unwrap().current.as_str().to_string(),
+                        season_remaining_secs: app.season.read().unwrap().remaining_secs(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

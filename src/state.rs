@@ -952,6 +952,9 @@ pub struct AppState {
     /// 旅行商人狀態（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘，限時出售稀有物品。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub wandering_merchant: Arc<RwLock<crate::wandering_merchant::WanderingMerchantState>>,
+    /// 季節循環（ROADMAP 137）：春夏秋冬各 20 分鐘輪替，影響作物成長速度。
+    /// 記憶體模式，重啟從春天開始（世界換季，行為合理）。
+    pub season: Arc<RwLock<crate::season::SeasonState>>,
 }
 
 impl AppState {
@@ -1116,6 +1119,7 @@ impl AppState {
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
+            season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
         }
     }
 
