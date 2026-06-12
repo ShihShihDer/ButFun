@@ -986,6 +986,9 @@ pub struct AppState {
     /// 流星雨狀態（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub meteor_shower: Arc<RwLock<crate::meteor_shower::MeteorShowerState>>,
+    /// 夜間乙太泉（ROADMAP 162）：每當日夜轉入夜晚時在城外生成 5 個乙太泉採集點。
+    /// 玩家靠近採集得 +8 乙太；天亮自動清除。純記憶體模式，重啟清零。
+    pub night_springs: Arc<RwLock<crate::night_aether_springs::NightAetherSprings>>,
     /// 旅行商人狀態（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘，限時出售稀有物品。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub wandering_merchant: Arc<RwLock<crate::wandering_merchant::WanderingMerchantState>>,
@@ -1176,6 +1179,7 @@ impl AppState {
             observatory: Arc::new(RwLock::new(crate::observatory::ObservatoryState::new())),
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
+            night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),

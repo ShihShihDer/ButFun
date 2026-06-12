@@ -1162,6 +1162,27 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 夜間乙太泉 tick（ROADMAP 162）：黃昏轉夜晚時生成 5 個城外乙太泉採集點。
+            {
+                use crate::night_aether_springs::SpringsEvent;
+                let current_phase = app.daynight.read().unwrap().phase();
+                let ev = app.night_springs.write().unwrap().tick(current_phase);
+                match ev {
+                    Some(SpringsEvent::Activated) => {
+                        let msg = format!(
+                            "🌙 夜幕降臨，{} 個乙太泉在城外湧現——夜探者可在天亮前採集，各得 {} 乙太！",
+                            crate::night_aether_springs::SPRING_COUNT,
+                            crate::night_aether_springs::ETHER_REWARD,
+                        );
+                        let _ = app.tx_chat.send(msg);
+                    }
+                    Some(SpringsEvent::Deactivated) => {
+                        // 天亮靜默清除，不廣播（避免擾民）。
+                    }
+                    None => {}
+                }
+            }
+
             // 旅行商人（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘。
             {
                 let (arrived, departed) = app.wandering_merchant.write().unwrap().tick(dt);
@@ -1930,6 +1951,10 @@ pub fn spawn(app: AppState) {
                                 consecutive_successes: iv.consecutive_successes,
                             }
                         },
+                        // 夜間乙太泉（ROADMAP 162）。
+                        night_spring_nodes: app.night_springs.read().unwrap().active_nodes()
+                            .map(|n| crate::protocol::SpringNodeView { id: n.id, wx: n.wx, wy: n.wy })
+                            .collect(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

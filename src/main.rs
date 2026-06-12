@@ -13,6 +13,7 @@ mod town_project;
 mod town_project_store;
 mod observatory;
 mod meteor_shower;
+mod night_aether_springs;
 mod wandering_merchant;
 mod connections;
 mod equipment;

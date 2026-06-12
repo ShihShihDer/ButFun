@@ -464,6 +464,10 @@ pub enum ClientMsg {
     /// 成功後：節點標為已採集、玩家獲得 StarDust×1。
     #[serde(rename = "collect_dust_node")]
     CollectDustNode { node_id: u32 },
+    /// 採集夜間乙太泉（ROADMAP 162）。玩家必須在 COLLECT_REACH 範圍內且是夜晚。
+    /// 成功後：節點標為已採集、玩家獲得 +8 乙太。
+    #[serde(rename = "collect_spring_node")]
+    CollectSpringNode { node_id: u32 },
     /// 向旅行商人購買（ROADMAP 135）。玩家需在 TRADE_REACH 範圍內、登入、持有足夠乙太。
     /// 成功後：扣乙太、玩家背包增加 item×qty。
     #[serde(rename = "buy_from_wanderer")]
@@ -573,6 +577,17 @@ pub enum ClientMsg {
         /// 是否為彩虹節點——每場恰好 1 個，採集得到 RainbowStarDust（ROADMAP 134）。
         pub is_rainbow: bool,
     }
+
+/// 快照裡的夜間乙太泉節點（ROADMAP 162）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SpringNodeView {
+    /// 節點唯一 ID（用於 CollectSpringNode ClientMsg）。
+    pub id: u32,
+    /// 世界座標 X。
+    pub wx: f32,
+    /// 世界座標 Y。
+    pub wy: f32,
+}
 
 /// 快照裡的季節性野外採集節點（ROADMAP 154）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -734,6 +749,9 @@ pub enum ServerMsg {
         /// 城鎮入侵警報（ROADMAP 158）：入侵是否進行中、剩餘秒數、累計波次。
         /// 前端依此顯示 HUD 警報橫幅與倒數計時。
         invasion: InvasionView,
+        /// 夜間乙太泉（ROADMAP 162）：活躍中的乙太泉節點清單（夜晚期間）。
+        /// 天亮後為空陣列。前端在節點位置顯示紫色脈動光圈。
+        night_spring_nodes: Vec<SpringNodeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1589,6 +1607,7 @@ mod tests {
             civic_effect_secs: 0,
             civic_effect_kind: String::new(),
             invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false, wave_level: 1, consecutive_successes: 0 },
+            night_spring_nodes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

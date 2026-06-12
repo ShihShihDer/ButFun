@@ -812,6 +812,7 @@
   let meteorShowerUntilMs = 0;  // ROADMAP 133 流星雨到期的 performance.now() 時刻（0=無流星雨）
   let dustNodes = [];           // ROADMAP 133 活躍星塵採集點 [{id, wx, wy}]
   let lastMeteorShowerText = null;
+  let nightSpringNodes = [];    // ROADMAP 162 夜間乙太泉採集點 [{id, wx, wy}]
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
@@ -1161,6 +1162,8 @@
           meteorShowerUntilMs = 0;
         }
         dustNodes = Array.isArray(msg.dust_nodes) ? msg.dust_nodes : [];
+        // 夜間乙太泉（ROADMAP 162）。
+        nightSpringNodes = Array.isArray(msg.night_spring_nodes) ? msg.night_spring_nodes : [];
         // 旅行商人（ROADMAP 135）。
         if (msg.wandering_merchant_secs > 0) {
           wanderingMerchantUntilMs = performance.now() + msg.wandering_merchant_secs * 1000;
@@ -2999,6 +3002,7 @@
     if (!me) return "farm";
     if (nearestEnemy(me)) return "attack";
     if (nearestDustNode(me)) return "collect_dust";
+    if (nearestSpringNode(me)) return "collect_spring";
     if (nearestSeasonalNode(me)) return "gather_seasonal";
     if (nearestHarvestable(me)) return "gather";
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
@@ -3018,6 +3022,9 @@
     // 附近有星塵節點時採集（ROADMAP 133）。
     const dn = nearestDustNode(me);
     if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
+    // 附近有夜間乙太泉時採集（ROADMAP 162）。
+    const spn = nearestSpringNode(me);
+    if (spn) { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); return; }
     // 附近有季節性節點時採集（ROADMAP 154）。
     const sn = nearestSeasonalNode(me);
     if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
@@ -3052,7 +3059,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
-    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️" }[currentActionKind(me)] || "✋";
+    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧" }[currentActionKind(me)] || "✋";
     ctx.font = "30px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -3588,6 +3595,7 @@
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
+    safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
     safeDraw("villageLandmark", () => drawVillageLandmark(camX, camY)); // 新手村地標
@@ -5262,6 +5270,71 @@
       if (d <= bestD) { bestD = d; best = n; }
     }
     return best;
+  }
+
+  // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。
+  const SPRING_COLLECT_REACH = 80;
+  function nearestSpringNode(me) {
+    if (!me || nightSpringNodes.length === 0) return null;
+    let best = null;
+    let bestD = SPRING_COLLECT_REACH * SPRING_COLLECT_REACH;
+    for (const n of nightSpringNodes) {
+      const dx = n.wx - me.x;
+      const dy = n.wy - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
+  // 繪製夜間乙太泉節點（ROADMAP 162）：紫色脈動光圈，夜間探索感。
+  function drawNightSprings(camX, camY, now) {
+    if (nightSpringNodes.length === 0) return;
+    const me = myId ? players.get(myId) : null;
+    const nearest = nearestSpringNode(me);
+    for (const n of nightSpringNodes) {
+      const sx = n.wx - camX;
+      const sy = n.wy - camY;
+      if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
+      ctx.save();
+      const pulse = 0.55 + 0.45 * Math.sin(now * 0.00420 + n.id * 1.3);
+      // 外層光暈（紫色）
+      ctx.beginPath();
+      ctx.arc(sx, sy, 28 + 6 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(160,80,255,${(0.08 + 0.07 * pulse).toFixed(3)})`;
+      ctx.fill();
+      // 內核（藍紫色）
+      ctx.beginPath();
+      ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(120,60,220,${(0.65 + 0.25 * pulse).toFixed(3)})`;
+      ctx.fill();
+      // 邊框
+      ctx.strokeStyle = `rgba(200,140,255,${(0.75 + 0.2 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // 中心圖示
+      ctx.font = "16px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("💧", sx, sy + 1);
+      // 靠近時顯示互動提示
+      if (n === nearest) {
+        ctx.strokeStyle = "rgba(200,140,255,0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 26, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textBaseline = "alphabetic";
+        const ty = sy - 36;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("🌙 採集乙太泉 [E]", sx, ty);
+        ctx.fillStyle = "rgba(220,160,255,0.95)";
+        ctx.fillText("🌙 採集乙太泉 [E]", sx, ty);
+      }
+      ctx.restore();
+    }
   }
 
   // 回傳「玩家搆得到、但已採空(harvestable=false)的最近節點」,沒有就 null。
@@ -12488,6 +12561,21 @@
         }
       }
     }
+    // ROADMAP 162：點到夜間乙太泉節點就採集。
+    {
+      const spn = nearestSpringNode(me);
+      if (spn) {
+        const rect0 = canvas.getBoundingClientRect();
+        const twx = clientX - rect0.left + lastCam.x;
+        const twy = clientY - rect0.top + lastCam.y;
+        const dx = spn.wx - twx, dy = spn.wy - twy;
+        if (dx * dx + dy * dy <= 40 * 40) {
+          ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id }));
+          spawnTapFlash(spn.wx, spn.wy);
+          return;
+        }
+      }
+    }
     // ROADMAP 154：點到季節性節點就採集。
     {
       const sn = nearestSeasonalNode(me);
@@ -12629,6 +12717,11 @@
     {
       const dn = nearestDustNode(me);
       if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
+    }
+    // 次判夜間乙太泉採集（ROADMAP 162）。
+    {
+      const spn = nearestSpringNode(me);
+      if (spn) { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); return; }
     }
     // 次判季節性節點採集（ROADMAP 154）。
     {
