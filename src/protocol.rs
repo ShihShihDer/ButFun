@@ -519,6 +519,14 @@ pub enum ClientMsg {
         /// `item = None` 表示捐乙太；`Some(ItemKind)` 表示捐材料。
         #[serde(rename = "donate_to_project")]
         DonateToProject { item: Option<ItemKind>, qty: u32 },
+        /// 在住家室內放置家具（ROADMAP 155）：玩家需在室內、背包有對應家具物品、未超過上限。
+        /// `kind` 為 snake_case 家具種類（如 "steam_bed"）。
+        #[serde(rename = "place_furniture")]
+        PlaceFurniture { kind: String },
+        /// 從住家室內移除家具（ROADMAP 155）：玩家需在室內、idx 有效。
+        /// 移除後家具退還到背包；`idx` 為 home_furniture 陣列索引。
+        #[serde(rename = "remove_furniture")]
+        RemoveFurniture { idx: usize },
     }
 
     /// 快照裡的城鎮大工程狀態（ROADMAP 131）。
@@ -675,6 +683,9 @@ pub enum ServerMsg {
         season_remaining_secs: u32,
         /// 季節性野外採集節點（ROADMAP 154）：當季活躍節點清單（耗盡者已過濾）。
         seasonal_nodes: Vec<SeasonalNodeView>,
+        /// 玩家自己住家的家具清單（ROADMAP 155）：只在室內時送出（節省流量）。
+        /// 前端用於繪製室內場景的家具 + 顯示家具管理面板。
+        home_furniture: Vec<crate::home_furniture::FurnitureView>,
         /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
         /// 全部送出（18 隻量小；前端依 AOI 過濾）。
         wildlife: Vec<WildlifeView>,
@@ -1529,6 +1540,7 @@ mod tests {
             colonies: vec![],
             species_attitudes: vec![],
             seasonal_nodes: vec![],
+            home_furniture: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

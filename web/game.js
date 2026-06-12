@@ -222,6 +222,7 @@
   let hpKnown = false;
   let wasDownedLastTick = false; // 上一快照是否倒地，用於偵測「傳回新手村」瞬間
   let myLevel = null; // 上一快照等級，用於偵測升級
+  let myFurniture = []; // 住家家具列表（ROADMAP 155）：快照帶回的已放置家具陣列
   // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
   // 移動中很容易漏看「我正在挨打」。報讀器那條已補受擊播報(給看不到畫面的玩家),這條是它對稱的
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
@@ -1255,6 +1256,9 @@
           }
           // 住家按鈕顯示/隱藏（ROADMAP 111）
           updateHomeBtn(me);
+          // 住家家具面板（ROADMAP 155）
+          myFurniture = me.home_furniture || [];
+          updateFurniturePanel(me, Array.from(myInv.entries()).map(([item, qty]) => ({ item, qty })));
           // 居民搭話按鈕（ROADMAP 118）
           updateResidentBtn(me);
           // 居民互助請求按鈕（ROADMAP 125）
@@ -3675,6 +3679,23 @@
     ctx.font = "11px system-ui,sans-serif";
     ctx.textAlign = "right";
     ctx.fillText("按「離開室內」返回", viewW - 10, 23);
+
+    // 家具 emoji 展示（固定格內）
+    if (myFurniture.length > 0) {
+      const FURNITURE_EMOJI = { SteamBed: "🛏️", AetherChest: "📦", EtherPlant: "🪴", StarLantern: "🔮", AncientDeco: "🏺" };
+      const POSITIONS = [
+        [1, 1], [2, 1], [3, 1], [5, 1], [6, 1]
+      ];
+      ctx.font = `${Math.floor(TILE * 0.8)}px system-ui`;
+      ctx.textAlign = "center";
+      myFurniture.forEach((f, i) => {
+        const pos = POSITIONS[i % POSITIONS.length];
+        const gx = pos[0] * TILE + TILE / 2 - iCamX;
+        const gy = pos[1] * TILE + TILE * 0.7 - iCamY;
+        if (gx + TILE < 0 || gx > viewW || gy + TILE < 0 || gy > viewH) return;
+        ctx.fillText(FURNITURE_EMOJI[f.kind] || "🪑", gx, gy);
+      });
+    }
   }
 
   // 住家按鈕顯示/隱藏控制（ROADMAP 111）
@@ -3699,6 +3720,115 @@
     } else {
       btn.classList.add("hidden");
     }
+  }
+  // ── 住家家具面板（ROADMAP 155）────────────────────────────────────────────────
+  const FURNITURE_ITEMS = ["steam_bed", "aether_chest", "ether_plant", "star_lantern", "ancient_deco"];
+  const FURNITURE_KIND_MAP = {
+    steam_bed: "SteamBed", aether_chest: "AetherChest", ether_plant: "EtherPlant",
+    star_lantern: "StarLantern", ancient_deco: "AncientDeco"
+  };
+  const FURNITURE_EFFECTS = {
+    SteamBed: "每 30 秒回 2 HP",
+    AetherChest: "背包 +3 種類槽",
+    EtherPlant: "採集 EXP +8%",
+    StarLantern: "夜間攻擊 +2",
+    AncientDeco: "NPC 賣出 +10%",
+  };
+  let lastFurnitureSig = "";
+  let furniturePanelEl = null;
+  function updateFurniturePanel(me, inv) {
+    const isIndoor = me && me.indoor_plot_id != null;
+    if (!isIndoor || isGuest) {
+      if (furniturePanelEl) furniturePanelEl.style.display = "none";
+      return;
+    }
+    // 第一次建立面板
+    if (!furniturePanelEl) {
+      furniturePanelEl = document.createElement("div");
+      furniturePanelEl.id = "furniturePanel";
+      furniturePanelEl.style.cssText = [
+        "position:fixed", "right:12px", "top:50%",
+        "transform:translateY(-50%)",
+        "background:#1a1210", "border:2px solid #7a5838",
+        "border-radius:10px", "padding:10px 14px",
+        "z-index:1500", "min-width:200px", "max-width:240px",
+        "color:#f0e8d0", "font-size:.85rem", "max-height:60vh", "overflow-y:auto",
+      ].join(";");
+      const titleEl = document.createElement("div");
+      titleEl.className = "panel-header";
+      titleEl.style.cssText = "font-weight:bold;margin-bottom:8px;font-size:.9rem;";
+      furniturePanelEl.appendChild(titleEl);
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "panel-body";
+      furniturePanelEl.appendChild(bodyEl);
+      document.body.appendChild(furniturePanelEl);
+    }
+    furniturePanelEl.style.display = "";
+
+    const sig = JSON.stringify(myFurniture) + "|" + FURNITURE_ITEMS.map(k => (inv.find(s => s.item === k)?.qty || 0)).join(",");
+    if (sig === lastFurnitureSig) return;
+    lastFurnitureSig = sig;
+
+    const header = furniturePanelEl.querySelector(".panel-header");
+    const body = furniturePanelEl.querySelector(".panel-body");
+    header.textContent = `🛋️ 住家家具 (${myFurniture.length}/5)`;
+
+    let html = "";
+    // 已放置
+    if (myFurniture.length > 0) {
+      html += `<div style="color:#aaa;font-size:.75rem;margin-bottom:3px;">已放置</div>`;
+      myFurniture.forEach((f, idx) => {
+        const nameKey = Object.entries(FURNITURE_KIND_MAP).find(([, v]) => v === f.kind)?.[0] || f.kind.toLowerCase();
+        const name = ITEM_NAME[nameKey] || f.kind;
+        const emoji = ITEM_LOOK[nameKey] || "🪑";
+        const effect = FURNITURE_EFFECTS[f.kind] || "";
+        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #3a2a1a;">
+          <span style="font-size:1.2em">${emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.82rem">${name}</div>
+            <div style="font-size:.68rem;color:#8df">${effect}</div>
+          </div>
+          <button data-idx="${idx}" style="font-size:.68rem;padding:1px 5px;background:#552;border:1px solid #885;color:#fc8;border-radius:3px;cursor:pointer;">移除</button>
+        </div>`;
+      });
+    }
+    // 可放置（背包有且未達上限）
+    const canPlace = myFurniture.length < 5;
+    const placeableItems = FURNITURE_ITEMS.filter(k => (inv.find(s => s.item === k)?.qty || 0) > 0);
+    if (placeableItems.length > 0) {
+      html += `<div style="color:#aaa;font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
+      placeableItems.forEach(k => {
+        const name = ITEM_NAME[k] || k;
+        const emoji = ITEM_LOOK[k] || "🪑";
+        const effect = FURNITURE_EFFECTS[FURNITURE_KIND_MAP[k]] || "";
+        const disabled = !canPlace;
+        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #3a2a1a;">
+          <span style="font-size:1.2em">${emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.82rem">${name}</div>
+            <div style="font-size:.68rem;color:#8df">${effect}</div>
+          </div>
+          <button data-kind="${k}" ${disabled ? "disabled" : ""} style="font-size:.68rem;padding:1px 5px;background:${disabled?"#333":"#255"};border:1px solid ${disabled?"#555":"#585"};color:${disabled?"#777":"#8fc"};border-radius:3px;cursor:${disabled?"default":"pointer"};">放置</button>
+        </div>`;
+      });
+    }
+    if (html === "") {
+      html = `<div style="color:#666;font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
+    }
+    body.innerHTML = html;
+
+    body.querySelectorAll("button[data-idx]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.getAttribute("data-idx"), 10);
+        try { ws.send(JSON.stringify({ type: "remove_furniture", idx })); } catch {}
+      });
+    });
+    body.querySelectorAll("button[data-kind]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const kind = btn.getAttribute("data-kind");
+        try { ws.send(JSON.stringify({ type: "place_furniture", kind })); } catch {}
+      });
+    });
   }
   // ── 住家室內場景 end ──────────────────────────────────────────────────────────
 
@@ -7912,9 +8042,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -8013,6 +8143,12 @@
     { id: "summer_elixir",   out: "summer_elixir",    outQty: 1, inputs: [["solar_shard", 2]] },
     { id: "autumn_tonic",    out: "autumn_tonic",     outQty: 1, inputs: [["maple_leaf", 2]] },
     { id: "winter_medicine", out: "winter_medicine",  outQty: 1, inputs: [["ice_shard", 2]] },
+    // 住家家具（ROADMAP 155）：採集材料合成可放置於住家的家具道具。
+    { id: "steam_bed",    out: "steam_bed",    outQty: 1, inputs: [["wood", 4], ["stone", 2]] },
+    { id: "aether_chest", out: "aether_chest", outQty: 1, inputs: [["wood", 3], ["stone", 4]] },
+    { id: "ether_plant",  out: "ether_plant",  outQty: 1, inputs: [["wild_flower", 2], ["wood", 2]] },
+    { id: "star_lantern", out: "star_lantern", outQty: 1, inputs: [["star_crystal_shard", 2], ["stone", 2]] },
+    { id: "ancient_deco", out: "ancient_deco", outQty: 1, inputs: [["ancient_fragment", 2], ["stone", 1]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -8095,6 +8231,12 @@
       summer_elixir:    "回血 15hp + 獲得 15 乙太 ☀️ 夏天太陽碎片合成",
       autumn_tonic:     "回血 20hp + 農夫熟練度 +20 🍂 秋天楓葉採集合成",
       winter_medicine:  "回復至滿血 ❄️ 冬天冰晶碎片採集合成",
+      // 住家家具（ROADMAP 155）
+      steam_bed:    "每 30 秒在室內回復 2 HP 🛏️ 木材×4＋石頭×2",
+      aether_chest: "背包額外 +3 種類槽 📦 木材×3＋石頭×4",
+      ether_plant:  "採集 EXP +8% 🪴 野花×2＋木材×2",
+      star_lantern: "夜間攻擊力 +2 🔮 星晶碎片×2＋石頭×2",
+      ancient_deco: "NPC 賣出收入 +10% 🏺 古代碎片×2＋石頭×1",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv

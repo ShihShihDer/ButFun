@@ -86,7 +86,9 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::CoralArmor | ItemKind::RuneArmor | ItemKind::StarCrystalArmor
         | ItemKind::EtherBow | ItemKind::CrystalBallista | ItemKind::VoidCannon
         | ItemKind::WildFlower | ItemKind::SolarShard | ItemKind::MapleLeaf | ItemKind::IceShard
-        | ItemKind::SpringSachet | ItemKind::SummerElixir | ItemKind::AutumnTonic | ItemKind::WinterMedicine => None,
+        | ItemKind::SpringSachet | ItemKind::SummerElixir | ItemKind::AutumnTonic | ItemKind::WinterMedicine
+        | ItemKind::SteamBed | ItemKind::AetherChest | ItemKind::EtherPlant
+        | ItemKind::StarLantern | ItemKind::AncientDeco => None,
     }
 }
 

@@ -152,6 +152,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             indoor_plot_id: None,
             indoor_x: 0.0,
             indoor_y: 0.0,
+            inventory_extra_kinds: 0,
         }
     } else {
         // 等 Join
@@ -224,6 +225,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             indoor_plot_id: None,
             indoor_x: 0.0,
             indoor_y: 0.0,
+            inventory_extra_kinds: 0,
         }
     };
     let id = player.id;
@@ -293,6 +295,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.ether = 0;
                     }
                 }
+                // 乙太寶箱背包加成（ROADMAP 155）：重連同一 session 時從 home_furnishings 重新同步，
+                // 避免 inventory_extra_kinds 停在初始值 0 而家具面板仍顯示寶箱的不一致狀態。
+                if app.home_furnishings.read().unwrap()
+                    .get(&uid).map(|h| h.has_chest()).unwrap_or(false)
+                {
+                    p.inventory_extra_kinds = crate::home_furniture::CHEST_CAPACITY_BONUS as u32;
+                }
             }
             players.insert(id, p);
         }
@@ -356,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _ } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -440,6 +449,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         species_attitudes: species_attitudes.clone(),
                                         // 季節性野外採集節點（ROADMAP 154）：全服廣播（量少，最多 3 顆）。
                                         seasonal_nodes: seasonal_nodes.clone(),
+                                        // 住家家具（ROADMAP 155）：只在玩家自己室內時送出本人家具。
+                                        home_furniture: {
+                                            let ps = app_for_forward.players.read().unwrap();
+                                            if let Some(p) = ps.get(&id) {
+                                                if p.indoor_plot_id.is_some() {
+                                                    app_for_forward.home_furnishings.read().unwrap()
+                                                        .get(&id)
+                                                        .map(|f| f.views())
+                                                        .unwrap_or_default()
+                                                } else {
+                                                    vec![]
+                                                }
+                                            } else {
+                                                vec![]
+                                            }
+                                        },
                                     }
                                 }
                                 other => other.clone(),
@@ -823,8 +848,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 + 5 * village_gather_pct / 100
                                 + 5 * gathering_pct / 100
                                 + 5 * forecast_exp_pct / 100;
-                            // 護符 +10% 與繁榮加成合併成一次整數乘法，避免 5*10/100=0 截斷。
-                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct) + 50) / 100;
+                            // 乙太花盆（ROADMAP 155）：住家放置後採集 EXP +8%。
+                            let plant_pct = if app.home_furnishings.read().unwrap()
+                                .get(&id).map(|h| h.has_plant()).unwrap_or(false) {
+                                crate::home_furniture::PLANT_GATHER_EXP_PCT
+                            } else { 0 };
+                            // 護符 +10% 與繁榮/花盆加成合併成一次整數乘法，避免 5*10/100=0 截斷。
+                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct + plant_pct) + 50) / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
@@ -1217,8 +1247,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                             earned * crate::observatory::StarForecastBonus::npc_bonus_pct() / 100
                                                         } else { 0 }
                                                     };
-                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, forecast_npc_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
-                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus).saturating_add(forecast_npc_bonus);
+                                                    // 古代擺件（ROADMAP 155）：住家放置後 NPC 收購 +10%。
+                                                    let deco_npc_bonus = if app.home_furnishings.read().unwrap()
+                                                        .get(&id).map(|h| h.has_deco()).unwrap_or(false) {
+                                                        earned * crate::home_furniture::DECO_NPC_BONUS_PCT / 100
+                                                    } else { 0 };
+                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, forecast_npc_bonus, deco_npc_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
+                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus).saturating_add(forecast_npc_bonus).saturating_add(deco_npc_bonus);
                                                     p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                     true
                                                 } else {
@@ -1615,15 +1650,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 遠程武器（ROADMAP 146）：射程 3 倍於近戰；在安全區內遠程攻擊不給獎勵（防龜城）。
                     // 鎖序：讀 players（取位置+冷卻） → 寫 enemies（attack_nearest） → 寫 players（設冷卻+掉落）。
                     const ATTACK_COOLDOWN_SECS: f32 = 0.6;
+                    let is_night = app.daynight.read().unwrap().phase() == crate::daynight::Phase::Night;
+                    let has_lantern = app.home_furnishings.read().unwrap()
+                        .get(&id).map(|h| h.has_lantern()).unwrap_or(false);
                     let info = app.players.read().unwrap().get(&id).map(|p| {
                         use crate::refinement::{enchant_extra_damage, is_crit_tick};
                         let enchant = p.equipment.weapon_meta.enchant;
                         let attempt = p.kill_count as u64;
+                        let lantern_bonus = if is_night && has_lantern {
+                            crate::home_furniture::LANTERN_NIGHT_ATK_BONUS as u32
+                        } else { 0 };
                         let base_power = crate::equipment::equipped_weapon_power(&p.equipment)
                             + crate::combat::level_attack_bonus(p.level())
                             + crate::class::combat_bonus(&p.masteries)
                             + enchant_extra_damage(enchant)
-                            + p.pet.map(|pk| pk.bonus_attack()).unwrap_or(0);
+                            + p.pet.map(|pk| pk.bonus_attack()).unwrap_or(0)
+                            + lantern_bonus; // 星燈夜間攻擊加成（ROADMAP 155）
                         // 暴擊：每 5 次攻擊有一次雙倍傷害。
                         let power = if enchant == Some(crate::refinement::EnchantKind::CritStrike)
                             && is_crit_tick(attempt) {
@@ -4488,7 +4530,69 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
-                // ── 住家內裝 end ──────────────────────────────────────────────
+                // ── 住家家具（ROADMAP 155）───────────────────────────────────
+                Ok(ClientMsg::PlaceFurniture { kind }) => {
+                    use crate::home_furniture::FurnitureKind;
+                    use crate::inventory::ItemKind;
+                    if let Some(uid) = authed_uid {
+                        let fkind = FurnitureKind::from_str(&kind);
+                        let item_kind: Option<ItemKind> = match fkind {
+                            Some(FurnitureKind::SteamBed)    => Some(ItemKind::SteamBed),
+                            Some(FurnitureKind::AetherChest) => Some(ItemKind::AetherChest),
+                            Some(FurnitureKind::EtherPlant)  => Some(ItemKind::EtherPlant),
+                            Some(FurnitureKind::StarLantern) => Some(ItemKind::StarLantern),
+                            Some(FurnitureKind::AncientDeco) => Some(ItemKind::AncientDeco),
+                            None => None,
+                        };
+                        if let (Some(fkind), Some(iitem)) = (fkind, item_kind) {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                // 玩家必須在室內且背包有對應家具物品。
+                                if p.indoor_plot_id.is_some() && p.inventory.has(iitem, 1) {
+                                    let mut furnishings = app.home_furnishings.write().unwrap();
+                                    let home = furnishings.entry(uid).or_default();
+                                    if home.place(fkind) {
+                                        // 成功放置，從背包扣除。
+                                        let _ = p.inventory.take(iitem, 1);
+                                        // 乙太箱背包容量加成即時生效。
+                                        if fkind == FurnitureKind::AetherChest {
+                                            p.inventory_extra_kinds = crate::home_furniture::CHEST_CAPACITY_BONUS as u32;
+                                        }
+                                        tracing::info!(player = %p.name, ?fkind, "放置住家家具");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::RemoveFurniture { idx }) => {
+                    use crate::inventory::ItemKind;
+                    if let Some(uid) = authed_uid {
+                        let removed = {
+                            let mut furnishings = app.home_furnishings.write().unwrap();
+                            furnishings.get_mut(&uid).and_then(|h| h.remove(idx))
+                        };
+                        if let Some(fkind) = removed {
+                            let item_kind: ItemKind = match fkind {
+                                crate::home_furniture::FurnitureKind::SteamBed    => ItemKind::SteamBed,
+                                crate::home_furniture::FurnitureKind::AetherChest => ItemKind::AetherChest,
+                                crate::home_furniture::FurnitureKind::EtherPlant  => ItemKind::EtherPlant,
+                                crate::home_furniture::FurnitureKind::StarLantern => ItemKind::StarLantern,
+                                crate::home_furniture::FurnitureKind::AncientDeco => ItemKind::AncientDeco,
+                            };
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&uid) {
+                                p.add_item_overflow(item_kind, 1);
+                                // 移除乙太箱：背包容量加成消失。
+                                if fkind == crate::home_furniture::FurnitureKind::AetherChest {
+                                    p.inventory_extra_kinds = 0;
+                                }
+                                tracing::info!(player = %p.name, ?fkind, idx, "移除住家家具（退還背包）");
+                            }
+                        }
+                    }
+                }
+                // ── 住家內裝 + 家具 end ──────────────────────────────────────
 
                 // ── 居民搭話（ROADMAP 118）────────────────────────────────────
                 Ok(ClientMsg::TalkToResident { resident_id }) => {
