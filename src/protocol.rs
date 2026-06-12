@@ -772,6 +772,10 @@ pub enum ServerMsg {
         /// 空陣列 = 目前無 Alpha 活躍。
         #[serde(default)]
         alpha_monsters: Vec<crate::monster_colony::ColonyAlphaView>,
+        /// 生態清剿委託（ROADMAP 172）：目前活躍的全服清剿委託（無委託時為 null）。
+        /// 前端在生態面板或 HUD 顯示委託名稱、進度、剩餘時間、獎勵。
+        #[serde(default)]
+        eco_bounty: Option<crate::eco_bounty::EcoBountyView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1632,6 +1636,7 @@ mod tests {
             monster_colony_views: vec![],
             eco_pressure_value: 0.0,
             alpha_monsters: vec![],
+            eco_bounty: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

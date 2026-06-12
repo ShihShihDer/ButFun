@@ -629,6 +629,44 @@ pub fn spawn(app: AppState) {
                     compute_eco_pressure(&colony_inputs, hostile_count, wary_count, monster_total, prey_avg)
                 };
 
+                // ROADMAP 172：生態清剿委託 tick——壓力超標時自動發布全服清剿任務。
+                {
+                    // 找族群最多的巢穴（busiest colony）傳給委託管理器。
+                    let busiest = app.monster_colonies.read().unwrap()
+                        .colonies.iter()
+                        .max_by_key(|c| c.population)
+                        .map(|c| (c.id, c.name.to_string(), c.population));
+
+                    let event = app.eco_bounty.write().unwrap().tick(dt, eco_pressure, busiest);
+                    if let Some(ev) = event {
+                        use crate::eco_bounty::EcoBountyEvent;
+                        match ev {
+                            EcoBountyEvent::Started { colony_name, kill_target } => {
+                                let _ = app.tx_chat.send(
+                                    crate::eco_bounty::started_text(&colony_name, kill_target, crate::eco_bounty::REWARD_PER_PLAYER)
+                                );
+                            }
+                            EcoBountyEvent::Completed { colony_name, reward_per_player } => {
+                                // 給所有在線玩家乙太獎勵。
+                                {
+                                    let mut players = app.players.write().unwrap();
+                                    for p in players.values_mut() {
+                                        p.ether = p.ether.saturating_add(reward_per_player);
+                                    }
+                                }
+                                let _ = app.tx_chat.send(
+                                    crate::eco_bounty::completed_text(&colony_name, reward_per_player)
+                                );
+                            }
+                            EcoBountyEvent::Expired { colony_name } => {
+                                let _ = app.tx_chat.send(
+                                    crate::eco_bounty::expired_text(&colony_name)
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let cmds = {
                     let mut director = app.director.write().unwrap();
                     director.update_population(resident_count);
@@ -1081,6 +1119,9 @@ pub fn spawn(app: AppState) {
                                     ));
                                 });
                             }
+                            // ROADMAP 172：MonsterKilledInColony 由 ws.rs 的 on_monster_killed_near 路徑處理，
+                            // game.rs tick() 不會產生此事件，但需加入 match 分支。
+                            MonsterColonyEvent::MonsterKilledInColony { .. } => {}
                         }
                     }
                 }
@@ -2220,6 +2261,8 @@ pub fn spawn(app: AppState) {
                         eco_pressure_value: app.director.read().unwrap().eco_pressure(),
                         // 巢穴 Alpha（ROADMAP 168）：目前活躍的 Alpha 首領。
                         alpha_monsters: app.monster_colonies.read().unwrap().alpha_views(),
+                        // 生態清剿委託（ROADMAP 172）：目前活躍的清剿委託（無則為 None）。
+                        eco_bounty: app.eco_bounty.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

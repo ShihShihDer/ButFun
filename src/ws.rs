@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -481,6 +481,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         eco_pressure_value: *eco_pressure_value,
                                         // 巢穴 Alpha（ROADMAP 168）：全服廣播。
                                         alpha_monsters: alpha_monsters.clone(),
+                                        // 生態清剿委託（ROADMAP 172）：全服廣播。
+                                        eco_bounty: eco_bounty.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2107,6 +2109,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             let _ = app.tx_chat.send(format!(
                                                 "🏕️ [{name}] ({cx:.0},{cy:.0}) 的怪物巢穴被清剿一空！"
                                             ));
+                                        }
+                                        // ROADMAP 172：通知生態清剿委託；完成事件由 eco_bounty 管理器回傳，
+                                        // 但完成廣播+發獎在 game.rs tick 處理（避免 ws.rs 做玩家資料遍歷）。
+                                        // 這裡只需推進 kills_so_far，完成時等下一個 tick 廣播即可。
+                                        MonsterColonyEvent::MonsterKilledInColony { colony_id } => {
+                                            let ev = app.eco_bounty.write().unwrap().on_colony_kill(colony_id);
+                                            if let Some(crate::eco_bounty::EcoBountyEvent::Completed { colony_name, reward_per_player }) = ev {
+                                                // 立即給在線玩家獎勵並廣播（ws.rs 有 players 鎖存取能力）。
+                                                {
+                                                    let mut players = app.players.write().unwrap();
+                                                    for p in players.values_mut() {
+                                                        p.ether = p.ether.saturating_add(reward_per_player);
+                                                    }
+                                                }
+                                                let _ = app.tx_chat.send(
+                                                    crate::eco_bounty::completed_text(&colony_name, reward_per_player)
+                                                );
+                                            }
                                         }
                                         MonsterColonyEvent::ColonyRevived { .. } => {}
                                         MonsterColonyEvent::SpawnAt { .. } => {}

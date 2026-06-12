@@ -120,6 +120,7 @@ mod invasion;
 mod monster_colony;
 mod eco_pressure;
 mod eco_report;
+mod eco_bounty;
 
 use std::net::SocketAddr;
 

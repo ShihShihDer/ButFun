@@ -810,7 +810,8 @@
     const sig = `${speciesHudCollapsed}|${Math.round(ecoPressureValue)}|`
       + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
       + "|" + monsterSpeciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
-      + "|" + monsterColonyViews.map(c => `${c.id}${c.density}`).join(",");
+      + "|" + monsterColonyViews.map(c => `${c.id}${c.density}`).join(",")
+      + "|" + (ecoBounty ? `${ecoBounty.kills_so_far}/${ecoBounty.kill_target}/${ecoBounty.time_left_secs}` : "none");
     if (sig === lastSpeciesHudSig) return;
     lastSpeciesHudSig = sig;
 
@@ -829,12 +830,29 @@
       // 生態壓力色調
       const ep = ecoPressureValue || 0;
       const epCol = ep >= 75 ? "#ff6060" : ep >= 50 ? "#ffcc44" : ep >= 25 ? "#88aaff" : "#778";
+      // 委託提示（ROADMAP 172）
+      const bountyHint = ecoBounty ? ` <span style="color:#ffaa33;">📋${ecoBounty.kills_so_far}/${ecoBounty.kill_target}</span>` : "";
       panel.style.minWidth = "0";
-      panel.innerHTML = `<span style="color:${epCol};">🌿${alertHtml} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
+      panel.innerHTML = `<span style="color:${epCol};">🌿${alertHtml}${bountyHint} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
       return;
     }
 
     panel.style.minWidth = "145px";
+
+    // 生態清剿委託（ROADMAP 172）：有活躍委託時顯示在最上方
+    let bountySection = "";
+    if (ecoBounty) {
+      const b = ecoBounty;
+      const bFilled = Math.max(0, Math.min(10, Math.round(b.kills_so_far / Math.max(1, b.kill_target) * 10)));
+      const bBar = "█".repeat(bFilled) + "░".repeat(10 - bFilled);
+      const minsLeft = Math.ceil(b.time_left_secs / 60);
+      bountySection = `<div style="margin-bottom:4px;border-bottom:1px solid #552;padding-bottom:3px;background:rgba(80,60,0,0.25);border-radius:4px;padding:3px 4px 3px;">
+        <div style="color:#ffaa33;font-size:.62rem;margin-bottom:1px;">📋 生態清剿委託</div>
+        <div style="color:#ffe08a;font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${b.colony_name}</div>
+        <div style="color:#ffcc66;font-size:.63rem;">${bBar} ${b.kills_so_far}/${b.kill_target} 隻</div>
+        <div style="color:#cc9944;font-size:.6rem;">⏱ ${minsLeft}分鐘 · 🪙 ${b.reward_per_player}乙太/人</div>
+      </div>`;
+    }
 
     // 生態壓力儀表（ROADMAP 167）
     const ep = ecoPressureValue || 0;
@@ -886,7 +904,7 @@
       colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴</div>${colonyRows}`;
     }
 
-    panel.innerHTML = `${pressureHtml}${wildSection}${monsterSection}${colonySection}
+    panel.innerHTML = `${bountySection}${pressureHtml}${wildSection}${monsterSection}${colonySection}
       <div style="color:#445;font-size:.58rem;margin-top:4px;text-align:right;">▾ 點此收合</div>`;
   }
 
@@ -925,6 +943,7 @@
   let monsterColonyViews = [];      // ROADMAP 164 怪物巢穴 [{id, kind, name, cx, cy, spawn_radius, density, has_alpha}]
   let ecoPressureValue = 0;         // ROADMAP 167 生態壓力值（0-100），從 Snapshot 同步
   let alphaMonsters = [];           // ROADMAP 168 巢穴 Alpha [{id, colony_id, kind, x, y, hp, max_hp}]
+  let ecoBounty = null;             // ROADMAP 172 生態清剿委託 {colony_name, kill_target, kills_so_far, reward_per_player, time_left_secs}
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1294,6 +1313,8 @@
         if (msg.eco_pressure_value != null) ecoPressureValue = msg.eco_pressure_value;
         // 巢穴 Alpha（ROADMAP 168）：當前活躍的 Alpha 首領。
         if (Array.isArray(msg.alpha_monsters)) alphaMonsters = msg.alpha_monsters;
+        // 生態清剿委託（ROADMAP 172）：全服清剿任務，null 表示無活躍委託。
+        ecoBounty = msg.eco_bounty ?? null;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);

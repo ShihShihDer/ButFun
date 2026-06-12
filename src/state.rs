@@ -1023,6 +1023,9 @@ pub struct AppState {
     /// 城鎮入侵警報（ROADMAP 158）：每 90 分鐘怪物大舉入侵城鎮外圍，玩家攜手抵禦。
     /// 純記憶體，重啟清零，不破壞玩家資料。
     pub invasion: Arc<RwLock<crate::invasion::InvasionState>>,
+    /// 生態清剿委託（ROADMAP 172）：生態壓力超標時自動發布全服清剿委託，完成後在線玩家分潤乙太。
+    /// 純記憶體，重啟清零，不破壞玩家資料。
+    pub eco_bounty: Arc<RwLock<crate::eco_bounty::EcoBountyState>>,
 }
 
 impl AppState {
@@ -1198,6 +1201,7 @@ impl AppState {
             civic_vote: Arc::new(RwLock::new(crate::civic_vote::CivicVoteState::new())),
             town_memory: Arc::new(RwLock::new(crate::town_memory::TownMemory::new())),
             invasion: Arc::new(RwLock::new(crate::invasion::InvasionState::new())),
+            eco_bounty: Arc::new(RwLock::new(crate::eco_bounty::EcoBountyState::new())),
         }
     }
 
