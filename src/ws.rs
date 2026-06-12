@@ -749,10 +749,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let gather_exp_base = 5u32
                                 + 5 * village_gather_pct / 100
                                 + 5 * gathering_pct / 100
-                                + 5 * forecast_exp_pct / 100
-                                + 5 * star_amulet_pct / 100;
-                            // 以四捨五入整數乘法套用繁榮加成。
-                            let gather_exp = (gather_exp_base * (100 + prosperity_pct) + 50) / 100;
+                                + 5 * forecast_exp_pct / 100;
+                            // 護符 +10% 與繁榮加成合併成一次整數乘法，避免 5*10/100=0 截斷。
+                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct) + 50) / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
