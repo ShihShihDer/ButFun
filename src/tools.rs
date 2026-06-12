@@ -83,7 +83,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::StarDust | ItemKind::StarAmulet
         | ItemKind::RainbowStarDust | ItemKind::StarGuardianAmulet
         | ItemKind::HardenedBlade | ItemKind::StarCrystalBlade | ItemKind::RiftBlade
-        | ItemKind::CoralArmor | ItemKind::RuneArmor | ItemKind::StarCrystalArmor => None,
+        | ItemKind::CoralArmor | ItemKind::RuneArmor | ItemKind::StarCrystalArmor
+        | ItemKind::EtherBow | ItemKind::CrystalBallista | ItemKind::VoidCannon => None,
     }
 }
 

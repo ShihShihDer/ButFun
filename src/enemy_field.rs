@@ -320,21 +320,24 @@ impl EnemyField {
         px: f32,
         py: f32,
         power: u32,
+        reach: f32,
     ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
-        
-        self.ensure_chunks_around(px, py, ATTACK_REACH);
+
+        self.ensure_chunks_around(px, py, reach);
 
         let (cx, cy) = chunk_key(px, py);
         // 記住敵人「實際被找到的 chunk」——別從 id.0/id.1 推導 chunk：敵人會移動跨 chunk,
         // 其 id 內含的原始 chunk 欄位可能對不上現在所在的 chunk,事後重查就會 None。
         let mut best: Option<((i32, i32), (i32, i32, usize), f32)> = None; // (找到的 chunk, 敵人 id, dist²)
-        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        let reach_sq = reach * reach;
+        // 遠程武器射程可能跨多個 chunk；搜尋半徑由傳入 reach 決定，最少掃 ±1 chunk。
+        let chunk_r = (reach / CHUNK_SIZE as f32).ceil() as i32 + 1;
 
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        for dy in -chunk_r..=chunk_r {
+            for dx in -chunk_r..=chunk_r {
                 if let Some(enemies) = self.chunks.get(&(cx + dx, cy + dy)) {
                     for placed in enemies {
                         if !placed.enemy.is_alive() {
@@ -414,18 +417,20 @@ impl EnemyField {
         px: f32,
         py: f32,
         power: u32,
+        reach: f32,
     ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
         if !px.is_finite() || !py.is_finite() {
             return Vec::new();
         }
-        self.ensure_chunks_around(px, py, ATTACK_REACH);
+        self.ensure_chunks_around(px, py, reach);
         let (cx, cy) = chunk_key(px, py);
-        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        let reach_sq = reach * reach;
+        let chunk_r = (reach / CHUNK_SIZE as f32).ceil() as i32 + 1;
 
         // 收集所有在範圍內且存活的敵人 id + 所在 chunk
         let mut targets: Vec<((i32, i32), (i32, i32, usize))> = Vec::new();
-        for dy in -1..=1 {
-            for dx in -1..=1 {
+        for dy in -chunk_r..=chunk_r {
+            for dx in -chunk_r..=chunk_r {
                 let ck = (cx + dx, cy + dy);
                 if let Some(enemies) = self.chunks.get(&ck) {
                     for placed in enemies {
@@ -1036,7 +1041,7 @@ mod tests {
         f.advance(1.0, &[(520.0, 256.0)], false, |_, _| false);
 
         // 在新位置附近攻擊，不應 panic
-        let result = f.attack_nearest(516.0, 256.0, 1);
+        let result = f.attack_nearest(516.0, 256.0, 1, ATTACK_REACH);
         assert!(result.is_some());
     }
 
@@ -1045,7 +1050,7 @@ mod tests {
         let mut f = EnemyField::new();
         f.ensure_chunks_around(0.0, 0.0, 100.0);
         let target = f.enemies()[0].clone();
-        let got = f.attack_nearest(target.x, target.y, 1);
+        let got = f.attack_nearest(target.x, target.y, 1, ATTACK_REACH);
         assert!(got.is_some());
         assert_eq!(got.unwrap().0, target.enemy.kind());
     }
@@ -1104,7 +1109,7 @@ mod tests {
             (e.x, e.y, e.base_level)
         };
         // 用一萬點傷害確保一擊必殺
-        let result = f.attack_nearest(ex, ey, 10000);
+        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
         assert!(result.is_some(), "應能攻擊到敵人");
         let (_, _, was_notorious, loot) = result.unwrap();
         assert!(loot.is_some(), "應有掉落（代表擊殺）");
@@ -1170,7 +1175,7 @@ mod tests {
             chunk[0].level = chunk[0].base_level + 3;
         }
         let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
-        let result = f.attack_nearest(ex, ey, 10000);
+        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
         let (_, _, was_notorious, loot) = result.unwrap();
         assert!(loot.is_some());
         assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
@@ -1198,7 +1203,7 @@ mod tests {
                 .unwrap()
         };
         // 只打 1 點傷害，不擊殺，確保仍能廣播狼群警報
-        let _result = f.attack_nearest(target_pos.0, target_pos.1, 1);
+        let _result = f.attack_nearest(target_pos.0, target_pos.1, 1, ATTACK_REACH);
         // 附近同種怪應有 pack_target
         let any_pack = f.chunks.values().flat_map(|v| v.iter()).any(|e| {
             e.enemy.is_alive() && e.enemy.kind() == target_kind && e.pack_target.is_some()
@@ -1217,7 +1222,7 @@ mod tests {
         // 把 HP 降到 10%（殘血）——直接 attack 打到快死
         let max_hp = f.chunks[&key][0].enemy.max_hp();
         let damage = max_hp - max_hp / 10; // 留 10% HP
-        f.attack_nearest(ex, ey, damage);
+        f.attack_nearest(ex, ey, damage, ATTACK_REACH);
         assert!(f.chunks[&key][0].enemy.is_alive(), "怪應仍存活");
 
         // 玩家在怪的右側（ex + 150，在 AGGRO_RADIUS 260 內）
@@ -1256,7 +1261,7 @@ mod tests {
             .find(|e| e.x == fx && e.y == fy)
             .map(|e| e.enemy.max_hp()).unwrap_or(10);
         let damage = max_hp - 1; // 留 1 HP
-        if damage > 0 { f.attack_nearest(fx, fy, damage); }
+        if damage > 0 { f.attack_nearest(fx, fy, damage, ATTACK_REACH); }
 
         // 在殘血怪旁邊放一個玩家，讓 advance 的前置掃描觸發呼救信號
         f.advance(0.05, &[(fx + 50.0, fy)], false, |_, _| false);

@@ -260,6 +260,17 @@ pub enum ItemKind {
     /// 星晶鎧（合成：星晶碎片×5 + 石頭×4 → 星晶鎧×1，需 Lv.10）。每次受傷減 5 點傷害。
     /// 夜採星晶打造的全身護甲，防禦值僅次宇宙護盾(def 6)——夜行者的盔甲精華。
     StarCrystalArmor,
+
+    // ── 遠程武器（ROADMAP 146 遠程武器）────────────────────────────────────────
+    /// 乙太弓🏹（合成：乙太×5 + 木材×4 → 乙太弓×1）。遠程攻擊力 +9，射程 180px。
+    /// 入門遠程武器，用基礎材料打造——讓怕被貼臉的玩家有「站遠打」的戰鬥選擇。
+    EtherBow,
+    /// 晶石弩（合成：晶石碎片×5 + 石頭×4 → 晶石弩×1）。遠程攻擊力 +14，射程 220px。
+    /// 深層晶洞探索者的進階遠程武器，晶石能量壓縮成高速彈——射程更遠、傷害更高。
+    CrystalBallista,
+    /// 虛空炮（合成：虛空碎片×5 + 石頭×3 → 虛空炮×1，需 Lv.18）。遠程攻擊力 +27，射程 250px。
+    /// 虛空星技術結晶的頂級遠程武器，能量炮彈在空中炸開——高等冒險者的終極遠程裝備。
+    VoidCannon,
 }
 
 impl ItemKind {
@@ -340,6 +351,10 @@ impl ItemKind {
         ItemKind::CoralArmor,
         ItemKind::RuneArmor,
         ItemKind::StarCrystalArmor,
+        // ROADMAP 146 遠程武器
+        ItemKind::EtherBow,
+        ItemKind::CrystalBallista,
+        ItemKind::VoidCannon,
     ];
 }
 
@@ -617,13 +632,16 @@ mod tests {
                 | ItemKind::RiftBlade
                 | ItemKind::CoralArmor
                 | ItemKind::RuneArmor
-                | ItemKind::StarCrystalArmor => {}
+                | ItemKind::StarCrystalArmor
+                | ItemKind::EtherBow
+                | ItemKind::CrystalBallista
+                | ItemKind::VoidCannon => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 70 種（含 ROADMAP 145：HardenedBlade/StarCrystalBlade/RiftBlade/CoralArmor/RuneArmor/StarCrystalArmor）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 70, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 73 種（含 ROADMAP 146：EtherBow/CrystalBallista/VoidCannon）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 73, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]

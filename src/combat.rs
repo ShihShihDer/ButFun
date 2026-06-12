@@ -72,6 +72,13 @@ pub enum WeaponKind {
     StarCrystalBlade,
     /// 裂縫刃（ROADMAP 145）：宇宙裂縫碎片凝聚，攻擊力 +35，宇宙裂縫事件高風險回報。
     RiftBlade,
+    // ── 遠程武器（ROADMAP 146）────────────────────────────────────────────────
+    /// 乙太弓（ROADMAP 146）：乙太能量壓縮成高速箭矢，遠程攻擊力 +9，射程 180px。
+    EtherBow,
+    /// 晶石弩（ROADMAP 146）：晶石碎片鑄造的精密機械弩，遠程攻擊力 +14，射程 220px。
+    CrystalBallista,
+    /// 虛空炮（ROADMAP 146）：虛空星能量炮，炮彈空中炸開，遠程攻擊力 +27，射程 250px。
+    VoidCannon,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -98,6 +105,10 @@ pub const UNARMED_ATTACK_POWER: u32 = 2;
 /// 武器的攻擊力：嚴格高於徒手，讓「合成武器」這條配方鏈真的有感、值得攢素材去合
 /// （對齊 PLAN 驗收「合成出的武器真的讓打怪明顯變強」）。
 pub const WEAPON_ATTACK_POWER: u32 = 5;
+
+/// 遠程武器的攻擊射程（像素）。近戰 ATTACK_REACH=64px，遠程約 3 倍。
+/// 防呆：玩家在安全區（城鎮）時遠程攻擊城外怪不給獎勵，以防龜城刷怪。
+pub const RANGED_ATTACK_REACH: f32 = 220.0;
 
 /// 等級攻擊加成：每升兩級 +1 傷害，讓玩家感受到成長但不至於破壞早期平衡。
 /// Lv.2 = +1, Lv.4 = +2, Lv.10 = +5, Lv.20 = +10。
@@ -170,7 +181,17 @@ impl WeaponKind {
             WeaponKind::AetherBlade => 30,
             WeaponKind::RiftBlade => 35,
             WeaponKind::OriginBlade => 40,
+            // 遠程武器（ROADMAP 146）
+            WeaponKind::EtherBow => 9,
+            WeaponKind::CrystalBallista => 14,
+            WeaponKind::VoidCannon => 27,
         }
+    }
+
+    /// 此武器是否為遠程武器（ROADMAP 146）。
+    /// 遠程武器攻擊射程約 3 倍於近戰；玩家在安全區時遠程攻擊不給獎勵（防龜城）。
+    pub fn is_ranged(self) -> bool {
+        matches!(self, WeaponKind::EtherBow | WeaponKind::CrystalBallista | WeaponKind::VoidCannon)
     }
 }
 
@@ -265,6 +286,10 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
         ItemKind::OriginBlade => Some(WeaponKind::OriginBlade),
+        // 遠程武器（ROADMAP 146）
+        ItemKind::EtherBow => Some(WeaponKind::EtherBow),
+        ItemKind::CrystalBallista => Some(WeaponKind::CrystalBallista),
+        ItemKind::VoidCannon => Some(WeaponKind::VoidCannon),
     }
 }
 
@@ -341,7 +366,10 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::StarGuardianAmulet
         | ItemKind::HardenedBlade
         | ItemKind::StarCrystalBlade
-        | ItemKind::RiftBlade => None,
+        | ItemKind::RiftBlade
+        | ItemKind::EtherBow
+        | ItemKind::CrystalBallista
+        | ItemKind::VoidCannon => None,
     }
 }
 
