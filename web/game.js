@@ -6428,7 +6428,8 @@
     }
   }
 
-  // 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物，友善、不攻擊玩家。
+  // 野生動物（ROADMAP 140 中立 + ROADMAP 141 食物鏈）。
+  // 捕食者（野狼/野狐）以橙紅名牌區別；追獵中背景閃爍。
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
     const W = canvas.width, H = canvas.height;
@@ -6440,23 +6441,28 @@
       if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
 
       ctx.save();
-      const isFleeing = w.state === "fleeing";
-      // 驚逃時輕微抖動（左右搖）。
-      const wobble = isFleeing ? Math.sin(now / 60) * 2 : 0;
+      const isFleeing  = w.state === "fleeing";
+      const isHunting  = w.state === "hunting";
+      const isPredator = w.kind === "wild_wolf" || w.kind === "wild_fox";
+      const wobble = (isFleeing || isHunting) ? Math.sin(now / 60) * 2 : 0;
       ctx.translate(sx + wobble, sy);
 
       switch (w.kind) {
-        case "wild_bird":   _drawWildBird(isFleeing, now);    break;
-        case "wild_deer":   _drawWildDeer(isFleeing, now);    break;
+        case "wild_bird":     _drawWildBird(isFleeing, now);     break;
+        case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
         case "small_critter": _drawSmallCritter(isFleeing, now); break;
+        case "wild_wolf":     _drawWildWolf(isHunting, now);     break;
+        case "wild_fox":      _drawWildFox(isHunting, now);      break;
       }
 
-      // 名字標籤（淡綠色，對比敵人的橙紅色）。
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      // 名字標籤：捕食者橙紅、獵物淡綠；追獵中閃爍。
+      const labelColor = isPredator ? "#f0b060" : "#a8f0a8";
+      const bgAlpha = isHunting ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
+      ctx.fillStyle = "rgba(0,0,0," + bgAlpha.toFixed(2) + ")";
       const label = w.name;
       const lw = ctx.measureText(label).width + 8;
       ctx.fillRect(-lw / 2, -34, lw, 14);
-      ctx.fillStyle = "#a8f0a8";
+      ctx.fillStyle = labelColor;
       ctx.font = "10px monospace";
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
@@ -6639,6 +6645,141 @@
       ctx.strokeStyle = "#b89060";
       ctx.stroke();
     }
+  }
+
+  // 野狼（ROADMAP 141）：深灰毛色、三角耳、尖嘴、蓬尾。追獵中眼睛紅。
+  function _drawWildWolf(hunting, now) {
+    // 身體
+    ctx.fillStyle = hunting ? "#7a6a5a" : "#8a7a6a";
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 13, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頸
+    ctx.fillStyle = "#7a6a5a";
+    ctx.beginPath();
+    ctx.moveTo(8, -2); ctx.lineTo(11, -8); ctx.lineTo(13, -4); ctx.lineTo(10, 2);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#8a7a6a";
+    ctx.beginPath();
+    ctx.ellipse(12, -10, 6, 5, Math.PI / 8, 0, Math.PI * 2);
+    ctx.fill();
+    // 尖嘴
+    ctx.fillStyle = "#6a5a4a";
+    ctx.beginPath();
+    ctx.moveTo(17, -8); ctx.lineTo(22, -7); ctx.lineTo(17, -5);
+    ctx.fill();
+    // 左耳（三角）
+    ctx.fillStyle = "#6a5a4a";
+    ctx.beginPath();
+    ctx.moveTo(9, -14); ctx.lineTo(7, -21); ctx.lineTo(13, -17);
+    ctx.fill();
+    // 右耳
+    ctx.beginPath();
+    ctx.moveTo(14, -14); ctx.lineTo(15, -21); ctx.lineTo(18, -16);
+    ctx.fill();
+    // 眼（追獵中紅色）
+    ctx.fillStyle = hunting ? "#e03030" : "#222";
+    ctx.beginPath();
+    ctx.arc(14, -11, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    if (!hunting) {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(14.5, -11.4, 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 四腿
+    const legPhase = hunting ? (now / 75) % (Math.PI * 2) : 0;
+    const ls = hunting ? Math.sin(legPhase) * 5 : 0;
+    ctx.strokeStyle = "#6a5a4a";
+    ctx.lineWidth = 2.2;
+    const legs = [[-6, 10, -7 + ls, 20], [0, 10, 0, 20], [5, 10, 6 - ls, 20], [-2, 10, -2, 20]];
+    for (const [x1, y1, x2, y2] of legs) {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    // 蓬尾
+    ctx.fillStyle = "#9a8a7a";
+    ctx.beginPath();
+    ctx.ellipse(-13, 0, 7, 4, Math.PI / 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f0ece0";
+    ctx.beginPath();
+    ctx.arc(-15, 1, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 野狐（ROADMAP 141）：橙棕毛色、大耳、尖嘴、白胸毛、蓬尾。追獵中動態。
+  function _drawWildFox(hunting, now) {
+    // 身體
+    ctx.fillStyle = hunting ? "#c86830" : "#d87840";
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 10, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頸
+    ctx.fillStyle = "#c06828";
+    ctx.beginPath();
+    ctx.moveTo(7, -1); ctx.lineTo(9, -7); ctx.lineTo(11, -3); ctx.lineTo(8, 2);
+    ctx.fill();
+    // 頭
+    ctx.fillStyle = "#d87840";
+    ctx.beginPath();
+    ctx.ellipse(10, -9, 5, 4, Math.PI / 10, 0, Math.PI * 2);
+    ctx.fill();
+    // 尖嘴（細長）
+    ctx.fillStyle = "#c06828";
+    ctx.beginPath();
+    ctx.moveTo(14, -7); ctx.lineTo(20, -6); ctx.lineTo(14, -5);
+    ctx.fill();
+    // 白嘴邊
+    ctx.fillStyle = "#f8f0e0";
+    ctx.beginPath();
+    ctx.arc(15, -6.5, 2, 0, Math.PI * 2);
+    ctx.fill();
+    // 大耳（三角，偏高）
+    ctx.fillStyle = "#c06828";
+    ctx.beginPath();
+    ctx.moveTo(8, -12); ctx.lineTo(5, -20); ctx.lineTo(11, -16);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(12, -12); ctx.lineTo(13, -20); ctx.lineTo(16, -15);
+    ctx.fill();
+    // 耳內粉色
+    ctx.fillStyle = "#f0a080";
+    ctx.beginPath();
+    ctx.ellipse(8.5, -16, 1.5, 3, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(13.5, -16, 1.5, 3, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    // 眼
+    ctx.fillStyle = hunting ? "#d04020" : "#222";
+    ctx.beginPath();
+    ctx.arc(12, -9.5, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 胸白毛
+    ctx.fillStyle = "#f8f0e0";
+    ctx.beginPath();
+    ctx.ellipse(2, 0, 3, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 四腿（細）
+    const legPhase = hunting ? (now / 80) % (Math.PI * 2) : 0;
+    const ls = hunting ? Math.sin(legPhase) * 4 : 0;
+    ctx.strokeStyle = "#b05820";
+    ctx.lineWidth = 1.8;
+    const legs = [[-4, 8, -5 + ls, 16], [1, 8, 1, 16], [4, 8, 5 - ls, 16], [-1, 8, -1, 16]];
+    for (const [x1, y1, x2, y2] of legs) {
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    // 蓬尾（橙白相間）
+    ctx.fillStyle = "#d87840";
+    ctx.beginPath();
+    ctx.ellipse(-11, 1, 6, 3.5, Math.PI / 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f8f0e0";
+    ctx.beginPath();
+    ctx.arc(-14, 1.5, 2.5, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // NPC 對話泡泡（ROADMAP 92）：在各 NPC 頭頂畫圓角對話框，幾秒後自動淡出。
