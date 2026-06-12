@@ -936,6 +936,9 @@ pub struct AppState {
     pub observatory: Arc<RwLock<crate::observatory::ObservatoryState>>,
     /// 星象預報專屬 Semaphore（容量 1）：同時最多一個 AI 星象生成呼叫。
     pub observatory_sem: Arc<Semaphore>,
+    /// 流星雨狀態（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
+    /// 純記憶體模式，重啟清零；不破壞玩家資料。
+    pub meteor_shower: Arc<RwLock<crate::meteor_shower::MeteorShowerState>>,
 }
 
 impl AppState {
@@ -1098,6 +1101,7 @@ impl AppState {
             town_project_store,
             observatory: Arc::new(RwLock::new(crate::observatory::ObservatoryState::new())),
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
+            meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
         }
     }
 

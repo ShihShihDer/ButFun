@@ -871,6 +871,22 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
+            {
+                let project_completed = app.town_project.read().unwrap().status
+                    == crate::town_project::TownProjectStatus::Completed;
+                let triggered = app.meteor_shower.write().unwrap().tick(dt, project_completed);
+                if triggered {
+                    let dur_min = (crate::meteor_shower::SHOWER_DURATION_SECS / 60.0) as u32;
+                    let msg = format!(
+                        "☄️ 流星雨降臨！城鎮周圍出現 {} 個星塵採集點，限時 {} 分鐘——快去採集吧！",
+                        crate::meteor_shower::DUST_NODE_COUNT,
+                        dur_min,
+                    );
+                    let _ = app.tx_chat.send(msg);
+                }
+            }
+
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
             {
@@ -1546,6 +1562,11 @@ pub fn spawn(app: AppState) {
                         // 天文台星象預報（ROADMAP 132）。
                         star_forecast_secs: app.observatory.read().unwrap().remaining_secs(),
                         star_forecast_bonus: app.observatory.read().unwrap().bonus_kind_str().to_string(),
+                        // 流星雨（ROADMAP 133）。
+                        meteor_shower_secs: app.meteor_shower.read().unwrap().remaining_secs(),
+                        dust_nodes: app.meteor_shower.read().unwrap().active_nodes()
+                            .map(|n| crate::protocol::DustNodeView { id: n.id, wx: n.wx, wy: n.wy })
+                            .collect(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

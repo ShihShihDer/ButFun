@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -408,6 +408,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // 天文台星象預報（ROADMAP 132）：全服廣播。
                                         star_forecast_secs: *star_forecast_secs,
                                         star_forecast_bonus: star_forecast_bonus.clone(),
+                                        // 流星雨（ROADMAP 133）：全服廣播。
+                                        meteor_shower_secs: *meteor_shower_secs,
+                                        dust_nodes: dust_nodes.iter().filter(|n| filter_pos(n.wx, n.wy)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -737,6 +740,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     crate::observatory::StarForecastBonus::exp_bonus_pct()
                                 } else { 0 }
                             };
+                            // 星光護符（ROADMAP 133）：持有時 EXP +10%。
+                            let star_amulet_pct: u32 =
+                                if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 { 10 } else { 0 };
                             let prosperity_pct = crate::town_prosperity::level_from_u8(
                                 app.residents.read().unwrap().prosperity_level()
                             ).exp_bonus_pct();
@@ -744,8 +750,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 + 5 * village_gather_pct / 100
                                 + 5 * gathering_pct / 100
                                 + 5 * forecast_exp_pct / 100;
-                            // 以四捨五入整數乘法套用繁榮加成。
-                            let gather_exp = (gather_exp_base * (100 + prosperity_pct) + 50) / 100;
+                            // 護符 +10% 與繁榮加成合併成一次整數乘法，避免 5*10/100=0 截斷。
+                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct) + 50) / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
@@ -1525,6 +1531,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     1.0_f32 + crate::observatory::StarForecastBonus::exp_bonus_pct() as f32 / 100.0
                                 } else { 1.0_f32 }
                             };
+                            // 星光護符（ROADMAP 133）：持有時 EXP +10%。
+                            let star_amulet_mult = if p.inventory.count(crate::inventory::ItemKind::StarAmulet) > 0 {
+                                1.1_f32
+                            } else { 1.0_f32 };
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult
@@ -1532,7 +1542,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 * village_mult
                                 * gathering_mult
                                 * prosperity_mult
-                                * forecast_mult) as u32;
+                                * forecast_mult
+                                * star_amulet_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
@@ -4138,6 +4149,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 居民互助請求 end ──────────────────────────────────────────
+
+                // ── 流星雨星塵採集（ROADMAP 133）────────────────────────────────
+                Ok(ClientMsg::CollectDustNode { node_id }) => {
+                    // 驗證玩家位置在節點 COLLECT_REACH 內，成功則給 StarDust×1。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let collected = player_pos.map(|(px, py)| {
+                        app.meteor_shower.write().unwrap().try_collect(node_id, px, py)
+                    }).unwrap_or(false);
+                    if collected {
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.add_item_overflow(crate::inventory::ItemKind::StarDust, 1);
+                            tracing::info!(player = %p.name, node_id, "採集星塵節點");
+                        }
+                    }
+                }
+                // ── 流星雨星塵採集 end ───────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
