@@ -673,6 +673,37 @@
     pill.style.display = "block";
   }
 
+  // 城鎮入侵警報 HUD（ROADMAP 158）：入侵進行中時在 HUD 顯示紅色倒數橫幅。
+  function updateInvasionHud(invasion) {
+    let banner = document.getElementById("hudInvasionAlert");
+    if (!invasion || !invasion.active) {
+      if (banner) banner.style.display = "none";
+      return;
+    }
+    const secs = Math.ceil(invasion.remaining_secs);
+    const mins = Math.floor(secs / 60);
+    const ss = secs % 60;
+    const timeStr = mins > 0 ? `${mins}m${String(ss).padStart(2,"0")}s` : `${secs}s`;
+    const waveLabel = `第 ${invasion.wave_count + 1} 波`;
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "hudInvasionAlert";
+      banner.style.cssText = [
+        "position:fixed", "top:calc(8px + env(safe-area-inset-top))",
+        "left:50%", "transform:translateX(-50%)",
+        "background:rgba(60,5,5,0.92)", "border:1.5px solid #ff4040",
+        "border-radius:14px", "padding:7px 18px",
+        "z-index:1200", "min-width:180px", "text-align:center",
+        "font-family:monospace", "color:#ff8080", "font-size:.82rem",
+        "box-shadow:0 0 12px rgba(255,60,60,0.5)",
+        "pointer-events:none",
+      ].join(";");
+      document.body.appendChild(banner);
+    }
+    banner.innerHTML = `<span style="font-size:1rem">⚔️</span> <b style="color:#ff4040">[入侵警報]</b> ${waveLabel} <span style="color:#ffb0b0">${timeStr}</span>`;
+    banner.style.display = "block";
+  }
+
   // 餵食按鈕（ROADMAP 144）：玩家有野花種子且附近有野生動物時，顯示浮動按鈕。
   const FEED_REACH_PX = 100;
   function updateFeedWildlifeBtn() {
@@ -1164,6 +1195,8 @@
         // 公民投票（ROADMAP 156）：同步當前投票狀態與生效效果。
         window._lastCivicVoteData = msg.civic_vote || null;
         updateCivicVoteHud(msg.civic_vote, msg.civic_effect_secs, msg.civic_effect_kind);
+        // 城鎮入侵警報（ROADMAP 158）：入侵進行中時顯示紅色倒數橫幅。
+        updateInvasionHud(msg.invasion);
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
