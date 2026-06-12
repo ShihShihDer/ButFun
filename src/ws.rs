@@ -460,8 +460,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     });
 
+    // H2 安全：每連線訊息限流（令牌桶）——防單一惡意客戶端每秒灌數千訊息 DoS（CPU + 廣播放大）。
+    let mut rl_win = std::time::Instant::now();
+    let mut rl_n: u32 = 0;
+    let mut rl_chat_win = std::time::Instant::now();
+    let mut rl_chat_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
+        // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
+        if rl_win.elapsed().as_secs() >= 1 {
+            rl_win = std::time::Instant::now();
+            rl_n = 0;
+        }
+        rl_n += 1;
+        if rl_n > 60 {
+            continue;
+        }
         match msg {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
                 Ok(ClientMsg::Input {
@@ -480,6 +494,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 Ok(ClientMsg::Chat { text }) => {
+                    // H2：聊天額外限流（每則 chat 走 broadcast 放大給全服，更嚴）。超量靜默丟棄。
+                    if rl_chat_win.elapsed().as_secs() >= 1 {
+                        rl_chat_win = std::time::Instant::now();
+                        rl_chat_n = 0;
+                    }
+                    rl_chat_n += 1;
+                    if rl_chat_n > 3 {
+                        continue;
+                    }
                     // 清過控制字元 / 截長後若還有內容才廣播（集中在 sanitize_chat，可測）。
                     if let Some(text) = sanitize_chat(&text) {
                         // 讀**線上即時**名(不是進場時擷取的舊名):改名後不重連、聊天 from 也立刻是新名。

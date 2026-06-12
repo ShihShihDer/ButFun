@@ -381,10 +381,44 @@ async fn api_worldview(State(app): State<AppState>) -> impl IntoResponse {
 
 /// 收到一則玩家建議。內容清乾淨後若為空（全空白 / 全控制字元）回 400、不存——
 /// 擋空的判斷下沉到 `add`（依實際會被存下的內容），不是只對 raw 輸入 `trim`。
+/// 建議箱每 IP 速率限制（H3 安全強化）：防匿名腳本無限 POST 灌爆 suggestions 表 / 撐爆磁碟。
+/// Cloudflare tunnel 後真實 IP 在 `CF-Connecting-IP`；近似計數（每分鐘窗、每 IP ≤ 3 則）。
+fn suggest_rate_ok(ip: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static RL: OnceLock<Mutex<HashMap<String, (u64, u32)>>> = OnceLock::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let min = now / 60;
+    let mut map = RL.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    if map.len() > 20000 {
+        map.clear(); // 防 map 無限長大
+    }
+    let e = map.entry(ip.to_string()).or_insert((min, 0));
+    if e.0 != min {
+        *e = (min, 0);
+    }
+    e.1 += 1;
+    e.1 <= 3
+}
+
 async fn post_suggestion(
     State(app): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(new): Json<NewSuggestion>,
 ) -> impl IntoResponse {
+    // H3：每 IP 速率限制。Cloudflare tunnel 後真實 IP 在 CF-Connecting-IP（退而求其次 X-Forwarded-For）。
+    let ip = headers
+        .get("cf-connecting-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if !suggest_rate_ok(&ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, "建議送太頻繁了，請稍後再試").into_response();
+    }
     match app.suggestions.add(new).await {
         Some(saved) => (StatusCode::CREATED, Json(saved)).into_response(),
         None => (StatusCode::BAD_REQUEST, "建議內容不可為空").into_response(),

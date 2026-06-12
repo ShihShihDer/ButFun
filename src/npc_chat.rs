@@ -301,8 +301,40 @@ fn groq_model() -> String {
 /// 呼叫 Groq（OpenAI 相容 `/chat/completions`）。失敗（無 key / HTTP 錯 / 逾時 / 解析錯）
 /// 一律回 None，由上層降級。雲端執行：超快、server 端天然並發、零本機 CPU——
 /// 多人同時聊也扛得住（這正是本機純 CPU ~44s/prompt 撐不住的解方）。
+/// 全域 Groq 呼叫上限（H1 安全強化）：防單一/協同玩家輪流跟多個 NPC 聊、繞過 per-NPC 冷卻、
+/// 持續打爆免費額度 / 燒錢。超過每分鐘或每日上限就一律回 None（降級到 ollama/罐頭）。
+/// 可用環境變數覆寫；近似計數（窗邊界可能略過量），對「成本上限」足夠。
+fn groq_env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+fn groq_rate_ok() -> bool {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    static MIN_WIN: AtomicU64 = AtomicU64::new(0);
+    static MIN_CNT: AtomicU32 = AtomicU32::new(0);
+    static DAY_WIN: AtomicU64 = AtomicU64::new(0);
+    static DAY_CNT: AtomicU32 = AtomicU32::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (min, day) = (now / 60, now / 86400);
+    if MIN_WIN.swap(min, Ordering::Relaxed) != min {
+        MIN_CNT.store(0, Ordering::Relaxed);
+    }
+    if DAY_WIN.swap(day, Ordering::Relaxed) != day {
+        DAY_CNT.store(0, Ordering::Relaxed);
+    }
+    let m = MIN_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    let d = DAY_CNT.fetch_add(1, Ordering::Relaxed) + 1;
+    m <= groq_env_u32("BUTFUN_GROQ_MAX_PER_MIN", 30) && d <= groq_env_u32("BUTFUN_GROQ_MAX_PER_DAY", 3000)
+}
+
 async fn groq_chat(system: &str, user: &str) -> Option<String> {
     let key = groq_key()?;
+    // H1：全域額度上限——超過就降級（不再呼叫 Groq），保護免費額度 / 不燒錢。
+    if !groq_rate_ok() {
+        return None;
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
