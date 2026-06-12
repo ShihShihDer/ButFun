@@ -528,6 +528,7 @@
   let lastMeteorShowerText = null;
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
+  let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
@@ -871,6 +872,8 @@
           wanderingMerchantUntilMs = 0;
         }
         wanderingCatalog = Array.isArray(msg.wandering_catalog) ? msg.wandering_catalog : [];
+        // 旅行商人限時委託（ROADMAP 136）。
+        merchantQuests = Array.isArray(msg.merchant_quests) ? msg.merchant_quests : [];
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -6994,9 +6997,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -9987,8 +9990,8 @@
       _wanderingPanelSig = null;
       return;
     }
-    // 簽章：商品清單+登入狀態沒變就不重建
-    const sig = JSON.stringify(wanderingCatalog) + isGuest;
+    // 簽章：商品清單+委託狀態+登入狀態沒變就不重建
+    const sig = JSON.stringify(wanderingCatalog) + JSON.stringify(merchantQuests) + isGuest;
     if (panel && sig === _wanderingPanelSig) { panel.style.display = ""; return; }
     _wanderingPanelSig = sig;
 
@@ -10061,6 +10064,78 @@
       }
       row.appendChild(btn);
       panel.appendChild(row);
+    }
+
+    // ── ROADMAP 136：限時委託區塊 ──────────────────────────────────────────
+    if (merchantQuests.length > 0) {
+      const divider = document.createElement("div");
+      divider.style.cssText = "border-top:1px solid #554400;margin:10px 0 6px;";
+      panel.appendChild(divider);
+
+      const questTitle = document.createElement("div");
+      questTitle.style.cssText = "color:#ffdd88;font-weight:bold;margin-bottom:6px;font-size:.88rem";
+      questTitle.textContent = "📋 限時委託（商人在場期間完成可得獎勵）";
+      panel.appendChild(questTitle);
+
+      for (const q of merchantQuests) {
+        const qrow = document.createElement("div");
+        qrow.style.cssText = "background:#2a1600;border:1px solid #664400;border-radius:8px;padding:8px 10px;margin:5px 0";
+
+        const qheader = document.createElement("div");
+        qheader.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px";
+        const qname = document.createElement("span");
+        qname.style.cssText = "font-weight:bold;color:#ffcc66";
+        qname.textContent = q.name;
+        const qstatus = document.createElement("span");
+        qstatus.style.cssText = "font-size:.78rem;" + (q.completed ? "color:#88ff88" : q.accepted ? "color:#88aaff" : "color:#888");
+        qstatus.textContent = q.completed ? "✅已完成" : q.accepted ? "📌進行中" : "待接取";
+        qheader.appendChild(qname);
+        qheader.appendChild(qstatus);
+        qrow.appendChild(qheader);
+
+        const qdesc = document.createElement("div");
+        qdesc.style.cssText = "color:#cc9944;font-size:.8rem;margin-bottom:4px";
+        qdesc.textContent = q.description;
+        qrow.appendChild(qdesc);
+
+        // 進度條（接取後才顯示）
+        if (q.accepted && !q.completed) {
+          const pct = Math.min(100, Math.round(q.progress / q.required * 100));
+          const barWrap = document.createElement("div");
+          barWrap.style.cssText = "background:#333;border-radius:4px;height:6px;margin:4px 0";
+          const bar = document.createElement("div");
+          bar.style.cssText = `width:${pct}%;height:100%;background:#aa7700;border-radius:4px;transition:width .3s`;
+          barWrap.appendChild(bar);
+          qrow.appendChild(barWrap);
+          const prog = document.createElement("div");
+          prog.style.cssText = "font-size:.75rem;color:#888;text-align:right";
+          prog.textContent = `${q.progress}/${q.required}`;
+          qrow.appendChild(prog);
+        }
+
+        // 獎勵說明
+        const qreward = document.createElement("div");
+        qreward.style.cssText = "font-size:.78rem;color:#aaffaa;margin-top:3px";
+        const ricon = ITEM_LOOK[q.reward_item] || "🎁";
+        const rname = ITEM_NAME[q.reward_item] || q.reward_item;
+        qreward.textContent = `獎勵：${q.reward_ether}⚡ + ${ricon}${rname}×${q.reward_qty}`;
+        qrow.appendChild(qreward);
+
+        // 接取按鈕（未接且未完成才顯示）
+        if (!q.accepted && !q.completed && !isGuest) {
+          const acceptBtn = document.createElement("button");
+          acceptBtn.textContent = "接取委託";
+          acceptBtn.style.cssText = "margin-top:6px;padding:3px 10px;border-radius:6px;border:1px solid #aa7700;background:#3a2000;color:#ffcc44;cursor:pointer;font-size:.8rem";
+          acceptBtn.addEventListener("click", () => {
+            if (!ws) return;
+            try { ws.send(JSON.stringify({ type: "accept_merchant_quest", quest_id: q.id })); }
+            catch (ex) {}
+          });
+          qrow.appendChild(acceptBtn);
+        }
+
+        panel.appendChild(qrow);
+      }
     }
   }
 
