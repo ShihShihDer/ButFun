@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -421,6 +421,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         season_remaining_secs: *season_remaining_secs,
                                         // 野生動物（ROADMAP 140）：依 AOI 剔除。
                                         wildlife: wildlife.iter().filter(|w| filter_pos(w.x, w.y)).cloned().collect(),
+                                        // 乙太微粒（ROADMAP 142）：依 AOI 剔除。
+                                        carion_orbs: carion_orbs.iter().filter(|o| filter_pos(o.x, o.y)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2531,6 +2533,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+
+                // ── 乙太微粒採集（ROADMAP 142 死亡餵養生命）────────────────────────
+                Ok(ClientMsg::CollectCarrionOrb { orb_id }) => {
+                    // 採集乙太微粒：需未倒地、在微粒 CARION_COLLECT_RADIUS 內。
+                    use crate::wildlife::CARION_ETHER;
+                    let (px, py, is_downed) = app.players.read().unwrap()
+                        .get(&id)
+                        .map(|p| (p.x, p.y, p.vitals.is_downed()))
+                        .unwrap_or((0.0, 0.0, true));
+                    if !is_downed {
+                        let result = app.wildlife_manager.write().unwrap()
+                            .collect_carion_orb(orb_id, px, py);
+                        if result.is_some() {
+                            let name = app.players.read().unwrap()
+                                .get(&id)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_default();
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.ether = p.ether.saturating_add(CARION_ETHER);
+                                tracing::info!(player = %name, ether = CARION_ETHER, "採集乙太微粒");
+                            }
+                            let msg = format!(
+                                "🌿 {} 採集了乙太微粒，得到 {} 乙太。萬物皆有其歸宿，死亡是循環的一環。",
+                                name, CARION_ETHER
+                            );
+                            let _ = app.tx_chat.send(msg);
                         }
                     }
                 }

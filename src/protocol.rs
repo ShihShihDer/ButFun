@@ -363,6 +363,10 @@ pub enum ClientMsg {
     /// 成功：背包加 1 個星晶碎片、給 15 點探索者熟練度 XP。
     /// 白天 / 太遠 / 礦脈已採 / 倒地中靜默忽略。
     GatherStarCrystal,
+    /// 採集乙太微粒（ROADMAP 142）：玩家靠近野生動物死亡位置，採集乙太微粒得乙太。
+    /// `orb_id`：要採集的微粒 ID（前端從快照取得）。
+    /// 倒地中 / 太遠 / ID 不存在 / 已被他人採集 → 靜默忽略。
+    CollectCarrionOrb { orb_id: u32 },
     /// 接取貿易任務（ROADMAP 51）：在當前星球商人處接取一個貿易包裹。
     /// `route_id`：要接取的路線編號（需在本星球且未在冷卻中且未持有其他包裹）。
     /// 一次只能攜帶一個包裹；同路線有 5 分鐘冷卻。倒地中靜默忽略。
@@ -636,6 +640,9 @@ pub enum ServerMsg {
         /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
         /// 全部送出（18 隻量小；前端依 AOI 過濾）。
         wildlife: Vec<WildlifeView>,
+        /// 乙太微粒（ROADMAP 142）：獵物死亡後釋出的乙太節點。
+        /// 玩家靠近採集可得乙太；TTL 90 秒後自動消失。
+        carion_orbs: Vec<CarrionOrbView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1003,6 +1010,15 @@ pub struct WildlifeView {
     pub y: f32,
     /// 行為狀態：wandering / resting / fleeing / returning。
     pub state: String,
+}
+
+/// 快照裡一顆乙太微粒的位置（ROADMAP 142）。
+/// 獵物死亡後在原地生成，玩家靠近可採集乙太。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CarrionOrbView {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// 快照裡一個世界採集節點的可見狀態。
@@ -1388,6 +1404,7 @@ mod tests {
             current_season: "spring".to_string(),
             season_remaining_secs: 1200,
             wildlife: vec![],
+            carion_orbs: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

@@ -1652,6 +1652,13 @@ pub fn spawn(app: AppState) {
                                     state: a.state_str().to_string(),
                                 }).collect()
                         },
+                        // 乙太微粒（ROADMAP 142 死亡餵養生命）：死亡獵物留下的乙太節點。
+                        carion_orbs: {
+                            let wm = app.wildlife_manager.read().unwrap();
+                            wm.carion_orbs.iter()
+                                .map(|o| crate::protocol::CarrionOrbView { id: o.id, x: o.x, y: o.y })
+                                .collect()
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
