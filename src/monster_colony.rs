@@ -8,6 +8,9 @@
 //! 決定戰術（包圍/集火/撤退/集結），交由 game.rs 非同步生成 Groq 台詞並廣播。
 //! 成本紀律：每隻 Alpha 最多每 90 秒呼叫一次 LLM；無玩家時仍使用罐頭台詞。
 //!
+//! ROADMAP 170：Alpha 領地爭奪——不同巢穴的 Alpha 進入 900px 內自動廝殺，
+//! 敗者巢穴族群衰退、勝者稱霸，玩家趁亂收漁人之利；零 LLM、純算術。
+//!
 //! 效能：全純算術、零 migration；記憶體模式，重啟全重置。
 
 use serde::Serialize;
@@ -42,6 +45,15 @@ pub const ALPHA_COMMAND_COOLDOWN_SECS: f32 = 90.0;
 /// 當前指令顯示持續時間（秒）：前端顯示 active_tactic 氣泡的時長。
 const ALPHA_TACTIC_DURATION_SECS: f32 = 30.0;
 
+// ─── ROADMAP 170：Alpha 領地爭奪常數 ────────────────────────────────────────
+
+/// 兩隻 Alpha 進入此半徑（像素）內且屬不同巢穴，觸發領地衝突廝殺。
+const ALPHA_CLASH_RADIUS: f32 = 900.0;
+/// 衝突中每秒互相造成的傷害（HP/秒）。
+const ALPHA_CLASH_DAMAGE_PER_SEC: f32 = 8.0;
+/// 敗者巢穴在 Alpha 被擊敗後的冷卻倍率（相對 ALPHA_COOLDOWN_SECS）。
+const ALPHA_CLASH_DEFEAT_COOLDOWN_MULT: f32 = 2.0;
+
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
 /// 單個怪物巢穴。
@@ -68,7 +80,7 @@ pub struct MonsterColony {
     pub alpha_cooldown: f32,
 }
 
-/// 巢穴 Alpha 首領（ROADMAP 168 + 169）。
+/// 巢穴 Alpha 首領（ROADMAP 168 + 169 + 170）。
 /// 單獨追蹤，不走 EnemyField。
 pub struct ColonyAlpha {
     /// 全域唯一 ID（用於 AttackAlpha 訊息定位）。
@@ -94,6 +106,9 @@ pub struct ColonyAlpha {
     pub active_tactic: Option<String>,
     /// 當前指令剩餘顯示時間（秒）；到零後清除 active_tactic。
     tactic_remaining: f32,
+    // ROADMAP 170：領地爭奪
+    /// 正在與哪隻 Alpha 廝殺（對方的 alpha.id），`None` 表示無衝突。
+    pub clash_target_id: Option<u32>,
 }
 
 /// 給協議層用的 Alpha 視圖（隨快照廣播）。
@@ -108,6 +123,8 @@ pub struct ColonyAlphaView {
     pub max_hp: u32,
     /// 當前指令名稱（繁中），無指令時為 `null`。前端用於顯示指揮氣泡。
     pub active_tactic: Option<String>,
+    /// ROADMAP 170：正在廝殺的對方 Alpha ID；`null` 表示無衝突。前端顯示紅色衝突徽章。
+    pub clash_target_id: Option<u32>,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -153,6 +170,19 @@ pub enum MonsterColonyEvent {
         alpha_x: f32,
         alpha_y: f32,
     },
+    /// ROADMAP 170：兩隻不同巢穴的 Alpha 首次進入衝突半徑，廣播開戰通知。
+    AlphaClashStart {
+        colony_a_name: &'static str,
+        colony_b_name: &'static str,
+    },
+    /// ROADMAP 170：Alpha 領地衝突結束，敗者 Alpha 倒下。
+    /// game.rs 負責更新敗者巢穴族群 + 廣播勝利訊息。
+    AlphaClashVictory {
+        winner_colony_name: &'static str,
+        loser_colony_name: &'static str,
+        /// 敗者巢穴 ID，game.rs 用於更新族群計數與冷卻。
+        loser_colony_id: u32,
+    },
 }
 
 /// 管理所有怪物巢穴。
@@ -173,7 +203,7 @@ impl MonsterColonyManager {
         }
     }
 
-    /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現 + Alpha 指揮計時（ROADMAP 169）。
+    /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現 + Alpha 指揮計時 + Alpha 領地爭奪。
     pub fn tick(&mut self, dt: f32) -> Vec<MonsterColonyEvent> {
         let mut events = Vec::new();
 
@@ -249,10 +279,104 @@ impl MonsterColonyManager {
                 command_cooldown: ALPHA_COMMAND_FIRST_WAIT_SECS,
                 active_tactic: None,
                 tactic_remaining: 0.0,
+                clash_target_id: None,
             });
         }
 
+        // ROADMAP 170：Alpha 領地爭奪——兩兩偵測 + 互相施傷 + 結算
+        self.tick_alpha_clash(dt, &mut events);
+
         events
+    }
+
+    /// ROADMAP 170：偵測所有不同巢穴 Alpha 對的領地衝突，施加傷害並結算。
+    fn tick_alpha_clash(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
+        let n = self.alphas.len();
+        if n < 2 {
+            return;
+        }
+
+        // 第一遍：收集衝突對，決定傷害量與新衝突通知
+        // 分離收集以避免可變借用衝突
+        let mut damage_vec: Vec<(usize, u32)> = Vec::new();
+        let mut clash_starts: Vec<(&'static str, &'static str)> = Vec::new();
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if self.alphas[i].colony_id == self.alphas[j].colony_id {
+                    continue; // 同巢穴不相殺
+                }
+                let dx = self.alphas[i].x - self.alphas[j].x;
+                let dy = self.alphas[i].y - self.alphas[j].y;
+                if dx * dx + dy * dy > ALPHA_CLASH_RADIUS * ALPHA_CLASH_RADIUS {
+                    continue; // 超出衝突半徑
+                }
+                let aj_id = self.alphas[j].id;
+                let ai_id = self.alphas[i].id;
+                // 首次進入範圍才發廣播
+                if self.alphas[i].clash_target_id != Some(aj_id) {
+                    clash_starts.push((self.alphas[i].colony_name, self.alphas[j].colony_name));
+                }
+                self.alphas[i].clash_target_id = Some(aj_id);
+                self.alphas[j].clash_target_id = Some(ai_id);
+                let dmg = ((ALPHA_CLASH_DAMAGE_PER_SEC * dt) as u32).max(1);
+                damage_vec.push((i, dmg));
+                damage_vec.push((j, dmg));
+            }
+        }
+
+        for (a_name, b_name) in clash_starts {
+            events.push(MonsterColonyEvent::AlphaClashStart {
+                colony_a_name: a_name,
+                colony_b_name: b_name,
+            });
+        }
+
+        // 第二遍：套用傷害
+        for (idx, dmg) in damage_vec {
+            self.alphas[idx].hp = self.alphas[idx].hp.saturating_sub(dmg);
+        }
+
+        // 第三遍：找出因衝突歸零的 Alpha，結算勝負
+        let dead_ids: Vec<u32> = self.alphas.iter()
+            .filter(|a| a.hp == 0 && a.clash_target_id.is_some())
+            .map(|a| a.id)
+            .collect();
+
+        for &dead_id in &dead_ids {
+            let (loser_name, loser_colony_id) = match self.alphas.iter().find(|a| a.id == dead_id) {
+                Some(a) => (a.colony_name, a.colony_id),
+                None => continue,
+            };
+            let winner_name: &'static str = self.alphas.iter()
+                .find(|a| a.clash_target_id == Some(dead_id) && a.id != dead_id)
+                .map(|a| a.colony_name)
+                .unwrap_or("未知");
+            events.push(MonsterColonyEvent::AlphaClashVictory {
+                winner_colony_name: winner_name,
+                loser_colony_name: loser_name,
+                loser_colony_id,
+            });
+            // 敗者巢穴族群衰退 + 加長冷卻
+            if let Some(col) = self.colonies.iter_mut().find(|c| c.id == loser_colony_id) {
+                col.population = col.population.saturating_sub(2);
+                col.alpha_cooldown = ALPHA_COOLDOWN_SECS * ALPHA_CLASH_DEFEAT_COOLDOWN_MULT;
+            }
+        }
+
+        // 移除陣亡的 Alpha，並清除存活者對已消失 Alpha 的引用
+        if !dead_ids.is_empty() {
+            self.alphas.retain(|a| !dead_ids.contains(&a.id));
+            let alive_ids: std::collections::HashSet<u32> =
+                self.alphas.iter().map(|a| a.id).collect();
+            for alpha in &mut self.alphas {
+                if let Some(tid) = alpha.clash_target_id {
+                    if !alive_ids.contains(&tid) {
+                        alpha.clash_target_id = None;
+                    }
+                }
+            }
+        }
     }
 
     /// 設定指定 Alpha 的當前指令（game.rs 在 AlphaCommandReady 後同步呼叫）。
@@ -351,6 +475,7 @@ impl MonsterColonyManager {
             hp: a.hp,
             max_hp: a.max_hp,
             active_tactic: a.active_tactic.clone(),
+            clash_target_id: a.clash_target_id,
         }).collect()
     }
 
@@ -927,5 +1052,205 @@ mod tests {
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
             "Alpha 死亡後不應再發出指令"
         );
+    }
+
+    // ─── ROADMAP 170：Alpha 領地爭奪測試 ─────────────────────────────────────
+
+    /// 直接植入兩個 Alpha（在衝突半徑內），驗輔函式，免重複建巢穴。
+    fn spawn_two_nearby_alphas(mgr: &mut MonsterColonyManager) -> (u32, u32) {
+        let a_id = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: a_id,
+            colony_id: 1,
+            kind: crate::combat::EnemyKind::ScrapDrone,
+            x: 0.0,
+            y: 0.0,
+            hp: 100,
+            max_hp: 100,
+            colony_name: "巢穴甲",
+            command_cooldown: 9999.0,
+            active_tactic: None,
+            tactic_remaining: 0.0,
+            clash_target_id: None,
+        });
+        let b_id = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: b_id,
+            colony_id: 2,
+            kind: crate::combat::EnemyKind::CrystalGolem,
+            x: 500.0, // 在 ALPHA_CLASH_RADIUS(900) 內
+            y: 0.0,
+            hp: 100,
+            max_hp: 100,
+            colony_name: "巢穴乙",
+            command_cooldown: 9999.0,
+            active_tactic: None,
+            tactic_remaining: 0.0,
+            clash_target_id: None,
+        });
+        (a_id, b_id)
+    }
+
+    #[test]
+    fn two_nearby_alphas_start_clashing() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_nearby_alphas(&mut mgr);
+        let events = mgr.tick(0.1);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
+            "兩隻不同巢穴的 Alpha 進入範圍應觸發 AlphaClashStart"
+        );
+    }
+
+    #[test]
+    fn clash_start_fires_only_once() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_nearby_alphas(&mut mgr);
+        mgr.tick(0.1); // 第一幀：觸發 ClashStart
+        let events2 = mgr.tick(0.1); // 第二幀：已有 clash_target_id，不再廣播
+        assert!(
+            !events2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
+            "AlphaClashStart 只應在衝突首次偵測到時發出一次"
+        );
+    }
+
+    #[test]
+    fn clash_damages_both_alphas() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_nearby_alphas(&mut mgr);
+        let initial_hp = (mgr.alphas[0].hp, mgr.alphas[1].hp);
+        mgr.tick(1.0); // 1 秒鐘傷害
+        assert!(mgr.alphas[0].hp < initial_hp.0, "衝突 Alpha A 應受到傷害");
+        // Alpha B 可能已死（若勝負很快決定），不過至少要有過傷害
+        let b_still_alive = mgr.alphas.iter().any(|a| a.colony_id == 2);
+        if b_still_alive {
+            let b_hp = mgr.alphas.iter().find(|a| a.colony_id == 2).unwrap().hp;
+            assert!(b_hp < initial_hp.1, "衝突 Alpha B 也應受到傷害");
+        }
+    }
+
+    #[test]
+    fn weaker_alpha_dies_in_clash() {
+        let mut mgr = MonsterColonyManager::new();
+        // 讓其中一隻血很少，確保會在幾秒內死亡
+        let (a_id, _b_id) = spawn_two_nearby_alphas(&mut mgr);
+        mgr.alphas.iter_mut().find(|a| a.id == a_id).unwrap().hp = 5; // A 快死了
+        // 持續推進，直到 A 死亡（最多 10 秒 = 足夠）
+        for _ in 0..100 {
+            mgr.tick(0.1);
+            if !mgr.alphas.iter().any(|a| a.id == a_id) { break; }
+        }
+        assert!(
+            !mgr.alphas.iter().any(|a| a.id == a_id),
+            "低血量 Alpha A 應在衝突中死亡"
+        );
+    }
+
+    #[test]
+    fn clash_victory_event_emitted() {
+        let mut mgr = MonsterColonyManager::new();
+        let (a_id, _) = spawn_two_nearby_alphas(&mut mgr);
+        mgr.alphas.iter_mut().find(|a| a.id == a_id).unwrap().hp = 1;
+        // 推進到死亡
+        let mut victory_found = false;
+        for _ in 0..20 {
+            let events = mgr.tick(0.5);
+            if events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashVictory { .. })) {
+                victory_found = true;
+                break;
+            }
+        }
+        assert!(victory_found, "衝突應在 Alpha 死亡時發出 AlphaClashVictory 事件");
+    }
+
+    #[test]
+    fn loser_colony_alpha_cooldown_extended() {
+        let mut mgr = MonsterColonyManager::new();
+        // 植入兩個假巢穴供 Alpha 使用
+        while mgr.colonies.len() < 2 { mgr.colonies.clear(); break; }
+        mgr.colonies = vec![
+            MonsterColony {
+                id: 1, kind: crate::combat::EnemyKind::ScrapDrone, name: "甲",
+                cx: 0.0, cy: 0.0, spawn_radius: 100.0,
+                population: 3, max_population: 3,
+                spawn_timer: 999.0, spawn_count: 0, alpha_cooldown: 0.0,
+            },
+            MonsterColony {
+                id: 2, kind: crate::combat::EnemyKind::CrystalGolem, name: "乙",
+                cx: 500.0, cy: 0.0, spawn_radius: 100.0,
+                population: 3, max_population: 3,
+                spawn_timer: 999.0, spawn_count: 0, alpha_cooldown: 0.0,
+            },
+        ];
+        let (a_id, _) = spawn_two_nearby_alphas(&mut mgr);
+        mgr.alphas.iter_mut().find(|a| a.id == a_id).unwrap().hp = 1;
+        for _ in 0..20 { mgr.tick(0.5); }
+        let loser_col = mgr.colonies.iter().find(|c| c.id == 1);
+        if let Some(col) = loser_col {
+            assert!(col.alpha_cooldown > ALPHA_COOLDOWN_SECS,
+                "敗者巢穴冷卻應大於正常冷卻（{ALPHA_COOLDOWN_SECS}s）");
+        }
+    }
+
+    #[test]
+    fn same_colony_alphas_do_not_clash() {
+        let mut mgr = MonsterColonyManager::new();
+        // 植入兩隻同巢穴 Alpha
+        for i in 0..2u32 {
+            let id = mgr.next_alpha_id;
+            mgr.next_alpha_id += 1;
+            mgr.alphas.push(ColonyAlpha {
+                id,
+                colony_id: 99, // 同巢穴
+                kind: crate::combat::EnemyKind::ScrapDrone,
+                x: (i as f32) * 100.0,
+                y: 0.0,
+                hp: 100, max_hp: 100,
+                colony_name: "共同巢穴",
+                command_cooldown: 9999.0,
+                active_tactic: None,
+                tactic_remaining: 0.0,
+                clash_target_id: None,
+            });
+        }
+        let events = mgr.tick(10.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
+            "同一巢穴的 Alpha 不應互相衝突"
+        );
+        assert_eq!(mgr.alphas.len(), 2, "同巢穴 Alpha 不應因衝突消失");
+    }
+
+    #[test]
+    fn out_of_range_alphas_do_not_clash() {
+        let mut mgr = MonsterColonyManager::new();
+        let id1 = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: id1, colony_id: 1,
+            kind: crate::combat::EnemyKind::ScrapDrone,
+            x: 0.0, y: 0.0,
+            hp: 100, max_hp: 100, colony_name: "遠端巢穴甲",
+            command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
+            clash_target_id: None,
+        });
+        let id2 = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: id2, colony_id: 2,
+            kind: crate::combat::EnemyKind::CrystalGolem,
+            x: 2000.0, y: 0.0, // 超出 900px 衝突半徑
+            hp: 100, max_hp: 100, colony_name: "遠端巢穴乙",
+            command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
+            clash_target_id: None,
+        });
+        let events = mgr.tick(1.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
+            "距離超過衝突半徑的 Alpha 不應開始衝突"
+        );
+        assert_eq!(mgr.alphas[0].hp, 100, "超出範圍的 Alpha 不應受到傷害");
     }
 }
