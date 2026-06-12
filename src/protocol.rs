@@ -333,6 +333,10 @@ pub enum ClientMsg {
     /// `enabled = true` 時加入自動集合；`false` 時移除。
     /// 風之步（gale）不支援自動（方向依賴）；其餘四種皆可。
     SetAutoSkill { kind: String, enabled: bool },
+    /// 屬性加點（ROADMAP 152）：玩家將 `points` 個屬性點分配到指定屬性。
+    /// `stat` 可為 "hp" / "attack" / "speed" / "atk_speed"。
+    /// 點數不足 / 未知屬性種類靜默忽略。
+    AllocateStat { stat: String, points: u32 },
     /// 馴化寵物（ROADMAP 46）：嘗試馴化 ATTACK_REACH 內 HP < 25% 的最近怪物。
     /// 不帶座標參數——伺服器以玩家自己的位置判定（防隔空馴化）。
     /// 乙太不足 / 無符合條件怪物 / 不可馴化種類 / 倒地中靜默忽略。
@@ -990,6 +994,23 @@ pub struct PlayerView {
     /// 累計擊殺怪物數（ROADMAP 147）。HUD 顯示；重啟清空。0 時省略流量。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub kill_count: u32,
+
+    // ── 屬性加點（ROADMAP 152）────────────────────────────────────────────────
+    /// 未分配的屬性點。0 時省略流量。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub stat_points_unspent: u32,
+    /// 已分配到 HP 的點數（每點 +5 max HP）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub stat_hp: u32,
+    /// 已分配到攻擊的點數（每點 +2 攻擊）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub stat_attack: u32,
+    /// 已分配到移動速度的點數（每點 +8% 速度）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub stat_speed: u32,
+    /// 已分配到攻擊速度的點數（每點 -5% 攻擊冷卻）。0 時省略。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub stat_atk_speed: u32,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1358,6 +1379,11 @@ mod tests {
                 indoor_x: None,
                 indoor_y: None,
                 kill_count: 0,
+                stat_points_unspent: 0,
+                stat_hp: 0,
+                stat_attack: 0,
+                stat_speed: 0,
+                stat_atk_speed: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1572,6 +1598,11 @@ mod tests {
             indoor_x: None,
             indoor_y: None,
             kill_count: 0,
+            stat_points_unspent: 0,
+            stat_hp: 0,
+            stat_attack: 0,
+            stat_speed: 0,
+            stat_atk_speed: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1774,6 +1805,11 @@ mod tests {
             indoor_x: None,
             indoor_y: None,
             kill_count: 0,
+            stat_points_unspent: 0,
+            stat_hp: 0,
+            stat_attack: 0,
+            stat_speed: 0,
+            stat_atk_speed: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1821,6 +1857,11 @@ mod tests {
             indoor_x: None,
             indoor_y: None,
             kill_count: 0,
+            stat_points_unspent: 0,
+            stat_hp: 0,
+            stat_attack: 0,
+            stat_speed: 0,
+            stat_atk_speed: 0,
         }
     }
 
@@ -1858,5 +1899,19 @@ mod tests {
         pv.costume = 3;
         let v2: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v2["costume"], 3, "costume=3 應出現在 JSON");
+    }
+
+    /// 前端送的 allocate_stat 訊息要能被解析成 `ClientMsg::AllocateStat`（ROADMAP 152 JSON 契約）。
+    #[test]
+    fn parses_allocate_stat_message() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"allocate_stat","stat":"hp","points":2}"#).unwrap();
+        match msg {
+            ClientMsg::AllocateStat { stat, points } => {
+                assert_eq!(stat, "hp");
+                assert_eq!(points, 2);
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
     }
 }

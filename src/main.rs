@@ -109,6 +109,7 @@ mod community_gathering;
 mod season;
 mod wildlife;
 mod species_relations;
+mod stat_points;
 
 use std::net::SocketAddr;
 

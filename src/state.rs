@@ -174,6 +174,10 @@ pub struct Player {
     /// 冷卻好後在對應行動時自動觸發，不需手動開技能面板點按。記憶體前置，重啟清空。
     pub auto_skills: std::collections::HashSet<String>,
 
+    // ── 屬性加點（ROADMAP 152）───────────────────────────────────────────────
+    /// 玩家的屬性加點分配（未分配點 + 四條已分配點）。持久化於 players 表。
+    pub stats: crate::stat_points::StatPoints,
+
     // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
     /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
     pub pet: Option<crate::pet::PetKind>,
@@ -269,7 +273,8 @@ impl Player {
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
                 + crate::class::combat_bonus(&self.masteries)
-                + self.pet.map(|p| p.bonus_attack()).unwrap_or(0),
+                + self.pet.map(|p| p.bonus_attack()).unwrap_or(0)
+                + self.stats.attack * crate::stat_points::ATTACK_PER_POINT,
             defense: crate::equipment::equipped_armor_defense(&self.equipment)
                 + self.pet.map(|p| p.bonus_defense()).unwrap_or(0),
             planet: self.planet.clone(),
@@ -543,6 +548,12 @@ impl Player {
             indoor_y: self.indoor_plot_id.map(|_| self.indoor_y),
             // ── 擊殺計數（ROADMAP 147）
             kill_count: self.kill_count,
+            // ── 屬性加點（ROADMAP 152）
+            stat_points_unspent: self.stats.unspent,
+            stat_hp: self.stats.hp,
+            stat_attack: self.stats.attack,
+            stat_speed: self.stats.speed,
+            stat_atk_speed: self.stats.atk_speed,
         }
     }
 
@@ -699,6 +710,8 @@ impl Player {
         }
         // 移動數學整段在 world_core::step_with_keys（對角線正規化、水域阻擋、
         // 實心格四角碰撞、受困逃脫）——前端 wasm 預測呼叫同一份，預測==權威。
+        // 速度加點透過縮放 dt 實現，保持碰撞邏輯不變。
+        let effective_dt = dt * self.stats.speed_mult();
         (self.x, self.y) = world_core::step_with_keys(
             self.x,
             self.y,
@@ -706,7 +719,7 @@ impl Player {
             self.input.down,
             self.input.left,
             self.input.right,
-            dt,
+            effective_dt,
             tile_solid,
         );
     }
@@ -1218,6 +1231,7 @@ mod tests {
             pending_precision: false,
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
+            stats: crate::stat_points::StatPoints::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
