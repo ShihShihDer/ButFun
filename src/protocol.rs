@@ -760,6 +760,10 @@ pub enum ServerMsg {
         /// 玩家可根據密度判斷該地區怪物活躍程度，清剿後密度下降。
         #[serde(default)]
         monster_colony_views: Vec<crate::monster_colony::MonsterColonyView>,
+        /// 生態壓力值（ROADMAP 167）：0-100 的整合生態壓力，前端統一物種視圖用。
+        /// 0 = 生態均衡，≥25 開始累積，≥50 緊張，≥75 危機（影響獸潮週期）。
+        #[serde(default)]
+        eco_pressure_value: f32,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1618,6 +1622,7 @@ mod tests {
             night_spring_nodes: vec![],
             monster_species_attitudes: vec![],
             monster_colony_views: vec![],
+            eco_pressure_value: 0.0,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

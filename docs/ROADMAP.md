@@ -1340,10 +1340,12 @@ D-3. ✅ **小地圖導航**（PR #71）
 165. [x] **跨物種食物鏈接線：怪物進食物鏈、死亡同一循環**
     - 怪物獵食野生動物（依食性配對），野生動物把怪物視為威脅逃竄/群逃；被獵殺同樣掉乙太微粒——「死亡餵養生命」整條循環統一，不分陣營。
     - 實作：EtherWisp→野鳥、MushroomStalker→小動物、ScrapDrone→野鹿；`monster_hunts_wildlife` 純函式；`hunting_wildlife_target` 欄位；`update_wildlife_targets`/`collect_wildlife_kills`；wildlife tick 接 monster_threats；game.rs 接線；11 條新測試。（PR #305）
-166. [ ] **獸潮湧現化：從生態壓力長出，不再純計時器**
+166. [x] **獸潮湧現化：從生態壓力長出，不再純計時器**
     - 巢穴族群過剩/食物短缺/人類過度獵殺其獵物 → 攻城壓力上升 → 獸潮；生態安定→無獸潮。director 的 timer 降級成「生態讀數的觸發器」。
-167. [ ] **統一物種視圖：HUD/態度面板列出所有物種（含怪物種）**
+    - 實作：新增 `src/eco_pressure.rs`（純函式，9 測試）；director 加 `eco_pressure` 欄位與 `should_trigger_horde/effective_interval`；壓力 ≥75 加速至 0.5x 間隔並多派一隻 CrystalGolem；AnnounceHorde 廣播帶生態標籤。
+167. [x] **統一物種視圖：HUD/態度面板列出所有物種（含怪物種）**
     - 玩家看到的是**一個生態系的關係網**，不是「動物一欄、怪物另一套」。接 163 的 tier 廣播。
+    - 實作：Snapshot 新增 `eco_pressure_value` 欄位（f32，含 ws.rs 轉發）；前端面板重設計：生態壓力儀表 + 野生物種區塊 + 怪物物種區塊（依嚴重度排序）+ 巢穴區塊；14 種怪物各配圖示；收合時顯示最嚴重警訊。
 
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
