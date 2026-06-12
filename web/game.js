@@ -6681,7 +6681,7 @@
     if (!carionOrbs.length) return;
     const W = canvas.width, H = canvas.height;
     const now = performance.now();
-    const me = players.find(p => p.id === myId);
+    const me = players.get(myId); // 修正:players 是 Map、沒有 .find()——舊碼 players.find 會丟 TypeError，讓整個 render 迴圈死掉、角色消失
     const COLLECT_RADIUS = 80;
 
     for (const orb of carionOrbs) {
