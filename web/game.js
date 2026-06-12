@@ -3370,7 +3370,7 @@
       drawActionButton(me);
       drawDamageFlash(renderNow);
       updateVillageBuffHud();
-      requestAnimationFrame(render);
+      requestAnimationFrame(safeRender);
       return;
     }
 
@@ -3511,7 +3511,24 @@
     updateSpeciesAttitudeHud();
     updateFeedWildlifeBtn();
 
-    requestAnimationFrame(render);
+    requestAnimationFrame(safeRender);
+  }
+
+  // 渲染韌性護網（ROADMAP 142 善後）：任何單一幀的繪製若拋例外，絕不該永久殺死
+  // requestAnimationFrame 迴圈（迴圈一停＝畫面凍結＝角色「突然不見」）。包一層 try/catch：
+  // 出錯只記一次 console（避免洗版），仍排下一幀，讓暫時性的實體繪製錯誤（某物種／屍光／
+  // 聚落資料一時異常）能在下一幀自我恢復，而不是讓整個世界畫面整個掛掉。
+  function safeRender() {
+    try {
+      render();
+    } catch (e) {
+      if (!safeRender._warned) {
+        console.error("[render] 繪製例外，已攔截避免凍結：", e);
+        safeRender._warned = true;
+      }
+      // render() 內部排下一幀的程式碼可能在拋例外前就沒跑到，這裡補排確保迴圈不斷。
+      requestAnimationFrame(safeRender);
+    }
   }
 
   // ── 住家室內場景（ROADMAP 111）────────────────────────────────────────────────
@@ -12496,7 +12513,7 @@
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
     }
-    requestAnimationFrame(render);
+    requestAnimationFrame(safeRender);
   }
 
   // 訪客新玩家也配個與主題相襯的隨機代號(玩家建議:新玩家用隨機角色名稱)。
