@@ -3399,97 +3399,73 @@
       return;
     }
 
-    drawGround(camX, camY);
-    drawTerrain(camX, camY); // 可挖地形方塊（C-1 純顯示，在地表之上、農地之下）
-    drawField(camX, camY);
-    drawSprinklers(camX, camY); // 灑水器（ROADMAP 112）畫在農地之上、採集節點之下
-    drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
-    drawDustNodes(camX, camY, renderNow); // 流星雨星塵採集點（ROADMAP 133）
-    drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
-    drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
-    drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
-    drawTownBuildings(camX, camY); // 城鎮建築外觀（ROADMAP 110）：蒸汽龐克建築結構
-    drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
-    drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
-    drawColonies(camX, camY); // 物種聚落領地圓圈（ROADMAP 143）
-    drawWildlife(camX, camY); // 中立野生動物（ROADMAP 140）
-    drawCarionOrbs(camX, camY); // 乙太微粒（ROADMAP 142 死亡餵養生命）
-    drawWanderingMerchant(camX, camY); // 旅行商人（ROADMAP 135）
-    drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
-    drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
-    drawMeteorParticles(renderNow, _weatherDt); // 流星雨射星特效（ROADMAP 133）
-    maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
+    // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
+    // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
+    safeDraw("ground", () => drawGround(camX, camY));
+    safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
+    safeDraw("field", () => drawField(camX, camY));
+    safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
+    safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
+    safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
+    safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
+    safeDraw("villageLandmark", () => drawVillageLandmark(camX, camY)); // 新手村地標
+    safeDraw("townDecor", () => drawTownDecor(camX, camY)); // 城鎮裝飾:名牌+城門守衛
+    safeDraw("townBuildings", () => drawTownBuildings(camX, camY)); // 城鎮建築（ROADMAP 110）
+    safeDraw("landPlots", () => drawLandPlots(camX, camY)); // 城外產權地塊（ROADMAP 34）
+    safeDraw("npcs", () => drawNpcs(camX, camY)); // NPC（ROADMAP 73）
+    safeDraw("colonies", () => drawColonies(camX, camY)); // 物種聚落領地圓圈（ROADMAP 143）
+    safeDraw("wildlife", () => drawWildlife(camX, camY)); // 中立野生動物（ROADMAP 140）
+    safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
+    safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
+    safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
+    safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
+    safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
+    safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
 
-    // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
-    // 與角色仍蓋在最上層,不被別人的 sprite／名字遮住,「一眼找到自己」才真的成立。
+    // 畫玩家:先畫別人,最後才畫自己——別人站你頭上時你的金名牌與角色仍在最上層。
+    // 每個玩家各自包:單一玩家資料異常不會害「你自己」消失（這是「人物消失」的關鍵保護）。
     for (const p of players.values()) {
-      if (p.id !== myId) drawPlayer(p, camX, camY);
+      if (p.id !== myId) safeDraw("otherPlayer", () => drawPlayer(p, camX, camY));
     }
-    if (me) drawPlayer(me, camX, camY);
+    if (me) safeDraw("self", () => drawPlayer(me, camX, camY));
 
-    // 日夜染色（疊在世界與玩家上，但在觸控搖桿與 HUD/小地圖之前）。
-    drawDayNightTint();
+    // 疊加層（日夜染色→環境光→星星→微光→視差→大氣→特效/飄字→邊緣指標）：多為本地特效、
+    // 較不易拋例外，整段包一層 safeDraw 即可——萬一某個拋了，也不會連帶把下面的小地圖/HUD 跳過。
+    // 繪製順序維持原樣（順序決定圖層疊壓，不可亂動）。
+    safeDraw("overlay", () => {
+      drawDayNightTint();                              // 日夜染色（疊在世界與玩家上）
+      drawAmbientLight(camX, camY, performance.now()); // 環境光與日夜光暈（ROADMAP 90）
+      drawNightStars(performance.now());               // 夜空星星 + 遠方行星（ROADMAP 19）
+      drawNightMotes(performance.now());               // 夜晚漂浮的乙太微光
+      drawBiomeParallax(camX, camY, renderNow);        // 生態背景視差層次（ROADMAP 91）
+      drawLumenNightGlow(camX, camY, performance.now()); // 燐光族夜視光環
+      drawNightDangerVignette(performance.now());      // 夜間危機暈輪
+      drawVerdantAtmosphere(performance.now());        // 各星球大氣染色（ROADMAP 20）
+      drawCrimsonAtmosphere(performance.now());
+      drawVoidAtmosphere(performance.now());
+      drawAetherAtmosphere(performance.now());
+      drawOriginAtmosphere(performance.now());
+      drawRangedHits(performance.now(), camX, camY);   // 遠程命中特效
+      drawTravelFlash(performance.now());              // 星際旅行傳送閃光（ROADMAP 20）
+      drawSkillFlashes(performance.now(), camX, camY); // 主動技能圈形特效（ROADMAP 45）
+      drawFloaters(camX, camY, performance.now());     // 採集/收成「+N」飄字
+      drawHitFloaters(camX, camY, performance.now());  // 戰鬥傷害數字飄字（ROADMAP 94）
+      drawTapFlashes(camX, camY, performance.now());   // 互動確認漣漪
+      drawGatherFx(camX, camY, performance.now());     // 採集動作特效
+      drawAttackFx(camX, camY, performance.now());
+      drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
+      drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
+    });
 
-    // 環境光與日夜光暈（ROADMAP 90）：日夜色溫梯度、城鎮燈籠暖光、柔光暈圈。
-    // 在日夜暗色之後畫：燈籠用 lighter 混合局部補亮暗色世界；星星/乙太微光在其上方。
-    drawAmbientLight(camX, camY, performance.now());
-
-    // 夜空星星 + 遠方行星（ROADMAP 19）：在日夜染色之後畫，夜越深越清晰。
-    drawNightStars(performance.now());
-
-    // 夜晚漂浮的乙太微光：在日夜染色「之後」畫（浮在變暗的世界上），但在飄字／漣漪／
-    // 小地圖／HUD「之前」（那些互動回饋與 HUD 仍蓋在最上層、不被微光干擾）。
-    drawNightMotes(performance.now());
-
-    // 生態背景視差層次（ROADMAP 91）：霧氣斑塊 + 白天光帶，以不同視差速率漂移，帶出生態深度感。
-    // 畫在夜晚微光之後、行星大氣染色之前，讓日夜色調也覆蓋到視差背景層。
-    drawBiomeParallax(camX, camY, renderNow);
-
-    // 燐光族夜視光環：夜間對敵人疊一層藍白發光外環，讓 lumen 種族玩家在暗處更容易找到敵人。
-    drawLumenNightGlow(camX, camY, performance.now());
-
-    // 夜間危機暈輪：夜晚在螢幕四周加脈動深紅暈輪，傳達「夜裡危險、怪物加速」的氣氛。
-    drawNightDangerVignette(performance.now());
-
-    // 翠幽星大氣染色（ROADMAP 20）：在翠幽星時，畫面疊一層微翠綠暈，強化星球身份感。
-    drawVerdantAtmosphere(performance.now());
-    drawCrimsonAtmosphere(performance.now());
-    drawVoidAtmosphere(performance.now());
-    drawAetherAtmosphere(performance.now());
-    drawOriginAtmosphere(performance.now());
-
-    // 星際旅行傳送閃光（ROADMAP 20）：旅行成功後的短暫白/綠閃光特效。
-    drawRangedHits(performance.now(), camX, camY);
-    drawTravelFlash(performance.now());
-    // 主動技能圈形特效（ROADMAP 45）：施法者頭上短暫圈形發光。
-    drawSkillFlashes(performance.now(), camX, camY);
-
-    // 收成乙太 / 採集進背包的「+N」飄字：在日夜染色「之後」畫，當回饋 HUD 不被夜色蓋暗。
-    drawFloaters(camX, camY, performance.now());
-    // 戰鬥傷害數字飄字（ROADMAP 94）：在 floaters 上方同層，畫完採集飄字後疊上。
-    drawHitFloaters(camX, camY, performance.now());
-
-    // 互動確認漣漪：同在日夜染色之後畫，點/輕點田格的當下回饋不被夜色蓋暗。
-    drawTapFlashes(camX, camY, performance.now());
-
-    // 採集動作特效（命中星芒 + 飛散碎屑）：同在日夜染色之後畫,當回饋不被夜色蓋暗。
-    drawGatherFx(camX, camY, performance.now());
-    drawAttackFx(camX, camY, performance.now());
-
-    // 離田時的「回農地」邊緣指標：同在日夜染色之後畫，當 HUD 不被夜色蓋暗。
-    drawFarmPointer(camX, camY);
-    // 「往新手村」邊緣指標：村子離開畫面時永遠指出方向 + 距離（遠距導航，補小地圖只在近處顯家）。
-    drawVillagePointer(camX, camY);
-
-    // 小地圖（右下角縮圖）：在日夜染色「之後」畫，當作 HUD 不被夜色蓋暗。
-    drawMinimap();
+    // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
+    safeDraw("minimap", () => drawMinimap());
 
     // 萬用動作鈕：按住時連發（約每 0.2 秒一次），再把鈕畫在 HUD 層（蓋在世界上）。
     if (actionTouchId !== null) {
       const nowA = performance.now();
       if (nowA - lastSmartAction >= 200) { lastSmartAction = nowA; smartAction(); }
     }
-    drawActionButton(me);
+    safeDraw("actionButton", () => drawActionButton(me));
 
     // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
     // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。
@@ -3516,27 +3492,39 @@
     // 宇宙裂縫事件改用狀態列小 pill（hudEvent，於快照更新）+ 小地圖 🌀 標記 + 聊天廣播，
     // 不再畫頂部大橫幅——原橫幅會疊在血量/等級 pill 上，手機版面直接撞爛（玩家回報）。
 
-    // 受擊紅光:畫在最上層(連搖桿/小地圖之上),受擊的當下不被任何東西蓋住,一眼就知道在挨打。
-    drawDamageFlash(performance.now());
-    // 村落節慶加成計時器（ROADMAP 64）：每幀更新 HUD pill，加成結束自動隱藏。
-    updateVillageBuffHud();
-    // 廣場聚會加成計時器（ROADMAP 124）：聚會期間在 HUD 顯示綠色倒數 pill。
-    updateGatheringHud();
-    // 城鎮繁榮儀（ROADMAP 128）：常駐顯示當前繁榮等級。
-    updateProsperityHud();
-    // 天文台星象預報（ROADMAP 132）：活躍加成顯示倒數 pill。
-    updateStarForecastHud();
-    // 流星雨（ROADMAP 133）：活躍流星雨顯示倒數 pill。
-    updateMeteorShowerHud();
-    // 旅行商人（ROADMAP 135）：在城鎮期間顯示橙色倒數 pill。
-    updateWanderingMerchantHud();
-    // 季節循環（ROADMAP 137）：常駐顯示目前季節 pill（每次快照同步一次，render 只確保初始顯示）。
-    updateSeasonHud();
-    // 物種關係（ROADMAP 144）：左下角常駐 5 物種態度欄 + 近距離餵食按鈕。
-    updateSpeciesAttitudeHud();
-    updateFeedWildlifeBtn();
+    // 受擊紅光 + 各 HUD 計時器/狀態 pill 更新：整段包一層 safeDraw——某個 update*Hud 對某筆資料
+    // 拋例外時不會連帶把其餘 HUD 更新與下一幀排程跳過（rAF 在最後，靠 safeRender 兜底仍會續排）。
+    safeDraw("hud", () => {
+      drawDamageFlash(performance.now());   // 受擊紅光（畫在最上層）
+      updateVillageBuffHud();               // 村落節慶加成計時器（ROADMAP 64）
+      updateGatheringHud();                 // 廣場聚會加成計時器（ROADMAP 124）
+      updateProsperityHud();                // 城鎮繁榮儀（ROADMAP 128）
+      updateStarForecastHud();              // 天文台星象預報（ROADMAP 132）
+      updateMeteorShowerHud();              // 流星雨（ROADMAP 133）
+      updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
+      updateSeasonHud();                    // 季節循環（ROADMAP 137）
+      updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
+      updateFeedWildlifeBtn();              // 近距離餵食按鈕
+    });
 
     requestAnimationFrame(safeRender);
+  }
+
+  // 單格繪製安全網（人物消失善後）：把 render 主序列「每一個」繪製呼叫各自包 try/catch。
+  // safeRender 是「整幀」兜底，但那代表任一繪製拋例外就把它後面的所有繪製（含角色、小地圖、HUD）
+  // 整批跳過——這正是「某個實體繪製偶爾踩到特定資料 → 角色連同半個畫面突然不見」的成因。
+  // safeDraw 把粒度降到「單一繪製」：某個繪製炸只損失那一項，角色與其餘繪製照畫；每個 label 只
+  // 警告一次（避免洗版），並把是「哪個繪製」炸的記到 console，下次直接定位根因而非靠猜。
+  const _safeDrawWarned = new Set();
+  function safeDraw(label, fn) {
+    try {
+      fn();
+    } catch (e) {
+      if (!_safeDrawWarned.has(label)) {
+        _safeDrawWarned.add(label);
+        console.error(`[render:${label}] 繪製例外（已隔離，不影響其他繪製）：`, e);
+      }
+    }
   }
 
   // 渲染韌性護網（ROADMAP 142 善後）：任何單一幀的繪製若拋例外，絕不該永久殺死
