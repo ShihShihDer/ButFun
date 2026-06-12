@@ -244,7 +244,8 @@ impl Player {
     }
 
     /// `traveler_xy`：目前在場旅人的座標（None = 旅人不在場）。
-    pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager, traveler_xy: Option<(f32, f32)>) -> PlayerView {
+    /// `wandering_merchant_active`：旅行商人是否在城鎮（ROADMAP 135）。
+    pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager, traveler_xy: Option<(f32, f32)>, wandering_merchant_active: bool) -> PlayerView {
         PlayerView {
             id: self.id,
             name: self.name.clone(),
@@ -492,6 +493,15 @@ impl Player {
                     let dy = self.y - ny;
                     (dx * dx + dy * dy).sqrt() <= crate::village_chief::CHIEF_REACH
                 }).unwrap_or(false),
+            near_wandering_merchant: wandering_merchant_active
+                && self.planet == PLANET_HOME
+                && {
+                    let dx = self.x - crate::wandering_merchant::WANDERER_X;
+                    let dy = self.y - crate::wandering_merchant::WANDERER_Y;
+                    dx * dx + dy * dy
+                        <= crate::wandering_merchant::TRADE_REACH
+                            * crate::wandering_merchant::TRADE_REACH
+                },
             near_traveler: self.planet == PLANET_HOME
                 && traveler_xy.map(|(nx, ny)| {
                     let dx = self.x - nx;
@@ -939,6 +949,9 @@ pub struct AppState {
     /// 流星雨狀態（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub meteor_shower: Arc<RwLock<crate::meteor_shower::MeteorShowerState>>,
+    /// 旅行商人狀態（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘，限時出售稀有物品。
+    /// 純記憶體模式，重啟清零；不破壞玩家資料。
+    pub wandering_merchant: Arc<RwLock<crate::wandering_merchant::WanderingMerchantState>>,
 }
 
 impl AppState {
@@ -1102,6 +1115,7 @@ impl AppState {
             observatory: Arc::new(RwLock::new(crate::observatory::ObservatoryState::new())),
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
+            wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
         }
     }
 
@@ -1366,7 +1380,7 @@ mod tests {
         assert!(hit, "玩家在線應命中");
         let sch = app.npc_schedule.read().unwrap();
         assert_eq!(
-            app.players.read().unwrap().get(&uid).unwrap().view(&sch, None).name,
+            app.players.read().unwrap().get(&uid).unwrap().view(&sch, None, false).name,
             "新名",
             "下一張快照應帶新名"
         );

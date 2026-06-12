@@ -435,6 +435,10 @@ pub enum ClientMsg {
     /// 成功後：節點標為已採集、玩家獲得 StarDust×1。
     #[serde(rename = "collect_dust_node")]
     CollectDustNode { node_id: u32 },
+    /// 向旅行商人購買（ROADMAP 135）。玩家需在 TRADE_REACH 範圍內、登入、持有足夠乙太。
+    /// 成功後：扣乙太、玩家背包增加 item×qty。
+    #[serde(rename = "buy_from_wanderer")]
+    BuyFromWanderer { item: ItemKind, qty: u32 },
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
@@ -521,7 +525,20 @@ pub enum ClientMsg {
         pub wx: f32,
         /// 世界座標 Y。
         pub wy: f32,
+        /// 是否為彩虹節點——每場恰好 1 個，採集得到 RainbowStarDust（ROADMAP 134）。
+        pub is_rainbow: bool,
     }
+
+/// 旅行商人商品目錄一個條目（ROADMAP 135）。
+#[derive(Debug, Clone, Serialize)]
+pub struct WanderingCatalogEntry {
+    /// 商品種類（snake_case 字串，前端用於顯示名稱與圖示）。
+    pub item: crate::inventory::ItemKind,
+    /// 乙太單價。
+    pub price_ether: u32,
+    /// 剩餘可售數量。
+    pub remaining: u32,
+}
 
 /// 伺服器送給客戶端的訊息。
 #[derive(Debug, Clone, Serialize)]
@@ -601,6 +618,10 @@ pub enum ServerMsg {
         meteor_shower_secs: u32,
         /// 活躍星塵採集點清單（ROADMAP 133）。流星雨期間前端在各節點位置顯示採集點。
         dust_nodes: Vec<DustNodeView>,
+        /// 旅行商人剩餘秒數（ROADMAP 135）。0=不在城鎮；>0 時前端顯示商人 NPC。
+        wandering_merchant_secs: u32,
+        /// 旅行商人當前商品目錄（ROADMAP 135）；商人不在城鎮時為空陣列。
+        wandering_catalog: Vec<WanderingCatalogEntry>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -858,6 +879,9 @@ pub struct PlayerView {
     /// 玩家是否靠近目前在場的旅人 NPC（ROADMAP 74）（false 時省略節省流量）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_traveler: bool,
+    /// 玩家是否在旅行商人交易範圍內（ROADMAP 135）（false 時省略節省流量）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_wandering_merchant: bool,
 
     /// 玩家是否在隊伍中（ROADMAP 97）。前端在名牌顯示 [隊] 標記；false 時省略節省流量。
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1235,7 +1259,7 @@ mod tests {
                 farm_fair_cooldown: 0.0,
                 near_fair_judge: false,
                 near_village_chief: false,
-                near_traveler: false,
+                near_traveler: false, near_wandering_merchant: false,
                 in_party: false,
                 hair_style: 0,
                 skin_tone: 0,
@@ -1330,6 +1354,8 @@ mod tests {
             star_forecast_bonus: String::new(),
             meteor_shower_secs: 0,
             dust_nodes: vec![],
+            wandering_merchant_secs: 0,
+            wandering_catalog: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
@@ -1437,7 +1463,7 @@ mod tests {
             farm_fair_cooldown: 0.0,
             near_fair_judge: false,
             near_village_chief: false,
-            near_traveler: false,
+            near_traveler: false, near_wandering_merchant: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,
@@ -1637,7 +1663,7 @@ mod tests {
             expedition_orders: vec![], expedition_active: None, expedition_cooldown: 0.0, near_expedition_board: false,
             procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
             farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
-            near_village_chief: false, near_traveler: false,
+            near_village_chief: false, near_traveler: false, near_wandering_merchant: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,
@@ -1682,7 +1708,7 @@ mod tests {
             expedition_orders: vec![], expedition_active: None, expedition_cooldown: 0.0, near_expedition_board: false,
             procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
             farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
-            near_village_chief: false, near_traveler: false,
+            near_village_chief: false, near_traveler: false, near_wandering_merchant: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,

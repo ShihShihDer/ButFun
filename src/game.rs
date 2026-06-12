@@ -887,6 +887,23 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 旅行商人（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘。
+            {
+                let (arrived, departed) = app.wandering_merchant.write().unwrap().tick(dt);
+                if arrived {
+                    let stay_min = (crate::wandering_merchant::STAY_SECS / 60.0) as u32;
+                    let _ = app.tx_chat.send(format!(
+                        "🧳 旅行商人來了！帶著其他星球的稀有貨物，在廣場北緣等候你 {} 分鐘——快去交易！",
+                        stay_min,
+                    ));
+                }
+                if departed {
+                    let _ = app.tx_chat.send(
+                        "👋 旅行商人的貨物已賣完，他揮手道別，踏上下一段旅程……".to_string(),
+                    );
+                }
+            }
+
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
             {
@@ -1497,7 +1514,7 @@ pub fn spawn(app: AppState) {
 
                     ServerMsg::Snapshot {
                         tick,
-                        players: players.values().map(|p| p.view(&sch, traveler_xy)).collect(),
+                        players: players.values().map(|p| p.view(&sch, traveler_xy, app.wandering_merchant.read().unwrap().is_active())).collect(),
                         fields: field_views,
                         nodes: node_views,
                         enemies: enemy_views,
@@ -1565,8 +1582,18 @@ pub fn spawn(app: AppState) {
                         // 流星雨（ROADMAP 133）。
                         meteor_shower_secs: app.meteor_shower.read().unwrap().remaining_secs(),
                         dust_nodes: app.meteor_shower.read().unwrap().active_nodes()
-                            .map(|n| crate::protocol::DustNodeView { id: n.id, wx: n.wx, wy: n.wy })
+                            .map(|n| crate::protocol::DustNodeView { id: n.id, wx: n.wx, wy: n.wy, is_rainbow: n.is_rainbow })
                             .collect(),
+                        // 旅行商人（ROADMAP 135）。
+                        wandering_merchant_secs: app.wandering_merchant.read().unwrap().remaining_secs(),
+                        wandering_catalog: {
+                            let wm = app.wandering_merchant.read().unwrap();
+                            wm.catalog.iter().map(|e| crate::protocol::WanderingCatalogEntry {
+                                item: e.item,
+                                price_ether: e.price_ether,
+                                remaining: e.remaining(),
+                            }).collect()
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
