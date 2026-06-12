@@ -537,6 +537,8 @@ impl Player {
             indoor_plot_id: self.indoor_plot_id,
             indoor_x: self.indoor_plot_id.map(|_| self.indoor_x),
             indoor_y: self.indoor_plot_id.map(|_| self.indoor_y),
+            // ── 擊殺計數（ROADMAP 147）
+            kill_count: self.kill_count,
         }
     }
 

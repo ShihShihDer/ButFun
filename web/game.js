@@ -1072,7 +1072,7 @@
               me.inventory_slot_count || 0, me.inventory_slot_max || 0, decayTimers);
           }
           updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
-          updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense);
+          updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense, me.kill_count || 0);
           updateRefinePanel(me, inv); // 精煉/附魔面板（ROADMAP 37）
           updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
@@ -1345,6 +1345,11 @@
       case "ranged_hit":
         // 遠程攻擊（ROADMAP 146）：在攻擊者位置播放彈道放射特效。
         showRangedHit(msg.from_x, msg.from_y, msg.hit);
+        break;
+
+      case "kill_notify":
+        // ROADMAP 147：擊殺通知——告知玩家討伐了哪隻怪、獲得了什麼。
+        addKillNotify(msg.enemy_name, msg.item_display, msg.kill_total);
         break;
     }
   }
@@ -7741,7 +7746,7 @@
     { id: "reinforced_pickaxe", out: "reinforced_pickaxe", outQty: 1, inputs: [["pickaxe", 1], ["wood", 2], ["stone", 4]] },
     // 武器:閉合「採集→合成→變強打怪」的合成側。與伺服器 crafting.rs 的 "weapon" 配方對齊
     // (stone×4 + ether×2 → weapon)。合出後拿不拿得到傷害加成由伺服器 combat 說了算,前端只呈現配方。
-    { id: "weapon", out: "weapon", outQty: 1, inputs: [["stone", 4], ["ether", 2]] },
+    { id: "weapon", out: "weapon", outQty: 1, inputs: [["stone", 4], ["ether", 2]], atk: 5 },
     // 活力藥水：野花種子×3 → 活力藥水×1。使用後回復 6 HP。對齊伺服器 crafting.rs healing_potion 配方。
     { id: "healing_potion", out: "healing_potion", outQty: 1, inputs: [["wildflower_seed", 3]] },
     // ROADMAP 15 生態特產合成：四種生態域特產各有一條合成路線。
@@ -7755,45 +7760,45 @@
     { id: "pearl_potion", out: "pearl_potion", outQty: 1, inputs: [["deep_sea_pearl", 1]] },
     // ROADMAP 19 生態裝備：生態特產打造武器/護甲，持有即被動生效。
     // 晶石之刃：晶石碎片×6 → 晶石之刃×1。持有後攻擊力 +8（比基礎武器更強）。
-    { id: "crystal_blade", out: "crystal_blade", outQty: 1, inputs: [["crystal_shard", 6]] },
+    { id: "crystal_blade", out: "crystal_blade", outQty: 1, inputs: [["crystal_shard", 6]], atk: 8 },
     // 珊瑚矛：深海珍珠×3 → 珊瑚矛×1。持有後攻擊力 +12，全遊戲最強武器。
-    { id: "coral_lance", out: "coral_lance", outQty: 1, inputs: [["deep_sea_pearl", 3]] },
+    { id: "coral_lance", out: "coral_lance", outQty: 1, inputs: [["deep_sea_pearl", 3]], atk: 12 },
     // 草原護符：野花種子×8 → 草原護符×1。持有後每次受傷減 1 點傷害。
-    { id: "meadow_amulet", out: "meadow_amulet", outQty: 1, inputs: [["wildflower_seed", 8]] },
+    { id: "meadow_amulet", out: "meadow_amulet", outQty: 1, inputs: [["wildflower_seed", 8]], def: 1 },
     // 晶石護盾：晶石碎片×8 + 石頭×4 → 晶石護盾×1。持有後每次受傷減 2 點傷害。
-    { id: "crystal_shield", out: "crystal_shield", outQty: 1, inputs: [["crystal_shard", 8], ["stone", 4]] },
+    { id: "crystal_shield", out: "crystal_shield", outQty: 1, inputs: [["crystal_shard", 8], ["stone", 4]], def: 2 },
     // 星圖：古代碎片×5 → 星圖×1。使用後展開遠方星球星圖，多星球旅程的序章。
     { id: "star_chart", out: "star_chart", outQty: 1, inputs: [["ancient_fragment", 5]] },
     // ROADMAP 19 續：森林/沙漠生態武器，補完五大生態全覆蓋。
     // 蕈菇杖：蕈菇孢子×6 → 蕈菇杖×1。持有後攻擊力 +7，森林生態秘密武器。
-    { id: "mushroom_staff", out: "mushroom_staff", outQty: 1, inputs: [["mushroom_spore", 6]] },
+    { id: "mushroom_staff", out: "mushroom_staff", outQty: 1, inputs: [["mushroom_spore", 6]], atk: 7 },
     // 符文刃：古代碎片×4 → 符文刃×1。持有後攻擊力 +10，沙漠遺跡精英武器。
-    { id: "rune_blade", out: "rune_blade", outQty: 1, inputs: [["ancient_fragment", 4]] },
+    { id: "rune_blade", out: "rune_blade", outQty: 1, inputs: [["ancient_fragment", 4]], atk: 10 },
     // ROADMAP 21 翠幽星合成路線：翠幽碎片（採藤或打翠幽鬼可得）合出強力消耗品與最強武器。
     // 翠幽精露：翠幽碎片×2 → 翠幽精露×1。使用後滿血並重置自然回血冷卻。
     { id: "jade_elixir", out: "jade_elixir", outQty: 1, inputs: [["jade_shard", 2]] },
     // 翠幽刃：翠幽碎片×5 → 翠幽刃×1。持有後攻擊力 +15，全遊戲最強武器。
-    { id: "jade_blade", out: "jade_blade", outQty: 1, inputs: [["jade_shard", 5]] },
+    { id: "jade_blade", out: "jade_blade", outQty: 1, inputs: [["jade_shard", 5]], atk: 15 },
     // ROADMAP 22 赤焰星合成路線：熔晶碎片（挖熔岩石或打蒸汽機械可得）合出強力消耗品與最強武器。
     // 蒸汽精粹：熔晶碎片×2 → 蒸汽精粹×1。使用後回復至滿血並獲得 8 乙太。
     { id: "steam_elixir", out: "steam_elixir", outQty: 1, inputs: [["lava_crystal", 2]] },
     // 赤焰刃：熔晶碎片×6 → 赤焰刃×1。持有後攻擊力 +20，赤焰星專屬武器。
-    { id: "crimson_blade", out: "crimson_blade", outQty: 1, inputs: [["lava_crystal", 6]] },
+    { id: "crimson_blade", out: "crimson_blade", outQty: 1, inputs: [["lava_crystal", 6]], atk: 20 },
     // ROADMAP 23 虛空星合成路線：虛空碎片（挖虛空晶石或打虛空幽靈可得）合出強力消耗品與最強武器。
     // 虛空精粹：虛空碎片×2 → 虛空精粹×1。使用後回復至滿血並獲得 10 乙太。
     { id: "void_elixir", out: "void_elixir", outQty: 1, inputs: [["void_shard", 2]] },
     // 虛空刃：虛空碎片×6 → 虛空刃×1。持有後攻擊力 +25，虛空星專屬最強武器。
-    { id: "void_blade", out: "void_blade", outQty: 1, inputs: [["void_shard", 6]] },
+    { id: "void_blade", out: "void_blade", outQty: 1, inputs: [["void_shard", 6]], atk: 25 },
     // ROADMAP 24 霧醚星合成路線：霧醚碎片（挖霧醚晶霧或打霧醚幽靈可得）合出精粹與終極武器。
     // 霧醚精粹：霧醚碎片×2 → 霧醚精粹×1。使用後回復滿血並獲得 15 乙太。
     { id: "aether_essence", out: "aether_essence", outQty: 1, inputs: [["aether_shard", 2]] },
     // 霧醚之刃：霧醚碎片×8 → 霧醚之刃×1。持有後攻擊力 +30，霧醚星終極武器。
-    { id: "aether_blade", out: "aether_blade", outQty: 1, inputs: [["aether_shard", 8]] },
+    { id: "aether_blade", out: "aether_blade", outQty: 1, inputs: [["aether_shard", 8]], atk: 30 },
     // ROADMAP 25 星源星合成路線：源晶碎片（挖源晶或打源晶守護者可得）合出精粹與最強武器。
     // 源晶精粹：源晶碎片×2 → 源晶精粹×1。使用後回復滿血並獲得 20 乙太，五星最強補給。
     { id: "origin_essence", out: "origin_essence", outQty: 1, inputs: [["origin_shard", 2]] },
     // 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
-    { id: "origin_blade", out: "origin_blade", outQty: 1, inputs: [["origin_shard", 10]] },
+    { id: "origin_blade", out: "origin_blade", outQty: 1, inputs: [["origin_shard", 10]], atk: 40 },
     // ROADMAP 130 城鎮慶典配方：需城鎮達到指定繁榮等級才可合成（minProsperity：2=生機/3=繁盛）。
     // 城鎮特釀：野花種子×4 + 小麥×3 → 城鎮特釀×1。需城鎮【生機】（平均快樂≥55）。
     { id: "town_brew", out: "town_brew", outQty: 1, inputs: [["wildflower_seed", 4], ["wheat_grain", 3]], minProsperity: 2 },
@@ -7804,24 +7809,24 @@
     { id: "star_guardian_amulet", out: "star_guardian_amulet", outQty: 1, inputs: [["rainbow_star_dust", 1], ["star_dust", 4], ["star_crystal_shard", 2]] },
     // ROADMAP 145 進階武器/裝備：填補進階線空缺、提供雙路選擇（資源路 / 等級路）。
     // 硬化刃：石頭×8 + 乙太×4 → 硬化刃×1。攻擊力 +7，不需探索特殊地形的「勤勞路」。
-    { id: "hardened_blade", out: "hardened_blade", outQty: 1, inputs: [["stone", 8], ["ether", 4]] },
+    { id: "hardened_blade", out: "hardened_blade", outQty: 1, inputs: [["stone", 8], ["ether", 4]], atk: 7 },
     // 星晶之刃：星晶碎片×7 → 星晶之刃×1。攻擊力 +14，夜行玩家的橋接武器（需 Lv.10）。
-    { id: "star_crystal_blade", out: "star_crystal_blade", outQty: 1, inputs: [["star_crystal_shard", 7]], minLevel: 10 },
+    { id: "star_crystal_blade", out: "star_crystal_blade", outQty: 1, inputs: [["star_crystal_shard", 7]], atk: 14, minLevel: 10 },
     // 裂縫刃：裂縫碎片×4 → 裂縫刃×1。攻擊力 +35，宇宙裂縫事件限定高風險回報（需 Lv.15）。
-    { id: "rift_blade", out: "rift_blade", outQty: 1, inputs: [["rift_shard", 4]], minLevel: 15 },
+    { id: "rift_blade", out: "rift_blade", outQty: 1, inputs: [["rift_shard", 4]], atk: 35, minLevel: 15 },
     // 珊瑚鎧：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1。防禦 -3，水域探索者的高級防具。
-    { id: "coral_armor", out: "coral_armor", outQty: 1, inputs: [["deep_sea_pearl", 2], ["crystal_shard", 6]] },
+    { id: "coral_armor", out: "coral_armor", outQty: 1, inputs: [["deep_sea_pearl", 2], ["crystal_shard", 6]], def: 3 },
     // 符文鎧：古代碎片×5 + 石頭×6 → 符文鎧×1。防禦 -4，沙漠文明的進階鎧甲。
-    { id: "rune_armor", out: "rune_armor", outQty: 1, inputs: [["ancient_fragment", 5], ["stone", 6]] },
+    { id: "rune_armor", out: "rune_armor", outQty: 1, inputs: [["ancient_fragment", 5], ["stone", 6]], def: 4 },
     // 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。防禦 -5，夜行探索者的盔甲巔峰（需 Lv.10）。
-    { id: "star_crystal_armor", out: "star_crystal_armor", outQty: 1, inputs: [["star_crystal_shard", 5], ["stone", 4]], minLevel: 10 },
+    { id: "star_crystal_armor", out: "star_crystal_armor", outQty: 1, inputs: [["star_crystal_shard", 5], ["stone", 4]], def: 5, minLevel: 10 },
     // ROADMAP 146 遠程武器：讓玩家有「站遠打」的選擇，與近戰並存。
     // 乙太弓：乙太×5 + 木材×4 → 乙太弓×1。遠程攻擊力 +9，入門遠程武器。
-    { id: "ether_bow", out: "ether_bow", outQty: 1, inputs: [["ether", 5], ["wood", 4]] },
+    { id: "ether_bow", out: "ether_bow", outQty: 1, inputs: [["ether", 5], ["wood", 4]], atk: 9 },
     // 晶石弩：晶石碎片×5 + 石頭×4 → 晶石弩×1。遠程攻擊力 +14，進階遠程武器。
-    { id: "crystal_ballista", out: "crystal_ballista", outQty: 1, inputs: [["crystal_shard", 5], ["stone", 4]] },
+    { id: "crystal_ballista", out: "crystal_ballista", outQty: 1, inputs: [["crystal_shard", 5], ["stone", 4]], atk: 14 },
     // 虛空炮：虛空碎片×5 + 石頭×3 → 虛空炮×1。遠程攻擊力 +27，頂級遠程武器（需 Lv.18）。
-    { id: "void_cannon", out: "void_cannon", outQty: 1, inputs: [["void_shard", 5], ["stone", 3]], minLevel: 18 },
+    { id: "void_cannon", out: "void_cannon", outQty: 1, inputs: [["void_shard", 5], ["stone", 3]], atk: 27, minLevel: 18 },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -8079,17 +8084,35 @@
   }
 
   // 裝備面板（ROADMAP 36）：顯示三槽裝備狀態、ATK/DEF 數值；點「卸下」退回背包。
-  function updateEquipPanel(equippedWeapon, equippedArmor, equippedAccessory, attack, defense) {
+  // ROADMAP 147: 加 killCount 參數，在戰鬥數值列顯示擊殺計數
+  function updateEquipPanel(equippedWeapon, equippedArmor, equippedAccessory, attack, defense, killCount) {
     const body = document.getElementById("equipBody");
     if (!body) return;
+    // ROADMAP 147: 建立武器/護甲基礎數值快速查表（與 CRAFT_RECIPES 的 atk/def 對齊）
+    const ITEM_BASE_ATK = {
+      weapon: 5, hardened_blade: 7, crystal_blade: 8, mushroom_staff: 7,
+      rune_blade: 10, coral_lance: 12, star_crystal_blade: 14, jade_blade: 15,
+      crimson_blade: 20, void_blade: 25, aether_blade: 30, rift_blade: 35,
+      origin_blade: 40, ether_bow: 9, crystal_ballista: 14, void_cannon: 27,
+    };
+    const ITEM_BASE_DEF = {
+      meadow_amulet: 1, crystal_shield: 2, coral_armor: 3,
+      rune_armor: 4, star_crystal_armor: 5, cosmic_shield: 6,
+    };
     const slotHtml = (label, item, slotKey) => {
       if (item) {
         const icon = ITEM_LOOK[item] || "❓";
         const name = ITEM_NAME[item] || item;
+        // 顯示裝備槽的基礎數值（武器→ATK，護甲→DEF）
+        const baseAtk = ITEM_BASE_ATK[item];
+        const baseDef = ITEM_BASE_DEF[item];
+        const statTag = baseAtk ? ` <span style="color:#f4a261;font-size:0.82em;">ATK+${baseAtk}</span>`
+                      : baseDef ? ` <span style="color:#74b9ff;font-size:0.82em;">DEF+${baseDef}</span>`
+                      : "";
         return `<div class="equip-slot filled">` +
           `<span class="equip-slot-label">${label}</span>` +
           `<span class="equip-slot-ico">${icon}</span>` +
-          `<span class="equip-slot-name">${name}</span>` +
+          `<span class="equip-slot-name">${name}${statTag}</span>` +
           `<button class="equip-unequip-btn" data-slot="${slotKey}" title="卸下 ${name}">卸下</button>` +
           `</div>`;
       }
@@ -8098,6 +8121,7 @@
         `<span class="equip-slot-empty">（空）</span>` +
         `</div>`;
     };
+    const killStr = (killCount || 0) > 0 ? `  <span>💀 擊殺 ${killCount}</span>` : "";
     body.innerHTML =
       slotHtml("🗡️ 武器", equippedWeapon, "weapon") +
       slotHtml("🛡️ 防具", equippedArmor, "armor") +
@@ -8105,6 +8129,7 @@
       `<div class="equip-stats">` +
         `<span>⚔️ 攻擊 ${typeof attack === "number" ? attack : "—"}</span>` +
         `<span>🛡️ 防禦 ${typeof defense === "number" && defense > 0 ? defense : "—"}</span>` +
+        killStr +
       `</div>`;
     body.querySelectorAll(".equip-unequip-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -8308,7 +8333,11 @@
       const levelHint = !levelOk
         ? ` <span style="color:#e9b72b;font-size:0.85em;">🔒 需 Lv.${minLv}</span>`
         : "";
-      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}${prosHint}${levelHint}`;
+      // ROADMAP 147：武器顯示攻擊力、護甲顯示防禦值，讓玩家合成前就知道數值。
+      const statHint = r.atk ? ` <span style="color:#f4a261;font-size:0.82em;">⚔️ATK+${r.atk}</span>`
+                     : r.def ? ` <span style="color:#74b9ff;font-size:0.82em;">🛡️DEF+${r.def}</span>`
+                     : "";
+      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span>${statHint} ← ${needs}${prosHint}${levelHint}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "craft-btn";
@@ -11867,6 +11896,25 @@
     // 長時間掛機聊天會無上限堆 DOM(慢慢吃記憶體、捲動也變重);只留最近 N 則,舊的移除。
     while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
     // 只有本來就貼著底部(在追最新)才自動捲到底;正在讀舊訊息就保持原位不打擾。
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  // ROADMAP 147: 擊殺通知——以橙色系統行顯示討伐結果，讓玩家知道打倒了什麼、獲得了什麼。
+  // 累計擊殺數一起顯示，量化「打怪成長感」。
+  function addKillNotify(enemyName, itemDisplay, killTotal) {
+    const log = document.getElementById("chatLog");
+    if (!log) return;
+    log.style.display = "block";
+    const toggle = document.getElementById("chatToggle");
+    if (toggle) toggle.style.display = "block";
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+    const line = document.createElement("div");
+    line.className = "sys";
+    line.style.color = "#f4a261"; // 橙色，與系統訊息灰色區分
+    // 純引擎資料，非玩家輸入，安全直接設 textContent
+    line.textContent = `⚔️ 討伐 ${enemyName}！獲得 ${itemDisplay}（累計 ${killTotal} 隻）`;
+    log.appendChild(line);
+    while (log.childElementCount > MAX_CHAT_LINES) log.removeChild(log.firstElementChild);
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
 

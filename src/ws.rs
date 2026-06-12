@@ -1784,7 +1784,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     (0, 0, String::new(), Vec::new())
                                 }
                             };
-                            let _ = (kill_count, new_level); // 避免 unused 警告
+                            let _ = new_level; // 等級升等由 combat_level_up 廣播處理
+                            // ROADMAP 147：擊殺通知——單播給玩家，讓他知道討伐了什麼、得到什麼。
+                            if let Some((kill_kind, _, _, Some((item, qty)))) = result {
+                                let msg = crate::protocol::ServerMsg::KillNotify {
+                                    enemy_name: kill_kind.display_name().to_string(),
+                                    item_display: format!(
+                                        "{}×{}",
+                                        crate::npc_deal::item_display_zh(item),
+                                        qty
+                                    ),
+                                    kill_total: kill_count,
+                                };
+                                if let Ok(j) = serde_json::to_string(&msg) {
+                                    let _ = tx_direct.try_send(j);
+                                }
+                            }
                             for ach in newly_unlocked {
                                 let _ = app.tx_chat.send(format!(
                                     "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
