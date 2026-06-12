@@ -5494,6 +5494,7 @@
     { wx: 2480, wy: 2080, type: "procurement", sign: "星際採購" },
     { wx: 2600, wy: 2080, type: "fair",        sign: "農展館" },
     { wx: 2720, wy: 2080, type: "chief",       sign: "里長屋" },
+    { wx: 2560, wy: 2328, type: "observatory", sign: "蒸汽天文台" },
   ];
 
   function drawTownBuildings(camX, camY) {
@@ -5503,7 +5504,12 @@
       if (sx < -130 || sx > viewW + 130 || sy < -130 || sy > viewH + 60) continue;
       ctx.save();
       ctx.imageSmoothingEnabled = false;
-      _drawBuilding(sx, sy, b.type, b.sign);
+      // observatory 走特殊繪製（隨進度成長）
+      if (b.type === "observatory") {
+        _drawObservatory(sx, sy, b.sign);
+      } else {
+        _drawBuilding(sx, sy, b.type, b.sign);
+      }
       ctx.restore();
     }
   }
@@ -5517,7 +5523,104 @@
     procurement: { wall: "#3c2860", roof: "#261840", trim: "#8060c0", win: "#180838" },
     fair:        { wall: "#8a6838", roof: "#5a3818", trim: "#d4a840", win: "#2a1808" },
     chief:       { wall: "#6a3808", roof: "#3a1804", trim: "#d4a820", win: "#1a0c04" },
+    observatory: { wall: "#546e7a", roof: "#78909c", trim: "#cfd8dc", win: "#00bcd4" },
   };
+
+  function _drawObservatory(sx, sy, sign) {
+    // 取得伺服器廣播的工程狀態（預設為建設中，0 進度）
+    const p = lastSnapshot?.town_project || { status: "building", progress_pct: 0 };
+    const BW = 84;
+    const wb = sy - 10;
+
+    // ── 地面陰影 ──
+    ctx.fillStyle = "rgba(0,0,0,0.20)";
+    ctx.beginPath();
+    ctx.ellipse(sx, wb + 8, BW * 0.55, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (p.status === "completed") {
+      // 已完工：畫蒸汽天文台（圓形結構 + 銅頂 + 望遠鏡）
+      const WH = 60;
+      const wt = wb - WH;
+      const C = _BLDG_COLORS.observatory;
+
+      // 主牆體（圓柱感）
+      const grad = ctx.createLinearGradient(sx - BW/2, wt, sx + BW/2, wt);
+      grad.addColorStop(0, "#455a64");
+      grad.addColorStop(0.5, C.wall);
+      grad.addColorStop(1, "#455a64");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect(sx - BW / 2, wt, BW, WH, 6);
+      ctx.fill();
+
+      // 銅質圓頂
+      ctx.fillStyle = "#b08d57"; // 銅色
+      ctx.beginPath();
+      ctx.arc(sx, wt + 5, BW / 2 + 4, Math.PI, 0);
+      ctx.fill();
+      ctx.strokeStyle = "#8d6e63";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 望遠鏡（蒸汽龐克管線風格）
+      ctx.save();
+      ctx.translate(sx + 10, wt - 15);
+      ctx.rotate(-Math.PI / 4);
+      ctx.fillStyle = "#5d4037";
+      ctx.fillRect(0, 0, 45, 12);
+      ctx.fillStyle = "#d4af37"; // 金色鏡頭
+      ctx.fillRect(40, -2, 8, 16);
+      ctx.restore();
+
+      // 裝飾銅環
+      ctx.strokeStyle = "#d4af37";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(sx - BW/2 - 2, wt + 5);
+      ctx.lineTo(sx + BW/2 + 2, wt + 5);
+      ctx.stroke();
+
+    } else {
+      // 建設中：畫施工現場
+      const pct = p.progress_pct;
+      
+      // 圍欄
+      ctx.strokeStyle = "#795548";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(sx - BW/2 - 10, wb - 20, BW + 20, 30);
+      
+      // 地基與部分牆磚（隨進度變多）
+      ctx.fillStyle = "#90a4ae";
+      const rows = Math.ceil(pct * 6);
+      for(let i=0; i<rows; i++) {
+        const y = wb - 5 - i*8;
+        ctx.fillRect(sx - BW/2 + 4, y, BW - 8, 6);
+      }
+
+      // 鷹架（木質框架）
+      ctx.strokeStyle = "#8d6e63";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(sx - BW/2, wb); ctx.lineTo(sx - BW/2, wb - 50);
+      ctx.moveTo(sx + BW/2, wb); ctx.lineTo(sx + BW/2, wb - 50);
+      ctx.moveTo(sx - BW/2 - 5, wb - 45); ctx.lineTo(sx + BW/2 + 5, wb - 45);
+      ctx.stroke();
+
+      // 施工告示牌
+      ctx.fillStyle = "#fff176";
+      ctx.fillRect(sx - 15, wb - 15, 30, 20);
+      ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
+      ctx.strokeRect(sx - 15, wb - 15, 30, 20);
+      ctx.fillStyle = "#000";
+      ctx.font = "bold 9px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("施工中", sx, wb - 2);
+    }
+
+    // 招牌
+    _drawSign(sx, wb - 15, sign);
+  }
 
   function _drawBuilding(sx, sy, type, sign) {
     const BW = 74;   // 建築寬度（像素）
@@ -9426,6 +9529,80 @@
       btn.onclick = () => ws && ws.readyState === WebSocket.OPEN
         && ws.send(JSON.stringify({ type: "donate_to_village" }));
       body.appendChild(btn);
+    }
+
+    // ── 城鎮大工程（ROADMAP 131） ──
+    const tp = lastSnapshot?.town_project;
+    if (tp) {
+      const divider = document.createElement("div");
+      divider.style.cssText = "border-top: 1px solid #444; margin: 12px 0;";
+      body.appendChild(divider);
+
+      const title = document.createElement("h3");
+      title.textContent = `🏗️ 大工程：${tp.name}`;
+      title.style.cssText = "margin: 0 0 8px 0; font-size: 1rem; color: #80c0ff;";
+      body.appendChild(title);
+
+      if (tp.status === "completed") {
+        const done = document.createElement("p");
+        done.textContent = "✨ 工程已圓滿完工！感謝所有貢獻者。";
+        done.style.cssText = "color: #80ffa0; font-size: .85rem;";
+        body.appendChild(done);
+      } else {
+        // 進度條
+        const barWrap = document.createElement("div");
+        barWrap.style.cssText = "background: #222; height: 12px; border-radius: 6px; overflow: hidden; margin-bottom: 10px; border: 1px solid #444;";
+        const barFill = document.createElement("div");
+        barFill.style.cssText = `background: linear-gradient(90deg, #448aff, #00bcd4); width: ${tp.progress_pct * 100}%; height: 100%; transition: width 0.4s;`;
+        barWrap.appendChild(barFill);
+        body.appendChild(barWrap);
+
+        // 材料列表與捐獻按鈕
+        const mats = [
+          { label: "✨ 乙太", cur: tp.current_ether, target: tp.target_ether, item: null },
+          { label: "🪵 木材", cur: tp.current_wood, target: tp.target_wood, item: "wood" },
+          { label: "🪨 石材", cur: tp.current_stone, target: tp.target_stone, item: "stone" },
+          { label: "💎 晶石", cur: tp.current_crystal, target: tp.target_crystal, item: "crystal_shard" },
+        ];
+
+        const matWrap = document.createElement("div");
+        matWrap.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        
+        mats.forEach(m => {
+          const row = document.createElement("div");
+          row.style.cssText = "display: flex; align-items: center; justify-content: space-between; font-size: .8rem; color: #ccc;";
+          const label = document.createElement("span");
+          label.textContent = `${m.label}：${m.cur} / ${m.target}`;
+          row.appendChild(label);
+
+          if (!isGuestUser) {
+            const btn = document.createElement("button");
+            const qty = m.item === null ? 100 : 10;
+            btn.textContent = `捐 ${qty}`;
+            const have = m.item === null ? ether : (myInv.get(m.item) || 0);
+            btn.disabled = have < qty || m.cur >= m.target;
+            btn.style.cssText = "padding: 2px 6px; font-size: .75rem; cursor: pointer;";
+            btn.onclick = () => ws.send(JSON.stringify({ type: "donate_to_project", item: m.item, qty }));
+            row.appendChild(btn);
+          }
+          matWrap.appendChild(row);
+        });
+        body.appendChild(matWrap);
+      }
+
+      // 貢獻榜
+      if (tp.top_contributors && tp.top_contributors.length > 0) {
+        const board = document.createElement("div");
+        board.style.cssText = "margin-top: 12px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;";
+        board.innerHTML = `<div style="font-size: .75rem; color: #aaa; margin-bottom: 4px; border-bottom: 1px solid #333;">🏆 貢獻排行</div>`;
+        tp.top_contributors.forEach((c, i) => {
+          const crow = document.createElement("div");
+          crow.style.cssText = "display: flex; justify-content: space-between; font-size: .75rem; color: #ddd;";
+          crow.innerHTML = `<span>${i+1}. ${c.name}</span><span>${c.score} pt</span>`;
+          board.appendChild(crow);
+        });
+        body.appendChild(board);
+      }
     }
   }
 

@@ -927,6 +927,10 @@ pub struct AppState {
     /// NPC 販售庫存（ROADMAP 104）：賣商有庫存上限、賣完缺貨、定期補貨。
     /// 記憶體模式（重啟從初始滿庫開始——相當於商隊補完貨才開門）。
     pub npc_stock: Arc<RwLock<crate::npc_stock::NpcStockState>>,
+    /// 城鎮大工程狀態（ROADMAP 131）。
+    pub town_project: Arc<RwLock<crate::town_project::TownProjectState>>,
+    /// 城鎮大工程持久化 store。
+    pub town_project_store: crate::town_project_store::TownProjectStore,
 }
 
 impl AppState {
@@ -946,6 +950,7 @@ impl AppState {
             GuildStore::new(),
             crate::sprinkler::SprinklerPersist::new(),
             vec![],
+            crate::town_project_store::TownProjectStore::new(),
         )
     }
 
@@ -967,6 +972,7 @@ impl AppState {
         guilds: GuildStore,
         sprinkler_persist: crate::sprinkler::SprinklerPersist,
         sprinkler_preload: Vec<(uuid::Uuid, crate::sprinkler::SprinklerData)>,
+        town_project_store: crate::town_project_store::TownProjectStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -1081,6 +1087,10 @@ impl AppState {
             npc_treasury: Arc::new(RwLock::new(crate::npc_treasury::NpcTreasuryState::new())),
             npc_pending_deal: Arc::new(RwLock::new(HashMap::new())),
             npc_stock: Arc::new(RwLock::new(crate::npc_stock::NpcStockState::new())),
+            town_project: Arc::new(RwLock::new(
+                town_project_store.saved_project().unwrap_or_else(crate::town_project::TownProjectState::new_observatory)
+            )),
+            town_project_store,
         }
     }
 

@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -401,8 +401,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         active_help_requests: active_help_requests.clone(),
                                         // 居民心情（ROADMAP 126）：全服廣播（量小，5-12 居民）。
                                         resident_moods: resident_moods.clone(),
-                                        // 城鎮繁榮等級（ROADMAP 128）：全服廣播。
+                                        // 城鎮繁榮等級：全服廣播。
                                         town_prosperity_level: *town_prosperity_level,
+                                        // 城鎮大工程：全服廣播。
+                                        town_project: town_project.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -3336,6 +3338,96 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     player_name, amount, new_t
                                 ));
                                 tracing::info!(player = %player_name, amount, new_treasury = new_t, "玩家捐獻村落金庫");
+                            }
+                        }
+                    }
+                }
+
+                // ── 城鎮大工程：捐獻（ROADMAP 131）───────────────────────────
+                Ok(ClientMsg::DonateToProject { item, qty }) => {
+                    if let Some(uid) = authed_uid {
+                        let (player_name, pos_x, pos_y, downed) = {
+                            let players = app.players.read().unwrap();
+                            players.get(&uid).map(|p| (p.name.clone(), p.x, p.y, p.vitals.is_downed()))
+                                .unwrap_or_else(|| ("".into(), 0.0, 0.0, true))
+                        };
+
+                        // 必須靠近里長（工程發起人）。
+                        if !downed && crate::village_chief::is_within_reach(pos_x, pos_y) && qty > 0 {
+                            let mut actual_qty = 0;
+
+                            // 1. 扣除玩家資源
+                            {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    match item {
+                                        None => { // 捐乙太
+                                            actual_qty = p.ether.min(qty);
+                                            p.ether -= actual_qty;
+                                        }
+                                        Some(kind) => {
+                                            if p.inventory.count(kind) >= qty {
+                                                p.inventory.take(kind, qty);
+                                                actual_qty = qty;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if actual_qty > 0 {
+                                // 2. 更新工程進度
+                                let (score, taken_qty, is_completed, project_id, project_name) = {
+                                    let mut project = app.town_project.write().unwrap();
+                                    let (s, t) = project.donate(item, actual_qty);
+                                    (s, t, project.status == crate::town_project::TownProjectStatus::Completed, project.project_id.clone(), project.name.clone())
+                                };
+
+                                if score > 0 {
+                                    // 3. 紀錄並持久化
+                                    let (ether, wood, stone, crystal) = match item {
+                                        None => (taken_qty, 0, 0, 0),
+                                        Some(crate::inventory::ItemKind::Wood) => (0, taken_qty, 0, 0),
+                                        Some(crate::inventory::ItemKind::Stone) => (0, 0, taken_qty, 0),
+                                        Some(crate::inventory::ItemKind::CrystalShard) | Some(crate::inventory::ItemKind::StarCrystalShard) => (0, 0, 0, taken_qty),
+                                        _ => (0, 0, 0, 0),
+                                    };
+                                    app.town_project_store.save_donation(uid, project_id.clone(), ether, wood, stone, crystal, score);
+                                    app.town_project_store.save_progress(app.town_project.read().unwrap().clone());
+
+                                    // 退還溢出部分
+                                    if taken_qty < actual_qty {
+                                        let mut players = app.players.write().unwrap();
+                                        if let Some(p) = players.get_mut(&uid) {
+                                            match item {
+                                                None => p.ether += actual_qty - taken_qty,
+                                                Some(kind) => { p.inventory.add(kind, actual_qty - taken_qty); }
+                                            }
+                                        }
+                                    }
+
+                                    // 4. 廣播
+                                    let item_name = match item {
+                                        None => "乙太".to_string(),
+                                        Some(k) => format!("{:?}", k),
+                                    };
+                                    let _ = app.tx_chat.send(format!("🏗️ {} 為【{}】工程捐獻了 {} {}！", player_name, project_name, taken_qty, item_name));
+                                    
+                                    if is_completed {
+                                        let _ = app.tx_chat.send(format!("🎊 慶賀！【{}】工程已圓滿完工！城鎮的未來更加閃耀 ✨", project_name));
+                                        // 記錄世界大事
+                                        app.world_log.write().unwrap().push(format!("【{}】大工程順利完工！", project_name));
+                                    }
+                                } else {
+                                    // 資源不合或已滿，全部退回
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        match item {
+                                            None => p.ether += actual_qty,
+                                            Some(kind) => { p.inventory.add(kind, actual_qty); }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
