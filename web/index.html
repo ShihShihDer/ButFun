@@ -48,6 +48,9 @@
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12;
       font-family: system-ui, "Noto Sans TC", sans-serif; color: var(--ink); }
     #game { display: block; width: 100vw; height: 100vh; touch-action: none; }
+    /* 手機觸控修正：HUD 互動元件用 manipulation——關掉「雙擊放大」與 300ms 點擊延遲(tap 不靈/空點)，
+       但**保留雙指縮放**(viewport 沒鎖縮放，弱視玩家仍可放大讀 HUD)。 */
+    #hud, #hud button, .dock-btn, .dock-cat, .menu-item, .hud-window, .hud-window button { touch-action: manipulation; }
 
     /* 進場畫面 */
     #login {
