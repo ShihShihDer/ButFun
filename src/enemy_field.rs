@@ -95,6 +95,9 @@ pub struct EnemyLevelUpResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemyField {
     chunks: HashMap<(i32, i32), Vec<PlacedEnemy>>,
+    /// 各怪物種類的 aggro 半徑倍率（由 MonsterSpeciesRelations 更新）。
+    /// 中立時為 1.0；友善<1；敵視>1。空 Map 時所有種類預設 1.0。
+    pub aggro_multipliers: HashMap<EnemyKind, f32>,
 }
 
 #[allow(dead_code)]
@@ -102,7 +105,13 @@ impl EnemyField {
     pub fn new() -> Self {
         Self {
             chunks: HashMap::new(),
+            aggro_multipliers: HashMap::new(),
         }
+    }
+
+    /// 從 MonsterSpeciesRelations 快照更新 aggro 倍率（每幀在 advance 前呼叫）。
+    pub fn update_aggro_multipliers(&mut self, multipliers: HashMap<EnemyKind, f32>) {
+        self.aggro_multipliers = multipliers;
     }
 
     pub fn enemies(&self) -> Vec<PlacedEnemy> {
@@ -207,6 +216,12 @@ impl EnemyField {
                     continue;
                 }
 
+                // ROADMAP 163：依怪物物種態度調整 aggro 半徑。
+                // 友善物種（玩家打很多次）×0.35 幾乎不追；敵視（怪打趴玩家多次）×1.6 更積極。
+                let kind_mult = self.aggro_multipliers.get(&placed.enemy.kind()).copied().unwrap_or(1.0);
+                let effective_aggro = AGGRO_RADIUS * kind_mult;
+                let kind_aggro_sq = effective_aggro * effective_aggro;
+
                 let mut nearest: Option<(f32, f32, f32)> = None;
                 for &(tx, ty) in players {
                     if !tx.is_finite() || !ty.is_finite() {
@@ -215,7 +230,7 @@ impl EnemyField {
                     let dx = tx - placed.x;
                     let dy = ty - placed.y;
                     let d2 = dx * dx + dy * dy;
-                    if d2 <= aggro_sq && nearest.is_none_or(|(_, _, b)| d2 < b) {
+                    if d2 <= kind_aggro_sq && nearest.is_none_or(|(_, _, b)| d2 < b) {
                         nearest = Some((tx, ty, d2));
                     }
                 }

@@ -752,6 +752,10 @@ pub enum ServerMsg {
         /// 夜間乙太泉（ROADMAP 162）：活躍中的乙太泉節點清單（夜晚期間）。
         /// 天亮後為空陣列。前端在節點位置顯示紫色脈動光圈。
         night_spring_nodes: Vec<SpringNodeView>,
+        /// 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
+        /// 前端依層級在怪物名牌顯示層級色彩標記（⚠/△/♥）；空陣列=全Neutral。
+        #[serde(default)]
+        monster_species_attitudes: Vec<crate::species_relations::SpeciesAttitudeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1608,6 +1612,7 @@ mod tests {
             civic_effect_kind: String::new(),
             invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false, wave_level: 1, consecutive_successes: 0 },
             night_spring_nodes: vec![],
+            monster_species_attitudes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
