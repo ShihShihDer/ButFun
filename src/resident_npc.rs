@@ -111,6 +111,8 @@ pub enum ResidentLifecycleEvent {
         y: f32,
         text: String,
     },
+    /// 居民快樂值首次突破 HAPPY_THRESHOLD（ROADMAP 126）：發出世界聊天廣播。
+    HappinessBoost { name: &'static str, msg: String },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -152,6 +154,20 @@ pub const HELP_REQUEST_TIMER_MAX: f32 = 1200.0;
 pub const HELP_REQUEST_DURATION_SECS: f32 = 480.0;
 /// 玩家協助居民後獲得的乙太獎勵。
 pub const HELP_REWARD_ETHER: u32 = 8;
+
+// ── 心情溫度常數（ROADMAP 126）────────────────────────────────────────────────
+/// 快樂值初始值。
+pub const HAPPINESS_INITIAL: u8 = 50;
+/// 快樂值每次幫助後增加量。
+pub const HAPPINESS_HELP_GAIN: u8 = 20;
+/// 快樂值下限（自然衰減不低於此值）。
+pub const HAPPINESS_MIN: u8 = 20;
+/// 快樂值自然衰減間隔（秒）= 5 分鐘。
+pub const HAPPINESS_DECAY_INTERVAL: f32 = 300.0;
+/// 快樂值每次自然衰減量。
+pub const HAPPINESS_DECAY_AMOUNT: u8 = 3;
+/// 快樂態閾值：happiness >= 此值視為「快樂」，廣播更溫暖語氣。
+pub const HAPPINESS_HAPPY_THRESHOLD: u8 = 70;
 
 // ── 鄰里互動常數（ROADMAP 121）────────────────────────────────────────────────
 /// 相遇觸發距離（像素）：兩位居民距離 ≤ 此值才能觸發打招呼。
@@ -304,6 +320,11 @@ pub struct ResidentNpc {
     help_active_timer: f32,
     /// 互助請求模板種子（每次請求遞增）。
     help_request_seed: usize,
+    // ── 心情溫度（ROADMAP 126）──────────────────────────
+    /// 快樂值（0-100）；玩家幫助 +20、自然衰減 -3/5min，下限 20。
+    pub happiness: u8,
+    /// 快樂衰減倒數計時（秒）；到 0 扣 HAPPINESS_DECAY_AMOUNT，重設為 HAPPINESS_DECAY_INTERVAL。
+    happiness_decay_timer: f32,
 }
 
 impl ResidentNpc {
@@ -351,6 +372,8 @@ impl ResidentNpc {
             is_requesting_help: false,
             help_active_timer: 0.0,
             help_request_seed: index,
+            happiness: HAPPINESS_INITIAL,
+            happiness_decay_timer: HAPPINESS_DECAY_INTERVAL,
         }
     }
 
@@ -374,6 +397,12 @@ impl ResidentNpc {
         // 主動搭話冷卻計時（ROADMAP 123）
         if self.greeting_cooldown > 0.0 {
             self.greeting_cooldown -= dt;
+        }
+        // 快樂衰減計時（ROADMAP 126）
+        self.happiness_decay_timer -= dt;
+        if self.happiness_decay_timer <= 0.0 {
+            self.happiness = self.happiness.saturating_sub(HAPPINESS_DECAY_AMOUNT).max(HAPPINESS_MIN);
+            self.happiness_decay_timer = HAPPINESS_DECAY_INTERVAL;
         }
         // 正在打招呼：停止移動，等計時結束
         if self.chat_remaining > 0.0 {
@@ -471,12 +500,20 @@ impl ResidentManager {
                 r.thought_count += 1;
                 r.thought_timer = self.rng.gen_range(THOUGHT_TIMER_MIN..=THOUGHT_TIMER_MAX);
             }
-            // 工作動態廣播計時（ROADMAP 120）——居民在工作時段定期廣播活動，0 玩家也持續。
+            // 工作動態廣播計時（ROADMAP 120 / 126）——居民在工作時段定期廣播活動，0 玩家也持續。
+            // 快樂（ROADMAP 126）：happiness >= HAPPY_THRESHOLD 時使用更歡欣的模板。
             r.work_timer -= dt;
             if r.work_timer <= 0.0 {
-                if let Some(text) = crate::resident_chat::get_work_action(
-                    r.persona, phase, r.name, r.work_broadcast_count,
-                ) {
+                let text_opt = if r.happiness >= HAPPINESS_HAPPY_THRESHOLD {
+                    Some(crate::resident_chat::get_happy_work_action(
+                        r.persona, r.name, r.work_broadcast_count,
+                    ))
+                } else {
+                    crate::resident_chat::get_work_action(
+                        r.persona, phase, r.name, r.work_broadcast_count,
+                    )
+                };
+                if let Some(text) = text_opt {
                     events.push(ResidentLifecycleEvent::WorkActivity { text });
                     r.work_broadcast_count += 1;
                 }
@@ -689,18 +726,35 @@ impl ResidentManager {
             .map(|r| (r.persona, r.name, r.x, r.y))
     }
 
-    /// 完成居民互助請求（ROADMAP 125）：清除 is_requesting_help，重設計時器。
-    /// 回傳 true 表示成功（居民存在且正在求助）；false 表示請求已被他人完成或不存在。
-    pub fn fulfill_help_request(&mut self, resident_id: &str) -> bool {
+    /// 完成居民互助請求（ROADMAP 125 / 126）：清除 is_requesting_help，重設計時器；
+    /// 同時為居民加快樂值，若首次突破 HAPPY_THRESHOLD 則回傳 HappinessBoost 事件。
+    /// 回傳 (成功, Option<HappinessBoost事件>)。
+    pub fn fulfill_help_request(&mut self, resident_id: &str) -> (bool, Option<ResidentLifecycleEvent>) {
         if let Some(r) = self.residents.iter_mut().find(|r| r.id == resident_id && r.is_requesting_help) {
+            let old_happiness = r.happiness;
             r.is_requesting_help = false;
             r.help_active_timer = 0.0;
             r.help_request_timer = HELP_REQUEST_TIMER_MAX;
             r.help_request_seed += 1;
-            true
+            r.happiness = (r.happiness as u16 + HAPPINESS_HELP_GAIN as u16).min(100) as u8;
+            // 首次跨越快樂門檻時廣播（ROADMAP 126）
+            let boost_event = if old_happiness < HAPPINESS_HAPPY_THRESHOLD
+                && r.happiness >= HAPPINESS_HAPPY_THRESHOLD
+            {
+                let msg = crate::resident_chat::get_happiness_boost_chat(r.name);
+                Some(ResidentLifecycleEvent::HappinessBoost { name: r.name, msg })
+            } else {
+                None
+            };
+            (true, boost_event)
         } else {
-            false
+            (false, None)
         }
+    }
+
+    /// 回傳所有居民的 (id, happiness)，供快照廣播用（ROADMAP 126）。
+    pub fn moods(&self) -> Vec<(String, u8)> {
+        self.residents.iter().map(|r| (r.id.clone(), r.happiness)).collect()
     }
 }
 
@@ -1310,27 +1364,28 @@ mod tests {
         assert!(mgr.requesting_ids().is_empty(), "初始狀態應無求助請求");
     }
 
-    /// fulfill_help_request 應清除請求並回傳 true。
+    /// fulfill_help_request 應清除請求並回傳 (true, ...)。
     #[test]
     fn fulfill_help_request_clears_flag() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].is_requesting_help = true;
         mgr.residents[0].help_active_timer = 100.0;
         let rid = mgr.residents[0].id.clone();
-        let result = mgr.fulfill_help_request(&rid);
-        assert!(result, "fulfill_help_request 應回傳 true");
+        let (ok, _) = mgr.fulfill_help_request(&rid);
+        assert!(ok, "fulfill_help_request 應回傳 true");
         assert!(!mgr.residents[0].is_requesting_help, "完成後 is_requesting_help 應為 false");
     }
 
-    /// 對非求助居民呼叫 fulfill_help_request 應回傳 false。
+    /// 對非求助居民呼叫 fulfill_help_request 應回傳 (false, None)。
     #[test]
     fn fulfill_help_request_returns_false_if_not_requesting() {
         let mut mgr = ResidentManager::new();
         // 確保第一位居民沒在求助
         mgr.residents[0].is_requesting_help = false;
         let rid = mgr.residents[0].id.clone();
-        let result = mgr.fulfill_help_request(&rid);
-        assert!(!result, "居民未求助時 fulfill_help_request 應回傳 false");
+        let (ok, ev) = mgr.fulfill_help_request(&rid);
+        assert!(!ok, "居民未求助時 fulfill_help_request 應回傳 false");
+        assert!(ev.is_none(), "未求助時不應有快樂提升事件");
     }
 
     /// find_requesting_by_id 應找到求助居民。
@@ -1348,5 +1403,97 @@ mod tests {
         let mgr = ResidentManager::new();
         let rid = mgr.residents[0].id.clone();
         assert!(mgr.find_requesting_by_id(&rid).is_none(), "未求助時應回傳 None");
+    }
+
+    // ── 心情溫度測試（ROADMAP 126）─────────────────────────────────────────────
+
+    /// 初始快樂值應為 HAPPINESS_INITIAL。
+    #[test]
+    fn resident_initial_happiness() {
+        let mgr = ResidentManager::new();
+        for r in &mgr.residents {
+            assert_eq!(r.happiness, HAPPINESS_INITIAL, "初始快樂值應為 {HAPPINESS_INITIAL}");
+        }
+    }
+
+    /// fulfill_help_request 應增加快樂值（上限 100）。
+    #[test]
+    fn fulfill_help_request_increases_happiness() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].is_requesting_help = true;
+        mgr.residents[0].help_active_timer = 100.0;
+        let initial = mgr.residents[0].happiness;
+        let rid = mgr.residents[0].id.clone();
+        let (ok, _) = mgr.fulfill_help_request(&rid);
+        assert!(ok, "fulfill_help_request 應成功");
+        let new_h = mgr.residents[0].happiness;
+        assert!(new_h > initial || new_h == 100, "快樂值應增加或達上限：initial={initial}, new={new_h}");
+    }
+
+    /// 快樂值達上限後不超過 100。
+    #[test]
+    fn happiness_does_not_exceed_max() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = 95;
+        mgr.residents[0].is_requesting_help = true;
+        let rid = mgr.residents[0].id.clone();
+        let _ = mgr.fulfill_help_request(&rid);
+        assert!(mgr.residents[0].happiness <= 100, "快樂值不應超過 100");
+    }
+
+    /// 快樂值首次突破門檻時，fulfill_help_request 應回傳 HappinessBoost 事件。
+    #[test]
+    fn happiness_boost_event_emitted_on_threshold_cross() {
+        let mut mgr = ResidentManager::new();
+        // 把快樂值設在門檻剛好下方
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD - 1;
+        mgr.residents[0].is_requesting_help = true;
+        let rid = mgr.residents[0].id.clone();
+        let (ok, ev) = mgr.fulfill_help_request(&rid);
+        assert!(ok, "fulfill_help_request 應成功");
+        assert!(ev.is_some(), "跨越快樂門檻時應產生 HappinessBoost 事件");
+    }
+
+    /// 快樂值已在門檻以上時，fulfill_help_request 不應重複觸發 HappinessBoost。
+    #[test]
+    fn happiness_boost_event_not_emitted_if_already_happy() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD + 5; // 已在門檻以上
+        mgr.residents[0].is_requesting_help = true;
+        let rid = mgr.residents[0].id.clone();
+        let (ok, ev) = mgr.fulfill_help_request(&rid);
+        assert!(ok, "fulfill_help_request 應成功");
+        assert!(ev.is_none(), "快樂值已在門檻以上時不應重複觸發 HappinessBoost");
+    }
+
+    /// 快樂衰減：happiness_decay_timer 歸零後快樂值應減少，且不低於 HAPPINESS_MIN。
+    #[test]
+    fn happiness_decays_but_not_below_min() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_INITIAL;
+        mgr.residents[0].happiness_decay_timer = 0.1; // 接近 0
+        // tick 一幀讓計時器歸零
+        let _ = mgr.tick(0.2, HAPPINESS_INITIAL as i32, Phase::Day, &[]);
+        let h = mgr.residents[0].happiness;
+        assert!(h < HAPPINESS_INITIAL, "衰減後快樂值應下降：got {h}");
+        // 多次衰減也不低於 HAPPINESS_MIN
+        for r in &mut mgr.residents { r.happiness = HAPPINESS_MIN; r.happiness_decay_timer = 0.0; }
+        let _ = mgr.tick(1.0, HAPPINESS_MIN as i32, Phase::Day, &[]);
+        for r in &mgr.residents {
+            assert!(r.happiness >= HAPPINESS_MIN, "快樂值不應低於 HAPPINESS_MIN={HAPPINESS_MIN}：got {}", r.happiness);
+        }
+    }
+
+    /// moods() 應回傳每位居民的 (id, happiness)。
+    #[test]
+    fn moods_returns_all_residents() {
+        let mgr = ResidentManager::new();
+        let moods = mgr.moods();
+        assert_eq!(moods.len(), mgr.population(), "moods() 長度應等於居民人數");
+        for (id, h) in &moods {
+            assert!(id.starts_with("resident_"), "id 應以 'resident_' 開頭：{id}");
+            assert!(*h >= HAPPINESS_MIN, "快樂值不應低於 HAPPINESS_MIN");
+            assert!(*h <= 100, "快樂值不應超過 100");
+        }
     }
 }

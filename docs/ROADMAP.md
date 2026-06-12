@@ -1009,12 +1009,22 @@ D-3. ✅ **小地圖導航**（PR #71）
 
 ## 接著（居民互動回報 — AI 自主提案 2026-06-12）
 
-125. **居民互助請求——居民偶爾廣播「需要幫忙」，玩家靠近回應後獲得乙太小獎勵，讓城鎮居民從「路人背景」升級成「需要你的鄰居」**
+125. ✅ **居民互助請求——居民偶爾廣播「需要幫忙」，玩家靠近回應後獲得乙太小獎勵，讓城鎮居民從「路人背景」升級成「需要你的鄰居」**（PR #238）
     - 每位居民每 12～20 分鐘觸發一次求助廣播（世界聊天 + 頭頂泡泡），請求持續 8 分鐘；期間快照廣播 `active_help_requests`（求助居民 id 清單）。
     - 玩家走近 80px 內：HUD 亮出「🤝 幫忙」按鈕（獨立於「💬 搭話」），點擊驗證距離後清除請求、玩家獲得 8 乙太、居民廣播感謝語。
     - 4 種 persona × 3 條求助語（共 12 條）＋ 4 種 persona × 3 條感謝語（共 12 條）；語境帶居民名字與玩家名字。
     - **純模板零 LLM**：`resident_chat.rs` 新增 `get_help_request()` + `get_help_thanks()`；`resident_npc.rs` 新增 `help_request_timer/is_requesting_help/help_active_timer/help_request_seed` 欄位 + `HelpRequested` 事件 + `fulfill_help_request()` + `requesting_ids()` 方法；`protocol.rs` 新增 `active_help_requests` 快照欄位 + `ClientMsg::HelpResident`；`game.rs` + `ws.rs` 接線；前端新增「🤝 幫忙」按鈕。零 migration，記憶體模式，不破壞玩家資料。
     - 玩家感知：城鎮裡偶爾出現「🪣 阿土說：『我的水桶裂了，誰能幫我找找？』」，走過去點「🤝 幫忙」，居民感謝你並贈 8 乙太——城鎮不再只是背景，它真的需要你。
+
+## 接著（居民情感深化 — AI 自主提案 2026-06-12）
+
+126. **居民心情溫度——玩家幫助居民後快樂值上升，廣播更溫暖語氣，頭頂顯示 💛，讓玩家感受「我的行動讓城鎮更溫暖」**
+    - 每位居民有 `happiness: u8`（0-100，初始 50）；玩家幫助一次 +20（上限 100），每 5 分鐘自然衰減 3（下限 20）。
+    - 快樂（≥70）居民工作廣播換用更歡欣的模板（4 persona × 3 條，共 12 條），讓玩家在聊天欄就能感受到城鎮氣氛變好。
+    - 快樂值首次突破 70 時發出一條世界聊天：「💛 {居民名} 心情格外好，幹活都有勁！」。
+    - 快照新增 `resident_moods: Vec<(String, u8)>`（id → happiness）；前端在快樂居民頭上畫一顆小 💛 emoji（7px 小字）。
+    - **純模板零 LLM**：`resident_chat.rs` 新增 `get_happy_work_action()` 12 條；`resident_npc.rs` 新增 `happiness`/`happiness_decay_timer` 欄位 + `HappinessBoost` 事件；`protocol.rs` 新增 `resident_moods`；`game.rs` 接線廣播；前端讀 `resident_moods`，`drawResidentLook` 補心型。零 migration，記憶體模式，不破壞玩家資料。
+    - 玩家感知：連續幫幾個居民後，聊天欄出現「💛 阿土 心情格外好，幹活都有勁！」，再走進城鎮，看到阿土頭上有顆小金心——世界記得你做的事。
 
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
