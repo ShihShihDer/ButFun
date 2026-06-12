@@ -580,6 +580,14 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::EtherOverlordBlade,
         output_qty: 1,
     },
+    /// Alpha 之力：Alpha 晶核×2 + 乙太礦石×5 → Alpha 之力×1。
+    /// 使用後回滿血 + 獲得 +25 乙太——Alpha 的原始生命力傾注你的身體。
+    Recipe {
+        id: "alpha_force",
+        inputs: &[(ItemKind::AlphaCrystal, 2), (ItemKind::Ether, 5)],
+        output: ItemKind::AlphaForce,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -868,8 +876,10 @@ mod tests {
                     item,
                     ItemKind::WildFlower | ItemKind::SolarShard | ItemKind::MapleLeaf | ItemKind::IceShard
                 );
+                // 巢穴 Alpha 擊殺可得（ROADMAP 168）：AttackAlpha 擊殺後殺手獲得 AlphaCrystal。
+                let alpha_kill_drop = item == ItemKind::AlphaCrystal;
                 assert!(
-                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible,
+                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",

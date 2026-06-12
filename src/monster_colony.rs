@@ -1,9 +1,8 @@
 //! ROADMAP 164：怪物巢穴=聚落——怪物從命名巢穴出生/回巢，
 //! 族群可清剿衰退或放著壯大；與野生動物聚落同一設計哲學。
 //!
-//! 每個巢穴固定在世界座標，關聯一種怪物（EnemyKind）。
-//! 玩家在巢穴附近（COLONY_KILL_RADIUS 像素內）擊殺同種怪物，族群數量下降；
-//! 若族群歸零，巢穴暫時廢棄並加長冷卻；放著不管，每 RESPAWN_SECS 秒補充一隻。
+//! ROADMAP 168：巢穴 Alpha 湧現——族群達峰值時湧現地區霸主，
+//! 3 倍生命、守衛領地；擊殺後族群-2、全服廣播、殺手得乙太+晶核。
 //!
 //! 效能：全純算術、零 LLM、零 migration；記憶體模式，重啟全重置。
 
@@ -18,6 +17,17 @@ const RESPAWN_SECS: f32 = 120.0;
 const WIPED_COOLDOWN_MULT: f32 = 3.0;
 /// 玩家在此半徑（像素）內擊殺同類怪物，計入巢穴族群損失。
 pub const COLONY_KILL_RADIUS: f32 = 420.0;
+
+/// Alpha 冷卻（秒）：被擊殺後需等此時間才再次湧現。
+const ALPHA_COOLDOWN_SECS: f32 = 300.0;
+/// 挑戰 Alpha 的最大距離（像素）。
+pub const ALPHA_ATTACK_REACH: f32 = 80.0;
+/// Alpha 乙太獎勵：殺手個人獲得。
+pub const ALPHA_KILLER_ETHER: u32 = 15;
+/// Alpha 乙太獎勵：全服在線玩家各得。
+pub const ALPHA_GLOBAL_ETHER: u32 = 3;
+/// Alpha 晶核掉落數量。
+pub const ALPHA_CRYSTAL_DROP: u32 = 1;
 
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
@@ -41,6 +51,41 @@ pub struct MonsterColony {
     spawn_timer: f32,
     /// 累計生成次數，用作出生點散佈的鹽值（確保分佈不重疊）。
     spawn_count: u32,
+    /// Alpha 被擊殺後的冷卻計時器（秒），>0 表示正在冷卻中。
+    pub alpha_cooldown: f32,
+}
+
+/// 巢穴 Alpha 首領（ROADMAP 168）。
+/// 單獨追蹤，不走 EnemyField。
+pub struct ColonyAlpha {
+    /// 全域唯一 ID（用於 AttackAlpha 訊息定位）。
+    pub id: u32,
+    /// 所屬巢穴 ID。
+    pub colony_id: u32,
+    /// 怪物種類（同巢穴）。
+    pub kind: EnemyKind,
+    /// 世界座標 X（在巢穴中心稍微偏移）。
+    pub x: f32,
+    /// 世界座標 Y。
+    pub y: f32,
+    /// 目前生命值。
+    pub hp: u32,
+    /// 最大生命值（= kind.max_hp() × 3）。
+    pub max_hp: u32,
+    /// 對應巢穴名稱（用於廣播）。
+    pub colony_name: &'static str,
+}
+
+/// 給協議層用的 Alpha 視圖（隨快照廣播）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ColonyAlphaView {
+    pub id: u32,
+    pub colony_id: u32,
+    pub kind: String,
+    pub x: f32,
+    pub y: f32,
+    pub hp: u32,
+    pub max_hp: u32,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -54,6 +99,15 @@ pub struct MonsterColonyView {
     pub spawn_radius: f32,
     /// 族群密度：0=廢棄 1=稀疏 2=正常 3=茂盛（讓玩家有感而不顯示精確數字）。
     pub density: u32,
+    /// 是否有 Alpha 首領活躍（前端顯示警示標記）。
+    pub has_alpha: bool,
+}
+
+/// Alpha 擊殺結果（由 game.rs 用於廣播/發獎）。
+pub struct AlphaKilledResult {
+    pub colony_id: u32,
+    pub colony_name: &'static str,
+    pub kind: EnemyKind,
 }
 
 /// 巢穴管理器發出的事件，由 game.rs 消化。
@@ -64,22 +118,37 @@ pub enum MonsterColonyEvent {
     ColonyCleared { name: &'static str, cx: f32, cy: f32 },
     /// 廢棄巢穴族群復生（可廣播全服聊天）。
     ColonyRevived { name: &'static str },
+    /// 巢穴 Alpha 湧現（廣播全服通知玩家）。
+    AlphaAppeared { colony_name: &'static str, kind: EnemyKind },
 }
 
 /// 管理所有怪物巢穴。
 pub struct MonsterColonyManager {
     pub colonies: Vec<MonsterColony>,
+    /// 當前活躍的 Alpha 首領（同一巢穴至多 1 隻）。
+    pub alphas: Vec<ColonyAlpha>,
+    /// 下一個 Alpha 的全域唯一 ID 計數器。
+    next_alpha_id: u32,
 }
 
 impl MonsterColonyManager {
     pub fn new() -> Self {
-        Self { colonies: build_colonies() }
+        Self {
+            colonies: build_colonies(),
+            alphas: Vec::new(),
+            next_alpha_id: 1,
+        }
     }
 
-    /// 每幀推進：倒數補充計時器，到期且族群未滿則發出 SpawnAt 事件。
+    /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現檢查。
     pub fn tick(&mut self, dt: f32) -> Vec<MonsterColonyEvent> {
         let mut events = Vec::new();
+
+        // 族群補充 + Alpha 冷卻倒數
         for col in &mut self.colonies {
+            if col.alpha_cooldown > 0.0 {
+                col.alpha_cooldown = (col.alpha_cooldown - dt).max(0.0);
+            }
             if col.population >= col.max_population {
                 continue;
             }
@@ -97,7 +166,70 @@ impl MonsterColonyManager {
                 events.push(MonsterColonyEvent::ColonyRevived { name: col.name });
             }
         }
+
+        // Alpha 湧現：族群已滿 + 無活躍 Alpha + 冷卻結束（兩遍避免借用衝突）
+        let to_spawn: Vec<(u32, EnemyKind, f32, f32, u32, &'static str)> = self.colonies.iter()
+            .filter(|col| {
+                col.population >= col.max_population
+                    && col.alpha_cooldown <= 0.0
+                    && !self.alphas.iter().any(|a| a.colony_id == col.id)
+            })
+            .map(|col| {
+                let (ax, ay) = alpha_spawn_pos(col);
+                (col.id, col.kind, ax, ay, col.kind.max_hp() * 3, col.name)
+            })
+            .collect();
+
+        for (colony_id, kind, ax, ay, max_hp, colony_name) in to_spawn {
+            events.push(MonsterColonyEvent::AlphaAppeared { colony_name, kind });
+            let alpha_id = self.next_alpha_id;
+            self.next_alpha_id += 1;
+            self.alphas.push(ColonyAlpha {
+                id: alpha_id, colony_id, kind, x: ax, y: ay,
+                hp: max_hp, max_hp, colony_name,
+            });
+        }
+
         events
+    }
+
+    /// 玩家攻擊指定 Alpha（id = alpha.id，在距離 reach 內有效）。
+    /// 傳回 `Some(AlphaKilledResult)` 代表 Alpha 被擊殺，否則為 `None`（未死或找不到）。
+    pub fn attack_alpha(
+        &mut self,
+        alpha_id: u32,
+        px: f32,
+        py: f32,
+        power: u32,
+        reach: f32,
+    ) -> Option<AlphaKilledResult> {
+        let reach_sq = reach * reach;
+        let idx = self.alphas.iter().position(|a| {
+            a.id == alpha_id
+                && (a.x - px).powi(2) + (a.y - py).powi(2) <= reach_sq
+        })?;
+
+        let alpha = &mut self.alphas[idx];
+        alpha.hp = alpha.hp.saturating_sub(power);
+        if alpha.hp > 0 {
+            return None; // 未死
+        }
+
+        // Alpha 死亡
+        let result = AlphaKilledResult {
+            colony_id: alpha.colony_id,
+            colony_name: alpha.colony_name,
+            kind: alpha.kind,
+        };
+        self.alphas.swap_remove(idx);
+
+        // 對應巢穴族群 -2（最少 0）並設冷卻
+        if let Some(col) = self.colonies.iter_mut().find(|c| c.id == result.colony_id) {
+            col.population = col.population.saturating_sub(2);
+            col.alpha_cooldown = ALPHA_COOLDOWN_SECS;
+        }
+
+        Some(result)
     }
 
     /// 玩家在 (kill_x, kill_y) 擊殺了 kill_kind 種類的怪 →
@@ -128,12 +260,26 @@ impl MonsterColonyManager {
             let col = &mut self.colonies[idx];
             col.population -= 1;
             if col.population == 0 {
-                // 巢穴清空：加長冷卻再復生
+                // 巢穴清空：加長冷卻再復生；同時移除 Alpha（族群歸零 Alpha 也消失）
                 col.spawn_timer = RESPAWN_SECS * WIPED_COOLDOWN_MULT;
+                self.alphas.retain(|a| a.colony_id != col.id);
                 events.push(MonsterColonyEvent::ColonyCleared { name: col.name, cx: col.cx, cy: col.cy });
             }
         }
         events
+    }
+
+    /// 回傳供快照廣播的 Alpha 視圖清單。
+    pub fn alpha_views(&self) -> Vec<ColonyAlphaView> {
+        self.alphas.iter().map(|a| ColonyAlphaView {
+            id: a.id,
+            colony_id: a.colony_id,
+            kind: a.kind.as_str().to_string(),
+            x: a.x,
+            y: a.y,
+            hp: a.hp,
+            max_hp: a.max_hp,
+        }).collect()
     }
 
     /// 回傳供快照廣播的視圖清單。
@@ -146,6 +292,7 @@ impl MonsterColonyManager {
             cy:           col.cy,
             spawn_radius: col.spawn_radius,
             density:      colony_density(col.population, col.max_population),
+            has_alpha:    self.alphas.iter().any(|a| a.colony_id == col.id),
         }).collect()
     }
 }
@@ -177,6 +324,11 @@ fn colony_spawn_pos(col: &MonsterColony) -> (f32, f32) {
     (col.cx + r * angle.cos(), col.cy + r * angle.sin())
 }
 
+/// Alpha 固定在巢穴中心正北方 40px 處（確保明顯、不與普通怪重疊）。
+fn alpha_spawn_pos(col: &MonsterColony) -> (f32, f32) {
+    (col.cx, col.cy - 40.0)
+}
+
 /// 世界座標巢穴列表（城外安全區外，分散四方供玩家探索）。
 ///
 /// 城鎮中心像素 ≈ (2336, 2272)，安全區半徑 ≈ 1344px（42 格）。
@@ -189,6 +341,7 @@ fn build_colonies() -> Vec<MonsterColony> {
             cx: 4000.0, cy: 1800.0, spawn_radius: 220.0,
             population: 5, max_population: 8,
             spawn_timer: RESPAWN_SECS, spawn_count: 0,
+            alpha_cooldown: 0.0,
         },
         MonsterColony {
             id: 1, kind: EnemyKind::MushroomStalker,
@@ -196,6 +349,7 @@ fn build_colonies() -> Vec<MonsterColony> {
             cx: 3900.0, cy: 3200.0, spawn_radius: 240.0,
             population: 5, max_population: 7,
             spawn_timer: RESPAWN_SECS, spawn_count: 0,
+            alpha_cooldown: 0.0,
         },
         MonsterColony {
             id: 2, kind: EnemyKind::ScrapDrone,
@@ -203,6 +357,7 @@ fn build_colonies() -> Vec<MonsterColony> {
             cx: 2200.0, cy: 3900.0, spawn_radius: 200.0,
             population: 4, max_population: 6,
             spawn_timer: RESPAWN_SECS, spawn_count: 0,
+            alpha_cooldown: 0.0,
         },
         MonsterColony {
             id: 3, kind: EnemyKind::CrystalGolem,
@@ -210,6 +365,7 @@ fn build_colonies() -> Vec<MonsterColony> {
             cx: 700.0, cy: 2400.0, spawn_radius: 260.0,
             population: 3, max_population: 5,
             spawn_timer: RESPAWN_SECS, spawn_count: 0,
+            alpha_cooldown: 0.0,
         },
         MonsterColony {
             id: 4, kind: EnemyKind::EtherWisp,
@@ -217,6 +373,7 @@ fn build_colonies() -> Vec<MonsterColony> {
             cx: 1100.0, cy: 800.0, spawn_radius: 210.0,
             population: 5, max_population: 7,
             spawn_timer: RESPAWN_SECS, spawn_count: 0,
+            alpha_cooldown: 0.0,
         },
     ]
 }
@@ -374,5 +531,184 @@ mod tests {
         for view in mgr.colony_views() {
             assert!(view.density <= 3, "密度等級應在 0~3 之間");
         }
+    }
+
+    // ─── ROADMAP 168 Alpha 測試 ─────────────────────────────────────────────
+
+    #[test]
+    fn alpha_spawns_when_colony_full() {
+        let mut mgr = MonsterColonyManager::new();
+        // 讓第一個巢穴族群達上限
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        let events = mgr.tick(0.1);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
+            "族群達峰值應湧現 Alpha"
+        );
+        assert_eq!(mgr.alphas.len(), 1, "應有 1 個 Alpha 活躍");
+    }
+
+    #[test]
+    fn alpha_does_not_spawn_when_on_cooldown() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 100.0; // 冷卻中
+        let events = mgr.tick(0.1);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
+            "冷卻中不應湧現 Alpha"
+        );
+        assert_eq!(mgr.alphas.len(), 0);
+    }
+
+    #[test]
+    fn alpha_not_duplicate_per_colony() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1); // 第一次：Alpha 湧現
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        let events = mgr.tick(0.1); // 第二次：Alpha 已存在，不應再湧現
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
+            "已有 Alpha 時不應重複湧現"
+        );
+        assert_eq!(mgr.alphas.len(), 1, "同一巢穴只有 1 個 Alpha");
+    }
+
+    #[test]
+    fn alpha_has_triple_hp() {
+        let mut mgr = MonsterColonyManager::new();
+        let col = &mgr.colonies[0];
+        let kind = col.kind;
+        let max = col.max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let alpha = &mgr.alphas[0];
+        assert_eq!(alpha.kind, kind);
+        assert_eq!(alpha.max_hp, kind.max_hp() * 3, "Alpha 生命應為基礎值的 3 倍");
+        assert_eq!(alpha.hp, alpha.max_hp, "Alpha 湧現時應滿血");
+    }
+
+    #[test]
+    fn attack_alpha_reduces_hp() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let alpha = &mgr.alphas[0];
+        let (id, ax, ay) = (alpha.id, alpha.x, alpha.y);
+        let result = mgr.attack_alpha(id, ax, ay, 1, ALPHA_ATTACK_REACH);
+        assert!(result.is_none(), "一點傷害不應擊殺 Alpha");
+        assert!(mgr.alphas[0].hp < mgr.alphas[0].max_hp, "HP 應已減少");
+    }
+
+    #[test]
+    fn attack_alpha_kill_removes_alpha_and_reduces_colony() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let alpha = &mgr.alphas[0];
+        let (id, ax, ay, big_power) = (alpha.id, alpha.x, alpha.y, 999999);
+        let result = mgr.attack_alpha(id, ax, ay, big_power, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "超大傷害應擊殺 Alpha");
+        assert_eq!(mgr.alphas.len(), 0, "Alpha 應被移除");
+        assert_eq!(mgr.colonies[0].population, max.saturating_sub(2), "族群應減 2");
+        assert!(mgr.colonies[0].alpha_cooldown > 0.0, "擊殺後應進入冷卻");
+    }
+
+    #[test]
+    fn attack_alpha_out_of_reach_fails() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let alpha = &mgr.alphas[0];
+        let (id, ax, ay) = (alpha.id, alpha.x, alpha.y);
+        // 玩家距 Alpha 超過 ALPHA_ATTACK_REACH
+        let result = mgr.attack_alpha(id, ax + ALPHA_ATTACK_REACH * 2.0, ay, 999999, ALPHA_ATTACK_REACH);
+        assert!(result.is_none(), "超出距離不應命中");
+        assert_eq!(mgr.alphas[0].hp, mgr.alphas[0].max_hp, "HP 應無損");
+    }
+
+    #[test]
+    fn cooldown_decrements_over_time() {
+        let mut mgr = MonsterColonyManager::new();
+        mgr.colonies[0].alpha_cooldown = 100.0;
+        mgr.tick(10.0);
+        assert!(
+            mgr.colonies[0].alpha_cooldown < 100.0,
+            "冷卻計時器應隨時間減少"
+        );
+    }
+
+    #[test]
+    fn alpha_views_reflect_active_alphas() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let views = mgr.alpha_views();
+        assert_eq!(views.len(), 1, "應有 1 個 Alpha 視圖");
+        assert_eq!(views[0].max_hp, mgr.colonies[0].kind.max_hp() * 3);
+    }
+
+    #[test]
+    fn colony_view_has_alpha_flag() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        let views = mgr.colony_views();
+        assert!(views[0].has_alpha, "Alpha 活躍時巢穴視圖應標示 has_alpha");
+    }
+
+    #[test]
+    fn wiping_colony_also_removes_alpha() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        assert_eq!(mgr.alphas.len(), 1, "Alpha 應存在");
+        // 清空族群
+        mgr.colonies[0].population = 1;
+        mgr.on_monster_killed_near(mgr.colonies[0].cx, mgr.colonies[0].cy, mgr.colonies[0].kind);
+        assert_eq!(mgr.colonies[0].population, 0);
+        assert_eq!(mgr.alphas.len(), 0, "族群清空時 Alpha 應一併移除");
+    }
+
+    #[test]
+    fn alpha_cooldown_prevents_immediate_respawn() {
+        let mut mgr = MonsterColonyManager::new();
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        // 擊殺 Alpha
+        let (id, ax, ay) = {
+            let a = &mgr.alphas[0];
+            (a.id, a.x, a.y)
+        };
+        mgr.attack_alpha(id, ax, ay, 999999, ALPHA_ATTACK_REACH);
+        // 立刻設族群為滿 + tick
+        mgr.colonies[0].population = max;
+        let events = mgr.tick(0.1);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
+            "Alpha 剛被擊殺後冷卻中不應立刻湧現"
+        );
     }
 }

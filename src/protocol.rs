@@ -388,6 +388,10 @@ pub enum ClientMsg {
     /// 需未倒地、距離 ≤ FEED_REACH、背包有野花種子 → 成功，該物種態度升高。
     #[serde(rename = "feed_wildlife")]
     FeedWildlife { wildlife_id: u32 },
+    /// 挑戰巢穴 Alpha（ROADMAP 168）：對指定 Alpha 發動一次攻擊。
+    /// 需未倒地、距離 ≤ ALPHA_ATTACK_REACH、alpha_id 存在 → 成功；Alpha 死亡觸發獎勵廣播。
+    #[serde(rename = "attack_alpha")]
+    AttackAlpha { alpha_id: u32 },
     /// 接取貿易任務（ROADMAP 51）：在當前星球商人處接取一個貿易包裹。
     /// `route_id`：要接取的路線編號（需在本星球且未在冷卻中且未持有其他包裹）。
     /// 一次只能攜帶一個包裹；同路線有 5 分鐘冷卻。倒地中靜默忽略。
@@ -764,6 +768,10 @@ pub enum ServerMsg {
         /// 0 = 生態均衡，≥25 開始累積，≥50 緊張，≥75 危機（影響獸潮週期）。
         #[serde(default)]
         eco_pressure_value: f32,
+        /// 巢穴 Alpha 首領（ROADMAP 168）：目前活躍的 Alpha，供前端地圖繪製及互動。
+        /// 空陣列 = 目前無 Alpha 活躍。
+        #[serde(default)]
+        alpha_monsters: Vec<crate::monster_colony::ColonyAlphaView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1623,6 +1631,7 @@ mod tests {
             monster_species_attitudes: vec![],
             monster_colony_views: vec![],
             eco_pressure_value: 0.0,
+            alpha_monsters: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

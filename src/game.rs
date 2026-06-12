@@ -969,6 +969,12 @@ pub fn spawn(app: AppState) {
                                     "⚠️ [{name}] 怪物巢穴族群開始恢復，請注意！"
                                 ));
                             }
+                            MonsterColonyEvent::AlphaAppeared { colony_name, kind } => {
+                                let kind_name = kind.display_name();
+                                let _ = app.tx_chat.send(format!(
+                                    "👑 [{colony_name}] 族群達到巔峰！Alpha 首領「{kind_name}·霸主」降臨領地，尋求挑戰者！"
+                                ));
+                            }
                         }
                     }
                 }
@@ -2106,6 +2112,8 @@ pub fn spawn(app: AppState) {
                         monster_colony_views: app.monster_colonies.read().unwrap().colony_views(),
                         // 生態壓力值（ROADMAP 167）：director 儲存的最新生態壓力，直接讀出廣播。
                         eco_pressure_value: app.director.read().unwrap().eco_pressure(),
+                        // 巢穴 Alpha（ROADMAP 168）：目前活躍的 Alpha 首領。
+                        alpha_monsters: app.monster_colonies.read().unwrap().alpha_views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
