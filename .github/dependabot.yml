@@ -1,0 +1,24 @@
+# Dependabot：GitHub 原生的持續依賴漏洞掃描（零本機維護，server 端跑）。
+# 對 Cargo.lock / package-lock.json 比對 GitHub Advisory DB（含 RustSec / npm advisories）：
+# 有套件被爆 CVE 或有安全更新 → 自動開修復 PR。這就是「權威機構提出漏洞 → 自動看有沒有中招 + 開修」。
+# 註：Dependabot security alerts 另需在 repo Settings → Security 開啟（多數預設已開）。
+version: 2
+updates:
+  - package-ecosystem: "cargo"        # Rust 後端依賴
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+  - package-ecosystem: "npm"          # 前端依賴（ws 等）
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(npm)"
+  - package-ecosystem: "github-actions" # CI workflow 的 action 版本
+    directory: "/"
+    schedule:
+      interval: "weekly"
