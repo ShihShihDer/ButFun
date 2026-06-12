@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -425,6 +425,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         carion_orbs: carion_orbs.iter().filter(|o| filter_pos(o.x, o.y)).cloned().collect(),
                                         // 物種聚落（ROADMAP 143）：靜態資料，全部送出。
                                         colonies: colonies.clone(),
+                                        // 物種關係（ROADMAP 144）：全服廣播（量少，5 物種）。
+                                        species_attitudes: species_attitudes.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2562,6 +2564,76 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let msg = format!(
                                 "🌿 {} 採集了乙太微粒，得到 {} 乙太。萬物皆有其歸宿，死亡是循環的一環。",
                                 name, CARION_ETHER
+                            );
+                            let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
+
+                // ── 攻擊野生動物（ROADMAP 144）──────────────────────────────────────
+                Ok(ClientMsg::AttackWildlife { wildlife_id }) => {
+                    use crate::species_relations::ATTACK_WILDLIFE_REACH;
+                    let (px, py, is_downed) = app.players.read().unwrap()
+                        .get(&id)
+                        .map(|p| (p.x, p.y, p.vitals.is_downed()))
+                        .unwrap_or((0.0, 0.0, true));
+                    if !is_downed {
+                        let killed_kind = app.wildlife_manager.write().unwrap()
+                            .attack_wildlife(wildlife_id, px, py, ATTACK_WILDLIFE_REACH);
+                        if let Some(kind) = killed_kind {
+                            use crate::wildlife::TrophicLevel;
+                            let mut sr = app.species_relations.write().unwrap();
+                            if kind.trophic_level() == TrophicLevel::Predator {
+                                // 殺死掠食者 → 被獵物種好感+
+                                sr.on_kill_predator(kind);
+                            } else {
+                                // 殺死獵物 → 該物種敵意+
+                                sr.on_kill_prey(kind);
+                            }
+                            let name = app.players.read().unwrap()
+                                .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            let msg = format!("🗡️ {} 攻擊了一隻 {}。", name, kind.display_name());
+                            let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
+
+                // ── 餵食野生動物（ROADMAP 144）──────────────────────────────────────
+                Ok(ClientMsg::FeedWildlife { wildlife_id }) => {
+                    use crate::species_relations::FEED_REACH;
+                    use crate::inventory::ItemKind;
+                    let (px, py, is_downed, has_seed) = {
+                        let players = app.players.read().unwrap();
+                        let p = players.get(&id);
+                        (
+                            p.map(|p| p.x).unwrap_or(0.0),
+                            p.map(|p| p.y).unwrap_or(0.0),
+                            p.map(|p| p.vitals.is_downed()).unwrap_or(true),
+                            p.map(|p| p.inventory.count(ItemKind::WildflowerSeed) > 0).unwrap_or(false),
+                        )
+                    };
+                    if !is_downed && has_seed {
+                        // 找在餵食距離內的指定野生動物。
+                        let target_kind = {
+                            let wm = app.wildlife_manager.read().unwrap();
+                            let reach2 = FEED_REACH * FEED_REACH;
+                            wm.animals.iter().find(|a| {
+                                a.id == wildlife_id && a.alive
+                                    && (a.x - px).powi(2) + (a.y - py).powi(2) <= reach2
+                            }).map(|a| a.kind)
+                        };
+                        if let Some(kind) = target_kind {
+                            // 消耗一個野花種子。
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.inventory.take(ItemKind::WildflowerSeed, 1);
+                            }
+                            app.species_relations.write().unwrap().on_feed(kind);
+                            let name = app.players.read().unwrap()
+                                .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            let attitude = app.species_relations.read().unwrap().attitude(kind);
+                            let msg = format!(
+                                "🌿 {} 餵食了 {}（消耗野花種子×1）。{} 對人類的態度：{}",
+                                name, kind.display_name(), kind.display_name(), attitude
                             );
                             let _ = app.tx_chat.send(msg);
                         }

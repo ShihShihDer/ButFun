@@ -75,6 +75,21 @@ const COLONY_THREAT_COOLDOWN: f32 = 90.0;
 /// 進入守衛狀態的範圍倍率（相對於 guard_radius）。
 const COLONY_ACTIVATE_MULTIPLIER: f32 = 1.8;
 
+// ─── ROADMAP 144：人類↔物種關係常數 ─────────────────────────────────────────
+
+/// 敵視物種主動偵測玩家並攻擊的半徑（像素）。
+const HOSTILE_DETECT_RADIUS: f32 = 200.0;
+/// 敵視守衛動物近身攻擊觸發距離（像素）。
+const HOSTILE_ATTACK_REACH: f32 = 35.0;
+/// 敵視野生動物的攻擊傷害（HP）。
+const HOSTILE_ATTACK_DAMAGE: u32 = 2;
+/// 敵視攻擊後動物的冷卻（秒）——映射成 guard_timer 重設值。
+const HOSTILE_ATTACK_COOLDOWN: f32 = 3.0;
+/// 友善物種（attitude ≥ 此值）不把玩家加入逃跑威脅清單。
+const FRIENDLY_ATTITUDE: i32 = 65;
+/// 敵視物種（attitude < 此值）會主動攻擊玩家。
+const HOSTILE_ATTITUDE: i32 = 25;
+
 // ─── ROADMAP 142：乙太微粒常數 ───────────────────────────────────────────────
 
 /// 乙太微粒採集有效距離（像素）。
@@ -89,7 +104,7 @@ const MAX_CARION_ORBS: usize = 8;
 // ─── 種類與營養階 ────────────────────────────────────────────────────────────
 
 /// 野生動物種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WildlifeKind {
     WildBird,
@@ -198,6 +213,14 @@ pub enum WildlifeEvent {
         colony_name: &'static str,
         cx: f32,
         cy: f32,
+    },
+    /// ROADMAP 144：敵視物種守衛攻擊玩家——近身時對附近玩家造成傷害。
+    /// 外層（game.rs）應找出 near_x/near_y 附近的玩家並扣血。
+    WildlifeAttack {
+        attacker_kind: WildlifeKind,
+        near_x: f32,
+        near_y: f32,
+        damage: u32,
     },
 }
 
@@ -403,8 +426,42 @@ impl WildlifeManager {
         Some(CARION_ETHER)
     }
 
+    /// ROADMAP 144：玩家攻擊野生動物——在攻擊距離內找到該 ID 的存活動物並使其死亡。
+    /// 回傳被擊殺動物的種類（`None` 表示不存在/超出距離/已死亡）。
+    pub fn attack_wildlife(
+        &mut self,
+        wildlife_id: u32,
+        px: f32,
+        py: f32,
+        reach: f32,
+    ) -> Option<WildlifeKind> {
+        let reach2 = reach * reach;
+        if let Some(a) = self.animals.iter_mut().find(|a| {
+            a.id == wildlife_id
+                && a.alive
+                && (a.x - px).powi(2) + (a.y - py).powi(2) <= reach2
+        }) {
+            let kind = a.kind;
+            a.alive = false;
+            a.respawn_timer = PREY_RESPAWN_SECS;
+            a.state = WildlifeState::Resting { rest_timer: 0.0 };
+            Some(kind)
+        } else {
+            None
+        }
+    }
+
     /// 每幀推進所有野生動物，回傳本幀產生的事件列表。
-    pub fn tick(&mut self, dt: f32, player_positions: &[(f32, f32)]) -> Vec<WildlifeEvent> {
+    ///
+    /// `attitudes`：各物種目前態度值（0-100）。用於：
+    ///   - 友善（≥65）：獵物不把玩家加入逃跑威脅清單（不逃）。
+    ///   - 敵視（<25）：獵物主動向玩家靠近（守衛行為），近身時發出 WildlifeAttack 事件。
+    pub fn tick(
+        &mut self,
+        dt: f32,
+        player_positions: &[(f32, f32)],
+        attitudes: &std::collections::HashMap<WildlifeKind, i32>,
+    ) -> Vec<WildlifeEvent> {
         let mut events = Vec::new();
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
@@ -491,8 +548,25 @@ impl WildlifeManager {
             }
         }
 
-        // ── Phase 2c: 守衛行為 tick（ROADMAP 143）───────────────────────────
+        // ── Phase 2b-extra: 敵視物種主動偵測玩家（ROADMAP 144）─────────────
+        // attitude < HOSTILE_ATTITUDE 的物種：不等聚落觸發，直接向附近玩家靠近。
+        for a in &mut self.animals {
+            if !a.alive { continue; }
+            if matches!(a.state, WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
+                continue;
+            }
+            let kind_attitude = *attitudes.get(&a.kind).unwrap_or(&50);
+            if kind_attitude >= HOSTILE_ATTITUDE { continue; }
+            // 找 HOSTILE_DETECT_RADIUS 內最近的玩家。
+            let threat = nearest_in_range(a.x, a.y, player_positions, HOSTILE_DETECT_RADIUS);
+            if let Some((tx, ty)) = threat {
+                a.state = WildlifeState::Guarding { threat_x: tx, threat_y: ty, guard_timer: GUARD_DURATION };
+            }
+        }
+
+        // ── Phase 2c: 守衛行為 tick（ROADMAP 143 + 144）─────────────────────
         // 處理所有物種（獵物與捕食者）的 Guarding 狀態。
+        // ROADMAP 144：若物種為敵視且動物已靠近玩家 HOSTILE_ATTACK_REACH 內，發出傷害事件。
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
             let WildlifeState::Guarding { threat_x, threat_y, guard_timer } = self.animals[i].state else { continue };
@@ -500,6 +574,21 @@ impl WildlifeManager {
             let dy = threat_y - self.animals[i].y;
             let dist = (dx * dx + dy * dy).sqrt();
             let remaining = guard_timer - dt;
+
+            // 敵視物種近身攻擊（ROADMAP 144）。
+            let kind_attitude = *attitudes.get(&self.animals[i].kind).unwrap_or(&50);
+            if kind_attitude < HOSTILE_ATTITUDE && dist <= HOSTILE_ATTACK_REACH {
+                events.push(WildlifeEvent::WildlifeAttack {
+                    attacker_kind: self.animals[i].kind,
+                    near_x: self.animals[i].x,
+                    near_y: self.animals[i].y,
+                    damage: HOSTILE_ATTACK_DAMAGE,
+                });
+                // 攻擊後回到休息（冷卻），再被 Phase 2b-extra 重新觸發。
+                self.animals[i].state = WildlifeState::Resting { rest_timer: HOSTILE_ATTACK_COOLDOWN };
+                continue;
+            }
+
             if remaining <= 0.0 || dist < 30.0 {
                 // 計時到或已靠近，回到休息。
                 self.animals[i].state = WildlifeState::Resting { rest_timer: 2.0 };
@@ -598,8 +687,16 @@ impl WildlifeManager {
             // 守衛狀態已在 Phase 2c 處理，跳過正常閒晃（不逃跑）。
             if matches!(self.animals[i].state, WildlifeState::Guarding { .. }) { continue; }
 
-            // 威脅 = 玩家 + 捕食者。
-            let mut threats: Vec<(f32, f32)> = player_positions.to_vec();
+            // ROADMAP 144：友善物種不把玩家視為威脅（不逃跑）。
+            let kind_attitude = *attitudes.get(&self.animals[i].kind).unwrap_or(&50);
+            let player_threats: &[(f32, f32)] = if kind_attitude >= FRIENDLY_ATTITUDE {
+                &[] // 友善時玩家不是威脅
+            } else {
+                player_positions
+            };
+
+            // 威脅 = 玩家（按態度決定）+ 捕食者。
+            let mut threats: Vec<(f32, f32)> = player_threats.to_vec();
             threats.extend_from_slice(&pred_positions);
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
@@ -782,7 +879,7 @@ mod tests {
         mgr.animals[wolf_idx].y = mgr.animals[deer_idx].y;
         mgr.animals[wolf_idx].state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
         // 跑一幀觸發追獵。
-        mgr.tick(0.1, &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new());
         let wolf = &mgr.animals[wolf_idx];
         // 野狼應追獵某隻野鹿（不指定是哪隻，因附近可能有多隻）。
         assert!(
@@ -812,7 +909,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        let events = mgr.tick(0.1, &[]);
+        let events = mgr.tick(0.1, &[], &std::collections::HashMap::new());
         // 野鹿應死亡。
         assert!(!mgr.animals[deer_idx].alive, "野鹿應已死亡");
         // 應有 Kill 事件。
@@ -829,7 +926,7 @@ mod tests {
         mgr.animals[deer_idx].alive = false;
         mgr.animals[deer_idx].respawn_timer = 0.1;
         // 跑超過 0.1 秒。
-        mgr.tick(0.2, &[]);
+        mgr.tick(0.2, &[], &std::collections::HashMap::new());
         assert!(mgr.animals[deer_idx].alive, "野鹿應在計時器結束後重生");
     }
 
@@ -838,7 +935,7 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let players = vec![(2200.0f32, 2200.0)];
         for _ in 0..100 {
-            mgr.tick(0.1, &players);
+            mgr.tick(0.1, &players, &std::collections::HashMap::new());
         }
         assert_eq!(mgr.animals.len(), WILDLIFE_COUNT);
     }
@@ -856,7 +953,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new());
         assert_eq!(mgr.carion_orbs.len(), 1, "擊殺後應生成一顆乙太微粒");
         let orb = &mgr.carion_orbs[0];
         let dx = orb.x - deer_x;
@@ -871,7 +968,7 @@ mod tests {
         mgr.carion_orbs.push(CarrionOrb { id: 0, x: 2000.0, y: 2000.0, ttl: 0.05 });
         assert_eq!(mgr.carion_orbs.len(), 1);
         // 跑超過 TTL。
-        mgr.tick(0.1, &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new());
         assert_eq!(mgr.carion_orbs.len(), 0, "TTL 到期後應自動消失");
     }
 
@@ -918,7 +1015,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new());
         // 上限不超出。
         assert!(mgr.carion_orbs.len() <= MAX_CARION_ORBS, "乙太微粒不應超過上限");
     }
@@ -970,7 +1067,7 @@ mod tests {
         mgr.animals[deer_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players);
+        mgr.tick(0.1, &players, &std::collections::HashMap::new());
         // 野鹿應進入 Guarding 狀態。
         let deer = &mgr.animals[deer_idx];
         assert!(
@@ -986,7 +1083,7 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        let events = mgr.tick(0.1, &players);
+        let events = mgr.tick(0.1, &players, &std::collections::HashMap::new());
         assert!(
             events.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "玩家進入聚落應觸發 ColonyThreatened 事件"
@@ -1000,10 +1097,10 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         let players = vec![(cx, cy)];
         // 第一次觸發。
-        let events1 = mgr.tick(0.1, &players);
+        let events1 = mgr.tick(0.1, &players, &std::collections::HashMap::new());
         assert!(events1.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })));
         // 馬上再觸發：冷卻中，不應再發出事件。
-        let events2 = mgr.tick(0.1, &players);
+        let events2 = mgr.tick(0.1, &players, &std::collections::HashMap::new());
         assert!(
             !events2.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "冷卻中不應再發出 ColonyThreatened 事件"
@@ -1017,7 +1114,7 @@ mod tests {
         // 手動設定守衛狀態，計時即將到期。
         mgr.animals[deer_idx].state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
         // 跑超過計時。
-        mgr.tick(0.2, &[]);
+        mgr.tick(0.2, &[], &std::collections::HashMap::new());
         let deer = &mgr.animals[deer_idx];
         assert!(
             matches!(deer.state, WildlifeState::Resting { .. }),
@@ -1047,7 +1144,7 @@ mod tests {
         mgr.animals[bird_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在狐狸洞。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players);
+        mgr.tick(0.1, &players, &std::collections::HashMap::new());
         // 野鳥不應受狐狸洞影響。
         let bird = &mgr.animals[bird_idx];
         assert!(
