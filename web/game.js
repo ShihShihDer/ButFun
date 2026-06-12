@@ -616,7 +616,10 @@
     const rows = speciesAttitudes.map(s => {
       const icon = SPECIES_ICON[s.kind] || "?";
       const color = TIER_COLOR[s.tier] || "#c0c8d0";
-      const bar = "█".repeat(Math.round(s.attitude / 10)) + "░".repeat(10 - Math.round(s.attitude / 10));
+      // 後端理應把 attitude clamp 在 0-100,但前端不該信任範圍:一旦收到負值或 >100,
+      // String.repeat(負數) 會丟 RangeError 殺死整個 render 迴圈。先 clamp 計數到 0-10 自保。
+      const filled = Math.max(0, Math.min(10, Math.round((s.attitude || 0) / 10)));
+      const bar = "█".repeat(filled) + "░".repeat(10 - filled);
       return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.65rem;">${bar}</span> ${s.attitude}</div>`;
     }).join("");
     panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度</div>${rows}`;
