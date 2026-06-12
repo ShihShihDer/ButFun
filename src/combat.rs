@@ -437,7 +437,7 @@ pub fn weapon_power(inv: &Inventory) -> u32 {
 }
 
 /// 敵人的種類。種類決定生命多寡、掉落什麼、危險度、重生多久。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnemyKind {
     /// 銹蝕巡邏機：故障的舊機械，皮厚、打倒落下礦石（拆解的廢鐵）。
@@ -495,6 +495,26 @@ impl EnemyKind {
             EnemyKind::OriginGuardian   => "源晶守護者",
             EnemyKind::RiftGuardian     => "裂縫守護者",
             EnemyKind::EtherOverlord    => "乙太霸主",
+        }
+    }
+
+    /// snake_case 字串識別碼（與 serde 序列化結果一致，供物種系統用）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnemyKind::ScrapDrone      => "scrap_drone",
+            EnemyKind::EtherWisp       => "ether_wisp",
+            EnemyKind::FlutterSprite   => "flutter_sprite",
+            EnemyKind::MushroomStalker => "mushroom_stalker",
+            EnemyKind::CrystalGolem    => "crystal_golem",
+            EnemyKind::RuneGuardian    => "rune_guardian",
+            EnemyKind::CoralCrab       => "coral_crab",
+            EnemyKind::JadeWraith      => "jade_wraith",
+            EnemyKind::SteamConstruct  => "steam_construct",
+            EnemyKind::VoidPhantom     => "void_phantom",
+            EnemyKind::AetherSpecter   => "aether_specter",
+            EnemyKind::OriginGuardian  => "origin_guardian",
+            EnemyKind::RiftGuardian    => "rift_guardian",
+            EnemyKind::EtherOverlord   => "ether_overlord",
         }
     }
 

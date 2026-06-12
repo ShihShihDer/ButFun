@@ -262,6 +262,11 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 enemies.tick(dt);
+                // ROADMAP 163：依怪物物種態度層級更新每種怪的 aggro 倍率。
+                {
+                    let mults = app.monster_species.read().unwrap().aggro_multipliers_snapshot();
+                    enemies.update_aggro_multipliers(mults);
+                }
                 // C-3:敵人也吃地形碰撞（用同一份 tile deltas 快照），不再穿牆。
                 // 夜間危機：夜裡敵人追擊速度加成（is_night）。
                 enemies.advance(dt, &chase_targets, is_night, |x: f32, y: f32| {
@@ -343,14 +348,24 @@ pub fn spawn(app: AppState) {
                 // 分開持 enemies 寫鎖，避免與上方 players 寫鎖同時持有。
                 if !downed_positions.is_empty() {
                     let mut newly_notorious: Vec<crate::enemy_field::EnemyLevelUpResult> = Vec::new();
+                    let mut killer_kinds: Vec<crate::combat::EnemyKind> = Vec::new();
                     {
                         let mut enemies = app.enemies.write().unwrap();
                         for (px, py) in downed_positions {
                             if let Some(r) = enemies.level_up_nearest_killer(px, py) {
+                                killer_kinds.push(r.kind);
                                 if r.newly_notorious {
                                     newly_notorious.push(r);
                                 }
                             }
+                        }
+                    }
+                    // ROADMAP 163：怪物擊倒玩家 → 對應物種態度下降（更囂張）。
+                    // 事件由 tick() 統一廣播，這裡只做態度調整。
+                    if !killer_kinds.is_empty() {
+                        let mut ms = app.monster_species.write().unwrap();
+                        for k in killer_kinds {
+                            ms.on_monster_kills_player(k);
                         }
                     }
                     for r in newly_notorious {
@@ -823,6 +838,21 @@ pub fn spawn(app: AppState) {
                                     new_tier.display_zh()
                                 );
                                 let _ = app.tx_chat.send(msg);
+                            }
+                        }
+                    }
+                }
+                // ROADMAP 163：怪物物種關係 tick（態度自然衰減 + 層級改變廣播）。
+                {
+                    let ms_events = app.monster_species.write().unwrap().tick(dt);
+                    for ev in ms_events {
+                        use crate::species_relations::MonsterRelationEvent;
+                        match ev {
+                            MonsterRelationEvent::TierChanged { kind, new_tier } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🐾 [怪物生態] {} 對人類的態度變為{}。",
+                                    kind.display_name(), new_tier.display_zh()
+                                ));
                             }
                         }
                     }
@@ -1955,6 +1985,8 @@ pub fn spawn(app: AppState) {
                         night_spring_nodes: app.night_springs.read().unwrap().active_nodes()
                             .map(|n| crate::protocol::SpringNodeView { id: n.id, wx: n.wx, wy: n.wy })
                             .collect(),
+                        // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
+                        monster_species_attitudes: app.monster_species.read().unwrap().views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

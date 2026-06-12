@@ -857,6 +857,7 @@
   let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
   let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
+  let monsterSpeciesAttitudes = []; // ROADMAP 163 怪物物種態度 [{kind, name, attitude, tier}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1218,6 +1219,8 @@
         if (Array.isArray(msg.colonies) && msg.colonies.length > 0) coloniesList = msg.colonies;
         // 物種關係（ROADMAP 144）：5 物種態度與等級。
         if (Array.isArray(msg.species_attitudes)) speciesAttitudes = msg.species_attitudes;
+        // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度。
+        if (Array.isArray(msg.monster_species_attitudes)) monsterSpeciesAttitudes = msg.monster_species_attitudes;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -8335,7 +8338,8 @@
         ctx.beginPath(); ctx.arc(sx, ey, 30 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
         ctx.globalAlpha = 1;
       }
-      // 怪物等級名牌（ROADMAP 41/42）：Lv.N 名字；兇名精英加「兇名」前綴。
+      // 怪物等級名牌（ROADMAP 41/42/163）：Lv.N 名字；兇名精英加「兇名」前綴；
+      // ROADMAP 163：依物種態度層級在名牌後加標記（♥=友善/△=謹慎/⚠=敵對）。
       if (e.alive && typeof e.level === "number") {
         const plvl = myLevel || 1;
         const diff = e.level - plvl;
@@ -8343,7 +8347,12 @@
         const lvColor = e.resting ? "#8ab" : e.notorious ? "#ff4444" : diff <= -2 ? "#7dca5a" : diff >= 2 ? "#e85454" : "#f0d060";
         const kindName = ENEMY_NAME[e.kind] || e.kind;
         const prefix = e.notorious ? "兇名 " : e.resting ? "💤 " : "";
-        const tag = `${prefix}Lv.${e.level} ${kindName}`;
+        // 怪物物種態度標記（ROADMAP 163）
+        const attEntry = monsterSpeciesAttitudes.find(a => a.kind === e.kind);
+        const tierTag = attEntry
+          ? (attEntry.tier === "friendly" ? " ♥" : attEntry.tier === "wary" ? " △" : attEntry.tier === "hostile" ? " ⚠" : "")
+          : "";
+        const tag = `${prefix}Lv.${e.level} ${kindName}${tierTag}`;
         ctx.font = e.notorious ? "bold 10px sans-serif" : "bold 9px sans-serif";
         ctx.textAlign = "center";
         ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : e.resting ? "rgba(0,20,40,0.5)" : "rgba(0,0,0,0.55)";

@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -473,6 +473,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         invasion: invasion.clone(),
                                         // 夜間乙太泉（ROADMAP 162）：全服廣播（量少，最多 5 顆）。
                                         night_spring_nodes: night_spring_nodes.clone(),
+                                        // 怪物物種態度（ROADMAP 163）：全服廣播。
+                                        monster_species_attitudes: monster_species_attitudes.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2066,6 +2068,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 for p in app.players.write().unwrap().values_mut() {
                                     p.ether = p.ether.saturating_add(crate::director::HORDE_VICTORY_ETHER);
                                 }
+                            }
+                        }
+                    }
+                    // ROADMAP 163：玩家擊殺怪物 → 對應物種態度上升（怪物學會敬畏）。
+                    // 事件由 game.rs tick() 統一廣播，這裡只做態度調整。
+                    // 安全區遠程擊殺不計入（和其他 suppress_rewards 行為一致）。
+                    if !suppress_rewards {
+                        let killed_kinds: Vec<crate::combat::EnemyKind> = results.iter()
+                            .filter(|(_, _, _, loot)| loot.is_some())
+                            .map(|(kind, _, _, _)| *kind)
+                            .collect();
+                        if !killed_kinds.is_empty() {
+                            let mut ms = app.monster_species.write().unwrap();
+                            for k in killed_kinds {
+                                ms.on_player_kills_monster(k);
                             }
                         }
                     }
