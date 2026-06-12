@@ -846,6 +846,31 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 天文台星象預報 tick（ROADMAP 132）：天文台竣工後每個黎明廣播星象、啟用全服加成。
+            {
+                let project_completed = app.town_project.read().unwrap().status
+                    == crate::town_project::TownProjectStatus::Completed;
+                let phase_now = app.daynight.read().unwrap().phase();
+                let forecast = app.observatory.write().unwrap()
+                    .tick(dt, phase_now, project_completed);
+                if let Some(bonus) = forecast {
+                    let app2 = app.clone();
+                    let sem = app.observatory_sem.clone();
+                    tokio::spawn(async move {
+                        let _permit = sem.try_acquire();
+                        let text = crate::observatory::generate_forecast(bonus).await;
+                        let bonus_name = bonus.name();
+                        let msg = format!(
+                            "🔭 [蒸汽天文台] 今日星象：「{}」→ {} 持續 {} 分鐘！",
+                            text,
+                            bonus_name,
+                            (crate::observatory::FORECAST_DURATION_SECS / 60.0) as u32,
+                        );
+                        let _ = app2.tx_chat.send(msg);
+                    });
+                }
+            }
+
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
             {
@@ -1518,6 +1543,9 @@ pub fn spawn(app: AppState) {
                         town_prosperity_level: app.residents.read().unwrap().prosperity_level(),
                         // 城鎮大工程狀態（ROADMAP 131）。
                         town_project: app.town_project.read().unwrap().view(),
+                        // 天文台星象預報（ROADMAP 132）。
+                        star_forecast_secs: app.observatory.read().unwrap().remaining_secs(),
+                        star_forecast_bonus: app.observatory.read().unwrap().bonus_kind_str().to_string(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

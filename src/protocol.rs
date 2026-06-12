@@ -578,6 +578,10 @@ pub enum ServerMsg {
         town_prosperity_level: u8,
         /// 城鎮大工程狀態（ROADMAP 131）。
         town_project: TownProjectView,
+        /// 天文台星象預報剩餘秒數（ROADMAP 132）。0 表示無活躍預報；>0 時對應 star_forecast_bonus 生效。
+        star_forecast_secs: u32,
+        /// 天文台星象預報加成類型（ROADMAP 132）。空字串=無加成；"exp_boost"/"travel_discount"/"gather_extra"/"npc_bonus"。
+        star_forecast_bonus: String,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1303,6 +1307,8 @@ mod tests {
                 target_crystal: 10,
                 top_contributors: vec![],
             },
+            star_forecast_secs: 0,
+            star_forecast_bonus: String::new(),
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

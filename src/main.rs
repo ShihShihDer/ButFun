@@ -11,6 +11,7 @@ mod director;
 mod combat;
 mod town_project;
 mod town_project_store;
+mod observatory;
 mod connections;
 mod equipment;
 mod refinement;
