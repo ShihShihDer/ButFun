@@ -34,6 +34,17 @@ impl ProsperityLevel {
         }
     }
 
+    /// 採集/戰鬥 EXP 加成百分比（整數，如 15 代表 +15%）。
+    /// 凋零/平靜不加成；生機 +15%；繁盛 +30%（ROADMAP 129）。
+    pub fn exp_bonus_pct(self) -> u32 {
+        match self {
+            ProsperityLevel::Withered => 0,
+            ProsperityLevel::Calm     => 0,
+            ProsperityLevel::Thriving => 15,
+            ProsperityLevel::Vibrant  => 30,
+        }
+    }
+
     /// 等級 emoji（前端 HUD 用）。
     pub fn emoji(self) -> &'static str {
         match self {
@@ -142,5 +153,18 @@ mod tests {
     fn test_level_ordering() {
         assert!((ProsperityLevel::Vibrant as u8) > (ProsperityLevel::Withered as u8));
         assert!((ProsperityLevel::Thriving as u8) > (ProsperityLevel::Calm as u8));
+    }
+
+    #[test]
+    fn test_exp_bonus_pct_no_bonus_below_thriving() {
+        assert_eq!(ProsperityLevel::Withered.exp_bonus_pct(), 0);
+        assert_eq!(ProsperityLevel::Calm.exp_bonus_pct(), 0);
+    }
+
+    #[test]
+    fn test_exp_bonus_pct_thriving_and_vibrant() {
+        assert_eq!(ProsperityLevel::Thriving.exp_bonus_pct(), 15);
+        assert_eq!(ProsperityLevel::Vibrant.exp_bonus_pct(), 30);
+        assert!(ProsperityLevel::Vibrant.exp_bonus_pct() > ProsperityLevel::Thriving.exp_bonus_pct());
     }
 }

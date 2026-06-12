@@ -362,17 +362,20 @@
   }
 
   // 城鎮繁榮儀 HUD（ROADMAP 128）：常駐顯示城鎮繁榮等級，讓玩家一眼看到整體氛圍。
+  // bonus: 採集/戰鬥 EXP 加成百分比（ROADMAP 129 繁榮紅利，與後端 exp_bonus_pct 同步）。
   const PROSPERITY_INFO = [
-    { emoji: "🥀", name: "凋零", color: "#a05050", border: "#703030", bg: "#2a1010" },
-    { emoji: "🌿", name: "平靜", color: "#70a070", border: "#407040", bg: "#101a10" },
-    { emoji: "🌻", name: "生機", color: "#c0c040", border: "#909020", bg: "#1a1a00" },
-    { emoji: "🎉", name: "繁盛", color: "#e0a020", border: "#b07010", bg: "#1a1000" },
+    { emoji: "🥀", name: "凋零", bonus: 0,  color: "#a05050", border: "#703030", bg: "#2a1010" },
+    { emoji: "🌿", name: "平靜", bonus: 0,  color: "#70a070", border: "#407040", bg: "#101a10" },
+    { emoji: "🌻", name: "生機", bonus: 15, color: "#c0c040", border: "#909020", bg: "#1a1a00" },
+    { emoji: "🎉", name: "繁盛", bonus: 30, color: "#e0a020", border: "#b07010", bg: "#1a1000" },
   ];
   let lastProsperityLevel = -1;
   function updateProsperityHud() {
     let pill = document.getElementById("hudProsperity");
     const info = PROSPERITY_INFO[townProsperityLevel] || PROSPERITY_INFO[1];
-    const text = `${info.emoji} ${info.name}`;
+    const text = info.bonus > 0
+      ? `${info.emoji} ${info.name} +${info.bonus}% EXP`
+      : `${info.emoji} ${info.name}`;
     if (townProsperityLevel === lastProsperityLevel) return;
     lastProsperityLevel = townProsperityLevel;
     if (!pill) {
