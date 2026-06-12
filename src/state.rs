@@ -526,6 +526,8 @@ impl Player {
                     let dy = self.y - ny;
                     dx * dx + dy * dy <= crate::traveler_npc::TRAVELER_REACH * crate::traveler_npc::TRAVELER_REACH
                 }).unwrap_or(false),
+            near_memory_stone: self.planet == PLANET_HOME
+                && crate::town_memory::is_near_stone(self.x, self.y),
             in_party: self.party_id.is_some(),
             hair_style: self.hair_style,
             skin_tone: self.skin_tone,
@@ -1005,6 +1007,9 @@ pub struct AppState {
     /// 公民投票（ROADMAP 156）：居民代言人定期提案，玩家投票決定城鎮短期效果。
     /// 記憶體模式，重啟清零；不破壞玩家資料。
     pub civic_vote: Arc<RwLock<crate::civic_vote::CivicVoteState>>,
+    /// 城鎮記憶石（ROADMAP 157）：記錄世界大事（守城勝敗、提案、季節、大工程等），
+    /// 玩家靠近記憶石可讀取。純記憶體，重啟清零，不破壞玩家資料。
+    pub town_memory: Arc<RwLock<crate::town_memory::TownMemory>>,
 }
 
 impl AppState {
@@ -1175,6 +1180,7 @@ impl AppState {
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             home_furnishings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             civic_vote: Arc::new(RwLock::new(crate::civic_vote::CivicVoteState::new())),
+            town_memory: Arc::new(RwLock::new(crate::town_memory::TownMemory::new())),
         }
     }
 

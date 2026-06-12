@@ -531,6 +531,10 @@ pub enum ClientMsg {
         /// 移除後家具退還到背包；`idx` 為 home_furniture 陣列索引。
         #[serde(rename = "remove_furniture")]
         RemoveFurniture { idx: usize },
+        /// 讀取城鎮記憶石（ROADMAP 157）：玩家需在 INTERACT_REACH 範圍內。
+        /// 後端回傳 TownMemoryList。
+        #[serde(rename = "read_town_memory")]
+        ReadTownMemory,
     }
 
     /// 快照裡的城鎮大工程狀態（ROADMAP 131）。
@@ -797,6 +801,10 @@ pub enum ServerMsg {
         item_display: String,
         kill_total: u32,
     },
+    /// 城鎮記憶石列表（ROADMAP 157）：回應 ReadTownMemory，單播給請求的玩家。
+    TownMemoryList {
+        entries: Vec<crate::town_memory::MemoryEntry>,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -983,6 +991,9 @@ pub struct PlayerView {
     /// 玩家是否在旅行商人交易範圍內（ROADMAP 135）（false 時省略節省流量）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_wandering_merchant: bool,
+    /// 玩家是否在城鎮記憶石互動範圍內（ROADMAP 157）（false 時省略節省流量）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_memory_stone: bool,
 
     /// 玩家是否在隊伍中（ROADMAP 97）。前端在名牌顯示 [隊] 標記；false 時省略節省流量。
     #[serde(default, skip_serializing_if = "is_false")]
@@ -1436,6 +1447,7 @@ mod tests {
                 near_fair_judge: false,
                 near_village_chief: false,
                 near_traveler: false, near_wandering_merchant: false,
+                near_memory_stone: false,
                 in_party: false,
                 hair_style: 0,
                 skin_tone: 0,
@@ -1665,6 +1677,7 @@ mod tests {
             near_fair_judge: false,
             near_village_chief: false,
             near_traveler: false, near_wandering_merchant: false,
+            near_memory_stone: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,
@@ -1877,6 +1890,7 @@ mod tests {
             procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
             farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
             near_village_chief: false, near_traveler: false, near_wandering_merchant: false,
+            near_memory_stone: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,
@@ -1934,6 +1948,7 @@ mod tests {
             procurement_orders: vec![], procurement_active: None, procurement_cooldown: 0.0, near_procurement_agent: false,
             farm_fair_orders: vec![], farm_fair_active: None, farm_fair_cooldown: 0.0, near_fair_judge: false,
             near_village_chief: false, near_traveler: false, near_wandering_merchant: false,
+            near_memory_stone: false,
             in_party: false,
             hair_style: 0,
             skin_tone: 0,
