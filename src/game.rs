@@ -776,6 +776,10 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::HappinessBoost { msg, .. } => {
                             let _ = app.tx_chat.send(msg);
                         }
+                        // 城鎮繁榮等級改變（ROADMAP 128）：廣播世界聊天讓全服玩家都知道。
+                        ResidentLifecycleEvent::ProsperityChanged { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
                         // 快樂居民招待附近玩家（ROADMAP 127）：給乙太小禮 + 泡泡 + 世界聊天。
                         ResidentLifecycleEvent::PlayerGift {
                             resident_id, resident_name, x, y, player_name, text, ..
@@ -1499,6 +1503,8 @@ pub fn spawn(app: AppState) {
                         active_help_requests: app.residents.read().unwrap().requesting_ids(),
                         // 居民心情（ROADMAP 126）：前端在快樂居民頭上顯示 💛。
                         resident_moods: app.residents.read().unwrap().moods(),
+                        // 城鎮繁榮等級（ROADMAP 128）：0=凋零 1=平靜 2=生機 3=繁盛。
+                        town_prosperity_level: app.residents.read().unwrap().prosperity_level(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

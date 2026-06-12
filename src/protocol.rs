@@ -546,6 +546,8 @@ pub enum ServerMsg {
         /// 居民心情：(resident_id, happiness: 0-100)（ROADMAP 126）。
         /// happiness >= 70 視為快樂；前端在快樂居民頭上顯示 💛。
         resident_moods: Vec<(String, u8)>,
+        /// 城鎮繁榮等級（ROADMAP 128）：0=凋零 1=平靜 2=生機 3=繁盛。
+        town_prosperity_level: u8,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1255,6 +1257,7 @@ mod tests {
             gathering_secs: 0,
             active_help_requests: vec![],
             resident_moods: vec![],
+            town_prosperity_level: 1,
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
