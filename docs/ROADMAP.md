@@ -1106,6 +1106,17 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 後端：`MerchantQuestKind`、`MerchantQuest`、`MerchantQuestView` 結構；`accept_quest()` / `on_kill()` / `on_gather()` / `quest_views()` 方法；23 個單元測試。
     - 接線：`protocol.rs` Snapshot 加 `merchant_quests` 欄位 + `AcceptMerchantQuest` 客戶端訊息；`ws.rs` 在殺怪/採集事件後呼叫 hook，`game.rs` 廣播 quest views；前端交易面板下方新增「限時委託」區塊，含進度條與接取按鈕。
 
+## 接著（季節循環 — AI 自主提案 2026-06-12）
+
+137. ✅ **季節循環——世界有了春夏秋冬，作物成長隨季節起伏，讓時間有了意義**（本輪 PR）
+    - 四個季節各持續 20 分鐘（80 分鐘一完整循環）：🌸春（作物 ×1.25）、☀️夏（×1.0）、🍂秋（×0.8）、❄️冬（×0.5）。
+    - 季節切換時廣播全服公告（「🌸 春天降臨！百花盛開，作物生長加速！」等），讓玩家感知時間在流動。
+    - 季節成長倍率疊乘在現有日夜倍率之上（日夜控制晝夜節奏、季節控制長期趨勢，互相獨立）。
+    - 前端 HUD 右側常駐季節 pill（「🌸 春（N m Ns）」），顯示剩餘秒數，四季各有主題色。
+    - `src/season.rs` 純邏輯模組（10 個單元測試）；`state.rs` 新增 `season` 欄位；`game.rs` 每 tick 推進 + 切換廣播 + 農地成長接線；`protocol.rs` Snapshot 加 `current_season`/`season_remaining_secs`；`ws.rs` 轉發；前端 `SEASON_INFO` + `updateSeasonHud()`。
+    - 零 migration，記憶體模式，重啟從春天開始；不破壞玩家資料；1301 tests 全綠。
+    - 玩家感知：進場右上角看到「🌸 春（18m42s）」pill；農田在春天種什麼都長得飛快；寒冬來臨廣播公告，農地幾乎凍住——時間不只是裝飾，它真的影響世界。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

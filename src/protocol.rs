@@ -628,6 +628,11 @@ pub enum ServerMsg {
         wandering_catalog: Vec<WanderingCatalogEntry>,
         /// 旅行商人限時委託清單（ROADMAP 136）；商人不在城鎮時為空陣列。
         merchant_quests: Vec<crate::wandering_merchant::MerchantQuestView>,
+        /// 目前季節（ROADMAP 137）：spring/summer/autumn/winter。
+        /// 前端依此顯示 HUD pill；影響作物成長速度。
+        current_season: String,
+        /// 目前季節剩餘秒數（ROADMAP 137）：前端顯示倒計時。
+        season_remaining_secs: u32,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1363,6 +1368,8 @@ mod tests {
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
             merchant_quests: vec![],
+            current_season: "spring".to_string(),
+            season_remaining_secs: 1200,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
