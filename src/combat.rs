@@ -463,6 +463,9 @@ pub enum EnemyKind {
     /// 裂縫守護者（宇宙裂縫事件，ROADMAP 26）：宇宙裂縫中湧現的次元巨靈，
     /// 全身環繞扭曲次元光弧，碎滅後留下裂縫碎片——全宇宙最危險的臨時訪客，強度超越星源守護者。
     RiftGuardian,
+    /// 乙太霸主（城鎮入侵事件，ROADMAP 159）：由亂化乙太能量凝聚而成的黑紅巨靈，
+    /// 每次入侵波次率領野獸大軍衝城；倒下後散落古代碎片——驅逐侵略者的最高榮耀。
+    EtherOverlord,
 }
 
 impl EnemyKind {
@@ -482,6 +485,7 @@ impl EnemyKind {
             EnemyKind::AetherSpecter    => "霧醚幻靈",
             EnemyKind::OriginGuardian   => "源晶守護者",
             EnemyKind::RiftGuardian     => "裂縫守護者",
+            EnemyKind::EtherOverlord    => "乙太霸主",
         }
     }
 
@@ -512,6 +516,8 @@ impl EnemyKind {
             EnemyKind::OriginGuardian => 40,
             // 裂縫守護者最強——宇宙裂縫限定訪客，超越星源守護者，罕見而危險的次元巨靈。
             EnemyKind::RiftGuardian => 60,
+            // 乙太霸主——城鎮入侵首領，高 HP 讓玩家需要通力合作才能擊倒。
+            EnemyKind::EtherOverlord => 180,
         }
     }
 
@@ -548,6 +554,8 @@ impl EnemyKind {
             EnemyKind::OriginGuardian => (ItemKind::OriginShard, 1),
             // 裂縫守護者碎滅後凝聚成裂縫碎片（宇宙裂縫特有，不對應任何地形挖掘）。
             EnemyKind::RiftGuardian => (ItemKind::RiftShard, 2),
+            // 乙太霸主碎散後留下古代碎片（侵略首領攜帶的遠古力量結晶，可用於高階合成）。
+            EnemyKind::EtherOverlord => (ItemKind::AncientFragment, 3),
         }
     }
 
@@ -580,6 +588,8 @@ impl EnemyKind {
             EnemyKind::OriginGuardian => 15,
             // 裂縫守護者威脅最高——宇宙裂縫次元巨靈，超越星源守護者的極高威脅。
             EnemyKind::RiftGuardian => 20,
+            // 乙太霸主——城鎮入侵首領，威脅僅次裂縫守護者，每次出擊都讓玩家膽寒。
+            EnemyKind::EtherOverlord => 10,
         }
     }
 
@@ -605,6 +615,8 @@ impl EnemyKind {
             EnemyKind::OriginGuardian => 90,
             // 裂縫守護者給予最多 exp——宇宙裂縫次元巨靈，擊倒後的最豐厚 exp 獎賞。
             EnemyKind::RiftGuardian => 150,
+            // 乙太霸主——城鎮入侵首領，擊敗可獲特別獎勵，給予最高 exp 鼓勵玩家挑戰。
+            EnemyKind::EtherOverlord => 200,
         }
     }
 
@@ -630,6 +642,8 @@ impl EnemyKind {
             EnemyKind::OriginGuardian => 150.0,
             // 裂縫守護者重生時間極長——次元事件敵人，碎滅後有足夠時間享受戰果（由世界事件計時控制再生）。
             EnemyKind::RiftGuardian => 3600.0,
+            // 乙太霸主重生時間極長——入侵事件首領，5 分鐘入侵期內不重生（600 秒遠超波次時長）。
+            EnemyKind::EtherOverlord => 600.0,
         }
     }
 }
@@ -764,7 +778,7 @@ impl Enemy {
 mod tests {
     use super::*;
 
-    const KINDS: [EnemyKind; 13] = [
+    const KINDS: [EnemyKind; 14] = [
         EnemyKind::ScrapDrone,
         EnemyKind::EtherWisp,
         EnemyKind::FlutterSprite,
@@ -778,6 +792,7 @@ mod tests {
         EnemyKind::AetherSpecter,
         EnemyKind::OriginGuardian,
         EnemyKind::RiftGuardian,
+        EnemyKind::EtherOverlord,
     ];
 
     // ───── 武器查表（鏡像 tools.rs 的採集倍率測試）─────
@@ -1101,7 +1116,8 @@ mod tests {
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
                 | EnemyKind::OriginGuardian
-                | EnemyKind::RiftGuardian => {}
+                | EnemyKind::RiftGuardian
+                | EnemyKind::EtherOverlord => {}
             }
         }
 
@@ -1154,7 +1170,8 @@ mod tests {
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
                 | EnemyKind::OriginGuardian
-                | EnemyKind::RiftGuardian => {}
+                | EnemyKind::RiftGuardian
+                | EnemyKind::EtherOverlord => {}
             }
         }
 

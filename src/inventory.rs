@@ -813,6 +813,7 @@ mod tests {
             EnemyKind::AetherSpecter,
             EnemyKind::OriginGuardian,
             EnemyKind::RiftGuardian,
+            EnemyKind::EtherOverlord,
         ];
         for &e in ENEMY_KINDS {
             match e {
@@ -828,7 +829,8 @@ mod tests {
                 | EnemyKind::VoidPhantom
                 | EnemyKind::AetherSpecter
                 | EnemyKind::OriginGuardian
-                | EnemyKind::RiftGuardian => {}
+                | EnemyKind::RiftGuardian
+                | EnemyKind::EtherOverlord => {}
             }
         }
         let droppable: std::collections::BTreeSet<ItemKind> =

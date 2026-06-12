@@ -700,7 +700,10 @@
       ].join(";");
       document.body.appendChild(banner);
     }
-    banner.innerHTML = `<span style="font-size:1rem">⚔️</span> <b style="color:#ff4040">[入侵警報]</b> ${waveLabel} <span style="color:#ffb0b0">${timeStr}</span>`;
+    const bossStr = invasion.boss_alive
+      ? `<span style="color:#ff6060;font-size:.78rem"> ▸ 首領健在</span>`
+      : `<span style="color:#80ff80;font-size:.78rem"> ▸ 首領已倒</span>`;
+    banner.innerHTML = `<span style="font-size:1rem">⚔️</span> <b style="color:#ff4040">[入侵警報]</b> ${waveLabel} <span style="color:#ffb0b0">${timeStr}</span>${bossStr}`;
     banner.style.display = "block";
   }
 
