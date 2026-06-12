@@ -7244,7 +7244,9 @@
   // 玩家進入此範圍後，同種動物會停止逃跑並向玩家靠近（群體防衛）。
   function drawColonies(camX, camY) {
     if (!coloniesList.length) return;
-    const W = canvas.width, H = canvas.height;
+    // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
+    // (me.rx - viewW/2),多加的偏移會把實體畫到偏離半個~數個螢幕(dpr 越高越糟,手機上
+    // 動物/聚落圈/屍光全部錯位)。改用全檔標準「world - cam」慣例 + viewW/viewH 剔除。
     // 各物種對應的填色與邊框色。
     const COLONY_STYLE = {
       wild_bird:     { fill: "rgba(135, 206, 250, 0.08)", stroke: "rgba(135, 206, 250, 0.40)", icon: "🐦" },
@@ -7254,10 +7256,10 @@
       wild_fox:      { fill: "rgba(240, 130,  20, 0.09)", stroke: "rgba(240, 130,  20, 0.40)", icon: "🦊" },
     };
     for (const c of coloniesList) {
-      const sx = c.cx - camX + W / 2;
-      const sy = c.cy - camY + H / 2;
+      const sx = c.cx - camX;
+      const sy = c.cy - camY;
       const r  = c.guard_radius;
-      if (sx < -r || sx > W + r || sy < -r || sy > H + r) continue;
+      if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
       const style = COLONY_STYLE[c.kind] || { fill: "rgba(200,200,200,0.08)", stroke: "rgba(200,200,200,0.35)", icon: "🏠" };
       ctx.save();
       // 填充。
@@ -7290,13 +7292,15 @@
 
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
-    const W = canvas.width, H = canvas.height;
+    // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
+    // (me.rx - viewW/2),多加的偏移會把實體畫到偏離半個~數個螢幕(dpr 越高越糟,手機上
+    // 動物/聚落圈/屍光全部錯位)。改用全檔標準「world - cam」慣例 + viewW/viewH 剔除。
     const now = performance.now();
 
     for (const w of wildlifeList) {
-      const sx = w.x - camX + W / 2;
-      const sy = w.y - camY + H / 2;
-      if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+      const sx = w.x - camX;
+      const sy = w.y - camY;
+      if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
 
       ctx.save();
       const isFleeing  = w.state === "fleeing";
@@ -7342,15 +7346,17 @@
   // 發光翠綠外環＋金色核心，輕微脈動——象徵「萬物皆有其歸宿，死亡是循環的一環」。
   function drawCarionOrbs(camX, camY) {
     if (!carionOrbs.length) return;
-    const W = canvas.width, H = canvas.height;
+    // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
+    // (me.rx - viewW/2),多加的偏移會把實體畫到偏離半個~數個螢幕(dpr 越高越糟,手機上
+    // 動物/聚落圈/屍光全部錯位)。改用全檔標準「world - cam」慣例 + viewW/viewH 剔除。
     const now = performance.now();
     const me = players.get(myId); // 修正:players 是 Map、沒有 .find()——舊碼 players.find 會丟 TypeError，讓整個 render 迴圈死掉、角色消失
     const COLLECT_RADIUS = 80;
 
     for (const orb of carionOrbs) {
-      const sx = orb.x - camX + W / 2;
-      const sy = orb.y - camY + H / 2;
-      if (sx < -30 || sx > W + 30 || sy < -30 || sy > H + 30) continue;
+      const sx = orb.x - camX;
+      const sy = orb.y - camY;
+      if (sx < -30 || sx > viewW + 30 || sy < -30 || sy > viewH + 30) continue;
 
       ctx.save();
       ctx.translate(sx, sy);
@@ -10507,7 +10513,8 @@
     if (!body) return;
     const cooldown = me ? (me.fish_cooldown || 0) : 0;
     const nearWater = me ? !!me.near_water : false;
-    const sig = [isGuestUser, cooldown > 0, nearWater].join("|");
+    // sig 用整秒數而非布林:冷卻倒數每秒要刷新,否則秒數凍結在初值直到歸零。
+    const sig = [isGuestUser, Math.ceil(cooldown), nearWater].join("|");
     if (sig === lastFishSig) return;
     lastFishSig = sig;
     body.innerHTML = "";
@@ -10972,7 +10979,8 @@
     const invMap = {};
     for (const s of inv) invMap[s.item] = (invMap[s.item] || 0) + s.qty;
 
-    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearWorkshop, planet].join("|");
+    // sig 含背包:可接清單顯示「(背包:N)」與夠料標色,採集後要即時刷新(sig 漏列=按了沒反應的同病)。
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearWorkshop, planet, JSON.stringify(invMap)].join("|");
     if (sig === lastWorkshopSig) return;
     lastWorkshopSig = sig;
     body.innerHTML = "";
@@ -11333,7 +11341,8 @@
     const orders = me ? (me.procurement_orders || []) : [];
     const inv = me ? (me.inventory || []) : [];
 
-    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearAgent, planet].join("|");
+    // sig 含背包:可接清單顯示「手上碎片:N」,數量變了要即時刷新。
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearAgent, planet, JSON.stringify(inv)].join("|");
     if (sig === lastProcurementSig) return;
     lastProcurementSig = sig;
     body.innerHTML = "";
@@ -11458,7 +11467,8 @@
     const orders = me ? (me.farm_fair_orders || []) : [];
     const inv = me ? (me.inventory || []) : [];
 
-    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearJudge, planet].join("|");
+    // sig 含背包:可接清單顯示「(背包:N)」,數量變了要即時刷新。
+    const sig = [isGuestUser, JSON.stringify(active), cooldown.toFixed(1), nearJudge, planet, JSON.stringify(inv)].join("|");
     if (sig === lastFarmFairSig) return;
     lastFarmFairSig = sig;
     body.innerHTML = "";
@@ -11707,7 +11717,8 @@
         tp.top_contributors.forEach((c, i) => {
           const crow = document.createElement("div");
           crow.style.cssText = "display: flex; justify-content: space-between; font-size: .75rem; color: #ddd;";
-          crow.innerHTML = `<span>${i+1}. ${c.name}</span><span>${c.score} pt</span>`;
+          // 玩家顯示名必過 escHtml——後端 sanitize 不濾 <>,直插 innerHTML 是對「看貢獻榜的人」的 XSS。
+          crow.innerHTML = `<span>${i+1}. ${escHtml(c.name)}</span><span>${c.score} pt</span>`;
           board.appendChild(crow);
         });
         body.appendChild(board);
