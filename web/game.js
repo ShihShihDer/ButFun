@@ -7487,6 +7487,23 @@
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
+      // ROADMAP 169：指揮氣泡——Alpha 發出指令時顯示橙色徽章
+      if (a.active_tactic) {
+        const tacticPulse = 0.85 + 0.15 * Math.sin(now / 300);
+        const tacticLabel = `📣 ${a.active_tactic}`;
+        ctx.font = "bold 10px sans-serif";
+        const tw = ctx.measureText(tacticLabel).width + 10;
+        const tx = sx, ty = ly + 8;
+        ctx.fillStyle = `rgba(200,80,0,${(0.88 * tacticPulse).toFixed(3)})`;
+        ctx.fillRect(tx - tw / 2, ty - 1, tw, 13);
+        ctx.strokeStyle = `rgba(255,160,60,${(0.9 * tacticPulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(tx - tw / 2, ty - 1, tw, 13);
+        ctx.fillStyle = "#fff";
+        ctx.textBaseline = "top";
+        ctx.fillText(tacticLabel, tx, ty);
+      }
+
       ctx.restore();
     }
   }
