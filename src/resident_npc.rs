@@ -19,8 +19,10 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use crate::daynight::Phase;
 
 // ── 居民生命週期常數（ROADMAP 116）──────────────────────────────────────────
-/// 居民壽命預設（秒，真實時間）。約 45 分鐘；可用 BUTFUN_RESIDENT_LIFESPAN_SECS 覆寫。
-pub const RESIDENT_LIFESPAN_SECS_DEFAULT: f32 = 2700.0;
+/// 居民壽命預設（秒，真實時間）。約 2 天——讓居民像「長期老鄰居」般穩定存在（跨多次遊玩仍是同一批
+/// 面孔），也成為穩定的人才庫（服務型 NPC 退休時提拔最年長居民接班，資歷才有意義）。比服務型 NPC
+/// （約 1 天）長，確保隨時都有夠資深的居民可被提拔。可用 BUTFUN_RESIDENT_LIFESPAN_SECS 覆寫。
+pub const RESIDENT_LIFESPAN_SECS_DEFAULT: f32 = 172800.0;
 const RESIDENT_RETIREMENT_FRACTION: f32 = 0.90;
 
 pub fn resident_lifespan_secs() -> f32 {
