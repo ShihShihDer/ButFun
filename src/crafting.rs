@@ -387,11 +387,40 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::Sprinkler,
         output_qty: 1,
     },
+    // ── 城鎮慶典配方（ROADMAP 130）────────────────────────────────────────────
+    /// 城鎮特釀：野花種子×4 + 小麥×3 → 城鎮特釀×1。需城鎮達到【生機】才可合成。
+    Recipe {
+        id: "town_brew",
+        inputs: &[(ItemKind::WildflowerSeed, 4), (ItemKind::WheatGrain, 3)],
+        output: ItemKind::TownBrew,
+        output_qty: 1,
+    },
+    /// 繁盛精露：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1。需城鎮達到【繁盛】才可合成。
+    Recipe {
+        id: "vibrant_elixir",
+        inputs: &[
+            (ItemKind::MushroomSpore, 3),
+            (ItemKind::DeepSeaPearl, 1),
+            (ItemKind::AncientFragment, 2),
+        ],
+        output: ItemKind::VibrantElixir,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
 pub fn recipe_by_id(id: &str) -> Option<&'static Recipe> {
     RECIPES.iter().find(|r| r.id == id)
+}
+
+/// 配方的城鎮繁榮等級門檻（u8，對應 ProsperityLevel::as_u8）。
+/// 0 = 無門檻；2 = 需達生機（Thriving）；3 = 需達繁盛（Vibrant）。
+pub fn recipe_min_prosperity(recipe_id: &str) -> u8 {
+    match recipe_id {
+        "town_brew"      => 2,
+        "vibrant_elixir" => 3,
+        _                => 0,
+    }
 }
 
 #[cfg(test)]

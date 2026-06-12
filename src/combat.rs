@@ -230,7 +230,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::PotatoGratin
         | ItemKind::StarCrystalShard
         | ItemKind::NightPotion
-        | ItemKind::Sprinkler => None,
+        | ItemKind::Sprinkler
+        | ItemKind::TownBrew
+        | ItemKind::VibrantElixir => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -299,7 +301,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::PotatoGratin
         | ItemKind::StarCrystalShard
         | ItemKind::NightPotion
-        | ItemKind::Sprinkler => None,
+        | ItemKind::Sprinkler
+        | ItemKind::TownBrew
+        | ItemKind::VibrantElixir => None,
     }
 }
 

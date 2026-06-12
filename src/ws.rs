@@ -769,17 +769,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 走既有 `recipe_by_id`(已測)而非每訊息 serde 重組產物名:免每筆配料一次 Value 配置,
                     // 也不把查找耦死在「id 必等於產物序列化名」上(同產物不同配料就會抓錯)。
                     if let Some(recipe) = crate::crafting::recipe_by_id(&recipe_id) {
-                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            let discount = crate::class::crafting_reduction(&p.masteries);
-                            if recipe.craft_with_discount(&mut p.inventory, discount) {
-                                // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品。
-                                let used_precision = p.pending_precision;
-                                if used_precision {
-                                    p.pending_precision = false;
-                                    p.add_item_overflow(recipe.output, 1);
+                        // 城鎮慶典配方（ROADMAP 130）：合成前先確認城鎮繁榮等級達門檻。
+                        let min_pros = crate::crafting::recipe_min_prosperity(&recipe_id);
+                        let prosperity_ok = min_pros == 0
+                            || app.residents.read().unwrap().prosperity_level() >= min_pros;
+                        if prosperity_ok {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                let discount = crate::class::crafting_reduction(&p.masteries);
+                                if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                    // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品。
+                                    let used_precision = p.pending_precision;
+                                    if used_precision {
+                                        p.pending_precision = false;
+                                        p.add_item_overflow(recipe.output, 1);
+                                    }
+                                    p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
+                                    tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
                                 }
-                                p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
-                                tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
                             }
                         }
                     }
@@ -1845,6 +1851,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(20);
                                     tracing::info!(player = %p.name, gained, "飲用夜幻藥水回血");
+                                }
+                            }
+                            // ── 城鎮慶典配方（ROADMAP 130）───────────────────────────
+                            ItemKind::TownBrew => {
+                                // 城鎮特釀：回復 22 HP + 農夫熟練度 +10 XP。需城鎮達到【生機】才可合成。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(22);
+                                    p.masteries.gain_farmer(10);
+                                    tracing::info!(player = %p.name, gained, "飲用城鎮特釀回血+農夫熟練度");
+                                }
+                            }
+                            ItemKind::VibrantElixir => {
+                                // 繁盛精露：回復至等級滿血 + 獲得 20 乙太。需城鎮達到【繁盛】才可合成。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.ether = p.ether.saturating_add(20);
+                                    tracing::info!(player = %p.name, gained, "飲用繁盛精露滿血+獲得20乙太");
                                 }
                             }
                             _ => {} // 非消耗品，忽略
