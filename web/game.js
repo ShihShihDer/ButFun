@@ -667,6 +667,7 @@
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
   let townProsperityLevel = 1; // ROADMAP 128 城鎮繁榮等級：0=凋零 1=平靜 2=生機 3=繁盛
+  let townProject = null; // ROADMAP 132 天文台共建工程狀態 {status, progress_pct}（從快照同步；天文台繪製/面板用）
   let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
@@ -1044,6 +1045,10 @@
           townProsperityLevel = msg.town_prosperity_level;
           updateProsperityHud();
         }
+        // 天文台共建工程狀態（ROADMAP 132）：從快照同步給天文台繪製/面板用。
+        // 過去 _drawObservatory 直接引用不存在的 `lastSnapshot` → ReferenceError，在城裡（天文台
+        // 入鏡）每幀拋例外、被 safeRender 整幀攔下 → 角色/小地圖/HUD 連帶消失（「進城人物不見」根因）。
+        if (msg.town_project != null) townProject = msg.town_project;
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
         // 天氣狀態（ROADMAP 93）：每幀快照同步，前端粒子系統由此驅動。
@@ -6085,9 +6090,27 @@
     observatory: { wall: "#546e7a", roof: "#78909c", trim: "#cfd8dc", win: "#00bcd4" },
   };
 
+  // 建築招牌/名牌：深色底牌 + 描邊 + 置中文字，以 (sx, y) 為中心畫。天文台呼叫此函式畫招牌，
+  // 但它過去從未被定義 → ReferenceError，連同上面的 `lastSnapshot` 一起讓天文台每幀拋例外、
+  // 在城裡（天文台入鏡）被 safeRender 整幀攔下 → 角色/小地圖/HUD 連帶消失（「進城人物不見」根因）。
+  function _drawSign(sx, y, sign, trim = "#cfd8dc") {
+    if (!sign) return;
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    const sw = ctx.measureText(sign).width + 14;
+    ctx.fillStyle = "#241008";
+    ctx.beginPath();
+    ctx.roundRect(sx - sw / 2, y - 7, sw, 14, 3);
+    ctx.fill();
+    ctx.strokeStyle = trim; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.fillStyle = trim;
+    ctx.fillText(sign, sx, y + 3);
+  }
+
   function _drawObservatory(sx, sy, sign) {
-    // 取得伺服器廣播的工程狀態（預設為建設中，0 進度）
-    const p = lastSnapshot?.town_project || { status: "building", progress_pct: 0 };
+    // 取得伺服器廣播的工程狀態（預設為建設中，0 進度）。townProject 從快照同步而來；
+    // 過去誤用未宣告的 `lastSnapshot` 直接 ReferenceError（見 snapshot handler 註解）。
+    const p = townProject || { status: "building", progress_pct: 0 };
     const BW = 84;
     const wb = sy - 10;
 
@@ -10780,7 +10803,7 @@
     }
 
     // ── 城鎮大工程（ROADMAP 131） ──
-    const tp = lastSnapshot?.town_project;
+    const tp = townProject;
     if (tp) {
       const divider = document.createElement("div");
       divider.style.cssText = "border-top: 1px solid #444; margin: 12px 0;";
