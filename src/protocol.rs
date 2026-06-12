@@ -738,6 +738,13 @@ pub enum ServerMsg {
         price_per: u32,
         total: u32,
     },
+    /// 擊殺通知（ROADMAP 147）：擊殺怪物後單播給本人。讓玩家知道打倒了什麼、得到什麼。
+    /// `enemy_name`：怪物中文顯示名；`item_display`：戰利品名×數量；`kill_total`：累計擊殺數。
+    KillNotify {
+        enemy_name: String,
+        item_display: String,
+        kill_total: u32,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -973,6 +980,9 @@ pub struct PlayerView {
     /// 室內 Y 位置（像素）。indoor_plot_id 有值時才送。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indoor_y: Option<f32>,
+    /// 累計擊殺怪物數（ROADMAP 147）。HUD 顯示；重啟清空。0 時省略流量。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub kill_count: u32,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -1336,6 +1346,7 @@ mod tests {
                 indoor_plot_id: None,
                 indoor_x: None,
                 indoor_y: None,
+                kill_count: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -1547,6 +1558,7 @@ mod tests {
             indoor_plot_id: None,
             indoor_x: None,
             indoor_y: None,
+            kill_count: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -1747,6 +1759,7 @@ mod tests {
             indoor_plot_id: None,
             indoor_x: None,
             indoor_y: None,
+            kill_count: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -1792,6 +1805,7 @@ mod tests {
             indoor_plot_id: None,
             indoor_x: None,
             indoor_y: None,
+            kill_count: 0,
         }
     }
 
