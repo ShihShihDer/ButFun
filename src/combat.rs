@@ -79,6 +79,8 @@ pub enum WeaponKind {
     CrystalBallista,
     /// 虛空炮（ROADMAP 146）：虛空星能量炮，炮彈空中炸開，遠程攻擊力 +27，射程 220px（RANGED_ATTACK_REACH）。
     VoidCannon,
+    /// 守城戰刃（ROADMAP 160）：霸主晶核鑄造，攻擊力 +28，入侵首領限定，擊殺乙太霸主方能取得原料。
+    EtherOverlordBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -185,6 +187,7 @@ impl WeaponKind {
             WeaponKind::EtherBow => 9,
             WeaponKind::CrystalBallista => 14,
             WeaponKind::VoidCannon => 27,
+            WeaponKind::EtherOverlordBlade => 28,
         }
     }
 
@@ -192,6 +195,7 @@ impl WeaponKind {
     /// 遠程武器攻擊射程約 3 倍於近戰；玩家在安全區時遠程攻擊不給獎勵（防龜城）。
     pub fn is_ranged(self) -> bool {
         matches!(self, WeaponKind::EtherBow | WeaponKind::CrystalBallista | WeaponKind::VoidCannon)
+        // EtherOverlordBlade 是近戰武器，不在此列。
     }
 }
 
@@ -294,7 +298,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::AetherChest
         | ItemKind::EtherPlant
         | ItemKind::StarLantern
-        | ItemKind::AncientDeco => None,
+        | ItemKind::AncientDeco
+        | ItemKind::EtherOverlordCore => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -303,6 +308,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::EtherBow => Some(WeaponKind::EtherBow),
         ItemKind::CrystalBallista => Some(WeaponKind::CrystalBallista),
         ItemKind::VoidCannon => Some(WeaponKind::VoidCannon),
+        // 入侵首領限定武器（ROADMAP 160）
+        ItemKind::EtherOverlordBlade => Some(WeaponKind::EtherOverlordBlade),
     }
 }
 
@@ -395,7 +402,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::AetherChest
         | ItemKind::EtherPlant
         | ItemKind::StarLantern
-        | ItemKind::AncientDeco => None,
+        | ItemKind::AncientDeco
+        | ItemKind::EtherOverlordCore
+        | ItemKind::EtherOverlordBlade => None,
     }
 }
 
@@ -555,7 +564,7 @@ impl EnemyKind {
             // 裂縫守護者碎滅後凝聚成裂縫碎片（宇宙裂縫特有，不對應任何地形挖掘）。
             EnemyKind::RiftGuardian => (ItemKind::RiftShard, 2),
             // 乙太霸主碎散後留下古代碎片（侵略首領攜帶的遠古力量結晶，可用於高階合成）。
-            EnemyKind::EtherOverlord => (ItemKind::AncientFragment, 3),
+            EnemyKind::EtherOverlord => (ItemKind::EtherOverlordCore, 1),
         }
     }
 

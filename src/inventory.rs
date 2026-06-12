@@ -301,6 +301,12 @@ pub enum ItemKind {
     StarLantern,
     /// 古代擺件🏺（合成：古代碎片×2 + 石頭×1）。放置住家後 NPC 收購 +10%。
     AncientDeco,
+
+    // ── 入侵首領戰利品（ROADMAP 160）────────────────────────────────────────
+    /// 霸主晶核💠（擊殺乙太霸主時全服在線玩家各得 1 顆）。合成守城戰刃的核心材料。
+    EtherOverlordCore,
+    /// 守城戰刃⚔️（合成：霸主晶核×2 + 乙太×20）。持有後攻擊力 +28，入侵首領限定強力戰刃。
+    EtherOverlordBlade,
 }
 
 impl ItemKind {
@@ -400,6 +406,9 @@ impl ItemKind {
         ItemKind::EtherPlant,
         ItemKind::StarLantern,
         ItemKind::AncientDeco,
+        // ROADMAP 160 入侵首領戰利品
+        ItemKind::EtherOverlordCore,
+        ItemKind::EtherOverlordBlade,
     ];
 }
 
@@ -695,13 +704,16 @@ mod tests {
                 | ItemKind::AetherChest
                 | ItemKind::EtherPlant
                 | ItemKind::StarLantern
-                | ItemKind::AncientDeco => {}
+                | ItemKind::AncientDeco
+                // ROADMAP 160 入侵首領戰利品
+                | ItemKind::EtherOverlordCore
+                | ItemKind::EtherOverlordBlade => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 86 種（含 ROADMAP 155：住家家具 5 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 86, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 88 種（含 ROADMAP 160：入侵首領戰利品 2 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 88, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
