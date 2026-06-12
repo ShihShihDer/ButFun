@@ -1028,12 +1028,13 @@ pub fn spawn(app: AppState) {
             }
 
             // 城鎮入侵警報 tick（ROADMAP 158/159）：每 90 分鐘一波野怪+首領衝向城鎮外圍，玩家攜手抵禦。
+            // 城鎮入侵警報 tick（ROADMAP 158/159/161）。
             {
                 use crate::invasion::InvasionEvent;
                 let invasion_event = app.invasion.write().unwrap().tick(dt);
                 if let Some(ev) = invasion_event {
                     match ev {
-                        InvasionEvent::Started(spawns) => {
+                        InvasionEvent::Started { spawns, wave_level, consecutive_successes } => {
                             // 注入入侵怪物到敵人場中（含首領乙太霸主）。
                             {
                                 let mut enemies = app.enemies.write().unwrap();
@@ -1042,21 +1043,35 @@ pub fn spawn(app: AppState) {
                                 }
                             }
                             let wave = app.invasion.read().unwrap().wave_count;
+                            let mob_count = spawns.len() - 1; // 不含首領
+                            // 連勝指示文字（Lv.2+ 才顯示）。
+                            let streak_hint = if consecutive_successes > 0 {
+                                format!("（連勝 {} 波）", consecutive_successes)
+                            } else {
+                                String::new()
+                            };
+                            let level_tag = if wave_level >= 2 {
+                                format!(" [Lv.{} 入侵]", wave_level)
+                            } else {
+                                String::new()
+                            };
                             let text = format!(
-                                "⚔️ [入侵警報] 第 {} 波野獸大軍從城鎮外圍逼近！乙太霸主率 12 隻怪物包圍城鎮！(5 分鐘後波次消退)",
-                                wave + 1
+                                "⚔️ [入侵警報{}] 第 {} 波野獸大軍從城鎮外圍逼近{}！乙太霸主率 {} 隻怪物包圍城鎮！(5 分鐘後波次消退)",
+                                level_tag, wave + 1, streak_hint, mob_count
                             );
-                            let _ = app.tx_chat.send(text.clone());
-                            // 城鎮記憶石記錄入侵事件。
+                            let _ = app.tx_chat.send(text);
                             app.town_memory.write().unwrap().push_event("⚔️", format!(
-                                "城鎮入侵警報——第 {} 波野獸大軍突襲，乙太霸主率軍登場",
-                                wave + 1
+                                "城鎮入侵警報——第 {} 波野獸大軍突襲（Lv.{}），乙太霸主率軍登場",
+                                wave + 1, wave_level
                             ));
                         }
-                        InvasionEvent::Ended { boss_killed } => {
+                        InvasionEvent::Ended { boss_killed, wave_level, consecutive_successes } => {
                             let wave = app.invasion.read().unwrap().wave_count;
-                            // 首領擊殺 → +10 乙太；首領逃脫 → +5 乙太。
-                            let ether_reward = if boss_killed { 10 } else { 5 };
+                            // 首領逃脫固定 +5 乙太；首領擊殺依等級遞增。
+                            let ether_reward = if boss_killed {
+                                // 從 invasion state 讀取本波等級對應的獎勵。
+                                match wave_level { 3 => 20, 2 => 15, _ => 10 }
+                            } else { 5 };
                             {
                                 let mut players = app.players.write().unwrap();
                                 for p in players.values_mut() {
@@ -1064,13 +1079,20 @@ pub fn spawn(app: AppState) {
                                 }
                             }
                             let (text, memory_emoji, memory_text) = if boss_killed {
+                                let streak_msg = if consecutive_successes >= crate::invasion::WAVE_LEVEL_3_THRESHOLD {
+                                    format!(" 🔥 連勝 {} 波！已達 Lv.3 入侵等級！", consecutive_successes)
+                                } else if consecutive_successes >= crate::invasion::WAVE_LEVEL_2_THRESHOLD {
+                                    format!(" ✨ 連勝 {} 波！已達 Lv.2 入侵等級！", consecutive_successes)
+                                } else {
+                                    String::new()
+                                };
                                 (
                                     format!(
-                                        "🏆 [入侵勝利] 第 {} 波入侵擊退！乙太霸主已被玩家消滅！全服在線玩家獲得 +10 乙太特別獎勵！",
-                                        wave
+                                        "🏆 [入侵勝利] 第 {} 波入侵擊退！乙太霸主已被玩家消滅！全服在線玩家獲得 +{} 乙太特別獎勵！{}",
+                                        wave, ether_reward, streak_msg
                                     ),
                                     "🏆",
-                                    format!("首領勝利——第 {} 波乙太霸主被英雄擊敗，全服 +10 乙太獎勵", wave),
+                                    format!("首領勝利——第 {} 波乙太霸主被英雄擊敗（Lv.{}），全服 +{} 乙太獎勵", wave, wave_level, ether_reward),
                                 )
                             } else {
                                 (
@@ -1079,7 +1101,7 @@ pub fn spawn(app: AppState) {
                                         wave
                                     ),
                                     "🛡️",
-                                    format!("守城退去——第 {} 波入侵撤退，乙太霸主趁亂逃脫", wave),
+                                    format!("守城退去——第 {} 波入侵撤退（Lv.{}），乙太霸主趁亂逃脫", wave, wave_level),
                                 )
                             };
                             let _ = app.tx_chat.send(text);
@@ -1896,7 +1918,7 @@ pub fn spawn(app: AppState) {
                         civic_vote: app.civic_vote.read().unwrap().vote_view(),
                         civic_effect_secs: app.civic_vote.read().unwrap().effect_remaining_secs(),
                         civic_effect_kind: app.civic_vote.read().unwrap().active_effect_kind(),
-                        // 城鎮入侵警報（ROADMAP 158）：入侵狀態供前端 HUD 顯示倒數。
+                        // 城鎮入侵警報（ROADMAP 158/161）：入侵狀態供前端 HUD 顯示倒數。
                         invasion: {
                             let iv = app.invasion.read().unwrap();
                             crate::protocol::InvasionView {
@@ -1904,6 +1926,8 @@ pub fn spawn(app: AppState) {
                                 remaining_secs: iv.remaining_secs(),
                                 wave_count: iv.wave_count,
                                 boss_alive: iv.boss_alive,
+                                wave_level: iv.wave_level(),
+                                consecutive_successes: iv.consecutive_successes,
                             }
                         },
                     }

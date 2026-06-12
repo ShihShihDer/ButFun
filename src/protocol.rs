@@ -589,7 +589,7 @@ pub struct SeasonalNodeView {
     pub charges: u8,
 }
 
-/// 城鎮入侵警報快照（ROADMAP 158）——供前端 HUD 顯示入侵狀態與倒數。
+/// 城鎮入侵警報快照（ROADMAP 158/161）——供前端 HUD 顯示入侵狀態與倒數。
 #[derive(Debug, Clone, Serialize)]
 pub struct InvasionView {
     /// 入侵是否進行中。
@@ -600,6 +600,10 @@ pub struct InvasionView {
     pub wave_count: u32,
     /// 入侵首領「乙太霸主」是否仍存活（active = true 時有意義）。
     pub boss_alive: bool,
+    /// 當前入侵等級（1/2/3），依連勝次數決定（ROADMAP 161）。
+    pub wave_level: u32,
+    /// 連續成功守城次數（供前端顯示連勝指示）。
+    pub consecutive_successes: u32,
 }
 
 /// 旅行商人商品目錄一個條目（ROADMAP 135）。
@@ -1584,7 +1588,7 @@ mod tests {
             civic_vote: None,
             civic_effect_secs: 0,
             civic_effect_kind: String::new(),
-            invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false },
+            invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false, wave_level: 1, consecutive_successes: 0 },
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

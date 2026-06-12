@@ -2069,27 +2069,38 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if newly_killed {
                                 let pname = app.players.read().unwrap()
                                     .get(&id).map(|p| p.name.clone()).unwrap_or_default();
-                                let wave = app.invasion.read().unwrap().wave_count;
-                                // 霸主晶核：全服在線玩家各得 1 顆（ROADMAP 160）。
+                                // 依入侵等級決定晶核分配數量（ROADMAP 161）。
+                                let (wave, cores_per_player, wave_level, ether_reward) = {
+                                    let iv = app.invasion.read().unwrap();
+                                    (iv.wave_count, iv.cores_reward(), iv.wave_level(), iv.ether_boss_reward())
+                                };
                                 let online_count = {
                                     let mut players = app.players.write().unwrap();
                                     let cnt = players.len();
                                     for p in players.values_mut() {
-                                        p.inventory.add(crate::inventory::ItemKind::EtherOverlordCore, 1);
+                                        p.inventory.add(
+                                            crate::inventory::ItemKind::EtherOverlordCore,
+                                            cores_per_player,
+                                        );
                                     }
                                     cnt
                                 };
+                                let level_tag = if wave_level >= 2 {
+                                    format!(" [Lv.{}]", wave_level)
+                                } else {
+                                    String::new()
+                                };
                                 let _ = app.tx_chat.send(format!(
-                                    "💥 [首領擊倒！] 「{}」等英雄擊敗乙太霸主！全服 {} 位在線玩家各獲得 💠 霸主晶核×1！(2 顆可合成守城戰刃⚔️)",
-                                    pname, online_count
+                                    "💥 [首領擊倒{}！] 「{}」等英雄擊敗乙太霸主！全服 {} 位在線玩家各獲得 💠 霸主晶核×{}！(2 顆可合成守城戰刃⚔️)",
+                                    level_tag, pname, online_count, cores_per_player
                                 ));
                                 let _ = app.tx_chat.send(format!(
-                                    "🏆 第 {} 波入侵結束後將再獲 +10 乙太特別獎勵！",
-                                    wave + 1
+                                    "🏆 第 {} 波入侵結束後將再獲 +{} 乙太特別獎勵！",
+                                    wave + 1, ether_reward
                                 ));
                                 app.town_memory.write().unwrap().push_event(
                                     "💥",
-                                    format!("入侵首領「乙太霸主」被{}等英雄擊倒——全服在線玩家各獲霸主晶核×1", pname),
+                                    format!("入侵首領「乙太霸主」被{}等英雄擊倒（Lv.{}）——全服在線玩家各獲霸主晶核×{}", pname, wave_level, cores_per_player),
                                 );
                             }
                         }
