@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -471,6 +471,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         civic_effect_kind: civic_effect_kind.clone(),
                                         // 城鎮入侵警報（ROADMAP 158）：全服廣播入侵狀態。
                                         invasion: invasion.clone(),
+                                        // 夜間乙太泉（ROADMAP 162）：全服廣播（量少，最多 5 顆）。
+                                        night_spring_nodes: night_spring_nodes.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -4802,6 +4804,36 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 流星雨星塵採集 end ───────────────────────────────────────────
+
+                // ── 夜間乙太泉採集（ROADMAP 162）─────────────────────────────────────
+                Ok(ClientMsg::CollectSpringNode { node_id }) => {
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let collected = player_pos.map(|(px, py)| {
+                        app.night_springs.write().unwrap().try_collect(node_id, px, py)
+                    }).unwrap_or(false);
+                    if collected {
+                        let all_done = app.night_springs.read().unwrap().all_collected();
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.ether = p.ether.saturating_add(crate::night_aether_springs::ETHER_REWARD);
+                            tracing::info!(player = %p.name, node_id, "採集夜間乙太泉");
+                        }
+                        // 全部採集完成時記入城鎮記憶石（一晚只記一次）。
+                        let mut ns = app.night_springs.write().unwrap();
+                        if all_done && !ns.all_collected_announced {
+                            ns.all_collected_announced = true;
+                            drop(ns);
+                            let player_name = app.players.read().unwrap()
+                                .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            if !player_name.is_empty() {
+                                app.town_memory.write().unwrap().push_event(
+                                    "🌙",
+                                    format!("夜探者 {} 採集了今夜全部乙太泉！", player_name),
+                                );
+                            }
+                        }
+                    }
+                }
+                // ── 夜間乙太泉採集 end ────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {
