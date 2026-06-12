@@ -1097,6 +1097,15 @@ D-3. ✅ **小地圖導航**（PR #71）
     - `src/wandering_merchant.rs` 純邏輯模組（10 個單元測試）；`state.rs` + `game.rs` + `ws.rs` + `protocol.rs` 全數接線；零 migration，記憶體模式，不破壞玩家資料。
     - 玩家感知：每 2 小時城鎮廣播「旅行商人來了！」，HUD 計時讓玩家知道要搶多久，稀有物品吸引城鎮玩家定期上線。
 
+136. ✅ **旅行商人限時委託——商人在場期間帶來 2 張限時委託（採集令 / 狩獵令），完成可得稀有物品**
+    - 觸發時機：旅行商人每次到訪時生成 2 張委託，離開時清空；委託只在商人在場期間有效。
+    - 採集令：採集 3 個 `StarCrystalShard`（星晶碎片）→ 完成得 12⚡ + `StarDust`×3（星塵）。
+    - 狩獵令：擊殺 2 隻 `CrystalGolem`（水晶傀儡）→ 完成得 18⚡ + `RainbowStarDust`×1（彩虹星塵）。
+    - 玩家點「接取委託」後開始計算進度，採集/殺怪自動累積；完成即時發放獎勵 + 系統公告。
+    - 彩虹星塵新增第二條取得路徑（除流星雨採集外，可透過旅行商人委託獲得），符合 ROADMAP 39 雙路徑鐵律。
+    - 後端：`MerchantQuestKind`、`MerchantQuest`、`MerchantQuestView` 結構；`accept_quest()` / `on_kill()` / `on_gather()` / `quest_views()` 方法；23 個單元測試。
+    - 接線：`protocol.rs` Snapshot 加 `merchant_quests` 欄位 + `AcceptMerchantQuest` 客戶端訊息；`ws.rs` 在殺怪/採集事件後呼叫 hook，`game.rs` 廣播 quest views；前端交易面板下方新增「限時委託」區塊，含進度條與接取按鈕。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

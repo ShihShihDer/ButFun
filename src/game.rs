@@ -1594,6 +1594,8 @@ pub fn spawn(app: AppState) {
                                 remaining: e.remaining(),
                             }).collect()
                         },
+                        // 旅行商人限時委託（ROADMAP 136）。
+                        merchant_quests: app.wandering_merchant.read().unwrap().quest_views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

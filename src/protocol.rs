@@ -439,6 +439,10 @@ pub enum ClientMsg {
     /// 成功後：扣乙太、玩家背包增加 item×qty。
     #[serde(rename = "buy_from_wanderer")]
     BuyFromWanderer { item: ItemKind, qty: u32 },
+    /// 接取旅行商人限時委託（ROADMAP 136）。玩家需在 TRADE_REACH 範圍內且已登入。
+    /// 商人在場期間完成委託條件後，引擎自動發放獎勵（無需手動交付）。
+    #[serde(rename = "accept_merchant_quest")]
+    AcceptMerchantQuest { quest_id: u8 },
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
@@ -622,6 +626,8 @@ pub enum ServerMsg {
         wandering_merchant_secs: u32,
         /// 旅行商人當前商品目錄（ROADMAP 135）；商人不在城鎮時為空陣列。
         wandering_catalog: Vec<WanderingCatalogEntry>,
+        /// 旅行商人限時委託清單（ROADMAP 136）；商人不在城鎮時為空陣列。
+        merchant_quests: Vec<crate::wandering_merchant::MerchantQuestView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1356,6 +1362,7 @@ mod tests {
             dust_nodes: vec![],
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
+            merchant_quests: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

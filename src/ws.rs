@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -414,6 +414,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // 旅行商人（ROADMAP 135）：全服廣播。
                                         wandering_merchant_secs: *wandering_merchant_secs,
                                         wandering_catalog: wandering_catalog.clone(),
+                                        // 旅行商人限時委託（ROADMAP 136）：全服廣播。
+                                        merchant_quests: merchant_quests.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -791,6 +793,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 每日任務：採集事件（ROADMAP 32）。
                         if let Some(uid) = authed_uid {
                             advance_daily_gather(&app, uid, item, amount, &tx_direct);
+                        }
+                        // 旅行商人限時委託：採集事件（ROADMAP 136）。
+                        if let Some(uid) = authed_uid {
+                            let quest_result = app.wandering_merchant.write().unwrap().on_gather(item, amount as u32);
+                            if let Some((qid, qname, ether_reward, reward_item, reward_qty)) = quest_result {
+                                let pname = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.ether = p.ether.saturating_add(ether_reward);
+                                        p.add_item_overflow(reward_item, reward_qty);
+                                        tracing::info!(
+                                            player = %p.name, quest_id = qid, qname, ether_reward,
+                                            ?reward_item, reward_qty, "完成旅行商人採集委託"
+                                        );
+                                        p.name.clone()
+                                    } else { String::new() }
+                                };
+                                if !pname.is_empty() {
+                                    let item_name = crate::npc_deal::item_display_zh(reward_item);
+                                    let _ = tx_direct.send(format!(
+                                        "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
+                                        qname, ether_reward, item_name, reward_qty
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -1729,6 +1756,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     .entry(uid)
                                     .or_default()
                                     .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
+                            }
+                        }
+                    }
+                    // 旅行商人限時委託：擊殺事件（ROADMAP 136）。
+                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                        let quest_result = app.wandering_merchant.write().unwrap().on_kill(kill_kind);
+                        if let Some((qid, qname, ether_reward, reward_item, reward_qty)) = quest_result {
+                            let pname = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    p.ether = p.ether.saturating_add(ether_reward);
+                                    p.add_item_overflow(reward_item, reward_qty);
+                                    tracing::info!(
+                                        player = %p.name, quest_id = qid, qname, ether_reward,
+                                        ?reward_item, reward_qty, "完成旅行商人委託"
+                                    );
+                                    p.name.clone()
+                                } else { String::new() }
+                            };
+                            if !pname.is_empty() {
+                                let item_name = crate::npc_deal::item_display_zh(reward_item);
+                                let _ = tx_direct.send(format!(
+                                    "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
+                                    qname, ether_reward, item_name, reward_qty
+                                ));
                             }
                         }
                     }
@@ -4245,6 +4297,42 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 旅行商人交易 end ─────────────────────────────────────────────────
+
+                // ── 旅行商人限時委託接取（ROADMAP 136）──────────────────────────────────
+                Ok(ClientMsg::AcceptMerchantQuest { quest_id }) => {
+                    // 需登入
+                    if authed_uid.is_none() {
+                        if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                            from: "系統".into(), text: "需要登入才能接取委託".into(),
+                        }) { let _ = tx_direct.try_send(j); }
+                        continue;
+                    }
+                    // 玩家在範圍內
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    let Some((px, py)) = player_pos else { continue; };
+                    let dx = px - crate::wandering_merchant::WANDERER_X;
+                    let dy = py - crate::wandering_merchant::WANDERER_Y;
+                    let in_range = dx * dx + dy * dy
+                        <= crate::wandering_merchant::TRADE_REACH * crate::wandering_merchant::TRADE_REACH;
+                    if !in_range { continue; }
+                    // 嘗試接取委託
+                    let result = app.wandering_merchant.write().unwrap().accept_quest(quest_id);
+                    match result {
+                        Ok(quest_name) => {
+                            if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                from: "旅行商人".into(),
+                                text: format!("📋 接取委託：{}。商人在場期間完成即可領賞！", quest_name),
+                            }) { let _ = tx_direct.try_send(j); }
+                        }
+                        Err(reason) => {
+                            if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                from: "旅行商人".into(),
+                                text: format!("😅 {}", reason),
+                            }) { let _ = tx_direct.try_send(j); }
+                        }
+                    }
+                }
+                // ── 旅行商人限時委託接取 end ──────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
