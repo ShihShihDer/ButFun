@@ -361,6 +361,40 @@
     pill.textContent = text;
   }
 
+  // 城鎮繁榮儀 HUD（ROADMAP 128）：常駐顯示城鎮繁榮等級，讓玩家一眼看到整體氛圍。
+  const PROSPERITY_INFO = [
+    { emoji: "🥀", name: "凋零", color: "#a05050", border: "#703030", bg: "#2a1010" },
+    { emoji: "🌿", name: "平靜", color: "#70a070", border: "#407040", bg: "#101a10" },
+    { emoji: "🌻", name: "生機", color: "#c0c040", border: "#909020", bg: "#1a1a00" },
+    { emoji: "🎉", name: "繁盛", color: "#e0a020", border: "#b07010", bg: "#1a1000" },
+  ];
+  let lastProsperityLevel = -1;
+  function updateProsperityHud() {
+    let pill = document.getElementById("hudProsperity");
+    const info = PROSPERITY_INFO[townProsperityLevel] || PROSPERITY_INFO[1];
+    const text = `${info.emoji} ${info.name}`;
+    if (townProsperityLevel === lastProsperityLevel) return;
+    lastProsperityLevel = townProsperityLevel;
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudProsperity";
+      pill.style.cssText = [
+        "position:fixed", "top:54px", "right:8px",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+        "transition:background .4s,color .4s",
+      ].join(";");
+      document.body.appendChild(pill);
+    }
+    pill.style.background = info.bg;
+    pill.style.color = info.color;
+    pill.style.border = `1px solid ${info.border}`;
+    pill.style.display = "block";
+    pill.textContent = text;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -374,6 +408,7 @@
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
+  let townProsperityLevel = 1; // ROADMAP 128 城鎮繁榮等級：0=凋零 1=平靜 2=生機 3=繁盛
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -699,6 +734,11 @@
         if (Array.isArray(msg.resident_moods)) {
           residentMoods.clear();
           for (const [rid, h] of msg.resident_moods) residentMoods.set(rid, h);
+        }
+        // 城鎮繁榮等級（ROADMAP 128）：從快照同步，HUD 顯示城鎮整體狀態。
+        if (msg.town_prosperity_level != null) {
+          townProsperityLevel = msg.town_prosperity_level;
+          updateProsperityHud();
         }
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
@@ -3102,6 +3142,8 @@
     updateVillageBuffHud();
     // 廣場聚會加成計時器（ROADMAP 124）：聚會期間在 HUD 顯示綠色倒數 pill。
     updateGatheringHud();
+    // 城鎮繁榮儀（ROADMAP 128）：常駐顯示當前繁榮等級。
+    updateProsperityHud();
 
     requestAnimationFrame(render);
   }

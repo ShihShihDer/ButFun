@@ -123,6 +123,15 @@ pub enum ResidentLifecycleEvent {
         text: String,
         gift_seed: usize,
     },
+    /// 城鎮繁榮等級改變（ROADMAP 128）：由居民平均快樂值計算，等級升降時廣播。
+    ProsperityChanged {
+        /// 舊等級 u8（0-3）。
+        old_level: u8,
+        /// 新等級 u8（0-3）。
+        new_level: u8,
+        /// 廣播文字。
+        msg: String,
+    },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -478,6 +487,8 @@ pub struct ResidentManager {
     rng: StdRng,
     /// 上一次偵測到的時段（ROADMAP 119），用於偵測時段切換並廣播公告。
     current_phase: Option<Phase>,
+    /// 上一次廣播時的繁榮等級（ROADMAP 128），避免重複廣播。初始 1（平靜）。
+    last_prosperity_level: u8,
 }
 
 impl ResidentManager {
@@ -493,6 +504,7 @@ impl ResidentManager {
             population_timer: POPULATION_CHECK_SECS,
             rng,
             current_phase: None,
+            last_prosperity_level: 1, // 初始視為平靜，避免啟動立即廣播
         }
     }
 
@@ -689,6 +701,21 @@ impl ResidentManager {
             }
         }
 
+        // 繁榮等級偵測（ROADMAP 128）：每幀算一次平均快樂值，等級改變才廣播。
+        {
+            use crate::town_prosperity::{prosperity_from_avg, prosperity_changed_msg};
+            let avg = self.avg_happiness();
+            let new_level = prosperity_from_avg(avg).as_u8();
+            if new_level != self.last_prosperity_level {
+                let old_level = self.last_prosperity_level;
+                let old_lv = crate::town_prosperity::level_from_u8(old_level);
+                let new_lv = crate::town_prosperity::level_from_u8(new_level);
+                let msg = prosperity_changed_msg(old_lv, new_lv);
+                self.last_prosperity_level = new_level;
+                events.push(ResidentLifecycleEvent::ProsperityChanged { old_level, new_level, msg });
+            }
+        }
+
         (events, thoughts)
     }
 
@@ -811,6 +838,20 @@ impl ResidentManager {
     /// 回傳所有居民的 (id, happiness)，供快照廣播用（ROADMAP 126）。
     pub fn moods(&self) -> Vec<(String, u8)> {
         self.residents.iter().map(|r| (r.id.clone(), r.happiness)).collect()
+    }
+
+    /// 計算居民平均快樂值（無居民時回 50）。
+    pub fn avg_happiness(&self) -> u8 {
+        if self.residents.is_empty() {
+            return 50;
+        }
+        let total: u32 = self.residents.iter().map(|r| r.happiness as u32).sum();
+        (total / self.residents.len() as u32) as u8
+    }
+
+    /// 回傳目前快取的繁榮等級（0-3），用於快照廣播。
+    pub fn prosperity_level(&self) -> u8 {
+        self.last_prosperity_level
     }
 }
 

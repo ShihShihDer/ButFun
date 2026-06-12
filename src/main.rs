@@ -99,6 +99,7 @@ mod perishable;
 mod home_interior;
 mod resident_npc;
 mod resident_chat;
+mod town_prosperity;
 mod community_gathering;
 
 use std::net::SocketAddr;
