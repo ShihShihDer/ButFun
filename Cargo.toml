@@ -21,7 +21,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
-rand = "0.9"
+rand = "0.10"
 dotenvy = "0.15"
 urlencoding = "2"
 # Phase 0-E 跨重啟持久化：Postgres 連線池 + migration。query 走 runtime API（非 query! 巨集），
