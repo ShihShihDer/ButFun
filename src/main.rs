@@ -12,6 +12,7 @@ mod combat;
 mod town_project;
 mod town_project_store;
 mod observatory;
+mod meteor_shower;
 mod connections;
 mod equipment;
 mod refinement;

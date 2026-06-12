@@ -406,6 +406,13 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::VibrantElixir,
         output_qty: 1,
     },
+    /// 星光護符：星塵×3 → 星光護符×1（ROADMAP 133）。持有時採集/戰鬥 EXP +10%。
+    Recipe {
+        id: "star_amulet",
+        inputs: &[(ItemKind::StarDust, 3)],
+        output: ItemKind::StarAmulet,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -670,8 +677,10 @@ mod tests {
                 );
                 // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
                 let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
+                // 流星雨採集可得（ROADMAP 133）：天文台完工後流星雨期間採集地面星塵節點。
+                let meteor_dust_collectible = item == ItemKind::StarDust;
                 assert!(
-                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable,
+                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",

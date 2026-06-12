@@ -431,6 +431,10 @@ pub enum ClientMsg {
     /// 成功後：清除請求、玩家獲得 HELP_REWARD_ETHER 乙太、廣播居民感謝語。
     #[serde(rename = "help_resident")]
     HelpResident { resident_id: String },
+    /// 採集流星雨星塵節點（ROADMAP 133）。玩家必須在 COLLECT_REACH 範圍內。
+    /// 成功後：節點標為已採集、玩家獲得 StarDust×1。
+    #[serde(rename = "collect_dust_node")]
+    CollectDustNode { node_id: u32 },
     /// 向村落金庫捐獻一筆乙太（固定金額 `village_chief::DONATE_AMOUNT`）。
     /// 需登入 + 在里長互動範圍內 + 持有足夠乙太；成功廣播聊天公告。
     DonateToVillage,
@@ -508,6 +512,17 @@ pub enum ClientMsg {
         pub score: u32,
     }
 
+    /// 快照裡的星塵採集點（ROADMAP 133 流星雨）。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct DustNodeView {
+        /// 節點唯一 ID（用於 CollectDustNode ClientMsg）。
+        pub id: u32,
+        /// 世界座標 X。
+        pub wx: f32,
+        /// 世界座標 Y。
+        pub wy: f32,
+    }
+
 /// 伺服器送給客戶端的訊息。
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -582,6 +597,10 @@ pub enum ServerMsg {
         star_forecast_secs: u32,
         /// 天文台星象預報加成類型（ROADMAP 132）。空字串=無加成；"exp_boost"/"travel_discount"/"gather_extra"/"npc_bonus"。
         star_forecast_bonus: String,
+        /// 流星雨剩餘秒數（ROADMAP 133）。0=無流星雨；>0 時前端顯示流星粒子特效。
+        meteor_shower_secs: u32,
+        /// 活躍星塵採集點清單（ROADMAP 133）。流星雨期間前端在各節點位置顯示採集點。
+        dust_nodes: Vec<DustNodeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1309,6 +1328,8 @@ mod tests {
             },
             star_forecast_secs: 0,
             star_forecast_bonus: String::new(),
+            meteor_shower_secs: 0,
+            dust_nodes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

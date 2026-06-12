@@ -445,6 +445,37 @@
     pill.textContent = text;
   }
 
+  // 流星雨 HUD pill（ROADMAP 133）。
+  function updateMeteorShowerHud() {
+    let pill = document.getElementById("hudMeteorShower");
+    const nowMs = performance.now();
+    const remainMs = meteorShowerUntilMs - nowMs;
+    if (remainMs <= 0) {
+      if (pill) pill.style.display = "none";
+      lastMeteorShowerText = null;
+      return;
+    }
+    const secs = Math.ceil(remainMs / 1000);
+    const text = `☄️ 流星雨 ${secs}s（採集星塵！）`;
+    if (text === lastMeteorShowerText) return;
+    lastMeteorShowerText = text;
+    if (!pill) {
+      const newPill = document.createElement("div");
+      newPill.id = "hudMeteorShower";
+      newPill.style.cssText = [
+        "position:fixed", "top:102px", "right:8px",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+        "background:#0d1a2a", "color:#88ccff", "border:1px solid #4488bb",
+      ].join(";");
+      document.body.appendChild(newPill);
+    }
+    const t = document.getElementById("hudMeteorShower");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -457,6 +488,9 @@
   let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
   let starForecastUntilMs = 0;  // ROADMAP 132 天文台星象加成到期的 performance.now() 時刻（0=無加成）
   let starForecastBonus = "";   // ROADMAP 132 當前加成類型字串
+  let meteorShowerUntilMs = 0;  // ROADMAP 133 流星雨到期的 performance.now() 時刻（0=無流星雨）
+  let dustNodes = [];           // ROADMAP 133 活躍星塵採集點 [{id, wx, wy}]
+  let lastMeteorShowerText = null;
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
@@ -786,6 +820,13 @@
           starForecastUntilMs = 0;
           starForecastBonus = "";
         }
+        // 流星雨（ROADMAP 133）。
+        if (msg.meteor_shower_secs > 0) {
+          meteorShowerUntilMs = performance.now() + msg.meteor_shower_secs * 1000;
+        } else if (msg.meteor_shower_secs === 0 && meteorShowerUntilMs > 0) {
+          meteorShowerUntilMs = 0;
+        }
+        dustNodes = Array.isArray(msg.dust_nodes) ? msg.dust_nodes : [];
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -2512,6 +2553,7 @@
   function currentActionKind(me) {
     if (!me) return "farm";
     if (nearestEnemy(me)) return "attack";
+    if (nearestDustNode(me)) return "collect_dust";
     if (nearestHarvestable(me)) return "gather";
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
     const wx = me.x + Math.cos(f) * 26, wy = me.y + Math.sin(f) * 26;
@@ -2527,6 +2569,9 @@
     if (!me) return;
     // 附近有敵人時優先攻擊。
     if (nearestEnemy(me)) { sendAttack(); return; }
+    // 附近有星塵節點時採集（ROADMAP 133）。
+    const dn = nearestDustNode(me);
+    if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
     const rect = canvas.getBoundingClientRect();
     // 挖/放的方向：優先用「正在按的方向」(keys)——在隧道裡你被牆擋住、無法轉身改 facing，
     // 但按左就該能挖左牆/側壁。沒按方向才退回 facing（朝向）。
@@ -2558,7 +2603,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
-    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱" }[currentActionKind(me)] || "✋";
+    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️" }[currentActionKind(me)] || "✋";
     ctx.font = "30px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -3091,6 +3136,7 @@
     drawField(camX, camY);
     drawSprinklers(camX, camY); // 灑水器（ROADMAP 112）畫在農地之上、採集節點之下
     drawNodes(camX, camY); // 採集節點畫在地表/農地之上、玩家之下
+    drawDustNodes(camX, camY, renderNow); // 流星雨星塵採集點（ROADMAP 133）
     drawEnemies(camX, camY); // 敵人(戰鬥 1-F)畫在地表之上、玩家之下
     drawVillageLandmark(camX, camY); // 新手村燈塔地標(遠看得到的亮點),畫在 NPC 同層
     drawTownDecor(camX, camY); // 城鎮裝飾:據點名牌+城門守衛(從 TOWNS 幾何推導,純表現)
@@ -3099,6 +3145,7 @@
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
     drawNpcSpeechBubbles(camX, camY); // NPC 對話泡泡（ROADMAP 92）
     drawWeatherParticles(renderNow, _weatherDt); // 天氣粒子特效（ROADMAP 93）
+    drawMeteorParticles(renderNow, _weatherDt); // 流星雨射星特效（ROADMAP 133）
     maybeAnnounceReachable(me); // 走進可採節點範圍時播一句給報讀器(鏡像視覺的黃環+「按鍵採集」提示)
 
     // 畫玩家:先畫別人,最後才畫自己——當別的玩家站到你頭上時,你那顆描金的名字
@@ -3206,6 +3253,8 @@
     updateProsperityHud();
     // 天文台星象預報（ROADMAP 132）：活躍加成顯示倒數 pill。
     updateStarForecastHud();
+    // 流星雨（ROADMAP 133）：活躍流星雨顯示倒數 pill。
+    updateMeteorShowerHud();
 
     requestAnimationFrame(render);
   }
@@ -4533,6 +4582,21 @@
     return best;
   }
 
+  // 回傳玩家搆得到（80px 內）的最近活躍星塵節點，沒有就 null（ROADMAP 133）。
+  const DUST_COLLECT_REACH = 80;
+  function nearestDustNode(me) {
+    if (!me || dustNodes.length === 0) return null;
+    let best = null;
+    let bestD = DUST_COLLECT_REACH * DUST_COLLECT_REACH;
+    for (const n of dustNodes) {
+      const dx = n.wx - me.x;
+      const dy = n.wy - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
   // 回傳「玩家搆得到、但已採空(harvestable=false)的最近節點」,沒有就 null。
   // 用來在玩家站在採空節點旁時標「已採空」,免得按鍵沒反應卻不知為何(切片 1 無重生,採空即長期變淡)。
   function nearestDepleted(me) {
@@ -4652,6 +4716,55 @@
           ctx.fillStyle = "rgba(255,235,180,0.8)";
           ctx.fillText(hint, sx, hy);
         }
+      }
+      ctx.restore();
+    }
+  }
+
+  // 畫流星雨星塵採集點（ROADMAP 133）：藍白閃爍圓 + 近身黃環提示。
+  function drawDustNodes(camX, camY, now) {
+    if (dustNodes.length === 0) return;
+    const me = myId ? players.get(myId) : null;
+    const nearest = nearestDustNode(me);
+    for (const n of dustNodes) {
+      const sx = n.wx - camX;
+      const sy = n.wy - camY;
+      if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
+      ctx.save();
+      // 閃爍光暈（藍白，週期 1.2s）
+      const pulse = 0.55 + 0.45 * Math.sin(now * 0.00524 + n.id);
+      ctx.beginPath();
+      ctx.arc(sx, sy, 22 + 4 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(120,180,255,${(0.12 + 0.08 * pulse).toFixed(3)})`;
+      ctx.fill();
+      // 主體圓盤
+      ctx.beginPath();
+      ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(60,120,220,${(0.6 + 0.3 * pulse).toFixed(3)})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(180,220,255,${(0.7 + 0.3 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // 中心 emoji
+      ctx.font = "16px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("☄️", sx, sy + 1);
+      // 近身互動環 + 提示文字
+      if (n === nearest) {
+        ctx.strokeStyle = "rgba(160,210,255,0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 20, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textBaseline = "alphabetic";
+        const ty = sy - 26;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("✨採集星塵", sx, ty);
+        ctx.fillStyle = "rgba(180,230,255,0.95)";
+        ctx.fillText("✨採集星塵", sx, ty);
       }
       ctx.restore();
     }
@@ -6409,6 +6522,42 @@
     ctx.fill();
   }
 
+  // ── 流星雨粒子特效（ROADMAP 133）────────────────────────────────────────────
+  // 流星雨活躍期間在螢幕上畫射星劃痕（藍白拖尾）；平時不畫，不影響效能。
+  const _meteorParticles = [];
+  function drawMeteorParticles(now, dt) {
+    if (reduceMotion || !_parallaxEnabled) return;
+    if (meteorShowerUntilMs <= now) return;
+    // 每幀約 1/15 機率生成一顆射星
+    if (Math.random() < dt * 1.2 && _meteorParticles.length < 12) {
+      const startX = Math.random() * (viewW + 200) - 100;
+      _meteorParticles.push({ x: startX, y: -20, vx: -110 - Math.random() * 70, vy: 160 + Math.random() * 80, life: 0.65 + Math.random() * 0.4, maxLife: 0 });
+      _meteorParticles[_meteorParticles.length - 1].maxLife = _meteorParticles[_meteorParticles.length - 1].life;
+    }
+    ctx.save();
+    for (let i = _meteorParticles.length - 1; i >= 0; i--) {
+      const m = _meteorParticles[i];
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+      m.life -= dt;
+      if (m.life <= 0 || m.y > viewH + 30 || m.x < -200) { _meteorParticles.splice(i, 1); continue; }
+      const alpha = Math.min(1.0, m.life / (m.maxLife * 0.4));
+      const len = Math.hypot(m.vx, m.vy) * 0.045;
+      const nx = m.vx / Math.hypot(m.vx, m.vy);
+      const ny = m.vy / Math.hypot(m.vx, m.vy);
+      const grad = ctx.createLinearGradient(m.x, m.y, m.x - nx * len, m.y - ny * len);
+      grad.addColorStop(0, `rgba(220,240,255,${(alpha * 0.95).toFixed(3)})`);
+      grad.addColorStop(1, "rgba(100,160,255,0)");
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(m.x, m.y);
+      ctx.lineTo(m.x - nx * len, m.y - ny * len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function drawMerchantLook(sx, by, id, name) {
     // 身體（棕色斗篷）
     ctx.fillStyle = "#7b4f2e";
@@ -6722,9 +6871,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -6795,6 +6944,8 @@
     { id: "town_brew", out: "town_brew", outQty: 1, inputs: [["wildflower_seed", 4], ["wheat_grain", 3]], minProsperity: 2 },
     // 繁盛精露：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1。需城鎮【繁盛】（平均快樂≥75）。
     { id: "vibrant_elixir", out: "vibrant_elixir", outQty: 1, inputs: [["mushroom_spore", 3], ["deep_sea_pearl", 1], ["ancient_fragment", 2]], minProsperity: 3 },
+    // ROADMAP 133 流星雨：星塵×3 → 星光護符×1。
+    { id: "star_amulet", out: "star_amulet", outQty: 1, inputs: [["star_dust", 3]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -6860,6 +7011,7 @@
       meadow_amulet: "防禦 -1（減 1 傷）🌸 草原生態",
       crystal_shield: "防禦 -2（減 2 傷）💎 岩地生態",
       cosmic_shield: "防禦 -6（減 6 傷）🌌 宇宙星",
+      star_amulet: "EXP +10%（採集與戰鬥）☄️ 流星雨產物",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv
@@ -10361,6 +10513,21 @@
     const me = myId ? players.get(myId) : null;
     const f = myField();
     const now = Date.now();
+    // 先判星塵採集（ROADMAP 133）：點到活躍星塵節點就送 collect_dust_node。
+    {
+      const dn = nearestDustNode(me);
+      if (dn) {
+        const rect0 = canvas.getBoundingClientRect();
+        const twx = clientX - rect0.left + lastCam.x;
+        const twy = clientY - rect0.top + lastCam.y;
+        const dx = dn.wx - twx, dy = dn.wy - twy;
+        if (dx * dx + dy * dy <= 40 * 40) {
+          ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id }));
+          spawnTapFlash(dn.wx, dn.wy);
+          return;
+        }
+      }
+    }
     // 先判採集:點到「玩家搆得到的可採節點」就送採集——要擺在「不在自己農地就早退」的守衛
     // 之前(採集發生在離田的節點旁)。伺服器一律用玩家權威位置採最近的,客戶端只判「點到節點」當觸發。
     {
@@ -10470,6 +10637,11 @@
     if (!me) return;
     // 最優先：附近有存活敵人就主動攻擊。
     if (nearestEnemy(me)) { sendAttack(); return; }
+    // 次判星塵採集（ROADMAP 133）：附近有活躍星塵節點時採集。
+    {
+      const dn = nearestDustNode(me);
+      if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
+    }
     // 次判採集:站在搆得到的可採節點旁,按動作鍵就採集。
     {
       const gn = nearestHarvestable(me);

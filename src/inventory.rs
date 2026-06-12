@@ -221,6 +221,13 @@ pub enum ItemKind {
     /// 需城鎮達到【繁盛】等級（平均快樂≥75）才可合成。
     /// 使用後回復至等級滿血並獲得 20 乙太——多星系素材匯聚、城鎮繁盛的頂級賜予。
     VibrantElixir,
+
+    // ── 流星雨（ROADMAP 133）────────────────────────────────────────────────
+    /// 星塵✨（流星雨採集點採集可得）。可賣 NPC 3 乙太，或 ×3 合成星光護符。
+    StarDust,
+    /// 星光護符🌟（合成：星塵×3 → 星光護符×1）。
+    /// 背包中持有時採集/戰鬥 EXP +10%——流星饋贈，知識隨光而來。
+    StarAmulet,
 }
 
 impl ItemKind {
@@ -290,6 +297,8 @@ impl ItemKind {
         ItemKind::Sprinkler,
         ItemKind::TownBrew,
         ItemKind::VibrantElixir,
+        ItemKind::StarDust,
+        ItemKind::StarAmulet,
     ];
 }
 
@@ -557,13 +566,15 @@ mod tests {
                 | ItemKind::NightPotion
                 | ItemKind::Sprinkler
                 | ItemKind::TownBrew
-                | ItemKind::VibrantElixir => {}
+                | ItemKind::VibrantElixir
+                | ItemKind::StarDust
+                | ItemKind::StarAmulet => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 60 種（含 ROADMAP 130 城鎮慶典配方：TownBrew/VibrantElixir）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 60, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 62 種（含 ROADMAP 133 流星雨：StarDust/StarAmulet）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 62, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -730,9 +741,11 @@ mod tests {
             );
             // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
             let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
+            // 流星雨採集可得（ROADMAP 133）：天文台完工後流星雨期間採集地面星塵節點。
+            let meteor_dust_collectible = item == ItemKind::StarDust;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶）\
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
@@ -837,11 +850,14 @@ mod tests {
             // 9. 是可放置功能物件（PlaceSprinkler 之類的 handler：背包消耗一個 → 放置到世界）。
             // 放置後在世界發揮功能（自動澆水等），非單純的地形建造材料，故獨立一條。
             let placeable_functional = item == ItemKind::Sprinkler;
+            // 10. 是被動加成護符（持有時全程生效，不消耗）。
+            // 星光護符持有時採集/戰鬥 EXP +10%（ROADMAP 133）。
+            let passive_amulet = item == ItemKind::StarAmulet;
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
                     || building_material || npc_sellable || usable_consumable || useful_armor
-                    || navigation_tool || placeable_functional,
+                    || navigation_tool || placeable_functional || passive_amulet,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
                  不是有效用的武器或防具／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"
