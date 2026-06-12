@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -479,6 +479,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         monster_colony_views: monster_colony_views.clone(),
                                         // 生態壓力值（ROADMAP 167）：全服廣播。
                                         eco_pressure_value: *eco_pressure_value,
+                                        // 巢穴 Alpha（ROADMAP 168）：全服廣播。
+                                        alpha_monsters: alpha_monsters.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2108,6 +2110,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         }
                                         MonsterColonyEvent::ColonyRevived { .. } => {}
                                         MonsterColonyEvent::SpawnAt { .. } => {}
+                                        MonsterColonyEvent::AlphaAppeared { .. } => {}
                                     }
                                 }
                             }
@@ -2365,6 +2368,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(p.vitals.max_hp());
                                     tracing::info!(player = %p.name, gained, "使用冬日神藥滿血復原");
+                                }
+                            }
+                            // ── 巢穴 Alpha 戰利品合成品（ROADMAP 168）──────────────
+                            ItemKind::AlphaForce => {
+                                // Alpha 之力：回滿血 + 獲得 +25 乙太——Alpha 原始生命力傾注。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.ether = p.ether.saturating_add(25);
+                                    tracing::info!(player = %p.name, gained, "使用 Alpha 之力滿血+獲得25乙太");
                                 }
                             }
                             _ => {} // 非消耗品，忽略
@@ -3023,6 +3035,60 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                             let msg = format!("🗡️ {} 攻擊了一隻 {}。", name, kind.display_name());
                             let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
+
+                // ── 挑戰巢穴 Alpha（ROADMAP 168）────────────────────────────────────
+                Ok(ClientMsg::AttackAlpha { alpha_id }) => {
+                    use crate::monster_colony::ALPHA_ATTACK_REACH;
+                    use crate::inventory::ItemKind;
+                    let (px, py, is_downed, power) = {
+                        let players = app.players.read().unwrap();
+                        let p = players.get(&id);
+                        let power = p.map(|p| {
+                            let base = crate::combat::level_attack_bonus(p.level())
+                                + crate::equipment::equipped_weapon_power(&p.equipment)
+                                + 1; // 最小 1 傷害
+                            base.max(1)
+                        }).unwrap_or(1);
+                        (
+                            p.map(|p| p.x).unwrap_or(0.0),
+                            p.map(|p| p.y).unwrap_or(0.0),
+                            p.map(|p| p.vitals.is_downed()).unwrap_or(true),
+                            power,
+                        )
+                    };
+                    if !is_downed {
+                        let kill_result = app.monster_colonies.write().unwrap()
+                            .attack_alpha(alpha_id, px, py, power, ALPHA_ATTACK_REACH);
+                        if let Some(result) = kill_result {
+                            use crate::monster_colony::{ALPHA_KILLER_ETHER, ALPHA_GLOBAL_ETHER, ALPHA_CRYSTAL_DROP};
+                            // 殺手個人獎勵
+                            let killer_name = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    p.ether = p.ether.saturating_add(ALPHA_KILLER_ETHER);
+                                    p.inventory.add(ItemKind::AlphaCrystal, ALPHA_CRYSTAL_DROP);
+                                    p.name.clone()
+                                } else {
+                                    "某玩家".to_string()
+                                }
+                            };
+                            // 全服在線玩家各得乙太
+                            {
+                                let mut players = app.players.write().unwrap();
+                                for p in players.values_mut() {
+                                    p.ether = p.ether.saturating_add(ALPHA_GLOBAL_ETHER);
+                                }
+                            }
+                            let kind_name = result.kind.display_name();
+                            let colony_name = result.colony_name;
+                            let _ = app.tx_chat.send(format!(
+                                "💎 [Alpha 擊倒！] {} 制伏了 {} 的 Alpha 首領「{}·霸主」！\
+                                 全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，{killer_name} 額外獲得 +{ALPHA_KILLER_ETHER} 乙太 + Alpha 晶核💎！",
+                                killer_name, colony_name, kind_name
+                            ));
                         }
                     }
                 }

@@ -307,6 +307,13 @@ pub enum ItemKind {
     EtherOverlordCore,
     /// 守城戰刃⚔️（合成：霸主晶核×2 + 乙太×20）。持有後攻擊力 +28，入侵首領限定強力戰刃。
     EtherOverlordBlade,
+
+    // ── 巢穴 Alpha 戰利品（ROADMAP 168）────────────────────────────────────
+    /// Alpha 晶核💎（擊殺巢穴 Alpha 首領後殺手獲得 1 顆）。稀有野外探索限定材料。
+    AlphaCrystal,
+    /// Alpha 之力⚡（合成：Alpha 晶核×2 + 乙太礦石×5）。
+    /// 使用後：回滿血 + 獲得 +25 乙太——Alpha 的原始生命力傾注你的身體。
+    AlphaForce,
 }
 
 impl ItemKind {
@@ -409,6 +416,9 @@ impl ItemKind {
         // ROADMAP 160 入侵首領戰利品
         ItemKind::EtherOverlordCore,
         ItemKind::EtherOverlordBlade,
+        // ROADMAP 168 巢穴 Alpha 戰利品
+        ItemKind::AlphaCrystal,
+        ItemKind::AlphaForce,
     ];
 }
 
@@ -707,13 +717,16 @@ mod tests {
                 | ItemKind::AncientDeco
                 // ROADMAP 160 入侵首領戰利品
                 | ItemKind::EtherOverlordCore
-                | ItemKind::EtherOverlordBlade => {}
+                | ItemKind::EtherOverlordBlade
+                // ROADMAP 168 巢穴 Alpha 戰利品
+                | ItemKind::AlphaCrystal
+                | ItemKind::AlphaForce => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 88 種（含 ROADMAP 160：入侵首領戰利品 2 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 88, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 90 種（含 ROADMAP 168：巢穴 Alpha 戰利品 2 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 90, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -890,9 +903,11 @@ mod tests {
                 item,
                 ItemKind::WildFlower | ItemKind::SolarShard | ItemKind::MapleLeaf | ItemKind::IceShard
             );
+            // 巢穴 Alpha 擊殺可得（ROADMAP 168）：攻擊 Alpha 首領擊殺後殺手得 AlphaCrystal。
+            let alpha_kill_drop = item == ItemKind::AlphaCrystal;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible,
-                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集）\
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop,
+                "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集／非 Alpha 擊殺掉落）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
         }
@@ -995,6 +1010,8 @@ mod tests {
                     | ItemKind::SummerElixir
                     | ItemKind::AutumnTonic
                     | ItemKind::WinterMedicine
+                    // 巢穴 Alpha 合成品（ROADMAP 168）：Alpha 晶核合成，使用後回滿血+乙太。
+                    | ItemKind::AlphaForce
             );
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。

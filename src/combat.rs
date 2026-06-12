@@ -299,7 +299,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::EtherPlant
         | ItemKind::StarLantern
         | ItemKind::AncientDeco
-        | ItemKind::EtherOverlordCore => None,
+        | ItemKind::EtherOverlordCore
+        | ItemKind::AlphaCrystal
+        | ItemKind::AlphaForce => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -404,7 +406,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::StarLantern
         | ItemKind::AncientDeco
         | ItemKind::EtherOverlordCore
-        | ItemKind::EtherOverlordBlade => None,
+        | ItemKind::EtherOverlordBlade
+        | ItemKind::AlphaCrystal
+        | ItemKind::AlphaForce => None,
     }
 }
 

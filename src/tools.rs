@@ -89,7 +89,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::SpringSachet | ItemKind::SummerElixir | ItemKind::AutumnTonic | ItemKind::WinterMedicine
         | ItemKind::SteamBed | ItemKind::AetherChest | ItemKind::EtherPlant
         | ItemKind::StarLantern | ItemKind::AncientDeco
-        | ItemKind::EtherOverlordCore | ItemKind::EtherOverlordBlade => None,
+        | ItemKind::EtherOverlordCore | ItemKind::EtherOverlordBlade
+        | ItemKind::AlphaCrystal | ItemKind::AlphaForce => None,
     }
 }
 

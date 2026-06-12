@@ -922,8 +922,9 @@
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
   let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
   let monsterSpeciesAttitudes = []; // ROADMAP 163 怪物物種態度 [{kind, name, attitude, tier}]
-  let monsterColonyViews = [];      // ROADMAP 164 怪物巢穴 [{id, kind, name, cx, cy, spawn_radius, density}]
+  let monsterColonyViews = [];      // ROADMAP 164 怪物巢穴 [{id, kind, name, cx, cy, spawn_radius, density, has_alpha}]
   let ecoPressureValue = 0;         // ROADMAP 167 生態壓力值（0-100），從 Snapshot 同步
+  let alphaMonsters = [];           // ROADMAP 168 巢穴 Alpha [{id, colony_id, kind, x, y, hp, max_hp}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1291,6 +1292,8 @@
         if (Array.isArray(msg.monster_colony_views)) monsterColonyViews = msg.monster_colony_views;
         // 生態壓力值（ROADMAP 167）：0-100，供統一物種視圖顯示。
         if (msg.eco_pressure_value != null) ecoPressureValue = msg.eco_pressure_value;
+        // 巢穴 Alpha（ROADMAP 168）：當前活躍的 Alpha 首領。
+        if (Array.isArray(msg.alpha_monsters)) alphaMonsters = msg.alpha_monsters;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3707,6 +3710,7 @@
     safeDraw("npcs", () => drawNpcs(camX, camY)); // NPC（ROADMAP 73）
     safeDraw("colonies", () => drawColonies(camX, camY)); // 物種聚落領地圓圈（ROADMAP 143）
     safeDraw("monsterColonies", () => drawMonsterColonies(camX, camY)); // 怪物巢穴（ROADMAP 164）
+    safeDraw("alphaMonsters", () => drawAlphaMonsters(camX, camY)); // 巢穴 Alpha（ROADMAP 168）
     safeDraw("wildlife", () => drawWildlife(camX, camY)); // 中立野生動物（ROADMAP 140）
     safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
@@ -7420,6 +7424,91 @@
     }
   }
 
+  // ── ROADMAP 168 巢穴 Alpha 繪製 ────────────────────────────────────────────
+  function drawAlphaMonsters(camX, camY) {
+    if (!alphaMonsters.length) return;
+    const now = performance.now();
+    for (const a of alphaMonsters) {
+      const sx = a.x - camX;
+      const sy = a.y - camY;
+      if (sx < -80 || sx > viewW + 80 || sy < -80 || sy > viewH + 80) continue;
+
+      const icon = MONSTER_COLONY_ICON[a.kind] || "👾";
+      const hpPct = a.hp / Math.max(1, a.max_hp);
+      // 金色脈動光環
+      const pulse = 0.7 + 0.3 * Math.sin(now / 600);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(sx, sy, 28 * pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      // 外圈旋轉花環（彰顯 Alpha 威嚴）
+      ctx.beginPath();
+      ctx.arc(sx, sy, 32, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 圖示（放大 1.4x 彰顯霸主體型）
+      ctx.font = "22px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(icon, sx, sy);
+
+      // 血條（顯示在圖示上方）
+      const barW = 48, barH = 6;
+      const bx = sx - barW / 2, by = sy - 36;
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(bx, by, barW, barH);
+      ctx.fillStyle = hpPct > 0.5 ? "#4c4" : hpPct > 0.25 ? "#ca4" : "#c44";
+      ctx.fillRect(bx, by, barW * hpPct, barH);
+      ctx.strokeStyle = "rgba(255,210,0,0.8)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, barW, barH);
+
+      // 👑 皇冠標記
+      ctx.font = "14px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("👑", sx, by);
+
+      // 名牌（顯示在下方）
+      const kindName = MONSTER_DISPLAY_NAME[a.kind] || a.kind;
+      const label = `👑 ${kindName}·霸主`;
+      ctx.font = "bold 11px sans-serif";
+      const lw = ctx.measureText(label).width + 8;
+      const lx = sx, ly = sy + 30;
+      ctx.fillStyle = "rgba(80,50,0,0.75)";
+      ctx.fillRect(lx - lw / 2, ly - 12, lw, 14);
+      ctx.fillStyle = "#ffd700";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(label, lx, ly + 2);
+
+      ctx.restore();
+    }
+  }
+
+  // 怪物種類顯示名稱（前端用）
+  const MONSTER_DISPLAY_NAME = {
+    scrap_drone: "廢料無人機",
+    ether_wisp: "迷途乙太靈",
+    flutter_sprite: "飄舞精靈",
+    mushroom_stalker: "蕈菇潛行者",
+    crystal_golem: "水晶傀儡",
+    rune_guardian: "符文守衛",
+    coral_crab: "珊瑚蟹",
+    jade_wraith: "翠幽惡靈",
+    steam_construct: "蒸汽構裝體",
+    void_phantom: "虛空幻影",
+    aether_specter: "霧醚幽靈",
+    origin_guardian: "星源守衛",
+    rift_guardian: "裂縫守衛",
+    ether_overlord: "乙太霸主",
+  };
+
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
     // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
@@ -8512,11 +8601,11 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
-  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240" };
+  const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240", alpha_crystal: "220,180,255", alpha_force: "255,220,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
   // 只用來畫面板與「夠不夠料」的提示反灰——真正查表扣料一律由伺服器說了算(規則只在伺服器)。
   // 接線後 client 送 { type:"craft", recipe_id:id },產物隨既有背包快照回來,零契約變更。
@@ -8621,6 +8710,8 @@
     { id: "ancient_deco", out: "ancient_deco", outQty: 1, inputs: [["ancient_fragment", 2], ["stone", 1]] },
     // 入侵首領限定武器（ROADMAP 160）：霸主晶核×2 + 乙太×20 → 守城戰刃。攻擊力 +28。
     { id: "ether_overlord_blade", out: "ether_overlord_blade", outQty: 1, inputs: [["ether_overlord_core", 2], ["ether", 20]], atk: 28 },
+    // 巢穴 Alpha 戰利品合成（ROADMAP 168）：Alpha 晶石×2 + 乙太×5 → Alpha 原力。使用後全回血+25乙太。
+    { id: "alpha_force", out: "alpha_force", outQty: 1, inputs: [["alpha_crystal", 2], ["ether", 5]] },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -8705,6 +8796,8 @@
       winter_medicine:  "回復至滿血 ❄️ 冬天冰晶碎片採集合成",
       // 入侵首領限定武器（ROADMAP 160）
       ether_overlord_blade: "攻擊力 +28 💠 入侵限定（霸主晶核×2＋乙太×20）",
+      // 巢穴 Alpha 戰利品（ROADMAP 168）
+      alpha_force: "使用後回滿血 + 獲得 +25 乙太 ⚡ Alpha晶石×2＋乙太×5",
       // 住家家具（ROADMAP 155）
       steam_bed:    "每 30 秒在室內回復 2 HP 🛏️ 木材×4＋石頭×2",
       aether_chest: "背包額外 +3 種類槽 📦 木材×3＋石頭×4",
@@ -12765,6 +12858,20 @@
           spawnTapFlash(sn.wx, sn.wy);
           return;
         }
+      }
+    }
+    // ROADMAP 168：點到附近 Alpha 首領 → 送 attack_alpha（伺服器驗距離）。
+    if (me && alphaMonsters.length) {
+      const rectA = canvas.getBoundingClientRect();
+      const awx = clientX - rectA.left + lastCam.x;
+      const awy = clientY - rectA.top + lastCam.y;
+      const ALPHA_CLICK_R = 40 * 40;
+      const clickedAlpha = alphaMonsters.find(a =>
+        (a.x - awx) ** 2 + (a.y - awy) ** 2 <= ALPHA_CLICK_R);
+      if (clickedAlpha) {
+        ws.send(JSON.stringify({ type: "attack_alpha", alpha_id: clickedAlpha.id }));
+        spawnTapFlash(clickedAlpha.x, clickedAlpha.y);
+        return;
       }
     }
     // ROADMAP 144：點到附近野生動物 → 送 attack_wildlife（伺服器驗距離）。
