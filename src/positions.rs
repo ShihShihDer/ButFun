@@ -355,11 +355,12 @@ async fn upsert_rows(
         .bind(m.artisan  as i64)
         .bind(m.explorer as i64)
         .bind(m.merchant as i64)
-        .bind(s.unspent  as i64)
-        .bind(s.hp       as i64)
-        .bind(s.attack   as i64)
-        .bind(s.speed    as i64)
-        .bind(s.atk_speed as i64)
+        // 屬性點 5 欄為 INT4：以 i32 綁定，與欄位型別一致（避免 i64→INT4 隱式收斂的邊界風險）。
+        .bind(s.unspent  as i32)
+        .bind(s.hp       as i32)
+        .bind(s.attack   as i32)
+        .bind(s.speed    as i32)
+        .bind(s.atk_speed as i32)
         .execute(&mut *tx)
         .await?;
     }
@@ -406,11 +407,14 @@ async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
         let ma: i64 = r.get("mastery_artisan");
         let me: i64 = r.get("mastery_explorer");
         let mm: i64 = r.get("mastery_merchant");
-        let su: i64 = r.get("stat_unspent");
-        let sh: i64 = r.get("stat_hp");
-        let sa: i64 = r.get("stat_attack");
-        let ss: i64 = r.get("stat_speed");
-        let sas: i64 = r.get("stat_atk_speed");
+        // 屬性點 5 欄（migration 0024）建為 INTEGER(INT4)→必須以 i32 解碼，否則 sqlx ColumnDecode
+        // 會 panic（Rust i64/INT8 與 SQL INT4 不相容），讀玩家位置時整個 server 開機就掛、crash loop。
+        // 其他 i64 欄（ether/exp/masteries）的欄位本就是 BIGINT，故維持 i64。
+        let su: i32 = r.get("stat_unspent");
+        let sh: i32 = r.get("stat_hp");
+        let sa: i32 = r.get("stat_attack");
+        let ss: i32 = r.get("stat_speed");
+        let sas: i32 = r.get("stat_atk_speed");
         let (x, y) = spawn_at(Some((x, y)));
         map.insert(
             id,
