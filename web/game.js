@@ -7428,6 +7428,36 @@
   function drawAlphaMonsters(camX, camY) {
     if (!alphaMonsters.length) return;
     const now = performance.now();
+
+    // ROADMAP 170：先畫衝突連線（在 Alpha 圖示下層，視覺清楚）
+    for (const a of alphaMonsters) {
+      if (!a.clash_target_id) continue;
+      const target = alphaMonsters.find(b => b.id === a.clash_target_id);
+      if (!target) continue;
+      // 只由 id 較小的那方畫線，避免重複
+      if (a.id >= target.id) continue;
+      const ax = a.x - camX, ay = a.y - camY;
+      const bx = target.x - camX, by = target.y - camY;
+      const clashPulse = 0.5 + 0.5 * Math.abs(Math.sin(now / 150));
+      ctx.save();
+      ctx.globalAlpha = clashPulse * 0.7;
+      ctx.strokeStyle = "#ff2020";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 中點顯示劍擊閃光「⚔️」
+      ctx.globalAlpha = clashPulse;
+      ctx.font = "16px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("⚔️", (ax + bx) / 2, (ay + by) / 2);
+      ctx.restore();
+    }
+
     for (const a of alphaMonsters) {
       const sx = a.x - camX;
       const sy = a.y - camY;
@@ -7435,37 +7465,42 @@
 
       const icon = MONSTER_COLONY_ICON[a.kind] || "👾";
       const hpPct = a.hp / Math.max(1, a.max_hp);
-      // 金色脈動光環
-      const pulse = 0.7 + 0.3 * Math.sin(now / 600);
+      const isClashing = !!a.clash_target_id;
+      // 衝突中改為紅色脈動光環；正常為金色
+      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : 600));
       ctx.save();
       ctx.beginPath();
       ctx.arc(sx, sy, 28 * pulse, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = isClashing
+        ? `rgba(255,50,50,${(0.7 * pulse).toFixed(3)})`
+        : `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
+      ctx.lineWidth = isClashing ? 4 : 3;
       ctx.stroke();
-      // 外圈旋轉花環（彰顯 Alpha 威嚴）
+      // 外圈花環
       ctx.beginPath();
       ctx.arc(sx, sy, 32, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
+      ctx.strokeStyle = isClashing
+        ? `rgba(255,80,80,${(0.35 * pulse).toFixed(3)})`
+        : `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // 圖示（放大 1.4x 彰顯霸主體型）
+      // 圖示
       ctx.font = "22px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(icon, sx, sy);
 
-      // 血條（顯示在圖示上方）
+      // 血條
       const barW = 48, barH = 6;
       const bx = sx - barW / 2, by = sy - 36;
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillRect(bx, by, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? "#4c4" : hpPct > 0.25 ? "#ca4" : "#c44";
       ctx.fillRect(bx, by, barW * hpPct, barH);
-      ctx.strokeStyle = "rgba(255,210,0,0.8)";
+      ctx.strokeStyle = isClashing ? "rgba(255,80,80,0.9)" : "rgba(255,210,0,0.8)";
       ctx.lineWidth = 1;
       ctx.strokeRect(bx, by, barW, barH);
 
@@ -7475,20 +7510,35 @@
       ctx.textBaseline = "bottom";
       ctx.fillText("👑", sx, by);
 
-      // 名牌（顯示在下方）
+      // 名牌
       const kindName = MONSTER_DISPLAY_NAME[a.kind] || a.kind;
       const label = `👑 ${kindName}·霸主`;
       ctx.font = "bold 11px sans-serif";
       const lw = ctx.measureText(label).width + 8;
       const lx = sx, ly = sy + 30;
-      ctx.fillStyle = "rgba(80,50,0,0.75)";
+      ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : "rgba(80,50,0,0.75)";
       ctx.fillRect(lx - lw / 2, ly - 12, lw, 14);
-      ctx.fillStyle = "#ffd700";
+      ctx.fillStyle = isClashing ? "#ff8080" : "#ffd700";
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
-      // ROADMAP 169：指揮氣泡——Alpha 發出指令時顯示橙色徽章
-      if (a.active_tactic) {
+      // ROADMAP 170：衝突徽章（優先於 tactic 氣泡）
+      if (isClashing) {
+        const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
+        const clashLabel = "⚔️ 衝突中";
+        ctx.font = "bold 10px sans-serif";
+        const cw = ctx.measureText(clashLabel).width + 10;
+        const cx2 = sx, cy2 = ly + 8;
+        ctx.fillStyle = `rgba(180,20,20,${(0.92 * clashPulse).toFixed(3)})`;
+        ctx.fillRect(cx2 - cw / 2, cy2 - 1, cw, 13);
+        ctx.strokeStyle = `rgba(255,80,80,${(0.95 * clashPulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cx2 - cw / 2, cy2 - 1, cw, 13);
+        ctx.fillStyle = "#fff";
+        ctx.textBaseline = "top";
+        ctx.fillText(clashLabel, cx2, cy2);
+      } else if (a.active_tactic) {
+        // ROADMAP 169：指揮氣泡——無衝突時才顯示橙色徽章
         const tacticPulse = 0.85 + 0.15 * Math.sin(now / 300);
         const tacticLabel = `📣 ${a.active_tactic}`;
         ctx.font = "bold 10px sans-serif";

@@ -975,6 +975,18 @@ pub fn spawn(app: AppState) {
                                     "👑 [{colony_name}] 族群達到巔峰！Alpha 首領「{kind_name}·霸主」降臨領地，尋求挑戰者！"
                                 ));
                             }
+                            // ROADMAP 170：Alpha 領地爭奪——衝突開始廣播。
+                            MonsterColonyEvent::AlphaClashStart { colony_a_name, colony_b_name } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "⚔️ 領地爭奪！[{colony_a_name}] Alpha vs [{colony_b_name}] Alpha——兩霸互搏！"
+                                ));
+                            }
+                            // ROADMAP 170：Alpha 領地爭奪——衝突結果廣播。
+                            MonsterColonyEvent::AlphaClashVictory { winner_colony_name, loser_colony_name, .. } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🏆 [{winner_colony_name}] Alpha 擊潰了 [{loser_colony_name}] Alpha！[{winner_colony_name}] 稱霸此區域，[{loser_colony_name}] 元氣大傷！趁勢攻擊殘血霸主！"
+                                ));
+                            }
                             // ROADMAP 169：Alpha 咆哮指揮——決定戰術並非同步生成台詞廣播。
                             MonsterColonyEvent::AlphaCommandReady { alpha_id, colony_name, kind, hp_pct, alpha_x, alpha_y } => {
                                 let kind_name = kind.display_name();
