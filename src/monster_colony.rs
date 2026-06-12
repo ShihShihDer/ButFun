@@ -183,6 +183,9 @@ pub enum MonsterColonyEvent {
         /// 敗者巢穴 ID，game.rs 用於更新族群計數與冷卻。
         loser_colony_id: u32,
     },
+    /// ROADMAP 172：玩家在某個巢穴附近擊殺一隻怪物，族群 -1。
+    /// ws.rs 將此事件轉給 EcoBountyState::on_colony_kill()。
+    MonsterKilledInColony { colony_id: u32 },
 }
 
 /// 管理所有怪物巢穴。
@@ -454,6 +457,8 @@ impl MonsterColonyManager {
         if let Some(idx) = best {
             let col = &mut self.colonies[idx];
             col.population -= 1;
+            // ROADMAP 172：通知生態清剿委託此巢穴被擊殺了一隻怪物。
+            events.push(MonsterColonyEvent::MonsterKilledInColony { colony_id: col.id });
             if col.population == 0 {
                 // 巢穴清空：加長冷卻再復生；同時移除 Alpha（族群歸零 Alpha 也消失）
                 col.spawn_timer = RESPAWN_SECS * WIPED_COOLDOWN_MULT;
