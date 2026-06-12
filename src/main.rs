@@ -113,6 +113,7 @@ mod wildlife;
 mod species_relations;
 mod stat_points;
 mod skill_mastery;
+mod civic_vote;
 
 use std::net::SocketAddr;
 

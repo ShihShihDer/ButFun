@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _ } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -465,6 +465,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 vec![]
                                             }
                                         },
+                                        // 公民投票（ROADMAP 156）：全服廣播（投票視圖 + 效果狀態）。
+                                        civic_vote: civic_vote.clone(),
+                                        civic_effect_secs: *civic_effect_secs,
+                                        civic_effect_kind: civic_effect_kind.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -853,8 +857,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 .get(&id).map(|h| h.has_plant()).unwrap_or(false) {
                                 crate::home_furniture::PLANT_GATHER_EXP_PCT
                             } else { 0 };
-                            // 護符 +10% 與繁榮/花盆加成合併成一次整數乘法，避免 5*10/100=0 截斷。
-                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct + plant_pct) + 50) / 100;
+                            // 農耕盛典（ROADMAP 156）：公民投票通過後採集 EXP +50%。
+                            let farming_festival_pct = if app.civic_vote.read().unwrap().farming_festival_active() {
+                                crate::civic_vote::FARMING_FESTIVAL_EXP_BONUS_PCT
+                            } else { 0 };
+                            // 合併所有百分比加成（避免 5*N/100=0 截斷），一次整數乘法。
+                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct + plant_pct + farming_festival_pct) + 50) / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
@@ -1252,8 +1260,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                         .get(&id).map(|h| h.has_deco()).unwrap_or(false) {
                                                         earned * crate::home_furniture::DECO_NPC_BONUS_PCT / 100
                                                     } else { 0 };
-                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, forecast_npc_bonus, deco_npc_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
-                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus).saturating_add(forecast_npc_bonus).saturating_add(deco_npc_bonus);
+                                                    // 夜市開張（ROADMAP 156）：公民投票通過後 NPC 收購 +15%。
+                                                    let night_market_bonus = if app.civic_vote.read().unwrap().night_market_active() {
+                                                        earned * crate::civic_vote::NIGHT_MARKET_BUY_BONUS_PCT / 100
+                                                    } else { 0 };
+                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, forecast_npc_bonus, deco_npc_bonus, night_market_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
+                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus).saturating_add(forecast_npc_bonus).saturating_add(deco_npc_bonus).saturating_add(night_market_bonus);
                                                     p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                     true
                                                 } else {
@@ -4835,6 +4847,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 旅行商人限時委託接取 end ──────────────────────────────────────────
+
+                // ── 公民投票（ROADMAP 156）────────────────────────────────────────────
+                Ok(ClientMsg::CivicVote { yes }) => {
+                    // 無需登入也能投票（訪客也是城鎮成員）。
+                    let player_id = id.to_string();
+                    let accepted = app.civic_vote.write().unwrap().cast_vote(&player_id, yes);
+                    if accepted {
+                        let vote_label = if yes { "✅ 讚成" } else { "❌ 反對" };
+                        if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                            from: "城鎮".into(),
+                            text: format!("🗳️ 你投下了{}票！", vote_label),
+                        }) { let _ = tx_direct.try_send(j); }
+                    }
+                    // 已投過或無活躍投票 → 靜默忽略。
+                }
+                // ── 公民投票 end ──────────────────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
