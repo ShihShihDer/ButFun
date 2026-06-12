@@ -159,7 +159,7 @@ pub struct Player {
     /// 持久化於 inventories 表的 equipment 欄；首次登入由 `auto_equip_best` 遷移。
     pub equipment: crate::equipment::EquipmentSlots,
 
-    // ── 主動技能（ROADMAP 45）─────────────────────────────────────────────
+    // ── 主動技能（ROADMAP 45 / 151）─────────────────────────────────────────
     /// 五技能的冷卻倒數（記憶體前置，重啟清空）。
     pub skill_cooldowns: crate::active_skill::SkillCooldowns,
     /// 戰吼旗：true 時下次攻擊打中 ATTACK_REACH 內**所有**存活敵人（群攻）。
@@ -170,6 +170,9 @@ pub struct Player {
     pub pending_precision: bool,
     /// 議價術旗：true 時下次 NPC 賣出額外多得等額乙太（總收入 ×2）。
     pub pending_haggle: bool,
+    /// 自動施放技能集合（ROADMAP 151）：玩家選擇哪些技能要自動施放。
+    /// 冷卻好後在對應行動時自動觸發，不需手動開技能面板點按。記憶體前置，重啟清空。
+    pub auto_skills: std::collections::HashSet<String>,
 
     // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
     /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
@@ -294,6 +297,7 @@ impl Player {
                 if self.pending_haggle    { flags.push("haggle".to_string()); }
                 flags
             },
+            auto_skills: self.auto_skills.iter().cloned().collect(),
             pet_kind: self.pet.map(|p| p.as_str().to_string()),
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
@@ -1213,6 +1217,7 @@ mod tests {
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            auto_skills: std::collections::HashSet::new(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,

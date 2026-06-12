@@ -329,6 +329,10 @@ pub enum ClientMsg {
     /// `kind`：`"warcry"` / `"bounty"` / `"precision"` / `"gale"` / `"haggle"`。
     /// 熟練度未達 Lv.5 / 冷卻中 / 未登入靜默忽略。
     UseSkill { kind: String },
+    /// 設定技能自動施放（ROADMAP 151）：玩家在技能面板勾選/取消某技能的自動施放。
+    /// `enabled = true` 時加入自動集合；`false` 時移除。
+    /// 風之步（gale）不支援自動（方向依賴）；其餘四種皆可。
+    SetAutoSkill { kind: String, enabled: bool },
     /// 馴化寵物（ROADMAP 46）：嘗試馴化 ATTACK_REACH 內 HP < 25% 的最近怪物。
     /// 不帶座標參數——伺服器以玩家自己的位置判定（防隔空馴化）。
     /// 乙太不足 / 無符合條件怪物 / 不可馴化種類 / 倒地中靜默忽略。
@@ -831,6 +835,9 @@ pub struct PlayerView {
     pub skill_cooldowns: std::collections::HashMap<String, u32>,
     /// 目前掛起的一次性技能旗標（ROADMAP 45）。前端顯示待發光效（"warcry", "bounty"...）。
     pub active_skill_flags: Vec<String>,
+    /// 設定為自動施放的技能（ROADMAP 151）。前端顯示 ⚡ 自動圖示。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_skills: Vec<String>,
     /// 目前的寵物種類 wire key（ROADMAP 46）。None = 沒有寵物。
     /// 前端用來在玩家旁邊顯示寵物 emoji，以及在 HUD 顯示寵物加成。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1308,6 +1315,7 @@ mod tests {
                 armor_refine: 0,
                 skill_cooldowns: std::collections::HashMap::new(),
                 active_skill_flags: vec![],
+                auto_skills: vec![],
                 pet_kind: None,
                 fish_cooldown: 0.0,
                 near_water: false,
@@ -1521,6 +1529,7 @@ mod tests {
             armor_refine: 0,
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
+            auto_skills: vec![],
             pet_kind: None,
             fish_cooldown: 0.0,
             near_water: false,
@@ -1741,6 +1750,7 @@ mod tests {
             weapon_refine: 0, weapon_enchant: None, armor_refine: 0,
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
+            auto_skills: vec![],
             pet_kind: None, fish_cooldown: 0.0, near_water: false,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
@@ -1787,6 +1797,7 @@ mod tests {
             weapon_refine: 0, weapon_enchant: None, armor_refine: 0,
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
+            auto_skills: vec![],
             pet_kind: None, fish_cooldown: 0.0, near_water: false,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,

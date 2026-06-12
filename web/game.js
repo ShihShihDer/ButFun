@@ -9423,7 +9423,8 @@
     const masteries = me.masteries || {};
     const cds = me.skill_cooldowns || {};
     const flags = me.active_skill_flags || [];
-    const sig = JSON.stringify({ masteries, cds, flags, isGuestUser });
+    const autoSkills = me.auto_skills || [];
+    const sig = JSON.stringify({ masteries, cds, flags, autoSkills, isGuestUser });
     if (sig === lastSkillSig) return;
     lastSkillSig = sig;
     body.innerHTML = "";
@@ -9438,7 +9439,7 @@
 
     const intro = document.createElement("div");
     intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
-    intro.textContent = "各熟練度 Lv.5 解鎖對應主動技能。每個技能觸發後進入冷卻，冷卻完畢即可再次使用。";
+    intro.textContent = "各熟練度 Lv.5 解鎖對應主動技能。開啟「⚡ 自動」後，冷卻好時會在對應行動自動施放，無需手動點按。";
     body.appendChild(intro);
 
     for (const def of SKILL_DEFS) {
@@ -9448,6 +9449,9 @@
       const cd = cds[def.kind] || 0;
       const ready = unlocked && cd === 0;
       const isPending = flags.includes(def.kind);
+      const isAuto = autoSkills.includes(def.kind);
+      // 風之步不支援自動（需要方向輸入）
+      const canAuto = def.kind !== "gale";
 
       const row = document.createElement("div");
       row.style.cssText = `
@@ -9465,7 +9469,7 @@
 
       const nameEl = document.createElement("div");
       nameEl.style.cssText = `font-size:.9rem;font-weight:bold;color:${unlocked ? "#eee" : "#888"};`;
-      nameEl.textContent = `${def.name}${isPending ? " ✨" : ""}`;
+      nameEl.textContent = `${def.name}${isPending ? " ✨" : ""}${isAuto ? " ⚡" : ""}`;
       info.appendChild(nameEl);
 
       const descEl = document.createElement("div");
@@ -9477,6 +9481,10 @@
       statusEl.style.cssText = "color:#888;font-size:.72rem;margin-top:2px;";
       if (!unlocked) {
         statusEl.textContent = `熟練度 Lv.${def.lv} 解鎖（目前 Lv.${masteryLv}）`;
+      } else if (isAuto && cd > 0) {
+        statusEl.textContent = `⚡ 自動施放中（冷卻剩 ${cd} 秒）`;
+      } else if (isAuto) {
+        statusEl.textContent = "⚡ 自動施放中（下次行動自動觸發）";
       } else if (cd > 0) {
         statusEl.textContent = `冷卻中 ${cd} 秒`;
       } else if (isPending) {
@@ -9487,22 +9495,48 @@
       info.appendChild(statusEl);
       row.appendChild(info);
 
+      // 按鈕區塊：手動施放 + 自動開關
+      const btnWrap = document.createElement("div");
+      btnWrap.style.cssText = "display:flex;flex-direction:column;gap:4px;align-items:flex-end;";
+
+      // 手動施放按鈕
       const btn = document.createElement("button");
       btn.type = "button";
       btn.style.cssText = `
-        padding:6px 12px; border:none; border-radius:6px; cursor:pointer;
-        font-size:.8rem; min-width:56px;
-        background:${ready ? "#5080f0" : "#333"};
-        color:${ready ? "#fff" : "#666"};
+        padding:5px 10px; border:none; border-radius:6px; cursor:pointer;
+        font-size:.8rem; min-width:52px;
+        background:${ready && !isAuto ? "#5080f0" : "#333"};
+        color:${ready && !isAuto ? "#fff" : "#666"};
       `;
       btn.textContent = cd > 0 ? `${cd}s` : (unlocked ? "施放" : "未解鎖");
-      btn.disabled = !ready;
-      if (ready) {
+      btn.disabled = !ready || isAuto;
+      btn.title = isAuto ? "自動施放模式中（關閉自動才能手動）" : "";
+      if (ready && !isAuto) {
         btn.addEventListener("click", () => {
           ws.send(JSON.stringify({ type: "use_skill", kind: def.kind }));
         });
       }
-      row.appendChild(btn);
+      btnWrap.appendChild(btn);
+
+      // 自動開關按鈕（風之步不顯示）
+      if (canAuto && unlocked) {
+        const autoBtn = document.createElement("button");
+        autoBtn.type = "button";
+        autoBtn.style.cssText = `
+          padding:3px 8px; border:1px solid ${isAuto ? "#f0c050" : "#444"}; border-radius:5px;
+          cursor:pointer; font-size:.72rem; min-width:52px;
+          background:${isAuto ? "#3a3010" : "#222"};
+          color:${isAuto ? "#f0c050" : "#666"};
+        `;
+        autoBtn.textContent = isAuto ? "⚡ 自動開" : "⚡ 自動";
+        autoBtn.title = isAuto ? "關閉自動施放" : "開啟自動施放（冷卻好時自動觸發）";
+        autoBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "set_auto_skill", kind: def.kind, enabled: !isAuto }));
+        });
+        btnWrap.appendChild(autoBtn);
+      }
+
+      row.appendChild(btnWrap);
       body.appendChild(row);
     }
   }
