@@ -413,6 +413,14 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::StarAmulet,
         output_qty: 1,
     },
+    /// 星際守護符：彩虹星塵×1 + 星塵×4 + 星晶碎片×2 → 星際守護符×1（ROADMAP 134）。
+    /// 持有時採集/戰鬥 EXP +15%；流星雨期間每採集節點額外 +1 星塵。
+    Recipe {
+        id: "star_guardian_amulet",
+        inputs: &[(ItemKind::RainbowStarDust, 1), (ItemKind::StarDust, 4), (ItemKind::StarCrystalShard, 2)],
+        output: ItemKind::StarGuardianAmulet,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -677,8 +685,8 @@ mod tests {
                 );
                 // 夜採可得（ROADMAP 50）：夜間採集星晶礦脈。
                 let star_crystal_gatherable = item == ItemKind::StarCrystalShard;
-                // 流星雨採集可得（ROADMAP 133）：天文台完工後流星雨期間採集地面星塵節點。
-                let meteor_dust_collectible = item == ItemKind::StarDust;
+                // 流星雨採集可得（ROADMAP 133/134）：天文台完工後流星雨期間採集地面星塵節點。
+                let meteor_dust_collectible = item == ItemKind::StarDust || item == ItemKind::RainbowStarDust;
                 assert!(
                     obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\

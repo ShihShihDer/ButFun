@@ -28,12 +28,15 @@ pub struct EquipmentSlots {
     pub armor_meta: EquipmentMeta,
 }
 
-/// 一個物品對應的裝備槽名稱（"weapon" / "armor"）；不可裝備的物品回 `None`。
+/// 一個物品對應的裝備槽名稱（"weapon" / "armor" / "accessory"）；不可裝備的物品回 `None`。
 pub fn slot_for_item(item: ItemKind) -> Option<&'static str> {
     if crate::combat::weapon_from_item(item).is_some() {
         Some("weapon")
     } else if crate::combat::armor_from_item(item).is_some() {
         Some("armor")
+    } else if matches!(item, ItemKind::StarAmulet | ItemKind::StarGuardianAmulet) {
+        // 護符類飾品——提供被動加成，無戰鬥數值（ROADMAP 133/134）。
+        Some("accessory")
     } else {
         None
     }
@@ -46,6 +49,7 @@ pub fn equip(slots: &mut EquipmentSlots, item: ItemKind) -> Option<ItemKind> {
     match slot_for_item(item)? {
         "weapon" => slots.weapon.replace(item),
         "armor" => slots.armor.replace(item),
+        "accessory" => slots.accessory.replace(item),
         _ => None,
     }
 }
