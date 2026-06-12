@@ -13222,8 +13222,12 @@
     const hudEl = document.getElementById("hud");
     const hudToggle = document.getElementById("hudToggle");
     if (hudEl && hudToggle) {
-      let collapsed = false;
-      try { collapsed = localStorage.getItem("butfun.hudCollapsed") === "1"; } catch {}
+      // 預設：手機/窄螢幕收合次要狀態(只留核心數值,抗擁擠);桌機展開。玩家手動切換後記住其偏好。
+      let collapsed = window.innerWidth < 760;
+      try {
+        const saved = localStorage.getItem("butfun.hudCollapsed");
+        if (saved !== null) collapsed = saved === "1";
+      } catch {}
       const applyHud = () => {
         hudEl.classList.toggle("collapsed", collapsed);
         hudToggle.textContent = collapsed ? "▸ HUD" : "▾ HUD";

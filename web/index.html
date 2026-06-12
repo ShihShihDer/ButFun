@@ -106,8 +106,13 @@
     #hudToggle { background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; color: var(--ink);
       cursor: pointer; font: inherit; padding: 3px 9px; margin-bottom: 5px; line-height: 1.2; }
     #hudToggle:hover { border-color: var(--brass); }
-    #hud.collapsed > .hud-row, #hud.collapsed > #hudDock, #hud.collapsed > .hud-sub,
+    /* 收合(▸ HUD)時只藏「次要狀態」與引導列,核心數值列(乙太/血量/等級/攻擊)與 dock(背包/選單)
+       永遠留著——手機預設收合,只剩 4 個核心數值,大幅減少版面擁擠。 */
+    #hud.collapsed .hud-secondary, #hud.collapsed > .hud-sub,
     #hud.collapsed > #hudGuestHint { display: none !important; }
+    /* 次要狀態藥丸群:平時 display:contents 讓子元素融入 .hud-row 的 flex 排版(與直接平鋪無異);
+       收合時整組一次隱藏,只留核心。 */
+    .hud-secondary { display: contents; }
     /* 狀態列:小圖示+數字橫排成藥丸,省空間、一眼可讀;窄螢幕放不下會自動換行。 */
     #hud .hud-row { display: flex; flex-wrap: wrap; gap: 6px; }
     #hud .hud-pill { background: var(--panel); padding: 4px 9px; border-radius: 999px; line-height: 1.4; white-space: nowrap; }
@@ -432,6 +437,8 @@
       <span class="hud-pill" id="hudLevel" title="等級與經驗值">⭐ Lv.0</span>
       <!-- 攻擊力（ROADMAP 18 升級加成）:基礎武器力 + 等級加成，讓玩家感受到升級帶來的成長。 -->
       <span class="hud-pill" id="hudAttack" title="目前攻擊力（武器力 + 等級加成）" style="color:#ff9d8f">⚔️ 2</span>
+      <!-- ↓↓ 次要狀態群（HUD 抗擁擠）：手機預設收合，點「▾ HUD」展開。核心數值（上面 4 個）永遠在。 -->
+      <span class="hud-secondary">
       <!-- 防禦力（ROADMAP 19 生態裝備）：持有護甲時顯示，每次受傷減少的傷害點數。 -->
       <span class="hud-pill hidden" id="hudDefense" title="目前防禦（每次受傷減少的傷害點數）" style="color:#8ec4f0">🛡️ 0</span>
       <!-- 星球指示器（ROADMAP 20 多星球旅程）：不在故鄉時顯示目前所在星球。 -->
@@ -456,6 +463,8 @@
       <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
       <span class="hud-pill" id="hudTime">—</span>
       <button type="button" class="hud-pill" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 回城</button>
+      </span>
+      <!-- ↑↑ 次要狀態群結束。以下情境動作鈕（靠近才亮）不收進次要群，讓「搭話/幫忙/採集」提示永遠看得到。 -->
       <button type="button" class="hud-pill hidden" id="homeBtn" title="進入住家（需靠近建地中心）" aria-label="進入住家" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 進入住家</button>
       <button type="button" class="hud-pill hidden" id="residentBtn" title="和附近居民搭話" aria-label="搭話" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">💬 搭話</button>
       <button type="button" class="hud-pill hidden" id="helpResidentBtn" title="協助附近需要幫忙的居民" aria-label="幫忙" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🤝 幫忙</button>
