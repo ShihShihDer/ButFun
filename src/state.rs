@@ -931,6 +931,11 @@ pub struct AppState {
     pub town_project: Arc<RwLock<crate::town_project::TownProjectState>>,
     /// 城鎮大工程持久化 store。
     pub town_project_store: crate::town_project_store::TownProjectStore,
+    /// 天文台星象預報狀態（ROADMAP 132）：天文台竣工後每個黎明廣播星象、啟用全服加成。
+    /// 純記憶體模式，重啟清零；不破壞玩家資料。
+    pub observatory: Arc<RwLock<crate::observatory::ObservatoryState>>,
+    /// 星象預報專屬 Semaphore（容量 1）：同時最多一個 AI 星象生成呼叫。
+    pub observatory_sem: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -1091,6 +1096,8 @@ impl AppState {
                 town_project_store.saved_project().unwrap_or_else(crate::town_project::TownProjectState::new_observatory)
             )),
             town_project_store,
+            observatory: Arc::new(RwLock::new(crate::observatory::ObservatoryState::new())),
+            observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
         }
     }
 

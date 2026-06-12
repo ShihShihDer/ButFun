@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -405,6 +405,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         town_prosperity_level: *town_prosperity_level,
                                         // 城鎮大工程：全服廣播。
                                         town_project: town_project.clone(),
+                                        // 天文台星象預報（ROADMAP 132）：全服廣播。
+                                        star_forecast_secs: *star_forecast_secs,
+                                        star_forecast_bonus: star_forecast_bonus.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -709,7 +712,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             } else { 0 };
                             // 寵物採集加成（ROADMAP 46）：飄舞精靈每次額外 +1 物品。
                             let pet_gather = p.pet.map(|pk| pk.bonus_gather_qty()).unwrap_or(0);
-                            let (added, _wh, _drop) = p.add_item_overflow(item, amount * mult + bounty_bonus + pet_gather + weather_bonus);
+                            // 星象預報豐收星象（ROADMAP 132）：採集每次額外 +1 物品。
+                            let forecast_gather = {
+                                let obs = app.observatory.read().unwrap();
+                                if obs.is_active() && obs.current_bonus == crate::observatory::StarForecastBonus::GatherExtra {
+                                    crate::observatory::StarForecastBonus::gather_extra_qty()
+                                } else { 0 }
+                            };
+                            let (added, _wh, _drop) = p.add_item_overflow(item, amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather);
                             // 採集得 exp（鼓勵探索）；村落節慶加成 +30%（ROADMAP 64）；廣場聚會加成 +20%（ROADMAP 124）；繁榮紅利 +15/+30%（ROADMAP 129）。
                             let village_gather_pct = {
                                 let lock = app.village_buff_until.read().unwrap();
@@ -720,12 +730,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let gathering_pct = if app.community_gathering.read().unwrap().is_active() {
                                 crate::community_gathering::GATHERING_EXP_BONUS_PCT
                             } else { 0 };
+                            // 星象預報吉星高照（ROADMAP 132）：EXP +25%。
+                            let forecast_exp_pct = {
+                                let obs = app.observatory.read().unwrap();
+                                if obs.is_active() && obs.current_bonus == crate::observatory::StarForecastBonus::ExpBoost {
+                                    crate::observatory::StarForecastBonus::exp_bonus_pct()
+                                } else { 0 }
+                            };
                             let prosperity_pct = crate::town_prosperity::level_from_u8(
                                 app.residents.read().unwrap().prosperity_level()
                             ).exp_bonus_pct();
                             let gather_exp_base = 5u32
                                 + 5 * village_gather_pct / 100
-                                + 5 * gathering_pct / 100;
+                                + 5 * gathering_pct / 100
+                                + 5 * forecast_exp_pct / 100;
                             // 以四捨五入整數乘法套用繁榮加成。
                             let gather_exp = (gather_exp_base * (100 + prosperity_pct) + 50) / 100;
                             let old_level = p.level();
@@ -1031,8 +1049,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                         p.pending_haggle = false;
                                                         earned.saturating_add(class_bonus)
                                                     } else { 0 };
-                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
-                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus);
+                                                    // 星象預報金星入市（ROADMAP 132）：NPC 收購 +15%。
+                                                    let forecast_npc_bonus = {
+                                                        let obs = app.observatory.read().unwrap();
+                                                        if obs.is_active() && obs.current_bonus == crate::observatory::StarForecastBonus::NpcBonus {
+                                                            earned * crate::observatory::StarForecastBonus::npc_bonus_pct() / 100
+                                                        } else { 0 }
+                                                    };
+                                                    tracing::info!(player = %p.name, ?item, actual_qty, earned, class_bonus, haggle_bonus, commission_bonus, forecast_npc_bonus, bulk_cost, merchant_name, "NPC 收購（批量漸降價）");
+                                                    p.ether = p.ether.saturating_add(earned).saturating_add(class_bonus).saturating_add(haggle_bonus).saturating_add(commission_bonus).saturating_add(forecast_npc_bonus);
                                                     p.masteries.gain_merchant(1); // 商人熟練度（ROADMAP 38）
                                                     true
                                                 } else {
@@ -1493,13 +1518,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let prosperity_mult = 1.0_f32 + crate::town_prosperity::level_from_u8(
                                 app.residents.read().unwrap().prosperity_level()
                             ).exp_bonus_pct() as f32 / 100.0;
+                            // 星象預報吉星高照（ROADMAP 132）：EXP +25%。
+                            let forecast_mult = {
+                                let obs = app.observatory.read().unwrap();
+                                if obs.is_active() && obs.current_bonus == crate::observatory::StarForecastBonus::ExpBoost {
+                                    1.0_f32 + crate::observatory::StarForecastBonus::exp_bonus_pct() as f32 / 100.0
+                                } else { 1.0_f32 }
+                            };
                             let reward = (base_reward as f32
                                 * crate::refinement::enchant_exp_multiplier(enchant)
                                 * notorious_mult
                                 * pet_mult
                                 * village_mult
                                 * gathering_mult
-                                * prosperity_mult) as u32;
+                                * prosperity_mult
+                                * forecast_mult) as u32;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
@@ -1993,6 +2026,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         TRAVEL_ETHER_COST_VERDANT_DIRECT,
                     };
                     use crate::protocol::ServerMsg;
+                    // 星象預報星際順風（ROADMAP 132）：旅行費額外 -10 乙太。
+                    let forecast_travel_discount: u32 = {
+                        let obs = app.observatory.read().unwrap();
+                        if obs.is_active() && obs.current_bonus == crate::observatory::StarForecastBonus::TravelDiscount {
+                            crate::observatory::StarForecastBonus::travel_discount_ether()
+                        } else { 0 }
+                    };
                     let result = if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         let travel_discount = crate::class::travel_cost_reduction(&p.masteries);
                         match p.can_travel_to(&planet, travel_discount) {
@@ -2010,7 +2050,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 ];
                                 let has_all_weapons = biome_weapons.iter().all(|w| p.inventory.count(*w) > 0);
                                 let base_cost = if has_all_weapons { TRAVEL_ETHER_COST } else { TRAVEL_ETHER_COST_VERDANT_DIRECT };
-                                let cost = crate::class::apply_travel_discount(&p.masteries, base_cost);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, base_cost).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_VERDANT.to_string();
                                 p.x = VERDANT_SPAWN_X;
@@ -2024,7 +2064,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_CRIMSON => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_CRIMSON);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_CRIMSON).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_CRIMSON.to_string();
                                 p.x = CRIMSON_SPAWN_X;
@@ -2038,7 +2078,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_VOID => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_VOID);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_VOID).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_VOID.to_string();
                                 p.x = VOID_SPAWN_X;
@@ -2052,7 +2092,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_AETHER => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_AETHER);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_AETHER).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_AETHER.to_string();
                                 p.x = AETHER_SPAWN_X;
@@ -2066,7 +2106,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) if planet == PLANET_ORIGIN => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_ORIGIN);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST_ORIGIN).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_ORIGIN.to_string();
                                 p.x = ORIGIN_SPAWN_X;
@@ -2080,7 +2120,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                             }
                             Ok(()) => {
-                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST);
+                                let cost = crate::class::apply_travel_discount(&p.masteries, TRAVEL_ETHER_COST).saturating_sub(forecast_travel_discount);
                                 p.ether -= cost;
                                 p.planet = PLANET_HOME.to_string();
                                 let (hx, hy) = crate::positions::default_spawn();

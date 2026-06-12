@@ -361,6 +361,53 @@
     pill.textContent = text;
   }
 
+  // 天文台星象預報 HUD（ROADMAP 132）：天文台竣工後，活躍加成顯示倒計時 pill。
+  let lastForecastText = null;
+  const FORECAST_BONUS_INFO = {
+    exp_boost:        { text: "⭐ 吉星高照 EXP+25%",  color: "#f0e080", border: "#c0b020", bg: "#1a1a00" },
+    travel_discount:  { text: "🌬️ 星際順風 旅行-10✨", color: "#80c0f0", border: "#2080c0", bg: "#001a2a" },
+    gather_extra:     { text: "🌾 豐收星象 採集+1",    color: "#80e090", border: "#20a040", bg: "#001a08" },
+    npc_bonus:        { text: "💰 金星入市 收購+15%",  color: "#f0b050", border: "#c07010", bg: "#1a0e00" },
+  };
+  function updateStarForecastHud() {
+    let pill = document.getElementById("hudStarForecast");
+    const nowMs = performance.now();
+    const remainMs = starForecastUntilMs - nowMs;
+    if (remainMs <= 0 || !starForecastBonus) {
+      if (pill) pill.style.display = "none";
+      lastForecastText = null;
+      return;
+    }
+    const secs = Math.ceil(remainMs / 1000);
+    const info = FORECAST_BONUS_INFO[starForecastBonus];
+    const label = info ? info.text : starForecastBonus;
+    const text = `🔭 ${label}（${secs}s）`;
+    if (text === lastForecastText) return;
+    lastForecastText = text;
+    if (!pill) {
+      const newPill = document.createElement("div");
+      newPill.id = "hudStarForecast";
+      newPill.style.cssText = [
+        "position:fixed", "top:78px", "right:8px",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "z-index:1000",
+        "pointer-events:none",
+        "transition:background .4s,color .4s",
+      ].join(";");
+      document.body.appendChild(newPill);
+    }
+    const target = document.getElementById("hudStarForecast");
+    if (target) {
+      const inf = info || { color: "#c0c0c0", border: "#808080", bg: "#101010" };
+      target.style.background = inf.bg;
+      target.style.color = inf.color;
+      target.style.border = `1px solid ${inf.border}`;
+      target.style.display = "block";
+      target.textContent = text;
+    }
+  }
+
   // 城鎮繁榮儀 HUD（ROADMAP 128）：常駐顯示城鎮繁榮等級，讓玩家一眼看到整體氛圍。
   // bonus: 採集/戰鬥 EXP 加成百分比（ROADMAP 129 繁榮紅利，與後端 exp_bonus_pct 同步）。
   const PROSPERITY_INFO = [
@@ -408,6 +455,8 @@
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
+  let starForecastUntilMs = 0;  // ROADMAP 132 天文台星象加成到期的 performance.now() 時刻（0=無加成）
+  let starForecastBonus = "";   // ROADMAP 132 當前加成類型字串
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
   const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
   let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
@@ -728,6 +777,14 @@
           gatheringUntilMs = performance.now() + msg.gathering_secs * 1000;
         } else if (msg.gathering_secs === 0 && gatheringUntilMs > 0) {
           gatheringUntilMs = 0;
+        }
+        // 天文台星象預報（ROADMAP 132）：從快照同步剩餘時間與加成類型。
+        if (msg.star_forecast_secs > 0) {
+          starForecastUntilMs = performance.now() + msg.star_forecast_secs * 1000;
+          starForecastBonus = msg.star_forecast_bonus || "";
+        } else if (msg.star_forecast_secs === 0 && starForecastUntilMs > 0) {
+          starForecastUntilMs = 0;
+          starForecastBonus = "";
         }
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
@@ -3147,6 +3204,8 @@
     updateGatheringHud();
     // 城鎮繁榮儀（ROADMAP 128）：常駐顯示當前繁榮等級。
     updateProsperityHud();
+    // 天文台星象預報（ROADMAP 132）：活躍加成顯示倒數 pill。
+    updateStarForecastHud();
 
     requestAnimationFrame(render);
   }
