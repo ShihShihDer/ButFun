@@ -530,9 +530,15 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // AI 導演層＋獸潮攻城（ROADMAP 44）：低頻導演 tick，觸發時注入怪波＋廣播公告。
+            // AI 導演層＋獸潮攻城（ROADMAP 44 / 139）：低頻導演 tick，觸發時注入怪波＋廣播公告。
+            // 先把居民數傳給導演，讓它依人口縮放波次（ROADMAP 139 平衡）。
             {
-                let cmds = app.director.write().unwrap().tick(dt);
+                let resident_count = app.residents.read().unwrap().population();
+                let cmds = {
+                    let mut director = app.director.write().unwrap();
+                    director.update_population(resident_count);
+                    director.tick(dt)
+                };
                 for cmd in cmds {
                     match cmd {
                         crate::director::DirectorCmd::AnnounceHorde { site_x, site_y, site_label, wave } => {
