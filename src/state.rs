@@ -1002,6 +1002,9 @@ pub struct AppState {
     /// 玩家住家家具（ROADMAP 155）：每位玩家（UUID）所放置的家具列表。
     /// 記憶體模式，重啟清空（玩家需重新進室內放置）；家具材料在背包持久化。
     pub home_furnishings: Arc<RwLock<std::collections::HashMap<uuid::Uuid, crate::home_furniture::HomeFurnishings>>>,
+    /// 公民投票（ROADMAP 156）：居民代言人定期提案，玩家投票決定城鎮短期效果。
+    /// 記憶體模式，重啟清零；不破壞玩家資料。
+    pub civic_vote: Arc<RwLock<crate::civic_vote::CivicVoteState>>,
 }
 
 impl AppState {
@@ -1171,6 +1174,7 @@ impl AppState {
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             home_furnishings: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            civic_vote: Arc::new(RwLock::new(crate::civic_vote::CivicVoteState::new())),
         }
     }
 

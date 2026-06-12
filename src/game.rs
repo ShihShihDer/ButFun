@@ -546,6 +546,7 @@ pub fn spawn(app: AppState) {
             // 先把居民數傳給導演，讓它依人口縮放波次（ROADMAP 139 平衡）。
             {
                 let resident_count = app.residents.read().unwrap().population();
+                let defense_drill = app.civic_vote.read().unwrap().defense_drill_active();
                 let cmds = {
                     let mut director = app.director.write().unwrap();
                     director.update_population(resident_count);
@@ -554,6 +555,13 @@ pub fn spawn(app: AppState) {
                 for cmd in cmds {
                     match cmd {
                         crate::director::DirectorCmd::AnnounceHorde { site_x, site_y, site_label, wave } => {
+                            // 城防演練（ROADMAP 156）：城防演練進行中，跳過怪物注入。
+                            if defense_drill {
+                                let _ = app.tx_chat.send(
+                                    "🛡️ 城防演練進行中，獸潮被警戒陣形阻擋，暫時撤退！".to_string()
+                                );
+                                continue;
+                            }
                             // 注入第一波怪物（全部在保護圈外確認）。
                             let mut enemies = app.enemies.write().unwrap();
                             let mut injected = 0u32;
@@ -953,6 +961,42 @@ pub fn spawn(app: AppState) {
                         }
                         GatheringEvent::Ended { text } => {
                             let _ = app.tx_chat.send(text);
+                        }
+                    }
+                }
+            }
+
+            // 公民投票 tick（ROADMAP 156）：居民代言人定期提案，玩家投票決定城鎮短期效果。
+            {
+                use crate::civic_vote::CivicVoteEvent;
+                let spokesman = crate::civic_vote::CivicVoteState::elect_spokesman(
+                    &app.residents.read().unwrap().residents
+                );
+                let civic_events = app.civic_vote.write().unwrap().tick(dt, spokesman);
+                for ev in civic_events {
+                    match ev {
+                        CivicVoteEvent::ProposalStarted { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                        CivicVoteEvent::ProposalPassed { text, .. } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                        CivicVoteEvent::ProposalRejected { text } => {
+                            let _ = app.tx_chat.send(text);
+                        }
+                        CivicVoteEvent::AetherReward => {
+                            // 乙太集資：給所有在線玩家 +AETHER_REWARD_AMOUNT 乙太。
+                            let reward = crate::civic_vote::AETHER_REWARD_AMOUNT;
+                            {
+                                let mut players = app.players.write().unwrap();
+                                for p in players.values_mut() {
+                                    p.ether = p.ether.saturating_add(reward);
+                                }
+                            }
+                            let _ = app.tx_chat.send(format!(
+                                "⚡ 乙太集資成功！每位在線玩家獲得 +{} 乙太！",
+                                reward
+                            ));
                         }
                     }
                 }
@@ -1751,6 +1795,10 @@ pub fn spawn(app: AppState) {
                         species_attitudes: app.species_relations.read().unwrap().views(),
                         // 住家家具（ROADMAP 155）：廣播時以空陣列佔位，ws.rs 過濾層依玩家 id 填入本人家具。
                         home_furniture: vec![],
+                        // 公民投票（ROADMAP 156）：當前活躍投票視圖 + 效果狀態。
+                        civic_vote: app.civic_vote.read().unwrap().vote_view(),
+                        civic_effect_secs: app.civic_vote.read().unwrap().effect_remaining_secs(),
+                        civic_effect_kind: app.civic_vote.read().unwrap().active_effect_kind(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

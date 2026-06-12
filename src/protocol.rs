@@ -456,6 +456,10 @@ pub enum ClientMsg {
     /// 成功後：清除請求、玩家獲得 HELP_REWARD_ETHER 乙太、廣播居民感謝語。
     #[serde(rename = "help_resident")]
     HelpResident { resident_id: String },
+    /// 公民投票（ROADMAP 156）：對當前活躍提案投下讚成（true）或反對（false）票。
+    /// 每位玩家每次提案限投一票；無活躍投票或已投過則靜默忽略。
+    #[serde(rename = "civic_vote")]
+    CivicVote { yes: bool },
     /// 採集流星雨星塵節點（ROADMAP 133）。玩家必須在 COLLECT_REACH 範圍內。
     /// 成功後：節點標為已採集、玩家獲得 StarDust×1。
     #[serde(rename = "collect_dust_node")]
@@ -698,6 +702,14 @@ pub enum ServerMsg {
         /// 物種態度（ROADMAP 144）：各物種對人類的態度值（0-100）與層級。
         /// 前端用於「生態」面板顯示關係狀態，並根據態度調整視覺提示。
         species_attitudes: Vec<crate::species_relations::SpeciesAttitudeView>,
+        /// 公民投票（ROADMAP 156）：當前活躍投票視圖，None = 無進行中的投票。
+        /// 前端顯示代言人、提案文字、投票按鈕與倒數計時。
+        civic_vote: Option<crate::civic_vote::CivicVoteView>,
+        /// 公民投票效果剩餘秒數（ROADMAP 156）：0 = 無效果；> 0 時依 civic_effect_kind 顯示 HUD pill。
+        civic_effect_secs: u32,
+        /// 公民投票效果種類（ROADMAP 156）：空字串=無；farming_festival/night_market/defense_drill。
+        /// 前端依此顯示效果標籤。
+        civic_effect_kind: String,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1541,6 +1553,9 @@ mod tests {
             species_attitudes: vec![],
             seasonal_nodes: vec![],
             home_furniture: vec![],
+            civic_vote: None,
+            civic_effect_secs: 0,
+            civic_effect_kind: String::new(),
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

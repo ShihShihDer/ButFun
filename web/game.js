@@ -572,6 +572,107 @@
     }
   }
 
+  // 公民投票 HUD（ROADMAP 156）：投票面板 + 效果 pill。
+  let civicHasVoted = false; // 本次提案是否已投票（前端快取，防重複顯示已投）
+  let lastCivicVoteId = null; // 以 spokesman_name+proposal_kind 組合識別提案（換提案重設 hasVoted）
+
+  function updateCivicVoteHud(voteData, effectSecs, effectKind) {
+    _updateCivicVotePanel(voteData);
+    _updateCivicEffectPill(effectSecs, effectKind);
+  }
+
+  function _updateCivicVotePanel(voteData) {
+    let panel = document.getElementById("civicVotePanel");
+    if (!voteData || voteData.vote_remaining_secs <= 0) {
+      if (panel) panel.style.display = "none";
+      return;
+    }
+    const voteId = `${voteData.spokesman_name}:${voteData.proposal_kind}`;
+    if (voteId !== lastCivicVoteId) {
+      lastCivicVoteId = voteId;
+      civicHasVoted = false;
+    }
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "civicVotePanel";
+      panel.style.cssText = [
+        "position:fixed", "top:60px", "left:50%", "transform:translateX(-50%)",
+        "background:rgba(20,15,40,0.92)", "border:1px solid #8060c0",
+        "border-radius:12px", "padding:10px 16px", "z-index:1100",
+        "max-width:360px", "width:90%", "box-sizing:border-box",
+        "font-family:monospace", "color:#d0b8ff", "font-size:.8rem",
+        "text-align:center",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    const secs = voteData.vote_remaining_secs;
+    const timeStr = secs > 60 ? `${Math.floor(secs/60)}m${secs%60}s` : `${secs}s`;
+    const btnDisabled = civicHasVoted ? 'disabled style="opacity:0.5;cursor:default"' : '';
+    const votedHint = civicHasVoted ? '<div style="color:#a070e0;margin-top:4px;font-size:.7rem">已投票</div>' : '';
+    panel.innerHTML = `
+      <div style="color:#b09fe0;font-size:.7rem;margin-bottom:4px">🏅 代言人：${voteData.spokesman_name}</div>
+      <div style="color:#ffe0a0;margin-bottom:6px;line-height:1.4">${voteData.proposal_text.replace(/請在\d+秒內投票！$/, '')}</div>
+      <div style="color:#80d080;font-size:.7rem;margin-bottom:6px">✅ ${voteData.vote_yes}票 ❌ ${voteData.vote_no}票 ⏱ ${timeStr}</div>
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button ${btnDisabled} onclick="window._castCivicVote(true)"
+          style="background:#2a5a2a;border:1px solid #4a9a4a;border-radius:8px;color:#a0ffa0;padding:4px 14px;cursor:pointer;font-family:monospace">✅ 讚成</button>
+        <button ${btnDisabled} onclick="window._castCivicVote(false)"
+          style="background:#5a2a2a;border:1px solid #9a4a4a;border-radius:8px;color:#ffa0a0;padding:4px 14px;cursor:pointer;font-family:monospace">❌ 反對</button>
+      </div>
+      ${votedHint}
+    `;
+    panel.style.display = "block";
+  }
+
+  window._castCivicVote = function(yes) {
+    if (civicHasVoted) return;
+    civicHasVoted = true;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "civic_vote", yes }));
+    }
+    _updateCivicVotePanel(null); // 立刻隱藏，下一幀快照會重新顯示（已投票狀態）
+    setTimeout(() => { _updateCivicVotePanel(window._lastCivicVoteData); }, 100);
+  };
+
+  let _lastCivicVoteDataRef = null;
+  const _origUpdate = updateCivicVoteHud;
+  // 覆蓋以快取最後的 voteData，供 _castCivicVote 用
+  // （已定義在上面，這裡補快取邏輯）
+  window._lastCivicVoteData = null;
+
+  function _updateCivicEffectPill(effectSecs, effectKind) {
+    let pill = document.getElementById("hudCivicEffect");
+    if (!effectSecs || effectSecs <= 0 || !effectKind) {
+      if (pill) pill.style.display = "none";
+      return;
+    }
+    const EFFECT_LABELS = {
+      farming_festival: { label: "🌾 農耕盛典", color: "#ffe080", bg: "#1a1200" },
+      night_market:     { label: "🏮 夜市開張", color: "#ff9060", bg: "#1a0800" },
+      defense_drill:    { label: "🛡️ 城防演練", color: "#80c0ff", bg: "#000e1a" },
+      aether_collection:{ label: "⚡ 乙太集資", color: "#c0a0ff", bg: "#0e0018" },
+    };
+    const info = EFFECT_LABELS[effectKind] || { label: effectKind, color: "#ffffff", bg: "#111" };
+    const mins = Math.floor(effectSecs / 60);
+    const secs = effectSecs % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudCivicEffect";
+      pill.style.cssText = [
+        "order:7", "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px",
+        "border:1px solid rgba(180,140,255,0.6)",
+      ].join(";");
+      _ensureBannerColumn().appendChild(pill);
+    }
+    pill.style.background = info.bg;
+    pill.style.color = info.color;
+    pill.textContent = `${info.label} ${timeStr}`;
+    pill.style.display = "block";
+  }
+
   // 餵食按鈕（ROADMAP 144）：玩家有野花種子且附近有野生動物時，顯示浮動按鈕。
   const FEED_REACH_PX = 100;
   function updateFeedWildlifeBtn() {
@@ -1060,6 +1161,9 @@
           weatherType = msg.weather.weather_type || "clear";
           weatherIntensity = msg.weather.intensity || 0.0;
         }
+        // 公民投票（ROADMAP 156）：同步當前投票狀態與生效效果。
+        window._lastCivicVoteData = msg.civic_vote || null;
+        updateCivicVoteHud(msg.civic_vote, msg.civic_effect_secs, msg.civic_effect_kind);
         updateFarmHud(myField());
         const me = msg.players.find((p) => p.id === myId);
         if (me) {
