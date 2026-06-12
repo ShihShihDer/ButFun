@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -475,6 +475,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         night_spring_nodes: night_spring_nodes.clone(),
                                         // 怪物物種態度（ROADMAP 163）：全服廣播。
                                         monster_species_attitudes: monster_species_attitudes.clone(),
+                                        // 怪物巢穴（ROADMAP 164）：全服廣播（量少，5 個巢穴）。
+                                        monster_colony_views: monster_colony_views.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2081,8 +2083,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .collect();
                         if !killed_kinds.is_empty() {
                             let mut ms = app.monster_species.write().unwrap();
-                            for k in killed_kinds {
-                                ms.on_player_kills_monster(k);
+                            for k in &killed_kinds {
+                                ms.on_player_kills_monster(*k);
+                            }
+                            // ROADMAP 164：玩家擊殺怪物同時通知巢穴管理器扣族群數。
+                            {
+                                let colony_events = {
+                                    let mut cols = app.monster_colonies.write().unwrap();
+                                    let mut evts = Vec::new();
+                                    for k in &killed_kinds {
+                                        evts.extend(cols.on_monster_killed_near(px, py, *k));
+                                    }
+                                    evts
+                                };
+                                for ev in colony_events {
+                                    use crate::monster_colony::MonsterColonyEvent;
+                                    match ev {
+                                        MonsterColonyEvent::ColonyCleared { name, cx, cy } => {
+                                            let _ = app.tx_chat.send(format!(
+                                                "🏕️ [{name}] ({cx:.0},{cy:.0}) 的怪物巢穴被清剿一空！"
+                                            ));
+                                        }
+                                        MonsterColonyEvent::ColonyRevived { .. } => {}
+                                        MonsterColonyEvent::SpawnAt { .. } => {}
+                                    }
+                                }
                             }
                         }
                     }

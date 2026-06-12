@@ -857,6 +857,28 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+                // ROADMAP 164：怪物巢穴 tick——族群補充計時器推進，發出生成指令。
+                {
+                    let colony_events = app.monster_colonies.write().unwrap().tick(dt);
+                    for ev in colony_events {
+                        use crate::monster_colony::MonsterColonyEvent;
+                        match ev {
+                            MonsterColonyEvent::SpawnAt { kind, x, y, .. } => {
+                                app.enemies.write().unwrap().inject_event_enemy(x, y, kind);
+                            }
+                            MonsterColonyEvent::ColonyCleared { name, cx, cy } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🏕️ [{name}] ({cx:.0},{cy:.0}) 的怪物巢穴被清剿一空！暫時解放此區域。"
+                                ));
+                            }
+                            MonsterColonyEvent::ColonyRevived { name } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "⚠️ [{name}] 怪物巢穴族群開始恢復，請注意！"
+                                ));
+                            }
+                        }
+                    }
+                }
                 let (resident_events, thought_events) = app.residents.write().unwrap()
                     .tick(dt, avg_prosperity, current_phase, &player_positions);
                 for ev in resident_events {
@@ -1987,6 +2009,8 @@ pub fn spawn(app: AppState) {
                             .collect(),
                         // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
                         monster_species_attitudes: app.monster_species.read().unwrap().views(),
+                        // 怪物巢穴（ROADMAP 164）：各巢穴位置、種類、密度。
+                        monster_colony_views: app.monster_colonies.read().unwrap().colony_views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

@@ -1008,6 +1008,9 @@ pub struct AppState {
     /// 玩家殺怪→態度+（怪物學會敬畏）；怪物擊倒玩家→態度-（怪物更囂張）。
     /// 態度層級影響 aggro 半徑；記憶體模式，重啟清零。
     pub monster_species: Arc<RwLock<crate::species_relations::MonsterSpeciesRelations>>,
+    /// 怪物巢穴=聚落（ROADMAP 164）：5 個固定巢穴，怪物從此出生/回巢；
+    /// 族群可清剿衰退或放著壯大。記憶體模式，重啟全重置。
+    pub monster_colonies: Arc<RwLock<crate::monster_colony::MonsterColonyManager>>,
     /// 玩家住家家具（ROADMAP 155）：每位玩家（UUID）所放置的家具列表。
     /// 記憶體模式，重啟清空（玩家需重新進室內放置）；家具材料在背包持久化。
     pub home_furnishings: Arc<RwLock<std::collections::HashMap<uuid::Uuid, crate::home_furniture::HomeFurnishings>>>,
@@ -1190,6 +1193,7 @@ impl AppState {
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             monster_species: Arc::new(RwLock::new(crate::species_relations::MonsterSpeciesRelations::new())),
+            monster_colonies: Arc::new(RwLock::new(crate::monster_colony::MonsterColonyManager::new())),
             home_furnishings: Arc::new(RwLock::new(std::collections::HashMap::new())),
             civic_vote: Arc::new(RwLock::new(crate::civic_vote::CivicVoteState::new())),
             town_memory: Arc::new(RwLock::new(crate::town_memory::TownMemory::new())),
