@@ -2111,6 +2111,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         MonsterColonyEvent::ColonyRevived { .. } => {}
                                         MonsterColonyEvent::SpawnAt { .. } => {}
                                         MonsterColonyEvent::AlphaAppeared { .. } => {}
+                                        // AlphaCommandReady 只由 game.rs 的主 tick 迴圈處理
+                                        MonsterColonyEvent::AlphaCommandReady { .. } => {}
                                     }
                                 }
                             }

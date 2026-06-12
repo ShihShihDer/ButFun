@@ -1358,6 +1358,17 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **零 migration、零 LLM、純記憶體模式**：`monster_colony.rs` 擴充 `ColonyAlpha`/`alpha_tick()/attack_alpha()`（15 個單元測試）；`protocol.rs` 新增 `ColonyAlphaView` + `alpha_monsters` 快照欄位 + `AttackAlpha` 訊息；`inventory.rs` 新增 `AlphaCrystal`/`AlphaForce`；`crafting.rs` 新增配方；`game.rs`/`ws.rs` 全數接線；`web/game.js` 繪製 Alpha + 互動。
     - 玩家感知：走進野外看到某個巢穴角落出現頭頂戴皇冠的巨大怪物（3 倍 HP），靠近按「⚔️ 挑戰 Alpha」開始對決；擊殺後全服廣播「💎 [Alpha 擊倒！] 玩家 X 制伏了廢料無人機陣的 Alpha！」——野外探索有了真正的地區霸主。
 
+## 接著（Alpha 咆哮指揮 — AI 自主提案 2026-06-13）
+
+169. [ ] **Alpha 咆哮指揮——Colony Alpha 每 90 秒發布一次戰術指令（包圍/集火/撤退/集結），Groq 生成台詞廣播，讓野外 Alpha 有「在指揮」的氣場**（本輪 PR）
+    - Alpha 首領首次湧現 60 秒後開始發出第一條指令；此後每 90 秒一次（與 boss_ai 同節奏）。
+    - 指令戰術由罐頭邏輯即時決定（依血量 + Alpha 周圍 500px 內玩家數：低血→撤退、0 玩家→集結、多玩家→包圍、少玩家→集火）；Groq/ollama/罐頭降級鏈生成廣播台詞。
+    - 廣播格式：「📣 〔廢料無人機陣 Alpha・廢料無人機〕下令「包圍」：從四面八方圍住他們，一個也別逃！」
+    - 前端 Alpha 頭頂新增指揮氣泡（橙色徽章 `📣 包圍`），持續 30 秒後消失；有指令時脈動光環頻率加快。
+    - **成本紀律**：與 `boss_ai_sem`（容量 1）共享 Semaphore；`BUTFUN_NPC_LLM=0` 時直接用罐頭台詞，不呼叫任何 API；無玩家時仍下指令（讓世界持續運轉）。
+    - **零 migration、純記憶體模式**：`monster_colony.rs`（3 新常數、`ColonyAlpha` 加 3 欄位、`AlphaCommandReady` 事件、`set_alpha_tactic()` 方法、`active_tactic` 加進視圖、10 個單元測試）；`game.rs`（處理 `AlphaCommandReady` 事件）；`web/game.js`（指揮氣泡繪製）。
+    - 玩家感知：在野外遠遠看到 Alpha 頭頂出現橙色「📣 包圍」徽章，全服聊天出現咆哮廣播——「Alpha 在指揮！趕快打掉它！」；即使沒有玩家在附近，Alpha 也發出「集結！」令，讓世界感覺持續活著。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

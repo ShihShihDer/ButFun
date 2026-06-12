@@ -975,6 +975,41 @@ pub fn spawn(app: AppState) {
                                     "👑 [{colony_name}] 族群達到巔峰！Alpha 首領「{kind_name}·霸主」降臨領地，尋求挑戰者！"
                                 ));
                             }
+                            // ROADMAP 169：Alpha 咆哮指揮——決定戰術並非同步生成台詞廣播。
+                            MonsterColonyEvent::AlphaCommandReady { alpha_id, colony_name, kind, hp_pct, alpha_x, alpha_y } => {
+                                let kind_name = kind.display_name();
+                                // 計算 Alpha 周圍 COMMAND_RADIUS 內的玩家數（附近才算）。
+                                let command_radius = crate::boss_ai::COMMAND_RADIUS;
+                                let player_count = {
+                                    let players = app.players.read().unwrap();
+                                    players.values()
+                                        .filter(|p| {
+                                            let dx = p.x - alpha_x;
+                                            let dy = p.y - alpha_y;
+                                            dx * dx + dy * dy <= command_radius * command_radius
+                                        })
+                                        .count()
+                                };
+                                // 同步決定戰術（零延遲），寫回 Alpha 狀態（前端快照可見）。
+                                let tactic = crate::boss_ai::canned_tactic(hp_pct, player_count);
+                                let tactic_name = tactic.display_name().to_string();
+                                app.monster_colonies.write().unwrap()
+                                    .set_alpha_tactic(alpha_id, tactic_name.clone());
+                                // 非同步生成廣播台詞（Groq → 罐頭降級）。
+                                let tx_chat = app.tx_chat.clone();
+                                let sem = app.boss_ai_sem.clone();
+                                let kind_name_s = kind_name.to_string();
+                                let colony_s = colony_name.to_string();
+                                let tactic_c = tactic.clone();
+                                tokio::spawn(async move {
+                                    let Ok(_permit) = sem.try_acquire_owned() else { return };
+                                    let msg = crate::boss_ai::generate_tactic_message(&kind_name_s, 1, &tactic_c).await;
+                                    let tactic_disp = tactic_c.display_name();
+                                    let _ = tx_chat.send(format!(
+                                        "📣 〔{colony_s} Alpha・{kind_name_s}〕下令「{tactic_disp}」：{msg}"
+                                    ));
+                                });
+                            }
                         }
                     }
                 }

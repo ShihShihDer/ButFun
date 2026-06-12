@@ -4,7 +4,11 @@
 //! ROADMAP 168：巢穴 Alpha 湧現——族群達峰值時湧現地區霸主，
 //! 3 倍生命、守衛領地；擊殺後族群-2、全服廣播、殺手得乙太+晶核。
 //!
-//! 效能：全純算術、零 LLM、零 migration；記憶體模式，重啟全重置。
+//! ROADMAP 169：Alpha 咆哮指揮——Alpha 首領每 90 秒依血量/附近玩家數
+//! 決定戰術（包圍/集火/撤退/集結），交由 game.rs 非同步生成 Groq 台詞並廣播。
+//! 成本紀律：每隻 Alpha 最多每 90 秒呼叫一次 LLM；無玩家時仍使用罐頭台詞。
+//!
+//! 效能：全純算術、零 migration；記憶體模式，重啟全重置。
 
 use serde::Serialize;
 use crate::combat::EnemyKind;
@@ -28,6 +32,15 @@ pub const ALPHA_KILLER_ETHER: u32 = 15;
 pub const ALPHA_GLOBAL_ETHER: u32 = 3;
 /// Alpha 晶核掉落數量。
 pub const ALPHA_CRYSTAL_DROP: u32 = 1;
+
+// ─── ROADMAP 169：Alpha 咆哮指揮常數 ────────────────────────────────────────
+
+/// Alpha 首次湧現後，距第一次咆哮的等待時間（秒）。
+const ALPHA_COMMAND_FIRST_WAIT_SECS: f32 = 60.0;
+/// Alpha 咆哮指揮冷卻（秒）：每次下令後需等此時間才能再次發出指令。
+pub const ALPHA_COMMAND_COOLDOWN_SECS: f32 = 90.0;
+/// 當前指令顯示持續時間（秒）：前端顯示 active_tactic 氣泡的時長。
+const ALPHA_TACTIC_DURATION_SECS: f32 = 30.0;
 
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
@@ -55,7 +68,7 @@ pub struct MonsterColony {
     pub alpha_cooldown: f32,
 }
 
-/// 巢穴 Alpha 首領（ROADMAP 168）。
+/// 巢穴 Alpha 首領（ROADMAP 168 + 169）。
 /// 單獨追蹤，不走 EnemyField。
 pub struct ColonyAlpha {
     /// 全域唯一 ID（用於 AttackAlpha 訊息定位）。
@@ -74,6 +87,13 @@ pub struct ColonyAlpha {
     pub max_hp: u32,
     /// 對應巢穴名稱（用於廣播）。
     pub colony_name: &'static str,
+    // ROADMAP 169：咆哮指揮
+    /// 距下次發出指揮指令倒數（秒）；首次設為 ALPHA_COMMAND_FIRST_WAIT_SECS。
+    pub command_cooldown: f32,
+    /// 當前指令名稱（繁中，如「包圍」），`None` 表示無指令。
+    pub active_tactic: Option<String>,
+    /// 當前指令剩餘顯示時間（秒）；到零後清除 active_tactic。
+    tactic_remaining: f32,
 }
 
 /// 給協議層用的 Alpha 視圖（隨快照廣播）。
@@ -86,6 +106,8 @@ pub struct ColonyAlphaView {
     pub y: f32,
     pub hp: u32,
     pub max_hp: u32,
+    /// 當前指令名稱（繁中），無指令時為 `null`。前端用於顯示指揮氣泡。
+    pub active_tactic: Option<String>,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -120,6 +142,17 @@ pub enum MonsterColonyEvent {
     ColonyRevived { name: &'static str },
     /// 巢穴 Alpha 湧現（廣播全服通知玩家）。
     AlphaAppeared { colony_name: &'static str, kind: EnemyKind },
+    /// Alpha 發出咆哮指揮（ROADMAP 169）：
+    /// game.rs 計算附近玩家數→決定戰術→非同步呼叫 Groq 台詞→廣播。
+    AlphaCommandReady {
+        alpha_id: u32,
+        colony_name: &'static str,
+        kind: EnemyKind,
+        /// 當前血量百分比（0.0~1.0），供 canned_tactic 判斷。
+        hp_pct: f32,
+        alpha_x: f32,
+        alpha_y: f32,
+    },
 }
 
 /// 管理所有怪物巢穴。
@@ -140,7 +173,7 @@ impl MonsterColonyManager {
         }
     }
 
-    /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現檢查。
+    /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現 + Alpha 指揮計時（ROADMAP 169）。
     pub fn tick(&mut self, dt: f32) -> Vec<MonsterColonyEvent> {
         let mut events = Vec::new();
 
@@ -167,6 +200,32 @@ impl MonsterColonyManager {
             }
         }
 
+        // ROADMAP 169：Alpha 咆哮指揮計時——倒數並在歸零時發出 AlphaCommandReady
+        for alpha in &mut self.alphas {
+            // 指令顯示計時：到期則清除前端氣泡
+            if alpha.tactic_remaining > 0.0 {
+                alpha.tactic_remaining -= dt;
+                if alpha.tactic_remaining <= 0.0 {
+                    alpha.active_tactic = None;
+                }
+            }
+            // 指揮冷卻：歸零則觸發一次指令
+            alpha.command_cooldown -= dt;
+            if alpha.command_cooldown <= 0.0 {
+                let hp_pct = alpha.hp as f32 / alpha.max_hp.max(1) as f32;
+                events.push(MonsterColonyEvent::AlphaCommandReady {
+                    alpha_id: alpha.id,
+                    colony_name: alpha.colony_name,
+                    kind: alpha.kind,
+                    hp_pct,
+                    alpha_x: alpha.x,
+                    alpha_y: alpha.y,
+                });
+                // 重置冷卻（game.rs 呼叫 set_alpha_tactic 不再重複重置）
+                alpha.command_cooldown = ALPHA_COMMAND_COOLDOWN_SECS;
+            }
+        }
+
         // Alpha 湧現：族群已滿 + 無活躍 Alpha + 冷卻結束（兩遍避免借用衝突）
         let to_spawn: Vec<(u32, EnemyKind, f32, f32, u32, &'static str)> = self.colonies.iter()
             .filter(|col| {
@@ -187,10 +246,22 @@ impl MonsterColonyManager {
             self.alphas.push(ColonyAlpha {
                 id: alpha_id, colony_id, kind, x: ax, y: ay,
                 hp: max_hp, max_hp, colony_name,
+                command_cooldown: ALPHA_COMMAND_FIRST_WAIT_SECS,
+                active_tactic: None,
+                tactic_remaining: 0.0,
             });
         }
 
         events
+    }
+
+    /// 設定指定 Alpha 的當前指令（game.rs 在 AlphaCommandReady 後同步呼叫）。
+    /// 前端在 `active_tactic` 非 None 期間顯示指揮氣泡（ROADMAP 169）。
+    pub fn set_alpha_tactic(&mut self, alpha_id: u32, tactic_name: String) {
+        if let Some(a) = self.alphas.iter_mut().find(|a| a.id == alpha_id) {
+            a.active_tactic = Some(tactic_name);
+            a.tactic_remaining = ALPHA_TACTIC_DURATION_SECS;
+        }
     }
 
     /// 玩家攻擊指定 Alpha（id = alpha.id，在距離 reach 內有效）。
@@ -279,6 +350,7 @@ impl MonsterColonyManager {
             y: a.y,
             hp: a.hp,
             max_hp: a.max_hp,
+            active_tactic: a.active_tactic.clone(),
         }).collect()
     }
 
@@ -709,6 +781,151 @@ mod tests {
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
             "Alpha 剛被擊殺後冷卻中不應立刻湧現"
+        );
+    }
+
+    // ─── ROADMAP 169 Alpha 咆哮指揮測試 ────────────────────────────────────────
+
+    fn spawn_alpha(mgr: &mut MonsterColonyManager) -> u32 {
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        assert_eq!(mgr.alphas.len(), 1, "輔助函式：應已湧現 Alpha");
+        mgr.alphas[0].id
+    }
+
+    #[test]
+    fn new_alpha_starts_with_first_wait() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        assert!(
+            mgr.alphas[0].command_cooldown > 0.0,
+            "新湧現的 Alpha 應有初始指令冷卻"
+        );
+        assert!(
+            mgr.alphas[0].active_tactic.is_none(),
+            "新湧現的 Alpha 無指令"
+        );
+    }
+
+    #[test]
+    fn alpha_command_not_ready_before_first_wait() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        // 僅推進一小段（遠小於 first wait）
+        let events = mgr.tick(1.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
+            "第一次等待時間未到不應觸發 AlphaCommandReady"
+        );
+    }
+
+    #[test]
+    fn alpha_command_fires_after_first_wait() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
+            "第一次等待結束後應觸發 AlphaCommandReady"
+        );
+    }
+
+    #[test]
+    fn alpha_command_resets_cooldown_after_fire() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        // 推進到觸發
+        mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0);
+        // 觸發後冷卻應重置
+        assert!(
+            mgr.alphas[0].command_cooldown > 0.0,
+            "AlphaCommandReady 觸發後應重置指令冷卻"
+        );
+    }
+
+    #[test]
+    fn alpha_command_does_not_fire_twice_in_one_tick() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        // 一次 tick 推進遠超兩個冷卻週期
+        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + ALPHA_COMMAND_COOLDOWN_SECS * 3.0);
+        let count = events.iter()
+            .filter(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }))
+            .count();
+        assert_eq!(count, 1, "單次 tick 最多只觸發一次 AlphaCommandReady（冷卻已重置）");
+    }
+
+    #[test]
+    fn set_alpha_tactic_updates_view() {
+        let mut mgr = MonsterColonyManager::new();
+        let id = spawn_alpha(&mut mgr);
+        mgr.set_alpha_tactic(id, "包圍".to_string());
+        let views = mgr.alpha_views();
+        assert_eq!(views[0].active_tactic.as_deref(), Some("包圍"), "視圖應反映剛設定的指令");
+    }
+
+    #[test]
+    fn active_tactic_clears_after_duration() {
+        let mut mgr = MonsterColonyManager::new();
+        let id = spawn_alpha(&mut mgr);
+        mgr.set_alpha_tactic(id, "集結".to_string());
+        // 推進超過指令持續時間
+        mgr.tick(ALPHA_TACTIC_DURATION_SECS + 1.0);
+        assert!(
+            mgr.alphas[0].active_tactic.is_none(),
+            "指令持續時間到期後應清除"
+        );
+    }
+
+    #[test]
+    fn alpha_command_ready_carries_correct_info() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        // 手動設冷卻歸零以確定觸發
+        mgr.alphas[0].command_cooldown = 0.0;
+        let events = mgr.tick(0.01);
+        let ev = events.iter().find(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }));
+        assert!(ev.is_some(), "應找到 AlphaCommandReady");
+        if let Some(MonsterColonyEvent::AlphaCommandReady { alpha_id, hp_pct, .. }) = ev {
+            assert_eq!(*alpha_id, mgr.alphas[0].id, "alpha_id 應匹配");
+            assert!(*hp_pct > 0.0 && *hp_pct <= 1.0, "hp_pct 應在合理範圍");
+        }
+    }
+
+    #[test]
+    fn multiple_alphas_have_independent_cooldowns() {
+        let mut mgr = MonsterColonyManager::new();
+        // 讓前兩個巢穴都達滿族群 + Alpha 冷卻歸零
+        for i in 0..2 {
+            let max = mgr.colonies[i].max_population;
+            mgr.colonies[i].population = max;
+            mgr.colonies[i].alpha_cooldown = 0.0;
+        }
+        mgr.tick(0.1); // 湧現兩個 Alpha
+        // 手動讓第一個 Alpha 指令冷卻歸零、第二個保留
+        mgr.alphas[0].command_cooldown = 0.0;
+        mgr.alphas[1].command_cooldown = 999.0;
+        let events = mgr.tick(0.01);
+        let count = events.iter()
+            .filter(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }))
+            .count();
+        assert_eq!(count, 1, "只有冷卻歸零的那個 Alpha 應觸發指令");
+    }
+
+    #[test]
+    fn killed_alpha_no_longer_emits_commands() {
+        let mut mgr = MonsterColonyManager::new();
+        let id = spawn_alpha(&mut mgr);
+        let (ax, ay) = (mgr.alphas[0].x, mgr.alphas[0].y);
+        mgr.attack_alpha(id, ax, ay, 999999, ALPHA_ATTACK_REACH);
+        assert_eq!(mgr.alphas.len(), 0, "Alpha 應已消失");
+        // 推進足夠時間，不應有任何 AlphaCommandReady
+        let events = mgr.tick(ALPHA_COMMAND_COOLDOWN_SECS * 2.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
+            "Alpha 死亡後不應再發出指令"
         );
     }
 }
