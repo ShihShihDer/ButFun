@@ -577,6 +577,7 @@
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
   let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
+  let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -928,6 +929,8 @@
         if (Array.isArray(msg.wildlife)) wildlifeList = msg.wildlife;
         // 乙太微粒（ROADMAP 142 死亡餵養生命）。
         if (Array.isArray(msg.carion_orbs)) carionOrbs = msg.carion_orbs;
+        // 物種聚落（ROADMAP 143）：靜態資料，只在首幀或變動時更新。
+        if (Array.isArray(msg.colonies) && msg.colonies.length > 0) coloniesList = msg.colonies;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3247,6 +3250,7 @@
     drawTownBuildings(camX, camY); // 城鎮建築外觀（ROADMAP 110）：蒸汽龐克建築結構
     drawLandPlots(camX, camY); // ROADMAP 34 城外產權地塊邊界與地主名牌
     drawNpcs(camX, camY);   // NPC（ROADMAP 73：全數由 npcs 陣列驅動並支持走動）
+    drawColonies(camX, camY); // 物種聚落領地圓圈（ROADMAP 143）
     drawWildlife(camX, camY); // 中立野生動物（ROADMAP 140）
     drawCarionOrbs(camX, camY); // 乙太微粒（ROADMAP 142 死亡餵養生命）
     drawWanderingMerchant(camX, camY); // 旅行商人（ROADMAP 135）
@@ -3827,6 +3831,34 @@
       ctx.arc(px, py, isMe ? 4 : 2.5, 0, Math.PI * 2);
       ctx.fillStyle = isMe ? "#ffd24a" : "rgba(111,168,220,0.7)";
       ctx.fill();
+    }
+
+    // 物種聚落（ROADMAP 143）：小地圖上畫聚落圓圈標記。
+    if (coloniesList.length) {
+      const MM_COLONY_COLORS = {
+        wild_bird:     "rgba(135,206,250,0.55)",
+        wild_deer:     "rgba(60,180,80,0.55)",
+        small_critter: "rgba(210,170,100,0.55)",
+        wild_wolf:     "rgba(200,40,40,0.55)",
+        wild_fox:      "rgba(240,130,20,0.55)",
+      };
+      for (const c of coloniesList) {
+        const mmx = toMiniX(c.cx), mmy = toMiniY(c.cy);
+        if (mmx < ox - 4 || mmx > ox + size + 4 || mmy < oy - 4 || mmy > oy + size + 4) continue;
+        const mmr = Math.max(3, c.guard_radius / MM_RADIUS * (size / 2));
+        ctx.beginPath();
+        ctx.arc(mmx, mmy, mmr, 0, Math.PI * 2);
+        ctx.strokeStyle = MM_COLONY_COLORS[c.kind] || "rgba(200,200,200,0.55)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // 小圓心點。
+        ctx.beginPath();
+        ctx.arc(mmx, mmy, 2, 0, Math.PI * 2);
+        ctx.fillStyle = MM_COLONY_COLORS[c.kind] || "rgba(200,200,200,0.55)";
+        ctx.fill();
+      }
     }
 
     ctx.restore(); // 解除裁切
@@ -6462,6 +6494,54 @@
 
   // 野生動物（ROADMAP 140 中立 + ROADMAP 141 食物鏈）。
   // 捕食者（野狼/野狐）以橙紅名牌區別；追獵中背景閃爍。
+  // 物種聚落領地（ROADMAP 143）：半透明圓圈標出各物種的巢穴/棲地領域。
+  // 玩家進入此範圍後，同種動物會停止逃跑並向玩家靠近（群體防衛）。
+  function drawColonies(camX, camY) {
+    if (!coloniesList.length) return;
+    const W = canvas.width, H = canvas.height;
+    // 各物種對應的填色與邊框色。
+    const COLONY_STYLE = {
+      wild_bird:     { fill: "rgba(135, 206, 250, 0.08)", stroke: "rgba(135, 206, 250, 0.40)", icon: "🐦" },
+      wild_deer:     { fill: "rgba(60,  180,  80, 0.08)", stroke: "rgba(60,  180,  80, 0.40)", icon: "🦌" },
+      small_critter: { fill: "rgba(210, 170, 100, 0.10)", stroke: "rgba(210, 170, 100, 0.42)", icon: "🐿️" },
+      wild_wolf:     { fill: "rgba(200,  40,  40, 0.09)", stroke: "rgba(200,  40,  40, 0.40)", icon: "🐺" },
+      wild_fox:      { fill: "rgba(240, 130,  20, 0.09)", stroke: "rgba(240, 130,  20, 0.40)", icon: "🦊" },
+    };
+    for (const c of coloniesList) {
+      const sx = c.cx - camX + W / 2;
+      const sy = c.cy - camY + H / 2;
+      const r  = c.guard_radius;
+      if (sx < -r || sx > W + r || sy < -r || sy > H + r) continue;
+      const style = COLONY_STYLE[c.kind] || { fill: "rgba(200,200,200,0.08)", stroke: "rgba(200,200,200,0.35)", icon: "🏠" };
+      ctx.save();
+      // 填充。
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fillStyle = style.fill;
+      ctx.fill();
+      // 虛線邊框。
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([6, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 聚落圖示 + 名稱（邊框上方）。
+      ctx.font = "12px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      const label = style.icon + " " + c.name;
+      const lw = ctx.measureText(label).width + 10;
+      const lx = sx, ly = sy - r - 4;
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(lx - lw / 2, ly - 14, lw, 14);
+      ctx.fillStyle = style.stroke.replace("0.40", "0.90").replace("0.42", "0.90").replace("0.35", "0.90");
+      ctx.fillText(label, lx, ly);
+      ctx.restore();
+    }
+  }
+
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
     const W = canvas.width, H = canvas.height;
@@ -6475,8 +6555,9 @@
       ctx.save();
       const isFleeing  = w.state === "fleeing";
       const isHunting  = w.state === "hunting";
+      const isGuarding = w.state === "guarding";
       const isPredator = w.kind === "wild_wolf" || w.kind === "wild_fox";
-      const wobble = (isFleeing || isHunting) ? Math.sin(now / 60) * 2 : 0;
+      const wobble = (isFleeing || isHunting || isGuarding) ? Math.sin(now / 60) * 2 : 0;
       ctx.translate(sx + wobble, sy);
 
       switch (w.kind) {
@@ -6487,9 +6568,9 @@
         case "wild_fox":      _drawWildFox(isHunting, now);      break;
       }
 
-      // 名字標籤：捕食者橙紅、獵物淡綠；追獵中閃爍。
-      const labelColor = isPredator ? "#f0b060" : "#a8f0a8";
-      const bgAlpha = isHunting ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
+      // 名字標籤：守衛狀態橙黃警戒、捕食者橙紅、獵物淡綠；追獵/守衛中閃爍。
+      const labelColor = isGuarding ? "#ffcc44" : (isPredator ? "#f0b060" : "#a8f0a8");
+      const bgAlpha = (isHunting || isGuarding) ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
       ctx.fillStyle = "rgba(0,0,0," + bgAlpha.toFixed(2) + ")";
       const label = w.name;
       const lw = ctx.measureText(label).width + 8;

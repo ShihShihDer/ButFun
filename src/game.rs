@@ -728,6 +728,14 @@ pub fn spawn(app: AppState) {
                                 );
                                 let _ = app.tx_chat.send(msg);
                             }
+                            // ROADMAP 143：物種聚落被入侵，廣播世界聊天警示。
+                            WildlifeEvent::ColonyThreatened { colony_name, cx, cy } => {
+                                let msg = format!(
+                                    "🛡️ 城外 ({:.0},{:.0})：{} 察覺到入侵者，正在驅離！",
+                                    cx, cy, colony_name
+                                );
+                                let _ = app.tx_chat.send(msg);
+                            }
                         }
                     }
                 }
@@ -1658,6 +1666,11 @@ pub fn spawn(app: AppState) {
                             wm.carion_orbs.iter()
                                 .map(|o| crate::protocol::CarrionOrbView { id: o.id, x: o.x, y: o.y })
                                 .collect()
+                        },
+                        // 物種聚落（ROADMAP 143）：靜態領地資料，前端渲染聚落圓圈 + 小地圖標記。
+                        colonies: {
+                            let wm = app.wildlife_manager.read().unwrap();
+                            wm.colony_views()
                         },
                     }
                 };
