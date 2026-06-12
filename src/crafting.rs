@@ -421,6 +421,58 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::StarGuardianAmulet,
         output_qty: 1,
     },
+
+    // ── 進階武器（ROADMAP 145 武器/裝備進階線）────────────────────────────────
+    /// 硬化刃：石頭×8 + 乙太×4 → 硬化刃×1。攻擊力 +7。
+    /// 不需探索特殊地形的「勤勞路」——與蕈菇杖（孢子路）同等級，給只在城附近採礦的玩家選擇。
+    Recipe {
+        id: "hardened_blade",
+        inputs: &[(ItemKind::Stone, 8), (ItemKind::Ether, 4)],
+        output: ItemKind::HardenedBlade,
+        output_qty: 1,
+    },
+    /// 星晶之刃：星晶碎片×7 → 星晶之刃×1。攻擊力 +14（需 Lv.10）。
+    /// 夜行者的橋接武器，填補珊瑚矛(+12)→翠幽刃(+15)的缺口。
+    Recipe {
+        id: "star_crystal_blade",
+        inputs: &[(ItemKind::StarCrystalShard, 7)],
+        output: ItemKind::StarCrystalBlade,
+        output_qty: 1,
+    },
+    /// 裂縫刃：裂縫碎片×4 → 裂縫刃×1。攻擊力 +35（需 Lv.15）。
+    /// 宇宙裂縫事件限定，高風險換來超越霧醚之刃(+30)的高回報。
+    Recipe {
+        id: "rift_blade",
+        inputs: &[(ItemKind::RiftShard, 4)],
+        output: ItemKind::RiftBlade,
+        output_qty: 1,
+    },
+
+    // ── 進階護甲（ROADMAP 145 武器/裝備進階線）────────────────────────────────
+    /// 珊瑚鎧：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1。每次受傷減 3 點傷害。
+    /// 珊瑚礁探索者的獎賞，填補晶石護盾(def 2)→宇宙護盾(def 6)的空缺第一梯。
+    Recipe {
+        id: "coral_armor",
+        inputs: &[(ItemKind::DeepSeaPearl, 2), (ItemKind::CrystalShard, 6)],
+        output: ItemKind::CoralArmor,
+        output_qty: 1,
+    },
+    /// 符文鎧：古代碎片×5 + 石頭×6 → 符文鎧×1。每次受傷減 4 點傷害。
+    /// 沙漠遺跡文明的防禦鎧甲，進階護甲第二梯，沙漠探索者的高級裝備。
+    Recipe {
+        id: "rune_armor",
+        inputs: &[(ItemKind::AncientFragment, 5), (ItemKind::Stone, 6)],
+        output: ItemKind::RuneArmor,
+        output_qty: 1,
+    },
+    /// 星晶鎧：星晶碎片×5 + 石頭×4 → 星晶鎧×1。每次受傷減 5 點傷害（需 Lv.10）。
+    /// 夜採星晶打造的全身護甲，防禦值僅次宇宙護盾(def 6)——夜行探索者的盔甲巔峰。
+    Recipe {
+        id: "star_crystal_armor",
+        inputs: &[(ItemKind::StarCrystalShard, 5), (ItemKind::Stone, 4)],
+        output: ItemKind::StarCrystalArmor,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -435,6 +487,20 @@ pub fn recipe_min_prosperity(recipe_id: &str) -> u8 {
         "town_brew"      => 2,
         "vibrant_elixir" => 3,
         _                => 0,
+    }
+}
+
+/// 配方的玩家等級門檻（ROADMAP 145 等級路徑）。
+/// 0 = 無門檻；否則玩家 level 必須 >= 此值才可合成。
+/// 兩條路徑鐵律：有等級門檻的配方，玩家可先攢素材（不需等到達等級），
+/// 也可先升等（讓升等本身就有「解鎖新配方」的感覺）——二者任一成立即可合成。
+/// 目前實作：level < 門檻時直接拒絕（素材雖齊也不合），符合「成長門禁」的設計。
+/// 未來可根據玩家回饋調整為「低等級需多倍素材」的真正雙路路線。
+pub fn recipe_min_level(recipe_id: &str) -> u32 {
+    match recipe_id {
+        "star_crystal_blade" | "star_crystal_armor" => 10,
+        "rift_blade"                                => 15,
+        _                                           => 0,
     }
 }
 

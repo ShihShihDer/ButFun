@@ -81,7 +81,9 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::StarCrystalShard | ItemKind::NightPotion | ItemKind::Sprinkler
         | ItemKind::TownBrew | ItemKind::VibrantElixir
         | ItemKind::StarDust | ItemKind::StarAmulet
-        | ItemKind::RainbowStarDust | ItemKind::StarGuardianAmulet => None,
+        | ItemKind::RainbowStarDust | ItemKind::StarGuardianAmulet
+        | ItemKind::HardenedBlade | ItemKind::StarCrystalBlade | ItemKind::RiftBlade
+        | ItemKind::CoralArmor | ItemKind::RuneArmor | ItemKind::StarCrystalArmor => None,
     }
 }
 

@@ -237,6 +237,29 @@ pub enum ItemKind {
     /// 背包中持有時採集/戰鬥 EXP +15%（高於星光護符的 +10%）；
     /// 流星雨期間每採集一個節點額外獲得 +1 顆星塵——知道哪裡有彩虹的人，才會有守護之光。
     StarGuardianAmulet,
+
+    // ── 進階武器（ROADMAP 145 武器/裝備進階線）────────────────────────────────
+    /// 硬化刃（合成：石頭×8 + 乙太×4 → 硬化刃×1）。攻擊力 +7。
+    /// 不需探索特殊地形，用基礎材料走「勤勞路」換出與蕈菇杖等級的武器——兩條路徑第一站。
+    HardenedBlade,
+    /// 星晶之刃（合成：星晶碎片×7 → 星晶之刃×1，需 Lv.10）。攻擊力 +14。
+    /// 夜間採集星晶礦脈才能取得材料，填補珊瑚矛(+12)→翠幽刃(+15)之間的空缺，
+    /// 讓夜行玩家在未踏上星球前就有更強的武器。
+    StarCrystalBlade,
+    /// 裂縫刃（合成：裂縫碎片×4 → 裂縫刃×1，需 Lv.15）。攻擊力 +35。
+    /// 宇宙裂縫事件限定，超越霧醚之刃(+30)、略遜源晶之刃(+40)——宇宙裂縫的高風險高回報。
+    RiftBlade,
+
+    // ── 進階護甲（ROADMAP 145 武器/裝備進階線）────────────────────────────────
+    /// 珊瑚鎧（合成：深海珍珠×2 + 晶石碎片×6 → 珊瑚鎧×1）。每次受傷減 3 點傷害。
+    /// 珊瑚礁探索專屬，填補晶石護盾(def 2)→宇宙護盾(def 6)之間的空缺——水域探索的防禦回報。
+    CoralArmor,
+    /// 符文鎧（合成：古代碎片×5 + 石頭×6 → 符文鎧×1）。每次受傷減 4 點傷害。
+    /// 沙漠遺跡文明的鎧甲，由古代銘刻強化防禦，進階防具的第二梯。
+    RuneArmor,
+    /// 星晶鎧（合成：星晶碎片×5 + 石頭×4 → 星晶鎧×1，需 Lv.10）。每次受傷減 5 點傷害。
+    /// 夜採星晶打造的全身護甲，防禦值僅次宇宙護盾(def 6)——夜行者的盔甲精華。
+    StarCrystalArmor,
 }
 
 impl ItemKind {
@@ -310,6 +333,13 @@ impl ItemKind {
         ItemKind::StarAmulet,
         ItemKind::RainbowStarDust,
         ItemKind::StarGuardianAmulet,
+        // ROADMAP 145 進階武器/裝備
+        ItemKind::HardenedBlade,
+        ItemKind::StarCrystalBlade,
+        ItemKind::RiftBlade,
+        ItemKind::CoralArmor,
+        ItemKind::RuneArmor,
+        ItemKind::StarCrystalArmor,
     ];
 }
 
@@ -581,13 +611,19 @@ mod tests {
                 | ItemKind::StarDust
                 | ItemKind::StarAmulet
                 | ItemKind::RainbowStarDust
-                | ItemKind::StarGuardianAmulet => {}
+                | ItemKind::StarGuardianAmulet
+                | ItemKind::HardenedBlade
+                | ItemKind::StarCrystalBlade
+                | ItemKind::RiftBlade
+                | ItemKind::CoralArmor
+                | ItemKind::RuneArmor
+                | ItemKind::StarCrystalArmor => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 64 種（含 ROADMAP 134：RainbowStarDust/StarGuardianAmulet）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 64, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 70 種（含 ROADMAP 145：HardenedBlade/StarCrystalBlade/RiftBlade/CoralArmor/RuneArmor/StarCrystalArmor）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 70, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]

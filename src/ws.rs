@@ -865,7 +865,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let min_pros = crate::crafting::recipe_min_prosperity(&recipe_id);
                         let prosperity_ok = min_pros == 0
                             || app.residents.read().unwrap().prosperity_level() >= min_pros;
-                        if prosperity_ok {
+                        // 等級門檻（ROADMAP 145）：部分高階配方需達到最低等級。
+                        let min_lv = crate::crafting::recipe_min_level(&recipe_id);
+                        let level_ok = min_lv == 0 || {
+                            app.players.read().unwrap()
+                                .get(&id)
+                                .map(|p| p.level() >= min_lv)
+                                .unwrap_or(false)
+                        };
+                        if prosperity_ok && level_ok {
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 let discount = crate::class::crafting_reduction(&p.masteries);
                                 if recipe.craft_with_discount(&mut p.inventory, discount) {
