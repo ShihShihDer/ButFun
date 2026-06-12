@@ -14,8 +14,9 @@
 
 use std::collections::HashMap;
 
-/// NPC 壽命預設（秒，真實時間）。約 2 小時。
-pub const LIFESPAN_SECS_DEFAULT: f64 = 7200.0;
+/// NPC 壽命預設（秒，真實時間）。約 1 天——服務型 NPC（商人/工匠/村長…）做為「老面孔」長期駐守，
+/// 傳承（老年→回歸乙太→後繼者）成為偶爾才遇上的、有重量的儀式，而非頻繁洗牌。可用環境變數覆寫。
+pub const LIFESPAN_SECS_DEFAULT: f64 = 86400.0;
 
 /// 進入老年期的壽命分數（80% 壽命後進入老年，有預告、玩家來得及道別）。
 pub const ELDER_FRACTION: f64 = 0.80;
