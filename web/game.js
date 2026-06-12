@@ -11901,7 +11901,8 @@
     // ── ROADMAP 138：☰ 選單項目接線 + syncMenuDot ──
     // winMenu 裡每顆 .menu-item 點擊 → openWinFor 對應 dock-btn（自動收選單、開目標視窗）。
     for (const item of document.querySelectorAll("#winMenu .menu-item")) {
-      item.addEventListener("click", () => {
+      item.addEventListener("click", (e) => {
+        e.stopPropagation(); // 防呆：別讓這次點擊冒泡觸發「點窗外關窗」把剛開的面板又關掉
         const target = document.getElementById(item.dataset.target);
         if (target) openWinFor(target);
       });
