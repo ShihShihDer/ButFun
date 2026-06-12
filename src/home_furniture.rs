@@ -124,9 +124,10 @@ pub struct HomeFurnishings {
 }
 
 impl HomeFurnishings {
-    /// 嘗試放置一件家具。成功回 `true`；已達上限回 `false`。
+    /// 嘗試放置一件家具。成功回 `true`；已達上限或同種類已存在回 `false`。
+    /// 每種家具只能放一件（語意唯一：各有獨特被動效果）。
     pub fn place(&mut self, kind: FurnitureKind) -> bool {
-        if self.items.len() >= MAX_FURNITURE {
+        if self.items.len() >= MAX_FURNITURE || self.items.contains(&kind) {
             return false;
         }
         self.items.push(kind);
@@ -194,12 +195,27 @@ mod tests {
     #[test]
     fn place_up_to_max() {
         let mut h = HomeFurnishings::default();
-        for _ in 0..MAX_FURNITURE {
-            assert!(h.place(FurnitureKind::SteamBed));
-        }
-        // 超過上限拒絕
-        assert!(!h.place(FurnitureKind::AetherChest));
+        // 五種各放一件，剛好達到上限
+        assert!(h.place(FurnitureKind::SteamBed));
+        assert!(h.place(FurnitureKind::AetherChest));
+        assert!(h.place(FurnitureKind::EtherPlant));
+        assert!(h.place(FurnitureKind::StarLantern));
+        assert!(h.place(FurnitureKind::AncientDeco));
         assert_eq!(h.count(), MAX_FURNITURE);
+        // 已達上限，任何新放置都應拒絕
+        assert!(!h.place(FurnitureKind::SteamBed));
+    }
+
+    #[test]
+    fn no_duplicate_kind() {
+        let mut h = HomeFurnishings::default();
+        assert!(h.place(FurnitureKind::SteamBed));
+        // 同種類第二次放置應拒絕
+        assert!(!h.place(FurnitureKind::SteamBed));
+        assert_eq!(h.count(), 1);
+        // 不同種類仍可放
+        assert!(h.place(FurnitureKind::AetherChest));
+        assert_eq!(h.count(), 2);
     }
 
     #[test]
