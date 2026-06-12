@@ -809,6 +809,27 @@ pub fn spawn(app: AppState) {
                             app.world_log.write().unwrap().push(format!(
                                 "旅行者 {name} 從外地走入主城，身份：{origin}"
                             ));
+                            // ROADMAP 171：旅人野外見聞——根據生態狀況廣播野外快報。
+                            {
+                                let pressure = app.director.read().unwrap().eco_pressure();
+                                let (alpha_count, top_colony) = {
+                                    let cols = app.monster_colonies.read().unwrap();
+                                    let ac = cols.alphas.len();
+                                    let tc = cols.colonies.iter()
+                                        .max_by_key(|c| c.population)
+                                        .filter(|c| c.population > 0)
+                                        .map(|c| c.name.to_string());
+                                    (ac, tc)
+                                };
+                                let ctx = crate::eco_report::EcoReportContext {
+                                    pressure,
+                                    active_alpha_count: alpha_count,
+                                    top_colony_name: top_colony,
+                                };
+                                if let Some(report) = crate::eco_report::pick_eco_report(name, &ctx) {
+                                    let _ = app.tx_chat.send(report);
+                                }
+                            }
                         }
                         TravelerEvent::Departed { name } => {
                             let _ = app.tx_chat.send(format!(
@@ -974,6 +995,25 @@ pub fn spawn(app: AppState) {
                                 let _ = app.tx_chat.send(format!(
                                     "👑 [{colony_name}] 族群達到巔峰！Alpha 首領「{kind_name}·霸主」降臨領地，尋求挑戰者！"
                                 ));
+                                // ROADMAP 171：Alpha 湧現觸發 NPC 主動評論。
+                                {
+                                    let event_kind = crate::npc_proactive::WorldEventKind::AlphaEmergent {
+                                        colony_name: colony_name.to_string(),
+                                        kind_name: kind_name.to_string(),
+                                    };
+                                    let app2 = app.clone();
+                                    tokio::spawn(async move {
+                                        let now = std::time::Instant::now();
+                                        let maybe_npc = {
+                                            let mut cd = app2.npc_proactive.write().unwrap();
+                                            crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                        };
+                                        if let Some(npc_id) = maybe_npc {
+                                            let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                            let _ = app2.tx_chat.send(reaction);
+                                        }
+                                    });
+                                }
                             }
                             // ROADMAP 170：Alpha 領地爭奪——衝突開始廣播。
                             MonsterColonyEvent::AlphaClashStart { colony_a_name, colony_b_name } => {
@@ -986,6 +1026,25 @@ pub fn spawn(app: AppState) {
                                 let _ = app.tx_chat.send(format!(
                                     "🏆 [{winner_colony_name}] Alpha 擊潰了 [{loser_colony_name}] Alpha！[{winner_colony_name}] 稱霸此區域，[{loser_colony_name}] 元氣大傷！趁勢攻擊殘血霸主！"
                                 ));
+                                // ROADMAP 171：領地爭奪結果觸發 NPC 主動評論。
+                                {
+                                    let event_kind = crate::npc_proactive::WorldEventKind::AlphaClashResult {
+                                        winner_colony: winner_colony_name.to_string(),
+                                        loser_colony: loser_colony_name.to_string(),
+                                    };
+                                    let app2 = app.clone();
+                                    tokio::spawn(async move {
+                                        let now = std::time::Instant::now();
+                                        let maybe_npc = {
+                                            let mut cd = app2.npc_proactive.write().unwrap();
+                                            crate::npc_proactive::pick_reacting_npc(&event_kind, &mut cd, now)
+                                        };
+                                        if let Some(npc_id) = maybe_npc {
+                                            let reaction = crate::npc_proactive::generate_proactive_reaction(npc_id, event_kind).await;
+                                            let _ = app2.tx_chat.send(reaction);
+                                        }
+                                    });
+                                }
                             }
                             // ROADMAP 169：Alpha 咆哮指揮——決定戰術並非同步生成台詞廣播。
                             MonsterColonyEvent::AlphaCommandReady { alpha_id, colony_name, kind, hp_pct, alpha_x, alpha_y } => {

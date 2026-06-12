@@ -119,6 +119,7 @@ mod town_memory;
 mod invasion;
 mod monster_colony;
 mod eco_pressure;
+mod eco_report;
 
 use std::net::SocketAddr;
 
