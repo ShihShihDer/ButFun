@@ -533,6 +533,43 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::WinterMedicine,
         output_qty: 1,
     },
+
+    // ── 住家家具（ROADMAP 155）─────────────────────────────────────────────────
+    /// 蒸汽床鋪：木材×4 + 石頭×2 → 蒸汽床鋪×1。放置住家後每 30 秒回血 2。
+    Recipe {
+        id: "steam_bed",
+        inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 2)],
+        output: ItemKind::SteamBed,
+        output_qty: 1,
+    },
+    /// 乙太寶箱：木材×3 + 石頭×4 → 乙太寶箱×1。放置後背包種類上限 +3。
+    Recipe {
+        id: "aether_chest",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 4)],
+        output: ItemKind::AetherChest,
+        output_qty: 1,
+    },
+    /// 乙太花盆：野花×2 + 木材×2 → 乙太花盆×1。放置後採集 EXP +8%。
+    Recipe {
+        id: "ether_plant",
+        inputs: &[(ItemKind::WildFlower, 2), (ItemKind::Wood, 2)],
+        output: ItemKind::EtherPlant,
+        output_qty: 1,
+    },
+    /// 星魂燈：星晶碎片×2 + 石頭×2 → 星魂燈×1。放置後夜間攻擊力 +2。
+    Recipe {
+        id: "star_lantern",
+        inputs: &[(ItemKind::StarCrystalShard, 2), (ItemKind::Stone, 2)],
+        output: ItemKind::StarLantern,
+        output_qty: 1,
+    },
+    /// 古代擺件：古代碎片×2 + 石頭×1 → 古代擺件×1。放置後 NPC 收購 +10%。
+    Recipe {
+        id: "ancient_deco",
+        inputs: &[(ItemKind::AncientFragment, 2), (ItemKind::Stone, 1)],
+        output: ItemKind::AncientDeco,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。

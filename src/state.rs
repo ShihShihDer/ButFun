@@ -246,6 +246,11 @@ pub struct Player {
     pub indoor_x: f32,
     /// 室內 Y 位置（像素，相對室內空間左上角）。indoor_plot_id 為 None 時無意義。
     pub indoor_y: f32,
+
+    // ── 家具加成（ROADMAP 155）───────────────────────────────────────────
+    /// 乙太箱帶來的背包額外種類槽（0 = 無乙太箱；3 = 有一個乙太箱）。
+    /// 記憶體模式：與 home_furnishings 同步，重啟歸零。
+    pub inventory_extra_kinds: u32,
 }
 
 impl Player {
@@ -577,8 +582,9 @@ impl Player {
         if qty == 0 {
             return (0, 0, 0);
         }
+        let max_kinds = MAX_INVENTORY_ITEM_KINDS + self.inventory_extra_kinds as usize;
         // 背包仍可接受（已有此種類，或種類槽未滿）
-        if !self.inventory.is_full_for_new_kind(item, MAX_INVENTORY_ITEM_KINDS) {
+        if !self.inventory.is_full_for_new_kind(item, max_kinds) {
             let added = self.inventory.add(item, qty);
             let remaining = qty - added;
             if remaining == 0 {
@@ -993,6 +999,9 @@ pub struct AppState {
     /// 人類↔物種關係（ROADMAP 144）：各物種對人類的態度值。
     /// 記憶體模式，重啟清零（世界換季重生）。
     pub species_relations: Arc<RwLock<crate::species_relations::SpeciesRelations>>,
+    /// 玩家住家家具（ROADMAP 155）：每位玩家（UUID）所放置的家具列表。
+    /// 記憶體模式，重啟清空（玩家需重新進室內放置）；家具材料在背包持久化。
+    pub home_furnishings: Arc<RwLock<std::collections::HashMap<uuid::Uuid, crate::home_furniture::HomeFurnishings>>>,
 }
 
 impl AppState {
@@ -1161,6 +1170,7 @@ impl AppState {
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
+            home_furnishings: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -1267,6 +1277,7 @@ mod tests {
             indoor_plot_id: None,
             indoor_x: 0.0,
             indoor_y: 0.0,
+            inventory_extra_kinds: 0,
         }
     }
 

@@ -289,7 +289,12 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::SpringSachet
         | ItemKind::SummerElixir
         | ItemKind::AutumnTonic
-        | ItemKind::WinterMedicine => None,
+        | ItemKind::WinterMedicine
+        | ItemKind::SteamBed
+        | ItemKind::AetherChest
+        | ItemKind::EtherPlant
+        | ItemKind::StarLantern
+        | ItemKind::AncientDeco => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -385,7 +390,12 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::SpringSachet
         | ItemKind::SummerElixir
         | ItemKind::AutumnTonic
-        | ItemKind::WinterMedicine => None,
+        | ItemKind::WinterMedicine
+        | ItemKind::SteamBed
+        | ItemKind::AetherChest
+        | ItemKind::EtherPlant
+        | ItemKind::StarLantern
+        | ItemKind::AncientDeco => None,
     }
 }
 

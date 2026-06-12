@@ -102,6 +102,7 @@ mod sprinkler;
 mod warehouse;
 mod perishable;
 mod home_interior;
+mod home_furniture;
 mod resident_npc;
 mod resident_chat;
 mod town_prosperity;

@@ -289,6 +289,18 @@ pub enum ItemKind {
     AutumnTonic,
     /// 冬日神藥（冰晶碎片×2 合成）。回復至等級滿血。
     WinterMedicine,
+
+    // ── 住家家具（ROADMAP 155）────────────────────────────────────────────────
+    /// 蒸汽床鋪🛏️（合成：木材×4 + 石頭×2）。放置住家後每 30 秒回血 2（脫離戰鬥時）。
+    SteamBed,
+    /// 乙太寶箱📦（合成：木材×3 + 石頭×4）。放置住家後背包物品種類上限 +3。
+    AetherChest,
+    /// 乙太花盆🪴（合成：野花×2 + 木材×2）。放置住家後採集 EXP +8%。
+    EtherPlant,
+    /// 星魂燈🔮（合成：星晶碎片×2 + 石頭×2）。放置住家後夜間攻擊力 +2。
+    StarLantern,
+    /// 古代擺件🏺（合成：古代碎片×2 + 石頭×1）。放置住家後 NPC 收購 +10%。
+    AncientDeco,
 }
 
 impl ItemKind {
@@ -382,6 +394,12 @@ impl ItemKind {
         ItemKind::SummerElixir,
         ItemKind::AutumnTonic,
         ItemKind::WinterMedicine,
+        // ROADMAP 155 住家家具
+        ItemKind::SteamBed,
+        ItemKind::AetherChest,
+        ItemKind::EtherPlant,
+        ItemKind::StarLantern,
+        ItemKind::AncientDeco,
     ];
 }
 
@@ -671,13 +689,19 @@ mod tests {
                 | ItemKind::SpringSachet
                 | ItemKind::SummerElixir
                 | ItemKind::AutumnTonic
-                | ItemKind::WinterMedicine => {}
+                | ItemKind::WinterMedicine
+                // ROADMAP 155 住家家具
+                | ItemKind::SteamBed
+                | ItemKind::AetherChest
+                | ItemKind::EtherPlant
+                | ItemKind::StarLantern
+                | ItemKind::AncientDeco => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 81 種（含 ROADMAP 154：季節性野外特產 8 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 81, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 86 種（含 ROADMAP 155：住家家具 5 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 86, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -961,9 +985,18 @@ mod tests {
             // 8. 是導航工具（UseItem 觸發功能但不消耗——持有期間可重複使用）。
             // 星圖屬此類：展開星際旅行界面，直到多星球旅程開啟（ROADMAP 20）都有意義。
             let navigation_tool = item == ItemKind::StarChart;
-            // 9. 是可放置功能物件（PlaceSprinkler 之類的 handler：背包消耗一個 → 放置到世界）。
-            // 放置後在世界發揮功能（自動澆水等），非單純的地形建造材料，故獨立一條。
-            let placeable_functional = item == ItemKind::Sprinkler;
+            // 9. 是可放置功能物件（PlaceSprinkler / PlaceFurniture 之類的 handler：背包消耗一個 → 放置到世界）。
+            // 放置後在世界發揮功能（自動澆水/家具被動加成等），非單純的地形建造材料，故獨立一條。
+            let placeable_functional = matches!(
+                item,
+                ItemKind::Sprinkler
+                    // 家具（ROADMAP 155）：放置到住家後提供被動加成，可移除退還背包。
+                    | ItemKind::SteamBed
+                    | ItemKind::AetherChest
+                    | ItemKind::EtherPlant
+                    | ItemKind::StarLantern
+                    | ItemKind::AncientDeco
+            );
             // 10. 是被動加成護符（持有時全程生效，不消耗）。
             // 星光護符持有時採集/戰鬥 EXP +10%（ROADMAP 133）；
             // 星際守護符持有時採集/戰鬥 EXP +15%（ROADMAP 134）。

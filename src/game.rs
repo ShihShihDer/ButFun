@@ -446,6 +446,15 @@ pub fn spawn(app: AppState) {
                             decay_notifications.push((p.id, events));
                         }
                     }
+                    // 蒸汽床 HP 回復（ROADMAP 155）：每 30 秒，在室內且擁有蒸汽床的玩家回復 2 HP。
+                    let bed_interval = crate::home_furniture::BED_REGEN_INTERVAL_SECS as u64 * TICK_HZ as u64;
+                    if tick % bed_interval == 0 && p.indoor_plot_id.is_some() && !p.vitals.is_downed() {
+                        let has_bed = app.home_furnishings.read().unwrap()
+                            .get(&p.id).map(|h| h.has_bed()).unwrap_or(false);
+                        if has_bed {
+                            p.vitals.heal(crate::home_furniture::BED_REGEN_HP);
+                        }
+                    }
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
@@ -1740,6 +1749,8 @@ pub fn spawn(app: AppState) {
                         },
                         // 物種態度（ROADMAP 144）：各物種對人類的態度值與層級。
                         species_attitudes: app.species_relations.read().unwrap().views(),
+                        // 住家家具（ROADMAP 155）：廣播時以空陣列佔位，ws.rs 過濾層依玩家 id 填入本人家具。
+                        home_furniture: vec![],
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
