@@ -362,6 +362,92 @@ pub fn get_player_greeting(persona: ResidentPersona, resident_name: &str, player
         .replace("{player}", player_name)
 }
 
+// ── 互助請求模板（ROADMAP 125）──────────────────────────────────────────────
+
+/// 農夫求助語（第一人稱，帶居民名）。
+static FARM_HELP_REQUEST: &[&str] = &[
+    "🪣 {name}站在田邊皺著眉頭：「我的水桶裂了，誰能幫我找找看？」",
+    "🌾 {name}抓著鋤頭喊道：「最近作物長不好，哪位好心人能陪我看看田地？」",
+    "🐔 {name}急著張望說：「我的雞跑不見了！誰有沒有看到一隻橘紅色的雞？」",
+];
+
+/// 市場客求助語。
+static MARKET_HELP_REQUEST: &[&str] = &[
+    "🛒 {name}左右張望說：「我好像把錢袋落在市場這邊，誰幫我找一下？」",
+    "📦 {name}苦著臉說：「這箱貨太重了，有沒有好心人幫我推一段路？」",
+    "💬 {name}問周圍人：「今天的集市在哪裡開啊？我找了半天都摸不著頭緒。」",
+];
+
+/// 廣場居民求助語。
+static SQUARE_HELP_REQUEST: &[&str] = &[
+    "☕ {name}招招手說：「哎，有沒有人陪我聊幾句？今天心裡有點悶，想說說話。」",
+    "📋 {name}比著公告欄說：「公告欄的字太小了，誰幫我念一下上面寫什麼？」",
+    "🎵 {name}笑著說：「誰能教我哼那個最近流行的曲子？聽過但就是記不住旋律。」",
+];
+
+/// 遊走者求助語。
+static WANDER_HELP_REQUEST: &[&str] = &[
+    "🗺️ {name}拿著一張破舊地圖說：「這條路是不是繞遠了？誰知道怎麼走最快？」",
+    "🔍 {name}苦著臉說：「我好像把東西落在城南角落，有沒有人跟我去找一下？」",
+    "🌙 {name}小聲說：「聽說城外有個奇怪的地方，誰能陪我去探探？一個人怕怕的。」",
+];
+
+/// 農夫感謝語（帶居民名與玩家名）。
+static FARM_HELP_THANKS: &[&str] = &[
+    "🌾 {name}感激地笑著：「謝謝你，{player}！你真是個熱心人，這點乙太表示我的謝意！」",
+    "💧 {name}抹了把汗說：「{player}！多虧你幫忙，這裡有點乙太，你別嫌棄啊！」",
+    "🪴 {name}用力點頭：「{player}，太感謝了！田裡的事最怕麻煩人，你真好！」",
+];
+
+/// 市場客感謝語。
+static MARKET_HELP_THANKS: &[&str] = &[
+    "🛒 {name}大笑說：「{player}，你救了我！這點乙太是我的感謝，下次碰到好事告訴我！」",
+    "💰 {name}掏出一把乙太：「{player}！做生意最重要是人情，這是給你的，下次再麻煩囉！」",
+    "📦 {name}拍拍手：「{player}！真的太謝謝了！我不善言詞，就這點乙太心意！」",
+];
+
+/// 廣場居民感謝語。
+static SQUARE_HELP_THANKS: &[&str] = &[
+    "☕ {name}笑瞇瞇說：「{player}，聊了幾句感覺好多了！這點乙太謝謝你陪我！」",
+    "🎵 {name}開心地說：「{player}！就是你這樣熱心的人讓村子溫暖，乙太拿去買點好東西！」",
+    "🌸 {name}感動地點頭：「{player}，謝謝你願意停下來幫忙，這是我小小的心意！」",
+];
+
+/// 遊走者感謝語。
+static WANDER_HELP_THANKS: &[&str] = &[
+    "🗺️ {name}把乙太塞到{player}手裡：「{player}！多謝你願意陪我，這是旅途存下來的一點。」",
+    "🔍 {name}笑著說：「{player}，你真是旅者同好！這點乙太當見面禮，下次再一起探索！」",
+    "🌙 {name}低聲說：「{player}，謝謝你……城裡的人都很忙，你肯停下來真好。」",
+];
+
+/// 取得居民互助請求廣播文字（ROADMAP 125）。
+///
+/// `name` 嵌入文字；`seed` 供模板輪替。
+pub fn get_help_request(persona: ResidentPersona, name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_HELP_REQUEST,
+        ResidentPersona::MarketBrowser => MARKET_HELP_REQUEST,
+        ResidentPersona::TownSquare    => SQUARE_HELP_REQUEST,
+        ResidentPersona::Wanderer      => WANDER_HELP_REQUEST,
+    };
+    pool[seed % pool.len()].replace("{name}", name)
+}
+
+/// 取得居民被幫助後的感謝語（ROADMAP 125）。
+///
+/// `name` 為居民名，`player_name` 為玩家名；`seed` 供模板輪替。
+pub fn get_help_thanks(persona: ResidentPersona, name: &str, player_name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_HELP_THANKS,
+        ResidentPersona::MarketBrowser => MARKET_HELP_THANKS,
+        ResidentPersona::TownSquare    => SQUARE_HELP_THANKS,
+        ResidentPersona::Wanderer      => WANDER_HELP_THANKS,
+    };
+    pool[seed % pool.len()]
+        .replace("{name}", name)
+        .replace("{player}", player_name)
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -681,6 +767,100 @@ mod tests {
                 assert!(template.contains("{player}"), "模板應含 {{player}}：{template}");
                 let filled = template.replace("{name}", "A").replace("{player}", "B");
                 assert!(!filled.contains('{'), "替換後不應殘留佔位符：{filled}");
+            }
+        }
+    }
+
+    // ── ROADMAP 125 互助請求測試 ──────────────────────────────────────────────
+
+    #[test]
+    fn help_request_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_help_request(persona, "阿土", 0);
+            assert!(!text.is_empty(), "persona {:?} 求助語不應為空", persona);
+        }
+    }
+
+    #[test]
+    fn help_request_contains_name() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_help_request(persona, "梅子", 0);
+            assert!(text.contains("梅子"), "求助語應含居民名 '梅子'：{text}");
+        }
+    }
+
+    #[test]
+    fn help_request_seed_wraps_without_panic() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let _ = get_help_request(persona, "二柱", 9999);
+        }
+    }
+
+    #[test]
+    fn help_request_all_templates_have_name_placeholder() {
+        for pool in [FARM_HELP_REQUEST, MARKET_HELP_REQUEST, SQUARE_HELP_REQUEST, WANDER_HELP_REQUEST] {
+            for template in pool {
+                assert!(template.contains("{name}"), "模板應含 {{name}}：{template}");
+                let filled = template.replace("{name}", "測試");
+                assert!(!filled.contains("{name}"), "替換後不應殘留佔位符");
+            }
+        }
+    }
+
+    #[test]
+    fn help_thanks_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_help_thanks(persona, "阿土", "冒險者", 0);
+            assert!(!text.is_empty(), "persona {:?} 感謝語不應為空", persona);
+        }
+    }
+
+    #[test]
+    fn help_thanks_contains_both_names() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_help_thanks(persona, "小花", "英雄甲", 0);
+            assert!(text.contains("小花"), "感謝語應含居民名 '小花'：{text}");
+            assert!(text.contains("英雄甲"), "感謝語應含玩家名 '英雄甲'：{text}");
+        }
+    }
+
+    #[test]
+    fn help_thanks_no_leftover_placeholders() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            for seed in 0..3 {
+                let text = get_help_thanks(persona, "居民名", "玩家名", seed);
+                assert!(!text.contains("{name}"), "不應殘留 {{name}}：{text}");
+                assert!(!text.contains("{player}"), "不應殘留 {{player}}：{text}");
             }
         }
     }

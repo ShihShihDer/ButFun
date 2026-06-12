@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -397,6 +397,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         sprinklers: sprinklers.iter().filter(|s| filter_pos(s.wx, s.wy)).cloned().collect(),
                                         // 廣場聚會剩餘秒數（ROADMAP 124）：全服廣播。
                                         gathering_secs: *gathering_secs,
+                                        // 互助請求居民清單（ROADMAP 125）：全服廣播。
+                                        active_help_requests: active_help_requests.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -3897,6 +3899,72 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 居民搭話 end ──────────────────────────────────────────────
+
+                // ── 居民互助請求（ROADMAP 125）────────────────────────────────
+                Ok(ClientMsg::HelpResident { resident_id }) => {
+                    use crate::resident_npc::RESIDENT_REACH;
+                    use crate::resident_npc::HELP_REWARD_ETHER;
+
+                    // 驗證範圍 + 確認居民正在求助
+                    let found = {
+                        let players = app.players.read().unwrap();
+                        let residents = app.residents.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            residents.find_requesting_by_id(&resident_id).and_then(|(persona, name, rx, ry)| {
+                                let dx = p.x - rx;
+                                let dy = p.y - ry;
+                                if dx * dx + dy * dy > RESIDENT_REACH * RESIDENT_REACH {
+                                    return None;
+                                }
+                                Some((persona, name.to_string(), rx, ry))
+                            })
+                        })
+                    };
+                    if let Some((persona, resident_name, rx, ry)) = found {
+                        // 完成請求（原子性：只有第一個點的玩家能成功）
+                        let fulfilled = app.residents.write().unwrap().fulfill_help_request(&resident_id);
+                        if fulfilled {
+                            // 給玩家乙太獎勵
+                            let player_name = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    p.ether += HELP_REWARD_ETHER;
+                                    p.name.clone()
+                                } else {
+                                    String::new()
+                                }
+                            };
+                            if !player_name.is_empty() {
+                                // 居民感謝語泡泡（廣播給周圍玩家）
+                                let seed = player_name.len() ^ resident_name.len();
+                                let thanks_text = crate::resident_chat::get_help_thanks(
+                                    persona, &resident_name, &player_name, seed,
+                                );
+                                let _ = app.tx.send(std::sync::Arc::new(
+                                    crate::protocol::ServerMsg::NpcSpeech {
+                                        npc_id: resident_id.clone(),
+                                        npc_name: format!("居民 {resident_name}"),
+                                        text: thanks_text.clone(),
+                                        display_secs: 7,
+                                        wx: rx,
+                                        wy: ry,
+                                    }
+                                ));
+                                // 私信告知玩家獎勵明細
+                                if let Ok(json) = serde_json::to_string(
+                                    &crate::protocol::ServerMsg::NpcReply {
+                                        npc: resident_id,
+                                        display: format!("居民 {resident_name}"),
+                                        text: format!("{thanks_text}（+{HELP_REWARD_ETHER} 乙太）"),
+                                    }
+                                ) {
+                                    let _ = tx_direct.send(json).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 居民互助請求 end ──────────────────────────────────────────
 
                 Ok(ClientMsg::Join { .. }) => {} // 已進場，忽略
                 Err(e) => tracing::debug!("無法解析客戶端訊息：{e}"),
