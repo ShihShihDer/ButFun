@@ -1752,77 +1752,89 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
-                    if let Some((kind, _, _, Some(_))) = result {
-                        let completed = app.quests.write().unwrap().on_kill(kind);
-                        notify_quest_complete(&app, completed);
+                    // 安全區遠程擊殺不計數，防止城內架砲刷任務（suppress_rewards 同步守衛）。
+                    if !suppress_rewards {
+                        if let Some((kind, _, _, Some(_))) = result {
+                            let completed = app.quests.write().unwrap().on_kill(kind);
+                            notify_quest_complete(&app, completed);
+                        }
                     }
                     // 成就：擊殺計數里程碑（ROADMAP 31）。
-                    if let Some((_, _, _, Some(_))) = result {
-                        let (kill_count, new_level, pname, newly_unlocked) = {
-                            let mut players = app.players.write().unwrap();
-                            if let Some(p) = players.get_mut(&id) {
-                                p.kill_count = p.kill_count.saturating_add(1);
-                                let kc = p.kill_count;
-                                let lv = p.level();
-                                let pn = p.name.clone();
-                                // 擊殺里程碑成就
-                                let mut newly: Vec<crate::achievement::Achievement> = Vec::new();
-                                if let Some(ach) = crate::achievement::achievement_for_kill_count(kc) {
-                                    if p.achievements.unlock(ach) { newly.push(ach); }
+                    // 安全區遠程擊殺不計里程碑，防城內刷牆。
+                    if !suppress_rewards {
+                        if let Some((_, _, _, Some(_))) = result {
+                            let (kill_count, new_level, pname, newly_unlocked) = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    p.kill_count = p.kill_count.saturating_add(1);
+                                    let kc = p.kill_count;
+                                    let lv = p.level();
+                                    let pn = p.name.clone();
+                                    // 擊殺里程碑成就
+                                    let mut newly: Vec<crate::achievement::Achievement> = Vec::new();
+                                    if let Some(ach) = crate::achievement::achievement_for_kill_count(kc) {
+                                        if p.achievements.unlock(ach) { newly.push(ach); }
+                                    }
+                                    // 升級里程碑成就（跟隨 exp 升級一起檢查）
+                                    for ach in crate::achievement::achievements_for_level(lv) {
+                                        if p.achievements.unlock(ach) { newly.push(ach); }
+                                    }
+                                    (kc, lv, pn, newly)
+                                } else {
+                                    (0, 0, String::new(), Vec::new())
                                 }
-                                // 升級里程碑成就（跟隨 exp 升級一起檢查）
-                                for ach in crate::achievement::achievements_for_level(lv) {
-                                    if p.achievements.unlock(ach) { newly.push(ach); }
-                                }
-                                (kc, lv, pn, newly)
-                            } else {
-                                (0, 0, String::new(), Vec::new())
+                            };
+                            let _ = (kill_count, new_level); // 避免 unused 警告
+                            for ach in newly_unlocked {
+                                let _ = app.tx_chat.send(format!(
+                                    "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
+                                ));
                             }
-                        };
-                        let _ = (kill_count, new_level); // 避免 unused 警告
-                        for ach in newly_unlocked {
-                            let _ = app.tx_chat.send(format!(
-                                "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
-                            ));
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
-                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
-                        advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                    // 安全區遠程擊殺不算每日任務進度。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                            advance_daily_kill(&app, uid, kill_kind, &tx_direct);
+                        }
                     }
                     // 懸賞告示板：擊殺事件（ROADMAP 53）。
-                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
-                        let bounty_result = {
-                            let mut players = app.players.write().unwrap();
-                            if let Some(p) = players.get_mut(&uid) {
-                                crate::bounty_board::on_kill(&mut p.bounty_active, kill_kind)
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some((reward, xp)) = bounty_result {
-                            let pname = {
+                    // 安全區遠程擊殺不結算懸賞，防止城牆龜縮刷賞。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                            let bounty_result = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&uid) {
-                                    p.ether = p.ether.saturating_add(reward);
-                                    p.masteries.gain_warrior(xp);
-                                    p.bounty_active = None;
-                                    p.bounty_cooldown = crate::bounty_board::BOUNTY_COOLDOWN_SECS;
-                                    tracing::info!(player = %p.name, reward, xp, "完成懸賞任務");
-                                    p.name.clone()
+                                    crate::bounty_board::on_kill(&mut p.bounty_active, kill_kind)
                                 } else {
-                                    String::new()
+                                    None
                                 }
                             };
-                            if !pname.is_empty() {
-                                let _ = tx_direct.send(format!(
-                                    "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
-                                ));
-                                // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
-                                app.player_logs.write().unwrap()
-                                    .entry(uid)
-                                    .or_default()
-                                    .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
+                            if let Some((reward, xp)) = bounty_result {
+                                let pname = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.ether = p.ether.saturating_add(reward);
+                                        p.masteries.gain_warrior(xp);
+                                        p.bounty_active = None;
+                                        p.bounty_cooldown = crate::bounty_board::BOUNTY_COOLDOWN_SECS;
+                                        tracing::info!(player = %p.name, reward, xp, "完成懸賞任務");
+                                        p.name.clone()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
+                                if !pname.is_empty() {
+                                    let _ = tx_direct.send(format!(
+                                        "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
+                                    ));
+                                    // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
+                                    app.player_logs.write().unwrap()
+                                        .entry(uid)
+                                        .or_default()
+                                        .push(format!("完成懸賞討伐任務，獲得 {} 乙太", reward));
+                                }
                             }
                         }
                     }

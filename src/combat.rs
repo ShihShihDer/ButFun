@@ -73,11 +73,11 @@ pub enum WeaponKind {
     /// 裂縫刃（ROADMAP 145）：宇宙裂縫碎片凝聚，攻擊力 +35，宇宙裂縫事件高風險回報。
     RiftBlade,
     // ── 遠程武器（ROADMAP 146）────────────────────────────────────────────────
-    /// 乙太弓（ROADMAP 146）：乙太能量壓縮成高速箭矢，遠程攻擊力 +9，射程 180px。
+    /// 乙太弓（ROADMAP 146）：乙太能量壓縮成高速箭矢，遠程攻擊力 +9，射程 220px（RANGED_ATTACK_REACH）。
     EtherBow,
-    /// 晶石弩（ROADMAP 146）：晶石碎片鑄造的精密機械弩，遠程攻擊力 +14，射程 220px。
+    /// 晶石弩（ROADMAP 146）：晶石碎片鑄造的精密機械弩，遠程攻擊力 +14，射程 220px（RANGED_ATTACK_REACH）。
     CrystalBallista,
-    /// 虛空炮（ROADMAP 146）：虛空星能量炮，炮彈空中炸開，遠程攻擊力 +27，射程 250px。
+    /// 虛空炮（ROADMAP 146）：虛空星能量炮，炮彈空中炸開，遠程攻擊力 +27，射程 220px（RANGED_ATTACK_REACH）。
     VoidCannon,
 }
 
