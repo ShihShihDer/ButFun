@@ -30,6 +30,10 @@ pub enum WorldEventKind {
     EliteSlain { name: String, slayer: String },
     /// 村落節慶開始（凱爾長老辦的）。
     VillageFestival,
+    /// 巢穴 Alpha 首領湧現（ROADMAP 171）——附巢穴名稱與怪物種類。
+    AlphaEmergent { colony_name: String, kind_name: String },
+    /// Alpha 領地爭奪結算（ROADMAP 171）——附勝負巢穴名。
+    AlphaClashResult { winner_colony: String, loser_colony: String },
 }
 
 impl WorldEventKind {
@@ -54,6 +58,12 @@ impl WorldEventKind {
             WorldEventKind::VillageFestival => {
                 "村落節慶開始！全村 EXP 加成 30%".to_string()
             }
+            WorldEventKind::AlphaEmergent { colony_name, kind_name } => {
+                format!("{colony_name} 的 {kind_name} 族群達到巔峰，Alpha 首領湧現稱霸領地")
+            }
+            WorldEventKind::AlphaClashResult { winner_colony, loser_colony } => {
+                format!("{winner_colony} 的 Alpha 擊潰了 {loser_colony} 的 Alpha，稱霸野外區域")
+            }
         }
     }
 
@@ -71,6 +81,8 @@ impl WorldEventKind {
             WorldEventKind::VillageFestival => {
                 &["village_chief", "farm_fair_npc", "expedition_npc"]
             }
+            WorldEventKind::AlphaEmergent { .. } => &["bounty_npc", "village_chief"],
+            WorldEventKind::AlphaClashResult { .. } => &["bounty_npc", "merchant"],
         }
     }
 }
@@ -128,6 +140,20 @@ pub fn canned_reaction(npc_id: &str, event: &WorldEventKind) -> String {
         }
         ("expedition_npc", WorldEventKind::VillageFestival) => {
             "〔探勘員芙利亞〕節慶！我從遠方帶回的故事，今晚全說個夠！".to_string()
+        }
+        // ROADMAP 171：Alpha 湧現 NPC 反應
+        ("bounty_npc", WorldEventKind::AlphaEmergent { colony_name, kind_name }) => {
+            format!("〔獵手蘭卡〕{colony_name} 出現 Alpha 霸主了！{kind_name} 族群巔峰——有膽的去挑戰，獎勵豐厚。")
+        }
+        ("village_chief", WorldEventKind::AlphaEmergent { colony_name, .. }) => {
+            format!("〔凱爾長老〕{colony_name} 地區霸主降臨！勇者們謹慎行事，也可趁機立功。")
+        }
+        // ROADMAP 171：Alpha 領地爭奪結果 NPC 反應
+        ("bounty_npc", WorldEventKind::AlphaClashResult { winner_colony, loser_colony }) => {
+            format!("〔獵手蘭卡〕{winner_colony} Alpha 稱霸！{loser_colony} 元氣大傷——殘血霸主此時最好打，把握機會！")
+        }
+        ("merchant", WorldEventKind::AlphaClashResult { winner_colony, .. }) => {
+            format!("〔薇拉〕{winner_colony} Alpha 獲勝了，還在殘血！武器藥水我這裡備著，快去收割。")
         }
         _ => {
             let display = crate::npc_chat::find_npc(npc_id)
@@ -218,6 +244,14 @@ mod tests {
                 slayer: "勇者".to_string(),
             },
             WorldEventKind::VillageFestival,
+            WorldEventKind::AlphaEmergent {
+                colony_name: "廢料無人機陣".to_string(),
+                kind_name: "廢料無人機".to_string(),
+            },
+            WorldEventKind::AlphaClashResult {
+                winner_colony: "水晶傀儡巢穴".to_string(),
+                loser_colony: "蘑菇窟".to_string(),
+            },
         ];
         for event in &events {
             for &npc_id in event.reacting_npcs() {
@@ -279,6 +313,8 @@ mod tests {
             WorldEventKind::QuestComplete { name: "N".to_string() },
             WorldEventKind::EliteSlain { name: "A".to_string(), slayer: "B".to_string() },
             WorldEventKind::VillageFestival,
+            WorldEventKind::AlphaEmergent { colony_name: "C".to_string(), kind_name: "K".to_string() },
+            WorldEventKind::AlphaClashResult { winner_colony: "W".to_string(), loser_colony: "L".to_string() },
         ];
         for e in events {
             assert!(!e.description().is_empty(), "description 不應為空");
