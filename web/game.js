@@ -551,6 +551,77 @@
     }
   }
 
+  // 餵食按鈕（ROADMAP 144）：玩家有野花種子且附近有野生動物時，顯示浮動按鈕。
+  const FEED_REACH_PX = 100;
+  function updateFeedWildlifeBtn() {
+    let btn = document.getElementById("hudFeedWildlife");
+    const me = myId ? players.get(myId) : null;
+    const hasSeed = me && (myInv.get("wildflower_seed") || 0) > 0;
+    const nearest = hasSeed && me && wildlifeList.find(w =>
+      w.alive !== false
+      && (w.x - me.x) ** 2 + (w.y - me.y) ** 2 <= FEED_REACH_PX ** 2
+    );
+    if (!nearest) {
+      if (btn) btn.style.display = "none";
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "hudFeedWildlife";
+      btn.style.cssText = [
+        "position:fixed", "bottom:60px", "right:140px",
+        "background:rgba(40,80,40,0.80)", "border:1px solid #4a8",
+        "border-radius:10px", "color:#a0ffc0",
+        "font-size:.8rem", "font-family:monospace",
+        "padding:4px 12px", "z-index:1001", "cursor:pointer",
+      ].join(";");
+      btn.textContent = "🌿 餵食";
+      btn.addEventListener("click", () => {
+        const w = wildlifeList.find(w => w.alive !== false);
+        if (w && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "feed_wildlife", wildlife_id: w.id }));
+        }
+      });
+      document.body.appendChild(btn);
+    }
+    btn.style.display = "block";
+    btn.textContent = `🌿 餵食 ${nearest.name}`;
+    btn.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "feed_wildlife", wildlife_id: nearest.id }));
+      }
+    };
+  }
+
+  // 物種態度面板（ROADMAP 144）：左下角小面板，顯示 5 物種對人類的好感度。
+  // 顏色：Friendly=#60ffb0、Neutral=#c0c8d0、Wary=#ffcc44、Hostile=#ff6060。
+  const TIER_COLOR = { friendly: "#60ffb0", neutral: "#c0c8d0", wary: "#ffcc44", hostile: "#ff6060" };
+  const SPECIES_ICON = { wild_bird: "🐦", wild_deer: "🦌", small_critter: "🐿️", wild_wolf: "🐺", wild_fox: "🦊" };
+  function updateSpeciesAttitudeHud() {
+    if (!speciesAttitudes.length) return;
+    let panel = document.getElementById("hudSpeciesAttitude");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "hudSpeciesAttitude";
+      panel.style.cssText = [
+        "position:fixed", "bottom:60px", "left:8px",
+        "background:rgba(10,12,20,0.72)", "border:1px solid #334",
+        "border-radius:8px", "padding:5px 8px",
+        "font-size:.72rem", "font-family:monospace",
+        "z-index:1000", "pointer-events:none",
+        "min-width:130px",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    const rows = speciesAttitudes.map(s => {
+      const icon = SPECIES_ICON[s.kind] || "?";
+      const color = TIER_COLOR[s.tier] || "#c0c8d0";
+      const bar = "█".repeat(Math.round(s.attitude / 10)) + "░".repeat(10 - Math.round(s.attitude / 10));
+      return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.65rem;">${bar}</span> ${s.attitude}</div>`;
+    }).join("");
+    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度</div>${rows}`;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -578,6 +649,7 @@
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
   let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
+  let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -931,6 +1003,8 @@
         if (Array.isArray(msg.carion_orbs)) carionOrbs = msg.carion_orbs;
         // 物種聚落（ROADMAP 143）：靜態資料，只在首幀或變動時更新。
         if (Array.isArray(msg.colonies) && msg.colonies.length > 0) coloniesList = msg.colonies;
+        // 物種關係（ROADMAP 144）：5 物種態度與等級。
+        if (Array.isArray(msg.species_attitudes)) speciesAttitudes = msg.species_attitudes;
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -3370,6 +3444,9 @@
     updateWanderingMerchantHud();
     // 季節循環（ROADMAP 137）：常駐顯示目前季節 pill（每次快照同步一次，render 只確保初始顯示）。
     updateSeasonHud();
+    // 物種關係（ROADMAP 144）：左下角常駐 5 物種態度欄 + 近距離餵食按鈕。
+    updateSpeciesAttitudeHud();
+    updateFeedWildlifeBtn();
 
     requestAnimationFrame(render);
   }
@@ -6569,10 +6646,17 @@
       }
 
       // 名字標籤：守衛狀態橙黃警戒、捕食者橙紅、獵物淡綠；追獵/守衛中閃爍。
-      const labelColor = isGuarding ? "#ffcc44" : (isPredator ? "#f0b060" : "#a8f0a8");
+      // ROADMAP 144：物種關係等級影響標籤顏色（Hostile 紅、Friendly 亮綠）。
+      const tierInfo = speciesAttitudes.find(s => s.kind === w.kind);
+      const tier = tierInfo ? tierInfo.tier : "neutral";
+      const labelColor = tier === "hostile" ? "#ff6060"
+                       : tier === "friendly" ? "#60ffb0"
+                       : isGuarding ? "#ffcc44"
+                       : (isPredator ? "#f0b060" : "#a8f0a8");
       const bgAlpha = (isHunting || isGuarding) ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
       ctx.fillStyle = "rgba(0,0,0," + bgAlpha.toFixed(2) + ")";
-      const label = w.name;
+      const tierIcon = tier === "hostile" ? "⚠" : tier === "friendly" ? "♥" : tier === "wary" ? "△" : "";
+      const label = (tierIcon ? tierIcon + " " : "") + w.name;
       const lw = ctx.measureText(label).width + 8;
       ctx.fillRect(-lw / 2, -34, lw, 14);
       ctx.fillStyle = labelColor;
@@ -11406,6 +11490,19 @@
           spawnTapFlash(dn.wx, dn.wy);
           return;
         }
+      }
+    }
+    // ROADMAP 144：點到附近野生動物 → 送 attack_wildlife（伺服器驗距離）。
+    if (me && wildlifeList.length) {
+      const rect0 = canvas.getBoundingClientRect();
+      const twx = clientX - rect0.left + lastCam.x;
+      const twy = clientY - rect0.top + lastCam.y;
+      const CLICK_R = 40 * 40;
+      const clicked = wildlifeList.find(w => w.alive !== false
+        && (w.x - twx) ** 2 + (w.y - twy) ** 2 <= CLICK_R);
+      if (clicked) {
+        ws.send(JSON.stringify({ type: "attack_wildlife", wildlife_id: clicked.id }));
+        return;
       }
     }
     // 先判採集:點到「玩家搆得到的可採節點」就送採集——要擺在「不在自己農地就早退」的守衛

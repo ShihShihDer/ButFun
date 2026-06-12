@@ -715,7 +715,10 @@ pub fn spawn(app: AppState) {
                     let positions: Vec<(f32, f32)> = player_positions.iter()
                         .map(|(_, x, y)| (*x, *y))
                         .collect();
-                    let wildlife_events = app.wildlife_manager.write().unwrap().tick(dt, &positions);
+                    // ROADMAP 144：取得物種態度 Map，傳入 wildlife tick。
+                    let attitudes = app.species_relations.read().unwrap().attitudes.clone();
+                    let wildlife_events = app.wildlife_manager.write().unwrap()
+                        .tick(dt, &positions, &attitudes);
                     for ev in wildlife_events {
                         use crate::wildlife::WildlifeEvent;
                         match ev {
@@ -733,6 +736,56 @@ pub fn spawn(app: AppState) {
                                 let msg = format!(
                                     "🛡️ 城外 ({:.0},{:.0})：{} 察覺到入侵者，正在驅離！",
                                     cx, cy, colony_name
+                                );
+                                let _ = app.tx_chat.send(msg);
+                            }
+                            // ROADMAP 144：敵視物種近身攻擊玩家——找出 near_x/near_y 附近的玩家並扣血。
+                            WildlifeEvent::WildlifeAttack { attacker_kind, near_x, near_y, damage } => {
+                                let reach2 = (crate::species_relations::HOSTILE_WILDLIFE_DAMAGE as f32 * 20.0_f32).powi(2);
+                                let victim_ids: Vec<uuid::Uuid> = {
+                                    let pl = app.players.read().unwrap();
+                                    pl.values()
+                                        .filter(|p| {
+                                            let dx = p.x - near_x;
+                                            let dy = p.y - near_y;
+                                            dx * dx + dy * dy <= reach2 && !p.vitals.is_downed()
+                                        })
+                                        .map(|p| p.id)
+                                        .collect()
+                                };
+                                for vid in victim_ids {
+                                    let downed = {
+                                        let mut players = app.players.write().unwrap();
+                                        if let Some(p) = players.get_mut(&vid) {
+                                            p.vitals.take_damage(damage);
+                                            p.vitals.is_downed()
+                                        } else { false }
+                                    };
+                                    if downed {
+                                        let name = app.players.read().unwrap()
+                                            .get(&vid).map(|p| p.name.clone()).unwrap_or_default();
+                                        let msg = format!(
+                                            "⚠️ {} 被 {} 擊倒！需要保護這片野地的信任，試著餵食牠們改善關係。",
+                                            name, attacker_kind.display_name()
+                                        );
+                                        let _ = app.tx_chat.send(msg);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ROADMAP 144：物種關係 tick（態度自然衰減 + 層級改變廣播）。
+                {
+                    let sr_events = app.species_relations.write().unwrap().tick(dt);
+                    for ev in sr_events {
+                        use crate::species_relations::SpeciesRelationEvent;
+                        match ev {
+                            SpeciesRelationEvent::TierChanged { kind, new_tier } => {
+                                let msg = format!(
+                                    "🌿 [生態] {} 對人類的態度改變為{}！",
+                                    kind.display_name(),
+                                    new_tier.display_zh()
                                 );
                                 let _ = app.tx_chat.send(msg);
                             }
@@ -1672,6 +1725,8 @@ pub fn spawn(app: AppState) {
                             let wm = app.wildlife_manager.read().unwrap();
                             wm.colony_views()
                         },
+                        // 物種態度（ROADMAP 144）：各物種對人類的態度值與層級。
+                        species_attitudes: app.species_relations.read().unwrap().views(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

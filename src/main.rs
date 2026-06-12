@@ -108,6 +108,7 @@ mod town_prosperity;
 mod community_gathering;
 mod season;
 mod wildlife;
+mod species_relations;
 
 use std::net::SocketAddr;
 

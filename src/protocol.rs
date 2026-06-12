@@ -367,6 +367,15 @@ pub enum ClientMsg {
     /// `orb_id`：要採集的微粒 ID（前端從快照取得）。
     /// 倒地中 / 太遠 / ID 不存在 / 已被他人採集 → 靜默忽略。
     CollectCarrionOrb { orb_id: u32 },
+    /// 攻擊野生動物（ROADMAP 144）：在攻擊距離內擊殺指定 ID 的野生動物。
+    /// 未倒地、距離 ≤ ATTACK_WILDLIFE_REACH、ID 存在且存活 → 成功。
+    /// 獵物物種：該物種對人類態度降低；掠食者物種：被獵獵物物種態度升高。
+    #[serde(rename = "attack_wildlife")]
+    AttackWildlife { wildlife_id: u32 },
+    /// 餵食野生動物（ROADMAP 144）：消耗一個野花種子餵食指定野生動物。
+    /// 需未倒地、距離 ≤ FEED_REACH、背包有野花種子 → 成功，該物種態度升高。
+    #[serde(rename = "feed_wildlife")]
+    FeedWildlife { wildlife_id: u32 },
     /// 接取貿易任務（ROADMAP 51）：在當前星球商人處接取一個貿易包裹。
     /// `route_id`：要接取的路線編號（需在本星球且未在冷卻中且未持有其他包裹）。
     /// 一次只能攜帶一個包裹；同路線有 5 分鐘冷卻。倒地中靜默忽略。
@@ -646,6 +655,9 @@ pub enum ServerMsg {
         /// 物種聚落（ROADMAP 143）：各物種的巢穴/棲地，有領地守衛行為。
         /// 靜態資料（位置不變），前端用於渲染聚落邊界圓圈與小地圖標記。
         colonies: Vec<crate::wildlife::ColonyView>,
+        /// 物種態度（ROADMAP 144）：各物種對人類的態度值（0-100）與層級。
+        /// 前端用於「生態」面板顯示關係狀態，並根據態度調整視覺提示。
+        species_attitudes: Vec<crate::species_relations::SpeciesAttitudeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1409,6 +1421,7 @@ mod tests {
             wildlife: vec![],
             carion_orbs: vec![],
             colonies: vec![],
+            species_attitudes: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

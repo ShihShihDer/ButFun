@@ -958,6 +958,9 @@ pub struct AppState {
     /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
     /// 記憶體模式，重啟重新在固定座標生成。
     pub wildlife_manager: Arc<RwLock<crate::wildlife::WildlifeManager>>,
+    /// 人類↔物種關係（ROADMAP 144）：各物種對人類的態度值。
+    /// 記憶體模式，重啟清零（世界換季重生）。
+    pub species_relations: Arc<RwLock<crate::species_relations::SpeciesRelations>>,
 }
 
 impl AppState {
@@ -1124,6 +1127,7 @@ impl AppState {
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
+            species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
         }
     }
 
