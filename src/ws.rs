@@ -3377,30 +3377,41 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                             if actual_qty > 0 {
                                 // 2. 更新工程進度
-                                let (score, is_completed, project_id, project_name) = {
+                                let (score, taken_qty, is_completed, project_id, project_name) = {
                                     let mut project = app.town_project.write().unwrap();
-                                    let s = project.donate(item, actual_qty);
-                                    (s, project.status == crate::town_project::TownProjectStatus::Completed, project.project_id.clone(), project.name.clone())
+                                    let (s, t) = project.donate(item, actual_qty);
+                                    (s, t, project.status == crate::town_project::TownProjectStatus::Completed, project.project_id.clone(), project.name.clone())
                                 };
 
                                 if score > 0 {
                                     // 3. 紀錄並持久化
                                     let (ether, wood, stone, crystal) = match item {
-                                        None => (actual_qty, 0, 0, 0),
-                                        Some(crate::inventory::ItemKind::Wood) => (0, actual_qty, 0, 0),
-                                        Some(crate::inventory::ItemKind::Stone) => (0, 0, actual_qty, 0),
-                                        Some(crate::inventory::ItemKind::CrystalShard) | Some(crate::inventory::ItemKind::StarCrystalShard) => (0, 0, 0, actual_qty),
+                                        None => (taken_qty, 0, 0, 0),
+                                        Some(crate::inventory::ItemKind::Wood) => (0, taken_qty, 0, 0),
+                                        Some(crate::inventory::ItemKind::Stone) => (0, 0, taken_qty, 0),
+                                        Some(crate::inventory::ItemKind::CrystalShard) | Some(crate::inventory::ItemKind::StarCrystalShard) => (0, 0, 0, taken_qty),
                                         _ => (0, 0, 0, 0),
                                     };
                                     app.town_project_store.save_donation(uid, project_id.clone(), ether, wood, stone, crystal, score);
                                     app.town_project_store.save_progress(app.town_project.read().unwrap().clone());
+
+                                    // 退還溢出部分
+                                    if taken_qty < actual_qty {
+                                        let mut players = app.players.write().unwrap();
+                                        if let Some(p) = players.get_mut(&uid) {
+                                            match item {
+                                                None => p.ether += actual_qty - taken_qty,
+                                                Some(kind) => { p.inventory.add(kind, actual_qty - taken_qty); }
+                                            }
+                                        }
+                                    }
 
                                     // 4. 廣播
                                     let item_name = match item {
                                         None => "乙太".to_string(),
                                         Some(k) => format!("{:?}", k),
                                     };
-                                    let _ = app.tx_chat.send(format!("🏗️ {} 為【{}】工程捐獻了 {} {}！", player_name, project_name, actual_qty, item_name));
+                                    let _ = app.tx_chat.send(format!("🏗️ {} 為【{}】工程捐獻了 {} {}！", player_name, project_name, taken_qty, item_name));
                                     
                                     if is_completed {
                                         let _ = app.tx_chat.send(format!("🎊 慶賀！【{}】工程已圓滿完工！城鎮的未來更加閃耀 ✨", project_name));
@@ -3408,11 +3419,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         app.world_log.write().unwrap().push(format!("【{}】大工程順利完工！", project_name));
                                     }
                                 } else {
-                                    // 資源不合或已滿，退回乙太
-                                    if item.is_none() {
-                                        let mut players = app.players.write().unwrap();
-                                        if let Some(p) = players.get_mut(&uid) {
-                                            p.ether += actual_qty;
+                                    // 資源不合或已滿，全部退回
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        match item {
+                                            None => p.ether += actual_qty,
+                                            Some(kind) => { p.inventory.add(kind, actual_qty); }
                                         }
                                     }
                                 }

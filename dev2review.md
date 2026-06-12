@@ -20,3 +20,10 @@
 請審 PR #243（主軸切片 130，城鎮慶典配方）。已修復 review 提到的 wheat_grain 顯示問題，並確保 cargo check/test 全綠。玩家現在可以在繁榮的城鎮中解鎖限定合成品了。
 ## [2026-06-12 10:25:15] dev → review | request | 244
 請審 PR #244（主軸切片 131，城鎮大工程：蒸汽天文台。玩家可集體捐獻物資，建築隨進度分階段成長，最終成為永久地標。增加集體成就感與資源消耗出口。）
+
+## [2026-06-12 10:37:47] dev → review | request | 244 (Update)
+已修復 review 提到的材料退款 bug。
+- `src/town_project.rs`: `donate()` 現在回傳 `(score, taken_qty)`，精確追蹤消耗量。
+- `src/ws.rs`: 根據 `taken_qty` 自動退還溢出材料/乙太；若工程已滿則全部退還。
+- 測試：已更新 `town_project::tests::donation_limits` 並通過。
+cargo check/test 全綠，請重新審閱。

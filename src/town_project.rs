@@ -60,35 +60,35 @@ impl TownProjectState {
         (total_current / total_target).min(1.0)
     }
 
-    /// 接受捐獻。回傳增加的積分值。
-    pub fn donate(&mut self, item: Option<ItemKind>, qty: u32) -> u32 {
-        if self.status == TownProjectStatus::Completed { return 0; }
+    /// 接受捐獻。回傳 (積分值, 實際扣除數量)。
+    pub fn donate(&mut self, item: Option<ItemKind>, qty: u32) -> (u32, u32) {
+        if self.status == TownProjectStatus::Completed { return (0, 0); }
         match item {
             None => { // 捐乙太
                 let can_take = self.target_ether.saturating_sub(self.current_ether).min(qty);
                 self.current_ether += can_take;
                 self.check_completion();
-                can_take
+                (can_take, can_take)
             }
             Some(ItemKind::Wood) => {
                 let can_take = self.target_wood.saturating_sub(self.current_wood).min(qty);
                 self.current_wood += can_take;
                 self.check_completion();
-                can_take * 5
+                (can_take * 5, can_take)
             }
             Some(ItemKind::Stone) => {
                 let can_take = self.target_stone.saturating_sub(self.current_stone).min(qty);
                 self.current_stone += can_take;
                 self.check_completion();
-                can_take * 5
+                (can_take * 5, can_take)
             }
             Some(ItemKind::CrystalShard) | Some(ItemKind::StarCrystalShard) => {
                 let can_take = self.target_crystal.saturating_sub(self.current_crystal).min(qty);
                 self.current_crystal += can_take;
                 self.check_completion();
-                can_take * 15
+                (can_take * 15, can_take)
             }
-            _ => 0, // 不接受其他材料
+            _ => (0, 0), // 不接受其他材料
         }
     }
 
@@ -153,12 +153,14 @@ mod tests {
     #[test]
     fn donation_limits() {
         let mut p = TownProjectState::new_observatory();
-        let score = p.donate(None, 12000);
+        let (score, taken) = p.donate(None, 12000);
         assert_eq!(score, 10000);
+        assert_eq!(taken, 10000);
         assert_eq!(p.current_ether, 10000);
         
-        let score_wood = p.donate(Some(ItemKind::Wood), 600);
+        let (score_wood, taken_wood) = p.donate(Some(ItemKind::Wood), 600);
         assert_eq!(score_wood, 500 * 5);
+        assert_eq!(taken_wood, 500);
         assert_eq!(p.current_wood, 500);
     }
 }
