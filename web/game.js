@@ -6560,9 +6560,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -6628,6 +6628,11 @@
     { id: "origin_essence", out: "origin_essence", outQty: 1, inputs: [["origin_shard", 2]] },
     // 源晶之刃：源晶碎片×10 → 源晶之刃×1。持有後攻擊力 +40，全遊戲最強武器。
     { id: "origin_blade", out: "origin_blade", outQty: 1, inputs: [["origin_shard", 10]] },
+    // ROADMAP 130 城鎮慶典配方：需城鎮達到指定繁榮等級才可合成（minProsperity：2=生機/3=繁盛）。
+    // 城鎮特釀：野花種子×4 + 小麥×3 → 城鎮特釀×1。需城鎮【生機】（平均快樂≥55）。
+    { id: "town_brew", out: "town_brew", outQty: 1, inputs: [["wildflower_seed", 4], ["wheat_grain", 3]], minProsperity: 2 },
+    // 繁盛精露：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1。需城鎮【繁盛】（平均快樂≥75）。
+    { id: "vibrant_elixir", out: "vibrant_elixir", outQty: 1, inputs: [["mushroom_spore", 3], ["deep_sea_pearl", 1], ["ancient_fragment", 2]], minProsperity: 3 },
   ];
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
@@ -6675,6 +6680,8 @@
       pearl_potion: "回復至滿血",
       star_chart: "展開遠方星球星圖（多星球前奏）",
       steam_elixir: "回復至滿血 + 獲得 8 乙太",
+      town_brew: "回復 22 HP + 農夫熟練度 +10 XP",
+      vibrant_elixir: "回復至滿血 + 獲得 20 乙太",
     };
     // 裝備/護甲的說明（點⚔️裝備後生效，顯示已裝備狀態）。
     const GEAR_DESC = {
@@ -7059,17 +7066,22 @@
     const toggle = document.getElementById("craftToggle");
     if (!summary || !body || !toggle) return;
     const have = new Map((inv || []).map((s) => [s.item, s.qty]));
-    // 世界快照每個 tick 都來,但合成台只取決於「配方用到的素材數量」。沒變就提早返回:
-    // 否則每拍 innerHTML 重建會把鍵盤/報讀器停在「合成」鈕上的焦點打掉、手機也白耗電。
+    // 世界快照每個 tick 都來,但合成台只取決於「配方用到的素材數量」與「城鎮繁榮等級」。
+    // 沒變就提早返回:否則每拍 innerHTML 重建會把鍵盤/報讀器停在「合成」鈕上的焦點打掉、手機也白耗電。
     const sig = CRAFT_RECIPES.map((r) =>
       r.inputs.map(([item, qty]) => have.get(item) || 0).join(",")
-    ).join("|");
+    ).join("|") + "|p" + (townProsperityLevel || 0);
     if (sig === lastCraftSig) return;
     lastCraftSig = sig;
-    let craftable = 0; // 此刻夠料的配方數,寫進標題列摘要(收著時也一眼知道能不能合)
+    // 城鎮繁榮等級名稱（對齊伺服器 town_prosperity.rs ProsperityLevel::name）。
+    const PROSPERITY_NAMES = ["凋零", "平靜", "生機", "繁盛"];
+    let craftable = 0; // 此刻夠料且繁榮達標的配方數,寫進標題列摘要(收著時也一眼知道能不能合)
     body.innerHTML = "";
     for (const r of CRAFT_RECIPES) {
-      const ok = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
+      const minPros = r.minProsperity || 0;
+      const prosOk = minPros === 0 || (townProsperityLevel || 0) >= minPros;
+      const matOk = r.inputs.every(([item, qty]) => (have.get(item) || 0) >= qty);
+      const ok = prosOk && matOk;
       if (ok) craftable++;
       const row = document.createElement("div");
       row.className = "craft-row";
@@ -7085,7 +7097,11 @@
       const outName = ITEM_NAME[r.out] || r.out;
       const desc = document.createElement("div");
       desc.className = "craft-desc";
-      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}`;
+      // 繁榮鎖定提示：門檻未達時在配方描述後加鎖定說明。
+      const prosHint = !prosOk
+        ? ` <span style="color:#e9b72b;font-size:0.85em;">🔒 需城鎮達到【${PROSPERITY_NAMES[minPros] || "繁盛"}】</span>`
+        : "";
+      desc.innerHTML = `<span class="craft-out">${outIco} ${outName}</span> ← ${needs}${prosHint}`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "craft-btn";
@@ -7095,11 +7111,14 @@
       const needLabel = r.inputs
         .map(([item, qty]) => `${ITEM_NAME[item] || item}×${qty}`)
         .join("、");
+      const disabledReason = !prosOk
+        ? `（需城鎮達到${PROSPERITY_NAMES[minPros] || "繁盛"}等級）`
+        : !matOk ? "（素材不足）" : "";
       btn.setAttribute(
         "aria-label",
-        `合成 ${outName},需要 ${needLabel}${ok ? "" : "（素材不足）"}`
+        `合成 ${outName},需要 ${needLabel}${disabledReason}`
       );
-      btn.title = ok ? `合成 ${outName}` : "素材不足";
+      btn.title = ok ? `合成 ${outName}` : disabledReason.replace(/[（）]/g, "");
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
         // 只送意圖:伺服器查配方扣料、產物隨既有背包快照回來(規則只在伺服器,前端不自行加道具)。

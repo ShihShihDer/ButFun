@@ -1050,6 +1050,14 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **純模板零 LLM、零 migration**：`town_prosperity.rs` 純邏輯（10 條單元測試）；`resident_npc.rs` 新增 `ProsperityChanged` 事件 + `avg_happiness/prosperity_level` 方法；`protocol.rs` 新增快照欄位；`game.rs/ws.rs` 接線廣播；前端 `updateProsperityHud()` 常駐 pill。
     - 玩家感知：幫助居民讓他們快樂後，右上角 pill 顏色由暗綠轉黃綠、最終轉金黃，聊天欄廣播等級提升——「我讓城鎮更好了」有了視覺化的集體回饋。
 
+130. **城鎮慶典配方——城鎮達生機/繁盛解鎖限定合成配方，閉合「幫助居民→城鎮繁榮→解鎖新內容」正回饋圈**（本輪 PR）
+    - **城鎮特釀** 🍺（需達生機 Thriving≥55）：野花種子×4 + 小麥×3 → 城鎮特釀×1；使用後回血22 + 農夫熟練度+10 XP。
+    - **繁盛精露** 🌟（需達繁盛 Vibrant≥75）：蕈菇孢子×3 + 深海珍珠×1 + 古代碎片×2 → 繁盛精露×1；使用後回滿血 + 獲得20乙太（多星系素材的頂級賜予）。
+    - 繁榮等級不足時：伺服器拒絕合成（靜默忽略）；前端合成台顯示鎖定狀態「🔒 需城鎮達到XX等級」反灰。
+    - 兩條路徑原則（ROADMAP 39）：材料可探索採集（時間路）或市場購買（資源路）。
+    - **純邏輯零 LLM、零 migration**：`inventory.rs` 加 2 個 ItemKind；`crafting.rs` 加 `recipe_min_prosperity()` + 2 條配方；`ws.rs` Craft handler 加繁榮門檻、UseItem 加兩種效果；前端 ITEM_LOOK/ITEM_NAME/CONSUMABLE_DESC/CRAFT_RECIPES 更新、合成台顯示鎖定提示。
+    - 玩家感知：合成台右下角出現灰色「🔒 城鎮特釀」，等城鎮繁榮到生機後解鎖可合——讓幫助居民這件事多了一條有遊玩意義的具體回報。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。
