@@ -63,6 +63,8 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::StarCrystalShard, price_per: 5  },
     // 星塵（ROADMAP 133）：流星雨限定採集，3 乙太/顆，鼓勵流星雨期間採集。
     ShopEntry { item: ItemKind::StarDust,         price_per: 3  },
+    // 彩虹星塵（ROADMAP 134）：流星雨稀有彩虹節點限定，8 乙太/顆，稀有溢價。
+    ShopEntry { item: ItemKind::RainbowStarDust,  price_per: 8  },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

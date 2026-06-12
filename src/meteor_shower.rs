@@ -39,6 +39,8 @@ pub struct DustNode {
     pub wx: f32,
     pub wy: f32,
     pub collected: bool,
+    /// 是否為彩虹節點——每場流星雨恰好 1 個（ROADMAP 134）。
+    pub is_rainbow: bool,
 }
 
 /// 流星雨狀態（純記憶體，重啟清零）。
@@ -107,28 +109,35 @@ impl MeteorShowerState {
         true
     }
 
-    /// 嘗試採集指定節點（驗證距離）。回傳 `true` 表示採集成功（節點存在、未採集、距離夠近）。
-    pub fn try_collect(&mut self, node_id: u32, px: f32, py: f32) -> bool {
+    /// 嘗試採集指定節點（驗證距離）。
+    /// 回傳 `Some(is_rainbow)` 表示採集成功（true = 彩虹節點），`None` 表示失敗。
+    pub fn try_collect(&mut self, node_id: u32, px: f32, py: f32) -> Option<bool> {
         if let Some(node) = self.dust_nodes.iter_mut()
             .find(|n| n.id == node_id && !n.collected)
         {
             let dx = node.wx - px;
             let dy = node.wy - py;
             if dx * dx + dy * dy <= COLLECT_REACH * COLLECT_REACH {
+                let is_rainbow = node.is_rainbow;
                 node.collected = true;
-                return true;
+                return Some(is_rainbow);
             }
         }
-        false
+        None
     }
 
     /// 生成 DUST_NODE_COUNT 個節點，散落於城鎮中心周圍。
+    /// 每場恰好 1 個彩虹節點，位置由場次計數決定性選取，無偽隨機。
     fn spawn_nodes(&mut self) -> Vec<DustNode> {
+        // 用場次計數決定彩虹節點落在哪個 offset 位置（依序輪替）。
+        let shower_idx = self.node_counter / DUST_NODE_COUNT as u32;
+        let rainbow_idx = (shower_idx % DUST_NODE_COUNT as u32) as usize;
         let nodes = NODE_OFFSETS.iter().enumerate().map(|(i, (dx, dy))| DustNode {
             id: self.node_counter.wrapping_add(i as u32),
             wx: TOWN_CENTER_X + dx,
             wy: TOWN_CENTER_Y + dy,
             collected: false,
+            is_rainbow: i == rainbow_idx,
         }).collect();
         self.node_counter = self.node_counter.wrapping_add(DUST_NODE_COUNT as u32);
         nodes
@@ -200,8 +209,8 @@ mod tests {
         s.tick(0.1, true);
         let node = &s.dust_nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
-        let ok = s.try_collect(id, wx + 10.0, wy + 10.0);
-        assert!(ok, "在範圍內應成功採集");
+        let result = s.try_collect(id, wx + 10.0, wy + 10.0);
+        assert!(result.is_some(), "在範圍內應成功採集");
         assert!(s.dust_nodes.iter().find(|n| n.id == id).unwrap().collected, "節點應標為已採集");
     }
 
@@ -211,8 +220,36 @@ mod tests {
         s.tick(0.1, true);
         let node = &s.dust_nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
-        let ok = s.try_collect(id, wx + 200.0, wy + 200.0);
-        assert!(!ok, "超出範圍不應成功採集");
+        let result = s.try_collect(id, wx + 200.0, wy + 200.0);
+        assert!(result.is_none(), "超出範圍不應成功採集");
+    }
+
+    #[test]
+    fn exactly_one_rainbow_node_per_shower() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        let rainbow_count = s.dust_nodes.iter().filter(|n| n.is_rainbow).count();
+        assert_eq!(rainbow_count, 1, "每場流星雨恰好 1 個彩虹節點");
+    }
+
+    #[test]
+    fn rainbow_node_cycles_across_showers() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        let mut rainbow_positions: Vec<usize> = vec![];
+        for _ in 0..DUST_NODE_COUNT {
+            s.tick(0.1, true);
+            let pos = s.dust_nodes.iter().position(|n| n.is_rainbow).unwrap();
+            rainbow_positions.push(pos);
+            // 強制結束並再次觸發。
+            s.active_secs = 0.0;
+            s.dust_nodes.clear();
+            s.cooldown = -1.0;
+        }
+        // 各場彩虹節點位置應覆蓋 0..DUST_NODE_COUNT 的所有索引（輪替）。
+        let mut sorted = rainbow_positions.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), DUST_NODE_COUNT, "彩虹節點應輪替覆蓋所有位置");
     }
 
     #[test]

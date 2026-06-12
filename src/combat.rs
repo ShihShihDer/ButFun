@@ -234,7 +234,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::TownBrew
         | ItemKind::VibrantElixir
         | ItemKind::StarDust
-        | ItemKind::StarAmulet => None,
+        | ItemKind::StarAmulet
+        | ItemKind::RainbowStarDust
+        | ItemKind::StarGuardianAmulet => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -307,7 +309,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::TownBrew
         | ItemKind::VibrantElixir
         | ItemKind::StarDust
-        | ItemKind::StarAmulet => None,
+        | ItemKind::StarAmulet
+        | ItemKind::RainbowStarDust
+        | ItemKind::StarGuardianAmulet => None,
     }
 }
 
