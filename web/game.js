@@ -8415,7 +8415,8 @@
       "display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.5);",
       "max-width:min(360px,90vw);",
     ].join("");
-    banner.innerHTML = `<span>⚔️ <b>${fromName}</b> 邀請你加入隊伍！</span>`;
+    // 安全：邀請者玩家名一律 HTML 跳脫，防儲存型 XSS（玩家可把名字設成 <svg onload=...>）。
+    banner.innerHTML = `<span>⚔️ <b>${escHtml(fromName)}</b> 邀請你加入隊伍！</span>`;
 
     const acceptBtn = document.createElement("button");
     acceptBtn.type = "button";
