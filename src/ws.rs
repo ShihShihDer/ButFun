@@ -2058,6 +2058,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                         }
                     }
+                    // 入侵首領擊殺（ROADMAP 159）：乙太霸主被玩家擊倒，通知入侵狀態並廣播。
+                    // 安全區遠程擊殺不觸發（防城牆龜縮刷首領）。
+                    if !suppress_rewards {
+                        let boss_just_killed = results.iter().any(|(kind, _, _, loot)| {
+                            *kind == crate::combat::EnemyKind::EtherOverlord && loot.is_some()
+                        });
+                        if boss_just_killed {
+                            let newly_killed = app.invasion.write().unwrap().mark_boss_killed();
+                            if newly_killed {
+                                let pname = app.players.read().unwrap()
+                                    .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                                let wave = app.invasion.read().unwrap().wave_count;
+                                let _ = app.tx_chat.send(format!(
+                                    "💥 [首領擊倒！] 「{}」等英雄擊敗乙太霸主！第 {} 波入侵結束後可獲 +10 乙太特別獎勵！",
+                                    pname, wave + 1
+                                ));
+                                app.town_memory.write().unwrap().push_event(
+                                    "💥",
+                                    format!("入侵首領「乙太霸主」被{}等英雄擊倒——等待入侵結束領取特別獎勵", pname),
+                                );
+                            }
+                        }
+                    }
                 }
                 Ok(ClientMsg::ReturnHome) => {
                     // 回城：傳回新手村（出生點 / 安全區中心）。便利功能，無代價、無冷卻。

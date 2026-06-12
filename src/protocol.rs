@@ -598,6 +598,8 @@ pub struct InvasionView {
     pub remaining_secs: f32,
     /// 累計已完成的入侵波次（供前端顯示「第 N 波」）。
     pub wave_count: u32,
+    /// 入侵首領「乙太霸主」是否仍存活（active = true 時有意義）。
+    pub boss_alive: bool,
 }
 
 /// 旅行商人商品目錄一個條目（ROADMAP 135）。
@@ -1582,7 +1584,7 @@ mod tests {
             civic_vote: None,
             civic_effect_secs: 0,
             civic_effect_kind: String::new(),
-            invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0 },
+            invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false },
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
