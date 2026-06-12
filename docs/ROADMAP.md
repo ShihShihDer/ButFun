@@ -1287,6 +1287,16 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **零 migration、零 LLM、純記憶體模式**：`src/combat.rs` 新增 EtherOverlord；`src/invasion.rs` 擴充（`boss_alive`/`boss_killed_this_wave` 欄位、`mark_boss_killed()` 方法、`Ended { boss_killed }` 事件、14 個單元測試）；`src/protocol.rs`/`src/game.rs`/`src/ws.rs`/`web/game.js` 全數接線。
     - 玩家感知：入侵開始廣播改為「乙太霸主率 12 隻怪物包圍城鎮！」；HUD 顯示首領是否仍健在；打倒首領後獎勵加倍——「比打一般怪更有意義的集合目標」。
 
+## 接著（霸主戰利品 — AI 自主提案 2026-06-13）
+
+160. ✅ **霸主晶核 + 守城戰刃——入侵首領限定戰利品，讓守城英雄手握最有力的象徵**（本輪 PR）
+    - 每波入侵首領（乙太霸主）被擊殺時，全服在線玩家**立刻各獲 1 顆「💠 霸主晶核」**（取代原先首領掉落的古代碎片×3）。
+    - 霸主晶核是**入侵限定材料**：只有親歷入侵、搶在首領被消滅前在線，才能取得。
+    - 新合成配方：**霸主晶核×2 + 乙太×20 → 守城戰刃（⚔️ 攻擊力 +28）**——位於裂縫刃（+35, Lv.15）之下的強力近戰武器，不需等級限制，參與守城就能攢。
+    - 全服廣播：「全服 N 位在線玩家各獲得 💠 霸主晶核×1！(2 顆可合成守城戰刃⚔️)」；記憶石記錄「入侵首領被英雄擊倒——全服在線玩家各獲霸主晶核×1」。
+    - **零 migration、零 LLM、純記憶體模式**：`src/inventory.rs`（新增 EtherOverlordCore/EtherOverlordBlade + 全不變式更新 88 種）；`src/combat.rs`（EtherOverlordBlade 武器 +28、EtherOverlord 掉落改為晶核）；`src/crafting.rs`（ether_overlord_blade 配方）；`src/ws.rs`（首領擊殺時全服分發晶核）；`web/game.js`（ITEM_LOOK/NAME/GEAR_DESC/CRAFT_RECIPES/ITEM_BASE_ATK/biomeGear 全更新）。
+    - 玩家感知：參與入侵後背包看到「💠 霸主晶核 ×1 來了！」；合成台看到新配方「守城戰刃」；裝備後攻擊力直接跳到 +28——「守城不只是為了城鎮，也是為了讓自己更強」。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

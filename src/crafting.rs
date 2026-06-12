@@ -570,6 +570,16 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::AncientDeco,
         output_qty: 1,
     },
+
+    // ── 入侵首領限定合成（ROADMAP 160）────────────────────────────────────────
+    /// 守城戰刃：霸主晶核×2 + 乙太×20 → 守城戰刃×1。攻擊力 +28。
+    /// 只有擊殺入侵首領乙太霸主才能取得霸主晶核，象徵守城英雄的最高榮耀。
+    Recipe {
+        id: "ether_overlord_blade",
+        inputs: &[(ItemKind::EtherOverlordCore, 2), (ItemKind::Ether, 20)],
+        output: ItemKind::EtherOverlordBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
