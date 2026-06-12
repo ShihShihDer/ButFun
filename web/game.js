@@ -10910,7 +10910,16 @@
     const buffSecs = villageBuffUntilMs > performance.now()
       ? Math.round((villageBuffUntilMs - performance.now()) / 1000) : 0;
     const ether   = me.ether || 0;
-    const sig = `${treasury}|${buffSecs}|${ether}|${isGuestUser}`;
+    // sig 必須涵蓋「面板上所有會變的值」,否則該值變了卻因 sig 沒變而早退、不重繪。
+    // 舊 sig 只有村庫/buff/乙太——捐木材/石材/晶石給「大工程」既不扣乙太也不動村庫,sig 不變
+    // → 按了沒反應、要重開面板才更新(玩家回報)。這裡補進大工程進度/各材料/貢獻榜,以及自己背包
+    // 的木/石/晶數量(影響各「捐」鈕的可按狀態),任一變動都會即時重繪。
+    const tp = townProject;
+    const tpSig = tp
+      ? `${tp.status}|${tp.progress_pct}|${tp.current_ether}|${tp.current_wood}|${tp.current_stone}|${tp.current_crystal}|${(tp.top_contributors || []).map(c => c.name + c.score).join(",")}`
+      : "noproj";
+    const invSig = `${myInv.get("wood") || 0}|${myInv.get("stone") || 0}|${myInv.get("crystal_shard") || 0}`;
+    const sig = `${treasury}|${buffSecs}|${ether}|${isGuestUser}|${tpSig}|${invSig}`;
     if (sig === lastVillageChiefSig) return;
     lastVillageChiefSig = sig;
 
@@ -10944,8 +10953,7 @@
       body.appendChild(btn);
     }
 
-    // ── 城鎮大工程（ROADMAP 131） ──
-    const tp = townProject;
+    // ── 城鎮大工程（ROADMAP 131） ── tp 已於上方 sig 計算時宣告，沿用同一份。
     if (tp) {
       const divider = document.createElement("div");
       divider.style.cssText = "border-top: 1px solid #444; margin: 12px 0;";
