@@ -769,6 +769,14 @@
   // 顏色：Friendly=#60ffb0、Neutral=#c0c8d0、Wary=#ffcc44、Hostile=#ff6060。
   const TIER_COLOR = { friendly: "#60ffb0", neutral: "#c0c8d0", wary: "#ffcc44", hostile: "#ff6060" };
   const SPECIES_ICON = { wild_bird: "🐦", wild_deer: "🦌", small_critter: "🐿️", wild_wolf: "🐺", wild_fox: "🦊" };
+  // 預設「收合成一顆小徽章」——常駐五列長條太擋視野（玩家回報）。點徽章展開完整面板、再點收回，
+  // 偏好記在 localStorage。收合時若有 hostile/wary 物種，徽章上亮該物種圖示+⚠，重要警訊不漏看。
+  let speciesHudCollapsed = true;
+  try {
+    const saved = localStorage.getItem("butfun.speciesHudCollapsed");
+    if (saved !== null) speciesHudCollapsed = saved === "1";
+  } catch {}
+  let lastSpeciesHudSig = null;
   function updateSpeciesAttitudeHud() {
     if (!speciesAttitudes.length) return;
     let panel = document.getElementById("hudSpeciesAttitude");
@@ -780,11 +788,32 @@
         "background:rgba(10,12,20,0.72)", "border:1px solid #334",
         "border-radius:8px", "padding:5px 8px",
         "font-size:.72rem", "font-family:monospace",
-        "z-index:1000", "pointer-events:none",
-        "min-width:130px",
+        "z-index:1000", "cursor:pointer", "user-select:none",
       ].join(";");
+      panel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        speciesHudCollapsed = !speciesHudCollapsed;
+        try { localStorage.setItem("butfun.speciesHudCollapsed", speciesHudCollapsed ? "1" : "0"); } catch {}
+        lastSpeciesHudSig = null; // 強制下一幀重繪
+      });
       document.body.appendChild(panel);
     }
+    // 每幀都會被 render 呼叫:用內容簽章擋重繪,避免無謂的 innerHTML 重建(也避免吃掉點擊)。
+    const sig = `${speciesHudCollapsed}|` + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",");
+    if (sig === lastSpeciesHudSig) return;
+    lastSpeciesHudSig = sig;
+
+    if (speciesHudCollapsed) {
+      const alert = speciesAttitudes.find(s => s.tier === "hostile") || speciesAttitudes.find(s => s.tier === "wary");
+      const alertHtml = alert
+        ? ` <span style="color:${TIER_COLOR[alert.tier]}">${SPECIES_ICON[alert.kind] || "?"}⚠</span>`
+        : "";
+      panel.style.minWidth = "0";
+      panel.innerHTML = `<span style="color:#778;">🌿${alertHtml} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
+      return;
+    }
+
+    panel.style.minWidth = "130px";
     const rows = speciesAttitudes.map(s => {
       const icon = SPECIES_ICON[s.kind] || "?";
       const color = TIER_COLOR[s.tier] || "#c0c8d0";
@@ -794,7 +823,7 @@
       const bar = "█".repeat(filled) + "░".repeat(10 - filled);
       return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.65rem;">${bar}</span> ${s.attitude}</div>`;
     }).join("");
-    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度</div>${rows}`;
+    panel.innerHTML = `<div style="color:#778;font-size:.65rem;margin-bottom:3px;">🌿 物種態度 <span style="font-size:.6rem;color:#556;">▾ 點此收合</span></div>${rows}`;
   }
 
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
