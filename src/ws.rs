@@ -925,10 +925,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 };
                                 if !pname.is_empty() {
                                     let item_name = crate::npc_deal::item_display_zh(reward_item);
-                                    let _ = tx_direct.send(format!(
+                                    // tokio mpsc 的 send() 回傳 Future,過去沒 .await 直接丟棄=從未送出;
+                                    // 且單播通道載的是 JSON 字串,要包成 ServerMsg::Chat 客戶端才解析得到。
+                                    let note = ServerMsg::Chat { from: "系統".into(), text: format!(
                                         "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
                                         qname, ether_reward, item_name, reward_qty
-                                    ));
+                                    ) };
+                                    if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
                                 }
                             }
                         }
@@ -1907,9 +1910,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     }
                                 };
                                 if !pname.is_empty() {
-                                    let _ = tx_direct.send(format!(
+                                    // send() Future 沒 await=從未送出;包 ServerMsg::Chat JSON 才會被客戶端解析。
+                                    let note = ServerMsg::Chat { from: "系統".into(), text: format!(
                                         "🎯 你討伐了蘭卡的通緝目標，獲得懸賞 {reward} 乙太！"
-                                    ));
+                                    ) };
+                                    if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
                                     let _ = app.tx_chat.send(format!(
                                         "🎯 [獵手蘭卡] 廣播：「通緝目標已被 {} 討伐！感謝這位勇者！」",
                                         pname
@@ -2008,9 +2013,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     }
                                 };
                                 if !pname.is_empty() {
-                                    let _ = tx_direct.send(format!(
+                                    // send() Future 沒 await=從未送出;包 ServerMsg::Chat JSON 才會被客戶端解析。
+                                    let note = ServerMsg::Chat { from: "系統".into(), text: format!(
                                         "🎯 懸賞完成！獲得 {} 乙太 + {} 戰士 XP！", reward, xp
-                                    ));
+                                    ) };
+                                    if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
                                     // 記入玩家事跡日誌（ROADMAP 67）：引擎事實，NPC 可自然提及。
                                     app.player_logs.write().unwrap()
                                         .entry(uid)
@@ -2038,10 +2045,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             };
                             if !pname.is_empty() {
                                 let item_name = crate::npc_deal::item_display_zh(reward_item);
-                                let _ = tx_direct.send(format!(
+                                // send() Future 沒 await=從未送出;包 ServerMsg::Chat JSON 才會被客戶端解析。
+                                let note = ServerMsg::Chat { from: "系統".into(), text: format!(
                                     "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
                                     qname, ether_reward, item_name, reward_qty
-                                ));
+                                ) };
+                                if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
                             }
                         }
                     }
@@ -2952,16 +2961,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .attack_wildlife(wildlife_id, px, py, ATTACK_WILDLIFE_REACH);
                         if let Some(kind) = killed_kind {
                             use crate::wildlife::TrophicLevel;
-                            let mut sr = app.species_relations.write().unwrap();
-                            if kind.trophic_level() == TrophicLevel::Predator {
-                                // 殺死掠食者 → 被獵物種好感+
-                                sr.on_kill_predator(kind);
-                            } else {
-                                // 殺死獵物 → 該物種敵意+
-                                sr.on_kill_prey(kind);
-                            }
+                            // 鎖序鐵律：絕不在 species_relations guard 內再鎖 players——遊戲迴圈快照
+                            // 反向持鎖（players.read → species_relations.read），加上隨時排隊的
+                            // players.write（移動輸入）會組成三方死鎖環（寫者優先讓快照的 read 排隊）。
+                            // 先讀好名字，再短暫鎖 sr，兩把鎖永不重疊。
                             let name = app.players.read().unwrap()
                                 .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            {
+                                let mut sr = app.species_relations.write().unwrap();
+                                if kind.trophic_level() == TrophicLevel::Predator {
+                                    // 殺死掠食者 → 被獵物種好感+
+                                    sr.on_kill_predator(kind);
+                                } else {
+                                    // 殺死獵物 → 該物種敵意+
+                                    sr.on_kill_prey(kind);
+                                }
+                            }
                             let msg = format!("🗡️ {} 攻擊了一隻 {}。", name, kind.display_name());
                             let _ = app.tx_chat.send(msg);
                         }
@@ -4012,7 +4027,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         let mut players = app.players.write().unwrap();
                                         if let Some(p) = players.get_mut(&uid) {
                                             match item {
-                                                None => p.ether += actual_qty - taken_qty,
+                                                // saturating:防 taken>actual 反向 wrap 印鈔、防 u32 上限 wrap 歸零。
+                                                None => p.ether = p.ether.saturating_add(actual_qty.saturating_sub(taken_qty)),
                                                 Some(kind) => { p.inventory.add(kind, actual_qty - taken_qty); }
                                             }
                                         }
@@ -4555,15 +4571,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let Some(uid) = authed_uid else { continue; };
                     let mut notice: Option<String> = None;
                     {
-                        let land = app.land_plots.read().unwrap();
-                        let plot_id_opt = land.plot_of(uid).and_then(|pid| {
-                            use crate::land_plot::PlotPurpose;
-                            if land.purpose_of(pid) == Some(PlotPurpose::FreeBuild) {
-                                Some(pid)
-                            } else {
-                                None
-                            }
-                        });
+                        // 鎖序鐵律：先在 land_plots guard 內算好 plot_id 並「釋放」，才鎖 players——
+                        // 遊戲迴圈快照反向持鎖（players.read → land_plots.read），在 land guard 內鎖
+                        // players 會與排隊中的 land_plots.write（買地）組成三方死鎖環。
+                        let plot_id_opt = {
+                            let land = app.land_plots.read().unwrap();
+                            land.plot_of(uid).and_then(|pid| {
+                                use crate::land_plot::PlotPurpose;
+                                if land.purpose_of(pid) == Some(PlotPurpose::FreeBuild) {
+                                    Some(pid)
+                                } else {
+                                    None
+                                }
+                            })
+                        };
                         if let Some(plot_id) = plot_id_opt {
                             let mut players = app.players.write().unwrap();
                             if let Some(p) = players.get_mut(&id) {
@@ -4740,7 +4761,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let player_name = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
-                                    p.ether += HELP_REWARD_ETHER;
+                                    p.ether = p.ether.saturating_add(HELP_REWARD_ETHER);
                                     p.name.clone()
                                 } else {
                                     String::new()
