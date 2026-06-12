@@ -776,6 +776,30 @@ pub fn spawn(app: AppState) {
                         ResidentLifecycleEvent::HappinessBoost { msg, .. } => {
                             let _ = app.tx_chat.send(msg);
                         }
+                        // 快樂居民招待附近玩家（ROADMAP 127）：給乙太小禮 + 泡泡 + 世界聊天。
+                        ResidentLifecycleEvent::PlayerGift {
+                            resident_id, resident_name, x, y, player_name, text, ..
+                        } => {
+                            use crate::resident_npc::GIFT_ETHER;
+                            // 給指定玩家乙太（依名字查找；此時 residents 寫鎖已釋放，安全取 players 寫鎖）
+                            {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.values_mut().find(|p| p.name == player_name) {
+                                    p.ether = p.ether.saturating_add(GIFT_ETHER);
+                                }
+                            }
+                            // NpcSpeech 頭頂泡泡
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: resident_id,
+                                npc_name: format!("居民 {}", resident_name),
+                                text: text.clone(),
+                                display_secs: 8,
+                                wx: x,
+                                wy: y,
+                            }));
+                            // 世界聊天帶 +5 乙太提示
+                            let _ = app.tx_chat.send(format!("{}（+{} 乙太）", text, GIFT_ETHER));
+                        }
                     }
                 }
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。

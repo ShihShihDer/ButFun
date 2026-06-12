@@ -496,6 +496,49 @@ pub fn get_happiness_boost_chat(name: &str) -> String {
     format!("💛 {} 心情格外好，幹活都有勁！", name)
 }
 
+// ── 快樂小回饋模板（ROADMAP 127）──────────────────────────────────────────────
+// 快樂居民（happiness ≥ 70）計時到期且有玩家在附近時，主動招待玩家 GIFT_ETHER 乙太。
+// 4 persona × 3 條 = 12 條，語氣溫暖、有人情味。
+
+static FARM_GIFT: &[&str] = &[
+    "🎁 {name}從口袋掏出一小把乙太，悄悄遞給{player}：「你常在城裡走動，這點心意收著吧！」",
+    "🌾 {name}停下手邊農活，笑著向{player}揮手：「{player}！最近城鎮氣氛真好，這點乙太算我請你的！」",
+    "🪴 {name}把攢下的一點乙太塞進{player}手裡：「田裡的收成好，分你一點，一起開心！」",
+];
+
+static MARKET_GIFT: &[&str] = &[
+    "💛 {name}在攤位旁招招手：「{player}！今天生意順，這點乙太算是我的好彩頭，分你一份！」",
+    "🛒 {name}把一小包乙太塞給{player}：「你對城裡的人都很好，這點小意思心意到了！」",
+    "✨ {name}笑著說：「{player}，城鎮有你真好。拿著，買點你喜歡的東西！」",
+];
+
+static SQUARE_GIFT: &[&str] = &[
+    "☀️ {name}從石凳上站起來，把一把乙太遞給{player}：「你在這裡讓廣場更熱鬧，感謝你！」",
+    "🌸 {name}眼神柔和地看著{player}：「{player}，城鎮因為你更溫暖了。這點心意，請收下。」",
+    "💬 {name}拍拍{player}的肩膀：「平時多虧你照顧大家，這點乙太是我的謝意，別嫌少！」",
+];
+
+static WANDER_GIFT: &[&str] = &[
+    "🧭 {name}從包袱裡翻出一把乙太，笑著交給{player}：「旅人之間互相照應，拿著用！」",
+    "🌙 {name}低聲對{player}說：「城裡有你真好。這點乙太，是我想說謝謝的方式。」",
+    "🗺️ {name}停下腳步，認真地把乙太遞給{player}：「你對這城鎮的心意，大家都看見了。」",
+];
+
+/// 取得快樂居民招待玩家的訊息文字（ROADMAP 127）。
+///
+/// `name` 為居民名；`player_name` 為玩家名；`seed` 供模板輪替。
+pub fn get_gift_message(persona: ResidentPersona, name: &str, player_name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_GIFT,
+        ResidentPersona::MarketBrowser => MARKET_GIFT,
+        ResidentPersona::TownSquare    => SQUARE_GIFT,
+        ResidentPersona::Wanderer      => WANDER_GIFT,
+    };
+    pool[seed % pool.len()]
+        .replace("{name}", name)
+        .replace("{player}", player_name)
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -968,5 +1011,74 @@ mod tests {
     fn happiness_boost_chat_contains_name() {
         let msg = get_happiness_boost_chat("阿花");
         assert!(msg.contains("阿花"), "快樂廣播應含居民名：{msg}");
+    }
+
+    // ── ROADMAP 127 快樂小回饋測試 ───────────────────────────────────────────────
+
+    #[test]
+    fn gift_message_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_gift_message(persona, "阿土", "冒險者", 0);
+            assert!(!text.is_empty(), "persona {:?} 招待訊息不應為空", persona);
+        }
+    }
+
+    #[test]
+    fn gift_message_contains_both_names() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_gift_message(persona, "梅子", "英雄甲", 0);
+            assert!(text.contains("梅子"), "招待訊息應含居民名：{text}");
+            assert!(text.contains("英雄甲"), "招待訊息應含玩家名：{text}");
+        }
+    }
+
+    #[test]
+    fn gift_message_no_leftover_placeholders() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            for seed in 0..3 {
+                let text = get_gift_message(persona, "居民名", "玩家名", seed);
+                assert!(!text.contains("{name}"), "不應殘留 {{name}}：{text}");
+                assert!(!text.contains("{player}"), "不應殘留 {{player}}：{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn gift_message_seed_wraps_without_panic() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let _ = get_gift_message(persona, "老根", "測試玩家", 9999);
+        }
+    }
+
+    #[test]
+    fn gift_message_all_templates_have_placeholders() {
+        for pool in [FARM_GIFT, MARKET_GIFT, SQUARE_GIFT, WANDER_GIFT] {
+            for template in pool {
+                assert!(template.contains("{name}"), "禮物模板應含 {{name}}：{template}");
+                assert!(template.contains("{player}"), "禮物模板應含 {{player}}：{template}");
+                let filled = template.replace("{name}", "A").replace("{player}", "B");
+                assert!(!filled.contains('{'), "替換後不應殘留佔位符：{filled}");
+            }
+        }
     }
 }

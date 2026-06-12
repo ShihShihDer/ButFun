@@ -113,6 +113,16 @@ pub enum ResidentLifecycleEvent {
     },
     /// 居民快樂值首次突破 HAPPY_THRESHOLD（ROADMAP 126）：發出世界聊天廣播。
     HappinessBoost { name: &'static str, msg: String },
+    /// 快樂居民主動招待附近玩家（ROADMAP 127）：給乙太小禮 + NpcSpeech 泡泡 + 世界聊天。
+    PlayerGift {
+        resident_id: String,
+        resident_name: &'static str,
+        x: f32,
+        y: f32,
+        player_name: String,
+        text: String,
+        gift_seed: usize,
+    },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -154,6 +164,16 @@ pub const HELP_REQUEST_TIMER_MAX: f32 = 1200.0;
 pub const HELP_REQUEST_DURATION_SECS: f32 = 480.0;
 /// 玩家協助居民後獲得的乙太獎勵。
 pub const HELP_REWARD_ETHER: u32 = 8;
+
+// ── 快樂小回饋常數（ROADMAP 127）──────────────────────────────────────────────
+/// 快樂居民招待計時器最短間隔（秒）= 15 分鐘。
+pub const GIFT_TIMER_MIN: f32 = 900.0;
+/// 快樂居民招待計時器最長間隔（秒）= 25 分鐘。
+pub const GIFT_TIMER_MAX: f32 = 1500.0;
+/// 快樂居民招待玩家的乙太小禮金額。
+pub const GIFT_ETHER: u32 = 5;
+/// 招待觸發距離（像素）：玩家在此範圍內才能收到禮。
+pub const GIFT_DIST_PX: f32 = 80.0;
 
 // ── 心情溫度常數（ROADMAP 126）────────────────────────────────────────────────
 /// 快樂值初始值。
@@ -325,6 +345,11 @@ pub struct ResidentNpc {
     pub happiness: u8,
     /// 快樂衰減倒數計時（秒）；到 0 扣 HAPPINESS_DECAY_AMOUNT，重設為 HAPPINESS_DECAY_INTERVAL。
     happiness_decay_timer: f32,
+    // ── 快樂小回饋（ROADMAP 127）────────────────────────
+    /// 招待計時器倒數（秒）；到 0 且快樂且有玩家在附近則觸發禮物。
+    gift_timer: f32,
+    /// 禮物種子（供模板輪替）。
+    gift_seed: usize,
 }
 
 impl ResidentNpc {
@@ -345,6 +370,8 @@ impl ResidentNpc {
         let greeting_offset = rng.gen_range(0.0..GREETING_COOLDOWN_SECS);
         // 互助請求計時錯開，避免所有居民同時廣播求助。
         let help_offset = rng.gen_range(0.0..HELP_REQUEST_TIMER_MAX);
+        // 招待計時錯開，避免多位居民同時送禮。
+        let gift_offset = rng.gen_range(0.0..GIFT_TIMER_MAX);
         Self {
             id: format!("resident_{}", index),
             name,
@@ -374,6 +401,8 @@ impl ResidentNpc {
             help_request_seed: index,
             happiness: HAPPINESS_INITIAL,
             happiness_decay_timer: HAPPINESS_DECAY_INTERVAL,
+            gift_timer: GIFT_TIMER_MIN + gift_offset,
+            gift_seed: index,
         }
     }
 
@@ -574,6 +603,33 @@ impl ResidentManager {
                     // 無人幫忙，請求自動過期
                     r.is_requesting_help = false;
                     r.help_request_timer = self.rng.gen_range(HELP_REQUEST_TIMER_MIN..=HELP_REQUEST_TIMER_MAX);
+                }
+            }
+            // 快樂小回饋（ROADMAP 127）——快樂居民計時到期且有玩家在附近時，主動招待一位玩家。
+            r.gift_timer -= dt;
+            if r.gift_timer <= 0.0 {
+                r.gift_timer = self.rng.gen_range(GIFT_TIMER_MIN..=GIFT_TIMER_MAX);
+                // 只在快樂狀態下觸發
+                if r.happiness >= HAPPINESS_HAPPY_THRESHOLD {
+                    if let Some((player_name, _, _)) = player_positions.iter().find(|(_, px, py)| {
+                        let dx = r.x - px;
+                        let dy = r.y - py;
+                        (dx * dx + dy * dy).sqrt() <= GIFT_DIST_PX
+                    }) {
+                        let text = crate::resident_chat::get_gift_message(
+                            r.persona, r.name, player_name, r.gift_seed,
+                        );
+                        events.push(ResidentLifecycleEvent::PlayerGift {
+                            resident_id: r.id.clone(),
+                            resident_name: r.name,
+                            x: r.x,
+                            y: r.y,
+                            player_name: player_name.clone(),
+                            text,
+                            gift_seed: r.gift_seed,
+                        });
+                        r.gift_seed += 1;
+                    }
                 }
             }
         }
@@ -1495,5 +1551,121 @@ mod tests {
             assert!(*h >= HAPPINESS_MIN, "快樂值不應低於 HAPPINESS_MIN");
             assert!(*h <= 100, "快樂值不應超過 100");
         }
+    }
+
+    // ── ROADMAP 127 快樂小回饋測試 ──────────────────────────────────────────────
+
+    /// 快樂居民 + gift_timer 歸零 + 玩家在範圍內 → 應觸發 PlayerGift 事件。
+    #[test]
+    fn gift_triggers_when_happy_and_player_nearby() {
+        let mut mgr = ResidentManager::new();
+        // 設第一位居民為快樂且計時器到期
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = 0.01;
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        // 玩家在 40px 以內（< GIFT_DIST_PX 80px）
+        let players = vec![("英雄".to_string(), rx + 40.0, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        assert!(
+            events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
+            "快樂且計時到期且玩家在附近時應觸發 PlayerGift"
+        );
+    }
+
+    /// 不快樂的居民即使計時到期也不觸發禮物。
+    #[test]
+    fn gift_not_triggered_when_not_happy() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD - 1; // 低於門檻
+        mgr.residents[0].gift_timer = 0.01;
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        let players = vec![("英雄".to_string(), rx + 40.0, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
+            "不快樂的居民不應觸發 PlayerGift"
+        );
+    }
+
+    /// 玩家距離超出 GIFT_DIST_PX 時不觸發禮物。
+    #[test]
+    fn gift_not_triggered_when_player_far() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = 0.01;
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        // 玩家距離超過 GIFT_DIST_PX
+        let players = vec![("英雄".to_string(), rx + GIFT_DIST_PX + 10.0, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
+            "玩家距離超出範圍不應觸發 PlayerGift"
+        );
+    }
+
+    /// 無玩家在線時不觸發禮物。
+    #[test]
+    fn gift_not_triggered_when_no_players() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = 0.01;
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
+            "無玩家時不應觸發 PlayerGift"
+        );
+    }
+
+    /// 觸發後 gift_timer 應重置為 ≥ GIFT_TIMER_MIN。
+    #[test]
+    fn gift_timer_resets_after_trigger() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = 0.01;
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        let players = vec![("英雄".to_string(), rx + 40.0, ry)];
+        mgr.tick(0.1, 50, Phase::Day, &players);
+        assert!(
+            mgr.residents[0].gift_timer >= GIFT_TIMER_MIN,
+            "觸發後 gift_timer 應重置到最小間隔以上"
+        );
+    }
+
+    /// PlayerGift 事件的 player_name 應與玩家真實名字一致。
+    #[test]
+    fn gift_event_has_correct_player_name() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = 0.01;
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        let players = vec![("小明".to_string(), rx + 30.0, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        if let Some(ResidentLifecycleEvent::PlayerGift { player_name, text, .. }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })) {
+            assert_eq!(player_name, "小明", "PlayerGift 的 player_name 應為 '小明'");
+            assert!(text.contains("小明"), "招待訊息應含玩家名 '小明'：{text}");
+        } else {
+            panic!("應有 PlayerGift 事件");
+        }
+    }
+
+    /// 計時器未到不觸發（防洪水廣播）。
+    #[test]
+    fn gift_not_triggered_before_timer() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
+        mgr.residents[0].gift_timer = GIFT_TIMER_MAX; // 遠未到期
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        let players = vec![("英雄".to_string(), rx + 40.0, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        assert!(
+            !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
+            "計時器未到不應觸發 PlayerGift"
+        );
     }
 }
