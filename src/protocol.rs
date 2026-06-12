@@ -543,6 +543,9 @@ pub enum ServerMsg {
         /// 目前有活躍互助請求的居民 id 清單（ROADMAP 125）。
         /// 前端依此在靠近的求助居民旁顯示「🤝 幫忙」按鈕。
         active_help_requests: Vec<String>,
+        /// 居民心情：(resident_id, happiness: 0-100)（ROADMAP 126）。
+        /// happiness >= 70 視為快樂；前端在快樂居民頭上顯示 💛。
+        resident_moods: Vec<(String, u8)>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1251,6 +1254,7 @@ mod tests {
             sprinklers: vec![],
             gathering_secs: 0,
             active_help_requests: vec![],
+            resident_moods: vec![],
         };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

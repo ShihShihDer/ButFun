@@ -772,6 +772,10 @@ pub fn spawn(app: AppState) {
                                 wy: y,
                             }));
                         }
+                        // 居民快樂值首次突破門檻（ROADMAP 126）：廣播暖心世界聊天。
+                        ResidentLifecycleEvent::HappinessBoost { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
                     }
                 }
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
@@ -1469,6 +1473,8 @@ pub fn spawn(app: AppState) {
                         gathering_secs: app.community_gathering.read().unwrap().remaining_secs(),
                         // 目前求助中的居民 id 清單（ROADMAP 125）：前端顯示「🤝 幫忙」按鈕用。
                         active_help_requests: app.residents.read().unwrap().requesting_ids(),
+                        // 居民心情（ROADMAP 126）：前端在快樂居民頭上顯示 💛。
+                        resident_moods: app.residents.read().unwrap().moods(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

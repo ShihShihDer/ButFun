@@ -372,6 +372,8 @@
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
   let helpRequestResidentIds = new Set(); // ROADMAP 125 目前有活躍互助請求的居民 id 集合
+  const HAPPINESS_HAPPY_THRESHOLD = 70; // ROADMAP 126 快樂門檻，與後端保持一致
+  let residentMoods = new Map(); // ROADMAP 126 居民心情：Map<resident_id, happiness: 0-100>
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -692,6 +694,11 @@
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
+        }
+        // 居民心情（ROADMAP 126）：從快照同步，供 drawResidentLook 繪製 💛。
+        if (Array.isArray(msg.resident_moods)) {
+          residentMoods.clear();
+          for (const [rid, h] of msg.resident_moods) residentMoods.set(rid, h);
         }
         // 村庫乙太（ROADMAP 64）：每幀快照同步，里長面板顯示用。
         if (msg.village_treasury != null) villageTreasury = msg.village_treasury;
@@ -6365,6 +6372,12 @@
     ctx.font = "9px sans-serif"; ctx.textAlign = "center";
     ctx.fillStyle = "rgba(220,200,160,0.75)";
     ctx.fillText(name, sx, by - 18);
+    // 快樂心型（ROADMAP 126）：happiness >= 70 時在名字左側顯示小 💛
+    const mood = residentMoods.get(id);
+    if (mood != null && mood >= HAPPINESS_HAPPY_THRESHOLD) {
+      ctx.font = "7px sans-serif";
+      ctx.fillText("💛", sx - ctx.measureText(name).width / 2 - 6, by - 18);
+    }
   }
 
   // 畫世界上的敵人 + 血條。被打倒(重生中)的畫很淡;走近會自動開打(伺服器每秒結算,前端只呈現)。

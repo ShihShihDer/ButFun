@@ -448,6 +448,54 @@ pub fn get_help_thanks(persona: ResidentPersona, name: &str, player_name: &str, 
         .replace("{player}", player_name)
 }
 
+// ── 快樂廣播模板（ROADMAP 126）────────────────────────────────────────────────
+// 當居民 happiness >= HAPPY_THRESHOLD 時，工作廣播改用這些更歡欣的文字。
+// 4 persona × 3 條 = 12 條，語氣明顯更活潑。
+
+static FARM_HAPPY_WORK: &[&str] = &[
+    "🌻 {name} 哼著小調翻土，今天的土地格外鬆軟，心情也跟著鬆了！",
+    "🌱 {name} 一邊撒種一邊微笑，感覺今年的收成一定特別好！",
+    "🚿 {name} 澆水澆得特別起勁，看著綠芽冒出來真是滿足！",
+];
+
+static MARKET_HAPPY_WORK: &[&str] = &[
+    "💛 {name} 笑著整理攤位，最近城裡氣氛真好，生意也跟著順！",
+    "🎉 {name} 和顧客聊得興起，今天的交易特別順暢，心情大好！",
+    "✨ {name} 挑貨挑得眼睛發亮，覺得今天一定有好東西進帳！",
+];
+
+static SQUARE_HAPPY_WORK: &[&str] = &[
+    "☀️ {name} 坐在廣場曬太陽，感覺整個世界都亮了起來，真愜意！",
+    "💬 {name} 和路過的鄰居說說笑笑，城鎮有大家真好！",
+    "🌸 {name} 看著廣場花圃發呆，心裡暖暖的，說不出是為什麼。",
+];
+
+static WANDER_HAPPY_WORK: &[&str] = &[
+    "🎶 {name} 悠悠晃過街角，隨口哼了段小曲，心情輕得像風！",
+    "🌈 {name} 在城裡四處遊逛，到處都覺得順眼，連石板路都可愛！",
+    "🍃 {name} 踩著輕快的步伐繞城一圈，今天到哪都有股說不清的愉快。",
+];
+
+/// 取得居民快樂狀態下的工作廣播（ROADMAP 126）。
+///
+/// 只在 `happiness >= HAPPINESS_HAPPY_THRESHOLD` 時呼叫；語氣比一般版本更歡欣。
+pub fn get_happy_work_action(persona: ResidentPersona, name: &str, seed: usize) -> String {
+    let pool: &[&str] = match persona {
+        ResidentPersona::FarmWorker    => FARM_HAPPY_WORK,
+        ResidentPersona::MarketBrowser => MARKET_HAPPY_WORK,
+        ResidentPersona::TownSquare    => SQUARE_HAPPY_WORK,
+        ResidentPersona::Wanderer      => WANDER_HAPPY_WORK,
+    };
+    pool[seed % pool.len()].replace("{name}", name)
+}
+
+/// 取得居民快樂值突破門檻時的世界聊天廣播（ROADMAP 126）。
+///
+/// 玩家在聊天欄看到這條，知道自己的幫助讓城鎮更溫暖了。
+pub fn get_happiness_boost_chat(name: &str) -> String {
+    format!("💛 {} 心情格外好，幹活都有勁！", name)
+}
+
 // ── 單元測試 ──────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
@@ -863,5 +911,62 @@ mod tests {
                 assert!(!text.contains("{player}"), "不應殘留 {{player}}：{text}");
             }
         }
+    }
+
+    // ── 快樂廣播測試（ROADMAP 126）──────────────────────────────────────────────
+
+    #[test]
+    fn happy_work_action_all_personas_nonempty() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_happy_work_action(persona, "阿土", 0);
+            assert!(!text.is_empty(), "快樂工作廣播不應為空（persona: {:?}）", persona);
+        }
+    }
+
+    #[test]
+    fn happy_work_action_contains_name() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let text = get_happy_work_action(persona, "梅子", 1);
+            assert!(text.contains("梅子"), "快樂廣播應含居民名（persona: {:?}）：{text}", persona);
+        }
+    }
+
+    #[test]
+    fn happy_work_action_seed_wraps_without_panic() {
+        for persona in [
+            ResidentPersona::FarmWorker,
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            let _ = get_happy_work_action(persona, "狗蛋", 9999);
+        }
+    }
+
+    #[test]
+    fn happy_work_all_templates_have_name_placeholder() {
+        for pool in [FARM_HAPPY_WORK, MARKET_HAPPY_WORK, SQUARE_HAPPY_WORK, WANDER_HAPPY_WORK] {
+            for template in pool {
+                assert!(template.contains("{name}"), "快樂模板應含 {{name}}：{template}");
+                let filled = template.replace("{name}", "測試");
+                assert!(!filled.contains("{name}"), "替換後不應殘留佔位符：{filled}");
+            }
+        }
+    }
+
+    #[test]
+    fn happiness_boost_chat_contains_name() {
+        let msg = get_happiness_boost_chat("阿花");
+        assert!(msg.contains("阿花"), "快樂廣播應含居民名：{msg}");
     }
 }

@@ -345,7 +345,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -399,6 +399,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         gathering_secs: *gathering_secs,
                                         // 互助請求居民清單（ROADMAP 125）：全服廣播。
                                         active_help_requests: active_help_requests.clone(),
+                                        // 居民心情（ROADMAP 126）：全服廣播（量小，5-12 居民）。
+                                        resident_moods: resident_moods.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -3921,8 +3923,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         })
                     };
                     if let Some((persona, resident_name, rx, ry)) = found {
-                        // 完成請求（原子性：只有第一個點的玩家能成功）
-                        let fulfilled = app.residents.write().unwrap().fulfill_help_request(&resident_id);
+                        // 完成請求（原子性：只有第一個點的玩家能成功）；ROADMAP 126 同時回傳快樂提升事件。
+                        let (fulfilled, happiness_boost) = app.residents.write().unwrap().fulfill_help_request(&resident_id);
+                        // 快樂值突破門檻時廣播世界聊天（ROADMAP 126）
+                        if let Some(crate::resident_npc::ResidentLifecycleEvent::HappinessBoost { msg, .. }) = happiness_boost {
+                            let _ = app.tx_chat.send(msg);
+                        }
                         if fulfilled {
                             // 給玩家乙太獎勵
                             let player_name = {
