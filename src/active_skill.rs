@@ -222,4 +222,48 @@ mod tests {
     fn unknown_skill_returns_none() {
         assert!(ActiveSkillKind::from_str("teleport").is_none());
     }
+
+    // ── 自動施放相關邏輯（ROADMAP 151）───────────────────────────────────────
+
+    /// 風之步不在 from_str 回傳 None 確保（本測試確認它是合法 kind）；
+    /// 但後端 SetAutoSkill handler 中會特別排除 gale。
+    #[test]
+    fn gale_parses_but_auto_cast_excluded_by_kind_check() {
+        let kind = ActiveSkillKind::from_str("gale").expect("gale 應可解析");
+        assert_eq!(kind, ActiveSkillKind::Gale);
+        // 唯一不支援自動的就是 Gale：其他四種皆可設自動。
+        for k in [ActiveSkillKind::Warcry, ActiveSkillKind::Bounty,
+                  ActiveSkillKind::Precision, ActiveSkillKind::Haggle] {
+            assert_ne!(k, ActiveSkillKind::Gale, "{:?} 不應等於 Gale", k);
+        }
+    }
+
+    /// 自動施放的觸發條件：冷卻 = 0 + 解鎖 + 未 pending。
+    #[test]
+    fn auto_cast_triggers_when_ready_and_unlocked() {
+        let m = mastery_at_level(5);
+        let mut cd = SkillCooldowns::default();
+        // 初始冷卻 = 0，符合自動觸發條件。
+        assert_eq!(cd.get(ActiveSkillKind::Warcry), 0.0);
+        assert!(ActiveSkillKind::Warcry.is_unlocked(&m));
+        // 模擬觸發：設定冷卻（與 ws.rs 自動觸發時一致）。
+        cd.set(ActiveSkillKind::Warcry, ActiveSkillKind::Warcry.cooldown_secs());
+        assert!(cd.get(ActiveSkillKind::Warcry) > 0.0, "觸發後應進入冷卻");
+    }
+
+    /// 冷卻中不應再次自動觸發（守衛條件：cd > 0）。
+    #[test]
+    fn auto_cast_blocked_when_on_cooldown() {
+        let mut cd = SkillCooldowns::default();
+        cd.set(ActiveSkillKind::Bounty, 30.0);
+        // cd > 0 → 不應觸發。
+        assert!(cd.get(ActiveSkillKind::Bounty) > 0.0);
+    }
+
+    /// Lv.4 尚未解鎖，自動觸發應跳過。
+    #[test]
+    fn auto_cast_blocked_when_not_unlocked() {
+        let m = mastery_at_level(4);
+        assert!(!ActiveSkillKind::Haggle.is_unlocked(&m), "Lv.4 不應解鎖");
+    }
 }

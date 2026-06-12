@@ -129,6 +129,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            auto_skills: std::collections::HashSet::new(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -198,6 +199,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_bounty: false,
             pending_precision: false,
             pending_haggle: false,
+            auto_skills: std::collections::HashSet::new(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -728,6 +730,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let gathered = player_pos
                         .and_then(|(px, py)| app.nodes.write().unwrap().gather_near(px, py));
                     if let Some((kind, amount)) = gathered {
+                        // 豐饒術自動施放（ROADMAP 151）：設定自動且冷卻到期就自動觸發。
+                        {
+                            use crate::active_skill::ActiveSkillKind;
+                            let should_auto = app.players.read().unwrap().get(&id).map(|p| {
+                                p.auto_skills.contains("bounty")
+                                    && !p.pending_bounty
+                                    && p.skill_cooldowns.get(ActiveSkillKind::Bounty) == 0.0
+                                    && ActiveSkillKind::Bounty.is_unlocked(&p.masteries)
+                            }).unwrap_or(false);
+                            if should_auto {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.pending_bounty = true;
+                                    p.skill_cooldowns.set(ActiveSkillKind::Bounty, ActiveSkillKind::Bounty.cooldown_secs());
+                                }
+                            }
+                        }
                         // 天氣採集加成（ROADMAP 93）：對應生態域的天氣條件下採集 +1。
                         let weather_bonus: u32 = {
                             let biome_str = player_pos.map(|(px, py)| {
@@ -874,6 +892,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 .unwrap_or(false)
                         };
                         if prosperity_ok && level_ok {
+                            // 精密合成自動施放（ROADMAP 151）：設定自動且冷卻到期就自動觸發。
+                            {
+                                use crate::active_skill::ActiveSkillKind;
+                                let should_auto = app.players.read().unwrap().get(&id).map(|p| {
+                                    p.auto_skills.contains("precision")
+                                        && !p.pending_precision
+                                        && p.skill_cooldowns.get(ActiveSkillKind::Precision) == 0.0
+                                        && ActiveSkillKind::Precision.is_unlocked(&p.masteries)
+                                }).unwrap_or(false);
+                                if should_auto {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                        p.pending_precision = true;
+                                        p.skill_cooldowns.set(ActiveSkillKind::Precision, ActiveSkillKind::Precision.cooldown_secs());
+                                    }
+                                }
+                            }
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 let discount = crate::class::crafting_reduction(&p.masteries);
                                 if recipe.craft_with_discount(&mut p.inventory, discount) {
@@ -1117,6 +1151,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         };
                                         let commission_bonus = commission_bonus_per_unit.saturating_mul(actual_qty);
 
+                                        // 議價術自動施放（ROADMAP 151）：設定自動且冷卻到期就自動觸發。
+                                        {
+                                            use crate::active_skill::ActiveSkillKind;
+                                            let should_auto = app.players.read().unwrap().get(&id).map(|p| {
+                                                p.auto_skills.contains("haggle")
+                                                    && !p.pending_haggle
+                                                    && p.skill_cooldowns.get(ActiveSkillKind::Haggle) == 0.0
+                                                    && ActiveSkillKind::Haggle.is_unlocked(&p.masteries)
+                                            }).unwrap_or(false);
+                                            if should_auto {
+                                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                                    p.pending_haggle = true;
+                                                    p.skill_cooldowns.set(ActiveSkillKind::Haggle, ActiveSkillKind::Haggle.cooldown_secs());
+                                                }
+                                            }
+                                        }
                                         // 扣除背包物品、結算乙太（write lock）
                                         let did_sell = {
                                             let mut players = app.players.write().unwrap();
@@ -1570,7 +1620,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 安全區防呆：玩家在城鎮範圍內用遠程打外面的怪不給獎勵/exp
                     let suppress_rewards = is_ranged && in_safe_zone;
 
-                    // 戰吼（ROADMAP 45）：讀取旗標、決定單攻或群攻，然後清旗。
+                    // 戰吼（ROADMAP 45 / 151 自動施放）：讀取旗標、決定單攻或群攻，然後清旗。
+                    // 若設定自動且冷卻到期、技能已解鎖、尚未 pending，先自動觸發。
+                    {
+                        use crate::active_skill::ActiveSkillKind;
+                        let should_auto = app.players.read().unwrap().get(&id).map(|p| {
+                            p.auto_skills.contains("warcry")
+                                && !p.pending_warcry
+                                && p.skill_cooldowns.get(ActiveSkillKind::Warcry) == 0.0
+                                && ActiveSkillKind::Warcry.is_unlocked(&p.masteries)
+                                && !p.vitals.is_downed()
+                        }).unwrap_or(false);
+                        if should_auto {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.pending_warcry = true;
+                                p.skill_cooldowns.set(ActiveSkillKind::Warcry, ActiveSkillKind::Warcry.cooldown_secs());
+                            }
+                        }
+                    }
                     let use_warcry = app.players.read().unwrap()
                         .get(&id).map(|p| p.pending_warcry).unwrap_or(false);
                     let results: Vec<_> = if use_warcry {
@@ -2391,6 +2458,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         player_id: id,
                         kind: kind.clone(),
                     }));
+                }
+
+                // ── 技能自動施放設定（ROADMAP 151）────────────────────────────────
+                Ok(ClientMsg::SetAutoSkill { kind, enabled }) => {
+                    use crate::active_skill::ActiveSkillKind;
+                    // 風之步（gale）不支援自動施放（需要方向輸入）。
+                    let valid = ActiveSkillKind::from_str(&kind)
+                        .map(|k| k != ActiveSkillKind::Gale)
+                        .unwrap_or(false);
+                    if !valid { continue; }
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if enabled {
+                            p.auto_skills.insert(kind.clone());
+                        } else {
+                            p.auto_skills.remove(&kind);
+                        }
+                        tracing::debug!(player = %p.name, kind = %kind, enabled, "技能自動施放設定");
+                    }
                 }
 
                 // ── 寵物系統（ROADMAP 46）──────────────────────────────────────────
