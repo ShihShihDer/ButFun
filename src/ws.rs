@@ -130,6 +130,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_precision: false,
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
+            stats: crate::stat_points::StatPoints::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -200,6 +201,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pending_precision: false,
             pending_haggle: false,
             auto_skills: std::collections::HashSet::new(),
+            stats: crate::stat_points::StatPoints::default(),
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
@@ -269,10 +271,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.exp = s.exp;
                         // 五條熟練度從 DB 還原（ROADMAP 38）。
                         p.masteries = s.masteries;
-                        // 根據存檔等級 + 戰士熟練度校正最大血量（Vitals 不持久化，重連給滿血）。
-                        let base_hp = crate::vitals::level_max_hp(p.level());
-                        let warrior_bonus = crate::class::hp_bonus(&p.masteries);
-                        p.vitals.set_max_hp_full(base_hp + warrior_bonus);
+                        // 屬性加點從 DB 還原（ROADMAP 152）。
+                        p.stats = s.stats;
+                        // 根據存檔等級 + 戰士熟練度 + HP 加點校正最大血量（Vitals 不持久化，重連給滿血）。
+                        let base_hp = crate::vitals::level_max_hp(p.level())
+                            + crate::class::hp_bonus(&p.masteries)
+                            + p.stats.hp * crate::stat_points::HP_PER_POINT;
+                        p.vitals.set_max_hp_full(base_hp);
                     }
                     // 第一次進場、沒有歷史位置 → 落在自己那塊地的中心。
                     None => {
@@ -814,7 +819,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
-                                p.vitals.on_level_up(p.level());
+                                // 升等給屬性點（ROADMAP 152）：先加點再計算 max HP，因為屬性點本輪剛到不影響加成。
+                                p.stats.unspent = p.stats.unspent.saturating_add(crate::stat_points::POINTS_PER_LEVEL);
+                                let full_max = crate::vitals::level_max_hp(p.level())
+                                    + crate::class::hp_bonus(&p.masteries)
+                                    + p.stats.hp * crate::stat_points::HP_PER_POINT;
+                                p.vitals.on_level_up(full_max);
                                 gather_level_up = Some((p.name.clone(), p.level()));
                             }
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
@@ -1066,6 +1076,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     saved.wallet_expansions,
                                                     saved.exp,
                                                     saved.masteries,
+                                                    saved.stats,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -1659,7 +1670,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         results.iter().find(|(_, _, _, loot)| loot.is_some()).cloned();
                     let mut combat_level_up: Option<(String, u32)> = None;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                        p.attack_cooldown = ATTACK_COOLDOWN_SECS;
+                        // 攻擊速度加點縮短攻擊冷卻（ROADMAP 152）。
+                        p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
                         if use_warcry { p.pending_warcry = false; }
                         // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
                         // 安全區防呆：遠程在城內打城外怪不給獎勵。
@@ -1714,7 +1726,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(reward);
                             if p.level() > old_level {
-                                p.vitals.on_level_up(p.level());
+                                // 升等給屬性點（ROADMAP 152）：先加點再計算 max HP。
+                                p.stats.unspent = p.stats.unspent.saturating_add(crate::stat_points::POINTS_PER_LEVEL);
+                                let full_max = crate::vitals::level_max_hp(p.level())
+                                    + crate::class::hp_bonus(&p.masteries)
+                                    + p.stats.hp * crate::stat_points::HP_PER_POINT;
+                                p.vitals.on_level_up(full_max);
                                 combat_level_up = Some((p.name.clone(), p.level()));
                             }
                             // 吸血：擊殺後回復 2 HP。
@@ -2475,6 +2492,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.auto_skills.remove(&kind);
                         }
                         tracing::debug!(player = %p.name, kind = %kind, enabled, "技能自動施放設定");
+                    }
+                }
+
+                // ── 屬性加點分配（ROADMAP 152）────────────────────────────────────
+                Ok(ClientMsg::AllocateStat { stat, points }) => {
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if let Ok(()) = p.stats.allocate(&stat, points) {
+                            // HP 加點立即更新最大血量（不補滿，只調整上限）。
+                            if stat == crate::stat_points::STAT_HP {
+                                let new_max = crate::vitals::level_max_hp(p.level())
+                                    + crate::class::hp_bonus(&p.masteries)
+                                    + p.stats.hp * crate::stat_points::HP_PER_POINT;
+                                p.vitals.update_max_hp(new_max);
+                            }
+                            tracing::debug!(player = %p.name, stat = %stat, points, unspent = p.stats.unspent, "屬性加點分配");
+                        }
                     }
                 }
 
@@ -4801,7 +4834,12 @@ fn on_daily_task_completed(
             let old_level = p.level();
             p.exp = p.exp.saturating_add(crate::daily_quest::DAILY_TASK_EXP_REWARD);
             let new_lv = if p.level() > old_level {
-                p.vitals.on_level_up(p.level());
+                // 升等給屬性點（ROADMAP 152）：先加點再計算 max HP。
+                p.stats.unspent = p.stats.unspent.saturating_add(crate::stat_points::POINTS_PER_LEVEL);
+                let full_max = crate::vitals::level_max_hp(p.level())
+                    + crate::class::hp_bonus(&p.masteries)
+                    + p.stats.hp * crate::stat_points::HP_PER_POINT;
+                p.vitals.on_level_up(full_max);
                 Some(p.level())
             } else {
                 None
@@ -4929,7 +4967,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries);
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats);
                     // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                     app.inventories.remember_equipment(id, &player.equipment);
@@ -4946,7 +4984,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             app.inventories.flush_equipment_one(id, &player.equipment).await;

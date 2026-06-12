@@ -86,15 +86,25 @@ impl Vitals {
         self.hp = self.max_hp;             // 重連給滿血
     }
 
-    /// 升級時呼叫：更新上限，並將新增的 HP 直接補給玩家（升級獎勵感）。
-    pub fn on_level_up(&mut self, new_level: u32) {
-        let new_max = level_max_hp(new_level);
+    /// 升級時呼叫：以 `full_new_max`（含等級 + 戰士加成 + 屬性加點）更新上限，
+    /// 並將新增的 HP 直接補給玩家（升級獎勵感）。
+    /// 呼叫端負責傳入完整的新上限，避免 on_level_up 需要知道加點細節。
+    pub fn on_level_up(&mut self, full_new_max: u32) {
+        let new_max = full_new_max.max(MAX_HP);
         if new_max > self.max_hp {
             let bonus = new_max - self.max_hp;
             self.max_hp = new_max;
             // 升級補 HP，不超過新上限。
             self.hp = (self.hp + bonus).min(self.max_hp);
         }
+    }
+
+    /// 屬性加點分配 HP 時呼叫：更新上限但不補滿（加點不送血，只是上限提升）。
+    /// 若新上限低於當前血量則保持血量不變（不強制扣血）。
+    pub fn update_max_hp(&mut self, new_max: u32) {
+        self.max_hp = new_max.max(MAX_HP);
+        // 不補滿，只確保當前血量不超過新上限。
+        self.hp = self.hp.min(self.max_hp);
     }
 
     /// 剩餘生命。
@@ -528,11 +538,11 @@ mod tests {
     #[test]
     fn on_level_up_increases_max_and_gives_bonus_hp() {
         let mut v = Vitals::new(); // 20/20
-        v.on_level_up(1);          // max → 22, hp → 22（+2 bonus）
+        v.on_level_up(level_max_hp(1)); // max → 22, hp → 22（+2 bonus）
         assert_eq!(v.max_hp(), 22);
         assert_eq!(v.hp(), 22);
-        v.take_damage(5);          // 17/22
-        v.on_level_up(2);          // max → 24, hp → 19（+2 bonus）
+        v.take_damage(5);               // 17/22
+        v.on_level_up(level_max_hp(2)); // max → 24, hp → 19（+2 bonus）
         assert_eq!(v.max_hp(), 24);
         assert_eq!(v.hp(), 19);
     }

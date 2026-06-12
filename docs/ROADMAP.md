@@ -1216,9 +1216,12 @@ D-3. ✅ **小地圖導航**（PR #71）
       前端技能面板每行加「⚡ 自動」切換鈕；自動中名稱旁顯示 ⚡；狀態文字說明冷卻/自動觸發狀態；技能說明文字更新為含自動施放說明。
       4 個新單元測試（自動觸發條件/冷卻阻斷/解鎖守衛/Gale 排除）；1351 tests 全綠；零 migration，記憶體模式，不破壞玩家資料。
 
-152. **角色屬性自由加點——玩家:沒有加點系統（實現 BACKLOG Phase 1.5-B）**
+152. ✅ **角色屬性自由加點——玩家:沒有加點系統（實現 BACKLOG Phase 1.5-B）**
     - 每升等給屬性點,玩家自由分配:**HP/體力、攻擊、移動速度、攻擊速度**(點一下就加,即時生效)。
     - 持久化(向後相容 migration);可保留有限洗點(或不洗,設計時定)。給玩家 build 自由度——和「使用型熟練」並存:熟練給職能成長、加點給個人化。
+    - 後端：`src/stat_points.rs` 純邏輯模組（6 個單元測試）＋`migrations/0024_stat_points.sql`（ADD COLUMN IF NOT EXISTS 向後相容）；`state.rs`+`ws.rs`+`protocol.rs`+`positions.rs`+`game.rs`+`vitals.rs` 全數接線（升等加點、加點即時套用、HP/攻擊/速度/攻擊速度四條效果）。
+    - 前端：`web/game.js` `updateStatPanel`（按一下＋即送 AllocateStat）＋HUD pill「🎯 N 點可分配（S）」；`web/index.html` 加 `winStat` 視窗 + `S` 鍵捷徑 + 選單項目。
+    - 1358 測試全綠，`node --check` 通過，向後相容（`serde(default)` + `ADD COLUMN IF NOT EXISTS`）。
 
 153. **技能使用型熟練(per-skill)——玩家:技能越用越熟練（沿用既有哲學，非技能點）**
     - 延伸現有兼修熟練(ROADMAP 38)到**個別主動技能**:某技能用得越多→傷害/冷卻/消耗變好(自然成長,不寫死門檻)。

@@ -1106,6 +1106,8 @@
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
+          updateStatPanel(me, isGuest);  // 屬性加點面板（ROADMAP 152）
+          updateStatUnspentHud(me.stat_points_unspent || 0); // 未分配點數 pill
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
@@ -9554,6 +9556,123 @@
     jade_wraith:     { emoji: "👻", name: "翠幽魅影",   desc: "攻擊力 +4。馴化費 35 乙太。" },
     origin_guardian: { emoji: "🌟", name: "源晶守護者", desc: "攻擊力 +6、防禦 +3。馴化費 60 乙太（最強）。" },
   };
+  // ── 屬性加點 HUD pill（ROADMAP 152）：有未分配點數時亮起提示 ────────────────
+  let lastStatUnspentCount = -1;
+  function updateStatUnspentHud(unspent) {
+    if (unspent === lastStatUnspentCount) return;
+    lastStatUnspentCount = unspent;
+    let pill = document.getElementById("hudStatUnspent");
+    if (unspent <= 0) {
+      if (pill) pill.style.display = "none";
+      return;
+    }
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudStatUnspent";
+      pill.style.cssText = [
+        "order:5",
+        "background:#5a3a00", "color:#ffd580",
+        "border:1px solid #c9a24b", "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px", "cursor:pointer",
+      ].join(";");
+      pill.title = "有未分配屬性點，按 S 開啟加點面板";
+      pill.addEventListener("click", () => {
+        const btn = document.getElementById("dockStat");
+        if (btn) btn.click();
+      });
+      _ensureBannerColumn().appendChild(pill);
+    }
+    pill.style.display = "block";
+    pill.textContent = "🎯 " + unspent + " 點可分配（S）";
+  }
+
+  // ── 屬性加點面板（ROADMAP 152）──────────────────────────────────────────────
+  let lastStatSig = null;
+  function updateStatPanel(me, isGuestUser) {
+    const body = document.getElementById("statBody");
+    if (!body) return;
+    const unspent = me.stat_points_unspent || 0;
+    const hp      = me.stat_hp        || 0;
+    const atk     = me.stat_attack    || 0;
+    const spd     = me.stat_speed     || 0;
+    const atkSpd  = me.stat_atk_speed || 0;
+    const sig = JSON.stringify({ unspent, hp, atk, spd, atkSpd, isGuestUser });
+    if (sig === lastStatSig) return;
+    lastStatSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能使用屬性加點";
+      body.appendChild(hint);
+      return;
+    }
+
+    // 標題列：顯示未分配點數
+    const header = document.createElement("div");
+    header.style.cssText = "margin-bottom:10px;";
+    const unspentLabel = document.createElement("div");
+    unspentLabel.style.cssText = "color:" + (unspent > 0 ? "#ffd580" : "#aaa") + ";font-size:.9rem;font-weight:bold;";
+    unspentLabel.textContent = unspent > 0
+      ? "🎯 可分配屬性點：" + unspent + " 點"
+      : "🎯 屬性點：升等後可分配";
+    header.appendChild(unspentLabel);
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:#777;font-size:.75rem;margin-top:3px;";
+    hint.textContent = "每升等獲得 2 點，點下 ＋ 立即生效。";
+    header.appendChild(hint);
+    body.appendChild(header);
+
+    // 四條屬性
+    const STAT_DEFS = [
+      { key: "hp",        emoji: "❤️",  name: "HP 上限",  current: hp,     desc: (n) => "已加 " + n + " 點（max HP +" + (n * 5) + "）。每點 +5 最大 HP。" },
+      { key: "attack",    emoji: "⚔️",  name: "攻擊力",   current: atk,    desc: (n) => "已加 " + n + " 點（攻擊 +" + (n * 2) + "）。每點 +2 攻擊力。" },
+      { key: "speed",     emoji: "💨",  name: "移動速度", current: spd,    desc: (n) => "已加 " + n + " 點（速度 +" + (n * 8) + "%）。每點 +8% 移動速度。" },
+      { key: "atk_speed", emoji: "⚡",  name: "攻擊速度", current: atkSpd, desc: (n) => "已加 " + n + " 點（冷卻 -" + (n * 5) + "%）。每點縮短 5% 攻擊冷卻。" },
+    ];
+
+    for (const def of STAT_DEFS) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #333;";
+
+      const emojiEl = document.createElement("span");
+      emojiEl.style.cssText = "font-size:1.3rem;min-width:2rem;text-align:center;";
+      emojiEl.textContent = def.emoji;
+      row.appendChild(emojiEl);
+
+      const info = document.createElement("div");
+      info.style.cssText = "flex:1;";
+      const nameEl = document.createElement("div");
+      nameEl.style.cssText = "font-size:.9rem;font-weight:bold;color:#eee;";
+      nameEl.textContent = def.name;
+      info.appendChild(nameEl);
+      const descEl = document.createElement("div");
+      descEl.style.cssText = "color:#aaa;font-size:.76rem;margin-top:2px;";
+      descEl.textContent = def.desc(def.current);
+      info.appendChild(descEl);
+      row.appendChild(info);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "＋";
+      btn.title = "分配 1 點到「" + def.name + "」";
+      btn.disabled = unspent <= 0;
+      btn.style.cssText = "width:32px;height:32px;border-radius:6px;font-size:1.1rem;font-weight:bold;cursor:" +
+        (unspent > 0 ? "pointer" : "default") + ";border:1px solid " +
+        (unspent > 0 ? "#c9a24b" : "#444") + ";background:transparent;color:" +
+        (unspent > 0 ? "#ffd580" : "#555") + ";";
+      btn.addEventListener("click", () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "allocate_stat", stat: def.key, points: 1 }));
+        }
+      });
+      row.appendChild(btn);
+      body.appendChild(row);
+    }
+  }
+
   function updatePetPanel(me, isGuestUser) {
     const body = document.getElementById("petBody");
     if (!body) return;

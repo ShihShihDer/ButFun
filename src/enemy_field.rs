@@ -1197,11 +1197,13 @@ mod tests {
         let bx = active.x;
         let by = active.y;
         f.advance(1.0, &[player], true, |_, _| false);
+        // 注意：PlacedEnemy.id 含 chunk 座標，跨 chunk 移動後 ID 會改變，
+        // 因此以「離出發點最近的存活怪」代替 ID 查找。
         let after = f.enemies().into_iter()
             .filter(|e| e.enemy.is_alive())
             .min_by(|a, b| {
-                let da = (a.x-bx).powi(2)+(a.y-by).powi(2);
-                let db = (b.x-bx).powi(2)+(b.y-by).powi(2);
+                let da = (a.x - bx).powi(2) + (a.y - by).powi(2);
+                let db = (b.x - bx).powi(2) + (b.y - by).powi(2);
                 da.partial_cmp(&db).unwrap()
             })
             .expect("enemy still alive");
