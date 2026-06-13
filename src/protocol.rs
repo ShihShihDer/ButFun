@@ -747,6 +747,8 @@ pub enum ServerMsg {
         /// 物種態度（ROADMAP 144）：各物種對人類的態度值（0-100）與層級。
         /// 前端用於「生態」面板顯示關係狀態，並根據態度調整視覺提示。
         species_attitudes: Vec<crate::species_relations::SpeciesAttitudeView>,
+        /// 目前活躍的居民採集隊目標（ROADMAP 177）。None = 無採集隊。
+        expedition_target: Option<(f32, f32)>,
         /// 公民投票（ROADMAP 156）：當前活躍投票視圖，None = 無進行中的投票。
         /// 前端顯示代言人、提案文字、投票按鈕與倒數計時。
         civic_vote: Option<crate::civic_vote::CivicVoteView>,
@@ -1299,6 +1301,10 @@ pub struct NpcView {
     pub buy_list: Vec<ShopCatalogEntry>,
     /// NPC 願意販售的物品（玩家向 NPC 買）。
     pub sell_list: Vec<ShopCatalogEntry>,
+    /// 目前是否在野外採集隊中（ROADMAP 177）。
+    pub is_expedition: bool,
+    /// 目前血量百分比（ROADMAP 177）；0.0-1.0；None 表示無敵/不顯示。
+    pub hp_pct: Option<f32>,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -1458,6 +1464,7 @@ mod tests {
         let owner = Uuid::nil();
         let snap = ServerMsg::Snapshot {
             tick: 1,
+            expedition_target: None,
             players: vec![PlayerView {
                 id: Uuid::nil(),
                 name: "測試".into(),
@@ -1589,6 +1596,8 @@ mod tests {
                 y: 200.0,
                 buy_list: vec![ShopCatalogEntry { item: ItemKind::Wood, price_per: 1, trend: "stable".to_string(), stock: None, max_stock: None }],
                 sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15, trend: "stable".to_string(), stock: Some(8), max_stock: Some(8) }],
+                is_expedition: false,
+                hp_pct: None,
             }],
             terrain: vec![],
             world_event: None,

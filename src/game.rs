@@ -326,6 +326,86 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
+            if tick % (TICK_HZ as u64) == 0 {
+                // 1. 觸發判定
+                let start_ev = {
+                    let mut res = app.residents.write().unwrap();
+                    let colonies = app.monster_colonies.read().unwrap();
+                    let invasion = app.invasion.read().unwrap();
+                    if res.expedition_cooldown <= 0.0 && !invasion.active && res.prosperity_level() >= 3 {
+                        if let Some(target) = colonies.colonies.iter().max_by_key(|c| c.population) {
+                            res.expedition_cooldown = 2400.0; // 40 分鐘冷卻
+                            res.start_expedition(target.name.to_string(), target.cx, target.cy)
+                        } else { None }
+                    } else { None }
+                };
+                if let Some(ev) = start_ev {
+                    use crate::resident_npc::ResidentLifecycleEvent;
+                    if let ResidentLifecycleEvent::ExpeditionStarted { ref msg, .. } = ev {
+                        let _ = app.tx_chat.send(msg.clone());
+                    }
+                }
+
+                // 2. 受擊判定（比照玩家反擊邏輯，每秒一次）
+                let mut npc_dmgs: Vec<(String, u32)> = Vec::new();
+                {
+                    let res = app.residents.read().unwrap();
+                    let enemies = app.enemies.read().unwrap();
+                    for r in &res.residents {
+                        if r.expedition.is_some() {
+                            let threat = enemies.threat_at(r.x, r.y);
+                            if threat > 0 {
+                                npc_dmgs.push((r.id.clone(), threat));
+                            }
+                        }
+                    }
+                }
+                if !npc_dmgs.is_empty() {
+                    let mut res = app.residents.write().unwrap();
+                    for (rid, dmg) in npc_dmgs {
+                        if let Some(r) = res.residents.iter_mut().find(|r| r.id == rid) {
+                            r.hp -= dmg as f32;
+                        }
+                    }
+                }
+
+                // 3. 護送津貼判定（ROADMAP 177，每 10 秒一次）
+                if tick % (10 * TICK_HZ as u64) == 0 {
+                    let mut rewarded_players = Vec::new();
+                    {
+                        let res = app.residents.read().unwrap();
+                        let players = app.players.read().unwrap();
+                        let exp_npcs: Vec<_> = res.residents.iter()
+                            .filter(|r| r.expedition.is_some())
+                            .map(|r| (r.x, r.y))
+                            .collect();
+                        
+                        if !exp_npcs.is_empty() {
+                            for p in players.values() {
+                                if p.vitals.is_downed() { continue; }
+                                for (nx, ny) in &exp_npcs {
+                                    let dx = p.x - nx;
+                                    let dy = p.y - ny;
+                                    if (dx * dx + dy * dy).sqrt() < 100.0 {
+                                        rewarded_players.push(p.id);
+                                        break; // 同一玩家一次只得一份
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !rewarded_players.is_empty() {
+                        let mut players = app.players.write().unwrap();
+                        for pid in rewarded_players {
+                            if let Some(p) = players.get_mut(&pid) {
+                                p.ether += 5;
+                            }
+                        }
+                    }
+                }
+            }
+
             // 敵人反擊（每秒一次）：玩家在攻擊範圍內時，敵人自動造成傷害——
             // 站著不動不打怪也會被打，逼玩家主動出擊或趕緊走開。
             // 避免巢狀鎖：先讀玩家位置 → 查敵人威脅 → 把傷害套回玩家，三步各持一把鎖。
@@ -1291,6 +1371,27 @@ pub fn spawn(app: AppState) {
                                 format!("城鎮繁榮{}至等級 {}", if new_level > old_level { "提升" } else { "下滑" }, new_level),
                             );
                         }
+                        ResidentLifecycleEvent::ExpeditionStarted { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
+                        ResidentLifecycleEvent::ExpeditionSuccess { names, msg } => {
+                            let _ = app.tx_chat.send(msg);
+                            // 全服在線玩家各得 10 乙太
+                            {
+                                let mut players = app.players.write().unwrap();
+                                for p in players.values_mut() {
+                                    p.ether += 10;
+                                }
+                            }
+                            // 記錄到記憶石
+                            app.town_memory.write().unwrap().push_event(
+                                "🏹",
+                                format!("居民採集隊 {} 平安歸來，帶回珍貴樣本！全服在線玩家獲 10 乙太。", names.join("、"))
+                            );
+                        }
+                        ResidentLifecycleEvent::ExpeditionFailed { msg, .. } => {
+                            let _ = app.tx_chat.send(msg);
+                        }
                         // 快樂居民招待附近玩家（ROADMAP 127）：給乙太小禮 + 泡泡 + 世界聊天。
                         ResidentLifecycleEvent::PlayerGift {
                             resident_id, resident_name, x, y, player_name, text, ..
@@ -2094,6 +2195,8 @@ pub fn spawn(app: AppState) {
                             y: pos.1,
                             buy_list,
                             sell_list,
+                            is_expedition: false,
+                            hp_pct: None,
                         });
                     }
                     drop(lc);
@@ -2107,6 +2210,8 @@ pub fn spawn(app: AppState) {
                         y: vmy,
                         buy_list: build_dynamic_buy_list(VERDANT_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(VERDANT_SELL_LIST),
+                        is_expedition: false,
+                        hp_pct: None,
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -2116,6 +2221,8 @@ pub fn spawn(app: AppState) {
                         y: cmy,
                         buy_list: build_dynamic_buy_list(CRIMSON_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(CRIMSON_SELL_LIST),
+                        is_expedition: false,
+                        hp_pct: None,
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -2125,6 +2232,8 @@ pub fn spawn(app: AppState) {
                         y: vmy2,
                         buy_list: build_dynamic_buy_list(VOID_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(VOID_SELL_LIST),
+                        is_expedition: false,
+                        hp_pct: None,
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -2134,6 +2243,8 @@ pub fn spawn(app: AppState) {
                         y: amy,
                         buy_list: build_dynamic_buy_list(AETHER_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(AETHER_SELL_LIST),
+                        is_expedition: false,
+                        hp_pct: None,
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -2143,6 +2254,8 @@ pub fn spawn(app: AppState) {
                         y: omy,
                         buy_list: build_dynamic_buy_list(ORIGIN_BUY_LIST, &dm, now_secs),
                         sell_list: build_static_sell_list(ORIGIN_SELL_LIST),
+                        is_expedition: false,
+                        hp_pct: None,
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -2156,6 +2269,8 @@ pub fn spawn(app: AppState) {
                                 y: tv.y,
                                 buy_list: Vec::new(),
                                 sell_list: Vec::new(),
+                                is_expedition: false,
+                                hp_pct: None,
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -2164,9 +2279,11 @@ pub fn spawn(app: AppState) {
                     };
 
                     // —— 路人居民（ROADMAP 115）——：純模板 NPC，無商店功能。
+                    let mut expedition_target = None;
                     {
                         let res = app.residents.read().unwrap();
-                        for (id, name, x, y) in res.views() {
+                        expedition_target = res.expedition_target();
+                        for (id, name, x, y, is_exp, hp_pct) in res.views() {
                             npc_views.push(NpcView {
                                 id: id.to_string(),
                                 name: name.to_string(),
@@ -2174,6 +2291,8 @@ pub fn spawn(app: AppState) {
                                 y,
                                 buy_list: Vec::new(),
                                 sell_list: Vec::new(),
+                                is_expedition: is_exp,
+                                hp_pct,
                             });
                         }
                     }
@@ -2303,6 +2422,7 @@ pub fn spawn(app: AppState) {
                         },
                         // 物種態度（ROADMAP 144）：各物種對人類的態度值與層級。
                         species_attitudes: app.species_relations.read().unwrap().views(),
+                        expedition_target,
                         // 住家家具（ROADMAP 155）：廣播時以空陣列佔位，ws.rs 過濾層依玩家 id 填入本人家具。
                         home_furniture: vec![],
                         // 公民投票（ROADMAP 156）：當前活躍投票視圖 + 效果狀態。
