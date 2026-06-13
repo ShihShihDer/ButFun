@@ -5324,8 +5324,9 @@
     for (const s of sprinklers) {
       const sx = s.wx - camX;
       const sy = s.wy - camY;
-      // 只畫在視窗範圍附近
-      if (sx < -32 || sx > canvas.width + 32 || sy < -32 || sy > canvas.height + 32) continue;
+      // 只畫在視窗範圍附近——用邏輯像素 viewW/viewH（sx/sy 是 world-cam 邏輯座標）；
+      // 過去用 canvas.width(=viewW*dpr 裝置像素)當邊界，dpr≥2 時剔除框過大，畫面外的灑水器仍嘗試繪製。
+      if (sx < -32 || sx > viewW + 32 || sy < -32 || sy > viewH + 32) continue;
       ctx.fillText("💧", sx, sy);
     }
     ctx.restore();
