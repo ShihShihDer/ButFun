@@ -1087,6 +1087,14 @@ pub fn spawn(app: AppState) {
                             // 產生並已在上方處理；wildlife tick 不應再發出此事件，此 arm 僅防止
                             // 非窮盡匹配的編譯錯誤。
                             WildlifeEvent::MonsterHunted { .. } => {}
+                            // ROADMAP 207：安穩成群的獵物孕育出新生命——低頻、療癒向的世界訊息。
+                            WildlifeEvent::Born { kind, x, y } => {
+                                let msg = format!(
+                                    "🌱 城外 ({:.0},{:.0})：一隻 {} 的幼獸誕生了，獸群又添了新成員。",
+                                    x, y, kind.display_name()
+                                );
+                                let _ = app.tx_chat.send(msg);
+                            }
                         }
                     }
                 }
@@ -2502,6 +2510,9 @@ pub fn spawn(app: AppState) {
                                     // ROADMAP 205：餵食馴養——個體親近度與馴養旗標。
                                     familiarity: a.familiarity(),
                                     tamed: a.is_tamed(),
+                                    // ROADMAP 207：繁衍——幼獸體型與旗標。
+                                    scale: a.scale(),
+                                    juvenile: a.is_juvenile(),
                                 }).collect()
                         },
                         // 乙太微粒（ROADMAP 142 死亡餵養生命）：死亡獵物留下的乙太節點。
