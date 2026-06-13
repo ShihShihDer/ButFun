@@ -365,6 +365,9 @@ const scenarios = [
   // 霞光黃昏橙紅分支：phase=dusk、light 0.42（偏低、lowness 大）跑 twilightGlowTint 的黃昏橙紅色與
   // 「光源貼地平→霞光更濃更沉」路徑（rising=false → nx 偏右）。
   variant("晨昏霞光(黃昏橙紅)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dusk", light: 0.42, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 冬日飄雪（226）：current_season=winter → 跑 drawSnow 的飄雪繪製分支（雪勢淡入→撒雪花→
+  // 緩降搖擺→薄霜白幕）。6 幀已足以讓 _snowFade 越過 0.01 門檻進入繪製主路徑（完整落下/despawn 見專屬長跑情境）。
+  variant("冬日飄雪", (s) => { s.current_season = "winter"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
@@ -437,6 +440,23 @@ for (const sc of scenarios) {
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 日夜循環：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
   else if (!cycErr) console.log("  ✅ 日夜循環：乾淨");
+}
+
+// 冬日飄雪（226）：雪花緩降（vy ~26）需數百毫秒才落出畫面下緣，連跑 ~200 幀（每幀 +16ms ≈ 3.2s）
+// 才實跑「淡入→撒雪花→緩降搖擺→落地 despawn→補新雪→薄霜白幕」完整迴圈（一般 6 幀只碰到開頭）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：冬季（冬日飄雪，連跑 200 幀觸發雪花完整落下與補充）──");
+  const winterSnap = JSON.parse(JSON.stringify(snapshot));
+  winterSnap.current_season = "winter";
+  winterSnap.daynight = { phase: "day", light: 0.82, night_danger: false };
+  winterSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...winterSnap, type: "snapshot" }) });
+  const r = pump("冬日飄雪", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 冬日飄雪：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 冬日飄雪：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 冬日飄雪：乾淨");
 }
 
 console.log("");
