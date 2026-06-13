@@ -462,9 +462,10 @@
       <span class="hud-pill hidden" id="hudTrade" title="攜帶中的貿易包裹（按 V 開啟面板）" style="color:#f0b060;cursor:pointer">📦 →</span>
       <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
       <span class="hud-pill" id="hudTime">—</span>
-      <button type="button" class="hud-pill" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 回城</button>
       </span>
-      <!-- ↑↑ 次要狀態群結束。以下情境動作鈕（靠近才亮）不收進次要群，讓「搭話/幫忙/採集」提示永遠看得到。 -->
+      <!-- ↑↑ 次要狀態群結束。回城是常用便利功能(快速返家、無代價無冷卻)→常駐可見,不被收合藏起
+           (先前誤收進次要群→手機預設收合下玩家找不到);情境動作鈕(搭話/幫忙/採集)靠近才亮、提示永遠看得到。 -->
+      <button type="button" class="hud-pill" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 回城</button>
       <button type="button" class="hud-pill hidden" id="homeBtn" title="進入住家（需靠近建地中心）" aria-label="進入住家" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 進入住家</button>
       <button type="button" class="hud-pill hidden" id="residentBtn" title="和附近居民搭話" aria-label="搭話" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">💬 搭話</button>
       <button type="button" class="hud-pill hidden" id="helpResidentBtn" title="協助附近需要幫忙的居民" aria-label="幫忙" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🤝 幫忙</button>
