@@ -3808,6 +3808,7 @@
     // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     safeDraw("ground", () => drawGround(camX, camY));
+    safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -9017,6 +9018,92 @@
       ctx.quadraticCurveTo(bx - w * 0.4, by - dip, bx, by);
       ctx.quadraticCurveTo(bx + w * 0.4, by - dip, bx + w, by);
       ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── 水域波光粼粼（ROADMAP 195）────────────────────────────────────────────
+  // 水域 tile 的水面泛起隨陽光明滅的細碎波光：白天亮、破曉/黃昏染金、夜裡映冷月白光。
+  // 純前端視覺、零後端：波光點以既有確定性 sceneryHash 撒佈（同格永遠同位置、不隨鏡頭閃爍），
+  // 亮度隨時間以正弦明滅、色溫沿用既有 daynight 判定。是 189/190 地面氛圍、天空線（191~194）之後
+  // 補上的「水面」維度——過去水域只是一片靜止的藍，現在水面第一次會閃、會呼吸。
+  // 與既有天象區隔：波光＝水面 tile 上的反光（只在水域、貼著地表）；天氣粒子（93）＝下雨/沙暴；
+  // 氛圍粒子（189/190）＝各生態地面常駐生命氣息——層次、位置、觸發刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；每格至多一點、暗於門檻即跳過。
+  const SHIMMER_MAX_ALPHA   = 0.55;  // 單顆波光最大不透明度（半透明反光、不蓋掉水色）
+  const SHIMMER_PERIOD_MS   = 2400;  // 明滅週期基準（每格再以 hash 微調，避免整片同步閃）
+  const SHIMMER_DENSITY     = 0.6;   // sceneryHash 高於此值的水格才有波光點（疏密，零=滿版）
+  const SHIMMER_MIN_TWINKLE = 0.1;   // 明滅亮度低於此即不畫（多數時間波光是暗的，省繪製）
+  const SHIMMER_DOT_R       = 4.5;   // 波光柔光斑基準半徑（邏輯像素，再以 hash 微縮放）
+
+  // 純函式：波光明滅亮度 [0,1]。以 periodMs 為週期、phaseOff 為初相，平方讓亮峰尖、暗區長
+  // （像水面零星閃光，而非整片同亮）。periodMs<=0 視為不閃（回 0）。無 DOM、可測。
+  function shimmerTwinkle(now, periodMs, phaseOff) {
+    if (!(periodMs > 0)) return 0;
+    const raw = (Math.sin((now / periodMs) * Math.PI * 2 + (phaseOff || 0)) + 1) / 2; // [0,1]
+    return raw * raw; // 平方：暗區拉長、亮峰較尖，像粼粼閃光
+  }
+
+  // 純函式：依日夜光照/相位給波光色溫 {r,g,b}。破曉/黃昏染金、白天亮天藍白、夜裡映冷月白。
+  // 無 DOM、可測。
+  function shimmerTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 221, b: 150 }; // 晨昏：金橘霞光
+    if (light >= 0.5) return { r: 200, g: 232, b: 255 };                          // 白天：亮天藍白
+    return { r: 175, g: 200, b: 235 };                                            // 夜/暗：冷月白藍
+  }
+
+  // 純函式：波光整體強度 [0,1]，隨日照線性。白天最強、夜裡仍留微光（水面映月）。無 DOM、可測。
+  function shimmerStrength(light) {
+    const L = Math.max(0, Math.min(1, light));
+    return 0.4 + 0.6 * L;
+  }
+
+  // 每幀在可見水域 tile 上繪製粼粼波光。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawWaterShimmer(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = shimmerTint(light, phase);
+    const strength = shimmerStrength(light);
+    if (strength <= 0) return;
+
+    // 與 drawGround 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        // 只在水域 tile 上撒波光
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "water") continue;
+        // 此格是否有波光點（疏密）＋格內位置／相位／週期微調，皆由確定性 hash 決定（不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 13 + 1, ty * 7 + 3);
+        if (h0 < SHIMMER_DENSITY) continue;
+        const h1 = sceneryHash(tx * 5 + 2, ty * 11 + 9);
+        const h2 = sceneryHash(tx * 9 + 4, ty * 3 + 7);
+
+        const period = SHIMMER_PERIOD_MS * (0.7 + h1 * 0.6); // 每格週期不同，避免整片同步
+        const phaseOff = h2 * Math.PI * 2;
+        const tw = shimmerTwinkle(now, period, phaseOff);
+        if (tw < SHIMMER_MIN_TWINKLE) continue; // 此刻暗、不畫，省繪製
+
+        const sx = tx * TS - camX + h1 * TS;     // 格內水平偏移
+        const sy = ty * TS - camY + h2 * TS;     // 格內垂直偏移
+        const r = SHIMMER_DOT_R * (0.6 + h0 * 0.8);
+        const alpha = tw * strength * SHIMMER_MAX_ALPHA;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        grad.addColorStop(0, `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${tint.r},${tint.g},${tint.b},0)`);
+        ctx.fillStyle = grad;
+        // 水平拉長成短橢圓，更像水面反光（非圓點）
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, r * 1.6, r * 0.7, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
