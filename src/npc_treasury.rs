@@ -128,6 +128,21 @@ impl NpcTreasuryState {
         TreasuryPayResult { actual_qty, actual_paid, notice }
     }
 
+    /// 退回先前原子扣下的金額（成交失敗回滾用）。只回補既有金庫鍵，
+    /// 並夾到該商人上限，避免退款把金庫灌爆。同時扣回 lifetime 支付統計。
+    pub fn refund_amount(&mut self, npc_key: &str, amount: u32) {
+        if amount == 0 { return; }
+        let max = MAX_TREASURY.iter()
+            .find(|(k, _)| *k == npc_key)
+            .map(|(_, m)| *m)
+            .unwrap_or(u32::MAX);
+        if let Some(e) = self.treasury.get_mut(npc_key) {
+            *e = e.saturating_add(amount).min(max);
+        }
+        // 這筆扣帳是「收購預扣」走 lifetime_supply_cost（與本檔扣帳對應），回滾時扣回。
+        self.lifetime_supply_cost = self.lifetime_supply_cost.saturating_sub(amount);
+    }
+
     /// 從金庫扣減指定金額（saturating，不能變負）。供應鏈進貨成本時呼叫。
     pub fn deduct(&mut self, npc_key: &str, amount: u32) {
         if let Some(e) = self.treasury.get_mut(npc_key) {
@@ -218,6 +233,30 @@ mod tests {
         assert_eq!(r.actual_paid, 30);
         assert!(r.notice.is_some(), "應提示現金不足");
         assert_eq!(t.balance(MERCHANT_HOME), 0);
+    }
+
+    #[test]
+    fn refund_amount_restores_and_caps_at_max() {
+        let mut t = make();
+        // 先扣到 0，再退回；退款不應超過該商人上限。
+        let before = t.balance(MERCHANT_HOME);
+        t.deduct(MERCHANT_HOME, before);
+        assert_eq!(t.balance(MERCHANT_HOME), 0);
+        // 退回剛剛扣的金額，餘額應復原。
+        t.refund_amount(MERCHANT_HOME, before);
+        assert_eq!(t.balance(MERCHANT_HOME), before);
+        // 退一筆遠超上限的金額，應夾在上限。
+        let max = MAX_TREASURY.iter().find(|(k, _)| *k == MERCHANT_HOME).map(|(_, m)| *m).unwrap();
+        t.refund_amount(MERCHANT_HOME, u32::MAX - 100);
+        assert_eq!(t.balance(MERCHANT_HOME), max, "退款不可灌爆上限");
+    }
+
+    #[test]
+    fn refund_amount_zero_is_noop() {
+        let mut t = make();
+        let before = t.balance(MERCHANT_HOME);
+        t.refund_amount(MERCHANT_HOME, 0);
+        assert_eq!(t.balance(MERCHANT_HOME), before);
     }
 
     #[test]
