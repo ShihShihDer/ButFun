@@ -112,6 +112,16 @@ pub enum ResidentLifecycleEvent {
         player_name: String,
         text: String,
     },
+    /// 凱旋英雄禮讚（ROADMAP 188）：餘韻期間英雄玩家本人走近，居民停步致謝——只廣播頭頂 🙏 NpcSpeech 泡泡（不洗世界聊天）。
+    HeroGratitude {
+        resident_id: String,
+        resident_name: &'static str,
+        x: f32,
+        y: f32,
+        /// 致謝對象（英雄玩家名）；目前僅供記錄/除錯，廣播只發頭頂泡泡。
+        hero_name: String,
+        text: String,
+    },
     /// 居民發出互助請求（ROADMAP 125）：廣播世界聊天 + NpcSpeech 泡泡。
     HelpRequested {
         resident_id: String,
@@ -197,6 +207,14 @@ const CELEBRATE_DURATION_SECS: f32 = 8.0;
 /// 凱旋餘韻持續秒數（ROADMAP 186）：歡慶（185）結束後，城鎮居民仍會在這段時間裡
 /// 興奮地談論剛剛那場勝利——思想泡泡改冒「勝利談資」，把野外戰局接進居民的日常對話。
 const TRIUMPH_AFTERGLOW_SECS: f32 = 40.0;
+
+// ── 凱旋英雄禮讚（ROADMAP 188）──────────────────────
+/// 餘韻期間，英雄玩家本人靠到多近（像素）才觸發居民致謝（沿用搭話 120px 手感）。
+const GRATITUDE_DIST_PX: f32 = 120.0;
+/// 同一居民兩次對英雄致謝的冷卻（秒）；英雄久留城中時避免泡泡洗版。
+const GRATITUDE_COOLDOWN_SECS: f32 = 12.0;
+/// 致謝瞬間停步轉身的駐留秒數（複用 chat_remaining 暫停移動，營造「認出英雄」的停頓）。
+const GRATITUDE_PAUSE_SECS: f32 = 2.0;
 
 /// 依索引把居民確定性地散佈在城中心廣場周圍，避免全部疊在同一點。
 /// 用黃金角分布 + 內外兩圈交錯，讓聚集看起來自然成團。
@@ -430,6 +448,11 @@ pub struct ResidentNpc {
     // ── 凱旋歡慶（ROADMAP 185）────────────────────────
     /// 是否正處於菁英 Alpha 被討伐的歡慶狀態（原地雀躍、頭頂 🎉）。由 ResidentManager 每幀依城鎮歡慶計時設定。
     pub celebrating: bool,
+    // ── 凱旋英雄禮讚（ROADMAP 188）────────────────────────
+    /// 對英雄致謝的冷卻剩餘秒數（> 0 = 冷卻中，不再對英雄重複致謝）。
+    gratitude_cooldown: f32,
+    /// 致謝模板種子（每次致謝遞增，供模板輪替）。
+    gratitude_seed: usize,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -508,6 +531,8 @@ impl ResidentNpc {
             expedition: None,
             alarmed: false,
             celebrating: false,
+            gratitude_cooldown: 0.0,
+            gratitude_seed: index,
         }
     }
 
@@ -597,6 +622,10 @@ impl ResidentNpc {
         if self.greeting_cooldown > 0.0 {
             self.greeting_cooldown -= dt;
         }
+        // 凱旋英雄禮讚冷卻計時（ROADMAP 188）
+        if self.gratitude_cooldown > 0.0 {
+            self.gratitude_cooldown -= dt;
+        }
         // 快樂衰減計時（ROADMAP 126）
         self.happiness_decay_timer -= dt;
         if self.happiness_decay_timer <= 0.0 {
@@ -659,6 +688,9 @@ pub struct ResidentManager {
     /// 凱旋餘韻剩餘秒數（ROADMAP 186）；含歡慶期在內一併倒數，歡慶結束後仍 > 0 的這段即「餘韻期」，
     /// 居民思想泡泡改冒勝利談資。由 notify_hero_triumph 與 celebrate_timer 一同點燃。
     afterglow_timer: f32,
+    /// 餘韻期間追蹤的「英雄玩家名」（ROADMAP 188）；該英雄本人走近居民時觸發專屬致謝。
+    /// 由 notify_hero_triumph 設定，餘韻耗盡時清除（None = 無進行中的凱旋餘韻）。
+    hero_name: Option<String>,
 }
 
 impl ResidentManager {
@@ -679,19 +711,25 @@ impl ResidentManager {
             town_alarmed: false,
             celebrate_timer: 0.0,
             afterglow_timer: 0.0,
+            hero_name: None,
         }
     }
 
     /// ROADMAP 185：菁英 Alpha（覺醒／霸主）被討伐時由 ws.rs 呼叫，點燃城鎮凱旋歡慶。
     /// 城鎮仍處生態避難警戒（180）時不歡慶——危機未解、避難優先，回傳 0（連捷報都不發）；
     /// 否則點亮歡慶計時並回傳將參與歡慶的在城居民數（採集隊在外者除外），供廣播判斷是否有人慶賀。
-    pub fn notify_hero_triumph(&mut self) -> usize {
+    ///
+    /// `hero_name` 為討伐菁英的英雄玩家名（ROADMAP 188）：餘韻期間該英雄本人走近居民時，
+    /// 居民會停步轉身、對他專屬道謝（🙏）。
+    pub fn notify_hero_triumph(&mut self, hero_name: String) -> usize {
         if self.town_alarmed {
             return 0;
         }
         self.celebrate_timer = CELEBRATE_DURATION_SECS;
         // ROADMAP 186：餘韻含歡慶期一併倒數，歡慶結束後留下 TRIUMPH_AFTERGLOW_SECS 的勝利談資餘韻。
         self.afterglow_timer = CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS;
+        // ROADMAP 188：記下這位英雄，餘韻期間他本人走進城裡時居民會認出並致謝。
+        self.hero_name = Some(hero_name);
         self.residents.iter().filter(|r| r.expedition.is_none()).count()
     }
 
@@ -734,6 +772,10 @@ impl ResidentManager {
         // 期間冒出的思想泡泡改用勝利談資模板。避難優先（危機未解不閒聊），與歡慶同受 alarmed 壓制。
         if self.afterglow_timer > 0.0 {
             self.afterglow_timer = (self.afterglow_timer - dt).max(0.0);
+            // ROADMAP 188：餘韻耗盡即不再追蹤英雄，避免日後誤觸發致謝。
+            if self.afterglow_timer <= 0.0 {
+                self.hero_name = None;
+            }
         }
         let in_afterglow = self.afterglow_timer > 0.0 && !celebrating && !alarmed;
 
@@ -811,6 +853,19 @@ impl ResidentManager {
             });
         }
 
+        // ROADMAP 188：餘韻期間，討伐菁英的英雄本人若正在城裡，取其當前位置供居民就近致謝。
+        // 先在進入居民迴圈前一次性查出英雄座標（避免在 &mut residents 迴圈內再借 self.hero_name）。
+        let triumph_hero: Option<(String, f32, f32)> = if in_afterglow {
+            self.hero_name.as_ref().and_then(|hname| {
+                player_positions
+                    .iter()
+                    .find(|(pname, _, _)| pname == hname)
+                    .map(|(_, px, py)| (hname.clone(), *px, *py))
+            })
+        } else {
+            None
+        };
+
         // 1. 推進每位居民的年齡、移動、思想計時
         for (i, r) in self.residents.iter_mut().enumerate() {
             r.age_secs += dt;
@@ -820,6 +875,31 @@ impl ResidentManager {
             // 兩者皆抑制日常演出（思想泡泡 / 工作動態 / 小事件 / 搭話 / 求助 / 送禮），讓當下氣氛集中鮮明。
             if alarmed || celebrating {
                 continue;
+            }
+            // ── 凱旋英雄禮讚（ROADMAP 188）──
+            // 餘韻期間，討伐菁英的英雄本人走近，居民停步轉身、頭頂 🙏 向他本人專屬道謝。
+            // 冷卻 + 駐留（chat_remaining）避免泡泡洗版；只認 triumph_hero（即英雄本人），其他玩家無此反應。
+            if let Some((ref hero_name, hx, hy)) = triumph_hero {
+                if r.gratitude_cooldown <= 0.0 && r.chat_remaining <= 0.0 {
+                    let dx = r.x - hx;
+                    let dy = r.y - hy;
+                    if (dx * dx + dy * dy).sqrt() <= GRATITUDE_DIST_PX {
+                        let text = crate::resident_chat::get_hero_gratitude(
+                            r.name, hero_name, r.gratitude_seed,
+                        );
+                        events.push(ResidentLifecycleEvent::HeroGratitude {
+                            resident_id: r.id.clone(),
+                            resident_name: r.name,
+                            x: r.x,
+                            y: r.y,
+                            hero_name: hero_name.clone(),
+                            text,
+                        });
+                        r.gratitude_cooldown = GRATITUDE_COOLDOWN_SECS;
+                        r.chat_remaining = GRATITUDE_PAUSE_SECS; // 停步轉身致謝
+                        r.gratitude_seed += 1;
+                    }
+                }
             }
             // 思想泡泡計時（ROADMAP 118）
             r.thought_timer -= dt;
@@ -2211,7 +2291,7 @@ mod tests {
     fn hero_triumph_ignites_celebration_and_counts_in_town_residents() {
         let mut mgr = ResidentManager::new();
         // 平時（未避難）討伐菁英 → 點燃歡慶，回傳在城居民數（無採集隊時 = 全員）。
-        let cheering = mgr.notify_hero_triumph();
+        let cheering = mgr.notify_hero_triumph("英雄".into());
         assert_eq!(cheering, mgr.residents.len(), "未在避難時，全體在城居民都會歡慶");
         assert!(mgr.celebrate_timer > 0.0, "應點亮歡慶計時");
         // 一幀後居民 celebrating 應為 true
@@ -2226,7 +2306,7 @@ mod tests {
         mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
         assert!(mgr.town_alarmed);
         // 危機未解時討伐菁英 → 不歡慶（避難優先），回傳 0
-        let cheering = mgr.notify_hero_triumph();
+        let cheering = mgr.notify_hero_triumph("英雄".into());
         assert_eq!(cheering, 0, "城鎮避難中不該歡慶");
         assert_eq!(mgr.celebrate_timer, 0.0, "避難中不該點亮歡慶計時");
     }
@@ -2234,7 +2314,7 @@ mod tests {
     #[test]
     fn celebration_yields_to_alarm_when_crisis_strikes_mid_party() {
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         // 歡慶中突然生態壓力衝頂 → 避難壓過歡慶，居民不再 celebrating（顯示 😰 而非 🎉）。
         mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
         assert!(mgr.town_alarmed, "壓力衝頂應進入避難");
@@ -2245,7 +2325,7 @@ mod tests {
     #[test]
     fn celebration_expires_after_duration() {
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         // 推進超過歡慶時長，歡慶自然結束、居民散回日常。
         let mut elapsed = 0.0;
         while elapsed <= CELEBRATE_DURATION_SECS + 1.0 {
@@ -2259,7 +2339,7 @@ mod tests {
     #[test]
     fn celebration_views_expose_flag() {
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         // views() 第 8 元素（celebrating）應隨歡慶為 true，供快照傳給前端。
         assert!(mgr.views().all(|(_, _, _, _, _, _, _, celebrating)| celebrating),
@@ -2294,7 +2374,7 @@ mod tests {
     fn triumph_celebration_still_suppresses_thoughts() {
         // 歡慶期（185）內仍應抑制思想泡泡，讓歡呼氣氛集中——餘韻談資只在歡慶散場後才冒。
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(thoughts.is_empty(), "歡慶期間應抑制思想泡泡（集中歡慶氣氛）");
@@ -2304,7 +2384,7 @@ mod tests {
     fn afterglow_emits_triumph_thoughts() {
         // 歡慶散場後進入餘韻期，思想泡泡應改冒勝利談資（triumph = true）。
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 一次推進跨過 8 秒歡慶期、落在餘韻期內。
         let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0);
@@ -2316,7 +2396,7 @@ mod tests {
     fn afterglow_expires_back_to_normal_thoughts() {
         // 餘韻期過完，思想泡泡應回歸常態（triumph = false）。
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 一次推進跨過 歡慶 + 餘韻 總時長，餘韻已耗盡。
         let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 0.1, 50, Phase::Day, &[], 0.0);
@@ -2328,10 +2408,88 @@ mod tests {
     fn alarm_overrides_afterglow_chatter() {
         // 危機優先：餘韻期間若生態避難警戒響起，應壓過勝利談資、抑制思想泡泡。
         let mut mgr = ResidentManager::new();
-        mgr.notify_hero_triumph();
+        mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 推進跨過歡慶期落入餘韻，同時生態壓力衝頂進入避難。
         let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
         assert!(thoughts.is_empty(), "餘韻遇生態避難應讓位（危機優先，不閒聊勝利）");
+    }
+
+    // ── 凱旋英雄禮讚（ROADMAP 188）──────────────────────────────────────────
+
+    /// 取出本幀所有 HeroGratitude 事件，方便斷言。
+    fn gratitude_events(events: &[ResidentLifecycleEvent]) -> Vec<&ResidentLifecycleEvent> {
+        events
+            .iter()
+            .filter(|e| matches!(e, ResidentLifecycleEvent::HeroGratitude { .. }))
+            .collect()
+    }
+
+    /// 點燃凱旋、跨過歡慶期進入餘韻，回傳第一位居民「當前」座標（已含本幀移動）。
+    /// 之後再以小 dt 把英雄放到此座標，可穩定測距（避免大 dt 內居民移動致判定失準）。
+    fn enter_afterglow_at_resident0(mgr: &mut ResidentManager, hero: &str) -> (f32, f32) {
+        mgr.notify_hero_triumph(hero.to_string());
+        mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        (mgr.residents[0].x, mgr.residents[0].y)
+    }
+
+    #[test]
+    fn afterglow_hero_nearby_triggers_gratitude() {
+        // 餘韻期間，英雄本人走到居民身旁 → 該居民冒出 🙏 致謝事件，且點名英雄。
+        let mut mgr = ResidentManager::new();
+        let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
+        let positions = vec![("勇者阿光".to_string(), rx, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let grats = gratitude_events(&events);
+        assert!(!grats.is_empty(), "英雄走近時餘韻期應觸發致謝");
+        if let ResidentLifecycleEvent::HeroGratitude { hero_name, text, .. } = grats[0] {
+            assert_eq!(hero_name, "勇者阿光", "致謝對象應為英雄本人");
+            assert!(text.contains("勇者阿光"), "致謝文字應點名英雄：{text}");
+        }
+    }
+
+    #[test]
+    fn gratitude_only_for_the_hero_not_other_players() {
+        // 非英雄的玩家在旁邊不該觸發凱旋致謝（只認英雄本人）。
+        let mut mgr = ResidentManager::new();
+        let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
+        let positions = vec![("路過的別人".to_string(), rx, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        assert!(gratitude_events(&events).is_empty(), "非英雄玩家不該觸發凱旋致謝");
+    }
+
+    #[test]
+    fn no_gratitude_outside_afterglow() {
+        // 沒有進行中的凱旋餘韻（hero_name 為 None）時，英雄站在旁邊也不致謝。
+        let mut mgr = ResidentManager::new();
+        let (rx, ry) = (mgr.residents[0].x, mgr.residents[0].y);
+        let positions = vec![("勇者阿光".to_string(), rx, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        assert!(gratitude_events(&events).is_empty(), "非餘韻期不該觸發致謝");
+    }
+
+    #[test]
+    fn gratitude_respects_cooldown_no_spam() {
+        // 英雄久留居民身旁：致謝一次後進入冷卻 + 駐留，緊接的下一小步不該連噴泡泡。
+        let mut mgr = ResidentManager::new();
+        let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
+        let positions = vec![("勇者阿光".to_string(), rx, ry)];
+        let (e1, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        assert!(!gratitude_events(&e1).is_empty(), "首次走近應致謝");
+        let (e2, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        assert!(gratitude_events(&e2).is_empty(), "冷卻/駐留期間不該重複致謝（防洗版）");
+    }
+
+    #[test]
+    fn gratitude_cleared_after_afterglow_expires() {
+        // 餘韻耗盡後 hero_name 清除：英雄之後再站旁邊也不致謝。
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph("勇者阿光".into());
+        mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 1.0, 50, Phase::Day, &[], 0.0);
+        assert!(mgr.hero_name.is_none(), "餘韻耗盡後應清除英雄追蹤");
+        let (rx, ry) = (mgr.residents[0].x, mgr.residents[0].y);
+        let positions = vec![("勇者阿光".to_string(), rx, ry)];
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        assert!(gratitude_events(&events).is_empty(), "餘韻結束後英雄走近不該再致謝");
     }
 }

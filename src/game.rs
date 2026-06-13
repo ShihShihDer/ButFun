@@ -1381,6 +1381,20 @@ pub fn spawn(app: AppState) {
                             }));
                             let _ = app.tx_chat.send(text);
                         }
+                        // ROADMAP 188：凱旋英雄禮讚——餘韻期間英雄本人走近，居民停步致謝。
+                        // 只發頭頂 🙏 NpcSpeech 泡泡（就近專屬反應，不洗世界聊天；全城歡慶捷報已在 185 廣播過）。
+                        ResidentLifecycleEvent::HeroGratitude {
+                            resident_id, resident_name, x, y, hero_name: _, text,
+                        } => {
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: resident_id,
+                                npc_name: format!("居民 {}", resident_name),
+                                text,
+                                display_secs: 7,
+                                wx: x,
+                                wy: y,
+                            }));
+                        }
                         // ROADMAP 121：兩位居民相遇打招呼——廣播雙方 NpcSpeech 泡泡。
                         ResidentLifecycleEvent::NeighborChat {
                             id_a, name_a, text_a, x_a, y_a,

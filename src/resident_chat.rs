@@ -285,6 +285,29 @@ pub fn get_triumph_thought(seed: usize) -> &'static str {
     TRIUMPH_THOUGHTS[seed % TRIUMPH_THOUGHTS.len()]
 }
 
+// ── 凱旋英雄禮讚模板（ROADMAP 188）──────────────────────────────────────────
+/// 餘韻期間（186），討伐菁英的英雄玩家本人走進城裡、靠近某位居民時，
+/// 該居民停步轉身、對英雄本人專屬道謝（頭頂 🙏）——居民第一次認得「特定玩家的戰功」。
+/// 不分 persona（全城都認得這位英雄）、帶居民名 {name} 與英雄名 {player}。
+/// 面向玩家字串，將來在地化時集中替換。
+static HERO_GRATITUDE: &[&str] = &[
+    "🙏 {name}停下腳步向{player}深深一鞠躬：「{player}！討伐菁英首領的英雄就是你吧？真是太感謝了！」",
+    "🙏 {name}快步迎上{player}：「就是你斬下那頭怪物王的！城裡上下都念著你的好呢。」",
+    "🙏 {name}紅著眼眶握住{player}的手：「{player}，有你在，我們晚上才敢安心點燈——謝謝你。」",
+    "🙏 {name}朝{player}豎起大拇指：「方才那場惡戰我都看見了！{player}，你是全城的英雄！」",
+    "🙏 {name}從攤上抓了把果子塞給{player}：「英雄不嫌棄就收下吧，這是我們的一點心意。」",
+    "🙏 {name}向{player}恭敬行禮：「首領一倒，野外總算太平了，這份恩情我們記著呢。」",
+];
+
+/// 取得凱旋英雄禮讚文字（ROADMAP 188）：確定性依 seed 取模，必非空。
+///
+/// `resident_name` 為居民顯示名；`hero_name` 為英雄玩家名；`seed` 供模板輪替。
+pub fn get_hero_gratitude(resident_name: &str, hero_name: &str, seed: usize) -> String {
+    HERO_GRATITUDE[seed % HERO_GRATITUDE.len()]
+        .replace("{name}", resident_name)
+        .replace("{player}", hero_name)
+}
+
 /// 取得居民對玩家搭話的回應文字。
 pub fn get_chat(persona: ResidentPersona, seed: usize) -> &'static str {
     let pool: &[&str] = match persona {
@@ -1113,5 +1136,28 @@ mod tests {
         }
         // 同 seed 取兩次應一致（確定性）。
         assert_eq!(get_triumph_thought(3), get_triumph_thought(3));
+    }
+
+    #[test]
+    fn hero_gratitude_fills_placeholders_and_is_deterministic() {
+        // 凱旋英雄禮讚（ROADMAP 188）：依 seed 取模、必非空、替換後不殘留佔位符、含 🙏。
+        for seed in [0usize, 1, 5, 6, 99, usize::MAX] {
+            let s = get_hero_gratitude("艾拉", "勇者", seed);
+            assert!(!s.is_empty(), "禮讚文字不應為空（seed={seed}）");
+            assert!(!s.contains('{'), "替換後不應殘留佔位符：{s}");
+            assert!(s.contains("艾拉"), "應含居民名：{s}");
+            assert!(s.contains("勇者"), "應含英雄名：{s}");
+            assert!(s.contains('🙏'), "禮讚應帶 🙏：{s}");
+        }
+        // 同 seed 取兩次應一致（確定性）。
+        assert_eq!(get_hero_gratitude("A", "B", 2), get_hero_gratitude("A", "B", 2));
+    }
+
+    #[test]
+    fn hero_gratitude_all_templates_have_placeholders() {
+        for template in HERO_GRATITUDE {
+            assert!(template.contains("{name}"), "禮讚模板應含 {{name}}：{template}");
+            assert!(template.contains("{player}"), "禮讚模板應含 {{player}}：{template}");
+        }
     }
 }

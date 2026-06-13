@@ -3237,7 +3237,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // ROADMAP 185：菁英 Alpha 殞落凱旋——覺醒/霸主菁英首領被討伐，城鎮居民歡慶（🎉）。
                             // 城鎮仍在生態避難警戒時不歡慶（危機未解、避難優先），notify_hero_triumph 回傳 0、連捷報都不發。
                             if result.was_awakened || result.was_dominant {
-                                let cheering = app.residents.write().unwrap().notify_hero_triumph();
+                                let cheering = app.residents.write().unwrap().notify_hero_triumph(killer_name.clone());
                                 if cheering > 0 {
                                     let _ = app.tx_chat.send(format!(
                                         "🎉【全城歡慶】{killer_name} 討伐了 {colony_name} 的菁英首領「{kind_name}·霸主」\
