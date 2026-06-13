@@ -551,6 +551,21 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 210：破曉甦醒——天明時把仍在夜眠的晝行獵物主動喚回閒晃。
+    /// 夜眠用的 NIGHT_SLEEP_REST_SECS(=一整個日夜週期長) 遠大於日間小憩上限
+    /// REST_TIMER_MAX，故以「rest_timer 是否超過日間小憩上限」即可分辨夜眠與小憩——
+    /// 只喚醒夜眠者、不打斷白天的正常小憩。不靠計時器自然到期，因為那計時器比整段
+    /// 白天還長,鹿會癱在家裡跨越整個白天(與「晨光鋪上草地、鹿群一隻隻醒來」相反)。
+    fn wake_from_night_sleep(&mut self, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Resting { rest_timer } = self.state {
+            if rest_timer > REST_TIMER_MAX {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            }
+        }
+    }
+
     /// 供協議層使用的狀態字串。
     pub fn state_str(&self) -> &'static str {
         match &self.state {
@@ -1068,6 +1083,11 @@ impl WildlifeManager {
             if calm_at_night {
                 a.tick_night_rest(dt);
             } else {
+                // ROADMAP 210：破曉甦醒——天亮（非夜間）後，仍處夜眠的晝行獵物先喚醒再閒晃；
+                // 否則 600s 夜眠計時器比整段白天還長，鹿會癱在家裡跨越整個白天。
+                if !is_night && is_diurnal(animal_kind) {
+                    a.wake_from_night_sleep(herd_anchor, rng);
+                }
                 a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, rng);
             }
         }
@@ -2336,6 +2356,43 @@ mod tests {
         let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
             "夜間遇威脅仍應逃命（不繼續睡），實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn diurnal_prey_wakes_at_dawn() {
+        // 入夜歸巢沉睡（長時 Resting）的晝行獵物，天亮後應主動甦醒、恢復閒晃，
+        // 而非癱在家裡跨越整個白天（不靠那個比白天還長的夜眠計時器自然到期）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0; // 在家
+        // 模擬入夜沉睡：長時 Resting（NIGHT_SLEEP_REST_SECS，遠大於日間小憩上限）。
+        deer.state = WildlifeState::Resting { rest_timer: NIGHT_SLEEP_REST_SECS };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 推進幾幀「白天」（is_night=false）——夜眠計時器(600s)遠未到期，
+        // 若只靠自然倒數會永遠醒不來，破曉甦醒邏輯必須主動喚醒。
+        for _ in 0..3 { mgr.tick(0.2, &[], &att, &[], false); }
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(!matches!(d.state, WildlifeState::Resting { .. }),
+            "天亮後夜眠的晝行獵物應甦醒、離開沉睡，實際仍 {:?}", d.state);
+    }
+
+    #[test]
+    fn dawn_does_not_interrupt_short_daytime_rest() {
+        // 破曉甦醒只該喚醒「夜眠」（長時 Resting），不該打斷白天正常的短暫小憩；
+        // 否則白天獵物會永遠無法停下休息。短休應如常倒數，不被當成夜眠強制喚醒。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0;
+        deer.state = WildlifeState::Resting { rest_timer: REST_TIMER_MAX }; // 日間正常小憩
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false); // 白天推進一小步（遠不足以耗盡小憩）
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Resting { .. }),
+            "白天的短暫小憩不應被破曉甦醒打斷，實際 {:?}", d.state);
     }
 
     #[test]
