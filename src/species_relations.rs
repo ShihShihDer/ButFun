@@ -7,7 +7,7 @@
 //!   - 殺死掠食者        → 被捕獵的獵物物種好感+（+10）
 //!   - 餵食野生動物      → 該物種好感+（+15）
 //! 怪物物種態度影響：
-//!   - 玩家殺死某種怪 → 該物種敬畏人類（+8）
+//!   - 玩家獵殺某種怪 → 該物種視人類為大敵、更敵視（-8）
 //!   - 某種怪擊倒玩家 → 該物種更加囂張（-10）
 //! 態度層級影響怪物 aggro 半徑：友善 ×0.35 / 中立 ×1.0 / 警覺 ×1.3 / 敵視 ×1.6。
 //!
@@ -377,8 +377,8 @@ mod tests {
 
 // ─── 怪物物種常數 ─────────────────────────────────────────────────────────────
 
-/// 玩家擊殺怪物後該物種的態度獎勵（怪物學會敬畏人類）。
-const MONSTER_KILL_REWARD: i32 = 8;
+/// 玩家獵殺某種怪後該物種的態度變化（該物種視人類為大敵 → 態度−，對齊野生動物「殺戮有後果」）。
+const MONSTER_KILL_HOSTILITY: i32 = -8;
 /// 怪物擊倒玩家後該物種的態度懲罰（怪物氣焰更盛）。
 const MONSTER_PLAYER_KILL_PENALTY: i32 = -10;
 /// 怪物態度自然衰減間隔（秒）——比野生動物慢，怪物記性更長。
@@ -457,9 +457,9 @@ impl MonsterSpeciesRelations {
         }
     }
 
-    /// 玩家擊殺某種怪 → 該物種學會敬畏人類，態度+。
+    /// 玩家獵殺某種怪 → 該物種視人類為大敵、更敵視，態度−（aggro 增）。
     pub fn on_player_kills_monster(&mut self, kind: EnemyKind) {
-        self.adjust(kind, MONSTER_KILL_REWARD);
+        self.adjust(kind, MONSTER_KILL_HOSTILITY);
     }
 
     /// 某種怪擊倒玩家 → 該物種更加囂張，態度-。
@@ -553,10 +553,11 @@ mod monster_tests {
     }
 
     #[test]
-    fn kill_monster_raises_attitude() {
+    fn kill_monster_lowers_attitude() {
         let mut ms = MonsterSpeciesRelations::new();
         ms.on_player_kills_monster(EnemyKind::ScrapDrone);
-        assert_eq!(ms.attitude(EnemyKind::ScrapDrone), 50 + MONSTER_KILL_REWARD);
+        // 獵殺 → 該物種更敵視，態度−（對齊野生動物）
+        assert_eq!(ms.attitude(EnemyKind::ScrapDrone), 50 + MONSTER_KILL_HOSTILITY);
         // 其他種類不受影響
         assert_eq!(ms.attitude(EnemyKind::CrystalGolem), 50);
     }
@@ -572,19 +573,21 @@ mod monster_tests {
     #[test]
     fn attitude_clamps_to_0_100() {
         let mut ms = MonsterSpeciesRelations::new();
+        // 大量獵殺 → 態度持續下探但不破 0
         for _ in 0..15 { ms.on_player_kills_monster(EnemyKind::ScrapDrone); }
-        assert!(ms.attitude(EnemyKind::ScrapDrone) <= 100);
+        assert!(ms.attitude(EnemyKind::ScrapDrone) >= 0);
+        // 再加上被怪殺 → 仍夾在 0 以上
         for _ in 0..15 { ms.on_monster_kills_player(EnemyKind::ScrapDrone); }
         assert!(ms.attitude(EnemyKind::ScrapDrone) >= 0);
     }
 
     #[test]
-    fn friendly_tier_gives_small_aggro_multiplier() {
+    fn killing_monsters_raises_aggro() {
         let mut ms = MonsterSpeciesRelations::new();
-        // 把某種怪拉到友善（50 + 8*3 = 74 ≥ 65）
-        for _ in 0..3 { ms.on_player_kills_monster(EnemyKind::EtherWisp); }
-        assert_eq!(ms.tier(EnemyKind::EtherWisp), RelationTier::Friendly);
-        assert!(ms.aggro_multiplier(EnemyKind::EtherWisp) < 1.0, "友善物種 aggro 倍率應小於 1.0");
+        // 獵殺 4 次 → 50 - 8*4 = 18 < 25 → 敵視，aggro 倍率變大（生態反撲）
+        for _ in 0..4 { ms.on_player_kills_monster(EnemyKind::EtherWisp); }
+        assert_eq!(ms.tier(EnemyKind::EtherWisp), RelationTier::Hostile);
+        assert!(ms.aggro_multiplier(EnemyKind::EtherWisp) > 1.0, "被獵殺物種 aggro 倍率應大於 1.0");
     }
 
     #[test]
@@ -609,18 +612,18 @@ mod monster_tests {
     #[test]
     fn monster_tier_event_emitted_on_change() {
         let mut ms = MonsterSpeciesRelations::new();
-        // 把怪拉到友善
-        for _ in 0..3 { ms.on_player_kills_monster(EnemyKind::RuneGuardian); }
+        // 大量獵殺 → 把怪推到敵視（50 - 8*4 = 18 < 25）
+        for _ in 0..4 { ms.on_player_kills_monster(EnemyKind::RuneGuardian); }
         let events = ms.tick(1.0);
         assert!(events.iter().any(|e| matches!(e,
-            MonsterRelationEvent::TierChanged { kind: EnemyKind::RuneGuardian, new_tier: RelationTier::Friendly }
+            MonsterRelationEvent::TierChanged { kind: EnemyKind::RuneGuardian, new_tier: RelationTier::Hostile }
         )));
     }
 
     #[test]
     fn monster_tier_event_has_cooldown() {
         let mut ms = MonsterSpeciesRelations::new();
-        for _ in 0..3 { ms.on_player_kills_monster(EnemyKind::CoralCrab); }
+        for _ in 0..4 { ms.on_player_kills_monster(EnemyKind::CoralCrab); }
         let e1 = ms.tick(1.0);
         assert!(e1.iter().any(|e| matches!(e, MonsterRelationEvent::TierChanged { .. })));
         let e2 = ms.tick(1.0);
@@ -630,11 +633,12 @@ mod monster_tests {
     #[test]
     fn natural_decay_toward_neutral() {
         let mut ms = MonsterSpeciesRelations::new();
+        // 獵殺 → 態度低於 50（敵視方向），自然衰減應往 50 回升
         for _ in 0..3 { ms.on_player_kills_monster(EnemyKind::JadeWraith); }
         let before = ms.attitude(EnemyKind::JadeWraith);
         ms.tick(MONSTER_DECAY_INTERVAL_SECS + 1.0);
         let after = ms.attitude(EnemyKind::JadeWraith);
-        assert!(after < before, "態度應向 50 靠近：before={before}, after={after}");
+        assert!(after > before, "態度應向 50 回升：before={before}, after={after}");
     }
 
     #[test]
