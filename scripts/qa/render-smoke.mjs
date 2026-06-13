@@ -377,6 +377,11 @@ const scenarios = [
   // 夏日蟬夏（229）：current_season=summer → 跑 drawSummerMotes 的浮塵繪製分支（夏絮勢淡入→撒絮→
   // 上飄閃爍橫盪→暖金薄幕）。6 幀已足以讓 _moteFade 越過 0.01 門檻進入繪製主路徑。
   variant("夏日蟬夏", (s) => { s.current_season = "summer"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 春夏彩蝶（236）：current_season=spring/summer ＋ 白天（light 0.82 > 0.42）→ 跑 drawButterflies 的
+  // 彩蝶繪製分支（蝶勢淡入→繞圈翩飛→開合拍翅）。6 幀已足以讓 _butterflyFade 越過 0.01 門檻進入繪製主路徑
+  //（春夜螢火 233 的白天對偶）。spring 與 summer 各跑一次確認兩季皆觸發。
+  variant("春日彩蝶", (s) => { s.current_season = "spring"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  variant("夏日彩蝶", (s) => { s.current_season = "summer"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
