@@ -259,6 +259,11 @@ const scenarios = [
   variant("岩石礦光(黃昏染金)", (s) => { s.players[0].x = -7000; s.players[0].y = 5800; s.daynight = { phase: "dusk", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 礦脈微光夜映月分支：同一片岩地、入夜清冷月白，跑 rockGlintTint 的夜/暗路徑與夜間 strength（岩面映月微光）。
   variant("岩石礦光(夜映月)", (s) => { s.players[0].x = -7000; s.players[0].y = 5800; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 雲影掠地（203）：白天雲遮日在地表拖過的大片緩移柔暗斑，與地形無關（任何地表都畫），
+  // 故沿用城鎮中心座標。正午（light 0.85）跑 strength 達滿的滿濃路徑（initCloudShadows→窗格回捲鋪滿→偏扁橢圓柔斑漸層）。
+  variant("雲影掠地(正午滿濃)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 雲影晨昏轉淡分支：破曉 light 0.5 落在 MIN(0.42)→DAY(0.6) 淡入帶內，跑 strength 部分濃度的繪製路徑。
+  variant("雲影掠地(破曉轉淡)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dawn", light: 0.5, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;

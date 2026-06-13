@@ -147,6 +147,12 @@
   // 水面映日／映月（ROADMAP 202）：水面倒映太陽/月亮一道隨光源天弧方位的粼粼倒影，沿用陰影系統
   // 同一份 light 趨勢（rising），每幀算出 _sunGlint 供 drawSunGlint 共用；null=無日夜資訊（不畫倒影）。
   let _sunGlint        = null;   // 本幀水面倒影參數 { dx, rot, strength, tint }，null=不畫
+  // 雲影掠地（ROADMAP 203）：白天流雲（193）飄過太陽（200）時，在地表投下緩緩移動的柔和陰影斑塊。
+  // 純前端視覺、零後端：陰影濃淡由既有 daynight.light 推得（正午雲影最清楚、晨昏轉淡、夜裡無雲故無影），
+  // 斑塊在世界座標裡順風緩移＋以「畫面＋留白」窗格 modulo 回捲鋪滿可見地表（隨鏡頭一起捲動，像貼在地上）。
+  // 與既有元素區隔：195~199 是「地表反光提亮」、201 是「實體腳下投影」、本項是「天上雲遮日在地面拖過的大片暗斑」。
+  const cloudShadows = [];       // [{nx,ny,rx,ry,weight}]（nx/ny=窗格內相位 [0,1)；rx/ry=橢圓半徑；weight=濃淡權重）
+  let _cloudShadowInit = false;  // 雲影斑塊池是否已生成
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3835,6 +3841,7 @@
     // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     safeDraw("ground", () => drawGround(camX, camY));
+    safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
@@ -8945,6 +8952,95 @@
         ctx.arc(cx, cy, rad, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+    ctx.restore();
+  }
+
+  // ── 雲影掠地（ROADMAP 203）──────────────────────────────────────────────────
+  // 白天流雲（193）飄過太陽（200）時，在地表拖過大片緩移的柔暗斑：正午雲影最清楚、晨昏轉淡、
+  // 夜裡無雲故無影。純前端視覺、零後端：濃淡由既有 daynight.light 推得，斑塊在世界座標裡順風緩移，
+  // 再以「畫面＋留白」窗格 modulo 回捲鋪滿可見地表——減去 camX/camY 讓斑塊隨景一起捲動（像貼在地上、
+  // 玩家走過時從斑下穿過），加上隨時間前移的 drift 則是雲被風吹著緩緩飄。畫在地表之上、各反光/實體之下。
+  const CLOUD_SHADOW_COUNT     = 5;          // 同時鋪在可見地表的雲影斑塊數（固定池上限，效能優先）
+  const CLOUD_SHADOW_MAX_ALPHA = 0.16;       // 單片雲影最大不透明度（柔暗、不壓黑地表）
+  const CLOUD_SHADOW_DAY_LIGHT = 0.6;        // 雲影最清楚的亮度（正午）：light 達此即滿
+  const CLOUD_SHADOW_MIN_LIGHT = 0.42;       // 低於此亮度（夜/深晨昏）視為無雲、不畫（與 CLOUD_NIGHT_LIGHT 同口徑）
+  const CLOUD_SHADOW_WIND_X    = 14;         // 雲影順風橫移速度（世界 px/秒，緩——比雲本身慢，雲在天高處）
+  const CLOUD_SHADOW_WIND_Y    = 5;          // 縱向漂移（略，斜風，與既有斜射天象同向）
+  const CLOUD_SHADOW_TINT      = "30,36,54"; // 雲影色（冷藍灰黑，非純黑——像被雲濾過一層的天光）
+
+  // 純函式：依當下亮度推「雲影整體濃淡」strength∈[0,1]。
+  // 夜/深晨昏（light<=MIN）無雲→0；由 MIN 線性升到 DAY_LIGHT 達滿（正午雲影最清楚）。無 DOM、可測。
+  function cloudShadowStrength(light) {
+    if (light <= CLOUD_SHADOW_MIN_LIGHT) return 0;
+    const t = (light - CLOUD_SHADOW_MIN_LIGHT) / (CLOUD_SHADOW_DAY_LIGHT - CLOUD_SHADOW_MIN_LIGHT);
+    return Math.max(0, Math.min(1, t));
+  }
+
+  // 純函式：正模（always >=0）取餘——把世界座標折回 [0,span) 窗格內，供回捲鋪滿用。
+  // span<=0 視為退化、回 0（不畫，避免除錯）。無 DOM、可測。
+  function wrapMod(v, span) {
+    if (!(span > 0)) return 0;
+    return ((v % span) + span) % span;
+  }
+
+  // 純函式：全域濃淡 strength × 單片柔邊權重 weight → 單片最終不透明度，夾到 MAX_ALPHA。無 DOM、可測。
+  function cloudShadowBlobAlpha(strength, weight) {
+    return Math.max(0, Math.min(CLOUD_SHADOW_MAX_ALPHA, strength * weight * CLOUD_SHADOW_MAX_ALPHA));
+  }
+
+  // 一次性程序生成雲影斑塊池：每片是一個偏扁的大柔斑（雲影偏寬扁），相位/尺寸/濃淡各異。
+  // 用 Math.random 只在生成時跑一次（之後每幀讀既有結構，繪製不再用亂數，斑塊不會逐幀閃跳）。
+  function initCloudShadows() {
+    if (_cloudShadowInit) return;
+    for (let i = 0; i < CLOUD_SHADOW_COUNT; i++) {
+      const rx = 150 + Math.random() * 170;            // 水平半徑 150~320（大片柔斑）
+      const ry = rx * (0.45 + Math.random() * 0.3);    // 垂直半徑＝水平的 0.45~0.75（雲影偏扁，必 < rx）
+      cloudShadows.push({
+        nx: Math.random(),                             // 窗格內水平相位 [0,1)
+        ny: Math.random(),                             // 窗格內垂直相位 [0,1)
+        rx, ry,
+        weight: 0.6 + Math.random() * 0.4,             // 單片濃淡權重（柔邊，各片深淺不同）
+      });
+    }
+    _cloudShadowInit = true;
+  }
+
+  function drawCloudShadow(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;   // 弱機/低幀：緩移斑塊一律不畫（與雲/各反光同口徑）
+    if (!daynight) return;
+    const strength = cloudShadowStrength(daynight.light);
+    if (strength <= 0.01) return;                     // 夜/深晨昏無雲，不畫，省繪製
+    initCloudShadows();
+
+    // 以最大半徑當邊界留白，讓斑塊在「畫面＋留白」窗格內 modulo 回捲鋪滿可見區、邊緣不硬切
+    let maxR = 0;
+    for (const s of cloudShadows) if (s.rx > maxR) maxR = s.rx;
+    const wrapW = viewW + 2 * maxR;
+    const wrapH = viewH + 2 * maxR;
+    const driftX = CLOUD_SHADOW_WIND_X * now / 1000;
+    const driftY = CLOUD_SHADOW_WIND_Y * now / 1000;
+
+    ctx.save();
+    for (const s of cloudShadows) {
+      // 窗格相位 → 順風漂移＋減鏡頭（貼地隨景捲動），再折回窗格鋪滿；左上角再退 maxR 補留白
+      const sx = wrapMod(s.nx * wrapW + driftX - camX, wrapW) - maxR;
+      const sy = wrapMod(s.ny * wrapH + driftY - camY, wrapH) - maxR;
+      const alpha = cloudShadowBlobAlpha(strength, s.weight);
+      if (alpha <= 0) continue;
+      // 偏扁橢圓柔斑：壓扁變換後在 local 空間畫圓＋徑向漸層（中心最暗、邊緣透明，雲影是糊的無硬邊）
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.scale(1, s.ry / s.rx);
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, s.rx);
+      grad.addColorStop(0,   `rgba(${CLOUD_SHADOW_TINT},${alpha.toFixed(3)})`);
+      grad.addColorStop(0.6, `rgba(${CLOUD_SHADOW_TINT},${(alpha * 0.5).toFixed(3)})`);
+      grad.addColorStop(1,   `rgba(${CLOUD_SHADOW_TINT},0)`);
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, s.rx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
     ctx.restore();
   }
