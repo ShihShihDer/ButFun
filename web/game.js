@@ -313,6 +313,14 @@
   const SNOW_MAX_PARTICLES = 90;
   const snowParticles = [];
   let _snowFade = 0;             // 冬季雪勢淡入淡出進度 [0,1]（非冬季→0，冬季→1，逐幀趨近不突兀）
+  // 秋日落葉（ROADMAP 227）：226 讓「冬季」第一次看得見（飄雪），本切片回頭補上「秋季」——
+  // 秋天時天空飄落一片片暖色枯葉、邊打著旋邊緩降、覆一層極淡暖金薄幕，與冬雪對成季節視覺一對。
+  // 純前端、讀既有 currentSeason、零後端。粒子池上限與雪同低（葉緩降、不需太密），以 _leafFade 平滑淡入淡出。
+  const LEAF_MAX_PARTICLES = 70;
+  const leafParticles = [];
+  let _leafFade = 0;             // 秋季落葉淡入淡出進度 [0,1]（非秋季→0，秋季→1，逐幀趨近不突兀）
+  // 落葉暖色盤（[r,g,b]）：琥珀／鏽紅／金黃／枯褐，隨葉隨機取一色，賣「秋天的層次」。
+  const LEAF_PALETTE = [[217,138,61], [192,87,43], [224,168,46], [168,106,58], [201,120,53]];
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4031,6 +4039,7 @@
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
+    safeDraw("leaves", () => drawLeaves(renderNow, _weatherDt)); // 秋日落葉（227）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -10777,6 +10786,100 @@
     // 薄霜白幕：極淡冷白覆全屏，賣「冬天的空氣」（隨雪勢淡入淡出）。
     ctx.globalAlpha = _snowFade * 0.05;
     ctx.fillStyle = "#dceaff";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // ── ROADMAP 227: 秋日落葉 ───────────────────────────────────────────────────
+  // 226 讓「冬季」第一次看得見（飄雪），但四季裡的「秋」仍只在 HUD pill。本切片把「秋季」
+  // 也畫出來：秋天時天空飄落一片片暖色枯葉，邊打著旋（自轉）邊左右搖擺緩降，再覆一層極淡暖金
+  // 薄幕，讓玩家一眼認得「落葉了、秋天到了」。與冬雪（226）對成季節視覺一對，刻意區隔——雪是
+  // 柔白小圓點直降，葉是暖色橢圓、會自轉打旋、搖擺幅度更大。純前端視覺、讀既有 currentSeason、
+  // 零後端；效能分級（reduceMotion／低 FPS 一律關閉）。下面三個純函式抽出、無 DOM／可單元自驗。
+
+  // 純函式：秋季回 1、其餘季節回 0（葉只在秋天落）。
+  function leafTargetIntensity(season) {
+    return season === "autumn" ? 1 : 0;
+  }
+
+  // 純函式：把目前葉勢 cur 朝目標 target 以固定速率逼近（每秒 LEAF_FADE_RATE），夾在 [0,1]。
+  // 讓入秋時葉緩緩落起、出秋時緩緩停（跨季不突然冒出一整屏葉／突然消失）。壞值（NaN）退回 0。
+  function leafFadeStep(cur, target, dt) {
+    const LEAF_FADE_RATE = 0.6;   // 約 1.7 秒淡入／淡出滿（與雪同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * LEAF_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：落葉的水平位置＝基準 x ＋ 隨下落高度與相位擺動的正弦（葉片打旋飄盪，幅度大於雪）。
+  function leafSwayX(baseX, y, phase, sway) {
+    return baseX + Math.sin(y * 0.015 + phase) * sway;
+  }
+
+  // 生成一片落葉（隨機落點／緩降速度／大小／搖擺幅度／自轉，並從暖色盤隨機取一色）。
+  function makeLeaf(W, H) {
+    const c = LEAF_PALETTE[Math.floor(Math.random() * LEAF_PALETTE.length)] || LEAF_PALETTE[0];
+    return {
+      x: Math.random() * (W + 40) - 20,
+      y: -Math.random() * H - 10,        // 從畫面上方一個螢幕高度內撒下，落下後鋪滿
+      vy: 24 + Math.random() * 34,        // 緩降，遠慢於雨（雨 vy ~270），與雪相近
+      size: 2.2 + Math.random() * 3.0,    // 葉比雪片大一些
+      alpha: 0.55 + Math.random() * 0.4,
+      sway: 12 + Math.random() * 22,      // 左右搖擺幅度，明顯大於雪（葉子飄得更盪）
+      phase: Math.random() * Math.PI * 2,
+      rot: Math.random() * Math.PI * 2,   // 初始朝向
+      vrot: (Math.random() - 0.5) * 2.4,  // 自轉角速度（正負皆有，葉片打旋翻飛）
+      r: c[0], g: c[1], b: c[2],
+      life: 7 + Math.random() * 6,
+    };
+  }
+
+  // 每幀更新並繪製秋季落葉。非秋季時 _leafFade 緩緩歸零、池清空、零開銷早退。
+  function drawLeaves(now, dt) {
+    if (reduceMotion) { if (leafParticles.length) leafParticles.length = 0; _leafFade = 0; return; }
+    _leafFade = leafFadeStep(_leafFade, leafTargetIntensity(currentSeason), dt);
+    if (_leafFade <= 0.01) { if (leafParticles.length) leafParticles.length = 0; return; }
+    if (!_parallaxEnabled) { if (leafParticles.length) leafParticles.length = 0; return; }
+
+    const W = viewW, H = viewH;
+    const spawnCount = Math.ceil(_leafFade * 2);   // 葉勢越濃補得越快
+    for (let i = 0; i < spawnCount && leafParticles.length < LEAF_MAX_PARTICLES; i++) {
+      leafParticles.push(makeLeaf(W, H));
+    }
+
+    ctx.save();
+    for (let i = leafParticles.length - 1; i >= 0; i--) {
+      const p = leafParticles[i];
+      p.y += p.vy * dt;
+      p.phase += dt;
+      p.rot += p.vrot * dt;
+      p.life -= dt;
+      if (p.y > H + 14 || p.life <= 0) { leafParticles.splice(i, 1); continue; }
+      const x = leafSwayX(p.x, p.y, p.phase, p.sway);
+      const fade = Math.min(1, p.life / 0.8);   // 末段淡出
+      ctx.globalAlpha = _leafFade * p.alpha * fade;
+      ctx.fillStyle = "rgb(" + p.r + "," + p.g + "," + p.b + ")";
+      // 葉子＝打旋的橢圓，再描一道淡中肋，賣「翻飛的枯葉」（純 Canvas、零資源）。
+      ctx.save();
+      ctx.translate(x, p.y);
+      ctx.rotate(p.rot);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(80,48,24," + (0.5 * fade) + ")";
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(-p.size, 0);
+      ctx.lineTo(p.size, 0);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // 暖金薄幕：極淡暖金覆全屏，賣「秋天的空氣」（隨葉勢淡入淡出，與冬雪薄霜白幕對偶）。
+    ctx.globalAlpha = _leafFade * 0.045;
+    ctx.fillStyle = "#e8b86a";
     ctx.fillRect(0, 0, W, H);
     ctx.globalAlpha = 1.0;
     ctx.restore();
