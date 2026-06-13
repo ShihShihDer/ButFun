@@ -1309,6 +1309,9 @@ pub struct NpcView {
     pub is_expedition: bool,
     /// 目前血量百分比（ROADMAP 177）；0.0-1.0；None 表示無敵/不顯示。
     pub hp_pct: Option<f32>,
+    /// 生態危機避難中（ROADMAP 180）：居民奔回城中心廣場聚集，前端顯示 😰；非居民 NPC 恆為 false。
+    #[serde(default)]
+    pub alarmed: bool,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -1602,6 +1605,7 @@ mod tests {
                 sell_list: vec![ShopCatalogEntry { item: ItemKind::Pickaxe, price_per: 15, trend: "stable".to_string(), stock: Some(8), max_stock: Some(8) }],
                 is_expedition: false,
                 hp_pct: None,
+                alarmed: false,
             }],
             terrain: vec![],
             world_event: None,

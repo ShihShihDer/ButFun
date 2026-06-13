@@ -1316,8 +1316,10 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+                // ROADMAP 180：把當前生態壓力傳入居民 tick，驅動「生態危機避難」整體反應。
+                let eco_for_residents = app.director.read().unwrap().eco_pressure();
                 let (resident_events, thought_events) = app.residents.write().unwrap()
-                    .tick(dt, avg_prosperity, current_phase, &player_positions);
+                    .tick(dt, avg_prosperity, current_phase, &player_positions, eco_for_residents);
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {
@@ -1347,6 +1349,11 @@ pub fn spawn(app: AppState) {
                         // ROADMAP 122：居民隨機小事件——廣播至世界聊天，0 玩家也持續累積。
                         ResidentLifecycleEvent::MiniEvent { text } => {
                             let _ = app.tx_chat.send(text);
+                        }
+                        // ROADMAP 180：生態危機避難開始／解除——全服廣播，讓玩家感受到城鎮對野外危機的反應。
+                        ResidentLifecycleEvent::EcoAlarm { msg }
+                        | ResidentLifecycleEvent::EcoCalm { msg } => {
+                            let _ = app.tx_chat.send(msg);
                         }
                         // ROADMAP 123：居民主動向玩家打招呼——廣播 NpcSpeech 泡泡 + 世界聊天通知。
                         ResidentLifecycleEvent::PlayerGreeting {
@@ -2236,6 +2243,7 @@ pub fn spawn(app: AppState) {
                             sell_list,
                             is_expedition: false,
                             hp_pct: None,
+                            alarmed: false,
                         });
                     }
                     drop(lc);
@@ -2251,6 +2259,7 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(VERDANT_SELL_LIST),
                         is_expedition: false,
                         hp_pct: None,
+                        alarmed: false,
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -2262,6 +2271,7 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(CRIMSON_SELL_LIST),
                         is_expedition: false,
                         hp_pct: None,
+                        alarmed: false,
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -2273,6 +2283,7 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(VOID_SELL_LIST),
                         is_expedition: false,
                         hp_pct: None,
+                        alarmed: false,
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -2284,6 +2295,7 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(AETHER_SELL_LIST),
                         is_expedition: false,
                         hp_pct: None,
+                        alarmed: false,
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -2295,6 +2307,7 @@ pub fn spawn(app: AppState) {
                         sell_list: build_static_sell_list(ORIGIN_SELL_LIST),
                         is_expedition: false,
                         hp_pct: None,
+                        alarmed: false,
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -2310,6 +2323,7 @@ pub fn spawn(app: AppState) {
                                 sell_list: Vec::new(),
                                 is_expedition: false,
                                 hp_pct: None,
+                                alarmed: false,
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -2322,7 +2336,7 @@ pub fn spawn(app: AppState) {
                     {
                         let res = app.residents.read().unwrap();
                         expedition_target = res.expedition_target();
-                        for (id, name, x, y, is_exp, hp_pct) in res.views() {
+                        for (id, name, x, y, is_exp, hp_pct, alarmed) in res.views() {
                             npc_views.push(NpcView {
                                 id: id.to_string(),
                                 name: name.to_string(),
@@ -2332,6 +2346,7 @@ pub fn spawn(app: AppState) {
                                 sell_list: Vec::new(),
                                 is_expedition: is_exp,
                                 hp_pct,
+                                alarmed,
                             });
                         }
                     }
