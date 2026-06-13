@@ -368,6 +368,16 @@
   const FIREFLY_COUNT = 36;          // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
   let _fireflyFade = 0;              // 春夜螢火淡入淡出進度 [0,1]（非春夜→0，春夜→1，逐幀緩緩趨近）
   let _fireflies = null;             // 惰性生成的螢火蟲池（畫面比例座標的位置、緩游速度、閃爍相位、尺寸）
+  // 秋夜薄霧（ROADMAP 234）：231 冬夜極光、232 夏夜銀河、233 春夜螢火各給了冬、夏、春一張「夜臉」，
+  // 唯獨秋季的夜仍與其他季節無異——「給每季一張夜臉」只差最後一塊。本切片給秋季補上它的夜景：
+  // 當季節為秋天且入夜，下半草地高度緩緩漫起一層銀白薄霧，橫向極緩飄移、勻緩呼吸，待天亮又緩緩散去，
+  // 把四季夜臉湊成全套。與春夜螢火刻意對偶又區隔——同在地面，但螢火是黃綠、明滅跳動的「點點生靈」，
+  // 薄霧是銀白、勻緩呼吸的「瀰漫霧氣帶」（一生一靜、一點一片）。與天氣霧（後端 weatherType 驅動）也區隔：
+  // 秋霧由「季節＋晝夜」驅動、是秋夜常駐氛圍。純前端、讀既有 currentSeason＋daynight.light、零後端。
+  const AUTUMN_MIST_NIGHT_LIGHT = 0.42; // daynight.light 低於此值算「夜」（與極光／銀河／螢火同調）
+  const MIST_BANK_COUNT = 14;        // 薄霧團數（少而大的扁平霧團，鋪成一層瀰漫的低霧，不該太多）
+  let _autumnMistFade = 0;           // 秋夜薄霧淡入淡出進度 [0,1]（非秋夜→0，秋夜→1，逐幀緩緩趨近）
+  let _autumnMist = null;            // 惰性生成的薄霧團池（畫面比例座標的位置、橫向飄速、呼吸相位、尺寸）
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4110,6 +4120,7 @@
       drawGalaxy(performance.now(), _weatherDt);        // 夏夜銀河（232），晴朗夏夜斜掛的銀色星河、與星空同層
       drawNightMotes(performance.now());               // 夜晚漂浮的乙太微光
       drawFireflies(performance.now(), _weatherDt);    // 春夜螢火（233），春夜草地上點點黃綠明滅游移的螢火蟲
+      drawAutumnMist(performance.now(), _weatherDt);    // 秋夜薄霧（234），秋夜草地上瀰漫橫流的銀白薄霧
       drawBiomeParallax(camX, camY, renderNow);        // 生態背景視差層次（ROADMAP 91）
       drawLumenNightGlow(camX, camY, performance.now()); // 燐光族夜視光環
       drawNightDangerVignette(performance.now());      // 夜間危機暈輪
@@ -11398,6 +11409,93 @@
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ── ROADMAP 234: 秋夜薄霧 ─────────────────────────────────────────────────
+  // 純函式：秋季夜晚回 1、其餘回 0（薄霧只在秋夜出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function mistTargetIntensity(season, light) {
+    const dark = (typeof light === "number" ? light : 1) < AUTUMN_MIST_NIGHT_LIGHT;
+    return (season === "autumn" && dark) ? 1 : 0;
+  }
+
+  // 純函式：把目前秋霧勢 cur 朝目標 target 以固定速率逼近（每秒 MIST_FADE_RATE），夾在 [0,1]。
+  // 與極光／銀河／螢火同樣從容（入秋夜薄霧緩緩漫起、出秋緩緩散去）。壞值（NaN）退回 0。
+  function mistFadeStep(cur, target, dt) {
+    const MIST_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與極光／銀河／螢火同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * MIST_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：薄霧的勻緩「呼吸」亮度 [0,1]＝以正弦在 0.7~1.0 間淺幅起伏，賣霧氣「緩緩濃淡」的綿長感。
+  // 與螢火 fireflyPulse（三次方塑形成暗久亮短的明滅脈衝）刻意區隔——霧是勻緩呼吸、不一閃一滅。
+  // 壞值（NaN）退回 0。
+  function mistBreath(phase) {
+    if (!(phase === phase)) return 0;            // NaN 檢查（NaN !== NaN）
+    const s = 0.5 + 0.5 * Math.sin(phase);       // 0..1
+    const v = 0.7 + 0.3 * s;                     // 0.7..1.0 淺幅呼吸
+    return Math.max(0, Math.min(1, v));
+  }
+
+  // 生成薄霧團池（一次性、之後快取，不每幀重建→確定性、不隨鏡頭抖動）。各霧團：畫面比例座標 x（全寬）、
+  // y（只在下半草地高度 0.60~0.95，貼地的低霧）、橫向極緩飄速（無垂直飄移，霧只橫向流）、呼吸相位／速度、
+  // 寬扁的橢圓尺寸（霧是大而柔的瀰漫團、不是點），各自基準濃度略有差異。
+  function makeMistBanks() {
+    const banks = [];
+    for (let i = 0; i < MIST_BANK_COUNT; i++) {
+      banks.push({
+        x: Math.random(),
+        y: 0.60 + Math.random() * 0.35,
+        vx: (0.004 + Math.random() * 0.010) * (Math.random() < 0.5 ? -1 : 1), // 每秒走畫面寬 ±0.4%~1.4%，極緩橫流
+        phase: Math.random() * Math.PI * 2,
+        bws: 0.18 + Math.random() * 0.22,    // 呼吸速度（綿長、比螢火明滅慢得多）
+        rx: 0.16 + Math.random() * 0.14,     // 橢圓半寬（畫面比例，霧團很寬）
+        ry: 0.05 + Math.random() * 0.05,     // 橢圓半高（扁，貼地鋪開）
+        base: 0.6 + Math.random() * 0.4,     // 基準濃度係數
+      });
+    }
+    return banks;
+  }
+
+  // 每幀更新並繪製秋夜薄霧。非秋夜時 _autumnMistFade 緩緩歸零、池清空、零開銷早退。
+  // 畫在春夜螢火（233）之後——薄霧是貼地的瀰漫氛圍層；用畫面座標、不隨鏡頭平移（與螢火同口徑）。
+  function drawAutumnMist(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = mistTargetIntensity(currentSeason, light);
+    _autumnMistFade = mistFadeStep(_autumnMistFade, target, Math.max(0, (dt || 0)));
+    if (_autumnMistFade <= 0.01) { _autumnMist = null; return; }
+    if (reduceMotion || !_parallaxEnabled) { _autumnMistFade = 0; _autumnMist = null; return; }
+    if (!_autumnMist) _autumnMist = makeMistBanks();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+    const step = Math.max(0, dt || 0);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";   // 加色，薄霧像疊在夜色上的銀白柔光
+    for (const m of _autumnMist) {
+      // 極緩橫流；飄出左右邊界從另一側繞回（無垂直飄移，霧只沿地面橫向流動）。
+      m.x += m.vx * step;
+      if (m.x < -0.2) m.x += 1.4; else if (m.x > 1.2) m.x -= 1.4;
+      const a = _autumnMistFade * m.base * mistBreath(t * m.bws + m.phase) * 0.12; // peak 很淡，不蓋住地物
+      if (a < 0.006) continue;
+      const px = m.x * W, py = m.y * H;
+      const rx = m.rx * W, ry = m.ry * H;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.scale(1, ry / rx);                     // 把圓徑向漸層壓成寬扁橢圓
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      g.addColorStop(0, `rgba(214,226,232,${a.toFixed(3)})`);  // 中心銀白偏冷
+      g.addColorStop(1, "rgba(214,226,232,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, rx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
     ctx.restore();
   }

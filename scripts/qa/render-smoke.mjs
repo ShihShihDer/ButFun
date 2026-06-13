@@ -573,6 +573,24 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 春夜螢火：乾淨");
 }
 
+// 秋夜薄霧（234）：current_season=autumn ＋ 夜（light 0.12 < 0.42）→ 跑 drawAutumnMist 的繪製分支
+//（秋霧勢淡入→惰性生成薄霧團池→各霧團橫向緩流、勻緩呼吸、寬扁銀白柔光暈）。連跑 ~300 幀
+//（每幀 +16ms ≈ 4.8s）才實跑完 _autumnMistFade 從 0 緩緩淡入滿（MIST_FADE_RATE 0.25 約需 4s）後的完整繪製路徑。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：秋夜（秋夜薄霧，連跑 300 幀觸發薄霧淡入與橫流呼吸繪製）──");
+  const mistSnap = JSON.parse(JSON.stringify(snapshot));
+  mistSnap.current_season = "autumn";
+  mistSnap.daynight = { phase: "night", light: 0.12, night_danger: true };
+  mistSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...mistSnap, type: "snapshot" }) });
+  const r = pump("秋夜薄霧", 300);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 秋夜薄霧：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 秋夜薄霧：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 秋夜薄霧：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
