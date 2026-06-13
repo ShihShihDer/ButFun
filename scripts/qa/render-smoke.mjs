@@ -219,6 +219,8 @@ const scenarios = [
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 天邊流雲（193）：白天情境（上方 light 0.75）已跑白雲路徑；這裡加破曉金色時刻跑「染暖」分支。
+  variant("破曉金色時刻流雲", (s) => { s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
