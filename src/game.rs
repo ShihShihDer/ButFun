@@ -2499,6 +2499,9 @@ pub fn spawn(app: AppState) {
                                     x: a.x,
                                     y: a.y,
                                     state: a.state_str().to_string(),
+                                    // ROADMAP 205：餵食馴養——個體親近度與馴養旗標。
+                                    familiarity: a.familiarity(),
+                                    tamed: a.is_tamed(),
                                 }).collect()
                         },
                         // 乙太微粒（ROADMAP 142 死亡餵養生命）：死亡獵物留下的乙太節點。

@@ -8069,6 +8069,23 @@
       ctx.textBaseline = "top";
       ctx.fillText(label, 0, -33);
 
+      // ROADMAP 205：餵食馴養——已馴養的個體頭頂浮一顆輕輕跳動的愛心 💛（牠親近你、會跟著你）；
+      // 尚未馴養但已開始累積親近度時，畫一顆漸滿的小心形作為「快馴服了」的回饋。
+      if (w.tamed) {
+        const beat = 1 + 0.12 * Math.sin(now / 260);
+        ctx.font = (11 * beat).toFixed(1) + "px sans-serif";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💛", 0, -36);
+      } else if (w.familiarity > 0.01) {
+        // 進度心：底色淡灰、依親近度由下往上染成粉紅，暗示「再餵幾次就馴服」。
+        const f = Math.max(0, Math.min(1, w.familiarity));
+        ctx.font = "9px sans-serif";
+        ctx.textBaseline = "bottom";
+        ctx.globalAlpha = 0.35 + 0.5 * f;
+        ctx.fillText("🤍", 0, -36);
+        ctx.globalAlpha = 1;
+      }
+
       ctx.restore();
     }
   }
