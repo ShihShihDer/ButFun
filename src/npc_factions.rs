@@ -183,11 +183,11 @@ pub fn mutual_avg(relations: &NpcRelationsState, a: &str, b: &str) -> i32 {
 pub fn npc_display_name(id: &str) -> &'static str {
     match id {
         "merchant" => "商人薇拉",
-        "workshop_npc" => "工匠老胡",
+        "workshop_npc" => "工匠鐸恩",
         "bounty_npc" => "獵手蘭卡",
         "expedition_npc" => "探勘員芙利亞",
-        "procurement_npc" => "採購代理人吉爾",
-        "farm_fair_npc" => "評審老農",
+        "procurement_npc" => "採購代理人諾亞",
+        "farm_fair_npc" => "評審卡特",
         "village_chief" => "凱爾長老",
         _ => "某位居民",
     }

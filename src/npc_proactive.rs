@@ -118,7 +118,7 @@ pub fn canned_reaction(npc_id: &str, event: &WorldEventKind) -> String {
             format!("〔凱爾長老〕「{}」完成了！每一份貢獻，老朽都記在心裡。", name)
         }
         ("farm_fair_npc", WorldEventKind::QuestComplete { .. }) => {
-            "〔評審老農〕大夥合力完成任務了！這團結勁，比老頭我最好的收成還珍貴。".to_string()
+            "〔評審卡特〕大夥合力完成任務了！這團結勁，比我最好的收成還珍貴。".to_string()
         }
         ("bounty_npc", WorldEventKind::EliteSlain { name, slayer }) => {
             format!(
@@ -136,7 +136,7 @@ pub fn canned_reaction(npc_id: &str, event: &WorldEventKind) -> String {
             "〔凱爾長老〕節慶開始！讓喜悅充滿每條街道——你們都是這個村落的驕傲。".to_string()
         }
         ("farm_fair_npc", WorldEventKind::VillageFestival) => {
-            "〔評審老農〕節慶！老頭去搬些新鮮農產品，慶典少不了好食材！".to_string()
+            "〔評審卡特〕節慶！我去搬些新鮮農產品，慶典少不了好食材！".to_string()
         }
         ("expedition_npc", WorldEventKind::VillageFestival) => {
             "〔探勘員芙利亞〕節慶！我從遠方帶回的故事，今晚全說個夠！".to_string()

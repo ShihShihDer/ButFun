@@ -25,8 +25,8 @@ const FIRST_CALL_WAIT_SECS: f32 = 90.0;
 /// noon_bell 專屬 Semaphore 容量：同時最多 1 個 AI 呼叫。
 pub const MAX_CONCURRENT_CALLS: usize = 1;
 
-/// 工匠老胡的顯示名稱（與 npc_chat.rs 的 NPCS 保持一致）。
-pub const HU_DISPLAY_NAME: &str = "工匠老胡";
+/// 工匠鐸恩的顯示名稱（與 npc_chat.rs 的 NPCS 保持一致）。
+pub const HU_DISPLAY_NAME: &str = "工匠鐸恩";
 
 /// 午鐘狀態（純記憶體，重啟清零）。
 pub struct NoonBellState {
@@ -78,7 +78,7 @@ pub fn build_system_prompt(online_count: usize) -> String {
         format!("目前有 {online_count} 位冒險者在線。")
     };
     format!(
-        "你是蒸汽龐克太空歌劇世界主城工坊的老師傅——老胡。\
+        "你是蒸汽龐克太空歌劇世界主城工坊的老師傅——鐸恩。\
         黎明剛過，日照全開，正是一天最適合動工的時候。{count_hint}\
         你站在工坊門口，用粗嗓門宣告開工。\
         請用 30 字以內的繁體中文說一句午間開工令：簡短有力，帶點老師傅的口吻，\

@@ -42,10 +42,10 @@ static PAIRS: &[(&str, &str)] = &[
     ("workshop_npc", "bounty_npc"),       // 工匠問獵手需要什麼工具
     ("bounty_npc", "village_chief"),      // 獵手向長老報告邊境情況
     ("expedition_npc", "procurement_npc"), // 探勘員分享星際發現
-    ("farm_fair_npc", "merchant"),        // 老農詢問農產品市場行情
+    ("farm_fair_npc", "merchant"),        // 卡特詢問農產品市場行情
     ("village_chief", "expedition_npc"),  // 長老詢問探勘進度
     ("procurement_npc", "merchant"),      // 採購代理人詢問貨源
-    ("bounty_npc", "farm_fair_npc"),      // 獵手與老農聊城外動態
+    ("bounty_npc", "farm_fair_npc"),      // 獵手與卡特聊城外動態
     ("workshop_npc", "expedition_npc"),   // 工匠問探勘員需要哪些工具
     ("village_chief", "procurement_npc"), // 長老關心星際貿易情況
 ];
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn build_system_prompt_contains_listener_display_name() {
         let prompt = build_system_prompt("merchant", "workshop_npc");
-        assert!(prompt.contains("工匠老胡"), "prompt 應包含聆聽者顯示名稱");
+        assert!(prompt.contains("工匠鐸恩"), "prompt 應包含聆聽者顯示名稱");
     }
 
     #[test]
