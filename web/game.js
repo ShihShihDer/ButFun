@@ -7456,7 +7456,42 @@
     if (!alphaMonsters.length) return;
     const now = performance.now();
 
-    // ROADMAP 170：先畫衝突連線（在 Alpha 圖示下層，視覺清楚）
+    // ROADMAP 174：先畫結盟連線（在衝突連線和 Alpha 圖示下層）
+    for (const a of alphaMonsters) {
+      if (!a.allied_to_id) continue;
+      const ally = alphaMonsters.find(b => b.id === a.allied_to_id);
+      if (!ally) continue;
+      if (a.id >= ally.id) continue; // 只由 id 小的畫線，避免重複
+      const ax = a.x - camX, ay = a.y - camY;
+      const bx = ally.x - camX, by = ally.y - camY;
+      const alliancePulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 500));
+      ctx.save();
+      // 外層光暈
+      ctx.globalAlpha = alliancePulse * 0.35;
+      ctx.strokeStyle = "#ffe080";
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      // 內層金色實線
+      ctx.globalAlpha = alliancePulse * 0.85;
+      ctx.strokeStyle = "#ffd700";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      // 中點顯示握手標誌
+      ctx.globalAlpha = alliancePulse;
+      ctx.font = "18px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🤝", (ax + bx) / 2, (ay + by) / 2);
+      ctx.restore();
+    }
+
+    // ROADMAP 170：再畫衝突連線（在 Alpha 圖示下層，視覺清楚）
     for (const a of alphaMonsters) {
       if (!a.clash_target_id) continue;
       const target = alphaMonsters.find(b => b.id === a.clash_target_id);
@@ -7493,23 +7528,28 @@
       const icon = MONSTER_COLONY_ICON[a.kind] || "👾";
       const hpPct = a.hp / Math.max(1, a.max_hp);
       const isClashing = !!a.clash_target_id;
-      // 衝突中改為紅色脈動光環；正常為金色
-      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : 600));
+      const isAllied = !!a.allied_to_id;
+      // 衝突中→紅色；結盟中→金白雙環；正常→金色
+      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : 600));
       ctx.save();
       ctx.beginPath();
       ctx.arc(sx, sy, 28 * pulse, 0, Math.PI * 2);
       ctx.strokeStyle = isClashing
         ? `rgba(255,50,50,${(0.7 * pulse).toFixed(3)})`
-        : `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
-      ctx.lineWidth = isClashing ? 4 : 3;
+        : isAllied
+          ? `rgba(255,240,120,${(0.85 * pulse).toFixed(3)})`
+          : `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
+      ctx.lineWidth = isClashing ? 4 : isAllied ? 4 : 3;
       ctx.stroke();
-      // 外圈花環
+      // 外圈花環（結盟時疊加白色外環）
       ctx.beginPath();
       ctx.arc(sx, sy, 32, 0, Math.PI * 2);
       ctx.strokeStyle = isClashing
         ? `rgba(255,80,80,${(0.35 * pulse).toFixed(3)})`
-        : `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
-      ctx.lineWidth = 1.5;
+        : isAllied
+          ? `rgba(255,255,200,${(0.5 * pulse).toFixed(3)})`
+          : `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
+      ctx.lineWidth = isAllied ? 2 : 1.5;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -7549,7 +7589,7 @@
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
-      // ROADMAP 170：衝突徽章（優先於 tactic 氣泡）
+      // ROADMAP 170：衝突徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
       if (isClashing) {
         const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
         const clashLabel = "⚔️ 衝突中";
@@ -7564,6 +7604,21 @@
         ctx.fillStyle = "#fff";
         ctx.textBaseline = "top";
         ctx.fillText(clashLabel, cx2, cy2);
+      } else if (isAllied) {
+        // ROADMAP 174：結盟徽章（金色底，深色字）
+        const alliancePulse = 0.88 + 0.12 * Math.sin(now / 450);
+        const allyLabel = "🤝 結盟中";
+        ctx.font = "bold 10px sans-serif";
+        const aw = ctx.measureText(allyLabel).width + 10;
+        const alx = sx, aly = ly + 8;
+        ctx.fillStyle = `rgba(160,120,0,${(0.92 * alliancePulse).toFixed(3)})`;
+        ctx.fillRect(alx - aw / 2, aly - 1, aw, 13);
+        ctx.strokeStyle = `rgba(255,210,50,${(0.95 * alliancePulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(alx - aw / 2, aly - 1, aw, 13);
+        ctx.fillStyle = "#ffe566";
+        ctx.textBaseline = "top";
+        ctx.fillText(allyLabel, alx, aly);
       } else if (a.active_tactic) {
         // ROADMAP 169：指揮氣泡——無衝突時才顯示橙色徽章
         const tacticPulse = 0.85 + 0.15 * Math.sin(now / 300);
