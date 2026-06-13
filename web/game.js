@@ -138,6 +138,12 @@
   // 負=漸暗（下午/月升後段），純前端推得，不必動後端加時間欄位。
   let _skyLightPrev  = -1;       // 上一幀的 daynight.light（-1=尚未取樣）
   let _skyLightTrend = 0;        // light 變化的 EMA（>=0 視為漸亮/上午、<0 視為漸暗/下午）
+  // 日影晷（ROADMAP 201）：地面實體腳下陰影依太陽/月亮的天弧位置投射、晨昏拉長、夜映冷淡。
+  // 自帶一份 light 趨勢追蹤（與天空主體 _skyLightTrend 同口徑但獨立——陰影弱機也畫、不受
+  // _parallaxEnabled 早退影響），每幀於 render 早期算出 _shadowCast 供各繪製點共用；null=無日夜資訊。
+  let _shadowLightPrev = -1;     // 陰影系統上一幀的 daynight.light（-1=尚未取樣）
+  let _shadowTrend     = 0;      // 陰影系統的 light 趨勢 EMA
+  let _shadowCast      = null;   // 本幀投影參數 { dx, lenMult, alphaMult, tint }，null=退回固定腳下圓
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3586,11 +3592,8 @@
     const by = sy - bob;
     const sty = speciesStyle(p.species);
 
-    // 腳下陰影（固定在地面，賣出彈跳的踏地感）
-    ctx.beginPath();
-    ctx.ellipse(sx, sy + 12, 11, 4, 0, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.fill();
+    // 腳下陰影（固定在地面，賣出彈跳的踏地感）——日影晷（201）：隨太陽/月亮方位偏移、晨昏拉長
+    drawGroundShadow(sx, sy + 12, 11, 4, 0.22);
 
     // 種族光環：在陰影上方、角色本體下方，讓各族玩家一眼分辨。
     // 自己不畫（自己已有金色名牌 + 鏡頭跟隨，夠清晰）。
@@ -3766,6 +3769,17 @@
       }
     }
     _prevRenderNow = renderNow;
+
+    // 日影晷（ROADMAP 201）：每幀於繪製前算好本幀地面投影參數，供玩家/敵人/建築共用。
+    // 自帶 light 趨勢追蹤（弱機也更新，不隨 _parallaxEnabled 早退），daynight 缺值時退回固定圓。
+    if (daynight) {
+      _shadowTrend = skyLightTrend(_shadowTrend, _shadowLightPrev, daynight.light);
+      _shadowLightPrev = daynight.light;
+      _shadowCast = computeShadowCast(daynight.light, _shadowTrend >= 0);
+    } else {
+      _shadowCast = null;
+      _shadowLightPrev = -1;
+    }
     const SNAP_MS = 75;
     for (const p of players.values()) {
       let nrx, nry;
@@ -6858,11 +6872,8 @@
   // 城鎮記憶石（ROADMAP 157）：直立石碑，刻著藍色乙太符文，記錄城鎮歷史。
   function _drawMemoryStone(sx, sy, sign) {
     const wb = sy - 10;
-    // 地面陰影
-    ctx.fillStyle = "rgba(0,0,0,0.18)";
-    ctx.beginPath();
-    ctx.ellipse(sx, wb + 6, 22, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // 地面陰影——日影晷（201）：不動的石碑，影子隨太陽/月亮整日繞、晨昏長長拉出
+    drawGroundShadow(sx, wb + 6, 22, 6, 0.18);
     // 底座石基
     ctx.fillStyle = "#3a3040";
     ctx.beginPath();
@@ -6922,11 +6933,8 @@
     const BW = 84;
     const wb = sy - 10;
 
-    // ── 地面陰影 ──
-    ctx.fillStyle = "rgba(0,0,0,0.20)";
-    ctx.beginPath();
-    ctx.ellipse(sx, wb + 8, BW * 0.55, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // ── 地面陰影 ──日影晷（201）：高塔投影隨太陽/月亮方位偏移、晨昏拉長
+    drawGroundShadow(sx, wb + 8, BW * 0.55, 8, 0.20);
 
     if (p.status === "completed") {
       // 已完工：畫蒸汽天文台（圓形結構 + 銅頂 + 望遠鏡）
@@ -7022,11 +7030,8 @@
 
     const C = _BLDG_COLORS[type] || { wall: "#607080", roof: "#404050", trim: "#a0b0b8", win: "#102030" };
 
-    // ── 地面陰影 ──
-    ctx.fillStyle = "rgba(0,0,0,0.20)";
-    ctx.beginPath();
-    ctx.ellipse(sx, wb + 8, BW * 0.5, 7, 0, 0, Math.PI * 2);
-    ctx.fill();
+    // ── 地面陰影 ──日影晷（201）：建築投影隨太陽/月亮方位偏移、晨昏拉長
+    drawGroundShadow(sx, wb + 8, BW * 0.5, 7, 0.20);
 
     // ── 主牆體 ──
     ctx.fillStyle = C.wall;
@@ -9086,6 +9091,58 @@
     ctx.restore();
   }
 
+  // ── 日影晷（ROADMAP 201）──────────────────────────────────────────────────
+  // 天上有了會升落的太陽／月亮（200）後，地面萬物第一次有「會隨光源轉向、晨昏拉長」的影子：
+  // 清晨太陽在東（畫面左），影子長長朝西（右）拉；正午高懸，影子縮回腳下；黃昏太陽西沉，
+  // 影子又朝東（左）拉長；入夜換月光主導，影子變淡、偏冷月白。時間第一次「投影」在地面上。
+  // 純前端視覺、零後端：投影方向／長度全由既有 daynight.light＋天弧純函式（skyArcProgress/
+  // skyArcPoint，與 200 同口徑）推得，不必動後端加時間欄位。與既有元素區隔：這是「地面實體
+  // 腳下的投影」（玩家／敵人／建築共用），不是天空主體（200）也不是地表反光（195~199）。
+  // 效能優先：投影只是把既有固定橢圓換成偏移＋拉長的橢圓，零額外繪製開銷，弱機也照畫
+  //（陰影緩慢轉向、非閃爍，無 reduceMotion 顧慮）。
+  const SHADOW_LEN_GAIN   = 2.2;   // 影子最長時相對基準的額外倍率（晨昏低垂時 lenMult≈1+此值）
+  const SHADOW_DAY_MULT   = 1.15;  // 白天太陽影相對基準 alpha 的倍率（略深、方向清楚）
+  const SHADOW_NIGHT_MULT = 0.5;   // 深夜月光影相對基準 alpha 的倍率（淡）
+
+  // 純函式：依當下 light／趨勢推「地面投影」參數。回傳 { dx, lenMult, alphaMult, tint }。
+  //   dx∈[-1,1]：影子水平方向（光源在東/左→影朝西/右為正；正午→0）。
+  //   lenMult>=1：影子沿光向的拉長倍率（光源越低越長，正午≈1）。
+  //   alphaMult：相對基準 alpha 的倍率（白天深、夜裡淡）。tint："r,g,b"（白天中性黑、夜偏冷藍黑）。
+  // 太陽（漸亮側）與月亮（漸暗側）以 sunVisibility 連續加權混合，交班時方向/長度平滑不跳。
+  // 無 DOM、可測。
+  function computeShadowCast(light, rising) {
+    const sunVis  = sunVisibility(light);            // 1=純太陽主導、0=純月亮主導
+    const sunPt   = skyArcPoint(skyArcProgress(light, rising));        // 太陽弧上落點
+    const moonPt  = skyArcPoint(skyArcProgress(1 - light, !rising));   // 月亮弧上落點（方向相反）
+    const nx   = sunPt.nx   * sunVis + moonPt.nx   * (1 - sunVis);     // 加權水平位置
+    const elev = sunPt.elev * sunVis + moonPt.elev * (1 - sunVis);     // 加權仰角
+    const dx = (0.5 - nx) * 2;                       // 光源偏左(nx<0.5)→影朝右(dx>0)
+    const lenMult = 1 + (1 - Math.max(0, Math.min(1, elev))) * SHADOW_LEN_GAIN; // 越低越長
+    const alphaMult = SHADOW_NIGHT_MULT + (SHADOW_DAY_MULT - SHADOW_NIGHT_MULT) * sunVis;
+    const cold = 1 - sunVis;                         // 夜裡偏冷藍黑、白天中性黑
+    const tint = `${Math.round(28 * cold)},${Math.round(38 * cold)},${Math.round(66 * cold)}`;
+    return { dx, lenMult, alphaMult, tint };
+  }
+
+  // 在 (cx,cy) 畫一個地面投影橢圓：基準半徑 baseRx×baseRy、基準不透明度 baseAlpha。
+  // 依本幀 _shadowCast 把橢圓朝光反向偏移＋沿該向拉長＋調色調濃淡；_shadowCast 為 null
+  //（無日夜資訊，如訪客/未載入）時退回原本的固定腳下小圓，行為與升級前一致。
+  function drawGroundShadow(cx, cy, baseRx, baseRy, baseAlpha) {
+    const sc = _shadowCast;
+    ctx.beginPath();
+    if (!sc) {
+      ctx.ellipse(cx, cy, baseRx, baseRy, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,0,0,${baseAlpha})`;
+      ctx.fill();
+      return;
+    }
+    const rx = baseRx * sc.lenMult;          // 沿光向拉長
+    const offX = sc.dx * (rx - baseRx);       // 影根貼腳、整體朝光反向延伸（拉得越長偏越多）
+    ctx.ellipse(cx + offX, cy, rx, baseRy, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${sc.tint},${(baseAlpha * sc.alphaMult).toFixed(3)})`;
+    ctx.fill();
+  }
+
   // ── 白晝飛鳥（ROADMAP 194）────────────────────────────────────────────────
   // 白天偶爾一小群 V 字編隊的鳥剪影緩緩拍翅、橫越上半天邊、飛遠即逝；夜裡或弱機不出。
   // 純前端視覺、零後端：依既有 daynight.light 判白天（與彩虹 191 同口徑），自排下群出現時刻。
@@ -10183,9 +10240,8 @@
         const fadeT = (df.until - fxNow) / ENEMY_DEATH_FADE_MS;
         ctx.save();
         ctx.globalAlpha = fadeT * fadeT; // 二次曲線：快速消失
-        // 死亡後定住，不跳動（用 sy 而非 ey）
-        ctx.fillStyle = "rgba(0,0,0,0.22)";
-        ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+        // 死亡後定住，不跳動（用 sy 而非 ey）；日影晷（201）：投影隨光源方位
+        drawGroundShadow(sx, sy + 13, 12, 4, 0.22);
         if      (e.kind === "scrap_drone")      drawScrapDrone(sx, sy, t, phase);
         else if (e.kind === "ether_wisp")       drawEtherWisp(sx, sy, t, phase);
         else if (e.kind === "flutter_sprite")   drawFlutterSprite(sx, sy, t, phase);
@@ -10214,9 +10270,8 @@
         : 0;
       ctx.save();
       if (e.resting) ctx.globalAlpha = 0.42; // 夜間休息中（ROADMAP 148）
-      // 影子(定在地面、不隨浮動)
-      ctx.fillStyle = "rgba(0,0,0,0.22)";
-      ctx.beginPath(); ctx.ellipse(sx, sy + 13, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+      // 影子(定在地面、不隨浮動)；日影晷（201）：投影隨太陽/月亮方位偏移、晨昏拉長
+      drawGroundShadow(sx, sy + 13, 12, 4, 0.22);
       // 生物造型(走近會動、會追——這層只負責長相)
       if      (e.kind === "scrap_drone")      drawScrapDrone(sx, ey, t, phase);
       else if (e.kind === "ether_wisp")       drawEtherWisp(sx, ey, t, phase);
