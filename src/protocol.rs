@@ -1227,7 +1227,16 @@ pub struct WildlifeView {
     /// ROADMAP 205：是否已被馴養（親近度滿）——前端在頭頂顯示 💛、不再怕玩家。
     #[serde(default)]
     pub tamed: bool,
+    /// ROADMAP 207：相對體型（幼獸 < 1.0、成體 1.0）——前端據此縮放繪製，幼獸畫小一號。
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+    /// ROADMAP 207：是否為尚未長成的幼獸——前端可在頭頂點一抹「新生」微光。
+    #[serde(default)]
+    pub juvenile: bool,
 }
+
+/// WildlifeView.scale 的預設值（成體 1.0）——舊快照無此欄位時不致縮成 0。
+fn default_scale() -> f32 { 1.0 }
 
 /// 快照裡一顆乙太微粒的位置（ROADMAP 142）。
 /// 獵物死亡後在原地生成，玩家靠近可採集乙太。

@@ -8041,12 +8041,29 @@
       const wobble = (isFleeing || isHunting || isGuarding) ? Math.sin(now / 60) * 2 : 0;
       ctx.translate(sx + wobble, sy);
 
+      // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
+      // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
+      const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
+      ctx.save();
+      if (scale !== 1) ctx.scale(scale, scale);
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
         case "small_critter": _drawSmallCritter(isFleeing, now); break;
         case "wild_wolf":     _drawWildWolf(isHunting, now);     break;
         case "wild_fox":      _drawWildFox(isHunting, now);      break;
+      }
+      ctx.restore();
+
+      // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
+      if (w.juvenile) {
+        const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
+        ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("✨", 0, -24);
+        ctx.globalAlpha = 1;
       }
 
       // 名字標籤：守衛狀態橙黃警戒、捕食者橙紅、獵物淡綠；追獵/守衛中閃爍。

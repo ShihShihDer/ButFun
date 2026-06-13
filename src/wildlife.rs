@@ -137,6 +137,42 @@ const HERD_RADIUS: f32 = 280.0;
 /// 刻意取中段：既明顯成群、又保留各自散布，不會擠成一個點。
 const HERD_PULL: f32 = 0.5;
 
+// ─── ROADMAP 207：幼獸誕生（族群繁衍）─────────────────────────────────────────
+// 承接 206（群聚結伴）：當同種獵物成群、且周遭安穩（附近沒有捕食者）一段時間，
+// 群體會孕育出一隻「幼獸」——在群體中心誕生、體型小小的、隨時間慢慢長大成成體。
+// 於是世界的獸群不再是固定 18 隻散點，而會從稀疏慢慢繁衍成興旺的家族（封頂避免暴增）。
+// 純啟發式、零 LLM、零持久化、無 migration、記憶體模式（重啟回到初始族群）。
+// 捕食者不繁衍（維持稀少、孤獨的掠食者氣場），只有獵物會。
+
+/// 構成「可繁衍的一群」所需的同種成年存活個體數（含被選為基準的那隻）。
+const BREED_HERD_MIN: usize = 2;
+/// 判定群聚與安穩的半徑（像素）——同種成年彼此聚在此範圍內、且範圍稍大內無捕食者。
+const BREED_RADIUS: f32 = 240.0;
+/// 捕食者干擾半徑（像素）：群體中心此範圍內有捕食者就停止孕育（緊張的群體不生育）。
+const BREED_DISTURB_RADIUS: f32 = 360.0;
+/// 孕育所需的累計「安穩成群」秒數，達標即誕生一隻幼獸。刻意偏長，讓繁衍是緩慢、難得的成長。
+const BREED_THRESHOLD_SECS: f32 = 90.0;
+/// 幼獸長成成體所需秒數（期間體型由小漸大）。
+const MATURE_DURATION_SECS: f32 = 120.0;
+/// 剛誕生幼獸的相對體型（成體為 1.0）——前端據此把幼獸畫小一號。
+const JUVENILE_MIN_SCALE: f32 = 0.45;
+
+/// 三種會繁衍的獵物（捕食者不列入）。
+const BREEDING_KINDS: [WildlifeKind; 3] =
+    [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
+
+/// 每種獵物在世界中的個體數上限（含存活與待重生者）——封頂避免族群無限暴增、保護效能。
+/// 初始數量：野鳥 6、野鹿 5、小動物 7；各留約 +3 的繁衍成長空間。
+fn species_cap(kind: WildlifeKind) -> usize {
+    match kind {
+        WildlifeKind::WildBird     => 9,
+        WildlifeKind::WildDeer     => 8,
+        WildlifeKind::SmallCritter => 10,
+        // 捕食者不繁衍，給個與初始相同的封頂（永不觸發）。
+        WildlifeKind::WildWolf | WildlifeKind::WildFox => 2,
+    }
+}
+
 // ─── 種類與營養階 ────────────────────────────────────────────────────────────
 
 /// 野生動物種類。
@@ -279,6 +315,12 @@ pub enum WildlifeEvent {
         x: f32,
         y: f32,
     },
+    /// ROADMAP 207：安穩成群的獵物孕育出一隻幼獸——應廣播至全服聊天（低頻、療癒向）。
+    Born {
+        kind: WildlifeKind,
+        x: f32,
+        y: f32,
+    },
 }
 
 // ─── 狀態 ────────────────────────────────────────────────────────────────────
@@ -312,6 +354,9 @@ pub struct Wildlife {
     state: WildlifeState,
     /// ROADMAP 205：個體親近度（0~1）——反覆餵食累積，達 TAME_FAMILIARITY 即馴養。
     familiarity: f32,
+    /// ROADMAP 207：成熟度（0~1）。初始族群皆為成體（1.0）；繁衍誕生的幼獸由 0 起、
+    /// 隨時間長到 1.0。未滿 1.0 即「幼獸」，體型較小（前端據 `scale()` 縮小繪製）。
+    maturity: f32,
 }
 
 impl Wildlife {
@@ -331,7 +376,16 @@ impl Wildlife {
                 rest_timer: rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX),
             },
             familiarity: 0.0,
+            // 初始族群皆為成體。
+            maturity: 1.0,
         }
+    }
+
+    /// ROADMAP 207：誕生一隻幼獸（成熟度由 0 起）。家設在群體中心，讓牠生來就屬於這群。
+    fn new_juvenile(id: u32, kind: WildlifeKind, cx: f32, cy: f32, rng: &mut StdRng) -> Self {
+        let mut w = Wildlife::new(id, kind, cx, cy, rng);
+        w.maturity = 0.0;
+        w
     }
 
     /// ROADMAP 205：此隻動物目前的親近度（0~1）。
@@ -342,6 +396,17 @@ impl Wildlife {
     /// ROADMAP 205：是否已被馴養（親近度達門檻）。
     pub fn is_tamed(&self) -> bool {
         self.familiarity >= TAME_FAMILIARITY
+    }
+
+    /// ROADMAP 207：是否為尚未長成的幼獸。
+    pub fn is_juvenile(&self) -> bool {
+        self.maturity < 1.0
+    }
+
+    /// ROADMAP 207：相對體型（幼獸小、成體 1.0）——供前端縮放繪製。
+    /// 由成熟度線性插值：剛誕生 `JUVENILE_MIN_SCALE`、長成後 1.0。
+    pub fn scale(&self) -> f32 {
+        JUVENILE_MIN_SCALE + (1.0 - JUVENILE_MIN_SCALE) * self.maturity.clamp(0.0, 1.0)
     }
 
     /// 非追獵行為 tick：閒晃 / 休息 / 逃跑 / 返家。
@@ -457,6 +522,10 @@ pub struct WildlifeManager {
     pub colonies: Vec<Colony>,
     /// 每個聚落的廣播冷卻倒數（索引對應 colonies）。
     colony_threat_cooldowns: Vec<f32>,
+    /// ROADMAP 207：下一隻新生個體的 ID（繁衍誕生用，確保全程唯一、不與初始 22 隻衝突）。
+    next_animal_id: u32,
+    /// ROADMAP 207：各獵物物種的「安穩成群」累計秒數；達門檻即誕生一隻幼獸後歸零。
+    breed_progress: std::collections::HashMap<WildlifeKind, f32>,
 }
 
 impl WildlifeManager {
@@ -465,6 +534,7 @@ impl WildlifeManager {
         let animals = spawn_all_wildlife(&mut rng);
         let colonies = build_colonies();
         let n = colonies.len();
+        let next_animal_id = animals.len() as u32;
         Self {
             animals, rng,
             kill_broadcast_cooldown: 0.0,
@@ -472,6 +542,8 @@ impl WildlifeManager {
             orb_counter: 0,
             colonies,
             colony_threat_cooldowns: vec![0.0; n],
+            next_animal_id,
+            breed_progress: std::collections::HashMap::new(),
         }
     }
 
@@ -596,9 +668,15 @@ impl WildlifeManager {
         for a in &mut self.animals {
             if !a.alive {
                 a.respawn_timer -= dt;
-            } else if a.familiarity > 0.0 {
-                // 親近度隨時間緩慢衰減——羈絆需偶爾以餵食維繫，但不易斷。
-                a.familiarity = (a.familiarity - FAMILIARITY_DECAY_PER_SEC * dt).max(0.0);
+            } else {
+                if a.familiarity > 0.0 {
+                    // 親近度隨時間緩慢衰減——羈絆需偶爾以餵食維繫，但不易斷。
+                    a.familiarity = (a.familiarity - FAMILIARITY_DECAY_PER_SEC * dt).max(0.0);
+                }
+                // ROADMAP 207：幼獸隨時間長大，成熟度趨近 1.0（體型隨之變大）。
+                if a.maturity < 1.0 {
+                    a.maturity = (a.maturity + dt / MATURE_DURATION_SECS).min(1.0);
+                }
             }
         }
         let respawn_ready: Vec<usize> = self.animals.iter().enumerate()
@@ -881,6 +959,45 @@ impl WildlifeManager {
             }
         }
 
+        // ── Phase 6: 族群繁衍（ROADMAP 207）────────────────────────────────────
+        // 各獵物物種：若有一群安穩成群的成體（彼此聚在 BREED_RADIUS 內、且群心附近沒有
+        // 捕食者），就持續累積「安穩成群」秒數；達門檻且未達族群上限時，在群體中心誕生
+        // 一隻幼獸。受擾或滿額時進度緩退，群體散開時更快流失——繁衍是難得、需要安穩的成果。
+        for kind in BREEDING_KINDS {
+            let center = breeding_cluster_center(&self.animals, kind, BREED_RADIUS, BREED_HERD_MIN);
+            let total = species_total(&self.animals, kind);
+            let cap = species_cap(kind);
+
+            let mut born_at: Option<(f32, f32)> = None;
+            {
+                let prog = self.breed_progress.entry(kind).or_insert(0.0);
+                match center {
+                    Some((cx, cy)) => {
+                        let disturbed = nearest_in_range(cx, cy, &pred_positions, BREED_DISTURB_RADIUS).is_some();
+                        if !disturbed && total < cap {
+                            *prog += dt;
+                            if *prog >= BREED_THRESHOLD_SECS {
+                                *prog = 0.0;
+                                born_at = Some((cx, cy));
+                            }
+                        } else {
+                            // 群體緊張或已滿額：進度緩退（不立即歸零，保留一點韌性）。
+                            *prog = (*prog - dt).max(0.0);
+                        }
+                    }
+                    // 沒有成群：進度更快流失（散開的個體不繁衍）。
+                    None => *prog = (*prog - dt * 2.0).max(0.0),
+                }
+            }
+
+            if let Some((cx, cy)) = born_at {
+                let id = self.next_animal_id;
+                self.next_animal_id = self.next_animal_id.wrapping_add(1);
+                self.animals.push(Wildlife::new_juvenile(id, kind, cx, cy, &mut self.rng));
+                events.push(WildlifeEvent::Born { kind, x: cx, y: cy });
+            }
+        }
+
         events
     }
 }
@@ -952,6 +1069,49 @@ fn herd_wander_target(hx: f32, hy: f32, anchor: Option<(f32, f32)>, rng: &mut St
         Some((cx, cy)) => (rx + (cx - rx) * HERD_PULL, ry + (cy - ry) * HERD_PULL),
         None => (rx, ry),
     }
+}
+
+// ─── ROADMAP 207：繁衍純函式（可測） ─────────────────────────────────────────
+
+/// 統計某物種在世界中的個體總數（含存活與待重生）——用於封頂判斷。
+/// 計入待重生者，是因為死亡個體稍後會在家附近重生回到族群，
+/// 故「總數」才是穩定的族群規模上限依據（避免靠不斷死亡刷出超額幼獸）。
+fn species_total(animals: &[Wildlife], kind: WildlifeKind) -> usize {
+    animals.iter().filter(|a| a.kind == kind).count()
+}
+
+/// 找出「可繁衍的一群」的中心：在所有存活成體中，找出第一隻其 `radius` 內
+/// （含自身）同種存活成體達 `min_count` 隻者，回傳該群的平均位置；否則 `None`。
+/// 只算成體（幼獸不繁衍），且只看獵物本身的聚集——捕食者干擾在呼叫端另判。
+fn breeding_cluster_center(
+    animals: &[Wildlife],
+    kind: WildlifeKind,
+    radius: f32,
+    min_count: usize,
+) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    let adults: Vec<(f32, f32)> = animals.iter()
+        .filter(|a| a.alive && a.kind == kind && !a.is_juvenile())
+        .map(|a| (a.x, a.y))
+        .collect();
+
+    for &(sx, sy) in &adults {
+        let group: Vec<(f32, f32)> = adults.iter()
+            .copied()
+            .filter(|&(x, y)| {
+                let dx = x - sx;
+                let dy = y - sy;
+                dx * dx + dy * dy <= r2
+            })
+            .collect();
+        if group.len() >= min_count {
+            let n = group.len() as f32;
+            let mx = group.iter().map(|p| p.0).sum::<f32>() / n;
+            let my = group.iter().map(|p| p.1).sum::<f32>() / n;
+            return Some((mx, my));
+        }
+    }
+    None
 }
 
 /// 生成所有野生動物（獵物 + 捕食者）。
@@ -1625,5 +1785,147 @@ mod tests {
         deer.tick_idle(0.1, &threats, WANDER_SPEED, anchor, &mut rng);
         assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
             "威脅在 FLEE_RADIUS 內，群聚不應蓋過逃跑，實際 {:?}", deer.state);
+    }
+
+    // ─── ROADMAP 207：幼獸誕生（族群繁衍）測試 ──────────────────────────────
+
+    /// 測試用：在指定座標放一隻成體（覆蓋 new() 的隨機偏移）。
+    fn adult_at(kind: WildlifeKind, x: f32, y: f32) -> Wildlife {
+        let mut rng = make_rng();
+        let mut w = Wildlife::new(0, kind, x, y, &mut rng);
+        w.x = x; w.y = y; w.maturity = 1.0;
+        w
+    }
+    /// 測試用：在指定座標放一隻幼獸。
+    fn juvenile_at(kind: WildlifeKind, x: f32, y: f32) -> Wildlife {
+        let mut w = adult_at(kind, x, y);
+        w.maturity = 0.0;
+        w
+    }
+
+    #[test]
+    fn juvenile_scale_grows_with_maturity() {
+        let baby = juvenile_at(WildlifeKind::WildBird, 0.0, 0.0);
+        assert!(baby.is_juvenile(), "成熟度 0 應為幼獸");
+        assert!((baby.scale() - JUVENILE_MIN_SCALE).abs() < 1e-4, "剛誕生體型應為 JUVENILE_MIN_SCALE");
+        let adult = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        assert!(!adult.is_juvenile(), "成熟度 1 不應為幼獸");
+        assert!((adult.scale() - 1.0).abs() < 1e-4, "成體體型應為 1.0");
+    }
+
+    #[test]
+    fn species_total_counts_alive_and_dead() {
+        let mut alive = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        alive.id = 1;
+        let mut dead = adult_at(WildlifeKind::WildDeer, 10.0, 0.0);
+        dead.id = 2; dead.alive = false;
+        let bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        let animals = vec![alive, dead, bird];
+        assert_eq!(species_total(&animals, WildlifeKind::WildDeer), 2, "存活+待重生皆計入");
+        assert_eq!(species_total(&animals, WildlifeKind::WildBird), 1);
+    }
+
+    #[test]
+    fn breeding_cluster_center_none_when_scattered() {
+        // 兩隻成體相距遠大於 BREED_RADIUS → 各自落單 → None。
+        let animals = vec![
+            adult_at(WildlifeKind::WildDeer, 0.0, 0.0),
+            adult_at(WildlifeKind::WildDeer, 0.0, BREED_RADIUS + 100.0),
+        ];
+        assert_eq!(breeding_cluster_center(&animals, WildlifeKind::WildDeer, BREED_RADIUS, BREED_HERD_MIN), None);
+    }
+
+    #[test]
+    fn breeding_cluster_center_returns_mean_of_group() {
+        let animals = vec![
+            adult_at(WildlifeKind::WildDeer, 0.0, 0.0),
+            adult_at(WildlifeKind::WildDeer, 40.0, 0.0),
+        ];
+        let c = breeding_cluster_center(&animals, WildlifeKind::WildDeer, BREED_RADIUS, BREED_HERD_MIN)
+            .expect("緊鄰兩成體應構成可繁衍群");
+        assert!((c.0 - 20.0).abs() < 0.01 && c.1.abs() < 0.01, "群心應為兩者平均 (20,0)，實際 {c:?}");
+    }
+
+    #[test]
+    fn breeding_cluster_center_excludes_juveniles() {
+        // 只有一隻成體（另一隻是幼獸）→ 成體不足 BREED_HERD_MIN → 幼獸不繁衍。
+        let animals = vec![
+            adult_at(WildlifeKind::WildDeer, 0.0, 0.0),
+            juvenile_at(WildlifeKind::WildDeer, 30.0, 0.0),
+        ];
+        assert_eq!(breeding_cluster_center(&animals, WildlifeKind::WildDeer, BREED_RADIUS, BREED_HERD_MIN), None,
+            "幼獸不算可繁衍成體");
+    }
+
+    #[test]
+    fn grouped_peaceful_herd_breeds_a_juvenile() {
+        // 兩隻成年野鹿緊鄰、無捕食者、無玩家，進度逼近門檻 → 一個 tick 即誕生一隻幼獸。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        mgr.animals = vec![d1, d2];
+        mgr.next_animal_id = 102;
+        mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
+
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[]);
+
+        assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), 3, "安穩成群應誕生一隻幼鹿");
+        let baby = mgr.animals.last().unwrap();
+        assert_eq!(baby.kind, WildlifeKind::WildDeer);
+        assert!(baby.is_juvenile(), "新生個體應為幼獸");
+    }
+
+    #[test]
+    fn predator_near_blocks_breeding() {
+        // 同樣逼近門檻，但群心附近有捕食者 → 緊張不育，進度回退、不誕生。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        // 狼就在群心旁（BREED_DISTURB_RADIUS 內），但不在 KILL_RADIUS 內。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5120.0, 5000.0); wolf.id = 102;
+        mgr.animals = vec![d1, d2, wolf];
+        mgr.next_animal_id = 103;
+        mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
+
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[]);
+
+        assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), 2, "捕食者在旁不應誕生幼獸");
+    }
+
+    #[test]
+    fn breeding_respects_species_cap() {
+        // 野鹿已達上限 → 即使成群安穩、進度滿，也不再誕生（封頂保護效能）。
+        let mut mgr = WildlifeManager::new();
+        let cap = species_cap(WildlifeKind::WildDeer);
+        let mut herd = Vec::new();
+        for i in 0..cap {
+            let mut d = adult_at(WildlifeKind::WildDeer, 5000.0 + i as f32 * 20.0, 5000.0);
+            d.id = 200 + i as u32;
+            herd.push(d);
+        }
+        mgr.animals = herd;
+        mgr.next_animal_id = 300;
+        mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
+
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[]);
+
+        assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), cap, "達上限後不應再繁衍");
+    }
+
+    #[test]
+    fn juvenile_matures_into_adult_over_time() {
+        // 幼獸在族群中隨時間長大；足夠時間後成熟度達 1.0、不再是幼獸。
+        let mut mgr = WildlifeManager::new();
+        let baby = juvenile_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        mgr.animals = vec![baby];
+        let attitudes = std::collections::HashMap::new();
+        for _ in 0..(MATURE_DURATION_SECS as usize + 5) {
+            mgr.tick(1.0, &[], &attitudes, &[]);
+        }
+        assert!(!mgr.animals[0].is_juvenile(), "足夠時間後幼獸應長成成體");
+        assert!((mgr.animals[0].scale() - 1.0).abs() < 1e-4, "長成後體型應為 1.0");
     }
 }
