@@ -13762,11 +13762,24 @@
     }
   });
 
+  // ROADMAP 181：把欲擺放座標夾在視野內，避免視窗被拖出畫面找不回來。
+  // 純函式（無 DOM／無副作用，方便單獨驗證）：給定欲放左上座標、視窗尺寸、視野尺寸與邊距，
+  // 回傳夾住後的左上座標；視窗比視野還大時退讓到 margin（至少露出標題列可再拖回）。
+  function clampWinPos(x, y, winW, winH, viewW, viewH, margin) {
+    const maxX = Math.max(margin, viewW - winW - margin);
+    const maxY = Math.max(margin, viewH - winH - margin);
+    return {
+      x: Math.min(Math.max(x, margin), maxX),
+      y: Math.min(Math.max(y, margin), maxY),
+    };
+  }
+
   // ---- 星露谷風工具列(dock)+ 可開關視窗 ----
   // 總監定調:左上常駐欄太佔空間。常駐只留精簡狀態(乙太/生命/線上/時段);背包/合成/擴地/操作說明
   // 改成 dock 一排小圖示,點圖示才開對應視窗。規則:同時只開一個;再點同一顆、按 ✕、按 Esc、
   // 點世界任一處都關。視窗內容沿用既有渲染(updateBagHud / updateCraftPanel / updateExpandPanel
   // 寫進 #bagBody / #craftBody / #expandBody),這裡只管「哪個視窗開著」。純前端互動,不碰遊戲規則。
+  // ROADMAP 181：視窗可由標題列拖曳並記住各自擺放位置(RO 風浮動視窗)——見 initDock 末段。
   function initDock() {
     const dock = document.getElementById("hudDock");
     if (!dock) return;
@@ -13790,6 +13803,7 @@
       if (openWin === win) { closeWin(); return; } // 再點同一顆 = 關
       closeWin(false); // 先收掉別的(同時只開一個)
       win.classList.remove("hidden");
+      restoreWinPos(win); // ROADMAP 181：還原玩家上次把這個視窗擺到的位置(沒擺過就維持預設左上)
       btn.setAttribute("aria-expanded", "true");
       openWin = win;
       openBtn = btn;
@@ -14115,6 +14129,92 @@
     for (const x of document.querySelectorAll(".hud-window .win-close")) {
       x.addEventListener("click", () => closeWin());
     }
+
+    // ── ROADMAP 181：HUD 視窗可由標題列拖曳 + 記住各自位置(RO 風浮動視窗) ──
+    // 痛點延續 138：視窗一律開在左上、常擋住正在發生的動作。讓玩家像 RO 一樣把面板拖去順手的
+    // 角落、且下次開還在原處。純前端、零後端/協議改動;pointer 事件統一滑鼠與觸控。
+    const WINPOS_KEY = "butfun_winpos_v1";
+    function loadAllWinPos() {
+      try { return JSON.parse(localStorage.getItem(WINPOS_KEY) || "{}") || {}; } catch { return {}; }
+    }
+    function saveWinPos(id, pos) {
+      if (!id) return;
+      const all = loadAllWinPos();
+      if (pos) all[id] = pos; else delete all[id];
+      try { localStorage.setItem(WINPOS_KEY, JSON.stringify(all)); } catch {}
+    }
+    // 套用一組座標到視窗:夾進視野後改用相對視野的 fixed 定位(脫離左上容器排版)。
+    function applyWinPos(win, x, y) {
+      const c = clampWinPos(x, y, win.offsetWidth, win.offsetHeight, window.innerWidth, window.innerHeight, 6);
+      win.classList.add("win-floated");
+      win.style.left = c.x + "px";
+      win.style.top = c.y + "px";
+      win.style.right = "auto";
+      win.style.margin = "0";
+    }
+    // 還原成預設位置:清掉 inline 定位,落回 #hudWindows 容器的左上槽位。
+    function resetWinPos(win) {
+      win.classList.remove("win-floated");
+      win.style.left = "";
+      win.style.top = "";
+      win.style.right = "";
+      win.style.margin = "";
+    }
+    // 開窗時還原玩家上次擺放的位置;沒存過(或座標壞掉)就維持預設。
+    // 註:此為 function 宣告,會提升到 initDock 頂部,故 openWinFor 雖在前面也呼叫得到。
+    function restoreWinPos(win) {
+      const saved = loadAllWinPos()[win.id];
+      if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) applyWinPos(win, saved.x, saved.y);
+      else resetWinPos(win);
+    }
+    // 把單一視窗的標題列做成拖曳把手。
+    function makeWinDraggable(win) {
+      const head = win.querySelector(".win-head");
+      if (!head) return;
+      let dragging = false, startX = 0, startY = 0, baseX = 0, baseY = 0, moved = false;
+      head.addEventListener("pointerdown", (e) => {
+        if (e.target.closest("button")) return;        // 點到 ✕ 等按鈕:讓它正常點擊,不啟動拖曳
+        if (e.button !== undefined && e.button > 0) return; // 只接受主鍵/觸控,右鍵/中鍵不拖
+        dragging = true; moved = false;
+        const r = win.getBoundingClientRect();
+        baseX = r.left; baseY = r.top;
+        startX = e.clientX; startY = e.clientY;
+        try { head.setPointerCapture(e.pointerId); } catch {}
+        e.preventDefault();
+      });
+      head.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX, dy = e.clientY - startY;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+        applyWinPos(win, baseX + dx, baseY + dy);
+      });
+      function endDrag(e) {
+        if (!dragging) return;
+        dragging = false;
+        try { head.releasePointerCapture(e.pointerId); } catch {}
+        if (moved) {
+          const r = win.getBoundingClientRect();
+          saveWinPos(win.id, { x: Math.round(r.left), y: Math.round(r.top) });
+        }
+      }
+      head.addEventListener("pointerup", endDrag);
+      head.addEventListener("pointercancel", endDrag);
+      // 雙擊標題列 = 還原預設位置(萬一拖到邊角想復位,不必清資料)。
+      head.addEventListener("dblclick", (e) => {
+        if (e.target.closest("button")) return;
+        resetWinPos(win);
+        saveWinPos(win.id, null);
+      });
+    }
+    for (const win of document.querySelectorAll(".hud-window")) makeWinDraggable(win);
+    // 視野尺寸改變(手機旋轉/桌面縮放)時,把開著的浮動視窗重新夾回畫面內,避免被切到看不到標題列。
+    window.addEventListener("resize", () => {
+      for (const win of document.querySelectorAll(".hud-window.win-floated")) {
+        if (win.classList.contains("hidden")) continue;
+        const r = win.getBoundingClientRect();
+        applyWinPos(win, r.left, r.top);
+      }
+    });
     // Esc 關掉開著的視窗(沒開窗時不攔,留給聊天等既有 Esc 行為)。
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && openWin) { e.preventDefault(); closeWin(); }

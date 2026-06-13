@@ -172,7 +172,13 @@
       padding: 8px 12px 10px; width: min(300px, 84vw); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
       max-height: min(66vh, calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
       max-height: min(66dvh, calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); overflow-y: auto; }
-    .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    /* 標題列＝拖曳把手(ROADMAP 181)：游標提示可拖、觸控時不誤觸發捲動/縮放、拖曳中不選字。
+       視窗內文(overflow-y:auto)的捲動不受影響——touch-action:none 只落在這條標題列。 */
+    .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+      cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+    .hud-window .win-head:active { cursor: grabbing; }
+    /* 已被玩家拖曳擺放過的浮動視窗:脫離左上容器槽位、改用相對視野的 fixed 定位(座標由 JS 寫 inline)。 */
+    .hud-window.win-floated { position: fixed; }
     .hud-window .win-title { color: var(--brass); font-weight: 600; flex: 1; }
     .hud-window .win-close { font: inherit; cursor: pointer; width: 28px; height: 28px; line-height: 1;
       border-radius: 7px; border: 1px solid #3a4250; background: #161b22; color: var(--ink); padding: 0; flex: none; }
