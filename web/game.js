@@ -3812,6 +3812,7 @@
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
+    safeDraw("rockGlint", () => drawRockGlint(camX, camY, renderNow)); // 岩石礦脈微光（199），岩面原地一閃的冷白礦光、貼地表之上
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -9399,6 +9400,96 @@
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(sx, sy, r, 0, Math.PI * 2); // 圓點柔光斑（與波光的橢圓反光區隔，像沙粒一點點反光）
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 岩石礦脈微光（ROADMAP 199）─────────────────────────────────────────────
+  // 純前端視覺、零後端：在可見岩石（rocky）tile 上撒一層原地一閃的冷白礦光，
+  // 像陽光照到岩面嵌的石英／雲母結晶刻面、忽然反光一下。承接 195~198 把五大生態
+  // 地表（水/草/森林/沙/岩）的「會動」補齊——岩石是最後一塊靜止的地表。
+  // 與既有元素的定位區隔（避免重疊）：
+  //   流沙微光（198）＝沙漠 tile 順風「橫向飄移＋明滅」的暖金光點（會移動）；
+  //   岩石礦脈微光（199）＝岩石 tile「原地」一閃的冷白礦光（不飄移，因岩石不流動），
+  //     且色更冷（石英銀白 vs 沙的暖金）、閃更銳更短（結晶刻面瞬閃 vs 沙粒柔反光）、更疏；
+  //   水面波光（195）＝水域內部原地明滅的反光；草浪（197）＝草地橫掃亮帶；
+  //   生態氛圍粒子（189/190）＝各生態地面『飄浮離地』的生命氣息——層次、動法刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；每格至多一點、暗於門檻即跳過。
+  const ROCK_GLINT_MAX_ALPHA = 0.40;  // 單顆礦光最大不透明度（半透明、不蓋掉岩色）
+  const ROCK_GLINT_PERIOD_MS = 3400;  // 明滅週期基準（比沙漫，礦光偶爾一閃；每格再以 hash 微調，避免整片同步）
+  const ROCK_GLINT_DENSITY   = 0.74;  // sceneryHash 高於此值的岩格才有礦光點（比沙更疏；岩面礦脈零星）
+  const ROCK_GLINT_MIN       = 0.10;  // 明滅亮度低於此即不畫（多數時間岩面是暗的，省繪製）
+  const ROCK_GLINT_DOT_R     = 2.6;   // 礦光柔光斑基準半徑（邏輯像素，再以 hash 微縮放；比沙小，像結晶刻面）
+  const ROCK_GLINT_SHARP     = 4;     // 明滅銳度：raw^SHARP 讓亮峰更尖、暗區更長（結晶刻面瞬閃感，比沙更銳）
+
+  // 純函式：礦光明滅亮度 [0,1]。以 periodMs 為週期、phaseOff 為初相，^sharp 讓亮峰尖、暗區長
+  // （像結晶刻面瞬閃，而非整片同亮）。periodMs<=0 視為不閃（回 0）；sharp<=0 視為線性。無 DOM、可測。
+  function rockGlintFlash(now, periodMs, phaseOff, sharp) {
+    if (!(periodMs > 0)) return 0;
+    const raw = (Math.sin((now / periodMs) * Math.PI * 2 + (phaseOff || 0)) + 1) / 2; // [0,1]
+    return sharp > 0 ? Math.pow(raw, sharp) : raw;
+  }
+
+  // 純函式：依日夜光照/相位給礦脈微光色溫 {r,g,b}。破曉/黃昏染暖金（霞光打在岩面）、
+  // 白天冷白銀光（石英/雲母刻面反光）、夜裡映清冷月白（岩面映月微光）。無 DOM、可測。
+  function rockGlintTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 222, b: 170 }; // 晨昏：暖金霞光
+    if (light >= 0.5) return { r: 226, g: 234, b: 246 };                          // 白天：冷白銀光（石英反光）
+    return { r: 196, g: 206, b: 226 };                                           // 夜/暗：清冷月白
+  }
+
+  // 純函式：礦脈微光整體強度 [0,1]，隨日照線性。白天最強（陽光照岩），夜裡仍留微光（岩面映月）。無 DOM、可測。
+  function rockGlintStrength(light) {
+    const L = Math.max(0, Math.min(1, light));
+    return 0.28 + 0.72 * L;
+  }
+
+  // 每幀在可見岩石 tile 上繪製原地明滅的冷白礦光。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawRockGlint(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = rockGlintTint(light, phase);
+    const strength = rockGlintStrength(light);
+    if (strength <= 0) return;
+
+    // 與 drawGround／drawSandGlint 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    const baseColor = `${tint.r},${tint.g},${tint.b}`;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        // 只在岩石 tile 上撒礦光
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "rocky") continue;
+        // 此格是否有礦光點（疏密）＋格內位置／明滅相位／週期，全由確定性 hash 決定（不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 17 + 5, ty * 11 + 2);
+        if (h0 < ROCK_GLINT_DENSITY) continue;
+        const h1 = sceneryHash(tx * 7 + 3, ty * 13 + 8);
+        const h2 = sceneryHash(tx * 5 + 6, ty * 19 + 4);
+
+        const period = ROCK_GLINT_PERIOD_MS * (0.7 + h2 * 0.6); // 每格週期不同，避免整片同步
+        const phaseOff = h0 * Math.PI * 2;
+        const bright = rockGlintFlash(now, period, phaseOff, ROCK_GLINT_SHARP);
+        if (bright < ROCK_GLINT_MIN) continue; // 此刻暗，不畫，省繪製
+
+        const sx = tx * TS - camX + h1 * TS;   // 格內位置固定（原地不飄移，岩石不流動）
+        const sy = ty * TS - camY + h2 * TS;
+        const r = ROCK_GLINT_DOT_R * (0.6 + h1 * 0.8);
+        const alpha = bright * strength * ROCK_GLINT_MAX_ALPHA;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        grad.addColorStop(0, `rgba(${baseColor},${alpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${baseColor},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2); // 小圓點柔光斑（像岩面結晶刻面一閃）
         ctx.fill();
       }
     }
