@@ -242,6 +242,13 @@ const scenarios = [
   variant("草原微風(破曉染金)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 草浪夜映月分支：同一片草原、入夜冷月白，跑 windTint 的夜/暗路徑與夜間 strength（風不歇、仍留微光）。
   variant("草原微風(夜映月)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 沙漠流沙微光（198）：把玩家移到確定成片沙漠的座標（(2800,-1700) 視野內幾乎滿是 sand 格），
+  // 讓相機視野滿是沙地，實跑流沙微光「撒點→順風飄移行進包絡→明滅→繪製柔光斑」內層路徑（白天暖金沙光）。
+  variant("沙漠流沙(白天)", (s) => { s.players[0].x = 2800; s.players[0].y = -1700; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 流沙微光晨昏染金分支：同一片沙漠、破曉色溫，跑 sandGlintTint 的 dawn/dusk 金橘路徑。
+  variant("沙漠流沙(破曉染金)", (s) => { s.players[0].x = 2800; s.players[0].y = -1700; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 流沙微光夜映月分支：同一片沙漠、入夜清冷月白，跑 sandGlintTint 的夜/暗路徑與夜間 strength（沙面映月微光）。
+  variant("沙漠流沙(夜映月)", (s) => { s.players[0].x = 2800; s.players[0].y = -1700; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
