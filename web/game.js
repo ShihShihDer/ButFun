@@ -58,6 +58,17 @@
 
   // ---- 狀態 ----
   let ws = null;
+  // 安全送出：斷線／連線未就緒時靜默忽略，避免 onclick 直接 ws.send 在斷線時拋例外。
+  // obj 可為已序列化字串或物件。回傳是否成功送出。
+  function safeSend(obj) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(typeof obj === "string" ? obj : JSON.stringify(obj));
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
   let myId = null;
   let world = { width: 2000, height: 2000 };
   let myName = "";
@@ -2654,42 +2665,42 @@
         // 武裝路（30 乙太）或直購路（300 乙太）任一滿足即可出發。
         const canGoVerdant = (allCollected && myEther >= TRAVEL_COST) || myEther >= VERDANT_DIRECT_COST;
         if (canGoVerdant) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "verdant" }));
+          safeSend({ type: "travel_to_planet", planet: "verdant" });
           overlay.remove();
         }
         return;
       }
       if (btnC && btnC.contains(e.target)) {
         if (myEther >= CRIMSON_TRAVEL_COST) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "crimson" }));
+          safeSend({ type: "travel_to_planet", planet: "crimson" });
           overlay.remove();
         }
         return;
       }
       if (btnVoid && btnVoid.contains(e.target)) {
         if (myEther >= VOID_TRAVEL_COST) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "void" }));
+          safeSend({ type: "travel_to_planet", planet: "void" });
           overlay.remove();
         }
         return;
       }
       if (btnAether && btnAether.contains(e.target)) {
         if (myEther >= AETHER_TRAVEL_COST) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "aether" }));
+          safeSend({ type: "travel_to_planet", planet: "aether" });
           overlay.remove();
         }
         return;
       }
       if (btnOrigin && btnOrigin.contains(e.target)) {
         if (myEther >= ORIGIN_TRAVEL_COST) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "origin" }));
+          safeSend({ type: "travel_to_planet", planet: "origin" });
           overlay.remove();
         }
         return;
       }
       if (btnH && btnH.contains(e.target)) {
         if (myEther >= TRAVEL_COST) {
-          ws.send(JSON.stringify({ type: "travel_to_planet", planet: "home" }));
+          safeSend({ type: "travel_to_planet", planet: "home" });
           overlay.remove();
         }
         return;
@@ -11062,7 +11073,7 @@
       releaseBtn.style.cssText = "padding:6px 10px;border:1px solid #c05050;border-radius:6px;background:transparent;color:#e07070;cursor:pointer;font-size:.8rem;";
       releaseBtn.textContent = "釋放";
       releaseBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "release_pet" }));
+        safeSend({ type: "release_pet" });
       });
       card.appendChild(releaseBtn);
       body.appendChild(card);
@@ -11079,7 +11090,7 @@
     tameBtn.textContent = "🐾 馴化最近的低血量怪物";
     tameBtn.title = "靠近血量低於 25% 的怪物後點此馴化（消耗乙太）";
     tameBtn.addEventListener("click", () => {
-      ws.send(JSON.stringify({ type: "tame_pet" }));
+      safeSend({ type: "tame_pet" });
     });
     body.appendChild(tameBtn);
 
@@ -11127,7 +11138,7 @@
     if (nearWater && cooldown <= 0) {
       castBtn.textContent = "🎣 垂釣（站在水邊）";
       castBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "fish" }));
+        safeSend({ type: "fish" });
       });
     } else if (cooldown > 0) {
       castBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
@@ -11387,7 +11398,7 @@
     } else {
       gatherBtn.textContent = `✨ 採集星晶（剩 ${remaining} 個）`;
       gatherBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "GatherStarCrystal" }));
+        safeSend({ type: "GatherStarCrystal" });
       });
     }
     body.appendChild(gatherBtn);
@@ -11483,7 +11494,7 @@
         deliverBtn.textContent = `✅ 交付包裹（得 ${cargo.reward} 乙太）`;
         deliverBtn.style.cssText += "border:1px solid #40c040;background:transparent;color:#80ff80;cursor:pointer;";
         deliverBtn.addEventListener("click", () => {
-          ws.send(JSON.stringify({ type: "DeliverTrade" }));
+          safeSend({ type: "DeliverTrade" });
         });
       } else if (isAtDest) {
         deliverBtn.textContent = `靠近 ${PLANET_NAMES[cargo.dest] || cargo.dest} 商人才能交付`;
@@ -11501,7 +11512,7 @@
       cancelBtn.textContent = "🗑️ 取消任務（無懲罰）";
       cancelBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       cancelBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "CancelTrade" }));
+        safeSend({ type: "CancelTrade" });
       });
       body.appendChild(cancelBtn);
       return;
@@ -11613,7 +11624,7 @@
         fulfillBtn.textContent = `✅ 交付訂單（得 ${active.reward} 乙太）`;
         fulfillBtn.style.cssText += "border:1px solid #40c040;background:transparent;color:#80ff80;cursor:pointer;";
         fulfillBtn.addEventListener("click", () => {
-          ws.send(JSON.stringify({ type: "FulfillWorkshopOrder" }));
+          safeSend({ type: "FulfillWorkshopOrder" });
         });
       } else if (!nearWorkshop) {
         fulfillBtn.textContent = "靠近工坊 NPC 才能交付";
@@ -11631,7 +11642,7 @@
       abandonBtn.textContent = "🗑️ 放棄訂單（無懲罰）";
       abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       abandonBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "AbandonWorkshopOrder" }));
+        safeSend({ type: "AbandonWorkshopOrder" });
       });
       body.appendChild(abandonBtn);
       return;
@@ -11742,7 +11753,7 @@
       abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
       abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       abandonBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "AbandonBounty" }));
+        safeSend({ type: "AbandonBounty" });
       });
       body.appendChild(abandonBtn);
 
@@ -11850,7 +11861,7 @@
       surveyBtn.textContent = "📍 採樣（在目標生態域且足夠遠時可用）";
       surveyBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #208040;border-radius:8px;background:transparent;color:#80e080;cursor:pointer;font-size:.85rem;margin-bottom:6px;";
       surveyBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "SurveyExpedition" }));
+        safeSend({ type: "SurveyExpedition" });
       });
       body.appendChild(surveyBtn);
 
@@ -11859,7 +11870,7 @@
       abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
       abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       abandonBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "AbandonExpedition" }));
+        safeSend({ type: "AbandonExpedition" });
       });
       body.appendChild(abandonBtn);
 
@@ -11983,7 +11994,7 @@
       abandonBtn.textContent = "🗑️ 放棄任務（無懲罰）";
       abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       abandonBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "abandon_procurement" }));
+        safeSend({ type: "abandon_procurement" });
       });
       body.appendChild(abandonBtn);
 
@@ -12118,7 +12129,7 @@
       abandonBtn.textContent = "🗑️ 放棄委託（無懲罰）";
       abandonBtn.style.cssText = "width:100%;padding:6px 0;border:1px solid #663333;border-radius:8px;background:transparent;color:#ff8080;cursor:pointer;font-size:.85rem;";
       abandonBtn.addEventListener("click", () => {
-        ws.send(JSON.stringify({ type: "abandon_fair_order" }));
+        safeSend({ type: "abandon_fair_order" });
       });
       body.appendChild(abandonBtn);
 

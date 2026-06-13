@@ -1064,14 +1064,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 Ok(ClientMsg::PostListing { item, qty, price_per }) => {
                     // 掛單：已登入 + 背包夠量才執行。扣背包→建掛單，原子操作（同一把 players 鎖）。
+                    // 防外掛：price_per/qty 須 >0，且單價封頂（防超大數溢出與洗錢式天價掛單）。
+                    const MAX_PRICE_PER: u32 = 1_000_000;
                     if let Some(uid) = authed_uid {
                         let pos = app.players.read().unwrap().get(&uid).map(|p| (p.x, p.y, p.name.clone()));
                         if let Some((px, py, name)) = pos {
-                            let ok = {
+                            let valid = qty > 0 && price_per > 0 && price_per <= MAX_PRICE_PER;
+                            let ok = valid && {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&uid) {
-                                    // qty=0 或量不足都拒絕
-                                    qty > 0 && p.inventory.take(item, qty)
+                                    // 量不足拒絕
+                                    p.inventory.take(item, qty)
                                 } else { false }
                             };
                             if ok {
@@ -1209,13 +1212,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 查基準收購價（確認物品在清單內）
                                 if let Some(base_price) = buy_list.iter().find(|e| e.item == item).map(|e| e.price_per) {
                                     // ROADMAP 102：單筆內批量漸降價。
-                                    // 先讀取金庫餘額，再以批量漸降價算出最大可成交量與總成本。
-                                    // 不再以「固定單價 × 數量」計算，避免批量倒貨套利。
+                                    // 防 TOCTOU（公測前外掛硬化）：金庫「讀餘額→算可成交量→扣帳」三步驟
+                                    // 必須在同一把 npc_treasury 寫鎖的臨界區內原子完成，否則併發賣貨
+                                    // 會各自以同一份過時餘額算出成本、雙雙扣帳超抽金庫。
+                                    // 鎖序：此處只持 npc_treasury 寫鎖（不與 players 重疊），扣完即放，再鎖 players。
                                     let now_secs = unix_secs();
-                                    let treasury_balance = app.npc_treasury.read().unwrap()
-                                        .balance(merchant_name);
-                                    let (actual_qty, bulk_cost, treasury_notice) = app.dynamic_prices.read().unwrap()
-                                        .find_bulk_affordable(item, base_price, qty, treasury_balance, now_secs);
+                                    let (actual_qty, bulk_cost, treasury_notice) = {
+                                        let mut treasury = app.npc_treasury.write().unwrap();
+                                        let treasury_balance = treasury.balance(merchant_name);
+                                        let (aq, cost, notice) = app.dynamic_prices.read().unwrap()
+                                            .find_bulk_affordable(item, base_price, qty, treasury_balance, now_secs);
+                                        // 同一臨界區內立即扣帳（reserve），避免 check 後放鎖再扣的競態。
+                                        if cost > 0 {
+                                            treasury.deduct(merchant_name, cost);
+                                        }
+                                        (aq, cost, notice)
+                                    };
 
                                     if actual_qty == 0 {
                                         // 金庫清空，婉拒收購，私訊玩家
@@ -1298,9 +1310,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             }
                                         }; // players write lock 在此釋放
 
+                                        if !did_sell {
+                                            // 背包扣除失敗（理論上 qty 已驗證，極端競態才會發生）：
+                                            // 把先前原子扣下的金庫餘額退回，避免金庫白白蒸發。
+                                            if bulk_cost > 0 {
+                                                app.npc_treasury.write().unwrap()
+                                                    .refund_amount(merchant_name, bulk_cost);
+                                            }
+                                        }
                                         if did_sell {
-                                            // 金庫扣帳（ROADMAP 100/102）：成交後才扣；batch_cost 已含漸降價折扣。
-                                            app.npc_treasury.write().unwrap().deduct(merchant_name, bulk_cost);
+                                            // 金庫已於上方臨界區原子扣帳，此處不再重複扣。
 
                                             // 通知玩家部分收購（ROADMAP 100）。
                                             if treasury_notice {
@@ -2043,29 +2062,32 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 旅行商人限時委託：擊殺事件（ROADMAP 136）。
-                    if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
-                        let quest_result = app.wandering_merchant.write().unwrap().on_kill(kill_kind);
-                        if let Some((qid, qname, ether_reward, reward_item, reward_qty)) = quest_result {
-                            let pname = {
-                                let mut players = app.players.write().unwrap();
-                                if let Some(p) = players.get_mut(&uid) {
-                                    p.ether = p.ether.saturating_add(ether_reward);
-                                    p.add_item_overflow(reward_item, reward_qty);
-                                    tracing::info!(
-                                        player = %p.name, quest_id = qid, qname, ether_reward,
-                                        ?reward_item, reward_qty, "完成旅行商人委託"
-                                    );
-                                    p.name.clone()
-                                } else { String::new() }
-                            };
-                            if !pname.is_empty() {
-                                let item_name = crate::npc_deal::item_display_zh(reward_item);
-                                // send() Future 沒 await=從未送出;包 ServerMsg::Chat JSON 才會被客戶端解析。
-                                let note = ServerMsg::Chat { from: "系統".into(), text: format!(
-                                    "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
-                                    qname, ether_reward, item_name, reward_qty
-                                ) };
-                                if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
+                    // 安全區遠程擊殺不結算委託，防止城牆龜縮刷委託（與懸賞/社群/每日一致）。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_)))) = (authed_uid, result) {
+                            let quest_result = app.wandering_merchant.write().unwrap().on_kill(kill_kind);
+                            if let Some((qid, qname, ether_reward, reward_item, reward_qty)) = quest_result {
+                                let pname = {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&uid) {
+                                        p.ether = p.ether.saturating_add(ether_reward);
+                                        p.add_item_overflow(reward_item, reward_qty);
+                                        tracing::info!(
+                                            player = %p.name, quest_id = qid, qname, ether_reward,
+                                            ?reward_item, reward_qty, "完成旅行商人委託"
+                                        );
+                                        p.name.clone()
+                                    } else { String::new() }
+                                };
+                                if !pname.is_empty() {
+                                    let item_name = crate::npc_deal::item_display_zh(reward_item);
+                                    // send() Future 沒 await=從未送出;包 ServerMsg::Chat JSON 才會被客戶端解析。
+                                    let note = ServerMsg::Chat { from: "系統".into(), text: format!(
+                                        "📋 委託「{}」完成！獲得 {} 乙太 + {}×{}！",
+                                        qname, ether_reward, item_name, reward_qty
+                                    ) };
+                                    if let Ok(j) = serde_json::to_string(&note) { let _ = tx_direct.try_send(j); }
+                                }
                             }
                         }
                     }
@@ -3100,7 +3122,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::AttackAlpha { alpha_id }) => {
                     use crate::monster_colony::ALPHA_ATTACK_REACH;
                     use crate::inventory::ItemKind;
-                    let (px, py, is_downed, power) = {
+                    // 攻擊冷卻閘（防外掛洪水秒殺世界頭目）：比照一般 Attack handler。
+                    const ATTACK_COOLDOWN_SECS: f32 = 0.6;
+                    let (px, py, is_downed, cooldown, power) = {
                         let players = app.players.read().unwrap();
                         let p = players.get(&id);
                         let power = p.map(|p| {
@@ -3113,10 +3137,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.map(|p| p.x).unwrap_or(0.0),
                             p.map(|p| p.y).unwrap_or(0.0),
                             p.map(|p| p.vitals.is_downed()).unwrap_or(true),
+                            p.map(|p| p.attack_cooldown).unwrap_or(0.0),
                             power,
                         )
                     };
-                    if !is_downed {
+                    if !is_downed && cooldown <= 0.0 {
+                        // 命中與否都設冷卻，防止洪水攻擊。
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
+                        }
                         let kill_result = app.monster_colonies.write().unwrap()
                             .attack_alpha(alpha_id, px, py, power, ALPHA_ATTACK_REACH);
                         if let Some(result) = kill_result {
@@ -3184,7 +3213,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::AttackAncientAlpha) => {
                     use crate::monster_colony::{ANCIENT_ALPHA_ATTACK_REACH, ANCIENT_ALPHA_KILLER_ETHER, ANCIENT_ALPHA_GLOBAL_ETHER};
                     use crate::inventory::ItemKind;
-                    let (px, py, is_downed, power) = {
+                    // 攻擊冷卻閘（防外掛洪水秒殺傳說古 Alpha）：比照一般 Attack handler。
+                    const ATTACK_COOLDOWN_SECS: f32 = 0.6;
+                    let (px, py, is_downed, cooldown, power) = {
                         let players = app.players.read().unwrap();
                         let p = players.get(&id);
                         let power = p.map(|p| {
@@ -3197,10 +3228,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.map(|p| p.x).unwrap_or(0.0),
                             p.map(|p| p.y).unwrap_or(0.0),
                             p.map(|p| p.vitals.is_downed()).unwrap_or(true),
+                            p.map(|p| p.attack_cooldown).unwrap_or(0.0),
                             power,
                         )
                     };
-                    if !is_downed {
+                    if !is_downed && cooldown <= 0.0 {
+                        // 命中與否都設冷卻，防止洪水攻擊。
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
+                        }
                         let _ = ANCIENT_ALPHA_ATTACK_REACH; // 距離驗證在 attack_ancient_alpha 內
                         let kill_result = app.monster_colonies.write().unwrap()
                             .attack_ancient_alpha(px, py, power);
@@ -3737,7 +3773,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         for (item, qty) in &deductions {
                                             p.inventory.take(*item, *qty);
                                         }
-                                        p.ether += reward;
+                                        p.ether = p.ether.saturating_add(reward);
                                         p.masteries.gain_farmer(xp);
                                         p.farm_fair_active = None;
                                         p.farm_fair_cooldown = crate::farm_fair::FAIR_COOLDOWN_SECS;
@@ -5207,8 +5243,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 // ── 公民投票（ROADMAP 156）────────────────────────────────────────────
                 Ok(ClientMsg::CivicVote { yes }) => {
-                    // 無需登入也能投票（訪客也是城鎮成員）。
-                    let player_id = id.to_string();
+                    // 必須已登入才能投票。訪客 id 每次連線都換新 Uuid，重連即可重複灌票，
+                    // 故僅登入玩家可投，並以 uid 為去重鍵（與 ConfirmDeal「訪客不參與」一致）。
+                    let uid = match authed_uid {
+                        Some(u) => u,
+                        None => {
+                            if let Ok(j) = serde_json::to_string(&crate::protocol::ServerMsg::Chat {
+                                from: "城鎮".into(),
+                                text: "🗳️ 登入後才能參與城鎮投票喔！".into(),
+                            }) { let _ = tx_direct.try_send(j); }
+                            continue;
+                        }
+                    };
+                    let player_id = uid.to_string();
                     let accepted = app.civic_vote.write().unwrap().cast_vote(&player_id, yes);
                     if accepted {
                         let vote_label = if yes { "✅ 讚成" } else { "❌ 反對" };
