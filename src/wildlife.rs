@@ -473,6 +473,34 @@ const TRACK_REACH: f32 = 8.0;
 const TRACK_DURATION_MIN: f32 = 2.0;
 const TRACK_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
+// 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
+// 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
+// 原地停留 DIGEST_DURATION 秒）；過去這純粹是孤立的一隻在吃，本切片讓附近閒晃的同群野狼「感知」
+// 到這場獵殺、快步趕來圍著屍體一起分食（頭頂浮 🍖）。錨點就是「正在 Digesting 的野狼自身座標」
+// （已在 animals 列表、已隨快照廣播），不需動用玩家可採的乙太微粒（CarrionOrb）、不新增任何全域
+// 狀態。召喚像 218 群嚎呼應一樣是「逐圈接力」：新加入者本幀不在快照裡，故狼群陸續趕到、逐圈聚攏，
+// 而非同幀整群瞬間到齊。只屬於野狼：野狐獨食、不聚成群（與 218 群嚎＝狼社交、223 撲鼠＝狐獨行
+// 的二分一致，把掠食者一側的「社交 vs 獨行」差異從聲音／狩獵姿態延伸到進食）。純啟發式、零 LLM、
+// 零 tick 簽名改動、零協議改動（新增的 feasting 字串沿用 state_str；獵殺點與計時隨狀態變體攜帶，
+// 無新欄位）、記憶體模式。獵物／威脅永遠優先：圍食只在無獵可追的平靜空檔延續，獵物一旦進入搜尋
+// 範圍，掠食者 phase 在圍食分支之前就已改走狩獵（潛行／追獵），圍食自然讓位。
+/// 一隻閒晃的平靜野狼「感知」到同群獵殺、被召喚前往分食的最大範圍——比群嚎傳得遠（HOWL_HEAR_RADIUS
+/// 460，聲音傳得遠）近些：循的是看得見的同伴在進食、得自己趕過去，故設成中等距離。
+const FEAST_HEAR_RADIUS: f32 = 360.0;
+/// 範圍內有同群野狼正在分食時，一隻平靜野狼本幀被召喚前往的機率——仿 218 的 HOWL_JOIN_PROB，
+/// 「逐幀低機率牽動」讓狼群陸續趕到、逐圈聚攏，而非同幀整群瞬間擁上。
+const FEAST_JOIN_PROB: f32 = 0.06;
+/// 趕往獵殺點的移動速度——快於巡遊（PRED_WANDER_SPEED 52）、慢於全速追獵（HUNT_SPEED 155），
+/// 讀起來像「聞到血腥味急步趕去搶食」的小跑。
+const FEAST_SPEED: f32 = 96.0;
+/// 視為「已圍到屍體旁」的距離——略大於其他 REACH，讓多隻狼圍成一圈分食、而非全擠在同一點。
+const FEAST_REACH: f32 = 24.0;
+/// 一隻加入者圍食的最短／最長時長（秒）——短於獵殺者的 DIGEST_DURATION（25），加入者搶食一陣
+/// 就讓位散去。
+const FEAST_DURATION_MIN: f32 = 6.0;
+const FEAST_DURATION_MAX: f32 = 11.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -700,6 +728,12 @@ enum WildlifeState {
     /// 循味到落點或計時耗盡就抬頭回到巡遊。只有野狼（WildWolf）會嗅蹤——與野狐白晝撲鼠對成
     /// 掠食者一側的物種差異；獵物/威脅出現時一律優先改狩獵/逃命（與 213 潛行 Stalking 互斥）。
     Tracking { tx: f32, ty: f32, track_timer: f32 },
+    /// ROADMAP 230：野狼群聚分食——一隻野狼獵殺後在屍體旁進食（Digesting）時，附近閒晃的同群
+    /// 野狼被「召喚」趨近、圍著一起分食。朝獵殺點 (ax,ay) 快步趕去，圍到屍體旁就原地分食（頭頂
+    /// 浮 🍖）、feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊。獵殺點與計時隨狀態
+    /// 變體攜帶（無新欄位）。只有野狼（社交性掠食者）會群聚分食——野狐獨食（與 218 群嚎呼應＝狼
+    /// 社交、撲鼠＝狐獨行的二分一致）；獵物／威脅一旦出現一律優先改狩獵／逃命，圍食永遠讓位。
+    Feasting { ax: f32, ay: f32, feast_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1167,6 +1201,28 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
+    /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
+    /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
+    /// 掠食者獨來獨往、不沿群聚拉力）。只在 Feasting 狀態下生效（呼叫端已確保此隻為野狼、無獵可追
+    /// 的平靜空檔；獵物/威脅一旦出現，掠食者 phase 在更前面就已改走狩獵/逃命，圍食永遠讓位）。
+    fn tick_feast(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Feasting { ax, ay, feast_timer } = self.state {
+            let remaining = feast_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            // 尚未趕到就朝獵殺點快步移動；已圍到屍體旁（feast_step 回 None）就原地分食、不動。
+            if let Some((nx, ny)) = feast_step(self.x, self.y, ax, ay, dt) {
+                self.x = nx;
+                self.y = ny;
+            }
+            self.state = WildlifeState::Feasting { ax, ay, feast_timer: remaining };
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1190,6 +1246,7 @@ impl Wildlife {
             WildlifeState::Pouncing { .. }  => "pouncing",
             WildlifeState::Sparring { .. }  => "sparring",
             WildlifeState::Tracking { .. }  => "tracking",
+            WildlifeState::Feasting { .. }  => "feasting",
         }
     }
 }
@@ -1436,6 +1493,16 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 230：本幀起始時正在屍體旁進食（Digesting）的野狼座標快照——即「正在進行的獵殺
+        // 分食現場」的錨點，供附近閒晃的同群野狼據此被召喚趨近、圍著一起分食（仿 218 群嚎快照：
+        // 新加入者本幀不在此快照裡，故狼群逐圈聚攏、陸續趕到，而非同幀整群瞬間到齊）。只取野狼：
+        // 野狐獨食、不聚成群（社交 vs 獨行的物種差異）。
+        let feast_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildWolf
+                && matches!(a.state, WildlifeState::Digesting { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -1679,6 +1746,25 @@ impl WildlifeManager {
                                 // 計時倒數，循味到落點或耗盡就抬頭回巡遊）。獵物/威脅在更前面（prey_snap
                                 // 搜尋）已優先處理，故嗅蹤只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_track(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Feasting { .. }) {
+                                // ROADMAP 230：已在圍食中——把這一段分食走完（趕往獵殺點/原地圍食、
+                                // 計時倒數，吃飽或屍體分食殆盡就起身回巡遊）。獵物/威脅在更前面
+                                // （prey_snap 搜尋）已優先處理，故圍食只在無獵可追的平靜空檔延續、
+                                // 永遠讓位給狩獵。
+                                a.tick_feast(dt, rng);
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && nearest_in_range(a.x, a.y, &feast_snap, FEAST_HEAR_RADIUS).is_some()
+                                && rng.gen::<f32>() < FEAST_JOIN_PROB
+                            {
+                                // ROADMAP 230：附近有同群野狼正在屍體旁分食——以 FEAST_JOIN_PROB 被
+                                // 召喚趕去一起分食（頭頂浮 🍖）。仿 218 群嚎呼應「感知到就接力」：逐幀
+                                // 低機率牽動，狼群陸續趕到、逐圈聚攏，而非同幀整群瞬間擁上。只屬於野狼
+                                // （社交性掠食者）：野狐獨食、不聚成群。不分晝夜（獵殺隨時可能發生）。
+                                if let Some((ax, ay)) = nearest_in_range(a.x, a.y, &feast_snap, FEAST_HEAR_RADIUS) {
+                                    let timer = rng.gen_range(FEAST_DURATION_MIN..=FEAST_DURATION_MAX);
+                                    a.state = WildlifeState::Feasting { ax, ay, feast_timer: timer };
+                                }
                             } else if pred_kind == WildlifeKind::WildFox
                                 && !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
@@ -2301,6 +2387,21 @@ fn track_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
     }
     let step = (TRACK_SPEED * dt).min(dist);
     (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 230：野狼群聚分食——朝獵殺點 (ax,ay) 趕去的逐幀位移（純函式，便於測試）。
+/// 回傳 `None`＝已圍到屍體旁（FEAST_REACH 內，呼叫端讓牠原地分食、不再移動）；
+/// 回傳 `Some((nx,ny))`＝仍在趕往屍體，以 FEAST_SPEED 朝獵殺點移動後的新位置（單幀位移受剩餘
+/// 距離上限約束，不會衝過獵殺點）。
+fn feast_step(x: f32, y: f32, ax: f32, ay: f32, dt: f32) -> Option<(f32, f32)> {
+    let dx = ax - x;
+    let dy = ay - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= FEAST_REACH {
+        return None;
+    }
+    let step = (FEAST_SPEED * dt).min(dist);
+    Some((x + dx / dist * step, y + dy / dist * step))
 }
 
 /// ROADMAP 209：驚群炸開——在 `fleeing_snap`（正在逃竄的同種獵物：id/kind/x/y/vx/vy）中，
@@ -5297,5 +5398,124 @@ mod tests {
             matches!(w.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "獵物出現時嗅蹤野狼應改去獵殺，實際 {:?}", w.state,
         );
+    }
+
+    // ─── ROADMAP 230：野狼群聚分食 ────────────────────────────────────────────
+    #[test]
+    fn feast_step_returns_none_when_arrived() {
+        // 已圍到屍體旁（FEAST_REACH 內）：回傳 None，示意呼叫端原地分食、不再移動。
+        let r = feast_step(5000.0, 5000.0, 5000.0 + FEAST_REACH - 5.0, 5000.0, 0.1);
+        assert!(r.is_none(), "圍到屍體旁應回傳 None（原地分食），實際 {:?}", r);
+    }
+
+    #[test]
+    fn feast_step_moves_toward_anchor_when_far() {
+        // 尚未趕到：以 FEAST_SPEED 朝獵殺點快步趕去，回傳更靠近的新位置。
+        let (ax, ay) = (5400.0_f32, 5000.0_f32); // 400px 遠（> FEAST_REACH）
+        let before = (ax - 5000.0).abs();
+        let (nx, ny) = feast_step(5000.0, 5000.0, ax, ay, 0.1).expect("遠距離應回傳趕往的新位置");
+        let after = ((ax - nx).powi(2) + (ay - ny).powi(2)).sqrt();
+        assert!(after < before, "趕往後應更靠近獵殺點（{after} < {before}）");
+        let moved = ((nx - 5000.0).powi(2) + (ny - 5000.0).powi(2)).sqrt();
+        assert!((moved - FEAST_SPEED * 0.1).abs() < 0.01, "單幀位移應約 FEAST_SPEED*dt，實際 {moved}");
+    }
+
+    #[test]
+    fn feast_step_does_not_overshoot_anchor() {
+        // 單幀位移受剩餘距離 clamp——大 dt 也不會衝過獵殺點。
+        let (ax, ay) = (5000.0 + FEAST_REACH + 5.0, 5000.0); // 略超 REACH 才會回趕往位置
+        let (nx, _ny) = feast_step(5000.0, 5000.0, ax, ay, 100.0).expect("仍在 REACH 外應回趕往位置");
+        assert!(nx <= ax + 0.001, "趕往不可衝過獵殺點 x（{nx} <= {ax}）");
+    }
+
+    #[test]
+    fn feast_speed_between_wander_and_hunt() {
+        // 趕食是「聞到血腥味的小跑」——快於巡遊、慢於全速追獵。
+        assert!(FEAST_SPEED > PRED_WANDER_SPEED, "趕食應快於巡遊");
+        assert!(FEAST_SPEED < HUNT_SPEED, "趕食應慢於全速追獵");
+    }
+
+    #[test]
+    fn feasting_state_str_is_feasting() {
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 0.0, 0.0);
+        wolf.state = WildlifeState::Feasting { ax: 10.0, ay: 0.0, feast_timer: 1.0 };
+        assert_eq!(wolf.state_str(), "feasting");
+    }
+
+    #[test]
+    fn tick_feast_walks_toward_anchor_then_holds() {
+        // 圍食進行中：朝獵殺點快步趕去（座標改變）、計時遞減、狀態維持 Feasting。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Feasting { ax: 5400.0, ay: 5000.0, feast_timer: 5.0 };
+        wolf.tick_feast(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Feasting { feast_timer, .. } => {
+                assert!((feast_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("圍食未到期應維持 Feasting，實際 {:?}", wolf.state),
+        }
+        assert!(wolf.x > 5000.0, "圍食中應朝獵殺點移動");
+    }
+
+    #[test]
+    fn tick_feast_holds_position_when_arrived() {
+        // 已圍到屍體旁（FEAST_REACH 內）：原地分食、座標不變。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Feasting { ax: 5005.0, ay: 5000.0, feast_timer: 5.0 }; // 5px < FEAST_REACH 24
+        let (x0, y0) = (wolf.x, wolf.y);
+        wolf.tick_feast(0.1, &mut rng);
+        assert!((wolf.x - x0).abs() < 1e-4 && (wolf.y - y0).abs() < 1e-4, "圍到屍體旁應原地分食不移動");
+    }
+
+    #[test]
+    fn tick_feast_returns_to_wander_when_timer_expires() {
+        // 圍食到期：吃飽起身回巡遊。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Feasting { ax: 5400.0, ay: 5000.0, feast_timer: 0.05 };
+        wolf.tick_feast(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }), "圍食到期應回巡遊，實際 {:?}", wolf.state);
+    }
+
+    #[test]
+    fn nearby_wolves_gather_to_feast_on_a_kill() {
+        // 一隻野狼在屍體旁進食（Digesting）時，附近閒晃的同群野狼會被召喚趕來圍食（Feasting）。
+        let mut mgr = WildlifeManager::new();
+        let mut feeder = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        feeder.id = 1;
+        feeder.state = WildlifeState::Digesting { timer: 100000.0 }; // 一直在屍體旁進食當錨點
+        let mut joiner = adult_at(WildlifeKind::WildWolf, 5000.0 + FEAST_HEAR_RADIUS * 0.5, 5000.0);
+        joiner.id = 2;
+        joiner.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![feeder, joiner]; // 場上只有兩隻狼、沒有任何獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅、無獵物
+            let j = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(j.state, WildlifeState::Feasting { .. }) { joined = true; break; }
+        }
+        assert!(joined, "附近的同群野狼應被召喚趕來圍食");
+    }
+
+    #[test]
+    fn lone_fox_does_not_summon_a_feast() {
+        // 物種專屬：野狐獨食——進食（Digesting）的野狐不該召喚附近的野狼來圍食（feast 錨點只認野狼）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Digesting { timer: 100000.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + FEAST_HEAR_RADIUS * 0.5, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Feasting { .. }), "野狐獨食不該召喚野狼圍食");
+        }
     }
 }
