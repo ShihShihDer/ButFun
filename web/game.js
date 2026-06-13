@@ -8054,8 +8054,9 @@
       }
       const isHunting  = w.state === "hunting";
       const isGuarding = w.state === "guarding";
+      const isDefending = w.state === "defending"; // ROADMAP 214：母獸護幼，朝掠食者衝刺
       const isPredator = w.kind === "wild_wolf" || w.kind === "wild_fox";
-      const wobble = (isFleeing || isHunting || isGuarding) ? Math.sin(now / 60) * 2 : 0;
+      const wobble = (isFleeing || isHunting || isGuarding || isDefending) ? Math.sin(now / 60) * 2 : 0;
       ctx.translate(sx + wobble, sy);
 
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
@@ -8140,6 +8141,19 @@
         ctx.restore();
       }
 
+      // ROADMAP 214：母獸護幼——挺身驅趕掠食者的成體（state==="defending"）頭頂浮一個微微
+      // 抖動的 🛡，讓「母鹿衝出來擋在小鹿與狼之間把狼趕走」一眼看得到（不逃反衝、護住幼獸）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在成體護幼衝刺時才給此狀態）。
+      if (isDefending) {
+        ctx.save();
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(0 + Math.sin(now / 70) * 1.5, -24); // 微微抖動，像憤而護幼的緊繃
+        ctx.fillText("🛡", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
@@ -8158,8 +8172,9 @@
       const labelColor = tier === "hostile" ? "#ff6060"
                        : tier === "friendly" ? "#60ffb0"
                        : isGuarding ? "#ffcc44"
+                       : isDefending ? "#ffd24a" // ROADMAP 214：護幼成體標籤轉警戒黃，顯出挺身護衛的緊張
                        : (isPredator ? "#f0b060" : "#a8f0a8");
-      const bgAlpha = (isHunting || isGuarding) ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
+      const bgAlpha = (isHunting || isGuarding || isDefending) ? (0.55 + 0.2 * Math.sin(now / 180)) : 0.45;
       ctx.fillStyle = "rgba(0,0,0," + bgAlpha.toFixed(2) + ")";
       const tierIcon = tier === "hostile" ? "⚠" : tier === "friendly" ? "♥" : tier === "wary" ? "△" : "";
       const label = (tierIcon ? tierIcon + " " : "") + w.name;
