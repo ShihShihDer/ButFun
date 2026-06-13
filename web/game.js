@@ -8378,6 +8378,13 @@
       const isTracking = w.kind === "wild_wolf" && w.state === "tracking";
       const trackLower = isTracking ? 2 + Math.abs(Math.sin(now / 260)) * 1.5 : 0; // 壓低身子、緩緩一嗅一頓
 
+      // ROADMAP 230：野狼群聚分食——圍食中的野狼（state==="feasting"）低頭埋進屍體一口口撕咬：
+      // 身體明顯壓低（比嗅蹤更低）並隨啃咬節奏一頓一頓地起伏，讀起來是「埋頭分食」。只有野狼會
+      // 群聚分食、野狐獨食（社交 vs 獨行）。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      //（後端只在野狼被同群獵殺召喚、趕到屍體旁圍食時才給）。
+      const isFeasting = w.kind === "wild_wolf" && w.state === "feasting";
+      const feastLower = isFeasting ? 3 + Math.abs(Math.sin(now / 180)) * 2 : 0; // 低頭埋食、一口口啃咬
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
@@ -8387,6 +8394,7 @@
       if (pounceLift) ctx.translate(0, -pounceLift); // ROADMAP 223：撲跳：把狐身抬起成躍弧
       if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
       if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
+      if (feastLower) ctx.translate(0, feastLower); // ROADMAP 230：圍食：把狼身更壓低、低頭埋食
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -8607,6 +8615,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("👃", 9, -20 + trackLower); // 跟著壓低的狼身略往下的一記嗅探
+        ctx.restore();
+      }
+
+      // ROADMAP 230：野狼群聚分食——圍食中的野狼（state==="feasting"）頭頂浮一塊隨啃咬節奏
+      // 一頓一頓的 🍖，讓「一隻狼獵殺後、附近同群野狼趕來圍著屍體一起分食」一眼看得到——這是
+      // 掠食者社交性的標誌一幕（與 218 群嚎呼應同屬「狼是群居社交獸」一線；野狐獨食、不畫）。
+      // 🍖 隨埋頭的狼身一起略往下、與一口口啃咬的節奏同步明滅。純前端、零協議欄位：直接讀伺服器
+      // 廣播的 w.state（後端只在野狼被同群獵殺召喚、趕到屍體旁圍食時才給）。
+      if (w.state === "feasting") {
+        ctx.save();
+        const ft = Math.abs(Math.sin(now / 180)); // 與一口口啃咬同步、緩緩明滅
+        ctx.globalAlpha = 0.5 + 0.45 * ft;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🍖", 9, -20 + feastLower); // 跟著埋頭的狼身略往下的一塊分食
         ctx.restore();
       }
 
