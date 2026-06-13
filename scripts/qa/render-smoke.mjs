@@ -279,6 +279,13 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_bird", x: me0.x + 30, y: me0.y, state: "flying", familiarity: 0, tamed: false };
     }
   }),
+  // 晝日鳥鳴呼應（221）：白天把野鳥設成 chirping → 跑 drawWildlife 的啁啾 🎵 繪製分支（含明滅與上下跳動平移）。
+  variant("野鳥啁啾", (s) => {
+    s.daynight = { phase: "day", light: 0.8, night_danger: false };
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_bird", x: me0.x + 30, y: me0.y, state: "chirping", familiarity: 0, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
