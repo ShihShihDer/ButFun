@@ -7393,44 +7393,66 @@
     // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
     // (me.rx - viewW/2),多加的偏移會把實體畫到偏離半個~數個螢幕(dpr 越高越糟,手機上
     // 動物/聚落圈/屍光全部錯位)。改用全檔標準「world - cam」慣例 + viewW/viewH 剔除。
-    // 各物種對應的填色與邊框色。
+    //
+    // 視覺收斂(玩家回報「大虛線圈又大又多又重疊、很吵、看不出意思」):
+    //   1. 遠的聚落不畫大圈——只在中心畫一個很小的圖示標記+淡名牌,不擋視野。
+    //   2. 只有玩家「靠近」(距中心 < guard_radius * 1.3)時才畫完整領地圈,
+    //      且填色幾乎透明、邊框很淡的虛線,多圈重疊也不會疊色爆掉。
+    //   3. 名牌(圖示+名稱)保留但更小更淡。
+    // 純視覺收斂,不改任何遊戲邏輯/資料。
+    //
+    // 玩家世界座標 = 螢幕中心(camX 已含 me.rx - viewW/2 置中),不需另查 players/myId。
+    const meWx = camX + viewW / 2;
+    const meWy = camY + viewH / 2;
+    // 各物種對應的圖示與基底色(用 rgb 字串,alpha 在繪製時依遠近套用,集中不爆色)。
     const COLONY_STYLE = {
-      wild_bird:     { fill: "rgba(135, 206, 250, 0.08)", stroke: "rgba(135, 206, 250, 0.40)", icon: "🐦" },
-      wild_deer:     { fill: "rgba(60,  180,  80, 0.08)", stroke: "rgba(60,  180,  80, 0.40)", icon: "🦌" },
-      small_critter: { fill: "rgba(210, 170, 100, 0.10)", stroke: "rgba(210, 170, 100, 0.42)", icon: "🐿️" },
-      wild_wolf:     { fill: "rgba(200,  40,  40, 0.09)", stroke: "rgba(200,  40,  40, 0.40)", icon: "🐺" },
-      wild_fox:      { fill: "rgba(240, 130,  20, 0.09)", stroke: "rgba(240, 130,  20, 0.40)", icon: "🦊" },
+      wild_bird:     { rgb: "135, 206, 250", icon: "🐦" },
+      wild_deer:     { rgb: "60,  180,  80", icon: "🦌" },
+      small_critter: { rgb: "210, 170, 100", icon: "🐿️" },
+      wild_wolf:     { rgb: "200,  40,  40", icon: "🐺" },
+      wild_fox:      { rgb: "240, 130,  20", icon: "🦊" },
     };
+    const FALLBACK = { rgb: "200,200,200", icon: "🏠" };
     for (const c of coloniesList) {
       const sx = c.cx - camX;
       const sy = c.cy - camY;
       const r  = c.guard_radius;
-      if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
-      const style = COLONY_STYLE[c.kind] || { fill: "rgba(200,200,200,0.08)", stroke: "rgba(200,200,200,0.35)", icon: "🏠" };
+      // 中心點在螢幕外(含一點邊界)就整個跳過——遠到看不到圖示/名牌也沒必要畫。
+      if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
+      const style = COLONY_STYLE[c.kind] || FALLBACK;
+      // 玩家到聚落中心的世界距離,決定是否「靠近」而畫完整圈。
+      const near = Math.hypot(c.cx - meWx, c.cy - meWy) < r * 1.3;
       ctx.save();
-      // 填充。
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      // 虛線邊框。
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = style.stroke;
-      ctx.lineWidth = 1.2;
-      ctx.setLineDash([6, 5]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // 聚落圖示 + 名稱（邊框上方）。
-      ctx.font = "12px sans-serif";
+      if (near) {
+        // 靠近:畫完整領地圈,但極淡——填色幾乎透明、邊框很淡的虛線,不擋視野。
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${style.rgb}, 0.03)`;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${style.rgb}, 0.22)`;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 7]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        // 遠:只在中心畫一個小圓點標記,不畫大圈、不擋視野。
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${style.rgb}, 0.55)`;
+        ctx.fill();
+      }
+      // 聚落圖示 + 名稱(更小更淡)。靠近時掛在圈邊緣上方,遠時掛在中心點上方。
+      ctx.font = "11px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       const label = style.icon + " " + c.name;
-      const lw = ctx.measureText(label).width + 10;
-      const lx = sx, ly = sy - r - 4;
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(lx - lw / 2, ly - 14, lw, 14);
-      ctx.fillStyle = style.stroke.replace("0.40", "0.90").replace("0.42", "0.90").replace("0.35", "0.90");
+      const lw = ctx.measureText(label).width + 8;
+      const lx = sx, ly = near ? sy - r - 3 : sy - 6;
+      ctx.fillStyle = "rgba(0,0,0,0.32)";
+      ctx.fillRect(lx - lw / 2, ly - 13, lw, 13);
+      ctx.fillStyle = `rgba(${style.rgb}, 0.85)`;
       ctx.fillText(label, lx, ly);
       ctx.restore();
     }
