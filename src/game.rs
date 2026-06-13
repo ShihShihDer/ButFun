@@ -2256,6 +2256,7 @@ pub fn spawn(app: AppState) {
                             is_expedition: false,
                             hp_pct: None,
                             alarmed: false,
+                            celebrating: false,
                         });
                     }
                     drop(lc);
@@ -2272,6 +2273,7 @@ pub fn spawn(app: AppState) {
                         is_expedition: false,
                         hp_pct: None,
                         alarmed: false,
+                        celebrating: false,
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -2284,6 +2286,7 @@ pub fn spawn(app: AppState) {
                         is_expedition: false,
                         hp_pct: None,
                         alarmed: false,
+                        celebrating: false,
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -2296,6 +2299,7 @@ pub fn spawn(app: AppState) {
                         is_expedition: false,
                         hp_pct: None,
                         alarmed: false,
+                        celebrating: false,
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -2308,6 +2312,7 @@ pub fn spawn(app: AppState) {
                         is_expedition: false,
                         hp_pct: None,
                         alarmed: false,
+                        celebrating: false,
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -2320,6 +2325,7 @@ pub fn spawn(app: AppState) {
                         is_expedition: false,
                         hp_pct: None,
                         alarmed: false,
+                        celebrating: false,
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -2336,6 +2342,7 @@ pub fn spawn(app: AppState) {
                                 is_expedition: false,
                                 hp_pct: None,
                                 alarmed: false,
+                                celebrating: false,
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -2348,7 +2355,7 @@ pub fn spawn(app: AppState) {
                     {
                         let res = app.residents.read().unwrap();
                         expedition_target = res.expedition_target();
-                        for (id, name, x, y, is_exp, hp_pct, alarmed) in res.views() {
+                        for (id, name, x, y, is_exp, hp_pct, alarmed, celebrating) in res.views() {
                             npc_views.push(NpcView {
                                 id: id.to_string(),
                                 name: name.to_string(),
@@ -2359,6 +2366,7 @@ pub fn spawn(app: AppState) {
                                 is_expedition: is_exp,
                                 hp_pct,
                                 alarmed,
+                                celebrating,
                             });
                         }
                     }

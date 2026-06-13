@@ -1315,6 +1315,9 @@ pub struct NpcView {
     /// 生態危機避難中（ROADMAP 180）：居民奔回城中心廣場聚集，前端顯示 😰；非居民 NPC 恆為 false。
     #[serde(default)]
     pub alarmed: bool,
+    /// 凱旋歡慶中（ROADMAP 185）：菁英 Alpha 被討伐，居民原地歡呼，前端顯示 🎉；非居民 NPC 恆為 false。
+    #[serde(default)]
+    pub celebrating: bool,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -1610,6 +1613,7 @@ mod tests {
                 is_expedition: false,
                 hp_pct: None,
                 alarmed: false,
+                celebrating: false,
             }],
             terrain: vec![],
             world_event: None,
