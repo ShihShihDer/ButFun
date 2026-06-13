@@ -385,6 +385,9 @@ const scenarios = [
   // 秋日紅蜻蜓（237）：current_season=autumn ＋ 白天（light 0.82 > 0.42）→ 跑 drawDragonflies 的蜻蜓繪製分支
   //（蜻蜓勢淡入→停—衝疾射→翅膀嗡振）。6 幀已足以讓 _dragonflyFade 越過 0.01 門檻進入繪製主路徑（春夏彩蝶的秋日對偶）。
   variant("秋日紅蜻蜓", (s) => { s.current_season = "autumn"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 冬日寒雀（238）：current_season=winter ＋ 白天（light 0.82 > 0.42）→ 跑 drawSparrows 的寒雀繪製分支
+  //（雀勢淡入→原地啄食點頭→停—衝短距蹦躍→拋物線弧＋展翅）。6 幀已足以讓 _sparrowFade 越過 0.01 門檻進入繪製主路徑（彩蝶 236／蜻蜓 237 的冬日對偶）。
+  variant("冬日寒雀", (s) => { s.current_season = "winter"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
@@ -429,6 +432,24 @@ for (const sc of scenarios) {
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 白晝飛鳥：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
   else if (!(r instanceof Error)) console.log("  ✅ 白晝飛鳥：乾淨");
+}
+
+// 冬日寒雀（238）：寒雀多半原地啄食、偶爾忽地短距蹦躍，蹦躍中才跑「拋物線抬升＋展翅」分支；
+// 蹦跳頻率低（每循環 ~4~7s），6 幀的一般情境碰不到蹦躍中段，故這裡連跑 ~480 幀（每幀 +16ms ≈ 7.7s）
+// 實跑「啄食點頭→停—衝短距蹦躍→拋物線弧＋展翅→落地續啄」完整路徑（彩蝶 236／蜻蜓 237 的冬日對偶）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：冬日（冬日寒雀，連跑 480 幀觸發蹦躍弧＋展翅）──");
+  const winterSnap = JSON.parse(JSON.stringify(snapshot));
+  winterSnap.current_season = "winter";
+  winterSnap.daynight = { phase: "day", light: 0.82, night_danger: false };
+  winterSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...winterSnap, type: "snapshot" }) });
+  const r = pump("冬日寒雀蹦躍", 480);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 冬日寒雀蹦躍：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 冬日寒雀蹦躍：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 冬日寒雀蹦躍：乾淨");
 }
 
 // 天空的太陽與月亮（200）：太陽/月亮的「弧上水平位置」靠每幀追蹤 light 趨勢分辨（升 or 落），
