@@ -374,6 +374,24 @@ const CHIRP_HEAR_RADIUS: f32 = 420.0;
 /// 鳴聲像漣漪般逐圈傳開，不會瞬間全鳴（對應 218 的 HOWL_JOIN_PROB，是「聽見後的接力」）。
 const CHIRP_JOIN_PROB: f32 = 0.45;
 
+// ─── ROADMAP 222：小動物捧食啃咬（critter sits up to nibble）──────────────────
+// 承接 220（鳥群振翅升空）開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」，但生態裡的另一
+// 種小傢伙——小動物（SmallCritter，松鼠般的齧齒小獸）——行為卻仍與野鹿幾乎一模一樣：在地上走走停停、
+// 低頭吃草、逃竄。牠少了松鼠最招牌、最惹人憐愛的那一幕：直起身子、捧著找到的堅果／種子，捧在胸前
+// 一小口一小口地啃。本切片給小動物補上專屬的「捧食啃咬」：白天平靜時，小動物漫步到定點後偶爾不只是
+// 發呆或低頭吃草，而會坐起來捧著食物啃一小段（頭頂浮一顆 🌰），啃完再起身閒晃。與 211 白晝吃草的
+// 區隔：吃草（🌿）是所有晝行獵物低頭啃地上的草，啃咬（🌰）是小動物專屬、直起身捧食而啃的另一種姿態；
+// 兩者互斥（同一隻同一刻只會其一）。與鳥的飛／鳴（220/221）不同，松鼠覓食是各顧各的、不傳染，故
+// 本切片不做「呼應」（無快照、無接力）——只是一隻隻自顧自地坐起來啃，更像真實的松鼠。純啟發式、
+// 零 LLM、零 tick 簽名改動、零協議改動（新增的 nibbling 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、記憶體模式。威脅永遠優先：啃到一半若掠食者／玩家逼近，立刻丟食逃竄。
+/// 平靜的小動物本幀坐起來捧食啃咬的機率——偏低，讓啃咬是白天偶爾的一小段、而非時時在啃（多數時候
+/// 仍照常閒晃／吃草）。
+const NIBBLE_PROB: f32 = 0.03;
+/// 一段啃咬的最短／最長時長（秒）——坐起來捧食啃數秒後再起身回到閒晃。
+const NIBBLE_DURATION_MIN: f32 = 2.0;
+const NIBBLE_DURATION_MAX: f32 = 5.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -583,6 +601,10 @@ enum WildlifeState {
     /// ROADMAP 221：晝日鳥鳴呼應——白天平靜的野鳥停下啁啾（頭頂浮 🎵）。原地不動（不更新座標）、
     /// chirp_timer 倒數，到期就回到漫遊（沿用群聚拉力）；啁啾中若有威脅逼近一律優先收聲逃竄。
     Chirping { chirp_timer: f32 },
+    /// ROADMAP 222：小動物捧食啃咬——白天平靜的小動物坐起來捧食啃咬（頭頂浮 🌰）。原地不動
+    /// （不更新座標）、nibble_timer 倒數，到期就回到漫遊（沿用群聚拉力）；啃咬中若有威脅逼近
+    /// 一律優先丟食逃竄。只有小動物（SmallCritter）會啃咬。
+    Nibbling { nibble_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -976,6 +998,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
+    /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
+    fn tick_nibble(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Nibbling { nibble_timer } = self.state {
+            let remaining = nibble_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Nibbling { nibble_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -995,6 +1033,7 @@ impl Wildlife {
             WildlifeState::Waking { .. }    => "waking",
             WildlifeState::Flying { .. }    => "flying",
             WildlifeState::Chirping { .. }  => "chirping",
+            WildlifeState::Nibbling { .. }  => "nibbling",
         }
     }
 }
@@ -1701,6 +1740,7 @@ impl WildlifeManager {
                 // ROADMAP 216：成體相依理毛——理毛永遠讓位給逃命（威脅優先）。先看附近有無威脅：
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
                 let is_bird = animal_kind == WildlifeKind::WildBird;
+                let is_critter = animal_kind == WildlifeKind::SmallCritter;
                 if matches!(a.state, WildlifeState::Watching { .. }) {
                     // ROADMAP 212 修補：走到此處代表本隻已非自群哨兵（act_as_sentinel 為偽——
                     // 例如有更小 id 的同種成體漂進了 SENTINEL_HERD_RADIUS、接手放哨），卻仍滯留在
@@ -1763,6 +1803,24 @@ impl WildlifeManager {
                     // 停下啁啾：原地仰首鳴唱一小段（頭頂浮 🎵）。
                     let timer = rng.gen_range(CHIRP_DURATION_MIN..=CHIRP_DURATION_MAX);
                     a.state = WildlifeState::Chirping { chirp_timer: timer };
+                } else if is_critter && matches!(a.state, WildlifeState::Nibbling { .. }) {
+                    // ROADMAP 222：已在啃咬中——威脅一旦逼近就立刻丟食改逃竄（覓食永遠讓位逃命），
+                    // 否則原地把這一段啃完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_nibble(dt, herd_anchor, rng);
+                    }
+                } else if is_critter
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < NIBBLE_PROB
+                {
+                    // ROADMAP 222：白天平靜的小動物——偶爾坐起來捧食啃咬一小段（頭頂浮 🌰）。
+                    // 各顧各的、不傳染（與鳥的飛／鳴呼應刻意區隔），只是一隻隻自顧自地坐起來啃。
+                    let timer = rng.gen_range(NIBBLE_DURATION_MIN..=NIBBLE_DURATION_MAX);
+                    a.state = WildlifeState::Nibbling { nibble_timer: timer };
                 } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
@@ -4500,5 +4558,106 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "啁啾中遇威脅應立刻收聲逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 222：小動物捧食啃咬 ──────────────────────────────────────────
+    #[test]
+    fn tick_nibble_holds_position_while_timer_remaining() {
+        // 啃咬進行中：原地不動（座標不變）、計時遞減、狀態維持 Nibbling。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Nibbling { nibble_timer: 2.0 };
+        critter.tick_nibble(0.1, None, &mut rng);
+        match critter.state {
+            WildlifeState::Nibbling { nibble_timer } => {
+                assert!((nibble_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("啃咬未到期應維持 Nibbling，實際 {:?}", critter.state),
+        }
+        assert!((critter.x - 5000.0).abs() < 1e-6 && (critter.y - 5000.0).abs() < 1e-6, "啃咬中應原地不動");
+    }
+
+    #[test]
+    fn tick_nibble_returns_to_wander_when_timer_expires() {
+        // 啃咬到期：回到漫遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Nibbling { nibble_timer: 0.05 };
+        critter.tick_nibble(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "啃咬到期應回漫遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn nibbling_state_str_is_nibbling() {
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        critter.state = WildlifeState::Nibbling { nibble_timer: 1.0 };
+        assert_eq!(critter.state_str(), "nibbling");
+    }
+
+    #[test]
+    fn non_critter_never_nibbles() {
+        // 物種專屬：只有小動物會啃咬——白天平靜的野鹿連跑數百幀都不該進入 Nibbling。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Nibbling { .. }), "非小動物不該啃咬，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn critter_does_not_nibble_at_night() {
+        // 夜間：小動物歸巢沉睡，不啃咬——連跑多幀都不該進入 Nibbling。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(c.state, WildlifeState::Nibbling { .. }), "夜間小動物不該啃咬，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn calm_critter_eventually_nibbles_during_day() {
+        // 白天平靜：一隻孤身小動物連跑多幀後，總會偶爾坐起來捧食啃咬（NIBBLE_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut nibbled = false;
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(c.state, WildlifeState::Nibbling { .. }) {
+                nibbled = true;
+                break;
+            }
+        }
+        assert!(nibbled, "白天平靜的小動物應偶爾坐起來啃咬");
+    }
+
+    #[test]
+    fn nibbling_critter_flees_when_threat_approaches() {
+        // 威脅永遠優先：啃咬中的小動物一旦有威脅逼近 FLEE_RADIUS 內，立刻丟食逃竄（非繼續啃）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Nibbling { nibble_timer: 1.0e9 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "啃咬中遇威脅應立刻丟食逃竄，實際 {:?}", c.state);
     }
 }
