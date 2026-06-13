@@ -26,6 +26,111 @@
     }
   })();
   const artOk = (n) => artReady && ART[n] && ART[n].complete && ART[n].naturalWidth > 0;
+
+  // ---- 可選「黏土動畫風」渲染（純前端、加法、預設不變）。----
+  // renderStyle 預設 'pixel'（＝現有像素／emoji／程式繪製，一行不變）。只有玩家
+  // **明確開啟** clay 時，才把有黏土圖的實體換成黏土 sprite + 停格式程式動作；其餘照舊。
+  // 來源優先序：URL `?style=clay` > localStorage('butfun.renderStyle') > 預設 'pixel'。
+  let renderStyle = "pixel";
+  (function initRenderStyle() {
+    let urlStyle = null;
+    try { urlStyle = new URLSearchParams(location.search).get("style"); } catch {}
+    let saved = null;
+    try { saved = localStorage.getItem("butfun.renderStyle"); } catch {}
+    const want = urlStyle || saved;
+    if (want === "clay" || want === "pixel") renderStyle = want;
+    // URL 明確指定時也順手記住，玩家重整／回訪維持同畫風。
+    if (urlStyle === "clay" || urlStyle === "pixel") {
+      try { localStorage.setItem("butfun.renderStyle", urlStyle); } catch {}
+    }
+  })();
+  // 切換畫風（設定面板呼叫）：存 localStorage，立即生效（clay 圖採惰性載入）。
+  function setRenderStyle(style) {
+    if (style !== "clay" && style !== "pixel") return;
+    renderStyle = style;
+    try { localStorage.setItem("butfun.renderStyle", style); } catch {}
+    if (style === "clay") loadClayArt();
+  }
+
+  // 黏土素材獨立惰性載入：只有切到 clay 時才抓圖（預設模式零額外網路成本）。
+  // 載得到就畫黏土 sprite，載失敗／還沒載到時 drawClaySprite 自動退回原本畫法。
+  const CLAY = {};
+  let clayLoadStarted = false;
+  function loadClayArt() {
+    if (clayLoadStarted) return;
+    clayLoadStarted = true;
+    const names = ["tree", "rock", "ether_ore", "star_crystal", "scrap_drone",
+                   "ether_orb", "wheat", "carrot", "potato", "resident", "player"];
+    for (const n of names) {
+      const img = new Image();
+      img.src = `assets/clay/${n}.png?v=1`;
+      CLAY[n] = img;
+    }
+  }
+  if (renderStyle === "clay") loadClayArt();
+  const clayOk = (n) => renderStyle === "clay" && CLAY[n] && CLAY[n].complete && CLAY[n].naturalWidth > 0;
+
+  // 黏土停格式動作參數：定格跳階（非平滑）做出 claymation「一格一格」的停格感。
+  const CLAY_STEP_BOB = [0, -2, -3];           // 移動彈跳（定格 3 階循環，像素）
+  const CLAY_STEP_SQUASH = [1.0, 1.04, 0.97];  // 對應水平擠壓（squash/stretch）
+  const CLAY_BREATHE = [1.0, 1.01];            // 站立極輕微呼吸（2 階定格）
+
+  // drawClaySprite：renderStyle==='clay' 且該 key 黏土圖載到了才畫，否則回傳 false
+  // 讓呼叫端 fallback 回原本畫法。x,y 為「世界座標扣相機」後的螢幕座標（呼叫端算好）。
+  // 約定：sprite 底部對齊 (x, y)（腳/底貼地），水平置中於 x。
+  // opts:
+  //   size     繪製邊長（預設 40）
+  //   animate  true=套用停格式彈跳/擠壓（移動時）或呼吸（站立時）；false=純靜圖
+  //   moving   是否移動中（決定彈跳 vs 呼吸）
+  //   flip     水平翻轉（朝左時）
+  //   walk     角色 walk 相位（決定停格階；缺則用時間）
+  //   shadow   落地柔影半徑（>0 才畫；預設不畫）
+  //   now      時間（ms），缺則 performance.now()
+  function drawClaySprite(key, x, y, size, opts) {
+    if (!clayOk(key)) return false;
+    opts = opts || {};
+    const s = size || 40;
+    const now = opts.now != null ? opts.now : performance.now();
+    const animate = opts.animate && !reduceMotion;
+    let bob = 0, sqx = 1, sqy = 1;
+    if (animate) {
+      if (opts.moving) {
+        // 移動：定格跳階彈跳 + 擠壓拉伸。用 walk 相位優先（與伺服器步伐同步），否則用時間。
+        const phase = opts.walk != null ? Math.floor(opts.walk) : Math.floor(now / 120);
+        const idx = ((phase % CLAY_STEP_BOB.length) + CLAY_STEP_BOB.length) % CLAY_STEP_BOB.length;
+        bob = CLAY_STEP_BOB[idx];
+        sqx = CLAY_STEP_SQUASH[idx];
+        sqy = 2 - sqx; // 體積守恆：橫擠則縱拉
+      } else {
+        // 站立：極輕微定格呼吸（縱向）。
+        const idx = Math.floor(now / 600) % CLAY_BREATHE.length;
+        sqy = CLAY_BREATHE[idx];
+      }
+    }
+    // 落地柔影（接地感）：固定在地面、不跟著彈跳。
+    if (opts.shadow > 0) {
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = "#000";
+      ctx.beginPath();
+      ctx.ellipse(x, y - 2, opts.shadow, opts.shadow * 0.4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    const img = CLAY[key];
+    const dw = s * sqx;
+    const dh = s * sqy;
+    ctx.save();
+    if (opts.flip) {
+      ctx.translate(x, 0);
+      ctx.scale(-1, 1);
+      ctx.translate(-x, 0);
+    }
+    // 底部對齊 (x, y - bob)、水平置中。round 避免次像素糊。
+    ctx.drawImage(img, Math.round(x - dw / 2), Math.round(y - dh - bob), Math.round(dw), Math.round(dh));
+    ctx.restore();
+    return true;
+  }
   // 朝向弧度 → player.png 的列(0 下 / 1 左 / 2 右 / 3 上)。
   function facingToDir(rad) {
     const deg = (rad * 180) / Math.PI; // -180..180
@@ -3623,7 +3728,15 @@
     // dir/frame 提前計算，sprite 和程式繪製兩路徑都會用到。
     const dir = facingToDir(p.facing);
     const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
-    if (artOk("player")) {
+    // 黏土風玩家：單張底圖 + 停格式彈跳/擠壓（移動）或呼吸（站立），朝左水平翻轉。
+    // 走 clay 路徑自帶停格 bob，故以 sy（地面）為底，不用 by（避免與既有 bob 疊加）。
+    // 上方 drawGroundShadow 已畫過腳下柔影，這裡不重複畫 shadow。
+    const drewClayPlayer = (renderStyle === "clay") && drawClaySprite("player", sx, sy + 14, 40, {
+      animate: true, moving: p.moving, walk: p.walk, flip: dir === 1,
+    });
+    if (drewClayPlayer) {
+      // 已用黏土圖畫好玩家本體，跳過像素/程式路徑。
+    } else if (artOk("player")) {
       // 精靈圖路徑：新蒸汽龐克像素角色（ROADMAP 88 生成）。
       // sprite 32x32，放大成 36 好看；腳對齊 sy（陰影位置）。
       const dw = 36, dh = 36;
@@ -5736,8 +5849,12 @@
       const wob = nodeHitWobble(n, now);
       const dx = wob > 0 ? Math.sin(now * 0.045) * 5 * wob : 0;
       ctx.save();
+      // 黏土風採集節點（樹/石/乙太礦皆有黏土圖）：靜態 sprite + 落地柔影；其餘照舊。
+      const drewClayNode = (renderStyle === "clay") && drawClaySprite(n.kind, sx + dx, sy + 8, 46, { shadow: 14 });
       const spriteName = NODE_SPRITE[n.kind];
-      if (spriteName && artOk(spriteName)) {
+      if (drewClayNode) {
+        // 已用黏土圖畫好節點本體。
+      } else if (spriteName && artOk(spriteName)) {
         // 有對應 sprite(樹/石)→ 畫真的 pixel art,底部對齊節點位置、放大些好看清。
         const img = ART[spriteName];
         const s = 44;
@@ -5988,6 +6105,9 @@
 
   // 廢鐵無人機：蒸汽龐克機械偵查器。機身＋雙旋翼＋銅天線＋紅色警示核心眼。ROADMAP 89 精緻化。
   function drawScrapDrone(cx, cy, t, phase) {
+    // 黏土風廢鐵無人機：以本體中心對齊的黏土 sprite（不另畫柔影——呼叫端已畫地面影）。
+    // cy 已含呼叫端的上下浮動，這裡僅靜置黏土圖；其餘照舊程式繪製。
+    if (renderStyle === "clay" && drawClaySprite("scrap_drone", cx, cy + 16, 36, {})) return;
     const bob = Math.sin(t * 8 + phase) * 0.8;
     // 機身主體（倒梯形鋼板，比原版寬）
     ctx.fillStyle = "#5a4636";
@@ -7450,6 +7570,33 @@
         const sy = wy - camY + h / 2;
         if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
         ctx.save();
+        // 黏土風作物：把作物排成一列黏土 sprite（最多 4 株，避免擠）；成熟在腳邊綠勾。
+        // 只要這格至少一種作物有黏土圖就走黏土路徑；無圖的作物該株退回 emoji。
+        const clayCrops = renderStyle === "clay" && fp.crops.some(c => clayOk(c.kind));
+        if (clayCrops) {
+          const shown = fp.crops.slice(0, 4);
+          const gap = 22;
+          const baseX = sx - ((shown.length - 1) * gap) / 2;
+          for (let ci = 0; ci < shown.length; ci++) {
+            const c = shown[ci];
+            const cx = baseX + ci * gap;
+            if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9 })) {
+              // 該作物沒黏土圖：退回 emoji。
+              ctx.font = "18px sans-serif";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText((CROP_EMOJI[c.kind] || "🌱"), cx, sy - 10);
+            }
+            if (c.ripe) {
+              ctx.font = "11px sans-serif";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText("✅", cx, sy + 12);
+            }
+          }
+          ctx.restore();
+          continue;
+        }
         ctx.font = "18px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -7473,6 +7620,10 @@
         const sx = sc.x - camX;
         const sy = sc.y - camY;
         if (sx < -30 || sy < -30 || sx > viewW + 30 || sy > viewH + 30) continue;
+        // 黏土風星晶：靜態黏土 sprite（中心對齊）+ 落地柔影；其餘照舊閃爍 emoji。
+        if (renderStyle === "clay" && drawClaySprite("star_crystal", sx, sy + 14, 34, { shadow: 11 })) {
+          continue;
+        }
         // 脈動效果：大小在 0.7~1.3 之間震盪
         const pulse = 0.7 + 0.3 * Math.sin(t * 2.5 + sc.x * 0.05 + sc.y * 0.03);
         ctx.save();
@@ -8298,6 +8449,27 @@
       const sx = orb.x - camX;
       const sy = orb.y - camY;
       if (sx < -30 || sx > viewW + 30 || sy < -30 || sy > viewH + 30) continue;
+
+      // 黏土風乙太球：以球中心對齊的黏土 sprite + 落地柔影；其餘照舊發光漸層。
+      // 標籤（+N✨）與近身採集環沿用原路徑，仍會疊在黏土球上，不漏資訊。
+      if (renderStyle === "clay" && drawClaySprite("ether_orb", sx, sy + 14, 30, { shadow: 9 })) {
+        // 已用黏土圖畫好乙太球本體，跳過程式光暈本體；標籤仍由下方原碼補上。
+        ctx.save();
+        ctx.translate(sx, sy);
+        const pulse2 = 0.8 + 0.2 * Math.sin(now / 500);
+        const outerR2 = 12 * pulse2;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        const label2 = "+4✨";
+        ctx.font = "bold 9px monospace";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        const lw2 = ctx.measureText(label2).width + 8;
+        ctx.fillRect(-lw2 / 2, -outerR2 - 18, lw2, 14);
+        ctx.fillStyle = "#c8ffc0";
+        ctx.fillText(label2, 0, -outerR2 - 17);
+        ctx.restore();
+        continue;
+      }
 
       ctx.save();
       ctx.translate(sx, sy);
@@ -10664,22 +10836,29 @@
     const headCol = headColors[idx % 4];
     // 行走動畫：左右輕微搖擺
     const sway = reduceMotion ? 0 : Math.sin(t * 2.2 + idx * 1.1) * 1.5;
-    // 身體（比深度 NPC 小：橢圓半徑 8×11）
-    ctx.fillStyle = bodyCol;
-    ctx.beginPath(); ctx.ellipse(sx + sway * 0.5, by + 9, 8, 11, 0, 0, Math.PI * 2); ctx.fill();
-    // 頭
-    ctx.fillStyle = headCol;
-    ctx.beginPath(); ctx.arc(sx, by - 6, 6, 0, Math.PI * 2); ctx.fill();
-    // 簡單頭飾（市場=小帽、農夫=草帽沿、廣場=髮飾點、遊民=不加）
-    if (idx % 4 === 0) {
-      ctx.fillStyle = "#5c3a10";
-      ctx.beginPath(); ctx.ellipse(sx, by - 10, 5.5, 2, 0, 0, Math.PI * 2); ctx.fill();
-    } else if (idx % 4 === 1) {
-      ctx.fillStyle = "#8b7020";
-      ctx.beginPath(); ctx.ellipse(sx, by - 10, 8, 2, 0, 0, Math.PI * 2); ctx.fill();
-    } else if (idx % 4 === 2) {
-      ctx.fillStyle = "#9060a0";
-      ctx.beginPath(); ctx.arc(sx + 4, by - 10, 2.5, 0, Math.PI * 2); ctx.fill();
+    // 黏土風居民：單張黏土底圖 + 站立呼吸 + 落地柔影；名字/HP/心情/警示泡泡仍照舊疊上。
+    // 居民無精確「移動中」旗標，這裡一律走站立呼吸（極輕微、reduceMotion 時關）。
+    const drewClayResident = (renderStyle === "clay") && drawClaySprite("resident", sx, by + 22, 38, {
+      animate: true, moving: false, shadow: 12,
+    });
+    if (!drewClayResident) {
+      // 身體（比深度 NPC 小：橢圓半徑 8×11）
+      ctx.fillStyle = bodyCol;
+      ctx.beginPath(); ctx.ellipse(sx + sway * 0.5, by + 9, 8, 11, 0, 0, Math.PI * 2); ctx.fill();
+      // 頭
+      ctx.fillStyle = headCol;
+      ctx.beginPath(); ctx.arc(sx, by - 6, 6, 0, Math.PI * 2); ctx.fill();
+      // 簡單頭飾（市場=小帽、農夫=草帽沿、廣場=髮飾點、遊民=不加）
+      if (idx % 4 === 0) {
+        ctx.fillStyle = "#5c3a10";
+        ctx.beginPath(); ctx.ellipse(sx, by - 10, 5.5, 2, 0, 0, Math.PI * 2); ctx.fill();
+      } else if (idx % 4 === 1) {
+        ctx.fillStyle = "#8b7020";
+        ctx.beginPath(); ctx.ellipse(sx, by - 10, 8, 2, 0, 0, Math.PI * 2); ctx.fill();
+      } else if (idx % 4 === 2) {
+        ctx.fillStyle = "#9060a0";
+        ctx.beginPath(); ctx.arc(sx + 4, by - 10, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
     }
     // 名字（比深度 NPC 更小更淡，不搶鏡）
     ctx.font = "9px sans-serif"; ctx.textAlign = "center";
@@ -16001,6 +16180,14 @@
       optPredict.addEventListener("change", () => {
         settings.predict = optPredict.checked;
         try { localStorage.setItem("butfun.predict", optPredict.checked ? "1" : "0"); } catch {}
+      });
+    }
+    // ⚙ 設定：黏土動畫畫風開關（預設關＝像素/emoji 原樣；勾選＝clay）。純前端、只切外觀。
+    const optClay = document.getElementById("optClayStyle");
+    if (optClay) {
+      optClay.checked = renderStyle === "clay";
+      optClay.addEventListener("change", () => {
+        setRenderStyle(optClay.checked ? "clay" : "pixel");
       });
     }
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
