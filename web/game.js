@@ -352,6 +352,12 @@
     { baseY: 0.17, amp: 0.040, wavelen: 0.70, speed: 0.008, phase: 1.7, r: 90,  g: 220, b: 230 }, // 青藍（中）
     { baseY: 0.24, amp: 0.034, wavelen: 0.90, speed: 0.006, phase: 3.4, r: 170, g: 130, b: 255 }, // 藕紫（最下、最淡）
   ];
+  // 夏夜銀河（ROADMAP 232）：231 冬夜極光給了冬季「夜」的臉，本切片補上夏季的夜——晴朗的夏夜
+  // 天空斜掛一條由密集微星與淡銀光暈組成的銀河，靜靜橫亙天際。與冬夜極光（彩色、流動、低垂天邊
+  // 的簾幕）刻意成對又區隔：銀河是夏夜的「銀白靜止斜帶」。純前端、讀既有 currentSeason＋daynight.light。
+  const GALAXY_NIGHT_LIGHT = 0.42;   // daynight.light 低於此值算「夜」（與極光／夜間氛圍同調）
+  let _galaxyFade = 0;               // 夏夜銀河淡入淡出進度 [0,1]（非夏夜→0，夏夜→1，逐幀緩緩趨近）
+  let _galaxyStars = null;           // 惰性生成的銀河微星佈局（沿帶 u、垂帶偏移 off、大小、閃爍相位、色）
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4091,6 +4097,7 @@
       drawDayNightTint();                              // 日夜染色（疊在世界與玩家上）
       drawAmbientLight(camX, camY, performance.now()); // 環境光與日夜光暈（ROADMAP 90）
       drawNightStars(performance.now());               // 夜空星星 + 遠方行星（ROADMAP 19）
+      drawGalaxy(performance.now(), _weatherDt);        // 夏夜銀河（232），晴朗夏夜斜掛的銀色星河、與星空同層
       drawNightMotes(performance.now());               // 夜晚漂浮的乙太微光
       drawBiomeParallax(camX, camY, renderNow);        // 生態背景視差層次（ROADMAP 91）
       drawLumenNightGlow(camX, camY, performance.now()); // 燐光族夜視光環
@@ -11200,6 +11207,103 @@
         ctx.lineTo(x, auroraBandY(x, t, W, H, band) + bandH);
       }
       ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ── ROADMAP 232: 夏夜銀河 ─────────────────────────────────────────────────
+  // 純函式：夏季夜晚回 1、其餘回 0（銀河只在夏夜出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function galaxyTargetIntensity(season, light) {
+    const dark = (typeof light === "number" ? light : 1) < GALAXY_NIGHT_LIGHT;
+    return (season === "summer" && dark) ? 1 : 0;
+  }
+
+  // 純函式：把目前銀河勢 cur 朝目標 target 以固定速率逼近（每秒 GALAXY_FADE_RATE），夾在 [0,1]。
+  // 與極光同樣從容（銀河也是緩緩浮現／緩緩褪去，不該一下子全亮）。壞值（NaN）退回 0。
+  function galaxyFadeStep(cur, target, dt) {
+    const GALAXY_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與極光同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * GALAXY_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：銀河帶上某顆微星的閃爍透明度＝基準 alpha ×（隨相位輕微起伏的明滅，夾在 [0,1]）。
+  // 銀河微星只輕輕「呼吸」（淺幅 twinkle，0.7~1.0），與夏絮的深閃爍刻意區隔。壞值（NaN）退回 0。
+  function galaxyTwinkle(baseAlpha, phase) {
+    if (!(baseAlpha >= 0)) return 0;
+    const flick = 0.7 + 0.3 * Math.sin(phase);
+    return Math.max(0, Math.min(1, baseAlpha * flick));
+  }
+
+  // 生成銀河帶上的密集微星佈局（一次性、之後快取，不每幀重算→確定性、不隨鏡頭抖動）。
+  // 每顆星帶 u（沿帶 0~1）、off（垂帶偏移 -1~1，以三抽取平均向帶心聚攏，像真銀河中央最密）、
+  // 大小、閃爍相位／速度、銀白偏藍的色。畫面比例座標於繪製時換成像素。
+  function makeGalaxyStars() {
+    const COLORS = ["230,238,255", "210,224,255", "245,245,235", "200,235,255"];
+    const stars = [];
+    for (let i = 0; i < 110; i++) {
+      const off = ((Math.random() + Math.random() + Math.random()) / 3) * 2 - 1; // 向帶心聚攏
+      stars.push({
+        u: Math.random(),
+        off,
+        size: 0.5 + Math.random() * 1.3,
+        a: 0.35 + Math.random() * 0.5,
+        tw: 0.6 + Math.random() * 1.4,                 // 閃爍速度
+        phase: Math.random() * Math.PI * 2,
+        c: COLORS[Math.floor(Math.random() * COLORS.length)],
+      });
+    }
+    return stars;
+  }
+
+  // 每幀更新並繪製夏夜銀河。非夏夜時 _galaxyFade 緩緩歸零、零開銷早退。畫在夜空星星（19）之後、
+  // 極光／月亮之前（與星星同層的更遠天象），用畫面座標、不隨鏡頭平移。
+  function drawGalaxy(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = galaxyTargetIntensity(currentSeason, light);
+    _galaxyFade = galaxyFadeStep(_galaxyFade, target, Math.max(0, (dt || 0)));
+    if (_galaxyFade <= 0.01) return;
+    if (reduceMotion || !_parallaxEnabled) { _galaxyFade = 0; return; }
+    if (!_galaxyStars) _galaxyStars = makeGalaxyStars();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+    // 銀河帶端點（畫面比例）：左上偏低 → 右上偏中，斜掛上半天空。
+    const x0 = 0, y0 = H * 0.14, x1 = W, y1 = H * 0.46;
+    const dx = x1 - x0, dy = y1 - y0;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len, ny = dx / len;   // 垂直於帶的單位法向量
+    const halfW = H * 0.11;                 // 帶半寬
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";   // 加色，銀河像疊在夜空上的乳白光帶
+    // 乳白銀霧：沿帶心一串大而極淡的柔光圓相疊，堆出「乳白星河」的瀰漫光暈（無需 blur，靠加色疊）。
+    const hazeSegs = 12;
+    for (let i = 0; i <= hazeSegs; i++) {
+      const u = i / hazeSegs;
+      const cx = x0 + dx * u, cy = y0 + dy * u;
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, halfW);
+      const peak = (_galaxyFade * 0.05).toFixed(3);   // 極淡，不蓋住星星與月亮
+      g.addColorStop(0, `rgba(220,228,255,${peak})`);
+      g.addColorStop(1, "rgba(220,228,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, halfW, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 帶上密集微星：沿帶 u、垂帶 off×halfW 落位，各自輕輕閃爍。
+    for (const s of _galaxyStars) {
+      const bx = x0 + dx * s.u + nx * s.off * halfW;
+      const by = y0 + dy * s.u + ny * s.off * halfW;
+      const a = _galaxyFade * galaxyTwinkle(s.a, t * s.tw + s.phase);
+      if (a < 0.02) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = `rgb(${s.c})`;
+      ctx.beginPath();
+      ctx.arc(bx, by, s.size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
