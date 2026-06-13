@@ -3339,6 +3339,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.inventory.take(ItemKind::WildflowerSeed, 1);
                             }
                             app.species_relations.write().unwrap().on_feed(kind);
+                            // ROADMAP 205：提升「這一隻」的個體親近度；回傳「是否剛跨過馴養門檻」。
+                            let just_tamed = app.wildlife_manager.write().unwrap()
+                                .on_feed_animal(wildlife_id)
+                                .map(|(_, _, t)| t)
+                                .unwrap_or(false);
                             let name = app.players.read().unwrap()
                                 .get(&id).map(|p| p.name.clone()).unwrap_or_default();
                             let attitude = app.species_relations.read().unwrap().attitude(kind);
@@ -3347,6 +3352,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 name, kind.display_name(), kind.display_name(), attitude
                             );
                             let _ = app.tx_chat.send(msg);
+                            // ROADMAP 205：這一隻第一次被餵到「馴養」——溫馨慶賀，從此牠不再怕這位玩家、會跟著你。
+                            if just_tamed {
+                                let _ = app.tx_chat.send(format!(
+                                    "💛 {} 與一隻 {} 建立了信任——牠不再害怕，願意親近並跟隨左右了。",
+                                    name, kind.display_name()
+                                ));
+                            }
                         }
                     }
                 }

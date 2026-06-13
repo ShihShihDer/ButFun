@@ -1221,6 +1221,12 @@ pub struct WildlifeView {
     pub y: f32,
     /// 行為狀態：wandering / resting / fleeing / returning。
     pub state: String,
+    /// ROADMAP 205：個體親近度（0~1）——反覆餵食累積。前端可據此顯示漸滿的愛心。
+    #[serde(default)]
+    pub familiarity: f32,
+    /// ROADMAP 205：是否已被馴養（親近度滿）——前端在頭頂顯示 💛、不再怕玩家。
+    #[serde(default)]
+    pub tamed: bool,
 }
 
 /// 快照裡一顆乙太微粒的位置（ROADMAP 142）。

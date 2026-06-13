@@ -103,6 +103,28 @@ const CARION_ORB_TTL: f32 = 90.0;
 /// 同時存在乙太微粒的上限（防止無限堆積）。
 const MAX_CARION_ORBS: usize = 8;
 
+// ─── ROADMAP 205：餵食馴養 ───────────────────────────────────────────────────
+// 反覆餵食「同一隻」野生動物，會累積個體親近度（0~1）。
+// 親近度達 TAME_FAMILIARITY 後該隻動物被「馴養」：不再把玩家視為威脅（不逃跑），
+// 玩家靠近時溫順地走向你、保持舒適距離（彷彿跟著你）。牠仍會逃離捕食者/獵食怪物
+// （信任的是你、不是狼）。親近度隨時間緩慢衰減、死亡歸零——是一段需要維繫的關係。
+
+/// 親近度上限（餵食累積的封頂）。
+const MAX_FAMILIARITY: f32 = 1.0;
+/// 個體親近度達此值即視為「已馴養」。刻意低於上限，留出緩衝——餵滿後即使緩慢衰減，
+/// 也要好一陣子才會掉出馴養狀態（不會因每幀微小衰減就立刻「退馴」）。
+const TAME_FAMILIARITY: f32 = 0.8;
+/// 每餵食一次提升的親近度（需數次餵食才馴養，過程才有溫度）。
+const FEED_FAMILIARITY_GAIN: f32 = 0.25;
+/// 親近度每秒自然衰減（很慢——約 30 分鐘從滿值歸零，關係需偶爾維繫但不易斷）。
+const FAMILIARITY_DECAY_PER_SEC: f32 = 1.0 / 1800.0;
+/// 馴養動物「察覺到附近玩家」而走向他的範圍（像素）。
+const FOLLOW_RANGE: f32 = 260.0;
+/// 馴養動物跟隨時與玩家保持的舒適距離（像素）——更近就停下，不黏在腳邊。
+const FOLLOW_COMFORT_DIST: f32 = 60.0;
+/// 馴養動物走向玩家的速度（像素/秒）——比逃跑慢，溫順小跑。
+const FOLLOW_SPEED: f32 = 60.0;
+
 // ─── 種類與營養階 ────────────────────────────────────────────────────────────
 
 /// 野生動物種類。
@@ -276,6 +298,8 @@ pub struct Wildlife {
     home_x: f32,
     home_y: f32,
     state: WildlifeState,
+    /// ROADMAP 205：個體親近度（0~1）——反覆餵食累積，達 TAME_FAMILIARITY 即馴養。
+    familiarity: f32,
 }
 
 impl Wildlife {
@@ -294,7 +318,18 @@ impl Wildlife {
             state: WildlifeState::Resting {
                 rest_timer: rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX),
             },
+            familiarity: 0.0,
         }
+    }
+
+    /// ROADMAP 205：此隻動物目前的親近度（0~1）。
+    pub fn familiarity(&self) -> f32 {
+        self.familiarity
+    }
+
+    /// ROADMAP 205：是否已被馴養（親近度達門檻）。
+    pub fn is_tamed(&self) -> bool {
+        self.familiarity >= TAME_FAMILIARITY
     }
 
     /// 非追獵行為 tick：閒晃 / 休息 / 逃跑 / 返家。
@@ -474,6 +509,17 @@ impl WildlifeManager {
         }
     }
 
+    /// ROADMAP 205：餵食指定 ID 的存活動物，提升其個體親近度。
+    /// 回傳 `(種類, 提升後親近度, 是否「剛跨過馴養門檻」)`；找不到/已死亡則 `None`。
+    /// 距離 / 種子消耗由呼叫端（ws.rs 的 feed_wildlife）負責，本函式只管親近度。
+    pub fn on_feed_animal(&mut self, wildlife_id: u32) -> Option<(WildlifeKind, f32, bool)> {
+        let a = self.animals.iter_mut().find(|a| a.id == wildlife_id && a.alive)?;
+        let was_tamed = a.familiarity >= TAME_FAMILIARITY;
+        a.familiarity = (a.familiarity + FEED_FAMILIARITY_GAIN).min(MAX_FAMILIARITY);
+        let now_tamed = a.familiarity >= TAME_FAMILIARITY;
+        Some((a.kind, a.familiarity, now_tamed && !was_tamed))
+    }
+
     /// ROADMAP 165：回傳所有存活野生動物的快照（ID, 種類, x, y）。
     /// 供怪物追獵目標計算用（取讀鎖後呼叫）。
     pub fn alive_snapshot(&self) -> Vec<(u32, WildlifeKind, f32, f32)> {
@@ -532,10 +578,13 @@ impl WildlifeManager {
             *cd = (*cd - dt).max(0.0);
         }
 
-        // ── Phase 1: 死亡倒數 + 重生 ──────────────────────────────────────────
+        // ── Phase 1: 死亡倒數 + 重生 + 親近度衰減（ROADMAP 205）─────────────────
         for a in &mut self.animals {
             if !a.alive {
                 a.respawn_timer -= dt;
+            } else if a.familiarity > 0.0 {
+                // 親近度隨時間緩慢衰減——羈絆需偶爾以餵食維繫，但不易斷。
+                a.familiarity = (a.familiarity - FAMILIARITY_DECAY_PER_SEC * dt).max(0.0);
             }
         }
         let respawn_ready: Vec<usize> = self.animals.iter().enumerate()
@@ -550,6 +599,8 @@ impl WildlifeManager {
             a.x = a.home_x + ox;
             a.y = a.home_y + oy;
             a.state = WildlifeState::Resting { rest_timer: 2.0 };
+            // ROADMAP 205：重生的是「新的個體」，與玩家的羈絆隨上一隻回歸乙太而散——親近度歸零。
+            a.familiarity = 0.0;
         }
 
         // ── Phase 2: 快照（供決策使用） ────────────────────────────────────────
@@ -743,24 +794,45 @@ impl WildlifeManager {
             // 守衛狀態已在 Phase 2c 處理，跳過正常閒晃（不逃跑）。
             if matches!(self.animals[i].state, WildlifeState::Guarding { .. }) { continue; }
 
-            // ROADMAP 144：友善物種不把玩家視為威脅（不逃跑）。
-            let kind_attitude = *attitudes.get(&self.animals[i].kind).unwrap_or(&50);
-            let player_threats: &[(f32, f32)] = if kind_attitude >= FRIENDLY_ATTITUDE {
-                &[] // 友善時玩家不是威脅
-            } else {
-                player_positions
-            };
-
-            // 威脅 = 玩家（按態度決定）+ 捕食者 + ROADMAP 165：怪物獵食者。
-            let mut threats: Vec<(f32, f32)> = player_threats.to_vec();
-            threats.extend_from_slice(&pred_positions);
-            // ROADMAP 165：把「獵食此物種的怪物」位置也加入逃跑威脅清單。
             let animal_kind = self.animals[i].kind;
+            // ROADMAP 205：被馴養的個體把玩家當朋友（不逃跑），未馴養則沿用 144 物種態度判定。
+            let tamed = self.animals[i].is_tamed();
+
+            // 威脅 = 捕食者 + ROADMAP 165 獵食此物種的怪物——馴養與否都仍會逃離掠食者（信任的是你、不是狼）。
+            let mut threats: Vec<(f32, f32)> = pred_positions.clone();
             for &(mk, mx, my) in monster_threats {
                 if monster_hunts_wildlife(mk) == Some(animal_kind) {
                     threats.push((mx, my));
                 }
             }
+            // ROADMAP 144：未馴養且物種對人類不夠友善時，玩家也算威脅。
+            let kind_attitude = *attitudes.get(&animal_kind).unwrap_or(&50);
+            if !tamed && kind_attitude < FRIENDLY_ATTITUDE {
+                threats.extend_from_slice(player_positions);
+            }
+
+            // ROADMAP 205：馴養個體在沒有掠食者威脅時，溫順地走向附近玩家、保持舒適距離（彷彿跟著你）。
+            if tamed {
+                let ax = self.animals[i].x;
+                let ay = self.animals[i].y;
+                let fleeing_now = matches!(self.animals[i].state, WildlifeState::Fleeing { .. });
+                let predator_near = nearest_in_range(ax, ay, &threats, FLEE_RADIUS).is_some();
+                if !fleeing_now && !predator_near {
+                    if let Some((px, py)) = nearest_in_range(ax, ay, player_positions, FOLLOW_RANGE) {
+                        let dx = px - ax;
+                        let dy = py - ay;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist > FOLLOW_COMFORT_DIST {
+                            self.animals[i].x += dx / dist * FOLLOW_SPEED * dt;
+                            self.animals[i].y += dy / dist * FOLLOW_SPEED * dt;
+                        }
+                        // 朝向玩家的溫順狀態（已到舒適距離則原地陪著你）。
+                        self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                        continue;
+                    }
+                }
+            }
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             a.tick_idle(dt, &threats, WANDER_SPEED, rng);
@@ -1304,5 +1376,113 @@ mod tests {
             "CrystalGolem 不應有食物鏈配對"
         );
         let _ = threats;
+    }
+
+    // ─── ROADMAP 205：餵食馴養 測試 ─────────────────────────────────────────
+    use std::collections::HashMap;
+
+    /// 把 mgr 內第一隻指定種類的動物搬到 (x,y)、設定親近度與休息狀態，回傳其 id。
+    fn place_test_animal(mgr: &mut WildlifeManager, kind: WildlifeKind, x: f32, y: f32, familiarity: f32) -> u32 {
+        let id = mgr.animals.iter().find(|a| a.kind == kind).map(|a| a.id).unwrap();
+        let a = mgr.animals.iter_mut().find(|a| a.id == id).unwrap();
+        a.alive = true;
+        a.x = x; a.y = y;
+        a.home_x = x; a.home_y = y;
+        a.familiarity = familiarity;
+        a.state = WildlifeState::Resting { rest_timer: 10.0 };
+        id
+    }
+
+    #[test]
+    fn feeding_raises_familiarity_and_tames_exactly_once() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, 0.0);
+        let needed = (TAME_FAMILIARITY / FEED_FAMILIARITY_GAIN).ceil() as i32;
+        let mut tamed_events = 0;
+        for _ in 0..needed {
+            let (_, _, just_tamed) = mgr.on_feed_animal(id).unwrap();
+            if just_tamed { tamed_events += 1; }
+        }
+        assert!(mgr.animals.iter().find(|a| a.id == id).unwrap().is_tamed(), "餵足次數後應已馴養");
+        assert_eq!(tamed_events, 1, "「剛馴養」事件應只觸發一次");
+        // 已馴養後再餵不應再觸發馴養事件。
+        let (_, _, again) = mgr.on_feed_animal(id).unwrap();
+        assert!(!again, "已馴養後再餵不應重複觸發馴養");
+    }
+
+    #[test]
+    fn on_feed_animal_unknown_id_returns_none() {
+        let mut mgr = WildlifeManager::new();
+        assert!(mgr.on_feed_animal(999_999).is_none(), "不存在的 ID 應回傳 None");
+    }
+
+    #[test]
+    fn tamed_prey_does_not_flee_player() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家就在 FLEE_RADIUS 內。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[]);
+        let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
+        assert!(!matches!(a.state, WildlifeState::Fleeing { .. }), "馴養個體不應逃離玩家，實際: {:?}", a.state);
+    }
+
+    #[test]
+    fn untamed_prey_still_flees_player() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, 0.0);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new(); // 預設態度 50 < FRIENDLY，玩家是威脅
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[]);
+        let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
+        assert!(matches!(a.state, WildlifeState::Fleeing { .. }), "未馴養個體應逃離玩家，實際: {:?}", a.state);
+    }
+
+    #[test]
+    fn tamed_prey_follows_nearby_player() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家在 FOLLOW_RANGE 內、舒適距離外（右側 200px）。
+        mgr.tick(0.2, &[(5200.0, 5000.0)], &att, &[]);
+        let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
+        assert!(a.x > 5000.0, "馴養個體應朝玩家移動（x 變大），實際 x={}", a.x);
+    }
+
+    #[test]
+    fn tamed_prey_still_flees_hunting_monster() {
+        use crate::combat::EnemyKind;
+        let mut mgr = WildlifeManager::new();
+        // ScrapDrone 獵食 WildDeer。
+        assert_eq!(monster_hunts_wildlife(EnemyKind::ScrapDrone), Some(WildlifeKind::WildDeer));
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家在旁（馴養→不怕），但獵食怪物在 FLEE_RADIUS 內。
+        mgr.tick(0.1, &[(5040.0, 5000.0)], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)]);
+        let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
+        assert!(matches!(a.state, WildlifeState::Fleeing { .. }), "馴養個體仍應逃離掠食怪物，實際: {:?}", a.state);
+    }
+
+    #[test]
+    fn familiarity_decays_over_time() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..100 { mgr.tick(1.0, &[], &att, &[]); } // 100 秒、無餵食
+        let f = mgr.animals.iter().find(|a| a.id == id).unwrap().familiarity();
+        assert!(f < MAX_FAMILIARITY, "親近度應隨時間衰減，實際 {f}");
+        assert!(f > 0.0, "100 秒衰減不應歸零（衰減很慢），實際 {f}");
+    }
+
+    #[test]
+    fn respawn_resets_familiarity() {
+        let mut mgr = WildlifeManager::new();
+        let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
+        // 擊殺該隻（玩家攻擊），再推進到重生。
+        assert!(mgr.attack_wildlife(id, 5000.0, 5000.0, 30.0).is_some(), "應成功擊殺");
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..((PREY_RESPAWN_SECS as i32) + 2) { mgr.tick(1.0, &[], &att, &[]); }
+        let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
+        assert!(a.alive, "應已重生");
+        assert_eq!(a.familiarity(), 0.0, "重生個體親近度應歸零（羈絆隨上一隻散去）");
     }
 }

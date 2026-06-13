@@ -216,6 +216,14 @@ const scenarios = [
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
   variant("野生動物含未知kind", (s) => { if (s.wildlife?.length) { s.wildlife[0] = { ...s.wildlife[0], kind: "mystery_beast", state: "hunting" }; } }),
+  // 餵食馴養（205）：把幾隻野生動物設成已馴養（tamed→頭頂 💛）與餵食進行中（familiarity 部分→進度心 🤍），
+  // 實跑 drawWildlife 的馴養愛心兩條新繪製分支（含 globalAlpha 進度染色）。
+  variant("野生動物馴養(愛心)", (s) => {
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], x: me0.x + 30, y: me0.y, state: "wandering", familiarity: 1.0, tamed: true };
+      if (s.wildlife[1]) s.wildlife[1] = { ...s.wildlife[1], x: me0.x - 30, y: me0.y + 20, state: "resting", familiarity: 0.5, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
