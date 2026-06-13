@@ -228,6 +228,13 @@ const scenarios = [
   variant("水域波光(破曉染金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 水域波光夜間映月分支：同一片水域、入夜冷月白光，跑 shimmerTint 的夜/暗路徑與夜間 strength。
   variant("水域波光(夜映月)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 水岸碎浪（196）：把玩家移到確定含水陸交界的座標（(960,-6000) 視野內 ~42 個臨陸水格），
+  // 讓相機視野滿是岸線，實跑碎浪「找岸邊→漲退→雙描邊浪沫」內層路徑（白天亮白）。
+  variant("水岸碎浪(白天)", (s) => { s.players[0].x = 960; s.players[0].y = -6000; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 水岸碎浪晨昏染暖分支：同一片岸線、破曉色溫，跑 foamTint 的 dawn/dusk 暖奶白路徑。
+  variant("水岸碎浪(破曉染暖)", (s) => { s.players[0].x = 960; s.players[0].y = -6000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 水岸碎浪夜映月分支：同一片岸線、入夜冷月白沫，跑 foamTint 的夜/暗路徑與夜間 strength。
+  variant("水岸碎浪(夜映月)", (s) => { s.players[0].x = 960; s.players[0].y = -6000; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;

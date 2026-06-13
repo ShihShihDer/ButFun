@@ -3809,6 +3809,7 @@
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
+    safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -9103,6 +9104,103 @@
         ctx.beginPath();
         ctx.ellipse(sx, sy, r * 1.6, r * 0.7, 0, 0, Math.PI * 2);
         ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 水岸碎浪（ROADMAP 196）──────────────────────────────────────────────────
+  // 水域與陸地交界處泛起一道輕輕拍岸的白色浪花：白天亮白、破曉/黃昏染暖、夜裡映冷月白。
+  // 純前端視覺、零後端：以既有 biomeAt 判定每格四鄰是否為陸地（=岸線），浪花亮度隨時間以正弦
+  // 「漲—退」起伏（像海浪拍岸），每格相位以既有確定性 sceneryHash 微調（不隨鏡頭閃爍、各段不同步）。
+  // 是 195 水面波光（水域內部反光）之後補上的「水陸交界」維度——過去水岸只是生硬的色塊邊，
+  // 現在水會輕輕拍上岸、起一道會漲退的白沫。與既有元素區隔：波光（195）＝水域內部反光（貼水面）；
+  // 碎浪（196）＝水陸交界的白沫（只在岸邊）；氛圍粒子（189/190）＝地面飄浮生命氣息——層次、位置刻意不同。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；只在有陸鄰的水格畫，岸線本就稀疏。
+  const FOAM_MAX_ALPHA = 0.5;   // 浪花最大不透明度（半透明白沫、不蓋掉水色與岸色）
+  const FOAM_PERIOD_MS = 3000;  // 拍岸漲退週期基準（比波光慢，海浪悠悠；每格再以 hash 微調避免同步）
+  const FOAM_BAND      = 6;      // 浪花沿岸帶寬（邏輯像素，round cap 軟化端點成柔沫）
+  const FOAM_MIN_LAP   = 0.06;   // 漲退亮度低於此即不畫該段（退潮時省繪製）
+
+  // 純函式：拍岸浪花的「漲退」亮度 [0,1]。以 periodMs 為週期、phaseOff 為初相，正弦起伏；
+  // 退到谷底時近 0（浪退、岸邊白沫變淡），漲到峰頂近 1（浪拍上岸、白沫最盛）。
+  // periodMs<=0 視為不動（回固定中值 0.5，仍有白沫但不漲退）。無 DOM、可測。
+  function foamLap(now, periodMs, phaseOff) {
+    if (!(periodMs > 0)) return 0.5;
+    const raw = (Math.sin((now / periodMs) * Math.PI * 2 + (phaseOff || 0)) + 1) / 2; // [0,1]
+    return raw; // 線性起伏，比波光（平方）飽滿，因白沫本就比零星反光連續
+  }
+
+  // 純函式：依日夜光照/相位給浪花色溫 {r,g,b}。破曉/黃昏染暖奶白、白天亮白、夜裡映冷月白。
+  // 白沫整體偏白（與波光的藍白反光區隔），只在色溫上隨晝夜微偏。無 DOM、可測。
+  function foamTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 240, b: 214 }; // 晨昏：暖奶白
+    if (light >= 0.5) return { r: 244, g: 250, b: 255 };                          // 白天：亮白
+    return { r: 206, g: 220, b: 242 };                                            // 夜/暗：冷月白
+  }
+
+  // 純函式：浪花整體強度 [0,1]，隨日照線性。白天最盛、夜裡仍留微沫（水面映月）。無 DOM、可測。
+  function foamStrength(light) {
+    const L = Math.max(0, Math.min(1, light));
+    return 0.45 + 0.55 * L;
+  }
+
+  // 純函式：給定水格四鄰「是否為水」，回傳四邊是否為岸（鄰格非水＝該邊臨陸）。無 DOM、可測。
+  function shoreSides(waterN, waterS, waterE, waterW) {
+    return { n: !waterN, s: !waterS, e: !waterE, w: !waterW };
+  }
+
+  // 每幀在可見「臨陸水格」的水陸交界邊繪製拍岸浪花。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawShoreFoam(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = foamTint(light, phase);
+    const strength = foamStrength(light);
+    if (strength <= 0) return;
+
+    // 與 drawGround／drawWaterShimmer 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    const isWater = (gx, gy) => biomeAt(gx * TS + TS / 2, gy * TS + TS / 2) === "water";
+
+    ctx.save();
+    ctx.lineCap = "round";
+    const baseColor = `${tint.r},${tint.g},${tint.b}`;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (!isWater(tx, ty)) continue;                 // 只在水格上找岸線
+        const sides = shoreSides(isWater(tx, ty - 1), isWater(tx, ty + 1), isWater(tx + 1, ty), isWater(tx - 1, ty));
+        if (!(sides.n || sides.s || sides.e || sides.w)) continue; // 四鄰全水＝內陸水、無岸
+
+        // 此格的漲退相位／週期微調由確定性 hash 決定（同格永遠同結果、不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 13 + 5, ty * 7 + 1);
+        const h1 = sceneryHash(tx * 5 + 3, ty * 11 + 7);
+        const period = FOAM_PERIOD_MS * (0.75 + h0 * 0.5);
+
+        const sx0 = tx * TS - camX;
+        const sy0 = ty * TS - camY;
+        // 四邊各自帶不同初相（+side 偏移）→ 各段拍岸不同步，讀起來像浪一段段拍上岸
+        const drawEdge = (ax, ay, bx, by, sidePhase) => {
+          const lap = foamLap(now, period, h1 * Math.PI * 2 + sidePhase);
+          if (lap < FOAM_MIN_LAP) return;
+          const alpha = lap * strength * FOAM_MAX_ALPHA;
+          // 寬而淡的底沫 + 細而亮的浪尖（兩道描邊，皆 round cap 軟化，零 shadowBlur）
+          ctx.strokeStyle = `rgba(${baseColor},${(alpha * 0.6).toFixed(3)})`;
+          ctx.lineWidth = FOAM_BAND * (0.85 + h0 * 0.5);
+          ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+          ctx.strokeStyle = `rgba(${baseColor},${alpha.toFixed(3)})`;
+          ctx.lineWidth = FOAM_BAND * 0.4;
+          ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+        };
+        if (sides.n) drawEdge(sx0, sy0, sx0 + TS, sy0, 0);                       // 上邊
+        if (sides.s) drawEdge(sx0, sy0 + TS, sx0 + TS, sy0 + TS, Math.PI * 0.5); // 下邊
+        if (sides.e) drawEdge(sx0 + TS, sy0, sx0 + TS, sy0 + TS, Math.PI);       // 右邊
+        if (sides.w) drawEdge(sx0, sy0, sx0, sy0 + TS, Math.PI * 1.5);           // 左邊
       }
     }
     ctx.restore();
