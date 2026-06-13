@@ -9034,6 +9034,15 @@
         ctx.fillStyle = "#d65a5a";
         ctx.fillRect(bx, by, bw * (e.hp / e.max_hp), 4);
       }
+      // 潰逃標記（ROADMAP 183）：族群被打殘或首領陣亡時殘兵潰逃，頭頂冒 💨 逃竄符號。
+      // 沿用既有名牌層、無新面板；reduceMotion 不抖動。
+      if (e.alive && e.routing) {
+        const wob = reduceMotion ? 0 : Math.sin(t * 9 + phase) * 2;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("💨", sx + 13 + wob, sy - 14);
+        ctx.textAlign = "left";
+      }
       // 兇名精英光環（ROADMAP 42/89）：旋轉荊棘冠 + 雙層脈動紅暈 + 背景大光圈。
       if (e.alive && e.notorious) {
         const pulse = 0.5 + 0.5 * Math.sin(t * 4 + e.x * 0.01);

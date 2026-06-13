@@ -201,6 +201,29 @@ impl EnemyField {
         self.chunks.values().flatten().cloned().collect()
     }
 
+    /// ROADMAP 183：族群潰逃——把以 (cx,cy) 為圓心、`radius` 半徑內、種類為 `kind`、
+    /// 存活的怪物設定 `retreat_timer = duration`，令其士氣崩潰、強制逃離玩家奔回巢穴
+    /// （沿用 ROADMAP 117 既有 retreat 逃跑路徑，零移動架構改動）。
+    /// 用 `max(duration)` 不縮短既有更久的撤退計時。回傳實際受影響的怪數（供測試/廣播判斷）。
+    pub fn rout_region(&mut self, cx: f32, cy: f32, kind: EnemyKind, radius: f32, duration: f32) -> u32 {
+        let radius_sq = radius * radius;
+        let mut affected = 0;
+        for nodes in self.chunks.values_mut() {
+            for placed in nodes {
+                if placed.enemy.kind() != kind || !placed.enemy.is_alive() {
+                    continue;
+                }
+                let dx = placed.x - cx;
+                let dy = placed.y - cy;
+                if dx * dx + dy * dy <= radius_sq {
+                    placed.retreat_timer = placed.retreat_timer.max(duration);
+                    affected += 1;
+                }
+            }
+        }
+        affected
+    }
+
     pub fn ensure_chunks_around(&mut self, px: f32, py: f32, radius: f32) {
         let (cx_min, cy_min) = chunk_key(px - radius, py - radius);
         let (cx_max, cy_max) = chunk_key(px + radius, py + radius);
@@ -1724,4 +1747,62 @@ mod tests {
         let kills = f.collect_wildlife_kills();
         assert!(kills.is_empty(), "距離超過擊殺半徑時不應有擊殺事件");
     }
+
+    // ── ROADMAP 183：族群潰逃 rout_region ──────────────────────────────────────
+
+    /// 在 (x,y) 注入一隻指定種類、滿血的測試怪，回傳其 id。
+    fn push_test_enemy(f: &mut EnemyField, idx: usize, x: f32, y: f32, kind: EnemyKind) -> (i32, i32, usize) {
+        use world_core::chunk_key;
+        let (cx, cy) = chunk_key(x, y);
+        let id = (cx, cy, idx);
+        f.chunks.entry((cx, cy)).or_default().push(PlacedEnemy {
+            id, x, y, base_level: 1, level: 1,
+            enemy: crate::combat::Enemy::new_leveled(kind, 1),
+            pack_target: None, pack_target_timer: 0.0,
+            flee_boost_timer: 0.0, retreat_timer: 0.0,
+            hunting_wildlife_target: None,
+        });
+        id
+    }
+
+    #[test]
+    fn rout_region_sets_retreat_on_in_range_same_kind() {
+        let mut f = EnemyField::new();
+        let (ox, oy) = (4000.0_f32, 4000.0_f32);
+        push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);          // 圓心，命中
+        push_test_enemy(&mut f, 1, ox + 80.0, oy, EnemyKind::ScrapDrone);   // 半徑內，命中
+        push_test_enemy(&mut f, 2, ox + 500.0, oy, EnemyKind::ScrapDrone);  // 半徑外，不命中
+        push_test_enemy(&mut f, 3, ox, oy, EnemyKind::EtherWisp);           // 異種，不命中
+
+        let affected = f.rout_region(ox, oy, EnemyKind::ScrapDrone, 200.0, ROUT_TEST_DUR);
+        assert_eq!(affected, 2, "只有半徑內同種存活怪應潰逃");
+
+        // 驗證 retreat_timer 確實設上（命中者 >0、未命中者仍為 0）。
+        let timers: Vec<f32> = f.enemies().iter()
+            .filter(|e| e.enemy.kind() == EnemyKind::ScrapDrone && (e.x - ox).abs() <= 100.0)
+            .map(|e| e.retreat_timer)
+            .collect();
+        assert!(timers.iter().all(|&t| t >= ROUT_TEST_DUR), "命中者應設上 retreat_timer");
+    }
+
+    #[test]
+    fn rout_region_ignores_dead_and_does_not_shorten_timer() {
+        let mut f = EnemyField::new();
+        let (ox, oy) = (-3000.0_f32, 2000.0_f32);
+        let dead_id = push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);
+        let long_id = push_test_enemy(&mut f, 1, ox + 10.0, oy, EnemyKind::ScrapDrone);
+        // 一隻打死、一隻先設更久的撤退計時。
+        for nodes in f.chunks.values_mut() {
+            for p in nodes {
+                if p.id == dead_id { p.enemy.attack(99999); }
+                if p.id == long_id { p.retreat_timer = 999.0; }
+            }
+        }
+        let affected = f.rout_region(ox, oy, EnemyKind::ScrapDrone, 200.0, ROUT_TEST_DUR);
+        assert_eq!(affected, 1, "死亡怪不潰逃，只有存活那隻受影響");
+        let long_timer = f.enemies().iter().find(|e| e.id == long_id).unwrap().retreat_timer;
+        assert_eq!(long_timer, 999.0, "rout 用 max，不應縮短既有更久的撤退計時");
+    }
+
+    const ROUT_TEST_DUR: f32 = 6.0;
 }

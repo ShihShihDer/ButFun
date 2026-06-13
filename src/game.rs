@@ -299,6 +299,8 @@ pub fn spawn(app: AppState) {
                             alive: p.enemy.is_alive(),
                             notorious: p.level >= p.base_level.saturating_add(3),
                             resting: is_night && crate::enemy_field::is_night_rester(p.id),
+                            // ROADMAP 183：retreat_timer>0 → 潰逃中，前端畫 💨。
+                            routing: p.retreat_timer > 0.0,
                         })
                         .collect()
                 } else {
@@ -1313,6 +1315,9 @@ pub fn spawn(app: AppState) {
                                     "🩸 [{colony_name}] Alpha 重傷！號令「{kind_name}」援軍 {count} 隻馳援、圍護首領——把握時機速戰速決！"
                                 ));
                             }
+                            // ROADMAP 183：潰逃事件只由 ws.rs 擊殺路徑（on_monster_killed_near）產生並處理，
+                            // 主 tick 的巢穴推進不會發出此事件，這裡僅補 exhaustive 分支。
+                            MonsterColonyEvent::ColonyRouted { .. } => {}
                         }
                     }
                 }
