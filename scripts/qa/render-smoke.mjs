@@ -382,6 +382,9 @@ const scenarios = [
   //（春夜螢火 233 的白天對偶）。spring 與 summer 各跑一次確認兩季皆觸發。
   variant("春日彩蝶", (s) => { s.current_season = "spring"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   variant("夏日彩蝶", (s) => { s.current_season = "summer"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 秋日紅蜻蜓（237）：current_season=autumn ＋ 白天（light 0.82 > 0.42）→ 跑 drawDragonflies 的蜻蜓繪製分支
+  //（蜻蜓勢淡入→停—衝疾射→翅膀嗡振）。6 幀已足以讓 _dragonflyFade 越過 0.01 門檻進入繪製主路徑（春夏彩蝶的秋日對偶）。
+  variant("秋日紅蜻蜓", (s) => { s.current_season = "autumn"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;

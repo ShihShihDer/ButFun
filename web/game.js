@@ -378,6 +378,17 @@
   const BUTTERFLY_COUNT = 18;        // 彩蝶隻數（白天偶見、蝶大較顯眼，比螢火更少不鋪滿）
   let _butterflyFade = 0;            // 春夏彩蝶淡入淡出進度 [0,1]（非春夏白天→0，春夏白天→1，逐幀緩緩趨近）
   let _butterflies = null;           // 惰性生成的彩蝶池（畫面比例座標的位置、緩游/繞圈相位、拍翅相位、尺寸、色）
+  // 秋日紅蜻蜓（ROADMAP 237）：233 春夜螢火、236 春夏彩蝶給了春夜、春夏白天各一隻貼地小生命，這條
+  // 「季節×晝夜×貼地小生命」線目前獨缺秋天的白天。本切片補上秋季的白天地面生命——當季節為秋、且為
+  // 白天，草地上空點綴幾隻赤紅的秋蜻蜓：各自懸停定點一陣，再忽地疾射到附近新位置（停—頓—衝的飛行），
+  // 四片細長翅膀快速嗡振、身體赤紅纖長（赤とんぼ，東亞最具代表性的秋日意象）。與春夏彩蝶刻意對偶又
+  // 區隔——彩蝶是連續正弦繞圈翩飛、暖系花色、翅膀緩緩開合；紅蜻蜓是停—衝間歇直線疾射、赤紅單色、
+  // 翅膀高頻嗡振。與白晝飛鳥（194，高空成群橫越的剪影）也區隔——蜻蜓貼地花叢高度單飛點停、不結隊。
+  // 純前端、讀既有 currentSeason＋daynight.light、零後端、零協議改動。
+  const DRAGONFLY_DAY_LIGHT = 0.42;  // daynight.light 高於此值算「白天」（與彩蝶／夜門檻同口徑）
+  const DRAGONFLY_COUNT = 12;        // 紅蜻蜓隻數（秋日偶見、蜻蜓懸停顯眼，比彩蝶更少不鋪滿）
+  let _dragonflyFade = 0;            // 秋日紅蜻蜓淡入淡出進度 [0,1]（非秋日白天→0，秋日白天→1，逐幀緩緩趨近）
+  let _dragonflies = null;           // 惰性生成的紅蜻蜓池（畫面比例座標的位置、停—衝起訖點/相位、翅振相位、朝向、尺寸）
   // 秋夜薄霧（ROADMAP 234）：231 冬夜極光、232 夏夜銀河、233 春夜螢火各給了冬、夏、春一張「夜臉」，
   // 唯獨秋季的夜仍與其他季節無異——「給每季一張夜臉」只差最後一塊。本切片給秋季補上它的夜景：
   // 當季節為秋天且入夜，下半草地高度緩緩漫起一層銀白薄霧，橫向極緩飄移、勻緩呼吸，待天亮又緩緩散去，
@@ -4122,6 +4133,7 @@
     safeDraw("blossom", () => drawBlossom(renderNow, _weatherDt)); // 春日花飛（228）
     safeDraw("summerMotes", () => drawSummerMotes(renderNow, _weatherDt)); // 夏日蟬夏（229）
     safeDraw("butterflies", () => drawButterflies(renderNow, _weatherDt)); // 春夏彩蝶（236），春夏白天草地上空翩飛的彩色蝴蝶（春夜螢火的白天對偶）
+    safeDraw("dragonflies", () => drawDragonflies(renderNow, _weatherDt)); // 秋日紅蜻蜓（237），秋季白天草地上空懸停疾射的赤紅秋蜻（春夏彩蝶的秋日對偶）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -11595,6 +11607,138 @@
       const r = b.size;
       const spread = butterflyFlap(t * b.flaps + b.flap);
       drawOneButterfly(px, py, r, spread, b.col, _butterflyFade * 0.95);
+    }
+  }
+
+  // ── ROADMAP 237: 秋日紅蜻蜓（春夏彩蝶 236 的秋日對偶）─────────────────────────
+  // 純函式：秋季的白天回 1、其餘回 0（紅蜻蜓只在秋日白天出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function dragonflyTargetIntensity(season, light) {
+    const day = (typeof light === "number" ? light : 1) >= DRAGONFLY_DAY_LIGHT;
+    return (season === "autumn" && day) ? 1 : 0;
+  }
+
+  // 純函式：把目前蜻蜓季勢 cur 朝目標 target 以固定速率逼近（每秒 DRAGONFLY_FADE_RATE），夾在 [0,1]。
+  // 與彩蝶／螢火同樣從容（入秋日白天蜻蜓緩緩飛起、出秋日白天緩緩散去）。壞值（NaN）退回 0。
+  function dragonflyFadeStep(cur, target, dt) {
+    const DRAGONFLY_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與彩蝶／螢火同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * DRAGONFLY_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：蜻蜓「停—衝」飛行的位移進度 [0,1]＝一個循環裡前段懸停不動（回 0）、後段忽地疾射到位（快速升到 1）。
+  // 與彩蝶 butterflyFlap（連續正弦開合）刻意區隔——蜻蜓是間歇的停—頓—衝、非連續飄飛。phase 取小數部當循環相位。
+  // 壞值（NaN）退回 0。
+  function dragonflyDart(phase) {
+    if (!(phase === phase)) return 0;            // NaN 檢查（NaN !== NaN）
+    let f = phase - Math.floor(phase);           // 0..1 循環相位
+    const HOLD = 0.72;                           // 前 72% 懸停定點不動
+    if (f < HOLD) return 0;
+    const s = (f - HOLD) / (1 - HOLD);           // 0..1 疾射段進度
+    // smoothstep 收尾＝起步猛、到位緩，賣「忽地一衝、穩穩停住」的蜻蜓手感。
+    return Math.max(0, Math.min(1, s * s * (3 - 2 * s)));
+  }
+
+  // 純函式：蜻蜓翅膀的高頻嗡振強度 [0,1]＝以快頻正弦在 0.55~1.0 間細振，賣四片薄翅「快速嗡振」的微顫。
+  // 與彩蝶 butterflyFlap（0.25~1.0 大幅開合）刻意區隔——蜻蜓翅幾乎全展、只快速細顫，不大開大合。壞值退回 0.55。
+  function dragonflyWingBuzz(phase) {
+    if (!(phase === phase)) return 0.55;         // NaN 檢查
+    const s = 0.5 + 0.5 * Math.sin(phase);       // 0..1
+    const v = 0.55 + 0.45 * s;                   // 0.55..1.0（翅膀恆近全展、只細顫）
+    return Math.max(0, Math.min(1, v));
+  }
+
+  // 秋日紅蜻蜓的赤紅調色盤（赤紅／鏽橘／琥珀紅，各蜻蜓生成時隨機取一色），呼應秋色、與彩蝶暖系花色刻意拉開。
+  const DRAGONFLY_COLORS = [
+    [228, 70, 55],     // 赤紅
+    [216, 96, 48],     // 鏽橘
+    [206, 120, 60],    // 琥珀紅
+  ];
+
+  // 生成紅蜻蜓池（一次性、之後快取，不每幀重建→確定性、不隨鏡頭抖動）。各蜻蜓：當前畫面比例座標（起點 sx,sy）、
+  // 下一個疾射目標（tx,ty）、停—衝循環相位 dphase／頻率 dfreq、翅振相位 wphase／頻率 wfreq、朝向 ang、尺寸、色。
+  function makeDragonflies() {
+    const flies = [];
+    for (let i = 0; i < DRAGONFLY_COUNT; i++) {
+      const sx = Math.random();
+      const sy = 0.45 + Math.random() * 0.43;     // 草地花叢高度
+      flies.push({
+        sx, sy,
+        tx: sx, ty: sy,                            // 初始目標＝起點（首個循環就地懸停，下個循環才選新點）
+        dphase: Math.random(),                     // 停—衝循環相位（0..1）
+        dfreq: 0.18 + Math.random() * 0.12,        // 停—衝頻率（每秒走幾個循環；慢→停得久、衝得疏）
+        wphase: Math.random() * Math.PI * 2,       // 翅振相位
+        wfreq: 26 + Math.random() * 10,            // 翅振頻率（高頻嗡振，遠快於彩蝶拍翅）
+        ang: 0,                                     // 當前朝向（朝疾射方向，停時保留上次朝向）
+        size: 3.4 + Math.random() * 2.0,
+        col: DRAGONFLY_COLORS[i % DRAGONFLY_COLORS.length],
+      });
+    }
+    return flies;
+  }
+
+  // 繪一隻蜻蜓（畫面座標 px,py；半徑 r；朝向 ang；翅振強度 buzz 0..1；色 col；整體不透明度 a）。
+  // 纖長赤紅身體沿朝向畫出；四片細長半透明翅膀（左右各前後一對）橫展、隨 buzz 微顫。純圖形、無文案。
+  function drawOneDragonfly(px, py, r, ang, buzz, col, a) {
+    const [cr, cg, cb] = col;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.globalAlpha = a;
+    // 四片細長翅膀（沿身體中段橫展，前後各一對；半透明、隨 buzz 略微改變展幅）
+    const wingL = r * (1.05 + 0.15 * buzz);   // 翅長
+    const wingW = r * 0.32;                    // 翅寬（細長）
+    ctx.fillStyle = `rgba(235,238,245,${(a * 0.42 * (0.7 + 0.3 * buzz)).toFixed(3)})`;
+    for (const sgn of [-1, 1]) {               // 上下兩側
+      for (const dx of [-r * 0.18, r * 0.22]) { // 前後兩對
+        ctx.beginPath();
+        ctx.ellipse(dx, sgn * wingL * 0.5, wingW, wingL * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // 纖長身體（沿 x 軸；頭端略粗、尾端漸細以一截橢圓代表）
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.95)`;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.15, r * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 頭部小圓點
+    ctx.beginPath();
+    ctx.arc(r * 1.0, 0, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 每幀更新並繪製秋日紅蜻蜓。非秋日白天時 _dragonflyFade 緩緩歸零、池清空、零開銷早退。
+  // 畫在世界粒子層（彩蝶之後）——蜻蜓是貼地花叢上空、玩家眼前的白天前景生命；用畫面座標、不隨鏡頭平移。
+  function drawDragonflies(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = dragonflyTargetIntensity(currentSeason, light);
+    _dragonflyFade = dragonflyFadeStep(_dragonflyFade, target, Math.max(0, (dt || 0)));
+    if (_dragonflyFade <= 0.01) { _dragonflies = null; return; }
+    if (reduceMotion || !_parallaxEnabled) { _dragonflyFade = 0; _dragonflies = null; return; }
+    if (!_dragonflies) _dragonflies = makeDragonflies();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+
+    for (const d of _dragonflies) {
+      // 停—衝循環：相位累進，跨越整數邊界（一個循環結束）就把上次目標收為新起點、再就近抽下一個疾射目標。
+      const prev = d.dphase;
+      d.dphase = prev + (dt || 0) * d.dfreq;
+      if (Math.floor(d.dphase) > Math.floor(prev)) {
+        d.sx = d.tx; d.sy = d.ty;                              // 上個循環的落點＝這個循環的起點
+        d.tx = Math.min(0.98, Math.max(0.02, d.sx + (Math.random() - 0.5) * 0.18)); // 就近橫向疾射（±9% 螢幕寬）
+        d.ty = Math.min(0.88, Math.max(0.45, d.sy + (Math.random() - 0.5) * 0.12)); // 仍鎖在草地帶內
+        const dxn = d.tx - d.sx, dyn = d.ty - d.sy;
+        if (dxn * dxn + dyn * dyn > 1e-6) d.ang = Math.atan2(dyn * H, dxn * W);      // 朝疾射方向（依實際像素比例算角度）
+      }
+      const k = dragonflyDart(d.dphase);                        // 0（懸停）→1（到位）的停—衝位移進度
+      const px = (d.sx + (d.tx - d.sx) * k) * W;
+      const py = (d.sy + (d.ty - d.sy) * k) * H;
+      const buzz = dragonflyWingBuzz(t * d.wfreq + d.wphase);
+      drawOneDragonfly(px, py, d.size, d.ang, buzz, d.col, _dragonflyFade * 0.9);
     }
   }
 
