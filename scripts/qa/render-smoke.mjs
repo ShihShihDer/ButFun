@@ -451,6 +451,30 @@ for (const sc of scenarios) {
   else if (!cycErr) console.log("  ✅ 日夜循環：乾淨");
 }
 
+// 四季草色（235）：地面隨季染色（春嫩／夏基準／秋金／冬霜），跨季以 _groundTint 逐幀 lerp。
+// 每幀 updateGroundTint→drawGround 內掃一層季節色＋drawGrassTuft 同步染色。逐季切換並各連跑 ~40 幀
+//（每幀 +16ms ≈ 0.64s，足夠讓 GROUND_TINT_RATE 0.35/s 的 lerp 從上一季色明顯轉向當季色），實跑
+// seasonGroundTintTarget／groundTintStep／applyGroundTint 三條純函式路徑與地表掃色 fillRect、且
+// 涵蓋「換季轉場」（非僅穩態），確認跨季 lerp 與草叢染色全程零繪製例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：四季草色（地面隨季染色，逐季切換各跑 40 幀觸發跨季 lerp 轉場）──");
+  const grassSnap = JSON.parse(JSON.stringify(snapshot));
+  grassSnap.daynight = { phase: "day", light: 0.85, night_danger: false };
+  grassSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  let grassErr = false;
+  for (const season of ["spring", "summer", "autumn", "winter", "spring"]) {
+    grassSnap.current_season = season;
+    lastWS.onmessage({ data: JSON.stringify({ ...grassSnap, type: "snapshot" }) });
+    const r = pump(`四季草色 ${season}`, 40);
+    if (r instanceof Error) { grassErr = true; break; }
+  }
+  if (grassErr) { failed = true; console.error("  ❌ 四季草色：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 四季草色：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!grassErr) console.log("  ✅ 四季草色：乾淨");
+}
+
 // 冬日飄雪（226）：雪花緩降（vy ~26）需數百毫秒才落出畫面下緣，連跑 ~200 幀（每幀 +16ms ≈ 3.2s）
 // 才實跑「淡入→撒雪花→緩降搖擺→落地 despawn→補新雪→薄霜白幕」完整迴圈（一般 6 幀只碰到開頭）。
 {
