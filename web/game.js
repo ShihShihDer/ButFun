@@ -7431,7 +7431,7 @@
       } else if (npc.id === "traveler") {
         drawTravelerLook(sx, by, t, npc.name);
       } else if (npc.id.startsWith("resident_")) {
-        drawResidentLook(sx, by, t, npc.id, npc.name, npc.is_expedition, npc.hp_pct, npc.alarmed);
+        drawResidentLook(sx, by, t, npc.id, npc.name, npc.is_expedition, npc.hp_pct, npc.alarmed, npc.celebrating);
       } else {
         // 未知 NPC：退回通用外觀
         ctx.fillStyle = "#777";
@@ -8918,7 +8918,7 @@
 
   // 路人居民外觀（ROADMAP 115）：簡單素人造型，4 種配色對應 4 種 persona（依 index 取餘）。
   // 純裝飾性，不可互動，比深度 AI NPC 小一圈以示區別。
-  function drawResidentLook(sx, by, t, id, name, isExpedition, hpPct, alarmed) {
+  function drawResidentLook(sx, by, t, id, name, isExpedition, hpPct, alarmed, celebrating) {
     // 依 index 決定衣服色調（市場=橙棕、農夫=草綠、廣場=藍紫、遊民=灰褐）
     const idx = parseInt(id.replace("resident_", ""), 10) || 0;
     const bodyColors = ["#8b5e2a", "#4a7a3a", "#3a5a8a", "#6a6a6a"];
@@ -8971,6 +8971,11 @@
       const bob = reduceMotion ? 0 : Math.sin(t * 6 + sx * 0.05) * 1.5;
       ctx.font = "13px sans-serif"; ctx.textAlign = "center";
       ctx.fillText("😰", sx, by - 24 + bob);
+    } else if (celebrating) {
+      // 凱旋歡慶（ROADMAP 185）：頭頂浮現 🎉 慶賀泡泡，活潑上下跳動（比 😰 更快更高，暗示雀躍）。
+      const hop = reduceMotion ? 0 : Math.abs(Math.sin(t * 9 + sx * 0.05)) * 3.5;
+      ctx.font = "14px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("🎉", sx, by - 25 - hop);
     }
   }
 

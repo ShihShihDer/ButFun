@@ -188,6 +188,9 @@ const ALARM_SPEED_MULT: f32 = 1.35;
 /// 居民環繞城中心廣場聚集的基準半徑（px）。
 const HUDDLE_RADIUS: f32 = 64.0;
 
+/// 凱旋歡慶持續秒數（ROADMAP 185）：菁英 Alpha 被討伐後，城鎮居民原地歡慶的時長。
+const CELEBRATE_DURATION_SECS: f32 = 8.0;
+
 /// 依索引把居民確定性地散佈在城中心廣場周圍，避免全部疊在同一點。
 /// 用黃金角分布 + 內外兩圈交錯，讓聚集看起來自然成團。
 fn huddle_spot(index: usize) -> (f32, f32) {
@@ -417,6 +420,9 @@ pub struct ResidentNpc {
     // ── 生態守望（ROADMAP 180）────────────────────────
     /// 是否正處於生態危機避難狀態（奔回廣場、頭頂 😰）。由 ResidentManager 每幀依城鎮整體警戒設定。
     pub alarmed: bool,
+    // ── 凱旋歡慶（ROADMAP 185）────────────────────────
+    /// 是否正處於菁英 Alpha 被討伐的歡慶狀態（原地雀躍、頭頂 🎉）。由 ResidentManager 每幀依城鎮歡慶計時設定。
+    pub celebrating: bool,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -494,6 +500,7 @@ impl ResidentNpc {
             max_hp: 20.0,
             expedition: None,
             alarmed: false,
+            celebrating: false,
         }
     }
 
@@ -509,7 +516,7 @@ impl ResidentNpc {
     }
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
-    fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase, alarmed: bool, index: usize) {
+    fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase, alarmed: bool, celebrating: bool, index: usize) {
         // ── 野外採集隊邏輯（ROADMAP 177）──
         // 採集隊已在野外執行任務，優先於避難（不會半途折返廣場），故不標記 alarmed。
         if let Some(ref mut ex) = self.expedition {
@@ -551,7 +558,10 @@ impl ResidentNpc {
         // ── 生態守望避難（ROADMAP 180）──
         // 城鎮整體警戒時，居民放下手邊事、急行軍奔回城中心廣場確定性散佈點聚集，
         // 抵達後原地待避；危機期間不閒晃、不互動（互動類事件由 ResidentManager 統一抑制）。
+        // 避難與歡慶旗標一律先更新（在任何提早 return 之前），避免狀態殘留導致前端泡泡顯示錯亂。
+        // 互斥由 ResidentManager 保證：避難優先，故同幀不會同時為 true。
         self.alarmed = alarmed;
+        self.celebrating = celebrating;
         if alarmed {
             let (hx, hy) = huddle_spot(index);
             let dx = hx - self.x;
@@ -562,6 +572,13 @@ impl ResidentNpc {
                 self.x += dx / dist * step;
                 self.y += dy / dist * step;
             }
+            return;
+        }
+
+        // ── 凱旋歡慶（ROADMAP 185）──
+        // 菁英 Alpha 被討伐後，居民放下手邊事、原地雀躍歡呼（不移動），頭頂浮現 🎉。
+        // 歡慶期間不閒晃、不互動（互動類事件由 ResidentManager 統一抑制），讓歡慶氣氛集中而鮮明。
+        if celebrating {
             return;
         }
 
@@ -630,6 +647,8 @@ pub struct ResidentManager {
     pub expedition_cooldown: f32,
     /// 城鎮整體是否處於生態危機避難警戒（ROADMAP 180）；遲滯切換，避免在閾值附近抖動。
     town_alarmed: bool,
+    /// 凱旋歡慶剩餘秒數（ROADMAP 185）；> 0 且未在避難時，城鎮居民原地歡慶（頭頂 🎉）。由 notify_hero_triumph 點燃。
+    celebrate_timer: f32,
 }
 
 impl ResidentManager {
@@ -648,7 +667,19 @@ impl ResidentManager {
             last_prosperity_level: 1, // 初始視為平靜，避免啟動立即廣播
             expedition_cooldown: 300.0, // 初始 5 分鐘冷卻，給世界暖機時間
             town_alarmed: false,
+            celebrate_timer: 0.0,
         }
+    }
+
+    /// ROADMAP 185：菁英 Alpha（覺醒／霸主）被討伐時由 ws.rs 呼叫，點燃城鎮凱旋歡慶。
+    /// 城鎮仍處生態避難警戒（180）時不歡慶——危機未解、避難優先，回傳 0（連捷報都不發）；
+    /// 否則點亮歡慶計時並回傳將參與歡慶的在城居民數（採集隊在外者除外），供廣播判斷是否有人慶賀。
+    pub fn notify_hero_triumph(&mut self) -> usize {
+        if self.town_alarmed {
+            return 0;
+        }
+        self.celebrate_timer = CELEBRATE_DURATION_SECS;
+        self.residents.iter().filter(|r| r.expedition.is_none()).count()
     }
 
     /// 每幀推進：移動所有居民 + 生命週期 + 人口增減 + 思想泡泡計時。
@@ -676,6 +707,14 @@ impl ResidentManager {
             });
         }
         let alarmed = self.town_alarmed;
+
+        // ── 凱旋歡慶（ROADMAP 185）：菁英 Alpha 被討伐後城鎮短暫歡慶 ──
+        // 避難警戒優先（危機未解不慶祝）：歡慶計時雖在跑，只要城鎮仍在避難就不歡慶，
+        // 兩者互斥，避免「一邊驚慌避難、一邊歡呼」的矛盾。
+        if self.celebrate_timer > 0.0 {
+            self.celebrate_timer = (self.celebrate_timer - dt).max(0.0);
+        }
+        let celebrating = self.celebrate_timer > 0.0 && !alarmed;
 
         // 0. 野外採集隊成敗判定（ROADMAP 177）
         let mut failed = false;
@@ -754,10 +793,11 @@ impl ResidentManager {
         // 1. 推進每位居民的年齡、移動、思想計時
         for (i, r) in self.residents.iter_mut().enumerate() {
             r.age_secs += dt;
-            r.tick(dt, &mut self.rng, phase, alarmed, i);
-            // 生態守望（ROADMAP 180）：避難期間居民只顧奔回廣場聚集，
-            // 不發思想泡泡 / 工作動態 / 小事件 / 搭話 / 求助 / 送禮——讓危機氣氛安靜而緊繃。
-            if alarmed {
+            r.tick(dt, &mut self.rng, phase, alarmed, celebrating, i);
+            // 生態守望（ROADMAP 180）：避難期間居民只顧奔回廣場聚集；
+            // 凱旋歡慶（ROADMAP 185）：歡慶期間居民只顧原地歡呼。
+            // 兩者皆抑制日常演出（思想泡泡 / 工作動態 / 小事件 / 搭話 / 求助 / 送禮），讓當下氣氛集中鮮明。
+            if alarmed || celebrating {
                 continue;
             }
             // 思想泡泡計時（ROADMAP 118）
@@ -1061,7 +1101,7 @@ impl ResidentManager {
     }
 
     /// 回傳居民視圖清單：(id, name, x, y, is_expedition, hp_pct)。供快照廣播用。
-    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32, bool, Option<f32>, bool)> {
+    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32, bool, Option<f32>, bool, bool)> {
         self.residents.iter().map(|r| (
             r.id.as_str(),
             r.name,
@@ -1070,6 +1110,7 @@ impl ResidentManager {
             r.expedition.is_some(),
             if r.expedition.is_some() { Some(r.hp / r.max_hp) } else { None },
             r.alarmed, // ROADMAP 180：生態危機避難中（前端顯示 😰）
+            r.celebrating, // ROADMAP 185：菁英 Alpha 被討伐歡慶中（前端顯示 🎉）
         ))
     }
 
@@ -2139,6 +2180,67 @@ mod tests {
         };
         assert!(after < before, "避難時居民應更靠近城中心（before={before}, after={after}）");
         assert!(mgr.residents[0].alarmed, "避難中居民 alarmed 應為 true");
+    }
+
+    // ── 菁英 Alpha 殞落凱旋（ROADMAP 185）測試 ──────────────────────────────────
+
+    #[test]
+    fn hero_triumph_ignites_celebration_and_counts_in_town_residents() {
+        let mut mgr = ResidentManager::new();
+        // 平時（未避難）討伐菁英 → 點燃歡慶，回傳在城居民數（無採集隊時 = 全員）。
+        let cheering = mgr.notify_hero_triumph();
+        assert_eq!(cheering, mgr.residents.len(), "未在避難時，全體在城居民都會歡慶");
+        assert!(mgr.celebrate_timer > 0.0, "應點亮歡慶計時");
+        // 一幀後居民 celebrating 應為 true
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        assert!(mgr.residents.iter().all(|r| r.celebrating), "歡慶幀內居民 celebrating 應為 true");
+    }
+
+    #[test]
+    fn hero_triumph_suppressed_while_town_alarmed() {
+        let mut mgr = ResidentManager::new();
+        // 先進入生態避難警戒
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(mgr.town_alarmed);
+        // 危機未解時討伐菁英 → 不歡慶（避難優先），回傳 0
+        let cheering = mgr.notify_hero_triumph();
+        assert_eq!(cheering, 0, "城鎮避難中不該歡慶");
+        assert_eq!(mgr.celebrate_timer, 0.0, "避難中不該點亮歡慶計時");
+    }
+
+    #[test]
+    fn celebration_yields_to_alarm_when_crisis_strikes_mid_party() {
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        // 歡慶中突然生態壓力衝頂 → 避難壓過歡慶，居民不再 celebrating（顯示 😰 而非 🎉）。
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(mgr.town_alarmed, "壓力衝頂應進入避難");
+        assert!(mgr.residents.iter().all(|r| !r.celebrating), "避難優先，歡慶旗標應被壓下");
+        assert!(mgr.residents.iter().all(|r| r.alarmed), "居民應改為避難狀態");
+    }
+
+    #[test]
+    fn celebration_expires_after_duration() {
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        // 推進超過歡慶時長，歡慶自然結束、居民散回日常。
+        let mut elapsed = 0.0;
+        while elapsed <= CELEBRATE_DURATION_SECS + 1.0 {
+            mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
+            elapsed += 0.5;
+        }
+        assert_eq!(mgr.celebrate_timer, 0.0, "超時後歡慶計時應歸零");
+        assert!(mgr.residents.iter().all(|r| !r.celebrating), "超時後居民不應再歡慶");
+    }
+
+    #[test]
+    fn celebration_views_expose_flag() {
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        // views() 第 8 元素（celebrating）應隨歡慶為 true，供快照傳給前端。
+        assert!(mgr.views().all(|(_, _, _, _, _, _, _, celebrating)| celebrating),
+            "歡慶中 views() 的 celebrating 應為 true");
     }
 
     #[test]
