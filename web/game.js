@@ -3810,6 +3810,7 @@
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
+    safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -9201,6 +9202,87 @@
         if (sides.s) drawEdge(sx0, sy0 + TS, sx0 + TS, sy0 + TS, Math.PI * 0.5); // 下邊
         if (sides.e) drawEdge(sx0 + TS, sy0, sx0 + TS, sy0 + TS, Math.PI);       // 右邊
         if (sides.w) drawEdge(sx0, sy0, sx0, sy0 + TS, Math.PI * 1.5);           // 左邊
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 草原微風 / 草浪（ROADMAP 197）────────────────────────────────────────
+  // 一陣微風以斜向「亮帶」緩緩掃過草原/森林 tile，草色隨風起伏明暗——像風吹過草原時
+  // 一波波被陽光掃亮的草浪。純前端視覺、零後端：亮帶是沿固定風向行進的正弦波（行波），
+  // 同一世界座標在同一時刻永遠同亮度（不隨鏡頭閃爍）；色溫沿用既有 daynight 判定。
+  // 是 195/196「水面會動」的陸地對偶——過去水域會閃會拍岸、草地卻永遠靜止，現在草也會被風吹動。
+  // 與既有元素區隔：草浪（197）＝草地 tile 上隨風移動的「亮帶」（限草原/森林、貼地表、橫掃）；
+  // 水面波光（195）＝水域內部反光；水岸碎浪（196）＝水陸交界白沫；氛圍粒子（189/190）＝地面飄浮
+  // 生命氣息（非貼地、非橫掃）；天氣粒子（93）＝下雨/沙暴——層次、位置、動法刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；只有落在風帶波峰上的
+  // 少數草格會被畫（亮度低於門檻即跳過），多數草格每幀被略過，零粒子池、零逐幀物理。
+  const WIND_PERIOD_MS  = 5200; // 一陣風波峰掃過同一點的週期（緩，微風悠悠）
+  const WIND_WAVELENGTH = 520;  // 相鄰風帶波峰的世界距離（px；寬帶，整片草原同時有一兩道在掃）
+  const WIND_DX         = 0.86; // 風向單位向量（斜向右下，與既有斜射天象呼應）
+  const WIND_DY         = 0.51; // ↑（WIND_DX,WIND_DY 已約略正規化，僅作行波相位投影用）
+  const WIND_SHARP      = 3;    // 波峰銳度：raw^SHARP 讓多數草格暗、只有窄窄一道亮帶被掃亮
+  const WIND_MIN_GUST   = 0.12; // 風帶亮度低於此即不畫該格（多數草格此刻不在波峰上，省繪製）
+  const WIND_MAX_ALPHA  = 0.13; // 亮帶最大不透明度（極淡的提亮、不蓋掉草色，只讓草「被掃亮」一下）
+
+  // 純函式：行波在某點的「陣風」亮度 [0,1]。phaseOff 為該點沿風向的空間相位（投影/波長×2π），
+  // 隨時間前移形成行波；raw 為 [0,1] 正弦，^sharp 讓波峰尖、波谷寬（讀起來像一道窄亮帶在掃，
+  // 而非整片同亮）。periodMs<=0 視為無風（回 0）；sharp<=0 視為線性（不銳化）。無 DOM、可測。
+  function windGust(now, periodMs, phaseOff, sharp) {
+    if (!(periodMs > 0)) return 0;
+    const raw = (Math.sin(phaseOff - (now / periodMs) * Math.PI * 2) + 1) / 2; // [0,1] 行波
+    return sharp > 0 ? Math.pow(raw, sharp) : raw;
+  }
+
+  // 純函式：依日夜光照/相位給草浪亮帶的色溫 {r,g,b}。破曉/黃昏染金、白天暖白（陽光掃過草尖）、
+  // 夜裡映冷月白（風仍在、只是淡）。無 DOM、可測。
+  function windTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 236, b: 176 }; // 晨昏：金橘暖陽
+    if (light >= 0.5) return { r: 252, g: 250, b: 222 };                          // 白天：暖白草光
+    return { r: 196, g: 212, b: 232 };                                            // 夜/暗：冷月白
+  }
+
+  // 純函式：草浪整體強度 [0,1]，隨日照線性。白天最明顯（陽光掃草尖），夜裡仍留微光（風不歇）。無 DOM、可測。
+  function windStrength(light) {
+    const L = Math.max(0, Math.min(1, light));
+    return 0.3 + 0.7 * L;
+  }
+
+  // 每幀在可見草原/森林 tile 上繪製隨風掃過的亮帶。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawWindRipple(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const strength = windStrength(light);
+    if (strength <= 0) return;
+    const tint = windTint(light, phase);
+
+    // 與 drawGround 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const b = biomeAt(tx * TS + TS / 2, ty * TS + TS / 2);
+        if (b !== "meadow" && b !== "forest") continue; // 只在草地起草浪
+        const wx = tx * TS;
+        const wy = ty * TS;
+        // 沿風向投影出空間相位；每格再以確定性 hash 微抖相位，讓波前是不規則草緣、非死直線。
+        const proj = wx * WIND_DX + wy * WIND_DY;
+        const jitter = (sceneryHash(tx * 17 + 3, ty * 13 + 7) - 0.5) * 0.9;
+        const phaseOff = (proj / WIND_WAVELENGTH) * Math.PI * 2 + jitter;
+        const g = windGust(now, WIND_PERIOD_MS, phaseOff, WIND_SHARP);
+        if (g < WIND_MIN_GUST) continue; // 此格此刻不在波峰上、不畫，省繪製
+
+        const dx = Math.round(tx * TS - camX);
+        const dy = Math.round(ty * TS - camY);
+        const alpha = g * strength * WIND_MAX_ALPHA;
+        ctx.fillStyle = `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`;
+        ctx.fillRect(dx, dy, TS + 1, TS + 1); // 整格極淡提亮，疊出一道被風掃亮的草浪
       }
     }
     ctx.restore();

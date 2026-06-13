@@ -235,6 +235,13 @@ const scenarios = [
   variant("水岸碎浪(破曉染暖)", (s) => { s.players[0].x = 960; s.players[0].y = -6000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 水岸碎浪夜映月分支：同一片岸線、入夜冷月白沫，跑 foamTint 的夜/暗路徑與夜間 strength。
   variant("水岸碎浪(夜映月)", (s) => { s.players[0].x = 960; s.players[0].y = -6000; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 草原微風／草浪（197）：城鎮中心 (3000,3000) 是成片草原，視野滿是草地 tile，實跑草浪
+  // 「投影風帶相位→陣風亮度→提亮草格」內層路徑（白天暖白草光，跑 windTint 白天分支）。
+  variant("草原微風(白天)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 草浪晨昏染金分支：同一片草原、破曉色溫，跑 windTint 的 dawn/dusk 金橘路徑。
+  variant("草原微風(破曉染金)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 草浪夜映月分支：同一片草原、入夜冷月白，跑 windTint 的夜/暗路徑與夜間 strength（風不歇、仍留微光）。
+  variant("草原微風(夜映月)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
