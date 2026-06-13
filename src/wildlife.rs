@@ -419,6 +419,29 @@ const POUNCE_REACH: f32 = 10.0;
 const POUNCE_DURATION_MIN: f32 = 0.45;
 const POUNCE_DURATION_MAX: f32 = 0.8;
 
+// ─── ROADMAP 224：野鹿頂角較勁（deer antler sparring）──────────────────────────
+// 承接 220～223 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
+// 小動物專屬的「捧食啃咬」、223 給了掠食者一側野狐專屬的「撲鼠」——獵物三種裡，野鳥（飛／鳴）與
+// 小動物（捧食）都已有只屬於自己的姿態，唯獨**野鹿**行為仍與通用無異：吃草／群聚／放哨／理毛，
+// 少了鹿最招牌、玩家一眼認得的那一幕——兩頭雄鹿低頭相抵、鹿角頂在一起一推一退地較勁。本切片給
+// 野鹿補上專屬的「頂角較勁」，把「獵物全員物種差異化」收尾：白天平靜歇息的當口，身邊有同種成體
+// 夥伴貼得夠近時，兩頭成年野鹿偶爾低頭抵角較力一小段（前端畫成頭對頭、一推一退地頂撞，頭頂浮 💥），
+// 較完再分開起身漫遊。與 216 理毛（💕 溫柔依偎）刻意對成一對：理毛是「成員之間互相照拂」的柔，
+// 較勁是「成員之間試探力量」的剛——同一片鹿群，既會安靜地依偎理毛、也會偶爾抵角較勁，群的社交
+// 第一次有了剛柔兩面。複用 216 同框架（同種成體配對 + 機率轉入），只屬於野鹿：野鳥／小動物不較勁。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 sparring 字串沿用 state_str；計時隨狀態
+// 變體攜帶，無新欄位）、記憶體模式。威脅永遠優先：較勁只在白天平靜時發生，掠食者／玩家一旦逼近
+// 立刻中斷改逃竄（呼叫端先判威脅）。
+/// 較勁夥伴半徑（像素）——身邊有同種成體在此近距離內，歇息時才可能低頭抵角較勁（比理毛更貼近，
+/// 因為抵角要頭碰頭）。
+const SPAR_RADIUS: f32 = 46.0;
+/// 一段較勁的最短／最長時長（秒）——抵角一推一退較力數秒後再分開。
+const SPAR_DURATION_MIN: f32 = 2.5;
+const SPAR_DURATION_MAX: f32 = 5.0;
+/// 成年野鹿在白天歇息、且身邊有同種夥伴貼近時，本幀轉入較勁的機率——偏低，讓較勁是偶爾的一場
+/// 力量試探、而非時時在頂（多數時候仍照常吃草／休息／理毛）。
+const SPAR_PROB: f32 = 0.04;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -636,6 +659,11 @@ enum WildlifeState {
     /// pounce_timer 倒數，撲到落點或計時耗盡就回到巡遊。前端依此狀態把狐身抬起成躍弧、地面留
     /// 投影，讀起來是「縱身撲下」。只有野狐（WildFox）會撲鼠；獵物/威脅出現時一律優先改狩獵/逃命。
     Pouncing { px: f32, py: f32, pounce_timer: f32 },
+    /// ROADMAP 224：野鹿頂角較勁——白天平靜歇息、身邊有同種成體夥伴貼近的兩頭成年野鹿，低頭
+    /// 抵角較力（前端畫成頭對頭、一推一退地頂撞，頭頂浮 💥）。原地不動（不更新座標，視覺頂撞由前端
+    /// 演繹）、spar_timer 倒數，到期就回到漫遊（沿用群聚拉力）；較勁中若有威脅逼近一律優先中斷逃竄。
+    /// 只有野鹿（WildDeer）會較勁——與 216 理毛（柔）對成剛柔一對。
+    Sparring { spar_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -973,6 +1001,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 224：野鹿頂角較勁——較勁中（Sparring）原地不動、倒數計時；到期就挑下一個漫遊
+    /// 目標（沿用群聚拉力 herd_anchor）分開起身漫遊。只在 Sparring 狀態下生效（呼叫端已確保
+    /// 此隻為成年野鹿、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
+    /// 與 tick_groom 同模式：頂撞的視覺一推一退交給前端演繹，後端只穩定地推進計時。
+    fn tick_spar(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Sparring { spar_timer } = self.state {
+            let remaining = spar_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Sparring { spar_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 217：掠食者夜嚎——長嚎中（Howling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// 回到巡遊（掠食者獨來獨往，故用 random_target 純隨機、無群聚拉力）。只在 Howling 狀態下
     /// 生效（呼叫端已確保此隻為掠食者、夜間、附近無可追獵物；發現獵物時呼叫端不會走到此分支、
@@ -1086,6 +1131,7 @@ impl Wildlife {
             WildlifeState::Chirping { .. }  => "chirping",
             WildlifeState::Nibbling { .. }  => "nibbling",
             WildlifeState::Pouncing { .. }  => "pouncing",
+            WildlifeState::Sparring { .. }  => "sparring",
         }
     }
 }
@@ -1787,6 +1833,17 @@ impl WildlifeManager {
                     self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, GROOM_RADIUS,
                 ).is_some();
 
+            // ROADMAP 224：野鹿頂角較勁——白天的成年野鹿若身邊有同種成體夥伴貼近（SPAR_RADIUS 內，
+            // 比理毛更近，因抵角要頭碰頭），歇息的當口偶爾轉去較勁。只限野鹿（is_deer）；幼獸／逃竄中／
+            // 夜間一律不較勁（走依偎/逃竄/夜眠分支），故順手短路。
+            let spar_has_partner = !is_night
+                && animal_kind == WildlifeKind::WildDeer
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_adult_of_kind(
+                    self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, SPAR_RADIUS,
+                ).is_some();
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             if calm_at_night {
@@ -1890,6 +1947,20 @@ impl WildlifeManager {
                     // 各顧各的、不傳染（與鳥的飛／鳴呼應刻意區隔），只是一隻隻自顧自地坐起來啃。
                     let timer = rng.gen_range(NIBBLE_DURATION_MIN..=NIBBLE_DURATION_MAX);
                     a.state = WildlifeState::Nibbling { nibble_timer: timer };
+                } else if matches!(a.state, WildlifeState::Sparring { .. }) && !threat_near {
+                    // ROADMAP 224：已在較勁中且仍平靜——把這一段抵角較完（原地不動、計時倒數，
+                    // 頂撞的一推一退由前端演繹）。威脅一旦逼近就落到下方 tick_idle 改逃竄（威脅優先）。
+                    a.tick_spar(dt, herd_anchor, rng);
+                } else if spar_has_partner
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < SPAR_PROB
+                {
+                    // ROADMAP 224：白天歇息的成年野鹿、身邊有同種夥伴貼近、平靜——偶爾低頭抵角較勁
+                    // （頭頂浮 💥）。只屬於野鹿，與 216 理毛（💕 柔）對成剛柔一對。沒轉入較勁的野鹿
+                    // 仍會落到下方 grooming 分支（鹿也會互相理毛），社交因此剛柔兼備。
+                    let timer = rng.gen_range(SPAR_DURATION_MIN..=SPAR_DURATION_MAX);
+                    a.state = WildlifeState::Sparring { spar_timer: timer };
                 } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
@@ -4263,6 +4334,126 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(f.state, WildlifeState::Grooming { .. }), "幼獸不該理毛");
+        }
+    }
+
+    // ─── ROADMAP 224：野鹿頂角較勁 測試 ─────────────────────────────────────────
+
+    #[test]
+    fn tick_spar_returns_to_wander_when_timer_expires() {
+        // 較勁計時耗盡 → 收尾分開回漫遊（再起身找下一個目標），不會一直黏著頂角。
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Sparring { spar_timer: 0.05 };
+        w.tick_spar(0.1, None, &mut rng); // dt > timer
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "較勁計時耗盡應回漫遊，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn tick_spar_holds_position_while_timer_remaining() {
+        // 較勁中：座標不動（頂撞視覺由前端演繹）、計時遞減、維持 Sparring。
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        let (x0, y0) = (w.x, w.y);
+        w.state = WildlifeState::Sparring { spar_timer: 5.0 };
+        w.tick_spar(0.1, None, &mut rng);
+        assert!((w.x - x0).abs() < 1e-6 && (w.y - y0).abs() < 1e-6, "較勁中後端應原地不動");
+        match w.state {
+            WildlifeState::Sparring { spar_timer } => {
+                assert!((spar_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("計時未耗盡應維持較勁，實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deer_adults_spar_partner_in_daytime() {
+        // 整管理器：白天，兩隻緊鄰的成鹿——非哨兵那隻（較大 id）連跑多幀後應有機會進入較勁。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        a.id = 1; // 群內最小 id → 擔任哨兵（站崗、不較勁）
+        a.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut b = adult_at(WildlifeKind::WildDeer, 5010.0, 5000.0); // 距夥伴 10px < SPAR_RADIUS
+        b.id = 2; // 非哨兵 → 可較勁
+        b.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![a, b];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_spar = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(w.state, WildlifeState::Sparring { .. }) { saw_spar = true; break; }
+        }
+        assert!(saw_spar, "白天身邊有同種夥伴的成年野鹿應會開始較勁");
+    }
+
+    #[test]
+    fn lone_deer_never_spars() {
+        // 身邊沒有同種成體夥伴的孤鹿——連跑多幀都不該較勁（較勁是「兩頭相抵」的互動）。
+        let mut mgr = WildlifeManager::new();
+        let mut lone = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        lone.id = 1;
+        mgr.animals = vec![lone];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Sparring { .. }), "孤鹿不該較勁");
+        }
+    }
+
+    #[test]
+    fn non_deer_never_spars() {
+        // 較勁只屬於野鹿——兩隻緊鄰的小動物連跑多幀都不該進入 Sparring（牠們走的是捧食啃咬）。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        a.id = 1;
+        a.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut b = adult_at(WildlifeKind::SmallCritter, 5010.0, 5000.0);
+        b.id = 2;
+        b.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![a, b];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let spar = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Sparring { .. }));
+            assert!(!spar, "非野鹿不該較勁");
+        }
+    }
+
+    #[test]
+    fn sparring_deer_flees_when_predator_approaches() {
+        // 威脅優先：正在較勁的成鹿，掠食者逼近時應改逃竄（不會繼續較勁）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Sparring { spar_timer: 5.0 };
+        // 狼貼近成鹿（FLEE_RADIUS 內），形成直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5060.0, 5000.0);
+        wolf.id = 2;
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時較勁成鹿應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn deer_do_not_spar_at_night() {
+        // 夜間：成鹿歸巢沉睡，不較勁——連跑多幀都不該進入 Sparring。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        a.id = 1;
+        let mut b = adult_at(WildlifeKind::WildDeer, 5010.0, 5000.0);
+        b.id = 2;
+        mgr.animals = vec![a, b];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let spar = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Sparring { .. }));
+            assert!(!spar, "夜間成鹿不該較勁");
         }
     }
 
