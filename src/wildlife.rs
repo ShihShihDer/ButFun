@@ -228,6 +228,21 @@ const SENTINEL_FLEE_RADIUS: f32 = 300.0;
 const WATCH_DURATION_MIN: f32 = 4.0;
 const WATCH_DURATION_MAX: f32 = 8.0;
 
+// ─── ROADMAP 214：母獸護幼 ────────────────────────────────────────────────────
+// 承接 208（幼獸依偎母獸）+ 213（掠食者潛行突襲）：當掠食者鎖定（潛行/追獵）一隻幼獸時，
+// 離那隻幼獸最近的同種成體會「挺身護幼」——不逃反而轉身朝掠食者衝去（頭頂浮 🛡），把狼／狐
+// 逼到威嚇距離內就驅退牠（掠食者放棄、退走）。於是「狼悄悄逼近落單的小鹿、母鹿猛地衝出擋在
+// 中間把狼趕走」這幕在野地自然湧現——掠食（213）終於有了「反捕食」這一側的對偶。純啟發式、
+// 零 LLM、零協議改動（新增的 defending 字串沿用 state_str）；幼獸本就在 prey_snap 裡（會被獵），
+// 故本切片不動掠食者目標選擇的平衡，只新增成體的護幼反應。
+/// 護幼觸發半徑——成體會為「DEFEND_GUARD_RADIUS 內、且自己是最近成體」的受脅同種幼獸挺身。
+const DEFEND_GUARD_RADIUS: f32 = 240.0;
+/// 護幼衝刺速度——介於漫遊(35)與逃竄(200)之間，比掠食者潛行(78)快、足以及時擋在幼獸與狼之間。
+const DEFEND_SPEED: f32 = 150.0;
+/// 威嚇半徑——護幼成體逼進掠食者此距離內，掠食者即放棄狩獵、退走（大於 KILL_RADIUS，故狼來不
+/// 及咬到幼獸就先被趕跑；母獸自身非掠食者目標、不會被咬，護幼安全）。
+const INTIMIDATE_RADIUS: f32 = 90.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -415,6 +430,9 @@ enum WildlifeState {
     Watching { watch_timer: f32 },
     /// ROADMAP 143：聚落守衛——動物向入侵玩家靠近，不逃跑。
     Guarding { threat_x: f32, threat_y: f32, guard_timer: f32 },
+    /// ROADMAP 214：母獸護幼——成體不逃反而朝威脅幼獸的掠食者衝去（頭頂浮 🛡），逼到威嚇距離把牠趕走。
+    /// 每幀依當下受脅幼獸即時重算衝刺方向，故狀態本身不需攜帶座標（無資料的單元變體）。
+    Defending,
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -710,6 +728,7 @@ impl Wildlife {
             WildlifeState::Guarding { .. }  => "guarding",
             WildlifeState::Grazing { .. }   => "grazing",
             WildlifeState::Watching { .. }  => "watching",
+            WildlifeState::Defending        => "defending",
         }
     }
 }
@@ -924,6 +943,14 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 214：母獸護幼——正在護幼的成體位置快照（種類＋座標），供 Phase 3 把逼近的
+        // 同種掠食者嚇退。刻意在此處（變更前）取一次，反映上一幀設下的 Defending 狀態：
+        // 掠食者本幀讀到、放棄狩獵，成體本幀（Phase 4）再依當下威脅刷新護衛——一幀延遲、自然。
+        let defending_snap: Vec<(WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && matches!(a.state, WildlifeState::Defending))
+            .map(|a| (a.kind, a.x, a.y))
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -1030,6 +1057,20 @@ impl WildlifeManager {
             let pred_id   = self.animals[i].id;
             let pred_x    = self.animals[i].x;
             let pred_y    = self.animals[i].y;
+
+            // ROADMAP 214：母獸護幼——若有「自己所獵物種」的護幼成體已逼到威嚇半徑內，
+            // 放棄狩獵、退走（被母獸趕跑）。在 match 前統一攔截：不論潛行/追獵/消化/閒晃，
+            // 一隻挺身護幼的母鹿都能把附近的狼逼退（咬不到幼獸就先被趕走）。
+            if let Some(target_kind) = pred_kind.hunts() {
+                let intim_r2 = INTIMIDATE_RADIUS * INTIMIDATE_RADIUS;
+                let driven_off = defending_snap.iter().any(|&(k, dx, dy)| {
+                    k == target_kind && (dx - pred_x).powi(2) + (dy - pred_y).powi(2) <= intim_r2
+                });
+                if driven_off {
+                    self.animals[i].state = WildlifeState::Returning;
+                    continue;
+                }
+            }
 
             match state {
                 WildlifeState::Hunting { target_id, hunt_timer } => {
@@ -1144,6 +1185,26 @@ impl WildlifeManager {
             })
             .collect();
 
+        // ROADMAP 214：母獸護幼——蒐集「正被掠食者鎖定（潛行/追獵）的幼獸」快照
+        // （juv_id/juv_kind/jx/jy/pred_x/pred_y）。由 Phase 3 剛更新過的掠食者狀態即時推得，
+        // 供下方 Phase 4 讓離該幼獸最近的同種成體（母獸）挺身護衛。動物總數少（~22），O(n²) 無虞。
+        let threatened_juv_snap: Vec<(u32, WildlifeKind, f32, f32, f32, f32)> = {
+            let mut v = Vec::new();
+            for a in self.animals.iter() {
+                if !a.alive || a.kind.trophic_level() != TrophicLevel::Predator { continue; }
+                let target_id = match a.state {
+                    WildlifeState::Stalking { target_id, .. } | WildlifeState::Hunting { target_id, .. } => target_id,
+                    _ => continue,
+                };
+                if let Some(juv) = self.animals.iter()
+                    .find(|j| j.id == target_id && j.alive && j.is_juvenile())
+                {
+                    v.push((juv.id, juv.kind, juv.x, juv.y, a.x, a.y));
+                }
+            }
+            v
+        };
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -1154,6 +1215,28 @@ impl WildlifeManager {
             let animal_kind = self.animals[i].kind;
             // ROADMAP 205：被馴養的個體把玩家當朋友（不逃跑），未馴養則沿用 144 物種態度判定。
             let tamed = self.animals[i].is_tamed();
+
+            // ROADMAP 214：母獸護幼——成體優先為「被掠食者鎖定的同種幼獸」挺身（凌駕自身逃跑：
+            // 母獸不顧自己的恐懼，衝去擋在幼獸與狼之間）。只有「離受脅幼獸最近的同種成體」會出面，
+            // 故每隻受脅幼獸至多由一隻母獸護衛、不致整群暴衝。幼獸本身不護幼（牠是被護的一方）。
+            if !self.animals[i].is_juvenile() {
+                let ax = self.animals[i].x;
+                let ay = self.animals[i].y;
+                if let Some((tx, ty)) = defend_target(
+                    self.animals[i].id, animal_kind, ax, ay, &threatened_juv_snap, &adult_snap,
+                ) {
+                    let (nx, ny) = defend_charge(ax, ay, tx, ty, dt);
+                    self.animals[i].x = nx;
+                    self.animals[i].y = ny;
+                    self.animals[i].state = WildlifeState::Defending;
+                    continue;
+                }
+                // 已無需護衛的幼獸（剛把狼趕走 / 威脅解除）：若仍處 Defending 就收斂回返家，
+                // 下方/次幀再走正常閒晃，不會卡在護衛姿態。
+                if matches!(self.animals[i].state, WildlifeState::Defending) {
+                    self.animals[i].state = WildlifeState::Returning;
+                }
+            }
 
             // 威脅 = 捕食者 + ROADMAP 165 獵食此物種的怪物——馴養與否都仍會逃離掠食者（信任的是你、不是狼）。
             let mut threats: Vec<(f32, f32)> = pred_positions.clone();
@@ -1513,6 +1596,72 @@ fn stalk_creep(pred_x: f32, pred_y: f32, prey_x: f32, prey_y: f32, dt: f32) -> O
     // 朝獵物移動 STALK_SPEED*dt，但不越過獵物（step 受 dist 上限）。
     let step = (STALK_SPEED * dt).min(dist);
     Some((pred_x + dx / dist * step, pred_y + dy / dist * step))
+}
+
+// ─── ROADMAP 214：母獸護幼純函式（可測） ─────────────────────────────────────
+
+/// 在 `adult_snap`（同種成體位置快照）中，找出離 (jx,jy) 最近、且距離在 `radius` 內的
+/// 同種成體 id；範圍內無同種成體則 `None`。供護幼判定「我是不是離這隻幼獸最近的成體」。
+/// 純函式，便於測試。
+fn nearest_adult_id_of_kind(
+    kind: WildlifeKind,
+    jx: f32,
+    jy: f32,
+    adult_snap: &[(u32, WildlifeKind, f32, f32)],
+    radius: f32,
+) -> Option<u32> {
+    let r2 = radius * radius;
+    adult_snap.iter()
+        .filter(|&&(_, k, _, _)| k == kind)
+        .map(|&(id, _, px, py)| (id, (px - jx).powi(2) + (py - jy).powi(2)))
+        .filter(|&(_, d2)| d2 <= r2)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(id, _)| id)
+}
+
+/// ROADMAP 214：母獸護幼——判定 (ax,ay) 這隻成體是否該為「被掠食者鎖定的同種幼獸」挺身護衛。
+/// 在 `threatened`（受脅幼獸：juv_id/juv_kind/jx/jy/pred_x/pred_y）中，找出本成體
+/// `DEFEND_GUARD_RADIUS` 內、同種、且「本成體就是離該幼獸最近的同種成體」的那隻幼獸，
+/// 回傳其威脅掠食者的座標（成體應朝它衝去驅趕）；無則 `None`。
+/// 「最近成體才護衛」確保每隻受脅幼獸至多由一隻（最近的那隻＝母獸）出面，不會整群一起暴衝。
+/// 純函式，便於測試。
+fn defend_target(
+    self_id: u32,
+    kind: WildlifeKind,
+    ax: f32,
+    ay: f32,
+    threatened: &[(u32, WildlifeKind, f32, f32, f32, f32)],
+    adult_snap: &[(u32, WildlifeKind, f32, f32)],
+) -> Option<(f32, f32)> {
+    let r2 = DEFEND_GUARD_RADIUS * DEFEND_GUARD_RADIUS;
+    // 在所有「我該護的」幼獸中，挑離我最近的那隻去護（自己只有一個身子）。
+    threatened.iter()
+        .filter(|&&(_, jkind, _, _, _, _)| jkind == kind)
+        .filter(|&&(_, _, jx, jy, _, _)| (jx - ax).powi(2) + (jy - ay).powi(2) <= r2)
+        .filter(|&&(_, _, jx, jy, _, _)| {
+            // 只有「離這隻幼獸最近的同種成體」才出面護衛（那就是牠的母獸）。
+            nearest_adult_id_of_kind(kind, jx, jy, adult_snap, DEFEND_GUARD_RADIUS) == Some(self_id)
+        })
+        .min_by(|&&(_, _, ax1, ay1, _, _), &&(_, _, ax2, ay2, _, _)| {
+            let d1 = (ax1 - ax).powi(2) + (ay1 - ay).powi(2);
+            let d2 = (ax2 - ax).powi(2) + (ay2 - ay).powi(2);
+            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|&(_, _, _, _, px, py)| (px, py))
+}
+
+/// ROADMAP 214：母獸護幼——成體朝威脅掠食者衝刺的逐幀位移（純函式，便於測試）。
+/// 以 `DEFEND_SPEED` 朝 (pred_x,pred_y) 移動，單幀位移受「與掠食者距離」上限約束
+/// （不越過掠食者，最多貼到原地）；已幾乎重疊時原地不動。
+fn defend_charge(ax: f32, ay: f32, pred_x: f32, pred_y: f32, dt: f32) -> (f32, f32) {
+    let dx = pred_x - ax;
+    let dy = pred_y - ay;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0 {
+        return (ax, ay);
+    }
+    let step = (DEFEND_SPEED * dt).min(dist);
+    (ax + dx / dist * step, ay + dy / dist * step)
 }
 
 /// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
@@ -3013,5 +3162,162 @@ mod tests {
         mgr.tick(0.05, &[], &att, &[], false);
         assert!(matches!(mgr.animals[wi].state, WildlifeState::Hunting { .. }),
             "貼近獵物應直接撲（hunting），實際 {:?}", mgr.animals[wi].state);
+    }
+
+    // ─── ROADMAP 214：母獸護幼 ───────────────────────────────────────────────
+
+    #[test]
+    fn nearest_adult_id_picks_closest_same_kind() {
+        // nearest_adult_id_of_kind 應回傳半徑內、同種、離目標最近的成體 id。
+        let snap = vec![
+            (10u32, WildlifeKind::WildDeer, 5300.0, 5000.0), // 遠
+            (11u32, WildlifeKind::WildDeer, 5050.0, 5000.0), // 近 ← 應選這隻
+            (12u32, WildlifeKind::WildBird, 5010.0, 5000.0), // 更近但異種，不算
+        ];
+        let id = nearest_adult_id_of_kind(WildlifeKind::WildDeer, 5000.0, 5000.0, &snap, 240.0);
+        assert_eq!(id, Some(11), "應選同種中最近的成體");
+        // 範圍外則 None。
+        let none = nearest_adult_id_of_kind(WildlifeKind::WildDeer, 0.0, 0.0, &snap, 240.0);
+        assert_eq!(none, None, "半徑內無同種成體應為 None");
+    }
+
+    #[test]
+    fn defend_charge_moves_toward_predator_without_overshoot() {
+        // 護幼衝刺朝掠食者移動 DEFEND_SPEED*dt；單幀位移受距離上限約束，不越過掠食者。
+        let (ax, ay) = (5000.0_f32, 5000.0_f32);
+        let (px, py) = (5400.0_f32, 5000.0_f32); // 400px 遠
+        let (nx, ny) = defend_charge(ax, ay, px, py, 0.1);
+        let moved = ((nx - ax).powi(2) + (ny - ay).powi(2)).sqrt();
+        assert!((moved - DEFEND_SPEED * 0.1).abs() < 0.01, "單幀位移應約 DEFEND_SPEED*dt，實際 {moved}");
+        assert!(nx > ax, "應朝掠食者（東側）移動");
+        // 大 dt 不越過掠食者（step 受距離 clamp）。
+        let (nx2, _) = defend_charge(ax, ay, px, py, 100.0);
+        assert!(nx2 <= px + 0.001, "不可衝過掠食者");
+    }
+
+    #[test]
+    fn defend_charge_faster_than_stalk() {
+        // 護幼衝刺需快過掠食者潛行，母獸才來得及擋在幼獸與狼之間。
+        assert!(DEFEND_SPEED > STALK_SPEED, "護幼衝刺應快於掠食者潛行");
+    }
+
+    fn threatened(juv_id: u32, kind: WildlifeKind, jx: f32, jy: f32, px: f32, py: f32)
+        -> (u32, WildlifeKind, f32, f32, f32, f32) { (juv_id, kind, jx, jy, px, py) }
+
+    #[test]
+    fn defend_target_when_self_is_nearest_adult() {
+        // 同種受脅幼獸在護衛半徑內、且自己是離牠最近的成體 → 回傳掠食者座標（該衝去護衛）。
+        let self_id = 2u32;
+        let adult_snap = vec![(2u32, WildlifeKind::WildDeer, 5100.0, 5000.0)];
+        let threats = vec![threatened(3, WildlifeKind::WildDeer, 5050.0, 5000.0, 4900.0, 5000.0)];
+        let r = defend_target(self_id, WildlifeKind::WildDeer, 5100.0, 5000.0, &threats, &adult_snap);
+        assert_eq!(r, Some((4900.0, 5000.0)), "應回傳威脅掠食者的座標");
+    }
+
+    #[test]
+    fn defend_target_none_when_fawn_too_far() {
+        // 受脅幼獸在護衛半徑外 → 不護（None）。
+        let adult_snap = vec![(2u32, WildlifeKind::WildDeer, 5000.0, 5000.0)];
+        // 幼獸遠在 DEFEND_GUARD_RADIUS(240) 之外。
+        let threats = vec![threatened(3, WildlifeKind::WildDeer, 5000.0 + 400.0, 5000.0, 5500.0, 5000.0)];
+        let r = defend_target(2, WildlifeKind::WildDeer, 5000.0, 5000.0, &threats, &adult_snap);
+        assert_eq!(r, None, "幼獸太遠不該護");
+    }
+
+    #[test]
+    fn defend_target_none_when_other_adult_is_closer() {
+        // 另一隻成體離受脅幼獸更近（牠才是母獸）→ 自己不出面（避免整群暴衝）。
+        let adult_snap = vec![
+            (2u32, WildlifeKind::WildDeer, 5200.0, 5000.0), // 自己，較遠
+            (9u32, WildlifeKind::WildDeer, 5060.0, 5000.0), // 別隻，較近 ← 牠才護
+        ];
+        let threats = vec![threatened(3, WildlifeKind::WildDeer, 5050.0, 5000.0, 4900.0, 5000.0)];
+        let r = defend_target(2, WildlifeKind::WildDeer, 5200.0, 5000.0, &threats, &adult_snap);
+        assert_eq!(r, None, "不是最近成體就不該出面護衛");
+    }
+
+    #[test]
+    fn defend_target_ignores_other_kind_fawn() {
+        // 異種受脅幼獸不護（鹿不為鳥的幼獸挺身）。
+        let adult_snap = vec![(2u32, WildlifeKind::WildDeer, 5050.0, 5000.0)];
+        let threats = vec![threatened(3, WildlifeKind::WildBird, 5050.0, 5000.0, 4900.0, 5000.0)];
+        let r = defend_target(2, WildlifeKind::WildDeer, 5050.0, 5000.0, &threats, &adult_snap);
+        assert_eq!(r, None, "不該為異種幼獸護衛");
+    }
+
+    #[test]
+    fn doe_enters_defending_when_wolf_hunts_nearby_fawn() {
+        // 整管理器：狼正追獵一隻幼鹿，附近最近的成鹿（母獸）應挺身轉入 Defending（不逃）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Hunting { target_id: 3, hunt_timer: 10.0 };
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5120.0, 5000.0);
+        doe.id = 2;
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5040.0, 5000.0);
+        fawn.id = 3;
+        mgr.animals = vec![wolf, doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Defending),
+            "狼追獵幼鹿時，最近的成鹿應挺身護幼（Defending），實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn defending_doe_drives_off_wolf() {
+        // 護幼成鹿逼到威嚇半徑內，正在追獵幼鹿的狼應放棄、退走（Returning）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Hunting { target_id: 3, hunt_timer: 10.0 };
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5050.0, 5000.0); // 距狼 50px < INTIMIDATE(90)
+        doe.id = 2;
+        doe.state = WildlifeState::Defending; // 已在護幼姿態
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5030.0, 5000.0);
+        fawn.id = 3;
+        mgr.animals = vec![wolf, doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(w.state, WildlifeState::Returning),
+            "護幼成鹿逼近時，狼應被嚇退（Returning），實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn wolf_not_intimidated_by_distant_defender() {
+        // 護幼成鹿在威嚇半徑外時，狼不受影響（照常追獵），確認嚇退是距離觸發、非旗標硬設。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Hunting { target_id: 3, hunt_timer: 10.0 };
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5400.0, 5000.0); // 400px > INTIMIDATE(90)
+        doe.id = 2;
+        doe.state = WildlifeState::Defending;
+        // 幼鹿在狼搜尋半徑內、但已超出擊殺距離（>KILL_RADIUS，本幀不會被咬死），
+        // 且離那隻遠方護衛成鹿太遠（>DEFEND_GUARD_RADIUS），故該成鹿本幀不會續護。
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5060.0, 5000.0);
+        fawn.id = 3;
+        mgr.animals = vec![wolf, doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(w.state, WildlifeState::Hunting { .. }),
+            "遠方護衛成鹿不該嚇退狼，狼應續獵，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn predator_not_a_defender_target() {
+        // 掠食者自己不會「護幼」——defend 只作用於獵物成體（掠食者無同種幼獸可護）。
+        // 連跑整管理器多幀，斷言任何掠食者都不會進入 Defending。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            mgr.tick(0.2, &[], &att, &[], false);
+            let pred_defend = mgr.animals.iter().any(|a|
+                a.kind.trophic_level() == TrophicLevel::Predator
+                && matches!(a.state, WildlifeState::Defending));
+            assert!(!pred_defend, "掠食者不該護幼");
+        }
     }
 }
