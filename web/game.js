@@ -2451,19 +2451,9 @@
     const phase = daynight.phase;
     ctx.save();
 
-    // ① 全時段柔光暈圈：邊緣到中心的極淡漸暗，給 Canvas 世界加一層「鏡頭邊緣」深度感。
-    //    白天 8%、夜晚因已有暗色疊層故跳過（避免重疊加深邊緣太死）。
-    if (!reduceMotion && light > 0.3) {
-      const vigA = (light - 0.3) / 0.7 * 0.09; // 0 → 0.09，白天最強
-      const vx = viewW / 2, vy = viewH / 2;
-      const vInner = Math.min(viewW, viewH) * 0.28;
-      const vOuter = Math.hypot(viewW, viewH) / 2;
-      const vig = ctx.createRadialGradient(vx, vy, vInner, vx, vy, vOuter);
-      vig.addColorStop(0, "rgba(0,0,0,0)");
-      vig.addColorStop(1, `rgba(0,4,16,${vigA.toFixed(3)})`);
-      ctx.fillStyle = vig;
-      ctx.fillRect(0, 0, viewW, viewH);
-    }
+    // ① 白天柔光暈圈已移除：玩家回報這層螢幕空間暈圈「跟著視角、白天像壞燈泡一直閃」
+    //    且感覺不必要（光線足夠時的微弱邊緣漸暗，價值低於它造成的閃爍不適）。保留
+    //    ②黎明黃昏色溫 與 ④夜間燈籠暖光 這兩個有意義的氛圍層。
 
     // ② 黎明/黃昏垂直色溫梯度：天頂偏橙粉，地面偏暖金，比純色疊加更有「光從天邊打來」的立體感。
     if (phase === "dawn" || phase === "dusk") {
