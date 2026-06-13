@@ -107,6 +107,9 @@
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
+  // 雨後彩虹（ROADMAP 191）：偵測「雨→停」轉換用的前一幀降雨狀態與彩虹點燃時刻。
+  let _wasRaining = false;       // 上一幀是否正在下雨（草原雨）
+  let _rainbowStartMs = 0;       // 當前彩虹點燃的 performance.now() 時刻（0=無彩虹）
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3845,6 +3848,9 @@
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
     });
+
+    // 雨後彩虹（ROADMAP 191）：獨立 safeDraw，每幀偵測「雨→停」轉換並繪製天邊彩虹。
+    safeDraw("rainbow", () => drawRainbow(performance.now()));
 
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
@@ -8637,6 +8643,65 @@
     ctx.beginPath();
     ctx.arc(x, y, biome === "meadow" ? size : size * 0.7, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // ── 雨後彩虹（ROADMAP 191）────────────────────────────────────────────────
+  // 草原降雨（grassland_rain，93）結束、且白天時，天邊浮現一道半透明七色彩虹，
+  // 緩緩淡入、駐留、再淡去。純前端視覺、零後端：偵測前端既有天氣狀態的「雨→停」轉換即點燃。
+  // 與星空（19）／生態氛圍粒子（189/190）／天氣（93）定位皆不同：天氣是「下雨當下」的粒子、
+  // 彩虹是「雨停之後」的天象獎勵——雨過天青，玩家第一次看到天氣會留下好看的尾韻。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律關閉。
+  const RAINBOW_DURATION_MS = 14000; // 彩虹總壽命（含淡入淡出）
+  const RAINBOW_FADE_IN_MS  = 1800;  // 淡入時長
+  const RAINBOW_FADE_OUT_MS = 4500;  // 淡去時長
+  const RAINBOW_DAY_LIGHT   = 0.5;   // 需足夠日照才會有彩虹（夜裡不出，符合真實天象）
+  const RAINBOW_MAX_ALPHA   = 0.5;   // 彩虹整體最大不透明度（半透明天象，不搶戲）
+
+  // 純函式：判斷當前是否「正在下雨」（草原雨、強度足夠）。無 DOM、可測。
+  function isRainingState(type, intensity) {
+    return type === "grassland_rain" && intensity > 0.2;
+  }
+
+  // 純函式：依已逝時間回傳彩虹整體不透明度係數 [0,1]（淡入→駐留→淡去）。無 DOM、可測。
+  function rainbowAlpha(elapsed, total, fadeIn, fadeOut) {
+    if (elapsed <= 0 || elapsed >= total) return 0;
+    if (elapsed < fadeIn) return elapsed / fadeIn;                  // 淡入
+    if (elapsed > total - fadeOut) return (total - elapsed) / fadeOut; // 淡去
+    return 1;                                                       // 駐留
+  }
+
+  // 每幀偵測「雨→停」轉換並繪製彩虹（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  function drawRainbow(now) {
+    // 偵測雨剛停＋白天 → 點燃彩虹（_wasRaining 每幀更新，故放在效能早退之前）
+    const rainingNow = isRainingState(weatherType, weatherIntensity);
+    const light = daynight ? daynight.light : 1;
+    if (_wasRaining && !rainingNow && _rainbowStartMs === 0 && light >= RAINBOW_DAY_LIGHT) {
+      _rainbowStartMs = now;
+    }
+    _wasRaining = rainingNow;
+
+    if (_rainbowStartMs === 0) return;
+    if (reduceMotion || !_parallaxEnabled) { _rainbowStartMs = 0; return; } // 弱機不畫、清狀態
+
+    const a = rainbowAlpha(now - _rainbowStartMs, RAINBOW_DURATION_MS, RAINBOW_FADE_IN_MS, RAINBOW_FADE_OUT_MS);
+    if (a <= 0) { _rainbowStartMs = 0; return; } // 壽命耗盡：熄滅、釋放狀態
+
+    // 半透明七色同心弧：圓心落在畫面下方外側 → 弧線拱在上半天邊，像真彩虹橫跨天空。
+    const cx = viewW / 2;
+    const cy = viewH * 1.28;
+    const baseR = Math.min(viewW, viewH) * 0.82;
+    const bandW = Math.max(3, viewH * 0.011);
+    const bands = ["255,90,90", "255,170,70", "255,225,80", "120,220,110", "90,180,255", "110,110,255", "180,110,255"];
+    ctx.save();
+    ctx.lineWidth = bandW;
+    ctx.lineCap = "round";
+    for (let i = 0; i < bands.length; i++) {
+      ctx.strokeStyle = `rgba(${bands[i]},${(a * RAINBOW_MAX_ALPHA).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseR + i * bandW, Math.PI * 1.16, Math.PI * 1.84);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // ── 天氣粒子特效（ROADMAP 93）────────────────────────────────────────────
