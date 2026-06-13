@@ -8154,8 +8154,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 215：幼獸嬉戲——在母獸身邊蹦跳玩耍的幼獸（state==="frolicking"）頭頂浮一個
+      // 歡快上下彈跳的 💫，讓「小鹿在媽媽身邊蹦蹦跳跳地玩」一眼看得到（玩一段就回到依偎）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天幼獸平靜依偎時才給此狀態）。
+      if (w.state === "frolicking") {
+        ctx.save();
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(0, -24 - Math.abs(Math.sin(now / 130)) * 3); // 上下彈跳，像蹦蹦跳跳的雀躍
+        ctx.fillText("💫", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      if (w.juvenile) {
+      // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";

@@ -178,6 +178,23 @@ const NURSE_COMFORT_DIST: f32 = 36.0;
 /// 幼獸依偎跟隨的速度（像素/秒）——略快於閒晃，才追得上緩緩漫遊的成體。
 const NURSE_SPEED: f32 = 48.0;
 
+// ─── ROADMAP 215：幼獸嬉戲（在母獸身邊蹦跳玩耍）──────────────────────────────────
+// 承接 207（幼獸誕生）＋ 208（幼獸依偎母獸）：幼獸不再只是靜靜貼著母獸，而會在白天、
+// 平靜、已依偎到母獸身邊時，偶爾在媽媽周圍小範圍蹦跳玩耍（頭頂浮 ✨），玩一段就回到依偎。
+// 嬉戲落點每次隨機（圍著母獸、玩不離媽媽），受威脅一律優先逃命（威脅永遠優先）、夜間只依偎
+// 不玩耍。純啟發式、零 LLM、零協議改動（state 本就每幀廣播）、無新狀態欄位（落點/計時隨變體攜帶）。
+/// 嬉戲落點離母獸的最大半徑（像素）——蹦跳只在媽媽身邊小範圍，玩不遠、不脫群、不入險。
+const FROLIC_RADIUS: f32 = 70.0;
+/// 蹦跳速度（像素/秒）——快於依偎跟隨，幼獸玩起來活潑蹦跳。
+const FROLIC_SPEED: f32 = 64.0;
+/// 視為「已蹦到落點」的判定距離（像素）——到了就結束這一段嬉戲、回母獸身邊依偎。
+const FROLIC_REACH: f32 = 12.0;
+/// 單段嬉戲（朝一個蹦跳落點）的最短/最長持續秒數——到期未達落點也收尾回依偎，不會玩個沒完。
+const FROLIC_DURATION_MIN: f32 = 1.2;
+const FROLIC_DURATION_MAX: f32 = 2.6;
+/// 已依偎到母獸身邊、且白天平靜時，本幀起一段嬉戲的機率——偏低，讓幼獸玩玩停停、多數時候靜靜依偎。
+const FROLIC_PROB: f32 = 0.025;
+
 // ─── ROADMAP 209：驚群炸開（恐慌連鎖）─────────────────────────────────────────
 // 承接 206（群聚結伴）：獸群會聚在一起，但危險來時過去卻是「各跑各的」——只有
 // 直接看到捕食者、且在 FLEE_RADIUS 內的那幾隻會逃，旁邊沒看到的同伴照樣閒晃。
@@ -433,6 +450,9 @@ enum WildlifeState {
     /// ROADMAP 214：母獸護幼——成體不逃反而朝威脅幼獸的掠食者衝去（頭頂浮 🛡），逼到威嚇距離把牠趕走。
     /// 每幀依當下受脅幼獸即時重算衝刺方向，故狀態本身不需攜帶座標（無資料的單元變體）。
     Defending,
+    /// ROADMAP 215：幼獸嬉戲——已依偎到母獸身邊的幼獸在媽媽周圍蹦跳玩耍（頭頂浮 ✨）。
+    /// 朝當前蹦跳落點 (hop_x, hop_y) 蹦去，到達或 frolic_timer 耗盡就回到依偎（下一幀再決定要不要再玩）。
+    Frolicking { hop_x: f32, hop_y: f32, frolic_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -716,6 +736,27 @@ impl Wildlife {
     }
 
     /// 供協議層使用的狀態字串。
+    /// ROADMAP 215：幼獸嬉戲——已依偎到母獸身邊的幼獸在媽媽周圍蹦跳玩耍。朝當前蹦跳落點
+    /// (hop_x, hop_y) 蹦去；蹦到落點或 frolic_timer 耗盡，就回到依偎（朝母獸 (mx,my) 的溫順
+    /// Wandering），下一幀再由呼叫端決定要不要重新開一段嬉戲。`mx,my` 為母獸座標：到期收尾時
+    /// 回到母獸身邊，玩不離媽媽。只在 Frolicking 狀態下生效（呼叫端已確保）。
+    fn tick_frolic(&mut self, dt: f32, mx: f32, my: f32) {
+        if let WildlifeState::Frolicking { hop_x, hop_y, frolic_timer } = self.state {
+            let (nx, ny) = frolic_hop(self.x, self.y, hop_x, hop_y, dt);
+            self.x = nx;
+            self.y = ny;
+            let remaining = frolic_timer - dt;
+            let reached =
+                (hop_x - self.x).powi(2) + (hop_y - self.y).powi(2) <= FROLIC_REACH * FROLIC_REACH;
+            if remaining <= 0.0 || reached {
+                // 玩夠這一段：回到母獸身邊依偎（朝母獸的溫順 Wandering）。
+                self.state = WildlifeState::Wandering { target_x: mx, target_y: my, wander_timer: 1.0 };
+            } else {
+                self.state = WildlifeState::Frolicking { hop_x, hop_y, frolic_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -729,6 +770,7 @@ impl Wildlife {
             WildlifeState::Grazing { .. }   => "grazing",
             WildlifeState::Watching { .. }  => "watching",
             WildlifeState::Defending        => "defending",
+            WildlifeState::Frolicking { .. } => "frolicking",
         }
     }
 }
@@ -1303,15 +1345,32 @@ impl WildlifeManager {
                     if let Some((px, py)) = nearest_adult_of_kind(
                         self.animals[i].id, animal_kind, ax, ay, &adult_snap, NURSE_RANGE,
                     ) {
+                        // ROADMAP 215：幼獸嬉戲——已在玩耍中的幼獸繼續這一段蹦跳（圍著母獸
+                        // (px,py)），蹦到落點或計時耗盡就在 tick_frolic 裡收斂回依偎。受威脅
+                        // 一律優先逃（上方 predator_near 已擋），故玩耍只在平靜時延續。
+                        if matches!(self.animals[i].state, WildlifeState::Frolicking { .. }) {
+                            self.animals[i].tick_frolic(dt, px, py);
+                            continue;
+                        }
                         let dx = px - ax;
                         let dy = py - ay;
                         let dist = (dx * dx + dy * dy).sqrt();
                         if dist > NURSE_COMFORT_DIST {
                             self.animals[i].x += dx / dist * NURSE_SPEED * dt;
                             self.animals[i].y += dy / dist * NURSE_SPEED * dt;
+                            // 還在追母獸：依偎於母獸的溫順狀態。
+                            self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                            continue;
                         }
-                        // 依偎於母獸的溫順狀態（已到舒適距離則原地依偎）。
-                        self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                        // ROADMAP 215：已依偎到母獸身邊（舒適距離內）——白天平靜時有 FROLIC_PROB
+                        // 機率開一段嬉戲（在媽媽周圍蹦跳玩耍 ✨），否則靜靜依偎。夜間只依偎不玩耍。
+                        if !is_night && self.rng.gen::<f32>() < FROLIC_PROB {
+                            let (hx, hy) = frolic_target(px, py, &mut self.rng);
+                            let timer = self.rng.gen_range(FROLIC_DURATION_MIN..=FROLIC_DURATION_MAX);
+                            self.animals[i].state = WildlifeState::Frolicking { hop_x: hx, hop_y: hy, frolic_timer: timer };
+                        } else {
+                            self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                        }
                         continue;
                     }
                 }
@@ -1508,6 +1567,28 @@ fn nearest_adult_of_kind(
         .filter(|&(_, _, d2)| d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(px, py, _)| (px, py))
+}
+
+/// ROADMAP 215：幼獸嬉戲——在母獸 (mx,my) 周圍 FROLIC_RADIUS 內隨機挑一個蹦跳落點。
+/// 角度與半徑皆隨機（半徑取 sqrt 讓落點在圓內均勻分布），故每段嬉戲蹦的方向都不同、由 rng
+/// 即時決定（湧現不寫死），且永遠圍著母獸（玩不離媽媽）。純函式，便於測試。
+fn frolic_target(mx: f32, my: f32, rng: &mut StdRng) -> (f32, f32) {
+    let angle = rng.gen_range(0.0_f32..std::f32::consts::TAU);
+    let r = FROLIC_RADIUS * rng.gen_range(0.0_f32..=1.0).sqrt();
+    (mx + angle.cos() * r, my + angle.sin() * r)
+}
+
+/// ROADMAP 215：幼獸嬉戲——朝蹦跳落點 (hx,hy) 以 FROLIC_SPEED 移動一幀，回傳新位置。
+/// 單幀位移受「到落點的剩餘距離」clamp，故永遠不會蹦過頭（最多剛好到達落點）。純函式。
+fn frolic_hop(x: f32, y: f32, hx: f32, hy: f32, dt: f32) -> (f32, f32) {
+    let dx = hx - x;
+    let dy = hy - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= 1e-3 {
+        return (x, y);
+    }
+    let step = (FROLIC_SPEED * dt).min(dist);
+    (x + dx / dist * step, y + dy / dist * step)
 }
 
 /// ROADMAP 209：驚群炸開——在 `fleeing_snap`（正在逃竄的同種獵物：id/kind/x/y/vx/vy）中，
@@ -3318,6 +3399,135 @@ mod tests {
                 a.kind.trophic_level() == TrophicLevel::Predator
                 && matches!(a.state, WildlifeState::Defending));
             assert!(!pred_defend, "掠食者不該護幼");
+        }
+    }
+
+    // ─── ROADMAP 215：幼獸嬉戲 ───────────────────────────────────────────────
+
+    #[test]
+    fn frolic_target_stays_within_radius_of_mother() {
+        // 蹦跳落點永遠落在母獸周圍 FROLIC_RADIUS 內（玩不離媽媽）。
+        let mut rng = make_rng();
+        let (mx, my) = (5000.0_f32, 5000.0_f32);
+        for _ in 0..200 {
+            let (tx, ty) = frolic_target(mx, my, &mut rng);
+            let d = ((tx - mx).powi(2) + (ty - my).powi(2)).sqrt();
+            assert!(d <= FROLIC_RADIUS + 0.01, "蹦跳落點不該離母獸超過 FROLIC_RADIUS，實際 {d}");
+        }
+    }
+
+    #[test]
+    fn frolic_hop_moves_toward_target_without_overshoot() {
+        // 蹦跳朝落點移動 FROLIC_SPEED*dt；單幀位移受距離 clamp，不會蹦過頭。
+        let (x, y) = (5000.0_f32, 5000.0_f32);
+        let (hx, hy) = (5300.0_f32, 5000.0_f32); // 300px 遠
+        let (nx, ny) = frolic_hop(x, y, hx, hy, 0.1);
+        let moved = ((nx - x).powi(2) + (ny - y).powi(2)).sqrt();
+        assert!((moved - FROLIC_SPEED * 0.1).abs() < 0.01, "單幀位移應約 FROLIC_SPEED*dt，實際 {moved}");
+        assert!(nx > x && (ny - y).abs() < 0.001, "應朝落點（東側）直線蹦去");
+        // 大 dt 不蹦過落點（step 受距離 clamp）。
+        let (nx2, _) = frolic_hop(x, y, hx, hy, 100.0);
+        assert!(nx2 <= hx + 0.001, "不可蹦過落點");
+    }
+
+    #[test]
+    fn frolic_hop_faster_than_nurse_follow() {
+        // 玩耍蹦跳要比依偎跟隨活潑（快），幼獸玩起來才像在蹦蹦跳跳。
+        assert!(FROLIC_SPEED > NURSE_SPEED, "嬉戲蹦跳應快於依偎跟隨");
+    }
+
+    #[test]
+    fn tick_frolic_returns_to_nursing_when_reached() {
+        // 已蹦到落點（在 FROLIC_REACH 內）→ tick_frolic 收斂回依偎（朝母獸的 Wandering）。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Frolicking { hop_x: 5002.0, hop_y: 5000.0, frolic_timer: 5.0 };
+        w.tick_frolic(0.1, 4980.0, 5000.0);
+        match w.state {
+            WildlifeState::Wandering { target_x, target_y, .. } => {
+                assert!((target_x - 4980.0).abs() < 0.001 && (target_y - 5000.0).abs() < 0.001,
+                    "玩夠應回母獸身邊依偎");
+            }
+            other => panic!("到達落點後應回依偎（Wandering），實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_frolic_returns_to_nursing_when_timer_expires() {
+        // 計時耗盡（即使還沒蹦到落點）→ 也收尾回依偎，不會玩個沒完。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Frolicking { hop_x: 5300.0, hop_y: 5000.0, frolic_timer: 0.05 };
+        w.tick_frolic(0.1, 4990.0, 5000.0); // dt > timer
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "計時耗盡應收尾回依偎，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn fawn_frolics_near_mother_in_daytime() {
+        // 整管理器：白天，一隻已貼在母鹿身邊的幼鹿，連跑多幀後應有機會進入嬉戲（Frolicking）。
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        doe.id = 1;
+        doe.state = WildlifeState::Resting { rest_timer: 100000.0 }; // 母獸定住，便於觀察幼獸
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5010.0, 5000.0); // 已在舒適距離內
+        fawn.id = 2;
+        mgr.animals = vec![doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_frolic = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let f = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+            if matches!(f.state, WildlifeState::Frolicking { .. }) { saw_frolic = true; break; }
+        }
+        assert!(saw_frolic, "白天依偎在母獸身邊的幼獸應會開始嬉戲");
+    }
+
+    #[test]
+    fn fawn_does_not_frolic_at_night() {
+        // 夜間：幼獸只依偎不玩耍——連跑多幀都不該進入 Frolicking。
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        doe.id = 1;
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5010.0, 5000.0);
+        fawn.id = 2;
+        mgr.animals = vec![doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let f = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Frolicking { .. }), "夜間幼獸不該嬉戲");
+        }
+    }
+
+    #[test]
+    fn frolicking_fawn_flees_when_predator_approaches() {
+        // 威脅優先：正在嬉戲的幼獸，掠食者逼近時應改逃竄（不會繼續玩）。
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        doe.id = 1;
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5010.0, 5000.0);
+        fawn.id = 2;
+        fawn.state = WildlifeState::Frolicking { hop_x: 5030.0, hop_y: 5000.0, frolic_timer: 5.0 };
+        // 狼貼近幼獸（FLEE_RADIUS 內），形成直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5060.0, 5000.0);
+        wolf.id = 3;
+        mgr.animals = vec![doe, fawn, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        assert!(matches!(f.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時嬉戲幼獸應改逃竄，實際 {:?}", f.state);
+    }
+
+    #[test]
+    fn adult_never_frolics() {
+        // 嬉戲只屬於幼獸——連跑整管理器多幀，任何成體都不該進入 Frolicking。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            mgr.tick(0.2, &[], &att, &[], false);
+            let adult_frolic = mgr.animals.iter().any(|a|
+                !a.is_juvenile() && matches!(a.state, WildlifeState::Frolicking { .. }));
+            assert!(!adult_frolic, "成體不該嬉戲");
         }
     }
 }
