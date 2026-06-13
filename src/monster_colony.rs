@@ -68,6 +68,19 @@ const ALLIANCE_HP_BONUS: u32 = 50;
 /// 結盟期間擊殺盟約 Alpha 額外獲得的乙太獎勵。
 pub const ALLIANCE_BREAK_BONUS_ETHER: u32 = 5;
 
+// ─── ROADMAP 175：Alpha 覺醒危機常數 ─────────────────────────────────────────
+
+/// 觸發 Alpha 覺醒的生態壓力閾值。
+const ALPHA_AWAKENING_PRESSURE: f32 = 85.0;
+/// 覺醒解除的生態壓力閾值（低於此值時解除覺醒）。
+const ALPHA_DEAWAKEN_PRESSURE: f32 = 70.0;
+/// 觸發覺醒所需的最少活躍 Alpha 數。
+const ALPHA_AWAKENING_MIN_COUNT: usize = 2;
+/// 覺醒時 HP 加成百分比（50%）。
+const ALPHA_AWAKENING_HP_BONUS: f32 = 0.5;
+/// 覺醒 Alpha 被擊殺時殺手額外獲得的乙太。
+pub const AWAKENED_BONUS_ETHER: u32 = 5;
+
 // ─── ROADMAP 173：傳說古 Alpha 常數 ──────────────────────────────────────────
 
 /// 傳說古 Alpha 的生命值——遠超普通 Alpha（族群 Alpha 最多 24HP），需全服合力擊倒。
@@ -149,6 +162,9 @@ pub struct ColonyAlpha {
     // ROADMAP 174：跨族結盟
     /// 盟約對象的 Alpha ID；`None` 表示未結盟。
     pub allied_to_id: Option<u32>,
+    // ROADMAP 175：Alpha 覺醒危機
+    /// 是否處於覺醒狀態（eco_pressure ≥ 85 且同場 Alpha ≥ 2 時激活）。
+    pub awakened: bool,
 }
 
 /// 給協議層用的 Alpha 視圖（隨快照廣播）。
@@ -167,6 +183,8 @@ pub struct ColonyAlphaView {
     pub clash_target_id: Option<u32>,
     /// ROADMAP 174：盟約對象的 Alpha ID；`null` 表示未結盟。前端顯示金色連線與「盟」徽章。
     pub allied_to_id: Option<u32>,
+    /// ROADMAP 175：是否處於覺醒狀態。前端顯示赤色外環 + 🔥👑 名牌。
+    pub awakened: bool,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -191,6 +209,8 @@ pub struct AlphaKilledResult {
     pub kind: EnemyKind,
     /// ROADMAP 174：擊殺時 Alpha 是否正在盟約中（是 → 額外獎勵）。
     pub was_allied: bool,
+    /// ROADMAP 175：擊殺時 Alpha 是否處於覺醒狀態（是 → 額外獎勵）。
+    pub was_awakened: bool,
 }
 
 // ─── ROADMAP 173：傳說古 Alpha ────────────────────────────────────────────────
@@ -272,6 +292,9 @@ pub enum MonsterColonyEvent {
     AllianceBroken {
         survivor_name: &'static str,
     },
+    /// ROADMAP 175：Alpha 覺醒危機——壓力衝頂且多隻 Alpha 同場，全員進入覺醒狀態。
+    /// game.rs 負責廣播全服警報。
+    AlphaAwakened { count: usize },
 }
 
 /// 管理所有怪物巢穴。
@@ -310,7 +333,7 @@ impl MonsterColonyManager {
     }
 
     /// 每幀推進：族群補充 + Alpha 冷卻倒數 + Alpha 湧現 + Alpha 指揮計時 + Alpha 領地爭奪。
-    pub fn tick(&mut self, dt: f32) -> Vec<MonsterColonyEvent> {
+    pub fn tick(&mut self, dt: f32, eco_pressure: f32) -> Vec<MonsterColonyEvent> {
         let mut events = Vec::new();
 
         // 族群補充 + Alpha 冷卻倒數
@@ -387,6 +410,7 @@ impl MonsterColonyManager {
                 tactic_remaining: 0.0,
                 clash_target_id: None,
                 allied_to_id: None,
+                awakened: false,
             });
         }
 
@@ -398,6 +422,9 @@ impl MonsterColonyManager {
 
         // ROADMAP 173：傳說古 Alpha 湧現判斷
         self.tick_ancient_alpha(dt, &mut events);
+
+        // ROADMAP 175：Alpha 覺醒危機——壓力衝頂時覺醒所有 Alpha
+        self.tick_awakening(eco_pressure, &mut events);
 
         events
     }
@@ -523,13 +550,15 @@ impl MonsterColonyManager {
             return None; // 未死
         }
 
-        // Alpha 死亡：先記錄是否正在盟約中
+        // Alpha 死亡：記錄盟約狀態與覺醒狀態
         let was_allied = self.alphas[idx].allied_to_id.is_some();
+        let was_awakened = self.alphas[idx].awakened;
         let result = AlphaKilledResult {
             colony_id: self.alphas[idx].colony_id,
             colony_name: self.alphas[idx].colony_name,
             kind: self.alphas[idx].kind,
             was_allied,
+            was_awakened,
         };
         self.alphas.swap_remove(idx);
 
@@ -625,6 +654,38 @@ impl MonsterColonyManager {
     /// 回傳跨族結盟是否活躍（供 game.rs 計算額外生態壓力加成）。
     pub fn alliance_active(&self) -> bool {
         self.alliance_active
+    }
+
+    /// ROADMAP 175：覺醒危機——壓力衝頂且 Alpha 達數量門檻時全員覺醒；壓力回落後解除。
+    fn tick_awakening(&mut self, eco_pressure: f32, events: &mut Vec<MonsterColonyEvent>) {
+        if self.alphas.is_empty() {
+            return;
+        }
+        if eco_pressure >= ALPHA_AWAKENING_PRESSURE && self.alphas.len() >= ALPHA_AWAKENING_MIN_COUNT {
+            // 找出尚未覺醒的 Alpha，進行覺醒加持
+            let newly_awakened: Vec<usize> = self.alphas.iter()
+                .enumerate()
+                .filter(|(_, a)| !a.awakened)
+                .map(|(i, _)| i)
+                .collect();
+            if !newly_awakened.is_empty() {
+                for i in newly_awakened {
+                    let a = &mut self.alphas[i];
+                    a.awakened = true;
+                    // HP 加成 50%（上限 1.5× max_hp）
+                    let cap = a.max_hp + a.max_hp / 2;
+                    let bonus = (a.max_hp as f32 * ALPHA_AWAKENING_HP_BONUS) as u32;
+                    a.hp = (a.hp + bonus).min(cap);
+                }
+                let count = self.alphas.len();
+                events.push(MonsterColonyEvent::AlphaAwakened { count });
+            }
+        } else if eco_pressure < ALPHA_DEAWAKEN_PRESSURE {
+            // 壓力回落，解除覺醒（HP 不恢復）
+            for a in &mut self.alphas {
+                a.awakened = false;
+            }
+        }
     }
 
     /// 每幀推進古 Alpha 冷卻 + 湧現判斷。
@@ -755,6 +816,7 @@ impl MonsterColonyManager {
             active_tactic: a.active_tactic.clone(),
             clash_target_id: a.clash_target_id,
             allied_to_id: a.allied_to_id,
+            awakened: a.awakened,
         }).collect()
     }
 
@@ -884,7 +946,7 @@ mod tests {
         // 清空第一個巢穴並讓計時歸零
         mgr.colonies[0].population = 0;
         mgr.colonies[0].spawn_timer = 0.0;
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::SpawnAt { .. })),
             "族群未滿且計時歸零應觸發 SpawnAt"
@@ -896,7 +958,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         let col = &mut mgr.colonies[0];
         col.population = col.max_population;
-        let events = mgr.tick(RESPAWN_SECS + 1.0);
+        let events = mgr.tick(RESPAWN_SECS + 1.0, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::SpawnAt { colony_id: 0, .. })),
             "族群已滿不應觸發 SpawnAt"
@@ -908,7 +970,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         mgr.colonies[0].population = 0;
         mgr.colonies[0].spawn_timer = 0.0;
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::ColonyRevived { .. })),
             "廢棄巢穴復生應發出 ColonyRevived"
@@ -1018,7 +1080,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
             "族群達峰值應湧現 Alpha"
@@ -1032,7 +1094,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 100.0; // 冷卻中
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
             "冷卻中不應湧現 Alpha"
@@ -1046,10 +1108,10 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1); // 第一次：Alpha 湧現
+        mgr.tick(0.1, 0.0); // 第一次：Alpha 湧現
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
-        let events = mgr.tick(0.1); // 第二次：Alpha 已存在，不應再湧現
+        let events = mgr.tick(0.1, 0.0); // 第二次：Alpha 已存在，不應再湧現
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
             "已有 Alpha 時不應重複湧現"
@@ -1065,7 +1127,7 @@ mod tests {
         let max = col.max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let alpha = &mgr.alphas[0];
         assert_eq!(alpha.kind, kind);
         assert_eq!(alpha.max_hp, kind.max_hp() * 3, "Alpha 生命應為基礎值的 3 倍");
@@ -1078,7 +1140,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let alpha = &mgr.alphas[0];
         let (id, ax, ay) = (alpha.id, alpha.x, alpha.y);
         let result = mgr.attack_alpha(id, ax, ay, 1, ALPHA_ATTACK_REACH);
@@ -1092,7 +1154,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let alpha = &mgr.alphas[0];
         let (id, ax, ay, big_power) = (alpha.id, alpha.x, alpha.y, 999999);
         let result = mgr.attack_alpha(id, ax, ay, big_power, ALPHA_ATTACK_REACH);
@@ -1108,7 +1170,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let alpha = &mgr.alphas[0];
         let (id, ax, ay) = (alpha.id, alpha.x, alpha.y);
         // 玩家距 Alpha 超過 ALPHA_ATTACK_REACH
@@ -1121,7 +1183,7 @@ mod tests {
     fn cooldown_decrements_over_time() {
         let mut mgr = MonsterColonyManager::new();
         mgr.colonies[0].alpha_cooldown = 100.0;
-        mgr.tick(10.0);
+        mgr.tick(10.0, 0.0);
         assert!(
             mgr.colonies[0].alpha_cooldown < 100.0,
             "冷卻計時器應隨時間減少"
@@ -1134,7 +1196,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let views = mgr.alpha_views();
         assert_eq!(views.len(), 1, "應有 1 個 Alpha 視圖");
         assert_eq!(views[0].max_hp, mgr.colonies[0].kind.max_hp() * 3);
@@ -1146,7 +1208,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         let views = mgr.colony_views();
         assert!(views[0].has_alpha, "Alpha 活躍時巢穴視圖應標示 has_alpha");
     }
@@ -1157,7 +1219,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         assert_eq!(mgr.alphas.len(), 1, "Alpha 應存在");
         // 清空族群
         mgr.colonies[0].population = 1;
@@ -1172,7 +1234,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         // 擊殺 Alpha
         let (id, ax, ay) = {
             let a = &mgr.alphas[0];
@@ -1181,7 +1243,7 @@ mod tests {
         mgr.attack_alpha(id, ax, ay, 999999, ALPHA_ATTACK_REACH);
         // 立刻設族群為滿 + tick
         mgr.colonies[0].population = max;
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAppeared { .. })),
             "Alpha 剛被擊殺後冷卻中不應立刻湧現"
@@ -1194,7 +1256,7 @@ mod tests {
         let max = mgr.colonies[0].max_population;
         mgr.colonies[0].population = max;
         mgr.colonies[0].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         assert_eq!(mgr.alphas.len(), 1, "輔助函式：應已湧現 Alpha");
         mgr.alphas[0].id
     }
@@ -1218,7 +1280,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         spawn_alpha(&mut mgr);
         // 僅推進一小段（遠小於 first wait）
-        let events = mgr.tick(1.0);
+        let events = mgr.tick(1.0, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
             "第一次等待時間未到不應觸發 AlphaCommandReady"
@@ -1229,7 +1291,7 @@ mod tests {
     fn alpha_command_fires_after_first_wait() {
         let mut mgr = MonsterColonyManager::new();
         spawn_alpha(&mut mgr);
-        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0);
+        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
             "第一次等待結束後應觸發 AlphaCommandReady"
@@ -1241,7 +1303,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         spawn_alpha(&mut mgr);
         // 推進到觸發
-        mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0);
+        mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + 1.0, 0.0);
         // 觸發後冷卻應重置
         assert!(
             mgr.alphas[0].command_cooldown > 0.0,
@@ -1254,7 +1316,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         spawn_alpha(&mut mgr);
         // 一次 tick 推進遠超兩個冷卻週期
-        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + ALPHA_COMMAND_COOLDOWN_SECS * 3.0);
+        let events = mgr.tick(ALPHA_COMMAND_FIRST_WAIT_SECS + ALPHA_COMMAND_COOLDOWN_SECS * 3.0, 0.0);
         let count = events.iter()
             .filter(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }))
             .count();
@@ -1276,7 +1338,7 @@ mod tests {
         let id = spawn_alpha(&mut mgr);
         mgr.set_alpha_tactic(id, "集結".to_string());
         // 推進超過指令持續時間
-        mgr.tick(ALPHA_TACTIC_DURATION_SECS + 1.0);
+        mgr.tick(ALPHA_TACTIC_DURATION_SECS + 1.0, 0.0);
         assert!(
             mgr.alphas[0].active_tactic.is_none(),
             "指令持續時間到期後應清除"
@@ -1289,7 +1351,7 @@ mod tests {
         spawn_alpha(&mut mgr);
         // 手動設冷卻歸零以確定觸發
         mgr.alphas[0].command_cooldown = 0.0;
-        let events = mgr.tick(0.01);
+        let events = mgr.tick(0.01, 0.0);
         let ev = events.iter().find(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }));
         assert!(ev.is_some(), "應找到 AlphaCommandReady");
         if let Some(MonsterColonyEvent::AlphaCommandReady { alpha_id, hp_pct, .. }) = ev {
@@ -1307,11 +1369,11 @@ mod tests {
             mgr.colonies[i].population = max;
             mgr.colonies[i].alpha_cooldown = 0.0;
         }
-        mgr.tick(0.1); // 湧現兩個 Alpha
+        mgr.tick(0.1, 0.0); // 湧現兩個 Alpha
         // 手動讓第一個 Alpha 指令冷卻歸零、第二個保留
         mgr.alphas[0].command_cooldown = 0.0;
         mgr.alphas[1].command_cooldown = 999.0;
-        let events = mgr.tick(0.01);
+        let events = mgr.tick(0.01, 0.0);
         let count = events.iter()
             .filter(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. }))
             .count();
@@ -1326,7 +1388,7 @@ mod tests {
         mgr.attack_alpha(id, ax, ay, 999999, ALPHA_ATTACK_REACH);
         assert_eq!(mgr.alphas.len(), 0, "Alpha 應已消失");
         // 推進足夠時間，不應有任何 AlphaCommandReady
-        let events = mgr.tick(ALPHA_COMMAND_COOLDOWN_SECS * 2.0);
+        let events = mgr.tick(ALPHA_COMMAND_COOLDOWN_SECS * 2.0, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaCommandReady { .. })),
             "Alpha 死亡後不應再發出指令"
@@ -1353,6 +1415,7 @@ mod tests {
             tactic_remaining: 0.0,
             clash_target_id: None,
             allied_to_id: None,
+                awakened: false,
         });
         let b_id = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1370,6 +1433,7 @@ mod tests {
             tactic_remaining: 0.0,
             clash_target_id: None,
             allied_to_id: None,
+                awakened: false,
         });
         (a_id, b_id)
     }
@@ -1378,7 +1442,7 @@ mod tests {
     fn two_nearby_alphas_start_clashing() {
         let mut mgr = MonsterColonyManager::new();
         spawn_two_nearby_alphas(&mut mgr);
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
             "兩隻不同巢穴的 Alpha 進入範圍應觸發 AlphaClashStart"
@@ -1389,8 +1453,8 @@ mod tests {
     fn clash_start_fires_only_once() {
         let mut mgr = MonsterColonyManager::new();
         spawn_two_nearby_alphas(&mut mgr);
-        mgr.tick(0.1); // 第一幀：觸發 ClashStart
-        let events2 = mgr.tick(0.1); // 第二幀：已有 clash_target_id，不再廣播
+        mgr.tick(0.1, 0.0); // 第一幀：觸發 ClashStart
+        let events2 = mgr.tick(0.1, 0.0); // 第二幀：已有 clash_target_id，不再廣播
         assert!(
             !events2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
             "AlphaClashStart 只應在衝突首次偵測到時發出一次"
@@ -1402,7 +1466,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         spawn_two_nearby_alphas(&mut mgr);
         let initial_hp = (mgr.alphas[0].hp, mgr.alphas[1].hp);
-        mgr.tick(1.0); // 1 秒鐘傷害
+        mgr.tick(1.0, 0.0); // 1 秒鐘傷害
         assert!(mgr.alphas[0].hp < initial_hp.0, "衝突 Alpha A 應受到傷害");
         // Alpha B 可能已死（若勝負很快決定），不過至少要有過傷害
         let b_still_alive = mgr.alphas.iter().any(|a| a.colony_id == 2);
@@ -1420,7 +1484,7 @@ mod tests {
         mgr.alphas.iter_mut().find(|a| a.id == a_id).unwrap().hp = 5; // A 快死了
         // 持續推進，直到 A 死亡（最多 10 秒 = 足夠）
         for _ in 0..100 {
-            mgr.tick(0.1);
+            mgr.tick(0.1, 0.0);
             if !mgr.alphas.iter().any(|a| a.id == a_id) { break; }
         }
         assert!(
@@ -1437,7 +1501,7 @@ mod tests {
         // 推進到死亡
         let mut victory_found = false;
         for _ in 0..20 {
-            let events = mgr.tick(0.5);
+            let events = mgr.tick(0.5, 0.0);
             if events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashVictory { .. })) {
                 victory_found = true;
                 break;
@@ -1467,7 +1531,7 @@ mod tests {
         ];
         let (a_id, _) = spawn_two_nearby_alphas(&mut mgr);
         mgr.alphas.iter_mut().find(|a| a.id == a_id).unwrap().hp = 1;
-        for _ in 0..20 { mgr.tick(0.5); }
+        for _ in 0..20 { mgr.tick(0.5, 0.0); }
         let loser_col = mgr.colonies.iter().find(|c| c.id == 1);
         if let Some(col) = loser_col {
             assert!(col.alpha_cooldown > ALPHA_COOLDOWN_SECS,
@@ -1495,9 +1559,10 @@ mod tests {
                 tactic_remaining: 0.0,
                 clash_target_id: None,
                 allied_to_id: None,
+                awakened: false,
             });
         }
-        let events = mgr.tick(10.0);
+        let events = mgr.tick(10.0, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
             "同一巢穴的 Alpha 不應互相衝突"
@@ -1518,6 +1583,7 @@ mod tests {
             command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
             clash_target_id: None,
             allied_to_id: None,
+                awakened: false,
         });
         let id2 = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1529,8 +1595,9 @@ mod tests {
             command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
             clash_target_id: None,
             allied_to_id: None,
+                awakened: false,
         });
-        let events = mgr.tick(1.0);
+        let events = mgr.tick(1.0, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaClashStart { .. })),
             "距離超過衝突半徑的 Alpha 不應開始衝突"
@@ -1561,7 +1628,7 @@ mod tests {
     #[test]
     fn ancient_alpha_not_spawned_with_less_than_3_full_colonies() {
         let mut mgr = make_full_colony_mgr_n(2);
-        let events = mgr.tick(1.0);
+        let events = mgr.tick(1.0, 0.0);
         assert!(mgr.ancient.is_none(), "2 個滿員巢穴不應觸發古 Alpha");
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
@@ -1572,7 +1639,7 @@ mod tests {
     #[test]
     fn ancient_alpha_spawns_with_3_full_colonies() {
         let mut mgr = make_full_colony_mgr_n(3);
-        let events = mgr.tick(1.0);
+        let events = mgr.tick(1.0, 0.0);
         assert!(mgr.ancient.is_some(), "3 個滿員巢穴應觸發古 Alpha");
         assert!(
             events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
@@ -1583,7 +1650,7 @@ mod tests {
     #[test]
     fn ancient_alpha_has_correct_hp() {
         let mut mgr = make_full_colony_mgr_n(3);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let ancient = mgr.ancient.as_ref().unwrap();
         assert_eq!(ancient.hp, ANCIENT_ALPHA_HP);
         assert_eq!(ancient.max_hp, ANCIENT_ALPHA_HP);
@@ -1592,7 +1659,7 @@ mod tests {
     #[test]
     fn ancient_alpha_not_in_safe_zone() {
         let mut mgr = make_full_colony_mgr_n(5);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let ancient = mgr.ancient.as_ref().unwrap();
         let dx = ancient.x - TOWN_CENTER_X;
         let dy = ancient.y - TOWN_CENTER_Y;
@@ -1604,7 +1671,7 @@ mod tests {
     #[test]
     fn ancient_alpha_attack_reduces_hp() {
         let mut mgr = make_full_colony_mgr_n(3);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
         let result = mgr.attack_ancient_alpha(ax, ay, 10);
         assert!(result.is_none(), "單次攻擊不應擊倒");
@@ -1614,7 +1681,7 @@ mod tests {
     #[test]
     fn ancient_alpha_attack_out_of_range_fails() {
         let mut mgr = make_full_colony_mgr_n(3);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let result = mgr.attack_ancient_alpha(0.0, 0.0, 9999);
         assert!(result.is_none(), "超出攻擊範圍應回傳 None");
         assert!(mgr.ancient.is_some(), "超出範圍攻擊不應移除古 Alpha");
@@ -1623,7 +1690,7 @@ mod tests {
     #[test]
     fn ancient_alpha_kill_removes_and_sets_cooldown() {
         let mut mgr = make_full_colony_mgr_n(3);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
         let result = mgr.attack_ancient_alpha(ax, ay, ANCIENT_ALPHA_HP);
         assert!(result.is_some(), "HP 歸零應回傳擊殺結果");
@@ -1634,11 +1701,11 @@ mod tests {
     #[test]
     fn ancient_alpha_cooldown_prevents_reemergence() {
         let mut mgr = make_full_colony_mgr_n(3);
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
         mgr.attack_ancient_alpha(ax, ay, ANCIENT_ALPHA_HP);
         // 冷卻中不應再度湧現
-        let events = mgr.tick(1.0);
+        let events = mgr.tick(1.0, 0.0);
         assert!(mgr.ancient.is_none(), "冷卻中不應再度湧現");
         assert!(
             !events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
@@ -1650,7 +1717,7 @@ mod tests {
     fn ancient_alpha_view_reflects_state() {
         let mut mgr = make_full_colony_mgr_n(3);
         assert!(mgr.ancient_alpha_view().is_none(), "無古 Alpha 時視圖應為 None");
-        mgr.tick(1.0);
+        mgr.tick(1.0, 0.0);
         let view = mgr.ancient_alpha_view();
         assert!(view.is_some(), "古 Alpha 存活時視圖應為 Some");
         assert_eq!(view.unwrap().hp, ANCIENT_ALPHA_HP);
@@ -1667,7 +1734,7 @@ mod tests {
         // 巢穴 1
         mgr.colonies[1].population = mgr.colonies[1].max_population;
         mgr.colonies[1].alpha_cooldown = 0.0;
-        mgr.tick(0.1);
+        mgr.tick(0.1, 0.0);
         assert_eq!(mgr.alphas.len(), 2, "應湧現 2 隻 Alpha");
         (mgr.alphas[0].id, mgr.alphas[1].id)
     }
@@ -1677,7 +1744,7 @@ mod tests {
         let mut mgr = MonsterColonyManager::new();
         spawn_alpha(&mut mgr);
         // 跑超過閾值時間
-        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0);
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0, 0.0);
         assert!(
             !mgr.alliance_active(),
             "單隻 Alpha 不應觸發結盟"
@@ -1695,7 +1762,7 @@ mod tests {
         // 移除衝突（確保都在遠離的位置，不會進衝突半徑）
         mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
         mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
-        mgr.tick(10.0);
+        mgr.tick(10.0, 0.0);
         assert!(
             mgr.coexistence_timer > 0.0,
             "兩隻 Alpha 共存應累積 coexistence_timer"
@@ -1710,7 +1777,7 @@ mod tests {
         mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
         mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
         // 跑到剛好超過閾值
-        let events = mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 0.1, 0.0);
         assert!(
             mgr.alliance_active(),
             "共存 {} 秒後應觸發結盟",
@@ -1730,7 +1797,7 @@ mod tests {
         mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
         let hp_before_a = mgr.alphas[0].hp;
         let hp_before_b = mgr.alphas[1].hp;
-        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1, 0.0);
         assert!(
             mgr.alphas[0].hp > hp_before_a || mgr.alphas[1].hp > hp_before_b,
             "結盟後至少一隻 Alpha 血量應增加"
@@ -1744,7 +1811,7 @@ mod tests {
         mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
         mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
         // 觸發結盟
-        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1, 0.0);
         assert!(mgr.alliance_active(), "前置條件：應已結盟");
         // 擊殺盟約 Alpha A
         let alpha_a = mgr.alphas.iter().find(|a| a.id == id_a).unwrap();
@@ -1753,7 +1820,7 @@ mod tests {
         assert!(result.is_some(), "應擊殺 Alpha A");
         assert!(result.unwrap().was_allied, "擊殺盟約 Alpha 應設 was_allied=true");
         // 下一幀偵測到結盟已失效
-        let events = mgr.tick(0.1);
+        let events = mgr.tick(0.1, 0.0);
         assert!(
             !mgr.alliance_active(),
             "盟約 Alpha 被擊殺後應解除結盟"
@@ -1786,7 +1853,7 @@ mod tests {
         mgr.alphas[0].x = 100.0; mgr.alphas[0].y = 100.0;
         mgr.alphas[1].x = 200.0; mgr.alphas[1].y = 100.0; // 距離 < ALPHA_CLASH_RADIUS
         // 跑超過結盟閾值
-        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0);
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0, 0.0);
         assert!(
             !mgr.alliance_active(),
             "廝殺中的 Alpha 不應觸發結盟"
@@ -1804,7 +1871,142 @@ mod tests {
         spawn_two_different_colony_alphas(&mut mgr);
         mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
         mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
-        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1, 0.0);
         assert!(mgr.alliance_active(), "結盟觸發後 alliance_active() 應為 true");
+    }
+
+    // ── ROADMAP 175：Alpha 覺醒危機測試 ──────────────────────────────────────
+
+    #[test]
+    fn awakening_not_triggered_single_alpha() {
+        // 單隻 Alpha + 高壓力：不達覺醒最低數量門檻，不觸發。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        let events = mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        assert!(!mgr.alphas[0].awakened, "單隻 Alpha 不應觸發覺醒");
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAwakened { .. })),
+            "不應有 AlphaAwakened 事件"
+        );
+    }
+
+    #[test]
+    fn awakening_not_triggered_low_pressure() {
+        // 兩隻 Alpha + 低壓力：壓力未達閾值，不觸發。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        let events = mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE - 1.0);
+        assert!(!mgr.alphas[0].awakened, "壓力不足不應觸發覺醒");
+        assert!(!mgr.alphas[1].awakened, "壓力不足不應觸發覺醒");
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAwakened { .. })),
+            "不應有 AlphaAwakened 事件"
+        );
+    }
+
+    #[test]
+    fn awakening_triggered_two_alphas_high_pressure() {
+        // 兩隻 Alpha + 高壓力：觸發覺醒，發出 AlphaAwakened 事件。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        let events = mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        assert!(mgr.alphas[0].awakened, "Alpha[0] 應處於覺醒狀態");
+        assert!(mgr.alphas[1].awakened, "Alpha[1] 應處於覺醒狀態");
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAwakened { count: 2 })),
+            "應有 AlphaAwakened {{ count: 2 }} 事件"
+        );
+    }
+
+    #[test]
+    fn awakening_gives_hp_bonus() {
+        // 覺醒時 HP 應增加 50%。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        let hp_before = mgr.alphas[0].hp;
+        let max_hp = mgr.alphas[0].max_hp;
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        let hp_after = mgr.alphas[0].hp;
+        let expected_bonus = (max_hp as f32 * ALPHA_AWAKENING_HP_BONUS) as u32;
+        assert_eq!(hp_after, (hp_before + expected_bonus).min(max_hp + max_hp / 2),
+            "覺醒 HP 加成應為 50%");
+    }
+
+    #[test]
+    fn awakening_hp_capped_at_150pct_max() {
+        // HP 加成不超過 1.5× max_hp。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        let max_hp = mgr.alphas[0].max_hp;
+        mgr.alphas[0].hp = max_hp; // 滿血
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        let cap = max_hp + max_hp / 2;
+        assert!(mgr.alphas[0].hp <= cap, "覺醒 HP 不應超過 1.5× max_hp");
+    }
+
+    #[test]
+    fn awakening_no_double_event() {
+        // 已覺醒的 Alpha 再次觸發不應重複發事件。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0); // 第一次覺醒
+        let events2 = mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0); // 第二次同壓力
+        assert!(
+            !events2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaAwakened { .. })),
+            "已覺醒的 Alpha 不應再次發出 AlphaAwakened 事件"
+        );
+    }
+
+    #[test]
+    fn deawakening_when_pressure_drops() {
+        // 壓力回落到 DEAWAKEN 以下時，覺醒應解除。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0); // 覺醒
+        assert!(mgr.alphas[0].awakened, "應已覺醒");
+        mgr.tick(0.1, ALPHA_DEAWAKEN_PRESSURE - 1.0); // 壓力回落
+        assert!(!mgr.alphas[0].awakened, "壓力回落後應解除覺醒");
+        assert!(!mgr.alphas[1].awakened, "壓力回落後應解除覺醒");
+    }
+
+    #[test]
+    fn kill_alpha_sets_was_awakened_true() {
+        // 覺醒狀態下擊殺 Alpha，was_awakened 應為 true。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        let alpha_id = mgr.alphas[0].id;
+        let alpha_x = mgr.alphas[0].x;
+        let alpha_y = mgr.alphas[0].y;
+        let max_hp = mgr.alphas[0].max_hp;
+        let result = mgr.attack_alpha(alpha_id, alpha_x, alpha_y, max_hp * 10, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "應成功擊殺");
+        assert!(result.unwrap().was_awakened, "was_awakened 應為 true");
+    }
+
+    #[test]
+    fn kill_alpha_sets_was_awakened_false_when_normal() {
+        // 非覺醒狀態下擊殺 Alpha，was_awakened 應為 false。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        let alpha_id = mgr.alphas[0].id;
+        let alpha_x = mgr.alphas[0].x;
+        let alpha_y = mgr.alphas[0].y;
+        let max_hp = mgr.alphas[0].max_hp;
+        let result = mgr.attack_alpha(alpha_id, alpha_x, alpha_y, max_hp * 10, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "應成功擊殺");
+        assert!(!result.unwrap().was_awakened, "非覺醒狀態 was_awakened 應為 false");
+    }
+
+    #[test]
+    fn alpha_view_includes_awakened_field() {
+        // alpha_views() 回傳的視圖應含 awakened 欄位。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        let views_before = mgr.alpha_views();
+        assert!(!views_before[0].awakened, "覺醒前 awakened 應為 false");
+        mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
+        let views_after = mgr.alpha_views();
+        assert!(views_after[0].awakened, "覺醒後 awakened 應為 true");
     }
 }

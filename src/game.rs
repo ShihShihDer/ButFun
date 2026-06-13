@@ -1013,8 +1013,10 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 // ROADMAP 164：怪物巢穴 tick——族群補充計時器推進，發出生成指令。
+                // 傳入當前生態壓力（ROADMAP 175：覺醒危機判斷用）。
                 {
-                    let colony_events = app.monster_colonies.write().unwrap().tick(dt);
+                    let eco_now = app.director.read().unwrap().eco_pressure();
+                    let colony_events = app.monster_colonies.write().unwrap().tick(dt, eco_now);
                     for ev in colony_events {
                         use crate::monster_colony::MonsterColonyEvent;
                         match ev {
@@ -1166,6 +1168,13 @@ pub fn spawn(app: AppState) {
                                 let _ = app.tx_chat.send(format!(
                                     "💥【結盟瓦解！】盟約 Alpha 被擊倒，跨族結盟宣告瓦解！\
                                      [{survivor_name}] Alpha 失去盟友，是趁機出擊的好時機！"
+                                ));
+                            }
+                            // ROADMAP 175：Alpha 覺醒危機——廣播全服緊急警報。
+                            MonsterColonyEvent::AlphaAwakened { count } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🔥【Alpha 覺醒危機！】生態壓力衝頂，荒野 {count} 隻 Alpha 首領全數覺醒！\
+                                     生命激增、攻擊加倍——速速清剿或壓低生態壓力！"
                                 ));
                             }
                         }
