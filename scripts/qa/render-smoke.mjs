@@ -555,6 +555,24 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 夏夜銀河：乾淨");
 }
 
+// 春夜螢火（233）：current_season=spring ＋ 夜（light 0.12 < 0.42）→ 跑 drawFireflies 的繪製分支
+//（螢火季勢淡入→惰性生成螢火池→各螢火緩游、三次方脈衝明滅、黃綠柔光暈）。連跑 ~300 幀
+//（每幀 +16ms ≈ 4.8s）才實跑完 _fireflyFade 從 0 緩緩淡入滿（FIREFLY_FADE_RATE 0.25 約需 4s）後的完整繪製路徑。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：春夜（春夜螢火，連跑 300 幀觸發螢火淡入與明滅游移繪製）──");
+  const fireflySnap = JSON.parse(JSON.stringify(snapshot));
+  fireflySnap.current_season = "spring";
+  fireflySnap.daynight = { phase: "night", light: 0.12, night_danger: true };
+  fireflySnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...fireflySnap, type: "snapshot" }) });
+  const r = pump("春夜螢火", 300);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 春夜螢火：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 春夜螢火：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 春夜螢火：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
