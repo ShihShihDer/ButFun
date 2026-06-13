@@ -73,6 +73,9 @@ pub struct ResidentThoughtEvent {
     pub y: f32,
     /// 供模板選取的種子。
     pub seed: usize,
+    /// 凱旋餘韻談資（ROADMAP 186）：true 時改用「勝利談資」模板（居民在聊剛斬下的菁英首領），
+    /// 由 game.rs 廣播時據此切換模板；`#[serde(default)]` 無關（純後端事件）。
+    pub triumph: bool,
 }
 
 /// 居民生命週期事件，由 game.rs 廣播至世界聊天。
@@ -190,6 +193,10 @@ const HUDDLE_RADIUS: f32 = 64.0;
 
 /// 凱旋歡慶持續秒數（ROADMAP 185）：菁英 Alpha 被討伐後，城鎮居民原地歡慶的時長。
 const CELEBRATE_DURATION_SECS: f32 = 8.0;
+
+/// 凱旋餘韻持續秒數（ROADMAP 186）：歡慶（185）結束後，城鎮居民仍會在這段時間裡
+/// 興奮地談論剛剛那場勝利——思想泡泡改冒「勝利談資」，把野外戰局接進居民的日常對話。
+const TRIUMPH_AFTERGLOW_SECS: f32 = 40.0;
 
 /// 依索引把居民確定性地散佈在城中心廣場周圍，避免全部疊在同一點。
 /// 用黃金角分布 + 內外兩圈交錯，讓聚集看起來自然成團。
@@ -649,6 +656,9 @@ pub struct ResidentManager {
     town_alarmed: bool,
     /// 凱旋歡慶剩餘秒數（ROADMAP 185）；> 0 且未在避難時，城鎮居民原地歡慶（頭頂 🎉）。由 notify_hero_triumph 點燃。
     celebrate_timer: f32,
+    /// 凱旋餘韻剩餘秒數（ROADMAP 186）；含歡慶期在內一併倒數，歡慶結束後仍 > 0 的這段即「餘韻期」，
+    /// 居民思想泡泡改冒勝利談資。由 notify_hero_triumph 與 celebrate_timer 一同點燃。
+    afterglow_timer: f32,
 }
 
 impl ResidentManager {
@@ -668,6 +678,7 @@ impl ResidentManager {
             expedition_cooldown: 300.0, // 初始 5 分鐘冷卻，給世界暖機時間
             town_alarmed: false,
             celebrate_timer: 0.0,
+            afterglow_timer: 0.0,
         }
     }
 
@@ -679,6 +690,8 @@ impl ResidentManager {
             return 0;
         }
         self.celebrate_timer = CELEBRATE_DURATION_SECS;
+        // ROADMAP 186：餘韻含歡慶期一併倒數，歡慶結束後留下 TRIUMPH_AFTERGLOW_SECS 的勝利談資餘韻。
+        self.afterglow_timer = CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS;
         self.residents.iter().filter(|r| r.expedition.is_none()).count()
     }
 
@@ -715,6 +728,14 @@ impl ResidentManager {
             self.celebrate_timer = (self.celebrate_timer - dt).max(0.0);
         }
         let celebrating = self.celebrate_timer > 0.0 && !alarmed;
+
+        // ── 凱旋餘韻談資（ROADMAP 186）：歡慶散場後，居民仍興奮地聊著剛斬下的菁英首領 ──
+        // 餘韻計時含歡慶期一併倒數；歡慶結束（celebrating 為 false）後仍 > 0 的這段即「餘韻期」，
+        // 期間冒出的思想泡泡改用勝利談資模板。避難優先（危機未解不閒聊），與歡慶同受 alarmed 壓制。
+        if self.afterglow_timer > 0.0 {
+            self.afterglow_timer = (self.afterglow_timer - dt).max(0.0);
+        }
+        let in_afterglow = self.afterglow_timer > 0.0 && !celebrating && !alarmed;
 
         // 0. 野外採集隊成敗判定（ROADMAP 177）
         let mut failed = false;
@@ -810,6 +831,8 @@ impl ResidentManager {
                     x: r.x,
                     y: r.y,
                     seed: r.thought_count,
+                    // ROADMAP 186：餘韻期內冒出的思想泡泡聊的是剛斬下的菁英首領（勝利談資）。
+                    triumph: in_afterglow,
                 });
                 r.thought_count += 1;
                 r.thought_timer = self.rng.gen_range(THOUGHT_TIMER_MIN..=THOUGHT_TIMER_MAX);
@@ -2263,5 +2286,52 @@ mod tests {
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
         assert!(thoughts.is_empty(), "避難期間應抑制思想泡泡（保持危機氣氛安靜）");
+    }
+
+    // ── 凱旋餘韻談資（ROADMAP 186）──────────────────────────────────────────
+
+    #[test]
+    fn triumph_celebration_still_suppresses_thoughts() {
+        // 歡慶期（185）內仍應抑制思想泡泡，讓歡呼氣氛集中——餘韻談資只在歡慶散場後才冒。
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        for r in &mut mgr.residents { r.thought_timer = 0.0; }
+        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        assert!(thoughts.is_empty(), "歡慶期間應抑制思想泡泡（集中歡慶氣氛）");
+    }
+
+    #[test]
+    fn afterglow_emits_triumph_thoughts() {
+        // 歡慶散場後進入餘韻期，思想泡泡應改冒勝利談資（triumph = true）。
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        for r in &mut mgr.residents { r.thought_timer = 0.0; }
+        // 一次推進跨過 8 秒歡慶期、落在餘韻期內。
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        assert!(!thoughts.is_empty(), "餘韻期應冒出思想泡泡");
+        assert!(thoughts.iter().all(|t| t.triumph), "餘韻期思想泡泡應全為勝利談資");
+    }
+
+    #[test]
+    fn afterglow_expires_back_to_normal_thoughts() {
+        // 餘韻期過完，思想泡泡應回歸常態（triumph = false）。
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        for r in &mut mgr.residents { r.thought_timer = 0.0; }
+        // 一次推進跨過 歡慶 + 餘韻 總時長，餘韻已耗盡。
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        assert!(!thoughts.is_empty(), "餘韻耗盡後思想泡泡應正常冒出");
+        assert!(thoughts.iter().all(|t| !t.triumph), "餘韻耗盡後思想泡泡應回歸常態（非勝利談資）");
+    }
+
+    #[test]
+    fn alarm_overrides_afterglow_chatter() {
+        // 危機優先：餘韻期間若生態避難警戒響起，應壓過勝利談資、抑制思想泡泡。
+        let mut mgr = ResidentManager::new();
+        mgr.notify_hero_triumph();
+        for r in &mut mgr.residents { r.thought_timer = 0.0; }
+        // 推進跨過歡慶期落入餘韻，同時生態壓力衝頂進入避難。
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(thoughts.is_empty(), "餘韻遇生態避難應讓位（危機優先，不閒聊勝利）");
     }
 }

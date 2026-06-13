@@ -1485,7 +1485,12 @@ pub fn spawn(app: AppState) {
                     };
                     let ctx = crate::resident_chat::ResidentContext { phase, weather };
                     for ev in thought_events {
-                        let text = crate::resident_chat::get_thought(ev.persona, &ctx, ev.seed);
+                        // ROADMAP 186：凱旋餘韻期內改冒「勝利談資」（居民聊剛斬下的菁英首領）；否則照常態思想模板。
+                        let text = if ev.triumph {
+                            crate::resident_chat::get_triumph_thought(ev.seed)
+                        } else {
+                            crate::resident_chat::get_thought(ev.persona, &ctx, ev.seed)
+                        };
                         let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
                             npc_id: ev.id,
                             npc_name: format!("居民 {}", ev.name),
