@@ -8227,12 +8227,30 @@
         ctx.restore();
       }
 
+      // ROADMAP 223：野狐撲鼠——白天無獵可追時，野狐偶爾朝草叢裡看不見的小獵物來一記標誌性的高弧
+      // 撲跳（state==="pouncing"）：把狐身猛地往上抬起成一道躍弧（比飛行的浮沉更急更高，讀起來像
+      // 縱身一撲），並在牠真實的地面位置留一抹淡橢圓投影（標示牠騰空躍過哪裡）。只有野狐會撲、野狼
+      // 不撲。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、無獵可追的野狐撲跳時給）。
+      const isPouncing = w.kind === "wild_fox" && w.state === "pouncing";
+      let pounceLift = 0;
+      if (isPouncing) {
+        pounceLift = Math.abs(Math.sin(now / 120)) * 15; // 猛地躍起的高弧（急促起落，像縱身撲下）
+        ctx.save();
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2, 0, 0, Math.PI * 2); // 地面投影（淡橢圓，標示騰空躍過的地面）
+        ctx.fill();
+        ctx.restore();
+      }
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
       ctx.save();
       if (scale !== 1) ctx.scale(scale, scale);
       if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面
+      if (pounceLift) ctx.translate(0, -pounceLift); // ROADMAP 223：撲跳：把狐身抬起成躍弧
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -8408,6 +8426,21 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🌰", 6, -22 - nt * 2); // 捧在身前的食物，隨啃咬微微一動一動
+        ctx.restore();
+      }
+
+      // ROADMAP 223：野狐撲鼠——撲跳中的野狐（state==="pouncing"）頭頂浮一縷急促的 💨，讓「野狐
+      // 朝草叢猛地縱身一撲」一眼看得到（掠食者一側第一次有了物種專屬姿態：野狼夜嚎 🌙、野狐白晝撲鼠 💨）。
+      // 💨 隨躍弧一起往上竄、與抬起的狐身同步。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      // （後端只在白天平靜、無獵可追的野狐撲跳時才給）。
+      if (w.state === "pouncing") {
+        ctx.save();
+        const pt = Math.abs(Math.sin(now / 120)); // 與躍起同步、急促起伏
+        ctx.globalAlpha = 0.5 + 0.45 * pt;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💨", 9, -22 - pounceLift); // 隨撲躍往上竄的一縷勁風（跟著抬起的狐身）
         ctx.restore();
       }
 
