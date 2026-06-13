@@ -310,6 +310,20 @@ const HOWL_HEAR_RADIUS: f32 = 460.0;
 /// 不在「起始嚎聲快照」裡，故牽動每 tick 只向外擴一圈——嚎聲像漣漪般逐圈傳開，不會瞬間全嚎。
 const HOWL_JOIN_PROB: f32 = 0.5;
 
+// ─── ROADMAP 219：破曉甦醒伸展（dawn waking stretch）──────────────────────────
+// 承接 210（晝夜作息：晝行獵物入夜歸巢沉睡 💤）：210 讓鹿群入夜後一隻隻窩回家裡安睡，補上了
+// 「夜」的作息；但牠們的「破曉」卻是瞬間的——天一亮，沉睡的獵物上一幀還癱在家裡、下一幀已直接
+// 起身漫遊，少了動物甦醒最自然的那一拍：先伸個懶腰。本切片補上這層：天明喚醒夜眠的晝行獵物時，
+// 不再讓牠立刻起步，而是先原地伸展一小段（頭頂浮一輪緩緩升起的朝陽 🌅、像睜眼伸懶腰），伸展完
+// 才起身投入新一天的閒晃。於是同一片草原，晨光鋪上草地時，鹿群會一隻隻先在家門口舒展身子、再
+// 慢慢散開吃草——「日出而作」第一次有了「甦醒」這一拍，與夜眠 💤 對成完整的晝夜起落。純啟發式、
+// 零 LLM、零 tick 簽名改動、零協議改動（新增的 waking 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、記憶體模式。威脅永遠優先：伸展中若有掠食者逼近，立刻中斷改逃竄（睡醒遇險先逃命）。
+/// 破曉甦醒的伸展時長（秒）——天明喚醒夜眠者後，原地舒展身子數秒再起身漫遊。偏短：只是醒來的
+/// 一拍過渡，不是又一段休息（過長會讓整群鹿天亮後還賴在原地，反而失了「晨起散開」的生氣）。
+const WAKE_DURATION_MIN: f32 = 1.5;
+const WAKE_DURATION_MAX: f32 = 3.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -509,6 +523,9 @@ enum WildlifeState {
     /// ROADMAP 217：掠食者夜嚎——夜裡無獵可追時仰首長嚎（頭頂浮 🌙）。原地不動（不更新座標）、
     /// howl_timer 倒數，到期就回到巡遊；一發現獵物即由呼叫端改去獵殺（狩獵優先）。
     Howling { howl_timer: f32 },
+    /// ROADMAP 219：破曉甦醒伸展——天明喚醒夜眠的晝行獵物時，先原地伸展一小段（頭頂浮 🌅）、
+    /// wake_timer 倒數，到期才起身漫遊；伸展中若有威脅逼近一律優先中斷改逃竄。
+    Waking { wake_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -781,12 +798,29 @@ impl Wildlife {
     /// REST_TIMER_MAX，故以「rest_timer 是否超過日間小憩上限」即可分辨夜眠與小憩——
     /// 只喚醒夜眠者、不打斷白天的正常小憩。不靠計時器自然到期，因為那計時器比整段
     /// 白天還長,鹿會癱在家裡跨越整個白天(與「晨光鋪上草地、鹿群一隻隻醒來」相反)。
-    fn wake_from_night_sleep(&mut self, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+    fn wake_from_night_sleep(&mut self, rng: &mut StdRng) {
         if let WildlifeState::Resting { rest_timer } = self.state {
             if rest_timer > REST_TIMER_MAX {
+                // ROADMAP 219：破曉甦醒不再瞬間起步——先轉入「伸展」一小段（頭頂浮 🌅），
+                // 由 tick_wake 倒數到期才起身投入漫遊（晨光鋪上草地、鹿群先舒展再散開）。
+                let wake = rng.gen_range(WAKE_DURATION_MIN..=WAKE_DURATION_MAX);
+                self.state = WildlifeState::Waking { wake_timer: wake };
+            }
+        }
+    }
+
+    /// ROADMAP 219：破曉甦醒伸展——伸展中（Waking）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）起身投入新一天的閒晃。只在 Waking 狀態下生效（呼叫端已確保
+    /// 此隻為晝行獵物、天明、且當下平靜；威脅一旦逼近，呼叫端不會走到此分支、改去逃竄——威脅永遠優先）。
+    fn tick_wake(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Waking { wake_timer } = self.state {
+            let remaining = wake_timer - dt;
+            if remaining <= 0.0 {
                 let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
                 let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
                 self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Waking { wake_timer: remaining };
             }
         }
     }
@@ -862,6 +896,7 @@ impl Wildlife {
             WildlifeState::Frolicking { .. } => "frolicking",
             WildlifeState::Grooming { .. }  => "grooming",
             WildlifeState::Howling { .. }   => "howling",
+            WildlifeState::Waking { .. }    => "waking",
         }
     }
 }
@@ -1543,14 +1578,23 @@ impl WildlifeManager {
                     a.tick_watch(dt, herd_anchor, rng);
                 }
             } else {
-                // ROADMAP 210：破曉甦醒——天亮（非夜間）後，仍處夜眠的晝行獵物先喚醒再閒晃；
+                // ROADMAP 210：破曉甦醒——天亮（非夜間）後，仍處夜眠的晝行獵物先喚醒；
                 // 否則 600s 夜眠計時器比整段白天還長，鹿會癱在家裡跨越整個白天。
+                // ROADMAP 219：喚醒不再瞬間起步，而是先轉入「伸展」（Waking）一小段再起身漫遊。
                 if !is_night && is_diurnal(animal_kind) {
-                    a.wake_from_night_sleep(herd_anchor, rng);
+                    a.wake_from_night_sleep(rng);
                 }
                 // ROADMAP 216：成體相依理毛——理毛永遠讓位給逃命（威脅優先）。先看附近有無威脅：
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
-                if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
+                if matches!(a.state, WildlifeState::Waking { .. }) {
+                    // ROADMAP 219：破曉伸展中——威脅一旦逼近就立刻中斷改逃竄（睡醒遇險先逃命），
+                    // 否則原地舒展身子、計時倒數，到期才起身投入新一天的閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_wake(dt, herd_anchor, rng);
+                    }
+                } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
                 } else if groom_has_partner
@@ -3035,6 +3079,62 @@ mod tests {
     }
 
     #[test]
+    fn dawn_wake_enters_stretching_first() {
+        // ROADMAP 219：破曉甦醒不再瞬間起步——天明喚醒夜眠的晝行獵物時，應先轉入「伸展」
+        // （Waking）一小段、原地不動，而非上一幀沉睡、下一幀就直接漫遊。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0; // 在家
+        deer.state = WildlifeState::Resting { rest_timer: NIGHT_SLEEP_REST_SECS }; // 夜眠
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false); // 破曉第一幀（白天、短到不足以伸展完）
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Waking { .. }),
+            "破曉喚醒應先轉入伸展（Waking），實際 {:?}", d.state);
+        assert!((d.x - 5000.0).abs() < 1.0 && (d.y - 5000.0).abs() < 1.0,
+            "伸展中應原地不動，實際 ({},{})", d.x, d.y);
+    }
+
+    #[test]
+    fn waking_resumes_wandering_after_stretch() {
+        // 伸展數秒後應起身投入新一天的閒晃（離開 Waking、不再賴在原地）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0;
+        deer.state = WildlifeState::Resting { rest_timer: NIGHT_SLEEP_REST_SECS };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 推進總時長遠超過伸展上限（WAKE_DURATION_MAX=3.0s）：0.5s × 10 = 5s。
+        for _ in 0..10 { mgr.tick(0.5, &[], &att, &[], false); }
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(!matches!(d.state, WildlifeState::Waking { .. }),
+            "伸展完應起身（離開 Waking），實際仍 {:?}", d.state);
+        assert!(!matches!(d.state, WildlifeState::Resting { .. }),
+            "伸展完不應又退回沉睡，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn waking_flees_when_threatened() {
+        use crate::combat::EnemyKind;
+        // 威脅永遠優先：破曉伸展中若有掠食威脅逼近（FLEE_RADIUS 內），應立刻中斷伸展改逃竄。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0;
+        deer.state = WildlifeState::Waking { wake_timer: 2.0 }; // 正在伸展
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 獵食野鹿的怪物在 FLEE_RADIUS 內、白天。
+        mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)], false);
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "伸展中遇威脅應立刻逃命（不繼續伸展），實際 {:?}", d.state);
+    }
+
+    #[test]
     fn nocturnal_predator_does_not_head_home_at_night() {
         // 夜行掠食者入夜不歸巢眠——無獵物時照常閒晃（朝漫遊目標移動，而非朝家歸返）。
         let mut mgr = WildlifeManager::new();
@@ -3801,6 +3901,12 @@ mod tests {
         mgr.animals = vec![doe, fawn];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         for _ in 0..2000 {
+            // 把受測對象釘在幼獸（成熟度 < 1）：本測試要驗的是「身為幼獸時不理毛」，
+            // 而幼獸每幀會成長（dt/MATURE_DURATION_SECS），2000 幀(200s)遠超成熟期(120s)會長成成體；
+            // 不釘住的話受測對象中途轉成體、理毛就成了正當行為（216），測不到原本要驗的不變量。
+            if let Some(f) = mgr.animals.iter_mut().find(|x| x.id == 2) {
+                f.maturity = 0.0;
+            }
             mgr.tick(0.1, &[], &att, &[], false);
             let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(f.state, WildlifeState::Grooming { .. }), "幼獸不該理毛");

@@ -8195,6 +8195,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 219：破曉甦醒伸展——天明喚醒的晝行獵物先原地伸展一小段（state==="waking"）
+      // 頭頂浮一輪緩緩升起、漸漸轉亮的 🌅，讓「晨光鋪上草地、鹿群一隻隻睜眼伸懶腰再散開」一眼
+      // 看得到（與夜眠 💤 對成完整的晝夜起落）。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      // （後端只在天明喚醒夜眠的晝行獵物時才給此短暫過渡狀態）。
+      if (w.state === "waking") {
+        ctx.save();
+        const wt = (Math.sin(now / 700) + 1) / 2; // 0→1 緩緩起落，像朝陽升起又微微明滅
+        ctx.globalAlpha = 0.55 + 0.4 * wt;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22 - wt * 3); // 像朝陽緩緩升起般微微上移
+        ctx.fillText("🌅", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {
