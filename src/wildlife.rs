@@ -55,6 +55,15 @@ const HOME_ARRIVE_DIST: f32 = 20.0;
 const HUNT_RADIUS: f32 = 320.0;
 /// 追獵速度。
 const HUNT_SPEED: f32 = 155.0;
+// ─── ROADMAP 213：孤獵潛行突襲 ────────────────────────────────────────────────
+/// 潛行接近速度——遠慢於全速追獵（約其半），讀起來像壓低身子匍匐逼近。
+const STALK_SPEED: f32 = 78.0;
+/// 撲擊距離——潛近到此距離內即爆衝轉入 Hunting 全速撲殺。
+/// 刻意 ＞ FLEE_RADIUS(180)：爆衝恰在獵物即將察覺的剎那發動；亦小於哨兵警戒
+/// SENTINEL_FLEE_RADIUS(300)，讓哨兵能在掠食者仍潛行時就先發現。
+const POUNCE_RANGE: f32 = 200.0;
+/// 潛行耐性上限（秒）——超時仍追不到就放棄返家，不會永遠尾隨。
+const STALK_TIMEOUT: f32 = 12.0;
 /// 進入此距離觸發擊殺。
 const KILL_RADIUS: f32 = 22.0;
 /// 追獵超時（秒），超過後放棄。
@@ -393,6 +402,9 @@ enum WildlifeState {
     Resting { rest_timer: f32 },
     Fleeing { vx: f32, vy: f32, flee_timer: f32 },
     Returning,
+    /// ROADMAP 213：孤獵潛行——掠食者鎖定獵物後壓低身子緩緩潛近（頭頂浮 🐾），
+    /// 逼近到撲擊距離才爆衝轉入 Hunting；stalk_timer 耗盡仍追不到就放棄返家。
+    Stalking { target_id: u32, stalk_timer: f32 },
     /// 捕食者正在追獵指定 ID 的獵物。
     Hunting { target_id: u32, hunt_timer: f32 },
     /// 捕食者吃完後消化休息。
@@ -692,6 +704,7 @@ impl Wildlife {
             WildlifeState::Resting { .. }   => "resting",
             WildlifeState::Fleeing { .. }   => "fleeing",
             WildlifeState::Returning        => "returning",
+            WildlifeState::Stalking { .. }  => "stalking",
             WildlifeState::Hunting { .. }   => "hunting",
             WildlifeState::Digesting { .. } => "digesting",
             WildlifeState::Guarding { .. }  => "guarding",
@@ -944,7 +957,7 @@ impl WildlifeManager {
                 let ddy = a.y - col_cy;
                 if ddx * ddx + ddy * ddy > activate_r2 { continue; }
                 // 不干擾正在追獵/消化/已守衛的狀態。
-                if matches!(a.state, WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
+                if matches!(a.state, WildlifeState::Stalking { .. } | WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
                     continue;
                 }
                 a.state = WildlifeState::Guarding { threat_x, threat_y, guard_timer: GUARD_DURATION };
@@ -955,7 +968,7 @@ impl WildlifeManager {
         // attitude < HOSTILE_ATTITUDE 的物種：不等聚落觸發，直接向附近玩家靠近。
         for a in &mut self.animals {
             if !a.alive { continue; }
-            if matches!(a.state, WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
+            if matches!(a.state, WildlifeState::Stalking { .. } | WildlifeState::Hunting { .. } | WildlifeState::Digesting { .. } | WildlifeState::Guarding { .. }) {
                 continue;
             }
             let kind_attitude = *attitudes.get(&a.kind).unwrap_or(&50);
@@ -1044,6 +1057,34 @@ impl WildlifeManager {
                         self.animals[i].state = WildlifeState::Returning;
                     }
                 }
+                WildlifeState::Stalking { target_id, stalk_timer } => {
+                    // ROADMAP 213：孤獵潛行——壓低身子緩緩潛近鎖定的獵物，逼到撲擊距離即爆衝。
+                    if let Some(&(_, _, px, py)) = prey_snap.iter()
+                        .find(|&&(id, _, _, _)| id == target_id)
+                    {
+                        match stalk_creep(pred_x, pred_y, px, py, dt) {
+                            None => {
+                                // 已進入撲擊距離——爆衝轉入全速追獵撲殺。
+                                self.animals[i].state =
+                                    WildlifeState::Hunting { target_id, hunt_timer: HUNT_TIMEOUT };
+                            }
+                            Some((nx, ny)) => {
+                                self.animals[i].x = nx;
+                                self.animals[i].y = ny;
+                                let remaining = stalk_timer - dt;
+                                // 潛行有耐性上限：耗盡仍追不到就放棄返家，不永遠尾隨。
+                                self.animals[i].state = if remaining <= 0.0 {
+                                    WildlifeState::Returning
+                                } else {
+                                    WildlifeState::Stalking { target_id, stalk_timer: remaining }
+                                };
+                            }
+                        }
+                    } else {
+                        // 獵物已死或不見，放棄。
+                        self.animals[i].state = WildlifeState::Returning;
+                    }
+                }
                 WildlifeState::Digesting { timer } => {
                     let remaining = timer - dt;
                     if remaining <= 0.0 {
@@ -1071,8 +1112,15 @@ impl WildlifeManager {
                                 let db = (bx - pred_x).powi(2) + (by - pred_y).powi(2);
                                 da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
                             });
-                        if let Some(&(target_id, _, _, _)) = nearest {
-                            self.animals[i].state = WildlifeState::Hunting { target_id, hunt_timer: HUNT_TIMEOUT };
+                        if let Some(&(target_id, _, npx, npy)) = nearest {
+                            // ROADMAP 213：孤獵潛行突襲——發現獵物後，若已貼到撲擊距離內就直接撲
+                            // （Hunting 全速撲殺），否則先進潛行（Stalking）壓低身子緩緩逼近。
+                            let dist = ((npx - pred_x).powi(2) + (npy - pred_y).powi(2)).sqrt();
+                            self.animals[i].state = if within_pounce_range(dist) {
+                                WildlifeState::Hunting { target_id, hunt_timer: HUNT_TIMEOUT }
+                            } else {
+                                WildlifeState::Stalking { target_id, stalk_timer: STALK_TIMEOUT }
+                            };
                         } else {
                             // 無獵物，正常閒晃（捕食者不怕玩家，傳空威脅；獨來獨往不群聚）。
                             let rng = &mut self.rng;
@@ -1444,6 +1492,29 @@ fn night_hunt_radius(is_night: bool) -> f32 {
     if is_night { HUNT_RADIUS * NIGHT_HUNT_RADIUS_MULT } else { HUNT_RADIUS }
 }
 
+// ─── ROADMAP 213：孤獵潛行突襲純函式（可測） ─────────────────────────────────
+
+/// 與獵物的距離是否已進入撲擊距離（true＝該爆衝轉入全速追獵）。純函式，便於測試。
+fn within_pounce_range(dist: f32) -> bool {
+    dist <= POUNCE_RANGE
+}
+
+/// 掠食者潛行接近獵物的逐幀位移（純函式，便於測試）。
+/// 回傳 `None`＝已在撲擊距離內（呼叫端應爆衝轉入 Hunting）；
+/// 回傳 `Some((nx, ny))`＝仍在潛近，以遠慢於追獵的 `STALK_SPEED` 壓低身子朝獵物 creep 後的新位置。
+/// 單幀位移受「與獵物距離」上限約束，故潛近不會越過獵物（最多貼到原地）。
+fn stalk_creep(pred_x: f32, pred_y: f32, prey_x: f32, prey_y: f32, dt: f32) -> Option<(f32, f32)> {
+    let dx = prey_x - pred_x;
+    let dy = prey_y - pred_y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if within_pounce_range(dist) {
+        return None;
+    }
+    // 朝獵物移動 STALK_SPEED*dt，但不越過獵物（step 受 dist 上限）。
+    let step = (STALK_SPEED * dt).min(dist);
+    Some((pred_x + dx / dist * step, pred_y + dy / dist * step))
+}
+
 /// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
 /// 先取家附近的隨機點（沿用 `random_target` 的散布），若 `anchor`（附近同種夥伴
 /// 的平均位置）存在，再把目標朝群體中心按 `HERD_PULL` 混合，使同種動物鬆散聚攏、
@@ -1626,18 +1697,22 @@ mod tests {
         // 跑一幀觸發追獵。
         mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         let wolf = &mgr.animals[wolf_idx];
-        // 野狼應追獵某隻野鹿（不指定是哪隻，因附近可能有多隻）。
+        // 野狼應開始狩獵某隻野鹿（不指定是哪隻，因附近可能有多隻）。
+        // ROADMAP 213：250px ＞ 撲擊距離(200)，故「開始狩獵」表現為先進潛行（Stalking）；
+        // 兩者皆鎖定了目標，故都算數。
+        let target = match wolf.state {
+            WildlifeState::Hunting { target_id, .. } => Some(target_id),
+            WildlifeState::Stalking { target_id, .. } => Some(target_id),
+            _ => None,
+        };
+        assert!(target.is_some(),
+            "野狼應進入狩獵（Stalking/Hunting）狀態，實際: {:?}", wolf.state);
+        // 確認狩獵目標確實是野鹿。
+        let target_id = target.unwrap();
         assert!(
-            matches!(wolf.state, WildlifeState::Hunting { .. }),
-            "野狼應進入 Hunting 狀態，實際: {:?}", wolf.state
+            mgr.animals.iter().any(|a| a.id == target_id && a.kind == WildlifeKind::WildDeer),
+            "狩獵目標應為野鹿，target_id={target_id}"
         );
-        // 確認追獵目標確實是野鹿。
-        if let WildlifeState::Hunting { target_id, .. } = wolf.state {
-            assert!(
-                mgr.animals.iter().any(|a| a.id == target_id && a.kind == WildlifeKind::WildDeer),
-                "追獵目標應為野鹿，target_id={target_id}"
-            );
-        }
         let _ = deer_id; // 已不用直接比對
     }
 
@@ -2591,6 +2666,8 @@ mod tests {
     fn predator_night_hunt_reaches_farther_than_day() {
         // 同一場景：狼與一隻 400px 外的鹿（介於白天 320 與夜間 448 之間）。
         // 白天搆不著（不獵）；夜間搜尋範圍放大後搆得著（開始獵）。
+        // ROADMAP 213：400px ＞ 撲擊距離(200)，故「開始獵」表現為先進潛行（Stalking）；
+        // 兩者皆屬「已鎖定獵物、開始狩獵」，故都算數。
         let hunts_after_tick = |is_night: bool| -> bool {
             let mut mgr = WildlifeManager::new();
             let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
@@ -2604,7 +2681,7 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], is_night);
             matches!(
                 mgr.animals.iter().find(|a| a.id == 1).unwrap().state,
-                WildlifeState::Hunting { .. }
+                WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }
             )
         };
         assert!(!hunts_after_tick(false), "白天 400px 外的鹿應搆不著、狼不獵");
@@ -2826,5 +2903,115 @@ mod tests {
         s.tick_watch(0.1, Some((5200.0, 5000.0)), &mut rng);
         assert!(matches!(s.state, WildlifeState::Wandering { .. }),
             "站崗到期應轉入漫遊跟群，實際 {:?}", s.state);
+    }
+
+    // ─── ROADMAP 213：孤獵潛行突襲 ───────────────────────────────────────────
+    #[test]
+    fn within_pounce_range_boundary() {
+        // 撲擊距離邊界判定：等於 POUNCE_RANGE 算「在範圍內」，略大則否。
+        assert!(within_pounce_range(POUNCE_RANGE - 1.0), "撲擊距離內應為 true");
+        assert!(within_pounce_range(POUNCE_RANGE), "恰在邊界應為 true");
+        assert!(!within_pounce_range(POUNCE_RANGE + 1.0), "超出撲擊距離應為 false");
+    }
+
+    #[test]
+    fn stalk_creep_returns_none_within_pounce_range() {
+        // 已在撲擊距離內：回傳 None，示意呼叫端該爆衝轉入追獵。
+        let r = stalk_creep(5000.0, 5000.0, 5000.0 + POUNCE_RANGE - 10.0, 5000.0, 0.1);
+        assert!(r.is_none(), "撲擊距離內應回傳 None（該爆衝），實際 {:?}", r);
+    }
+
+    #[test]
+    fn stalk_creep_moves_toward_prey_when_far() {
+        // 撲擊距離外：壓低身子緩緩潛近，回傳更靠近獵物的新位置。
+        let (px, py) = (5000.0_f32, 5000.0_f32);
+        let (preyx, preyy) = (5400.0_f32, 5000.0_f32); // 400px 遠（> POUNCE_RANGE 200）
+        let before = ((preyx - px).powi(2) + (preyy - py).powi(2)).sqrt();
+        let (nx, ny) = stalk_creep(px, py, preyx, preyy, 0.1).expect("遠距離應回傳潛近新位置");
+        let after = ((preyx - nx).powi(2) + (preyy - ny).powi(2)).sqrt();
+        assert!(after < before, "潛行後應更靠近獵物（{after} < {before}）");
+        // 單幀位移約 STALK_SPEED*dt（方向正確、沿直線）。
+        let moved = ((nx - px).powi(2) + (ny - py).powi(2)).sqrt();
+        assert!((moved - STALK_SPEED * 0.1).abs() < 0.01,
+            "單幀位移應約 STALK_SPEED*dt，實際 {moved}");
+    }
+
+    #[test]
+    fn stalk_creep_does_not_overshoot_prey() {
+        // 潛近單幀位移受「與獵物距離」上限約束——不會越過獵物（最壞貼到原地）。
+        // 構造一個 dt 大到 STALK_SPEED*dt 會超過剩餘距離的情境（但距離仍 > POUNCE_RANGE 才會 creep，
+        // 故改以「剛好超出撲擊距離一點」配大 dt 驗證 step 被 dist clamp）。
+        let (px, py) = (5000.0_f32, 5000.0_f32);
+        let (preyx, preyy) = (5000.0 + POUNCE_RANGE + 5.0, 5000.0); // 略超撲擊距離
+        let (nx, _ny) = stalk_creep(px, py, preyx, preyy, 100.0).expect("應仍在潛近");
+        assert!(nx <= preyx + 0.001, "潛近不可越過獵物 x（{nx} <= {preyx}）");
+    }
+
+    #[test]
+    fn stalk_speed_strictly_slower_than_hunt() {
+        // 潛行必須遠慢於全速追獵——這正是「潛近 vs 撲擊」張力的來源。
+        assert!(STALK_SPEED < HUNT_SPEED, "潛速應嚴格小於追速");
+    }
+
+    #[test]
+    fn pounce_range_between_flee_and_sentinel() {
+        // 撲擊距離刻意 ＞ 一般獵物警戒(FLEE_RADIUS) 且 ＜ 哨兵警戒(SENTINEL_FLEE_RADIUS)：
+        // 爆衝恰在獵物即將察覺的剎那，且哨兵仍能在掠食者潛行時提早發現。
+        assert!(POUNCE_RANGE > FLEE_RADIUS,
+            "撲擊距離應大於一般警戒，爆衝才在獵物即將察覺時發動");
+        assert!(POUNCE_RANGE < SENTINEL_FLEE_RADIUS,
+            "撲擊距離應小於哨兵警戒，哨兵才能在掠食者潛行時先發現");
+    }
+
+    #[test]
+    fn predator_stalks_when_prey_far_pounces_when_near() {
+        // 整管理器：把一隻狼放在遠處鹿的搜尋半徑內、但撲擊距離外，連跑幾幀後
+        // 該狼應進入「潛行（stalking）」而非立刻全速追獵（hunting）。
+        let mut mgr = WildlifeManager::new();
+        // 強制布置：第一隻狼移到 (5000,5000)，最近的鹿放到撲擊距離外、搜尋半徑內（260px）。
+        let mut wolf_idx = None;
+        let mut deer_idx = None;
+        for (i, a) in mgr.animals.iter().enumerate() {
+            if wolf_idx.is_none() && a.kind == WildlifeKind::WildWolf { wolf_idx = Some(i); }
+            else if deer_idx.is_none() && a.kind == WildlifeKind::WildDeer { deer_idx = Some(i); }
+        }
+        let (wi, di) = (wolf_idx.unwrap(), deer_idx.unwrap());
+        // 把其他鹿挪到極遠處，確保 di 是狼的最近獵物（不被別的鹿搶鎖定）。
+        for (i, a) in mgr.animals.iter_mut().enumerate() {
+            if i != di && a.kind == WildlifeKind::WildDeer { a.x = 90000.0; a.y = 90000.0; }
+        }
+        mgr.animals[wi].x = 5000.0; mgr.animals[wi].y = 5000.0;
+        mgr.animals[wi].state = WildlifeState::Returning;
+        mgr.animals[di].x = 5260.0; mgr.animals[di].y = 5000.0; // 260px：> POUNCE(200)、< HUNT_RADIUS(320)
+        mgr.animals[di].state = WildlifeState::Resting { rest_timer: 100.0 };
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 跑一幀：狼應鎖定該鹿並進入潛行（而非 hunting）。鹿此時離狼 260 > FLEE_RADIUS，不會逃。
+        mgr.tick(0.05, &[], &att, &[], false);
+        assert!(matches!(mgr.animals[wi].state, WildlifeState::Stalking { .. }),
+            "遠距離發現獵物應先潛行，實際 {:?}", mgr.animals[wi].state);
+    }
+
+    #[test]
+    fn predator_pounces_immediately_when_prey_already_close() {
+        // 對照：獵物一開始就貼在撲擊距離內，狼應「直接」進入全速追獵（不必再潛）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf_idx = None;
+        let mut deer_idx = None;
+        for (i, a) in mgr.animals.iter().enumerate() {
+            if wolf_idx.is_none() && a.kind == WildlifeKind::WildWolf { wolf_idx = Some(i); }
+            else if deer_idx.is_none() && a.kind == WildlifeKind::WildDeer { deer_idx = Some(i); }
+        }
+        let (wi, di) = (wolf_idx.unwrap(), deer_idx.unwrap());
+        for (i, a) in mgr.animals.iter_mut().enumerate() {
+            if i != di && a.kind == WildlifeKind::WildDeer { a.x = 90000.0; a.y = 90000.0; }
+        }
+        mgr.animals[wi].x = 5000.0; mgr.animals[wi].y = 5000.0;
+        mgr.animals[wi].state = WildlifeState::Returning;
+        mgr.animals[di].x = 5120.0; mgr.animals[di].y = 5000.0; // 120px < POUNCE_RANGE(200)
+        mgr.animals[di].state = WildlifeState::Resting { rest_timer: 100.0 };
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.05, &[], &att, &[], false);
+        assert!(matches!(mgr.animals[wi].state, WildlifeState::Hunting { .. }),
+            "貼近獵物應直接撲（hunting），實際 {:?}", mgr.animals[wi].state);
     }
 }

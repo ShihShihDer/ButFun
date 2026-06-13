@@ -247,6 +247,12 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "watching", familiarity: 0, tamed: false };
     }
   }),
+  // 孤獵潛行（213）：把掠食者設成 stalking → 跑 drawWildlife 的潛行 🐾 繪製分支（含起伏 alpha）。
+  variant("掠食者潛行(🐾)", (s) => {
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_wolf", x: me0.x - 40, y: me0.y, state: "stalking", familiarity: 0, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
