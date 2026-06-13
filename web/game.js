@@ -8087,6 +8087,18 @@
         }
       }
 
+      // ROADMAP 210：晝夜作息——夜間在家安睡的晝行獵物（鹿/鳥/小動物）頭頂浮一個輕柔的 💤，
+      // 讓「入夜整片獸群歸巢沉睡」一眼看得到（掠食者夜行不睡，故不畫）。純前端、零協議欄位：
+      // 由既有 daynight.phase（夜）＋ 物種（非掠食者）＋ 狀態（resting）推得。
+      if (!isPredator && w.state === "resting" && daynight && daynight.phase === "night") {
+        ctx.globalAlpha = 0.5 + 0.2 * Math.sin(now / 600); // 緩緩呼吸般明滅
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💤", 8, -24);
+        ctx.globalAlpha = 1;
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
