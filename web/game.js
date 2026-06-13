@@ -8099,6 +8099,20 @@
         ctx.globalAlpha = 1;
       }
 
+      // ROADMAP 211：白晝吃草——白天低頭覓食的晝行獵物（state==="grazing"）頭頂浮一片
+      // 輕輕搖曳的 🌿，讓「鹿群停下來吃草」一眼看得到（與夜眠 💤 對成完整的晝夜作息）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜時才會給獵物此狀態）。
+      if (w.state === "grazing") {
+        ctx.save();
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.rotate(Math.sin(now / 320) * 0.18); // 像被微風吹動般輕輕搖曳
+        ctx.fillText("🌿", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱

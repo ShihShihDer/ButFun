@@ -191,6 +191,17 @@ const NIGHT_HUNT_RADIUS_MULT: f32 = 1.4;
 /// 此值在「平靜夜晚」期間不會被遞減（夜眠分支不走 tick_idle），故獵物會一路睡到白天才甦醒。
 const NIGHT_SLEEP_REST_SECS: f32 = 600.0;
 
+// ─── ROADMAP 211：白晝吃草 ────────────────────────────────────────────────────
+// 承接 210（晝夜作息）：晝行獵物白天抵達漫遊目標後，有機率低頭吃草（原地不動數秒、頭頂浮
+// 🌿）而非單純休息——補上「白天醒著做什麼」這層，與夜眠 💤 對成完整的晝夜作息。
+// 純啟發式、零 LLM、零協議改動（state 本就每幀廣播；新增的 grazing 字串沿用 state_str）。
+// 只有平靜的晝行獵物白天才吃草：夜間/掠食者一律傳 graze_prob=0（行為與切片前逐位元一致）。
+/// 平靜的晝行獵物白天抵達漫遊目標時轉入「吃草」（而非單純休息）的機率。
+const GRAZE_PROB: f32 = 0.45;
+/// 一次吃草的最短／最長時長（秒）——原地低頭覓食數秒後再回漫遊。
+const GRAZE_DURATION_MIN: f32 = 3.0;
+const GRAZE_DURATION_MAX: f32 = 7.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -369,6 +380,8 @@ enum WildlifeState {
     Hunting { target_id: u32, hunt_timer: f32 },
     /// 捕食者吃完後消化休息。
     Digesting { timer: f32 },
+    /// ROADMAP 211：白晝吃草——平靜的晝行獵物白天原地低頭覓食數秒（頭頂浮 🌿）。
+    Grazing { graze_timer: f32 },
     /// ROADMAP 143：聚落守衛——動物向入侵玩家靠近，不逃跑。
     Guarding { threat_x: f32, threat_y: f32, guard_timer: f32 },
 }
@@ -447,7 +460,9 @@ impl Wildlife {
     /// `flee_threats`：需要逃離的座標（玩家 + 捕食者）；捕食者呼叫時傳空。
     /// `herd_anchor`：ROADMAP 206——附近同種夥伴的平均位置；選新漫遊目標時朝它拉，
     /// 同種動物便鬆散成群移動。捕食者傳 `None`（獨來獨往）。
-    fn tick_idle(&mut self, dt: f32, flee_threats: &[(f32, f32)], speed: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+    /// `graze_prob`：ROADMAP 211——抵達漫遊目標時轉入「吃草」（而非單純休息）的機率。
+    /// 只有平靜的晝行獵物白天才 > 0；夜間/掠食者一律傳 0（行為與切片前逐位元一致）。
+    fn tick_idle(&mut self, dt: f32, flee_threats: &[(f32, f32)], speed: f32, herd_anchor: Option<(f32, f32)>, graze_prob: f32, rng: &mut StdRng) {
         let already_fleeing = matches!(self.state, WildlifeState::Fleeing { .. });
         if !already_fleeing {
             if let Some((tx, ty)) = nearest_in_range(self.x, self.y, flee_threats, FLEE_RADIUS) {
@@ -514,12 +529,30 @@ impl Wildlife {
                 let dy = target_y - self.y;
                 let dist = (dx * dx + dy * dy).sqrt();
                 if dist < 8.0 || remaining <= 0.0 {
-                    let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
-                    self.state = WildlifeState::Resting { rest_timer: rest };
+                    // ROADMAP 211：白晝吃草——抵達目標時，晝行獵物有 graze_prob 機率低頭吃草
+                    //（原地不動數秒、頭頂浮 🌿）而非單純休息；graze_prob==0（掠食者/夜間）時逐位元同原本。
+                    if graze_prob > 0.0 && rng.gen::<f32>() < graze_prob {
+                        let graze = rng.gen_range(GRAZE_DURATION_MIN..=GRAZE_DURATION_MAX);
+                        self.state = WildlifeState::Grazing { graze_timer: graze };
+                    } else {
+                        let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+                        self.state = WildlifeState::Resting { rest_timer: rest };
+                    }
                 } else {
                     self.x += (dx / dist) * speed * dt;
                     self.y += (dy / dist) * speed * dt;
                     self.state = WildlifeState::Wandering { target_x, target_y, wander_timer: remaining };
+                }
+            }
+            WildlifeState::Grazing { graze_timer } => {
+                // ROADMAP 211：吃草中——原地不動（不更新座標）、計時遞減；到期後再挑下一個漫遊目標。
+                let remaining = graze_timer - dt;
+                if remaining <= 0.0 {
+                    let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                    let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                    self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+                } else {
+                    self.state = WildlifeState::Grazing { graze_timer: remaining };
                 }
             }
             // Hunting/Digesting 由管理器處理。
@@ -576,6 +609,7 @@ impl Wildlife {
             WildlifeState::Hunting { .. }   => "hunting",
             WildlifeState::Digesting { .. } => "digesting",
             WildlifeState::Guarding { .. }  => "guarding",
+            WildlifeState::Grazing { .. }   => "grazing",
         }
     }
 }
@@ -956,7 +990,8 @@ impl WildlifeManager {
                             // 無獵物，正常閒晃（捕食者不怕玩家，傳空威脅；獨來獨往不群聚）。
                             let rng = &mut self.rng;
                             let a = &mut self.animals[i];
-                            a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, rng);
+                            // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
+                            a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
                         }
                     }
                 }
@@ -1088,7 +1123,10 @@ impl WildlifeManager {
                 if !is_night && is_diurnal(animal_kind) {
                     a.wake_from_night_sleep(herd_anchor, rng);
                 }
-                a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, rng);
+                // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
+                // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
+                let graze_prob = if is_night { 0.0 } else { GRAZE_PROB };
+                a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, graze_prob, rng);
             }
         }
 
@@ -1422,7 +1460,7 @@ mod tests {
         let mut rng = make_rng();
         let mut animal = Wildlife::new(0, WildlifeKind::WildBird, 2000.0, 2000.0, &mut rng);
         for _ in 0..300 {
-            animal.tick_idle(0.1, &[], WANDER_SPEED, None, &mut rng);
+            animal.tick_idle(0.1, &[], WANDER_SPEED, None, 0.0, &mut rng);
         }
         let dx = animal.x - animal.home_x;
         let dy = animal.y - animal.home_y;
@@ -1435,7 +1473,7 @@ mod tests {
         let mut rng = make_rng();
         let mut animal = Wildlife::new(0, WildlifeKind::WildDeer, 2000.0, 2000.0, &mut rng);
         let threats = vec![(2050.0_f32, 2050.0_f32)];
-        animal.tick_idle(0.1, &threats, WANDER_SPEED, None, &mut rng);
+        animal.tick_idle(0.1, &threats, WANDER_SPEED, None, 0.0, &mut rng);
         assert!(matches!(animal.state, WildlifeState::Fleeing { .. }),
             "應轉成 Fleeing，實際: {:?}", animal.state);
     }
@@ -1797,7 +1835,7 @@ mod tests {
         bird.y = 2000.0;
         // 把 EtherWisp 放在 FLEE_RADIUS 內（100px）。
         let threats = vec![(EnemyKind::EtherWisp, 2100.0_f32, 2000.0_f32)];
-        bird.tick_idle(0.1, &threats.iter().map(|&(_, x, y)| (x, y)).collect::<Vec<_>>(), WANDER_SPEED, None, &mut rng);
+        bird.tick_idle(0.1, &threats.iter().map(|&(_, x, y)| (x, y)).collect::<Vec<_>>(), WANDER_SPEED, None, 0.0, &mut rng);
         assert!(
             matches!(bird.state, WildlifeState::Fleeing { .. }),
             "怪物在 FLEE_RADIUS 內，野鳥應進入 Fleeing 狀態"
@@ -1995,7 +2033,7 @@ mod tests {
         let mut deer = Wildlife::new(0, WildlifeKind::WildDeer, 2000.0, 2000.0, &mut rng);
         let threats = vec![(2030.0_f32, 2000.0_f32)];
         let anchor = Some((2010.0_f32, 2000.0_f32));
-        deer.tick_idle(0.1, &threats, WANDER_SPEED, anchor, &mut rng);
+        deer.tick_idle(0.1, &threats, WANDER_SPEED, anchor, 0.0, &mut rng);
         assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
             "威脅在 FLEE_RADIUS 內，群聚不應蓋過逃跑，實際 {:?}", deer.state);
     }
@@ -2432,5 +2470,93 @@ mod tests {
         };
         assert!(!hunts_after_tick(false), "白天 400px 外的鹿應搆不著、狼不獵");
         assert!(hunts_after_tick(true), "夜間搜尋範圍放大、400px 外的鹿搆得著、狼開始獵");
+    }
+
+    // ─── ROADMAP 211：白晝吃草 ───────────────────────────────────────────────
+
+    #[test]
+    fn arrival_grazes_when_prob_one() {
+        // graze_prob=1 時，漫遊抵達目標的獵物應轉入吃草（而非休息）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        // 已站在目標點上（dist<8 → 視為抵達）。
+        deer.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 10.0 };
+        deer.tick_idle(0.1, &[], WANDER_SPEED, None, 1.0, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Grazing { .. }),
+            "抵達目標且 graze_prob=1 應轉入吃草，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn arrival_rests_not_grazes_when_prob_zero() {
+        // graze_prob=0（掠食者/夜間）時，抵達目標一律轉入休息、絕不吃草（與切片前一致）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 10.0 };
+        deer.tick_idle(0.1, &[], WANDER_SPEED, None, 0.0, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }),
+            "graze_prob=0 抵達目標應休息、不吃草，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn grazing_stays_still_then_returns_to_wander() {
+        // 吃草中原地不動（座標不變）；計時到期後回到漫遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Grazing { graze_timer: 0.3 };
+        deer.tick_idle(0.1, &[], WANDER_SPEED, None, GRAZE_PROB, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Grazing { .. }), "未到期仍應吃草中");
+        assert!((deer.x - 5000.0).abs() < 0.01 && (deer.y - 5000.0).abs() < 0.01,
+            "吃草中位置應不動，實際 ({},{})", deer.x, deer.y);
+        // 再推進到超過計時 → 回漫遊。
+        deer.tick_idle(0.5, &[], WANDER_SPEED, None, GRAZE_PROB, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }),
+            "吃草到期後應回到漫遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn grazing_prey_flees_on_threat() {
+        // 吃草中的獵物，威脅進入 FLEE_RADIUS 仍應立即逃命（威脅永遠優先於吃草）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Grazing { graze_timer: 5.0 };
+        deer.tick_idle(0.1, &[(5050.0, 5000.0)], WANDER_SPEED, None, GRAZE_PROB, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
+            "吃草中遇威脅應改逃竄，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn predator_never_grazes_during_day() {
+        // 整管理器白天連跑多幀：掠食者（狼/狐）永遠不會進入吃草狀態。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 { mgr.tick(0.2, &[], &att, &[], false); }
+        let pred_grazing = mgr.animals.iter().any(|a|
+            a.kind.trophic_level() == TrophicLevel::Predator
+            && matches!(a.state, WildlifeState::Grazing { .. }));
+        assert!(!pred_grazing, "掠食者不該吃草");
+    }
+
+    #[test]
+    fn prey_eventually_grazes_during_day_but_not_at_night() {
+        // 白天連跑多幀：晝行獵物群中至少有一隻會吃草（白晝吃草確實會發生）。
+        let mut day = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_graze_by_day = false;
+        for _ in 0..400 {
+            day.tick(0.2, &[], &att, &[], false);
+            if day.animals.iter().any(|a| matches!(a.state, WildlifeState::Grazing { .. })) {
+                saw_graze_by_day = true;
+                break;
+            }
+        }
+        assert!(saw_graze_by_day, "白天連跑多幀後，應有晝行獵物吃草");
+
+        // 夜間連跑同樣多幀：獵物入夜歸巢沉睡、絕不吃草。
+        let mut night = WildlifeManager::new();
+        for _ in 0..400 {
+            night.tick(0.2, &[], &att, &[], true);
+            let any_graze = night.animals.iter().any(|a| matches!(a.state, WildlifeState::Grazing { .. }));
+            assert!(!any_graze, "夜間獵物應沉睡、不吃草");
+        }
     }
 }
