@@ -329,6 +329,16 @@
   let _petalFade = 0;            // 春季花瓣淡入淡出進度 [0,1]（非春季→0，春季→1，逐幀趨近不突兀）
   // 花瓣淡粉色盤（[r,g,b]）：櫻粉／淺桃／近白粉／玫瑰粉，隨瓣隨機取一色，賣「春天的柔」。
   const PETAL_PALETTE = [[255,205,222], [255,224,235], [250,182,206], [255,236,244], [247,196,214]];
+  // 夏日蟬夏（ROADMAP 229）：226 冬雪、227 秋葉、228 春櫻讓「冬／秋／春」看得見，本切片補上最後
+  // 一季「夏季」，湊成四季視覺全套。夏天時空氣裡緩緩「上飄」一片片被陽光照亮的柳絮／浮塵（微微
+  // 閃爍、橫向搖曳），再覆一層極淡暖金幕，賣「慵懶炎夏午後的熱氣浮光」。與雪（白圓直降）、葉（暖
+  // 橢圓打旋降）、櫻（粉瓣橫飄降）三方刻意區隔——夏絮是暖白小點、唯一「往上飄」、邊飄邊忽明忽暗。
+  // 純前端、讀既有 currentSeason、零後端。以 _moteFade 平滑淡入淡出（與雪／葉／櫻同模式）。
+  const MOTE_MAX_PARTICLES = 80;
+  const moteParticles = [];
+  let _moteFade = 0;             // 夏季浮塵淡入淡出進度 [0,1]（非夏季→0，夏季→1，逐幀趨近不突兀）
+  // 夏絮暖色盤（[r,g,b]）：暖白／米金／淺鵝黃／陽光奶白，隨絮隨機取一色，賣「被夏陽照亮的浮絮」。
+  const MOTE_PALETTE = [[255,248,224], [255,240,200], [250,235,190], [255,250,235], [248,230,180]];
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4049,6 +4059,7 @@
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
     safeDraw("leaves", () => drawLeaves(renderNow, _weatherDt)); // 秋日落葉（227）
     safeDraw("blossom", () => drawBlossom(renderNow, _weatherDt)); // 春日花飛（228）
+    safeDraw("summerMotes", () => drawSummerMotes(renderNow, _weatherDt)); // 夏日蟬夏（229）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -10982,6 +10993,100 @@
     // 淡粉薄幕：極淡櫻粉覆全屏，賣「春天的空氣」（隨花瓣勢淡入淡出，與冬雪白幕、秋葉金幕三聯）。
     ctx.globalAlpha = _petalFade * 0.04;
     ctx.fillStyle = "#ffd9e6";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // ── ROADMAP 229: 夏日蟬夏（四季視覺最後一塊）─────────────────────────────────
+  // 226 冬雪、227 秋葉、228 春櫻把三季畫出來後，本切片補上「夏季」湊齊四季：夏天時空氣裡緩緩
+  // 「上飄」一片片被陽光照亮的柳絮／浮塵、邊飄邊忽明忽暗，再覆一層極淡暖金幕，讓玩家一眼認得
+  // 「炎夏到了」。與冬雪（白圓直降）、秋葉（暖橢圓打旋降）、春櫻（粉瓣橫飄降）刻意四方區隔——
+  // 夏絮是暖白小點、唯一「往上飄」、靠閃爍（而非翻轉）賣熱氣浮光。純前端視覺、讀既有 currentSeason、
+  // 零後端；效能分級（reduceMotion／低 FPS 一律關閉）。下面三個純函式抽出、無 DOM／可單元自驗，與雪／葉／櫻同模式。
+
+  // 純函式：夏季回 1、其餘季節回 0（夏絮只在夏天飄）。
+  function moteTargetIntensity(season) {
+    return season === "summer" ? 1 : 0;
+  }
+
+  // 純函式：把目前夏絮勢 cur 朝目標 target 以固定速率逼近（每秒 MOTE_FADE_RATE），夾在 [0,1]。
+  // 讓入夏時浮塵緩緩飄起、出夏時緩緩停（跨季不突然冒出一整屏／突然消失）。壞值（NaN）退回 0。
+  function moteFadeStep(cur, target, dt) {
+    const MOTE_FADE_RATE = 0.6;    // 約 1.7 秒淡入／淡出滿（與雪／葉／櫻同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * MOTE_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：夏絮水平位置＝隨熱氣橫移的基準 x ＋ 隨高度與相位擺動的正弦（慵懶左右盪）。
+  // baseX 已隨 vx 每幀橫移，這裡再疊一層更慢更寬的搖盪，賣「熱氣把浮絮托著緩緩晃」。
+  function moteSwayX(baseX, y, phase, sway) {
+    return baseX + Math.sin(y * 0.010 + phase) * sway;
+  }
+
+  // 純函式：夏絮的閃爍透明度＝基準 alpha ×（隨相位起伏的明滅，夾在 [0,1]）。賣「浮塵在陽光下忽明忽暗」。
+  // twinkle 為閃爍深度 [0,1]；壞值（NaN alpha）退回 0、避免畫出界外值。
+  function moteTwinkleAlpha(baseAlpha, phase, twinkle) {
+    if (!(baseAlpha >= 0)) return 0;
+    const flick = 1 - twinkle * (0.5 + 0.5 * Math.sin(phase * 2.2));
+    return Math.max(0, Math.min(1, baseAlpha * flick));
+  }
+
+  // 生成一片夏絮（隨機落點／上飄速度／大小／搖擺幅度／橫飄熱氣／閃爍，並從暖色盤隨機取一色）。
+  function makeSummerMote(W, H) {
+    const c = MOTE_PALETTE[Math.floor(Math.random() * MOTE_PALETTE.length)] || MOTE_PALETTE[0];
+    return {
+      x: Math.random() * (W + 80) - 40,
+      y: H + 10 + Math.random() * H * 0.4,   // 從畫面下方一帶升起，上飄後鋪滿（與雪／葉／櫻反向）
+      vy: -(10 + Math.random() * 20),         // 緩緩上飄（負向），比下落的雪／葉／櫻更慢更輕
+      vx: 6 + Math.random() * 14,             // 受熱氣橫移（同一向，賣「一陣熱風把浮絮托著走」）
+      size: 1.4 + Math.random() * 1.8,        // 夏絮比花瓣更小巧（點狀浮塵）
+      alpha: 0.4 + Math.random() * 0.4,
+      sway: 14 + Math.random() * 22,          // 左右搖盪幅度，慵懶橫盪
+      phase: Math.random() * Math.PI * 2,
+      twinkle: 0.4 + Math.random() * 0.4,     // 閃爍深度（夏絮靠明滅、而非翻轉，與葉／櫻區隔）
+      r: c[0], g: c[1], b: c[2],
+      life: 7 + Math.random() * 6,
+    };
+  }
+
+  // 每幀更新並繪製夏季浮塵。非夏季時 _moteFade 緩緩歸零、池清空、零開銷早退。
+  function drawSummerMotes(now, dt) {
+    if (reduceMotion) { if (moteParticles.length) moteParticles.length = 0; _moteFade = 0; return; }
+    _moteFade = moteFadeStep(_moteFade, moteTargetIntensity(currentSeason), dt);
+    if (_moteFade <= 0.01) { if (moteParticles.length) moteParticles.length = 0; return; }
+    if (!_parallaxEnabled) { if (moteParticles.length) moteParticles.length = 0; return; }
+
+    const W = viewW, H = viewH;
+    const spawnCount = Math.ceil(_moteFade * 2);   // 夏絮勢越濃補得越快
+    for (let i = 0; i < spawnCount && moteParticles.length < MOTE_MAX_PARTICLES; i++) {
+      moteParticles.push(makeSummerMote(W, H));
+    }
+
+    ctx.save();
+    for (let i = moteParticles.length - 1; i >= 0; i--) {
+      const p = moteParticles[i];
+      p.y += p.vy * dt;          // 上飄（vy 為負）
+      p.x += p.vx * dt;          // 受熱氣橫移
+      p.phase += dt;
+      p.life -= dt;
+      // 上飄會把夏絮帶出上緣／右緣，連同壽終一併回收。
+      if (p.y < -14 || p.x > W + 50 || p.life <= 0) { moteParticles.splice(i, 1); continue; }
+      const x = moteSwayX(p.x, p.y, p.phase, p.sway);
+      const fade = Math.min(1, p.life / 0.8);   // 末段淡出
+      ctx.globalAlpha = _moteFade * moteTwinkleAlpha(p.alpha, p.phase, p.twinkle) * fade;
+      ctx.fillStyle = "rgb(" + p.r + "," + p.g + "," + p.b + ")";
+      // 夏絮＝柔和小圓點（被陽光照亮的浮塵），靠閃爍賣熱氣感（純 Canvas、零資源）。
+      ctx.beginPath();
+      ctx.arc(x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 暖金薄幕：極淡暖金覆全屏，賣「炎夏的空氣」（隨夏絮勢淡入淡出，與冬雪白幕、秋葉金幕、春櫻粉幕四聯）。
+    ctx.globalAlpha = _moteFade * 0.035;
+    ctx.fillStyle = "#ffe9b0";
     ctx.fillRect(0, 0, W, H);
     ctx.globalAlpha = 1.0;
     ctx.restore();
