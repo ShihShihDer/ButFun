@@ -8181,6 +8181,20 @@
         ctx.restore();
       }
 
+      // ROADMAP 217：掠食者夜嚎——夜裡無獵可追時仰首長嚎的掠食者（state==="howling"）頭頂浮一個
+      // 緩緩升起又明滅的 🌙，讓「狼仰首對月長嗥」一眼看得到（夜的氛圍第一次有了掠食者的嗓音）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在夜間掠食者無獵可追時才給此狀態）。
+      if (w.state === "howling") {
+        ctx.save();
+        ctx.globalAlpha = 0.5 + 0.4 * Math.abs(Math.sin(now / 520)); // 像一聲嗥叫的起落般明滅
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(0, -24 - Math.abs(Math.sin(now / 700)) * 2); // 像仰首時微微上揚
+        ctx.fillText("🌙", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {
