@@ -324,6 +324,32 @@ const HOWL_JOIN_PROB: f32 = 0.5;
 const WAKE_DURATION_MIN: f32 = 1.5;
 const WAKE_DURATION_MAX: f32 = 3.0;
 
+// ─── ROADMAP 220：鳥群振翅升空盤旋（bird flock takes flight）─────────────────
+// 承接 206（群聚結伴）與全套獵物作息（207~219）：野鳥（WildBird）至今行為與野鹿、小動物幾乎
+// 一樣——在地上走走停停、吃草、逃竄，唯獨少了鳥最本該有的那一面：飛。本切片給野鳥補上專屬的
+// 「振翅升空」：白天平靜時，野鳥偶爾會整群一起拍翅升空、繞著群心緩緩盤旋一陣，再陸續降落回地面
+// 閒晃。升空像 218 群嚎一樣會「呼應」——一隻起飛，附近同類被牽動跟著飛起，整群一齊盤旋成一片
+// （而非各飛各的）。威脅永遠優先：盤旋中若掠食者逼近，立刻降下逃竄（飛行是悠閒的盤旋、不是逃命
+// 手段）。只有野鳥會飛（鹿／小動物不適用），生態第一次有了「物種專屬行為」與「空中維度」。純
+// 啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 flying 字串沿用 state_str；計時與盤旋角度
+// 隨狀態變體攜帶，無新欄位）、記憶體模式。前端依 state==="flying" 把鳥往上抬起、地面留一抹投影，
+// 讀起來就是「飛在空中」。
+/// 平靜的野鳥本幀自發振翅升空的機率——偏低，讓起飛是白天偶爾的一陣騷動、而非時時在飛。
+const FLIGHT_PROB: f32 = 0.012;
+/// 一段盤旋的最短／最長時長（秒）——升空繞圈數秒後再降落回地面閒晃。
+const FLIGHT_DURATION_MIN: f32 = 3.0;
+const FLIGHT_DURATION_MAX: f32 = 6.0;
+/// 升空能「帶動」多遠外的同種野鳥跟著飛起（世界座標像素）——一隻起飛、近旁同類呼應。
+const FLIGHT_HEAR_RADIUS: f32 = 320.0;
+/// 「看見」附近同類升空時，本幀跟著飛起的機率——偏高（鳥群起飛極富感染力），但不設 1.0：留一點
+/// 隨機，讓起飛是錯落地一隻接一隻；又因新起飛者本幀不在「起始升空快照」裡，故牽動每 tick 只向外
+/// 擴一圈——升空像漣漪般逐圈傳開，整群在一兩秒內陸續拍翅而起，而非同幀整齊齊飛。
+const FLIGHT_JOIN_PROB: f32 = 0.6;
+/// 盤旋半徑（世界座標像素）——繞著群心（無群則繞自家）轉圈的圈半徑。
+const FLIGHT_CIRCLE_RADIUS: f32 = 26.0;
+/// 盤旋角速度（弧度／秒）——每秒繞行的角度，決定盤旋快慢。
+const FLIGHT_ANGULAR_SPEED: f32 = 1.6;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -526,6 +552,10 @@ enum WildlifeState {
     /// ROADMAP 219：破曉甦醒伸展——天明喚醒夜眠的晝行獵物時，先原地伸展一小段（頭頂浮 🌅）、
     /// wake_timer 倒數，到期才起身漫遊；伸展中若有威脅逼近一律優先中斷改逃竄。
     Waking { wake_timer: f32 },
+    /// ROADMAP 220：鳥群振翅升空盤旋——白天平靜的野鳥升空後，繞著群心（無群則繞自家）以 angle
+    /// 為當前盤旋角、每幀依角速度推進繞圈；fly_timer 倒數，到期就降落回漫遊；盤旋中若有威脅
+    /// 逼近一律優先降下逃竄。前端依此狀態把鳥往上抬、地面留投影，讀起來是「飛在空中」。
+    Flying { fly_timer: f32, angle: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -880,6 +910,28 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 220：鳥群振翅升空盤旋——盤旋中（Flying）繞著群心 `anchor`（無群則繞自家）轉圈：
+    /// 每幀把盤旋角 `angle` 依角速度推進、沿 FLIGHT_CIRCLE_RADIUS 重算座標，整群共用同一群心、
+    /// 各以不同起始角繞行，便讀成「一群鳥一起盤旋」。fly_timer 倒數到期就降落、起身漫遊（沿用
+    /// 群聚拉力挑落點）。只在 Flying 狀態下生效（呼叫端已確保此隻為野鳥、白天、平靜；威脅一旦
+    /// 逼近呼叫端不會走到此分支、改去降下逃竄——威脅永遠優先）。
+    fn tick_fly(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Flying { fly_timer, angle } = self.state {
+            let remaining = fly_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                let (cx, cy) = herd_anchor.unwrap_or((self.home_x, self.home_y));
+                let new_angle = angle + FLIGHT_ANGULAR_SPEED * dt;
+                self.x = cx + new_angle.cos() * FLIGHT_CIRCLE_RADIUS;
+                self.y = cy + new_angle.sin() * FLIGHT_CIRCLE_RADIUS;
+                self.state = WildlifeState::Flying { fly_timer: remaining, angle: new_angle };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -897,6 +949,7 @@ impl Wildlife {
             WildlifeState::Grooming { .. }  => "grooming",
             WildlifeState::Howling { .. }   => "howling",
             WildlifeState::Waking { .. }    => "waking",
+            WildlifeState::Flying { .. }    => "flying",
         }
     }
 }
@@ -1124,6 +1177,14 @@ impl WildlifeManager {
         // 故牽動每 tick 只向外擴一圈，嚎聲像漣漪般逐圈傳開（與 209 驚群恐慌的逐圈傳染同手法）。
         let howling_snap: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && matches!(a.state, WildlifeState::Howling { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 220：本幀起始時正在盤旋（Flying）的野鳥座標快照——供其餘平靜野鳥據此
+        // 「看見」附近升空的同類而被牽動跟著飛起（接力升空，仿 218 群嚎快照）。新起飛者本幀
+        // 不在此快照裡，故牽動每 tick 只向外擴一圈，升空像漣漪般逐圈傳開。
+        let flying_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && matches!(a.state, WildlifeState::Flying { .. }))
             .map(|a| (a.x, a.y))
             .collect();
 
@@ -1586,6 +1647,7 @@ impl WildlifeManager {
                 }
                 // ROADMAP 216：成體相依理毛——理毛永遠讓位給逃命（威脅優先）。先看附近有無威脅：
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
+                let is_bird = animal_kind == WildlifeKind::WildBird;
                 if matches!(a.state, WildlifeState::Waking { .. }) {
                     // ROADMAP 219：破曉伸展中——威脅一旦逼近就立刻中斷改逃竄（睡醒遇險先逃命），
                     // 否則原地舒展身子、計時倒數，到期才起身投入新一天的閒晃。
@@ -1594,6 +1656,30 @@ impl WildlifeManager {
                     } else {
                         a.tick_wake(dt, herd_anchor, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Flying { .. }) {
+                    // ROADMAP 220：已在空中盤旋——威脅一旦逼近就立刻降下逃竄（飛行是悠閒的盤旋、
+                    // 不是逃命手段），否則繞著群心繼續盤旋、計時倒數，到期降落回閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_fly(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && {
+                        // ROADMAP 220：白天平靜的野鳥——看見附近同類升空（FLIGHT_HEAR_RADIUS 內）便以
+                        // 較高的 FLIGHT_JOIN_PROB 被牽動跟著飛起（接力）；沒看見才退回低機率 FLIGHT_PROB
+                        // 自發起飛。本幀新起飛者不在 flying_snap 裡，故升空逐圈外擴、整群錯落而起。
+                        let join = sees_flight(a.x, a.y, &flying_snap) && rng.gen::<f32>() < FLIGHT_JOIN_PROB;
+                        join || rng.gen::<f32>() < FLIGHT_PROB
+                    }
+                {
+                    // 振翅升空：繞著群心盤旋（起始角隨機，整群各以不同角繞同一群心 → 一群鳥一起盤旋）。
+                    let timer = rng.gen_range(FLIGHT_DURATION_MIN..=FLIGHT_DURATION_MAX);
+                    let angle: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
+                    a.state = WildlifeState::Flying { fly_timer: timer, angle };
                 } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
@@ -1707,6 +1793,18 @@ fn hears_howl(px: f32, py: f32, howling: &[(f32, f32)]) -> bool {
     howling.iter().any(|&(hx, hy)| {
         let dx = hx - px;
         let dy = hy - py;
+        dx * dx + dy * dy <= r2
+    })
+}
+
+/// ROADMAP 220：鳥群振翅升空盤旋——位於 (px,py) 的野鳥是否「看見」附近任一正在盤旋的同類
+/// （`flying` 為本幀起始時正在盤旋者的座標快照）。只要有一隻在 FLIGHT_HEAR_RADIUS 內就回 true，
+/// 由呼叫端據此（以 FLIGHT_JOIN_PROB）牽動牠跟著飛起。純距離判定、無副作用。
+fn sees_flight(px: f32, py: f32, flying: &[(f32, f32)]) -> bool {
+    let r2 = FLIGHT_HEAR_RADIUS * FLIGHT_HEAR_RADIUS;
+    flying.iter().any(|&(fx, fy)| {
+        let dx = fx - px;
+        let dy = fy - py;
         dx * dx + dy * dy <= r2
     })
 }
@@ -4067,5 +4165,114 @@ mod tests {
             matches!(w.state, WildlifeState::Resting { .. } | WildlifeState::Howling { .. }),
             "無鄰近嚎聲時，歇息的掠食者應維持歇息（或極低機率自發長嚎），實際 {:?}", w.state,
         );
+    }
+
+    // ─── ROADMAP 220：鳥群振翅升空盤旋 ───────────────────────────────────────
+
+    #[test]
+    fn tick_fly_circles_around_anchor_while_timer_remaining() {
+        // 盤旋進行中：繞著群心轉圈——計時遞減、盤旋角依角速度推進、座標落在以群心為圓心、
+        // 半徑 FLIGHT_CIRCLE_RADIUS 的圓周上，狀態維持 Flying。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        let anchor = Some((5000.0_f32, 5000.0_f32));
+        bird.state = WildlifeState::Flying { fly_timer: 5.0, angle: 0.0 };
+        bird.tick_fly(0.1, anchor, &mut rng);
+        match bird.state {
+            WildlifeState::Flying { fly_timer, angle } => {
+                assert!((fly_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+                assert!((angle - FLIGHT_ANGULAR_SPEED * 0.1).abs() < 1e-4, "盤旋角應依角速度推進");
+            }
+            _ => panic!("盤旋未到期應維持 Flying，實際 {:?}", bird.state),
+        }
+        let r = ((bird.x - 5000.0).powi(2) + (bird.y - 5000.0).powi(2)).sqrt();
+        assert!((r - FLIGHT_CIRCLE_RADIUS).abs() < 1e-3, "盤旋座標應落在群心圓周上，實際半徑 {r}");
+    }
+
+    #[test]
+    fn tick_fly_lands_to_wander_when_timer_expires() {
+        // 盤旋到期：降落回漫遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Flying { fly_timer: 0.05, angle: 1.0 };
+        bird.tick_fly(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "盤旋到期應降落回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn flying_state_str_is_flying() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Flying { fly_timer: 1.0, angle: 0.0 };
+        assert_eq!(bird.state_str(), "flying");
+    }
+
+    #[test]
+    fn sees_flight_only_within_radius() {
+        // 純距離判定：升空中的同類在 FLIGHT_HEAR_RADIUS 內看得見、外則看不見；空快照永遠看不見。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!sees_flight(me.0, me.1, &[]), "四下無同類升空時看不見");
+        let near = (me.0 + FLIGHT_HEAR_RADIUS - 1.0, me.1);
+        assert!(sees_flight(me.0, me.1, &[near]), "半徑內升空的同類應看得見");
+        let far = (me.0 + FLIGHT_HEAR_RADIUS + 50.0, me.1);
+        assert!(!sees_flight(me.0, me.1, &[far]), "半徑外升空的同類看不見");
+        assert!(sees_flight(me.0, me.1, &[far, near]), "其中一隻在範圍內就算看得見");
+    }
+
+    #[test]
+    fn calm_bird_joins_nearby_flight() {
+        // 接力升空：一隻持續盤旋的野鳥旁，白天平靜、未升空的同類會被牽動跟著飛起。
+        let mut mgr = WildlifeManager::new();
+        let mut flyer = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        flyer.id = 1;
+        flyer.state = WildlifeState::Flying { fly_timer: 1.0e9, angle: 0.0 }; // 整段測試持續盤旋
+        // 300px：大於群聚半徑（280，故兩鳥不成群、盤旋者繞自家不貼向對方）、大於哨兵群半徑（220，
+        // 故不被收編成哨兵而脫離盤旋）、小於升空牽動半徑（320，看得見彼此升空）。
+        let mut listener = adult_at(WildlifeKind::WildBird, 5300.0, 5000.0);
+        listener.id = 2;
+        // 一般白天漫遊（目標設在自身位置、計時極長 → 幾乎原地，且不觸發夜眠喚醒邏輯）。
+        listener.state = WildlifeState::Wandering { target_x: 5300.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![flyer, listener];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..80 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false（白天）
+            let l = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(l.state, WildlifeState::Flying { .. }) {
+                joined = true;
+                break;
+            }
+        }
+        assert!(joined, "白天平靜時看見附近同類升空的野鳥，應被牽動跟著飛起");
+    }
+
+    #[test]
+    fn non_bird_never_flies() {
+        // 物種專屬：只有野鳥會飛——白天平靜的野鹿連跑數百幀都不該進入 Flying。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Flying { .. }), "非鳥類不該升空，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn flying_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：盤旋中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻降下逃竄（非繼續盤旋）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Flying { fly_timer: 1.0e9, angle: 0.0 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 50 < FRIENDLY_ATTITUDE 65 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "盤旋中遇威脅應立刻降下逃竄，實際 {:?}", b.state);
     }
 }

@@ -8059,11 +8059,29 @@
       const wobble = (isFleeing || isHunting || isGuarding || isDefending) ? Math.sin(now / 60) * 2 : 0;
       ctx.translate(sx + wobble, sy);
 
+      // ROADMAP 220：鳥群振翅升空盤旋——盤旋中的野鳥（state==="flying"）畫成「飛在空中」：
+      // 把鳥身往上抬起一段（含輕微起伏，像振翅浮沉），並在牠真實的地面位置留一抹淡橢圓投影
+      // （標示牠飛在哪上方）。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天
+      // 平靜的野鳥升空盤旋時才給此狀態）。
+      const isFlying = w.kind === "wild_bird" && w.state === "flying";
+      let flyLift = 0;
+      if (isFlying) {
+        flyLift = 18 + Math.sin(now / 200) * 3; // 升空高度 + 振翅般的輕微浮沉
+        ctx.save();
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2, 0, 0, Math.PI * 2); // 地面投影（淡橢圓）
+        ctx.fill();
+        ctx.restore();
+      }
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
       ctx.save();
       if (scale !== 1) ctx.scale(scale, scale);
+      if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
