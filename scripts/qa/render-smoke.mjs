@@ -233,6 +233,22 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log(`  ✅ ${sc.name}：乾淨`);
 }
 
+// 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
+// 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：入夜（夜空流星，連跑 180 幀觸發流星劃過）──");
+  const nightSnap = JSON.parse(JSON.stringify(snapshot));
+  nightSnap.daynight = { phase: "night", light: 0.12, night_danger: true };
+  nightSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...nightSnap, type: "snapshot" }) });
+  const r = pump("入夜流星", 180);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 入夜流星：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 入夜流星：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 入夜流星：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
