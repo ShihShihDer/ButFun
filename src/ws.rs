@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -483,6 +483,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         alpha_monsters: alpha_monsters.clone(),
                                         // 生態清剿委託（ROADMAP 172）：全服廣播。
                                         eco_bounty: eco_bounty.clone(),
+                                        // 傳說古 Alpha（ROADMAP 173）：全服廣播（唯一世界頭目）。
+                                        ancient_alpha: ancient_alpha.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -2135,6 +2137,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         MonsterColonyEvent::AlphaCommandReady { .. } => {}
                                         MonsterColonyEvent::AlphaClashStart { .. } => {}
                                         MonsterColonyEvent::AlphaClashVictory { .. } => {}
+                                        // ROADMAP 173：傳說古 Alpha 事件——只由 game.rs 主 tick 處理
+                                        MonsterColonyEvent::AncientAlphaEmerged { .. } => {}
+                                        MonsterColonyEvent::AncientAlphaSlain => {}
                                     }
                                 }
                             }
@@ -3112,6 +3117,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 "💎 [Alpha 擊倒！] {} 制伏了 {} 的 Alpha 首領「{}·霸主」！\
                                  全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，{killer_name} 額外獲得 +{ALPHA_KILLER_ETHER} 乙太 + Alpha 晶核💎！",
                                 killer_name, colony_name, kind_name
+                            ));
+                        }
+                    }
+                }
+
+                // ── 挑戰傳說古 Alpha（ROADMAP 173）──────────────────────────────────
+                Ok(ClientMsg::AttackAncientAlpha) => {
+                    use crate::monster_colony::{ANCIENT_ALPHA_ATTACK_REACH, ANCIENT_ALPHA_KILLER_ETHER, ANCIENT_ALPHA_GLOBAL_ETHER};
+                    use crate::inventory::ItemKind;
+                    let (px, py, is_downed, power) = {
+                        let players = app.players.read().unwrap();
+                        let p = players.get(&id);
+                        let power = p.map(|p| {
+                            let base = crate::combat::level_attack_bonus(p.level())
+                                + crate::equipment::equipped_weapon_power(&p.equipment)
+                                + 1;
+                            base.max(1)
+                        }).unwrap_or(1);
+                        (
+                            p.map(|p| p.x).unwrap_or(0.0),
+                            p.map(|p| p.y).unwrap_or(0.0),
+                            p.map(|p| p.vitals.is_downed()).unwrap_or(true),
+                            power,
+                        )
+                    };
+                    if !is_downed {
+                        let _ = ANCIENT_ALPHA_ATTACK_REACH; // 距離驗證在 attack_ancient_alpha 內
+                        let kill_result = app.monster_colonies.write().unwrap()
+                            .attack_ancient_alpha(px, py, power);
+                        if kill_result.is_some() {
+                            // 殺手個人獎勵：乙太 + 傳說晶核
+                            let killer_name = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    p.ether = p.ether.saturating_add(ANCIENT_ALPHA_KILLER_ETHER);
+                                    p.inventory.add(ItemKind::LegendaryCore, 1);
+                                    p.name.clone()
+                                } else {
+                                    "某玩家".to_string()
+                                }
+                            };
+                            // 全服在線玩家各得乙太
+                            {
+                                let mut players = app.players.write().unwrap();
+                                for p in players.values_mut() {
+                                    p.ether = p.ether.saturating_add(ANCIENT_ALPHA_GLOBAL_ETHER);
+                                }
+                            }
+                            let _ = app.tx_chat.send(format!(
+                                "🌟【傳說古 Alpha 倒下！】{killer_name} 率眾擊倒了傳說古 Alpha！\
+                                 全服在線玩家各得 +{ANCIENT_ALPHA_GLOBAL_ETHER} 乙太，\
+                                 {killer_name} 額外獲得 +{ANCIENT_ALPHA_KILLER_ETHER} 乙太 + 傳說晶核💫！\
+                                 傳說戰刃等你來合成！"
                             ));
                         }
                     }

@@ -1122,6 +1122,35 @@ pub fn spawn(app: AppState) {
                             // ROADMAP 172：MonsterKilledInColony 由 ws.rs 的 on_monster_killed_near 路徑處理，
                             // game.rs tick() 不會產生此事件，但需加入 match 分支。
                             MonsterColonyEvent::MonsterKilledInColony { .. } => {}
+                            // ROADMAP 173：傳說古 Alpha 降臨——廣播警報 + Groq 生成宣言台詞。
+                            MonsterColonyEvent::AncientAlphaEmerged { x, y } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "⚡【傳說古 Alpha 降臨！】生態壓力達到頂點，傳說古 Alpha 現身荒野 ({x:.0},{y:.0})！\
+                                     全服合力挑戰，擊倒後可得傳說晶核，合成傳說戰刃！"
+                                ));
+                                // 非同步呼叫 Groq 生成古 Alpha 宣言（利用 boss_ai_sem 限流）。
+                                let tx_chat = app.tx_chat.clone();
+                                let sem = app.boss_ai_sem.clone();
+                                tokio::spawn(async move {
+                                    let Ok(_permit) = sem.try_acquire_owned() else { return };
+                                    let system =
+                                        "你是蒸汽龐克太空歌劇世界中的「傳說古 Alpha」，宇宙最古老的生態守護者，\
+                                         被人類打破生態平衡所激怒而降臨。\
+                                         你俯視所有生命，視一切入侵者為微塵。\
+                                         請用 30 字以內的繁體中文，以古老王者的口吻，\
+                                         發出一聲震懾四方的降臨宣言。\
+                                         只輸出那一句宣言，不要引號或前綴。";
+                                    let user = "傳說古 Alpha 降臨，發出你的宣言！";
+                                    let canned = "「爾等渺小的侵略者，今日便是汝等滅頂之時！」";
+                                    let text = match crate::npc_chat::raw_llm_call(system, user).await {
+                                        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+                                        _ => canned.to_string(),
+                                    };
+                                    let _ = tx_chat.send(format!("⚡ 古 Alpha 宣言：{text}"));
+                                });
+                            }
+                            // ROADMAP 173：傳說古 Alpha 被擊倒——廣播由 ws.rs 負責（含殺手名稱）。
+                            MonsterColonyEvent::AncientAlphaSlain => {}
                         }
                     }
                 }
@@ -2263,6 +2292,8 @@ pub fn spawn(app: AppState) {
                         alpha_monsters: app.monster_colonies.read().unwrap().alpha_views(),
                         // 生態清剿委託（ROADMAP 172）：目前活躍的清剿委託（無則為 None）。
                         eco_bounty: app.eco_bounty.read().unwrap().view(),
+                        // 傳說古 Alpha（ROADMAP 173）：目前存活的世界頭目（無則為 None）。
+                        ancient_alpha: app.monster_colonies.read().unwrap().ancient_alpha_view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

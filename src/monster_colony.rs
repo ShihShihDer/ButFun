@@ -11,6 +11,11 @@
 //! ROADMAP 170：Alpha 領地爭奪——不同巢穴的 Alpha 進入 900px 內自動廝殺，
 //! 敗者巢穴族群衰退、勝者稱霸，玩家趁亂收漁人之利；零 LLM、純算術。
 //!
+//! ROADMAP 173：傳說古 Alpha 降臨——3 個以上巢穴同時達滿員時，生態系頂點
+//! 「傳說古 Alpha」降臨荒野；HP 600、攻擊距離 120px；Groq 生成降臨宣言廣播全服；
+//! 擊倒掉落傳說晶核，合成傳說戰刃（ATK+55，全遊戲最強）；20 分鐘冷卻後可再湧現。
+//! 成本紀律：降臨時才呼叫一次 LLM（利用 boss_ai_sem 限流）；零 migration。
+//!
 //! 效能：全純算術、零 migration；記憶體模式，重啟全重置。
 
 use serde::Serialize;
@@ -53,6 +58,29 @@ const ALPHA_CLASH_RADIUS: f32 = 900.0;
 const ALPHA_CLASH_DAMAGE_PER_SEC: f32 = 8.0;
 /// 敗者巢穴在 Alpha 被擊敗後的冷卻倍率（相對 ALPHA_COOLDOWN_SECS）。
 const ALPHA_CLASH_DEFEAT_COOLDOWN_MULT: f32 = 2.0;
+
+// ─── ROADMAP 173：傳說古 Alpha 常數 ──────────────────────────────────────────
+
+/// 傳說古 Alpha 的生命值——遠超普通 Alpha（族群 Alpha 最多 24HP），需全服合力擊倒。
+pub const ANCIENT_ALPHA_HP: u32 = 600;
+/// 挑戰傳說古 Alpha 的最大距離（像素），比普通 Alpha 略大（體型更巨）。
+pub const ANCIENT_ALPHA_ATTACK_REACH: f32 = 120.0;
+/// 古 Alpha 被擊倒後的冷卻時間（秒）：20 分鐘後才能再次湧現。
+const ANCIENT_ALPHA_COOLDOWN_SECS: f32 = 1200.0;
+/// 觸發古 Alpha 湧現所需的「滿員巢穴」最低數量。
+const ANCIENT_ALPHA_MIN_FULL_COLONIES: usize = 3;
+/// 「滿員」的族群飽和度閾值（族群數 / 最大族群數 ≥ 此值）。
+const ANCIENT_SATURATION_THRESHOLD: f32 = 0.80;
+/// 古 Alpha 擊倒後殺手個人獲得的乙太。
+pub const ANCIENT_ALPHA_KILLER_ETHER: u32 = 50;
+/// 古 Alpha 擊倒後全服在線玩家各得的乙太。
+pub const ANCIENT_ALPHA_GLOBAL_ETHER: u32 = 10;
+/// 城鎮中心 X 座標（像素），確保古 Alpha 不在安全區內生成。
+const TOWN_CENTER_X: f32 = 2336.0;
+/// 城鎮中心 Y 座標（像素）。
+const TOWN_CENTER_Y: f32 = 2272.0;
+/// 古 Alpha 與城鎮中心的最小距離（像素）——確保在安全區外。
+const ANCIENT_MIN_TOWN_DIST: f32 = 1600.0;
 
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
@@ -149,6 +177,32 @@ pub struct AlphaKilledResult {
     pub kind: EnemyKind,
 }
 
+// ─── ROADMAP 173：傳說古 Alpha ────────────────────────────────────────────────
+
+/// 傳說古 Alpha：生態系頂點，3 個以上巢穴同時滿員時湧現的世界頭目。
+pub struct AncientAlpha {
+    /// 世界座標 X（像素）。
+    pub x: f32,
+    /// 世界座標 Y（像素）。
+    pub y: f32,
+    /// 目前生命值。
+    pub hp: u32,
+    /// 最大生命值（固定 ANCIENT_ALPHA_HP）。
+    pub max_hp: u32,
+}
+
+/// 給協議層用的古 Alpha 視圖（隨快照廣播，前端渲染特殊世界頭目圖示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AncientAlphaView {
+    pub x: f32,
+    pub y: f32,
+    pub hp: u32,
+    pub max_hp: u32,
+}
+
+/// 古 Alpha 擊殺結果（由 ws.rs 用於發獎）。
+pub struct AncientAlphaKilledResult;
+
 /// 巢穴管理器發出的事件，由 game.rs 消化。
 pub enum MonsterColonyEvent {
     /// 應在此座標注入一隻怪物（由 EnemyField::inject_event_enemy 執行）。
@@ -186,6 +240,11 @@ pub enum MonsterColonyEvent {
     /// ROADMAP 172：玩家在某個巢穴附近擊殺一隻怪物，族群 -1。
     /// ws.rs 將此事件轉給 EcoBountyState::on_colony_kill()。
     MonsterKilledInColony { colony_id: u32 },
+    /// ROADMAP 173：傳說古 Alpha 降臨——3 個以上巢穴同時滿員時湧現。
+    /// game.rs 負責廣播降臨訊息並非同步呼叫 Groq 生成宣言台詞。
+    AncientAlphaEmerged { x: f32, y: f32 },
+    /// ROADMAP 173：傳說古 Alpha 被擊倒。game.rs 負責廣播勝利訊息。
+    AncientAlphaSlain,
 }
 
 /// 管理所有怪物巢穴。
@@ -195,6 +254,11 @@ pub struct MonsterColonyManager {
     pub alphas: Vec<ColonyAlpha>,
     /// 下一個 Alpha 的全域唯一 ID 計數器。
     next_alpha_id: u32,
+    // ROADMAP 173：傳說古 Alpha
+    /// 當前活躍的傳說古 Alpha（全局唯一，`None` = 已死亡或尚未湧現）。
+    pub ancient: Option<AncientAlpha>,
+    /// 古 Alpha 被擊倒後的冷卻計時器（秒），>0 = 冷卻中，不觸發湧現判斷。
+    pub ancient_cooldown: f32,
 }
 
 impl MonsterColonyManager {
@@ -203,6 +267,8 @@ impl MonsterColonyManager {
             colonies: build_colonies(),
             alphas: Vec::new(),
             next_alpha_id: 1,
+            ancient: None,
+            ancient_cooldown: 0.0,
         }
     }
 
@@ -288,6 +354,9 @@ impl MonsterColonyManager {
 
         // ROADMAP 170：Alpha 領地爭奪——兩兩偵測 + 互相施傷 + 結算
         self.tick_alpha_clash(dt, &mut events);
+
+        // ROADMAP 173：傳說古 Alpha 湧現判斷
+        self.tick_ancient_alpha(dt, &mut events);
 
         events
     }
@@ -428,6 +497,84 @@ impl MonsterColonyManager {
         }
 
         Some(result)
+    }
+
+    // ── ROADMAP 173：傳說古 Alpha 相關方法 ──────────────────────────────────
+
+    /// 每幀推進古 Alpha 冷卻 + 湧現判斷。
+    /// 當 `ancient` 為 `None` 且冷卻歸零、且 3+ 巢穴飽和度 ≥ 80% 時，湧現古 Alpha。
+    fn tick_ancient_alpha(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
+        // 1. 古 Alpha 存活中：不做任何事（玩家攻擊負責減 HP）。
+        if self.ancient.is_some() {
+            return;
+        }
+        // 2. 冷卻倒數。
+        if self.ancient_cooldown > 0.0 {
+            self.ancient_cooldown = (self.ancient_cooldown - dt).max(0.0);
+            return;
+        }
+        // 3. 冷卻歸零：檢查是否有足夠多的「滿員」巢穴。
+        let full_colonies: Vec<(f32, f32)> = self.colonies.iter()
+            .filter(|c| {
+                c.max_population > 0
+                    && c.population as f32 / c.max_population as f32 >= ANCIENT_SATURATION_THRESHOLD
+            })
+            .map(|c| (c.cx, c.cy))
+            .collect();
+
+        if full_colonies.len() < ANCIENT_ALPHA_MIN_FULL_COLONIES {
+            return;
+        }
+
+        // 4. 計算滿員巢穴的幾何中心，並確保不在城鎮安全區內。
+        let n = full_colonies.len() as f32;
+        let cx = full_colonies.iter().map(|(x, _)| x).sum::<f32>() / n;
+        let cy = full_colonies.iter().map(|(_, y)| y).sum::<f32>() / n;
+        let dx = cx - TOWN_CENTER_X;
+        let dy = cy - TOWN_CENTER_Y;
+        let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (ax, ay) = if dist < ANCIENT_MIN_TOWN_DIST {
+            let scale = ANCIENT_MIN_TOWN_DIST / dist;
+            (TOWN_CENTER_X + dx * scale, TOWN_CENTER_Y + dy * scale)
+        } else {
+            (cx, cy)
+        };
+
+        // 5. 湧現！
+        self.ancient = Some(AncientAlpha { x: ax, y: ay, hp: ANCIENT_ALPHA_HP, max_hp: ANCIENT_ALPHA_HP });
+        events.push(MonsterColonyEvent::AncientAlphaEmerged { x: ax, y: ay });
+    }
+
+    /// 玩家對傳說古 Alpha 發動一次攻擊。
+    /// 需：未倒地、距離 ≤ ANCIENT_ALPHA_ATTACK_REACH、古 Alpha 存活。
+    /// 回傳 `Some(AncientAlphaKilledResult)` 代表擊倒，`None` 代表未死或條件不符。
+    pub fn attack_ancient_alpha(
+        &mut self,
+        px: f32,
+        py: f32,
+        power: u32,
+    ) -> Option<AncientAlphaKilledResult> {
+        let ancient = self.ancient.as_mut()?;
+        let reach_sq = ANCIENT_ALPHA_ATTACK_REACH * ANCIENT_ALPHA_ATTACK_REACH;
+        let dist_sq = (ancient.x - px).powi(2) + (ancient.y - py).powi(2);
+        if dist_sq > reach_sq {
+            return None; // 距離不足
+        }
+        ancient.hp = ancient.hp.saturating_sub(power);
+        if ancient.hp > 0 {
+            return None; // 未死
+        }
+        // 古 Alpha 死亡：清除實體、設冷卻。
+        self.ancient = None;
+        self.ancient_cooldown = ANCIENT_ALPHA_COOLDOWN_SECS;
+        Some(AncientAlphaKilledResult)
+    }
+
+    /// 回傳供快照廣播的古 Alpha 視圖（`None` 代表目前無古 Alpha 活躍）。
+    pub fn ancient_alpha_view(&self) -> Option<AncientAlphaView> {
+        self.ancient.as_ref().map(|a| AncientAlphaView {
+            x: a.x, y: a.y, hp: a.hp, max_hp: a.max_hp,
+        })
     }
 
     /// 玩家在 (kill_x, kill_y) 擊殺了 kill_kind 種類的怪 →
@@ -1257,5 +1404,123 @@ mod tests {
             "距離超過衝突半徑的 Alpha 不應開始衝突"
         );
         assert_eq!(mgr.alphas[0].hp, 100, "超出範圍的 Alpha 不應受到傷害");
+    }
+
+    // ── ROADMAP 173：傳說古 Alpha 測試 ──────────────────────────────────────
+
+    fn make_full_colony_mgr_n(n: usize) -> MonsterColonyManager {
+        let mut mgr = MonsterColonyManager::new();
+        mgr.colonies.clear();
+        for i in 0..n {
+            mgr.colonies.push(MonsterColony {
+                id: i as u32,
+                kind: crate::combat::EnemyKind::ScrapDrone,
+                name: "測試巢穴",
+                cx: (i as f32) * 500.0 + 4000.0, // 距城鎮中心 > 1600px
+                cy: 4000.0,
+                spawn_radius: 100.0,
+                population: 10, max_population: 10, // 100% 飽和
+                spawn_timer: 9999.0, spawn_count: 0, alpha_cooldown: 0.0,
+            });
+        }
+        mgr
+    }
+
+    #[test]
+    fn ancient_alpha_not_spawned_with_less_than_3_full_colonies() {
+        let mut mgr = make_full_colony_mgr_n(2);
+        let events = mgr.tick(1.0);
+        assert!(mgr.ancient.is_none(), "2 個滿員巢穴不應觸發古 Alpha");
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
+            "不應發出 AncientAlphaEmerged 事件"
+        );
+    }
+
+    #[test]
+    fn ancient_alpha_spawns_with_3_full_colonies() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        let events = mgr.tick(1.0);
+        assert!(mgr.ancient.is_some(), "3 個滿員巢穴應觸發古 Alpha");
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
+            "應發出 AncientAlphaEmerged 事件"
+        );
+    }
+
+    #[test]
+    fn ancient_alpha_has_correct_hp() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        mgr.tick(1.0);
+        let ancient = mgr.ancient.as_ref().unwrap();
+        assert_eq!(ancient.hp, ANCIENT_ALPHA_HP);
+        assert_eq!(ancient.max_hp, ANCIENT_ALPHA_HP);
+    }
+
+    #[test]
+    fn ancient_alpha_not_in_safe_zone() {
+        let mut mgr = make_full_colony_mgr_n(5);
+        mgr.tick(1.0);
+        let ancient = mgr.ancient.as_ref().unwrap();
+        let dx = ancient.x - TOWN_CENTER_X;
+        let dy = ancient.y - TOWN_CENTER_Y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        assert!(dist >= ANCIENT_MIN_TOWN_DIST,
+            "古 Alpha 應在城鎮安全區外（dist={dist:.0}px）");
+    }
+
+    #[test]
+    fn ancient_alpha_attack_reduces_hp() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        mgr.tick(1.0);
+        let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
+        let result = mgr.attack_ancient_alpha(ax, ay, 10);
+        assert!(result.is_none(), "單次攻擊不應擊倒");
+        assert_eq!(mgr.ancient.as_ref().unwrap().hp, ANCIENT_ALPHA_HP - 10);
+    }
+
+    #[test]
+    fn ancient_alpha_attack_out_of_range_fails() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        mgr.tick(1.0);
+        let result = mgr.attack_ancient_alpha(0.0, 0.0, 9999);
+        assert!(result.is_none(), "超出攻擊範圍應回傳 None");
+        assert!(mgr.ancient.is_some(), "超出範圍攻擊不應移除古 Alpha");
+    }
+
+    #[test]
+    fn ancient_alpha_kill_removes_and_sets_cooldown() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        mgr.tick(1.0);
+        let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
+        let result = mgr.attack_ancient_alpha(ax, ay, ANCIENT_ALPHA_HP);
+        assert!(result.is_some(), "HP 歸零應回傳擊殺結果");
+        assert!(mgr.ancient.is_none(), "擊殺後古 Alpha 應消失");
+        assert!(mgr.ancient_cooldown > 0.0, "擊殺後應進入冷卻");
+    }
+
+    #[test]
+    fn ancient_alpha_cooldown_prevents_reemergence() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        mgr.tick(1.0);
+        let (ax, ay) = { let a = mgr.ancient.as_ref().unwrap(); (a.x, a.y) };
+        mgr.attack_ancient_alpha(ax, ay, ANCIENT_ALPHA_HP);
+        // 冷卻中不應再度湧現
+        let events = mgr.tick(1.0);
+        assert!(mgr.ancient.is_none(), "冷卻中不應再度湧現");
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AncientAlphaEmerged { .. })),
+            "冷卻中不應發出 AncientAlphaEmerged"
+        );
+    }
+
+    #[test]
+    fn ancient_alpha_view_reflects_state() {
+        let mut mgr = make_full_colony_mgr_n(3);
+        assert!(mgr.ancient_alpha_view().is_none(), "無古 Alpha 時視圖應為 None");
+        mgr.tick(1.0);
+        let view = mgr.ancient_alpha_view();
+        assert!(view.is_some(), "古 Alpha 存活時視圖應為 Some");
+        assert_eq!(view.unwrap().hp, ANCIENT_ALPHA_HP);
     }
 }

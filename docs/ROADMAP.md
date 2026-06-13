@@ -1409,6 +1409,21 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **零 migration、零 LLM、純記憶體模式**：`src/eco_bounty.rs` 純邏輯模組（16 個單元測試）；`src/monster_colony.rs` 新增 `MonsterKilledInColony` 事件；`src/state.rs` + `src/main.rs` + `src/protocol.rs` + `src/game.rs` + `src/ws.rs` + `web/game.js` 全數接線。
     - 玩家感知：生態壓力高漲時聊天出現「📋【生態清剿委託・蘭卡】靈蛾巢威脅升高！全服共同清剿 5 隻，完成後每位在線玩家得 12 乙太！」——玩家自動形成臨時聯盟去野外打怪；完成時「✅【清剿委託完成！】靈蛾巢威脅平息，在線玩家各得 12 乙太！」——合作感與即時收益。
 
+## 接著（傳說古 Alpha 前端接線 — AI 自主提案 2026-06-13）
+
+173. ✅ **傳說古 Alpha 前端接線——後端已完整實作的世界頭目終於在畫面上現身，玩家能看到、能點擊挑戰、能合成傳說戰刃**（本輪 PR）
+    - 後端（monster_colony.rs / game.rs / ws.rs / protocol.rs）早已完整：3 個巢穴全滿時湧現、Groq 生成降臨宣言、擊殺發 50+10 乙太 + 傳說晶核、傳說戰刃配方（+55 攻擊力）。
+    - 本輪補全前端缺口：
+      1. Snapshot 解析 `ancient_alpha` 欄位 → 存入 `ancientAlpha` 變數。
+      2. `drawAncientAlpha(camX, camY)`：三重脈動光環（金/紫/白）+ 36px 主圖示 + 80px 血條 + 名牌「⚡ 傳說古 Alpha」。
+      3. 點擊偵測：玩家點擊古 Alpha 附近（60px 半徑）→ 送 `attack_ancient_alpha` 訊息；伺服器驗距離（120px）。
+      4. `ITEM_LOOK`/`ITEM_NAME`/`ITEM_FLOAT_COLOR`：新增 `legendary_core`（💫 傳說晶核）、`legendary_blade`（🌟 傳說戰刃）。
+      5. `CRAFT_RECIPES`：加入傳說戰刃配方（傳說晶核×1 + Alpha晶石×3 + 乙太×30）顯示。
+      6. `GEAR_DESC`/`ITEM_BASE_ATK`：傳說戰刃說明文字與 +55 攻擊力值。
+      7. `biomeGear` 裝備圖鑑：新增「傳說戰刃 · 傳說古Alpha限定」。
+    - 1578 tests 全綠，`node --check` 通過，零 migration，不破壞玩家資料。
+    - 玩家感知：三個巢穴同時爆滿後，荒野中出現三重光環的⚡巨大圓圈「傳說古 Alpha」；靠近按下觸控/點擊，全服聯手輸出 600 HP；倒下後廣播、合成台出現「傳說戰刃」——「全遊戲最強武器終於到手了」。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

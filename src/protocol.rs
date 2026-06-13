@@ -392,6 +392,11 @@ pub enum ClientMsg {
     /// 需未倒地、距離 ≤ ALPHA_ATTACK_REACH、alpha_id 存在 → 成功；Alpha 死亡觸發獎勵廣播。
     #[serde(rename = "attack_alpha")]
     AttackAlpha { alpha_id: u32 },
+    /// 挑戰傳說古 Alpha（ROADMAP 173）：對當前存活的傳說古 Alpha 發動一次攻擊。
+    /// 需未倒地、距離 ≤ ANCIENT_ALPHA_ATTACK_REACH、古 Alpha 存活 → 成功；
+    /// 死亡觸發傳說晶核掉落 + 全服乙太獎勵廣播。
+    #[serde(rename = "attack_ancient_alpha")]
+    AttackAncientAlpha,
     /// 接取貿易任務（ROADMAP 51）：在當前星球商人處接取一個貿易包裹。
     /// `route_id`：要接取的路線編號（需在本星球且未在冷卻中且未持有其他包裹）。
     /// 一次只能攜帶一個包裹；同路線有 5 分鐘冷卻。倒地中靜默忽略。
@@ -776,6 +781,10 @@ pub enum ServerMsg {
         /// 前端在生態面板或 HUD 顯示委託名稱、進度、剩餘時間、獎勵。
         #[serde(default)]
         eco_bounty: Option<crate::eco_bounty::EcoBountyView>,
+        /// 傳說古 Alpha（ROADMAP 173）：目前存活的世界頭目（null = 未出現或冷卻中）。
+        /// 前端在世界地圖繪製巨大特殊圖示，玩家點擊觸發 AttackAncientAlpha。
+        #[serde(default)]
+        ancient_alpha: Option<crate::monster_colony::AncientAlphaView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1637,6 +1646,7 @@ mod tests {
             eco_pressure_value: 0.0,
             alpha_monsters: vec![],
             eco_bounty: None,
+            ancient_alpha: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
