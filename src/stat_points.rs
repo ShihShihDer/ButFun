@@ -46,6 +46,16 @@ pub const ATK_SPEED_PCT_PER_POINT: u32 = 5;
 /// 攻擊冷卻下限（秒），攻擊速度加點不可突破此值。
 pub const ATTACK_COOLDOWN_MIN: f32 = 0.25;
 
+/// 移動速度加成的「膝點」：在此額外百分比（小數，0.40 = +40%）以內為線性全額生效，
+/// 超過後改用平方根壓縮，邊際遞減——讓前期投資有感、後期投資仍有效但不失控。
+/// 0.40 對應 5 點速度（5 × 8% = 40%），一般等級玩家的投資完全落在膝點內、不受影響。
+pub const SPEED_BONUS_KNEE: f32 = 0.40;
+
+/// 移動速度乘數硬上限：有效移動速度最多為基礎的此倍數。
+/// 取 2.0 = 封頂在 2 倍速——足夠快又仍可操控；只夾掉高等玩家（Lv.400+）
+/// 由線性公式膨脹出的失控值（原本可達數十倍速），不影響正常等級的投資。
+pub const SPEED_MULT_MAX: f32 = 2.0;
+
 /// 可分配的屬性種類標識。
 pub const STAT_HP: &str = "hp";
 pub const STAT_ATTACK: &str = "attack";
@@ -54,8 +64,25 @@ pub const STAT_ATK_SPEED: &str = "atk_speed";
 
 impl StatPoints {
     /// 計算移動速度乘數（1.0 = 原速，> 1.0 = 加速）。
+    ///
+    /// 平衡（升級後不再失控過快）：每點 +8% 是原始「名目加成」，但有效加成在膝點
+    /// `SPEED_BONUS_KNEE` 以內全額生效、超過後改用平方根壓縮（邊際遞減），最後再
+    /// 以 `SPEED_MULT_MAX` 硬封頂。如此一來：
+    ///   - 一般等級玩家（投資 ≤ 5 點）完全落在膝點內、行為與舊公式一致；
+    ///   - 高等玩家（Lv.400+ 把大量點數倒進速度）原本會線性膨脹到數十倍速，
+    ///     現在被壓縮並夾在 2 倍速以內，仍快但可操控。
     pub fn speed_mult(&self) -> f32 {
-        1.0 + (self.speed * SPEED_PCT_PER_POINT) as f32 / 100.0
+        // 名目加成（小數）：speed 點數 × 每點百分比。
+        let nominal_bonus = (self.speed * SPEED_PCT_PER_POINT) as f32 / 100.0;
+        let effective_bonus = if nominal_bonus <= SPEED_BONUS_KNEE {
+            // 膝點以內：線性全額，保持前期手感與舊行為。
+            nominal_bonus
+        } else {
+            // 膝點以外：超出量用平方根壓縮，邊際遞減（仍隨投資成長、但越來越慢）。
+            SPEED_BONUS_KNEE + (nominal_bonus - SPEED_BONUS_KNEE).sqrt()
+        };
+        // 硬封頂：有效乘數不超過 SPEED_MULT_MAX。
+        (1.0 + effective_bonus).min(SPEED_MULT_MAX)
     }
 
     /// 計算有效攻擊冷卻（秒），以基礎冷卻為輸入。
@@ -114,9 +141,47 @@ mod tests {
     #[test]
     fn speed_mult_scales_correctly() {
         let s = StatPoints { speed: 2, ..Default::default() };
-        // 2 點 × 8% = +16% → mult = 1.16
+        // 2 點 × 8% = +16%（< 膝點 40%）→ 線性全額 → mult = 1.16
         let mult = s.speed_mult();
         assert!((mult - 1.16).abs() < 0.001, "mult={mult}");
+    }
+
+    #[test]
+    fn speed_mult_linear_within_knee() {
+        // 膝點對應 5 點（5 × 8% = 40% = 膝點），仍應線性全額 → 1.40。
+        let s = StatPoints { speed: 5, ..Default::default() };
+        let mult = s.speed_mult();
+        assert!((mult - 1.40).abs() < 0.001, "mult={mult}");
+    }
+
+    #[test]
+    fn speed_mult_diminishing_beyond_knee() {
+        // 10 點 × 8% = 80% 名目，超過膝點 40%。
+        // 有效 = 0.40 + sqrt(0.80 - 0.40) = 0.40 + sqrt(0.40) ≈ 0.40 + 0.6325 = 1.0325
+        // → mult ≈ 2.0325，但被硬上限 2.0 夾住。
+        let s = StatPoints { speed: 10, ..Default::default() };
+        let mult = s.speed_mult();
+        assert_eq!(mult, SPEED_MULT_MAX);
+    }
+
+    #[test]
+    fn speed_mult_capped_for_extreme_investment() {
+        // 高等玩家把大量點數倒進速度（舊公式會線性膨脹到數十倍速）。
+        // 100 點：舊 = 1 + 8.0 = 9 倍速；800 點：舊 = 65 倍速——皆失控。
+        // 新公式一律被 SPEED_MULT_MAX 夾住、可操控。
+        for &pts in &[100u32, 400, 800, 10_000] {
+            let s = StatPoints { speed: pts, ..Default::default() };
+            let mult = s.speed_mult();
+            assert!(mult <= SPEED_MULT_MAX + 1e-6, "pts={pts} mult={mult} 超過上限");
+            assert_eq!(mult, SPEED_MULT_MAX, "pts={pts} 應被夾到上限");
+        }
+    }
+
+    #[test]
+    fn speed_mult_baseline_is_one() {
+        // 沒投資速度 → 原速 1.0（不被任何夾擠影響）。
+        let s = StatPoints::default();
+        assert_eq!(s.speed_mult(), 1.0);
     }
 
     #[test]
