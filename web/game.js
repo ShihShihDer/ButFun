@@ -13934,6 +13934,33 @@
     };
   }
 
+  // ROADMAP 187：常駐欄釘選清單的純函式管理（無 DOM／無副作用，便於單獨驗證）。
+  // 清洗一份存下來的釘選清單：只保留仍存在的面板 id、去重保序、夾在上限內
+  // （面板改版被移除時自動剔除——向後相容，不會殘留死鈕）。
+  function normalizeDockPins(raw, validIds, max) {
+    const valid = new Set(validIds || []);
+    const seen = new Set();
+    const out = [];
+    for (const id of Array.isArray(raw) ? raw : []) {
+      if (typeof id !== "string" || !valid.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+      if (out.length >= max) break; // 夾上限：超過的丟棄
+    }
+    return out;
+  }
+
+  // 切換某面板的釘選狀態，回傳 { pins, changed, full }：
+  // 已釘→取消（changed）；未釘且未達上限→加到尾端（changed）；未釘但已滿→不加並回報 full（讓 UI 提示）。
+  function toggleDockPin(pins, id, max) {
+    const cur = Array.isArray(pins) ? pins.slice() : [];
+    const i = cur.indexOf(id);
+    if (i >= 0) { cur.splice(i, 1); return { pins: cur, changed: true, full: false }; }
+    if (cur.length >= max) return { pins: cur, changed: false, full: true };
+    cur.push(id);
+    return { pins: cur, changed: true, full: false };
+  }
+
   // ---- 星露谷風工具列(dock)+ 可開關視窗 ----
   // 總監定調:左上常駐欄太佔空間。常駐只留精簡狀態(乙太/生命/線上/時段);背包/合成/擴地/操作說明
   // 改成 dock 一排小圖示,點圖示才開對應視窗。規則:同時只開一個;再點同一顆、按 ✕、按 Esc、
@@ -14024,6 +14051,107 @@
       new MutationObserver(syncMenuDot).observe(dockHiddenEl, { subtree: true, attributes: true, attributeFilter: ["class"] });
     }
     syncMenuDot();
+
+    // ── ROADMAP 187：常用面板釘選回常駐欄（玩家自訂快捷）──────────────────────────
+    // PLAN_UI_REDESIGN step 3：☰ 選單裡每個面板可按 📌 釘到常駐欄，常用功能一鍵直達（不必每次
+    // ☰→分類→項目三層點）。釘選清單存 localStorage 跨重開記得；上限 DOCK_PIN_MAX 守「常駐欄瘦身」
+    // 鐵律，不讓它又長回一面牆。純前端、零後端/協議；快捷鈕走 181 同一條 openWinFor。
+    const DOCK_PIN_KEY = "butfun_dockpins_v1";
+    const DOCK_PIN_MAX = 6;
+    const dockPinnedEl = document.getElementById("dockPinned");
+    // 可釘選的面板 id（= 各 menu-item 的 data-target）。
+    const pinnableIds = [...document.querySelectorAll("#winMenu .menu-item")].map((it) => it.dataset.target);
+    // 依面板 id 取「圖示＋標籤」（沿用選單 item 文字；面向玩家字串集中於 HTML、便於日後在地化）。
+    const pinLabelOf = (id) => {
+      const item = document.querySelector(`#winMenu .menu-item[data-target="${id}"]`);
+      return item ? item.textContent.trim() : id;
+    };
+    function loadDockPins() {
+      try { return normalizeDockPins(JSON.parse(localStorage.getItem(DOCK_PIN_KEY) || "[]"), pinnableIds, DOCK_PIN_MAX); }
+      catch { return []; }
+    }
+    function saveDockPins(pins) {
+      try { localStorage.setItem(DOCK_PIN_KEY, JSON.stringify(pins)); } catch {}
+    }
+    let dockPins = loadDockPins();
+
+    // 依目前清單重建常駐欄快捷鈕（icon-only slim 鈕＋tooltip；點擊＝開對應視窗，鏡像來源鈕的可做事黃點）。
+    function renderDockPins() {
+      if (!dockPinnedEl) return;
+      dockPinnedEl.textContent = "";
+      for (const id of dockPins) {
+        const src = document.getElementById(id);
+        if (!src) continue;
+        const label = pinLabelOf(id);               // 例：「⚔️ 裝備」
+        const icon = label.split(/\s+/)[0] || "📌";  // 取最前面的 emoji 當圖示，常駐欄維持瘦身
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "dock-btn dock-pin-btn";
+        b.dataset.win = src.dataset.win;            // 讓 openWinFor 找得到對應視窗
+        b.title = label;                            // hover/長按 tooltip（消除神祕圖示）
+        b.setAttribute("aria-label", label);
+        b.setAttribute("aria-haspopup", "dialog");
+        b.setAttribute("aria-expanded", "false");
+        b.textContent = icon;
+        if (src.classList.contains("dock-active")) b.classList.add("dock-active");
+        b.addEventListener("click", () => openWinFor(b));
+        dockPinnedEl.appendChild(b);
+      }
+    }
+
+    // 同步選單裡 📌 鈕的「已釘選」外觀與 tooltip。
+    function syncPinButtons() {
+      for (const p of document.querySelectorAll("#winMenu .menu-pin")) {
+        const on = dockPins.includes(p.dataset.pin);
+        p.classList.toggle("pinned", on);
+        p.setAttribute("aria-pressed", on ? "true" : "false");
+        p.title = on ? "取消釘選" : "釘到常駐欄";
+      }
+    }
+
+    // 在每個 menu-item 旁注入一顆 📌 釘選切換鈕（包進 .menu-row 以免按鈕巢狀，且不破壞既有開窗點擊）。
+    for (const item of document.querySelectorAll("#winMenu .menu-item")) {
+      const id = item.dataset.target;
+      const row = document.createElement("span");
+      row.className = "menu-row";
+      item.parentNode.insertBefore(row, item);
+      row.appendChild(item);
+      const pin = document.createElement("button");
+      pin.type = "button";
+      pin.className = "menu-pin";
+      pin.dataset.pin = id;
+      pin.textContent = "📌";
+      pin.addEventListener("click", (e) => {
+        e.stopPropagation(); // 別冒泡觸發開窗，也別觸發「點窗外關窗」
+        const r = toggleDockPin(dockPins, id, DOCK_PIN_MAX);
+        if (!r.changed) { // 已達上限：抖一下提示、不再塞入（守常駐欄瘦身）
+          if (dockPinnedEl) {
+            dockPinnedEl.classList.remove("pin-full");
+            void dockPinnedEl.offsetWidth; // 重啟動畫
+            dockPinnedEl.classList.add("pin-full");
+          }
+          return;
+        }
+        dockPins = r.pins;
+        saveDockPins(dockPins);
+        renderDockPins();
+        syncPinButtons();
+      });
+      row.appendChild(pin);
+    }
+
+    // 常駐快捷鈕也跟著快照「可做事」黃點亮（鏡像隱藏容器來源鈕的 dock-active）。
+    if (dockHiddenEl && dockPinnedEl) {
+      new MutationObserver(() => {
+        for (const b of dockPinnedEl.querySelectorAll(".dock-pin-btn")) {
+          const srcBtn = document.querySelector(`#dockHidden .dock-btn[data-win="${b.dataset.win}"]`);
+          b.classList.toggle("dock-active", !!(srcBtn && srcBtn.classList.contains("dock-active")));
+        }
+      }).observe(dockHiddenEl, { subtree: true, attributes: true, attributeFilter: ["class"] });
+    }
+
+    renderDockPins();
+    syncPinButtons();
 
     // ── 🗺️ 世界地圖：星球帶 + 本星鳥瞰（生態底色/城鎮/你的位置/裂縫）+ 旅行入口 ──
     // 解玩家痛點「不知道自己在哪、其他星球怎麼去」——旅行原本埋在「合成星圖→背包使用」
