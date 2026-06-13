@@ -286,6 +286,13 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_bird", x: me0.x + 30, y: me0.y, state: "chirping", familiarity: 0, tamed: false };
     }
   }),
+  // 小動物捧食啃咬（222）：白天把小動物設成 nibbling → 跑 drawWildlife 的啃咬 🌰 繪製分支（含明滅與微微起伏平移）。
+  variant("小動物啃咬", (s) => {
+    s.daynight = { phase: "day", light: 0.8, night_danger: false };
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "small_critter", x: me0.x + 30, y: me0.y, state: "nibbling", familiarity: 0, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),

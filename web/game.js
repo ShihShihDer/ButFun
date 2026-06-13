@@ -8396,6 +8396,21 @@
         ctx.restore();
       }
 
+      // ROADMAP 222：小動物捧食啃咬——白天平靜時坐起來捧食啃咬的小動物（state==="nibbling"）
+      // 頭頂浮一顆 🌰，讓「松鼠捧著堅果一小口一小口地啃」一眼看得到（與 211 低頭吃草 🌿 區隔：
+      // 啃咬是小動物專屬、捧食而啃的另一種覓食姿態）。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在白天平靜的小動物啃咬時才給此狀態）。
+      if (w.state === "nibbling") {
+        ctx.save();
+        const nt = (Math.sin(now / 200) + 1) / 2; // 0→1 一小口一小口、輕輕起伏地啃
+        ctx.globalAlpha = 0.6 + 0.35 * nt;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🌰", 6, -22 - nt * 2); // 捧在身前的食物，隨啃咬微微一動一動
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {
