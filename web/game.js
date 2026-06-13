@@ -339,6 +339,19 @@
   let _moteFade = 0;             // 夏季浮塵淡入淡出進度 [0,1]（非夏季→0，夏季→1，逐幀趨近不突兀）
   // 夏絮暖色盤（[r,g,b]）：暖白／米金／淺鵝黃／陽光奶白，隨絮隨機取一色，賣「被夏陽照亮的浮絮」。
   const MOTE_PALETTE = [[255,248,224], [255,240,200], [250,235,190], [255,250,235], [248,230,180]];
+  // 冬夜極光（ROADMAP 231）：226 冬雪給了冬季「白天」的臉，本切片補上冬季「夜晚」——
+  // 冬天的夜空緩緩流動著一條條彩色極光帶（綠→青→紫），把四季視覺線（226~229）首次延伸進夜空，
+  // 讓「冬季」湊成完整的晝夜雙面（晝雪／夜極光）。純前端、讀既有 currentSeason＋daynight.light，零後端。
+  // 與流星（192：短促劃過的一道白線）、夜色染天（純色調覆蓋）刻意區隔——極光是恆常飄動的彩色光幕。
+  const AURORA_NIGHT_LIGHT = 0.42;   // daynight.light 低於此值算「夜」（與 190 夜間氛圍同調）
+  let _auroraFade = 0;               // 冬夜極光淡入淡出進度 [0,1]（非冬夜→0，冬夜→1，逐幀緩緩趨近）
+  // 極光帶設定：每條帶的 [基準高度比例, 振幅比例, 波長比例, 飄移速度, 相位, [r,g,b]]。三條疊出層次
+  //（上綠、中青、下紫），各自以不同速度與波長緩緩流動，賣「極光簾幕一層層錯落飄動」。
+  const AURORA_BANDS = [
+    { baseY: 0.10, amp: 0.030, wavelen: 0.55, speed: 0.011, phase: 0.0, r: 120, g: 255, b: 170 }, // 翠綠（最上、最亮）
+    { baseY: 0.17, amp: 0.040, wavelen: 0.70, speed: 0.008, phase: 1.7, r: 90,  g: 220, b: 230 }, // 青藍（中）
+    { baseY: 0.24, amp: 0.034, wavelen: 0.90, speed: 0.006, phase: 3.4, r: 170, g: 130, b: 255 }, // 藕紫（最下、最淡）
+  ];
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4102,6 +4115,10 @@
     // 晨昏霞光天幕（ROADMAP 204）：獨立 safeDraw，破曉/黃昏時天邊朝著太陽/月亮升落的方位泛起
     // 由濃轉淡的方位性霞光。排在太陽/月亮之前——霞光是主體背後的天幕，主體在其上發光。
     safeDraw("twilightGlow", () => drawTwilightGlow());
+
+    // 冬夜極光（ROADMAP 231）：獨立 safeDraw，冬季夜晚天邊緩緩流動的綠青紫光幕。排在太陽/月亮之前
+    // ——極光是夜空背後的光幕，月亮在其上發光（晝雪 226 的夜晚對偶，把四季視覺首次延伸進夜空）。
+    safeDraw("aurora", () => drawAurora(performance.now(), _weatherDt));
 
     // 天空的太陽與月亮（ROADMAP 200）：獨立 safeDraw，白天太陽、入夜月亮沿天弧東升西落。
     // 排在雲/鳥之前——雲與鳥較靠近觀者，會從太陽/月亮主體前飄過。
@@ -11113,6 +11130,78 @@
     ctx.fillStyle = "#ffe9b0";
     ctx.fillRect(0, 0, W, H);
     ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // ── ROADMAP 231: 冬夜極光 ─────────────────────────────────────────────────
+  // 純函式：冬季夜晚回 1、其餘回 0（極光只在冬夜出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function auroraTargetIntensity(season, light) {
+    const dark = (typeof light === "number" ? light : 1) < AURORA_NIGHT_LIGHT;
+    return (season === "winter" && dark) ? 1 : 0;
+  }
+
+  // 純函式：把目前極光勢 cur 朝目標 target 以固定速率逼近（每秒 AURORA_FADE_RATE），夾在 [0,1]。
+  // 比四季粒子更慢（極光是緩緩漫上夜空、緩緩褪去的光幕，不該一下子全亮）。壞值（NaN）退回 0。
+  function auroraFadeStep(cur, target, dt) {
+    const AURORA_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（比雪／葉的 1.7 秒更從容）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * AURORA_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：某條極光帶在畫面欄位 x（像素）、時刻 t（秒）的簾幕中心 y（像素）。
+  // 疊兩道不同頻率的正弦，賣「極光簾幕邊緣的不規則波動」；帶會隨 t 緩緩往一向飄移（x - speed*t*W 的相位）。
+  // W/H 為畫面寬高；band 為 AURORA_BANDS 的一筆設定。回傳值已是像素座標。
+  function auroraBandY(x, t, W, H, band) {
+    const k = (Math.PI * 2) / Math.max(1, band.wavelen * W);   // 主波的角頻率（依波長比例換算）
+    const drift = band.speed * t * W;                          // 隨時間往一向緩緩平移的相位
+    const wave = Math.sin((x + drift) * k + band.phase)
+               + 0.4 * Math.sin((x + drift) * k * 2.3 + band.phase * 1.7); // 疊一道高頻細波，邊緣更自然
+    return band.baseY * H + wave * band.amp * H;
+  }
+
+  // 每幀更新並繪製冬夜極光。非冬夜時 _auroraFade 緩緩歸零、零開銷早退。畫在天空層（晨昏霞光之後、
+  // 太陽月亮之前），用畫面座標（與雲／流星同為螢幕空間天象），不隨鏡頭平移。
+  function drawAurora(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = auroraTargetIntensity(currentSeason, light);
+    _auroraFade = auroraFadeStep(_auroraFade, target, Math.max(0, (dt || 0)));
+    if (_auroraFade <= 0.01) return;
+    if (reduceMotion || !_parallaxEnabled) { _auroraFade = 0; return; }
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;                     // 秒
+    const cols = 18;                          // 沿寬度取樣的欄數（夠順又省）
+    const bandH = H * 0.10;                    // 每條簾幕往下延伸的高度（漸層淡出）
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";  // 加色混合，極光疊在夜空上像發光的光幕
+    for (let bi = 0; bi < AURORA_BANDS.length; bi++) {
+      const band = AURORA_BANDS[bi];
+      // 簾幕由上（中心線）往下漸層淡出：頂端最亮、底端透明，賣「光簾垂落」。
+      const topY = auroraBandY(0, t, W, H, band);
+      const grad = ctx.createLinearGradient(0, topY, 0, topY + bandH);
+      const peak = (_auroraFade * 0.16).toFixed(3);   // 整體很淡，靠加色提亮、不蓋住星空
+      grad.addColorStop(0, `rgba(${band.r},${band.g},${band.b},0)`);
+      grad.addColorStop(0.45, `rgba(${band.r},${band.g},${band.b},${peak})`);
+      grad.addColorStop(1, `rgba(${band.r},${band.g},${band.b},0)`);
+      ctx.fillStyle = grad;
+      // 沿中心線描出一條波動帶（上緣＝簾幕中心線、下緣＝中心線下 bandH），填滿漸層。
+      ctx.beginPath();
+      ctx.moveTo(0, auroraBandY(0, t, W, H, band));
+      for (let c = 1; c <= cols; c++) {
+        const x = (c / cols) * W;
+        ctx.lineTo(x, auroraBandY(x, t, W, H, band));
+      }
+      for (let c = cols; c >= 0; c--) {
+        const x = (c / cols) * W;
+        ctx.lineTo(x, auroraBandY(x, t, W, H, band) + bandH);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
   }
 
