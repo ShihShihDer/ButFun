@@ -70,6 +70,51 @@
   if (renderStyle === "clay") loadClayArt();
   const clayOk = (n) => renderStyle === "clay" && CLAY[n] && CLAY[n].complete && CLAY[n].naturalWidth > 0;
 
+  // 黏土地面紋理（無縫 512 圖）：地面 tile 也換黏土，配合 sprite 成「全黏土世界」。
+  // 與 sprite 同樣惰性載入（只切到 clay 才抓），各圖載失敗時對應地面自動退回原本底色/tileset。
+  // 效能：地面每幀畫整片，故每張紋理一次性烘成 CanvasPattern（縮到 TS×TS 的離屏 tile 再 createPattern），
+  // 之後每幀只是 fillRect + pattern，不每格重縮放。
+  const CLAY_TILES = {};            // name → Image
+  const CLAY_TILE_PATTERNS = {};    // name → CanvasPattern（烘好後快取；null=烘過但失敗）
+  let clayTileLoadStarted = false;
+  function loadClayTiles() {
+    if (clayTileLoadStarted) return;
+    clayTileLoadStarted = true;
+    const names = ["meadow", "dirt", "stone", "sand", "forest"];
+    for (const n of names) {
+      const img = new Image();
+      img.src = `assets/clay/tiles/${n}.png?v=1`;
+      CLAY_TILES[n] = img;
+    }
+  }
+  if (renderStyle === "clay") loadClayTiles();
+  // 取得某黏土地面的快取 pattern：圖載到了才烘、烘一次重用；非 clay 或載不到回 null（呼叫端 fallback）。
+  function clayTilePattern(name) {
+    if (renderStyle !== "clay") return null;
+    if (CLAY_TILE_PATTERNS[name] !== undefined) return CLAY_TILE_PATTERNS[name];
+    const img = CLAY_TILES[name];
+    if (!img || !img.complete || !img.naturalWidth) return null; // 還沒載到：先別烘（之後幀再試），暫退 fallback
+    try {
+      // 512 無縫紋理縮到 TS×TS 離屏 canvas，再建 repeat pattern：平鋪零接縫、每幀零重縮放。
+      const off = document.createElement("canvas");
+      off.width = TS; off.height = TS;
+      const octx = off.getContext("2d");
+      octx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, TS, TS);
+      const pat = ctx.createPattern(off, "repeat");
+      CLAY_TILE_PATTERNS[name] = pat || null;
+    } catch (_e) {
+      CLAY_TILE_PATTERNS[name] = null;
+    }
+    return CLAY_TILE_PATTERNS[name];
+  }
+  // 生態（biome）→ 黏土地面圖名對應。對不到的維持原樣（回 null）。
+  const CLAY_BIOME_TILE = { meadow: "meadow", forest: "forest", sand: "sand", rocky: "stone" };
+  // 可挖實心方塊（TileKind）→ 黏土地面圖名（土感/石感）。空格用 biome 對應。
+  const CLAY_KIND_TILE = { dirt: "dirt", stone: "stone", ore: "stone", town_wall: "stone" };
+
+  // clay 模式下 sprite 整體放大係數：黏土質感較粗，略放大才看得出手感（純視覺、不動碰撞/邏輯）。
+  const CLAY_SPRITE_SCALE = 1.3;
+
   // 黏土停格式動作參數：定格跳階（非平滑）做出 claymation「一格一格」的停格感。
   const CLAY_STEP_BOB = [0, -2, -3];           // 移動彈跳（定格 3 階循環，像素）
   const CLAY_STEP_SQUASH = [1.0, 1.04, 0.97];  // 對應水平擠壓（squash/stretch）
@@ -89,7 +134,8 @@
   function drawClaySprite(key, x, y, size, opts) {
     if (!clayOk(key)) return false;
     opts = opts || {};
-    const s = size || 40;
+    // 全黏土世界：sprite 適度放大，讓黏土手感看得出來。底部仍對齊 (x,y)、水平置中（純視覺、不動判定）。
+    const s = (size || 40) * CLAY_SPRITE_SCALE;
     const now = opts.now != null ? opts.now : performance.now();
     const animate = opts.animate && !reduceMotion;
     let bob = 0, sqx = 1, sqy = 1;
@@ -5150,6 +5196,21 @@
         const tx = tx0 + i, ty = ty0 + j;
         const sx = Math.round(tx * TS - camX);
         const sy = Math.round(ty * TS - camY);
+        // 全黏土世界：clay 模式下常見可挖方塊（土/石/礦/鎮牆）也鋪黏土紋理，與地面成一氣。
+        // pattern 對齊世界格（同 drawGround 手法：平移一個 tile 內相位）；之上仍保留抖動/立體邊做深度。
+        // 對不到黏土圖名或圖沒載到 → 走下面原本底色（fallback）。
+        let clayDug = null;
+        if (renderStyle === "clay" && CLAY_KIND_TILE[kind]) {
+          clayDug = clayTilePattern(CLAY_KIND_TILE[kind]);
+        }
+        if (clayDug) {
+          const offX = (((camX % TS) + TS) % TS), offY = (((camY % TS) + TS) % TS);
+          ctx.save();
+          ctx.translate(-offX, -offY);
+          ctx.fillStyle = clayDug;
+          ctx.fillRect(sx + offX, sy + offY, TS, TS);
+          ctx.restore();
+        } else {
         // 基底色（調飽和、彼此分得開，別都糊成灰褐）。
         ctx.fillStyle = kind === "crystal" ? "#2a1f52"
           : kind === "mushroom" ? "#1a3a1e"
@@ -5166,6 +5227,7 @@
           : kind === "stone" ? "#6d6a66"
           : "#6e4f30";
         ctx.fillRect(sx, sy, TS, TS);
+        } // end clayDug fallback
         // 每格固定微抖動紋理（土感，不隨鏡頭閃爍）。
         const jitter = grassHash(tx * 5 + 3, ty * 7 + 1);
         if (jitter > 0.74) { ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(sx, sy, TS, TS); }
@@ -5431,11 +5493,42 @@
     const tx1 = Math.floor((camX + viewW) / TS) + 1;
     const ty1 = Math.floor((camY + viewH) / TS) + 1;
     const hasTiles = artOk("tileset_a");
+    // 全黏土世界：clay 模式且地面紋理烘好了，整片地面用黏土紋理平鋪（pattern 對齊世界座標，
+    // 鏡頭移動時不滑動）。各 biome 對到對應黏土圖（草原/森林/沙/岩）；對不到或圖沒載到的格回
+    // 原本 tileset/底色路徑（fallback）。pattern 已快取，平鋪只是 translate+fillRect，效能可顧。
+    const clayGround = renderStyle === "clay";
+    if (clayGround) loadClayTiles(); // 確保惰性載入已啟動（切到 clay 後首幀）
+    // pattern 原點固定在 canvas (0,0)；把 ctx 平移一個 tile 內的相位，紋理就貼著世界格、鏡頭移動不滑動。
+    // 只在畫黏土地面那刻 save/translate，畫完立刻 restore，不影響後續其他繪製的座標系。
+    const clayOffX = clayGround ? (((camX % TS) + TS) % TS) : 0;
+    const clayOffY = clayGround ? (((camY % TS) + TS) % TS) : 0;
+    let clayTranslated = false;
+    const endClayTranslate = () => { if (clayTranslated) { ctx.restore(); clayTranslated = false; } };
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
         const b = biomeAt(tx * TS + TS / 2, ty * TS + TS / 2);
         const dx = Math.round(tx * TS - camX);
         const dy = Math.round(ty * TS - camY);
+        // 黏土地面分支：水域不鋪黏土（保留水色）；其餘 biome 找對應黏土 pattern 平鋪。
+        if (clayGround && b !== "water") {
+          const pat = clayTilePattern(CLAY_BIOME_TILE[b]);
+          if (pat) {
+            if (!clayTranslated) { ctx.save(); ctx.translate(-clayOffX, -clayOffY); clayTranslated = true; }
+            // ctx 已平移 -off：要畫到螢幕 dx，需在平移座標系畫 dx+off。
+            const px = dx + clayOffX, py = dy + clayOffY;
+            ctx.fillStyle = pat;
+            ctx.fillRect(px, py, TS + 1, TS + 1);
+            if (b === "forest") { // 森林壓暗，與草原拉出層次（沿用原本層次手法）
+              ctx.fillStyle = "rgba(8,26,14,0.34)";
+              ctx.fillRect(px, py, TS + 1, TS + 1);
+            }
+            continue;
+          }
+          // pattern 沒烘好（圖還沒載到）→ 結束平移、掉到下面原本路徑當 fallback。
+          endClayTranslate();
+        } else {
+          endClayTranslate();
+        }
         if (hasTiles && (b === "meadow" || b === "forest")) {
           const variant = (grassHash(tx, ty) * 4) | 0; // 0..3
           ctx.drawImage(ART.tileset_a, variant * TS, 0, TS, TS, dx, dy, TS, TS);
@@ -5453,6 +5546,7 @@
         }
       }
     }
+    endClayTranslate(); // 收尾：若最後一格走了黏土平移分支，還原座標系
     if (hasTiles) drawDecorations(camX, camY);
 
     // 裝飾(草叢/樹/石)。畫在地表之上、農地/節點/玩家之下。水域不長草(drawScenery 內跳過)。
