@@ -1026,6 +1026,9 @@ pub struct AppState {
     /// 生態清剿委託（ROADMAP 172）：生態壓力超標時自動發布全服清剿委託，完成後在線玩家分潤乙太。
     /// 純記憶體，重啟清零，不破壞玩家資料。
     pub eco_bounty: Arc<RwLock<crate::eco_bounty::EcoBountyState>>,
+    /// 生態豐收節（ROADMAP 178）：壓力曾衝上危機後被壓回安寧時自動開節、發獎、亮慶典橫幅。
+    /// 純記憶體，重啟清零，不破壞玩家資料。
+    pub eco_festival: Arc<RwLock<crate::eco_festival::EcoFestivalState>>,
 }
 
 impl AppState {
@@ -1202,6 +1205,7 @@ impl AppState {
             town_memory: Arc::new(RwLock::new(crate::town_memory::TownMemory::new())),
             invasion: Arc::new(RwLock::new(crate::invasion::InvasionState::new())),
             eco_bounty: Arc::new(RwLock::new(crate::eco_bounty::EcoBountyState::new())),
+            eco_festival: Arc::new(RwLock::new(crate::eco_festival::EcoFestivalState::new())),
         }
     }
 
