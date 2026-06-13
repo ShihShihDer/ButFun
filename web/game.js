@@ -8113,6 +8113,19 @@
         ctx.restore();
       }
 
+      // ROADMAP 212：群體警戒哨——成群獵物中的哨兵抬頭放哨（state==="watching"）頭頂浮一個
+      // 緩緩左右張望的 👀，讓「一隻站崗、其餘安心吃草」一眼看得到（牠先發現危險、全群跟著炸）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天成群時才會給某隻此狀態）。
+      if (w.state === "watching") {
+        ctx.save();
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8 + Math.sin(now / 540) * 3, -24); // 像左右張望般緩緩平移
+        ctx.fillText("👀", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
