@@ -131,6 +131,13 @@
   let _birdDir = 1;              // 飛行方向（1=由左往右、-1=由右往左）
   let _birdCount = 0;            // 本群鳥數
   let _birdFlapPhase = 0;        // 本群拍翅初相（每群略不同，看起來不機械）
+  // 天空的太陽與月亮（ROADMAP 200）：白天一輪太陽沿天弧東升西落、入夜換成月亮升落，
+  // 晨昏低垂染紅、正午高懸。純視覺、零後端：用既有 daynight.light 推太陽/月亮的高度，
+  // 但「東升或西落」（弧上的水平位置）光靠 light 無從分辨（升落時 light 同值），
+  // 故每幀追蹤 light 的「趨勢」——以 EMA 平滑掉雜訊，正=漸亮（上午/月升前段）、
+  // 負=漸暗（下午/月升後段），純前端推得，不必動後端加時間欄位。
+  let _skyLightPrev  = -1;       // 上一幀的 daynight.light（-1=尚未取樣）
+  let _skyLightTrend = 0;        // light 變化的 EMA（>=0 視為漸亮/上午、<0 視為漸暗/下午）
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3874,6 +3881,10 @@
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
     });
+
+    // 天空的太陽與月亮（ROADMAP 200）：獨立 safeDraw，白天太陽、入夜月亮沿天弧東升西落。
+    // 排在雲/鳥之前——雲與鳥較靠近觀者，會從太陽/月亮主體前飄過。
+    safeDraw("celestialBody", () => drawCelestialBody(performance.now()));
 
     // 天邊流雲（ROADMAP 193）：獨立 safeDraw，白天天邊飄雲、破曉/黃昏染金、入夜淡出。
     safeDraw("clouds", () => drawClouds(performance.now()));
@@ -8923,6 +8934,155 @@
         ctx.fill();
       }
     }
+    ctx.restore();
+  }
+
+  // ── 天空的太陽與月亮（ROADMAP 200）──────────────────────────────────────
+  // 白天一輪太陽沿天弧東升西落、入夜換成月亮升落；晨昏低垂染紅、正午/午夜高懸。
+  // 純前端視覺、零後端：太陽/月亮的「高度」由既有 daynight.light 推得（越亮越高），
+  // 「弧上水平位置」（東升 or 西落）則靠每幀追蹤的 light 趨勢分辨——光靠 light 值無從區分
+  //（升、落時 light 同值），故記趨勢：漸亮=上午（東→天頂）、漸暗=下午（天頂→西）。
+  // 與既有天象區隔：太陽/月亮＝天空唯一的「光源主體」（白天一個、夜晚一個，沿弧升落）；
+  // 星星（19）＝夜空靜態天幕；流星（192）＝夜晚偶發尾韻；雲（193）／鳥（194）＝白天天邊飄移生命；
+  // 彩虹（191）＝雨後尾韻——主體、層次、時機刻意不同。雲與鳥在太陽/月亮之上飄過（更靠近觀者）。
+  // 效能優先：低幀（沿用 91 的 _parallaxEnabled）不畫；reduceMotion 仍畫（它本就極緩、非閃爍）但關掉呼吸脈動。
+  const SKY_LIGHT_MID    = 0.4;   // 太陽/月亮交班的亮度中點（晨昏在此前後交替）
+  const SKY_FADE_SPAN    = 0.12;  // 交班的淡入淡出半幅（窄帶：晨昏快速換班，不長時間兩者並亮）
+  const SUN_CORE_R       = 26;    // 太陽核心半徑（邏輯像素，會再依畫面尺寸微縮）
+  const MOON_CORE_R      = 22;    // 月亮核心半徑
+  const SKY_GLOW_MULT    = 3.6;   // 外暈半徑相對核心的倍率
+  const SKY_TOP_FRAC     = 0.10;  // 天頂時主體中心離畫面頂的比例（越小越高）
+  const SKY_HORIZON_FRAC = 0.52;  // 地平（升落）時主體中心的畫面縱向比例
+  const SKY_MARGIN_FRAC  = 0.14;  // 東/西兩端離畫面邊的水平留白比例
+
+  // 純函式：把 daynight.light 的逐幀變化平滑成趨勢 EMA。回傳新的 EMA 值。
+  // prevTrend=上一幀 EMA、prev=上一幀 light（<0 表首次取樣，回 0 不躁動）、cur=本幀 light。
+  // 無 DOM、可測。
+  function skyLightTrend(prevTrend, prev, cur) {
+    if (!(prev >= 0)) return 0;            // 首次取樣：尚無變化量，趨勢視為 0
+    const d = cur - prev;
+    return prevTrend * 0.88 + d * 0.12;    // EMA：對雜訊不敏感，但對長段單調升/降很快收斂出正確符號
+  }
+
+  // 純函式：把「亮度 v∈[0,1] + 是否漸增 rising」映成天弧進度 p∈[0,1]。
+  // p=0 在東側地平（剛升起）、p=0.5 在天頂、p=1 在西側地平（將落下）。
+  // rising（漸亮/上午）：v 0→1 對應 p 0→0.5（東→天頂）；
+  // !rising（漸暗/下午）：v 1→0 對應 p 0.5→1（天頂→西）。無 DOM、可測。
+  function skyArcProgress(v, rising) {
+    const l = Math.max(0, Math.min(1, v));
+    return rising ? 0.5 * l : 1 - 0.5 * l;
+  }
+
+  // 純函式：天弧進度 p → 螢幕落點比例 { nx, elev }。nx∈[0,1]＝東(左)→西(右)；
+  // elev∈[0,1]＝地平(0)→天頂(1)，以 sin 弧線使升落貼地平、正午最高。無 DOM、可測。
+  function skyArcPoint(p) {
+    const cp = Math.max(0, Math.min(1, p));
+    return { nx: cp, elev: Math.sin(cp * Math.PI) };
+  }
+
+  // 純函式：太陽/月亮在當下 light 的可見度。sun=漸亮側、moon=漸暗側，於 SKY_LIGHT_MID
+  // 前後 SKY_FADE_SPAN 窄帶內交叉淡入淡出（晨昏快速交班，不長時間兩者並亮）。無 DOM、可測。
+  function sunVisibility(light) {
+    return Math.max(0, Math.min(1, (light - (SKY_LIGHT_MID - SKY_FADE_SPAN)) / (2 * SKY_FADE_SPAN)));
+  }
+  function moonVisibility(light) {
+    return 1 - sunVisibility(light);
+  }
+
+  // 純函式：太陽的「暖度」warmth∈[0,1]（0=正午亮白偏金、1=貼地平/晨昏的橙紅）。
+  // 取「離地平程度」與「晨昏相位」兩者較大值：太陽低垂(elev 小)或晨昏時都偏紅。無 DOM、可測。
+  function sunWarmth(elev, phase) {
+    const horizon = Math.max(0, 1 - elev / 0.5);                 // elev<0.5（偏低）漸暖
+    const dawnDusk = (phase === "dawn" || phase === "dusk") ? 0.7 : 0;
+    return Math.max(0, Math.min(1, Math.max(horizon, dawnDusk)));
+  }
+
+  // 每幀依晝夜推導太陽/月亮的弧上位置與外觀並繪製（螢幕座標、不隨鏡頭移動）。
+  // 由獨立 safeDraw 呼叫；畫在疊加層之後、雲/鳥之前（雲鳥較靠近觀者、會從主體前飄過）。
+  function drawCelestialBody(now) {
+    if (!daynight) { _skyLightPrev = -1; return; }
+    // 低幀（弱機）不畫；reduceMotion 仍畫但不脈動。
+    if (!_parallaxEnabled) { _skyLightPrev = daynight.light; return; }
+
+    const light = daynight.light;
+    const phase = daynight.phase;
+    // 追蹤 light 趨勢（升/落分辨）。趨勢 >=0 視為漸亮（上午/月升前段）。
+    _skyLightTrend = skyLightTrend(_skyLightTrend, _skyLightPrev, light);
+    _skyLightPrev = light;
+    const lightRising = _skyLightTrend >= 0;
+
+    const sunVis  = sunVisibility(light);
+    const moonVis = moonVisibility(light);
+    const minDim  = Math.min(viewW, viewH);
+    const scale   = Math.max(0.7, Math.min(1.6, minDim / 800)); // 依畫面尺寸微縮主體
+    const marginX = viewW * SKY_MARGIN_FRAC;
+    const topY    = viewH * SKY_TOP_FRAC;
+    const horizonY = viewH * SKY_HORIZON_FRAC;
+    const pulse = reduceMotion ? 1 : 0.94 + 0.06 * Math.sin(now / 3000); // 極緩呼吸（reduceMotion 關）
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // 加亮混合：在暗色夜空/白天天空都像發光體
+
+    // 內部小工具：在 (x,y) 畫一個「核心亮盤 + 柔外暈」的發光主體。
+    const drawOrb = (x, y, coreR, vis, coreCol, glowCol) => {
+      const glowR = coreR * SKY_GLOW_MULT;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+      g.addColorStop(0,    `rgba(${glowCol},${(0.5 * vis).toFixed(3)})`);
+      g.addColorStop(0.35, `rgba(${glowCol},${(0.22 * vis).toFixed(3)})`);
+      g.addColorStop(1,    `rgba(${glowCol},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, glowR, 0, Math.PI * 2);
+      ctx.fill();
+      const c = ctx.createRadialGradient(x, y, 0, x, y, coreR);
+      c.addColorStop(0,    `rgba(${coreCol},${(0.95 * vis).toFixed(3)})`);
+      c.addColorStop(0.7,  `rgba(${coreCol},${(0.85 * vis).toFixed(3)})`);
+      c.addColorStop(1,    `rgba(${glowCol},0)`);
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(x, y, coreR, 0, Math.PI * 2);
+      ctx.fill();
+      return coreR;
+    };
+
+    // 太陽（漸亮側升落）
+    if (sunVis > 0.01) {
+      const p = skyArcProgress(light, lightRising);
+      const { nx, elev } = skyArcPoint(p);
+      const x = marginX + nx * (viewW - 2 * marginX);
+      const y = horizonY - elev * (horizonY - topY);
+      const coreR = SUN_CORE_R * scale * pulse;
+      const w = sunWarmth(elev, phase);
+      // 暖度 w：0=正午亮白偏金 (255,245,205)，1=晨昏/低垂橙紅 (255,150,80)
+      const cr = 255;
+      const cg = Math.round(245 + (150 - 245) * w);
+      const cb = Math.round(205 + (80 - 205) * w);
+      // 外暈比核心更暖更橘
+      const gr = 255, gg = Math.round(210 + (120 - 210) * w), gb = Math.round(120 + (50 - 120) * w);
+      drawOrb(x, y, coreR, sunVis, `${cr},${cg},${cb}`, `${gr},${gg},${gb}`);
+    }
+
+    // 月亮（漸暗側升落：dark=1-light 為其「亮度」，升落方向與太陽相反）
+    if (moonVis > 0.01) {
+      const dark = 1 - light;
+      const p = skyArcProgress(dark, !lightRising);
+      const { nx, elev } = skyArcPoint(p);
+      const x = marginX + nx * (viewW - 2 * marginX);
+      const y = horizonY - elev * (horizonY - topY);
+      const coreR = MOON_CORE_R * scale * pulse;
+      drawOrb(x, y, coreR, moonVis, "238,242,255", "165,190,235"); // 清冷銀白
+      // 一抹偏移的淡影，讓圓盤讀起來像月亮（凸月陰影）而非另一顆太陽。
+      ctx.globalCompositeOperation = "source-over";
+      const sh = ctx.createRadialGradient(x + coreR * 0.42, y - coreR * 0.30, 0, x + coreR * 0.42, y - coreR * 0.30, coreR * 0.95);
+      sh.addColorStop(0, `rgba(120,135,170,${(0.18 * moonVis).toFixed(3)})`);
+      sh.addColorStop(1, "rgba(120,135,170,0)");
+      ctx.fillStyle = sh;
+      ctx.beginPath();
+      ctx.arc(x, y, coreR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalCompositeOperation = "lighter";
+    }
+
     ctx.restore();
   }
 

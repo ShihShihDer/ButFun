@@ -302,6 +302,32 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 白晝飛鳥：乾淨");
 }
 
+// 天空的太陽與月亮（200）：太陽/月亮的「弧上水平位置」靠每幀追蹤 light 趨勢分辨（升 or 落），
+// 故需「光度隨時間連續變化」才跑得到完整路徑——這裡實跑一輪日夜循環（夜→晨→正午→昏→夜），
+// light 先升後降，依序觸發「月落→太陽東升→正午高懸→太陽西沉染紅→月升」的趨勢翻轉與交班。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：日夜循環（太陽/月亮升落，light 連續升降跑趨勢翻轉與交班）──");
+  const cycSnap = JSON.parse(JSON.stringify(snapshot));
+  cycSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  // 一輪 light 軌跡：0.1（夜）→ 0.9（正午）→ 0.1（夜），對應 phase 由 night→dawn→day→dusk→night。
+  const seq = [];
+  for (let i = 0; i <= 16; i++) seq.push(0.1 + (0.8 * i) / 16);   // 升（月落→日升→正午）
+  for (let i = 1; i <= 16; i++) seq.push(0.9 - (0.8 * i) / 16);   // 降（正午→日落→月升）
+  let cycErr = false;
+  for (const light of seq) {
+    const phase = light < 0.35 ? "night" : (light < 0.62 ? "dawn" : "day");
+    cycSnap.daynight = { phase, light, night_danger: light < 0.35 };
+    lastWS.onmessage({ data: JSON.stringify({ ...cycSnap, type: "snapshot" }) });
+    const r = pump(`日夜循環 light=${light.toFixed(2)}`, 3);
+    if (r instanceof Error) { cycErr = true; break; }
+  }
+  if (cycErr) { failed = true; console.error("  ❌ 日夜循環：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 日夜循環：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!cycErr) console.log("  ✅ 日夜循環：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
