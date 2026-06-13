@@ -392,6 +392,33 @@ const NIBBLE_PROB: f32 = 0.03;
 const NIBBLE_DURATION_MIN: f32 = 2.0;
 const NIBBLE_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 223：野狐撲鼠（fox mousing pounce）──────────────────────────────
+// 承接 220～222 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
+// 小動物專屬的「捧食啃咬」——但那都是在差異化「獵物」。生態的另一側「掠食者」（野狼／野狐）至今行為
+// 完全相同：一起潛行突襲（213）、一起夜嚎呼應（217/218），看不出狼與狐有何不同。本切片給掠食者一側
+// 補上第一道物種專屬姿態：野狐標誌性的「撲鼠」——真實的野狐覓食時會朝草叢／雪地裡看不見的小獵物
+// 猛地縱身高高一撲、頭下尾上地砸下去。白天無獵可追的平靜空檔，野狐偶爾就地來這麼一記高弧撲跳
+// （前端把狐身猛地抬起成一道躍弧、地面留投影，頭頂浮一縷 💨），撲完落地再起身巡遊。只屬於野狐：
+// 野狼不撲鼠——於是掠食者一側第一次有了物種差異（野狼夜嚎、野狐白晝撲鼠，晝夜互補）。與野鳥的飛／鳴
+// 呼應刻意區隔：撲鼠是各撲各的、不傳染（無快照、無接力），只是一隻隻自顧自地撲，更像獨來獨往的狐。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 pouncing 字串沿用 state_str；撲擊落點與計時
+// 隨狀態變體攜帶，無新欄位）、記憶體模式。獵物／威脅永遠優先：撲跳只在無獵可追的平靜空檔發生，獵物
+// 一旦進入搜尋範圍，掠食者 phase 在撲跳分支之前就已改走狩獵（潛行／追獵），撲跳自然讓位。
+// 註：本切片的 POUNCE_* 常數講的是「野狐撲鼠」這個白晝覓食姿態（Pouncing 狀態），與檔頭既有的
+// POUNCE_RANGE（213 潛行→撲殺的爆衝轉換距離）是兩回事——後者是任何掠食者鎖定真實獵物時的撲擊圈，
+// 前者是野狐無獵可追時就地朝草叢虛撲的一記，命名相近但語意不同、互不影響。
+/// 白天無獵可追的平靜野狐本幀就地撲鼠的機率——偏低，讓撲跳是白天偶爾的一記、而非時時在撲。
+const POUNCE_PROB: f32 = 0.02;
+/// 撲擊落點離出發點的最大範圍（短促一撲，不是長距奔襲）。
+const POUNCE_RADIUS: f32 = 46.0;
+/// 撲跳的爆發速度——明顯快過巡遊，讀起來像猛然縱身一躍。
+const POUNCE_SPEED: f32 = 150.0;
+/// 視為「已撲到落點」的距離（到此即收尾落地）。
+const POUNCE_REACH: f32 = 10.0;
+/// 一記撲跳的最短／最長時長（秒）——一撲很短，躍起落地即收。
+const POUNCE_DURATION_MIN: f32 = 0.45;
+const POUNCE_DURATION_MAX: f32 = 0.8;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -605,6 +632,10 @@ enum WildlifeState {
     /// （不更新座標）、nibble_timer 倒數，到期就回到漫遊（沿用群聚拉力）；啃咬中若有威脅逼近
     /// 一律優先丟食逃竄。只有小動物（SmallCritter）會啃咬。
     Nibbling { nibble_timer: f32 },
+    /// ROADMAP 223：野狐撲鼠——白天無獵可追的平靜野狐，朝撲擊落點 (px,py) 縱身高高一撲；
+    /// pounce_timer 倒數，撲到落點或計時耗盡就回到巡遊。前端依此狀態把狐身抬起成躍弧、地面留
+    /// 投影，讀起來是「縱身撲下」。只有野狐（WildFox）會撲鼠；獵物/威脅出現時一律優先改狩獵/逃命。
+    Pouncing { px: f32, py: f32, pounce_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1014,6 +1045,26 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 223：野狐撲鼠——撲跳中（Pouncing）朝撲擊落點 (px,py) 縱身躍去；pounce_timer 倒數，
+    /// 撲到落點（POUNCE_REACH 內）或計時耗盡就回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、
+    /// 不沿群聚拉力）。只在 Pouncing 狀態下生效（呼叫端已確保此隻為野狐、白天、無獵可追的平靜空檔；
+    /// 獵物/威脅一旦出現，掠食者 phase 在更前面就已改走狩獵/逃命，不會走到此分支——撲跳永遠讓位）。
+    fn tick_pounce(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Pouncing { px, py, pounce_timer } = self.state {
+            let (nx, ny) = pounce_leap(self.x, self.y, px, py, dt);
+            self.x = nx;
+            self.y = ny;
+            let remaining = pounce_timer - dt;
+            let reached = (px - self.x).powi(2) + (py - self.y).powi(2) <= POUNCE_REACH * POUNCE_REACH;
+            if remaining <= 0.0 || reached {
+                let (tx, ty) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Pouncing { px, py, pounce_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1034,6 +1085,7 @@ impl Wildlife {
             WildlifeState::Flying { .. }    => "flying",
             WildlifeState::Chirping { .. }  => "chirping",
             WildlifeState::Nibbling { .. }  => "nibbling",
+            WildlifeState::Pouncing { .. }  => "pouncing",
         }
     }
 }
@@ -1513,6 +1565,23 @@ impl WildlifeManager {
                             {
                                 let timer = rng.gen_range(HOWL_DURATION_MIN..=HOWL_DURATION_MAX);
                                 a.state = WildlifeState::Howling { howl_timer: timer };
+                            } else if matches!(a.state, WildlifeState::Pouncing { .. }) {
+                                // ROADMAP 223：已在撲跳中——把這一記撲躍完（朝落點縱身躍去、計時倒數，
+                                // 撲到或耗盡就落地回巡遊）。獵物/威脅在更前面（prey_snap 搜尋）已優先處理，
+                                // 故撲跳只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_pounce(dt, rng);
+                            } else if pred_kind == WildlifeKind::WildFox
+                                && !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < POUNCE_PROB
+                            {
+                                // ROADMAP 223：白天無獵可追的平靜野狐——偶爾朝草叢裡看不見的小獵物來一記
+                                // 標誌性的高弧撲跳（頭頂浮 💨）。只屬於野狐：野狼不撲鼠（掠食者一側第一次有了
+                                // 物種專屬姿態）。各撲各的、不傳染（與野鳥飛/鳴的呼應刻意區隔），只是一隻隻
+                                // 自顧自地撲。夜間改走夜嚎分支（晝撲鼠、夜嚎，晝夜互補）。
+                                let (px, py) = pounce_target(a.x, a.y, rng);
+                                let timer = rng.gen_range(POUNCE_DURATION_MIN..=POUNCE_DURATION_MAX);
+                                a.state = WildlifeState::Pouncing { px, py, pounce_timer: timer };
                             } else {
                                 // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
                                 a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
@@ -2040,6 +2109,28 @@ fn frolic_hop(x: f32, y: f32, hx: f32, hy: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (FROLIC_SPEED * dt).min(dist);
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 223：野狐撲鼠——在野狐當前位置 (x,y) 周圍 POUNCE_RADIUS 內隨機挑一個撲擊落點
+/// （朝草叢裡看不見的小獵物猛撲）。角度與半徑皆隨機（半徑取 sqrt 讓落點在圓內均勻分布），故每撲
+/// 方向都不同、由 rng 即時決定（湧現不寫死），且永遠是短促一撲。純函式，便於測試。
+fn pounce_target(x: f32, y: f32, rng: &mut StdRng) -> (f32, f32) {
+    let angle = rng.gen_range(0.0_f32..std::f32::consts::TAU);
+    let r = POUNCE_RADIUS * rng.gen_range(0.0_f32..=1.0).sqrt();
+    (x + angle.cos() * r, y + angle.sin() * r)
+}
+
+/// ROADMAP 223：野狐撲鼠——朝撲擊落點 (px,py) 以 POUNCE_SPEED 移動一幀，回傳新位置。
+/// 單幀位移受「到落點的剩餘距離」clamp，故永遠不會撲過頭（最多剛好到達落點）。純函式。
+fn pounce_leap(x: f32, y: f32, px: f32, py: f32, dt: f32) -> (f32, f32) {
+    let dx = px - x;
+    let dy = py - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= 1e-3 {
+        return (x, y);
+    }
+    let step = (POUNCE_SPEED * dt).min(dist);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -4659,5 +4750,131 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "啃咬中遇威脅應立刻丟食逃竄，實際 {:?}", c.state);
+    }
+
+    // ─── ROADMAP 223：野狐撲鼠 ────────────────────────────────────────────────
+    #[test]
+    fn pounce_target_stays_within_radius() {
+        // 撲擊落點永遠落在出發點周圍 POUNCE_RADIUS 內（短促一撲、不長奔）。
+        let mut rng = make_rng();
+        for _ in 0..200 {
+            let (px, py) = pounce_target(5000.0, 5000.0, &mut rng);
+            let d = ((px - 5000.0).powi(2) + (py - 5000.0).powi(2)).sqrt();
+            assert!(d <= POUNCE_RADIUS + 0.01, "撲擊落點不該離出發點超過 POUNCE_RADIUS，實際 {d}");
+        }
+    }
+
+    #[test]
+    fn pounce_leap_moves_toward_target_without_overshoot() {
+        // 撲跳朝落點移動 POUNCE_SPEED*dt；單幀位移受剩餘距離 clamp，不會撲過頭。
+        let (nx, ny) = pounce_leap(5000.0, 5000.0, 5200.0, 5000.0, 0.1);
+        let moved = ((nx - 5000.0).powi(2) + (ny - 5000.0).powi(2)).sqrt();
+        assert!((moved - POUNCE_SPEED * 0.1).abs() < 0.01, "單幀位移應約 POUNCE_SPEED*dt，實際 {moved}");
+        // 落點很近時：一幀剛好到達、不超過。
+        let (cx, cy) = pounce_leap(5000.0, 5000.0, 5001.0, 5000.0, 0.1);
+        let m2 = ((cx - 5000.0).powi(2) + (cy - 5000.0).powi(2)).sqrt();
+        assert!(m2 <= 1.0 + 1e-4, "近落點單幀不該撲過頭，實際 {m2}");
+    }
+
+    #[test]
+    fn pouncing_state_str_is_pouncing() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Pouncing { px: 10.0, py: 0.0, pounce_timer: 1.0 };
+        assert_eq!(fox.state_str(), "pouncing");
+    }
+
+    #[test]
+    fn tick_pounce_holds_pouncing_while_timer_remaining() {
+        // 撲跳進行中：朝落點移動（座標改變）、計時遞減、狀態維持 Pouncing。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Pouncing { px: 5300.0, py: 5000.0, pounce_timer: 2.0 };
+        fox.tick_pounce(0.1, &mut rng);
+        match fox.state {
+            WildlifeState::Pouncing { pounce_timer, .. } => {
+                assert!((pounce_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("撲跳未到期應維持 Pouncing，實際 {:?}", fox.state),
+        }
+        assert!(fox.x > 5000.0, "撲跳中應朝落點移動");
+    }
+
+    #[test]
+    fn tick_pounce_returns_to_wander_when_timer_expires() {
+        // 撲跳到期：落地回到巡遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Pouncing { px: 5300.0, py: 5000.0, pounce_timer: 0.05 };
+        fox.tick_pounce(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(fox.state, WildlifeState::Wandering { .. }), "撲跳到期應回巡遊，實際 {:?}", fox.state);
+    }
+
+    #[test]
+    fn calm_fox_eventually_pounces_during_day() {
+        // 白天無獵可追的平靜野狐連跑多幀後，總會偶爾就地撲鼠（POUNCE_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox]; // 場上只有狐、沒有任何獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut pounced = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅、無獵物
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(f.state, WildlifeState::Pouncing { .. }) { pounced = true; break; }
+        }
+        assert!(pounced, "白天無獵可追的平靜野狐應偶爾就地撲鼠");
+    }
+
+    #[test]
+    fn wolf_never_pounces() {
+        // 物種專屬：只有野狐撲鼠——白天無獵可追的野狼連跑多幀都不該進入 Pouncing。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Pouncing { .. }), "野狼不該撲鼠");
+        }
+    }
+
+    #[test]
+    fn fox_does_not_pounce_at_night() {
+        // 夜間：野狐改走夜嚎（晝撲鼠、夜嚎，晝夜互補）——連跑多幀都不該進入 Pouncing。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Pouncing { .. }), "夜間野狐不該撲鼠（改夜嚎）");
+        }
+    }
+
+    #[test]
+    fn pouncing_fox_hunts_when_prey_appears() {
+        // 狩獵優先：撲跳中的野狐，附近出現可獵物種（小動物）時應改去獵殺（潛行或全速追獵），不再撲鼠。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Pouncing { px: 5030.0, py: 5000.0, pounce_timer: 2.0 };
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5060.0, 5000.0); // 白天搜尋半徑 HUNT_RADIUS=320 內
+        critter.id = 2;
+        mgr.animals = vec![fox, critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "獵物出現時撲跳野狐應改去獵殺，實際 {:?}", f.state,
+        );
     }
 }
