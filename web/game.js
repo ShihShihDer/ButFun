@@ -378,6 +378,17 @@
   const MIST_BANK_COUNT = 14;        // 薄霧團數（少而大的扁平霧團，鋪成一層瀰漫的低霧，不該太多）
   let _autumnMistFade = 0;           // 秋夜薄霧淡入淡出進度 [0,1]（非秋夜→0，秋夜→1，逐幀緩緩趨近）
   let _autumnMist = null;            // 惰性生成的薄霧團池（畫面比例座標的位置、橫向飄速、呼吸相位、尺寸）
+  // 四季草色（ROADMAP 235）：226~229 把四季的「晝景」（冬雪／秋葉／春櫻／夏絮）、231~234 把四季的
+  // 「夜景」（極光／銀河／螢火／薄霧）都畫進了世界，四季視覺看似全套——但回頭看，那八筆全發生在
+  // 「空中」，玩家腳下的草色卻永遠是同一抹深綠、從不隨季節變。本切片把季節第一次染到「地面」本身：
+  // 當季節更替，整片地表會緩緩換上當季的色調——春嫩亮黃綠、夏深濃綠（基準色、不染）、秋金黃琥珀、
+  // 冬冷白薄霜。以一層極淡的季節色掃過已畫好的地表（一次 fillRect、效能可顧），草叢同步染色，跨季
+  // 以 _groundTint 逐幀向目標 lerp、平滑淡入淡出（入季色緩緩染上、出季緩緩褪去，不會突然換一整屏）。
+  // 純前端 Canvas 2D、效能優先、讀既有 currentSeason、零後端、零協議改動。
+  const GROUND_TINT_RATE = 0.35;   // 草色跨季 lerp 速率（/秒）：約 3 秒換到當季色，慢到像季節在轉、不突兀
+  // 當前地面季節染色，逐幀向 seasonGroundTintTarget(currentSeason) 逼近。初值＝夏（基準、不染）。
+  let _groundTint = { r: 120, g: 180, b: 70, a: 0.0 };
+
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4064,6 +4075,7 @@
 
     // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
+    updateGroundTint(_weatherDt); // 四季草色（235）：先把地面季節染色向當季目標推進一幀，再畫地表
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
@@ -5566,6 +5578,46 @@
 
   // 畫地面(程序生態域)+ 世界邊界。草原/森林保留草地瓦片(森林壓暗一階拉層次),
   // 水/沙/岩改用生態域底色 → 走到哪、場景就不同,無接縫。
+  // 四季草色（235）——季節地面染色目標（純函式、可測）：給季節字串，回傳 {r,g,b,a}。
+  // a＝染色強度（0＝不染）。夏季是基準深綠、a=0（地表本色就是夏色）；其餘三季各有當季色調。
+  function seasonGroundTintTarget(season) {
+    switch (season) {
+      case "spring": return { r: 150, g: 205, b: 80, a: 0.20 };  // 春：嫩亮黃綠（新生草色）
+      case "autumn": return { r: 200, g: 135, b: 45, a: 0.28 };  // 秋：金黃琥珀（枯黃草色）
+      case "winter": return { r: 205, g: 218, b: 232, a: 0.26 }; // 冬：冷白薄霜（覆霜草色）
+      case "summer":
+      default:       return { r: 120, g: 180, b: 70, a: 0.0 };   // 夏：深濃綠＝基準色、不染
+    }
+  }
+
+  // 四季草色（235）——逐幀把當前染色向目標逼近（純函式、可測）：r/g/b/a 一起以 rate/秒 線性 lerp。
+  // dt 夾在 [0,0.1]（與其餘季節效果同調），k 夾在 [0,1] 確保不過衝。
+  function groundTintStep(cur, target, dt) {
+    const k = Math.min(1, Math.max(0, dt) * GROUND_TINT_RATE);
+    return {
+      r: cur.r + (target.r - cur.r) * k,
+      g: cur.g + (target.g - cur.g) * k,
+      b: cur.b + (target.b - cur.b) * k,
+      a: cur.a + (target.a - cur.a) * k,
+    };
+  }
+
+  // 四季草色（235）——把一個基底 rgb 依當前季節染色混合（純函式、可測）：以 tint.a 為權重朝 tint 色
+  // 線性靠攏，回傳染色後的 {r,g,b}（整數）。草叢、足跡等地面元素共用此式，與地表掃色方向一致。
+  function applyGroundTint(r, g, b, tint) {
+    const a = Math.min(1, Math.max(0, tint.a));
+    return {
+      r: Math.round(r + (tint.r - r) * a),
+      g: Math.round(g + (tint.g - g) * a),
+      b: Math.round(b + (tint.b - b) * a),
+    };
+  }
+
+  // 四季草色（235）——每幀更新地面季節染色（向當季目標逼近）。在繪製地表前呼叫、帶入 _weatherDt。
+  function updateGroundTint(dt) {
+    _groundTint = groundTintStep(_groundTint, seasonGroundTintTarget(currentSeason), dt);
+  }
+
   function drawGround(camX, camY) {
     ctx.fillStyle = "#12331f";
     ctx.fillRect(0, 0, viewW, viewH);
@@ -5629,6 +5681,15 @@
       }
     }
     endClayTranslate(); // 收尾：若最後一格走了黏土平移分支，還原座標系
+
+    // 四季草色（235）：地表 tile 都畫好後，在其上輕掃一層當季季節色——讓玩家腳下的地面隨季換色
+    //（春嫩／秋金／冬霜，夏＝基準不染）。一次 fillRect、效能可顧；強度由 _groundTint.a 跨季平滑淡入淡出。
+    // 畫在地表之上、裝飾／實體之下：草叢另在 drawGrassTuft 同步染色，水面波光等也都疊在這層之後。
+    if (_groundTint.a > 0.012) {
+      ctx.fillStyle = `rgba(${Math.round(_groundTint.r)},${Math.round(_groundTint.g)},${Math.round(_groundTint.b)},${_groundTint.a.toFixed(3)})`;
+      ctx.fillRect(0, 0, viewW, viewH);
+    }
+
     if (hasTiles) drawDecorations(camX, camY);
 
     // 裝飾(草叢/樹/石)。畫在地表之上、農地/節點/玩家之下。水域不長草(drawScenery 內跳過)。
@@ -5644,9 +5705,11 @@
     return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
   }
 
-  // 一小撮程式草叢（純畫,不需素材）。
+  // 一小撮程式草叢（純畫,不需素材）。四季草色（235）：草叢顏色同步隨季染色，與地表掃色方向一致，
+  // 才不會出現「地面換季了、草叢卻仍是夏綠」的不協調。
   function drawGrassTuft(sx, sy, h) {
-    ctx.strokeStyle = `rgba(${(90 + h * 70) | 0}, ${(140 + h * 60) | 0}, 80, 0.45)`;
+    const tc = applyGroundTint((90 + h * 70) | 0, (140 + h * 60) | 0, 80, _groundTint);
+    ctx.strokeStyle = `rgba(${tc.r}, ${tc.g}, ${tc.b}, 0.45)`;
     ctx.lineWidth = 1.5;
     for (let i = 0; i < 3; i++) {
       const ang = -Math.PI / 2 + (i - 1) * 0.45;
