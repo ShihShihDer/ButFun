@@ -104,6 +104,21 @@ const TOWN_CENTER_Y: f32 = 2272.0;
 /// 古 Alpha 與城鎮中心的最小距離（像素）——確保在安全區外。
 const ANCIENT_MIN_TOWN_DIST: f32 = 1600.0;
 
+// ─── ROADMAP 176：物種霸主湧現常數 ───────────────────────────────────────────
+
+/// 巢穴成為霸主所需的持續達標時間（秒），3 分鐘。
+pub const DOMINANT_QUALIFY_SECS: f32 = 180.0;
+/// 觸發霸主所需族群密度比例門檻（≥ 67% = 茂盛）。
+const DOMINANT_MIN_POP_RATIO: f32 = 0.67;
+/// 霸主存續期間額外生態壓力加成值。
+pub const DOMINANT_PRESSURE_BONUS: f32 = 8.0;
+/// 擊殺霸主巢穴普通怪物額外乙太獎勵。
+pub const DOMINANT_KILL_BONUS_ETHER: u32 = 1;
+/// 擊殺霸主巢穴 Alpha 額外乙太獎勵（疊加在 ALPHA_KILLER_ETHER 之上）。
+pub const DOMINANT_ALPHA_BONUS_ETHER: u32 = 5;
+/// 霸主解除後該巢穴的冷卻秒數（15 分鐘，避免連續稱霸）。
+pub const DOMINANT_COOLDOWN_SECS: f32 = 15.0 * 60.0;
+
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
 /// 單個怪物巢穴。
@@ -185,6 +200,8 @@ pub struct ColonyAlphaView {
     pub allied_to_id: Option<u32>,
     /// ROADMAP 175：是否處於覺醒狀態。前端顯示赤色外環 + 🔥👑 名牌。
     pub awakened: bool,
+    /// ROADMAP 176：所屬巢穴是否為當前霸主。前端顯示 👑 徽章。
+    pub is_dominant: bool,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -200,6 +217,8 @@ pub struct MonsterColonyView {
     pub density: u32,
     /// 是否有 Alpha 首領活躍（前端顯示警示標記）。
     pub has_alpha: bool,
+    /// ROADMAP 176：是否為當前霸主巢穴。前端顯示 👑 標記。
+    pub is_dominant: bool,
 }
 
 /// Alpha 擊殺結果（由 game.rs 用於廣播/發獎）。
@@ -211,6 +230,8 @@ pub struct AlphaKilledResult {
     pub was_allied: bool,
     /// ROADMAP 175：擊殺時 Alpha 是否處於覺醒狀態（是 → 額外獎勵）。
     pub was_awakened: bool,
+    /// ROADMAP 176：擊殺時 Alpha 是否為霸主巢穴的 Alpha（是 → 額外獎勵）。
+    pub was_dominant: bool,
 }
 
 // ─── ROADMAP 173：傳說古 Alpha ────────────────────────────────────────────────
@@ -295,6 +316,14 @@ pub enum MonsterColonyEvent {
     /// ROADMAP 175：Alpha 覺醒危機——壓力衝頂且多隻 Alpha 同場，全員進入覺醒狀態。
     /// game.rs 負責廣播全服警報。
     AlphaAwakened { count: usize },
+    /// ROADMAP 176：巢穴稱霸宣告——持續維持高密度族群 + Alpha 達 3 分鐘。
+    /// game.rs 負責廣播全服警示；ws.rs 收到後對該巢穴殺怪加乙太獎勵。
+    DominanceDeclaration { colony_id: u32, colony_name: &'static str },
+    /// ROADMAP 176：霸主落幕——族群跌落或霸主 Alpha 被擊殺（由 attack_alpha 清除後事件）。
+    /// game.rs 負責廣播全服消息。
+    DominanceBroken { colony_id: u32, colony_name: &'static str },
+    /// ROADMAP 176：玩家在霸主巢穴附近擊殺普通怪物——ws.rs 給擊殺者 +1 乙太。
+    MonsterKilledInDominantColony,
 }
 
 /// 管理所有怪物巢穴。
@@ -316,6 +345,15 @@ pub struct MonsterColonyManager {
     alliance_active: bool,
     /// 結盟的兩個 Alpha ID（僅 alliance_active = true 時有效）。
     alliance_pair: [u32; 2],
+    // ROADMAP 176：物種霸主
+    /// 當前稱霸的巢穴 ID；None = 無霸主。
+    dominant_colony_id: Option<u32>,
+    /// 候選巢穴 ID（持續達標但計時未到）；None = 無候選。
+    candidate_colony_id: Option<u32>,
+    /// 候選巢穴已連續達標的秒數。
+    dominant_qualify_timer: f32,
+    /// 各巢穴霸主冷卻剩餘秒數（剛失去霸主後需冷卻，避免連續稱霸）。
+    dominant_cooldowns: std::collections::HashMap<u32, f32>,
 }
 
 impl MonsterColonyManager {
@@ -329,6 +367,10 @@ impl MonsterColonyManager {
             coexistence_timer: 0.0,
             alliance_active: false,
             alliance_pair: [0, 0],
+            dominant_colony_id: None,
+            candidate_colony_id: None,
+            dominant_qualify_timer: 0.0,
+            dominant_cooldowns: std::collections::HashMap::new(),
         }
     }
 
@@ -425,6 +467,9 @@ impl MonsterColonyManager {
 
         // ROADMAP 175：Alpha 覺醒危機——壓力衝頂時覺醒所有 Alpha
         self.tick_awakening(eco_pressure, &mut events);
+
+        // ROADMAP 176：物種霸主——族群茂盛 + Alpha 持續 3 分鐘則稱霸
+        self.tick_dominance(dt, &mut events);
 
         events
     }
@@ -550,15 +595,17 @@ impl MonsterColonyManager {
             return None; // 未死
         }
 
-        // Alpha 死亡：記錄盟約狀態與覺醒狀態
+        // Alpha 死亡：記錄盟約狀態、覺醒狀態、霸主狀態
         let was_allied = self.alphas[idx].allied_to_id.is_some();
         let was_awakened = self.alphas[idx].awakened;
+        let was_dominant = self.dominant_colony_id == Some(self.alphas[idx].colony_id);
         let result = AlphaKilledResult {
             colony_id: self.alphas[idx].colony_id,
             colony_name: self.alphas[idx].colony_name,
             kind: self.alphas[idx].kind,
             was_allied,
             was_awakened,
+            was_dominant,
         };
         self.alphas.swap_remove(idx);
 
@@ -566,6 +613,14 @@ impl MonsterColonyManager {
         if let Some(col) = self.colonies.iter_mut().find(|c| c.id == result.colony_id) {
             col.population = col.population.saturating_sub(2);
             col.alpha_cooldown = ALPHA_COOLDOWN_SECS;
+        }
+
+        // ROADMAP 176：若擊殺的是霸主 Alpha，立即解除霸主並設冷卻
+        if was_dominant {
+            self.dominant_colony_id = None;
+            self.candidate_colony_id = None;
+            self.dominant_qualify_timer = 0.0;
+            self.dominant_cooldowns.insert(result.colony_id, DOMINANT_COOLDOWN_SECS);
         }
 
         Some(result)
@@ -688,6 +743,79 @@ impl MonsterColonyManager {
         }
     }
 
+    /// ROADMAP 176：推進物種霸主邏輯。
+    /// 條件：有 Alpha + 族群比例 ≥ 67%（密度茂盛）持續 3 分鐘 → 稱霸廣播。
+    /// 霸主 Alpha 被擊殺由 attack_alpha() 直接清除；族群衰退則在此偵測。
+    fn tick_dominance(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
+        // 更新各巢穴霸主冷卻倒數
+        for cd in self.dominant_cooldowns.values_mut() {
+            *cd = (*cd - dt).max(0.0);
+        }
+
+        // 若已有霸主：確認是否仍符合條件（族群比例 ≥ 閾值 且 Alpha 存活）
+        if let Some(dom_id) = self.dominant_colony_id {
+            let still_ok = self.colonies.iter()
+                .find(|c| c.id == dom_id)
+                .map(|c| {
+                    c.max_population > 0
+                        && c.population as f32 / c.max_population as f32 >= DOMINANT_MIN_POP_RATIO
+                        && self.alphas.iter().any(|a| a.colony_id == dom_id)
+                })
+                .unwrap_or(false);
+            if !still_ok {
+                // 族群衰退或 Alpha 消失（廝殺等非擊殺路徑）→ 解除霸主
+                let name = self.colonies.iter()
+                    .find(|c| c.id == dom_id)
+                    .map(|c| c.name)
+                    .unwrap_or("未知");
+                self.dominant_colony_id = None;
+                self.candidate_colony_id = None;
+                self.dominant_qualify_timer = 0.0;
+                self.dominant_cooldowns.insert(dom_id, DOMINANT_COOLDOWN_SECS);
+                events.push(MonsterColonyEvent::DominanceBroken { colony_id: dom_id, colony_name: name });
+            }
+            // 有霸主時不尋找新候選
+            return;
+        }
+
+        // 尋找候選：族群比例 ≥ 閾值 + 有 Alpha + 無冷卻
+        let candidate = self.colonies.iter()
+            .filter(|c| {
+                c.max_population > 0
+                    && c.population as f32 / c.max_population as f32 >= DOMINANT_MIN_POP_RATIO
+                    && self.alphas.iter().any(|a| a.colony_id == c.id)
+                    && self.dominant_cooldowns.get(&c.id).copied().unwrap_or(0.0) == 0.0
+            })
+            .map(|c| c.id)
+            .next();
+
+        match candidate {
+            None => {
+                // 無候選，重置
+                self.candidate_colony_id = None;
+                self.dominant_qualify_timer = 0.0;
+            }
+            Some(cid) => {
+                if self.candidate_colony_id != Some(cid) {
+                    // 候選換了，重置計時
+                    self.candidate_colony_id = Some(cid);
+                    self.dominant_qualify_timer = 0.0;
+                }
+                self.dominant_qualify_timer += dt;
+                if self.dominant_qualify_timer >= DOMINANT_QUALIFY_SECS {
+                    let name = self.colonies.iter()
+                        .find(|c| c.id == cid)
+                        .map(|c| c.name)
+                        .unwrap_or("未知");
+                    self.dominant_colony_id = Some(cid);
+                    self.candidate_colony_id = None;
+                    self.dominant_qualify_timer = 0.0;
+                    events.push(MonsterColonyEvent::DominanceDeclaration { colony_id: cid, colony_name: name });
+                }
+            }
+        }
+    }
+
     /// 每幀推進古 Alpha 冷卻 + 湧現判斷。
     /// 當 `ancient` 為 `None` 且冷卻歸零、且 3+ 巢穴飽和度 ≥ 80% 時，湧現古 Alpha。
     fn tick_ancient_alpha(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
@@ -791,8 +919,13 @@ impl MonsterColonyManager {
         if let Some(idx) = best {
             let col = &mut self.colonies[idx];
             col.population -= 1;
+            let colony_id = col.id;
             // ROADMAP 172：通知生態清剿委託此巢穴被擊殺了一隻怪物。
-            events.push(MonsterColonyEvent::MonsterKilledInColony { colony_id: col.id });
+            events.push(MonsterColonyEvent::MonsterKilledInColony { colony_id });
+            // ROADMAP 176：若為霸主巢穴，額外發出霸主擊殺事件供 ws.rs 給乙太獎勵。
+            if self.dominant_colony_id == Some(colony_id) {
+                events.push(MonsterColonyEvent::MonsterKilledInDominantColony);
+            }
             if col.population == 0 {
                 // 巢穴清空：加長冷卻再復生；同時移除 Alpha（族群歸零 Alpha 也消失）
                 col.spawn_timer = RESPAWN_SECS * WIPED_COOLDOWN_MULT;
@@ -817,6 +950,7 @@ impl MonsterColonyManager {
             clash_target_id: a.clash_target_id,
             allied_to_id: a.allied_to_id,
             awakened: a.awakened,
+            is_dominant: self.dominant_colony_id == Some(a.colony_id),
         }).collect()
     }
 
@@ -831,7 +965,13 @@ impl MonsterColonyManager {
             spawn_radius: col.spawn_radius,
             density:      colony_density(col.population, col.max_population),
             has_alpha:    self.alphas.iter().any(|a| a.colony_id == col.id),
+            is_dominant:  self.dominant_colony_id == Some(col.id),
         }).collect()
+    }
+
+    /// ROADMAP 176：霸主存續期間額外的生態壓力加成值（供 game.rs 疊加）。
+    pub fn dominant_pressure_bonus(&self) -> f32 {
+        if self.dominant_colony_id.is_some() { DOMINANT_PRESSURE_BONUS } else { 0.0 }
     }
 }
 
@@ -2008,5 +2148,208 @@ mod tests {
         mgr.tick(0.1, ALPHA_AWAKENING_PRESSURE + 1.0);
         let views_after = mgr.alpha_views();
         assert!(views_after[0].awakened, "覺醒後 awakened 應為 true");
+    }
+
+    // ── ROADMAP 176：物種霸主湧現測試 ────────────────────────────────────────
+
+    /// 建立一個族群滿員且有 Alpha 的場景，回傳 mgr 和 colony_id。
+    fn setup_dominant_candidate() -> (MonsterColonyManager, u32) {
+        let mut mgr = MonsterColonyManager::new();
+        let col_id = mgr.colonies[0].id;
+        // 將族群拉到 max（確保比例 = 1.0 ≥ DOMINANT_MIN_POP_RATIO）
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        // 直接植入 Alpha（繞過湧現計時）
+        let alpha_id = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: alpha_id,
+            colony_id: col_id,
+            kind: mgr.colonies[0].kind,
+            x: mgr.colonies[0].cx,
+            y: mgr.colonies[0].cy,
+            hp: 100,
+            max_hp: 100,
+            colony_name: mgr.colonies[0].name,
+            command_cooldown: 9999.0,
+            active_tactic: None,
+            tactic_remaining: 0.0,
+            clash_target_id: None,
+            allied_to_id: None,
+            awakened: false,
+        });
+        (mgr, col_id)
+    }
+
+    #[test]
+    fn dominance_not_triggered_before_qualify_time() {
+        // 條件達成但計時未到，不發 DominanceDeclaration。
+        let (mut mgr, _) = setup_dominant_candidate();
+        let events = mgr.tick(DOMINANT_QUALIFY_SECS - 1.0, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { .. })),
+            "計時未到不應觸發 DominanceDeclaration"
+        );
+        assert!(mgr.dominant_colony_id.is_none(), "尚未稱霸");
+    }
+
+    #[test]
+    fn dominance_triggered_after_qualify_time() {
+        // 計時達到 DOMINANT_QUALIFY_SECS 後發 DominanceDeclaration。
+        let (mut mgr, col_id) = setup_dominant_candidate();
+        let events = mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { colony_id, .. } if *colony_id == col_id)),
+            "計時到達後應發 DominanceDeclaration"
+        );
+        assert_eq!(mgr.dominant_colony_id, Some(col_id), "稱霸 colony_id 應正確");
+    }
+
+    #[test]
+    fn dominance_not_triggered_without_alpha() {
+        // 族群滿員但無 Alpha（且 alpha_cooldown 阻止自動湧現），不應稱霸。
+        let mut mgr = MonsterColonyManager::new();
+        let col = &mut mgr.colonies[0];
+        let max = col.max_population;
+        col.population = max;
+        // 高冷卻防止 tick 內自動湧現 Alpha
+        col.alpha_cooldown = DOMINANT_QUALIFY_SECS * 2.0;
+        let events = mgr.tick(DOMINANT_QUALIFY_SECS + 1.0, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { .. })),
+            "無 Alpha 不應稱霸"
+        );
+    }
+
+    #[test]
+    fn dominance_not_triggered_low_population() {
+        // Alpha 存在但族群比例 < DOMINANT_MIN_POP_RATIO，不應稱霸。
+        let mut mgr = MonsterColonyManager::new();
+        let col_id = mgr.colonies[0].id;
+        // 族群設為 max 的 50%（< 67% 閾值）
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max / 2;
+        let alpha_id = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: alpha_id, colony_id: col_id, kind: mgr.colonies[0].kind,
+            x: mgr.colonies[0].cx, y: mgr.colonies[0].cy,
+            hp: 100, max_hp: 100, colony_name: mgr.colonies[0].name,
+            command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
+            clash_target_id: None, allied_to_id: None, awakened: false,
+        });
+        let events = mgr.tick(DOMINANT_QUALIFY_SECS + 1.0, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { .. })),
+            "族群不足不應稱霸"
+        );
+    }
+
+    #[test]
+    fn dominance_broken_on_population_drop() {
+        // 稱霸後族群下滑至閾值以下，觸發 DominanceBroken。
+        let (mut mgr, col_id) = setup_dominant_candidate();
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0); // 觸發稱霸
+        assert_eq!(mgr.dominant_colony_id, Some(col_id));
+        // 族群跌到 0（被清空）
+        mgr.colonies[0].population = 0;
+        let events = mgr.tick(0.1, 0.0);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceBroken { colony_id, .. } if *colony_id == col_id)),
+            "族群跌落後應發 DominanceBroken"
+        );
+        assert!(mgr.dominant_colony_id.is_none(), "霸主應被清除");
+    }
+
+    #[test]
+    fn dominance_broken_on_alpha_kill() {
+        // 霸主 Alpha 被擊殺時 attack_alpha 應清除霸主並設 was_dominant = true。
+        let (mut mgr, col_id) = setup_dominant_candidate();
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        assert_eq!(mgr.dominant_colony_id, Some(col_id));
+        let alpha_id = mgr.alphas[0].id;
+        let ax = mgr.alphas[0].x;
+        let ay = mgr.alphas[0].y;
+        let result = mgr.attack_alpha(alpha_id, ax, ay, 99999, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "應成功擊殺");
+        let r = result.unwrap();
+        assert!(r.was_dominant, "was_dominant 應為 true");
+        assert!(mgr.dominant_colony_id.is_none(), "霸主應被清除");
+    }
+
+    #[test]
+    fn kill_normal_alpha_sets_was_dominant_false() {
+        // 非霸主 Alpha 被擊殺時 was_dominant 應為 false。
+        let (mut mgr, _) = setup_dominant_candidate();
+        // 不推進計時，Alpha 尚未稱霸
+        let alpha_id = mgr.alphas[0].id;
+        let ax = mgr.alphas[0].x;
+        let ay = mgr.alphas[0].y;
+        let result = mgr.attack_alpha(alpha_id, ax, ay, 99999, ALPHA_ATTACK_REACH);
+        assert!(result.is_some());
+        assert!(!result.unwrap().was_dominant, "非霸主 was_dominant 應為 false");
+    }
+
+    #[test]
+    fn dominant_pressure_bonus_correct() {
+        // 無霸主時加成為 0；稱霸後加成為 DOMINANT_PRESSURE_BONUS。
+        let (mut mgr, _) = setup_dominant_candidate();
+        assert_eq!(mgr.dominant_pressure_bonus(), 0.0, "初始無霸主，加成應為 0");
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        assert_eq!(mgr.dominant_pressure_bonus(), DOMINANT_PRESSURE_BONUS, "稱霸後加成應為正確值");
+    }
+
+    #[test]
+    fn dominance_cooldown_prevents_immediate_re_dominance() {
+        // 霸主解除後同一巢穴立刻無法再度稱霸（需等冷卻）。
+        let (mut mgr, col_id) = setup_dominant_candidate();
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        mgr.colonies[0].population = 0; // 族群跌落
+        mgr.tick(0.1, 0.0); // DominanceBroken，設冷卻
+        // 恢復族群 + Alpha
+        let max = mgr.colonies[0].max_population;
+        mgr.colonies[0].population = max;
+        let events = mgr.tick(DOMINANT_QUALIFY_SECS + 1.0, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { colony_id: id, .. } if *id == col_id)),
+            "冷卻期間不應再度觸發 DominanceDeclaration"
+        );
+    }
+
+    #[test]
+    fn colony_view_shows_is_dominant() {
+        // colony_views() 中霸主巢穴的 is_dominant 應為 true。
+        let (mut mgr, col_id) = setup_dominant_candidate();
+        let views_before = mgr.colony_views();
+        let v = views_before.iter().find(|c| c.id == col_id).unwrap();
+        assert!(!v.is_dominant, "稱霸前 is_dominant 應為 false");
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        let views_after = mgr.colony_views();
+        let v2 = views_after.iter().find(|c| c.id == col_id).unwrap();
+        assert!(v2.is_dominant, "稱霸後 is_dominant 應為 true");
+    }
+
+    #[test]
+    fn alpha_view_shows_is_dominant() {
+        // alpha_views() 中霸主巢穴 Alpha 的 is_dominant 應為 true。
+        let (mut mgr, _) = setup_dominant_candidate();
+        let views_before = mgr.alpha_views();
+        assert!(!views_before[0].is_dominant, "稱霸前 Alpha is_dominant 應為 false");
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        let views_after = mgr.alpha_views();
+        assert!(views_after[0].is_dominant, "稱霸後 Alpha is_dominant 應為 true");
+    }
+
+    #[test]
+    fn no_double_dominance_declaration() {
+        // 已稱霸的巢穴再次 tick 不應重複發 DominanceDeclaration。
+        let (mut mgr, _) = setup_dominant_candidate();
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0); // 第一次稱霸
+        let events2 = mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0);
+        assert!(
+            !events2.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { .. })),
+            "已稱霸不應重複發 DominanceDeclaration"
+        );
     }
 }
