@@ -117,6 +117,13 @@
   const footDust = [];             // [{wx,wy,vx,vy,life,ttl,size,r,g,b}]
   const _footLastPos = new Map();  // 角色 id → {x,y,acc} 上次取樣位置與未滿一格的累積位移
   let _footDustLast = 0;           // 上次更新時間（推 dt）
+  // 生態氛圍粒子（ROADMAP 189）：依玩家所在生態常駐飄浮的「生命氣息」粒子
+  //（草原花絮／森林落葉／沙漠熱氣／礦區乙太微塵／水域浮光）。與天氣（93）不同——
+  // 天氣是後端驅動的動態天候、氛圍是恆常的生態氣息；天氣作用時氛圍自動淡出讓位。
+  // 池上限比天氣更省（常駐層）；reduceMotion／低幀自動關閉。用畫面座標，每幀更新。
+  const AMBIENT_MAX_PARTICLES = 28;
+  const ambientParticles = [];
+  let _ambientBiome = null;        // 目前粒子所屬生態；玩家跨生態時清池換樣
   // 戰鬥命中飄字（ROADMAP 94）：敵人/玩家受傷或回血時噴出的數字。與 floaters 分開，
   // 視覺規格不同（更大更快更短命），不污染採集/乙太的飄字佇列。
   const hitFloaters = [];
@@ -3794,6 +3801,7 @@
     safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
+    safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
@@ -8470,6 +8478,118 @@
 
     ctx.globalAlpha = 1.0;
     ctx.restore();
+  }
+
+  // ── 生態氛圍粒子（ROADMAP 189）──────────────────────────────────────────
+  // 常駐的生態「生命氣息」：依玩家所在生態恆常飄浮對應粒子，補上生態的空氣感。
+  // 與天氣（93）定位區隔：天氣＝後端驅動的動態天候、氛圍＝前端恆常的生態氣息；
+  // weatherIntensity 越高氛圍越淡（讓位給天氣）。reduceMotion／低幀（沿用 91 的
+  // _parallaxEnabled，持續 < 30 FPS 自動關）一律關閉，效能優先。
+
+  // 純函式：依生態回傳氛圍粒子配置（無 DOM、可測）。回傳 null＝該生態不生成氛圍粒子。
+  // rgb: 粒子主色；rise: true=向上飄/false=向下落；life: 壽命秒基準；sway: 水平搖曳幅度(px)；
+  // size: 粒子基準尺寸；spin: 是否打旋（落葉）；twinkle: 是否忽明忽暗（微塵/浮光）；
+  // density: 每幀生成機率(0~1，越高越密)。面向玩家的純視覺參數，無文案、無 i18n 顧慮。
+  function ambientSpecForBiome(biome) {
+    switch (biome) {
+      case "meadow": // 草原：蒲公英花絮／花粉光點，緩緩上飄、左右搖曳
+        return { rgb: "236,240,210", rise: true,  life: 6.0, sway: 18, size: 2.2, spin: false, twinkle: false, density: 0.25 };
+      case "forest": // 森林：葉片緩緩下落、邊落邊打旋
+        return { rgb: "120,160,70",  rise: false, life: 7.0, sway: 26, size: 3.2, spin: true,  twinkle: false, density: 0.22 };
+      case "sand":   // 沙漠：地表上升的熱氣微塵，忽明忽暗
+        return { rgb: "220,200,150", rise: true,  life: 5.0, sway: 10, size: 1.8, spin: false, twinkle: true,  density: 0.28 };
+      case "rocky":  // 礦區：乙太發光微塵，緩慢上浮、閃爍（呼應礦區乙太主題）
+        return { rgb: "150,210,255", rise: true,  life: 6.5, sway: 12, size: 2.0, spin: false, twinkle: true,  density: 0.24 };
+      case "water":  // 水域：水面浮光點，緩緩飄移、忽明忽暗
+        return { rgb: "180,230,255", rise: true,  life: 5.5, sway: 22, size: 2.0, spin: false, twinkle: true,  density: 0.20 };
+      default:
+        return null;
+    }
+  }
+
+  // 依配置生成一顆氛圍粒子（畫面座標）。上飄者從畫面底側生成、下落者從頂側生成。
+  function makeAmbientParticle(spec, W, H) {
+    const x = Math.random() * (W + 60) - 30;
+    const y = spec.rise ? H + 10 + Math.random() * 20 : -10 - Math.random() * 20;
+    const speed = 12 + Math.random() * 18; // px/s，緩慢
+    return {
+      x,
+      y,
+      vy: spec.rise ? -speed : speed,
+      phase: Math.random() * Math.PI * 2,        // 搖曳/閃爍相位
+      swaySpeed: 0.6 + Math.random() * 0.8,
+      spin: spec.spin ? (Math.random() - 0.5) * 2 : 0,
+      angle: Math.random() * Math.PI * 2,
+      size: spec.size * (0.7 + Math.random() * 0.6),
+      life: spec.life * (0.7 + Math.random() * 0.6),
+      age: 0,
+    };
+  }
+
+  // 每幀更新並繪製生態氛圍粒子。畫面座標、緩慢飄移；玩家跨生態時換樣清池。
+  function drawAmbientParticles(camX, camY, now, dt) {
+    if (reduceMotion || !_parallaxEnabled) { if (ambientParticles.length) ambientParticles.length = 0; return; }
+    if (!dt || dt <= 0) dt = 0.016;
+    if (dt > 0.1) dt = 0.1; // 切分頁回來時別爆衝
+
+    const W = viewW, H = viewH;
+    const wcx = (camX || 0) + W / 2;
+    const wcy = (camY || 0) + H / 2;
+    const biome = biomeAt(wcx, wcy);
+    const spec = ambientSpecForBiome(biome);
+    if (!spec) { if (ambientParticles.length) ambientParticles.length = 0; return; }
+
+    // 跨生態時清池，避免上一個生態的粒子殘留串場
+    if (biome !== _ambientBiome) { ambientParticles.length = 0; _ambientBiome = biome; }
+
+    // 天氣作用時氛圍讓位（intensity 越高越淡），晴天全強度
+    const weatherFade = 1 - Math.min(1, weatherIntensity * 1.3);
+    if (weatherFade <= 0.02) { if (ambientParticles.length) ambientParticles.length = 0; return; }
+
+    // 補充粒子（節流：受密度與池上限雙重節制）
+    if (ambientParticles.length < AMBIENT_MAX_PARTICLES && Math.random() < spec.density) {
+      ambientParticles.push(makeAmbientParticle(spec, W, H));
+    }
+
+    ctx.save();
+    for (let i = ambientParticles.length - 1; i >= 0; i--) {
+      const p = ambientParticles[i];
+      p.age += dt;
+      p.y += p.vy * dt;
+      p.phase += p.swaySpeed * dt;
+      if (p.spin) p.angle += p.spin * dt;
+      if (p.age >= p.life || p.y < -30 || p.y > H + 30) { ambientParticles.splice(i, 1); continue; }
+      const x = p.x + Math.sin(p.phase) * spec.sway;
+      // 進退場淡入淡出 + 可選閃爍 + 天氣讓位
+      const lifeT = p.age / p.life;
+      let alpha = Math.min(lifeT * 4, (1 - lifeT) * 2.5, 1);
+      if (spec.twinkle) alpha *= 0.55 + 0.45 * Math.sin(p.phase * 2.3);
+      alpha *= weatherFade * 0.6;
+      if (alpha <= 0.01) continue;
+      ctx.globalAlpha = Math.max(0, alpha);
+      drawAmbientShape(biome, x, p.y, p.size, p.angle, spec.rgb);
+    }
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 依生態畫單顆氛圍粒子：森林＝旋轉葉片、草原＝柔白花絮、其餘＝發光微塵/浮光。
+  function drawAmbientShape(biome, x, y, size, angle, rgb) {
+    if (biome === "forest") {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, size, size * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    ctx.fillStyle = `rgb(${rgb})`;
+    ctx.beginPath();
+    ctx.arc(x, y, biome === "meadow" ? size : size * 0.7, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // ── 天氣粒子特效（ROADMAP 93）────────────────────────────────────────────
