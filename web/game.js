@@ -321,6 +321,14 @@
   let _leafFade = 0;             // 秋季落葉淡入淡出進度 [0,1]（非秋季→0，秋季→1，逐幀趨近不突兀）
   // 落葉暖色盤（[r,g,b]）：琥珀／鏽紅／金黃／枯褐，隨葉隨機取一色，賣「秋天的層次」。
   const LEAF_PALETTE = [[217,138,61], [192,87,43], [224,168,46], [168,106,58], [201,120,53]];
+  // 春日花飛（ROADMAP 228）：226 冬雪、227 秋葉讓「冬／秋」看得見，本切片回頭補上「春季」——
+  // 春天時天空飄落一片片淡粉花瓣（櫻色），隨風橫飄、盪得比葉更遠、邊飄邊輕輕翻轉，覆一層極淡
+  // 粉幕，與冬雪、秋葉湊成季節視覺三聯。純前端、讀既有 currentSeason、零後端。以 _petalFade 平滑淡入淡出。
+  const PETAL_MAX_PARTICLES = 80;
+  const petalParticles = [];
+  let _petalFade = 0;            // 春季花瓣淡入淡出進度 [0,1]（非春季→0，春季→1，逐幀趨近不突兀）
+  // 花瓣淡粉色盤（[r,g,b]）：櫻粉／淺桃／近白粉／玫瑰粉，隨瓣隨機取一色，賣「春天的柔」。
+  const PETAL_PALETTE = [[255,205,222], [255,224,235], [250,182,206], [255,236,244], [247,196,214]];
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4040,6 +4048,7 @@
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
     safeDraw("leaves", () => drawLeaves(renderNow, _weatherDt)); // 秋日落葉（227）
+    safeDraw("blossom", () => drawBlossom(renderNow, _weatherDt)); // 春日花飛（228）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -10880,6 +10889,99 @@
     // 暖金薄幕：極淡暖金覆全屏，賣「秋天的空氣」（隨葉勢淡入淡出，與冬雪薄霜白幕對偶）。
     ctx.globalAlpha = _leafFade * 0.045;
     ctx.fillStyle = "#e8b86a";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // ── ROADMAP 228: 春日花飛 ───────────────────────────────────────────────────
+  // 226 冬雪、227 秋葉讓「冬／秋」第一次看得見，但四季裡最有生機的「春」仍只在 HUD pill。
+  // 本切片把「春季」也畫出來：春天時天空飄落一片片淡粉花瓣，隨風往同一向橫飄、盪得比落葉更遠，
+  // 邊飄邊輕輕翻轉（櫻吹雪），再覆一層極淡粉幕，讓玩家一眼認得「花開了、春天到了」。與冬雪
+  //（226，白圓點直降）、秋葉（227，暖橢圓打旋）刻意三方區隔——花瓣是淡粉小瓣、受風橫飄、盪幅
+  // 最大、翻轉最慢最柔。純前端視覺、讀既有 currentSeason、零後端；效能分級（reduceMotion／低 FPS
+  // 一律關閉）。下面三個純函式抽出、無 DOM／可單元自驗，與雪／葉同模式。
+
+  // 純函式：春季回 1、其餘季節回 0（花瓣只在春天飛）。
+  function petalTargetIntensity(season) {
+    return season === "spring" ? 1 : 0;
+  }
+
+  // 純函式：把目前花瓣勢 cur 朝目標 target 以固定速率逼近（每秒 PETAL_FADE_RATE），夾在 [0,1]。
+  // 讓入春時花瓣緩緩飄起、出春時緩緩停（跨季不突然冒出一整屏／突然消失）。壞值（NaN）退回 0。
+  function petalFadeStep(cur, target, dt) {
+    const PETAL_FADE_RATE = 0.6;   // 約 1.7 秒淡入／淡出滿（與雪／葉同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * PETAL_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：花瓣水平位置＝隨風橫飄的基準 x ＋ 隨下落高度與相位擺動的正弦（盪幅大於雪／葉，最飄）。
+  // baseX 已隨 vx 每幀橫移，這裡再疊一層更慢更寬的搖盪，賣「櫻吹雪被風一陣陣帶著走」。
+  function petalSwayX(baseX, y, phase, sway) {
+    return baseX + Math.sin(y * 0.012 + phase) * sway;
+  }
+
+  // 生成一片花瓣（隨機落點／緩降速度／大小／搖擺幅度／橫飄風速／翻轉，並從淡粉盤隨機取一色）。
+  function makePetal(W, H) {
+    const c = PETAL_PALETTE[Math.floor(Math.random() * PETAL_PALETTE.length)] || PETAL_PALETTE[0];
+    return {
+      x: Math.random() * (W + 80) - 40,
+      y: -Math.random() * H - 10,        // 從畫面上方一個螢幕高度內撒下，落下後鋪滿
+      vy: 20 + Math.random() * 28,        // 緩降，比雪／葉再輕一些（花瓣最飄）
+      vx: 8 + Math.random() * 18,         // 受風橫飄（同一向，賣「一陣風把花瓣帶著走」）
+      size: 1.8 + Math.random() * 2.4,    // 花瓣比落葉小巧
+      alpha: 0.5 + Math.random() * 0.4,
+      sway: 16 + Math.random() * 26,      // 左右搖盪幅度，明顯大於葉（花瓣盪得最遠）
+      phase: Math.random() * Math.PI * 2,
+      rot: Math.random() * Math.PI * 2,   // 初始朝向
+      vrot: (Math.random() - 0.5) * 1.4,  // 翻轉角速度，慢於葉的打旋（花瓣翻得柔）
+      r: c[0], g: c[1], b: c[2],
+      life: 7 + Math.random() * 6,
+    };
+  }
+
+  // 每幀更新並繪製春季花飛。非春季時 _petalFade 緩緩歸零、池清空、零開銷早退。
+  function drawBlossom(now, dt) {
+    if (reduceMotion) { if (petalParticles.length) petalParticles.length = 0; _petalFade = 0; return; }
+    _petalFade = petalFadeStep(_petalFade, petalTargetIntensity(currentSeason), dt);
+    if (_petalFade <= 0.01) { if (petalParticles.length) petalParticles.length = 0; return; }
+    if (!_parallaxEnabled) { if (petalParticles.length) petalParticles.length = 0; return; }
+
+    const W = viewW, H = viewH;
+    const spawnCount = Math.ceil(_petalFade * 2);   // 花瓣勢越濃補得越快
+    for (let i = 0; i < spawnCount && petalParticles.length < PETAL_MAX_PARTICLES; i++) {
+      petalParticles.push(makePetal(W, H));
+    }
+
+    ctx.save();
+    for (let i = petalParticles.length - 1; i >= 0; i--) {
+      const p = petalParticles[i];
+      p.y += p.vy * dt;
+      p.x += p.vx * dt;          // 受風橫飄（與葉只原地打旋區隔）
+      p.phase += dt;
+      p.rot += p.vrot * dt;
+      p.life -= dt;
+      // 橫飄會把花瓣帶出右緣，連同壽終／落底一併回收。
+      if (p.y > H + 14 || p.x > W + 50 || p.life <= 0) { petalParticles.splice(i, 1); continue; }
+      const x = petalSwayX(p.x, p.y, p.phase, p.sway);
+      const fade = Math.min(1, p.life / 0.8);   // 末段淡出
+      ctx.globalAlpha = _petalFade * p.alpha * fade;
+      ctx.fillStyle = "rgb(" + p.r + "," + p.g + "," + p.b + ")";
+      // 花瓣＝翻轉的窄橢圓（比葉更細長、更小），賣「飄落的櫻瓣」（純 Canvas、零資源）。
+      ctx.save();
+      ctx.translate(x, p.y);
+      ctx.rotate(p.rot);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.size, p.size * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    // 淡粉薄幕：極淡櫻粉覆全屏，賣「春天的空氣」（隨花瓣勢淡入淡出，與冬雪白幕、秋葉金幕三聯）。
+    ctx.globalAlpha = _petalFade * 0.04;
+    ctx.fillStyle = "#ffd9e6";
     ctx.fillRect(0, 0, W, H);
     ctx.globalAlpha = 1.0;
     ctx.restore();
