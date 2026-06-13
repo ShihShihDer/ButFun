@@ -1,0 +1,67 @@
+ButFun — CC0 無縫地面材質（Color/Albedo 貼圖）
+============================================================
+全部來源為 ambientCG（https://ambientcg.com），全站採用 CC0 1.0
+（Public Domain / 公有領域，可商用、可修改、無需署名）。
+官方授權說明：https://ambientcg.com/license
+
+每張皆為 1K-JPG Color map，下載後裁成正方形、縮到 512x512，
+另存一份輕度暖色染色版以對齊 ButFun 黏土風暖色盤。
+  <key>.png        = 染色版（暖色對齊後）
+  <key>_orig.png   = 原圖（裁正方 512、未染色）
+
+原始下載 URL 形式：https://ambientcg.com/get?file=<AssetID>_1K-JPG.zip
+（單檔 512 直連已停用，改抓 1K-JPG zip 取其中 *_Color.jpg）
+
+------------------------------------------------------------
+[grass / grass_orig]  草地（主推）
+  AssetID : Grass004
+  來源頁  : https://ambientcg.com/view?id=Grass004
+  下載    : https://ambientcg.com/get?file=Grass004_1K-JPG.zip
+  原始檔  : Grass004_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[grass_alt / grass_alt_orig]  草地（替代，較深較密）
+  AssetID : Grass001
+  來源頁  : https://ambientcg.com/view?id=Grass001
+  下載    : https://ambientcg.com/get?file=Grass001_1K-JPG.zip
+  原始檔  : Grass001_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[dirt / dirt_orig]  泥土／土壤（主推，乾淨均勻）
+  AssetID : Ground030
+  來源頁  : https://ambientcg.com/view?id=Ground030
+  下載    : https://ambientcg.com/get?file=Ground030_1K-JPG.zip
+  原始檔  : Ground030_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[dirt_alt / dirt_alt_orig]  泥土＋零星草叢（替代）
+  AssetID : Ground003
+  來源頁  : https://ambientcg.com/view?id=Ground003
+  下載    : https://ambientcg.com/get?file=Ground003_1K-JPG.zip
+  原始檔  : Ground003_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[stone / stone_orig]  石地／碎石
+  AssetID : Rock030
+  來源頁  : https://ambientcg.com/view?id=Rock030
+  下載    : https://ambientcg.com/get?file=Rock030_1K-JPG.zip
+  原始檔  : Rock030_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[sand / sand_orig]  沙地（主推，最平滑均勻）
+  AssetID : Ground054
+  來源頁  : https://ambientcg.com/view?id=Ground054
+  下載    : https://ambientcg.com/get?file=Ground054_1K-JPG.zip
+  原始檔  : Ground054_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[sand_alt / sand_alt_orig]  沙地（替代，沙灘質感）
+  AssetID : Ground080
+  來源頁  : https://ambientcg.com/view?id=Ground080
+  下載    : https://ambientcg.com/get?file=Ground080_1K-JPG.zip
+  原始檔  : Ground080_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+------------------------------------------------------------
+備註：本批僅抓 Color/Albedo。所有來源 CC0，無需署名，
+但仍記錄出處以守 ButFun 紅線「AI 當老師不當影印機」。
