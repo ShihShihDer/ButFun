@@ -8328,6 +8328,13 @@
         ctx.restore();
       }
 
+      // ROADMAP 224：野鹿頂角較勁——較勁中的成年野鹿（state==="sparring"）畫成「頭對頭、一推一退地
+      // 抵角頂撞」：身體沿水平方向小幅來回挪動（像兩頭鹿鹿角抵在一起較力，一進一退），讀起來是
+      // 「在較勁」而非靜止理毛。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、
+      // 身邊有同種成體夥伴的野鹿較勁時才給）。
+      const isSparring = w.kind === "wild_deer" && w.state === "sparring";
+      const sparShove = isSparring ? Math.sin(now / 90) * 2.5 : 0; // 一推一退的水平頂撞
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
@@ -8335,6 +8342,7 @@
       if (scale !== 1) ctx.scale(scale, scale);
       if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面
       if (pounceLift) ctx.translate(0, -pounceLift); // ROADMAP 223：撲跳：把狐身抬起成躍弧
+      if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -8449,6 +8457,21 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💕", 8, -22);
+        ctx.restore();
+      }
+
+      // ROADMAP 224：野鹿頂角較勁——白天平靜歇息時低頭抵角較勁的成年野鹿（state==="sparring"）頭頂
+      // 浮一枚隨頂撞節奏一脹一縮的 💥，讓「兩頭鹿鹿角頂在一起一推一退地較力」一眼看得到——與 216 理毛
+      // 的 💕（柔）對成剛柔一對。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、
+      // 身邊有同種成體夥伴的野鹿較勁時才給某隻此狀態）。
+      if (w.state === "sparring") {
+        ctx.save();
+        const spt = Math.abs(Math.sin(now / 90)); // 與身體頂撞同步、一脹一縮，像力道的一推一退
+        ctx.globalAlpha = 0.55 + 0.4 * spt;
+        ctx.font = `${11 + spt * 2}px sans-serif`; // 隨頂撞節奏一脹一縮
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💥", 0, -24);
         ctx.restore();
       }
 
