@@ -6700,8 +6700,8 @@
   // 城鎮建築外觀（ROADMAP 110）——原創蒸汽龐克建築，在 NPC 作息站點固定位置繪製。
   // 位置對齊 npc_schedule.rs VILLAGE_NPCS.station_pos。建築在 NPCs 之前畫（作為背景）。
   const TOWN_BUILDINGS = [
-    { wx: 2120, wy: 2328, type: "shop",        sign: "薇拉商店" },
-    { wx: 2120, wy: 2080, type: "workshop",    sign: "老胡工坊" },
+    { wx: 2120, wy: 2328, type: "shop",        sign: "百貨商店" },
+    { wx: 2120, wy: 2080, type: "workshop",    sign: "機械工坊" },
     { wx: 2240, wy: 2080, type: "bounty",      sign: "懸賞公所" },
     { wx: 2360, wy: 2080, type: "expedition",  sign: "探勘站" },
     { wx: 2480, wy: 2080, type: "procurement", sign: "星際採購" },
@@ -13610,7 +13610,13 @@
   function npcChatThinking(npcId, on) {
     const old = document.getElementById(`npcThinking_${npcId}`);
     if (old) old.remove();
-    if (on) appendNpcChat(npcId, NPC_DISPLAY_MAP[npcId] || "NPC", "", "thinking");
+    if (on) {
+      // 優先用伺服器當前 NPC 名（npcs 快照），傳承換代改名也不 stale；
+      // 拿不到才退回本地映射，最後才是「NPC」。
+      const live = npcs.find((n) => n && n.id === npcId);
+      const who = (live && live.name) || NPC_DISPLAY_MAP[npcId] || "NPC";
+      appendNpcChat(npcId, who, "", "thinking");
+    }
   }
   function escapeHtmlNpc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
   function sendNpcChat(npcId) {
