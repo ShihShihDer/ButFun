@@ -15,7 +15,7 @@
 //!
 //! 完全記憶體模式，重啟清零，零 migration。
 
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 use crate::daynight::Phase;
 
 // ── 居民生命週期常數（ROADMAP 116）──────────────────────────────────────────
@@ -134,6 +134,24 @@ pub enum ResidentLifecycleEvent {
         /// 廣播文字。
         msg: String,
     },
+    /// 居民野外採集隊出發（ROADMAP 177）。
+    ExpeditionStarted {
+        names: Vec<&'static str>,
+        target_name: String,
+        target_x: f32,
+        target_y: f32,
+        msg: String,
+    },
+    /// 居民野外採集隊成功歸來（ROADMAP 177）。
+    ExpeditionSuccess {
+        names: Vec<&'static str>,
+        msg: String,
+    },
+    /// 居民野外採集隊失敗（成員死亡）（ROADMAP 177）。
+    ExpeditionFailed {
+        names: Vec<&'static str>,
+        msg: String,
+    },
 }
 
 /// 故鄉城鎮閒晃邊界（像素）。
@@ -151,6 +169,10 @@ const WAIT_SECS_MAX: f32 = 12.0;
 
 /// 抵達目標的判定半徑（像素）。
 const ARRIVE_DIST: f32 = 8.0;
+
+/// 城鎮中心座標（居民漫遊區正中央），採集隊出發/歸返的基準點（ROADMAP 177）。
+const TOWN_CENTER_X: f32 = 2500.0;
+const TOWN_CENTER_Y: f32 = 2500.0;
 
 // ── 思想泡泡計時器常數（ROADMAP 118）──────────────────────────────────────────
 /// 思想泡泡最短間隔（秒）。
@@ -363,6 +385,33 @@ pub struct ResidentNpc {
     gift_timer: f32,
     /// 禮物種子（供模板輪替）。
     gift_seed: usize,
+    // ── 野外採集隊（ROADMAP 177）────────────────────────
+    /// 目前血量。
+    pub hp: f32,
+    /// 最大血量。
+    pub max_hp: f32,
+    /// 野外採集隊狀態。
+    pub expedition: Option<ExpeditionState>,
+}
+
+/// 居民野外採集隊狀態（ROADMAP 177）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpeditionState {
+    pub target_x: f32,
+    pub target_y: f32,
+    pub phase: ExpeditionPhase,
+    /// 在目標點採樣的剩餘秒數。
+    pub stay_timer: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ExpeditionPhase {
+    /// 前往目標。
+    To,
+    /// 抵達目標正在採樣。
+    At,
+    /// 採樣完成返回城鎮。
+    From,
 }
 
 impl ResidentNpc {
@@ -416,6 +465,9 @@ impl ResidentNpc {
             happiness_decay_timer: HAPPINESS_DECAY_INTERVAL,
             gift_timer: GIFT_TIMER_MIN + gift_offset,
             gift_seed: index,
+            hp: 20.0,
+            max_hp: 20.0,
+            expedition: None,
         }
     }
 
@@ -432,6 +484,43 @@ impl ResidentNpc {
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
     fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase) {
+        // ── 野外採集隊邏輯（ROADMAP 177）──
+        if let Some(ref mut ex) = self.expedition {
+            match ex.phase {
+                ExpeditionPhase::To => {
+                    let dx = ex.target_x - self.x;
+                    let dy = ex.target_y - self.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist < ARRIVE_DIST {
+                        ex.phase = ExpeditionPhase::At;
+                        ex.stay_timer = 120.0; // 在目標點停留 2 分鐘採樣
+                    } else {
+                        let step = (MOVE_SPEED * 0.8 * dt).min(dist);
+                        self.x += dx / dist * step;
+                        self.y += dy / dist * step;
+                    }
+                }
+                ExpeditionPhase::At => {
+                    ex.stay_timer -= dt;
+                    if ex.stay_timer <= 0.0 {
+                        ex.phase = ExpeditionPhase::From;
+                    }
+                }
+                ExpeditionPhase::From => {
+                    let dx = TOWN_CENTER_X - self.x; // 城中心座標
+                    let dy = TOWN_CENTER_Y - self.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist >= ARRIVE_DIST {
+                        let step = (MOVE_SPEED * 0.8 * dt).min(dist);
+                        self.x += dx / dist * step;
+                        self.y += dy / dist * step;
+                    }
+                    // 到達後由 ResidentManager::tick 判定成功並清除狀態
+                }
+            }
+            return; // 採集隊期間不執行日常閒晃
+        }
+
         // 鄰里互動冷卻計時（ROADMAP 121）
         if self.chat_cooldown > 0.0 {
             self.chat_cooldown -= dt;
@@ -493,6 +582,8 @@ pub struct ResidentManager {
     current_phase: Option<Phase>,
     /// 上一次廣播時的繁榮等級（ROADMAP 128），避免重複廣播。初始 1（平靜）。
     last_prosperity_level: u8,
+    /// 野外採集隊冷卻時間（秒）（ROADMAP 177）。
+    pub expedition_cooldown: f32,
 }
 
 impl ResidentManager {
@@ -509,6 +600,7 @@ impl ResidentManager {
             rng,
             current_phase: None,
             last_prosperity_level: 1, // 初始視為平靜，避免啟動立即廣播
+            expedition_cooldown: 300.0, // 初始 5 分鐘冷卻，給世界暖機時間
         }
     }
 
@@ -517,6 +609,71 @@ impl ResidentManager {
     pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase, player_positions: &[(String, f32, f32)]) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
         let mut events = Vec::new();
         let mut thoughts = Vec::new();
+
+        // 0. 野外採集隊成敗判定（ROADMAP 177）
+        let mut failed = false;
+        let mut success = false;
+        let mut expedition_names = Vec::new();
+        let mut has_expedition = false;
+
+        if self.expedition_cooldown > 0.0 {
+            self.expedition_cooldown -= dt;
+        }
+
+        for r in &self.residents {
+            if let Some(ref ex) = r.expedition {
+                has_expedition = true;
+                expedition_names.push(r.name);
+                if r.hp <= 0.0 {
+                    failed = true;
+                } else if ex.phase == ExpeditionPhase::From {
+                    let dx = TOWN_CENTER_X - r.x;
+                    let dy = TOWN_CENTER_Y - r.y;
+                    if (dx * dx + dy * dy).sqrt() < ARRIVE_DIST {
+                        success = true;
+                    }
+                }
+            }
+        }
+
+        if has_expedition {
+            if failed {
+                for r in &mut self.residents {
+                    if r.expedition.is_some() {
+                        r.expedition = None;
+                        r.hp = r.max_hp;
+                    }
+                }
+                events.push(ResidentLifecycleEvent::ExpeditionFailed {
+                    names: expedition_names,
+                    msg: "❌ 【採集隊撤退】成員體力耗盡，採集隊宣告失敗，物資全數遺失。".to_string(),
+                });
+            } else if success {
+                // 簡化判定：所有隊員都回到城中心才算成功
+                let all_back = self.residents.iter().filter(|r| r.expedition.is_some()).all(|r| {
+                    if let Some(ref ex) = r.expedition {
+                        if ex.phase != ExpeditionPhase::From { return false; }
+                        let dx = TOWN_CENTER_X - r.x;
+                        let dy = TOWN_CENTER_Y - r.y;
+                        (dx * dx + dy * dy).sqrt() < ARRIVE_DIST
+                    } else {
+                        true
+                    }
+                });
+                if all_back {
+                    for r in &mut self.residents {
+                        if r.expedition.is_some() {
+                            r.expedition = None;
+                            r.hp = r.max_hp;
+                        }
+                    }
+                    events.push(ResidentLifecycleEvent::ExpeditionSuccess {
+                        names: expedition_names,
+                        msg: "🌿 【採集隊歸來】採集隊平安回到城鎮中心，帶回了珍貴的野外樣本！".to_string(),
+                    });
+                }
+            }
+        }
 
         // 時段切換偵測（ROADMAP 119）：廣播一條「居民換聚場」公告。
         if self.current_phase != Some(phase) {
@@ -787,9 +944,57 @@ impl ResidentManager {
         result
     }
 
-    /// 回傳所有居民的 (id, name, x, y)，供快照組裝用。
-    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32)> {
-        self.residents.iter().map(|r| (r.id.as_str(), r.name, r.x, r.y))
+    /// 啟動野外採集隊（ROADMAP 177）。
+    pub fn start_expedition(&mut self, target_name: String, tx: f32, ty: f32) -> Option<ResidentLifecycleEvent> {
+        let mut candidates: Vec<usize> = self.residents.iter().enumerate()
+            .filter(|(_, r)| r.expedition.is_none() && r.happiness >= 50)
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() { return None; }
+
+        candidates.shuffle(&mut self.rng);
+        let count = if candidates.len() >= 2 { self.rng.gen_range(1..=2) } else { 1 };
+        let selected = &candidates[..count];
+
+        let mut names = Vec::new();
+        for &idx in selected {
+            let r = &mut self.residents[idx];
+            r.expedition = Some(ExpeditionState {
+                target_x: tx,
+                target_y: ty,
+                phase: ExpeditionPhase::To,
+                stay_timer: 0.0,
+            });
+            r.hp = r.max_hp;
+            names.push(r.name);
+        }
+
+        let msg = format!("🏹 【採集隊出發】{} 離開城鎮，前往 {} 進行野外採樣！", names.join("、"), target_name);
+        Some(ResidentLifecycleEvent::ExpeditionStarted {
+            names,
+            target_name,
+            target_x: tx,
+            target_y: ty,
+            msg,
+        })
+    }
+
+    /// 目前採集隊的目標座標（ROADMAP 177）。
+    pub fn expedition_target(&self) -> Option<(f32, f32)> {
+        self.residents.iter()
+            .find_map(|r| r.expedition.as_ref().map(|ex| (ex.target_x, ex.target_y)))
+    }
+
+    /// 回傳居民視圖清單：(id, name, x, y, is_expedition, hp_pct)。供快照廣播用。
+    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32, bool, Option<f32>)> {
+        self.residents.iter().map(|r| (
+            r.id.as_str(),
+            r.name,
+            r.x,
+            r.y,
+            r.expedition.is_some(),
+            if r.expedition.is_some() { Some(r.hp / r.max_hp) } else { None }
+        ))
     }
 
     /// 目前居民人數（供測試用）。
@@ -1715,5 +1920,80 @@ mod tests {
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "計時器未到不應觸發 PlayerGift"
         );
+    }
+
+    // ── ROADMAP 177：野外採集隊測試 ──────────────────────────────────────────
+
+    #[test]
+    fn expedition_starts_when_requested() {
+        let mut mgr = ResidentManager::new();
+        // 確保至少有一位快樂居民
+        mgr.residents[0].happiness = 60;
+        let ev = mgr.start_expedition("靈蛾巢".to_string(), 3000.0, 3000.0);
+        assert!(ev.is_some(), "應能成功啟動採集隊");
+        assert!(mgr.residents.iter().any(|r| r.expedition.is_some()), "應有居民進入採集狀態");
+        if let Some(ResidentLifecycleEvent::ExpeditionStarted { target_name, .. }) = ev {
+            assert_eq!(target_name, "靈蛾巢");
+        }
+    }
+
+    #[test]
+    fn expedition_npc_moves_toward_target() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = 60;
+        mgr.residents[0].x = 2500.0;
+        mgr.residents[0].y = 2500.0;
+        mgr.start_expedition("目標".to_string(), 3000.0, 3000.0);
+        
+        // tick 推進
+        mgr.tick(1.0, 50, Phase::Day, &[]);
+        let r = &mgr.residents[0];
+        assert!(r.x > 2500.0, "採集隊員應向目標移動 (x: {})", r.x);
+        assert!(r.y > 2500.0, "採集隊員應向目標移動 (y: {})", r.y);
+    }
+
+    #[test]
+    fn expedition_fails_on_npc_death() {
+        let mut mgr = ResidentManager::new();
+        mgr.residents[0].happiness = 60;
+        mgr.start_expedition("危險地".to_string(), 3000.0, 3000.0);
+        
+        // 模擬受傷至死
+        mgr.residents[0].hp = 0.0;
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        
+        assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionFailed { .. })), "死亡應導致採集失敗");
+        assert!(mgr.residents[0].expedition.is_none(), "失敗後應清除狀態");
+        assert!(mgr.residents[0].hp > 0.0, "失敗後應恢復生命以便日常生活");
+    }
+
+    #[test]
+    fn expedition_succeeds_when_returning_to_center() {
+        let mut mgr = ResidentManager::new();
+        // 確保只有一位符合條件的快樂居民
+        for r in &mut mgr.residents { r.happiness = 0; }
+        mgr.residents[0].happiness = 60;
+
+        mgr.start_expedition("目標".to_string(), 3000.0, 3000.0);
+        assert_eq!(mgr.residents.iter().filter(|r| r.expedition.is_some()).count(), 1);
+        
+        // 1. 到達目標
+        mgr.residents[0].x = 3000.0;
+        mgr.residents[0].y = 3000.0;
+        mgr.tick(0.1, 50, Phase::Day, &[]);
+        assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::At));
+        
+        // 2. 停留完成
+        mgr.residents[0].expedition.as_mut().unwrap().stay_timer = 0.01;
+        mgr.tick(0.2, 50, Phase::Day, &[]);
+        assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::From));
+        
+        // 3. 回到城中心
+        mgr.residents[0].x = 2500.0;
+        mgr.residents[0].y = 2500.0;
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        
+        assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionSuccess { .. })), "回到中心應觸發成功");
+        assert!(mgr.residents[0].expedition.is_none(), "成功後應清除狀態");
     }
 }

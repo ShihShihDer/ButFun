@@ -953,6 +953,7 @@
   let ecoBounty = null;             // ROADMAP 172 生態清剿委託 {colony_name, kill_target, kills_so_far, reward_per_player, time_left_secs}
   let ancientAlpha = null;          // ROADMAP 173 傳說古 Alpha {x, y, hp, max_hp}（null = 未出現）
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
+  let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1214,6 +1215,7 @@
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
         listings = msg.listings || [];
         npcs = msg.npcs || [];
+        expeditionTarget = msg.expedition_target || null;
         // 地形 delta 更新：把伺服器廣播的差異覆蓋進 tileDeltaMap。
         // C-2：kind=empty 表示該格已被挖掉（delta 覆蓋為空），前端直接更新；
         // 重置快照（完整 terrain 陣列）時先清空 map 再填入，確保不殘留舊差異。
@@ -4440,6 +4442,16 @@
         ctx.textBaseline = "alphabetic";
       }
     }
+    if (expeditionTarget) {
+      const rx = toMiniX(expeditionTarget[0]), ry = toMiniY(expeditionTarget[1]);
+      if (rx >= ox && rx <= ox + size && ry >= oy && ry <= oy + size) {
+        ctx.font = "13px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("📍", rx, ry);
+        ctx.textBaseline = "alphabetic";
+      }
+    }
 
     // 獸潮攻城點（ROADMAP 44）：廣播或攻城中在小地圖標脈動紅色⚔️符號。
     if (hordeEvent) {
@@ -4453,6 +4465,20 @@
         ctx.fillText("⚔️", hx, hy);
         ctx.globalAlpha = 1;
         ctx.textBaseline = "alphabetic";
+      }
+    }
+
+    // 採集隊員標記（ROADMAP 177）
+    for (const npc of npcs) {
+      if (npc.is_expedition) {
+        const nx = toMiniX(npc.x), ny = toMiniY(npc.y);
+        if (nx >= ox && nx <= ox + size && ny >= oy && ny <= oy + size) {
+          ctx.font = "11px system-ui, sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("🏹", nx, ny);
+          ctx.textBaseline = "alphabetic";
+        }
       }
     }
 
@@ -7343,7 +7369,7 @@
       } else if (npc.id === "traveler") {
         drawTravelerLook(sx, by, t, npc.name);
       } else if (npc.id.startsWith("resident_")) {
-        drawResidentLook(sx, by, t, npc.id, npc.name);
+        drawResidentLook(sx, by, t, npc.id, npc.name, npc.is_expedition, npc.hp_pct);
       } else {
         // 未知 NPC：退回通用外觀
         ctx.fillStyle = "#777";
@@ -8670,7 +8696,7 @@
 
   // 路人居民外觀（ROADMAP 115）：簡單素人造型，4 種配色對應 4 種 persona（依 index 取餘）。
   // 純裝飾性，不可互動，比深度 AI NPC 小一圈以示區別。
-  function drawResidentLook(sx, by, t, id, name) {
+  function drawResidentLook(sx, by, t, id, name, isExpedition, hpPct) {
     // 依 index 決定衣服色調（市場=橙棕、農夫=草綠、廣場=藍紫、遊民=灰褐）
     const idx = parseInt(id.replace("resident_", ""), 10) || 0;
     const bodyColors = ["#8b5e2a", "#4a7a3a", "#3a5a8a", "#6a6a6a"];
@@ -8698,8 +8724,19 @@
     }
     // 名字（比深度 NPC 更小更淡，不搶鏡）
     ctx.font = "9px sans-serif"; ctx.textAlign = "center";
-    ctx.fillStyle = "rgba(220,200,160,0.75)";
-    ctx.fillText(name, sx, by - 18);
+    ctx.fillStyle = isExpedition ? "#ffd700" : "rgba(220,200,160,0.75)";
+    const label = isExpedition ? `🏹 ${name}` : name;
+    ctx.fillText(label, sx, by - 18);
+
+    // 採集隊 HP 條（ROADMAP 177）
+    if (isExpedition && typeof hpPct === "number") {
+      const barW = 20;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(sx - barW/2, by + 22, barW, 2.5);
+      ctx.fillStyle = hpPct > 0.3 ? "#50ff50" : "#ff5050";
+      ctx.fillRect(sx - barW/2, by + 22, barW * hpPct, 2.5);
+    }
+
     // 快樂心型（ROADMAP 126）：happiness >= 70 時在名字左側顯示小 💛
     const mood = residentMoods.get(id);
     if (mood != null && mood >= HAPPINESS_HAPPY_THRESHOLD) {
