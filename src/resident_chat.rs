@@ -263,6 +263,28 @@ pub fn get_thought(persona: ResidentPersona, ctx: &ResidentContext, seed: usize)
     pool[seed % pool.len()]
 }
 
+// ── 凱旋餘韻談資模板（ROADMAP 186）──────────────────────────────────────────
+/// 歡慶（185）散場後的「餘韻期」裡，居民興奮談論剛被討伐的菁英首領。
+/// 不分 persona（全城都在聊同一件大事）、第一人稱口語，沿用既有思想泡泡泡泡層渲染。
+/// 面向玩家字串，將來在地化時集中替換。
+static TRIUMPH_THOUGHTS: &[&str] = &[
+    "聽說有人把那隻菁英首領給討伐了，真是英雄！",
+    "城外那頭怪物王終於倒下了，今晚能睡個好覺了。",
+    "我親眼看到牠頭頂的赤環滅了……太痛快了！",
+    "孩子們都在學那位勇者揮劍的樣子呢，哈哈。",
+    "首領一倒，野外的怪物應該會安分一陣子吧？",
+    "得替英雄備杯熱茶，凱旋歸來總得犒賞一下。",
+    "方才那聲歡呼，整座城都聽見了吧！",
+    "我還在發抖呢，沒想到真有人能撂倒那種龐然大物。",
+    "廣場上大家都在傳頌這場勝仗，氣氛真好。",
+    "牠盤踞那麼久，今天總算有人替我們出了口氣。",
+];
+
+/// 取得凱旋餘韻談資（ROADMAP 186）：確定性依 seed 取模，必非空。
+pub fn get_triumph_thought(seed: usize) -> &'static str {
+    TRIUMPH_THOUGHTS[seed % TRIUMPH_THOUGHTS.len()]
+}
+
 /// 取得居民對玩家搭話的回應文字。
 pub fn get_chat(persona: ResidentPersona, seed: usize) -> &'static str {
     let pool: &[&str] = match persona {
@@ -1080,5 +1102,16 @@ mod tests {
                 assert!(!filled.contains('{'), "替換後不應殘留佔位符：{filled}");
             }
         }
+    }
+
+    #[test]
+    fn triumph_thought_is_deterministic_and_nonempty() {
+        // 勝利談資（ROADMAP 186）：依 seed 取模、必非空、且 seed 環繞不 panic。
+        for seed in [0usize, 1, 7, 9, 10, 99, usize::MAX] {
+            let t = get_triumph_thought(seed);
+            assert!(!t.is_empty(), "勝利談資不應為空（seed={seed}）");
+        }
+        // 同 seed 取兩次應一致（確定性）。
+        assert_eq!(get_triumph_thought(3), get_triumph_thought(3));
     }
 }
