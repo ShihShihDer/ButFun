@@ -122,8 +122,12 @@
   // 天氣是後端驅動的動態天候、氛圍是恆常的生態氣息；天氣作用時氛圍自動淡出讓位。
   // 池上限比天氣更省（常駐層）；reduceMotion／低幀自動關閉。用畫面座標，每幀更新。
   const AMBIENT_MAX_PARTICLES = 28;
+  // 夜間氛圍切換（ROADMAP 190）：daynight.light 低於此值算「夜」，各生態氛圍切換成
+  // 夜間限定的發光生命（森林螢火蟲／草原夜光花粉／水域磷光…）；跨日夜時清池換樣。
+  const AMBIENT_NIGHT_LIGHT = 0.42;
   const ambientParticles = [];
   let _ambientBiome = null;        // 目前粒子所屬生態；玩家跨生態時清池換樣
+  let _ambientNight = false;       // 目前粒子所屬日夜段（ROADMAP 190）；跨日夜時清池換樣
   // 戰鬥命中飄字（ROADMAP 94）：敵人/玩家受傷或回血時噴出的數字。與 floaters 分開，
   // 視覺規格不同（更大更快更短命），不污染採集/乙太的飄字佇列。
   const hitFloaters = [];
@@ -8486,22 +8490,41 @@
   // weatherIntensity 越高氛圍越淡（讓位給天氣）。reduceMotion／低幀（沿用 91 的
   // _parallaxEnabled，持續 < 30 FPS 自動關）一律關閉，效能優先。
 
-  // 純函式：依生態回傳氛圍粒子配置（無 DOM、可測）。回傳 null＝該生態不生成氛圍粒子。
+  // 純函式：依生態（與日夜）回傳氛圍粒子配置（無 DOM、可測）。回傳 null＝不生成氛圍粒子。
   // rgb: 粒子主色；rise: true=向上飄/false=向下落；life: 壽命秒基準；sway: 水平搖曳幅度(px)；
   // size: 粒子基準尺寸；spin: 是否打旋（落葉）；twinkle: 是否忽明忽暗（微塵/浮光）；
-  // density: 每幀生成機率(0~1，越高越密)。面向玩家的純視覺參數，無文案、無 i18n 顧慮。
-  function ambientSpecForBiome(biome) {
+  // density: 每幀生成機率(0~1，越高越密)；glow: 是否畫發光光暈（夜間發光生命）。
+  // 面向玩家的純視覺參數，無文案、無 i18n 顧慮。
+  // ROADMAP 190：night=true 時回傳該生態的「夜間限定」發光生命配置——白天的花絮/落葉/
+  // 熱氣到了夜裡換成螢火蟲、夜光花粉、磷光等會自體發亮的氛圍，世界第一次有「日夜不同的空氣感」。
+  function ambientSpecForBiome(biome, night) {
+    if (night) {
+      switch (biome) {
+        case "meadow": // 草原夜：夜光花粉，柔綠螢光緩緩上飄、忽明忽暗
+          return { rgb: "190,240,170", rise: true,  life: 6.5, sway: 20, size: 2.0, spin: false, twinkle: true,  glow: true, density: 0.22 };
+        case "forest": // 森林夜：螢火蟲，黃綠暖光緩慢游動、強烈明滅（招牌夜景）
+          return { rgb: "210,240,120", rise: true,  life: 7.5, sway: 32, size: 2.4, spin: false, twinkle: true,  glow: true, density: 0.20 };
+        case "sand":   // 沙漠夜：夜風冷塵，清冷月白微光緩緩上飄、微弱閃爍
+          return { rgb: "200,210,230", rise: true,  life: 5.5, sway: 12, size: 1.7, spin: false, twinkle: true,  glow: true, density: 0.24 };
+        case "rocky":  // 礦區夜：乙太微塵入夜更亮，青藍冷光上浮、強閃爍（呼應乙太主題）
+          return { rgb: "160,225,255", rise: true,  life: 6.5, sway: 14, size: 2.2, spin: false, twinkle: true,  glow: true, density: 0.26 };
+        case "water":  // 水域夜：磷光，青藍冷光緩緩飄移、忽明忽暗（夜裡更顯）
+          return { rgb: "150,235,230", rise: true,  life: 6.0, sway: 24, size: 2.2, spin: false, twinkle: true,  glow: true, density: 0.22 };
+        default:
+          return null;
+      }
+    }
     switch (biome) {
       case "meadow": // 草原：蒲公英花絮／花粉光點，緩緩上飄、左右搖曳
-        return { rgb: "236,240,210", rise: true,  life: 6.0, sway: 18, size: 2.2, spin: false, twinkle: false, density: 0.25 };
+        return { rgb: "236,240,210", rise: true,  life: 6.0, sway: 18, size: 2.2, spin: false, twinkle: false, glow: false, density: 0.25 };
       case "forest": // 森林：葉片緩緩下落、邊落邊打旋
-        return { rgb: "120,160,70",  rise: false, life: 7.0, sway: 26, size: 3.2, spin: true,  twinkle: false, density: 0.22 };
+        return { rgb: "120,160,70",  rise: false, life: 7.0, sway: 26, size: 3.2, spin: true,  twinkle: false, glow: false, density: 0.22 };
       case "sand":   // 沙漠：地表上升的熱氣微塵，忽明忽暗
-        return { rgb: "220,200,150", rise: true,  life: 5.0, sway: 10, size: 1.8, spin: false, twinkle: true,  density: 0.28 };
+        return { rgb: "220,200,150", rise: true,  life: 5.0, sway: 10, size: 1.8, spin: false, twinkle: true,  glow: false, density: 0.28 };
       case "rocky":  // 礦區：乙太發光微塵，緩慢上浮、閃爍（呼應礦區乙太主題）
-        return { rgb: "150,210,255", rise: true,  life: 6.5, sway: 12, size: 2.0, spin: false, twinkle: true,  density: 0.24 };
+        return { rgb: "150,210,255", rise: true,  life: 6.5, sway: 12, size: 2.0, spin: false, twinkle: true,  glow: false, density: 0.24 };
       case "water":  // 水域：水面浮光點，緩緩飄移、忽明忽暗
-        return { rgb: "180,230,255", rise: true,  life: 5.5, sway: 22, size: 2.0, spin: false, twinkle: true,  density: 0.20 };
+        return { rgb: "180,230,255", rise: true,  life: 5.5, sway: 22, size: 2.0, spin: false, twinkle: true,  glow: false, density: 0.20 };
       default:
         return null;
     }
@@ -8536,11 +8559,17 @@
     const wcx = (camX || 0) + W / 2;
     const wcy = (camY || 0) + H / 2;
     const biome = biomeAt(wcx, wcy);
-    const spec = ambientSpecForBiome(biome);
+    // ROADMAP 190：依晝夜光照決定日／夜配置——夜裡換成發光的夜間生命（螢火蟲、磷光…）
+    const night = !!(daynight && daynight.light < AMBIENT_NIGHT_LIGHT);
+    const spec = ambientSpecForBiome(biome, night);
     if (!spec) { if (ambientParticles.length) ambientParticles.length = 0; return; }
 
-    // 跨生態時清池，避免上一個生態的粒子殘留串場
-    if (biome !== _ambientBiome) { ambientParticles.length = 0; _ambientBiome = biome; }
+    // 跨生態或跨日夜時清池，避免上一段（生態／日夜）的粒子殘留串場
+    if (biome !== _ambientBiome || night !== _ambientNight) {
+      ambientParticles.length = 0;
+      _ambientBiome = biome;
+      _ambientNight = night;
+    }
 
     // 天氣作用時氛圍讓位（intensity 越高越淡），晴天全強度
     const weatherFade = 1 - Math.min(1, weatherIntensity * 1.3);
@@ -8567,21 +8596,39 @@
       alpha *= weatherFade * 0.6;
       if (alpha <= 0.01) continue;
       ctx.globalAlpha = Math.max(0, alpha);
-      drawAmbientShape(biome, x, p.y, p.size, p.angle, spec.rgb);
+      drawAmbientShape(biome, x, p.y, p.size, p.angle, spec.rgb, spec.glow);
     }
     ctx.globalAlpha = 1.0;
     ctx.restore();
   }
 
-  // 依生態畫單顆氛圍粒子：森林＝旋轉葉片、草原＝柔白花絮、其餘＝發光微塵/浮光。
-  function drawAmbientShape(biome, x, y, size, angle, rgb) {
-    if (biome === "forest") {
+  // 依生態畫單顆氛圍粒子：森林（日）＝旋轉葉片、草原（日）＝柔白花絮、其餘＝發光微塵/浮光。
+  // ROADMAP 190：glow=true（夜間發光生命）時先疊一圈柔光暈，畫出螢火蟲/磷光的自體發亮感。
+  function drawAmbientShape(biome, x, y, size, angle, rgb, glow) {
+    // 森林白天的旋轉葉片（夜間 forest 走 glow 螢火蟲分支，不打旋）
+    if (biome === "forest" && !glow) {
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(angle);
       ctx.fillStyle = `rgb(${rgb})`;
       ctx.beginPath();
       ctx.ellipse(0, 0, size, size * 0.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+    // 夜間發光生命：外圈柔光暈（半透明）＋ 內芯亮點，營造自體發亮的螢火/磷光感
+    if (glow) {
+      ctx.save();
+      const prevA = ctx.globalAlpha;
+      ctx.globalAlpha = prevA * 0.4;
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = prevA;
+      ctx.beginPath();
+      ctx.arc(x, y, size * 0.8, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       return;
