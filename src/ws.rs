@@ -3747,7 +3747,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             app.player_logs.write().unwrap()
                                 .entry(uid)
                                 .or_default()
-                                .push(format!("向老農提交農展委託，獲得 {} 乙太", reward));
+                                .push(format!("向評審卡特提交農展委託，獲得 {} 乙太", reward));
                             let _ = pname;
                         }
                     }

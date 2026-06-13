@@ -62,7 +62,7 @@ impl NpcRelationsState {
             }
         }
 
-        // 村落骨幹：凱爾長老 ↔ 老農（共同守護鄉土，情誼深厚）
+        // 村落骨幹：凱爾長老 ↔ 卡特（共同守護鄉土，情誼深厚）
         s.set("village_chief", "farm_fair_npc", 75);
         s.set("farm_fair_npc", "village_chief", 75);
 
@@ -79,7 +79,7 @@ impl NpcRelationsState {
         s.set("merchant", "procurement_npc", 68);
         s.set("procurement_npc", "merchant", 68);
 
-        // 工匠老胡 ↔ 老農：踏實的土地人，惺惺相惜
+        // 工匠鐸恩 ↔ 卡特：踏實的土地人，惺惺相惜
         s.set("workshop_npc", "farm_fair_npc", 68);
         s.set("farm_fair_npc", "workshop_npc", 68);
 
@@ -138,7 +138,7 @@ impl NpcRelationsState {
                 self.adjust("merchant", "workshop_npc", -3);
             }
             RelationsEvent::VillageFestival => {
-                // 節慶共享喜悅，里長與老農形象上升
+                // 節慶共享喜悅，里長與卡特形象上升
                 for &a in ALL_NPCS {
                     if a != "village_chief" {
                         self.adjust(a, "village_chief", 5);
@@ -150,7 +150,7 @@ impl NpcRelationsState {
                 self.adjust("village_chief", "farm_fair_npc", 8);
             }
             RelationsEvent::QuestCompleted => {
-                // 任務完成，里長與老農對執行任務的居民印象提升
+                // 任務完成，里長與卡特對執行任務的居民印象提升
                 self.adjust("village_chief", "bounty_npc", 5);
                 self.adjust("farm_fair_npc", "bounty_npc", 5);
                 self.adjust("village_chief", "expedition_npc", 3);
@@ -228,11 +228,11 @@ impl NpcRelationsState {
 fn npc_display_name(id: &str) -> &'static str {
     match id {
         "merchant"        => "商人薇拉",
-        "workshop_npc"    => "工匠老胡",
+        "workshop_npc"    => "工匠鐸恩",
         "bounty_npc"      => "獵手蘭卡",
         "expedition_npc"  => "探勘員芙利亞",
-        "procurement_npc" => "採購代理人吉爾",
-        "farm_fair_npc"   => "評審老農",
+        "procurement_npc" => "採購代理人諾亞",
+        "farm_fair_npc"   => "評審卡特",
         "village_chief"   => "凱爾長老",
         _                 => "某位居民",
     }
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn decay_moves_toward_neutral() {
         let mut s = NpcRelationsState::new();
-        // 里長對老農初始 75 → 應向 50 衰減
+        // 里長對卡特初始 75 → 應向 50 衰減
         let before = s.get("village_chief", "farm_fair_npc").unwrap();
         s.tick_decay_all();
         let after = s.get("village_chief", "farm_fair_npc").unwrap();
@@ -377,10 +377,10 @@ mod tests {
     #[test]
     fn prompt_section_non_empty_for_notable_relation() {
         let s = NpcRelationsState::new();
-        // 里長對老農 75，應列入 prompt
+        // 里長對卡特 75，應列入 prompt
         let section = s.to_prompt_section("village_chief");
         assert!(!section.is_empty(), "里長應有值得注意的關係");
-        assert!(section.contains("老農") || section.contains("凱爾"), "應提及相關 NPC");
+        assert!(section.contains("卡特") || section.contains("凱爾"), "應提及相關 NPC");
     }
 
     #[test]

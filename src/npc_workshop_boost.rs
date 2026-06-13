@@ -16,7 +16,7 @@
 //! - 純記憶體模式，重啟清零，零 migration，不破壞玩家資料。
 
 /// 工匠的顯示名稱。
-pub const WORKSHOP_NPC_NAME: &str = "工匠老胡";
+pub const WORKSHOP_NPC_NAME: &str = "工匠鐸恩";
 
 /// 歸屬感高於此值時，老胡才考慮發布急修加成令。
 pub const BELONGING_THRESHOLD: i32 = 65;

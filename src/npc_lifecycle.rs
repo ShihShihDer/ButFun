@@ -37,11 +37,11 @@ pub fn lifespan_secs() -> f64 {
 fn successor_names(npc_id: &str) -> &'static [&'static str] {
     match npc_id {
         "merchant"         => &["薇拉", "梅塔", "艾娜"],
-        "workshop_npc"     => &["老胡", "師傅阿鎮", "匠人托比"],
-        "bounty_npc"       => &["蘭卡", "赤爪岳", "獵師梅德"],
-        "expedition_npc"   => &["芙利亞", "探索家托倫", "地圖師萊拉"],
-        "procurement_npc"  => &["吉爾", "採購員諾亞", "貿易商薩爾"],
-        "farm_fair_npc"    => &["老農", "評審卡特", "農展師芙絲"],
+        "workshop_npc"     => &["鐸恩", "瑞汶", "索倫"],
+        "bounty_npc"       => &["蘭卡", "梅德", "凱恩"],
+        "expedition_npc"   => &["芙利亞", "托倫", "萊拉"],
+        "procurement_npc"  => &["諾亞", "薩爾", "吉薇"],
+        "farm_fair_npc"    => &["卡特", "芙絲", "葉森"],
         "village_chief"    => &["凱爾長老", "長老艾登", "守護者泰雅"],
         _                  => &["旅人"],
     }
