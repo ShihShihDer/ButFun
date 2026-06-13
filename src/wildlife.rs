@@ -260,6 +260,23 @@ const DEFEND_SPEED: f32 = 150.0;
 /// 及咬到幼獸就先被趕跑；母獸自身非掠食者目標、不會被咬，護幼安全）。
 const INTIMIDATE_RADIUS: f32 = 90.0;
 
+// ─── ROADMAP 216：成體相依理毛（herd social grooming）───────────────────────────
+// 承接 206（群聚結伴）+ 215（幼獸嬉戲）：過去成體獵物白天只會吃草／休息／站崗，彼此之間
+// 沒有任何「親暱互動」——群只是聚在一起的個體。本切片補上群居動物最溫柔的一塊：成體在白天
+// 平靜歇息的當口，偶爾轉向身邊的同種成體夥伴互相理毛（頭頂浮 💕），數秒後再起身。於是同一
+// 片草原，你會看到兩頭鹿安靜地依偎著彼此梳理——群第一次有了「成員之間的羈絆」，而不只是
+// 一群各自吃草的點。幼獸嬉戲（215）是「孩子繞著母親玩」，理毛則是「大人之間互相照拂」，兩者
+// 把生態的「親密」補成完整一對。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的
+// grooming 字串沿用 state_str；夥伴座標／計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+/// 理毛夥伴半徑（像素）——身邊有同種成體在此近距離內，歇息時才可能轉去互相理毛（親暱貼近）。
+const GROOM_RADIUS: f32 = 60.0;
+/// 視為「已理毛中」的單段最短／最長時長（秒）——靜靜替彼此梳理數秒後再起身漫遊。
+const GROOM_DURATION_MIN: f32 = 3.0;
+const GROOM_DURATION_MAX: f32 = 6.5;
+/// 成體在白天歇息、且身邊有同種夥伴時，本幀轉入理毛的機率——偏低，讓理毛是偶爾的溫柔片刻、
+/// 而非時時黏著（多數時候仍照常吃草／休息）。
+const GROOM_PROB: f32 = 0.05;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -453,6 +470,9 @@ enum WildlifeState {
     /// ROADMAP 215：幼獸嬉戲——已依偎到母獸身邊的幼獸在媽媽周圍蹦跳玩耍（頭頂浮 ✨）。
     /// 朝當前蹦跳落點 (hop_x, hop_y) 蹦去，到達或 frolic_timer 耗盡就回到依偎（下一幀再決定要不要再玩）。
     Frolicking { hop_x: f32, hop_y: f32, frolic_timer: f32 },
+    /// ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種成體夥伴互相理毛（頭頂浮 💕）。
+    /// 原地不動（不更新座標）、groom_timer 倒數，到期就回到漫遊；威脅一旦逼近一律優先逃竄。
+    Grooming { groom_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -757,6 +777,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 216：成體相依理毛——理毛中（Grooming）原地不動、倒數計時；到期就挑下一個
+    /// 漫遊目標（沿用群聚拉力 herd_anchor）回到漫遊。只在 Grooming 狀態下生效（呼叫端已確保
+    /// 此隻為成體、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
+    fn tick_groom(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Grooming { groom_timer } = self.state {
+            let remaining = groom_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Grooming { groom_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -771,6 +807,7 @@ impl Wildlife {
             WildlifeState::Watching { .. }  => "watching",
             WildlifeState::Defending        => "defending",
             WildlifeState::Frolicking { .. } => "frolicking",
+            WildlifeState::Grooming { .. }  => "grooming",
         }
     }
 }
@@ -1401,6 +1438,16 @@ impl WildlifeManager {
                 && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
                 && nearest_in_range(self.animals[i].x, self.animals[i].y, &threats, FLEE_RADIUS).is_none();
 
+            // ROADMAP 216：成體相依理毛——白天的成體獵物若身邊有同種成體夥伴（GROOM_RADIUS 內），
+            // 在歇息的當口偶爾轉去互相理毛。此處先判定「是否有可理毛的夥伴」（重用 208 的最近同種
+            // 成體查詢）；幼獸／逃竄中／夜間一律不理毛（走依偎/逃竄/夜眠分支），故順手短路。
+            let groom_has_partner = !is_night
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_adult_of_kind(
+                    self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, GROOM_RADIUS,
+                ).is_some();
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             if calm_at_night {
@@ -1419,10 +1466,26 @@ impl WildlifeManager {
                 if !is_night && is_diurnal(animal_kind) {
                     a.wake_from_night_sleep(herd_anchor, rng);
                 }
-                // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
-                // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
-                let graze_prob = if is_night { 0.0 } else { GRAZE_PROB };
-                a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, graze_prob, rng);
+                // ROADMAP 216：成體相依理毛——理毛永遠讓位給逃命（威脅優先）。先看附近有無威脅：
+                let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
+                if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
+                    // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
+                    a.tick_groom(dt, herd_anchor, rng);
+                } else if groom_has_partner
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < GROOM_PROB
+                {
+                    // 白天歇息的成體、身邊有同種夥伴、平靜——偶爾轉去互相理毛（頭頂浮 💕）。
+                    let timer = rng.gen_range(GROOM_DURATION_MIN..=GROOM_DURATION_MAX);
+                    a.state = WildlifeState::Grooming { groom_timer: timer };
+                } else {
+                    // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
+                    // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
+                    // （理毛中卻有威脅逼近時也落到這裡，tick_idle 內會先轉逃竄——威脅永遠優先。）
+                    let graze_prob = if is_night { 0.0 } else { GRAZE_PROB };
+                    a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, graze_prob, rng);
+                }
             }
         }
 
@@ -3528,6 +3591,125 @@ mod tests {
             let adult_frolic = mgr.animals.iter().any(|a|
                 !a.is_juvenile() && matches!(a.state, WildlifeState::Frolicking { .. }));
             assert!(!adult_frolic, "成體不該嬉戲");
+        }
+    }
+
+    // ─── ROADMAP 216：成體相依理毛 測試 ─────────────────────────────────────────
+
+    #[test]
+    fn tick_groom_returns_to_wander_when_timer_expires() {
+        // 理毛計時耗盡 → 收尾回漫遊（再起身找下一個目標），不會一直黏在原地理毛。
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Grooming { groom_timer: 0.05 };
+        w.tick_groom(0.1, None, &mut rng); // dt > timer
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "理毛計時耗盡應回漫遊，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn tick_groom_holds_position_while_timer_remaining() {
+        // 理毛中：原地不動（不更新座標）、計時遞減、維持 Grooming。
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        let (x0, y0) = (w.x, w.y);
+        w.state = WildlifeState::Grooming { groom_timer: 5.0 };
+        w.tick_groom(0.1, None, &mut rng);
+        assert!((w.x - x0).abs() < 1e-6 && (w.y - y0).abs() < 1e-6, "理毛中應原地不動");
+        match w.state {
+            WildlifeState::Grooming { groom_timer } => {
+                assert!((groom_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("計時未耗盡應維持理毛，實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adults_groom_partner_in_daytime() {
+        // 整管理器：白天，兩隻緊鄰的成鹿——非哨兵那隻（較大 id）連跑多幀後應有機會進入理毛。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        a.id = 1; // 群內最小 id → 擔任哨兵（站崗、不理毛）
+        a.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut b = adult_at(WildlifeKind::WildDeer, 5012.0, 5000.0); // 距夥伴 12px < GROOM_RADIUS
+        b.id = 2; // 非哨兵 → 可理毛
+        b.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![a, b];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_groom = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(w.state, WildlifeState::Grooming { .. }) { saw_groom = true; break; }
+        }
+        assert!(saw_groom, "白天身邊有同種夥伴的成體應會開始理毛");
+    }
+
+    #[test]
+    fn lone_adult_never_grooms() {
+        // 身邊沒有同種成體夥伴的孤獸——連跑多幀都不該理毛（理毛是「相依」行為）。
+        let mut mgr = WildlifeManager::new();
+        let mut lone = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        lone.id = 1;
+        mgr.animals = vec![lone];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Grooming { .. }), "孤獸不該理毛");
+        }
+    }
+
+    #[test]
+    fn adults_do_not_groom_at_night() {
+        // 夜間：成體歸巢沉睡，不理毛——連跑多幀都不該進入 Grooming。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        a.id = 1;
+        let mut b = adult_at(WildlifeKind::WildDeer, 5012.0, 5000.0);
+        b.id = 2;
+        mgr.animals = vec![a, b];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let groom = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Grooming { .. }));
+            assert!(!groom, "夜間成體不該理毛");
+        }
+    }
+
+    #[test]
+    fn grooming_adult_flees_when_predator_approaches() {
+        // 威脅優先：正在理毛的成體，掠食者逼近時應改逃竄（不會繼續理毛）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Grooming { groom_timer: 5.0 };
+        // 狼貼近成鹿（FLEE_RADIUS 內），形成直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5060.0, 5000.0);
+        wolf.id = 2;
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時理毛成體應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn juvenile_never_grooms() {
+        // 理毛只屬於成體——身邊放滿同種成體的幼獸，連跑多幀都不該進入 Grooming（牠走的是嬉戲/依偎）。
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        doe.id = 1;
+        doe.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5012.0, 5000.0);
+        fawn.id = 2;
+        mgr.animals = vec![doe, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Grooming { .. }), "幼獸不該理毛");
         }
     }
 }
