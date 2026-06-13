@@ -117,6 +117,10 @@
   let _shootStarNextMs  = 0;     // 下次可點燃流星的時刻（0=尚未排程，入夜首幀排首發）
   let _shootStarX0 = 0, _shootStarY0 = 0; // 流星起點（畫面座標，上半天邊）
   let _shootStarDX = 0, _shootStarDY = 0; // 流星位移向量（往下斜射，含長度）
+  // 天邊流雲（ROADMAP 193）：白天上半天邊常駐飄著幾朵柔白雲，破曉/黃昏被霞光染金，
+  // 入夜淡出讓位給星星（19）與流星（192）。雲池於首次可見時一次性程序生成（見 initClouds）。
+  const clouds = [];             // [{x,y,vx,scale,blobs:[{dx,dy,r}]}]（x/y=螢幕比例座標）
+  let _cloudLast = 0;            // 上次推進漂移的 performance.now()（推 dt 用）
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3855,6 +3859,9 @@
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
     });
+
+    // 天邊流雲（ROADMAP 193）：獨立 safeDraw，白天天邊飄雲、破曉/黃昏染金、入夜淡出。
+    safeDraw("clouds", () => drawClouds(performance.now()));
 
     // 雨後彩虹（ROADMAP 191）：獨立 safeDraw，每幀偵測「雨→停」轉換並繪製天邊彩虹。
     safeDraw("rainbow", () => drawRainbow(performance.now()));
@@ -8807,6 +8814,97 @@
     ctx.beginPath();
     ctx.arc(headX, headY, Math.max(1.6, Math.min(viewW, viewH) * 0.005), 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  // ── 天邊流雲（ROADMAP 193）────────────────────────────────────────────────
+  // 白天上半天邊常駐飄著幾朵柔白雲，極緩橫移、各有形狀；破曉/黃昏被霞光染成金橘暮色
+  //（沿用既有色溫口徑，峰在 light=0.6）；入夜淡出、把夜空讓給星星（19）與流星（192）。
+  // 純前端視覺、零後端：依既有 daynight.light/phase 推導可見度與染暖度。
+  // 與既有天象區隔：雲＝白天天空常駐生命；天氣（93）＝下雨/沙暴；星星（19）＝夜空靜態天幕；
+  // 彩虹（191）／流星（192）＝特定時機天象尾韻——元素、時機、層次刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫並清池；夜裡早退不畫。
+  const CLOUD_NIGHT_LIGHT = 0.42; // daynight.light 低於此值算「夜」（與 190 同口徑）：雲淡出為 0
+  const CLOUD_FADE_RANGE  = 0.20; // 由 NIGHT_LIGHT 起、跨此區間（→0.62）線性淡入到滿
+  const CLOUD_WARM_SPAN   = 0.18; // 金色時刻染暖的亮度半幅（峰在 light=0.6，與色溫梯度同口徑）
+  const CLOUD_COUNT       = 5;    // 同時掛在天邊的雲朵數（固定池上限，效能優先）
+  const CLOUD_MAX_ALPHA   = 0.34; // 雲整體最大不透明度（柔白半透明，不搶戲）
+
+  // 純函式：依晝夜推導雲的 { alpha, warm }。alpha=整體可見度（夜裡 0、白天 1），
+  // warm=金色時刻染暖度（僅破曉/黃昏非零，峰在 light=0.6）。無 DOM、可測。
+  function cloudAppearance(light, phase) {
+    const alpha = Math.max(0, Math.min(1, (light - CLOUD_NIGHT_LIGHT) / CLOUD_FADE_RANGE));
+    const warm = (phase === "dawn" || phase === "dusk")
+      ? Math.max(0, 1 - Math.abs(light - 0.6) / CLOUD_WARM_SPAN)
+      : 0;
+    return { alpha, warm };
+  }
+
+  // 一次性程序生成雲池：每朵雲由 3~5 個柔邊 puff 團組成，各有尺度與漂速方向。
+  // 用 Math.random 只在生成時跑一次（之後每幀讀既有結構，繪製不再用亂數）。
+  function initClouds() {
+    if (clouds.length) return;
+    for (let i = 0; i < CLOUD_COUNT; i++) {
+      const blobs = [];
+      const n = 3 + Math.floor(Math.random() * 3); // 3~5 個團
+      for (let b = 0; b < n; b++) {
+        blobs.push({
+          dx: (Math.random() - 0.5) * 1.6,   // 團相對雲心的水平偏移（單位：雲尺度）
+          dy: (Math.random() - 0.5) * 0.55,  // 垂直偏移（雲較扁）
+          r:  0.5 + Math.random() * 0.65,    // 團半徑（單位：雲尺度）
+        });
+      }
+      clouds.push({
+        x: Math.random(),                    // 螢幕寬比例 [0,1)
+        y: 0.05 + Math.random() * 0.18,      // 上半天邊
+        vx: (0.004 + Math.random() * 0.006) * (Math.random() < 0.5 ? 1 : -1), // 極緩橫移（比例/秒）
+        scale: 26 + Math.random() * 26,      // 雲整體尺度（邏輯像素）
+        blobs,
+      });
+    }
+  }
+
+  // 每幀推進漂移並繪製天邊流雲（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  function drawClouds(now) {
+    if (!daynight) { _cloudLast = now; return; }
+    // 弱機／低幀：不畫並清池（再次可見時重新生成）
+    if (reduceMotion || !_parallaxEnabled) { if (clouds.length) clouds.length = 0; _cloudLast = now; return; }
+    const { alpha: vis, warm } = cloudAppearance(daynight.light, daynight.phase);
+    if (vis <= 0.01) { _cloudLast = now; return; } // 夜裡無雲，讓位星空
+    initClouds();
+
+    let dt = (now - _cloudLast) / 1000;
+    _cloudLast = now;
+    if (!(dt > 0) || dt > 0.1) dt = 0.016; // 首幀／分頁切回的大跳用固定步，避免瞬移
+    for (const c of clouds) {
+      c.x += c.vx * dt;
+      // 飄出邊界就從另一側繞回（留一個雲寬的餘裕，避免硬邊閃現）
+      if (c.x < -0.25) c.x += 1.5; else if (c.x > 1.25) c.x -= 1.5;
+    }
+
+    // 顏色：柔白雲 → 金色時刻往金橘 (255,200,130) 染暖
+    const r = Math.round(235 + (255 - 235) * warm);
+    const g = Math.round(240 + (200 - 240) * warm);
+    const b = Math.round(250 + (130 - 250) * warm);
+    const maxA = vis * CLOUD_MAX_ALPHA;
+    ctx.save();
+    for (const c of clouds) {
+      const cxBase = c.x * viewW, cyBase = c.y * viewH;
+      for (const bl of c.blobs) {
+        const cx = cxBase + bl.dx * c.scale;
+        const cy = cyBase + bl.dy * c.scale;
+        const rad = bl.r * c.scale;
+        if (cx < -rad || cx > viewW + rad) continue; // 螢幕外的團跳過
+        const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+        gr.addColorStop(0,   `rgba(${r},${g},${b},${maxA.toFixed(3)})`);
+        gr.addColorStop(0.6, `rgba(${r},${g},${b},${(maxA * 0.5).toFixed(3)})`);
+        gr.addColorStop(1,   `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = gr;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     ctx.restore();
   }
 
