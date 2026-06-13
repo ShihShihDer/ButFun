@@ -1318,6 +1318,13 @@ pub fn spawn(app: AppState) {
                             // ROADMAP 183：潰逃事件只由 ws.rs 擊殺路徑（on_monster_killed_near）產生並處理，
                             // 主 tick 的巢穴推進不會發出此事件，這裡僅補 exhaustive 分支。
                             MonsterColonyEvent::ColonyRouted { .. } => {}
+                            // ROADMAP 184：菁英 Alpha 背水死戰——無援可召的瀕死絕境，發垂死怒吼廣播。
+                            MonsterColonyEvent::AlphaLastStand { colony_name, kind } => {
+                                let kind_name = kind.display_name();
+                                let _ = app.tx_chat.send(format!(
+                                    "🩸 [{colony_name}] 的「{kind_name}」首領走投無路、援軍已斷，發出垂死怒吼背水死戰——趁勝追擊，斬草除根！"
+                                ));
+                            }
                         }
                     }
                 }

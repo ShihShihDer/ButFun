@@ -2205,6 +2205,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 ));
                                             }
                                         }
+                                        // ROADMAP 184：菁英 Alpha 背水死戰——只由 game.rs 主 tick 偵測並廣播，
+                                        // 擊殺路徑不會發出此事件，這裡僅補 exhaustive 分支。
+                                        MonsterColonyEvent::AlphaLastStand { .. } => {}
                                     }
                                 }
                             }

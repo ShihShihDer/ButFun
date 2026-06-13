@@ -134,6 +134,25 @@ const ALPHA_SUMMON_MAX_EXTRA: u32 = 6;
 /// 召喚指揮氣泡顯示文字（沿用 ROADMAP 169 前端指揮氣泡渲染）。
 const SUMMON_TACTIC_NAME: &str = "號令援軍";
 
+// ─── ROADMAP 184：菁英 Alpha 背水死戰 ─────────────────────────────────────────
+/// 菁英 Alpha（覺醒或霸主）血量跌破此比例、且已無援可召（援軍冷卻中或族群已達兵力上限）時，
+/// 走投無路而背水死戰。比召喚門檻（0.5）更低，確保「先嘗試召援、無援可召才死戰」的決策順序。
+const LAST_STAND_HP_THRESHOLD: f32 = 0.25;
+
+/// 純函式：判斷一隻菁英 Alpha 是否陷入「無援可召的瀕死絕境」而應背水死戰。
+/// 兩條觸發路徑（對齊主軸「至少兩條路徑」判準）：
+/// - **援軍冷卻路**（`summon_on_cd`）：王已召過援軍、冷卻未到又被打到瀕死，無兵可調。
+/// - **兵力上限路**（`colony_over_cap`）：族群已達召喚上限，再也叫不出援軍。
+/// 兩路最終都代表「沒有援軍會來了」，王只能背水一戰。
+pub fn alpha_is_cornered(
+    hp_pct: f32,
+    is_elite: bool,
+    summon_on_cd: bool,
+    colony_over_cap: bool,
+) -> bool {
+    is_elite && hp_pct < LAST_STAND_HP_THRESHOLD && (summon_on_cd || colony_over_cap)
+}
+
 // ─── ROADMAP 183：族群潰逃 ─────────────────────────────────────────────────────
 /// 族群人口（占上限比例）首次跌破此門檻時，殘兵士氣崩潰、潰逃回巢。
 /// 與 colony_density 的「稀疏」界線（0.33）對齊：被打到稀疏即視為殘破。
@@ -208,6 +227,9 @@ pub struct ColonyAlpha {
     // ROADMAP 175：Alpha 覺醒危機
     /// 是否處於覺醒狀態（eco_pressure ≥ 85 且同場 Alpha ≥ 2 時激活）。
     pub awakened: bool,
+    // ROADMAP 184：菁英 Alpha 背水死戰
+    /// 是否陷入「無援可召的瀕死絕境」而背水死戰；一旦進入便鎖定直到死亡或血量回升。
+    pub last_stand: bool,
 }
 
 /// 給協議層用的 Alpha 視圖（隨快照廣播）。
@@ -230,6 +252,9 @@ pub struct ColonyAlphaView {
     pub awakened: bool,
     /// ROADMAP 176：所屬巢穴是否為當前霸主。前端顯示 👑 徽章。
     pub is_dominant: bool,
+    /// ROADMAP 184：是否背水死戰（無援可召的瀕死絕境）。前端顯示血色急促脈動危機環 + 🩸 背水死戰徽章。
+    #[serde(default)]
+    pub last_stand: bool,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -375,6 +400,12 @@ pub enum MonsterColonyEvent {
         /// 潰逃影響半徑（採巢穴 spawn_radius）。
         radius: f32,
     },
+    /// ROADMAP 184：菁英 Alpha 陷入無援可召的瀕死絕境，進入背水死戰。
+    /// game.rs 主 tick 負責廣播全服垂死怒吼；純演出，不改任何戰鬥數值。
+    AlphaLastStand {
+        colony_name: &'static str,
+        kind: EnemyKind,
+    },
 }
 
 /// 管理所有怪物巢穴。
@@ -508,6 +539,7 @@ impl MonsterColonyManager {
                 clash_target_id: None,
                 allied_to_id: None,
                 awakened: false,
+                last_stand: false,
             });
         }
 
@@ -526,10 +558,52 @@ impl MonsterColonyManager {
         // ROADMAP 176：物種霸主——族群茂盛 + Alpha 持續 3 分鐘則稱霸
         self.tick_dominance(dt, &mut events);
 
+        // ROADMAP 184：菁英 Alpha 背水死戰——瀕死且無援可召時，發出垂死怒吼背水一戰。
+        // 必須排在召喚「之前」：死戰只認「上一幀」已設下的援軍冷卻或兵力上限。若排在召喚之後，
+        // 同幀剛召喚設下的冷卻會被誤判成「無援」而當場觸發死戰——順序保證了「先嘗試召援、
+        // 確認無援可召才死戰」的決策樹（每幀先問「我被逼到絕境了嗎」，再決定要不要召援）。
+        self.tick_alpha_last_stand(&mut events);
+
         // ROADMAP 179：怪物王號令援軍——菁英 Alpha 受重傷召喚巢穴援軍
         self.tick_alpha_summon(dt, &mut events);
 
         events
+    }
+
+    /// ROADMAP 184：偵測陷入「無援可召的瀕死絕境」的菁英 Alpha，鎖定背水死戰狀態並廣播。
+    /// 純演出（不改任何戰鬥數值）：只設 `last_stand` 旗標供前端渲染血色危機環 + 徽章，
+    /// 並在「進入」瞬間發一次全服廣播。血量回升至門檻以上則解除（防禦性，可重新觸發）。
+    fn tick_alpha_last_stand(&mut self, events: &mut Vec<MonsterColonyEvent>) {
+        let dominant = self.dominant_colony_id;
+        // 先算出各巢穴是否已達召喚兵力上限（與 tick_alpha_summon 的保護同口徑）。
+        let over_cap: std::collections::HashMap<u32, bool> = self.colonies.iter()
+            .map(|c| (c.id, c.population >= c.max_population + ALPHA_SUMMON_MAX_EXTRA))
+            .collect();
+
+        let mut entered: Vec<(&'static str, EnemyKind)> = Vec::new();
+        for a in &mut self.alphas {
+            let is_elite = a.awakened || dominant == Some(a.colony_id);
+            let hp_pct = a.hp as f32 / a.max_hp.max(1) as f32;
+            let on_cd = self.alpha_summon_cd.get(&a.id).copied().unwrap_or(0.0) > 0.0;
+            let colony_over_cap = over_cap.get(&a.colony_id).copied().unwrap_or(false);
+
+            if a.hp == 0 {
+                a.last_stand = false;
+                continue;
+            }
+            let cornered = alpha_is_cornered(hp_pct, is_elite, on_cd, colony_over_cap);
+            if cornered && !a.last_stand {
+                a.last_stand = true;
+                entered.push((a.colony_name, a.kind));
+            } else if !cornered && a.last_stand && hp_pct >= LAST_STAND_HP_THRESHOLD {
+                // 血量回升脫離瀕死（如結盟/覺醒加成）→ 解除死戰，允許日後重新觸發。
+                a.last_stand = false;
+            }
+        }
+
+        for (colony_name, kind) in entered {
+            events.push(MonsterColonyEvent::AlphaLastStand { colony_name, kind });
+        }
     }
 
     /// ROADMAP 170：偵測所有不同巢穴 Alpha 對的領地衝突，施加傷害並結算。
@@ -1103,6 +1177,7 @@ impl MonsterColonyManager {
             allied_to_id: a.allied_to_id,
             awakened: a.awakened,
             is_dominant: self.dominant_colony_id == Some(a.colony_id),
+            last_stand: a.last_stand,
         }).collect()
     }
 
@@ -1418,6 +1493,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
             awakened: false,
+            last_stand: false,
         });
         let result = mgr.attack_alpha(aid, cx, cy, 99999, ALPHA_ATTACK_REACH)
             .expect("足量傷害應斬殺 Alpha");
@@ -1804,6 +1880,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
                 awakened: false,
+                last_stand: false,
         });
         let b_id = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1822,6 +1899,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
                 awakened: false,
+                last_stand: false,
         });
         (a_id, b_id)
     }
@@ -1948,6 +2026,7 @@ mod tests {
                 clash_target_id: None,
                 allied_to_id: None,
                 awakened: false,
+                last_stand: false,
             });
         }
         let events = mgr.tick(10.0, 0.0);
@@ -1972,6 +2051,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
                 awakened: false,
+                last_stand: false,
         });
         let id2 = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1984,6 +2064,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
                 awakened: false,
+                last_stand: false,
         });
         let events = mgr.tick(1.0, 0.0);
         assert!(
@@ -2426,6 +2507,7 @@ mod tests {
             clash_target_id: None,
             allied_to_id: None,
             awakened: false,
+            last_stand: false,
         });
         (mgr, col_id)
     }
@@ -2485,7 +2567,7 @@ mod tests {
             x: mgr.colonies[0].cx, y: mgr.colonies[0].cy,
             hp: 100, max_hp: 100, colony_name: mgr.colonies[0].name,
             command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
-            clash_target_id: None, allied_to_id: None, awakened: false,
+            clash_target_id: None, allied_to_id: None, awakened: false, last_stand: false,
         });
         let events = mgr.tick(DOMINANT_QUALIFY_SECS + 1.0, 0.0);
         assert!(
@@ -2731,5 +2813,109 @@ mod tests {
             !mgr.alpha_summon_cd.contains_key(&aid),
             "Alpha 消失後冷卻紀錄應被清除"
         );
+    }
+
+    // ─── ROADMAP 184：菁英 Alpha 背水死戰 ──────────────────────────────────────
+
+    #[test]
+    fn cornered_pure_fn_paths() {
+        // 純函式：非菁英永不死戰；菁英瀕死 + 任一「無援」路徑成立才死戰。
+        assert!(!alpha_is_cornered(0.1, false, true, true), "非菁英不死戰");
+        assert!(!alpha_is_cornered(0.5, true, true, true), "血量未跌破門檻不死戰");
+        assert!(!alpha_is_cornered(0.1, true, false, false), "瀕死但仍有援可召不死戰");
+        assert!(alpha_is_cornered(0.1, true, true, false), "瀕死 + 援軍冷卻 → 死戰");
+        assert!(alpha_is_cornered(0.1, true, false, true), "瀕死 + 兵力上限 → 死戰");
+    }
+
+    #[test]
+    fn last_stand_triggered_when_over_cap() {
+        // 兵力上限路：菁英瀕死且族群已達召喚上限（無兵可調）→ 當幀即背水死戰。
+        let mut mgr = wounded_awakened_alpha();
+        let col_id = mgr.alphas[0].colony_id;
+        if let Some(col) = mgr.colonies.iter_mut().find(|c| c.id == col_id) {
+            col.population = col.max_population + ALPHA_SUMMON_MAX_EXTRA + 1;
+        }
+        let events = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaLastStand { .. })),
+            "無兵可調的瀕死菁英應背水死戰並廣播"
+        );
+        assert!(mgr.alphas[0].last_stand, "應鎖定 last_stand 旗標");
+    }
+
+    #[test]
+    fn last_stand_waits_for_summon_first() {
+        // 決策樹：瀕死但「援軍尚可召」時，當幀應先召援、不死戰；
+        // 召援設下冷卻後的下一幀仍瀕死，才確認無援而背水死戰。
+        let mut mgr = wounded_awakened_alpha();
+        let e1 = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            !e1.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaLastStand { .. })),
+            "第一幀仍有援可召，不應死戰"
+        );
+        assert!(
+            e1.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "第一幀應先召喚援軍"
+        );
+        assert!(!mgr.alphas[0].last_stand, "第一幀不應鎖定死戰");
+
+        mgr.alphas[0].hp = 1; // 維持瀕死
+        let e2 = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            e2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaLastStand { .. })),
+            "援軍冷卻中又瀕死 → 確認無援，背水死戰"
+        );
+        assert!(mgr.alphas[0].last_stand, "第二幀應鎖定死戰");
+    }
+
+    #[test]
+    fn last_stand_no_double_event() {
+        // 鎖定後不應每幀重複廣播。
+        let mut mgr = wounded_awakened_alpha();
+        let col_id = mgr.alphas[0].colony_id;
+        if let Some(col) = mgr.colonies.iter_mut().find(|c| c.id == col_id) {
+            col.population = col.max_population + ALPHA_SUMMON_MAX_EXTRA + 1;
+        }
+        let _ = mgr.tick(0.1, KEEP_AWAKE_PRESSURE); // 進入死戰
+        assert!(mgr.alphas[0].last_stand, "前置：應已死戰");
+        mgr.alphas[0].hp = 1;
+        let e2 = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            !e2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaLastStand { .. })),
+            "已在死戰狀態不應重複廣播"
+        );
+    }
+
+    #[test]
+    fn last_stand_not_for_non_elite() {
+        // 非菁英（未覺醒、非霸主）即使瀕死且無兵可調也不死戰——死戰是菁英專屬戲份。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        mgr.alphas[0].hp = 1; // 瀕死但非菁英
+        let col_id = mgr.alphas[0].colony_id;
+        if let Some(col) = mgr.colonies.iter_mut().find(|c| c.id == col_id) {
+            col.population = col.max_population + ALPHA_SUMMON_MAX_EXTRA + 1;
+        }
+        let events = mgr.tick(0.1, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaLastStand { .. })),
+            "非菁英 Alpha 不應背水死戰"
+        );
+        assert!(!mgr.alphas[0].last_stand);
+    }
+
+    #[test]
+    fn last_stand_cleared_on_death() {
+        // 王陣亡（hp=0）時死戰旗標應清除，避免殘留到下一隻同槽 Alpha。
+        let mut mgr = wounded_awakened_alpha();
+        let col_id = mgr.alphas[0].colony_id;
+        if let Some(col) = mgr.colonies.iter_mut().find(|c| c.id == col_id) {
+            col.population = col.max_population + ALPHA_SUMMON_MAX_EXTRA + 1;
+        }
+        let _ = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(mgr.alphas[0].last_stand, "前置：應已死戰");
+        mgr.alphas[0].hp = 0; // 陣亡
+        let _ = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(!mgr.alphas[0].last_stand, "陣亡後死戰旗標應清除");
     }
 }
