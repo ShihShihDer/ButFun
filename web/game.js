@@ -8126,6 +8126,20 @@
         ctx.restore();
       }
 
+      // ROADMAP 213：孤獵潛行突襲——壓低身子緩緩潛近獵物的掠食者（state==="stalking"）頭頂
+      // 浮一個輕輕起伏的 🐾，讓「狼影鬼祟逼近、伺機撲擊」一眼看得到（潛行不畫奔跑動畫，
+      // 故身形讀起來像匍匐而非狂奔；逼到撲擊距離才轉 hunting 全速撲出）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在掠食者潛近段才給此狀態）。
+      if (w.state === "stalking") {
+        ctx.save();
+        ctx.globalAlpha = 0.7 + 0.25 * Math.sin(now / 300); // 緩緩起伏，像屏息潛行
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🐾", 8, -22);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
