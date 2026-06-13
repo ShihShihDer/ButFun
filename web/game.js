@@ -358,6 +358,16 @@
   const GALAXY_NIGHT_LIGHT = 0.42;   // daynight.light 低於此值算「夜」（與極光／夜間氛圍同調）
   let _galaxyFade = 0;               // 夏夜銀河淡入淡出進度 [0,1]（非夏夜→0，夏夜→1，逐幀緩緩趨近）
   let _galaxyStars = null;           // 惰性生成的銀河微星佈局（沿帶 u、垂帶偏移 off、大小、閃爍相位、色）
+  // 春夜螢火（ROADMAP 233）：231 冬夜極光、232 夏夜銀河各給了冬、夏一張「夜臉」，春季的夜卻仍與
+  // 其他季節無異。本切片給春季補上它的夜景——當季節為春天且入夜，草地上空緩緩亮起一群黃綠色螢火蟲，
+  // 貼著地面緩緩游移、一明一滅地閃爍。與冬夜極光（天邊流動的彩色簾幕）、夏夜銀河（斜貫天頂的靜止星帶）
+  // 刻意三分——螢火是春夜「貼地飛舞、明滅游移的點點生靈」，把夜景從天空帶回地面。與夜晚乙太微光
+  //（金色、散佈全畫面、勻緩明滅）也刻意區隔：螢火是黃綠色、只在下半草地高度、一閃一滅的脈衝節奏、
+  // 且只在春夜出現。純前端、讀既有 currentSeason＋daynight.light、零後端。
+  const FIREFLY_NIGHT_LIGHT = 0.42;  // daynight.light 低於此值算「夜」（與極光／銀河同調）
+  const FIREFLY_COUNT = 36;          // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
+  let _fireflyFade = 0;              // 春夜螢火淡入淡出進度 [0,1]（非春夜→0，春夜→1，逐幀緩緩趨近）
+  let _fireflies = null;             // 惰性生成的螢火蟲池（畫面比例座標的位置、緩游速度、閃爍相位、尺寸）
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4099,6 +4109,7 @@
       drawNightStars(performance.now());               // 夜空星星 + 遠方行星（ROADMAP 19）
       drawGalaxy(performance.now(), _weatherDt);        // 夏夜銀河（232），晴朗夏夜斜掛的銀色星河、與星空同層
       drawNightMotes(performance.now());               // 夜晚漂浮的乙太微光
+      drawFireflies(performance.now(), _weatherDt);    // 春夜螢火（233），春夜草地上點點黃綠明滅游移的螢火蟲
       drawBiomeParallax(camX, camY, renderNow);        // 生態背景視差層次（ROADMAP 91）
       drawLumenNightGlow(camX, camY, performance.now()); // 燐光族夜視光環
       drawNightDangerVignette(performance.now());      // 夜間危機暈輪
@@ -11304,6 +11315,88 @@
       ctx.fillStyle = `rgb(${s.c})`;
       ctx.beginPath();
       ctx.arc(bx, by, s.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ── ROADMAP 233: 春夜螢火 ─────────────────────────────────────────────────
+  // 純函式：春季夜晚回 1、其餘回 0（螢火只在春夜出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function fireflyTargetIntensity(season, light) {
+    const dark = (typeof light === "number" ? light : 1) < FIREFLY_NIGHT_LIGHT;
+    return (season === "spring" && dark) ? 1 : 0;
+  }
+
+  // 純函式：把目前螢火季勢 cur 朝目標 target 以固定速率逼近（每秒 FIREFLY_FADE_RATE），夾在 [0,1]。
+  // 與極光／銀河同樣從容（入春夜螢火緩緩亮起、出春緩緩散去，不該一下子冒出一整片）。壞值（NaN）退回 0。
+  function fireflyFadeStep(cur, target, dt) {
+    const FIREFLY_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與極光／銀河同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * FIREFLY_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：螢火蟲的明滅脈衝亮度 [0,1]＝把正弦相位以三次方塑形，讓「亮的時間短、暗的時間長」，
+  // 賣螢火「一閃一滅」的脈衝感（而非乙太微光那種勻緩明滅）。壞值（NaN）退回 0。
+  function fireflyPulse(phase) {
+    if (!(phase === phase)) return 0;            // NaN 檢查（NaN !== NaN）
+    const s = 0.5 + 0.5 * Math.sin(phase);       // 0..1
+    const v = s * s * s;                         // 三次方→暗久亮短的脈衝
+    return Math.max(0, Math.min(1, v));
+  }
+
+  // 生成螢火蟲池（一次性、之後快取，不每幀重建→確定性、不隨鏡頭抖動）。各螢火：畫面比例座標 x（全寬）、
+  // y（只在下半草地高度 0.52~0.98）、極緩游移速度、閃爍相位／速度（比乙太微光俐落）、微小尺寸。
+  function makeFireflies() {
+    const flies = [];
+    for (let i = 0; i < FIREFLY_COUNT; i++) {
+      flies.push({
+        x: Math.random(),
+        y: 0.52 + Math.random() * 0.46,
+        vx: (Math.random() - 0.5) * 0.03,   // 每秒走畫面寬的 ±1.5%，極緩游移
+        vy: (Math.random() - 0.5) * 0.02,
+        phase: Math.random() * Math.PI * 2,
+        tws: 1.2 + Math.random() * 1.8,      // 閃爍速度（比乙太微光快、明滅更俐落）
+        size: 1.0 + Math.random() * 1.2,
+      });
+    }
+    return flies;
+  }
+
+  // 每幀更新並繪製春夜螢火。非春夜時 _fireflyFade 緩緩歸零、池清空、零開銷早退。
+  // 畫在夜空與乙太微光（19/232）之後——螢火是貼地的前景氛圍，比天象更靠近觀者；用畫面座標、不隨鏡頭平移。
+  function drawFireflies(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = fireflyTargetIntensity(currentSeason, light);
+    _fireflyFade = fireflyFadeStep(_fireflyFade, target, Math.max(0, (dt || 0)));
+    if (_fireflyFade <= 0.01) { _fireflies = null; return; }
+    if (reduceMotion || !_parallaxEnabled) { _fireflyFade = 0; _fireflies = null; return; }
+    if (!_fireflies) _fireflies = makeFireflies();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+    const step = Math.max(0, dt || 0);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";   // 加色，螢火像疊在夜色上的點點黃綠光
+    for (const f of _fireflies) {
+      // 極緩游移；飄出左右邊界從另一側繞回，飄出上下界（草地帶）就彈回帶內，永遠貼在下半草地高度飄。
+      f.x += f.vx * step;
+      f.y += f.vy * step;
+      if (f.x < 0) f.x += 1; else if (f.x >= 1) f.x -= 1;
+      if (f.y < 0.52) f.y = 0.98; else if (f.y >= 0.98) f.y = 0.52;
+      const a = _fireflyFade * fireflyPulse(t * f.tws + f.phase);
+      if (a < 0.02) continue;
+      const px = f.x * W, py = f.y * H;
+      const r = f.size * 2.4;
+      const g = ctx.createRadialGradient(px, py, 0, px, py, r);
+      g.addColorStop(0, `rgba(190,255,130,${(a * 0.9).toFixed(3)})`);  // 中心黃綠
+      g.addColorStop(1, "rgba(190,255,130,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();
