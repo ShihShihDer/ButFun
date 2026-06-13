@@ -1197,6 +1197,9 @@ pub struct EnemyView {
     /// 夜間休息中（ROADMAP 148）：此怪夜間回巢靜止，前端畫成半透明 + 💤 符號。
     #[serde(default, skip_serializing_if = "is_false")]
     pub resting: bool,
+    /// 潰逃中（ROADMAP 183）：retreat_timer>0 強制逃離玩家，前端在頭頂畫 💨 逃竄符號。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub routing: bool,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -1589,6 +1592,7 @@ mod tests {
                 alive: true,
                 notorious: false,
                 resting: false,
+                routing: false,
             }],
             daynight: DayNightView {
                 phase: Phase::Day,

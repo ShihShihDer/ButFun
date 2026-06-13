@@ -2192,6 +2192,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         MonsterColonyEvent::DominanceBroken { .. } => {}
                                         // ROADMAP 179：怪物王號令援軍——只由 game.rs 主 tick 處理
                                         MonsterColonyEvent::AlphaSummonedReinforcements { .. } => {}
+                                        // ROADMAP 183：族群被打殘 → 殘兵潰逃。對巢穴範圍內同種殘部設 retreat_timer
+                                        // 逃回巢穴，並廣播全服捷報。鎖序：此處未持其他鎖，只暫借 enemies 寫鎖。
+                                        MonsterColonyEvent::ColonyRouted { name, kind, cx, cy, radius } => {
+                                            let fled = app.enemies.write().unwrap().rout_region(
+                                                cx, cy, kind, radius,
+                                                crate::monster_colony::ROUT_DURATION_SECS,
+                                            );
+                                            if fled > 0 {
+                                                let _ = app.tx_chat.send(format!(
+                                                    "💨 [{name}] 的族群被打得潰不成軍，殘兵四散奔逃！"
+                                                ));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -3205,6 +3218,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = app.tx_chat.send(format!(
                                     "👑【霸主 Alpha 倒下！】{killer_name} 終結了 {colony_name} 的霸主之勢！\
                                      額外獲得 +{DOMINANT_ALPHA_BONUS_ETHER} 乙太！"
+                                ));
+                            }
+                            // ROADMAP 183：斬首路——指揮全族的 Alpha 倒下，群龍無首，殘部當場潰逃回巢。
+                            // monster_colonies 寫鎖已於 attack_alpha 結束時釋放，此處只暫借 enemies 寫鎖。
+                            let fled = app.enemies.write().unwrap().rout_region(
+                                result.cx, result.cy, result.kind, result.rout_radius,
+                                crate::monster_colony::ROUT_DURATION_SECS,
+                            );
+                            if fled > 0 {
+                                let _ = app.tx_chat.send(format!(
+                                    "💨 [{colony_name}] 首領倒下，群龍無首——殘部驚潰逃竄！"
                                 ));
                             }
                         }

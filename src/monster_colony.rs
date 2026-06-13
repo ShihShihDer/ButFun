@@ -134,6 +134,19 @@ const ALPHA_SUMMON_MAX_EXTRA: u32 = 6;
 /// 召喚指揮氣泡顯示文字（沿用 ROADMAP 169 前端指揮氣泡渲染）。
 const SUMMON_TACTIC_NAME: &str = "號令援軍";
 
+// ─── ROADMAP 183：族群潰逃 ─────────────────────────────────────────────────────
+/// 族群人口（占上限比例）首次跌破此門檻時，殘兵士氣崩潰、潰逃回巢。
+/// 與 colony_density 的「稀疏」界線（0.33）對齊：被打到稀疏即視為殘破。
+pub const ROUT_FRACTION: f32 = 0.34;
+/// 潰逃持續秒數：期間殘兵強制逃離玩家（沿用 retreat_timer 路徑），結束後自然回巢。
+pub const ROUT_DURATION_SECS: f32 = 6.0;
+
+/// 純函式：給定族群上限，回傳「潰逃門檻人口」——人口跌破此值即視為殘破。
+/// 至少為 1，避免 max 很小時門檻歸零永不觸發。
+pub fn rout_threshold(max_population: u32) -> u32 {
+    ((max_population as f32 * ROUT_FRACTION).round() as u32).max(1)
+}
+
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
 /// 單個怪物巢穴。
@@ -247,6 +260,11 @@ pub struct AlphaKilledResult {
     pub was_awakened: bool,
     /// ROADMAP 176：擊殺時 Alpha 是否為霸主巢穴的 Alpha（是 → 額外獎勵）。
     pub was_dominant: bool,
+    /// ROADMAP 183：所屬巢穴中心座標——供 ws.rs 斬首後對殘部觸發潰逃。
+    pub cx: f32,
+    pub cy: f32,
+    /// ROADMAP 183：潰逃影響半徑（巢穴 spawn_radius）。
+    pub rout_radius: f32,
 }
 
 // ─── ROADMAP 173：傳說古 Alpha ────────────────────────────────────────────────
@@ -346,6 +364,16 @@ pub enum MonsterColonyEvent {
         kind: EnemyKind,
         count: u32,
         positions: Vec<(f32, f32)>,
+    },
+    /// ROADMAP 183：族群被打殘（人口首次跌破 ROUT_FRACTION）→ 殘兵潰逃。
+    /// ws.rs 收到後對 (cx,cy) radius 內同種怪呼叫 EnemyField::rout_region 並廣播。
+    ColonyRouted {
+        name: &'static str,
+        kind: EnemyKind,
+        cx: f32,
+        cy: f32,
+        /// 潰逃影響半徑（採巢穴 spawn_radius）。
+        radius: f32,
     },
 }
 
@@ -701,6 +729,12 @@ impl MonsterColonyManager {
         let was_allied = self.alphas[idx].allied_to_id.is_some();
         let was_awakened = self.alphas[idx].awakened;
         let was_dominant = self.dominant_colony_id == Some(self.alphas[idx].colony_id);
+        // ROADMAP 183：取所屬巢穴幾何，供斬首後對殘部觸發潰逃（巢穴可能已被清空 → 退回 Alpha 自身位置）。
+        let colony_id = self.alphas[idx].colony_id;
+        let (rout_cx, rout_cy, rout_radius) = self.colonies.iter()
+            .find(|c| c.id == colony_id)
+            .map(|c| (c.cx, c.cy, c.spawn_radius))
+            .unwrap_or((self.alphas[idx].x, self.alphas[idx].y, COLONY_KILL_RADIUS));
         let result = AlphaKilledResult {
             colony_id: self.alphas[idx].colony_id,
             colony_name: self.alphas[idx].colony_name,
@@ -708,6 +742,9 @@ impl MonsterColonyManager {
             was_allied,
             was_awakened,
             was_dominant,
+            cx: rout_cx,
+            cy: rout_cy,
+            rout_radius,
         };
         self.alphas.swap_remove(idx);
 
@@ -1020,10 +1057,23 @@ impl MonsterColonyManager {
         }
         if let Some(idx) = best {
             let col = &mut self.colonies[idx];
+            let pop_before = col.population;
             col.population -= 1;
             let colony_id = col.id;
             // ROADMAP 172：通知生態清剿委託此巢穴被擊殺了一隻怪物。
             events.push(MonsterColonyEvent::MonsterKilledInColony { colony_id });
+            // ROADMAP 183：族群人口首次跌破潰逃門檻（且尚未歸零）→ 殘兵士氣崩潰、潰逃回巢。
+            // 只在「跨過門檻的那一刀」觸發一次，避免之後每刀洗版；歸零走下方 ColonyCleared、不潰逃。
+            let thresh = rout_threshold(col.max_population);
+            if col.population > 0 && col.population < thresh && pop_before >= thresh {
+                events.push(MonsterColonyEvent::ColonyRouted {
+                    name: col.name,
+                    kind: col.kind,
+                    cx: col.cx,
+                    cy: col.cy,
+                    radius: col.spawn_radius,
+                });
+            }
             // ROADMAP 176：若為霸主巢穴，額外發出霸主擊殺事件供 ws.rs 給乙太獎勵。
             if self.dominant_colony_id == Some(colony_id) {
                 events.push(MonsterColonyEvent::MonsterKilledInDominantColony);
@@ -1292,6 +1342,88 @@ mod tests {
     fn colony_views_count_matches() {
         let mgr = MonsterColonyManager::new();
         assert_eq!(mgr.colony_views().len(), mgr.colonies.len());
+    }
+
+    // ── ROADMAP 183：族群潰逃 ──────────────────────────────────────────────────
+
+    #[test]
+    fn rout_threshold_basics() {
+        // 34% 門檻：取四捨五入、至少 1。
+        assert_eq!(rout_threshold(10), 3, "10*0.34=3.4→3");
+        assert_eq!(rout_threshold(8), 3, "8*0.34=2.72→3");
+        assert_eq!(rout_threshold(1), 1, "上限 1 時門檻至少 1");
+        assert_eq!(rout_threshold(0), 1, "上限 0 也保底為 1，避免永不觸發");
+    }
+
+    #[test]
+    fn kill_crossing_rout_threshold_emits_routed_once() {
+        let mut mgr = MonsterColonyManager::new();
+        let (cx, cy, kind) = (mgr.colonies[0].cx, mgr.colonies[0].cy, mgr.colonies[0].kind);
+        let max = mgr.colonies[0].max_population;
+        let thresh = rout_threshold(max);
+        // 把人口設在門檻（尚未潰逃），下一刀跌破門檻 → 觸發一次潰逃。
+        mgr.colonies[0].population = thresh;
+        let events = mgr.on_monster_killed_near(cx, cy, kind);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::ColonyRouted { .. })),
+            "人口首次跌破潰逃門檻應發出 ColonyRouted"
+        );
+        // 再殺一刀（已在門檻下）不應再次潰逃，避免洗版。
+        let events2 = mgr.on_monster_killed_near(cx, cy, kind);
+        assert!(
+            !events2.iter().any(|e| matches!(e, MonsterColonyEvent::ColonyRouted { .. })),
+            "已在門檻下不應重複發出 ColonyRouted"
+        );
+    }
+
+    #[test]
+    fn wiping_to_zero_does_not_rout() {
+        // 打到歸零走 ColonyCleared，不發潰逃（沒有殘兵可逃）。
+        let mut mgr = MonsterColonyManager::new();
+        mgr.colonies[0].population = 1;
+        let (cx, cy, kind) = (mgr.colonies[0].cx, mgr.colonies[0].cy, mgr.colonies[0].kind);
+        let events = mgr.on_monster_killed_near(cx, cy, kind);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::ColonyRouted { .. })),
+            "族群歸零不應發出 ColonyRouted"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::ColonyCleared { .. })),
+            "族群歸零應發出 ColonyCleared"
+        );
+    }
+
+    #[test]
+    fn alpha_kill_result_carries_colony_geometry() {
+        // 斬首路：attack_alpha 回傳應帶巢穴中心與半徑，供 ws.rs 觸發潰逃。
+        let mut mgr = MonsterColonyManager::new();
+        let col0 = &mgr.colonies[0];
+        let (col_id, cx, cy, radius, kind) =
+            (col0.id, col0.cx, col0.cy, col0.spawn_radius, col0.kind);
+        // 直接植入一隻位於巢穴 0 中心的 Alpha，再用足量傷害斬殺。
+        let aid = mgr.next_alpha_id;
+        mgr.next_alpha_id += 1;
+        mgr.alphas.push(ColonyAlpha {
+            id: aid,
+            colony_id: col_id,
+            kind,
+            x: cx,
+            y: cy,
+            hp: 100,
+            max_hp: 100,
+            colony_name: "測試巢",
+            command_cooldown: 9999.0,
+            active_tactic: None,
+            tactic_remaining: 0.0,
+            clash_target_id: None,
+            allied_to_id: None,
+            awakened: false,
+        });
+        let result = mgr.attack_alpha(aid, cx, cy, 99999, ALPHA_ATTACK_REACH)
+            .expect("足量傷害應斬殺 Alpha");
+        assert_eq!(result.cx, cx);
+        assert_eq!(result.cy, cy);
+        assert_eq!(result.rout_radius, radius);
     }
 
     #[test]
