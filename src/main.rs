@@ -121,6 +121,7 @@ mod monster_colony;
 mod eco_pressure;
 mod eco_report;
 mod eco_bounty;
+mod eco_festival;
 
 use std::net::SocketAddr;
 

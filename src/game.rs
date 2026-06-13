@@ -752,6 +752,32 @@ pub fn spawn(app: AppState) {
                     }
                 }
 
+                // ROADMAP 178：生態豐收節 tick——壓力曾衝上危機後被壓回安寧時，全城自動慶祝。
+                {
+                    let invasion_active = app.invasion.read().unwrap().active;
+                    let event = app.eco_festival.write().unwrap().tick(dt, eco_pressure, invasion_active);
+                    if let Some(ev) = event {
+                        use crate::eco_festival::EcoFestivalEvent;
+                        match ev {
+                            EcoFestivalEvent::Started { reward_per_player } => {
+                                // 開節即時發給所有在線玩家乙太。
+                                {
+                                    let mut players = app.players.write().unwrap();
+                                    for p in players.values_mut() {
+                                        p.ether = p.ether.saturating_add(reward_per_player);
+                                    }
+                                }
+                                let _ = app.tx_chat.send(
+                                    crate::eco_festival::started_text(reward_per_player)
+                                );
+                            }
+                            EcoFestivalEvent::Ended => {
+                                let _ = app.tx_chat.send(crate::eco_festival::ended_text());
+                            }
+                        }
+                    }
+                }
+
                 let cmds = {
                     let mut director = app.director.write().unwrap();
                     director.update_population(resident_count);
@@ -2457,6 +2483,8 @@ pub fn spawn(app: AppState) {
                         eco_bounty: app.eco_bounty.read().unwrap().view(),
                         // 傳說古 Alpha（ROADMAP 173）：目前存活的世界頭目（無則為 None）。
                         ancient_alpha: app.monster_colonies.read().unwrap().ancient_alpha_view(),
+                        // 生態豐收節（ROADMAP 178）：進行中的全城慶典（無則為 None）。
+                        eco_festival: app.eco_festival.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

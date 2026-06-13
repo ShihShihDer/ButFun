@@ -787,6 +787,10 @@ pub enum ServerMsg {
         /// 前端在世界地圖繪製巨大特殊圖示，玩家點擊觸發 AttackAncientAlpha。
         #[serde(default)]
         ancient_alpha: Option<crate::monster_colony::AncientAlphaView>,
+        /// 生態豐收節（ROADMAP 178）：進行中的全城慶典（null = 無慶典）。
+        /// 前端在生態面板顯示金色慶典橫幅（剩餘分鐘 + 乙太獎勵）。
+        #[serde(default)]
+        eco_festival: Option<crate::eco_festival::EcoFestivalView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1656,6 +1660,7 @@ mod tests {
             alpha_monsters: vec![],
             eco_bounty: None,
             ancient_alpha: None,
+            eco_festival: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

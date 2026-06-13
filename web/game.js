@@ -812,7 +812,8 @@
       + "|" + monsterSpeciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
       + "|" + monsterColonyViews.map(c => `${c.id}${c.density}${c.is_dominant ? "D" : ""}`).join(",")
       + "|" + (ecoBounty ? `${ecoBounty.kills_so_far}/${ecoBounty.kill_target}/${ecoBounty.time_left_secs}` : "none")
-      + "|dom:" + (dominantColonyId ?? "none");
+      + "|dom:" + (dominantColonyId ?? "none")
+      + "|fest:" + (ecoFestival ? Math.ceil(ecoFestival.time_left_secs / 60) : "none");
     if (sig === lastSpeciesHudSig) return;
     lastSpeciesHudSig = sig;
 
@@ -833,12 +834,26 @@
       const epCol = ep >= 75 ? "#ff6060" : ep >= 50 ? "#ffcc44" : ep >= 25 ? "#88aaff" : "#778";
       // 委託提示（ROADMAP 172）
       const bountyHint = ecoBounty ? ` <span style="color:#ffaa33;">📋${ecoBounty.kills_so_far}/${ecoBounty.kill_target}</span>` : "";
+      // 豐收節提示（ROADMAP 178）：安寧慶典進行中時亮金綠 🌾。
+      const festHint = ecoFestival ? ` <span style="color:#7be07b;">🌾</span>` : "";
       panel.style.minWidth = "0";
-      panel.innerHTML = `<span style="color:${epCol};">🌿${alertHtml}${bountyHint} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
+      panel.innerHTML = `<span style="color:${epCol};">🌿${alertHtml}${bountyHint}${festHint} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
       return;
     }
 
     panel.style.minWidth = "145px";
+
+    // 生態豐收節（ROADMAP 178）：安寧慶典進行中時，最上方亮金綠色慶典橫幅。
+    let festivalSection = "";
+    if (ecoFestival) {
+      const f = ecoFestival;
+      const fMins = Math.ceil(f.time_left_secs / 60);
+      festivalSection = `<div style="margin-bottom:4px;border-bottom:1px solid #2a5;padding-bottom:3px;background:linear-gradient(90deg,rgba(40,90,30,0.35),rgba(90,80,0,0.25));border-radius:4px;padding:3px 4px 3px;">
+        <div style="color:#9be87b;font-size:.62rem;margin-bottom:1px;">🌾 生態豐收節</div>
+        <div style="color:#d8f0a8;font-size:.63rem;">野外回歸安寧，全城歡慶！</div>
+        <div style="color:#a8cc66;font-size:.6rem;">⏱ ${fMins}分鐘 · 🪙 +${f.reward_per_player}乙太/人</div>
+      </div>`;
+    }
 
     // 生態清剿委託（ROADMAP 172）：有活躍委託時顯示在最上方
     let bountySection = "";
@@ -911,7 +926,7 @@
       colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴${headerExtra}</div>${colonyRows}`;
     }
 
-    panel.innerHTML = `${bountySection}${pressureHtml}${wildSection}${monsterSection}${colonySection}
+    panel.innerHTML = `${festivalSection}${bountySection}${pressureHtml}${wildSection}${monsterSection}${colonySection}
       <div style="color:#445;font-size:.58rem;margin-top:4px;text-align:right;">▾ 點此收合</div>`;
   }
 
@@ -952,6 +967,7 @@
   let alphaMonsters = [];           // ROADMAP 168 巢穴 Alpha [{id, colony_id, kind, x, y, hp, max_hp}]
   let ecoBounty = null;             // ROADMAP 172 生態清剿委託 {colony_name, kill_target, kills_so_far, reward_per_player, time_left_secs}
   let ancientAlpha = null;          // ROADMAP 173 傳說古 Alpha {x, y, hp, max_hp}（null = 未出現）
+  let ecoFestival = null;           // ROADMAP 178 生態豐收節 {time_left_secs, reward_per_player}（null = 無慶典）
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -1328,6 +1344,8 @@
         ecoBounty = msg.eco_bounty ?? null;
         // 傳說古 Alpha（ROADMAP 173）：世界頭目狀態，null 表示尚未現身或冷卻中。
         ancientAlpha = msg.ancient_alpha ?? null;
+        // 生態豐收節（ROADMAP 178）：進行中的全城慶典，null 表示無慶典。
+        ecoFestival = msg.eco_festival ?? null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
