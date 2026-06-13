@@ -119,6 +119,21 @@ pub const DOMINANT_ALPHA_BONUS_ETHER: u32 = 5;
 /// 霸主解除後該巢穴的冷卻秒數（15 分鐘，避免連續稱霸）。
 pub const DOMINANT_COOLDOWN_SECS: f32 = 15.0 * 60.0;
 
+// ─── ROADMAP 179：怪物王號令援軍 ───────────────────────────────────────────────
+/// 菁英 Alpha（覺醒或霸主）血量跌破此比例時，會號令巢穴援軍馳援。
+/// 以「重傷」為觸發前提，等同要求玩家正在輸出——不會在無人交戰時憑空刷怪。
+const ALPHA_SUMMON_HP_THRESHOLD: f32 = 0.5;
+/// 兩次召喚之間的冷卻（秒），避免連續刷怪洗版。
+const ALPHA_SUMMON_COOLDOWN_SECS: f32 = 45.0;
+/// 每次召喚的援軍數量。
+const ALPHA_SUMMON_COUNT: u32 = 3;
+/// 援軍出生散佈半徑（像素，圍在王身邊）。
+const ALPHA_SUMMON_RADIUS: f32 = 90.0;
+/// 援軍兵力上限保護：該巢穴族群超過 max + 此值時暫停召喚（防病態洗怪）。
+const ALPHA_SUMMON_MAX_EXTRA: u32 = 6;
+/// 召喚指揮氣泡顯示文字（沿用 ROADMAP 169 前端指揮氣泡渲染）。
+const SUMMON_TACTIC_NAME: &str = "號令援軍";
+
 // ─── 型別 ────────────────────────────────────────────────────────────────────
 
 /// 單個怪物巢穴。
@@ -324,6 +339,14 @@ pub enum MonsterColonyEvent {
     DominanceBroken { colony_id: u32, colony_name: &'static str },
     /// ROADMAP 176：玩家在霸主巢穴附近擊殺普通怪物——ws.rs 給擊殺者 +1 乙太。
     MonsterKilledInDominantColony,
+    /// ROADMAP 179：菁英 Alpha（覺醒或霸主）受重傷時號令巢穴援軍馳援。
+    /// game.rs 對每個 position 呼叫 inject_event_enemy 注入援軍，並廣播全服警示。
+    AlphaSummonedReinforcements {
+        colony_name: &'static str,
+        kind: EnemyKind,
+        count: u32,
+        positions: Vec<(f32, f32)>,
+    },
 }
 
 /// 管理所有怪物巢穴。
@@ -354,6 +377,9 @@ pub struct MonsterColonyManager {
     dominant_qualify_timer: f32,
     /// 各巢穴霸主冷卻剩餘秒數（剛失去霸主後需冷卻，避免連續稱霸）。
     dominant_cooldowns: std::collections::HashMap<u32, f32>,
+    // ROADMAP 179：怪物王號令援軍
+    /// 各 Alpha 的召喚冷卻剩餘秒數（key = alpha.id）；>0 表示冷卻中不再召喚。
+    alpha_summon_cd: std::collections::HashMap<u32, f32>,
 }
 
 impl MonsterColonyManager {
@@ -371,6 +397,7 @@ impl MonsterColonyManager {
             candidate_colony_id: None,
             dominant_qualify_timer: 0.0,
             dominant_cooldowns: std::collections::HashMap::new(),
+            alpha_summon_cd: std::collections::HashMap::new(),
         }
     }
 
@@ -471,6 +498,9 @@ impl MonsterColonyManager {
         // ROADMAP 176：物種霸主——族群茂盛 + Alpha 持續 3 分鐘則稱霸
         self.tick_dominance(dt, &mut events);
 
+        // ROADMAP 179：怪物王號令援軍——菁英 Alpha 受重傷召喚巢穴援軍
+        self.tick_alpha_summon(dt, &mut events);
+
         events
     }
 
@@ -561,6 +591,78 @@ impl MonsterColonyManager {
                     }
                 }
             }
+        }
+    }
+
+    /// ROADMAP 179：怪物王號令援軍——菁英 Alpha（覺醒或霸主）受重傷時召喚巢穴援軍。
+    ///
+    /// 設計重點：
+    /// - **只有菁英級**（`awakened` 或所屬巢穴稱霸）才召喚——守成本紀律，大眾 Alpha 不刷怪。
+    /// - **重傷才召喚**（HP < 50%）——血量只在玩家攻擊時下降，故等同「玩家正在交戰」的前提，
+    ///   不會在無人荒野憑空生怪。
+    /// - **冷卻 + 兵力上限**雙重保護，避免病態洗版。
+    /// - 援軍走既有 `inject_event_enemy` 管線（由 game.rs 消化事件），零戰鬥/移動架構改動。
+    fn tick_alpha_summon(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
+        // 冷卻倒數 + 清除已不存在 Alpha 的殘留計時（避免 map 無限增長）。
+        let alive: std::collections::HashSet<u32> = self.alphas.iter().map(|a| a.id).collect();
+        self.alpha_summon_cd.retain(|id, _| alive.contains(id));
+        for cd in self.alpha_summon_cd.values_mut() {
+            *cd = (*cd - dt).max(0.0);
+        }
+
+        let dominant = self.dominant_colony_id;
+        // 第一遍：挑出符合召喚條件的 Alpha（先收集避免可變借用衝突）。
+        let mut to_summon: Vec<(u32, u32)> = Vec::new(); // (alpha_id, colony_id)
+        for a in &self.alphas {
+            let is_elite = a.awakened || dominant == Some(a.colony_id);
+            let hp_pct = a.hp as f32 / a.max_hp.max(1) as f32;
+            let on_cd = self.alpha_summon_cd.get(&a.id).copied().unwrap_or(0.0) > 0.0;
+            if is_elite && a.hp > 0 && hp_pct < ALPHA_SUMMON_HP_THRESHOLD && !on_cd {
+                to_summon.push((a.id, a.colony_id));
+            }
+        }
+
+        // 第二遍：執行召喚。
+        for (alpha_id, colony_id) in to_summon {
+            // 取得王身座標作為援軍散佈圓心。
+            let Some((ax, ay, kind, colony_name)) = self.alphas.iter()
+                .find(|a| a.id == alpha_id)
+                .map(|a| (a.x, a.y, a.kind, a.colony_name))
+            else { continue };
+
+            // 兵力上限保護：族群已遠超容量則暫停召喚（仍進冷卻，避免每幀重判）。
+            let over_cap = self.colonies.iter()
+                .find(|c| c.id == colony_id)
+                .map(|c| c.population >= c.max_population + ALPHA_SUMMON_MAX_EXTRA)
+                .unwrap_or(true);
+            if over_cap {
+                self.alpha_summon_cd.insert(alpha_id, ALPHA_SUMMON_COOLDOWN_SECS);
+                continue;
+            }
+
+            // 散佈援軍出生點（圍在王身邊）。
+            let mut positions = Vec::with_capacity(ALPHA_SUMMON_COUNT as usize);
+            for k in 0..ALPHA_SUMMON_COUNT {
+                let (ox, oy) = summon_offset(alpha_id, k);
+                positions.push((ax + ox, ay + oy));
+            }
+            let count = positions.len() as u32;
+
+            // 族群計數同步增加（援軍是「額外兵力」，允許暫時超過 max；死亡後自然回落，
+            // 期間自然暫停一般補充——符合「王把族群全叫出來護駕」的直覺）。
+            if let Some(col) = self.colonies.iter_mut().find(|c| c.id == colony_id) {
+                col.population += count;
+            }
+            // 設定指揮氣泡（沿用 ROADMAP 169 前端渲染，無需新前端碼）。
+            if let Some(a) = self.alphas.iter_mut().find(|a| a.id == alpha_id) {
+                a.active_tactic = Some(SUMMON_TACTIC_NAME.to_string());
+                a.tactic_remaining = ALPHA_TACTIC_DURATION_SECS;
+            }
+            self.alpha_summon_cd.insert(alpha_id, ALPHA_SUMMON_COOLDOWN_SECS);
+
+            events.push(MonsterColonyEvent::AlphaSummonedReinforcements {
+                colony_name, kind, count, positions,
+            });
         }
     }
 
@@ -1005,6 +1107,20 @@ fn colony_spawn_pos(col: &MonsterColony) -> (f32, f32) {
 /// Alpha 固定在巢穴中心正北方 40px 處（確保明顯、不與普通怪重疊）。
 fn alpha_spawn_pos(col: &MonsterColony) -> (f32, f32) {
     (col.cx, col.cy - 40.0)
+}
+
+/// ROADMAP 179：援軍相對王身的散佈偏移（以 alpha_id + 序號為鹽值，確定性不重疊）。
+fn summon_offset(alpha_id: u32, k: u32) -> (f32, f32) {
+    let mut s = (alpha_id as u64).wrapping_mul(0x9E3779B97F4A7C15);
+    s = s.wrapping_add((k as u64).wrapping_mul(0xBF58476D1CE4E5B9));
+    s ^= s >> 30;
+    s = s.wrapping_mul(0x94D049BB133111EB);
+    s ^= s >> 27;
+    let angle = (s & 0xFFFF) as f32 / 65535.0 * std::f32::consts::TAU;
+    // 半徑 [0.4, 1.0] × 召喚半徑，確保援軍環繞而非疊在王身上。
+    let r_frac = 0.4 + 0.6 * ((s >> 16 & 0xFFFF) as f32 / 65535.0);
+    let r = ALPHA_SUMMON_RADIUS * r_frac;
+    (r * angle.cos(), r * angle.sin())
 }
 
 /// 世界座標巢穴列表（城外安全區外，分散四方供玩家探索）。
@@ -2350,6 +2466,138 @@ mod tests {
         assert!(
             !events2.iter().any(|e| matches!(e, MonsterColonyEvent::DominanceDeclaration { .. })),
             "已稱霸不應重複發 DominanceDeclaration"
+        );
+    }
+
+    // ─── ROADMAP 179：怪物王號令援軍 ───────────────────────────────────────────
+
+    /// 輔助：建立一隻「覺醒（菁英）+ 重傷」的 Alpha。
+    /// 注意：須以 eco_pressure 落在 [70, 85) 區間的值 tick，避免 tick_awakening 重置覺醒旗標。
+    fn wounded_awakened_alpha() -> MonsterColonyManager {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        mgr.alphas[0].awakened = true;
+        mgr.alphas[0].hp = 1; // 重傷（遠低於 50%）
+        mgr
+    }
+
+    /// 維持覺醒不被重置的安全壓力值（70 ≤ x < 85）。
+    const KEEP_AWAKE_PRESSURE: f32 = 75.0;
+
+    #[test]
+    fn summon_not_triggered_when_not_elite() {
+        // 重傷但非菁英（未覺醒、非霸主）→ 不召喚。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        mgr.alphas[0].hp = 1;
+        let events = mgr.tick(0.1, 0.0);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "非菁英 Alpha 不應召喚援軍"
+        );
+    }
+
+    #[test]
+    fn summon_not_triggered_at_full_hp() {
+        // 菁英但滿血 → 不召喚（重傷才召喚）。
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        mgr.alphas[0].awakened = true;
+        let events = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "滿血菁英 Alpha 不應召喚援軍"
+        );
+    }
+
+    #[test]
+    fn summon_triggered_for_wounded_awakened_alpha() {
+        // 覺醒 + 重傷 → 召喚指定數量援軍，族群增加，氣泡與冷卻就位。
+        let mut mgr = wounded_awakened_alpha();
+        let col_id = mgr.alphas[0].colony_id;
+        let alpha_id = mgr.alphas[0].id;
+        let pop_before = mgr.colonies.iter().find(|c| c.id == col_id).unwrap().population;
+        let events = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        let summon = events.iter().find_map(|e| match e {
+            MonsterColonyEvent::AlphaSummonedReinforcements { count, positions, .. } =>
+                Some((*count, positions.len())),
+            _ => None,
+        });
+        let (count, npos) = summon.expect("重傷菁英 Alpha 應召喚援軍");
+        assert_eq!(count, ALPHA_SUMMON_COUNT, "召喚數量應為常數值");
+        assert_eq!(npos as u32, ALPHA_SUMMON_COUNT, "position 數應等於召喚數");
+        let pop_after = mgr.colonies.iter().find(|c| c.id == col_id).unwrap().population;
+        assert_eq!(pop_after, pop_before + ALPHA_SUMMON_COUNT, "族群應增加援軍數");
+        assert_eq!(
+            mgr.alphas[0].active_tactic.as_deref(), Some(SUMMON_TACTIC_NAME),
+            "應設定召喚指揮氣泡"
+        );
+        assert!(
+            mgr.alpha_summon_cd.get(&alpha_id).copied().unwrap_or(0.0) > 0.0,
+            "召喚後應進入冷卻"
+        );
+    }
+
+    #[test]
+    fn summon_respects_cooldown() {
+        // 連續兩幀都重傷，冷卻期間不應再次召喚。
+        let mut mgr = wounded_awakened_alpha();
+        let _ = mgr.tick(0.1, KEEP_AWAKE_PRESSURE); // 第一次召喚
+        mgr.alphas[0].hp = 1; // 維持重傷
+        let events2 = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            !events2.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "冷卻期間不應再召喚"
+        );
+    }
+
+    #[test]
+    fn summon_triggered_for_wounded_dominant_alpha() {
+        // 霸主資格（非覺醒）+ 重傷 → 召喚援軍。
+        let (mut mgr, _) = setup_dominant_candidate();
+        mgr.tick(DOMINANT_QUALIFY_SECS + 0.1, 0.0); // 稱霸
+        assert!(mgr.dominant_colony_id.is_some(), "前置：應已稱霸");
+        mgr.alphas[0].hp = 1;
+        mgr.alphas[0].awakened = false; // 確認靠霸主資格而非覺醒成為菁英
+        let events = mgr.tick(0.1, 0.0);
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "重傷霸主 Alpha 應召喚援軍"
+        );
+    }
+
+    #[test]
+    fn summon_skipped_when_over_cap() {
+        // 族群兵力已超過上限保護值 → 不召喚，但仍進冷卻避免每幀重判。
+        let mut mgr = wounded_awakened_alpha();
+        let col_id = mgr.alphas[0].colony_id;
+        let alpha_id = mgr.alphas[0].id;
+        if let Some(col) = mgr.colonies.iter_mut().find(|c| c.id == col_id) {
+            col.population = col.max_population + ALPHA_SUMMON_MAX_EXTRA + 1;
+        }
+        let events = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. })),
+            "兵力超過上限時不應再召喚"
+        );
+        assert!(
+            mgr.alpha_summon_cd.get(&alpha_id).copied().unwrap_or(0.0) > 0.0,
+            "超上限仍應設冷卻"
+        );
+    }
+
+    #[test]
+    fn summon_cooldown_pruned_when_alpha_gone() {
+        // Alpha 消失後其冷卻紀錄應被清除，避免 map 無限增長。
+        let mut mgr = wounded_awakened_alpha();
+        let aid = mgr.alphas[0].id;
+        let _ = mgr.tick(0.1, KEEP_AWAKE_PRESSURE); // 召喚 → 建立冷卻
+        assert!(mgr.alpha_summon_cd.contains_key(&aid), "前置：應有冷卻紀錄");
+        mgr.alphas.clear(); // Alpha 消失
+        let _ = mgr.tick(0.1, 0.0);
+        assert!(
+            !mgr.alpha_summon_cd.contains_key(&aid),
+            "Alpha 消失後冷卻紀錄應被清除"
         );
     }
 }

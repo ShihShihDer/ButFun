@@ -1300,6 +1300,19 @@ pub fn spawn(app: AppState) {
                             }
                             // ROADMAP 176：霸主巢穴普通怪擊殺——由 ws.rs 發獎，game.rs 忽略
                             MonsterColonyEvent::MonsterKilledInDominantColony => {}
+                            // ROADMAP 179：怪物王號令援軍——注入援軍小怪並廣播全服警示。
+                            MonsterColonyEvent::AlphaSummonedReinforcements { colony_name, kind, count, positions } => {
+                                {
+                                    let mut enemies = app.enemies.write().unwrap();
+                                    for (x, y) in &positions {
+                                        enemies.inject_event_enemy(*x, *y, kind);
+                                    }
+                                }
+                                let kind_name = kind.display_name();
+                                let _ = app.tx_chat.send(format!(
+                                    "🩸 [{colony_name}] Alpha 重傷！號令「{kind_name}」援軍 {count} 隻馳援、圍護首領——把握時機速戰速決！"
+                                ));
+                            }
                         }
                     }
                 }

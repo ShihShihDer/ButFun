@@ -2190,6 +2190,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // ROADMAP 176：霸主宣告/落幕——只由 game.rs 主 tick 處理
                                         MonsterColonyEvent::DominanceDeclaration { .. } => {}
                                         MonsterColonyEvent::DominanceBroken { .. } => {}
+                                        // ROADMAP 179：怪物王號令援軍——只由 game.rs 主 tick 處理
+                                        MonsterColonyEvent::AlphaSummonedReinforcements { .. } => {}
                                     }
                                 }
                             }
