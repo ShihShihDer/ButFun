@@ -157,6 +157,18 @@ const MATURE_DURATION_SECS: f32 = 120.0;
 /// 剛誕生幼獸的相對體型（成體為 1.0）——前端據此把幼獸畫小一號。
 const JUVENILE_MIN_SCALE: f32 = 0.45;
 
+// ─── ROADMAP 208：幼獸依偎母獸（親子跟隨）───────────────────────────────────────
+// 承接 207（幼獸誕生）：剛出生的幼獸不再各自亂晃，而會主動依偎、跟隨最近的同種成體
+// （像小鹿緊跟母鹿）——平靜時黏在成體身邊小跑、保持依偎距離，成體漫遊時被牽著走。
+// 受掠食者驚擾時威脅優先（仍會逃命）、長成成體後自然脫離（不再是幼獸）。
+// 純啟發式、零 LLM、零協議改動（位置本就每幀廣播）、無新狀態欄位。
+/// 幼獸尋找可依偎成體的範圍（像素）——只在這個範圍內找最近的同種成體當「母獸」。
+const NURSE_RANGE: f32 = 320.0;
+/// 幼獸依偎時與成體保持的舒適距離（像素）——更近就停，不疊在一起。
+const NURSE_COMFORT_DIST: f32 = 36.0;
+/// 幼獸依偎跟隨的速度（像素/秒）——略快於閒晃，才追得上緩緩漫遊的成體。
+const NURSE_SPEED: f32 = 48.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -701,6 +713,12 @@ impl WildlifeManager {
             .map(|a| (a.id, a.kind, a.x, a.y))
             .collect();
 
+        // ROADMAP 208：成體獵物位置快照（maturity 已滿），供幼獸尋找依偎的「母獸」。
+        let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
+            .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect();
+
         // 捕食者位置：獵物逃跑時參考此清單。
         let pred_positions: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Predator)
@@ -925,6 +943,31 @@ impl WildlifeManager {
                 }
             }
 
+            // ROADMAP 208：幼獸依偎母獸——未受威脅時，幼獸主動靠近並跟隨最近的同種成體
+            // （像小鹿緊跟母鹿）；附近沒有成體則退回正常閒晃/群聚。仍會逃離掠食者（威脅優先）。
+            if self.animals[i].is_juvenile() {
+                let ax = self.animals[i].x;
+                let ay = self.animals[i].y;
+                let fleeing_now = matches!(self.animals[i].state, WildlifeState::Fleeing { .. });
+                let predator_near = nearest_in_range(ax, ay, &threats, FLEE_RADIUS).is_some();
+                if !fleeing_now && !predator_near {
+                    if let Some((px, py)) = nearest_adult_of_kind(
+                        self.animals[i].id, animal_kind, ax, ay, &adult_snap, NURSE_RANGE,
+                    ) {
+                        let dx = px - ax;
+                        let dy = py - ay;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        if dist > NURSE_COMFORT_DIST {
+                            self.animals[i].x += dx / dist * NURSE_SPEED * dt;
+                            self.animals[i].y += dy / dist * NURSE_SPEED * dt;
+                        }
+                        // 依偎於母獸的溫順狀態（已到舒適距離則原地依偎）。
+                        self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                        continue;
+                    }
+                }
+            }
+
             // ROADMAP 206：群聚結伴——算出附近同種夥伴的平均位置（群體中心），
             // 作為下一個漫遊目標的拉力；HERD_RADIUS 內無同種夥伴則 None（退回純隨機）。
             let herd_anchor = herd_center(
@@ -1057,6 +1100,26 @@ fn herd_center(
     } else {
         Some((sx / n as f32, sy / n as f32))
     }
+}
+
+/// ROADMAP 208：幼獸依偎——在 `adult_snap`（同種成體位置快照）中，找出離 (ax,ay) 最近、
+/// 且距離在 `radius` 內的同種成體位置作為依偎對象；範圍內無同種成體則 `None`。
+/// 排除自己（理論上幼獸本就不在成體快照裡，仍以 id 保險）。純函式，便於測試。
+fn nearest_adult_of_kind(
+    self_id: u32,
+    kind: WildlifeKind,
+    ax: f32,
+    ay: f32,
+    adult_snap: &[(u32, WildlifeKind, f32, f32)],
+    radius: f32,
+) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    adult_snap.iter()
+        .filter(|&&(id, k, _, _)| id != self_id && k == kind)
+        .map(|&(_, _, px, py)| (px, py, (px - ax).powi(2) + (py - ay).powi(2)))
+        .filter(|&(_, _, d2)| d2 <= r2)
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(px, py, _)| (px, py))
 }
 
 /// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
@@ -1927,5 +1990,65 @@ mod tests {
         }
         assert!(!mgr.animals[0].is_juvenile(), "足夠時間後幼獸應長成成體");
         assert!((mgr.animals[0].scale() - 1.0).abs() < 1e-4, "長成後體型應為 1.0");
+    }
+
+    // ─── ROADMAP 208：幼獸依偎母獸（親子跟隨）測試 ─────────────────────────────
+
+    #[test]
+    fn nearest_adult_none_when_no_same_kind_in_range() {
+        // 範圍內只有他種成體 → None。
+        let snap = vec![(1u32, WildlifeKind::WildBird, 10.0, 0.0)];
+        assert!(nearest_adult_of_kind(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap, NURSE_RANGE).is_none());
+        // 同種但遠在範圍外 → None。
+        let far = vec![(1u32, WildlifeKind::WildDeer, 9999.0, 0.0)];
+        assert!(nearest_adult_of_kind(0, WildlifeKind::WildDeer, 0.0, 0.0, &far, NURSE_RANGE).is_none());
+    }
+
+    #[test]
+    fn nearest_adult_picks_closest_same_kind() {
+        let snap = vec![
+            (1u32, WildlifeKind::WildDeer, 300.0, 0.0),   // 同種、較遠（仍在範圍內）
+            (2u32, WildlifeKind::WildDeer, 50.0, 0.0),    // 同種、最近 → 應選此
+            (3u32, WildlifeKind::WildBird, 10.0, 0.0),    // 他種 → 排除
+            (0u32, WildlifeKind::WildDeer, 5.0, 0.0),     // 自己 id → 排除
+            (4u32, WildlifeKind::WildDeer, 9999.0, 0.0),  // 同種但超出範圍 → 排除
+        ];
+        let (px, _) = nearest_adult_of_kind(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap, NURSE_RANGE)
+            .expect("應找到同種成體");
+        assert!((px - 50.0).abs() < 1e-4, "應選最近的同種成體 x=50，實際 {px}");
+    }
+
+    #[test]
+    fn juvenile_follows_nearest_adult() {
+        // 幼獸在成體右側 200px、無威脅 → 應朝成體（左）依偎移動。
+        let mut mgr = WildlifeManager::new();
+        let mut adult = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        adult.id = 1;
+        let mut juv = juvenile_at(WildlifeKind::WildDeer, 5200.0, 5000.0);
+        juv.id = 2; juv.home_x = 5200.0; juv.home_y = 5000.0;
+        juv.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![adult, juv];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[]);
+        let jx = mgr.animals.iter().find(|a| a.id == 2).unwrap().x;
+        assert!(jx < 5200.0, "幼獸應朝同種成體（左側）依偎移動，實際 x={jx}");
+    }
+
+    #[test]
+    fn juvenile_flees_predator_instead_of_nursing() {
+        use crate::combat::EnemyKind;
+        // 身旁有可依偎的成體，但獵食幼獸的怪物更近 → 威脅優先、仍逃命（不依偎）。
+        let mut mgr = WildlifeManager::new();
+        let mut adult = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        adult.id = 1;
+        let mut juv = juvenile_at(WildlifeKind::WildDeer, 5200.0, 5000.0);
+        juv.id = 2; juv.home_x = 5200.0; juv.home_y = 5000.0;
+        juv.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![adult, juv];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // ScrapDrone 獵食 WildDeer，置於幼獸右側 40px（FLEE_RADIUS 內）。
+        mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5240.0, 5000.0)]);
+        let j = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        assert!(matches!(j.state, WildlifeState::Fleeing { .. }), "幼獸應逃離掠食者而非依偎，實際: {:?}", j.state);
     }
 }
