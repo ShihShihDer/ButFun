@@ -7655,6 +7655,26 @@
       const isAllied = !!a.allied_to_id;
       const isAwakened = !!a.awakened; // ROADMAP 175
       const isDominant = !!a.is_dominant; // ROADMAP 176
+      const isLastStand = !!a.last_stand; // ROADMAP 184：背水死戰
+      // 背水死戰（ROADMAP 184）：王走投無路、無援可召的瀕死絕境——
+      // 在所有環之下先畫一圈血色急促脈動的危機環，一眼讀出「快斬殺它！」。
+      if (isLastStand) {
+        const lsPulse = 0.55 + 0.45 * Math.abs(Math.sin(now / 110)); // 比覺醒更急促
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 44 * (0.85 + 0.15 * lsPulse), 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(200,0,0,${(0.75 * lsPulse).toFixed(3)})`;
+        ctx.lineWidth = 5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(sx, sy, 52, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(120,0,0,${(0.45 * lsPulse).toFixed(3)})`;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
       // 衝突中→紅色；結盟中→金白雙環；覺醒→赤紅；霸主→金+深金；正常→金色
       const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : isAwakened ? 250 : isDominant ? 700 : 600));
       ctx.save();
@@ -7720,8 +7740,22 @@
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
-      // ROADMAP 170：衝突徽章 > ROADMAP 175：覺醒徽章 > ROADMAP 176：霸主徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
-      if (isClashing) {
+      // ROADMAP 184：背水死戰徽章（最高優先，最戲劇化的瀕死絕境）> 衝突 > 覺醒 > 霸主 > 結盟 > 指揮氣泡
+      if (isLastStand) {
+        const lsPulse = 0.78 + 0.22 * Math.abs(Math.sin(now / 110));
+        const lsLabel = "🩸 背水死戰";
+        ctx.font = "bold 10px sans-serif";
+        const lw2 = ctx.measureText(lsLabel).width + 10;
+        const lsx = sx, lsy = ly + 8;
+        ctx.fillStyle = `rgba(150,0,0,${(0.95 * lsPulse).toFixed(3)})`;
+        ctx.fillRect(lsx - lw2 / 2, lsy - 1, lw2, 13);
+        ctx.strokeStyle = `rgba(255,40,40,${(0.98 * lsPulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lsx - lw2 / 2, lsy - 1, lw2, 13);
+        ctx.fillStyle = "#ffd0d0";
+        ctx.textBaseline = "top";
+        ctx.fillText(lsLabel, lsx, lsy);
+      } else if (isClashing) {
         const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
         const clashLabel = "⚔️ 衝突中";
         ctx.font = "bold 10px sans-serif";
