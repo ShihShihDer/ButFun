@@ -160,6 +160,20 @@
       color: var(--ink); cursor: pointer; font: inherit; font-size: 0.88em; text-align: left; }
     .menu-item:hover { border-color: var(--brass); background: rgba(201,162,75,0.08); }
     .menu-item:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* ROADMAP 187：每個選單項右側併一顆 📌 釘選鈕（包進 .menu-row 以免按鈕巢狀；視覺上與項目連成一片）。 */
+    .menu-row { display: inline-flex; align-items: stretch; }
+    .menu-row .menu-item { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .menu-pin { border: 1px solid #3a4250; border-left: none; border-radius: 0 8px 8px 0;
+      background: transparent; color: var(--ink); cursor: pointer; font: inherit; font-size: 0.82em;
+      padding: 0 8px; opacity: 0.4; }
+    .menu-pin:hover { opacity: 0.9; border-color: var(--brass); }
+    .menu-pin:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    .menu-pin.pinned { opacity: 1; border-color: var(--brass); background: rgba(201,162,75,0.18); }
+    /* ROADMAP 187：釘選後出現在常駐欄的一排快捷鈕（沿用 .dock-btn 樣式；空時 :empty 不佔版面）。 */
+    #dockPinned { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    #dockPinned:empty { display: none; }
+    #dockPinned.pin-full { animation: pinShake 0.3s ease; }
+    @keyframes pinShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
 
     /* dock 點開的視窗:浮在左上(蓋過狀態列),同時只開一個,點 ✕／按 Esc／點世界任一處可關。
        沿用面板深底+陰影+關閉鈕。限高內捲:配方/背包列多時不超出視窗高(dvh 跟著手機工具列縮放,
@@ -315,6 +329,7 @@
        偏好下一併關掉——前庭敏感的玩家收/展聊天時不再有位移/旋轉動效,狀態切換照舊即時生效。 */
     @media (prefers-reduced-motion: reduce) {
       #chat, #chatCaret { transition: none; }
+      #dockPinned.pin-full { animation: none; } /* ROADMAP 187：尊重減少動態，釘選滿載不抖動 */
     }
     /* 可收合的聊天紀錄:跟操作說明同一套語彙(點標題列收/展、狀態存 localStorage)。
        手機直式螢幕小,聊天熱絡時 30vh 的紀錄會擋住下半地表——給玩家一鍵收起的選擇。
@@ -488,6 +503,8 @@
                 data-win="winMenu" aria-haspopup="dialog" aria-expanded="false"
                 aria-label="開啟功能選單" title="開啟功能選單（所有系統入口）">☰ 選單</button>
       </div>
+      <!-- ROADMAP 187：玩家從 ☰ 選單釘選的常用面板快捷鈕（由 game.js 依 localStorage 動態填入；空時不佔版面） -->
+      <div id="dockPinned"></div>
       <!-- 隱藏容器：保留所有 dock-btn 讓鍵盤捷徑繼續用（display:none 仍可 .click()） -->
       <div id="dockHidden" style="display:none">
         <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-keyshortcuts="C" aria-label="合成台（C）">🔧</button>
