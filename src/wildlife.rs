@@ -125,6 +125,18 @@ const FOLLOW_COMFORT_DIST: f32 = 60.0;
 /// 馴養動物走向玩家的速度（像素/秒）——比逃跑慢，溫順小跑。
 const FOLLOW_SPEED: f32 = 60.0;
 
+// ─── ROADMAP 206：群聚結伴 ───────────────────────────────────────────────────
+// 同種野生動物（獵物）漫遊時，選下一個閒晃目標會朝「附近同種夥伴的平均位置」
+// 拉一把，於是鬆散成群移動：草原上的野鹿三兩成群、野鳥成簇飄移，
+// 世界不再是一盤各走各的散點。純啟發式、零 LLM、零持久化、無 migration。
+// 捕食者（狼/狐）刻意維持獨來獨往（更顯孤狼氣場），不參與群聚。
+
+/// 尋找同種群聚夥伴的半徑（像素）——只看這個範圍內的同種存活獵物算「一群」。
+const HERD_RADIUS: f32 = 280.0;
+/// 選新漫遊目標時朝群體中心混合的比例（0=純隨機家附近、1=直奔群體中心）。
+/// 刻意取中段：既明顯成群、又保留各自散布，不會擠成一個點。
+const HERD_PULL: f32 = 0.5;
+
 // ─── 種類與營養階 ────────────────────────────────────────────────────────────
 
 /// 野生動物種類。
@@ -334,7 +346,9 @@ impl Wildlife {
 
     /// 非追獵行為 tick：閒晃 / 休息 / 逃跑 / 返家。
     /// `flee_threats`：需要逃離的座標（玩家 + 捕食者）；捕食者呼叫時傳空。
-    fn tick_idle(&mut self, dt: f32, flee_threats: &[(f32, f32)], speed: f32, rng: &mut StdRng) {
+    /// `herd_anchor`：ROADMAP 206——附近同種夥伴的平均位置；選新漫遊目標時朝它拉，
+    /// 同種動物便鬆散成群移動。捕食者傳 `None`（獨來獨往）。
+    fn tick_idle(&mut self, dt: f32, flee_threats: &[(f32, f32)], speed: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
         let already_fleeing = matches!(self.state, WildlifeState::Fleeing { .. });
         if !already_fleeing {
             if let Some((tx, ty)) = nearest_in_range(self.x, self.y, flee_threats, FLEE_RADIUS) {
@@ -378,7 +392,7 @@ impl Wildlife {
                     self.x = self.home_x;
                     self.y = self.home_y;
                     let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
-                    let (tx, ty) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                    let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
                     self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
                 } else {
                     self.x += (dx / dist) * RETURN_SPEED * dt;
@@ -389,7 +403,7 @@ impl Wildlife {
                 let remaining = rest_timer - dt;
                 if remaining <= 0.0 {
                     let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
-                    let (tx, ty) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                    let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
                     self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
                 } else {
                     self.state = WildlifeState::Resting { rest_timer: remaining };
@@ -777,10 +791,10 @@ impl WildlifeManager {
                         if let Some(&(target_id, _, _, _)) = nearest {
                             self.animals[i].state = WildlifeState::Hunting { target_id, hunt_timer: HUNT_TIMEOUT };
                         } else {
-                            // 無獵物，正常閒晃（捕食者不怕玩家，傳空威脅）。
+                            // 無獵物，正常閒晃（捕食者不怕玩家，傳空威脅；獨來獨往不群聚）。
                             let rng = &mut self.rng;
                             let a = &mut self.animals[i];
-                            a.tick_idle(dt, &[], PRED_WANDER_SPEED, rng);
+                            a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, rng);
                         }
                     }
                 }
@@ -833,9 +847,15 @@ impl WildlifeManager {
                 }
             }
 
+            // ROADMAP 206：群聚結伴——算出附近同種夥伴的平均位置（群體中心），
+            // 作為下一個漫遊目標的拉力；HERD_RADIUS 內無同種夥伴則 None（退回純隨機）。
+            let herd_anchor = herd_center(
+                self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &prey_snap,
+            );
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
-            a.tick_idle(dt, &threats, WANDER_SPEED, rng);
+            a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, rng);
         }
 
         // ── Phase 5: 套用擊殺 ──────────────────────────────────────────────────
@@ -887,6 +907,51 @@ fn random_target(hx: f32, hy: f32, radius: f32, rng: &mut StdRng) -> (f32, f32) 
     let angle: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
     let dist: f32  = rng.gen_range(0.0..radius);
     (hx + angle.cos() * dist, hy + angle.sin() * dist)
+}
+
+/// ROADMAP 206：附近同種存活獵物的平均位置（不含自己），即「群體中心」。
+/// 只統計 `HERD_RADIUS` 內、同 `kind` 的個體；範圍內無夥伴則回 `None`。
+/// 純函式（吃 `prey_snap` 快照），便於測試。
+fn herd_center(
+    self_id: u32,
+    kind: WildlifeKind,
+    x: f32,
+    y: f32,
+    prey_snap: &[(u32, WildlifeKind, f32, f32)],
+) -> Option<(f32, f32)> {
+    let r2 = HERD_RADIUS * HERD_RADIUS;
+    let mut sx = 0.0_f32;
+    let mut sy = 0.0_f32;
+    let mut n = 0u32;
+    for &(id, k, px, py) in prey_snap {
+        if id == self_id || k != kind {
+            continue;
+        }
+        let dx = px - x;
+        let dy = py - y;
+        if dx * dx + dy * dy <= r2 {
+            sx += px;
+            sy += py;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        None
+    } else {
+        Some((sx / n as f32, sy / n as f32))
+    }
+}
+
+/// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
+/// 先取家附近的隨機點（沿用 `random_target` 的散布），若 `anchor`（附近同種夥伴
+/// 的平均位置）存在，再把目標朝群體中心按 `HERD_PULL` 混合，使同種動物鬆散聚攏、
+/// 成群移動；無夥伴則退回純隨機漫遊（行為與 205 之前完全一致）。純函式，便於測試。
+fn herd_wander_target(hx: f32, hy: f32, anchor: Option<(f32, f32)>, rng: &mut StdRng) -> (f32, f32) {
+    let (rx, ry) = random_target(hx, hy, WANDER_RADIUS, rng);
+    match anchor {
+        Some((cx, cy)) => (rx + (cx - rx) * HERD_PULL, ry + (cy - ry) * HERD_PULL),
+        None => (rx, ry),
+    }
 }
 
 /// 生成所有野生動物（獵物 + 捕食者）。
@@ -984,7 +1049,7 @@ mod tests {
         let mut rng = make_rng();
         let mut animal = Wildlife::new(0, WildlifeKind::WildBird, 2000.0, 2000.0, &mut rng);
         for _ in 0..300 {
-            animal.tick_idle(0.1, &[], WANDER_SPEED, &mut rng);
+            animal.tick_idle(0.1, &[], WANDER_SPEED, None, &mut rng);
         }
         let dx = animal.x - animal.home_x;
         let dy = animal.y - animal.home_y;
@@ -997,7 +1062,7 @@ mod tests {
         let mut rng = make_rng();
         let mut animal = Wildlife::new(0, WildlifeKind::WildDeer, 2000.0, 2000.0, &mut rng);
         let threats = vec![(2050.0_f32, 2050.0_f32)];
-        animal.tick_idle(0.1, &threats, WANDER_SPEED, &mut rng);
+        animal.tick_idle(0.1, &threats, WANDER_SPEED, None, &mut rng);
         assert!(matches!(animal.state, WildlifeState::Fleeing { .. }),
             "應轉成 Fleeing，實際: {:?}", animal.state);
     }
@@ -1359,7 +1424,7 @@ mod tests {
         bird.y = 2000.0;
         // 把 EtherWisp 放在 FLEE_RADIUS 內（100px）。
         let threats = vec![(EnemyKind::EtherWisp, 2100.0_f32, 2000.0_f32)];
-        bird.tick_idle(0.1, &threats.iter().map(|&(_, x, y)| (x, y)).collect::<Vec<_>>(), WANDER_SPEED, &mut rng);
+        bird.tick_idle(0.1, &threats.iter().map(|&(_, x, y)| (x, y)).collect::<Vec<_>>(), WANDER_SPEED, None, &mut rng);
         assert!(
             matches!(bird.state, WildlifeState::Fleeing { .. }),
             "怪物在 FLEE_RADIUS 內，野鳥應進入 Fleeing 狀態"
@@ -1484,5 +1549,81 @@ mod tests {
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(a.alive, "應已重生");
         assert_eq!(a.familiarity(), 0.0, "重生個體親近度應歸零（羈絆隨上一隻散去）");
+    }
+
+    // ─── ROADMAP 206：群聚結伴 測試 ─────────────────────────────────────────
+
+    #[test]
+    fn herd_center_none_when_alone() {
+        // 同種只有自己一隻 → 範圍內無夥伴 → None。
+        let snap = vec![(0u32, WildlifeKind::WildDeer, 100.0_f32, 100.0_f32)];
+        assert_eq!(herd_center(0, WildlifeKind::WildDeer, 100.0, 100.0, &snap), None);
+    }
+
+    #[test]
+    fn herd_center_excludes_self_and_other_species() {
+        // 三隻同種夥伴（皆在範圍內）+ 一隻自己 + 一隻他種 → 只平均那三隻同種。
+        let snap = vec![
+            (0u32, WildlifeKind::WildDeer, 0.0_f32, 0.0_f32),     // 自己（排除）
+            (1u32, WildlifeKind::WildDeer, 10.0, 0.0),
+            (2u32, WildlifeKind::WildDeer, 30.0, 0.0),
+            (3u32, WildlifeKind::WildDeer, 50.0, 0.0),
+            (4u32, WildlifeKind::WildBird, 10.0, 0.0),            // 他種（排除）
+        ];
+        let c = herd_center(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap).expect("應有群體中心");
+        assert!((c.0 - 30.0).abs() < 0.01 && c.1.abs() < 0.01, "群體中心應為三同種平均 (30,0)，實際 {c:?}");
+    }
+
+    #[test]
+    fn herd_center_ignores_neighbors_beyond_radius() {
+        // 同種夥伴在 HERD_RADIUS 外 → 不算入 → None。
+        let far = HERD_RADIUS + 50.0;
+        let snap = vec![
+            (0u32, WildlifeKind::WildDeer, 0.0_f32, 0.0_f32),
+            (1u32, WildlifeKind::WildDeer, far, 0.0),
+        ];
+        assert_eq!(herd_center(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap), None,
+            "範圍外夥伴不應觸發群聚");
+    }
+
+    #[test]
+    fn herd_wander_target_pulls_toward_anchor() {
+        // 有群體中心時，新目標應比「純隨機家附近目標」更靠近群體中心。
+        // 家在原點，群體中心遠在 (10000,10000)：拉力後的目標與中心的距離，
+        // 應明顯小於家到中心的距離（被朝中心拉了 HERD_PULL 比例）。
+        let mut rng = make_rng();
+        let anchor = (10000.0_f32, 10000.0_f32);
+        let home_to_anchor = (anchor.0.powi(2) + anchor.1.powi(2)).sqrt();
+        for _ in 0..50 {
+            let (tx, ty) = herd_wander_target(0.0, 0.0, Some(anchor), &mut rng);
+            let d = ((tx - anchor.0).powi(2) + (ty - anchor.1).powi(2)).sqrt();
+            // 隨機點僅落在家附近 WANDER_RADIUS 內，混合 HERD_PULL 後距中心必縮短。
+            assert!(d < home_to_anchor * (1.0 - HERD_PULL + 0.01),
+                "拉力後距群體中心 {d} 應明顯小於 {home_to_anchor}");
+        }
+    }
+
+    #[test]
+    fn herd_wander_target_no_anchor_is_pure_random_near_home() {
+        // 無夥伴時行為應與純隨機漫遊一致：目標落在家附近 WANDER_RADIUS 內。
+        let mut rng = make_rng();
+        for _ in 0..50 {
+            let (tx, ty) = herd_wander_target(2000.0, 2000.0, None, &mut rng);
+            let d = ((tx - 2000.0_f32).powi(2) + (ty - 2000.0_f32).powi(2)).sqrt();
+            assert!(d <= WANDER_RADIUS + 0.01, "無夥伴目標應在家附近，實際距離 {d}");
+        }
+    }
+
+    #[test]
+    fn herding_does_not_disturb_flee() {
+        // 群聚只影響「選漫遊目標」，不該蓋過逃跑：玩家逼近時仍進入 Fleeing。
+        // （群聚夥伴就在身邊，但威脅優先。）
+        let mut rng = make_rng();
+        let mut deer = Wildlife::new(0, WildlifeKind::WildDeer, 2000.0, 2000.0, &mut rng);
+        let threats = vec![(2030.0_f32, 2000.0_f32)];
+        let anchor = Some((2010.0_f32, 2000.0_f32));
+        deer.tick_idle(0.1, &threats, WANDER_SPEED, anchor, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
+            "威脅在 FLEE_RADIUS 內，群聚不應蓋過逃跑，實際 {:?}", deer.state);
     }
 }
