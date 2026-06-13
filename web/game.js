@@ -4557,6 +4557,30 @@
     ctx.lineWidth = 2;
     ctx.strokeRect(ox, oy, size, size);
 
+    // 東南西北方位指示(玩家報「不知道方位/易迷向」):小地圖映射為純平移+等比縮放、無翻轉/旋轉,
+    // 故 螢幕上=世界 -y=北、下=南、右=東、左=西(按 ↑ 走 y 變小=往北,與此自洽)。
+    // 在方框四邊中點各標一個小而半透明的方位字,貼著邊內側、不擋小地圖內容。
+    {
+      const dirInset = 9;            // 字心離框邊的內縮像素
+      const dirs = [
+        { t: "北", x: ox + size / 2,        y: oy + dirInset },
+        { t: "南", x: ox + size / 2,        y: oy + size - dirInset },
+        { t: "東", x: ox + size - dirInset, y: oy + size / 2 },
+        { t: "西", x: ox + dirInset,        y: oy + size / 2 },
+      ];
+      ctx.font = "9px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(10,16,30,0.85)"; // 細深色描邊,任何地貌底色上都看得清
+      ctx.fillStyle = "rgba(255,255,255,0.7)"; // 半透明白字,不搶過地圖內容
+      for (const d of dirs) {
+        ctx.strokeText(d.t, d.x, d.y);
+        ctx.fillText(d.t, d.x, d.y);
+      }
+      ctx.textBaseline = "alphabetic";
+    }
+
     // 圖例帶:縮圖下方每列三欄,每格「色 swatch＋中文」。畫在縮圖之下、收合鈕之前。
     const mmColW = size / 3;
     ctx.textAlign = "left";
