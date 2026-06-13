@@ -202,6 +202,23 @@ const GRAZE_PROB: f32 = 0.45;
 const GRAZE_DURATION_MIN: f32 = 3.0;
 const GRAZE_DURATION_MAX: f32 = 7.0;
 
+// ─── ROADMAP 212：群體警戒哨 ──────────────────────────────────────────────────
+// 承接 211（白晝吃草）+ 209（驚群炸開）：白天成群的成體獵物中，由群內 id 最小那隻擔任
+// 「哨兵」——不低頭吃草，而是抬頭放哨（頭頂浮 👀）。哨兵的警戒範圍放大
+// （SENTINEL_FLEE_RADIUS > 一般 FLEE_RADIUS），比埋頭吃草的同伴更早察覺逼近的危險；牠一
+// 旦炸群逃竄，經 209 的恐慌感染，整群隨之一起炸開奔散。於是「一隻站崗、其餘安心吃草，哨兵
+// 先發現狼影、全群跟著逃」這幕在野地自然湧現。純啟發式、零 LLM、零協議改動（新增的 watching
+// 字串沿用 state_str；哨兵去中心地由「群內最小 id」推定，每群恰一隻、穩定不抖動）。
+/// 判定哨兵時計入同群夥伴的半徑（略小於 HERD_RADIUS，只罩住「真的成群」的近鄰）。
+const SENTINEL_HERD_RADIUS: f32 = 220.0;
+/// 成群門檻：半徑內同種成體（含自己）達此數才設哨兵——孤獸不必放哨。
+const SENTINEL_MIN_HERD: usize = 2;
+/// 哨兵的警戒（逃竄觸發）半徑——放大版的 FLEE_RADIUS(180)，使其比同伴更早發現威脅。
+const SENTINEL_FLEE_RADIUS: f32 = 300.0;
+/// 一次站崗放哨的最短／最長時長（秒）——抬頭警戒數秒後跟著群體挪步、再重新站崗。
+const WATCH_DURATION_MIN: f32 = 4.0;
+const WATCH_DURATION_MAX: f32 = 8.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -382,6 +399,8 @@ enum WildlifeState {
     Digesting { timer: f32 },
     /// ROADMAP 211：白晝吃草——平靜的晝行獵物白天原地低頭覓食數秒（頭頂浮 🌿）。
     Grazing { graze_timer: f32 },
+    /// ROADMAP 212：群體警戒哨——成群獵物中的哨兵抬頭放哨（頭頂浮 👀），數秒後跟群挪步再站崗。
+    Watching { watch_timer: f32 },
     /// ROADMAP 143：聚落守衛——動物向入侵玩家靠近，不逃跑。
     Guarding { threat_x: f32, threat_y: f32, guard_timer: f32 },
 }
@@ -560,6 +579,73 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 212：背向 (tx,ty) 炸出逃竄——設為 Fleeing（與 tick_idle 的逃竄初始化一致）。
+    /// 供哨兵在「放大警戒半徑」內發現威脅時率先逃竄（再經 209 恐慌感染帶動全群）。
+    fn flee_from(&mut self, tx: f32, ty: f32) {
+        let dx = self.x - tx;
+        let dy = self.y - ty;
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        self.state = WildlifeState::Fleeing {
+            vx: dx / len * FLEE_SPEED,
+            vy: dy / len * FLEE_SPEED,
+            flee_timer: FLEE_DURATION,
+        };
+    }
+
+    /// ROADMAP 212：群體警戒哨——哨兵「站崗放哨」行為（無威脅時才走此分支；威脅由呼叫端
+    /// 先以放大半徑攔截並改走逃竄）。哨兵抬頭警戒數秒（Watching，原地不動、不吃草），時間到
+    /// 就跟著群體挪一步（免得被群拋下），抵達後重新站崗。其餘狀態（剛由吃草／休息／夜眠轉
+    /// 來）一律收斂成站崗。移動模型沿用 tick_idle 的漫遊／返家段，行為一致、便於測試。
+    fn tick_watch(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        match self.state.clone() {
+            WildlifeState::Watching { watch_timer } => {
+                let remaining = watch_timer - dt;
+                if remaining <= 0.0 {
+                    // 放哨告一段落：跟群體挪一步，稍後再站崗。
+                    let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                    let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                    self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+                } else {
+                    self.state = WildlifeState::Watching { watch_timer: remaining };
+                }
+            }
+            WildlifeState::Wandering { target_x, target_y, wander_timer } => {
+                let remaining = wander_timer - dt;
+                let dx = target_x - self.x;
+                let dy = target_y - self.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < 8.0 || remaining <= 0.0 {
+                    // 抵達 → 站崗放哨。
+                    let watch = rng.gen_range(WATCH_DURATION_MIN..=WATCH_DURATION_MAX);
+                    self.state = WildlifeState::Watching { watch_timer: watch };
+                } else {
+                    self.x += (dx / dist) * WANDER_SPEED * dt;
+                    self.y += (dy / dist) * WANDER_SPEED * dt;
+                    self.state = WildlifeState::Wandering { target_x, target_y, wander_timer: remaining };
+                }
+            }
+            WildlifeState::Returning => {
+                let dx = self.home_x - self.x;
+                let dy = self.home_y - self.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= HOME_ARRIVE_DIST {
+                    self.x = self.home_x;
+                    self.y = self.home_y;
+                    let watch = rng.gen_range(WATCH_DURATION_MIN..=WATCH_DURATION_MAX);
+                    self.state = WildlifeState::Watching { watch_timer: watch };
+                } else {
+                    self.x += (dx / dist) * RETURN_SPEED * dt;
+                    self.y += (dy / dist) * RETURN_SPEED * dt;
+                }
+            }
+            // Resting / Grazing /（剛由夜眠轉白天）等其餘狀態：立即收斂成站崗放哨。
+            _ => {
+                let watch = rng.gen_range(WATCH_DURATION_MIN..=WATCH_DURATION_MAX);
+                self.state = WildlifeState::Watching { watch_timer: watch };
+            }
+        }
+    }
+
     /// ROADMAP 210：晝夜作息——夜間「平靜歸巢沉睡」行為。
     /// 呼叫端（Phase 4）已確保：此隻為晝行獵物、當下未在逃竄、附近也無威脅；
     /// 故本函式只管「回家睡覺」——尚未到家就朝家走（Returning），到家就轉入長時休息
@@ -610,6 +696,7 @@ impl Wildlife {
             WildlifeState::Digesting { .. } => "digesting",
             WildlifeState::Guarding { .. }  => "guarding",
             WildlifeState::Grazing { .. }   => "grazing",
+            WildlifeState::Watching { .. }  => "watching",
         }
     }
 }
@@ -1105,6 +1192,17 @@ impl WildlifeManager {
                 self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &prey_snap,
             );
 
+            // ROADMAP 212：群體警戒哨——白天成群的成體獵物中，由群內 id 最小那隻擔任哨兵。
+            // 哨兵不吃草、抬頭放哨（警戒半徑放大），比埋頭的同伴更早察覺危險、率先炸群（再經
+            // 209 帶動全群）。只在白天、未在逃竄、成體、且確實成群時成立；其餘照常閒晃/吃草。
+            let act_as_sentinel = !is_night
+                && is_diurnal(animal_kind)
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && herd_sentinel(
+                    self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap,
+                );
+
             // ROADMAP 210：晝夜作息——夜間，晝行獵物若平靜（未在逃竄、附近也無威脅），
             // 就歸巢沉睡而非繼續閒晃；白天、或有威脅/逃竄時一律走原本的閒晃/逃竄邏輯
             // （威脅永遠優先，tick_idle 內部會先處理逃跑）。
@@ -1117,6 +1215,14 @@ impl WildlifeManager {
             let a = &mut self.animals[i];
             if calm_at_night {
                 a.tick_night_rest(dt);
+            } else if act_as_sentinel {
+                // ROADMAP 212：哨兵——放大警戒半徑內若有威脅，率先背向炸出逃竄（次幀經 209
+                // 感染全群一起炸開）；無威脅則站崗放哨（抬頭警戒、不吃草）。
+                if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, SENTINEL_FLEE_RADIUS) {
+                    a.flee_from(tx, ty);
+                } else {
+                    a.tick_watch(dt, herd_anchor, rng);
+                }
             } else {
                 // ROADMAP 210：破曉甦醒——天亮（非夜間）後，仍處夜眠的晝行獵物先喚醒再閒晃；
                 // 否則 600s 夜眠計時器比整段白天還長，鹿會癱在家裡跨越整個白天。
@@ -1302,6 +1408,34 @@ fn panic_velocity_from_herd(
 /// 純函式，便於測試。
 fn is_diurnal(kind: WildlifeKind) -> bool {
     kind.trophic_level() == TrophicLevel::Prey
+}
+
+/// ROADMAP 212：群體警戒哨——判定 (ax,ay) 這隻成體是否擔任所屬群的哨兵。
+/// 在 `adult_snap`（同種成體位置快照，含自己）中，若 SENTINEL_HERD_RADIUS 內的同種成體
+/// （含自己）達 SENTINEL_MIN_HERD 隻，且自己是其中 id 最小者，便由自己放哨。以「群內最小
+/// id」去中心地推定，保證每群恰一隻哨兵、且穩定不抖動（不靠隨機、不需額外狀態）。純函式。
+fn herd_sentinel(
+    self_id: u32,
+    kind: WildlifeKind,
+    ax: f32,
+    ay: f32,
+    adult_snap: &[(u32, WildlifeKind, f32, f32)],
+) -> bool {
+    let r2 = SENTINEL_HERD_RADIUS * SENTINEL_HERD_RADIUS;
+    let mut count = 0usize;
+    let mut min_id = self_id;
+    for &(oid, k, px, py) in adult_snap {
+        if k != kind {
+            continue;
+        }
+        if (px - ax).powi(2) + (py - ay).powi(2) <= r2 {
+            count += 1;
+            if oid < min_id {
+                min_id = oid;
+            }
+        }
+    }
+    count >= SENTINEL_MIN_HERD && min_id == self_id
 }
 
 /// ROADMAP 210：掠食者本幀的狩獵搜尋半徑——夜行獵手入夜後覓食範圍放大（×NIGHT_HUNT_RADIUS_MULT）。
@@ -1721,12 +1855,17 @@ mod tests {
     #[test]
     fn guard_timer_expires_and_animal_returns_to_rest() {
         let mut mgr = WildlifeManager::new();
-        let deer_idx = mgr.animals.iter().position(|a| a.kind == WildlifeKind::WildDeer).unwrap();
+        let mut deer = mgr.animals.iter()
+            .find(|a| a.kind == WildlifeKind::WildDeer).unwrap().clone();
+        deer.id = 0;
         // 手動設定守衛狀態，計時即將到期。
-        mgr.animals[deer_idx].state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
+        deer.state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
+        // 單獨測「守衛到期→休息」這一轉換：場上只留這隻（孤獸不成群、不會接管哨兵 watching，
+        // 也沒有近旁掠食者觸發 ROADMAP 212 哨兵的放大警戒逃竄）——把單元行為與群聚行為隔開。
+        mgr.animals = vec![deer];
         // 跑超過計時。
         mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[], false);
-        let deer = &mgr.animals[deer_idx];
+        let deer = &mgr.animals[0];
         assert!(
             matches!(deer.state, WildlifeState::Resting { .. }),
             "計時到期後應回到 Resting，實際: {:?}", deer.state
@@ -2558,5 +2697,134 @@ mod tests {
             let any_graze = night.animals.iter().any(|a| matches!(a.state, WildlifeState::Grazing { .. }));
             assert!(!any_graze, "夜間獵物應沉睡、不吃草");
         }
+    }
+
+    // ─── ROADMAP 212：群體警戒哨 ─────────────────────────────────────────────
+
+    #[test]
+    fn herd_sentinel_is_lowest_id_in_group() {
+        // 同種三隻成體聚在一起：只有 id 最小者（id=2）擔任哨兵，其餘不是。
+        let snap = vec![
+            (5u32, WildlifeKind::WildDeer, 0.0_f32, 0.0_f32),
+            (2u32, WildlifeKind::WildDeer, 30.0, 0.0),
+            (8u32, WildlifeKind::WildDeer, 0.0, 40.0),
+        ];
+        assert!(herd_sentinel(2, WildlifeKind::WildDeer, 30.0, 0.0, &snap), "群內最小 id 應為哨兵");
+        assert!(!herd_sentinel(5, WildlifeKind::WildDeer, 0.0, 0.0, &snap), "非最小 id 不該是哨兵");
+        assert!(!herd_sentinel(8, WildlifeKind::WildDeer, 0.0, 40.0, &snap), "非最小 id 不該是哨兵");
+    }
+
+    #[test]
+    fn lone_animal_is_not_sentinel() {
+        // 孤獸（半徑內無同種夥伴）不必放哨——不成群就沒有哨兵。
+        let snap = vec![(3u32, WildlifeKind::WildDeer, 0.0_f32, 0.0_f32)];
+        assert!(!herd_sentinel(3, WildlifeKind::WildDeer, 0.0, 0.0, &snap),
+            "孤獸不成群、不該設哨兵");
+    }
+
+    #[test]
+    fn herd_sentinel_excludes_other_species_and_far_kin() {
+        // 不同物種與超出 SENTINEL_HERD_RADIUS 的同種都不算同群——故仍是孤獸、無哨兵。
+        let snap = vec![
+            (0u32, WildlifeKind::WildDeer, 0.0_f32, 0.0_f32),                    // 自己
+            (1u32, WildlifeKind::WildBird, 20.0, 0.0),                           // 異種 → 排除
+            (2u32, WildlifeKind::WildDeer, SENTINEL_HERD_RADIUS + 50.0, 0.0),    // 超範圍 → 排除
+        ];
+        assert!(!herd_sentinel(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap),
+            "異種與超範圍同種都不算同群，自己應視為孤獸、無哨兵");
+    }
+
+    #[test]
+    fn sentinel_flees_threat_outside_normal_radius() {
+        // 哨兵的放大警戒：在「一般 FLEE_RADIUS 之外、SENTINEL_FLEE_RADIUS 之內」就先察覺逃竄。
+        // 同場兩隻成鹿成群（觸發哨兵），威脅放在 240px（>180 一般半徑、<300 哨兵半徑）。
+        let mut mgr = WildlifeManager::new();
+        let mut s = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); // 哨兵（id 最小）
+        s.id = 1;
+        s.state = WildlifeState::Watching { watch_timer: 5.0 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 同群夥伴
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![s, mate];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 威脅在哨兵正東 240px：超出一般 FLEE_RADIUS(180)、落在 SENTINEL_FLEE_RADIUS(300) 內。
+        mgr.tick(0.1, &[(5240.0, 5000.0)], &att, &[], false);
+        let sent = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(sent.state, WildlifeState::Fleeing { .. }),
+            "哨兵應以放大半徑提早察覺 240px 外的威脅而逃竄，實際 {:?}", sent.state);
+    }
+
+    #[test]
+    fn non_sentinel_ignores_threat_outside_normal_radius() {
+        // 對照：同樣 240px 的威脅，對「非哨兵」的一般獵物來說仍在 FLEE_RADIUS(180) 之外、
+        // 不該觸發逃竄——證明提早察覺是哨兵獨有的放大警戒，而非全體。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 5.0 };
+        deer.tick_idle(0.1, &[(5240.0, 5000.0)], WANDER_SPEED, None, GRAZE_PROB, &mut rng);
+        assert!(!matches!(deer.state, WildlifeState::Fleeing { .. }),
+            "一般獵物對 240px（>FLEE_RADIUS）的威脅不該逃，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn herd_posts_exactly_one_sentinel_during_day() {
+        // 整管理器白天連跑多幀：成群的成鹿中應「至少有一隻」站崗放哨（watching），
+        // 且同一群（同種、彼此在哨兵半徑內）至多一隻——一隻看守、其餘安心活動。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_watch = false;
+        for _ in 0..400 {
+            mgr.tick(0.2, &[], &att, &[], false);
+            let watchers: Vec<&Wildlife> = mgr.animals.iter()
+                .filter(|a| a.alive && matches!(a.state, WildlifeState::Watching { .. }))
+                .collect();
+            if !watchers.is_empty() {
+                saw_watch = true;
+            }
+            // 不變式：每隻放哨者都必須是其同群（同種、SENTINEL_HERD_RADIUS 內成體）的最小 id。
+            let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = mgr.animals.iter()
+                .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
+                .map(|a| (a.id, a.kind, a.x, a.y)).collect();
+            for w in &watchers {
+                assert!(herd_sentinel(w.id, w.kind, w.x, w.y, &adult_snap),
+                    "放哨者必為其同群最小 id（去中心、每群恰一隻）");
+            }
+        }
+        assert!(saw_watch, "白天連跑多幀後，成群獵物中應出現站崗放哨者");
+    }
+
+    #[test]
+    fn no_sentinel_at_night() {
+        // 夜間獵物歸巢沉睡，不站崗放哨（哨兵只在白天）。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.2, &[], &att, &[], true);
+            let any_watch = mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Watching { .. }));
+            assert!(!any_watch, "夜間不該有獵物放哨");
+        }
+    }
+
+    #[test]
+    fn predator_never_watches() {
+        // 掠食者（狼/狐）不放哨——放哨是成群獵物的行為。
+        let mut mgr = WildlifeManager::new();
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 { mgr.tick(0.2, &[], &att, &[], false); }
+        let pred_watch = mgr.animals.iter().any(|a|
+            a.kind.trophic_level() == TrophicLevel::Predator
+            && matches!(a.state, WildlifeState::Watching { .. }));
+        assert!(!pred_watch, "掠食者不該放哨");
+    }
+
+    #[test]
+    fn watching_drifts_with_herd_after_timer() {
+        // 站崗到期：哨兵應跟群挪步（轉入 Wandering），不會永遠釘在原地被群拋下。
+        let mut rng = make_rng();
+        let mut s = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        s.state = WildlifeState::Watching { watch_timer: 0.05 };
+        s.tick_watch(0.1, Some((5200.0, 5000.0)), &mut rng);
+        assert!(matches!(s.state, WildlifeState::Wandering { .. }),
+            "站崗到期應轉入漫遊跟群，實際 {:?}", s.state);
     }
 }
