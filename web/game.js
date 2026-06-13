@@ -368,6 +368,16 @@
   const FIREFLY_COUNT = 36;          // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
   let _fireflyFade = 0;              // 春夜螢火淡入淡出進度 [0,1]（非春夜→0，春夜→1，逐幀緩緩趨近）
   let _fireflies = null;             // 惰性生成的螢火蟲池（畫面比例座標的位置、緩游速度、閃爍相位、尺寸）
+  // 春夏彩蝶（ROADMAP 236）：233 春夜螢火給了春季「夜、貼地、明滅游移的點點生靈」，本切片補上它的
+  // 白天對偶——當季節為春或夏、且為白天，草地上空翩翩飛起一群彩色蝴蝶：各自循正弦繞圈翩飛、邊飛邊
+  // 緩緩開合拍翅，飛色取自暖系花圃調色盤（粉橘／鵝黃／天藍／藕紫／奶白隨蝶隨機）。與春夜螢火刻意對偶
+  // 又區隔——螢火是夜、黃綠、加色明滅的脈衝光點；彩蝶是晝、彩色、實色開合的拍翅生靈。與白晝飛鳥（194，
+  // 高空成群橫越的剪影）也區隔——彩蝶貼地花叢高度單飛繞圈、不結隊橫越。純前端、讀既有 currentSeason
+  // ＋daynight.light、零後端。
+  const BUTTERFLY_DAY_LIGHT = 0.42;  // daynight.light 高於此值算「白天」（與夜門檻同口徑、方向相反）
+  const BUTTERFLY_COUNT = 18;        // 彩蝶隻數（白天偶見、蝶大較顯眼，比螢火更少不鋪滿）
+  let _butterflyFade = 0;            // 春夏彩蝶淡入淡出進度 [0,1]（非春夏白天→0，春夏白天→1，逐幀緩緩趨近）
+  let _butterflies = null;           // 惰性生成的彩蝶池（畫面比例座標的位置、緩游/繞圈相位、拍翅相位、尺寸、色）
   // 秋夜薄霧（ROADMAP 234）：231 冬夜極光、232 夏夜銀河、233 春夜螢火各給了冬、夏、春一張「夜臉」，
   // 唯獨秋季的夜仍與其他季節無異——「給每季一張夜臉」只差最後一塊。本切片給秋季補上它的夜景：
   // 當季節為秋天且入夜，下半草地高度緩緩漫起一層銀白薄霧，橫向極緩飄移、勻緩呼吸，待天亮又緩緩散去，
@@ -4111,6 +4121,7 @@
     safeDraw("leaves", () => drawLeaves(renderNow, _weatherDt)); // 秋日落葉（227）
     safeDraw("blossom", () => drawBlossom(renderNow, _weatherDt)); // 春日花飛（228）
     safeDraw("summerMotes", () => drawSummerMotes(renderNow, _weatherDt)); // 夏日蟬夏（229）
+    safeDraw("butterflies", () => drawButterflies(renderNow, _weatherDt)); // 春夏彩蝶（236），春夏白天草地上空翩飛的彩色蝴蝶（春夜螢火的白天對偶）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -11474,6 +11485,117 @@
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  // ── ROADMAP 236: 春夏彩蝶（春夜螢火 233 的白天對偶）────────────────────────
+  // 純函式：春／夏的白天回 1、其餘回 0（彩蝶只在春夏白天出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function butterflyTargetIntensity(season, light) {
+    const day = (typeof light === "number" ? light : 1) >= BUTTERFLY_DAY_LIGHT;
+    return ((season === "spring" || season === "summer") && day) ? 1 : 0;
+  }
+
+  // 純函式：把目前彩蝶季勢 cur 朝目標 target 以固定速率逼近（每秒 BUTTERFLY_FADE_RATE），夾在 [0,1]。
+  // 與螢火／極光同樣從容（入春夏白天彩蝶緩緩飛起、出春夏白天緩緩散去，不該一下子冒出一整群）。壞值（NaN）退回 0。
+  function butterflyFadeStep(cur, target, dt) {
+    const BUTTERFLY_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與螢火／極光同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * BUTTERFLY_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：彩蝶的拍翅展幅 [0,1]＝以正弦在 0.25~1.0 間起伏，賣翅膀「緩緩開合」的拍動感。
+  // 與螢火 fireflyPulse（三次方塑形成明滅脈衝）刻意區隔——蝶是勻緩開合、不一閃一滅。壞值（NaN）退回 0.25。
+  function butterflyFlap(phase) {
+    if (!(phase === phase)) return 0.25;         // NaN 檢查（NaN !== NaN）
+    const s = 0.5 + 0.5 * Math.sin(phase);       // 0..1
+    const v = 0.25 + 0.75 * s;                   // 0.25..1.0（翅膀不會完全閉死，留一線可見）
+    return Math.max(0, Math.min(1, v));
+  }
+
+  // 春夏彩蝶的暖系花圃調色盤（粉橘／鵝黃／天藍／藕紫／奶白），各蝶生成時隨機取一色。
+  const BUTTERFLY_COLORS = [
+    [255, 150, 170],   // 粉橘
+    [255, 224, 130],   // 鵝黃
+    [150, 200, 255],   // 天藍
+    [206, 170, 240],   // 藕紫
+    [255, 248, 232],   // 奶白
+  ];
+
+  // 生成彩蝶池（一次性、之後快取，不每幀重建→確定性、不隨鏡頭抖動）。各蝶：畫面比例座標 x（全寬）、
+  // y（草地花叢高度 0.45~0.88）、極緩水平漂移、繞圈相位／頻率（賣「翩翩繞圈」的飄飛軌跡）、拍翅相位／頻率、
+  // 尺寸、色（取自 BUTTERFLY_COLORS）。
+  function makeButterflies() {
+    const flies = [];
+    for (let i = 0; i < BUTTERFLY_COUNT; i++) {
+      flies.push({
+        x: Math.random(),
+        y: 0.45 + Math.random() * 0.43,
+        vx: (Math.random() - 0.5) * 0.04,   // 每秒走畫面寬的 ±2%，緩緩水平漂移
+        wob: Math.random() * Math.PI * 2,   // 繞圈擺動相位
+        wobs: 0.6 + Math.random() * 0.8,    // 繞圈擺動頻率（蝶翩然起伏的快慢）
+        flap: Math.random() * Math.PI * 2,  // 拍翅相位
+        flaps: 4.0 + Math.random() * 3.0,   // 拍翅頻率（蝶拍翅比螢火明滅更俐落綿密）
+        size: 3.2 + Math.random() * 2.2,
+        col: BUTTERFLY_COLORS[i % BUTTERFLY_COLORS.length],
+      });
+    }
+    return flies;
+  }
+
+  // 繪一隻蝴蝶（畫面座標 px,py；半徑 r；拍翅展幅 spread 0..1；色 col；整體不透明度 a）。
+  // 兩對翅膀以橢圓鏡像畫出、隨 spread 橫向開合（拍翅）；中間一截深色身體。純圖形、無文案。
+  function drawOneButterfly(px, py, r, spread, col, a) {
+    const [cr, cg, cb] = col;
+    const wingW = r * (0.35 + 0.65 * spread);   // 翅膀橫展隨拍翅開合
+    const upH = r * 0.85, loH = r * 0.6;         // 上翅較大、下翅較小
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.92)`;
+    // 左右各畫上下兩片翅膀
+    for (const sgn of [-1, 1]) {
+      const cx = px + sgn * wingW * 0.6;
+      ctx.beginPath();
+      ctx.ellipse(cx, py - upH * 0.35, wingW * 0.7, upH, 0, 0, Math.PI * 2);  // 上翅
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx, py + loH * 0.45, wingW * 0.55, loH, 0, 0, Math.PI * 2); // 下翅
+      ctx.fill();
+    }
+    // 身體（深色細長）
+    ctx.fillStyle = `rgba(70,55,50,${(a * 0.9).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.ellipse(px, py, r * 0.16, r * 0.95, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 每幀更新並繪製春夏彩蝶。非春夏白天時 _butterflyFade 緩緩歸零、池清空、零開銷早退。
+  // 畫在世界粒子層（雪／葉／櫻／夏絮之後）——彩蝶是貼地花叢上空、玩家眼前的白天前景生命；用畫面座標、不隨鏡頭平移。
+  function drawButterflies(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = butterflyTargetIntensity(currentSeason, light);
+    _butterflyFade = butterflyFadeStep(_butterflyFade, target, Math.max(0, (dt || 0)));
+    if (_butterflyFade <= 0.01) { _butterflies = null; return; }
+    if (reduceMotion || !_parallaxEnabled) { _butterflyFade = 0; _butterflies = null; return; }
+    if (!_butterflies) _butterflies = makeButterflies();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+    const step = Math.max(0, dt || 0);
+
+    for (const b of _butterflies) {
+      // 水平緩漂＋正弦繞圈擺動，合成翩翩飄飛的軌跡；飄出左右界從另一側繞回，垂直只在草地帶內輕擺。
+      b.x += b.vx * step;
+      if (b.x < -0.02) b.x += 1.04; else if (b.x > 1.02) b.x -= 1.04;
+      const wobY = Math.sin(t * b.wobs + b.wob) * 0.025;   // 上下翩然起伏（畫面高度 ±2.5%）
+      const px = b.x * W;
+      const py = (b.y + wobY) * H;
+      const r = b.size;
+      const spread = butterflyFlap(t * b.flaps + b.flap);
+      drawOneButterfly(px, py, r, spread, b.col, _butterflyFade * 0.95);
+    }
   }
 
   // ── ROADMAP 234: 秋夜薄霧 ─────────────────────────────────────────────────
