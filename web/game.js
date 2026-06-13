@@ -307,6 +307,12 @@
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
+  // 冬日飄雪（ROADMAP 226）：四季系統（137）至今只有 HUD pill 看得見，世界外觀從不隨季節變。
+  // 本切片把「冬季」第一次畫出來——冬天時天空飄落柔白雪花、覆一層極淡薄霜白幕。純前端、
+  // 讀既有 currentSeason、零後端。粒子池上限放低（雪緩降、不需太密），跨季以 _snowFade 平滑淡入淡出。
+  const SNOW_MAX_PARTICLES = 90;
+  const snowParticles = [];
+  let _snowFade = 0;             // 冬季雪勢淡入淡出進度 [0,1]（非冬季→0，冬季→1，逐幀趨近不突兀）
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4024,6 +4030,7 @@
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
+    safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -10696,6 +10703,83 @@
     // 泡泡內的微弱高光
     ctx.fillStyle = "rgba(200,255,255,0.15)";
     ctx.fill();
+  }
+
+  // ── ROADMAP 226: 冬日飄雪 ───────────────────────────────────────────────────
+  // 四季系統（137）至今只有 HUD pill 看得見，世界外觀從不隨季節改變。本切片把「冬季」
+  // 第一次畫出來：冬天時整片天空緩緩飄落柔白雪花、再覆一層極淡的薄霜白幕，讓玩家一眼認得
+  // 「下雪了、冬天到了」。純前端視覺、讀既有 currentSeason、零後端；效能分級（reduceMotion／
+  // 低 FPS 一律關閉），與天氣粒子（93）／夜晚對偶。下面三個純函式抽出來、無 DOM／可單元自驗。
+
+  // 純函式：冬季回 1、其餘季節回 0（雪只在冬天下）。
+  function snowTargetIntensity(season) {
+    return season === "winter" ? 1 : 0;
+  }
+
+  // 純函式：把目前雪勢 cur 朝目標 target 以固定速率逼近（每秒 SNOW_FADE_RATE），夾在 [0,1]。
+  // 讓入冬時雪緩緩下起、出冬時緩緩停（跨季不突然冒出一整屏雪／突然消失）。壞值（NaN）退回 0。
+  function snowFadeStep(cur, target, dt) {
+    const SNOW_FADE_RATE = 0.6;   // 約 1.7 秒淡入／淡出滿
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * SNOW_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：雪花的水平位置＝基準 x ＋ 隨下落高度與相位擺動的正弦（雪片飄飄然左右搖）。
+  function snowSwayX(baseX, y, phase, sway) {
+    return baseX + Math.sin(y * 0.018 + phase) * sway;
+  }
+
+  // 生成一片雪花（隨機落點／緩降速度／大小／搖擺幅度）。在可視範圍上方一帶撒入，配合下落填滿畫面。
+  function makeSnowflake(W, H) {
+    return {
+      x: Math.random() * (W + 40) - 20,
+      y: -Math.random() * H - 10,        // 從畫面上方一個螢幕高度內撒下，落下後鋪滿
+      vy: 26 + Math.random() * 38,        // 緩降，遠慢於雨（雨 vy ~270）
+      size: 1.2 + Math.random() * 2.3,
+      alpha: 0.5 + Math.random() * 0.5,
+      sway: 6 + Math.random() * 14,       // 左右飄擺幅度
+      phase: Math.random() * Math.PI * 2,
+      life: 6 + Math.random() * 6,
+    };
+  }
+
+  // 每幀更新並繪製冬季飄雪。非冬季時 _snowFade 緩緩歸零、池清空、零開銷早退。
+  function drawSnow(now, dt) {
+    if (reduceMotion) { if (snowParticles.length) snowParticles.length = 0; _snowFade = 0; return; }
+    _snowFade = snowFadeStep(_snowFade, snowTargetIntensity(currentSeason), dt);
+    if (_snowFade <= 0.01) { if (snowParticles.length) snowParticles.length = 0; return; }
+    if (!_parallaxEnabled) { if (snowParticles.length) snowParticles.length = 0; return; }
+
+    const W = viewW, H = viewH;
+    const spawnCount = Math.ceil(_snowFade * 2);   // 雪勢越濃補得越快
+    for (let i = 0; i < spawnCount && snowParticles.length < SNOW_MAX_PARTICLES; i++) {
+      snowParticles.push(makeSnowflake(W, H));
+    }
+
+    ctx.save();
+    ctx.fillStyle = "#f4f8ff";   // 柔白雪片
+    for (let i = snowParticles.length - 1; i >= 0; i--) {
+      const p = snowParticles[i];
+      p.y += p.vy * dt;
+      p.phase += dt;
+      p.life -= dt;
+      if (p.y > H + 12 || p.life <= 0) { snowParticles.splice(i, 1); continue; }
+      const x = snowSwayX(p.x, p.y, p.phase, p.sway);
+      const fade = Math.min(1, p.life / 0.8);   // 末段淡出
+      ctx.globalAlpha = _snowFade * p.alpha * fade;
+      ctx.beginPath();
+      ctx.arc(x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 薄霜白幕：極淡冷白覆全屏，賣「冬天的空氣」（隨雪勢淡入淡出）。
+    ctx.globalAlpha = _snowFade * 0.05;
+    ctx.fillStyle = "#dceaff";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
   }
 
   // ── ROADMAP 182: 移動足跡塵土 ───────────────────────────────────────────────
