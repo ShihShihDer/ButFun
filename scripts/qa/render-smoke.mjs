@@ -368,6 +368,9 @@ const scenarios = [
   // 冬日飄雪（226）：current_season=winter → 跑 drawSnow 的飄雪繪製分支（雪勢淡入→撒雪花→
   // 緩降搖擺→薄霜白幕）。6 幀已足以讓 _snowFade 越過 0.01 門檻進入繪製主路徑（完整落下/despawn 見專屬長跑情境）。
   variant("冬日飄雪", (s) => { s.current_season = "winter"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 秋日落葉（227）：current_season=autumn → 跑 drawLeaves 的落葉繪製分支（葉勢淡入→撒葉→
+  // 打旋搖擺緩降→中肋描線→暖金薄幕）。6 幀已足以讓 _leafFade 越過 0.01 門檻進入繪製主路徑。
+  variant("秋日落葉", (s) => { s.current_season = "autumn"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
@@ -457,6 +460,23 @@ for (const sc of scenarios) {
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 冬日飄雪：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
   else if (!(r instanceof Error)) console.log("  ✅ 冬日飄雪：乾淨");
+}
+
+// 秋日落葉（227）：落葉緩降（vy ~24）需數百毫秒才落出畫面下緣，連跑 ~200 幀（每幀 +16ms ≈ 3.2s）
+// 才實跑「淡入→撒葉→打旋搖擺緩降→落地 despawn→補新葉→暖金薄幕」完整迴圈（一般 6 幀只碰到開頭）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：秋季（秋日落葉，連跑 200 幀觸發落葉完整落下與補充）──");
+  const autumnSnap = JSON.parse(JSON.stringify(snapshot));
+  autumnSnap.current_season = "autumn";
+  autumnSnap.daynight = { phase: "day", light: 0.82, night_danger: false };
+  autumnSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...autumnSnap, type: "snapshot" }) });
+  const r = pump("秋日落葉", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 秋日落葉：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 秋日落葉：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 秋日落葉：乾淨");
 }
 
 console.log("");
