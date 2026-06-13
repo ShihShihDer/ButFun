@@ -169,6 +169,19 @@ const NURSE_COMFORT_DIST: f32 = 36.0;
 /// 幼獸依偎跟隨的速度（像素/秒）——略快於閒晃，才追得上緩緩漫遊的成體。
 const NURSE_SPEED: f32 = 48.0;
 
+// ─── ROADMAP 209：驚群炸開（恐慌連鎖）─────────────────────────────────────────
+// 承接 206（群聚結伴）：獸群會聚在一起，但危險來時過去卻是「各跑各的」——只有
+// 直接看到捕食者、且在 FLEE_RADIUS 內的那幾隻會逃，旁邊沒看到的同伴照樣閒晃。
+// 真正的獸群不是這樣：一隻驚跳、恐慌就像漣漪般傳遍全群，整群朝同方向一起炸開奔逃。
+// 本切片補上這塊：附近同種夥伴正在逃竄、而自己附近沒有「直接威脅」時，也被恐慌
+// 感染、朝同伴逃竄的方向一起竄逃。恐慌每 tick 只傳一圈（吃逃竄快照），於是看起來像
+// 一波由威脅源向外擴散的炸群。純啟發式、零 LLM、零協議改動（state 本就每幀廣播）。
+/// 恐慌連鎖半徑（像素）——同種夥伴在此範圍內逃竄，會把恐慌傳染給自己。
+/// 略小於群聚半徑（HERD_RADIUS 280），讓恐慌只在「真的成群」的近鄰間擴散。
+const ALARM_RADIUS: f32 = 220.0;
+/// 被感染的驚逃時長（秒）——略短於直接目擊威脅的 FLEE_DURATION，二手恐慌較快平復。
+const ALARM_FLEE_DURATION: f32 = 3.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -897,6 +910,17 @@ impl WildlifeManager {
             }
         }
 
+        // ROADMAP 209：驚群炸開——本幀開始時「正在逃竄」的獵物快照（id/kind/x/y/vx/vy），
+        // 供恐慌連鎖判定。刻意在 Phase 4 變更前取一次：被感染者本幀不再回傳到此快照，
+        // 故恐慌每 tick 只向外傳一圈，看起來像一波由威脅源擴散開的炸群（不會瞬間全炸）。
+        let fleeing_snap: Vec<(u32, WildlifeKind, f32, f32, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey)
+            .filter_map(|a| match a.state {
+                WildlifeState::Fleeing { vx, vy, .. } => Some((a.id, a.kind, a.x, a.y, vx, vy)),
+                _ => None,
+            })
+            .collect();
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -919,6 +943,25 @@ impl WildlifeManager {
             let kind_attitude = *attitudes.get(&animal_kind).unwrap_or(&50);
             if !tamed && kind_attitude < FRIENDLY_ATTITUDE {
                 threats.extend_from_slice(player_positions);
+            }
+
+            // ROADMAP 209：驚群炸開——自己附近沒有「直接威脅」（否則交給下方 tick_idle 算
+            // 正確的背向威脅逃竄），但有同種夥伴正在近旁逃竄時，被恐慌感染、朝同伴逃竄的
+            // 方向一起炸開。恐慌優先於馴養跟隨/幼獸依偎/群聚閒晃——連你養熟的鹿也會跟著炸群。
+            if !matches!(self.animals[i].state, WildlifeState::Fleeing { .. }) {
+                let ax = self.animals[i].x;
+                let ay = self.animals[i].y;
+                let direct_threat = nearest_in_range(ax, ay, &threats, FLEE_RADIUS).is_some();
+                if !direct_threat {
+                    if let Some((vx, vy)) = panic_velocity_from_herd(
+                        self.animals[i].id, animal_kind, ax, ay, &fleeing_snap, ALARM_RADIUS,
+                    ) {
+                        self.animals[i].state = WildlifeState::Fleeing {
+                            vx, vy, flee_timer: ALARM_FLEE_DURATION,
+                        };
+                        continue;
+                    }
+                }
             }
 
             // ROADMAP 205：馴養個體在沒有掠食者威脅時，溫順地走向附近玩家、保持舒適距離（彷彿跟著你）。
@@ -1120,6 +1163,30 @@ fn nearest_adult_of_kind(
         .filter(|&(_, _, d2)| d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(px, py, _)| (px, py))
+}
+
+/// ROADMAP 209：驚群炸開——在 `fleeing_snap`（正在逃竄的同種獵物：id/kind/x/y/vx/vy）中，
+/// 找離 (ax,ay) 最近、且距離在 `radius` 內的同種逃竄夥伴，回傳其逃竄方向（正規化後乘
+/// FLEE_SPEED）作為被感染者的逃竄速度——於是整群朝同一方向一起炸開（恐慌如漣漪傳開）。
+/// 範圍內無逃竄同伴則 `None`。排除自己。純函式，便於測試。
+fn panic_velocity_from_herd(
+    self_id: u32,
+    kind: WildlifeKind,
+    ax: f32,
+    ay: f32,
+    fleeing_snap: &[(u32, WildlifeKind, f32, f32, f32, f32)],
+    radius: f32,
+) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    fleeing_snap.iter()
+        .filter(|&&(id, k, _, _, _, _)| id != self_id && k == kind)
+        .map(|&(_, _, px, py, vx, vy)| (vx, vy, (px - ax).powi(2) + (py - ay).powi(2)))
+        .filter(|&(_, _, d2)| d2 <= r2)
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(vx, vy, _)| {
+            let len = (vx * vx + vy * vy).sqrt().max(1.0);
+            (vx / len * FLEE_SPEED, vy / len * FLEE_SPEED)
+        })
 }
 
 /// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
@@ -2050,5 +2117,89 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5240.0, 5000.0)]);
         let j = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         assert!(matches!(j.state, WildlifeState::Fleeing { .. }), "幼獸應逃離掠食者而非依偎，實際: {:?}", j.state);
+    }
+
+    // ─── ROADMAP 209：驚群炸開（恐慌連鎖）測試 ─────────────────────────────────
+
+    #[test]
+    fn panic_velocity_copies_nearest_fleeing_kin_direction() {
+        // 同種逃竄夥伴在範圍內、朝東逃（vx>0）→ 被感染者沿同方向、速度正規化為 FLEE_SPEED。
+        let snap = vec![
+            (1u32, WildlifeKind::WildDeer, 100.0, 0.0, FLEE_SPEED, 0.0),
+        ];
+        let (vx, vy) = panic_velocity_from_herd(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap, ALARM_RADIUS)
+            .expect("近旁有同種逃竄夥伴應被感染");
+        assert!((vx - FLEE_SPEED).abs() < 1e-3 && vy.abs() < 1e-3,
+            "應沿夥伴方向（東）以 FLEE_SPEED 逃竄，實際 ({vx},{vy})");
+    }
+
+    #[test]
+    fn panic_velocity_excludes_self_other_kind_and_out_of_range() {
+        let snap = vec![
+            (0u32, WildlifeKind::WildDeer, 10.0, 0.0, FLEE_SPEED, 0.0),       // 自己 → 排除
+            (2u32, WildlifeKind::WildBird, 10.0, 0.0, FLEE_SPEED, 0.0),       // 他種 → 排除
+            (3u32, WildlifeKind::WildDeer, ALARM_RADIUS + 50.0, 0.0, FLEE_SPEED, 0.0), // 超出範圍 → 排除
+        ];
+        assert!(panic_velocity_from_herd(0, WildlifeKind::WildDeer, 0.0, 0.0, &snap, ALARM_RADIUS).is_none(),
+            "排除自己/他種/範圍外後應無可感染來源");
+    }
+
+    #[test]
+    fn fleeing_kin_panics_calm_neighbor() {
+        // 一隻野鹿正在逃竄、近旁另一隻平靜野鹿（無玩家/捕食者直接威脅）→ 被恐慌感染、一起炸開。
+        let mut mgr = WildlifeManager::new();
+        let mut runner = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        runner.id = 1;
+        runner.state = WildlifeState::Fleeing { vx: FLEE_SPEED, vy: 0.0, flee_timer: FLEE_DURATION };
+        let mut calm = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px，ALARM_RADIUS 內
+        calm.id = 2;
+        calm.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![runner, calm];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[]);
+
+        let c = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        match c.state {
+            WildlifeState::Fleeing { vx, .. } => assert!(vx > 0.0, "應沿逃竄夥伴方向（東）炸開，實際 vx={vx}"),
+            ref s => panic!("平靜同伴應被恐慌感染轉為 Fleeing，實際 {s:?}"),
+        }
+    }
+
+    #[test]
+    fn distant_kin_does_not_panic_neighbor() {
+        // 逃竄夥伴遠在 ALARM_RADIUS 外 → 恐慌傳不到，平靜的同伴不應炸群。
+        let mut mgr = WildlifeManager::new();
+        let mut runner = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        runner.id = 1;
+        runner.state = WildlifeState::Fleeing { vx: FLEE_SPEED, vy: 0.0, flee_timer: FLEE_DURATION };
+        let mut calm = adult_at(WildlifeKind::WildDeer, 5000.0 + ALARM_RADIUS + 80.0, 5000.0);
+        calm.id = 2;
+        calm.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![runner, calm];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[]);
+
+        let c = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        assert!(!matches!(c.state, WildlifeState::Fleeing { .. }),
+            "逃竄夥伴在 ALARM_RADIUS 外不應傳染恐慌，實際 {:?}", c.state);
+    }
+
+    #[test]
+    fn panic_does_not_cross_species() {
+        // 一隻野鳥逃竄、近旁一隻平靜野鹿 → 異種恐慌不互傳，野鹿不炸群。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Fleeing { vx: FLEE_SPEED, vy: 0.0, flee_timer: FLEE_DURATION };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5080.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[]);
+
+        let d = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        assert!(!matches!(d.state, WildlifeState::Fleeing { .. }),
+            "異種不應互傳恐慌，野鹿不應因野鳥逃竄而炸群，實際 {:?}", d.state);
     }
 }

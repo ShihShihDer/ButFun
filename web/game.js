@@ -1033,6 +1033,10 @@
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   let seasonalNodesList = [];     // ROADMAP 154 季節性野外採集節點 [{id, wx, wy, season, charges}]
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
+  // ROADMAP 209：驚群炸開——記錄每隻動物「上一幀是否在逃竄」與「受驚閃現截止時間」，
+  // 用來偵測「剛轉入 fleeing」的瞬間、在頭頂閃一下 ❗（恐慌如漣漪在獸群間一隻接一隻跳起）。
+  const _wildlifeStartle = new Map(); // id -> { wasFleeing:bool, until:ms }
+  const STARTLE_MS = 650;             // 受驚 ❗ 閃現時長（毫秒）
   let carionOrbs = [];            // ROADMAP 142 乙太微粒 [{id, x, y}]
   let coloniesList = [];          // ROADMAP 143 物種聚落 [{id, kind, name, cx, cy, guard_radius}]
   let speciesAttitudes = [];      // ROADMAP 144 物種關係 [{kind, name, attitude, tier}]
@@ -8035,6 +8039,19 @@
 
       ctx.save();
       const isFleeing  = w.state === "fleeing";
+      // ROADMAP 209：偵測「剛轉入逃竄」的瞬間——前一幀不在逃竄、這一幀逃竄 → 觸發受驚閃現。
+      // 整群被恐慌連鎖一隻接一隻點燃時，便看得到一連串 ❗ 像漣漪般依序跳起。
+      {
+        const st = _wildlifeStartle.get(w.id);
+        const wasFleeing = st ? st.wasFleeing : false;
+        if (isFleeing && !wasFleeing) {
+          _wildlifeStartle.set(w.id, { wasFleeing: true, until: now + STARTLE_MS });
+        } else if (st) {
+          st.wasFleeing = isFleeing;
+        } else {
+          _wildlifeStartle.set(w.id, { wasFleeing: isFleeing, until: 0 });
+        }
+      }
       const isHunting  = w.state === "hunting";
       const isGuarding = w.state === "guarding";
       const isPredator = w.kind === "wild_wolf" || w.kind === "wild_fox";
@@ -8054,6 +8071,21 @@
         case "wild_fox":      _drawWildFox(isHunting, now);      break;
       }
       ctx.restore();
+
+      // ROADMAP 209：受驚閃現——剛被恐慌點燃的瞬間，頭頂彈出一個會上飄淡出的 ❗，
+      // 讓「驚群炸開」一眼看得到：一隻驚跳、旁邊接著跳，恐慌像漣漪傳遍整群。
+      {
+        const st = _wildlifeStartle.get(w.id);
+        if (st && st.until > now) {
+          const t = 1 - (st.until - now) / STARTLE_MS; // 0→1 隨時間推進
+          ctx.globalAlpha = Math.max(0, 1 - t);        // 漸淡
+          ctx.font = "13px sans-serif";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "bottom";
+          ctx.fillText("❗", 0, -30 - t * 10);          // 邊淡邊上飄
+          ctx.globalAlpha = 1;
+        }
+      }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       if (w.juvenile) {
