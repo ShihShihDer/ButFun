@@ -2090,9 +2090,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .map(|(kind, _, _, _)| *kind)
                             .collect();
                         if !killed_kinds.is_empty() {
-                            let mut ms = app.monster_species.write().unwrap();
-                            for k in &killed_kinds {
-                                ms.on_player_kills_monster(*k);
+                            // 鎖序鐵律：monster_species 寫鎖只在這個小區塊持有、用完立刻釋放，絕不與下方
+                            // 會鎖 players 的巢穴/委託事件處理重疊——快照鎖序是 players→monster_species，
+                            // 若這裡持 monster_species 期間再鎖 players 即反轉 → 與快照+排隊 write 成三方
+                            // 死鎖環、整站永久卡死（同 AttackWildlife/EnterHome 修過的同族雷）。
+                            {
+                                let mut ms = app.monster_species.write().unwrap();
+                                for k in &killed_kinds {
+                                    ms.on_player_kills_monster(*k);
+                                }
                             }
                             // ROADMAP 164：玩家擊殺怪物同時通知巢穴管理器扣族群數。
                             {
