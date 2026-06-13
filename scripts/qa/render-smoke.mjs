@@ -374,6 +374,9 @@ const scenarios = [
   // 春日花飛（228）：current_season=spring → 跑 drawBlossom 的花瓣繪製分支（花瓣勢淡入→撒瓣→
   // 橫飄翻轉緩降→淡粉薄幕）。6 幀已足以讓 _petalFade 越過 0.01 門檻進入繪製主路徑。
   variant("春日花飛", (s) => { s.current_season = "spring"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 夏日蟬夏（229）：current_season=summer → 跑 drawSummerMotes 的浮塵繪製分支（夏絮勢淡入→撒絮→
+  // 上飄閃爍橫盪→暖金薄幕）。6 幀已足以讓 _moteFade 越過 0.01 門檻進入繪製主路徑。
+  variant("夏日蟬夏", (s) => { s.current_season = "summer"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
@@ -497,6 +500,23 @@ for (const sc of scenarios) {
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 春日花飛：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
   else if (!(r instanceof Error)) console.log("  ✅ 春日花飛：乾淨");
+}
+
+// 夏日蟬夏（229）：夏絮緩緩上飄（vy ~ -10~-30）兼受熱氣橫移（vx ~6~20）需數百毫秒才飄出畫面上緣/右緣，連跑
+// ~200 幀（每幀 +16ms ≈ 3.2s）才實跑「淡入→撒絮→上飄閃爍橫盪→飄出 despawn→補新絮→暖金薄幕」完整迴圈。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：夏季（夏日蟬夏，連跑 200 幀觸發夏絮完整上飄與補充）──");
+  const summerSnap = JSON.parse(JSON.stringify(snapshot));
+  summerSnap.current_season = "summer";
+  summerSnap.daynight = { phase: "day", light: 0.82, night_danger: false };
+  summerSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...summerSnap, type: "snapshot" }) });
+  const r = pump("夏日蟬夏", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 夏日蟬夏：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 夏日蟬夏：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 夏日蟬夏：乾淨");
 }
 
 console.log("");
