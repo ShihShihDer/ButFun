@@ -81,6 +81,9 @@ pub enum WeaponKind {
     VoidCannon,
     /// 守城戰刃（ROADMAP 160）：霸主晶核鑄造，攻擊力 +28，入侵首領限定，擊殺乙太霸主方能取得原料。
     EtherOverlordBlade,
+    /// 傳說戰刃（ROADMAP 173）：傳說晶核×1 + Alpha 晶核×3 + 乙太×30 合成，
+    /// 攻擊力 +55，全遊戲最強武器——唯有擊倒傳說古 Alpha 才能得到原料。
+    LegendaryBlade,
 }
 
 /// 持有某類護甲所提供的防禦加成。
@@ -188,6 +191,8 @@ impl WeaponKind {
             WeaponKind::CrystalBallista => 14,
             WeaponKind::VoidCannon => 27,
             WeaponKind::EtherOverlordBlade => 28,
+            // ROADMAP 173：傳說古 Alpha 戰利品合成，全遊戲最強
+            WeaponKind::LegendaryBlade => 55,
         }
     }
 
@@ -301,7 +306,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::AncientDeco
         | ItemKind::EtherOverlordCore
         | ItemKind::AlphaCrystal
-        | ItemKind::AlphaForce => None,
+        | ItemKind::AlphaForce
+        | ItemKind::LegendaryCore => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -312,6 +318,8 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         ItemKind::VoidCannon => Some(WeaponKind::VoidCannon),
         // 入侵首領限定武器（ROADMAP 160）
         ItemKind::EtherOverlordBlade => Some(WeaponKind::EtherOverlordBlade),
+        // 傳說古 Alpha 合成武器（ROADMAP 173）
+        ItemKind::LegendaryBlade => Some(WeaponKind::LegendaryBlade),
     }
 }
 
@@ -408,7 +416,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::EtherOverlordCore
         | ItemKind::EtherOverlordBlade
         | ItemKind::AlphaCrystal
-        | ItemKind::AlphaForce => None,
+        | ItemKind::AlphaForce
+        | ItemKind::LegendaryCore
+        | ItemKind::LegendaryBlade => None,
     }
 }
 

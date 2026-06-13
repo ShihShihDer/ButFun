@@ -314,6 +314,14 @@ pub enum ItemKind {
     /// Alpha 之力⚡（合成：Alpha 晶核×2 + 乙太礦石×5）。
     /// 使用後：回滿血 + 獲得 +25 乙太——Alpha 的原始生命力傾注你的身體。
     AlphaForce,
+
+    // ── 傳說古 Alpha 戰利品（ROADMAP 173）──────────────────────────────────
+    /// 傳說晶核💫（擊倒傳說古 Alpha 時殺手獲得 1 顆）。全遊戲最稀有的戰利品，
+    /// 只有合力挑戰世界頭目才能取得，是傳說戰刃的唯一原料。
+    LegendaryCore,
+    /// 傳說戰刃🌟（合成：傳說晶核×1 + Alpha 晶核×3 + 乙太礦石×30）。
+    /// 攻擊力 +55，全遊戲最強武器——傳說古 Alpha 生命力的最終結晶。
+    LegendaryBlade,
 }
 
 impl ItemKind {
@@ -419,6 +427,9 @@ impl ItemKind {
         // ROADMAP 168 巢穴 Alpha 戰利品
         ItemKind::AlphaCrystal,
         ItemKind::AlphaForce,
+        // ROADMAP 173 傳說古 Alpha 戰利品
+        ItemKind::LegendaryCore,
+        ItemKind::LegendaryBlade,
     ];
 }
 
@@ -720,13 +731,16 @@ mod tests {
                 | ItemKind::EtherOverlordBlade
                 // ROADMAP 168 巢穴 Alpha 戰利品
                 | ItemKind::AlphaCrystal
-                | ItemKind::AlphaForce => {}
+                | ItemKind::AlphaForce
+                // ROADMAP 173 傳說古 Alpha 戰利品
+                | ItemKind::LegendaryCore
+                | ItemKind::LegendaryBlade => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 90 種（含 ROADMAP 168：巢穴 Alpha 戰利品 2 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 90, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 92 種（含 ROADMAP 173：傳說古 Alpha 戰利品 2 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 92, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -905,8 +919,10 @@ mod tests {
             );
             // 巢穴 Alpha 擊殺可得（ROADMAP 168）：攻擊 Alpha 首領擊殺後殺手得 AlphaCrystal。
             let alpha_kill_drop = item == ItemKind::AlphaCrystal;
+            // 傳說古 Alpha 擊倒可得（ROADMAP 173）：擊倒世界頭目後殺手得 LegendaryCore。
+            let ancient_alpha_kill_drop = item == ItemKind::LegendaryCore;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop,
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集／非 Alpha 擊殺掉落）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );

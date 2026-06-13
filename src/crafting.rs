@@ -588,6 +588,16 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::AlphaForce,
         output_qty: 1,
     },
+
+    // ── 傳說古 Alpha 限定合成（ROADMAP 173）──────────────────────────────────
+    /// 傳說戰刃：傳說晶核×1 + Alpha 晶核×3 + 乙太礦石×30 → 傳說戰刃×1。攻擊力 +55。
+    /// 需擊倒傳說古 Alpha 取得傳說晶核（全遊戲最稀有），象徵「生態系征服者」的終極武器。
+    Recipe {
+        id: "legendary_blade",
+        inputs: &[(ItemKind::LegendaryCore, 1), (ItemKind::AlphaCrystal, 3), (ItemKind::Ether, 30)],
+        output: ItemKind::LegendaryBlade,
+        output_qty: 1,
+    },
 ];
 
 /// 依 ID 查配方。
@@ -878,8 +888,10 @@ mod tests {
                 );
                 // 巢穴 Alpha 擊殺可得（ROADMAP 168）：AttackAlpha 擊殺後殺手獲得 AlphaCrystal。
                 let alpha_kill_drop = item == ItemKind::AlphaCrystal;
+                // 傳說古 Alpha 擊倒可得（ROADMAP 173）：擊倒世界頭目後殺手得 LegendaryCore。
+                let ancient_alpha_kill_drop = item == ItemKind::LegendaryCore;
                 assert!(
-                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop,
+                    obtainable.contains(&item) || craftable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop,
                     "配方 `{}` 需要素材 {:?}，但它既不可採集/挖掘/掉落，也沒有任何\
                      配方產出它——玩家永遠湊不齊料，這是條看得到卻永遠合不出的死配方；請確認該素材\
                      能由世界獲取／合成取得，或為它補上來源",

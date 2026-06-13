@@ -90,7 +90,8 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::SteamBed | ItemKind::AetherChest | ItemKind::EtherPlant
         | ItemKind::StarLantern | ItemKind::AncientDeco
         | ItemKind::EtherOverlordCore | ItemKind::EtherOverlordBlade
-        | ItemKind::AlphaCrystal | ItemKind::AlphaForce => None,
+        | ItemKind::AlphaCrystal | ItemKind::AlphaForce
+        | ItemKind::LegendaryCore | ItemKind::LegendaryBlade => None,
     }
 }
 
