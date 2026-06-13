@@ -350,6 +350,30 @@ const FLIGHT_CIRCLE_RADIUS: f32 = 26.0;
 /// 盤旋角速度（弧度／秒）——每秒繞行的角度，決定盤旋快慢。
 const FLIGHT_ANGULAR_SPEED: f32 = 1.6;
 
+// ─── ROADMAP 221：晝日鳥鳴呼應（daytime bird song chorus / contagion）─────────
+// 承接 218（群嚎呼應）：218 把夜的氛圍從「偶爾一聲孤嗥」補成「此起彼落的群嚎」，讓夜行荒野頭皮
+// 發麻；可白天的草原卻反而更顯安靜——鳥群只是默默低頭吃草、無聲升空，少了真實野地白天最有感染力
+// 的那層底噪：鳥鳴。本切片把 218 的整套「呼應」手法從夜的狼嚎搬到晝的鳥鳴：白天平靜時，野鳥偶爾
+// 停下啁啾一小段（頭頂浮 🎵），鳴聲會「傳染」——一隻起鳴，附近同類「聽見」了被牽動跟著啁啾，鳴聲
+// 像漣漪般逐圈在草原上傳開，遠近的鳥此起彼落地對鳴成一片晨間合唱。與 218 對成完整的晝夜聲景：夜有
+// 狼嚎（🌙）、晝有鳥鳴（🎵）。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 chirping 字串
+// 沿用 state_str；計時隨狀態變體攜帶，無新欄位）、記憶體模式。與 220 升空的區隔：啁啾是原地出聲、
+// 不離地、不盤旋的另一種白天行為（鳥可站著鳴、也可飛起，兩者互斥）。威脅永遠優先：啁啾中若有掠食者
+// 逼近，立刻收聲逃竄。
+/// 平靜的野鳥本幀自發起鳴的機率——偏低，讓起鳴是白天偶爾的一聲、而非時時鳴個不停（多數時候仍照常
+/// 閒晃吃草）。對應 218 的 HOWL_PROB，是「自發起頭的第一聲」。
+const CHIRP_PROB: f32 = 0.015;
+/// 一段啁啾的最短／最長時長（秒）——仰首鳴數秒後再低頭回到閒晃。比狼嚎略短：鳥鳴輕快、一串就停。
+const CHIRP_DURATION_MIN: f32 = 1.5;
+const CHIRP_DURATION_MAX: f32 = 3.0;
+/// 一段啁啾能傳多遠、牽動多遠外的同類跟鳴（世界座標像素）——比升空牽動半徑（FLIGHT_HEAR_RADIUS）
+/// 更遠，鳴聲傳得比拍翅遠，讓散在草原各處的鳥也聽得到、應得上。
+const CHIRP_HEAR_RADIUS: f32 = 420.0;
+/// 「聽見」附近啁啾時，本幀跟著起鳴的機率——偏高（鳥鳴很有感染力），但不設 1.0：留一點隨機，讓
+/// 接力是錯落地一隻接一隻；又因新起鳴者本幀不在「起始啁啾快照」裡，故牽動每 tick 只向外擴一圈——
+/// 鳴聲像漣漪般逐圈傳開，不會瞬間全鳴（對應 218 的 HOWL_JOIN_PROB，是「聽見後的接力」）。
+const CHIRP_JOIN_PROB: f32 = 0.45;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -556,6 +580,9 @@ enum WildlifeState {
     /// 為當前盤旋角、每幀依角速度推進繞圈；fly_timer 倒數，到期就降落回漫遊；盤旋中若有威脅
     /// 逼近一律優先降下逃竄。前端依此狀態把鳥往上抬、地面留投影，讀起來是「飛在空中」。
     Flying { fly_timer: f32, angle: f32 },
+    /// ROADMAP 221：晝日鳥鳴呼應——白天平靜的野鳥停下啁啾（頭頂浮 🎵）。原地不動（不更新座標）、
+    /// chirp_timer 倒數，到期就回到漫遊（沿用群聚拉力）；啁啾中若有威脅逼近一律優先收聲逃竄。
+    Chirping { chirp_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -932,6 +959,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 221：晝日鳥鳴呼應——啁啾中（Chirping）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，鳥成群，與獨來獨往的狼 tick_howl 用 random_target 不同）回到
+    /// 閒晃。只在 Chirping 狀態下生效（呼叫端已確保此隻為野鳥、白天、平靜；威脅一旦逼近呼叫端不會
+    /// 走到此分支、改去收聲逃竄——威脅永遠優先）。
+    fn tick_chirp(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Chirping { chirp_timer } = self.state {
+            let remaining = chirp_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Chirping { chirp_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -950,6 +994,7 @@ impl Wildlife {
             WildlifeState::Howling { .. }   => "howling",
             WildlifeState::Waking { .. }    => "waking",
             WildlifeState::Flying { .. }    => "flying",
+            WildlifeState::Chirping { .. }  => "chirping",
         }
     }
 }
@@ -1185,6 +1230,14 @@ impl WildlifeManager {
         // 不在此快照裡，故牽動每 tick 只向外擴一圈，升空像漣漪般逐圈傳開。
         let flying_snap: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && matches!(a.state, WildlifeState::Flying { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 221：本幀起始時正在啁啾（Chirping）的野鳥座標快照——供其餘平靜野鳥據此
+        // 「聽見」附近啁啾的同類而被牽動跟鳴（接力起鳴，仿 218 群嚎快照）。新起鳴者本幀不在此
+        // 快照裡，故牽動每 tick 只向外擴一圈，鳴聲像漣漪般逐圈傳開。
+        let chirping_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && matches!(a.state, WildlifeState::Chirping { .. }))
             .map(|a| (a.x, a.y))
             .collect();
 
@@ -1648,7 +1701,14 @@ impl WildlifeManager {
                 // ROADMAP 216：成體相依理毛——理毛永遠讓位給逃命（威脅優先）。先看附近有無威脅：
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
                 let is_bird = animal_kind == WildlifeKind::WildBird;
-                if matches!(a.state, WildlifeState::Waking { .. }) {
+                if matches!(a.state, WildlifeState::Watching { .. }) {
+                    // ROADMAP 212 修補：走到此處代表本隻已非自群哨兵（act_as_sentinel 為偽——
+                    // 例如有更小 id 的同種成體漂進了 SENTINEL_HERD_RADIUS、接手放哨），卻仍滯留在
+                    // Watching。若不主動釋放，tick_idle 的 catch-all（`_ => {}`）會讓牠永遠卡在放哨，
+                    // 形成「一群兩哨」。這裡把卸任的哨兵收斂回休息，下一幀再交還一般作息（漫遊/吃草）。
+                    let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+                    a.state = WildlifeState::Resting { rest_timer: rest };
+                } else if matches!(a.state, WildlifeState::Waking { .. }) {
                     // ROADMAP 219：破曉伸展中——威脅一旦逼近就立刻中斷改逃竄（睡醒遇險先逃命），
                     // 否則原地舒展身子、計時倒數，到期才起身投入新一天的閒晃。
                     if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
@@ -1663,6 +1723,14 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_fly(dt, herd_anchor, rng);
+                    }
+                } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
+                    // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
+                    // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_chirp(dt, herd_anchor, rng);
                     }
                 } else if is_bird
                     && !is_night
@@ -1680,6 +1748,21 @@ impl WildlifeManager {
                     let timer = rng.gen_range(FLIGHT_DURATION_MIN..=FLIGHT_DURATION_MAX);
                     let angle: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
                     a.state = WildlifeState::Flying { fly_timer: timer, angle };
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && {
+                        // ROADMAP 221：白天平靜的野鳥——聽見附近同類啁啾（CHIRP_HEAR_RADIUS 內）便以
+                        // 較高的 CHIRP_JOIN_PROB 被牽動跟著起鳴（接力）；沒聽見才退回低機率 CHIRP_PROB
+                        // 自發起鳴。本幀新起鳴者不在 chirping_snap 裡，故鳴聲逐圈外擴、整群錯落而鳴。
+                        let join = hears_song(a.x, a.y, &chirping_snap) && rng.gen::<f32>() < CHIRP_JOIN_PROB;
+                        join || rng.gen::<f32>() < CHIRP_PROB
+                    }
+                {
+                    // 停下啁啾：原地仰首鳴唱一小段（頭頂浮 🎵）。
+                    let timer = rng.gen_range(CHIRP_DURATION_MIN..=CHIRP_DURATION_MAX);
+                    a.state = WildlifeState::Chirping { chirp_timer: timer };
                 } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
@@ -1805,6 +1888,18 @@ fn sees_flight(px: f32, py: f32, flying: &[(f32, f32)]) -> bool {
     flying.iter().any(|&(fx, fy)| {
         let dx = fx - px;
         let dy = fy - py;
+        dx * dx + dy * dy <= r2
+    })
+}
+
+/// ROADMAP 221：晝日鳥鳴呼應——位於 (px,py) 的野鳥是否「聽得見」附近任一正在啁啾的同類
+/// （`chirping` 為本幀起始時正在啁啾者的座標快照）。只要有一聲鳴在 CHIRP_HEAR_RADIUS 內就回 true，
+/// 由呼叫端據此（以 CHIRP_JOIN_PROB）牽動牠跟鳴。純距離判定、無副作用（仿 218 的 hears_howl）。
+fn hears_song(px: f32, py: f32, chirping: &[(f32, f32)]) -> bool {
+    let r2 = CHIRP_HEAR_RADIUS * CHIRP_HEAR_RADIUS;
+    chirping.iter().any(|&(cx, cy)| {
+        let dx = cx - px;
+        let dy = cy - py;
         dx * dx + dy * dy <= r2
     })
 }
@@ -3435,6 +3530,12 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         let mut saw_watch = false;
+        // 上一幀「身分不符」的放哨者 id 集合。放哨身分以「決策當幀起始（pre-tick）」的群組為準，
+        // 但這裡是在 tick 後（post-tick）用已位移的座標重算——故群組剛合併/剛離散的「那一幀」，
+        // 會出現短暫的身分不符（例如哨兵的同群這一幀正好走散、剩牠一隻）。這是合法的單幀過渡，
+        // 下一幀必被收斂（卸任哨兵釋放回休息，見 Phase 4 的 ROADMAP 212 修補）。真正要抓的壞味道
+        // 是「卡死」——身分不符卻一直賴在 Watching。故不變式改為：同一隻的身分不符**不得連跨兩幀**。
+        let mut prev_bad: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for _ in 0..400 {
             mgr.tick(0.2, &[], &att, &[], false);
             let watchers: Vec<&Wildlife> = mgr.animals.iter()
@@ -3443,14 +3544,19 @@ mod tests {
             if !watchers.is_empty() {
                 saw_watch = true;
             }
-            // 不變式：每隻放哨者都必須是其同群（同種、SENTINEL_HERD_RADIUS 內成體）的最小 id。
+            // 每隻放哨者都應是其同群（同種、SENTINEL_HERD_RADIUS 內成體）的最小 id（去中心、每群恰一隻）。
             let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = mgr.animals.iter()
                 .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
                 .map(|a| (a.id, a.kind, a.x, a.y)).collect();
-            for w in &watchers {
-                assert!(herd_sentinel(w.id, w.kind, w.x, w.y, &adult_snap),
-                    "放哨者必為其同群最小 id（去中心、每群恰一隻）");
-            }
+            let bad: std::collections::HashSet<u32> = watchers.iter()
+                .filter(|w| !herd_sentinel(w.id, w.kind, w.x, w.y, &adult_snap))
+                .map(|w| w.id)
+                .collect();
+            // 連跨兩幀仍身分不符 = 卡死的滯留哨兵（如永遠出不了 Watching 的孤獸）→ 不合法。
+            let stuck: Vec<u32> = bad.intersection(&prev_bad).copied().collect();
+            assert!(stuck.is_empty(),
+                "放哨者身分不符不得連跨兩幀（卸任哨兵應於次幀釋放回休息）：卡死 id={:?}", stuck);
+            prev_bad = bad;
         }
         assert!(saw_watch, "白天連跑多幀後，成群獵物中應出現站崗放哨者");
     }
@@ -4274,5 +4380,125 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "盤旋中遇威脅應立刻降下逃竄，實際 {:?}", b.state);
+    }
+
+    // ── ROADMAP 221：晝日鳥鳴呼應 ────────────────────────────────────────────
+
+    #[test]
+    fn tick_chirp_holds_position_while_timer_remaining() {
+        // 啁啾進行中：原地不動（座標不變）、計時遞減、狀態維持 Chirping。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Chirping { chirp_timer: 2.0 };
+        bird.tick_chirp(0.1, None, &mut rng);
+        match bird.state {
+            WildlifeState::Chirping { chirp_timer } => {
+                assert!((chirp_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("啁啾未到期應維持 Chirping，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "啁啾中應原地不動");
+    }
+
+    #[test]
+    fn tick_chirp_returns_to_wander_when_timer_expires() {
+        // 啁啾到期：回到漫遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Chirping { chirp_timer: 0.05 };
+        bird.tick_chirp(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "啁啾到期應回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn chirping_state_str_is_chirping() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Chirping { chirp_timer: 1.0 };
+        assert_eq!(bird.state_str(), "chirping");
+    }
+
+    #[test]
+    fn hears_song_only_within_radius() {
+        // 純距離判定：啁啾中的同類在 CHIRP_HEAR_RADIUS 內聽得見、外則聽不見；空快照永遠聽不見。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!hears_song(me.0, me.1, &[]), "四下無同類啁啾時聽不見");
+        let near = (me.0 + CHIRP_HEAR_RADIUS - 1.0, me.1);
+        assert!(hears_song(me.0, me.1, &[near]), "半徑內啁啾的同類應聽得見");
+        let far = (me.0 + CHIRP_HEAR_RADIUS + 50.0, me.1);
+        assert!(!hears_song(me.0, me.1, &[far]), "半徑外啁啾的同類聽不見");
+        assert!(hears_song(me.0, me.1, &[far, near]), "其中一隻在範圍內就算聽得見");
+    }
+
+    #[test]
+    fn calm_bird_joins_nearby_song() {
+        // 接力起鳴：一隻持續啁啾的野鳥旁，白天平靜、未鳴的同類會被牽動跟著啁啾。
+        let mut mgr = WildlifeManager::new();
+        let mut singer = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        singer.id = 1;
+        singer.state = WildlifeState::Chirping { chirp_timer: 1.0e9 }; // 整段測試持續啁啾
+        // 300px：大於群聚半徑（280，故兩鳥不成群）、大於哨兵群半徑（220）、小於鳴聲牽動半徑（420，
+        // 聽得見彼此啁啾）、大於升空牽動半徑（320，故聽者不會被升空牽動而改去飛、確保是「跟鳴」）。
+        let mut listener = adult_at(WildlifeKind::WildBird, 5300.0, 5000.0);
+        listener.id = 2;
+        // 一般白天漫遊（目標設在自身位置、計時極長 → 幾乎原地，且不觸發夜眠喚醒邏輯）。
+        listener.state = WildlifeState::Wandering { target_x: 5300.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![singer, listener];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..80 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false（白天）
+            let l = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(l.state, WildlifeState::Chirping { .. }) {
+                joined = true;
+                break;
+            }
+        }
+        assert!(joined, "白天平靜時聽見附近同類啁啾的野鳥，應被牽動跟著起鳴");
+    }
+
+    #[test]
+    fn non_bird_never_chirps() {
+        // 物種專屬：只有野鳥會啁啾——白天平靜的野鹿連跑數百幀都不該進入 Chirping。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Chirping { .. }), "非鳥類不該啁啾，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_chirp_at_night() {
+        // 夜間：野鳥歸巢沉睡，不啁啾——連跑多幀都不該進入 Chirping。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Chirping { .. }), "夜間野鳥不該啁啾，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn chirping_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：啁啾中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻收聲逃竄（非繼續鳴唱）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Chirping { chirp_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 50 < FRIENDLY_ATTITUDE 65 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "啁啾中遇威脅應立刻收聲逃竄，實際 {:?}", b.state);
     }
 }

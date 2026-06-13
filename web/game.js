@@ -8380,6 +8380,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 221：晝日鳥鳴呼應——白天平靜時停下啁啾的野鳥（state==="chirping"）頭頂浮一枚
+      // 輕輕跳動的 🎵，讓「鳥群此起彼落地對鳴」一眼（與耳）看得到——與 218 的狼嚎 🌙 對成完整
+      // 的晝夜聲景。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜的野鳥啁啾時
+      // 才給此狀態）。
+      if (w.state === "chirping") {
+        ctx.save();
+        const ct = (Math.sin(now / 240) + 1) / 2; // 0→1 輕快起落，像一串清亮的鳥鳴
+        ctx.globalAlpha = 0.55 + 0.4 * ct;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(7, -23 - ct * 3); // 像音符隨鳴聲輕輕上下跳動
+        ctx.fillText("🎵", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {
