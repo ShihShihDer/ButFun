@@ -8167,6 +8167,20 @@
         ctx.restore();
       }
 
+      // ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種夥伴互相梳理的成體（state==="grooming"）
+      // 頭頂浮一個輕輕呼吸般明滅的 💕，讓「兩頭鹿安靜地依偎著彼此理毛」一眼看得到（群成員之間
+      // 第一次有了親暱羈絆，而不只是各自吃草的點）。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在白天平靜、身邊有同種成體夥伴時才給某隻此狀態）。
+      if (w.state === "grooming") {
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 600)); // 像依偎時的輕柔呼吸般明滅
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💕", 8, -22);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {
