@@ -265,6 +265,13 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "frolicking", juvenile: true, familiarity: 0, tamed: false };
     }
   }),
+  // 掠食者夜嚎（217）：夜間把掠食者設成 howling → 跑 drawWildlife 的長嚎 🌙 繪製分支（含明滅與仰首上揚平移）。
+  variant("掠食者夜嚎(🌙)", (s) => {
+    s.daynight = { phase: "night", light: 0.2, night_danger: true };
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_wolf", x: me0.x - 40, y: me0.y, state: "howling", familiarity: 0, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),

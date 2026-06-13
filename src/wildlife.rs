@@ -277,6 +277,22 @@ const GROOM_DURATION_MAX: f32 = 6.5;
 /// 而非時時黏著（多數時候仍照常吃草／休息）。
 const GROOM_PROB: f32 = 0.05;
 
+// ─── ROADMAP 217：掠食者夜嚎（predator night howl）─────────────────────────────
+// 承接 210（晝夜作息）+ 213（孤獵潛行）：過去獵物入夜歸巢沉睡、夜晚成了「獵物缺席」的安靜時段，
+// 但夜其實是掠食者的主場——牠們只會默默巡遊獵食，從不發出聲音，夜的氛圍裡少了最標誌性的一筆：
+// 狼嗥。本切片補上掠食者夜間的嗓音：夜裡無獵可追的平靜空檔，狼／狐偶爾停下腳步、仰首長嚎
+// （頭頂浮 🌙），數秒後再回到巡遊。於是當你夜行荒野，遠處會傳來一聲聲嗥叫——夜第一次有了
+// 掠食者的存在感，世界在入夜後不再只是「獵物睡了」、而是「換掠食者的世界醒著」。純夜間氛圍
+// 行為：不移動、不群聚（守掠食者「獨來獨往」設定，不與 206 群聚混淆）、不改狩獵優先（一發現
+// 獵物即改去獵殺）。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 howling 字串沿用
+// state_str；計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+/// 掠食者在夜間歇息、且附近無獵物可追時，本幀仰首長嚎的機率——偏低，讓嗥叫是夜裡偶爾的一聲、
+/// 而非時時嚎個不停（多數時候仍照常巡遊獵食）。
+const HOWL_PROB: f32 = 0.02;
+/// 一聲長嚎的最短／最長時長（秒）——仰首嚎數秒後再低頭回到巡遊。
+const HOWL_DURATION_MIN: f32 = 2.0;
+const HOWL_DURATION_MAX: f32 = 3.5;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -473,6 +489,9 @@ enum WildlifeState {
     /// ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種成體夥伴互相理毛（頭頂浮 💕）。
     /// 原地不動（不更新座標）、groom_timer 倒數，到期就回到漫遊；威脅一旦逼近一律優先逃竄。
     Grooming { groom_timer: f32 },
+    /// ROADMAP 217：掠食者夜嚎——夜裡無獵可追時仰首長嚎（頭頂浮 🌙）。原地不動（不更新座標）、
+    /// howl_timer 倒數，到期就回到巡遊；一發現獵物即由呼叫端改去獵殺（狩獵優先）。
+    Howling { howl_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -793,6 +812,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 217：掠食者夜嚎——長嚎中（Howling）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// 回到巡遊（掠食者獨來獨往，故用 random_target 純隨機、無群聚拉力）。只在 Howling 狀態下
+    /// 生效（呼叫端已確保此隻為掠食者、夜間、附近無可追獵物；發現獵物時呼叫端不會走到此分支、
+    /// 改去獵殺——狩獵永遠優先）。
+    fn tick_howl(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Howling { howl_timer } = self.state {
+            let remaining = howl_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Howling { howl_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -808,6 +844,7 @@ impl Wildlife {
             WildlifeState::Defending        => "defending",
             WildlifeState::Frolicking { .. } => "frolicking",
             WildlifeState::Grooming { .. }  => "grooming",
+            WildlifeState::Howling { .. }   => "howling",
         }
     }
 }
@@ -1245,8 +1282,21 @@ impl WildlifeManager {
                             // 無獵物，正常閒晃（捕食者不怕玩家，傳空威脅；獨來獨往不群聚）。
                             let rng = &mut self.rng;
                             let a = &mut self.animals[i];
-                            // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
-                            a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
+                            // ROADMAP 217：掠食者夜嚎——夜裡無獵可追的平靜空檔，偶爾仰首長嚎。
+                            // 已在長嚎中就把這一聲嚎完（原地不動、計時倒數）；否則夜間歇息時以
+                            // HOWL_PROB 開一段長嚎。白天、或正在巡遊/返家時一律照常閒晃（不嚎）。
+                            if matches!(a.state, WildlifeState::Howling { .. }) {
+                                a.tick_howl(dt, rng);
+                            } else if is_night
+                                && matches!(a.state, WildlifeState::Resting { .. })
+                                && rng.gen::<f32>() < HOWL_PROB
+                            {
+                                let timer = rng.gen_range(HOWL_DURATION_MIN..=HOWL_DURATION_MAX);
+                                a.state = WildlifeState::Howling { howl_timer: timer };
+                            } else {
+                                // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
+                                a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
+                            }
                         }
                     }
                 }
@@ -3711,5 +3761,101 @@ mod tests {
             let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(f.state, WildlifeState::Grooming { .. }), "幼獸不該理毛");
         }
+    }
+
+    // ─── ROADMAP 217：掠食者夜嚎 ────────────────────────────────────────────
+
+    #[test]
+    fn tick_howl_returns_to_wander_when_timer_expires() {
+        // 長嚎計時耗盡後，掠食者應回到漫遊（巡遊）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Howling { howl_timer: 0.05 };
+        let mut rng = make_rng();
+        wolf.tick_howl(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }),
+            "長嚎到期應回到漫遊，實際 {:?}", wolf.state);
+    }
+
+    #[test]
+    fn tick_howl_holds_position_while_timer_remaining() {
+        // 長嚎進行中：原地不動（座標不變）、計時遞減、仍維持 Howling。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Howling { howl_timer: 3.0 };
+        let (x0, y0) = (wolf.x, wolf.y);
+        let mut rng = make_rng();
+        wolf.tick_howl(0.1, &mut rng);
+        assert_eq!((wolf.x, wolf.y), (x0, y0), "長嚎中掠食者應原地不動");
+        match wolf.state {
+            WildlifeState::Howling { howl_timer } => assert!((howl_timer - 2.9).abs() < 1e-4, "計時應遞減 dt"),
+            _ => panic!("長嚎未到期應維持 Howling，實際 {:?}", wolf.state),
+        }
+    }
+
+    #[test]
+    fn predator_howls_at_night_when_no_prey() {
+        // 整管理器：夜間，附近無獵物可追的掠食者（歇息中）連跑多幀後應有機會仰首長嚎。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf]; // 場上只有狼、沒有任何獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_howl = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Howling { .. }) { saw_howl = true; break; }
+        }
+        assert!(saw_howl, "夜間無獵可追的掠食者應會仰首長嚎");
+    }
+
+    #[test]
+    fn predator_does_not_howl_in_daytime() {
+        // 白天：長嚎是夜間氛圍行為——連跑多幀都不該進入 Howling。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Howling { .. }), "白天掠食者不該長嚎");
+        }
+    }
+
+    #[test]
+    fn prey_never_howl() {
+        // 長嚎只屬於掠食者——夜間的獵物（歸巢沉睡）連跑多幀都不該進入 Howling。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Howling { .. }), "獵物不該長嚎");
+        }
+    }
+
+    #[test]
+    fn howling_predator_hunts_when_prey_appears() {
+        // 狩獵優先：正在長嚎的掠食者，附近出現可獵物種時應改去獵殺（潛行或全速追獵），不再長嚎。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Howling { howl_timer: 3.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 夜獵半徑內
+        deer.id = 2;
+        mgr.animals = vec![wolf, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(
+            matches!(w.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "獵物出現時長嚎掠食者應改去獵殺，實際 {:?}", w.state,
+        );
     }
 }
