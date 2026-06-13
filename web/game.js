@@ -3811,6 +3811,7 @@
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
+    safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -9288,7 +9289,124 @@
     ctx.restore();
   }
 
+  // ── 沙漠流沙微光（ROADMAP 198）──────────────────────────────────────────────
+  // 沙漠（sand）tile 的沙面上浮著一點點順著風緩緩橫向飄移、又一閃一閃的金色微光——
+  // 像陽光灑在被風吹動的細沙上、沙粒滾過時忽然反光一下。純前端視覺、零後端：每格至多一顆
+  // 微光點，格內位置／明滅相位／週期全由既有確定性 sceneryHash 決定（同格永遠同結果、不隨鏡頭
+  // 閃爍）；其「順風位置」只是 now 的函式（與相機無關），故整片微光會朝同一風向流動、卻不會隨
+  // 鏡頭跳動。是 195/196（水面會閃會拍岸）、197（草地會起浪）之後，補上「沙漠地表」這塊維度——
+  // 過去水動了、草也動了，唯獨大片沙漠永遠靜止，現在沙面也會在風裡流光。
+  // 與既有元素區隔（避免重疊）：流沙微光（198）＝只在 sand tile、順風橫向「飄移＋明滅」的貼地金光點；
+  // 水面波光（195）＝水域內部「原地明滅」的反光（不飄移）；草浪（197）＝草地沿風向橫掃的整格亮帶
+  // （提亮整格、非點）；生態氛圍粒子（189/190）＝各生態地面『飄浮離地』的生命氣息（含沙漠熱氣微塵）；
+  // 天氣粒子（93）＝沙暴「正在發生」——層次、動法（飄移點 vs 原地閃 vs 橫掃帶 vs 飄浮粒）刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；每格至多一點、暗於門檻即跳過。
+  const SAND_GLINT_MAX_ALPHA = 0.42;  // 單顆微光最大不透明度（半透明、不蓋掉沙色）
+  const SAND_GLINT_PERIOD_MS = 2600;  // 明滅週期基準（每格再以 hash 微調，避免整片同步閃）
+  const SAND_DRIFT_PERIOD_MS = 9000;  // 順風飄移一個 tile 寬所需時間（緩，微風吹沙悠悠）
+  const SAND_GLINT_DENSITY   = 0.62;  // sceneryHash 高於此值的沙格才有微光點（疏；沙面零星反光）
+  const SAND_GLINT_MIN       = 0.08;  // 綜合亮度（明滅×行進包絡）低於此即不畫（多數時間沙面是暗的，省繪製）
+  const SAND_GLINT_DOT_R     = 3.2;   // 微光柔光斑基準半徑（邏輯像素，再以 hash 微縮放）
+  const SAND_GLINT_SHARP     = 2;     // 明滅銳度：raw^SHARP 讓亮峰尖、暗區長（零星閃光感）
+
+  // 純函式：取小數部分 [0,1)。負數也歸正（順風飄移相位用）。無 DOM、可測。
+  function fract01(x) {
+    return x - Math.floor(x);
+  }
+
+  // 純函式：微光順風「橫向行進位置」frac ∈ [0,1)。along0 為該點初始格內相位（hash 撒佈），
+  // 隨時間以 periodMs 為週期勻速前移（風把沙吹過去）、到格緣即回捲。periodMs<=0 視為不飄（回 along0 的 frac）。
+  // 只吃 now（不吃相機），故同格同時刻位置恆定、不隨鏡頭閃。無 DOM、可測。
+  function sandDriftAlong(along0, now, periodMs) {
+    if (!(periodMs > 0)) return fract01(along0);
+    return fract01(along0 + now / periodMs);
+  }
+
+  // 純函式：行進包絡 [0,1]，沿格內行進位置 along∈[0,1] 取 sin(π·along)——兩端（回捲縫）為 0、
+  // 中段為 1。讓微光「行到格中最亮、貼近縫處淡出」，回捲時亮度已近 0，遮掉橫向回捲的跳變（不閃）。無 DOM、可測。
+  function sandGlintEnvelope(along) {
+    const a = Math.max(0, Math.min(1, along));
+    return Math.sin(Math.PI * a);
+  }
+
+  // 純函式：微光明滅亮度 [0,1]。以 periodMs 為週期、phaseOff 為初相，^sharp 讓亮峰尖、暗區長
+  // （像沙粒零星反光，而非整片同亮）。periodMs<=0 視為不閃（回 0）；sharp<=0 視為線性。無 DOM、可測。
+  function sandGlintTwinkle(now, periodMs, phaseOff, sharp) {
+    if (!(periodMs > 0)) return 0;
+    const raw = (Math.sin((now / periodMs) * Math.PI * 2 + (phaseOff || 0)) + 1) / 2; // [0,1]
+    return sharp > 0 ? Math.pow(raw, sharp) : raw;
+  }
+
+  // 純函式：依日夜光照/相位給流沙微光色溫 {r,g,b}。破曉/黃昏染金橘、白天暖金（陽光灑在沙上）、
+  // 夜裡映清冷月白（沙面映月微光）。無 DOM、可測。
+  function sandGlintTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 214, b: 138 }; // 晨昏：金橘霞光
+    if (light >= 0.5) return { r: 255, g: 240, b: 190 };                          // 白天：暖金沙光
+    return { r: 198, g: 208, b: 226 };                                           // 夜/暗：清冷月白
+  }
+
+  // 純函式：流沙微光整體強度 [0,1]，隨日照線性。白天最強（陽光灑沙），夜裡仍留微光（沙面映月）。無 DOM、可測。
+  function sandGlintStrength(light) {
+    const L = Math.max(0, Math.min(1, light));
+    return 0.32 + 0.68 * L;
+  }
+
+  // 每幀在可見沙漠 tile 上繪製順風飄移＋明滅的金色微光。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawSandGlint(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = sandGlintTint(light, phase);
+    const strength = sandGlintStrength(light);
+    if (strength <= 0) return;
+
+    // 與 drawGround／drawWaterShimmer 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    const baseColor = `${tint.r},${tint.g},${tint.b}`;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        // 只在沙漠 tile 上撒微光
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "sand") continue;
+        // 此格是否有微光點（疏密）＋格內初始位置／明滅相位／週期，全由確定性 hash 決定（不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 13 + 1, ty * 7 + 3);
+        if (h0 < SAND_GLINT_DENSITY) continue;
+        const h1 = sceneryHash(tx * 5 + 2, ty * 11 + 9);
+        const h2 = sceneryHash(tx * 9 + 4, ty * 3 + 7);
+
+        // 順風橫向飄移：along 隨時間前移、到格緣回捲；行進包絡讓回捲縫處亮度→0（遮跳變）
+        const along = sandDriftAlong(h1, now, SAND_DRIFT_PERIOD_MS);
+        const env = sandGlintEnvelope(along);
+        const period = SAND_GLINT_PERIOD_MS * (0.7 + h2 * 0.6); // 每格週期不同，避免整片同步
+        const phaseOff = h0 * Math.PI * 2;
+        const tw = sandGlintTwinkle(now, period, phaseOff, SAND_GLINT_SHARP);
+        const bright = env * tw;
+        if (bright < SAND_GLINT_MIN) continue; // 此刻暗／近回捲縫，不畫，省繪製
+
+        const sx = tx * TS - camX + along * TS;   // 順風橫向位置（隨 now 前移）
+        const sy = ty * TS - camY + h2 * TS;       // 格內垂直位置（固定，避免雙縫）
+        const r = SAND_GLINT_DOT_R * (0.6 + h0 * 0.8);
+        const alpha = bright * strength * SAND_GLINT_MAX_ALPHA;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        grad.addColorStop(0, `rgba(${baseColor},${alpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${baseColor},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2); // 圓點柔光斑（與波光的橢圓反光區隔，像沙粒一點點反光）
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
   // ── 天氣粒子特效（ROADMAP 93）────────────────────────────────────────────
+  // 每幀更新並繪製天氣粒子（雨滴/沙塵/晶塵/海霧泡泡）。
   // 每幀更新並繪製天氣粒子（雨滴/沙塵/晶塵/海霧泡泡）。
   // 粒子完全由後端天氣狀態驅動，reduceMotion 或低 FPS 時關閉。
   function drawWeatherParticles(now, dt) {
