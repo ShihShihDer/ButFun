@@ -1435,6 +1435,18 @@ D-3. ✅ **小地圖導航**（PR #71）
     - 零 migration、零 LLM 依賴、純記憶體模式。1586 tests 全綠。
     - 玩家感知：荒野出現兩隻 Alpha 相距甚遠卻有金色連線相連，聊天出現「🤝【跨族結盟！】靈蛾 Alpha 與廢料無人機 Alpha 締結盟約！」；玩家立刻分頭圍攻；擊殺後「💥【結盟瓦解！】」+ 額外乙太獎勵——「世界的怪物在合作，我們也要合作！」
 
+## 接著（Alpha 覺醒危機 — AI 自主提案 2026-06-13）
+
+175. **Alpha 覺醒危機——生態壓力衝頂（≥85）且同時有 2 隻以上 Alpha 存活時，所有 Alpha 進入覺醒狀態：HP 激增、光環由金轉赤、全服廣播；玩家緊急合力清剿或壓低生態壓力，擊殺覺醒 Alpha 額外得乙太**
+    - 觸發條件：`eco_pressure ≥ 85.0 && active_alpha_count >= 2`。
+    - 覺醒效果：所有 Alpha `hp += max_hp × 50%`（上限 1.5× max_hp）；`awakened = true`。
+    - 解除條件：eco_pressure 降至 < 70 時，`awakened` 歸回 false（HP 不恢復）。
+    - 覺醒廣播：「🔥【Alpha 覺醒危機！】生態壓力衝頂，N 隻 Alpha 首領全數覺醒！生命激增、攻擊加倍——速速清剿或壓低壓力！」
+    - 覺醒擊殺獎勵：殺手額外 +5 乙太（AWAKENED_BONUS_ETHER），廣播「🔥 覺醒 Alpha 制伏！」。
+    - 前端視覺：覺醒 Alpha 疊加深赤色外環（`rgba(220,40,40,...)`）+ 名牌前綴改為「🔥👑」。
+    - **零 migration、零 LLM、純記憶體模式**：`monster_colony.rs`（新常數 + `ColonyAlpha.awakened` + `AlphaKilledResult.was_awakened` + `AlphaAwakened` 事件 + `tick_awakening()` + `ColonyAlphaView.awakened`，10+ 單元測試）；`game.rs`（讀取 director.eco_pressure() 傳入 tick + `AlphaAwakened` 廣播）；`ws.rs`（awakened 擊殺加成）；`web/game.js`（赤色外環 + 🔥👑 名牌）。
+    - 玩家感知：生態壓力接近頂點時忽然廣播「🔥 Alpha 覺醒！」，地圖上所有金冠怪多了一圈赤紅脈動光環——「要完蛋了！快叫人！」；打倒覺醒 Alpha 的玩家得到額外乙太；清剿委託或壓低壓力都能解除覺醒，讓多種應對策略有意義。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

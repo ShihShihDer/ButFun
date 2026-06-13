@@ -7529,8 +7529,9 @@
       const hpPct = a.hp / Math.max(1, a.max_hp);
       const isClashing = !!a.clash_target_id;
       const isAllied = !!a.allied_to_id;
-      // 衝突中→紅色；結盟中→金白雙環；正常→金色
-      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : 600));
+      const isAwakened = !!a.awakened; // ROADMAP 175
+      // 衝突中→紅色；結盟中→金白雙環；覺醒→赤紅；正常→金色
+      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : isAwakened ? 250 : 600));
       ctx.save();
       ctx.beginPath();
       ctx.arc(sx, sy, 28 * pulse, 0, Math.PI * 2);
@@ -7538,19 +7539,23 @@
         ? `rgba(255,50,50,${(0.7 * pulse).toFixed(3)})`
         : isAllied
           ? `rgba(255,240,120,${(0.85 * pulse).toFixed(3)})`
-          : `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
-      ctx.lineWidth = isClashing ? 4 : isAllied ? 4 : 3;
+          : isAwakened
+            ? `rgba(220,40,40,${(0.9 * pulse).toFixed(3)})`
+            : `rgba(255,210,0,${(0.55 * pulse).toFixed(3)})`;
+      ctx.lineWidth = isClashing ? 4 : isAllied ? 4 : isAwakened ? 4 : 3;
       ctx.stroke();
-      // 外圈花環（結盟時疊加白色外環）
+      // 外圈花環（結盟→白色；覺醒→深赤外環；其他→橙色虛線）
       ctx.beginPath();
-      ctx.arc(sx, sy, 32, 0, Math.PI * 2);
+      ctx.arc(sx, sy, 36, 0, Math.PI * 2);
       ctx.strokeStyle = isClashing
         ? `rgba(255,80,80,${(0.35 * pulse).toFixed(3)})`
         : isAllied
           ? `rgba(255,255,200,${(0.5 * pulse).toFixed(3)})`
-          : `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
-      ctx.lineWidth = isAllied ? 2 : 1.5;
-      ctx.setLineDash([5, 5]);
+          : isAwakened
+            ? `rgba(180,0,0,${(0.6 * pulse).toFixed(3)})`
+            : `rgba(255,140,0,${(0.3 * pulse).toFixed(3)})`;
+      ctx.lineWidth = isAllied ? 2 : isAwakened ? 3 : 1.5;
+      ctx.setLineDash(isAwakened ? [] : [5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -7562,34 +7567,35 @@
 
       // 血條
       const barW = 48, barH = 6;
-      const bx = sx - barW / 2, by = sy - 36;
+      const bx = sx - barW / 2, by = sy - 38;
       ctx.fillStyle = "rgba(0,0,0,0.6)";
       ctx.fillRect(bx, by, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? "#4c4" : hpPct > 0.25 ? "#ca4" : "#c44";
       ctx.fillRect(bx, by, barW * hpPct, barH);
-      ctx.strokeStyle = isClashing ? "rgba(255,80,80,0.9)" : "rgba(255,210,0,0.8)";
+      ctx.strokeStyle = isClashing ? "rgba(255,80,80,0.9)" : isAwakened ? "rgba(220,40,40,0.9)" : "rgba(255,210,0,0.8)";
       ctx.lineWidth = 1;
       ctx.strokeRect(bx, by, barW, barH);
 
-      // 👑 皇冠標記
+      // 皇冠標記（覺醒時改 🔥👑）
       ctx.font = "14px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
-      ctx.fillText("👑", sx, by);
+      ctx.fillText(isAwakened ? "🔥👑" : "👑", sx, by);
 
-      // 名牌
+      // 名牌（覺醒時前綴改 🔥👑）
       const kindName = MONSTER_DISPLAY_NAME[a.kind] || a.kind;
-      const label = `👑 ${kindName}·霸主`;
+      const crownPrefix = isAwakened ? "🔥👑" : "👑";
+      const label = `${crownPrefix} ${kindName}·霸主`;
       ctx.font = "bold 11px sans-serif";
       const lw = ctx.measureText(label).width + 8;
-      const lx = sx, ly = sy + 30;
-      ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : "rgba(80,50,0,0.75)";
+      const lx = sx, ly = sy + 32;
+      ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : isAwakened ? "rgba(120,10,10,0.85)" : "rgba(80,50,0,0.75)";
       ctx.fillRect(lx - lw / 2, ly - 12, lw, 14);
-      ctx.fillStyle = isClashing ? "#ff8080" : "#ffd700";
+      ctx.fillStyle = isClashing ? "#ff8080" : isAwakened ? "#ff6060" : "#ffd700";
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
-      // ROADMAP 170：衝突徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
+      // ROADMAP 170：衝突徽章 > ROADMAP 175：覺醒徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
       if (isClashing) {
         const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
         const clashLabel = "⚔️ 衝突中";
@@ -7604,6 +7610,21 @@
         ctx.fillStyle = "#fff";
         ctx.textBaseline = "top";
         ctx.fillText(clashLabel, cx2, cy2);
+      } else if (isAwakened) {
+        // ROADMAP 175：覺醒徽章（深赤底，閃爍）
+        const awakenPulse = 0.8 + 0.2 * Math.abs(Math.sin(now / 250));
+        const awakenLabel = "🔥 覺醒中";
+        ctx.font = "bold 10px sans-serif";
+        const awkenW = ctx.measureText(awakenLabel).width + 10;
+        const awkenX = sx, awkenY = ly + 8;
+        ctx.fillStyle = `rgba(160,10,10,${(0.95 * awakenPulse).toFixed(3)})`;
+        ctx.fillRect(awkenX - awkenW / 2, awkenY - 1, awkenW, 13);
+        ctx.strokeStyle = `rgba(255,60,60,${(0.98 * awakenPulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(awkenX - awkenW / 2, awkenY - 1, awkenW, 13);
+        ctx.fillStyle = "#ffaaaa";
+        ctx.textBaseline = "top";
+        ctx.fillText(awakenLabel, awkenX, awkenY);
       } else if (isAllied) {
         // ROADMAP 174：結盟徽章（金色底，深色字）
         const alliancePulse = 0.88 + 0.12 * Math.sin(now / 450);
