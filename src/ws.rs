@@ -2140,6 +2140,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         // ROADMAP 173：傳說古 Alpha 事件——只由 game.rs 主 tick 處理
                                         MonsterColonyEvent::AncientAlphaEmerged { .. } => {}
                                         MonsterColonyEvent::AncientAlphaSlain => {}
+                                        // ROADMAP 174：跨族結盟——只由 game.rs 主 tick 處理
+                                        MonsterColonyEvent::AllianceFormed { .. } => {}
+                                        MonsterColonyEvent::AllianceBroken { .. } => {}
                                     }
                                 }
                             }
@@ -3092,12 +3095,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let kill_result = app.monster_colonies.write().unwrap()
                             .attack_alpha(alpha_id, px, py, power, ALPHA_ATTACK_REACH);
                         if let Some(result) = kill_result {
-                            use crate::monster_colony::{ALPHA_KILLER_ETHER, ALPHA_GLOBAL_ETHER, ALPHA_CRYSTAL_DROP};
-                            // 殺手個人獎勵
+                            use crate::monster_colony::{ALPHA_KILLER_ETHER, ALPHA_GLOBAL_ETHER, ALPHA_CRYSTAL_DROP, ALLIANCE_BREAK_BONUS_ETHER};
+                            // 殺手個人獎勵（盟約中額外獎勵）
+                            let alliance_bonus = if result.was_allied { ALLIANCE_BREAK_BONUS_ETHER } else { 0 };
                             let killer_name = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
-                                    p.ether = p.ether.saturating_add(ALPHA_KILLER_ETHER);
+                                    p.ether = p.ether.saturating_add(ALPHA_KILLER_ETHER + alliance_bonus);
                                     p.inventory.add(ItemKind::AlphaCrystal, ALPHA_CRYSTAL_DROP);
                                     p.name.clone()
                                 } else {
@@ -3113,11 +3117,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                             let kind_name = result.kind.display_name();
                             let colony_name = result.colony_name;
-                            let _ = app.tx_chat.send(format!(
-                                "💎 [Alpha 擊倒！] {} 制伏了 {} 的 Alpha 首領「{}·霸主」！\
-                                 全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，{killer_name} 額外獲得 +{ALPHA_KILLER_ETHER} 乙太 + Alpha 晶核💎！",
-                                killer_name, colony_name, kind_name
-                            ));
+                            if result.was_allied {
+                                let _ = app.tx_chat.send(format!(
+                                    "💎⚔️ [盟約破碎！] {} 瓦解了 {} 的盟約 Alpha「{}·霸主」！\
+                                     全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，\
+                                     {killer_name} 額外獲得 +{} 乙太（含破盟獎勵 +{ALLIANCE_BREAK_BONUS_ETHER}）+ Alpha 晶核💎！",
+                                    killer_name, colony_name, kind_name,
+                                    ALPHA_KILLER_ETHER + alliance_bonus
+                                ));
+                            } else {
+                                let _ = app.tx_chat.send(format!(
+                                    "💎 [Alpha 擊倒！] {} 制伏了 {} 的 Alpha 首領「{}·霸主」！\
+                                     全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，{killer_name} 額外獲得 +{ALPHA_KILLER_ETHER} 乙太 + Alpha 晶核💎！",
+                                    killer_name, colony_name, kind_name
+                                ));
+                            }
                         }
                     }
                 }

@@ -59,6 +59,15 @@ const ALPHA_CLASH_DAMAGE_PER_SEC: f32 = 8.0;
 /// 敗者巢穴在 Alpha 被擊敗後的冷卻倍率（相對 ALPHA_COOLDOWN_SECS）。
 const ALPHA_CLASH_DEFEAT_COOLDOWN_MULT: f32 = 2.0;
 
+// ─── ROADMAP 174：Alpha 跨族結盟常數 ─────────────────────────────────────────
+
+/// 兩隻不同巢穴的 Alpha 共存（未廝殺）多少秒後觸發跨族結盟。
+const ALLIANCE_FORM_SECS: f32 = 180.0;
+/// 結盟時每隻 Alpha 獲得的額外 HP（盟約加持）。
+const ALLIANCE_HP_BONUS: u32 = 50;
+/// 結盟期間擊殺盟約 Alpha 額外獲得的乙太獎勵。
+pub const ALLIANCE_BREAK_BONUS_ETHER: u32 = 5;
+
 // ─── ROADMAP 173：傳說古 Alpha 常數 ──────────────────────────────────────────
 
 /// 傳說古 Alpha 的生命值——遠超普通 Alpha（族群 Alpha 最多 24HP），需全服合力擊倒。
@@ -137,6 +146,9 @@ pub struct ColonyAlpha {
     // ROADMAP 170：領地爭奪
     /// 正在與哪隻 Alpha 廝殺（對方的 alpha.id），`None` 表示無衝突。
     pub clash_target_id: Option<u32>,
+    // ROADMAP 174：跨族結盟
+    /// 盟約對象的 Alpha ID；`None` 表示未結盟。
+    pub allied_to_id: Option<u32>,
 }
 
 /// 給協議層用的 Alpha 視圖（隨快照廣播）。
@@ -153,6 +165,8 @@ pub struct ColonyAlphaView {
     pub active_tactic: Option<String>,
     /// ROADMAP 170：正在廝殺的對方 Alpha ID；`null` 表示無衝突。前端顯示紅色衝突徽章。
     pub clash_target_id: Option<u32>,
+    /// ROADMAP 174：盟約對象的 Alpha ID；`null` 表示未結盟。前端顯示金色連線與「盟」徽章。
+    pub allied_to_id: Option<u32>,
 }
 
 /// 給協議層用的巢穴視圖（隨快照廣播，讓玩家在地圖/態度面板看到巢穴）。
@@ -175,6 +189,8 @@ pub struct AlphaKilledResult {
     pub colony_id: u32,
     pub colony_name: &'static str,
     pub kind: EnemyKind,
+    /// ROADMAP 174：擊殺時 Alpha 是否正在盟約中（是 → 額外獎勵）。
+    pub was_allied: bool,
 }
 
 // ─── ROADMAP 173：傳說古 Alpha ────────────────────────────────────────────────
@@ -245,6 +261,17 @@ pub enum MonsterColonyEvent {
     AncientAlphaEmerged { x: f32, y: f32 },
     /// ROADMAP 173：傳說古 Alpha 被擊倒。game.rs 負責廣播勝利訊息。
     AncientAlphaSlain,
+    /// ROADMAP 174：跨族結盟達成——兩隻不同巢穴的 Alpha 共存 3 分鐘後締結盟約。
+    /// game.rs 負責廣播警告 + 生態壓力加成。
+    AllianceFormed {
+        alpha_a_name: &'static str,
+        alpha_b_name: &'static str,
+    },
+    /// ROADMAP 174：跨族結盟瓦解——某隻盟約 Alpha 被玩家擊殺。
+    /// game.rs 負責廣播破盟訊息 + 發送額外乙太。
+    AllianceBroken {
+        survivor_name: &'static str,
+    },
 }
 
 /// 管理所有怪物巢穴。
@@ -259,6 +286,13 @@ pub struct MonsterColonyManager {
     pub ancient: Option<AncientAlpha>,
     /// 古 Alpha 被擊倒後的冷卻計時器（秒），>0 = 冷卻中，不觸發湧現判斷。
     pub ancient_cooldown: f32,
+    // ROADMAP 174：跨族結盟
+    /// 兩隻以上不同巢穴 Alpha 共存（未廝殺）的累計秒數；達 ALLIANCE_FORM_SECS 觸發結盟。
+    coexistence_timer: f32,
+    /// 當前是否有跨族結盟活躍。
+    alliance_active: bool,
+    /// 結盟的兩個 Alpha ID（僅 alliance_active = true 時有效）。
+    alliance_pair: [u32; 2],
 }
 
 impl MonsterColonyManager {
@@ -269,6 +303,9 @@ impl MonsterColonyManager {
             next_alpha_id: 1,
             ancient: None,
             ancient_cooldown: 0.0,
+            coexistence_timer: 0.0,
+            alliance_active: false,
+            alliance_pair: [0, 0],
         }
     }
 
@@ -349,11 +386,15 @@ impl MonsterColonyManager {
                 active_tactic: None,
                 tactic_remaining: 0.0,
                 clash_target_id: None,
+                allied_to_id: None,
             });
         }
 
         // ROADMAP 170：Alpha 領地爭奪——兩兩偵測 + 互相施傷 + 結算
         self.tick_alpha_clash(dt, &mut events);
+
+        // ROADMAP 174：跨族結盟——共存計時 + 結盟觸發 + 盟約失效偵測
+        self.tick_alliance(dt, &mut events);
 
         // ROADMAP 173：傳說古 Alpha 湧現判斷
         self.tick_ancient_alpha(dt, &mut events);
@@ -482,11 +523,13 @@ impl MonsterColonyManager {
             return None; // 未死
         }
 
-        // Alpha 死亡
+        // Alpha 死亡：先記錄是否正在盟約中
+        let was_allied = self.alphas[idx].allied_to_id.is_some();
         let result = AlphaKilledResult {
-            colony_id: alpha.colony_id,
-            colony_name: alpha.colony_name,
-            kind: alpha.kind,
+            colony_id: self.alphas[idx].colony_id,
+            colony_name: self.alphas[idx].colony_name,
+            kind: self.alphas[idx].kind,
+            was_allied,
         };
         self.alphas.swap_remove(idx);
 
@@ -500,6 +543,89 @@ impl MonsterColonyManager {
     }
 
     // ── ROADMAP 173：傳說古 Alpha 相關方法 ──────────────────────────────────
+
+    /// ROADMAP 174：推進跨族結盟邏輯：
+    /// 1. 若已結盟 → 偵測盟約是否因 Alpha 死亡而失效。
+    /// 2. 若未結盟 → 計算正在和平共存（無廝殺）的異巢穴 Alpha 對；達 ALLIANCE_FORM_SECS 觸發結盟。
+    fn tick_alliance(&mut self, dt: f32, events: &mut Vec<MonsterColonyEvent>) {
+        if self.alliance_active {
+            // 確認兩隻盟約 Alpha 是否仍存活
+            let [id_a, id_b] = self.alliance_pair;
+            let a_alive = self.alphas.iter().any(|a| a.id == id_a);
+            let b_alive = self.alphas.iter().any(|a| a.id == id_b);
+            if !a_alive || !b_alive {
+                // 盟約 Alpha 死亡 → 結盟瓦解
+                let survivor_name: &'static str = if a_alive {
+                    self.alphas.iter().find(|a| a.id == id_a)
+                        .map(|a| a.colony_name).unwrap_or("未知")
+                } else if b_alive {
+                    self.alphas.iter().find(|a| a.id == id_b)
+                        .map(|a| a.colony_name).unwrap_or("未知")
+                } else {
+                    "未知"
+                };
+                self.alliance_active = false;
+                self.alliance_pair = [0, 0];
+                // 清除所有 Alpha 的 allied_to_id
+                for alpha in &mut self.alphas {
+                    alpha.allied_to_id = None;
+                }
+                events.push(MonsterColonyEvent::AllianceBroken { survivor_name });
+            }
+            return;
+        }
+
+        // 未結盟：計算可結盟的 Alpha 對（不同巢穴、互無廝殺）
+        let peaceful: Vec<usize> = (0..self.alphas.len())
+            .filter(|&i| self.alphas[i].clash_target_id.is_none())
+            .collect();
+
+        // 找出第一對不同巢穴的 peaceful Alpha
+        let mut candidate_pair: Option<(usize, usize)> = None;
+        'outer: for i in 0..peaceful.len() {
+            for j in (i + 1)..peaceful.len() {
+                let ai = peaceful[i];
+                let aj = peaceful[j];
+                if self.alphas[ai].colony_id != self.alphas[aj].colony_id {
+                    candidate_pair = Some((ai, aj));
+                    break 'outer;
+                }
+            }
+        }
+
+        if candidate_pair.is_some() {
+            self.coexistence_timer += dt;
+            if self.coexistence_timer >= ALLIANCE_FORM_SECS {
+                let (ai, aj) = candidate_pair.unwrap();
+                let id_a = self.alphas[ai].id;
+                let id_b = self.alphas[aj].id;
+                let name_a = self.alphas[ai].colony_name;
+                let name_b = self.alphas[aj].colony_name;
+                // 盟約加持：各補 ALLIANCE_HP_BONUS 點生命（不超過最大值的 2 倍為上限）
+                self.alphas[ai].hp = (self.alphas[ai].hp + ALLIANCE_HP_BONUS)
+                    .min(self.alphas[ai].max_hp * 2);
+                self.alphas[aj].hp = (self.alphas[aj].hp + ALLIANCE_HP_BONUS)
+                    .min(self.alphas[aj].max_hp * 2);
+                self.alphas[ai].allied_to_id = Some(id_b);
+                self.alphas[aj].allied_to_id = Some(id_a);
+                self.alliance_active = true;
+                self.alliance_pair = [id_a, id_b];
+                self.coexistence_timer = 0.0;
+                events.push(MonsterColonyEvent::AllianceFormed {
+                    alpha_a_name: name_a,
+                    alpha_b_name: name_b,
+                });
+            }
+        } else {
+            // 沒有可結盟對 → 重置計時
+            self.coexistence_timer = 0.0;
+        }
+    }
+
+    /// 回傳跨族結盟是否活躍（供 game.rs 計算額外生態壓力加成）。
+    pub fn alliance_active(&self) -> bool {
+        self.alliance_active
+    }
 
     /// 每幀推進古 Alpha 冷卻 + 湧現判斷。
     /// 當 `ancient` 為 `None` 且冷卻歸零、且 3+ 巢穴飽和度 ≥ 80% 時，湧現古 Alpha。
@@ -628,6 +754,7 @@ impl MonsterColonyManager {
             max_hp: a.max_hp,
             active_tactic: a.active_tactic.clone(),
             clash_target_id: a.clash_target_id,
+            allied_to_id: a.allied_to_id,
         }).collect()
     }
 
@@ -1225,6 +1352,7 @@ mod tests {
             active_tactic: None,
             tactic_remaining: 0.0,
             clash_target_id: None,
+            allied_to_id: None,
         });
         let b_id = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1241,6 +1369,7 @@ mod tests {
             active_tactic: None,
             tactic_remaining: 0.0,
             clash_target_id: None,
+            allied_to_id: None,
         });
         (a_id, b_id)
     }
@@ -1365,6 +1494,7 @@ mod tests {
                 active_tactic: None,
                 tactic_remaining: 0.0,
                 clash_target_id: None,
+                allied_to_id: None,
             });
         }
         let events = mgr.tick(10.0);
@@ -1387,6 +1517,7 @@ mod tests {
             hp: 100, max_hp: 100, colony_name: "遠端巢穴甲",
             command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
             clash_target_id: None,
+            allied_to_id: None,
         });
         let id2 = mgr.next_alpha_id;
         mgr.next_alpha_id += 1;
@@ -1397,6 +1528,7 @@ mod tests {
             hp: 100, max_hp: 100, colony_name: "遠端巢穴乙",
             command_cooldown: 9999.0, active_tactic: None, tactic_remaining: 0.0,
             clash_target_id: None,
+            allied_to_id: None,
         });
         let events = mgr.tick(1.0);
         assert!(
@@ -1522,5 +1654,157 @@ mod tests {
         let view = mgr.ancient_alpha_view();
         assert!(view.is_some(), "古 Alpha 存活時視圖應為 Some");
         assert_eq!(view.unwrap().hp, ANCIENT_ALPHA_HP);
+    }
+
+    // ─── ROADMAP 174 跨族結盟測試 ─────────────────────────────────────────────
+
+    /// 建立兩個不同巢穴各一隻 Alpha，方便結盟測試。
+    fn spawn_two_different_colony_alphas(mgr: &mut MonsterColonyManager) -> (u32, u32) {
+        assert!(mgr.colonies.len() >= 2, "至少需要 2 個巢穴");
+        // 巢穴 0
+        mgr.colonies[0].population = mgr.colonies[0].max_population;
+        mgr.colonies[0].alpha_cooldown = 0.0;
+        // 巢穴 1
+        mgr.colonies[1].population = mgr.colonies[1].max_population;
+        mgr.colonies[1].alpha_cooldown = 0.0;
+        mgr.tick(0.1);
+        assert_eq!(mgr.alphas.len(), 2, "應湧現 2 隻 Alpha");
+        (mgr.alphas[0].id, mgr.alphas[1].id)
+    }
+
+    #[test]
+    fn alliance_not_formed_with_single_alpha() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_alpha(&mut mgr);
+        // 跑超過閾值時間
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0);
+        assert!(
+            !mgr.alliance_active(),
+            "單隻 Alpha 不應觸發結盟"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AllianceFormed { .. })),
+            "不應有 AllianceFormed 事件"
+        );
+    }
+
+    #[test]
+    fn alliance_coexistence_timer_increments() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        // 移除衝突（確保都在遠離的位置，不會進衝突半徑）
+        mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
+        mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
+        mgr.tick(10.0);
+        assert!(
+            mgr.coexistence_timer > 0.0,
+            "兩隻 Alpha 共存應累積 coexistence_timer"
+        );
+    }
+
+    #[test]
+    fn alliance_forms_after_threshold() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        // 放置在遠離位置（不觸發衝突）
+        mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
+        mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
+        // 跑到剛好超過閾值
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        assert!(
+            mgr.alliance_active(),
+            "共存 {} 秒後應觸發結盟",
+            ALLIANCE_FORM_SECS
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AllianceFormed { .. })),
+            "應發出 AllianceFormed 事件"
+        );
+    }
+
+    #[test]
+    fn alliance_gives_hp_bonus() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
+        mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
+        let hp_before_a = mgr.alphas[0].hp;
+        let hp_before_b = mgr.alphas[1].hp;
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        assert!(
+            mgr.alphas[0].hp > hp_before_a || mgr.alphas[1].hp > hp_before_b,
+            "結盟後至少一隻 Alpha 血量應增加"
+        );
+    }
+
+    #[test]
+    fn alliance_broken_when_alpha_killed() {
+        let mut mgr = MonsterColonyManager::new();
+        let (id_a, _id_b) = spawn_two_different_colony_alphas(&mut mgr);
+        mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
+        mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
+        // 觸發結盟
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        assert!(mgr.alliance_active(), "前置條件：應已結盟");
+        // 擊殺盟約 Alpha A
+        let alpha_a = mgr.alphas.iter().find(|a| a.id == id_a).unwrap();
+        let (ax, ay, max_hp) = (alpha_a.x, alpha_a.y, alpha_a.max_hp * 2 + 100);
+        let result = mgr.attack_alpha(id_a, ax, ay, max_hp, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "應擊殺 Alpha A");
+        assert!(result.unwrap().was_allied, "擊殺盟約 Alpha 應設 was_allied=true");
+        // 下一幀偵測到結盟已失效
+        let events = mgr.tick(0.1);
+        assert!(
+            !mgr.alliance_active(),
+            "盟約 Alpha 被擊殺後應解除結盟"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, MonsterColonyEvent::AllianceBroken { .. })),
+            "應發出 AllianceBroken 事件"
+        );
+    }
+
+    #[test]
+    fn non_allied_alpha_kill_has_was_allied_false() {
+        let mut mgr = MonsterColonyManager::new();
+        let id_a = spawn_alpha(&mut mgr);
+        let alpha_a = mgr.alphas.iter().find(|a| a.id == id_a).unwrap();
+        let (ax, ay, max_hp) = (alpha_a.x, alpha_a.y, alpha_a.max_hp + 100);
+        let result = mgr.attack_alpha(id_a, ax, ay, max_hp, ALPHA_ATTACK_REACH);
+        assert!(result.is_some(), "應擊殺 Alpha");
+        assert!(
+            !result.unwrap().was_allied,
+            "非盟約 Alpha 擊殺不應設 was_allied=true"
+        );
+    }
+
+    #[test]
+    fn alliance_not_formed_when_clashing() {
+        let mut mgr = MonsterColonyManager::new();
+        spawn_two_different_colony_alphas(&mut mgr);
+        // 讓兩隻 Alpha 貼近觸發廝殺
+        mgr.alphas[0].x = 100.0; mgr.alphas[0].y = 100.0;
+        mgr.alphas[1].x = 200.0; mgr.alphas[1].y = 100.0; // 距離 < ALPHA_CLASH_RADIUS
+        // 跑超過結盟閾值
+        let events = mgr.tick(ALLIANCE_FORM_SECS + 1.0);
+        assert!(
+            !mgr.alliance_active(),
+            "廝殺中的 Alpha 不應觸發結盟"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, MonsterColonyEvent::AllianceFormed { .. })),
+            "廝殺中不應有 AllianceFormed 事件"
+        );
+    }
+
+    #[test]
+    fn alliance_active_method_returns_correct_state() {
+        let mut mgr = MonsterColonyManager::new();
+        assert!(!mgr.alliance_active(), "初始無結盟");
+        spawn_two_different_colony_alphas(&mut mgr);
+        mgr.alphas[0].x = 0.0; mgr.alphas[0].y = 0.0;
+        mgr.alphas[1].x = 5000.0; mgr.alphas[1].y = 5000.0;
+        mgr.tick(ALLIANCE_FORM_SECS + 0.1);
+        assert!(mgr.alliance_active(), "結盟觸發後 alliance_active() 應為 true");
     }
 }

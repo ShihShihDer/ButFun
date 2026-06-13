@@ -626,7 +626,10 @@ pub fn spawn(app: AppState) {
                     let prey_avg = prey_kinds.iter().map(|&k| sr.attitude(k)).sum::<i32>() / prey_kinds.len() as i32;
                     drop(sr);
 
-                    compute_eco_pressure(&colony_inputs, hostile_count, wary_count, monster_total, prey_avg)
+                    let raw = compute_eco_pressure(&colony_inputs, hostile_count, wary_count, monster_total, prey_avg);
+                    // ROADMAP 174：跨族結盟期間額外生態壓力加成 +15
+                    let alliance_bonus = if app.monster_colonies.read().unwrap().alliance_active() { 15.0 } else { 0.0 };
+                    (raw + alliance_bonus).min(100.0)
                 };
 
                 // ROADMAP 172：生態清剿委託 tick——壓力超標時自動發布全服清剿任務。
@@ -1151,6 +1154,20 @@ pub fn spawn(app: AppState) {
                             }
                             // ROADMAP 173：傳說古 Alpha 被擊倒——廣播由 ws.rs 負責（含殺手名稱）。
                             MonsterColonyEvent::AncientAlphaSlain => {}
+                            // ROADMAP 174：跨族結盟達成——廣播警報。
+                            MonsterColonyEvent::AllianceFormed { alpha_a_name, alpha_b_name } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🤝【跨族結盟！】[{alpha_a_name}] Alpha 與 [{alpha_b_name}] Alpha \
+                                     締結盟約！雙方生命激增、生態壓力飆升！趁結盟未穩——分頭瓦解！"
+                                ));
+                            }
+                            // ROADMAP 174：跨族結盟瓦解——廣播捷報。
+                            MonsterColonyEvent::AllianceBroken { survivor_name } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "💥【結盟瓦解！】盟約 Alpha 被擊倒，跨族結盟宣告瓦解！\
+                                     [{survivor_name}] Alpha 失去盟友，是趁機出擊的好時機！"
+                                ));
+                            }
                         }
                     }
                 }
