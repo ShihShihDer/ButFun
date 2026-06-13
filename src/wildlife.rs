@@ -182,6 +182,15 @@ const ALARM_RADIUS: f32 = 220.0;
 /// 被感染的驚逃時長（秒）——略短於直接目擊威脅的 FLEE_DURATION，二手恐慌較快平復。
 const ALARM_FLEE_DURATION: f32 = 3.0;
 
+// ─── ROADMAP 210：晝夜作息 ────────────────────────────────────────────────────
+// 把既有晝夜系統接進生態：晝行的獵物入夜歸巢沉睡、夜行的掠食者入夜狩獵範圍更廣。
+// 純啟發式、零 LLM、零協議改動（state 本就每幀廣播；夜間 is_night 由 game.rs 傳入）。
+/// 夜間掠食者狩獵搜尋半徑倍率——夜行獵手入夜後覓食範圍更廣（與 enemy_field 夜間加成同調）。
+const NIGHT_HUNT_RADIUS_MULT: f32 = 1.4;
+/// 夜間歸巢沉睡的休息時長（秒）——遠長於白天的 REST_TIMER，讓晝行獵物安睡到天明。
+/// 此值在「平靜夜晚」期間不會被遞減（夜眠分支不走 tick_idle），故獵物會一路睡到白天才甦醒。
+const NIGHT_SLEEP_REST_SECS: f32 = 600.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -518,6 +527,30 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 210：晝夜作息——夜間「平靜歸巢沉睡」行為。
+    /// 呼叫端（Phase 4）已確保：此隻為晝行獵物、當下未在逃竄、附近也無威脅；
+    /// 故本函式只管「回家睡覺」——尚未到家就朝家走（Returning），到家就轉入長時休息
+    /// （沉睡）。沉睡的 rest_timer 在平靜夜晚不會被遞減（不走 tick_idle），故會一路睡到
+    /// 天明；威脅一旦逼近，Phase 4 會在進到此分支前就改走逃竄（威脅永遠優先）。
+    fn tick_night_rest(&mut self, dt: f32) {
+        let dx = self.home_x - self.x;
+        let dy = self.home_y - self.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist <= HOME_ARRIVE_DIST {
+            // 已到家：安睡。已在休息就維持原狀（不重設計時、不抖動），否則轉入長時沉睡。
+            self.x = self.home_x;
+            self.y = self.home_y;
+            if !matches!(self.state, WildlifeState::Resting { .. }) {
+                self.state = WildlifeState::Resting { rest_timer: NIGHT_SLEEP_REST_SECS };
+            }
+        } else {
+            // 尚未到家：朝家緩步歸返。
+            self.x += (dx / dist) * RETURN_SPEED * dt;
+            self.y += (dy / dist) * RETURN_SPEED * dt;
+            self.state = WildlifeState::Returning;
+        }
+    }
+
     /// 供協議層使用的狀態字串。
     pub fn state_str(&self) -> &'static str {
         match &self.state {
@@ -668,12 +701,16 @@ impl WildlifeManager {
     /// `attitudes`：各物種目前態度值（0-100）。用於：
     ///   - 友善（≥65）：獵物不把玩家加入逃跑威脅清單（不逃）。
     ///   - 敵視（<25）：獵物主動向玩家靠近（守衛行為），近身時發出 WildlifeAttack 事件。
+    ///
+    /// `is_night`（ROADMAP 210）：晝夜作息。為 true 時——晝行獵物（鹿/鳥/小動物）在平靜
+    /// 無威脅時歸巢沉睡、不再閒晃；夜行掠食者（狼/狐）狩獵搜尋範圍放大（更積極覓食）。
     pub fn tick(
         &mut self,
         dt: f32,
         player_positions: &[(f32, f32)],
         attitudes: &std::collections::HashMap<WildlifeKind, i32>,
         monster_threats: &[(EnemyKind, f32, f32)],
+        is_night: bool,
     ) -> Vec<WildlifeEvent> {
         let mut events = Vec::new();
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
@@ -883,14 +920,15 @@ impl WildlifeManager {
                     }
                 }
                 _ => {
-                    // 閒晃/返家：嘗試找獵物。
+                    // 閒晃/返家：嘗試找獵物。ROADMAP 210：夜行掠食者入夜後搜尋範圍放大。
                     if let Some(target_kind) = pred_kind.hunts() {
+                        let hunt_r2 = night_hunt_radius(is_night).powi(2);
                         let nearest = prey_snap.iter()
                             .filter(|&&(_, k, _, _)| k == target_kind)
                             .filter(|&&(_, _, px, py)| {
                                 let dx = px - pred_x;
                                 let dy = py - pred_y;
-                                dx * dx + dy * dy <= HUNT_RADIUS * HUNT_RADIUS
+                                dx * dx + dy * dy <= hunt_r2
                             })
                             .min_by(|&&(_, _, ax, ay), &&(_, _, bx, by)| {
                                 let da = (ax - pred_x).powi(2) + (ay - pred_y).powi(2);
@@ -1017,9 +1055,21 @@ impl WildlifeManager {
                 self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &prey_snap,
             );
 
+            // ROADMAP 210：晝夜作息——夜間，晝行獵物若平靜（未在逃竄、附近也無威脅），
+            // 就歸巢沉睡而非繼續閒晃；白天、或有威脅/逃竄時一律走原本的閒晃/逃竄邏輯
+            // （威脅永遠優先，tick_idle 內部會先處理逃跑）。
+            let calm_at_night = is_night
+                && is_diurnal(animal_kind)
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_in_range(self.animals[i].x, self.animals[i].y, &threats, FLEE_RADIUS).is_none();
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
-            a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, rng);
+            if calm_at_night {
+                a.tick_night_rest(dt);
+            } else {
+                a.tick_idle(dt, &threats, WANDER_SPEED, herd_anchor, rng);
+            }
         }
 
         // ── Phase 5: 套用擊殺 ──────────────────────────────────────────────────
@@ -1187,6 +1237,19 @@ fn panic_velocity_from_herd(
             let len = (vx * vx + vy * vy).sqrt().max(1.0);
             (vx / len * FLEE_SPEED, vy / len * FLEE_SPEED)
         })
+}
+
+/// ROADMAP 210：晝夜作息——某種野生動物是否「晝行性」（白天活躍、入夜歸巢沉睡）。
+/// 獵物晝行（鹿/鳥/小動物白天閒晃、夜裡睡覺）；掠食者夜行（狼/狐入夜更活躍地狩獵）。
+/// 純函式，便於測試。
+fn is_diurnal(kind: WildlifeKind) -> bool {
+    kind.trophic_level() == TrophicLevel::Prey
+}
+
+/// ROADMAP 210：掠食者本幀的狩獵搜尋半徑——夜行獵手入夜後覓食範圍放大（×NIGHT_HUNT_RADIUS_MULT）。
+/// 純函式，便於測試。
+fn night_hunt_radius(is_night: bool) -> f32 {
+    if is_night { HUNT_RADIUS * NIGHT_HUNT_RADIUS_MULT } else { HUNT_RADIUS }
 }
 
 /// ROADMAP 206：群聚結伴——選一個新的漫遊目標。
@@ -1369,7 +1432,7 @@ mod tests {
         mgr.animals[wolf_idx].y = mgr.animals[deer_idx].y;
         mgr.animals[wolf_idx].state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
         // 跑一幀觸發追獵。
-        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         let wolf = &mgr.animals[wolf_idx];
         // 野狼應追獵某隻野鹿（不指定是哪隻，因附近可能有多隻）。
         assert!(
@@ -1399,7 +1462,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        let events = mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
+        let events = mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         // 野鹿應死亡。
         assert!(!mgr.animals[deer_idx].alive, "野鹿應已死亡");
         // 應有 Kill 事件。
@@ -1416,7 +1479,7 @@ mod tests {
         mgr.animals[deer_idx].alive = false;
         mgr.animals[deer_idx].respawn_timer = 0.1;
         // 跑超過 0.1 秒。
-        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[], false);
         assert!(mgr.animals[deer_idx].alive, "野鹿應在計時器結束後重生");
     }
 
@@ -1425,7 +1488,7 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let players = vec![(2200.0f32, 2200.0)];
         for _ in 0..100 {
-            mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+            mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         }
         assert_eq!(mgr.animals.len(), WILDLIFE_COUNT);
     }
@@ -1443,7 +1506,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         assert_eq!(mgr.carion_orbs.len(), 1, "擊殺後應生成一顆乙太微粒");
         let orb = &mgr.carion_orbs[0];
         let dx = orb.x - deer_x;
@@ -1458,7 +1521,7 @@ mod tests {
         mgr.carion_orbs.push(CarrionOrb { id: 0, x: 2000.0, y: 2000.0, ttl: 0.05 });
         assert_eq!(mgr.carion_orbs.len(), 1);
         // 跑超過 TTL。
-        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         assert_eq!(mgr.carion_orbs.len(), 0, "TTL 到期後應自動消失");
     }
 
@@ -1505,7 +1568,7 @@ mod tests {
         mgr.animals[wolf_idx].x = deer_x + KILL_RADIUS * 0.5;
         mgr.animals[wolf_idx].y = deer_y;
         mgr.animals[wolf_idx].state = WildlifeState::Hunting { target_id: deer_id, hunt_timer: 10.0 };
-        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &[], &std::collections::HashMap::new(), &[], false);
         // 上限不超出。
         assert!(mgr.carion_orbs.len() <= MAX_CARION_ORBS, "乙太微粒不應超過上限");
     }
@@ -1557,7 +1620,7 @@ mod tests {
         mgr.animals[deer_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         // 野鹿應進入 Guarding 狀態。
         let deer = &mgr.animals[deer_idx];
         assert!(
@@ -1573,7 +1636,7 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         // 玩家站在聚落中心。
         let players = vec![(cx, cy)];
-        let events = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+        let events = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         assert!(
             events.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "玩家進入聚落應觸發 ColonyThreatened 事件"
@@ -1587,10 +1650,10 @@ mod tests {
         let (cx, cy) = (deer_colony.cx, deer_colony.cy);
         let players = vec![(cx, cy)];
         // 第一次觸發。
-        let events1 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+        let events1 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         assert!(events1.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })));
         // 馬上再觸發：冷卻中，不應再發出事件。
-        let events2 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+        let events2 = mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         assert!(
             !events2.iter().any(|e| matches!(e, WildlifeEvent::ColonyThreatened { .. })),
             "冷卻中不應再發出 ColonyThreatened 事件"
@@ -1604,7 +1667,7 @@ mod tests {
         // 手動設定守衛狀態，計時即將到期。
         mgr.animals[deer_idx].state = WildlifeState::Guarding { threat_x: 2000.0, threat_y: 2000.0, guard_timer: 0.05 };
         // 跑超過計時。
-        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.2, &[], &std::collections::HashMap::new(), &[], false);
         let deer = &mgr.animals[deer_idx];
         assert!(
             matches!(deer.state, WildlifeState::Resting { .. }),
@@ -1634,7 +1697,7 @@ mod tests {
         mgr.animals[bird_idx].state = WildlifeState::Resting { rest_timer: 5.0 };
         // 玩家站在狐狸洞。
         let players = vec![(cx, cy)];
-        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[]);
+        mgr.tick(0.1, &players, &std::collections::HashMap::new(), &[], false);
         // 野鳥不應受狐狸洞影響。
         let bird = &mgr.animals[bird_idx];
         assert!(
@@ -1777,7 +1840,7 @@ mod tests {
         let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         // 玩家就在 FLEE_RADIUS 內。
-        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[]);
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(!matches!(a.state, WildlifeState::Fleeing { .. }), "馴養個體不應逃離玩家，實際: {:?}", a.state);
     }
@@ -1787,7 +1850,7 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, 0.0);
         let att: HashMap<WildlifeKind, i32> = HashMap::new(); // 預設態度 50 < FRIENDLY，玩家是威脅
-        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[]);
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(matches!(a.state, WildlifeState::Fleeing { .. }), "未馴養個體應逃離玩家，實際: {:?}", a.state);
     }
@@ -1798,7 +1861,7 @@ mod tests {
         let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         // 玩家在 FOLLOW_RANGE 內、舒適距離外（右側 200px）。
-        mgr.tick(0.2, &[(5200.0, 5000.0)], &att, &[]);
+        mgr.tick(0.2, &[(5200.0, 5000.0)], &att, &[], false);
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(a.x > 5000.0, "馴養個體應朝玩家移動（x 變大），實際 x={}", a.x);
     }
@@ -1812,7 +1875,7 @@ mod tests {
         let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         // 玩家在旁（馴養→不怕），但獵食怪物在 FLEE_RADIUS 內。
-        mgr.tick(0.1, &[(5040.0, 5000.0)], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)]);
+        mgr.tick(0.1, &[(5040.0, 5000.0)], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)], false);
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(matches!(a.state, WildlifeState::Fleeing { .. }), "馴養個體仍應逃離掠食怪物，實際: {:?}", a.state);
     }
@@ -1822,7 +1885,7 @@ mod tests {
         let mut mgr = WildlifeManager::new();
         let id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, MAX_FAMILIARITY);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        for _ in 0..100 { mgr.tick(1.0, &[], &att, &[]); } // 100 秒、無餵食
+        for _ in 0..100 { mgr.tick(1.0, &[], &att, &[], false); } // 100 秒、無餵食
         let f = mgr.animals.iter().find(|a| a.id == id).unwrap().familiarity();
         assert!(f < MAX_FAMILIARITY, "親近度應隨時間衰減，實際 {f}");
         assert!(f > 0.0, "100 秒衰減不應歸零（衰減很慢），實際 {f}");
@@ -1835,7 +1898,7 @@ mod tests {
         // 擊殺該隻（玩家攻擊），再推進到重生。
         assert!(mgr.attack_wildlife(id, 5000.0, 5000.0, 30.0).is_some(), "應成功擊殺");
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        for _ in 0..((PREY_RESPAWN_SECS as i32) + 2) { mgr.tick(1.0, &[], &att, &[]); }
+        for _ in 0..((PREY_RESPAWN_SECS as i32) + 2) { mgr.tick(1.0, &[], &att, &[], false); }
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(a.alive, "應已重生");
         assert_eq!(a.familiarity(), 0.0, "重生個體親近度應歸零（羈絆隨上一隻散去）");
@@ -1998,7 +2061,7 @@ mod tests {
         mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
 
         let attitudes = std::collections::HashMap::new();
-        mgr.tick(0.1, &[], &attitudes, &[]);
+        mgr.tick(0.1, &[], &attitudes, &[], false);
 
         assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), 3, "安穩成群應誕生一隻幼鹿");
         let baby = mgr.animals.last().unwrap();
@@ -2019,7 +2082,7 @@ mod tests {
         mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
 
         let attitudes = std::collections::HashMap::new();
-        mgr.tick(0.1, &[], &attitudes, &[]);
+        mgr.tick(0.1, &[], &attitudes, &[], false);
 
         assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), 2, "捕食者在旁不應誕生幼獸");
     }
@@ -2040,7 +2103,7 @@ mod tests {
         mgr.breed_progress.insert(WildlifeKind::WildDeer, BREED_THRESHOLD_SECS - 0.01);
 
         let attitudes = std::collections::HashMap::new();
-        mgr.tick(0.1, &[], &attitudes, &[]);
+        mgr.tick(0.1, &[], &attitudes, &[], false);
 
         assert_eq!(species_total(&mgr.animals, WildlifeKind::WildDeer), cap, "達上限後不應再繁衍");
     }
@@ -2053,7 +2116,7 @@ mod tests {
         mgr.animals = vec![baby];
         let attitudes = std::collections::HashMap::new();
         for _ in 0..(MATURE_DURATION_SECS as usize + 5) {
-            mgr.tick(1.0, &[], &attitudes, &[]);
+            mgr.tick(1.0, &[], &attitudes, &[], false);
         }
         assert!(!mgr.animals[0].is_juvenile(), "足夠時間後幼獸應長成成體");
         assert!((mgr.animals[0].scale() - 1.0).abs() < 1e-4, "長成後體型應為 1.0");
@@ -2096,7 +2159,7 @@ mod tests {
         juv.state = WildlifeState::Resting { rest_timer: 10.0 };
         mgr.animals = vec![adult, juv];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        mgr.tick(0.2, &[], &att, &[]);
+        mgr.tick(0.2, &[], &att, &[], false);
         let jx = mgr.animals.iter().find(|a| a.id == 2).unwrap().x;
         assert!(jx < 5200.0, "幼獸應朝同種成體（左側）依偎移動，實際 x={jx}");
     }
@@ -2114,7 +2177,7 @@ mod tests {
         mgr.animals = vec![adult, juv];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         // ScrapDrone 獵食 WildDeer，置於幼獸右側 40px（FLEE_RADIUS 內）。
-        mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5240.0, 5000.0)]);
+        mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5240.0, 5000.0)], false);
         let j = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         assert!(matches!(j.state, WildlifeState::Fleeing { .. }), "幼獸應逃離掠食者而非依偎，實際: {:?}", j.state);
     }
@@ -2156,7 +2219,7 @@ mod tests {
         calm.state = WildlifeState::Resting { rest_timer: 10.0 };
         mgr.animals = vec![runner, calm];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        mgr.tick(0.1, &[], &att, &[]);
+        mgr.tick(0.1, &[], &att, &[], false);
 
         let c = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         match c.state {
@@ -2177,7 +2240,7 @@ mod tests {
         calm.state = WildlifeState::Resting { rest_timer: 10.0 };
         mgr.animals = vec![runner, calm];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        mgr.tick(0.1, &[], &att, &[]);
+        mgr.tick(0.1, &[], &att, &[], false);
 
         let c = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         assert!(!matches!(c.state, WildlifeState::Fleeing { .. }),
@@ -2196,10 +2259,121 @@ mod tests {
         deer.state = WildlifeState::Resting { rest_timer: 10.0 };
         mgr.animals = vec![bird, deer];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
-        mgr.tick(0.1, &[], &att, &[]);
+        mgr.tick(0.1, &[], &att, &[], false);
 
         let d = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         assert!(!matches!(d.state, WildlifeState::Fleeing { .. }),
             "異種不應互傳恐慌，野鹿不應因野鳥逃竄而炸群，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 210：晝夜作息 測試 ─────────────────────────────────────────
+
+    #[test]
+    fn prey_diurnal_predator_nocturnal() {
+        // 獵物晝行（白天活躍、入夜歸巢眠）；掠食者夜行（入夜更活躍狩獵）。
+        assert!(is_diurnal(WildlifeKind::WildDeer), "野鹿應為晝行性");
+        assert!(is_diurnal(WildlifeKind::WildBird), "野鳥應為晝行性");
+        assert!(is_diurnal(WildlifeKind::SmallCritter), "小動物應為晝行性");
+        assert!(!is_diurnal(WildlifeKind::WildWolf), "狼應為夜行性（非晝行）");
+        assert!(!is_diurnal(WildlifeKind::WildFox), "狐應為夜行性（非晝行）");
+    }
+
+    #[test]
+    fn night_hunt_radius_expands_at_night() {
+        // 夜間掠食者搜尋半徑放大；白天維持原 HUNT_RADIUS。
+        assert_eq!(night_hunt_radius(false), HUNT_RADIUS, "白天搜尋半徑應為原值");
+        assert!(night_hunt_radius(true) > HUNT_RADIUS, "夜間搜尋半徑應放大");
+        assert!((night_hunt_radius(true) - HUNT_RADIUS * NIGHT_HUNT_RADIUS_MULT).abs() < 0.01);
+    }
+
+    #[test]
+    fn diurnal_prey_heads_home_to_sleep_at_night() {
+        // 夜間、無威脅時，遠離家的晝行獵物應朝家歸返（準備入眠）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); // home=(5000,5000)
+        deer.id = 1;
+        deer.x = 5400.0; deer.y = 5000.0; // 離家 400px（遠在 HOME_ARRIVE_DIST 外）
+        deer.state = WildlifeState::Wandering { target_x: 5500.0, target_y: 5000.0, wander_timer: 10.0 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], true); // 夜間
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(d.x < 5400.0, "夜間應朝家（西側）歸返，x 應變小，實際 x={}", d.x);
+        assert!(matches!(d.state, WildlifeState::Returning), "歸返途中狀態應為 Returning，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn sleeping_prey_stays_at_home_through_night() {
+        // 已在家休息的晝行獵物，夜間應持續安睡（不甦醒去閒晃、位置不動）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.x = 5000.0; deer.y = 5000.0; // 就在家
+        deer.state = WildlifeState::Resting { rest_timer: 0.5 }; // 即將到期的短休息
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 連推進數秒（遠超 0.5 秒休息計時）。
+        for _ in 0..10 { mgr.tick(1.0, &[], &att, &[], true); }
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Resting { .. }),
+            "夜間應持續安睡（不甦醒去閒晃），實際 {:?}", d.state);
+        assert!((d.x - 5000.0).abs() < 1.0 && (d.y - 5000.0).abs() < 1.0,
+            "安睡中位置應留在家，實際 ({},{})", d.x, d.y);
+    }
+
+    #[test]
+    fn diurnal_prey_still_flees_threat_at_night() {
+        use crate::combat::EnemyKind;
+        // 夜間安睡的獵物，仍會被逼近的掠食威脅驚醒逃命（威脅永遠優先於入眠）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 獵食野鹿的怪物（ScrapDrone）在 FLEE_RADIUS 內。
+        mgr.tick(0.1, &[], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)], true);
+        let d = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "夜間遇威脅仍應逃命（不繼續睡），實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn nocturnal_predator_does_not_head_home_at_night() {
+        // 夜行掠食者入夜不歸巢眠——無獵物時照常閒晃（朝漫遊目標移動，而非朝家歸返）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0); // home=(5000,5000)
+        wolf.id = 1;
+        wolf.x = 5400.0; wolf.y = 5000.0; // 離家 400px（東側）
+        wolf.state = WildlifeState::Wandering { target_x: 5800.0, target_y: 5000.0, wander_timer: 10.0 };
+        mgr.animals = vec![wolf]; // 場上無獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], true); // 夜間
+        let w = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(w.x > 5400.0, "夜行掠食者應朝漫遊目標（東側）移動、不歸巢，x 應變大，實際 x={}", w.x);
+    }
+
+    #[test]
+    fn predator_night_hunt_reaches_farther_than_day() {
+        // 同一場景：狼與一隻 400px 外的鹿（介於白天 320 與夜間 448 之間）。
+        // 白天搆不著（不獵）；夜間搜尋範圍放大後搆得著（開始獵）。
+        let hunts_after_tick = |is_night: bool| -> bool {
+            let mut mgr = WildlifeManager::new();
+            let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+            wolf.id = 1;
+            wolf.state = WildlifeState::Resting { rest_timer: 10.0 };
+            let mut deer = adult_at(WildlifeKind::WildDeer, 5400.0, 5000.0); // 距狼 400px
+            deer.id = 2;
+            deer.state = WildlifeState::Resting { rest_timer: 10.0 };
+            mgr.animals = vec![wolf, deer];
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            mgr.tick(0.1, &[], &att, &[], is_night);
+            matches!(
+                mgr.animals.iter().find(|a| a.id == 1).unwrap().state,
+                WildlifeState::Hunting { .. }
+            )
+        };
+        assert!(!hunts_after_tick(false), "白天 400px 外的鹿應搆不著、狼不獵");
+        assert!(hunts_after_tick(true), "夜間搜尋範圍放大、400px 外的鹿搆得著、狼開始獵");
     }
 }

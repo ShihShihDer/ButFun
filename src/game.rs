@@ -1029,7 +1029,7 @@ pub fn spawn(app: AppState) {
                             .collect()
                     };
                     let wildlife_events = app.wildlife_manager.write().unwrap()
-                        .tick(dt, &positions, &attitudes, &monster_threats);
+                        .tick(dt, &positions, &attitudes, &monster_threats, is_night);
                     for ev in wildlife_events {
                         use crate::wildlife::WildlifeEvent;
                         match ev {
