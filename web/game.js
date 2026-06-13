@@ -389,6 +389,24 @@
   const DRAGONFLY_COUNT = 12;        // 紅蜻蜓隻數（秋日偶見、蜻蜓懸停顯眼，比彩蝶更少不鋪滿）
   let _dragonflyFade = 0;            // 秋日紅蜻蜓淡入淡出進度 [0,1]（非秋日白天→0，秋日白天→1，逐幀緩緩趨近）
   let _dragonflies = null;           // 惰性生成的紅蜻蜓池（畫面比例座標的位置、停—衝起訖點/相位、翅振相位、朝向、尺寸）
+  // 冬日寒雀（ROADMAP 238）：233 春夜螢火、236 春夏彩蝶、237 秋日紅蜻蜓給了春夜、春夏白天、秋日白天
+  // 各一隻貼地小生命，「季節×晝夜×貼地小生命」這條線至今獨缺「冬天的白天」——昆蟲不過冬，冬日草原
+  // 白天空無一生。本切片補上冬季白天的地面生命：當季節為冬、且為白天，雪地上蹦跳著幾隻蓬鬆的褐灰小
+  // 寒雀，多半在原地一頓一頓地啄食（小幅上下點頭），偶爾忽地短距撲翅一躍、以小拋物線蹦到附近新位置
+  // 再落地續啄。與春夏彩蝶（連續正弦繞圈翩飛、暖系花色、緩緩開合拍翅）、秋日紅蜻蜓（懸停疾射、赤紅
+  // 單色、高頻嗡振）刻意三分——寒雀是「貼地蹦跳啄食、褐灰蓬鬆、多停少飛」的鳥。與高空成群橫越的飛鳥
+  //（194，天際剪影）也區隔——寒雀在草地花叢高度、單隻蹦跳、不結隊橫越。純前端、讀既有 currentSeason
+  // ＋daynight.light、零後端、零協議改動。
+  const SPARROW_DAY_LIGHT = 0.42;    // daynight.light 高於此值算「白天」（與彩蝶／蜻蜓同口徑、與夜門檻方向相反）
+  const SPARROW_COUNT = 10;          // 寒雀隻數（冬日偶見、雀蹦跳顯眼，比蜻蜓更少不鋪滿）
+  let _sparrowFade = 0;              // 冬日寒雀淡入淡出進度 [0,1]（非冬日白天→0，冬日白天→1，逐幀緩緩趨近）
+  let _sparrows = null;              // 惰性生成的寒雀池（畫面比例座標的位置、蹦跳起訖點/相位、啄食點頭相位、朝向、尺寸、色）
+  // 寒雀褐灰調色盤（[r,g,b]）：麻褐／灰褐／暖栗，各雀生成時隨機取一色，賣「雪地上樸實的小麻雀」、與彩蝶花色／蜻蜓赤紅刻意拉開。
+  const SPARROW_COLORS = [
+    [150, 116, 84],    // 麻褐
+    [128, 112, 96],    // 灰褐
+    [168, 128, 90],    // 暖栗
+  ];
   // 秋夜薄霧（ROADMAP 234）：231 冬夜極光、232 夏夜銀河、233 春夜螢火各給了冬、夏、春一張「夜臉」，
   // 唯獨秋季的夜仍與其他季節無異——「給每季一張夜臉」只差最後一塊。本切片給秋季補上它的夜景：
   // 當季節為秋天且入夜，下半草地高度緩緩漫起一層銀白薄霧，橫向極緩飄移、勻緩呼吸，待天亮又緩緩散去，
@@ -4134,6 +4152,7 @@
     safeDraw("summerMotes", () => drawSummerMotes(renderNow, _weatherDt)); // 夏日蟬夏（229）
     safeDraw("butterflies", () => drawButterflies(renderNow, _weatherDt)); // 春夏彩蝶（236），春夏白天草地上空翩飛的彩色蝴蝶（春夜螢火的白天對偶）
     safeDraw("dragonflies", () => drawDragonflies(renderNow, _weatherDt)); // 秋日紅蜻蜓（237），秋季白天草地上空懸停疾射的赤紅秋蜻（春夏彩蝶的秋日對偶）
+    safeDraw("sparrows", () => drawSparrows(renderNow, _weatherDt));       // 冬日寒雀（238），冬季白天雪地上蹦跳啄食、偶爾短距撲翅一躍的褐灰小雀（補齊四季白天貼地生命）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
     safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
@@ -11739,6 +11758,154 @@
       const py = (d.sy + (d.ty - d.sy) * k) * H;
       const buzz = dragonflyWingBuzz(t * d.wfreq + d.wphase);
       drawOneDragonfly(px, py, d.size, d.ang, buzz, d.col, _dragonflyFade * 0.9);
+    }
+  }
+
+  // ── ROADMAP 238: 冬日寒雀（春夏彩蝶 236／秋日紅蜻蜓 237 的冬日對偶，補齊四季白天貼地生命）────
+  // 純函式：冬季的白天回 1、其餘回 0（寒雀只在冬日白天出現）。light 為 daynight.light，缺值（白天預設）視為亮。
+  function sparrowTargetIntensity(season, light) {
+    const day = (typeof light === "number" ? light : 1) >= SPARROW_DAY_LIGHT;
+    return (season === "winter" && day) ? 1 : 0;
+  }
+
+  // 純函式：把目前寒雀季勢 cur 朝目標 target 以固定速率逼近（每秒 SPARROW_FADE_RATE），夾在 [0,1]。
+  // 與彩蝶／蜻蜓／螢火同樣從容（入冬日白天寒雀緩緩出現、出冬日白天緩緩散去）。壞值（NaN）退回 0。
+  function sparrowFadeStep(cur, target, dt) {
+    const SPARROW_FADE_RATE = 0.25;   // 約 4 秒淡入／淡出滿（與彩蝶／蜻蜓／螢火同調）
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * SPARROW_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：寒雀「蹦跳」飛行的位移進度 [0,1]＝一個循環裡前段在原地啄食不移動（回 0）、後段忽地短距一躍到位（快速升到 1）。
+  // 與蜻蜓 dragonflyDart 同屬「停—衝」家族但停得更久（HOLD 更高，賣「多停少飛、地面覓食」）。phase 取小數部當循環相位。壞值退回 0。
+  function sparrowHopProgress(phase) {
+    if (!(phase === phase)) return 0;            // NaN 檢查（NaN !== NaN）
+    let f = phase - Math.floor(phase);           // 0..1 循環相位
+    const HOLD = 0.82;                           // 前 82% 在原地啄食不動（比蜻蜓 0.72 更黏地）
+    if (f < HOLD) return 0;
+    const s = (f - HOLD) / (1 - HOLD);           // 0..1 蹦躍段進度
+    // smoothstep 收尾＝起跳俐落、落地穩住，賣「忽地一蹦、穩穩落地」的雀手感。
+    return Math.max(0, Math.min(1, s * s * (3 - 2 * s)));
+  }
+
+  // 純函式：寒雀蹦躍時的拋物線抬升量 [0,1]＝起落兩端貼地（回 0）、中段躍至最高（回 1），用 sin(πk) 畫出「蹦一下又落地」的弧。
+  // 與蜻蜓直線疾射刻意區隔——雀是帶弧度的短跳。k 為 sparrowHopProgress 的位移進度。壞值退回 0。
+  function sparrowHopArc(k) {
+    if (!(k === k)) return 0;                    // NaN 檢查
+    const c = Math.max(0, Math.min(1, k));
+    return Math.sin(c * Math.PI);                // 0→1→0 的單拱
+  }
+
+  // 純函式：寒雀原地啄食時的點頭量 [0,1]＝以中頻正弦點頭，賣「一頓一頓低頭啄雪／覓食」的節奏。只在停（未蹦躍）時用。壞值退回 0。
+  function sparrowPeck(phase) {
+    if (!(phase === phase)) return 0;            // NaN 檢查
+    const s = 0.5 + 0.5 * Math.sin(phase);       // 0..1
+    return Math.max(0, Math.min(1, s));
+  }
+
+  // 生成寒雀池（一次性、之後快取，不每幀重建→確定性、不隨鏡頭抖動）。各雀：當前畫面比例座標（起點 sx,sy）、
+  // 下一個蹦躍落點（tx,ty）、蹦跳循環相位 hphase／頻率 hfreq、啄食點頭相位 pphase／頻率 pfreq、朝向 dir（±1，面左或右）、尺寸、色。
+  function makeSparrows() {
+    const birds = [];
+    for (let i = 0; i < SPARROW_COUNT; i++) {
+      const sx = Math.random();
+      const sy = 0.52 + Math.random() * 0.38;     // 草地／雪地高度（比蜻蜓更貼地、鳥在地面覓食）
+      birds.push({
+        sx, sy,
+        tx: sx, ty: sy,                            // 初始目標＝起點（首個循環就地啄食，下個循環才蹦到新點）
+        hphase: Math.random(),                     // 蹦跳循環相位（0..1）
+        hfreq: 0.14 + Math.random() * 0.12,        // 蹦跳頻率（每秒幾個循環；慢→停得久、蹦得疏）
+        pphase: Math.random() * Math.PI * 2,       // 啄食點頭相位
+        pfreq: 3.2 + Math.random() * 1.8,          // 啄食點頭頻率（中頻、一頓一頓）
+        dir: Math.random() < 0.5 ? -1 : 1,         // 面向（蹦躍時朝移動方向，停時保留）
+        size: 3.0 + Math.random() * 1.6,
+        col: SPARROW_COLORS[i % SPARROW_COLORS.length],
+      });
+    }
+    return birds;
+  }
+
+  // 繪一隻寒雀（畫面座標 px,py；半徑 r；面向 dir ±1；啄食低頭量 peck 0..1；展翅量 flap 0..1（蹦躍中才展）；色 col；整體不透明度 a）。
+  // 蓬鬆橢圓身體＋小圓頭（啄食時下壓）＋短尖尾；蹦躍時兩側畫出小展翅。純圖形、無文案。
+  function drawOneSparrow(px, py, r, dir, peck, flap, col, a) {
+    const [cr, cg, cb] = col;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.scale(dir, 1);                            // dir 決定面左／面右
+    ctx.globalAlpha = a;
+    // 蹦躍時的小展翅（半透明，貼身體上緣往外張；flap 越大張越開）
+    if (flap > 0.01) {
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${(a * 0.7).toFixed(3)})`;
+      const wL = r * (0.9 + 0.7 * flap), wW = r * 0.5;
+      for (const sgn of [-1, 1]) {
+        ctx.beginPath();
+        ctx.ellipse(-r * 0.1, -r * 0.2 + sgn * 0, wW, wL * 0.5, sgn * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // 蓬鬆身體（橢圓，略向尾端傾）
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},0.96)`;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.05, r * 0.82, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 短尖尾（往身體後方斜下伸一小三角）
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.8, -r * 0.1);
+    ctx.lineTo(-r * 1.7, r * 0.35);
+    ctx.lineTo(-r * 0.7, r * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    // 小圓頭（前上方；啄食時隨 peck 往前下壓，賣低頭啄食）
+    const hx = r * 0.85 + peck * r * 0.35, hy = -r * 0.45 + peck * r * 0.55;
+    ctx.beginPath();
+    ctx.arc(hx, hy, r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    // 小尖喙（頭前端一抹深色）
+    ctx.fillStyle = `rgba(60,48,36,${(a * 0.9).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(hx + r * 0.45, hy);
+    ctx.lineTo(hx + r * 0.85, hy + r * 0.12);
+    ctx.lineTo(hx + r * 0.45, hy + r * 0.22);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 每幀更新並繪製冬日寒雀。非冬日白天時 _sparrowFade 緩緩歸零、池清空、零開銷早退。
+  // 畫在世界粒子層（蜻蜓之後）——寒雀是貼地花叢／雪地上、玩家眼前的白天前景生命；用畫面座標、不隨鏡頭平移。
+  function drawSparrows(now, dt) {
+    const light = daynight ? daynight.light : 1;
+    const target = sparrowTargetIntensity(currentSeason, light);
+    _sparrowFade = sparrowFadeStep(_sparrowFade, target, Math.max(0, (dt || 0)));
+    if (_sparrowFade <= 0.01) { _sparrows = null; return; }
+    if (reduceMotion || !_parallaxEnabled) { _sparrowFade = 0; _sparrows = null; return; }
+    if (!_sparrows) _sparrows = makeSparrows();
+
+    const W = viewW, H = viewH;
+    const t = now / 1000;
+
+    for (const b of _sparrows) {
+      // 蹦跳循環：相位累進，跨越整數邊界（一個循環結束）就把上次落點收為新起點、再就近抽下一個蹦躍落點。
+      const prev = b.hphase;
+      b.hphase = prev + (dt || 0) * b.hfreq;
+      if (Math.floor(b.hphase) > Math.floor(prev)) {
+        b.sx = b.tx; b.sy = b.ty;                              // 上個循環的落點＝這個循環的起點
+        const ntx = Math.min(0.97, Math.max(0.03, b.sx + (Math.random() - 0.5) * 0.14)); // 就近蹦躍（±7% 螢幕寬）
+        b.ty = Math.min(0.90, Math.max(0.52, b.sy + (Math.random() - 0.5) * 0.06));      // 仍鎖在貼地帶內
+        if (Math.abs(ntx - b.sx) > 1e-4) b.dir = ntx > b.sx ? 1 : -1;                    // 面向蹦躍方向
+        b.tx = ntx;
+      }
+      const k = sparrowHopProgress(b.hphase);                  // 0（原地啄食）→1（蹦到位）的蹦跳位移進度
+      const arc = sparrowHopArc(k);                            // 蹦躍中段的拋物線抬升（0→1→0）
+      const px = (b.sx + (b.tx - b.sx) * k) * W;
+      const py = (b.sy + (b.ty - b.sy) * k) * H - arc * b.size * 4.0; // 蹦躍弧度（往上抬幾倍身高）
+      // 停（k≈0）時才點頭啄食；蹦躍中（k>0）展翅、不啄食。
+      const peck = k < 0.02 ? sparrowPeck(t * b.pfreq + b.pphase) : 0;
+      const flap = k > 0.02 && k < 0.98 ? 1 : 0;
+      drawOneSparrow(px, py, b.size, b.dir, peck, flap, b.col, _sparrowFade * 0.92);
     }
   }
 
