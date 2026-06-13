@@ -1447,6 +1447,19 @@ D-3. ✅ **小地圖導航**（PR #71）
     - **零 migration、零 LLM、純記憶體模式**：`monster_colony.rs`（新常數 + `ColonyAlpha.awakened` + `AlphaKilledResult.was_awakened` + `AlphaAwakened` 事件 + `tick_awakening()` + `ColonyAlphaView.awakened`，10+ 單元測試）；`game.rs`（讀取 director.eco_pressure() 傳入 tick + `AlphaAwakened` 廣播）；`ws.rs`（awakened 擊殺加成）；`web/game.js`（赤色外環 + 🔥👑 名牌）。
     - 玩家感知：生態壓力接近頂點時忽然廣播「🔥 Alpha 覺醒！」，地圖上所有金冠怪多了一圈赤紅脈動光環——「要完蛋了！快叫人！」；打倒覺醒 Alpha 的玩家得到額外乙太；清剿委託或壓低壓力都能解除覺醒，讓多種應對策略有意義。
 
+## 接著（物種霸主湧現 — AI 自主提案 2026-06-13）
+
+176. **物種霸主湧現——一個巢穴族群維持茂盛（≥67% 最大族群）且有 Alpha 持續 3 分鐘，自動「稱霸」；全服廣播、eco_pressure +8、霸主巢穴怪物每殺多 1 乙太、Alpha 雙冠 👑👑 顯示；擊殺霸主 Alpha 額外 +5 乙太並廣播落幕**
+    - 稱霸條件：巢穴 `population / max_population ≥ 0.67` 且 Alpha 存活，維持 180 秒（3 分鐘）。
+    - 稱霸廣播：「👑【霸主湧現！】{colony_name} 巢穴稱霸！族群鼎盛、Alpha 長踞——速去制伏，擊殺有額外乙太！生態壓力持續上升！」
+    - 生態壓力加成：霸主存續期間 eco_pressure +8（`DOMINANT_PRESSURE_BONUS`）。
+    - 擊殺獎勵：霸主巢穴普通怪 +1 乙太；霸主 Alpha 擊殺 +5 乙太 + 廣播「👑【霸主 Alpha 倒下！】」。
+    - 解除條件：（a）霸主 Alpha 被玩家擊殺；（b）族群跌到 < 67% 閾值。解除後 15 分鐘冷卻。
+    - 前端視覺：生態面板霸主巢穴顯示「👑 霸主」金色標籤 + 頭部 ⚠ 警示；Alpha 名牌改為「👑👑 種名·霸主」雙冠；名牌下方「👑 稱霸中 +乙太」金色脈動徽章。
+    - **12 個單元測試**全覆蓋：不達閾值/無 Alpha/低族群不觸發、計時達標觸發、族群跌落解除、Alpha 擊殺解除 was_dominant=true、非霸主擊殺 was_dominant=false、壓力加成正確、冷卻防止立即再霸、colony_views/alpha_views 欄位正確、無重複宣告。
+    - **零 migration、零 LLM、純記憶體模式**：`monster_colony.rs`（6 常數 + 4 manager 欄位 + 3 新事件 + `tick_dominance()` + `dominant_pressure_bonus()` + `is_dominant` 欄位）；`game.rs`（事件廣播 + eco_pressure 疊加）；`ws.rs`（霸主普通怪 +1 乙太 + 霸主 Alpha 廣播）；`web/game.js`（生態面板 👑 標籤 + Alpha 雙冠 + 稱霸徽章）。
+    - 玩家感知：野外一個巢穴的怪物數量長期不被打散、Alpha 也沒被解決，3 分鐘後聊天出現「👑 霸主湧現！」；生態面板看到那個巢穴旁多了金色 👑 霸主，地圖上那隻 Alpha 改為雙冠 👑👑 徽章——「快去打那個！每隻怪多掉 1 乙太，打倒首領還有 +5 乙太！」——玩家自動聚焦清剿。
+
 ## 「主軸 vs 補洞」判準（worker 與 reviewer 都照這個）
 - 新內容的解鎖/取得**至少兩條路徑**（時間路＋資源路）——單一路徑硬閘是「被侷限感」的根源（ROADMAP 39 立規）。
 - 只是讓既有東西**更安全 / 更快 / 更乾淨、玩家無感** → 補洞，**除非擋路否則跳過**。

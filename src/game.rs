@@ -629,7 +629,9 @@ pub fn spawn(app: AppState) {
                     let raw = compute_eco_pressure(&colony_inputs, hostile_count, wary_count, monster_total, prey_avg);
                     // ROADMAP 174：跨族結盟期間額外生態壓力加成 +15
                     let alliance_bonus = if app.monster_colonies.read().unwrap().alliance_active() { 15.0 } else { 0.0 };
-                    (raw + alliance_bonus).min(100.0)
+                    // ROADMAP 176：霸主巢穴存續期間額外生態壓力加成 +8
+                    let dominant_bonus = app.monster_colonies.read().unwrap().dominant_pressure_bonus();
+                    (raw + alliance_bonus + dominant_bonus).min(100.0)
                 };
 
                 // ROADMAP 172：生態清剿委託 tick——壓力超標時自動發布全服清剿任務。
@@ -1177,6 +1179,21 @@ pub fn spawn(app: AppState) {
                                      生命激增、攻擊加倍——速速清剿或壓低生態壓力！"
                                 ));
                             }
+                            // ROADMAP 176：物種霸主稱霸——廣播全服警示，玩家知道有額外乙太可拿
+                            MonsterColonyEvent::DominanceDeclaration { colony_name, .. } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "👑【霸主湧現！】{colony_name} 巢穴稱霸！族群鼎盛、Alpha 長踞——\
+                                     速去制伏，擊殺有額外乙太！生態壓力持續上升！"
+                                ));
+                            }
+                            // ROADMAP 176：霸主落幕——廣播全服
+                            MonsterColonyEvent::DominanceBroken { colony_name, .. } => {
+                                let _ = app.tx_chat.send(format!(
+                                    "👑【霸主落幕！】{colony_name} 的霸主之勢瓦解！"
+                                ));
+                            }
+                            // ROADMAP 176：霸主巢穴普通怪擊殺——由 ws.rs 發獎，game.rs 忽略
+                            MonsterColonyEvent::MonsterKilledInDominantColony => {}
                         }
                     }
                 }

@@ -810,8 +810,9 @@
     const sig = `${speciesHudCollapsed}|${Math.round(ecoPressureValue)}|`
       + speciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
       + "|" + monsterSpeciesAttitudes.map(s => `${s.kind}${s.attitude}${s.tier}`).join(",")
-      + "|" + monsterColonyViews.map(c => `${c.id}${c.density}`).join(",")
-      + "|" + (ecoBounty ? `${ecoBounty.kills_so_far}/${ecoBounty.kill_target}/${ecoBounty.time_left_secs}` : "none");
+      + "|" + monsterColonyViews.map(c => `${c.id}${c.density}${c.is_dominant ? "D" : ""}`).join(",")
+      + "|" + (ecoBounty ? `${ecoBounty.kills_so_far}/${ecoBounty.kill_target}/${ecoBounty.time_left_secs}` : "none")
+      + "|dom:" + (dominantColonyId ?? "none");
     if (sig === lastSpeciesHudSig) return;
     lastSpeciesHudSig = sig;
 
@@ -899,9 +900,15 @@
       const colonyRows = monsterColonyViews.map(c => {
         const di = Math.min(3, c.density);
         const col = di === 0 ? "#556" : di === 1 ? "#cc6644" : di === 2 ? "#ee4422" : "#ff2200";
-        return `<div style="color:${col};margin:1px 0;font-size:.65rem;">${DENSITY_ICON[di]} ${c.name} [${DENSITY_TEXT[di]}]</div>`;
+        const dominantTag = c.is_dominant
+          ? `<span style="color:#ffd700;font-size:.6rem;margin-left:2px;">👑 霸主</span>`
+          : "";
+        return `<div style="color:${col};margin:1px 0;font-size:.65rem;">${DENSITY_ICON[di]} ${c.name} [${DENSITY_TEXT[di]}]${dominantTag}</div>`;
       }).join("");
-      colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴</div>${colonyRows}`;
+      // 有霸主時在標題後加警示
+      const hasDominant = monsterColonyViews.some(c => c.is_dominant);
+      const headerExtra = hasDominant ? `<span style="color:#ffd700;font-size:.6rem;"> ⚠ 霸主活躍</span>` : "";
+      colonySection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">🏕️ 怪物巢穴${headerExtra}</div>${colonyRows}`;
     }
 
     panel.innerHTML = `${bountySection}${pressureHtml}${wildSection}${monsterSection}${colonySection}
@@ -945,6 +952,7 @@
   let alphaMonsters = [];           // ROADMAP 168 巢穴 Alpha [{id, colony_id, kind, x, y, hp, max_hp}]
   let ecoBounty = null;             // ROADMAP 172 生態清剿委託 {colony_name, kill_target, kills_so_far, reward_per_player, time_left_secs}
   let ancientAlpha = null;          // ROADMAP 173 傳說古 Alpha {x, y, hp, max_hp}（null = 未出現）
+  let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
   // 用它擋住重複初始化／重啟第二個 render 迴圈。
   let started = false;
@@ -1318,6 +1326,12 @@
         ecoBounty = msg.eco_bounty ?? null;
         // 傳說古 Alpha（ROADMAP 173）：世界頭目狀態，null 表示尚未現身或冷卻中。
         ancientAlpha = msg.ancient_alpha ?? null;
+        // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
+        dominantColonyId = null;
+        if (Array.isArray(msg.monster_colony_views)) {
+          const dom = msg.monster_colony_views.find(c => c.is_dominant);
+          if (dom) dominantColonyId = dom.id;
+        }
         // 居民互助請求（ROADMAP 125）：從快照同步目前求助居民清單。
         if (Array.isArray(msg.active_help_requests)) {
           helpRequestResidentIds = new Set(msg.active_help_requests);
@@ -7530,8 +7544,9 @@
       const isClashing = !!a.clash_target_id;
       const isAllied = !!a.allied_to_id;
       const isAwakened = !!a.awakened; // ROADMAP 175
-      // 衝突中→紅色；結盟中→金白雙環；覺醒→赤紅；正常→金色
-      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : isAwakened ? 250 : 600));
+      const isDominant = !!a.is_dominant; // ROADMAP 176
+      // 衝突中→紅色；結盟中→金白雙環；覺醒→赤紅；霸主→金+深金；正常→金色
+      const pulse = 0.7 + 0.3 * Math.sin(now / (isClashing ? 200 : isAllied ? 450 : isAwakened ? 250 : isDominant ? 700 : 600));
       ctx.save();
       ctx.beginPath();
       ctx.arc(sx, sy, 28 * pulse, 0, Math.PI * 2);
@@ -7572,30 +7587,30 @@
       ctx.fillRect(bx, by, barW, barH);
       ctx.fillStyle = hpPct > 0.5 ? "#4c4" : hpPct > 0.25 ? "#ca4" : "#c44";
       ctx.fillRect(bx, by, barW * hpPct, barH);
-      ctx.strokeStyle = isClashing ? "rgba(255,80,80,0.9)" : isAwakened ? "rgba(220,40,40,0.9)" : "rgba(255,210,0,0.8)";
+      ctx.strokeStyle = isClashing ? "rgba(255,80,80,0.9)" : isAwakened ? "rgba(220,40,40,0.9)" : isDominant ? "rgba(255,180,0,0.9)" : "rgba(255,210,0,0.8)";
       ctx.lineWidth = 1;
       ctx.strokeRect(bx, by, barW, barH);
 
-      // 皇冠標記（覺醒時改 🔥👑）
+      // 皇冠標記（覺醒時改 🔥👑；霸主時改 👑👑）
       ctx.font = "14px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
-      ctx.fillText(isAwakened ? "🔥👑" : "👑", sx, by);
+      ctx.fillText(isAwakened ? "🔥👑" : isDominant ? "👑👑" : "👑", sx, by);
 
-      // 名牌（覺醒時前綴改 🔥👑）
+      // 名牌（覺醒時前綴改 🔥👑；霸主時前綴改 👑👑；正常 👑）
       const kindName = MONSTER_DISPLAY_NAME[a.kind] || a.kind;
-      const crownPrefix = isAwakened ? "🔥👑" : "👑";
+      const crownPrefix = isAwakened ? "🔥👑" : isDominant ? "👑👑" : "👑";
       const label = `${crownPrefix} ${kindName}·霸主`;
       ctx.font = "bold 11px sans-serif";
       const lw = ctx.measureText(label).width + 8;
       const lx = sx, ly = sy + 32;
-      ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : isAwakened ? "rgba(120,10,10,0.85)" : "rgba(80,50,0,0.75)";
+      ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : isAwakened ? "rgba(120,10,10,0.85)" : isDominant ? "rgba(100,70,0,0.88)" : "rgba(80,50,0,0.75)";
       ctx.fillRect(lx - lw / 2, ly - 12, lw, 14);
-      ctx.fillStyle = isClashing ? "#ff8080" : isAwakened ? "#ff6060" : "#ffd700";
+      ctx.fillStyle = isClashing ? "#ff8080" : isAwakened ? "#ff6060" : isDominant ? "#ffe066" : "#ffd700";
       ctx.textBaseline = "bottom";
       ctx.fillText(label, lx, ly + 2);
 
-      // ROADMAP 170：衝突徽章 > ROADMAP 175：覺醒徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
+      // ROADMAP 170：衝突徽章 > ROADMAP 175：覺醒徽章 > ROADMAP 176：霸主徽章 > ROADMAP 174：結盟徽章 > ROADMAP 169：指揮氣泡
       if (isClashing) {
         const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
         const clashLabel = "⚔️ 衝突中";
@@ -7625,6 +7640,21 @@
         ctx.fillStyle = "#ffaaaa";
         ctx.textBaseline = "top";
         ctx.fillText(awakenLabel, awkenX, awkenY);
+      } else if (isDominant) {
+        // ROADMAP 176：霸主徽章（深金色底，閃爍提示擊殺有額外乙太）
+        const domPulse = 0.85 + 0.15 * Math.sin(now / 700);
+        const domLabel = "👑 稱霸中 +乙太";
+        ctx.font = "bold 10px sans-serif";
+        const dw = ctx.measureText(domLabel).width + 10;
+        const dx2 = sx, dy2 = ly + 8;
+        ctx.fillStyle = `rgba(130,90,0,${(0.92 * domPulse).toFixed(3)})`;
+        ctx.fillRect(dx2 - dw / 2, dy2 - 1, dw, 13);
+        ctx.strokeStyle = `rgba(255,200,40,${(0.95 * domPulse).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(dx2 - dw / 2, dy2 - 1, dw, 13);
+        ctx.fillStyle = "#ffe566";
+        ctx.textBaseline = "top";
+        ctx.fillText(domLabel, dx2, dy2);
       } else if (isAllied) {
         // ROADMAP 174：結盟徽章（金色底，深色字）
         const alliancePulse = 0.88 + 0.12 * Math.sin(now / 450);

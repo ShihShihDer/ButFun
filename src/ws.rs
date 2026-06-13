@@ -2145,6 +2145,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         MonsterColonyEvent::AllianceBroken { .. } => {}
                                         // ROADMAP 175：Alpha 覺醒危機——只由 game.rs 主 tick 處理
                                         MonsterColonyEvent::AlphaAwakened { .. } => {}
+                                        // ROADMAP 176：霸主巢穴普通怪擊殺——給擊殺者 +1 乙太
+                                        MonsterColonyEvent::MonsterKilledInDominantColony => {
+                                            if let Some(uid) = authed_uid {
+                                                let mut players = app.players.write().unwrap();
+                                                if let Some(p) = players.get_mut(&uid) {
+                                                    p.ether = p.ether.saturating_add(
+                                                        crate::monster_colony::DOMINANT_KILL_BONUS_ETHER
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        // ROADMAP 176：霸主宣告/落幕——只由 game.rs 主 tick 處理
+                                        MonsterColonyEvent::DominanceDeclaration { .. } => {}
+                                        MonsterColonyEvent::DominanceBroken { .. } => {}
                                     }
                                 }
                             }
@@ -3097,11 +3111,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let kill_result = app.monster_colonies.write().unwrap()
                             .attack_alpha(alpha_id, px, py, power, ALPHA_ATTACK_REACH);
                         if let Some(result) = kill_result {
-                            use crate::monster_colony::{ALPHA_KILLER_ETHER, ALPHA_GLOBAL_ETHER, ALPHA_CRYSTAL_DROP, ALLIANCE_BREAK_BONUS_ETHER, AWAKENED_BONUS_ETHER};
-                            // 殺手個人獎勵（盟約中額外獎勵 + 覺醒中額外獎勵）
+                            use crate::monster_colony::{ALPHA_KILLER_ETHER, ALPHA_GLOBAL_ETHER, ALPHA_CRYSTAL_DROP, ALLIANCE_BREAK_BONUS_ETHER, AWAKENED_BONUS_ETHER, DOMINANT_ALPHA_BONUS_ETHER};
+                            // 殺手個人獎勵（盟約中額外獎勵 + 覺醒中額外獎勵 + 霸主中額外獎勵）
                             let alliance_bonus = if result.was_allied { ALLIANCE_BREAK_BONUS_ETHER } else { 0 };
                             let awakened_bonus = if result.was_awakened { AWAKENED_BONUS_ETHER } else { 0 };
-                            let total_killer = ALPHA_KILLER_ETHER + alliance_bonus + awakened_bonus;
+                            let dominant_bonus = if result.was_dominant { DOMINANT_ALPHA_BONUS_ETHER } else { 0 };
+                            let total_killer = ALPHA_KILLER_ETHER + alliance_bonus + awakened_bonus + dominant_bonus;
                             let killer_name = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
@@ -3143,6 +3158,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = app.tx_chat.send(format!(
                                     "💎 [Alpha 擊倒！] {killer_name} 制伏了 {colony_name} 的 Alpha 首領「{kind_name}·霸主」！\
                                      全服在線玩家各得 +{ALPHA_GLOBAL_ETHER} 乙太，{killer_name} 額外獲得 +{ALPHA_KILLER_ETHER} 乙太 + Alpha 晶核💎！"
+                                ));
+                            }
+                            // ROADMAP 176：霸主 Alpha 被擊殺，廣播霸主落幕（含額外獎勵說明）
+                            if result.was_dominant {
+                                let _ = app.tx_chat.send(format!(
+                                    "👑【霸主 Alpha 倒下！】{killer_name} 終結了 {colony_name} 的霸主之勢！\
+                                     額外獲得 +{DOMINANT_ALPHA_BONUS_ETHER} 乙太！"
                                 ));
                             }
                         }
