@@ -1,0 +1,52 @@
+ButFun — CC0 無縫地面材質（Color/Albedo 貼圖）
+============================================================
+全部來源為 ambientCG（https://ambientcg.com），全站採用 CC0 1.0
+（Public Domain / 公有領域，可商用、可修改、無需署名）。
+官方授權說明：https://ambientcg.com/license
+
+每張皆為 1K-JPG Color map，下載後裁成正方形、縮到 512x512，
+另作輕度暖色染色以對齊 ButFun 黏土風暖色盤。
+
+原始下載 URL 形式：https://ambientcg.com/get?file=<AssetID>_1K-JPG.zip
+（單檔 512 直連已停用，改抓 1K-JPG zip 取其中 *_Color.jpg）
+
+下表 key 即實際檔名（與 game.js loadClayTiles 的 meadow/dirt/stone/sand/forest 對齊）。
+------------------------------------------------------------
+[meadow.png]  主草地（乾淨均勻）
+  AssetID : Grass004
+  來源頁  : https://ambientcg.com/view?id=Grass004
+  下載    : https://ambientcg.com/get?file=Grass004_1K-JPG.zip
+  原始檔  : Grass004_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[forest.png]  森林草地（較深較密，與草原拉層次）
+  AssetID : Grass001
+  來源頁  : https://ambientcg.com/view?id=Grass001
+  下載    : https://ambientcg.com/get?file=Grass001_1K-JPG.zip
+  原始檔  : Grass001_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[dirt.png]  泥土／土壤（乾淨均勻）
+  AssetID : Ground030
+  來源頁  : https://ambientcg.com/view?id=Ground030
+  下載    : https://ambientcg.com/get?file=Ground030_1K-JPG.zip
+  原始檔  : Ground030_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[stone.png]  石地／碎石
+  AssetID : Rock030
+  來源頁  : https://ambientcg.com/view?id=Rock030
+  下載    : https://ambientcg.com/get?file=Rock030_1K-JPG.zip
+  原始檔  : Rock030_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+[sand.png]  沙地（最平滑均勻）
+  AssetID : Ground054
+  來源頁  : https://ambientcg.com/view?id=Ground054
+  下載    : https://ambientcg.com/get?file=Ground054_1K-JPG.zip
+  原始檔  : Ground054_1K-JPG_Color.jpg
+  授權    : CC0 1.0（ambientCG）
+
+------------------------------------------------------------
+備註：本批僅抓 Color/Albedo。所有來源 CC0，無需署名，
+但仍記錄出處以守 ButFun 紅線「AI 當老師不當影印機」。

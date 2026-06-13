@@ -83,7 +83,7 @@
     const names = ["meadow", "dirt", "stone", "sand", "forest"];
     for (const n of names) {
       const img = new Image();
-      img.src = `assets/clay/tiles/${n}.png?v=1`;
+      img.src = `assets/clay/tiles/${n}.png?v=2`;
       CLAY_TILES[n] = img;
     }
   }
