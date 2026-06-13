@@ -110,6 +110,13 @@
   // 雨後彩虹（ROADMAP 191）：偵測「雨→停」轉換用的前一幀降雨狀態與彩虹點燃時刻。
   let _wasRaining = false;       // 上一幀是否正在下雨（草原雨）
   let _rainbowStartMs = 0;       // 當前彩虹點燃的 performance.now() 時刻（0=無彩虹）
+  // 夜空流星（ROADMAP 192）：入夜後偶發一道劃過上半天邊的流星，純視覺天象——
+  // 與玩法事件「流星雨（133，含採集節點/星塵）」刻意區隔：這裡無玩法、無節點、不可採集，
+  // 只是夜空獎勵，是白天雨後彩虹（191）的夜晚對偶。下面記錄當前流星點燃時刻、下次排程時刻與路徑幾何。
+  let _shootStarStartMs = 0;     // 當前流星點燃時刻（0=無流星劃過中）
+  let _shootStarNextMs  = 0;     // 下次可點燃流星的時刻（0=尚未排程，入夜首幀排首發）
+  let _shootStarX0 = 0, _shootStarY0 = 0; // 流星起點（畫面座標，上半天邊）
+  let _shootStarDX = 0, _shootStarDY = 0; // 流星位移向量（往下斜射，含長度）
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3851,6 +3858,9 @@
 
     // 雨後彩虹（ROADMAP 191）：獨立 safeDraw，每幀偵測「雨→停」轉換並繪製天邊彩虹。
     safeDraw("rainbow", () => drawRainbow(performance.now()));
+
+    // 夜空流星（ROADMAP 192）：獨立 safeDraw，入夜偶發一道流星劃過上半天邊。
+    safeDraw("shootingStar", () => drawShootingStar(performance.now()));
 
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
@@ -8701,6 +8711,102 @@
       ctx.arc(cx, cy, baseR + i * bandW, Math.PI * 1.16, Math.PI * 1.84);
       ctx.stroke();
     }
+    ctx.restore();
+  }
+
+  // ── 夜空流星（ROADMAP 192）────────────────────────────────────────────────
+  // 入夜後偶發一道流星，從上半天邊斜斜劃過、拖一條漸層尾巴，閃現約一秒即逝。
+  // 純前端視覺、零後端：依既有 daynight.light 判夜（與 190 同口徑），自排下次出現時刻。
+  // 與「流星雨（133）」定位刻意不同：133 是後端驅動、含採集節點/星塵的玩法事件；
+  // 192 是無玩法、不可採集的夜空天象，是白天雨後彩虹（191）的夜晚對偶——
+  // 雨停白天掛彩虹、入夜偶見流星劃過，天空兩種時段各有一份好看的尾韻。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫並清狀態。
+  const SHOOT_STAR_NIGHT_LIGHT   = 0.42;  // daynight.light 低於此值算「夜」（與 190 同口徑），白天不出
+  const SHOOT_STAR_DURATION_MS   = 1100;  // 單顆流星劃過總時長（含淡入淡出）
+  const SHOOT_STAR_FADE_IN_MS    = 180;   // 淡入（流星閃現很快）
+  const SHOOT_STAR_FADE_OUT_MS   = 520;   // 淡去（尾巴漸消）
+  const SHOOT_STAR_MAX_ALPHA     = 0.85;  // 流星頭部最大不透明度（夜空亮點，可較顯眼）
+  const SHOOT_STAR_MIN_GAP_MS    = 14000; // 兩顆流星間最短間隔（偶發、不洗版）
+  const SHOOT_STAR_MAX_GAP_MS    = 40000; // 兩顆流星間最長間隔
+  const SHOOT_STAR_FIRST_DELAY_MS = 1500; // 入夜後首顆流星的延遲（讓夜幕落定再現，亦利自驗）
+  const SHOOT_STAR_TRAIL_FRAC    = 0.18;  // 尾巴長度（占整段路徑的比例）
+
+  // 純函式：流星頭部沿路徑的進度 [0,1]（線性）。無 DOM、可測。
+  function shootStarProgress(elapsed, total) {
+    if (total <= 0) return 1;
+    const p = elapsed / total;
+    return p < 0 ? 0 : (p > 1 ? 1 : p);
+  }
+
+  // 純函式：依亂數回傳下次流星的間隔毫秒（夾在 [minGap,maxGap]）。無 DOM、可測。
+  function nextShootStarGap(rand, minGap, maxGap) {
+    const r = rand < 0 ? 0 : (rand > 1 ? 1 : rand);
+    return minGap + r * (maxGap - minGap);
+  }
+
+  // 每幀偵測夜晚並繪製偶發流星（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  function drawShootingStar(now) {
+    const light = daynight ? daynight.light : 1;
+    const night = light < SHOOT_STAR_NIGHT_LIGHT;
+    // 白天／弱機／低幀：清狀態並重置排程（避免天一亮累積、再入夜時重新排首發）
+    if (!night || reduceMotion || !_parallaxEnabled) {
+      _shootStarStartMs = 0;
+      _shootStarNextMs = 0;
+      return;
+    }
+    // 入夜首幀：排首顆流星的出現時刻
+    if (_shootStarNextMs === 0) _shootStarNextMs = now + SHOOT_STAR_FIRST_DELAY_MS;
+
+    // 尚無流星劃過中：時候到了就點燃一顆（隨機起點與斜射方向）
+    if (_shootStarStartMs === 0) {
+      if (now < _shootStarNextMs) return;
+      _shootStarStartMs = now;
+      const fromLeft = Math.random() < 0.5;                 // 由左上往右下、或右上往左下
+      _shootStarX0 = fromLeft ? viewW * (0.05 + Math.random() * 0.30)
+                              : viewW * (0.65 + Math.random() * 0.30);
+      _shootStarY0 = viewH * (0.05 + Math.random() * 0.22); // 起點落在上半天邊
+      const len = Math.min(viewW, viewH) * (0.26 + Math.random() * 0.16);
+      _shootStarDX = (fromLeft ? 1 : -1) * len * (0.55 + Math.random() * 0.25);
+      _shootStarDY = len * (0.50 + Math.random() * 0.30);   // 一律往下斜射
+    }
+
+    const elapsed = now - _shootStarStartMs;
+    // 壽命耗盡：熄滅、排下一顆（隨機間隔）
+    if (elapsed >= SHOOT_STAR_DURATION_MS) {
+      _shootStarStartMs = 0;
+      _shootStarNextMs = now + nextShootStarGap(Math.random(), SHOOT_STAR_MIN_GAP_MS, SHOOT_STAR_MAX_GAP_MS);
+      return;
+    }
+
+    const a = rainbowAlpha(elapsed, SHOOT_STAR_DURATION_MS, SHOOT_STAR_FADE_IN_MS, SHOOT_STAR_FADE_OUT_MS);
+    if (a <= 0) return;
+    const alpha = a * SHOOT_STAR_MAX_ALPHA;
+
+    // 頭部位置與尾巴起點（尾巴拖在頭部後方一小段）
+    const p = shootStarProgress(elapsed, SHOOT_STAR_DURATION_MS);
+    const headX = _shootStarX0 + _shootStarDX * p;
+    const headY = _shootStarY0 + _shootStarDY * p;
+    const tp = Math.max(0, p - SHOOT_STAR_TRAIL_FRAC);
+    const tailX = _shootStarX0 + _shootStarDX * tp;
+    const tailY = _shootStarY0 + _shootStarDY * tp;
+
+    ctx.save();
+    // 漸層尾巴：尾端透明 → 頭端亮白
+    const grad = ctx.createLinearGradient(tailX, tailY, headX, headY);
+    grad.addColorStop(0, "rgba(200,225,255,0)");
+    grad.addColorStop(1, `rgba(235,245,255,${alpha.toFixed(3)})`);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = Math.max(1.5, Math.min(viewW, viewH) * 0.004);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(tailX, tailY);
+    ctx.lineTo(headX, headY);
+    ctx.stroke();
+    // 頭部亮芯：一點柔白
+    ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(headX, headY, Math.max(1.6, Math.min(viewW, viewH) * 0.005), 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
