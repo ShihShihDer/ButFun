@@ -8335,6 +8335,13 @@
       const isSparring = w.kind === "wild_deer" && w.state === "sparring";
       const sparShove = isSparring ? Math.sin(now / 90) * 2.5 : 0; // 一推一退的水平頂撞
 
+      // ROADMAP 225：野狼嗅蹤巡查——嗅蹤中的野狼（state==="tracking"）把鼻子貼地、一嗅一頓地
+      // 低頭循味緩步而行：身體微微壓低（往下一點點）並隨一嗅一頓的節奏輕輕起伏，讀起來是「低頭
+      // 嗅地」而非昂首巡遊。只有野狼會嗅蹤、野狐不嗅（牠撲鼠）。純前端、零協議欄位：直接讀伺服器
+      // 廣播的 w.state（後端只在白天平靜、無獵可追的野狼嗅蹤時才給）。
+      const isTracking = w.kind === "wild_wolf" && w.state === "tracking";
+      const trackLower = isTracking ? 2 + Math.abs(Math.sin(now / 260)) * 1.5 : 0; // 壓低身子、緩緩一嗅一頓
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
@@ -8343,6 +8350,7 @@
       if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面
       if (pounceLift) ctx.translate(0, -pounceLift); // ROADMAP 223：撲跳：把狐身抬起成躍弧
       if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
+      if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -8548,6 +8556,21 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💨", 9, -22 - pounceLift); // 隨撲躍往上竄的一縷勁風（跟著抬起的狐身）
+        ctx.restore();
+      }
+
+      // ROADMAP 225：野狼嗅蹤巡查——嗅蹤中的野狼（state==="tracking"）頭頂浮一個一嗅一頓的 👃，
+      // 讓「野狼低頭貼地、循著氣味痕跡緩步追蹤」一眼看得到（掠食者一側物種差異補齊：野狼白晝嗅蹤 👃、
+      // 野狐白晝撲鼠 💨，夜裡同樣會嚎 🌙）。👃 隨壓低的狼身一起略往下、與一嗅一頓的節奏同步明滅。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、無獵可追的野狼嗅蹤時才給）。
+      if (w.state === "tracking") {
+        ctx.save();
+        const tt = Math.abs(Math.sin(now / 260)); // 與一嗅一頓同步、緩緩明滅
+        ctx.globalAlpha = 0.45 + 0.45 * tt;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("👃", 9, -20 + trackLower); // 跟著壓低的狼身略往下的一記嗅探
         ctx.restore();
       }
 

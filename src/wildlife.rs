@@ -442,6 +442,37 @@ const SPAR_DURATION_MAX: f32 = 5.0;
 /// 力量試探、而非時時在頂（多數時候仍照常吃草／休息／理毛）。
 const SPAR_PROB: f32 = 0.04;
 
+// ─── ROADMAP 225：野狼嗅蹤巡查（wolf scent-tracking）──────────────────────────
+// 把 220～224 開的「物種專屬行為」這條線收到真正的尾：220 給了野鳥專屬的「飛／鳴」、222 給了
+// 小動物專屬的「捧食啃咬」、224 給了野鹿專屬的「頂角較勁」、223 給了野狐專屬的「白晝撲鼠」——
+// 盤點下來，五種生物裡野鳥（飛／鳴）、小動物（捧食）、野鹿（較勁）、野狐（撲鼠）都已有了只屬於
+// 自己、玩家一眼認得的白晝姿態，唯獨**野狼**白天仍只是與通用無異地巡遊（夜裡才有夜嚎 217/218）。
+// 換句話說，野狼是五種動物裡「唯一一種白天沒有專屬姿態」的——本切片補上這最後一塊：野狼標誌性的
+// 「嗅蹤」。真實的野狼覓食巡查時會把鼻子貼近地面、循著嗅到的氣味痕跡低頭緩步追蹤一段。白天無獵
+// 可追的平靜空檔，野狼偶爾就低頭嗅地、朝嗅到的方向沿著一條氣味痕跡慢慢走一小段（前端把狼身壓低、
+// 頭頂浮一個一嗅一頓的 👃），嗅完再抬頭起身回到巡遊。只屬於野狼：野狐不嗅蹤（牠白晝撲鼠）——於是
+// 掠食者一側的物種差異補齊（野狼白晝嗅蹤、野狐白晝撲鼠，夜裡同樣會嚎），五種生物**全員**白天各有
+// 各的專屬姿態，「物種專屬行為」這條線正式收尾。與野鳥的飛／鳴呼應刻意區隔：嗅蹤是各嗅各的、
+// 不傳染（無快照、無接力），只是一隻隻自顧自地低頭循味而行，更像獨來獨往的孤狼。與 213 潛行（Stalking）
+// 也刻意區隔：潛行是「鎖定了真實獵物、壓低身子逼近撲殺」，嗅蹤是「無獵可追時低頭循味閒巡」——兩者
+// 觸發條件互斥（有獵物先走狩獵、嗅蹤只在無獵可追的平靜空檔），狀態字串亦不同（tracking vs stalking）。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 tracking 字串沿用 state_str；嗅蹤落點與計時
+// 隨狀態變體攜帶，無新欄位）、記憶體模式。獵物／威脅永遠優先：嗅蹤只在無獵可追的平靜空檔發生，獵物
+// 一旦進入搜尋範圍，掠食者 phase 在嗅蹤分支之前就已改走狩獵（潛行／追獵），嗅蹤自然讓位。
+/// 白天無獵可追的平靜野狼本幀就地起一段嗅蹤的機率——偏低，讓嗅蹤是白天偶爾的一段循味閒巡，
+/// 而非時時在嗅（多數時候仍照常巡遊）。
+const TRACK_PROB: f32 = 0.02;
+/// 一條氣味痕跡的落點離出發點的最大範圍——比野狐撲鼠（POUNCE_RADIUS 46）遠些，因為嗅蹤是
+/// 「循著一條痕跡走一小段」而非「就地一撲」。
+const TRACK_RADIUS: f32 = 95.0;
+/// 嗅蹤的移動速度——遠慢於巡遊（PRED_WANDER_SPEED 52），讀起來像鼻子貼地、一嗅一頓地緩步循味。
+const TRACK_SPEED: f32 = 26.0;
+/// 視為「已循味到落點」的距離（到此即收尾抬頭）。
+const TRACK_REACH: f32 = 8.0;
+/// 一段嗅蹤的最短／最長時長（秒）——循味是一段悠閒的低頭巡查，明顯長過野狐那一記短促撲跳。
+const TRACK_DURATION_MIN: f32 = 2.0;
+const TRACK_DURATION_MAX: f32 = 4.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -664,6 +695,11 @@ enum WildlifeState {
     /// 演繹）、spar_timer 倒數，到期就回到漫遊（沿用群聚拉力）；較勁中若有威脅逼近一律優先中斷逃竄。
     /// 只有野鹿（WildDeer）會較勁——與 216 理毛（柔）對成剛柔一對。
     Sparring { spar_timer: f32 },
+    /// ROADMAP 225：野狼嗅蹤巡查——白天無獵可追的平靜野狼，把鼻子貼地、循著一條氣味痕跡朝落點
+    /// (tx,ty) 低頭緩步追蹤一小段（頭頂浮一個一嗅一頓的 👃，移動明顯放慢）；track_timer 倒數，
+    /// 循味到落點或計時耗盡就抬頭回到巡遊。只有野狼（WildWolf）會嗅蹤——與野狐白晝撲鼠對成
+    /// 掠食者一側的物種差異；獵物/威脅出現時一律優先改狩獵/逃命（與 213 潛行 Stalking 互斥）。
+    Tracking { tx: f32, ty: f32, track_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1110,6 +1146,27 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 225：野狼嗅蹤巡查——嗅蹤中（Tracking）把鼻子貼地、以遠慢於巡遊的 TRACK_SPEED 朝
+    /// 氣味落點 (tx,ty) 低頭循味緩步而行；track_timer 倒數，循味到落點（TRACK_REACH 內）或計時
+    /// 耗盡就抬頭回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力）。只在 Tracking
+    /// 狀態下生效（呼叫端已確保此隻為野狼、白天、無獵可追的平靜空檔；獵物/威脅一旦出現，掠食者 phase
+    /// 在更前面就已改走狩獵/逃命，不會走到此分支——嗅蹤永遠讓位）。
+    fn tick_track(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Tracking { tx, ty, track_timer } = self.state {
+            let (nx, ny) = track_step(self.x, self.y, tx, ty, dt);
+            self.x = nx;
+            self.y = ny;
+            let remaining = track_timer - dt;
+            let reached = (tx - self.x).powi(2) + (ty - self.y).powi(2) <= TRACK_REACH * TRACK_REACH;
+            if remaining <= 0.0 || reached {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Tracking { tx, ty, track_timer: remaining };
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1132,6 +1189,7 @@ impl Wildlife {
             WildlifeState::Nibbling { .. }  => "nibbling",
             WildlifeState::Pouncing { .. }  => "pouncing",
             WildlifeState::Sparring { .. }  => "sparring",
+            WildlifeState::Tracking { .. }  => "tracking",
         }
     }
 }
@@ -1616,6 +1674,11 @@ impl WildlifeManager {
                                 // 撲到或耗盡就落地回巡遊）。獵物/威脅在更前面（prey_snap 搜尋）已優先處理，
                                 // 故撲跳只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_pounce(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Tracking { .. }) {
+                                // ROADMAP 225：已在嗅蹤中——把這一段循味走完（朝氣味落點低頭緩步、
+                                // 計時倒數，循味到落點或耗盡就抬頭回巡遊）。獵物/威脅在更前面（prey_snap
+                                // 搜尋）已優先處理，故嗅蹤只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_track(dt, rng);
                             } else if pred_kind == WildlifeKind::WildFox
                                 && !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
@@ -1628,6 +1691,19 @@ impl WildlifeManager {
                                 let (px, py) = pounce_target(a.x, a.y, rng);
                                 let timer = rng.gen_range(POUNCE_DURATION_MIN..=POUNCE_DURATION_MAX);
                                 a.state = WildlifeState::Pouncing { px, py, pounce_timer: timer };
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < TRACK_PROB
+                            {
+                                // ROADMAP 225：白天無獵可追的平靜野狼——偶爾把鼻子貼地、循著一條氣味
+                                // 痕跡低頭緩步追蹤一小段（頭頂浮 👃）。只屬於野狼：野狐不嗅蹤（牠白晝撲鼠）
+                                // ——掠食者一側的物種差異補齊，五種生物全員白天各有專屬姿態。各嗅各的、
+                                // 不傳染（與野鳥飛/鳴的呼應刻意區隔），只是一隻隻自顧自地低頭循味而行。
+                                // 夜間改走夜嚎分支（晝嗅蹤、夜嚎，與野狐晝撲鼠/夜嚎對稱）。
+                                let (tx, ty) = track_target(a.x, a.y, rng);
+                                let timer = rng.gen_range(TRACK_DURATION_MIN..=TRACK_DURATION_MAX);
+                                a.state = WildlifeState::Tracking { tx, ty, track_timer: timer };
                             } else {
                                 // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
                                 a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
@@ -2202,6 +2278,28 @@ fn pounce_leap(x: f32, y: f32, px: f32, py: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (POUNCE_SPEED * dt).min(dist);
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 225：野狼嗅蹤巡查——在野狼當前位置 (x,y) 周圍 TRACK_RADIUS 內隨機挑一個氣味落點
+/// （朝嗅到的方向循味而行）。角度與半徑皆隨機（半徑取 sqrt 讓落點在圓內均勻分布），故每段嗅蹤
+/// 方向都不同、由 rng 即時決定（湧現不寫死），且永遠是短程一段。純函式，便於測試。
+fn track_target(x: f32, y: f32, rng: &mut StdRng) -> (f32, f32) {
+    let angle = rng.gen_range(0.0_f32..std::f32::consts::TAU);
+    let r = TRACK_RADIUS * rng.gen_range(0.0_f32..=1.0).sqrt();
+    (x + angle.cos() * r, y + angle.sin() * r)
+}
+
+/// ROADMAP 225：野狼嗅蹤巡查——朝氣味落點 (tx,ty) 以遠慢於巡遊的 TRACK_SPEED 低頭循味移動一幀，
+/// 回傳新位置。單幀位移受「到落點的剩餘距離」clamp，故永遠不會走過頭（最多剛好到達落點）。純函式。
+fn track_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= 1e-3 {
+        return (x, y);
+    }
+    let step = (TRACK_SPEED * dt).min(dist);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -5066,6 +5164,138 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "獵物出現時撲跳野狐應改去獵殺，實際 {:?}", f.state,
+        );
+    }
+
+    // ─── ROADMAP 225：野狼嗅蹤巡查 ─────────────────────────────────────────────
+    #[test]
+    fn track_target_stays_within_radius() {
+        // 氣味落點永遠落在出發點周圍 TRACK_RADIUS 內（循味一小段、不長奔）。
+        let mut rng = make_rng();
+        for _ in 0..200 {
+            let (tx, ty) = track_target(5000.0, 5000.0, &mut rng);
+            let d = ((tx - 5000.0).powi(2) + (ty - 5000.0).powi(2)).sqrt();
+            assert!(d <= TRACK_RADIUS + 0.01, "氣味落點不該離出發點超過 TRACK_RADIUS，實際 {d}");
+        }
+    }
+
+    #[test]
+    fn track_step_moves_toward_target_without_overshoot() {
+        // 嗅蹤朝落點移動 TRACK_SPEED*dt；單幀位移受剩餘距離 clamp，不會走過頭。
+        let (nx, ny) = track_step(5000.0, 5000.0, 5200.0, 5000.0, 0.1);
+        let moved = ((nx - 5000.0).powi(2) + (ny - 5000.0).powi(2)).sqrt();
+        assert!((moved - TRACK_SPEED * 0.1).abs() < 0.01, "單幀位移應約 TRACK_SPEED*dt，實際 {moved}");
+        // 落點很近時：一幀剛好到達、不超過。
+        let (cx, cy) = track_step(5000.0, 5000.0, 5001.0, 5000.0, 0.1);
+        let m2 = ((cx - 5000.0).powi(2) + (cy - 5000.0).powi(2)).sqrt();
+        assert!(m2 <= 1.0 + 1e-4, "近落點單幀不該走過頭，實際 {m2}");
+    }
+
+    #[test]
+    fn track_step_is_slower_than_predator_wander() {
+        // 嗅蹤是鼻子貼地的緩步循味——其速度應明顯慢於掠食者巡遊（讀起來像低頭一嗅一頓）。
+        assert!(TRACK_SPEED < PRED_WANDER_SPEED, "嗅蹤速度應慢於巡遊速度");
+    }
+
+    #[test]
+    fn tracking_state_str_is_tracking() {
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 0.0, 0.0);
+        wolf.state = WildlifeState::Tracking { tx: 10.0, ty: 0.0, track_timer: 1.0 };
+        assert_eq!(wolf.state_str(), "tracking");
+    }
+
+    #[test]
+    fn tick_track_holds_tracking_while_timer_remaining() {
+        // 嗅蹤進行中：朝落點低頭緩步（座標改變）、計時遞減、狀態維持 Tracking。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Tracking { tx: 5300.0, ty: 5000.0, track_timer: 3.0 };
+        wolf.tick_track(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Tracking { track_timer, .. } => {
+                assert!((track_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("嗅蹤未到期應維持 Tracking，實際 {:?}", wolf.state),
+        }
+        assert!(wolf.x > 5000.0, "嗅蹤中應朝落點移動");
+    }
+
+    #[test]
+    fn tick_track_returns_to_wander_when_timer_expires() {
+        // 嗅蹤到期：抬頭回到巡遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Tracking { tx: 5300.0, ty: 5000.0, track_timer: 0.05 };
+        wolf.tick_track(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }), "嗅蹤到期應回巡遊，實際 {:?}", wolf.state);
+    }
+
+    #[test]
+    fn calm_wolf_eventually_tracks_during_day() {
+        // 白天無獵可追的平靜野狼連跑多幀後，總會偶爾低頭起一段嗅蹤（TRACK_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf]; // 場上只有狼、沒有任何獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut tracked = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅、無獵物
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Tracking { .. }) { tracked = true; break; }
+        }
+        assert!(tracked, "白天無獵可追的平靜野狼應偶爾低頭嗅蹤");
+    }
+
+    #[test]
+    fn fox_never_tracks() {
+        // 物種專屬：只有野狼嗅蹤——白天無獵可追的野狐連跑多幀都不該進入 Tracking（牠改撲鼠）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Tracking { .. }), "野狐不該嗅蹤（牠撲鼠）");
+        }
+    }
+
+    #[test]
+    fn wolf_does_not_track_at_night() {
+        // 夜間：野狼改走夜嚎（晝嗅蹤、夜嚎，與野狐晝撲鼠/夜嚎對稱）——連跑多幀都不該進入 Tracking。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Tracking { .. }), "夜間野狼不該嗅蹤（改夜嚎）");
+        }
+    }
+
+    #[test]
+    fn tracking_wolf_hunts_when_prey_appears() {
+        // 狩獵優先：嗅蹤中的野狼，附近出現可獵物種（野鹿）時應改去獵殺（潛行或全速追獵），不再嗅蹤。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Tracking { tx: 5050.0, ty: 5000.0, track_timer: 3.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 白天搜尋半徑 HUNT_RADIUS 內
+        deer.id = 2;
+        mgr.animals = vec![wolf, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(
+            matches!(w.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "獵物出現時嗅蹤野狼應改去獵殺，實際 {:?}", w.state,
         );
     }
 }
