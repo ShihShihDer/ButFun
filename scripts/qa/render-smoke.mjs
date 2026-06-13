@@ -233,6 +233,13 @@ const scenarios = [
       if (s.wildlife[1]) s.wildlife[1] = { ...s.wildlife[1], kind: "wild_wolf", x: me0.x - 30, y: me0.y + 20, state: "resting" };
     }
   }),
+  // 白晝吃草（211）：白天把獵物設成 grazing → 跑 drawWildlife 的吃草 🌿 繪製分支（含 rotate 搖曳）。
+  variant("野生動物白晝吃草(🌿)", (s) => {
+    s.daynight = { phase: "day", light: 0.85, night_danger: false };
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "grazing", familiarity: 0, tamed: false };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
