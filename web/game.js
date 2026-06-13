@@ -121,6 +121,16 @@
   // 入夜淡出讓位給星星（19）與流星（192）。雲池於首次可見時一次性程序生成（見 initClouds）。
   const clouds = [];             // [{x,y,vx,scale,blobs:[{dx,dy,r}]}]（x/y=螢幕比例座標）
   let _cloudLast = 0;            // 上次推進漂移的 performance.now()（推 dt 用）
+  // 白晝飛鳥（ROADMAP 194）：白天偶爾一小群 V 字編隊的鳥剪影緩緩拍翅、橫越上半天邊、飛遠即逝。
+  // 是夜空流星（192）的白天對偶——白天有飛鳥、入夜有流星，天空兩種時段各有一份會動的生命。
+  // 純視覺、零後端：依既有 daynight.light 判白天，自排下群出現時刻。下面記錄當前鳥群飛入時刻、
+  // 下次排程時刻與本群的飛行高度／方向／鳥數／拍翅初相。
+  let _birdStartMs = 0;          // 當前鳥群飛入時刻（0=無鳥群飛行中）
+  let _birdNextMs  = 0;          // 下次可放飛鳥群的時刻（0=尚未排程，白天首幀排首群）
+  let _birdY0 = 0;               // 本群領鳥的飛行高度（畫面座標，上半天邊）
+  let _birdDir = 1;              // 飛行方向（1=由左往右、-1=由右往左）
+  let _birdCount = 0;            // 本群鳥數
+  let _birdFlapPhase = 0;        // 本群拍翅初相（每群略不同，看起來不機械）
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3862,6 +3872,9 @@
 
     // 天邊流雲（ROADMAP 193）：獨立 safeDraw，白天天邊飄雲、破曉/黃昏染金、入夜淡出。
     safeDraw("clouds", () => drawClouds(performance.now()));
+
+    // 白晝飛鳥（ROADMAP 194）：獨立 safeDraw，白天偶發一小群拍翅鳥剪影橫越上半天邊（流星的白天對偶）。
+    safeDraw("daytimeBirds", () => drawDaytimeBirds(performance.now()));
 
     // 雨後彩虹（ROADMAP 191）：獨立 safeDraw，每幀偵測「雨→停」轉換並繪製天邊彩虹。
     safeDraw("rainbow", () => drawRainbow(performance.now()));
@@ -8904,6 +8917,106 @@
         ctx.arc(cx, cy, rad, 0, Math.PI * 2);
         ctx.fill();
       }
+    }
+    ctx.restore();
+  }
+
+  // ── 白晝飛鳥（ROADMAP 194）────────────────────────────────────────────────
+  // 白天偶爾一小群 V 字編隊的鳥剪影緩緩拍翅、橫越上半天邊、飛遠即逝；夜裡或弱機不出。
+  // 純前端視覺、零後端：依既有 daynight.light 判白天（與彩虹 191 同口徑），自排下群出現時刻。
+  // 是夜空流星（192）的白天對偶——白天放飛鳥、入夜見流星，天空兩種時段各有一份會動的生命。
+  // 與既有天象區隔：鳥＝白天天空會動的生命；雲（193）＝白天靜態柔白雲團；星星（19）＝夜空靜態天幕；
+  // 彩虹（191）／流星（192）＝特定時機的天象尾韻——元素、時機、層次刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫並清狀態；同時最多一群。
+  const BIRD_DAY_LIGHT     = 0.5;   // daynight.light ≥ 此值算白天（與彩虹 RAINBOW_DAY_LIGHT 同口徑），夜裡不出
+  const BIRD_FLIGHT_MS     = 9000;  // 一群鳥從一側飛到另一側的總時長（緩慢悠然）
+  const BIRD_FADE_IN_MS    = 1200;  // 從天邊淡入
+  const BIRD_FADE_OUT_MS   = 1800;  // 飛遠淡出
+  const BIRD_MAX_ALPHA     = 0.5;   // 鳥剪影最大不透明度（遠空剪影、半透明不搶戲）
+  const BIRD_MIN_GAP_MS    = 18000; // 兩群鳥間最短間隔（偶發、不洗版）
+  const BIRD_MAX_GAP_MS    = 45000; // 兩群鳥間最長間隔
+  const BIRD_FIRST_DELAY_MS = 1500; // 白天首群的延遲（讓畫面落定再現，亦利 render-smoke 自驗可重現觸發）
+  const BIRD_FLAP_MS       = 520;   // 拍翅週期（一個完整上下拍動的毫秒數）
+  const BIRD_MIN_COUNT     = 3;     // 一群最少鳥數
+  const BIRD_MAX_COUNT     = 6;     // 一群最多鳥數
+
+  // 純函式：拍翅振幅 [0,1]。phase=0 翅平、半週期翅最開，隨時間以 periodMs 為週期循環。
+  // periodMs<=0 視為不拍（回 0）。無 DOM、可測。
+  function birdWingDip(now, periodMs, phaseOff) {
+    if (!(periodMs > 0)) return 0;
+    const ph = (now / periodMs) * Math.PI * 2 + (phaseOff || 0);
+    return (1 - Math.cos(ph)) / 2; // cos→[-1,1] 映射到 [0,1]
+  }
+
+  // 純函式：V 字編隊中第 rank 隻鳥相對領鳥的偏移（領鳥 rank=0）。
+  // back=往後幾個身位（隨 rank 不遞減）、lateral=側向偏移（奇數一側、偶數另一側交替，撐開 V）。
+  // 無 DOM、可測。
+  function flockOffset(rank) {
+    if (rank <= 0) return { back: 0, lateral: 0 };
+    const tier = Math.ceil(rank / 2);          // 1,1,2,2,3,3...（離領鳥越遠 tier 越大）
+    const side = (rank % 2 === 1) ? -1 : 1;     // 奇數一側、偶數另一側，交替撐開 V 字
+    return { back: tier, lateral: tier * side };
+  }
+
+  // 每幀偵測白天並繪製偶發鳥群（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  function drawDaytimeBirds(now) {
+    const light = daynight ? daynight.light : 1;
+    const day = light >= BIRD_DAY_LIGHT;
+    // 夜裡／弱機／低幀：清狀態並重置排程（避免天一黑累積、再白天時重新排首群）
+    if (!day || reduceMotion || !_parallaxEnabled) {
+      _birdStartMs = 0;
+      _birdNextMs = 0;
+      return;
+    }
+    // 白天首幀：排首群的出現時刻
+    if (_birdNextMs === 0) _birdNextMs = now + BIRD_FIRST_DELAY_MS;
+
+    // 尚無鳥群飛行中：時候到了就放飛一群（隨機方向／高度／鳥數／拍翅初相）
+    if (_birdStartMs === 0) {
+      if (now < _birdNextMs) return;
+      _birdStartMs = now;
+      _birdDir = Math.random() < 0.5 ? 1 : -1;
+      _birdY0 = viewH * (0.08 + Math.random() * 0.22);  // 飛行高度落在上半天邊
+      _birdCount = BIRD_MIN_COUNT + Math.floor(Math.random() * (BIRD_MAX_COUNT - BIRD_MIN_COUNT + 1));
+      _birdFlapPhase = Math.random() * Math.PI * 2;
+    }
+
+    const elapsed = now - _birdStartMs;
+    // 飛完全程：飛遠、排下一群（隨機間隔）
+    if (elapsed >= BIRD_FLIGHT_MS) {
+      _birdStartMs = 0;
+      _birdNextMs = now + nextShootStarGap(Math.random(), BIRD_MIN_GAP_MS, BIRD_MAX_GAP_MS);
+      return;
+    }
+
+    const a = rainbowAlpha(elapsed, BIRD_FLIGHT_MS, BIRD_FADE_IN_MS, BIRD_FADE_OUT_MS);
+    if (a <= 0) return;
+    const alpha = a * BIRD_MAX_ALPHA;
+
+    // 鳥群整體橫向位置：從一側畫面外飛到另一側外（多走 0.3 個畫面寬餘裕，淡入淡出時不硬邊閃現）
+    const p = shootStarProgress(elapsed, BIRD_FLIGHT_MS);
+    const span = viewW * 1.3;
+    const leadX = _birdDir > 0 ? (-viewW * 0.15 + span * p) : (viewW * 1.15 - span * p);
+    const size = Math.max(7, Math.min(viewW, viewH) * 0.018); // 單隻鳥半翼展（邏輯像素）
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(55,65,85,${alpha.toFixed(3)})`;
+    ctx.lineWidth = Math.max(1.4, size * 0.18);
+    ctx.lineCap = "round";
+    for (let i = 0; i < _birdCount; i++) {
+      const off = flockOffset(i);
+      // 領鳥在最前；其餘往「飛行方向的後方」拖、並上下撐開成 V
+      const bx = leadX - _birdDir * off.back * size * 1.6;
+      const by = _birdY0 + off.lateral * size * 1.1;
+      // 拍翅相位每隻略錯開（i*0.6 弧度），看起來不像同一台機器在拍
+      const dip = birdWingDip(now, BIRD_FLAP_MS, _birdFlapPhase + i * 0.6) * size * 0.7;
+      const w = size;
+      // 海鷗式剪影：兩段柔曲的翅膀（中央為身、兩翼向外向上揚），dip 越大翅越開
+      ctx.beginPath();
+      ctx.moveTo(bx - w, by);
+      ctx.quadraticCurveTo(bx - w * 0.4, by - dip, bx, by);
+      ctx.quadraticCurveTo(bx + w * 0.4, by - dip, bx + w, by);
+      ctx.stroke();
     }
     ctx.restore();
   }
