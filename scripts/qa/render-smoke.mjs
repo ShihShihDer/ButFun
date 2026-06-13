@@ -223,6 +223,9 @@ const scenarios = [
   variant("破曉金色時刻流雲", (s) => { s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 水域波光（195）：把玩家移到確定是水域的座標（biomeAtJS 在此片成片回 water），讓相機視野滿是
   // 水面 tile，實跑波光「撒點→明滅→繪製柔光斑」內層路徑（白天藍白波光）。
+  // 水面映日／映月（202）一併在這三片水域情境內被跑到（同片水域，白天暖白／破曉金橘／夜映月銀三色溫
+  // 分支與 drawSunGlint 撒方位倒影內層路徑）；其方位倒影強度的 rising/falling 幾何另由下方「日夜循環」
+  // 情境（light 連續升降一輪）跑到晨昏強放／正午弱早退的完整切換。
   variant("水域波光(白天)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 水域波光晨昏染金分支：同一片水域、破曉色溫，跑 shimmerTint 的 dawn/dusk 金橘路徑。
   variant("水域波光(破曉染金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.6, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),

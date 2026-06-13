@@ -144,6 +144,9 @@
   let _shadowLightPrev = -1;     // 陰影系統上一幀的 daynight.light（-1=尚未取樣）
   let _shadowTrend     = 0;      // 陰影系統的 light 趨勢 EMA
   let _shadowCast      = null;   // 本幀投影參數 { dx, lenMult, alphaMult, tint }，null=退回固定腳下圓
+  // 水面映日／映月（ROADMAP 202）：水面倒映太陽/月亮一道隨光源天弧方位的粼粼倒影，沿用陰影系統
+  // 同一份 light 趨勢（rising），每幀算出 _sunGlint 供 drawSunGlint 共用；null=無日夜資訊（不畫倒影）。
+  let _sunGlint        = null;   // 本幀水面倒影參數 { dx, rot, strength, tint }，null=不畫
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
@@ -3776,9 +3779,12 @@
       _shadowTrend = skyLightTrend(_shadowTrend, _shadowLightPrev, daynight.light);
       _shadowLightPrev = daynight.light;
       _shadowCast = computeShadowCast(daynight.light, _shadowTrend >= 0);
+      // 水面映日／映月（202）：沿用陰影系統同一份 light 趨勢（rising），算本幀水面倒影參數。
+      _sunGlint = computeSunGlint(daynight.light, _shadowTrend >= 0, daynight.phase);
     } else {
       _shadowCast = null;
       _shadowLightPrev = -1;
+      _sunGlint = null;
     }
     const SNAP_MS = 75;
     for (const p of players.values()) {
@@ -3830,6 +3836,7 @@
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
+    safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
@@ -9323,6 +9330,110 @@
         // 水平拉長成短橢圓，更像水面反光（非圓點）
         ctx.beginPath();
         ctx.ellipse(sx, sy, r * 1.6, r * 0.7, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 水面映日／映月（ROADMAP 202）────────────────────────────────────────────
+  // 天上有了會升落的太陽／月亮（200）、地上有了會隨光源轉向的影子（201）之後，水面第一次「把天
+  // 上那輪光也反射回來」：水域 tile 上泛起一道隨太陽／月亮天弧方位的粼粼倒影——清晨黃昏光源低垂
+  // （elev 小）時倒影最長最亮、染成金橘（像被低太陽在水面拉出一條反光路）；正午高懸時光幾乎垂直
+  // 打下、水面反光收斂近無；入夜換月光主導，倒影轉成清冷的月銀、淡淡漾動。倒影長軸隨光源螢幕方位
+  // （dx）斜傾，整片朝同一方向，讀起來像「水正映著天邊那輪光」。
+  // 純前端視覺、零後端：方位／高度全由既有 daynight.light＋天弧純函式（skyArcProgress/skyArcPoint，
+  // 與 200/201 同口徑）＋陰影系統同一份 light 趨勢（rising）推得，不必動後端。
+  // 與既有水域元素刻意區隔：波光（195）＝水面零星、無方向、全時段都在的小反光（source-over 小斑）；
+  // 碎浪（196）＝水陸交界的白沫（只在岸邊）；映日／映月（202）＝隨「天上光源方位」成片同向、晨昏才
+  // 大放異彩的拉長倒影（lighter 加亮、更大更長、正午/深夜近乎不出）——層次、方向、時機都不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；光源高懸（正午/深夜）整層早退；
+  // 只在水域 tile 畫、比波光更疏（GLINT_DENSITY 高），暗於門檻即跳過。
+  const GLINT_MAX_ALPHA    = 0.5;   // 單道倒影最大不透明度（半透明、加亮疊在水面，不蓋水色）
+  const GLINT_PERIOD_MS    = 2600;  // 倒影粼動週期基準（比波光稍慢，像拉長的反光在水面漾動；每格 hash 微調避免同步）
+  const GLINT_DENSITY      = 0.78;  // sceneryHash 高於此的水格才有倒影（比波光更疏，成「一道道」而非滿版）
+  const GLINT_MIN_TWINKLE  = 0.12;  // 粼動亮度低於此即不畫該道（省繪製）
+  const GLINT_DOT_R        = 7;     // 倒影柔光斑基準半徑（比波光大、長軸更拉長，像被光源拉出的反光）
+  const GLINT_MIN_STRENGTH = 0.04;  // 整體強度低於此（正午/深夜光源高懸）即整層不畫
+  const GLINT_TILT         = 0.5;   // 倒影長軸隨光源螢幕方位斜傾的最大弧度（dx=±1 時）
+
+  // 純函式：水面倒影整體強度 [0,1]。光源越低（晨昏/升落，elev→0）倒影越長越亮、正午高懸（elev→1）近 0；
+  // 太陽段（sunVis 高）比月亮段亮（陽光強、月光弱）。平方讓「只有真的很低時才大放異彩」。無 DOM、可測。
+  function sunGlintStrength(elev, sunVis) {
+    const low = 1 - Math.max(0, Math.min(1, elev));         // 1=貼地平、0=天頂
+    const lowness = low * low;                              // 平方：晨昏低垂才強、稍高就快速收斂
+    const sv = Math.max(0, Math.min(1, sunVis));
+    const bodyGain = 0.45 + 0.55 * sv;                      // 太陽段最亮、純月亮段約 0.45
+    return Math.max(0, Math.min(1, lowness * bodyGain));
+  }
+
+  // 純函式：水面倒影色溫 {r,g,b}。晨昏/低太陽染金橘、白天暖白日光、夜映清冷月銀。無 DOM、可測。
+  function sunGlintTint(light, phase, sunVis) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 196, b: 110 }; // 晨昏：低太陽金橘
+    if (sunVis >= 0.5) return { r: 255, g: 238, b: 198 };                        // 白天：暖白日光
+    return { r: 198, g: 216, b: 246 };                                           // 夜：清冷月銀
+  }
+
+  // 純函式：依當下 light／趨勢（rising）／相位推「本幀水面倒影」參數 { dx, rot, strength, tint }。
+  //   dx∈[-1,1]：光源螢幕水平位置（-1=東/左、+1=西/右），與 201 陰影同弧但此處用於倒影朝向。
+  //   rot：倒影長軸隨方位斜傾的弧度（dx×GLINT_TILT）。strength：整體強度（晨昏最盛、正午/深夜近 0）。
+  //   tint：色溫 {r,g,b}。太陽（漸亮側）與月亮（漸暗側）以 sunVisibility 連續加權混合，交班平滑不跳。
+  // 與 computeShadowCast 同口徑取弧上落點，確保「影子方向」與「倒影方向」一致（同一輪光源）。無 DOM、可測。
+  function computeSunGlint(light, rising, phase) {
+    const sunVis = sunVisibility(light);                              // 1=純太陽、0=純月亮
+    const sunPt  = skyArcPoint(skyArcProgress(light, rising));        // 太陽弧上落點
+    const moonPt = skyArcPoint(skyArcProgress(1 - light, !rising));   // 月亮弧上落點（方向相反）
+    const nx   = sunPt.nx   * sunVis + moonPt.nx   * (1 - sunVis);    // 加權螢幕水平位置
+    const elev = sunPt.elev * sunVis + moonPt.elev * (1 - sunVis);    // 加權仰角
+    const dx = (nx - 0.5) * 2;                                        // 光源在左(nx<0.5)→dx<0
+    const strength = sunGlintStrength(elev, sunVis);
+    const tint = sunGlintTint(light, phase, sunVis);
+    const rot = dx * GLINT_TILT;                                      // 倒影長軸隨光源方位斜傾
+    return { dx, rot, strength, tint };
+  }
+
+  // 每幀在可見水域 tile 上繪製隨光源方位的粼粼倒影。由獨立 safeDraw 呼叫，畫在波光（195）之上、
+  // 其餘實體之下。正午/深夜光源高懸時 _sunGlint.strength 近 0、整層早退（零繪製開銷）。
+  function drawSunGlint(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+    const g = _sunGlint;
+    if (!g || g.strength < GLINT_MIN_STRENGTH) return; // 正午/深夜光源高懸：整層不畫
+    const tint = g.tint;
+
+    // 與 drawGround／drawWaterShimmer 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // 加亮混合：像水面把天光反射回來（與波光的 source-over 區隔）
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "water") continue;
+        // 用與波光（195）不同的 hash 種子：另一套疏密／格內位置／相位，倒影與波光不重疊、各自一套點。
+        const h0 = sceneryHash(tx * 17 + 6, ty * 23 + 4);
+        if (h0 < GLINT_DENSITY) continue;       // 比波光更疏，成「一道道」倒影而非滿版
+        const h1 = sceneryHash(tx * 11 + 8, ty * 5 + 1);
+        const h2 = sceneryHash(tx * 3 + 7, ty * 19 + 2);
+
+        const period = GLINT_PERIOD_MS * (0.8 + h1 * 0.5); // 每格週期不同，避免整片同步漾動
+        const phaseOff = h2 * Math.PI * 2;
+        const tw = shimmerTwinkle(now, period, phaseOff);
+        if (tw < GLINT_MIN_TWINKLE) continue;   // 此刻暗、不畫，省繪製
+
+        const sx = tx * TS - camX + h1 * TS;     // 格內水平偏移
+        const sy = ty * TS - camY + h2 * TS;     // 格內垂直偏移
+        const r = GLINT_DOT_R * (0.7 + h0 * 0.7);
+        const alpha = tw * g.strength * GLINT_MAX_ALPHA;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        grad.addColorStop(0, `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${tint.r},${tint.g},${tint.b},0)`);
+        ctx.fillStyle = grad;
+        // 沿光源方位拉長成細長倒影（比 195 的短橢圓更長、更具方向性，整片朝同一方位斜傾）
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, r * 2.4, r * 0.55, g.rot, 0, Math.PI * 2);
         ctx.fill();
       }
     }
