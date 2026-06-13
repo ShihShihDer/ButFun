@@ -251,6 +251,22 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 入夜流星：乾淨");
 }
 
+// 白晝飛鳥（194）：白天偶發鳥群，首群延遲 ~1.5s 才放飛、單群飛 9s，故連跑 ~720 幀（每幀 +16ms ≈ 11.5s）
+// 才能實跑「放飛→拍翅 V 字編隊橫越→飛遠熄滅→排下一群」完整路徑（一般情境 6 幀碰不到）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：白天（白晝飛鳥，連跑 720 幀觸發鳥群橫越）──");
+  const daySnap = JSON.parse(JSON.stringify(snapshot));
+  daySnap.daynight = { phase: "day", light: 0.85, night_danger: false };
+  daySnap.weather = { weather_type: "clear", intensity: 0.0 };
+  lastWS.onmessage({ data: JSON.stringify({ ...daySnap, type: "snapshot" }) });
+  const r = pump("白晝飛鳥", 720);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 白晝飛鳥：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 白晝飛鳥：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 白晝飛鳥：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
