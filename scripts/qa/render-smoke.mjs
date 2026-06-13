@@ -108,7 +108,9 @@ const documentStub = {
   createTextNode: () => ({}),
   activeElement: makeEl("active"),
 };
-class FakeImage { constructor() { this.onload = null; this.onerror = null; this._src = ""; } set src(v) { this._src = v; } get src() { return this._src; } addEventListener() {} }
+// FakeImage 報告「已載入完成」：complete + naturalWidth/Height 非零，讓 game.js 的 artOk/clayOk
+// 判定為真，實際走精靈圖/黏土圖的 drawImage / createPattern 繪製分支（否則永遠 fallback、測不到）。
+class FakeImage { constructor() { this.onload = null; this.onerror = null; this._src = ""; this.complete = true; this.naturalWidth = 512; this.naturalHeight = 512; } set src(v) { this._src = v; } get src() { return this._src; } addEventListener() {} }
 class FakeAudio { constructor() { return new Proxy({}, { get: () => () => ({ connect: () => {}, start: () => {}, stop: () => {} }), set: () => true }); } }
 
 const windowStub = {
@@ -118,7 +120,9 @@ const windowStub = {
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, clear: () => {} },
   sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   navigator: { getGamepads: () => [], userAgent: "node-render-smoke", language: "zh-TW", onLine: true, vibrate: () => {}, clipboard: { writeText: () => Promise.resolve() } },
-  location: { host: "localhost:3000", hostname: "localhost", protocol: "http:", href: "http://localhost:3000/", origin: "http://localhost:3000", pathname: "/", search: "", reload: () => {} },
+  // 渲染風格情境：預設空（＝pixel）；BUTFUN_SMOKE_STYLE=clay 時模擬 ?style=clay，讓 game.js
+  // IIFE 啟動即進黏土模式，連跑全黏土地面/sprite 路徑也抓零 render 例外。
+  location: { host: "localhost:3000", hostname: "localhost", protocol: "http:", href: "http://localhost:3000/", origin: "http://localhost:3000", pathname: "/", search: process.env.BUTFUN_SMOKE_STYLE === "clay" ? "?style=clay" : "", reload: () => {} },
   devicePixelRatio: 1, innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
   addEventListener: () => {}, removeEventListener: () => {},
   matchMedia: () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {} }),
