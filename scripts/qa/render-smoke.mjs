@@ -264,6 +264,12 @@ const scenarios = [
   variant("雲影掠地(正午滿濃)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "day", light: 0.85, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
   // 雲影晨昏轉淡分支：破曉 light 0.5 落在 MIN(0.42)→DAY(0.6) 淡入帶內，跑 strength 部分濃度的繪製路徑。
   variant("雲影掠地(破曉轉淡)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dawn", light: 0.5, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 晨昏霞光天幕（204）：破曉 light 0.5 落在霞光 MID(0.5) 峰值，phase=dawn 跑「東側玫瑰金、強度滿、
+  // 主斑 radialGradient＋天邊 linearGradient」完整路徑（rising=true → nx 偏左）。
+  variant("晨昏霞光(破曉玫瑰金)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dawn", light: 0.5, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 霞光黃昏橙紅分支：phase=dusk、light 0.42（偏低、lowness 大）跑 twilightGlowTint 的黃昏橙紅色與
+  // 「光源貼地平→霞光更濃更沉」路徑（rising=false → nx 偏右）。
+  variant("晨昏霞光(黃昏橙紅)", (s) => { s.players[0].x = 3000; s.players[0].y = 3000; s.daynight = { phase: "dusk", light: 0.42, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;

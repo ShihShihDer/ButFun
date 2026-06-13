@@ -3910,6 +3910,10 @@
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
     });
 
+    // 晨昏霞光天幕（ROADMAP 204）：獨立 safeDraw，破曉/黃昏時天邊朝著太陽/月亮升落的方位泛起
+    // 由濃轉淡的方位性霞光。排在太陽/月亮之前——霞光是主體背後的天幕，主體在其上發光。
+    safeDraw("twilightGlow", () => drawTwilightGlow());
+
     // 天空的太陽與月亮（ROADMAP 200）：獨立 safeDraw，白天太陽、入夜月亮沿天弧東升西落。
     // 排在雲/鳥之前——雲與鳥較靠近觀者，會從太陽/月亮主體前飄過。
     safeDraw("celestialBody", () => drawCelestialBody(performance.now()));
@@ -9191,6 +9195,80 @@
       ctx.globalCompositeOperation = "lighter";
     }
 
+    ctx.restore();
+  }
+
+  // ── 晨昏霞光天幕（ROADMAP 204）──────────────────────────────────────────────
+  // 天上有了會升落的太陽／月亮（200）後，破曉與黃昏時天邊朝著光源升落的方位（沿用 200 天弧）
+  // 泛起一片由濃轉淡的霞光：清晨太陽自東（畫面左）升起→左側天邊染玫瑰金；黃昏太陽西沉（右）
+  // →右側天邊染橙紅；正午全亮、深夜全暗皆無霞光。延續視覺精緻化天空線（88~91、189~203），
+  // 承接 200（會升落的太陽月亮），把過去只有一塊均勻暖色全屏濾鏡（drawDayNightTint）的晨昏
+  // 升級成「天邊朝著太陽那側發亮」的方位性霞光——天空第一次像真的被低空的太陽點燃一隅。
+  // 純前端 Canvas 2D、零後端：強度由既有 daynight.light/phase 推得，方位用 200 的天弧純函式
+  // （skyArcProgress/skyArcPoint）求太陽/月亮螢幕水平位置；畫在太陽/月亮主體之前（霞光是主體
+  // 背後的天幕、主體在其上發光）。與既有區隔：drawDayNightTint＝全屏均勻濾鏡；本切片＝方位性、
+  // 聚在光源一側、自天頂向下淡出的霞光。效能優先：低幀/弱機（_parallaxEnabled）不畫、非晨昏
+  // （強度 0）早退，每幀至多 1 個 radialGradient＋1 個 linearGradient、零粒子池、零逐幀物理。
+  const TWILIGHT_GLOW_PEAK_ALPHA = 0.30; // 霞光峰值不透明度（強度滿時的主斑核心）
+  const TWILIGHT_GLOW_LIGHT_MID  = 0.5;  // 霞光最盛的亮度中點（晨昏 light 居中時最濃）
+  const TWILIGHT_GLOW_LIGHT_SPAN = 0.34; // 自中點向兩端（全亮/全暗）淡出的半幅
+
+  // 純函式：晨昏霞光強度 [0,1]。只在 dawn/dusk 相位出現，光度越接近 MID 越濃、趨近全亮/全暗淡出。
+  // 無 DOM、可測。
+  function twilightGlowStrength(light, phase) {
+    if (phase !== "dawn" && phase !== "dusk") return 0;
+    const band = 1 - Math.min(1, Math.abs(light - TWILIGHT_GLOW_LIGHT_MID) / TWILIGHT_GLOW_LIGHT_SPAN);
+    return Math.max(0, Math.min(1, band));
+  }
+
+  // 純函式：晨昏霞光色 {r,g,b}。破曉偏玫瑰金（暖中帶粉），黃昏偏橙紅（更深更暖）。無 DOM、可測。
+  function twilightGlowTint(phase) {
+    return phase === "dawn"
+      ? { r: 255, g: 178, b: 150 }   // 破曉：玫瑰金
+      : { r: 255, g: 132, b: 78 };   // 黃昏：橙紅
+  }
+
+  // 每幀依晝夜推導霞光強度／方位並繪製（螢幕座標、不隨鏡頭移動）。
+  // 由獨立 safeDraw 呼叫；排在 drawCelestialBody 之前（霞光是主體背後的天幕、主體在其上發光）。
+  function drawTwilightGlow() {
+    if (!daynight) return;
+    if (!_parallaxEnabled) return;                 // 弱機/低幀不畫（沿用 91 的判定）
+    const light = daynight.light;
+    const phase = daynight.phase;
+    const strength = twilightGlowStrength(light, phase);
+    if (strength <= 0.001) return;                 // 非晨昏：強度 0，早退
+
+    // 方位：破曉太陽自東（左）升、黃昏自西（右）落——直接由 phase 決定升/落（與 200 天弧同口徑、
+    // 無需 light 趨勢追蹤，故與 drawCelestialBody 的呼叫先後無關）。
+    const rising = phase === "dawn";
+    const p = skyArcProgress(light, rising);
+    const { nx, elev } = skyArcPoint(p);
+    const marginX = viewW * SKY_MARGIN_FRAC;
+    const glowX = marginX + nx * (viewW - 2 * marginX);
+    // 太陽越低（elev 小、越貼地平）霞光越濃、越沉向天邊；高起時收斂。
+    const lowness = 1 - Math.max(0, Math.min(1, elev)); // 0=天頂 1=貼地平
+    const a = TWILIGHT_GLOW_PEAK_ALPHA * strength * (0.55 + 0.45 * lowness);
+    const { r, g, b } = twilightGlowTint(phase);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // 加亮：在晨昏漸暗天色上像天邊被低空太陽點燃發光
+    // 主霞光：聚在光源一側、自天頂偏上向下糊開的大柔斑。
+    const cx = glowX;
+    const cy = viewH * (-0.06 + 0.10 * lowness); // 貼近頂緣，光源越低略下沉
+    const R = Math.max(viewW, viewH) * 0.72;
+    const g1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    g1.addColorStop(0,    `rgba(${r},${g},${b},${a.toFixed(3)})`);
+    g1.addColorStop(0.45, `rgba(${r},${g},${b},${(a * 0.4).toFixed(3)})`);
+    g1.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = g1;
+    ctx.fillRect(0, 0, viewW, viewH);
+    // 一抹橫貫天邊的淡暈：讓整條地平線都微微泛色（弱於主斑、不喧賓奪主）。
+    const bandA = a * 0.5;
+    const g2 = ctx.createLinearGradient(0, 0, 0, viewH * 0.5);
+    g2.addColorStop(0, `rgba(${r},${g},${b},${bandA.toFixed(3)})`);
+    g2.addColorStop(1, `rgba(${r},${g},${b},0)`);
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, 0, viewW, viewH);
     ctx.restore();
   }
 
