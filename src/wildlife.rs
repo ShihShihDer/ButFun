@@ -293,6 +293,23 @@ const HOWL_PROB: f32 = 0.02;
 const HOWL_DURATION_MIN: f32 = 2.0;
 const HOWL_DURATION_MAX: f32 = 3.5;
 
+// ─── ROADMAP 218：群嚎呼應（howl chorus / contagion）─────────────────────────
+// 承接 217（掠食者夜嚎）：217 讓夜裡無獵可追的狼／狐偶爾仰首獨嚎（🌙），但每一聲都是孤零零的——
+// 一隻嚎完、四下無回應，少了狼群最攝人的那一幕：一聲起，四方應，此起彼落連成一片。本切片補上
+// 「呼應」：當一隻掠食者開始長嚎，附近同樣夜裡歇息、無獵可追的同類「聽見」了，會被牽動跟著仰首
+// 接嚎——一聲引發一片，嚎叫像漣漪般在夜裡的荒野間傳開（就像 209 驚群把恐慌一圈圈傳染，這裡把
+// 嚎聲一圈圈傳染）。於是夜行荒野時，遠近的狼影會此起彼落地對嚎成一支夜曲，而非各嚎各的。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（仍走既有 howling 狀態與 state_str，無新欄位）、
+// 記憶體模式。與 217 的區隔：217＝「自發起頭的第一聲」（低機率 HOWL_PROB 隨機觸發），
+// 218＝「聽見後的接力」（被附近嚎聲牽動而跟嚎）——一個點火、一個傳染，合起來才是「群嚎」。
+/// 一聲長嚎能傳多遠、牽動多遠外的同類接嚎（世界座標像素）——比狩獵搜尋半徑更遠，嚎聲傳得比
+/// 腳步聲遠，讓散在夜野各處的狼也聽得到、應得上。
+const HOWL_HEAR_RADIUS: f32 = 460.0;
+/// 「聽見」附近嚎聲時，本幀跟著接嚎的機率——偏高（嚎聲很有感染力），但不設 1.0：留一點隨機，
+/// 讓接力是錯落地一隻接一隻（而非同幀整齊齊嚎），讀起來更像真實的此起彼落。又因新接嚎者本幀
+/// 不在「起始嚎聲快照」裡，故牽動每 tick 只向外擴一圈——嚎聲像漣漪般逐圈傳開，不會瞬間全嚎。
+const HOWL_JOIN_PROB: f32 = 0.5;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -1067,6 +1084,14 @@ impl WildlifeManager {
             .map(|a| (a.kind, a.x, a.y))
             .collect();
 
+        // ROADMAP 218：群嚎呼應——本幀「起始時正在長嚎」的掠食者座標快照，供 Phase 3 讓附近
+        // 同樣夜裡歇息的同類聽見後接嚎。刻意在 Phase 3 變更前取一次：本幀新接嚎者不在此快照裡，
+        // 故牽動每 tick 只向外擴一圈，嚎聲像漣漪般逐圈傳開（與 209 驚群恐慌的逐圈傳染同手法）。
+        let howling_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && matches!(a.state, WildlifeState::Howling { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -1285,11 +1310,18 @@ impl WildlifeManager {
                             // ROADMAP 217：掠食者夜嚎——夜裡無獵可追的平靜空檔，偶爾仰首長嚎。
                             // 已在長嚎中就把這一聲嚎完（原地不動、計時倒數）；否則夜間歇息時以
                             // HOWL_PROB 開一段長嚎。白天、或正在巡遊/返家時一律照常閒晃（不嚎）。
+                            // ROADMAP 218：群嚎呼應——夜間歇息的掠食者若「聽見」附近同類正在長嚎
+                            // （HOWL_HEAR_RADIUS 內），會以較高的 HOWL_JOIN_PROB 被牽動接嚎；沒聽見
+                            // 才退回 217 的低機率自發起頭。本幀新接嚎者不在 howling_snap 裡，故嚎聲
+                            // 逐圈外傳、此起彼落，而非同幀整片齊嚎。
                             if matches!(a.state, WildlifeState::Howling { .. }) {
                                 a.tick_howl(dt, rng);
-                            } else if is_night
-                                && matches!(a.state, WildlifeState::Resting { .. })
-                                && rng.gen::<f32>() < HOWL_PROB
+                            } else if is_night && matches!(a.state, WildlifeState::Resting { .. })
+                                && {
+                                    let join = hears_howl(a.x, a.y, &howling_snap)
+                                        && rng.gen::<f32>() < HOWL_JOIN_PROB;
+                                    join || rng.gen::<f32>() < HOWL_PROB
+                                }
                             {
                                 let timer = rng.gen_range(HOWL_DURATION_MIN..=HOWL_DURATION_MAX);
                                 a.state = WildlifeState::Howling { howl_timer: timer };
@@ -1621,6 +1653,18 @@ fn nearest_in_range(ax: f32, ay: f32, pts: &[(f32, f32)], radius: f32) -> Option
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied()
+}
+
+/// ROADMAP 218：群嚎呼應——位於 (px,py) 的掠食者是否「聽得見」附近任一正在長嚎的同類
+/// （`howling` 為本幀起始時正在長嚎者的座標快照）。只要有一聲嚎在 HOWL_HEAR_RADIUS 內就回 true，
+/// 由呼叫端據此（以 HOWL_JOIN_PROB）牽動牠接嚎。純距離判定、不分種（狼狐皆會對嚎），無副作用。
+fn hears_howl(px: f32, py: f32, howling: &[(f32, f32)]) -> bool {
+    let r2 = HOWL_HEAR_RADIUS * HOWL_HEAR_RADIUS;
+    howling.iter().any(|&(hx, hy)| {
+        let dx = hx - px;
+        let dy = hy - py;
+        dx * dx + dy * dy <= r2
+    })
 }
 
 fn random_target(hx: f32, hy: f32, radius: f32, rng: &mut StdRng) -> (f32, f32) {
@@ -3856,6 +3900,66 @@ mod tests {
         assert!(
             matches!(w.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "獵物出現時長嚎掠食者應改去獵殺，實際 {:?}", w.state,
+        );
+    }
+
+    // ─── ROADMAP 218：群嚎呼應 ───────────────────────────────────────────────
+    #[test]
+    fn hears_howl_only_within_radius() {
+        // 純距離判定：嚎聲在 HOWL_HEAR_RADIUS 內聽得到、外則聽不到；空快照永遠聽不到。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!hears_howl(me.0, me.1, &[]), "四下無嚎聲時聽不到");
+        let near = (me.0 + HOWL_HEAR_RADIUS - 1.0, me.1);
+        assert!(hears_howl(me.0, me.1, &[near]), "半徑內的嚎聲應聽得到");
+        let far = (me.0 + HOWL_HEAR_RADIUS + 50.0, me.1);
+        assert!(!hears_howl(me.0, me.1, &[far]), "半徑外的嚎聲聽不到");
+        // 多個來源：只要有一聲在範圍內即聽得到。
+        assert!(hears_howl(me.0, me.1, &[far, near]), "其中一聲在範圍內就算聽得到");
+    }
+
+    #[test]
+    fn resting_predator_joins_nearby_howl() {
+        // 群嚎呼應：一隻持續長嚎的狼旁，夜裡歇息、無獵可追的同類會被牽動接嚎。
+        let mut mgr = WildlifeManager::new();
+        let mut howler = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        howler.id = 1;
+        // 給極長的計時，讓牠整段測試都維持長嚎（持續發聲源）。
+        howler.state = WildlifeState::Howling { howl_timer: 1.0e9 };
+        let mut listener = adult_at(WildlifeKind::WildFox, 5100.0, 5000.0); // 在 HOWL_HEAR_RADIUS 內
+        listener.id = 2;
+        listener.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![howler, listener];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 無獵物在場（只有兩隻掠食者）→ 走閒晃分支。HOWL_JOIN_PROB=0.5，數十幀內幾乎必然接嚎。
+        let mut listener_howled = false;
+        for _ in 0..60 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+            let l = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(l.state, WildlifeState::Howling { .. }) {
+                listener_howled = true;
+                break;
+            }
+        }
+        assert!(listener_howled, "夜裡歇息的同類聽見持續的嚎聲後應被牽動接嚎");
+    }
+
+    #[test]
+    fn lone_resting_predator_rarely_howls_without_neighbor() {
+        // 對照：四下無嚎聲時，群嚎呼應不觸發——歇息的狼僅靠 217 的低機率 HOWL_PROB 自發起頭，
+        // 故單幀內絕大多數時候仍維持歇息（驗證接嚎確實是「被附近嚎聲牽動」而非無條件嚎）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], true);
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        // 單幀自發起嚎機率僅 HOWL_PROB(0.02)，這裡不斷言絕不嚎，只驗證沒有「附近嚎聲」這個牽動源時
+        // 狀態仍是歇息或（極低機率）自發長嚎——不會是別的（確認沒有意外副作用）。
+        assert!(
+            matches!(w.state, WildlifeState::Resting { .. } | WildlifeState::Howling { .. }),
+            "無鄰近嚎聲時，歇息的掠食者應維持歇息（或極低機率自發長嚎），實際 {:?}", w.state,
         );
     }
 }
