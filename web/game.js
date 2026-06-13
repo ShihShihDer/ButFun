@@ -110,6 +110,13 @@
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
   const WEATHER_MAX_PARTICLES = 80;
   const weatherParticles = [];
+  // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
+  // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
+  const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
+  const FOOT_DUST_SPACING = 14;    // 角色每移動約這麼多像素揚一撮塵（越小越密）
+  const footDust = [];             // [{wx,wy,vx,vy,life,ttl,size,r,g,b}]
+  const _footLastPos = new Map();  // 角色 id → {x,y,acc} 上次取樣位置與未滿一格的累積位移
+  let _footDustLast = 0;           // 上次更新時間（推 dt）
   // 戰鬥命中飄字（ROADMAP 94）：敵人/玩家受傷或回血時噴出的數字。與 floaters 分開，
   // 視覺規格不同（更大更快更短命），不污染採集/乙太的飄字佇列。
   const hitFloaters = [];
@@ -3789,6 +3796,7 @@
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
+    safeDraw("footDust", () => drawFootDust(camX, camY, renderNow)); // 移動足跡塵土（182），畫在角色腳下
     safeDraw("announceReachable", () => maybeAnnounceReachable(me)); // 報讀器播報
 
     // 畫玩家:先畫別人,最後才畫自己——別人站你頭上時你的金名牌與角色仍在最上層。
@@ -8551,6 +8559,110 @@
     // 泡泡內的微弱高光
     ctx.fillStyle = "rgba(200,255,255,0.15)";
     ctx.fill();
+  }
+
+  // ── ROADMAP 182: 移動足跡塵土 ───────────────────────────────────────────────
+  // 角色（自己／其他玩家／居民 NPC）走動時，在腳下揚起依所在生態著色的貼地塵土，
+  // 讓世界對腳步有反應。純前端視覺、世界座標、效能分級（reduceMotion／低 FPS 關閉）。
+
+  // 各生態的足塵顏色與份量；未知生態退回淡灰塵。純函式（無 DOM／無隨機，可單元自驗）。
+  function footDustStyle(biome) {
+    switch (biome) {
+      case "sand":   return { r: 214, g: 188, b: 130, count: 2 }; // 沙地揚塵明顯、偏暖黃
+      case "meadow": return { r: 120, g: 170, b: 92,  count: 1 }; // 草原綠色草屑
+      case "forest": return { r: 92,  g: 138, b: 80,  count: 1 }; // 林地深綠草屑
+      case "rocky":  return { r: 152, g: 150, b: 160, count: 1 }; // 岩地灰塵
+      default:        return { r: 170, g: 160, b: 142, count: 1 }; // water／其他：淡塵一撮
+    }
+  }
+
+  // 依「自上次取樣以來的累積移動距離」決定這次要揚幾撮塵。純函式（可單元自驗）。
+  // 回傳 { puffs, carry }：puffs=要生成的撮數，carry=未滿一格、留到下次再累積的餘量。
+  // maxPuffs 夾住單幀撮數，防止快照瞬移／傳送一次爆出一長條塵土。
+  // 壞值（負距離／非正 spacing／NaN）一律回 0 撮、餘量歸 0，不算出界外值。
+  function footDustDue(accumDist, spacing, maxPuffs) {
+    if (!(accumDist > 0) || !(spacing > 0)) {
+      return { puffs: 0, carry: 0 };
+    }
+    let puffs = Math.floor(accumDist / spacing);
+    const carry = accumDist - puffs * spacing; // 餘量留到下次累積
+    if (maxPuffs != null && puffs > maxPuffs) puffs = maxPuffs;
+    return { puffs, carry };
+  }
+
+  // 生成一顆腳下塵土粒子：在腳下偏下方一點隨機散開、微微上揚後回落。
+  function makeFootDustParticle(wx, wy, style) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 3 + Math.random() * 8;
+    return {
+      wx: wx + (Math.random() - 0.5) * 6,
+      wy: wy + 11 + (Math.random() - 0.5) * 4, // 對齊腳下陰影（drawPlayer 畫在 sy+12）
+      vx: Math.cos(ang) * spd * 0.5,
+      vy: -(5 + Math.random() * 9),            // 先微微上揚
+      life: 0.4 + Math.random() * 0.3,
+      ttl: 0.7,
+      size: 2 + Math.random() * 2,
+      r: style.r, g: style.g, b: style.b,
+    };
+  }
+
+  function drawFootDust(camX, camY, now) {
+    // 純裝飾：reduceMotion 或低 FPS 時整段關閉（效能優先鐵律）。關閉期間清掉取樣與池，
+    // 避免恢復時用一大段累積位移瞬間爆出一長條塵土。
+    if (reduceMotion || !_parallaxEnabled) {
+      _footDustLast = now;
+      if (_footLastPos.size) _footLastPos.clear();
+      if (footDust.length) footDust.length = 0;
+      return;
+    }
+    let dt = (now - _footDustLast) / 1000;
+    _footDustLast = now;
+    if (!(dt > 0) || dt > 0.1) dt = 0.016; // 首幀／分頁切回的大跳用固定步
+
+    // 收集本幀的角色：自己＋其他玩家（內插座標 rx/ry）、居民 NPC（快照座標 x/y）。
+    const seen = new Set();
+    const consider = (id, x, y) => {
+      if (typeof x !== "number" || typeof y !== "number") return;
+      seen.add(id);
+      const prev = _footLastPos.get(id);
+      if (!prev) { _footLastPos.set(id, { x, y, acc: 0 }); return; }
+      const dx = x - prev.x, dy = y - prev.y;
+      const d = Math.hypot(dx, dy);
+      // 過大的位移（重生／傳送／剛進視野）不揚塵，避免拉出一條塵土線。
+      const acc = prev.acc + (d < 80 ? d : 0);
+      const { puffs, carry } = footDustDue(acc, FOOT_DUST_SPACING, 3);
+      prev.x = x; prev.y = y; prev.acc = carry;
+      if (puffs <= 0) return;
+      const style = footDustStyle(biomeAt(x, y));
+      const want = puffs * style.count;
+      const room = FOOT_DUST_MAX - footDust.length;
+      const n = Math.min(want, room > 0 ? room : 0);
+      for (let i = 0; i < n; i++) footDust.push(makeFootDustParticle(x, y, style));
+    };
+    for (const p of players.values()) consider("p:" + p.id, p.rx, p.ry);
+    for (const npc of npcs) consider("n:" + npc.id, npc.x, npc.y);
+    // 清掉離場角色的取樣，避免 Map 無限長大。
+    for (const id of _footLastPos.keys()) if (!seen.has(id)) _footLastPos.delete(id);
+
+    // 更新並繪製（世界座標 → 螢幕座標）。
+    ctx.save();
+    for (let i = footDust.length - 1; i >= 0; i--) {
+      const d = footDust[i];
+      d.life -= dt;
+      if (d.life <= 0) { footDust.splice(i, 1); continue; }
+      d.wx += d.vx * dt;
+      d.wy += d.vy * dt;
+      d.vy += 16 * dt; // 微微回落
+      const sx = d.wx - camX;
+      const sy = d.wy - camY;
+      if (sx < -20 || sy < -20 || sx > viewW + 20 || sy > viewH + 20) continue;
+      const a = Math.max(0, Math.min(0.5, (d.life / d.ttl) * 0.45));
+      ctx.fillStyle = `rgba(${d.r},${d.g},${d.b},${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, d.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   // ── 旅行商人繪製（ROADMAP 135）──────────────────────────────────────────────
