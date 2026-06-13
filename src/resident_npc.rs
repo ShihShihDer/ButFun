@@ -96,6 +96,10 @@ pub enum ResidentLifecycleEvent {
     },
     /// 居民隨機小事件（ROADMAP 122）：偶爾廣播日常生活趣事至世界聊天。
     MiniEvent { text: String },
+    /// 生態危機警戒開始（ROADMAP 180）：生態壓力衝頂，居民奔回城中心廣場避難。
+    EcoAlarm { msg: String },
+    /// 生態危機解除（ROADMAP 180）：壓力回落，居民鬆口氣散回日常。
+    EcoCalm { msg: String },
     /// 居民主動向玩家打招呼（ROADMAP 123）：廣播 NpcSpeech 泡泡 + 世界聊天通知。
     PlayerGreeting {
         resident_id: String,
@@ -173,6 +177,24 @@ const ARRIVE_DIST: f32 = 8.0;
 /// 城鎮中心座標（居民漫遊區正中央），採集隊出發/歸返的基準點（ROADMAP 177）。
 const TOWN_CENTER_X: f32 = 2500.0;
 const TOWN_CENTER_Y: f32 = 2500.0;
+
+// ── 生態守望（ROADMAP 180）──────────────────────────────────────────────────
+/// 生態壓力 ≥ 此值 → 城鎮進入避難警戒（居民奔回城中心廣場聚集）。
+const ECO_ALARM_PRESSURE: f32 = 75.0;
+/// 生態壓力 < 此值 → 解除警戒、回歸日常（與武裝值拉開遲滯，避免在閾值附近抖動）。
+const ECO_CALM_PRESSURE: f32 = 45.0;
+/// 避難時的急行軍速度倍率（比平時快，營造「趕緊跑回去」的張力）。
+const ALARM_SPEED_MULT: f32 = 1.35;
+/// 居民環繞城中心廣場聚集的基準半徑（px）。
+const HUDDLE_RADIUS: f32 = 64.0;
+
+/// 依索引把居民確定性地散佈在城中心廣場周圍，避免全部疊在同一點。
+/// 用黃金角分布 + 內外兩圈交錯，讓聚集看起來自然成團。
+fn huddle_spot(index: usize) -> (f32, f32) {
+    let ang = index as f32 * 2.399963; // 黃金角（弧度）≈ 137.5°
+    let ring = if index % 2 == 0 { HUDDLE_RADIUS } else { HUDDLE_RADIUS * 0.55 };
+    (TOWN_CENTER_X + ang.cos() * ring, TOWN_CENTER_Y + ang.sin() * ring)
+}
 
 // ── 思想泡泡計時器常數（ROADMAP 118）──────────────────────────────────────────
 /// 思想泡泡最短間隔（秒）。
@@ -392,6 +414,9 @@ pub struct ResidentNpc {
     pub max_hp: f32,
     /// 野外採集隊狀態。
     pub expedition: Option<ExpeditionState>,
+    // ── 生態守望（ROADMAP 180）────────────────────────
+    /// 是否正處於生態危機避難狀態（奔回廣場、頭頂 😰）。由 ResidentManager 每幀依城鎮整體警戒設定。
+    pub alarmed: bool,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -468,6 +493,7 @@ impl ResidentNpc {
             hp: 20.0,
             max_hp: 20.0,
             expedition: None,
+            alarmed: false,
         }
     }
 
@@ -483,8 +509,9 @@ impl ResidentNpc {
     }
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
-    fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase) {
+    fn tick(&mut self, dt: f32, rng: &mut impl Rng, phase: Phase, alarmed: bool, index: usize) {
         // ── 野外採集隊邏輯（ROADMAP 177）──
+        // 採集隊已在野外執行任務，優先於避難（不會半途折返廣場），故不標記 alarmed。
         if let Some(ref mut ex) = self.expedition {
             match ex.phase {
                 ExpeditionPhase::To => {
@@ -519,6 +546,23 @@ impl ResidentNpc {
                 }
             }
             return; // 採集隊期間不執行日常閒晃
+        }
+
+        // ── 生態守望避難（ROADMAP 180）──
+        // 城鎮整體警戒時，居民放下手邊事、急行軍奔回城中心廣場確定性散佈點聚集，
+        // 抵達後原地待避；危機期間不閒晃、不互動（互動類事件由 ResidentManager 統一抑制）。
+        self.alarmed = alarmed;
+        if alarmed {
+            let (hx, hy) = huddle_spot(index);
+            let dx = hx - self.x;
+            let dy = hy - self.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist >= ARRIVE_DIST {
+                let step = (MOVE_SPEED * ALARM_SPEED_MULT * dt).min(dist);
+                self.x += dx / dist * step;
+                self.y += dy / dist * step;
+            }
+            return;
         }
 
         // 鄰里互動冷卻計時（ROADMAP 121）
@@ -584,6 +628,8 @@ pub struct ResidentManager {
     last_prosperity_level: u8,
     /// 野外採集隊冷卻時間（秒）（ROADMAP 177）。
     pub expedition_cooldown: f32,
+    /// 城鎮整體是否處於生態危機避難警戒（ROADMAP 180）；遲滯切換，避免在閾值附近抖動。
+    town_alarmed: bool,
 }
 
 impl ResidentManager {
@@ -601,14 +647,35 @@ impl ResidentManager {
             current_phase: None,
             last_prosperity_level: 1, // 初始視為平靜，避免啟動立即廣播
             expedition_cooldown: 300.0, // 初始 5 分鐘冷卻，給世界暖機時間
+            town_alarmed: false,
         }
     }
 
     /// 每幀推進：移動所有居民 + 生命週期 + 人口增減 + 思想泡泡計時。
     /// 回傳 (lifecycle_events, thought_events)，供 game.rs 廣播。
-    pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase, player_positions: &[(String, f32, f32)]) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
+    pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase, player_positions: &[(String, f32, f32)], eco_pressure: f32) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
         let mut events = Vec::new();
         let mut thoughts = Vec::new();
+
+        // ── 生態守望（ROADMAP 180）：城鎮對野外生態危機的整體反應 ──
+        // 遲滯切換：壓力衝上 ECO_ALARM_PRESSURE 才進入警戒，跌破較低的 ECO_CALM_PRESSURE 才解除，
+        // 避免在單一閾值附近反覆觸發/解除造成廣播洗版與居民來回奔波。
+        let was_alarmed = self.town_alarmed;
+        if !self.town_alarmed && eco_pressure >= ECO_ALARM_PRESSURE {
+            self.town_alarmed = true;
+        } else if self.town_alarmed && eco_pressure < ECO_CALM_PRESSURE {
+            self.town_alarmed = false;
+        }
+        if self.town_alarmed && !was_alarmed {
+            events.push(ResidentLifecycleEvent::EcoAlarm {
+                msg: "😰【居民避難】野外生態驟然失衡，城鎮居民驚覺異動，紛紛趕回城中心廣場聚集互相依靠……".to_string(),
+            });
+        } else if !self.town_alarmed && was_alarmed {
+            events.push(ResidentLifecycleEvent::EcoCalm {
+                msg: "😌【居民安心】野外漸歸平靜，居民們鬆了一口氣，三三兩兩散回各自的營生。".to_string(),
+            });
+        }
+        let alarmed = self.town_alarmed;
 
         // 0. 野外採集隊成敗判定（ROADMAP 177）
         let mut failed = false;
@@ -685,9 +752,14 @@ impl ResidentManager {
         }
 
         // 1. 推進每位居民的年齡、移動、思想計時
-        for r in &mut self.residents {
+        for (i, r) in self.residents.iter_mut().enumerate() {
             r.age_secs += dt;
-            r.tick(dt, &mut self.rng, phase);
+            r.tick(dt, &mut self.rng, phase, alarmed, i);
+            // 生態守望（ROADMAP 180）：避難期間居民只顧奔回廣場聚集，
+            // 不發思想泡泡 / 工作動態 / 小事件 / 搭話 / 求助 / 送禮——讓危機氣氛安靜而緊繃。
+            if alarmed {
+                continue;
+            }
             // 思想泡泡計時（ROADMAP 118）
             r.thought_timer -= dt;
             if r.thought_timer <= 0.0 {
@@ -808,8 +880,11 @@ impl ResidentManager {
         }
 
         // 2. 鄰里互動檢查（ROADMAP 121）：兩位居民靠近時互相打招呼。
-        let neighbor_events = self.check_neighbor_interactions();
-        events.extend(neighbor_events);
+        // 生態守望（ROADMAP 180）：避難聚集時居民彼此緊鄰，若照常觸發鄰里寒暄會洗版，故暫停。
+        if !alarmed {
+            let neighbor_events = self.check_neighbor_interactions();
+            events.extend(neighbor_events);
+        }
 
         // 4. 退休公告（90% 壽命，防重複）
         for r in &mut self.residents {
@@ -986,14 +1061,15 @@ impl ResidentManager {
     }
 
     /// 回傳居民視圖清單：(id, name, x, y, is_expedition, hp_pct)。供快照廣播用。
-    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32, bool, Option<f32>)> {
+    pub fn views(&self) -> impl Iterator<Item = (&str, &str, f32, f32, bool, Option<f32>, bool)> {
         self.residents.iter().map(|r| (
             r.id.as_str(),
             r.name,
             r.x,
             r.y,
             r.expedition.is_some(),
-            if r.expedition.is_some() { Some(r.hp / r.max_hp) } else { None }
+            if r.expedition.is_some() { Some(r.hp / r.max_hp) } else { None },
+            r.alarmed, // ROADMAP 180：生態危機避難中（前端顯示 😰）
         ))
     }
 
@@ -1082,7 +1158,7 @@ mod tests {
         let initial = mgr.population();
         // 直接觸發人口檢查（把計時器歸零）
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
         assert_eq!(mgr.population(), (initial + 1).min(MAX_POPULATION));
         // 繁榮帶來移民事件
         if initial < MAX_POPULATION {
@@ -1095,12 +1171,12 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 先讓人口超過最小值
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[]);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[]);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
         let before = mgr.population();
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1, Phase::Day, &[], 0.0);
         assert_eq!(mgr.population(), (before - 1).max(MIN_POPULATION));
         if before > MIN_POPULATION {
             assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::Departed { .. })));
@@ -1113,7 +1189,7 @@ mod tests {
         // 多次觸發衰退
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 0, Phase::Day, &[]);
+            mgr.tick(0.01, 0, Phase::Day, &[], 0.0);
         }
         assert!(mgr.population() >= MIN_POPULATION);
     }
@@ -1123,7 +1199,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         assert!(mgr.population() <= MAX_POPULATION);
     }
@@ -1133,7 +1209,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 跑 60 秒模擬
         for _ in 0..600 {
-            mgr.tick(0.1, 50, Phase::Day, &[]);
+            mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         }
         for r in &mgr.residents {
             // 居民不該衝出全城大邊界
@@ -1151,13 +1227,13 @@ mod tests {
         mgr.residents[0].lifespan_secs = 100.0;
         mgr.residents[0].age_secs = 88.0; // 89% < 90%
         // tick 一下，不應觸發
-        let (ev, _) = mgr.tick(0.5, 50, Phase::Day, &[]);
+        let (ev, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 再 tick 過 90%
-        let (ev2, _) = mgr.tick(2.0, 50, Phase::Day, &[]);
+        let (ev2, _) = mgr.tick(2.0, 50, Phase::Day, &[], 0.0);
         assert!(ev2.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 已標記，再 tick 不重複
-        let (ev3, _) = mgr.tick(0.5, 50, Phase::Day, &[]);
+        let (ev3, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
         assert!(!ev3.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
     }
 
@@ -1170,7 +1246,7 @@ mod tests {
             mgr.residents[0].age_secs = 100.0; // 壽命到期
             mgr.residents[0].name
         };
-        let (ev, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (ev, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         // 人口不變（退休 + 新居民）
         assert_eq!(mgr.population(), before);
         // 事件應存在
@@ -1238,10 +1314,10 @@ mod tests {
     fn phase_transition_event_emitted_on_change() {
         let mut mgr = ResidentManager::new();
         // 初始 current_phase = None → 第一次 tick 任何時段都觸發轉換事件
-        let (events, _) = mgr.tick(0.01, 50, Phase::Dawn, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0);
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { phase: Phase::Dawn, .. })));
         // 同一時段再 tick → 不重複觸發
-        let (events2, _) = mgr.tick(0.01, 50, Phase::Dawn, &[]);
+        let (events2, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0);
         assert!(!events2.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { .. })));
     }
 
@@ -1249,12 +1325,12 @@ mod tests {
     fn phase_transition_changes_resident_targets() {
         let mut mgr = ResidentManager::new();
         // 先在白天跑幾秒讓居民穩定
-        for _ in 0..10 { mgr.tick(0.5, 50, Phase::Day, &[]); }
+        for _ in 0..10 { mgr.tick(0.5, 50, Phase::Day, &[], 0.0); }
         let old_targets: Vec<(f32, f32)> = mgr.residents.iter()
             .map(|r| (r.target_x, r.target_y))
             .collect();
         // 切換到黃昏
-        mgr.tick(0.01, 50, Phase::Dusk, &[]);
+        mgr.tick(0.01, 50, Phase::Dusk, &[], 0.0);
         // 至少部分居民的目標應已改變（在新時段邊界內）
         let changed = mgr.residents.iter().zip(&old_targets)
             .filter(|(r, old)| (r.target_x - old.0).abs() > 1.0 || (r.target_y - old.1).abs() > 1.0)
@@ -1271,7 +1347,7 @@ mod tests {
         mgr.residents[0].work_timer = 0.0;
         let persona = mgr.residents[0].persona;
         // 確保是白天（所有 persona 白天都會廣播）
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         let work_evs: Vec<_> = events.iter()
             .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
             .collect();
@@ -1283,7 +1359,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 把所有居民 work_timer 清零
         for r in &mut mgr.residents { r.work_timer = 0.0; }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Night, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Night, &[], 0.0);
         let work_evs: usize = events.iter()
             .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
             .count();
@@ -1295,7 +1371,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].work_timer = 0.0;
         let expected_name = mgr.residents[0].name;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         for ev in &events {
             if let ResidentLifecycleEvent::WorkActivity { text } = ev {
                 assert!(
@@ -1310,7 +1386,7 @@ mod tests {
     fn work_timer_resets_after_firing() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].work_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[]);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert!(
             mgr.residents[0].work_timer >= WORK_TIMER_MIN,
             "觸發後 work_timer 應重置到最小間隔以上"
@@ -1326,7 +1402,7 @@ mod tests {
         // 確保有至少兩位居民
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         // 把兩人放在一起
         mgr.residents[0].x = 2400.0;
@@ -1350,7 +1426,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         mgr.residents[0].x = 2400.0;
         mgr.residents[0].y = 2400.0;
@@ -1371,7 +1447,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = CHAT_COOLDOWN; // 有冷卻
@@ -1391,7 +1467,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
@@ -1415,7 +1491,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
@@ -1435,7 +1511,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[]);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
         }
         let expected_a = mgr.residents[0].name;
         let expected_b = mgr.residents[1].name;
@@ -1461,7 +1537,7 @@ mod tests {
     fn mini_event_fires_when_timer_expires() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].mini_event_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
             "mini_event_timer=0 應觸發 MiniEvent"
@@ -1473,7 +1549,7 @@ mod tests {
     fn mini_event_timer_resets_after_firing() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].mini_event_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[]);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert!(
             mgr.residents[0].mini_event_timer >= MINI_EVENT_TIMER_MIN,
             "觸發後 mini_event_timer 應重置到最小間隔以上"
@@ -1486,7 +1562,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let expected_name = mgr.residents[0].name;
         mgr.residents[0].mini_event_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         if let Some(ResidentLifecycleEvent::MiniEvent { text }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })) {
             assert!(text.contains(expected_name), "MiniEvent 文字應包含居民名字 '{expected_name}'，got: {text}");
         } else {
@@ -1502,7 +1578,7 @@ mod tests {
         for r in &mut mgr.residents {
             r.mini_event_timer = MINI_EVENT_TIMER_MAX;
         }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
             "計時器未到不應觸發 MiniEvent"
@@ -1515,7 +1591,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let seed_before = mgr.residents[0].mini_event_seed;
         mgr.residents[0].mini_event_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[]);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert_eq!(
             mgr.residents[0].mini_event_seed,
             seed_before + 1,
@@ -1535,7 +1611,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家正好在居民旁邊（距離 50px，小於 GREETING_DIST_PX 120px）
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家在範圍內且冷卻結束時應觸發 PlayerGreeting"
@@ -1554,7 +1630,7 @@ mod tests {
         }
         // 玩家距離 500px，超出 GREETING_DIST_PX 120px。
         let players = vec![("冒險者".to_string(), 2900.0, 2400.0)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家距離超出範圍時不應觸發 PlayerGreeting"
@@ -1570,7 +1646,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "冷卻中不應觸發 PlayerGreeting"
@@ -1588,7 +1664,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "正在與鄰居打招呼時不應主動向玩家搭話"
@@ -1603,7 +1679,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("路人甲".to_string(), rx + 30.0, ry)];
-        mgr.tick(0.01, 50, Phase::Day, &players);
+        mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
         assert!(
             mgr.residents[0].greeting_cooldown > 0.0,
             "觸發搭話後 greeting_cooldown 應 > 0"
@@ -1615,7 +1691,7 @@ mod tests {
     fn player_greeting_no_trigger_with_empty_player_list() {
         let mut mgr = ResidentManager::new();
         for r in &mut mgr.residents { r.greeting_cooldown = 0.0; }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家列表為空時不應觸發 PlayerGreeting"
@@ -1631,7 +1707,7 @@ mod tests {
         // 把第一位居民的計時器設為幾乎到零
         mgr.residents[0].help_request_timer = 0.01;
         mgr.residents[0].is_requesting_help = false;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::HelpRequested { .. })),
             "help_request_timer 到期應觸發 HelpRequested 事件"
@@ -1643,7 +1719,7 @@ mod tests {
     fn help_request_sets_requesting_flag() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].help_request_timer = 0.01;
-        mgr.tick(0.1, 50, Phase::Day, &[]);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(mgr.residents[0].is_requesting_help, "觸發後 is_requesting_help 應為 true");
     }
 
@@ -1653,7 +1729,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].is_requesting_help = true;
         mgr.residents[0].help_active_timer = 0.01;
-        mgr.tick(0.1, 50, Phase::Day, &[]);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(!mgr.residents[0].is_requesting_help, "時限到期後 is_requesting_help 應為 false");
     }
 
@@ -1782,12 +1858,12 @@ mod tests {
         mgr.residents[0].happiness = HAPPINESS_INITIAL;
         mgr.residents[0].happiness_decay_timer = 0.1; // 接近 0
         // tick 一幀讓計時器歸零
-        let _ = mgr.tick(0.2, HAPPINESS_INITIAL as i32, Phase::Day, &[]);
+        let _ = mgr.tick(0.2, HAPPINESS_INITIAL as i32, Phase::Day, &[], 0.0);
         let h = mgr.residents[0].happiness;
         assert!(h < HAPPINESS_INITIAL, "衰減後快樂值應下降：got {h}");
         // 多次衰減也不低於 HAPPINESS_MIN
         for r in &mut mgr.residents { r.happiness = HAPPINESS_MIN; r.happiness_decay_timer = 0.0; }
-        let _ = mgr.tick(1.0, HAPPINESS_MIN as i32, Phase::Day, &[]);
+        let _ = mgr.tick(1.0, HAPPINESS_MIN as i32, Phase::Day, &[], 0.0);
         for r in &mgr.residents {
             assert!(r.happiness >= HAPPINESS_MIN, "快樂值不應低於 HAPPINESS_MIN={HAPPINESS_MIN}：got {}", r.happiness);
         }
@@ -1819,7 +1895,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家在 40px 以內（< GIFT_DIST_PX 80px）
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "快樂且計時到期且玩家在附近時應觸發 PlayerGift"
@@ -1835,7 +1911,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "不快樂的居民不應觸發 PlayerGift"
@@ -1852,7 +1928,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家距離超過 GIFT_DIST_PX
         let players = vec![("英雄".to_string(), rx + GIFT_DIST_PX + 10.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "玩家距離超出範圍不應觸發 PlayerGift"
@@ -1865,7 +1941,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
         mgr.residents[0].gift_timer = 0.01;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "無玩家時不應觸發 PlayerGift"
@@ -1881,7 +1957,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        mgr.tick(0.1, 50, Phase::Day, &players);
+        mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         assert!(
             mgr.residents[0].gift_timer >= GIFT_TIMER_MIN,
             "觸發後 gift_timer 應重置到最小間隔以上"
@@ -1897,7 +1973,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("小明".to_string(), rx + 30.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         if let Some(ResidentLifecycleEvent::PlayerGift { player_name, text, .. }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })) {
             assert_eq!(player_name, "小明", "PlayerGift 的 player_name 應為 '小明'");
             assert!(text.contains("小明"), "招待訊息應含玩家名 '小明'：{text}");
@@ -1915,7 +1991,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "計時器未到不應觸發 PlayerGift"
@@ -1946,7 +2022,7 @@ mod tests {
         mgr.start_expedition("目標".to_string(), 3000.0, 3000.0);
         
         // tick 推進
-        mgr.tick(1.0, 50, Phase::Day, &[]);
+        mgr.tick(1.0, 50, Phase::Day, &[], 0.0);
         let r = &mgr.residents[0];
         assert!(r.x > 2500.0, "採集隊員應向目標移動 (x: {})", r.x);
         assert!(r.y > 2500.0, "採集隊員應向目標移動 (y: {})", r.y);
@@ -1960,7 +2036,7 @@ mod tests {
         
         // 模擬受傷至死
         mgr.residents[0].hp = 0.0;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionFailed { .. })), "死亡應導致採集失敗");
         assert!(mgr.residents[0].expedition.is_none(), "失敗後應清除狀態");
@@ -1980,20 +2056,110 @@ mod tests {
         // 1. 到達目標
         mgr.residents[0].x = 3000.0;
         mgr.residents[0].y = 3000.0;
-        mgr.tick(0.1, 50, Phase::Day, &[]);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::At));
         
         // 2. 停留完成
         mgr.residents[0].expedition.as_mut().unwrap().stay_timer = 0.01;
-        mgr.tick(0.2, 50, Phase::Day, &[]);
+        mgr.tick(0.2, 50, Phase::Day, &[], 0.0);
         assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::From));
         
         // 3. 回到城中心
         mgr.residents[0].x = 2500.0;
         mgr.residents[0].y = 2500.0;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[]);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
         
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionSuccess { .. })), "回到中心應觸發成功");
         assert!(mgr.residents[0].expedition.is_none(), "成功後應清除狀態");
+    }
+
+    // ── 生態守望（ROADMAP 180）測試 ──────────────────────────────────
+
+    #[test]
+    fn eco_alarm_triggers_above_threshold_once() {
+        let mut mgr = ResidentManager::new();
+        // 低壓不觸發
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE - 1.0);
+        assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "未達閾值不該警戒");
+        assert!(!mgr.town_alarmed);
+        // 衝上閾值觸發一次
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "達閾值應警戒");
+        assert!(mgr.town_alarmed);
+        // 持續高壓不重複廣播
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE + 5.0);
+        assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "持續高壓不該重複警戒廣播");
+        assert!(mgr.town_alarmed);
+    }
+
+    #[test]
+    fn eco_alarm_hysteresis_holds_between_thresholds() {
+        let mut mgr = ResidentManager::new();
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE); // 進警戒
+        assert!(mgr.town_alarmed);
+        // 壓力落在 calm 與 alarm 之間：遲滯區，仍維持警戒、不解除
+        let mid = (ECO_ALARM_PRESSURE + ECO_CALM_PRESSURE) / 2.0;
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], mid);
+        assert!(mgr.town_alarmed, "遲滯區間應維持警戒");
+        assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoCalm { .. })), "遲滯區間不該解除");
+    }
+
+    #[test]
+    fn eco_calm_triggers_below_calm_threshold() {
+        let mut mgr = ResidentManager::new();
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(mgr.town_alarmed);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_CALM_PRESSURE - 1.0);
+        assert!(ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoCalm { .. })), "跌破安寧值應解除警戒");
+        assert!(!mgr.town_alarmed);
+    }
+
+    #[test]
+    fn alarmed_residents_move_toward_town_center() {
+        let mut mgr = ResidentManager::new();
+        // 把一位居民放到遠離廣場的位置
+        mgr.residents[0].x = WANDER_X_MIN;
+        mgr.residents[0].y = WANDER_Y_MIN;
+        mgr.residents[0].expedition = None;
+        let before = {
+            let r = &mgr.residents[0];
+            let dx = TOWN_CENTER_X - r.x;
+            let dy = TOWN_CENTER_Y - r.y;
+            (dx * dx + dy * dy).sqrt()
+        };
+        // 推進數秒的避難移動
+        for _ in 0..30 {
+            mgr.tick(0.5, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        }
+        let after = {
+            let r = &mgr.residents[0];
+            let dx = TOWN_CENTER_X - r.x;
+            let dy = TOWN_CENTER_Y - r.y;
+            (dx * dx + dy * dy).sqrt()
+        };
+        assert!(after < before, "避難時居民應更靠近城中心（before={before}, after={after}）");
+        assert!(mgr.residents[0].alarmed, "避難中居民 alarmed 應為 true");
+    }
+
+    #[test]
+    fn huddle_spots_are_distinct_and_near_center() {
+        // 不同索引散佈在不同點，且都落在城中心廣場附近（< 兩倍半徑）。
+        let a = huddle_spot(0);
+        let b = huddle_spot(1);
+        let c = huddle_spot(2);
+        assert!(a != b && b != c && a != c, "不同索引應散佈在不同點");
+        for (x, y) in [a, b, c] {
+            let d = ((TOWN_CENTER_X - x).powi(2) + (TOWN_CENTER_Y - y).powi(2)).sqrt();
+            assert!(d <= HUDDLE_RADIUS * 2.0, "聚集點應靠近城中心廣場");
+        }
+    }
+
+    #[test]
+    fn alarmed_suppresses_flavor_thought_bubbles() {
+        let mut mgr = ResidentManager::new();
+        // 強制思想泡泡即刻就緒
+        for r in &mut mgr.residents { r.thought_timer = 0.0; }
+        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        assert!(thoughts.is_empty(), "避難期間應抑制思想泡泡（保持危機氣氛安靜）");
     }
 }
