@@ -499,6 +499,33 @@ for (const sc of scenarios) {
   else if (!cycErr) console.log("  ✅ 日夜循環：乾淨");
 }
 
+// 雷光驚畜（248）：暴雨閃電（243）乍亮時，畫面上的野生動物被雷光嚇得縮身下伏。閃電首記延遲
+// LIGHTNING_FIRST_DELAY_MS（1.2s）才點燃、單記僅 750ms，6 幀的一般情境碰不到泛光中段，故連跑
+// ~200 幀（每幀 +16ms）讓 _lightningFlash>0 的幀實跑 drawWildlife 的 cowerDuck 縮身位移分支。
+// 同時擺上鹿/狼/狐/鳥/小獸五種，確認各種動物在雷光下縮身繪製零例外（暴雨 grassland_rain intensity
+// 0.9 > LIGHTNING_STORM_INTENSITY 0.55 才打雷）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：暴雨（雷光驚畜，連跑 200 幀觸發閃電泛光與動物縮身）──");
+  const stormSnap = JSON.parse(JSON.stringify(snapshot));
+  stormSnap.daynight = { phase: "day", light: 0.7, night_danger: false };
+  stormSnap.weather = { weather_type: "grassland_rain", intensity: 0.9 };
+  const sm0 = stormSnap.players[0];
+  if (stormSnap.wildlife?.length) {
+    stormSnap.wildlife[0] = { ...stormSnap.wildlife[0], kind: "wild_deer", x: sm0.x + 30, y: sm0.y, state: "wandering" };
+    if (stormSnap.wildlife[1]) stormSnap.wildlife[1] = { ...stormSnap.wildlife[1], kind: "wild_wolf", x: sm0.x - 30, y: sm0.y + 20, state: "wandering" };
+    if (stormSnap.wildlife[2]) stormSnap.wildlife[2] = { ...stormSnap.wildlife[2], kind: "wild_fox", x: sm0.x, y: sm0.y + 40, state: "wandering" };
+    if (stormSnap.wildlife[3]) stormSnap.wildlife[3] = { ...stormSnap.wildlife[3], kind: "wild_bird", x: sm0.x + 50, y: sm0.y - 20, state: "wandering" };
+    if (stormSnap.wildlife[4]) stormSnap.wildlife[4] = { ...stormSnap.wildlife[4], kind: "small_critter", x: sm0.x - 50, y: sm0.y - 30, state: "wandering" };
+  }
+  lastWS.onmessage({ data: JSON.stringify({ ...stormSnap, type: "snapshot" }) });
+  const r = pump("雷光驚畜", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 雷光驚畜：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雷光驚畜：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 雷光驚畜：乾淨");
+}
+
 // 四季草色（235）：地面隨季染色（春嫩／夏基準／秋金／冬霜），跨季以 _groundTint 逐幀 lerp。
 // 每幀 updateGroundTint→drawGround 內掃一層季節色＋drawGrassTuft 同步染色。逐季切換並各連跑 ~40 幀
 //（每幀 +16ms ≈ 0.64s，足夠讓 GROUND_TINT_RATE 0.35/s 的 lerp 從上一季色明顯轉向當季色），實跑

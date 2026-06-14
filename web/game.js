@@ -274,6 +274,7 @@
   let _lightningStartMs = 0;     // 當前閃電點燃時刻（0=無閃電進行中）
   let _lightningNextMs  = 0;     // 下次可點燃閃電的時刻（0=尚未排程，暴雨首幀排首發）
   let _lightningBolt = null;     // 本次閃電的分叉電光路徑 [{x,y}...]（null=純雲後泛光、無可見電光）
+  let _lightningFlash = 0;       // 上一幀閃電泛光強度 [0,1]（0=此刻無閃電）；供 drawWildlife 讀來驅動「雷光驚畜」縮身（ROADMAP 248）
   // 天邊流雲（ROADMAP 193）：白天上半天邊常駐飄著幾朵柔白雲，破曉/黃昏被霞光染金，
   // 入夜淡出讓位給星星（19）與流星（192）。雲池於首次可見時一次性程序生成（見 initClouds）。
   const clouds = [];             // [{x,y,vx,scale,blobs:[{dx,dy,r}]}]（x/y=螢幕比例座標）
@@ -8578,6 +8579,13 @@
       const isFeasting = w.kind === "wild_wolf" && w.state === "feasting";
       const feastLower = isFeasting ? 3 + Math.abs(Math.sin(now / 180)) * 2 : 0; // 低頭埋食、一口口啃咬
 
+      // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
+      //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
+      // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
+      // 即不縮。鹿/狼/狐/鳥/小獸都怕雷、全種通用。純前端視覺、零協議欄位、不改後端狀態（沿用 209 受驚 ❗
+      // 同為前端視覺反應的前例）。
+      const cowerDuck = lightningCowerOffset(_lightningFlash);
+
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
@@ -8597,6 +8605,7 @@
       if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
       if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
       if (feastLower) ctx.translate(0, feastLower); // ROADMAP 230：圍食：把狼身更壓低、低頭埋食
+      if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -9723,6 +9732,7 @@
   const LIGHTNING_MAX_GAP_MS      = 18000; // 兩記閃電最長間隔
   const LIGHTNING_FIRST_DELAY_MS  = 1200;  // 暴雨開始後首記閃電的延遲（讓雨勢落定再閃，亦利自驗）
   const LIGHTNING_BOLT_CHANCE     = 0.6;   // 每記閃電伴一道可見分叉電光的機率（其餘只雲後泛光）
+  const LIGHTNING_COWER_MAX_PX    = 4;     // ROADMAP 248：雷光最亮時野生動物縮身下伏的最大像素（一抖即收、輕微不誇張）
 
   // 純函式：判斷當前是否「正在暴雨」（草原雨、強度夠大才打雷）。無 DOM、可測。
   function isStormState(type, intensity) {
@@ -9738,6 +9748,15 @@
     const f2 = 0.35 * Math.exp(-Math.pow((t - 0.58) / 0.05, 2));// 二次閃 2（約 58% 處更弱的尾閃）
     const v = main + f1 + f2;
     return v > 1 ? 1 : v;
+  }
+
+  // 純函式：依此刻閃電泛光強度 flash[0,1] 回傳野生動物受驚縮身下伏的像素位移（ROADMAP 248）。
+  // 雷光越亮縮得越低；無閃電（flash<=0）回 0；壞值（NaN/非有限）退 0（寧不動也不亂抖）。無 DOM、可測。
+  function lightningCowerOffset(flash) {
+    const f = (typeof flash === "number" && isFinite(flash)) ? flash : 0;
+    if (f <= 0) return 0;
+    const c = f > 1 ? 1 : f;
+    return c * LIGHTNING_COWER_MAX_PX;
   }
 
   // 純函式：依亂數回傳下次閃電的間隔毫秒（夾在 [minGap,maxGap]）。無 DOM、可測。
@@ -9765,6 +9784,7 @@
 
   // 每幀偵測暴雨並繪製偶發閃電（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
   function drawLightning(now) {
+    _lightningFlash = 0; // 預設此幀無泛光（任一提前 return 都保持 0，drawWildlife 讀到才不縮身）
     const storming = isStormState(weatherType, weatherIntensity);
     // 非暴雨／弱機／低幀：清狀態並重置排程（避免雨停後累積、再逢暴雨時重新排首發）
     if (!storming || reduceMotion || !_parallaxEnabled) {
@@ -9793,6 +9813,7 @@
     }
 
     const a = lightningFlashAlpha(elapsed, LIGHTNING_DURATION_MS);
+    _lightningFlash = a; // 記下此幀泛光強度，供 drawWildlife 驅動「雷光驚畜」（ROADMAP 248）
     if (a <= 0) return;
 
     ctx.save();
