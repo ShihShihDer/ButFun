@@ -8745,6 +8745,29 @@
 
       ctx.restore();
 
+      // ROADMAP 258：寒冬呵氣——冬季時溫血野生動物嘴邊週期性呼出一團可見的白色氣息，向上飄散、漸漸擴散
+      // 淡去（每隻以 id 錯開呼吸相位、不整群同步）。承接季節視覺（226 冬雪）與「天氣 × 生態」（248 雷光驚畜／
+      // 249 雨淋濕身）線——讓「寒冬」第一次不只落在景物上，而是「呵」在活物身上：天一冷，鹿狼狐鳥小獸全都
+      // 看得見地呼著白氣。鹿/狼/狐/鳥/小獸全種通用（誰都會在寒天呵氣）；騰空的飛行/撲跳個體不畫（氣團錨在
+      // 地面頭部、不跟空中身體）。弱機/低幀（沿用 91 的 _parallaxEnabled）或減動效偏好者不跑，效能優先。
+      // 純前端 Canvas 2D、零協議欄位、零後端、不改任何既有狀態或位移。
+      if (currentSeason === "winter" && _parallaxEnabled && !reduceMotion && !isFlying && !isPouncing) {
+        const puff = coldBreathPuff(w.id, now);
+        if (puff && puff.alpha > 0.004) {
+          // 氣團冒在頭部前緣（隨幼獸體型 scale 一同縮小：小獸呵的氣也小）
+          const bx = 7 * scale;
+          const by = (-9 * scale) + puff.dy * scale;
+          const rr = puff.r * scale;
+          ctx.save();
+          ctx.globalAlpha = puff.alpha;
+          ctx.fillStyle = "#f4f9ff"; // 柔白偏冷
+          ctx.beginPath();
+          ctx.ellipse(bx, by, rr, rr * 0.78, 0, 0, Math.PI * 2); // 略扁的氣團
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+
       // ROADMAP 209：受驚閃現——剛被恐慌點燃的瞬間，頭頂彈出一個會上飄淡出的 ❗，
       // 讓「驚群炸開」一眼看得到：一隻驚跳、旁邊接著跳，恐慌像漣漪傳遍整群。
       {
@@ -9926,6 +9949,14 @@
   const LIGHTNING_BOLT_CHANCE     = 0.6;   // 每記閃電伴一道可見分叉電光的機率（其餘只雲後泛光）
   const LIGHTNING_COWER_MAX_PX    = 4;     // ROADMAP 248：雷光最亮時野生動物縮身下伏的最大像素（一抖即收、輕微不誇張）
 
+  // ROADMAP 258：寒冬呵氣——冬季溫血野生動物嘴邊週期性呼出的一團白色氣息（冒起→上飄擴散→淡散）。
+  const BREATH_PERIOD_MS   = 3400;  // 一次呼吸週期（每隻動物約每 3.4 秒呵出一口氣）
+  const BREATH_VISIBLE_MS  = 1300;  // 一口呵氣可見的時長（其餘為吸氣間歇、無氣）
+  const BREATH_RISE_PX     = 7;     // 呵氣團在可見週期內向上飄升的總像素
+  const BREATH_R0          = 1.6;   // 呵氣團初生半徑（剛離嘴、小而濃）
+  const BREATH_R1          = 4.2;   // 呵氣團消散前半徑（飄遠後擴散變大、變淡）
+  const BREATH_MAX_ALPHA   = 0.42;  // 呵氣團峰值不透明度（柔白、不搶戲）
+
   // 純函式：判斷當前是否「正在暴雨」（草原雨、強度夠大才打雷）。無 DOM、可測。
   function isStormState(type, intensity) {
     return type === "grassland_rain" && intensity > LIGHTNING_STORM_INTENSITY;
@@ -9949,6 +9980,24 @@
     if (f <= 0) return 0;
     const c = f > 1 ? 1 : f;
     return c * LIGHTNING_COWER_MAX_PX;
+  }
+
+  // 純函式：依動物 seed（用其 id）與此刻時間 nowMs，回傳當下這隻動物嘴邊呵氣團的狀態（ROADMAP 258）。
+  // 每隻以 id 取餘數錯開呼吸相位（不會整群同步呵氣）；一個週期內前段可見、後段為吸氣間歇（回 null）。
+  // 可見段內 t∈[0,1)：氣團一邊向上飄（dy 往負）、一邊擴散變大（r 由小到大）、透明度快速冒起再緩緩消散。
+  // 壞值（NaN/非有限）回 null（寧不畫也不亂閃）。無 DOM、可單元自驗。
+  function coldBreathPuff(seed, nowMs) {
+    if (typeof seed !== "number" || !isFinite(seed) || typeof nowMs !== "number" || !isFinite(nowMs)) return null;
+    const phase = (((seed % BREATH_PERIOD_MS) + BREATH_PERIOD_MS) % BREATH_PERIOD_MS); // 每隻錯開的相位
+    const tcyc = (((nowMs + phase) % BREATH_PERIOD_MS) + BREATH_PERIOD_MS) % BREATH_PERIOD_MS; // 週期內進度（毫秒）
+    if (tcyc >= BREATH_VISIBLE_MS) return null; // 吸氣間歇：此刻無可見呵氣
+    const t = tcyc / BREATH_VISIBLE_MS;          // 0→1 一口呵氣的生命週期
+    const dy = -t * BREATH_RISE_PX;              // 向上飄升（canvas 往上為負）
+    const r = BREATH_R0 + t * (BREATH_R1 - BREATH_R0); // 漸漸擴散變大
+    // 透明度：前 1/4 快速冒起到峰值，其後緩緩消散到 0
+    const a = t < 0.25 ? (t / 0.25) : (1 - (t - 0.25) / 0.75);
+    const alpha = (a > 0 ? a : 0) * BREATH_MAX_ALPHA;
+    return { dy, r, alpha };
   }
 
   // 純函式：依亂數回傳下次閃電的間隔毫秒（夾在 [minGap,maxGap]）。無 DOM、可測。
