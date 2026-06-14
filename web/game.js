@@ -444,6 +444,11 @@
   // 初值 0（地面乾爽）。是天氣線（93 雨／191 彩虹／243 閃電）第一次落到「地面」的尾韻。
   let _wetness = 0.0;
 
+  // 城鎮居民躲雨撐傘（ROADMAP 254）：草原下雨時城裡的 NPC 撐起一把傘擋雨——逐幀向
+  // umbrellaTargetCover(weatherType, weatherIntensity) 逼近（雨一下傘快撐開、雨停從容收起）。
+  // 初值 0（無傘）。是天氣線第一次接到「人」身上（248 雷光驚畜接到「野生動物」的對偶）。
+  let _npcUmbrella = 0.0;
+
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4135,6 +4140,7 @@
     updateGroundTint(_weatherDt); // 四季草色（235）：先把地面季節染色向當季目標推進一幀，再畫地表
     updateWaterIce(_weatherDt);   // 冬日結冰水面（242）：把水域冰覆向當季目標推進一幀，供波光/倒影/冰光共用
     updateWetGround(_weatherDt);  // 雨後地面濕潤（246）：把陸地濕潤強度向當前天氣目標推進一幀（下雨快濕、停雨慢乾）
+    updateNpcUmbrella(_weatherDt); // 居民躲雨撐傘（254）：把 NPC 撐傘程度向當前天氣目標推進一幀（下雨快撐、停雨慢收）
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
@@ -7981,8 +7987,98 @@
         ctx.fillText(npc.id, sx, by - 15);
       }
 
+      // ROADMAP 254：城鎮居民躲雨撐傘——草原下雨時在這位 NPC 頭頂罩一把傘擋雨（畫在外觀之上、
+      // 罩在頭上）。晴天 _npcUmbrella 歸零即整段早退、零開銷。
+      drawNpcUmbrella(sx, by);
+
       ctx.restore();
     }
+  }
+
+  // ─── ROADMAP 254：城鎮居民躲雨撐傘（天氣 × 人）────────────────────────────────────
+  // 天氣這條線一路把雨畫到了天上（93 雨絲／243 閃電）、地上（246 濕地／247 漣漪），248 還第一次把
+  // 雷光接到「野生動物」身上（雷光驚畜）——可城裡那群有名有姓的居民與大人物，至今對頭頂的傾盆大雨
+  // 毫無反應，照樣若無其事地站在街上淋著。本切片把天氣第一次接到「人」身上：草原下雨時，畫面上的
+  // NPC（商人、工匠、長老、居民、城外旅人……）會撐起一把傘擋雨——雨一下傘緩緩升起罩在頭上、雨停
+  // 又緩緩收去。與 248 雷光驚畜（天氣 × 生態）對成「天氣 × 人」的對偶，讓城鎮在風雨裡也活了起來。
+  // 純前端 Canvas 2D、效能優先、讀既有 weatherType＋weatherIntensity＋daynight、零後端、零協議改動、零持久化。
+  // 下面數支純函式抽出來、無 DOM／可單元自驗。
+  const UMBRELLA_RAISE_RATE = 1.4;  // 撐傘升起的 lerp 速率（/秒）：約 0.7 秒撐開（雨一下趕緊撐傘）
+  const UMBRELLA_LOWER_RATE = 0.8;  // 收傘的 lerp 速率（/秒）：約 1.25 秒收起（雨停從容收傘，慢於撐開）
+
+  // 純函式：當前天氣下 NPC「該不該撐傘」的目標 [0,1]。正在下草原雨（沿用 191/243/246 的 isRainingState
+  // 判定）回 1（撐傘），否則回 0（收傘）。無 DOM、可測。
+  function umbrellaTargetCover(type, intensity) {
+    return isRainingState(type, intensity) ? 1 : 0;
+  }
+
+  // 純函式：把目前撐傘程度 cur 朝 target 逼近——撐開（cur<target）用 UMBRELLA_RAISE_RATE 快、收起
+  // （cur>target）用 UMBRELLA_LOWER_RATE 慢，夾在 [0,1]。故雨一下趕緊撐、雨停從容收，不會驟撐驟收。
+  // 壞值（NaN）退回 0。無 DOM、可測（與 246 wetFadeStep 同模式）。
+  function umbrellaFadeStep(cur, target, dt) {
+    if (!(cur >= 0)) cur = 0;
+    const t = Math.max(0, dt);
+    if (cur < target) return Math.min(target, cur + t * UMBRELLA_RAISE_RATE);
+    if (cur > target) return Math.max(target, cur - t * UMBRELLA_LOWER_RATE);
+    return cur;
+  }
+
+  // 純函式：傘面色溫 {canopy, rib}。傘是暖色的擋雨布——白天鮮明朱紅、晨昏沾一抹霞、夜裡轉沉暗。無 DOM、可測。
+  function umbrellaTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { canopy: "#d98a64", rib: "#7a4a36" }; // 晨昏：暖霞紅
+    if (light >= 0.5) return { canopy: "#e3593f", rib: "#8c3a2a" };                          // 白天：鮮明朱紅
+    return { canopy: "#9a4436", rib: "#542a22" };                                            // 夜：沉暗紅
+  }
+
+  // 每幀把撐傘程度向當前天氣目標推進一格。在畫 NPC 之前呼叫（與 updateWetGround／updateGroundTint 同模式）。
+  function updateNpcUmbrella(dt) {
+    _npcUmbrella = umbrellaFadeStep(_npcUmbrella, umbrellaTargetCover(weatherType, weatherIntensity), dt);
+  }
+
+  // 在單一 NPC 頭頂畫一把擋雨的傘（螢幕座標 sx，基準 by）。撐傘程度 _npcUmbrella 驅動：未撐滿時傘自頭頂
+  // 上方些許滑入、alpha 漸顯（撐開／收起的過場）。傘為上凸半圓 canopy＋數條傘骨＋頂尖小鈕＋一根細柄垂向
+  // 身體。晴天收盡（_npcUmbrella 歸零）即早退、零開銷。不靠 shadowBlur（jsdom 可冒煙）；弱機/低幀略過傘骨細節。
+  function drawNpcUmbrella(sx, by) {
+    const u = _npcUmbrella;
+    if (u <= 0.01) return;
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = umbrellaTint(light, phase);
+    const R = 14;                  // 傘面半徑
+    const slideIn = (1 - u) * 8;   // 未撐滿時從頭頂上方些許滑入（撐開過場）
+    const cy = by - 20 + slideIn;  // 傘心 y（頭頂上方）
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, u);
+    // 傘面（上凸半圓 dome：水平直徑底邊 ＋ 上方弧）
+    ctx.fillStyle = tint.canopy;
+    ctx.beginPath();
+    ctx.arc(sx, cy, R, Math.PI, 2 * Math.PI); // θ∈[π,2π] 為上半（sin<0、螢幕上方）
+    ctx.closePath();
+    ctx.fill();
+    // 傘柄（自傘心垂向身體的細線，末端一個小彎鉤）
+    ctx.strokeStyle = tint.rib;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(sx, cy);
+    ctx.lineTo(sx, by - 4);
+    ctx.stroke();
+    // 傘骨分隔（自傘心向傘緣的數條淡線）＋頂尖小鈕——弱機/低幀略過，省繪製
+    if (_parallaxEnabled && !reduceMotion) {
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      for (let k = 1; k <= 3; k++) {
+        const a = Math.PI + (Math.PI * k / 4); // 半圓內均分的傘骨方向
+        ctx.moveTo(sx, cy);
+        ctx.lineTo(sx + R * Math.cos(a), cy + R * Math.sin(a));
+      }
+      ctx.stroke();
+      // 頂尖小鈕
+      ctx.fillStyle = tint.rib;
+      ctx.beginPath();
+      ctx.arc(sx, cy - R, 1.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   // 野生動物（ROADMAP 140 中立 + ROADMAP 141 食物鏈）。

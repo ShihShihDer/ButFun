@@ -407,6 +407,12 @@ const scenarios = [
   variant("雨打水面漣漪(白天)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "day", light: 0.7, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(破曉金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.55, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(夜冷月)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "night", light: 0.15, night_danger: true }; s.weather = { weather_type: "grassland_rain", intensity: 0.5 }; }),
+
+  // 居民躲雨撐傘（254）：玩家留在城鎮中心（NPC 在場）＋草原降雨（grassland_rain，intensity > 0.2 門檻）→
+  // 連跑 6 幀讓 _npcUmbrella 越過 0.01 門檻，走 drawNpcUmbrella 的繪製分支（每位 NPC 頭頂撐起傘面＋傘骨＋
+  // 細柄＋頂鈕）。白天／夜各跑一次，確認 umbrellaTint 的 light>=0.5 與夜分支、以及弱機略過傘骨的條件皆零例外。
+  variant("居民躲雨撐傘(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
+  variant("居民躲雨撐傘(夜)", (s) => { s.daynight = { phase: "night", light: 0.15, night_danger: true }; s.weather = { weather_type: "grassland_rain", intensity: 0.6 }; }),
 ];
 
 let failed = false;
