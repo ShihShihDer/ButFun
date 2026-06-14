@@ -133,9 +133,11 @@ async fn google_start(State(app): State<AppState>) -> Response {
     );
 
     let mut resp = Redirect::temporary(&auth_url).into_response();
-    // state cookie,15 分鐘,SameSite=Lax 才能在從 Google 轉回來時帶回。
+    // state cookie,15 分鐘。**必須 SameSite=None**:登入要「本站→accounts.google.com→轉回本站 callback」,
+    // 這趟跨站往返下 Lax 的 cookie 不會被帶回(實測:Lax 收不到、None 才收得到),故用 None。
+    // 安全性不變:仍 HttpOnly+Secure+15分一次性 nonce,CSRF 靠值不可偽造,與 SameSite 無關。
     let cookie = format!(
-        "{STATE_COOKIE}={state}; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax"
+        "{STATE_COOKIE}={state}; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=None"
     );
     resp.headers_mut()
         .append(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
@@ -177,12 +179,20 @@ async fn google_callback(
         // 隱私安全診斷:只記「cookie 有無 / 兩邊長度 / 是否有任何 cookie」,不記 state 值、不記個資。
         let has_any_cookie = !cookie_header.is_empty();
         let saved_len = saved_state.map(|s| s.len());
+        // 只記收到的 cookie「名稱」清單(不含值),用於診斷哪些 cookie 撐過跨站往返、哪些沒撐過。
+        let cookie_names: String = cookie_header
+            .split(';')
+            .filter_map(|p| p.trim().split('=').next())
+            .filter(|n| !n.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
         tracing::warn!(
             target: "butfun_server",
             has_any_cookie,
             state_cookie_present = saved_len.is_some(),
             saved_state_len = ?saved_len,
             recv_state_len = state.len(),
+            cookie_names = %cookie_names,
             "OAuth callback state 對不上:用於診斷登入失敗(不含敏感值)"
         );
         return (StatusCode::BAD_REQUEST, "state 對不上(防 CSRF 機制)").into_response();
@@ -231,7 +241,7 @@ async fn google_callback(
         "{SESSION_COOKIE}={session_token}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax"
     );
     let clear_state = format!(
-        "{STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+        "{STATE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None"
     );
 
     let mut resp = Redirect::temporary("/").into_response();
