@@ -1353,10 +1353,10 @@ mod tests {
     #[test]
     fn walks_past_world_edge_into_negative() {
         // ③ 無限世界（切片 A）：邊界 clamp 已拿掉，往上走應能跨過 y=0 進入負座標、不被夾在 0。
-        // 從 (1360,200) 陸地往左上走 226px → y 跨進負值（避開原點附近的水，掃掠碰撞不穿水）。
+        // 從 (1360,140) 陸地往左上走 ~163px → y 跨進負值（避開原點附近的水，掃掠碰撞不穿水）。
         let mut p = player_at(
             1360.0,
-            200.0,
+            140.0,
             Input {
                 up: true,
                 left: true,

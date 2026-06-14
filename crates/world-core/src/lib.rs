@@ -574,7 +574,8 @@ pub fn resolve_move<F: Fn(f32, f32) -> bool>(
 // 主 crate 的 `Player::step` 與下方 wasm 出口 `step_player` 都是薄包裝。
 
 /// 玩家移動速度（px/s）。主 crate `state::PLAYER_SPEED` re-export 這份。
-pub const PLAYER_SPEED: f32 = 320.0;
+/// 230 px/s ≈ 7.2 格/秒（TILE_PX=32）——較先前的 320（10 格/秒）放慢，降低手機操作難度。
+pub const PLAYER_SPEED: f32 = 230.0;
 /// 玩家碰撞盒半徑（px）。四角判定用；略小於半格（16px）讓走 32px 隧道不卡。
 pub const PLAYER_TILE_RADIUS: f32 = 8.0;
 
