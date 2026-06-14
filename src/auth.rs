@@ -133,9 +133,9 @@ async fn google_start(State(app): State<AppState>) -> Response {
     );
 
     let mut resp = Redirect::temporary(&auth_url).into_response();
-    // state cookie,5 分鐘,SameSite=Lax 才能在從 Google 轉回來時帶回。
+    // state cookie,15 分鐘,SameSite=Lax 才能在從 Google 轉回來時帶回。
     let cookie = format!(
-        "{STATE_COOKIE}={state}; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax"
+        "{STATE_COOKIE}={state}; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Lax"
     );
     resp.headers_mut()
         .append(header::SET_COOKIE, HeaderValue::from_str(&cookie).unwrap());
@@ -171,9 +171,21 @@ async fn google_callback(
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    match read_cookie(cookie_header, STATE_COOKIE) {
-        Some(saved) if saved == state => {}
-        _ => return (StatusCode::BAD_REQUEST, "state 對不上(防 CSRF 機制)").into_response(),
+    let saved_state = read_cookie(cookie_header, STATE_COOKIE);
+    let ok = matches!(&saved_state, Some(s) if *s == state);
+    if !ok {
+        // 隱私安全診斷:只記「cookie 有無 / 兩邊長度 / 是否有任何 cookie」,不記 state 值、不記個資。
+        let has_any_cookie = !cookie_header.is_empty();
+        let saved_len = saved_state.map(|s| s.len());
+        tracing::warn!(
+            target: "butfun_server",
+            has_any_cookie,
+            state_cookie_present = saved_len.is_some(),
+            saved_state_len = ?saved_len,
+            recv_state_len = state.len(),
+            "OAuth callback state 對不上:用於診斷登入失敗(不含敏感值)"
+        );
+        return (StatusCode::BAD_REQUEST, "state 對不上(防 CSRF 機制)").into_response();
     }
 
     // 1) 用 code 換 access_token + id_token
