@@ -1336,10 +1336,30 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+                // ROADMAP 244：收集主要 NPC 與旅人的即時位置，傳入居民 tick 觸發鄰里招呼。
+                let mut major_npcs = Vec::new();
+                {
+                    let sch = app.npc_schedule.read().unwrap();
+                    let lc = app.npc_lifecycle.read().unwrap();
+                    for s in crate::npc_schedule::VILLAGE_NPCS {
+                        let name = lc.current_display(s.id).to_string();
+                        if let Some((mx, my)) = sch.get_pos(s.id) {
+                            major_npcs.push((s.id.to_string(), name, mx, my));
+                        }
+                    }
+                    let tv = app.traveler.read().unwrap();
+                    if tv.is_visible() {
+                        major_npcs.push(("traveler".to_string(), tv.name().to_string(), tv.x, tv.y));
+                    }
+                }
+
                 // ROADMAP 180：把當前生態壓力傳入居民 tick，驅動「生態危機避難」整體反應。
                 let eco_for_residents = app.director.read().unwrap().eco_pressure();
+                let world_log_snap: Vec<String> = app.world_log.read().unwrap().recent().iter().cloned().collect();
+                let relations_ref = app.npc_relations.read().unwrap();
                 let (resident_events, thought_events) = app.residents.write().unwrap()
-                    .tick(dt, avg_prosperity, current_phase, &player_positions, eco_for_residents);
+                    .tick(dt, avg_prosperity, current_phase, &player_positions, eco_for_residents, &major_npcs, &world_log_snap, &relations_ref);
+                drop(relations_ref);
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {
@@ -1423,6 +1443,29 @@ pub fn spawn(app: AppState) {
                                 display_secs: 6,
                                 wx: x_b,
                                 wy: y_b,
+                            }));
+                        }
+                        // ROADMAP 244：主要 NPC 與居民相遇打招呼——廣播雙方 NpcSpeech 泡泡。
+                        ResidentLifecycleEvent::MajorNpcChat {
+                            major_id, major_name, major_x, major_y,
+                            resident_id, resident_name, resident_x, resident_y,
+                            major_text, resident_text,
+                        } => {
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: major_id,
+                                npc_name: major_name,
+                                text: major_text,
+                                display_secs: 6,
+                                wx: major_x,
+                                wy: major_y,
+                            }));
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: resident_id,
+                                npc_name: format!("居民 {}", resident_name),
+                                text: resident_text,
+                                display_secs: 6,
+                                wx: resident_x,
+                                wy: resident_y,
                             }));
                         }
                         // ROADMAP 125：居民互助請求——廣播世界聊天 + NpcSpeech 頭頂泡泡。

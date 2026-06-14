@@ -233,7 +233,117 @@ static REPLY_TEMPLATES: &[&str] = &[
     "好啊好啊！",
 ];
 
+// ── 主要 NPC 白天招呼模板（ROADMAP 244） ───────────────────────────────────────────
+
+/// 主要 NPC 向路過居民主動招呼（帶居民名字）
+static MAJOR_GREET_MERCHANT: &[&str] = &[
+    "嘿，{other}！今天市場熱鬧，不去逛逛嗎？",
+    "喲，{other}！剛進了批好貨，有空來看看！",
+    "{other}，最近生意做得怎麼樣？",
+];
+
+static MAJOR_GREET_CHIEF: &[&str] = &[
+    "{other}，今天村子氣氛不錯，辛苦了！",
+    "看到大家都在努力，我這心裡就踏實。{other}，好樣的！",
+    "嘿，{other}，最近生活上還有什麼需要幫忙的嗎？",
+];
+
+static MAJOR_GREET_WORKSHOP: &[&str] = &[
+    "嗨，{other}！這工具用的還順手吧？不順隨時拿來修！",
+    "看這腳步，今天幹勁十足啊，{other}！",
+    "{other}，聽說你最近又採了不少好料？",
+];
+
+static MAJOR_GREET_TRAVELER: &[&str] = &[
+    "你好啊，{other}！我是外地來的旅人，這兒風景真不錯。",
+    "嘿，{other}！這城鎮比我想像中還有朝氣呢。",
+    "打擾了，{other}，請問這附近有什麼有趣的故事嗎？",
+];
+
+static MAJOR_GREET_GENERIC: &[&str] = &[
+    "嘿，{other}！忙著呢？",
+    "喲，{other}，今天天氣真好！",
+    "{other}，看到你真高興！",
+];
+
+/// 居民對主要 NPC 招呼的回應
+static MAJOR_REPLY_TEMPLATES: &[&str] = &[
+    "您好！今天確實不錯。",
+    "嘿，剛好路過，您忙！",
+    "是啊，日子越來越有盼頭了。",
+    "哈哈，承您吉言！",
+    "您太客氣了，回頭聊！",
+];
+
+/// 取得主要 NPC 向居民主動招呼的文字（帶居民名字）。
+///
+/// `major_id` 用於區分主要 NPC 身分；`other_name` 為居民顯示名；`seed` 供模板輪替。
+pub fn get_major_npc_greet(major_id: &str, other_name: &str, seed: usize) -> String {
+    let pool = match major_id {
+        "merchant" => MAJOR_GREET_MERCHANT,
+        "village_chief" => MAJOR_GREET_CHIEF,
+        "workshop_npc" => MAJOR_GREET_WORKSHOP,
+        id if id.starts_with("traveler") => MAJOR_GREET_TRAVELER,
+        _ => MAJOR_GREET_GENERIC,
+    };
+    pool[seed % pool.len()].replace("{other}", other_name)
+}
+
+// ── 動態傳聞與八卦模板（ROADMAP 244 動態話題層） ───────────────────────────────────────────
+
+/// 世界大事傳聞模板（帶大事內容與居民名）
+static WORLD_GOSSIP_TEMPLATES: &[&str] = &[
+    "嘿，{other}！你聽說了嗎？{event}，這消息傳得可真快！",
+    "{other}，剛才城裡都在傳「{event}」，看來最近不安穩啊。",
+    "喲，{other}！「{event}」這事兒，你怎麼看？",
+    "剛剛聽人說起「{event}」，這世界變化真快，是吧，{other}？",
+];
+
+/// 社交八卦模板（帶對方名字與關係描述）
+static SOCIAL_GOSSIP_TEMPLATES: &[&str] = &[
+    "說起來，{other}，我覺得最近{target}對大家真是{desc}，挺有意思的。",
+    "{other}，你有沒有覺得{target}最近有點變化？看他那樣，感覺是{desc}。",
+    "嘿，{other}，私下跟你說，我對{target}可是{desc}，別傳出去啊！",
+];
+
+/// 取得動態主要 NPC 招呼文字（ROADMAP 244 動態話題層）。
+///
+/// 優先級：世界大事（WorldLog） > 社交八卦（NpcRelations） > 常規招呼（244）。
+pub fn get_dynamic_major_npc_greet(
+    major_id: &str,
+    other_name: &str,
+    seed: usize,
+    world_events: &[String],
+    relations: &[(String, String, i32)], // (target_name, affinity_desc, affinity_score)
+) -> String {
+    // 1. 優先聊世界大事（若最近有事）
+    if !world_events.is_empty() {
+        let event = &world_events[seed % world_events.len()];
+        let template = WORLD_GOSSIP_TEMPLATES[seed % WORLD_GOSSIP_TEMPLATES.len()];
+        return template.replace("{other}", other_name).replace("{event}", event);
+    }
+
+    // 2. 其次聊社交八卦（若有顯著關係）
+    if !relations.is_empty() {
+        let (target_name, desc, _) = &relations[seed % relations.len()];
+        let template = SOCIAL_GOSSIP_TEMPLATES[seed % SOCIAL_GOSSIP_TEMPLATES.len()];
+        return template
+            .replace("{other}", other_name)
+            .replace("{target}", target_name)
+            .replace("{desc}", desc);
+    }
+
+    // 3. 最後退回常規招呼
+    get_major_npc_greet(major_id, other_name, seed)
+}
+
+/// 取得居民對主要 NPC 招呼的回應文字。
+pub fn get_major_npc_reply(seed: usize) -> &'static str {
+    MAJOR_REPLY_TEMPLATES[seed % MAJOR_REPLY_TEMPLATES.len()]
+}
+
 /// 取得居民向鄰居主動招呼的文字（帶對方名字）。
+
 ///
 /// `other_name` 為對方居民顯示名；`seed` 供模板輪替。
 pub fn get_neighbor_greet(other_name: &str, seed: usize) -> String {
@@ -751,6 +861,26 @@ mod tests {
     fn neighbor_reply_nonempty_for_all_seeds() {
         for seed in [0, 1, 2, 3, 4, 9999] {
             assert!(!get_neighbor_reply(seed).is_empty());
+        }
+    }
+
+    #[test]
+    fn major_npc_greet_contains_name_and_varied() {
+        // 驗證不同 NPC 身分是否有不同模板
+        let merchant_greet = get_major_npc_greet("merchant", "阿土", 0);
+        assert!(merchant_greet.contains("阿土"));
+        
+        let chief_greet = get_major_npc_greet("village_chief", "小花", 1);
+        assert!(chief_greet.contains("小花"));
+
+        let traveler_greet = get_major_npc_greet("traveler_1", "二柱", 0);
+        assert!(traveler_greet.contains("二柱") && traveler_greet.contains("旅人"));
+    }
+
+    #[test]
+    fn major_npc_reply_is_nonempty() {
+        for seed in [0, 1, 2, 99] {
+            assert!(!get_major_npc_reply(seed).is_empty());
         }
     }
 
