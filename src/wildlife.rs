@@ -229,6 +229,26 @@ const FROLIC_DURATION_MAX: f32 = 2.6;
 /// 已依偎到母獸身邊、且白天平靜時，本幀起一段嬉戲的機率——偏低，讓幼獸玩玩停停、多數時候靜靜依偎。
 const FROLIC_PROB: f32 = 0.025;
 
+// ─── ROADMAP 289：幼獸學吃草（fawns mimic-graze beside mother）────────────────
+// 承接 207（幼獸誕生）→ 208（依偎母獸）→ 215（在母獸身邊蹦跳嬉戲）→ 274（母獸舐犢）那條家庭／生命
+// 循環線——盤點下來，已依偎到母獸身邊的幼獸（哺乳的小鹿／小獸）平靜時的日常只有兩種：靜靜依偎、或蹦跳
+// 嬉戲（215 💫）。可現實裡幼崽待在母獸身邊還有最日常、最動人的一幕：學媽媽低頭吃草——牠們的覓食本能
+// 正是靠依樣畫葫蘆地模仿母獸一點一點學會的。本切片補上這塊：已依偎到母獸身邊、白天平靜的幼獸，偶爾
+// 也低下頭、學著媽媽的樣子就地啃食嫩草（新增 MimicGrazing 狀態，頭頂浮一枚 🌱），學一小段再回到依偎。
+// 與 215 幼獸嬉戲（💫，繞著媽媽蹦跳玩耍）刻意對成「幼獸的日常：玩耍／學覓食」一對——玩夠了學吃草、
+// 學一陣又跑去玩。與 211 成體吃草（🌿，獨自低頭覓食）區隔：那是成體已會的覓食、頭頂 🌿；這是幼崽
+// 「跟著媽媽學」的覓食、頭頂嫩芽般的 🌱，且只發生在依偎於母獸身邊時（學的對象就是媽媽）。只屬於哺乳
+// 幼獸（小鹿／小獸；幼鳥另有自己的覓食路徑、地面啄籽見 288，不走此「學吃草」）。純啟發式、零 LLM、
+// 零 tick 簽名改動、零協議改動（新增的 mimic_graze 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、
+// 零持久化、零 migration、記憶體模式。威脅永遠優先：學吃草只在無掠食者逼近的平靜空檔發生（與 215 嬉戲
+// 同受上游 predator_near 守衛），狼／玩家一逼近即依既有幼獸邏輯改逃命（學吃草永遠讓位逃命）。
+/// 已依偎到母獸身邊、且白天平靜時，本幀起一段「學吃草」的機率——與 215 嬉戲（FROLIC_PROB 0.025）同量級
+/// 偏低，讓幼獸學學停停、多數時候仍靜靜依偎；嬉戲與學吃草各佔幼獸平靜日常的一小角。
+const MIMIC_GRAZE_PROB: f32 = 0.022;
+/// 一段「學吃草」的最短／最長時長（秒）——低頭學著啃一小段嫩草再起身，與成體吃草（GRAZE 數秒）同量級。
+const MIMIC_GRAZE_DURATION_MIN: f32 = 1.8;
+const MIMIC_GRAZE_DURATION_MAX: f32 = 3.6;
+
 // ─── ROADMAP 209：驚群炸開（恐慌連鎖）─────────────────────────────────────────
 // 承接 206（群聚結伴）：獸群會聚在一起，但危險來時過去卻是「各跑各的」——只有
 // 直接看到捕食者、且在 FLEE_RADIUS 內的那幾隻會逃，旁邊沒看到的同伴照樣閒晃。
@@ -1394,6 +1414,10 @@ enum WildlifeState {
     /// ROADMAP 215：幼獸嬉戲——已依偎到母獸身邊的幼獸在媽媽周圍蹦跳玩耍（頭頂浮 ✨）。
     /// 朝當前蹦跳落點 (hop_x, hop_y) 蹦去，到達或 frolic_timer 耗盡就回到依偎（下一幀再決定要不要再玩）。
     Frolicking { hop_x: f32, hop_y: f32, frolic_timer: f32 },
+    /// ROADMAP 289：幼獸學吃草——已依偎到母獸身邊的哺乳幼獸（小鹿／小獸）學媽媽低頭就地啃嫩草（頭頂浮 🌱）。
+    /// 原地不動（不更新座標）、graze_timer 倒數，到期就回到依偎；威脅一旦逼近一律優先逃命（與 215 嬉戲同受
+    /// 上游 predator_near 守衛）。與 215 嬉戲對成「幼獸的日常：玩耍／學覓食」一對。
+    MimicGrazing { graze_timer: f32 },
     /// ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種成體夥伴互相理毛（頭頂浮 💕）。
     /// 原地不動（不更新座標）、groom_timer 倒數，到期就回到漫遊；威脅一旦逼近一律優先逃竄。
     Grooming { groom_timer: f32 },
@@ -1890,6 +1914,23 @@ impl Wildlife {
                 self.state = WildlifeState::Wandering { target_x: mx, target_y: my, wander_timer: 1.0 };
             } else {
                 self.state = WildlifeState::Frolicking { hop_x, hop_y, frolic_timer: remaining };
+            }
+        }
+    }
+
+    /// ROADMAP 289：幼獸學吃草——學吃草中（MimicGrazing）原地不動（不更新座標、低頭學啃嫩草）、
+    /// graze_timer 倒數；學夠這一段（到期）就回到母獸身邊依偎（朝母獸 (mx,my) 的溫順 Wandering），
+    /// 下一幀再由呼叫端決定要不要再學一段或去玩耍。`mx,my` 為母獸座標：學的對象就是媽媽、學完不離媽媽。
+    /// 只在 MimicGrazing 狀態下生效（呼叫端已確保此隻為依偎於母獸身邊、白天平靜的哺乳幼獸；威脅逼近時
+    /// 呼叫端不會走到此分支、改逃竄）。
+    fn tick_mimic_graze(&mut self, dt: f32, mx: f32, my: f32) {
+        if let WildlifeState::MimicGrazing { graze_timer } = self.state {
+            let remaining = graze_timer - dt;
+            if remaining <= 0.0 {
+                // 學夠這一段：回到母獸身邊依偎（朝母獸的溫順 Wandering）。
+                self.state = WildlifeState::Wandering { target_x: mx, target_y: my, wander_timer: 1.0 };
+            } else {
+                self.state = WildlifeState::MimicGrazing { graze_timer: remaining };
             }
         }
     }
@@ -2511,6 +2552,7 @@ impl Wildlife {
             WildlifeState::Watching { .. }  => "watching",
             WildlifeState::Defending        => "defending",
             WildlifeState::Frolicking { .. } => "frolicking",
+            WildlifeState::MimicGrazing { .. } => "mimic_graze",
             WildlifeState::Grooming { .. }  => "grooming",
             WildlifeState::Courting { .. }  => "courting",
             WildlifeState::Howling { .. }   => "howling",
@@ -3608,6 +3650,13 @@ impl WildlifeManager {
                             self.animals[i].tick_frolic(dt, px, py);
                             continue;
                         }
+                        // ROADMAP 289：幼獸學吃草——已在學吃草中的幼獸繼續這一段（原地低頭學啃嫩草），
+                        // 計時耗盡就在 tick_mimic_graze 裡收斂回母獸 (px,py) 身邊依偎。受威脅一律優先逃
+                        // （上方 predator_near 已擋），故學吃草只在平靜時延續。
+                        if matches!(self.animals[i].state, WildlifeState::MimicGrazing { .. }) {
+                            self.animals[i].tick_mimic_graze(dt, px, py);
+                            continue;
+                        }
                         let dx = px - ax;
                         let dy = py - ay;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -3624,6 +3673,15 @@ impl WildlifeManager {
                             let (hx, hy) = frolic_target(px, py, &mut self.rng);
                             let timer = self.rng.gen_range(FROLIC_DURATION_MIN..=FROLIC_DURATION_MAX);
                             self.animals[i].state = WildlifeState::Frolicking { hop_x: hx, hop_y: hy, frolic_timer: timer };
+                        } else if !is_night
+                            && matches!(animal_kind, WildlifeKind::WildDeer | WildlifeKind::SmallCritter)
+                            && self.rng.gen::<f32>() < MIMIC_GRAZE_PROB
+                        {
+                            // ROADMAP 289：幼獸學吃草——沒起意去玩耍、白天平靜時偶爾低下頭學媽媽就地啃嫩草
+                            // （🌱），學一小段再回依偎。只屬於哺乳幼獸（小鹿／小獸）；幼鳥另有自己的覓食路徑
+                            // （288 地面啄籽），不走此「學吃草」。與 215 嬉戲對成「玩耍／學覓食」一對。
+                            let timer = self.rng.gen_range(MIMIC_GRAZE_DURATION_MIN..=MIMIC_GRAZE_DURATION_MAX);
+                            self.animals[i].state = WildlifeState::MimicGrazing { graze_timer: timer };
                         } else {
                             self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
                         }
@@ -9926,6 +9984,137 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "啄地中遇威脅應立刻拍翅逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 289：幼獸學吃草（哺乳幼獸在母獸身邊學吃草）──────────────────
+    #[test]
+    fn tick_mimic_graze_holds_position_while_timer_remaining() {
+        // 學吃草進行中：原地不動（座標不變）、計時遞減、狀態維持 MimicGrazing。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::MimicGrazing { graze_timer: 2.0 };
+        w.tick_mimic_graze(0.1, 4980.0, 5000.0);
+        match w.state {
+            WildlifeState::MimicGrazing { graze_timer } => {
+                assert!((graze_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("學吃草未到期應維持 MimicGrazing，實際 {other:?}"),
+        }
+        assert!((w.x - 5000.0).abs() < 1e-6 && (w.y - 5000.0).abs() < 1e-6, "學吃草中應原地不動");
+    }
+
+    #[test]
+    fn tick_mimic_graze_returns_to_nursing_when_timer_expires() {
+        // 學夠這一段（到期）→ 回到母獸身邊依偎（朝母獸 (mx,my) 的溫順 Wandering）。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::MimicGrazing { graze_timer: 0.05 };
+        w.tick_mimic_graze(0.1, 4980.0, 5000.0); // dt > 剩餘 → 到期
+        match w.state {
+            WildlifeState::Wandering { target_x, target_y, .. } => {
+                assert!((target_x - 4980.0).abs() < 0.001 && (target_y - 5000.0).abs() < 0.001,
+                    "學夠應回母獸身邊依偎");
+            }
+            other => panic!("學吃草到期後應回依偎（Wandering），實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_mimic_graze_noop_on_other_state() {
+        // 防呆：非 MimicGrazing 狀態呼叫 tick_mimic_graze 不該有任何作用（狀態不變）。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Resting { rest_timer: 3.0 };
+        w.tick_mimic_graze(0.1, 4980.0, 5000.0);
+        assert!(matches!(w.state, WildlifeState::Resting { .. }), "非學吃草狀態呼叫不該改狀態");
+    }
+
+    #[test]
+    fn mimic_graze_state_str_is_mimic_graze() {
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.state = WildlifeState::MimicGrazing { graze_timer: 1.0 };
+        assert_eq!(w.state_str(), "mimic_graze");
+    }
+
+    #[test]
+    fn adult_never_mimic_grazes() {
+        // 只屬於幼獸：成體（鹿）連跑多幀都不該進入 MimicGrazing（成體已會的覓食走 211 吃草）。
+        let mut mgr = WildlifeManager::new();
+        let mut adult = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        adult.id = 1;
+        adult.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        mgr.animals = vec![adult];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for a in &mgr.animals {
+                assert!(!matches!(a.state, WildlifeState::MimicGrazing { .. }),
+                    "成體不該學吃草，實際 {:?}", a.state);
+            }
+        }
+    }
+
+    #[test]
+    fn juvenile_bird_never_mimic_grazes() {
+        // 只屬於哺乳幼獸：幼鳥（依偎在成鳥身邊）連跑多幀都不該進入 MimicGrazing
+        //（幼鳥另有自己的覓食路徑——288 地面啄籽，不走此「學吃草」）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 }; // 母鳥定點不動，讓幼鳥安穩依偎
+        let mut chick = juvenile_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        chick.id = 2;
+        mgr.animals = vec![mother, chick];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for a in &mgr.animals {
+                assert!(!matches!(a.state, WildlifeState::MimicGrazing { .. }),
+                    "幼鳥不該學吃草，實際 {:?}", a.state);
+            }
+        }
+    }
+
+    #[test]
+    fn nestled_fawn_eventually_mimic_grazes_during_day() {
+        // 白天平靜：一隻依偎在定點母鹿身邊的幼鹿，連跑多幀後總會偶爾低頭學媽媽吃草
+        //（MIMIC_GRAZE_PROB 之必然累積；上限 1100 幀 < 成熟所需 1200 幀，期間仍是幼獸）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 }; // 母鹿定點不動，幼鹿安穩依偎
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0); // 與母鹿同位 → 立即依偎
+        fawn.id = 2;
+        mgr.animals = vec![mother, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut mimicked = false;
+        for _ in 0..1100 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(f.state, WildlifeState::MimicGrazing { .. }) {
+                mimicked = true;
+                break;
+            }
+        }
+        assert!(mimicked, "白天依偎在母獸身邊的幼鹿應偶爾低頭學吃草");
+    }
+
+    #[test]
+    fn fawn_never_mimic_grazes_when_threat_near() {
+        // 威脅永遠優先：母鹿身邊的幼鹿，只要威脅逼近，連跑多幀都不該學吃草（一律先逃命）。
+        // 用逼近的玩家當威脅（預設態度下玩家算威脅、且不會獵殺幼鹿，免去被咬死重生的干擾）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        fawn.id = 2;
+        mgr.animals = vec![mother, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            // 玩家就在幼鹿身旁 40px（< FLEE_RADIUS 180）→ predator_near，幼鹿先逃命、不學吃草。
+            mgr.tick(0.1, &[(6040.0, 6000.0)], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::MimicGrazing { .. }),
+                "威脅逼近時幼鹿不該學吃草，實際 {:?}", f.state);
+        }
     }
 
     // ─── ROADMAP 285：晝伏蜷睡（夜行掠食者白天補眠）──────────────────────────

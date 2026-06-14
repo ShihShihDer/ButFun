@@ -269,6 +269,12 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "frolicking", juvenile: true, familiarity: 0, tamed: false };
     }
   }),
+  // 幼獸學吃草（289）：把一隻幼獸設成 mimic_graze → 跑 drawWildlife 的學吃草 🌱 繪製分支（含一頓一頓平移）。
+  variant("幼獸學吃草(🌱)", (s) => {
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "mimic_graze", juvenile: true, familiarity: 0, tamed: false };
+    }
+  }),
   // 掠食者夜嚎（217）：夜間把掠食者設成 howling → 跑 drawWildlife 的長嚎 🌙 繪製分支（含明滅與仰首上揚平移）。
   variant("掠食者夜嚎(🌙)", (s) => {
     s.daynight = { phase: "night", light: 0.2, night_danger: true };
