@@ -689,6 +689,30 @@ const DOZE_PROB: f32 = 0.03;
 const DOZE_DURATION_MIN: f32 = 3.5;
 const DOZE_DURATION_MAX: f32 = 7.0;
 
+// ─── ROADMAP 287：群狼碰鼻問安（wolf pack muzzle-greeting）──────────────────────
+// 承接 216 成體相依理毛（💕）那條「群成員之間的羈絆」線——可那筆溫柔至今只給了獵物（鹿等成體互相
+// 梳理）。盤點掠食者一側：野狼明明是五種生物裡最社交的（218 群嚎此起彼落、230 群聚分食、250 協同
+// 圍獵），牠們的「群」卻只在「一起出聲／一起進食／一起狩獵」時才看得見——兩頭平靜的狼狹路相逢時，
+// 至今只是各走各的、擦身而過從不打招呼，看不出牠們本是一群有羈絆的夥伴。本切片給野狼補上群居犬科
+// 最招牌、最暖的一幕——久別重逢時的「碰鼻問安」：白天無獵可追的平靜空檔，一頭狼身邊若就有另一頭
+// 成年同伴（GREET_RADIUS 內），偶爾轉向夥伴碰鼻致意一小段（前端畫成頭挨著頭、頭頂浮一枚 🧡），
+// 問完安再起身回到巡遊。與 216 理毛（💕，獵物群的暖）刻意對成「獵物群的暖／狼群的暖」一對，把
+// 「群成員之間的羈絆」從獵物一側補到了掠食者一側。只屬於野狼（社交性掠食者）：野狐獨來獨往、不問安
+//（與 218 群嚎＝狼社交、223 撲鼠＝狐獨行的二分一致）。前端 🧡 與既有諸心刻意區隔：❤️＝求偶（270）、
+// 💕＝成體互理（216）、💗＝母獸舐犢（274）、💛/🤍＝馴養親近你（205）、🧡＝狼群同伴問安（本切片）。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 greeting 字串沿用 state_str；計時隨狀態變體
+// 攜帶，無新欄位）、零持久化、零 migration、記憶體模式。獵物永遠優先：問安只在無獵可追的平靜空檔發生
+// （獵物搜尋已在更前面跑過），獵物一旦進入搜尋範圍，掠食者 phase 在問安分支之前就已改走狩獵，問安自然讓位。
+/// 問安夥伴半徑（像素）——身邊有同種成年野狼在此近距離內，平靜空檔才可能轉去碰鼻致意（對齊 216 理毛
+/// 的 GROOM_RADIUS：親暱貼近才打招呼）。
+const GREET_RADIUS: f32 = 60.0;
+/// 白天無獵可追、身邊有同伴的平靜野狼本幀轉入碰鼻問安的機率——偏低（對齊 216 理毛 0.05 量級），
+/// 讓問安是偶爾的一段溫柔片刻、而非時時黏著（多數時候仍照常巡遊／嗅蹤）。
+const GREET_PROB: f32 = 0.04;
+/// 一段碰鼻問安的最短／最長時長（秒）——重逢致意是短暫的一陣親暱，比嗅蹤略短。
+const GREET_DURATION_MIN: f32 = 2.0;
+const GREET_DURATION_MAX: f32 = 4.0;
+
 // ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
 // 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
 // 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
@@ -1505,6 +1529,13 @@ enum WildlifeState {
     /// 掠食者 phase 在蜷睡分支之前就已改走狩獵——蜷睡永遠讓位狩獵。與 219 破曉甦醒伸展（🌅，晝行獸天明
     /// 睜眼）對成「晝夜鏡像」一對；與 253 飽足（😴，吃飽後歇）區隔——一個是夜行獸白天補眠、一個是吃飽後酣憩。
     Dozing { doze_timer: f32 },
+    /// ROADMAP 287：群狼碰鼻問安——白天無獵可追的平靜野狼（WildWolf）身邊若有同種成年同伴（GREET_RADIUS
+    /// 內），偶爾轉向夥伴碰鼻致意一小段（前端畫成頭挨著頭、頭頂浮一枚 🧡）。原地不動（不更新座標）、
+    /// greet_timer 倒數，到期就起身回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與
+    /// tick_doze 同模式）。獵物一旦進入搜尋範圍，掠食者 phase 在問安分支之前就已改走狩獵——問安永遠讓位
+    /// 狩獵。只屬於野狼（社交性掠食者）：野狐獨來獨往、不問安。與 216 理毛（💕，獵物群的暖）對成「獵物群的
+    /// 暖／狼群的暖」一對，把群成員之間的羈絆從獵物一側補到了掠食者一側。
+    Greeting { greet_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2273,6 +2304,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 287：群狼碰鼻問安——問安中（Greeting）原地不動、倒數計時；致意完（greet_timer 耗盡）就起身
+    /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_doze 同模式）。只在 Greeting
+    /// 狀態下生效（呼叫端已確保此隻為野狼、白天、無獵可追、身邊有同種成年同伴的平靜空檔；獵物一旦出現，掠食者
+    /// phase 在更前面的獵物搜尋就已改走狩獵，不會走到此分支——問安永遠讓位狩獵）。
+    fn tick_greet(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Greeting { greet_timer } = self.state {
+            let remaining = greet_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Greeting { greet_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2452,6 +2499,7 @@ impl Wildlife {
             WildlifeState::Ruminating { .. } => "ruminating",
             WildlifeState::Shooing { .. }    => "shooing",
             WildlifeState::Dozing { .. }     => "dozing",
+            WildlifeState::Greeting { .. }   => "greeting",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -2817,6 +2865,15 @@ impl WildlifeManager {
             })
             .collect();
 
+        // ROADMAP 287：群狼碰鼻問安——本幀起始時所有存活成年野狼的快照（id＋座標），供平靜空檔的野狼據此
+        // 「看見」身邊有無同種成年同伴可問安（複用 208/216 的 nearest_adult_of_kind 查詢）。只取成年野狼：
+        // 幼狼不問安、野狐獨來獨往不問安（與 218 群嚎＝狼社交、223 撲鼠＝狐獨行的二分一致）。帶 kind 欄位
+        // 以沿用既有 (id, kind, x, y) 快照格式與查詢函式，雖只有野狼一種。
+        let wolf_adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildWolf && !a.is_juvenile())
+            .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -3106,6 +3163,11 @@ impl WildlifeManager {
                                 // 計時倒數，循味到落點或耗盡就抬頭回巡遊）。獵物/威脅在更前面（prey_snap
                                 // 搜尋）已優先處理，故嗅蹤只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_track(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Greeting { .. }) {
+                                // ROADMAP 287：已在碰鼻問安中——把這一段致意走完（原地不動、計時倒數，致意完
+                                // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故問安只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_greet(dt, rng);
                             } else if matches!(a.state, WildlifeState::Dozing { .. }) {
                                 // ROADMAP 285：已在蜷睡中——把這一覺睡完（原地不動、計時倒數，睡夠了就起身
                                 // 回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故蜷睡只在無獵可追的
@@ -3188,6 +3250,21 @@ impl WildlifeManager {
                                 let (tx, ty) = track_target(a.x, a.y, rng);
                                 let timer = rng.gen_range(TRACK_DURATION_MIN..=TRACK_DURATION_MAX);
                                 a.state = WildlifeState::Tracking { tx, ty, track_timer: timer };
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < GREET_PROB
+                                && nearest_adult_of_kind(
+                                    a.id, WildlifeKind::WildWolf, a.x, a.y, &wolf_adult_snap, GREET_RADIUS,
+                                ).is_some()
+                            {
+                                // ROADMAP 287：白天無獵可追的平靜野狼——身邊若就有另一頭成年同伴（GREET_RADIUS
+                                // 內），偶爾轉向夥伴碰鼻問安一小段（頭頂浮 🧡）。只屬於野狼（社交性掠食者）：野狐
+                                // 獨來獨往、不問安（與 218 群嚎＝狼社交、223 撲鼠＝狐獨行的二分一致）。與 216 理毛
+                                // （💕，獵物群的暖）對成「獵物群的暖／狼群的暖」一對。排在撲鼠／嗅蹤之後、蜷睡之前：
+                                // 物種專屬的活動姿態優先，沒起意去嗅、但身邊有同伴時就轉去問安、再沒有才退回蜷睡補眠。
+                                let timer = rng.gen_range(GREET_DURATION_MIN..=GREET_DURATION_MAX);
+                                a.state = WildlifeState::Greeting { greet_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -9781,6 +9858,132 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "蜷睡中發現獵物應立刻醒來狩獵，實際 {:?}", f.state
+        );
+    }
+
+    // ─── ROADMAP 287：群狼碰鼻問安（野狼群成員之間的羈絆）──────────────────
+    #[test]
+    fn tick_greet_holds_position_while_timer_remaining() {
+        // 問安進行中：原地不動（座標不變）、計時遞減、狀態維持 Greeting。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Greeting { greet_timer: 2.0 };
+        wolf.tick_greet(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Greeting { greet_timer } => {
+                assert!((greet_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("問安未到期應維持 Greeting，實際 {:?}", wolf.state),
+        }
+        assert!((wolf.x - 5000.0).abs() < 1e-6 && (wolf.y - 5000.0).abs() < 1e-6, "問安中應原地不動");
+    }
+
+    #[test]
+    fn tick_greet_returns_to_wander_when_timer_expires() {
+        // 問安到期：起身回到巡遊。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Greeting { greet_timer: 0.05 };
+        wolf.tick_greet(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }), "問安到期應回巡遊，實際 {:?}", wolf.state);
+    }
+
+    #[test]
+    fn tick_greet_noop_on_other_state() {
+        // 防呆：非 Greeting 狀態呼叫 tick_greet 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Resting { rest_timer: 3.0 };
+        wolf.tick_greet(0.1, &mut rng);
+        assert!(matches!(wolf.state, WildlifeState::Resting { .. }), "非問安狀態呼叫 tick_greet 不該改狀態");
+    }
+
+    #[test]
+    fn greeting_state_str_is_greeting() {
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 0.0, 0.0);
+        wolf.state = WildlifeState::Greeting { greet_timer: 1.0 };
+        assert_eq!(wolf.state_str(), "greeting");
+    }
+
+    #[test]
+    fn lone_wolf_never_greets() {
+        // 問安需要同伴：場上只有一頭野狼、身邊無同種成體，連跑數千幀都不該進入 Greeting。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.next_animal_id = 2;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Greeting { .. }), "孤狼無同伴不該問安，實際 {:?}", w.state);
+        }
+    }
+
+    #[test]
+    fn fox_never_greets() {
+        // 物種專屬：問安只屬於社交性的野狼——兩頭相鄰的成年野狐（獨來獨往）連跑數千幀都不該問安。
+        let mut mgr = WildlifeManager::new();
+        let mut f1 = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0); f1.id = 1;
+        let mut f2 = adult_at(WildlifeKind::WildFox, 6020.0, 6000.0); f2.id = 2;
+        f1.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        f2.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![f1, f2];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for w in &mgr.animals {
+                assert!(!matches!(w.state, WildlifeState::Greeting { .. }), "野狐獨來獨往不該問安，實際 {:?}", w.state);
+            }
+        }
+    }
+
+    #[test]
+    fn paired_wolves_eventually_greet_during_day() {
+        // 白天無獵可追、身邊有同伴：兩頭相鄰的成年野狼連跑多幀後，總會偶爾轉去碰鼻問安。
+        let mut mgr = WildlifeManager::new();
+        let mut w1 = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0); w1.id = 1;
+        let mut w2 = adult_at(WildlifeKind::WildWolf, 6020.0, 6000.0); w2.id = 2;
+        // 同家、相鄰起步（GREET_RADIUS 60 內），場上無獵物 → 必走「無獵可追」的閒置分支。
+        w1.home_x = 6000.0; w1.home_y = 6000.0;
+        w2.home_x = 6000.0; w2.home_y = 6000.0;
+        w1.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        w2.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![w1, w2];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut greeted = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            if mgr.animals.iter().any(|w| matches!(w.state, WildlifeState::Greeting { .. })) {
+                greeted = true;
+                break;
+            }
+        }
+        assert!(greeted, "白天無獵可追、身邊有同伴的平靜野狼應偶爾轉去碰鼻問安");
+    }
+
+    #[test]
+    fn greeting_wolf_hunts_when_prey_appears() {
+        // 問安永遠讓位狩獵：問安中的野狼一旦有可獵的野鹿進入搜尋範圍，立刻改去狩獵（非繼續問安）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5120.0, 5000.0); // 120px，落在野狼搜尋範圍內
+        deer.id = 100;
+        deer.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 101;
+        wolf.state = WildlifeState::Greeting { greet_timer: 1.0e9 }; // 問安正酣
+        mgr.animals = vec![deer, wolf];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(w.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "問安中發現獵物應立刻改去狩獵，實際 {:?}", w.state
         );
     }
 
