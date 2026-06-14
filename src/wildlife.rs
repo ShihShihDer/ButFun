@@ -546,6 +546,36 @@ const VIGILANCE_PROB: f32 = 0.06;
 const VIGILANCE_DURATION_MIN: f32 = 2.0;
 const VIGILANCE_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
+// 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
+// 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
+// 就只剩一顆靜靜躺著、等玩家來撿的乙太微粒（CarrionOrb，142）——沒有任何活物再理會它，屍骸
+// 的生命週期到此戛然而止。本切片補上最後一環、也給野鳥一個全新的生態角色「食腐者」：白天平靜的
+// 野鳥若「看見」附近有新鮮屍骸（CarrionOrb 在 SCAVENGE_SEE_RADIUS 內），會被吸引飛攏過去、降在
+// 屍骸旁低頭一啄一啄地撿食殘骸（新增 Scavenging 狀態，頭頂浮 🍖），啄一小段後拍翅散去。逐幀低
+// 機率觸發 → 鳥群由近而遠陸續飛攏，像烏鴉聞屍而至（仿 218／250 逐圈擴散手法）。與 230 野狼分食
+// 刻意對成「哺乳獸群聚分食／飛禽零落撿食」一對——同樣圍著屍骸，狼是成群埋頭撕咬（社交），鳥是
+// 零落降下一啄即走（伺機）；獸吃肉、鳥撿殘，一場獵殺餵養了食物鏈的兩層。與既有元素區隔：不是新
+// 增獵殺，是讓既有屍骸（142 CarrionOrb）多被一類活物利用。天然的湧現：掠食者一旦逼近 FLEE_RADIUS，
+// 食腐鳥照既有獵物邏輯優先逃竄（撿食永遠讓位逃命）——於是鳥只在野狼吃飽散去、危機解除後才敢上前，
+// 恰是真實食腐者「等掠食者離開才湊近」的伺機天性，不必特別寫死。只屬於野鳥（伺機飛禽）：鹿/小獸
+// 不食腐、野狼野狐自己就是獵殺者。零 LLM、純啟發式、可測、零 tick 簽名改動、零協議改動（新增的
+// scavenging 字串沿用 state_str；屍骸落點與計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+/// 野鳥「看見」屍骸（CarrionOrb）而被吸引前來啄食的偵測半徑——設得比警戒帶（340）略小，讓食腐
+/// 是「附近剛好有屍骸」才湊近的伺機行為，而非滿圖飛奔奔喪。
+const SCAVENGE_SEE_RADIUS: f32 = 300.0;
+/// 偵測半徑內有屍骸時，一隻平靜野鳥本幀被吸引、轉去啄食的機率——逐幀低機率觸發，讓鳥群由近而遠
+/// 陸續飛攏（而非同幀整群瞬間擁上），像烏鴉聞屍零落而至。
+const SCAVENGE_PROB: f32 = 0.05;
+/// 一段啄食殘骸的持續秒數（隨機區間）——啄一小段後拍翅散去；期間掠食者一旦逼進 FLEE_RADIUS 即
+/// 中斷改逃竄（撿食永遠讓位逃命）。
+const SCAVENGE_DURATION_MIN: f32 = 3.0;
+const SCAVENGE_DURATION_MAX: f32 = 7.0;
+/// 趨近屍骸的步速（比閒晃略快，像聞屍而至的伺機飛禽落地小跑湊近）。
+const SCAVENGE_SPEED: f32 = 72.0;
+/// 視為「已抵達屍骸旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再移動。
+const SCAVENGE_REACH: f32 = 16.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -783,6 +813,12 @@ enum WildlifeState {
     /// 平靜的獵物停下覓食、抬頭僵立戒備（頭頂浮 😨）。原地不動（不更新座標）、vigil_timer 倒數；
     /// 掠食者退出警戒帶或計時到期就鬆懈回歇息，掠食者一旦逼進 FLEE_RADIUS 內則一律優先改逃竄。
     Vigilant { vigil_timer: f32 },
+    /// ROADMAP 252：腐肉招鴉——白天平靜的野鳥「看見」附近有新鮮屍骸（CarrionOrb）時，被吸引飛攏
+    /// 過去、降在屍骸落點 (ox,oy) 旁低頭一啄一啄地撿食殘骸（頭頂浮 🍖）；scav_timer 倒數，啄一小段
+    /// 後拍翅散去回巡遊。屍骸落點與計時隨狀態變體攜帶（無新欄位）。只有野鳥（伺機飛禽）會食腐——
+    /// 與 230 野狼群聚分食對成「哺乳獸群聚分食／飛禽零落撿食」一對；掠食者一旦逼近一律優先改逃竄
+    /// （撿食永遠讓位逃命），故鳥只在獵殺者散去後才敢上前，恰是真實食腐者的伺機天性。
+    Scavenging { ox: f32, oy: f32, scav_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1289,6 +1325,29 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 252：腐肉招鴉——食腐中（Scavenging）把這一段撿食走完：尚未飛攏到屍骸落點 (ox,oy)
+    /// 就朝它快步趨近，已降到屍骸旁（scavenge_step 回 None）就原地一啄一啄、不動；scav_timer 倒數，
+    /// 啄夠了（殘骸撿食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標）。只在 Scavenging 狀態下生效
+    /// （呼叫端已確保此隻為野鳥、白天、且無掠食者逼進 FLEE_RADIUS——那種情形更前面就已改走逃竄，
+    /// 撿食永遠讓位逃命）。屍骸即使中途被玩家撿走或 TTL 到期，鳥仍把這一小段啄完才散去（如 230
+    /// 圍食亦只憑 feast_timer 收束、不另查屍體存續），自然且無需額外狀態。
+    fn tick_scavenge(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Scavenging { ox, oy, scav_timer } = self.state {
+            let remaining = scav_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            // 尚未飛攏到就朝屍骸落點快步趨近；已降到屍骸旁（scavenge_step 回 None）就原地啄食、不動。
+            if let Some((nx, ny)) = scavenge_step(self.x, self.y, ox, oy, dt) {
+                self.x = nx;
+                self.y = ny;
+            }
+            self.state = WildlifeState::Scavenging { ox, oy, scav_timer: remaining };
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1314,6 +1373,7 @@ impl Wildlife {
             WildlifeState::Tracking { .. }  => "tracking",
             WildlifeState::Feasting { .. }  => "feasting",
             WildlifeState::Vigilant { .. }  => "vigilant",
+            WildlifeState::Scavenging { .. } => "scavenging",
         }
     }
 }
@@ -1928,6 +1988,11 @@ impl WildlifeManager {
             v
         };
 
+        // ROADMAP 252：腐肉招鴉——本幀現存的屍骸（CarrionOrb，142）落點快照，供白天平靜的野鳥
+        // 「看見」附近有新鮮屍骸而被吸引飛攏過去撿食。carion_orbs 是獨立欄位（與 animals 不相干），
+        // 取其座標即可；屍骸即使在野鳥啄食途中被玩家撿走或 TTL 到期，鳥仍憑 scav_timer 把這一段啄完。
+        let carrion_snap: Vec<(f32, f32)> = self.carion_orbs.iter().map(|o| (o.x, o.y)).collect();
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -2157,6 +2222,14 @@ impl WildlifeManager {
                     // 像一道警覺感在草地上漾開。警戒永遠凌駕白晝的吃草/嬉鬧/理毛/較勁（恐懼先於玩樂）。
                     let timer = rng.gen_range(VIGILANCE_DURATION_MIN..=VIGILANCE_DURATION_MAX);
                     a.state = WildlifeState::Vigilant { vigil_timer: timer };
+                } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
+                    // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
+                    // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_scavenge(dt, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Flying { .. }) {
                     // ROADMAP 220：已在空中盤旋——威脅一旦逼近就立刻降下逃竄（飛行是悠閒的盤旋、
                     // 不是逃命手段），否則繞著群心繼續盤旋、計時倒數，到期降落回閒晃。
@@ -2164,6 +2237,24 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_fly(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &carrion_snap, SCAVENGE_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < SCAVENGE_PROB
+                {
+                    // ROADMAP 252：白天平靜的野鳥——「看見」附近有新鮮屍骸（CarrionOrb 在
+                    // SCAVENGE_SEE_RADIUS 內）便以 SCAVENGE_PROB 被吸引飛攏過去撿食（鎖定最近的屍骸
+                    // 落點，飛去低頭一啄一啄，頭頂浮 🍖）。逐幀低機率觸發 → 鳥群由近而遠陸續飛攏，
+                    // 像烏鴉聞屍零落而至（仿 218 群嚎／250 圍獵的逐圈擴散）。只屬於野鳥（伺機飛禽）；
+                    // 掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此分支即短路、改走逃竄——故鳥只在
+                    // 獵殺者散去、危機解除後才敢上前，恰是真實食腐者的伺機天性。排在飛/鳴的自發分支
+                    // 之前：附近有屍骸時，撿食的吸引力凌駕悠閒的盤旋/鳴唱。
+                    if let Some((ox, oy)) = nearest_in_range(a.x, a.y, &carrion_snap, SCAVENGE_SEE_RADIUS) {
+                        let timer = rng.gen_range(SCAVENGE_DURATION_MIN..=SCAVENGE_DURATION_MAX);
+                        a.state = WildlifeState::Scavenging { ox, oy, scav_timer: timer };
                     }
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
@@ -2534,6 +2625,20 @@ fn feast_step(x: f32, y: f32, ax: f32, ay: f32, dt: f32) -> Option<(f32, f32)> {
         return None;
     }
     let step = (FEAST_SPEED * dt).min(dist);
+    Some((x + dx / dist * step, y + dy / dist * step))
+}
+
+/// ROADMAP 252：腐肉招鴉——食腐野鳥朝屍骸落點 (ox,oy) 趨近一步：已在 SCAVENGE_REACH 內就回
+/// `None`（代表已降到屍骸旁、可原地啄食、不再移動），否則回正規化後乘步速與 dt 的下一個落點。
+/// 純函式，便於測試。
+fn scavenge_step(x: f32, y: f32, ox: f32, oy: f32, dt: f32) -> Option<(f32, f32)> {
+    let dx = ox - x;
+    let dy = oy - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= SCAVENGE_REACH {
+        return None;
+    }
+    let step = (SCAVENGE_SPEED * dt).min(dist);
     Some((x + dx / dist * step, y + dy / dist * step))
 }
 
@@ -4878,6 +4983,140 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(d.state, WildlifeState::Vigilant { .. }), "無掠食者時不該警戒");
+        }
+    }
+
+    // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸）──────────────────────────────
+
+    #[test]
+    fn scavenging_state_str_is_scavenging() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Scavenging { ox: 5100.0, oy: 5000.0, scav_timer: 4.0 };
+        assert_eq!(bird.state_str(), "scavenging");
+    }
+
+    #[test]
+    fn scavenge_step_walks_closer_then_stops_at_reach() {
+        // 離屍骸還遠：回 Some，且新落點離屍骸更近（朝它趨近一步）。
+        let (sx, sy) = (5000.0_f32, 5000.0_f32);
+        let (ox, oy) = (5200.0_f32, 5000.0_f32);
+        let next = scavenge_step(sx, sy, ox, oy, 0.1);
+        assert!(next.is_some(), "離屍骸尚遠應回 Some（繼續趨近）");
+        let (nx, ny) = next.unwrap();
+        let d_before = ((ox - sx).powi(2) + (oy - sy).powi(2)).sqrt();
+        let d_after = ((ox - nx).powi(2) + (oy - ny).powi(2)).sqrt();
+        assert!(d_after < d_before, "趨近一步後應離屍骸更近");
+        // 已在啄食距離內：回 None（原地啄食、不再移動）。
+        assert!(scavenge_step(ox - 5.0, oy, ox, oy, 0.1).is_none(), "已抵達屍骸旁應回 None");
+    }
+
+    #[test]
+    fn tick_scavenge_moves_toward_carcass_then_pecks_in_place() {
+        // 離屍骸還遠的食腐鳥：tick 後應朝屍骸位移、計時遞減、仍為 Scavenging。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Scavenging { ox: 5200.0, oy: 5000.0, scav_timer: 5.0 };
+        let x0 = bird.x;
+        let mut rng = make_rng();
+        bird.tick_scavenge(0.1, &mut rng);
+        assert!(bird.x > x0, "離屍骸尚遠應朝屍骸趨近");
+        match bird.state {
+            WildlifeState::Scavenging { scav_timer, .. } => {
+                assert!((scav_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("趨近途中應維持食腐，實際 {other:?}"),
+        }
+        // 已降到屍骸旁的食腐鳥：原地啄食、不再移動。
+        let mut at = adult_at(WildlifeKind::WildBird, 5200.0, 5000.0);
+        at.state = WildlifeState::Scavenging { ox: 5200.0, oy: 5000.0, scav_timer: 5.0 };
+        let (ax, ay) = (at.x, at.y);
+        at.tick_scavenge(0.1, &mut rng);
+        assert!((at.x - ax).abs() < 1e-6 && (at.y - ay).abs() < 1e-6, "已到屍骸旁應原地啄食、不動");
+    }
+
+    #[test]
+    fn tick_scavenge_disperses_when_timer_expires() {
+        // 啄夠了（計時耗盡）——起身散去回巡遊（Wandering）。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Scavenging { ox: 5010.0, oy: 5000.0, scav_timer: 0.05 };
+        let mut rng = make_rng();
+        bird.tick_scavenge(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }),
+            "撿食計時耗盡應散去回巡遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn calm_bird_scavenges_nearby_carcass() {
+        // 整管理器：白天，一隻平靜的野鳥附近有一顆新鮮屍骸（SCAVENGE_SEE_RADIUS 內）、無掠食者——
+        // 連跑多幀後野鳥應有機會被吸引前去啄食（進入 Scavenging）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![bird];
+        // 屍骸放在 200px（SCAVENGE_SEE_RADIUS 300 內），TTL 設極高以免測試途中過期。
+        mgr.carion_orbs.push(CarrionOrb { id: 0, x: 5200.0, y: 5000.0, ttl: 1.0e9 });
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_scavenging = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Scavenging { .. }) { saw_scavenging = true; break; }
+        }
+        assert!(saw_scavenging, "附近有屍骸時，平靜的野鳥應會被吸引前去啄食殘骸");
+    }
+
+    #[test]
+    fn bird_does_not_scavenge_without_carcass() {
+        // 附近沒有任何屍骸的野鳥——連跑多幀都不該進入食腐（食腐是「附近有屍骸」才觸發）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Scavenging { .. }), "無屍骸時不該食腐");
+        }
+    }
+
+    #[test]
+    fn scavenging_bird_flees_when_predator_approaches() {
+        // 威脅優先：正在啄食殘骸的野鳥，掠食者逼進 FLEE_RADIUS 內時應改逃竄（撿食讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Scavenging { ox: 5000.0, oy: 5000.0, scav_timer: 5.0 };
+        // 狼貼近野鳥（FLEE_RADIUS 180 內），形成直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5060.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Digesting { timer: 100000.0 }; // 原地不追，只當威脅源
+        mgr.animals = vec![bird, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時食腐野鳥應改逃竄，實際 {:?}", b.state);
+    }
+
+    #[test]
+    fn non_bird_prey_never_scavenges() {
+        // 只有野鳥會食腐：鹿/小獸即使身邊有屍骸也不該進入 Scavenging。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5020.0, 5000.0);
+        critter.id = 2;
+        critter.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![deer, critter];
+        mgr.carion_orbs.push(CarrionOrb { id: 0, x: 5100.0, y: 5000.0, ttl: 1.0e9 });
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let any_scav = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Scavenging { .. }));
+            assert!(!any_scav, "只有野鳥會食腐，鹿/小獸不該啄食殘骸");
         }
     }
 
