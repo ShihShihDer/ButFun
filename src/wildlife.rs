@@ -914,6 +914,27 @@ const CACHE_PROB: f32 = 0.02;
 const CACHE_DURATION_MIN: f32 = 2.5;
 const CACHE_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 283：臥嚼反芻（rumination／野鹿歇下後反芻嚼草）──────────────────────
+// 211 白晝吃草給了晝行獵物白天低頭啃草的覓食姿態（🌿，active feeding）。但盤點下來，野鹿是反芻獸
+// （ruminant），牠最招牌、也最安詳的一幕並非吃草本身，而是吃飽後臥下歇著、把先前囫圇吞下的草料
+// 「回嚼」一次——反芻（cud chewing）：嘴巴一左一右地慢慢嚼，神情閒適。這是真實鹿群在草原上最常見的
+// 安詳畫面，也是牠們「進食」之後本該有、卻一直缺席的下半場。本切片給野鹿補上這專屬的反芻：白天平靜
+// 歇息（Resting）的野鹿，偶爾睏意般地進入反芻，原地臥著慢嚼一小段（新增 Ruminating 狀態、頭頂浮一枚
+// 😌），再起身回到閒晃。與 211 白晝吃草（🌿，當場低頭啃）刻意對成「進食／反芻」一對——同是野鹿的覓食
+// 循環，一個低頭把草吞下、一個歇下把草回嚼，把野鹿的覓食從「只會當場吃」推進到「吃完還會安詳地反芻
+// 消化」，讓這片草原多一幕真實反芻獸特有的閒適。與 278 群體呵欠（鹿／小獸、會傳染的睏意漣漪）同從
+// Resting 起意、卻刻意區隔：呵欠是社會性傳染、反芻各顧各不傳染（無快照、無接力），只是一隻隻鹿自顧自
+// 地臥著回嚼；且只屬於野鹿（WildDeer，唯一的反芻獸；野鳥走 276 理羽、小動物走 280 塵浴／282 囤糧，
+// 各有專屬姿態）。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 ruminating 字串沿用 state_str；
+// 計時隨狀態變體攜帶，無新欄位）、記憶體模式。威脅永遠優先：反芻到一半若掠食者／玩家逼近，立刻起身奔逃。
+/// 平靜歇息的野鹿本幀進入反芻的機率——與 278 呵欠自發（YAWN_SELF_PROB 0.02）／282 囤糧（CACHE_PROB 0.02）
+/// 同級偏低：反芻是吃飽歇下後偶一為之的事，多數時候鹿仍照常歇著／漫遊，反芻只是歇息間偶爾一回的回嚼。
+const RUMINATE_PROB: f32 = 0.02;
+/// 一段反芻的最短／最長時長（秒）——反芻是慢條斯理的回嚼，刻意略長於 278 呵欠（1.2~2.5s）與 282 囤糧
+/// （2.5~5s）：嚼草料是悠長的活兒，一臥就是好一陣子。期間威脅一旦逼近一律優先起身奔逃。
+const RUMINATE_DURATION_MIN: f32 = 3.0;
+const RUMINATE_DURATION_MAX: f32 = 6.0;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1416,6 +1437,12 @@ enum WildlifeState {
     /// 逃命）。與 222 捧食啃咬（🌰，當場吃掉）對成「吃掉／存起」一對——同是小動物覓食，一個當場入腹、
     /// 一個埋藏過冬。只屬於小動物。
     Caching { cache_timer: f32 },
+    /// ROADMAP 283：臥嚼反芻——白天平靜歇息的野鹿（WildDeer，唯一的反芻獸）偶爾臥下回嚼先前吞下的草料
+    /// （cud chewing；前端畫成原地臥著嘴巴一左一右慢嚼、頭頂浮一枚 😌）。原地不動（不更新座標）、
+    /// ruminate_timer 倒數，到期就起身回到漫遊；威脅一旦逼近一律優先起身奔逃（反芻永遠讓位逃命）。
+    /// 與 211 白晝吃草（🌿，當場低頭啃）對成「進食／反芻」一對——同是野鹿的覓食循環，一個把草吞下、
+    /// 一個歇下回嚼；與 278 群體呵欠（會傳染）同從 Resting 起意卻刻意區隔（反芻各顧各、不傳染）。只屬於野鹿。
+    Ruminating { ruminate_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2054,6 +2081,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 283：臥嚼反芻——反芻中（Ruminating）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_yawn 同模式）回到閒晃。只在 Ruminating 狀態下生效（呼叫端
+    /// 已確保此隻為野鹿、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去奔逃——威脅永遠優先）。
+    fn tick_ruminate(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Ruminating { ruminate_timer } = self.state {
+            let remaining = ruminate_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Ruminating { ruminate_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 281：棲背啄蟲——棲在宿主背上（Cleaning）的野鳥每幀貼到宿主當前座標（`host_pos`，騎著牠
     /// 移動、略偏上像停在背脊），clean_timer 倒數一啄一啄；到期就拍翅飛離、挑下一個漫遊目標（沿用群聚拉力
     /// herd_anchor，與 tick_preen 同模式）回到漫遊。宿主一旦不在本幀宿主快照裡（受驚不再平靜／走遠／死亡，
@@ -2312,6 +2355,7 @@ impl Wildlife {
             WildlifeState::Flushing { .. }  => "flushing",
             WildlifeState::DustBathing { .. } => "dust_bathing",
             WildlifeState::Caching { .. } => "caching",
+            WildlifeState::Ruminating { .. } => "ruminating",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3913,6 +3957,29 @@ impl WildlifeManager {
                     // 與 277 搔癢（Wandering 起意、各顧各的自理）對成一對——漫步搔癢、歇下打呵欠。
                     let timer = rng.gen_range(YAWN_DURATION_MIN..=YAWN_DURATION_MAX);
                     a.state = WildlifeState::Yawning { yawn_timer: timer };
+                } else if animal_kind == WildlifeKind::WildDeer
+                    && matches!(a.state, WildlifeState::Ruminating { .. })
+                {
+                    // ROADMAP 283：已在反芻中——威脅一旦逼近就立刻起身奔逃（反芻永遠讓位逃命），
+                    // 否則原地把這一段草料回嚼完、計時倒數，到期起身回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_ruminate(dt, herd_anchor, rng);
+                    }
+                } else if animal_kind == WildlifeKind::WildDeer
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < RUMINATE_PROB
+                {
+                    // ROADMAP 283：白天平靜歇息的野鹿（唯一的反芻獸）——偶爾臥下回嚼先前吞下的草料
+                    // （頭頂浮一枚 😌）。各顧各的、不傳染（與 278 呵欠的社會性傳染刻意區隔），只是一隻隻
+                    // 鹿自顧自地臥著慢嚼。與 211 白晝吃草（🌿，當場低頭啃）對成「進食／反芻」一對。只從
+                    // Resting 起意（吃飽歇下後才回嚼）——排在所有社交親暱與呵欠之後，反芻補的是這些都歇下
+                    // 後、最安詳的那點消化時光，不搶社交的節奏；沒轉入反芻的野鹿仍落到下方吃草分支。只屬於野鹿。
+                    let timer = rng.gen_range(RUMINATE_DURATION_MIN..=RUMINATE_DURATION_MAX);
+                    a.state = WildlifeState::Ruminating { ruminate_timer: timer };
                 } else {
                     // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
                     // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
@@ -9354,6 +9421,103 @@ mod tests {
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "囤糧中遇威脅應立刻丟下活兒躥逃，實際 {:?}", c.state);
     }
 
+    // ─── ROADMAP 283：臥嚼反芻（rumination）──────────────────────────────────
+    #[test]
+    fn tick_ruminate_holds_position_while_timer_remaining() {
+        // 反芻進行中：原地不動（座標不變）、計時遞減、狀態維持 Ruminating。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Ruminating { ruminate_timer: 2.0 };
+        deer.tick_ruminate(0.1, None, &mut rng);
+        match deer.state {
+            WildlifeState::Ruminating { ruminate_timer } => {
+                assert!((ruminate_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("反芻未到期應維持 Ruminating，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "反芻中應原地不動");
+    }
+
+    #[test]
+    fn tick_ruminate_returns_to_wander_when_timer_expires() {
+        // 反芻到期：起身回到漫遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Ruminating { ruminate_timer: 0.05 };
+        deer.tick_ruminate(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "反芻到期應回漫遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_ruminate_noop_on_other_state() {
+        // 防呆：非 Ruminating 狀態呼叫 tick_ruminate 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 3.0 };
+        deer.tick_ruminate(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非反芻狀態呼叫 tick_ruminate 不該改狀態");
+    }
+
+    #[test]
+    fn ruminating_state_str_is_ruminating() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Ruminating { ruminate_timer: 1.0 };
+        assert_eq!(deer.state_str(), "ruminating");
+    }
+
+    #[test]
+    fn non_deer_never_ruminates() {
+        // 物種專屬：只有野鹿（唯一的反芻獸）會反芻——白天平靜的小動物連跑數百幀都不該進入 Ruminating
+        //（小動物走 280 塵浴／282 囤糧、野鳥走 276 理羽，各有專屬姿態，不反芻）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(c.state, WildlifeState::Ruminating { .. }), "非野鹿不該反芻，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn calm_deer_eventually_ruminates_during_day() {
+        // 白天平靜：一隻孤身野鹿連跑多幀後，總會偶爾臥下反芻（RUMINATE_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut ruminated = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Ruminating { .. }) {
+                ruminated = true;
+                break;
+            }
+        }
+        assert!(ruminated, "白天平靜的野鹿應偶爾臥下反芻嚼草");
+    }
+
+    #[test]
+    fn ruminating_deer_flees_when_threat_approaches() {
+        // 威脅永遠優先：反芻中的野鹿一旦有威脅逼近 FLEE_RADIUS 內，立刻起身奔逃（非繼續嚼）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Ruminating { ruminate_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "反芻中遇威脅應立刻起身奔逃，實際 {:?}", d.state);
+    }
+
     // ─── ROADMAP 281：棲背啄蟲（清潔共生）─────────────────────────────────────
     #[test]
     fn tick_clean_rides_host_and_decrements() {
@@ -9597,7 +9761,9 @@ mod tests {
         mgr.animals = vec![yawner, calm];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         let mut saw_yawn = false;
-        for _ in 0..300 {
+        // ROADMAP 283：反芻也從 Resting 起意、且會鎖住鹿數十幀無法歇息，稀釋了「歇息幀」的密度，
+        // 故給傳染足夠的幀數累積（自發呵欠測試本就用 3000 幀，這裡放寬到 1500 仍綽綽有餘）。
+        for _ in 0..1500 {
             mgr.tick(0.1, &[], &att, &[], false); // is_night=false
             let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             if matches!(c.state, WildlifeState::Yawning { .. }) { saw_yawn = true; break; }
