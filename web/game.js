@@ -268,6 +268,12 @@
   let _shootStarNextMs  = 0;     // 下次可點燃流星的時刻（0=尚未排程，入夜首幀排首發）
   let _shootStarX0 = 0, _shootStarY0 = 0; // 流星起點（畫面座標，上半天邊）
   let _shootStarDX = 0, _shootStarDY = 0; // 流星位移向量（往下斜射，含長度）
+  // 雷雨閃電（ROADMAP 243）：草原雨大到「暴雨」程度時，天空偶爾乍亮一記閃電——全屏冷藍白
+  // 泛光急衰、部分伴一道蜿蜒分叉的電光。純前端視覺、零後端：偵測前端既有天氣狀態的「暴雨」
+  // 即自排下次閃電時刻。是雨後彩虹（191）的對偶——彩虹是雨停白天的尾韻、閃電是暴雨當下的天威。
+  let _lightningStartMs = 0;     // 當前閃電點燃時刻（0=無閃電進行中）
+  let _lightningNextMs  = 0;     // 下次可點燃閃電的時刻（0=尚未排程，暴雨首幀排首發）
+  let _lightningBolt = null;     // 本次閃電的分叉電光路徑 [{x,y}...]（null=純雲後泛光、無可見電光）
   // 天邊流雲（ROADMAP 193）：白天上半天邊常駐飄著幾朵柔白雲，破曉/黃昏被霞光染金，
   // 入夜淡出讓位給星星（19）與流星（192）。雲池於首次可見時一次性程序生成（見 initClouds）。
   const clouds = [];             // [{x,y,vx,scale,blobs:[{dx,dy,r}]}]（x/y=螢幕比例座標）
@@ -4226,6 +4232,10 @@
 
     // 夜空流星（ROADMAP 192）：獨立 safeDraw，入夜偶發一道流星劃過上半天邊。
     safeDraw("shootingStar", () => drawShootingStar(performance.now()));
+
+    // 雷雨閃電（ROADMAP 243）：獨立 safeDraw，草原暴雨時天空偶發一記全屏泛光＋分叉電光。
+    // 排在天象最上層、小地圖之前——閃電要照亮整片天地（含地面），覆在所有世界元素之上。
+    safeDraw("lightning", () => drawLightning(performance.now()));
 
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
@@ -9686,6 +9696,122 @@
     ctx.beginPath();
     ctx.arc(headX, headY, Math.max(1.6, Math.min(viewW, viewH) * 0.005), 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+  }
+
+  // ── 雷雨閃電（ROADMAP 243）────────────────────────────────────────────────
+  // 草原降雨（grassland_rain，93）大到「暴雨」程度時，天空偶爾乍亮一記閃電：全屏冷藍白泛光
+  // 極快衝起、指數急衰、間或補一兩記二次閃（flicker，模擬多次放電），部分閃還伴一道從天頂蜿蜒
+  // 而下的分叉電光。純前端視覺、零後端：偵測前端既有天氣狀態（weatherType/weatherIntensity）的
+  // 「暴雨」即點燃並自排下一記。與雨後彩虹（191）刻意對成一對——彩虹是「雨停白天」的好看尾韻、
+  // 閃電是「暴雨當下」的天威；小雨／非草原雨一律不打雷（只有夠大的草原暴雨才有）。
+  // 效能優先＋顧及光敏感：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不閃並清狀態，
+  // 泛光最大不透明度壓得溫和、不刺眼。
+  const LIGHTNING_STORM_INTENSITY = 0.55;  // 草原雨強度高於此才算「暴雨」、才會打雷（小雨不打雷）
+  const LIGHTNING_DURATION_MS     = 750;   // 單記閃電總時長（乍亮急衰＋餘閃）
+  const LIGHTNING_MAX_ALPHA       = 0.34;  // 全屏泛光最大不透明度（溫和，不刺眼、顧及光敏感）
+  const LIGHTNING_BOLT_MS         = 150;   // 可見電光自身的存在時長（一瞬即逝，比泛光更短）
+  const LIGHTNING_MIN_GAP_MS      = 6000;  // 兩記閃電最短間隔（偶發、不洗版）
+  const LIGHTNING_MAX_GAP_MS      = 18000; // 兩記閃電最長間隔
+  const LIGHTNING_FIRST_DELAY_MS  = 1200;  // 暴雨開始後首記閃電的延遲（讓雨勢落定再閃，亦利自驗）
+  const LIGHTNING_BOLT_CHANCE     = 0.6;   // 每記閃電伴一道可見分叉電光的機率（其餘只雲後泛光）
+
+  // 純函式：判斷當前是否「正在暴雨」（草原雨、強度夠大才打雷）。無 DOM、可測。
+  function isStormState(type, intensity) {
+    return type === "grassland_rain" && intensity > LIGHTNING_STORM_INTENSITY;
+  }
+
+  // 純函式：依已逝時間回傳閃電泛光強度 [0,1]——乍亮急衰、間或補一兩記二次閃（flicker）。無 DOM、可測。
+  function lightningFlashAlpha(elapsed, total) {
+    if (elapsed <= 0 || elapsed >= total) return 0;
+    const t = elapsed / total;                                   // 正規化進度 [0,1)
+    const main = Math.exp(-t * 7);                               // 主閃：t=0 滿亮、指數急衰
+    const f1 = 0.5 * Math.exp(-Math.pow((t - 0.32) / 0.05, 2)); // 二次閃 1（約 32% 處短促小峰）
+    const f2 = 0.35 * Math.exp(-Math.pow((t - 0.58) / 0.05, 2));// 二次閃 2（約 58% 處更弱的尾閃）
+    const v = main + f1 + f2;
+    return v > 1 ? 1 : v;
+  }
+
+  // 純函式：依亂數回傳下次閃電的間隔毫秒（夾在 [minGap,maxGap]）。無 DOM、可測。
+  function nextLightningGap(rand, minGap, maxGap) {
+    const r = rand < 0 ? 0 : (rand > 1 ? 1 : rand);
+    return minGap + r * (maxGap - minGap);
+  }
+
+  // 生成本記閃電的分叉電光路徑：自天頂某 x 蜿蜒下探到約畫面中段；部分閃只泛光、回傳 null。
+  // 用 Math.random（非純函式），點燃時呼叫一次、快取於 _lightningBolt，繪製期間不再重算。
+  function makeLightningBolt() {
+    if (Math.random() > LIGHTNING_BOLT_CHANCE) return null; // 此記只雲後泛光、無可見電光
+    const pts = [];
+    let x = viewW * (0.2 + Math.random() * 0.6); // 起點落在上緣中段，避免太貼邊
+    let y = 0;
+    const steps = 8;
+    const segH = (viewH * 0.55) / steps;          // 主幹下探到約畫面 55% 高（地平線一帶）
+    for (let i = 0; i <= steps; i++) {
+      pts.push({ x, y });
+      x += (Math.random() - 0.5) * viewW * 0.09;  // 每段左右抖動，形成蜿蜒
+      y += segH;
+    }
+    return pts;
+  }
+
+  // 每幀偵測暴雨並繪製偶發閃電（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  function drawLightning(now) {
+    const storming = isStormState(weatherType, weatherIntensity);
+    // 非暴雨／弱機／低幀：清狀態並重置排程（避免雨停後累積、再逢暴雨時重新排首發）
+    if (!storming || reduceMotion || !_parallaxEnabled) {
+      _lightningStartMs = 0;
+      _lightningNextMs = 0;
+      _lightningBolt = null;
+      return;
+    }
+    // 暴雨首幀：排首記閃電的出現時刻
+    if (_lightningNextMs === 0) _lightningNextMs = now + LIGHTNING_FIRST_DELAY_MS;
+
+    // 尚無閃電進行中：時候到了就點燃一記（決定本記是否伴可見電光）
+    if (_lightningStartMs === 0) {
+      if (now < _lightningNextMs) return;
+      _lightningStartMs = now;
+      _lightningBolt = makeLightningBolt();
+    }
+
+    const elapsed = now - _lightningStartMs;
+    // 壽命耗盡：熄滅、排下一記（隨機間隔）
+    if (elapsed >= LIGHTNING_DURATION_MS) {
+      _lightningStartMs = 0;
+      _lightningBolt = null;
+      _lightningNextMs = now + nextLightningGap(Math.random(), LIGHTNING_MIN_GAP_MS, LIGHTNING_MAX_GAP_MS);
+      return;
+    }
+
+    const a = lightningFlashAlpha(elapsed, LIGHTNING_DURATION_MS);
+    if (a <= 0) return;
+
+    ctx.save();
+    // 全屏冷藍白泛光：閃電把整片天地照亮一瞬（含地面），故疊在天象最上層、覆蓋整個畫面
+    ctx.fillStyle = `rgba(205,222,255,${(a * LIGHTNING_MAX_ALPHA).toFixed(3)})`;
+    ctx.fillRect(0, 0, viewW, viewH);
+
+    // 可見分叉電光（僅本記有 bolt 且在電光一瞬內）：外粗淡藍襯光 ＋ 內細亮白主幹，模擬發光不靠 shadowBlur
+    if (_lightningBolt && elapsed < LIGHTNING_BOLT_MS) {
+      const ba = 1 - elapsed / LIGHTNING_BOLT_MS; // 電光自身比泛光更快淡出
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      // 外層襯光
+      ctx.strokeStyle = `rgba(150,190,255,${(ba * 0.5).toFixed(3)})`;
+      ctx.lineWidth = Math.max(3, Math.min(viewW, viewH) * 0.012);
+      ctx.beginPath();
+      ctx.moveTo(_lightningBolt[0].x, _lightningBolt[0].y);
+      for (let i = 1; i < _lightningBolt.length; i++) ctx.lineTo(_lightningBolt[i].x, _lightningBolt[i].y);
+      ctx.stroke();
+      // 內層亮白主幹
+      ctx.strokeStyle = `rgba(245,250,255,${(ba * 0.9).toFixed(3)})`;
+      ctx.lineWidth = Math.max(1.2, Math.min(viewW, viewH) * 0.004);
+      ctx.beginPath();
+      ctx.moveTo(_lightningBolt[0].x, _lightningBolt[0].y);
+      for (let i = 1; i < _lightningBolt.length; i++) ctx.lineTo(_lightningBolt[i].x, _lightningBolt[i].y);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
