@@ -807,6 +807,31 @@ const SNIFF_PROB: f32 = 0.045;
 const SNIFF_DURATION_MIN: f32 = 1.5;
 const SNIFF_DURATION_MAX: f32 = 3.0;
 
+// ─── ROADMAP 295：畏味避徑（predator-scent avoidance／草食獸聞到掠食者新留的領地記號而警覺繞道）──
+// 293 留味（掠食者宣示地盤 💧）→ 294 同類讀味（另一隻掠食者讀這記界味 👃）把「氣味記號」這條線補成了
+// 掠食者之間的雙向社交。可這記掠食者的氣味記號至今只被「同類」讀到——草原上最該在意它的另一群、那記界味
+// 本來最致命的讀者，是獵物。現實裡掠食者的氣味記號是一張寫在風裡的「危險告示」：埋頭吃草的鹿群即便看不見
+// 掠食者本體，也會嗅到牠新留下的界味、本能地警覺繞開那片地——生態學所謂的「恐懼地景」（landscape of fear）。
+// 本切片把 293 的記號補上這第三個、也是跨物種的讀者：白天平靜歇息／漫步的草食走獸（鹿／小獸，is_mammal），
+// 若「聞到」附近 SCENT_AVOID_RADIUS 內有掠食者正留下一記新鮮的領地記號（複用 294 的 marking_snap：本幀正在
+// Marking 的掠食者座標快照），便偶爾以 SCENT_AVOID_PROB 抬頭一驚、不安地朝反方向警覺繞走一小段（新增 Skirting
+// 狀態、頭頂浮一枚 😟）。於是掠食者的一記留味，第一次同時牽動了「同類」（294 讀味社交）與「獵物」（295 畏味
+// 繞行）——直接回應 reviewer 一路要的「讓不同物種真的彼此牽動」，並把生命循環的「恐懼地景」第一次攤到玩家眼前。
+/// 草食走獸「聞到」掠食者新鮮領地記號的感知半徑——刻意設在自身警戒帶 VIGILANCE_RADIUS(340) 之外：在 340 內
+/// 掠食者本體早被 251/262/263 警戒（抬頭僵立）接手，本筆專管「看不見掠食者本體、卻嗅得到那記隨風飄來的界味」
+/// 的更遠一圈（氣味比視線傳得遠），與既有的「看見掠食者就警戒」乾淨區隔、不重疊。
+const SCENT_AVOID_RADIUS: f32 = 480.0;
+/// 聞到掠食者新鮮記號後本幀起意警覺繞走的機率——中等偏低（與 284 驚飛示警 FLUSH_ALERT_PROB 0.35 同量級）：
+/// 是「隱約嗅到危險、本能地挪開一點」的不安繞行，而非看見掠食者那般的恐慌炸群（逐幀觸發 → 獸群錯落繞開）。
+const SCENT_AVOID_PROB: f32 = 0.3;
+/// 一段畏味繞行的最短／最長時長（秒）——不安地朝反方向警覺走開一小段就鬆下來回復閒晃，與一段戒備凝望
+/// （VIGILANCE_DURATION 2~4.5s）同量級。期間威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（繞行永遠讓位逃命）。
+const SKIRT_DURATION_MIN: f32 = 2.5;
+const SKIRT_DURATION_MAX: f32 = 4.5;
+/// 畏味繞行的移動速度——比閒晃巡遊（WANDER_SPEED 35）快、卻遠不及驚慌逃竄（FLEE_SPEED 200）：是「提防著、
+/// 不疾不徐挪開」的警覺步調，而非沒命地奔。介於跟食趨近（FORAGE_SPEED 56）與食腐趨近（SCAVENGE_SPEED 72）之間。
+const SKIRT_SPEED: f32 = 64.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1730,6 +1755,13 @@ enum WildlifeState {
     /// 一個讀；與 225 嗅蹤（👃，野狼循一條舊味跡低頭緩步走）刻意區隔——讀界是「原地讀同類剛留下的新鮮記號」的
     /// 一次回應、非循舊跡走，且野狼／野狐二者皆會（225 只野狼）。
     Sniffing { sniff_timer: f32 },
+    /// ROADMAP 295：畏味避徑——白天平靜歇息／漫步的草食走獸（鹿／小獸）「聞到」附近（SCENT_AVOID_RADIUS 內、
+    /// 卻在自身警戒帶 VIGILANCE_RADIUS 之外）有掠食者正留下一記新鮮領地記號（marking_snap）時，抬頭一驚、不安
+    /// 地朝那記界味的反方向警覺繞走一小段（前端畫成低頭快步、頭頂浮一枚 😟）。(ax,ay) 記下那記界味的座標，每幀
+    /// 以 SKIRT_SPEED 朝其反方向挪步遠離；skirt_timer 倒數，繞夠了就鬆下來回復閒晃；威脅一旦真逼進 FLEE_RADIUS
+    /// 一律改全速奔逃（繞行永遠讓位逃命）。把 293 掠食者留下的記號補上第三個、也是跨物種的讀者（同類讀味 294
+    /// ／獵物畏味 295），讓「恐懼地景」第一次攤到玩家眼前。
+    Skirting { ax: f32, ay: f32, skirt_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2612,6 +2644,25 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 295：畏味避徑——繞行中（Skirting）把這一段警覺繞走走完：每幀以 SKIRT_SPEED 朝那記界味落點
+    /// (ax,ay) 的反方向挪步遠離（不安地提防著、不疾不徐挪開），skirt_timer 倒數，繞夠了就鬆下來起身回巡遊
+    /// （朝家附近的下一個漫遊目標）。只在 Skirting 狀態下生效（呼叫端已確保此隻為草食走獸、白天、且無威脅
+    /// 逼進 FLEE_RADIUS——那種情形更前面就已改走逃竄，繞行永遠讓位逃命）。
+    fn tick_skirt(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Skirting { ax, ay, skirt_timer } = self.state {
+            let remaining = skirt_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            let (nx, ny) = skirt_step(self.x, self.y, ax, ay, dt);
+            self.x = nx;
+            self.y = ny;
+            self.state = WildlifeState::Skirting { ax, ay, skirt_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2821,6 +2872,7 @@ impl Wildlife {
             WildlifeState::Gleaning { .. }   => "gleaning",
             WildlifeState::Marking { .. }    => "marking",
             WildlifeState::Sniffing { .. }   => "sniffing",
+            WildlifeState::Skirting { .. }   => "skirting",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -4151,6 +4203,15 @@ impl WildlifeManager {
                     // 僵立、計時倒數，掠食者退出警戒帶就提前鬆懈回歇息）。掠食者一旦逼進 FLEE_RADIUS
                     // （threat_near 為真）就落到下方 tick_idle 改逃竄——警戒永遠讓位逃命。
                     a.tick_vigilant(dt, &pred_positions, rng);
+                } else if matches!(a.state, WildlifeState::Skirting { .. }) {
+                    // ROADMAP 295：已在畏味繞行中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃
+                    // （繞行永遠讓位逃命），否則朝那記界味反方向警覺繞走一小段、計時倒數，繞夠了就鬆下來
+                    // 回巡遊。與 219 破曉伸展／251 警戒同模式：一段平靜時的小動作，遇險即讓位逃命。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_skirt(dt, rng);
+                    }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
@@ -4200,6 +4261,35 @@ impl WildlifeManager {
                     // 鹿轉入 Vigilant（離開 grazer_snap）便不再驚起新的鳥，乾淨收斂。
                     let timer = rng.gen_range(VIGILANCE_DURATION_MIN..=VIGILANCE_DURATION_MAX);
                     a.state = WildlifeState::Vigilant { vigil_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_none()
+                    && rng.gen::<f32>() < SCENT_AVOID_PROB
+                    && nearest_in_range(a.x, a.y, &marking_snap, SCENT_AVOID_RADIUS).is_some()
+                {
+                    // ROADMAP 295：畏味避徑——平靜歇息／漫步的草食走獸（鹿／小獸）「聞到」附近有掠食者正留下
+                    // 一記新鮮的領地記號（marking_snap 在 SCENT_AVOID_RADIUS 內），且自身警戒帶 VIGILANCE_RADIUS
+                    // 內並無掠食者本體（看不見掠食者、只嗅得到那記隨風飄來的界味）時，抬頭一驚、不安地朝那記界味
+                    // 的反方向警覺繞走一小段（轉入 Skirting 😟）。生態學的「恐懼地景」：埋頭吃草的鹿即便看不見
+                    // 掠食者，也會嗅到牠新留下的氣味記號、本能地避開那片地。把 293 掠食者留下的記號補上第三個、
+                    // 也是跨物種的讀者——同類讀味（294）／獵物畏味（295），讓「掠食者的一記留味同時牽動同類與獵物」
+                    // 第一次攤到玩家眼前。**刻意排在 251/262/263 掠食者警戒、284 驚飛示警之後**：看得見的真威脅／
+                    // 鳥驚飛的即時警訊永遠優先（恐懼地景是更隱微的背景不安）；也排在下方搔癢／呵欠／反芻等白晝玩樂
+                    // 之前——警覺先於玩樂。**與 251/284 警戒（😨，原地僵立）刻意區隔**：那是看見威脅／驚飛而停下
+                    // 凝望，本筆是嗅到界味而「挪開繞走」（會位移、朝反方向遠離），是恐懼地景特有的迴避而非定格。
+                    // **precondition＝VIGILANCE_RADIUS 內無掠食者本體**：掠食者一旦進到 340 內，251/262/263 的
+                    // 「看見就警戒」早一步接手（且此 is_none 守衛同時失效），本筆專管那更遠一圈「看不見本體、只嗅得到
+                    // 界味」的恐懼地景，與既有警戒乾淨不重疊。**零捕食平衡風險**：純多一個讓平靜獸群偶爾警覺繞開
+                    // 的閒置迴避姿態，不改任何獵殺／搜尋／逃竄結果（威脅一旦真逼進 FLEE_RADIUS，上面 Skirting
+                    // 續走分支即改全速奔逃——繞行永遠讓位逃命）。**只屬於草食走獸**（掠食者另由掠食迴圈處理，不畏
+                    // 同類界味；有測試覆蓋）。**晝起意**（夜間 marking_snap 本就為空、且夜行獸另走夜眠分支）。
+                    // 機率先擲、快照查詢後做：多數幀一擲不中即略過較貴的範圍查詢。
+                    if let Some((ax, ay)) = nearest_in_range(a.x, a.y, &marking_snap, SCENT_AVOID_RADIUS) {
+                        let timer = rng.gen_range(SKIRT_DURATION_MIN..=SKIRT_DURATION_MAX);
+                        a.state = WildlifeState::Skirting { ax, ay, skirt_timer: timer };
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -5139,6 +5229,20 @@ fn forage_step(x: f32, y: f32, gx: f32, gy: f32, dt: f32) -> Option<(f32, f32)> 
     }
     let step = (FORAGE_SPEED * dt).min(dist - FORAGE_COMFORT_DIST);
     Some((x + dx / dist * step, y + dy / dist * step))
+}
+
+/// ROADMAP 295：畏味避徑的一步位移——朝那記掠食者界味落點 (ax,ay) 的**反方向**挪一步遠離（提防著挪開，
+/// 而非奔逃）。回正規化後的反方向乘 SKIRT_SPEED 與 dt 的下一個落點；若恰與界味重疊（dist≈0、方向無定義）
+/// 就原地不動以防 NaN（下一幀界味已不在該處或自身已不在 Skirting，自然收斂）。純函式，便於測試。
+fn skirt_step(x: f32, y: f32, ax: f32, ay: f32, dt: f32) -> (f32, f32) {
+    let dx = x - ax; // 遠離方向＝自身指向界味的反向
+    let dy = y - ay;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0e-3 {
+        return (x, y);
+    }
+    let step = SKIRT_SPEED * dt;
+    (x + dx / dist * step, y + dy / dist * step)
 }
 
 /// ROADMAP 253：飽足歇息推進——飽餐後躺臥歇息一段，僅倒數計時、原地不動。
@@ -11210,6 +11314,200 @@ mod tests {
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "讀味中發現獵物應立刻改去狩獵，實際 {:?}", f.state
         );
+    }
+
+    // ─── ROADMAP 295：畏味避徑（草食獸聞到掠食者新留的領地記號而警覺繞道）────────────
+    #[test]
+    fn skirt_step_moves_away_from_point() {
+        // 純函式：朝界味落點的反方向挪一步遠離，單幀位移約 SKIRT_SPEED*dt，且移動後離界味更遠。
+        let (ax, ay) = (5000.0_f32, 5000.0_f32);
+        let (x, y) = (5100.0_f32, 5000.0_f32); // 在界味東側 100px
+        let (nx, ny) = skirt_step(x, y, ax, ay, 0.1);
+        let before = ((x - ax).powi(2) + (y - ay).powi(2)).sqrt();
+        let after = ((nx - ax).powi(2) + (ny - ay).powi(2)).sqrt();
+        assert!(after > before, "繞行應遠離界味：before {before} after {after}");
+        assert!(nx > x && (ny - y).abs() < 1e-4, "界味在正西，應朝正東遠離");
+        let moved = ((nx - x).powi(2) + (ny - y).powi(2)).sqrt();
+        assert!((moved - SKIRT_SPEED * 0.1).abs() < 0.01, "單幀位移應約 SKIRT_SPEED*dt，實際 {moved}");
+    }
+
+    #[test]
+    fn skirt_step_holds_when_overlapping_mark() {
+        // 防呆：恰與界味重疊（方向無定義）時原地不動、不產生 NaN。
+        let (nx, ny) = skirt_step(5000.0, 5000.0, 5000.0, 5000.0, 0.1);
+        assert!((nx - 5000.0).abs() < 1e-6 && (ny - 5000.0).abs() < 1e-6, "重疊時應原地不動");
+        assert!(nx.is_finite() && ny.is_finite(), "不該產生 NaN/Inf");
+    }
+
+    #[test]
+    fn skirt_speed_between_wander_and_flee() {
+        // 步調定位：畏味繞行比閒晃巡遊快、卻遠不及驚慌逃竄——是「提防著挪開」而非沒命地奔。
+        assert!(SKIRT_SPEED > WANDER_SPEED, "繞行應快於閒晃");
+        assert!(SKIRT_SPEED < FLEE_SPEED, "繞行應遠慢於逃竄");
+    }
+
+    #[test]
+    fn tick_skirt_moves_away_while_timer_remaining() {
+        // 繞行進行中：朝界味反方向位移、計時遞減、狀態維持 Skirting。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0);
+        deer.state = WildlifeState::Skirting { ax: 5000.0, ay: 5000.0, skirt_timer: 3.0 };
+        deer.tick_skirt(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Skirting { skirt_timer, .. } => {
+                assert!((skirt_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("繞行未到期應維持 Skirting，實際 {:?}", deer.state),
+        }
+        assert!(deer.x > 5100.0, "界味在正西，繞行應朝東遠離（x 增大），實際 {}", deer.x);
+    }
+
+    #[test]
+    fn tick_skirt_returns_to_wander_when_timer_expires() {
+        // 繞行到期：鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5100.0, 5000.0);
+        critter.state = WildlifeState::Skirting { ax: 5000.0, ay: 5000.0, skirt_timer: 0.05 };
+        critter.tick_skirt(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_skirt_noop_on_other_state() {
+        // 防呆：非 Skirting 狀態呼叫 tick_skirt 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_skirt(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非繞行狀態呼叫 tick_skirt 不該改狀態");
+    }
+
+    #[test]
+    fn skirting_state_str_is_skirting() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Skirting { ax: 0.0, ay: 0.0, skirt_timer: 1.0 };
+        assert_eq!(deer.state_str(), "skirting");
+    }
+
+    #[test]
+    fn predator_never_skirts() {
+        // 物種專屬：畏味繞行只發生在草食走獸 phase——掠食者即便身邊有同類在留味，連跑多幀都不該進入 Skirting
+        //（掠食者另由掠食迴圈處理，不畏同類界味）。把野狐放在野狼避狼半徑(160)外、SCENT_AVOID_RADIUS 內，證明
+        // 牠不繞行是「物種不對」而非「離記號太遠」。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0); // 持續留味的界味源
+        wolf.id = 1;
+        wolf.state = WildlifeState::Marking { mark_timer: 1.0e9 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5300.0, 5000.0); // 300px：>避狼160、<480
+        fox.id = 2;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf, fox];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Skirting { .. }), "掠食者不該畏味繞行，實際 {:?}", f.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_skirt_without_a_mark() {
+        // 需附近真有掠食者在留味才起意：場上沒有任何正在 Marking 的掠食者時，平靜草食走獸連跑多幀都不該繞行。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Skirting { .. }), "無掠食者留味時不該繞行");
+        }
+    }
+
+    #[test]
+    fn calm_mammal_eventually_skirts_a_fresh_mark() {
+        // 白天平靜：一頭鹿在掠食者新鮮界味的「恐懼地景」圈內（VIGILANCE_RADIUS(340) 外、SCENT_AVOID_RADIUS(480)
+        // 內），看不見掠食者本體、卻嗅得到那記界味——連跑多幀後應有機會警覺繞走（進入 Skirting）。用野狐當界味源
+        //（野狐不獵鹿，能穩定持續 Marking 當吸引源、不會中途轉去狩獵這頭鹿）。
+        let mut mgr = WildlifeManager::new();
+        let mut marker = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        marker.id = 1;
+        marker.state = WildlifeState::Marking { mark_timer: 1.0e9 }; // 持續留味當吸引源
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5400.0, 5000.0); // 400px：>340 且 <480
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![marker, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut skirted = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(d.state, WildlifeState::Skirting { .. }) {
+                skirted = true;
+                break;
+            }
+        }
+        assert!(skirted, "白天平靜、恐懼地景圈內嗅到掠食者新鮮界味的鹿應偶爾警覺繞走");
+    }
+
+    #[test]
+    fn mammal_does_not_skirt_when_predator_in_vigilance_band() {
+        // 與 251/262 警戒乾淨區隔：掠食者本體一旦進到自身警戒帶 VIGILANCE_RADIUS(340) 內，由「看見就警戒」接手
+        //（precondition is_none 同時失效）——鹿不該因近在 340 內的留味掠食者而繞行（該走警戒、非繞行）。
+        let mut mgr = WildlifeManager::new();
+        let mut marker = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        marker.id = 1;
+        marker.state = WildlifeState::Marking { mark_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5250.0, 5000.0); // 250px：在警戒帶 340 內
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![marker, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Skirting { .. }), "警戒帶內的留味者應走警戒、非繞行，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn skirting_mammal_gives_way_to_flee() {
+        // 繞行永遠讓位逃命：繞行中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃（非繼續繞）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Skirting { ax: 4000.0, ay: 5000.0, skirt_timer: 1.0e9 }; // 繞得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn mammal_does_not_skirt_at_night() {
+        // 晝起意：夜間草食走獸另走夜眠分支、且 marking_snap 本就為空——夜裡即便放一隻持續留味的掠食者，
+        // 連跑多幀都不該繞行。
+        let mut mgr = WildlifeManager::new();
+        let mut marker = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        marker.id = 1;
+        marker.state = WildlifeState::Marking { mark_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5400.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![marker, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Skirting { .. }), "夜間草食走獸不該繞行，實際 {:?}", d.state);
+        }
     }
 
     // ─── ROADMAP 287：群狼碰鼻問安（野狼群成員之間的羈絆）──────────────────
