@@ -576,6 +576,22 @@ const SCAVENGE_SPEED: f32 = 72.0;
 /// 視為「已抵達屍骸旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再移動。
 const SCAVENGE_REACH: f32 = 16.0;
 
+// ─── ROADMAP 253：飽足歇獵（the lull after the kill）─────────────────────────
+// 250 圍獵讓掠食者「飢餓時」成群匯聚撲殺；230 分食、252 食腐讓一場獵殺餵養了食物鏈兩層。
+// 但盤點下來，掠食者吃完後（既有 Digesting 進食 25s 結束）立刻就回頭巡遊、隨時可再獵——少了真實
+// 草原上最關鍵的一段節律：剛飽餐的掠食者並不會馬上再殺，而是肚滿腸肥地躺臥歇息，附近的獵物也因而
+// 暫時不再怕牠（獅子吃飽後，羚羊敢在不遠處安心吃草）。本切片補上這段「飽足歇獵」：掠食者吃飽
+// （Digesting 結束）後不立刻回頭狩獵，而是進入一段 Sated 飽足歇息——躺臥不動、不搜尋獵物，且從獵物
+// 的威脅快照（pred_positions）排除，於是附近的鹿不再炸群逃竄、也不再僵立警戒，照常低頭吃草；計時
+// 耗盡飢餓重燃，才回復巡遊與狩獵、危機再臨。與 250「飢則成群圍獵」對成「飢則獵／飽則歇」的一對，
+// 也讓 218 群嚎→250 圍獵→230 分食／252 食腐→253 飽足歇息 串成「一場獵殺後草原重歸平靜」的完整尾韻。
+// 零 LLM、純啟發式、可測、零 tick 簽名改動、零協議改動（新增的 sated 字串沿用 state_str；計時隨
+// 狀態變體攜帶，無新欄位）、記憶體模式。
+/// 飽餐後歇息的最短／最長時長（秒，隨機區間）——略長於進食的 DIGEST_DURATION(25)，讓「飽足→危機
+/// 退潮→獵物重歸安寧」這段平靜看得見；計時耗盡才飢餓重燃、回復巡遊與狩獵。
+const SATED_DURATION_MIN: f32 = 25.0;
+const SATED_DURATION_MAX: f32 = 40.0;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -819,6 +835,11 @@ enum WildlifeState {
     /// 與 230 野狼群聚分食對成「哺乳獸群聚分食／飛禽零落撿食」一對；掠食者一旦逼近一律優先改逃竄
     /// （撿食永遠讓位逃命），故鳥只在獵殺者散去後才敢上前，恰是真實食腐者的伺機天性。
     Scavenging { ox: f32, oy: f32, scav_timer: f32 },
+    /// ROADMAP 253：飽足歇獵——掠食者吃飽（Digesting 進食結束）後不立刻回頭狩獵，而是肚滿腸肥地
+    /// 躺臥歇息一段（頭頂浮 😴）：原地不動、不搜尋獵物，且從獵物的威脅快照（pred_positions）排除，
+    /// 附近的獵物因而不再怕牠、照常吃草；sated_timer 倒數，計時耗盡飢餓重燃就回巡遊、重新可獵。
+    /// 計時隨狀態變體攜帶（無新欄位）。與 250「飢則成群圍獵」對成「飢則獵／飽則歇」。
+    Sated { sated_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1374,6 +1395,7 @@ impl Wildlife {
             WildlifeState::Feasting { .. }  => "feasting",
             WildlifeState::Vigilant { .. }  => "vigilant",
             WildlifeState::Scavenging { .. } => "scavenging",
+            WildlifeState::Sated { .. }     => "sated",
         }
     }
 }
@@ -1582,9 +1604,12 @@ impl WildlifeManager {
             .map(|a| (a.id, a.kind, a.x, a.y))
             .collect();
 
-        // 捕食者位置：獵物逃跑時參考此清單。
+        // 捕食者位置：獵物逃跑時參考此清單。ROADMAP 253：剛飽餐後躺臥歇息（Sated）的掠食者肚滿腸肥、
+        // 無意再獵，從威脅清單排除——附近的獵物因而不再炸群逃竄、也不再僵立警戒，照常低頭吃草，一場
+        // 獵殺後草原暫歸平靜（飽則歇獵的對偶面：威脅隨飽足退潮）。
         let pred_positions: Vec<(f32, f32)> = self.animals.iter()
-            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Predator)
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Predator
+                && !is_sated(&a.state))
             .map(|a| (a.x, a.y))
             .collect();
 
@@ -1821,12 +1846,27 @@ impl WildlifeManager {
                 WildlifeState::Digesting { timer } => {
                     let remaining = timer - dt;
                     if remaining <= 0.0 {
-                        let home_x = self.animals[i].home_x;
-                        let home_y = self.animals[i].home_y;
-                        let (tx, ty) = random_target(home_x, home_y, WANDER_RADIUS, &mut self.rng);
-                        self.animals[i].state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: 5.0 };
+                        // ROADMAP 253：吃飽了——不立刻回頭狩獵，先進入一段「飽足」躺臥歇息
+                        // （Sated）：肚滿腸肥、無意再獵，附近獵物得以暫時安心。
+                        let sated = self.rng.gen_range(SATED_DURATION_MIN..=SATED_DURATION_MAX);
+                        self.animals[i].state = WildlifeState::Sated { sated_timer: sated };
                     } else {
                         self.animals[i].state = WildlifeState::Digesting { timer: remaining };
+                    }
+                }
+                WildlifeState::Sated { sated_timer } => {
+                    // ROADMAP 253：飽足歇獵——肚滿腸肥地躺臥歇息，原地不動、不搜尋獵物（狩獵讓位給
+                    // 飽足）；計時耗盡飢餓重燃就回巡遊（朝家附近的下一個漫遊目標）、重新可獵。
+                    match sated_step(sated_timer, dt) {
+                        Some(remaining) => {
+                            self.animals[i].state = WildlifeState::Sated { sated_timer: remaining };
+                        }
+                        None => {
+                            let home_x = self.animals[i].home_x;
+                            let home_y = self.animals[i].home_y;
+                            let (tx, ty) = random_target(home_x, home_y, WANDER_RADIUS, &mut self.rng);
+                            self.animals[i].state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: 5.0 };
+                        }
                     }
                 }
                 _ => {
@@ -2640,6 +2680,21 @@ fn scavenge_step(x: f32, y: f32, ox: f32, oy: f32, dt: f32) -> Option<(f32, f32)
     }
     let step = (SCAVENGE_SPEED * dt).min(dist);
     Some((x + dx / dist * step, y + dy / dist * step))
+}
+
+/// ROADMAP 253：飽足歇息推進——飽餐後躺臥歇息一段，僅倒數計時、原地不動。
+/// 回 `Some(剩餘秒數)` 表示仍飽足歇著；回 `None` 表示飢餓重燃、該回巡遊重新可獵。純函式，便於測試。
+fn sated_step(timer: f32, dt: f32) -> Option<f32> {
+    let remaining = timer - dt;
+    if remaining <= 0.0 { None } else { Some(remaining) }
+}
+
+/// ROADMAP 253：判斷掠食者是否「飽足歇息、無意再獵」（Sated）——剛飽餐後躺臥打盹的掠食者肚滿
+/// 腸肥、不會起意狩獵，不應令附近獵物恐懼／警戒；據此把牠排出獵物的威脅快照（pred_positions），
+/// 讓一場獵殺後草原暫歸平靜（飢則獵／飽則歇的對偶面）。進食中（Digesting）的狼仍守在血淋淋的獵物旁、
+/// 不算「歇息」，故不在此列——獵物要等牠吃飽躺下才真正放鬆。純函式，便於測試。
+fn is_sated(state: &WildlifeState) -> bool {
+    matches!(state, WildlifeState::Sated { .. })
 }
 
 /// ROADMAP 209：驚群炸開——在 `fleeing_snap`（正在逃竄的同種獵物：id/kind/x/y/vx/vy）中，
@@ -5136,6 +5191,109 @@ mod tests {
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
             "掠食者逼進 FLEE_RADIUS 時警戒鹿應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 253：飽足歇獵（the lull after the kill）───────────────────────
+
+    #[test]
+    fn sated_state_str_is_sated() {
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Sated { sated_timer: 30.0 };
+        assert_eq!(wolf.state_str(), "sated");
+    }
+
+    #[test]
+    fn sated_step_counts_down_then_expires() {
+        // 仍飽足：回 Some(剩餘)，且剩餘＝計時減 dt。
+        match sated_step(5.0, 0.1) {
+            Some(remaining) => assert!((remaining - 4.9).abs() < 1e-4, "應遞減 dt"),
+            None => panic!("計時未耗盡應回 Some"),
+        }
+        // 計時耗盡（dt ≥ 剩餘）：回 None（飢餓重燃該回巡遊）。
+        assert!(sated_step(0.05, 0.1).is_none(), "計時耗盡應回 None");
+    }
+
+    #[test]
+    fn is_sated_only_for_sated_state() {
+        // 只有飽足歇息（Sated）＝無威脅而排出威脅快照；進食中（Digesting，仍守在獵物旁）與其餘
+        // 狀態都仍是威脅。
+        assert!(is_sated(&WildlifeState::Sated { sated_timer: 10.0 }), "飽足歇息應視為無威脅");
+        assert!(!is_sated(&WildlifeState::Digesting { timer: 10.0 }), "進食中仍守在獵物旁、不算歇息");
+        assert!(!is_sated(&WildlifeState::Hunting { target_id: 1, hunt_timer: 5.0 }), "追獵中是威脅");
+        assert!(!is_sated(&WildlifeState::Stalking { target_id: 1, stalk_timer: 5.0 }), "潛行中是威脅");
+        assert!(!is_sated(&WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 1.0 }), "巡遊中是威脅");
+    }
+
+    #[test]
+    fn digesting_predator_becomes_sated_when_done() {
+        // 整管理器：進食（Digesting）計時耗盡後，掠食者應進入飽足歇息（Sated）、而非直接回巡遊。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Digesting { timer: 0.05 };
+        mgr.animals = vec![wolf]; // 場上只有狼、無獵物干擾
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false); // dt > 剩餘 → 進食結束
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(w.state, WildlifeState::Sated { .. }),
+            "進食結束應進入飽足歇息，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn sated_predator_returns_to_wander_when_timer_expires() {
+        // 整管理器：飽足歇息計時耗盡後，飢餓重燃——掠食者回巡遊（Wandering）、重新可獵。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Sated { sated_timer: 0.05 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false); // dt > 剩餘 → 到期
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "飽足到期應回巡遊，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn sated_predator_does_not_hunt_nearby_prey() {
+        // 飽則歇獵：飽足歇息中的狼，即使一頭鹿就在獵殺範圍內，也不該起意狩獵（狩獵讓位給飽足），
+        // 連跑多幀都維持 Sated（直到計時耗盡才回巡遊重新可獵；此處計時設極大以驗證歇息期間不獵）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Sated { sated_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // HUNT_RADIUS(320) 內
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![wolf, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(matches!(w.state, WildlifeState::Sated { .. }),
+                "飽足歇息中的狼不該起意狩獵，實際 {:?}", w.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_flee_sated_predator() {
+        // 飽足無威脅：一頭平靜的鹿緊鄰著一隻飽足歇息（Sated）的狼（FLEE_RADIUS 內），
+        // 因該狼已被排出威脅快照，鹿不該炸群逃竄、得以照常安心歇息。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5100.0, 5000.0); // FLEE_RADIUS(180) 內
+        wolf.id = 2;
+        wolf.state = WildlifeState::Sated { sated_timer: 1.0e9 };
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..50 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Fleeing { .. }),
+                "緊鄰飽足歇息的狼，鹿不該逃竄，實際 {:?}", d.state);
+        }
     }
 
     // ─── ROADMAP 217：掠食者夜嚎 ────────────────────────────────────────────
