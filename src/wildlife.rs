@@ -822,6 +822,29 @@ const FORAGE_SPEED: f32 = 56.0;
 /// 視為「已跟到鹿身旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再貼近（傍著鹿、不擋著鹿）。
 const FORAGE_COMFORT_DIST: f32 = 30.0;
 
+// ─── ROADMAP 279：走獸驚飛棲鳥（incidental flushing／大型草食獸不經意驚起棲地野鳥）──────
+// 265 跟食把混群的跨物種相處推到了「正向共生」（鳥傍鹿撿蟲）、266 哨兵互惠又補上鳥替鹿放哨的回報——
+// 那是混群「彼此得利」的一面。可現實的草原上，大型草食獸與小型棲鳥之間還有一筆最尋常、誰也沒惡意的
+// 互動：一頭低頭吃草的鹿閒晃著走過一片正歇在地上的鳥，不經意踏到牠們腳邊，那群鳥便「轟」地受驚撲翅
+// 竄起（incidental flushing，賞鳥人最熟悉的一幕：大動物一靠近，地上的鳥就成片驚飛）。本切片給混群補上
+// 這反面的一筆——不是共生、也不是威脅，只是大傢伙不經意的驚擾：白天平靜歇息／漫步的野鳥，若有一頭閒晃
+// 覓食的野鹿（複用 265 的 grazer_snap：平靜的 Grazing/Wandering/Resting 鹿）踏進貼身的 FLUSH_RADIUS，
+// 便以 FLUSH_PROB 受驚撲翅竄起（新增 Flushing 狀態、頭頂冒一縷 💨），flush_timer 倒數耗盡才落回地面回到
+// 漫遊。與 220 升空（self-initiated、悠閒繞圈盤旋）刻意對成一對：220 是自發的悠閒升空，279 是被走獸踏近
+// 驚起的急促竄飛。**零捕食平衡風險**：驚飛純為視覺信使，鳥竄起後 flush_timer 一到就落回，與掠食者無關；
+// 觸發限「平靜的鹿」不含掠食者（掠食者逼近本就走既有 FLEE 逃竄、優先於此分支），鳥本就在獵物快照裡、
+// 遇真威脅一律優先逃竄。天然湧現不寫死：只在鹿真的閒晃踏到鳥腳邊那一刻、逐幀低機率觸發。
+/// 一頭平靜的野鹿踏到多近，會驚起腳邊歇息／漫步的野鳥——刻意很近（遠小於 265 跟食的 FORAGE_SEE_RADIUS
+/// 200：跟食是「身邊有鹿在覓食」就湊近，驚飛是「鹿踏到貼身腳邊」才受驚），確保只在鹿真的逼到近處才驚起。
+const FLUSH_RADIUS: f32 = 40.0;
+/// 貼身內有平靜的鹿時，一隻歇息／漫步的野鳥本幀受驚撲翅竄起的機率——偏高（大動物踏到腳邊極驚人），
+/// 但不設 1.0：留一點隨機，讓一片鳥三三兩兩錯落驚起、而非同幀整群齊飛（沿用逐圈擴散的鬆散手感）。
+const FLUSH_PROB: f32 = 0.45;
+/// 一段驚飛的持續秒數（隨機區間）——撲翅竄起、在空中慌張地撲騰一小段再落回地面（刻意短於 220 升空的
+/// 悠閒盤旋：驚飛是急促的一震，而非繞圈盤旋）。期間威脅一旦逼近一律優先逃竄（驚飛讓位逃命）。
+const FLUSH_DURATION_MIN: f32 = 1.0;
+const FLUSH_DURATION_MAX: f32 = 2.2;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1300,6 +1323,12 @@ enum WildlifeState {
     /// 在歇息的獸群間漾開。與 277 搔癢（Wandering 起意、各顧各的自理）對成一對——漫步時搔癢、歇息時
     /// 打呵欠；一個各顧各、一個會傳染。
     Yawning { yawn_timer: f32 },
+    /// ROADMAP 279：走獸驚飛棲鳥——白天平靜歇息／漫步的野鳥，被一頭閒晃覓食的大型草食走獸（野鹿）
+    /// 不經意地踏到貼身（FLUSH_RADIUS 內）時，受驚一震、撲翅竄起一小段（前端畫成猛地騰空、頭頂冒一
+    /// 縷 💨）。flush_timer 倒數，到期就落回地面回到漫遊；威脅一旦逼近一律優先逃竄（驚飛讓位逃命）。
+    /// 與 220 升空（self-initiated、悠閒繞圈盤旋 Flying）對成一對——一個是自發的悠閒升空、一個是被
+    /// 走獸踏近驚起的急促竄飛，是混群相處（265 跟食）反面的「不經意驚擾」一筆。
+    Flushing { flush_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1890,6 +1919,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 279：走獸驚飛棲鳥——驚飛中（Flushing）撲翅竄在空中、倒數計時；到期就落回地面挑下一個
+    /// 漫遊目標（沿用群聚拉力 herd_anchor，鳥成群，與 tick_yawn 同模式）回到閒晃。只在 Flushing 狀態下
+    /// 生效（呼叫端已確保此隻為野鳥；威脅一旦逼近呼叫端不會走到此分支、改去逃竄——威脅永遠優先）。
+    fn tick_flush(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Flushing { flush_timer } = self.state {
+            let remaining = flush_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Flushing { flush_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -2120,6 +2165,7 @@ impl Wildlife {
             WildlifeState::Preening { .. }  => "preening",
             WildlifeState::Scratching { .. } => "scratching",
             WildlifeState::Yawning { .. }   => "yawning",
+            WildlifeState::Flushing { .. }  => "flushing",
         }
     }
 }
@@ -3383,6 +3429,29 @@ impl WildlifeManager {
                         let timer = rng.gen_range(SCAVENGE_DURATION_MIN..=SCAVENGE_DURATION_MAX);
                         a.state = WildlifeState::Scavenging { ox, oy, scav_timer: timer };
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Flushing { .. }) {
+                    // ROADMAP 279：已在驚飛中——威脅一旦逼近就立刻改逃竄（驚飛永遠讓位逃命），否則在空中
+                    // 把這一震撲騰走完、計時倒數，到期落回地面回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_flush(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &grazer_snap, FLUSH_RADIUS).is_some()
+                    && rng.gen::<f32>() < FLUSH_PROB
+                {
+                    // ROADMAP 279：白天平靜歇息／漫步的野鳥——一頭閒晃覓食的野鹿（grazer_snap）不經意踏進
+                    // 貼身的 FLUSH_RADIUS 時受驚撲翅竄起（Flushing、頭頂冒 💨）。排在 265 跟食之前：鹿都已
+                    // 踏到腳邊了，受驚驚飛凌駕「湊近跟食」（FLUSH_RADIUS 40 ≪ FORAGE_SEE_RADIUS 200，故只有
+                    // 鹿真的貼身才驚飛、遠處的鹿仍照舊去跟食）。正在傍鹿跟食的鳥（CommensalForaging，刻意
+                    // 貼著鹿）不在本分支（只認 Resting/Wandering），不被自己選擇湊近的鹿驚飛——不破壞 265。
+                    // 掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此分支即短路、改走逃竄——驚飛讓位逃命。
+                    let timer = rng.gen_range(FLUSH_DURATION_MIN..=FLUSH_DURATION_MAX);
+                    a.state = WildlifeState::Flushing { flush_timer: timer };
                 } else if is_bird
                     && !is_night
                     && !threat_near
@@ -8970,6 +9039,144 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "呵欠中遇威脅應立刻閉口逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 279：走獸驚飛棲鳥 ────────────────────────────────────────────
+    #[test]
+    fn tick_flush_stays_aloft_while_timer_remaining() {
+        // 驚飛進行中：計時遞減、狀態維持 Flushing。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Flushing { flush_timer: 1.5 };
+        bird.tick_flush(0.1, None, &mut rng);
+        match bird.state {
+            WildlifeState::Flushing { flush_timer } => {
+                assert!((flush_timer - 1.4).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("驚飛未到期應維持 Flushing，實際 {:?}", bird.state),
+        }
+    }
+
+    #[test]
+    fn tick_flush_returns_to_wander_when_timer_expires() {
+        // 驚飛到期：落回地面回到漫遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Flushing { flush_timer: 0.05 };
+        bird.tick_flush(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "驚飛到期應落回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_flush_noop_on_other_state() {
+        // 防呆：非 Flushing 狀態呼叫 tick_flush 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 3.0 };
+        bird.tick_flush(0.1, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非驚飛狀態呼叫 tick_flush 不該改狀態");
+    }
+
+    #[test]
+    fn flushing_state_str_is_flushing() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Flushing { flush_timer: 1.0 };
+        assert_eq!(bird.state_str(), "flushing");
+    }
+
+    #[test]
+    fn calm_bird_flushes_when_grazing_deer_steps_close() {
+        // 一隻平靜歇息的野鳥，身旁有一頭低頭吃草的野鹿踏進貼身 FLUSH_RADIUS 內。連跑多幀，
+        // 這隻鳥應被驚起、撲翅竄飛（進入 Flushing）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0 + FLUSH_RADIUS - 10.0, 5000.0); // 貼身內
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 }; // 整段維持低頭吃草（在 grazer_snap 裡）
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut flushed = false;
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Flushing { .. }) { flushed = true; break; }
+        }
+        assert!(flushed, "身旁的鹿踏到貼身時，平靜的野鳥應受驚撲翅竄起");
+    }
+
+    #[test]
+    fn bird_not_flushed_by_distant_deer() {
+        // 遠處的鹿不該驚起鳥——只有鹿真的踏到貼身腳邊才驚飛。鹿擺在 FORAGE_SEE_RADIUS 外（不會吸引
+        // 鳥湊近跟食、進而排除「鳥自己飛近鹿後才被驚起」的間接路徑），純驗「鹿不貼身就不驚飛」這道閘。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0 + FORAGE_SEE_RADIUS + 60.0, 5000.0); // 跟食半徑外
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Flushing { .. }), "遠處的鹿不該驚起鳥，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn non_bird_never_flushes() {
+        // 物種專屬：只有野鳥會被走獸驚飛——一頭平靜歇息的野鹿身旁即使緊鄰另一頭吃草的鹿，也永不進入 Flushing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut grazer = adult_at(WildlifeKind::WildDeer, 5000.0 + FLUSH_RADIUS - 10.0, 5000.0);
+        grazer.id = 2;
+        grazer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        mgr.animals = vec![deer, grazer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Flushing { .. }), "非野鳥不該被驚飛，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn foraging_bird_not_flushed_by_its_deer() {
+        // 守 265：一隻正傍著鹿跟食（CommensalForaging，刻意貼著鹿）的鳥，不該被自己選擇湊近的那頭鹿驚飛
+        // （驚飛分支只認 Resting/Wandering），跟食關係不被驚飛打斷。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0 + FLUSH_RADIUS - 10.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Flushing { .. }), "跟食中的鳥不該被自己傍的鹿驚飛，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn flushing_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：驚飛中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻改逃竄（非繼續驚飛撲騰）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Flushing { flush_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false); // 玩家逼到 50px（< FLEE_RADIUS）
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "驚飛中遇威脅應立刻改逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 223：野狐撲鼠 ────────────────────────────────────────────────
