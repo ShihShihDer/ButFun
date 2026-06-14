@@ -852,6 +852,31 @@ const SHELTER_PROB: f32 = 0.05;
 const SHELTER_DURATION_MIN: f32 = 4.0;
 const SHELTER_DURATION_MAX: f32 = 9.0;
 
+// ─── ROADMAP 297：雨後抖水（rain shake-off／雨停後抖落皮毛羽毛上的水珠）──────────────
+// 296 雨中避雨（🌧️）把「動物 × 天氣」這條維度由「下雨時縮身避雨」起了頭——可那筆只演到「雨還在下」。
+// 雨總會停，而雨一停、最招牌的一幕正是被淋濕的動物渾身一抖、把皮毛羽毛上的水珠甩開（狗淋雨後的甩身、
+// 鳥抖鬆羽毛抖落雨水）。本切片給 296 補上「雨後」這後半段，與 296 雨中避雨對成「雨中／雨後」一對：
+// 雨剛停的一小段時間窗（POST_RAIN_WINDOW）內，白天平靜歇息／漫步的草食獸（鹿／鳥／小獸）偶爾停下、
+// 原地用力一抖把身上的雨水甩開（新增 Shaking 狀態、頭頂浮一枚被甩開、四下飛濺的 💦），抖一小陣就鬆下來
+// 回復閒晃。**雨停的瞬間由 set_raining 偵測（raining→not raining 的下降緣）開一段時間窗、tick 逐幀倒數**，
+// 故抖水只在「剛淋過雨」的當口浮現——雨停得久了（窗口耗盡）就不再抖，晴了一整天的乾獸自然不會無端抖水。
+// 逐幀低機率觸發 → 雨一停，剛才縮著避雨的獸群由近而遠錯落地一隻隻抖開水珠（仿 296 避雨的漣漪式起頭），
+// 而非同幀整群瞬間齊抖。**與 296 雨中避雨（🌧️）對成「雨中／雨後」一對、以「正在下雨／雨剛停」乾淨區隔**：
+// 避雨要 is_raining、抖水要 !is_raining 且在雨停窗口內，兩者畫面上永不同時出現。**晝起意**（夜間草食獸
+// 另走夜眠分支，與 296 一致）。**威脅永遠優先**：掠食者／玩家一旦逼進 FLEE_RADIUS 一律改全速奔逃（抖水
+// 永遠讓位逃命）。**只屬於草食獸**（Phase 4 本就只處理獵物，故天然只草食獸觸發）。純啟發式、零 LLM、可測、
+// 零 tick 簽名改動（post_rain 走新增的 manager 欄位、由 set_raining 的下降緣設窗、tick 內逐幀倒數）、
+// 零協議改動（新增的 shaking 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、零 migration、記憶體模式。
+/// 雨停後仍會觸發抖水的時間窗（秒）——雨一停就開窗，逐幀倒數歸零即關。讓抖水只在「剛淋過雨」的當口浮現，
+/// 雨停久了的乾獸不再無端抖水（也給剛才縮著避雨的獸群留足由近而遠錯落抖開的餘裕）。
+const POST_RAIN_WINDOW: f32 = 12.0;
+/// 雨停後平靜的草食獸偶爾停下、用力一抖甩開水珠的逐幀機率——與 296 避雨 SHELTER_PROB(0.05) 同量級：
+/// 偏低，讓抖水是「雨一停、一隻隻陸續抖開水珠」的漣漪式起頭，而非同幀整群瞬間齊抖。
+const SHAKE_PROB: f32 = 0.05;
+/// 一陣抖水的最短／最長時長（秒）——比避雨／反芻更短促的一下下用力抖動（甩水是一陣急抖、非耐著性子的久佇）。
+const SHAKE_DURATION_MIN: f32 = 1.0;
+const SHAKE_DURATION_MAX: f32 = 2.5;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1786,6 +1811,11 @@ enum WildlifeState {
     /// （前端畫成蜷縮定格、頭頂浮一枚 🌧️）。shelter_timer 倒數；雨一停或縮夠了就鬆下來起身回復閒晃；威脅
     /// 一旦真逼進 FLEE_RADIUS 一律改全速奔逃（避雨永遠讓位逃命）。把「動物 × 天氣」這條新維度第一次接起來。
     Sheltering { shelter_timer: f32 },
+    /// ROADMAP 297：雨後抖水——雨剛停的時間窗（POST_RAIN_WINDOW）內，白天平靜的草食獸（鹿／鳥／小獸）
+    /// 偶爾停下、原地用力一抖把皮毛羽毛上的水珠甩開（前端畫成原地急抖、頭頂浮一枚四下飛濺的 💦）。
+    /// shake_timer 倒數，抖一小陣就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（抖水
+    /// 永遠讓位逃命）。與 296 雨中避雨（🌧️）對成「雨中／雨後」一對，把「動物 × 天氣」演完雨停的後半段。
+    Shaking { shake_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2703,6 +2733,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 297：雨後抖水——抖水中（Shaking）原地用力一抖甩開水珠（不更新座標，急抖定格由前端以 💦
+    /// 演繹），shake_timer 倒數。抖夠了一陣就鬆下來、挑家附近的下一個漫遊目標回巡遊。只在 Shaking 狀態下
+    /// 生效（呼叫端已確保此隻為草食獵物、白天、雨剛停的時間窗內、且無威脅逼進 FLEE_RADIUS——那種情形更前面
+    /// 就已改走逃竄，抖水永遠讓位逃命）。與 tick_shelter 同模式，但抖水不繫於 is_raining（雨停才抖、只看計時）。
+    fn tick_shake(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Shaking { shake_timer } = self.state {
+            let remaining = shake_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            self.state = WildlifeState::Shaking { shake_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2914,6 +2960,7 @@ impl Wildlife {
             WildlifeState::Sniffing { .. }   => "sniffing",
             WildlifeState::Skirting { .. }   => "skirting",
             WildlifeState::Sheltering { .. } => "sheltering",
+            WildlifeState::Shaking { .. } => "shaking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -2944,6 +2991,10 @@ pub struct WildlifeManager {
     /// 走欄位而非 tick 參數，以沿用本模組「零 tick 簽名改動」的慣例（避免動到二百餘處 tick 呼叫）。
     /// 預設 false（不下雨），故既有測試無須改動、行為與本切片前逐位元一致。
     raining: bool,
+    /// ROADMAP 297：雨停後仍會觸發抖水的剩餘時間窗（秒）——set_raining 在偵測到雨停（raining→not raining
+    /// 的下降緣）時設為 POST_RAIN_WINDOW、tick 內逐幀倒數至 0。>0 即「剛淋過雨」、草食獸偶爾抖水甩水。
+    /// 預設 0（沒淋過雨、不抖水），故既有測試無須改動、行為與本切片前逐位元一致。
+    post_rain_timer: f32,
 }
 
 impl WildlifeManager {
@@ -2964,11 +3015,18 @@ impl WildlifeManager {
             breed_progress: std::collections::HashMap::new(),
             grief_sites: Vec::new(),
             raining: false,
+            post_rain_timer: 0.0,
         }
     }
 
     /// ROADMAP 296：更新本幀天氣（是否下雨）——game.rs 每幀於 `tick` 前呼叫，餵入後端權威天氣。
+    /// ROADMAP 297：兼偵測「雨停的下降緣」（上幀在下雨、本幀不下雨）——一停就開一段 POST_RAIN_WINDOW
+    /// 的抖水時間窗（tick 內逐幀倒數），讓草食獸只在「剛淋過雨」的當口偶爾抖水甩水。
     pub fn set_raining(&mut self, raining: bool) {
+        if self.raining && !raining {
+            // 雨剛停：開一段抖水時間窗（剛才縮著避雨／淋著雨的獸群，這段時間內偶爾起身抖落水珠）。
+            self.post_rain_timer = POST_RAIN_WINDOW;
+        }
         self.raining = raining;
     }
 
@@ -3084,6 +3142,9 @@ impl WildlifeManager {
         let mut events = Vec::new();
         // ROADMAP 296：本幀天氣（是否下雨）——供 Phase 4 草食獸雨中避雨判定（game.rs 已於 tick 前更新）。
         let is_raining = self.raining;
+        // ROADMAP 297：雨停後的抖水時間窗逐幀倒數；post_rain 為真表「剛淋過雨」、供 Phase 4 草食獸抖水判定。
+        self.post_rain_timer = (self.post_rain_timer - dt).max(0.0);
+        let post_rain = self.post_rain_timer > 0.0;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4274,6 +4335,15 @@ impl WildlifeManager {
                     } else {
                         a.tick_shelter(dt, is_raining, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Shaking { .. }) {
+                    // ROADMAP 297：已在雨後抖水——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（抖水永遠
+                    // 讓位逃命），否則原地用力一抖把水珠甩開、計時倒數，抖夠了一陣就鬆下來起身回巡遊。與 296
+                    // 避雨同模式：一段平靜時的定格小動作，遇險即讓位逃命。抖水不繫於天氣（雨停才抖、只看計時）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_shake(dt, rng);
+                    }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
@@ -4370,6 +4440,24 @@ impl WildlifeManager {
                     // Sheltering 續算分支即改全速奔逃（避雨永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(SHELTER_DURATION_MIN..=SHELTER_DURATION_MAX);
                     a.state = WildlifeState::Sheltering { shelter_timer: timer };
+                } else if !is_night
+                    && !is_raining
+                    && post_rain
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SHAKE_PROB
+                {
+                    // ROADMAP 297：雨後抖水——白天（!is_night）雨剛停（!is_raining 且仍在 post_rain 時間窗內）時，
+                    // 平靜歇息／漫步的草食獸（鹿／鳥／小獸；Phase 4 本就只處理獵物，故天然只草食獸觸發）偶爾停下、
+                    // 原地用力一抖把皮毛羽毛上的水珠甩開（轉入 Shaking 💦）。逐幀低機率觸發 → 雨一停，剛才縮著避雨的
+                    // 獸群由近而遠錯落地一隻隻抖開水珠，而非同幀整群瞬間齊抖。**與 296 雨中避雨對成「雨中／雨後」一對、
+                    // 以「正在下雨／雨剛停」乾淨區隔**：避雨要 is_raining（落在上面那支），抖水要 !is_raining 且在雨停
+                    // 窗口內，兩者畫面上永不同時出現——把「動物 × 天氣」這條維度從「下雨時縮身避雨」演到「雨停後抖落水珠」。
+                    // **排在 296 避雨之後**（正在下雨時先避雨、雨停了才抖水，順序天然不爭）；沿用 296 一系「恐懼分支之後、
+                    // 白晝玩樂之前」的位置。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Shaking 續算分支即改全速
+                    // 奔逃（抖水永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(SHAKE_DURATION_MIN..=SHAKE_DURATION_MAX);
+                    a.state = WildlifeState::Shaking { shake_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -11734,6 +11822,188 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(w.state, WildlifeState::Sheltering { .. }), "掠食者不該避雨，實際 {:?}", w.state);
+        }
+    }
+
+    // ─── ROADMAP 297：雨後抖水（rain shake-off）──────────────────────────────
+    #[test]
+    fn tick_shake_holds_position_until_timer_expires() {
+        // 抖水進行中：原地不動（座標不變）、計時遞減、狀態維持 Shaking。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Shaking { shake_timer: 2.0 };
+        deer.tick_shake(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Shaking { shake_timer } => {
+                assert!((shake_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("抖水未到期應維持 Shaking，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "抖水應原地不動");
+    }
+
+    #[test]
+    fn tick_shake_returns_to_wander_when_timer_expires() {
+        // 抖夠了一陣：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Shaking { shake_timer: 0.05 };
+        critter.tick_shake(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_shake_noop_on_other_state() {
+        // 防呆：非 Shaking 狀態呼叫 tick_shake 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_shake(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非抖水狀態呼叫 tick_shake 不該改狀態");
+    }
+
+    #[test]
+    fn shaking_state_str_is_shaking() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Shaking { shake_timer: 1.0 };
+        assert_eq!(deer.state_str(), "shaking");
+    }
+
+    #[test]
+    fn calm_prey_eventually_shakes_after_rain_stops() {
+        // 雨剛停：一頭平靜、四下無威脅的鹿，在雨停後的時間窗內連跑多幀應有機會停下抖水（進入 Shaking）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);  // 先下雨
+        mgr.set_raining(false); // 雨剛停 → 開抖水時間窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut shook = false;
+        // POST_RAIN_WINDOW(12s) / dt(0.1) ≈ 120 幀內要抖到（機率 0.05/幀，window 內期望觸發數遠大於 1）
+        for _ in 0..120 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、雨已停
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Shaking { .. }) {
+                shook = true;
+                break;
+            }
+        }
+        assert!(shook, "雨剛停、平靜無威脅的鹿應在抖水時間窗內偶爾停下抖水");
+    }
+
+    #[test]
+    fn prey_does_not_shake_without_rain_ever() {
+        // 沒淋過雨就不抖：從未下過雨（post_rain_timer 一直為 0）時，平靜的鹿連跑多幀都不該進入 Shaking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        // 不呼叫 set_raining → 從未下雨、無抖水時間窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shaking { .. }), "沒淋過雨不該抖水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_shake_after_window_expires() {
+        // 雨停久了（窗口耗盡）就不再抖：雨停後先空跑足以耗盡 POST_RAIN_WINDOW(12s) 的時間，
+        // 此後平靜的鹿連跑多幀都不該再進入 Shaking（晴了一整天的乾獸不會無端抖水）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        // 直接讓牠處於漫遊（避開抖水起意需要的 Resting/Wandering 也行；用 Wandering 確保不誤判）
+        deer.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        mgr.set_raining(false); // 開窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 先空跑 13 秒（>12s 窗口）耗盡時間窗——途中可能抖一陣，但窗口耗盡後就該止住
+        for _ in 0..130 {
+            mgr.tick(0.1, &[], &att, &[], false);
+        }
+        // 此後再連跑多幀都不該抖水
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shaking { .. }), "雨停久了不該再抖水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_shake_while_still_raining() {
+        // 與 296 區隔：雨還在下時走避雨、不走抖水——下雨期間平靜的鹿連跑多幀都不該進入 Shaking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true); // 持續下雨
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.set_raining(true); // 每幀仍在下雨（不觸發下降緣、不開窗）
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shaking { .. }), "下雨中應避雨、不抖水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn shaking_prey_gives_way_to_flee() {
+        // 抖水永遠讓位逃命：抖水中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Shaking { shake_timer: 1.0e9 }; // 抖得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn prey_does_not_shake_at_night() {
+        // 晝起意：夜間草食獸另走夜眠分支——即便雨剛停，夜裡連跑多幀都不該進入 Shaking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        mgr.set_raining(false); // 開窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..120 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shaking { .. }), "夜間草食獸不該抖水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn predator_never_shakes_after_rain() {
+        // 物種專屬：抖水只發生在草食獵物 phase——掠食者即便在雨剛停的窗口內，連跑多幀都不該進入 Shaking。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_raining(true);
+        mgr.set_raining(false); // 開窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..120 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Shaking { .. }), "掠食者不該抖水，實際 {:?}", w.state);
         }
     }
 
