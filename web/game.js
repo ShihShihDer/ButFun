@@ -12244,6 +12244,57 @@
     return flies;
   }
 
+  // ── ROADMAP 257: 滑鼠拂過驚動草地小生命（彩蝶／紅蜻蜓／寒雀／春夜螢火共用）────────────
+  // 這群裝飾性小生命都用「畫面比例座標」飄移、與滑鼠游標同座標系，故能讓游標靠近時把牠們驚開。
+  // 三支 DOM-free 純函式 + 一支就地更新驚動標量的 helper，四個繪製迴圈共用一份。
+  const STARTLE_RADIUS = 92;   // 驚動半徑（螢幕像素）：游標進此半徑內，小生命開始受驚閃避
+  const STARTLE_PUSH = 64;     // 最大推開距離（螢幕像素）：游標正中時把生命推開的位移上限
+
+  // 純函式：游標驚動目標強度 [0,1]。dx,dy＝自身−游標的螢幕向量；游標在 radius 外回 0、正中回 1、線性內插。壞值退 0。
+  function pointerStartleTarget(dx, dy, radius) {
+    if (!(radius > 0)) return 0;
+    const d = Math.hypot(dx, dy);
+    if (!(d < radius)) return 0;
+    return 1 - d / radius;
+  }
+
+  // 純函式：把驚動標量 cur 朝 target 平滑——驚起快（RISE）、平復慢（FALL），賣「猛地一驚、緩緩定神」。壞值退 0。
+  function startleStep(cur, target, dt) {
+    const RISE = 8.0, FALL = 1.6;   // 每秒逼近速率（驚起 ~0.12 秒到位、平復 ~0.6 秒淡回）
+    if (!(cur >= 0)) cur = 0;
+    if (!(target >= 0)) target = 0;
+    const rate = target > cur ? RISE : FALL;
+    const d = Math.max(0, dt || 0) * rate;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：依驚動標量 st 沿「遠離游標」方向算螢幕像素偏移 {ox,oy}。dx,dy＝自身−游標；st≤0 或重疊時回零。
+  function startleOffset(dx, dy, st, maxPush) {
+    if (!(st > 0)) return { ox: 0, oy: 0 };
+    const d = Math.hypot(dx, dy);
+    if (!(d > 1e-4)) return { ox: 0, oy: 0 };
+    const k = (st * maxPush) / d;          // 單位方向 ×（強度×上限）
+    return { ox: dx * k, oy: dy * k };
+  }
+
+  // 取當前游標的繪製座標（讀既有 hoverScreen 滑鼠 hover、扣 canvas rect 偏移）；無 hover（如觸控裝置）回 null。
+  function activePointerPx() {
+    if (!hoverScreen) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { x: hoverScreen.x - rect.left, y: hoverScreen.y - rect.top };
+  }
+
+  // 就地更新一隻小生命的驚動標量 fly._st，回這幀該疊加的螢幕像素偏移 {ox,oy}。
+  // px,py＝該生命本幀的螢幕座標；ptr＝游標螢幕座標或 null。偏移是純疊加層、游標離開即衰減歸零，不動本體 x/y。
+  function flyStartle(fly, px, py, ptr, dt) {
+    const dx = ptr ? px - ptr.x : 0, dy = ptr ? py - ptr.y : 0;
+    const target = ptr ? pointerStartleTarget(dx, dy, STARTLE_RADIUS) : 0;
+    fly._st = startleStep(fly._st || 0, target, dt);
+    return startleOffset(dx, dy, fly._st, STARTLE_PUSH);
+  }
+
   // 每幀更新並繪製春夜螢火。非春夜時 _fireflyFade 緩緩歸零、池清空、零開銷早退。
   // 畫在夜空與乙太微光（19/232）之後——螢火是貼地的前景氛圍，比天象更靠近觀者；用畫面座標、不隨鏡頭平移。
   function drawFireflies(now, dt) {
@@ -12258,6 +12309,8 @@
     const t = now / 1000;
     const step = Math.max(0, dt || 0);
 
+    const ptr = activePointerPx();   // 游標螢幕座標（驚動用），無 hover 回 null
+
     ctx.save();
     ctx.globalCompositeOperation = "lighter";   // 加色，螢火像疊在夜色上的點點黃綠光
     for (const f of _fireflies) {
@@ -12268,7 +12321,8 @@
       if (f.y < 0.52) f.y = 0.98; else if (f.y >= 0.98) f.y = 0.52;
       const a = _fireflyFade * fireflyPulse(t * f.tws + f.phase);
       if (a < 0.02) continue;
-      const px = f.x * W, py = f.y * H;
+      const { ox, oy } = flyStartle(f, f.x * W, f.y * H, ptr, step);   // 游標驚動：朝外閃避的螢幕像素偏移
+      const px = f.x * W + ox, py = f.y * H + oy;
       const r = f.size * 2.4;
       const g = ctx.createRadialGradient(px, py, 0, px, py, r);
       g.addColorStop(0, `rgba(190,255,130,${(a * 0.9).toFixed(3)})`);  // 中心黃綠
@@ -12378,14 +12432,17 @@
     const W = viewW, H = viewH;
     const t = now / 1000;
     const step = Math.max(0, dt || 0);
+    const ptr = activePointerPx();   // 游標螢幕座標（驚動用），無 hover 回 null
 
     for (const b of _butterflies) {
       // 水平緩漂＋正弦繞圈擺動，合成翩翩飄飛的軌跡；飄出左右界從另一側繞回，垂直只在草地帶內輕擺。
       b.x += b.vx * step;
       if (b.x < -0.02) b.x += 1.04; else if (b.x > 1.02) b.x -= 1.04;
       const wobY = Math.sin(t * b.wobs + b.wob) * 0.025;   // 上下翩然起伏（畫面高度 ±2.5%）
-      const px = b.x * W;
-      const py = (b.y + wobY) * H;
+      const bpx = b.x * W, bpy = (b.y + wobY) * H;
+      const { ox, oy } = flyStartle(b, bpx, bpy, ptr, step);   // 游標驚動：朝外閃避的螢幕像素偏移
+      const px = bpx + ox;
+      const py = bpy + oy;
       const r = b.size;
       const spread = butterflyFlap(t * b.flaps + b.flap);
       drawOneButterfly(px, py, r, spread, b.col, _butterflyFade * 0.95);
@@ -12505,6 +12562,8 @@
     const W = viewW, H = viewH;
     const t = now / 1000;
 
+    const ptr = activePointerPx();   // 游標螢幕座標（驚動用），無 hover 回 null
+
     for (const d of _dragonflies) {
       // 停—衝循環：相位累進，跨越整數邊界（一個循環結束）就把上次目標收為新起點、再就近抽下一個疾射目標。
       const prev = d.dphase;
@@ -12517,8 +12576,10 @@
         if (dxn * dxn + dyn * dyn > 1e-6) d.ang = Math.atan2(dyn * H, dxn * W);      // 朝疾射方向（依實際像素比例算角度）
       }
       const k = dragonflyDart(d.dphase);                        // 0（懸停）→1（到位）的停—衝位移進度
-      const px = (d.sx + (d.tx - d.sx) * k) * W;
-      const py = (d.sy + (d.ty - d.sy) * k) * H;
+      const bpx = (d.sx + (d.tx - d.sx) * k) * W;
+      const bpy = (d.sy + (d.ty - d.sy) * k) * H;
+      const off = flyStartle(d, bpx, bpy, ptr, dt || 0);        // 游標驚動：朝外閃避的螢幕像素偏移
+      const px = bpx + off.ox, py = bpy + off.oy;
       const buzz = dragonflyWingBuzz(t * d.wfreq + d.wphase);
       drawOneDragonfly(px, py, d.size, d.ang, buzz, d.col, _dragonflyFade * 0.9);
     }
@@ -12650,6 +12711,8 @@
     const W = viewW, H = viewH;
     const t = now / 1000;
 
+    const ptr = activePointerPx();   // 游標螢幕座標（驚動用），無 hover 回 null
+
     for (const b of _sparrows) {
       // 蹦跳循環：相位累進，跨越整數邊界（一個循環結束）就把上次落點收為新起點、再就近抽下一個蹦躍落點。
       const prev = b.hphase;
@@ -12663,8 +12726,10 @@
       }
       const k = sparrowHopProgress(b.hphase);                  // 0（原地啄食）→1（蹦到位）的蹦跳位移進度
       const arc = sparrowHopArc(k);                            // 蹦躍中段的拋物線抬升（0→1→0）
-      const px = (b.sx + (b.tx - b.sx) * k) * W;
-      const py = (b.sy + (b.ty - b.sy) * k) * H - arc * b.size * 4.0; // 蹦躍弧度（往上抬幾倍身高）
+      const bpx = (b.sx + (b.tx - b.sx) * k) * W;
+      const bpy = (b.sy + (b.ty - b.sy) * k) * H - arc * b.size * 4.0; // 蹦躍弧度（往上抬幾倍身高）
+      const off = flyStartle(b, bpx, bpy, ptr, dt || 0);       // 游標驚動：朝外閃避的螢幕像素偏移
+      const px = bpx + off.ox, py = bpy + off.oy;
       // 停（k≈0）時才點頭啄食；蹦躍中（k>0）展翅、不啄食。
       const peck = k < 0.02 ? sparrowPeck(t * b.pfreq + b.pphase) : 0;
       const flap = k > 0.02 && k < 0.98 ? 1 : 0;
