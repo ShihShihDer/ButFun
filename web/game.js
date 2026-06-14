@@ -60,7 +60,9 @@
     if (clayLoadStarted) return;
     clayLoadStarted = true;
     const names = ["tree", "rock", "ether_ore", "star_crystal", "scrap_drone",
-                   "ether_orb", "wheat", "carrot", "potato", "resident", "player"];
+                   "ether_orb", "wheat", "carrot", "potato", "resident", "player",
+                   "player_1", "player_2", "player_3", "player_4", "player_5",
+                   "resident_1", "resident_2", "resident_3", "resident_4", "resident_5"];
     for (const n of names) {
       const img = new Image();
       img.src = `assets/clay/${n}.png?v=1`;
@@ -69,6 +71,16 @@
   }
   if (renderStyle === "clay") loadClayArt();
   const clayOk = (n) => renderStyle === "clay" && CLAY[n] && CLAY[n].complete && CLAY[n].naturalWidth > 0;
+
+  // 依實體 id 穩定挑一個外觀變體（base_1..base_N）：變體圖載到了才用，否則退回單張 base。
+  // 同一 id 永遠對到同一變體（雜湊決定），讓玩家/居民彼此長得不同、又不會每幀跳動。
+  function clayVariantKey(base, id, count) {
+    if (renderStyle !== "clay") return base;
+    let h = 0; const s = String(id == null ? "" : id);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    const vk = base + "_" + ((h % count) + 1);
+    return clayOk(vk) ? vk : base;
+  }
 
   // 黏土地面紋理（無縫 512 圖）：地面 tile 也換黏土，配合 sprite 成「全黏土世界」。
   // 與 sprite 同樣惰性載入（只切到 clay 才抓），各圖載失敗時對應地面自動退回原本底色/tileset。
@@ -3939,7 +3951,7 @@
     // 黏土風玩家：單張底圖 + 停格式彈跳/擠壓（移動）或呼吸（站立），朝左水平翻轉。
     // 走 clay 路徑自帶停格 bob，故以 sy（地面）為底，不用 by（避免與既有 bob 疊加）。
     // 上方 drawGroundShadow 已畫過腳下柔影，這裡不重複畫 shadow。
-    const drewClayPlayer = (renderStyle === "clay") && drawClaySprite("player", sx, sy + 14, 40, {
+    const drewClayPlayer = (renderStyle === "clay") && drawClaySprite(clayVariantKey("player", p.id, 5), sx, sy + 14, 40, {
       animate: true, moving: p.moving, walk: p.walk, flip: dir === 1,
     });
     if (drewClayPlayer) {
@@ -13023,7 +13035,7 @@
     const sway = reduceMotion ? 0 : Math.sin(t * 2.2 + idx * 1.1) * 1.5;
     // 黏土風居民：單張黏土底圖 + 站立呼吸 + 落地柔影；名字/HP/心情/警示泡泡仍照舊疊上。
     // 居民無精確「移動中」旗標，這裡一律走站立呼吸（極輕微、reduceMotion 時關）。
-    const drewClayResident = (renderStyle === "clay") && drawClaySprite("resident", sx, by + 22, 38, {
+    const drewClayResident = (renderStyle === "clay") && drawClaySprite(clayVariantKey("resident", id, 5), sx, by + 22, 38, {
       animate: true, moving: false, shadow: 12,
     });
     if (!drewClayResident) {
