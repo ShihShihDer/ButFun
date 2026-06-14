@@ -1541,6 +1541,42 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+                // ROADMAP 245：入夜聚會閒談——入夜後圍聚在聚會點的兩位主要 NPC 彼此攀談，
+                // 語氣隨 npc_relations 好感冷暖流動。與 244（白天、NPC↔居民）對成晝夜一對。
+                // 頻率溫和（每隔 GATHER_INTERVAL 才一組）、純啟發式零 LLM。
+                {
+                    const GATHER_INTERVAL_SECS: u64 = 20;
+                    let gather_ticks = GATHER_INTERVAL_SECS * TICK_HZ as u64;
+                    if current_phase == crate::daynight::Phase::Night
+                        && tick % gather_ticks == 0
+                        && tick > 0
+                    {
+                        let relations_ref = app.npc_relations.read().unwrap();
+                        // major_npcs 已含村裡主要 NPC 的即時（夜間聚會）位置（旅人入夜多半不在場）。
+                        if let Some(chat) =
+                            crate::npc_gather::pick_gather_pair(&major_npcs, &relations_ref, tick as usize)
+                        {
+                            drop(relations_ref);
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: chat.speaker_id,
+                                npc_name: chat.speaker_name,
+                                text: chat.speaker_text,
+                                display_secs: 6,
+                                wx: chat.speaker_x,
+                                wy: chat.speaker_y,
+                            }));
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: chat.listener_id,
+                                npc_name: chat.listener_name,
+                                text: chat.listener_text,
+                                display_secs: 6,
+                                wx: chat.listener_x,
+                                wy: chat.listener_y,
+                            }));
+                        }
+                    }
+                }
+
                 // ROADMAP 118：居民思想泡泡——廣播 NpcSpeech，前端在居民頭頂繪製泡泡。
                 if !thought_events.is_empty() {
                     let (phase, weather) = {
