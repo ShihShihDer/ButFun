@@ -35,6 +35,10 @@ const FLEE_SPEED: f32 = 200.0;
 /// 驚逃計時器（秒）。
 const FLEE_DURATION: f32 = 4.5;
 
+/// ROADMAP 260：野狐避狼——和平的野狐察覺此半徑內有野狼逼近，便背向退走、把地盤讓給頂級掠食者。
+/// 取值落在護幼威嚇半徑（90）與敵視偵測半徑（200）之間：狼要「晃近」才避，不會狼一出現在遠處就跑。
+const FOX_AVOID_WOLF_RADIUS: f32 = 160.0;
+
 /// 閒晃速度（像素/秒）——獵物。
 const WANDER_SPEED: f32 = 35.0;
 /// 閒晃速度——捕食者（稍快）。
@@ -1639,6 +1643,13 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 260：野狐避狼——本幀存活野狼座標快照，供 Phase 3 讓和平的野狐察覺逼近的野狼後
+        // 背向退走（中型掠食者讓位頂級掠食者）。取全部存活野狼即可（連在獵食/歇息的狼對狐都是威脅）。
+        let wolf_positions: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildWolf)
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ROADMAP 214：母獸護幼——正在護幼的成體位置快照（種類＋座標），供 Phase 3 把逼近的
         // 同種掠食者嚇退。刻意在此處（變更前）取一次，反映上一幀設下的 Defending 狀態：
         // 掠食者本幀讀到、放棄狩獵，成體本幀（Phase 4）再依當下威脅刷新護衛——一幀延遲、自然。
@@ -1811,6 +1822,21 @@ impl WildlifeManager {
                 });
                 if driven_off {
                     self.animals[i].state = WildlifeState::Returning;
+                    continue;
+                }
+            }
+
+            // ROADMAP 260：野狐避狼——和平的野狐察覺 FOX_AVOID_WOLF_RADIUS 內有野狼，就放下手邊的
+            // 閒晃／撲鼠／巡遊，背向那頭狼退走（中型掠食者讓位頂級掠食者）。在 match 前統一攔截：
+            // 不論潛行／撲跳／閒晃，狼一近就一律先讓道。複用既有 Fleeing 退竄管線（無新狀態、無新欄位）：
+            // 設為背向最近野狼的 Fleeing，再呼叫既有 tick_idle 走一步退避、continue（本幀讓位給退避、不狩獵）。
+            // 攔截每幀重設方向與計時，故狼還在範圍內就持續退；狼一走遠攔截不再觸發，野狐自然回復常態。
+            if pred_kind == WildlifeKind::WildFox {
+                if let Some((wx, wy)) = nearest_in_range(pred_x, pred_y, &wolf_positions, FOX_AVOID_WOLF_RADIUS) {
+                    let (vx, vy) = flee_velocity_away(pred_x, pred_y, wx, wy);
+                    let a = &mut self.animals[i];
+                    a.state = WildlifeState::Fleeing { vx, vy, flee_timer: FLEE_DURATION };
+                    a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, &mut self.rng);
                     continue;
                 }
             }
@@ -2505,6 +2531,20 @@ impl WildlifeManager {
 }
 
 // ─── 輔助函式 ────────────────────────────────────────────────────────────────
+
+/// ROADMAP 260：野狐避狼——回傳由威脅源 (from_x, from_y) 指向自身 (x, y) 的「背向」速度向量
+/// （正規化後乘 `FLEE_SPEED`），供呼叫端把野狐設為背向野狼退走的 `Fleeing`。座標重合（距離極小）
+/// 時退回一個固定方向（正 x，量值仍為 `FLEE_SPEED`），避免除以零產生 NaN。純函式、無副作用、可測。
+fn flee_velocity_away(x: f32, y: f32, from_x: f32, from_y: f32) -> (f32, f32) {
+    let dx = x - from_x;
+    let dy = y - from_y;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0e-3 {
+        // 重合：無明確背向，退回固定方向（不產生 NaN）。
+        return (FLEE_SPEED, 0.0);
+    }
+    (dx / len * FLEE_SPEED, dy / len * FLEE_SPEED)
+}
 
 fn nearest_in_range(ax: f32, ay: f32, pts: &[(f32, f32)], radius: f32) -> Option<(f32, f32)> {
     let r2 = radius * radius;
@@ -5534,7 +5574,8 @@ mod tests {
         howler.id = 1;
         // 給極長的計時，讓牠整段測試都維持長嚎（持續發聲源）。
         howler.state = WildlifeState::Howling { howl_timer: 1.0e9 };
-        let mut listener = adult_at(WildlifeKind::WildFox, 5100.0, 5000.0); // 在 HOWL_HEAR_RADIUS 內
+        // 用野狼當聽眾（群嚎 218 本是野狼社交行為；野狐改走 260 避狼、不會留在狼旁接嚎）。
+        let mut listener = adult_at(WildlifeKind::WildWolf, 5100.0, 5000.0); // 在 HOWL_HEAR_RADIUS 內
         listener.id = 2;
         listener.state = WildlifeState::Resting { rest_timer: 1.0e9 };
         mgr.animals = vec![howler, listener];
@@ -6375,5 +6416,60 @@ mod tests {
                 "野狐不該被牽動加入野狼的圍獵，實際 {:?}", f.state,
             );
         }
+    }
+
+    // ── ROADMAP 260：野狐避狼 ──────────────────────────────────────────────────
+    #[test]
+    fn flee_velocity_away_points_away_and_has_flee_speed() {
+        // 狼在自身右側 → 背向向量應指向左（vx 為負），量值等於 FLEE_SPEED。
+        let (vx, vy) = flee_velocity_away(5000.0, 5000.0, 5100.0, 5000.0);
+        assert!(vx < 0.0, "應背向右側的狼往左退，vx={vx}");
+        assert!((vy).abs() < 1.0e-3, "純水平退避時 vy 應約 0，vy={vy}");
+        let mag = (vx * vx + vy * vy).sqrt();
+        assert!((mag - FLEE_SPEED).abs() < 1.0e-2, "退避量值應為 FLEE_SPEED，實際 {mag}");
+    }
+
+    #[test]
+    fn flee_velocity_away_coincident_is_finite() {
+        // 座標重合（狼正好疊在狐身上）：不得產生 NaN，量值仍為 FLEE_SPEED。
+        let (vx, vy) = flee_velocity_away(5000.0, 5000.0, 5000.0, 5000.0);
+        assert!(vx.is_finite() && vy.is_finite(), "重合不得產生 NaN，({vx},{vy})");
+        let mag = (vx * vx + vy * vy).sqrt();
+        assert!((mag - FLEE_SPEED).abs() < 1.0e-2, "重合退避量值仍應為 FLEE_SPEED，實際 {mag}");
+    }
+
+    #[test]
+    fn fox_flees_nearby_wolf() {
+        // 和平的野狐右側 100px 處（在 FOX_AVOID_WOLF_RADIUS=160 內）有一頭野狼 → 野狐應背向退走。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 5.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5100.0, 5000.0);
+        wolf.id = 2;
+        mgr.animals = vec![fox, wolf];
+        let att: std::collections::HashMap<WildlifeKind, i32> = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(matches!(f.state, WildlifeState::Fleeing { .. }),
+            "野狐近狼時應轉入 Fleeing 退避，實際 {:?}", f.state);
+        assert!(f.x < 5000.0, "野狐應背向右側的狼往左退（x 變小），實際 x={}", f.x);
+    }
+
+    #[test]
+    fn fox_ignores_distant_wolf() {
+        // 野狼遠在 FOX_AVOID_WOLF_RADIUS 之外（400px）→ 野狐照常、不因避狼而轉入 Fleeing。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 5.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5400.0, 5000.0);
+        wolf.id = 2;
+        mgr.animals = vec![fox, wolf];
+        let att: std::collections::HashMap<WildlifeKind, i32> = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|a| a.id == 1).unwrap();
+        assert!(!matches!(f.state, WildlifeState::Fleeing { .. }),
+            "野狼在避狼半徑外，野狐不該退避，實際 {:?}", f.state);
     }
 }
