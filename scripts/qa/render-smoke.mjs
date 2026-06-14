@@ -657,6 +657,23 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 秋夜薄霧：乾淨");
 }
 
+// 雷雨閃電（243）：草原暴雨（grassland_rain，intensity 0.85 > 0.55）→ 跑 drawLightning 的繪製分支
+//（首記延遲 ~1.2s 後點燃→全屏冷藍白泛光急衰＋分叉電光一瞬→熄滅→排下一記）。首記延遲 ~75 幀、
+// 單記 ~47 幀，故連跑 ~200 幀（每幀 +16ms ≈ 3.2s）實跑完整「點燃→泛光＋電光→熄滅→排下一記」路徑。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：草原暴雨（雷雨閃電，連跑 200 幀觸發閃電泛光＋分叉電光）──");
+  const stormSnap = JSON.parse(JSON.stringify(snapshot));
+  stormSnap.daynight = { phase: "day", light: 0.6, night_danger: false }; // 陰雨白天
+  stormSnap.weather = { weather_type: "grassland_rain", intensity: 0.85 }; // 暴雨（> 0.55 門檻）
+  lastWS.onmessage({ data: JSON.stringify({ ...stormSnap, type: "snapshot" }) });
+  const r = pump("雷雨閃電", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 雷雨閃電：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雷雨閃電：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 雷雨閃電：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
