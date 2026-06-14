@@ -428,6 +428,10 @@
   // 當前地面季節染色，逐幀向 seasonGroundTintTarget(currentSeason) 逼近。初值＝夏（基準、不染）。
   let _groundTint = { r: 120, g: 180, b: 70, a: 0.0 };
 
+  // 冬日結冰水面（ROADMAP 242）：入冬時水域緩緩覆上冷白冰光、波光收斂。當前冰覆強度 [0,1]，
+  // 逐幀向 iceTargetCover(currentSeason) 逼近（冬=1、其餘=0）。初值 0（盛夏、水不結冰）。
+  let _iceCover = 0.0;
+
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4117,9 +4121,11 @@
     // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     updateGroundTint(_weatherDt); // 四季草色（235）：先把地面季節染色向當季目標推進一幀，再畫地表
+    updateWaterIce(_weatherDt);   // 冬日結冰水面（242）：把水域冰覆向當季目標推進一幀，供波光/倒影/冰光共用
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
+    safeDraw("waterIce", () => drawWaterIce(camX, camY)); // 冬日結冰水面（242），冬季水面覆冷白冰光＋淡裂紋、波光之上映日映月之下
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
@@ -10297,6 +10303,100 @@
     ctx.restore();
   }
 
+  // ── 冬日結冰水面（ROADMAP 242）──────────────────────────────────────────────
+  // 235 讓四季第一次染到「地面」本身（草地隨季換色），但有一塊地表始終置身季節之外：水域。
+  // 入冬時草地鋪了薄霜、天上飄起雪（226），玩家腳邊的池水卻依舊一汪盛夏的湛藍、照常粼粼蕩漾，
+  // 與凍天雪地格格不入。本切片讓水域第一次也會「結冰」：入冬時水面緩緩覆上一層冷白冰光、浮起幾道
+  // 淡淡的裂紋，原本活潑的波光（195）與映日映月（202）同步收斂——結冰的水不再蕩漾，只剩一面靜靜
+  // 反著冷光的冰。跨季以 _iceCover 逐幀向當季目標 lerp（入冬緩緩凍上、開春緩緩消融），不突然蓋一屏冰。
+  // 延續視覺精緻化季節線（226~235）與水域線（195/196/202）——補上「季節 → 水面」這塊唯一漏掉的維度。
+  // 純前端 Canvas 2D、效能優先、讀既有 currentSeason＋daynight、零後端、零協議改動。
+  // 下面四個純函式抽出來、無 DOM／可單元自驗。
+  const ICE_FADE_RATE          = 0.22;  // 結冰/消融跨季 lerp 速率（/秒）：約 4.5 秒凍滿/化盡，慢過下雪、像水「漸漸」凍上
+  const ICE_SHEEN_MAX_ALPHA    = 0.42;  // 冰面冷白覆光峰值不透明度（半透明、不全蓋掉水色，仍透出底下深藍）
+  const ICE_CRACK_DENSITY      = 0.82;  // sceneryHash 高於此的冰格才浮裂紋（疏，成「幾道」而非滿版裂痕）
+  const ICE_CRACK_ALPHA        = 0.16;  // 單道冰裂紋不透明度（極淡冷白細線，再乘 _iceCover 淡入）
+  const WATER_ICE_SHIMMER_DAMP = 0.85;  // 結冰時波光（195）被壓抑的比例（凍滿時只剩 15% 蕩漾）
+  const WATER_ICE_GLINT_DAMP   = 0.80;  // 結冰時映日映月（202）倒影被壓抑的比例
+
+  // 純函式：當季冰覆目標 [0,1]。只在冬季結冰（回 1），其餘季節回 0（水化開）。無 DOM、可測。
+  function iceTargetCover(season) {
+    return season === "winter" ? 1 : 0;
+  }
+
+  // 純函式：把目前冰覆 cur 朝 target 以固定速率（每秒 ICE_FADE_RATE）逼近，夾在 [0,1]。
+  // 入冬時冰緩緩凍上、開春時緩緩消融，跨季不突然蓋上/掀掉一整屏冰。壞值（NaN）退回 0。無 DOM、可測。
+  function iceFadeStep(cur, target, dt) {
+    if (!(cur >= 0)) cur = 0;
+    const d = Math.max(0, dt) * ICE_FADE_RATE;
+    if (cur < target) return Math.min(target, cur + d);
+    if (cur > target) return Math.max(target, cur - d);
+    return cur;
+  }
+
+  // 純函式：冰面冷白覆光色溫 {r,g,b}。白天亮冷白、破曉/黃昏沾一絲暖霞、夜裡轉清冷月藍。無 DOM、可測。
+  function iceSheenTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 226, g: 232, b: 240 }; // 晨昏：微暖的冷白
+    if (light >= 0.5) return { r: 224, g: 240, b: 252 };                          // 白天：亮冷白
+    return { r: 188, g: 206, b: 232 };                                            // 夜：清冷月藍
+  }
+
+  // 純函式：冰面覆光整體不透明度 [0,1]。隨冰覆 cover 成正比、白天略亮夜裡略沉（冰在日光下更白）。無 DOM、可測。
+  function iceSheenAlpha(cover, light) {
+    const c = Math.max(0, Math.min(1, cover));
+    const L = Math.max(0, Math.min(1, light));
+    return c * (0.7 + 0.3 * L) * ICE_SHEEN_MAX_ALPHA;
+  }
+
+  // 每幀把冰覆向當季目標推進一格。在畫水面冰之前呼叫（與 updateGroundTint 同模式）。
+  function updateWaterIce(dt) {
+    _iceCover = iceFadeStep(_iceCover, iceTargetCover(currentSeason), dt);
+  }
+
+  // 每幀在可見水域 tile 上覆一層冬日冰光＋幾道淡裂紋。由獨立 safeDraw 呼叫，畫在波光（195）之上、
+  // 映日映月（202）之下——結冰的水面仍可透出一抹被壓抑的冷光。非冬季 _iceCover 歸零後整層早退、零開銷。
+  function drawWaterIce(camX, camY) {
+    if (_iceCover <= 0.01) return;  // 非冬季/已化開：整層不畫
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = iceSheenTint(light, phase);
+    const sheenA = iceSheenAlpha(_iceCover, light);
+    if (sheenA <= 0.004) return;
+
+    // 與 drawGround／drawWaterShimmer 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    const fill = `rgba(${tint.r},${tint.g},${tint.b},${sheenA.toFixed(3)})`;
+    const crackStroke = `rgba(235,244,255,${(ICE_CRACK_ALPHA * _iceCover).toFixed(3)})`;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "water") continue;
+        const sx = tx * TS - camX;
+        const sy = ty * TS - camY;
+        // 冰面：整格覆一層半透明冷白（透出底下水色）
+        ctx.fillStyle = fill;
+        ctx.fillRect(sx, sy, TS, TS);
+        // 裂紋：疏落幾格才浮一道淡冷白細線，端點由確定性 hash 決定（同格永遠同紋、不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 29 + 5, ty * 31 + 8);
+        if (h0 < ICE_CRACK_DENSITY) continue;
+        const h1 = sceneryHash(tx * 7 + 3, ty * 13 + 6);
+        const h2 = sceneryHash(tx * 17 + 9, ty * 5 + 2);
+        const h3 = sceneryHash(tx * 11 + 4, ty * 23 + 7);
+        ctx.strokeStyle = crackStroke;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(sx + h1 * TS, sy + h2 * TS * 0.4);
+        ctx.lineTo(sx + h3 * TS, sy + (0.5 + h1 * 0.5) * TS);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   // ── 水域波光粼粼（ROADMAP 195）────────────────────────────────────────────
   // 水域 tile 的水面泛起隨陽光明滅的細碎波光：白天亮、破曉/黃昏染金、夜裡映冷月白光。
   // 純前端視覺、零後端：波光點以既有確定性 sceneryHash 撒佈（同格永遠同位置、不隨鏡頭閃爍），
@@ -10368,7 +10468,8 @@
         const sx = tx * TS - camX + h1 * TS;     // 格內水平偏移
         const sy = ty * TS - camY + h2 * TS;     // 格內垂直偏移
         const r = SHIMMER_DOT_R * (0.6 + h0 * 0.8);
-        const alpha = tw * strength * SHIMMER_MAX_ALPHA;
+        // 結冰時（242）波光收斂：凍滿時只剩約 15% 蕩漾，像被冰封住的水面不再活潑反光
+        const alpha = tw * strength * SHIMMER_MAX_ALPHA * (1 - _iceCover * WATER_ICE_SHIMMER_DAMP);
 
         const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
         grad.addColorStop(0, `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`);
@@ -10472,7 +10573,8 @@
         const sx = tx * TS - camX + h1 * TS;     // 格內水平偏移
         const sy = ty * TS - camY + h2 * TS;     // 格內垂直偏移
         const r = GLINT_DOT_R * (0.7 + h0 * 0.7);
-        const alpha = tw * g.strength * GLINT_MAX_ALPHA;
+        // 結冰時（242）映日/映月倒影同步收斂：凍滿的冰面不再蕩出拉長的反光路
+        const alpha = tw * g.strength * GLINT_MAX_ALPHA * (1 - _iceCover * WATER_ICE_GLINT_DAMP);
 
         const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
         grad.addColorStop(0, `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`);
