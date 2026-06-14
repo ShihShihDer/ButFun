@@ -866,6 +866,32 @@ const DUSTBATHE_PROB: f32 = 0.02;
 const DUSTBATHE_DURATION_MIN: f32 = 3.0;
 const DUSTBATHE_DURATION_MAX: f32 = 6.0;
 
+// ─── ROADMAP 281：棲背啄蟲（cleaning symbiosis／牛背啄牛鳥式的清潔共生）────────────
+// 276 理羽（🪶）／277 搔癢（🐾）／280 塵浴（🌫️）一路把「梳理／自理」這條線鋪得很滿，但盤點下來
+// 那些全是「替自己打理」（替自己梳羽、撓自己的癢、自己滾塵浴）——獨缺最動人的一種：**替別種打理**。
+// 真實草原上啄牛鳥／牛背鷺會站到大型草食獸（牛、鹿）的背上，一口一口啄走皮毛間的蜱蟲、蠅蛆與寄生蟲：
+// 鳥得一餐、獸得除蟲，是教科書級的跨物種**互利共生**（cleaning symbiosis）。266 哨兵互惠雖也是跨物種
+// 互惠，但那是「鳥的警覺順帶替鹿示警」的間接好處、彼此並未真正貼到一塊；本切片補上第一筆**身體上的**
+// 跨物種互利——讓白天平靜的野鳥，若身邊就有一頭平靜的成年野鹿，偶爾飛上牠的背（新增 Cleaning 狀態、
+// 棲背逐幀貼著宿主移動、頭頂浮一枚 🐛）替牠啄一段蟲再飛離。與 276 理羽（替自己梳羽）刻意對成「自理／
+// 互理跨物種」一對——把梳理從「替自己」推進到「替別種啄理」。純啟發式、零 LLM、零 tick 簽名改動、
+// 零協議改動（新增的 cleaning 字串沿用 state_str；宿主 id 與計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+// 威脅永遠優先：棲背到一半若掠食者／玩家逼近，立刻拍翅飛離逃竄；宿主一旦受驚不再平靜（離開宿主快照），
+// 鳥也隨即飛離回到漫遊——一驚就散，與真實草原上鳥獸一受驚便各奔東西的景象相合。
+/// 平靜的野鳥本幀飛上鄰近宿主啄蟲的機率——與 276 理羽（PREEN_PROB 0.03）同級偏低：清潔共生只在
+/// 「身邊剛好有頭安心的鹿」時偶一為之，多數時候野鳥仍照常閒晃／覓食。
+const CLEAN_PROB: f32 = 0.02;
+/// 野鳥起意棲背的搜尋半徑（像素）——刻意取小：只飛上「就在身旁」的鹿，避免大老遠瞬移過去；棲背是
+/// 順勢落到鄰近一頭鹿的背上，不是長途奔赴。
+const CLEAN_RADIUS: f32 = 46.0;
+/// 一段棲背啄蟲的最短／最長時長（秒）——刻意略長於自理（276 理羽 2~5s）：清潔共生是賴在背上慢條斯理
+/// 一口一口地啄，比替自己梳一處羽毛從容些。期間威脅一旦逼近一律優先拍翅飛離逃竄。
+const CLEAN_DURATION_MIN: f32 = 4.0;
+const CLEAN_DURATION_MAX: f32 = 9.0;
+/// 棲背時貼到宿主座標後再往上偏的像素量——讓鳥停在鹿的「背脊」上方、而非與牠完全重疊，看得出是
+/// 「停在背上」而非「鑽進身體裡」。
+const CLEAN_PERCH_OFFSET_Y: f32 = 10.0;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1355,6 +1381,13 @@ enum WildlifeState {
     /// bath_timer 倒數，到期就抖抖身子起身回到漫遊；威脅一旦逼近一律優先翻身躍起逃竄（塵浴永遠讓位逃命）。
     /// 與 277 搔癢（🐾，抬後腿撓耳後的「局部」自理）對成「局部小動作／全身大保養」一對。只屬於小動物。
     DustBathing { bath_timer: f32 },
+    /// ROADMAP 281：棲背啄蟲——白天平靜的野鳥飛上一頭平靜成年野鹿的背，替牠啄食皮毛間的寄生蟲
+    /// （清潔共生：鳥得一餐、鹿得除蟲；前端畫成棲在鹿背上低頭一啄一啄、頭頂浮一枚 🐛）。`host_id`
+    /// 記住宿主那頭鹿，棲背期間逐幀貼到宿主當前座標（騎著牠移動）、clean_timer 倒數，到期就拍翅飛離
+    /// 回到漫遊；宿主一旦受驚不再平靜（離開宿主快照）也隨即飛離。威脅一旦逼近一律優先拍翅飛離逃竄
+    /// （共生永遠讓位逃命）。與 276 理羽（🪶，替自己梳羽）對成「自理／跨物種互理」一對——把梳理從
+    /// 「替自己」推進到第一筆「替別種啄理」的跨物種互利共生。
+    Cleaning { host_id: u32, clean_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1977,6 +2010,31 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 281：棲背啄蟲——棲在宿主背上（Cleaning）的野鳥每幀貼到宿主當前座標（`host_pos`，騎著牠
+    /// 移動、略偏上像停在背脊），clean_timer 倒數一啄一啄；到期就拍翅飛離、挑下一個漫遊目標（沿用群聚拉力
+    /// herd_anchor，與 tick_preen 同模式）回到漫遊。宿主一旦不在本幀宿主快照裡（受驚不再平靜／走遠／死亡，
+    /// host_pos 為 None）也立刻飛離回到漫遊——一驚就散。只在 Cleaning 狀態下生效（呼叫端已確保此隻為野鳥、
+    /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去逃竄——威脅永遠優先）。
+    fn tick_clean(&mut self, dt: f32, host_pos: Option<(f32, f32)>, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Cleaning { host_id, clean_timer } = self.state {
+            let remaining = clean_timer - dt;
+            match host_pos {
+                // 宿主還在、也還沒啄夠：貼到牠背脊上（略偏上），續啄、計時倒數。
+                Some((hx, hy)) if remaining > 0.0 => {
+                    self.x = hx;
+                    self.y = hy - CLEAN_PERCH_OFFSET_Y;
+                    self.state = WildlifeState::Cleaning { host_id, clean_timer: remaining };
+                }
+                // 啄夠了、或宿主走了／受驚散了：拍翅飛離回到漫遊。
+                _ => {
+                    let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                    let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                    self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+                }
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -2209,6 +2267,7 @@ impl Wildlife {
             WildlifeState::Yawning { .. }   => "yawning",
             WildlifeState::Flushing { .. }  => "flushing",
             WildlifeState::DustBathing { .. } => "dust_bathing",
+            WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
 }
@@ -3017,6 +3076,20 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 281：棲背啄蟲——本幀「可棲息的宿主」快照（平靜的成年野鹿：id＋座標）。供下方野鳥
+        // 起意飛上最近一頭鹿的背啄蟲、並在棲背期間逐幀依 id 追蹤宿主即時座標（騎著牠移動）。只認平靜
+        // 作息（Grazing/Wandering/Resting，與 265/266 grazer_snap 同一組「安心覓食」狀態）的成年鹿——
+        // 逃竄／被獵／警戒／幼獸一律不當宿主（鹿一受驚便離開此快照，騎在背上的鳥隨即飛離，一驚就散）。
+        // 動物總數少（~22），O(n²) 無虞。
+        let clean_host_snap: Vec<(u32, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildDeer && !a.is_juvenile()
+                && matches!(a.state,
+                    WildlifeState::Grazing { .. }
+                    | WildlifeState::Wandering { .. }
+                    | WildlifeState::Resting { .. }))
+            .map(|a| (a.id, a.x, a.y))
+            .collect();
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -3568,6 +3641,37 @@ impl WildlifeManager {
                     // 自顧自地低頭整羽。與 216 互理（💕）／274 親理（💗）湊成「理毛三態」的「自理」一筆。
                     let timer = rng.gen_range(PREEN_DURATION_MIN..=PREEN_DURATION_MAX);
                     a.state = WildlifeState::Preening { preen_timer: timer };
+                } else if is_bird && matches!(a.state, WildlifeState::Cleaning { .. }) {
+                    // ROADMAP 281：已棲在宿主背上啄蟲——威脅一旦逼近就立刻拍翅飛離逃竄（共生永遠讓位
+                    // 逃命），否則貼著宿主當前座標續啄、計時倒數（依 host_id 從本幀宿主快照查座標；宿主
+                    // 受驚不再平靜／走遠／死亡而查無，tick_clean 即讓鳥飛離回到漫遊——一驚就散）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let host = if let WildlifeState::Cleaning { host_id, .. } = a.state {
+                            host_pos_by_id(&clean_host_snap, host_id)
+                        } else {
+                            None
+                        };
+                        a.tick_clean(dt, host, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < CLEAN_PROB
+                    && nearest_host(a.x, a.y, &clean_host_snap, CLEAN_RADIUS).is_some()
+                {
+                    // ROADMAP 281：白天平靜的野鳥——若身邊 CLEAN_RADIUS 內就有一頭平靜的成年野鹿，偶爾
+                    // 飛上牠的背替牠啄食皮毛間的寄生蟲（清潔共生：鳥得一餐、鹿得除蟲，頭頂浮 🐛）。鎖定
+                    // 那頭鹿為宿主（記 host_id），之後逐幀貼著牠移動（騎在背上）、啄一小段再飛離。與 276
+                    // 理羽（替自己梳羽）刻意對成「自理／跨物種互理」一對——把梳理從「替自己」推進到第一筆
+                    // 「替別種啄理」的跨物種互利共生；也與 266 哨兵互惠（鳥的警覺間接示警）區隔——這是
+                    // 鳥獸真正貼到一塊的「身體上」互惠。排在自理（理羽）之後：身邊有鹿可棲就順勢飛上牠的背。
+                    if let Some((host_id, _, _)) = nearest_host(a.x, a.y, &clean_host_snap, CLEAN_RADIUS) {
+                        let timer = rng.gen_range(CLEAN_DURATION_MIN..=CLEAN_DURATION_MAX);
+                        a.state = WildlifeState::Cleaning { host_id, clean_timer: timer };
+                    }
                 } else if is_mammal && matches!(a.state, WildlifeState::Scratching { .. }) {
                     // ROADMAP 277：已在搔癢中——威脅一旦逼近就立刻放下後腿逃竄（自理永遠讓位逃命），
                     // 否則原地把這一段搔完、計時倒數，到期回到閒晃。
@@ -4022,6 +4126,24 @@ fn nearest_adult_of_kind(
         .filter(|&(_, _, d2)| d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(px, py, _)| (px, py))
+}
+
+/// ROADMAP 281：棲背啄蟲——位於 (ax,ay) 的野鳥，回傳 `radius` 內最近一頭可棲息的宿主（`hosts` 為本幀
+/// 宿主快照：id＋座標，已由呼叫端篩成「平靜的成年野鹿」）。回傳 id 供野鳥棲背期間逐幀依 id 追蹤宿主
+/// 即時座標（騎在背上隨牠移動）。純函式，便於測試。
+fn nearest_host(ax: f32, ay: f32, hosts: &[(u32, f32, f32)], radius: f32) -> Option<(u32, f32, f32)> {
+    let r2 = radius * radius;
+    hosts.iter()
+        .map(|&(id, px, py)| (id, px, py, (px - ax).powi(2) + (py - ay).powi(2)))
+        .filter(|&(_, _, _, d2)| d2 <= r2)
+        .min_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(id, px, py, _)| (id, px, py))
+}
+
+/// ROADMAP 281：棲背啄蟲——依宿主 id 從本幀宿主快照查當前座標（供棲背的野鳥逐幀貼上去騎著移動）。
+/// 查無（宿主已受驚不再平靜／走出快照／死亡）回傳 None，呼叫端據此讓鳥飛離回到漫遊。純函式，便於測試。
+fn host_pos_by_id(hosts: &[(u32, f32, f32)], id: u32) -> Option<(f32, f32)> {
+    hosts.iter().find(|&&(hid, _, _)| hid == id).map(|&(_, px, py)| (px, py))
 }
 
 /// ROADMAP 271：守靈駐立——在倒下處 (x,y) 留下一個攜物種 `kind` 的哀悼地（TTL=GRIEF_SITE_TTL）。
@@ -9067,6 +9189,139 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "塵浴中遇威脅應立刻翻身躍起逃竄，實際 {:?}", c.state);
+    }
+
+    // ─── ROADMAP 281：棲背啄蟲（清潔共生）─────────────────────────────────────
+    #[test]
+    fn tick_clean_rides_host_and_decrements() {
+        // 棲背進行中、宿主還在：鳥貼到宿主背脊上方（host_y - 偏移）、計時遞減、維持 Cleaning。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Cleaning { host_id: 7, clean_timer: 3.0 };
+        bird.tick_clean(0.1, Some((5200.0, 5300.0)), None, &mut rng);
+        match bird.state {
+            WildlifeState::Cleaning { host_id, clean_timer } => {
+                assert_eq!(host_id, 7, "host_id 應保持不變");
+                assert!((clean_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("棲背未到期、宿主仍在應維持 Cleaning，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5200.0).abs() < 1e-6, "應貼到宿主 x");
+        assert!((bird.y - (5300.0 - CLEAN_PERCH_OFFSET_Y)).abs() < 1e-6, "應停在宿主背脊上方（host_y - 偏移）");
+    }
+
+    #[test]
+    fn tick_clean_returns_to_wander_when_timer_expires() {
+        // 棲背到期：拍翅飛離回到漫遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Cleaning { host_id: 7, clean_timer: 0.05 };
+        bird.tick_clean(0.1, Some((5200.0, 5300.0)), None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "棲背到期應回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_clean_flies_off_when_host_gone() {
+        // 宿主受驚不再平靜／走遠／死亡（host_pos 為 None）：即便計時還有剩，也立刻飛離回到漫遊（一驚就散）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Cleaning { host_id: 7, clean_timer: 5.0 };
+        bird.tick_clean(0.1, None, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "宿主不在應立刻飛離回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_clean_noop_on_other_state() {
+        // 防呆：非 Cleaning 狀態呼叫 tick_clean 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 3.0 };
+        bird.tick_clean(0.1, Some((5200.0, 5300.0)), None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非 Cleaning 狀態呼叫 tick_clean 不該改狀態");
+    }
+
+    #[test]
+    fn cleaning_state_str_is_cleaning() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Cleaning { host_id: 1, clean_timer: 1.0 };
+        assert_eq!(bird.state_str(), "cleaning");
+    }
+
+    #[test]
+    fn nearest_host_picks_nearest_within_radius_and_none_beyond() {
+        // 在半徑內挑最近一頭宿主、回傳其 id；全在半徑外則回 None。
+        let hosts = [(3u32, 5050.0, 5000.0), (9u32, 5020.0, 5000.0)];
+        let got = nearest_host(5000.0, 5000.0, &hosts, 46.0);
+        assert_eq!(got.map(|(id, _, _)| id), Some(9), "應挑最近（20px）那頭、其 id=9");
+        assert!(nearest_host(5000.0, 5000.0, &hosts, 10.0).is_none(), "兩頭都在 10px 外時應回 None");
+    }
+
+    #[test]
+    fn host_pos_by_id_finds_and_misses() {
+        let hosts = [(3u32, 5050.0, 5000.0), (9u32, 5020.0, 5100.0)];
+        assert_eq!(host_pos_by_id(&hosts, 9), Some((5020.0, 5100.0)), "依 id 查得宿主座標");
+        assert!(host_pos_by_id(&hosts, 42).is_none(), "查無此 id 應回 None");
+    }
+
+    #[test]
+    fn non_bird_never_cleans() {
+        // 物種專屬：只有野鳥會棲背啄蟲——一頭緊鄰平靜成年野鹿的小動物連跑數百幀都不該進入 Cleaning。
+        let mut mgr = WildlifeManager::new();
+        let mut host = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        host.id = 1;
+        host.state = WildlifeState::Grazing { graze_timer: 1.0e9 }; // 永遠低頭吃草、原地不動，恆為宿主
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 2;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![host, critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(c.state, WildlifeState::Cleaning { .. }), "非野鳥不該棲背啄蟲，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn calm_bird_eventually_cleans_adult_deer() {
+        // 白天平靜、身旁就有一頭平靜成年野鹿的野鳥，連跑多幀後總會偶爾飛上鹿背啄蟲（CLEAN_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut host = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        host.id = 1;
+        host.state = WildlifeState::Grazing { graze_timer: 1.0e9 }; // 永遠原地低頭吃草，恆為可棲宿主
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 2;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![host, bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut cleaned = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(b.state, WildlifeState::Cleaning { .. }) {
+                cleaned = true;
+                break;
+            }
+        }
+        assert!(cleaned, "身旁有平靜成年野鹿的白天平靜野鳥應偶爾飛上鹿背啄蟲");
+    }
+
+    #[test]
+    fn cleaning_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：棲背啄蟲中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻拍翅飛離逃竄（非繼續啄）。
+        let mut mgr = WildlifeManager::new();
+        let mut host = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        host.id = 1;
+        host.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 2;
+        bird.state = WildlifeState::Cleaning { host_id: 1, clean_timer: 1.0e9 };
+        mgr.animals = vec![host, bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "棲背中遇威脅應立刻拍翅飛離逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 278：群體呵欠 ────────────────────────────────────────────────
