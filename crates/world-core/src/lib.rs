@@ -574,8 +574,8 @@ pub fn resolve_move<F: Fn(f32, f32) -> bool>(
 // 主 crate 的 `Player::step` 與下方 wasm 出口 `step_player` 都是薄包裝。
 
 /// 玩家移動速度（px/s）。主 crate `state::PLAYER_SPEED` re-export 這份。
-/// 230≈7.2 格/秒、為降低手機操作難度而從 320 放慢（走路基速；趕路用 RUN_MULT 跑步）。
-pub const PLAYER_SPEED: f32 = 230.0;
+/// 180≈5.6 格/秒、玩家回報走路仍偏快，為操作手感再放慢（曾 320→230）（走路基速；趕路用 RUN_MULT 跑步）。
+pub const PLAYER_SPEED: f32 = 180.0;
 /// 跑步倍率：在走路基速 `PLAYER_SPEED` 上的加速倍數。前端預測需用同一值（縮放 dt），
 /// 故額外以 wasm 函式 `run_mult()` 匯出，避免兩邊數字漂移。
 pub const RUN_MULT: f32 = 1.6;
