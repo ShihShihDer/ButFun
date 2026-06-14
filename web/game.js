@@ -8117,14 +8117,19 @@
   };
   const DENSITY_COLOR = [
     null, // 0=廢棄（不繪製）
-    { fill: "rgba(180,40,40,0.06)",  stroke: "rgba(180,40,40,0.30)" }, // 1=稀疏
-    { fill: "rgba(200,50,30,0.10)",  stroke: "rgba(200,50,30,0.45)" }, // 2=正常
-    { fill: "rgba(220,30,20,0.15)",  stroke: "rgba(220,30,20,0.60)" }, // 3=茂盛
+    // 視覺收斂（玩家回報「巨大紅虛線圈很醜」）：stroke 各降一檔（0.30/0.45/0.60→
+    // 0.20/0.30/0.40），fill 再淡一點，配合「靠近才畫」讓畫面乾淨。
+    { fill: "rgba(180,40,40,0.04)",  stroke: "rgba(180,40,40,0.20)" }, // 1=稀疏
+    { fill: "rgba(200,50,30,0.07)",  stroke: "rgba(200,50,30,0.30)" }, // 2=正常
+    { fill: "rgba(220,30,20,0.10)",  stroke: "rgba(220,30,20,0.40)" }, // 3=茂盛
   ];
   const DENSITY_LABEL = ["", "稀疏", "正常", "茂盛"];
 
   function drawMonsterColonies(camX, camY) {
     if (!monsterColonyViews.length) return;
+    // 玩家世界座標 = 螢幕中心（camX 已含 me.rx - viewW/2 置中），仿 drawColonies。
+    const meWx = camX + viewW / 2;
+    const meWy = camY + viewH / 2;
     for (const c of monsterColonyViews) {
       if (c.density === 0) continue; // 廢棄巢穴不繪製
       const sx = c.cx - camX;
@@ -8132,20 +8137,26 @@
       const r  = c.spawn_radius;
       if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
       const style = DENSITY_COLOR[Math.min(3, c.density)] || DENSITY_COLOR[1];
+      // 視覺收斂（玩家回報「巨大紅虛線圈很醜、佔大半畫面」）：只有玩家靠近巢穴
+      // （距中心 < spawn_radius * 1.25）時才畫領地圈；離遠了完全不畫，只留中心
+      // 圖示/名稱讓玩家仍找得到。仿 drawColonies() 野生領地「靠近才畫」做法。
+      const near = Math.hypot(c.cx - meWx, c.cy - meWy) < r * 1.25;
       ctx.save();
-      // 填充。
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fillStyle = style.fill;
-      ctx.fill();
-      // 虛線邊框（更短的虛線，與野生聚落區分）。
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.strokeStyle = style.stroke;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      if (near) {
+        // 填充。
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fillStyle = style.fill;
+        ctx.fill();
+        // 虛線邊框（更短的虛線，與野生聚落區分）。
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.strokeStyle = style.stroke;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
       // 巢穴圖示 + 名稱 + 密度。
       ctx.font = "12px sans-serif";
       ctx.textAlign = "center";
@@ -8153,7 +8164,8 @@
       const icon = MONSTER_COLONY_ICON[c.kind] || "⚠️";
       const label = `${icon} ${c.name} [${DENSITY_LABEL[c.density] || ""}]`;
       const lw = ctx.measureText(label).width + 10;
-      const lx = sx, ly = sy - r - 4;
+      // 靠近時名牌掛在圈頂上方；離遠不畫圈，名牌改掛中心點上方（仍找得到巢穴）。
+      const lx = sx, ly = near ? sy - r - 4 : sy - 8;
       ctx.fillStyle = "rgba(0,0,0,0.50)";
       ctx.fillRect(lx - lw / 2, ly - 14, lw, 14);
       ctx.fillStyle = "rgba(255,120,100,0.90)";
@@ -8167,68 +8179,37 @@
     if (!alphaMonsters.length) return;
     const now = performance.now();
 
-    // ROADMAP 174：先畫結盟連線（在衝突連線和 Alpha 圖示下層）
+    // 視覺收斂（玩家回報「一堆線 很醜」）：移除原本跨整個螢幕的結盟金色連線
+    // （ROADMAP 174）與衝突紅色虛線連線（ROADMAP 170）——它們會橫貫畫面、彼此
+    // 交叉成一團亂線。結盟/衝突資訊改全部靠各 Alpha 本體呈現：本體頭頂的小
+    // 🤝/⚔️ emoji（取代原本連線中點的標誌）＋既有的金/紅脈動環＋本體下方的
+    // 「🤝 結盟中 / ⚔️ 衝突中」徽章。資訊不流失、畫面乾淨。
     for (const a of alphaMonsters) {
-      if (!a.allied_to_id) continue;
-      const ally = alphaMonsters.find(b => b.id === a.allied_to_id);
-      if (!ally) continue;
-      if (a.id >= ally.id) continue; // 只由 id 小的畫線，避免重複
-      const ax = a.x - camX, ay = a.y - camY;
-      const bx = ally.x - camX, by = ally.y - camY;
-      const alliancePulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 500));
-      ctx.save();
-      // 外層光暈
-      ctx.globalAlpha = alliancePulse * 0.35;
-      ctx.strokeStyle = "#ffe080";
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      // 內層金色實線
-      ctx.globalAlpha = alliancePulse * 0.85;
-      ctx.strokeStyle = "#ffd700";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      // 中點顯示握手標誌
-      ctx.globalAlpha = alliancePulse;
-      ctx.font = "18px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("🤝", (ax + bx) / 2, (ay + by) / 2);
-      ctx.restore();
-    }
-
-    // ROADMAP 170：再畫衝突連線（在 Alpha 圖示下層，視覺清楚）
-    for (const a of alphaMonsters) {
-      if (!a.clash_target_id) continue;
-      const target = alphaMonsters.find(b => b.id === a.clash_target_id);
-      if (!target) continue;
-      // 只由 id 較小的那方畫線，避免重複
-      if (a.id >= target.id) continue;
-      const ax = a.x - camX, ay = a.y - camY;
-      const bx = target.x - camX, by = target.y - camY;
-      const clashPulse = 0.5 + 0.5 * Math.abs(Math.sin(now / 150));
-      ctx.save();
-      ctx.globalAlpha = clashPulse * 0.7;
-      ctx.strokeStyle = "#ff2020";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // 中點顯示劍擊閃光「⚔️」
-      ctx.globalAlpha = clashPulse;
-      ctx.font = "16px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("⚔️", (ax + bx) / 2, (ay + by) / 2);
-      ctx.restore();
+      const sx = a.x - camX;
+      const sy = a.y - camY;
+      if (sx < -80 || sx > viewW + 80 || sy < -80 || sy > viewH + 80) continue;
+      if (a.allied_to_id) {
+        // 結盟：本體上方畫小握手 emoji（金色脈動），取代跨螢幕金線。
+        const alliancePulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 500));
+        ctx.save();
+        ctx.globalAlpha = alliancePulse;
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🤝", sx + 14, sy - 18);
+        ctx.restore();
+      }
+      if (a.clash_target_id) {
+        // 衝突：本體上方畫小劍 emoji（急促脈動），取代跨螢幕紅虛線。
+        const clashPulse = 0.5 + 0.5 * Math.abs(Math.sin(now / 150));
+        ctx.save();
+        ctx.globalAlpha = clashPulse;
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("⚔️", sx - 14, sy - 18);
+        ctx.restore();
+      }
     }
 
     for (const a of alphaMonsters) {
