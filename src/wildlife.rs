@@ -302,6 +302,28 @@ const GROOM_DURATION_MAX: f32 = 6.5;
 /// 而非時時黏著（多數時候仍照常吃草／休息）。
 const GROOM_PROB: f32 = 0.05;
 
+// ─── ROADMAP 270：求偶示愛（courtship — 繁衍 207 看得見的前奏）────────────────────
+// 族群繁衍（207）至今全在幕後默默累積：一群安穩成群的成體（BREEDING_KINDS）聚在 BREED_RADIUS 內、
+// 群心沒有掠食者，就持續累積「安穩成群」秒數（breed_progress），到 BREED_THRESHOLD_SECS 就在群心
+// 憑空誕生一隻幼獸——玩家看得到「新生兒出現」（Born），卻完全看不到那之前的醞釀。本切片給繁衍補上
+// 看得見的前奏：當某物種的 breed_progress 已過半（一場新生正在醞釀）時，群裡白天歇息、身邊有同種
+// 成體夥伴的成體，會在歇息的當口偶爾轉向夥伴求偶示愛（新增 Courting 狀態，原地不動、頭頂浮 ❤️）。
+// 於是玩家會看見：兩頭成體先依偎著冒出愛心，不久那片草地就多了一隻幼獸——生命的循環第一次有了
+// 看得見的開頭。與 216 理毛（💕，無條件的日常親暱）刻意區隔：求偶（❤️）只在「繁衍將近」時才浮現，
+// 是 207 繁衍系統的視覺信使，把原本隱形的孕育第一次攤到玩家眼前。純啟發式、零 LLM、零 tick 簽名
+// 改動、零協議改動（新增的 courting 字串沿用 state_str，無新欄位）、記憶體模式。
+/// 求偶夥伴半徑（像素）——身邊有同種成體在此近距離內，繁衍將近時歇息才可能轉去求偶（依偎貼近）。
+const COURT_RADIUS: f32 = 60.0;
+/// 「繁衍將近」門檻（秒）——某物種的 breed_progress 累積到此（BREED_THRESHOLD_SECS 之半）才算
+/// 一場新生正在醞釀，群裡的成體這時才會求偶；故求偶可靠地出現在 Born 之前的最後一段，是真正的前奏。
+const COURT_PROGRESS_SECS: f32 = BREED_THRESHOLD_SECS * 0.5;
+/// 視為「已求偶中」的單段最短／最長時長（秒）——靜靜向夥伴示愛數秒後再起身漫遊。
+const COURT_DURATION_MIN: f32 = 3.0;
+const COURT_DURATION_MAX: f32 = 6.0;
+/// 成體在白天歇息、物種繁衍將近、且身邊有同種夥伴時，本幀轉入求偶的機率——偏低，讓示愛是孕育前
+/// 偶爾的溫柔片刻（多數時候仍照常吃草／休息），而非時時黏著。
+const COURT_PROB: f32 = 0.04;
+
 // ─── ROADMAP 217：掠食者夜嚎（predator night howl）─────────────────────────────
 // 承接 210（晝夜作息）+ 213（孤獵潛行）：過去獵物入夜歸巢沉睡、夜晚成了「獵物缺席」的安靜時段，
 // 但夜其實是掠食者的主場——牠們只會默默巡遊獵食，從不發出聲音，夜的氛圍裡少了最標誌性的一筆：
@@ -1010,6 +1032,10 @@ enum WildlifeState {
     /// ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種成體夥伴互相理毛（頭頂浮 💕）。
     /// 原地不動（不更新座標）、groom_timer 倒數，到期就回到漫遊；威脅一旦逼近一律優先逃竄。
     Grooming { groom_timer: f32 },
+    /// ROADMAP 270：求偶示愛——白天歇息、繁衍將近（breed_progress 過半）時，群裡轉向身邊同種成體
+    /// 夥伴求偶的成體（頭頂浮 ❤️）。原地不動（不更新座標）、court_timer 倒數，到期就回到漫遊；威脅
+    /// 一旦逼近一律優先逃竄。是繁衍 207 看得見的前奏——與 216 理毛（💕，無條件日常親暱）對成一對。
+    Courting { court_timer: f32 },
     /// ROADMAP 217：掠食者夜嚎——夜裡無獵可追時仰首長嚎（頭頂浮 🌙）。原地不動（不更新座標）、
     /// howl_timer 倒數，到期就回到巡遊；一發現獵物即由呼叫端改去獵殺（狩獵優先）。
     Howling { howl_timer: f32 },
@@ -1418,6 +1444,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 270：求偶示愛——求偶中（Courting）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）回到漫遊。只在 Courting 狀態下生效（呼叫端已確保此隻為白天、
+    /// 平靜、繁衍將近、身邊有同種成體夥伴的成體；威脅逼近時呼叫端不會走到此分支、改逃竄）。
+    /// 與 tick_groom 同模式：示愛的依偎由前端演繹（頭頂浮 ❤️），後端只穩定地推進計時。
+    fn tick_court(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Courting { court_timer } = self.state {
+            let remaining = court_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Courting { court_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 224：野鹿頂角較勁——較勁中（Sparring）原地不動、倒數計時；到期就挑下一個漫遊
     /// 目標（沿用群聚拉力 herd_anchor）分開起身漫遊。只在 Sparring 狀態下生效（呼叫端已確保
     /// 此隻為成年野鹿、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
@@ -1697,6 +1740,7 @@ impl Wildlife {
             WildlifeState::Defending        => "defending",
             WildlifeState::Frolicking { .. } => "frolicking",
             WildlifeState::Grooming { .. }  => "grooming",
+            WildlifeState::Courting { .. }  => "courting",
             WildlifeState::Howling { .. }   => "howling",
             WildlifeState::Waking { .. }    => "waking",
             WildlifeState::Flying { .. }    => "flying",
@@ -1973,6 +2017,14 @@ impl WildlifeManager {
         let howling_snap: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && matches!(a.state, WildlifeState::Howling { .. }))
             .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 270：求偶示愛——本幀起始時「繁衍進度已過半、一場新生正在醞釀」的物種集合快照
+        // （讀 207 的 breed_progress）。供下方平靜作息分支：唯有處於此集合的物種，其成體才會在歇息
+        // 當口轉入求偶，讓求偶成為繁衍系統看得見的前奏（可靠地出現在 Born 之前的最後一段）。
+        let courting_species: std::collections::HashSet<WildlifeKind> = BREEDING_KINDS.iter()
+            .copied()
+            .filter(|k| self.breed_progress.get(k).copied().unwrap_or(0.0) >= COURT_PROGRESS_SECS)
             .collect();
 
         // ROADMAP 220：本幀起始時正在盤旋（Flying）的野鳥座標快照——供其餘平靜野鳥據此
@@ -2691,6 +2743,17 @@ impl WildlifeManager {
                     self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, GROOM_RADIUS,
                 ).is_some();
 
+            // ROADMAP 270：求偶示愛——白天平靜的成體，若自己這一物種的繁衍進度已過半（courting_species
+            // 命中＝一場新生正在醞釀）、且身邊有同種成體夥伴（COURT_RADIUS 內），歇息的當口偶爾轉去向
+            // 夥伴求偶（頭頂浮 ❤️）。幼獸／逃竄中／夜間／非繁衍將近的物種一律不求偶，故順手短路。
+            let court_has_partner = !is_night
+                && courting_species.contains(&animal_kind)
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_adult_of_kind(
+                    self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, COURT_RADIUS,
+                ).is_some();
+
             // ROADMAP 224：野鹿頂角較勁——白天的成年野鹿若身邊有同種成體夥伴貼近（SPAR_RADIUS 內，
             // 比理毛更近，因抵角要頭碰頭），歇息的當口偶爾轉去較勁。只限野鹿（is_deer）；幼獸／逃竄中／
             // 夜間一律不較勁（走依偎/逃竄/夜眠分支），故順手短路。
@@ -2960,6 +3023,20 @@ impl WildlifeManager {
                     // 仍會落到下方 grooming 分支（鹿也會互相理毛），社交因此剛柔兼備。
                     let timer = rng.gen_range(SPAR_DURATION_MIN..=SPAR_DURATION_MAX);
                     a.state = WildlifeState::Sparring { spar_timer: timer };
+                } else if matches!(a.state, WildlifeState::Courting { .. }) && !threat_near {
+                    // ROADMAP 270：已在求偶中且仍平靜——把這一段示愛走完（原地不動、計時倒數，
+                    // 依偎的視覺由前端演繹）。威脅一旦逼近就落到下方 tick_idle 改逃竄（求偶讓位逃命）。
+                    a.tick_court(dt, herd_anchor, rng);
+                } else if court_has_partner
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < COURT_PROB
+                {
+                    // ROADMAP 270：白天歇息、繁衍將近的成體、身邊有同種夥伴、平靜——偶爾轉去求偶示愛
+                    // （頭頂浮 ❤️）。求偶優先於理毛（繁衍醞釀中的依偎更專注），是 207 繁衍看得見的前奏；
+                    // 沒轉入求偶的成體仍會落到下方 grooming／吃草分支，日常親暱與孕育前奏兼備。
+                    let timer = rng.gen_range(COURT_DURATION_MIN..=COURT_DURATION_MAX);
+                    a.state = WildlifeState::Courting { court_timer: timer };
                 } else if matches!(a.state, WildlifeState::Grooming { .. }) && !threat_near {
                     // 已在理毛中且仍平靜：把這一段梳理走完（原地不動、計時倒數）。
                     a.tick_groom(dt, herd_anchor, rng);
@@ -4491,6 +4568,95 @@ mod tests {
         let baby = mgr.animals.last().unwrap();
         assert_eq!(baby.kind, WildlifeKind::WildDeer);
         assert!(baby.is_juvenile(), "新生個體應為幼獸");
+    }
+
+    // ─── ROADMAP 270：求偶示愛 ───────────────────────────────────────────────
+    #[test]
+    fn tick_court_counts_down_then_returns_to_wandering() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Courting { court_timer: 1.0 };
+        d.tick_court(0.4, None, &mut rng);
+        match d.state {
+            WildlifeState::Courting { court_timer } =>
+                assert!((court_timer - 0.6).abs() < 1e-4, "未到期應續求偶並倒數，實得 {court_timer}"),
+            _ => panic!("未到期不應離開求偶"),
+        }
+        // 再推進使計時耗盡 → 回到漫遊。
+        d.tick_court(1.0, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Wandering { .. }), "求偶到期應回到漫遊");
+    }
+
+    #[test]
+    fn tick_court_noop_when_not_courting() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Resting { rest_timer: 3.0 };
+        d.tick_court(0.5, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Resting { .. }), "非求偶狀態呼叫 tick_court 應原樣不動");
+    }
+
+    #[test]
+    fn courting_emerges_when_breeding_imminent() {
+        // 兩隻成年野鹿緊鄰、白天平靜、無捕食者無玩家，且該物種繁衍進度已過半（一場新生正在醞釀）
+        // → 歇息的當口應有鹿轉入求偶示愛（Courting）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Resting { rest_timer: 5.0 };
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        d2.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![d1, d2];
+        mgr.next_animal_id = 102;
+        let attitudes = std::collections::HashMap::new();
+
+        let mut seen_courting = false;
+        for _ in 0..2000 {
+            // 每幀重設進度到「過半但未達門檻」，避免 Phase 6 把它推到滿額重置而退出 courting_species。
+            mgr.breed_progress.insert(WildlifeKind::WildDeer, COURT_PROGRESS_SECS + 1.0);
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            if mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Courting { .. })) {
+                seen_courting = true;
+                break;
+            }
+        }
+        assert!(seen_courting, "繁衍將近時，平靜成群的成體應會轉入求偶示愛");
+    }
+
+    #[test]
+    fn no_courting_when_breeding_not_imminent() {
+        // 同樣兩隻緊鄰成年野鹿、白天平靜，但繁衍進度尚淺（遠未過半）→ 一律不求偶（求偶是繁衍將近的前奏）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Resting { rest_timer: 5.0 };
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        d2.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![d1, d2];
+        mgr.next_animal_id = 102;
+        let attitudes = std::collections::HashMap::new();
+
+        for _ in 0..600 {
+            mgr.breed_progress.insert(WildlifeKind::WildDeer, 0.0); // 每幀壓回 0，遠未達 COURT_PROGRESS_SECS
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            assert!(!mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Courting { .. })),
+                "繁衍未過半時不應出現求偶");
+        }
+    }
+
+    #[test]
+    fn courting_yields_to_threat() {
+        // 求偶中的鹿，一旦掠食者逼近 FLEE_RADIUS 內 → 立刻改逃竄（求偶永遠讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Courting { court_timer: 5.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + FLEE_RADIUS * 0.4, 5000.0); wolf.id = 101;
+        wolf.state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
+        mgr.animals = vec![d1, wolf];
+        mgr.breed_progress.insert(WildlifeKind::WildDeer, COURT_PROGRESS_SECS + 1.0);
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[], false);
+        let deer = mgr.animals.iter().find(|a| a.id == 100).unwrap();
+        assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時求偶應立刻讓位逃竄");
     }
 
     #[test]
