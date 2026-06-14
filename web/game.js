@@ -8692,6 +8692,13 @@
       const isScavenging = w.kind === "wild_bird" && w.state === "scavenging";
       const scavPeck = isScavenging ? 2 + Math.abs(Math.sin(now / 130)) * 3 : 0; // 一啄一啄地點頭啄食
 
+      // ROADMAP 265：混群共生覓食——跟食中的野鳥（state==="foraging"）傍在覓食的野鹿身旁，低頭一啄
+      // 一啄地撿食被踏草驚起的蟲：鳥身隨「啄下—抬起」的節奏一頓一頓上下點動（與 252 食腐同手法，啄速
+      // 略快一些，像在草間追啄竄動的蟲）。只有野鳥會跟食。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      //（後端只在白天平靜、附近有覓食野鹿的野鳥跟食時才給）。
+      const isForaging = w.kind === "wild_bird" && w.state === "foraging";
+      const foragePeck = isForaging ? 2 + Math.abs(Math.sin(now / 110)) * 3 : 0; // 一啄一啄地點頭撿蟲
+
       // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
       //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
       // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
@@ -8719,6 +8726,7 @@
       if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
       if (feastLower) ctx.translate(0, feastLower); // ROADMAP 230：圍食：把狼身更壓低、低頭埋食
       if (scavPeck) ctx.translate(0, scavPeck); // ROADMAP 252：食腐：把鳥身一啄一啄地往下點啄屍骸
+      if (foragePeck) ctx.translate(0, foragePeck); // ROADMAP 265：跟食：把鳥身一啄一啄地往下點撿蟲
       if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
@@ -9067,6 +9075,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🍖", 8, -18 + scavPeck); // 跟著點頭啄食的鳥身一頓一頓往下的一塊殘骸
+        ctx.restore();
+      }
+
+      // ROADMAP 265：混群共生覓食——跟食中的野鳥（state==="foraging"）頭頂浮一隻隨啄食節奏一頓一頓
+      // 的 🐛，讓「野鳥傍在覓食的野鹿身旁、低頭撿食被踏草驚起的蟲」一眼看得到——這是牛背鷺式共生的
+      // 標誌一幕（與 252 食腐的 🍖 區隔：那是傍著死屍撿殘肉、這是傍著活鹿撿活蟲，野鳥伺機覓食的兩面）。
+      // 🐛 隨點頭啄食的鳥身一起一頓一頓往下。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在
+      // 白天平靜、附近有覓食野鹿的野鳥跟食時才給）。
+      if (w.state === "foraging") {
+        ctx.save();
+        const ft = Math.abs(Math.sin(now / 110)); // 與一啄一啄同步、緩緩明滅
+        ctx.globalAlpha = 0.5 + 0.45 * ft;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🐛", 8, -18 + foragePeck); // 跟著點頭啄食的鳥身一頓一頓往下的一隻小蟲
         ctx.restore();
       }
 
