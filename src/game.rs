@@ -1028,8 +1028,12 @@ pub fn spawn(app: AppState) {
                             })
                             .collect()
                     };
-                    let wildlife_events = app.wildlife_manager.write().unwrap()
-                        .tick(dt, &positions, &attitudes, &monster_threats, is_night);
+                    // ROADMAP 296：餵入本幀權威天氣（是否下雨），供草食獸雨中避雨判定（走欄位、不動 tick 簽名）。
+                    let wildlife_events = {
+                        let mut wm = app.wildlife_manager.write().unwrap();
+                        wm.set_raining(is_raining);
+                        wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
+                    };
                     for ev in wildlife_events {
                         use crate::wildlife::WildlifeEvent;
                         match ev {

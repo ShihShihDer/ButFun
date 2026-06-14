@@ -832,6 +832,26 @@ const SKIRT_DURATION_MAX: f32 = 4.5;
 /// 不疾不徐挪開」的警覺步調，而非沒命地奔。介於跟食趨近（FORAGE_SPEED 56）與食腐趨近（SCAVENGE_SPEED 72）之間。
 const SKIRT_SPEED: f32 = 64.0;
 
+// ─── ROADMAP 296：雨中避雨（rain sheltering／白天下雨時草食獸停下覓食、低頭縮身佇立避雨）──────
+// 至今這片野地的生態與「天氣」完全脫鉤：晴天、下雨、暴雨，鹿群一個樣地閒晃吃草，看不出牠們會「應對天氣」。
+// 可後端早有一份權威天氣（game.rs 的 weather/is_raining，農地 246 雨天加速、前端 93 雨絲都讀它），生態系卻
+// 獨獨缺席。本切片把「動物 × 天氣」這條全新維度第一次接起來、由最自然的一筆起頭：白天下起雨來，平靜歇息／
+// 漫步的草食獸（鹿／鳥／小獸）不再悠閒覓食，而會偶爾停下、原地低頭縮起身子佇立避雨（新增 Sheltering 狀態、
+// 頭頂浮一枚 🌧️），雨一停就鬆下來起身回復閒晃。逐幀低機率觸發 → 雨一下，獸群由近而遠錯落地一隻隻縮下身子
+// （仿 251 警戒漣漪／220 升空的逐圈擴散），而非同幀整群瞬間定格。**與 210 夜眠（💤，入夜歸巢安睡）刻意以
+// 「晝夜」區隔**：避雨只在白天（!is_night）起意、夜間下雨另走夜眠（夜雨不疊避雨），兩者畫面上永不同時出現。
+// **威脅永遠優先**：掠食者／玩家一旦逼進 FLEE_RADIUS 一律改全速奔逃（避雨永遠讓位逃命）。**只屬於草食獸**
+// （掠食者照常巡獵／夜獵——雨不擋狼；Phase 4 本就只處理獵物，故天然只草食獸觸發）。純啟發式、零 LLM、可測、
+// 零 tick 簽名改動（is_raining 走新增的 manager 欄位、game.rs 每幀於 tick 前更新，沿用「零 tick 簽名改動」慣例）、
+// 零協議改動（新增的 sheltering 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、零 migration、記憶體模式。
+/// 白天下雨時平靜的草食獸偶爾停下覓食、轉入低頭縮身避雨的逐幀機率——與 216 理毛 GROOM_PROB(0.05) 同量級：
+/// 偏低，讓避雨是「雨一下、一隻隻陸續縮下身子」的漣漪式起頭，而非同幀整群瞬間定格。
+const SHELTER_PROB: f32 = 0.05;
+/// 一段避雨佇立的最短／最長時長（秒）——縮著淋一小段就起身（若雨仍未停，下一段平靜空檔會再次低機率縮下）。
+/// 比一段吃草／理毛略長：避雨是「等雨小一點」的耐著性子佇立，而非一下下的覓食動作。
+const SHELTER_DURATION_MIN: f32 = 4.0;
+const SHELTER_DURATION_MAX: f32 = 9.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1762,6 +1782,10 @@ enum WildlifeState {
     /// 一律改全速奔逃（繞行永遠讓位逃命）。把 293 掠食者留下的記號補上第三個、也是跨物種的讀者（同類讀味 294
     /// ／獵物畏味 295），讓「恐懼地景」第一次攤到玩家眼前。
     Skirting { ax: f32, ay: f32, skirt_timer: f32 },
+    /// ROADMAP 296：雨中避雨——白天下雨時平靜的草食獸（鹿／鳥／小獸）停下覓食、原地低頭縮起身子佇立避雨
+    /// （前端畫成蜷縮定格、頭頂浮一枚 🌧️）。shelter_timer 倒數；雨一停或縮夠了就鬆下來起身回復閒晃；威脅
+    /// 一旦真逼進 FLEE_RADIUS 一律改全速奔逃（避雨永遠讓位逃命）。把「動物 × 天氣」這條新維度第一次接起來。
+    Sheltering { shelter_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2663,6 +2687,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 296：雨中避雨——避雨中（Sheltering）原地低頭縮身佇立（不更新座標，蜷縮定格由前端以 🌧️
+    /// 演繹），shelter_timer 倒數。雨一停（`is_raining` 為偽）就鬆下來、或縮夠了一段就起身，挑家附近的下一個
+    /// 漫遊目標回巡遊。只在 Sheltering 狀態下生效（呼叫端已確保此隻為草食獵物、白天、且無威脅逼進 FLEE_RADIUS
+    /// ——那種情形更前面就已改走逃竄，避雨永遠讓位逃命）。
+    fn tick_shelter(&mut self, dt: f32, is_raining: bool, rng: &mut StdRng) {
+        if let WildlifeState::Sheltering { shelter_timer } = self.state {
+            let remaining = shelter_timer - dt;
+            if !is_raining || remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            self.state = WildlifeState::Sheltering { shelter_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2873,6 +2913,7 @@ impl Wildlife {
             WildlifeState::Marking { .. }    => "marking",
             WildlifeState::Sniffing { .. }   => "sniffing",
             WildlifeState::Skirting { .. }   => "skirting",
+            WildlifeState::Sheltering { .. } => "sheltering",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -2899,6 +2940,10 @@ pub struct WildlifeManager {
     breed_progress: std::collections::HashMap<WildlifeKind, f32>,
     /// ROADMAP 271：活躍哀悼地列表——每場獵殺在倒下處留下一個，TTL 逐幀淡去。
     grief_sites: Vec<GriefSite>,
+    /// ROADMAP 296：本幀是否正在下雨（後端權威天氣）——game.rs 每幀於 tick 前以 `set_raining` 更新。
+    /// 走欄位而非 tick 參數，以沿用本模組「零 tick 簽名改動」的慣例（避免動到二百餘處 tick 呼叫）。
+    /// 預設 false（不下雨），故既有測試無須改動、行為與本切片前逐位元一致。
+    raining: bool,
 }
 
 impl WildlifeManager {
@@ -2918,7 +2963,13 @@ impl WildlifeManager {
             next_animal_id,
             breed_progress: std::collections::HashMap::new(),
             grief_sites: Vec::new(),
+            raining: false,
         }
+    }
+
+    /// ROADMAP 296：更新本幀天氣（是否下雨）——game.rs 每幀於 `tick` 前呼叫，餵入後端權威天氣。
+    pub fn set_raining(&mut self, raining: bool) {
+        self.raining = raining;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3031,6 +3082,8 @@ impl WildlifeManager {
         is_night: bool,
     ) -> Vec<WildlifeEvent> {
         let mut events = Vec::new();
+        // ROADMAP 296：本幀天氣（是否下雨）——供 Phase 4 草食獸雨中避雨判定（game.rs 已於 tick 前更新）。
+        let is_raining = self.raining;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4212,6 +4265,15 @@ impl WildlifeManager {
                     } else {
                         a.tick_skirt(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Sheltering { .. }) {
+                    // ROADMAP 296：已在雨中避雨——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（避雨永遠
+                    // 讓位逃命），否則原地低頭縮身佇立、計時倒數；雨一停或縮夠了就鬆下來起身回巡遊。與 219
+                    // 破曉伸展／251 警戒／295 繞行同模式：一段平靜時的定格小動作，遇險即讓位逃命。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_shelter(dt, is_raining, rng);
+                    }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
@@ -4290,6 +4352,24 @@ impl WildlifeManager {
                         let timer = rng.gen_range(SKIRT_DURATION_MIN..=SKIRT_DURATION_MAX);
                         a.state = WildlifeState::Skirting { ax, ay, skirt_timer: timer };
                     }
+                } else if !is_night
+                    && is_raining
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SHELTER_PROB
+                {
+                    // ROADMAP 296：雨中避雨——白天（!is_night）下起雨來（is_raining）時，平靜歇息／漫步的草食獸
+                    //（鹿／鳥／小獸；Phase 4 本就只處理獵物，故天然只草食獸觸發）偶爾停下覓食、原地低頭縮起身子
+                    // 佇立避雨（轉入 Sheltering 🌧️）。逐幀低機率觸發 → 雨一下，獸群由近而遠錯落地一隻隻縮下身子，
+                    // 而非同幀整群瞬間定格。**把「動物 × 天氣」這條全新維度第一次接起來**：後端早有權威天氣（農地
+                    // 246 雨天加速、前端 93 雨絲都讀它），生態系至此第一次也讀天氣、看得出獸群會「應對天氣」。
+                    // **與 210 夜眠（💤）以晝夜區隔**：避雨只在白天起意、夜間下雨另走夜眠（夜雨不疊避雨）。**排在
+                    // 251/262/263 掠食者警戒、284 驚飛示警、295 畏味避徑等「恐懼」分支之後**（看得見／嗅得到的危險
+                    // 永遠優先於避雨這樁背景天氣反應），卻**排在下方吃草／理毛／嬉戲／食腐／跟食等白晝玩樂與覓食之前**
+                    //（雨一下，悠閒的覓食玩樂讓位給縮身避雨）。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面
+                    // Sheltering 續算分支即改全速奔逃（避雨永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(SHELTER_DURATION_MIN..=SHELTER_DURATION_MAX);
+                    a.state = WildlifeState::Sheltering { shelter_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -11507,6 +11587,153 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], true); // 夜間
             let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(d.state, WildlifeState::Skirting { .. }), "夜間草食走獸不該繞行，實際 {:?}", d.state);
+        }
+    }
+
+    // ─── ROADMAP 296：雨中避雨（rain sheltering）────────────────────────────
+    #[test]
+    fn tick_shelter_holds_position_while_raining() {
+        // 避雨進行中：原地不動（座標不變）、計時遞減、狀態維持 Sheltering。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Sheltering { shelter_timer: 3.0 };
+        deer.tick_shelter(0.1, true, &mut rng);
+        match deer.state {
+            WildlifeState::Sheltering { shelter_timer } => {
+                assert!((shelter_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("仍下雨且未到期應維持 Sheltering，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "避雨應原地不動");
+    }
+
+    #[test]
+    fn tick_shelter_returns_to_wander_when_rain_stops() {
+        // 雨一停：即便計時尚有餘，也鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Sheltering { shelter_timer: 5.0 };
+        critter.tick_shelter(0.1, false, &mut rng); // 雨已停
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "雨停應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_shelter_returns_to_wander_when_timer_expires() {
+        // 縮夠了一段：即便仍在下雨，計時耗盡也起身回巡遊（下一段平靜空檔會再低機率縮下）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Sheltering { shelter_timer: 0.05 };
+        deer.tick_shelter(0.1, true, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_shelter_noop_on_other_state() {
+        // 防呆：非 Sheltering 狀態呼叫 tick_shelter 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_shelter(0.1, true, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非避雨狀態呼叫 tick_shelter 不該改狀態");
+    }
+
+    #[test]
+    fn sheltering_state_str_is_sheltering() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Sheltering { shelter_timer: 1.0 };
+        assert_eq!(deer.state_str(), "sheltering");
+    }
+
+    #[test]
+    fn calm_prey_eventually_shelters_in_rain() {
+        // 白天下雨：一頭平靜、四下無威脅的鹿連跑多幀後應有機會停下縮身避雨（進入 Sheltering）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut sheltered = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、下雨
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Sheltering { .. }) {
+                sheltered = true;
+                break;
+            }
+        }
+        assert!(sheltered, "白天下雨、平靜無威脅的鹿應偶爾停下縮身避雨");
+    }
+
+    #[test]
+    fn prey_does_not_shelter_without_rain() {
+        // 需真的在下雨才避雨：晴天（raining=false）時平靜的鹿連跑多幀都不該進入 Sheltering。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        // 不呼叫 set_raining → 預設 false（晴天）
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Sheltering { .. }), "晴天不該避雨，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_shelter_at_night() {
+        // 晝起意：夜間草食獸另走夜眠分支——夜裡即便下雨，連跑多幀都不該進入 Sheltering（夜雨不疊避雨）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間、下雨
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Sheltering { .. }), "夜間草食獸不該避雨，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn sheltering_prey_gives_way_to_flee() {
+        // 避雨永遠讓位逃命：避雨中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Sheltering { shelter_timer: 1.0e9 }; // 縮得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_raining(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn predator_never_shelters_in_rain() {
+        // 物種專屬：避雨只發生在草食獵物 phase——掠食者即便在雨中，連跑多幀都不該進入 Sheltering
+        //（雨不擋狼，掠食者另由掠食迴圈處理）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_raining(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Sheltering { .. }), "掠食者不該避雨，實際 {:?}", w.state);
         }
     }
 

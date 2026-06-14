@@ -9198,6 +9198,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 296：雨中避雨——白天下起雨來時，平靜的草食獸（鹿／鳥／小獸，state==="sheltering"）停下覓食、
+      // 原地低頭縮起身子佇立避雨，頭頂浮一枚緩緩明滅、如垂落雨絲般的 🌧️，讓「下雨了、獸群縮著身子等雨過」
+      // 一眼看得到——生態系第一次也「應對天氣」。與 290 偎母打盹的 💤（白天偎母安眠）區隔：那是依偎補眠、
+      // 本筆是縮身避雨，觸發時機（下雨 vs 平靜午後）與符號皆不同。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在白天、正下雨、無威脅逼近的平靜草食獸身上才給此狀態）。
+      if (w.state === "sheltering") {
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 360)); // 像細雨綿綿般和緩明滅
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(7, -22);
+        ctx.fillText("🌧️", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9517,8 +9533,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
