@@ -9079,6 +9079,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 276：野鳥理羽——白天平靜時停下、低頭以喙梳理自己羽毛的野鳥（state==="preening"）
+      // 頭頂飄落一根 🪶，讓「鳥兒低頭一根一根地整理羽毛」一眼看得到——與 216 理毛的 💕（成體互相）、
+      // 274 舐犢的 💗（親代理幼）湊成「理毛三態」：互理／親理／自理（🪶）。純前端、零協議欄位：直接
+      // 讀伺服器廣播的 w.state（後端只在白天平靜的野鳥理羽時才給此狀態）。
+      if (w.state === "preening") {
+        ctx.save();
+        const pr = (Math.sin(now / 360) + 1) / 2; // 0→1 緩緩起落，像一根羽毛輕輕飄墜又揚起
+        ctx.globalAlpha = 0.4 + 0.4 * pr;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        // 羽毛一邊緩緩飄落（隨 pr 上下浮沉）、一邊隨梳理輕輕左右搖，像剛被理鬆抖落的一片絨羽
+        ctx.translate(6 + Math.sin(now / 300) * 2, -20 - pr * 4);
+        ctx.fillText("🪶", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 222：小動物捧食啃咬——白天平靜時坐起來捧食啃咬的小動物（state==="nibbling"）
       // 頭頂浮一顆 🌰，讓「松鼠捧著堅果一小口一小口地啃」一眼看得到（與 211 低頭吃草 🌿 區隔：
       // 啃咬是小動物專屬、捧食而啃的另一種覓食姿態）。純前端、零協議欄位：直接讀伺服器廣播的
