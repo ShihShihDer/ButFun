@@ -2758,10 +2758,12 @@
     if (dark < 0.4) return;
     initNightStars();
     const alpha = (dark - 0.4) / 0.6;
+    // ROADMAP 240 月明星稀：今晚月相越接近滿月，月光越洗去微光、星越稀；新月夜星河最燦。
+    const moonStar = moonStarVisibility(moonPhase(Date.now()).illum);
     ctx.save();
     for (const s of NIGHT_STARS) {
       const twinkle = reduceMotion ? 0.85 : 0.7 + 0.3 * Math.sin(now / 1200 + s.tw);
-      const a = alpha * twinkle * 0.9;
+      const a = alpha * twinkle * 0.9 * moonStar;
       if (a < 0.05) continue;
       ctx.beginPath();
       ctx.arc(s.rx * viewW, s.ry * viewH * 0.6, s.r, 0, Math.PI * 2);
@@ -9928,6 +9930,17 @@
     return { illum, waxing };
   }
 
+  // ── ROADMAP 240：月明星稀（月相盈虧調制星光與銀河的可見度）─────────────────
+  // 239 讓那輪月真的會陰晴圓缺；本切片把那份盈虧第一次「灑」到周遭夜空——月明則星河黯、
+  // 月晦則星河燦。illum 為 moonPhase 的受光比例∈[0,1]（新月 0、滿月 1）；回傳星光可見度乘數
+  // ∈[MOON_STAR_MIN..1]：滿月（月光洗去微光）壓到 MOON_STAR_MIN、新月回 1，線性單調遞減。
+  // 壞值（NaN/非有限）退 1（寧亮不誤暗，保夜空一向看得到星）。無 DOM、純算術、可測。
+  const MOON_STAR_MIN = 0.45;   // 滿月夜星光最多被壓到的下限（仍隱約可辨、不全滅）
+  function moonStarVisibility(illum) {
+    const i = Number.isFinite(illum) ? Math.max(0, Math.min(1, illum)) : 0;
+    return 1 - (1 - MOON_STAR_MIN) * i;
+  }
+
   // 每幀依晝夜推導太陽/月亮的弧上位置與外觀並繪製（螢幕座標、不隨鏡頭移動）。
   // 由獨立 safeDraw 呼叫；畫在疊加層之後、雲/鳥之前（雲鳥較靠近觀者、會從主體前飄過）。
   function drawCelestialBody(now) {
@@ -11443,6 +11456,8 @@
     if (_galaxyFade <= 0.01) return;
     if (reduceMotion || !_parallaxEnabled) { _galaxyFade = 0; return; }
     if (!_galaxyStars) _galaxyStars = makeGalaxyStars();
+    // ROADMAP 240 月明星稀：銀河是夜空最黯淡的一抹，月明時最先被月光洗淡、月晦時最燦。
+    const moonStar = moonStarVisibility(moonPhase(Date.now()).illum);
 
     const W = viewW, H = viewH;
     const t = now / 1000;
@@ -11461,7 +11476,7 @@
       const u = i / hazeSegs;
       const cx = x0 + dx * u, cy = y0 + dy * u;
       const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, halfW);
-      const peak = (_galaxyFade * 0.05).toFixed(3);   // 極淡，不蓋住星星與月亮
+      const peak = (_galaxyFade * 0.05 * moonStar).toFixed(3);   // 極淡，不蓋住星星與月亮；月明再洗淡（240）
       g.addColorStop(0, `rgba(220,228,255,${peak})`);
       g.addColorStop(1, "rgba(220,228,255,0)");
       ctx.fillStyle = g;
@@ -11473,7 +11488,7 @@
     for (const s of _galaxyStars) {
       const bx = x0 + dx * s.u + nx * s.off * halfW;
       const by = y0 + dy * s.u + ny * s.off * halfW;
-      const a = _galaxyFade * galaxyTwinkle(s.a, t * s.tw + s.phase);
+      const a = _galaxyFade * galaxyTwinkle(s.a, t * s.tw + s.phase) * moonStar;
       if (a < 0.02) continue;
       ctx.globalAlpha = a;
       ctx.fillStyle = `rgb(${s.c})`;
