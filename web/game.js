@@ -3869,6 +3869,39 @@
   // 畫單一玩家(角色 sprite／fallback 圓 + 種族光環 + 頭上名字)。抽成獨立函式,讓 render 能
   // 控制畫的順序——別人先畫、自己最後畫,確保自己永遠在最上層。純表現層,不嵌任何
   // 遊戲規則(將來 WebXR renderer 自有角色呈現,這層只屬 2D 客戶端)。
+
+  // ---- 玩家外觀差異化（預設像素模式）-----------------------------------------
+  // 問題：sprite 載入後所有玩家都畫同一張 player.png，連玩家選的套裝顏色也看不到 → 大家長一樣。
+  // 解法：依玩家套裝色（沒換裝者用 id 雜湊的柔和色相）把整張 sprite sheet 上色一次後快取，
+  //       之後每幀只是 blit。source-atop 只染不透明像素、低 alpha 保留原本明暗 → 有差異又不糊。
+  const TINTED_PLAYER_SHEETS = {};   // 色字串 → 離屏 canvas（染好快取；null=染過但失敗）
+  function playerTintColor(p) {
+    const cs = COSTUMES[(p && p.costume) ?? 0];
+    if (cs && cs.body) return cs.body;            // 玩家選了有色套裝 → 直接用該色
+    // 預設「探險家套裝」(膚色身體) 無專屬色：用 id 雜湊出穩定柔和色相，讓沒換裝的人也彼此不同。
+    let h = 0; const s = String((p && p.id) || "");
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return `hsl(${h % 360}, 42%, 55%)`;
+  }
+  function tintedPlayerSheet(color) {
+    if (TINTED_PLAYER_SHEETS[color] !== undefined) return TINTED_PLAYER_SHEETS[color];
+    const src = ART.player;
+    if (!src || !src.complete || !src.naturalWidth) return null; // 還沒載到：先別染，這幀用原圖
+    try {
+      const off = document.createElement("canvas");
+      off.width = src.naturalWidth; off.height = src.naturalHeight;
+      const octx = off.getContext("2d");
+      octx.drawImage(src, 0, 0);
+      octx.globalCompositeOperation = "source-atop"; // 只染已畫的不透明像素
+      octx.globalAlpha = 0.38;                        // 低 alpha：保留 sprite 原本明暗/細節
+      octx.fillStyle = color;
+      octx.fillRect(0, 0, off.width, off.height);
+      TINTED_PLAYER_SHEETS[color] = off;
+    } catch (_e) {
+      TINTED_PLAYER_SHEETS[color] = null;
+    }
+    return TINTED_PLAYER_SHEETS[color];
+  }
   function drawPlayer(p, camX, camY) {
     const sx = p.rx - camX;
     const sy = p.ry - camY;
@@ -3914,9 +3947,11 @@
     } else if (artOk("player")) {
       // 精靈圖路徑：新蒸汽龐克像素角色（ROADMAP 88 生成）。
       // sprite 32x32，放大成 36 好看；腳對齊 sy（陰影位置）。
+      // 外觀差異化：依玩家套裝色染色（快取整張 sheet），讓每位玩家/捏臉看得出不同；染不出退回原圖。
       const dw = 36, dh = 36;
+      const sheet = tintedPlayerSheet(playerTintColor(p)) || ART.player;
       ctx.drawImage(
-        ART.player, frame * TS, dir * TS, TS, TS,
+        sheet, frame * TS, dir * TS, TS, TS,
         Math.round(sx - dw / 2), Math.round(by - dh + 14), dw, dh
       );
     } else {
