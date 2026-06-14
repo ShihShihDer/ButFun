@@ -9896,6 +9896,38 @@
     return Math.max(0, Math.min(1, Math.max(horizon, dawnDusk)));
   }
 
+  // ── 月相：月有陰晴圓缺（ROADMAP 239）────────────────────────────────────────
+  // 200 給了天空一輪會升落的月亮，但它永遠是同一張滿月臉（只有一抹固定假陰影裝樣子）。
+  // 本切片讓月亮依「真實世界的朔望月」盈虧——遊戲裡今晚的月相＝現實今晚抬頭看到的月相，
+  // 新月（近黑）→眉月→上弦（右半亮）→盈凸→滿月→虧凸→下弦（左半亮）→殘月→新月，周而復始。
+  // 純前端、零後端、確定性：相位由真實時間（Date.now）對朔望月取模推得，全玩家共看同一張月臉。
+  const SYNODIC_MONTH_DAYS = 29.530588853;   // 朔望月平均長度（天）
+  // 已知新月參考時刻（2000-01-06 18:14 UTC，廣為採用的曆元新月），單位毫秒。
+  const KNOWN_NEW_MOON_MS = 947182440000;
+  const DAY_MS = 86400000;
+
+  // 純函式：朔望月齡（自參考新月起算、對朔望月取模的天數）∈ [0, SYNODIC_MONTH_DAYS)。
+  // 壞值（NaN/非有限）退 0（視為新月）。無 DOM、可測。
+  function lunarAgeDays(nowMs) {
+    if (!Number.isFinite(nowMs)) return 0;
+    const days = (nowMs - KNOWN_NEW_MOON_MS) / DAY_MS;
+    let age = days % SYNODIC_MONTH_DAYS;
+    if (age < 0) age += SYNODIC_MONTH_DAYS;   // 參考時刻之前的負模也歸正
+    return age;
+  }
+
+  // 純函式：把月齡映成月相 { illum, waxing }。
+  // illum∈[0,1]＝受光（明亮）面比例：新月 0、上/下弦 0.5、滿月 1；
+  // waxing＝是否漸盈（朔望月前半段月齡 < 半月為盈、亮面在右；後半段為虧、亮面在左）。
+  // 受光比例採天文標準 (1-cos(2π·相位))/2。壞值退新月。無 DOM、可測。
+  function moonPhase(nowMs) {
+    const age = lunarAgeDays(nowMs);
+    const cyc = age / SYNODIC_MONTH_DAYS;                 // 周期相位 [0,1)
+    const illum = Math.max(0, Math.min(1, (1 - Math.cos(2 * Math.PI * cyc)) / 2));
+    const waxing = cyc < 0.5;                             // 前半盈、後半虧
+    return { illum, waxing };
+  }
+
   // 每幀依晝夜推導太陽/月亮的弧上位置與外觀並繪製（螢幕座標、不隨鏡頭移動）。
   // 由獨立 safeDraw 呼叫；畫在疊加層之後、雲/鳥之前（雲鳥較靠近觀者、會從主體前飄過）。
   function drawCelestialBody(now) {
@@ -9970,15 +10002,31 @@
       const y = horizonY - elev * (horizonY - topY);
       const coreR = MOON_CORE_R * scale * pulse;
       drawOrb(x, y, coreR, moonVis, "238,242,255", "165,190,235"); // 清冷銀白
-      // 一抹偏移的淡影，讓圓盤讀起來像月亮（凸月陰影）而非另一顆太陽。
+      // 月相陰影（ROADMAP 239）：依真實朔望月在月盤上罩出「未受光的暗面」，畫出陰晴圓缺——
+      // 取代過去那抹固定假陰影。暗面形狀＝暗側月緣半圓 ＋ 終止線橢圓圍成的弧月。
       ctx.globalCompositeOperation = "source-over";
-      const sh = ctx.createRadialGradient(x + coreR * 0.42, y - coreR * 0.30, 0, x + coreR * 0.42, y - coreR * 0.30, coreR * 0.95);
-      sh.addColorStop(0, `rgba(120,135,170,${(0.18 * moonVis).toFixed(3)})`);
-      sh.addColorStop(1, "rgba(120,135,170,0)");
-      ctx.fillStyle = sh;
-      ctx.beginPath();
-      ctx.arc(x, y, coreR, 0, Math.PI * 2);
-      ctx.fill();
+      const { illum, waxing } = moonPhase(Date.now());
+      if (illum < 0.985 && coreR > 0.5) {          // 滿月（illum≈1）整盤受光、無暗面，免畫
+        const s = waxing ? 1 : -1;                 // 受光面方位：盈在右(+1)、虧在左(-1)
+        const term = 1 - 2 * illum;                // 終止線橢圓帶號水平半徑比例（新月+1→上/下弦0→滿月-1）
+        const N = 32;                              // 終止線取樣段數（夜間每幀僅一次、開銷微小）
+        ctx.beginPath();
+        for (let i = 0; i <= N; i++) {             // 暗側月緣半圓（v 自上而下）
+          const v = -coreR + 2 * coreR * (i / N);
+          const w = Math.sqrt(Math.max(0, coreR * coreR - v * v));
+          const px = x - s * w;
+          if (i === 0) ctx.moveTo(px, y + v); else ctx.lineTo(px, y + v);
+        }
+        for (let i = N; i >= 0; i--) {             // 終止線橢圓（v 自下而上）合圍出暗面
+          const v = -coreR + 2 * coreR * (i / N);
+          const w = Math.sqrt(Math.max(0, coreR * coreR - v * v));
+          ctx.lineTo(x + s * term * w, y + v);
+        }
+        ctx.closePath();
+        // 暗面用清冷深藍灰、留一抹地照微光（不全黑，新月仍隱約可辨）；不透明度隨月可見度淡入淡出。
+        ctx.fillStyle = `rgba(26,32,54,${(0.80 * moonVis).toFixed(3)})`;
+        ctx.fill();
+      }
       ctx.globalCompositeOperation = "lighter";
     }
 

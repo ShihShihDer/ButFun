@@ -388,6 +388,10 @@ const scenarios = [
   // 冬日寒雀（238）：current_season=winter ＋ 白天（light 0.82 > 0.42）→ 跑 drawSparrows 的寒雀繪製分支
   //（雀勢淡入→原地啄食點頭→停—衝短距蹦躍→拋物線弧＋展翅）。6 幀已足以讓 _sparrowFade 越過 0.01 門檻進入繪製主路徑（彩蝶 236／蜻蜓 237 的冬日對偶）。
   variant("冬日寒雀", (s) => { s.current_season = "winter"; s.daynight = { phase: "day", light: 0.82, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 夜空月相（239）：入夜（light 0.12）→ 跑 drawCelestialBody 的月亮分支，月相陰影依真實朔望月
+  // （moonPhase(Date.now)）罩出暗面、畫出陰晴圓缺（暗側月緣半圓＋終止線橢圓圍成的弧月）。
+  // 取代 200 過去那抹固定假陰影；任一真實時刻的月相都應零例外繪過暗面合圍路徑。
+  variant("夜空月相", (s) => { s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
 ];
 
 let failed = false;
