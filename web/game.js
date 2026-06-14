@@ -4207,6 +4207,7 @@
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
+    safeDraw("morningDew", () => drawMorningDew(camX, camY, renderNow)); // 破曉晨露（259），破曉時草尖上原地明滅、入晝即散的貼地露光、四季染不同色溫
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
     safeDraw("rockGlint", () => drawRockGlint(camX, camY, renderNow)); // 岩石礦脈微光（199），岩面原地一閃的冷白礦光、貼地表之上
     safeDraw("wetGround", () => drawWetGround(camX, camY)); // 雨後地面濕潤（246），雨後陸地泛冷潤暗光＋疏落幾汪映天淺水窪、貼地表之上其餘實體之下
@@ -11382,6 +11383,101 @@
         const alpha = g * strength * WIND_MAX_ALPHA;
         ctx.fillStyle = `rgba(${tint.r},${tint.g},${tint.b},${alpha.toFixed(3)})`;
         ctx.fillRect(dx, dy, TS + 1, TS + 1); // 整格極淡提亮，疊出一道被風掃亮的草浪
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 破曉晨露（ROADMAP 259）──────────────────────────────────────────────────
+  // 破曉時分，草地（meadow/forest）的草尖上凝著一點點晨露，被第一道斜光照得忽明忽暗地
+  // 閃爍；隨太陽升高、晨光轉暖，露珠漸漸蒸散淡去——是只在每天清晨短短一段才見得到的微光。
+  // 純前端視覺、零後端：每格至多一顆露光，格內位置／明滅相位／週期全由既有確定性 sceneryHash
+  // 決定（同格永遠同結果、不隨鏡頭閃爍）；整層強度只是 daynight.light/phase 的函式（破曉峰值、
+  // 入晝歸零），故同一世界座標同一時刻恆定。四季染不同色溫（春青／夏亮／秋金／冬霜），
+  // 讓每個清晨的草地都有當季的露色。是 195/196/197/198（水會閃、會拍岸、草會起浪、沙會流光）
+  // 之後補上的「時間」維度——過去那些地表微光不分晝夜恆在，晨露是第一筆「只屬於破曉」的地表生命。
+  // 與既有元素區隔（避免重疊）：晨露（259）＝只在破曉、草地上「原地明滅」的貼地露光點，入晝即散；
+  // 草浪（197）＝草地全天沿風向「橫掃」的整格亮帶（提亮整格、非點、不限破曉）；水面波光（195）＝
+  // 水域內部反光（限水格）；沙漠微光（198）＝沙格順風飄移的金光點——位置（草／水／沙）、時機
+  // （破曉／全天）、動法（原地明滅／橫掃／飄移）刻意不同，互不重疊。
+  // 效能優先：reduceMotion／低幀（沿用 91 的 _parallaxEnabled）一律不畫；非破曉整層零開銷早退；
+  // 每格至多一點、疏布、暗於門檻即跳過。
+  const DEW_MAX_ALPHA   = 0.5;   // 單顆露光最大不透明度（半透明亮點、不蓋掉草色）
+  const DEW_PERIOD_MS   = 2400;  // 明滅週期基準（每格再以 hash 微調，避免整片同步閃）
+  const DEW_DENSITY     = 0.66;  // sceneryHash 高於此值的草格才凝露（疏；草尖零星掛露）
+  const DEW_MIN_TWINKLE = 0.1;   // 明滅亮度低於此即不畫（多數時間露光是暗的，省繪製）
+  const DEW_DOT_R       = 2.6;   // 露光柔光斑基準半徑（邏輯像素，再以 hash 微縮放）
+  const DEW_FADE_LIGHT  = 0.55;  // 晨光升到此亮度，露已蒸散殆盡（強度歸零）
+
+  // 純函式：晨露整層強度 [0,1]。只在破曉（phase==="dawn"）才有露——其餘時段一律 0（晨露是
+  // 「只屬於清晨」的短暫景）；破曉內隨晨光由暗轉亮線性淡出（light 越低＝天剛濛濛亮、露最盛，
+  // 升到 DEW_FADE_LIGHT 即蒸散歸零），讀起來像「太陽一升、露就退」。無 DOM、可單元自驗。
+  function dewStrength(light, phase) {
+    if (phase !== "dawn") return 0;
+    const L = Math.max(0, light);
+    if (L >= DEW_FADE_LIGHT) return 0;
+    return Math.max(0, Math.min(1, 1 - L / DEW_FADE_LIGHT));
+  }
+
+  // 純函式：依季節給晨露色溫 {r,g,b}。春青嫩、夏亮白、秋金暖、冬霜冷藍白——每季清晨各有露色。
+  // 未知季節退回中性亮白。無 DOM、可單元自驗。
+  function dewTint(season) {
+    switch (season) {
+      case "spring": return { r: 214, g: 245, b: 224 }; // 春：嫩青白
+      case "summer": return { r: 240, g: 250, b: 246 }; // 夏：清亮白
+      case "autumn": return { r: 250, g: 238, b: 200 }; // 秋：金暖白
+      case "winter": return { r: 220, g: 236, b: 252 }; // 冬：霜冷藍白
+      default:        return { r: 240, g: 248, b: 250 }; // 其他：中性亮白
+    }
+  }
+
+  // 每幀在可見草原/森林 tile 的草尖上繪製破曉露光。由獨立 safeDraw 呼叫，畫在地表之上、其餘實體之下。
+  function drawMorningDew(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const strength = dewStrength(light, phase);
+    if (strength <= 0.01) return; // 非破曉／露已散：整層零開銷早退
+
+    const tint = dewTint(currentSeason);
+
+    // 與 drawGround 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // 加亮：像露珠把斜射的晨光點亮一下
+    const baseColor = `${tint.r},${tint.g},${tint.b}`;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const b = biomeAt(tx * TS + TS / 2, ty * TS + TS / 2);
+        if (b !== "meadow" && b !== "forest") continue; // 露只凝在草地
+        // 用與草浪（197）／波光（195）不同的 hash 種子：另一套疏密／格內位置／相位，各層不重疊。
+        const h0 = sceneryHash(tx * 29 + 9, ty * 31 + 5);
+        if (h0 < DEW_DENSITY) continue;        // 比草浪更疏，草尖零星掛露
+        const h1 = sceneryHash(tx * 7 + 2, ty * 13 + 8);
+        const h2 = sceneryHash(tx * 19 + 6, ty * 3 + 4);
+
+        const period = DEW_PERIOD_MS * (0.8 + h1 * 0.6); // 每格週期不同，避免整片同步閃
+        const phaseOff = h2 * Math.PI * 2;
+        const tw = shimmerTwinkle(now, period, phaseOff);
+        if (tw < DEW_MIN_TWINKLE) continue;    // 此刻暗、不畫，省繪製
+
+        const sx = tx * TS - camX + h1 * TS;   // 格內水平偏移
+        const sy = ty * TS - camY + h2 * TS;   // 格內垂直偏移
+        const r = DEW_DOT_R * (0.7 + h0 * 0.6);
+        const alpha = tw * strength * DEW_MAX_ALPHA;
+
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        grad.addColorStop(0, `rgba(${baseColor},${alpha.toFixed(3)})`);
+        grad.addColorStop(1, `rgba(${baseColor},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2); // 圓點露光（與 202 拉長倒影、197 整格亮帶區隔）
+        ctx.fill();
       }
     }
     ctx.restore();
