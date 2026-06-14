@@ -122,7 +122,7 @@ async fn google_start(State(app): State<AppState>) -> Response {
     let Some(cfg) = app.auth.as_ref() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "OAuth 尚未設定").into_response();
     };
-    let state = random_b64(16);
+    let state = make_signed_state(&cfg.session_secret, now_unix_secs());
     let scopes = "openid email profile";
     let auth_url = format!(
         "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={cid}&redirect_uri={ru}&scope={sc}&state={st}&access_type=online&prompt=select_account",
@@ -168,18 +168,14 @@ async fn google_callback(
         return (StatusCode::BAD_REQUEST, "缺少 code 或 state").into_response();
     };
 
-    // 驗 state(對齊 cookie 中先前種下的值)。
-    let cookie_header = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let saved_state = read_cookie(cookie_header, STATE_COOKIE);
-    let ok = matches!(&saved_state, Some(s) if *s == state);
-    if !ok {
-        // 隱私安全診斷:只記「cookie 有無 / 兩邊長度 / 是否有任何 cookie」,不記 state 值、不記個資。
-        let has_any_cookie = !cookie_header.is_empty();
-        let saved_len = saved_state.map(|s| s.len());
-        // 只記收到的 cookie「名稱」清單(不含值),用於診斷哪些 cookie 撐過跨站往返、哪些沒撐過。
+    // CSRF 防護：驗 state 自身的 HMAC 簽章 + 15 分時效（stateless,不依賴 cookie——
+    // 實測使用者環境 cookie 在 OAuth 跨站往返會遺失,故改驗簽章）。
+    if !verify_signed_state(&state, &cfg.session_secret, now_unix_secs(), 900) {
+        // 隱私安全診斷(不記 state 值/個資)。仍記 cookie 名稱清單,延續 #430 的觀測。
+        let cookie_header = headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
         let cookie_names: String = cookie_header
             .split(';')
             .filter_map(|p| p.trim().split('=').next())
@@ -188,12 +184,9 @@ async fn google_callback(
             .join(",");
         tracing::warn!(
             target: "butfun_server",
-            has_any_cookie,
-            state_cookie_present = saved_len.is_some(),
-            saved_state_len = ?saved_len,
             recv_state_len = state.len(),
             cookie_names = %cookie_names,
-            "OAuth callback state 對不上:用於診斷登入失敗(不含敏感值)"
+            "OAuth callback 簽章式 state 驗證失敗"
         );
         return (StatusCode::BAD_REQUEST, "state 對不上(防 CSRF 機制)").into_response();
     }
@@ -366,6 +359,46 @@ fn sign_session(user_id: &Uuid, secret: &[u8]) -> String {
     format!("{uid}.{sig_b64}")
 }
 
+/// 簽章式 OAuth state（stateless CSRF 防護，不依賴 cookie）。
+/// 格式：`<nonce_b64>.<unix_secs>.<hmac_b64>`，皆 URL-safe。HMAC 蓋住 `<nonce>.<unix_secs>`。
+fn make_signed_state(secret: &[u8], now_secs: u64) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let nonce = random_b64(12);
+    let payload = format!("{nonce}.{now_secs}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC 任意長度");
+    mac.update(payload.as_bytes());
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    format!("{payload}.{sig}")
+}
+
+/// 驗證簽章式 state：簽章正確且時戳在 `max_age_secs` 內才回 true。常數時間比對。
+fn verify_signed_state(state: &str, secret: &[u8], now_secs: u64, max_age_secs: u64) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    // 取最後一個 '.' 切出 payload 與 sig（payload 自身含一個 '.'）。
+    let Some((payload, _sig)) = state.rsplit_once('.') else { return false };
+    // payload = "<nonce>.<ts>"
+    let Some((_nonce, ts_str)) = payload.rsplit_once('.') else { return false };
+    let Ok(ts) = ts_str.parse::<u64>() else { return false };
+    // 時效（容忍時鐘些微倒退：用 saturating_sub 兩向）。
+    if now_secs.saturating_sub(ts) > max_age_secs { return false; }
+    // 重算簽章，常數時間比對整個 state。
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC 任意長度");
+    mac.update(payload.as_bytes());
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    let expected = format!("{payload}.{sig}");
+    constant_time_eq(state.as_bytes(), expected.as_bytes())
+}
+
+/// 目前 unix 秒。
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn verify_session(token: &str, secret: &[u8]) -> Option<Uuid> {
     let (uid_str, _sig) = token.split_once('.')?;
     let uid = Uuid::parse_str(uid_str).ok()?;
@@ -480,6 +513,43 @@ mod tests {
         assert_eq!(verify_session("沒有點號", SECRET), None);
         assert_eq!(verify_session("not-a-uuid.sig", SECRET), None);
         assert_eq!(verify_session("", SECRET), None);
+    }
+
+    // ---- make_signed_state / verify_signed_state ----
+
+    #[test]
+    fn signed_state_roundtrip_ok() {
+        let now = 1_700_000_000u64;
+        let state = make_signed_state(SECRET, now);
+        // 同密鑰、同(或近)時間驗章應通過。
+        assert!(verify_signed_state(&state, SECRET, now, 900));
+    }
+
+    #[test]
+    fn signed_state_rejects_tampered() {
+        let now = 1_700_000_000u64;
+        let state = make_signed_state(SECRET, now);
+        // 改一個字元 → 簽章驗證失敗。
+        let mut bad = state.clone();
+        let last = bad.pop().unwrap();
+        bad.push(if last == 'A' { 'B' } else { 'A' });
+        assert!(!verify_signed_state(&bad, SECRET, now, 900));
+    }
+
+    #[test]
+    fn signed_state_rejects_expired() {
+        let now = 1_700_000_000u64;
+        let state = make_signed_state(SECRET, now);
+        // 過了 max_age(900)後驗章 → 失敗。
+        assert!(!verify_signed_state(&state, SECRET, now + 1000, 900));
+    }
+
+    #[test]
+    fn signed_state_rejects_wrong_secret() {
+        let now = 1_700_000_000u64;
+        let state = make_signed_state(SECRET, now);
+        // 不同密鑰 → 攻擊者偽造不出有效簽章。
+        assert!(!verify_signed_state(&state, b"attacker-secret", now, 900));
     }
 
     // ---- constant_time_eq ----
