@@ -877,6 +877,24 @@ const SHAKE_PROB: f32 = 0.05;
 const SHAKE_DURATION_MIN: f32 = 1.0;
 const SHAKE_DURATION_MAX: f32 = 2.5;
 
+// ─── ROADMAP 298：雨後曬太陽（post-rain basking／雨停出太陽、淋濕的草食獸攤身曬太陽烘乾取暖）──────────────
+// 296 雨中避雨（🌧️，下雨時縮身佇立）→ 297 雨後抖水（💦，雨停渾身一抖甩水）把「動物 × 天氣」這條維度從
+// 「下雨怎麼辦」演到「雨停了抖開水珠」。可雨停後最招牌、最暖的收尾，是太陽一探頭、剛淋濕的獸群攤開身子曬太陽
+// 把毛羽曬乾取暖（鹿側躺向陽、鳥攤開翅膀曬日光浴是真實的「太陽浴」行為）。本切片把這最後一幕補上：雨剛停的
+// 同一段時間窗（POST_RAIN_WINDOW）內，平靜的草食獸抖完水後偶爾停下、攤身曬太陽烘乾取暖（新增 Basking 狀態、
+// 頭頂浮一枚徐徐脹縮如暖意的 ☀️），曬一段就鬆下來回閒晃。與 297 抖水（💦，一陣急抖）刻意對成「抖水／曬乾」一對，
+// 把同一場雨從「下雨縮身→雨停抖水→雨後曬乾取暖」從頭到尾演完整。沿用 297 的 post_rain 時間窗（複用、零新欄位），
+// 排在 297 抖水之後（雨一停先抖開水珠、再攤著曬乾，順序天然不爭）。零捕食平衡風險（純多一個讓草食獸偶爾原地
+// 攤身曬太陽的閒置姿態，不改任何獵殺／搜尋／繁衍結果、不生成可撿的實體）、零 LLM、純啟發式、可測、零 tick 簽名
+// 改動（複用 297 的 post_rain）、零協議改動（新增的 basking 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、
+// 零持久化、零 migration、記憶體模式。
+/// 雨停後平靜的草食獸偶爾停下、攤身曬太陽烘乾取暖的逐幀機率——與 297 抖水 SHAKE_PROB(0.05) 同量級、略低：
+/// 曬太陽是抖完水後更悠閒的收尾，比抖水稍少見一點，讓「雨停了、獸群陸續攤身曬太陽」是漣漪式起頭而非整群齊曬。
+const BASK_PROB: f32 = 0.04;
+/// 一段曬太陽的最短／最長時長（秒）——比 297 抖水(1~2.5s 一陣急抖)從容得多：曬太陽是攤著烘乾、悠閒的收尾。
+const BASK_DURATION_MIN: f32 = 5.0;
+const BASK_DURATION_MAX: f32 = 10.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1816,6 +1834,11 @@ enum WildlifeState {
     /// shake_timer 倒數，抖一小陣就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（抖水
     /// 永遠讓位逃命）。與 296 雨中避雨（🌧️）對成「雨中／雨後」一對，把「動物 × 天氣」演完雨停的後半段。
     Shaking { shake_timer: f32 },
+    /// ROADMAP 298：雨後曬太陽——雨剛停的時間窗（POST_RAIN_WINDOW，複用 297）內，白天平靜的草食獸（鹿／鳥
+    /// ／小獸）抖完水後偶爾停下、攤開身子曬太陽把毛羽曬乾取暖（前端畫成攤身定格、頭頂浮一枚徐徐脹縮如暖意的
+    /// ☀️）。bask_timer 倒數，曬一段就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（曬太陽
+    /// 永遠讓位逃命）。與 297 雨後抖水（💦）對成「抖水／曬乾」一對，把同一場雨從下雨縮身演到雨後曬乾取暖。
+    Basking { bask_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2749,6 +2772,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 298：雨後曬太陽——曬太陽中（Basking）原地攤身曬太陽烘乾取暖（不更新座標，攤身定格由前端以 ☀️
+    /// 演繹），bask_timer 倒數。曬夠了一段就鬆下來、挑家附近的下一個漫遊目標回巡遊。只在 Basking 狀態下生效
+    /// （呼叫端已確保此隻為草食獵物、白天、雨剛停的時間窗內、且無威脅逼進 FLEE_RADIUS——那種情形更前面就已改走
+    /// 逃竄，曬太陽永遠讓位逃命）。與 tick_shake 同模式，曬太陽不繫於 is_raining（雨停才曬、只看計時）。
+    fn tick_bask(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Basking { bask_timer } = self.state {
+            let remaining = bask_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            self.state = WildlifeState::Basking { bask_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2961,6 +3000,7 @@ impl Wildlife {
             WildlifeState::Skirting { .. }   => "skirting",
             WildlifeState::Sheltering { .. } => "sheltering",
             WildlifeState::Shaking { .. } => "shaking",
+            WildlifeState::Basking { .. } => "basking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -4344,6 +4384,15 @@ impl WildlifeManager {
                     } else {
                         a.tick_shake(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Basking { .. }) {
+                    // ROADMAP 298：已在雨後曬太陽——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（曬太陽永遠
+                    // 讓位逃命），否則原地攤身曬太陽烘乾取暖、計時倒數，曬夠了一段就鬆下來起身回巡遊。與 297 抖水
+                    // 同模式：一段平靜時的定格小動作，遇險即讓位逃命。曬太陽不繫於天氣（雨停才曬、只看計時）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_bask(dt, rng);
+                    }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
@@ -4458,6 +4507,24 @@ impl WildlifeManager {
                     // 奔逃（抖水永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(SHAKE_DURATION_MIN..=SHAKE_DURATION_MAX);
                     a.state = WildlifeState::Shaking { shake_timer: timer };
+                } else if !is_night
+                    && !is_raining
+                    && post_rain
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < BASK_PROB
+                {
+                    // ROADMAP 298：雨後曬太陽——白天（!is_night）雨剛停（!is_raining 且仍在 post_rain 時間窗內）時，
+                    // 平靜歇息／漫步的草食獸（鹿／鳥／小獸；Phase 4 本就只處理獵物，故天然只草食獸觸發）抖完水後偶爾
+                    // 停下、攤開身子曬太陽把毛羽曬乾取暖（轉入 Basking ☀️）。逐幀低機率觸發 → 雨一停，剛才抖開水珠的
+                    // 獸群由近而遠錯落地一隻隻攤身曬太陽，而非同幀整群瞬間齊曬。**與 297 雨後抖水對成「抖水／曬乾」一對**：
+                    // 抖水（💦，雨一停渾身一抖甩水）→ 曬太陽（☀️，攤著烘乾取暖），把同一場雨從「下雨縮身→雨停抖水→
+                    // 雨後曬乾取暖」從頭到尾演完整。**複用 297 的 post_rain 時間窗**（同一窗、零新欄位），**排在 297 抖水
+                    // 之後**（雨一停先抖開水珠、再攤著曬乾，順序天然不爭）；沿用 296/297 一系「恐懼分支之後、白晝玩樂之前」
+                    // 的位置。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Basking 續算分支即改全速奔逃（曬太陽永遠
+                    // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(BASK_DURATION_MIN..=BASK_DURATION_MAX);
+                    a.state = WildlifeState::Basking { bask_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -11927,6 +11994,10 @@ mod tests {
         for _ in 0..130 {
             mgr.tick(0.1, &[], &att, &[], false);
         }
+        // 耗盡窗口後重設回乾淨的漫遊狀態——清掉可能正在進行、會延續到斷言迴圈的抖水（避免測試繫於 RNG 觸發時機）。
+        for a in mgr.animals.iter_mut() {
+            a.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        }
         // 此後再連跑多幀都不該抖水
         for _ in 0..500 {
             mgr.tick(0.1, &[], &att, &[], false);
@@ -12004,6 +12075,197 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(w.state, WildlifeState::Shaking { .. }), "掠食者不該抖水，實際 {:?}", w.state);
+        }
+    }
+
+    // ─── ROADMAP 298：雨後曬太陽（post-rain basking）──────────────────────────
+    #[test]
+    fn tick_bask_holds_position_until_timer_expires() {
+        // 曬太陽進行中：原地不動（座標不變）、計時遞減、狀態維持 Basking。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Basking { bask_timer: 6.0 };
+        deer.tick_bask(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Basking { bask_timer } => {
+                assert!((bask_timer - 5.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("曬太陽未到期應維持 Basking，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "曬太陽應原地不動");
+    }
+
+    #[test]
+    fn tick_bask_returns_to_wander_when_timer_expires() {
+        // 曬夠了一段：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Basking { bask_timer: 0.05 };
+        critter.tick_bask(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_bask_noop_on_other_state() {
+        // 防呆：非 Basking 狀態呼叫 tick_bask 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_bask(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非曬太陽狀態呼叫 tick_bask 不該改狀態");
+    }
+
+    #[test]
+    fn basking_state_str_is_basking() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Basking { bask_timer: 1.0 };
+        assert_eq!(deer.state_str(), "basking");
+    }
+
+    #[test]
+    fn calm_prey_eventually_basks_after_rain_stops() {
+        // 雨剛停：一頭平靜、四下無威脅的鹿，在雨停後的時間窗內連跑多幀應有機會停下攤身曬太陽（進入 Basking）。
+        // 每隔一段反覆刷新雨停窗（true→false 的下降緣重新開窗），確保曬太陽有充足機會（避免被 297 抖水佔去窗口時間）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut basked = false;
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 雨剛停 → 重新開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、雨已停
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Basking { .. }) {
+                basked = true;
+                break;
+            }
+        }
+        assert!(basked, "雨剛停、平靜無威脅的鹿應在雨停時間窗內偶爾停下曬太陽");
+    }
+
+    #[test]
+    fn prey_does_not_bask_without_rain_ever() {
+        // 沒淋過雨就不曬：從未下過雨（post_rain_timer 一直為 0）時，平靜的鹿連跑多幀都不該進入 Basking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        // 不呼叫 set_raining → 從未下雨、無雨停時間窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Basking { .. }), "沒淋過雨不該曬太陽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_bask_after_window_expires() {
+        // 雨停久了（窗口耗盡）就不再曬：雨停後先空跑足以耗盡 POST_RAIN_WINDOW(12s) 的時間，
+        // 此後平靜的鹿連跑多幀都不該再進入 Basking（晴了一整天的乾獸不會無端曬太陽）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        mgr.set_raining(false); // 開窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 先空跑 13 秒（>12s 窗口）耗盡時間窗——途中可能曬一陣，但窗口耗盡後就該止住
+        for _ in 0..130 {
+            mgr.tick(0.1, &[], &att, &[], false);
+        }
+        // 耗盡窗口後重設回乾淨的漫遊狀態——清掉可能正在進行、會延續到斷言迴圈的曬太陽（避免測試繫於 RNG 觸發時機）。
+        for a in mgr.animals.iter_mut() {
+            a.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        }
+        // 此後再連跑多幀都不該曬太陽
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Basking { .. }), "雨停久了不該再曬太陽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_bask_while_still_raining() {
+        // 與 296 區隔：雨還在下時走避雨、不走曬太陽——下雨期間平靜的鹿連跑多幀都不該進入 Basking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true); // 持續下雨
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.set_raining(true); // 每幀仍在下雨（不觸發下降緣、不開窗）
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Basking { .. }), "下雨中應避雨、不曬太陽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn basking_prey_gives_way_to_flee() {
+        // 曬太陽永遠讓位逃命：曬太陽中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Basking { bask_timer: 1.0e9 }; // 曬得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn prey_does_not_bask_at_night() {
+        // 晝起意：夜間草食獸另走夜眠分支——即便雨剛停，夜裡連跑多幀都不該進入 Basking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 反覆開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Basking { .. }), "夜間草食獸不該曬太陽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn predator_never_basks_after_rain() {
+        // 物種專屬：曬太陽只發生在草食獵物 phase——掠食者即便在雨剛停的窗口內，連跑多幀都不該進入 Basking。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 反覆開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Basking { .. }), "掠食者不該曬太陽，實際 {:?}", w.state);
         }
     }
 
