@@ -194,6 +194,11 @@ const JUVENILE_MIN_SCALE: f32 = 0.45;
 /// 刻意短於守靈／求偶：成年是一瞬的蛻變雀躍，不是長段的駐立。
 const MATURE_CELEBRATE_MIN: f32 = 1.5;
 const MATURE_CELEBRATE_MAX: f32 = 3.0;
+/// ROADMAP 273：初生啼鳴——剛誕生的幼獸先原地蜷縮啼鳴定格的時長區間（隨機），到期才起身去依偎母獸。
+/// 刻意短（與 272 成年禮同量級）：是新生兒落地後的第一聲、第一抖，而非長段駐立。把 207 原本「憑空出現
+/// 就立刻亂跑」的誕生，補上看得見的「降臨一瞬」，與 272 ✨ 成年禮對成生命兩端的蛻變一刻。
+const NEWBORN_CHEEP_MIN: f32 = 1.2;
+const NEWBORN_CHEEP_MAX: f32 = 2.5;
 
 // ─── ROADMAP 208：幼獸依偎母獸（親子跟隨）───────────────────────────────────────
 // 承接 207（幼獸誕生）：剛出生的幼獸不再各自亂晃，而會主動依偎、跟隨最近的同種成體
@@ -1155,6 +1160,11 @@ enum WildlifeState {
     /// 從此正式投入成體生活（求偶／繁衍／放哨…）；威脅一旦逼近一律優先逃竄（成年禮永遠讓位逃命）。
     /// 補上 207 繁衍→208 依偎照養→（本切片）長成→270 求偶→271 守靈這條生命循環裡原本唯一無聲的「長成」一環。
     Maturing { mature_timer: f32 },
+    /// ROADMAP 273：初生啼鳴——剛誕生（207）的幼獸落地後的第一刻，原地蜷縮啼鳴定格一小段
+    /// （前端畫成頭頂浮一枚像呼吸般徐徐脹縮的 🐣）。原地不動（不更新座標）、newborn_timer 倒數，
+    /// 到期才起身去依偎母獸（208）。威脅一旦逼近一律優先逃竄（初生永遠讓位逃命）。把 207 原本
+    /// 「憑空出現就立刻亂跑」的誕生補上看得見的「降臨一瞬」，與 272 ✨ 成年禮對成生命兩端的蛻變一刻。
+    Newborn { newborn_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1208,6 +1218,11 @@ impl Wildlife {
     fn new_juvenile(id: u32, kind: WildlifeKind, cx: f32, cy: f32, rng: &mut StdRng) -> Self {
         let mut w = Wildlife::new(id, kind, cx, cy, rng);
         w.maturity = 0.0;
+        // ROADMAP 273：初生啼鳴——剛誕生的幼獸不再憑空出現就立刻亂跑，而是先原地蜷縮啼鳴定格一小段
+        // 「降臨一瞬」（Newborn，頭頂浮 🐣）再起身去依偎母獸（208）。把 207 無聲的誕生補上看得見的開頭。
+        w.state = WildlifeState::Newborn {
+            newborn_timer: rng.gen_range(NEWBORN_CHEEP_MIN..=NEWBORN_CHEEP_MAX),
+        };
         w
     }
 
@@ -1564,6 +1579,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 273：初生啼鳴——初生定格中（`Newborn`）原地不動、倒數計時；到期就轉成溫順的 `Wandering`
+    /// 起身（下一幀由 208 幼獸依偎邏輯接手、朝母獸小跑）。只在 `Newborn` 狀態下生效（呼叫端已確保此隻
+    /// 為幼獸、平靜；威脅逼近時呼叫端不會走到此分支、改逃竄）。與 tick_mature/tick_wake 同模式：蜷縮啼鳴的
+    /// 視覺由前端演繹（頭頂浮 🐣），後端只穩定地推進計時。純邏輯、可測。
+    fn tick_newborn(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Newborn { newborn_timer } = self.state {
+            let remaining = newborn_timer - dt;
+            if remaining <= 0.0 {
+                // 起身去找母獸：給一個溫順的短漫遊目標（原地），下一幀 208 依偎邏輯會把牠導向最近的同種成體。
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                self.state = WildlifeState::Wandering { target_x: self.x, target_y: self.y, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Newborn { newborn_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 224：野鹿頂角較勁——較勁中（Sparring）原地不動、倒數計時；到期就挑下一個漫遊
     /// 目標（沿用群聚拉力 herd_anchor）分開起身漫遊。只在 Sparring 狀態下生效（呼叫端已確保
     /// 此隻為成年野鹿、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
@@ -1861,6 +1893,7 @@ impl Wildlife {
             WildlifeState::Mobbing { .. }   => "mobbing",
             WildlifeState::Mourning { .. }  => "mourning",
             WildlifeState::Maturing { .. }  => "maturing",
+            WildlifeState::Newborn { .. }   => "newborn",
         }
     }
 }
@@ -2796,6 +2829,14 @@ impl WildlifeManager {
                 let ay = self.animals[i].y;
                 let fleeing_now = matches!(self.animals[i].state, WildlifeState::Fleeing { .. });
                 let predator_near = nearest_in_range(ax, ay, &threats, FLEE_RADIUS).is_some();
+                // ROADMAP 273：初生啼鳴——剛誕生的幼獸先原地蜷縮啼鳴定格一小段（Newborn，頭頂浮 🐣），
+                // 計時倒數、到期才轉成溫順漫遊、由下方 208 依偎邏輯接手朝母獸小跑。威脅一旦逼近
+                // （predator_near）就不走此分支、落到下方 tick_idle 改逃竄——初生永遠讓位逃命。
+                // 把 207 原本「憑空出現就立刻亂跑」的誕生補上看得見的「降臨一瞬」。
+                if !predator_near && matches!(self.animals[i].state, WildlifeState::Newborn { .. }) {
+                    self.animals[i].tick_newborn(dt, &mut self.rng);
+                    continue;
+                }
                 if !fleeing_now && !predator_near {
                     if let Some((px, py)) = nearest_adult_of_kind(
                         self.animals[i].id, animal_kind, ax, ay, &adult_snap, NURSE_RANGE,
@@ -4747,6 +4788,45 @@ mod tests {
         assert!((w.maturity - 1.0).abs() < 1e-6, "成體成熟度應維持 1.0");
         assert!(matches!(w.state, WildlifeState::Resting { .. }),
             "已是成體者再呼叫不應觸發成年禮，實際 {:?}", w.state);
+    }
+
+    // ─── ROADMAP 273：初生啼鳴（newborn 降臨一瞬）測試 ──────────────────────────────
+
+    #[test]
+    fn new_juvenile_starts_in_newborn() {
+        let mut rng = make_rng();
+        let w = Wildlife::new_juvenile(99, WildlifeKind::WildDeer, 100.0, 200.0, &mut rng);
+        assert!(w.is_juvenile(), "剛誕生應是幼獸");
+        assert!(matches!(w.state, WildlifeState::Newborn { .. }),
+            "剛誕生應在 Newborn 初生定格，實際 {:?}", w.state);
+        assert_eq!(w.state_str(), "newborn");
+    }
+
+    #[test]
+    fn newborn_holds_in_place_then_wanders() {
+        let mut rng = make_rng();
+        let mut w = Wildlife::new_juvenile(1, WildlifeKind::WildDeer, 100.0, 200.0, &mut rng);
+        let (x0, y0) = (w.x, w.y);
+        // 計時未耗盡：仍在初生定格、原地不動。
+        w.tick_newborn(0.1, &mut rng);
+        assert!(matches!(w.state, WildlifeState::Newborn { .. }),
+            "未到期應仍在初生定格，實際 {:?}", w.state);
+        assert!((w.x - x0).abs() < 1e-6 && (w.y - y0).abs() < 1e-6, "初生定格期間應原地不動");
+        // 計時耗盡：起身轉為溫順漫遊（下一幀由 208 依偎邏輯接手）。
+        w.tick_newborn(NEWBORN_CHEEP_MAX + 1.0, &mut rng);
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "初生定格結束應起身漫遊，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn tick_newborn_noop_when_not_newborn() {
+        // 非 Newborn 狀態呼叫 tick_newborn 不應有作用（呼叫端已守 matches! 防護，這裡再驗純函式安全）。
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.state = WildlifeState::Resting { rest_timer: 5.0 };
+        w.tick_newborn(10.0, &mut rng);
+        assert!(matches!(w.state, WildlifeState::Resting { .. }),
+            "非初生狀態呼叫不應改變狀態，實際 {:?}", w.state);
     }
 
     #[test]
