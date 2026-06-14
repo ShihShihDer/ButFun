@@ -115,6 +115,48 @@ impl NpcRelationsState {
         self.affinities.get(from)?.get(to).copied()
     }
 
+    /// 收集 `major_id` 對其他主要 NPC 的「顯著」關係，供動態八卦話題使用
+    /// （ROADMAP 244 街頭攀談 / 255 向大人物搭話共用）。
+    ///
+    /// 只收偏離中性 > 12 的關係（值得拿出來聊的好惡），回傳
+    /// `(對方顯示名, 關係描述, 好感值)`；無顯著關係時回空陣列（話題層自然退回日常）。
+    pub fn significant_relations(&self, major_id: &str) -> Vec<(String, String, i32)> {
+        let mut relations = Vec::new();
+        for &other_id in &[
+            "merchant",
+            "workshop_npc",
+            "bounty_npc",
+            "expedition_npc",
+            "village_chief",
+        ] {
+            if other_id == major_id {
+                continue;
+            }
+            if let Some(affinity) = self.get(major_id, other_id) {
+                // 差距超過 12 才算顯著，值得聊
+                if (affinity - NEUTRAL).abs() > 12 {
+                    let other_name = match other_id {
+                        "merchant" => "薇拉",
+                        "workshop_npc" => "鐸恩",
+                        "bounty_npc" => "蘭卡",
+                        "expedition_npc" => "芙利亞",
+                        "village_chief" => "凱爾長老",
+                        _ => "某人",
+                    };
+                    let desc = match affinity {
+                        v if v >= 70 => "挺不錯的夥伴",
+                        v if v >= 60 => "還算可靠",
+                        v if v <= 30 => "有點難相處",
+                        v if v <= 42 => "最近有點摩擦",
+                        _ => "尚可",
+                    };
+                    relations.push((other_name.to_string(), desc.to_string(), affinity));
+                }
+            }
+        }
+        relations
+    }
+
     /// 世界事件發生，調整相關 NPC 對之間的好惡值。
     pub fn apply_world_event(&mut self, event: RelationsEvent) {
         match event {
@@ -387,5 +429,33 @@ mod tests {
     fn prompt_section_empty_for_unknown_npc() {
         let s = NpcRelationsState::new();
         assert!(s.to_prompt_section("unknown_npc").is_empty());
+    }
+
+    #[test]
+    fn significant_relations_surfaces_notable_and_skips_self() {
+        // ROADMAP 244/255 共用：里長對卡特初始 75（顯著），應被收進來、附描述。
+        let s = NpcRelationsState::new();
+        let rels = s.significant_relations("village_chief");
+        // 不應把自己列進去
+        assert!(rels.iter().all(|(name, _, _)| name != "凱爾長老"), "不應含自己");
+        // 顯著關係的描述非空、分值落在範圍
+        for (name, desc, score) in &rels {
+            assert!(!name.is_empty() && !desc.is_empty(), "名稱與描述都應非空");
+            assert!(*score >= 0 && *score <= 100, "好感值應在 0~100");
+        }
+    }
+
+    #[test]
+    fn significant_relations_empty_when_all_neutral() {
+        // 全部中性（差距 <=12）時應回空陣列 → 話題層自然退回日常寒暄。
+        let mut s = NpcRelationsState::default();
+        for &a in ALL_NPCS {
+            for &b in ALL_NPCS {
+                if a != b {
+                    s.set(a, b, NEUTRAL);
+                }
+            }
+        }
+        assert!(s.significant_relations("merchant").is_empty());
     }
 }

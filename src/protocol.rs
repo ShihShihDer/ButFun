@@ -461,6 +461,12 @@ pub enum ClientMsg {
     /// 跟路人居民搭話。`resident_id` 為 "resident_N" 格式；玩家必須在互動範圍內。
     /// 伺服器回傳 `NpcReply` 給本人、廣播 `NpcSpeech` 泡泡給周圍玩家。
     TalkToResident { resident_id: String },
+    /// 向城裡的主要 NPC 搭話（ROADMAP 255）。`npc_id` 為穩定 id（如 "merchant"、"traveler"）；
+    /// 玩家必須在互動範圍（SHOP_REACH）內。伺服器即時以「玩家名」生成一句帶動態話題
+    /// （世界大事 / NPC 八卦 / 日常，沿用 244 話題層、零 LLM）的回應，
+    /// 回 `NpcReply` 給本人、廣播 `NpcSpeech` 泡泡給周圍玩家。
+    #[serde(rename = "talk_to_major_npc")]
+    TalkToMajorNpc { npc_id: String },
     /// 協助正在求助的居民（ROADMAP 125）。玩家必須在互動範圍內且居民有活躍請求。
     /// 成功後：清除請求、玩家獲得 HELP_REWARD_ETHER 乙太、廣播居民感謝語。
     #[serde(rename = "help_resident")]

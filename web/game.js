@@ -1963,6 +1963,8 @@
           updateFurniturePanel(me, Array.from(myInv.entries()).map(([item, qty]) => ({ item, qty })));
           // 居民搭話按鈕（ROADMAP 118）
           updateResidentBtn(me);
+          // 主要 NPC 攀談按鈕（ROADMAP 255）
+          updateMajorNpcBtn(me);
           // 居民互助請求按鈕（ROADMAP 125）
           updateHelpResidentBtn(me);
           // 乙太微粒採集按鈕（ROADMAP 142）
@@ -4681,6 +4683,50 @@
     }
   }
   // ── 居民搭話按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
+  // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
+  const MAJOR_NPC_IDS = new Set([
+    "merchant",
+    "workshop_npc",
+    "bounty_npc",
+    "expedition_npc",
+    "procurement_npc",
+    "farm_fair_npc",
+    "village_chief",
+    "traveler",
+  ]);
+  // 互動距離（與後端 SHOP_REACH 保持一致）。
+  const SHOP_REACH_PX = 96;
+  // 目前最近可攀談的大人物 id（供按鈕點擊用）。
+  let nearestMajorNpcId = null;
+
+  /** 每幀更新「🗣️ 攀談」按鈕：找最近且在 SHOP_REACH 內的城鎮大人物。 */
+  function updateMajorNpcBtn(me) {
+    const btn = document.getElementById("majorNpcBtn");
+    if (!btn || !me || me.indoor_plot_id != null) {
+      if (btn) btn.classList.add("hidden");
+      nearestMajorNpcId = null;
+      return;
+    }
+    let best = null;
+    let bestDist2 = SHOP_REACH_PX * SHOP_REACH_PX;
+    for (const npc of npcs) {
+      if (!MAJOR_NPC_IDS.has(npc.id)) continue;
+      const dx = me.x - npc.x;
+      const dy = me.y - npc.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestDist2) { bestDist2 = d2; best = npc; }
+    }
+    nearestMajorNpcId = best ? best.id : null;
+    if (best) {
+      btn.classList.remove("hidden");
+      btn.title = `和 ${best.name} 攀談`;
+    } else {
+      btn.classList.add("hidden");
+    }
+  }
+  // ── 向主要 NPC 攀談按鈕 end ────────────────────────────────────────────────────
 
   // ── 居民互助請求按鈕（ROADMAP 125）──────────────────────────────────────────
   let nearestHelpResidentId = null;
@@ -18418,6 +18464,15 @@
       residentBtnEl.addEventListener("click", () => {
         if (!ws || ws.readyState !== WebSocket.OPEN || !nearestResidentId) return;
         ws.send(JSON.stringify({ type: "talk_to_resident", resident_id: nearestResidentId }));
+      });
+    }
+
+    // 🗣️ 主要 NPC 攀談按鈕（ROADMAP 255）
+    const majorNpcBtnEl = document.getElementById("majorNpcBtn");
+    if (majorNpcBtnEl) {
+      majorNpcBtnEl.addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !nearestMajorNpcId) return;
+        ws.send(JSON.stringify({ type: "talk_to_major_npc", npc_id: nearestMajorNpcId }));
       });
     }
 
