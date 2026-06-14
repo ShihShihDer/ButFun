@@ -753,6 +753,29 @@ const GREET_PROB: f32 = 0.04;
 const GREET_DURATION_MIN: f32 = 2.0;
 const GREET_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 291：掠食者舔毛理身（canid self-grooming／野狼野狐白天理一理毛）──────
+// 276 野鳥理羽（🪶，低頭以喙梳自己的羽）、277 走獸搔癢（🐾，抬後腿撓耳後的癢）一路把「自我打理」這條
+// 線鋪到了飛禽與草食走獸身上，可盤點下來掠食者一側至今獨缺：野狼／野狐白天無獵可追時，除了 285 蜷睡
+// 補眠（睡著的）、223 撲鼠／225 嗅蹤（各自的物種專屬覓食姿態），就再沒有一個「醒著、卻只是在打理自己」
+// 的日常動作——犬科最招牌的清潔習性「舔毛理身」（用舌頭舔順自己的毛、理一理皮毛）至今缺席。本切片給
+// 掠食者補上這塊：白天平靜、無獵可追的空檔，野狼／野狐偶爾停下低頭舔理自己的毛。**與 276 理羽（🪶）／
+// 277 搔癢（🐾）刻意湊成「自我打理三族到齊」**——飛禽理羽、走獸搔癢、掠食者舔毛，五種生物全都有了
+// 看得見的自理姿態。**兩種掠食者共有**（不分狼狐、皆會舔毛，與 285 蜷睡同為夜行掠食者共有的白晝閒置
+// 底色），與 223 撲鼠（狐專屬）／225 嗅蹤（狼專屬）那兩個各自的物種專屬姿態刻意區隔。**與 285 蜷睡
+// 區隔**：蜷睡是睡著補眠（😪、原地蜷成一團），舔毛是醒著的清潔自理（👅、低頭舔順皮毛）——故排在蜷睡
+// 之前（醒著的自理動作優先於最休憩的補眠：沒起意去撲／去嗅／去問安，先理一理毛，再沒有才退回蜷睡）。
+// 各舔各的、不傳染（與野鳥飛／鳴的呼應刻意區隔），只是一隻隻自顧自地舔毛。純啟發式、零 LLM、零 tick
+// 簽名改動、零協議改動（新增的 licking 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、
+// 零 migration、記憶體模式。獵物永遠優先：舔毛只在掠食者 phase 無獵可追的平靜空檔發生（獵物搜尋已在
+// 更前面跑過），獵物一旦進入搜尋範圍，掠食者 phase 在舔毛分支之前就已改走狩獵，舔毛自然讓位。
+/// 白天無獵可追的平靜掠食者本幀停下舔毛理身的機率——與 277 搔癢（SCRATCH_PROB 0.03）同級偏低：
+/// 舔毛是白天偶爾理一理、而非時時在舔（多數時候仍照常巡遊／撲鼠／嗅蹤）。
+const LICK_PROB: f32 = 0.03;
+/// 一段舔毛理身的最短／最長時長（秒）——舔順皮毛是比蜷睡補眠（3.5~7s）短促的一陣自理小動作，與 277
+/// 搔癢（2~5s）同量級。期間威脅一旦逼近一律優先停下奔逃（舔毛永遠讓位逃命）。
+const LICK_DURATION_MIN: f32 = 2.0;
+const LICK_DURATION_MAX: f32 = 4.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1605,6 +1628,12 @@ enum WildlifeState {
     /// 狩獵。只屬於野狼（社交性掠食者）：野狐獨來獨往、不問安。與 216 理毛（💕，獵物群的暖）對成「獵物群的
     /// 暖／狼群的暖」一對，把群成員之間的羈絆從獵物一側補到了掠食者一側。
     Greeting { greet_timer: f32 },
+    /// ROADMAP 291：掠食者舔毛理身——白天無獵可追的平靜掠食者（野狼／野狐，二者皆會）偶爾停下、低頭舔理
+    /// 自己的毛（前端畫成原地不動、頭頂浮一枚 👅）。原地不動（不更新座標）、lick_timer 倒數，理一小段再
+    /// 起身回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_doze 同模式）。獵物
+    /// 一旦進入搜尋範圍，掠食者 phase 在舔毛分支之前就已改走狩獵——舔毛永遠讓位狩獵。與 276 理羽（🪶）／
+    /// 277 搔癢（🐾）湊成「自我打理三族到齊」；與 285 蜷睡（😪，睡著補眠）區隔——舔毛是醒著的清潔自理。
+    Licking { lick_timer: f32 },
     /// ROADMAP 288：野鳥啄地覓食——白天平靜、正四處漫步的野鳥（WildBird）偶爾停下、低頭就地啄食地上的
     /// 草籽（前端畫成原地不動、頭頂浮一枚 🌾）。原地不動（不更新座標）、peck_timer 倒數，啄一小段再起身
     /// 回到漫遊（沿用群聚拉力 herd_anchor，鳥成群，與 tick_preen 同模式）；威脅一旦逼近一律優先拍翅逃竄
@@ -2445,6 +2474,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 291：掠食者舔毛理身——舔毛中（Licking）原地不動、倒數計時；理完（lick_timer 耗盡）就起身
+    /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_doze／tick_greet 同模式）。
+    /// 只在 Licking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
+    /// phase 在更前面的獵物搜尋就已改走狩獵，不會走到此分支——舔毛永遠讓位狩獵）。
+    fn tick_lick(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Licking { lick_timer } = self.state {
+            let remaining = lick_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Licking { lick_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2627,6 +2672,7 @@ impl Wildlife {
             WildlifeState::Shooing { .. }    => "shooing",
             WildlifeState::Dozing { .. }     => "dozing",
             WildlifeState::Greeting { .. }   => "greeting",
+            WildlifeState::Licking { .. }    => "licking",
             WildlifeState::Pecking { .. }    => "pecking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
@@ -3296,6 +3342,11 @@ impl WildlifeManager {
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故問安只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_greet(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Licking { .. }) {
+                                // ROADMAP 291：已在舔毛理身中——把這一段自理走完（原地不動、計時倒數，理完
+                                // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故舔毛只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_lick(dt, rng);
                             } else if matches!(a.state, WildlifeState::Dozing { .. }) {
                                 // ROADMAP 285：已在蜷睡中——把這一覺睡完（原地不動、計時倒數，睡夠了就起身
                                 // 回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故蜷睡只在無獵可追的
@@ -3393,6 +3444,19 @@ impl WildlifeManager {
                                 // 物種專屬的活動姿態優先，沒起意去嗅、但身邊有同伴時就轉去問安、再沒有才退回蜷睡補眠。
                                 let timer = rng.gen_range(GREET_DURATION_MIN..=GREET_DURATION_MAX);
                                 a.state = WildlifeState::Greeting { greet_timer: timer };
+                            } else if !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < LICK_PROB
+                            {
+                                // ROADMAP 291：白天無獵可追的平靜掠食者——偶爾停下、低頭舔理自己的毛（頭頂浮
+                                // 一枚 👅）。犬科最招牌的清潔習性，野狼／野狐二者皆會（與 285 蜷睡同為兩種夜行
+                                // 掠食者共有的白晝閒置底色），與 223 撲鼠（狐專屬）／225 嗅蹤（狼專屬）那兩個各自的
+                                // 物種專屬姿態刻意區隔。與 276 理羽（🪶）／277 搔癢（🐾）湊成「自我打理三族到齊」。
+                                // 排在問安之後、蜷睡之前：物種專屬活動與問安優先，沒起意去撲／去嗅／去問安就理一理
+                                // 毛、再沒有才退回蜷睡補眠（舔毛是醒著的清潔自理、蜷睡是睡著補眠，醒著的動作優先）。
+                                // 各舔各的、不傳染。夜間改走夜嚎分支（夜活躍、晝自理）。
+                                let timer = rng.gen_range(LICK_DURATION_MIN..=LICK_DURATION_MAX);
+                                a.state = WildlifeState::Licking { lick_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -10399,6 +10463,124 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "蜷睡中發現獵物應立刻醒來狩獵，實際 {:?}", f.state
+        );
+    }
+
+    // ─── ROADMAP 291：掠食者舔毛理身（canid self-grooming）──────────────────
+    #[test]
+    fn tick_lick_holds_position_while_timer_remaining() {
+        // 舔毛進行中：原地不動（座標不變）、計時遞減、狀態維持 Licking。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Licking { lick_timer: 2.0 };
+        wolf.tick_lick(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Licking { lick_timer } => {
+                assert!((lick_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("舔毛未到期應維持 Licking，實際 {:?}", wolf.state),
+        }
+        assert!((wolf.x - 5000.0).abs() < 1e-6 && (wolf.y - 5000.0).abs() < 1e-6, "舔毛中應原地不動");
+    }
+
+    #[test]
+    fn tick_lick_returns_to_wander_when_timer_expires() {
+        // 舔毛到期：起身回到巡遊。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Licking { lick_timer: 0.05 };
+        fox.tick_lick(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(fox.state, WildlifeState::Wandering { .. }), "舔毛到期應回巡遊，實際 {:?}", fox.state);
+    }
+
+    #[test]
+    fn tick_lick_noop_on_other_state() {
+        // 防呆：非 Licking 狀態呼叫 tick_lick 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Resting { rest_timer: 3.0 };
+        wolf.tick_lick(0.1, &mut rng);
+        assert!(matches!(wolf.state, WildlifeState::Resting { .. }), "非舔毛狀態呼叫 tick_lick 不該改狀態");
+    }
+
+    #[test]
+    fn licking_state_str_is_licking() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Licking { lick_timer: 1.0 };
+        assert_eq!(fox.state_str(), "licking");
+    }
+
+    #[test]
+    fn prey_never_licks() {
+        // 物種專屬：舔毛只發生在掠食者 phase——晝行獵物（鹿/鳥/小動物）連跑數百幀都不該進入 Licking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Licking { .. }), "獵物不該舔毛理身，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_predator_eventually_licks_during_day() {
+        // 白天無獵可追：一隻孤身野狼（附近無獵物可獵）連跑多幀後，總會偶爾停下舔理自己的毛。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf]; // 場上只有這隻狼、無獵物 → 必走「無獵可追」的閒置分支
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut licked = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Licking { .. }) {
+                licked = true;
+                break;
+            }
+        }
+        assert!(licked, "白天無獵可追的平靜野狼應偶爾停下舔毛理身");
+    }
+
+    #[test]
+    fn nocturnal_predator_never_licks_at_night() {
+        // 晝夜區隔：舔毛只在白天起意（夜間掠食者改走夜嚎分支）——夜裡連跑多幀都不該進入 Licking。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Licking { .. }), "夜間掠食者不該舔毛理身，實際 {:?}", f.state);
+        }
+    }
+
+    #[test]
+    fn licking_predator_wakes_to_hunt_nearby_prey() {
+        // 舔毛永遠讓位狩獵：舔毛中的野狐一旦有可獵的小動物進入搜尋範圍，立刻改去狩獵（非繼續舔）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0); // 120px < POUNCE_RANGE(200)
+        critter.id = 100;
+        critter.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 101;
+        fox.state = WildlifeState::Licking { lick_timer: 1.0e9 }; // 理得正起勁
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "舔毛中發現獵物應立刻改去狩獵，實際 {:?}", f.state
         );
     }
 
