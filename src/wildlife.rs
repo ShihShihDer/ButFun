@@ -892,6 +892,28 @@ const CLEAN_DURATION_MAX: f32 = 9.0;
 /// 「停在背上」而非「鑽進身體裡」。
 const CLEAN_PERCH_OFFSET_Y: f32 = 10.0;
 
+// ─── ROADMAP 282：囤糧埋藏（food caching／松鼠式的刨地埋藏堅果）────────────────────
+// 222 捧食啃咬給了小動物（SmallCritter）第一筆專屬覓食姿態——坐起來捧著堅果一小口一小口地「當場吃掉」
+// （🌰）。但盤點下來，小動物（松鼠般的齧齒小獸）最招牌、最惹人會心一笑的本領，恰恰是覓食的「另一個
+// 去向」：吃不完的不當場啃完，而是刨個小坑把堅果「埋藏起來」留作過冬存糧——scatter hoarding（分散
+// 囤藏）是松鼠／花栗鼠的教科書級行為。本切片給小動物補上這專屬的囤糧：白天平靜、正四處漫步（Wandering）
+// 的小動物，偶爾停下、低頭刨地把覓得的堅果埋進土裡（新增 Caching 狀態、頭頂浮一枚 🥜），埋藏一小段再
+// 起身閒晃。與 222 捧食啃咬（🌰，當場吃掉）刻意對成「吃掉／存起」一對——同是小動物的覓食，一個當場
+// 入腹、一個埋藏過冬，把小動物的覓食從「只會當場吃」推進到「會未雨綢繆地囤」，讓這最弱小的一種獵物
+// 也有了「為將來打算」的鮮明性格。與 280 塵浴同手法：各顧各的、不傳染（無快照、無接力），只是一隻隻
+// 自顧自地就地刨坑埋糧；只從 Wandering 起意（漫步途中順手把堅果藏起）、不從 Resting 起意，與 277／280
+// 一致——囤藏屬於「起來活動著」覓食的時候。只屬於小動物（SmallCritter，最招牌的囤糧者；野鳥／野鹿不
+// 囤糧，各有專屬姿態）。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 caching 字串沿用
+// state_str；計時隨狀態變體攜帶，無新欄位）、記憶體模式。威脅永遠優先：埋到一半若掠食者／玩家逼近，
+// 立刻丟下手中的活兒躥逃。
+/// 平靜的小動物本幀停下囤糧的機率——與 280 塵浴（DUSTBATHE_PROB 0.02）同級偏低：埋藏是覓得堅果後偶一
+/// 為之的事，多數時候小動物仍照常閒晃／覓食，囤糧只是漫步途中偶爾一回的「把吃不完的藏起來」。
+const CACHE_PROB: f32 = 0.02;
+/// 一段囤糧埋藏的最短／最長時長（秒）——低頭刨個小坑、把堅果塞進去、再扒土蓋好，是俐落幾秒的活兒
+/// （刻意略短於 280 塵浴 3~6s：埋一顆堅果比翻身打滾的全身大保養來得快）。期間威脅一旦逼近一律優先躥逃。
+const CACHE_DURATION_MIN: f32 = 2.5;
+const CACHE_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1388,6 +1410,12 @@ enum WildlifeState {
     /// （共生永遠讓位逃命）。與 276 理羽（🪶，替自己梳羽）對成「自理／跨物種互理」一對——把梳理從
     /// 「替自己」推進到第一筆「替別種啄理」的跨物種互利共生。
     Cleaning { host_id: u32, clean_timer: f32 },
+    /// ROADMAP 282：囤糧埋藏——白天平靜漫步的小動物（SmallCritter）偶爾停下、低頭刨地把覓得的堅果埋進
+    /// 土裡留作存糧（scatter hoarding；前端畫成原地低伏刨土、頭頂浮一枚 🥜）。原地不動（不更新座標）、
+    /// cache_timer 倒數，到期就扒土蓋好、起身回到漫遊；威脅一旦逼近一律優先丟下活兒躥逃（囤糧永遠讓位
+    /// 逃命）。與 222 捧食啃咬（🌰，當場吃掉）對成「吃掉／存起」一對——同是小動物覓食，一個當場入腹、
+    /// 一個埋藏過冬。只屬於小動物。
+    Caching { cache_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2010,6 +2038,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 282：囤糧埋藏——埋藏中（Caching）原地不動、倒數計時；到期就扒土蓋好、挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_dustbathe 同模式）回到閒晃。只在 Caching 狀態下生效（呼叫端
+    /// 已確保此隻為小動物、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去躥逃——威脅永遠優先）。
+    fn tick_cache(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Caching { cache_timer } = self.state {
+            let remaining = cache_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Caching { cache_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 281：棲背啄蟲——棲在宿主背上（Cleaning）的野鳥每幀貼到宿主當前座標（`host_pos`，騎著牠
     /// 移動、略偏上像停在背脊），clean_timer 倒數一啄一啄；到期就拍翅飛離、挑下一個漫遊目標（沿用群聚拉力
     /// herd_anchor，與 tick_preen 同模式）回到漫遊。宿主一旦不在本幀宿主快照裡（受驚不再平靜／走遠／死亡，
@@ -2267,6 +2311,7 @@ impl Wildlife {
             WildlifeState::Yawning { .. }   => "yawning",
             WildlifeState::Flushing { .. }  => "flushing",
             WildlifeState::DustBathing { .. } => "dust_bathing",
+            WildlifeState::Caching { .. } => "caching",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3715,6 +3760,27 @@ impl WildlifeManager {
                     // Resting 起意——與 277 搔癢一致：自理屬於「起來活動著」的時候，settled 的歇息就讓牠安穩歇著。
                     let timer = rng.gen_range(DUSTBATHE_DURATION_MIN..=DUSTBATHE_DURATION_MAX);
                     a.state = WildlifeState::DustBathing { bath_timer: timer };
+                } else if is_critter && matches!(a.state, WildlifeState::Caching { .. }) {
+                    // ROADMAP 282：已在囤糧中——威脅一旦逼近就立刻丟下活兒躥逃（囤糧永遠讓位逃命），
+                    // 否則原地把這一段埋完、計時倒數，到期扒土蓋好回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_cache(dt, herd_anchor, rng);
+                    }
+                } else if is_critter
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < CACHE_PROB
+                {
+                    // ROADMAP 282：白天平靜、正四處漫步的小動物（SmallCritter）——偶爾停下、低頭刨地把覓得的
+                    // 堅果埋進土裡留作存糧（頭頂浮一枚 🥜）。各顧各的、不傳染（與 280 塵浴同手法），只是一隻隻
+                    // 自顧自地就地刨坑埋糧。與 222 捧食啃咬（🌰，當場吃掉）對成「吃掉／存起」一對。只從 Wandering
+                    // 起意（漫步途中順手把堅果藏起）、不從 Resting 起意——與 277／280 一致：覓食囤藏屬於「起來
+                    // 活動著」的時候，settled 的歇息就讓牠安穩歇著。
+                    let timer = rng.gen_range(CACHE_DURATION_MIN..=CACHE_DURATION_MAX);
+                    a.state = WildlifeState::Caching { cache_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::Nibbling { .. }) {
                     // ROADMAP 222：已在啃咬中——威脅一旦逼近就立刻丟食改逃竄（覓食永遠讓位逃命），
                     // 否則原地把這一段啃完、計時倒數，到期回到閒晃。
@@ -9189,6 +9255,103 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "塵浴中遇威脅應立刻翻身躍起逃竄，實際 {:?}", c.state);
+    }
+
+    // ─── ROADMAP 282：囤糧埋藏（food caching）──────────────────────────────────
+    #[test]
+    fn tick_cache_holds_position_while_timer_remaining() {
+        // 囤糧進行中：原地不動（座標不變）、計時遞減、狀態維持 Caching。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Caching { cache_timer: 2.0 };
+        critter.tick_cache(0.1, None, &mut rng);
+        match critter.state {
+            WildlifeState::Caching { cache_timer } => {
+                assert!((cache_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("囤糧未到期應維持 Caching，實際 {:?}", critter.state),
+        }
+        assert!((critter.x - 5000.0).abs() < 1e-6 && (critter.y - 5000.0).abs() < 1e-6, "囤糧中應原地不動");
+    }
+
+    #[test]
+    fn tick_cache_returns_to_wander_when_timer_expires() {
+        // 囤糧到期：扒土蓋好回到漫遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Caching { cache_timer: 0.05 };
+        critter.tick_cache(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "囤糧到期應回漫遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_cache_noop_on_other_state() {
+        // 防呆：非 Caching 狀態呼叫 tick_cache 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Resting { rest_timer: 3.0 };
+        critter.tick_cache(0.1, None, &mut rng);
+        assert!(matches!(critter.state, WildlifeState::Resting { .. }), "非囤糧狀態呼叫 tick_cache 不該改狀態");
+    }
+
+    #[test]
+    fn caching_state_str_is_caching() {
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        critter.state = WildlifeState::Caching { cache_timer: 1.0 };
+        assert_eq!(critter.state_str(), "caching");
+    }
+
+    #[test]
+    fn non_critter_never_caches() {
+        // 物種專屬：只有小動物會囤糧——白天平靜的野鹿連跑數百幀都不該進入 Caching
+        //（野鹿走 277 搔癢、野鳥走 276 理羽，各有專屬姿態，不囤糧）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Caching { .. }), "非小動物不該囤糧，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_critter_eventually_caches_during_day() {
+        // 白天平靜：一隻孤身小動物連跑多幀後，總會偶爾停下囤糧（CACHE_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut cached = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(c.state, WildlifeState::Caching { .. }) {
+                cached = true;
+                break;
+            }
+        }
+        assert!(cached, "白天平靜的小動物應偶爾停下囤糧埋藏");
+    }
+
+    #[test]
+    fn caching_critter_flees_when_threat_approaches() {
+        // 威脅永遠優先：囤糧中的小動物一旦有威脅逼近 FLEE_RADIUS 內，立刻丟下活兒躥逃（非繼續埋）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Caching { cache_timer: 1.0e9 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "囤糧中遇威脅應立刻丟下活兒躥逃，實際 {:?}", c.state);
     }
 
     // ─── ROADMAP 281：棲背啄蟲（清潔共生）─────────────────────────────────────
