@@ -9096,6 +9096,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 277：走獸搔癢——白天平靜時停下、抬起後腿快速搔抓耳後的草食走獸（鹿／小獸，
+      // state==="scratching"）頭頂浮一枚 🐾，讓「走獸抬腿撓癢」一眼看得到——與 276 理羽的 🪶（鳥的
+      // 自理）對成「自理一對」：長羽的鳥梳羽、長毛的獸搔癢。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在白天平靜的鹿／小獸搔癢時才給此狀態）。
+      if (w.state === "scratching") {
+        ctx.save();
+        const sr = (Math.sin(now / 90) + 1) / 2; // 0→1 快速起落，像後腿飛快地一搔一搔（比理羽急促）
+        ctx.globalAlpha = 0.55 + 0.35 * sr;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        // 🐾 隨搔抓輕輕抖動（高頻小幅震），像耳後正被後腿一下一下撓著
+        ctx.translate(6 + Math.sin(now / 70) * 1.5, -20 - sr * 2);
+        ctx.fillText("🐾", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 222：小動物捧食啃咬——白天平靜時坐起來捧食啃咬的小動物（state==="nibbling"）
       // 頭頂浮一顆 🌰，讓「松鼠捧著堅果一小口一小口地啃」一眼看得到（與 211 低頭吃草 🌿 區隔：
       // 啃咬是小動物專屬、捧食而啃的另一種覓食姿態）。純前端、零協議欄位：直接讀伺服器廣播的
