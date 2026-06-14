@@ -438,6 +438,11 @@
   // 逐幀向 iceTargetCover(currentSeason) 逼近（冬=1、其餘=0）。初值 0（盛夏、水不結冰）。
   let _iceCover = 0.0;
 
+  // 雨後地面濕潤（ROADMAP 246）：草原下雨時陸地緩緩變濕、雨停後仍濕一陣再慢慢乾去。當前濕潤強度 [0,1]，
+  // 逐幀向 wetTargetCover(weatherType, weatherIntensity) 逼近——下雨快濕（WET_WET_RATE）、停雨慢乾（WET_DRY_RATE）。
+  // 初值 0（地面乾爽）。是天氣線（93 雨／191 彩虹／243 閃電）第一次落到「地面」的尾韻。
+  let _wetness = 0.0;
+
   // 移動足跡塵土（ROADMAP 182）：角色走動時在腳下揚起依生態著色的貼地塵土。
   // 池上限避免 GC 壓力；用世界座標，塵土留在地上、鏡頭移動時不跟著平移。
   const FOOT_DUST_MAX = 60;        // 同時存在的塵土粒子上限
@@ -4128,6 +4133,7 @@
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     updateGroundTint(_weatherDt); // 四季草色（235）：先把地面季節染色向當季目標推進一幀，再畫地表
     updateWaterIce(_weatherDt);   // 冬日結冰水面（242）：把水域冰覆向當季目標推進一幀，供波光/倒影/冰光共用
+    updateWetGround(_weatherDt);  // 雨後地面濕潤（246）：把陸地濕潤強度向當前天氣目標推進一幀（下雨快濕、停雨慢乾）
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
@@ -4137,6 +4143,7 @@
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
     safeDraw("rockGlint", () => drawRockGlint(camX, camY, renderNow)); // 岩石礦脈微光（199），岩面原地一閃的冷白礦光、貼地表之上
+    safeDraw("wetGround", () => drawWetGround(camX, camY)); // 雨後地面濕潤（246），雨後陸地泛冷潤暗光＋疏落幾汪映天淺水窪、貼地表之上其餘實體之下
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
@@ -10518,6 +10525,127 @@
         ctx.moveTo(sx + h1 * TS, sy + h2 * TS * 0.4);
         ctx.lineTo(sx + h3 * TS, sy + (0.5 + h1 * 0.5) * TS);
         ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 雨後地面濕潤（ROADMAP 246）──────────────────────────────────────────────
+  // 天氣這條線至今只活在「天上」：下雨的雨絲（93）、雨後天邊的彩虹（191）、暴雨當下的閃電（243）。
+  // 可雨落下來該打濕的是「地面」——下過一場雨，腳下的土地理應沉一階色、泛起一層濕潤的冷光，低處還會
+  // 積起幾汪映著天光的淺水窪，待雨停後慢慢蒸乾。本切片把天氣第一次落到地表：草原降雨時陸地緩緩變濕
+  // （整片地壓暗一階、沾一層冷潤反光），疏落的低處浮起幾汪淺水窪、各映一抹當下的天色（白天映亮天藍、
+  // 晨昏映金、夜裡映冷月白），雨停後濕潤不立刻消失、而是隨 _wetness 慢慢乾去（停雨慢乾、像水真的在蒸發）。
+  // 與雨後彩虹（191）刻意對成「天上 / 地面」一對——彩虹是雨停後天邊的好看尾韻、濕潤水窪是雨後地面的尾韻。
+  // 跨幀以 _wetness 逐幀逼近當前天氣目標：下雨快濕、停雨慢乾，不會驟濕驟乾。
+  // 純前端 Canvas 2D、效能優先、讀既有 weatherType＋weatherIntensity＋daynight、零後端、零協議改動、零持久化。
+  // 下面數支純函式抽出來、無 DOM／可單元自驗。
+  const WET_WET_RATE        = 0.5;    // 下雨變濕的 lerp 速率（/秒）：約 2 秒濕透（雨一下地很快就濕）
+  const WET_DRY_RATE        = 0.03;   // 雨停乾去的 lerp 速率（/秒）：約 33 秒乾盡（慢過變濕、像水「慢慢」蒸乾）
+  const WET_SHEEN_MAX_ALPHA = 0.14;   // 濕地整片冷潤暗光峰值不透明度（淡，只把地壓暗一階、不糊掉地貌）
+  const PUDDLE_DENSITY      = 0.88;   // sceneryHash 高於此的陸地格才積一汪水窪（疏，成「幾汪」而非滿地泥濘）
+  const PUDDLE_MAX_ALPHA    = 0.5;    // 單汪水窪映天反光峰值不透明度（半透明、透出底下地色）
+  const PUDDLE_RIM_ALPHA    = 0.28;   // 水窪邊緣一抹亮反光（高光弧）峰值不透明度
+
+  // 純函式：當前天氣下陸地的濕潤目標 [0,1]。正在下草原雨（沿用 191/243 的 isRainingState 判定）回 1
+  // （地面變濕），否則回 0（地面乾去）。無 DOM、可測。
+  function wetTargetCover(type, intensity) {
+    return isRainingState(type, intensity) ? 1 : 0;
+  }
+
+  // 純函式：把目前濕潤 cur 朝 target 逼近——變濕（cur<target）用 WET_WET_RATE 快、乾去（cur>target）用
+  // WET_DRY_RATE 慢，夾在 [0,1]。故雨一下地很快濕、雨停後慢慢乾，不會驟濕驟乾。壞值（NaN）退回 0。無 DOM、可測。
+  function wetFadeStep(cur, target, dt) {
+    if (!(cur >= 0)) cur = 0;
+    const t = Math.max(0, dt);
+    if (cur < target) return Math.min(target, cur + t * WET_WET_RATE);
+    if (cur > target) return Math.max(target, cur - t * WET_DRY_RATE);
+    return cur;
+  }
+
+  // 純函式：濕地冷潤暗光色溫 {r,g,b}。濕土偏冷暗——白天沉一階冷青灰、晨昏沾一絲暖、夜裡轉清冷月藍。無 DOM、可測。
+  function wetSheenTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 64, g: 70, b: 84 };  // 晨昏：微暖的冷暗
+    if (light >= 0.5) return { r: 48, g: 62, b: 74 };                          // 白天：冷青灰暗
+    return { r: 34, g: 44, b: 64 };                                            // 夜：清冷月藍暗
+  }
+
+  // 純函式：濕地暗光整體不透明度 [0,1]，隨濕潤 wetness 成正比、白天略淡夜裡略沉（暗處濕地更顯陰冷）。無 DOM、可測。
+  function wetSheenAlpha(wetness, light) {
+    const w = Math.max(0, Math.min(1, wetness));
+    const L = Math.max(0, Math.min(1, light));
+    return w * (1.05 - 0.25 * L) * WET_SHEEN_MAX_ALPHA;
+  }
+
+  // 純函式：水窪映天反光色溫 {r,g,b}。水窪映的是頭頂的天——白天映亮天藍、晨昏映金霞、夜裡映冷月白。無 DOM、可測。
+  function puddleTint(light, phase) {
+    if (phase === "dawn" || phase === "dusk") return { r: 255, g: 214, b: 156 }; // 晨昏：映金霞
+    if (light >= 0.5) return { r: 196, g: 224, b: 248 };                          // 白天：映亮天藍白
+    return { r: 150, g: 172, b: 210 };                                            // 夜：映冷月白藍
+  }
+
+  // 每幀把陸地濕潤向當前天氣目標推進一格。在畫濕地之前呼叫（與 updateGroundTint／updateWaterIce 同模式）。
+  function updateWetGround(dt) {
+    _wetness = wetFadeStep(_wetness, wetTargetCover(weatherType, weatherIntensity), dt);
+  }
+
+  // 每幀在可見陸地 tile 上覆一層雨後冷潤暗光、並在疏落低處積幾汪映天淺水窪。由獨立 safeDraw 呼叫，
+  // 畫在地表反光（195~199）之上、可挖地形/農地/實體之下——濕潤是貼著地皮的一層。雨停乾盡（_wetness 歸零）
+  // 後整層早退、零開銷；弱機/低幀（沿用 91 的 _parallaxEnabled）只保留整片暗光、不畫逐格水窪，省繪製。
+  function drawWetGround(camX, camY) {
+    if (_wetness <= 0.01) return;  // 乾爽：整層不畫
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const sheenTint = wetSheenTint(light, phase);
+    const sheenA = wetSheenAlpha(_wetness, light);
+    if (sheenA <= 0.004) return;
+
+    // 與 drawGround／drawWaterIce 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    // 第一層：整片陸地覆一層半透明冷潤暗光（單格一次 fillRect，水域不畫——水本就濕）
+    const sheenFill = `rgba(${sheenTint.r},${sheenTint.g},${sheenTint.b},${sheenA.toFixed(3)})`;
+    ctx.fillStyle = sheenFill;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) === "water") continue; // 水域不疊濕地暗光
+        ctx.fillRect(tx * TS - camX, ty * TS - camY, TS, TS);
+      }
+    }
+
+    // 第二層：疏落低處積幾汪映天淺水窪（弱機/低幀不畫，省繪製）
+    if (!reduceMotion && _parallaxEnabled) {
+      const pud = puddleTint(light, phase);
+      const puddleA = PUDDLE_MAX_ALPHA * _wetness;
+      const rimA = PUDDLE_RIM_ALPHA * _wetness;
+      for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const h0 = sceneryHash(tx * 13 + 7, ty * 19 + 3);
+          if (h0 < PUDDLE_DENSITY) continue;                                    // 疏：多數格無水窪
+          if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) === "water") continue; // 水域不積窪
+          // 水窪位置/大小由確定性 hash 決定（同格永遠同窪、不隨鏡頭閃爍）
+          const h1 = sceneryHash(tx * 5 + 2, ty * 11 + 9);
+          const h2 = sceneryHash(tx * 23 + 4, ty * 3 + 6);
+          const h3 = sceneryHash(tx * 17 + 8, ty * 29 + 1);
+          const cx = tx * TS - camX + (0.25 + h1 * 0.5) * TS;
+          const cy = ty * TS - camY + (0.3 + h2 * 0.45) * TS;
+          const rx = TS * (0.16 + h3 * 0.16);   // 橢圓水窪：扁、貼地透視
+          const ry = rx * 0.55;
+          ctx.fillStyle = `rgba(${pud.r},${pud.g},${pud.b},${puddleA.toFixed(3)})`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fill();
+          // 邊緣一抹亮反光（高光弧）：水窪上緣一道更亮的細弧，讓水面讀起來「反光」而非一塊污漬
+          ctx.strokeStyle = `rgba(235,244,255,${rimA.toFixed(3)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx * 0.82, ry * 0.82, 0, Math.PI * 1.05, Math.PI * 1.95);
+          ctx.stroke();
+        }
       }
     }
     ctx.restore();
