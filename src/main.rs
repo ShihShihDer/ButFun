@@ -71,6 +71,7 @@ mod npc_lifecycle;
 mod npc_schedule;
 mod npc_memory_store;
 mod npc_factions;
+mod npc_gather;
 mod npc_needs;
 mod npc_proactive;
 mod npc_relations;
