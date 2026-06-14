@@ -8614,6 +8614,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 279：走獸驚飛棲鳥——被閒晃的野鹿踏到貼身而受驚撲翅竄起的野鳥（state==="flushing"）
+      // 畫成「猛地騰空、急促撲騰」：把鳥身急竄抬起一段（比 220 升空更急更高頻的撲騰浮沉，讀起來像
+      // 受驚的一震、而非悠閒盤旋），並在地面留一抹淡橢圓投影標示牠竄起的位置。純前端、零協議欄位：
+      // 直接讀伺服器廣播的 w.state（後端只在平靜野鳥被貼身的鹿驚起時才給此狀態）。
+      const isFlushing = w.kind === "wild_bird" && w.state === "flushing";
+      let flushLift = 0;
+      if (isFlushing) {
+        flushLift = 14 + Math.abs(Math.sin(now / 70)) * 8; // 急促高頻的撲騰竄起（比升空更慌、更跳）
+        ctx.save();
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 5, 2, 0, 0, Math.PI * 2); // 地面投影（淡橢圓，標示驚起的位置）
+        ctx.fill();
+        ctx.restore();
+      }
+
       // ROADMAP 223：野狐撲鼠——白天無獵可追時，野狐偶爾朝草叢裡看不見的小獵物來一記標誌性的高弧
       // 撲跳（state==="pouncing"）：把狐身猛地往上抬起成一道躍弧（比飛行的浮沉更急更高，讀起來像
       // 縱身一撲），並在牠真實的地面位置留一抹淡橢圓投影（標示牠騰空躍過哪裡）。只有野狐會撲、野狼
@@ -8702,6 +8719,7 @@
       ctx.save();
       if (scale !== 1) ctx.scale(scale, scale);
       if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面
+      if (flushLift) ctx.translate(0, -flushLift); // ROADMAP 279：驚飛：把受驚的鳥身急竄抬離地面
       if (pounceLift) ctx.translate(0, -pounceLift); // ROADMAP 223：撲跳：把狐身抬起成躍弧
       if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
       if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
@@ -9125,6 +9143,20 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🥱", 6, -20 - yr * 3); // 隨呵欠輕輕往上飄一點
+        ctx.restore();
+      }
+
+      // ROADMAP 279：走獸驚飛棲鳥——被閒晃的野鹿踏到貼身而受驚撲翅竄起的野鳥（state==="flushing"）
+      // 頭頂冒一縷急促往上竄的 💨，讓「大傢伙一靠近、地上的鳥就轟地驚飛」一眼看得到——與 220 升空
+      // （悠閒繞圈盤旋、無 💨）對成一對：自發的悠閒升空／被走獸驚起的急促竄飛。💨 隨抬起的鳥身一起
+      // 往上竄。純前端、零協議欄位：直接讀伺服器廣播的 w.state。
+      if (w.state === "flushing") {
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 70)); // 隨撲騰急促明滅
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💨", 9, -22 - flushLift); // 隨竄起的鳥身一起往上竄的一縷驚風
         ctx.restore();
       }
 
