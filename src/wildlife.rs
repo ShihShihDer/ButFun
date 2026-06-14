@@ -666,6 +666,29 @@ const TRACK_REACH: f32 = 8.0;
 const TRACK_DURATION_MIN: f32 = 2.0;
 const TRACK_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 285：晝伏蜷睡（nocturnal predators curl up and doze by day）────────
+// 承接 276～283 那條「給每種生物補上看得見的日常小動作」的生態線，補上掠食者一側獨缺的一筆作息底色。
+// 盤點下來：晝行獵物（鹿／鳥／小動物）天明會 219 甦醒伸展（🌅）、入夜會 210 歸巢夜眠（💤），晝夜起落
+// 一眼看得見；可**夜行的掠食者**（野狼／野狐，`is_diurnal` 皆為 false）卻只在夜裡有 217/218 夜嚎（🌙）、
+// 白天有各自的物種專屬姿態（223 野狐撲鼠、225 野狼嗅蹤），唯獨少了「夜行獸該在白天補眠」這個最自然的
+// 作息底色——白晝無獵可追的平靜空檔，牠們多半只是與通用無異地閒晃，看不出「這是夜行性、白天本該睏」。
+// 本切片給兩種夜行掠食者補上共有的「晝伏蜷睡」：白天無獵可追的平靜空檔，野狼／野狐偶爾就地蜷成一團
+// 打盹補眠（前端畫成原地不動、頭頂浮一枚徐徐脹縮的 😪）、doze_timer 倒數，睡夠了就起身回到巡遊。與
+// 219 破曉甦醒伸展（🌅，晝行獸天明睜眼）恰成「晝夜鏡像」一對——晝行獸天明醒來伸展、夜行獸天明蜷睡補眠；
+// 也與 217 夜嚎（🌙，掠食者夜裡活躍）對成「夜活躍／晝補眠」。與 223 撲鼠（狐專屬）／225 嗅蹤（狼專屬）
+// 刻意區隔：那兩者是各自的物種專屬白晝姿態，蜷睡則是**兩種夜行掠食者共有**的作息底色（故不分狼狐、皆會）。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 dozing 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、零持久化、零 migration、記憶體模式。獵物永遠優先：蜷睡只在無獵可追的平靜空檔發生且落入
+// `_` 閒置分支（獵物搜尋已在更前面跑過），獵物一旦進入搜尋範圍，掠食者 phase 在蜷睡分支之前就已改走狩獵
+//（潛行／追獵），蜷睡自然讓位——「睡讓位狩獵」由分支順序保證。前端 😪 與既有兩種睡眠符號刻意區隔：
+// 💤＝入夜歸巢的晝行獵物夜眠、😴＝白天飽餐後歇息的掠食者（253 飽足）、😪＝白天蜷睡補眠的夜行掠食者。
+/// 白天無獵可追的平靜掠食者本幀就地蜷睡的機率——偏低（對齊 223 撲鼠／225 嗅蹤 0.02 量級略高），
+/// 讓蜷睡是白天偶爾補個眠、而非時時在睡（多數時候仍照常巡遊／撲鼠／嗅蹤）。
+const DOZE_PROB: f32 = 0.03;
+/// 一段蜷睡的最短／最長時長（秒）——補眠是比撲鼠／嗅蹤更長的一段安歇，睡夠了才起身。
+const DOZE_DURATION_MIN: f32 = 3.5;
+const DOZE_DURATION_MAX: f32 = 7.0;
+
 // ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
 // 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
 // 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
@@ -1451,6 +1474,12 @@ enum WildlifeState {
     /// 與 211 白晝吃草（🌿，當場低頭啃）對成「進食／反芻」一對——同是野鹿的覓食循環，一個把草吞下、
     /// 一個歇下回嚼；與 278 群體呵欠（會傳染）同從 Resting 起意卻刻意區隔（反芻各顧各、不傳染）。只屬於野鹿。
     Ruminating { ruminate_timer: f32 },
+    /// ROADMAP 285：晝伏蜷睡——白天無獵可追的平靜掠食者（野狼／野狐，皆夜行性）偶爾就地蜷成一團打盹補眠
+    /// （前端畫成原地不動、頭頂浮一枚徐徐脹縮的 😪）。原地不動（不更新座標）、doze_timer 倒數，睡夠了就
+    /// 起身回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力）。獵物一旦進入搜尋範圍，
+    /// 掠食者 phase 在蜷睡分支之前就已改走狩獵——蜷睡永遠讓位狩獵。與 219 破曉甦醒伸展（🌅，晝行獸天明
+    /// 睜眼）對成「晝夜鏡像」一對；與 253 飽足（😴，吃飽後歇）區隔——一個是夜行獸白天補眠、一個是吃飽後酣憩。
+    Dozing { doze_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2187,6 +2216,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 285：晝伏蜷睡——蜷睡中（Dozing）原地不動、倒數計時；睡夠了（doze_timer 耗盡）就起身回到
+    /// 巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_pounce／tick_track 同模式）。
+    /// 只在 Dozing 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
+    /// phase 在更前面的獵物搜尋就已改走狩獵，不會走到此分支——蜷睡永遠讓位狩獵）。
+    fn tick_doze(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Dozing { doze_timer } = self.state {
+            let remaining = doze_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Dozing { doze_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2364,6 +2409,7 @@ impl Wildlife {
             WildlifeState::DustBathing { .. } => "dust_bathing",
             WildlifeState::Caching { .. } => "caching",
             WildlifeState::Ruminating { .. } => "ruminating",
+            WildlifeState::Dozing { .. }     => "dozing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3018,6 +3064,11 @@ impl WildlifeManager {
                                 // 計時倒數，循味到落點或耗盡就抬頭回巡遊）。獵物/威脅在更前面（prey_snap
                                 // 搜尋）已優先處理，故嗅蹤只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_track(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Dozing { .. }) {
+                                // ROADMAP 285：已在蜷睡中——把這一覺睡完（原地不動、計時倒數，睡夠了就起身
+                                // 回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故蜷睡只在無獵可追的
+                                // 平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_doze(dt, rng);
                             } else if matches!(a.state, WildlifeState::Feasting { .. }) {
                                 // ROADMAP 230：已在圍食中——把這一段分食走完（趕往獵殺點/原地圍食、
                                 // 計時倒數，吃飽或屍體分食殆盡就起身回巡遊）。獵物/威脅在更前面
@@ -3095,6 +3146,18 @@ impl WildlifeManager {
                                 let (tx, ty) = track_target(a.x, a.y, rng);
                                 let timer = rng.gen_range(TRACK_DURATION_MIN..=TRACK_DURATION_MAX);
                                 a.state = WildlifeState::Tracking { tx, ty, track_timer: timer };
+                            } else if !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < DOZE_PROB
+                            {
+                                // ROADMAP 285：白天無獵可追的平靜掠食者——偶爾就地蜷成一團打盹補眠（頭頂浮
+                                // 一枚 😪）。野狼／野狐皆夜行性，白天本該補眠：這是兩種夜行掠食者**共有**的作息
+                                // 底色（故不分狼狐、皆會），與 223 撲鼠（狐專屬）／225 嗅蹤（狼專屬）那兩個各自的
+                                // 物種專屬白晝姿態刻意區隔。各睡各的、不傳染（與野鳥飛/鳴的呼應刻意區隔）。排在
+                                // 撲鼠／嗅蹤之後：物種專屬的活動姿態優先，沒起意去撲／去嗅才退回蜷睡補眠。夜間改走
+                                // 夜嚎分支（夜活躍、晝補眠），與 219 晝行獸破曉甦醒伸展對成「晝夜鏡像」一對。
+                                let timer = rng.gen_range(DOZE_DURATION_MIN..=DOZE_DURATION_MAX);
+                                a.state = WildlifeState::Dozing { doze_timer: timer };
                             } else {
                                 // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
                                 a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
@@ -9552,6 +9615,108 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "反芻中遇威脅應立刻起身奔逃，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 285：晝伏蜷睡（夜行掠食者白天補眠）──────────────────────────
+    #[test]
+    fn tick_doze_holds_position_while_timer_remaining() {
+        // 蜷睡進行中：原地不動（座標不變）、計時遞減、狀態維持 Dozing。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Dozing { doze_timer: 2.0 };
+        fox.tick_doze(0.1, &mut rng);
+        match fox.state {
+            WildlifeState::Dozing { doze_timer } => {
+                assert!((doze_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("蜷睡未到期應維持 Dozing，實際 {:?}", fox.state),
+        }
+        assert!((fox.x - 5000.0).abs() < 1e-6 && (fox.y - 5000.0).abs() < 1e-6, "蜷睡中應原地不動");
+    }
+
+    #[test]
+    fn tick_doze_returns_to_wander_when_timer_expires() {
+        // 蜷睡到期：起身回到巡遊。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Dozing { doze_timer: 0.05 };
+        wolf.tick_doze(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }), "蜷睡到期應回巡遊，實際 {:?}", wolf.state);
+    }
+
+    #[test]
+    fn tick_doze_noop_on_other_state() {
+        // 防呆：非 Dozing 狀態呼叫 tick_doze 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Resting { rest_timer: 3.0 };
+        fox.tick_doze(0.1, &mut rng);
+        assert!(matches!(fox.state, WildlifeState::Resting { .. }), "非蜷睡狀態呼叫 tick_doze 不該改狀態");
+    }
+
+    #[test]
+    fn dozing_state_str_is_dozing() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Dozing { doze_timer: 1.0 };
+        assert_eq!(fox.state_str(), "dozing");
+    }
+
+    #[test]
+    fn prey_never_dozes() {
+        // 物種專屬：蜷睡只發生在掠食者 phase——晝行獵物（鹿/鳥/小動物）連跑數百幀都不該進入 Dozing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Dozing { .. }), "獵物不該蜷睡，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_predator_eventually_dozes_during_day() {
+        // 白天無獵可追：一隻孤身野狐（附近無小動物可獵）連跑多幀後，總會偶爾蜷下打盹補眠。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox]; // 場上只有這隻狐、無獵物 → 必走「無獵可追」的閒置分支
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut dozed = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(f.state, WildlifeState::Dozing { .. }) {
+                dozed = true;
+                break;
+            }
+        }
+        assert!(dozed, "白天無獵可追的平靜野狐應偶爾蜷下補眠");
+    }
+
+    #[test]
+    fn dozing_predator_wakes_to_hunt_nearby_prey() {
+        // 蜷睡永遠讓位狩獵：蜷睡中的野狐一旦有可獵的小動物進入搜尋範圍，立刻醒來改去狩獵（非繼續睡）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0); // 120px < POUNCE_RANGE(200)
+        critter.id = 100;
+        critter.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 101;
+        fox.state = WildlifeState::Dozing { doze_timer: 1.0e9 }; // 睡得正酣
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "蜷睡中發現獵物應立刻醒來狩獵，實際 {:?}", f.state
+        );
     }
 
     // ─── ROADMAP 281：棲背啄蟲（清潔共生）─────────────────────────────────────
