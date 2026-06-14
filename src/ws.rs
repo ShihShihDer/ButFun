@@ -552,6 +552,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     down,
                     left,
                     right,
+                    run,
                 }) => {
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.input = Input {
@@ -559,6 +560,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             down,
                             left,
                             right,
+                            run,
                         };
                     }
                 }

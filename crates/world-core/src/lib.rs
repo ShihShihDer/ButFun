@@ -574,7 +574,20 @@ pub fn resolve_move<F: Fn(f32, f32) -> bool>(
 // 主 crate 的 `Player::step` 與下方 wasm 出口 `step_player` 都是薄包裝。
 
 /// 玩家移動速度（px/s）。主 crate `state::PLAYER_SPEED` re-export 這份。
-pub const PLAYER_SPEED: f32 = 320.0;
+/// 230≈7.2 格/秒、為降低手機操作難度而從 320 放慢（走路基速；趕路用 RUN_MULT 跑步）。
+pub const PLAYER_SPEED: f32 = 230.0;
+/// 跑步倍率：在走路基速 `PLAYER_SPEED` 上的加速倍數。前端預測需用同一值（縮放 dt），
+/// 故額外以 wasm 函式 `run_mult()` 匯出，避免兩邊數字漂移。
+pub const RUN_MULT: f32 = 1.6;
+
+/// wasm/前端入口：跑步倍率（與 `RUN_MULT` 同源）。前端預測縮放 dt 時呼叫，避免兩邊漂移。
+///
+/// # Safety
+/// 純值回傳、無指標、無共享狀態；`extern "C"` 僅為 wasm 匯出穩定符號。
+#[no_mangle]
+pub extern "C" fn run_mult() -> f32 {
+    RUN_MULT
+}
 /// 玩家碰撞盒半徑（px）。四角判定用；略小於半格（16px）讓走 32px 隧道不卡。
 pub const PLAYER_TILE_RADIUS: f32 = 8.0;
 

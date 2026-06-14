@@ -215,6 +215,8 @@ pub enum ClientMsg {
         left: bool,
         #[serde(default)]
         right: bool,
+        #[serde(default)]
+        run: bool,
     },
     /// 聊天訊息。
     Chat { text: String },
