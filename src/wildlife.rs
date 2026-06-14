@@ -617,6 +617,27 @@ const SCAVENGE_REACH: f32 = 16.0;
 const SATED_DURATION_MIN: f32 = 25.0;
 const SATED_DURATION_MAX: f32 = 40.0;
 
+// ─── ROADMAP 261：狼搶狐食（搶奪獵物／kleptoparasitism）──────────────────────────
+// 260 野狐避狼補上了「掠食者↔掠食者」的第一層位階——和平的野狐見了塊頭更大的野狼會本能背向退走
+// （中型掠食者讓位頂級掠食者）。但那只是「空間避讓」：狐遠遠看見狼就讓開、彼此其實還沒真正爭過。
+// 真實生態裡 apex 對 meso 最直接的壓迫是「搶食」——狼會循著血腥味奪走狐剛得手的獵物（kleptoparasitism／
+// 干擾競爭，現實中狼確實會搶奪甚至獵殺狐的口中食）。本切片把這層補上，作為 260 的攻擊性對偶：當一隻
+// 閒晃的野狼「看見」附近有野狐剛獵殺、正在屍體旁進食（既有 Digesting 狀態）時，會被吸引快步趕去搶奪
+// 那份獵物（頭頂浮 🍖）；野狼一逼近，260 野狐避狼即令那隻狐棄食竄走——於是「狼趨近搶奪／狐棄食逃竄」
+// 自然湧現，狐辛苦撲來的獵物就這麼被狼劫走。複用 230 群聚分食的 Feasting 趨近管線（朝那隻狐的位置快步
+// 趕去、抵達即原地搶食），與 230 刻意對成一對：同樣循「Digesting 錨點」趨近，230 認的是同群野狼（社交
+// 共食）、261 認的是野狐（跨種奪食）。召喚沿用 218／230 的「逐幀低機率牽動」：野狼由近而遠陸續被吸引，
+// 而非同幀瞬間擁上。獵物／威脅永遠優先（own-prey 搜尋已先行，只在自己附近無獵可追時才轉去搶狐）。
+// 零 LLM、純啟發式、可測、零新狀態變體（複用 Feasting）、零新欄位、零協議改動、零前端改動（前端早已
+// 會畫 feasting 的 🍖）、零持久化、零 migration、記憶體模式。
+/// 一隻閒晃的野狼「看見」附近有野狐正在進食、被吸引前去搶奪的最大範圍。刻意設得大於 260 的
+/// FOX_AVOID_WOLF_RADIUS(160)：讓野狼從野狐的避讓範圍之外就先察覺、開始趨近，逼進到 160 內時
+/// 野狐才依 260 棄食竄走——一遠一近銜接出「狼遠遠盯上、近身奪食、狐倉皇讓出」的完整奪食一幕。
+const KLEPTO_SEE_RADIUS: f32 = 240.0;
+/// 範圍內有野狐正在進食時，一隻閒晃野狼本幀被吸引前去搶奪的機率——仿 230 的 FEAST_JOIN_PROB，
+/// 「逐幀低機率牽動」讓野狼陸續趨近、不會同幀瞬間全擁上。
+const KLEPTO_PROB: f32 = 0.06;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -1692,6 +1713,15 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 261：狼搶狐食——本幀起始時正在屍體旁進食（Digesting）的野狐座標快照，供附近閒晃的
+        // 野狼據此「看見」中型掠食者剛得手的獵物而被吸引前去搶奪。只取野狐：狼搶的是狐的口中食（與 230
+        // feast_snap 只取野狼＝同群分食刻意對偶——同樣循 Digesting 錨點趨近，一是同群共食、一是跨種奪食）。
+        let fox_feast_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildFox
+                && matches!(a.state, WildlifeState::Digesting { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ROADMAP 250：本幀起始時正在追獵（潛行 Stalking／全速追殺 Hunting）的野狼快照——
         // （座標＋牠鎖定的獵物 id），即「正在進行的圍獵現場」，供附近閒晃的同群野狼據此「看見
         // 同伴在追」而被牽動加入、鎖定同一頭獵物（仿 218／230 快照：本幀新加入者不在此快照裡，
@@ -2011,6 +2041,22 @@ impl WildlifeManager {
                                 // 低機率牽動，狼群陸續趕到、逐圈聚攏，而非同幀整群瞬間擁上。只屬於野狼
                                 // （社交性掠食者）：野狐獨食、不聚成群。不分晝夜（獵殺隨時可能發生）。
                                 if let Some((ax, ay)) = nearest_in_range(a.x, a.y, &feast_snap, FEAST_HEAR_RADIUS) {
+                                    let timer = rng.gen_range(FEAST_DURATION_MIN..=FEAST_DURATION_MAX);
+                                    a.state = WildlifeState::Feasting { ax, ay, feast_timer: timer };
+                                }
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && nearest_in_range(a.x, a.y, &fox_feast_snap, KLEPTO_SEE_RADIUS).is_some()
+                                && rng.gen::<f32>() < KLEPTO_PROB
+                            {
+                                // ROADMAP 261：狼搶狐食——附近有野狐剛獵殺、正在進食（Digesting），閒晃的
+                                // 野狼被吸引快步趕去搶奪這份獵物（頂級掠食者奪走中型掠食者的口中食）。複用 230
+                                // 的 Feasting 趨近管線（朝那隻野狐的位置 (ax,ay) 趕去、抵達即原地搶食、頭頂浮 🍖），
+                                // 無新狀態、無新欄位、無協議改動。野狐一側不必另寫：狼一逼近 FOX_AVOID_WOLF_RADIUS
+                                //（160）內，260 野狐避狼即令牠棄食竄走——「狼趨近搶奪／狐棄食逃竄」自然湧現。仿
+                                // 218／230「逐幀低機率牽動」，野狼由近而遠陸續被吸引、而非同幀瞬間擁上。排在 230
+                                // 同群分食之後：附近若有同群野狼的獵殺優先去共食，沒有才轉去搶野狐的。
+                                if let Some((ax, ay)) = nearest_in_range(a.x, a.y, &fox_feast_snap, KLEPTO_SEE_RADIUS) {
                                     let timer = rng.gen_range(FEAST_DURATION_MIN..=FEAST_DURATION_MAX);
                                     a.state = WildlifeState::Feasting { ax, ay, feast_timer: timer };
                                 }
@@ -6302,13 +6348,18 @@ mod tests {
     }
 
     #[test]
-    fn lone_fox_does_not_summon_a_feast() {
-        // 物種專屬：野狐獨食——進食（Digesting）的野狐不該召喚附近的野狼來圍食（feast 錨點只認野狼）。
+    fn fox_is_not_a_pack_feast_anchor() {
+        // 230 群聚分食的錨點只認野狼（feast_snap 只收 WildWolf）——進食中的野狐不該透過 230 的「同群
+        // 共食」召喚野狼。為與 261 狼搶狐食（會在 KLEPTO_SEE_RADIUS=240 內被進食的狐吸引去搶）區隔，
+        // 把狼擺在 240～360 之間（300px）：落在 230 的 FEAST_HEAR_RADIUS(360) 內、卻在 261 的搶食察覺
+        // 半徑(240) 外。此處狼仍不去 Feasting，正證明 230 不把野狐當共食錨點（261 的奪食另在近距由
+        // wolf_is_drawn_to_rob_a_feeding_fox 覆蓋）。
         let mut mgr = WildlifeManager::new();
         let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
         fox.id = 1;
         fox.state = WildlifeState::Digesting { timer: 100000.0 };
-        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + FEAST_HEAR_RADIUS * 0.5, 5000.0);
+        let dist = (KLEPTO_SEE_RADIUS + FEAST_HEAR_RADIUS) * 0.5; // 300px：在 230 範圍內、261 範圍外
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + dist, 5000.0);
         wolf.id = 2;
         wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
         mgr.animals = vec![fox, wolf];
@@ -6316,7 +6367,8 @@ mod tests {
         for _ in 0..500 {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
-            assert!(!matches!(w.state, WildlifeState::Feasting { .. }), "野狐獨食不該召喚野狼圍食");
+            assert!(!matches!(w.state, WildlifeState::Feasting { .. }),
+                "230 群聚分食的錨點只認野狼，野狐不該透過 230 召喚野狼共食");
         }
     }
 
@@ -6471,5 +6523,87 @@ mod tests {
         let f = mgr.animals.iter().find(|a| a.id == 1).unwrap();
         assert!(!matches!(f.state, WildlifeState::Fleeing { .. }),
             "野狼在避狼半徑外，野狐不該退避，實際 {:?}", f.state);
+    }
+
+    // ─── ROADMAP 261：狼搶狐食測試 ──────────────────────────────────────────
+
+    #[test]
+    fn klepto_radius_exceeds_fox_avoid_radius() {
+        // 設計前提：狼的「察覺搶食」範圍必須大於 260 狐的「避狼」範圍，
+        // 才能讓狼從狐的避讓圈外先盯上、趨近，逼進 160 內時狐才棄食竄走——一遠一近銜接成完整奪食。
+        assert!(KLEPTO_SEE_RADIUS > FOX_AVOID_WOLF_RADIUS,
+            "搶食察覺半徑（{KLEPTO_SEE_RADIUS}）應大於避狼半徑（{FOX_AVOID_WOLF_RADIUS}）");
+    }
+
+    #[test]
+    fn wolf_is_drawn_to_rob_a_feeding_fox() {
+        // 一隻野狐在屍體旁進食（Digesting）時，附近閒晃的野狼會被吸引快步趕去搶奪（轉入 Feasting）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Digesting { timer: 100000.0 }; // 一直在屍體旁進食當錨點
+        // 狼擺在 200px 外——落在搶食察覺半徑(240)內、卻在狐的避狼半徑(160)外，狐不會因牠在場就先逃。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5200.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox, wolf]; // 場上只有狐與狼、沒有任何獵物
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut robbed = false;
+        for _ in 0..2000 {
+            // 每幀把狐釘回 Digesting（維持當搶食錨點），狼一旦轉入 Feasting 即視為被吸引去搶。
+            if let Some(f) = mgr.animals.iter_mut().find(|x| x.id == 1) {
+                f.state = WildlifeState::Digesting { timer: 100000.0 };
+            }
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅、無獵物
+            let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(w.state, WildlifeState::Feasting { .. }) { robbed = true; break; }
+        }
+        assert!(robbed, "閒晃的野狼應被進食中的野狐吸引、趕去搶奪");
+    }
+
+    #[test]
+    fn wolf_ignores_a_distant_feeding_fox() {
+        // 進食的野狐遠在搶食察覺半徑(240)之外（400px）→ 野狼不該被吸引去搶（不轉入 Feasting）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Digesting { timer: 100000.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + KLEPTO_SEE_RADIUS + 160.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![fox, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            if let Some(f) = mgr.animals.iter_mut().find(|x| x.id == 1) {
+                f.state = WildlifeState::Digesting { timer: 100000.0 };
+            }
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Feasting { .. }),
+                "遠處的進食野狐不該吸引野狼去搶");
+        }
+    }
+
+    #[test]
+    fn fox_does_not_rob_a_feeding_fox() {
+        // 物種專屬：搶食是野狼（apex）對野狐（meso）的奪食——野狐自己不會去搶另一隻進食中的野狐。
+        let mut mgr = WildlifeManager::new();
+        let mut feeder = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        feeder.id = 1;
+        feeder.state = WildlifeState::Digesting { timer: 100000.0 };
+        let mut other = adult_at(WildlifeKind::WildFox, 5200.0, 5000.0);
+        other.id = 2;
+        other.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![feeder, other];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            if let Some(f) = mgr.animals.iter_mut().find(|x| x.id == 1) {
+                f.state = WildlifeState::Digesting { timer: 100000.0 };
+            }
+            mgr.tick(0.1, &[], &att, &[], false);
+            let o = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(o.state, WildlifeState::Feasting { .. }),
+                "野狐不該去搶另一隻野狐的獵物（搶食只屬野狼）");
+        }
     }
 }
