@@ -845,6 +845,27 @@ const FLUSH_PROB: f32 = 0.45;
 const FLUSH_DURATION_MIN: f32 = 1.0;
 const FLUSH_DURATION_MAX: f32 = 2.2;
 
+// ─── ROADMAP 280：塵浴打滾（dust bathing／小動物翻身打滾、揚塵做全身大保養）──────────
+// 接續 276 理羽（🪶，鳥的自理）／277 搔癢（🐾，獸的自理）這條「自理」線——但那兩筆都是「局部的小動作」：
+// 鳥扭頭以喙細梳一處羽毛、獸抬後腿撓一下耳後。生態裡還有一種更鮮明、更惹人會心一笑的自理，是把整個身子
+// 都用上的「全身大保養」——塵浴／沙浴（dust bathing）：小型齧齒動物（松鼠、黃鼠般的小傢伙）最招牌的本領，
+// 找塊乾爽的空地蹲下、翻身打滾、撲騰抖動，讓細塵鑽進皮毛裡吸走油脂、悶死蟎蟲，是無水的「乾洗」。本切片
+// 給小動物（SmallCritter）補上這專屬的塵浴：白天平靜、正四處漫步（Wandering）的小動物，偶爾停下、就地
+// 翻身打滾揚起一陣塵霧（新增 DustBathing 狀態、頭頂浮一枚 🌫️），打滾一小段再抖抖身子起來閒晃。與 277
+// 搔癢（🐾，抬後腿撓耳後的「局部」自理）刻意對成「局部小動作／全身大保養」一對——撓一下癢是局部、翻身
+// 打滾是全身；也是 276／277「替自己理毛」之後，把「自理」從「局部精修」推進到「全身翻滾」的一筆。與 277
+// 同手法：各顧各的自理、不傳染（無快照、無接力），只是一隻隻自顧自地就地打滾，更像真實的小獸。只屬於小
+// 動物（SmallCritter，最招牌的塵浴者；野鳥走 276 理羽、野鹿走 277 搔癢，各有專屬自理姿態）。純啟發式、
+// 零 LLM、零 tick 簽名改動、零協議改動（新增的 dust_bathing 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、記憶體模式。威脅永遠優先：打滾到一半若掠食者／玩家逼近，立刻翻身躍起逃竄。
+/// 平靜的小動物本幀停下塵浴的機率——比 277 搔癢（SCRATCH_PROB 0.03）略低：全身翻滾的大保養比抬腿撓一下
+/// 耳後更費事、做得更少，多數時候仍照常閒晃／覓食，塵浴只是白天偶爾一回的「打理一番」。
+const DUSTBATHE_PROB: f32 = 0.02;
+/// 一段塵浴的最短／最長時長（秒）——就地翻身打滾、撲騰抖動數秒再起身（刻意略長於 277 搔癢 2~5s：全身
+/// 打滾比局部撓癢久一點，是慢條斯理的「大保養」）。期間威脅一旦逼近一律優先翻身躍起逃竄。
+const DUSTBATHE_DURATION_MIN: f32 = 3.0;
+const DUSTBATHE_DURATION_MAX: f32 = 6.0;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1329,6 +1350,11 @@ enum WildlifeState {
     /// 與 220 升空（self-initiated、悠閒繞圈盤旋 Flying）對成一對——一個是自發的悠閒升空、一個是被
     /// 走獸踏近驚起的急促竄飛，是混群相處（265 跟食）反面的「不經意驚擾」一筆。
     Flushing { flush_timer: f32 },
+    /// ROADMAP 280：塵浴打滾——白天平靜漫步的小動物（SmallCritter）偶爾停下、就地翻身打滾、撲騰抖動，
+    /// 揚起一陣塵霧做無水的「全身大保養」（前端畫成原地低伏翻滾、頭頂浮一枚 🌫️）。原地不動（不更新座標）、
+    /// bath_timer 倒數，到期就抖抖身子起身回到漫遊；威脅一旦逼近一律優先翻身躍起逃竄（塵浴永遠讓位逃命）。
+    /// 與 277 搔癢（🐾，抬後腿撓耳後的「局部」自理）對成「局部小動作／全身大保養」一對。只屬於小動物。
+    DustBathing { bath_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1935,6 +1961,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 280：塵浴打滾——塵浴中（DustBathing）原地不動、倒數計時；到期就抖抖身子挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_scratch 同模式）回到閒晃。只在 DustBathing 狀態下生效（呼叫端
+    /// 已確保此隻為小動物、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去逃竄——威脅永遠優先）。
+    fn tick_dustbathe(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::DustBathing { bath_timer } = self.state {
+            let remaining = bath_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::DustBathing { bath_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -2166,6 +2208,7 @@ impl Wildlife {
             WildlifeState::Scratching { .. } => "scratching",
             WildlifeState::Yawning { .. }   => "yawning",
             WildlifeState::Flushing { .. }  => "flushing",
+            WildlifeState::DustBathing { .. } => "dust_bathing",
         }
     }
 }
@@ -3547,6 +3590,27 @@ impl WildlifeManager {
                     // 走獸習性（趴著歇息時不會抬腿搔癢）。
                     let timer = rng.gen_range(SCRATCH_DURATION_MIN..=SCRATCH_DURATION_MAX);
                     a.state = WildlifeState::Scratching { scratch_timer: timer };
+                } else if is_critter && matches!(a.state, WildlifeState::DustBathing { .. }) {
+                    // ROADMAP 280：已在塵浴中——威脅一旦逼近就立刻翻身躍起逃竄（塵浴永遠讓位逃命），
+                    // 否則原地把這一段滾完、計時倒數，到期抖抖身子回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_dustbathe(dt, herd_anchor, rng);
+                    }
+                } else if is_critter
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < DUSTBATHE_PROB
+                {
+                    // ROADMAP 280：白天平靜、正四處漫步的小動物（SmallCritter）——偶爾停下、就地翻身打滾、
+                    // 撲騰抖動，揚起一陣塵霧做無水的「全身大保養」（頭頂浮一枚 🌫️）。各顧各的、不傳染（與 277
+                    // 搔癢同手法），只是一隻隻自顧自地就地打滾。與 277 搔癢（🐾，抬後腿撓耳後的「局部」自理）
+                    // 對成「局部小動作／全身大保養」一對。只從 Wandering 起意（漫步途中找塊空地打滾）、不從
+                    // Resting 起意——與 277 搔癢一致：自理屬於「起來活動著」的時候，settled 的歇息就讓牠安穩歇著。
+                    let timer = rng.gen_range(DUSTBATHE_DURATION_MIN..=DUSTBATHE_DURATION_MAX);
+                    a.state = WildlifeState::DustBathing { bath_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::Nibbling { .. }) {
                     // ROADMAP 222：已在啃咬中——威脅一旦逼近就立刻丟食改逃竄（覓食永遠讓位逃命），
                     // 否則原地把這一段啃完、計時倒數，到期回到閒晃。
@@ -8906,6 +8970,103 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "搔癢中遇威脅應立刻放下後腿逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 280：塵浴打滾 ────────────────────────────────────────────────
+    #[test]
+    fn tick_dustbathe_holds_position_while_timer_remaining() {
+        // 塵浴進行中：原地不動（座標不變）、計時遞減、狀態維持 DustBathing。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::DustBathing { bath_timer: 2.0 };
+        critter.tick_dustbathe(0.1, None, &mut rng);
+        match critter.state {
+            WildlifeState::DustBathing { bath_timer } => {
+                assert!((bath_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("塵浴未到期應維持 DustBathing，實際 {:?}", critter.state),
+        }
+        assert!((critter.x - 5000.0).abs() < 1e-6 && (critter.y - 5000.0).abs() < 1e-6, "塵浴中應原地不動");
+    }
+
+    #[test]
+    fn tick_dustbathe_returns_to_wander_when_timer_expires() {
+        // 塵浴到期：抖抖身子回到漫遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::DustBathing { bath_timer: 0.05 };
+        critter.tick_dustbathe(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "塵浴到期應回漫遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_dustbathe_noop_on_other_state() {
+        // 防呆：非 DustBathing 狀態呼叫 tick_dustbathe 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Resting { rest_timer: 3.0 };
+        critter.tick_dustbathe(0.1, None, &mut rng);
+        assert!(matches!(critter.state, WildlifeState::Resting { .. }), "非塵浴狀態呼叫 tick_dustbathe 不該改狀態");
+    }
+
+    #[test]
+    fn dustbathing_state_str_is_dust_bathing() {
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        critter.state = WildlifeState::DustBathing { bath_timer: 1.0 };
+        assert_eq!(critter.state_str(), "dust_bathing");
+    }
+
+    #[test]
+    fn non_critter_never_dust_bathes() {
+        // 物種專屬：只有小動物會塵浴——白天平靜的野鹿連跑數百幀都不該進入 DustBathing
+        //（野鹿走 277 搔癢、野鳥走 276 理羽，各有專屬自理姿態，不塵浴）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::DustBathing { .. }), "非小動物不該塵浴，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_critter_eventually_dust_bathes_during_day() {
+        // 白天平靜：一隻孤身小動物連跑多幀後，總會偶爾停下塵浴（DUSTBATHE_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut bathed = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(c.state, WildlifeState::DustBathing { .. }) {
+                bathed = true;
+                break;
+            }
+        }
+        assert!(bathed, "白天平靜的小動物應偶爾停下塵浴打滾");
+    }
+
+    #[test]
+    fn dust_bathing_critter_flees_when_threat_approaches() {
+        // 威脅永遠優先：塵浴中的小動物一旦有威脅逼近 FLEE_RADIUS 內，立刻翻身躍起逃竄（非繼續打滾）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::DustBathing { bath_timer: 1.0e9 };
+        mgr.animals = vec![critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "塵浴中遇威脅應立刻翻身躍起逃竄，實際 {:?}", c.state);
     }
 
     // ─── ROADMAP 278：群體呵欠 ────────────────────────────────────────────────

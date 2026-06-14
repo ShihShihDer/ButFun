@@ -8697,6 +8697,14 @@
       const isFeigning = w.kind === "small_critter" && w.state === "feigning";
       const feignTopple = isFeigning ? 1.45 : 0; // 側傾約 83°（弧度），僵直翻倒在地、一動不動
 
+      // ROADMAP 280：塵浴打滾——塵浴中的小動物（state==="dust_bathing"）就地低伏翻滾、撲騰抖動：身體一邊
+      // 小幅左右搖擺翻滾、一邊輕輕壓低貼地，讀起來是「在塵土裡打滾撲騰做全身大保養」而非站立。只有小動物
+      // 會塵浴（與 275 裝死的整個側傾翻倒 89° 區隔：塵浴是來回小幅搖擺的「翻滾」，不是僵直癱倒）。純前端、
+      // 零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜漫步的小動物塵浴時才給此狀態）。
+      const isDustBathing = w.kind === "small_critter" && w.state === "dust_bathing";
+      const dustRoll = isDustBathing ? Math.sin(now / 110) * 0.35 : 0; // 來回小幅搖擺，像在塵土裡翻來覆去
+      const dustLower = isDustBathing ? 3 : 0; // 略壓低貼地（蹲伏著打滾）
+
       // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
       //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
       // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
@@ -8730,6 +8738,9 @@
       if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
       // ROADMAP 275：裝死：繞著腳邊上方一點的支點把整個身體側傾翻倒（像斷氣般癱在地上）。
       if (feignTopple) { ctx.translate(0, -3); ctx.rotate(feignTopple); ctx.translate(0, 3); }
+      // ROADMAP 280：塵浴：壓低貼地、繞腳邊支點來回小幅搖擺翻滾（在塵土裡打滾撲騰）。
+      if (dustLower) ctx.translate(0, dustLower);
+      if (dustRoll) { ctx.translate(0, -3); ctx.rotate(dustRoll); ctx.translate(0, 3); }
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -9157,6 +9168,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💨", 9, -22 - flushLift); // 隨竄起的鳥身一起往上竄的一縷驚風
+        ctx.restore();
+      }
+
+      // ROADMAP 280：塵浴打滾——白天平靜漫步時就地翻身打滾、撲騰揚塵的小動物（state==="dust_bathing"）
+      // 頭頂浮一枚緩緩翻騰的 🌫️，讓「小傢伙在塵土裡打滾、揚起一陣塵霧做全身大保養」一眼看得到——與 277
+      // 搔癢的 🐾（抬後腿撓耳後的局部自理）對成「局部小動作／全身大保養」一對。純前端、零協議欄位：直接讀
+      // 伺服器廣播的 w.state（後端只在白天平靜漫步的小動物塵浴時才給此狀態）。
+      if (w.state === "dust_bathing") {
+        ctx.save();
+        const dr = (Math.sin(now / 200) + 1) / 2; // 0→1 緩緩翻騰，像揚起的塵霧一陣一陣地飄散
+        ctx.globalAlpha = 0.4 + 0.35 * dr;
+        ctx.font = (11 + dr * 2) + "px sans-serif"; // 隨揚塵緩緩脹大、再收小
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        // 🌫️ 隨翻滾在腳邊低處左右飄移（揚起的塵土貼著地面散開），比其他自理的頭頂信使更低、更貼地
+        ctx.fillText("🌫️", Math.sin(now / 130) * 3, -14 - dr * 2);
         ctx.restore();
       }
 
