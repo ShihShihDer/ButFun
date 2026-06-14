@@ -333,6 +333,25 @@ const COURT_DURATION_MAX: f32 = 6.0;
 /// 偶爾的溫柔片刻（多數時候仍照常吃草／休息），而非時時黏著。
 const COURT_PROB: f32 = 0.04;
 
+// ─── ROADMAP 274：母獸舐犢（親代照拂幼獸 / parental grooming）────────────────────
+// 216 理毛是成體↔成體之間的日常親暱（💕，明確排除幼獸）、215 嬉戲是幼獸繞著母獸蹦跳玩耍，可生命
+// 循環裡最動人的一塊——「親代低頭照拂自己的孩子」——至今無一幕：幼獸只會自顧自地依偎（208）／
+// 玩耍（215），成體則只跟同儕理毛（216），母獸與幼獸之間始終沒有一個看得見的溫柔互動。本切片補上：
+// 白天平靜歇息、身邊有同種幼獸貼近（TEND_RADIUS 內）的成體，會在歇息的當口偶爾低頭替幼獸舐毛照拂
+//（新增 Tending 狀態，原地不動、頭頂浮 💗），數秒後再起身。於是同一片草原，你會看到一頭母鹿安靜地
+// 俯身替身邊的小鹿舐毛——與 216 理毛（💕，成員之間互相照拂）對成「親代照拂幼獸／同儕互相照拂」一對，
+// 把生態的「親暱」從同輩補到了親子。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 tending
+// 字串沿用 state_str，計時隨狀態變體攜帶、無新欄位）、零持久化、零 migration、記憶體模式。
+/// 舐犢幼獸半徑（像素）——身邊有同種幼獸在此近距離內，成體歇息時才可能低頭照拂（比理毛略近，
+/// 親代俯身貼著幼獸）。
+const TEND_RADIUS: f32 = 56.0;
+/// 視為「正在舐犢」的單段最短／最長時長（秒）——靜靜替幼獸理毛數秒後再起身漫遊。
+const TEND_DURATION_MIN: f32 = 3.0;
+const TEND_DURATION_MAX: f32 = 6.5;
+/// 成體在白天歇息、且身邊有同種幼獸時，本幀轉入舐犢的機率——偏低，讓照拂是偶爾的溫柔片刻
+///（多數時候仍照常吃草／休息），而非時時黏著。
+const TEND_PROB: f32 = 0.045;
+
 // ─── ROADMAP 271：守靈駐立（mourning — 死亡看得見的餘韻）──────────────────────
 // 生命循環至今已從求偶（270）、誕生（207）、依偎（208）、嬉戲（215）一路鋪到理毛（216）、護幼
 // （214），唯獨「死亡」這一端始終沒有半點餘韻：掠食者咬死一隻獵物（既有 Kill），倖存的同伴只會
@@ -1165,6 +1184,11 @@ enum WildlifeState {
     /// 到期才起身去依偎母獸（208）。威脅一旦逼近一律優先逃竄（初生永遠讓位逃命）。把 207 原本
     /// 「憑空出現就立刻亂跑」的誕生補上看得見的「降臨一瞬」，與 272 ✨ 成年禮對成生命兩端的蛻變一刻。
     Newborn { newborn_timer: f32 },
+    /// ROADMAP 274：母獸舐犢——白天平靜歇息、身邊有同種幼獸貼近（TEND_RADIUS 內）的成體，偶爾低頭
+    /// 替幼獸舐毛照拂（前端畫成頭頂浮一枚輕柔明滅的 💗）。原地不動（不更新座標）、tend_timer 倒數，
+    /// 到期就起身回到漫遊；威脅一旦逼近一律優先逃竄（照拂永遠讓位逃命）。與 216 理毛（💕，成體互相）
+    /// 對成「親代照拂幼獸／同儕互相照拂」一對，把生態的親暱從同輩補到了親子。
+    Tending { tend_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1546,6 +1570,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 274：母獸舐犢——舐犢中（Tending）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）起身回到漫遊。只在 Tending 狀態下生效（呼叫端已確保此隻為白天、
+    /// 平靜的成體，且身邊有同種幼獸貼近；威脅逼近時呼叫端不會走到此分支、改逃竄）。
+    /// 與 tick_groom 同模式：俯身替幼獸舐毛的視覺由前端演繹（頭頂浮 💗），後端只穩定地推進計時。
+    fn tick_tend(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Tending { tend_timer } = self.state {
+            let remaining = tend_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Tending { tend_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 207/272：幼獸隨時間長大，成熟度趨近 1.0（體型隨之變大）；ROADMAP 272：成熟度剛跨過
     /// 1.0、長成成體的那一刻，轉入「成年禮」原地舒展定格一小段（`Maturing`，前端畫成頭頂浮 ✨）再
     /// 起身投入成體生活。只在「由幼轉成」的那一幀觸發一次（加之前 <1.0、加之後已滿）；非幼獸（成熟度
@@ -1894,6 +1935,7 @@ impl Wildlife {
             WildlifeState::Mourning { .. }  => "mourning",
             WildlifeState::Maturing { .. }  => "maturing",
             WildlifeState::Newborn { .. }   => "newborn",
+            WildlifeState::Tending { .. }   => "tending",
         }
     }
 }
@@ -2111,6 +2153,12 @@ impl WildlifeManager {
         // ROADMAP 208：成體獵物位置快照（maturity 已滿），供幼獸尋找依偎的「母獸」。
         let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
+            .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect();
+
+        // ROADMAP 274：母獸舐犢——幼獸位置快照（maturity 未滿），供成體尋找身邊可照拂的同種幼獸。
+        let juv_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && a.is_juvenile())
             .map(|a| (a.id, a.kind, a.x, a.y))
             .collect();
 
@@ -2939,6 +2987,17 @@ impl WildlifeManager {
                     self.animals[i].x, self.animals[i].y, animal_kind, &grief_snap, MOURN_RADIUS,
                 ).is_some();
 
+            // ROADMAP 274：母獸舐犢——白天的成體獵物若身邊有同種幼獸（TEND_RADIUS 內），歇息的當口
+            // 偶爾低頭替幼獸舐毛照拂。此處先判定「是否有可照拂的幼獸」（重用 nearest_adult_of_kind 的
+            //「快照中最近同種」查詢、傳入幼獸快照 juv_snap）；幼獸／逃竄中／夜間一律不舐犢（走依偎/
+            // 逃竄/夜眠分支），故順手短路。
+            let tend_has_juvenile = !is_night
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_adult_of_kind(
+                    self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &juv_snap, TEND_RADIUS,
+                ).is_some();
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             if calm_at_night {
@@ -3245,6 +3304,21 @@ impl WildlifeManager {
                     // 白天歇息的成體、身邊有同種夥伴、平靜——偶爾轉去互相理毛（頭頂浮 💕）。
                     let timer = rng.gen_range(GROOM_DURATION_MIN..=GROOM_DURATION_MAX);
                     a.state = WildlifeState::Grooming { groom_timer: timer };
+                } else if matches!(a.state, WildlifeState::Tending { .. }) && !threat_near {
+                    // ROADMAP 274：已在舐犢中且仍平靜——把這一段照拂走完（原地不動、計時倒數，俯身
+                    // 替幼獸舐毛的視覺由前端演繹）。威脅一旦逼近就落到下方 tick_idle 改逃竄（照拂讓位逃命）。
+                    a.tick_tend(dt, herd_anchor, rng);
+                } else if tend_has_juvenile
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < TEND_PROB
+                {
+                    // ROADMAP 274：白天歇息的成體、身邊有同種幼獸、平靜——偶爾低頭替幼獸舐毛照拂
+                    // （頭頂浮 💗）。排在 216 理毛之後：同儕理毛先延續其既有節奏，舐犢補的是「成體身邊
+                    // 有幼獸」這個 216 未涵蓋的親子片刻；沒轉入舐犢的成體仍落到下方吃草分支，世界既有
+                    // 同儕互相照拂、也有親代俯身照拂幼獸。
+                    let timer = rng.gen_range(TEND_DURATION_MIN..=TEND_DURATION_MAX);
+                    a.state = WildlifeState::Tending { tend_timer: timer };
                 } else {
                     // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
                     // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
@@ -4979,6 +5053,95 @@ mod tests {
         let deer = mgr.animals.iter().find(|a| a.id == 100).unwrap();
         assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
             "掠食者逼近時求偶應立刻讓位逃竄");
+    }
+
+    // ─── ROADMAP 274：母獸舐犢（親代照拂幼獸） ────────────────────────────────
+    #[test]
+    fn tick_tend_counts_down_then_returns_to_wandering() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Tending { tend_timer: 1.0 };
+        d.tick_tend(0.4, None, &mut rng);
+        match d.state {
+            WildlifeState::Tending { tend_timer } =>
+                assert!((tend_timer - 0.6).abs() < 1e-4, "未到期應續舐犢並倒數，實得 {tend_timer}"),
+            _ => panic!("未到期不應離開舐犢"),
+        }
+        // 再推進使計時耗盡 → 回到漫遊。
+        d.tick_tend(1.0, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Wandering { .. }), "舐犢到期應回到漫遊");
+    }
+
+    #[test]
+    fn tick_tend_noop_when_not_tending() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Resting { rest_timer: 3.0 };
+        d.tick_tend(0.5, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Resting { .. }), "非舐犢狀態呼叫 tick_tend 應原樣不動");
+    }
+
+    #[test]
+    fn tending_emerges_when_juvenile_nearby() {
+        // 一隻成年野鹿白天平靜歇息、身邊有一隻同種幼獸貼近（TEND_RADIUS 內）、無捕食者無玩家
+        // → 歇息的當口應有成體轉入舐犢照拂（Tending）。
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); doe.id = 100;
+        doe.state = WildlifeState::Resting { rest_timer: 5.0 };
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 5030.0, 5000.0); fawn.id = 101;
+        fawn.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![doe, fawn];
+        mgr.next_animal_id = 102;
+        let attitudes = std::collections::HashMap::new();
+
+        let mut seen_tending = false;
+        for _ in 0..2000 {
+            // 每幀壓回成熟度，避免幼獸長成後不再是幼獸（脫離舐犢條件）。
+            if let Some(f) = mgr.animals.iter_mut().find(|a| a.id == 101) { f.maturity = 0.0; }
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            if mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Tending { .. })) {
+                seen_tending = true;
+                break;
+            }
+        }
+        assert!(seen_tending, "身邊有同種幼獸貼近時，平靜歇息的成體應會轉入舐犢照拂");
+    }
+
+    #[test]
+    fn no_tending_without_juvenile() {
+        // 兩隻緊鄰成年野鹿、白天平靜，身邊沒有任何幼獸 → 一律不舐犢（舐犢只在身邊有幼獸時才出現；
+        // 成體之間另有 216 理毛）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Resting { rest_timer: 5.0 };
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        d2.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![d1, d2];
+        mgr.next_animal_id = 102;
+        let attitudes = std::collections::HashMap::new();
+
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            assert!(!mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Tending { .. })),
+                "身邊沒有幼獸時不應出現舐犢");
+        }
+    }
+
+    #[test]
+    fn tending_yields_to_threat() {
+        // 舐犢中的成鹿，一旦掠食者逼近 FLEE_RADIUS 內 → 立刻改逃竄（照拂永遠讓位逃命）。
+        // （此處不放幼獸，純測「照拂讓位逃竄」這條路徑；身邊真有受脅幼獸時則另由 214 母獸護幼接手。）
+        let mut mgr = WildlifeManager::new();
+        let mut doe = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); doe.id = 100;
+        doe.state = WildlifeState::Tending { tend_timer: 5.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + FLEE_RADIUS * 0.4, 5000.0); wolf.id = 101;
+        wolf.state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
+        mgr.animals = vec![doe, wolf];
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[], false);
+        let doe = mgr.animals.iter().find(|a| a.id == 100).unwrap();
+        assert!(matches!(doe.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時舐犢應立刻讓位逃竄");
     }
 
     // ─── ROADMAP 271：守靈駐立 ───────────────────────────────────────────────
