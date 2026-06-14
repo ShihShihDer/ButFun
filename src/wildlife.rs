@@ -571,6 +571,25 @@ const VIGILANCE_PROB: f32 = 0.06;
 const VIGILANCE_DURATION_MIN: f32 = 2.0;
 const VIGILANCE_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 262：警戒漣漪（同群示警傳染／vigilance contagion）────────────────
+// 251 讓警戒帶內的每隻獵物各自以 VIGILANCE_PROB 偶爾抬頭僵立——但牠們彼此「看不見對方的警覺」，
+// 於是一群鹿是各看各的、零零落落地隨機抬頭，少了真實獸群「一隻警覺、全群跟著繃緊」的連動。本切片
+// 把「警覺」接成會在同群間傳開的訊號：當一隻平靜獵物「看見」身邊同種夥伴已在警戒僵立（Vigilant），
+// 便以較高的 VIGIL_JOIN_PROB 被牽動跟著抬頭戒備——於是第一隻察覺掠食者的鹿一僵，警覺感便像漣漪般
+// 由近而遠掃過整群（仿 218 群嚎／220 升空／221 跟鳴「看見就接力」的同手法），鹿群第一次像一個整體
+// 般同時繃緊。與 209 驚群炸開刻意對成一對：209＝掠食者已逼進 FLEE_RADIUS、恐慌化為「逃」的漣漪；
+// 262＝掠食者尚在警戒帶、警覺化為「戒」的漣漪——逃竄之前那一層「山雨欲來」的緊繃第一次成形。沿用
+// 251 的 Vigilant 狀態與前端 😨（無新狀態、無新欄位、無協議改動）；仍需掠食者在自身警戒帶內
+// （precondition 與 251 自發觸發相同），故傳染只是讓在帶內的同群「更快一起繃緊」、絕不無端僵立，
+// 也與 tick_vigilant「掠食者退出警戒帶即鬆懈」一致（漣漪不會在無威脅處空轉）。零 LLM、純啟發式、
+// 可測、零 tick 簽名改動、記憶體模式。
+/// 同群示警傳染半徑——一隻平靜獵物「看見」此範圍內同種夥伴已在警戒僵立時，被牽動跟著抬頭。
+/// 設略小於 ALARM_RADIUS(220，209 恐慌傳染半徑)，呼應「警覺傳得比恐慌稍近一點」的直覺。
+const VIGIL_ALARM_RADIUS: f32 = 200.0;
+/// 看見同群已在警戒時、本幀跟著抬頭的機率——明顯高於 251 自發的 VIGILANCE_PROB(0.06)，讓警覺
+/// 一旦在群中起頭就快速傳開（漣漪），而非仍各自慢慢隨機抬頭（仿 220/221 的 JOIN_PROB > 自發 PROB）。
+const VIGIL_JOIN_PROB: f32 = 0.20;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -2106,6 +2125,16 @@ impl WildlifeManager {
             })
             .collect();
 
+        // ROADMAP 262：警戒漣漪——本幀開始時「正在警戒僵立」(Vigilant) 的獵物快照（kind/x/y），供
+        // Phase 4 讓附近平靜的同種夥伴「看見」牠的警覺而被牽動跟著抬頭。刻意在 Phase 4 變更前取一次：
+        // 本幀新被牽動者不在此快照裡，故警覺每 tick 只向外傳一圈，像一道警覺感由威脅源逐圈漾開（仿 209
+        // 恐慌、218 群嚎的逐圈傳染）。只取獵物（警戒是被掠食者的反應）。
+        let vigilant_snap: Vec<(WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey
+                && matches!(a.state, WildlifeState::Vigilant { .. }))
+            .map(|a| (a.kind, a.x, a.y))
+            .collect();
+
         // ROADMAP 214：母獸護幼——蒐集「正被掠食者鎖定（潛行/追獵）的幼獸」快照
         // （juv_id/juv_kind/jx/jy/pred_x/pred_y）。由 Phase 3 剛更新過的掠食者狀態即時推得，
         // 供下方 Phase 4 讓離該幼獸最近的同種成體（母獸）挺身護衛。動物總數少（~22），O(n²) 無虞。
@@ -2376,7 +2405,17 @@ impl WildlifeManager {
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
-                    && rng.gen::<f32>() < VIGILANCE_PROB
+                    && {
+                        // ROADMAP 262：警戒漣漪——掠食者在自身警戒帶內的平靜獵物，若「看見」附近同種
+                        // 夥伴已在警戒僵立（VIGIL_ALARM_RADIUS 內），便以較高的 VIGIL_JOIN_PROB 被牽動
+                        // 跟著抬頭（接力）；沒看見才退回 251 低機率 VIGILANCE_PROB 自發起頭。本幀新被牽動
+                        // 者不在 vigilant_snap 裡，故警覺逐圈外傳、整群錯落而起、終致全群繃緊（仿 220/221
+                        // 的 join＞自發）。precondition 仍要求掠食者在自身警戒帶內，故傳染只是讓帶內同群
+                        // 「更快一起繃緊」、絕不無端僵立，且與 tick_vigilant「退出警戒帶即鬆懈」一致。
+                        let join = sees_alarmed_herd(animal_kind, a.x, a.y, &vigilant_snap)
+                            && rng.gen::<f32>() < VIGIL_JOIN_PROB;
+                        join || rng.gen::<f32>() < VIGILANCE_PROB
+                    }
                 {
                     // ROADMAP 251：平靜的獵物——掠食者落在「警戒帶」(FLEE_RADIUS, VIGILANCE_RADIUS] 內
                     // （已逼近、尚未到逃命距離；FLEE_RADIUS 內早被 threat_near 短路去逃竄）時，偶爾停下
@@ -2661,6 +2700,21 @@ fn hears_song(px: f32, py: f32, chirping: &[(f32, f32)]) -> bool {
         let dx = cx - px;
         let dy = cy - py;
         dx * dx + dy * dy <= r2
+    })
+}
+
+/// ROADMAP 262：警戒漣漪——位於 (px,py) 的獵物是否「看見」附近任一已在警戒僵立（Vigilant）的
+/// 同種夥伴（`vigilant` 為本幀起始時正在警戒者的 kind＋座標快照）。只要有一隻同種在 VIGIL_ALARM_RADIUS
+/// 內就回 true，由呼叫端據此（以 VIGIL_JOIN_PROB）牽動牠跟著抬頭。限同種：警覺在同群內傳開（仿 209
+/// 恐慌只在同種間感染）。純距離判定、無副作用（仿 218 的 hears_howl／220 的 sees_flight）。
+fn sees_alarmed_herd(kind: WildlifeKind, px: f32, py: f32, vigilant: &[(WildlifeKind, f32, f32)]) -> bool {
+    let r2 = VIGIL_ALARM_RADIUS * VIGIL_ALARM_RADIUS;
+    vigilant.iter().any(|&(k, vx, vy)| {
+        k == kind && {
+            let dx = vx - px;
+            let dy = vy - py;
+            dx * dx + dy * dy <= r2
+        }
     })
 }
 
@@ -5189,6 +5243,75 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(d.state, WildlifeState::Vigilant { .. }), "無掠食者時不該警戒");
+        }
+    }
+
+    // ─── ROADMAP 262：警戒漣漪（同群示警傳染） ──────────────────────────────────
+
+    #[test]
+    fn sees_alarmed_herd_only_same_kind_within_radius() {
+        // 純距離＋同種判定：同種夥伴在 VIGIL_ALARM_RADIUS 內看得見、外則看不見；
+        // 異種夥伴即使在範圍內也不傳染（警覺只在同群內漾開）；空快照永遠看不見。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!sees_alarmed_herd(WildlifeKind::WildDeer, me.0, me.1, &[]), "四下無警戒夥伴時看不見");
+        let near = (WildlifeKind::WildDeer, me.0 + VIGIL_ALARM_RADIUS - 1.0, me.1);
+        assert!(sees_alarmed_herd(WildlifeKind::WildDeer, me.0, me.1, &[near]), "半徑內的同種警戒應看得見");
+        let far = (WildlifeKind::WildDeer, me.0 + VIGIL_ALARM_RADIUS + 50.0, me.1);
+        assert!(!sees_alarmed_herd(WildlifeKind::WildDeer, me.0, me.1, &[far]), "半徑外的同種警戒看不見");
+        // 異種：即使近在咫尺也不算（鹿不被鳥的警覺牽動）。
+        let other = (WildlifeKind::WildBird, me.0 + 10.0, me.1);
+        assert!(!sees_alarmed_herd(WildlifeKind::WildDeer, me.0, me.1, &[other]), "異種警戒不傳染");
+        // 多個來源：只要有一隻同種在範圍內即看得見。
+        assert!(sees_alarmed_herd(WildlifeKind::WildDeer, me.0, me.1, &[far, other, near]),
+            "其中一隻同種在範圍內就算看得見");
+    }
+
+    #[test]
+    fn vigilance_contagion_spreads_to_calm_herdmate() {
+        // 整管理器：白天，狼在警戒帶內（兩隻鹿都察覺得到牠）；一隻鹿「已在警戒」、另一隻平靜的鹿
+        // 緊鄰著牠（VIGIL_ALARM_RADIUS 內）。連跑多幀，平靜的那隻應被同群的警覺牽動而跟著抬頭警戒。
+        let mut mgr = WildlifeManager::new();
+        let mut alerted = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        alerted.id = 1;
+        // 給極長計時讓牠整段測試都維持警戒（持續的警覺源）；狼在帶內，tick_vigilant 不會讓牠鬆懈。
+        alerted.state = WildlifeState::Vigilant { vigil_timer: 1.0e9 };
+        let mut calm = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 60px：VIGIL_ALARM_RADIUS 內
+        calm.id = 2;
+        calm.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        // 狼放在 330px：HUNT_RADIUS(320) 外（不鎖定潛獵）、VIGILANCE_RADIUS(340) 內（兩鹿都察覺）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5330.0, 5000.0);
+        wolf.id = 3;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 }; // 原地消化、不追獵
+        mgr.animals = vec![alerted, calm, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_vigilant = false;
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(c.state, WildlifeState::Vigilant { .. }) { saw_vigilant = true; break; }
+        }
+        assert!(saw_vigilant, "緊鄰已警戒夥伴的平靜獵物，應被同群警覺牽動而跟著抬頭警戒");
+    }
+
+    #[test]
+    fn vigilance_contagion_needs_predator_in_own_band() {
+        // 傳染不能無中生有：即使緊鄰一隻「正在警戒」的夥伴，只要自身警戒帶內沒有掠食者，
+        // 平靜的獵物就不該被牽動僵立（precondition 與 251 自發觸發相同——傳染只是加速、不無端僵立）。
+        let mut mgr = WildlifeManager::new();
+        let mut alerted = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        alerted.id = 1;
+        alerted.state = WildlifeState::Vigilant { vigil_timer: 1.0e9 };
+        let mut calm = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 緊鄰警戒夥伴
+        calm.id = 2;
+        calm.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        // 全場無任何掠食者 → calm 自身警戒帶內無威脅。
+        mgr.animals = vec![alerted, calm];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(c.state, WildlifeState::Vigilant { .. }),
+                "自身警戒帶內無掠食者時，不該僅因夥伴警戒就被牽動僵立");
         }
     }
 
