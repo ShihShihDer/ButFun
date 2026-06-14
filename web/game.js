@@ -8680,7 +8680,9 @@
       // 一啄地撿食被踏草驚起的蟲：鳥身隨「啄下—抬起」的節奏一頓一頓上下點動（與 252 食腐同手法，啄速
       // 略快一些，像在草間追啄竄動的蟲）。只有野鳥會跟食。純前端、零協議欄位：直接讀伺服器廣播的 w.state
       //（後端只在白天平靜、附近有覓食野鹿的野鳥跟食時才給）。
-      const isForaging = w.kind === "wild_bird" && w.state === "foraging";
+      // ROADMAP 292：跟刨撿蟲——跟著刨地小動物的野鳥（state==="gleaning"）同樣傍在身旁低頭一啄一啄地撿
+      // 翻出的蟲，沿用 265 跟鹿同一套「低頭點啄」身體節奏與 🐛 氣泡（差別只在跟的對象：鹿／刨地的鼠）。
+      const isForaging = w.kind === "wild_bird" && (w.state === "foraging" || w.state === "gleaning");
       const foragePeck = isForaging ? 2 + Math.abs(Math.sin(now / 110)) * 3 : 0; // 一啄一啄地點頭撿蟲
 
       // ROADMAP 271：守靈駐立——默哀中的成體（state==="mourning"）走到夥伴倒下處低頭佇立：身體
@@ -9432,7 +9434,9 @@
       // 標誌一幕（與 252 食腐的 🍖 區隔：那是傍著死屍撿殘肉、這是傍著活鹿撿活蟲，野鳥伺機覓食的兩面）。
       // 🐛 隨點頭啄食的鳥身一起一頓一頓往下。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在
       // 白天平靜、附近有覓食野鹿的野鳥跟食時才給）。
-      if (w.state === "foraging") {
+      // ROADMAP 292：跟刨撿蟲的野鳥（state==="gleaning"）同樣頭頂浮一隻隨啄食一頓一頓的 🐛——與 265 跟鹿
+      // 共用同一幕牛背鷺式撿蟲，差別只在跟的是刨地的小動物（282 囤糧刨土翻出的蟲）而非吃草的鹿。
+      if (w.state === "foraging" || w.state === "gleaning") {
         ctx.save();
         const ft = Math.abs(Math.sin(now / 110)); // 與一啄一啄同步、緩緩明滅
         ctx.globalAlpha = 0.5 + 0.45 * ft;

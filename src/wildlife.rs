@@ -953,6 +953,42 @@ const FORAGE_SPEED: f32 = 56.0;
 /// 視為「已跟到鹿身旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再貼近（傍著鹿、不擋著鹿）。
 const FORAGE_COMFORT_DIST: f32 = 30.0;
 
+// ─── ROADMAP 292：跟刨撿蟲（gleaning behind a digger／野鳥跟著刨地的小動物撿翻出的蟲）────────
+// 265 共生跟食給混群補上了第一筆正向相處——野鳥傍著低頭吃草的鹿，撿食被踏草驚起的蟲（牛背鷺式共生）。
+// 但那筆「跟食」至今只繫於野鹿一種「擾動者」：鹿走過驚起草蟲，鳥就跟著撿。可草原上會替小鳥翻出食物的
+// 何止大型草食獸——282 囤糧埋藏裡那隻低頭刨地、把堅果埋進土裡的小動物（SmallCritter），牠刨開的鬆土同樣
+// 會翻出地底的蟲蛹，正是伺機飛禽眼中的另一張免費餐桌。本切片把 265 的「跟食」從「跟鹿」擴到「跟刨地的
+// 小動物」：白天平靜的野鳥若「看見」附近有一隻正在囤糧刨地的小動物（GLEAN_SEE_RADIUS 內、digger_snap），
+// 便以 GLEAN_PROB 被吸引飛攏過去、跟著那隻刨地的小動物身旁一啄一啄地撿食翻出的蟲（新增 Gleaning 狀態、
+// 頭頂浮一枚 🐛），小動物挪步牠也跟著挪（複用 265 的 forage_step 趨近／保持身旁距離）；那隻小動物刨完起身
+// 走遠（超出 GLEAN_FOLLOW_RADIUS）或計時耗盡，鳥就拍翅散去回閒晃。**與 265 共生跟食刻意對成「跟鹿／跟鼠」
+// 一對**——同一筆牛背鷺式共生，從「跟著吃草的大鹿」擴到「跟著刨地的小鼠」，把 282 囤糧這個原本純屬小動物
+// 自利的動作，第一次牽動到了另一個物種（小動物刨地→野鳥得食），讓玩家看見不同物種真的彼此牽動。
+// **與 CommensalForaging 刻意分成獨立狀態（不複用）**：266 哨兵互惠只認 CommensalForaging 的鳥替鹿放哨，
+// 跟刨地小動物撿蟲的鳥不該被誤計為鹿的哨兵（小動物不是鹿、附近未必有鹿），故另立 Gleaning 狀態，零交纏。
+// **只屬於野鳥（伺機飛禽）**：跟食是飛禽的伺機天性，其餘物種不撿蟲（有測試覆蓋）。**需要刨地的小動物在場**：
+// 身邊 GLEAN_SEE_RADIUS 內無正在 Caching 的小動物一律不起意（有測試覆蓋）。**排在 265 跟鹿之後**：身邊同時
+// 有覓食的鹿與刨地的鼠時，先跟相處已久的鹿；沒鹿可跟、卻有鼠在刨地時才轉去跟鼠。**威脅永遠優先逃竄**：
+// 掠食者一旦逼進 FLEE_RADIUS 此分支即短路、改走逃竄（覓食永遠讓位逃命，有測試覆蓋）。**零捕食平衡風險**：
+// 純多一個讓平靜野鳥跟著刨地小動物撿蟲的閒置覓食姿態，不改任何獵殺／搜尋結果。**天然湧現不寫死**：跟刨
+// 只在白天平靜、身邊恰有小動物刨地的當口偶爾浮現，威脅一現便由既有逃竄邏輯接管。**零 LLM、純啟發式、可測、
+// 零 tick 簽名沿用既有、零協議改動（新增的 gleaning 字串沿用 state_str，計時隨狀態變體攜帶、無新欄位）、
+// 零持久化、零 migration、記憶體模式。**
+/// 野鳥「看見」附近有正在刨地（Caching）的小動物而被吸引前來跟撿的偵測半徑——與 265 跟鹿的 FORAGE_SEE_RADIUS
+/// 同值（200）：同是「身邊剛好有擾動者在翻土／踏草」才湊近的伺機行為。
+const GLEAN_SEE_RADIUS: f32 = 200.0;
+/// 已在跟刨中時，被跟的那隻小動物一旦走出此半徑（刨完起身漫遊／逃竄遠離），鳥就拍翅散去——與 FORAGE_FOLLOW_RADIUS
+/// 同值（260），留一段緩衝讓鳥能跟著挪動的小動物走一小段。
+const GLEAN_FOLLOW_RADIUS: f32 = 260.0;
+/// 偵測半徑內有刨地的小動物時，一隻平靜野鳥本幀被吸引、轉去跟撿的機率——逐幀低機率觸發（沿用 265 的逐圈擴散
+/// 手感，讓鳥三三兩兩陸續飛攏）。略低於 265 跟鹿的 FORAGE_PROB(0.012)：刨地是短暫的當口（小動物只刨一小段），
+/// 跟鼠的機會本就比跟一頭悠閒吃草的鹿稍縱即逝。
+const GLEAN_PROB: f32 = 0.01;
+/// 一段跟刨的持續秒數（隨機區間）——跟著刨地的小動物撿一陣蟲後拍翅散去；期間掠食者一旦逼進 FLEE_RADIUS 即
+/// 中斷改逃竄、或那隻小動物走遠也提前散去。
+const GLEAN_DURATION_MIN: f32 = 3.0;
+const GLEAN_DURATION_MAX: f32 = 7.0;
+
 // ─── ROADMAP 279：走獸驚飛棲鳥（incidental flushing／大型草食獸不經意驚起棲地野鳥）──────
 // 265 跟食把混群的跨物種相處推到了「正向共生」（鳥傍鹿撿蟲）、266 哨兵互惠又補上鳥替鹿放哨的回報——
 // 那是混群「彼此得利」的一面。可現實的草原上，大型草食獸與小型棲鳥之間還有一筆最尋常、誰也沒惡意的
@@ -1640,6 +1676,14 @@ enum WildlifeState {
     /// （覓食永遠讓位逃命）。與 265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）對成「跟食／自啄」一對——有覓食的
     /// 鹿就傍著撿蟲、沒鹿也會自己低頭啄草籽。與 252 食腐（🍖，啄屍骸）／276 理羽（🪶，梳自己的羽）區隔。只屬於野鳥。
     Pecking { peck_timer: f32 },
+    /// ROADMAP 292：跟刨撿蟲——白天平靜的野鳥若「看見」附近有一隻正在囤糧刨地（Caching）的小動物
+    /// （GLEAN_SEE_RADIUS 內），便飛攏過去跟著那隻刨地的小動物身旁一啄一啄地撿食翻出的蟲（前端畫成跟著
+    /// 挪動、頭頂浮一枚 🐛）。glean_timer 倒數，每幀朝最近那隻刨地小動物趨近／保持身旁距離（複用 265 的
+    /// forage_step）；那隻小動物走遠（超出 GLEAN_FOLLOW_RADIUS）或計時耗盡就拍翅散去回閒晃；威脅一旦逼近
+    /// 一律優先逃竄（覓食永遠讓位逃命）。與 265 共生跟食（🐛，傍鹿撿蟲）對成「跟鹿／跟鼠」一對——把 282
+    /// 囤糧這個小動物自利的動作第一次牽動到另一物種（小動物刨地→野鳥得食）。與 CommensalForaging 分成獨立
+    /// 狀態（266 哨兵互惠只認 CommensalForaging 的鳥替鹿放哨，跟鼠的鳥不該被誤計）。只屬於野鳥。
+    Gleaning { glean_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2576,6 +2620,28 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 292：跟刨撿蟲的一步推進——`digger` 為呼叫端本幀查得最近那隻正在刨地的小動物座標
+    /// （GLEAN_FOLLOW_RADIUS 內；走遠／無則傳 None）。計時耗盡、或被跟的小動物已走遠（digger 為 None）
+    /// 就拍翅散去回閒晃；否則尚未跟到身旁就朝牠挪近（複用 265 的 forage_step：已到覓食距離就原地一啄一啄、
+    /// 不動），計時倒數、續留跟刨。只在 Gleaning 狀態下生效（呼叫端已先擋威脅／到期；防呆：非此狀態 noop）。
+    fn tick_glean(&mut self, dt: f32, digger: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Gleaning { glean_timer } = self.state {
+            let remaining = glean_timer - dt;
+            if remaining <= 0.0 || digger.is_none() {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            if let Some((gx, gy)) = digger {
+                if let Some((nx, ny)) = forage_step(self.x, self.y, gx, gy, dt) {
+                    self.x = nx;
+                    self.y = ny;
+                }
+            }
+            self.state = WildlifeState::Gleaning { glean_timer: remaining };
+        }
+    }
+
     /// ROADMAP 267：圍攻鼓譟的一步推進——`target` 為本幀重鎖的閒晃掠食者座標（呼叫端逐幀查得最近的
     /// 一頭傳入；掠食者走遠／轉入主動狩獵時傳 None）。target 為 None 或計時耗盡就散去歇息（回 Resting）；
     /// 否則朝掠食者俯衝逼到鼓譟距離 MOB_HARASS_DIST（mob_step）、計時倒數、續留圍攻。掠食者移動時每幀
@@ -2674,6 +2740,7 @@ impl Wildlife {
             WildlifeState::Greeting { .. }   => "greeting",
             WildlifeState::Licking { .. }    => "licking",
             WildlifeState::Pecking { .. }    => "pecking",
+            WildlifeState::Gleaning { .. }   => "gleaning",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3541,6 +3608,16 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 292：跟刨撿蟲——本幀「正在囤糧刨地的小動物」座標快照（SmallCritter，Caching 狀態）。
+        // 供下方野鳥起意飛攏到最近一隻刨地小動物身旁、跟著撿食翻出的蟲、並在跟刨期間逐幀重鎖最近的牠
+        // （跟著牠挪步）。只認 Caching 的小動物：刨地翻土才會翻出地底蟲蛹（小動物一起身離開 Caching，此
+        // 快照即不含牠，跟著的鳥下一幀便因 digger 為 None 而拍翅散去，一停就散）。動物總數少（~22），O(n²) 無虞。
+        let digger_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::SmallCritter
+                && matches!(a.state, WildlifeState::Caching { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ROADMAP 266：哨兵互惠——本幀「正傍鹿跟食（CommensalForaging）、且已用尖眼瞥見逼近掠食者
         // （pred_positions 在 SENTINEL_KEEN_RADIUS 內）」的哨兵鳥座標快照。供下方 Phase 4 讓牠方才傍著
         // 的那頭平靜鹿（SENTINEL_HEED_RADIUS 內）讀到這記警報、先一步抬頭戒備。刻意在 Phase 4 變更前
@@ -4014,6 +4091,17 @@ impl WildlifeManager {
                         let grazer = nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_FOLLOW_RADIUS);
                         a.tick_commensal(dt, grazer, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Gleaning { .. }) {
+                    // ROADMAP 292：已在跟刨撿蟲中——威脅一旦逼近就立刻拍翅逃竄（覓食永遠讓位逃命），
+                    // 否則重鎖最近那隻正在刨地的小動物（GLEAN_FOLLOW_RADIUS 內）、跟著牠挪步保持身旁的
+                    // 撿食距離；那隻小動物刨完起身走遠（範圍內已無刨地的小動物 → digger 為 None）或計時
+                    // 耗盡就拍翅散去。與 265 跟鹿（CommensalForaging）分開：跟鼠的鳥不替鹿放哨（266）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let digger = nearest_in_range(a.x, a.y, &digger_snap, GLEAN_FOLLOW_RADIUS);
+                        a.tick_glean(dt, digger, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Mobbing { .. }) {
                     // ROADMAP 267：已在圍攻鼓譟中——只要那頭被攆的掠食者還閒晃在 MOB_SEE_RADIUS 內
                     //（loiter_pred_snap），就重鎖最近的牠繼續俯衝鼓譟、計時倒數（到期散去歇息）；牠一旦
@@ -4111,6 +4199,21 @@ impl WildlifeManager {
                     // 分支即短路、改走逃竄——危機一來，方才其樂融融的混群一哄而散。
                     let timer = rng.gen_range(FORAGE_DURATION_MIN..=FORAGE_DURATION_MAX);
                     a.state = WildlifeState::CommensalForaging { forage_timer: timer };
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &digger_snap, GLEAN_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < GLEAN_PROB
+                {
+                    // ROADMAP 292：白天平靜的野鳥——「看見」附近有一隻正在囤糧刨地的小動物（digger_snap 在
+                    // GLEAN_SEE_RADIUS 內）便以 GLEAN_PROB 被吸引，飛攏到牠身旁跟著低頭撿食刨土翻出的蟲（頭頂
+                    // 浮 🐛），小動物挪步牠也跟著挪。把 282 囤糧這個原本純屬小動物自利的動作，第一次牽動到另一
+                    // 物種（小動物刨地→野鳥得食）。與 265 跟鹿（CommensalForaging）對成「跟鹿／跟鼠」一對，故排在
+                    // 265 跟食分支之後：身邊同時有覓食的鹿與刨地的鼠時先跟鹿，沒鹿可跟、卻有鼠在刨地時才轉去跟鼠。
+                    // 掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此分支即短路、改走逃竄——覓食永遠讓位逃命。
+                    let timer = rng.gen_range(GLEAN_DURATION_MIN..=GLEAN_DURATION_MAX);
+                    a.state = WildlifeState::Gleaning { glean_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -10103,6 +10206,133 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "啄地中遇威脅應立刻拍翅逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 292：跟刨撿蟲（野鳥跟著刨地的小動物撿翻出的蟲）──────────────────
+    #[test]
+    fn tick_glean_follows_digger_then_disperses() {
+        // 離刨地小動物還遠的跟刨鳥：tick 後應朝牠位移、計時遞減、仍為 Gleaning。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Gleaning { glean_timer: 5.0 };
+        let x0 = bird.x;
+        let mut rng = make_rng();
+        bird.tick_glean(0.1, Some((5200.0, 5000.0)), &mut rng);
+        assert!(bird.x > x0, "離刨地的小動物尚遠應朝牠趨近");
+        match bird.state {
+            WildlifeState::Gleaning { glean_timer } => {
+                assert!((glean_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("趨近途中應維持跟刨，實際 {other:?}"),
+        }
+        // 被跟的小動物走遠（digger 為 None）——拍翅散去回閒晃。
+        let mut left = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        left.state = WildlifeState::Gleaning { glean_timer: 5.0 };
+        left.tick_glean(0.1, None, &mut rng);
+        assert!(matches!(left.state, WildlifeState::Wandering { .. }),
+            "被跟的小動物走遠應散去回閒晃，實際 {:?}", left.state);
+        // 計時耗盡——亦散去回閒晃（即使小動物仍在）。
+        let mut done = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        done.state = WildlifeState::Gleaning { glean_timer: 0.05 };
+        done.tick_glean(0.1, Some((5010.0, 5000.0)), &mut rng);
+        assert!(matches!(done.state, WildlifeState::Wandering { .. }),
+            "跟刨計時耗盡應散去回閒晃，實際 {:?}", done.state);
+    }
+
+    #[test]
+    fn tick_glean_noop_on_other_state() {
+        // 防呆：非 Gleaning 狀態呼叫 tick_glean 不該有任何作用（狀態不變）。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 3.0 };
+        let mut rng = make_rng();
+        bird.tick_glean(0.1, Some((5010.0, 5000.0)), &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }),
+            "非跟刨狀態呼叫 tick_glean 不該改狀態，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn gleaning_state_str_is_gleaning() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Gleaning { glean_timer: 1.0 };
+        assert_eq!(bird.state_str(), "gleaning");
+    }
+
+    #[test]
+    fn non_bird_never_gleans() {
+        // 物種專屬：只有野鳥會跟刨撿蟲——身邊有刨地小動物的另一頭鹿／小動物連跑數百幀都不該進入 Gleaning。
+        let mut mgr = WildlifeManager::new();
+        let mut digger = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        digger.id = 1;
+        digger.state = WildlifeState::Caching { cache_timer: 1.0e9 }; // 持續刨地當吸引源
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5080.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Wandering { target_x: 5080.0, target_y: 5000.0, wander_timer: 0.1 };
+        let mut other = adult_at(WildlifeKind::SmallCritter, 5100.0, 5000.0);
+        other.id = 3;
+        other.state = WildlifeState::Wandering { target_x: 5100.0, target_y: 5000.0, wander_timer: 0.1 };
+        mgr.animals = vec![digger, deer, other];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for a in &mgr.animals {
+                if a.kind != WildlifeKind::WildBird {
+                    assert!(!matches!(a.state, WildlifeState::Gleaning { .. }),
+                        "非野鳥不該跟刨撿蟲，實際 {:?}", a.state);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bird_does_not_glean_without_digger() {
+        // 附近沒有任何刨地小動物的野鳥——連跑多幀都不該進入跟刨（需要刨地的小動物在場）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Gleaning { .. }), "無刨地的小動物時不該跟刨");
+        }
+    }
+
+    #[test]
+    fn calm_bird_eventually_gleans_beside_digging_critter() {
+        // 白天平靜：一隻野鳥附近有一隻持續刨地（Caching）的小動物（GLEAN_SEE_RADIUS 內）、無掠食者——
+        // 連跑多幀後野鳥應有機會被吸引飛攏到牠身旁跟刨（進入 Gleaning）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        // 小動物放在 120px（GLEAN_SEE_RADIUS 200 內），持續刨地當吸引源。
+        let mut digger = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0);
+        digger.id = 2;
+        digger.state = WildlifeState::Caching { cache_timer: 1.0e9 };
+        mgr.animals = vec![bird, digger];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_gleaning = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Gleaning { .. }) { saw_gleaning = true; break; }
+        }
+        assert!(saw_gleaning, "附近有刨地的小動物時，平靜的野鳥應會被吸引飛攏到牠身旁跟刨撿蟲");
+    }
+
+    #[test]
+    fn gleaning_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：跟刨中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻拍翅逃竄（非繼續跟刨）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Gleaning { glean_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "跟刨中遇威脅應立刻拍翅逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 289：幼獸學吃草（哺乳幼獸在母獸身邊學吃草）──────────────────
