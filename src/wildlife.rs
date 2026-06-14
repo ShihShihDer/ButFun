@@ -733,6 +733,20 @@ const CROSS_MOB_RADIUS: f32 = 180.0;
 /// 鬧上去、跟著加入比從零起意容易），但仍逐幀低機率，故小動物由近而遠一隻隻加入、圍攻像漣漪般擴開。
 const CROSS_MOB_PROB: f32 = 0.035;
 
+// ─── ROADMAP 269：驅敵的後效（掠食者忌憚被圍攻過的巢區／post-mobbing avoidance）──────
+// 267/268 讓混群能把閒晃掠食者鼓譟攆走，可那頭被攆走的掠食者朝反方向走兩步、wander 計時一到
+// 就又隨機漫遊回同一片草地、被同一群鳥再攆一次——像金魚記憶，驅趕沒有後效。本切片給掠食者補上
+// 一層「忌憚記憶」：被混群攆走時記下那片巢區（鳥群中心）與一個忌憚計時，計時內牠閒晃漫遊時若選到
+// 會把自己帶回那片巢區的目標，就改道一個背離忌憚點的新目標——於是被攆走的掠食者一段時間內主動繞著
+// 那片地走、不再晃回去討罵，混群的存在第一次真正在地圖上「劃出」掠食者短時間內不愛去的區域，驅趕
+// 有了後效。忌憚隨計時自然消退（記憶體模式、零持久化）；掠食者一旦轉入主動狩獵（潛行/追獵）忌憚
+// 不阻擋（飢餓壓倒怕鳥），只影響無目的的閒晃漫遊。
+/// 掠食者被混群鼓譟攆走後忌憚那片巢區的持續秒數——一段時間內閒晃時繞著走。隨計時自然消退。
+const MOB_GRUDGE_DURATION: f32 = 14.0;
+/// 忌憚圈半徑——漫遊目標落在被圍攻點此範圍內就改道背離。略小於 WANDER_RADIUS(180)，讓掠食者
+/// 仍能在巢區外圍正常漫遊、只避開核心那片（不致被永久趕離家門）。
+const MOB_GRUDGE_RADIUS: f32 = 150.0;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -1082,6 +1096,9 @@ pub struct Wildlife {
     /// ROADMAP 207：成熟度（0~1）。初始族群皆為成體（1.0）；繁衍誕生的幼獸由 0 起、
     /// 隨時間長到 1.0。未滿 1.0 即「幼獸」，體型較小（前端據 `scale()` 縮小繪製）。
     maturity: f32,
+    /// ROADMAP 269：驅敵的後效——被混群鼓譟攆走時記下 (巢區中心 x, y, 剩餘忌憚秒數)；忌憚未消時
+    /// 閒晃漫遊會繞開那片巢區，不再晃回去被反覆攆。`None`＝無忌憚（記憶體模式、不持久化、不進協議）。
+    mob_grudge: Option<(f32, f32, f32)>,
 }
 
 impl Wildlife {
@@ -1103,6 +1120,8 @@ impl Wildlife {
             familiarity: 0.0,
             // 初始族群皆為成體。
             maturity: 1.0,
+            // ROADMAP 269：初始無忌憚。
+            mob_grudge: None,
         }
     }
 
@@ -1639,6 +1658,26 @@ impl Wildlife {
                         self.state = WildlifeState::Mobbing { target_x: tx, target_y: ty, mob_timer: remaining };
                     }
                 }
+            }
+        }
+    }
+
+    /// ROADMAP 269：驅敵的後效——倒數忌憚計時；忌憚未消時，若當前漫遊目標會把自己帶回被圍攻過的
+    /// 巢區（`MOB_GRUDGE_RADIUS` 內），就改道一個背離忌憚點的新目標（保留原 `wander_timer`）。
+    /// 無忌憚（`mob_grudge == None`）一律早退，行為與切片前逐位元一致。每幀只在掠食者「純隨機閒晃」
+    /// 的當口呼叫（撲鼠/嗅蹤/圍獵/圍食等專屬行為不受擾）。
+    fn tick_grudge(&mut self, dt: f32) {
+        let Some((gx, gy, t)) = self.mob_grudge else { return; };
+        let remaining = t - dt;
+        if remaining <= 0.0 {
+            self.mob_grudge = None;
+            return;
+        }
+        self.mob_grudge = Some((gx, gy, remaining));
+        if let WildlifeState::Wandering { target_x, target_y, wander_timer } = self.state {
+            let (nx, ny) = grudge_redirect(self.x, self.y, target_x, target_y, gx, gy, MOB_GRUDGE_RADIUS);
+            if (nx, ny) != (target_x, target_y) {
+                self.state = WildlifeState::Wandering { target_x: nx, target_y: ny, wander_timer };
             }
         }
     }
@@ -2248,6 +2287,9 @@ impl WildlifeManager {
                             {
                                 let (tx, ty) = point_away(a.x, a.y, cx, cy, WANDER_RADIUS);
                                 a.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: 3.0 };
+                                // ROADMAP 269：驅敵的後效——記下這片被圍攻的巢區（鳥群中心）與忌憚計時，
+                                // 並在還被鬧時每幀 refresh 到滿；鳥一散去不再走此分支，忌憚才開始消退。
+                                a.mob_grudge = Some((cx, cy, MOB_GRUDGE_DURATION));
                                 a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
                             } else if matches!(a.state, WildlifeState::Howling { .. }) {
                                 a.tick_howl(dt, rng);
@@ -2350,6 +2392,9 @@ impl WildlifeManager {
                             } else {
                                 // ROADMAP 211：掠食者（狼/狐）不吃草——graze_prob 永遠傳 0。
                                 a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
+                                // ROADMAP 269：驅敵的後效——倒數忌憚、把會晃回被圍攻巢區的漫遊目標改道
+                                // 背離（無忌憚者早退、逐位元一致）。只在純隨機閒晃的當口生效，不擾撲鼠/嗅蹤/圍獵。
+                                a.tick_grudge(dt);
                             }
                         }
                     }
@@ -3414,6 +3459,19 @@ fn point_away(px: f32, py: f32, fx: f32, fy: f32, dist: f32) -> (f32, f32) {
         return (px + dist, py);
     }
     (px + dx / d * dist, py + dy / d * dist)
+}
+
+/// ROADMAP 269：忌憚改道——若漫遊目標 `(tx,ty)` 落在忌憚點 `(gx,gy)` 的 `radius` 內，回傳一個
+/// 背離忌憚點的新目標（複用 `point_away`，以自身 `(sx,sy)` 為基準朝遠離忌憚點的方向取 `WANDER_RADIUS`）；
+/// 否則原樣回傳。讓被混群攆走的掠食者一段時間內繞開那片巢區、不晃回去被反覆攆。純函式、可單元自驗。
+fn grudge_redirect(sx: f32, sy: f32, tx: f32, ty: f32, gx: f32, gy: f32, radius: f32) -> (f32, f32) {
+    let dx = tx - gx;
+    let dy = ty - gy;
+    if dx * dx + dy * dy < radius * radius {
+        point_away(sx, sy, gx, gy, WANDER_RADIUS)
+    } else {
+        (tx, ty)
+    }
 }
 
 /// ROADMAP 256：好奇試探的一步位移——朝玩家 (px,py) 謹慎挪近，但只挪到警戒距離
@@ -6612,6 +6670,79 @@ mod tests {
             mgr.animals[0].state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5200.0, wander_timer: 1.0e9 };
         }
         assert!(joined, "平靜小動物看見鳥群已圍攻閒晃狼、終應被牽動加入圍攻（轉 Mobbing）");
+    }
+
+    // ─── ROADMAP 269：驅敵的後效（忌憚被圍攻過的巢區）────────────────────────────
+    #[test]
+    fn grudge_redirect_steers_away_only_when_target_inside_grudge() {
+        // 漫遊目標落在忌憚圈內（離忌憚點 50 < 半徑 150）→ 改道：新目標應背離忌憚點（在自身遠離側）。
+        // 自身在 (5000,5000)、忌憚點在 (5040,5000)（小動物剛攆狼那片），目標 (5060,5000) 在圈內。
+        let (nx, ny) = grudge_redirect(5000.0, 5000.0, 5060.0, 5000.0, 5040.0, 5000.0, MOB_GRUDGE_RADIUS);
+        assert!(nx < 5000.0 && (ny - 5000.0).abs() < 1e-3,
+            "目標在忌憚圈內應改道背離忌憚點（往 -x），實際 ({nx},{ny})");
+        // 漫遊目標在忌憚圈外（離忌憚點 300 > 半徑 150）→ 原樣回傳、不干涉正常漫遊。
+        let (sx, sy) = grudge_redirect(5000.0, 5000.0, 5340.0, 5000.0, 5040.0, 5000.0, MOB_GRUDGE_RADIUS);
+        assert!((sx - 5340.0).abs() < 1e-3 && (sy - 5000.0).abs() < 1e-3,
+            "目標在忌憚圈外應原樣回傳，實際 ({sx},{sy})");
+        // 邊界：恰在半徑上（嚴格小於才改道）→ 視為圈外、原樣。
+        let (bx, _by) = grudge_redirect(5000.0, 5000.0, 5040.0 + MOB_GRUDGE_RADIUS, 5000.0, 5040.0, 5000.0, MOB_GRUDGE_RADIUS);
+        assert!((bx - (5040.0 + MOB_GRUDGE_RADIUS)).abs() < 1e-3, "恰在半徑上應視為圈外、不改道");
+    }
+
+    #[test]
+    fn tick_grudge_counts_down_and_clears_when_expired() {
+        // 忌憚計時隨 dt 倒數；耗盡即清為 None（記憶體模式、自然消退）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.mob_grudge = Some((5040.0, 5000.0, 0.3));
+        wolf.tick_grudge(0.2);
+        assert!(matches!(wolf.mob_grudge, Some((_, _, t)) if (t - 0.1).abs() < 1e-3), "忌憚應倒數 0.3→0.1");
+        wolf.tick_grudge(0.2);
+        assert!(wolf.mob_grudge.is_none(), "忌憚耗盡應清為 None");
+        // 無忌憚者呼叫一律早退、不動狀態（逐位元一致）。
+        let mut calm = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        calm.state = WildlifeState::Wandering { target_x: 5060.0, target_y: 5000.0, wander_timer: 5.0 };
+        calm.tick_grudge(0.2);
+        assert!(matches!(calm.state, WildlifeState::Wandering { target_x, .. } if (target_x - 5060.0).abs() < 1e-3),
+            "無忌憚者狀態不應被動到");
+    }
+
+    #[test]
+    fn tick_grudge_reroutes_wander_target_back_into_nest() {
+        // 帶忌憚的閒晃掠食者，漫遊目標指回被圍攻巢區（忌憚圈內）→ tick_grudge 應把目標改道背離。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.mob_grudge = Some((5040.0, 5000.0, MOB_GRUDGE_DURATION));
+        wolf.state = WildlifeState::Wandering { target_x: 5060.0, target_y: 5000.0, wander_timer: 5.0 };
+        wolf.tick_grudge(0.2);
+        match wolf.state {
+            WildlifeState::Wandering { target_x, wander_timer, .. } => {
+                assert!(target_x < 5000.0, "晃回巢區的目標應被改道背離忌憚點（往 -x），實際 target_x={target_x}");
+                assert!((wander_timer - 5.0).abs() < 1e-3, "改道應保留原 wander_timer");
+            }
+            other => panic!("應仍是 Wandering，實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mobbed_predator_remembers_grudge_and_walks_off() {
+        // 整管理器：兩隻鳥圍著一頭閒晃狼貼臉鼓譟（MOB_HARASS_RADIUS 內達 quorum）→ 狼被攆走、
+        // 且記下忌憚（mob_grudge 被設、計時為滿）。驗證 267 攆走分支接上了 269 的忌憚記憶。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        // 兩隻鳥都在 MOB_HARASS_RADIUS(130) 內、且正在 Mobbing（會進 mobbing_snap）。
+        let mut b1 = adult_at(WildlifeKind::WildBird, 5060.0, 5000.0);
+        b1.id = 2;
+        b1.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        let mut b2 = adult_at(WildlifeKind::WildBird, 5000.0, 5060.0);
+        b2.id = 3;
+        b2.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        mgr.animals = vec![wolf, b1, b2];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(w.mob_grudge, Some((_, _, t)) if (t - MOB_GRUDGE_DURATION).abs() < 1e-3),
+            "被混群攆走的狼應記下滿格忌憚，實際 {:?}", w.mob_grudge);
     }
 
     #[test]
