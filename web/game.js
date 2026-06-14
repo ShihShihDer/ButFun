@@ -8449,6 +8449,22 @@
     ether_overlord: "乙太霸主",
   };
 
+  // ROADMAP 241：野生動物接地柔影——純函式：依物種回傳腳下接地影的基準幾何
+  //   { gy, rx, ry }：gy=影心相對體心下移量（約莫腳底貼地處）、rx/ry=影橢圓基準半徑。
+  // 體型大者影大且貼地（鹿/狼），小巧者影小（鳥/小動物）；未知 kind 退中庸預設。
+  // 實際偏移／拉長／濃淡由 drawGroundShadow 讀本幀 _shadowCast（日影晷 201）算得，這裡只給基準。
+  // 無 DOM、純資料、可單元自驗。
+  function wildlifeShadowProfile(kind) {
+    switch (kind) {
+      case "wild_deer":     return { gy: 18, rx: 12, ry: 4 };
+      case "wild_wolf":     return { gy: 20, rx: 13, ry: 4.5 };
+      case "wild_fox":      return { gy: 16, rx: 10, ry: 3.5 };
+      case "small_critter": return { gy: 8,  rx: 8,  ry: 3 };
+      case "wild_bird":     return { gy: 6,  rx: 6,  ry: 2.5 };
+      default:              return { gy: 12, rx: 10, ry: 3.5 };
+    }
+  }
+
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
     // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
@@ -8541,6 +8557,15 @@
       // ROADMAP 207：繁衍誕生的幼獸體型較小（scale<1），隨成長慢慢長到成體大小。
       // 只縮放「身體」繪製，標籤與愛心維持原尺寸（畫在縮放區塊之外）。
       const scale = (typeof w.scale === "number" && w.scale > 0) ? w.scale : 1;
+      // ROADMAP 241：接地柔影——萬物（玩家/建築/石碑）早已腳下投影隨日影晷（201）轉向拉長，唯獨
+      // 野生動物至今像浮在草上、沒有影子。除騰空的飛行/撲跳個體（牠們另有空中投影）外，給每隻動物
+      // 腳下畫一抹隨太陽方位偏移、晨昏拉長、夜映冷淡的柔影（復用 drawGroundShadow＋_shadowCast）。
+      // 影固定在地面（補回 -wobble 不隨身體晃），隨幼獸體型 scale 一同縮放。畫在 scale 區塊之外、
+      // 自管縮放，以免被身體的躍弧/壓低位移帶走。
+      if (!isFlying && !isPouncing) {
+        const sp = wildlifeShadowProfile(w.kind);
+        drawGroundShadow(-wobble, sp.gy * scale, sp.rx * scale, sp.ry * scale, 0.2);
+      }
       ctx.save();
       if (scale !== 1) ctx.scale(scale, scale);
       if (flyLift) ctx.translate(0, -flyLift); // 升空：把鳥身往上抬離地面

@@ -311,6 +311,15 @@ const scenarios = [
       s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "sparring", familiarity: 0, tamed: false };
     }
   }),
+  // 野生動物接地柔影（241）：破曉低光 → _shadowCast 拉長偏移，跑各物種腳下影的偏移＋拉長路徑。
+  variant("野生動物晨昏接地長影", (s) => {
+    s.daynight = { phase: "dawn", light: 0.5, night_danger: false };
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_deer", x: me0.x + 30, y: me0.y, state: "wandering" };
+      if (s.wildlife[1]) s.wildlife[1] = { ...s.wildlife[1], kind: "wild_wolf", x: me0.x - 30, y: me0.y + 20, state: "wandering" };
+      if (s.wildlife[2]) s.wildlife[2] = { ...s.wildlife[2], kind: "small_critter", x: me0.x, y: me0.y + 40, state: "wandering" };
+    }
+  }),
   // 雨後彩虹（191）：先下草原雨（白天）→ 下一情境雨停，跨情境觸發彩虹繪製路徑。
   variant("草原降雨(白天)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.8 }; }),
   variant("雨停天青(彩虹)", (s) => { s.daynight = { phase: "day", light: 0.75, night_danger: false }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
