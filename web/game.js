@@ -8490,6 +8490,15 @@
     }
   }
 
+  // ROADMAP 249：雨淋濕野生動物——純函式：依逐幀濕潤 wetness（沿用 246 的 _wetness）回傳動物
+  // 背脊濕亮反光的不透明度 [0,1]。隨濕潤成正比、暗處略增（濕透的毛在暗處更顯油亮反光）。無 DOM、可單元自驗。
+  const WILDLIFE_WET_GLOSS_MAX = 0.34; // 濕毛背脊映天反光峰值不透明度（淡，只在背上描一道亮弧、不糊掉身形）
+  function wildlifeWetGloss(wetness, light) {
+    const w = Math.max(0, Math.min(1, wetness));
+    const L = Math.max(0, Math.min(1, light));
+    return w * (1.12 - 0.3 * L) * WILDLIFE_WET_GLOSS_MAX;
+  }
+
   function drawWildlife(camX, camY) {
     if (!wildlifeList.length) return;
     // 修正(掃雷):過去誤用 canvas.width(裝置像素)再加 W/2 置中——camX 本身已含置中
@@ -8613,6 +8622,32 @@
         case "wild_wolf":     _drawWildWolf(isHunting, now);     break;
         case "wild_fox":      _drawWildFox(isHunting, now);      break;
       }
+
+      // ROADMAP 249：雨淋濕野生動物——草原下雨時（沿用 246 逐幀更新的 _wetness）動物的毛被雨淋濕，
+      // 背脊泛起一道映著天光的冷潤反光（像濕透的毛在反光）；雨停後隨 _wetness 一同慢慢乾去。色溫沿用
+      // 水窪映天的 puddleTint（白天藍白、晨昏金、夜冷月白），故動物身上的濕亮與腳下水窪（246）映的是
+      // 同一片天。畫在身體 sprite 之上、隨身體所有位移/縮放一起走（身體濕了，反光跟身體晃）。與 248
+      // 雷光驚畜刻意對成「天氣 × 生態」一對——248 是雷一閃當場一驚（瞬間動作）、249 是雨淋濕一身
+      //（持續外觀），兩者一驚一濕、互不重疊。鹿/狼/狐/鳥/小獸全種通用（誰都會被雨淋濕）。弱機/低幀
+      //（沿用 91 的 _parallaxEnabled）或乾爽（_wetness 極低）即不畫，效能優先。純前端視覺、零協議欄位、零後端。
+      if (_wetness > 0.02 && _parallaxEnabled && !reduceMotion) {
+        const wlight = daynight ? daynight.light : 1;
+        const wphase = daynight ? daynight.phase : "day";
+        const glossA = wildlifeWetGloss(_wetness, wlight);
+        if (glossA > 0.004) {
+          const gp = wildlifeShadowProfile(w.kind);
+          const gt = puddleTint(wlight, wphase);
+          ctx.save();
+          // 背脊一道映天的濕亮高光弧（扁橢圓上緣，描在身體上半輪廓）
+          ctx.strokeStyle = `rgba(${gt.r},${gt.g},${gt.b},${glossA.toFixed(3)})`;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, gp.rx * 0.72, gp.rx * 0.52, 0, Math.PI * 1.1, Math.PI * 1.9);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
       ctx.restore();
 
       // ROADMAP 209：受驚閃現——剛被恐慌點燃的瞬間，頭頂彈出一個會上飄淡出的 ❗，
