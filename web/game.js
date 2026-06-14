@@ -8673,6 +8673,13 @@
       const isMourning = w.state === "mourning";
       const mournLower = isMourning ? 2.5 + Math.abs(Math.sin(now / 900)) * 1.2 : 0; // 垂首壓低、極緩的低首呼吸
 
+      // ROADMAP 275：負鼠裝死——裝死中的小動物（state==="feigning"）四腳一軟、僵直翻倒在地：身體整個
+      // 側傾近 90°（像斷了氣般翻倒不動），讀起來是「倒地裝死」而非站立。只有最弱的小動物會裝死（打不過
+      // 也未必跑得贏，只能騙過）。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在小動物被威脅
+      // 逼到貼臉、無路可逃的死生關頭才給此狀態）。與 209 驚群炸開（硬逃）對成「打不過就騙過」一對。
+      const isFeigning = w.kind === "small_critter" && w.state === "feigning";
+      const feignTopple = isFeigning ? 1.45 : 0; // 側傾約 83°（弧度），僵直翻倒在地、一動不動
+
       // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
       //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
       // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
@@ -8703,6 +8710,8 @@
       if (foragePeck) ctx.translate(0, foragePeck); // ROADMAP 265：跟食：把鳥身一啄一啄地往下點撿蟲
       if (mournLower) ctx.translate(0, mournLower); // ROADMAP 271：守靈：把身體壓低、垂首默哀
       if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
+      // ROADMAP 275：裝死：繞著腳邊上方一點的支點把整個身體側傾翻倒（像斷氣般癱在地上）。
+      if (feignTopple) { ctx.translate(0, -3); ctx.rotate(feignTopple); ctx.translate(0, 3); }
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
         case "wild_deer":     _drawWildDeer(isFleeing, now);     break;
@@ -8880,6 +8889,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💗", 8, -22);
+        ctx.restore();
+      }
+
+      // ROADMAP 275：負鼠裝死——倒地裝死的小動物（state==="feigning"）頭頂浮一枚緩緩打轉、像斷了氣
+      // 般的 💫，讓「一隻小松鼠突然四腳朝天倒地裝死、逼近的掠食者（或玩家）嗅一嗅又走開」這一幕一眼
+      // 看得到——草原的反捕食第一次有了「智取」而非硬逃的一手。純前端、零協議欄位：直接讀伺服器廣播
+      // 的 w.state（後端只在小動物被威脅逼到貼臉、無路可逃時才給）。
+      if (w.state === "feigning") {
+        ctx.save();
+        ctx.globalAlpha = 0.5 + 0.3 * Math.abs(Math.sin(now / 700)); // 像斷了氣般微弱明滅
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.rotate((now / 900) % (Math.PI * 2)); // 緩緩打轉，像頭暈眼花的星星
+        ctx.fillText("💫", 0, 0);
         ctx.restore();
       }
 
