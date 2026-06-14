@@ -8910,6 +8910,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 290：幼獸偎母打盹——偎在母獸身邊白天打小盹的幼獸（state==="napping"）頭頂浮一枚
+      // 徐徐脹縮（像睡息一呼一吸）的 💤，讓「玩累了的小傢伙窩在媽媽身邊補眠」一眼看得到（睡一段就回依偎）。
+      // 與 215 嬉戲的 💫（活蹦亂跳）對成「動／靜」一對。與 210 夜眠的 💤 同符號但永不同時出現：夜眠只在
+      // 夜間、偎母打盹只在白天，畫面上靠晝夜自然分隔。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      // （後端只在白天依偎於母獸身邊的幼獸偶爾打盹時才給此狀態）。
+      if (w.state === "napping") {
+        ctx.save();
+        const br = (Math.sin(now / 600) + 1) / 2; // 0→1 緩緩一呼一吸，比別的氣泡慢，賣睡得安穩
+        ctx.globalAlpha = 0.45 + 0.4 * br;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(0, -24 - br * 2); // 隨睡息輕輕浮沉
+        ctx.fillText("💤", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種夥伴互相梳理的成體（state==="grooming"）
       // 頭頂浮一個輕輕呼吸般明滅的 💕，讓「兩頭鹿安靜地依偎著彼此理毛」一眼看得到（群成員之間
       // 第一次有了親暱羈絆，而不只是各自吃草的點）。純前端、零協議欄位：直接讀伺服器廣播的
@@ -9426,8 +9443,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";

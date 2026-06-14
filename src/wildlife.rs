@@ -249,6 +249,26 @@ const MIMIC_GRAZE_PROB: f32 = 0.022;
 const MIMIC_GRAZE_DURATION_MIN: f32 = 1.8;
 const MIMIC_GRAZE_DURATION_MAX: f32 = 3.6;
 
+// ─── ROADMAP 290：幼獸偎母打盹（fawns nap snuggled by mother）──────────────────
+// 承接 207（誕生）→ 208（依偎）→ 215（在母獸身邊嬉戲）→ 289（學媽媽吃草）那條幼獸日常／生命循環線——
+// 盤點下來，已依偎到母獸身邊的幼獸平靜時的白天日常已有三種：靜靜依偎、繞著媽媽蹦跳玩耍（215 💫）、低頭
+// 學媽媽啃嫩草（289 🌱）。獨缺幼崽最招牌、最惹人憐愛的一筆——玩累了、吃飽了，就偎著媽媽在白天的暖陽下
+// 打個小盹（幼獸本就比成體嗜睡）。本切片補上這塊：已依偎到母獸身邊、白天平靜的幼獸，偶爾窩著打盹（新增
+// Napping 狀態，頭頂浮一枚徐徐脹縮的 💤），睡一小段再回到依偎。與 215 嬉戲（💫，活蹦亂跳）刻意對成
+// 「動／靜」一對——玩夠了就偎著媽媽補眠，把幼獸的白天日常從「玩耍／學覓食」補成「玩耍／學覓食／打盹」
+// 完整的一日。所有幼獸通用（小鹿／小獸／雛鳥都會偎母打盹，與 215 嬉戲一致；不像 289 學吃草限哺乳幼獸）。
+// 與 210 夜眠（💤，入夜歸巢的成體在家安睡、只在夜間出現）刻意以「晝夜」區隔——偎母打盹只在白天
+// （!is_night）依偎於母獸身邊的幼獸才有，兩者畫面上永不同時出現。純啟發式、零 LLM、零 tick 簽名改動、
+// 零協議改動（新增的 napping 字串沿用 state_str；計時隨狀態變體攜帶、無新欄位）、零持久化、零 migration、
+// 記憶體模式。威脅永遠優先：打盹只在無掠食者逼近的平靜空檔發生（與 215 嬉戲同受上游 predator_near 守衛），
+// 狼／玩家一逼近即依既有幼獸邏輯改逃命（打盹永遠讓位逃命）。
+/// 已依偎到母獸身邊、且白天平靜時，本幀起一段「打盹」的機率——與 215 嬉戲（FROLIC_PROB 0.025）／289
+/// 學吃草（MIMIC_GRAZE_PROB 0.022）同量級偏低，讓幼獸玩玩、學學、睏了打個盹，多數時候仍靜靜依偎。
+const NAP_PROB: f32 = 0.02;
+/// 一段「打盹」的最短／最長時長（秒）——比嬉戲（1.2~2.6）／學吃草（1.8~3.6）更長些，小盹睡得沉一點。
+const NAP_DURATION_MIN: f32 = 3.0;
+const NAP_DURATION_MAX: f32 = 6.0;
+
 // ─── ROADMAP 209：驚群炸開（恐慌連鎖）─────────────────────────────────────────
 // 承接 206（群聚結伴）：獸群會聚在一起，但危險來時過去卻是「各跑各的」——只有
 // 直接看到捕食者、且在 FLEE_RADIUS 內的那幾隻會逃，旁邊沒看到的同伴照樣閒晃。
@@ -1418,6 +1438,10 @@ enum WildlifeState {
     /// 原地不動（不更新座標）、graze_timer 倒數，到期就回到依偎；威脅一旦逼近一律優先逃命（與 215 嬉戲同受
     /// 上游 predator_near 守衛）。與 215 嬉戲對成「幼獸的日常：玩耍／學覓食」一對。
     MimicGrazing { graze_timer: f32 },
+    /// ROADMAP 290：幼獸偎母打盹——已依偎到母獸身邊的幼獸（小鹿／小獸／雛鳥）白天平靜時偎著媽媽打個小盹
+    /// （頭頂浮一枚徐徐脹縮的 💤）。原地不動（不更新座標）、nap_timer 倒數，到期就回到依偎；威脅一旦逼近
+    /// 一律優先逃命（與 215 嬉戲同受上游 predator_near 守衛）。與 215 嬉戲（💫，活蹦亂跳）對成「動／靜」一對。
+    Napping { nap_timer: f32 },
     /// ROADMAP 216：成體相依理毛——白天歇息時轉向身邊同種成體夥伴互相理毛（頭頂浮 💕）。
     /// 原地不動（不更新座標）、groom_timer 倒數，到期就回到漫遊；威脅一旦逼近一律優先逃竄。
     Grooming { groom_timer: f32 },
@@ -1931,6 +1955,23 @@ impl Wildlife {
                 self.state = WildlifeState::Wandering { target_x: mx, target_y: my, wander_timer: 1.0 };
             } else {
                 self.state = WildlifeState::MimicGrazing { graze_timer: remaining };
+            }
+        }
+    }
+
+    /// ROADMAP 290：幼獸偎母打盹——打盹中（Napping）原地不動（不更新座標、偎著媽媽閉眼小睡）、
+    /// nap_timer 倒數；睡夠這一段（到期）就回到母獸身邊依偎（朝母獸 (mx,my) 的溫順 Wandering），
+    /// 下一幀再由呼叫端決定要不要再睡／去玩／去學吃草。`mx,my` 為母獸座標：偎著媽媽睡、醒來不離媽媽。
+    /// 只在 Napping 狀態下生效（呼叫端已確保此隻為依偎於母獸身邊、白天平靜的幼獸；威脅逼近時呼叫端
+    /// 不會走到此分支、改逃竄）。
+    fn tick_nap(&mut self, dt: f32, mx: f32, my: f32) {
+        if let WildlifeState::Napping { nap_timer } = self.state {
+            let remaining = nap_timer - dt;
+            if remaining <= 0.0 {
+                // 睡醒了：回到母獸身邊依偎（朝母獸的溫順 Wandering）。
+                self.state = WildlifeState::Wandering { target_x: mx, target_y: my, wander_timer: 1.0 };
+            } else {
+                self.state = WildlifeState::Napping { nap_timer: remaining };
             }
         }
     }
@@ -2553,6 +2594,7 @@ impl Wildlife {
             WildlifeState::Defending        => "defending",
             WildlifeState::Frolicking { .. } => "frolicking",
             WildlifeState::MimicGrazing { .. } => "mimic_graze",
+            WildlifeState::Napping { .. } => "napping",
             WildlifeState::Grooming { .. }  => "grooming",
             WildlifeState::Courting { .. }  => "courting",
             WildlifeState::Howling { .. }   => "howling",
@@ -3657,6 +3699,13 @@ impl WildlifeManager {
                             self.animals[i].tick_mimic_graze(dt, px, py);
                             continue;
                         }
+                        // ROADMAP 290：幼獸偎母打盹——已在打盹中的幼獸繼續這一段小睡（原地不動偎著媽媽），
+                        // 計時耗盡就在 tick_nap 裡收斂回母獸 (px,py) 身邊依偎。受威脅一律優先逃（上方
+                        // predator_near 已擋），故打盹只在平靜時延續。
+                        if matches!(self.animals[i].state, WildlifeState::Napping { .. }) {
+                            self.animals[i].tick_nap(dt, px, py);
+                            continue;
+                        }
                         let dx = px - ax;
                         let dy = py - ay;
                         let dist = (dx * dx + dy * dy).sqrt();
@@ -3682,6 +3731,12 @@ impl WildlifeManager {
                             // （288 地面啄籽），不走此「學吃草」。與 215 嬉戲對成「玩耍／學覓食」一對。
                             let timer = self.rng.gen_range(MIMIC_GRAZE_DURATION_MIN..=MIMIC_GRAZE_DURATION_MAX);
                             self.animals[i].state = WildlifeState::MimicGrazing { graze_timer: timer };
+                        } else if !is_night && self.rng.gen::<f32>() < NAP_PROB {
+                            // ROADMAP 290：幼獸偎母打盹——沒起意去玩耍、也沒學吃草，白天平靜時偶爾偎著媽媽打個
+                            // 小盹（💤），睡一小段再回依偎。所有幼獸通用（小鹿／小獸／雛鳥），與 215 嬉戲對成
+                            // 「動／靜」一對——玩夠了就偎著媽媽補眠。
+                            let timer = self.rng.gen_range(NAP_DURATION_MIN..=NAP_DURATION_MAX);
+                            self.animals[i].state = WildlifeState::Napping { nap_timer: timer };
                         } else {
                             self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
                         }
@@ -10114,6 +10169,134 @@ mod tests {
             let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(f.state, WildlifeState::MimicGrazing { .. }),
                 "威脅逼近時幼鹿不該學吃草，實際 {:?}", f.state);
+        }
+    }
+
+    // ─── ROADMAP 290：幼獸偎母打盹（幼獸白天偎著媽媽打小盹）──────────────────
+    #[test]
+    fn tick_nap_holds_position_while_timer_remaining() {
+        // 打盹進行中：原地不動（座標不變）、計時遞減、狀態維持 Napping。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Napping { nap_timer: 2.0 };
+        w.tick_nap(0.1, 4980.0, 5000.0);
+        match w.state {
+            WildlifeState::Napping { nap_timer } => {
+                assert!((nap_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("打盹未到期應維持 Napping，實際 {other:?}"),
+        }
+        assert!((w.x - 5000.0).abs() < 1e-6 && (w.y - 5000.0).abs() < 1e-6, "打盹中應原地不動");
+    }
+
+    #[test]
+    fn tick_nap_returns_to_nursing_when_timer_expires() {
+        // 睡夠這一段（到期）→ 回到母獸身邊依偎（朝母獸 (mx,my) 的溫順 Wandering）。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Napping { nap_timer: 0.05 };
+        w.tick_nap(0.1, 4980.0, 5000.0); // dt > 剩餘 → 到期
+        match w.state {
+            WildlifeState::Wandering { target_x, target_y, .. } => {
+                assert!((target_x - 4980.0).abs() < 0.001 && (target_y - 5000.0).abs() < 0.001,
+                    "睡醒應回母獸身邊依偎");
+            }
+            other => panic!("打盹到期後應回依偎（Wandering），實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_nap_noop_on_other_state() {
+        // 防呆：非 Napping 狀態呼叫 tick_nap 不該有任何作用（狀態不變）。
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        w.state = WildlifeState::Resting { rest_timer: 3.0 };
+        w.tick_nap(0.1, 4980.0, 5000.0);
+        assert!(matches!(w.state, WildlifeState::Resting { .. }), "非打盹狀態呼叫不該改狀態");
+    }
+
+    #[test]
+    fn nap_state_str_is_napping() {
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.state = WildlifeState::Napping { nap_timer: 1.0 };
+        assert_eq!(w.state_str(), "napping");
+    }
+
+    #[test]
+    fn adult_never_naps() {
+        // 只屬於幼獸：成體連跑多幀都不該進入 Napping（偎母打盹是幼獸專屬日常）。
+        let mut mgr = WildlifeManager::new();
+        let mut adult = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        adult.id = 1;
+        adult.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        mgr.animals = vec![adult];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for a in &mgr.animals {
+                assert!(!matches!(a.state, WildlifeState::Napping { .. }),
+                    "成體不該偎母打盹，實際 {:?}", a.state);
+            }
+        }
+    }
+
+    #[test]
+    fn nestled_juvenile_eventually_naps_during_day() {
+        // 白天平靜：一隻依偎在定點母獸身邊的幼獸，連跑多幀後總會偶爾偎著媽媽打個小盹
+        //（NAP_PROB 之必然累積；上限 1100 幀 < 成熟所需 1200 幀，期間仍是幼獸）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 }; // 母鹿定點不動，幼鹿安穩依偎
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0); // 與母鹿同位 → 立即依偎
+        fawn.id = 2;
+        mgr.animals = vec![mother, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut napped = false;
+        for _ in 0..1100 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(f.state, WildlifeState::Napping { .. }) {
+                napped = true;
+                break;
+            }
+        }
+        assert!(napped, "白天依偎在母獸身邊的幼獸應偶爾偎母打盹");
+    }
+
+    #[test]
+    fn juvenile_never_naps_at_night() {
+        // 只在白天：夜間幼獸只靜靜依偎、不打盹（偎母打盹是「白天的日常」，與 210 夜眠以晝夜區隔）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        fawn.id = 2;
+        mgr.animals = vec![mother, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // is_night = true
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Napping { .. }),
+                "夜間幼獸不該偎母打盹，實際 {:?}", f.state);
+        }
+    }
+
+    #[test]
+    fn fawn_never_naps_when_threat_near() {
+        // 威脅永遠優先：母獸身邊的幼獸，只要威脅逼近，連跑多幀都不該打盹（一律先逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut mother = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        mother.id = 1;
+        mother.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        fawn.id = 2;
+        mgr.animals = vec![mother, fawn];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            // 玩家就在幼鹿身旁 40px（< FLEE_RADIUS 180）→ predator_near，幼鹿先逃命、不打盹。
+            mgr.tick(0.1, &[(6040.0, 6000.0)], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Napping { .. }),
+                "威脅逼近時幼鹿不該打盹，實際 {:?}", f.state);
         }
     }
 
