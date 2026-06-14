@@ -602,6 +602,24 @@ const VIGIL_JOIN_PROB: f32 = 0.20;
 /// 自發的 VIGILANCE_PROB(0.06) 之間：別種的警報值得警覺，但不如自己同群可信，故傳得稍慢一些。
 const VIGIL_CROSS_PROB: f32 = 0.12;
 
+// ─── ROADMAP 264：跨物種驚逃（heterospecific panic flight）────────────────────
+// 263 把「警覺」漣漪從同群延伸到混居的異種獵物（一隻狼晃近，鹿、鳥、小獸一起繃緊警戒）；但盤點
+// 下來，掠食者真正撲進 FLEE_RADIUS、警覺化為「逃」的那一刻——209 驚群炸開——卻仍鎖在「同種」：
+// 一隻鹿炸群奔逃時旁邊同種的鹿跟著炸開，緊鄰混居的野鳥、小獸卻視若無睹、照樣低頭。真實草原上不同
+// 獵物混群共處，一隻爆衝奔逃就是給全場最直接的危險信號，旁邊的別種也跟著一哄而散。本切片把 209 的
+// 恐慌連鎖從「同群」延伸到「同處一地的異種獵物」：一隻平靜獵物附近沒有同種夥伴在逃、卻看見
+// CROSS_ALARM_RADIUS 內有**別種**獵物正炸群奔逃，也跟著朝同方向一起炸散——於是一隻狼撲進混群草地
+// 時，警覺先跨物種漾開（263），緊接著奔逃也跨物種炸開，整片不同種獸第一次像一個草原社群般一起繃緊、
+// 一起潰逃，與 263 對成「跨物種戒／跨物種逃」一頭一尾的攻防全套。沿用既有 Fleeing 狀態與 fleeing_snap
+// 快照（無新狀態、無新欄位、無協議／前端改動）；半徑與時長都略小於同種：別種的炸群可信、但隔了物種
+// 一層，傳得稍近、平復稍快。零 LLM、純啟發式、可測、記憶體模式、零持久化。
+/// 別種獵物在此範圍內逃竄會把恐慌傳染給自己——略小於同種 ALARM_RADIUS(220)：別種的炸群可信、但不如
+/// 自己同群，傳得稍近一些（呼應 263 跨物種警戒半徑 VIGIL_ALARM_RADIUS 200 小於同群 ALARM_RADIUS）。
+const CROSS_ALARM_RADIUS: f32 = 180.0;
+/// 被異種恐慌感染的驚逃時長（秒）——略短於同種二手恐慌 ALARM_FLEE_DURATION(3.0)：隔了一層物種的
+/// 三手恐慌平復得更快。仍 ＞ 0，足夠看見一波跨種炸群。
+const CROSS_ALARM_FLEE_DURATION: f32 = 2.5;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -2238,6 +2256,17 @@ impl WildlifeManager {
                         };
                         continue;
                     }
+                    // ROADMAP 264：跨物種驚逃——沒有同種夥伴在逃，但看見緊鄰的別種獵物炸群奔逃，
+                    // 也跟著朝同方向一起炸散（混群共逃；263 跨物種警戒的「逃」之對偶）。半徑與時長都
+                    // 略小於同種：別種的恐慌可信、但隔了物種一層，傳得稍近、平復稍快。
+                    if let Some((vx, vy)) = panic_velocity_from_other_species(
+                        animal_kind, ax, ay, &fleeing_snap, CROSS_ALARM_RADIUS,
+                    ) {
+                        self.animals[i].state = WildlifeState::Fleeing {
+                            vx, vy, flee_timer: CROSS_ALARM_FLEE_DURATION,
+                        };
+                        continue;
+                    }
                 }
             }
 
@@ -2953,6 +2982,30 @@ fn panic_velocity_from_herd(
     let r2 = radius * radius;
     fleeing_snap.iter()
         .filter(|&&(id, k, _, _, _, _)| id != self_id && k == kind)
+        .map(|&(_, _, px, py, vx, vy)| (vx, vy, (px - ax).powi(2) + (py - ay).powi(2)))
+        .filter(|&(_, _, d2)| d2 <= r2)
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(vx, vy, _)| {
+            let len = (vx * vx + vy * vy).sqrt().max(1.0);
+            (vx / len * FLEE_SPEED, vy / len * FLEE_SPEED)
+        })
+}
+
+/// ROADMAP 264：跨物種驚逃——在 `fleeing_snap`（正在逃竄的獵物：id/kind/x/y/vx/vy）中，找離
+/// (ax,ay) 最近、距離在 `radius` 內、且**異種**的逃竄夥伴，回傳其逃竄方向（正規化後乘 FLEE_SPEED）
+/// 作為被感染者的逃竄速度——於是混群裡別種一炸群，自己也跟著朝同方向炸散。與 panic_velocity_from_herd
+/// （限同種）互補；因 fleeing_snap 僅含獵物，異種必為另一種獵物（不含掠食者）。範圍內無異種逃竄者則
+/// `None`。kind 互異已自然排除自己（自己必為同種）。純函式，便於測試。
+fn panic_velocity_from_other_species(
+    kind: WildlifeKind,
+    ax: f32,
+    ay: f32,
+    fleeing_snap: &[(u32, WildlifeKind, f32, f32, f32, f32)],
+    radius: f32,
+) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    fleeing_snap.iter()
+        .filter(|&&(_, k, _, _, _, _)| k != kind)
         .map(|&(_, _, px, py, vx, vy)| (vx, vy, (px - ax).powi(2) + (py - ay).powi(2)))
         .filter(|&(_, _, d2)| d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
@@ -4096,14 +4149,71 @@ mod tests {
             "逃竄夥伴在 ALARM_RADIUS 外不應傳染恐慌，實際 {:?}", c.state);
     }
 
+    // ─── ROADMAP 264：跨物種驚逃（heterospecific panic flight）測試 ──────────────
+    // 註：209 原本「異種恐慌不互傳」的測試（panic_does_not_cross_species）已被本切片取代——
+    // 264 刻意讓混群裡別種的炸群也傳染（263 跨物種警戒的「逃」之對偶）。同種限定的底層 helper
+    // panic_velocity_from_herd 仍排除異種（見 panic_velocity_excludes_self_other_kind_and_out_of_range）；
+    // 跨物種那條改走新的 panic_velocity_from_other_species。
+
     #[test]
-    fn panic_does_not_cross_species() {
-        // 一隻野鳥逃竄、近旁一隻平靜野鹿 → 異種恐慌不互傳，野鹿不炸群。
+    fn cross_species_panic_copies_nearest_fleeing_other_direction() {
+        // 異種逃竄夥伴在範圍內、朝東逃 → 被感染者沿同方向、速度正規化為 FLEE_SPEED。
+        let snap = vec![
+            (1u32, WildlifeKind::WildBird, 100.0, 0.0, FLEE_SPEED, 0.0),
+        ];
+        let (vx, vy) = panic_velocity_from_other_species(WildlifeKind::WildDeer, 0.0, 0.0, &snap, CROSS_ALARM_RADIUS)
+            .expect("近旁有異種逃竄夥伴應被感染");
+        assert!((vx - FLEE_SPEED).abs() < 1e-3 && vy.abs() < 1e-3,
+            "應沿異種夥伴方向（東）以 FLEE_SPEED 逃竄，實際 ({vx},{vy})");
+    }
+
+    #[test]
+    fn cross_species_panic_excludes_same_kind_and_out_of_range() {
+        let snap = vec![
+            (1u32, WildlifeKind::WildDeer, 10.0, 0.0, FLEE_SPEED, 0.0),       // 同種 → 由 from_herd 負責，本函式排除
+            (2u32, WildlifeKind::WildBird, CROSS_ALARM_RADIUS + 50.0, 0.0, FLEE_SPEED, 0.0), // 異種但超範圍 → 排除
+        ];
+        assert!(panic_velocity_from_other_species(WildlifeKind::WildDeer, 0.0, 0.0, &snap, CROSS_ALARM_RADIUS).is_none(),
+            "排除同種與範圍外後應無可感染的異種來源");
+    }
+
+    #[test]
+    fn cross_alarm_radius_is_tighter_than_same_species() {
+        // 鐵律：別種炸群傳得比同群稍近、平復稍快（呼應 263 跨物種警戒半徑小於同群）。
+        assert!(CROSS_ALARM_RADIUS < ALARM_RADIUS, "跨物種驚逃半徑應小於同種 ALARM_RADIUS");
+        assert!(CROSS_ALARM_FLEE_DURATION < ALARM_FLEE_DURATION, "跨物種二手恐慌應比同種更快平復");
+        assert!(CROSS_ALARM_FLEE_DURATION > 0.0, "跨物種驚逃時長仍須 > 0，足以看見一波炸群");
+    }
+
+    #[test]
+    fn fleeing_other_species_panics_calm_neighbor() {
+        // 一隻野鳥炸群奔逃、近旁一隻平靜野鹿（無玩家/捕食者直接威脅）→ 被跨物種恐慌感染、一起炸開。
         let mut mgr = WildlifeManager::new();
         let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
         bird.id = 1;
         bird.state = WildlifeState::Fleeing { vx: FLEE_SPEED, vy: 0.0, flee_timer: FLEE_DURATION };
-        let mut deer = adult_at(WildlifeKind::WildDeer, 5080.0, 5000.0);
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5080.0, 5000.0); // 80px，CROSS_ALARM_RADIUS 內
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 10.0 };
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+
+        let d = mgr.animals.iter().find(|a| a.id == 2).unwrap();
+        match d.state {
+            WildlifeState::Fleeing { vx, .. } => assert!(vx > 0.0, "應沿異種夥伴方向（東）炸開，實際 vx={vx}"),
+            ref s => panic!("平靜異種鄰居應被跨物種恐慌感染轉為 Fleeing，實際 {s:?}"),
+        }
+    }
+
+    #[test]
+    fn distant_other_species_does_not_panic_neighbor() {
+        // 異種逃竄夥伴遠在 CROSS_ALARM_RADIUS 外 → 跨物種恐慌傳不到，平靜的鄰居不應炸群。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Fleeing { vx: FLEE_SPEED, vy: 0.0, flee_timer: FLEE_DURATION };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0 + CROSS_ALARM_RADIUS + 80.0, 5000.0);
         deer.id = 2;
         deer.state = WildlifeState::Resting { rest_timer: 10.0 };
         mgr.animals = vec![bird, deer];
@@ -4112,7 +4222,7 @@ mod tests {
 
         let d = mgr.animals.iter().find(|a| a.id == 2).unwrap();
         assert!(!matches!(d.state, WildlifeState::Fleeing { .. }),
-            "異種不應互傳恐慌，野鹿不應因野鳥逃竄而炸群，實際 {:?}", d.state);
+            "異種逃竄夥伴在 CROSS_ALARM_RADIUS 外不應傳染恐慌，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 210：晝夜作息 測試 ─────────────────────────────────────────
