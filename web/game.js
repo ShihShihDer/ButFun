@@ -8861,6 +8861,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 270：求偶示愛——繁衍將近（207 breed_progress 過半）時，群裡轉向身邊同種夥伴求偶的
+      // 成體（state==="courting"）頭頂浮一枚像心跳般徐徐一脹一縮的 ❤️，讓「兩頭成體依偎著示愛、不久
+      // 那片草地就多了一隻幼獸」這份孕育的前奏一眼看得到——把原本全在幕後默默累積的繁衍第一次攤到
+      // 玩家眼前。與 216 理毛的 💕（無條件日常親暱）對成一對：求偶（❤️）只在新生將至時才浮現。純前端、
+      // 零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、繁衍將近、身邊有同種夥伴時才給）。
+      if (w.state === "courting") {
+        ctx.save();
+        const cbt = Math.abs(Math.sin(now / 480)); // 像心跳般徐徐一脹一縮
+        ctx.globalAlpha = 0.55 + 0.4 * cbt;
+        ctx.font = `${12 + cbt * 2}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("❤️", 8, -22);
+        ctx.restore();
+      }
+
       // ROADMAP 224：野鹿頂角較勁——白天平靜歇息時低頭抵角較勁的成年野鹿（state==="sparring"）頭頂
       // 浮一枚隨頂撞節奏一脹一縮的 💥，讓「兩頭鹿鹿角頂在一起一推一退地較力」一眼看得到——與 216 理毛
       // 的 💕（柔）對成剛柔一對。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、
