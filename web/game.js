@@ -128,9 +128,11 @@
   const CLAY_SPRITE_SCALE = 1.3;
 
   // 黏土停格式動作參數：定格跳階（非平滑）做出 claymation「一格一格」的停格感。
-  const CLAY_STEP_BOB = [0, -2, -3];           // 移動彈跳（定格 3 階循環，像素）
-  const CLAY_STEP_SQUASH = [1.0, 1.04, 0.97];  // 對應水平擠壓（squash/stretch）
-  const CLAY_BREATHE = [1.0, 1.01];            // 站立極輕微呼吸（2 階定格）
+  // 走路＝左右一搖一擺的 waddle（4 階定格）：擺右↘著地 → 過渡↑抬起 → 擺左↙著地 → 過渡↑抬起。
+  const CLAY_STEP_BOB = [0, -3, 0, -3];               // 移動彈跳（4 階：著地時 0、過渡時抬起 -3）
+  const CLAY_STEP_SQUASH = [1.03, 0.99, 1.03, 0.99];  // 水平擠壓（著地略寬、過渡略窄）
+  const CLAY_STEP_TILT = [0.07, 0, -0.07, 0];         // 左右搖擺角（弧度 ~4°），繞腳底旋轉做 waddle
+  const CLAY_BREATHE = [1.0, 1.01];                   // 站立極輕微呼吸（2 階定格）
 
   // drawClaySprite：renderStyle==='clay' 且該 key 黏土圖載到了才畫，否則回傳 false
   // 讓呼叫端 fallback 回原本畫法。x,y 為「世界座標扣相機」後的螢幕座標（呼叫端算好）。
@@ -150,15 +152,16 @@
     const s = (size || 40) * CLAY_SPRITE_SCALE;
     const now = opts.now != null ? opts.now : performance.now();
     const animate = opts.animate && !reduceMotion;
-    let bob = 0, sqx = 1, sqy = 1;
+    let bob = 0, sqx = 1, sqy = 1, tilt = 0;
     if (animate) {
       if (opts.moving) {
-        // 移動：定格跳階彈跳 + 擠壓拉伸。用 walk 相位優先（與伺服器步伐同步），否則用時間。
+        // 移動：定格跳階彈跳 + 擠壓拉伸 + 左右搖擺。用 walk 相位優先（與伺服器步伐同步），否則用時間。
         const phase = opts.walk != null ? Math.floor(opts.walk) : Math.floor(now / 120);
         const idx = ((phase % CLAY_STEP_BOB.length) + CLAY_STEP_BOB.length) % CLAY_STEP_BOB.length;
         bob = CLAY_STEP_BOB[idx];
         sqx = CLAY_STEP_SQUASH[idx];
         sqy = 2 - sqx; // 體積守恆：橫擠則縱拉
+        tilt = CLAY_STEP_TILT[idx]; // 左右搖擺
       } else {
         // 站立：極輕微定格呼吸（縱向）。
         const idx = Math.floor(now / 600) % CLAY_BREATHE.length;
@@ -179,6 +182,12 @@
     const dw = s * sqx;
     const dh = s * sqy;
     ctx.save();
+    // 黏土走路 waddle：繞腳底樞紐 (x, y) 左右搖擺旋轉（只在移動時 tilt≠0）。
+    if (tilt) {
+      ctx.translate(x, y);
+      ctx.rotate(tilt);
+      ctx.translate(-x, -y);
+    }
     if (opts.flip) {
       ctx.translate(x, 0);
       ctx.scale(-1, 1);
