@@ -190,6 +190,10 @@ const BREED_THRESHOLD_SECS: f32 = 90.0;
 const MATURE_DURATION_SECS: f32 = 120.0;
 /// 剛誕生幼獸的相對體型（成體為 1.0）——前端據此把幼獸畫小一號。
 const JUVENILE_MIN_SCALE: f32 = 0.45;
+/// ROADMAP 272：成年禮——幼獸成熟度剛長滿、長成成體的那一刻，原地舒展定格的時長區間（隨機）。
+/// 刻意短於守靈／求偶：成年是一瞬的蛻變雀躍，不是長段的駐立。
+const MATURE_CELEBRATE_MIN: f32 = 1.5;
+const MATURE_CELEBRATE_MAX: f32 = 3.0;
 
 // ─── ROADMAP 208：幼獸依偎母獸（親子跟隨）───────────────────────────────────────
 // 承接 207（幼獸誕生）：剛出生的幼獸不再各自亂晃，而會主動依偎、跟隨最近的同種成體
@@ -1146,6 +1150,11 @@ enum WildlifeState {
     /// 就起身回到漫遊；威脅一旦逼近一律優先逃竄（哀悼永遠讓位逃命）。與 270 求偶（❤️）對成生死一對：
     /// 求偶是孕育前奏、守靈是殞落餘韻。
     Mourning { mourn_timer: f32 },
+    /// ROADMAP 272：成年獨立——幼獸成熟度剛跨過 1.0、長成成體的那一刻，原地舒展定格一小段「成年禮」
+    /// （前端畫成頭頂浮一枚輕快閃爍的 ✨）。原地不動（不更新座標）、mature_timer 倒數，到期就起身漫遊、
+    /// 從此正式投入成體生活（求偶／繁衍／放哨…）；威脅一旦逼近一律優先逃竄（成年禮永遠讓位逃命）。
+    /// 補上 207 繁衍→208 依偎照養→（本切片）長成→270 求偶→271 守靈這條生命循環裡原本唯一無聲的「長成」一環。
+    Maturing { mature_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1522,6 +1531,39 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 207/272：幼獸隨時間長大，成熟度趨近 1.0（體型隨之變大）；ROADMAP 272：成熟度剛跨過
+    /// 1.0、長成成體的那一刻，轉入「成年禮」原地舒展定格一小段（`Maturing`，前端畫成頭頂浮 ✨）再
+    /// 起身投入成體生活。只在「由幼轉成」的那一幀觸發一次（加之前 <1.0、加之後已滿）；非幼獸（成熟度
+    /// 已滿）呼叫即提早返回、無作用。純邏輯、可測：把繁衍系統裡原本唯一無聲的「長成」一刻攤到玩家眼前。
+    fn advance_maturity(&mut self, dt: f32, rng: &mut StdRng) {
+        if self.maturity >= 1.0 {
+            return;
+        }
+        let before = self.maturity;
+        self.maturity = (self.maturity + dt / MATURE_DURATION_SECS).min(1.0);
+        if before < 1.0 && self.maturity >= 1.0 {
+            let timer = rng.gen_range(MATURE_CELEBRATE_MIN..=MATURE_CELEBRATE_MAX);
+            self.state = WildlifeState::Maturing { mature_timer: timer };
+        }
+    }
+
+    /// ROADMAP 272：成年獨立——成年禮進行中（`Maturing`）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）起身漫遊、正式投入成體生活。只在 `Maturing` 狀態下生效（呼叫端已確保
+    /// 此隻平靜；威脅逼近時呼叫端不會走到此分支、改逃竄）。與 tick_court／tick_mourn 同模式：舒展定格的
+    /// 視覺由前端演繹（頭頂浮 ✨），後端只穩定地推進計時。
+    fn tick_mature(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Maturing { mature_timer } = self.state {
+            let remaining = mature_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Maturing { mature_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 224：野鹿頂角較勁——較勁中（Sparring）原地不動、倒數計時；到期就挑下一個漫遊
     /// 目標（沿用群聚拉力 herd_anchor）分開起身漫遊。只在 Sparring 狀態下生效（呼叫端已確保
     /// 此隻為成年野鹿、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
@@ -1818,6 +1860,7 @@ impl Wildlife {
             WildlifeState::CommensalForaging { .. } => "foraging",
             WildlifeState::Mobbing { .. }   => "mobbing",
             WildlifeState::Mourning { .. }  => "mourning",
+            WildlifeState::Maturing { .. }  => "maturing",
         }
     }
 }
@@ -1995,6 +2038,7 @@ impl WildlifeManager {
         }
 
         // ── Phase 1: 死亡倒數 + 重生 + 親近度衰減（ROADMAP 205）─────────────────
+        let rng = &mut self.rng;
         for a in &mut self.animals {
             if !a.alive {
                 a.respawn_timer -= dt;
@@ -2004,9 +2048,9 @@ impl WildlifeManager {
                     a.familiarity = (a.familiarity - FAMILIARITY_DECAY_PER_SEC * dt).max(0.0);
                 }
                 // ROADMAP 207：幼獸隨時間長大，成熟度趨近 1.0（體型隨之變大）。
-                if a.maturity < 1.0 {
-                    a.maturity = (a.maturity + dt / MATURE_DURATION_SECS).min(1.0);
-                }
+                // ROADMAP 272：成熟度剛長滿、長成成體的那一刻，轉入「成年禮」舒展定格一小段（Maturing，
+                // 頭頂浮 ✨），把生命循環裡原本唯一無聲的「長成」一刻攤到玩家眼前。
+                a.advance_maturity(dt, rng);
             }
         }
         let respawn_ready: Vec<usize> = self.animals.iter().enumerate()
@@ -2891,6 +2935,15 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_wake(dt, herd_anchor, rng);
+                    }
+                } else if matches!(a.state, WildlifeState::Maturing { .. }) {
+                    // ROADMAP 272：成年禮進行中——威脅一旦逼近就立刻中斷改逃竄（剛長成的成體遇險先逃命），
+                    // 否則原地舒展定格、計時倒數，到期才起身正式投入成體生活（漫遊／求偶／繁衍…）。
+                    // 與 219 破曉伸展（Waking）同模式：一段短暫的定格，遇險即讓位逃命。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_mature(dt, herd_anchor, rng);
                     }
                 } else if matches!(a.state, WildlifeState::Vigilant { .. }) && !threat_near {
                     // ROADMAP 251：已在警戒凝望中且威脅未逼進 FLEE_RADIUS——把這一段戒備盯完（原地
@@ -4644,6 +4697,56 @@ mod tests {
         let adult = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
         assert!(!adult.is_juvenile(), "成熟度 1 不應為幼獸");
         assert!((adult.scale() - 1.0).abs() < 1e-4, "成體體型應為 1.0");
+    }
+
+    // ─── ROADMAP 272：成年獨立（蛻變成年禮）測試 ──────────────────────────────
+
+    #[test]
+    fn juvenile_crossing_maturity_enters_celebration() {
+        let mut rng = make_rng();
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        // 推到「差一步就滿」，再前進一個夠大的 dt 跨過 1.0。
+        w.maturity = 1.0 - 1e-3;
+        w.advance_maturity(MATURE_DURATION_SECS, &mut rng); // 必跨過 1.0
+        assert!(!w.is_juvenile(), "成熟度應已長滿、不再是幼獸");
+        assert!(matches!(w.state, WildlifeState::Maturing { .. }),
+            "由幼轉成的那一刻應轉入成年禮 Maturing，實際 {:?}", w.state);
+        assert_eq!(w.state_str(), "maturing");
+    }
+
+    #[test]
+    fn maturing_celebration_returns_to_wandering() {
+        let mut rng = make_rng();
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.maturity = 1.0 - 1e-3;
+        w.advance_maturity(MATURE_DURATION_SECS, &mut rng);
+        assert!(matches!(w.state, WildlifeState::Maturing { .. }));
+        // 成年禮計時耗盡後起身漫遊、投入成體生活。
+        w.tick_mature(MATURE_CELEBRATE_MAX + 1.0, None, &mut rng);
+        assert!(matches!(w.state, WildlifeState::Wandering { .. }),
+            "成年禮結束應起身漫遊，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn advance_maturity_no_celebration_mid_growth() {
+        let mut rng = make_rng();
+        let mut w = juvenile_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.maturity = 0.2;
+        w.advance_maturity(0.5, &mut rng); // 加完仍 < 1.0
+        assert!(w.is_juvenile(), "仍在成長中應仍是幼獸");
+        assert!(!matches!(w.state, WildlifeState::Maturing { .. }),
+            "尚未長滿不應觸發成年禮，實際 {:?}", w.state);
+    }
+
+    #[test]
+    fn advance_maturity_noop_when_already_adult() {
+        let mut rng = make_rng();
+        let mut w = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        w.state = WildlifeState::Resting { rest_timer: 5.0 };
+        w.advance_maturity(1.0, &mut rng);
+        assert!((w.maturity - 1.0).abs() < 1e-6, "成體成熟度應維持 1.0");
+        assert!(matches!(w.state, WildlifeState::Resting { .. }),
+            "已是成體者再呼叫不應觸發成年禮，實際 {:?}", w.state);
     }
 
     #[test]
