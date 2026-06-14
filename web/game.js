@@ -8666,6 +8666,13 @@
       const isForaging = w.kind === "wild_bird" && w.state === "foraging";
       const foragePeck = isForaging ? 2 + Math.abs(Math.sin(now / 110)) * 3 : 0; // 一啄一啄地點頭撿蟲
 
+      // ROADMAP 271：守靈駐立——默哀中的成體（state==="mourning"）走到夥伴倒下處低頭佇立：身體
+      // 微微壓低（埋首默哀），偶爾一陣極輕的起伏（像低首呼吸），讀起來是「靜靜垂首佇立」而非平日昂首。
+      // 鹿/狼/狐/鳥/小獸全種通用（誰都會為同伴駐足）。純前端、零協議欄位：直接讀伺服器廣播的 w.state
+      //（後端只在掠食者散去、平靜、附近有同種夥伴哀悼地時才給）。
+      const isMourning = w.state === "mourning";
+      const mournLower = isMourning ? 2.5 + Math.abs(Math.sin(now / 900)) * 1.2 : 0; // 垂首壓低、極緩的低首呼吸
+
       // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
       //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
       // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
@@ -8694,6 +8701,7 @@
       if (feastLower) ctx.translate(0, feastLower); // ROADMAP 230：圍食：把狼身更壓低、低頭埋食
       if (scavPeck) ctx.translate(0, scavPeck); // ROADMAP 252：食腐：把鳥身一啄一啄地往下點啄屍骸
       if (foragePeck) ctx.translate(0, foragePeck); // ROADMAP 265：跟食：把鳥身一啄一啄地往下點撿蟲
+      if (mournLower) ctx.translate(0, mournLower); // ROADMAP 271：守靈：把身體壓低、垂首默哀
       if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
@@ -8874,6 +8882,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("❤️", 8, -22);
+        ctx.restore();
+      }
+
+      // ROADMAP 271：守靈駐立——掠食者散去、草原重歸平靜後，走到夥伴倒下處駐足默哀的成體
+      // （state==="mourning"）頭頂浮一枚極緩明滅、像低首靜默般的 🥀，讓「一頭鹿緩緩走回那片空地、
+      // 靜靜垂首佇立」這份殞落之後的餘韻一眼看得到——生命的循環第一次連「終點」也有了看得見的一幕。
+      // 與 270 求偶的 ❤️（孕育前奏）對成生死一對：求偶在新生將至時浮現、守靈在殞落之後浮現。純前端、
+      // 零協議欄位：直接讀伺服器廣播的 w.state（後端只在掠食者散去、平靜、附近有同種夥伴哀悼地時才給）。
+      if (w.state === "mourning") {
+        ctx.save();
+        const mbt = Math.abs(Math.sin(now / 1100)); // 極緩明滅，像低首靜默的呼吸
+        ctx.globalAlpha = 0.4 + 0.35 * mbt;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🥀", 8, -22);
         ctx.restore();
       }
 
