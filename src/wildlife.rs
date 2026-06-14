@@ -788,6 +788,25 @@ const MARK_PROB: f32 = 0.03;
 const MARK_DURATION_MIN: f32 = 1.5;
 const MARK_DURATION_MAX: f32 = 3.0;
 
+// ─── ROADMAP 294：聞味讀界（counter-marking sniff／犬科聞到同類剛留下的領地記號而停下讀味回應）──
+// 293 領地嗅標給了掠食者「留味」這一筆：野狼／野狐白天偶爾停下、以一滴氣味記號標記地盤（💧），與 225
+// 嗅蹤（👃，循別人留的舊味跡走）對成「讀味／留味」一對。可那記留下的氣味記號至今無人「讀」——一隻狼
+// 標完就走，旁邊另一隻同類視若無睹，留味只是個自說自話的單向動作。本切片把這條線補成真正的雙向社交：
+// 白天平靜、無獵可追的掠食者，若「聞到」附近 SNIFF_SEE_RADIUS 內有同類正留下一記新鮮的領地記號
+//（marking_snap：本幀正在 Marking 的掠食者座標快照），便偶爾以 SNIFF_PROB 停下、抬頭一嗅一嗅地讀這記
+// 界味、辨認「這是誰的地盤」（新增 Sniffing 狀態、頭頂浮一枚隨一嗅一頓上下輕動的 👃）。讓 293 留下的
+// 記號第一次被另一個個體真正讀到、回應——直接回應 reviewer 一路要的「讓不同個體真的彼此牽動」。
+/// 一隻掠食者「聞到」同類新鮮領地記號的感知半徑——略大於 287 碰鼻問安 GREET_RADIUS：氣味比碰鼻傳得遠
+/// 一些（老遠就嗅得到界味），但仍是貼近的鄰里範圍（不是全圖都聞得到）。
+const SNIFF_SEE_RADIUS: f32 = 220.0;
+/// 聞到同類新鮮記號後本幀停下讀味的機率——與 293 嗅標（MARK_PROB 0.03）同量級偏低：讀味是偶爾的回應，
+/// 多數時候即便附近有同類在標、這隻仍照常巡遊（不是一聞到就必停）。
+const SNIFF_PROB: f32 = 0.045;
+/// 一次讀味的最短／最長時長（秒）——湊上去一嗅一嗅辨認界味，與 293 嗅標（1.5~3.0s）同量級的短促停頓。
+/// 期間威脅一旦逼近一律優先停下奔逃（讀味永遠讓位逃命，由上游 prey_snap／flee 守衛把關）。
+const SNIFF_DURATION_MIN: f32 = 1.5;
+const SNIFF_DURATION_MAX: f32 = 3.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1703,6 +1722,14 @@ enum WildlifeState {
     /// 狩獵。與 225 嗅蹤（👃，循著別人留的氣味讀味）對成「讀味／留味」一對；與 291 舔毛（👅，清潔自理）
     /// 區隔——嗅標是宣示領地的留味記號、非自我打理。野狼／野狐二者皆會（與 285 蜷睡／291 舔毛同為兩種犬科共有）。
     Marking { mark_timer: f32 },
+    /// ROADMAP 294：聞味讀界——白天無獵可追的平靜掠食者（野狼／野狐，二者皆會）「聞到」附近同類正留下一記
+    /// 新鮮的領地記號（marking_snap）時，偶爾湊上前停下、抬頭一嗅一嗅地讀這記界味、辨認是誰的地盤（前端畫成
+    /// 原地不動、頭頂浮一枚 👃）。原地不動（不更新座標）、sniff_timer 倒數，讀完再起身回到巡遊（朝家附近的下一個
+    /// 漫遊目標，與 tick_mark／tick_lick／tick_doze 同模式）。獵物一旦進入搜尋範圍，掠食者 phase 在讀味分支之前
+    /// 就已改走狩獵——讀味永遠讓位狩獵。與 293 嗅標（💧，留下記號）對成「留味／讀味」的雙向社交一對：一個留、
+    /// 一個讀；與 225 嗅蹤（👃，野狼循一條舊味跡低頭緩步走）刻意區隔——讀界是「原地讀同類剛留下的新鮮記號」的
+    /// 一次回應、非循舊跡走，且野狼／野狐二者皆會（225 只野狼）。
+    Sniffing { sniff_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2569,6 +2596,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 294：聞味讀界——讀味中（Sniffing）原地不動、倒數計時；讀完（sniff_timer 耗盡）就起身回到巡遊
+    /// （朝家附近的下一個漫遊目標，與 tick_mark／tick_lick／tick_doze 同模式）。只在 Sniffing 狀態下生效（呼叫端
+    /// 已確保此隻為掠食者、白天、無獵可追的平靜空檔且附近有同類新鮮記號；獵物一旦出現，掠食者 phase 在更前面的
+    /// 獵物搜尋就已改走狩獵，不會走到此分支——讀味永遠讓位狩獵）。
+    fn tick_sniff(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Sniffing { sniff_timer } = self.state {
+            let remaining = sniff_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Sniffing { sniff_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -2777,6 +2820,7 @@ impl Wildlife {
             WildlifeState::Pecking { .. }    => "pecking",
             WildlifeState::Gleaning { .. }   => "gleaning",
             WildlifeState::Marking { .. }    => "marking",
+            WildlifeState::Sniffing { .. }   => "sniffing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3151,6 +3195,16 @@ impl WildlifeManager {
             .map(|a| (a.id, a.kind, a.x, a.y))
             .collect();
 
+        // ROADMAP 294：聞味讀界——本幀「正留下一記新鮮領地記號的掠食者」座標快照（野狼／野狐，Marking 狀態）。
+        // 供下方另一隻平靜掠食者「聞到」附近 SNIFF_SEE_RADIUS 內這記新鮮界味、湊上前停下讀味（Sniffing）。
+        // 只認當幀正在 Marking 的個體：讀的是「同類剛留下／正留下的新鮮記號」（標記者一起身離開 Marking，此快照
+        // 即不含牠）。讀味者自身在 Resting/Wandering（非 Marking），不會把自己算進來，故無需另行排除自己。
+        let marking_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Predator
+                && matches!(a.state, WildlifeState::Marking { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -3455,6 +3509,11 @@ impl WildlifeManager {
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故嗅標只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_mark(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Sniffing { .. }) {
+                                // ROADMAP 294：已在聞味讀界中——把這一段讀味走完（原地不動、計時倒數，讀完
+                                // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故讀味只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_sniff(dt, rng);
                             } else if matches!(a.state, WildlifeState::Dozing { .. }) {
                                 // ROADMAP 285：已在蜷睡中——把這一覺睡完（原地不動、計時倒數，睡夠了就起身
                                 // 回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故蜷睡只在無獵可追的
@@ -3579,6 +3638,24 @@ impl WildlifeManager {
                                 // 醒著的領地動作、蜷睡是睡著補眠，醒著的動作優先）。各標各的、不傳染。夜間改走夜嚎分支。
                                 let timer = rng.gen_range(MARK_DURATION_MIN..=MARK_DURATION_MAX);
                                 a.state = WildlifeState::Marking { mark_timer: timer };
+                            } else if !is_night
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && nearest_in_range(a.x, a.y, &marking_snap, SNIFF_SEE_RADIUS).is_some()
+                                && rng.gen::<f32>() < SNIFF_PROB
+                            {
+                                // ROADMAP 294：白天無獵可追的平靜掠食者——「聞到」附近有同類正留下一記新鮮的
+                                // 領地記號（marking_snap 在 SNIFF_SEE_RADIUS 內）時，偶爾湊上前停下、抬頭一嗅一嗅地
+                                // 讀這記界味、辨認是誰的地盤（頭頂浮一枚 👃）。把 293 嗅標（💧，留下記號）那筆原本
+                                // 自說自話的單向留味補成真正的雙向社交——留下的記號第一次被另一個個體讀到、回應，
+                                // 與 293 對成「留味／讀味」一對。野狼／野狐二者皆會（與 285 蜷睡／291 舔毛／293 嗅標
+                                // 同為兩種犬科共有的白晝閒置底色）。與 225 嗅蹤（👃，野狼循一條舊味跡低頭緩步走）
+                                // 刻意區隔：讀界是「原地讀同類剛留下的新鮮記號」的一次回應、非循舊跡走，且二者皆會。
+                                // 排在嗅標之後、蜷睡之前：物種專屬活動／問安／舔毛／自身嗅標優先，沒起意去做這些、
+                                // 卻聞到同類新鮮記號時才湊去讀一讀界，再沒有才退回蜷睡補眠。需附近真有同類在標才起意
+                                //（無記號可讀則跳過）。夜間改走夜嚎分支。獵物一旦進入搜尋範圍，更前面已改走狩獵——
+                                // 讀味永遠讓位狩獵。
+                                let timer = rng.gen_range(SNIFF_DURATION_MIN..=SNIFF_DURATION_MAX);
+                                a.state = WildlifeState::Sniffing { sniff_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -10984,6 +11061,154 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "嗅標中發現獵物應立刻改去狩獵，實際 {:?}", f.state
+        );
+    }
+
+    // ─── ROADMAP 294：聞味讀界（counter-marking sniff／犬科讀同類剛留下的領地記號）──────
+    #[test]
+    fn tick_sniff_holds_position_while_timer_remaining() {
+        // 讀味進行中：原地不動（座標不變）、計時遞減、狀態維持 Sniffing。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Sniffing { sniff_timer: 2.0 };
+        wolf.tick_sniff(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Sniffing { sniff_timer } => {
+                assert!((sniff_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("讀味未到期應維持 Sniffing，實際 {:?}", wolf.state),
+        }
+        assert!((wolf.x - 5000.0).abs() < 1e-6 && (wolf.y - 5000.0).abs() < 1e-6, "讀味中應原地不動");
+    }
+
+    #[test]
+    fn tick_sniff_returns_to_wander_when_timer_expires() {
+        // 讀味到期：起身回到巡遊。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Sniffing { sniff_timer: 0.05 };
+        fox.tick_sniff(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(fox.state, WildlifeState::Wandering { .. }), "讀味到期應回巡遊，實際 {:?}", fox.state);
+    }
+
+    #[test]
+    fn tick_sniff_noop_on_other_state() {
+        // 防呆：非 Sniffing 狀態呼叫 tick_sniff 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Resting { rest_timer: 3.0 };
+        wolf.tick_sniff(0.1, &mut rng);
+        assert!(matches!(wolf.state, WildlifeState::Resting { .. }), "非讀味狀態呼叫 tick_sniff 不該改狀態");
+    }
+
+    #[test]
+    fn sniffing_state_str_is_sniffing() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Sniffing { sniff_timer: 1.0 };
+        assert_eq!(fox.state_str(), "sniffing");
+    }
+
+    #[test]
+    fn prey_never_sniffs_a_mark() {
+        // 物種專屬：讀味只發生在掠食者 phase——平靜獵物即便身邊有同類掠食者剛留下記號，連跑數百幀都不該進入
+        // Sniffing。把鹿放在 FLEE_RADIUS(180) 外、SNIFF_SEE_RADIUS(220) 內（200px），證明牠不沾讀味是「物種
+        // 不對」而非「離記號太遠」。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0); // 持續標記的吸引源（野狐不獵鹿）
+        fox.id = 1;
+        fox.state = WildlifeState::Marking { mark_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5200.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Sniffing { .. }), "獵物不該讀味，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn predator_does_not_sniff_without_a_marking_peer() {
+        // 需附近真有同類在留味才起意：孤身野狐（場上沒有任何正在 Marking 的同類）連跑多幀都不該進入 Sniffing。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(f.state, WildlifeState::Sniffing { .. }), "無同類留味時不該讀味");
+        }
+    }
+
+    #[test]
+    fn calm_predator_eventually_sniffs_a_fresh_mark() {
+        // 白天無獵可追：一隻平靜野狐身邊有另一隻同類正留下一記新鮮記號（SNIFF_SEE_RADIUS 內持續 Marking）、
+        // 無獵物——連跑多幀後牠應有機會湊上前讀這記界味（進入 Sniffing）。用同為野狐避開「野狐避狼(260)／群狼
+        // 問安(287)」等其他鄰里反應的干擾。
+        let mut mgr = WildlifeManager::new();
+        let mut marker = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        marker.id = 1;
+        marker.state = WildlifeState::Marking { mark_timer: 1.0e9 }; // 持續留味當吸引源
+        let mut reader = adult_at(WildlifeKind::WildFox, 5100.0, 5000.0); // 100px < SNIFF_SEE_RADIUS(220)
+        reader.id = 2;
+        reader.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![marker, reader];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut sniffed = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let r = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(r.state, WildlifeState::Sniffing { .. }) {
+                sniffed = true;
+                break;
+            }
+        }
+        assert!(sniffed, "白天平靜、身邊有同類留下新鮮記號的野狐應偶爾湊上前讀味");
+    }
+
+    #[test]
+    fn predator_does_not_sniff_at_night() {
+        // 晝夜區隔：讀味只在白天起意（夜間掠食者改走夜嚎分支）——夜裡即便身邊有同類在留味，連跑多幀都不該
+        // 進入 Sniffing。
+        let mut mgr = WildlifeManager::new();
+        let mut marker = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        marker.id = 1;
+        marker.state = WildlifeState::Marking { mark_timer: 1.0e9 };
+        let mut reader = adult_at(WildlifeKind::WildFox, 5100.0, 5000.0);
+        reader.id = 2;
+        reader.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![marker, reader];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let r = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(!matches!(r.state, WildlifeState::Sniffing { .. }), "夜間掠食者不該讀味，實際 {:?}", r.state);
+        }
+    }
+
+    #[test]
+    fn sniffing_predator_wakes_to_hunt_nearby_prey() {
+        // 讀味永遠讓位狩獵：讀味中的野狐一旦有可獵的小動物進入搜尋範圍，立刻改去狩獵（非繼續讀）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0); // 120px < POUNCE_RANGE(200)
+        critter.id = 100;
+        critter.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 101;
+        fox.state = WildlifeState::Sniffing { sniff_timer: 1.0e9 }; // 讀得正起勁
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "讀味中發現獵物應立刻改去狩獵，實際 {:?}", f.state
         );
     }
 
