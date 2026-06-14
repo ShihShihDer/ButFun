@@ -722,6 +722,17 @@ const MOB_HARASS_RADIUS: f32 = 130.0;
 const MOB_DURATION_MIN: f32 = 3.0;
 const MOB_DURATION_MAX: f32 = 6.0;
 
+// ─── ROADMAP 268：跨物種共鳴圍攻（混群一起把威脅攆走／heterospecific mobbing）──────
+// 267 群鳥鼓譟驅敵只限野鳥；本切片把圍攻外擴到「同處一地的異種獵物」：平靜的小動物若「看見」
+// 身邊已有鳥／獸正圍攻鼓譟、又自己看得到那頭閒晃掠食者，便也跟著加入一同攆牠（複用 267 Mobbing
+// 狀態與安全界線）。承接 263 跨物種戒→264 跨物種逃→268 跨物種驅敵，補齊跨物種反應三部曲。
+/// 小動物「看見」附近已有鳥／獸正圍攻的半徑——略小於野鳥自身偵測掠食者的 MOB_SEE_RADIUS(240)，
+/// 與 264 跨物種驚逃 CROSS_ALARM_RADIUS(180＜同種 220) 同手法（跨了物種一層，傳得稍近一些）。
+const CROSS_MOB_RADIUS: f32 = 180.0;
+/// 小動物看見鳥群已圍上便被牽動加入的逐幀機率——高於野鳥自發起意圍攻的 MOB_PROB(0.02)（鳥群已壯著膽
+/// 鬧上去、跟著加入比從零起意容易），但仍逐幀低機率，故小動物由近而遠一隻隻加入、圍攻像漣漪般擴開。
+const CROSS_MOB_PROB: f32 = 0.035;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -1895,12 +1906,16 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
-        // ROADMAP 267：群鳥鼓譟驅敵——本幀（起始時）「正在圍攻鼓譟」(Mobbing) 的野鳥座標快照，供下方
-        // 掠食者決策讀到「身邊有幾隻鳥正圍著我鬧」（mob_pressure_center）而被擾得起身走開。刻意在變更前
-        // 取一次（反映上一幀的圍攻）：掠食者本幀讀到、走開，鳥本幀（Phase 4）再依當下情勢續圍/散去——一
-        // 幀延遲、自然，與既有 defending_snap/howling_snap 等同手法。
+        // ROADMAP 267：群鳥鼓譟驅敵——本幀（起始時）「正在圍攻鼓譟」(Mobbing) 的圍攻者座標快照，供下方
+        // 掠食者決策讀到「身邊有幾隻正圍著我鬧」（mob_pressure_center）而被擾得起身走開。刻意在變更前
+        // 取一次（反映上一幀的圍攻）：掠食者本幀讀到、走開，圍攻者本幀（Phase 4）再依當下情勢續圍/散去——
+        // 一幀延遲、自然，與既有 defending_snap/howling_snap 等同手法。
+        // ROADMAP 268：跨物種共鳴圍攻——納入野鳥＋小動物（凡正在 Mobbing 者）：既供平靜的小動物「看見
+        // 鳥群已圍上」而被牽動加入（cross_mob_target），也讓加入的小動物順勢被 mob_pressure_center 算進
+        // 壓力（鳥獸合力湊 quorum 攆走掠食者）。圍攻鏈仍永遠由鳥靠 flock_quorum 起頭、小動物只能跟上。
         let mobbing_snap: Vec<(f32, f32)> = self.animals.iter()
-            .filter(|a| a.alive && a.kind == WildlifeKind::WildBird
+            .filter(|a| a.alive
+                && matches!(a.kind, WildlifeKind::WildBird | WildlifeKind::SmallCritter)
                 && matches!(a.state, WildlifeState::Mobbing { .. }))
             .map(|a| (a.x, a.y))
             .collect();
@@ -2737,11 +2752,13 @@ impl WildlifeManager {
                         let grazer = nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_FOLLOW_RADIUS);
                         a.tick_commensal(dt, grazer, rng);
                     }
-                } else if is_bird && matches!(a.state, WildlifeState::Mobbing { .. }) {
+                } else if matches!(a.state, WildlifeState::Mobbing { .. }) {
                     // ROADMAP 267：已在圍攻鼓譟中——只要那頭被攆的掠食者還閒晃在 MOB_SEE_RADIUS 內
                     //（loiter_pred_snap），就重鎖最近的牠繼續俯衝鼓譟、計時倒數（到期散去歇息）；牠一旦
-                    // 轉入主動狩獵就會離開 loiter 快照，此時若已逼到 FLEE_RADIUS 內（真的衝著鳥來）便立刻
-                    // 拍翅逃竄（圍攻永遠讓位逃命），否則（掠食者走遠了）鼓譟收場、散去歇口氣。
+                    // 轉入主動狩獵就會離開 loiter 快照，此時若已逼到 FLEE_RADIUS 內（真的衝著來）便立刻
+                    // 逃竄（圍攻永遠讓位逃命），否則（掠食者走遠了）鼓譟收場、散去歇口氣。
+                    // ROADMAP 268：拿掉 is_bird 守門——加入圍攻的小動物（跨物種共鳴）沿用同一支 tick_mob，
+                    // 俯衝重鎖／轉獵逃竄／走遠散去的邏輯本就與物種無關（只有鳥／獸會進入 Mobbing 狀態）。
                     if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &loiter_pred_snap, MOB_SEE_RADIUS) {
                         a.tick_mob(dt, Some((tx, ty)), rng);
                     } else if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
@@ -2855,6 +2872,24 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_nibble(dt, herd_anchor, rng);
+                    }
+                } else if is_critter
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && cross_mob_target(a.x, a.y, &mobbing_snap, &loiter_pred_snap).is_some()
+                    && rng.gen::<f32>() < CROSS_MOB_PROB
+                {
+                    // ROADMAP 268：跨物種共鳴圍攻——白天平靜的小動物若「看見」身邊 CROSS_MOB_RADIUS 內
+                    // 已有鳥／獸正圍攻鼓譟（mobbing_snap），又自己也看得到那頭閒晃掠食者（loiter_pred_snap
+                    // 在 MOB_SEE_RADIUS 內、尚未逼到 FLEE_RADIUS——threat_near 為偽），便以 CROSS_MOB_PROB
+                    // 被牽動、複用 267 Mobbing 狀態一同俯衝圍攻（鎖定最近那頭閒晃掠食者，頭頂浮 😡）。逐幀
+                    // 低機率觸發 → 圍攻像漣漪般在混群間由近而遠擴開（仿 264 跨物種驚逃）。排在啃咬之前：
+                    // 身邊有鳥群正鬧著攆掠食者時，跟著加入的急迫凌駕悠閒的撿食。掠食者一旦逼進 FLEE_RADIUS
+                    // （threat_near 為真）此分支即短路、改走逃竄——圍攻永遠讓位逃命（小動物本是野狐的獵物）。
+                    if let Some((tx, ty)) = cross_mob_target(a.x, a.y, &mobbing_snap, &loiter_pred_snap) {
+                        let timer = rng.gen_range(MOB_DURATION_MIN..=MOB_DURATION_MAX);
+                        a.state = WildlifeState::Mobbing { target_x: tx, target_y: ty, mob_timer: timer };
                     }
                 } else if is_critter
                     && !is_night
@@ -3303,6 +3338,17 @@ fn is_mobbable_predator(state: &WildlifeState) -> bool {
         | WildlifeState::Howling { .. }
         | WildlifeState::Pouncing { .. }
         | WildlifeState::Tracking { .. })
+}
+
+/// ROADMAP 268：跨物種共鳴圍攻判定——平靜的小動物是否「看得到一場該加入的圍攻」：身邊
+/// `CROSS_MOB_RADIUS` 內有鳥／獸正圍攻鼓譟（`mobbing` 座標快照非空），且自己也「看見」`MOB_SEE_RADIUS`
+/// 內有那頭閒晃掠食者（`loiter_pred` 快照）。兩者皆備才回傳要圍攻的那頭掠食者座標（最近一頭，當圍攻目標）；
+/// 缺一即 `None`（沒看見鳥群圍上／沒看見可攆的閒晃掠食者就不起意）。純函式（吃兩份快照），便於測試。
+fn cross_mob_target(x: f32, y: f32, mobbing: &[(f32, f32)], loiter_pred: &[(f32, f32)]) -> Option<(f32, f32)> {
+    if nearest_in_range(x, y, mobbing, CROSS_MOB_RADIUS).is_none() {
+        return None;
+    }
+    nearest_in_range(x, y, loiter_pred, MOB_SEE_RADIUS)
 }
 
 /// ROADMAP 267：「數量壯膽」判定——位於 (x,y) 的野鳥在 `radius` 內是否有 ≥`quorum` 隻同種同伴
@@ -6496,6 +6542,76 @@ mod tests {
         let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(w.state, WildlifeState::Digesting { .. }), "進食中的掠食者不該被圍攻拉走，實際 {:?}", w.state);
         assert!((w.x - 5000.0).abs() < 1e-3 && (w.y - 5000.0).abs() < 1e-3, "進食中的掠食者應原地不動");
+    }
+
+    // ─── ROADMAP 268：跨物種共鳴圍攻 ───────────────────────────────────────────
+    #[test]
+    fn cross_mob_target_needs_both_a_mob_and_a_loiterer() {
+        let here = (5000.0_f32, 5000.0_f32);
+        // 身邊有鳥群圍攻（CROSS_MOB_RADIUS 內）＋自己看得到閒晃掠食者（MOB_SEE_RADIUS 內）→ 回傳該掠食者座標。
+        let mobbing = vec![(5050.0, 5000.0)];
+        let loiter = vec![(5200.0, 5000.0)];
+        let t = cross_mob_target(here.0, here.1, &mobbing, &loiter).expect("兩者皆備應回傳圍攻目標");
+        assert!((t.0 - 5200.0).abs() < 1e-3 && (t.1 - 5000.0).abs() < 1e-3, "應回傳那頭閒晃掠食者座標，實際 {t:?}");
+        // 沒有任何鳥／獸正圍攻 → None（沒看見鳥群圍上就不起意）。
+        assert!(cross_mob_target(here.0, here.1, &[], &loiter).is_none(), "身邊無圍攻者時不應起意");
+        // 有圍攻者、但看不到任何閒晃掠食者 → None（沒有可攆的目標）。
+        assert!(cross_mob_target(here.0, here.1, &mobbing, &[]).is_none(), "看不到可攆的閒晃掠食者時不應起意");
+        // 圍攻者在 CROSS_MOB_RADIUS 之外 → None（看不見那場圍攻）。
+        let far_mob = vec![(here.0 + CROSS_MOB_RADIUS + 50.0, here.1)];
+        assert!(cross_mob_target(here.0, here.1, &far_mob, &loiter).is_none(), "圍攻者在半徑外時看不見、不應起意");
+    }
+
+    #[test]
+    fn mobbing_critter_keeps_harassing_loitering_predator() {
+        // 整管理器：一隻已加入圍攻的小動物（跨物種共鳴），那頭被攆的狼仍閒晃在 MOB_SEE_RADIUS 內
+        // → 小動物續留圍攻、朝狼俯衝逼近（驗證續圍分支拿掉 is_bird 守門後、小動物沿用同一支 tick_mob）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Mobbing { target_x: 5200.0, target_y: 5000.0, mob_timer: 5.0 };
+        // 狼在 200px：FLEE_RADIUS(180) 外、MOB_SEE_RADIUS(240) 內，且閒晃（Wandering）→ 在 loiter 快照裡。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5200.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Wandering { target_x: 5200.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![critter, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], false);
+        let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(c.state, WildlifeState::Mobbing { .. }), "閒晃狼仍在範圍內時小動物應續留圍攻，實際 {:?}", c.state);
+        assert!(c.x > 5000.0, "圍攻的小動物應朝狼俯衝逼近（x 增大），實際 x={}", c.x);
+    }
+
+    #[test]
+    fn critter_joins_mob_when_birds_already_harassing() {
+        // 整管理器：一隻平靜的小動物，身邊已有鳥群正圍攻一頭閒晃狼、且自己也看得到那頭狼
+        // → 終會被牽動加入圍攻（轉 Mobbing）。逐輪固定場景幾何（鳥/狼會在 tick 中位移，重置回定位），
+        // 只觀察小動物是否被 CROSS_MOB_PROB 牽動；沒被牽動（或轉去 Vigilant）就收斂回 Resting、下輪再試。
+        let mut mgr = WildlifeManager::new();
+        let critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5200.0); // 距狼 200（FLEE 180 外、SEE 240 內）
+        let bird1 = adult_at(WildlifeKind::WildBird, 5000.0, 5190.0);        // 距小動物 10（CROSS_MOB_RADIUS 內）
+        let bird2 = adult_at(WildlifeKind::WildBird, 5030.0, 5190.0);
+        let wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        mgr.animals = vec![critter, bird1, bird2, wolf];
+        mgr.animals[0].id = 1; mgr.animals[1].id = 2; mgr.animals[2].id = 3; mgr.animals[3].id = 4;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..2000 {
+            // 逐輪重置場景幾何：鳥處 Mobbing 定位（離狼 >MOB_HARASS_RADIUS 130，不致把狼壓走）、狼閒晃定位。
+            mgr.animals[1].x = 5000.0; mgr.animals[1].y = 5190.0;
+            mgr.animals[1].state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+            mgr.animals[2].x = 5030.0; mgr.animals[2].y = 5190.0;
+            mgr.animals[2].state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+            mgr.animals[3].x = 5000.0; mgr.animals[3].y = 5000.0;
+            mgr.animals[3].state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 1.0e9 };
+            mgr.tick(0.5, &[], &att, &[], false);
+            if matches!(mgr.animals[0].state, WildlifeState::Mobbing { .. }) { joined = true; break; }
+            // 沒被牽動（或轉去 Vigilant/Nibbling）就收斂回定點平靜漫遊（目標＝自身，原地不動），下輪再給機會。
+            // 刻意不用 Resting{1e9}：那會 >REST_TIMER_MAX、被 wake_from_night_sleep 當成「睡飽該醒」每幀轉 Waking。
+            mgr.animals[0].x = 5000.0; mgr.animals[0].y = 5200.0;
+            mgr.animals[0].state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5200.0, wander_timer: 1.0e9 };
+        }
+        assert!(joined, "平靜小動物看見鳥群已圍攻閒晃狼、終應被牽動加入圍攻（轉 Mobbing）");
     }
 
     #[test]
