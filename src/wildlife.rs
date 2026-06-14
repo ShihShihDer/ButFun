@@ -966,6 +966,26 @@ const RUMINATE_PROB: f32 = 0.02;
 const RUMINATE_DURATION_MIN: f32 = 3.0;
 const RUMINATE_DURATION_MAX: f32 = 6.0;
 
+// ─── ROADMAP 286：甩尾驅蟲（tail-flicking to shoo flies）──────────────────────
+// 281 棲背啄蟲（🐛）給草食走獸補上了一筆「跨物種替你除蟲」的清潔共生：身邊有鳥肯飛上背、就有專人替牠
+// 啄掉皮毛間的寄生蟲。可那份好處有個前提——得正好有隻鳥在。盤點下來：身邊**沒有**幫手鳥時，被蚊蚋叮咬
+// 騷擾的走獸只能自己想辦法，而真實草原上大型草食獸最招牌的自我驅蟲動作，正是不時甩動尾巴、抖動皮毛把
+// 叮在身上的飛蟲趕開。本切片給草食走獸（野鹿／小獸，is_mammal）補上這專屬的「甩尾驅蟲」：白天平靜、正
+// 四處漫步（Wandering）時，偶爾被飛蟲叮擾、原地甩動尾巴抖一抖把蟲趕走（前端畫成原地微抖、頭頂浮一枚被揮開、
+// 嗡嗡打轉的 🪰），甩 shoo_timer 一小段再回到閒晃。與 281 棲背啄蟲（🐛，有鳥幫手時的跨物種除蟲）恰成
+// 「有幫手／自己來」一對——身邊有鳥就讓鳥啄、沒鳥就自己甩尾；也與 277 搔癢（🐾，撓耳後的自理）區隔：
+// 搔癢是撓自己的癢、甩尾是趕身上的蟲，同屬走獸的自我打理、各有專屬姿態。各甩各的、不傳染（與 278 呵欠的
+// 會傳染刻意區隔），只是一隻隻自顧自地揮尾驅蟲。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的
+// shooing 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、零 migration、記憶體模式。威脅
+// 永遠優先：甩尾到一半若掠食者／玩家逼近，立刻停下奔逃（甩尾永遠讓位逃命）。
+/// 平靜的草食走獸本幀起意甩尾驅蟲的機率——與 277 搔癢（SCRATCH_PROB 0.03）同級偏低：驅蟲是白天偶爾
+/// 被叮一下才甩、而非時時在甩（多數時候仍照常歇著／漫遊）。
+const SHOO_PROB: f32 = 0.03;
+/// 一段甩尾驅蟲的最短／最長時長（秒）——甩尾抖毛是比反芻／囤糧更短促的一陣小動作（揮幾下把蟲趕開就停），
+/// 與 277 搔癢（2~5s）同量級略短。期間威脅一旦逼近一律優先停下奔逃。
+const SHOO_DURATION_MIN: f32 = 1.5;
+const SHOO_DURATION_MAX: f32 = 3.0;
+
 // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
 // 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
 // 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
@@ -1474,6 +1494,11 @@ enum WildlifeState {
     /// 與 211 白晝吃草（🌿，當場低頭啃）對成「進食／反芻」一對——同是野鹿的覓食循環，一個把草吞下、
     /// 一個歇下回嚼；與 278 群體呵欠（會傳染）同從 Resting 起意卻刻意區隔（反芻各顧各、不傳染）。只屬於野鹿。
     Ruminating { ruminate_timer: f32 },
+    /// ROADMAP 286：甩尾驅蟲——白天平靜的草食走獸（野鹿／小獸，is_mammal）偶爾被飛蟲叮擾，原地甩動尾巴、
+    /// 抖動皮毛把蟲趕開（前端畫成原地微抖、頭頂浮一枚被揮開、嗡嗡打轉的 🪰）。原地不動（不更新座標）、
+    /// shoo_timer 倒數，到期就起身回到漫遊；威脅一旦逼近一律優先停下奔逃（甩尾永遠讓位逃命）。與 281 棲背
+    /// 啄蟲（🐛，有鳥幫手時的跨物種除蟲）對成「有幫手／自己來」一對；與 277 搔癢（🐾，撓自己的癢）區隔。
+    Shooing { shoo_timer: f32 },
     /// ROADMAP 285：晝伏蜷睡——白天無獵可追的平靜掠食者（野狼／野狐，皆夜行性）偶爾就地蜷成一團打盹補眠
     /// （前端畫成原地不動、頭頂浮一枚徐徐脹縮的 😪）。原地不動（不更新座標）、doze_timer 倒數，睡夠了就
     /// 起身回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力）。獵物一旦進入搜尋範圍，
@@ -2134,6 +2159,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 286：甩尾驅蟲——甩尾中（Shooing）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_scratch 同模式）回到閒晃。只在 Shooing 狀態下生效（呼叫端
+    /// 已確保此隻為草食走獸、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去奔逃——威脅永遠優先）。
+    fn tick_shoo(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Shooing { shoo_timer } = self.state {
+            let remaining = shoo_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Shooing { shoo_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 281：棲背啄蟲——棲在宿主背上（Cleaning）的野鳥每幀貼到宿主當前座標（`host_pos`，騎著牠
     /// 移動、略偏上像停在背脊），clean_timer 倒數一啄一啄；到期就拍翅飛離、挑下一個漫遊目標（沿用群聚拉力
     /// herd_anchor，與 tick_preen 同模式）回到漫遊。宿主一旦不在本幀宿主快照裡（受驚不再平靜／走遠／死亡，
@@ -2409,6 +2450,7 @@ impl Wildlife {
             WildlifeState::DustBathing { .. } => "dust_bathing",
             WildlifeState::Caching { .. } => "caching",
             WildlifeState::Ruminating { .. } => "ruminating",
+            WildlifeState::Shooing { .. }    => "shooing",
             WildlifeState::Dozing { .. }     => "dozing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
@@ -3882,6 +3924,29 @@ impl WildlifeManager {
                     // 走獸習性（趴著歇息時不會抬腿搔癢）。
                     let timer = rng.gen_range(SCRATCH_DURATION_MIN..=SCRATCH_DURATION_MAX);
                     a.state = WildlifeState::Scratching { scratch_timer: timer };
+                } else if is_mammal && matches!(a.state, WildlifeState::Shooing { .. }) {
+                    // ROADMAP 286：已在甩尾驅蟲中——威脅一旦逼近就立刻停下奔逃（驅蟲永遠讓位逃命），
+                    // 否則原地把這一陣甩完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_shoo(dt, herd_anchor, rng);
+                    }
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SHOO_PROB
+                {
+                    // ROADMAP 286：白天平靜、正四處漫步的草食走獸（鹿／小獸）——偶爾被飛蟲叮擾、原地甩動尾巴
+                    // 抖一抖把蟲趕開（頭頂浮一枚被揮開、嗡嗡打轉的 🪰）。各甩各的、不傳染（與 277 搔癢同手法），
+                    // 只是一隻隻自顧自地揮尾驅蟲。與 281 棲背啄蟲（🐛，有鳥幫手時的跨物種除蟲）對成「有幫手／
+                    // 自己來」一對——身邊有鳥就讓鳥啄、沒鳥就自己甩尾；與 277 搔癢（🐾，撓自己的癢）區隔。刻意
+                    // 只從 Wandering 起意、不從 Resting 起意——與 277 搔癢／280 塵浴／282 囤糧一致：這類自我打理
+                    // 屬於「起來活動著」的時候，settled 的歇息就讓牠安穩歇著（Resting 起意的另有 278 呵欠／283 反芻，
+                    // 不與此爭奪歇息幀）。
+                    let timer = rng.gen_range(SHOO_DURATION_MIN..=SHOO_DURATION_MAX);
+                    a.state = WildlifeState::Shooing { shoo_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::DustBathing { .. }) {
                     // ROADMAP 280：已在塵浴中——威脅一旦逼近就立刻翻身躍起逃竄（塵浴永遠讓位逃命），
                     // 否則原地把這一段滾完、計時倒數，到期抖抖身子回到閒晃。
@@ -9717,6 +9782,102 @@ mod tests {
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "蜷睡中發現獵物應立刻醒來狩獵，實際 {:?}", f.state
         );
+    }
+
+    // ─── ROADMAP 286：甩尾驅蟲（草食走獸自我除蟲）──────────────────────────
+    #[test]
+    fn tick_shoo_holds_position_while_timer_remaining() {
+        // 甩尾進行中：原地不動（座標不變）、計時遞減、狀態維持 Shooing。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Shooing { shoo_timer: 2.0 };
+        deer.tick_shoo(0.1, None, &mut rng);
+        match deer.state {
+            WildlifeState::Shooing { shoo_timer } => {
+                assert!((shoo_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("甩尾未到期應維持 Shooing，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "甩尾中應原地不動");
+    }
+
+    #[test]
+    fn tick_shoo_returns_to_wander_when_timer_expires() {
+        // 甩尾到期：起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Shooing { shoo_timer: 0.05 };
+        critter.tick_shoo(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "甩尾到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_shoo_noop_on_other_state() {
+        // 防呆：非 Shooing 狀態呼叫 tick_shoo 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 3.0 };
+        deer.tick_shoo(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非甩尾狀態呼叫 tick_shoo 不該改狀態");
+    }
+
+    #[test]
+    fn shooing_state_str_is_shooing() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Shooing { shoo_timer: 1.0 };
+        assert_eq!(deer.state_str(), "shooing");
+    }
+
+    #[test]
+    fn predator_never_shoos() {
+        // 物種專屬：甩尾驅蟲只發生在草食走獸（is_mammal）——掠食者（狼/狐）連跑數百幀都不該進入 Shooing。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Shooing { .. }), "掠食者不該甩尾驅蟲，實際 {:?}", w.state);
+        }
+    }
+
+    #[test]
+    fn calm_mammal_eventually_shoos_during_day() {
+        // 白天平靜：一頭孤身野鹿（附近無威脅）連跑多幀後，總會偶爾甩尾驅蟲。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer]; // 場上只有這頭鹿、無威脅 → 走平靜閒置分支
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut shooed = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Shooing { .. }) {
+                shooed = true;
+                break;
+            }
+        }
+        assert!(shooed, "白天平靜的野鹿應偶爾甩尾驅蟲");
+    }
+
+    #[test]
+    fn shooing_mammal_flees_approaching_threat() {
+        // 甩尾永遠讓位逃命：甩尾中的野鹿一旦有玩家逼近 FLEE_RADIUS 內，立刻停下奔逃（非繼續甩）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Shooing { shoo_timer: 1.0e9 }; // 甩得正起勁
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家貼到 FLEE_RADIUS 內（30px < 180）
+        mgr.tick(0.1, &[(5030.0, 5000.0)], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "甩尾中遇威脅應立刻奔逃，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 281：棲背啄蟲（清潔共生）─────────────────────────────────────
