@@ -713,6 +713,27 @@ const GREET_PROB: f32 = 0.04;
 const GREET_DURATION_MIN: f32 = 2.0;
 const GREET_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
+// 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
+// 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
+// 要有屍骸、要有覓食的鹿、要有可棲的鹿背。一旦身邊什麼都沒有，白天平靜漫步的野鳥便只是走來走去、
+// 看不出牠也得自己討生活。本切片給野鳥補上最基本、最不假外求的一筆覓食：自己低頭一啄一啄啄食地上的
+// 草籽。白天平靜、正四處漫步（Wandering）的野鳥，偶爾停下、低頭就地啄食草籽（新增 Pecking 狀態，頭頂
+// 浮一枚 🌾），啄一小段再起身回到閒晃。與 265 共生跟食（🐛，傍鹿撿蟲）刻意對成「跟食／自啄」一對——
+// 有覓食的鹿就傍著撿蟲、沒鹿也會自己低頭啄草籽（仿 286 甩尾「沒鳥幫忙自己來」、281「有幫手」的手法）。
+// 與 252 食腐（🍖，啄屍骸）／276 理羽（🪶，梳自己的羽）區隔：那是撿殘骸、那是自理，本切片是「不假外求的
+// 日常覓食」。只屬於野鳥（小型雜食飛禽，地面啄籽是牠最招牌的覓食姿態）。排在野鳥所有「需外物在場」的
+// 覓食／社交分支之後——身邊有屍骸先食腐、有鹿先跟食／棲背、都沒有時才自己低頭啄籽（恰是覓食的兜底）。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 pecking 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、零持久化、零 migration、記憶體模式。威脅永遠優先：啄地只在無威脅逼近的平靜空檔發生，掠食者
+// 一旦逼進 FLEE_RADIUS 即依既有獵物邏輯拍翅逃竄（覓食永遠讓位逃命）。
+/// 白天平靜、正四處漫步的野鳥本幀停下啄地覓食的機率——偏低（對齊 276 理羽 PREEN_PROB 0.03），讓啄地是
+/// 漫步途中偶爾的一段低頭覓食、而非時時在啄（多數時候仍照常閒晃／飛／鳴）。
+const PECK_PROB: f32 = 0.03;
+/// 一段啄地覓食的最短／最長時長（秒）——低頭啄一小段草籽再起身，與理羽（2~5s）同量級。
+const PECK_DURATION_MIN: f32 = 2.0;
+const PECK_DURATION_MAX: f32 = 4.5;
+
 // ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
 // 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
 // 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
@@ -1536,6 +1557,12 @@ enum WildlifeState {
     /// 狩獵。只屬於野狼（社交性掠食者）：野狐獨來獨往、不問安。與 216 理毛（💕，獵物群的暖）對成「獵物群的
     /// 暖／狼群的暖」一對，把群成員之間的羈絆從獵物一側補到了掠食者一側。
     Greeting { greet_timer: f32 },
+    /// ROADMAP 288：野鳥啄地覓食——白天平靜、正四處漫步的野鳥（WildBird）偶爾停下、低頭就地啄食地上的
+    /// 草籽（前端畫成原地不動、頭頂浮一枚 🌾）。原地不動（不更新座標）、peck_timer 倒數，啄一小段再起身
+    /// 回到漫遊（沿用群聚拉力 herd_anchor，鳥成群，與 tick_preen 同模式）；威脅一旦逼近一律優先拍翅逃竄
+    /// （覓食永遠讓位逃命）。與 265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）對成「跟食／自啄」一對——有覓食的
+    /// 鹿就傍著撿蟲、沒鹿也會自己低頭啄草籽。與 252 食腐（🍖，啄屍骸）／276 理羽（🪶，梳自己的羽）區隔。只屬於野鳥。
+    Pecking { peck_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2174,6 +2201,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 288：野鳥啄地覓食——啄地中（Pecking）原地不動、倒數計時；到期就起身、挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，鳥成群，與 tick_preen 同模式）回到閒晃。只在 Pecking 狀態下生效（呼叫端
+    /// 已確保此隻為野鳥、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去拍翅逃竄——威脅永遠優先）。
+    fn tick_peck(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Pecking { peck_timer } = self.state {
+            let remaining = peck_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Pecking { peck_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 283：臥嚼反芻——反芻中（Ruminating）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor，與 tick_yawn 同模式）回到閒晃。只在 Ruminating 狀態下生效（呼叫端
     /// 已確保此隻為野鹿、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去奔逃——威脅永遠優先）。
@@ -2500,6 +2543,7 @@ impl Wildlife {
             WildlifeState::Shooing { .. }    => "shooing",
             WildlifeState::Dozing { .. }     => "dozing",
             WildlifeState::Greeting { .. }   => "greeting",
+            WildlifeState::Pecking { .. }    => "pecking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3979,6 +4023,29 @@ impl WildlifeManager {
                         let timer = rng.gen_range(CLEAN_DURATION_MIN..=CLEAN_DURATION_MAX);
                         a.state = WildlifeState::Cleaning { host_id, clean_timer: timer };
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Pecking { .. }) {
+                    // ROADMAP 288：已在啄地覓食中——威脅一旦逼近就立刻拍翅逃竄（覓食永遠讓位逃命），
+                    // 否則原地把這一段草籽啄完、計時倒數，到期起身回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_peck(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < PECK_PROB
+                {
+                    // ROADMAP 288：白天平靜、正四處漫步的野鳥——偶爾停下、低頭就地啄食地上的草籽（頭頂浮
+                    // 一枚 🌾）。各顧各的、不傳染（與鳥的飛／鳴 220/221 的呼應刻意區隔），只是一隻隻自顧自地
+                    // 低頭啄籽。與 265 共生跟食（🐛，傍鹿撿蟲）對成「跟食／自啄」一對——排在所有「需外物在場」的
+                    // 覓食／社交分支（食腐／圍攻／跟食／棲背啄蟲）之後：身邊有屍骸先食腐、有鹿先跟食／棲背，都沒有
+                    // 時才自己低頭啄籽（恰是野鳥覓食的兜底）。只從 Wandering 起意（漫步途中順手低頭啄一啄）、不從
+                    // Resting 起意——與 277 搔癢／280 塵浴／282 囤糧一致：覓食屬於「起來活動著」的時候，settled 的
+                    // 歇息就讓牠安穩歇著。只屬於野鳥（地面啄籽是牠最招牌的覓食姿態）。
+                    let timer = rng.gen_range(PECK_DURATION_MIN..=PECK_DURATION_MAX);
+                    a.state = WildlifeState::Pecking { peck_timer: timer };
                 } else if is_mammal && matches!(a.state, WildlifeState::Scratching { .. }) {
                     // ROADMAP 277：已在搔癢中——威脅一旦逼近就立刻放下後腿逃竄（自理永遠讓位逃命），
                     // 否則原地把這一段搔完、計時倒數，到期回到閒晃。
@@ -9757,6 +9824,108 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "反芻中遇威脅應立刻起身奔逃，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage）──────────────────
+    #[test]
+    fn tick_peck_holds_position_while_timer_remaining() {
+        // 啄地進行中：原地不動（座標不變）、計時遞減、狀態維持 Pecking。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Pecking { peck_timer: 2.0 };
+        bird.tick_peck(0.1, None, &mut rng);
+        match bird.state {
+            WildlifeState::Pecking { peck_timer } => {
+                assert!((peck_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("啄地未到期應維持 Pecking，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "啄地中應原地不動");
+    }
+
+    #[test]
+    fn tick_peck_returns_to_wander_when_timer_expires() {
+        // 啄地到期：起身回到漫遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Pecking { peck_timer: 0.05 };
+        bird.tick_peck(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "啄地到期應回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_peck_noop_on_other_state() {
+        // 防呆：非 Pecking 狀態呼叫 tick_peck 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 3.0 };
+        bird.tick_peck(0.1, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非啄地狀態呼叫 tick_peck 不該改狀態");
+    }
+
+    #[test]
+    fn pecking_state_str_is_pecking() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Pecking { peck_timer: 1.0 };
+        assert_eq!(bird.state_str(), "pecking");
+    }
+
+    #[test]
+    fn non_bird_never_pecks_ground() {
+        // 物種專屬：只有野鳥會啄地覓食——白天平靜漫步的野鹿／小動物連跑數百幀都不該進入 Pecking
+        //（鹿走 211 吃草／283 反芻、小動物走 280 塵浴／282 囤糧，各有專屬覓食姿態）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 9000.0, 9000.0);
+        critter.id = 2;
+        critter.state = WildlifeState::Wandering { target_x: 9000.0, target_y: 9000.0, wander_timer: 0.1 };
+        mgr.animals = vec![deer, critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            for a in &mgr.animals {
+                assert!(!matches!(a.state, WildlifeState::Pecking { .. }), "非野鳥不該啄地，實際 {:?}", a.state);
+            }
+        }
+    }
+
+    #[test]
+    fn calm_bird_eventually_pecks_ground_during_day() {
+        // 白天平靜：一隻孤身野鳥（身邊無屍骸／無鹿可傍）連跑多幀後，總會偶爾停下自己低頭啄草籽
+        //（PECK_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut pecked = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Pecking { .. }) {
+                pecked = true;
+                break;
+            }
+        }
+        assert!(pecked, "白天平靜漫步的野鳥應偶爾停下低頭啄草籽");
+    }
+
+    #[test]
+    fn pecking_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：啄地中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻拍翅逃竄（非繼續啄）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Pecking { peck_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "啄地中遇威脅應立刻拍翅逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 285：晝伏蜷睡（夜行掠食者白天補眠）──────────────────────────
