@@ -9094,6 +9094,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 267：群鳥鼓譟驅敵——圍攻中的野鳥（state==="mobbing"）憑數量壯膽繞著閒晃的掠食者
+      // 俯衝鼓譟，頭頂浮一個急促抖動、明滅的 😡，讓「一群小鳥一擁而上、貼臉鬧著把狼/狐攆走」一眼看
+      // 得到——這是混群第一筆**主動集體防衛**（與 265 跟食 🐛、266 哨兵的被動相處區隔；與 214 母獸護幼
+      // 的單獸衝鋒區隔——這是憑數量壯膽的集體圍攻）。😡 比別的氣泡抖得急，賣那股一擁而上的躁動。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在成群野鳥圍攻閒晃掠食者時才給此狀態）。
+      if (w.state === "mobbing") {
+        ctx.save();
+        ctx.globalAlpha = 0.6 + 0.35 * Math.abs(Math.sin(now / 90)); // 急促明滅，像鼓譟時的躁動
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(Math.sin(now / 38) * 2.0, -22); // 抖得比別的氣泡急，賣一擁而上的躁動
+        ctx.fillText("😡", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫，這裡略過免得兩個頭頂符號疊在一起。
       if (w.juvenile && w.state !== "frolicking") {

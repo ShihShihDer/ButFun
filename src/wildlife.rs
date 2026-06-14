@@ -680,6 +680,48 @@ const SENTINEL_KEEN_RADIUS: f32 = 280.0;
 /// 滿草地的鹿都跟著抬頭（那是 263 泛泛跨物種警戒的事，不是哨兵專屬互惠）。
 const SENTINEL_HEED_RADIUS: f32 = 72.0;
 
+// ─── ROADMAP 267：群鳥鼓譟驅敵（混群集體驅趕掠食者／mobbing）──────────────────
+// 265 跟食、266 哨兵互惠把混群的「正向相處」鋪了開來，但這些都還是被動的（傍著彼此、互相報警）。
+// 真實草原上混群面對閒晃逼近的掠食者，除了怕／逃／報警，還有一招主動的集體反制——成群的小型獵物
+// （尤以鳥群最典型）會憑「數量壯膽」一擁而上，繞著那頭掠食者俯衝鼓譟、貼臉騷擾，把牠攆出地盤
+// （mobbing，是現實中鳥群驅趕貓頭鷹／鷹／狐的經典行為）。本切片給混群補上這第一筆**主動集體防衛**：
+// 白天平靜的野鳥若身邊有 ≥MOB_QUORUM 隻同伴壯膽（MOB_FLOCK_RADIUS 內），又「看見」一頭正閒晃路過、
+// 並未在主動狩獵的掠食者（is_mobbable_predator：巡遊/歇息/夜嚎/撲鼠/嗅蹤等，**排除潛行/追獵/進食**）
+// 落在 MOB_SEE_RADIUS（>FLEE_RADIUS，故掠食者尚未逼到逃命距離）內，便以 MOB_PROB 被牽動，一隻隻
+// 由近而遠加入圍攻（新增 Mobbing 狀態，頭頂浮 😡）——俯衝逼到 MOB_HARASS_DIST 的鼓譟距離繞著掠食者
+// 騷擾。而那頭被 ≥MOB_QUORUM 隻鳥圍著鼓譟的閒晃掠食者（MOB_HARASS_RADIUS 內），被擾得不勝其煩、起身
+// 朝鳥群反方向另覓漫遊目標走開（驅趕成形）。
+// 關鍵安全界線（零捕食平衡風險）：鳥只圍攻「閒晃中」的掠食者，**絕不打斷正在潛行/追獵/進食的掠食者**
+// （那些不在 is_mobbable_predator／loiter 快照裡），且驅趕只發生在掠食者「本就無獵可追、要原地閒晃」
+// 的當口——故鼓譟永遠不會奪走一場真正的狩獵，只把漫無目的的掠食者請出巢區。掠食者一旦轉入主動狩獵
+//（離開 loiter 快照），鼓譟的鳥即依既有獵物邏輯逃竄（圍攻永遠讓位逃命）。與 214 母獸護幼刻意區隔：
+// 214 是「單一母獸」為「自己被鎖定的幼獸」挺身衝去驅趕（護幼、針對潛行/追獵者）；267 是「一群鳥」憑
+// 數量壯膽集體攆走「閒晃路過」的掠食者（護地盤、針對閒晃者），無關幼獸、靠的是 quorum。承接 265 跟食
+// →266 互報→267 集體驅敵，混群的相處從「一起怕／逃／報警」推進到「一起把威脅攆走」。
+// 零 LLM、純啟發式、可測、零 tick 簽名改動、零協議改動（新增的 mobbing 字串沿用 state_str；目標座標與
+// 計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+/// 野鳥「看見」閒晃掠食者而起意圍攻的偵測半徑——刻意大於一般逃命距離 FLEE_RADIUS(180)，讓圍攻發生在
+/// 「掠食者已逼近、但尚未到貼臉逃命距離」的中段：掠食者更近就落到既有逃竄（圍攻讓位逃命）。
+const MOB_SEE_RADIUS: f32 = 240.0;
+/// 「數量壯膽」所需的同伴半徑——統計這半徑內有幾隻同種野鳥同伴（不含自己）。
+const MOB_FLOCK_RADIUS: f32 = 160.0;
+/// 起意圍攻所需的最少同伴數（不含自己）／掠食者感到被圍攻所需的最少鼓譟鳥數——孤鳥、單對鳥不敢上前
+/// （改逃／不理），要成群才壯得起膽（safety in numbers）。
+const MOB_QUORUM: usize = 2;
+/// 偵測範圍內有閒晃掠食者、且同伴成群時，一隻平靜野鳥本幀被牽動轉入圍攻的機率——逐幀低機率觸發，讓
+/// 鳥群由近而遠一隻隻加入、逐圈匯聚（仿 218 群嚎／250 圍獵／265 跟食的逐幀牽動），而非同幀整群瞬間擁上。
+const MOB_PROB: f32 = 0.02;
+/// 圍攻俯衝逼近掠食者時保持的鼓譟距離——貼臉騷擾但不真的撲上去（鳥終究打不過狼/狐，只是擾牠）。
+const MOB_HARASS_DIST: f32 = 90.0;
+/// 圍攻俯衝速度——比悠閒跟食（FORAGE_SPEED 56）快，賣「一擁而上、貼臉俯衝鼓譟」的急促。
+const MOB_SPEED: f32 = 78.0;
+/// 掠食者統計「身邊有幾隻鳥正圍著我鼓譟」的半徑——略大於鼓譟距離 MOB_HARASS_DIST(90)，確保俯衝到位
+/// 的鳥都算進壓力；達 MOB_QUORUM 隻就被擾得起身走開。
+const MOB_HARASS_RADIUS: f32 = 130.0;
+/// 一段圍攻鼓譟的持續時間（秒）——鬧一陣就散去歇口氣（掠食者多半此時已被攆走、或自己飛累了）。
+const MOB_DURATION_MIN: f32 = 3.0;
+const MOB_DURATION_MAX: f32 = 6.0;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -1004,6 +1046,11 @@ enum WildlifeState {
     /// 覓食距離挪步跟隨（被跟的鹿即時重算，故狀態本身不需攜帶座標）。計時耗盡、那頭鹿走遠、或掠食者
     /// 逼近就拍翅散去回巡遊。只屬於野鳥（伺機飛禽），跟的對象限野鹿——與 252 食腐對成「傍生者／傍亡者」。
     CommensalForaging { forage_timer: f32 },
+    /// ROADMAP 267：群鳥鼓譟驅敵——成群野鳥憑數量壯膽，圍著一頭閒晃路過的掠食者俯衝鼓譟、貼臉騷擾
+    /// 把牠攆走（頭頂浮 😡）。mob_timer 倒數，每幀重鎖最近那頭閒晃掠食者為目標 (target_x,target_y)、
+    /// 俯衝逼到鼓譟距離 MOB_HARASS_DIST 繞著騷擾。計時耗盡、掠食者走遠就散去歇息；掠食者一旦轉入主動
+    /// 狩獵（離開 loiter 快照）便依既有獵物邏輯逃竄（圍攻永遠讓位逃命）。只屬於野鳥（成群的小型獵物）。
+    Mobbing { target_x: f32, target_y: f32, mob_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1557,6 +1604,34 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 267：圍攻鼓譟的一步推進——`target` 為本幀重鎖的閒晃掠食者座標（呼叫端逐幀查得最近的
+    /// 一頭傳入；掠食者走遠／轉入主動狩獵時傳 None）。target 為 None 或計時耗盡就散去歇息（回 Resting）；
+    /// 否則朝掠食者俯衝逼到鼓譟距離 MOB_HARASS_DIST（mob_step）、計時倒數、續留圍攻。掠食者移動時每幀
+    /// 重鎖 → 鳥群跟著繞、貼臉鼓譟。
+    fn tick_mob(&mut self, dt: f32, target: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Mobbing { mob_timer, .. } = self.state {
+            let remaining = mob_timer - dt;
+            match target {
+                // 掠食者走了／不再閒晃，鼓譟收場、散去歇口氣（成群驅敵得逞或自己鬧累了）。
+                None => {
+                    let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+                    self.state = WildlifeState::Resting { rest_timer: rest };
+                }
+                Some((tx, ty)) => {
+                    if remaining <= 0.0 {
+                        let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+                        self.state = WildlifeState::Resting { rest_timer: rest };
+                    } else {
+                        let (nx, ny) = mob_step(self.x, self.y, tx, ty, dt);
+                        self.x = nx;
+                        self.y = ny;
+                        self.state = WildlifeState::Mobbing { target_x: tx, target_y: ty, mob_timer: remaining };
+                    }
+                }
+            }
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1586,6 +1661,7 @@ impl Wildlife {
             WildlifeState::Sated { .. }     => "sated",
             WildlifeState::Curious          => "curious",
             WildlifeState::CommensalForaging { .. } => "foraging",
+            WildlifeState::Mobbing { .. }   => "mobbing",
         }
     }
 }
@@ -1807,6 +1883,25 @@ impl WildlifeManager {
         // 背向退走（中型掠食者讓位頂級掠食者）。取全部存活野狼即可（連在獵食/歇息的狼對狐都是威脅）。
         let wolf_positions: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && a.kind == WildlifeKind::WildWolf)
+            .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 267：群鳥鼓譟驅敵——本幀「正閒晃、可被圍攻」的掠食者座標快照（is_mobbable_predator：
+        // 巡遊/歇息/夜嚎/撲鼠/嗅蹤等，排除潛行/追獵/進食），供 Phase 4 讓成群野鳥「看見」一頭閒晃路過的
+        // 掠食者而起意圍攻、並逐幀重鎖跟著繞。鳥只攆閒晃者、絕不打斷一場真正的狩獵或進食——零捕食平衡風險。
+        let loiter_pred_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Predator
+                && is_mobbable_predator(&a.state))
+            .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 267：群鳥鼓譟驅敵——本幀（起始時）「正在圍攻鼓譟」(Mobbing) 的野鳥座標快照，供下方
+        // 掠食者決策讀到「身邊有幾隻鳥正圍著我鬧」（mob_pressure_center）而被擾得起身走開。刻意在變更前
+        // 取一次（反映上一幀的圍攻）：掠食者本幀讀到、走開，鳥本幀（Phase 4）再依當下情勢續圍/散去——一
+        // 幀延遲、自然，與既有 defending_snap/howling_snap 等同手法。
+        let mobbing_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildBird
+                && matches!(a.state, WildlifeState::Mobbing { .. }))
             .map(|a| (a.x, a.y))
             .collect();
 
@@ -2126,7 +2221,20 @@ impl WildlifeManager {
                             // （HOWL_HEAR_RADIUS 內），會以較高的 HOWL_JOIN_PROB 被牽動接嚎；沒聽見
                             // 才退回 217 的低機率自發起頭。本幀新接嚎者不在 howling_snap 裡，故嚎聲
                             // 逐圈外傳、此起彼落，而非同幀整片齊嚎。
-                            if matches!(a.state, WildlifeState::Howling { .. }) {
+                            // ROADMAP 267：群鳥鼓譟驅敵——閒晃的掠食者若被 ≥MOB_QUORUM 隻野鳥圍著鼓譟騷擾
+                            // （MOB_HARASS_RADIUS 內，上一幀的 mobbing_snap），便不勝其煩、起身朝鳥群中心反方向
+                            // 另覓漫遊目標走開（驅趕成形）。只在掠食者「本就無獵可追、要原地閒晃」的當口發生
+                            //（已在此 else＝prey 搜尋無果），故鼓譟永遠不會奪走一場真正的狩獵——零捕食平衡風險；
+                            // is_mobbable 守門確保進食中（Feasting）的掠食者不被拉走（鳥本就不圍進食者）。排在最前：
+                            // 被一群鳥追著鬧時，連夜嚎/撲鼠/嗅蹤的閒情都顧不上了，先躲開鳥群要緊。
+                            if let Some((cx, cy)) = is_mobbable_predator(&a.state)
+                                .then(|| mob_pressure_center(a.x, a.y, &mobbing_snap, MOB_HARASS_RADIUS, MOB_QUORUM))
+                                .flatten()
+                            {
+                                let (tx, ty) = point_away(a.x, a.y, cx, cy, WANDER_RADIUS);
+                                a.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: 3.0 };
+                                a.tick_idle(dt, &[], PRED_WANDER_SPEED, None, 0.0, rng);
+                            } else if matches!(a.state, WildlifeState::Howling { .. }) {
                                 a.tick_howl(dt, rng);
                             } else if is_night && matches!(a.state, WildlifeState::Resting { .. })
                                 && {
@@ -2629,6 +2737,18 @@ impl WildlifeManager {
                         let grazer = nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_FOLLOW_RADIUS);
                         a.tick_commensal(dt, grazer, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Mobbing { .. }) {
+                    // ROADMAP 267：已在圍攻鼓譟中——只要那頭被攆的掠食者還閒晃在 MOB_SEE_RADIUS 內
+                    //（loiter_pred_snap），就重鎖最近的牠繼續俯衝鼓譟、計時倒數（到期散去歇息）；牠一旦
+                    // 轉入主動狩獵就會離開 loiter 快照，此時若已逼到 FLEE_RADIUS 內（真的衝著鳥來）便立刻
+                    // 拍翅逃竄（圍攻永遠讓位逃命），否則（掠食者走遠了）鼓譟收場、散去歇口氣。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &loiter_pred_snap, MOB_SEE_RADIUS) {
+                        a.tick_mob(dt, Some((tx, ty)), rng);
+                    } else if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_mob(dt, None, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Flying { .. }) {
                     // ROADMAP 220：已在空中盤旋——威脅一旦逼近就立刻降下逃竄（飛行是悠閒的盤旋、
                     // 不是逃命手段），否則繞著群心繼續盤旋、計時倒數，到期降落回閒晃。
@@ -2636,6 +2756,25 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_fly(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &loiter_pred_snap, MOB_SEE_RADIUS).is_some()
+                    && flock_quorum(a.id, animal_kind, a.x, a.y, &prey_snap, MOB_FLOCK_RADIUS, MOB_QUORUM)
+                    && rng.gen::<f32>() < MOB_PROB
+                {
+                    // ROADMAP 267：白天平靜的野鳥——身邊有 ≥MOB_QUORUM 隻同伴壯膽（MOB_FLOCK_RADIUS 內），
+                    // 又「看見」一頭正閒晃路過、並未在主動狩獵的掠食者（loiter_pred_snap 在 MOB_SEE_RADIUS 內、
+                    // 已逼近但尚未到逃命距離 FLEE_RADIUS——threat_near 為偽），便以 MOB_PROB 被牽動一擁而上、
+                    // 圍著牠俯衝鼓譟（鎖定最近的那頭，頭頂浮 😡）。逐幀低機率觸發 → 鳥群由近而遠一隻隻加入、
+                    // 逐圈匯聚（仿 218 群嚎／250 圍獵／265 跟食的逐幀牽動），而非同幀整群瞬間擁上。排在食腐／跟食
+                    // 之前：身邊有掠食者閒晃時，集體驅敵的急迫凌駕悠閒的撿食。只屬於野鳥（成群的小型獵物）；
+                    // 掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此分支即短路、改走逃竄——圍攻永遠讓位逃命。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &loiter_pred_snap, MOB_SEE_RADIUS) {
+                        let timer = rng.gen_range(MOB_DURATION_MIN..=MOB_DURATION_MAX);
+                        a.state = WildlifeState::Mobbing { target_x: tx, target_y: ty, mob_timer: timer };
                     }
                 } else if is_bird
                     && !is_night
@@ -3137,6 +3276,98 @@ fn sated_step(timer: f32, dt: f32) -> Option<f32> {
 /// 不算「歇息」，故不在此列——獵物要等牠吃飽躺下才真正放鬆。純函式，便於測試。
 fn is_sated(state: &WildlifeState) -> bool {
     matches!(state, WildlifeState::Sated { .. })
+}
+
+/// ROADMAP 267：圍攻俯衝的一步位移——朝閒晃掠食者 (tx,ty) 俯衝逼近，但只逼到鼓譟距離 MOB_HARASS_DIST
+/// 為止（已在距離內就回原座標＝貼臉繞著騷擾、不真的撲上去）。掠食者移動時每幀重算 → 鳥群跟著繞。純函式，便於測試。
+fn mob_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= MOB_HARASS_DIST || dist < 1.0 {
+        return (x, y);
+    }
+    let step = (MOB_SPEED * dt).min(dist - MOB_HARASS_DIST); // 不俯衝過鼓譟圈、不真撲上去
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 267：判斷掠食者是否「正閒晃、可被圍攻」——巡遊/歇息/返家/飽足/夜嚎/撲鼠/嗅蹤等漫無目的
+/// 的當口才算（鳥群只敢攆閒晃路過的掠食者）；**潛行(Stalking)/追獵(Hunting)/進食(Digesting)/分食(Feasting)
+/// 一律排除**——絕不打斷一場真正的狩獵或進食，確保圍攻零捕食平衡風險。純判定、無副作用，便於測試。
+fn is_mobbable_predator(state: &WildlifeState) -> bool {
+    matches!(state,
+        WildlifeState::Wandering { .. }
+        | WildlifeState::Resting { .. }
+        | WildlifeState::Returning
+        | WildlifeState::Sated { .. }
+        | WildlifeState::Howling { .. }
+        | WildlifeState::Pouncing { .. }
+        | WildlifeState::Tracking { .. })
+}
+
+/// ROADMAP 267：「數量壯膽」判定——位於 (x,y) 的野鳥在 `radius` 內是否有 ≥`quorum` 隻同種同伴
+/// （不含自己）。達標才敢起意圍攻（孤鳥/單對鳥不敢上前）。純函式（吃 prey_snap 快照），便於測試。
+fn flock_quorum(
+    self_id: u32,
+    kind: WildlifeKind,
+    x: f32,
+    y: f32,
+    prey_snap: &[(u32, WildlifeKind, f32, f32)],
+    radius: f32,
+    quorum: usize,
+) -> bool {
+    let r2 = radius * radius;
+    let mut n = 0usize;
+    for &(id, k, px, py) in prey_snap {
+        if id == self_id || k != kind {
+            continue;
+        }
+        let dx = px - x;
+        let dy = py - y;
+        if dx * dx + dy * dy <= r2 {
+            n += 1;
+            if n >= quorum {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// ROADMAP 267：掠食者承受的圍攻壓力——統計 `radius` 內正在圍攻鼓譟的鳥（mobbing 座標快照）數，達
+/// `quorum` 隻就回傳這群鳥的中心 (cx,cy)（供掠食者朝反方向走開）；不足則 `None`（沒被圍夠、不理會）。
+/// 純函式，便於測試。
+fn mob_pressure_center(px: f32, py: f32, mobbing: &[(f32, f32)], radius: f32, quorum: usize) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    let mut sx = 0.0_f32;
+    let mut sy = 0.0_f32;
+    let mut n = 0usize;
+    for &(mx, my) in mobbing {
+        let dx = mx - px;
+        let dy = my - py;
+        if dx * dx + dy * dy <= r2 {
+            sx += mx;
+            sy += my;
+            n += 1;
+        }
+    }
+    if n >= quorum {
+        Some((sx / n as f32, sy / n as f32))
+    } else {
+        None
+    }
+}
+
+/// ROADMAP 267：從 (fx,fy) 背向的一點——以 (px,py) 為起點，朝「遠離 (fx,fy)」方向取 `dist` 距離的目標點，
+/// 供被圍攻的掠食者設為新漫遊目標、朝鳥群反方向走開。兩點重疊時隨意挑一向（+x），避免除以零。純函式，便於測試。
+fn point_away(px: f32, py: f32, fx: f32, fy: f32, dist: f32) -> (f32, f32) {
+    let dx = px - fx;
+    let dy = py - fy;
+    let d = (dx * dx + dy * dy).sqrt();
+    if d < 1.0 {
+        return (px + dist, py);
+    }
+    (px + dx / d * dist, py + dy / d * dist)
 }
 
 /// ROADMAP 256：好奇試探的一步位移——朝玩家 (px,py) 謹慎挪近，但只挪到警戒距離
@@ -6068,6 +6299,203 @@ mod tests {
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(!matches!(b.state, WildlifeState::Fleeing { .. }),
             "掠食者在 SENTINEL_KEEN_RADIUS 之外時哨兵鳥不該早炸，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 267：群鳥鼓譟驅敵（mobbing）─────────────────────────────────────
+    #[test]
+    fn state_str_mobbing() {
+        let mut a = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        a.state = WildlifeState::Mobbing { target_x: 1.0, target_y: 2.0, mob_timer: 3.0 };
+        assert_eq!(a.state_str(), "mobbing");
+    }
+
+    #[test]
+    fn mob_see_radius_beyond_flee_radius() {
+        // 圍攻偵測半徑須大於逃命距離：圍攻發生在「掠食者已逼近、但尚未到貼臉逃命距離」的中段，
+        // 更近就落到既有逃竄（圍攻讓位逃命）。鼓譟距離須在逃命距離內（鳥憑壯膽逼得比平常更近）。
+        assert!(MOB_SEE_RADIUS > FLEE_RADIUS, "圍攻偵測半徑應大於逃命距離");
+        assert!(MOB_HARASS_DIST < FLEE_RADIUS, "鼓譟距離應在逃命距離內（壯膽逼近）");
+        assert!(MOB_HARASS_RADIUS > MOB_HARASS_DIST, "掠食者感壓力的半徑應略大於鼓譟距離");
+    }
+
+    #[test]
+    fn mob_step_darts_in_then_holds_at_harass_distance() {
+        // 遠在鼓譟距離外 → 朝掠食者俯衝逼近（距離縮小、但不衝過鼓譟圈）。
+        let (nx, ny) = mob_step(0.0, 0.0, 1000.0, 0.0, 0.1);
+        assert!(nx > 0.0 && (ny).abs() < 1e-3, "應朝掠食者俯衝（沿 +x）");
+        assert!(nx <= MOB_SPEED * 0.1 + 1e-3, "單幀俯衝距離受 MOB_SPEED 約束");
+        // 已在鼓譟距離內 → 原地（繞著騷擾、不真撲上去）。
+        let near = MOB_HARASS_DIST - 5.0;
+        let (hx, hy) = mob_step(0.0, 0.0, near, 0.0, 0.1);
+        assert_eq!((hx, hy), (0.0, 0.0), "已逼到鼓譟距離內應原地繞著騷擾、不再逼近");
+    }
+
+    #[test]
+    fn mob_step_does_not_overshoot_harass_ring() {
+        // 從鼓譟圈外一點點俯衝：單幀位移被夾到「剛好停在鼓譟距離」，不會穿過去貼到掠食者身上。
+        let start = MOB_HARASS_DIST + 10.0; // 只比鼓譟距離遠 10px
+        let (nx, _) = mob_step(0.0, 0.0, start, 0.0, 1.0); // dt 大到足以衝過頭（若不夾）
+        assert!((nx - 10.0).abs() < 1e-3, "應剛好俯衝到鼓譟圈邊緣（位移=10），不穿過去，實際 {nx}");
+    }
+
+    #[test]
+    fn is_mobbable_predator_excludes_active_hunt_and_feeding() {
+        // 閒晃狀態可被圍攻；潛行/追獵/進食/分食一律不可（絕不打斷一場真正的狩獵或進食）。
+        assert!(is_mobbable_predator(&WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 1.0 }));
+        assert!(is_mobbable_predator(&WildlifeState::Resting { rest_timer: 1.0 }));
+        assert!(is_mobbable_predator(&WildlifeState::Tracking { tx: 0.0, ty: 0.0, track_timer: 1.0 }));
+        assert!(!is_mobbable_predator(&WildlifeState::Stalking { target_id: 1, stalk_timer: 1.0 }), "潛行中不可被圍攻");
+        assert!(!is_mobbable_predator(&WildlifeState::Hunting { target_id: 1, hunt_timer: 1.0 }), "追獵中不可被圍攻");
+        assert!(!is_mobbable_predator(&WildlifeState::Digesting { timer: 1.0 }), "進食中不可被圍攻");
+        assert!(!is_mobbable_predator(&WildlifeState::Feasting { ax: 0.0, ay: 0.0, feast_timer: 1.0 }), "分食中不可被圍攻");
+    }
+
+    #[test]
+    fn flock_quorum_needs_enough_same_kind_companions() {
+        // 同種同伴達 quorum 才壯得起膽；不足、或都是別種、或都在半徑外，都不算。
+        let me_id = 1u32;
+        let here = (5000.0_f32, 5000.0_f32);
+        let near = |dx: f32| (here.0 + dx, here.1);
+        // 自己 + 1 隻同伴 = 不足 quorum(2)。
+        let snap1 = vec![(me_id, WildlifeKind::WildBird, here.0, here.1), (2, WildlifeKind::WildBird, near(20.0).0, near(20.0).1)];
+        assert!(!flock_quorum(me_id, WildlifeKind::WildBird, here.0, here.1, &snap1, MOB_FLOCK_RADIUS, MOB_QUORUM), "只有 1 隻同伴不足壯膽");
+        // 2 隻同伴 = 達 quorum。
+        let snap2 = vec![
+            (2, WildlifeKind::WildBird, near(20.0).0, near(20.0).1),
+            (3, WildlifeKind::WildBird, near(40.0).0, near(40.0).1),
+        ];
+        assert!(flock_quorum(me_id, WildlifeKind::WildBird, here.0, here.1, &snap2, MOB_FLOCK_RADIUS, MOB_QUORUM), "2 隻同伴達 quorum");
+        // 別種不算。
+        let snap3 = vec![
+            (2, WildlifeKind::WildDeer, near(20.0).0, near(20.0).1),
+            (3, WildlifeKind::WildDeer, near(40.0).0, near(40.0).1),
+        ];
+        assert!(!flock_quorum(me_id, WildlifeKind::WildBird, here.0, here.1, &snap3, MOB_FLOCK_RADIUS, MOB_QUORUM), "別種同伴不算壯膽");
+        // 半徑外不算。
+        let far = (here.0 + MOB_FLOCK_RADIUS + 50.0, here.1);
+        let snap4 = vec![(2, WildlifeKind::WildBird, far.0, far.1), (3, WildlifeKind::WildBird, far.0 + 10.0, far.1)];
+        assert!(!flock_quorum(me_id, WildlifeKind::WildBird, here.0, here.1, &snap4, MOB_FLOCK_RADIUS, MOB_QUORUM), "半徑外的同伴不算");
+    }
+
+    #[test]
+    fn mob_pressure_center_needs_quorum_and_returns_center() {
+        let p = (5000.0_f32, 5000.0_f32);
+        // 不足 quorum → None。
+        assert!(mob_pressure_center(p.0, p.1, &[(5050.0, 5000.0)], MOB_HARASS_RADIUS, MOB_QUORUM).is_none(), "只 1 隻鳥不成壓力");
+        // 達 quorum → 回傳鳥群中心。
+        let mob = vec![(5050.0, 5000.0), (5050.0, 5040.0)];
+        let c = mob_pressure_center(p.0, p.1, &mob, MOB_HARASS_RADIUS, MOB_QUORUM).expect("2 隻鳥應成壓力");
+        assert!((c.0 - 5050.0).abs() < 1e-3 && (c.1 - 5020.0).abs() < 1e-3, "中心應為兩鳥平均，實際 {c:?}");
+        // 半徑外的鳥不計入。
+        let far = vec![(5050.0, 5000.0), (5000.0 + MOB_HARASS_RADIUS + 50.0, 5000.0)];
+        assert!(mob_pressure_center(p.0, p.1, &far, MOB_HARASS_RADIUS, MOB_QUORUM).is_none(), "一隻在半徑外則不足 quorum");
+    }
+
+    #[test]
+    fn point_away_points_opposite_with_given_distance() {
+        // 從 (100,0) 背向 (0,0) 取距離 50 → 落在 (150,0)（沿遠離方向）。
+        let (tx, ty) = point_away(100.0, 0.0, 0.0, 0.0, 50.0);
+        assert!((tx - 150.0).abs() < 1e-3 && ty.abs() < 1e-3, "應沿遠離方向取指定距離，實際 ({tx},{ty})");
+        // 重疊時退化為 +x，不 NaN。
+        let (dx, dy) = point_away(7.0, 7.0, 7.0, 7.0, 30.0);
+        assert!(dx.is_finite() && dy.is_finite() && (dx - 37.0).abs() < 1e-3, "重疊時應有限且退化為 +x");
+    }
+
+    #[test]
+    fn mobbing_bird_keeps_harassing_loitering_predator() {
+        // 整管理器：一隻正在圍攻的野鳥，那頭被攆的狼仍閒晃在 MOB_SEE_RADIUS 內 → 鳥續留圍攻、朝狼俯衝逼近。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Mobbing { target_x: 5200.0, target_y: 5000.0, mob_timer: 5.0 };
+        // 狼在 200px：FLEE_RADIUS(180) 外、MOB_SEE_RADIUS(240) 內，且閒晃（Wandering）→ 在 loiter 快照裡。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5200.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Wandering { target_x: 5200.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![bird, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Mobbing { .. }), "閒晃狼仍在範圍內時鳥應續留圍攻，實際 {:?}", b.state);
+        assert!(b.x > 5000.0, "圍攻的鳥應朝狼俯衝逼近（x 增大），實際 x={}", b.x);
+    }
+
+    #[test]
+    fn mobbing_bird_disperses_when_predator_gone() {
+        // 那頭狼已走遠（範圍內已無閒晃掠食者）、四下也無威脅 → 鼓譟收場、鳥散去歇息。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Mobbing { target_x: 9000.0, target_y: 9000.0, mob_timer: 5.0 };
+        mgr.animals = vec![bird]; // 場上只剩鳥、無掠食者
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Resting { .. }), "掠食者走遠後圍攻應收場、散去歇息，實際 {:?}", b.state);
+    }
+
+    #[test]
+    fn mobbing_bird_bolts_when_predator_turns_to_hunt_and_closes_in() {
+        // 那頭掠食者轉入主動狩獵（離開 loiter 快照）並已逼到 FLEE_RADIUS 內 → 鳥立刻拍翅逃竄（圍攻讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Mobbing { target_x: 5100.0, target_y: 5000.0, mob_timer: 5.0 };
+        // 狼在 100px（FLEE_RADIUS 180 內）且為 Hunting（不在 loiter 快照）→ 鳥應逃。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5100.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Hunting { target_id: 999, hunt_timer: 1.0e9 };
+        mgr.animals = vec![bird, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.2, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "掠食者轉獵並逼近時圍攻的鳥應改逃竄，實際 {:?}", b.state);
+    }
+
+    #[test]
+    fn mobbed_loitering_predator_retreats_from_flock() {
+        // 整管理器：一頭閒晃的狼被 ≥MOB_QUORUM 隻正在鼓譟的野鳥圍著 → 不勝其煩、朝鳥群反方向走開（驅趕成形）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 1.0e9 };
+        // 兩隻鳥都在 MOB_HARASS_RADIUS(130) 內、處 Mobbing → 構成圍攻壓力。鳥群中心在狼的 +x/+y 側。
+        let mut b1 = adult_at(WildlifeKind::WildBird, 5060.0, 5000.0);
+        b1.id = 2;
+        b1.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        let mut b2 = adult_at(WildlifeKind::WildBird, 5060.0, 5040.0);
+        b2.id = 3;
+        b2.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        mgr.animals = vec![wolf, b1, b2];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 鳥群中心 ≈ (5060,5020)，狼起點到中心距離 ≈ 62.6。
+        let center = (5060.0_f32, 5020.0_f32);
+        let dist0 = ((5000.0_f32 - center.0).powi(2) + (5000.0_f32 - center.1).powi(2)).sqrt();
+        mgr.tick(0.5, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        let dist1 = ((w.x - center.0).powi(2) + (w.y - center.1).powi(2)).sqrt();
+        assert!(dist1 > dist0 + 1.0, "被圍攻的閒晃狼應朝鳥群反方向走開（離中心更遠），起 {dist0} → 後 {dist1}");
+    }
+
+    #[test]
+    fn mobbed_feeding_predator_not_pulled_away() {
+        // 安全界線：進食中（Digesting）的掠食者即使身邊有鼓譟鳥，也不被拉走（鳥本就不圍進食者、絕不打斷進食）。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 };
+        let mut b1 = adult_at(WildlifeKind::WildBird, 5060.0, 5000.0);
+        b1.id = 2;
+        b1.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        let mut b2 = adult_at(WildlifeKind::WildBird, 5060.0, 5040.0);
+        b2.id = 3;
+        b2.state = WildlifeState::Mobbing { target_x: 5000.0, target_y: 5000.0, mob_timer: 1.0e9 };
+        mgr.animals = vec![wolf, b1, b2];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.5, &[], &att, &[], false);
+        let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(w.state, WildlifeState::Digesting { .. }), "進食中的掠食者不該被圍攻拉走，實際 {:?}", w.state);
+        assert!((w.x - 5000.0).abs() < 1e-3 && (w.y - 5000.0).abs() < 1e-3, "進食中的掠食者應原地不動");
     }
 
     #[test]
