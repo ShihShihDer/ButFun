@@ -4237,7 +4237,7 @@
     safeDraw("leaves", () => drawLeaves(renderNow, _weatherDt)); // 秋日落葉（227）
     safeDraw("blossom", () => drawBlossom(renderNow, _weatherDt)); // 春日花飛（228）
     safeDraw("summerMotes", () => drawSummerMotes(renderNow, _weatherDt)); // 夏日蟬夏（229）
-    safeDraw("butterflies", () => drawButterflies(renderNow, _weatherDt)); // 春夏彩蝶（236），春夏白天草地上空翩飛的彩色蝴蝶（春夜螢火的白天對偶）
+    // 春夏彩蝶（236）已依玩家回饋移除（跟著鏡頭的螢幕座標裝飾、觀感廉價）。drawButterflies 函式保留未呼叫。
     safeDraw("dragonflies", () => drawDragonflies(renderNow, _weatherDt)); // 秋日紅蜻蜓（237），秋季白天草地上空懸停疾射的赤紅秋蜻（春夏彩蝶的秋日對偶）
     safeDraw("sparrows", () => drawSparrows(renderNow, _weatherDt));       // 冬日寒雀（238），冬季白天雪地上蹦跳啄食、偶爾短距撲翅一躍的褐灰小雀（補齊四季白天貼地生命）
     safeDraw("meteorParticles", () => drawMeteorParticles(renderNow, _weatherDt)); // 流星雨（133）
@@ -4290,9 +4290,7 @@
     // ——極光是夜空背後的光幕，月亮在其上發光（晝雪 226 的夜晚對偶，把四季視覺首次延伸進夜空）。
     safeDraw("aurora", () => drawAurora(performance.now(), _weatherDt));
 
-    // 天空的太陽與月亮（ROADMAP 200）：獨立 safeDraw，白天太陽、入夜月亮沿天弧東升西落。
-    // 排在雲/鳥之前——雲與鳥較靠近觀者，會從太陽/月亮主體前飄過。
-    safeDraw("celestialBody", () => drawCelestialBody(performance.now()));
+    // 天空太陽/月亮（200）已依玩家回饋移除（螢幕固定的白光球、觀感廉價）。日夜光照/陰影不受影響（走 daynight.light）。drawCelestialBody 函式保留未呼叫。
 
     // 天邊流雲（ROADMAP 193）：獨立 safeDraw，白天天邊飄雲、破曉/黃昏染金、入夜淡出。
     safeDraw("clouds", () => drawClouds(performance.now()));
