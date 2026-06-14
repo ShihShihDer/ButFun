@@ -324,6 +324,35 @@ const COURT_DURATION_MAX: f32 = 6.0;
 /// 偶爾的溫柔片刻（多數時候仍照常吃草／休息），而非時時黏著。
 const COURT_PROB: f32 = 0.04;
 
+// ─── ROADMAP 271：守靈駐立（mourning — 死亡看得見的餘韻）──────────────────────
+// 生命循環至今已從求偶（270）、誕生（207）、依偎（208）、嬉戲（215）一路鋪到理毛（216）、護幼
+// （214），唯獨「死亡」這一端始終沒有半點餘韻：掠食者咬死一隻獵物（既有 Kill），倖存的同伴只會
+// 炸群逃竄（209），等掠食者吃飽歇獵、草原歸於平靜（253）後，那群同伴就像什麼都沒發生過一樣回頭
+// 吃草——夥伴的殞落在生態系裡不留一絲痕跡。本切片給死亡補上看得見的餘韻：每場獵殺會在倒下處留下
+// 一個會逐漸淡去的「哀悼地」（grief site，攜物種＋座標＋TTL）；待掠食者散去、草原重歸平靜，附近
+// 的同種成體偶爾會走到夥伴倒下的地方駐足低頭默哀（新增 Mourning 狀態，原地不動、低頭、頭頂浮 🥀），
+// 數秒後再起身。於是同一片草原，你會看見：一頭狼撲倒了一隻鹿、飽食散去後，另一頭鹿緩緩走回那片
+// 空地、靜靜低頭佇立——生命的循環第一次連「終點」也有了看得見的一幕。與求偶（❤️）刻意對成生死
+// 一對：求偶是孕育將至的前奏、守靈是殞落之後的餘韻，一始一終把生命循環補成完整一圈。哀悼永遠讓位
+// 逃命（掠食者一旦逼近一律改逃竄），故守靈只發生在獵殺者散去後的平靜時分，恰是真實群居動物駐足
+// 殞落同伴身旁的天性。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 mourning 字串沿用
+// state_str，哀悼地存在管理器內、不入協議；計時隨狀態變體攜帶，無新欄位）、記憶體模式。
+/// 哀悼地存活時長（秒）——一場獵殺後在倒下處留存這麼久供同伴駐足，之後自然淡去。刻意長於掠食者
+/// 進食（DIGEST_DURATION 25s，期間仍是威脅、同伴不敢近）＋飽足散去的時間，留出散去後的平靜空檔讓
+/// 倖存者得以走回默哀。
+const GRIEF_SITE_TTL: f32 = 55.0;
+/// 同時存在的哀悼地上限——與乙太微粒同上限，避免一時多殺撐爆。較舊的會隨 TTL 先淡去。
+const MAX_GRIEF_SITES: usize = 8;
+/// 守靈半徑（像素）——成體在此範圍內「看得見」夥伴倒下處，平靜時才可能走去默哀。略大於理毛/求偶
+/// 的貼近半徑（同伴未必恰好佇立原地），但仍是近距離（同一片棲地）。
+const MOURN_RADIUS: f32 = 120.0;
+/// 視為「已守靈中」的單段最短／最長時長（秒）——靜靜低頭佇立數秒後再起身。
+const MOURN_DURATION_MIN: f32 = 3.5;
+const MOURN_DURATION_MAX: f32 = 7.0;
+/// 成體在白天歇息、附近有同種夥伴倒下處（哀悼地）、且平靜時，本幀轉入守靈的機率——偏低，讓默哀是
+/// 殞落之後偶爾的一幕靜默（不是每隻倖存者都會駐足），多數時候仍照常作息。
+const MOURN_PROB: f32 = 0.045;
+
 // ─── ROADMAP 217：掠食者夜嚎（predator night howl）─────────────────────────────
 // 承接 210（晝夜作息）+ 213（孤獵潛行）：過去獵物入夜歸巢沉睡、夜晚成了「獵物缺席」的安靜時段，
 // 但夜其實是掠食者的主場——牠們只會默默巡遊獵食，從不發出聲音，夜的氛圍裡少了最標誌性的一筆：
@@ -937,6 +966,16 @@ pub struct CarrionOrb {
     pub ttl: f32,
 }
 
+/// ROADMAP 271：守靈駐立——一場獵殺在倒下處留下的「哀悼地」，攜殞落者物種＋座標＋會逐漸淡去的
+/// TTL。供 tick 讓散去後平靜的同種成體走來駐足默哀；純存在管理器內、不入協議。
+#[derive(Debug, Clone)]
+struct GriefSite {
+    kind: WildlifeKind,
+    x: f32,
+    y: f32,
+    ttl: f32,
+}
+
 // ─── ROADMAP 143：物種聚落 ───────────────────────────────────────────────────
 
 /// 物種聚落——各物種的巢穴/棲地，有領地守衛行為。
@@ -1102,6 +1141,11 @@ enum WildlifeState {
     /// 俯衝逼到鼓譟距離 MOB_HARASS_DIST 繞著騷擾。計時耗盡、掠食者走遠就散去歇息；掠食者一旦轉入主動
     /// 狩獵（離開 loiter 快照）便依既有獵物邏輯逃竄（圍攻永遠讓位逃命）。只屬於野鳥（成群的小型獵物）。
     Mobbing { target_x: f32, target_y: f32, mob_timer: f32 },
+    /// ROADMAP 271：守靈駐立——掠食者散去、草原重歸平靜後，附近的同種成體走到夥伴倒下的「哀悼地」
+    /// 駐足低頭默哀（前端畫成低頭佇立、頭頂浮 🥀）。原地不動（不更新座標）、mourn_timer 倒數，到期
+    /// 就起身回到漫遊；威脅一旦逼近一律優先逃竄（哀悼永遠讓位逃命）。與 270 求偶（❤️）對成生死一對：
+    /// 求偶是孕育前奏、守靈是殞落餘韻。
+    Mourning { mourn_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1461,6 +1505,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 271：守靈駐立——守靈中（Mourning）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor）起身回到漫遊。只在 Mourning 狀態下生效（呼叫端已確保此隻為白天、
+    /// 平靜的成體，且附近有同種夥伴的哀悼地；威脅逼近時呼叫端不會走到此分支、改逃竄）。
+    /// 與 tick_court 同模式：低頭佇立的視覺由前端演繹（頭頂浮 🥀），後端只穩定地推進計時。
+    fn tick_mourn(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Mourning { mourn_timer } = self.state {
+            let remaining = mourn_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Mourning { mourn_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 224：野鹿頂角較勁——較勁中（Sparring）原地不動、倒數計時；到期就挑下一個漫遊
     /// 目標（沿用群聚拉力 herd_anchor）分開起身漫遊。只在 Sparring 狀態下生效（呼叫端已確保
     /// 此隻為成年野鹿、白天、平靜、且身邊有同種夥伴；威脅逼近時呼叫端不會走到此分支、改逃竄）。
@@ -1756,6 +1817,7 @@ impl Wildlife {
             WildlifeState::Curious          => "curious",
             WildlifeState::CommensalForaging { .. } => "foraging",
             WildlifeState::Mobbing { .. }   => "mobbing",
+            WildlifeState::Mourning { .. }  => "mourning",
         }
     }
 }
@@ -1779,6 +1841,8 @@ pub struct WildlifeManager {
     next_animal_id: u32,
     /// ROADMAP 207：各獵物物種的「安穩成群」累計秒數；達門檻即誕生一隻幼獸後歸零。
     breed_progress: std::collections::HashMap<WildlifeKind, f32>,
+    /// ROADMAP 271：活躍哀悼地列表——每場獵殺在倒下處留下一個，TTL 逐幀淡去。
+    grief_sites: Vec<GriefSite>,
 }
 
 impl WildlifeManager {
@@ -1797,6 +1861,7 @@ impl WildlifeManager {
             colony_threat_cooldowns: vec![0.0; n],
             next_animal_id,
             breed_progress: std::collections::HashMap::new(),
+            grief_sites: Vec::new(),
         }
     }
 
@@ -1888,6 +1953,8 @@ impl WildlifeManager {
             self.orb_counter = self.orb_counter.wrapping_add(1);
             self.carion_orbs.push(CarrionOrb { id, x: kx, y: ky, ttl: CARION_ORB_TTL });
         }
+        // ROADMAP 271：怪物獵殺也是夥伴的殞落——同樣留下哀悼地，同種倖存者一樣會駐足默哀。
+        push_grief_site(&mut self.grief_sites, wildlife_kind, kx, ky);
         Some(WildlifeEvent::MonsterHunted { monster_kind, wildlife_kind, x: kx, y: ky })
     }
 
@@ -1915,6 +1982,12 @@ impl WildlifeManager {
             orb.ttl -= dt;
         }
         self.carion_orbs.retain(|o| o.ttl > 0.0);
+
+        // ── Phase 0a': 哀悼地 TTL 倒數（ROADMAP 271）──────────────────────────
+        for site in &mut self.grief_sites {
+            site.ttl -= dt;
+        }
+        self.grief_sites.retain(|s| s.ttl > 0.0);
 
         // ── Phase 0b: 聚落廣播冷卻倒數（ROADMAP 143）────────────────────────
         for cd in &mut self.colony_threat_cooldowns {
@@ -1962,6 +2035,12 @@ impl WildlifeManager {
         let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
             .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect();
+
+        // ROADMAP 271：守靈駐立——本幀哀悼地快照（物種＋座標），供 Phase 4 讓散去後平靜的同種成體
+        // 走去夥伴倒下處默哀。哀悼地的播種與淡去發生在 Phase 5（套用擊殺）與 Phase 0a'，此處只讀。
+        let grief_snap: Vec<(WildlifeKind, f32, f32)> = self.grief_sites.iter()
+            .map(|s| (s.kind, s.x, s.y))
             .collect();
 
         // 捕食者位置：獵物逃跑時參考此清單。ROADMAP 253：剛飽餐後躺臥歇息（Sated）的掠食者肚滿腸肥、
@@ -2765,6 +2844,16 @@ impl WildlifeManager {
                     self.animals[i].id, animal_kind, self.animals[i].x, self.animals[i].y, &adult_snap, SPAR_RADIUS,
                 ).is_some();
 
+            // ROADMAP 271：守靈駐立——白天平靜的成體，若 MOURN_RADIUS 內有同種夥伴倒下的哀悼地
+            //（grief_snap 命中＝近處剛有一場殞落），歇息的當口偶爾會走去默哀。幼獸／逃竄中／夜間
+            // 一律不守靈（走依偎/逃竄/夜眠分支），故順手短路。
+            let mourn_has_site = !is_night
+                && !self.animals[i].is_juvenile()
+                && !matches!(self.animals[i].state, WildlifeState::Fleeing { .. })
+                && nearest_grief_site(
+                    self.animals[i].x, self.animals[i].y, animal_kind, &grief_snap, MOURN_RADIUS,
+                ).is_some();
+
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             if calm_at_night {
@@ -3023,6 +3112,20 @@ impl WildlifeManager {
                     // 仍會落到下方 grooming 分支（鹿也會互相理毛），社交因此剛柔兼備。
                     let timer = rng.gen_range(SPAR_DURATION_MIN..=SPAR_DURATION_MAX);
                     a.state = WildlifeState::Sparring { spar_timer: timer };
+                } else if matches!(a.state, WildlifeState::Mourning { .. }) && !threat_near {
+                    // ROADMAP 271：已在守靈中且仍平靜——把這一段默哀走完（原地不動、低頭佇立、計時
+                    // 倒數，視覺由前端演繹）。威脅一旦逼近就落到下方 tick_idle 改逃竄（哀悼讓位逃命）。
+                    a.tick_mourn(dt, herd_anchor, rng);
+                } else if mourn_has_site
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && rng.gen::<f32>() < MOURN_PROB
+                {
+                    // ROADMAP 271：白天歇息、附近有同種夥伴倒下處（哀悼地）、平靜——偶爾走去默哀
+                    // （頭頂浮 🥀）。排在求偶／理毛之前：一場剛發生的殞落，其餘韻凌駕日常的親暱與孕育
+                    // 前奏。沒轉入守靈的成體仍會落到下方求偶／理毛／吃草分支，世界既有哀也有暖。
+                    let timer = rng.gen_range(MOURN_DURATION_MIN..=MOURN_DURATION_MAX);
+                    a.state = WildlifeState::Mourning { mourn_timer: timer };
                 } else if matches!(a.state, WildlifeState::Courting { .. }) && !threat_near {
                     // ROADMAP 270：已在求偶中且仍平靜——把這一段示愛走完（原地不動、計時倒數，
                     // 依偎的視覺由前端演繹）。威脅一旦逼近就落到下方 tick_idle 改逃竄（求偶讓位逃命）。
@@ -3079,6 +3182,9 @@ impl WildlifeManager {
                 self.orb_counter = self.orb_counter.wrapping_add(1);
                 self.carion_orbs.push(CarrionOrb { id, x: kx, y: ky, ttl: CARION_ORB_TTL });
             }
+            // ROADMAP 271：在倒下處留下一個哀悼地（攜殞落者物種），供散去後平靜的同種成體走來駐足
+            // 默哀。每場獵殺都播種（不隨 30s 廣播限流），守靈才能可靠地接在每場死亡之後。
+            push_grief_site(&mut self.grief_sites, prey_kind, kx, ky);
         }
 
         // ── Phase 6: 族群繁衍（ROADMAP 207）────────────────────────────────────
@@ -3306,6 +3412,39 @@ fn nearest_adult_of_kind(
     adult_snap.iter()
         .filter(|&&(id, k, _, _)| id != self_id && k == kind)
         .map(|&(_, _, px, py)| (px, py, (px - ax).powi(2) + (py - ay).powi(2)))
+        .filter(|&(_, _, d2)| d2 <= r2)
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(px, py, _)| (px, py))
+}
+
+/// ROADMAP 271：守靈駐立——在倒下處 (x,y) 留下一個攜物種 `kind` 的哀悼地（TTL=GRIEF_SITE_TTL）。
+/// 已達上限 MAX_GRIEF_SITES 時，淘汰最舊（剩餘 TTL 最小）的一個再放入，確保最新的殞落一定留得下
+/// 痕跡（與乙太微粒「滿則跳過」不同：守靈要可靠地接在最近一場死亡之後）。純函式，便於測試。
+fn push_grief_site(sites: &mut Vec<GriefSite>, kind: WildlifeKind, x: f32, y: f32) {
+    if sites.len() >= MAX_GRIEF_SITES {
+        if let Some((idx, _)) = sites.iter().enumerate()
+            .min_by(|a, b| a.1.ttl.partial_cmp(&b.1.ttl).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            sites.swap_remove(idx);
+        }
+    }
+    sites.push(GriefSite { kind, x, y, ttl: GRIEF_SITE_TTL });
+}
+
+/// ROADMAP 271：守靈駐立——位於 (ax,ay) 的成體，回傳 `radius` 內、同物種 `kind` 最近的哀悼地座標
+/// （`sites` 為本幀哀悼地快照：物種＋座標）。供平靜成體決定要不要走去夥伴倒下處默哀。純函式，便於
+/// 測試。只認同種的哀悼地——鹿為鹿守靈、不會跨種（與既有同種社交行為一致）。
+fn nearest_grief_site(
+    ax: f32,
+    ay: f32,
+    kind: WildlifeKind,
+    sites: &[(WildlifeKind, f32, f32)],
+    radius: f32,
+) -> Option<(f32, f32)> {
+    let r2 = radius * radius;
+    sites.iter()
+        .filter(|&&(k, _, _)| k == kind)
+        .map(|&(_, px, py)| (px, py, (px - ax).powi(2) + (py - ay).powi(2)))
         .filter(|&(_, _, d2)| d2 <= r2)
         .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(px, py, _)| (px, py))
@@ -4657,6 +4796,123 @@ mod tests {
         let deer = mgr.animals.iter().find(|a| a.id == 100).unwrap();
         assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
             "掠食者逼近時求偶應立刻讓位逃竄");
+    }
+
+    // ─── ROADMAP 271：守靈駐立 ───────────────────────────────────────────────
+    #[test]
+    fn tick_mourn_counts_down_then_returns_to_wandering() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Mourning { mourn_timer: 1.0 };
+        d.tick_mourn(0.4, None, &mut rng);
+        match d.state {
+            WildlifeState::Mourning { mourn_timer } =>
+                assert!((mourn_timer - 0.6).abs() < 1e-4, "未到期應續守靈並倒數，實得 {mourn_timer}"),
+            _ => panic!("未到期不應離開守靈"),
+        }
+        d.tick_mourn(1.0, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Wandering { .. }), "守靈到期應回到漫遊");
+    }
+
+    #[test]
+    fn tick_mourn_noop_when_not_mourning() {
+        let mut rng = make_rng();
+        let mut d = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        d.state = WildlifeState::Resting { rest_timer: 3.0 };
+        d.tick_mourn(0.5, None, &mut rng);
+        assert!(matches!(d.state, WildlifeState::Resting { .. }), "非守靈狀態呼叫 tick_mourn 應原樣不動");
+    }
+
+    #[test]
+    fn nearest_grief_site_only_matches_same_kind_in_range() {
+        let sites = vec![
+            (WildlifeKind::WildDeer, 100.0, 0.0),                 // 同種、範圍內
+            (WildlifeKind::WildDeer, 30.0, 0.0),                  // 同種、更近
+            (WildlifeKind::WildBird, 10.0, 0.0),                  // 異種（雖最近，不算）
+            (WildlifeKind::WildDeer, MOURN_RADIUS + 50.0, 0.0),   // 同種但超出範圍
+        ];
+        let got = nearest_grief_site(0.0, 0.0, WildlifeKind::WildDeer, &sites, MOURN_RADIUS);
+        assert_eq!(got, Some((30.0, 0.0)), "應回傳同種、範圍內最近的哀悼地（30,0），實得 {got:?}");
+        // 該物種範圍內無哀悼地 → None（小動物沒有自己的哀悼地）。
+        assert_eq!(nearest_grief_site(0.0, 0.0, WildlifeKind::SmallCritter, &sites, MOURN_RADIUS), None);
+    }
+
+    #[test]
+    fn push_grief_site_caps_and_evicts_oldest() {
+        let mut sites: Vec<GriefSite> = Vec::new();
+        // 塞滿到上限，並讓較早放入的 TTL 較小（模擬較舊）。
+        for i in 0..MAX_GRIEF_SITES {
+            sites.push(GriefSite { kind: WildlifeKind::WildDeer, x: i as f32, y: 0.0, ttl: 1.0 + i as f32 });
+        }
+        assert_eq!(sites.len(), MAX_GRIEF_SITES);
+        // 再放一個新的（滿了 → 淘汰剩餘 TTL 最小者，即 ttl=1.0 的那個 x=0）。
+        push_grief_site(&mut sites, WildlifeKind::WildBird, 999.0, 0.0);
+        assert_eq!(sites.len(), MAX_GRIEF_SITES, "上限不被突破");
+        assert!(sites.iter().any(|s| s.x == 999.0 && s.kind == WildlifeKind::WildBird),
+            "最新的殞落一定留得下痕跡");
+        assert!(!sites.iter().any(|s| (s.x - 0.0).abs() < 1e-6 && s.ttl == 1.0),
+            "剩餘 TTL 最小（最舊）的應被淘汰");
+    }
+
+    #[test]
+    fn a_predator_kill_leaves_a_grief_site() {
+        // 狼正追獵、已逼到 KILL_RADIUS 內 → 本 tick 擊殺 → 倒下處留下一個同種（鹿）哀悼地。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); deer.id = 100;
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5005.0, 5000.0); wolf.id = 101;
+        wolf.state = WildlifeState::Hunting { target_id: 100, hunt_timer: 5.0 };
+        mgr.animals = vec![deer, wolf];
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[], false);
+
+        assert!(!mgr.animals.iter().find(|a| a.id == 100).unwrap().alive, "鹿應被擊殺");
+        assert_eq!(mgr.grief_sites.len(), 1, "擊殺應留下一個哀悼地");
+        assert_eq!(mgr.grief_sites[0].kind, WildlifeKind::WildDeer, "哀悼地物種＝殞落者（鹿）");
+    }
+
+    #[test]
+    fn mourning_emerges_near_a_grief_site() {
+        // 兩隻成年野鹿緊鄰、白天平靜、無捕食者，附近有一個同種哀悼地（夥伴倒下處）
+        // → 歇息的當口應有鹿走去駐足默哀（Mourning）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Resting { rest_timer: 5.0 };
+        let mut d2 = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); d2.id = 101;
+        d2.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![d1, d2];
+        let attitudes = std::collections::HashMap::new();
+
+        let mut seen_mourning = false;
+        for _ in 0..3000 {
+            // 每幀維持一個近處哀悼地（鹿群棲地內），避免 TTL 淡盡或被默哀「走完」後沒得再哀。
+            if mgr.grief_sites.is_empty() {
+                push_grief_site(&mut mgr.grief_sites, WildlifeKind::WildDeer, 5015.0, 5000.0);
+            }
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            if mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Mourning { .. })) {
+                seen_mourning = true;
+                break;
+            }
+        }
+        assert!(seen_mourning, "附近有夥伴倒下處時，平靜的同種成體應會走去駐足默哀");
+    }
+
+    #[test]
+    fn mourning_yields_to_threat() {
+        // 守靈中的鹿，一旦掠食者逼近 FLEE_RADIUS 內 → 立刻改逃竄（哀悼永遠讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut d1 = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0); d1.id = 100;
+        d1.state = WildlifeState::Mourning { mourn_timer: 5.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0 + FLEE_RADIUS * 0.4, 5000.0); wolf.id = 101;
+        wolf.state = WildlifeState::Wandering { target_x: 0.0, target_y: 0.0, wander_timer: 5.0 };
+        mgr.animals = vec![d1, wolf];
+        // 哀悼地仍在，但威脅優先。
+        push_grief_site(&mut mgr.grief_sites, WildlifeKind::WildDeer, 5010.0, 5000.0);
+        let attitudes = std::collections::HashMap::new();
+        mgr.tick(0.1, &[], &attitudes, &[], false);
+        let deer = mgr.animals.iter().find(|a| a.id == 100).unwrap();
+        assert!(matches!(deer.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時守靈應立刻讓位逃竄");
     }
 
     #[test]
