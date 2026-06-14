@@ -501,6 +501,27 @@ const FEAST_REACH: f32 = 24.0;
 const FEAST_DURATION_MIN: f32 = 6.0;
 const FEAST_DURATION_MAX: f32 = 11.0;
 
+// ─── ROADMAP 250：野狼協同圍獵（wolf pack hunt／coordinated chase）────────────
+// 生態的「掠食者」一側再進一步：218 群嚎呼應＝夜裡此起彼落地呼喚同伴、230 群聚分食＝獵殺後圍著
+// 屍體一起吃，這兩塊都發生在「獵殺前後」；唯獨「獵殺當下」這一幕，過去仍是孤狼獨鬥——一隻狼鎖定
+// 一頭鹿、獨自潛行追殺，旁邊就算有同群的狼也視而不見、各追各的。本切片讓野狼第一次在「追獵當下」
+// 也社交起來：一隻平靜閒晃的野狼若「看見」同群夥伴正在追獵（潛行／全速追殺）一頭獵物，會被牽動
+// 加入這場圍獵——鎖定同一頭獵物、一同包抄追上去。關鍵價值是「協同擴展感知」：被牽動者鎖定的，
+// 往往是牠自己搜尋範圍（HUNT_RADIUS）外、單憑一己之力根本看不見的獵物——是「看見同伴在追」才跟上，
+// 於是一頭鹿被一隻狼盯上，往往演變成整群狼從四面匯聚而來（狼群圍獵最招牌的一幕）。召喚沿用 218／230
+// 的「逐圈接力」手法：本幀新加入者不在快照裡，故狼群陸續加入、由近而遠逐圈擴散，而非同幀整群瞬間鎖定。
+// 只屬於野狼（社交性掠食者）：野狐獨來獨往、單獨狩獵（與 218 群嚎／230 分食＝狼社交、223 撲鼠＝狐獨行
+// 的二分一致，把「社交 vs 獨行」差異從聲音／進食延伸到狩獵本身）。純啟發式、零 LLM、零 tick 簽名改動、
+// 零協議改動（被牽動者進入既有的 Stalking 狀態、沿用既有 stalking/hunting 字串，無新欄位、無新狀態）。
+// 獵物的存活／逃竄判定一律走既有 Phase 3／4：被牽動者鎖定的獵物若中途死亡或不見，照既有邏輯放棄返家。
+/// 一隻閒晃的平靜野狼「看見」同群夥伴正在追獵、被牽動加入圍獵的最大範圍——略大於分食的
+/// FEAST_HEAR_RADIUS（360）：追獵是大動作的奔逐、遠遠就看得見同伴在追，故設成最遠的牽動半徑，
+/// 讓被牽動者得以鎖定自己搜尋範圍外、原本看不見的獵物（協同圍獵擴展了狼群的整體感知）。
+const PACK_HUNT_SEE_RADIUS: f32 = 420.0;
+/// 範圍內有同群野狼正在追獵時，一隻平靜野狼本幀被牽動加入的機率——仿 230 的 FEAST_JOIN_PROB，
+/// 「逐幀低機率牽動」讓狼群陸續加入、逐圈匯聚，而非同幀整群瞬間鎖定同一頭獵物。
+const PACK_HUNT_JOIN_PROB: f32 = 0.05;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -1503,6 +1524,19 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 250：本幀起始時正在追獵（潛行 Stalking／全速追殺 Hunting）的野狼快照——
+        // （座標＋牠鎖定的獵物 id），即「正在進行的圍獵現場」，供附近閒晃的同群野狼據此「看見
+        // 同伴在追」而被牽動加入、鎖定同一頭獵物（仿 218／230 快照：本幀新加入者不在此快照裡，
+        // 故狼群逐圈匯聚、陸續加入，而非同幀整群瞬間鎖定）。只取野狼：野狐獨來獨往、單獨狩獵。
+        let hunt_snap: Vec<(f32, f32, u32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildWolf)
+            .filter_map(|a| match a.state {
+                WildlifeState::Stalking { target_id, .. }
+                | WildlifeState::Hunting { target_id, .. } => Some((a.x, a.y, target_id)),
+                _ => None,
+            })
+            .collect();
+
         // ── Phase 2b: 聚落威脅偵測（ROADMAP 143）────────────────────────────
         // 對每個聚落：若有玩家進入守衛半徑，啟動同種動物的 Guarding 行為。
         for (idx, col) in self.colonies.iter().enumerate() {
@@ -1752,6 +1786,23 @@ impl WildlifeManager {
                                 // （prey_snap 搜尋）已優先處理，故圍食只在無獵可追的平靜空檔延續、
                                 // 永遠讓位給狩獵。
                                 a.tick_feast(dt, rng);
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < PACK_HUNT_JOIN_PROB
+                                && nearest_pack_hunt_target(a.x, a.y, &hunt_snap, PACK_HUNT_SEE_RADIUS).is_some()
+                            {
+                                // ROADMAP 250：附近有同群野狼正在追獵——「看見同伴在追」而被牽動加入
+                                // 圍獵：鎖定同伴所追的同一頭獵物、進入潛行（Stalking）包抄追上去。被牽動者
+                                // 鎖定的往往是自己搜尋範圍外、單憑己力看不見的獵物（協同擴展了狼群感知）。
+                                // 仿 218 群嚎／230 分食「看見就接力」：逐幀低機率牽動，狼群陸續加入、由近而
+                                // 遠逐圈匯聚，而非同幀整群瞬間鎖定。只屬於野狼（社交性掠食者）：野狐單獨狩獵。
+                                // 此分支排在「無自身可追的獵物」之後（own-prey 搜尋已先行），故只有自己附近
+                                // 沒獵物、卻看得見同伴在遠處追時才加入；獵物的存活／逃竄一律走既有 Phase 3。
+                                if let Some(target_id) =
+                                    nearest_pack_hunt_target(a.x, a.y, &hunt_snap, PACK_HUNT_SEE_RADIUS)
+                                {
+                                    a.state = WildlifeState::Stalking { target_id, stalk_timer: STALK_TIMEOUT };
+                                }
                             } else if pred_kind == WildlifeKind::WildWolf
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && nearest_in_range(a.x, a.y, &feast_snap, FEAST_HEAR_RADIUS).is_some()
@@ -2226,6 +2277,26 @@ fn nearest_in_range(ax: f32, ay: f32, pts: &[(f32, f32)], radius: f32) -> Option
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied()
+}
+
+/// ROADMAP 250：野狼協同圍獵——位於 (x,y) 的平靜野狼若「看見」`radius` 內有同群夥伴正在追獵
+/// （`hunters` 為本幀起始時正在潛行／追殺的野狼快照：座標＋牠鎖定的獵物 id），回傳「最近那位
+/// 追獵者鎖定的獵物 id」，供呼叫端讓這隻野狼鎖定同一頭獵物、加入圍獵；範圍內無追獵者則回 `None`。
+/// 純距離判定、無副作用——挑「最近的同伴」加入，確保由近而遠逐圈匯聚（仿 230 分食的就近召喚）。
+fn nearest_pack_hunt_target(x: f32, y: f32, hunters: &[(f32, f32, u32)], radius: f32) -> Option<u32> {
+    let r2 = radius * radius;
+    hunters.iter()
+        .filter(|&&(hx, hy, _)| {
+            let dx = hx - x;
+            let dy = hy - y;
+            dx * dx + dy * dy <= r2
+        })
+        .min_by(|&&(ax, ay, _), &&(bx, by, _)| {
+            let da = (ax - x).powi(2) + (ay - y).powi(2);
+            let db = (bx - x).powi(2) + (by - y).powi(2);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|&(_, _, target_id)| target_id)
 }
 
 /// ROADMAP 218：群嚎呼應——位於 (px,py) 的掠食者是否「聽得見」附近任一正在長嚎的同類
@@ -5516,6 +5587,104 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             assert!(!matches!(w.state, WildlifeState::Feasting { .. }), "野狐獨食不該召喚野狼圍食");
+        }
+    }
+
+    // ─── ROADMAP 250：野狼協同圍獵測試 ──────────────────────────────────────
+
+    #[test]
+    fn nearest_pack_hunt_target_picks_closest_in_range() {
+        // 範圍內挑「最近的追獵同伴」回傳牠鎖定的獵物 id；範圍外的不算。
+        let me = (5000.0, 5000.0);
+        let hunters = [
+            (5000.0 + 100.0, 5000.0, 7u32),                          // 近——應雀屏中選
+            (5000.0 + 300.0, 5000.0, 9u32),                          // 較遠、仍在範圍內
+            (5000.0 + PACK_HUNT_SEE_RADIUS + 50.0, 5000.0, 11u32),   // 範圍外——不算
+        ];
+        assert_eq!(
+            nearest_pack_hunt_target(me.0, me.1, &hunters, PACK_HUNT_SEE_RADIUS),
+            Some(7),
+            "應回傳最近那位追獵者鎖定的獵物 id",
+        );
+    }
+
+    #[test]
+    fn nearest_pack_hunt_target_none_when_out_of_range_or_empty() {
+        // 範圍內無追獵同伴（或空快照）一律回 None。
+        let me = (5000.0, 5000.0);
+        let far = [(5000.0 + PACK_HUNT_SEE_RADIUS + 1.0, 5000.0, 7u32)];
+        assert_eq!(nearest_pack_hunt_target(me.0, me.1, &far, PACK_HUNT_SEE_RADIUS), None);
+        assert_eq!(nearest_pack_hunt_target(me.0, me.1, &[], PACK_HUNT_SEE_RADIUS), None);
+    }
+
+    #[test]
+    fn idle_wolf_joins_a_packmates_hunt() {
+        // 協同圍獵：一隻平靜野狼「看見」同群夥伴正在追獵時，會鎖定同一頭獵物加入圍獵——
+        // 即使那頭獵物遠在自己搜尋範圍（HUNT_RADIUS 320）之外、單憑己力根本看不見。
+        let mut mgr = WildlifeManager::new();
+        let mut hunter = adult_at(WildlifeKind::WildWolf, 5400.0, 5000.0); // 圍獵錨點（持續追獵）
+        hunter.id = 1;
+        let mut joiner = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0); // 距獵物 1200px、看不見
+        joiner.id = 2;
+        joiner.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6200.0, 5000.0);   // 遠在 joiner 搜尋範圍外
+        deer.id = 3;
+        mgr.animals = vec![hunter, joiner, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..3000 {
+            // 每幀把錨點釘回「正在追獵那頭鹿」的穩定狀態（hunter 會邊追邊移動、鹿也可能被獵殺），
+            // 並把 joiner 釘回原位（避免巡遊漂出感知半徑），以確定性地驗證牽動是否發生。
+            for a in &mut mgr.animals {
+                match a.id {
+                    1 => { a.x = 5400.0; a.y = 5000.0; a.alive = true;
+                           a.state = WildlifeState::Hunting { target_id: 3, hunt_timer: 100000.0 }; }
+                    2 if !matches!(a.state, WildlifeState::Stalking { .. } | WildlifeState::Hunting { .. }) => {
+                           a.x = 5000.0; a.y = 5000.0; }
+                    3 => { a.x = 6200.0; a.y = 5000.0; a.alive = true; }
+                    _ => {}
+                }
+            }
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let j = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if let WildlifeState::Stalking { target_id, .. } | WildlifeState::Hunting { target_id, .. } = j.state {
+                assert_eq!(target_id, 3, "加入者應鎖定同伴所追的同一頭獵物");
+                joined = true;
+                break;
+            }
+        }
+        assert!(joined, "看見同伴在追獵的平靜野狼應被牽動加入圍獵");
+    }
+
+    #[test]
+    fn lone_fox_does_not_join_a_wolf_hunt() {
+        // 物種專屬：野狐獨來獨往、單獨狩獵——看見野狼在追獵也不會被牽動加入（圍獵只屬於野狼）。
+        let mut mgr = WildlifeManager::new();
+        let mut hunter = adult_at(WildlifeKind::WildWolf, 5400.0, 5000.0);
+        hunter.id = 1;
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 2;
+        fox.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6200.0, 5000.0); // 遠在野狐搜尋範圍外
+        deer.id = 3;
+        mgr.animals = vec![hunter, fox, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            for a in &mut mgr.animals {
+                match a.id {
+                    1 => { a.x = 5400.0; a.y = 5000.0; a.alive = true;
+                           a.state = WildlifeState::Hunting { target_id: 3, hunt_timer: 100000.0 }; }
+                    2 => { a.x = 5000.0; a.y = 5000.0; }
+                    3 => { a.x = 6200.0; a.y = 5000.0; a.alive = true; }
+                    _ => {}
+                }
+            }
+            mgr.tick(0.1, &[], &att, &[], false);
+            let f = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            assert!(
+                !matches!(f.state, WildlifeState::Stalking { .. } | WildlifeState::Hunting { .. }),
+                "野狐不該被牽動加入野狼的圍獵，實際 {:?}", f.state,
+            );
         }
     }
 }
