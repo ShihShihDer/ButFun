@@ -134,6 +134,27 @@ const FOLLOW_COMFORT_DIST: f32 = 60.0;
 /// 馴養動物走向玩家的速度（像素/秒）——比逃跑慢，溫順小跑。
 const FOLLOW_SPEED: f32 = 60.0;
 
+// ─── ROADMAP 256：好奇試探（與你漸漸熟稔的中段）─────────────────────────────────
+// 承接 205（餵食馴養）：餵食累積個體親近度——可過去未達馴養門檻(0.8)前，動物對你始終是
+// 非黑即白的「照樣怕你、一靠近就逃」，直到某一次餵食才驟然從怕生跳成親暱貼身跟隨，中間少了
+// 一段「漸漸卸下戒心」的過程。本切片在「野性」與「馴養」之間補上一個看得見的中段：餵到一定
+// 親近度(CURIOUS_FAMILIARITY)後，動物不再把你當威脅逃開，而會在白天平靜時好奇地朝你謹慎挪近、
+// 停在一段比馴養更遠的警戒距離外探頭打量你（頭頂浮 ❓），像在打量這個總帶食物來的人、慢慢學會
+// 信任；親近度再餵高才真正馴養、貼身跟隨。仍會逃離掠食者（信任的是你、不是狼）。於是馴養成了
+// 「怕生→好奇→親暱」三段可見的旅程，而非一次餵滿的開關。純啟發式、零 LLM、零持久化、
+// 零協議結構改動（新增的 curious 字串沿用既有 state_str 廣播）。
+/// 個體親近度達此值即「卸下戒心、開始好奇試探」（仍未馴養）。刻意落在初次餵食(0.25)與馴養
+/// 門檻(0.8)之間：餵過一回(0.25)仍怕生、餵過兩回(0.5)就卸下戒心轉好奇、餵到馴養(0.8)才貼身跟隨，
+/// 於是「怕生→好奇→親暱」三段各有對應的餵食次數，過程才有層次。
+const CURIOUS_FAMILIARITY: f32 = 0.4;
+/// 好奇個體「察覺到附近玩家」而趨近試探的範圍（像素）。
+const CURIOUS_RANGE: f32 = 220.0;
+/// 好奇趨近時保持的警戒距離（像素）——刻意大於馴養跟隨的舒適距離(60)：牠還沒全然信任、
+/// 只敢遠遠打量，不會湊到你腳邊。
+const CURIOUS_COMFORT_DIST: f32 = 110.0;
+/// 好奇趨近的速度（像素/秒）——比馴養跟隨(60)更慢、更猶豫，走走停停地試探。
+const CURIOUS_SPEED: f32 = 38.0;
+
 // ─── ROADMAP 206：群聚結伴 ───────────────────────────────────────────────────
 // 同種野生動物（獵物）漫遊時，選下一個閒晃目標會朝「附近同種夥伴的平均位置」
 // 拉一把，於是鬆散成群移動：草原上的野鹿三兩成群、野鳥成簇飄移，
@@ -840,6 +861,10 @@ enum WildlifeState {
     /// 附近的獵物因而不再怕牠、照常吃草；sated_timer 倒數，計時耗盡飢餓重燃就回巡遊、重新可獵。
     /// 計時隨狀態變體攜帶（無新欄位）。與 250「飢則成群圍獵」對成「飢則獵／飽則歇」。
     Sated { sated_timer: f32 },
+    /// ROADMAP 256：好奇試探——餵到一定親近度、已卸下戒心但尚未馴養的個體，白天平靜時好奇地
+    /// 朝附近玩家謹慎挪近、停在警戒距離外探頭打量（頭頂浮 ❓）。位移每幀依當下玩家座標即時重算，
+    /// 故狀態本身不需攜帶座標（無資料的單元變體）。與 205 馴養貼身跟隨之間的中段。
+    Curious,
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1396,6 +1421,7 @@ impl Wildlife {
             WildlifeState::Vigilant { .. }  => "vigilant",
             WildlifeState::Scavenging { .. } => "scavenging",
             WildlifeState::Sated { .. }     => "sated",
+            WildlifeState::Curious          => "curious",
         }
     }
 }
@@ -2043,6 +2069,8 @@ impl WildlifeManager {
             let animal_kind = self.animals[i].kind;
             // ROADMAP 205：被馴養的個體把玩家當朋友（不逃跑），未馴養則沿用 144 物種態度判定。
             let tamed = self.animals[i].is_tamed();
+            // ROADMAP 256：個體親近度——餵到 CURIOUS_FAMILIARITY 即「卸下戒心」（不再把你當威脅、轉為好奇試探）。
+            let fam = self.animals[i].familiarity;
 
             // ROADMAP 214：母獸護幼——成體優先為「被掠食者鎖定的同種幼獸」挺身（凌駕自身逃跑：
             // 母獸不顧自己的恐懼，衝去擋在幼獸與狼之間）。只有「離受脅幼獸最近的同種成體」會出面，
@@ -2074,8 +2102,10 @@ impl WildlifeManager {
                 }
             }
             // ROADMAP 144：未馴養且物種對人類不夠友善時，玩家也算威脅。
+            // ROADMAP 256：但餵到 CURIOUS_FAMILIARITY（卸下戒心）後便不再把你當威脅逃開——
+            // 改在下方好奇分支朝你謹慎挪近試探；親近度更高才馴養貼身跟隨。
             let kind_attitude = *attitudes.get(&animal_kind).unwrap_or(&50);
-            if !tamed && kind_attitude < FRIENDLY_ATTITUDE {
+            if !tamed && kind_attitude < FRIENDLY_ATTITUDE && fam < CURIOUS_FAMILIARITY {
                 threats.extend_from_slice(player_positions);
             }
 
@@ -2115,6 +2145,26 @@ impl WildlifeManager {
                         }
                         // 朝向玩家的溫順狀態（已到舒適距離則原地陪著你）。
                         self.animals[i].state = WildlifeState::Wandering { target_x: px, target_y: py, wander_timer: 1.0 };
+                        continue;
+                    }
+                }
+            }
+
+            // ROADMAP 256：好奇試探——餵到 CURIOUS_FAMILIARITY、卸下戒心但尚未馴養的個體，白天平靜時
+            // 好奇地朝附近玩家謹慎挪近，但只挪到 CURIOUS_COMFORT_DIST 警戒距離為止（更近就停下遠遠
+            // 打量、不湊到腳邊）。掠食者逼近 / 逃竄中一律優先逃（與馴養跟隨同樣讓位威脅）；夜間晝行
+            // 獵物歸巢沉睡、不試探。位置即時依玩家座標重算，故狀態無需攜帶座標。
+            if !tamed && fam >= CURIOUS_FAMILIARITY && !is_night {
+                let ax = self.animals[i].x;
+                let ay = self.animals[i].y;
+                let fleeing_now = matches!(self.animals[i].state, WildlifeState::Fleeing { .. });
+                let predator_near = nearest_in_range(ax, ay, &threats, FLEE_RADIUS).is_some();
+                if !fleeing_now && !predator_near {
+                    if let Some((px, py)) = nearest_in_range(ax, ay, player_positions, CURIOUS_RANGE) {
+                        let (nx, ny) = curious_step(ax, ay, px, py, dt);
+                        self.animals[i].x = nx;
+                        self.animals[i].y = ny;
+                        self.animals[i].state = WildlifeState::Curious;
                         continue;
                     }
                 }
@@ -2695,6 +2745,21 @@ fn sated_step(timer: f32, dt: f32) -> Option<f32> {
 /// 不算「歇息」，故不在此列——獵物要等牠吃飽躺下才真正放鬆。純函式，便於測試。
 fn is_sated(state: &WildlifeState) -> bool {
     matches!(state, WildlifeState::Sated { .. })
+}
+
+/// ROADMAP 256：好奇試探的一步位移——朝玩家 (px,py) 謹慎挪近，但只挪到警戒距離
+/// CURIOUS_COMFORT_DIST 為止（已在距離內就原地不動、遠遠探頭打量，不湊到腳邊）。回傳本幀的
+/// 新座標。比馴養跟隨（FOLLOW_SPEED/FOLLOW_COMFORT_DIST）更慢、停得更遠——牠還沒全然信任你。
+/// 純函式，便於測試。
+fn curious_step(ax: f32, ay: f32, px: f32, py: f32, dt: f32) -> (f32, f32) {
+    let dx = px - ax;
+    let dy = py - ay;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist > CURIOUS_COMFORT_DIST && dist > 0.0 {
+        (ax + dx / dist * CURIOUS_SPEED * dt, ay + dy / dist * CURIOUS_SPEED * dt)
+    } else {
+        (ax, ay)
+    }
 }
 
 /// ROADMAP 209：驚群炸開——在 `fleeing_snap`（正在逃竄的同種獵物：id/kind/x/y/vx/vy）中，
@@ -5294,6 +5359,61 @@ mod tests {
             assert!(!matches!(d.state, WildlifeState::Fleeing { .. }),
                 "緊鄰飽足歇息的狼，鹿不該逃竄，實際 {:?}", d.state);
         }
+    }
+
+    // ─── ROADMAP 256：好奇試探 ──────────────────────────────────────────────
+
+    #[test]
+    fn curious_step_moves_toward_player_when_far() {
+        // 距玩家遠（> CURIOUS_COMFORT_DIST）時，朝玩家挪近一步：新位置與玩家的距離應變小。
+        let (nx, ny) = curious_step(5000.0, 5000.0, 5300.0, 5000.0, 0.1);
+        assert!(nx > 5000.0, "應朝玩家(右)挪近，實際 x={}", nx);
+        let after = ((5300.0 - nx).powi(2) + (5000.0 - ny).powi(2)).sqrt();
+        assert!(after < 300.0, "與玩家距離應變小，實際 {}", after);
+    }
+
+    #[test]
+    fn curious_step_holds_within_comfort_distance() {
+        // 已在警戒距離內（< CURIOUS_COMFORT_DIST）時原地不動、遠遠打量，不再湊近玩家腳邊。
+        let (nx, ny) = curious_step(5000.0, 5000.0, 5050.0, 5000.0, 0.1); // 距 50 < 110
+        assert_eq!((nx, ny), (5000.0, 5000.0), "警戒距離內應原地不動");
+    }
+
+    #[test]
+    fn fed_prey_grows_curious_and_approaches_player_instead_of_fleeing() {
+        // ROADMAP 256：餵到好奇門檻、卸下戒心的鹿，白天見附近玩家不再逃開，而是好奇地朝你謹慎
+        // 挪近、停在警戒距離外打量（state==Curious）。場上只一頭鹿與一名玩家，無掠食者干擾。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.familiarity = 0.5; // 餵過兩回、已過好奇門檻(0.4)、仍未馴養(0.8)
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let player = [(5150.0_f32, 5000.0_f32)]; // CURIOUS_RANGE(220) 內、comfort(110) 外
+        mgr.tick(0.1, &player, &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Curious),
+            "餵熟的鹿見玩家應轉為好奇試探，實際 {:?}", d.state);
+        assert!(d.x > 5000.0, "好奇時應朝玩家(右)謹慎挪近，實際 x={}", d.x);
+        assert!(d.x < 5050.0, "只敢挪到警戒距離、不該湊到玩家腳邊，實際 x={}", d.x);
+    }
+
+    #[test]
+    fn barely_fed_prey_still_flees_player() {
+        // 親近度未達好奇門檻（怕生階段）的鹿，仍把逼近的玩家當威脅而逃竄、不會好奇趨近。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.familiarity = FEED_FAMILIARITY_GAIN; // 僅餵過一回(0.25) < CURIOUS_FAMILIARITY(0.4)
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let player = [(5100.0_f32, 5000.0_f32)]; // FLEE_RADIUS(180) 內
+        mgr.tick(0.1, &player, &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(!matches!(d.state, WildlifeState::Curious),
+            "怕生階段的鹿不該好奇趨近，實際 {:?}", d.state);
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "怕生階段的鹿見玩家逼近應逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 217：掠食者夜嚎 ────────────────────────────────────────────

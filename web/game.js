@@ -8914,6 +8914,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
+      // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
+      // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
+      // 貼身跟隨之間的中段）。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天、親近度
+      // 跨過好奇門檻、無掠食威脅、附近有你時才給此狀態）。
+      if (w.state === "curious") {
+        ctx.save();
+        ctx.globalAlpha = 0.5 + 0.35 * Math.abs(Math.sin(now / 460)); // 像試探時的猶疑般明滅
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8 + Math.sin(now / 380) * 1.5, -23); // 微微探頭、左右打量
+        ctx.fillText("❓", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 219：破曉甦醒伸展——天明喚醒的晝行獵物先原地伸展一小段（state==="waking"）
       // 頭頂浮一輪緩緩升起、漸漸轉亮的 🌅，讓「晨光鋪上草地、鹿群一隻隻睜眼伸懶腰再散開」一眼
       // 看得到（與夜眠 💤 對成完整的晝夜起落）。純前端、零協議欄位：直接讀伺服器廣播的 w.state
