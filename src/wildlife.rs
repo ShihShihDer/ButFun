@@ -352,6 +352,31 @@ const TEND_DURATION_MAX: f32 = 6.5;
 ///（多數時候仍照常吃草／休息），而非時時黏著。
 const TEND_PROB: f32 = 0.045;
 
+// ─── ROADMAP 275：負鼠裝死（裝死逃生 / thanatosis）──────────────────────────────
+// 草原上的反捕食至今全是「硬碰硬」：察覺危險就警戒（251）、近了就炸群逃竄（209/264）、母獸甚至
+// 挺身護幼（214）。可最弱的一種獵物——小動物（SmallCritter，松鼠般的齧齒小獸）——既打不過、論腳程
+// 也未必跑得贏撲上來的掠食者，現實中牠們有最後一招看家本領：被逼到貼臉、無路可逃的死生關頭，索性
+// 僵直倒地、四腳朝天裝死（thanatosis／負鼠那一招）。許多掠食者對「已經死掉、一動不動」的獵物會
+// 興趣大減、嗅一嗅就走開，這隻裝死的小傢伙便撿回一條命，待掠食者走遠再「甦醒」竄逃。本切片補上
+// 這塊：當一隻小動物被掠食者（或逼近的玩家）逼進 FEIGN_TRIGGER_RADIUS 這等貼身距離，便以 FEIGN_PROB
+// 機率轉入新狀態 Feigning（原地僵直不動、頭頂浮一枚像斷了氣般打轉的 💫）；自這一幀起牠被排出
+// 「可獵獵物快照」（prey_snap）——對掠食者而言形同憑空消失，正追著牠的掠食者因目標不見而放棄、
+// 轉身離去（複用既有「目標消失就 Returning」邏輯，零捕食平衡改動）；feign_timer 倒數耗盡才甦醒
+// 起身、回到正常作息（威脅仍在就逃、已遠就閒晃）。只有小動物會裝死（最弱、打不過也未必跑得贏，
+// 只能騙過）——與 209 驚群炸開（硬逃）對成「打不過就騙過」一對，給草原的反捕食補上「智取」的一手。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 feigning 字串沿用 state_str，計時隨狀態
+// 變體攜帶、無新欄位）、零持久化、零 migration、記憶體模式。
+/// 觸發裝死的貼身距離（像素）——小動物被掠食者／威脅逼進此半徑、跑也跑不掉的死生關頭才會倒地裝死。
+/// 遠大於 KILL_RADIUS(22)、且為掠食者一幀疾奔（HUNT_SPEED 155 × dt≈0.067 ≈ 10px）的數倍餘量，
+/// 確保在被咬到前那一幀就能搶先倒地（裝死後即被排出 prey_snap、掠食者下一幀便放棄）。
+const FEIGN_TRIGGER_RADIUS: f32 = 50.0;
+/// 被逼到貼臉的當口本幀轉入裝死的機率——偏高（裝死是險中求生的看家本領），但刻意非必成：
+/// 偶有失手被擒才符合真實，也讓裝死不致變成小動物對掠食者的免死金牌、不破壞掠食平衡。
+const FEIGN_PROB: f32 = 0.6;
+/// 僵直倒地裝死的單段最短／最長時長（秒）——夠久讓失去興趣的掠食者嗅一嗅、轉身走遠，到期才甦醒竄逃。
+const FEIGN_DURATION_MIN: f32 = 2.5;
+const FEIGN_DURATION_MAX: f32 = 4.5;
+
 // ─── ROADMAP 271：守靈駐立（mourning — 死亡看得見的餘韻）──────────────────────
 // 生命循環至今已從求偶（270）、誕生（207）、依偎（208）、嬉戲（215）一路鋪到理毛（216）、護幼
 // （214），唯獨「死亡」這一端始終沒有半點餘韻：掠食者咬死一隻獵物（既有 Kill），倖存的同伴只會
@@ -1189,6 +1214,11 @@ enum WildlifeState {
     /// 到期就起身回到漫遊；威脅一旦逼近一律優先逃竄（照拂永遠讓位逃命）。與 216 理毛（💕，成體互相）
     /// 對成「親代照拂幼獸／同儕互相照拂」一對，把生態的親暱從同輩補到了親子。
     Tending { tend_timer: f32 },
+    /// ROADMAP 275：負鼠裝死——被掠食者／威脅逼到貼臉、跑不掉的小動物，僵直倒地裝死（前端畫成
+    /// 倒臥不動、頭頂浮一枚打轉的 💫）。原地不動（不更新座標）、feign_timer 倒數；裝死期間牠被排出
+    /// 可獵獵物快照（prey_snap），對掠食者形同消失、令其放棄離去（複用「目標不見就 Returning」），
+    /// 計時耗盡才甦醒起身回到正常作息。與 209 驚群炸開（硬逃）對成「打不過就騙過」一對。
+    Feigning { feign_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1587,6 +1617,24 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 275：負鼠裝死——裝死中（Feigning）原地僵直不動、feign_timer 倒數；到期就「甦醒」
+    /// 起身、挑一個就近的漫遊目標回到正常作息（小動物獨自裝死、不沿群聚拉力，故用 random_target
+    /// 純隨機）。下一幀的獵物 phase 會正常重判：威脅仍在 FLEE_RADIUS 內就改逃竄、已遠就照常閒晃。
+    /// 只在 Feigning 狀態下生效（呼叫端已確保此隻處於裝死中）。倒臥裝死的視覺由前端演繹（頭頂浮 💫），
+    /// 後端只穩定地推進計時——與 tick_tend／tick_howl 同模式。
+    fn tick_feign(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Feigning { feign_timer } = self.state {
+            let remaining = feign_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Feigning { feign_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 207/272：幼獸隨時間長大，成熟度趨近 1.0（體型隨之變大）；ROADMAP 272：成熟度剛跨過
     /// 1.0、長成成體的那一刻，轉入「成年禮」原地舒展定格一小段（`Maturing`，前端畫成頭頂浮 ✨）再
     /// 起身投入成體生活。只在「由幼轉成」的那一幀觸發一次（加之前 <1.0、加之後已滿）；非幼獸（成熟度
@@ -1936,6 +1984,7 @@ impl Wildlife {
             WildlifeState::Maturing { .. }  => "maturing",
             WildlifeState::Newborn { .. }   => "newborn",
             WildlifeState::Tending { .. }   => "tending",
+            WildlifeState::Feigning { .. }  => "feigning",
         }
     }
 }
@@ -2145,8 +2194,12 @@ impl WildlifeManager {
         }
 
         // ── Phase 2: 快照（供決策使用） ────────────────────────────────────────
+        // ROADMAP 275：負鼠裝死——排除正在裝死（Feigning）的獵物：倒地裝死的小動物對掠食者形同「已是
+        // 死物」、憑空從可獵清單消失，正追著牠的掠食者因目標不見而放棄離去（複用 Hunting/Stalking 的
+        // 「目標不在 prey_snap 就 Returning」邏輯）。同時牠也退出群聚／驚群等群體動態（倒地不動、不參與）。
         let prey_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
-            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey)
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey
+                && !is_feigning(&a.state))
             .map(|a| (a.id, a.kind, a.x, a.y))
             .collect();
 
@@ -2738,6 +2791,14 @@ impl WildlifeManager {
             // 守衛狀態已在 Phase 2c 處理，跳過正常閒晃（不逃跑）。
             if matches!(self.animals[i].state, WildlifeState::Guarding { .. }) { continue; }
 
+            // ROADMAP 275：負鼠裝死——已倒地裝死中（Feigning）的小動物原地僵直、feign_timer 倒數，到期
+            // 才甦醒起身（下一幀正常重判：威脅仍在就逃、已遠就閒晃）。優先於一切獵物行為（裝死壓倒護幼／
+            // 驚群／閒晃）；掠食者則因牠已被排出 prey_snap 而搜尋不到、放棄離開。
+            if matches!(self.animals[i].state, WildlifeState::Feigning { .. }) {
+                self.animals[i].tick_feign(dt, &mut self.rng);
+                continue;
+            }
+
             let animal_kind = self.animals[i].kind;
             // ROADMAP 205：被馴養的個體把玩家當朋友（不逃跑），未馴養則沿用 144 物種態度判定。
             let tamed = self.animals[i].is_tamed();
@@ -2779,6 +2840,20 @@ impl WildlifeManager {
             let kind_attitude = *attitudes.get(&animal_kind).unwrap_or(&50);
             if !tamed && kind_attitude < FRIENDLY_ATTITUDE && fam < CURIOUS_FAMILIARITY {
                 threats.extend_from_slice(player_positions);
+            }
+
+            // ROADMAP 275：負鼠裝死（裝死逃生）——最弱的小動物被威脅（掠食者，或還怕人的話連逼近的
+            // 玩家）逼進 FEIGN_TRIGGER_RADIUS 這等貼臉、跑也跑不掉的死生關頭時，以 FEIGN_PROB 機率本能地
+            // 僵直倒地裝死（轉 Feigning、頭頂浮 💫）。自下一幀起牠被排出 prey_snap，正追著牠的掠食者
+            // 因目標憑空消失而放棄離去；feign_timer 到期才甦醒竄逃。觸發半徑 50px 遠大於 KILL_RADIUS(22)
+            // 與掠食者一幀疾奔（≈10px），確保在被咬到前那一幀就能搶先倒地。只有小動物會裝死——與 209 驚群
+            // 炸開（硬逃）對成「打不過就騙過」一對。排在 209 驚群之前：被逼到貼臉的小動物寧可裝死、不炸群。
+            if feign_trigger(animal_kind, self.animals[i].x, self.animals[i].y, &threats)
+                && self.rng.gen::<f32>() < FEIGN_PROB
+            {
+                let timer = self.rng.gen_range(FEIGN_DURATION_MIN..=FEIGN_DURATION_MAX);
+                self.animals[i].state = WildlifeState::Feigning { feign_timer: timer };
+                continue;
             }
 
             // ROADMAP 209：驚群炸開——自己附近沒有「直接威脅」（否則交給下方 tick_idle 算
@@ -3740,6 +3815,20 @@ fn sated_step(timer: f32, dt: f32) -> Option<f32> {
 /// 不算「歇息」，故不在此列——獵物要等牠吃飽躺下才真正放鬆。純函式，便於測試。
 fn is_sated(state: &WildlifeState) -> bool {
     matches!(state, WildlifeState::Sated { .. })
+}
+
+/// ROADMAP 275：負鼠裝死——判斷某狀態是否為裝死中（Feigning）。用於建可獵獵物快照（prey_snap）時
+/// 把裝死的小動物排除（對掠食者形同消失），以及獵物 phase 開頭優先續走裝死倒數。純函式，便於測試。
+fn is_feigning(state: &WildlifeState) -> bool {
+    matches!(state, WildlifeState::Feigning { .. })
+}
+
+/// ROADMAP 275：負鼠裝死——判斷一隻獵物本幀是否該倒地裝死（thanatosis）：只有最弱的小動物
+/// （SmallCritter）會裝死，且必須有威脅（掠食者或逼近的玩家）已逼進 FEIGN_TRIGGER_RADIUS 這等貼身、
+/// 跑也跑不掉的死生關頭。是否「真的」裝死另由呼叫端 roll FEIGN_PROB 決定（非必成）。純函式，便於測試。
+fn feign_trigger(kind: WildlifeKind, x: f32, y: f32, threats: &[(f32, f32)]) -> bool {
+    kind == WildlifeKind::SmallCritter
+        && nearest_in_range(x, y, threats, FEIGN_TRIGGER_RADIUS).is_some()
 }
 
 /// ROADMAP 267：圍攻俯衝的一步位移——朝閒晃掠食者 (tx,ty) 俯衝逼近，但只逼到鼓譟距離 MOB_HARASS_DIST
@@ -5142,6 +5231,120 @@ mod tests {
         let doe = mgr.animals.iter().find(|a| a.id == 100).unwrap();
         assert!(matches!(doe.state, WildlifeState::Fleeing { .. }),
             "掠食者逼近時舐犢應立刻讓位逃竄");
+    }
+
+    // ─── ROADMAP 275：負鼠裝死（裝死逃生 thanatosis） ─────────────────────────
+    #[test]
+    fn feign_trigger_only_for_critter_with_close_threat() {
+        // 只有小動物、且威脅已逼進 FEIGN_TRIGGER_RADIUS 內才該裝死。
+        let near = vec![(10.0, 0.0)]; // 距 (0,0) 10px，在觸發半徑內
+        let far = vec![(0.0, FEIGN_TRIGGER_RADIUS + 30.0)]; // 在觸發半徑外
+        assert!(feign_trigger(WildlifeKind::SmallCritter, 0.0, 0.0, &near),
+            "小動物身邊有貼近威脅應觸發裝死");
+        assert!(!feign_trigger(WildlifeKind::SmallCritter, 0.0, 0.0, &far),
+            "威脅在觸發半徑外不應裝死");
+        assert!(!feign_trigger(WildlifeKind::SmallCritter, 0.0, 0.0, &[]),
+            "沒有威脅不應裝死");
+        // 較大、跑得動或打得過的物種不靠裝死（牠們另有逃竄／護幼／群聚反捕食）。
+        assert!(!feign_trigger(WildlifeKind::WildDeer, 0.0, 0.0, &near),
+            "野鹿不裝死（裝死是最弱小動物的看家本領）");
+        assert!(!feign_trigger(WildlifeKind::WildBird, 0.0, 0.0, &near),
+            "野鳥不裝死");
+    }
+
+    #[test]
+    fn is_feigning_distinguishes_state() {
+        assert!(is_feigning(&WildlifeState::Feigning { feign_timer: 3.0 }), "裝死狀態應判為 feigning");
+        assert!(!is_feigning(&WildlifeState::Resting { rest_timer: 3.0 }), "歇息不是裝死");
+        assert!(!is_feigning(&WildlifeState::Fleeing { vx: 1.0, vy: 0.0, flee_timer: 1.0 }), "逃竄不是裝死");
+    }
+
+    #[test]
+    fn tick_feign_counts_down_then_wakes_to_wandering() {
+        let mut rng = make_rng();
+        let mut c = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        c.state = WildlifeState::Feigning { feign_timer: 1.0 };
+        c.tick_feign(0.4, &mut rng);
+        match c.state {
+            WildlifeState::Feigning { feign_timer } =>
+                assert!((feign_timer - 0.6).abs() < 1e-4, "未到期應續裝死並倒數，實得 {feign_timer}"),
+            _ => panic!("未到期不應離開裝死"),
+        }
+        // 再推進使計時耗盡 → 甦醒起身回到漫遊。
+        c.tick_feign(1.0, &mut rng);
+        assert!(matches!(c.state, WildlifeState::Wandering { .. }), "裝死到期應甦醒回到漫遊");
+    }
+
+    #[test]
+    fn tick_feign_noop_when_not_feigning() {
+        let mut rng = make_rng();
+        let mut c = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        c.state = WildlifeState::Resting { rest_timer: 3.0 };
+        c.tick_feign(0.5, &mut rng);
+        assert!(matches!(c.state, WildlifeState::Resting { .. }), "非裝死狀態呼叫 tick_feign 應原樣不動");
+    }
+
+    #[test]
+    fn feigning_emerges_when_threat_adjacent() {
+        // 一隻小動物被一名（還怕生的）玩家逼到貼臉（FEIGN_TRIGGER_RADIUS 內）→ 該倒地裝死。
+        // 用玩家當威脅（玩家不會咬死牠），測試才穩健（純驗「貼臉→裝死」這條路徑）。
+        let mut mgr = WildlifeManager::new();
+        let mut c = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0); c.id = 100;
+        c.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![c];
+        mgr.next_animal_id = 101;
+        let attitudes = std::collections::HashMap::new(); // 預設態度 50 < FRIENDLY 65 → 怕人
+        let player = [(5020.0, 5000.0)]; // 距小動物 20px，在觸發半徑內
+
+        let mut seen_feigning = false;
+        for _ in 0..200 {
+            mgr.tick(0.1, &player, &attitudes, &[], false);
+            if mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Feigning { .. })) {
+                seen_feigning = true;
+                break;
+            }
+        }
+        assert!(seen_feigning, "小動物被威脅逼到貼臉時應倒地裝死");
+    }
+
+    #[test]
+    fn no_feigning_when_no_threat_near() {
+        // 小動物白天平靜、附近無任何威脅 → 一律不裝死（裝死只在被逼到貼臉的死生關頭才出現）。
+        let mut mgr = WildlifeManager::new();
+        let mut c = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0); c.id = 100;
+        c.state = WildlifeState::Resting { rest_timer: 5.0 };
+        mgr.animals = vec![c];
+        mgr.next_animal_id = 101;
+        let attitudes = std::collections::HashMap::new();
+
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &attitudes, &[], false);
+            assert!(!mgr.animals.iter().any(|a| matches!(a.state, WildlifeState::Feigning { .. })),
+                "附近無威脅時不應裝死");
+        }
+    }
+
+    #[test]
+    fn feigning_critter_dropped_from_prey_snap_so_predator_gives_up() {
+        // 裝死中的小動物被排出 prey_snap：正追著牠的野狐找不到目標、放棄離去（轉非狩獵狀態），
+        // 小動物因而保住性命。複用「目標不在 prey_snap 就 Returning」邏輯，零捕食平衡改動。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0); critter.id = 100;
+        // 直接讓牠已在裝死中（隔離測試這條路徑，不依賴觸發機率）。
+        critter.state = WildlifeState::Feigning { feign_timer: 5.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5040.0, 5000.0); fox.id = 101;
+        // 野狐正鎖定追獵這隻小動物。
+        fox.state = WildlifeState::Hunting { target_id: 100, hunt_timer: HUNT_TIMEOUT };
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let attitudes = std::collections::HashMap::new();
+
+        mgr.tick(0.1, &[], &attitudes, &[], false);
+        let fox = mgr.animals.iter().find(|a| a.id == 101).unwrap();
+        assert!(!matches!(fox.state, WildlifeState::Hunting { .. }),
+            "目標裝死消失後，野狐應放棄追獵（不再 Hunting），實得 {:?}", fox.state);
+        let critter = mgr.animals.iter().find(|a| a.id == 100).unwrap();
+        assert!(critter.alive, "裝死的小動物應保住性命、未被獵殺");
     }
 
     // ─── ROADMAP 271：守靈駐立 ───────────────────────────────────────────────
