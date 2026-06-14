@@ -521,6 +521,24 @@ const NIBBLE_PROB: f32 = 0.03;
 const NIBBLE_DURATION_MIN: f32 = 2.0;
 const NIBBLE_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 276：野鳥理羽（bird preens its feathers）────────────────────────
+// 承接「理毛家族」這條線：216 給了成體↔成體互相理毛（💕，allogrooming），274 又補上成體↔幼獸的
+// 親代舐犢（💗，親理）——可這兩筆都是「替別人理」的社交親暱，獨缺最日常的一塊：動物獨自「替自己」
+// 打理身上的羽毛／皮毛（autopreening，自理）。生態裡最招牌的自理身影正是野鳥：停在地上，扭頭把
+// 喙埋進翅根、一根一根地梳整羽毛、抖鬆翅膀。本切片給野鳥補上這專屬的「理羽」：白天平靜時，野鳥
+// 漫步到定點後偶爾不只是發呆或低頭吃草，而會停下、低頭以喙梳理自己的羽毛一小段（頭頂飄落一根 🪶），
+// 理完再起身閒晃。與 216 理毛（💕，互理）／274 舐犢（💗，親理）湊成「理毛三態」——互理／親理／
+// 自理，把生態的梳理從「替別人」補到了「替自己」。與鳥的飛／鳴（220/221）的傳染呼應不同，理羽是
+// 各顧各的自理、不傳染（無快照、無接力）——只是一隻隻自顧自地低頭整羽，更像真實的鳥。純啟發式、
+// 零 LLM、零 tick 簽名改動、零協議改動（新增的 preening 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、記憶體模式。威脅永遠優先：理到一半若掠食者／玩家逼近，立刻收翅逃竄。
+/// 平靜的野鳥本幀停下理羽的機率——偏低，讓理羽是白天偶爾的一小段、而非時時在理（多數時候仍照常
+/// 閒晃／吃草／鳴唱）。對應 NIBBLE_PROB，是「各顧各、自發的一小段自理」。
+const PREEN_PROB: f32 = 0.03;
+/// 一段理羽的最短／最長時長（秒）——低頭梳整羽毛數秒後再起身回到閒晃，與啃咬同量級。
+const PREEN_DURATION_MIN: f32 = 2.0;
+const PREEN_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 223：野狐撲鼠（fox mousing pounce）──────────────────────────────
 // 承接 220～222 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
 // 小動物專屬的「捧食啃咬」——但那都是在差異化「獵物」。生態的另一側「掠食者」（野狼／野狐）至今行為
@@ -1219,6 +1237,11 @@ enum WildlifeState {
     /// 可獵獵物快照（prey_snap），對掠食者形同消失、令其放棄離去（複用「目標不見就 Returning」），
     /// 計時耗盡才甦醒起身回到正常作息。與 209 驚群炸開（硬逃）對成「打不過就騙過」一對。
     Feigning { feign_timer: f32 },
+    /// ROADMAP 276：野鳥理羽——白天平靜的野鳥偶爾停下，低頭以喙梳理自己的羽毛一小段（前端畫成
+    /// 原地微抖、頭頂飄落一根 🪶）。原地不動（不更新座標）、preen_timer 倒數，到期就起身回到漫遊；
+    /// 威脅一旦逼近一律優先收翅逃竄（理羽永遠讓位逃命）。與 216 理毛（💕，互理）／274 舐犢（💗，
+    /// 親理）湊成「理毛三態」——互理／親理／自理，把梳理從「替別人」補到了「替自己」。
+    Preening { preen_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1758,6 +1781,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 276：野鳥理羽——理羽中（Preening）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，鳥成群，與 tick_chirp 同模式）回到閒晃。只在 Preening 狀態下
+    /// 生效（呼叫端已確保此隻為野鳥、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去收翅逃竄——
+    /// 威脅永遠優先）。
+    fn tick_preen(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Preening { preen_timer } = self.state {
+            let remaining = preen_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Preening { preen_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -1985,6 +2025,7 @@ impl Wildlife {
             WildlifeState::Newborn { .. }   => "newborn",
             WildlifeState::Tending { .. }   => "tending",
             WildlifeState::Feigning { .. }  => "feigning",
+            WildlifeState::Preening { .. }  => "preening",
         }
     }
 }
@@ -3290,6 +3331,25 @@ impl WildlifeManager {
                     // 停下啁啾：原地仰首鳴唱一小段（頭頂浮 🎵）。
                     let timer = rng.gen_range(CHIRP_DURATION_MIN..=CHIRP_DURATION_MAX);
                     a.state = WildlifeState::Chirping { chirp_timer: timer };
+                } else if is_bird && matches!(a.state, WildlifeState::Preening { .. }) {
+                    // ROADMAP 276：已在理羽中——威脅一旦逼近就立刻收翅逃竄（自理永遠讓位逃命），
+                    // 否則原地把這一段羽毛梳完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_preen(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < PREEN_PROB
+                {
+                    // ROADMAP 276：白天平靜的野鳥——偶爾停下、低頭以喙梳理自己的羽毛一小段（頭頂飄落
+                    // 一根 🪶）。各顧各的、不傳染（與鳥的飛／鳴 220/221 的呼應刻意區隔），只是一隻隻
+                    // 自顧自地低頭整羽。與 216 互理（💕）／274 親理（💗）湊成「理毛三態」的「自理」一筆。
+                    let timer = rng.gen_range(PREEN_DURATION_MIN..=PREEN_DURATION_MAX);
+                    a.state = WildlifeState::Preening { preen_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::Nibbling { .. }) {
                     // ROADMAP 222：已在啃咬中——威脅一旦逼近就立刻丟食改逃竄（覓食永遠讓位逃命），
                     // 否則原地把這一段啃完、計時倒數，到期回到閒晃。
@@ -8143,7 +8203,11 @@ mod tests {
         mgr.animals = vec![flyer, listener];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         let mut joined = false;
-        for _ in 0..80 {
+        // 跑足夠多幀讓牽動必然累積：升空牽動只在聽者恰處 Wandering/Resting（而非當下在吃草／理毛／
+        // 理羽…等白晝作息）且擲中 FLIGHT_JOIN_PROB 時才發生，故所需幀數隨世界 RNG 序列而浮動（任何
+        // 新增的機率行為都會擾動這條確定性序列）。與 calm_critter_eventually_nibbles 等「終會累積」
+        // 的整合測同風格，給足裕度即可。
+        for _ in 0..400 {
             mgr.tick(0.1, &[], &att, &[], false); // is_night=false（白天）
             let l = mgr.animals.iter().find(|x| x.id == 2).unwrap();
             if matches!(l.state, WildlifeState::Flying { .. }) {
@@ -8404,6 +8468,102 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "啃咬中遇威脅應立刻丟食逃竄，實際 {:?}", c.state);
+    }
+
+    // ─── ROADMAP 276：野鳥理羽 ────────────────────────────────────────────────
+    #[test]
+    fn tick_preen_holds_position_while_timer_remaining() {
+        // 理羽進行中：原地不動（座標不變）、計時遞減、狀態維持 Preening。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Preening { preen_timer: 2.0 };
+        bird.tick_preen(0.1, None, &mut rng);
+        match bird.state {
+            WildlifeState::Preening { preen_timer } => {
+                assert!((preen_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("理羽未到期應維持 Preening，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "理羽中應原地不動");
+    }
+
+    #[test]
+    fn tick_preen_returns_to_wander_when_timer_expires() {
+        // 理羽到期：回到漫遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Preening { preen_timer: 0.05 };
+        bird.tick_preen(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "理羽到期應回漫遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_preen_noop_on_other_state() {
+        // 防呆：非 Preening 狀態呼叫 tick_preen 不該有任何作用（狀態不變、座標不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 3.0 };
+        bird.tick_preen(0.1, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非理羽狀態呼叫 tick_preen 不該改狀態");
+    }
+
+    #[test]
+    fn preening_state_str_is_preening() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Preening { preen_timer: 1.0 };
+        assert_eq!(bird.state_str(), "preening");
+    }
+
+    #[test]
+    fn non_bird_never_preens() {
+        // 物種專屬：只有野鳥會理羽——白天平靜的野鹿連跑數百幀都不該進入 Preening。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Preening { .. }), "非鳥類不該理羽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_bird_eventually_preens_during_day() {
+        // 白天平靜：一隻孤身野鳥連跑多幀後，總會偶爾停下理羽（PREEN_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut preened = false;
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Preening { .. }) {
+                preened = true;
+                break;
+            }
+        }
+        assert!(preened, "白天平靜的野鳥應偶爾停下理羽");
+    }
+
+    #[test]
+    fn preening_bird_flees_when_threat_approaches() {
+        // 威脅永遠優先：理羽中的野鳥一旦有威脅逼近 FLEE_RADIUS 內，立刻收翅逃竄（非繼續理羽）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Preening { preen_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "理羽中遇威脅應立刻收翅逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 223：野狐撲鼠 ────────────────────────────────────────────────
