@@ -557,6 +557,34 @@ const SCRATCH_PROB: f32 = 0.03;
 const SCRATCH_DURATION_MIN: f32 = 2.0;
 const SCRATCH_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 278：群體呵欠（contagious yawning ripples through a resting herd）──
+// 接續 276 理羽（🪶，鳥的自理）／277 搔癢（🐾，獸的自理）這條「歇下來的小動作」線，但換一個維度：
+// 276／277 都是「各顧各、不傳染」的自理；本切片補上生態裡最有名、最惹人會心一笑的**會傳染**的小動作
+// ——打呵欠。真實的群居哺乳動物（鹿群、犬群…）一隻打了個大呵欠，看見的同伴常被勾得跟著打（contagious
+// yawning，社會性傳染的經典案例）。本切片給草食走獸（鹿／小獸）補上這專屬的「群體呵欠」：白天平靜
+// **歇息（Resting）**的鹿／小獸，睏意上來偶爾張口打個大呵欠（頭頂浮一枚緩緩脹放的 🥱）；附近同種夥伴
+// 「看見」了會被牽動跟著打（仿 221 鳴聲／220 升空的「看見就接力」、262 警戒漣漪的「同種傳染」），睏意
+// 像漣漪般在歇息的獸群間一隻接一隻地漾開。與 277 搔癢恰成一對、刻意分工：**277 搔癢從 Wandering 起意、
+// 各顧各不傳染（自理）；278 呵欠從 Resting 起意、會傳染（社會性睏意漣漪）**——漫步時搔癢、歇下了打呵欠，
+// 一個各顧各、一個會傳開。本幀新被牽動者不在「呵欠快照」裡，故每 tick 只向外擴一圈，呵欠逐圈傳開、整群
+// 錯落而打，不會瞬間全打。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 yawning 字串沿用
+// state_str；計時隨狀態變體攜帶、無新欄位）、記憶體模式。威脅永遠優先：呵欠打到一半若掠食者／玩家逼近，
+// 立刻閉口逃竄。
+/// 平靜歇息的走獸本幀自發打呵欠（沒看見同種在打）的機率——偏低（對齊 223 撲鼠 POUNCE_PROB），讓自發起頭
+/// 是偶爾的一下，呵欠主要靠看見同伴而「傳染」開來，而非各打各的。
+const YAWN_SELF_PROB: f32 = 0.02;
+/// 「看見」附近同種夥伴正在打呵欠時、被牽動跟著打的機率——明顯高於自發（對應 221 CHIRP_JOIN_PROB），
+/// 讓呵欠以「接力傳染」為主、由近而遠在歇息的獸群間漾開。
+const YAWN_JOIN_PROB: f32 = 0.40;
+/// 呵欠傳染半徑（像素）——同種夥伴在此範圍內打呵欠，會把睏意「看」過來勾得自己也打。介於 262 同群
+/// 警戒半徑（VIGIL_ALARM_RADIUS 200，緊張時看得近而急）與 221 鳴聲半徑（CHIRP_HEAR_RADIUS 420，聲音
+/// 傳得遠）之間：呵欠靠「看見」而非聽見，得離得夠近才被勾到，但又比繃緊神經的警戒鬆些。
+const YAWN_SEE_RADIUS: f32 = 280.0;
+/// 一段呵欠的最短／最長時長（秒）——張口打個大呵欠是短短一下（與 272 成年禮／273 初生同量級、刻意短，
+/// 是「一個呵欠」而非長段駐立），打完再起身回到漫遊。
+const YAWN_DURATION_MIN: f32 = 1.2;
+const YAWN_DURATION_MAX: f32 = 2.5;
+
 // ─── ROADMAP 223：野狐撲鼠（fox mousing pounce）──────────────────────────────
 // 承接 220～222 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
 // 小動物專屬的「捧食啃咬」——但那都是在差異化「獵物」。生態的另一側「掠食者」（野狼／野狐）至今行為
@@ -1265,6 +1293,13 @@ enum WildlifeState {
     /// 回到漫遊；威脅一旦逼近一律優先放下後腿逃竄（搔癢永遠讓位逃命）。與 276 理羽（🪶，鳥的自理）
     /// 對成「自理一對」——長羽的鳥梳羽、長毛的獸搔癢。
     Scratching { scratch_timer: f32 },
+    /// ROADMAP 278：群體呵欠——白天平靜歇息的草食走獸（鹿／小獸）偶爾睏意上來、張口打個大呵欠
+    /// （前端畫成原地微仰、頭頂浮一枚緩緩脹放的 🥱）。原地不動（不更新座標）、yawn_timer 倒數，
+    /// 到期就起身回到漫遊；威脅一旦逼近一律優先閉口逃竄（呵欠永遠讓位逃命）。**呵欠會傳染**：附近
+    /// 同種夥伴「看見」了會被牽動跟著打哈欠（仿 221 鳴聲／220 升空的「看見就接力」），睏意像漣漪般
+    /// 在歇息的獸群間漾開。與 277 搔癢（Wandering 起意、各顧各的自理）對成一對——漫步時搔癢、歇息時
+    /// 打呵欠；一個各顧各、一個會傳染。
+    Yawning { yawn_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1838,6 +1873,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 278：群體呵欠——打呵欠中（Yawning）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_scratch 同模式）回到閒晃。只在 Yawning 狀態下生效
+    /// （呼叫端已確保此隻為草食走獸、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去逃竄——
+    /// 威脅永遠優先）。
+    fn tick_yawn(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Yawning { yawn_timer } = self.state {
+            let remaining = yawn_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Yawning { yawn_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -2067,6 +2119,7 @@ impl Wildlife {
             WildlifeState::Feigning { .. }  => "feigning",
             WildlifeState::Preening { .. }  => "preening",
             WildlifeState::Scratching { .. } => "scratching",
+            WildlifeState::Yawning { .. }   => "yawning",
         }
     }
 }
@@ -2380,6 +2433,15 @@ impl WildlifeManager {
         let chirping_snap: Vec<(f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && matches!(a.state, WildlifeState::Chirping { .. }))
             .map(|a| (a.x, a.y))
+            .collect();
+
+        // ROADMAP 278：本幀起始時正在打呵欠（Yawning）的走獸 kind＋座標快照——供其餘平靜歇息的同種
+        // 走獸據此「看見」附近同伴的呵欠而被勾得跟著打（接力傳染，仿 221 啁啾快照／262 警戒快照）。
+        // 帶 kind 以限同種傳染（鹿勾鹿、小獸勾小獸）。新被牽動者本幀不在此快照裡，故牽動每 tick 只向外
+        // 擴一圈，呵欠像漣漪般在獸群間逐圈傳開、不會瞬間全打。
+        let yawning_snap: Vec<(WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && matches!(a.state, WildlifeState::Yawning { .. }))
+            .map(|a| (a.kind, a.x, a.y))
             .collect();
 
         // ROADMAP 230：本幀起始時正在屍體旁進食（Digesting）的野狼座標快照——即「正在進行的獵殺
@@ -3520,6 +3582,34 @@ impl WildlifeManager {
                     // 同儕互相照拂、也有親代俯身照拂幼獸。
                     let timer = rng.gen_range(TEND_DURATION_MIN..=TEND_DURATION_MAX);
                     a.state = WildlifeState::Tending { tend_timer: timer };
+                } else if is_mammal && matches!(a.state, WildlifeState::Yawning { .. }) {
+                    // ROADMAP 278：已在打呵欠中——威脅一旦逼近就立刻閉口逃竄（呵欠永遠讓位逃命），
+                    // 否則原地把這一個呵欠打完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_yawn(dt, herd_anchor, rng);
+                    }
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. })
+                    && {
+                        // ROADMAP 278：白天平靜歇息的草食走獸——「看見」附近同種夥伴正在打呵欠
+                        // （YAWN_SEE_RADIUS 內）便以較高的 YAWN_JOIN_PROB 被勾得跟著打（接力傳染）；
+                        // 沒看見才退回低機率 YAWN_SELF_PROB 自發起頭。本幀新被牽動者不在 yawning_snap
+                        // 裡，故呵欠逐圈外擴、整群錯落而打（仿 220/221 的 join＞自發）。排在所有社交
+                        // 親暱（較勁／守靈／求偶／理毛／舐犢）之後：呵欠補的是社交都歇下後、最慵懶的
+                        // 那點睏意，不搶社交的節奏；沒打呵欠的走獸仍落到下方吃草分支。
+                        let join = sees_yawn(animal_kind, a.x, a.y, &yawning_snap)
+                            && rng.gen::<f32>() < YAWN_JOIN_PROB;
+                        join || rng.gen::<f32>() < YAWN_SELF_PROB
+                    }
+                {
+                    // 睏意上來，張口打個大呵欠（頭頂浮一枚緩緩脹放的 🥱），原地不動、計時倒數。
+                    // 與 277 搔癢（Wandering 起意、各顧各的自理）對成一對——漫步搔癢、歇下打呵欠。
+                    let timer = rng.gen_range(YAWN_DURATION_MIN..=YAWN_DURATION_MAX);
+                    a.state = WildlifeState::Yawning { yawn_timer: timer };
                 } else {
                     // ROADMAP 211：白晝吃草——只有白天的晝行獵物才會吃草（夜間傳 0：夜眠不吃草）。
                     // Phase 4 本就只處理獵物，故此處 is_diurnal 恆真；以 is_night 區隔晝夜即可。
@@ -3697,6 +3787,21 @@ fn sees_alarmed_herd(kind: WildlifeKind, px: f32, py: f32, vigilant: &[(Wildlife
         k == kind && {
             let dx = vx - px;
             let dy = vy - py;
+            dx * dx + dy * dy <= r2
+        }
+    })
+}
+
+/// ROADMAP 278：群體呵欠——位於 (px,py) 的走獸是否「看見」附近任一正在打呵欠（Yawning）的同種
+/// 夥伴（`yawning` 為本幀起始時正在打呵欠者的 kind＋座標快照）。只要有一隻同種在 YAWN_SEE_RADIUS
+/// 內就回 true，由呼叫端據此（以 YAWN_JOIN_PROB）牽動牠跟著打。限同種：呵欠在同群內傳開（仿 262
+/// 警戒只在同種間漣漪）。純距離判定、無副作用（仿 220 的 sees_flight／262 的 sees_alarmed_herd）。
+fn sees_yawn(kind: WildlifeKind, px: f32, py: f32, yawning: &[(WildlifeKind, f32, f32)]) -> bool {
+    let r2 = YAWN_SEE_RADIUS * YAWN_SEE_RADIUS;
+    yawning.iter().any(|&(k, yx, yy)| {
+        k == kind && {
+            let dx = yx - px;
+            let dy = yy - py;
             dx * dx + dy * dy <= r2
         }
     })
@@ -8732,6 +8837,139 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "搔癢中遇威脅應立刻放下後腿逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 278：群體呵欠 ────────────────────────────────────────────────
+    #[test]
+    fn tick_yawn_holds_position_while_timer_remaining() {
+        // 呵欠進行中：原地不動（座標不變）、計時遞減、狀態維持 Yawning。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Yawning { yawn_timer: 2.0 };
+        deer.tick_yawn(0.1, None, &mut rng);
+        match deer.state {
+            WildlifeState::Yawning { yawn_timer } => {
+                assert!((yawn_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("呵欠未到期應維持 Yawning，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "呵欠中應原地不動");
+    }
+
+    #[test]
+    fn tick_yawn_returns_to_wander_when_timer_expires() {
+        // 呵欠到期：回到漫遊（打完起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Yawning { yawn_timer: 0.05 };
+        deer.tick_yawn(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "呵欠到期應回漫遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_yawn_noop_on_other_state() {
+        // 防呆：非 Yawning 狀態呼叫 tick_yawn 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 3.0 };
+        deer.tick_yawn(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非呵欠狀態呼叫 tick_yawn 不該改狀態");
+    }
+
+    #[test]
+    fn yawning_state_str_is_yawning() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Yawning { yawn_timer: 1.0 };
+        assert_eq!(deer.state_str(), "yawning");
+    }
+
+    #[test]
+    fn sees_yawn_only_same_kind_within_radius() {
+        // 純距離＋同種判定：同種夥伴在 YAWN_SEE_RADIUS 內看得見、外則看不見；異種夥伴即使在範圍內
+        // 也不傳染（呵欠只在同群內漾開）；空快照永遠看不見。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!sees_yawn(WildlifeKind::WildDeer, me.0, me.1, &[]), "四下無打呵欠夥伴時看不見");
+        let near = (WildlifeKind::WildDeer, me.0 + YAWN_SEE_RADIUS - 1.0, me.1);
+        assert!(sees_yawn(WildlifeKind::WildDeer, me.0, me.1, &[near]), "半徑內的同種呵欠應看得見");
+        let far = (WildlifeKind::WildDeer, me.0 + YAWN_SEE_RADIUS + 50.0, me.1);
+        assert!(!sees_yawn(WildlifeKind::WildDeer, me.0, me.1, &[far]), "半徑外的同種呵欠看不見");
+        // 異種：即使近在咫尺也不算（鹿不被鳥的呵欠勾到）。
+        let other = (WildlifeKind::WildBird, me.0 + 10.0, me.1);
+        assert!(!sees_yawn(WildlifeKind::WildDeer, me.0, me.1, &[other]), "異種呵欠不傳染");
+        // 多個來源：只要有一隻同種在範圍內即看得見。
+        assert!(sees_yawn(WildlifeKind::WildDeer, me.0, me.1, &[far, other, near]),
+            "其中一隻同種在範圍內就算看得見");
+    }
+
+    #[test]
+    fn non_mammal_never_yawns() {
+        // 物種專屬：只有草食走獸（鹿／小獸）會打呵欠——白天平靜歇息的野鳥連跑數百幀都不該進入 Yawning。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Yawning { .. }), "非走獸不該打呵欠，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn calm_resting_mammal_eventually_yawns_during_day() {
+        // 白天平靜歇息：一隻孤身野鹿連跑多幀後，總會偶爾打個呵欠（YAWN_SELF_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 }; // 整段維持歇息（呵欠從 Resting 起意）
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut yawned = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Yawning { .. }) { yawned = true; break; }
+        }
+        assert!(yawned, "白天平靜歇息的野鹿應偶爾打個呵欠");
+    }
+
+    #[test]
+    fn yawn_contagion_spreads_to_resting_herdmate() {
+        // 傳染：白天，一隻鹿「已在打呵欠」（持續的呵欠源）、另一隻平靜歇息的鹿緊鄰著牠
+        // （YAWN_SEE_RADIUS 內）。連跑多幀，平靜的那隻應被同群的呵欠勾得跟著打。
+        let mut mgr = WildlifeManager::new();
+        let mut yawner = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        yawner.id = 1;
+        yawner.state = WildlifeState::Yawning { yawn_timer: 1.0e9 }; // 整段測試都維持打呵欠
+        let mut calm = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0); // 60px：YAWN_SEE_RADIUS 內
+        calm.id = 2;
+        calm.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![yawner, calm];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_yawn = false;
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+            if matches!(c.state, WildlifeState::Yawning { .. }) { saw_yawn = true; break; }
+        }
+        assert!(saw_yawn, "看見同群夥伴打呵欠，平靜歇息的鹿應被勾得跟著打");
+    }
+
+    #[test]
+    fn yawning_mammal_flees_when_threat_approaches() {
+        // 威脅永遠優先：打呵欠中的走獸一旦有威脅逼近 FLEE_RADIUS 內，立刻閉口逃竄（非繼續打呵欠）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Yawning { yawn_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "呵欠中遇威脅應立刻閉口逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 223：野狐撲鼠 ────────────────────────────────────────────────
