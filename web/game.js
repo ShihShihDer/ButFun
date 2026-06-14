@@ -4137,6 +4137,7 @@
     safeDraw("ground", () => drawGround(camX, camY));
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
+    safeDraw("rainRipples", () => drawRainRipples(camX, camY, renderNow)); // 雨打水面漣漪（247），下雨時水面被雨點打出一圈圈擴散的漣漪、貼波光之上映日映月之下
     safeDraw("waterIce", () => drawWaterIce(camX, camY)); // 冬日結冰水面（242），冬季水面覆冷白冰光＋淡裂紋、波光之上映日映月之下
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
@@ -10733,6 +10734,109 @@
         ctx.beginPath();
         ctx.ellipse(sx, sy, r * 1.6, r * 0.7, 0, 0, Math.PI * 2);
         ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ── 雨打水面漣漪（ROADMAP 247）──────────────────────────────────────────────
+  // 天氣這條線最近一路落到了地面：下雨的雨絲（93）、雨後天邊的彩虹（191）、暴雨當下的閃電（243）、
+  // 雨後陸地泛濕＋積窪（246）。可 246 明說「水域不疊濕地光——水本就濕」，於是盤點下來：下了一整場雨，
+  // 唯獨「水面」這塊毫無反應——雨點打在水上理應濺起一圈圈擴散的漣漪，可水域至今只有原本的波光，看不出
+  // 正在下雨。本切片把雨第一次打到「水上」：草原降雨（沿用 191/243/246 的 isRainingState 判定）時，
+  // 可見水域 tile 上疏落地不斷濺起漣漪——每個漣漪源剛濺起時是個小亮環、隨即向外擴散變大並淡去，淡盡後
+  // 換個落點再濺一輪（像雨點隨機打在水面）；雨越大漣漪越密越明顯（隨 weatherIntensity）。色溫沿用波光
+  // 一脈（白天藍白、晨昏金、夜冷月白），讓漣漪讀起來是「水面映著天的反光環」。與雨後地面濕潤（246）
+  // 刻意對成「水 / 陸」一對——246 是雨打濕了陸地、本切片是雨打皺了水面，天氣第一次同時落到了腳下的水陸。
+  // 純前端 Canvas 2D、效能優先（沒下雨整層早退、零開銷；弱機/低幀沿用 91 的 _parallaxEnabled 一律不畫；
+  // 每格至多一源、淡盡即跳過）、讀既有 weatherType＋weatherIntensity＋daynight、零後端、零協議改動、零持久化。
+  // 下面數支純函式抽出來、無 DOM／可單元自驗。
+  const RIPPLE_PERIOD_MS = 1400;  // 單個漣漪源「濺起→擴散→淡盡」一輪的基準週期（每格 hash 微調避免整片同步濺）
+  const RIPPLE_DENSITY   = 0.55;  // sceneryHash 高於此的水格才有漣漪源（疏密，避免滿版漣漪糊掉水色）
+  const RIPPLE_BASE_R    = 1.5;   // 漣漪剛濺起時的初生半徑（小，像雨點剛落下那一瞬）
+  const RIPPLE_SPREAD    = 9;     // 漣漪擴散到淡盡時相對初生增加的半徑（環越擴越大）
+  const RIPPLE_MAX_ALPHA = 0.34;  // 單圈漣漪描邊峰值不透明度（淡、半透明，透出底下水色與波光）
+  const RIPPLE_MIN_ALPHA = 0.02;  // 此刻不透明度低於此即不畫該源（多數時間漣漪已淡盡，省繪製）
+
+  // 純函式：把 now 換算成某漣漪源此刻在「濺起→淡盡」週期內的位置 { idx, t }——idx=第幾輪（整數，供
+  // 換落點，讓每輪濺在不同位置）、t=本輪進度 [0,1)（0=剛濺起、趨近 1=快淡盡）。periodMs<=0 視為靜止
+  //（回 {0,0}）。無 DOM、可測。
+  function rippleCycle(now, periodMs, phaseOff) {
+    if (!(periodMs > 0)) return { idx: 0, t: 0 };
+    const x = now / periodMs + (phaseOff || 0);
+    const idx = Math.floor(x);
+    return { idx, t: x - idx };
+  }
+
+  // 純函式：漣漪半徑隨進度 t 由 baseR 線性擴散到 baseR+spread（環越擴越大）。t 夾在 [0,1]。無 DOM、可測。
+  function rippleRadius(t, baseR, spread) {
+    const p = Math.max(0, Math.min(1, t));
+    return baseR + p * spread;
+  }
+
+  // 純函式：漣漪描邊不透明度隨進度 t 淡出——剛濺起（t=0）最亮、擴散到邊緣（t→1）淡盡。用 (1-t) 線性
+  // 淡出乘峰值 peak。t 夾在 [0,1]。無 DOM、可測。
+  function rippleAlpha(t, peak) {
+    const p = Math.max(0, Math.min(1, t));
+    return (1 - p) * peak;
+  }
+
+  // 純函式：當前天氣下「雨打水面漣漪」的整體強度 [0,1]。沒在下草原雨回 0（整層早退）；下雨時隨雨勢
+  // intensity 增強（小雨疏淡、大雨密亮）。無 DOM、可測。
+  function rainRippleStrength(type, intensity) {
+    if (!isRainingState(type, intensity)) return 0;
+    const i = Math.max(0, Math.min(1, intensity));
+    return 0.5 + 0.5 * i;
+  }
+
+  // 每幀在可見水域 tile 上繪製雨點濺起的擴散漣漪。由獨立 safeDraw 呼叫，畫在波光（195）之上、
+  // 映日映月（202）之下——漣漪是雨打在反光水面上的那層皺褶。沒下雨（strength≈0）整層早退、零開銷。
+  function drawRainRipples(camX, camY, now) {
+    if (reduceMotion || !_parallaxEnabled) return;
+    const strength = rainRippleStrength(weatherType, weatherIntensity);
+    if (strength <= 0.01) return; // 沒在下雨：整層不畫、零開銷
+
+    const light = daynight ? daynight.light : 1;
+    const phase = daynight ? daynight.phase : "day";
+    const tint = shimmerTint(light, phase); // 沿用波光一脈色溫（白天藍白／晨昏金／夜冷月白）
+
+    // 與 drawWaterShimmer 同口徑的可見 tile 範圍
+    const tx0 = Math.floor(camX / TS) - 1;
+    const ty0 = Math.floor(camY / TS) - 1;
+    const tx1 = Math.floor((camX + viewW) / TS) + 1;
+    const ty1 = Math.floor((camY + viewH) / TS) + 1;
+
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (biomeAt(tx * TS + TS / 2, ty * TS + TS / 2) !== "water") continue;
+        // 此格是否有漣漪源（疏密）＋週期／初相微調，皆由確定性 hash 決定（不隨鏡頭閃爍）
+        const h0 = sceneryHash(tx * 11 + 5, ty * 17 + 2);
+        if (h0 < RIPPLE_DENSITY) continue;
+        const h1 = sceneryHash(tx * 7 + 3, ty * 5 + 8);
+        const period = RIPPLE_PERIOD_MS * (0.7 + h1 * 0.6); // 每格週期不同，避免整片同步濺
+        const cyc = rippleCycle(now, period, h0);           // 以 h0 當初相，錯開各格起濺時刻
+        const a = rippleAlpha(cyc.t, RIPPLE_MAX_ALPHA) * strength;
+        if (a < RIPPLE_MIN_ALPHA) continue;                 // 已淡盡：不畫，省繪製
+        // 該輪落點：用 cyc.idx 再 hash，讓每一輪漣漪濺在格內不同位置（像雨點隨機打在水面）
+        const p1 = sceneryHash(tx * 3 + (cyc.idx % 101), ty * 13 + 6);
+        const p2 = sceneryHash(tx * 19 + 4, ty * 9 + (cyc.idx % 97));
+        const cx = tx * TS - camX + (0.2 + p1 * 0.6) * TS;
+        const cy = ty * TS - camY + (0.2 + p2 * 0.6) * TS;
+        const r = rippleRadius(cyc.t, RIPPLE_BASE_R, RIPPLE_SPREAD);
+        // 外圈：擴散中的主環（扁橢圓，貼水面透視）
+        ctx.strokeStyle = `rgba(${tint.r},${tint.g},${tint.b},${a.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r, r * 0.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // 內圈：跟在主環內側一道更小更亮的環，讓漣漪讀起來是「一圈圈」而非單線
+        if (r > RIPPLE_BASE_R + 2) {
+          ctx.strokeStyle = `rgba(${tint.r},${tint.g},${tint.b},${(a * 1.25).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 0.55, r * 0.55 * 0.5, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
     }
     ctx.restore();

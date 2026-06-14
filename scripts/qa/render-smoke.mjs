@@ -401,6 +401,12 @@ const scenarios = [
   // （moonPhase(Date.now)）罩出暗面、畫出陰晴圓缺（暗側月緣半圓＋終止線橢圓圍成的弧月）。
   // 取代 200 過去那抹固定假陰影；任一真實時刻的月相都應零例外繪過暗面合圍路徑。
   variant("夜空月相", (s) => { s.daynight = { phase: "night", light: 0.12, night_danger: true }; s.weather = { weather_type: "clear", intensity: 0.0 }; }),
+  // 雨打水面漣漪（247）：玩家在成片水域（同波光那片 (-4400,-3000)）＋草原降雨（grassland_rain，
+  // intensity 0.7 > 0.2 門檻）→ 跑 drawRainRipples 的繪製分支（水格上撒漣漪源→濺起→擴散環→淡盡換落點）。
+  // 三種色溫（白天藍白／晨昏金／夜冷月白）各跑一片，確認 shimmerTint 三分支與漣漪環繪製零例外。
+  variant("雨打水面漣漪(白天)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "day", light: 0.7, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
+  variant("雨打水面漣漪(破曉金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.55, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
+  variant("雨打水面漣漪(夜冷月)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "night", light: 0.15, night_danger: true }; s.weather = { weather_type: "grassland_rain", intensity: 0.5 }; }),
 ];
 
 let failed = false;
@@ -672,6 +678,24 @@ for (const sc of scenarios) {
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 雷雨閃電：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
   else if (!(r instanceof Error)) console.log("  ✅ 雷雨閃電：乾淨");
+}
+
+// 雨打水面漣漪（247）：單個漣漪源一輪「濺起→擴散→淡盡」週期 ~1.4s，6 幀（~96ms）只碰到剛濺起那一小段；
+// 連跑 ~200 幀（每幀 +16ms ≈ 3.2s）才實跑「濺起小亮環→擴散變大淡出→淡盡→換 cyc.idx 落點重濺一輪」
+// 完整迴圈與內外雙環路徑（一般 6 幀情境碰不到淡盡換落點那一段）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：水域降雨（雨打水面漣漪，連跑 200 幀觸發漣漪擴散→淡盡→換落點重濺）──");
+  const rainSnap = JSON.parse(JSON.stringify(snapshot));
+  rainSnap.players[0].x = -4400; rainSnap.players[0].y = -3000; // 成片水域
+  rainSnap.daynight = { phase: "day", light: 0.7, night_danger: false };
+  rainSnap.weather = { weather_type: "grassland_rain", intensity: 0.7 };
+  lastWS.onmessage({ data: JSON.stringify({ ...rainSnap, type: "snapshot" }) });
+  const r = pump("雨打水面漣漪", 200);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 雨打水面漣漪：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雨打水面漣漪：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 雨打水面漣漪：乾淨");
 }
 
 console.log("");
