@@ -539,6 +539,24 @@ const PREEN_PROB: f32 = 0.03;
 const PREEN_DURATION_MIN: f32 = 2.0;
 const PREEN_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 277：走獸搔癢（mammal scratches its fur with a hind leg）──────────
+// 接續 276 把「理毛家族」推到的「自理」一筆：276 給了野鳥專屬的理羽（🪶，扭頭以喙梳羽），可那只
+// 補了「長羽毛的」這一半——草地上長毛皮的走獸（鹿／小獸）同樣得日日打理身上的皮毛，卻獨缺一個看得見
+// 的自理身影。生態裡走獸最招牌的自理動作正是「抬起一條後腿、飛快地搔抓耳後／頸側」——抖落皮屑、撓去
+// 發癢。本切片給長毛的草食走獸補上這專屬的「搔癢」：白天平靜時，鹿／小獸漫步到定點後偶爾不只是發呆或
+// 低頭吃草，而會停下、抬起後腿快速搔抓耳後一小段（頭頂浮一枚 🐾），搔完再起身閒晃。與 276 理羽（🪶，
+// 鳥的自理）對成「自理一對」——長羽的鳥梳羽、長毛的獸搔癢，把 216 互理（💕）／274 親理（💗）之後的
+// 「自理」從「長羽毛的」補齊到「長皮毛的」。與 276 同手法：各顧各的自理、不傳染（無快照、無接力），
+// 只是一隻隻自顧自地抬腿搔癢，更像真實的走獸。純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的
+// scratching 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、記憶體模式。威脅永遠優先：搔到一半
+// 若掠食者／玩家逼近，立刻放下後腿逃竄。
+/// 平靜的走獸本幀停下搔癢的機率——偏低，讓搔癢是白天偶爾的一小段、而非時時在搔（多數時候仍照常
+/// 閒晃／吃草）。對齊 276 PREEN_PROB，是「各顧各、自發的一小段自理」。
+const SCRATCH_PROB: f32 = 0.03;
+/// 一段搔癢的最短／最長時長（秒）——抬後腿快速搔抓數秒後再起身回到閒晃，與理羽／啃咬同量級。
+const SCRATCH_DURATION_MIN: f32 = 2.0;
+const SCRATCH_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 223：野狐撲鼠（fox mousing pounce）──────────────────────────────
 // 承接 220～222 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
 // 小動物專屬的「捧食啃咬」——但那都是在差異化「獵物」。生態的另一側「掠食者」（野狼／野狐）至今行為
@@ -1242,6 +1260,11 @@ enum WildlifeState {
     /// 威脅一旦逼近一律優先收翅逃竄（理羽永遠讓位逃命）。與 216 理毛（💕，互理）／274 舐犢（💗，
     /// 親理）湊成「理毛三態」——互理／親理／自理，把梳理從「替別人」補到了「替自己」。
     Preening { preen_timer: f32 },
+    /// ROADMAP 277：走獸搔癢——白天平靜的草食走獸（鹿／小獸）偶爾停下，抬起後腿快速搔抓耳後一小段
+    /// （前端畫成原地微抖、頭頂浮一枚 🐾）。原地不動（不更新座標）、scratch_timer 倒數，到期就起身
+    /// 回到漫遊；威脅一旦逼近一律優先放下後腿逃竄（搔癢永遠讓位逃命）。與 276 理羽（🪶，鳥的自理）
+    /// 對成「自理一對」——長羽的鳥梳羽、長毛的獸搔癢。
+    Scratching { scratch_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1798,6 +1821,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 277：走獸搔癢——搔癢中（Scratching）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，與 tick_preen 同模式）回到閒晃。只在 Scratching 狀態下生效
+    /// （呼叫端已確保此隻為草食走獸、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去逃竄——
+    /// 威脅永遠優先）。
+    fn tick_scratch(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Scratching { scratch_timer } = self.state {
+            let remaining = scratch_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Scratching { scratch_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 222：小動物捧食啃咬——啃咬中（Nibbling）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor）回到閒晃。只在 Nibbling 狀態下生效（呼叫端已確保此隻為小動物、
     /// 白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去丟食逃竄——威脅永遠優先）。
@@ -2026,6 +2066,7 @@ impl Wildlife {
             WildlifeState::Tending { .. }   => "tending",
             WildlifeState::Feigning { .. }  => "feigning",
             WildlifeState::Preening { .. }  => "preening",
+            WildlifeState::Scratching { .. } => "scratching",
         }
     }
 }
@@ -3137,6 +3178,9 @@ impl WildlifeManager {
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
                 let is_bird = animal_kind == WildlifeKind::WildBird;
                 let is_critter = animal_kind == WildlifeKind::SmallCritter;
+                // ROADMAP 277：走獸搔癢——只有長皮毛的草食走獸（鹿／小獸）會搔癢（野鳥走 276 理羽、
+                // 掠食者另由掠食迴圈處理、不入此平靜作息分支）。
+                let is_mammal = matches!(animal_kind, WildlifeKind::WildDeer | WildlifeKind::SmallCritter);
                 if matches!(a.state, WildlifeState::Watching { .. }) {
                     // ROADMAP 212 修補：走到此處代表本隻已非自群哨兵（act_as_sentinel 為偽——
                     // 例如有更小 id 的同種成體漂進了 SENTINEL_HERD_RADIUS、接手放哨），卻仍滯留在
@@ -3350,6 +3394,28 @@ impl WildlifeManager {
                     // 自顧自地低頭整羽。與 216 互理（💕）／274 親理（💗）湊成「理毛三態」的「自理」一筆。
                     let timer = rng.gen_range(PREEN_DURATION_MIN..=PREEN_DURATION_MAX);
                     a.state = WildlifeState::Preening { preen_timer: timer };
+                } else if is_mammal && matches!(a.state, WildlifeState::Scratching { .. }) {
+                    // ROADMAP 277：已在搔癢中——威脅一旦逼近就立刻放下後腿逃竄（自理永遠讓位逃命），
+                    // 否則原地把這一段搔完、計時倒數，到期回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_scratch(dt, herd_anchor, rng);
+                    }
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SCRATCH_PROB
+                {
+                    // ROADMAP 277：白天平靜、正四處漫步的草食走獸（鹿／小獸）——偶爾停下、抬起後腿快速
+                    // 搔抓耳後一小段（頭頂浮一枚 🐾）。各顧各的、不傳染（與 276 理羽同手法），只是一隻隻
+                    // 自顧自地抬腿搔癢。與 276 理羽（🪶）對成「自理一對」——長羽的鳥梳羽、長毛的獸搔癢。
+                    // 刻意只從 Wandering 起意（漫步途中順手撓癢）、不從 Resting 起意：settled 的歇息就讓
+                    // 牠安穩歇著，自理屬於「起來活動著」的時候——與 276 鳥（停／飛皆可理羽）的差異恰合
+                    // 走獸習性（趴著歇息時不會抬腿搔癢）。
+                    let timer = rng.gen_range(SCRATCH_DURATION_MIN..=SCRATCH_DURATION_MAX);
+                    a.state = WildlifeState::Scratching { scratch_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::Nibbling { .. }) {
                     // ROADMAP 222：已在啃咬中——威脅一旦逼近就立刻丟食改逃竄（覓食永遠讓位逃命），
                     // 否則原地把這一段啃完、計時倒數，到期回到閒晃。
@@ -7814,6 +7880,11 @@ mod tests {
         mgr.animals = vec![deer, wolf];
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         for _ in 0..200 {
+            // 把孤鹿釘在原地（5000,5000），隔離「感知」與「漫步漂移」：本測驗的是「定點上、警戒帶外
+            // (345>340) 的狼感知不到」這件事，而非鹿恰好沒漫步靠近。鹿本就會在 home 周邊漫步，其軌跡
+            // 隨世界 RNG 序列浮動（任何新增的機率行為都會擾動這條確定性序列）；不釘住的話，偶爾的漫步
+            // 漂移可能把鹿帶進警戒帶、混淆「感知」這個受測點。故每幀重置回原地，純測距離上的感知界線。
+            if let Some(d) = mgr.animals.iter_mut().find(|x| x.id == 1) { d.x = 5000.0; d.y = 5000.0; }
             mgr.tick(0.1, &[], &att, &[], false);
             let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(d.state, WildlifeState::Vigilant { .. }),
@@ -8564,6 +8635,103 @@ mod tests {
         mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "理羽中遇威脅應立刻收翅逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 277：走獸搔癢 ────────────────────────────────────────────────
+    #[test]
+    fn tick_scratch_holds_position_while_timer_remaining() {
+        // 搔癢進行中：原地不動（座標不變）、計時遞減、狀態維持 Scratching。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Scratching { scratch_timer: 2.0 };
+        deer.tick_scratch(0.1, None, &mut rng);
+        match deer.state {
+            WildlifeState::Scratching { scratch_timer } => {
+                assert!((scratch_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("搔癢未到期應維持 Scratching，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "搔癢中應原地不動");
+    }
+
+    #[test]
+    fn tick_scratch_returns_to_wander_when_timer_expires() {
+        // 搔癢到期：回到漫遊（起身投入閒晃）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Scratching { scratch_timer: 0.05 };
+        deer.tick_scratch(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "搔癢到期應回漫遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_scratch_noop_on_other_state() {
+        // 防呆：非 Scratching 狀態呼叫 tick_scratch 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 3.0 };
+        deer.tick_scratch(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非搔癢狀態呼叫 tick_scratch 不該改狀態");
+    }
+
+    #[test]
+    fn scratching_state_str_is_scratching() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Scratching { scratch_timer: 1.0 };
+        assert_eq!(deer.state_str(), "scratching");
+    }
+
+    #[test]
+    fn non_mammal_never_scratches() {
+        // 物種專屬：只有長皮毛的草食走獸會搔癢——白天平靜的野鳥連跑數百幀都不該進入 Scratching
+        //（野鳥走 276 理羽，不搔癢）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Scratching { .. }), "非走獸不該搔癢，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn calm_mammal_eventually_scratches_during_day() {
+        // 白天平靜：一隻孤身野鹿連跑多幀後，總會偶爾停下搔癢（SCRATCH_PROB 之必然累積）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut scratched = false;
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、無威脅
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Scratching { .. }) {
+                scratched = true;
+                break;
+            }
+        }
+        assert!(scratched, "白天平靜的野鹿應偶爾停下搔癢");
+    }
+
+    #[test]
+    fn scratching_mammal_flees_when_threat_approaches() {
+        // 威脅永遠優先：搔癢中的走獸一旦有威脅逼近 FLEE_RADIUS 內，立刻放下後腿逃竄（非繼續搔癢）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Scratching { scratch_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 玩家逼到 50px（< FLEE_RADIUS 180）；物種預設態度 < FRIENDLY 且未馴養 → 算威脅。
+        mgr.tick(0.1, &[(5050.0, 5000.0)], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "搔癢中遇威脅應立刻放下後腿逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 223：野狐撲鼠 ────────────────────────────────────────────────
