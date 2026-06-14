@@ -21,7 +21,7 @@
       const done = () => { if (--remaining === 0) artReady = true; };
       img.onload = done;
       img.onerror = done; // 缺一張也不卡住整體
-      img.src = `assets/${n}.png?v=1`;
+      img.src = `assets/${n}.png?v=2`;
       ART[n] = img;
     }
   })();
@@ -3943,7 +3943,7 @@
     // 走路時上下彈跳一點，腳下陰影固定不跟著跳 → 讀起來像在踏步走動。
     // 開「減少動態」時不彈跳（避免持續上下晃造成不適），sprite 仍逐格切換不受影響。
     // 被打趴時不彈跳(在地上休息,不該還在踏步)。
-    const bob = (p.moving && !reduceMotion && !downed) ? Math.abs(Math.sin(p.walk)) * 3 : 0;
+    const bob = (p.moving && !reduceMotion && !downed) ? Math.abs(Math.sin(p.walk)) * 1.5 : 0;
     const by = sy - bob;
     const sty = speciesStyle(p.species);
 
