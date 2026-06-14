@@ -654,6 +654,32 @@ const FORAGE_SPEED: f32 = 56.0;
 /// 視為「已跟到鹿身旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再貼近（傍著鹿、不擋著鹿）。
 const FORAGE_COMFORT_DIST: f32 = 30.0;
 
+// ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────────
+// 265 給混群補上了第一筆**正向**的跨物種相處——野鳥傍著低頭吃草的鹿撿蟲（commensalism：鳥得利、
+// 鹿無損）。但盤點下來，那份好處至今全是**單向**的：鹿白白替鳥驚起蟲子，自己什麼也沒得到。真實
+// 草原上牛背鷺／啄牛鳥跟著大型草食獸並非全然占便宜——鳥站得高、眼尖、又一直警覺地東張西望，常比
+// 埋頭吃草的牛／鹿更早瞥見逼近的掠食者，一受驚拍翅炸飛，就等於替底下的大傢伙拉響了警報（牛背鷺式
+// 共生的另一面：哨兵互惠 sentinel mutualism）。本切片把 265 的單向占便宜補成**雙向互惠**：正在傍鹿
+// 跟食的哨兵鳥，憑著伺機飛禽的尖眼，會在比埋頭吃草的鹿更遠的 SENTINEL_KEEN_RADIUS 就「看見」逼近的
+// 掠食者、搶先一步拍翅炸飛（早於自身一般的 FLEE_RADIUS）；而牠方才傍著的那頭鹿，讀到身旁哨兵的這記
+// 警報（SENTINEL_HEED_RADIUS 內），便先一步抬頭僵立戒備（複用 251 Vigilant／頭頂 😨）——掠食者都還
+// 沒逼進鹿自己的逃命距離，這頭有鳥相伴的鹿就已繃緊；身邊沒有哨兵鳥的孤鹿則照舊埋頭，要等掠食者真的
+// 逼到 FLEE_RADIUS 才驚覺。於是 265 餵鳥之恩，鳥以「當鹿的眼睛」回報——混群裡的共生第一次有了來回。
+// 與 263/264 的跨物種警戒／驚逃刻意區隔：263/264 是「任一別種已在警戒／逃竄」的泛泛混群連動（靠機率、
+// 傳得稍慢）；266 是哨兵鳥與牠所傍之鹿之間「貼身、可靠、搶先一步」的專屬互惠（無機率、必觸發，且早於
+// 鹿自身的警戒帶反應）。天然湧現、不寫死：哨兵的早警只在「鳥正傍著鹿跟食（CommensalForaging）」時成立，
+// 鳥一散去這份哨兵關係就自然消失。只認 pred_positions（既有的掠食者快照，與 251 警戒同源），不為玩家
+// 早炸（玩家仍只在貼身 FLEE_RADIUS 內才驚動鳥，與 265 一致）。零 LLM、純啟發式、可測、複用 Vigilant
+// 狀態與 😨（無新狀態、無新欄位、零協議改動、零前端改動）、零持久化、記憶體模式。
+/// 跟食中的哨兵鳥「看見」逼近掠食者、搶先拍翅炸飛的偵測半徑——刻意設在鹿自身逃命距離 FLEE_RADIUS(180)
+/// 與警戒帶 VIGILANCE_RADIUS(340) 之間：哨兵鳥比埋頭吃草的鹿看得遠（早於 180 就炸飛），但仍在鹿警戒帶
+/// 之內（牠拉警報時，那頭掠食者本就已進鹿的 VIGILANCE_RADIUS，警報名正言順、不會無端嚇鹿）。
+const SENTINEL_KEEN_RADIUS: f32 = 280.0;
+/// 鹿「讀到」身旁哨兵鳥警報所需的貼身距離——略大於跟食舒適距離 FORAGE_COMFORT_DIST(30)：哨兵鳥本就
+/// 傍在鹿身旁覓食，留一小段緩衝涵蓋牠炸飛起跳的那一刻，確保只有「真的被傍著」的那頭鹿讀到警報，而非
+/// 滿草地的鹿都跟著抬頭（那是 263 泛泛跨物種警戒的事，不是哨兵專屬互惠）。
+const SENTINEL_HEED_RADIUS: f32 = 72.0;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -2267,6 +2293,20 @@ impl WildlifeManager {
             .map(|a| (a.x, a.y))
             .collect();
 
+        // ROADMAP 266：哨兵互惠——本幀「正傍鹿跟食（CommensalForaging）、且已用尖眼瞥見逼近掠食者
+        // （pred_positions 在 SENTINEL_KEEN_RADIUS 內）」的哨兵鳥座標快照。供下方 Phase 4 讓牠方才傍著
+        // 的那頭平靜鹿（SENTINEL_HEED_RADIUS 內）讀到這記警報、先一步抬頭戒備。刻意在 Phase 4 變更前
+        // 取一次：本幀這些哨兵鳥隨即會在自己的覓食分支因 SENTINEL_KEEN_RADIUS 早炸而拍翅逃竄，但鹿讀到
+        // 的是「炸飛前那一刻牠傍在身旁拉警報」的位置——鳥炸飛與鹿抬頭同幀發生，警報來回乾淨利落。
+        // 只認 pred_positions（與 251 警戒同源的掠食者快照），不含玩家：玩家仍只在貼身 FLEE_RADIUS 內
+        // 才驚動鳥（與 265 一致），哨兵早警專為真正的掠食者而設。
+        let alarmed_sentinel_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildBird
+                && matches!(a.state, WildlifeState::CommensalForaging { .. })
+                && nearest_in_range(a.x, a.y, &pred_positions, SENTINEL_KEEN_RADIUS).is_some())
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -2345,6 +2385,23 @@ impl WildlifeManager {
                         continue;
                     }
                 }
+            }
+
+            // ROADMAP 266：哨兵互惠——平靜的野鹿讀到身旁共生哨兵鳥的警報，先一步抬頭戒備。傍著牠跟食
+            // 的哨兵鳥（265）憑尖眼比埋頭吃草的鹿更早瞥見逼近的掠食者、搶先炸飛（見下方覓食分支），那頭
+            // 鹿便讀到這記專屬警報、先一步抬頭僵立（複用 251 Vigilant／😨）——掠食者都還沒逼進鹿自己的
+            // FLEE_RADIUS（否則早被上面的逃竄短路），有鳥相伴的鹿就已繃緊，孤鹿則仍埋頭。與 263 泛泛跨
+            // 物種警戒區隔：這是哨兵鳥與所傍之鹿「貼身、可靠、搶先」的專屬互惠，必觸發、不靠機率、早於
+            // 警戒帶反應。已在逃竄／警戒中（更急或已繃緊）則不重置。
+            if animal_kind == WildlifeKind::WildDeer
+                && !matches!(self.animals[i].state,
+                    WildlifeState::Fleeing { .. } | WildlifeState::Vigilant { .. })
+                && nearest_in_range(self.animals[i].x, self.animals[i].y, &threats, FLEE_RADIUS).is_none()
+                && deer_heeds_sentinel(self.animals[i].x, self.animals[i].y, &alarmed_sentinel_snap)
+            {
+                let timer = self.rng.gen_range(VIGILANCE_DURATION_MIN..=VIGILANCE_DURATION_MAX);
+                self.animals[i].state = WildlifeState::Vigilant { vigil_timer: timer };
+                continue;
             }
 
             // ROADMAP 205：馴養個體在沒有掠食者威脅時，溫順地走向附近玩家、保持舒適距離（彷彿跟著你）。
@@ -2561,7 +2618,12 @@ impl WildlifeManager {
                     // ROADMAP 265：已在共生跟食中——威脅一旦逼近就立刻拍翅逃竄（覓食永遠讓位逃命），
                     // 否則重鎖最近那頭平靜覓食的野鹿（FORAGE_FOLLOW_RADIUS 內）、跟著牠挪步保持身旁的
                     // 覓食距離；那頭鹿走遠（範圍內已無覓食的鹿 → grazer 為 None）或計時耗盡就拍翅散去。
-                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                    // ROADMAP 266：哨兵互惠——跟食中的哨兵鳥憑尖眼比埋頭吃草的鹿看得遠：掠食者在更大的
+                    // SENTINEL_KEEN_RADIUS 內就搶先拍翅炸飛（早於一般威脅的 FLEE_RADIUS），替傍著的鹿拉響
+                    // 警報。只對 pred_positions（真正的掠食者）早炸；玩家／其餘威脅仍循一般 FLEE_RADIUS。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS)
+                        .or_else(|| nearest_in_range(a.x, a.y, &pred_positions, SENTINEL_KEEN_RADIUS))
+                    {
                         a.flee_from(tx, ty);
                     } else {
                         let grazer = nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_FOLLOW_RADIUS);
@@ -2883,6 +2945,15 @@ fn sees_alarmed_other_species(kind: WildlifeKind, px: f32, py: f32, vigilant: &[
             dx * dx + dy * dy <= r2
         }
     })
+}
+
+/// ROADMAP 266：哨兵互惠——位於 (px,py) 的野鹿是否「讀到」身旁任一共生哨兵鳥的警報。
+/// `alarmed_sentinels` 是本幀「正傍鹿跟食、且已用尖眼瞥見逼近掠食者」的哨兵鳥座標快照；只要有
+/// 一隻落在 SENTINEL_HEED_RADIUS 內（＝真的傍著這頭鹿），就回 true，由呼叫端據此讓鹿先一步抬頭
+/// 戒備。半徑刻意很小（貼身），確保只有「被哨兵傍著」的那頭鹿讀到警報，而非滿草地的鹿都跟著抬頭
+/// （泛泛跨物種警戒是 263 的事）。純距離判定、無副作用，便於測試。
+fn deer_heeds_sentinel(px: f32, py: f32, alarmed_sentinels: &[(f32, f32)]) -> bool {
+    nearest_in_range(px, py, alarmed_sentinels, SENTINEL_HEED_RADIUS).is_some()
 }
 
 fn random_target(hx: f32, hy: f32, radius: f32, rng: &mut StdRng) -> (f32, f32) {
@@ -5925,6 +5996,123 @@ mod tests {
         let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
             "掠食者逼進 FLEE_RADIUS 時警戒鹿應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 266：哨兵互惠（sentinel mutualism／牛背鷺式共生的回報）──────────
+
+    #[test]
+    fn deer_heeds_sentinel_only_within_heed_radius() {
+        // 純距離判定：哨兵鳥落在 SENTINEL_HEED_RADIUS 內鹿才讀得到警報，外則讀不到；空快照永遠讀不到。
+        let me = (5000.0_f32, 5000.0_f32);
+        assert!(!deer_heeds_sentinel(me.0, me.1, &[]), "四下無警報哨兵時讀不到");
+        let near = (me.0 + SENTINEL_HEED_RADIUS - 1.0, me.1);
+        assert!(deer_heeds_sentinel(me.0, me.1, &[near]), "貼身（HEED 半徑內）的哨兵警報應讀得到");
+        let far = (me.0 + SENTINEL_HEED_RADIUS + 30.0, me.1);
+        assert!(!deer_heeds_sentinel(me.0, me.1, &[far]), "離得遠（HEED 半徑外）的哨兵不算傍著這頭鹿");
+        // 多個來源：只要有一隻哨兵貼身就讀得到。
+        assert!(deer_heeds_sentinel(me.0, me.1, &[far, near]), "其中一隻哨兵在貼身範圍內就讀得到");
+    }
+
+    #[test]
+    fn sentinel_keen_radius_between_flee_and_vigilance() {
+        // 哨兵鳥的尖眼偵測半徑應落在「鹿自身逃命距離」與「鹿警戒帶」之間：比埋頭吃草的鹿看得遠
+        // （早於 FLEE_RADIUS 就炸飛），但仍在鹿警戒帶內（拉警報時掠食者本就已進鹿的 VIGILANCE_RADIUS）。
+        assert!(FLEE_RADIUS < SENTINEL_KEEN_RADIUS, "哨兵應比埋頭吃草的鹿看得遠（早於 FLEE_RADIUS）");
+        assert!(SENTINEL_KEEN_RADIUS < VIGILANCE_RADIUS, "哨兵警報範圍仍應在鹿的警戒帶之內");
+        // 讀警報的貼身半徑應略大於跟食舒適距離（涵蓋鳥炸飛起跳的一刻）、但仍很貼身（不致滿草地鹿都抬頭）。
+        assert!(SENTINEL_HEED_RADIUS > FORAGE_COMFORT_DIST, "讀警報半徑應略大於跟食舒適距離");
+        assert!(SENTINEL_HEED_RADIUS < FLEE_RADIUS, "讀警報半徑應很貼身（遠小於泛泛的逃命距離）");
+    }
+
+    #[test]
+    fn foraging_sentinel_bird_bolts_at_keen_radius() {
+        // 整管理器：一隻正傍鹿跟食的哨兵鳥，掠食者進到 SENTINEL_KEEN_RADIUS 內（但仍在鳥自身
+        // FLEE_RADIUS 之外）——憑尖眼搶先一步拍翅炸飛（早警），而非埋頭吃到掠食者貼到 FLEE_RADIUS 才驚覺。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 1.0e9 };
+        // 鹿當吸引源、讓鳥維持跟食狀態（5020：FORAGE_FOLLOW_RADIUS 內）。
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5020.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        // 狼在 240px：FLEE_RADIUS(180) 外（一般鳥不會逃）、SENTINEL_KEEN_RADIUS(280) 內（哨兵看得見）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5240.0, 5000.0);
+        wolf.id = 3;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 }; // 原地不追、只當掠食者快照來源
+        mgr.animals = vec![bird, deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }),
+            "掠食者進到 SENTINEL_KEEN_RADIUS 內時，跟食的哨兵鳥應搶先炸飛，實際 {:?}", b.state);
+    }
+
+    #[test]
+    fn foraging_bird_keeps_foraging_when_predator_beyond_keen_radius() {
+        // 對照：掠食者在 SENTINEL_KEEN_RADIUS 之外時，跟食的哨兵鳥不會早炸（仍安心跟食、不逃竄）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 1.0e9 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5020.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        // 狼在 340px：SENTINEL_KEEN_RADIUS(280) 外（哨兵也看不見）、HUNT_RADIUS(320) 外（不鎖獵）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5340.0, 5000.0);
+        wolf.id = 3;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 };
+        mgr.animals = vec![bird, deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(!matches!(b.state, WildlifeState::Fleeing { .. }),
+            "掠食者在 SENTINEL_KEEN_RADIUS 之外時哨兵鳥不該早炸，實際 {:?}", b.state);
+    }
+
+    #[test]
+    fn deer_with_sentinel_grows_vigilant_to_threat_beyond_its_own_sight() {
+        // 互惠核心：傍鹿跟食的哨兵鳥憑尖眼瞥見一個「鹿自己看不到」的逼近掠食者（在鹿 VIGILANCE_RADIUS
+        // 之外、卻在鳥 SENTINEL_KEEN_RADIUS 之內），那頭鹿讀到哨兵警報、先一步抬頭警戒——鳥成了鹿的眼睛。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        // 哨兵鳥傍在鹿身旁（5070：SENTINEL_HEED_RADIUS 72 內），已在跟食。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5070.0, 5000.0);
+        bird.id = 2;
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 1.0e9 };
+        // 狼在 5345：距鹿 345px（VIGILANCE_RADIUS 340 外，鹿自己察覺不到）、距鳥 275px（KEEN 280 內，哨兵看得見）。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5345.0, 5000.0);
+        wolf.id = 3;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 };
+        mgr.animals = vec![deer, bird, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false); // 哨兵快照在 Phase 4 前取、鹿同幀讀到並抬頭
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Vigilant { .. }),
+            "讀到身旁哨兵鳥警報的鹿應先一步抬頭警戒，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn lone_deer_stays_calm_to_threat_beyond_its_own_sight() {
+        // 對照：同樣那個在 VIGILANCE_RADIUS 之外的掠食者，身邊沒有哨兵鳥的孤鹿讀不到任何警報、
+        // 也察覺不到（掠食者在自身警戒帶外），連跑多幀都安然不抬頭——凸顯哨兵鳥確實替鹿延伸了感知。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 1.0e9 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5345.0, 5000.0); // 345px：鹿 VIGILANCE_RADIUS 340 外
+        wolf.id = 2;
+        wolf.state = WildlifeState::Digesting { timer: 1.0e9 };
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..200 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Vigilant { .. }),
+                "無哨兵鳥、掠食者又在警戒帶外時，孤鹿不該察覺抬頭");
+        }
     }
 
     // ─── ROADMAP 253：飽足歇獵（the lull after the kill）───────────────────────
