@@ -895,6 +895,27 @@ const BASK_PROB: f32 = 0.04;
 const BASK_DURATION_MIN: f32 = 5.0;
 const BASK_DURATION_MAX: f32 = 10.0;
 
+// ─── ROADMAP 299：雨後飲水（post-rain drinking／雨停積出新水窪，草食獸低頭啜飲雨水解渴）──────────────
+// 296 雨中避雨（🌧️，下雨縮身）→ 297 雨後抖水（💦，雨停甩水）→ 298 雨後曬太陽（☀️，攤身曬乾取暖）把
+// 「動物 × 天氣」這條維度從「下雨怎麼辦」一路演到「雨停了抖開水珠、攤著曬乾」。可一場雨除了把獸群淋濕，也
+// 在地上積出一窪窪清亮的新水——雨後最自然不過的一筆，是趁這難得的活水低頭啜飲解渴（草食獸平時要走老遠去水
+// 邊喝水，雨後遍地新水窪正是補水的好時機，是真實的覓水行為）。本切片把這條水的故事補成完整的收尾：雨剛停的
+// 同一段時間窗（POST_RAIN_WINDOW，複用 297/298）內，平靜的草食獸偶爾停下、低頭就近啜飲積起的雨水（新增
+// Drinking 狀態、頭頂浮一枚徐徐脹縮如水光的 💧），喝一小段就鬆下來回閒晃。與 298 曬太陽（☀️，攤著烘乾）
+// 並列為雨停後的兩樁日常，把同一場雨從「下雨縮身→雨停抖水→雨後曬乾／飲水解渴」從頭到尾演到滿。沿用 297/298
+// 的 post_rain 時間窗（複用、零新欄位）。**與 298 曬太陽刻意對成「曬乾（攤身定格）／飲水（低頭啜飲）」一對**，
+// 一靜一動，各有細節。零捕食平衡風險（純多一個讓草食獸偶爾低頭啜飲的閒置覓水姿態，不改任何獵殺／搜尋／繁衍
+// 結果、不生成可撿的實體、不真的補任何屬性）、零 LLM、純啟發式、可測、零 tick 簽名改動（複用 297/298 的
+// post_rain）、零協議改動（新增的 drinking 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、
+// 零 migration、記憶體模式。
+/// 雨停後平靜的草食獸偶爾停下、低頭啜飲新水窪的逐幀機率——與 298 曬太陽 BASK_PROB(0.04) 同量級：
+/// 飲水是雨停後另一樁尋常的覓水小事，讓「雨停了、獸群陸續低頭喝起新積的雨水」是漣漪式起頭而非整群齊飲。
+const DRINK_PROB: f32 = 0.04;
+/// 一段飲水的最短／最長時長（秒）——介於 297 抖水(1~2.5s 急抖)與 298 曬太陽(5~10s 悠閒)之間：
+/// 低頭啜飲是有目的的覓水，比甩水從容、比曬乾短促。
+const DRINK_DURATION_MIN: f32 = 3.0;
+const DRINK_DURATION_MAX: f32 = 6.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1839,6 +1860,11 @@ enum WildlifeState {
     /// ☀️）。bask_timer 倒數，曬一段就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（曬太陽
     /// 永遠讓位逃命）。與 297 雨後抖水（💦）對成「抖水／曬乾」一對，把同一場雨從下雨縮身演到雨後曬乾取暖。
     Basking { bask_timer: f32 },
+    /// ROADMAP 299：雨後飲水——雨剛停的時間窗（POST_RAIN_WINDOW，複用 297/298）內，白天平靜的草食獸（鹿／鳥
+    /// ／小獸）偶爾停下、低頭就近啜飲積起的雨水解渴（前端畫成低頭定格、頭頂浮一枚徐徐脹縮如水光的 💧）。
+    /// drink_timer 倒數，喝一小段就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（飲水
+    /// 永遠讓位逃命）。與 298 雨後曬太陽（☀️）並列為雨停後的兩樁日常，把同一場雨從下雨縮身演到雨後飲水解渴。
+    Drinking { drink_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2788,6 +2814,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 299：雨後飲水——飲水中（Drinking）原地低頭啜飲新積的雨水（不更新座標，低頭定格由前端以 💧
+    /// 演繹），drink_timer 倒數。喝夠了一小段就鬆下來、挑家附近的下一個漫遊目標回巡遊。只在 Drinking 狀態下生效
+    /// （呼叫端已確保此隻為草食獵物、白天、雨剛停的時間窗內、且無威脅逼進 FLEE_RADIUS——那種情形更前面就已改走
+    /// 逃竄，飲水永遠讓位逃命）。與 tick_shake／tick_bask 同模式，飲水不繫於 is_raining（雨停才飲、只看計時）。
+    fn tick_drink(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Drinking { drink_timer } = self.state {
+            let remaining = drink_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            self.state = WildlifeState::Drinking { drink_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -3001,6 +3043,7 @@ impl Wildlife {
             WildlifeState::Sheltering { .. } => "sheltering",
             WildlifeState::Shaking { .. } => "shaking",
             WildlifeState::Basking { .. } => "basking",
+            WildlifeState::Drinking { .. } => "drinking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -4393,6 +4436,15 @@ impl WildlifeManager {
                     } else {
                         a.tick_bask(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Drinking { .. }) {
+                    // ROADMAP 299：已在雨後飲水——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（飲水永遠
+                    // 讓位逃命），否則原地低頭啜飲新積的雨水、計時倒數，喝夠了一小段就鬆下來起身回巡遊。與 298
+                    // 曬太陽同模式：一段平靜時的定格小動作，遇險即讓位逃命。飲水不繫於天氣（雨停才飲、只看計時）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_drink(dt, rng);
+                    }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
@@ -4525,6 +4577,24 @@ impl WildlifeManager {
                     // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(BASK_DURATION_MIN..=BASK_DURATION_MAX);
                     a.state = WildlifeState::Basking { bask_timer: timer };
+                } else if !is_night
+                    && !is_raining
+                    && post_rain
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < DRINK_PROB
+                {
+                    // ROADMAP 299：雨後飲水——白天（!is_night）雨剛停（!is_raining 且仍在 post_rain 時間窗內）時，
+                    // 平靜歇息／漫步的草食獸（鹿／鳥／小獸；Phase 4 本就只處理獵物，故天然只草食獸觸發）偶爾停下、
+                    // 低頭就近啜飲積起的雨水解渴（轉入 Drinking 💧）。逐幀低機率觸發 → 雨一停，獸群由近而遠錯落地
+                    // 一隻隻低頭喝起新水窪，而非同幀整群瞬間齊飲。**與 298 雨後曬太陽（☀️）並列為雨停後的兩樁日常**：
+                    // 曬太陽（攤身定格烘乾取暖）／飲水（低頭啜飲解渴）刻意對成「曬乾／飲水」一靜一動的一對，把同一場雨
+                    // 從「下雨縮身→雨停抖水→雨後曬乾／飲水」演到滿。**複用 297/298 的 post_rain 時間窗**（同一窗、零新
+                    // 欄位），排在 298 曬太陽之後（同為雨停後的低機率覓水／自理小事，順序天然不爭）；沿用 296 一系
+                    // 「恐懼分支之後、白晝玩樂之前」的位置。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Drinking
+                    // 續算分支即改全速奔逃（飲水永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(DRINK_DURATION_MIN..=DRINK_DURATION_MAX);
+                    a.state = WildlifeState::Drinking { drink_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -12266,6 +12336,197 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(w.state, WildlifeState::Basking { .. }), "掠食者不該曬太陽，實際 {:?}", w.state);
+        }
+    }
+
+    // ─── ROADMAP 299：雨後飲水（post-rain drinking）──────────────────────────
+    #[test]
+    fn tick_drink_holds_position_until_timer_expires() {
+        // 飲水進行中：原地不動（座標不變）、計時遞減、狀態維持 Drinking。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Drinking { drink_timer: 4.0 };
+        deer.tick_drink(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Drinking { drink_timer } => {
+                assert!((drink_timer - 3.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("飲水未到期應維持 Drinking，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "飲水應原地不動");
+    }
+
+    #[test]
+    fn tick_drink_returns_to_wander_when_timer_expires() {
+        // 喝夠了一小段：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Drinking { drink_timer: 0.05 };
+        critter.tick_drink(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_drink_noop_on_other_state() {
+        // 防呆：非 Drinking 狀態呼叫 tick_drink 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_drink(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非飲水狀態呼叫 tick_drink 不該改狀態");
+    }
+
+    #[test]
+    fn drinking_state_str_is_drinking() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Drinking { drink_timer: 1.0 };
+        assert_eq!(deer.state_str(), "drinking");
+    }
+
+    #[test]
+    fn calm_prey_eventually_drinks_after_rain_stops() {
+        // 雨剛停：一頭平靜、四下無威脅的鹿，在雨停後的時間窗內連跑多幀應有機會停下低頭飲水（進入 Drinking）。
+        // 每隔一段反覆刷新雨停窗（true→false 的下降緣重新開窗），確保飲水有充足機會（避免被 297 抖水／298 曬太陽佔去窗口時間）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut drank = false;
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 雨剛停 → 重新開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、雨已停
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Drinking { .. }) {
+                drank = true;
+                break;
+            }
+        }
+        assert!(drank, "雨剛停、平靜無威脅的鹿應在雨停時間窗內偶爾停下飲水");
+    }
+
+    #[test]
+    fn prey_does_not_drink_without_rain_ever() {
+        // 沒下過雨就沒水窪可喝：從未下過雨（post_rain_timer 一直為 0）時，平靜的鹿連跑多幀都不該進入 Drinking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        // 不呼叫 set_raining → 從未下雨、無雨停時間窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Drinking { .. }), "沒下過雨不該有水窪可喝，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_drink_after_window_expires() {
+        // 雨停久了（窗口耗盡、水窪乾涸）就不再飲：雨停後先空跑足以耗盡 POST_RAIN_WINDOW(12s) 的時間，
+        // 此後平靜的鹿連跑多幀都不該再進入 Drinking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true);
+        mgr.set_raining(false); // 開窗
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 先空跑 13 秒（>12s 窗口）耗盡時間窗——途中可能喝一陣，但窗口耗盡後就該止住
+        for _ in 0..130 {
+            mgr.tick(0.1, &[], &att, &[], false);
+        }
+        // 耗盡窗口後重設回乾淨的漫遊狀態——清掉可能正在進行、會延續到斷言迴圈的飲水（避免測試繫於 RNG 觸發時機）。
+        for a in mgr.animals.iter_mut() {
+            a.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 1.0e9 };
+        }
+        // 此後再連跑多幀都不該飲水
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Drinking { .. }), "雨停久了水窪乾涸不該再飲水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_drink_while_still_raining() {
+        // 與 296 區隔：雨還在下時走避雨、不走飲水——下雨期間平靜的鹿連跑多幀都不該進入 Drinking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_raining(true); // 持續下雨
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.set_raining(true); // 每幀仍在下雨（不觸發下降緣、不開窗）
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Drinking { .. }), "下雨中應避雨、不飲水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn drinking_prey_gives_way_to_flee() {
+        // 飲水永遠讓位逃命：飲水中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Drinking { drink_timer: 1.0e9 }; // 喝得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn prey_does_not_drink_at_night() {
+        // 晝起意：夜間草食獸另走夜眠分支——即便雨剛停，夜裡連跑多幀都不該進入 Drinking。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 反覆開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Drinking { .. }), "夜間草食獸不該飲水，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn predator_never_drinks_after_rain() {
+        // 物種專屬：飲水只發生在草食獵物 phase——掠食者即便在雨剛停的窗口內，連跑多幀都不該進入 Drinking。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for i in 0..400 {
+            if i % 50 == 0 {
+                mgr.set_raining(true);
+                mgr.set_raining(false); // 反覆開窗
+            }
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Drinking { .. }), "掠食者不該飲水，實際 {:?}", w.state);
         }
     }
 
