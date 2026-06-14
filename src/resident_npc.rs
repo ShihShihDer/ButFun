@@ -130,6 +130,20 @@ pub enum ResidentLifecycleEvent {
         y: f32,
         text: String,
     },
+    /// 主要 NPC 與居民相遇打招呼（ROADMAP 244）：廣播雙方 NpcSpeech。
+    MajorNpcChat {
+        major_id: String,
+        major_name: String,
+        major_x: f32,
+        major_y: f32,
+        resident_id: String,
+        resident_name: &'static str,
+        resident_x: f32,
+        resident_y: f32,
+        major_text: String,
+        resident_text: String,
+    },
+
     /// 居民快樂值首次突破 HAPPY_THRESHOLD（ROADMAP 126）：發出世界聊天廣播。
     HappinessBoost { name: &'static str, msg: String },
     /// 快樂居民主動招待附近玩家（ROADMAP 127）：給乙太小禮 + NpcSpeech 泡泡 + 世界聊天。
@@ -735,7 +749,8 @@ impl ResidentManager {
 
     /// 每幀推進：移動所有居民 + 生命週期 + 人口增減 + 思想泡泡計時。
     /// 回傳 (lifecycle_events, thought_events)，供 game.rs 廣播。
-    pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase, player_positions: &[(String, f32, f32)], eco_pressure: f32) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
+    /// `major_npcs`：主要 NPC 與旅人的位置列表 (id, name, x, y) (ROADMAP 244)。
+    pub fn tick(&mut self, dt: f32, avg_prosperity: i32, phase: Phase, player_positions: &[(String, f32, f32)], eco_pressure: f32, major_npcs: &[(String, String, f32, f32)], world_events: &[String], npc_relations: &crate::npc_relations::NpcRelationsState) -> (Vec<ResidentLifecycleEvent>, Vec<ResidentThoughtEvent>) {
         let mut events = Vec::new();
         let mut thoughts = Vec::new();
 
@@ -1027,6 +1042,12 @@ impl ResidentManager {
         if !alarmed {
             let neighbor_events = self.check_neighbor_interactions();
             events.extend(neighbor_events);
+
+            // 主要 NPC 互動檢查（ROADMAP 244）：白天且未警報時。
+            if phase == Phase::Day || phase == Phase::Dawn || phase == Phase::Dusk {
+                let major_events = self.check_major_npc_interactions(major_npcs, world_events, npc_relations);
+                events.extend(major_events);
+            }
         }
 
         // 4. 退休公告（90% 壽命，防重複）
@@ -1157,6 +1178,88 @@ impl ResidentManager {
                     id_b, name_b, text_b, x_b, y_b,
                 });
                 if result.len() >= 2 { break 'outer; }
+            }
+        }
+        result
+    }
+
+    /// 掃描居民與主要 NPC（含旅人）的配對，觸發招呼（ROADMAP 244）。
+    /// 每次最多觸發 1 組，避免頻率過高。
+    fn check_major_npc_interactions(
+        &mut self,
+        major_npcs: &[(String, String, f32, f32)],
+        world_events: &[String],
+        npc_relations: &crate::npc_relations::NpcRelationsState,
+    ) -> Vec<ResidentLifecycleEvent> {
+        let mut result = Vec::new();
+        if major_npcs.is_empty() { return result; }
+
+        for r in &mut self.residents {
+            if r.chat_remaining > 0.0 || r.chat_cooldown > 0.0 {
+                continue;
+            }
+            // 找最近且夠近的主要 NPC
+            if let Some((m_id, m_name, mx, my)) = major_npcs.iter().find(|(_, _, mx, my)| {
+                let dx = r.x - mx;
+                let dy = r.y - my;
+                dx * dx + dy * dy <= MEET_DIST * MEET_DIST
+            }) {
+                let r_name = r.name;
+                let r_id   = r.id.clone();
+                let rx     = r.x;
+                let ry     = r.y;
+                let seed   = r.thought_count;
+                
+                // 收集該 NPC 的顯著人際關係供八卦使用（ROADMAP 244 動態話題層）
+                let mut relations = Vec::new();
+                for &other_id in &["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "village_chief"] {
+                    if other_id != m_id {
+                        if let Some(affinity) = npc_relations.get(m_id, other_id) {
+                            // 差距超過 12 才算顯著，值得聊
+                            if (affinity - 50).abs() > 12 {
+                                let other_name = match other_id {
+                                    "merchant" => "薇拉",
+                                    "workshop_npc" => "鐸恩",
+                                    "bounty_npc" => "蘭卡",
+                                    "expedition_npc" => "芙利亞",
+                                    "village_chief" => "凱爾長老",
+                                    _ => "某人",
+                                };
+                                let desc = match affinity {
+                                    v if v >= 70 => "挺不錯的夥伴",
+                                    v if v >= 60 => "還算可靠",
+                                    v if v <= 30 => "有點難相處",
+                                    v if v <= 42 => "最近有點摩擦",
+                                    _ => "尚可",
+                                };
+                                relations.push((other_name.to_string(), desc.to_string(), affinity));
+                            }
+                        }
+                    }
+                }
+
+                let major_text = crate::resident_chat::get_dynamic_major_npc_greet(
+                    m_id, r_name, seed, world_events, &relations
+                );
+                let resident_text = crate::resident_chat::get_major_npc_reply(seed).to_string();
+
+                r.chat_remaining = CHAT_DURATION;
+                r.chat_cooldown  = CHAT_COOLDOWN;
+                r.thought_count += 1;
+
+                result.push(ResidentLifecycleEvent::MajorNpcChat {
+                    major_id: m_id.clone(),
+                    major_name: m_name.clone(),
+                    major_x: *mx,
+                    major_y: *my,
+                    resident_id: r_id,
+                    resident_name: r_name,
+                    resident_x: rx,
+                    resident_y: ry,
+                    major_text,
+                    resident_text,
+                });
+                break; // 每幀最多觸發一組與主要 NPC 的對話
             }
         }
         result
@@ -1302,7 +1405,7 @@ mod tests {
         let initial = mgr.population();
         // 直接觸發人口檢查（把計時器歸零）
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert_eq!(mgr.population(), (initial + 1).min(MAX_POPULATION));
         // 繁榮帶來移民事件
         if initial < MAX_POPULATION {
@@ -1315,12 +1418,12 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 先讓人口超過最小值
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         mgr.population_timer = 0.0;
-        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0);
+        mgr.tick(0.01, GROW_THRESHOLD + 1, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let before = mgr.population();
         mgr.population_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, SHRINK_THRESHOLD - 1, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert_eq!(mgr.population(), (before - 1).max(MIN_POPULATION));
         if before > MIN_POPULATION {
             assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::Departed { .. })));
@@ -1333,7 +1436,7 @@ mod tests {
         // 多次觸發衰退
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 0, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 0, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         assert!(mgr.population() >= MIN_POPULATION);
     }
@@ -1343,7 +1446,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         for _ in 0..20 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         assert!(mgr.population() <= MAX_POPULATION);
     }
@@ -1353,7 +1456,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 跑 60 秒模擬
         for _ in 0..600 {
-            mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+            mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         for r in &mgr.residents {
             // 居民不該衝出全城大邊界
@@ -1371,13 +1474,13 @@ mod tests {
         mgr.residents[0].lifespan_secs = 100.0;
         mgr.residents[0].age_secs = 88.0; // 89% < 90%
         // tick 一下，不應觸發
-        let (ev, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
+        let (ev, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 再 tick 過 90%
-        let (ev2, _) = mgr.tick(2.0, 50, Phase::Day, &[], 0.0);
+        let (ev2, _) = mgr.tick(2.0, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(ev2.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
         // 已標記，再 tick 不重複
-        let (ev3, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
+        let (ev3, _) = mgr.tick(0.5, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!ev3.iter().any(|e| matches!(e, ResidentLifecycleEvent::RetirementSoon { .. })));
     }
 
@@ -1390,7 +1493,7 @@ mod tests {
             mgr.residents[0].age_secs = 100.0; // 壽命到期
             mgr.residents[0].name
         };
-        let (ev, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (ev, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         // 人口不變（退休 + 新居民）
         assert_eq!(mgr.population(), before);
         // 事件應存在
@@ -1458,10 +1561,10 @@ mod tests {
     fn phase_transition_event_emitted_on_change() {
         let mut mgr = ResidentManager::new();
         // 初始 current_phase = None → 第一次 tick 任何時段都觸發轉換事件
-        let (events, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { phase: Phase::Dawn, .. })));
         // 同一時段再 tick → 不重複觸發
-        let (events2, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0);
+        let (events2, _) = mgr.tick(0.01, 50, Phase::Dawn, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!events2.iter().any(|e| matches!(e, ResidentLifecycleEvent::PhaseTransition { .. })));
     }
 
@@ -1469,12 +1572,12 @@ mod tests {
     fn phase_transition_changes_resident_targets() {
         let mut mgr = ResidentManager::new();
         // 先在白天跑幾秒讓居民穩定
-        for _ in 0..10 { mgr.tick(0.5, 50, Phase::Day, &[], 0.0); }
+        for _ in 0..10 { mgr.tick(0.5, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default()); }
         let old_targets: Vec<(f32, f32)> = mgr.residents.iter()
             .map(|r| (r.target_x, r.target_y))
             .collect();
         // 切換到黃昏
-        mgr.tick(0.01, 50, Phase::Dusk, &[], 0.0);
+        mgr.tick(0.01, 50, Phase::Dusk, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         // 至少部分居民的目標應已改變（在新時段邊界內）
         let changed = mgr.residents.iter().zip(&old_targets)
             .filter(|(r, old)| (r.target_x - old.0).abs() > 1.0 || (r.target_y - old.1).abs() > 1.0)
@@ -1491,7 +1594,7 @@ mod tests {
         mgr.residents[0].work_timer = 0.0;
         let persona = mgr.residents[0].persona;
         // 確保是白天（所有 persona 白天都會廣播）
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let work_evs: Vec<_> = events.iter()
             .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
             .collect();
@@ -1503,7 +1606,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 把所有居民 work_timer 清零
         for r in &mut mgr.residents { r.work_timer = 0.0; }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Night, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Night, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let work_evs: usize = events.iter()
             .filter(|e| matches!(e, ResidentLifecycleEvent::WorkActivity { .. }))
             .count();
@@ -1515,7 +1618,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].work_timer = 0.0;
         let expected_name = mgr.residents[0].name;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         for ev in &events {
             if let ResidentLifecycleEvent::WorkActivity { text } = ev {
                 assert!(
@@ -1530,7 +1633,7 @@ mod tests {
     fn work_timer_resets_after_firing() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].work_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             mgr.residents[0].work_timer >= WORK_TIMER_MIN,
             "觸發後 work_timer 應重置到最小間隔以上"
@@ -1546,7 +1649,7 @@ mod tests {
         // 確保有至少兩位居民
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         // 把兩人放在一起
         mgr.residents[0].x = 2400.0;
@@ -1570,7 +1673,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         mgr.residents[0].x = 2400.0;
         mgr.residents[0].y = 2400.0;
@@ -1591,7 +1694,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = CHAT_COOLDOWN; // 有冷卻
@@ -1611,7 +1714,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
@@ -1635,7 +1738,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         mgr.residents[0].x = 2400.0; mgr.residents[0].y = 2400.0;
         mgr.residents[0].chat_cooldown = 0.0; mgr.residents[0].chat_remaining = 0.0;
@@ -1655,7 +1758,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         while mgr.residents.len() < 2 {
             mgr.population_timer = 0.0;
-            mgr.tick(0.01, 100, Phase::Day, &[], 0.0);
+            mgr.tick(0.01, 100, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         let expected_a = mgr.residents[0].name;
         let expected_b = mgr.residents[1].name;
@@ -1681,7 +1784,7 @@ mod tests {
     fn mini_event_fires_when_timer_expires() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].mini_event_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
             "mini_event_timer=0 應觸發 MiniEvent"
@@ -1693,7 +1796,7 @@ mod tests {
     fn mini_event_timer_resets_after_firing() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].mini_event_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             mgr.residents[0].mini_event_timer >= MINI_EVENT_TIMER_MIN,
             "觸發後 mini_event_timer 應重置到最小間隔以上"
@@ -1706,7 +1809,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let expected_name = mgr.residents[0].name;
         mgr.residents[0].mini_event_timer = 0.0;
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         if let Some(ResidentLifecycleEvent::MiniEvent { text }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })) {
             assert!(text.contains(expected_name), "MiniEvent 文字應包含居民名字 '{expected_name}'，got: {text}");
         } else {
@@ -1722,7 +1825,7 @@ mod tests {
         for r in &mut mgr.residents {
             r.mini_event_timer = MINI_EVENT_TIMER_MAX;
         }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MiniEvent { .. })),
             "計時器未到不應觸發 MiniEvent"
@@ -1735,7 +1838,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let seed_before = mgr.residents[0].mini_event_seed;
         mgr.residents[0].mini_event_timer = 0.0;
-        mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert_eq!(
             mgr.residents[0].mini_event_seed,
             seed_before + 1,
@@ -1755,7 +1858,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家正好在居民旁邊（距離 50px，小於 GREETING_DIST_PX 120px）
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家在範圍內且冷卻結束時應觸發 PlayerGreeting"
@@ -1774,7 +1877,7 @@ mod tests {
         }
         // 玩家距離 500px，超出 GREETING_DIST_PX 120px。
         let players = vec![("冒險者".to_string(), 2900.0, 2400.0)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家距離超出範圍時不應觸發 PlayerGreeting"
@@ -1790,7 +1893,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "冷卻中不應觸發 PlayerGreeting"
@@ -1808,7 +1911,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("冒險者".to_string(), rx + 50.0, ry)];
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "正在與鄰居打招呼時不應主動向玩家搭話"
@@ -1823,7 +1926,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("路人甲".to_string(), rx + 30.0, ry)];
-        mgr.tick(0.01, 50, Phase::Day, &players, 0.0);
+        mgr.tick(0.01, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             mgr.residents[0].greeting_cooldown > 0.0,
             "觸發搭話後 greeting_cooldown 應 > 0"
@@ -1835,7 +1938,7 @@ mod tests {
     fn player_greeting_no_trigger_with_empty_player_list() {
         let mut mgr = ResidentManager::new();
         for r in &mut mgr.residents { r.greeting_cooldown = 0.0; }
-        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.01, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGreeting { .. })),
             "玩家列表為空時不應觸發 PlayerGreeting"
@@ -1851,7 +1954,7 @@ mod tests {
         // 把第一位居民的計時器設為幾乎到零
         mgr.residents[0].help_request_timer = 0.01;
         mgr.residents[0].is_requesting_help = false;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::HelpRequested { .. })),
             "help_request_timer 到期應觸發 HelpRequested 事件"
@@ -1863,7 +1966,7 @@ mod tests {
     fn help_request_sets_requesting_flag() {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].help_request_timer = 0.01;
-        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.residents[0].is_requesting_help, "觸發後 is_requesting_help 應為 true");
     }
 
@@ -1873,7 +1976,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].is_requesting_help = true;
         mgr.residents[0].help_active_timer = 0.01;
-        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!mgr.residents[0].is_requesting_help, "時限到期後 is_requesting_help 應為 false");
     }
 
@@ -2002,12 +2105,12 @@ mod tests {
         mgr.residents[0].happiness = HAPPINESS_INITIAL;
         mgr.residents[0].happiness_decay_timer = 0.1; // 接近 0
         // tick 一幀讓計時器歸零
-        let _ = mgr.tick(0.2, HAPPINESS_INITIAL as i32, Phase::Day, &[], 0.0);
+        let _ = mgr.tick(0.2, HAPPINESS_INITIAL as i32, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let h = mgr.residents[0].happiness;
         assert!(h < HAPPINESS_INITIAL, "衰減後快樂值應下降：got {h}");
         // 多次衰減也不低於 HAPPINESS_MIN
         for r in &mut mgr.residents { r.happiness = HAPPINESS_MIN; r.happiness_decay_timer = 0.0; }
-        let _ = mgr.tick(1.0, HAPPINESS_MIN as i32, Phase::Day, &[], 0.0);
+        let _ = mgr.tick(1.0, HAPPINESS_MIN as i32, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         for r in &mgr.residents {
             assert!(r.happiness >= HAPPINESS_MIN, "快樂值不應低於 HAPPINESS_MIN={HAPPINESS_MIN}：got {}", r.happiness);
         }
@@ -2039,7 +2142,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家在 40px 以內（< GIFT_DIST_PX 80px）
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "快樂且計時到期且玩家在附近時應觸發 PlayerGift"
@@ -2055,7 +2158,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "不快樂的居民不應觸發 PlayerGift"
@@ -2072,7 +2175,7 @@ mod tests {
         let ry = mgr.residents[0].y;
         // 玩家距離超過 GIFT_DIST_PX
         let players = vec![("英雄".to_string(), rx + GIFT_DIST_PX + 10.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "玩家距離超出範圍不應觸發 PlayerGift"
@@ -2085,7 +2188,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.residents[0].happiness = HAPPINESS_HAPPY_THRESHOLD;
         mgr.residents[0].gift_timer = 0.01;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "無玩家時不應觸發 PlayerGift"
@@ -2101,7 +2204,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             mgr.residents[0].gift_timer >= GIFT_TIMER_MIN,
             "觸發後 gift_timer 應重置到最小間隔以上"
@@ -2117,7 +2220,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("小明".to_string(), rx + 30.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         if let Some(ResidentLifecycleEvent::PlayerGift { player_name, text, .. }) = events.iter().find(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })) {
             assert_eq!(player_name, "小明", "PlayerGift 的 player_name 應為 '小明'");
             assert!(text.contains("小明"), "招待訊息應含玩家名 '小明'：{text}");
@@ -2135,7 +2238,7 @@ mod tests {
         let rx = mgr.residents[0].x;
         let ry = mgr.residents[0].y;
         let players = vec![("英雄".to_string(), rx + 40.0, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &players, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(
             !events.iter().any(|e| matches!(e, ResidentLifecycleEvent::PlayerGift { .. })),
             "計時器未到不應觸發 PlayerGift"
@@ -2166,7 +2269,7 @@ mod tests {
         mgr.start_expedition("目標".to_string(), 3000.0, 3000.0);
         
         // tick 推進
-        mgr.tick(1.0, 50, Phase::Day, &[], 0.0);
+        mgr.tick(1.0, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let r = &mgr.residents[0];
         assert!(r.x > 2500.0, "採集隊員應向目標移動 (x: {})", r.x);
         assert!(r.y > 2500.0, "採集隊員應向目標移動 (y: {})", r.y);
@@ -2180,7 +2283,7 @@ mod tests {
         
         // 模擬受傷至死
         mgr.residents[0].hp = 0.0;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionFailed { .. })), "死亡應導致採集失敗");
         assert!(mgr.residents[0].expedition.is_none(), "失敗後應清除狀態");
@@ -2200,18 +2303,18 @@ mod tests {
         // 1. 到達目標
         mgr.residents[0].x = 3000.0;
         mgr.residents[0].y = 3000.0;
-        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::At));
         
         // 2. 停留完成
         mgr.residents[0].expedition.as_mut().unwrap().stay_timer = 0.01;
-        mgr.tick(0.2, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.2, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(matches!(mgr.residents[0].expedition.as_ref().unwrap().phase, ExpeditionPhase::From));
         
         // 3. 回到城中心
         mgr.residents[0].x = 2500.0;
         mgr.residents[0].y = 2500.0;
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         
         assert!(events.iter().any(|e| matches!(e, ResidentLifecycleEvent::ExpeditionSuccess { .. })), "回到中心應觸發成功");
         assert!(mgr.residents[0].expedition.is_none(), "成功後應清除狀態");
@@ -2223,15 +2326,15 @@ mod tests {
     fn eco_alarm_triggers_above_threshold_once() {
         let mut mgr = ResidentManager::new();
         // 低壓不觸發
-        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE - 1.0);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE - 1.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "未達閾值不該警戒");
         assert!(!mgr.town_alarmed);
         // 衝上閾值觸發一次
-        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "達閾值應警戒");
         assert!(mgr.town_alarmed);
         // 持續高壓不重複廣播
-        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE + 5.0);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE + 5.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoAlarm { .. })), "持續高壓不該重複警戒廣播");
         assert!(mgr.town_alarmed);
     }
@@ -2239,11 +2342,11 @@ mod tests {
     #[test]
     fn eco_alarm_hysteresis_holds_between_thresholds() {
         let mut mgr = ResidentManager::new();
-        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE); // 進警戒
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default()); // 進警戒
         assert!(mgr.town_alarmed);
         // 壓力落在 calm 與 alarm 之間：遲滯區，仍維持警戒、不解除
         let mid = (ECO_ALARM_PRESSURE + ECO_CALM_PRESSURE) / 2.0;
-        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], mid);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], mid, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.town_alarmed, "遲滯區間應維持警戒");
         assert!(!ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoCalm { .. })), "遲滯區間不該解除");
     }
@@ -2251,9 +2354,9 @@ mod tests {
     #[test]
     fn eco_calm_triggers_below_calm_threshold() {
         let mut mgr = ResidentManager::new();
-        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.town_alarmed);
-        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_CALM_PRESSURE - 1.0);
+        let (ev, _) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_CALM_PRESSURE - 1.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(ev.iter().any(|e| matches!(e, ResidentLifecycleEvent::EcoCalm { .. })), "跌破安寧值應解除警戒");
         assert!(!mgr.town_alarmed);
     }
@@ -2273,7 +2376,7 @@ mod tests {
         };
         // 推進數秒的避難移動
         for _ in 0..30 {
-            mgr.tick(0.5, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+            mgr.tick(0.5, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         }
         let after = {
             let r = &mgr.residents[0];
@@ -2295,7 +2398,7 @@ mod tests {
         assert_eq!(cheering, mgr.residents.len(), "未在避難時，全體在城居民都會歡慶");
         assert!(mgr.celebrate_timer > 0.0, "應點亮歡慶計時");
         // 一幀後居民 celebrating 應為 true
-        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.residents.iter().all(|r| r.celebrating), "歡慶幀內居民 celebrating 應為 true");
     }
 
@@ -2303,7 +2406,7 @@ mod tests {
     fn hero_triumph_suppressed_while_town_alarmed() {
         let mut mgr = ResidentManager::new();
         // 先進入生態避難警戒
-        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.town_alarmed);
         // 危機未解時討伐菁英 → 不歡慶（避難優先），回傳 0
         let cheering = mgr.notify_hero_triumph("英雄".into());
@@ -2316,7 +2419,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.notify_hero_triumph("英雄".into());
         // 歡慶中突然生態壓力衝頂 → 避難壓過歡慶，居民不再 celebrating（顯示 😰 而非 🎉）。
-        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.town_alarmed, "壓力衝頂應進入避難");
         assert!(mgr.residents.iter().all(|r| !r.celebrating), "避難優先，歡慶旗標應被壓下");
         assert!(mgr.residents.iter().all(|r| r.alarmed), "居民應改為避難狀態");
@@ -2329,7 +2432,7 @@ mod tests {
         // 推進超過歡慶時長，歡慶自然結束、居民散回日常。
         let mut elapsed = 0.0;
         while elapsed <= CELEBRATE_DURATION_SECS + 1.0 {
-            mgr.tick(0.5, 50, Phase::Day, &[], 0.0);
+            mgr.tick(0.5, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
             elapsed += 0.5;
         }
         assert_eq!(mgr.celebrate_timer, 0.0, "超時後歡慶計時應歸零");
@@ -2340,7 +2443,7 @@ mod tests {
     fn celebration_views_expose_flag() {
         let mut mgr = ResidentManager::new();
         mgr.notify_hero_triumph("英雄".into());
-        mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         // views() 第 8 元素（celebrating）應隨歡慶為 true，供快照傳給前端。
         assert!(mgr.views().all(|(_, _, _, _, _, _, _, celebrating)| celebrating),
             "歡慶中 views() 的 celebrating 應為 true");
@@ -2364,7 +2467,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         // 強制思想泡泡即刻就緒
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
-        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(thoughts.is_empty(), "避難期間應抑制思想泡泡（保持危機氣氛安靜）");
     }
 
@@ -2376,7 +2479,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
-        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0);
+        let (_, thoughts) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(thoughts.is_empty(), "歡慶期間應抑制思想泡泡（集中歡慶氣氛）");
     }
 
@@ -2387,7 +2490,7 @@ mod tests {
         mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 一次推進跨過 8 秒歡慶期、落在餘韻期內。
-        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!thoughts.is_empty(), "餘韻期應冒出思想泡泡");
         assert!(thoughts.iter().all(|t| t.triumph), "餘韻期思想泡泡應全為勝利談資");
     }
@@ -2399,7 +2502,7 @@ mod tests {
         mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 一次推進跨過 歡慶 + 餘韻 總時長，餘韻已耗盡。
-        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!thoughts.is_empty(), "餘韻耗盡後思想泡泡應正常冒出");
         assert!(thoughts.iter().all(|t| !t.triumph), "餘韻耗盡後思想泡泡應回歸常態（非勝利談資）");
     }
@@ -2411,7 +2514,7 @@ mod tests {
         mgr.notify_hero_triumph("英雄".into());
         for r in &mut mgr.residents { r.thought_timer = 0.0; }
         // 推進跨過歡慶期落入餘韻，同時生態壓力衝頂進入避難。
-        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE);
+        let (_, thoughts) = mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], ECO_ALARM_PRESSURE, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(thoughts.is_empty(), "餘韻遇生態避難應讓位（危機優先，不閒聊勝利）");
     }
 
@@ -2429,7 +2532,7 @@ mod tests {
     /// 之後再以小 dt 把英雄放到此座標，可穩定測距（避免大 dt 內居民移動致判定失準）。
     fn enter_afterglow_at_resident0(mgr: &mut ResidentManager, hero: &str) -> (f32, f32) {
         mgr.notify_hero_triumph(hero.to_string());
-        mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0);
+        mgr.tick(CELEBRATE_DURATION_SECS + 0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         (mgr.residents[0].x, mgr.residents[0].y)
     }
 
@@ -2439,7 +2542,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
         let positions = vec![("勇者阿光".to_string(), rx, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         let grats = gratitude_events(&events);
         assert!(!grats.is_empty(), "英雄走近時餘韻期應觸發致謝");
         if let ResidentLifecycleEvent::HeroGratitude { hero_name, text, .. } = grats[0] {
@@ -2454,7 +2557,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
         let positions = vec![("路過的別人".to_string(), rx, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(gratitude_events(&events).is_empty(), "非英雄玩家不該觸發凱旋致謝");
     }
 
@@ -2464,7 +2567,7 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let (rx, ry) = (mgr.residents[0].x, mgr.residents[0].y);
         let positions = vec![("勇者阿光".to_string(), rx, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(gratitude_events(&events).is_empty(), "非餘韻期不該觸發致謝");
     }
 
@@ -2474,9 +2577,9 @@ mod tests {
         let mut mgr = ResidentManager::new();
         let (rx, ry) = enter_afterglow_at_resident0(&mut mgr, "勇者阿光");
         let positions = vec![("勇者阿光".to_string(), rx, ry)];
-        let (e1, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (e1, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!gratitude_events(&e1).is_empty(), "首次走近應致謝");
-        let (e2, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (e2, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(gratitude_events(&e2).is_empty(), "冷卻/駐留期間不該重複致謝（防洗版）");
     }
 
@@ -2485,11 +2588,55 @@ mod tests {
         // 餘韻耗盡後 hero_name 清除：英雄之後再站旁邊也不致謝。
         let mut mgr = ResidentManager::new();
         mgr.notify_hero_triumph("勇者阿光".into());
-        mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 1.0, 50, Phase::Day, &[], 0.0);
+        mgr.tick(CELEBRATE_DURATION_SECS + TRIUMPH_AFTERGLOW_SECS + 1.0, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(mgr.hero_name.is_none(), "餘韻耗盡後應清除英雄追蹤");
         let (rx, ry) = (mgr.residents[0].x, mgr.residents[0].y);
         let positions = vec![("勇者阿光".to_string(), rx, ry)];
-        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0);
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &positions, 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(gratitude_events(&events).is_empty(), "餘韻結束後英雄走近不該再致謝");
+    }
+
+    // ── ROADMAP 244：主要 NPC 招呼測試 ────────────────────────────────────────
+
+    #[test]
+    fn major_npc_chat_triggers_when_close() {
+        let mut mgr = ResidentManager::new();
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        
+        // 主要 NPC 在附近
+        let major_npcs = vec![("merchant".to_string(), "薇拉".to_string(), rx + 20.0, ry)];
+        
+        let (events, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &major_npcs, &[], &crate::npc_relations::NpcRelationsState::default());
+        
+        assert!(
+            events.iter().any(|e| matches!(e, ResidentLifecycleEvent::MajorNpcChat { .. })),
+            "居民靠近主要 NPC 時應觸發 MajorNpcChat"
+        );
+        
+        if let Some(ResidentLifecycleEvent::MajorNpcChat { major_name, resident_name, major_text, resident_text, .. }) = 
+            events.iter().find(|e| matches!(e, ResidentLifecycleEvent::MajorNpcChat { .. })) 
+        {
+            assert_eq!(major_name, "薇拉");
+            assert!(!major_text.is_empty());
+            assert!(!resident_text.is_empty());
+            assert!(major_text.contains(resident_name));
+        }
+    }
+
+    #[test]
+    fn major_npc_chat_respects_cooldown() {
+        let mut mgr = ResidentManager::new();
+        let rx = mgr.residents[0].x;
+        let ry = mgr.residents[0].y;
+        let major_npcs = vec![("merchant".to_string(), "薇拉".to_string(), rx + 20.0, ry)];
+        
+        // 第一次觸發
+        let (e1, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &major_npcs, &[], &crate::npc_relations::NpcRelationsState::default());
+        assert!(!e1.is_empty());
+        
+        // 第二次 tick，不應重複觸發
+        let (e2, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &major_npcs, &[], &crate::npc_relations::NpcRelationsState::default());
+        assert!(!e2.iter().any(|e| matches!(e, ResidentLifecycleEvent::MajorNpcChat { .. })), "冷卻中不應重複觸發主要 NPC 招呼");
     }
 }
