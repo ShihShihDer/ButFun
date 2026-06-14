@@ -8869,6 +8869,20 @@
         ctx.restore();
       }
 
+      // ROADMAP 274：母獸舐犢——白天歇息時低頭替身邊同種幼獸舐毛照拂的成體（state==="tending"）頭頂
+      // 浮一枚輕柔明滅的 💗，讓「一頭母鹿安靜地俯身替小鹿舐毛」一眼看得到——與 216 理毛的 💕（成員
+      // 之間互相照拂）對成「親代照拂幼獸／同儕互相照拂」一對，把生態的親暱從同輩補到了親子。純前端、
+      // 零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、身邊有同種幼獸貼近時才給某隻此狀態）。
+      if (w.state === "tending") {
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 640)); // 像俯身舐毛時的輕柔呼吸般明滅
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("💗", 8, -22);
+        ctx.restore();
+      }
+
       // ROADMAP 270：求偶示愛——繁衍將近（207 breed_progress 過半）時，群裡轉向身邊同種夥伴求偶的
       // 成體（state==="courting"）頭頂浮一枚像心跳般徐徐一脹一縮的 ❤️，讓「兩頭成體依偎著示愛、不久
       // 那片草地就多了一隻幼獸」這份孕育的前奏一眼看得到——把原本全在幕後默默累積的繁衍第一次攤到
