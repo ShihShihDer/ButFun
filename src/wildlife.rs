@@ -620,6 +620,40 @@ const CROSS_ALARM_RADIUS: f32 = 180.0;
 /// 三手恐慌平復得更快。仍 ＞ 0，足夠看見一波跨種炸群。
 const CROSS_ALARM_FLEE_DURATION: f32 = 2.5;
 
+// ─── ROADMAP 265：混群共生覓食（commensal foraging／牛背鷺式跟食）──────────────
+// 262～264 把「混群」這層世界觀一路鋪滿了——一隻狼晃進混居著鹿、鳥、小獸的草地，警覺先在同群、再跨
+// 物種漾開（262/263），緊接著奔逃也跨物種炸開（264）。但盤點下來，這片混群裡不同物種之間至今所有的
+// 互動全是**負面**的：怕（251/263 警戒）、逃（209/264 驚逃）、被吃（食物鏈）、被搶（261 狼搶狐食）。
+// 真實草原上混群共處的物種其實也彼此「占便宜」地好好過日子——最經典的是牛背鷺／啄牛鳥跟著吃草的大型
+// 草食獸走，撿食被牠們踏草、低頭啃食驚起的蟲子（commensalism：一方得利、一方無損）。本切片給混群補上
+// 第一筆**正向**的跨物種相處：白天平靜的野鳥若「看見」附近有平靜覓食的野鹿（FORAGE_SEE_RADIUS 內），
+// 偶爾被吸引飛攏到鹿身旁、跟著牠低頭一啄一啄地撿食被踏草驚起的蟲（新增 CommensalForaging 狀態，頭頂
+// 浮 🐛），鹿挪步牠也跟著挪（每幀重鎖最近那頭鹿、保持身旁的覓食距離 FORAGE_COMFORT_DIST）；那頭鹿
+// 走遠（超出 FORAGE_FOLLOW_RADIUS）或計時耗盡，鳥就拍翅散去回閒晃。與 252 食腐刻意對成「跟著活的鹿
+// 撿蟲（共生）／圍著死的屍骸撿殘（食腐）」一對——同是野鳥伺機覓食，一個傍著生者、一個傍著亡者。混群
+// 從 262~264「一起怕、一起逃」，第一次也「一起好好過日子」。天然湧現：掠食者一旦逼進 FLEE_RADIUS，
+// 跟食鳥照既有獵物邏輯優先逃竄（覓食永遠讓位逃命）——危機一來，方才還其樂融融的混群一哄而散，不必特別
+// 寫死。只屬於野鳥（伺機飛禽）：跟的對象限野鹿（草原上低頭啃草、最會驚起蟲子的大型草食獸）。零 LLM、
+// 純啟發式、可測、零 tick 簽名改動、零協議改動（新增的 foraging 字串沿用 state_str；計時隨狀態變體攜帶，
+// 無新欄位）、零持久化、記憶體模式。
+/// 野鳥「看見」附近有平靜覓食的野鹿而被吸引前來跟食的偵測半徑——略小於食腐的 SCAVENGE_SEE_RADIUS(300)：
+/// 跟食是「身邊剛好有鹿在覓食」才湊近的伺機行為，比聞屍而至的食腐更近一些（鹿驚起的蟲只在腳邊）。
+const FORAGE_SEE_RADIUS: f32 = 200.0;
+/// 已在跟食中時，被跟的那頭鹿一旦走出此半徑（漫遊／逃竄遠離），鳥就拍翅散去——略大於 SEE 半徑，留一段
+/// 緩衝讓鳥能跟著挪動的鹿走一小段，而非鹿一動就立刻散。
+const FORAGE_FOLLOW_RADIUS: f32 = 260.0;
+/// 偵測半徑內有覓食的鹿時，一隻平靜野鳥本幀被吸引、轉去跟食的機率——逐幀低機率觸發，讓鳥三三兩兩
+/// 陸續飛攏鹿身旁，而非同幀整群瞬間擁上（沿用 252 食腐／220 升空的逐圈擴散手感）。
+const FORAGE_PROB: f32 = 0.012;
+/// 一段跟食的持續秒數（隨機區間）——跟著鹿撿一陣蟲後拍翅散去；期間掠食者一旦逼進 FLEE_RADIUS 即
+/// 中斷改逃竄（覓食永遠讓位逃命）、或那頭鹿走遠也提前散去。
+const FORAGE_DURATION_MIN: f32 = 4.0;
+const FORAGE_DURATION_MAX: f32 = 9.0;
+/// 趨近／跟隨那頭鹿的步速（比閒晃略快，像伺機飛禽小跑跟上挪步的鹿）。
+const FORAGE_SPEED: f32 = 56.0;
+/// 視為「已跟到鹿身旁、可低頭啄食」的距離——進到此距離內就原地一啄一啄、不再貼近（傍著鹿、不擋著鹿）。
+const FORAGE_COMFORT_DIST: f32 = 30.0;
+
 // ─── ROADMAP 252：腐肉招鴉（食腐野鳥啄食殘骸／avian carrion scavenging）──────
 // 250 圍獵讓掠食者在「獵殺當下」成群匯聚撲殺、230 分食讓野狼群聚圍著屍體進食——一場獵殺的
 // 前中後（218 群嚎→250 圍獵→230 分食）至此成串。但盤點下來，那塊「屍骸」在野狼吃飽散去後，
@@ -939,6 +973,11 @@ enum WildlifeState {
     /// 朝附近玩家謹慎挪近、停在警戒距離外探頭打量（頭頂浮 ❓）。位移每幀依當下玩家座標即時重算，
     /// 故狀態本身不需攜帶座標（無資料的單元變體）。與 205 馴養貼身跟隨之間的中段。
     Curious,
+    /// ROADMAP 265：混群共生覓食——白天平靜的野鳥「看見」附近有平靜覓食的野鹿時，飛攏到鹿身旁
+    /// 跟著低頭撿食被踏草驚起的蟲（頭頂浮 🐛）；forage_timer 倒數，每幀重鎖最近那頭鹿、保持身旁的
+    /// 覓食距離挪步跟隨（被跟的鹿即時重算，故狀態本身不需攜帶座標）。計時耗盡、那頭鹿走遠、或掠食者
+    /// 逼近就拍翅散去回巡遊。只屬於野鳥（伺機飛禽），跟的對象限野鹿——與 252 食腐對成「傍生者／傍亡者」。
+    CommensalForaging { forage_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1468,6 +1507,30 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 265：混群共生覓食推進——跟著最近那頭平靜覓食的野鹿 `grazer` 挪步、保持身旁的覓食
+    /// 距離（已在 FORAGE_COMFORT_DIST 內就原地一啄一啄、不再貼近）。`grazer` 為 None 表示被跟的鹿已
+    /// 走出 FORAGE_FOLLOW_RADIUS（漫遊／逃竄遠離），鳥便拍翅散去回巡遊；forage_timer 耗盡亦同。
+    /// 鹿移動時其座標每幀由呼叫端重新查得傳入，故狀態本身不需攜帶座標。
+    fn tick_commensal(&mut self, dt: f32, grazer: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::CommensalForaging { forage_timer } = self.state {
+            let remaining = forage_timer - dt;
+            // 計時耗盡、或被跟的鹿已走遠（grazer 為 None）——拍翅散去回閒晃。
+            if remaining <= 0.0 || grazer.is_none() {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                return;
+            }
+            // 尚未跟到鹿身旁就朝牠挪近；已到覓食距離（forage_step 回 None）就原地一啄一啄、不動。
+            if let Some((gx, gy)) = grazer {
+                if let Some((nx, ny)) = forage_step(self.x, self.y, gx, gy, dt) {
+                    self.x = nx;
+                    self.y = ny;
+                }
+            }
+            self.state = WildlifeState::CommensalForaging { forage_timer: remaining };
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1496,6 +1559,7 @@ impl Wildlife {
             WildlifeState::Scavenging { .. } => "scavenging",
             WildlifeState::Sated { .. }     => "sated",
             WildlifeState::Curious          => "curious",
+            WildlifeState::CommensalForaging { .. } => "foraging",
         }
     }
 }
@@ -2190,6 +2254,19 @@ impl WildlifeManager {
         // 取其座標即可；屍骸即使在野鳥啄食途中被玩家撿走或 TTL 到期，鳥仍憑 scav_timer 把這一段啄完。
         let carrion_snap: Vec<(f32, f32)> = self.carion_orbs.iter().map(|o| (o.x, o.y)).collect();
 
+        // ROADMAP 265：混群共生覓食——本幀「平靜覓食的野鹿」座標快照，供白天平靜的野鳥「看見」附近
+        // 有低頭啃草的鹿而被吸引飛攏到牠身旁跟食、並逐幀重鎖跟隨。只取野鹿（草原上最會踏草驚起蟲子的
+        // 大型草食獸）、且處於平靜覓食／漫遊／歇息（Grazing/Wandering/Resting）——逃竄、警戒、夜眠中的
+        // 鹿不算「安心覓食」，鳥不會去傍。動物總數少（~22），O(n²) 無虞。
+        let grazer_snap: Vec<(f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind == WildlifeKind::WildDeer
+                && matches!(a.state,
+                    WildlifeState::Grazing { .. }
+                    | WildlifeState::Wandering { .. }
+                    | WildlifeState::Resting { .. }))
+            .map(|a| (a.x, a.y))
+            .collect();
+
         // ── Phase 4: 獵物行為（閒晃 + 逃離玩家/捕食者） ─────────────────────
         for i in 0..self.animals.len() {
             if !self.animals[i].alive { continue; }
@@ -2480,6 +2557,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_scavenge(dt, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::CommensalForaging { .. }) {
+                    // ROADMAP 265：已在共生跟食中——威脅一旦逼近就立刻拍翅逃竄（覓食永遠讓位逃命），
+                    // 否則重鎖最近那頭平靜覓食的野鹿（FORAGE_FOLLOW_RADIUS 內）、跟著牠挪步保持身旁的
+                    // 覓食距離；那頭鹿走遠（範圍內已無覓食的鹿 → grazer 為 None）或計時耗盡就拍翅散去。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let grazer = nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_FOLLOW_RADIUS);
+                        a.tick_commensal(dt, grazer, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Flying { .. }) {
                     // ROADMAP 220：已在空中盤旋——威脅一旦逼近就立刻降下逃竄（飛行是悠閒的盤旋、
                     // 不是逃命手段），否則繞著群心繼續盤旋、計時倒數，到期降落回閒晃。
@@ -2506,6 +2593,21 @@ impl WildlifeManager {
                         let timer = rng.gen_range(SCAVENGE_DURATION_MIN..=SCAVENGE_DURATION_MAX);
                         a.state = WildlifeState::Scavenging { ox, oy, scav_timer: timer };
                     }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &grazer_snap, FORAGE_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < FORAGE_PROB
+                {
+                    // ROADMAP 265：白天平靜的野鳥——「看見」附近有平靜覓食的野鹿（FORAGE_SEE_RADIUS 內）
+                    // 便以 FORAGE_PROB 被吸引，飛攏到鹿身旁跟著低頭撿食被踏草驚起的蟲（頭頂浮 🐛），鹿挪步
+                    // 牠也跟著挪。混群第一次有了正向的跨物種相處（牛背鷺式共生），不只是一起怕／逃／被吃／搶。
+                    // 排在飛/鳴自發之前：附近有覓食的鹿時，跟食的吸引力凌駕悠閒的盤旋/鳴唱（但讓位給更強的
+                    // 腐肉撿食——故置於 252 食腐分支之後）。掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此
+                    // 分支即短路、改走逃竄——危機一來，方才其樂融融的混群一哄而散。
+                    let timer = rng.gen_range(FORAGE_DURATION_MIN..=FORAGE_DURATION_MAX);
+                    a.state = WildlifeState::CommensalForaging { forage_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -2934,6 +3036,20 @@ fn scavenge_step(x: f32, y: f32, ox: f32, oy: f32, dt: f32) -> Option<(f32, f32)
         return None;
     }
     let step = (SCAVENGE_SPEED * dt).min(dist);
+    Some((x + dx / dist * step, y + dy / dist * step))
+}
+
+/// ROADMAP 265：混群共生跟食的一步位移——朝被跟的那頭鹿 (gx,gy) 挪近一步，但只挪到身旁的覓食
+/// 距離 FORAGE_COMFORT_DIST 為止（已在距離內就回 None＝原地一啄一啄、傍著鹿不擋著鹿）。鹿挪步時
+/// 每幀重算 → 鳥跟著鹿走。比食腐趨屍骸（SCAVENGE_SPEED/REACH）停得稍遠（傍著、不踩著）。純函式，便於測試。
+fn forage_step(x: f32, y: f32, gx: f32, gy: f32, dt: f32) -> Option<(f32, f32)> {
+    let dx = gx - x;
+    let dy = gy - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= FORAGE_COMFORT_DIST {
+        return None;
+    }
+    let step = (FORAGE_SPEED * dt).min(dist - FORAGE_COMFORT_DIST);
     Some((x + dx / dist * step, y + dy / dist * step))
 }
 
@@ -5649,6 +5765,148 @@ mod tests {
             let any_scav = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Scavenging { .. }));
             assert!(!any_scav, "只有野鳥會食腐，鹿/小獸不該啄食殘骸");
         }
+    }
+
+    // ─── ROADMAP 265：混群共生覓食（牛背鷺式跟食）────────────────────────────
+
+    #[test]
+    fn foraging_state_str_is_foraging() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 4.0 };
+        assert_eq!(bird.state_str(), "foraging");
+    }
+
+    #[test]
+    fn forage_step_walks_closer_then_stops_at_comfort() {
+        // 離鹿還遠：回 Some，且新落點離鹿更近（朝牠趨近一步）。
+        let (bx, by) = (5000.0_f32, 5000.0_f32);
+        let (gx, gy) = (5200.0_f32, 5000.0_f32);
+        let next = forage_step(bx, by, gx, gy, 0.1);
+        assert!(next.is_some(), "離覓食的鹿尚遠應回 Some（繼續趨近）");
+        let (nx, ny) = next.unwrap();
+        let d_before = ((gx - bx).powi(2) + (gy - by).powi(2)).sqrt();
+        let d_after = ((gx - nx).powi(2) + (gy - ny).powi(2)).sqrt();
+        assert!(d_after < d_before, "趨近一步後應離鹿更近");
+        // 已在覓食距離內（傍著鹿）：回 None（原地一啄一啄、不再貼近）。
+        assert!(forage_step(gx - FORAGE_COMFORT_DIST + 5.0, gy, gx, gy, 0.1).is_none(),
+            "已跟到鹿身旁（COMFORT 內）應回 None、原地啄食");
+    }
+
+    #[test]
+    fn forage_see_radius_smaller_than_scavenge() {
+        // 跟食是「身邊剛好有鹿在覓食」才湊近的伺機行為，偵測半徑比聞屍而至的食腐更近一些
+        //（鹿驚起的蟲只在腳邊）；跟隨緩衝半徑則略大於偵測半徑，留鳥跟著挪動的鹿走一小段。
+        assert!(FORAGE_SEE_RADIUS < SCAVENGE_SEE_RADIUS, "跟食偵測半徑應小於食腐（蟲只在腳邊）");
+        assert!(FORAGE_FOLLOW_RADIUS > FORAGE_SEE_RADIUS, "跟隨緩衝半徑應大於偵測半徑（容鳥跟鹿走一小段）");
+    }
+
+    #[test]
+    fn tick_commensal_follows_grazer_then_disperses() {
+        // 離鹿還遠的跟食鳥：tick 後應朝鹿位移、計時遞減、仍為 CommensalForaging。
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 5.0 };
+        let x0 = bird.x;
+        let mut rng = make_rng();
+        bird.tick_commensal(0.1, Some((5200.0, 5000.0)), &mut rng);
+        assert!(bird.x > x0, "離覓食的鹿尚遠應朝牠趨近");
+        match bird.state {
+            WildlifeState::CommensalForaging { forage_timer } => {
+                assert!((forage_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("趨近途中應維持跟食，實際 {other:?}"),
+        }
+        // 被跟的鹿走遠（grazer 為 None）——拍翅散去回巡遊。
+        let mut left = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        left.state = WildlifeState::CommensalForaging { forage_timer: 5.0 };
+        left.tick_commensal(0.1, None, &mut rng);
+        assert!(matches!(left.state, WildlifeState::Wandering { .. }),
+            "被跟的鹿走遠應散去回巡遊，實際 {:?}", left.state);
+        // 計時耗盡——亦散去回巡遊（即使鹿仍在）。
+        let mut done = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        done.state = WildlifeState::CommensalForaging { forage_timer: 0.05 };
+        done.tick_commensal(0.1, Some((5010.0, 5000.0)), &mut rng);
+        assert!(matches!(done.state, WildlifeState::Wandering { .. }),
+            "跟食計時耗盡應散去回巡遊，實際 {:?}", done.state);
+    }
+
+    #[test]
+    fn calm_bird_forages_beside_grazing_deer() {
+        // 整管理器：白天，一隻平靜的野鳥附近有一頭平靜覓食的野鹿（FORAGE_SEE_RADIUS 內）、無掠食者——
+        // 連跑多幀後野鳥應有機會被吸引飛攏到鹿身旁跟食（進入 CommensalForaging）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        // 鹿放在 120px（FORAGE_SEE_RADIUS 200 內），持續吃草當吸引源。
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5120.0, 5000.0);
+        deer.id = 2;
+        deer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        mgr.animals = vec![bird, deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_foraging = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::CommensalForaging { .. }) { saw_foraging = true; break; }
+        }
+        assert!(saw_foraging, "附近有覓食的野鹿時，平靜的野鳥應會被吸引飛攏到鹿身旁跟食");
+    }
+
+    #[test]
+    fn bird_does_not_forage_without_grazer() {
+        // 附近沒有任何覓食野鹿的野鳥——連跑多幀都不該進入跟食（跟食是「附近有覓食的鹿」才觸發）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::CommensalForaging { .. }), "無覓食的鹿時不該跟食");
+        }
+    }
+
+    #[test]
+    fn non_bird_prey_never_forages() {
+        // 只有野鳥會跟食：另一頭鹿/小獸即使身邊有覓食的鹿也不該進入 CommensalForaging。
+        let mut mgr = WildlifeManager::new();
+        let mut grazer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        grazer.id = 1;
+        grazer.state = WildlifeState::Grazing { graze_timer: 1.0e9 };
+        let mut other_deer = adult_at(WildlifeKind::WildDeer, 5060.0, 5000.0);
+        other_deer.id = 2;
+        other_deer.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5040.0, 5000.0);
+        critter.id = 3;
+        critter.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![grazer, other_deer, critter];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let any_forage = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::CommensalForaging { .. }));
+            assert!(!any_forage, "只有野鳥會跟食，鹿/小獸不該共生覓食");
+        }
+    }
+
+    #[test]
+    fn foraging_bird_flees_when_predator_approaches() {
+        // 威脅優先：正在跟食的野鳥，掠食者逼進 FLEE_RADIUS 內時應改逃竄（覓食讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::CommensalForaging { forage_timer: 5.0 };
+        // 狼貼近野鳥（FLEE_RADIUS 180 內），形成直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5060.0, 5000.0);
+        wolf.id = 2;
+        wolf.state = WildlifeState::Digesting { timer: 100000.0 }; // 原地不追，只當威脅源
+        mgr.animals = vec![bird, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼近時跟食的野鳥應改逃竄，實際 {:?}", b.state);
     }
 
     #[test]
