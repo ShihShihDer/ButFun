@@ -884,6 +884,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dynamic_major_greet_to_player_prioritizes_and_fills() {
+        // ROADMAP 255：玩家搭話沿用同一支動態話題層（other_name = 玩家名）。
+        // 1) 有世界大事時優先聊大事，且帶玩家名、帶事件、不殘留佔位符。
+        let events = vec!["裂隙開啟".to_string()];
+        let g = get_dynamic_major_npc_greet("merchant", "阿明", 0, &events, &[]);
+        assert!(g.contains("阿明"), "應帶玩家名：{g}");
+        assert!(g.contains("裂隙開啟"), "有大事時應聊大事：{g}");
+        assert!(!g.contains('{'), "替換後不應殘留佔位符：{g}");
+
+        // 2) 無大事但有顯著關係時退到八卦，帶玩家名與對象名。
+        let rels = vec![("芙利亞".to_string(), "有點難相處".to_string(), 28)];
+        let g2 = get_dynamic_major_npc_greet("merchant", "阿明", 1, &[], &rels);
+        assert!(g2.contains("阿明"), "八卦也應帶玩家名：{g2}");
+        assert!(g2.contains("芙利亞"), "八卦應提及對象：{g2}");
+        assert!(!g2.contains('{'), "替換後不應殘留佔位符：{g2}");
+
+        // 3) 皆無時退回日常寒暄，仍帶玩家名、非空、確定性。
+        let g3 = get_dynamic_major_npc_greet("village_chief", "阿明", 2, &[], &[]);
+        assert!(g3.contains("阿明") && !g3.is_empty(), "日常寒暄應帶玩家名：{g3}");
+        assert_eq!(g3, get_dynamic_major_npc_greet("village_chief", "阿明", 2, &[], &[]));
+    }
+
     // ── ROADMAP 122 小事件測試 ────────────────────────────────────────────────
 
     #[test]

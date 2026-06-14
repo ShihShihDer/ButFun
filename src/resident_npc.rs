@@ -1210,33 +1210,8 @@ impl ResidentManager {
                 let ry     = r.y;
                 let seed   = r.thought_count;
                 
-                // 收集該 NPC 的顯著人際關係供八卦使用（ROADMAP 244 動態話題層）
-                let mut relations = Vec::new();
-                for &other_id in &["merchant", "workshop_npc", "bounty_npc", "expedition_npc", "village_chief"] {
-                    if other_id != m_id {
-                        if let Some(affinity) = npc_relations.get(m_id, other_id) {
-                            // 差距超過 12 才算顯著，值得聊
-                            if (affinity - 50).abs() > 12 {
-                                let other_name = match other_id {
-                                    "merchant" => "薇拉",
-                                    "workshop_npc" => "鐸恩",
-                                    "bounty_npc" => "蘭卡",
-                                    "expedition_npc" => "芙利亞",
-                                    "village_chief" => "凱爾長老",
-                                    _ => "某人",
-                                };
-                                let desc = match affinity {
-                                    v if v >= 70 => "挺不錯的夥伴",
-                                    v if v >= 60 => "還算可靠",
-                                    v if v <= 30 => "有點難相處",
-                                    v if v <= 42 => "最近有點摩擦",
-                                    _ => "尚可",
-                                };
-                                relations.push((other_name.to_string(), desc.to_string(), affinity));
-                            }
-                        }
-                    }
-                }
+                // 收集該 NPC 的顯著人際關係供八卦使用（ROADMAP 244 動態話題層，與 255 共用同一支）
+                let relations = npc_relations.significant_relations(m_id);
 
                 let major_text = crate::resident_chat::get_dynamic_major_npc_greet(
                     m_id, r_name, seed, world_events, &relations

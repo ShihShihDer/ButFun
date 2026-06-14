@@ -5067,6 +5067,71 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 居民搭話 end ──────────────────────────────────────────────
 
+                // ── 向主要 NPC 搭話（ROADMAP 255）────────────────────────────
+                Ok(ClientMsg::TalkToMajorNpc { npc_id }) => {
+                    use crate::npc::SHOP_REACH;
+                    // 解析該主要 NPC 的即時座標與顯示名（固定六大走 npc_schedule＋npc_lifecycle、旅人走 traveler）
+                    let npc_loc: Option<(String, f32, f32)> = if npc_id.starts_with("traveler") {
+                        let tv = app.traveler.read().unwrap();
+                        if tv.is_visible() {
+                            Some((tv.name().to_string(), tv.x, tv.y))
+                        } else {
+                            None
+                        }
+                    } else {
+                        let sch = app.npc_schedule.read().unwrap();
+                        let lc = app.npc_lifecycle.read().unwrap();
+                        sch.get_pos(&npc_id)
+                            .map(|(mx, my)| (lc.current_display(&npc_id).to_string(), mx, my))
+                    };
+                    // 驗證玩家在互動範圍內，取玩家名與搭話種子
+                    let found = npc_loc.and_then(|(npc_name, mx, my)| {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            let dx = p.x - mx;
+                            let dy = p.y - my;
+                            if dx * dx + dy * dy <= SHOP_REACH * SHOP_REACH {
+                                // 種子 = 玩家 id bits XOR 玩家名長度（可重現又夠隨機，每次搭話輪替話題）
+                                let seed = id.as_u128() as usize ^ p.name.len();
+                                Some((npc_name, mx, my, p.name.clone(), seed))
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    if let Some((npc_name, mx, my, player_name, seed)) = found {
+                        // 動態話題層（沿用 244）：世界大事 > NPC 八卦 > 日常寒暄，零 LLM
+                        let world_events: Vec<String> =
+                            app.world_log.read().unwrap().recent().iter().cloned().collect();
+                        let relations = app.npc_relations.read().unwrap().significant_relations(&npc_id);
+                        let reply_text = crate::resident_chat::get_dynamic_major_npc_greet(
+                            &npc_id,
+                            &player_name,
+                            seed,
+                            &world_events,
+                            &relations,
+                        );
+                        // 私人回應（NpcReply，只有本人看到）
+                        if let Ok(json) = serde_json::to_string(&crate::protocol::ServerMsg::NpcReply {
+                            npc: npc_id.clone(),
+                            display: format!("💬 {npc_name}"),
+                            text: reply_text.clone(),
+                        }) {
+                            let _ = tx_direct.send(json).await;
+                        }
+                        // 世界可見泡泡（NpcSpeech，讓附近玩家也看到大人物在跟人說話）
+                        let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id,
+                            npc_name,
+                            text: reply_text,
+                            display_secs: 6,
+                            wx: mx,
+                            wy: my,
+                        }));
+                    }
+                }
+                // ── 向主要 NPC 搭話 end ────────────────────────────────────────
+
                 // ── 居民互助請求（ROADMAP 125）────────────────────────────────
                 Ok(ClientMsg::HelpResident { resident_id }) => {
                     use crate::resident_npc::RESIDENT_REACH;
