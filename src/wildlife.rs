@@ -522,6 +522,30 @@ const PACK_HUNT_SEE_RADIUS: f32 = 420.0;
 /// 「逐幀低機率牽動」讓狼群陸續加入、逐圈匯聚，而非同幀整群瞬間鎖定同一頭獵物。
 const PACK_HUNT_JOIN_PROB: f32 = 0.05;
 
+// ─── ROADMAP 251：草食獸警戒凝望（the landscape of fear）──────────────────────
+// 250 圍獵讓掠食者一側在「獵殺當下」第一次成群圍上；本切片補上獵物一側的對偶——
+// 過去獵物只有兩種反應：掠食者進到 FLEE_RADIUS(180) 內就「瞬間炸開逃竄」，否則就「低頭吃草、
+// 視而不見」，中間沒有任何過渡。少了真實草原上最揪心的那段張力：狼還在遠處踱步、尚未撲來時，
+// 鹿群早已抬起頭、僵住身子、緊盯著那道身影，一步都不敢動——警覺與恐懼，先於奔逃。本切片把這段
+// 「警戒帶」補上：當掠食者進入比 FLEE_RADIUS 遠、卻已逼近到令人不安的範圍（警戒帶），平靜的獵物
+// 會停下覓食、抬頭僵立戒備一小段（頭頂浮 😨）；掠食者若就此離開，牠鬆一口氣回到閒晃，若繼續進逼
+// 到 FLEE_RADIUS 內，則照既有邏輯炸開逃命。與 212 哨兵（👀，成群時恆有一隻泛泛巡視）刻意區隔：
+// 哨兵是「沒有特定威脅時的例行放哨」，警戒凝望是「有具體掠食者逼近時、全員當場僵住緊盯」——一個是
+// 日常的眼，一個是臨敵的凍。與 250 圍獵對成「掠食者成群匯聚追／獵物成群僵立警戒」的攻防對偶。
+// 純啟發式、零 LLM、零 tick 簽名改動、零協議改動（新增的 vigilant 字串沿用 state_str；計時隨狀態
+// 變體攜帶，無新欄位）、記憶體模式。
+/// 警戒帶外緣半徑——掠食者落在 (FLEE_RADIUS, VIGILANCE_RADIUS] 內（已逼近、尚未到逃命距離）時，
+/// 平靜獵物抬頭戒備。設在 FLEE_RADIUS(180) 與哨兵 SENTINEL_FLEE_RADIUS(300) 之外，讓「先警覺、
+/// 後逃竄」有一段看得見的緩衝；落在 FLEE_RADIUS 內由既有逃竄邏輯接手（警戒永遠讓位逃命）。
+const VIGILANCE_RADIUS: f32 = 340.0;
+/// 警戒帶內有掠食者時，一隻平靜獵物本幀停下覓食、抬頭僵立戒備的機率——逐幀低機率觸發，讓鹿群
+/// 由近而遠陸續抬頭（而非同幀整群瞬間僵住），像一道警覺感在草地上漾開。
+const VIGILANCE_PROB: f32 = 0.06;
+/// 一段警戒凝望的持續秒數（隨機區間）——盯一小段後若掠食者沒進逼就鬆懈回閒晃；期間掠食者一旦
+/// 退出警戒帶即提前解除（鬆一口氣），一旦逼進 FLEE_RADIUS 即中斷改逃竄。
+const VIGILANCE_DURATION_MIN: f32 = 2.0;
+const VIGILANCE_DURATION_MAX: f32 = 4.5;
+
 /// 三種會繁衍的獵物（捕食者不列入）。
 const BREEDING_KINDS: [WildlifeKind; 3] =
     [WildlifeKind::WildBird, WildlifeKind::WildDeer, WildlifeKind::SmallCritter];
@@ -755,6 +779,10 @@ enum WildlifeState {
     /// 變體攜帶（無新欄位）。只有野狼（社交性掠食者）會群聚分食——野狐獨食（與 218 群嚎呼應＝狼
     /// 社交、撲鼠＝狐獨行的二分一致）；獵物／威脅一旦出現一律優先改狩獵／逃命，圍食永遠讓位。
     Feasting { ax: f32, ay: f32, feast_timer: f32 },
+    /// ROADMAP 251：草食獸警戒凝望——掠食者進入「警戒帶」(FLEE_RADIUS, VIGILANCE_RADIUS] 時，
+    /// 平靜的獵物停下覓食、抬頭僵立戒備（頭頂浮 😨）。原地不動（不更新座標）、vigil_timer 倒數；
+    /// 掠食者退出警戒帶或計時到期就鬆懈回歇息，掠食者一旦逼進 FLEE_RADIUS 內則一律優先改逃竄。
+    Vigilant { vigil_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -1244,6 +1272,23 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 251：草食獸警戒凝望——警戒中（Vigilant）持續盯著最近的掠食者：原地不動（不更新座標，
+    /// 僵立緊盯由前端以 😨 演繹），vigil_timer 倒數。掠食者仍在警戒帶內就盯到計時耗盡才鬆懈回歇息；
+    /// 掠食者已退出警戒帶（漾過去了、危機解除）就提前鬆一口氣回歇息。只在 Vigilant 狀態下生效（呼叫端
+    /// 已確保此隻無「直接威脅」逼進 FLEE_RADIUS——那種情形更前面就已改走逃竄，警戒永遠讓位逃命）。
+    fn tick_vigilant(&mut self, dt: f32, predators: &[(f32, f32)], rng: &mut StdRng) {
+        let WildlifeState::Vigilant { vigil_timer } = self.state else { return };
+        // 掠食者已離開警戒帶，或盯夠了一段——鬆懈回歇息，下一幀再決定漫遊/吃草。
+        let still_wary = nearest_in_range(self.x, self.y, predators, VIGILANCE_RADIUS).is_some();
+        let remaining = vigil_timer - dt;
+        if !still_wary || remaining <= 0.0 {
+            let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+            self.state = WildlifeState::Resting { rest_timer: rest };
+        } else {
+            self.state = WildlifeState::Vigilant { vigil_timer: remaining };
+        }
+    }
+
     pub fn state_str(&self) -> &'static str {
         match &self.state {
             WildlifeState::Wandering { .. } => "wandering",
@@ -1268,6 +1313,7 @@ impl Wildlife {
             WildlifeState::Sparring { .. }  => "sparring",
             WildlifeState::Tracking { .. }  => "tracking",
             WildlifeState::Feasting { .. }  => "feasting",
+            WildlifeState::Vigilant { .. }  => "vigilant",
         }
     }
 }
@@ -2095,6 +2141,22 @@ impl WildlifeManager {
                     } else {
                         a.tick_wake(dt, herd_anchor, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Vigilant { .. }) && !threat_near {
+                    // ROADMAP 251：已在警戒凝望中且威脅未逼進 FLEE_RADIUS——把這一段戒備盯完（原地
+                    // 僵立、計時倒數，掠食者退出警戒帶就提前鬆懈回歇息）。掠食者一旦逼進 FLEE_RADIUS
+                    // （threat_near 為真）就落到下方 tick_idle 改逃竄——警戒永遠讓位逃命。
+                    a.tick_vigilant(dt, &pred_positions, rng);
+                } else if !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_in_range(a.x, a.y, &pred_positions, VIGILANCE_RADIUS).is_some()
+                    && rng.gen::<f32>() < VIGILANCE_PROB
+                {
+                    // ROADMAP 251：平靜的獵物——掠食者落在「警戒帶」(FLEE_RADIUS, VIGILANCE_RADIUS] 內
+                    // （已逼近、尚未到逃命距離；FLEE_RADIUS 內早被 threat_near 短路去逃竄）時，偶爾停下
+                    // 覓食、抬頭僵立戒備一小段（頭頂浮 😨）。逐幀低機率觸發 → 鹿群由近而遠陸續抬頭，
+                    // 像一道警覺感在草地上漾開。警戒永遠凌駕白晝的吃草/嬉鬧/理毛/較勁（恐懼先於玩樂）。
+                    let timer = rng.gen_range(VIGILANCE_DURATION_MIN..=VIGILANCE_DURATION_MAX);
+                    a.state = WildlifeState::Vigilant { vigil_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Flying { .. }) {
                     // ROADMAP 220：已在空中盤旋——威脅一旦逼近就立刻降下逃竄（飛行是悠閒的盤旋、
                     // 不是逃命手段），否則繞著群心繼續盤旋、計時倒數，到期降落回閒晃。
@@ -4725,6 +4787,116 @@ mod tests {
             let spar = mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Sparring { .. }));
             assert!(!spar, "夜間成鹿不該較勁");
         }
+    }
+
+    // ─── ROADMAP 251：草食獸警戒凝望 ────────────────────────────────────────
+
+    #[test]
+    fn vigilant_state_str_is_vigilant() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Vigilant { vigil_timer: 3.0 };
+        assert_eq!(deer.state_str(), "vigilant");
+    }
+
+    #[test]
+    fn tick_vigilant_holds_and_stays_put_while_predator_in_band() {
+        // 警戒帶內仍有掠食者、計時未耗盡——原地僵立不動、計時遞減 dt，維持 Vigilant。
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Vigilant { vigil_timer: 5.0 };
+        let (x0, y0) = (deer.x, deer.y);
+        // 掠食者在 250px：FLEE_RADIUS(180) 外、VIGILANCE_RADIUS(340) 內 → 仍在警戒帶。
+        let preds = [(5250.0, 5000.0)];
+        let mut rng = make_rng();
+        deer.tick_vigilant(0.1, &preds, &mut rng);
+        assert!((deer.x - x0).abs() < 1e-6 && (deer.y - y0).abs() < 1e-6, "警戒中後端應原地不動");
+        match deer.state {
+            WildlifeState::Vigilant { vigil_timer } => {
+                assert!((vigil_timer - 4.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            other => panic!("掠食者仍在警戒帶、計時未耗盡應維持警戒，實際 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tick_vigilant_relaxes_when_predator_leaves_band() {
+        // 掠食者已退出警戒帶（漾過去了）——即使計時還很久，也提前鬆懈回歇息。
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Vigilant { vigil_timer: 100.0 };
+        // 掠食者在 400px：VIGILANCE_RADIUS(340) 之外 → 已離開警戒帶。
+        let preds = [(5400.0, 5000.0)];
+        let mut rng = make_rng();
+        deer.tick_vigilant(0.1, &preds, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }),
+            "掠食者退出警戒帶應鬆懈回歇息，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_vigilant_relaxes_when_timer_expires() {
+        // 盯夠了一段（計時耗盡）、掠食者仍在但沒進逼——鬆一口氣回歇息（下一幀再決定漫遊/吃草）。
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Vigilant { vigil_timer: 0.05 };
+        let preds = [(5250.0, 5000.0)]; // 仍在警戒帶內
+        let mut rng = make_rng();
+        deer.tick_vigilant(0.1, &preds, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }),
+            "警戒計時耗盡應回歇息，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn calm_prey_grows_vigilant_when_predator_in_band() {
+        // 整管理器：白天，一隻平靜的鹿與一隻在「警戒帶」內的狼——
+        // 狼放在 330px：HUNT_RADIUS(320) 之外（狼看不見、不會鎖定潛獵），卻在 VIGILANCE_RADIUS(340)
+        // 之內（鹿先察覺）。狼設為消化中（原地不動、不追獵），連跑多幀後鹿應有機會抬頭警戒。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5330.0, 5000.0); // 330px：band 內、HUNT 外
+        wolf.id = 2;
+        wolf.state = WildlifeState::Digesting { timer: 100000.0 }; // 原地消化、不追獵
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_vigilant = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // is_night=false
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Vigilant { .. }) { saw_vigilant = true; break; }
+        }
+        assert!(saw_vigilant, "掠食者在警戒帶內時，平靜的獵物應會抬頭警戒凝望");
+    }
+
+    #[test]
+    fn lone_prey_never_grows_vigilant_without_predator() {
+        // 身邊沒有任何掠食者的孤鹿——連跑多幀都不該進入警戒（警戒是「有掠食者逼近」才觸發）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Vigilant { .. }), "無掠食者時不該警戒");
+        }
+    }
+
+    #[test]
+    fn vigilant_prey_flees_when_predator_closes_in() {
+        // 威脅優先：正在警戒凝望的鹿，掠食者一旦逼進 FLEE_RADIUS 內就改逃竄（警戒讓位逃命）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Vigilant { vigil_timer: 5.0 };
+        // 狼貼到 100px（FLEE_RADIUS 180 內）→ 直接威脅。
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5100.0, 5000.0);
+        wolf.id = 2;
+        mgr.animals = vec![deer, wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }),
+            "掠食者逼進 FLEE_RADIUS 時警戒鹿應改逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 217：掠食者夜嚎 ────────────────────────────────────────────
