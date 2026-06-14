@@ -8588,6 +8588,13 @@
       const isFeasting = w.kind === "wild_wolf" && w.state === "feasting";
       const feastLower = isFeasting ? 3 + Math.abs(Math.sin(now / 180)) * 2 : 0; // 低頭埋食、一口口啃咬
 
+      // ROADMAP 252：腐肉招鴉——食腐中的野鳥（state==="scavenging"）降在屍骸旁低頭一啄一啄地撿食
+      // 殘骸：鳥身隨「啄下—抬起」的節奏一頓一頓地上下點動（埋頭啄食 vs 平日昂首），讀起來是「在屍骸
+      // 上撿食」而非靜立。只有野鳥會食腐撿食（與 230 野狼群聚分食對成「哺乳獸群聚／飛禽零落」一對）。
+      // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜、附近有屍骸的野鳥撿食時才給）。
+      const isScavenging = w.kind === "wild_bird" && w.state === "scavenging";
+      const scavPeck = isScavenging ? 2 + Math.abs(Math.sin(now / 130)) * 3 : 0; // 一啄一啄地點頭啄食
+
       // ROADMAP 248：雷光驚畜——暴雨閃電（243）乍亮的一瞬，畫面上的野生動物會被雷光嚇得猛地縮身一伏
       //（讀起來像「被雷一驚」）。讀上一幀 drawLightning 算好的泛光強度 _lightningFlash：雷光越亮縮得
       // 越低、隨泛光急衰一同彈回；雷停（或弱機/低幀沿用 91 的 _parallaxEnabled 關閉時 _lightningFlash 恆 0）
@@ -8614,6 +8621,7 @@
       if (sparShove) ctx.translate(sparShove, 0); // ROADMAP 224：較勁：身體一推一退地頂撞
       if (trackLower) ctx.translate(0, trackLower); // ROADMAP 225：嗅蹤：把狼身壓低、低頭嗅地
       if (feastLower) ctx.translate(0, feastLower); // ROADMAP 230：圍食：把狼身更壓低、低頭埋食
+      if (scavPeck) ctx.translate(0, scavPeck); // ROADMAP 252：食腐：把鳥身一啄一啄地往下點啄屍骸
       if (cowerDuck) ctx.translate(0, cowerDuck); // ROADMAP 248：雷光驚畜：被閃電嚇得縮身下伏
       switch (w.kind) {
         case "wild_bird":     _drawWildBird(isFleeing, now);     break;
@@ -8893,6 +8901,22 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🍖", 9, -20 + feastLower); // 跟著埋頭的狼身略往下的一塊分食
+        ctx.restore();
+      }
+
+      // ROADMAP 252：腐肉招鴉——食腐中的野鳥（state==="scavenging"）頭頂浮一塊隨啄食節奏一頓一頓的
+      // 🍖，讓「野鳥降在屍骸旁、一啄一啄地撿食殘骸」一眼看得到——這是飛禽食腐的標誌一幕（與 230
+      // 野狼群聚分食 🍖 共用同一塊肉的意象，但狼是成群埋頭、鳥是零落一啄，獸吃肉、鳥撿殘）。🍖 隨
+      // 點頭啄食的鳥身一起一頓一頓往下。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在
+      // 白天平靜、附近有屍骸的野鳥撿食時才給）。
+      if (w.state === "scavenging") {
+        ctx.save();
+        const st = Math.abs(Math.sin(now / 130)); // 與一啄一啄同步、緩緩明滅
+        ctx.globalAlpha = 0.5 + 0.45 * st;
+        ctx.font = "11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.fillText("🍖", 8, -18 + scavPeck); // 跟著點頭啄食的鳥身一頓一頓往下的一塊殘骸
         ctx.restore();
       }
 
