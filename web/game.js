@@ -246,7 +246,13 @@
   // 是否已建立過在場基準：進場/重連的第一份快照只默默記名單、不把既有在場者當成「剛進場」
   // 洗一排提示（對齊 etherKnown 對乙太的同款防洗處理）。
   let presenceKnown = false;
-  const keys = { up: false, down: false, left: false, right: false };
+  const keys = { up: false, down: false, left: false, right: false, run: false };
+
+  // 跑步倍率：優先讀 wasm（與 world_core::RUN_MULT 同源，避免前後端數字漂移）；
+  // wasm 還沒這匯出（舊 .wasm / 載入失敗後備）時退回 1.6。
+  function runMult() {
+    return (wasmTerrain && typeof wasmTerrain.run_mult === "function") ? wasmTerrain.run_mult() : 1.6;
+  }
   let lastSentInput = "";
   // 萬用動作鈕（手機雙操作）：左半搖桿移動 + 右手一顆鈕，依「面前是什麼」自動挑動作
   // （旁邊有節點就採、面前是牆就挖、空格+選材料就放、其餘照顧田）。按住連發。
@@ -531,7 +537,9 @@
     if (dt > 0.1) dt = 0.1; // 分頁切回等長空檔別瞬移
     const mask = (keys.up ? 1 : 0) | (keys.down ? 2 : 0) | (keys.left ? 4 : 0) | (keys.right ? 8 : 0);
     if (!mask) return;
-    wasmTerrain.step_player(pred.x, pred.y, mask, dt);
+    // 跑步時預測也得同步加速，否則跑步會落後權威、被拉回（橡皮筋）。倍率讀 wasm 與後端同源。
+    const moveDt = dt * (keys.run ? runMult() : 1);
+    wasmTerrain.step_player(pred.x, pred.y, mask, moveDt);
     pred.x = wasmTerrain.step_out_x();
     pred.y = wasmTerrain.step_out_y();
   }
@@ -1371,6 +1379,8 @@
   // 視覺(死區內圈/推桿亮暗)共用這一個值,讓玩家看到的「亮起=在動」與實際送出的方向恆一致——
   // 死區是客戶端把觸控折算成方向布林的事,非伺服器規則,不嵌進權威遊戲邏輯。
   const TOUCH_DEAD = 14;
+  // 觸控搖桿的跑步門檻(px):手指離原點距離超過此量＝推到底＝跑步;輕推＝走路,給玩家精準慢速。
+  const TOUCH_RUN_DIST = 58;
   const TAP_SLOP = 22; // 點按/拖曳的分水嶺(px):> 移動死區 TOUCH_DEAD,手指自然微滑不會被當拖曳
   // 最近一次 render 用的鏡頭左上角（世界座標），給點擊換算用。
   const lastCam = { x: 0, y: 0 };
@@ -1462,7 +1472,7 @@
     // 每條新連線都重置「屬於這條連線」的輸入同步狀態：新連線伺服器不知道我們按著什麼，
     // 清掉移動鍵並把 lastSentInput 清空，下次 sendInputIfChanged 會重新把意圖送給新連線。
     lastSentInput = "";
-    keys.up = keys.down = keys.left = keys.right = false;
+    keys.up = keys.down = keys.left = keys.right = keys.run = false;
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
 
@@ -3345,7 +3355,7 @@
 
   // ---- 輸入 ----
   function sendInputIfChanged() {
-    const sig = `${keys.up}${keys.down}${keys.left}${keys.right}`;
+    const sig = `${keys.up}${keys.down}${keys.left}${keys.right}${keys.run}`;
     if (sig !== lastSentInput && ws && ws.readyState === WebSocket.OPEN) {
       lastSentInput = sig;
       ws.send(JSON.stringify({ type: "input", ...keys }));
@@ -3398,6 +3408,8 @@
     // 按組合鍵＝玩家在操作瀏覽器、不是在操控角色，放行給瀏覽器處理。Shift 不算（Shift 不
     // 改變鍵的快捷義，且 Shift+WASD 仍該照常移動）。
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // 按住 Shift＝跑步（趕路用）。只設旗標、不 preventDefault，不影響其他鍵。
+    if (e.key === "Shift") { keys.run = true; sendInputIfChanged(); return; }
     if (e.key === "Enter") {
       // 開聊天打字＝玩家從操控移動切換到打字。比照失焦/切背景的修復家族：先放開所有
       // 移動鍵並送出「停止」，免得按著方向鍵開聊天時，角色在你打字的整段時間持續亂走
@@ -3458,6 +3470,7 @@
     }
   });
   window.addEventListener("keyup", (e) => {
+    if (e.key === "Shift") { keys.run = false; sendInputIfChanged(); return; }
     const dir = keyToDir(e);
     if (dir) { keys[dir] = false; sendInputIfChanged(); }
   });
@@ -3467,7 +3480,7 @@
   // 人已飄到別處／撞牆）。延續「角色別在玩家沒在控時亂走」的修復家族：失焦就清掉
   // 所有移動鍵並把「停止」意圖送給伺服器。
   function releaseAllKeys() {
-    keys.up = keys.down = keys.left = keys.right = false;
+    keys.up = keys.down = keys.left = keys.right = keys.run = false;
     sendInputIfChanged();
   }
   window.addEventListener("blur", releaseAllKeys);
@@ -3519,6 +3532,8 @@
     keys.down = dy > TOUCH_DEAD;
     keys.left = dx < -TOUCH_DEAD;
     keys.right = dx > TOUCH_DEAD;
+    // 推到底（離原點超過門檻）＝跑步;輕推＝走路。靜止/放開時 dx=dy=0，自然算成不跑。
+    keys.run = Math.hypot(dx, dy) > TOUCH_RUN_DIST;
     sendInputIfChanged();
   }
   // 從 TouchList 取出搖桿那根手指(依 identifier);找不到回 null。

@@ -728,8 +728,9 @@ impl Player {
         }
         // 移動數學整段在 world_core::step_with_keys（對角線正規化、水域阻擋、
         // 實心格四角碰撞、受困逃脫）——前端 wasm 預測呼叫同一份，預測==權威。
-        // 速度加點透過縮放 dt 實現，保持碰撞邏輯不變。
-        let effective_dt = dt * self.stats.speed_mult();
+        // 速度加點＋跑步皆透過縮放 dt 實現，保持碰撞邏輯不變。
+        let run_mult = if self.input.run { world_core::RUN_MULT } else { 1.0 };
+        let effective_dt = dt * self.stats.speed_mult() * run_mult;
         (self.x, self.y) = world_core::step_with_keys(
             self.x,
             self.y,
@@ -750,6 +751,8 @@ pub struct Input {
     pub down: bool,
     pub left: bool,
     pub right: bool,
+    /// 跑步旗標：true 時移動速度 ×`world_core::RUN_MULT`（手機推到底／電腦 Shift）。
+    pub run: bool,
 }
 
 /// 整個應用程式共享的狀態。用 `Arc` 包起來在 handler 間共用。
@@ -1333,6 +1336,40 @@ mod tests {
     }
 
     #[test]
+    fn running_is_run_mult_times_walking() {
+        // 相同輸入、相同時間：run=true 的位移應 ≈ run=false 的 RUN_MULT 倍。
+        let walk_start = 1360.0_f32;
+        let mut walker = player_at(
+            walk_start,
+            200.0,
+            Input {
+                right: true,
+                ..Default::default()
+            },
+        );
+        let mut runner = player_at(
+            walk_start,
+            200.0,
+            Input {
+                right: true,
+                run: true,
+                ..Default::default()
+            },
+        );
+        walker.step(0.5, |_, _| false);
+        runner.step(0.5, |_, _| false);
+        let walk_dist = walker.x - walk_start;
+        let run_dist = runner.x - walk_start;
+        assert!(walk_dist > 0.0, "走路應有位移");
+        // 容差放寬到 0.05px：碰撞掃掠解算在不同距離有極微的次像素差，非倍率邏輯問題。
+        assert!(
+            (run_dist - walk_dist * world_core::RUN_MULT).abs() < 0.05,
+            "跑步位移 {run_dist} 應為走路 {walk_dist} 的 {} 倍",
+            world_core::RUN_MULT
+        );
+    }
+
+    #[test]
     fn diagonal_is_not_faster() {
         // (1360,200)：方圓 700px 無水陸地（掃掠碰撞不穿水，純測對角線速度需避水）。
         let mut p = player_at(
@@ -1353,13 +1390,15 @@ mod tests {
     #[test]
     fn walks_past_world_edge_into_negative() {
         // ③ 無限世界（切片 A）：邊界 clamp 已拿掉，往上走應能跨過 y=0 進入負座標、不被夾在 0。
-        // 從 (1360,200) 陸地往左上走 226px → y 跨進負值（避開原點附近的水，掃掠碰撞不穿水）。
+        // 從 (1360,200) 陸地往左上跑步約 260px → y 跨進負值（避開原點附近的水，掃掠碰撞不穿水）。
+        // 走路基速放慢成 230 後單秒位移不足以越過 y=0，改用 run 跑步補回距離、同時順帶驗證跑步可越界。
         let mut p = player_at(
             1360.0,
             200.0,
             Input {
                 up: true,
                 left: true,
+                run: true,
                 ..Default::default()
             },
         );
@@ -1422,6 +1461,7 @@ mod tests {
                     left: dir_x < 0.0,
                     down: dir_y > 0.0,
                     up: dir_y < 0.0,
+                    run: false,
                 };
                 let mut p = player_at(sx, sy, input);
                 for _ in 0..10 {
