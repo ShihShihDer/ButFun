@@ -1029,9 +1029,12 @@ pub fn spawn(app: AppState) {
                             .collect()
                     };
                     // ROADMAP 296：餵入本幀權威天氣（是否下雨），供草食獸雨中避雨判定（走欄位、不動 tick 簽名）。
+                    // ROADMAP 301：餵入本幀權威天象（是否正逢流星雨），供夜裡草食獸抬頭仰望流星判定（同走欄位）。
+                    let meteor_active = app.meteor_shower.read().unwrap().is_active();
                     let wildlife_events = {
                         let mut wm = app.wildlife_manager.write().unwrap();
                         wm.set_raining(is_raining);
+                        wm.set_meteor_active(meteor_active);
                         wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
                     };
                     for ev in wildlife_events {
