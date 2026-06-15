@@ -121,6 +121,14 @@ const FATTEN_DURATION_MIN: f32 = 2.5;
 /// 囤食單段最長時長（秒）。
 const FATTEN_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 316：寒冬蓬羽 ───────────────────────────────────────────────────
+/// 寒冬蓬羽自發起意機率（每幀）——偏低（與 308 哆嗦 SHIVER_PROB 0.03 同量級，多數幀不觸發）。
+const FLUFF_PROB: f32 = 0.03;
+/// 蓬羽單段最短時長（秒）——把羽毛鼓蓬成一團困住空氣保暖一陣再鬆下續行（與 308 哆嗦 2~4s 同量級）。
+const FLUFF_DURATION_MIN: f32 = 2.0;
+/// 蓬羽單段最長時長（秒）。
+const FLUFF_DURATION_MAX: f32 = 4.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2162,6 +2170,13 @@ enum WildlifeState {
     ///（👅）並列哺乳獸「四季各有一筆」。與 312 嗅花（純享受春花的閒情）區隔：這是過冬前埋頭增膘的進食姿態
     ///（狀態名 Fattening／符號 🍂 皆刻意區隔）。
     Fattening { fatten_timer: f32 },
+    /// ROADMAP 316：寒冬蓬羽——野鳥（WildBird）在寒冬寒時（is_cold_winter＝冬季且光照微弱，即清晨／向晚
+    /// 寒意最深）平靜時，偶爾停下、把羽毛蓬鬆鼓起成一團球以困住空氣保暖（ptiloerection，頭頂浮 🐤）。原地
+    /// 不動（不更新座標）、fluff_timer 倒數，到期就鬆下羽毛起身回到巡遊；蓬羽中若有威脅一律優先中斷改逃竄。
+    /// 與 308 寒冬哆嗦（🥶，哺乳獸縮身發抖）對成「嚴寒：獸哆嗦／鳥蓬羽」一對——同走 is_cold_winter、同是
+    /// 寒時的個體禦寒反應，物種閘恰好互補（哆嗦＝哺乳獸、蓬羽＝野鳥），把嚴寒禦寒補成獸鳥俱全；也與 311 秋
+    /// 集結（🧭）／313 春築巢（🪺）／314 夏張喙（🥵）並列「野鳥的季節戲」，補上過去缺席的冬季這一筆。
+    Fluffing { fluff_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3065,6 +3080,21 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 316：寒冬蓬羽——蓬羽中（Fluffing）原地不動、fluff_timer 倒數保暖；暖和些了（耗盡）就鬆下羽毛
+    /// 回到巡遊（朝家附近的下一個漫遊目標，與 tick_gape 同模式）。只在 Fluffing 狀態下生效（呼叫端已確保此隻為
+    /// 野鳥、寒冬寒時、平靜無威脅；威脅一旦出現，更前面的分支已改走逃竄，不會走到此分支——蓬羽永遠讓位逃命）。
+    fn tick_fluff(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Fluffing { fluff_timer } = self.state {
+            let remaining = fluff_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Fluffing { fluff_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 308：寒冬哆嗦取暖——冷顫中（Shivering）原地不動、shiver_timer 倒數保暖；暖和些了（耗盡）就
     /// 鬆下來回到巡遊（朝家附近的下一個漫遊目標，與 tick_pant 同模式）。只在 Shivering 狀態下生效（呼叫端已
     /// 確保此隻為哺乳獸、寒冬寒時、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走狩獵／逃竄，不會
@@ -3585,6 +3615,7 @@ impl Wildlife {
             WildlifeState::Nesting { .. }    => "nesting",
             WildlifeState::Gaping { .. }     => "gaping",
             WildlifeState::Fattening { .. }  => "fattening",
+            WildlifeState::Fluffing { .. }   => "fluffing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5833,6 +5864,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_gape(dt, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Fluffing { .. }) {
+                    // ROADMAP 316：已在蓬羽保暖中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速拍翅逃竄（蓬羽
+                    // 永遠讓位逃命），否則原地把羽毛鼓蓬保暖一陣、計時倒數，暖和些了就鬆下羽毛起身回巡遊。與 314
+                    // 張喙續算同模式：一段平靜時的定點小動作，遇險即讓位逃命。蓬羽不繫於即時光照（起意時已逢寒冬
+                    // 寒時、鼓蓬完這一段只看計時，與 308 哆嗦同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_fluff(dt, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -5910,6 +5951,28 @@ impl WildlifeManager {
                     // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(GAPE_DURATION_MIN..=GAPE_DURATION_MAX);
                     a.state = WildlifeState::Gaping { gape_timer: timer };
+                } else if is_bird
+                    && !is_night
+                    && is_cold_winter
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < FLUFF_PROB
+                {
+                    // ROADMAP 316：寒冬蓬羽——寒冬寒時（is_cold_winter＝冬季且光照微弱，即清晨／向晚寒意最深）的
+                    // 白天（!is_night），平靜歇息／漫步的野鳥（is_bird 守衛——把羽毛蓬鬆鼓起成一團球困住空氣保暖，
+                    // ptiloerection 是飛禽最招牌的禦寒姿態）偶爾停下、鼓蓬羽毛保暖（轉入 Fluffing 🐤）。逐幀低機率
+                    // 觸發 → 寒風裡鳥群由近而遠錯落地一隻隻鼓起羽球，而非同幀整群瞬間齊蓬。**與 308 寒冬哆嗦（🥶，
+                    // 哺乳獸縮身發抖）對成「嚴寒：獸哆嗦／鳥蓬羽」一對**：同走 is_cold_winter 守衛、同是寒時的個體
+                    // 禦寒反應，物種閘恰好互補（308＝哺乳獸／在各自 phase、本切片＝is_bird，永不相疊），把嚴寒禦寒
+                    // 從只有哺乳獸補成獸鳥俱全；也與 311 集結（🧭）／313 築巢（🪺）／314 張喙（🥵）並列「野鳥的季節
+                    // 戲」，補上過去缺席的冬季這一筆，湊成野鳥春夏秋冬四季全套。**守衛**：非寒冬寒時（is_cold_winter
+                    // 為偽）一律跳過。**只屬於野鳥**（哺乳獸另走 308 哆嗦／309 呵霧／310 偎暖；is_bird 守衛，有測試覆蓋
+                    // 鹿不蓬羽）。**排在覓食（252 食腐／265 跟鹿／292 跟鼠）、311 集結、313 築巢、314 張喙之後、220 升空／
+                    // 221 鳴唱之前**：需外物在場的覓食社交與其他季節姿態先處理，都沒有時這樁嚴寒禦寒才凌駕悠閒的飛／鳴。
+                    // **威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Fluffing 續算分支即改全速拍翅奔逃（蓬羽永遠
+                    // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(FLUFF_DURATION_MIN..=FLUFF_DURATION_MAX);
+                    a.state = WildlifeState::Fluffing { fluff_timer: timer };
                 } else if is_bird
                     && !is_night
                     && !threat_near
@@ -16096,6 +16159,165 @@ mod tests {
         mgr.next_animal_id = 3;
         mgr.set_summer(true);
         mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 316：寒冬蓬羽（winter feather fluffing）──────────────────────────
+    #[test]
+    fn tick_fluff_holds_position_until_timer_expires() {
+        // 蓬羽進行中：原地不動（座標不變）、計時遞減、狀態維持 Fluffing。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Fluffing { fluff_timer: 3.0 };
+        bird.tick_fluff(0.1, &mut rng);
+        match bird.state {
+            WildlifeState::Fluffing { fluff_timer } => {
+                assert!((fluff_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("蓬羽未到期應維持 Fluffing，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "蓬羽應原地不動");
+    }
+
+    #[test]
+    fn tick_fluff_returns_to_wander_when_timer_expires() {
+        // 鼓蓬夠了暖和些了：計時耗盡就鬆下羽毛起身回到巡遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Fluffing { fluff_timer: 0.05 };
+        bird.tick_fluff(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_fluff_noop_on_other_state() {
+        // 防呆：非 Fluffing 狀態呼叫 tick_fluff 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 2.0 };
+        bird.tick_fluff(0.1, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非蓬羽狀態呼叫 tick_fluff 不該改狀態");
+    }
+
+    #[test]
+    fn fluffing_state_str_is_fluffing() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Fluffing { fluff_timer: 1.0 };
+        assert_eq!(bird.state_str(), "fluffing");
+    }
+
+    #[test]
+    fn bird_eventually_fluffs_in_cold_winter() {
+        // 寒冬寒時：一隻平靜、四下無威脅的野鳥，在冬季且光照微弱時連跑多幀應有機會停下蓬羽保暖（進入 Fluffing）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut fluffed = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、寒冬寒時
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Fluffing { .. }) {
+                fluffed = true;
+                break;
+            }
+        }
+        assert!(fluffed, "寒冬寒時、平靜無威脅的野鳥應偶爾停下蓬羽保暖");
+    }
+
+    #[test]
+    fn bird_does_not_fluff_when_not_winter() {
+        // 季節守衛：光照微弱但非冬季（is_winter 為偽）時，平靜的野鳥連跑多幀都不該進入 Fluffing。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(false);
+        mgr.set_cold(true); // 寒涼但非冬季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Fluffing { .. }), "非冬季不該蓬羽，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_fluff_when_not_cold() {
+        // 光照守衛：冬季但光照不弱（is_cold 為偽，即非清晨／向晚最冷時段）時，平靜的野鳥連跑多幀都不該進入 Fluffing。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(true);
+        mgr.set_cold(false); // 冬季但非最冷時段
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Fluffing { .. }), "冬季非最冷時段不該蓬羽，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_never_fluffs_in_cold_winter() {
+        // 物種守衛：蓬羽是野鳥專屬——哺乳獸（鹿）即便在寒冬寒時，連跑多幀都不該進入 Fluffing（牠走 308 哆嗦）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Fluffing { .. }), "哺乳獸不該蓬羽，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_fluff_at_night() {
+        // 晝起意：夜間野鳥另走夜眠分支——即便寒冬寒時，夜裡連跑多幀都不該進入 Fluffing。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Fluffing { .. }), "夜間不該蓬羽，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn fluffing_bird_gives_way_to_flee() {
+        // 蓬羽永遠讓位逃命：蓬羽中的野鳥一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速拍翅奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        bird.id = 2;
+        bird.state = WildlifeState::Fluffing { fluff_timer: 1.0e9 }; // 鼓得正蓬
+        mgr.animals = vec![wolf, bird];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         mgr.tick(0.1, &[], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
