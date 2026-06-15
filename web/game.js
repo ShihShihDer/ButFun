@@ -4391,6 +4391,143 @@
   // 風格循環次序（與後端 HOME_STYLES 對齊；僅供面板顯示「下一個」提示）。
   const HOME_STYLE_ORDER = ["wood_cabin", "stone_hall", "aether_crystal", "cozy_pastoral", "starlit"];
 
+  // ── 住家窗景（ROADMAP 326）────────────────────────────────────────────────────
+  // 純函式：把世界狀態（時辰／天氣／季節）映射成「窗外要畫什麼」的描述子。
+  // 不讀全域、不用亂數，輸入相同則輸出相同 → 可獨立驗證（render-smoke 跑遍各組合）。
+  //   phase:       "dawn"|"day"|"dusk"|"night"（daynight.phase；未知＝day）
+  //   weatherType: 後端天氣代碼（clear/grassland_rain/desert_sandstorm/rocky_crystal_dust/water_sea_mist）
+  //   season:      "spring"|"summer"|"autumn"|"winter"
+  // 回傳：{ skyTop, skyBottom, celestial, particle, glow }
+  //   celestial: "sun"|"lowsun"|"moon"|"none"（窗外天體）
+  //   particle:  "rain"|"sand"|"dust"|"mist"|"snow"|"none"（窗內飄落物）
+  //   glow:      窗下灑進室內的柔光色（rgba，含透明度）
+  function homeWindowScene(phase, weatherType, season) {
+    const p = phase || "day";
+    const wt = weatherType || "clear";
+    const sn = season || "summer";
+    // 1) 時辰決定天空漸層與天體
+    let skyTop, skyBottom, celestial, glow;
+    switch (p) {
+      case "night":
+        skyTop = "#0c1030"; skyBottom = "#1b2150"; celestial = "moon";
+        glow = "rgba(120,150,220,0.16)"; break;        // 冷藍月光
+      case "dawn":
+        skyTop = "#3b3a72"; skyBottom = "#f0a86a"; celestial = "lowsun";
+        glow = "rgba(255,200,140,0.18)"; break;        // 暖橘晨光
+      case "dusk":
+        skyTop = "#5a356b"; skyBottom = "#ec7a45"; celestial = "lowsun";
+        glow = "rgba(255,170,110,0.18)"; break;        // 暖紫昏光
+      default: // day
+        skyTop = "#6fbef0"; skyBottom = "#cfeeff"; celestial = "sun";
+        glow = "rgba(255,240,200,0.16)"; break;        // 暖白日光
+    }
+    // 2) 季節微調白天天色（其他時辰維持時辰主調，避免過曝）
+    if (p === "day") {
+      if (sn === "autumn") { skyTop = "#7ab0d8"; skyBottom = "#ffe6c0"; }       // 秋：暖金地平
+      else if (sn === "winter") { skyTop = "#9fc2dc"; skyBottom = "#e8f2fb"; }  // 冬：清冷蒼白
+      else if (sn === "spring") { skyTop = "#86c8ef"; skyBottom = "#dff4ff"; }  // 春：柔嫩淺藍
+    }
+    // 3) 天氣決定窗內飄落物（用「包含」比對對齊後端代碼，未知天氣安全退回無粒子）
+    let particle = "none";
+    if (wt.includes("rain")) particle = "rain";
+    else if (wt.includes("sand")) particle = "sand";
+    else if (wt.includes("dust")) particle = "dust";
+    else if (wt.includes("mist")) particle = "mist";
+    // 4) 冬季即使天晴，窗外也靜靜飄雪（季節景，僅在無天氣粒子時補上）
+    if (particle === "none" && sn === "winter") particle = "snow";
+    return { skyTop, skyBottom, celestial, particle, glow };
+  }
+
+  // 確定性偽隨機（依整數種子回 [0,1)）——窗景星點/粒子落點用它，每幀穩定不抖、可重現。
+  function windowHashFrac(n) {
+    const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  // 窗內飄落物：雨絲／飛沙／晶塵／海霧／落雪。動畫只靠 now 推進，落點走確定性偽隨機。
+  function drawWindowParticles(wx, wy, ww, wh, particle, now, seed) {
+    if (!particle || particle === "none") return;
+    // 海霧：一層靜態白濛罩層（非動畫，reduceMotion 下也保留）。
+    if (particle === "mist") {
+      ctx.fillStyle = "rgba(220,228,235,0.28)";
+      ctx.fillRect(wx, wy, ww, wh);
+      return;
+    }
+    // 沙塵：先鋪一層昏黃靜態霾（reduceMotion 下也看得出沙天）。
+    if (particle === "sand") {
+      ctx.fillStyle = "rgba(210,180,120,0.26)";
+      ctx.fillRect(wx, wy, ww, wh);
+    }
+    if (reduceMotion) return;  // 動態落點在 reduceMotion 下省略，靜態罩層已表達天候
+    const COUNT = particle === "snow" ? 8 : particle === "dust" ? 6 : 10;
+    for (let i = 0; i < COUNT; i++) {
+      const colX = windowHashFrac(seed * 7 + i * 3);
+      const ph = windowHashFrac(seed * 5 + i * 13);
+      const speed = particle === "rain" ? 260 : particle === "snow" ? 40 : 60; // px/秒
+      const yy = wy + (((now / 1000) * speed + ph * wh) % wh);
+      const drift = particle === "snow" ? Math.sin(now / 500 + i) * 2 : 0;
+      const xx = wx + colX * ww + drift;
+      if (particle === "rain") {
+        ctx.strokeStyle = "rgba(185,205,235,0.6)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(xx, yy); ctx.lineTo(xx - 2, yy + 5); ctx.stroke();
+      } else if (particle === "snow") {
+        ctx.fillStyle = "rgba(255,255,255,0.85)";
+        ctx.beginPath(); ctx.arc(xx, yy, 1.4, 0, Math.PI * 2); ctx.fill();
+      } else { // dust（岩地晶塵，泛藍微光）／sand（飛沙，暖黃）
+        ctx.fillStyle = particle === "dust" ? "rgba(190,230,255,0.7)" : "rgba(225,200,150,0.6)";
+        ctx.fillRect(xx, yy, 1.4, 1.4);
+      }
+    }
+  }
+
+  // 在牆上某一格畫一扇窗：天空漸層 → 天體 → 飄落物 → 風格色窗框 + 十字窗櫺。
+  // seed 用該窗的欄號（讓兩扇窗的天體位置略錯開、星點不重複）。
+  function drawHomeWindow(sx, sy, size, scene, now, seed) {
+    const m = 3;                                   // 窗與牆邊的內縮
+    const wx = sx + m, wy = sy + m, ww = size - m * 2, wh = size - m * 2;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(wx, wy, ww, wh); ctx.clip();  // 之後只畫在窗內
+    // 天空漸層
+    const g = ctx.createLinearGradient(0, wy, 0, wy + wh);
+    g.addColorStop(0, scene.skyTop);
+    g.addColorStop(1, scene.skyBottom);
+    ctx.fillStyle = g; ctx.fillRect(wx, wy, ww, wh);
+    // 天體（兩扇窗位置略錯開）
+    const cx = wx + ww * (seed === 2 ? 0.34 : 0.66);
+    if (scene.celestial === "sun") {
+      ctx.fillStyle = "rgba(255,244,180,0.95)";
+      ctx.beginPath(); ctx.arc(cx, wy + wh * 0.30, ww * 0.16, 0, Math.PI * 2); ctx.fill();
+    } else if (scene.celestial === "lowsun") {
+      ctx.fillStyle = "rgba(255,212,150,0.95)";
+      ctx.beginPath(); ctx.arc(cx, wy + wh * 0.62, ww * 0.18, 0, Math.PI * 2); ctx.fill();
+    } else if (scene.celestial === "moon") {
+      ctx.fillStyle = "rgba(235,238,255,0.95)";
+      ctx.beginPath(); ctx.arc(cx, wy + wh * 0.30, ww * 0.14, 0, Math.PI * 2); ctx.fill();
+      // 星點（確定性偽隨機落點 + now 驅動的明滅）
+      for (let i = 0; i < 6; i++) {
+        const r1 = windowHashFrac(seed * 13 + i * 7);
+        const r2 = windowHashFrac(seed * 29 + i * 11);
+        const tw = reduceMotion ? 0.7 : 0.5 + 0.5 * Math.sin(now / 600 + i * 1.7);
+        ctx.globalAlpha = 0.35 + 0.5 * tw;
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.fillRect(wx + ww * r1, wy + wh * 0.5 * r2, 1.5, 1.5);
+      }
+      ctx.globalAlpha = 1;
+    }
+    // 窗內飄落物（雨/雪/沙/晶塵/霧）
+    drawWindowParticles(wx, wy, ww, wh, scene.particle, now, seed);
+    ctx.restore();
+    // 窗框 + 十字窗櫺（借 325 風格色票的牆縫線色，與整體裝潢一致）
+    const pal = homePalette(myHomeStyle);
+    ctx.strokeStyle = pal.wallLine; ctx.lineWidth = 2;
+    ctx.strokeRect(wx, wy, ww, wh);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(wx + ww / 2, wy); ctx.lineTo(wx + ww / 2, wy + wh);
+    ctx.moveTo(wx, wy + wh / 2); ctx.lineTo(wx + ww, wy + wh / 2);
+    ctx.stroke();
+  }
+
   // ── 住家室內場景（ROADMAP 111）────────────────────────────────────────────────
   // 8×8 格（256×256px）私人室內空間；木板地板 + 石磚牆；南面有出口門。
   // ROADMAP 325：地板/牆色依玩家選的居家風格（myHomeStyle）切換。
@@ -4400,6 +4537,9 @@
     const W = COLS * TILE;   // 256px
     const H = ROWS * TILE;   // 256px
     const pal = homePalette(myHomeStyle);
+    // ROADMAP 326：依當前世界狀態（時辰／天氣／季節）算出窗外天色一次，供北牆兩扇窗共用。
+    const scene = homeWindowScene(daynight && daynight.phase, weatherType, currentSeason);
+    const WINDOW_COLS = [2, 5]; // 北牆（r=0）開窗的欄號
     const ix = (me.indoor_x != null ? me.indoor_x : W / 2);
     const iy = (me.indoor_y != null ? me.indoor_y : H - TILE * 1.5 - 16);
 
@@ -4441,6 +4581,7 @@
       for (let c = 0; c < COLS; c++) {
         if (r > 0 && r < ROWS - 1 && c > 0 && c < COLS - 1) continue; // 跳過內部
         const isDoor = (r === ROWS - 1 && c === doorC); // 南牆出口
+        const isWindow = (r === 0 && WINDOW_COLS.includes(c)); // 北牆開窗（ROADMAP 326）
         const sx = c * TILE - iCamX;
         const sy = r * TILE - iCamY;
         if (sx + TILE < 0 || sx > viewW || sy + TILE < 0 || sy > viewH) continue;
@@ -4480,9 +4621,24 @@
           ctx.moveTo(sx + TILE / 2 - off, sy + TILE / 2);
           ctx.lineTo(sx + TILE / 2 - off, sy + TILE);
           ctx.stroke();
+          // 北牆開窗：在牆面上鑿出一扇窗，畫出窗外天色（ROADMAP 326）
+          if (isWindow) drawHomeWindow(sx, sy, TILE, scene, now, c);
         }
       }
     }
+
+    // 窗光：從北牆兩扇窗朝室內灑下的柔光（色隨天色，白天暖、入夜冷藍）。
+    // 畫在牆與玩家之間，落在窗正下方的地板上。
+    WINDOW_COLS.forEach((wc) => {
+      const lx = wc * TILE - iCamX;
+      const ly = TILE - iCamY;                 // 窗在 r=0，光從 r=1 的地板起算
+      if (lx + TILE < 0 || lx > viewW) return;
+      const gg = ctx.createLinearGradient(0, ly, 0, ly + TILE * 3);
+      gg.addColorStop(0, scene.glow);
+      gg.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gg;
+      ctx.fillRect(lx - TILE * 0.2, ly, TILE * 1.4, TILE * 3);
+    });
 
     // 玩家（使用室內坐標作為世界坐標，相機 = iCamX/iCamY）
     const pObj = players.get(myId);
