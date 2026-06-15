@@ -413,6 +413,41 @@ const scenarios = [
   variant("雨打水面漣漪(白天)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "day", light: 0.7, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(破曉金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.55, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(夜冷月)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "night", light: 0.15, night_danger: true }; s.weather = { weather_type: "grassland_rain", intensity: 0.5 }; }),
+  // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
+  // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
+  // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。
+  ...(() => {
+    const indoor = (extra) => (s) => {
+      const me = s.players[0];
+      me.indoor_plot_id = 7; me.indoor_x = 128; me.indoor_y = 200;
+      me.home_furniture = [{ kind: "bed", emoji: "🛏️", col: 3, row: 3 }];
+      Object.assign(me, extra.player || {});
+      if (extra.daynight) s.daynight = extra.daynight;
+      if (extra.weather) s.weather = extra.weather;
+      if (extra.season) s.current_season = extra.season;
+    };
+    const day = { phase: "day", light: 0.85, night_danger: false };
+    const night = { phase: "night", light: 0.12, night_danger: true };
+    const dawn = { phase: "dawn", light: 0.5, night_danger: false };
+    const dusk = { phase: "dusk", light: 0.45, night_danger: false };
+    const clear = { weather_type: "clear", intensity: 0.0 };
+    const rain = { weather_type: "grassland_rain", intensity: 0.7 };
+    const sand = { weather_type: "desert_sandstorm", intensity: 0.6 };
+    const dust = { weather_type: "rocky_crystal_dust", intensity: 0.6 };
+    const mist = { weather_type: "water_sea_mist", intensity: 0.6 };
+    return [
+      variant("室內窗景:白天晴(夏·木屋)", indoor({ daynight: day, weather: clear, season: "summer", player: { home_style: "wood_cabin" } })),
+      variant("室內窗景:入夜晴(月+星·星空)", indoor({ daynight: night, weather: clear, season: "summer", player: { home_style: "starlit" } })),
+      variant("室內窗景:破曉(低陽·石砌)", indoor({ daynight: dawn, weather: clear, season: "spring", player: { home_style: "stone_hall" } })),
+      variant("室內窗景:黃昏降雨(低陽+雨)", indoor({ daynight: dusk, weather: rain, season: "autumn", player: { home_style: "cozy_pastoral" } })),
+      variant("室內窗景:白天草原降雨(陽+雨)", indoor({ daynight: day, weather: rain, season: "spring", player: { home_style: "aether_crystal" } })),
+      variant("室內窗景:沙漠風沙(飛沙霾)", indoor({ daynight: day, weather: sand, season: "summer", player: { home_style: "wood_cabin" } })),
+      variant("室內窗景:岩地晶塵(微光屑)", indoor({ daynight: day, weather: dust, season: "summer", player: { home_style: "aether_crystal" } })),
+      variant("室內窗景:水域海霧(白濛)", indoor({ daynight: day, weather: mist, season: "summer", player: { home_style: "stone_hall" } })),
+      variant("室內窗景:冬季天晴(季節飄雪)", indoor({ daynight: day, weather: clear, season: "winter", player: { home_style: "cozy_pastoral" } })),
+      variant("室內窗景:冬夜(月+星+雪)", indoor({ daynight: night, weather: clear, season: "winter", player: { home_style: "starlit" } })),
+    ];
+  })(),
 ];
 
 let failed = false;
