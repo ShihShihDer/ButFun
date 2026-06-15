@@ -9531,6 +9531,24 @@
         ctx.restore();
       }
 
+      // ROADMAP 322：盛夏甩尾驅蟲——盛夏酷暑，哺乳走獸（state==="swishing"）平靜時偶爾停下、甩尾擺耳趕開
+      // 擾人的蚊蠅：頭頂浮一隻被趕得急促亂竄（左右快擺＋忽上忽下）的 🪰，讀起來像驅之不散的飛蟲在打轉。
+      // 與 307 喘氣（👅）並列盛夏哺乳獸兩筆：一散熱、一驅蟲；與 314 鳥張喙（🥵）以符號＋物種區隔。只有
+      // 哺乳走獸（鹿／小獸）會甩尾驅蟲（鳥／狼狐不入此分支）。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在盛夏白天平靜的哺乳走獸驅蟲時才給此狀態）。
+      if (w.state === "swishing") {
+        ctx.save();
+        const sf = Math.sin(now / 70);           // 急促左右快擺——蚊蠅亂竄
+        ctx.globalAlpha = 0.55 + 0.4 * Math.abs(sf);
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        // 🪰 急促地左右快擺、忽上忽下打轉，像驅之不散的飛蟲
+        ctx.translate(sf * 5, -20 + Math.cos(now / 90) * 2);
+        ctx.fillText("🪰", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9911,8 +9929,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵、舒翅中（stretching，317）改畫 🪽、逐葉中（leaf_chasing，320）改畫 🍃，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "cratering" && w.state !== "fluffing" && w.state !== "stretching" && w.state !== "trekking" && w.state !== "following" && w.state !== "leaf_chasing") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵、舒翅中（stretching，317）改畫 🪽、逐葉中（leaf_chasing，320）改畫 🍃、甩尾驅蟲中（swishing，322）改畫 🪰，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "cratering" && w.state !== "fluffing" && w.state !== "stretching" && w.state !== "trekking" && w.state !== "following" && w.state !== "leaf_chasing" && w.state !== "swishing") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
