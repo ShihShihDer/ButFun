@@ -8019,6 +8019,21 @@
     }
   }
 
+  // ROADMAP 324：故鄉七大 NPC 的工作 / 活動狀態 → 頭頂活動符號。
+  // 後端只傳語意代碼（保留 i18n 空間），前端在這裡對應到一枚 emoji，
+  // 讓玩家進城一眼看出「鎮上每個人都在忙自己的事」：白天各司其職、夜裡都回去歇、清晨還在趕路。
+  const NPC_ACTIVITY_ICON = {
+    commuting: "🚶",   // 趕路中
+    resting: "💤",     // 夜間休憩
+    tallying: "🪙",    // 商人點算貨銀
+    hammering: "🔨",   // 工匠敲打鍛造
+    sharpening: "🏹",  // 獵手擦拭上弦
+    mapping: "🗺️",     // 探勘員看地圖
+    stocktaking: "📦", // 採購清點備貨
+    judging: "📋",     // 評審打分
+    patrolling: "👀",  // 里長巡視
+  };
+
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
   function drawNpcs(camX, camY) {
     const me = myId ? players.get(myId) : null;
@@ -8062,6 +8077,22 @@
         ctx.font = "bold 10px sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(npc.id, sx, by - 15);
+      }
+
+      // ROADMAP 324：頭頂工作 / 活動符號（僅故鄉七大 NPC 在故鄉星球時有 activity）。
+      const actIcon = npc.activity ? NPC_ACTIVITY_ICON[npc.activity] : null;
+      if (actIcon && myPlanet === "home") {
+        // 隨呼吸般和緩起落，工作中的活力感；休憩時更慢更小一點。
+        const resting = npc.activity === "resting";
+        const amp = reduceMotion ? 0 : (resting ? 1.2 : 2.2);
+        const speed = resting ? 1.4 : 2.6;
+        const iconBob = Math.sin(t * speed + npc.x * 0.02) * amp;
+        ctx.font = "16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.globalAlpha = resting ? 0.8 : 1.0;
+        ctx.fillText(actIcon, sx, by - 34 + iconBob);
+        ctx.globalAlpha = 1.0;
       }
 
       ctx.restore();

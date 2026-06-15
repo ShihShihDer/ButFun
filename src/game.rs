@@ -2403,6 +2403,8 @@ pub fn spawn(app: AppState) {
                             hp_pct: None,
                             alarmed: false,
                             celebrating: false,
+                            // ROADMAP 324：故鄉 NPC 的工作 / 活動狀態，前端據此畫頭頂活動符號。
+                            activity: sch.get_activity(s.id).map(|a| a.code().to_string()),
                         });
                     }
                     drop(lc);
@@ -2420,6 +2422,7 @@ pub fn spawn(app: AppState) {
                         hp_pct: None,
                         alarmed: false,
                         celebrating: false,
+                        activity: None, // 他星商人不安排故鄉作息工作狀態
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -2433,6 +2436,7 @@ pub fn spawn(app: AppState) {
                         hp_pct: None,
                         alarmed: false,
                         celebrating: false,
+                        activity: None, // 他星商人不安排故鄉作息工作狀態
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -2446,6 +2450,7 @@ pub fn spawn(app: AppState) {
                         hp_pct: None,
                         alarmed: false,
                         celebrating: false,
+                        activity: None, // 他星商人不安排故鄉作息工作狀態
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -2459,6 +2464,7 @@ pub fn spawn(app: AppState) {
                         hp_pct: None,
                         alarmed: false,
                         celebrating: false,
+                        activity: None, // 他星商人不安排故鄉作息工作狀態
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -2472,6 +2478,7 @@ pub fn spawn(app: AppState) {
                         hp_pct: None,
                         alarmed: false,
                         celebrating: false,
+                        activity: None, // 他星商人不安排故鄉作息工作狀態
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -2489,6 +2496,7 @@ pub fn spawn(app: AppState) {
                                 hp_pct: None,
                                 alarmed: false,
                                 celebrating: false,
+                                activity: None, // 旅人不走故鄉作息工作狀態
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -2513,6 +2521,7 @@ pub fn spawn(app: AppState) {
                                 hp_pct,
                                 alarmed,
                                 celebrating,
+                                activity: None, // 路人居民另有作息調度，不走故鄉七大 NPC 工作狀態
                             });
                         }
                     }
