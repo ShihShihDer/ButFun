@@ -822,6 +822,22 @@ const BURY_PROB: f32 = 0.02;
 const BURY_DURATION_MIN: f32 = 2.5;
 const BURY_DURATION_MAX: f32 = 5.0;
 
+// ─── ROADMAP 304：掠食者刨出存糧（cache recovery／取回先前埋藏的存糧）────────────────────
+// 303 給掠食者補上「埋藏剩食」（把吃不完的獵肉刨坑藏起來留作存糧），可那條覓食線只演到「存起來」
+// 的前半段——藏好的存糧此後就憑空遺忘、永不被取回，看不見真實犬科最自然的後續：飢時回頭把先前
+// 藏的存糧刨出來吃掉。本切片把它補成完整循環：先前埋過存糧（has_cache）的狼狐，白天閒檔偶爾回頭
+// 刨個坑把舊藏的存糧取回（轉入 Recovering 🦴），取回後 has_cache 歸偽、可再埋新的——「埋藏→取回→
+// 再埋」一藏一取的完整覓食循環第一次成形。與 303 埋藏（🦴，藏起來）對成「藏／取」一對，把 282／303
+// 立下的「為將來打算地把吃不完的存起來」推進到「再回頭把存糧取用」。純內生閒置行為（不需任何新環境
+// 輸入、game.rs 零改動），沿用 303 埋藏那套白晝閒置行為框架，零 tick 簽名改動、零協議欄位。
+/// 持有存糧（has_cache）的平靜掠食者本幀回頭刨出取回的機率——與 303 埋藏（BURY_PROB 0.02）刻意同級
+///（對成「藏／取」一對）：取回也是偶爾為之的覓食雜務（多數時候仍照常巡遊／撲鼠／嗅蹤）。
+const RECOVER_PROB: f32 = 0.02;
+/// 一次刨出取回的最短／最長時長（秒）——刨開先前埋藏的小坑把存糧取出需時，沿用 303 埋藏
+///（BURY_DURATION 2.5~5s）同量級。期間威脅一旦逼近一律優先停下奔逃（取回永遠讓位逃命）。
+const RECOVER_DURATION_MIN: f32 = 2.5;
+const RECOVER_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 294：聞味讀界（counter-marking sniff／犬科聞到同類剛留下的領地記號而停下讀味回應）──
 // 293 領地嗅標給了掠食者「留味」這一筆：野狼／野狐白天偶爾停下、以一滴氣味記號標記地盤（💧），與 225
 // 嗅蹤（👃，循別人留的舊味跡走）對成「讀味／留味」一對。可那記留下的氣味記號至今無人「讀」——一隻狼
@@ -1907,6 +1923,15 @@ enum WildlifeState {
     ///（👅，清潔自理）／293 嗅標（💧，領地留味）／294 讀界（👃，讀同類記號）同為掠食者白晝閒置底色卻各有去向。
     /// 純內生閒置覓食姿態：不改任何獵殺／進食／消化結果、不生成可撿實體（只演出「藏存糧」的動作）。
     Burying { bury_timer: f32 },
+    /// ROADMAP 304：掠食者刨出存糧——先前埋過存糧（has_cache）的平靜掠食者（野狼／野狐，二者皆會）白天閒檔
+    /// 偶爾回頭就地低頭刨開先前埋藏的小坑、把舊藏的存糧取回（前端畫成低頭刨土、頭頂浮一枚隨刨土一上一下的 🦴，
+    /// 沿用 303 埋藏同一枚骨頭符號＝「藏／取」同一筆存糧）。原地不動（不更新座標）、recover_timer 倒數，取回扒開就
+    /// 起身回到巡遊（朝家附近的下一個漫遊目標，與 tick_bury 同模式、無群聚拉力）；取回後 has_cache 歸偽、可再埋新的。
+    /// 獵物一旦進入搜尋範圍，掠食者 phase 在取回分支之前就已改走狩獵——取回永遠讓位狩獵。與 303 埋藏剩食 Burying
+    ///（🦴，藏起來）對成「藏／取」一對，把 282／303 立下的「把吃不完的存起來」推進到「再回頭把存糧取用」、第一次
+    /// 形成「埋藏→取回→再埋」的完整覓食循環。純內生閒置覓食姿態：不改任何獵殺／進食／消化結果、不生成可撿實體
+    ///（只演出「取存糧」的動作）。
+    Recovering { recover_timer: f32 },
     /// ROADMAP 295：畏味避徑——白天平靜歇息／漫步的草食走獸（鹿／小獸）「聞到」附近（SCENT_AVOID_RADIUS 內、
     /// 卻在自身警戒帶 VIGILANCE_RADIUS 之外）有掠食者正留下一記新鮮領地記號（marking_snap）時，抬頭一驚、不安
     /// 地朝那記界味的反方向警覺繞走一小段（前端畫成低頭快步、頭頂浮一枚 😟）。(ax,ay) 記下那記界味的座標，每幀
@@ -1961,6 +1986,10 @@ pub struct Wildlife {
     /// ROADMAP 269：驅敵的後效——被混群鼓譟攆走時記下 (巢區中心 x, y, 剩餘忌憚秒數)；忌憚未消時
     /// 閒晃漫遊會繞開那片巢區，不再晃回去被反覆攆。`None`＝無忌憚（記憶體模式、不持久化、不進協議）。
     mob_grudge: Option<(f32, f32, f32)>,
+    /// ROADMAP 304：是否持有一筆先前埋藏的存糧。掠食者埋藏剩食（303 Burying）完成時設真、刨出取回
+    ///（304 Recovering）完成時歸偽。為真時白天閒檔偶爾回頭刨出取回、且不再埋第二筆（一次只藏一筆）。
+    /// 只掠食者會設真（獵物從不埋藏）。記憶體模式、不持久化、不進協議。
+    has_cache: bool,
 }
 
 impl Wildlife {
@@ -1984,6 +2013,8 @@ impl Wildlife {
             maturity: 1.0,
             // ROADMAP 269：初始無忌憚。
             mob_grudge: None,
+            // ROADMAP 304：初始未持有存糧。
+            has_cache: false,
         }
     }
 
@@ -2828,10 +2859,30 @@ impl Wildlife {
         if let WildlifeState::Burying { bury_timer } = self.state {
             let remaining = bury_timer - dt;
             if remaining <= 0.0 {
+                // ROADMAP 304：埋好了——記下此隻已持有一筆存糧（has_cache），供日後刨出取回。
+                self.has_cache = true;
                 let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
                 self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
             } else {
                 self.state = WildlifeState::Burying { bury_timer: remaining };
+            }
+        }
+    }
+
+    /// ROADMAP 304：掠食者刨出存糧——取回中（Recovering）原地不動、倒數計時；取回完（recover_timer 耗盡）就
+    /// 扒開取出、起身回到巡遊（朝家附近的下一個漫遊目標，與 tick_bury 同模式），並把 has_cache 歸偽（存糧已取用、
+    /// 可再埋新的）。只在 Recovering 狀態下生效（呼叫端已確保此隻為掠食者、白天、持有存糧、無獵可追的平靜空檔；
+    /// 獵物一旦出現，掠食者 phase 在更前面的獵物搜尋就已改走狩獵，不會走到此分支——取回永遠讓位狩獵）。
+    fn tick_recover(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Recovering { recover_timer } = self.state {
+            let remaining = recover_timer - dt;
+            if remaining <= 0.0 {
+                // 取回完畢：存糧取用、has_cache 歸偽（可再埋新的，「埋藏→取回→再埋」循環）。
+                self.has_cache = false;
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Recovering { recover_timer: remaining };
             }
         }
     }
@@ -3148,6 +3199,7 @@ impl Wildlife {
             WildlifeState::Marking { .. }    => "marking",
             WildlifeState::Sniffing { .. }   => "sniffing",
             WildlifeState::Burying { .. }    => "burying",
+            WildlifeState::Recovering { .. } => "recovering",
             WildlifeState::Skirting { .. }   => "skirting",
             WildlifeState::Sheltering { .. } => "sheltering",
             WildlifeState::Shaking { .. } => "shaking",
@@ -3915,6 +3967,11 @@ impl WildlifeManager {
                                 // 扒土蓋上起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故埋藏只在無獵
                                 // 可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_bury(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Recovering { .. }) {
+                                // ROADMAP 304：已在刨出取回中——把這一坑舊藏的存糧取完（原地不動、計時倒數，
+                                // 取回扒開就起身回巡遊、has_cache 歸偽）。獵物在更前面（prey_snap 搜尋）已優先處理，
+                                // 故取回只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_recover(dt, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4085,6 +4142,24 @@ impl WildlifeManager {
                                 a.state = WildlifeState::Sniffing { sniff_timer: timer };
                             } else if !is_night
                                 && !post_rain
+                                && a.has_cache
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < RECOVER_PROB
+                            {
+                                // ROADMAP 304：白天無獵可追、先前埋過存糧（has_cache）的平靜掠食者——偶爾回頭就地
+                                // 低頭刨開先前埋藏的小坑、把舊藏的存糧取回（轉入 Recovering 🦴）。把 303 埋藏只演到
+                                // 「存起來」的前半段補成完整循環：埋藏→取回→再埋。與 303 埋藏剩食（🦴，藏起來）對成
+                                // 「藏／取」一對。野狼／野狐二者皆會。**排在埋藏之前**：持有存糧時優先回頭取回（並令下面
+                                // 埋藏分支加 !has_cache 守衛、不再埋第二筆），取回後 has_cache 歸偽才又能埋新的——一次只
+                                // 藏一筆、一藏一取自然成環。**雨剛停的窗口內（post_rain）讓位給 300 雨後抖水等雨後即時反應、
+                                // 不取回**（與 303 埋藏同時序，剛淋濕先抖乾要緊）。**晝起意**（夜間改走夜嚎分支）。**取回永遠
+                                // 讓位狩獵**：此分支落在 prey_snap 搜尋無果的 else 內，獵物一旦在搜尋範圍內、更前面就已改走
+                                // 狩獵。純內生閒置覓食姿態，不改任何獵殺／進食／消化結果、不生成可撿的實體。
+                                let timer = rng.gen_range(RECOVER_DURATION_MIN..=RECOVER_DURATION_MAX);
+                                a.state = WildlifeState::Recovering { recover_timer: timer };
+                            } else if !is_night
+                                && !post_rain
+                                && !a.has_cache
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < BURY_PROB
                             {
@@ -4102,6 +4177,8 @@ impl WildlifeManager {
                                 // 夜嚎分支。埋藏永遠讓位狩獵：此分支落在
                                 // prey_snap 搜尋無果的 else 內，獵物一旦在搜尋範圍內、更前面就已改走狩獵。純內生閒置覓食姿態，
                                 // 不改任何獵殺／進食／消化結果、不生成可撿的實體。
+                                // ROADMAP 304：加 !a.has_cache 守衛——已持有一筆存糧時不再埋第二筆，而是由前面的取回分支回頭
+                                // 刨出取回（一次只藏一筆，「埋藏→取回→再埋」自然成環）。
                                 let timer = rng.gen_range(BURY_DURATION_MIN..=BURY_DURATION_MAX);
                                 a.state = WildlifeState::Burying { bury_timer: timer };
                             } else if !is_night
@@ -11867,6 +11944,191 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "埋藏中發現獵物應立刻改去狩獵，實際 {:?}", f.state
+        );
+    }
+
+    // ─── ROADMAP 304：掠食者刨出存糧（cache recovery／取回先前埋藏的存糧）──────
+    #[test]
+    fn tick_recover_holds_position_while_timer_remaining() {
+        // 取回進行中：原地不動（座標不變）、計時遞減、狀態維持 Recovering、has_cache 仍持有。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.has_cache = true;
+        wolf.state = WildlifeState::Recovering { recover_timer: 3.0 };
+        wolf.tick_recover(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Recovering { recover_timer } => {
+                assert!((recover_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("取回未到期應維持 Recovering，實際 {:?}", wolf.state),
+        }
+        assert!((wolf.x - 5000.0).abs() < 1e-6 && (wolf.y - 5000.0).abs() < 1e-6, "取回中應原地不動");
+        assert!(wolf.has_cache, "取回未完成前 has_cache 仍應為真");
+    }
+
+    #[test]
+    fn tick_recover_returns_to_wander_and_clears_cache_when_timer_expires() {
+        // 取回到期：扒開取出、起身回到巡遊，且 has_cache 歸偽（存糧已取用、可再埋新的）。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.has_cache = true;
+        fox.state = WildlifeState::Recovering { recover_timer: 0.05 };
+        fox.tick_recover(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(fox.state, WildlifeState::Wandering { .. }), "取回到期應回巡遊，實際 {:?}", fox.state);
+        assert!(!fox.has_cache, "取回完成後 has_cache 應歸偽");
+    }
+
+    #[test]
+    fn tick_recover_noop_on_other_state() {
+        // 防呆：非 Recovering 狀態呼叫 tick_recover 不該有任何作用（狀態與 has_cache 皆不變）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.has_cache = true;
+        wolf.state = WildlifeState::Resting { rest_timer: 3.0 };
+        wolf.tick_recover(0.1, &mut rng);
+        assert!(matches!(wolf.state, WildlifeState::Resting { .. }), "非取回狀態呼叫 tick_recover 不該改狀態");
+        assert!(wolf.has_cache, "非取回狀態呼叫 tick_recover 不該清掉 has_cache");
+    }
+
+    #[test]
+    fn recovering_state_str_is_recovering() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Recovering { recover_timer: 1.0 };
+        assert_eq!(fox.state_str(), "recovering");
+    }
+
+    #[test]
+    fn tick_bury_sets_has_cache_on_completion() {
+        // 「藏／取」循環的起點：埋藏完成時 has_cache 由偽轉真（供日後刨出取回）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        assert!(!wolf.has_cache, "初始未持有存糧");
+        wolf.state = WildlifeState::Burying { bury_timer: 0.05 };
+        wolf.tick_bury(0.1, &mut rng); // 埋好到期
+        assert!(matches!(wolf.state, WildlifeState::Wandering { .. }), "埋藏到期應回巡遊");
+        assert!(wolf.has_cache, "埋藏完成應記下已持有存糧（has_cache）");
+    }
+
+    #[test]
+    fn prey_never_recovers() {
+        // 物種專屬：刨出取回只發生在掠食者 phase——晝行獵物（鹿/鳥/小動物）即便硬塞 has_cache 也連跑數百幀都不取回。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.has_cache = true; // 即便硬塞存糧旗標，獵物也走不到掠食者取回分支
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Recovering { .. }), "獵物不該刨出取回，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn predator_without_cache_never_recovers() {
+        // 需先持有存糧才取回：一隻從未埋過存糧（has_cache=false）的孤身野狼，連跑多幀都不該進入 Recovering。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        // 故意不埋（一直保持 has_cache=false）：把場景限制成只觀察前幾百幀尚未埋成存糧的窗口不可靠，
+        // 故直接斷言「沒 has_cache 時不取回」——但因牠可能自行埋藏後再取回，這裡改測單幀分支邏輯：
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        // 只要 has_cache 仍為偽，就絕不可能在該幀進入 Recovering（取回分支有 has_cache 守衛）。
+        for _ in 0..600 {
+            let before = mgr.animals[0].has_cache;
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = &mgr.animals[0];
+            if !before {
+                assert!(!matches!(w.state, WildlifeState::Recovering { .. }),
+                    "未持有存糧的當幀不該進入取回，實際 {:?}", w.state);
+            }
+        }
+    }
+
+    #[test]
+    fn predator_with_cache_eventually_recovers_during_day() {
+        // 白天無獵可追、先前埋過存糧（has_cache=true）的孤身野狐，連跑多幀後總會偶爾回頭刨出取回。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.has_cache = true; // 先前已埋過一筆存糧
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox]; // 場上只有這隻狐、無獵物 → 必走「無獵可追」的閒置分支
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut recovered = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(f.state, WildlifeState::Recovering { .. }) {
+                recovered = true;
+                break;
+            }
+        }
+        assert!(recovered, "白天無獵可追、持有存糧的平靜野狐應偶爾回頭刨出取回");
+    }
+
+    #[test]
+    fn predator_holding_cache_recovers_before_burying_anew() {
+        // 一次只藏一筆＋取回優先於再埋：持有存糧的掠食者，閒置時第一個出現的「刨土」狀態必是 Recovering（取回）
+        // 而非 Burying（再埋）——取回分支排在埋藏之前、且埋藏分支有 !has_cache 守衛擋住再埋第二筆。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.has_cache = true; // 已持有一筆存糧
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut first_dig: Option<&'static str> = None;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Recovering { .. }) { first_dig = Some("recovering"); break; }
+            if matches!(w.state, WildlifeState::Burying { .. }) { first_dig = Some("burying"); break; }
+        }
+        assert_eq!(first_dig, Some("recovering"),
+            "持有存糧時第一個刨土動作應是取回（非再埋第二筆）");
+    }
+
+    #[test]
+    fn nocturnal_predator_never_recovers_at_night() {
+        // 晝夜區隔：取回只在白天起意（夜間掠食者改走夜嚎分支）——即便持有存糧，夜裡連跑多幀都不該進入 Recovering。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.has_cache = true;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Recovering { .. }), "夜間掠食者不該刨出取回，實際 {:?}", w.state);
+        }
+    }
+
+    #[test]
+    fn recovering_predator_wakes_to_hunt_nearby_prey() {
+        // 取回永遠讓位狩獵：取回中的野狐一旦有可獵的小動物進入搜尋範圍，立刻改去狩獵（非繼續取回）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0); // 120px < POUNCE_RANGE(200)
+        critter.id = 100;
+        critter.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 101;
+        fox.has_cache = true;
+        fox.state = WildlifeState::Recovering { recover_timer: 1.0e9 }; // 取得正起勁
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "取回中發現獵物應立刻改去狩獵，實際 {:?}", f.state
         );
     }
 
