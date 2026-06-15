@@ -49,6 +49,59 @@ pub fn cell_of(ix: f32, iy: f32) -> (u8, u8) {
     (clamp_cell(ix), clamp_cell(iy))
 }
 
+/// 居家風格主題（ROADMAP 325）。
+///
+/// 玩家可在自己室內循環切換的裝潢風格，決定地板與牆面的視覺色調。
+/// 後端只持有語意代碼（snake_case 契約），實際色票與中文名稱一律由前端決定，
+/// 保留 i18n 空間、也讓美術調色集中在繪製層。純記憶體模式（與家具同步，重啟歸零）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum HomeStyle {
+    /// 木屋（預設）：暖棕木板 + 石磚牆，沿用 111 原始風格。
+    #[default]
+    WoodCabin,
+    /// 石砌廳堂：冷灰石板地 + 深岩牆，沉穩厚重。
+    StoneHall,
+    /// 乙太水晶：泛藍晶亮地坪 + 幽光晶牆，蒸汽龐克科幻感。
+    AetherCrystal,
+    /// 溫馨田園：奶黃軟木地 + 暖陶牆，柔和居家。
+    CozyPastoral,
+    /// 星空雅居：靛紫夜色地 + 星塵牆，靜謐療癒。
+    Starlit,
+}
+
+/// 所有風格的固定順序（循環切換用，也是前端對應色票的權威次序）。
+pub const HOME_STYLES: &[HomeStyle] = &[
+    HomeStyle::WoodCabin,
+    HomeStyle::StoneHall,
+    HomeStyle::AetherCrystal,
+    HomeStyle::CozyPastoral,
+    HomeStyle::Starlit,
+];
+
+impl HomeStyle {
+    /// 穩定的字串代碼（snake_case），作為前後端契約。
+    pub fn code(self) -> &'static str {
+        match self {
+            HomeStyle::WoodCabin => "wood_cabin",
+            HomeStyle::StoneHall => "stone_hall",
+            HomeStyle::AetherCrystal => "aether_crystal",
+            HomeStyle::CozyPastoral => "cozy_pastoral",
+            HomeStyle::Starlit => "starlit",
+        }
+    }
+
+    /// 從 snake_case 字串解析；未知字串回 `None`。
+    pub fn from_str(s: &str) -> Option<Self> {
+        HOME_STYLES.iter().copied().find(|st| st.code() == s)
+    }
+
+    /// 循環切換到下一個風格（最後一個繞回第一個）。玩家按「換風格」即推進。
+    pub fn next(self) -> Self {
+        let idx = HOME_STYLES.iter().position(|&st| st == self).unwrap_or(0);
+        HOME_STYLES[(idx + 1) % HOME_STYLES.len()]
+    }
+}
+
 /// 玩家進入室內時的初始位置（中央靠南，靠近入口）。
 pub fn entry_position() -> (f32, f32) {
     (INTERIOR_WIDTH / 2.0, INTERIOR_HEIGHT - MARGIN - 16.0)
@@ -189,5 +242,46 @@ mod tests {
     #[test]
     fn plot_center_invalid_id_returns_none() {
         assert!(plot_center(999).is_none());
+    }
+
+    // —— ROADMAP 325：居家風格主題 ——
+
+    #[test]
+    fn home_style_default_is_wood_cabin() {
+        // 預設風格＝木屋，沿用 111 原始外觀；serde default 也據此向後相容舊快照。
+        assert_eq!(HomeStyle::default(), HomeStyle::WoodCabin);
+    }
+
+    #[test]
+    fn home_style_codes_are_unique_and_roundtrip() {
+        // 前後端契約：每個風格代碼唯一，且 from_str(code()) 能還原。
+        use std::collections::HashSet;
+        let codes: HashSet<&str> = HOME_STYLES.iter().map(|s| s.code()).collect();
+        assert_eq!(codes.len(), HOME_STYLES.len(), "風格代碼必須唯一");
+        for &st in HOME_STYLES {
+            assert_eq!(HomeStyle::from_str(st.code()), Some(st), "{} 應可還原", st.code());
+        }
+    }
+
+    #[test]
+    fn home_style_from_str_unknown_is_none() {
+        assert_eq!(HomeStyle::from_str("nonexistent_style"), None);
+    }
+
+    #[test]
+    fn home_style_next_cycles_through_all_and_wraps() {
+        // 循環切換：依 HOME_STYLES 次序前進，最後一個繞回第一個。
+        let mut st = HomeStyle::WoodCabin;
+        let mut seen = vec![st];
+        for _ in 1..HOME_STYLES.len() {
+            st = st.next();
+            seen.push(st);
+        }
+        // 走完一輪應恰好覆蓋全部風格（不重不漏）。
+        for &s in HOME_STYLES {
+            assert!(seen.contains(&s), "{} 應在循環中出現", s.code());
+        }
+        // 再 next 一次繞回起點。
+        assert_eq!(st.next(), HomeStyle::WoodCabin, "最後一個應繞回第一個");
     }
 }

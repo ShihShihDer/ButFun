@@ -552,6 +552,10 @@ pub enum ClientMsg {
         /// 移除後家具退還到背包；`idx` 為 home_furniture 陣列索引。
         #[serde(rename = "remove_furniture")]
         RemoveFurniture { idx: usize },
+        /// 循環切換居家風格主題（ROADMAP 325）：玩家需在自己室內。
+        /// 無參數，每次切到 `HomeStyle` 的下一個風格（最後一個繞回第一個）。
+        #[serde(rename = "cycle_home_style")]
+        CycleHomeStyle,
         /// 讀取城鎮記憶石（ROADMAP 157）：玩家需在 INTERACT_REACH 範圍內。
         /// 後端回傳 TownMemoryList。
         #[serde(rename = "read_town_memory")]
@@ -743,6 +747,10 @@ pub enum ServerMsg {
         /// 玩家自己住家的家具清單（ROADMAP 155）：只在室內時送出（節省流量）。
         /// 前端用於繪製室內場景的家具 + 顯示家具管理面板。
         home_furniture: Vec<crate::home_furniture::FurnitureView>,
+        /// 玩家自己住家的風格主題代碼（ROADMAP 325）：只在室內時送出。
+        /// 前端據此切換地板/牆面色票；`None`（含舊客戶端）回退預設木屋外觀。
+        #[serde(default)]
+        home_style: Option<String>,
         /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
         /// 全部送出（18 隻量小；前端依 AOI 過濾）。
         wildlife: Vec<WildlifeView>,
@@ -1689,6 +1697,7 @@ mod tests {
             species_attitudes: vec![],
             seasonal_nodes: vec![],
             home_furniture: vec![],
+            home_style: None,
             civic_vote: None,
             civic_effect_secs: 0,
             civic_effect_kind: String::new(),
