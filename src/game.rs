@@ -563,6 +563,10 @@ pub fn spawn(app: AppState) {
                     if p.fish_cooldown > 0.0 {
                         p.fish_cooldown = (p.fish_cooldown - dt).max(0.0);
                     }
+                    // 席間舉杯冷卻倒數（ROADMAP 329）。
+                    if p.toast_cooldown > 0.0 {
+                        p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
+                    }
                     // 星際貿易路線冷卻倒數（ROADMAP 51）。
                     crate::trade_route::tick_cooldowns(&mut p.trade_cooldowns, dt);
                     // 工匠工坊訂單計時（ROADMAP 52）。

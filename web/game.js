@@ -1158,6 +1158,51 @@
     };
   }
 
+  // 席間舉杯按鈕（ROADMAP 329）：午休聚食時段，玩家走到鎮中廣場餐桌旁時顯示浮動按鈕，
+  // 按下後鄰近就座的 NPC 會轉頭回敬一句（NpcSpeech 泡泡）——玩家第一次能加入城鎮社交。
+  // 鎮中廣場座標與半徑與後端 npc_schedule::PLAZA_POS / lunch_chatter::LUNCH_TOAST_REACH 對齊。
+  const PLAZA_X = 2400, PLAZA_Y = 2260;
+  const LUNCH_TOAST_REACH_PX = 140;
+  function updateLunchToastBtn() {
+    let btn = document.getElementById("hudLunchToast");
+    const me = myId ? players.get(myId) : null;
+    // 只在午休時段（後端權威 daynight.lunch_time）且玩家走近廣場餐桌時才顯示。
+    const isLunch = !!(daynight && daynight.lunch_time);
+    const nearPlaza = me
+      && (me.x - PLAZA_X) ** 2 + (me.y - PLAZA_Y) ** 2 <= LUNCH_TOAST_REACH_PX ** 2;
+    if (!isLunch || !nearPlaza) {
+      if (btn) btn.style.display = "none";
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "hudLunchToast";
+      btn.style.cssText = [
+        // 比餵食鈕（bottom:60px）高一截堆疊，避免兩鈕在同一角落重疊。
+        "position:fixed", "bottom:100px", "right:140px",
+        "background:rgba(90,60,30,0.82)", "border:1px solid #d8a84a",
+        "border-radius:10px", "color:#ffdb99",
+        "font-size:.8rem", "font-family:monospace",
+        "padding:4px 12px", "z-index:1001", "cursor:pointer",
+      ].join(";");
+      btn.addEventListener("click", () => { safeSend({ type: "join_lunch_toast" }); });
+      document.body.appendChild(btn);
+    }
+    btn.style.display = "block";
+    const cooldown = me ? (me.toast_cooldown || 0) : 0;
+    if (cooldown > 0) {
+      btn.textContent = `🍻 同席中（${Math.ceil(cooldown)}s）`;
+      btn.disabled = true;
+      btn.style.opacity = "0.55";
+      btn.style.cursor = "default";
+    } else {
+      btn.textContent = "🍻 舉杯同席";
+      btn.disabled = false;
+      btn.style.opacity = "1";
+      btn.style.cursor = "pointer";
+    }
+  }
+
   // 統一物種視圖（ROADMAP 144/163/167）：左下角小面板，整合顯示生態壓力、野生物種、
   // 怪物物種與巢穴密度——玩家看到的是一個生態系的關係網，而非「動物一欄、怪物另一套」。
   // 顏色：Friendly=#60ffb0、Neutral=#c0c8d0、Wary=#ffcc44、Hostile=#ff6060。
@@ -4336,6 +4381,7 @@
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
+      updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
 
     requestAnimationFrame(safeRender);

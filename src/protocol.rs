@@ -560,6 +560,11 @@ pub enum ClientMsg {
         /// 後端回傳 TownMemoryList。
         #[serde(rename = "read_town_memory")]
         ReadTownMemory,
+        /// 席間舉杯同席（ROADMAP 329）：午休聚食時段，玩家走到鎮中廣場餐桌旁舉杯加入。
+        /// 後端驗：未倒地、正值午休、玩家在 LUNCH_TOAST_REACH 內、冷卻已到期，
+        /// 再挑最近就座的 NPC 回敬一句（廣播 NpcSpeech 泡泡）。不符條件靜默忽略。
+        #[serde(rename = "join_lunch_toast")]
+        JoinLunchToast,
     }
 
     /// 快照裡的城鎮大工程狀態（ROADMAP 131）。
@@ -1000,6 +1005,11 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_water: bool,
 
+    // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
+    /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub toast_cooldown: f32,
+
     // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────────
     /// 目前攜帶的貿易包裹摘要（None = 無任務）。前端 HUD 顯示「📦 攜帶中 → 目標星球」。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1364,6 +1374,10 @@ pub struct DayNightView {
     pub light: f32,
     /// 夜間危機旗標（phase == Night 時為 true）：前端用來顯示危機暈輪 + 燐光族夜視效果。
     pub night_danger: bool,
+    /// 是否正值正午聚食時段（ROADMAP 329）：前端據此在鎮中廣場餐桌旁亮出「舉杯同席」鈕，
+    /// 讓玩家能在午休時加入城鎮 NPC 的圍桌共食。`serde(default)` 向後相容舊客戶端。
+    #[serde(default)]
+    pub lunch_time: bool,
 }
 
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
@@ -1549,6 +1563,7 @@ mod tests {
                 pet_kind: None,
                 fish_cooldown: 0.0,
                 near_water: false,
+                toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
                 workshop_orders: vec![],
@@ -1636,6 +1651,7 @@ mod tests {
                 phase: Phase::Day,
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
                 night_danger: false,
+                lunch_time: false,
             },
             listings: vec![],
             npcs: vec![NpcView {
@@ -1795,6 +1811,7 @@ mod tests {
             pet_kind: None,
             fish_cooldown: 0.0,
             near_water: false,
+            toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
             workshop_orders: vec![],
@@ -1959,6 +1976,13 @@ mod tests {
         assert!(matches!(msg, ClientMsg::JoinParty));
     }
 
+    /// 前端送的 join_lunch_toast 訊息要能被解析成 `ClientMsg::JoinLunchToast`（ROADMAP 329 wire contract）。
+    #[test]
+    fn join_lunch_toast_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"join_lunch_toast"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::JoinLunchToast));
+    }
+
     #[test]
     fn leave_party_message_parses_correctly() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"leave_party"}"#).unwrap();
@@ -2024,7 +2048,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, fish_cooldown: 0.0, near_water: false,
+            pet_kind: None, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2082,7 +2106,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, fish_cooldown: 0.0, near_water: false,
+            pet_kind: None, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

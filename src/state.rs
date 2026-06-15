@@ -192,6 +192,14 @@ pub struct Player {
     /// 釣魚嘗試計數（確保每次釣魚偽隨機結果不同；記憶體前置，重啟清空）。
     pub fish_attempt_count: u64,
 
+    // ── 席間舉杯（ROADMAP 329：玩家加入午餐社交）──────────────────────────
+    /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
+    /// 記憶體前置、不持久化（純社交互動，重啟清零無妨）。
+    pub toast_cooldown: f32,
+    /// 舉杯次數計數：讓每次 NPC 的回敬在其模板池內逐句推進、不老是同一句。
+    /// 記憶體前置、不持久化、重啟清空。
+    pub toast_count: u64,
+
     // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────
     /// 目前攜帶的貿易包裹。None = 無任務；Some = 正在跑商途中。記憶體前置，重啟清空。
     pub trade_cargo: Option<crate::trade_route::TradeCargo>,
@@ -315,6 +323,8 @@ impl Player {
             pet_kind: self.pet.map(|p| p.as_str().to_string()),
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
+            // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
+            toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
                 route_id: c.route_id,
                 cargo_name: c.cargo_name.clone(),
@@ -1302,6 +1312,8 @@ mod tests {
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            toast_cooldown: 0.0,
+            toast_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,

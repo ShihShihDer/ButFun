@@ -166,6 +166,8 @@ impl DayNight {
         let phase = self.phase();
         DayNightView {
             night_danger: phase == Phase::Night,
+            // ROADMAP 329：是否正值正午聚食時段，供前端在廣場餐桌旁亮出「舉杯同席」鈕。
+            lunch_time: crate::npc_schedule::is_lunch_time(phase, self.fraction()),
             phase,
             light: self.light_level(),
         }
