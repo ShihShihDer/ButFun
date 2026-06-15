@@ -160,6 +160,16 @@ const RUB_DURATION_MIN: f32 = 2.5;
 /// 一段磨角最長時長（秒）。
 const RUB_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 322：盛夏甩尾驅蟲（summer fly-shooing）─────────────────────────────
+/// 盛夏甩尾驅蟲自發起意機率（每幀）——對齊 307 喘氣 PANT_PROB(0.03)：盛夏酷暑下，散熱（喘氣）與驅蟲（甩尾）
+/// 同是哺乳獸正午最頻繁的兩樁應對，兩者頻率相當、由機率天然錯開（同走 is_hot_summer，誰先擲中走誰）。
+const SWISH_PROB: f32 = 0.03;
+/// 一段甩尾驅蟲的最短／最長時長（秒）——刻意短於喘氣／囤食等定點長動作：甩尾擺耳是一陣急促的甩動（蚊蠅一驅
+/// 就散、不必久佇），比反覆專注的磨角／刨雪短促得多。
+const SWISH_DURATION_MIN: f32 = 1.0;
+/// 一段甩尾驅蟲最長時長（秒）。
+const SWISH_DURATION_MAX: f32 = 2.5;
+
 // ─── ROADMAP 316：寒冬蓬羽 ───────────────────────────────────────────────────
 /// 寒冬蓬羽自發起意機率（每幀）——偏低（與 308 哆嗦 SHIVER_PROB 0.03 同量級，多數幀不觸發）。
 const FLUFF_PROB: f32 = 0.03;
@@ -2295,6 +2305,12 @@ enum WildlifeState {
     /// 第一樁「成體野鹿專屬」的季節戲。與 224 頂角（💥，兩隻成體互相牴角較勁）區隔：那是同伴間的比武、這是對著
     /// 樹獨自磨角的季前準備；與 315 囤食（🍂，秋季草食獸低頭增膘）並列秋季野鹿的兩筆——一筆覓食、一筆求偶準備。
     Rubbing { rub_timer: f32 },
+    /// ROADMAP 322：盛夏甩尾驅蟲——盛夏酷暑（is_hot_summer）蚊蠅最猖獗時，平靜的草食走獸（鹿／小獸）偶爾停下、
+    /// 甩尾擺耳驅趕擾人的飛蟲（fly-shooing：尾巴甩、耳朵抖，把叮咬的蚊蠅趕開，頭頂浮一隻被驅趕的 🪰）。原地不動
+    ///（不更新座標）、swish_timer 倒數，到期就鬆下來起身回到巡遊；驅蟲中若有威脅一律優先中斷改逃竄。**只屬於哺乳
+    /// 走獸**（鳥另走 314 張喙散熱、掠食者另走獵食迴圈）。與 307 喘氣（👅，張嘴散熱）並列盛夏哺乳獸的兩筆——一筆
+    /// 散熱、一筆驅蟲，同走 is_hot_summer 守衛、由機率天然錯開。
+    Swishing { swish_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3326,6 +3342,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 322：盛夏甩尾驅蟲——驅蟲中（Swishing）原地不動、swish_timer 倒數，尾巴一甩一甩把擾人的蚊蠅趕開；
+    /// 甩夠了一陣（耗盡）就鬆下來起身回到巡遊（朝家附近的下一個漫遊目標，與 tick_rub／tick_crater 同模式）。
+    /// 只在 Swishing 狀態下生效（呼叫端已確保此隻為盛夏白天、平靜無威脅的哺乳走獸；威脅一旦出現，更前面的續算
+    /// 分支已改走逃竄，不會走到此分支——驅蟲永遠讓位逃命）。
+    fn tick_swish(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Swishing { swish_timer } = self.state {
+            let remaining = swish_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Swishing { swish_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 310：寒冬偎暖——偎暖中（Huddling）朝本幀重鎖的同伴 `target` 緩緩挪近到貼緊距離就停、緊挨
     /// 取暖，huddle_timer 倒數；同伴走遠不見（`target` 為 None）或計時耗盡就鬆開、起身回巡遊（與 tick_shiver／
     /// tick_puff 同模式，挑家附近的下一個漫遊目標）。與 tick_mob 同模式：呼叫端每幀重鎖最近同伴座標傳入。
@@ -3862,6 +3894,7 @@ impl Wildlife {
             WildlifeState::Following { .. } => "following",
             WildlifeState::LeafChasing { .. } => "leaf_chasing",
             WildlifeState::Rubbing { .. }   => "rubbing",
+            WildlifeState::Swishing { .. }  => "swishing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5671,6 +5704,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_rub(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Swishing { .. }) {
+                    // ROADMAP 322：已在盛夏甩尾驅蟲——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（驅蟲永遠
+                    // 讓位逃命），否則原地甩尾擺耳趕開擾人的蚊蠅、計時倒數，甩夠了就鬆下來起身回巡遊。與 307 喘氣
+                    // 同模式：一段平靜時的定格小動作，遇險即讓位逃命。驅蟲不繫於即時光照（起意時已逢盛夏酷暑、甩完
+                    // 這一段只看計時，與喘氣同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_swish(dt, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Huddling { .. }) {
                     // ROADMAP 310：已在偎暖中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（偎暖永遠
                     // 讓位逃命），否則重鎖最近的同種成體夥伴、緩緩挪近貼緊取暖、計時倒數；同伴走遠不見或計時
@@ -6076,6 +6119,27 @@ impl WildlifeManager {
                     // 改全速奔逃（磨角永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(RUB_DURATION_MIN..=RUB_DURATION_MAX);
                     a.state = WildlifeState::Rubbing { rub_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_hot_summer
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SWISH_PROB
+                {
+                    // ROADMAP 322：盛夏甩尾驅蟲——盛夏正午酷暑（is_hot_summer＝夏季且光照強烈）的白天（!is_night），
+                    // 平靜歇息／漫步的草食走獸（鹿／小獸；is_mammal 守衛把野鳥排除——鳥另走 314 張喙散熱）偶爾停下、
+                    // 甩尾擺耳驅趕擾人的蚊蠅（轉入 Swishing 🪰）。逐幀低機率觸發 → 烈日當頭，獸群由近而遠錯落地一隻隻
+                    // 甩起尾巴，而非同幀整群瞬間齊甩。**與 307 夏日伸舌喘氣（👅）並列盛夏哺乳獸的兩筆**：同走 is_hot_summer
+                    // 雙重守衛、同是盛夏正午的閒置應對，一筆散熱（張嘴喘氣）、一筆驅蟲（甩尾擺耳）——把「動物 × 盛夏正午」
+                    // 從只演「熱」補上「蚊蠅擾人」這層，由機率天然錯開（307 在前先擲、沒中才落到本筆，與 315 囤食先於 321
+                    // 磨角同模式）。**與 314 鳥張喙（🥵）物種互補**（is_bird／is_mammal 永不相疊）。**雙重守衛**：非夏季或
+                    // 光照不強（is_hot_summer 為偽）一律跳過。**只屬於哺乳走獸**（鳥另走 314；掠食的狼／狐另走獵食迴圈、
+                    // 不入此平靜作息分支；有測試覆蓋鳥不甩尾）。**排在 296～299 雨天反應、251/284/295 恐懼分支、307 喘氣、
+                    // 308 哆嗦、309 呵氣、312 嗅花、315 囤食、319 刨雪、321 磨角之後、下方吃草／搔癢／嬉戲等白晝玩樂之前**：
+                    // 看得見的危險與雨天反應永遠優先，盛夏驅蟲這樁酷暑應對則凌駕悠閒玩樂。**威脅永遠優先**：威脅一旦真逼進
+                    // FLEE_RADIUS，上面 Swishing 續算分支即改全速奔逃（驅蟲永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(SWISH_DURATION_MIN..=SWISH_DURATION_MAX);
+                    a.state = WildlifeState::Swishing { swish_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -18766,6 +18830,163 @@ mod tests {
         mgr.animals = vec![wolf, deer];
         mgr.next_animal_id = 3;
         mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 322：盛夏甩尾驅蟲（summer fly-shooing）────────────────────────────
+    #[test]
+    fn swishing_state_str_is_swishing() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Swishing { swish_timer: 1.0 };
+        assert_eq!(deer.state_str(), "swishing");
+    }
+
+    #[test]
+    fn tick_swish_counts_down_in_place() {
+        // 驅蟲進行中：原地不動（座標不變）、計時遞減、狀態維持 Swishing。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Swishing { swish_timer: 2.0 };
+        deer.tick_swish(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Swishing { swish_timer } => {
+                assert!((swish_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("未到期應維持 Swishing，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "驅蟲原地不動，座標不該變");
+    }
+
+    #[test]
+    fn tick_swish_returns_to_wander_when_timer_expires() {
+        // 甩夠了：計時耗盡就鬆下來起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Swishing { swish_timer: 0.05 };
+        deer.tick_swish(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_swish_noop_on_other_state() {
+        // 防呆：非 Swishing 狀態呼叫 tick_swish 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_swish(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非驅蟲狀態呼叫 tick_swish 不該改狀態");
+    }
+
+    #[test]
+    fn mammal_eventually_swishes_in_hot_summer() {
+        // 盛夏正午酷暑：一隻平靜、四下無威脅的哺乳走獸，連跑多幀應有機會停下甩尾驅蟲（進入 Swishing）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut swished = false;
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、盛夏酷暑
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Swishing { .. }) {
+                swished = true;
+                break;
+            }
+        }
+        assert!(swished, "盛夏酷暑、平靜無威脅的哺乳走獸應偶爾停下甩尾驅蟲");
+    }
+
+    #[test]
+    fn mammal_does_not_swish_when_not_summer() {
+        // 季節守衛：非夏季（is_summer 為偽）時，即便烈日，平靜的哺乳走獸連跑多幀都不該進入 Swishing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_hot(true); // 烈日但非夏季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Swishing { .. }), "非夏季不該甩尾驅蟲，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_swish_when_not_hot() {
+        // 光照守衛：夏季但光照不強（is_hot 為偽）時，平靜的哺乳走獸連跑多幀都不該進入 Swishing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true); // 夏季但光照不強
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Swishing { .. }), "光照不強不該甩尾驅蟲，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_never_swishes_in_hot_summer() {
+        // 物種守衛：甩尾驅蟲是哺乳走獸專屬——野鳥另走 314 張喙散熱，即便盛夏酷暑，連跑多幀都不該進入 Swishing。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Swishing { .. }), "野鳥不該甩尾驅蟲，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_swish_at_night() {
+        // 晝起意：夜間哺乳走獸另走夜眠分支——即便盛夏，夜裡連跑多幀都不該進入 Swishing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Swishing { .. }), "夜間不該甩尾驅蟲，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn swishing_mammal_gives_way_to_flee() {
+        // 驅蟲永遠讓位逃命：驅蟲中的草食獸一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Swishing { swish_timer: 1.0e9 }; // 甩得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_summer(true);
+        mgr.set_hot(true);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
