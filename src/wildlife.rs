@@ -129,6 +129,29 @@ const FLUFF_DURATION_MIN: f32 = 2.0;
 /// 蓬羽單段最長時長（秒）。
 const FLUFF_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 318：結隊同行（herd trek／跟隨領頭遷移）────────────────────────────
+/// 「看得見領頭夥伴」的範圍（像素）——附近這個範圍內若有同種成體正領頭結隊行進，平靜的同伴會
+/// 跟上；尚未起步者得知附近已有領頭，便改去跟隨而非另起一隊。與群聚 HERD_RADIUS(280) 同量級、
+/// 略小於它：只在真正成群的近鄰間招呼結隊。
+const TREK_SEE_RADIUS: f32 = 240.0;
+/// 領頭者起意領隊的逐幀機率——刻意比偎暖／集結（0.03）低得多：結隊遠行是難得的群體事件，
+/// 不是時時刻刻都在出發。多數幀一擲不中即略過。
+const TREK_LEAD_PROB: f32 = 0.008;
+/// 看見領頭夥伴、跟上結隊的逐幀機率——高於起意領隊（0.008）：領頭一旦邁步，附近夥伴就較踴躍地
+/// 錯落跟上（隊伍逐幀向外擴一圈，像領頭招呼、夥伴陸續加入）。
+const TREK_JOIN_PROB: f32 = 0.05;
+/// 領頭穩步前行的速度（像素/秒）——比閒晃（WANDER_SPEED 35）略慢：是從容、堅定的遷移行進，
+/// 遠慢於逃竄（200）。
+const TREK_SPEED: f32 = 30.0;
+/// 跟隨者追上領頭的速度（像素/秒）——略快於領頭，才追得上、把隊伍收攏成一串。
+const TREK_FOLLOW_SPEED: f32 = 42.0;
+/// 跟隨者與領頭保持的舒適尾隨距離（像素）——靠到這麼近就停（落在領頭身後一段、不擠上去）。
+const TREK_FOLLOW_DIST: f32 = 30.0;
+/// 一段結隊行進的最短時長（秒）——比偎暖／集結（3~6）長：是一趟看得見的遷移，而非短暫的定格小動作。
+const TREK_DURATION_MIN: f32 = 5.0;
+/// 一段結隊行進的最長時長（秒）。
+const TREK_DURATION_MAX: f32 = 9.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2206,6 +2229,13 @@ enum WildlifeState {
     /// 呵欠（🥱，哺乳獸歇著打呵欠）對成「歇下的慵懶：獸打呵欠／鳥舒翅」一對——同是白天平靜歇息的慵懶姿態，
     /// 物種閘恰好互補（呵欠＝哺乳獸、舒翅＝野鳥）；與 276 理羽（🪶，梳羽自理）區隔（伸展肢體 vs 整理羽毛）。
     Stretching { stretch_timer: f32 },
+    /// ROADMAP 318：結隊同行——領頭者沿既定方向 (dir_x,dir_y，單位向量) 穩步前行（herd trek），
+    /// trek_timer 倒數，走到一段落就停下歇息；行進中若有威脅一律優先中斷改逃竄。引出一支隨後跟上
+    /// 的隊伍（同種夥伴轉入 Following 尾隨）。只屬於草食走獸（鹿／小獸；掠食者獨來獨往、野鳥另走集結）。
+    Trekking { dir_x: f32, dir_y: f32, trek_timer: f32 },
+    /// ROADMAP 318：結隊同行——跟隨者落在最近的領頭夥伴身後一段、隨牠一道緩緩遷移（每幀重鎖領頭座標），
+    /// trek_timer 倒數；領頭停下走遠或計時耗盡就散開回巡遊；跟隨中若有威脅一律優先中斷改逃竄。
+    Following { trek_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3265,6 +3295,53 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 318：結隊同行——領頭中（Trekking）沿既定方向 (dir_x,dir_y) 穩步前行、trek_timer 倒數，
+    /// 走到一段落（計時耗盡）就停下歇息（Resting，再由一般作息接手）。呼叫端已確保此隻為平靜無威脅的
+    /// 草食走獸（威脅一旦逼進 FLEE_RADIUS，更前面的續算分支已改走逃竄，不會走到此處——行進永遠讓位逃命）。
+    fn tick_trek(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Trekking { dir_x, dir_y, trek_timer } = self.state {
+            let remaining = trek_timer - dt;
+            if remaining <= 0.0 {
+                let rest = rng.gen_range(REST_TIMER_MIN..=REST_TIMER_MAX);
+                self.state = WildlifeState::Resting { rest_timer: rest };
+            } else {
+                // 沿既定方向（單位向量）穩穩前行；計時隨狀態變體攜帶。
+                self.x += dir_x * TREK_SPEED * dt;
+                self.y += dir_y * TREK_SPEED * dt;
+                self.state = WildlifeState::Trekking { dir_x, dir_y, trek_timer: remaining };
+            }
+        }
+    }
+
+    /// ROADMAP 318：結隊同行——跟隨中（Following）朝本幀重鎖的領頭夥伴 `leader` 尾隨到舒適距離就停（落在
+    /// 身後一段、不擠上去），trek_timer 倒數；領頭走遠不見（`leader` 為 None）或計時耗盡就散開、起身回巡遊
+    /// （與 tick_huddle 同模式，挑家附近的下一個漫遊目標）。呼叫端每幀重鎖最近領頭座標傳入（仿 310 偎暖逐幀
+    /// 重鎖目標）。只在 Following 狀態下生效（呼叫端已確保此隻平靜無威脅；威脅一旦出現，更前面的分支已改走
+    /// 逃竄——跟隨永遠讓位逃命）。
+    fn tick_follow(&mut self, dt: f32, leader: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Following { trek_timer } = self.state {
+            let remaining = trek_timer - dt;
+            match leader {
+                // 領頭走遠不見了——散開、起身回巡遊（沒了領頭就結不成隊）。
+                None => {
+                    let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                    self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                }
+                Some((tx, ty)) => {
+                    if remaining <= 0.0 {
+                        let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                        self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                    } else {
+                        let (nx, ny) = trek_follow_step(self.x, self.y, tx, ty, dt);
+                        self.x = nx;
+                        self.y = ny;
+                        self.state = WildlifeState::Following { trek_timer: remaining };
+                    }
+                }
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3663,6 +3740,8 @@ impl Wildlife {
             WildlifeState::Fattening { .. }  => "fattening",
             WildlifeState::Fluffing { .. }   => "fluffing",
             WildlifeState::Stretching { .. } => "stretching",
+            WildlifeState::Trekking { .. }  => "trekking",
+            WildlifeState::Following { .. } => "following",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -4039,6 +4118,19 @@ impl WildlifeManager {
         let adult_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
             .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey && !a.is_juvenile())
             .map(|a| (a.id, a.kind, a.x, a.y))
+            .collect();
+
+        // ROADMAP 318：結隊同行——本幀開始時「正領頭結隊行進」(Trekking) 的同種成體快照（id/kind/x/y），
+        // 供 Phase 4 讓附近平靜的同種夥伴「看見」領頭者而跟上結隊，並讓尚未起步者得知附近已有領頭、改去
+        // 跟隨而非另起一隊。刻意在 Phase 4 變更前取一次（與 fleeing_snap/vigilant_snap 同手法）：本幀新跟
+        // 上者尚未在此快照、故隊伍逐幀向外擴一圈，看起來像領頭者向外招呼、夥伴錯落跟上的一支隊伍。形狀同
+        // adult_snap，故 nearest_adult_of_kind 可直接複用查詢「最近的領頭夥伴」。
+        let trekking_snap: Vec<(u32, WildlifeKind, f32, f32)> = self.animals.iter()
+            .filter(|a| a.alive && a.kind.trophic_level() == TrophicLevel::Prey)
+            .filter_map(|a| match a.state {
+                WildlifeState::Trekking { .. } => Some((a.id, a.kind, a.x, a.y)),
+                _ => None,
+            })
             .collect();
 
         // ROADMAP 274：母獸舐犢——幼獸位置快照（maturity 未滿），供成體尋找身邊可照拂的同種幼獸。
@@ -5448,6 +5540,24 @@ impl WildlifeManager {
                         let companion = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, HUDDLE_SEE_RADIUS);
                         a.tick_huddle(dt, companion, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Trekking { .. }) {
+                    // ROADMAP 318：已在領頭行進——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（行進
+                    // 永遠讓位逃命），否則沿既定方向穩穩前行、計時倒數，走到一段落就停下歇息。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_trek(dt, rng);
+                    }
+                } else if matches!(a.state, WildlifeState::Following { .. }) {
+                    // ROADMAP 318：已在跟隨行進——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（跟隨
+                    // 永遠讓位逃命），否則每幀重鎖最近的領頭夥伴座標、落在其身後一段尾隨、計時倒數；領頭停下
+                    // 走遠或計時耗盡就散開回巡遊。每幀重鎖領頭座標傳入 tick_follow（仿 310 偎暖逐幀重鎖目標）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let leader = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &trekking_snap, TREK_SEE_RADIUS);
+                        a.tick_follow(dt, leader, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
                     // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
                     // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
@@ -5649,6 +5759,46 @@ impl WildlifeManager {
                     if let Some((tx, ty)) = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, HUDDLE_SEE_RADIUS) {
                         a.state = WildlifeState::Huddling { target_x: tx, target_y: ty, huddle_timer: timer };
                     }
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && !court_has_partner
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &trekking_snap, TREK_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < TREK_JOIN_PROB
+                {
+                    // ROADMAP 318：結隊同行（跟隨）——附近 TREK_SEE_RADIUS 內有同種成體正領頭結隊行進
+                    //（Trekking），平靜歇息／漫步的同伴錯落地跟上、落在領頭身後一段、隨牠一道緩緩遷移（轉入
+                    // Following）。**逐幀機率觸發** → 領頭一邁步，鄰近夥伴由近而遠錯落跟上，串成一支移動的隊伍，
+                    // 而非同幀整群瞬間齊步。**刻意排在領頭起意之前**：附近已有領頭就先跟上，沒有領頭（下方
+                    // is_none 守衛）才會有人起意領隊，於是一群通常只湧現一名領頭、其餘跟隨，隊形分明。**威脅永遠
+                    // 優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Following 續算分支即改全速奔逃（跟隨永遠讓位逃命）。
+                    let timer = rng.gen_range(TREK_DURATION_MIN..=TREK_DURATION_MAX);
+                    a.state = WildlifeState::Following { trek_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && !threat_near
+                    && !court_has_partner
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, TREK_SEE_RADIUS).is_some()
+                    && nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &trekking_snap, TREK_SEE_RADIUS).is_none()
+                    && rng.gen::<f32>() < TREK_LEAD_PROB
+                {
+                    // ROADMAP 318：結隊同行（領頭）——身邊 TREK_SEE_RADIUS 內有同種夥伴（不獨自遠行）、附近
+                    // 卻還沒有誰在領頭（trekking_snap 的 is_none 守衛）時，平靜的成體偶爾起意領隊：朝一個隨機
+                    // 方向邁開步子穩穩前行（轉入 Trekking），引出一支隨後跟上的隊伍。**與 206 群聚結伴（漫遊時
+                    // 朝群心鬆散凝聚、各走各的隨機目標）區隔**：結隊同行是一隻領頭、其餘尾隨的「有向、成串的
+                    // 移動隊伍」，把群體行為從「鬆散聚攏」推進到「彼此牽動、跟著領頭一道遷移」，正面回應 reviewer
+                    // 一路要的「讓不同個體真的彼此牽動、別再原地小動作」。**與 310 偎暖／311 集結（朝一點聚攏後
+                    // 靜止）區隔**：那是聚成一團定點取暖／棲息，這是會位移、整群一道前行的遷移。**起意機率刻意
+                    // 偏低**（TREK_LEAD_PROB 0.008，遠低於跟隨 0.05）：遠行是難得的群體事件。**只屬於草食走獸**
+                    //（鹿／小獸；is_mammal 守衛排除野鳥——鳥另走 311 集結；掠食者獨來獨往、不結隊，不入此平靜
+                    // 作息分支）。**對繁衍讓位**（!court_has_partner）：自己這物種繁衍將近時，群體留下求偶孕育
+                    //（270/207）而非遠行，結隊同行不搶那段醞釀新生的當口。**威脅永遠優先**：威脅一旦逼進，上面
+                    // Trekking 續算分支即改全速奔逃。
+                    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                    let timer = rng.gen_range(TREK_DURATION_MIN..=TREK_DURATION_MAX);
+                    a.state = WildlifeState::Trekking { dir_x: angle.cos(), dir_y: angle.sin(), trek_timer: timer };
                 } else if is_mammal
                     && !is_night
                     && is_cold_winter
@@ -6930,6 +7080,20 @@ fn flock_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (FLOCK_SPEED * dt).min(dist - FLOCK_SNUG_DIST);
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 318：結隊同行——朝領頭夥伴 (tx,ty) 尾隨到舒適距離 TREK_FOLLOW_DIST 就停（落在身後一段、
+/// 不擠上去）。單幀位移受 TREK_FOLLOW_SPEED 約束、且夾到剛好停在尾隨距離、不會穿過去疊到領頭身上
+/// （與 huddle_step／flock_step 同手法、僅速度／距離不同）。純函式，便於測試。
+fn trek_follow_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= TREK_FOLLOW_DIST || dist < 1.0 {
+        return (x, y);
+    }
+    let step = (TREK_FOLLOW_SPEED * dt).min(dist - TREK_FOLLOW_DIST);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -17272,6 +17436,253 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 318：結隊同行（herd trek）測試 ──────────────────────────────────
+    #[test]
+    fn trek_follow_step_approaches_then_holds_at_dist() {
+        // 遠在尾隨距離外 → 朝領頭緩緩挪近（沿 +x、受 TREK_FOLLOW_SPEED 約束）；已在尾隨距離內 → 原地不動。
+        let (nx, ny) = trek_follow_step(0.0, 0.0, 1000.0, 0.0, 0.1);
+        assert!(nx > 0.0 && ny.abs() < 1e-3, "應朝領頭挪近（沿 +x）");
+        assert!(nx <= TREK_FOLLOW_SPEED * 0.1 + 1e-3, "單幀挪近距離受 TREK_FOLLOW_SPEED 約束");
+        let near = TREK_FOLLOW_DIST - 5.0;
+        let (hx, hy) = trek_follow_step(0.0, 0.0, near, 0.0, 0.1);
+        assert_eq!((hx, hy), (0.0, 0.0), "已落到尾隨距離內應原地不動、不再逼近");
+    }
+
+    #[test]
+    fn trek_follow_step_does_not_overshoot_dist() {
+        // 從尾隨圈外一點點挪近：單幀位移被夾到「剛好停在尾隨距離」，不會穿過去疊到領頭身上。
+        let start = TREK_FOLLOW_DIST + 10.0;
+        let (nx, _) = trek_follow_step(0.0, 0.0, start, 0.0, 1.0); // dt 大到足以衝過頭（若不夾）
+        assert!((nx - 10.0).abs() < 1e-3, "應剛好挪到尾隨圈邊緣（位移=10），不穿過去，實際 {nx}");
+    }
+
+    #[test]
+    fn tick_trek_advances_along_heading() {
+        // 領頭行進：沿既定方向（單位向量）前行、計時遞減、狀態維持 Trekking。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Trekking { dir_x: 1.0, dir_y: 0.0, trek_timer: 5.0 };
+        deer.tick_trek(0.1, &mut rng);
+        assert!((deer.x - (5000.0 + TREK_SPEED * 0.1)).abs() < 1e-3, "應沿 +x 穩步前行，實際 x={}", deer.x);
+        assert!((deer.y - 5000.0).abs() < 1e-3, "dir_y=0 不該偏移 y");
+        assert!(matches!(deer.state, WildlifeState::Trekking { .. }), "未到期應維持領頭行進");
+    }
+
+    #[test]
+    fn tick_trek_returns_to_rest_when_timer_expires() {
+        // 計時耗盡——走到一段落，停下歇息（再由一般作息接手）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Trekking { dir_x: 1.0, dir_y: 0.0, trek_timer: 0.05 };
+        deer.tick_trek(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "計時耗盡應停下歇息，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_trek_noop_on_other_state() {
+        // 只在 Trekking 狀態下生效：其餘狀態原封不動。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_trek(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非領頭狀態應原封不動");
+    }
+
+    #[test]
+    fn tick_follow_returns_to_wander_when_leader_gone() {
+        // 領頭走遠不見（leader 為 None）——結不成隊，散開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Following { trek_timer: 5.0 };
+        deer.tick_follow(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "領頭不見應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_follow_returns_to_wander_when_timer_expires() {
+        // 計時耗盡——隨隊走了一程後散開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Following { trek_timer: 0.05 };
+        deer.tick_follow(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "計時耗盡應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_follow_noop_on_other_state() {
+        // 只在 Following 狀態下生效：其餘狀態原封不動。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_follow(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非跟隨狀態應原封不動");
+    }
+
+    #[test]
+    fn trekking_and_following_state_str() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Trekking { dir_x: 1.0, dir_y: 0.0, trek_timer: 1.0 };
+        assert_eq!(deer.state_str(), "trekking");
+        deer.state = WildlifeState::Following { trek_timer: 1.0 };
+        assert_eq!(deer.state_str(), "following");
+    }
+
+    #[test]
+    fn mammal_herd_eventually_treks() {
+        // 身邊有同種成體夥伴（120px，落在 TREK_SEE_RADIUS 240 內）的平靜鹿群，白天無威脅，連跑多幀應湧現
+        // 一隻領頭結隊行進（Trekking）——不限季節。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        a.id = 1;
+        a.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut b = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        b.id = 2;
+        b.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![a, b];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut saw_trek = false;
+        for _ in 0..2000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            if mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Trekking { .. })) {
+                saw_trek = true;
+                break;
+            }
+        }
+        assert!(saw_trek, "鹿群應偶爾有一隻起意領頭結隊行進");
+    }
+
+    #[test]
+    fn calm_mammal_joins_nearby_trek_leader() {
+        // 身邊有同種成體正領頭結隊行進時，平靜的鄰近夥伴應跟上、轉入 Following。三隻鹿緊鄰：id=1 會被推為
+        // 群體哨兵（212 Watching 站崗），id=2 釘為領頭（dir 0,0、計時極長，每幀仍在 TREK_SEE_RADIUS 內、
+        // 穩定出現在 trekking_snap），自由的 id=3 應跟上。（兩隻時一隻必為哨兵、只剩一隻自由，湊不成領頭＋
+        // 跟隨，故需第三隻。）
+        let mut mgr = WildlifeManager::new();
+        let mut sentinel = adult_at(WildlifeKind::WildDeer, 5000.0, 5030.0);
+        sentinel.id = 1;
+        sentinel.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut leader = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        leader.id = 2;
+        leader.state = WildlifeState::Trekking { dir_x: 0.0, dir_y: 0.0, trek_timer: 1.0e9 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 5030.0, 5000.0); // 30px，落在 TREK_SEE_RADIUS 240 內
+        mate.id = 3;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![sentinel, leader, mate];
+        mgr.next_animal_id = 4;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut joined = false;
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            if mgr.animals.iter().any(|x| x.id == 3 && matches!(x.state, WildlifeState::Following { .. })) {
+                joined = true;
+                break;
+            }
+        }
+        assert!(joined, "身邊有同種領頭時，平靜的夥伴應跟上結隊（轉入 Following）");
+    }
+
+    #[test]
+    fn lone_mammal_never_treks() {
+        // 對偶守衛：孤獸（身邊無同種夥伴）連跑多幀都不該起意領隊（領頭需身邊有伴、不獨自遠行）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(
+                !matches!(d.state, WildlifeState::Trekking { .. } | WildlifeState::Following { .. }),
+                "孤獸無同伴不該結隊，實際 {:?}", d.state
+            );
+        }
+    }
+
+    #[test]
+    fn bird_never_treks() {
+        // 物種守衛：結隊同行是草食走獸專屬——野鳥即便兩隻相鄰、白天，連跑多幀都不該結隊（牠們走 311 集結）。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        a.id = 1;
+        a.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut b = adult_at(WildlifeKind::WildBird, 6120.0, 6000.0);
+        b.id = 2;
+        b.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![a, b];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1500 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(
+                !mgr.animals.iter().any(|x| matches!(x.state,
+                    WildlifeState::Trekking { .. } | WildlifeState::Following { .. })),
+                "野鳥不該結隊同行"
+            );
+        }
+    }
+
+    #[test]
+    fn mammal_never_treks_at_night() {
+        // 晝起意守衛：夜間晝行獵物歸巢沉睡——即便身邊有同伴，鹿群夜裡連跑多幀都不該結隊。
+        let mut mgr = WildlifeManager::new();
+        let mut a = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        a.id = 1;
+        a.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut b = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        b.id = 2;
+        b.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![a, b];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            assert!(
+                !mgr.animals.iter().any(|x| matches!(x.state,
+                    WildlifeState::Trekking { .. } | WildlifeState::Following { .. })),
+                "夜間不該結隊同行"
+            );
+        }
+    }
+
+    #[test]
+    fn trekking_mammal_gives_way_to_flee() {
+        // 結隊永遠讓位逃命：領頭行進中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Trekking { dir_x: 1.0, dir_y: 0.0, trek_timer: 1.0e9 };
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近領頭應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn following_mammal_gives_way_to_flee() {
+        // 結隊永遠讓位逃命：跟隨行進中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Following { trek_timer: 1.0e9 };
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近跟隨者應改逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 312：春日嗅花（spring blossom-nuzzling）────────────────────────
