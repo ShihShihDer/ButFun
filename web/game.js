@@ -9301,6 +9301,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 308：寒冬哆嗦取暖——寒冬寒意最深的清晨／向晚，哺乳獸（state==="shivering"）停下腳步、縮起
+      // 身子原地冷顫保暖：頭頂浮一枚左右急速抖動（隨快速正弦水平微震，透出冷得發抖的顫慄感）的 🥶。與 307
+      // 喘氣（👅，急速脹縮）動態區隔：喘氣是縱向急促脹縮、冷顫是橫向快速抖動。只有哺乳獸（鹿/狼/狐/小獸）會顫、
+      // 野鳥不顫。純前端、零協議欄位：直接讀伺服器廣播 of w.state（後端只在寒冬寒時才給此狀態）。
+      if (w.state === "shivering") {
+        ctx.save();
+        const jitter = Math.sin(now / 55) * 1.6; // 左右急速抖動 [-1.6, 1.6]px
+        ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 90)); // 冷顫明滅
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8 + jitter, -22);
+        ctx.fillText("🥶", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9662,8 +9678,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
