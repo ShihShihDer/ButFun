@@ -136,6 +136,10 @@ pub struct FurnitureView {
 pub struct HomeFurnishings {
     /// 已放置的家具（最多 MAX_FURNITURE 件），各自帶室內格座標。
     items: Vec<PlacedFurniture>,
+    /// 居家風格主題（ROADMAP 325）：決定室內地板/牆面色調。
+    /// serde default → 木屋，舊快照（無此欄位）反序列化後維持原始外觀，向後相容。
+    #[serde(default)]
+    style: crate::home_interior::HomeStyle,
 }
 
 impl HomeFurnishings {
@@ -195,6 +199,17 @@ impl HomeFurnishings {
     /// 目前已放幾件。
     pub fn count(&self) -> usize {
         self.items.len()
+    }
+
+    /// 當前居家風格主題（ROADMAP 325）。
+    pub fn style(&self) -> crate::home_interior::HomeStyle {
+        self.style
+    }
+
+    /// 循環切換到下一個居家風格，回傳切換後的新風格。
+    pub fn cycle_style(&mut self) -> crate::home_interior::HomeStyle {
+        self.style = self.style.next();
+        self.style
     }
 
     /// 產生前端顯示快照。

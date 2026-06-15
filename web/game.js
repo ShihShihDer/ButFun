@@ -615,6 +615,7 @@
   let wasDownedLastTick = false; // 上一快照是否倒地，用於偵測「傳回新手村」瞬間
   let myLevel = null; // 上一快照等級，用於偵測升級
   let myFurniture = []; // 住家家具列表（ROADMAP 155）：快照帶回的已放置家具陣列
+  let myHomeStyle = "wood_cabin"; // 居家風格主題（ROADMAP 325）：快照帶回的風格代碼，預設木屋
   // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
   // 移動中很容易漏看「我正在挨打」。報讀器那條已補受擊播報(給看不到畫面的玩家),這條是它對稱的
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
@@ -1979,6 +1980,8 @@
           updateHomeBtn(me);
           // 住家家具面板（ROADMAP 155）
           myFurniture = me.home_furniture || [];
+          // 居家風格（ROADMAP 325）：快照只在室內時帶 home_style；室外為 null 時維持上次值。
+          if (me.home_style) myHomeStyle = me.home_style;
           updateFurniturePanel(me, Array.from(myInv.entries()).map(([item, qty]) => ({ item, qty })));
           // 居民搭話按鈕（ROADMAP 118）
           updateResidentBtn(me);
@@ -4372,13 +4375,31 @@
     }
   }
 
+  // ── 居家風格色票（ROADMAP 325）────────────────────────────────────────────────
+  // 後端只傳風格代碼，色票與中文名稱集中在前端（繪製/在地化層）。
+  // 每組：地板雙色（棋盤）、地板紋線、牆色、牆縫線、背景底色。
+  const HOME_STYLE_PALETTE = {
+    wood_cabin:     { name: "木屋",     floorA: "#8b6347", floorB: "#7a5838", floorLine: "rgba(0,0,0,0.15)", wall: "#5a5a6a", wallLine: "#3a3a48", bg: "#1a1210" },
+    stone_hall:     { name: "石砌廳堂", floorA: "#6b6b75", floorB: "#5c5c66", floorLine: "rgba(0,0,0,0.20)", wall: "#44444e", wallLine: "#2c2c34", bg: "#14141a" },
+    aether_crystal: { name: "乙太水晶", floorA: "#3a6b8c", floorB: "#2f5a78", floorLine: "rgba(160,220,255,0.18)", wall: "#2a4a66", wallLine: "#1a3045", bg: "#0e1820" },
+    cozy_pastoral:  { name: "溫馨田園", floorA: "#d8b88a", floorB: "#c9a878", floorLine: "rgba(90,60,20,0.18)", wall: "#b89a6a", wallLine: "#8a7048", bg: "#221a12" },
+    starlit:        { name: "星空雅居", floorA: "#3a3560", floorB: "#2f2b50", floorLine: "rgba(180,170,255,0.16)", wall: "#2a2548", wallLine: "#1a1730", bg: "#0e0c1a" },
+  };
+  function homePalette(code) {
+    return HOME_STYLE_PALETTE[code] || HOME_STYLE_PALETTE.wood_cabin;
+  }
+  // 風格循環次序（與後端 HOME_STYLES 對齊；僅供面板顯示「下一個」提示）。
+  const HOME_STYLE_ORDER = ["wood_cabin", "stone_hall", "aether_crystal", "cozy_pastoral", "starlit"];
+
   // ── 住家室內場景（ROADMAP 111）────────────────────────────────────────────────
   // 8×8 格（256×256px）私人室內空間；木板地板 + 石磚牆；南面有出口門。
+  // ROADMAP 325：地板/牆色依玩家選的居家風格（myHomeStyle）切換。
   function drawIndoorScene(me, now) {
     const TILE = 32;
     const COLS = 8, ROWS = 8;
     const W = COLS * TILE;   // 256px
     const H = ROWS * TILE;   // 256px
+    const pal = homePalette(myHomeStyle);
     const ix = (me.indoor_x != null ? me.indoor_x : W / 2);
     const iy = (me.indoor_y != null ? me.indoor_y : H - TILE * 1.5 - 16);
 
@@ -4391,19 +4412,19 @@
     const iCamY = Math.round(Math.max(minCamY, Math.min(maxCamY, rawCamY)));
 
     // 背景（戶外不見了）
-    ctx.fillStyle = "#1a1210";
+    ctx.fillStyle = pal.bg;
     ctx.fillRect(0, 0, viewW, viewH);
 
-    // 木板地板（內部 6×6 格，去掉外圍石磚牆一格）
+    // 地板（內部 6×6 格，去掉外圍牆一格）——色調依居家風格
     for (let r = 1; r < ROWS - 1; r++) {
       for (let c = 1; c < COLS - 1; c++) {
         const sx = c * TILE - iCamX;
         const sy = r * TILE - iCamY;
         if (sx + TILE < 0 || sx > viewW || sy + TILE < 0 || sy > viewH) continue;
-        ctx.fillStyle = (r + c) % 2 === 0 ? "#8b6347" : "#7a5838";
+        ctx.fillStyle = (r + c) % 2 === 0 ? pal.floorA : pal.floorB;
         ctx.fillRect(sx, sy, TILE, TILE);
-        // 木紋橫線
-        ctx.strokeStyle = "rgba(0,0,0,0.15)";
+        // 地板紋線
+        ctx.strokeStyle = pal.floorLine;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(sx, sy + TILE / 3);
@@ -4443,11 +4464,11 @@
           ctx.textAlign = "center";
           ctx.fillText("出口", sx + TILE / 2, sy + TILE - 3);
         } else {
-          // 石磚
-          ctx.fillStyle = "#5a5a6a";
+          // 牆（色調依居家風格）
+          ctx.fillStyle = pal.wall;
           ctx.fillRect(sx, sy, TILE, TILE);
           // 磚縫橫線
-          ctx.strokeStyle = "#3a3a48";
+          ctx.strokeStyle = pal.wallLine;
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.moveTo(sx, sy + TILE / 2);
@@ -4472,12 +4493,12 @@
     // 室內標題 pill（左上角）
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.beginPath();
-    ctx.roundRect(6, 6, 172, 24, 6);
+    ctx.roundRect(6, 6, 230, 24, 6);
     ctx.fill();
     ctx.fillStyle = "#f0e8d0";
     ctx.font = "bold 12px system-ui,sans-serif";
     ctx.textAlign = "left";
-    ctx.fillText(`🏠 住家室內 · 地塊 #${me.indoor_plot_id}`, 14, 23);
+    ctx.fillText(`🏠 住家室內 · 地塊 #${me.indoor_plot_id} · ${pal.name}`, 14, 23);
 
     // 操作提示（右上角）
     ctx.fillStyle = "rgba(0,0,0,0.45)";
@@ -4572,7 +4593,8 @@
     }
     furniturePanelEl.style.display = "";
 
-    const sig = JSON.stringify(myFurniture) + "|" + FURNITURE_ITEMS.map(k => (inv.find(s => s.item === k)?.qty || 0)).join(",");
+    // sig 納入 myHomeStyle（ROADMAP 325）：切換風格後面板才會重繪、按鈕文字才更新。
+    const sig = JSON.stringify(myFurniture) + "|" + FURNITURE_ITEMS.map(k => (inv.find(s => s.item === k)?.qty || 0)).join(",") + "|" + myHomeStyle;
     if (sig === lastFurnitureSig) return;
     lastFurnitureSig = sig;
 
@@ -4581,6 +4603,17 @@
     header.textContent = `🛋️ 住家家具 (${myFurniture.length}/5)`;
 
     let html = "";
+    // 居家風格切換（ROADMAP 325）：顯示當前風格 + 一鍵循環換下一個。
+    const curStyleName = homePalette(myHomeStyle).name;
+    const nextCode = HOME_STYLE_ORDER[(HOME_STYLE_ORDER.indexOf(myHomeStyle) + 1) % HOME_STYLE_ORDER.length];
+    const nextStyleName = homePalette(nextCode).name;
+    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0 7px;border-bottom:1px solid #3a2a1a;margin-bottom:5px;">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.82rem">🎨 居家風格</div>
+        <div style="font-size:.72rem;color:#cda">${curStyleName}</div>
+      </div>
+      <button id="cycleStyleBtn" title="換成「${nextStyleName}」" style="font-size:.68rem;padding:1px 5px;background:#347;border:1px solid #58a;color:#bdf;border-radius:3px;cursor:pointer;">換風格</button>
+    </div>`;
     // 已放置
     if (myFurniture.length > 0) {
       html += `<div style="color:#aaa;font-size:.75rem;margin-bottom:3px;">已放置</div>`;
@@ -4621,11 +4654,19 @@
         </div>`;
       });
     }
-    if (html === "") {
-      html = `<div style="color:#666;font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
+    // 風格區塊永遠在，故空提示改以「沒有任何家具」判斷（ROADMAP 325）。
+    if (myFurniture.length === 0 && placeableItems.length === 0) {
+      html += `<div style="color:#666;font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
     }
     body.innerHTML = html;
 
+    // 居家風格切換按鈕（ROADMAP 325）：送 cycle_home_style，後端循環到下一個風格。
+    const cycleBtn = body.querySelector("#cycleStyleBtn");
+    if (cycleBtn) {
+      cycleBtn.addEventListener("click", () => {
+        try { ws.send(JSON.stringify({ type: "cycle_home_style" })); } catch {}
+      });
+    }
     body.querySelectorAll("button[data-idx]").forEach(btn => {
       btn.addEventListener("click", () => {
         const idx = parseInt(btn.getAttribute("data-idx"), 10);

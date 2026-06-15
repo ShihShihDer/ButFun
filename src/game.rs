@@ -2660,6 +2660,8 @@ pub fn spawn(app: AppState) {
                         expedition_target,
                         // 住家家具（ROADMAP 155）：廣播時以空陣列佔位，ws.rs 過濾層依玩家 id 填入本人家具。
                         home_furniture: vec![],
+                        // 居家風格（ROADMAP 325）：同家具，廣播以 None 佔位，ws.rs 過濾層依玩家 id 填入本人風格。
+                        home_style: None,
                         // 公民投票（ROADMAP 156）：當前活躍投票視圖 + 效果狀態。
                         civic_vote: app.civic_vote.read().unwrap().vote_view(),
                         civic_effect_secs: app.civic_vote.read().unwrap().effect_remaining_secs(),

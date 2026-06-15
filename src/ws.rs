@@ -365,7 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -464,6 +464,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 }
                                             } else {
                                                 vec![]
+                                            }
+                                        },
+                                        // 居家風格（ROADMAP 325）：只在玩家自己室內時送出本人風格代碼。
+                                        home_style: {
+                                            let ps = app_for_forward.players.read().unwrap();
+                                            match ps.get(&id) {
+                                                Some(p) if p.indoor_plot_id.is_some() => Some(
+                                                    app_for_forward.home_furnishings.read().unwrap()
+                                                        .get(&id)
+                                                        .map(|f| f.style())
+                                                        .unwrap_or_default()
+                                                        .code()
+                                                        .to_string()
+                                                ),
+                                                _ => None,
                                             }
                                         },
                                         // 公民投票（ROADMAP 156）：全服廣播（投票視圖 + 效果狀態）。
@@ -5020,6 +5035,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                                 tracing::info!(player = %p.name, ?fkind, idx, "移除住家家具（退還背包）");
                             }
+                        }
+                    }
+                }
+                Ok(ClientMsg::CycleHomeStyle) => {
+                    // ROADMAP 325：玩家在自己室內循環切換居家風格主題。
+                    if let Some(uid) = authed_uid {
+                        let indoor = {
+                            let players = app.players.read().unwrap();
+                            players.get(&uid).map(|p| p.indoor_plot_id.is_some()).unwrap_or(false)
+                        };
+                        if indoor {
+                            let mut furnishings = app.home_furnishings.write().unwrap();
+                            let home = furnishings.entry(uid).or_default();
+                            let new_style = home.cycle_style();
+                            tracing::info!(?uid, style = new_style.code(), "切換居家風格");
                         }
                     }
                 }
