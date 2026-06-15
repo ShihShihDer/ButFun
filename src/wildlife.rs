@@ -764,6 +764,29 @@ const YAWN_SEE_RADIUS: f32 = 280.0;
 const YAWN_DURATION_MIN: f32 = 1.2;
 const YAWN_DURATION_MAX: f32 = 2.5;
 
+// ─── ROADMAP 317：野鳥舒翅（wing-and-leg stretching）─────────────────────────
+// 接續「歇下來的小動作」這條線：276 理羽（🪶，鳥用喙梳羽自理）、277 搔癢（🐾，獸抬後腿撓癢）、
+// 278 群體呵欠（🥱，獸歇著睏意傳染）、283 反芻（😌，鹿臥嚼）已把這條線鋪得很滿，可盤點下來，野鳥
+// 一側只有「梳羽毛」這一筆自理——飛禽最招牌、最惹人會心一笑的另一個舒適動作獨缺：朝一側懶懶地展開
+// 單邊翅膀、連同同側的腿一起抻直，伸個大懶腰（wing-and-leg stretching）。本切片給野鳥補上這專屬的
+// 「舒翅」：白天平靜歇息（Resting）的野鳥，偶爾停下、慵懶地舒展單翅與同側腿一小段（頭頂浮一枚隨翅膀
+// 緩緩張開又收起的 🪽），舒展完收翅起身回到閒晃。
+// **與 278 群體呵欠（🥱，哺乳獸歇著打呵欠）對成「歇下的慵懶：獸打呵欠／鳥舒翅」一對**——同是白天平靜
+// 歇息時的慵懶姿態，物種閘恰好互補（278＝哺乳獸、本切片＝is_bird，永不相疊），把這份慵懶從只有哺乳獸
+// 補成獸鳥俱全。**與 276 理羽（🪶，以喙梳羽的自理）刻意區隔**：理羽是「整理羽毛」、舒翅是「伸展肢體
+// 舒筋骨」，動作與符號（🪽 vs 🪶）皆不同。**與 219 破曉甦醒伸展（🌅，晝行哺乳獸天明甦醒的過渡）區隔**：
+// 那是哺乳獸僅在破曉甦醒時的一次性伸展、本切片是野鳥白天歇息中隨時偶爾起意的慵懶舒翅，物種＋時機＋符號
+// 皆異。**只屬於野鳥**（哺乳獸另走 277 搔癢／278 呵欠／283 反芻；is_bird 守衛）。**各顧各、不傳染**
+//（無快照、無接力，仿 276 理羽／283 反芻，只是一隻隻自顧自地舒展）。純啟發式、零 LLM、零 tick 簽名
+// 改動、零協議改動（新增的 stretching 字串沿用 state_str；計時隨狀態變體攜帶、無新欄位）、記憶體模式。
+// 威脅永遠優先：舒到一半若掠食者／玩家逼近，立刻收翅逃竄。
+/// 平靜歇息的野鳥本幀自發舒翅伸懶腰的機率——偏低（對齊 278 呵欠 YAWN_SELF_PROB），讓舒翅是白天歇著時
+/// 偶爾的一下慵懶舒展、而非時時在抻（多數時候仍照常閒晃／吃草／鳴唱）。各顧各、自發的一小段。
+const STRETCH_PROB: f32 = 0.02;
+/// 一段舒翅的最短／最長時長（秒）——朝一側懶懶地展開單翅與同側腿、抻直數秒再收翅起身，與理羽／呵欠同量級。
+const STRETCH_DURATION_MIN: f32 = 2.0;
+const STRETCH_DURATION_MAX: f32 = 4.0;
+
 // ─── ROADMAP 223：野狐撲鼠（fox mousing pounce）──────────────────────────────
 // 承接 220～222 開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」、221 專屬的「鳴」、222 給了
 // 小動物專屬的「捧食啃咬」——但那都是在差異化「獵物」。生態的另一側「掠食者」（野狼／野狐）至今行為
@@ -2177,6 +2200,12 @@ enum WildlifeState {
     /// 寒時的個體禦寒反應，物種閘恰好互補（哆嗦＝哺乳獸、蓬羽＝野鳥），把嚴寒禦寒補成獸鳥俱全；也與 311 秋
     /// 集結（🧭）／313 春築巢（🪺）／314 夏張喙（🥵）並列「野鳥的季節戲」，補上過去缺席的冬季這一筆。
     Fluffing { fluff_timer: f32 },
+    /// ROADMAP 317：野鳥舒翅——野鳥（WildBird）白天平靜歇息（Resting）時，偶爾停下、朝一側慵懶地展開
+    /// 單邊翅膀連同同側的腿一起抻直伸個懶腰（wing-and-leg stretching，頭頂浮 🪽）。原地不動（不更新
+    /// 座標）、stretch_timer 倒數，到期就收翅起身回到巡遊；舒翅中若有威脅一律優先中斷改逃竄。與 278 群體
+    /// 呵欠（🥱，哺乳獸歇著打呵欠）對成「歇下的慵懶：獸打呵欠／鳥舒翅」一對——同是白天平靜歇息的慵懶姿態，
+    /// 物種閘恰好互補（呵欠＝哺乳獸、舒翅＝野鳥）；與 276 理羽（🪶，梳羽自理）區隔（伸展肢體 vs 整理羽毛）。
+    Stretching { stretch_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2769,6 +2798,23 @@ impl Wildlife {
                 self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
             } else {
                 self.state = WildlifeState::Preening { preen_timer: remaining };
+            }
+        }
+    }
+
+    /// ROADMAP 317：野鳥舒翅——舒翅中（Stretching）原地不動、倒數計時；到期就挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，鳥成群，與 tick_preen 同模式）收翅起身回到閒晃。只在 Stretching
+    /// 狀態下生效（呼叫端已確保此隻為野鳥、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去收翅
+    /// 逃竄——威脅永遠優先）。
+    fn tick_stretch(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Stretching { stretch_timer } = self.state {
+            let remaining = stretch_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Stretching { stretch_timer: remaining };
             }
         }
     }
@@ -3616,6 +3662,7 @@ impl Wildlife {
             WildlifeState::Gaping { .. }     => "gaping",
             WildlifeState::Fattening { .. }  => "fattening",
             WildlifeState::Fluffing { .. }   => "fluffing",
+            WildlifeState::Stretching { .. } => "stretching",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -6043,6 +6090,29 @@ impl WildlifeManager {
                     // 自顧自地低頭整羽。與 216 互理（💕）／274 親理（💗）湊成「理毛三態」的「自理」一筆。
                     let timer = rng.gen_range(PREEN_DURATION_MIN..=PREEN_DURATION_MAX);
                     a.state = WildlifeState::Preening { preen_timer: timer };
+                } else if is_bird && matches!(a.state, WildlifeState::Stretching { .. }) {
+                    // ROADMAP 317：已在舒翅中——威脅一旦逼近就立刻收翅逃竄（舒展永遠讓位逃命），
+                    // 否則原地把這一段懶腰抻完、計時倒數，到期收翅起身回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_stretch(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < STRETCH_PROB
+                {
+                    // ROADMAP 317：白天平靜的野鳥——歇息／漫步的閒檔偶爾停下、朝一側慵懶地展開單翅連同同側的腿
+                    // 一起抻直，伸個大懶腰（頭頂浮一枚隨翅膀緩緩張開又收起的 🪽）。各顧各、不傳染（與鳥的飛／鳴
+                    // 220/221 的呼應刻意區隔），只是一隻隻自顧自地舒展。**緊接 276 理羽之後、同從 Resting|Wandering
+                    // 起意**（野鳥歇息／漫步途中的閒置自理姿態，與 276 理羽同一觸發時機；鳥少有純 Resting 的安歇段、
+                    // 多在 Resting↔Wandering 間穿梭，故沿用理羽的雙態觸發才真讀得到「鳥也會伸懶腰」）：同屬野鳥自理，
+                    // 把「自理」從梳羽推到伸展肢體。與 278 哺乳獸歇息打呵欠對成「慵懶：獸打呵欠／鳥舒翅」一對（物種
+                    // 閘互補不相疊）。威脅永遠優先：上面 Stretching 續算分支會在威脅逼近時改逃竄。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(STRETCH_DURATION_MIN..=STRETCH_DURATION_MAX);
+                    a.state = WildlifeState::Stretching { stretch_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Cleaning { .. }) {
                     // ROADMAP 281：已棲在宿主背上啄蟲——威脅一旦逼近就立刻拍翅飛離逃竄（共生永遠讓位
                     // 逃命），否則貼著宿主當前座標續啄、計時倒數（依 host_id 從本幀宿主快照查座標；宿主
@@ -16318,6 +16388,121 @@ mod tests {
         mgr.next_animal_id = 3;
         mgr.set_winter(true);
         mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
+    }
+
+    // ─── ROADMAP 317：野鳥舒翅（wing-and-leg stretching）─────────────────────────
+    #[test]
+    fn tick_stretch_holds_position_until_timer_expires() {
+        // 舒翅進行中：原地不動（座標不變）、計時遞減、狀態維持 Stretching。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Stretching { stretch_timer: 3.0 };
+        bird.tick_stretch(0.1, None, &mut rng);
+        match bird.state {
+            WildlifeState::Stretching { stretch_timer } => {
+                assert!((stretch_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("舒翅未到期應維持 Stretching，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "舒翅應原地不動");
+    }
+
+    #[test]
+    fn tick_stretch_returns_to_wander_when_timer_expires() {
+        // 懶腰抻夠了：計時耗盡就收翅起身回到巡遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Stretching { stretch_timer: 0.05 };
+        bird.tick_stretch(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_stretch_noop_on_other_state() {
+        // 防呆：非 Stretching 狀態呼叫 tick_stretch 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 2.0 };
+        bird.tick_stretch(0.1, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非舒翅狀態呼叫 tick_stretch 不該改狀態");
+    }
+
+    #[test]
+    fn stretching_state_str_is_stretching() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Stretching { stretch_timer: 1.0 };
+        assert_eq!(bird.state_str(), "stretching");
+    }
+
+    #[test]
+    fn bird_eventually_stretches_when_resting_by_day() {
+        // 白天平靜：一隻平靜、四下無威脅的野鳥（歇息／漫步的閒檔，沿用 276 理羽雙態觸發）連跑多幀應有機會停下舒翅伸懶腰（進入 Stretching）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut stretched = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Stretching { .. }) {
+                stretched = true;
+                break;
+            }
+        }
+        assert!(stretched, "白天平靜歇息、無威脅的野鳥應偶爾停下舒翅伸懶腰");
+    }
+
+    #[test]
+    fn mammal_never_stretches() {
+        // 物種守衛：舒翅是野鳥專屬——哺乳獸（鹿）即便白天平靜歇息，連跑多幀都不該進入 Stretching（牠走 277 搔癢／278 呵欠）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Stretching { .. }), "哺乳獸不該舒翅，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_stretch_at_night() {
+        // 晝起意：夜間野鳥另走夜眠分支——夜裡連跑多幀都不該進入 Stretching。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Stretching { .. }), "夜間不該舒翅，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn stretching_bird_gives_way_to_flee() {
+        // 舒翅永遠讓位逃命：舒翅中的野鳥一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速拍翅奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        bird.id = 2;
+        bird.state = WildlifeState::Stretching { stretch_timer: 1.0e9 }; // 抻得正起勁
+        mgr.animals = vec![wolf, bird];
+        mgr.next_animal_id = 3;
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         mgr.tick(0.1, &[], &att, &[], false);
         let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
