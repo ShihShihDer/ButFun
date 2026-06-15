@@ -4489,20 +4489,18 @@
     ctx.textAlign = "right";
     ctx.fillText("按「離開室內」返回", viewW - 10, 23);
 
-    // 家具 emoji 展示（固定格內）
+    // 家具 emoji 展示（ROADMAP 323：畫在玩家擺放的那一格 col/row，而非固定排版）
     if (myFurniture.length > 0) {
-      const FURNITURE_EMOJI = { SteamBed: "🛏️", AetherChest: "📦", EtherPlant: "🪴", StarLantern: "🔮", AncientDeco: "🏺" };
-      const POSITIONS = [
-        [1, 1], [2, 1], [3, 1], [5, 1], [6, 1]
-      ];
       ctx.font = `${Math.floor(TILE * 0.8)}px system-ui`;
       ctx.textAlign = "center";
-      myFurniture.forEach((f, i) => {
-        const pos = POSITIONS[i % POSITIONS.length];
-        const gx = pos[0] * TILE + TILE / 2 - iCamX;
-        const gy = pos[1] * TILE + TILE * 0.7 - iCamY;
+      myFurniture.forEach((f) => {
+        // 舊快照可能沒帶座標（理論上不會，純防呆）：回退到中央地板格。
+        const col = (f.col != null) ? f.col : 3;
+        const row = (f.row != null) ? f.row : 3;
+        const gx = col * TILE + TILE / 2 - iCamX;
+        const gy = row * TILE + TILE * 0.7 - iCamY;
         if (gx + TILE < 0 || gx > viewW || gy + TILE < 0 || gy > viewH) return;
-        ctx.fillText(FURNITURE_EMOJI[f.kind] || "🪑", gx, gy);
+        ctx.fillText(f.emoji || "🪑", gx, gy);
       });
     }
   }
@@ -4606,6 +4604,8 @@
     const placeableItems = FURNITURE_ITEMS.filter(k => (inv.find(s => s.item === k)?.qty || 0) > 0);
     if (placeableItems.length > 0) {
       html += `<div style="color:#aaa;font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
+      // ROADMAP 323：家具擺在玩家當前所站的室內格——先走到想擺的位置再按放置。
+      html += `<div style="color:#8c8;font-size:.66rem;margin:0 0 4px;">🚶 走到想擺放的位置，再按「放置」</div>`;
       placeableItems.forEach(k => {
         const name = ITEM_NAME[k] || k;
         const emoji = ITEM_LOOK[k] || "🪑";

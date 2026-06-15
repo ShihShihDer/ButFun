@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::home_interior::is_floor_cell;
+
 /// 家具種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +107,16 @@ pub const PLANT_GATHER_EXP_PCT: u32 = 8;
 /// 背包種類上限加成。
 pub const CHEST_CAPACITY_BONUS: usize = 3;
 
+/// 一件已擺放的家具：種類 + 室內地板格座標 (col, row)。
+/// ROADMAP 323：家具從「一串看不見的被動加成」升級成「擺在室內具體格子、進房看得到的佈置」。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PlacedFurniture {
+    pub kind: FurnitureKind,
+    /// 室內地板格座標（1..=6，去掉外圍石磚牆）。
+    pub col: u8,
+    pub row: u8,
+}
+
 /// 前端顯示用的家具快照。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FurnitureView {
@@ -114,23 +126,31 @@ pub struct FurnitureView {
     pub emoji: &'static str,
     pub label: &'static str,
     pub effect: &'static str,
+    /// 室內地板格座標——前端據此把家具畫在玩家擺放的那一格（ROADMAP 323）。
+    pub col: u8,
+    pub row: u8,
 }
 
 /// 某個住家的家具列表。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HomeFurnishings {
-    /// 已放置的家具（最多 MAX_FURNITURE 件）。
-    items: Vec<FurnitureKind>,
+    /// 已放置的家具（最多 MAX_FURNITURE 件），各自帶室內格座標。
+    items: Vec<PlacedFurniture>,
 }
 
 impl HomeFurnishings {
-    /// 嘗試放置一件家具。成功回 `true`；已達上限或同種類已存在回 `false`。
+    /// 嘗試在地板格 (col, row) 擺放一件家具。成功回 `true`；下列任一情況回 `false`：
+    /// 已達上限／同種類已存在／目標格非地板格／目標格已被其他家具占用。
     /// 每種家具只能放一件（語意唯一：各有獨特被動效果）。
-    pub fn place(&mut self, kind: FurnitureKind) -> bool {
-        if self.items.len() >= MAX_FURNITURE || self.items.contains(&kind) {
+    pub fn place(&mut self, kind: FurnitureKind, col: u8, row: u8) -> bool {
+        if self.items.len() >= MAX_FURNITURE
+            || self.items.iter().any(|f| f.kind == kind)
+            || !is_floor_cell(col, row)
+            || self.items.iter().any(|f| f.col == col && f.row == row)
+        {
             return false;
         }
-        self.items.push(kind);
+        self.items.push(PlacedFurniture { kind, col, row });
         true
     }
 
@@ -139,32 +159,37 @@ impl HomeFurnishings {
         if idx >= self.items.len() {
             return None;
         }
-        Some(self.items.remove(idx))
+        Some(self.items.remove(idx).kind)
+    }
+
+    /// 某種家具是否已擺放。
+    fn has_kind(&self, kind: FurnitureKind) -> bool {
+        self.items.iter().any(|f| f.kind == kind)
     }
 
     /// 是否有蒸汽床鋪。
     pub fn has_bed(&self) -> bool {
-        self.items.contains(&FurnitureKind::SteamBed)
+        self.has_kind(FurnitureKind::SteamBed)
     }
 
     /// 是否有乙太寶箱。
     pub fn has_chest(&self) -> bool {
-        self.items.contains(&FurnitureKind::AetherChest)
+        self.has_kind(FurnitureKind::AetherChest)
     }
 
     /// 是否有乙太花盆。
     pub fn has_plant(&self) -> bool {
-        self.items.contains(&FurnitureKind::EtherPlant)
+        self.has_kind(FurnitureKind::EtherPlant)
     }
 
     /// 是否有星魂燈。
     pub fn has_lantern(&self) -> bool {
-        self.items.contains(&FurnitureKind::StarLantern)
+        self.has_kind(FurnitureKind::StarLantern)
     }
 
     /// 是否有古代擺件。
     pub fn has_deco(&self) -> bool {
-        self.items.contains(&FurnitureKind::AncientDeco)
+        self.has_kind(FurnitureKind::AncientDeco)
     }
 
     /// 目前已放幾件。
@@ -174,16 +199,18 @@ impl HomeFurnishings {
 
     /// 產生前端顯示快照。
     pub fn views(&self) -> Vec<FurnitureView> {
-        self.items.iter().enumerate().map(|(idx, &kind)| FurnitureView {
+        self.items.iter().enumerate().map(|(idx, f)| FurnitureView {
             idx,
-            kind: format!("{kind:?}").chars().fold(String::new(), |mut s, c| {
+            kind: format!("{:?}", f.kind).chars().fold(String::new(), |mut s, c| {
                 if c.is_uppercase() && !s.is_empty() { s.push('_'); }
                 s.push(c.to_ascii_lowercase());
                 s
             }),
-            emoji: kind.emoji(),
-            label: kind.label(),
-            effect: kind.effect_desc(),
+            emoji: f.kind.emoji(),
+            label: f.kind.label(),
+            effect: f.kind.effect_desc(),
+            col: f.col,
+            row: f.row,
         }).collect()
     }
 }
@@ -195,34 +222,58 @@ mod tests {
     #[test]
     fn place_up_to_max() {
         let mut h = HomeFurnishings::default();
-        // 五種各放一件，剛好達到上限
-        assert!(h.place(FurnitureKind::SteamBed));
-        assert!(h.place(FurnitureKind::AetherChest));
-        assert!(h.place(FurnitureKind::EtherPlant));
-        assert!(h.place(FurnitureKind::StarLantern));
-        assert!(h.place(FurnitureKind::AncientDeco));
+        // 五種各放在不同格，剛好達到上限
+        assert!(h.place(FurnitureKind::SteamBed, 1, 1));
+        assert!(h.place(FurnitureKind::AetherChest, 2, 1));
+        assert!(h.place(FurnitureKind::EtherPlant, 3, 1));
+        assert!(h.place(FurnitureKind::StarLantern, 4, 1));
+        assert!(h.place(FurnitureKind::AncientDeco, 5, 1));
         assert_eq!(h.count(), MAX_FURNITURE);
-        // 已達上限，任何新放置都應拒絕
-        assert!(!h.place(FurnitureKind::SteamBed));
+        // 已達上限，任何新放置都應拒絕（即便目標格仍空）
+        assert!(!h.place(FurnitureKind::SteamBed, 6, 1));
     }
 
     #[test]
     fn no_duplicate_kind() {
         let mut h = HomeFurnishings::default();
-        assert!(h.place(FurnitureKind::SteamBed));
-        // 同種類第二次放置應拒絕
-        assert!(!h.place(FurnitureKind::SteamBed));
+        assert!(h.place(FurnitureKind::SteamBed, 1, 1));
+        // 同種類第二次放置應拒絕（即便換到別格）
+        assert!(!h.place(FurnitureKind::SteamBed, 2, 1));
         assert_eq!(h.count(), 1);
         // 不同種類仍可放
-        assert!(h.place(FurnitureKind::AetherChest));
+        assert!(h.place(FurnitureKind::AetherChest, 2, 1));
+        assert_eq!(h.count(), 2);
+    }
+
+    #[test]
+    fn place_rejects_non_floor_cell() {
+        let mut h = HomeFurnishings::default();
+        // 外圍石磚牆格（0 或 7）不可擺放
+        assert!(!h.place(FurnitureKind::SteamBed, 0, 1));
+        assert!(!h.place(FurnitureKind::SteamBed, 1, 7));
+        assert_eq!(h.count(), 0);
+        // 地板格可擺放
+        assert!(h.place(FurnitureKind::SteamBed, 1, 1));
+        assert_eq!(h.count(), 1);
+    }
+
+    #[test]
+    fn place_rejects_occupied_cell() {
+        let mut h = HomeFurnishings::default();
+        assert!(h.place(FurnitureKind::SteamBed, 3, 3));
+        // 同一格已被占用，另一種家具不能疊上去
+        assert!(!h.place(FurnitureKind::AetherChest, 3, 3));
+        assert_eq!(h.count(), 1);
+        // 換到空格就可以
+        assert!(h.place(FurnitureKind::AetherChest, 3, 4));
         assert_eq!(h.count(), 2);
     }
 
     #[test]
     fn remove_returns_kind() {
         let mut h = HomeFurnishings::default();
-        h.place(FurnitureKind::SteamBed);
-        h.place(FurnitureKind::AetherChest);
+        h.place(FurnitureKind::SteamBed, 1, 1);
+        h.place(FurnitureKind::AetherChest, 2, 1);
         let removed = h.remove(0);
         assert_eq!(removed, Some(FurnitureKind::SteamBed));
         assert_eq!(h.count(), 1);
@@ -232,10 +283,22 @@ mod tests {
     }
 
     #[test]
+    fn remove_then_replace_elsewhere() {
+        // 「移動」＝移除退背包後改擺他處：移除後同種家具可重放到別格。
+        let mut h = HomeFurnishings::default();
+        assert!(h.place(FurnitureKind::SteamBed, 1, 1));
+        assert_eq!(h.remove(0), Some(FurnitureKind::SteamBed));
+        assert!(h.place(FurnitureKind::SteamBed, 5, 5));
+        let v = h.views();
+        assert_eq!(v.len(), 1);
+        assert_eq!((v[0].col, v[0].row), (5, 5));
+    }
+
+    #[test]
     fn remove_out_of_bounds() {
         let mut h = HomeFurnishings::default();
         assert!(h.remove(0).is_none());
-        h.place(FurnitureKind::StarLantern);
+        h.place(FurnitureKind::StarLantern, 1, 1);
         assert!(h.remove(1).is_none());
     }
 
@@ -243,22 +306,22 @@ mod tests {
     fn has_checks() {
         let mut h = HomeFurnishings::default();
         assert!(!h.has_bed() && !h.has_chest() && !h.has_plant() && !h.has_lantern() && !h.has_deco());
-        h.place(FurnitureKind::SteamBed);
+        h.place(FurnitureKind::SteamBed, 1, 1);
         assert!(h.has_bed());
-        h.place(FurnitureKind::AetherChest);
+        h.place(FurnitureKind::AetherChest, 2, 1);
         assert!(h.has_chest());
-        h.place(FurnitureKind::EtherPlant);
+        h.place(FurnitureKind::EtherPlant, 3, 1);
         assert!(h.has_plant());
-        h.place(FurnitureKind::StarLantern);
+        h.place(FurnitureKind::StarLantern, 4, 1);
         assert!(h.has_lantern());
-        h.place(FurnitureKind::AncientDeco);
+        h.place(FurnitureKind::AncientDeco, 5, 1);
         assert!(h.has_deco());
     }
 
     #[test]
     fn has_cleared_after_remove() {
         let mut h = HomeFurnishings::default();
-        h.place(FurnitureKind::SteamBed);
+        h.place(FurnitureKind::SteamBed, 1, 1);
         assert!(h.has_bed());
         h.remove(0);
         assert!(!h.has_bed());
@@ -277,14 +340,17 @@ mod tests {
     #[test]
     fn views_correct_count_and_idx() {
         let mut h = HomeFurnishings::default();
-        h.place(FurnitureKind::SteamBed);
-        h.place(FurnitureKind::StarLantern);
+        h.place(FurnitureKind::SteamBed, 2, 3);
+        h.place(FurnitureKind::StarLantern, 5, 6);
         let v = h.views();
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].idx, 0);
         assert_eq!(v[1].idx, 1);
         assert_eq!(v[0].emoji, "🛏️");
         assert_eq!(v[1].emoji, "🔮");
+        // 快照帶回各家具的室內格座標，前端據此畫在玩家擺放的那一格。
+        assert_eq!((v[0].col, v[0].row), (2, 3));
+        assert_eq!((v[1].col, v[1].row), (5, 6));
     }
 
     #[test]
