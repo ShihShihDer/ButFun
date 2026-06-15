@@ -9367,6 +9367,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 312：春日嗅花——春季白天，草食獸（state==="nuzzling"）平靜時偶爾低頭湊近初綻的春花輕嗅：
+      // 頭頂浮一枚隨慢正弦輕輕脹縮（像湊近花朵一嗅一嗅、嗅聞春芳的呼吸起伏）的 🌸。與 307 喘氣（👅，縱向
+      // 急速脹縮）／308 哆嗦（🥶，橫向急抖）／311 集結（🧭，左右擺動）動態區隔：嗅花是和緩的脹縮明滅。
+      // 只有草食獸（鹿/小獸）會嗅花、掠食的狼/狐與野鳥不嗅。與 307/308/311 並列「四季各有一筆」（夏散熱
+      //／冬禦寒／秋集結／春嗅花）。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在春季白天平靜時才給此狀態）。
+      if (w.state === "nuzzling") {
+        ctx.save();
+        const bloom = 1.0 + Math.abs(Math.sin(now / 540)) * 0.22; // 和緩脹縮 [1.0, 1.22]，湊近嗅花的呼吸起伏
+        ctx.globalAlpha = 0.65 + 0.3 * Math.abs(Math.sin(now / 540)); // 隨呼吸微微明滅
+        ctx.font = (12 * bloom) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.fillText("🌸", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9728,8 +9745,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
