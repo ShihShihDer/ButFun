@@ -1119,6 +1119,24 @@ const PECK_PROB: f32 = 0.03;
 const PECK_DURATION_MIN: f32 = 2.0;
 const PECK_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 313：春日銜枝整巢（spring nest-gathering／春天築巢備料）────────────
+// 311 給了野鳥「秋集結」（南遷躁動 🧭）、312 給了哺乳獸「春嗅花」（🌸），把「動物 × 季節」這條維度補成
+// 四季到齊。可盤點下來，野鳥的季節戲只演了「秋天」（為南遷集結）這一季——春天這個對野鳥最關鍵的繁殖／
+// 築巢季，野鳥卻一概沒戲。本切片補上野鳥的春季戲、也與 312 哺乳獸春嗅花對成「春天裡，獸嗅花、鳥築巢」
+// 一對：春季白天平靜漫步的成鳥，偶爾停下、銜起一根枝條為築巢備料（新增 Nesting 狀態，頭頂浮一枚 🪺），
+// 整一小段巢材再起身回到閒晃。與 288 啄籽（🌾，低頭覓食）／276 理羽（🪶，梳自己的羽）刻意區隔：那是覓食、
+// 那是自理，本切片是「春天築巢備料」的繁殖季專屬姿態（故限春季、限成鳥——幼鳥不築巢，與 311 集結不限齡
+// 區隔）。只屬於野鳥（銜枝築巢是飛禽最招牌的春日畫面，哺乳獸另走 312 嗅花；is_bird 守衛）。純啟發式、零
+// LLM、零 tick 簽名改動、零協議改動（新增的 nesting 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零
+// 持久化、零 migration、記憶體模式。威脅永遠優先：整巢只在無威脅逼近的平靜空檔發生，掠食者一旦逼進
+// FLEE_RADIUS 即依既有獵物邏輯拍翅逃竄（築巢永遠讓位逃命）。
+/// 春季白天平靜漫步的成鳥本幀停下整巢備料的機率——偏低（對齊 288 啄籽 PECK_PROB 0.03），讓整巢是漫步途中
+/// 偶爾的一段築巢備料、而非時時在銜枝（多數時候仍照常閒晃／飛／鳴）。
+const NEST_PROB: f32 = 0.03;
+/// 一段整巢備料的最短／最長時長（秒）——銜起一根枝條整理一小段再起身，與啄籽（2~4.5s）同量級。
+const NEST_DURATION_MIN: f32 = 2.0;
+const NEST_DURATION_MAX: f32 = 4.5;
+
 // ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
 // 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
 // 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
@@ -2099,6 +2117,11 @@ enum WildlifeState {
     /// 不同：那是「讀資訊」、這是純粹「享受春花綻放」的季節閒情，與 307 夏喘氣／308 冬哆嗦／311 秋集結
     /// 並列「四季各有一筆」——夏散熱、冬禦寒、秋集結、春嗅花，把「動物 × 季節」鋪滿四季。
     Nuzzling { nuzzle_timer: f32 },
+    /// ROADMAP 313：春日銜枝整巢——成鳥（WildBird）在春季白天（is_spring）平靜漫步時，偶爾停下、銜起一根
+    /// 枝條為築巢備料（頭頂浮 🪺）。原地不動（不更新座標）、nest_timer 倒數，到期就起身回到巡遊；整巢中若有
+    /// 威脅一律優先中斷改逃竄。與 288 啄籽（🌾，低頭覓食）／276 理羽（🪶，梳自己的羽）區隔——那是覓食、那是
+    /// 自理，本切片是繁殖季專屬的「春天築巢備料」；與 312 哺乳獸春嗅花（🌸）對成「春天裡，獸嗅花、鳥築巢」一對。
+    Nesting { nest_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2793,6 +2816,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 313：春日銜枝整巢——整巢中（Nesting）原地不動、倒數計時；到期就起身、挑下一個漫遊目標
+    /// （沿用群聚拉力 herd_anchor，鳥成群，與 tick_peck 同模式）回到閒晃。只在 Nesting 狀態下生效（呼叫端
+    /// 已確保此隻為成鳥、春季白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去拍翅逃竄——威脅永遠優先）。
+    fn tick_nest(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Nesting { nest_timer } = self.state {
+            let remaining = nest_timer - dt;
+            if remaining <= 0.0 {
+                let timer = rng.gen_range(WANDER_TIMER_MIN..=WANDER_TIMER_MAX);
+                let (tx, ty) = herd_wander_target(self.home_x, self.home_y, herd_anchor, rng);
+                self.state = WildlifeState::Wandering { target_x: tx, target_y: ty, wander_timer: timer };
+            } else {
+                self.state = WildlifeState::Nesting { nest_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 283：臥嚼反芻——反芻中（Ruminating）原地不動、倒數計時；到期就挑下一個漫遊目標
     /// （沿用群聚拉力 herd_anchor，與 tick_yawn 同模式）回到閒晃。只在 Ruminating 狀態下生效（呼叫端
     /// 已確保此隻為野鹿、白天、平靜；威脅一旦逼近呼叫端不會走到此分支、改去奔逃——威脅永遠優先）。
@@ -3472,6 +3511,7 @@ impl Wildlife {
             WildlifeState::Huddling { .. }   => "huddling",
             WildlifeState::Flocking { .. }   => "flocking",
             WildlifeState::Nuzzling { .. }   => "nuzzling",
+            WildlifeState::Nesting { .. }    => "nesting",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5668,6 +5708,14 @@ impl WildlifeManager {
                         let companion = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, FLOCK_SEE_RADIUS);
                         a.tick_flock(dt, companion, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Nesting { .. }) {
+                    // ROADMAP 313：已在整巢備料中——威脅一旦逼近就立刻拍翅逃竄（築巢永遠讓位逃命），
+                    // 否則原地把這一段巢材整完、計時倒數，到期起身回到閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_nest(dt, herd_anchor, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -5699,6 +5747,31 @@ impl WildlifeManager {
                     if let Some((tx, ty)) = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, FLOCK_SEE_RADIUS) {
                         a.state = WildlifeState::Flocking { target_x: tx, target_y: ty, flock_timer: timer };
                     }
+                } else if is_bird
+                    && !a.is_juvenile()
+                    && !is_night
+                    && is_spring
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < NEST_PROB
+                {
+                    // ROADMAP 313：春日銜枝整巢——春季（is_spring）白天平靜、正四處漫步的成鳥（is_bird 守衛、
+                    // 且 !is_juvenile——築巢備料是繁殖季成鳥的事，幼鳥不築巢），偶爾停下、銜起一根枝條為築巢備料
+                    //（轉入 Nesting 🪺）。**與 311 秋日群鳥集結（🧭，南遷躁動）並列「野鳥的季節戲」**：311 演秋天南遷
+                    // 集結、本切片補上春天繁殖築巢，把野鳥的季節行為從只有秋季補到春秋兩季。**與 312 哺乳獸春嗅花
+                    //（🌸）對成「春天裡，獸嗅花、鳥築巢」一對**——同是春季白天平靜時的物種專屬季節姿態，哺乳獸低頭
+                    // 嗅花、野鳥銜枝整巢。**只屬於野鳥**（哺乳獸另走 312 嗅花；is_bird 守衛）。**春季守衛**：非春季
+                    //（is_spring 為偽）一律跳過。**只起意於成鳥**（幼鳥不築巢，與 311 集結不限齡刻意區隔）。**只從
+                    // Wandering 起意**（漫步途中順手銜枝，與 288 啄籽／277 搔癢一致——覓食／築巢屬「起來活動著」的
+                    // 時候，settled 的 Resting 就讓牠安穩歇著）。**與 288 啄籽（🌾，低頭覓食）／276 理羽（🪶，梳自己的
+                    // 羽）區隔**：那是覓食、那是自理，本切片是繁殖季專屬的築巢備料（狀態名 Nesting／符號 🪺 皆刻意
+                    // 區隔）。**緊跟 311 集結之後、排在 220 升空／221 鳴唱／288 啄籽之前**（與 311 同屬野鳥季節
+                    // 行為、同一決策位置）：身邊有屍骸／鹿／掠食者等「需外物在場」的覓食社交分支仍在更前面先處理過
+                    //（食腐／跟食／圍攻），都沒有時，這份春日繁殖築巢的本能才凌駕悠閒的飛／鳴／自啄。**威脅永遠
+                    // 優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Nesting 續算分支即改
+                    // 全速奔逃（築巢永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(NEST_DURATION_MIN..=NEST_DURATION_MAX);
+                    a.state = WildlifeState::Nesting { nest_timer: timer };
                 } else if is_bird
                     && !is_night
                     && !threat_near
@@ -16693,5 +16766,125 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 313：春日銜枝整巢 ──────────────────────────────────────────────
+
+    #[test]
+    fn nesting_state_str_is_nesting() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Nesting { nest_timer: 1.0 };
+        assert_eq!(bird.state_str(), "nesting");
+    }
+
+    #[test]
+    fn bird_eventually_nests_in_spring() {
+        // 春季白天：一隻平靜、四下無威脅的成鳥，在春季連跑多幀應有機會停下整巢備料（進入 Nesting）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_spring(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut nested = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、春季
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Nesting { .. }) {
+                nested = true;
+                break;
+            }
+        }
+        assert!(nested, "春季白天、平靜無威脅的成鳥應偶爾停下整巢備料");
+    }
+
+    #[test]
+    fn bird_does_not_nest_when_not_spring() {
+        // 季節守衛：非春季（is_spring 為偽）時，平靜的成鳥連跑多幀都不該進入 Nesting。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_spring(false);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Nesting { .. }), "非春季不該整巢，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_never_nests_in_spring() {
+        // 物種守衛：整巢是野鳥專屬——草食獸／掠食者即便在春季白天，連跑多幀都不該進入 Nesting。
+        for kind in [WildlifeKind::WildDeer, WildlifeKind::SmallCritter, WildlifeKind::WildWolf, WildlifeKind::WildFox] {
+            let mut mgr = WildlifeManager::new();
+            let mut m = adult_at(kind, 6000.0, 6000.0);
+            m.id = 1;
+            m.state = WildlifeState::Resting { rest_timer: 0.1 };
+            mgr.animals = vec![m];
+            mgr.set_spring(true);
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            for _ in 0..600 {
+                mgr.tick(0.1, &[], &att, &[], false);
+                let a = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                assert!(!matches!(a.state, WildlifeState::Nesting { .. }), "{:?} 不該整巢，實際 {:?}", kind, a.state);
+            }
+        }
+    }
+
+    #[test]
+    fn juvenile_bird_never_nests_in_spring() {
+        // 年齡守衛：築巢備料是繁殖季成鳥的事——幼鳥即便在春季白天，連跑多幀都不該進入 Nesting。
+        let mut mgr = WildlifeManager::new();
+        let mut chick = juvenile_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        chick.id = 1;
+        chick.state = WildlifeState::Wandering { target_x: 6000.0, target_y: 6000.0, wander_timer: 0.1 };
+        mgr.animals = vec![chick];
+        mgr.set_spring(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(c.state, WildlifeState::Nesting { .. }), "幼鳥不該整巢，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_nest_at_night() {
+        // 晝起意：夜間野鳥另走夜眠分支——即便春季，夜裡連跑多幀都不該進入 Nesting。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_spring(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Nesting { .. }), "夜間不該整巢，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn nesting_bird_gives_way_to_flee() {
+        // 築巢永遠讓位逃命：整巢中的成鳥一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        bird.id = 2;
+        bird.state = WildlifeState::Nesting { nest_timer: 1.0e9 }; // 整巢正起勁
+        mgr.animals = vec![wolf, bird];
+        mgr.next_animal_id = 3;
+        mgr.set_spring(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
     }
 }
