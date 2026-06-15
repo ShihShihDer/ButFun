@@ -805,6 +805,23 @@ const MARK_PROB: f32 = 0.03;
 const MARK_DURATION_MIN: f32 = 1.5;
 const MARK_DURATION_MAX: f32 = 3.0;
 
+// ─── ROADMAP 303：掠食者埋藏剩食（surplus caching／吃不完的獵肉刨坑藏起來留作存糧）──────
+// 223 撲鼠／225 嗅蹤給掠食者立了物種專屬的「覓食」姿態，可那條線至今只演到「找／追／吃」——吃不完的
+// 就憑空消失。真實的狼、狐最有性格的另一個覓食去向，是把吃不完的獵肉刨坑埋藏起來留作存糧（food caching／
+// surplus killing 是犬科的教科書級行為）。小動物一側早有 282 囤糧（🥜，松鼠埋堅果過冬），掠食者一側卻
+// 獨缺這「存起來」的對偶。本切片給掠食者補上：白天沒獵可追的閒檔，狼狐偶爾停下刨坑藏肉，與 282 囤糧
+// 刻意對成「草食囤堅果／掠食藏獵肉」一對，把「為將來打算地把吃不完的存起來」這條覓食性格從草食一側補
+// 到掠食一側。純內生閒置行為（不需任何新環境輸入、game.rs 零改動），沿用 291 舔毛／293 嗅標那套白晝
+// 閒置行為框架，零 tick 簽名改動、零協議欄位。
+/// 白天無獵可追的平靜掠食者本幀停下刨坑埋藏剩食的機率——與 282 小動物囤糧（CACHE_PROB 0.02）刻意同級
+/// （對成一對）、比 291 舔毛／293 嗅標（0.03）更低：埋藏存糧是偶爾為之的覓食雜務（多數時候仍照常巡遊／
+/// 撲鼠／嗅蹤）。
+const BURY_PROB: f32 = 0.02;
+/// 一次刨坑埋藏的最短／最長時長（秒）——刨個小坑把獵肉埋進土裡再扒土蓋好需時，沿用 282 囤糧
+/// （CACHE_DURATION 2.5~5s）同量級。期間威脅一旦逼近一律優先停下奔逃（埋藏永遠讓位逃命）。
+const BURY_DURATION_MIN: f32 = 2.5;
+const BURY_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 294：聞味讀界（counter-marking sniff／犬科聞到同類剛留下的領地記號而停下讀味回應）──
 // 293 領地嗅標給了掠食者「留味」這一筆：野狼／野狐白天偶爾停下、以一滴氣味記號標記地盤（💧），與 225
 // 嗅蹤（👃，循別人留的舊味跡走）對成「讀味／留味」一對。可那記留下的氣味記號至今無人「讀」——一隻狼
@@ -1882,6 +1899,14 @@ enum WildlifeState {
     /// 一個讀；與 225 嗅蹤（👃，野狼循一條舊味跡低頭緩步走）刻意區隔——讀界是「原地讀同類剛留下的新鮮記號」的
     /// 一次回應、非循舊跡走，且野狼／野狐二者皆會（225 只野狼）。
     Sniffing { sniff_timer: f32 },
+    /// ROADMAP 303：掠食者埋藏剩食——白天無獵可追的平靜掠食者（野狼／野狐，二者皆會）偶爾就地低頭刨個小坑、
+    /// 把先前吃剩的獵肉埋藏起來留作存糧（前端畫成低頭刨土、頭頂浮一枚隨刨土一上一下的 🦴）。原地不動（不更新
+    /// 座標）、bury_timer 倒數，埋好扒土蓋上再起身回到巡遊（朝家附近的下一個漫遊目標，與 tick_mark／tick_lick／
+    /// tick_doze 同模式、無群聚拉力）。獵物一旦進入搜尋範圍，掠食者 phase 在埋藏分支之前就已改走狩獵——埋藏永遠
+    /// 讓位狩獵。與 282 小動物囤糧 Caching（🥜，囤堅果過冬）對成「草食囤堅果／掠食藏獵肉」一對；與 291 舔毛
+    ///（👅，清潔自理）／293 嗅標（💧，領地留味）／294 讀界（👃，讀同類記號）同為掠食者白晝閒置底色卻各有去向。
+    /// 純內生閒置覓食姿態：不改任何獵殺／進食／消化結果、不生成可撿實體（只演出「藏存糧」的動作）。
+    Burying { bury_timer: f32 },
     /// ROADMAP 295：畏味避徑——白天平靜歇息／漫步的草食走獸（鹿／小獸）「聞到」附近（SCENT_AVOID_RADIUS 內、
     /// 卻在自身警戒帶 VIGILANCE_RADIUS 之外）有掠食者正留下一記新鮮領地記號（marking_snap）時，抬頭一驚、不安
     /// 地朝那記界味的反方向警覺繞走一小段（前端畫成低頭快步、頭頂浮一枚 😟）。(ax,ay) 記下那記界味的座標，每幀
@@ -2795,6 +2820,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 303：掠食者埋藏剩食——埋藏中（Burying）原地不動、倒數計時；埋好（bury_timer 耗盡）就扒土蓋上、
+    /// 起身回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_mark／tick_lick／tick_doze
+    /// 同模式）。只在 Burying 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
+    /// phase 在更前面的獵物搜尋就已改走狩獵，不會走到此分支——埋藏永遠讓位狩獵）。
+    fn tick_bury(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Burying { bury_timer } = self.state {
+            let remaining = bury_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Burying { bury_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 295：畏味避徑——繞行中（Skirting）把這一段警覺繞走走完：每幀以 SKIRT_SPEED 朝那記界味落點
     /// (ax,ay) 的反方向挪步遠離（不安地提防著、不疾不徐挪開），skirt_timer 倒數，繞夠了就鬆下來起身回巡遊
     /// （朝家附近的下一個漫遊目標）。只在 Skirting 狀態下生效（呼叫端已確保此隻為草食走獸、白天、且無威脅
@@ -3106,6 +3147,7 @@ impl Wildlife {
             WildlifeState::Gleaning { .. }   => "gleaning",
             WildlifeState::Marking { .. }    => "marking",
             WildlifeState::Sniffing { .. }   => "sniffing",
+            WildlifeState::Burying { .. }    => "burying",
             WildlifeState::Skirting { .. }   => "skirting",
             WildlifeState::Sheltering { .. } => "sheltering",
             WildlifeState::Shaking { .. } => "shaking",
@@ -3868,6 +3910,11 @@ impl WildlifeManager {
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故讀味只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_sniff(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Burying { .. }) {
+                                // ROADMAP 303：已在埋藏剩食中——把這一坑藏肉埋完（原地不動、計時倒數，埋好就
+                                // 扒土蓋上起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故埋藏只在無獵
+                                // 可追的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_bury(dt, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4036,6 +4083,27 @@ impl WildlifeManager {
                                 // 讀味永遠讓位狩獵。
                                 let timer = rng.gen_range(SNIFF_DURATION_MIN..=SNIFF_DURATION_MAX);
                                 a.state = WildlifeState::Sniffing { sniff_timer: timer };
+                            } else if !is_night
+                                && !post_rain
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < BURY_PROB
+                            {
+                                // ROADMAP 303：白天無獵可追的平靜掠食者——偶爾停下、就地低頭刨個小坑把先前吃剩的
+                                // 獵肉埋藏起來留作存糧（轉入 Burying 🦴）。犬科最有性格的另一個覓食去向（food caching／
+                                // surplus killing），野狼／野狐二者皆會（與 285 蜷睡／291 舔毛／293 嗅標／294 讀界同為
+                                // 兩種犬科共有的白晝閒置底色），與 223 撲鼠（狐專屬）／225 嗅蹤（狼專屬）那兩個物種專屬
+                                // 覓食姿態刻意區隔。與 282 小動物囤糧（🥜，囤堅果過冬）對成「草食囤堅果／掠食藏獵肉」一對，
+                                // 把「為將來打算地把吃不完的存起來」這條覓食性格從草食補到掠食。各埋各的、不傳染（與野鳥飛／
+                                // 鳴的呼應刻意區隔）。排在物種專屬覓食／問安／抖水／舔毛／嗅標／讀界之後、蜷睡之前：即時反應
+                                // 與社交自理優先，沒起意去做這些的閒檔才偶爾想起把存糧埋好，再沒有才退回蜷睡補眠（埋藏是醒著
+                                // 的覓食雜務、蜷睡是睡著補眠，醒著的動作優先）。**雨剛停的窗口內（post_rain）讓位給 300 雨後抖水
+                                // 等雨後即時反應、不埋藏**（剛淋濕一身、先抖乾要緊，不會這時去刨土埋肉弄髒沾泥）——與 300 抖水
+                                // 乾淨時序區隔（!post_rain 放在 rng 之前短路：雨後窗口內根本不起意、不擾既有雨後反應）。夜間改走
+                                // 夜嚎分支。埋藏永遠讓位狩獵：此分支落在
+                                // prey_snap 搜尋無果的 else 內，獵物一旦在搜尋範圍內、更前面就已改走狩獵。純內生閒置覓食姿態，
+                                // 不改任何獵殺／進食／消化結果、不生成可撿的實體。
+                                let timer = rng.gen_range(BURY_DURATION_MIN..=BURY_DURATION_MAX);
+                                a.state = WildlifeState::Burying { bury_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -11681,6 +11749,124 @@ mod tests {
         assert!(
             matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
             "嗅標中發現獵物應立刻改去狩獵，實際 {:?}", f.state
+        );
+    }
+
+    // ─── ROADMAP 303：掠食者埋藏剩食（surplus caching／犬科把吃不完的獵肉刨坑藏起來）──────
+    #[test]
+    fn tick_bury_holds_position_while_timer_remaining() {
+        // 埋藏進行中：原地不動（座標不變）、計時遞減、狀態維持 Burying。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Burying { bury_timer: 3.0 };
+        wolf.tick_bury(0.1, &mut rng);
+        match wolf.state {
+            WildlifeState::Burying { bury_timer } => {
+                assert!((bury_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("埋藏未到期應維持 Burying，實際 {:?}", wolf.state),
+        }
+        assert!((wolf.x - 5000.0).abs() < 1e-6 && (wolf.y - 5000.0).abs() < 1e-6, "埋藏中應原地不動");
+    }
+
+    #[test]
+    fn tick_bury_returns_to_wander_when_timer_expires() {
+        // 埋藏到期：扒土蓋上、起身回到巡遊。
+        let mut rng = make_rng();
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.state = WildlifeState::Burying { bury_timer: 0.05 };
+        fox.tick_bury(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(fox.state, WildlifeState::Wandering { .. }), "埋藏到期應回巡遊，實際 {:?}", fox.state);
+    }
+
+    #[test]
+    fn tick_bury_noop_on_other_state() {
+        // 防呆：非 Burying 狀態呼叫 tick_bury 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.state = WildlifeState::Resting { rest_timer: 3.0 };
+        wolf.tick_bury(0.1, &mut rng);
+        assert!(matches!(wolf.state, WildlifeState::Resting { .. }), "非埋藏狀態呼叫 tick_bury 不該改狀態");
+    }
+
+    #[test]
+    fn burying_state_str_is_burying() {
+        let mut fox = adult_at(WildlifeKind::WildFox, 0.0, 0.0);
+        fox.state = WildlifeState::Burying { bury_timer: 1.0 };
+        assert_eq!(fox.state_str(), "burying");
+    }
+
+    #[test]
+    fn prey_never_buries() {
+        // 物種專屬：埋藏剩食只發生在掠食者 phase——晝行獵物（鹿/鳥/小動物）連跑數百幀都不該進入 Burying。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..300 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Burying { .. }), "獵物不該埋藏剩食，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn calm_predator_eventually_buries_during_day() {
+        // 白天無獵可追：一隻孤身野狐（附近無獵物可獵）連跑多幀後，總會偶爾停下刨坑埋藏剩食。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox]; // 場上只有這隻狐、無獵物 → 必走「無獵可追」的閒置分支
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut buried = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let f = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(f.state, WildlifeState::Burying { .. }) {
+                buried = true;
+                break;
+            }
+        }
+        assert!(buried, "白天無獵可追的平靜野狐應偶爾停下埋藏剩食");
+    }
+
+    #[test]
+    fn nocturnal_predator_never_buries_at_night() {
+        // 晝夜區隔：埋藏只在白天起意（夜間掠食者改走夜嚎分支）——夜裡連跑多幀都不該進入 Burying。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Burying { .. }), "夜間掠食者不該埋藏剩食，實際 {:?}", w.state);
+        }
+    }
+
+    #[test]
+    fn burying_predator_wakes_to_hunt_nearby_prey() {
+        // 埋藏永遠讓位狩獵：埋藏中的野狐一旦有可獵的小動物進入搜尋範圍，立刻改去狩獵（非繼續埋）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5120.0, 5000.0); // 120px < POUNCE_RANGE(200)
+        critter.id = 100;
+        critter.state = WildlifeState::Resting { rest_timer: 100.0 };
+        let mut fox = adult_at(WildlifeKind::WildFox, 5000.0, 5000.0);
+        fox.id = 101;
+        fox.state = WildlifeState::Burying { bury_timer: 1.0e9 }; // 埋得正起勁
+        mgr.animals = vec![critter, fox];
+        mgr.next_animal_id = 102;
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let f = mgr.animals.iter().find(|x| x.id == 101).unwrap();
+        assert!(
+            matches!(f.state, WildlifeState::Hunting { .. } | WildlifeState::Stalking { .. }),
+            "埋藏中發現獵物應立刻改去狩獵，實際 {:?}", f.state
         );
     }
 
