@@ -9247,6 +9247,23 @@
         ctx.restore();
       }
 
+      // ROADMAP 299：雨後飲水——白天雨剛停時，平靜的草食獸（鹿／鳥／小獸，state==="drinking"）偶爾停下、低頭
+      // 就近啜飲積起的雨水解渴，頭頂浮一枚徐徐脹縮、如水光般和緩明滅的 💧，讓「雨停了、遍地新水窪，獸群一隻隻
+      // 低頭喝起雨水解渴」一眼看得到——與 298 雨後曬太陽的 ☀️ 並列為雨停後的兩樁日常（曬乾／飲水，一靜一動），
+      // 把同一場雨從「下雨縮身→雨停抖水→雨後曬乾／飲水解渴」演完整。純前端、零協議欄位：直接讀伺服器廣播的
+      // w.state（後端只在白天、雨剛停的時間窗內、無威脅逼近的平靜草食獸身上才給此狀態）。
+      if (w.state === "drinking") {
+        ctx.save();
+        const pulse = 0.6 + 0.3 * Math.abs(Math.sin(now / 480)); // 徐徐脹縮、如水光般和緩明滅
+        ctx.globalAlpha = pulse;
+        ctx.font = (11 * pulse) + "px sans-serif"; // 隨明滅微微脹縮，透出啜飲時的水光
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(7, -22);
+        ctx.fillText("💧", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9566,8 +9583,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
