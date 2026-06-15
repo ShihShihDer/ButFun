@@ -9321,6 +9321,10 @@
       // 輕輕跳動的 🎵，讓「鳥群此起彼落地對鳴」一眼（與耳）看得到——與 218 的狼嚎 🌙 對成完整
       // 的晝夜聲景。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜的野鳥啁啾時
       // 才給此狀態）。
+      // ROADMAP 305：拂曉鳥鳴大合唱——破曉時段（daynight.phase==="dawn"，讀既有廣播的權威時辰，與後端
+      // 同一道判定）改畫一串更密的 🎶「晨間合唱」，與平時的 🎵 一眼區隔；破曉時後端也讓鳥鳴得更密更長
+      //（自發起鳴機率拉高、鳴唱更悠長）。與 302 滿月嗥月（🌕／🌙 依月相切換）精準對偶：一個依月相、一個
+      // 依時辰，前端皆自讀既有廣播切符號、零協議欄位。
       if (w.state === "chirping") {
         ctx.save();
         const ct = (Math.sin(now / 240) + 1) / 2; // 0→1 輕快起落，像一串清亮的鳥鳴
@@ -9329,7 +9333,8 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -23 - ct * 3); // 像音符隨鳴聲輕輕上下跳動
-        ctx.fillText("🎵", 0, 0);
+        const isDawn = daynight && daynight.phase === "dawn";
+        ctx.fillText(isDawn ? "🎶" : "🎵", 0, 0); // 破曉滿林齊鳴畫更密的 🎶
         ctx.restore();
       }
 

@@ -560,6 +560,27 @@ const CHIRP_HEAR_RADIUS: f32 = 420.0;
 /// 鳴聲像漣漪般逐圈傳開，不會瞬間全鳴（對應 218 的 HOWL_JOIN_PROB，是「聽見後的接力」）。
 const CHIRP_JOIN_PROB: f32 = 0.45;
 
+// ─── ROADMAP 305：拂曉鳥鳴大合唱（dawn chorus）────────────────────────────────
+// 承接 221 晝日鳥鳴呼應（野鳥白天偶爾啁啾、鳴聲此起彼落地傳染成片）＋ 302 滿月嗥月（把掠食者
+// 夜嚎接上「月相」這條既有天象、滿月夜嚎得更密更長）：221 讓白天的草原有了鳥鳴底噪，但那份鳴唱
+// 至今不分時辰——破曉的晨光裡與正午艷陽下鳴得一樣疏、一樣短。可現實裡野鳥鳴得最盛的，正是天剛
+// 破曉的那一陣「dawn chorus」（拂曉合唱）——晨光初上，整片林子的鳥同時醒透、放聲齊鳴，是野地一日
+// 裡最有生氣的一刻。本切片把 302 給夜嚎接月相的同一手法，搬到晝的鳥鳴接「時辰」：破曉時段
+//（後端 is_dawn，由 game.rs 以權威日夜時鐘的 Phase::Dawn 判定、走欄位餵入，與 302 moon_full、
+// 301 meteor_active 同慣例），野鳥自發起鳴的機率明顯拉高、且一段鳴唱更悠長——晨光鋪上草地時，
+// 整片荒野的鳥鳴變得更密、更長，破曉第一次有了它最招牌的「滿林齊鳴」。221 鳴聲呼應照舊（仍走既有
+// Chirping 狀態與 chirping_snap、CHIRP_JOIN_PROB，無新狀態、無新協議欄位）；前端畫頭頂符號時自讀
+// 廣播的 daynight.phase，破曉畫一串更密的 🎶（晨間合唱）、平時畫 🎵，一眼看得出「破曉的鳴與平常不同」。
+// 與 302 滿月嗥月精準對偶：302＝夜×月相×掠食者嗥（🌕），305＝曉×時辰×野鳥鳴（🎶），合起來把
+// 「晝夜聲景」推進到「也分時辰天象」。純啟發式、零 LLM、零 tick 簽名改動、零協議改動、零新狀態、
+// 零持久化、零 migration、記憶體模式。
+/// 破曉時段野鳥自發起鳴的機率——明顯高於平常（CHIRP_PROB 0.015），表現「晨光初上、滿林齊鳴」，
+/// 讓破曉的草原鳥鳴此起彼落、明顯更密。仍不設過高：鳴唱之間仍有平靜閒晃的空檔。
+const DAWN_CHIRP_PROB: f32 = 0.05;
+/// 破曉一段鳴唱的最短／最長時長（秒）——比平常（1.5~3.0）更悠長，晨鳴一串接一串拖得更久。
+const DAWN_CHIRP_DURATION_MIN: f32 = 2.5;
+const DAWN_CHIRP_DURATION_MAX: f32 = 4.5;
+
 // ─── ROADMAP 222：小動物捧食啃咬（critter sits up to nibble）──────────────────
 // 承接 220（鳥群振翅升空）開的「物種專屬行為」這條線：220 給了野鳥專屬的「飛」，但生態裡的另一
 // 種小傢伙——小動物（SmallCritter，松鼠般的齧齒小獸）——行為卻仍與野鹿幾乎一模一樣：在地上走走停停、
@@ -3249,6 +3270,11 @@ pub struct WildlifeManager {
     /// 滿月夜時掠食者夜嚎（217）的自發起頭機率明顯拉高、長嚎更悠長（對月特別愛嚎）。預設 false
     /// （非滿月、夜嚎照舊低機率），故既有測試無須改動、行為與本切片前逐位元一致。
     moon_full: bool,
+    /// ROADMAP 305：本幀是否為破曉時段（後端權威時辰）——game.rs 每幀於 tick 前以權威日夜時鐘的
+    /// `Phase::Dawn` 判定、經 `set_dawn` 餵入（沿用 302 moon_full 的「走欄位、零 tick 簽名改動」慣例）。
+    /// 破曉時野鳥晝日鳴唱（221）的自發起鳴機率明顯拉高、一段鳴唱更悠長（拂曉滿林齊鳴）。預設 false
+    /// （非破曉、鳥鳴照舊低機率），故既有測試無須改動、行為與本切片前逐位元一致。
+    is_dawn: bool,
 }
 
 impl WildlifeManager {
@@ -3272,6 +3298,7 @@ impl WildlifeManager {
             post_rain_timer: 0.0,
             meteor_active: false,
             moon_full: false,
+            is_dawn: false,
         }
     }
 
@@ -3297,6 +3324,13 @@ impl WildlifeManager {
     /// （走欄位、不動 tick 簽名）。
     pub fn set_moon_full(&mut self, full: bool) {
         self.moon_full = full;
+    }
+
+    /// ROADMAP 305：更新本幀時辰（是否為破曉）——game.rs 每幀於 `tick` 前以權威日夜時鐘的
+    /// `Phase::Dawn` 判定後呼叫，餵入後端權威時辰。供破曉時段野鳥「拂曉滿林齊鳴」判定（自發起鳴
+    /// 機率拉高、鳴唱更悠長）（走欄位、不動 tick 簽名）。
+    pub fn set_dawn(&mut self, dawn: bool) {
+        self.is_dawn = dawn;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3418,6 +3452,8 @@ impl WildlifeManager {
         let meteor_active = self.meteor_active;
         // ROADMAP 302：本幀月相（是否滿月夜）——供掠食者夜嚎（217）滿月夜「對月特別愛嚎」判定（game.rs 已於 tick 前更新）。
         let moon_full = self.moon_full;
+        // ROADMAP 305：本幀時辰（是否破曉）——供野鳥晝日鳴唱（221）破曉「拂曉滿林齊鳴」判定（game.rs 已於 tick 前更新）。
+        let is_dawn = self.is_dawn;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -5077,14 +5113,23 @@ impl WildlifeManager {
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                     && {
                         // ROADMAP 221：白天平靜的野鳥——聽見附近同類啁啾（CHIRP_HEAR_RADIUS 內）便以
-                        // 較高的 CHIRP_JOIN_PROB 被牽動跟著起鳴（接力）；沒聽見才退回低機率 CHIRP_PROB
-                        // 自發起鳴。本幀新起鳴者不在 chirping_snap 裡，故鳴聲逐圈外擴、整群錯落而鳴。
+                        // 較高的 CHIRP_JOIN_PROB 被牽動跟著起鳴（接力）；沒聽見才退回低機率自發起鳴。
+                        // 本幀新起鳴者不在 chirping_snap 裡，故鳴聲逐圈外擴、整群錯落而鳴。
+                        // ROADMAP 305：拂曉合唱——破曉時段自發起鳴機率明顯拉高（晨光初上、滿林齊鳴），
+                        // 平時照舊低機率；221 鳴聲呼應（聽見鄰近鳴聲跟著接鳴）不分時辰一視同仁。
+                        let self_prob = if is_dawn { DAWN_CHIRP_PROB } else { CHIRP_PROB };
                         let join = hears_song(a.x, a.y, &chirping_snap) && rng.gen::<f32>() < CHIRP_JOIN_PROB;
-                        join || rng.gen::<f32>() < CHIRP_PROB
+                        join || rng.gen::<f32>() < self_prob
                     }
                 {
                     // 停下啁啾：原地仰首鳴唱一小段（頭頂浮 🎵）。
-                    let timer = rng.gen_range(CHIRP_DURATION_MIN..=CHIRP_DURATION_MAX);
+                    // ROADMAP 305：破曉一段鳴唱更悠長（晨鳴一串接一串），平時照舊。
+                    let (lo, hi) = if is_dawn {
+                        (DAWN_CHIRP_DURATION_MIN, DAWN_CHIRP_DURATION_MAX)
+                    } else {
+                        (CHIRP_DURATION_MIN, CHIRP_DURATION_MAX)
+                    };
+                    let timer = rng.gen_range(lo..=hi);
                     a.state = WildlifeState::Chirping { chirp_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Preening { .. }) {
                     // ROADMAP 276：已在理羽中——威脅一旦逼近就立刻收翅逃竄（自理永遠讓位逃命），
@@ -10370,6 +10415,57 @@ mod tests {
             }
         }
         assert!(joined, "白天平靜時聽見附近同類啁啾的野鳥，應被牽動跟著起鳴");
+    }
+
+    /// ROADMAP 305：拂曉鳥鳴大合唱——破曉時段野鳥自發起鳴的機率明顯拉高、一段鳴唱更悠長。
+    /// 場上只有一隻鳥（無鄰可接鳴、純看自發機率），破曉跑同樣多幀，累計處於 Chirping 的幀數應
+    /// **明顯多於**平常白天（機率 0.05>0.015、時長 2.5~4.5s>1.5~3.0s 雙雙拉高）。
+    #[test]
+    fn dawn_bird_chirps_more_than_normal_day() {
+        fn chirping_frames(is_dawn: bool) -> u32 {
+            let mut mgr = WildlifeManager::new();
+            let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+            bird.id = 1;
+            // 漫遊（目標設在自身、計時極長 → 幾乎原地）：平靜可起鳴，且不觸發夜眠喚醒邏輯。
+            bird.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 1.0e9 };
+            mgr.animals = vec![bird]; // 場上只有這隻鳥：無鄰可接鳴，純看自發機率
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            let mut frames = 0u32;
+            for _ in 0..8000 {
+                mgr.set_dawn(is_dawn);
+                mgr.tick(0.1, &[], &att, &[], false); // is_night=false（破曉與平常皆非夜）
+                let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                if matches!(b.state, WildlifeState::Chirping { .. }) {
+                    frames += 1;
+                }
+            }
+            frames
+        }
+        let dawn = chirping_frames(true);
+        let normal = chirping_frames(false);
+        assert!(dawn > 0, "破曉時野鳥應放聲齊鳴");
+        assert!(normal > 0, "平常白天野鳥仍會偶爾啁啾");
+        assert!(
+            dawn > normal,
+            "破曉應鳴得更密更長（dawn={dawn} 幀 應 > normal={normal} 幀）"
+        );
+    }
+
+    /// ROADMAP 305：破曉不破壞晝夜閘——即便破曉旗標為真，夜間（is_night=true）連跑多幀仍不該啁啾
+    /// （鳥鳴是白天行為；破曉本身非夜，但旗標與夜間閘相互獨立，防呆驗證夜間絕不因破曉旗標而起鳴）。
+    #[test]
+    fn dawn_flag_does_not_chirp_at_night() {
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.id = 1;
+        mgr.animals = vec![bird];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.set_dawn(true); // 破曉旗標為真
+            mgr.tick(0.1, &[], &att, &[], true); // 但夜間
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Chirping { .. }), "夜間即便破曉旗標為真仍不該啁啾");
+        }
     }
 
     #[test]
