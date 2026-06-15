@@ -113,6 +113,14 @@ const NUZZLE_DURATION_MIN: f32 = 2.0;
 /// 嗅花單段最長時長（秒）。
 const NUZZLE_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 315：秋日囤食貼膘 ───────────────────────────────────────────────
+/// 秋日囤食自發起意機率（每幀）——偏低（與 307 喘氣／308 哆嗦／312 嗅花 PROB 0.03 同量級，多數幀不觸發）。
+const FATTEN_PROB: f32 = 0.03;
+/// 囤食單段最短時長（秒）——低頭加緊啃食一陣再抬頭續行（比嗅花久些，讀起來像埋頭進食、為過冬增膘）。
+const FATTEN_DURATION_MIN: f32 = 2.5;
+/// 囤食單段最長時長（秒）。
+const FATTEN_DURATION_MAX: f32 = 4.5;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2146,6 +2154,14 @@ enum WildlifeState {
     /// 張喙中若有威脅一律優先中斷改逃竄。與 307 夏日伸舌喘氣（👅，哺乳獸伸舌）對成「夏日散熱：獸喘氣／鳥張喙」
     /// 一對——同是盛夏正午的體溫調節，物種閘恰好互補（喘氣＝哺乳獸、張喙＝野鳥），把酷暑散熱補成獸鳥俱全。
     Gaping { gape_timer: f32 },
+    /// ROADMAP 315：秋日囤食貼膘——草食走獸（鹿／小獸）在秋季白天（is_autumn）平靜時，偶爾停下、低頭加緊
+    /// 啃食、為過冬儲積脂肪（頭頂浮 🍂）。原地不動（不更新座標）、fatten_timer 倒數，到期就抬頭回到巡遊；
+    /// 囤食中若有威脅／獵物一律優先中斷改逃竄／狩獵。與 311 秋日群鳥集結（🧭，野鳥南遷前的集結）對成
+    ///「秋天裡，鳥集結、獸貼膘」一對——同是社交／覓食物種在嚴冬來臨前的「過冬準備」，物種閘恰好互補
+    ///（311＝野鳥、本切片＝草食哺乳獸），把秋季從只有野鳥補成獸鳥俱全；也與 312 春嗅花（🌸）／307 夏喘氣
+    ///（👅）並列哺乳獸「四季各有一筆」。與 312 嗅花（純享受春花的閒情）區隔：這是過冬前埋頭增膘的進食姿態
+    ///（狀態名 Fattening／符號 🍂 皆刻意區隔）。
+    Fattening { fatten_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3097,6 +3113,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 315：秋日囤食貼膘——囤食中（Fattening）原地不動、fatten_timer 倒數埋頭進食；吃夠了一陣
+    /// （耗盡）就抬頭回到巡遊（朝家附近的下一個漫遊目標，與 tick_nuzzle 同模式）。只在 Fattening 狀態下
+    /// 生效（呼叫端已確保此隻為草食走獸、秋季白天、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走
+    /// 狩獵／逃竄，不會走到此分支——囤食永遠讓位即時反應）。
+    fn tick_fatten(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Fattening { fatten_timer } = self.state {
+            let remaining = fatten_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Fattening { fatten_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 310：寒冬偎暖——偎暖中（Huddling）朝本幀重鎖的同伴 `target` 緩緩挪近到貼緊距離就停、緊挨
     /// 取暖，huddle_timer 倒數；同伴走遠不見（`target` 為 None）或計時耗盡就鬆開、起身回巡遊（與 tick_shiver／
     /// tick_puff 同模式，挑家附近的下一個漫遊目標）。與 tick_mob 同模式：呼叫端每幀重鎖最近同伴座標傳入。
@@ -3552,6 +3584,7 @@ impl Wildlife {
             WildlifeState::Nuzzling { .. }   => "nuzzling",
             WildlifeState::Nesting { .. }    => "nesting",
             WildlifeState::Gaping { .. }     => "gaping",
+            WildlifeState::Fattening { .. }  => "fattening",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5316,6 +5349,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_nuzzle(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Fattening { .. }) {
+                    // ROADMAP 315：已在秋日囤食貼膘——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（囤食
+                    // 永遠讓位逃命），否則原地低頭加緊啃食、計時倒數，吃夠了就抬頭起身回巡遊。與 312 嗅花同模式：
+                    // 一段平靜時的定格小動作，遇險即讓位逃命。囤食不繫於即時光照（起意時已逢秋季、吃完這一段只看
+                    // 計時，與嗅花／喘氣同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_fatten(dt, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Huddling { .. }) {
                     // ROADMAP 310：已在偎暖中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（偎暖永遠
                     // 讓位逃命），否則重鎖最近的同種成體夥伴、緩緩挪近貼緊取暖、計時倒數；同伴走遠不見或計時
@@ -5591,6 +5634,30 @@ impl WildlifeManager {
                     // 全速奔逃（嗅花永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(NUZZLE_DURATION_MIN..=NUZZLE_DURATION_MAX);
                     a.state = WildlifeState::Nuzzling { nuzzle_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_autumn
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < FATTEN_PROB
+                {
+                    // ROADMAP 315：秋日囤食貼膘——秋季的白天（!is_night、is_autumn），平靜歇息／漫步的草食走獸
+                    //（鹿／小獸；is_mammal 守衛把野鳥排除——埋頭增膘過冬是草食獸最招牌的「秋天」畫面）偶爾停下、
+                    // 低頭加緊啃食、為過冬儲積脂肪（轉入 Fattening 🍂）。逐幀低機率觸發 → 秋風裡，獸群由近而遠
+                    // 錯落地一隻隻低頭埋進草裡猛吃，而非同幀整群瞬間齊吃。**與 311 秋日群鳥集結（🧭，野鳥南遷前的
+                    // 集結）對成「秋天裡，鳥集結、獸貼膘」一對**：同是物種在嚴冬來臨前的「過冬準備」，物種閘恰好
+                    // 互補（311＝is_bird、本切片＝is_mammal，永不相疊），把秋季從只有野鳥補成獸鳥俱全；也與 307 夏
+                    // 喘氣（👅）／308 冬哆嗦（🥶）／312 春嗅花（🌸）並列哺乳獸「四季各有一筆」（夏散熱／冬禦寒／
+                    // 春嗅花／秋貼膘）。**與 312 嗅花（純享受春花綻放的閒情）截然不同**：那是「賞春」、這是過冬前
+                    // 埋頭增膘的進食姿態，故狀態名／符號皆刻意區隔（Nuzzling 🌸／Fattening 🍂）。**秋季守衛**：
+                    // 非秋季（is_autumn 為偽）一律跳過。**只屬於草食走獸**（掠食的狼／狐不貼膘——增膘過冬是草食獸的
+                    // 事，與牠們無關，故此切片只在草食 phase 落筆、掠食迴圈不覆蓋；有測試覆蓋掠食者不貼膘）。**排在
+                    // 296～299 雨天反應、251/284/295 恐懼分支、307 喘氣、308 哆嗦、309 呵氣、312 嗅花之後、下方吃草／
+                    // 搔癢／嬉戲等白晝玩樂之前**：看得見的危險與雨天反應永遠優先，囤食這樁過冬本能則凌駕悠閒玩樂。
+                    // **威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Fattening 續算分支即改全速奔逃（囤食永遠
+                    // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(FATTEN_DURATION_MIN..=FATTEN_DURATION_MAX);
+                    a.state = WildlifeState::Fattening { fatten_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -16972,6 +17039,184 @@ mod tests {
         mgr.animals = vec![wolf, deer];
         mgr.next_animal_id = 3;
         mgr.set_spring(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 315：秋日囤食貼膘（autumn fattening）────────────────────────────
+    #[test]
+    fn tick_fatten_holds_position_until_timer_expires() {
+        // 囤食進行中：原地不動（座標不變）、計時遞減、狀態維持 Fattening。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Fattening { fatten_timer: 3.0 };
+        deer.tick_fatten(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Fattening { fatten_timer } => {
+                assert!((fatten_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("囤食未到期應維持 Fattening，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "囤食應原地不動");
+    }
+
+    #[test]
+    fn tick_fatten_returns_to_wander_when_timer_expires() {
+        // 吃夠了：計時耗盡就抬頭起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Fattening { fatten_timer: 0.05 };
+        critter.tick_fatten(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_fatten_noop_on_other_state() {
+        // 防呆：非 Fattening 狀態呼叫 tick_fatten 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_fatten(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非囤食狀態呼叫 tick_fatten 不該改狀態");
+    }
+
+    #[test]
+    fn fattening_state_str_is_fattening() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Fattening { fatten_timer: 1.0 };
+        assert_eq!(deer.state_str(), "fattening");
+    }
+
+    #[test]
+    fn mammal_eventually_fattens_in_autumn() {
+        // 秋季白天：一頭平靜、四下無威脅的鹿，在秋季連跑多幀應有機會停下囤食（進入 Fattening）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut fattened = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、秋季
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Fattening { .. }) {
+                fattened = true;
+                break;
+            }
+        }
+        assert!(fattened, "秋季白天、平靜無威脅的鹿應偶爾停下囤食");
+    }
+
+    #[test]
+    fn critter_eventually_fattens_in_autumn() {
+        // 草食獸全員：小動物在秋季白天平靜空檔，也應偶爾停下囤食。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut fattened = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(c.state, WildlifeState::Fattening { .. }) {
+                fattened = true;
+                break;
+            }
+        }
+        assert!(fattened, "秋季白天、平靜無威脅的小動物也應偶爾停下囤食");
+    }
+
+    #[test]
+    fn mammal_does_not_fatten_when_not_autumn() {
+        // 季節守衛：非秋季（is_autumn 為偽）時，平靜的鹿連跑多幀都不該進入 Fattening。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(false);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Fattening { .. }), "非秋季不該囤食，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_never_fattens_in_autumn() {
+        // 物種守衛：囤食是草食獸專屬——野鳥即便在秋季白天（牠另走 311 集結），連跑多幀都不該進入 Fattening。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Fattening { .. }), "野鳥不該囤食，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn predator_never_fattens_in_autumn() {
+        // 物種守衛：囤食只屬於草食走獸——掠食的野狼／野狐即便在秋季白天無獵可追的平靜空檔，
+        // 連跑多幀都不該進入 Fattening（增膘過冬是草食獸的事，與掠食者無關）。
+        for kind in [WildlifeKind::WildWolf, WildlifeKind::WildFox] {
+            let mut mgr = WildlifeManager::new();
+            let mut pred = adult_at(kind, 6000.0, 6000.0);
+            pred.id = 1;
+            pred.state = WildlifeState::Resting { rest_timer: 0.1 };
+            mgr.animals = vec![pred];
+            mgr.set_autumn(true);
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            for _ in 0..600 {
+                mgr.tick(0.1, &[], &att, &[], false);
+                let p = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                assert!(!matches!(p.state, WildlifeState::Fattening { .. }), "{:?} 不該囤食，實際 {:?}", kind, p.state);
+            }
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_fatten_at_night() {
+        // 晝起意：夜間哺乳獸另走夜眠分支——即便秋季，夜裡連跑多幀都不該進入 Fattening。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Fattening { .. }), "夜間不該囤食，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn fattening_mammal_gives_way_to_flee() {
+        // 囤食永遠讓位逃命：囤食中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Fattening { fatten_timer: 1.0e9 }; // 吃得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
