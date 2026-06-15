@@ -9418,6 +9418,25 @@
         ctx.restore();
       }
 
+      // ROADMAP 316：寒冬蓬羽——寒冬寒意最深的清晨／向晚，野鳥（state==="fluffing"）停下、把羽毛蓬鬆鼓起成一團
+      // 球困住空氣保暖：頭頂浮一枚緩緩鼓脹又收（隨慢正弦徐徐脹大到飽滿再緩緩消下，像羽毛一鼓一收地蓬起保暖）的
+      // 🐤。與 308 哆嗦（🥶，哺乳獸橫向急速抖動）對成「嚴寒：獸哆嗦／鳥蓬羽」一對、動態區隔：哆嗦是定點橫向急抖、
+      // 蓬羽是緩慢飽滿的鼓脹；也與 309 呵霧（💨，上飄淡出）／310 偎暖（🤗，和緩小幅脹縮）區隔——蓬羽脹幅更大、更圓
+      // 飽，讀起來像整隻鼓成一團毛球。只有野鳥會蓬羽、哺乳獸另走 308/309/310。純前端、零協議欄位：直接讀伺服器
+      // 廣播的 w.state（後端只在寒冬寒時平靜的野鳥蓬羽時才給此狀態）。
+      if (w.state === "fluffing") {
+        ctx.save();
+        const swell = (Math.sin(now / 600) + 1) / 2;   // 0→1 緩緩鼓脹又收，像羽毛一鼓一收地蓬起保暖
+        const grow = 1.0 + swell * 0.45;               // 徐徐脹大到飽滿 [1.0, 1.45]——脹幅大於 310 偎暖，讀起來更圓飽
+        ctx.globalAlpha = 0.6 + 0.35 * swell;          // 鼓得越蓬越清晰（蓬起時飽滿、收下時轉淡）
+        ctx.font = (12 * grow) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.fillText("🐤", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 315：秋日囤食貼膘——秋季白天，草食獸（state==="fattening"）平靜時偶爾低頭加緊啃食、為過冬增膘：
       // 頭頂浮一枚隨埋頭進食的節奏一頓一頓上下起落（像低頭咬一口、再抬頭嚼一嚼）的 🍂。與 312 嗅花（🌸，和緩
       // 脹縮明滅）／307 喘氣（👅，縱向急脹縮）／311 集結（🧭，左右擺動）動態區隔：囤食是沉穩的一頓一頓上下。
@@ -9798,7 +9817,7 @@
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
       // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening") {
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "fluffing") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
