@@ -462,6 +462,23 @@ const HOWL_PROB: f32 = 0.02;
 const HOWL_DURATION_MIN: f32 = 2.0;
 const HOWL_DURATION_MAX: f32 = 3.5;
 
+// ─── ROADMAP 302：滿月嗥月（full-moon howl）─────────────────────────────────────
+// 承接 217 夜嚎／218 群嚎呼應＋239 月相（月有陰晴圓缺）：217 讓夜裡無獵可追的狼／狐偶爾仰首
+// 長嚎、218 讓嚎聲此起彼落地傳開，但那份嚎叫至今不分月色——新月夜與滿月夜嚎得一樣勤、一樣短。
+// 可「狼對著滿月長嚎」是這世界最深植人心的一幕（與 301 草食獸夜裡仰望流星恰成「動物 × 天象」
+// 的一對：草食獸無聲望流星、掠食者出聲嗥滿月）。本切片把生態系第一次接上「月相」這條既有天象：
+// 滿月之夜（後端 moon_full，與前端 moonPhase 同公式判定），掠食者自發起頭夜嚎的機率明顯拉高、
+// 且一聲長嚎更悠長——整片荒野的狼嚎在滿月夜變得更密、更長。218 群嚎呼應照舊（仍走既有 Howling
+// 狀態與 howling_snap，無新狀態、無新協議欄位）；前端畫頭頂符號時自算月相，滿月畫 🌕（對月長嚎）、
+// 平常夜畫 🌙，一眼看得出「滿月夜的嚎與平常不同」。純啟發式、零 LLM、零 tick 簽名改動、零協議改動、
+// 零新狀態、記憶體模式。
+/// 滿月夜掠食者自發起頭夜嚎的機率——明顯高於平常夜的 HOWL_PROB(0.02)，表現「對月特別愛嚎」，
+/// 讓滿月夜的荒野狼嚎此起彼落、明顯更密。仍不設過高：嚎叫之間仍有平靜巡遊的空檔。
+const MOON_HOWL_PROB: f32 = 0.06;
+/// 滿月夜一聲長嚎的最短／最長時長（秒）——比平常夜（2.0~3.5）更悠長，對月長嚎拖得更久。
+const MOON_HOWL_DURATION_MIN: f32 = 3.0;
+const MOON_HOWL_DURATION_MAX: f32 = 5.0;
+
 // ─── ROADMAP 218：群嚎呼應（howl chorus / contagion）─────────────────────────
 // 承接 217（掠食者夜嚎）：217 讓夜裡無獵可追的狼／狐偶爾仰首獨嚎（🌙），但每一聲都是孤零零的——
 // 一隻嚎完、四下無回應，少了狼群最攝人的那一幕：一聲起，四方應，此起彼落連成一片。本切片補上
@@ -3133,6 +3150,11 @@ pub struct WildlifeManager {
     /// 走欄位而非 tick 參數，沿用 296 raining 的「零 tick 簽名改動」慣例。預設 false（無流星雨、夜裡一律
     /// 沉睡），故既有測試無須改動、行為與本切片前逐位元一致。
     meteor_active: bool,
+    /// ROADMAP 302：本幀是否為滿月夜（後端權威月相）——game.rs 每幀於 tick 前以系統時間算月相、
+    /// 經 `set_moon_full` 餵入（沿用 301 meteor_active 的「走欄位、零 tick 簽名改動」慣例）。
+    /// 滿月夜時掠食者夜嚎（217）的自發起頭機率明顯拉高、長嚎更悠長（對月特別愛嚎）。預設 false
+    /// （非滿月、夜嚎照舊低機率），故既有測試無須改動、行為與本切片前逐位元一致。
+    moon_full: bool,
 }
 
 impl WildlifeManager {
@@ -3155,6 +3177,7 @@ impl WildlifeManager {
             raining: false,
             post_rain_timer: 0.0,
             meteor_active: false,
+            moon_full: false,
         }
     }
 
@@ -3173,6 +3196,13 @@ impl WildlifeManager {
     /// meteor_shower 狀態。供夜裡平靜的草食獸偶爾抬頭仰望流星判定（走欄位、不動 tick 簽名）。
     pub fn set_meteor_active(&mut self, active: bool) {
         self.meteor_active = active;
+    }
+
+    /// ROADMAP 302：更新本幀月相（是否滿月夜）——game.rs 每幀於 `tick` 前以系統時間（經 moon 模組
+    /// 與前端同公式算出受光比例）判定後呼叫，餵入後端權威月相。供滿月夜掠食者「對月特別愛嚎」判定
+    /// （走欄位、不動 tick 簽名）。
+    pub fn set_moon_full(&mut self, full: bool) {
+        self.moon_full = full;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3292,6 +3322,8 @@ impl WildlifeManager {
         let post_rain = self.post_rain_timer > 0.0;
         // ROADMAP 301：本幀天象（是否正逢流星雨）——供 Phase 4 夜裡草食獸抬頭仰望流星判定（game.rs 已於 tick 前更新）。
         let meteor_active = self.meteor_active;
+        // ROADMAP 302：本幀月相（是否滿月夜）——供掠食者夜嚎（217）滿月夜「對月特別愛嚎」判定（game.rs 已於 tick 前更新）。
+        let moon_full = self.moon_full;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -3790,12 +3822,21 @@ impl WildlifeManager {
                                 a.tick_howl(dt, rng);
                             } else if is_night && matches!(a.state, WildlifeState::Resting { .. })
                                 && {
+                                    // ROADMAP 302：滿月嗥月——滿月夜自發起頭夜嚎的機率明顯拉高（對月特別愛嚎），
+                                    // 平常夜照舊低機率；218 群嚎呼應（聽見鄰近嚎聲跟著接嚎）不分月色一視同仁。
+                                    let self_prob = if moon_full { MOON_HOWL_PROB } else { HOWL_PROB };
                                     let join = hears_howl(a.x, a.y, &howling_snap)
                                         && rng.gen::<f32>() < HOWL_JOIN_PROB;
-                                    join || rng.gen::<f32>() < HOWL_PROB
+                                    join || rng.gen::<f32>() < self_prob
                                 }
                             {
-                                let timer = rng.gen_range(HOWL_DURATION_MIN..=HOWL_DURATION_MAX);
+                                // ROADMAP 302：滿月夜一聲長嚎更悠長（對月長嚎拖得更久），平常夜照舊。
+                                let (lo, hi) = if moon_full {
+                                    (MOON_HOWL_DURATION_MIN, MOON_HOWL_DURATION_MAX)
+                                } else {
+                                    (HOWL_DURATION_MIN, HOWL_DURATION_MAX)
+                                };
+                                let timer = rng.gen_range(lo..=hi);
                                 a.state = WildlifeState::Howling { howl_timer: timer };
                             } else if matches!(a.state, WildlifeState::Pouncing { .. }) {
                                 // ROADMAP 223：已在撲跳中——把這一記撲躍完（朝落點縱身躍去、計時倒數，
@@ -9836,6 +9877,56 @@ mod tests {
             if matches!(w.state, WildlifeState::Howling { .. }) { saw_howl = true; break; }
         }
         assert!(saw_howl, "夜間無獵可追的掠食者應會仰首長嚎");
+    }
+
+    /// ROADMAP 302：滿月嗥月——統計地驗證「滿月夜狼嚎得更密、更長」：同一隻孤狼（無鄰可呼應，
+    /// 故只受自發機率影響）夜裡跑同樣多幀，滿月夜累計處於 Howling 的幀數應**明顯多於**平常夜
+    /// （機率 0.06>0.02、時長 3~5s>2~3.5s 雙雙拉高）。
+    #[test]
+    fn full_moon_predator_howls_more_than_normal_night() {
+        fn howling_frames(moon_full: bool) -> u32 {
+            let mut mgr = WildlifeManager::new();
+            let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+            wolf.id = 1;
+            wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+            mgr.animals = vec![wolf]; // 場上只有這隻狼：無鄰可接嚎，純看自發機率
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            let mut frames = 0u32;
+            for _ in 0..8000 {
+                mgr.set_moon_full(moon_full);
+                mgr.tick(0.1, &[], &att, &[], true); // is_night=true
+                let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                if matches!(w.state, WildlifeState::Howling { .. }) {
+                    frames += 1;
+                }
+            }
+            frames
+        }
+        let full = howling_frames(true);
+        let normal = howling_frames(false);
+        assert!(full > 0, "滿月夜孤狼應會對月長嚎");
+        assert!(normal > 0, "平常夜孤狼仍會偶爾長嚎");
+        assert!(
+            full > normal,
+            "滿月夜應嚎得更密更長（full={full} 幀 應 > normal={normal} 幀）"
+        );
+    }
+
+    /// ROADMAP 302：滿月不破壞晝夜閘——即便滿月，白天連跑多幀仍不該長嚎（嚎是夜間氛圍行為）。
+    #[test]
+    fn full_moon_does_not_howl_in_daytime() {
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 100000.0 };
+        mgr.animals = vec![wolf];
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..2000 {
+            mgr.set_moon_full(true); // 滿月夜
+            mgr.tick(0.1, &[], &att, &[], false); // 但白天
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Howling { .. }), "滿月的白天掠食者仍不該長嚎");
+        }
     }
 
     #[test]
