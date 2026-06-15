@@ -955,6 +955,9 @@ pub struct AppState {
     /// 餐桌熟客帳本（ROADMAP 330）：玩家↔NPC 相熟度（席間舉杯累積），
     /// 純記憶體模式重啟清零、零 LLM、碰不到遊戲狀態，與 npc_relations〔NPC↔NPC〕獨立。
     pub lunch_regulars: Arc<RwLock<crate::lunch_regular::RegularBook>>,
+    /// 街坊相認冷卻帳本（ROADMAP 331）：白天崗位上，七大 NPC 認出走近的熟客玩家（相熟度 ≥ 點頭之交）
+    /// 點名招呼一句；per-(玩家,NPC) 冷卻避免連珠炮。純記憶體模式重啟清零、零 LLM、碰不到遊戲狀態。
+    pub npc_recognition: Arc<RwLock<crate::npc_recognition::RecognitionBook>>,
     /// NPC 自主懸賞系統（ROADMAP 82）：蘭卡根據安全感發布通緝令，討伐者得獎。
     pub npc_bounty: Arc<RwLock<crate::npc_bounty::NpcBountyState>>,
     /// NPC 落敗反應系統（ROADMAP 83）：玩家倒地時 NPC 廣播慰問 / 警示，純記憶體模式，重啟清零。
@@ -1186,6 +1189,7 @@ impl AppState {
             daytime_talk_sem: Arc::new(Semaphore::new(crate::daytime_talk::MAX_CONCURRENT_TALKS)),
             lunch_chatter: Arc::new(RwLock::new(crate::lunch_chatter::LunchChatterState::new())),
             lunch_regulars: Arc::new(RwLock::new(crate::lunch_regular::RegularBook::new())),
+            npc_recognition: Arc::new(RwLock::new(crate::npc_recognition::RecognitionBook::new())),
             npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
             npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),

@@ -91,6 +91,7 @@ mod lunch_regular;
 mod npc_bounty;
 mod npc_defeat_reaction;
 mod npc_level_greet;
+mod npc_recognition;
 mod npc_commission;
 mod npc_expedition_boost;
 mod npc_workshop_boost;
