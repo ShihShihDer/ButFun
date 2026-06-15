@@ -75,6 +75,20 @@ const PUFF_DURATION_MIN: f32 = 1.0;
 /// 一口呵氣成霧時長最大值（秒）。
 const PUFF_DURATION_MAX: f32 = 2.5;
 
+/// ROADMAP 310：寒冬偎暖——偎暖時「看得見同伴」的範圍（像素）。寒冬寒時，身邊這範圍內若有同種成體
+/// 夥伴，平靜的社交性哺乳獸會朝牠靠攏偎暖（比理毛 GROOM_RADIUS 60 大——偎暖得先走過去聚攏，故先看得遠）。
+const HUDDLE_SEE_RADIUS: f32 = 200.0;
+/// 偎暖時與同伴貼緊的舒適距離（像素）——靠到這麼近就停（緊挨著分享體溫、不疊在一起）。
+const HUDDLE_SNUG_DIST: f32 = 22.0;
+/// 偎暖靠攏的移動速度（像素/秒）——緩緩挪過去依偎，比逃竄慢得多（從容地湊作一團）。
+const HUDDLE_SPEED: f32 = 26.0;
+/// 寒冬寒時、身邊有同伴的平靜社交哺乳獸，本幀轉入偎暖的機率——偏低（與 308 哆嗦 SHIVER_PROB 同量級）。
+const HUDDLE_PROB: f32 = 0.03;
+/// 偎暖單段最短時長（秒）——緊挨著取暖一陣再鬆開續行（比哆嗦久些，群聚取暖是較安穩的歇息）。
+const HUDDLE_DURATION_MIN: f32 = 3.0;
+/// 偎暖單段最長時長（秒）。
+const HUDDLE_DURATION_MAX: f32 = 6.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2043,6 +2057,12 @@ enum WildlifeState {
     /// 優先中斷改逃竄／狩獵。與 308 寒冬哆嗦（🥶，最冷時段縮身發抖）對成「縮身冷顫／呵氣成霧」一對：哆嗦
     /// 演「冷的體感反應」、呵氣演「冷的可見證據」，把「天有多冷」從動物的感受演到看得見的呼吸白霧。
     Puffing { puff_timer: f32 },
+    /// ROADMAP 310：寒冬偎暖——寒冬寒時平靜的社交性哺乳獸（鹿／小獸／狼，野狐獨行不偎），身邊有同種成體
+    /// 夥伴時朝牠靠攏、緊挨著分享體溫（頭頂浮 🤗）。target_x/y＝本幀重鎖的最近同伴座標（逐幀挪近到貼緊
+    /// 距離就停）、huddle_timer 倒數，同伴走遠不見或計時耗盡就鬆開回巡遊；偎暖中若有威脅／獵物一律優先
+    /// 中斷改逃竄／狩獵。與 308 寒冬哆嗦（🥶，孤獸獨自縮身發抖）對成「獨則顫／群則偎」一對：同樣寒冬寒時，
+    /// 孤獸只能縮身哆嗦，身邊有伴的則湊作一團偎暖——把禦寒從「各自的體感」推進到「彼此牽動的群體行為」。
+    Huddling { target_x: f32, target_y: f32, huddle_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2947,6 +2967,36 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 310：寒冬偎暖——偎暖中（Huddling）朝本幀重鎖的同伴 `target` 緩緩挪近到貼緊距離就停、緊挨
+    /// 取暖，huddle_timer 倒數；同伴走遠不見（`target` 為 None）或計時耗盡就鬆開、起身回巡遊（與 tick_shiver／
+    /// tick_puff 同模式，挑家附近的下一個漫遊目標）。與 tick_mob 同模式：呼叫端每幀重鎖最近同伴座標傳入。
+    /// 只在 Huddling 狀態下生效（呼叫端已確保此隻為社交哺乳獸、寒冬寒時、平靜無威脅；威脅／獵物一旦出現，
+    /// 更前面的分支已改走逃竄／狩獵，不會走到此分支——偎暖永遠讓位即時反應）。
+    fn tick_huddle(&mut self, dt: f32, target: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Huddling { huddle_timer, .. } = self.state {
+            let remaining = huddle_timer - dt;
+            match target {
+                // 同伴走遠不見了——鬆開、起身回巡遊（一個人就偎不成暖了）。
+                None => {
+                    let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                    self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                }
+                Some((tx, ty)) => {
+                    if remaining <= 0.0 {
+                        let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                        self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                    } else {
+                        // 朝同伴緩緩挪近到貼緊距離就停（緊挨取暖、不疊上去）；計時隨狀態變體攜帶。
+                        let (nx, ny) = huddle_step(self.x, self.y, tx, ty, dt);
+                        self.x = nx;
+                        self.y = ny;
+                        self.state = WildlifeState::Huddling { target_x: tx, target_y: ty, huddle_timer: remaining };
+                    }
+                }
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3337,6 +3387,7 @@ impl Wildlife {
             WildlifeState::Panting { .. }    => "panting",
             WildlifeState::Shivering { .. }  => "shivering",
             WildlifeState::Puffing { .. }    => "puffing",
+            WildlifeState::Huddling { .. }   => "huddling",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -4191,6 +4242,13 @@ impl WildlifeManager {
                                 // 鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故呵氣只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_puff(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Huddling { .. }) {
+                                // ROADMAP 310：已在偎暖中——重鎖最近的同種成狼夥伴、緩緩挪近貼緊取暖、計時倒數；
+                                // 同伴走遠不見或計時耗盡就鬆開回巡遊。獵物在更前面（prey_snap 搜尋）已優先處理，故偎暖
+                                // 只在無獵可追的平靜空檔延續、永遠讓位給狩獵。只有社交的野狼會偎暖（轉入分支限野狼），
+                                // 故以 WildWolf 重鎖同伴；獨行的野狐不偎（與 287 野狐不問安一致）。
+                                let companion = nearest_adult_of_kind(a.id, WildlifeKind::WildWolf, a.x, a.y, &wolf_adult_snap, HUDDLE_SEE_RADIUS);
+                                a.tick_huddle(dt, companion, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4416,6 +4474,25 @@ impl WildlifeManager {
                                 // 搜尋範圍內、更前面就已改走狩獵。純內生散熱姿態，不改任何獵殺／進食／消化結果。
                                 let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
                                 a.state = WildlifeState::Panting { pant_timer: timer };
+                            } else if pred_kind == WildlifeKind::WildWolf
+                                && !is_night
+                                && is_cold_winter
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && nearest_adult_of_kind(a.id, WildlifeKind::WildWolf, a.x, a.y, &wolf_adult_snap, HUDDLE_SEE_RADIUS).is_some()
+                                && rng.gen::<f32>() < HUDDLE_PROB
+                            {
+                                // ROADMAP 310：寒冬偎暖（掠食者一側）——寒冬寒時（is_cold_winter）、白天無獵可追的平靜
+                                // 野狼，身邊 HUDDLE_SEE_RADIUS 內若有同種成狼夥伴，偶爾朝牠靠攏、緊挨著分享體溫（轉入
+                                // Huddling 🤗）。**只屬於社交的野狼**（animal_kind 守衛）——獨行的野狐不偎（與 287 野狐不
+                                // 問安、218 群嚎＝狼社交的二分一致＝各有性格），孤獨的野狐寒冬寒時仍只落到下面的哆嗦獨自
+                                // 發抖。與草食的鹿／小獸偎暖（各自 phase）湊成「社交哺乳獸寒冬偎暖、孤獸只能哆嗦」一套。
+                                // **刻意排在 308 哆嗦分支之前**：有伴先偎暖、沒伴才落到哆嗦，孤狼顫、群狼偎，層次分明。
+                                // 偎暖永遠讓位狩獵：此分支落在 prey_snap 搜尋無果的 else 內，獵物一旦在搜尋範圍內、更前面就
+                                // 已改走狩獵。逐幀低機率 → 群狼由近而遠錯落地一隻隻靠攏聚成一團。
+                                let timer = rng.gen_range(HUDDLE_DURATION_MIN..=HUDDLE_DURATION_MAX);
+                                if let Some((tx, ty)) = nearest_adult_of_kind(a.id, WildlifeKind::WildWolf, a.x, a.y, &wolf_adult_snap, HUDDLE_SEE_RADIUS) {
+                                    a.state = WildlifeState::Huddling { target_x: tx, target_y: ty, huddle_timer: timer };
+                                }
                             } else if !is_night
                                 && is_cold_winter
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
@@ -5039,6 +5116,17 @@ impl WildlifeManager {
                     } else {
                         a.tick_puff(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Huddling { .. }) {
+                    // ROADMAP 310：已在偎暖中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（偎暖永遠
+                    // 讓位逃命），否則重鎖最近的同種成體夥伴、緩緩挪近貼緊取暖、計時倒數；同伴走遠不見或計時
+                    // 耗盡就鬆開回巡遊。與 308 哆嗦同模式但會位移：哆嗦是孤獸定點縮身、偎暖是朝有伴的同伴湊近，
+                    // 彼此牽動地聚成一團。每幀重鎖最近同伴座標傳入 tick_huddle（仿 267 圍攻的逐幀重鎖目標）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let companion = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, HUDDLE_SEE_RADIUS);
+                        a.tick_huddle(dt, companion, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
                     // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
                     // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
@@ -5218,6 +5306,28 @@ impl WildlifeManager {
                     //（喘氣永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
                     a.state = WildlifeState::Panting { pant_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_cold_winter
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, HUDDLE_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < HUDDLE_PROB
+                {
+                    // ROADMAP 310：寒冬偎暖——寒冬寒時（is_cold_winter）、白天平靜的社交哺乳獸（鹿／小獸；is_mammal
+                    // 守衛把野鳥排除），身邊 HUDDLE_SEE_RADIUS 內若有同種成體夥伴，偶爾朝牠靠攏、緊挨著分享體溫
+                    // （轉入 Huddling 🤗）。**與 308 寒冬哆嗦（🥶，孤獸獨自縮身發抖）對成「獨則顫／群則偎」一對**：
+                    // 同樣寒冬寒時，孤獸只能縮身哆嗦，身邊有伴的則湊作一團偎暖——把禦寒從「各自的體感」推進到
+                    // 「彼此牽動的群體行為」，直接回應 reviewer 一路要的「讓不同個體真的彼此牽動」。**刻意排在 308
+                    // 哆嗦分支之前**：有伴先偎暖、沒伴（nearest_adult_of_kind 為 None）才落到下面的哆嗦，於是孤獸顫、
+                    // 群獸偎，層次分明。**逐幀低機率觸發** → 寒風裡獸群由近而遠錯落地一隻隻靠攏聚成一團，而非同幀整群
+                    // 瞬間擠成一堆。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Huddling 續算分支即改全速奔逃
+                    // （偎暖永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。掠食一側只有社交的野狼會偎暖（在掠食迴圈
+                    // 同步覆蓋）、獨行的野狐不偎（與 287 野狐不問安、218 群嚎＝狼社交的二分一致＝各有性格）。
+                    let timer = rng.gen_range(HUDDLE_DURATION_MIN..=HUDDLE_DURATION_MAX);
+                    if let Some((tx, ty)) = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, HUDDLE_SEE_RADIUS) {
+                        a.state = WildlifeState::Huddling { target_x: tx, target_y: ty, huddle_timer: timer };
+                    }
                 } else if is_mammal
                     && !is_night
                     && is_cold_winter
@@ -6272,6 +6382,19 @@ fn mob_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (MOB_SPEED * dt).min(dist - MOB_HARASS_DIST); // 不俯衝過鼓譟圈、不真撲上去
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 310：寒冬偎暖——朝同伴 (tx,ty) 緩緩挪近到貼緊距離 HUDDLE_SNUG_DIST 就停（緊挨取暖、不疊
+/// 在一起）。單幀位移受 HUDDLE_SPEED 約束、且夾到剛好停在貼緊距離、不會穿過去貼到同伴身上。純函式，便於測試。
+fn huddle_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= HUDDLE_SNUG_DIST || dist < 1.0 {
+        return (x, y);
+    }
+    let step = (HUDDLE_SPEED * dt).min(dist - HUDDLE_SNUG_DIST);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -15775,6 +15898,242 @@ mod tests {
         let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
         deer.id = 2;
         deer.state = WildlifeState::Puffing { puff_timer: 1.0e9 }; // 呵得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 310：寒冬偎暖（winter huddling）─────────────────────────────────
+    #[test]
+    fn huddle_step_approaches_then_holds_at_snug() {
+        // 遠在貼緊距離外 → 朝同伴緩緩挪近（距離縮小、沿 +x）；已在貼緊距離內 → 原地不動（緊挨取暖、不疊上去）。
+        let (nx, ny) = huddle_step(0.0, 0.0, 1000.0, 0.0, 0.1);
+        assert!(nx > 0.0 && ny.abs() < 1e-3, "應朝同伴挪近（沿 +x）");
+        assert!(nx <= HUDDLE_SPEED * 0.1 + 1e-3, "單幀挪近距離受 HUDDLE_SPEED 約束");
+        let near = HUDDLE_SNUG_DIST - 5.0;
+        let (hx, hy) = huddle_step(0.0, 0.0, near, 0.0, 0.1);
+        assert_eq!((hx, hy), (0.0, 0.0), "已貼到取暖距離內應原地不動、不再逼近");
+    }
+
+    #[test]
+    fn huddle_step_does_not_overshoot_snug() {
+        // 從貼緊圈外一點點挪近：單幀位移被夾到「剛好停在貼緊距離」，不會穿過去疊到同伴身上。
+        let start = HUDDLE_SNUG_DIST + 10.0;
+        let (nx, _) = huddle_step(0.0, 0.0, start, 0.0, 1.0); // dt 大到足以衝過頭（若不夾）
+        assert!((nx - 10.0).abs() < 1e-3, "應剛好挪到貼緊圈邊緣（位移=10），不穿過去，實際 {nx}");
+    }
+
+    #[test]
+    fn tick_huddle_returns_to_wander_when_companion_gone() {
+        // 同伴走遠不見（target 為 None）——偎不成暖，鬆開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Huddling { target_x: 5050.0, target_y: 5000.0, huddle_timer: 5.0 };
+        deer.tick_huddle(0.1, None, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "同伴不見應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_huddle_returns_to_wander_when_timer_expires() {
+        // 計時耗盡——緊挨取暖一陣後鬆開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Huddling { target_x: 5050.0, target_y: 5000.0, huddle_timer: 0.05 };
+        deer.tick_huddle(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "計時耗盡應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_huddle_noop_on_other_state() {
+        // 只在 Huddling 狀態下生效：其餘狀態原封不動。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_huddle(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非偎暖狀態應原封不動");
+    }
+
+    #[test]
+    fn huddling_state_str_is_huddling() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Huddling { target_x: 0.0, target_y: 0.0, huddle_timer: 1.0 };
+        assert_eq!(deer.state_str(), "huddling");
+    }
+
+    #[test]
+    fn mammal_with_companion_eventually_huddles_in_cold_winter() {
+        // 寒冬寒時、身邊有同種成體夥伴（120px，落在 HUDDLE_SEE_RADIUS 200 內、卻在理毛 GROOM_RADIUS 60 外）
+        // 的平靜鹿，連跑多幀應有機會朝同伴靠攏偎暖（進入 Huddling）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut huddled = false;
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            if mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })) {
+                huddled = true;
+                break;
+            }
+        }
+        assert!(huddled, "寒冬寒時、身邊有同伴的鹿應偶爾朝同伴靠攏偎暖");
+    }
+
+    #[test]
+    fn lone_mammal_never_huddles() {
+        // 對偶守衛：孤獸（身邊無同種夥伴）即便寒冬寒時、連跑多幀都不該偎暖（會落到 308 哆嗦獨自發抖）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Huddling { .. }), "孤獸無同伴不該偎暖，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn wolf_with_companion_eventually_huddles_in_cold_winter() {
+        // 社交的野狼：寒冬寒時、身邊有同種成狼夥伴（120px）的平靜野狼，連跑多幀也應有機會朝同伴靠攏偎暖。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildWolf, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut huddled = false;
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            if mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })) {
+                huddled = true;
+                break;
+            }
+        }
+        assert!(huddled, "寒冬寒時、身邊有同伴的野狼應偶爾朝同伴靠攏偎暖");
+    }
+
+    #[test]
+    fn solitary_fox_never_huddles_even_with_companion() {
+        // 各有性格：野狐獨來獨往——即便寒冬寒時、身邊就有另一隻同種野狐，連跑多幀都不該偎暖（孤狐只會哆嗦）。
+        let mut mgr = WildlifeManager::new();
+        let mut fox = adult_at(WildlifeKind::WildFox, 6000.0, 6000.0);
+        fox.id = 1;
+        fox.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut other = adult_at(WildlifeKind::WildFox, 6120.0, 6000.0);
+        other.id = 2;
+        other.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fox, other];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })),
+                "獨行的野狐不該偎暖");
+        }
+    }
+
+    #[test]
+    fn bird_never_huddles_in_cold_winter() {
+        // 物種守衛：偎暖是社交哺乳獸專屬——野鳥即便兩隻相鄰、寒冬寒時，連跑多幀都不該偎暖。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut other = adult_at(WildlifeKind::WildBird, 6120.0, 6000.0);
+        other.id = 2;
+        other.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird, other];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })),
+                "野鳥不該偎暖");
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_huddle_when_not_winter() {
+        // 季節守衛：光照微弱但非冬季時，即便身邊有同伴，平靜的鹿連跑多幀都不該偎暖。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(false);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })),
+                "非冬季不該偎暖");
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_huddle_at_night() {
+        // 晝起意：夜間哺乳獸另走夜眠分支——即便寒冬寒冷、身邊有同伴，夜裡連跑多幀都不該偎暖。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Huddling { .. })),
+                "夜間不該偎暖");
+        }
+    }
+
+    #[test]
+    fn huddling_mammal_gives_way_to_flee() {
+        // 偎暖永遠讓位逃命：偎暖中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Huddling { target_x: 5100.0, target_y: 5050.0, huddle_timer: 1.0e9 };
         mgr.animals = vec![wolf, deer];
         mgr.next_animal_id = 3;
         mgr.set_winter(true);
