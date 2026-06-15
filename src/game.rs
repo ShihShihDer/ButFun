@@ -1031,10 +1031,17 @@ pub fn spawn(app: AppState) {
                     // ROADMAP 296：餵入本幀權威天氣（是否下雨），供草食獸雨中避雨判定（走欄位、不動 tick 簽名）。
                     // ROADMAP 301：餵入本幀權威天象（是否正逢流星雨），供夜裡草食獸抬頭仰望流星判定（同走欄位）。
                     let meteor_active = app.meteor_shower.read().unwrap().is_active();
+                    // ROADMAP 302：餵入本幀權威月相（是否滿月夜），供滿月夜掠食者「對月特別愛嚎」判定。
+                    // 以系統時間（Unix epoch 毫秒）經 moon 模組（與前端 moonPhase 同公式）判定，前後端月相一致。
+                    let moon_full = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| crate::moon::is_full_moon(d.as_millis() as f64))
+                        .unwrap_or(false);
                     let wildlife_events = {
                         let mut wm = app.wildlife_manager.write().unwrap();
                         wm.set_raining(is_raining);
                         wm.set_meteor_active(meteor_active);
+                        wm.set_moon_full(moon_full);
                         wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
                     };
                     for ev in wildlife_events {

@@ -9071,6 +9071,9 @@
       // ROADMAP 217：掠食者夜嚎——夜裡無獵可追時仰首長嚎的掠食者（state==="howling"）頭頂浮一個
       // 緩緩升起又明滅的 🌙，讓「狼仰首對月長嗥」一眼看得到（夜的氛圍第一次有了掠食者的嗓音）。
       // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在夜間掠食者無獵可追時才給此狀態）。
+      // ROADMAP 302：滿月嗥月——滿月夜（moonPhase().illum ≥ MOON_FULL_ILLUM，與後端同公式）改畫一輪
+      // 飽滿的 🌕「對月長嚎」，與平常夜的弦月 🌙 一眼區隔；滿月夜後端也讓狼嚎得更密更長（純前端判月相、
+      // 零協議欄位，與後端 moon::is_full_moon 用同一道天文受光比例公式對得上）。
       if (w.state === "howling") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.4 * Math.abs(Math.sin(now / 520)); // 像一聲嗥叫的起落般明滅
@@ -9078,7 +9081,8 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0, -24 - Math.abs(Math.sin(now / 700)) * 2); // 像仰首時微微上揚
-        ctx.fillText("🌙", 0, 0);
+        const fullMoon = moonPhase(Date.now()).illum >= MOON_FULL_ILLUM;
+        ctx.fillText(fullMoon ? "🌕" : "🌙", 0, 0);
         ctx.restore();
       }
 
@@ -10870,6 +10874,10 @@
   // 新月（近黑）→眉月→上弦（右半亮）→盈凸→滿月→虧凸→下弦（左半亮）→殘月→新月，周而復始。
   // 純前端、零後端、確定性：相位由真實時間（Date.now）對朔望月取模推得，全玩家共看同一張月臉。
   const SYNODIC_MONTH_DAYS = 29.530588853;   // 朔望月平均長度（天）
+  // ROADMAP 302：滿月嗥月——「視為滿月」的受光比例門檻（illum∈[0,1]，新月 0、滿月 1）。0.96 對應
+  // 滿月前後約 ±1.9 天的窗口，與後端 moon::MOON_FULL_ILLUM 同值，確保前端畫 🌕 與後端「狼對月愛嚎」
+  // 落在同一段滿月夜。
+  const MOON_FULL_ILLUM = 0.96;
   // 已知新月參考時刻（2000-01-06 18:14 UTC，廣為採用的曆元新月），單位毫秒。
   const KNOWN_NEW_MOON_MS = 947182440000;
   const DAY_MS = 86400000;

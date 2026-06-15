@@ -33,6 +33,7 @@ mod gather;
 mod gather_field;
 mod guild;
 mod market;
+mod moon;
 mod npc;
 mod npc_chat;
 mod inventory;
