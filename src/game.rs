@@ -123,11 +123,13 @@ pub fn spawn(app: AppState) {
 
             // 季節循環（ROADMAP 137）：推進季節計時器，切換時廣播公告。
             // 季節成長倍率疊乘在日夜倍率之上，獨立正交不互相侵犯。
-            let (season_growth, is_summer, is_winter) = {
+            let (season_growth, is_summer, is_winter, is_autumn) = {
                 let mut s = app.season.write().unwrap();
                 let is_summer = s.current == crate::season::Season::Summer;
                 // ROADMAP 308：本幀是否為冬季（供哺乳獸「寒冬哆嗦取暖」判定，與 is_summer 同把季節鎖一次取得）。
                 let is_winter = s.current == crate::season::Season::Winter;
+                // ROADMAP 311：本幀是否為秋季（供野鳥「秋日群鳥集結」判定，同把季節鎖一次取得）。
+                let is_autumn = s.current == crate::season::Season::Autumn;
                 if let Some(new_season) = s.tick(dt) {
                     let _ = app.tx_chat.send(new_season.announce_text().to_string());
                     tracing::info!(season = new_season.as_str(), "季節切換");
@@ -139,7 +141,7 @@ pub fn spawn(app: AppState) {
                         format!("季節更替——進入{}了", new_season.display_name()),
                     );
                 }
-                (s.growth_rate_modifier(), is_summer, is_winter)
+                (s.growth_rate_modifier(), is_summer, is_winter, is_autumn)
             };
 
             // 夜採星晶（ROADMAP 50）：偵測日夜轉換事件，生成或清除星晶礦脈。
@@ -1062,6 +1064,7 @@ pub fn spawn(app: AppState) {
                         wm.set_hot(is_hot);
                         wm.set_winter(is_winter);
                         wm.set_cold(is_cold);
+                        wm.set_autumn(is_autumn);
                         wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
                     };
                     for ev in wildlife_events {
