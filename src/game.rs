@@ -100,7 +100,7 @@ pub fn spawn(app: AppState) {
 
             // 先推進日夜時鐘，取得當下亮度決定作物成長速度（短暫持鎖，不跨 await）。
             // 時鐘無條件前進;view 只在要廣播時才取。
-            let (daynight_view, growth_rate, is_night, is_dawn, is_dusk) = {
+            let (daynight_view, growth_rate, is_night, is_dawn, is_dusk, is_hot) = {
                 let mut daynight = app.daynight.write().unwrap();
                 daynight.advance(dt);
                 let phase = daynight.phase();
@@ -114,13 +114,16 @@ pub fn spawn(app: AppState) {
                 } else {
                     None
                 };
-                (view, daynight.growth_rate(), is_night, is_dawn, is_dusk)
+                // ROADMAP 307：酷暑判定——光照強度超過 0.85 即為酷暑（盛夏正午）。
+                let is_hot = daynight.light_level() > 0.85;
+                (view, daynight.growth_rate(), is_night, is_dawn, is_dusk, is_hot)
             };
 
             // 季節循環（ROADMAP 137）：推進季節計時器，切換時廣播公告。
             // 季節成長倍率疊乘在日夜倍率之上，獨立正交不互相侵犯。
-            let season_growth = {
+            let (season_growth, is_summer) = {
                 let mut s = app.season.write().unwrap();
+                let is_summer = s.current == crate::season::Season::Summer;
                 if let Some(new_season) = s.tick(dt) {
                     let _ = app.tx_chat.send(new_season.announce_text().to_string());
                     tracing::info!(season = new_season.as_str(), "季節切換");
@@ -132,7 +135,7 @@ pub fn spawn(app: AppState) {
                         format!("季節更替——進入{}了", new_season.display_name()),
                     );
                 }
-                s.growth_rate_modifier()
+                (s.growth_rate_modifier(), is_summer)
             };
 
             // 夜採星晶（ROADMAP 50）：偵測日夜轉換事件，生成或清除星晶礦脈。
@@ -1051,6 +1054,8 @@ pub fn spawn(app: AppState) {
                         wm.set_moon_full(moon_full);
                         wm.set_dawn(is_dawn);
                         wm.set_dusk(is_dusk);
+                        wm.set_summer(is_summer);
+                        wm.set_hot(is_hot);
                         wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
                     };
                     for ev in wildlife_events {

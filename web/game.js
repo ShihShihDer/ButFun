@@ -9285,6 +9285,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 307：夏日伸舌喘氣——盛夏正午酷暑下，哺乳獸（state==="panting"）停下腳步、伸舌急速喘氣
+      // 散熱：頭頂浮一枚急速脹縮（字級隨明滅微微放大／縮小，透出喘氣的急促感）的 👅。與 291 舔毛（👅，
+      // 清潔自理）符號相同、動態區隔：舔毛是一頓一頓的舌舔、喘氣是急速脹縮的氣喘。只有哺乳獸（鹿/狼/狐/小獸）
+      // 會喘、野鳥不喘。純前端、零協議欄位：直接讀伺服器廣播 of w.state（後端只在夏季正午酷暑時才給此狀態）。
+      if (w.state === "panting") {
+        ctx.save();
+        const pulse = 1.0 + Math.abs(Math.sin(now / 110)) * 0.25; // 急速脹縮 [1.0, 1.25]
+        ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 110)); // 急促明滅
+        ctx.font = (12 * pulse) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.fillText("👅", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9646,8 +9662,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";

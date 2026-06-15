@@ -50,6 +50,14 @@ const WANDER_TIMER_MAX: f32 = 7.0;
 const REST_TIMER_MIN: f32 = 1.5;
 const REST_TIMER_MAX: f32 = 4.5;
 
+// ─── ROADMAP 307：夏日伸舌喘氣 ────────────────────────────────────────────────
+/// 夏日喘氣自發起意機率（每幀）。
+const PANT_PROB: f32 = 0.03;
+/// 夏日喘氣時長最小值（秒）。
+const PANT_DURATION_MIN: f32 = 2.0;
+/// 夏日喘氣時長最大值（秒）。
+const PANT_DURATION_MAX: f32 = 4.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2006,6 +2014,9 @@ enum WildlifeState {
     /// 倒數，仰望一小段就鬆下來、低頭回到歸巢沉睡（流星雨一停也立刻鬆下回睡）；威脅一旦真逼進 FLEE_RADIUS
     /// 一律改全速奔逃（仰望永遠讓位逃命）。與 296 雨中避雨（🌧️，白天讀雨）對成「天氣／天象」一對。
     Stargazing { gaze_timer: f32 },
+    /// ROADMAP 307：夏日伸舌喘氣——哺乳獸在盛夏酷暑（Summer & light > 0.85）時停下喘氣散熱（頭頂浮 👅）。
+    /// 原地不動（不更新座標）、pant_timer 倒數，到期就回到巡遊；喘氣中若有威脅／獵物一律優先中斷改逃竄／狩獵。
+    Panting { pant_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2862,6 +2873,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 307：夏日伸舌喘氣——喘氣中（Panting）原地不動、pant_timer 倒數散熱；涼快些了（耗盡）就
+    /// 鬆下來回到巡遊（朝家附近的下一個漫遊目標，與 tick_lick 同模式）。只在 Panting 狀態下生效（呼叫端已
+    /// 確保此隻為哺乳獸、盛夏正午、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走狩獵／逃竄，不會
+    /// 走到此分支——喘氣永遠讓位即時反應）。
+    fn tick_pant(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Panting { pant_timer } = self.state {
+            let remaining = pant_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Panting { pant_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3249,6 +3276,7 @@ impl Wildlife {
             WildlifeState::Basking { .. } => "basking",
             WildlifeState::Drinking { .. } => "drinking",
             WildlifeState::Stargazing { .. } => "stargazing",
+            WildlifeState::Panting { .. }    => "panting",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3302,6 +3330,10 @@ pub struct WildlifeManager {
     /// 黃昏時野鳥晝日鳴唱（221）的自發起鳴機率拉高、一段鳴唱拉長（暮鳴），但都介於平常與破曉之間。
     /// 預設 false（非黃昏、鳥鳴照舊低機率），故既有測試無須改動、行為與本切片前逐位元一致。
     is_dusk: bool,
+    /// ROADMAP 307：本幀是否為夏季——game.rs 每幀於 tick 前以 `app.season` 判定後呼叫。
+    is_summer: bool,
+    /// ROADMAP 307：本幀是否光照強烈（酷熱）——game.rs 每幀於 tick 前以 `light > 0.85`（盛夏正午）判定後呼叫。
+    is_hot: bool,
 }
 
 impl WildlifeManager {
@@ -3327,6 +3359,8 @@ impl WildlifeManager {
             moon_full: false,
             is_dawn: false,
             is_dusk: false,
+            is_summer: false,
+            is_hot: false,
         }
     }
 
@@ -3366,6 +3400,18 @@ impl WildlifeManager {
     /// 鳴唱拉長，但都介於平常與破曉之間）（走欄位、不動 tick 簽名）。
     pub fn set_dusk(&mut self, dusk: bool) {
         self.is_dusk = dusk;
+    }
+
+    /// ROADMAP 307：更新本幀季節是否為夏季——game.rs 每幀於 `tick` 前以權威 `app.season` 判定後呼叫。
+    /// 與 is_hot 雙重守衛，供哺乳獸「盛夏正午伸舌喘氣散熱」判定（走欄位、不動 tick 簽名）。
+    pub fn set_summer(&mut self, summer: bool) {
+        self.is_summer = summer;
+    }
+
+    /// ROADMAP 307：更新本幀是否光照強烈（酷熱正午）——game.rs 每幀於 `tick` 前以 `light > 0.85`
+    /// 判定後呼叫。與 is_summer 雙重守衛，供哺乳獸「盛夏正午伸舌喘氣散熱」判定（走欄位、不動 tick 簽名）。
+    pub fn set_hot(&mut self, hot: bool) {
+        self.is_hot = hot;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3491,6 +3537,8 @@ impl WildlifeManager {
         let is_dawn = self.is_dawn;
         // ROADMAP 306：本幀時辰（是否黃昏）——供野鳥晝日鳴唱（221）黃昏「暮鳴」判定（game.rs 已於 tick 前更新）。
         let is_dusk = self.is_dusk;
+        // ROADMAP 307：本幀是否盛夏正午酷暑（夏季且光照強烈）——供哺乳獸伸舌喘氣散熱判定（game.rs 已於 tick 前更新）。
+        let is_hot_summer = self.is_summer && self.is_hot;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4045,6 +4093,11 @@ impl WildlifeManager {
                                 // 取回扒開就起身回巡遊、has_cache 歸偽）。獵物在更前面（prey_snap 搜尋）已優先處理，
                                 // 故取回只在無獵可追的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_recover(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Panting { .. }) {
+                                // ROADMAP 307：已在伸舌喘氣中——把這一段散熱喘完（原地不動、計時倒數，涼快些了
+                                // 就鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故喘氣只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_pant(dt, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4254,6 +4307,22 @@ impl WildlifeManager {
                                 // 刨出取回（一次只藏一筆，「埋藏→取回→再埋」自然成環）。
                                 let timer = rng.gen_range(BURY_DURATION_MIN..=BURY_DURATION_MAX);
                                 a.state = WildlifeState::Burying { bury_timer: timer };
+                            } else if !is_night
+                                && is_hot_summer
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < PANT_PROB
+                            {
+                                // ROADMAP 307：盛夏正午酷暑（is_hot_summer＝夏季且光照強烈）、白天無獵可追的平靜
+                                // 掠食者——偶爾停下、張嘴伸舌急速喘氣散熱（轉入 Panting 👅）。哺乳獸最招牌的散熱方式，
+                                // 野狼／野狐二者皆會（與草食的鹿／小動物在各自 phase 同步覆蓋＝除鳥以外全員）。與 291 舔毛
+                                //（👅，清潔自理）區隔——喘氣是盛夏正午限定的熱反應、符號急速脹縮而非一頓一頓；與 305 拂曉
+                                // 鳥鳴／306 黃昏暮鳴對成「季節熱度／時辰聲景」一套。排在社交自理（舔毛／嗅標／讀界）與覓食
+                                //（埋藏／取回）之後、蜷睡之前：醒著的散熱反應優先於補眠（熱得喘氣時不會蜷睡），沒起意去做
+                                // 那些日常的閒檔、又逢酷暑才停下喘氣。各喘各的、不傳染。雙重守衛：非夏季或光照不強一律跳過。
+                                // 夜間改走夜嚎分支。喘氣永遠讓位狩獵：此分支落在 prey_snap 搜尋無果的 else 內，獵物一旦在
+                                // 搜尋範圍內、更前面就已改走狩獵。純內生散熱姿態，不改任何獵殺／進食／消化結果。
+                                let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
+                                a.state = WildlifeState::Panting { pant_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -4815,6 +4884,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_drink(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Panting { .. }) {
+                    // ROADMAP 307：已在伸舌喘氣——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（喘氣永遠
+                    // 讓位逃命），否則原地張嘴伸舌急速喘氣散熱、計時倒數，涼快些了就鬆下來起身回巡遊。與 298
+                    // 曬太陽同模式：一段平靜時的定格小動作，遇險即讓位逃命。喘氣不繫於即時光照（起意時已逢酷暑、
+                    // 喘完這一段只看計時，與曬太陽／飲水同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_pant(dt, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
                     // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
                     // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
@@ -4974,6 +5053,26 @@ impl WildlifeManager {
                     // 續算分支即改全速奔逃（飲水永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(DRINK_DURATION_MIN..=DRINK_DURATION_MAX);
                     a.state = WildlifeState::Drinking { drink_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_hot_summer
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < PANT_PROB
+                {
+                    // ROADMAP 307：夏日伸舌喘氣——盛夏正午酷暑（is_hot_summer＝夏季且光照強烈）的白天（!is_night），
+                    // 平靜歇息／漫步的草食走獸（鹿／小獸；is_mammal 守衛把野鳥排除——鳥靠張翅／避陰散熱，喘氣是哺乳獸
+                    // 最招牌的散熱方式）偶爾停下、張嘴伸舌急速喘氣散熱（轉入 Panting 👅）。逐幀低機率觸發 → 烈日當頭，
+                    // 獸群由近而遠錯落地一隻隻停下喘氣，而非同幀整群瞬間齊喘。**把「動物 × 季節熱度」這條維度第一次接起來**：
+                    // 後端早有權威季節（app.season）與光照，生態系至此第一次讀「夏季＋正午」，看得出獸群會「應對酷暑」。與
+                    // 305 拂曉鳥鳴／306 黃昏暮鳴對成「季節熱度／時辰聲景」一套、與 229 夏季薄霧（視覺）對成同一個盛夏正午。
+                    // **雙重守衛**：非夏季或光照不強（is_hot_summer 為偽）一律跳過。**只屬於哺乳獸**（掠食的狼／狐另在掠食
+                    // 迴圈同步覆蓋＝除鳥以外全員；有測試覆蓋鳥不喘）。**排在 296～299 雨天反應、251/284/295 恐懼分支之後、
+                    // 下方吃草／搔癢／嬉戲等白晝玩樂之前**：看得見的危險與雨天反應永遠優先，酷暑喘氣這樁熱反應則凌駕悠閒玩樂
+                    //（熱得喘氣時不嬉鬧）。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Panting 續算分支即改全速奔逃
+                    //（喘氣永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
+                    a.state = WildlifeState::Panting { pant_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -14970,5 +15069,187 @@ mod tests {
             assert!(!matches!(o.state, WildlifeState::Feasting { .. }),
                 "野狐不該去搶另一隻野狐的獵物（搶食只屬野狼）");
         }
+    }
+
+    // ─── ROADMAP 307：夏日伸舌喘氣（summer panting）──────────────────────────
+    #[test]
+    fn tick_pant_holds_position_until_timer_expires() {
+        // 喘氣進行中：原地不動（座標不變）、計時遞減、狀態維持 Panting。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Panting { pant_timer: 3.0 };
+        deer.tick_pant(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Panting { pant_timer } => {
+                assert!((pant_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("喘氣未到期應維持 Panting，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "喘氣應原地不動");
+    }
+
+    #[test]
+    fn tick_pant_returns_to_wander_when_timer_expires() {
+        // 喘夠了涼快些了：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Panting { pant_timer: 0.05 };
+        critter.tick_pant(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_pant_noop_on_other_state() {
+        // 防呆：非 Panting 狀態呼叫 tick_pant 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_pant(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非喘氣狀態呼叫 tick_pant 不該改狀態");
+    }
+
+    #[test]
+    fn panting_state_str_is_panting() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Panting { pant_timer: 1.0 };
+        assert_eq!(deer.state_str(), "panting");
+    }
+
+    #[test]
+    fn mammal_eventually_pants_in_hot_summer_noon() {
+        // 盛夏正午酷暑：一頭平靜、四下無威脅的鹿，在夏季且光照強烈時連跑多幀應有機會停下喘氣（進入 Panting）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut panted = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、盛夏正午
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Panting { .. }) {
+                panted = true;
+                break;
+            }
+        }
+        assert!(panted, "盛夏正午酷暑、平靜無威脅的鹿應偶爾停下喘氣");
+    }
+
+    #[test]
+    fn predator_eventually_pants_in_hot_summer_noon() {
+        // 除鳥以外全員：掠食的野狼在盛夏正午酷暑、無獵可追的平靜空檔，也應偶爾停下喘氣散熱。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut panted = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Panting { .. }) {
+                panted = true;
+                break;
+            }
+        }
+        assert!(panted, "盛夏正午酷暑、無獵可追的野狼也應偶爾停下喘氣");
+    }
+
+    #[test]
+    fn mammal_does_not_pant_when_not_summer() {
+        // 季節守衛：光照強烈但非夏季（is_summer 為偽）時，平靜的鹿連跑多幀都不該進入 Panting。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(false);
+        mgr.set_hot(true); // 烈日但非夏季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Panting { .. }), "非夏季不該喘氣，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_pant_when_not_hot() {
+        // 光照守衛：夏季但光照不強（is_hot 為偽，即非正午）時，平靜的鹿連跑多幀都不該進入 Panting。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(false); // 夏季但非烈日正午
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Panting { .. }), "夏季非正午不該喘氣，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_never_pants_in_hot_summer() {
+        // 物種守衛：喘氣是哺乳獸專屬——野鳥即便在盛夏正午酷暑，連跑多幀都不該進入 Panting（鳥靠張翅／避陰散熱）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Panting { .. }), "野鳥不該喘氣，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_pant_at_night() {
+        // 晝起意：夜間哺乳獸另走夜眠／夜嚎分支——即便夏季酷熱，夜裡連跑多幀都不該進入 Panting。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Panting { .. }), "夜間不該喘氣，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn panting_mammal_gives_way_to_flee() {
+        // 喘氣永遠讓位逃命：喘氣中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Panting { pant_timer: 1.0e9 }; // 喘得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
     }
 }
