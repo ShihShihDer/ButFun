@@ -151,6 +151,15 @@ const LEAF_CHASE_DURATION_MIN: f32 = 1.5;
 /// 一段逐葉最長時長（秒）。
 const LEAF_CHASE_DURATION_MAX: f32 = 3.0;
 
+// ─── ROADMAP 321：秋日雄鹿磨角（autumn antler-rubbing）──────────────────────────
+/// 秋日磨角自發起意機率（每幀）——略低於 315 囤食 FATTEN_PROB(0.03)：秋天首要仍是埋頭增膘過冬（嚴肅的覓食
+/// 先行），磨角是發情季前偶一為之的標誌性動作（去除已乾枯的鹿茸、宣示領域），不如進食頻繁。
+const RUB_PROB: f32 = 0.02;
+/// 一段磨角的最短／最長時長（秒）——比照囤食／刨雪的定點覓食節奏，是一陣專注的反覆磨蹭、非轉瞬的小動作。
+const RUB_DURATION_MIN: f32 = 2.5;
+/// 一段磨角最長時長（秒）。
+const RUB_DURATION_MAX: f32 = 4.5;
+
 // ─── ROADMAP 316：寒冬蓬羽 ───────────────────────────────────────────────────
 /// 寒冬蓬羽自發起意機率（每幀）——偏低（與 308 哆嗦 SHIVER_PROB 0.03 同量級，多數幀不觸發）。
 const FLUFF_PROB: f32 = 0.03;
@@ -2279,6 +2288,13 @@ enum WildlifeState {
     /// leaf_timer 倒數；追到落點（撲著了）或計時耗盡就收尾回巡遊；逐葉中若有威脅一律優先中斷改逃竄。
     /// 只屬於小動物（最玩心的逐葉者；野鹿沉穩、野鳥另有舒翅／集結，各有性情）。
     LeafChasing { target_x: f32, target_y: f32, leaf_timer: f32 },
+    /// ROADMAP 321：秋日雄鹿磨角——成體野鹿（WildDeer，且 maturity 已滿）在秋季白天（is_autumn）平靜時，偶爾
+    /// 停下、朝身旁的矮樹／灌叢低頭，將頭上鹿角一下一下反覆磨蹭（antler-rubbing：去除已乾枯的鹿茸、宣示即將
+    /// 到來的發情季與領域，頭頂浮 🌳）。原地不動（不更新座標）、rub_timer 倒數，到期就抬頭起身回到巡遊；磨角中
+    /// 若有威脅一律優先中斷改逃竄。**只屬於成體野鹿**（幼鹿尚無角、小獸／野鳥無角、掠食者另走獵食迴圈）——這是
+    /// 第一樁「成體野鹿專屬」的季節戲。與 224 頂角（💥，兩隻成體互相牴角較勁）區隔：那是同伴間的比武、這是對著
+    /// 樹獨自磨角的季前準備；與 315 囤食（🍂，秋季草食獸低頭增膘）並列秋季野鹿的兩筆——一筆覓食、一筆求偶準備。
+    Rubbing { rub_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3294,6 +3310,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 321：秋日雄鹿磨角——磨角中（Rubbing）原地不動、rub_timer 倒數，鹿角一下一下蹭著矮樹去除乾枯
+    /// 的鹿茸；磨夠了一陣（耗盡）就抬頭回到巡遊（朝家附近的下一個漫遊目標，與 tick_fatten／tick_crater 同模式）。
+    /// 只在 Rubbing 狀態下生效（呼叫端已確保此隻為秋季白天、平靜無威脅的成體野鹿；威脅一旦出現，更前面的續算
+    /// 分支已改走逃竄，不會走到此分支——磨角永遠讓位逃命）。
+    fn tick_rub(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Rubbing { rub_timer } = self.state {
+            let remaining = rub_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Rubbing { rub_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 310：寒冬偎暖——偎暖中（Huddling）朝本幀重鎖的同伴 `target` 緩緩挪近到貼緊距離就停、緊挨
     /// 取暖，huddle_timer 倒數；同伴走遠不見（`target` 為 None）或計時耗盡就鬆開、起身回巡遊（與 tick_shiver／
     /// tick_puff 同模式，挑家附近的下一個漫遊目標）。與 tick_mob 同模式：呼叫端每幀重鎖最近同伴座標傳入。
@@ -3829,6 +3861,7 @@ impl Wildlife {
             WildlifeState::Trekking { .. }  => "trekking",
             WildlifeState::Following { .. } => "following",
             WildlifeState::LeafChasing { .. } => "leaf_chasing",
+            WildlifeState::Rubbing { .. }   => "rubbing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5489,6 +5522,8 @@ impl WildlifeManager {
                 let threat_near = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS).is_some();
                 let is_bird = animal_kind == WildlifeKind::WildBird;
                 let is_critter = animal_kind == WildlifeKind::SmallCritter;
+                // ROADMAP 321：秋日雄鹿磨角——只有野鹿頭上長角、會對著樹磨角（小獸／野鳥無角、掠食者另走獵食迴圈）。
+                let is_deer = animal_kind == WildlifeKind::WildDeer;
                 // ROADMAP 277：走獸搔癢——只有長皮毛的草食走獸（鹿／小獸）會搔癢（野鳥走 276 理羽、
                 // 掠食者另由掠食迴圈處理、不入此平靜作息分支）。
                 let is_mammal = matches!(animal_kind, WildlifeKind::WildDeer | WildlifeKind::SmallCritter);
@@ -5625,6 +5660,16 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_crater(dt, rng);
+                    }
+                } else if matches!(a.state, WildlifeState::Rubbing { .. }) {
+                    // ROADMAP 321：已在秋日磨角——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（磨角永遠
+                    // 讓位逃命），否則原地將鹿角一下一下蹭著矮樹去茸、計時倒數，磨夠了就抬頭起身回巡遊。與 315
+                    // 囤食同模式：一段平靜時的定格小動作，遇險即讓位逃命。磨角不繫於即時光照（起意時已逢秋季、
+                    // 磨完這一段只看計時，與囤食／刨雪同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_rub(dt, rng);
                     }
                 } else if matches!(a.state, WildlifeState::Huddling { .. }) {
                     // ROADMAP 310：已在偎暖中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（偎暖永遠
@@ -6008,6 +6053,29 @@ impl WildlifeManager {
                     // 逼進 FLEE_RADIUS，上面 Cratering 續算分支即改全速奔逃（刨雪永遠讓位逃命）。機率先擲，多數幀略過。
                     let timer = rng.gen_range(CRATER_DURATION_MIN..=CRATER_DURATION_MAX);
                     a.state = WildlifeState::Cratering { crater_timer: timer };
+                } else if is_deer
+                    && !a.is_juvenile()
+                    && !is_night
+                    && is_autumn
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < RUB_PROB
+                {
+                    // ROADMAP 321：秋日雄鹿磨角——秋季的白天（!is_night、is_autumn），平靜歇息／漫步的成體野鹿
+                    //（is_deer && !is_juvenile 守衛：幼鹿尚無角、小獸／野鳥無角、掠食者另走獵食迴圈——這是首樁
+                    //「成體野鹿專屬」的季節戲）偶爾停下、朝身旁矮樹低頭、將頭上鹿角一下一下反覆磨蹭去除已乾枯的
+                    // 鹿茸、宣示即將到來的發情季與領域（轉入 Rubbing 🌳）。逐幀低機率觸發 → 秋風裡，鹿群由近而遠
+                    // 錯落地一隻隻停下對著樹磨角，而非同幀整群瞬間齊磨。**與 315 囤食貼膘（🍂，秋季草食獸低頭增膘）
+                    // 並列秋季野鹿的兩筆**：一筆過冬覓食、一筆求偶準備（同季由機率天然錯開、互不相爭）。**與 224
+                    // 頂角（💥，兩隻成體互相牴角較勁）截然不同**：那是同伴間的比武、這是對著樹獨自磨角的季前準備，
+                    // 故狀態名／符號皆刻意區隔（Sparring 💥／Rubbing 🌳）。**秋季＋成體守衛**：非秋季或仍是幼鹿一律
+                    // 跳過。**只屬於野鹿**（小獸／野鳥無角不磨、掠食的狼／狐另走獵食迴圈；有測試覆蓋他種不磨角）。
+                    //**排在 296～299 雨天反應、251/284/295 恐懼分支、307 喘氣、308 哆嗦、309 呵氣、312 嗅花、315 囤食、
+                    // 319 刨雪之後、下方吃草／搔癢／嬉戲等白晝玩樂之前**：看得見的危險與過冬覓食永遠優先，磨角這樁
+                    // 季前本能則凌駕悠閒玩樂。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Rubbing 續算分支即
+                    // 改全速奔逃（磨角永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(RUB_DURATION_MIN..=RUB_DURATION_MAX);
+                    a.state = WildlifeState::Rubbing { rub_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -18547,6 +18615,161 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", c.state);
+    }
+
+    // ─── ROADMAP 321：秋日雄鹿磨角（autumn antler-rubbing）────────────────────────
+    #[test]
+    fn rubbing_state_str_is_rubbing() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Rubbing { rub_timer: 1.0 };
+        assert_eq!(deer.state_str(), "rubbing");
+    }
+
+    #[test]
+    fn tick_rub_counts_down_in_place() {
+        // 磨角進行中：原地不動（座標不變）、計時遞減、狀態維持 Rubbing。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Rubbing { rub_timer: 3.0 };
+        deer.tick_rub(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Rubbing { rub_timer } => {
+                assert!((rub_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("未到期應維持 Rubbing，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "磨角原地不動，座標不該變");
+    }
+
+    #[test]
+    fn tick_rub_returns_to_wander_when_timer_expires() {
+        // 磨夠了：計時耗盡就抬頭起身回巡遊。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Rubbing { rub_timer: 0.05 };
+        deer.tick_rub(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(deer.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_rub_noop_on_other_state() {
+        // 防呆：非 Rubbing 狀態呼叫 tick_rub 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_rub(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非磨角狀態呼叫 tick_rub 不該改狀態");
+    }
+
+    #[test]
+    fn deer_eventually_rubs_in_autumn() {
+        // 秋季白天：一隻平靜、四下無威脅的成體野鹿，在秋季連跑多幀應有機會停下對著樹磨角（進入 Rubbing）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut rubbed = false;
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、秋季
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Rubbing { .. }) {
+                rubbed = true;
+                break;
+            }
+        }
+        assert!(rubbed, "秋季白天、平靜無威脅的成體野鹿應偶爾停下對著樹磨角");
+    }
+
+    #[test]
+    fn deer_does_not_rub_when_not_autumn() {
+        // 季節守衛：非秋季（is_autumn 為偽）時，平靜的成體野鹿連跑多幀都不該進入 Rubbing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(false);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Rubbing { .. }), "非秋季不該磨角，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn juvenile_deer_never_rubs_in_autumn() {
+        // 成體守衛：磨角是成體野鹿專屬——幼鹿尚無角，即便秋季白天，連跑多幀都不該進入 Rubbing。
+        let mut mgr = WildlifeManager::new();
+        let mut fawn = juvenile_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        fawn.id = 1;
+        fawn.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![fawn];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Rubbing { .. }), "幼鹿無角不該磨角，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn non_deer_never_rubs_in_autumn() {
+        // 物種守衛：磨角是野鹿專屬——小獸／野鳥／掠食者無角，即便秋季白天，連跑多幀都不該進入 Rubbing。
+        for kind in [WildlifeKind::SmallCritter, WildlifeKind::WildBird, WildlifeKind::WildWolf, WildlifeKind::WildFox] {
+            let mut mgr = WildlifeManager::new();
+            let mut a = adult_at(kind, 6000.0, 6000.0);
+            a.id = 1;
+            a.state = WildlifeState::Resting { rest_timer: 0.1 };
+            mgr.animals = vec![a];
+            mgr.set_autumn(true);
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            for _ in 0..600 {
+                mgr.tick(0.1, &[], &att, &[], false);
+                let x = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                assert!(!matches!(x.state, WildlifeState::Rubbing { .. }), "{:?} 無角不該磨角，實際 {:?}", kind, x.state);
+            }
+        }
+    }
+
+    #[test]
+    fn deer_does_not_rub_at_night() {
+        // 晝起意：夜間野鹿另走夜眠分支——即便秋季，夜裡連跑多幀都不該進入 Rubbing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Rubbing { .. }), "夜間不該磨角，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn rubbing_deer_gives_way_to_flee() {
+        // 磨角永遠讓位逃命：磨角中的野鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Rubbing { rub_timer: 1.0e9 }; // 磨得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
     }
 
     // ─── ROADMAP 313：春日銜枝整巢 ──────────────────────────────────────────────
