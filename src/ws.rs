@@ -2993,8 +2993,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     p.toast_cooldown = TOAST_COOLDOWN_SECS;
                                     p.toast_count = p.toast_count.wrapping_add(1);
                                 }
-                                // 5. 廣播該 NPC 的回敬泡泡（就地定位在其座位上）。
-                                if let Some(text) = toast_line(npc_id, slot) {
+                                // 4b. 記一筆相熟度（ROADMAP 330）：登入玩家用帳號 uid（跨連線延續本場），
+                                //     訪客用連線 id（斷線即失，與訪客無存檔一致）。回傳累積次數與是否跨層。
+                                let player_key = authed_uid.unwrap_or(id);
+                                let toast_rec = app
+                                    .lunch_regulars
+                                    .write()
+                                    .unwrap()
+                                    .record(&player_key.to_string(), npc_id);
+                                // 5. 廣播該 NPC 的回敬泡泡（就地定位在其座位上）；回敬語氣隨相熟度
+                                //    升溫——生面孔客套、熟客熱絡，剛跨層還會冒一句專屬「混熟了」台詞。
+                                if let Some(text) =
+                                    crate::lunch_regular::toast_response(npc_id, toast_rec, slot)
+                                        .or_else(|| toast_line(npc_id, slot))
+                                {
                                     let (wx, wy) = seats
                                         .iter()
                                         .find(|(sid, _, _)| *sid == npc_id)

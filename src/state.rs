@@ -952,6 +952,9 @@ pub struct AppState {
     /// 午休席間閒話狀態（ROADMAP 328）：正午圍桌共食時 NPC 輪流冒出家常閒話泡泡，
     /// 純模板零 LLM、純記憶體模式，重啟清零。
     pub lunch_chatter: Arc<RwLock<crate::lunch_chatter::LunchChatterState>>,
+    /// 餐桌熟客帳本（ROADMAP 330）：玩家↔NPC 相熟度（席間舉杯累積），
+    /// 純記憶體模式重啟清零、零 LLM、碰不到遊戲狀態，與 npc_relations〔NPC↔NPC〕獨立。
+    pub lunch_regulars: Arc<RwLock<crate::lunch_regular::RegularBook>>,
     /// NPC 自主懸賞系統（ROADMAP 82）：蘭卡根據安全感發布通緝令，討伐者得獎。
     pub npc_bounty: Arc<RwLock<crate::npc_bounty::NpcBountyState>>,
     /// NPC 落敗反應系統（ROADMAP 83）：玩家倒地時 NPC 廣播慰問 / 警示，純記憶體模式，重啟清零。
@@ -1182,6 +1185,7 @@ impl AppState {
             daytime_talk: Arc::new(RwLock::new(crate::daytime_talk::DaytimeTalkState::new())),
             daytime_talk_sem: Arc::new(Semaphore::new(crate::daytime_talk::MAX_CONCURRENT_TALKS)),
             lunch_chatter: Arc::new(RwLock::new(crate::lunch_chatter::LunchChatterState::new())),
+            lunch_regulars: Arc::new(RwLock::new(crate::lunch_regular::RegularBook::new())),
             npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
             npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
