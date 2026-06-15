@@ -86,6 +86,7 @@ mod npc_dusk_call;
 mod npc_noon_bell;
 mod npc_night_watch;
 mod daytime_talk;
+mod lunch_chatter;
 mod npc_bounty;
 mod npc_defeat_reaction;
 mod npc_level_greet;

@@ -2165,6 +2165,37 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 午休席間閒話（ROADMAP 328）：正午圍桌共食時，NPC 輪流冒出一句家常閒話泡泡。
+            // 純模板、零 LLM、零網路；只在午休時段、只發就地 NpcSpeech（不洗世界聊天頻道），
+            // 與 76 夜談 / 81 白日對話（皆 LLM＋聊天頻道）區隔。ROADMAP 114：0 玩家時仍持續。
+            {
+                let (phase, fraction) = {
+                    let dn = app.daynight.read().unwrap();
+                    (dn.phase(), dn.fraction())
+                };
+                let lunching = crate::npc_schedule::is_lunch_time(phase, fraction);
+                let utterance = app.lunch_chatter.write().unwrap().tick(dt, lunching);
+                if let Some(u) = utterance {
+                    let sched = app.npc_schedule.read().unwrap();
+                    // 只有真的已坐定（活動為 Lunching）才開口；還在趕路就略過這句，
+                    // 避免泡泡浮在去廣場的半路上。
+                    if sched.get_activity(u.speaker_id) == Some(crate::npc_schedule::NpcActivity::Lunching) {
+                        let (wx, wy) = sched
+                            .get_pos(u.speaker_id)
+                            .unwrap_or_else(|| crate::npc_schedule::fallback_pos(u.speaker_id));
+                        drop(sched);
+                        let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                            npc_id: u.speaker_id.to_string(),
+                            npc_name: crate::lunch_chatter::display_name(u.speaker_id).to_string(),
+                            text: u.text.to_string(),
+                            display_secs: 6,
+                            wx,
+                            wy,
+                        }));
+                    }
+                }
+            }
+
             // 晨喚（ROADMAP 77）：日夜循環進入黎明時，凱爾長老廣播晨間致辭。
             // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
             {

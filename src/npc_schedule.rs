@@ -24,6 +24,49 @@ const LUNCH_END_FRACTION: f32 = 0.40;
 /// 玩家一眼看得出「大家都聚到鎮中央了」。刻意與任一夜宿點錯開，作為可辨識的鎮心。
 pub const PLAZA_POS: Pos = Pos::new(2400.0, 2260.0);
 
+/// 圍桌共食的座位環半徑（像素，ROADMAP 328）：正午七大 NPC 不再全擠在 `PLAZA_POS` 同一點
+/// 互相重疊，而是各自落在環繞鎮心一圈的座位上，看起來像圍著一桌坐下用餐。
+const LUNCH_SEAT_RADIUS: f32 = 64.0;
+
+/// 取得某 NPC 正午聚食時的「座位」座標（ROADMAP 328）。
+///
+/// 七大 NPC 依其在 `VILLAGE_NPCS` 中的固定次序，等角分佈在以 `PLAZA_POS` 為圓心、
+/// `LUNCH_SEAT_RADIUS` 為半徑的座位環上，彼此錯開、不再疊在同一點。純函式、可測：
+/// 同一 id 永遠回同一座位、各 NPC 座位互異。非村落 NPC（不在名單內）回鎮心本身作後備。
+///
+/// 角度與座位偏移皆為編譯期可算的常數三角值，避免在熱路徑每幀重算；此處用查表近似
+/// （七等分圓周）讓座位穩定、可重現，且不引入浮點不確定性。
+pub fn lunch_seat(id: &str) -> Pos {
+    // 找出該 NPC 在權威次序中的索引；找不到（非村落 NPC）則回鎮心。
+    let Some(idx) = VILLAGE_NPCS.iter().position(|s| s.id == id) else {
+        return PLAZA_POS;
+    };
+    let n = VILLAGE_NPCS.len();
+    // 七等分圓周的單位方向（cos, sin），預先算好避免熱路徑三角運算與浮點不確定性。
+    // 由 i 從 0 起、每格 2π/7 ≈ 51.43°，第一個座位朝正上方（-y 為上）。
+    let (ux, uy) = unit_dir_seven(idx % n);
+    Pos::new(
+        PLAZA_POS.x + ux * LUNCH_SEAT_RADIUS,
+        PLAZA_POS.y + uy * LUNCH_SEAT_RADIUS,
+    )
+}
+
+/// 七等分圓周第 `i` 個座位的單位方向（cos, sin）。
+/// 第 0 個朝正上方，順時針排開；查表避免熱路徑三角運算、保證可重現。
+fn unit_dir_seven(i: usize) -> (f32, f32) {
+    // 角度（度）：-90（正上）起，每格 +360/7 ≈ 51.4286°，逐一硬編 cos/sin。
+    const DIRS: [(f32, f32); 7] = [
+        (0.0, -1.0),       // -90°：正上
+        (0.7818, -0.6235), // -38.57°
+        (0.9749, 0.2225),  //  12.86°
+        (0.4339, 0.9009),  //  64.29°
+        (-0.4339, 0.9009), // 115.71°
+        (-0.9749, 0.2225), // 167.14°
+        (-0.7818, -0.6235),// 218.57°（≈ -141.43°）
+    ];
+    DIRS[i % 7]
+}
+
 /// 是否正值正午聚食時段。純函式、可測。
 ///
 /// 只在「白天階段」且 `fraction` 落在午休窗內才成立——午休本就嵌在白天裡，
@@ -233,7 +276,7 @@ impl NpcScheduleManager {
                 let target = if phase == Phase::Night {
                     s.night_pos
                 } else if lunching {
-                    PLAZA_POS // 正午聚食：離崗走到鎮中廣場
+                    lunch_seat(s.id) // 正午聚食：離崗走到鎮中廣場的專屬座位（ROADMAP 328 圍桌錯開）
                 } else {
                     s.station_pos // 破曉、午前午後白天、黃昏都在崗位上
                 };
@@ -515,11 +558,16 @@ mod tests {
         }
         for s in VILLAGE_NPCS {
             let (x, y) = mgr.get_pos(s.id).unwrap();
+            // ROADMAP 328：抵達的是各自的座位（環繞鎮心一圈），而非同一點。
+            let seat = lunch_seat(s.id);
             assert!(
-                (x - PLAZA_POS.x).abs() < 1.0 && (y - PLAZA_POS.y).abs() < 1.0,
-                "{} 正午應抵達廣場 ({},{})，實際 ({},{})", s.id, PLAZA_POS.x, PLAZA_POS.y, x, y
+                (x - seat.x).abs() < 1.0 && (y - seat.y).abs() < 1.0,
+                "{} 正午應抵達座位 ({},{})，實際 ({},{})", s.id, seat.x, seat.y, x, y
             );
-            assert_eq!(mgr.get_activity(s.id), Some(NpcActivity::Lunching), "{} 抵達廣場應聚食", s.id);
+            // 座位仍落在鎮心一圈內（離 PLAZA_POS 約一個座位環半徑）。
+            let d = ((x - PLAZA_POS.x).powi(2) + (y - PLAZA_POS.y).powi(2)).sqrt();
+            assert!(d <= LUNCH_SEAT_RADIUS + 1.0, "{} 座位應在鎮心一圈內", s.id);
+            assert_eq!(mgr.get_activity(s.id), Some(NpcActivity::Lunching), "{} 抵達座位應聚食", s.id);
         }
     }
 
@@ -548,5 +596,41 @@ mod tests {
         let (x, y) = mgr.get_pos("merchant").unwrap();
         assert!((x - 2120.0).abs() < 1.0 && (y - 2328.0).abs() < 1.0, "午後商人應回崗位");
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Tallying));
+    }
+
+    #[test]
+    fn lunch_seats_are_distinct_for_all_village_npcs() {
+        // ROADMAP 328：七大 NPC 的座位互不相同（不再疊在同一點）。
+        let seats: Vec<Pos> = VILLAGE_NPCS.iter().map(|s| lunch_seat(s.id)).collect();
+        for i in 0..seats.len() {
+            for j in (i + 1)..seats.len() {
+                let close = (seats[i].x - seats[j].x).abs() < 1.0
+                    && (seats[i].y - seats[j].y).abs() < 1.0;
+                assert!(
+                    !close,
+                    "{} 與 {} 的座位不應重疊", VILLAGE_NPCS[i].id, VILLAGE_NPCS[j].id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lunch_seats_ring_around_plaza_center() {
+        // 每個座位都落在以鎮心為圓心、座位環半徑的圓上（誤差容忍查表近似）。
+        for s in VILLAGE_NPCS {
+            let seat = lunch_seat(s.id);
+            let d = ((seat.x - PLAZA_POS.x).powi(2) + (seat.y - PLAZA_POS.y).powi(2)).sqrt();
+            assert!(
+                (d - LUNCH_SEAT_RADIUS).abs() < 1.0,
+                "{} 座位距鎮心應約等於座位環半徑，實際 {}", s.id, d
+            );
+        }
+    }
+
+    #[test]
+    fn lunch_seat_is_deterministic_and_defaults_for_unknown() {
+        // 同一 id 永遠回同一座位；非村落 NPC 回鎮心本身。
+        assert_eq!(lunch_seat("merchant"), lunch_seat("merchant"));
+        assert_eq!(lunch_seat("unknown_npc"), PLAZA_POS);
     }
 }
