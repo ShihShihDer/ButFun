@@ -27,6 +27,28 @@ pub const ENTER_REACH: f32 = 96.0;
 /// 室內移動速度（與世界玩家速度一致）。
 pub const INDOOR_SPEED: f32 = world_core::PLAYER_SPEED;
 
+/// 室內可擺放家具的地板格範圍（內部 6×6，去掉外圍一格石磚牆）。
+/// ROADMAP 323 住家家具擺位：家具只能放在地板格上，不能擺進牆裡。
+pub const FLOOR_MIN_CELL: u8 = 1;
+pub const FLOOR_MAX_CELL: u8 = 6;
+
+/// 室內格 (col, row) 是否為可擺放家具的地板格（落在內部 6×6、非外圍石磚牆）。
+pub fn is_floor_cell(col: u8, row: u8) -> bool {
+    (FLOOR_MIN_CELL..=FLOOR_MAX_CELL).contains(&col)
+        && (FLOOR_MIN_CELL..=FLOOR_MAX_CELL).contains(&row)
+}
+
+/// 把室內座標 (ix, iy) 換算成所在的地板格 (col, row)，夾緊在可擺放範圍內。
+/// 玩家可移動範圍（`indoor_step` 夾在 [MARGIN, INTERIOR-MARGIN]）天然落在地板格內，
+/// 故夾緊只是防呆；ROADMAP 323 用它把「玩家當前所站的格」當成家具落點。
+pub fn cell_of(ix: f32, iy: f32) -> (u8, u8) {
+    let clamp_cell = |v: f32| -> u8 {
+        let c = (v / INTERIOR_TILE_PX).floor() as i32;
+        c.clamp(FLOOR_MIN_CELL as i32, FLOOR_MAX_CELL as i32) as u8
+    };
+    (clamp_cell(ix), clamp_cell(iy))
+}
+
 /// 玩家進入室內時的初始位置（中央靠南，靠近入口）。
 pub fn entry_position() -> (f32, f32) {
     (INTERIOR_WIDTH / 2.0, INTERIOR_HEIGHT - MARGIN - 16.0)
@@ -114,6 +136,37 @@ mod tests {
         let (x0, y0) = (128.0, 128.0);
         let (x1, y1) = indoor_step(x0, y0, false, false, false, false, 0.5);
         assert_eq!((x1, y1), (x0, y0));
+    }
+
+    #[test]
+    fn floor_cell_excludes_walls() {
+        // 內部 6×6（1..=6）為地板格；外圍 0 與 7 為石磚牆。
+        assert!(is_floor_cell(1, 1));
+        assert!(is_floor_cell(6, 6));
+        assert!(is_floor_cell(3, 4));
+        assert!(!is_floor_cell(0, 3), "col=0 是牆");
+        assert!(!is_floor_cell(3, 0), "row=0 是牆");
+        assert!(!is_floor_cell(7, 3), "col=7 是牆");
+        assert!(!is_floor_cell(3, 7), "row=7 是牆");
+    }
+
+    #[test]
+    fn cell_of_maps_walkable_range_to_floor_cells() {
+        // 玩家可移動範圍內任一點換算出的格都應落在地板格 1..=6。
+        for &(ix, iy) in &[
+            (MARGIN, MARGIN),
+            (INTERIOR_WIDTH - MARGIN, INTERIOR_HEIGHT - MARGIN),
+            (INTERIOR_WIDTH / 2.0, INTERIOR_HEIGHT / 2.0),
+        ] {
+            let (col, row) = cell_of(ix, iy);
+            assert!(is_floor_cell(col, row), "({ix},{iy}) → ({col},{row}) 應為地板格");
+        }
+        // 進入點（玩家初始所站處）也應在地板格。
+        let (ix, iy) = entry_position();
+        let (col, row) = cell_of(ix, iy);
+        assert!(is_floor_cell(col, row));
+        // 中央 (128,128) 落在第 4 格（128/32 = 4）。
+        assert_eq!(cell_of(128.0, 128.0), (4, 4));
     }
 
     #[test]

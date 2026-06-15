@@ -4978,9 +4978,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if let Some(p) = players.get_mut(&uid) {
                                 // 玩家必須在室內且背包有對應家具物品。
                                 if p.indoor_plot_id.is_some() && p.inventory.has(iitem, 1) {
+                                    // ROADMAP 323：把家具擺在玩家當前所站的室內格——走到想擺的位置再按放置。
+                                    let (col, row) = crate::home_interior::cell_of(p.indoor_x, p.indoor_y);
                                     let mut furnishings = app.home_furnishings.write().unwrap();
                                     let home = furnishings.entry(uid).or_default();
-                                    if home.place(fkind) {
+                                    if home.place(fkind, col, row) {
                                         // 成功放置，從背包扣除。
                                         let _ = p.inventory.take(iitem, 1);
                                         // 乙太箱背包容量加成即時生效。
