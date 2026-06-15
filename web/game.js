@@ -8222,6 +8222,7 @@
   const NPC_ACTIVITY_ICON = {
     commuting: "🚶",   // 趕路中
     resting: "💤",     // 夜間休憩
+    lunching: "🍲",    // 正午聚到廣場用餐（ROADMAP 327）
     tallying: "🪙",    // 商人點算貨銀
     hammering: "🔨",   // 工匠敲打鍛造
     sharpening: "🏹",  // 獵手擦拭上弦
@@ -8279,15 +8280,15 @@
       // ROADMAP 324：頭頂工作 / 活動符號（僅故鄉七大 NPC 在故鄉星球時有 activity）。
       const actIcon = npc.activity ? NPC_ACTIVITY_ICON[npc.activity] : null;
       if (actIcon && myPlanet === "home") {
-        // 隨呼吸般和緩起落，工作中的活力感；休憩時更慢更小一點。
-        const resting = npc.activity === "resting";
-        const amp = reduceMotion ? 0 : (resting ? 1.2 : 2.2);
-        const speed = resting ? 1.4 : 2.6;
+        // 隨呼吸般和緩起落，工作中的活力感；休憩 / 聚食等歇腳時更慢更小一點（ROADMAP 327）。
+        const calm = npc.activity === "resting" || npc.activity === "lunching";
+        const amp = reduceMotion ? 0 : (calm ? 1.2 : 2.2);
+        const speed = calm ? 1.4 : 2.6;
         const iconBob = Math.sin(t * speed + npc.x * 0.02) * amp;
         ctx.font = "16px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.globalAlpha = resting ? 0.8 : 1.0;
+        ctx.globalAlpha = calm ? 0.8 : 1.0;
         ctx.fillText(actIcon, sx, by - 34 + iconBob);
         ctx.globalAlpha = 1.0;
       }
