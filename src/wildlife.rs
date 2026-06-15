@@ -1137,6 +1137,25 @@ const NEST_PROB: f32 = 0.03;
 const NEST_DURATION_MIN: f32 = 2.0;
 const NEST_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 314：夏日張喙納涼（summer gular gaping／盛夏正午野鳥張喙展翅散熱）──────────
+// 307 夏日伸舌喘氣（👅）讓哺乳獸在盛夏正午酷暑下停下喘氣散熱，可那條分支的設計註解親手留了一句伏筆——
+// 「只屬於哺乳獸（鳥類透過張翅或避陰散熱，哺乳獸喘氣最招牌）」——野鳥的夏日散熱被刻意留白、等一筆專屬的
+// 補完。本切片把那筆伏筆兌現：野鳥不像哺乳獸伸舌喘氣，而是張開喙做 gular fluttering（喉部振動）、垂展雙翅
+// 把熱散掉（新增 Gaping 狀態，頭頂浮一枚 🥵），喘一小段涼快些了再起身回到閒晃。與 307 喘氣（👅，哺乳獸伸舌）
+// 對成「夏日散熱：獸喘氣／鳥張喙」一對：同走 is_hot_summer 雙重守衛、同是盛夏正午的體溫調節閒置動作，物種閘
+// 恰好互補（307＝is_mammal／掠食迴圈、本切片＝is_bird，永不相疊）；也與 311 秋集結（🧭）／313 春築巢（🪺）
+// 並列「野鳥的季節戲」，把野鳥的季節維度補上夏季這一筆。只屬於野鳥（張喙散熱是飛禽最招牌的酷暑姿態，哺乳獸
+// 另走 307 喘氣；is_bird 守衛）。純啟發式、零 LLM、零 tick 簽名改動（複用 307 的 is_summer／is_hot 欄位）、零協議
+// 改動（新增的 gaping 字串沿用 state_str；計時隨狀態變體攜帶，無新欄位）、零持久化、零 migration、記憶體模式。
+// 威脅永遠優先：張喙只在無威脅逼近的平靜空檔發生，掠食者一旦逼進 FLEE_RADIUS 即依既有獵物邏輯拍翅逃竄
+//（散熱永遠讓位逃命）。
+/// 盛夏正午酷暑下平靜的野鳥本幀停下張喙散熱的機率——對齊 307 喘氣 PANT_PROB 0.03，讓張喙是漫步／歇息途中
+/// 偶爾的一段散熱、而非時時在喘（多數時候仍照常閒晃／飛／鳴）。
+const GAPE_PROB: f32 = 0.03;
+/// 一段張喙散熱的最短／最長時長（秒）——張喙喘一小段涼快些了再起身，與 307 喘氣（2~4s）同量級。
+const GAPE_DURATION_MIN: f32 = 2.0;
+const GAPE_DURATION_MAX: f32 = 4.0;
+
 // ─── ROADMAP 230：野狼群聚分食（wolf pack feeding／communal feast）─────────────
 // 生態的「掠食者」一側：218 群嚎呼應讓野狼這個社交性掠食者夜裡此起彼落地呼應同伴、230 再補上
 // 牠白天最招牌的群體一幕——「群聚分食」。一隻野狼獵殺後會在屍體旁進食（既有 Digesting 狀態，
@@ -2122,6 +2141,11 @@ enum WildlifeState {
     /// 威脅一律優先中斷改逃竄。與 288 啄籽（🌾，低頭覓食）／276 理羽（🪶，梳自己的羽）區隔——那是覓食、那是
     /// 自理，本切片是繁殖季專屬的「春天築巢備料」；與 312 哺乳獸春嗅花（🌸）對成「春天裡，獸嗅花、鳥築巢」一對。
     Nesting { nest_timer: f32 },
+    /// ROADMAP 314：夏日張喙納涼——野鳥（WildBird）在盛夏正午酷暑（is_hot_summer＝Summer & light > 0.85）平靜時，
+    /// 偶爾停下、張開喙垂展雙翅散熱（頭頂浮 🥵）。原地不動（不更新座標）、gape_timer 倒數，到期就起身回到巡遊；
+    /// 張喙中若有威脅一律優先中斷改逃竄。與 307 夏日伸舌喘氣（👅，哺乳獸伸舌）對成「夏日散熱：獸喘氣／鳥張喙」
+    /// 一對——同是盛夏正午的體溫調節，物種閘恰好互補（喘氣＝哺乳獸、張喙＝野鳥），把酷暑散熱補成獸鳥俱全。
+    Gaping { gape_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3010,6 +3034,21 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 314：夏日張喙納涼——張喙中（Gaping）原地不動、gape_timer 倒數散熱；涼快些了（耗盡）就鬆下來
+    /// 回到巡遊（朝家附近的下一個漫遊目標，與 tick_pant 同模式）。只在 Gaping 狀態下生效（呼叫端已確保此隻為
+    /// 野鳥、盛夏正午、平靜無威脅；威脅一旦出現，更前面的分支已改走逃竄，不會走到此分支——張喙永遠讓位逃命）。
+    fn tick_gape(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Gaping { gape_timer } = self.state {
+            let remaining = gape_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Gaping { gape_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 308：寒冬哆嗦取暖——冷顫中（Shivering）原地不動、shiver_timer 倒數保暖；暖和些了（耗盡）就
     /// 鬆下來回到巡遊（朝家附近的下一個漫遊目標，與 tick_pant 同模式）。只在 Shivering 狀態下生效（呼叫端已
     /// 確保此隻為哺乳獸、寒冬寒時、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走狩獵／逃竄，不會
@@ -3512,6 +3551,7 @@ impl Wildlife {
             WildlifeState::Flocking { .. }   => "flocking",
             WildlifeState::Nuzzling { .. }   => "nuzzling",
             WildlifeState::Nesting { .. }    => "nesting",
+            WildlifeState::Gaping { .. }     => "gaping",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -5716,6 +5756,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_nest(dt, herd_anchor, rng);
                     }
+                } else if is_bird && matches!(a.state, WildlifeState::Gaping { .. }) {
+                    // ROADMAP 314：已在張喙散熱中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速拍翅逃竄（散熱
+                    // 永遠讓位逃命），否則原地張喙喘一小段、計時倒數，涼快些了就鬆下來起身回巡遊。與 307 喘氣
+                    // 同模式：一段平靜時的定點小動作，遇險即讓位逃命。張喙不繫於即時光照（起意時已逢盛夏正午、
+                    // 喘完這一段只看計時，與 307 喘氣同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_gape(dt, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -5772,6 +5822,27 @@ impl WildlifeManager {
                     // 全速奔逃（築巢永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(NEST_DURATION_MIN..=NEST_DURATION_MAX);
                     a.state = WildlifeState::Nesting { nest_timer: timer };
+                } else if is_bird
+                    && !is_night
+                    && is_hot_summer
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < GAPE_PROB
+                {
+                    // ROADMAP 314：夏日張喙納涼——盛夏正午酷暑（is_hot_summer＝夏季且光照極強）的白天（!is_night），
+                    // 平靜歇息／漫步的野鳥（is_bird 守衛——張喙做 gular fluttering＋垂展雙翅散熱是飛禽最招牌的酷暑
+                    // 姿態）偶爾停下、張開喙散熱（轉入 Gaping 🥵）。逐幀低機率觸發 → 烈日當頭，鳥群由近而遠錯落地
+                    // 一隻隻停下張喙，而非同幀整群瞬間齊喘。**與 307 夏日喘氣（👅，哺乳獸伸舌）對成「夏日散熱：獸喘氣／
+                    // 鳥張喙」一對**：同走 is_hot_summer 雙重守衛、同是盛夏正午的體溫調節閒置動作，物種閘恰好互補
+                    //（307＝is_mammal／掠食迴圈、本切片＝is_bird，永不相疊），把酷暑散熱從只有哺乳獸補成獸鳥俱全；
+                    // 也與 311 集結（🧭）／313 築巢（🪺）並列「野鳥的季節戲」，補上夏季這一筆。**雙重守衛**：非夏季或
+                    // 光照不強（is_hot_summer 為偽）一律跳過。**只屬於野鳥**（哺乳獸另走 307 喘氣；is_bird 守衛，有測試
+                    // 覆蓋鹿不張喙）。**排在覓食（252 食腐／265 跟鹿／292 跟鼠）、311 集結、313 築巢之後、220 升空／
+                    // 221 鳴唱之前**：需外物在場的覓食社交與季節社交先處理，都沒有時這樁酷暑散熱才凌駕悠閒的飛／鳴。
+                    // **威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Gaping 續算分支即改全速拍翅奔逃（散熱永遠
+                    // 讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(GAPE_DURATION_MIN..=GAPE_DURATION_MAX);
+                    a.state = WildlifeState::Gaping { gape_timer: timer };
                 } else if is_bird
                     && !is_night
                     && !threat_near
@@ -15823,6 +15894,145 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 314：夏日張喙納涼（summer gular gaping）──────────────────────────
+    #[test]
+    fn tick_gape_holds_position_until_timer_expires() {
+        // 張喙進行中：原地不動（座標不變）、計時遞減、狀態維持 Gaping。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Gaping { gape_timer: 3.0 };
+        bird.tick_gape(0.1, &mut rng);
+        match bird.state {
+            WildlifeState::Gaping { gape_timer } => {
+                assert!((gape_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("張喙未到期應維持 Gaping，實際 {:?}", bird.state),
+        }
+        assert!((bird.x - 5000.0).abs() < 1e-6 && (bird.y - 5000.0).abs() < 1e-6, "張喙應原地不動");
+    }
+
+    #[test]
+    fn gaping_state_str_is_gaping() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Gaping { gape_timer: 1.0 };
+        assert_eq!(bird.state_str(), "gaping");
+    }
+
+    #[test]
+    fn bird_eventually_gapes_in_hot_summer_noon() {
+        // 盛夏正午酷暑：一隻平靜、四下無威脅的野鳥，在夏季且光照強烈時連跑多幀應有機會停下張喙散熱（進入 Gaping）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut gaped = false;
+        for _ in 0..3000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、盛夏正午
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(b.state, WildlifeState::Gaping { .. }) {
+                gaped = true;
+                break;
+            }
+        }
+        assert!(gaped, "盛夏正午酷暑、平靜無威脅的野鳥應偶爾停下張喙散熱");
+    }
+
+    #[test]
+    fn bird_does_not_gape_when_not_summer() {
+        // 季節守衛：光照強烈但非夏季（is_summer 為偽）時，平靜的野鳥連跑多幀都不該進入 Gaping。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(false);
+        mgr.set_hot(true); // 烈日但非夏季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Gaping { .. }), "非夏季不該張喙，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_gape_when_not_hot() {
+        // 光照守衛：夏季但光照不強（is_hot 為偽，即非正午）時，平靜的野鳥連跑多幀都不該進入 Gaping。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(true);
+        mgr.set_hot(false); // 夏季但非烈日正午
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Gaping { .. }), "夏季非正午不該張喙，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_never_gapes_in_hot_summer() {
+        // 物種守衛：張喙是野鳥專屬——哺乳獸（鹿）即便在盛夏正午酷暑，連跑多幀都不該進入 Gaping（牠走 307 喘氣）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Gaping { .. }), "哺乳獸不該張喙，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_does_not_gape_at_night() {
+        // 晝起意：夜間野鳥另走夜眠分支——即便盛夏酷熱，夜裡連跑多幀都不該進入 Gaping。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Gaping { .. }), "夜間不該張喙，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn gaping_bird_gives_way_to_flee() {
+        // 張喙永遠讓位逃命：張喙中的野鳥一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速拍翅奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        bird.id = 2;
+        bird.state = WildlifeState::Gaping { gape_timer: 1.0e9 }; // 喘得正起勁
+        mgr.animals = vec![wolf, bird];
+        mgr.next_animal_id = 3;
+        mgr.set_summer(true);
+        mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
     }
 
     // ─── ROADMAP 308：寒冬哆嗦取暖（winter shivering）──────────────────────────

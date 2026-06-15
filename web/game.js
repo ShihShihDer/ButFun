@@ -9402,6 +9402,22 @@
         ctx.restore();
       }
 
+      // ROADMAP 314：夏日張喙納涼——盛夏正午酷暑下，野鳥（state==="gaping"）停下、張開喙垂展雙翅散熱：頭頂
+      // 浮一枚急速脹縮（字級隨明滅微微放大／縮小，透出張喙急喘的急促感）的 🥵。與 307 哺乳獸喘氣（👅）對成
+      //「夏日散熱：獸喘氣／鳥張喙」一對、符號區隔：哺乳獸伸舌（👅）、野鳥張喙熱臉（🥵）。只有野鳥會張喙、哺乳獸
+      // 另走 307 喘氣。純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在夏季正午酷暑的野鳥才給此狀態）。
+      if (w.state === "gaping") {
+        ctx.save();
+        const pulse = 1.0 + Math.abs(Math.sin(now / 110)) * 0.25; // 急速脹縮 [1.0, 1.25]，與 307 喘氣同節奏的急促感
+        ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 110)); // 急促明滅
+        ctx.font = (12 * pulse) + "px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.translate(8, -22);
+        ctx.fillText("🥵", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9763,8 +9779,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
