@@ -131,6 +131,26 @@ const CRATER_DURATION_MIN: f32 = 2.5;
 /// 刨雪覓食單段最長時長（秒）。
 const CRATER_DURATION_MAX: f32 = 4.5;
 
+// ─── ROADMAP 320：秋日逐落葉嬉戲（autumn leaf-chasing play）──────────────────────
+/// 秋日逐葉自發起意機率（每幀）——刻意低於 315 囤食 FATTEN_PROB(0.03)：秋天首要是埋頭增膘過冬（嚴肅的
+/// 覓食先行），逐葉只是閒晃途中偶爾瞥見一片打著旋兒飄落的枯葉、童心一起追撲一把的轉瞬玩心，多數幀不追。
+const LEAF_CHASE_PROB: f32 = 0.015;
+/// 飄落枯葉的落點與小動物的距離區間（像素）——葉子打著旋兒往不遠處飄落、小動物便往那兒追撲。
+/// 刻意小於 WANDER_RADIUS(180)：是腳邊一撲的玩心、非長途奔襲。
+const LEAF_CHASE_RANGE_MIN: f32 = 40.0;
+/// 飄落枯葉落點距離上限（像素）。
+const LEAF_CHASE_RANGE_MAX: f32 = 90.0;
+/// 追葉急奔的速度（像素/秒）——明顯快於閒晃（WANDER_SPEED 35），是一陣輕快活潑的小衝刺，
+/// 但遠慢於逃命（FLEE_SPEED 200）：玩心而非驚惶。
+const LEAF_CHASE_SPEED: f32 = 70.0;
+/// 視為「一把撲著落葉」的距離（像素）——追到這麼近就算撲著了、收尾起身回閒晃。
+const LEAF_CATCH_DIST: f32 = 6.0;
+/// 一段逐葉的最短／最長時長（秒）——追到落點即提早收尾，這只是撲空（葉子又飄遠了）時的保底上限，
+/// 不會追個沒完（刻意短於塵浴 3~6s：逐葉是一陣轉瞬的小衝刺、非慢條斯理的大保養）。
+const LEAF_CHASE_DURATION_MIN: f32 = 1.5;
+/// 一段逐葉最長時長（秒）。
+const LEAF_CHASE_DURATION_MAX: f32 = 3.0;
+
 // ─── ROADMAP 316：寒冬蓬羽 ───────────────────────────────────────────────────
 /// 寒冬蓬羽自發起意機率（每幀）——偏低（與 308 哆嗦 SHIVER_PROB 0.03 同量級，多數幀不觸發）。
 const FLUFF_PROB: f32 = 0.03;
@@ -2254,6 +2274,11 @@ enum WildlifeState {
     /// ROADMAP 318：結隊同行——跟隨者落在最近的領頭夥伴身後一段、隨牠一道緩緩遷移（每幀重鎖領頭座標），
     /// trek_timer 倒數；領頭停下走遠或計時耗盡就散開回巡遊；跟隨中若有威脅一律優先中斷改逃竄。
     Following { trek_timer: f32 },
+    /// ROADMAP 320：秋日逐落葉嬉戲——秋季白天平靜漫步（Wandering）的小動物（SmallCritter），偶爾瞥見一片
+    /// 打著旋兒飄落的枯葉、童心一起朝那落點 (target_x,target_y) 輕快追撲（leaf-chasing play，頭頂浮 🍃），
+    /// leaf_timer 倒數；追到落點（撲著了）或計時耗盡就收尾回巡遊；逐葉中若有威脅一律優先中斷改逃竄。
+    /// 只屬於小動物（最玩心的逐葉者；野鹿沉穩、野鳥另有舒翅／集結，各有性情）。
+    LeafChasing { target_x: f32, target_y: f32, leaf_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -3376,6 +3401,32 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 320：秋日逐落葉嬉戲——逐葉中（LeafChasing）朝落葉的落點 (target_x,target_y) 輕快追撲、
+    /// leaf_timer 倒數；追到落點（撲著了，距離 ≤ LEAF_CATCH_DIST）或計時耗盡就收尾、起身回巡遊（沿群聚
+    /// 拉力 herd_anchor 挑下一個漫遊目標，與 tick_dustbathe 同模式）。只在 LeafChasing 狀態下生效（呼叫端
+    /// 已確保此隻為秋天白天、平靜無威脅的小動物；威脅一旦逼進 FLEE_RADIUS，更前面的續算分支已改走逃竄，
+    /// 不會走到此處——逐葉永遠讓位逃命）。
+    fn tick_leaf_chase(&mut self, dt: f32, herd_anchor: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::LeafChasing { target_x, target_y, leaf_timer } = self.state {
+            let remaining = leaf_timer - dt;
+            let dx = target_x - self.x;
+            let dy = target_y - self.y;
+            let reached = (dx * dx + dy * dy).sqrt() <= LEAF_CATCH_DIST;
+            if remaining <= 0.0 || reached {
+                // 撲著了、或撲了一陣沒撲著（葉子又飄遠了）——收尾起身回閒晃。
+                let (ax, ay) = herd_anchor.unwrap_or((self.home_x, self.home_y));
+                let (wx, wy) = random_target(ax, ay, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                // 朝落點輕快追撲；計時隨狀態變體攜帶。
+                let (nx, ny) = leaf_chase_step(self.x, self.y, target_x, target_y, dt);
+                self.x = nx;
+                self.y = ny;
+                self.state = WildlifeState::LeafChasing { target_x, target_y, leaf_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3777,6 +3828,7 @@ impl Wildlife {
             WildlifeState::Stretching { .. } => "stretching",
             WildlifeState::Trekking { .. }  => "trekking",
             WildlifeState::Following { .. } => "following",
+            WildlifeState::LeafChasing { .. } => "leaf_chasing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -6453,6 +6505,40 @@ impl WildlifeManager {
                     // Resting 起意——與 277 搔癢一致：自理屬於「起來活動著」的時候，settled 的歇息就讓牠安穩歇著。
                     let timer = rng.gen_range(DUSTBATHE_DURATION_MIN..=DUSTBATHE_DURATION_MAX);
                     a.state = WildlifeState::DustBathing { bath_timer: timer };
+                } else if is_critter && matches!(a.state, WildlifeState::LeafChasing { .. }) {
+                    // ROADMAP 320：已在逐葉中——威脅一旦逼近就立刻丟下追逐躥逃（逐葉永遠讓位逃命），
+                    // 否則朝落點追撲、計時倒數，撲著了或追夠了就收尾回閒晃。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_leaf_chase(dt, herd_anchor, rng);
+                    }
+                } else if is_critter
+                    && is_autumn
+                    && !is_night
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < LEAF_CHASE_PROB
+                {
+                    // ROADMAP 320：秋日逐落葉嬉戲——秋季白天（is_autumn && !is_night）平靜、正四處漫步的小動物
+                    //（SmallCritter）——閒晃途中偶爾瞥見一片打著旋兒飄落的枯葉、童心一起朝那不遠處的落點輕快追撲
+                    //（轉入 LeafChasing 🍃），撲著了（或撲了一陣沒撲著、葉子又飄遠了）就收尾起身回閒晃。逐幀低機率
+                    // 觸發 → 秋風裡落葉紛飛時，獸群由近而遠錯落地一隻隻竄出去追葉，而非同幀整群齊追。**第一次讓
+                    // 生態讀「秋季」演出一樁「玩心」而非覓食的行為**：311 秋集結（南遷前飛攏）／315 秋囤膘（埋頭增膘）
+                    // 都是嚴肅的過冬準備，本筆補上秋天最惹人會心一笑的童趣——追著打旋的落葉撲一把。**只屬於小動物**
+                    //（最玩心的逐葉者；野鹿沉穩、野鳥另有舒翅／集結，與 280 塵浴／282 囤糧同為 SmallCritter 專屬，
+                    // 各物種性情分明）。**會位移**：朝落點輕快追撲（LEAF_CHASE_SPEED 70，明顯快於閒晃、遠慢於逃命），
+                    // 是這條閒置線少見的活潑小衝刺。只從 Wandering 起意（漫步途中順勢一撲）、不從 Resting 起意——與
+                    // 280 塵浴／282 囤糧一致：玩鬧屬於「起來活動著」的時候，settled 的歇息就讓牠安穩歇著。**威脅永遠
+                    // 優先**：追到一半若掠食者／玩家逼進 FLEE_RADIUS，上面 LeafChasing 續算分支即改全速奔逃。
+                    // 機率先擲，多數幀一擲不中即略過。
+                    let (dx, dy) = random_target(0.0, 0.0, 1.0, rng); // 隨機方向（單位圓內一點，僅取方向）
+                    let dir_len = (dx * dx + dy * dy).sqrt().max(0.001);
+                    let range = rng.gen_range(LEAF_CHASE_RANGE_MIN..=LEAF_CHASE_RANGE_MAX);
+                    let target_x = a.x + dx / dir_len * range;
+                    let target_y = a.y + dy / dir_len * range;
+                    let timer = rng.gen_range(LEAF_CHASE_DURATION_MIN..=LEAF_CHASE_DURATION_MAX);
+                    a.state = WildlifeState::LeafChasing { target_x, target_y, leaf_timer: timer };
                 } else if is_critter && matches!(a.state, WildlifeState::Caching { .. }) {
                     // ROADMAP 282：已在囤糧中——威脅一旦逼近就立刻丟下活兒躥逃（囤糧永遠讓位逃命），
                     // 否則原地把這一段埋完、計時倒數，到期扒土蓋好回到閒晃。
@@ -7164,6 +7250,19 @@ fn trek_follow_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (TREK_FOLLOW_SPEED * dt).min(dist - TREK_FOLLOW_DIST);
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 320：秋日逐落葉嬉戲——朝落葉的落點 (tx,ty) 以 LEAF_CHASE_SPEED 輕快追撲，單幀位移夾到不衝過
+/// 落點（剛好停在落點上、不過頭）。純函式，便於測試。
+fn leaf_chase_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1.0 {
+        return (x, y);
+    }
+    let step = (LEAF_CHASE_SPEED * dt).min(dist);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -18010,7 +18109,9 @@ mod tests {
         mgr.set_autumn(true);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         let mut fattened = false;
-        for _ in 0..400 {
+        // ROADMAP 320 後加長迴圈：秋季白天的小動物如今多了一樁競逐 Wandering 幀的閒置行為（逐落葉，
+        // LEAF_CHASE_PROB 0.015 < FATTEN_PROB 0.03，囤食仍優先），偶爾被逐葉佔去數幀，需更長的觀察窗。
+        for _ in 0..700 {
             mgr.tick(0.1, &[], &att, &[], false);
             let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             if matches!(c.state, WildlifeState::Fattening { .. }) {
@@ -18287,6 +18388,165 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 320：秋日逐落葉嬉戲（autumn leaf-chasing play）────────────────────
+    #[test]
+    fn leaf_chasing_state_str_is_leaf_chasing() {
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 0.0, 0.0);
+        critter.state = WildlifeState::LeafChasing { target_x: 1.0, target_y: 2.0, leaf_timer: 1.0 };
+        assert_eq!(critter.state_str(), "leaf_chasing");
+    }
+
+    #[test]
+    fn tick_leaf_chase_moves_toward_target() {
+        // 逐葉進行中：朝落點追撲（座標靠近落點）、計時遞減、狀態維持 LeafChasing。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::LeafChasing { target_x: 5090.0, target_y: 5000.0, leaf_timer: 3.0 };
+        critter.tick_leaf_chase(0.1, None, &mut rng);
+        match critter.state {
+            WildlifeState::LeafChasing { leaf_timer, .. } => {
+                assert!((leaf_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("追逐未到期、未撲著應維持 LeafChasing，實際 {:?}", critter.state),
+        }
+        // LEAF_CHASE_SPEED(70) * dt(0.1) = 7px，朝 +x 落點挪近
+        assert!((critter.x - 5007.0).abs() < 1e-3, "應朝落點追撲約 7px，實際 x={}", critter.x);
+        assert!((critter.y - 5000.0).abs() < 1e-6, "正東向落點，y 不該變");
+    }
+
+    #[test]
+    fn tick_leaf_chase_returns_to_wander_on_catch() {
+        // 撲著了：追到落點（距離 ≤ LEAF_CATCH_DIST）就收尾起身回巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        // 落點僅 3px（< LEAF_CATCH_DIST 6），本幀即視為撲著
+        critter.state = WildlifeState::LeafChasing { target_x: 5003.0, target_y: 5000.0, leaf_timer: 9.0 };
+        critter.tick_leaf_chase(0.1, None, &mut rng);
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "撲著了應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_leaf_chase_returns_to_wander_when_timer_expires() {
+        // 追夠了沒撲著（葉子又飄遠）：計時耗盡就收尾回巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::LeafChasing { target_x: 5090.0, target_y: 5000.0, leaf_timer: 0.05 };
+        critter.tick_leaf_chase(0.1, None, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_leaf_chase_noop_on_other_state() {
+        // 防呆：非 LeafChasing 狀態呼叫 tick_leaf_chase 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Resting { rest_timer: 2.0 };
+        critter.tick_leaf_chase(0.1, None, &mut rng);
+        assert!(matches!(critter.state, WildlifeState::Resting { .. }), "非逐葉狀態呼叫 tick_leaf_chase 不該改狀態");
+    }
+
+    #[test]
+    fn leaf_chase_step_stops_at_target_without_overshoot() {
+        // 純函式：單幀位移夾到不衝過落點——落點僅 5px（< 單幀步長 70*0.1=7）時，剛好停在落點上、不過頭。
+        let (nx, ny) = leaf_chase_step(5000.0, 5000.0, 5005.0, 5000.0, 0.1);
+        assert!((nx - 5005.0).abs() < 1e-4, "應剛好停在落點、不過頭，實際 x={}", nx);
+        assert!((ny - 5000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn critter_eventually_chases_leaf_in_autumn() {
+        // 秋季白天：一隻平靜、四下無威脅的小動物，在秋季連跑多幀應有機會竄出去追落葉（進入 LeafChasing）。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut chased = false;
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、秋季
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(c.state, WildlifeState::LeafChasing { .. }) {
+                chased = true;
+                break;
+            }
+        }
+        assert!(chased, "秋季白天、平靜無威脅的小動物應偶爾竄出去追落葉");
+    }
+
+    #[test]
+    fn critter_does_not_chase_leaf_when_not_autumn() {
+        // 季節守衛：非秋季（is_autumn 為偽）時，平靜的小動物連跑多幀都不該進入 LeafChasing。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        mgr.set_autumn(false);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(c.state, WildlifeState::LeafChasing { .. }), "非秋季不該逐葉，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn non_critter_never_chases_leaf_in_autumn() {
+        // 物種守衛：逐葉是小動物專屬——野鹿／野鳥／掠食者即便在秋季白天，連跑多幀都不該進入 LeafChasing。
+        for kind in [WildlifeKind::WildDeer, WildlifeKind::WildBird, WildlifeKind::WildWolf, WildlifeKind::WildFox] {
+            let mut mgr = WildlifeManager::new();
+            let mut a = adult_at(kind, 6000.0, 6000.0);
+            a.id = 1;
+            a.state = WildlifeState::Resting { rest_timer: 0.1 };
+            mgr.animals = vec![a];
+            mgr.set_autumn(true);
+            let att: HashMap<WildlifeKind, i32> = HashMap::new();
+            for _ in 0..600 {
+                mgr.tick(0.1, &[], &att, &[], false);
+                let x = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+                assert!(!matches!(x.state, WildlifeState::LeafChasing { .. }), "{:?} 不該逐葉，實際 {:?}", kind, x.state);
+            }
+        }
+    }
+
+    #[test]
+    fn critter_does_not_chase_leaf_at_night() {
+        // 晝起意：夜間小動物另走夜眠分支——即便秋季，夜裡連跑多幀都不該進入 LeafChasing。
+        let mut mgr = WildlifeManager::new();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 6000.0, 6000.0);
+        critter.id = 1;
+        critter.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![critter];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..500 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let c = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(c.state, WildlifeState::LeafChasing { .. }), "夜間不該逐葉，實際 {:?}", c.state);
+        }
+    }
+
+    #[test]
+    fn leaf_chasing_critter_gives_way_to_flee() {
+        // 逐葉永遠讓位逃命：逐葉中的小動物一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        critter.id = 2;
+        critter.state = WildlifeState::LeafChasing { target_x: 5200.0, target_y: 5000.0, leaf_timer: 1.0e9 }; // 追得正起勁
+        mgr.animals = vec![wolf, critter];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let c = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(c.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", c.state);
     }
 
     // ─── ROADMAP 313：春日銜枝整巢 ──────────────────────────────────────────────

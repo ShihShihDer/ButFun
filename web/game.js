@@ -9491,6 +9491,27 @@
         ctx.restore();
       }
 
+      // ROADMAP 320：秋日逐落葉嬉戲——秋季白天，小動物（state==="leaf_chasing"）平靜漫步時偶爾瞥見一片打著
+      // 旋兒飄落的枯葉、童心一起朝那落點輕快追撲：頭頂浮一枚隨追逐打著旋兒（左右擺盪＋輕輕浮沉，像一片在風裡
+      // 翻飛的落葉）的 🍃。與 315 囤食（🍂，沉穩一頓一頓上下）／319 刨雪（❄️）以動態＋符號區隔——逐葉是活潑
+      // 飄忽的左右打旋；與 311 集結（🧭，左右擺動的羅盤）以符號＋語意區隔。只有小動物會逐葉（鹿/鳥/狼狐不逐葉）。
+      // 與 311 集結／315 囤膘並列「秋天三樁」：鳥集結、獸囤膘、小獸追葉。純前端、零協議欄位：直接讀伺服器廣播
+      // 的 w.state（後端只在秋季白天平靜的小動物逐葉時才給此狀態）。
+      if (w.state === "leaf_chasing") {
+        ctx.save();
+        const lf = Math.sin(now / 150);          // -1→1 左右打旋
+        const lb = (Math.sin(now / 110) + 1) / 2; // 0→1 輕輕浮沉
+        ctx.globalAlpha = 0.6 + 0.35 * lb;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        // 🍃 隨追逐左右打著旋兒、上下輕輕翻飛，讀起來像一片在風裡打旋飄落、惹得小獸竄出去追撲的枯葉
+        ctx.translate(lf * 5, -20 - lb * 4);
+        ctx.rotate(lf * 0.5);
+        ctx.fillText("🍃", 0, 0);
+        ctx.restore();
+      }
+
       // ROADMAP 256：好奇試探——餵到一定親近度、卸下戒心但尚未馴養的動物，白天好奇地朝你謹慎
       // 挪近、停在警戒距離外探頭打量（state==="curious"）頭頂浮一個微微探頭、明滅試探的 ❓，讓
       // 「你餵過幾回的鹿還沒全然信任、只敢遠遠打量你」一眼看得到（介於 144 野性逃開與 205 馴養
@@ -9871,8 +9892,8 @@
       }
 
       // ROADMAP 207：剛出生的幼獸頭頂點一抹「新生」微光（隨長大淡出）。
-      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵、舒翅中（stretching，317）改畫 🪽，這裡略過免得兩個頭頂符號疊在一起。
-      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "cratering" && w.state !== "fluffing" && w.state !== "stretching" && w.state !== "trekking" && w.state !== "following") {
+      // 嬉戲中（frolicking）改畫 💫、打盹中（napping，290）改畫 💤、避雨中（sheltering，296）改畫 🌧️、抖水中（shaking，297）改畫 💦、曬太陽中（basking，298）改畫 ☀️、飲水中（drinking，299）改畫 💧、仰望流星中（stargazing，301）改畫 🌠、喘氣中（panting，307）改畫 👅、冷顫中（shivering，308）改畫 🥶、呵氣中（puffing，309）改畫 💨、偎暖中（huddling，310）改畫 🤗、集結中（flocking，311）改畫 🧭、嗅花中（nuzzling，312）改畫 🌸、張喙散熱中（gaping，314）改畫 🥵、舒翅中（stretching，317）改畫 🪽、逐葉中（leaf_chasing，320）改畫 🍃，這裡略過免得兩個頭頂符號疊在一起。
+      if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "cratering" && w.state !== "fluffing" && w.state !== "stretching" && w.state !== "trekking" && w.state !== "following" && w.state !== "leaf_chasing") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
         ctx.font = "10px sans-serif";
