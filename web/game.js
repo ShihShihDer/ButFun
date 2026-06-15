@@ -9333,8 +9333,10 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -23 - ct * 3); // 像音符隨鳴聲輕輕上下跳動
-        const isDawn = daynight && daynight.phase === "dawn";
-        ctx.fillText(isDawn ? "🎶" : "🎵", 0, 0); // 破曉滿林齊鳴畫更密的 🎶
+        // ROADMAP 306：黃昏暮鳴——黃昏（daynight.phase==="dusk"）與破曉同為合唱時辰，皆畫一串更密的
+        // 🎶；正午畫 🎵。一眼看得出「晨昏的合唱與正午不同」（後端黃昏鳴得更密更長、破曉更甚）。
+        const isChorusHour = daynight && (daynight.phase === "dawn" || daynight.phase === "dusk");
+        ctx.fillText(isChorusHour ? "🎶" : "🎵", 0, 0); // 晨昏合唱畫更密的 🎶
         ctx.restore();
       }
 

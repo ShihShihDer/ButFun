@@ -100,18 +100,21 @@ pub fn spawn(app: AppState) {
 
             // 先推進日夜時鐘，取得當下亮度決定作物成長速度（短暫持鎖，不跨 await）。
             // 時鐘無條件前進;view 只在要廣播時才取。
-            let (daynight_view, growth_rate, is_night, is_dawn) = {
+            let (daynight_view, growth_rate, is_night, is_dawn, is_dusk) = {
                 let mut daynight = app.daynight.write().unwrap();
                 daynight.advance(dt);
-                let is_night = daynight.phase() == crate::daynight::Phase::Night;
+                let phase = daynight.phase();
+                let is_night = phase == crate::daynight::Phase::Night;
                 // ROADMAP 305：本幀是否為破曉時段（供野鳥「拂曉滿林齊鳴」判定，與 is_night 同把時鐘鎖一次取得）。
-                let is_dawn = daynight.phase() == crate::daynight::Phase::Dawn;
+                let is_dawn = phase == crate::daynight::Phase::Dawn;
+                // ROADMAP 306：本幀是否為黃昏時段（供野鳥「黃昏暮鳴」判定，同把時鐘鎖一次取得）。
+                let is_dusk = phase == crate::daynight::Phase::Dusk;
                 let view = if want_broadcast {
                     Some(daynight.view())
                 } else {
                     None
                 };
-                (view, daynight.growth_rate(), is_night, is_dawn)
+                (view, daynight.growth_rate(), is_night, is_dawn, is_dusk)
             };
 
             // 季節循環（ROADMAP 137）：推進季節計時器，切換時廣播公告。
@@ -1047,6 +1050,7 @@ pub fn spawn(app: AppState) {
                         wm.set_meteor_active(meteor_active);
                         wm.set_moon_full(moon_full);
                         wm.set_dawn(is_dawn);
+                        wm.set_dusk(is_dusk);
                         wm.tick(dt, &positions, &attitudes, &monster_threats, is_night)
                     };
                     for ev in wildlife_events {
