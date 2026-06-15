@@ -916,6 +916,32 @@ const DRINK_PROB: f32 = 0.04;
 const DRINK_DURATION_MIN: f32 = 3.0;
 const DRINK_DURATION_MAX: f32 = 6.0;
 
+// ─── ROADMAP 301：流星雨仰望（meteor-shower stargazing／流星雨夜裡，沉睡的草食獸偶爾抬頭仰望流星）──────────────
+// 296～300 那條「動物 × 天氣」把同一場雨從「下雨縮身→雨停抖水→雨後曬乾／飲水→掠食者也抖水」從頭到尾演完整。
+// 可天空除了下雨，還有另一樁更難得、更壯麗的事——流星雨（meteor_shower.rs 早有一份權威的夜間流星雨，玩家
+// 已能在城鎮周圍採集星塵）。至今生態系只讀了「天氣（雨）」，卻沒讀過「天象（流星）」這條全新維度。本切片
+// 把它接起來、與 296 雨中避雨「動物 × 天氣」對成「動物 × 天象」的姊妹維度：流星雨降臨的夜裡（meteor_active），
+// 平時歸巢沉睡的晝行草食獸（鹿／鳥／小獸）偶爾從睡夢中抬起頭、仰望劃過夜空的流星（新增 Stargazing 狀態、
+// 頭頂浮一枚徐徐明滅如流光的 🌠），仰望一小段就鬆下來、低頭回到歸巢沉睡。逐幀低機率觸發 → 流星一落，獸群
+// 由近而遠錯落地一隻隻抬頭，而非同幀整群瞬間齊望（仿 296 一系的漣漪式起頭）。這恰是這座蒸汽龐克太空歌劇
+// 療癒世界該有的一幕：流星雨的夜裡，連草地上沉睡的鹿群也悄悄抬頭，與你一同望著滿天流光。
+// **與 210 夜眠（💤，入夜歸巢沉睡）以「有無流星雨」乾淨區隔**：平常夜裡一律沉睡，唯獨流星雨降臨的夜才會
+// 偶爾抬頭仰望、仰望完旋即回到沉睡（meteor_active 為偽即不觸發、仰望中流星雨一停也立刻鬆下回睡）。
+// **只在夜間、平靜（無威脅）時起意**：複用既有 calm_at_night 守衛（夜間、晝行草食獸、未逃竄、FLEE_RADIUS 內
+// 無威脅）；威脅一旦逼進 FLEE_RADIUS，calm_at_night 即為偽、落到下方續算分支改全速奔逃（仰望永遠讓位逃命）。
+// **與 296 雨中避雨對成「天氣／天象」一對**：避雨是白天讀雨、仰望是夜裡讀流星，晝夜＋雨象乾淨互補、永不同框。
+// 零捕食平衡風險（純多一個讓沉睡草食獸偶爾抬頭的閒置姿態，不改任何獵殺／搜尋／繁衍結果、不生成可撿的實體）、
+// 零 LLM、純啟發式、可測、零 tick 簽名改動（meteor_active 走新增的 manager 欄位、game.rs 每幀於 tick 前更新，
+// 沿用 296 is_raining 的「零 tick 簽名改動」慣例）、零協議改動（新增的 stargazing 字串沿用 state_str；計時隨
+// 狀態變體攜帶，無新欄位）、零持久化、零 migration、記憶體模式。
+/// 流星雨夜裡，沉睡的草食獸偶爾從睡夢中抬頭仰望流星的逐幀機率——與 298 曬太陽 BASK_PROB(0.04)／299 飲水
+/// DRINK_PROB(0.04) 同量級：偏低，讓「流星一落、獸群陸續抬頭」是漣漪式起頭而非整群瞬間齊望。
+const STARGAZE_PROB: f32 = 0.04;
+/// 一段仰望的最短／最長時長（秒）——比白天的小動作從容些：仰望流星是夜裡難得的靜謐出神，抬頭望著夜空
+/// 出一小會兒神再低頭回睡（介於 298 曬太陽 5~10s 與 299 飲水 3~6s 之間的悠閒）。
+const STARGAZE_DURATION_MIN: f32 = 4.0;
+const STARGAZE_DURATION_MAX: f32 = 9.0;
+
 // ─── ROADMAP 288：野鳥啄地覓食（ground-pecking forage／自啄草籽）──────────────
 // 承接 252 食腐（🍖，啄屍骸）、265 共生跟食（🐛，傍鹿撿被踏草驚起的蟲）、281 棲背啄蟲（🐛，飛上
 // 鹿背替牠除蟲）那條野鳥覓食線——可盤點下來，野鳥所有的覓食姿態至今都「要靠別的東西在場」才成立：
@@ -1865,6 +1891,11 @@ enum WildlifeState {
     /// drink_timer 倒數，喝一小段就鬆下來起身回復閒晃；威脅一旦真逼進 FLEE_RADIUS 一律改全速奔逃（飲水
     /// 永遠讓位逃命）。與 298 雨後曬太陽（☀️）並列為雨停後的兩樁日常，把同一場雨從下雨縮身演到雨後飲水解渴。
     Drinking { drink_timer: f32 },
+    /// ROADMAP 301：流星雨仰望——流星雨降臨的夜裡（meteor_active），平時歸巢沉睡的晝行草食獸（鹿／鳥／小獸）
+    /// 偶爾從睡夢中抬起頭、仰望劃過夜空的流星（前端畫成抬頭定格、頭頂浮一枚徐徐明滅如流光的 🌠）。gaze_timer
+    /// 倒數，仰望一小段就鬆下來、低頭回到歸巢沉睡（流星雨一停也立刻鬆下回睡）；威脅一旦真逼進 FLEE_RADIUS
+    /// 一律改全速奔逃（仰望永遠讓位逃命）。與 296 雨中避雨（🌧️，白天讀雨）對成「天氣／天象」一對。
+    Stargazing { gaze_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2830,6 +2861,25 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 301：流星雨仰望——仰望中（Stargazing）原地抬頭仰望流星（不更新座標，抬頭定格由前端以 🌠
+    /// 演繹），gaze_timer 倒數。仰望夠了一小段、或流星雨一停（`meteor_active` 為偽），就鬆下來轉入 Returning
+    /// 朝家走（下一幀 calm_at_night 仍真時由 tick_night_rest 接手歸巢沉睡；若已天明則由破曉甦醒／閒晃分支接手）。
+    /// 只在 Stargazing 狀態下生效（呼叫端已確保此隻為晝行草食獵物、夜間、且無威脅逼進 FLEE_RADIUS——威脅一旦
+    /// 逼近 calm_at_night 即為偽、落到續算分支改全速奔逃，仰望永遠讓位逃命）。與 tick_shelter 同模式，但仰望
+    /// 繫於 meteor_active（流星雨一停即收，仿 tick_shelter 繫於 is_raining）。
+    fn tick_stargaze(&mut self, dt: f32, meteor_active: bool, rng: &mut StdRng) {
+        if let WildlifeState::Stargazing { gaze_timer } = self.state {
+            let remaining = gaze_timer - dt;
+            if !meteor_active || remaining <= 0.0 {
+                // 仰望夠了、或流星雨停了：鬆下來朝家走，下一幀回到歸巢沉睡（rng 此處未用到，保留同款簽名一致性）。
+                let _ = rng;
+                self.state = WildlifeState::Returning;
+                return;
+            }
+            self.state = WildlifeState::Stargazing { gaze_timer: remaining };
+        }
+    }
+
     /// ROADMAP 230：野狼群聚分食——圍食中（Feasting）把這一段分食走完：尚未趕到獵殺點 (ax,ay)
     /// 就以 FEAST_SPEED 快步趕去，已圍到屍體旁（FEAST_REACH 內）就原地分食（不再移動，只倒數）；
     /// feast_timer 倒數，計時耗盡（吃飽／屍體分食殆盡）就起身回巡遊（朝家附近的下一個漫遊目標，
@@ -3044,6 +3094,7 @@ impl Wildlife {
             WildlifeState::Shaking { .. } => "shaking",
             WildlifeState::Basking { .. } => "basking",
             WildlifeState::Drinking { .. } => "drinking",
+            WildlifeState::Stargazing { .. } => "stargazing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3078,6 +3129,10 @@ pub struct WildlifeManager {
     /// 的下降緣）時設為 POST_RAIN_WINDOW、tick 內逐幀倒數至 0。>0 即「剛淋過雨」、草食獸偶爾抖水甩水。
     /// 預設 0（沒淋過雨、不抖水），故既有測試無須改動、行為與本切片前逐位元一致。
     post_rain_timer: f32,
+    /// ROADMAP 301：本幀是否正逢流星雨（後端權威天象）——game.rs 每幀於 tick 前以 `set_meteor_active` 更新。
+    /// 走欄位而非 tick 參數，沿用 296 raining 的「零 tick 簽名改動」慣例。預設 false（無流星雨、夜裡一律
+    /// 沉睡），故既有測試無須改動、行為與本切片前逐位元一致。
+    meteor_active: bool,
 }
 
 impl WildlifeManager {
@@ -3099,6 +3154,7 @@ impl WildlifeManager {
             grief_sites: Vec::new(),
             raining: false,
             post_rain_timer: 0.0,
+            meteor_active: false,
         }
     }
 
@@ -3111,6 +3167,12 @@ impl WildlifeManager {
             self.post_rain_timer = POST_RAIN_WINDOW;
         }
         self.raining = raining;
+    }
+
+    /// ROADMAP 301：更新本幀天象（是否正逢流星雨）——game.rs 每幀於 `tick` 前呼叫，餵入後端權威的
+    /// meteor_shower 狀態。供夜裡平靜的草食獸偶爾抬頭仰望流星判定（走欄位、不動 tick 簽名）。
+    pub fn set_meteor_active(&mut self, active: bool) {
+        self.meteor_active = active;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3228,6 +3290,8 @@ impl WildlifeManager {
         // ROADMAP 297：雨停後的抖水時間窗逐幀倒數；post_rain 為真表「剛淋過雨」、供 Phase 4 草食獸抖水判定。
         self.post_rain_timer = (self.post_rain_timer - dt).max(0.0);
         let post_rain = self.post_rain_timer > 0.0;
+        // ROADMAP 301：本幀天象（是否正逢流星雨）——供 Phase 4 夜裡草食獸抬頭仰望流星判定（game.rs 已於 tick 前更新）。
+        let meteor_active = self.meteor_active;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4374,7 +4438,28 @@ impl WildlifeManager {
             let rng = &mut self.rng;
             let a = &mut self.animals[i];
             if calm_at_night {
-                a.tick_night_rest(dt);
+                // ROADMAP 301：流星雨仰望——calm_at_night（夜間、晝行草食獸、未逃竄、FLEE_RADIUS 內無威脅）下，
+                // 流星雨降臨的夜裡讓沉睡的獸群偶爾抬頭仰望流星；平常夜裡（無流星雨）一律照舊歸巢沉睡。
+                if matches!(a.state, WildlifeState::Stargazing { .. }) {
+                    // 已在仰望中——calm_at_night 為真即保證 FLEE_RADIUS 內無威脅（威脅一逼近此值即為偽、
+                    // 落到下方續算分支改全速奔逃），故安心把這一段仰望走完（流星雨一停 tick_stargaze 即收）。
+                    a.tick_stargaze(dt, meteor_active, rng);
+                } else if meteor_active
+                    && matches!(
+                        a.state,
+                        WildlifeState::Resting { .. }
+                            | WildlifeState::Returning
+                            | WildlifeState::Wandering { .. }
+                    )
+                    && rng.gen::<f32>() < STARGAZE_PROB
+                {
+                    // 流星雨降臨的夜裡，歸巢沉睡／歸返／漫步的平靜草食獸偶爾從睡夢中抬起頭仰望流星（轉入
+                    // Stargazing 🌠）。逐幀低機率觸發 → 流星一落，獸群由近而遠錯落抬頭，而非同幀整群齊望。
+                    let timer = rng.gen_range(STARGAZE_DURATION_MIN..=STARGAZE_DURATION_MAX);
+                    a.state = WildlifeState::Stargazing { gaze_timer: timer };
+                } else {
+                    a.tick_night_rest(dt);
+                }
             } else if act_as_sentinel {
                 // ROADMAP 212：哨兵——放大警戒半徑內若有威脅，率先背向炸出逃竄（次幀經 209
                 // 感染全群一起炸開）；無威脅則站崗放哨（抬頭警戒、不吃草）。
@@ -4470,6 +4555,15 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_drink(dt, rng);
+                    }
+                } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
+                    // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
+                    // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
+                    // 多半已歇）續算 tick_stargaze——meteor_active 為偽即收、鬆下來回巡遊，乾淨銜接白天作息。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_stargaze(dt, meteor_active, rng);
                     }
                 } else if !threat_near
                     && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
@@ -12637,6 +12731,153 @@ mod tests {
             mgr.tick(0.1, &[], &att, &[], false);
             let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
             assert!(!matches!(w.state, WildlifeState::Drinking { .. }), "掠食者不該飲水，實際 {:?}", w.state);
+        }
+    }
+
+    // ─── ROADMAP 301：流星雨仰望（夜裡流星雨期間，沉睡的草食獸偶爾抬頭仰望流星）──────────────
+    #[test]
+    fn tick_stargaze_holds_position_until_timer_expires() {
+        // 仰望進行中（流星雨仍在）：原地不動（座標不變）、計時遞減、狀態維持 Stargazing。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Stargazing { gaze_timer: 6.0 };
+        deer.tick_stargaze(0.1, true, &mut rng); // 流星雨仍在
+        match deer.state {
+            WildlifeState::Stargazing { gaze_timer } => {
+                assert!((gaze_timer - 5.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("仰望未到期、流星雨仍在應維持 Stargazing，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "仰望應原地不動");
+    }
+
+    #[test]
+    fn tick_stargaze_returns_when_timer_expires() {
+        // 仰望夠了一小段：計時耗盡就鬆下來轉入 Returning（朝家走、下一幀回到歸巢沉睡）。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Stargazing { gaze_timer: 0.05 };
+        critter.tick_stargaze(0.1, true, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Returning), "到期應轉入 Returning，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_stargaze_returns_when_meteor_ends() {
+        // 流星雨一停：即便計時還剩很多，也立刻鬆下來轉入 Returning（流星沒了就不再仰望、低頭回睡）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Stargazing { gaze_timer: 1.0e9 }; // 望得正出神
+        deer.tick_stargaze(0.1, false, &mut rng); // 流星雨已停
+        assert!(matches!(deer.state, WildlifeState::Returning), "流星雨停了應轉入 Returning，實際 {:?}", deer.state);
+    }
+
+    #[test]
+    fn tick_stargaze_noop_on_other_state() {
+        // 防呆：非 Stargazing 狀態呼叫 tick_stargaze 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_stargaze(0.1, true, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非仰望狀態呼叫 tick_stargaze 不該改狀態");
+    }
+
+    #[test]
+    fn stargazing_state_str_is_stargazing() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Stargazing { gaze_timer: 1.0 };
+        assert_eq!(deer.state_str(), "stargazing");
+    }
+
+    #[test]
+    fn calm_prey_eventually_stargazes_during_meteor_at_night() {
+        // 流星雨的夜裡：一頭平靜、四下無威脅的鹿，連跑多幀應有機會從睡夢中抬頭仰望（進入 Stargazing）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_meteor_active(true); // 流星雨降臨
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut gazed = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間、流星雨中
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Stargazing { .. }) {
+                gazed = true;
+                break;
+            }
+        }
+        assert!(gazed, "流星雨的夜裡、平靜無威脅的鹿應偶爾抬頭仰望流星");
+    }
+
+    #[test]
+    fn prey_does_not_stargaze_without_meteor() {
+        // 沒流星雨就沒得望：夜裡無流星雨（meteor_active 預設 false）時，平靜的鹿連跑多幀都不該進入 Stargazing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        // 不呼叫 set_meteor_active → 無流星雨
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間、無流星雨
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Stargazing { .. }), "無流星雨不該仰望，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn prey_does_not_stargaze_during_day() {
+        // 晝夜區隔：仰望只在夜裡起意——即便流星雨開著，白天連跑多幀都不該進入 Stargazing（白天另走吃草/玩樂分支）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_meteor_active(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Stargazing { .. }), "白天不該仰望流星，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn stargazing_prey_gives_way_to_flee() {
+        // 仰望永遠讓位逃命：仰望中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Stargazing { gaze_timer: 1.0e9 }; // 望得正出神
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_meteor_active(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], true); // 夜間
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    #[test]
+    fn predator_never_stargazes() {
+        // 物種專屬：仰望只發生在晝行草食獵物 phase——夜行掠食者另走夜嚎/狩獵分支，即便流星雨開著、
+        // 連跑多幀都不該進入 Stargazing。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_meteor_active(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間、流星雨中
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(w.state, WildlifeState::Stargazing { .. }), "掠食者不該仰望流星，實際 {:?}", w.state);
         }
     }
 
