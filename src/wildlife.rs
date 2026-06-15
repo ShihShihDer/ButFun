@@ -66,6 +66,15 @@ const SHIVER_DURATION_MIN: f32 = 2.0;
 /// 寒冬冷顫時長最大值（秒）。
 const SHIVER_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 309：嚴寒呵氣成霧 ────────────────────────────────────────────────
+/// 冬日呵氣成霧自發起意機率（每幀）——略高於哆嗦（0.03）：呵出白霧是整個冬季白天的呼吸常態，
+/// 比「冷到縮身發抖」更日常、更常見，故起意更勤一些（仍偏低，多數幀不觸發）。
+const PUFF_PROB: f32 = 0.04;
+/// 一口呵氣成霧時長最小值（秒）——比哆嗦（2.0~4.0）更短促：一口白霧呼出、緩緩飄散即收。
+const PUFF_DURATION_MIN: f32 = 1.0;
+/// 一口呵氣成霧時長最大值（秒）。
+const PUFF_DURATION_MAX: f32 = 2.5;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2029,6 +2038,11 @@ enum WildlifeState {
     /// 縮起身子原地冷顫保暖（頭頂浮 🥶）。原地不動（不更新座標）、shiver_timer 倒數，到期就回到巡遊；
     /// 冷顫中若有威脅／獵物一律優先中斷改逃竄／狩獵。與 307 夏日伸舌喘氣（👅）對成「酷暑散熱／寒冬保暖」一對。
     Shivering { shiver_timer: f32 },
+    /// ROADMAP 309：嚴寒呵氣成霧——哺乳獸在冬季白天（is_winter）平靜時，偶爾呼出一團看得見的白霧哈氣
+    /// （頭頂浮 💨）。原地不動（不更新座標）、puff_timer 倒數，到期就回到巡遊；呵氣中若有威脅／獵物一律
+    /// 優先中斷改逃竄／狩獵。與 308 寒冬哆嗦（🥶，最冷時段縮身發抖）對成「縮身冷顫／呵氣成霧」一對：哆嗦
+    /// 演「冷的體感反應」、呵氣演「冷的可見證據」，把「天有多冷」從動物的感受演到看得見的呼吸白霧。
+    Puffing { puff_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2917,6 +2931,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 309：嚴寒呵氣成霧——呵氣中（Puffing）原地不動、puff_timer 倒數；一口白霧呼完（耗盡）就
+    /// 鬆下來回到巡遊（朝家附近的下一個漫遊目標，與 tick_shiver 同模式）。只在 Puffing 狀態下生效（呼叫端已
+    /// 確保此隻為哺乳獸、冬季白天、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走狩獵／逃竄，不會
+    /// 走到此分支——呵氣永遠讓位即時反應）。
+    fn tick_puff(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Puffing { puff_timer } = self.state {
+            let remaining = puff_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Puffing { puff_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3306,6 +3336,7 @@ impl Wildlife {
             WildlifeState::Stargazing { .. } => "stargazing",
             WildlifeState::Panting { .. }    => "panting",
             WildlifeState::Shivering { .. }  => "shivering",
+            WildlifeState::Puffing { .. }    => "puffing",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3588,6 +3619,9 @@ impl WildlifeManager {
         let is_hot_summer = self.is_summer && self.is_hot;
         // ROADMAP 308：本幀是否寒冬寒時（冬季且光照微弱）——供哺乳獸哆嗦取暖判定（game.rs 已於 tick 前更新）。
         let is_cold_winter = self.is_winter && self.is_cold;
+        // ROADMAP 309：本幀是否冬季（不限最冷時段）——供哺乳獸呵氣成霧判定。呵氣只需「天冷」（整個冬季白天皆可），
+        // 比哆嗦的 is_cold_winter（限清晨／向晚最冷時段）範圍更寬，與哆嗦形成「最冷才抖／整個冬日都呵霧」的層次。
+        let is_winter = self.is_winter;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4152,6 +4186,11 @@ impl WildlifeManager {
                                 // 就鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故冷顫只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_shiver(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Puffing { .. }) {
+                                // ROADMAP 309：已在呵氣成霧中——把這一口白霧呼完（原地不動、計時倒數，呼完就
+                                // 鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故呵氣只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_puff(dt, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4394,6 +4433,21 @@ impl WildlifeManager {
                                 // 任何獵殺／進食／消化結果。
                                 let timer = rng.gen_range(SHIVER_DURATION_MIN..=SHIVER_DURATION_MAX);
                                 a.state = WildlifeState::Shivering { shiver_timer: timer };
+                            } else if !is_night
+                                && is_winter
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < PUFF_PROB
+                            {
+                                // ROADMAP 309：冬季白天（is_winter，不限最冷時段）、無獵可追的平靜掠食者——偶爾呼出一團
+                                // 看得見的白霧哈氣（轉入 Puffing 💨）。冷空氣裡呼氣成霧是哺乳獸的呼吸常態，野狼／野狐二者皆會
+                                //（與草食的鹿／小動物在各自 phase 同步覆蓋＝除鳥以外全員）。**與 308 寒冬哆嗦（🥶）對成
+                                //「縮身冷顫／呵氣成霧」一對**：哆嗦限 is_cold_winter（最冷時段、縮身發抖的體感反應）、呵氣
+                                // 只需 is_winter（整個冬季白天、看得見的呼吸白霧），故排在哆嗦分支之後——最冷時段先嘗試哆嗦、
+                                // 沒起意才呵氣，非最冷的冬日白天則只呵氣，層次分明。各呵各的、不傳染。守衛：非冬季一律跳過。
+                                // 夜間改走夜嚎分支。呵氣永遠讓位狩獵：此分支落在 prey_snap 搜尋無果的 else 內，獵物一旦在
+                                // 搜尋範圍內、更前面就已改走狩獵。純內生禦寒姿態，不改任何獵殺／進食／消化結果。
+                                let timer = rng.gen_range(PUFF_DURATION_MIN..=PUFF_DURATION_MAX);
+                                a.state = WildlifeState::Puffing { puff_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -4975,6 +5029,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_shiver(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Puffing { .. }) {
+                    // ROADMAP 309：已在呵氣成霧——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（呵氣永遠
+                    // 讓位逃命），否則原地呼出白霧、計時倒數，一口呼完就鬆下來起身回巡遊。與 308 哆嗦同模式：
+                    // 一段平靜時的定格小動作，遇險即讓位逃命。呵氣不繫於即時光照（起意時已逢冬季、呵完這一段
+                    // 只看計時，與哆嗦／喘氣同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_puff(dt, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
                     // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
                     // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
@@ -5174,6 +5238,26 @@ impl WildlifeManager {
                     // 續算分支即改全速奔逃（冷顫永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(SHIVER_DURATION_MIN..=SHIVER_DURATION_MAX);
                     a.state = WildlifeState::Shivering { shiver_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_winter
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < PUFF_PROB
+                {
+                    // ROADMAP 309：嚴寒呵氣成霧——冬季的白天（!is_night、is_winter，不限最冷時段），平靜歇息／漫步的
+                    // 草食走獸（鹿／小獸；is_mammal 守衛把野鳥排除——呼氣成霧是哺乳獸口鼻最招牌的「天冷」畫面）偶爾停下、
+                    // 呼出一團看得見的白霧哈氣（轉入 Puffing 💨）。逐幀低機率觸發 → 寒風裡，獸群由近而遠錯落地一隻隻呵出
+                    // 白霧，而非同幀整群瞬間齊呵。**與 308 寒冬哆嗦（🥶）對成「縮身冷顫／呵氣成霧」一對**：哆嗦限
+                    // is_cold_winter（清晨／向晚最冷時段、縮身發抖的體感反應）、呵氣只需 is_winter（整個冬季白天、看得見
+                    // 的呼吸白霧），故排在 308 哆嗦分支之後——最冷時段先嘗試哆嗦、沒起意才呵氣，非最冷的冬日白天則只
+                    // 呵氣，層次分明，把「天有多冷」從動物的體感（發抖）演到看得見的呼吸白霧。**守衛**：非冬季（is_winter
+                    // 為偽）一律跳過。**只屬於哺乳獸**（掠食的狼／狐另在掠食迴圈同步覆蓋＝除鳥以外全員；有測試覆蓋鳥不呵）。
+                    // **排在 296～299 雨天反應、251/284/295 恐懼分支、307 喘氣、308 哆嗦之後、下方吃草／搔癢／嬉戲等白晝
+                    // 玩樂之前**：看得見的危險與雨天反應永遠優先，呵氣這樁禦寒呼吸姿態則凌駕悠閒玩樂。**威脅永遠優先**：威脅
+                    // 一旦真逼進 FLEE_RADIUS，上面 Puffing 續算分支即改全速奔逃（呵氣永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(PUFF_DURATION_MIN..=PUFF_DURATION_MAX);
+                    a.state = WildlifeState::Puffing { puff_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -15526,6 +15610,171 @@ mod tests {
         let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
         deer.id = 2;
         deer.state = WildlifeState::Shivering { shiver_timer: 1.0e9 }; // 顫得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 309：嚴寒呵氣成霧（cold breath puff）─────────────────────────────
+    #[test]
+    fn tick_puff_holds_position_until_timer_expires() {
+        // 呵氣進行中：原地不動（座標不變）、計時遞減、狀態維持 Puffing。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Puffing { puff_timer: 2.0 };
+        deer.tick_puff(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Puffing { puff_timer } => {
+                assert!((puff_timer - 1.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("呵氣未到期應維持 Puffing，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "呵氣應原地不動");
+    }
+
+    #[test]
+    fn tick_puff_returns_to_wander_when_timer_expires() {
+        // 一口白霧呼完：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Puffing { puff_timer: 0.05 };
+        critter.tick_puff(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_puff_noop_on_other_state() {
+        // 防呆：非 Puffing 狀態呼叫 tick_puff 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_puff(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非呵氣狀態呼叫 tick_puff 不該改狀態");
+    }
+
+    #[test]
+    fn puffing_state_str_is_puffing() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Puffing { puff_timer: 1.0 };
+        assert_eq!(deer.state_str(), "puffing");
+    }
+
+    #[test]
+    fn mammal_eventually_puffs_in_winter() {
+        // 冬季白天：一頭平靜、四下無威脅的鹿，在冬季時連跑多幀應有機會停下呵氣（進入 Puffing）。
+        // 刻意設 cold=false（非最冷時段）以證呵氣只需 is_winter、不依賴 is_cold——與哆嗦的 is_cold_winter 區隔。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(false); // 非最冷時段：哆嗦不觸發，只該呵氣
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut puffed = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、冬季
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Puffing { .. }) {
+                puffed = true;
+                break;
+            }
+        }
+        assert!(puffed, "冬季白天、平靜無威脅的鹿應偶爾停下呵氣成霧");
+    }
+
+    #[test]
+    fn predator_eventually_puffs_in_winter() {
+        // 除鳥以外全員：掠食的野狼在冬季、無獵可追的平靜空檔，也應偶爾停下呵氣成霧。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_winter(true);
+        mgr.set_cold(false);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut puffed = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Puffing { .. }) {
+                puffed = true;
+                break;
+            }
+        }
+        assert!(puffed, "冬季、無獵可追的野狼也應偶爾停下呵氣成霧");
+    }
+
+    #[test]
+    fn mammal_does_not_puff_when_not_winter() {
+        // 季節守衛：非冬季（is_winter 為偽）時，即便天冷，平靜的鹿連跑多幀都不該進入 Puffing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(false);
+        mgr.set_cold(true); // 天冷但非冬季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Puffing { .. }), "非冬季不該呵氣，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_never_puffs_in_winter() {
+        // 物種守衛：呵氣成霧是哺乳獸專屬——野鳥即便在冬季，連跑多幀都不該進入 Puffing。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Puffing { .. }), "野鳥不該呵氣，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_puff_at_night() {
+        // 晝起意：夜間哺乳獸另走夜眠／夜嚎分支——即便冬季，夜裡連跑多幀都不該進入 Puffing。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Puffing { .. }), "夜間不該呵氣，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn puffing_mammal_gives_way_to_flee() {
+        // 呵氣永遠讓位逃命：呵氣中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Puffing { puff_timer: 1.0e9 }; // 呵得正起勁
         mgr.animals = vec![wolf, deer];
         mgr.next_animal_id = 3;
         mgr.set_winter(true);
