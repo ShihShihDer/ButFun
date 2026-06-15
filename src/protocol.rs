@@ -1341,6 +1341,10 @@ pub struct NpcView {
     /// 凱旋歡慶中（ROADMAP 185）：菁英 Alpha 被討伐，居民原地歡呼，前端顯示 🎉；非居民 NPC 恆為 false。
     #[serde(default)]
     pub celebrating: bool,
+    /// 當前工作 / 活動狀態代碼（ROADMAP 324）：僅故鄉七大 NPC 有值（如 "tallying"／"hammering"／
+    /// "resting"／"commuting"），前端據此在頭頂浮現活動符號；其他 NPC（旅人 / 居民 / 他星商人）為 None。
+    #[serde(default)]
+    pub activity: Option<String>,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -1637,6 +1641,7 @@ mod tests {
                 hp_pct: None,
                 alarmed: false,
                 celebrating: false,
+                activity: Some("tallying".to_string()),
             }],
             terrain: vec![],
             world_event: None,
