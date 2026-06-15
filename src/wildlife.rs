@@ -58,6 +58,14 @@ const PANT_DURATION_MIN: f32 = 2.0;
 /// 夏日喘氣時長最大值（秒）。
 const PANT_DURATION_MAX: f32 = 4.0;
 
+// ─── ROADMAP 308：寒冬哆嗦取暖 ────────────────────────────────────────────────
+/// 寒冬冷顫自發起意機率（每幀）。
+const SHIVER_PROB: f32 = 0.03;
+/// 寒冬冷顫時長最小值（秒）。
+const SHIVER_DURATION_MIN: f32 = 2.0;
+/// 寒冬冷顫時長最大值（秒）。
+const SHIVER_DURATION_MAX: f32 = 4.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2017,6 +2025,10 @@ enum WildlifeState {
     /// ROADMAP 307：夏日伸舌喘氣——哺乳獸在盛夏酷暑（Summer & light > 0.85）時停下喘氣散熱（頭頂浮 👅）。
     /// 原地不動（不更新座標）、pant_timer 倒數，到期就回到巡遊；喘氣中若有威脅／獵物一律優先中斷改逃竄／狩獵。
     Panting { pant_timer: f32 },
+    /// ROADMAP 308：寒冬哆嗦取暖——哺乳獸在寒冬寒意最深的時段（Winter & light < 0.5，清晨／向晚）時停下、
+    /// 縮起身子原地冷顫保暖（頭頂浮 🥶）。原地不動（不更新座標）、shiver_timer 倒數，到期就回到巡遊；
+    /// 冷顫中若有威脅／獵物一律優先中斷改逃竄／狩獵。與 307 夏日伸舌喘氣（👅）對成「酷暑散熱／寒冬保暖」一對。
+    Shivering { shiver_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2889,6 +2901,22 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 308：寒冬哆嗦取暖——冷顫中（Shivering）原地不動、shiver_timer 倒數保暖；暖和些了（耗盡）就
+    /// 鬆下來回到巡遊（朝家附近的下一個漫遊目標，與 tick_pant 同模式）。只在 Shivering 狀態下生效（呼叫端已
+    /// 確保此隻為哺乳獸、寒冬寒時、平靜無威脅；獵物／威脅一旦出現，更前面的 phase 已改走狩獵／逃竄，不會
+    /// 走到此分支——冷顫永遠讓位即時反應）。
+    fn tick_shiver(&mut self, dt: f32, rng: &mut StdRng) {
+        if let WildlifeState::Shivering { shiver_timer } = self.state {
+            let remaining = shiver_timer - dt;
+            if remaining <= 0.0 {
+                let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+            } else {
+                self.state = WildlifeState::Shivering { shiver_timer: remaining };
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3277,6 +3305,7 @@ impl Wildlife {
             WildlifeState::Drinking { .. } => "drinking",
             WildlifeState::Stargazing { .. } => "stargazing",
             WildlifeState::Panting { .. }    => "panting",
+            WildlifeState::Shivering { .. }  => "shivering",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3334,6 +3363,10 @@ pub struct WildlifeManager {
     is_summer: bool,
     /// ROADMAP 307：本幀是否光照強烈（酷熱）——game.rs 每幀於 tick 前以 `light > 0.85`（盛夏正午）判定後呼叫。
     is_hot: bool,
+    /// ROADMAP 308：本幀是否為冬季——game.rs 每幀於 tick 前以 `app.season` 判定後呼叫。
+    is_winter: bool,
+    /// ROADMAP 308：本幀是否光照微弱（寒涼）——game.rs 每幀於 tick 前以 `light < 0.5`（寒冬清晨／向晚）判定後呼叫。
+    is_cold: bool,
 }
 
 impl WildlifeManager {
@@ -3361,6 +3394,8 @@ impl WildlifeManager {
             is_dusk: false,
             is_summer: false,
             is_hot: false,
+            is_winter: false,
+            is_cold: false,
         }
     }
 
@@ -3412,6 +3447,18 @@ impl WildlifeManager {
     /// 判定後呼叫。與 is_summer 雙重守衛，供哺乳獸「盛夏正午伸舌喘氣散熱」判定（走欄位、不動 tick 簽名）。
     pub fn set_hot(&mut self, hot: bool) {
         self.is_hot = hot;
+    }
+
+    /// ROADMAP 308：更新本幀季節是否為冬季——game.rs 每幀於 `tick` 前以權威 `app.season` 判定後呼叫。
+    /// 與 is_cold 雙重守衛，供哺乳獸「寒冬清晨哆嗦取暖」判定（走欄位、不動 tick 簽名）。
+    pub fn set_winter(&mut self, winter: bool) {
+        self.is_winter = winter;
+    }
+
+    /// ROADMAP 308：更新本幀是否光照微弱（寒涼，寒冬清晨／向晚）——game.rs 每幀於 `tick` 前以 `light < 0.5`
+    /// 判定後呼叫。與 is_winter 雙重守衛，供哺乳獸「寒冬哆嗦取暖」判定（走欄位、不動 tick 簽名）。
+    pub fn set_cold(&mut self, cold: bool) {
+        self.is_cold = cold;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3539,6 +3586,8 @@ impl WildlifeManager {
         let is_dusk = self.is_dusk;
         // ROADMAP 307：本幀是否盛夏正午酷暑（夏季且光照強烈）——供哺乳獸伸舌喘氣散熱判定（game.rs 已於 tick 前更新）。
         let is_hot_summer = self.is_summer && self.is_hot;
+        // ROADMAP 308：本幀是否寒冬寒時（冬季且光照微弱）——供哺乳獸哆嗦取暖判定（game.rs 已於 tick 前更新）。
+        let is_cold_winter = self.is_winter && self.is_cold;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -4098,6 +4147,11 @@ impl WildlifeManager {
                                 // 就鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故喘氣只在無獵可追
                                 // 的平靜空檔延續、永遠讓位給狩獵。
                                 a.tick_pant(dt, rng);
+                            } else if matches!(a.state, WildlifeState::Shivering { .. }) {
+                                // ROADMAP 308：已在哆嗦取暖中——把這一段冷顫保暖完（原地不動、計時倒數，暖和些了
+                                // 就鬆下來回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故冷顫只在無獵可追
+                                // 的平靜空檔延續、永遠讓位給狩獵。
+                                a.tick_shiver(dt, rng);
                             } else if matches!(a.state, WildlifeState::Shaking { .. }) {
                                 // ROADMAP 300：已在抖水中——把這一陣急抖甩水做完（原地不動、計時倒數，抖夠了
                                 // 就起身回巡遊）。獵物在更前面（prey_snap 搜尋）已優先處理，故抖水只在無獵可追
@@ -4323,6 +4377,23 @@ impl WildlifeManager {
                                 // 搜尋範圍內、更前面就已改走狩獵。純內生散熱姿態，不改任何獵殺／進食／消化結果。
                                 let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
                                 a.state = WildlifeState::Panting { pant_timer: timer };
+                            } else if !is_night
+                                && is_cold_winter
+                                && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                                && rng.gen::<f32>() < SHIVER_PROB
+                            {
+                                // ROADMAP 308：寒冬寒時（is_cold_winter＝冬季且光照微弱、即清晨／向晚寒意最深）、白天無獵
+                                // 可追的平靜掠食者——偶爾停下、縮起身子原地冷顫保暖（轉入 Shivering 🥶）。哺乳獸禦寒的本能，
+                                // 野狼／野狐二者皆會（與草食的鹿／小動物在各自 phase 同步覆蓋＝除鳥以外全員）。與 307 夏日伸舌
+                                // 喘氣（👅，酷暑散熱）對成「酷暑散熱／寒冬保暖」一對——同是哺乳獸的體溫調節，一個盛夏正午張嘴
+                                // 散熱、一個寒冬清晨縮身保暖；與 305 拂曉鳥鳴／306 黃昏暮鳴並列「季節溫度／時辰聲景」一套。排在
+                                // 喘氣與社交自理（舔毛／嗅標／讀界）、覓食（埋藏／取回）之後、蜷睡之前：醒著的禦寒反應優先於補眠
+                                //（冷得發抖時不會蜷睡），沒起意去做那些日常的閒檔、又逢寒時才停下冷顫。各顫各的、不傳染。雙重守衛：
+                                // 非冬季或光照不弱（is_cold_winter 為偽）一律跳過。夜間改走夜嚎分支。冷顫永遠讓位狩獵：此分支落
+                                // 在 prey_snap 搜尋無果的 else 內，獵物一旦在搜尋範圍內、更前面就已改走狩獵。純內生禦寒姿態，不改
+                                // 任何獵殺／進食／消化結果。
+                                let timer = rng.gen_range(SHIVER_DURATION_MIN..=SHIVER_DURATION_MAX);
+                                a.state = WildlifeState::Shivering { shiver_timer: timer };
                             } else if !is_night
                                 && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
                                 && rng.gen::<f32>() < DOZE_PROB
@@ -4894,6 +4965,16 @@ impl WildlifeManager {
                     } else {
                         a.tick_pant(dt, rng);
                     }
+                } else if matches!(a.state, WildlifeState::Shivering { .. }) {
+                    // ROADMAP 308：已在哆嗦取暖——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（冷顫永遠
+                    // 讓位逃命），否則原地縮身冷顫保暖、計時倒數，暖和些了就鬆下來起身回巡遊。與 307 喘氣同模式：
+                    // 一段平靜時的定格小動作，遇險即讓位逃命。冷顫不繫於即時光照（起意時已逢寒時、顫完這一段只看
+                    // 計時，與喘氣／曬太陽／飲水同）。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        a.tick_shiver(dt, rng);
+                    }
                 } else if matches!(a.state, WildlifeState::Stargazing { .. }) {
                     // ROADMAP 301：已在流星雨仰望——走到此處代表 calm_at_night 為偽（要嘛威脅逼進了 FLEE_RADIUS、
                     // 要嘛天已破曉）。威脅一旦真逼進就立刻中斷改全速奔逃（仰望永遠讓位逃命）；否則（破曉了、流星雨
@@ -5073,6 +5154,26 @@ impl WildlifeManager {
                     //（喘氣永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
                     let timer = rng.gen_range(PANT_DURATION_MIN..=PANT_DURATION_MAX);
                     a.state = WildlifeState::Panting { pant_timer: timer };
+                } else if is_mammal
+                    && !is_night
+                    && is_cold_winter
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && rng.gen::<f32>() < SHIVER_PROB
+                {
+                    // ROADMAP 308：寒冬哆嗦取暖——寒冬寒時（is_cold_winter＝冬季且光照微弱、即清晨／向晚寒意最深）的
+                    // 白天（!is_night），平靜歇息／漫步的草食走獸（鹿／小獸；is_mammal 守衛把野鳥排除——鳥靠蓬鬆羽毛
+                    // 鎖暖、冷顫縮身是哺乳獸最招牌的禦寒方式）偶爾停下、縮起身子原地冷顫保暖（轉入 Shivering 🥶）。逐幀
+                    // 低機率觸發 → 寒風裡，獸群由近而遠錯落地一隻隻停下發抖，而非同幀整群瞬間齊顫。**與 307 夏日伸舌喘氣
+                    //（👅）對成「酷暑散熱／寒冬保暖」一對**：同是哺乳獸讀「季節＋光照」的體溫調節，一個盛夏正午（夏季＋強光）
+                    // 張嘴散熱、一個寒冬寒時（冬季＋微光）縮身保暖，把「動物 × 季節溫度」這條維度從酷暑的半邊演到嚴寒的另
+                    // 半邊。**雙重守衛**：非冬季或光照不弱（is_cold_winter 為偽）一律跳過。**只屬於哺乳獸**（掠食的狼／狐另
+                    // 在掠食迴圈同步覆蓋＝除鳥以外全員；有測試覆蓋鳥不顫）。**排在 296～299 雨天反應、251/284/295 恐懼分支、
+                    // 307 喘氣之後、下方吃草／搔癢／嬉戲等白晝玩樂之前**：看得見的危險與雨天反應永遠優先，寒冬冷顫這樁禦寒
+                    // 反應則凌駕悠閒玩樂（冷得發抖時不嬉鬧）。**威脅永遠優先**：威脅一旦真逼進 FLEE_RADIUS，上面 Shivering
+                    // 續算分支即改全速奔逃（冷顫永遠讓位逃命）。機率先擲，多數幀一擲不中即略過。
+                    let timer = rng.gen_range(SHIVER_DURATION_MIN..=SHIVER_DURATION_MAX);
+                    a.state = WildlifeState::Shivering { shiver_timer: timer };
                 } else if is_bird && matches!(a.state, WildlifeState::Scavenging { .. }) {
                     // ROADMAP 252：已在啄食殘骸中——威脅一旦逼近就立刻拍翅逃竄（撿食永遠讓位逃命），
                     // 否則把這一段撿食走完（朝屍骸落點趨近／已到就原地啄食、計時倒數，到期散去回閒晃）。
@@ -15247,6 +15348,188 @@ mod tests {
         mgr.next_animal_id = 3;
         mgr.set_summer(true);
         mgr.set_hot(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 308：寒冬哆嗦取暖（winter shivering）──────────────────────────
+    #[test]
+    fn tick_shiver_holds_position_until_timer_expires() {
+        // 冷顫進行中：原地不動（座標不變）、計時遞減、狀態維持 Shivering。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Shivering { shiver_timer: 3.0 };
+        deer.tick_shiver(0.1, &mut rng);
+        match deer.state {
+            WildlifeState::Shivering { shiver_timer } => {
+                assert!((shiver_timer - 2.9).abs() < 1e-4, "計時應遞減 dt");
+            }
+            _ => panic!("冷顫未到期應維持 Shivering，實際 {:?}", deer.state),
+        }
+        assert!((deer.x - 5000.0).abs() < 1e-6 && (deer.y - 5000.0).abs() < 1e-6, "冷顫應原地不動");
+    }
+
+    #[test]
+    fn tick_shiver_returns_to_wander_when_timer_expires() {
+        // 顫夠了暖和些了：計時耗盡就鬆下來起身回到巡遊。
+        let mut rng = make_rng();
+        let mut critter = adult_at(WildlifeKind::SmallCritter, 5000.0, 5000.0);
+        critter.state = WildlifeState::Shivering { shiver_timer: 0.05 };
+        critter.tick_shiver(0.1, &mut rng); // dt > 剩餘 → 到期
+        assert!(matches!(critter.state, WildlifeState::Wandering { .. }), "到期應回巡遊，實際 {:?}", critter.state);
+    }
+
+    #[test]
+    fn tick_shiver_noop_on_other_state() {
+        // 防呆：非 Shivering 狀態呼叫 tick_shiver 不該有任何作用（狀態不變）。
+        let mut rng = make_rng();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5000.0, 5000.0);
+        deer.state = WildlifeState::Resting { rest_timer: 2.0 };
+        deer.tick_shiver(0.1, &mut rng);
+        assert!(matches!(deer.state, WildlifeState::Resting { .. }), "非冷顫狀態呼叫 tick_shiver 不該改狀態");
+    }
+
+    #[test]
+    fn shivering_state_str_is_shivering() {
+        let mut deer = adult_at(WildlifeKind::WildDeer, 0.0, 0.0);
+        deer.state = WildlifeState::Shivering { shiver_timer: 1.0 };
+        assert_eq!(deer.state_str(), "shivering");
+    }
+
+    #[test]
+    fn mammal_eventually_shivers_in_cold_winter() {
+        // 寒冬寒時：一頭平靜、四下無威脅的鹿，在冬季且光照微弱時連跑多幀應有機會停下冷顫（進入 Shivering）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut shivered = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false); // 白天、寒冬寒時
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(d.state, WildlifeState::Shivering { .. }) {
+                shivered = true;
+                break;
+            }
+        }
+        assert!(shivered, "寒冬寒時、平靜無威脅的鹿應偶爾停下冷顫");
+    }
+
+    #[test]
+    fn predator_eventually_shivers_in_cold_winter() {
+        // 除鳥以外全員：掠食的野狼在寒冬寒時、無獵可追的平靜空檔，也應偶爾停下冷顫保暖。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 6000.0, 6000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![wolf];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut shivered = false;
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let w = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            if matches!(w.state, WildlifeState::Shivering { .. }) {
+                shivered = true;
+                break;
+            }
+        }
+        assert!(shivered, "寒冬寒時、無獵可追的野狼也應偶爾停下冷顫");
+    }
+
+    #[test]
+    fn mammal_does_not_shiver_when_not_winter() {
+        // 季節守衛：光照微弱但非冬季（is_winter 為偽）時，平靜的鹿連跑多幀都不該進入 Shivering。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(false);
+        mgr.set_cold(true); // 微光但非冬季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shivering { .. }), "非冬季不該冷顫，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_shiver_when_not_cold() {
+        // 光照守衛：冬季但光照不弱（is_cold 為偽，即寒冬正午）時，平靜的鹿連跑多幀都不該進入 Shivering。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(false); // 冬季但光照尚強（非清晨向晚）
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shivering { .. }), "冬季非寒時不該冷顫，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn bird_never_shivers_in_cold_winter() {
+        // 物種守衛：冷顫是哺乳獸專屬——野鳥即便在寒冬寒時，連跑多幀都不該進入 Shivering（鳥靠蓬鬆羽毛鎖暖）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Shivering { .. }), "野鳥不該冷顫，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_does_not_shiver_at_night() {
+        // 晝起意：夜間哺乳獸另走夜眠／夜嚎分支——即便寒冬寒冷，夜裡連跑多幀都不該進入 Shivering。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer];
+        mgr.set_winter(true);
+        mgr.set_cold(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            let d = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(d.state, WildlifeState::Shivering { .. }), "夜間不該冷顫，實際 {:?}", d.state);
+        }
+    }
+
+    #[test]
+    fn shivering_mammal_gives_way_to_flee() {
+        // 冷顫永遠讓位逃命：冷顫中的鹿一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut deer = adult_at(WildlifeKind::WildDeer, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        deer.id = 2;
+        deer.state = WildlifeState::Shivering { shiver_timer: 1.0e9 }; // 顫得正起勁
+        mgr.animals = vec![wolf, deer];
+        mgr.next_animal_id = 3;
+        mgr.set_winter(true);
+        mgr.set_cold(true);
         let att: HashMap<WildlifeKind, i32> = HashMap::new();
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
