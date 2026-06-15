@@ -89,6 +89,22 @@ const HUDDLE_DURATION_MIN: f32 = 3.0;
 /// 偎暖單段最長時長（秒）。
 const HUDDLE_DURATION_MAX: f32 = 6.0;
 
+/// ROADMAP 311：秋日群鳥集結——集結時「看得見同伴」的範圍（像素）。秋天白天，身邊這範圍內若有同種
+/// 成鳥夥伴，平靜的野鳥會朝牠飛攏聚成一群（南遷前的集結）。略大於哺乳獸偎暖 HUDDLE_SEE_RADIUS(200)——
+/// 鳥拍翅趨近、看得更遠些，三三兩兩自更遠處陸續飛攏。
+const FLOCK_SEE_RADIUS: f32 = 240.0;
+/// 集結時與同伴貼近的舒適距離（像素）——靠到這麼近就停（棲在一處、不疊在一起）。比哺乳獸偎暖
+/// HUDDLE_SNUG_DIST(22) 略近：鳥體型小、棲群更緊湊。
+const FLOCK_SNUG_DIST: f32 = 16.0;
+/// 集結飛攏的移動速度（像素/秒）——比哺乳獸偎暖 HUDDLE_SPEED(26) 快：鳥拍翅趨近、輕快地飛攏成群。
+const FLOCK_SPEED: f32 = 42.0;
+/// 秋天白天、身邊有同伴的平靜野鳥，本幀轉入集結的機率——偏低（與哺乳獸偎暖 HUDDLE_PROB 0.03 同量級）。
+const FLOCK_PROB: f32 = 0.03;
+/// 集結單段最短時長（秒）——飛攏聚作一群棲息一陣再鬆開續行（與偎暖 3~6s 同量級）。
+const FLOCK_DURATION_MIN: f32 = 3.0;
+/// 集結單段最長時長（秒）。
+const FLOCK_DURATION_MAX: f32 = 6.0;
+
 /// 返家速度。
 const RETURN_SPEED: f32 = 60.0;
 /// 距巢穴多近算「到家」。
@@ -2063,6 +2079,12 @@ enum WildlifeState {
     /// 中斷改逃竄／狩獵。與 308 寒冬哆嗦（🥶，孤獸獨自縮身發抖）對成「獨則顫／群則偎」一對：同樣寒冬寒時，
     /// 孤獸只能縮身哆嗦，身邊有伴的則湊作一團偎暖——把禦寒從「各自的體感」推進到「彼此牽動的群體行為」。
     Huddling { target_x: f32, target_y: f32, huddle_timer: f32 },
+    /// ROADMAP 311：秋日群鳥集結——秋天白天平靜的野鳥，身邊有同種成鳥夥伴時朝牠飛攏、聚作一群（頭頂浮
+    /// 🧭，南遷前的集結／遷徙躁動）。target_x/y＝本幀重鎖的最近同伴座標（逐幀飛攏到貼近距離就停）、
+    /// flock_timer 倒數，同伴走遠不見或計時耗盡就鬆開回巡遊；集結中若有威脅一律優先中斷改逃竄。與 310
+    /// 寒冬偎暖（🤗，哺乳獸冬季湊作一團分享體溫）對成「哺乳獸冬偎暖／野鳥秋集結」一對：同是社交性物種
+    /// 在嚴季來臨前朝同伴聚攏、彼此牽動成群，把「應對季節」從哺乳獸推及野鳥這條過去缺席的物種線。
+    Flocking { target_x: f32, target_y: f32, flock_timer: f32 },
 }
 
 // ─── 實體 ────────────────────────────────────────────────────────────────────
@@ -2997,6 +3019,36 @@ impl Wildlife {
         }
     }
 
+    /// ROADMAP 311：秋日群鳥集結——集結中（Flocking）朝本幀重鎖的同伴 `target` 飛攏到貼近距離就停、聚作
+    /// 一群棲息，flock_timer 倒數；同伴走遠不見（`target` 為 None）或計時耗盡就鬆開、起身回巡遊（與 tick_huddle
+    /// 同模式，挑家附近的下一個漫遊目標）。呼叫端每幀重鎖最近同伴座標傳入（仿 310 偎暖逐幀重鎖目標）。
+    /// 只在 Flocking 狀態下生效（呼叫端已確保此隻為秋天白天、平靜無威脅的野鳥；威脅一旦出現，更前面的分支
+    /// 已改走逃竄，不會走到此分支——集結永遠讓位逃命）。
+    fn tick_flock(&mut self, dt: f32, target: Option<(f32, f32)>, rng: &mut StdRng) {
+        if let WildlifeState::Flocking { flock_timer, .. } = self.state {
+            let remaining = flock_timer - dt;
+            match target {
+                // 同伴走遠不見了——鬆開、起身回巡遊（一隻鳥就集不成群了）。
+                None => {
+                    let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                    self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                }
+                Some((tx, ty)) => {
+                    if remaining <= 0.0 {
+                        let (wx, wy) = random_target(self.home_x, self.home_y, WANDER_RADIUS, rng);
+                        self.state = WildlifeState::Wandering { target_x: wx, target_y: wy, wander_timer: 5.0 };
+                    } else {
+                        // 朝同伴飛攏到貼近距離就停（棲作一群、不疊上去）；計時隨狀態變體攜帶。
+                        let (nx, ny) = flock_step(self.x, self.y, tx, ty, dt);
+                        self.x = nx;
+                        self.y = ny;
+                        self.state = WildlifeState::Flocking { target_x: tx, target_y: ty, flock_timer: remaining };
+                    }
+                }
+            }
+        }
+    }
+
     /// ROADMAP 293：掠食者領地嗅標——嗅標中（Marking）原地不動、倒數計時；標完（mark_timer 耗盡）就起身
     /// 回到巡遊（朝家附近的下一個漫遊目標，掠食者獨來獨往、不沿群聚拉力，與 tick_lick／tick_doze 同模式）。
     /// 只在 Marking 狀態下生效（呼叫端已確保此隻為掠食者、白天、無獵可追的平靜空檔；獵物一旦出現，掠食者
@@ -3388,6 +3440,7 @@ impl Wildlife {
             WildlifeState::Shivering { .. }  => "shivering",
             WildlifeState::Puffing { .. }    => "puffing",
             WildlifeState::Huddling { .. }   => "huddling",
+            WildlifeState::Flocking { .. }   => "flocking",
             WildlifeState::Cleaning { .. }  => "cleaning",
         }
     }
@@ -3449,6 +3502,10 @@ pub struct WildlifeManager {
     is_winter: bool,
     /// ROADMAP 308：本幀是否光照微弱（寒涼）——game.rs 每幀於 tick 前以 `light < 0.5`（寒冬清晨／向晚）判定後呼叫。
     is_cold: bool,
+    /// ROADMAP 311：本幀是否為秋季——game.rs 每幀於 tick 前以權威 `app.season` 判定後呼叫。供野鳥
+    /// 「秋日群鳥集結（南遷前飛攏成群）」判定（走欄位、不動 tick 簽名，沿用 307/308 季節旗標同慣例）。
+    /// 預設 false（非秋季、不集結），故既有測試無須改動、行為與本切片前逐位元一致。
+    is_autumn: bool,
 }
 
 impl WildlifeManager {
@@ -3478,6 +3535,7 @@ impl WildlifeManager {
             is_hot: false,
             is_winter: false,
             is_cold: false,
+            is_autumn: false,
         }
     }
 
@@ -3541,6 +3599,12 @@ impl WildlifeManager {
     /// 判定後呼叫。與 is_winter 雙重守衛，供哺乳獸「寒冬哆嗦取暖」判定（走欄位、不動 tick 簽名）。
     pub fn set_cold(&mut self, cold: bool) {
         self.is_cold = cold;
+    }
+
+    /// ROADMAP 311：更新本幀季節是否為秋季——game.rs 每幀於 `tick` 前以權威 `app.season` 判定後呼叫。
+    /// 供野鳥「秋日群鳥集結（南遷前飛攏成群）」判定（走欄位、不動 tick 簽名）。
+    pub fn set_autumn(&mut self, autumn: bool) {
+        self.is_autumn = autumn;
     }
 
     /// 供快照廣播的聚落視圖列表（靜態，每幀傳出）。
@@ -3673,6 +3737,8 @@ impl WildlifeManager {
         // ROADMAP 309：本幀是否冬季（不限最冷時段）——供哺乳獸呵氣成霧判定。呵氣只需「天冷」（整個冬季白天皆可），
         // 比哆嗦的 is_cold_winter（限清晨／向晚最冷時段）範圍更寬，與哆嗦形成「最冷才抖／整個冬日都呵霧」的層次。
         let is_winter = self.is_winter;
+        // ROADMAP 311：本幀是否秋季——供野鳥「秋日群鳥集結（南遷前飛攏成群）」判定（game.rs 已於 tick 前更新）。
+        let is_autumn = self.is_autumn;
         self.kill_broadcast_cooldown = (self.kill_broadcast_cooldown - dt).max(-1.0);
 
         // ── Phase 0a: 乙太微粒 TTL 倒數（ROADMAP 142）────────────────────────
@@ -5514,6 +5580,17 @@ impl WildlifeManager {
                     // 掠食者一旦逼進 FLEE_RADIUS（threat_near 為真）此分支即短路、改走逃竄——覓食永遠讓位逃命。
                     let timer = rng.gen_range(GLEAN_DURATION_MIN..=GLEAN_DURATION_MAX);
                     a.state = WildlifeState::Gleaning { glean_timer: timer };
+                } else if is_bird && matches!(a.state, WildlifeState::Flocking { .. }) {
+                    // ROADMAP 311：已在集結中——威脅一旦真逼進 FLEE_RADIUS 就立刻中斷改全速奔逃（集結永遠
+                    // 讓位逃命），否則重鎖最近的同種成鳥夥伴、飛攏聚作一群、計時倒數；同伴走遠不見或計時耗盡
+                    // 就鬆開回巡遊。與 310 偎暖續算同模式但物種為鳥：每幀重鎖最近同伴座標傳入 tick_flock（仿
+                    // 310 偎暖逐幀重鎖目標），野鳥由近而遠錯落地朝同伴飛攏、彼此牽動地聚成一群。
+                    if let Some((tx, ty)) = nearest_in_range(a.x, a.y, &threats, FLEE_RADIUS) {
+                        a.flee_from(tx, ty);
+                    } else {
+                        let companion = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, FLOCK_SEE_RADIUS);
+                        a.tick_flock(dt, companion, rng);
+                    }
                 } else if is_bird && matches!(a.state, WildlifeState::Chirping { .. }) {
                     // ROADMAP 221：已在啁啾中——威脅一旦逼近就立刻收聲改逃竄（鳴叫永遠讓位逃命），
                     // 否則原地把這一段鳴唱走完、計時倒數，到期回到閒晃。
@@ -5521,6 +5598,29 @@ impl WildlifeManager {
                         a.flee_from(tx, ty);
                     } else {
                         a.tick_chirp(dt, herd_anchor, rng);
+                    }
+                } else if is_bird
+                    && !is_night
+                    && is_autumn
+                    && !threat_near
+                    && matches!(a.state, WildlifeState::Resting { .. } | WildlifeState::Wandering { .. })
+                    && nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, FLOCK_SEE_RADIUS).is_some()
+                    && rng.gen::<f32>() < FLOCK_PROB
+                {
+                    // ROADMAP 311：秋日群鳥集結——秋天（is_autumn）白天平靜的野鳥（is_bird 守衛），身邊
+                    // FLOCK_SEE_RADIUS 內若有同種成鳥夥伴，偶爾朝牠飛攏、聚作一群（轉入 Flocking 🧭，南遷前的
+                    // 集結／遷徙躁動）。**與 310 寒冬偎暖（🤗，哺乳獸冬季湊作一團分享體溫）對成「哺乳獸冬偎暖／
+                    // 野鳥秋集結」一對**：同是社交性物種在嚴季來臨前朝同伴聚攏、彼此牽動成群，把「應對季節」這條
+                    // 過去只有哺乳獸的線，第一次接到野鳥身上——野鳥至此終於有了自己的季節社交行為（310 偎暖明確
+                    // 把鳥排除）。**只屬於野鳥**（哺乳獸另走偎暖／喘氣，鳥不偎；is_bird 守衛）。**秋季守衛**：非
+                    // 秋季一律跳過。**逐幀低機率觸發** → 秋風裡野鳥由近而遠錯落地一隻隻飛攏聚成一群，而非同幀整群
+                    // 瞬間擠成一堆。**排在覓食（265 跟鹿／292 跟鼠）之後、220 升空／221 鳴唱之前**：覓食永遠優先
+                    // （要先吃飽），但這份南遷前的集結躁動凌駕悠閒的盤旋與鳴唱。**威脅永遠優先**：威脅一旦真逼進
+                    // FLEE_RADIUS，上面 Flocking 續算分支即改全速奔逃（集結永遠讓位逃命）。機率先擲，多數幀一擲
+                    // 不中即略過。需身邊真有同種成鳥夥伴（nearest_adult_of_kind 為 Some）才起意，否則一隻鳥集不成群。
+                    let timer = rng.gen_range(FLOCK_DURATION_MIN..=FLOCK_DURATION_MAX);
+                    if let Some((tx, ty)) = nearest_adult_of_kind(a.id, animal_kind, a.x, a.y, &adult_snap, FLOCK_SEE_RADIUS) {
+                        a.state = WildlifeState::Flocking { target_x: tx, target_y: ty, flock_timer: timer };
                     }
                 } else if is_bird
                     && !is_night
@@ -6395,6 +6495,20 @@ fn huddle_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
         return (x, y);
     }
     let step = (HUDDLE_SPEED * dt).min(dist - HUDDLE_SNUG_DIST);
+    (x + dx / dist * step, y + dy / dist * step)
+}
+
+/// ROADMAP 311：秋日群鳥集結——朝同伴 (tx,ty) 飛攏到貼近距離 FLOCK_SNUG_DIST 就停（棲作一群、不疊在
+/// 一起）。單幀位移受 FLOCK_SPEED 約束、且夾到剛好停在貼近距離、不會穿過去疊到同伴身上（與 huddle_step
+/// 同手法、僅速度／貼近距離不同）。純函式，便於測試。
+fn flock_step(x: f32, y: f32, tx: f32, ty: f32, dt: f32) -> (f32, f32) {
+    let dx = tx - x;
+    let dy = ty - y;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist <= FLOCK_SNUG_DIST || dist < 1.0 {
+        return (x, y);
+    }
+    let step = (FLOCK_SPEED * dt).min(dist - FLOCK_SNUG_DIST);
     (x + dx / dist * step, y + dy / dist * step)
 }
 
@@ -16142,5 +16256,187 @@ mod tests {
         mgr.tick(0.1, &[], &att, &[], false);
         let d = mgr.animals.iter().find(|x| x.id == 2).unwrap();
         assert!(matches!(d.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", d.state);
+    }
+
+    // ─── ROADMAP 311：秋日群鳥集結（autumn pre-migration flocking）──────────────────
+    #[test]
+    fn flock_step_approaches_then_holds_at_snug() {
+        // 遠在貼近距離外 → 朝同伴飛攏（距離縮小、沿 +x）；已在貼近距離內 → 原地不動（棲作一群、不疊上去）。
+        let (nx, ny) = flock_step(0.0, 0.0, 1000.0, 0.0, 0.1);
+        assert!(nx > 0.0 && ny.abs() < 1e-3, "應朝同伴飛攏（沿 +x）");
+        assert!(nx <= FLOCK_SPEED * 0.1 + 1e-3, "單幀飛攏距離受 FLOCK_SPEED 約束");
+        let near = FLOCK_SNUG_DIST - 5.0;
+        let (hx, hy) = flock_step(0.0, 0.0, near, 0.0, 0.1);
+        assert_eq!((hx, hy), (0.0, 0.0), "已飛攏到貼近距離內應原地不動、不再逼近");
+    }
+
+    #[test]
+    fn flock_step_does_not_overshoot_snug() {
+        // 從貼近圈外一點點飛攏：單幀位移被夾到「剛好停在貼近距離」，不會穿過去疊到同伴身上。
+        let start = FLOCK_SNUG_DIST + 10.0;
+        let (nx, _) = flock_step(0.0, 0.0, start, 0.0, 1.0); // dt 大到足以衝過頭（若不夾）
+        assert!((nx - 10.0).abs() < 1e-3, "應剛好飛攏到貼近圈邊緣（位移=10），不穿過去，實際 {nx}");
+    }
+
+    #[test]
+    fn tick_flock_returns_to_wander_when_companion_gone() {
+        // 同伴走遠不見（target 為 None）——集不成群，鬆開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Flocking { target_x: 5050.0, target_y: 5000.0, flock_timer: 5.0 };
+        bird.tick_flock(0.1, None, &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "同伴不見應回巡遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_flock_returns_to_wander_when_timer_expires() {
+        // 計時耗盡——飛攏聚作一群棲息一陣後鬆開、起身回巡遊。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Flocking { target_x: 5050.0, target_y: 5000.0, flock_timer: 0.05 };
+        bird.tick_flock(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Wandering { .. }), "計時耗盡應回巡遊，實際 {:?}", bird.state);
+    }
+
+    #[test]
+    fn tick_flock_noop_on_other_state() {
+        // 只在 Flocking 狀態下生效：其餘狀態原封不動。
+        let mut rng = make_rng();
+        let mut bird = adult_at(WildlifeKind::WildBird, 5000.0, 5000.0);
+        bird.state = WildlifeState::Resting { rest_timer: 2.0 };
+        bird.tick_flock(0.1, Some((5050.0, 5000.0)), &mut rng);
+        assert!(matches!(bird.state, WildlifeState::Resting { .. }), "非集結狀態應原封不動");
+    }
+
+    #[test]
+    fn flocking_state_str_is_flocking() {
+        let mut bird = adult_at(WildlifeKind::WildBird, 0.0, 0.0);
+        bird.state = WildlifeState::Flocking { target_x: 0.0, target_y: 0.0, flock_timer: 1.0 };
+        assert_eq!(bird.state_str(), "flocking");
+    }
+
+    #[test]
+    fn bird_with_companion_eventually_flocks_in_autumn() {
+        // 秋天白天、身邊有同種成鳥夥伴（120px，落在 FLOCK_SEE_RADIUS 240 內）的平靜野鳥，連跑多幀應有機會
+        // 朝同伴飛攏集結（進入 Flocking）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildBird, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        let mut flocked = false;
+        for _ in 0..600 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            if mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Flocking { .. })) {
+                flocked = true;
+                break;
+            }
+        }
+        assert!(flocked, "秋天白天、身邊有同伴的野鳥應偶爾朝同伴飛攏集結");
+    }
+
+    #[test]
+    fn lone_bird_never_flocks() {
+        // 對偶守衛：孤鳥（身邊無同種夥伴）即便秋天白天、連跑多幀都不該集結（一隻鳥集不成群）。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird];
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            let b = mgr.animals.iter().find(|x| x.id == 1).unwrap();
+            assert!(!matches!(b.state, WildlifeState::Flocking { .. }), "孤鳥無同伴不該集結，實際 {:?}", b.state);
+        }
+    }
+
+    #[test]
+    fn mammal_never_flocks_in_autumn() {
+        // 物種守衛：集結是野鳥專屬——哺乳獸（鹿）即便兩隻相鄰、秋天白天，連跑多幀都不該集結（牠們走偎暖／喘氣）。
+        let mut mgr = WildlifeManager::new();
+        let mut deer = adult_at(WildlifeKind::WildDeer, 6000.0, 6000.0);
+        deer.id = 1;
+        deer.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildDeer, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![deer, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Flocking { .. })),
+                "哺乳獸不該集結");
+        }
+    }
+
+    #[test]
+    fn bird_does_not_flock_when_not_autumn() {
+        // 季節守衛：非秋季時，即便身邊有同伴，平靜的野鳥連跑多幀都不該集結。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildBird, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(false); // 非秋季
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..1000 {
+            mgr.tick(0.1, &[], &att, &[], false);
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Flocking { .. })),
+                "非秋季不該集結");
+        }
+    }
+
+    #[test]
+    fn bird_does_not_flock_at_night() {
+        // 晝起意：夜間野鳥另走夜眠分支——即便秋天、身邊有同伴，夜裡連跑多幀都不該集結。
+        let mut mgr = WildlifeManager::new();
+        let mut bird = adult_at(WildlifeKind::WildBird, 6000.0, 6000.0);
+        bird.id = 1;
+        bird.state = WildlifeState::Resting { rest_timer: 0.1 };
+        let mut mate = adult_at(WildlifeKind::WildBird, 6120.0, 6000.0);
+        mate.id = 2;
+        mate.state = WildlifeState::Resting { rest_timer: 0.1 };
+        mgr.animals = vec![bird, mate];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        for _ in 0..400 {
+            mgr.tick(0.1, &[], &att, &[], true); // 夜間
+            assert!(!mgr.animals.iter().any(|x| matches!(x.state, WildlifeState::Flocking { .. })),
+                "夜間不該集結");
+        }
+    }
+
+    #[test]
+    fn flocking_bird_gives_way_to_flee() {
+        // 集結永遠讓位逃命：集結中的野鳥一旦有掠食者真逼進 FLEE_RADIUS(180)，立刻中斷改全速奔逃。
+        let mut mgr = WildlifeManager::new();
+        let mut wolf = adult_at(WildlifeKind::WildWolf, 5000.0, 5000.0);
+        wolf.id = 1;
+        wolf.state = WildlifeState::Wandering { target_x: 5000.0, target_y: 5000.0, wander_timer: 100.0 };
+        let mut bird = adult_at(WildlifeKind::WildBird, 5100.0, 5000.0); // 100px < FLEE_RADIUS(180)
+        bird.id = 2;
+        bird.state = WildlifeState::Flocking { target_x: 5100.0, target_y: 5050.0, flock_timer: 1.0e9 };
+        mgr.animals = vec![wolf, bird];
+        mgr.next_animal_id = 3;
+        mgr.set_autumn(true);
+        let att: HashMap<WildlifeKind, i32> = HashMap::new();
+        mgr.tick(0.1, &[], &att, &[], false);
+        let b = mgr.animals.iter().find(|x| x.id == 2).unwrap();
+        assert!(matches!(b.state, WildlifeState::Fleeing { .. }), "威脅逼近應改逃竄，實際 {:?}", b.state);
     }
 }
