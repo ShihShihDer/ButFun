@@ -85,6 +85,84 @@ pub fn lunch_line(npc_id: &str, slot: usize) -> Option<&'static str> {
         .map(|(_, lines)| lines[slot % lines.len()])
 }
 
+// ── 席間舉杯（ROADMAP 329：玩家加入午餐社交）────────────────────────────────────
+//
+// 327/328 讓七大 NPC 正午圍桌共食、席間你一言我一語，但玩家始終只能在旁看著。
+// 本段補上「玩家也能入席」的互動層：午休時段玩家走到鎮中廣場餐桌旁，按「舉杯同席」，
+// 鄰近就座的 NPC 便轉頭回敬一句（前端畫成該 NPC 頭頂的 NpcSpeech 泡泡）——玩家第一次
+// 能「介入」城鎮社交，而非旁觀。零 LLM、純查表，與席間閒話同樣不洗世界聊天頻道。
+
+/// 玩家可舉杯的判定半徑（像素，以鎮中廣場 `PLAZA_POS` 為圓心）。
+/// 略大於座位環半徑（64），讓走到餐桌旁的玩家都搆得著入席。
+pub const LUNCH_TOAST_REACH: f32 = 140.0;
+
+/// 兩次舉杯之間的冷卻（秒）：防洗泡泡，也讓 NPC 的回敬有呼吸空間。
+pub const TOAST_COOLDOWN_SECS: f32 = 6.0;
+
+/// 各 NPC 對玩家舉杯的回敬模板池（零 LLM）。
+///
+/// 語氣是「對著入席玩家舉杯寒暄」，扣合各自職業性格、與席間閒話（自言自語的家常）
+/// 刻意區隔——這些都是衝著玩家來的招呼。集中於此作為面向玩家字串的 i18n 替換點。
+static TOAST_LINES: &[(&str, &[&str])] = &[
+    ("merchant", &[
+        "來來來，這位客官也坐下喝一碗，今日不談生意！",
+        "稀客稀客，嚐嚐我帶的果脯，管夠。",
+        "緣分啊，舉杯舉杯——下回光顧我攤子記得喊我。",
+    ]),
+    ("workshop_npc", &[
+        "好漢入席！這碗敬你，吃飽了我教你兩手打鐵。",
+        "坐下歇腳，爐火我封好了，不急。",
+        "難得有人陪我喝一口，乾了這碗熱湯！",
+    ]),
+    ("bounty_npc", &[
+        "哈，能打又能喝，夠朋友！這碗敬你。",
+        "坐這兒，跟你說說東邊那群怪的趣事。",
+        "舉杯！野地裡難得碰上痛快人。",
+    ]),
+    ("expedition_npc", &[
+        "走南闖北的人最懂這口熱飯的好，敬你！",
+        "坐下坐下，跟你講講山那頭的奇景。",
+        "同席一回也是緣，乾杯！",
+    ]),
+    ("procurement_npc", &[
+        "這批好料正巧今日上桌，你來得是時候，請！",
+        "坐，嚐嚐這跨星香料調的湯，不虛此行。",
+        "舉杯——記著啊，你這頓我記在帳上（笑）。",
+    ]),
+    ("farm_fair_npc", &[
+        "自家種的菜配生人也對味，快坐下嚐！",
+        "難得有客，這瓜給你挑頂甜的那塊。",
+        "舉杯敬豐收，也敬你這位新朋友！",
+    ]),
+    ("village_chief", &[
+        "遠客入席是村裡的福氣，多吃點，別客氣！",
+        "來，這碗我請，往後在鎮上有事儘管找我。",
+        "看你也坐下了，這桌才算真齊了——乾杯！",
+    ]),
+];
+
+/// 取得某 NPC 對玩家舉杯的第 `slot` 句回敬（在其模板池內循環）。純函式、可測。
+/// 非村落 NPC 回 `None`——只有圍桌的七大 NPC 會回敬。
+pub fn toast_line(npc_id: &str, slot: usize) -> Option<&'static str> {
+    TOAST_LINES
+        .iter()
+        .find(|(id, _)| *id == npc_id)
+        .map(|(_, lines)| lines[slot % lines.len()])
+}
+
+/// 從一組就座 NPC（`(id, x, y)`）中，挑出離玩家 `(px, py)` 最近、且落在
+/// `LUNCH_TOAST_REACH` 內的那一位回敬。純函式、可測：無人就座或全都太遠回 `None`。
+/// 同距離時取在 `seats` 中較前者（穩定、可重現）。
+pub fn nearest_seated<'a>(px: f32, py: f32, seats: &[(&'a str, f32, f32)]) -> Option<&'a str> {
+    let reach_sq = LUNCH_TOAST_REACH * LUNCH_TOAST_REACH;
+    seats
+        .iter()
+        .map(|&(id, x, y)| (id, (x - px).powi(2) + (y - py).powi(2)))
+        .filter(|&(_, d2)| d2 <= reach_sq)
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(id, _)| id)
+}
+
 /// 取得 NPC 顯示名稱（從 npc_chat 共用資料；與 plaza_talk / daytime_talk 一致）。
 pub fn display_name(id: &str) -> &'static str {
     crate::npc_chat::find_npc(id).map(|n| n.display).unwrap_or("村民")
@@ -227,5 +305,66 @@ mod tests {
         assert_eq!(st.tick(1.0, false), None);
         // 進入新一場午休，前幾幀（< 首句等待）不應立刻發話。
         assert_eq!(st.tick(1.0, true), None);
+    }
+
+    // ── 席間舉杯（ROADMAP 329）─────────────────────────────────────────────────
+
+    #[test]
+    fn toast_line_returns_some_for_all_village_npcs() {
+        for s in VILLAGE_NPCS {
+            assert!(toast_line(s.id, 0).is_some(), "{} 應有舉杯回敬", s.id);
+        }
+    }
+
+    #[test]
+    fn toast_line_returns_none_for_unknown_npc() {
+        assert_eq!(toast_line("traveler", 0), None);
+        assert_eq!(toast_line("unknown", 2), None);
+    }
+
+    #[test]
+    fn toast_line_cycles_within_pool() {
+        let first = toast_line("merchant", 0).unwrap();
+        // merchant 回敬池有 3 句，slot=3 應繞回第一句、且不 panic。
+        assert_eq!(toast_line("merchant", 3), Some(first));
+        for slot in 0..3 {
+            assert!(toast_line("merchant", slot).is_some());
+        }
+    }
+
+    #[test]
+    fn nearest_seated_picks_closest_within_reach() {
+        // 三位就座 NPC，玩家最靠近 b。
+        let seats = [
+            ("merchant", 0.0, 0.0),
+            ("village_chief", 50.0, 0.0),
+            ("bounty_npc", 120.0, 0.0),
+        ];
+        // 玩家站在 (55,0)：最近的是 village_chief。
+        assert_eq!(nearest_seated(55.0, 0.0, &seats), Some("village_chief"));
+        // 玩家站在 (5,0)：最近的是 merchant。
+        assert_eq!(nearest_seated(5.0, 0.0, &seats), Some("merchant"));
+    }
+
+    #[test]
+    fn nearest_seated_none_when_all_too_far() {
+        let seats = [("merchant", 1000.0, 1000.0)];
+        // 玩家在原點，唯一座位遠超 LUNCH_TOAST_REACH → 無人回敬。
+        assert_eq!(nearest_seated(0.0, 0.0, &seats), None);
+    }
+
+    #[test]
+    fn nearest_seated_none_when_empty() {
+        // 午休還沒人就座 → None，不會 panic。
+        assert_eq!(nearest_seated(0.0, 0.0, &[]), None);
+    }
+
+    #[test]
+    fn nearest_seated_respects_reach_boundary() {
+        // 剛好落在半徑上算搆得著，超出一點點就不算。
+        let inside = [("merchant", LUNCH_TOAST_REACH, 0.0)];
+        assert_eq!(nearest_seated(0.0, 0.0, &inside), Some("merchant"));
+        let outside = [("merchant", LUNCH_TOAST_REACH + 1.0, 0.0)];
+        assert_eq!(nearest_seated(0.0, 0.0, &outside), None);
     }
 }

@@ -135,6 +135,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            toast_cooldown: 0.0,
+            toast_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -208,6 +210,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet: None,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            toast_cooldown: 0.0,
+            toast_count: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -2941,6 +2945,73 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 農夫熟練度 XP（讓農夫路線不只是種田）。
                             p.masteries.gain_farmer(FISH_FARMER_XP);
                             tracing::info!(player = %p.name, fish = ?fish, "釣到魚");
+                        }
+                    }
+                }
+
+                // ── 席間舉杯：玩家加入午餐社交（ROADMAP 329）────────────────────────
+                Ok(ClientMsg::JoinLunchToast) => {
+                    // 午休聚食時段，玩家走到鎮中廣場餐桌旁舉杯入席，鄰近就座的 NPC 轉頭回敬一句。
+                    // 零 LLM、純查表；只發就地 NpcSpeech 泡泡（不洗世界聊天頻道），與 327/328 同調。
+                    use crate::npc_schedule::{is_lunch_time, NpcActivity, VILLAGE_NPCS};
+                    use crate::lunch_chatter::{nearest_seated, toast_line, display_name, TOAST_COOLDOWN_SECS};
+                    // 1. 驗：正值午休時段（非午休一律不回敬）。
+                    let lunching_now = {
+                        let dn = app.daynight.read().unwrap();
+                        is_lunch_time(dn.phase(), dn.fraction())
+                    };
+                    if lunching_now {
+                        // 2. 取玩家位置 + 是否可舉杯（未倒地、冷卻到期）+ 取用句子序號。
+                        let player_info = {
+                            let players = app.players.read().unwrap();
+                            players.get(&id).and_then(|p| {
+                                if p.vitals.is_downed() || p.toast_cooldown > 0.0 {
+                                    None
+                                } else {
+                                    Some((p.x, p.y, p.toast_count as usize))
+                                }
+                            })
+                        };
+                        if let Some((px, py, slot)) = player_info {
+                            // 3. 收集目前真正就座（Lunching）的 NPC 座標，挑最近、在搆得著範圍內的那位。
+                            let seats: Vec<(&'static str, f32, f32)> = {
+                                let sched = app.npc_schedule.read().unwrap();
+                                VILLAGE_NPCS
+                                    .iter()
+                                    .filter_map(|s| {
+                                        if sched.get_activity(s.id) == Some(NpcActivity::Lunching) {
+                                            sched.get_pos(s.id).map(|(x, y)| (s.id, x, y))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            };
+                            if let Some(npc_id) = nearest_seated(px, py, &seats) {
+                                // 4. 確定有人回敬：扣冷卻、推進取句計數（讓回敬逐句不重複）。
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.toast_cooldown = TOAST_COOLDOWN_SECS;
+                                    p.toast_count = p.toast_count.wrapping_add(1);
+                                }
+                                // 5. 廣播該 NPC 的回敬泡泡（就地定位在其座位上）。
+                                if let Some(text) = toast_line(npc_id, slot) {
+                                    let (wx, wy) = seats
+                                        .iter()
+                                        .find(|(sid, _, _)| *sid == npc_id)
+                                        .map(|&(_, x, y)| (x, y))
+                                        .unwrap_or((px, py));
+                                    let _ = app.tx.send(std::sync::Arc::new(
+                                        crate::protocol::ServerMsg::NpcSpeech {
+                                            npc_id: npc_id.to_string(),
+                                            npc_name: display_name(npc_id).to_string(),
+                                            text: text.to_string(),
+                                            display_secs: 6,
+                                            wx,
+                                            wy,
+                                        },
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
