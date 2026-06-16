@@ -570,6 +570,79 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 340 表情共鳴：一群靠近的玩家同時比同個表情 → 在重心迸放大發光特效 ──
+            // 338 是各比各的、339 是兩人擊掌；共鳴是「群體同步」——完全長在 338 之上，沒有新指令，
+            // 只把大家本就在比的表情湊在一起放大成眾人共享的大場面。玩家比表情時 ws.rs 點亮
+            // 「最近表情」倒數（recent_emote），這裡每幀：把當下「最近還在比同個表情、且在室外」
+            // 的玩家聚團偵測共鳴（emote_resonance::detect 純函式、確定可重現），共鳴成員清掉倒數
+            // ＋在重心廣播 EmoteResonance，其餘遞減留待下幀。只新開一把 players 寫鎖、特效廣播在
+            // 出鎖後才送（守 prod-deadlock 鐵律：無巢狀上鎖）。多數時刻沒人比表情→回響清單空、近乎零成本。
+            {
+                let bursts: Vec<(String, f32, f32, u32)> = {
+                    let mut players = app.players.write().unwrap();
+                    // 蒐集當下「最近還在比表情、且在室外」的玩家回響（室內外空間不同、不互湊）。
+                    let echoes: Vec<crate::emote_resonance::Echo> = players
+                        .values()
+                        .filter_map(|p| {
+                            let (kind, ttl) = p.recent_emote?;
+                            if ttl > 0 && p.indoor_plot_id.is_none() {
+                                Some(crate::emote_resonance::Echo {
+                                    id: p.id,
+                                    kind,
+                                    zone: p.planet.clone(),
+                                    x: p.x,
+                                    y: p.y,
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if echoes.is_empty() {
+                        Vec::new()
+                    } else {
+                        let resonances = crate::emote_resonance::detect(&echoes);
+                        // 共鳴成員集合：他們的倒數清零（避免下幀重複迸），其餘遞減。
+                        let mut in_resonance: std::collections::HashSet<uuid::Uuid> =
+                            std::collections::HashSet::new();
+                        let mut evs = Vec::with_capacity(resonances.len());
+                        for r in &resonances {
+                            // glyph 由索引查出；理論上必在白名單內（索引源自 ws.rs index_of）。
+                            let glyph = crate::player_emote::glyph_at(r.kind)
+                                .unwrap_or("✨")
+                                .to_string();
+                            evs.push((glyph, r.mx, r.my, r.size));
+                            for m in &r.members {
+                                in_resonance.insert(*m);
+                            }
+                        }
+                        for p in players.values_mut() {
+                            if let Some((_, ttl)) = p.recent_emote.as_mut() {
+                                if in_resonance.contains(&p.id) {
+                                    p.recent_emote = None;
+                                } else if *ttl > 1 {
+                                    *ttl -= 1;
+                                } else {
+                                    p.recent_emote = None;
+                                }
+                            }
+                        }
+                        evs
+                    }
+                };
+                for (glyph, mx, my, size) in bursts {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::EmoteResonance {
+                            glyph,
+                            mx,
+                            my,
+                            size,
+                            display_secs: crate::emote_resonance::RESONANCE_DISPLAY_SECS,
+                        },
+                    ));
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定

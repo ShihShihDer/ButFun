@@ -107,6 +107,7 @@ mod world_log;
 mod player_log;
 mod player_emote;
 mod high_five;
+mod emote_resonance;
 mod weather;
 mod friends;
 mod party;

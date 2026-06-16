@@ -141,6 +141,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
+            recent_emote: None,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -220,6 +221,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
+            recent_emote: None,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -771,11 +773,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         continue;
                     }
                     // 查白名單：只接受固定表情，未知 kind 靜默忽略（玩家送不出任意內容）。
-                    if let Some(glyph) = crate::player_emote::glyph_for(&kind) {
-                        // 讀玩家自己的**權威座標 + 即時名**（改名後不重連也對）。
+                    if let Some(idx) = crate::player_emote::index_of(&kind) {
+                        let glyph = crate::player_emote::glyph_at(idx).unwrap_or("❓");
+                        // 讀玩家自己的**權威座標 + 即時名**（改名後不重連也對），同時點亮
+                        // 「最近表情」倒數——供 game.rs 每幀偵測表情共鳴（ROADMAP 340）。
                         let loc = {
-                            let ps = app.players.read().unwrap();
-                            ps.get(&id).map(|p| (p.name.clone(), p.x, p.y))
+                            let mut ps = app.players.write().unwrap();
+                            ps.get_mut(&id).map(|p| {
+                                p.recent_emote =
+                                    Some((idx, crate::emote_resonance::RESONANCE_WINDOW));
+                                (p.name.clone(), p.x, p.y)
+                            })
                         };
                         if let Some((from_name, wx, wy)) = loc {
                             let _ = app.tx.send(std::sync::Arc::new(ServerMsg::PlayerEmote {

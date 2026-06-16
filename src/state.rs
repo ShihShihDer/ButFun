@@ -215,6 +215,12 @@ pub struct Player {
     /// 不入快照（純社交一次性互動）。
     pub high_five_offer: u16,
 
+    // ── 表情共鳴（ROADMAP 340：玩家↔玩家群體同步）──────────────────────────
+    /// 「最近表情」：玩家比表情時由 ws.rs 設為 `(player_emote 索引, emote_resonance::RESONANCE_WINDOW)`，
+    /// game.rs 每幀把「最近還在比同個表情、又靠得夠近」的玩家聚團偵測共鳴後清掉、否則遞減倒數到 0。
+    /// 記憶體前置、不持久化、不入快照（純社交一次性互動）。None = 最近沒比表情。
+    pub recent_emote: Option<(u8, u16)>,
+
     // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────
     /// 目前攜帶的貿易包裹。None = 無任務；Some = 正在跑商途中。記憶體前置，重啟清空。
     pub trade_cargo: Option<crate::trade_route::TradeCargo>,
@@ -1344,6 +1350,7 @@ mod tests {
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
+            recent_emote: None,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
