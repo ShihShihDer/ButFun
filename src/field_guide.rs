@@ -141,6 +141,76 @@ pub fn reward_for_bit(bit: u8) -> u32 {
         .unwrap_or(0)
 }
 
+// ── ROADMAP 334 圖鑑里程碑：集滿一整類給一次性大獎、全集滿世界同慶 ──
+//
+// 動機：333 把世界生物變成「逐種發現、逐種小獎」的蒐集進度，可那條成長線少了「湊齊整套」
+// 的高潮——每種只給 3／12 乙太的小獎，集到第 19 種跟集第 1 種沒兩樣。reviewer 自 #496/#498/#499
+// 一再要「有玩家明顯獲得感的大整合」、#499 更明確建議「對此系統做一次大整合」。本層補上那高潮：
+// **集滿一整類（全部野生動物／全部守護者）給一筆一次性大獎，集滿整本圖鑑再給最大獎、且廣播全世界同慶**，
+// 讓蒐集從「逐種點亮」升級成「為了湊齊而努力」的長期目標，玩家攢到最後一刻終於有明顯的回報。
+//
+// 設計（零新持久化、零新協議——完全由既有 `codex` bitmask 推導）：
+// - 里程碑「達成」與否，是 codex mask 的純函式：某類所有位元都點亮即達成。
+// - 一次性發放靠「發現的那一刻 mask 由不滿→滿」這個轉變（`newly_completed`）天然觸發一次；
+//   codex 單調只增、且持久化，重開後 mask 已滿、不會再有「由不滿→滿」的轉變，故不重複領獎，
+//   完全不需要任何「已領清單」欄位（與 332 餐贈「跨層那一刻才送」同一招）。
+
+/// 一筆圖鑑里程碑。面向玩家字串（稱號／集滿了什麼）集中於此，為 i18n 集中替換點。
+#[derive(Debug, Clone, Copy)]
+pub struct Milestone {
+    /// 穩定 wire key（snake_case）：前端據此對應在地化字串。
+    pub key: &'static str,
+    /// 達成稱號（顯示；繁中）。
+    pub name: &'static str,
+    /// 集滿了什麼（顯示；繁中）。
+    pub label: &'static str,
+    /// 一次性乙太大獎。
+    pub reward_ether: u32,
+    /// 集滿範圍：`"wildlife"` 全野生動物 ／ `"guardian"` 全守護者 ／ `"all"` 整本圖鑑。
+    pub scope: &'static str,
+}
+
+/// 全部里程碑（依達成難度由小到大）。獎勵刻意是一次性、且極稀有，對經濟近乎零擾動。
+pub const MILESTONES: &[Milestone] = &[
+    Milestone { key: "wildlife_complete", name: "野地博物學家", label: "全部野生動物", reward_ether: 50,  scope: "wildlife" },
+    Milestone { key: "guardian_complete", name: "守護者圖鑑大成", label: "全部守護者怪物", reward_ether: 150, scope: "guardian" },
+    Milestone { key: "codex_complete",    name: "萬物圖鑑全書", label: "整本生態圖鑑", reward_ether: 300, scope: "all" },
+];
+
+/// 某里程碑「集滿」所需的位元遮罩（由 `CATALOG` 推導，與物種→bit 對應永遠同步）。
+pub fn milestone_mask(scope: &str) -> u64 {
+    match scope {
+        "all" => valid_mask(),
+        cat => CATALOG
+            .iter()
+            .filter(|e| e.category == cat)
+            .fold(0u64, |m, e| m | (1u64 << e.bit)),
+    }
+}
+
+/// 某里程碑是否已達成（該範圍所有位元都點亮）。
+pub fn is_achieved(mask: u64, m: &Milestone) -> bool {
+    let req = milestone_mask(m.scope);
+    mask & req == req
+}
+
+/// 比較「發現前 / 發現後」兩個 mask，回傳本次發現才**新達成**的里程碑（由不滿→滿）。
+/// 天然一次性：codex 單調只增，同一里程碑只會「由不滿→滿」一次。
+pub fn newly_completed(old_mask: u64, new_mask: u64) -> Vec<&'static Milestone> {
+    MILESTONES
+        .iter()
+        .filter(|m| is_achieved(new_mask, m) && !is_achieved(old_mask, m))
+        .collect()
+}
+
+/// 達成里程碑時廣播全世界的同慶訊息（面向玩家字串，i18n 集中替換點）。
+pub fn celebrate_line(m: &Milestone, player_name: &str) -> String {
+    format!(
+        "🏅 {} 集滿了{}，達成圖鑑里程碑「{}」，獲得 {} 乙太！",
+        player_name, m.label, m.name, m.reward_ether
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +325,87 @@ mod tests {
     #[test]
     fn guardian_reward_exceeds_wildlife() {
         assert!(REWARD_GUARDIAN > REWARD_WILDLIFE, "守護者更難遇、獎勵應更高");
+    }
+
+    // ── ROADMAP 334 圖鑑里程碑 ──
+
+    /// 集滿某分類所有位元的 mask（測試輔助）。
+    fn all_bits_of(cat: &str) -> u64 {
+        CATALOG
+            .iter()
+            .filter(|e| e.category == cat)
+            .fold(0u64, |m, e| m | (1u64 << e.bit))
+    }
+
+    #[test]
+    fn milestone_mask_matches_catalog_categories() {
+        assert_eq!(milestone_mask("wildlife"), all_bits_of("wildlife"));
+        assert_eq!(milestone_mask("guardian"), all_bits_of("guardian"));
+        assert_eq!(milestone_mask("all"), valid_mask());
+        // 全圖鑑 = 野生動物 ∪ 守護者（兩類不重疊、合起來涵蓋全部）。
+        assert_eq!(milestone_mask("wildlife") | milestone_mask("guardian"), valid_mask());
+        assert_eq!(milestone_mask("wildlife") & milestone_mask("guardian"), 0);
+    }
+
+    #[test]
+    fn milestones_have_positive_reward_and_unique_keys() {
+        for (i, a) in MILESTONES.iter().enumerate() {
+            assert!(a.reward_ether > 0, "里程碑 {} 獎勵應為正", a.key);
+            for b in &MILESTONES[i + 1..] {
+                assert_ne!(a.key, b.key, "里程碑 key 重複：{}", a.key);
+            }
+        }
+    }
+
+    #[test]
+    fn milestone_reward_grows_with_difficulty() {
+        // 集滿整本 ≥ 集滿守護者 ≥ 集滿野生動物（越難達成、獎越大）。
+        let by_key = |k: &str| MILESTONES.iter().find(|m| m.key == k).unwrap().reward_ether;
+        assert!(by_key("codex_complete") >= by_key("guardian_complete"));
+        assert!(by_key("guardian_complete") >= by_key("wildlife_complete"));
+    }
+
+    #[test]
+    fn newly_completed_fires_once_on_transition() {
+        let wild = all_bits_of("wildlife");
+        // 還差一種野生動物：尚未達成。
+        let almost = wild & !(1u64 << 4);
+        assert!(newly_completed(0, almost).is_empty(), "未集滿不該觸發里程碑");
+        // 補上最後一種：野生動物里程碑此刻才達成。
+        let just = newly_completed(almost, wild);
+        assert_eq!(just.len(), 1, "湊滿的那一刻只觸發一個里程碑");
+        assert_eq!(just[0].key, "wildlife_complete");
+        // 已達成後再發現別的，野生動物里程碑不再重複觸發（不可重複領獎）。
+        let (after, _) = discover(wild, 5);
+        let again: Vec<_> = newly_completed(wild, after).iter().map(|m| m.key).collect();
+        assert!(!again.contains(&"wildlife_complete"), "已達成的里程碑不重複觸發");
+    }
+
+    #[test]
+    fn completing_everything_fires_both_category_and_grand_milestone() {
+        // 從「全圖鑑只差最後一個守護者」一口氣補滿：同時達成守護者 + 全圖鑑里程碑。
+        let full = valid_mask();
+        let almost = full & !(1u64 << 18); // 差乙太霸主（最後一個守護者）
+        let fired: Vec<_> = newly_completed(almost, full).iter().map(|m| m.key).collect();
+        assert!(fired.contains(&"guardian_complete"), "補滿最後一個守護者→守護者里程碑");
+        assert!(fired.contains(&"codex_complete"), "同時也補滿了整本圖鑑→全書里程碑");
+        assert!(!fired.contains(&"wildlife_complete"), "野生動物早已集滿、不再觸發");
+    }
+
+    #[test]
+    fn is_achieved_reflects_mask() {
+        let wild_m = MILESTONES.iter().find(|m| m.key == "wildlife_complete").unwrap();
+        assert!(!is_achieved(0, wild_m));
+        assert!(is_achieved(all_bits_of("wildlife"), wild_m));
+        assert!(is_achieved(valid_mask(), wild_m), "全集滿時各分類里程碑都算達成");
+    }
+
+    #[test]
+    fn celebrate_line_mentions_player_and_reward() {
+        let m = &MILESTONES[0];
+        let line = celebrate_line(m, "阿明");
+        assert!(line.contains("阿明"), "同慶訊息含玩家名");
+        assert!(line.contains(m.name), "同慶訊息含里程碑稱號");
+        assert!(line.contains(&m.reward_ether.to_string()), "同慶訊息含獎勵數");
     }
 }

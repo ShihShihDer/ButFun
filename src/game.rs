@@ -358,40 +358,60 @@ pub fn spawn(app: AppState) {
             // 發現天然冪等（discover 對已點亮位元回 false、不重複領獎），故逐幀跑安全、不需冷卻帳本。
             // codex 與新增的乙太都隨既有玩家快照廣播，前端比對 codex 位元差噴「新發現」、乙太差噴「+N」。
             if !wildlife_snap.is_empty() || !enemy_disc.is_empty() {
-                use crate::field_guide::{bit_for_enemy, bit_for_wildlife, discover, reward_for_bit, DISCOVER_RADIUS};
+                use crate::field_guide::{
+                    bit_for_enemy, bit_for_wildlife, celebrate_line, discover, newly_completed,
+                    reward_for_bit, DISCOVER_RADIUS,
+                };
                 let r2 = DISCOVER_RADIUS * DISCOVER_RADIUS;
-                let mut players = app.players.write().unwrap();
-                for p in players.values_mut() {
-                    // 倒下玩家休息中、不在世界裡探查（比照戰鬥／追擊略過倒下者）。
-                    if p.vitals.is_downed() {
-                        continue;
-                    }
-                    // 野生動物（wildlife_snap：(id, kind, x, y)）。
-                    for &(_, kind, wx, wy) in &wildlife_snap {
-                        let dx = p.x - wx;
-                        let dy = p.y - wy;
-                        if dx * dx + dy * dy <= r2 {
-                            let bit = bit_for_wildlife(kind);
-                            let (mask, first) = discover(p.codex, bit);
-                            if first {
-                                p.codex = mask;
-                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                // ROADMAP 334：本幀新達成的圖鑑里程碑要廣播全世界同慶，收集起來、出鎖後再送。
+                let mut milestone_msgs: Vec<String> = Vec::new();
+                {
+                    let mut players = app.players.write().unwrap();
+                    for p in players.values_mut() {
+                        // 倒下玩家休息中、不在世界裡探查（比照戰鬥／追擊略過倒下者）。
+                        if p.vitals.is_downed() {
+                            continue;
+                        }
+                        let codex_before = p.codex; // ROADMAP 334：本幀發現前的圖鑑，判定是否湊滿一類
+                        // 野生動物（wildlife_snap：(id, kind, x, y)）。
+                        for &(_, kind, wx, wy) in &wildlife_snap {
+                            let dx = p.x - wx;
+                            let dy = p.y - wy;
+                            if dx * dx + dy * dy <= r2 {
+                                let bit = bit_for_wildlife(kind);
+                                let (mask, first) = discover(p.codex, bit);
+                                if first {
+                                    p.codex = mask;
+                                    p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                                }
+                            }
+                        }
+                        // 守護者怪物（enemy_disc：(kind, x, y)，已濾活著的）。
+                        for &(kind, ex, ey) in &enemy_disc {
+                            let dx = p.x - ex;
+                            let dy = p.y - ey;
+                            if dx * dx + dy * dy <= r2 {
+                                let bit = bit_for_enemy(kind);
+                                let (mask, first) = discover(p.codex, bit);
+                                if first {
+                                    p.codex = mask;
+                                    p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                                }
+                            }
+                        }
+                        // ROADMAP 334：本幀的發現若湊滿了某一整類 → 一次性大獎 + 世界同慶。
+                        // newly_completed 只在「由不滿→滿」那一刻回傳該里程碑，天然每位玩家每類只發一次。
+                        if p.codex != codex_before {
+                            for m in newly_completed(codex_before, p.codex) {
+                                p.ether = p.ether.saturating_add(m.reward_ether);
+                                milestone_msgs.push(celebrate_line(m, &p.name));
                             }
                         }
                     }
-                    // 守護者怪物（enemy_disc：(kind, x, y)，已濾活著的）。
-                    for &(kind, ex, ey) in &enemy_disc {
-                        let dx = p.x - ex;
-                        let dy = p.y - ey;
-                        if dx * dx + dy * dy <= r2 {
-                            let bit = bit_for_enemy(kind);
-                            let (mask, first) = discover(p.codex, bit);
-                            if first {
-                                p.codex = mask;
-                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
-                            }
-                        }
-                    }
+                }
+                // 出鎖後廣播同慶（極稀有：每位玩家每類一生一次，不會洗頻）。
+                for msg in milestone_msgs {
+                    let _ = app.tx_chat.send(msg);
                 }
             }
 
