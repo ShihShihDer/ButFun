@@ -197,6 +197,11 @@ pub struct Player {
     // ── 寵物（ROADMAP 46）────────────────────────────────────────────────
     /// 目前的寵物種類（記憶體前置，重啟後從 None 開始；設計上不持久化）。
     pub pet: Option<crate::pet::PetKind>,
+    /// 寵物的世界座標（ROADMAP 343）。記憶體前置、不持久化——寵物身分本就不持久化，
+    /// 座標每 tick 由 `pet_follow::follow_step` 朝主人跟隨重算，重連 / 重啟時隨馴化瞬間
+    /// 歸位到主人腳邊即可。沒寵物時這對值無意義（前端只在 `pet_kind` 存在時才畫）。
+    pub pet_x: f32,
+    pub pet_y: f32,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可釣；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -358,6 +363,9 @@ impl Player {
             },
             auto_skills: self.auto_skills.iter().cloned().collect(),
             pet_kind: self.pet.map(|p| p.as_str().to_string()),
+            // ROADMAP 343：有寵物才送座標（沒寵物時為 0，序列化略過，省頻寬）。
+            pet_x: if self.pet.is_some() { self.pet_x } else { 0.0 },
+            pet_y: if self.pet.is_some() { self.pet_y } else { 0.0 },
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
@@ -1363,6 +1371,8 @@ mod tests {
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
+            pet_x: x,
+            pet_y: y,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,

@@ -1014,6 +1014,14 @@ pub fn spawn(app: AppState) {
                             .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64));
                         kind != world_core::TileKind::Empty
                     });
+                    // 寵物現身相伴（ROADMAP 343）：有寵物時，每 tick 讓寵物座標朝主人平滑跟隨——
+                    // 主人走到哪、寵物像隻黏人的小夥伴小跑跟到哪（純函式、零鎖、無 IO）。
+                    if p.pet.is_some() {
+                        let (nx, ny, _moving) =
+                            crate::pet_follow::follow_step((p.pet_x, p.pet_y), (p.x, p.y), dt);
+                        p.pet_x = nx;
+                        p.pet_y = ny;
+                    }
                     // 主動攻擊冷卻倒數：每 tick 遞減，讓下次攻擊請求能被接受。
                     if p.attack_cooldown > 0.0 {
                         p.attack_cooldown = (p.attack_cooldown - dt).max(0.0);
