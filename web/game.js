@@ -16774,6 +16774,22 @@
   // 位元判定走除法取餘（不用 32-bit 的 `&`，未來 catalog 破 31 條也不會溢位失準）。
   function codexBitSet(mask, bit) { return Math.floor(mask / Math.pow(2, bit)) % 2 === 1; }
 
+  // ROADMAP 334 圖鑑里程碑：集滿一整類給一次性大獎、全集滿世界同慶。
+  // 此表鏡像後端 src/field_guide.rs 的 MILESTONES（key／name／label／reward／scope），
+  // 面向玩家字串集中於此，為前端 i18n 集中替換點。
+  const CODEX_MILESTONES = [
+    { key: "wildlife_complete", name: "野地博物學家", label: "全部野生動物",   reward: 50,  scope: "wildlife" },
+    { key: "guardian_complete", name: "守護者圖鑑大成", label: "全部守護者怪物", reward: 150, scope: "guardian" },
+    { key: "codex_complete",    name: "萬物圖鑑全書", label: "整本生態圖鑑",   reward: 300, scope: "all" },
+  ];
+  // 某里程碑「集滿」所需的物種數（由 CATALOG 推導，與後端 milestone_mask 同步）。
+  function milestoneEntries(scope) {
+    return scope === "all" ? CODEX_CATALOG : CODEX_CATALOG.filter((e) => e.category === scope);
+  }
+  function milestoneAchieved(mask, scope) {
+    return milestoneEntries(scope).every((e) => codexBitSet(mask, e.bit));
+  }
+
   let lastCodex = null;       // 上一幀的 codex bitmask（偵測新發現用；null = 尚未收過）
   let lastCodexSig = null;    // 面板簽章，未變不重建
 
@@ -16791,6 +16807,17 @@
               text: `📕 新發現：${e.emoji}${e.name}`, color: "180,220,255", born: performance.now() });
           }
           announce(`生態圖鑑新發現：${e.name}`);
+          stackIdx++;
+        }
+      }
+      // ROADMAP 334：本幀有沒有湊滿一整類（由不滿→滿）→ 在玩家身上噴金色「🏅 里程碑達成」飄字。
+      for (const m of CODEX_MILESTONES) {
+        if (milestoneAchieved(codex, m.scope) && !milestoneAchieved(lastCodex, m.scope)) {
+          if (typeof me.x === "number" && typeof me.y === "number") {
+            floaters.push({ wx: me.x, wy: me.y - 40 - stackIdx * 18,
+              text: `🏅 里程碑達成：${m.name}！`, color: "255,215,90", born: performance.now() });
+          }
+          announce(`圖鑑里程碑達成：${m.name}，集滿${m.label}，獲得 ${m.reward} 乙太`);
           stackIdx++;
         }
       }
@@ -16830,6 +16857,21 @@
           + `</div>`;
       }
       html += `</div>`;
+    }
+    // ROADMAP 334：圖鑑里程碑——集滿一整類給一次性大獎、全集滿世界同慶。
+    html += `<div style="color:var(--brass);font-weight:600;margin-top:12px;margin-bottom:4px">🏅 蒐集里程碑</div>`;
+    for (const m of CODEX_MILESTONES) {
+      const entries = milestoneEntries(m.scope);
+      const mFound = entries.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
+      const achieved = mFound >= entries.length;
+      html += `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;`
+        + `opacity:${achieved ? "1" : "0.7"}">`
+        + `<span style="font-size:1.1em">${achieved ? "🏅" : "🔒"}</span>`
+        + `<span style="flex:1;color:${achieved ? "#ffd75a" : "#cdd8e4"}">`
+        + `${escHtml(m.name)}<span style="color:#888;font-size:.82em">（集滿${escHtml(m.label)}）</span></span>`
+        + `<span style="color:${achieved ? "#ffd75a" : "#8aa0b8"};font-size:.82em">`
+        + `${achieved ? `+${m.reward} 乙太 ✓` : `${mFound}/${entries.length}`}</span>`
+        + `</div>`;
     }
     body.innerHTML = html;
   }
