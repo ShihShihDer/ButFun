@@ -564,6 +564,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     let mut rl_n: u32 = 0;
     let mut rl_chat_win = std::time::Instant::now();
     let mut rl_chat_n: u32 = 0;
+    // 表情動作限流（ROADMAP 338）：每則 emote 走 broadcast 放大給全服，比照 chat 從嚴。
+    let mut rl_emote_win = std::time::Instant::now();
+    let mut rl_emote_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -748,6 +751,36 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 走聊天專用頻道，不與高頻快照爭緩衝、不被 Lagged 一起丟。
                                 let _ = app.tx_chat.send(json);
                             }
+                        }
+                    }
+                }
+                Ok(ClientMsg::Emote { kind }) => {
+                    // 表情動作（ROADMAP 338）：玩家↔玩家的即時情緒表態。
+                    // 限流（比照 chat：每秒至多 3 次，超量靜默丟棄，不懲罰多按）。
+                    if rl_emote_win.elapsed().as_secs() >= 1 {
+                        rl_emote_win = std::time::Instant::now();
+                        rl_emote_n = 0;
+                    }
+                    rl_emote_n += 1;
+                    if rl_emote_n > 3 {
+                        continue;
+                    }
+                    // 查白名單：只接受固定表情，未知 kind 靜默忽略（玩家送不出任意內容）。
+                    if let Some(glyph) = crate::player_emote::glyph_for(&kind) {
+                        // 讀玩家自己的**權威座標 + 即時名**（改名後不重連也對）。
+                        let loc = {
+                            let ps = app.players.read().unwrap();
+                            ps.get(&id).map(|p| (p.name.clone(), p.x, p.y))
+                        };
+                        if let Some((from_name, wx, wy)) = loc {
+                            let _ = app.tx.send(std::sync::Arc::new(ServerMsg::PlayerEmote {
+                                from_id: id,
+                                from_name,
+                                glyph: glyph.to_string(),
+                                wx,
+                                wy,
+                                display_secs: crate::player_emote::EMOTE_DISPLAY_SECS,
+                            }));
                         }
                     }
                 }

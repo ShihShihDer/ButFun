@@ -220,6 +220,10 @@ pub enum ClientMsg {
     },
     /// 聊天訊息。
     Chat { text: String },
+    /// 表情動作（ROADMAP 338）：玩家從表情輪選一個情緒。`kind` 是 `player_emote::EMOTES`
+    /// 內的 wire key（如 "wave" / "heart"）。伺服器查白名單、用玩家自己的權威座標廣播
+    /// `PlayerEmote` 泡泡給全服；未知 kind / 未登入 / 超量靜默忽略。
+    Emote { kind: String },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -863,6 +867,17 @@ pub enum ServerMsg {
         display_secs: u32,
         wx: f32,
         wy: f32,
+    },
+    /// 玩家表情動作（ROADMAP 338）：某玩家比了一個表情，全服廣播、前端在該玩家頭頂彈跳浮起
+    /// 一枚大表情後淡出。`from_id`/`from_name` = 比表情的玩家；`glyph` = emoji；
+    /// `wx`/`wy` = 玩家當下世界座標；`display_secs` = 顯示秒數。一次性事件、不入快照、不持久化。
+    PlayerEmote {
+        from_id: Uuid,
+        from_name: String,
+        glyph: String,
+        wx: f32,
+        wy: f32,
+        display_secs: u32,
     },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。

@@ -105,6 +105,7 @@ mod npc_stock;
 mod supply_chain;
 mod world_log;
 mod player_log;
+mod player_emote;
 mod weather;
 mod friends;
 mod party;
