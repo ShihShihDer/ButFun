@@ -296,6 +296,10 @@
   // 喝采特效（ROADMAP 341）：每收到一次 cheered 就 push 一筆 { mx, my, startMs, expireAt }。
   // drawCheers 每幀在兩人之間迸出「👏 啪！」＋掌聲上飄淡出，過期自動清掉。純前端動畫，不入快照。
   const cheerFx = [];
+  // 人氣聚會圈（ROADMAP 342）：host_id → { startMs, endAt, guests }。收到 pop_gathering_started 加入、
+  // pop_gathering_ended 標記 endAt 開始淡出。drawPlayer 每幀在「正在當聚會主人」的玩家腳下畫一圈
+  // 發光旋轉的人氣聚會圈（圈隨主人即時座標走，主人走到哪圈跟到哪）。純前端表現層，不入快照。
+  const popGatherings = new Map();
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
@@ -2171,6 +2175,28 @@
           announce(
             "你替 " + (msg.target_name || "另一位玩家") + " 喝采（人氣 " + (msg.target_cheers || 0) + "）"
           );
+        }
+        break;
+      }
+      case "pop_gathering_started": {
+        // 人氣聚會湧現（ROADMAP 342）：一名高人氣玩家身邊聚起人潮，繞著他成形一場聚會。
+        // 記下主人 id → 開始在他腳下畫發光聚會圈（drawPopGatherings 每幀依其即時座標畫，圈隨主人走）。
+        const hid = msg.host_id;
+        if (hid) {
+          const now = performance.now();
+          popGatherings.set(hid, { startMs: now, endAt: null, guests: msg.guests || 0 });
+          // 世界頻道宣告一聲（聚會是值得一看的湧現時刻，比照節慶以聊天行呈現、不洗報讀器）。
+          const who = msg.host_name || "一位受歡迎的玩家";
+          addChat("🎉 人氣聚會", `在 ${who} 周圍聚起了一場熱鬧的聚會（${msg.guests || 0} 人）！`);
+        }
+        break;
+      }
+      case "pop_gathering_ended": {
+        // 人氣聚會落幕（ROADMAP 342）：人潮散去，標記主人腳下的聚會圈開始淡出（drawPopGatherings 收尾）。
+        const hid = msg.host_id;
+        const g = hid ? popGatherings.get(hid) : null;
+        if (g && g.endAt === null) {
+          g.endAt = performance.now() + 700; // 0.7s 淡出，與其他多人特效收尾節奏一致
         }
         break;
       }
@@ -4066,6 +4092,11 @@
 
     // 腳下陰影（固定在地面，賣出彈跳的踏地感）——日影晷（201）：隨太陽/月亮方位偏移、晨昏拉長
     drawGroundShadow(sx, sy + 12, 11, 4, 0.22);
+
+    // 人氣聚會圈（ROADMAP 342）：正在當聚會主人的玩家腳下，畫一圈發光旋轉的人氣聚會圈，
+    // 讓全世界一眼看見「人潮正圍著這位受歡迎的人」。畫在陰影之上、角色本體之下（圍在腳邊地面），
+    // 隨主人即時座標走（圈跟著主人移動）。reduceMotion 下不旋轉、只留靜態柔光圈。
+    drawPopGathering(p.id, sx, sy + 11);
 
     // 種族光環：在陰影上方、角色本體下方，讓各族玩家一眼分辨。
     // 自己不畫（自己已有金色名牌 + 鏡頭跟隨，夠清晰）。
@@ -11093,6 +11124,65 @@
       ctx.fillText("👏", sx, sy - 30);
     }
 
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 人氣聚會圈（ROADMAP 342）：在「正在當聚會主人」的玩家腳下，畫一圈發光旋轉的人氣聚會圈，
+  // 讓全世界看見人潮正圍著這位受歡迎的人。與 339/340/341 那些「迸完就散」的瞬間特效不同——
+  // 這是一個只要人潮還在就**持續存在**、且**跟著主人移動**的社交節點（圈畫在主人即時腳下座標）。
+  // 由 drawPlayer 對每名玩家呼叫；非主人（map 沒這 id）直接早退、近乎零成本。
+  // 尊重 reduceMotion（關旋轉光點與脈動、只留靜態柔光圈）。
+  function drawPopGathering(hostId, cx, cy) {
+    const g = popGatherings.get(hostId);
+    if (!g) return;
+    const now = performance.now();
+    // 淡出收尾：endAt 已過就移除、不再畫。
+    if (g.endAt !== null && now >= g.endAt) {
+      popGatherings.delete(hostId);
+      return;
+    }
+    // 透明度：剛湧現時 0.4s 淡入、落幕時 0.7s 淡出，其餘穩定。
+    const FADE_IN_MS = 400;
+    let alpha = 1.0;
+    if (g.endAt !== null) {
+      alpha = Math.max(0, (g.endAt - now) / 700);
+    } else {
+      alpha = Math.min(1.0, (now - g.startMs) / FADE_IN_MS);
+    }
+    if (alpha <= 0) return;
+
+    ctx.save();
+    // 腳下地面的人氣聚會圈——壓扁成橢圓，像鋪在地上的一圈暖光（與直立的種族光環區隔）。
+    const rx = 26;          // 橢圓長半徑（水平）
+    const ry = 11;          // 橢圓短半徑（垂直，壓扁貼地）
+    // 脈動：聚會圈緩緩呼吸（reduceMotion 下不脈動，固定中等亮度）。
+    const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(now / 420);
+    ctx.globalAlpha = alpha * (0.30 + 0.22 * pulse);
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = "#ffd24a"; // 暖金色，象徵「受歡迎／眾星拱月」，與粉色人氣徽記同系不同用
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // 內圈再描一道更淡的光，做出柔和的雙環光暈。
+    ctx.globalAlpha = alpha * (0.18 + 0.14 * pulse);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx - 6, ry - 2.5, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // 沿圈旋轉的幾個小光點（賣出「熱鬧、人潮環繞」的動感）；reduceMotion 下不旋轉、靜態散佈。
+    const dots = 6;
+    const spin = reduceMotion ? 0 : now / 700;
+    ctx.fillStyle = "#fff1b8";
+    for (let i = 0; i < dots; i++) {
+      const ang = spin + (i / dots) * Math.PI * 2;
+      const dx = cx + Math.cos(ang) * rx;
+      const dy = cy + Math.sin(ang) * ry;
+      ctx.globalAlpha = alpha * (0.35 + 0.4 * pulse);
+      ctx.beginPath();
+      ctx.arc(dx, dy, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.globalAlpha = 1.0;
     ctx.restore();
   }

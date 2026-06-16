@@ -954,6 +954,9 @@ pub struct AppState {
     /// 居民廣場聚會狀態（ROADMAP 124）：每 30 分鐘白天觸發一次聚會，持續 10 分鐘，全服 EXP +20%。
     /// 純邏輯、記憶體模式，重啟清零。
     pub community_gathering: Arc<RwLock<crate::community_gathering::CommunityGatheringState>>,
+    /// 人氣聚會狀態（ROADMAP 342）：追蹤各高人氣玩家身邊湧現的聚會生命週期（含散場緩衝），
+    /// 純記憶體模式，重啟清零。與 124 廣場聚會（定時、全城）不同——這是繞著「受歡迎的玩家」湧現的社交節點。
+    pub popularity_gathering: Arc<RwLock<crate::popularity_gathering::GatheringState>>,
     /// 怪物王咆哮狀態（ROADMAP 75）：追蹤各菁英精英的咆哮冷卻，純記憶體模式，重啟清零。
     pub boss_roar: Arc<RwLock<crate::boss_roar::BossRoarState>>,
     /// 怪物王咆哮專屬 Semaphore（容量 1）：同時最多一個 AI 咆哮呼叫，不佔用 NPC LLM 配額。
@@ -1208,6 +1211,7 @@ impl AppState {
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
             community_gathering: Arc::new(RwLock::new(crate::community_gathering::CommunityGatheringState::new())),
+            popularity_gathering: Arc::new(RwLock::new(crate::popularity_gathering::GatheringState::new())),
             boss_roar: Arc::new(RwLock::new(crate::boss_roar::BossRoarState::new())),
             boss_roar_sem: Arc::new(Semaphore::new(crate::boss_roar::MAX_CONCURRENT_ROARS)),
             boss_ai: Arc::new(RwLock::new(crate::boss_ai::BossAiState::new())),

@@ -752,6 +752,59 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 342 人氣聚會：高人氣玩家身邊聚起人潮 → 腳下湧現發光聚會圈＋世界宣告 ──
+            // 341 把人氣沉澱成名牌身份；342 讓那份人氣長出後果——「受歡迎」（≥10 人氣）的玩家會真的
+            // 吸引人潮、在他周圍聚成一個看得見的社交節點。每幀：把室外玩家（同星球才湊）餵進
+            // popularity_gathering::detect 找出當下成局的聚會（純函式、確定可重現），再經 reconcile
+            // 純狀態機（含散場緩衝防閃爍）對映成 Started/Ended 事件，**出鎖後**才取主人名字＋廣播給前端
+            // 畫聚會圈／淡出。讀鎖只開來蒐快照、隨即釋放後再動 gathering 狀態與 tx（守 prod-deadlock
+            // 鐵律：無巢狀上鎖）；多數時刻沒人攢到人氣門檻→detect 第一輪就跳光、近乎零成本。
+            {
+                let attendees: Vec<crate::popularity_gathering::Attendee> = {
+                    let players = app.players.read().unwrap();
+                    players
+                        .values()
+                        .filter(|p| p.indoor_plot_id.is_none())
+                        .map(|p| crate::popularity_gathering::Attendee {
+                            id: p.id,
+                            zone: p.planet.clone(),
+                            x: p.x,
+                            y: p.y,
+                            cheers: p.cheers,
+                        })
+                        .collect()
+                };
+                let parties = crate::popularity_gathering::detect(&attendees);
+                let events = app.popularity_gathering.write().unwrap().reconcile(&parties);
+                if !events.is_empty() {
+                    use crate::popularity_gathering::GatheringEvent;
+                    // 只在有事件時才回查一次主人名字（讀鎖快照、隨即釋放）。
+                    let names: std::collections::HashMap<uuid::Uuid, String> = {
+                        let players = app.players.read().unwrap();
+                        players.values().map(|p| (p.id, p.name.clone())).collect()
+                    };
+                    for ev in events {
+                        match ev {
+                            GatheringEvent::Started { host, guests } => {
+                                let host_name = names.get(&host).cloned().unwrap_or_default();
+                                let _ = app.tx.send(std::sync::Arc::new(
+                                    crate::protocol::ServerMsg::PopGatheringStarted {
+                                        host_id: host,
+                                        host_name,
+                                        guests,
+                                    },
+                                ));
+                            }
+                            GatheringEvent::Ended { host } => {
+                                let _ = app.tx.send(std::sync::Arc::new(
+                                    crate::protocol::ServerMsg::PopGatheringEnded { host_id: host },
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定
