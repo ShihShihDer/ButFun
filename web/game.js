@@ -1884,6 +1884,7 @@
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updateStatPanel(me, isGuest);  // 屬性加點面板（ROADMAP 152）
           updateCodexPanel(me);          // 生態圖鑑面板（ROADMAP 333）：偵測新發現噴飄字＋更新蒐集進度
+          updateAtlasPanel(me);          // 探索圖鑑面板（ROADMAP 336）：偵測新發現地形噴飄字＋更新探索進度
           updateStatUnspentHud(me.stat_points_unspent || 0); // 未分配點數 pill
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
@@ -16906,6 +16907,89 @@
         + `<span style="color:${achieved ? "#ffd75a" : "#8aa0b8"};font-size:.82em">`
         + `${achieved ? `+${m.reward} 乙太 ✓` : `${mFound}/${entries.length}`}</span>`
         + `</div>`;
+    }
+    body.innerHTML = html;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 探索圖鑑面板（ROADMAP 336）
+  // ──────────────────────────────────────────────────────────────────────────
+  // 此表鏡像後端 src/terrain_atlas.rs 的 CATALOG（bit／key／name／emoji／tier），
+  // 是穩定的持久化契約：bit 一旦指定就固定，新增地形一律往高位接、絕不重排，否則
+  // 舊存檔位元會錯位。面向玩家字串（name）集中在此，為前端 i18n 集中替換點。
+  const ATLAS_CATALOG = [
+    { bit: 0,  key: "ore",            name: "乙太礦脈", emoji: "⛏️", tier: "common" },
+    { bit: 1,  key: "crystal",        name: "晶石地",   emoji: "💎", tier: "common" },
+    { bit: 2,  key: "mushroom",       name: "蕈菇林",   emoji: "🍄", tier: "common" },
+    { bit: 3,  key: "wild_flower",    name: "野花原",   emoji: "🌸", tier: "common" },
+    { bit: 4,  key: "ancient_ruin",   name: "遠古遺跡", emoji: "🏛️", tier: "rare" },
+    { bit: 5,  key: "coral_reef",     name: "珊瑚礁",   emoji: "🪸", tier: "rare" },
+    { bit: 6,  key: "jade_vine",      name: "翠蔓地",   emoji: "🌿", tier: "rare" },
+    { bit: 7,  key: "lava_rock",      name: "熔岩荒原", emoji: "🌋", tier: "rare" },
+    { bit: 8,  key: "void_crystal",   name: "虛空晶簇", emoji: "🌌", tier: "legendary" },
+    { bit: 9,  key: "aether_mist",    name: "霧醚秘境", emoji: "🌫️", tier: "legendary" },
+    { bit: 10, key: "origin_crystal", name: "星源寶地", emoji: "🟡", tier: "legendary" },
+  ];
+  // 位元判定走除法取餘（與 codex 同調，未來破 31 條也不溢位）。
+  function atlasBitSet(mask, bit) { return Math.floor(mask / Math.pow(2, bit)) % 2 === 1; }
+
+  let lastAtlas = null;       // 上一幀的 atlas bitmask（偵測新探索用；null = 尚未收過）
+  let lastAtlasSig = null;    // 面板簽章，未變不重建
+
+  // 偵測新點亮的探索位元 → 在玩家身上噴「🗺️ 新發現地形」飄字 + 報讀器播報；並更新面板。
+  function updateAtlasPanel(me) {
+    const atlas = (typeof me.atlas === "number") ? me.atlas : 0;
+    // 新探索偵測：和上一幀比，凡是本幀才點亮的位元就慶祝一下（首次收到快照不回放歷史）。
+    if (lastAtlas !== null && atlas !== lastAtlas) {
+      let stackIdx = 0;
+      for (const e of ATLAS_CATALOG) {
+        if (atlasBitSet(atlas, e.bit) && !atlasBitSet(lastAtlas, e.bit)) {
+          if (typeof me.x === "number" && typeof me.y === "number") {
+            floaters.push({ wx: me.x, wy: me.y - 40 - stackIdx * 18,
+              text: `🗺️ 新發現地形：${e.emoji}${e.name}`, color: "200,235,170", born: performance.now() });
+          }
+          announce(`探索圖鑑新發現地形：${e.name}`);
+          stackIdx++;
+        }
+      }
+    }
+    lastAtlas = atlas;
+
+    const body = document.getElementById("atlasBody");
+    if (!body) return;
+    const sig = String(atlas);
+    if (sig === lastAtlasSig) return;
+    lastAtlasSig = sig;
+
+    const total = ATLAS_CATALOG.length;
+    const found = ATLAS_CATALOG.reduce((n, e) => n + (atlasBitSet(atlas, e.bit) ? 1 : 0), 0);
+
+    let html = "";
+    html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已探索 ${found} / ${total} 種地形</div>`;
+    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">走近世界各處的奇景地形即可探索、永久記入圖鑑；愈稀有、愈遠的地形首次踏足給的乙太愈豐厚。</div>`;
+    // 依稀有度分三段（常見／稀有／傳奇），由近而遠、由易而難。
+    const groups = [
+      { tier: "common",    title: "🌿 常見奇景" },
+      { tier: "rare",      title: "✨ 稀有奇景" },
+      { tier: "legendary", title: "🌌 傳奇奇景" },
+    ];
+    for (const g of groups) {
+      const entries = ATLAS_CATALOG.filter((e) => e.tier === g.tier);
+      const gFound = entries.reduce((n, e) => n + (atlasBitSet(atlas, e.bit) ? 1 : 0), 0);
+      html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${g.title}（${gFound}/${entries.length}）</div>`;
+      html += `<div style="display:flex;flex-wrap:wrap;gap:6px">`;
+      for (const e of entries) {
+        const done = atlasBitSet(atlas, e.bit);
+        // 已探索：亮 emoji + 名稱；未探索：問號剪影 + 「？？？」（蒐集懸念）。
+        html += `<div title="${done ? escHtml(e.name) : "尚未探索"}" style="`
+          + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
+          + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
+          + `background:${done ? "rgba(120,170,90,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
+          + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
+          + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
+          + `</div>`;
+      }
+      html += `</div>`;
     }
     body.innerHTML = html;
   }

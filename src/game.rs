@@ -423,6 +423,46 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 336 探索圖鑑：玩家走近各種奇景地形即「探索」、點亮圖鑑、首見給乙太 ──
+            // 奇景地形多為實心格、玩家被碰撞擋在外緣，故在玩家四周取樣（中心＋八方向，
+            // 半徑 EXPLORE_REACH），任一取樣點落在收錄地形上就記下。地形來源走 tile_deltas_snap
+            // （玩家挖掘差異，已在上方快照）＋ world_core::tile_kind_at 後援，與碰撞判定同一份。
+            // 探索天然冪等（explore 對已點亮位元回 false、不重複領獎），逐幀跑安全、不需冷卻帳本。
+            // atlas 隨既有玩家快照廣播，前端比對位元差噴「新發現地形」、乙太差噴「+N」（鏡像 333）。
+            // 只新開一把 players 寫鎖、無巢狀上鎖（守 prod-deadlock 鐵律）。
+            {
+                use crate::terrain_atlas::{bit_for_tile, explore, reward_for_bit, EXPLORE_REACH};
+                // 取樣偏移（單位向量）：中心 + 八方向，乘上 EXPLORE_REACH 後即取樣點相對位移。
+                const OFFS: [(f32, f32); 9] = [
+                    (0.0, 0.0),
+                    (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+                    (1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0),
+                ];
+                let mut players = app.players.write().unwrap();
+                for p in players.values_mut() {
+                    // 倒下玩家休息中、不在世界裡探查（比照圖鑑發現略過倒下者）。
+                    if p.vitals.is_downed() {
+                        continue;
+                    }
+                    for (ox, oy) in OFFS {
+                        let sx = p.x + ox * EXPLORE_REACH;
+                        let sy = p.y + oy * EXPLORE_REACH;
+                        let (cx, cy, tx, ty) = crate::tiles::world_to_cell(sx, sy);
+                        let kind = tile_deltas_snap
+                            .get(&(cx, cy, tx, ty))
+                            .copied()
+                            .unwrap_or_else(|| world_core::tile_kind_at(sx as f64, sy as f64));
+                        if let Some(bit) = bit_for_tile(kind) {
+                            let (mask, first) = explore(p.atlas, bit);
+                            if first {
+                                p.atlas = mask;
+                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定
@@ -2943,7 +2983,7 @@ pub async fn flush_all(app: &AppState) {
         (
             authed
                 .iter()
-                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex))
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex, p.atlas))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
             authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
@@ -2952,7 +2992,7 @@ pub async fn flush_all(app: &AppState) {
     if !online.is_empty() {
         // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
         app.positions
-            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx)));
+            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx, ax)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx, *ax)));
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;
