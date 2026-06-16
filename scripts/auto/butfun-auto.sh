@@ -27,7 +27,7 @@ PAUSE="$STATE/paused"
 # 由 statusline-expo.sh 快取到 ~/.cache/butfun-auto/seven_day_pct）；拿不到才退回 $ 代理。
 BUDGET_WEEKLY_PCT="${BUTFUN_BUDGET_WEEKLY_PCT:-80}"      # 你的目標：週用量壓在 80% 以下
 BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%數天過舊/缺才用）
-PCT_STALE_MAX_SEC="${BUTFUN_PCT_STALE_MAX_SEC:-345600}"  # 真實%「過期但仍沿用」上限(秒)，預設 4 天(< 7 天週期)
+PCT_STALE_MAX_SEC="${BUTFUN_PCT_STALE_MAX_SEC:-86400}"   # 真實%「過期但仍沿用」上限(秒)，預設 1 天：兼顧修半夜假停＋失花費追蹤最多 1 天就退$保底
 REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"          # 把關用（Sonnet，比 Opus 省）
 WORKER_FALLBACK_MODEL="${BUTFUN_WORKER_FALLBACK_MODEL:-claude-sonnet-4-6}"  # Gemini 沒額度時的備胎 worker
 
