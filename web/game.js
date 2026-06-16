@@ -289,6 +289,10 @@
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
+  // 表情共鳴特效（ROADMAP 340）：每收到一次 emote_resonance 就 push 一筆
+  // { glyph, mx, my, size, startMs, expireAt }。drawEmoteResonances 每幀在眾人重心迸出一枚
+  // 放大發光的大表情＋一圈向外擴散的同款小表情後淡出，過期自動清掉。純前端動畫，不入快照。
+  const emoteResonanceFx = [];
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
@@ -2118,6 +2122,29 @@
         if (msg.a_id === myId || msg.b_id === myId) {
           const other = msg.a_id === myId ? msg.b_name : msg.a_name;
           announce("你和 " + (other || "另一位玩家") + " 擊掌了！");
+        }
+        break;
+      }
+      case "emote_resonance": {
+        // 表情共鳴（ROADMAP 340）：一群玩家同時比同個表情，在重心迸出放大發光特效。
+        const now = performance.now();
+        const size = msg.size || 3;
+        emoteResonanceFx.push({
+          glyph: msg.glyph || "✨",
+          mx: msg.mx || 0,
+          my: msg.my || 0,
+          size,
+          startMs: now,
+          expireAt: now + (msg.display_secs || 5) * 1000,
+        });
+        // 只在共鳴中心離本地玩家夠近（看得到）時播報一次，避免遠方共鳴洗報讀器。
+        const me = myId ? players.get(myId) : null;
+        if (me) {
+          const dx = (msg.mx || 0) - me.x;
+          const dy = (msg.my || 0) - me.y;
+          if (dx * dx + dy * dy < 640 * 640) {
+            announce(size + " 人一起比了同個表情，引發了表情共鳴！");
+          }
         }
         break;
       }
@@ -4313,6 +4340,7 @@
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
     safeDraw("playerEmotes", () => drawPlayerEmotes(camX, camY)); // 玩家表情動作（338）
     safeDraw("highFives", () => drawHighFives(camX, camY)); // 玩家擊掌特效（339）
+    safeDraw("emoteResonances", () => drawEmoteResonances(camX, camY)); // 表情共鳴特效（340）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
@@ -10951,6 +10979,83 @@
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.strokeText("✋", sx, sy - 30);
       ctx.fillText("✋", sx, sy - 30);
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 表情共鳴特效（ROADMAP 340）：一群玩家同時比同個表情，在眾人重心迸出一枚**放大發光**的大
+  // 表情＋一圈向外擴散上飄的同款小表情後淡出。與擊掌（339，兩人之間單枚 ✋＋火花）、單枚表情
+  // （338，頭頂小 emoji）刻意區隔——這是一群人「同框共鳴」的大場面，份量更足、人越多光暈越大。
+  // 中心是共鳴當下的固定世界座標（瞬間事件、不跟著誰移動）。尊重 reduceMotion（關擴散與彈跳、只淡出）。
+  function drawEmoteResonances(camX, camY) {
+    if (emoteResonanceFx.length === 0) return;
+    const now = performance.now();
+    const POP_MS = 280;    // 中心大表情彈出（由小放大、輕微過衝）時長
+    const FADE_MS = 1200;  // 最後 1.2 秒漸隱
+
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    for (let i = emoteResonanceFx.length - 1; i >= 0; i--) {
+      const fx = emoteResonanceFx[i];
+      const remaining = fx.expireAt - now;
+      if (remaining <= 0) {
+        emoteResonanceFx.splice(i, 1);
+        continue;
+      }
+      const age = now - fx.startMs;
+      const sx = fx.mx - camX;
+      const sy = fx.my - camY;
+      if (sx < -120 || sx > viewW + 120 || sy < -160 || sy > viewH + 120) continue;
+
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+      // 人越多，中心表情越大、光暈越廣（size 由後端帶來，至少 3）。
+      const size = Math.max(3, fx.size || 3);
+      const baseSize = 40 + Math.min(8, size - 3) * 6; // 3 人 40px、上限約 88px
+      const cy = sy - 40;
+
+      // 發光光暈：中心一圈柔光，人越多越亮（reduceMotion 下仍保留靜態光暈、只是不擴散）。
+      ctx.globalAlpha = alpha * 0.5;
+      const glowR = baseSize * (reduceMotion ? 1.1 : (1.0 + Math.min(1, age / 500) * 0.6));
+      const grad = ctx.createRadialGradient(sx, cy, 2, sx, cy, glowR);
+      grad.addColorStop(0, "rgba(255,240,170,0.9)");
+      grad.addColorStop(1, "rgba(255,240,170,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, cy, glowR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 向外擴散上飄的同款小表情（一圈，數量隨人數，reduceMotion 下完全不畫）。
+      if (!reduceMotion) {
+        const spread = Math.min(1, age / 600); // 0→1 往外擴
+        const N = Math.min(10, 4 + size);       // 人越多撒越多
+        ctx.globalAlpha = alpha * 0.85;
+        ctx.font = `${baseSize * 0.42}px sans-serif`;
+        for (let k = 0; k < N; k++) {
+          const ang = (Math.PI * 2 * k) / N - Math.PI / 2;
+          const r = 10 + spread * (baseSize * 1.3);
+          const px = sx + Math.cos(ang) * r;
+          const py = cy + Math.sin(ang) * r - spread * 14; // 整體略往上飄
+          ctx.fillText(fx.glyph, px, py);
+        }
+      }
+
+      // 中心放大表情：彈出縮放（輕微過衝再回正）；reduceMotion 下直接定為 1。
+      let scale = 1;
+      if (!reduceMotion && age < POP_MS) {
+        const t = age / POP_MS;                 // 0→1
+        scale = 0.5 + 1.0 * t;                  // 由小放大
+        scale += Math.sin(t * Math.PI) * 0.24;  // 過衝凸起
+      }
+      ctx.globalAlpha = alpha;
+      ctx.font = `${baseSize * scale}px sans-serif`;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.strokeText(fx.glyph, sx, cy);
+      ctx.fillText(fx.glyph, sx, cy);
     }
 
     ctx.globalAlpha = 1.0;

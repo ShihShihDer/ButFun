@@ -42,6 +42,20 @@ pub fn is_valid(kind: &str) -> bool {
     glyph_for(kind).is_some()
 }
 
+/// 查某個 wire key 在 `EMOTES` 內的索引（0 起算）。未知 key 回 `None`。
+///
+/// 索引是穩定契約（隨 `EMOTES` 次序，只可尾端追加），記憶體前置欄位（如玩家最近表情）用它
+/// 把表情壓成一個小整數、無需在熱路徑搬字串。共鳴偵測（ROADMAP 340）即以同索引判斷
+/// 「比的是不是同一個表情」。
+pub fn index_of(kind: &str) -> Option<u8> {
+    EMOTES.iter().position(|(k, _)| *k == kind).map(|i| i as u8)
+}
+
+/// 由 `EMOTES` 索引取 emoji glyph。越界回 `None`。與 `index_of` 互為反向。
+pub fn glyph_at(index: u8) -> Option<&'static str> {
+    EMOTES.get(index as usize).map(|(_, g)| *g)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,5 +90,18 @@ mod tests {
         assert!(is_valid("wave"));
         assert!(is_valid("sleep"));
         assert_eq!(is_valid("nope"), glyph_for("nope").is_some());
+    }
+
+    #[test]
+    fn index_and_glyph_at_are_inverse() {
+        // 每個 wire key 的索引取回的 glyph，要等於直接查表的 glyph（index_of/glyph_at 互逆）。
+        for (key, glyph) in EMOTES {
+            let i = index_of(key).expect("白名單內的 key 必有索引");
+            assert_eq!(glyph_at(i), Some(*glyph), "{key} 索引取回的 glyph 不一致");
+        }
+        // 未知 key 無索引；越界索引無 glyph。
+        assert_eq!(index_of("nope"), None);
+        assert_eq!(index_of("WAVE"), None, "大小寫敏感");
+        assert_eq!(glyph_at(EMOTES.len() as u8), None, "越界索引回 None");
     }
 }

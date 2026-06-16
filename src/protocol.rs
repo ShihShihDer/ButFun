@@ -896,6 +896,17 @@ pub enum ServerMsg {
         my: f32,
         display_secs: u32,
     },
+    /// 表情共鳴（ROADMAP 340）：一群靠近的玩家在短時間內比了**同一個表情**，伺服器偵測到共鳴，
+    /// 全服廣播、前端在眾人重心迸出一道放大發光的共鳴特效（同一個 emoji 放大＋向外擴散的同款小表情）。
+    /// `glyph` = 共鳴的 emoji；`mx`/`my` = 參與者重心世界座標；`size` = 參與人數；
+    /// `display_secs` = 特效顯示秒數。一次性事件、不入快照、不持久化、零 migration。
+    EmoteResonance {
+        glyph: String,
+        mx: f32,
+        my: f32,
+        size: u32,
+        display_secs: u32,
+    },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
     /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
