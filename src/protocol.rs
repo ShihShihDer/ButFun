@@ -954,6 +954,9 @@ pub struct PlayerView {
     /// 探索圖鑑已踏足地形 bitmask（ROADMAP 336）。前端只取「自己那位」的來畫探索面板，
     /// 並與上一幀比對、新點亮的位元噴「新發現地形」飄字。
     pub atlas: u64,
+    /// 天象圖鑑已目睹天象 bitmask（ROADMAP 337）。前端只取「自己那位」的來畫天象面板，
+    /// 並與上一幀比對、新點亮的位元噴「新目睹天象」飄字。
+    pub skylog: u64,
     /// 目前等級（由 exp 推算，server 算好送來省前端重算）。
     pub level: u32,
     /// 目前有效攻擊力（基礎武器力 + 等級加成，ROADMAP 18）。前端 HUD 顯示，讓玩家感受成長。
@@ -1550,6 +1553,7 @@ mod tests {
                 exp: 0,
                 codex: 0,
                 atlas: 0,
+                skylog: 0,
                 level: 0,
                 attack: 2,
                 defense: 0,
@@ -1800,7 +1804,7 @@ mod tests {
             x: 0.0, y: 0.0,
             ether: 0, expansions: 0,
             inventory: vec![ItemStack { item: ItemKind::Wood, qty: 1 }],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
             planet: "verdant".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),
@@ -2045,7 +2049,7 @@ mod tests {
             species: "terran".into(),
             x: 0.0, y: 0.0, ether: 0, expansions: 0,
             inventory: vec![],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
             planet: "home".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),
@@ -2103,7 +2107,7 @@ mod tests {
             species: "terran".into(),
             x: 0.0, y: 0.0, ether: 0, expansions: 0,
             inventory: vec![],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
             planet: "home".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),

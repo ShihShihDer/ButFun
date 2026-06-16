@@ -1885,6 +1885,7 @@
           updateStatPanel(me, isGuest);  // 屬性加點面板（ROADMAP 152）
           updateCodexPanel(me);          // 生態圖鑑面板（ROADMAP 333）：偵測新發現噴飄字＋更新蒐集進度
           updateAtlasPanel(me);          // 探索圖鑑面板（ROADMAP 336）：偵測新發現地形噴飄字＋更新探索進度
+          updateSkyPanel(me);            // 天象圖鑑面板（ROADMAP 337）：偵測新目睹天象噴飄字＋更新觀象進度
           updateStatUnspentHud(me.stat_points_unspent || 0); // 未分配點數 pill
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
@@ -16985,6 +16986,85 @@
           + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
           + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
           + `background:${done ? "rgba(120,170,90,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
+          + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
+          + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
+          + `</div>`;
+      }
+      html += `</div>`;
+    }
+    body.innerHTML = html;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 天象圖鑑面板（ROADMAP 337）
+  // ──────────────────────────────────────────────────────────────────────────
+  // 此表鏡像後端 src/sky_codex.rs 的 CATALOG（bit／key／name／emoji／tier），
+  // 是穩定的持久化契約：bit 一旦指定就固定，新增天象一律往高位接、絕不重排，否則
+  // 舊存檔位元會錯位。面向玩家字串（name）集中在此，為前端 i18n 集中替換點。
+  const SKY_CATALOG = [
+    { bit: 0, key: "grassland_rain",   name: "草原細雨", emoji: "🌧️", tier: "common" },
+    { bit: 1, key: "desert_sandstorm", name: "沙漠風沙", emoji: "🌪️", tier: "common" },
+    { bit: 2, key: "crystal_dust",     name: "岩地晶塵", emoji: "✨", tier: "common" },
+    { bit: 3, key: "sea_mist",         name: "水域海霧", emoji: "🌊", tier: "common" },
+    { bit: 4, key: "meteor_shower",    name: "流星雨",   emoji: "☄️", tier: "rare" },
+    { bit: 5, key: "full_moon",        name: "滿月夜",   emoji: "🌕", tier: "rare" },
+    { bit: 6, key: "moonlit_meteor",   name: "滿月流星雨", emoji: "🌠", tier: "legendary" },
+  ];
+  // 位元判定走除法取餘（與 codex／atlas 同調，未來破 31 條也不溢位）。
+  function skyBitSet(mask, bit) { return Math.floor(mask / Math.pow(2, bit)) % 2 === 1; }
+
+  let lastSky = null;       // 上一幀的 skylog bitmask（偵測新目睹用；null = 尚未收過）
+  let lastSkySig = null;    // 面板簽章，未變不重建
+
+  // 偵測新點亮的天象位元 → 在玩家身上噴「🌌 新目睹天象」飄字 + 報讀器播報；並更新面板。
+  function updateSkyPanel(me) {
+    const sky = (typeof me.skylog === "number") ? me.skylog : 0;
+    // 新目睹偵測：和上一幀比，凡是本幀才點亮的位元就慶祝一下（首次收到快照不回放歷史）。
+    if (lastSky !== null && sky !== lastSky) {
+      let stackIdx = 0;
+      for (const e of SKY_CATALOG) {
+        if (skyBitSet(sky, e.bit) && !skyBitSet(lastSky, e.bit)) {
+          if (typeof me.x === "number" && typeof me.y === "number") {
+            floaters.push({ wx: me.x, wy: me.y - 40 - stackIdx * 18,
+              text: `🌌 新目睹天象：${e.emoji}${e.name}`, color: "190,205,250", born: performance.now() });
+          }
+          announce(`天象圖鑑新目睹天象：${e.name}`);
+          stackIdx++;
+        }
+      }
+    }
+    lastSky = sky;
+
+    const body = document.getElementById("skyBody");
+    if (!body) return;
+    const sig = String(sky);
+    if (sig === lastSkySig) return;
+    lastSkySig = sig;
+
+    const total = SKY_CATALOG.length;
+    const found = SKY_CATALOG.reduce((n, e) => n + (skyBitSet(sky, e.bit) ? 1 : 0), 0);
+
+    let html = "";
+    html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已目睹 ${found} / ${total} 種天象</div>`;
+    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">身處某種天象之下即可目睹、永久記入圖鑑；愈難遇上的天象首次親見給的乙太愈豐厚。流星雨與滿月需正好在線、抬頭趕上。</div>`;
+    // 依稀有度分三段（常見／稀有／傳奇），由常駐輪替到可遇難求。
+    const groups = [
+      { tier: "common",    title: "🌤️ 常見天象" },
+      { tier: "rare",      title: "✨ 稀有天象" },
+      { tier: "legendary", title: "🌌 傳奇天象" },
+    ];
+    for (const g of groups) {
+      const entries = SKY_CATALOG.filter((e) => e.tier === g.tier);
+      const gFound = entries.reduce((n, e) => n + (skyBitSet(sky, e.bit) ? 1 : 0), 0);
+      html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${g.title}（${gFound}/${entries.length}）</div>`;
+      html += `<div style="display:flex;flex-wrap:wrap;gap:6px">`;
+      for (const e of entries) {
+        const done = skyBitSet(sky, e.bit);
+        // 已目睹：亮 emoji + 名稱；未目睹：問號剪影 + 「？？？」（蒐集懸念）。
+        html += `<div title="${done ? escHtml(e.name) : "尚未目睹"}" style="`
+          + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
+          + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
+          + `background:${done ? "rgba(120,140,210,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
           + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
           + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
           + `</div>`;
