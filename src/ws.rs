@@ -113,6 +113,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             codex: 0,
             atlas: 0,
             skylog: 0,
+            cheers: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             // 重連還原：工會成員資料 keyed by uid 存在 GuildStore，登入玩家重連時從中還原
@@ -142,6 +143,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_count: 0,
             high_five_offer: 0,
             recent_emote: None,
+            cheer_offer: 0,
+            cheer_cooldowns: std::collections::HashMap::new(),
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -195,6 +198,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             codex: 0,
             atlas: 0,
             skylog: 0,
+            cheers: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
@@ -222,6 +226,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_count: 0,
             high_five_offer: 0,
             recent_emote: None,
+            cheer_offer: 0,
+            cheer_cooldowns: std::collections::HashMap::new(),
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -298,6 +304,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.codex = s.codex;
                         p.atlas = s.atlas;
                         p.skylog = s.skylog;
+                        // 喝采人氣（341）從 DB 還原——人氣是長駐的社交身份，不還原會讓名牌徽記一重連歸零。
+                        p.cheers = s.cheers;
                         // 根據存檔等級 + 戰士熟練度 + HP 加點校正最大血量（Vitals 不持久化，重連給滿血）。
                         let base_hp = crate::vitals::level_max_hp(p.level())
                             + crate::class::hp_bonus(&p.masteries)
@@ -574,6 +582,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 擊掌意願限流（ROADMAP 339）：比照 emote 從嚴（每秒至多 3 次，超量靜默丟棄）。
     let mut rl_hifive_win = std::time::Instant::now();
     let mut rl_hifive_n: u32 = 0;
+    // 喝采意願限流（ROADMAP 341）：比照 emote／擊掌從嚴（每秒至多 3 次，超量靜默丟棄）——
+    // 連線層擋封包洪流，每對象 60s 冷卻另由 game.rs 把關，雙重防洗榜。
+    let mut rl_cheer_win = std::time::Instant::now();
+    let mut rl_cheer_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -812,6 +824,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 在該玩家身上點亮擊掌意願倒數（訪客沒登入也行——配對只看在場玩家座標）。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.high_five_offer = crate::high_five::OFFER_TICKS;
+                    }
+                }
+                Ok(ClientMsg::Cheer) => {
+                    // 喝采意願（ROADMAP 341）：玩家替附近玩家鼓掌。這裡只點亮一個短暫的意願，
+                    // 真正的挑對象、加人氣、迸特效交給 game.rs 每幀做（同區、最近、過了冷卻）。
+                    // 限流（比照擊掌：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_cheer_win.elapsed().as_secs() >= 1 {
+                        rl_cheer_win = std::time::Instant::now();
+                        rl_cheer_n = 0;
+                    }
+                    rl_cheer_n += 1;
+                    if rl_cheer_n > 3 {
+                        continue;
+                    }
+                    // 點亮喝采意願倒數（訪客沒登入也能鼓掌——挑對象只看在場玩家座標；但人氣只記在
+                    // 對象身上、且對象需是已登入玩家才持久化得了，訪客互喝采重啟即逝、無妨）。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        p.cheer_offer = crate::player_cheer::OFFER_TICKS;
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {
@@ -1252,6 +1282,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     saved.codex,
                                                     saved.atlas,
                                                     saved.skylog,
+                                                    saved.cheers,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -5949,7 +5980,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex, player.atlas, player.skylog);
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex, player.atlas, player.skylog, player.cheers);
                     // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                     app.inventories.remember_equipment(id, &player.equipment);
@@ -5966,7 +5997,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex, player.atlas, player.skylog)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex, player.atlas, player.skylog, player.cheers)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             app.inventories.flush_equipment_one(id, &player.equipment).await;

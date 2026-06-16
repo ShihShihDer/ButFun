@@ -228,6 +228,10 @@ pub enum ClientMsg {
     /// 擊掌意願；game.rs 每幀把同區、靠得夠近、也正在比擊掌的另一名玩家配成一對、迸出特效。
     /// 無 payload——配對一律用玩家自己的權威座標判定（防隔空擊掌）。未登入 / 超量靜默忽略。
     HighFive,
+    /// 喝采（ROADMAP 341）：玩家按「👏 喝采」替附近玩家鼓掌。伺服器在該玩家身上點亮喝采意願；
+    /// game.rs 每幀挑「同區、最近、過了冷卻」的另一名玩家當對象，替**對方**人氣 +1、迸掌聲特效。
+    /// 無 payload——對象一律用喝采者自己的權威座標挑（防隔空喝采）。未登入 / 冷卻中 / 超量靜默忽略。
+    Cheer,
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -907,6 +911,20 @@ pub enum ServerMsg {
         size: u32,
         display_secs: u32,
     },
+    /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
+    /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣
+    /// 更新（名牌徽記即時刷、不必等下次快照）。`giver_name` = 喝采者；`target_id`/`target_name`
+    /// = 被喝采者；`target_cheers` = 對方最新累積人氣；`mx`/`my` = 兩人中點世界座標；
+    /// `display_secs` = 特效顯示秒數。一次性事件、不入快照（人氣本身另隨玩家快照持久化廣播）。
+    Cheered {
+        giver_name: String,
+        target_id: Uuid,
+        target_name: String,
+        target_cheers: u64,
+        mx: f32,
+        my: f32,
+        display_secs: u32,
+    },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
     /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
@@ -1000,6 +1018,9 @@ pub struct PlayerView {
     /// 天象圖鑑已目睹天象 bitmask（ROADMAP 337）。前端只取「自己那位」的來畫天象面板，
     /// 並與上一幀比對、新點亮的位元噴「新目睹天象」飄字。
     pub skylog: u64,
+    /// 累積人氣（ROADMAP 341 喝采人氣）。其他玩家對你「👏 喝采」即 +1，到階在名牌上方亮起
+    /// 人氣徽記。隨每位玩家快照廣播，前端據此畫**每個人**名牌上的人氣徽記（不只自己）。
+    pub cheers: u64,
     /// 目前等級（由 exp 推算，server 算好送來省前端重算）。
     pub level: u32,
     /// 目前有效攻擊力（基礎武器力 + 等級加成，ROADMAP 18）。前端 HUD 顯示，讓玩家感受成長。
@@ -1597,6 +1618,7 @@ mod tests {
                 codex: 0,
                 atlas: 0,
                 skylog: 0,
+                cheers: 0,
                 level: 0,
                 attack: 2,
                 defense: 0,
@@ -1847,7 +1869,7 @@ mod tests {
             x: 0.0, y: 0.0,
             ether: 0, expansions: 0,
             inventory: vec![ItemStack { item: ItemKind::Wood, qty: 1 }],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, cheers: 0, level: 0, attack: 2, defense: 0,
             planet: "verdant".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),
@@ -2092,7 +2114,7 @@ mod tests {
             species: "terran".into(),
             x: 0.0, y: 0.0, ether: 0, expansions: 0,
             inventory: vec![],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, cheers: 0, level: 0, attack: 2, defense: 0,
             planet: "home".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),
@@ -2150,7 +2172,7 @@ mod tests {
             species: "terran".into(),
             x: 0.0, y: 0.0, ether: 0, expansions: 0,
             inventory: vec![],
-            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, level: 0, attack: 2, defense: 0,
+            hp: 20, max_hp: 20, exp: 0, codex: 0, atlas: 0, skylog: 0, cheers: 0, level: 0, attack: 2, defense: 0,
             planet: "home".into(),
             job_class: None,
             masteries: crate::class::Masteries::default(),

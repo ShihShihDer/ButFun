@@ -293,6 +293,9 @@
   // { glyph, mx, my, size, startMs, expireAt }。drawEmoteResonances 每幀在眾人重心迸出一枚
   // 放大發光的大表情＋一圈向外擴散的同款小表情後淡出，過期自動清掉。純前端動畫，不入快照。
   const emoteResonanceFx = [];
+  // 喝采特效（ROADMAP 341）：每收到一次 cheered 就 push 一筆 { mx, my, startMs, expireAt }。
+  // drawCheers 每幀在兩人之間迸出「👏 啪！」＋掌聲上飄淡出，過期自動清掉。純前端動畫，不入快照。
+  const cheerFx = [];
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
@@ -1645,6 +1648,7 @@
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
             existing.codex = p.codex; // ROADMAP 335：逐快照更新 codex，名牌上的蒐集稱號才會隨集滿即時亮起
+            existing.cheers = p.cheers; // ROADMAP 341：逐快照更新人氣，名牌上的人氣徽記才會隨喝采即時亮起
             existing.planet = p.planet || "home";
             // 室內狀態（ROADMAP 111）
             existing.indoor_plot_id = p.indoor_plot_id ?? null;
@@ -2145,6 +2149,28 @@
           if (dx * dx + dy * dy < 640 * 640) {
             announce(size + " 人一起比了同個表情，引發了表情共鳴！");
           }
+        }
+        break;
+      }
+      case "cheered": {
+        // 喝采成功（ROADMAP 341）：一名玩家替另一名玩家鼓掌，對方人氣 +1。記一筆特效，drawCheers 畫。
+        const now = performance.now();
+        cheerFx.push({
+          mx: msg.mx || 0,
+          my: msg.my || 0,
+          startMs: now,
+          expireAt: now + (msg.display_secs || 3) * 1000,
+        });
+        // 就地把對方的最新人氣更新（名牌徽記即時刷、不必等下次快照）。
+        const tp = msg.target_id ? players.get(msg.target_id) : null;
+        if (tp && typeof msg.target_cheers === "number") {
+          tp.cheers = msg.target_cheers;
+        }
+        // 喝采者本人額外播報「你替 N 喝采（他的人氣 M）」；旁觀者只看畫面特效，不洗報讀器。
+        if (msg.giver_name && myName && msg.giver_name === myName) {
+          announce(
+            "你替 " + (msg.target_name || "另一位玩家") + " 喝采（人氣 " + (msg.target_cheers || 0) + "）"
+          );
         }
         break;
       }
@@ -4170,6 +4196,24 @@
       ctx.fillText(titleText, sx, sy - 38);
     }
 
+    // 人氣徽記（ROADMAP 341）：被別人「👏 喝采」攢到階的玩家，名牌上方配戴一枚人氣徽記，
+    // 全世界擦肩而過都看得見誰最受歡迎——多人互動第一次有了會留下的社交身份。純由廣播的
+    // cheers 推導（popularityFor），零新協議；只配戴最高階一枚，疊在蒐集稱號之上（兩者語意
+    // 互補：一個是「蒐集成就」、一個是「人緣」），沒有蒐集稱號時就接在原稱號位置、不留空行。
+    const popTier = popularityFor(p.cheers);
+    if (popTier) {
+      const popY = codexTitle ? sy - 52 : sy - 38;
+      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      const popText = `${popTier.badge} ${popTier.title}`;
+      ctx.strokeText(popText, sx, popY);
+      ctx.fillStyle = "#ffb6e1"; // 粉色，象徵人緣／受歡迎，與蒐集稱號的金色區隔
+      ctx.fillText(popText, sx, popY);
+    }
+
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
     // 紋理上米白字會糊掉(飄字/小地圖都有襯底,唯獨頭上名字沒有),描邊讓名字在任何
     // 地表、任何日夜亮度下都讀得清。lineJoin=round 讓尖角不溢出成毛刺。
@@ -4341,6 +4385,7 @@
     safeDraw("playerEmotes", () => drawPlayerEmotes(camX, camY)); // 玩家表情動作（338）
     safeDraw("highFives", () => drawHighFives(camX, camY)); // 玩家擊掌特效（339）
     safeDraw("emoteResonances", () => drawEmoteResonances(camX, camY)); // 表情共鳴特效（340）
+    safeDraw("cheers", () => drawCheers(camX, camY)); // 喝采特效（341）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
@@ -10985,6 +11030,73 @@
     ctx.restore();
   }
 
+  // 喝采特效（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌後，在兩人之間的中點「啪」地迸出
+  // 一枚 👏＋一圈往上飄的掌聲星點淡出。與擊掌（339，兩人對等的 ✋＋金色火花）刻意以符號與
+  // 配色區隔——這是「我替你鼓掌」的單向喝采（👏＋粉色星點），語意是把人氣送給對方。中點是
+  // 喝采當下的固定世界座標（瞬間動作、不跟著誰移動）。尊重 reduceMotion（關星點與彈跳、只淡出）。
+  function drawCheers(camX, camY) {
+    if (cheerFx.length === 0) return;
+    const now = performance.now();
+    const POP_MS = 200;    // 👏 彈出（由小放大、輕微過衝）時長
+    const FADE_MS = 900;   // 最後 0.9 秒漸隱
+    const BASE_SIZE = 34;  // 👏 基礎字級
+
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    for (let i = cheerFx.length - 1; i >= 0; i--) {
+      const fx = cheerFx[i];
+      const remaining = fx.expireAt - now;
+      if (remaining <= 0) {
+        cheerFx.splice(i, 1);
+        continue;
+      }
+      const age = now - fx.startMs;
+      const sx = fx.mx - camX;
+      const sy = fx.my - camY;
+      if (sx < -60 || sx > viewW + 60 || sy < -120 || sy > viewH + 60) continue;
+
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+
+      // 掌聲星點：自中點往上飄散的粉色小星點（reduceMotion 下完全不畫）。
+      if (!reduceMotion) {
+        const rise = Math.min(1, age / 450); // 0→1 往上飄
+        ctx.globalAlpha = alpha * 0.85;
+        ctx.fillStyle = "#ffb6e1";
+        const N = 5;
+        for (let k = 0; k < N; k++) {
+          const ang = (Math.PI * 2 * k) / N - Math.PI / 2;
+          const r = 5 + rise * 22;
+          const px = sx + Math.cos(ang) * r;
+          const py = sy - 30 + Math.sin(ang) * r - rise * 14; // 整體往上飄
+          ctx.beginPath();
+          ctx.arc(px, py, 2.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // 👏 彈出縮放（輕微過衝再回正）：reduceMotion 下直接定為 1。
+      let scale = 1;
+      if (!reduceMotion && age < POP_MS) {
+        const t = age / POP_MS;              // 0→1
+        scale = 0.5 + 1.0 * t;               // 由小放大
+        scale += Math.sin(t * Math.PI) * 0.22; // 過衝凸起
+      }
+      const size = BASE_SIZE * scale;
+
+      ctx.globalAlpha = alpha;
+      ctx.font = `${size}px sans-serif`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.strokeText("👏", sx, sy - 30);
+      ctx.fillText("👏", sx, sy - 30);
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
   // 表情共鳴特效（ROADMAP 340）：一群玩家同時比同個表情，在眾人重心迸出一枚**放大發光**的大
   // 表情＋一圈向外擴散上飄的同款小表情後淡出。與擊掌（339，兩人之間單枚 ✋＋火花）、單枚表情
   // （338，頭頂小 emoji）刻意區隔——這是一群人「同框共鳴」的大場面，份量更足、人越多光暈越大。
@@ -17104,6 +17216,23 @@
     return null;
   }
 
+  // ROADMAP 341 人氣徽記：被別人喝采累積到階的玩家，名牌上方亮出一枚人氣徽記，全世界看得到。
+  // 此表鏡像後端 src/player_cheer.rs 的 POPULARITY_TIERS（threshold／badge／title，**由高到低**）。
+  // 面向玩家字串（徽記／稱號）集中於此（i18n 集中替換點）。
+  const POPULARITY_TIERS = [
+    { threshold: 200, badge: "👑", title: "傳奇人物" },
+    { threshold: 50,  badge: "🌟", title: "萬人迷" },
+    { threshold: 10,  badge: "👏", title: "受歡迎" },
+  ];
+  // 依玩家累積人氣回傳其配戴的最高階人氣徽記（由高到低掃，第一個達門檻者勝）；未達最低門檻回 null。
+  function popularityFor(cheers) {
+    if (typeof cheers !== "number") return null;
+    for (const t of POPULARITY_TIERS) {
+      if (cheers >= t.threshold) return t;
+    }
+    return null;
+  }
+
   let lastCodex = null;       // 上一幀的 codex bitmask（偵測新發現用；null = 尚未收過）
   let lastCodexSig = null;    // 面板簽章，未變不重建
 
@@ -20492,6 +20621,15 @@
       highFiveBtn.addEventListener("click", () => {
         safeSend({ type: "high_five" });
         announce("伸手等著和附近的玩家擊掌");
+      });
+    }
+    // 👏 喝采（ROADMAP 341）：替附近玩家鼓掌，替對方累積人氣。按一下；伺服器挑同區、最近、
+    //    過了冷卻的另一名玩家當對象，在兩人之間迸出掌聲特效、替對方人氣 +1（見 cheered 事件）。
+    const cheerBtn = document.getElementById("cheerBtn");
+    if (cheerBtn) {
+      cheerBtn.addEventListener("click", () => {
+        safeSend({ type: "cheer" });
+        announce("替附近的玩家鼓掌喝采");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

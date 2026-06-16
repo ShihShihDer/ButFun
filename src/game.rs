@@ -643,6 +643,115 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 341 喝采人氣：對附近玩家「👏 喝采」→ 替對方人氣 +1、到階亮名牌徽記 ──
+            // 338/339/340 都是迸完就散的一次性特效；喝采是第一筆「會留下印記」的互動——把社交
+            // 從「即生即滅」推進到「沉澱成看得見的人氣身份」。玩家按喝采時 ws.rs 點亮 cheer_offer，
+            // 這裡每幀：替「還在喝采、且在室外」的玩家挑最近的同區對象（pick_target 純函式）、過了
+            // 每對象冷卻（can_cheer）就替**對方** cheers +1、寫冷卻、清意願、把事件帶出鎖外廣播；
+            // 對方人氣跨階時世界頻道報一聲。只新開一把 players 寫鎖、廣播在出鎖後才送（守
+            // prod-deadlock 鐵律：無巢狀上鎖）；多數時刻沒人喝采→意圖清單空、近乎零成本。
+            {
+                // (giver_name, target_id, target_name, target_cheers, mx, my)
+                let cheered: Vec<(String, uuid::Uuid, String, u64, f32, f32)>;
+                let mut tier_msgs: Vec<String> = Vec::new();
+                {
+                    let mut players = app.players.write().unwrap();
+                    // 候選對象快照：所有室外玩家（室內外空間不同、不互喝）。
+                    let candidates: Vec<crate::player_cheer::Candidate> = players
+                        .values()
+                        .filter(|p| p.indoor_plot_id.is_none())
+                        .map(|p| crate::player_cheer::Candidate {
+                            id: p.id,
+                            zone: p.planet.clone(),
+                            x: p.x,
+                            y: p.y,
+                        })
+                        .collect();
+                    // 當下還在喝采、且在室外的喝采者（依 id 排序求確定）。
+                    let mut givers: Vec<uuid::Uuid> = players
+                        .values()
+                        .filter(|p| p.cheer_offer > 0 && p.indoor_plot_id.is_none())
+                        .map(|p| p.id)
+                        .collect();
+                    givers.sort();
+
+                    // 第一階段（只讀）：替每位喝采者挑對象＋驗冷卻，算出本幀成立的喝采。
+                    // (giver_id, giver_name, target_id, gx, gy, old_cheers)
+                    let mut decisions: Vec<(uuid::Uuid, String, uuid::Uuid, f32, f32, u64)> = Vec::new();
+                    let mut matched: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+                    for gid in &givers {
+                        let Some(g) = players.get(gid) else { continue };
+                        let Some(tid) = crate::player_cheer::pick_target(
+                            g.id, &g.planet, g.x, g.y, &candidates,
+                        ) else { continue };
+                        if !crate::player_cheer::can_cheer(&g.cheer_cooldowns, tid) {
+                            continue; // 對象還在冷卻 → 這幀不計、意願留待下幀（或自然淡掉）。
+                        }
+                        let old = players.get(&tid).map(|t| t.cheers).unwrap_or(0);
+                        decisions.push((g.id, g.name.clone(), tid, g.x, g.y, old));
+                        matched.insert(g.id);
+                    }
+
+                    // 第二階段（套用）：逐 id 各別 get_mut（不同時持兩個可變借用）。
+                    let mut evs = Vec::with_capacity(decisions.len());
+                    for (gid, gname, tid, gx, gy, old) in decisions {
+                        // 替對方人氣 +1，取回最新值與座標、名字。
+                        let (new_cheers, tname, tx_, ty_) = match players.get_mut(&tid) {
+                            Some(t) => {
+                                t.cheers = t.cheers.saturating_add(1);
+                                (t.cheers, t.name.clone(), t.x, t.y)
+                            }
+                            None => continue,
+                        };
+                        // 喝采者：寫該對象冷卻、清掉意願。
+                        if let Some(g) = players.get_mut(&gid) {
+                            g.cheer_cooldowns.insert(tid, crate::player_cheer::CHEER_COOLDOWN);
+                            g.cheer_offer = 0;
+                        }
+                        // 人氣跨階（由無→有或更高）時世界頻道報一聲（出鎖後送）。
+                        let before = crate::player_cheer::popularity_for(old).map(|t| t.threshold);
+                        let after = crate::player_cheer::popularity_for(new_cheers);
+                        if let Some(t) = after {
+                            if before != Some(t.threshold) {
+                                tier_msgs.push(format!(
+                                    "🎉 {} 在眾人的喝采中成為了「{} {}」！",
+                                    tname, t.badge, t.title
+                                ));
+                            }
+                        }
+                        let mx = (gx + tx_) * 0.5;
+                        let my = (gy + ty_) * 0.5;
+                        evs.push((gname, tid, tname, new_cheers, mx, my));
+                    }
+
+                    // 沒挑到對象的喝采者意願遞減（留待下幀再試或淡掉）；同時每幀推進所有冷卻表。
+                    for p in players.values_mut() {
+                        if p.cheer_offer > 0 && !matched.contains(&p.id) {
+                            p.cheer_offer -= 1;
+                        }
+                        crate::player_cheer::tick_cooldowns(&mut p.cheer_cooldowns);
+                    }
+                    cheered = evs;
+                }
+                for (giver_name, target_id, target_name, target_cheers, mx, my) in cheered {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::Cheered {
+                            giver_name,
+                            target_id,
+                            target_name,
+                            target_cheers,
+                            mx,
+                            my,
+                            display_secs: crate::player_cheer::CHEER_DISPLAY_SECS,
+                        },
+                    ));
+                }
+                // 人氣跨階同慶（稀有：每位玩家每階一生一次，不會洗頻）。
+                for msg in tier_msgs {
+                    let _ = app.tx_chat.send(msg);
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定
@@ -3163,7 +3272,7 @@ pub async fn flush_all(app: &AppState) {
         (
             authed
                 .iter()
-                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex, p.atlas, p.skylog))
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex, p.atlas, p.skylog, p.cheers))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
             authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
@@ -3172,7 +3281,7 @@ pub async fn flush_all(app: &AppState) {
     if !online.is_empty() {
         // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
         app.positions
-            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx, ax, sl)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx, *ax, *sl)));
+            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx, ax, sl, cl)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx, *ax, *sl, *cl)));
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;
