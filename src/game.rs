@@ -957,6 +957,8 @@ pub fn spawn(app: AppState) {
 
             // NPC 升等賀詞（ROADMAP 84）：推進全服廣播冷卻倒數。
             app.npc_level_greet.write().unwrap().tick(dt);
+            // 街坊相認（ROADMAP 331）：推進「玩家×NPC」崗位招呼冷卻倒數（歸零者自動剔除）。
+            app.npc_recognition.write().unwrap().tick(dt);
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器；下雨時給 1.5x 加成。
@@ -1030,6 +1032,100 @@ pub fn spawn(app: AppState) {
                         .map(|p| (p.name.clone(), p.x, p.y))
                         .collect()
                 };
+                // 街坊相認（ROADMAP 331）：白天各自在崗位的七大 NPC，認出走近的熟客玩家、點名招呼一句，
+                // 把 329/330 在午休桌上攢起的相熟度，第一次兌現到午休之外的整日城鎮裡。
+                // 只在白天工作時段、非午休（午休另走席間舉杯）、相熟度 ≥ 點頭之交、且過了招呼冷卻時觸發。
+                {
+                    use crate::npc_schedule::{NpcActivity, VILLAGE_NPCS};
+                    // 1. 只在白天且非午休時段相認（夜歇／趕路／午休皆不觸發；午休自有席間舉杯）。
+                    let day_not_lunch = {
+                        let dn = app.daynight.read().unwrap();
+                        dn.phase() == crate::daynight::Phase::Day
+                            && !crate::npc_schedule::is_lunch_time(dn.phase(), dn.fraction())
+                    };
+                    if day_not_lunch {
+                        // 2. 收集目前真正在崗位工作（非趕路／夜歇／午休）的村落 NPC 及其座標。
+                        let working: Vec<(&'static str, f32, f32)> = {
+                            let sched = app.npc_schedule.read().unwrap();
+                            VILLAGE_NPCS
+                                .iter()
+                                .filter_map(|s| {
+                                    let act = sched.get_activity(s.id)?;
+                                    let on_duty = !matches!(
+                                        act,
+                                        NpcActivity::Commuting
+                                            | NpcActivity::Resting
+                                            | NpcActivity::Lunching
+                                    );
+                                    if on_duty {
+                                        sched.get_pos(s.id).map(|(x, y)| (s.id, x, y))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        };
+                        // 3. 快照在線、未倒地的玩家（鍵＝玩家 id，與相熟度帳本一致）。
+                        let players_snap: Vec<(uuid::Uuid, String, f32, f32)> = {
+                            let players = app.players.read().unwrap();
+                            players
+                                .values()
+                                .filter(|p| !p.vitals.is_downed())
+                                .map(|p| (p.id, p.name.clone(), p.x, p.y))
+                                .collect()
+                        };
+                        if !working.is_empty() && !players_snap.is_empty() {
+                            // 4. 在讀鎖／冷卻寫鎖內判定要招呼誰、招呼哪一句（持鎖期間不送訊息）。
+                            let mut greetings: Vec<(String, String, String, f32, f32)> = Vec::new();
+                            {
+                                let regulars = app.lunch_regulars.read().unwrap();
+                                let mut recog = app.npc_recognition.write().unwrap();
+                                for &(npc_id, nx, ny) in &working {
+                                    for (pid, pname, px, py) in &players_snap {
+                                        if !crate::npc_recognition::within_reach(nx, ny, *px, *py) {
+                                            continue;
+                                        }
+                                        let player_key = pid.to_string();
+                                        if !recog.ready(&player_key, npc_id) {
+                                            continue;
+                                        }
+                                        // 相熟度由午餐桌累積的舉杯次數推定；生面孔（Stranger）取不到招呼語、自然跳過。
+                                        let count = regulars.count(&player_key, npc_id);
+                                        let tier = crate::lunch_regular::tier_of(count);
+                                        if let Some(tpl) = crate::npc_recognition::recognize_line(
+                                            npc_id, tier, count as usize,
+                                        ) {
+                                            let text =
+                                                crate::npc_recognition::fill_name(tpl, pname);
+                                            recog.mark(&player_key, npc_id);
+                                            greetings.push((
+                                                npc_id.to_string(),
+                                                crate::lunch_chatter::display_name(npc_id)
+                                                    .to_string(),
+                                                text,
+                                                nx,
+                                                ny,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            // 5. 鎖外廣播 NpcSpeech 招呼泡泡（就地定位在 NPC 崗位上，不洗世界聊天）。
+                            for (npc_id, npc_name, text, wx, wy) in greetings {
+                                let _ = app.tx.send(std::sync::Arc::new(
+                                    crate::protocol::ServerMsg::NpcSpeech {
+                                        npc_id,
+                                        npc_name,
+                                        text,
+                                        display_secs: 6,
+                                        wx,
+                                        wy,
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
                 // 野生動物 tick（ROADMAP 141 食物鏈）。
                 {
                     let positions: Vec<(f32, f32)> = player_positions.iter()
