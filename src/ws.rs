@@ -3001,6 +3001,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     .write()
                                     .unwrap()
                                     .record(&player_key.to_string(), npc_id);
+                                // 4c. 老友的餐贈（ROADMAP 332）：剛跨進更高一層交情的那一刻，
+                                //     這位 NPC 順手把自家行當的一份心意塞進你背包，讓五片社交
+                                //     的累積頭一回兌現成實打實的東西。只在「跨層」那刻送、每層
+                                //     至多一份（複用 330 `crossed`，不需任何新帳本／冷卻），
+                                //     份量刻意壓小、不含武器，近乎零經濟擾動。背包變多會由前端
+                                //     快照差值自動噴「+N 物品」飄字＋報讀器播報，無需協議改動。
+                                if let Some(tier) = toast_rec.crossed {
+                                    if let Some(gift) = crate::lunch_gift::gift_for(npc_id, tier) {
+                                        if let Some(p) =
+                                            app.players.write().unwrap().get_mut(&id)
+                                        {
+                                            p.add_item_overflow(gift.item, gift.qty);
+                                            tracing::info!(
+                                                player = %p.name,
+                                                npc = npc_id,
+                                                ?tier,
+                                                item = ?gift.item,
+                                                qty = gift.qty,
+                                                "老友餐贈"
+                                            );
+                                        }
+                                    }
+                                }
                                 // 5. 廣播該 NPC 的回敬泡泡（就地定位在其座位上）；回敬語氣隨相熟度
                                 //    升溫——生面孔客套、熟客熱絡，剛跨層還會冒一句專屬「混熟了」台詞。
                                 if let Some(text) =
