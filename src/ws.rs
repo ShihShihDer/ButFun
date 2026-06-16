@@ -110,6 +110,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            codex: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             // 重連還原：工會成員資料 keyed by uid 存在 GuildStore，登入玩家重連時從中還原
@@ -187,6 +188,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            codex: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
@@ -1175,6 +1177,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     saved.masteries,
                                                     saved.stats,
                                                     saved.skill_masteries,
+                                                    saved.codex,
                                                 );
                                                 tracing::info!(%seller_name, total, "市場售出（賣家離線）：乙太已寫入持久化");
                                             }
@@ -5872,7 +5875,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
             // 內部 Mutex,與 players 鎖無交集,不會死鎖。
             if let Some(ref player) = p {
                 if persist_pos {
-                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries);
+                    app.positions.remember(id, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex);
                     // 背包與裝備槽同樣在鎖內更新 cache。
                     app.inventories.remember(id, &player.inventory);
                     app.inventories.remember_equipment(id, &player.equipment);
@@ -5889,7 +5892,7 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     if persist_pos {
         if let Some(ref player) = removed {
             app.positions
-                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries)
+                .flush_one(id, &player.name, &player.species, player.x, player.y, player.ether, player.wallet.expansions(), player.exp, player.masteries, player.stats, player.skill_masteries, player.codex)
                 .await;
             app.inventories.flush_one(id, &player.inventory).await;
             app.inventories.flush_equipment_one(id, &player.equipment).await;

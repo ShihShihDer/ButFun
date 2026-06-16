@@ -65,6 +65,9 @@ struct DiskRow {
     skill_use_gale: u32,
     #[serde(default)]
     skill_use_haggle: u32,
+    /// 生態圖鑑 bitmask（ROADMAP 333）。舊存檔無此欄位讀為 0。
+    #[serde(default)]
+    codex: u64,
 }
 
 /// 玩家進場時的預設位置——刻意生在「公共農地」正中央。沒有歷史位置(新玩家/全清後)時用它。
@@ -128,6 +131,9 @@ pub struct Saved {
     /// 技能使用型熟練度（ROADMAP 153）。舊存檔讀為全 0。
     #[serde(default)]
     pub skill_masteries: crate::skill_mastery::SkillMasteries,
+    /// 生態圖鑑已發現物種 bitmask（ROADMAP 333）。舊存檔讀為 0（圖鑑全空、重新蒐集）。
+    #[serde(default)]
+    pub codex: u64,
 }
 
 /// cache 後面的耐久層。
@@ -195,17 +201,17 @@ impl PositionStore {
 
     /// 記住某玩家目前狀態（更新 cache,同步）。Jsonl 模式順手寫穿磁碟;Postgres 模式只動
     /// cache,耐久寫入交給非同步的 `flush_online`/`flush_one`。
-    pub fn remember(&self, id: Uuid, x: f32, y: f32, ether: u32, wallet_expansions: u32, exp: u32, masteries: crate::class::Masteries, stats: crate::stat_points::StatPoints, skill_masteries: crate::skill_mastery::SkillMasteries) {
-        self.inner.write().unwrap().insert(id, Saved { x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries });
+    pub fn remember(&self, id: Uuid, x: f32, y: f32, ether: u32, wallet_expansions: u32, exp: u32, masteries: crate::class::Masteries, stats: crate::stat_points::StatPoints, skill_masteries: crate::skill_mastery::SkillMasteries, codex: u64) {
+        self.inner.write().unwrap().insert(id, Saved { x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries, codex });
         self.persist_jsonl();
     }
 
     /// 批次記住多名玩家（給遊戲迴圈定期快照線上玩家用）：更新 cache 一次。
-    pub fn remember_all<I: IntoIterator<Item = (Uuid, f32, f32, u32, u32, u32, crate::class::Masteries, crate::stat_points::StatPoints, crate::skill_mastery::SkillMasteries)>>(&self, items: I) {
+    pub fn remember_all<I: IntoIterator<Item = (Uuid, f32, f32, u32, u32, u32, crate::class::Masteries, crate::stat_points::StatPoints, crate::skill_mastery::SkillMasteries, u64)>>(&self, items: I) {
         {
             let mut m = self.inner.write().unwrap();
-            for (id, x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries) in items {
-                m.insert(id, Saved { x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries });
+            for (id, x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries, codex) in items {
+                m.insert(id, Saved { x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries, codex });
             }
         }
         self.persist_jsonl();
@@ -226,11 +232,11 @@ impl PositionStore {
     }
 
     /// 玩家離線時把其最後狀態 upsert 到 Postgres（補離線前最後進度）。非 Postgres 模式無動作。
-    pub async fn flush_one(&self, id: Uuid, name: &str, species: &str, x: f32, y: f32, ether: u32, wallet_expansions: u32, exp: u32, masteries: crate::class::Masteries, stats: crate::stat_points::StatPoints, skill_masteries: crate::skill_mastery::SkillMasteries) {
+    pub async fn flush_one(&self, id: Uuid, name: &str, species: &str, x: f32, y: f32, ether: u32, wallet_expansions: u32, exp: u32, masteries: crate::class::Masteries, stats: crate::stat_points::StatPoints, skill_masteries: crate::skill_mastery::SkillMasteries, codex: u64) {
         let Backend::Postgres(pool) = &self.backend else {
             return;
         };
-        let row = [(id, name.to_string(), species.to_string(), x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries)];
+        let row = [(id, name.to_string(), species.to_string(), x, y, ether, wallet_expansions, exp, masteries, stats, skill_masteries, codex)];
         if let Err(e) = upsert_rows(pool, &row).await {
             tracing::warn!("Postgres flush_one 失敗：{e}");
         }
@@ -308,6 +314,7 @@ impl PositionStore {
                         skill_use_precision: s.skill_masteries.precision,
                         skill_use_gale:      s.skill_masteries.gale,
                         skill_use_haggle:    s.skill_masteries.haggle,
+                        codex: s.codex,
                     })
                     .ok()
                 })
@@ -328,7 +335,7 @@ impl PositionStore {
 }
 
 /// 線上玩家 upsert 列型別（含熟練度 + 屬性加點 + 技能熟練度）。
-pub type OnlinePlayerRow = (Uuid, String, String, f32, f32, u32, u32, u32, crate::class::Masteries, crate::stat_points::StatPoints, crate::skill_mastery::SkillMasteries);
+pub type OnlinePlayerRow = (Uuid, String, String, f32, f32, u32, u32, u32, crate::class::Masteries, crate::stat_points::StatPoints, crate::skill_mastery::SkillMasteries, u64);
 
 /// 批次 upsert 到 `players` 表（一筆 transaction,要嘛全進要嘛全不進）。
 /// 走 runtime query API（非 `query!` 巨集），故 build/test 不需 live DB。
@@ -337,15 +344,16 @@ async fn upsert_rows(
     rows: &[OnlinePlayerRow],
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
-    for (id, name, species, x, y, ether, wallet_expansions, exp, m, s, sk) in rows {
+    for (id, name, species, x, y, ether, wallet_expansions, exp, m, s, sk, codex) in rows {
         sqlx::query(
             "INSERT INTO players \
                (id, name, species, x, y, ether, wallet_expansions, exp, \
                 mastery_warrior, mastery_farmer, mastery_artisan, mastery_explorer, mastery_merchant, \
                 stat_unspent, stat_hp, stat_attack, stat_speed, stat_atk_speed, \
                 skill_use_warcry, skill_use_bounty, skill_use_precision, skill_use_gale, skill_use_haggle, \
+                codex, \
                 updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, now()) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, now()) \
              ON CONFLICT (id) DO UPDATE SET \
                name = EXCLUDED.name, species = EXCLUDED.species, \
                x = EXCLUDED.x, y = EXCLUDED.y, ether = EXCLUDED.ether, \
@@ -365,6 +373,7 @@ async fn upsert_rows(
                skill_use_precision = EXCLUDED.skill_use_precision, \
                skill_use_gale      = EXCLUDED.skill_use_gale, \
                skill_use_haggle    = EXCLUDED.skill_use_haggle, \
+               codex = EXCLUDED.codex, \
                updated_at = now()",
         )
         .bind(id)
@@ -392,6 +401,8 @@ async fn upsert_rows(
         .bind(sk.precision as i32)
         .bind(sk.gale      as i32)
         .bind(sk.haggle    as i32)
+        // 生態圖鑑 bitmask（ROADMAP 333）：BIGINT 欄，以 i64 綁定（僅低位有值，安全）。
+        .bind(*codex as i64)
         .execute(&mut *tx)
         .await?;
     }
@@ -419,7 +430,8 @@ async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
          COALESCE(skill_use_bounty,    0) AS skill_use_bounty, \
          COALESCE(skill_use_precision, 0) AS skill_use_precision, \
          COALESCE(skill_use_gale,      0) AS skill_use_gale, \
-         COALESCE(skill_use_haggle,    0) AS skill_use_haggle \
+         COALESCE(skill_use_haggle,    0) AS skill_use_haggle, \
+         COALESCE(codex, 0) AS codex \
          FROM players",
     )
     .fetch_all(pool)
@@ -457,6 +469,8 @@ async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
         let sku_pr: i32 = r.get("skill_use_precision");
         let sku_ga: i32 = r.get("skill_use_gale");
         let sku_ha: i32 = r.get("skill_use_haggle");
+        // 生態圖鑑 bitmask（ROADMAP 333，migration 0026）：BIGINT 欄，i64 解碼後位元重塑回 u64。
+        let codex: i64 = r.get("codex");
         let (x, y) = spawn_at(Some((x, y)));
         map.insert(
             id,
@@ -487,6 +501,7 @@ async fn load_players_from_db(pool: &PgPool) -> HashMap<Uuid, Saved> {
                     gale:      sku_ga.max(0) as u32,
                     haggle:    sku_ha.max(0) as u32,
                 },
+                codex: codex as u64,
             },
         );
     }
@@ -525,6 +540,7 @@ fn load_from_disk(path: &str) -> HashMap<Uuid, Saved> {
                         gale:      r.skill_use_gale,
                         haggle:    r.skill_use_haggle,
                     },
+                    codex: r.codex,
                 });
             }
         }
@@ -611,7 +627,7 @@ mod tests {
     fn remember_then_recall_round_trips() {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 10.0, 20.0, 5, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
+        store.remember(id, 10.0, 20.0, 5, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
         assert_eq!(
             store.recall(id),
             Some(Saved {
@@ -623,6 +639,7 @@ mod tests {
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
                 skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+                codex: 0,
             })
         );
     }
@@ -631,8 +648,8 @@ mod tests {
     fn remember_overwrites_previous_state() {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 10.0, 20.0, 1, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
-        store.remember(id, 30.0, 40.0, 9, 2, 100, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
+        store.remember(id, 10.0, 20.0, 1, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
+        store.remember(id, 30.0, 40.0, 9, 2, 100, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
         assert_eq!(
             store.recall(id),
             Some(Saved {
@@ -644,6 +661,7 @@ mod tests {
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
                 skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+                codex: 0,
             })
         );
     }
@@ -652,7 +670,7 @@ mod tests {
     fn recalled_ether_survives_round_trip() {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
-        store.remember(id, 0.0, 0.0, 42, 3, 200, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
+        store.remember(id, 0.0, 0.0, 42, 3, 200, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
         assert_eq!(store.recall(id).map(|s| s.ether), Some(42));
         assert_eq!(store.recall(id).map(|s| s.wallet_expansions), Some(3));
         assert_eq!(store.recall(id).map(|s| s.exp), Some(200));
@@ -663,7 +681,7 @@ mod tests {
         let store = PositionStore::in_memory();
         let id = Uuid::new_v4();
         let m = crate::class::Masteries { warrior: 15, farmer: 5, ..Default::default() };
-        store.remember(id, 0.0, 0.0, 0, 0, 0, m, crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
+        store.remember(id, 0.0, 0.0, 0, 0, 0, m, crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
         assert_eq!(store.recall(id).map(|s| s.masteries), Some(m));
     }
 
@@ -678,6 +696,7 @@ mod tests {
             masteries: crate::class::Masteries { warrior: 10, ..Default::default() },
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+            codex: 0,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: Saved = serde_json::from_str(&json).unwrap();
@@ -703,6 +722,7 @@ mod tests {
             masteries: crate::class::Masteries::default(),
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+            codex: 0,
         };
         let (x, y) = spawn_at(Some((bad.x, bad.y)));
         assert_eq!((x, y), default_spawn());
@@ -716,6 +736,7 @@ mod tests {
             masteries: crate::class::Masteries::default(),
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+            codex: 0,
         };
         let (x, y) = spawn_at(Some((out_of_bounds.x, out_of_bounds.y)));
         assert_eq!((x, y), (-100.0, WORLD_HEIGHT + 100.0));
@@ -726,7 +747,7 @@ mod tests {
         let store = PositionStore::in_memory();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
-        store.remember(a, 1.0, 1.0, 3, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default());
+        store.remember(a, 1.0, 1.0, 3, 0, 0, crate::class::Masteries::default(), crate::stat_points::StatPoints::default(), crate::skill_mastery::SkillMasteries::default(), 0);
         assert_eq!(store.recall(b), None);
         assert_eq!(
             store.recall(a),
@@ -739,6 +760,7 @@ mod tests {
                 masteries: crate::class::Masteries::default(),
                 stats: crate::stat_points::StatPoints::default(),
                 skill_masteries: crate::skill_mastery::SkillMasteries::default(),
+                codex: 0,
             })
         );
     }
@@ -751,9 +773,9 @@ mod tests {
         let s = crate::stat_points::StatPoints::default();
         let sk = crate::skill_mastery::SkillMasteries::default();
         store
-            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3, 0, 0, m, s, sk)])
+            .flush_online(&[(id, "阿巡".into(), "terran".into(), 1.0, 2.0, 3, 0, 0, m, s, sk, 0)])
             .await;
-        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3, 0, 0, m, s, sk).await;
+        store.flush_one(id, "阿巡", "terran", 1.0, 2.0, 3, 0, 0, m, s, sk, 0).await;
         assert_eq!(store.recall(id), None);
     }
 }
