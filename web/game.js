@@ -282,6 +282,10 @@
   // NPC 對話泡泡（ROADMAP 92）：npc_id → { text, wx, wy, expireAt }。
   // 收到 npc_speech 事件時寫入，drawNpcSpeechBubbles 每幀讀取並淡出。
   const npcSpeechBubbles = new Map();
+  // 玩家表情動作（ROADMAP 338）：from_id → { glyph, wx, wy, startMs, expireAt }。
+  // 收到 player_emote 事件時寫入（同一玩家連發會覆蓋上一個），drawPlayerEmotes 每幀
+  // 讀取、彈跳浮起後淡出。純前端動畫，不入快照。
+  const playerEmotes = new Map();
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
@@ -2086,6 +2090,18 @@
           expireAt: performance.now() + (msg.display_secs || 8) * 1000,
         });
         break;
+      case "player_emote": {
+        // 玩家表情動作（ROADMAP 338）：在比表情的玩家頭頂彈跳浮起一枚大表情後淡出。
+        const now = performance.now();
+        playerEmotes.set(msg.from_id, {
+          glyph: msg.glyph || "❓",
+          wx: msg.wx || 0,
+          wy: msg.wy || 0,
+          startMs: now,
+          expireAt: now + (msg.display_secs || 4) * 1000,
+        });
+        break;
+      }
       case "village_event":
         // 里長自主辦村落節慶（ROADMAP 64）：全服廣播，顯示公告。
         addChat("🎉 村落節慶", msg.message || "村落節慶開始！");
@@ -4276,6 +4292,7 @@
     safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
+    safeDraw("playerEmotes", () => drawPlayerEmotes(camX, camY)); // 玩家表情動作（338）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
@@ -10778,6 +10795,74 @@
       for (let i = 0; i < lines.length; i++) {
         ctx.fillText(lines[i], bx + BUBBLE_PAD_X, by + BUBBLE_PAD_Y + i * LINE_H);
       }
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 玩家表情動作（ROADMAP 338）：在比表情的玩家頭頂彈跳浮起一枚大表情後淡出。
+  // 與 NPC 對話泡泡（92）刻意區隔——那是白底文字泡泡、這是無框的大 emoji 彈跳浮字，
+  // 一眼分得出「有人在比表情」而不是「有人在說話」。表情跟著玩家當下位置走（找得到本人就
+  // 用其即時座標，找不到才退回比表情當下的座標），玩家移動時表情會跟在頭上。
+  function drawPlayerEmotes(camX, camY) {
+    const now = performance.now();
+    const LIFE_MS = 4000;     // 與後端 EMOTE_DISPLAY_SECS 對齊（4 秒）
+    const FADE_MS = 1000;     // 最後 1 秒漸隱
+    const POP_MS = 220;       // 彈出（由小到大、輕微過衝）時長
+    const RISE_PX = 26;       // 全程上飄高度
+    const BASE_SIZE = 30;     // emoji 基礎字級
+
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    for (const [fromId, e] of playerEmotes) {
+      const remaining = e.expireAt - now;
+      if (remaining <= 0) {
+        playerEmotes.delete(fromId);
+        continue;
+      }
+      const age = now - e.startMs;
+
+      // 跟著玩家當下位置（找得到本人用即時座標，否則退回事件當下座標）。
+      const p = players.get(fromId);
+      const wx = p ? p.x : e.wx;
+      const wy = p ? p.y : e.wy;
+      const sx = wx - camX;
+      const sy = wy - camY;
+
+      // 螢幕外不畫。
+      if (sx < -60 || sx > viewW + 60 || sy < -120 || sy > viewH + 60) continue;
+
+      // 淡出 alpha。
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+
+      // 上飄高度：reduceMotion 下固定停在頭頂上方、不上飄。
+      const riseT = Math.min(1, age / LIFE_MS);
+      const rise = reduceMotion ? RISE_PX * 0.4 : RISE_PX * riseT;
+
+      // 彈出縮放（輕微過衝再回正）：reduceMotion 下直接定為 1。
+      let scale = 1;
+      if (!reduceMotion) {
+        if (age < POP_MS) {
+          const k = age / POP_MS;            // 0→1
+          scale = 0.4 + 1.0 * k;             // 由小放大
+          scale += Math.sin(k * Math.PI) * 0.18; // 過衝凸起
+        }
+      }
+
+      const size = BASE_SIZE * scale;
+      const ex = sx;
+      const ey = sy - 52 - rise; // 頭頂上方再往上飄
+
+      ctx.globalAlpha = alpha;
+      ctx.font = `${size}px sans-serif`;
+      // 淺描邊讓 emoji 在各種背景上都看得清。
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.strokeText(e.glyph, ex, ey);
+      ctx.fillText(e.glyph, ex, ey);
     }
 
     ctx.globalAlpha = 1.0;
@@ -20138,6 +20223,73 @@
           ws.send(JSON.stringify({ type: "return_home" }));
           announce("回城：傳回新手村");
         }
+      });
+    }
+    // 😊 表情動作（ROADMAP 338）：玩家↔玩家即時情緒表態。表情輪由前端動態生成，
+    //    wire key 對齊後端 player_emote::EMOTES；面向玩家的中文標籤集中在此（i18n 友善）。
+    const emoteBtn = document.getElementById("emoteBtn");
+    const emotePopup = document.getElementById("emotePopup");
+    if (emoteBtn && emotePopup) {
+      // [wire key, glyph, 中文標籤]——順序與後端白名單一致；glyph 僅供按鈕顯示，
+      // 真正畫在頭頂的 glyph 由伺服器廣播帶回（單一真實來源）。
+      const EMOTE_CHOICES = [
+        ["wave", "👋", "揮手"],
+        ["cheer", "🎉", "歡呼"],
+        ["heart", "❤️", "愛心"],
+        ["laugh", "😆", "大笑"],
+        ["thumbsup", "👍", "比讚"],
+        ["cry", "😢", "哭哭"],
+        ["angry", "😠", "生氣"],
+        ["sleep", "💤", "想睡"],
+      ];
+      // 動態建表情鈕（一次）。
+      for (const [kind, glyph, label] of EMOTE_CHOICES) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "menuitem");
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        b.textContent = glyph;
+        b.style.cssText = "font-size:22px;line-height:1;width:38px;height:38px;cursor:pointer;border:1px solid #3a4250;border-radius:8px;background:#222a36;";
+        b.addEventListener("click", () => {
+          safeSend({ type: "emote", kind });
+          announce("比了表情：" + label);
+          hideEmotePopup();
+        });
+        emotePopup.appendChild(b);
+      }
+      const hideEmotePopup = () => {
+        emotePopup.classList.add("hidden");
+        emoteBtn.setAttribute("aria-expanded", "false");
+      };
+      const showEmotePopup = () => {
+        // 定位到按鈕正上方（避免被螢幕邊界裁掉，夾在可視範圍內）。
+        const r = emoteBtn.getBoundingClientRect();
+        emotePopup.classList.remove("hidden");
+        const pw = emotePopup.offsetWidth || 200;
+        const ph = emotePopup.offsetHeight || 100;
+        let left = r.left;
+        if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+        if (left < 8) left = 8;
+        let top = r.top - ph - 8;
+        if (top < 8) top = r.bottom + 8; // 上方放不下就改放下方
+        emotePopup.style.left = left + "px";
+        emotePopup.style.top = top + "px";
+        emoteBtn.setAttribute("aria-expanded", "true");
+      };
+      emoteBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (emotePopup.classList.contains("hidden")) showEmotePopup();
+        else hideEmotePopup();
+      });
+      // 點空白處 / 按 Esc 關閉。
+      document.addEventListener("click", (ev) => {
+        if (emotePopup.classList.contains("hidden")) return;
+        if (ev.target === emoteBtn || emotePopup.contains(ev.target)) return;
+        hideEmotePopup();
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && !emotePopup.classList.contains("hidden")) hideEmotePopup();
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）
