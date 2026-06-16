@@ -58,6 +58,7 @@ mod users;
 mod world_event;
 mod ws;
 mod pet;
+mod pet_follow;
 mod fishing;
 mod field_guide;
 mod terrain_atlas;

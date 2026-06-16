@@ -413,6 +413,11 @@ const scenarios = [
   variant("雨打水面漣漪(白天)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "day", light: 0.7, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(破曉金)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "dawn", light: 0.55, night_danger: false }; s.weather = { weather_type: "grassland_rain", intensity: 0.7 }; }),
   variant("雨打水面漣漪(夜冷月)", (s) => { s.players[0].x = -4400; s.players[0].y = -3000; s.daynight = { phase: "night", light: 0.15, night_danger: true }; s.weather = { weather_type: "grassland_rain", intensity: 0.5 }; }),
+  // 寵物現身相伴（ROADMAP 343）：玩家帶寵物 → 跑 drawPlayer 的寵物繪製分支（座標內插＋待機輕浮／
+  // 追趕走動彈跳＋腳下小陰影＋登場蹦跳）。歇腳（寵物貼近主人）與追趕（寵物離主人 > 34px）兩條
+  // 彈跳分支各跑一次，兩種代表寵物（飄浮系 🧚／守護系 🌟）各畫一回，確認寵物渲染零繪製例外。
+  variant("寵物相伴(歇腳)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 10; m.pet_y = m.y + 6; }),
+  variant("寵物相伴(追趕主人)", (s) => { const m = s.players[0]; m.pet_kind = "origin_guardian"; m.pet_x = m.x - 90; m.pet_y = m.y - 20; }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

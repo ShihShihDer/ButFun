@@ -137,6 +137,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
+            pet_x: crate::state::WORLD_WIDTH / 2.0,
+            pet_y: crate::state::WORLD_HEIGHT / 2.0,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
@@ -220,6 +222,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             stats: crate::stat_points::StatPoints::default(),
             skill_masteries: crate::skill_mastery::SkillMasteries::default(),
             pet: None,
+            pet_x: crate::state::WORLD_WIDTH / 2.0,
+            pet_y: crate::state::WORLD_HEIGHT / 2.0,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
@@ -3007,6 +3011,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                         p.ether -= cost;
                         let old_pet = p.pet.replace(pet_kind);
+                        // ROADMAP 343：新寵物瞬間出現在主人腳邊（不從世界原點慢慢走過來）。
+                        p.pet_x = p.x;
+                        p.pet_y = p.y;
                         tracing::info!(
                             player = %p.name,
                             new_pet = pet_kind.display_name(),

@@ -1658,6 +1658,14 @@
             existing.indoor_plot_id = p.indoor_plot_id ?? null;
             existing.indoor_x = p.indoor_x ?? 0;
             existing.indoor_y = p.indoor_y ?? 0;
+            // 寵物現身相伴（ROADMAP 343）：逐快照更新寵物身分與座標，寵物才會即時跟著主人跑、
+            // 中途馴化的新寵物也才會立刻現身（pet_px/pet_py 記上一快照位置，供寵物與玩家同套線性內插）。
+            if (!existing.pet_kind && p.pet_kind) existing._petHopUntil = performance.now() + 600; // 新夥伴登場：蹦跳歡迎
+            existing.pet_px = existing.pet_x;
+            existing.pet_py = existing.pet_y;
+            existing.pet_kind = p.pet_kind;
+            existing.pet_x = p.pet_x;
+            existing.pet_y = p.pet_y;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -4273,15 +4281,43 @@
       ctx.fillRect(bx, hby, bw * (p.hp / p.max_hp), 4);
     }
 
-    // 寵物夥伴（ROADMAP 46）：玩家右下角顯示寵物 emoji，一眼看出誰有夥伴
-    if (p.pet_kind) {
+    // 寵物現身相伴（ROADMAP 343）：寵物不再是黏在名牌旁的固定 emoji（舊版 sx+16,sy+6 的貼圖感），
+    // 而是有自己世界座標、像隻黏人小夥伴跟著主人在世界裡跑動的夥伴。伺服器每 tick 用
+    // pet_follow::follow_step 把寵物朝主人推進、隨快照廣播座標，這裡只負責畫：寵物座標走和玩家
+    // 同一套快照線性內插（pet_px/pet_py→pet_x/pet_y over SNAP_MS），移動一樣順；加上待機輕浮 ＋
+    // 追趕時的走動小彈跳 ＋ 腳下小陰影把牠「踩」在地上 ＋ 新登場的蹦跳歡迎。reduceMotion 下關閉
+    // 一切浮動／彈跳、只留靜態身影。
+    if (p.pet_kind && typeof p.pet_x === "number") {
       const PET_EMOJI = {
         flutter_sprite: "🧚", crystal_golem: "💠",
         coral_crab: "🦀", jade_wraith: "👻", origin_guardian: "🌟"
       };
-      ctx.font = "12px system-ui, sans-serif";
+      const PET_SNAP_MS = 75; // 與玩家內插同步（render 迴圈的 SNAP_MS）
+      const petNow = performance.now();
+      // 寵物座標：與玩家位置同套「上一快照→這一快照」線性內插，避免低快照率下一頓一頓。
+      let ppx = p.pet_x, ppy = p.pet_y;
+      if (typeof p.pet_px === "number" && p.tArrive !== undefined) {
+        let f = (petNow - p.tArrive) / PET_SNAP_MS;
+        if (f > 1) f = 1;
+        ppx = p.pet_px + (p.pet_x - p.pet_px) * f;
+        ppy = p.pet_py + (p.pet_y - p.pet_py) * f;
+      }
+      const psx = ppx - camX;
+      const psy = ppy - camY;
+      // 追趕主人時（離主人較遠）走動彈跳明顯些、歇腳時只輕輕浮動，讀起來像會走路的活物。
+      const chasing = Math.hypot(ppx - p.rx, ppy - p.ry) > 34;
+      const bobAmp = chasing ? 2.6 : 1.2;
+      const petBob = reduceMotion ? 0 : Math.abs(Math.sin(petNow / 220 + p.pet_x * 0.05)) * bobAmp;
+      // 新夥伴登場的蹦跳歡迎（單次拋物線跳一下，~0.6s）。
+      let hop = 0;
+      if (p._petHopUntil && petNow < p._petHopUntil && !reduceMotion) {
+        hop = Math.sin(((p._petHopUntil - petNow) / 600) * Math.PI) * 6;
+      }
+      // 腳下小陰影，把寵物「踩」在世界地面上（區別於舊版黏名牌旁的貼圖感）。
+      drawGroundShadow(psx, psy + 7, 6, 2, 0.18);
+      ctx.font = "15px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", sx + 16, sy + 6);
+      ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
     }
   }
 
