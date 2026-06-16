@@ -1633,6 +1633,7 @@
             // drawPlayer 的「被打趴變淡」要靠它讀到每位玩家當下的權威血量。
             existing.hp = p.hp;
             existing.max_hp = p.max_hp;
+            existing.codex = p.codex; // ROADMAP 335：逐快照更新 codex，名牌上的蒐集稱號才會隨集滿即時亮起
             existing.planet = p.planet || "home";
             // 室內狀態（ROADMAP 111）
             existing.indoor_plot_id = p.indoor_plot_id ?? null;
@@ -4087,6 +4088,22 @@
       const nameW = ctx.measureText(p.name).width;
       ctx.strokeText("[隊]", sx + nameW / 2 + ctx.measureText("[隊]").width / 2 + 4, sy - 24);
       ctx.fillText("[隊]", sx + nameW / 2 + ctx.measureText("[隊]").width / 2 + 4, sy - 24);
+    }
+
+    // 蒐集稱號徽記（ROADMAP 335）：集滿圖鑑里程碑的玩家，名牌上方配戴一枚稱號，
+    // 全世界都看得見你是博物學家／守護者剋星／萬物通——蒐集第一次有了讓人看見的社交身份。
+    // 純由廣播的 codex bitmask 推導（codexTitleFor），零新協議；只配戴最高階一枚、不擠名牌。
+    const codexTitle = codexTitleFor(p.codex);
+    if (codexTitle) {
+      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      const titleText = `${codexTitle.badge} ${codexTitle.title}`;
+      ctx.strokeText(titleText, sx, sy - 38);
+      ctx.fillStyle = "#ffe08a"; // 金色，象徵尊榮的蒐集成就
+      ctx.fillText(titleText, sx, sy - 38);
     }
 
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
@@ -16788,6 +16805,23 @@
   }
   function milestoneAchieved(mask, scope) {
     return milestoneEntries(scope).every((e) => codexBitSet(mask, e.bit));
+  }
+
+  // ROADMAP 335 蒐集稱號徽記：集滿圖鑑里程碑的玩家，名牌上方亮出一枚「配戴稱號」，全世界看得到。
+  // 此表鏡像後端 src/field_guide.rs 的 CODEX_TITLES（key／badge／title／scope，**由高階到低階**）。
+  // 面向玩家字串（徽記／稱號）集中於此（i18n 集中替換點）。
+  const CODEX_TITLES = [
+    { key: "title_naturalist_grand", badge: "📚", title: "萬物通",     scope: "all" },
+    { key: "title_guardian_bane",    badge: "🛡️", title: "守護者剋星", scope: "guardian" },
+    { key: "title_naturalist",       badge: "🦌", title: "博物學家",   scope: "wildlife" },
+  ];
+  // 依玩家 codex bitmask 回傳其配戴的最高階蒐集稱號（由難到易掃，第一個集滿者勝）；皆未集滿回 null。
+  function codexTitleFor(mask) {
+    if (typeof mask !== "number") return null;
+    for (const t of CODEX_TITLES) {
+      if (milestoneAchieved(mask, t.scope)) return t;
+    }
+    return null;
   }
 
   let lastCodex = null;       // 上一幀的 codex bitmask（偵測新發現用；null = 尚未收過）

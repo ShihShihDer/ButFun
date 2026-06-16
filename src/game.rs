@@ -360,7 +360,7 @@ pub fn spawn(app: AppState) {
             if !wildlife_snap.is_empty() || !enemy_disc.is_empty() {
                 use crate::field_guide::{
                     bit_for_enemy, bit_for_wildlife, celebrate_line, discover, newly_completed,
-                    reward_for_bit, DISCOVER_RADIUS,
+                    reward_for_bit, title_earned_line, title_for, DISCOVER_RADIUS,
                 };
                 let r2 = DISCOVER_RADIUS * DISCOVER_RADIUS;
                 // ROADMAP 334：本幀新達成的圖鑑里程碑要廣播全世界同慶，收集起來、出鎖後再送。
@@ -402,9 +402,17 @@ pub fn spawn(app: AppState) {
                         // ROADMAP 334：本幀的發現若湊滿了某一整類 → 一次性大獎 + 世界同慶。
                         // newly_completed 只在「由不滿→滿」那一刻回傳該里程碑，天然每位玩家每類只發一次。
                         if p.codex != codex_before {
-                            for m in newly_completed(codex_before, p.codex) {
-                                p.ether = p.ether.saturating_add(m.reward_ether);
-                                milestone_msgs.push(celebrate_line(m, &p.name));
+                            let crossed = newly_completed(codex_before, p.codex);
+                            if !crossed.is_empty() {
+                                for m in &crossed {
+                                    p.ether = p.ether.saturating_add(m.reward_ether);
+                                    milestone_msgs.push(celebrate_line(m, &p.name));
+                                }
+                                // ROADMAP 335：集滿里程碑即「配戴」一枚蒐集稱號，全世界都看得到。
+                                // 達成的當下世界頻道也報一聲新配戴的最高階稱號（同 codex 推導、零新狀態）。
+                                if let Some(t) = title_for(p.codex) {
+                                    milestone_msgs.push(title_earned_line(t, &p.name));
+                                }
                             }
                         }
                     }
