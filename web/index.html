@@ -530,6 +530,7 @@
         <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-keyshortcuts="J" aria-label="職業選擇（J）">🎭</button>
         <button type="button" class="dock-btn" id="dockStat" data-win="winStat" aria-keyshortcuts="S" aria-label="屬性加點（S）">🎯</button>
         <button type="button" class="dock-btn" id="dockCodex" data-win="winCodex" aria-label="生態圖鑑">📕</button>
+        <button type="button" class="dock-btn" id="dockAtlas" data-win="winAtlas" aria-label="探索圖鑑">🗺️</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-keyshortcuts="G" aria-label="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockFriend" data-win="winFriend" aria-label="好友清單">👥</button>
         <button type="button" class="dock-btn" id="dockParty" data-win="winParty" aria-label="隊伍">⚔️</button>
@@ -611,6 +612,15 @@
         <button type="button" class="win-close" data-close="winCodex" aria-label="關閉生態圖鑑">✕</button>
       </div>
       <div id="codexBody" style="font-size:13px;min-width:260px;max-width:340px">載入中…</div>
+    </div>
+    <!-- 探索圖鑑面板（ROADMAP 336）：走近世界各處的奇景地形即「探索」、永久記進圖鑑，
+         首次踏足給乙太獎勵（愈稀有愈遠愈豐厚）；面板看得到「已探索 N / 全部」的進度與每種點亮狀態。 -->
+    <div id="winAtlas" class="hud-window hidden" role="dialog" aria-labelledby="atlasTitle">
+      <div class="win-head">
+        <span class="win-title" id="atlasTitle">🗺️ 探索圖鑑</span>
+        <button type="button" class="win-close" data-close="winAtlas" aria-label="關閉探索圖鑑">✕</button>
+      </div>
+      <div id="atlasBody" style="font-size:13px;min-width:260px;max-width:340px">載入中…</div>
     </div>
     <!-- 寵物夥伴面板（ROADMAP 46）：馴化野怪成夥伴，取得被動加成；P 鍵開關。 -->
     <div id="winPet" class="hud-window hidden" role="dialog" aria-labelledby="petTitle">
@@ -996,6 +1006,7 @@
             <button type="button" class="menu-item" data-target="dockClass">🎭 職業選擇</button>
             <button type="button" class="menu-item" data-target="dockStat">🎯 屬性加點</button>
             <button type="button" class="menu-item" data-target="dockCodex">📕 生態圖鑑</button>
+            <button type="button" class="menu-item" data-target="dockAtlas">🗺️ 探索圖鑑</button>
             <button type="button" class="menu-item" data-target="dockAchievement">🏆 成就</button>
             <button type="button" class="menu-item" data-target="dockDailyQuest">📅 每日任務</button>
             <button type="button" class="menu-item" data-target="dockLeaderboard">🏅 排行榜</button>

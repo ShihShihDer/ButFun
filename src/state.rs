@@ -130,6 +130,9 @@ pub struct Player {
     /// 生態圖鑑已發現物種 bitmask（ROADMAP 333）。每個位元對應 `field_guide::CATALOG`
     /// 一種生物，走近即點亮、永久保留。照 `exp` 的模式持久化（跨重啟存活，蒐集才有意義）。
     pub codex: u64,
+    /// 探索圖鑑已踏足地形 bitmask（ROADMAP 336）。每個位元對應 `terrain_atlas::CATALOG`
+    /// 一種奇景地形，走近即點亮、永久保留。照 `codex` 的模式持久化（跨重啟存活）。
+    pub atlas: u64,
     /// 玩家目前所在星球（ROADMAP 20/22/23/24/25 多星球旅程）。
     /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，
     /// "aether" = 霧醚星，"origin" = 星源星。
@@ -290,6 +293,7 @@ impl Player {
             max_hp: self.vitals.max_hp(),
             exp: self.exp,
             codex: self.codex,
+            atlas: self.atlas,
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
@@ -1302,6 +1306,7 @@ mod tests {
             attack_cooldown: 0.0,
             exp: 0,
             codex: 0,
+            atlas: 0,
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,

@@ -60,6 +60,7 @@ mod ws;
 mod pet;
 mod fishing;
 mod field_guide;
+mod terrain_atlas;
 mod ranching;
 mod farm_crops;
 mod star_crystal;
