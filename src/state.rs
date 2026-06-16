@@ -209,6 +209,12 @@ pub struct Player {
     /// 記憶體前置、不持久化、重啟清空。
     pub toast_count: u64,
 
+    // ── 玩家擊掌（ROADMAP 339：玩家↔玩家雙向同步動作）────────────────────────
+    /// 擊掌意願倒數（幀）。玩家比擊掌時由 ws.rs 設為 `high_five::OFFER_TICKS`；game.rs 每幀
+    /// 把「還在比」的玩家兩兩配對、迸特效後清零，沒配上就遞減到 0。記憶體前置、不持久化、
+    /// 不入快照（純社交一次性互動）。
+    pub high_five_offer: u16,
+
     // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────
     /// 目前攜帶的貿易包裹。None = 無任務；Some = 正在跑商途中。記憶體前置，重啟清空。
     pub trade_cargo: Option<crate::trade_route::TradeCargo>,
@@ -1337,6 +1343,7 @@ mod tests {
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
+            high_five_offer: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
