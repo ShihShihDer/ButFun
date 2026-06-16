@@ -505,6 +505,71 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 339 玩家擊掌：兩名同區、靠得夠近、也都在比擊掌的玩家配成一對、迸特效 ──
+            // 338 表情是單向廣播；擊掌是第一條「兩個真人各自出手、又站得夠近才成立」的雙向同步線。
+            // 玩家比擊掌時 ws.rs 在他身上點亮一個短暫的意願倒數（high_five_offer），這裡每幀：
+            // 把當下「還在比」（且在室外）的玩家依距離兩兩配對 → 配上的迸特效＋清意願、沒配上的遞減。
+            // 配對是純函式（high_five::match_pairs，吃同區鍵＋座標、吐確定的配對），接線只新開一把
+            // players 寫鎖、特效廣播在出鎖後才送（守 prod-deadlock 鐵律：無巢狀上鎖）。
+            {
+                // 先在寫鎖內配對＋更新意願，把要廣播的擊掌事件帶出鎖外再送。
+                let matches: Vec<(uuid::Uuid, String, uuid::Uuid, String, f32, f32)> = {
+                    let mut players = app.players.write().unwrap();
+                    // 蒐集當下還在比擊掌、且在室外的玩家意願（室內外空間不同、不互配）。
+                    let offers: Vec<crate::high_five::Offer> = players
+                        .values()
+                        .filter(|p| p.high_five_offer > 0 && p.indoor_plot_id.is_none())
+                        .map(|p| crate::high_five::Offer {
+                            id: p.id,
+                            zone: p.planet.clone(),
+                            x: p.x,
+                            y: p.y,
+                        })
+                        .collect();
+                    if offers.is_empty() {
+                        Vec::new()
+                    } else {
+                        let pairs = crate::high_five::match_pairs(&offers);
+                        // 先讀出每對的名字＋中點（不可變借用），再做意願清零（可變借用），避免交疊借用。
+                        let mut evs = Vec::with_capacity(pairs.len());
+                        let mut matched: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+                        for (a, b) in &pairs {
+                            if let (Some(pa), Some(pb)) = (players.get(a), players.get(b)) {
+                                let mx = (pa.x + pb.x) * 0.5;
+                                let my = (pa.y + pb.y) * 0.5;
+                                evs.push((*a, pa.name.clone(), *b, pb.name.clone(), mx, my));
+                                matched.insert(*a);
+                                matched.insert(*b);
+                            }
+                        }
+                        // 配上的清零意願（避免下幀重複迸特效）；沒配上的遞減、留待下幀再試。
+                        for p in players.values_mut() {
+                            if p.high_five_offer > 0 {
+                                if matched.contains(&p.id) {
+                                    p.high_five_offer = 0;
+                                } else {
+                                    p.high_five_offer -= 1;
+                                }
+                            }
+                        }
+                        evs
+                    }
+                };
+                for (a_id, a_name, b_id, b_name, mx, my) in matches {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::HighFiveMatch {
+                            a_id,
+                            a_name,
+                            b_id,
+                            b_name,
+                            mx,
+                            my,
+                            display_secs: crate::high_five::HIGH_FIVE_DISPLAY_SECS,
+                        },
+                    ));
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定

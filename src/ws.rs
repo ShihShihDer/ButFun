@@ -140,6 +140,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
+            high_five_offer: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -218,6 +219,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
+            high_five_offer: 0,
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
@@ -567,6 +569,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 表情動作限流（ROADMAP 338）：每則 emote 走 broadcast 放大給全服，比照 chat 從嚴。
     let mut rl_emote_win = std::time::Instant::now();
     let mut rl_emote_n: u32 = 0;
+    // 擊掌意願限流（ROADMAP 339）：比照 emote 從嚴（每秒至多 3 次，超量靜默丟棄）。
+    let mut rl_hifive_win = std::time::Instant::now();
+    let mut rl_hifive_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -782,6 +787,23 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 display_secs: crate::player_emote::EMOTE_DISPLAY_SECS,
                             }));
                         }
+                    }
+                }
+                Ok(ClientMsg::HighFive) => {
+                    // 擊掌意願（ROADMAP 339）：玩家伸手想擊掌。這裡只點亮一個短暫的意願，
+                    // 真正的配對與特效廣播交給 game.rs 每幀做（同區、靠得夠近、也正在比的兩人配成對）。
+                    // 限流（比照 emote：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_hifive_win.elapsed().as_secs() >= 1 {
+                        rl_hifive_win = std::time::Instant::now();
+                        rl_hifive_n = 0;
+                    }
+                    rl_hifive_n += 1;
+                    if rl_hifive_n > 3 {
+                        continue;
+                    }
+                    // 在該玩家身上點亮擊掌意願倒數（訪客沒登入也行——配對只看在場玩家座標）。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        p.high_five_offer = crate::high_five::OFFER_TICKS;
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {

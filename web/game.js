@@ -286,6 +286,9 @@
   // 收到 player_emote 事件時寫入（同一玩家連發會覆蓋上一個），drawPlayerEmotes 每幀
   // 讀取、彈跳浮起後淡出。純前端動畫，不入快照。
   const playerEmotes = new Map();
+  // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
+  // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
+  const highFiveFx = [];
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
@@ -2100,6 +2103,22 @@
           startMs: now,
           expireAt: now + (msg.display_secs || 4) * 1000,
         });
+        break;
+      }
+      case "high_five_match": {
+        // 玩家擊掌成功（ROADMAP 339）：兩名玩家在中點「啪」地擊掌。記一筆特效，drawHighFives 畫。
+        const now = performance.now();
+        highFiveFx.push({
+          mx: msg.mx || 0,
+          my: msg.my || 0,
+          startMs: now,
+          expireAt: now + (msg.display_secs || 3) * 1000,
+        });
+        // 兩位當事人額外播報「你和 X 擊掌了！」（旁觀者只看到畫面特效，不洗報讀器）。
+        if (msg.a_id === myId || msg.b_id === myId) {
+          const other = msg.a_id === myId ? msg.b_name : msg.a_name;
+          announce("你和 " + (other || "另一位玩家") + " 擊掌了！");
+        }
         break;
       }
       case "village_event":
@@ -4293,6 +4312,7 @@
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
     safeDraw("playerEmotes", () => drawPlayerEmotes(camX, camY)); // 玩家表情動作（338）
+    safeDraw("highFives", () => drawHighFives(camX, camY)); // 玩家擊掌特效（339）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
@@ -10863,6 +10883,74 @@
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.strokeText(e.glyph, ex, ey);
       ctx.fillText(e.glyph, ex, ey);
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 玩家擊掌特效（ROADMAP 339）：兩名玩家配成對後，在他們之間的中點「啪」地迸出一枚 ✋＋
+  // 一圈火花上飄淡出。與表情（338，頭頂單枚 emoji）刻意區隔——這是兩人「之間」的迸發，
+  // 一眼看得出「有兩個人擊掌了」。中點是擊掌當下的固定世界座標（瞬間動作、不跟著誰移動）。
+  // 尊重 reduceMotion（關火花飛濺與彈跳、只留淡出）。
+  function drawHighFives(camX, camY) {
+    if (highFiveFx.length === 0) return;
+    const now = performance.now();
+    const POP_MS = 200;    // ✋ 彈出（由小放大、輕微過衝）時長
+    const FADE_MS = 900;   // 最後 0.9 秒漸隱
+    const BASE_SIZE = 34;  // ✋ 基礎字級
+
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+
+    // 由後往前掃，過期的就地移除（splice 不影響尚未掃到的較小索引）。
+    for (let i = highFiveFx.length - 1; i >= 0; i--) {
+      const fx = highFiveFx[i];
+      const remaining = fx.expireAt - now;
+      if (remaining <= 0) {
+        highFiveFx.splice(i, 1);
+        continue;
+      }
+      const age = now - fx.startMs;
+      const sx = fx.mx - camX;
+      const sy = fx.my - camY;
+      if (sx < -60 || sx > viewW + 60 || sy < -120 || sy > viewH + 60) continue;
+
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+
+      // 火花：自中點往外四散上飄的小星點（reduceMotion 下完全不畫）。
+      if (!reduceMotion) {
+        const spread = Math.min(1, age / 350); // 0→1 往外擴
+        ctx.globalAlpha = alpha * 0.9;
+        ctx.fillStyle = "#ffe08a";
+        const N = 6;
+        for (let k = 0; k < N; k++) {
+          const ang = (Math.PI * 2 * k) / N - Math.PI / 2;
+          const r = 6 + spread * 26;
+          const px = sx + Math.cos(ang) * r;
+          const py = sy - 30 + Math.sin(ang) * r - spread * 8; // 整體略往上飄
+          ctx.beginPath();
+          ctx.arc(px, py, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // ✋ 彈出縮放（輕微過衝再回正）：reduceMotion 下直接定為 1。
+      let scale = 1;
+      if (!reduceMotion && age < POP_MS) {
+        const t = age / POP_MS;              // 0→1
+        scale = 0.5 + 1.0 * t;               // 由小放大
+        scale += Math.sin(t * Math.PI) * 0.22; // 過衝凸起
+      }
+      const size = BASE_SIZE * scale;
+
+      ctx.globalAlpha = alpha;
+      ctx.font = `${size}px sans-serif`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.strokeText("✋", sx, sy - 30);
+      ctx.fillText("✋", sx, sy - 30);
     }
 
     ctx.globalAlpha = 1.0;
@@ -20290,6 +20378,15 @@
       });
       document.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape" && !emotePopup.classList.contains("hidden")) hideEmotePopup();
+      });
+    }
+    // ✋ 擊掌（ROADMAP 339）：玩家↔玩家雙向同步動作。按一下伸手；伺服器把同區、靠得夠近、
+    //    也都在比擊掌的另一名玩家配成一對，在兩人之間迸出「啪！」特效（見 high_five_match 事件）。
+    const highFiveBtn = document.getElementById("highFiveBtn");
+    if (highFiveBtn) {
+      highFiveBtn.addEventListener("click", () => {
+        safeSend({ type: "high_five" });
+        announce("伸手等著和附近的玩家擊掌");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

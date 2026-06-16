@@ -224,6 +224,10 @@ pub enum ClientMsg {
     /// 內的 wire key（如 "wave" / "heart"）。伺服器查白名單、用玩家自己的權威座標廣播
     /// `PlayerEmote` 泡泡給全服；未知 kind / 未登入 / 超量靜默忽略。
     Emote { kind: String },
+    /// 擊掌意願（ROADMAP 339）：玩家按「✋ 擊掌」伸手。伺服器在該玩家身上點亮一個短暫的
+    /// 擊掌意願；game.rs 每幀把同區、靠得夠近、也正在比擊掌的另一名玩家配成一對、迸出特效。
+    /// 無 payload——配對一律用玩家自己的權威座標判定（防隔空擊掌）。未登入 / 超量靜默忽略。
+    HighFive,
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -877,6 +881,19 @@ pub enum ServerMsg {
         glyph: String,
         wx: f32,
         wy: f32,
+        display_secs: u32,
+    },
+    /// 玩家擊掌成功（ROADMAP 339）：兩名玩家靠得夠近、又都比了擊掌，伺服器把他們配成一對，
+    /// 全服廣播、前端在兩人**之間**的中點迸出一道「啪！」擊掌特效＋火花。`a_id`/`b_id` 與
+    /// `a_name`/`b_name` = 成對的兩名玩家；`mx`/`my` = 兩人中點世界座標；`display_secs` =
+    /// 特效顯示秒數。一次性事件、不入快照、不持久化。兩位當事人前端會額外播報「你和 X 擊掌了！」。
+    HighFiveMatch {
+        a_id: Uuid,
+        a_name: String,
+        b_id: Uuid,
+        b_name: String,
+        mx: f32,
+        my: f32,
         display_secs: u32,
     },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
