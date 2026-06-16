@@ -211,6 +211,56 @@ pub fn celebrate_line(m: &Milestone, player_name: &str) -> String {
     )
 }
 
+// ─── ROADMAP 335：蒐集稱號徽記 ──────────────────────────────────────────────
+//
+// 把 334 的里程碑從「達成那一刻一閃即逝的乙太大獎＋同慶」升級成「長駐、全世界看得到」的身份。
+// 集滿一整類圖鑑的玩家，名牌上方會「配戴」一枚蒐集稱號——別的玩家走在世界裡都看得見你是
+// 博物學家／守護者剋星／萬物通，蒐集第一次有了讓全世界看得見的社交身份。
+//
+// 設計（零新持久化、零新協議——完全由既有 `codex` bitmask 推導，與里程碑同一招）：
+// - 稱號「配戴與否」是 codex mask 的純函式：某類所有位元都點亮即配戴對應稱號。
+// - 稱號與里程碑一對一對應（同一 scope），由 `milestone_mask` 推導門檻，永遠與物種→bit 同步。
+// - 每位玩家只配戴「最高階」一枚（由難到易掃，第一個集滿者勝），名牌不擠。
+// - codex 既已隨玩家快照廣播，前端鏡像本表即可替每位玩家畫出稱號（前端零新協議）。
+
+/// 一枚蒐集稱號（配戴在名牌上方）。面向玩家字串（徽記 emoji／稱號）集中於此，為 i18n 集中替換點。
+#[derive(Debug, Clone, Copy)]
+pub struct CodexTitle {
+    /// 穩定 wire key（snake_case）：前端據此對應在地化字串。
+    pub key: &'static str,
+    /// 徽記 emoji（顯示在稱號前）。
+    pub badge: &'static str,
+    /// 配戴稱號（顯示；繁中，刻意短，名牌上方一行讀得清）。
+    pub title: &'static str,
+    /// 對應的里程碑範圍（與 `MILESTONES` 的 scope 一致，門檻由 `milestone_mask` 推導）。
+    pub scope: &'static str,
+}
+
+/// 全部蒐集稱號（**由高階到低階**排列：`title_for` 由上往下掃，回傳第一個已集滿者）。
+/// 與 `MILESTONES` 一對一對應（同 scope）；難度越高的稱號越尊貴、優先配戴。
+pub const CODEX_TITLES: &[CodexTitle] = &[
+    CodexTitle { key: "title_naturalist_grand", badge: "📚", title: "萬物通",     scope: "all" },
+    CodexTitle { key: "title_guardian_bane",    badge: "🛡️", title: "守護者剋星", scope: "guardian" },
+    CodexTitle { key: "title_naturalist",       badge: "🦌", title: "博物學家",   scope: "wildlife" },
+];
+
+/// 依玩家 codex bitmask 回傳其「配戴」的最高階蒐集稱號（由難到易掃，第一個集滿對應範圍者勝）。
+/// 純函式：稱號完全由既有 codex 推導，零新持久化、零新協議；皆未集滿回 `None`。
+pub fn title_for(codex: u64) -> Option<&'static CodexTitle> {
+    CODEX_TITLES.iter().find(|t| {
+        let req = milestone_mask(t.scope);
+        codex & req == req
+    })
+}
+
+/// 玩家集滿里程碑、配戴上新蒐集稱號時，廣播全世界的報喜訊息（i18n 集中替換點）。
+pub fn title_earned_line(t: &CodexTitle, player_name: &str) -> String {
+    format!(
+        "{} {} 配戴上了蒐集稱號「{}」，全邊境星都看得見了！",
+        t.badge, player_name, t.title
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +457,90 @@ mod tests {
         assert!(line.contains("阿明"), "同慶訊息含玩家名");
         assert!(line.contains(m.name), "同慶訊息含里程碑稱號");
         assert!(line.contains(&m.reward_ether.to_string()), "同慶訊息含獎勵數");
+    }
+
+    // ─── ROADMAP 335：蒐集稱號徽記 ───────────────────────────────────────────
+
+    #[test]
+    fn codex_titles_one_per_milestone_scope() {
+        // 稱號與里程碑一對一：每個里程碑 scope 恰有一枚稱號，反之亦然。
+        assert_eq!(CODEX_TITLES.len(), MILESTONES.len(), "稱號數應等於里程碑數");
+        for m in MILESTONES {
+            let n = CODEX_TITLES.iter().filter(|t| t.scope == m.scope).count();
+            assert_eq!(n, 1, "里程碑 scope {} 應恰有一枚稱號", m.scope);
+        }
+        for t in CODEX_TITLES {
+            assert!(
+                MILESTONES.iter().any(|m| m.scope == t.scope),
+                "稱號 {} 的 scope 應對得到里程碑",
+                t.key
+            );
+        }
+    }
+
+    #[test]
+    fn codex_titles_unique_keys_and_nonempty_strings() {
+        for (i, a) in CODEX_TITLES.iter().enumerate() {
+            assert!(!a.title.is_empty(), "稱號 {} 文字不應為空", a.key);
+            assert!(!a.badge.is_empty(), "稱號 {} 徽記不應為空", a.key);
+            for b in &CODEX_TITLES[i + 1..] {
+                assert_ne!(a.key, b.key, "稱號 key 不可重複");
+                assert_ne!(a.title, b.title, "稱號文字不可重複");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_titles_ordered_hardest_first() {
+        // title_for 由上往下掃、第一個集滿者勝，故須由難（位元最多）到易排列。
+        let pop = |scope: &str| milestone_mask(scope).count_ones();
+        for w in CODEX_TITLES.windows(2) {
+            assert!(
+                pop(w[0].scope) >= pop(w[1].scope),
+                "稱號應由難到易排列：{} 不該排在 {} 之前",
+                w[0].key,
+                w[1].key
+            );
+        }
+    }
+
+    #[test]
+    fn title_for_none_when_nothing_complete() {
+        assert!(title_for(0).is_none(), "空圖鑑不配戴任何稱號");
+        // 只發現一種、未集滿任一類 → 仍無稱號。
+        assert!(title_for(1u64 << 0).is_none(), "只發現一種不配戴稱號");
+    }
+
+    #[test]
+    fn title_for_wildlife_only_is_naturalist() {
+        let mask = milestone_mask("wildlife");
+        let t = title_for(mask).expect("集滿野生動物應配戴稱號");
+        assert_eq!(t.scope, "wildlife", "只集滿野生動物應配戴博物學家稱號");
+    }
+
+    #[test]
+    fn title_for_guardian_only_is_guardian_bane() {
+        let mask = milestone_mask("guardian");
+        // 守護者位元與野生動物位元不相撞，故此 mask 未集滿野生動物、不會升到 all。
+        let t = title_for(mask).expect("集滿守護者應配戴稱號");
+        assert_eq!(t.scope, "guardian", "只集滿守護者應配戴守護者剋星稱號");
+    }
+
+    #[test]
+    fn title_for_all_complete_is_grand_and_outranks() {
+        let mask = milestone_mask("all");
+        let t = title_for(mask).expect("集滿整本圖鑑應配戴稱號");
+        assert_eq!(t.scope, "all", "集滿整本應配戴最高階「萬物通」");
+        // 集滿整本同時也集滿了野生動物與守護者，但只配戴最高階一枚。
+        assert!(title_for(mask).map(|t| t.scope) == Some("all"));
+    }
+
+    #[test]
+    fn title_earned_line_mentions_player_and_title() {
+        let t = &CODEX_TITLES[0];
+        let line = title_earned_line(t, "阿明");
+        assert!(line.contains("阿明"), "報喜訊息含玩家名");
+        assert!(line.contains(t.title), "報喜訊息含稱號");
+        assert!(line.contains(t.badge), "報喜訊息含徽記");
     }
 }
