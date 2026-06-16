@@ -136,6 +136,9 @@ pub struct Player {
     /// 天象圖鑑已目睹天象 bitmask（ROADMAP 337）。每個位元對應 `sky_codex::CATALOG`
     /// 一種天象奇觀，身處其下即點亮、永久保留。照 `atlas` 的模式持久化（跨重啟存活）。
     pub skylog: u64,
+    /// 累積人氣（ROADMAP 341 喝采人氣）。其他玩家對你「👏 喝采」即 +1，到階在名牌上
+    /// 亮起人氣徽記。照 `skylog` 的模式持久化（跨重啟存活，人氣身份才有意義）。
+    pub cheers: u64,
     /// 玩家目前所在星球（ROADMAP 20/22/23/24/25 多星球旅程）。
     /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，
     /// "aether" = 霧醚星，"origin" = 星源星。
@@ -220,6 +223,15 @@ pub struct Player {
     /// game.rs 每幀把「最近還在比同個表情、又靠得夠近」的玩家聚團偵測共鳴後清掉、否則遞減倒數到 0。
     /// 記憶體前置、不持久化、不入快照（純社交一次性互動）。None = 最近沒比表情。
     pub recent_emote: Option<(u8, u16)>,
+
+    // ── 喝采人氣（ROADMAP 341：玩家↔玩家會留下印記的互動）──────────────────
+    /// 喝采意願倒數（幀）。玩家按「👏 喝采」時由 ws.rs 設為 `player_cheer::OFFER_TICKS`；
+    /// game.rs 每幀替「還在喝采」的玩家挑對象、替對方人氣 +1 後清零，沒挑到就遞減到 0。
+    /// 記憶體前置、不持久化、不入快照（純承載 ws→game 的意圖）。
+    pub cheer_offer: u16,
+    /// 防洗榜冷卻表：Key = 已喝采過的對象 id，Value = 剩餘冷卻幀數。同一對象 60s 內不重複
+    /// 計數（你可替全場每人各喝一次、但不能對同一人連按刷數）。記憶體前置、不持久化、重啟清空。
+    pub cheer_cooldowns: std::collections::HashMap<uuid::Uuid, u16>,
 
     // ── 星際貿易（ROADMAP 51）────────────────────────────────────────────
     /// 目前攜帶的貿易包裹。None = 無任務；Some = 正在跑商途中。記憶體前置，重啟清空。
@@ -310,6 +322,7 @@ impl Player {
             codex: self.codex,
             atlas: self.atlas,
             skylog: self.skylog,
+            cheers: self.cheers,
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
@@ -1324,6 +1337,7 @@ mod tests {
             codex: 0,
             atlas: 0,
             skylog: 0,
+            cheers: 0,
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
@@ -1351,6 +1365,8 @@ mod tests {
             toast_count: 0,
             high_five_offer: 0,
             recent_emote: None,
+            cheer_offer: 0,
+            cheer_cooldowns: std::collections::HashMap::new(),
             trade_cargo: None,
             trade_cooldowns: crate::trade_route::TradeCooldowns::new(),
             workshop_active: None,
