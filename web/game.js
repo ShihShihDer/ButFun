@@ -1882,6 +1882,7 @@
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updateStatPanel(me, isGuest);  // 屬性加點面板（ROADMAP 152）
+          updateCodexPanel(me);          // 生態圖鑑面板（ROADMAP 333）：偵測新發現噴飄字＋更新蒐集進度
           updateStatUnspentHud(me.stat_points_unspent || 0); // 未分配點數 pill
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
@@ -16741,6 +16742,96 @@
       row.appendChild(btn);
       body.appendChild(row);
     }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 生態圖鑑面板（ROADMAP 333）
+  // ──────────────────────────────────────────────────────────────────────────
+  // 此表鏡像後端 src/field_guide.rs 的 CATALOG（bit／key／name／emoji／category），
+  // 是穩定的持久化契約：bit 一旦指定就固定，新增物種一律往高位接、絕不重排，否則
+  // 舊存檔位元會錯位。面向玩家字串（name）集中在此，為前端 i18n 集中替換點。
+  const CODEX_CATALOG = [
+    { bit: 0,  key: "wild_bird",        name: "野鳥",       emoji: "🐦", category: "wildlife" },
+    { bit: 1,  key: "wild_deer",        name: "野鹿",       emoji: "🦌", category: "wildlife" },
+    { bit: 2,  key: "small_critter",    name: "小動物",     emoji: "🐿️", category: "wildlife" },
+    { bit: 3,  key: "wild_wolf",        name: "野狼",       emoji: "🐺", category: "wildlife" },
+    { bit: 4,  key: "wild_fox",         name: "野狐",       emoji: "🦊", category: "wildlife" },
+    { bit: 5,  key: "scrap_drone",      name: "廢鐵無人機", emoji: "🤖", category: "guardian" },
+    { bit: 6,  key: "ether_wisp",       name: "乙太鬼火",   emoji: "🔥", category: "guardian" },
+    { bit: 7,  key: "flutter_sprite",   name: "飄舞精靈",   emoji: "🧚", category: "guardian" },
+    { bit: 8,  key: "mushroom_stalker", name: "蕈菇潛行者", emoji: "🍄", category: "guardian" },
+    { bit: 9,  key: "crystal_golem",    name: "晶石傀儡",   emoji: "💎", category: "guardian" },
+    { bit: 10, key: "rune_guardian",    name: "符文守衛",   emoji: "🗿", category: "guardian" },
+    { bit: 11, key: "coral_crab",       name: "珊瑚蟹",     emoji: "🦀", category: "guardian" },
+    { bit: 12, key: "jade_wraith",      name: "翠幽魅影",   emoji: "💚", category: "guardian" },
+    { bit: 13, key: "steam_construct",  name: "蒸汽構裝",   emoji: "⚙️", category: "guardian" },
+    { bit: 14, key: "void_phantom",     name: "虛空幽靈",   emoji: "🌑", category: "guardian" },
+    { bit: 15, key: "aether_specter",   name: "霧醚幻靈",   emoji: "🌫️", category: "guardian" },
+    { bit: 16, key: "origin_guardian",  name: "源晶守護者", emoji: "🟡", category: "guardian" },
+    { bit: 17, key: "rift_guardian",    name: "裂縫守護者", emoji: "🌀", category: "guardian" },
+    { bit: 18, key: "ether_overlord",   name: "乙太霸主",   emoji: "👹", category: "guardian" },
+  ];
+  // 位元判定走除法取餘（不用 32-bit 的 `&`，未來 catalog 破 31 條也不會溢位失準）。
+  function codexBitSet(mask, bit) { return Math.floor(mask / Math.pow(2, bit)) % 2 === 1; }
+
+  let lastCodex = null;       // 上一幀的 codex bitmask（偵測新發現用；null = 尚未收過）
+  let lastCodexSig = null;    // 面板簽章，未變不重建
+
+  // 偵測新點亮的圖鑑位元 → 在玩家身上噴「📕 新發現」飄字 + 報讀器播報；並更新面板。
+  function updateCodexPanel(me) {
+    const codex = (typeof me.codex === "number") ? me.codex : 0;
+    // 新發現偵測：和上一幀比，凡是本幀才點亮的位元就慶祝一下（首次收到快照不回放歷史）。
+    if (lastCodex !== null && codex !== lastCodex) {
+      let stackIdx = 0;
+      for (const e of CODEX_CATALOG) {
+        if (codexBitSet(codex, e.bit) && !codexBitSet(lastCodex, e.bit)) {
+          // 在玩家當下位置上方疊著噴（多種同幀發現不互蓋）。
+          if (typeof me.x === "number" && typeof me.y === "number") {
+            floaters.push({ wx: me.x, wy: me.y - 40 - stackIdx * 18,
+              text: `📕 新發現：${e.emoji}${e.name}`, color: "180,220,255", born: performance.now() });
+          }
+          announce(`生態圖鑑新發現：${e.name}`);
+          stackIdx++;
+        }
+      }
+    }
+    lastCodex = codex;
+
+    const body = document.getElementById("codexBody");
+    if (!body) return;
+    const sig = String(codex);
+    if (sig === lastCodexSig) return;
+    lastCodexSig = sig;
+
+    const total = CODEX_CATALOG.length;
+    const found = CODEX_CATALOG.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
+
+    let html = "";
+    html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已發現 ${found} / ${total} 種</div>`;
+    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">走近野生動物或守護者怪物即可發現、永久記入圖鑑；每種首次發現給一筆乙太獎勵。</div>`;
+    const groups = [
+      { cat: "wildlife", title: "🌿 野生動物" },
+      { cat: "guardian", title: "🛡️ 守護者怪物" },
+    ];
+    for (const g of groups) {
+      const entries = CODEX_CATALOG.filter((e) => e.category === g.cat);
+      const gFound = entries.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
+      html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${g.title}（${gFound}/${entries.length}）</div>`;
+      html += `<div style="display:flex;flex-wrap:wrap;gap:6px">`;
+      for (const e of entries) {
+        const done = codexBitSet(codex, e.bit);
+        // 已發現：亮 emoji + 名稱；未發現：問號剪影 + 「？？？」（蒐集懸念）。
+        html += `<div title="${done ? escHtml(e.name) : "尚未發現"}" style="`
+          + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
+          + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
+          + `background:${done ? "rgba(90,140,200,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
+          + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
+          + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
+          + `</div>`;
+      }
+      html += `</div>`;
+    }
+    body.innerHTML = html;
   }
 
   function updatePetPanel(me, isGuestUser) {

@@ -274,7 +274,7 @@ pub fn spawn(app: AppState) {
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
             // view 只在廣播時建。怪會動起來——撲向玩家、沒人時漂回家,世界因此活起來。
             // ③ 無限世界: 先確保玩家周圍區塊已載入。
-            let (enemy_views, monster_wildlife_kills): (Vec<EnemyView>, Vec<(crate::combat::EnemyKind, u32, crate::wildlife::WildlifeKind, f32, f32)>) = {
+            let (enemy_views, monster_wildlife_kills, enemy_disc): (Vec<EnemyView>, Vec<(crate::combat::EnemyKind, u32, crate::wildlife::WildlifeKind, f32, f32)>, Vec<(crate::combat::EnemyKind, f32, f32)>) = {
                 let mut enemies = app.enemies.write().unwrap();
                 {
                     let players = app.players.read().unwrap();
@@ -301,6 +301,14 @@ pub fn spawn(app: AppState) {
                 // ROADMAP 165：更新怪物追獵目標，收集本幀擊殺事件。
                 enemies.update_wildlife_targets(&wildlife_snap, &chase_targets);
                 let kills = enemies.collect_wildlife_kills();
+                // ROADMAP 333 生態圖鑑：永遠收一份「活著的守護者怪物」座標＋種類快照（不限廣播幀），
+                // 供下方圖鑑發現比對。鎖內取、owned Vec 帶出，鎖外才碰玩家表（不巢狀上鎖）。
+                let enemy_disc: Vec<(crate::combat::EnemyKind, f32, f32)> = enemies
+                    .enemies()
+                    .iter()
+                    .filter(|p| p.enemy.is_alive())
+                    .map(|p| (p.enemy.kind(), p.x, p.y))
+                    .collect();
                 let views = if want_broadcast {
                     enemies
                         .enemies()
@@ -322,7 +330,7 @@ pub fn spawn(app: AppState) {
                 } else {
                     Vec::new()
                 };
-                (views, kills)
+                (views, kills, enemy_disc)
             };
 
             // ROADMAP 165：套用怪物獵殺野生動物事件（標記死亡 + 生成乙太微粒 + 廣播）。
@@ -339,6 +347,49 @@ pub fn spawn(app: AppState) {
                                 wildlife_kind.display_name(),
                             );
                             let _ = app.tx_chat.send(msg);
+                        }
+                    }
+                }
+            }
+
+            // ── ROADMAP 333 生態圖鑑：玩家走近野生動物／守護者怪物即「發現」、點亮圖鑑、首見給乙太 ──
+            // 鎖序乾淨：wildlife（wildlife_snap）與 enemies（enemy_disc）都已在上面各自 scope 取完、
+            // 以 owned 快照帶到此處，這裡只新開一把 players 寫鎖（無巢狀上鎖，守 prod-deadlock 鐵律）。
+            // 發現天然冪等（discover 對已點亮位元回 false、不重複領獎），故逐幀跑安全、不需冷卻帳本。
+            // codex 與新增的乙太都隨既有玩家快照廣播，前端比對 codex 位元差噴「新發現」、乙太差噴「+N」。
+            if !wildlife_snap.is_empty() || !enemy_disc.is_empty() {
+                use crate::field_guide::{bit_for_enemy, bit_for_wildlife, discover, reward_for_bit, DISCOVER_RADIUS};
+                let r2 = DISCOVER_RADIUS * DISCOVER_RADIUS;
+                let mut players = app.players.write().unwrap();
+                for p in players.values_mut() {
+                    // 倒下玩家休息中、不在世界裡探查（比照戰鬥／追擊略過倒下者）。
+                    if p.vitals.is_downed() {
+                        continue;
+                    }
+                    // 野生動物（wildlife_snap：(id, kind, x, y)）。
+                    for &(_, kind, wx, wy) in &wildlife_snap {
+                        let dx = p.x - wx;
+                        let dy = p.y - wy;
+                        if dx * dx + dy * dy <= r2 {
+                            let bit = bit_for_wildlife(kind);
+                            let (mask, first) = discover(p.codex, bit);
+                            if first {
+                                p.codex = mask;
+                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                            }
+                        }
+                    }
+                    // 守護者怪物（enemy_disc：(kind, x, y)，已濾活著的）。
+                    for &(kind, ex, ey) in &enemy_disc {
+                        let dx = p.x - ex;
+                        let dy = p.y - ey;
+                        if dx * dx + dy * dy <= r2 {
+                            let bit = bit_for_enemy(kind);
+                            let (mask, first) = discover(p.codex, bit);
+                            if first {
+                                p.codex = mask;
+                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                            }
                         }
                     }
                 }
@@ -2864,7 +2915,7 @@ pub async fn flush_all(app: &AppState) {
         (
             authed
                 .iter()
-                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries))
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
             authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
@@ -2873,7 +2924,7 @@ pub async fn flush_all(app: &AppState) {
     if !online.is_empty() {
         // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
         app.positions
-            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk)));
+            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx)));
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;

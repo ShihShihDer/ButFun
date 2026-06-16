@@ -127,6 +127,9 @@ pub struct Player {
     pub attack_cooldown: f32,
     /// 累積經驗值（ROADMAP 17 升級系統）。殺怪 / 採礦得 exp，等級由 exp 推算。
     pub exp: u32,
+    /// 生態圖鑑已發現物種 bitmask（ROADMAP 333）。每個位元對應 `field_guide::CATALOG`
+    /// 一種生物，走近即點亮、永久保留。照 `exp` 的模式持久化（跨重啟存活，蒐集才有意義）。
+    pub codex: u64,
     /// 玩家目前所在星球（ROADMAP 20/22/23/24/25 多星球旅程）。
     /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，
     /// "aether" = 霧醚星，"origin" = 星源星。
@@ -286,6 +289,7 @@ impl Player {
             hp: self.vitals.hp(),
             max_hp: self.vitals.max_hp(),
             exp: self.exp,
+            codex: self.codex,
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
@@ -1297,6 +1301,7 @@ mod tests {
             wallet: crate::economy::PlotWallet::new(),
             attack_cooldown: 0.0,
             exp: 0,
+            codex: 0,
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,
