@@ -26,7 +26,8 @@ PAUSE="$STATE/paused"
 # 預算守衛門檻。優先用「真實週額度%」（Claude Code 注入 statusline 的 rate_limits.seven_day，
 # 由 statusline-expo.sh 快取到 ~/.cache/butfun-auto/seven_day_pct）；拿不到才退回 $ 代理。
 BUDGET_WEEKLY_PCT="${BUTFUN_BUDGET_WEEKLY_PCT:-80}"      # 你的目標：週用量壓在 80% 以下
-BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%過期時用）
+BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%數天過舊/缺才用）
+PCT_STALE_MAX_SEC="${BUTFUN_PCT_STALE_MAX_SEC:-345600}"  # 真實%「過期但仍沿用」上限(秒)，預設 4 天(< 7 天週期)
 REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"          # 把關用（Sonnet，比 Opus 省）
 WORKER_FALLBACK_MODEL="${BUTFUN_WORKER_FALLBACK_MODEL:-claude-sonnet-4-6}"  # Gemini 沒額度時的備胎 worker
 
@@ -42,13 +43,22 @@ flock -n 9 || { log "上一輪還在跑，本輪讓位"; exit 0; }
 over_budget=""; budget_reason=""
 pct_line="$(cat "$STATE/seven_day_pct" 2>/dev/null || true)"
 seven_pct="${pct_line%% *}"; pct_ts="${pct_line##* }"; now="$(date +%s)"
-if [ -n "$seven_pct" ] && [ -n "$pct_ts" ] && [ "$((now - pct_ts))" -lt 43200 ]; then
+pct_age="$(( now - ${pct_ts:-0} ))"
+if [ -n "$seven_pct" ] && [ -n "$pct_ts" ] && [ "$pct_age" -lt 43200 ]; then
+  # 真實%新鮮（<12h）：照舊用真實%。
   log "週額度 ${seven_pct}% / 上限 ${BUDGET_WEEKLY_PCT}%（Claude 真實 7d%）"
   awk "BEGIN{exit !(${seven_pct}+0 >= ${BUDGET_WEEKLY_PCT}+0)}" 2>/dev/null \
     && { over_budget=1; budget_reason="週額度 ${seven_pct}% ≥ ${BUDGET_WEEKLY_PCT}%（Claude 真實 7d%）"; }
+elif [ -n "$seven_pct" ] && [ -n "$pct_ts" ] && [ "$pct_age" -lt "$PCT_STALE_MAX_SEC" ]; then
+  # 真實%過期但仍在數天內：沿用「上次的真實%」判斷（週用量幾小時不會大跳），
+  # 不退回不準的 $ 代理——避免半夜無 Claude session 刷新%時假停。
+  log "週額度 ${seven_pct}%（上次真實 7d%，已 $((pct_age/3600))h 未更新，仍沿用）/ 上限 ${BUDGET_WEEKLY_PCT}%"
+  awk "BEGIN{exit !(${seven_pct}+0 >= ${BUDGET_WEEKLY_PCT}+0)}" 2>/dev/null \
+    && { over_budget=1; budget_reason="週額度 ${seven_pct}% ≥ ${BUDGET_WEEKLY_PCT}%（上次真實 7d%，沿用）"; }
 else
+  # 完全沒有真實%（或已數天過舊）→ 最後才退回 $ 代理保底。
   week_cost="$(ccusage weekly --json 2>/dev/null | jq -r '.weekly | last | .totalCost // 0' 2>/dev/null || echo 0)"
-  log "本週等值花費 \$$week_cost / \$$BUDGET_WEEKLY_USD（\$代理；真實%快取過期或缺）"
+  log "本週等值花費 \$$week_cost / \$$BUDGET_WEEKLY_USD（\$代理；真實%缺或數天過舊）"
   awk "BEGIN{exit !(${week_cost:-0}+0 >= ${BUDGET_WEEKLY_USD}+0)}" 2>/dev/null \
     && { over_budget=1; budget_reason="本週等值花費 \$$week_cost ≥ \$$BUDGET_WEEKLY_USD（\$代理）"; }
 fi
