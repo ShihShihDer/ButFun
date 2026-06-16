@@ -1005,6 +1005,28 @@ pub fn spawn(app: AppState) {
             let mut decay_notifications: Vec<(uuid::Uuid, Vec<crate::perishable::DecayEvent>)> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
+                // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
+                // 配對——兩名各有寵物、同星球、站得夠近的玩家，他們的寵物會自己湊到中間玩耍。
+                // 純函式偵測（pet_play::detect），這裡只建「主人 id → 玩耍點」索引，供下方 tick
+                // 迴圈據此決定該隻寵物是「跑去玩耍」還是「跟著主人」。（不可變借用先結束、再進可變迴圈。）
+                let pet_play_targets: std::collections::HashMap<uuid::Uuid, (f32, f32)> = {
+                    let actors: Vec<crate::pet_play::PetActor> = players
+                        .values()
+                        .filter(|p| p.pet.is_some() && p.indoor_plot_id.is_none())
+                        .map(|p| crate::pet_play::PetActor {
+                            owner_id: p.id,
+                            zone: p.planet.clone(),
+                            owner_x: p.x,
+                            owner_y: p.y,
+                        })
+                        .collect();
+                    let mut m = std::collections::HashMap::new();
+                    for pair in crate::pet_play::detect(&actors) {
+                        m.insert(pair.a, pair.spot_a);
+                        m.insert(pair.b, pair.spot_b);
+                    }
+                    m
+                };
                 for p in players.values_mut() {
                     p.step(dt, |x: f32, y: f32| {
                         let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
@@ -1014,13 +1036,23 @@ pub fn spawn(app: AppState) {
                             .unwrap_or_else(|| world_core::tile_kind_at(x as f64, y as f64));
                         kind != world_core::TileKind::Empty
                     });
-                    // 寵物現身相伴（ROADMAP 343）：有寵物時，每 tick 讓寵物座標朝主人平滑跟隨——
-                    // 主人走到哪、寵物像隻黏人的小夥伴小跑跟到哪（純函式、零鎖、無 IO）。
+                    // 寵物現身相伴（ROADMAP 343）＋寵物玩伴嬉戲（ROADMAP 344）：有寵物時，每 tick
+                    // 推進寵物座標（純函式、零鎖、無 IO）——附近有寵物玩伴（在 pet_play_targets 裡）
+                    // 就跑去兩人中間的玩耍點蹦跳玩耍，否則回復跟隨主人。
                     if p.pet.is_some() {
-                        let (nx, ny, _moving) =
-                            crate::pet_follow::follow_step((p.pet_x, p.pet_y), (p.x, p.y), dt);
-                        p.pet_x = nx;
-                        p.pet_y = ny;
+                        if let Some(&spot) = pet_play_targets.get(&p.id) {
+                            let (nx, ny, _moving) =
+                                crate::pet_play::play_step((p.pet_x, p.pet_y), spot, dt);
+                            p.pet_x = nx;
+                            p.pet_y = ny;
+                            p.pet_playing = true;
+                        } else {
+                            let (nx, ny, _moving) =
+                                crate::pet_follow::follow_step((p.pet_x, p.pet_y), (p.x, p.y), dt);
+                            p.pet_x = nx;
+                            p.pet_y = ny;
+                            p.pet_playing = false;
+                        }
                     }
                     // 主動攻擊冷卻倒數：每 tick 遞減，讓下次攻擊請求能被接受。
                     if p.attack_cooldown > 0.0 {

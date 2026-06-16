@@ -418,6 +418,11 @@ const scenarios = [
   // 彈跳分支各跑一次，兩種代表寵物（飄浮系 🧚／守護系 🌟）各畫一回，確認寵物渲染零繪製例外。
   variant("寵物相伴(歇腳)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 10; m.pet_y = m.y + 6; }),
   variant("寵物相伴(追趕主人)", (s) => { const m = s.players[0]; m.pet_kind = "origin_guardian"; m.pet_x = m.x - 90; m.pet_y = m.y - 20; }),
+  // 寵物玩伴嬉戲（ROADMAP 344）：寵物正在跟別的寵物玩耍 → 跑 drawPlayer 的玩耍分支（更歡快的
+  // 蹦跳＋頭頂上飄循環淡出的愛心／音符）。pet_playing=true，覆蓋愛心（💕）與音符（🎵）兩種頭頂
+  // glyph 分支（依 pet_x 奇偶挑選）各畫一回，確認玩耍特效渲染零繪製例外。
+  variant("寵物玩伴嬉戲(愛心)", (s) => { const m = s.players[0]; m.pet_kind = "coral_crab"; m.pet_x = m.x + 4; m.pet_y = m.y + 2; m.pet_playing = true; }),
+  variant("寵物玩伴嬉戲(音符)", (s) => { const m = s.players[0]; m.pet_kind = "jade_wraith"; m.pet_x = m.x + 12; m.pet_y = m.y + 2; m.pet_playing = true; }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

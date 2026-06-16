@@ -1666,6 +1666,7 @@
             existing.pet_kind = p.pet_kind;
             existing.pet_x = p.pet_x;
             existing.pet_y = p.pet_y;
+            existing.pet_playing = !!p.pet_playing; // ROADMAP 344：寵物是否正在跟別的寵物玩耍
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -4304,10 +4305,14 @@
       }
       const psx = ppx - camX;
       const psy = ppy - camY;
-      // 追趕主人時（離主人較遠）走動彈跳明顯些、歇腳時只輕輕浮動，讀起來像會走路的活物。
+      // 寵物玩伴嬉戲（ROADMAP 344）：附近有寵物玩伴時，寵物會湊到中間玩耍——這時牠玩得更興奮，
+      // 蹦跳更歡快、頭頂飄出愛心 / 音符，與獨自跟隨的輕浮明顯區隔。
+      const playing = !!p.pet_playing;
+      // 追趕主人時（離主人較遠）走動彈跳明顯些、歇腳時只輕輕浮動；玩耍時蹦得最歡。
       const chasing = Math.hypot(ppx - p.rx, ppy - p.ry) > 34;
-      const bobAmp = chasing ? 2.6 : 1.2;
-      const petBob = reduceMotion ? 0 : Math.abs(Math.sin(petNow / 220 + p.pet_x * 0.05)) * bobAmp;
+      const bobAmp = playing ? 3.4 : (chasing ? 2.6 : 1.2);
+      const bobRate = playing ? 130 : 220; // 玩耍時蹦得更快更歡
+      const petBob = reduceMotion ? 0 : Math.abs(Math.sin(petNow / bobRate + p.pet_x * 0.05)) * bobAmp;
       // 新夥伴登場的蹦跳歡迎（單次拋物線跳一下，~0.6s）。
       let hop = 0;
       if (p._petHopUntil && petNow < p._petHopUntil && !reduceMotion) {
@@ -4318,6 +4323,23 @@
       ctx.font = "15px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
+      // 玩耍中：頭頂飄一枚循環上升淡出的愛心 / 音符，傳達「夥伴們玩得很開心」。
+      // reduceMotion 下退成一枚靜態小愛心、不上飄不閃。
+      if (playing) {
+        const glyph = (Math.floor(p.pet_x * 0.13) & 1) ? "💕" : "🎵"; // 依寵物穩定挑一種，避免逐幀亂跳
+        ctx.font = "11px system-ui, sans-serif";
+        if (reduceMotion) {
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(glyph, psx, psy - 16);
+          ctx.globalAlpha = 1;
+        } else {
+          const cyc = (petNow / 1100 + p.pet_x * 0.017) % 1; // 0→1 循環
+          const rise = cyc * 14;          // 向上飄
+          ctx.globalAlpha = Math.max(0, 1 - cyc); // 漸淡
+          ctx.fillText(glyph, psx + Math.sin(cyc * Math.PI * 2) * 3, psy - 14 - rise);
+          ctx.globalAlpha = 1;
+        }
+      }
     }
   }
 

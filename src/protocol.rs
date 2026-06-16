@@ -1091,6 +1091,10 @@ pub struct PlayerView {
     pub pet_x: f32,
     #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub pet_y: f32,
+    /// 寵物此刻是否正在跟別的寵物玩耍（ROADMAP 344「寵物玩伴嬉戲」）。前端據此在湊起來玩的
+    /// 兩寵物間播放歡樂特效（額外蹦跳＋上飄愛心 / 音符）。沒玩耍時 false、序列化略過。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pet_playing: bool,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
@@ -1660,7 +1664,7 @@ mod tests {
                 active_skill_flags: vec![],
                 auto_skills: vec![],
                 pet_kind: None,
-                pet_x: 0.0, pet_y: 0.0,
+                pet_x: 0.0, pet_y: 0.0, pet_playing: false,
                 fish_cooldown: 0.0,
                 near_water: false,
                 toast_cooldown: 0.0,
@@ -1909,7 +1913,7 @@ mod tests {
             active_skill_flags: vec![],
             auto_skills: vec![],
             pet_kind: None,
-            pet_x: 0.0, pet_y: 0.0,
+            pet_x: 0.0, pet_y: 0.0, pet_playing: false,
             fish_cooldown: 0.0,
             near_water: false,
             toast_cooldown: 0.0,
@@ -2149,7 +2153,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2207,7 +2211,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
