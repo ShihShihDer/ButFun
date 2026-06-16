@@ -133,6 +133,9 @@ pub struct Player {
     /// 探索圖鑑已踏足地形 bitmask（ROADMAP 336）。每個位元對應 `terrain_atlas::CATALOG`
     /// 一種奇景地形，走近即點亮、永久保留。照 `codex` 的模式持久化（跨重啟存活）。
     pub atlas: u64,
+    /// 天象圖鑑已目睹天象 bitmask（ROADMAP 337）。每個位元對應 `sky_codex::CATALOG`
+    /// 一種天象奇觀，身處其下即點亮、永久保留。照 `atlas` 的模式持久化（跨重啟存活）。
+    pub skylog: u64,
     /// 玩家目前所在星球（ROADMAP 20/22/23/24/25 多星球旅程）。
     /// "home" = 故鄉，"verdant" = 翠幽星，"crimson" = 赤焰星，"void" = 虛空星，
     /// "aether" = 霧醚星，"origin" = 星源星。
@@ -294,6 +297,7 @@ impl Player {
             exp: self.exp,
             codex: self.codex,
             atlas: self.atlas,
+            skylog: self.skylog,
             level: self.level(),
             attack: crate::equipment::equipped_weapon_power(&self.equipment)
                 + crate::combat::level_attack_bonus(self.level())
@@ -1307,6 +1311,7 @@ mod tests {
             exp: 0,
             codex: 0,
             atlas: 0,
+            skylog: 0,
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
             guild_tag: None,

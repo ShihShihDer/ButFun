@@ -61,6 +61,7 @@ mod pet;
 mod fishing;
 mod field_guide;
 mod terrain_atlas;
+mod sky_codex;
 mod ranching;
 mod farm_crops;
 mod star_crystal;

@@ -463,6 +463,48 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 337 天象圖鑑：玩家身處某種天象之下即「目睹」、點亮圖鑑、首見給乙太 ──
+            // 與 333／336 的「空間蒐集」不同，天象是「時間蒐集」：天氣、流星雨、滿月都是全域訊號，
+            // 凡此刻在線的玩家便共同身處同一片天空之下，無需逐人取樣座標——先算出「當下天空正在發生
+            // 的天象位元」一次，若非空才開一把 players 寫鎖（晴朗無事的多數幀直接略過、零鎖零成本）。
+            // 目睹天然冪等（witness 對已點亮位元回 false、不重複領獎）。skylog 隨既有玩家快照廣播，
+            // 前端比對位元差噴「新目睹天象」、乙太差噴「+N」（鏡像 333／336）。只新開一把寫鎖、
+            // 無巢狀上鎖（守 prod-deadlock 鐵律）。
+            {
+                use crate::sky_codex::{active_bits, reward_for_bit, witness};
+                // 全域訊號（皆為短暫持鎖、不跨 await 的便宜讀取）：當下天氣 / 流星雨 / 滿月夜。
+                let weather_key = app.weather.read().unwrap().view().weather_type;
+                let meteor_active = app.meteor_shower.read().unwrap().is_active();
+                let is_night = matches!(
+                    app.daynight.read().unwrap().phase(),
+                    crate::daynight::Phase::Night | crate::daynight::Phase::Dusk
+                );
+                // 滿月要掛在夜空才看得見圓滿（白天即使月相為滿也不算「滿月夜」）。
+                let full_moon_night = is_night
+                    && std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| crate::moon::is_full_moon(d.as_millis() as f64))
+                        .unwrap_or(false);
+                let active = active_bits(&weather_key, meteor_active, full_moon_night);
+                // 多數時刻天空無可蒐集的天象（晴朗白天）→ active 為 0，整段略過、連寫鎖都不開。
+                if active != 0 {
+                    let mut players = app.players.write().unwrap();
+                    for p in players.values_mut() {
+                        // 逐一檢查當下發生的每種天象，凡玩家尚未目睹過的就點亮＋首見加乙太。
+                        for bit in 0..crate::sky_codex::TOTAL as u8 {
+                            if active & (1u64 << bit) == 0 {
+                                continue;
+                            }
+                            let (mask, first) = witness(p.skylog, bit);
+                            if first {
+                                p.skylog = mask;
+                                p.ether = p.ether.saturating_add(reward_for_bit(bit));
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── ROADMAP 177: 野外採集隊觸發與受擊判定 ──
             if tick % (TICK_HZ as u64) == 0 {
                 // 1. 觸發判定
@@ -2983,7 +3025,7 @@ pub async fn flush_all(app: &AppState) {
         (
             authed
                 .iter()
-                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex, p.atlas))
+                .map(|p| (p.id, p.name.clone(), p.species.clone(), p.x, p.y, p.ether, p.wallet.expansions(), p.exp, p.masteries, p.stats, p.skill_masteries, p.codex, p.atlas, p.skylog))
                 .collect(),
             authed.iter().map(|p| (p.id, p.inventory.clone())).collect(),
             authed.iter().map(|p| (p.id, p.equipment.clone())).collect(),
@@ -2992,7 +3034,7 @@ pub async fn flush_all(app: &AppState) {
     if !online.is_empty() {
         // 先更新行程內 cache（同步,供重連 recall）,再非同步 upsert 到 Postgres。
         app.positions
-            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx, ax)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx, *ax)));
+            .remember_all(online.iter().map(|(id, _, _, x, y, e, we, exp, m, s, sk, cx, ax, sl)| (*id, *x, *y, *e, *we, *exp, *m, *s, *sk, *cx, *ax, *sl)));
         app.positions.flush_online(&online).await;
         app.inventories.remember_all(inventories.iter().cloned());
         app.inventories.flush_online(&inventories).await;
