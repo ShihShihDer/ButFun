@@ -202,6 +202,10 @@ pub struct Player {
     /// 歸位到主人腳邊即可。沒寵物時這對值無意義（前端只在 `pet_kind` 存在時才畫）。
     pub pet_x: f32,
     pub pet_y: f32,
+    /// 寵物此刻是否正在跟別的寵物玩耍（ROADMAP 344）。記憶體前置、不持久化——每 tick 由
+    /// `game.rs` 依 `pet_play::detect` 重算：附近有寵物玩伴就 true（寵物跑去中間蹦跳玩耍），
+    /// 否則 false（回復跟隨主人）。前端據此在玩耍的兩寵物間播放歡樂特效。
+    pub pet_playing: bool,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可釣；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -366,6 +370,8 @@ impl Player {
             // ROADMAP 343：有寵物才送座標（沒寵物時為 0，序列化略過，省頻寬）。
             pet_x: if self.pet.is_some() { self.pet_x } else { 0.0 },
             pet_y: if self.pet.is_some() { self.pet_y } else { 0.0 },
+            // ROADMAP 344：有寵物且正在玩耍才送 true（沒寵物時 false，序列化略過）。
+            pet_playing: self.pet.is_some() && self.pet_playing,
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
@@ -1373,6 +1379,7 @@ mod tests {
             pet: None,
             pet_x: x,
             pet_y: y,
+            pet_playing: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
