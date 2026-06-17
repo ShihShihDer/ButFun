@@ -2812,12 +2812,19 @@ pub fn spawn(app: AppState) {
                 if tick % faction_ticks == 0 && tick > 0 {
                     let relations_snapshot = app.npc_relations.read().unwrap();
                     let faction_events = app.npc_factions.write().unwrap().detect_changes(&relations_snapshot);
+                    // 鎮民陣營成形（ROADMAP 366）：同週期、同一把關係讀鎖內純算當前陣營，
+                    // 出鎖後再偵測新成形／成員增長的陣營並廣播（不巢狀上鎖，守 prod-deadlock）。
+                    let blocs = crate::town_blocs::compute_blocs(&relations_snapshot);
                     drop(relations_snapshot);
                     for ev in faction_events {
                         let text = ev.announce_text();
                         if !text.is_empty() {
                             let _ = app.tx_chat.send(text);
                         }
+                    }
+                    let bloc_events = app.town_blocs.write().unwrap().detect_new(&blocs);
+                    for ev in bloc_events {
+                        let _ = app.tx_chat.send(ev.announce_text());
                     }
                 }
             }
@@ -3689,6 +3696,26 @@ pub fn spawn(app: AppState) {
                                     npc_b_name: crate::npc_factions::npc_display_name(s.npc_b).to_string(),
                                     bond: s.bond.wire_key().to_string(),
                                     affinity: s.affinity,
+                                })
+                                .collect()
+                        },
+                        // 鎮民陣營（ROADMAP 366）：讀當前關係，純算出此刻連通成盟的三人以上群體
+                        // 與各自核心人物，送前端「鎮民派系」面板的「陣營」段。純讀取、確定性、量小
+                        // （七大 NPC 至多兩三群）；無人成群時為空陣列。
+                        town_blocs: {
+                            let rel = app.npc_relations.read().unwrap();
+                            crate::town_blocs::compute_blocs(&rel)
+                                .into_iter()
+                                .map(|b| crate::protocol::TownBlocView {
+                                    member_names: b
+                                        .members
+                                        .iter()
+                                        .map(|id| crate::npc_factions::npc_display_name(id).to_string())
+                                        .collect(),
+                                    members: b.members.iter().map(|id| id.to_string()).collect(),
+                                    figurehead_name: crate::npc_factions::npc_display_name(b.figurehead).to_string(),
+                                    figurehead: b.figurehead.to_string(),
+                                    cohesion: b.cohesion,
                                 })
                                 .collect()
                         },

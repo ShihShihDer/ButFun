@@ -1568,17 +1568,25 @@
     const allianceCount = known.filter(f => f.bond === "alliance").length;
     const rivalryCount = known.filter(f => f.bond === "rivalry").length;
 
-    // 內容簽章擋每幀無謂重繪（同物種面板手法）。
+    // 鎮民陣營（ROADMAP 366）：連通成盟的三人以上群體；只認結構完整的（有成員與核心）。
+    const blocs = Array.isArray(townBlocs)
+      ? townBlocs.filter(b => Array.isArray(b.members) && b.members.length >= 3 && b.figurehead)
+      : [];
+
+    // 內容簽章擋每幀無謂重繪（同物種面板手法）。陣營也納入簽章，成形／增長即重繪。
     const sig = `${townFactionsCollapsed}|`
-      + known.map(f => `${f.npc_a}${f.npc_b}${f.bond}${f.affinity}`).join(",");
+      + known.map(f => `${f.npc_a}${f.npc_b}${f.bond}${f.affinity}`).join(",")
+      + "|" + blocs.map(b => `${b.figurehead}:${b.members.join(".")}@${b.cohesion}`).join(";");
     if (sig === lastTownFactionsSig) return;
     lastTownFactionsSig = sig;
 
     if (townFactionsCollapsed) {
       const allyHint = allianceCount ? `<span style="color:#ffd966;">🤝${allianceCount}</span>` : "";
       const rivalHint = rivalryCount ? `<span style="color:#ff6b6b;margin-left:4px;">⚔️${rivalryCount}</span>` : "";
+      // 陣營徽章：有成群結派時顯示 🏛️N（皇冠核心數），讓玩家收合時也看得到「成了幾個圈子」。
+      const blocHint = blocs.length ? `<span style="color:#9cd6ff;margin-left:4px;">👑${blocs.length}</span>` : "";
       panel.style.minWidth = "0";
-      panel.innerHTML = `<span style="color:#cbb;">🏛️ ${allyHint}${rivalHint} <span style="font-size:.6rem;color:#655;">▸</span></span>`;
+      panel.innerHTML = `<span style="color:#cbb;">🏛️ ${allyHint}${rivalHint}${blocHint} <span style="font-size:.6rem;color:#655;">▸</span></span>`;
       return;
     }
 
@@ -1589,7 +1597,24 @@
       const nameB = f.npc_b_name || f.npc_b;
       return `<div style="color:${st.color};margin:1px 0;font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${st.icon} ${nameA} <span style="color:#778;">${st.sep}</span> ${nameB}</div>`;
     }).join("");
-    panel.innerHTML = `<div style="color:#988;font-size:.62rem;margin-bottom:2px;">🏛️ 鎮民派系</div>${rows}
+    // 陣營段：核心人物（👑）＋成員，凝聚度越高字色越暖。
+    let blocSection = "";
+    if (blocs.length) {
+      const blocRows = blocs.map(b => {
+        const lead = b.figurehead_name || b.figurehead;
+        const memberNames = (b.member_names && b.member_names.length === b.members.length)
+          ? b.member_names : b.members;
+        // 凝聚度 80~100 → 由淡藍到亮金，玩家一眼看出「這圈子有多鐵」。
+        const coh = Math.max(0, Math.min(100, b.cohesion | 0));
+        const warm = Math.max(0, Math.min(1, (coh - 80) / 20));
+        const r = Math.round(140 + warm * 115), g = Math.round(190 + warm * 25), bl = Math.round(255 - warm * 100);
+        const color = `rgb(${r},${g},${bl})`;
+        const others = memberNames.filter(n => n !== lead).join("、");
+        return `<div style="color:${color};margin:1px 0;font-size:.64rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">👑 ${lead}<span style="color:#778;font-size:.58rem;"> · ${others}</span></div>`;
+      }).join("");
+      blocSection = `<div style="color:#8ab;font-size:.6rem;margin-top:4px;border-top:1px solid #2a3340;padding-top:3px;">🏛️ 湧現陣營</div>${blocRows}`;
+    }
+    panel.innerHTML = `<div style="color:#988;font-size:.62rem;margin-bottom:2px;">🏛️ 鎮民派系</div>${rows}${blocSection}
       <div style="color:#544;font-size:.56rem;margin-top:3px;">村民關係自然消長</div>
       <div style="color:#544;font-size:.58rem;margin-top:2px;text-align:right;">▾ 點此收合</div>`;
   }
@@ -1637,6 +1662,7 @@
   let ancientAlpha = null;          // ROADMAP 173 傳說古 Alpha {x, y, hp, max_hp}（null = 未出現）
   let ecoFestival = null;           // ROADMAP 178 生態豐收節 {time_left_secs, reward_per_player}（null = 無慶典）
   let townFactions = [];            // ROADMAP 355 鎮民派系一覽 [{npc_a, npc_b, npc_a_name, npc_b_name, bond, affinity}]
+  let townBlocs = [];               // ROADMAP 366 鎮民陣營 [{members, member_names, figurehead, figurehead_name, cohesion}]
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -2062,6 +2088,8 @@
         ecoFestival = msg.eco_festival ?? null;
         // 鎮民派系一覽（ROADMAP 355）：七大 NPC 此刻的結盟／敵對配對；空陣列＝相處平和。
         if (Array.isArray(msg.town_factions)) townFactions = msg.town_factions;
+        // 鎮民陣營（ROADMAP 366）：連通成盟的三人以上群體與各自核心人物；空陣列＝無人成群。
+        if (Array.isArray(msg.town_blocs)) townBlocs = msg.town_blocs;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {

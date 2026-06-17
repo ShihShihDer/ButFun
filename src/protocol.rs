@@ -937,6 +937,11 @@ pub enum ServerMsg {
         /// 讓玩家隨時看得到村落社會結構的自然湧現（不必剛好在 15 分鐘一次的廣播瞬間在線）。
         #[serde(default)]
         town_factions: Vec<FactionStandingView>,
+        /// 鎮民陣營（ROADMAP 366）：當前關係網上連通成盟的三人以上居民群體，各帶一位核心人物。
+        /// 空陣列＝目前無人成群結派。前端在「鎮民派系」面板的「陣營」段顯示，
+        /// 讓玩家看見村落自發組織成幾個圈子、各有帶頭的人（355 兩兩配對之上的群體湧現）。
+        #[serde(default)]
+        town_blocs: Vec<TownBlocView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1822,6 +1827,23 @@ pub struct FactionStandingView {
     pub affinity: i32,
 }
 
+/// 鎮民陣營一覽中的一個群體（ROADMAP 366）：一群彼此連通成盟的居民，附帶推舉出的核心人物。
+/// 後端只送穩定 id、核心 id 與凝聚度；面向玩家文案由前端鏡像 id→名稱、cohesion→配色，保留 i18n 空間
+/// （名稱欄位僅作前端對不到 id 時的後備顯示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TownBlocView {
+    /// 陣營成員 id（依穩定 NPC 次序排列）。
+    pub members: Vec<String>,
+    /// 成員顯示名（後備用；前端優先以 id 鏡像在地化名稱）。
+    pub member_names: Vec<String>,
+    /// 核心人物 id（成員之一）。
+    pub figurehead: String,
+    /// 核心人物顯示名（後備用）。
+    pub figurehead_name: String,
+    /// 凝聚度（0–100）：成員兩兩平均好惡，越高越鐵。前端可畫凝聚條／配色。
+    pub cohesion: i32,
+}
+
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherView {
@@ -2193,6 +2215,7 @@ mod tests {
             ancient_alpha: None,
             eco_festival: None,
             town_factions: vec![],
+            town_blocs: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
