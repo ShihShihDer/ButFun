@@ -1631,7 +1631,23 @@ pub fn spawn(app: AppState) {
             // NPC 作息與移動（ROADMAP 73）：推進 NPC 位置。
             {
                 let daynight = app.daynight.read().unwrap();
-                app.npc_schedule.write().unwrap().tick(dt, &daynight);
+                // ROADMAP 356：黃昏串門子——黃昏時讀一次 355 湧現的結盟配對，算出「誰去拜訪誰」，
+                // 讓結盟 NPC 離崗走到盟友攤前寒暄。只在黃昏算（其餘時段省下這把讀鎖與計算）；
+                // 先取完結盟、放掉 npc_relations 鎖，再取 npc_schedule 寫鎖 tick（不巢狀上鎖，守死鎖鐵律）。
+                let visits = if daynight.phase() == crate::daynight::Phase::Dusk {
+                    let alliances: Vec<(&str, &str)> = {
+                        let rel = app.npc_relations.read().unwrap();
+                        crate::npc_factions::current_standings(&rel)
+                            .into_iter()
+                            .filter(|s| s.bond == crate::npc_factions::FactionBond::Alliance)
+                            .map(|s| (s.npc_a, s.npc_b))
+                            .collect()
+                    };
+                    crate::npc_schedule::dusk_visit_plan(&alliances)
+                } else {
+                    std::collections::HashMap::new()
+                };
+                app.npc_schedule.write().unwrap().tick(dt, &daynight, &visits);
             }
             // 城外旅人（ROADMAP 74）：推進旅人狀態並廣播到訪/離開事件。
             {
