@@ -239,6 +239,14 @@ const scenarios = [
   variant("野生動物含未知kind", (s) => { if (s.wildlife?.length) { s.wildlife[0] = { ...s.wildlife[0], kind: "mystery_beast", state: "hunting" }; } }),
   // 餵食馴養（205）：把幾隻野生動物設成已馴養（tamed→頭頂 💛）與餵食進行中（familiarity 部分→進度心 🤍），
   // 實跑 drawWildlife 的馴養愛心兩條新繪製分支（含 globalAlpha 進度染色）。
+  // 野外守護者（357）：把一隻掠食者設成「正在追獵」且緊鄰玩家（≤90px）→ 跑 updateScarePredatorBtn
+  // 的「建立並顯示驅趕按鈕」分支；另放一隻在遠處追獵的不應顯示（距離過濾）。零例外即通過。
+  variant("驅趕掠食者按鈕(357)", (s) => {
+    if (s.wildlife?.length) {
+      s.wildlife[0] = { ...s.wildlife[0], kind: "wild_wolf", x: me0.x + 40, y: me0.y, state: "hunting", familiarity: 0, tamed: false, alive: true };
+      if (s.wildlife[1]) s.wildlife[1] = { ...s.wildlife[1], kind: "wild_fox", x: me0.x + 2000, y: me0.y, state: "stalking", familiarity: 0, tamed: false, alive: true };
+    }
+  }),
   variant("野生動物馴養(愛心)", (s) => {
     if (s.wildlife?.length) {
       s.wildlife[0] = { ...s.wildlife[0], x: me0.x + 30, y: me0.y, state: "wandering", familiarity: 1.0, tamed: true };

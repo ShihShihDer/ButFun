@@ -4030,6 +4030,40 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
 
+                // ── 驅趕掠食者・救下獵物（ROADMAP 357）──────────────────────────────
+                Ok(ClientMsg::ScarePredator { wildlife_id }) => {
+                    // 仿 AttackWildlife 的鎖序——先取玩家權威座標（players 讀鎖即放）、再短暫取
+                    // wildlife 寫鎖驅趕、最後再短暫取 players 讀鎖拿名字後出鎖廣播；兩把鎖永不重疊
+                    //（守 prod-deadlock：快照反向持 players.read→其他鎖，故此處絕不在 wildlife 鎖內鎖 players）。
+                    use crate::wildlife::SCARE_PREDATOR_REACH;
+                    let (px, py, is_downed) = app.players.read().unwrap()
+                        .get(&id)
+                        .map(|p| (p.x, p.y, p.vitals.is_downed()))
+                        .unwrap_or((0.0, 0.0, true));
+                    if !is_downed {
+                        let rescue = app.wildlife_manager.write().unwrap()
+                            .scare_predator(wildlife_id, px, py, SCARE_PREDATOR_REACH);
+                        if let Some(r) = rescue {
+                            let name = app.players.read().unwrap()
+                                .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                            let msg = if let Some(prey) = r.prey_kind {
+                                format!("🛡️ {} 趕走了一隻{}，救下了一隻{}！",
+                                    name, r.predator_kind.display_name(), prey.display_name())
+                            } else {
+                                format!("🛡️ {} 趕走了一隻{}。", name, r.predator_kind.display_name())
+                            };
+                            let _ = app.tx_chat.send(msg);
+                            if r.newly_tamed {
+                                if let Some(prey) = r.prey_kind {
+                                    let _ = app.tx_chat.send(format!(
+                                        "💛 被救下的那隻{}卸下了戒心，從此信任了 {}。",
+                                        prey.display_name(), name));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── 挑戰巢穴 Alpha（ROADMAP 168）────────────────────────────────────
                 Ok(ClientMsg::AttackAlpha { alpha_id }) => {
                     use crate::monster_colony::ALPHA_ATTACK_REACH;
