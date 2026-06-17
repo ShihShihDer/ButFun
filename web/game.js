@@ -1432,6 +1432,78 @@
       <div style="color:#445;font-size:.58rem;margin-top:4px;text-align:right;">▾ 點此收合</div>`;
   }
 
+  // 鎮民派系一覽（ROADMAP 355）：右下角小面板，把後端「七大 NPC 自然湧現的結盟／敵對」
+  // 第一次持續顯示給玩家——讓玩家親眼看見村落社會結構的浮現，而非只在 15 分鐘一次的轉瞬
+  // 聊天廣播裡擦肩而過。與物種面板（左下角）同款收合徽章機制；和平相處（無明顯派系）時整個面板
+  // 自動隱去，不佔版面。bond → 圖示／配色／文案皆前端鏡像（後端只送 wire key），保留 i18n 空間。
+  const FACTION_BOND_STYLE = {
+    alliance: { icon: "🤝", color: "#ffd966", sep: "—", label: "結盟" },
+    rivalry:  { icon: "⚔️", color: "#ff6b6b", sep: "✕", label: "敵對" },
+  };
+  let townFactionsCollapsed = true;
+  try {
+    const saved = localStorage.getItem("butfun.townFactionsCollapsed");
+    if (saved !== null) townFactionsCollapsed = saved === "1";
+  } catch {}
+  let lastTownFactionsSig = null;
+  function updateTownFactionsHud() {
+    let panel = document.getElementById("hudTownFactions");
+    // 相處平和（無明顯派系）→ 面板整個隱去，不留空殼佔版面。
+    if (!townFactions.length) {
+      if (panel) { panel.remove(); lastTownFactionsSig = null; }
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "hudTownFactions";
+      panel.style.cssText = [
+        "position:fixed", "bottom:60px", "right:8px",
+        "background:rgba(10,12,20,0.72)", "border:1px solid #433",
+        "border-radius:8px", "padding:5px 8px",
+        "font-size:.72rem", "font-family:monospace",
+        "z-index:1000", "cursor:pointer", "user-select:none",
+        "max-height:60vh", "overflow-y:auto", "text-align:left",
+      ].join(";");
+      panel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        townFactionsCollapsed = !townFactionsCollapsed;
+        try { localStorage.setItem("butfun.townFactionsCollapsed", townFactionsCollapsed ? "1" : "0"); } catch {}
+        lastTownFactionsSig = null; // 強制下一幀重繪
+      });
+      document.body.appendChild(panel);
+    }
+    // 只認得的 bond 才入列（未知 wire key 保底略過，前端不致畫出空白列）。
+    const known = townFactions.filter(f => FACTION_BOND_STYLE[f.bond]);
+    if (!known.length) { if (panel) { panel.remove(); lastTownFactionsSig = null; } return; }
+    const allianceCount = known.filter(f => f.bond === "alliance").length;
+    const rivalryCount = known.filter(f => f.bond === "rivalry").length;
+
+    // 內容簽章擋每幀無謂重繪（同物種面板手法）。
+    const sig = `${townFactionsCollapsed}|`
+      + known.map(f => `${f.npc_a}${f.npc_b}${f.bond}${f.affinity}`).join(",");
+    if (sig === lastTownFactionsSig) return;
+    lastTownFactionsSig = sig;
+
+    if (townFactionsCollapsed) {
+      const allyHint = allianceCount ? `<span style="color:#ffd966;">🤝${allianceCount}</span>` : "";
+      const rivalHint = rivalryCount ? `<span style="color:#ff6b6b;margin-left:4px;">⚔️${rivalryCount}</span>` : "";
+      panel.style.minWidth = "0";
+      panel.innerHTML = `<span style="color:#cbb;">🏛️ ${allyHint}${rivalHint} <span style="font-size:.6rem;color:#655;">▸</span></span>`;
+      return;
+    }
+
+    panel.style.minWidth = "150px";
+    const rows = known.map(f => {
+      const st = FACTION_BOND_STYLE[f.bond];
+      const nameA = f.npc_a_name || f.npc_a;
+      const nameB = f.npc_b_name || f.npc_b;
+      return `<div style="color:${st.color};margin:1px 0;font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${st.icon} ${nameA} <span style="color:#778;">${st.sep}</span> ${nameB}</div>`;
+    }).join("");
+    panel.innerHTML = `<div style="color:#988;font-size:.62rem;margin-bottom:2px;">🏛️ 鎮民派系</div>${rows}
+      <div style="color:#544;font-size:.56rem;margin-top:3px;">村民關係自然消長</div>
+      <div style="color:#544;font-size:.58rem;margin-top:2px;text-align:right;">▾ 點此收合</div>`;
+  }
+
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
@@ -1474,6 +1546,7 @@
   let ecoBounty = null;             // ROADMAP 172 生態清剿委託 {colony_name, kill_target, kills_so_far, reward_per_player, time_left_secs}
   let ancientAlpha = null;          // ROADMAP 173 傳說古 Alpha {x, y, hp, max_hp}（null = 未出現）
   let ecoFestival = null;           // ROADMAP 178 生態豐收節 {time_left_secs, reward_per_player}（null = 無慶典）
+  let townFactions = [];            // ROADMAP 355 鎮民派系一覽 [{npc_a, npc_b, npc_a_name, npc_b_name, bond, affinity}]
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -1896,6 +1969,8 @@
         ancientAlpha = msg.ancient_alpha ?? null;
         // 生態豐收節（ROADMAP 178）：進行中的全城慶典，null 表示無慶典。
         ecoFestival = msg.eco_festival ?? null;
+        // 鎮民派系一覽（ROADMAP 355）：七大 NPC 此刻的結盟／敵對配對；空陣列＝相處平和。
+        if (Array.isArray(msg.town_factions)) townFactions = msg.town_factions;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -4997,6 +5072,7 @@
       updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
+      updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
