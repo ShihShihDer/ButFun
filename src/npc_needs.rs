@@ -204,6 +204,15 @@ impl NpcNeedsState {
         }
     }
 
+    /// 鎮民互助分享（ROADMAP 369）：調整指定 NPC 的繁榮感（正=回升、負=勻出），夾在 0~100。
+    /// 未知 NPC 不動（邊界安全）。
+    pub fn adjust_prosperity(&mut self, npc_id: &str, delta: i32) {
+        if let Some(n) = self.map.get_mut(npc_id) {
+            n.prosperity += delta;
+            n.clamp_all();
+        }
+    }
+
     /// 所有 NPC 需求向基線緩慢靠近（由 game.rs 每 DECAY_INTERVAL_SECS 呼叫一次）。
     pub fn tick_decay_all(&mut self) {
         for n in self.map.values_mut() {

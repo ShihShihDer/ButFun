@@ -2828,6 +2828,51 @@ pub fn spawn(app: AppState) {
                     }
                 }
             }
+            // 鎮民互助分享（ROADMAP 369）：每幀推進進行中的送禮手勢（光禮飄越廣場）。
+            app.town_share.write().unwrap().tick(dt);
+            // 每 SHARE_TICK_SECS 秒，依七大 NPC 的「繁榮感」需求（ROADMAP 69）挑一樁
+            // 「寬裕者勻給拮据者」的分享：受禮者繁榮感回升、送禮者勻出一點，世界頻道飄來暖訊、
+            // 啟動一段看得見的送禮手勢。鎖序（守 prod-deadlock）：先讀 needs 取繁榮感快照→放掉；
+            // 純函式挑事件；再寫 needs 套用→放掉；最後 town_share 寫鎖記錄＋啟動手勢；廣播出鎖後送。
+            {
+                const SHARE_TICK_SECS: u64 = 120;
+                let share_ticks = SHARE_TICK_SECS * TICK_HZ as u64;
+                if tick % share_ticks == 0 && tick > 0 {
+                    // 七大 NPC（穩定 id 次序，與 npc_factions 一致）的當前繁榮感快照。
+                    const VILLAGE_IDS: &[&str] = &[
+                        "merchant", "workshop_npc", "bounty_npc", "expedition_npc",
+                        "procurement_npc", "farm_fair_npc", "village_chief",
+                    ];
+                    let candidates: Vec<crate::town_share::ShareCandidate> = {
+                        let needs = app.npc_needs.read().unwrap();
+                        VILLAGE_IDS
+                            .iter()
+                            .map(|&id| crate::town_share::ShareCandidate {
+                                id,
+                                prosperity: needs.get(id).prosperity,
+                            })
+                            .collect()
+                    };
+                    let last_pair = app.town_share.read().unwrap().last_pair().map(|(g, r)| {
+                        // 把借出的 &str 轉成擁有，避免跨鎖借用。
+                        (g.to_string(), r.to_string())
+                    });
+                    let last_ref = last_pair.as_ref().map(|(g, r)| (g.as_str(), r.as_str()));
+                    if let Some(ev) = crate::town_share::pick_share(&candidates, last_ref) {
+                        {
+                            let mut needs = app.npc_needs.write().unwrap();
+                            needs.adjust_prosperity(ev.receiver, ev.give);
+                            needs.adjust_prosperity(ev.giver, -ev.cost);
+                        }
+                        app.town_share.write().unwrap().begin(ev.giver, ev.receiver);
+                        let line = crate::town_share::announce_text(
+                            crate::npc_factions::npc_display_name(ev.giver),
+                            crate::npc_factions::npc_display_name(ev.receiver),
+                        );
+                        let _ = app.tx_chat.send(line);
+                    }
+                }
+            }
 
             // 怪物王咆哮（ROADMAP 75）：每 tick 推進各菁英精英的咆哮冷卻計時；
             // 冷卻歸零時非同步呼叫 LLM（Groq→ollama→罐頭），結果廣播至全服聊天頻道。
@@ -3719,6 +3764,8 @@ pub fn spawn(app: AppState) {
                                 })
                                 .collect()
                         },
+                        // 鎮民互助分享（ROADMAP 369）：進行中的送禮手勢（至多一樁），無則 None。
+                        town_share: app.town_share.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

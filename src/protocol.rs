@@ -942,6 +942,10 @@ pub enum ServerMsg {
         /// 讓玩家看見村落自發組織成幾個圈子、各有帶頭的人（355 兩兩配對之上的群體湧現）。
         #[serde(default)]
         town_blocs: Vec<TownBlocView>,
+        /// 鎮民互助分享（ROADMAP 369）：進行中的「光禮飄越廣場」送禮手勢；`None` 表示目前無人正在分享。
+        /// 前端據此在送禮者與受禮者兩位 NPC 之間補間繪製一份小小光禮。`#[serde(default)]` 向後相容。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        town_share: Option<TownShareView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1844,6 +1848,18 @@ pub struct TownBlocView {
     pub cohesion: i32,
 }
 
+/// 鎮民互助分享的送禮手勢快照（ROADMAP 369）：一份心意正從送禮者飄越廣場、落向受禮者。
+/// 後端只送雙方穩定 id 與手勢進度 `t`；前端鏡像 id→當前 NPC 位置，在兩點之間補間畫出小小光禮。
+#[derive(Debug, Clone, Serialize)]
+pub struct TownShareView {
+    /// 送禮者 NPC id（寬裕、勻出心意的一方）。
+    pub giver: String,
+    /// 受禮者 NPC id（拮据、受到幫襯的一方）。
+    pub receiver: String,
+    /// 手勢進度 [0.0, 1.0]：0＝剛從送禮者腳邊出發，1＝抵達受禮者。前端據此補間光禮位置。
+    pub t: f32,
+}
+
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherView {
@@ -2221,6 +2237,7 @@ mod tests {
             eco_festival: None,
             town_factions: vec![],
             town_blocs: vec![],
+            town_share: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

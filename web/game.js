@@ -1663,6 +1663,7 @@
   let ecoFestival = null;           // ROADMAP 178 生態豐收節 {time_left_secs, reward_per_player}（null = 無慶典）
   let townFactions = [];            // ROADMAP 355 鎮民派系一覽 [{npc_a, npc_b, npc_a_name, npc_b_name, bond, affinity}]
   let townBlocs = [];               // ROADMAP 366 鎮民陣營 [{members, member_names, figurehead, figurehead_name, cohesion}]
+  let townShare = null;             // ROADMAP 369 鎮民互助分享送禮手勢 {giver, receiver, t}（null = 無人正在分享）
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -2090,6 +2091,8 @@
         if (Array.isArray(msg.town_factions)) townFactions = msg.town_factions;
         // 鎮民陣營（ROADMAP 366）：連通成盟的三人以上群體與各自核心人物；空陣列＝無人成群。
         if (Array.isArray(msg.town_blocs)) townBlocs = msg.town_blocs;
+        // 鎮民互助分享送禮手勢（ROADMAP 369）：一份心意正飄越廣場；無此欄位（舊伺服器/無人分享）→ null。
+        townShare = msg.town_share || null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -5115,6 +5118,7 @@
     safeDraw("townBuildings", () => drawTownBuildings(camX, camY)); // 城鎮建築（ROADMAP 110）
     safeDraw("landPlots", () => drawLandPlots(camX, camY)); // 城外產權地塊（ROADMAP 34）
     safeDraw("npcs", () => drawNpcs(camX, camY)); // NPC（ROADMAP 73）
+    safeDraw("townShare", () => drawTownShare(camX, camY)); // 鎮民互助分享光禮（ROADMAP 369）
     safeDraw("colonies", () => drawColonies(camX, camY)); // 物種聚落領地圓圈（ROADMAP 143）
     safeDraw("monsterColonies", () => drawMonsterColonies(camX, camY)); // 怪物巢穴（ROADMAP 164）
     safeDraw("alphaMonsters", () => drawAlphaMonsters(camX, camY)); // 巢穴 Alpha（ROADMAP 168）
@@ -9252,6 +9256,51 @@
 
       ctx.restore();
     }
+  }
+
+  // 鎮民互助分享（ROADMAP 369）：一位寬裕的居民勻一份心意給拮据的鄰里時，畫一份小小光禮，
+  // 自送禮者腳邊沿一道淺淺的弧線飄越廣場、落到受禮者手中。純表現、只讀快照、不嵌任何規則。
+  function drawTownShare(camX, camY) {
+    if (!townShare || !townShare.giver || !townShare.receiver) return;
+    // 鏡像 id → 當前 NPC 位置（NPC 走動中位置也即時跟上）；任一端不在此星球/視野清單則不畫。
+    const g = npcs.find(n => n.id === townShare.giver);
+    const r = npcs.find(n => n.id === townShare.receiver);
+    if (!g || !r) return;
+
+    const tt = Math.max(0, Math.min(1, townShare.t || 0));
+    const gx = g.x - camX, gy = g.y - camY;
+    const rx = r.x - camX, ry = r.y - camY;
+    // 直線補間 + 一道往上的淺弧（中段抬最高，sin 峰在 t=0.5）。
+    const px = gx + (rx - gx) * tt;
+    const baseY = gy + (ry - gy) * tt;
+    const arc = Math.sin(Math.PI * tt) * 34; // 弧頂約 34px
+    const py = baseY - 22 - arc; // 略高於 NPC 腳邊，懸在頭上飄送
+
+    if (px < -40 || py < -40 || px > viewW + 40 || py > viewH + 40) return;
+
+    const now = performance.now() / 1000;
+    const pulse = reduceMotion ? 1 : (1 + Math.sin(now * 5) * 0.12);
+    // 進出場淡入淡出：頭尾各 12% 行程漸顯/漸隱，中途全亮。
+    const fade = Math.min(1, tt / 0.12, (1 - tt) / 0.12);
+    const alpha = Math.max(0, Math.min(1, fade));
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    // 柔光暈（暖金，療癒基調）。
+    const haloR = 16 * pulse;
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, haloR);
+    grad.addColorStop(0, "rgba(255, 226, 150, 0.55)");
+    grad.addColorStop(1, "rgba(255, 226, 150, 0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, haloR, 0, Math.PI * 2);
+    ctx.fill();
+    // 光禮本體。
+    ctx.font = "18px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🎁", px, py);
+    ctx.restore();
   }
 
   // 野生動物（ROADMAP 140 中立 + ROADMAP 141 食物鏈）。
