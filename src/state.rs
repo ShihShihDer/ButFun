@@ -206,6 +206,14 @@ pub struct Player {
     /// `game.rs` 依 `pet_play::detect` 重算：附近有寵物玩伴就 true（寵物跑去中間蹦跳玩耍），
     /// 否則 false（回復跟隨主人）。前端據此在玩耍的兩寵物間播放歡樂特效。
     pub pet_playing: bool,
+    /// 進行中的一趟逗玩接物（ROADMAP 345）。`None` = 沒在接物（寵物照常跟隨／玩耍）。
+    /// 記憶體前置、不持久化——玩家丟出玩具時由 `ws.rs` 設成 `Some(Chasing)`，`game.rs` 每 tick
+    /// 用 `pet_fetch::chase_step` 推進（衝去叼→叼回主人），叼回即清回 `None`。
+    /// 接物進行中優先於跟隨／玩耍。
+    pub pet_fetch: Option<crate::pet_fetch::PetFetch>,
+    /// 寵物此刻是否正在接物（ROADMAP 345，= `pet_fetch.is_some()` 的快照鏡像）。供前端據此
+    /// 把寵物畫成「興奮衝刺」並畫出玩具；沒接物時 false、序列化略過。
+    pub pet_fetching: bool,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可釣；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -372,6 +380,10 @@ impl Player {
             pet_y: if self.pet.is_some() { self.pet_y } else { 0.0 },
             // ROADMAP 344：有寵物且正在玩耍才送 true（沒寵物時 false，序列化略過）。
             pet_playing: self.pet.is_some() && self.pet_playing,
+            // ROADMAP 345：接物進行中才送玩具座標＋接物旗標（沒寵物 / 沒接物時為 0／false，略過）。
+            pet_toy_x: if self.pet.is_some() { self.pet_fetch.map(|f| f.toy_x).unwrap_or(0.0) } else { 0.0 },
+            pet_toy_y: if self.pet.is_some() { self.pet_fetch.map(|f| f.toy_y).unwrap_or(0.0) } else { 0.0 },
+            pet_fetching: self.pet.is_some() && self.pet_fetching,
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
@@ -1380,6 +1392,8 @@ mod tests {
             pet_x: x,
             pet_y: y,
             pet_playing: false,
+            pet_fetch: None,
+            pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,

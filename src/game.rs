@@ -1040,18 +1040,67 @@ pub fn spawn(app: AppState) {
                     // 推進寵物座標（純函式、零鎖、無 IO）——附近有寵物玩伴（在 pet_play_targets 裡）
                     // 就跑去兩人中間的玩耍點蹦跳玩耍，否則回復跟隨主人。
                     if p.pet.is_some() {
-                        if let Some(&spot) = pet_play_targets.get(&p.id) {
+                        // 寵物逗玩接物（ROADMAP 345）優先：玩家丟出玩具後，寵物先衝去叼、再叼回主人，
+                        // 期間不跟隨也不玩耍。`PetFetch` 是 Copy，先複製出來再改 p 各欄位，避開借用衝突。
+                        // 接物途中若主人瞬移／換星球（寵物離主人超過 ABORT_DIST）就放棄這趟，讓跟隨接手。
+                        if let Some(f) = p.pet_fetch {
+                            let far = (p.pet_x - p.x).hypot(p.pet_y - p.y) > crate::pet_fetch::ABORT_DIST;
+                            if far {
+                                p.pet_fetch = None;
+                            } else {
+                                match f.phase {
+                                    crate::pet_fetch::FetchPhase::Chasing => {
+                                        // 衝向玩具落點；叼到（進 GRAB_REACH）就轉入叼回階段。
+                                        let (nx, ny, got) = crate::pet_fetch::chase_step(
+                                            p.pet_x, p.pet_y, f.toy_x, f.toy_y, dt,
+                                            crate::pet_fetch::FETCH_SPEED,
+                                            crate::pet_fetch::GRAB_REACH,
+                                        );
+                                        p.pet_x = nx;
+                                        p.pet_y = ny;
+                                        p.pet_fetch = Some(crate::pet_fetch::PetFetch {
+                                            phase: if got {
+                                                crate::pet_fetch::FetchPhase::Returning
+                                            } else {
+                                                crate::pet_fetch::FetchPhase::Chasing
+                                            },
+                                            ..f
+                                        });
+                                    }
+                                    crate::pet_fetch::FetchPhase::Returning => {
+                                        // 叼著玩具跑回主人；回到腳邊（進 RETURN_REACH）即交差、接物結束。
+                                        let (nx, ny, back) = crate::pet_fetch::chase_step(
+                                            p.pet_x, p.pet_y, p.x, p.y, dt,
+                                            crate::pet_fetch::FETCH_SPEED,
+                                            crate::pet_fetch::RETURN_REACH,
+                                        );
+                                        p.pet_x = nx;
+                                        p.pet_y = ny;
+                                        p.pet_fetch = if back {
+                                            None
+                                        } else {
+                                            // 玩具被叼著走，每 tick 跟到寵物身上（前端據此畫被叼的玩具）。
+                                            Some(crate::pet_fetch::PetFetch { toy_x: nx, toy_y: ny, ..f })
+                                        };
+                                    }
+                                }
+                            }
+                            p.pet_playing = false;
+                            p.pet_fetching = p.pet_fetch.is_some();
+                        } else if let Some(&spot) = pet_play_targets.get(&p.id) {
                             let (nx, ny, _moving) =
                                 crate::pet_play::play_step((p.pet_x, p.pet_y), spot, dt);
                             p.pet_x = nx;
                             p.pet_y = ny;
                             p.pet_playing = true;
+                            p.pet_fetching = false;
                         } else {
                             let (nx, ny, _moving) =
                                 crate::pet_follow::follow_step((p.pet_x, p.pet_y), (p.x, p.y), dt);
                             p.pet_x = nx;
                             p.pet_y = ny;
                             p.pet_playing = false;
+                            p.pet_fetching = false;
                         }
                     }
                     // 主動攻擊冷卻倒數：每 tick 遞減，讓下次攻擊請求能被接受。

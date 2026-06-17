@@ -58,6 +58,7 @@ mod users;
 mod world_event;
 mod ws;
 mod pet;
+mod pet_fetch;
 mod pet_follow;
 mod pet_play;
 mod fishing;
