@@ -1090,6 +1090,9 @@ pub struct AppState {
     /// 街坊相認冷卻帳本（ROADMAP 331）：白天崗位上，七大 NPC 認出走近的熟客玩家（相熟度 ≥ 點頭之交）
     /// 點名招呼一句；per-(玩家,NPC) 冷卻避免連珠炮。純記憶體模式重啟清零、零 LLM、碰不到遊戲狀態。
     pub npc_recognition: Arc<RwLock<crate::npc_recognition::RecognitionBook>>,
+    /// 鎮民認得你的夥伴冷卻帳本（ROADMAP 359）：帶寵物走近在崗 NPC 時，NPC 順著寵物個性（358）
+    /// 搭一句就地評論；per-(玩家,NPC) 冷卻避免連珠炮。純記憶體模式重啟清零、零 LLM、碰不到遊戲狀態。
+    pub pet_greeting: Arc<RwLock<crate::pet_greeting::GreetBook>>,
     /// NPC 自主懸賞系統（ROADMAP 82）：蘭卡根據安全感發布通緝令，討伐者得獎。
     pub npc_bounty: Arc<RwLock<crate::npc_bounty::NpcBountyState>>,
     /// NPC 落敗反應系統（ROADMAP 83）：玩家倒地時 NPC 廣播慰問 / 警示，純記憶體模式，重啟清零。
@@ -1331,6 +1334,7 @@ impl AppState {
             lunch_chatter: Arc::new(RwLock::new(crate::lunch_chatter::LunchChatterState::new())),
             lunch_regulars: Arc::new(RwLock::new(crate::lunch_regular::RegularBook::new())),
             npc_recognition: Arc::new(RwLock::new(crate::npc_recognition::RecognitionBook::new())),
+            pet_greeting: Arc::new(RwLock::new(crate::pet_greeting::GreetBook::new())),
             npc_bounty: Arc::new(RwLock::new(crate::npc_bounty::NpcBountyState::new())),
             npc_defeat_reaction: Arc::new(RwLock::new(crate::npc_defeat_reaction::NpcDefeatReactionState::new())),
             npc_defeat_reaction_sem: Arc::new(Semaphore::new(crate::npc_defeat_reaction::MAX_CONCURRENT_REACTIONS)),
