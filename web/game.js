@@ -1664,6 +1664,7 @@
   let townFactions = [];            // ROADMAP 355 鎮民派系一覽 [{npc_a, npc_b, npc_a_name, npc_b_name, bond, affinity}]
   let townBlocs = [];               // ROADMAP 366 鎮民陣營 [{members, member_names, figurehead, figurehead_name, cohesion}]
   let townShare = null;             // ROADMAP 369 鎮民互助分享送禮手勢 {giver, receiver, t}（null = 無人正在分享）
+  let worldGroves = [];             // ROADMAP 370 玩家親手種下、隨真實時間長大的世界樹群 [{x, y, stage}]
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -2093,6 +2094,8 @@
         if (Array.isArray(msg.town_blocs)) townBlocs = msg.town_blocs;
         // 鎮民互助分享送禮手勢（ROADMAP 369）：一份心意正飄越廣場；無此欄位（舊伺服器/無人分享）→ null。
         townShare = msg.town_share || null;
+        // 親手植樹成蔭（ROADMAP 370）：全服共享的世界樹群（隨真實時間長大）；無此欄位（舊伺服器）→ 空。
+        if (Array.isArray(msg.world_groves)) worldGroves = msg.world_groves;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -2356,6 +2359,8 @@
           updateHelpResidentBtn(me);
           // 乙太微粒採集按鈕（ROADMAP 142）
           updateCarionOrbBtn(me);
+          // 親手植樹按鈕（ROADMAP 370）：戶外、已登入才顯示
+          updatePlantTreeBtn(me, isGuest);
         }
         break;
       }
@@ -5117,6 +5122,7 @@
     safeDraw("townDecor", () => drawTownDecor(camX, camY)); // 城鎮裝飾:名牌+城門守衛
     safeDraw("townBuildings", () => drawTownBuildings(camX, camY)); // 城鎮建築（ROADMAP 110）
     safeDraw("landPlots", () => drawLandPlots(camX, camY)); // 城外產權地塊（ROADMAP 34）
+    safeDraw("worldGroves", () => drawWorldGroves(camX, camY, renderNow)); // 玩家親手種下的世界樹群（ROADMAP 370），貼地表、角色之下
     safeDraw("npcs", () => drawNpcs(camX, camY)); // NPC（ROADMAP 73）
     safeDraw("townShare", () => drawTownShare(camX, camY)); // 鎮民互助分享光禮（ROADMAP 369）
     safeDraw("colonies", () => drawColonies(camX, camY)); // 物種聚落領地圓圈（ROADMAP 143）
@@ -5794,6 +5800,16 @@
     }
   }
   // ── 居民搭話按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 親手植樹按鈕（ROADMAP 370）────────────────────────────────────────────────
+  /** 每幀更新「🌳 植樹」按鈕：已登入且在戶外才顯示（室內種樹沒意義；訪客不留世界痕跡）。 */
+  function updatePlantTreeBtn(me, isGuestUser) {
+    const btn = document.getElementById("plantTreeBtn");
+    if (!btn) return;
+    const canPlant = !!me && !isGuestUser && me.indoor_plot_id == null;
+    btn.classList.toggle("hidden", !canPlant);
+  }
+  // ── 親手植樹按鈕 end ──────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -9300,6 +9316,44 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("🎁", px, py);
+    ctx.restore();
+  }
+
+  // 親手植樹成蔭（ROADMAP 370）：玩家在戶外種下、隨真實時間長大的世界樹群。
+  // 後端每幀送來各樹的世界座標與成長階段（0=🌱嫩芽 1=🌿樹苗 2=🌲幼樹 3=🌳大樹）；
+  // 前端據階段選圖示與大小，由小到大畫出——玩家親眼看見自己種下的嫩芽一點點長成綠蔭。
+  // 純表現、只讀快照、不嵌任何規則；貼地表、畫在角色之下（樹是景物，不擋玩家）。
+  function drawWorldGroves(camX, camY, renderNow) {
+    if (!worldGroves || !worldGroves.length) return;
+    // 階段 → 圖示與字級（px）。大樹最醒目，嫩芽最小。
+    const GLYPH = ["🌱", "🌿", "🌲", "🌳"];
+    const SIZE = [13, 20, 28, 38];
+    const now = (renderNow || performance.now()) / 1000;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic"; // 以樹腳為錨點，畫在地面上
+    for (const t of worldGroves) {
+      const stage = Math.max(0, Math.min(3, (t.stage | 0)));
+      const sx = t.x - camX;
+      const sy = t.y - camY;
+      const sz = SIZE[stage];
+      // 視野外剔除（留一棵樹的邊界裕度）。
+      if (sx < -sz || sy < -sz * 2 || sx > viewW + sz || sy > viewH + sz) continue;
+      // 幼樹／大樹隨風輕擺（reduceMotion 下不擺）；嫩芽樹苗太小不擺。
+      const sway = (reduceMotion || stage < 2)
+        ? 0
+        : Math.sin(now * 1.3 + (t.x + t.y) * 0.05) * (stage === 3 ? 2.2 : 1.3);
+      // 樹腳柔影（成樹才畫得明顯，越大影越大）。
+      ctx.globalAlpha = 0.16 + stage * 0.03;
+      ctx.fillStyle = "#1d2a1c";
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + 1, sz * 0.34, sz * 0.13, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 樹身。
+      ctx.globalAlpha = 1;
+      ctx.font = `${sz}px sans-serif`;
+      ctx.fillText(GLYPH[stage], sx + sway, sy);
+    }
     ctx.restore();
   }
 
@@ -22502,6 +22556,17 @@
         }
         safeSend({ type: "play_with_pet", dx, dy });
         announce("朝面前丟出玩具，逗你的寵物去叼回");
+      });
+    }
+    // 🌳 植樹（ROADMAP 370）：在腳邊種下一株嫩芽，它會隨真實時間長成大樹、全服共享。
+    //    伺服器以玩家權威座標放置（防隔空種樹）；太近既有樹 / 室內 / 超量靜默忽略。
+    const plantTreeBtn = document.getElementById("plantTreeBtn");
+    if (plantTreeBtn) {
+      plantTreeBtn.addEventListener("click", () => {
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        safeSend({ type: "plant_tree" });
+        announce("在腳邊種下一株嫩芽，它會隨時間慢慢長成大樹");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

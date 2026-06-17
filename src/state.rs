@@ -1050,6 +1050,8 @@ pub struct AppState {
     /// 鎮民互助分享（ROADMAP 369）：寬裕的居民依「繁榮感」需求自發勻一份心意給拮据的居民；
     /// 持有防反覆刷頻的 last_pair 與進行中的送禮手勢計時。記憶體模式，重啟清零。
     pub town_share: Arc<RwLock<crate::town_share::TownShareState>>,
+    /// 玩家親手種下、隨真實時間長大的世界樹群（ROADMAP 370）。全服共享，記憶體模式、重啟清零。
+    pub world_grove: Arc<RwLock<crate::world_grove::WorldGrove>>,
     /// NPC 作息與移動管理器（ROADMAP 73）。
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
     /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
@@ -1332,6 +1334,7 @@ impl AppState {
             social_dynamics: Arc::new(RwLock::new(crate::social_dynamics::SocialDynamicsState::new())),
             town_blocs: Arc::new(RwLock::new(crate::town_blocs::TownBlocState::new())),
             town_share: Arc::new(RwLock::new(crate::town_share::TownShareState::new())),
+            world_grove: Arc::new(RwLock::new(crate::world_grove::WorldGrove::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),

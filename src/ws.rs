@@ -465,7 +465,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -611,6 +611,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         town_blocs: town_blocs.clone(),
                                         // 鎮民互助分享的送禮手勢（ROADMAP 369）：全服廣播（至多一樁，不做 AOI）。
                                         town_share: town_share.clone(),
+                                        // 親手植樹成蔭（ROADMAP 370）：世界樹群全服共享，不做 AOI 剔除（量小、封頂 80）。
+                                        world_groves: world_groves.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -671,6 +673,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 擋封包洪流；一趟接物未結束前不重複開新接物另由 game.rs 把關（`pet_fetch.is_none()` 才丟得出）。
     let mut rl_petfetch_win = std::time::Instant::now();
     let mut rl_petfetch_n: u32 = 0;
+    // 親手植樹限流（ROADMAP 370）：每株種樹走全服廣播放大，比照立路標／擊掌從嚴（每秒至多 3 次，
+    // 超量靜默丟棄）——連線層擋封包洪流；每人持有量與全域上限另由 world_grove 把關。
+    let mut rl_planttree_win = std::time::Instant::now();
+    let mut rl_planttree_n: u32 = 0;
     // 立路標限流（ROADMAP 353）：每則立牌走 broadcast 放大給全服，比照 emote／擊掌從嚴
     // （每秒至多 3 次，超量靜默丟棄）——連線層擋封包洪流，每人持有量另由 wayposts 板上限把關。
     let mut rl_waypost_win = std::time::Instant::now();
@@ -1096,6 +1102,32 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 phase: crate::pet_fetch::FetchPhase::Chasing,
                             });
                             p.pet_fetching = true;
+                        }
+                    }
+                }
+                Ok(ClientMsg::PlantTree) => {
+                    // 親手植樹（ROADMAP 370）：在玩家自己的權威座標種下一株嫩芽，隨真實時間長成大樹、全服共享。
+                    // 限流（比照立路標：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_planttree_win.elapsed().as_secs() >= 1 {
+                        rl_planttree_win = std::time::Instant::now();
+                        rl_planttree_n = 0;
+                    }
+                    rl_planttree_n += 1;
+                    if rl_planttree_n > 3 {
+                        continue;
+                    }
+                    // 取玩家權威座標：須已登入（訪客 id 不在 users，不給留世界痕跡）、在室外才種得了
+                    // （室內種樹沒意義）。種植上限／間距交給 world_grove 把關，種不成靜默忽略。
+                    let pos = {
+                        let players = app.players.read().unwrap();
+                        match players.get(&id) {
+                            Some(p) if p.indoor_plot_id.is_none() => Some((p.x, p.y)),
+                            _ => None,
+                        }
+                    };
+                    if let Some((px, py)) = pos {
+                        if app.users.get(id).is_some() {
+                            app.world_grove.write().unwrap().plant(id, px, py);
                         }
                     }
                 }

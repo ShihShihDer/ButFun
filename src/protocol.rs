@@ -242,6 +242,10 @@ pub enum ClientMsg {
         #[serde(default)]
         dy: f32,
     },
+    /// 親手植樹（ROADMAP 370）：玩家在「自己當下的權威座標」種下一株嫩芽，它會隨真實時間長成大樹。
+    /// 無 payload——一律用玩家自己的權威座標放置（防隔空種樹）。伺服器過全域／個人上限＋間距檢查後種下，
+    /// 全服共享。未登入 / 室內 / 太近既有樹 / 超量靜默忽略。
+    PlantTree,
     /// 立路標（ROADMAP 353）：玩家在「自己當下的權威座標」立一塊路標，留一句預設訊息給後來的人。
     /// `message_key` 必須是 `wayposts::PRESET_MESSAGES` 白名單內的 wire key（杜絕自由文字／XSS）。
     /// 伺服器查白名單、用玩家自己的權威座標放置（防隔空立牌），並全服廣播 `ServerMsg::Wayposts`。
@@ -946,6 +950,10 @@ pub enum ServerMsg {
         /// 前端據此在送禮者與受禮者兩位 NPC 之間補間繪製一份小小光禮。`#[serde(default)]` 向後相容。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         town_share: Option<TownShareView>,
+        /// 玩家親手種下的世界樹群（ROADMAP 370）：全服共享、隨真實時間長大的所有樹。
+        /// 空陣列＝目前世界上還沒有人種樹。前端在世界座標上繪製對應成長階段的樹。`#[serde(default)]` 向後相容。
+        #[serde(default)]
+        world_groves: Vec<TreeView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1860,6 +1868,16 @@ pub struct TownShareView {
     pub t: f32,
 }
 
+/// 玩家親手種下、隨真實時間長大的一株樹（ROADMAP 370）。後端只送世界座標與成長階段；
+/// 前端據 `stage`（0=嫩芽 1=樹苗 2=幼樹 3=大樹）在世界座標上繪製對應大小的樹。
+#[derive(Debug, Clone, Serialize)]
+pub struct TreeView {
+    pub x: f32,
+    pub y: f32,
+    /// 成長階段 wire 值（0=🌱 1=🌿 2=🌲 3=🌳），與 `world_grove::GrowStage::wire` 對齊、別重排。
+    pub stage: u8,
+}
+
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherView {
@@ -2238,6 +2256,7 @@ mod tests {
             town_factions: vec![],
             town_blocs: vec![],
             town_share: None,
+            world_groves: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
