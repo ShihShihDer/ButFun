@@ -328,6 +328,29 @@
     const m = BOTTLE_MESSAGES.find((x) => x.key === key);
     return m ? m.label : key;
   }
+  // 放天燈（ROADMAP 372）：夜空維度的第一個玩家能動性玩法——夜裡親手放一盞承載祝願的天燈，
+  // 升上全服共享的夜空、隨真實時間飄移後燃盡，眾人的燈匯成一片飄動的燈海。
+  // lanterns＝當前在空的天燈（ws "sky_lanterns" 整批更新；每盞補一個 recvMs 供本地推算升空進度）。
+  const lanternState = { lanterns: [] };
+  // 預設祝願（ROADMAP 372）：wire key → 面向玩家顯示句。與後端 `sky_lantern::PRESET_WISHES`
+  // 的 key 一一對應（顯示句以此處為準，集中前端便於 i18n）。新增句子兩邊 key 要同步。
+  const LANTERN_WISHES = [
+    { key: "peace", label: "願這片星海永遠安寧" },
+    { key: "good_health", label: "願你身體康健、平安順遂" },
+    { key: "reunion", label: "願與惦念的人再相逢" },
+    { key: "bountiful_harvest", label: "願田畝豐收、爐火常暖" },
+    { key: "safe_voyage", label: "願每段旅途都一路順風" },
+    { key: "bright_future", label: "願前路有光、所願皆成" },
+    { key: "gratitude", label: "謝謝陪我走到這裡的每個人" },
+    { key: "courage", label: "願我有再往前一步的勇氣" },
+  ];
+  function lanternLabel(key) {
+    const m = LANTERN_WISHES.find((x) => x.key === key);
+    return m ? m.label : key;
+  }
+  // daynight.light 低於此值起算「夜色」：天燈隨夜色加深而漸顯（放燈仍由伺服器以權威 Phase::Night 把關）。
+  const LANTERN_DUSK_LIGHT = 0.55;
+  const LANTERN_NIGHT_LIGHT = 0.42;
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -2208,6 +2231,7 @@
           updateMiningPanel(me, isGuest); // 礦脈深掘面板（ROADMAP 348）
           updateWaypostPanel(me, isGuest); // 探索者路標面板（ROADMAP 353）
           updateBottlePanel(me, isGuest); // 星海寄語 / 漂流瓶面板（ROADMAP 354）
+          updateLanternPanel(me, isGuest); // 放天燈面板（ROADMAP 372）：夜色/燈海數隨快照刷新
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
@@ -2463,6 +2487,23 @@
           if (dockBtn) dockBtn.classList.add("dock-active");
         }
         updateBottlePanel();
+        break;
+      }
+      case "sky_lanterns": {
+        // 夜空天燈列表（ROADMAP 372）：全服當前在空的所有天燈，整批替換。
+        // 每盞補一個本地收到時刻 recvMs，讓渲染能在兩次廣播之間把升空進度往前推（age_secs 是快照值）。
+        const recvMs = performance.now();
+        const arr = Array.isArray(msg.lanterns) ? msg.lanterns : [];
+        lanternState.lanterns = arr.map((l) => ({
+          id: l.id,
+          wish: l.wish,
+          author_name: l.author_name || "某位旅人",
+          age_secs: typeof l.age_secs === "number" ? l.age_secs : 0,
+          ttl_secs: typeof l.ttl_secs === "number" && l.ttl_secs > 0 ? l.ttl_secs : 600,
+          seed: (l.seed | 0) >>> 0,
+          recvMs,
+        }));
+        updateLanternPanel();
         break;
       }
       case "high_five_match": {
@@ -5210,6 +5251,9 @@
 
     // 夜空流星（ROADMAP 192）：獨立 safeDraw，入夜偶發一道流星劃過上半天邊。
     safeDraw("shootingStar", () => drawShootingStar(performance.now()));
+
+    // 放天燈（ROADMAP 372）：獨立 safeDraw，夜裡眾人放上的天燈緩緩升過夜空、隨真實時間飄移後燃盡。
+    safeDraw("skyLanterns", () => drawSkyLanterns(performance.now()));
 
     // 雷雨閃電（ROADMAP 243）：獨立 safeDraw，草原暴雨時天空偶發一記全屏泛光＋分叉電光。
     // 排在天象最上層、小地圖之前——閃電要照亮整片天地（含地面），覆在所有世界元素之上。
@@ -12446,6 +12490,66 @@
   }
 
   // 每幀偵測夜晚並繪製偶發流星（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  // ── 放天燈（ROADMAP 372）：夜空裡眾人放上的天燈緩緩升起、隨真實時間飄移後燃盡 ──────────
+  // 純前端表現層：天燈本身（有哪些、各自的 seed/age）由伺服器握權威並整批廣播，這裡只負責把每盞
+  // 依其 seed（水平起點＋飄擺相位）與 age/ttl（升空進度）畫成一盞暖橘發光的小燈、隨夜色深淺漸顯。
+  // 螢幕空間繪製（與極光／銀河同層的夜空 overlay）：眾人各自放的燈在同一片夜空匯成飄動的燈海。
+  function drawSkyLanterns(now) {
+    const list = lanternState.lanterns;
+    if (!list || list.length === 0) return;
+    const light = daynight ? daynight.light : 1;
+    // 隨夜色加深而漸顯：白天（light 高）→ 0 不畫；入夜越深越亮。
+    const nightFactor = Math.max(0, Math.min(1,
+      (LANTERN_DUSK_LIGHT - light) / (LANTERN_DUSK_LIGHT - LANTERN_NIGHT_LIGHT)));
+    if (nightFactor <= 0) return;
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // 暖橘光相加賣「夜空裡的暖光」
+    for (const l of list) {
+      // 升空進度：age_secs 是收到廣播當下的快照值，本地再隨時鐘往前推，兩次廣播之間也持續上升。
+      const elapsed = l.age_secs + Math.max(0, (now - l.recvMs) / 1000);
+      let prog = elapsed / l.ttl_secs;
+      if (prog < 0) prog = 0;
+      if (prog >= 1) continue; // 燃盡（伺服器下次廣播會移除）
+      // 緩起緩升：用 easeOut，越接近頂越慢，像天燈升到高空後幾乎靜浮。
+      const e = 1 - Math.pow(1 - prog, 1.6);
+
+      // 水平起點由 seed 決定（散開在天幕各處），升空時再緩緩往一向飄。
+      const fx = 0.06 + ((l.seed % 1000) / 1000) * 0.88;
+      const driftDir = (l.seed & 1) ? 1 : -1;
+      const sway = reduceMotion ? 0 : Math.sin(now / 2600 + l.seed) * viewW * 0.012;
+      const x = viewW * fx + driftDir * e * viewW * 0.05 + sway;
+      // 由近地平線升到上半天空。
+      const y = viewH * (0.94 - e * 0.86);
+
+      // 透明度：升空初段淡入、燃盡前淡出，再乘夜色因子。
+      let a = 1;
+      if (prog < 0.05) a = prog / 0.05;
+      else if (prog > 0.82) a = (1 - prog) / 0.18;
+      a = Math.max(0, Math.min(1, a)) * nightFactor;
+      if (a <= 0.01) continue;
+      // 火光輕微明滅（reduceMotion 下不閃，靜靜地浮）。
+      const flick = reduceMotion ? 1 : (0.85 + 0.15 * Math.sin(now / 180 + l.seed * 1.3));
+
+      // 暖光暈：徑向漸層由暖橘核心向外淡出。
+      const glowR = 13;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+      g.addColorStop(0, `rgba(255,196,108,${(0.55 * a * flick).toFixed(3)})`);
+      g.addColorStop(0.45, `rgba(255,150,70,${(0.28 * a * flick).toFixed(3)})`);
+      g.addColorStop(1, "rgba(255,120,40,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(x, y, glowR, 0, Math.PI * 2);
+      ctx.fill();
+      // 燈芯亮點。
+      ctx.fillStyle = `rgba(255,230,170,${(0.9 * a * flick).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function drawShootingStar(now) {
     const light = daynight ? daynight.light : 1;
     const night = light < SHOOT_STAR_NIGHT_LIGHT;
@@ -19190,6 +19294,74 @@
     body.appendChild(tip);
   }
 
+  // ── 放天燈面板（ROADMAP 372）────────────────────────────────────────────────
+  // 夜空維度的第一個玩家能動性玩法：夜裡挑一句祝願，放一盞天燈升上全服共享的夜空。
+  // 放燈只在夜裡受理（伺服器以權威 Phase::Night 把關，前端依夜色提示）；每人最多同時放 3 盞。
+  let lastLanternSig = null;
+  function updateLanternPanel(me, isGuestUser) {
+    const body = document.getElementById("lanternBody");
+    if (!body) return;
+    const light = daynight ? daynight.light : 1;
+    const isNight = light < LANTERN_DUSK_LIGHT;
+    const aloft = lanternState.lanterns.length;
+    // sig：登入狀態 + 是否夜晚 + 在空燈數 變了才重建（守 panel-sig 病）。
+    const sig = [isGuestUser, isNight, aloft].join("|");
+    if (sig === lastLanternSig) return;
+    lastLanternSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能放天燈，把一句祝願送上全服共享的夜空。";
+      body.appendChild(hint);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#ddd;font-size:.85rem;margin-bottom:8px;line-height:1.5;";
+    intro.textContent = "夜裡挑一句祝願，放一盞天燈升上夜空。它會隨真實時間緩緩飄移約十分鐘後燃盡；眾人放的燈匯成一片飄動的燈海。";
+    body.appendChild(intro);
+
+    // 夜空現況。
+    const status = document.createElement("div");
+    status.style.cssText = "color:#ffcf9f;font-size:.82rem;margin-bottom:8px;";
+    status.textContent = aloft > 0
+      ? `🏮 夜空裡飄著 ${aloft} 盞天燈`
+      : "🏮 夜空此刻還沒有天燈——放上第一盞吧。";
+    body.appendChild(status);
+
+    if (!isNight) {
+      const dayHint = document.createElement("div");
+      dayHint.style.cssText = "color:#bbb;font-size:.82rem;margin:6px 0;line-height:1.5;";
+      dayHint.textContent = "🌙 天燈只在夜裡放得了，也只有夜色裡才看得見。等天黑了再來吧。";
+      body.appendChild(dayHint);
+    } else {
+      const castHint = document.createElement("div");
+      castHint.style.cssText = "color:#bbb;font-size:.8rem;margin-top:4px;margin-bottom:4px;";
+      castHint.textContent = "🏮 挑一句祝願放上夜空：";
+      body.appendChild(castHint);
+
+      LANTERN_WISHES.forEach((m) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.style.cssText = "display:block;width:100%;text-align:left;padding:7px 10px;margin-bottom:5px;border:1px solid #c98a4b;border-radius:8px;background:rgba(201,138,75,.12);color:#f0c8a0;cursor:pointer;font-size:.88rem;";
+        btn.textContent = "🏮 " + m.label;
+        btn.addEventListener("click", () => {
+          safeSend({ type: "release_lantern", wish: m.key });
+          if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: "🏮 你放了一盞天燈", color: "255,200,120", born: performance.now() });
+          announce(`你放了一盞天燈，祈願「${m.label}」，它正升上夜空`);
+        });
+        body.appendChild(btn);
+      });
+    }
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:8px;line-height:1.5;";
+    tip.textContent = "天燈升空約十分鐘後燃盡消失；全服共享，你也看得見別人放的燈。每人最多同時放 3 盞。";
+    body.appendChild(tip);
+  }
+
   // ── 觀星連星座面板（ROADMAP 347）──────────────────────────────────────────
   // 夜裡開星圖，把散落的星點依今夜星座連成線。互動＝空間連線（與釣魚的反應計時換骨架）：
   // 點星點依序連成一條走線，伺服器把「邊的集合」與今夜星座比對，連對且首次即記入星座錄。
@@ -22163,6 +22335,8 @@
       if (win.id === "winStargaze") requestStarMap();
       // 和解面板（ROADMAP 364）：一開窗就向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
       if (win.id === "winReconcile") requestReconcile();
+      // 放天燈面板（ROADMAP 372）：一開窗就依當前夜色／燈海數重繪（不必等下次快照）。
+      if (win.id === "winLantern") updateLanternPanel();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();

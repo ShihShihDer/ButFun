@@ -262,6 +262,10 @@ pub enum ClientMsg {
     /// 伺服器以剛才的撈瓶記錄決定收件人（不信任前端傳對象，防偽造投遞）。
     /// `message_key` 須在白名單內。未登入 / 未撈過 / 回贈窗已過 / 未知 key 靜默忽略。
     ReplyBottle { message_key: String },
+    /// 放一盞天燈（ROADMAP 372）：玩家挑一句預設祝願，放一盞天燈升上全服共享的夜空。
+    /// `wish` 必須是 `sky_lantern::PRESET_WISHES` 白名單內的 wire key（杜絕自由文字／XSS）。
+    /// 只在夜間受理；未登入 / 白天 / 未知 key / 超量靜默忽略。
+    ReleaseLantern { wish: String },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -749,6 +753,25 @@ pub struct BottleReplyView {
     pub message_key: String,
 }
 
+/// 一盞在空的天燈（ROADMAP 372）。隨 `ServerMsg::SkyLanterns` 整批送給前端渲染。
+/// 前端依 `seed` 推算水平起點與飄擺、依 `age_secs`/`ttl_secs` 算升空進度與燃盡淡出，
+/// 不必逐幀廣播位置（省頻寬）。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LanternView {
+    /// 天燈唯一識別碼（前端去重、追蹤同一盞的動畫）。
+    pub id: u64,
+    /// 祝願 wire key（白名單內；前端對照成顯示句，i18n 友善）。
+    pub wish: String,
+    /// 放燈者顯示名。
+    pub author_name: String,
+    /// 已升空秒數（前端收到時的快照值，本地再隨時鐘往前推）。
+    pub age_secs: f32,
+    /// 一盞燈的總存在時長（秒），到此即燃盡淡出。
+    pub ttl_secs: f32,
+    /// 散開水平起點與飄擺相位的種子（前端確定推算飄移軌跡用）。
+    pub seed: u32,
+}
+
 /// 城鎮入侵警報快照（ROADMAP 158/161）——供前端 HUD 顯示入侵狀態與倒數。
 #[derive(Debug, Clone, Serialize)]
 pub struct InvasionView {
@@ -1061,6 +1084,11 @@ pub enum ServerMsg {
     /// 何時送：玩家連線時直送一次；有人拋瓶/撈瓶/瓶子沉沒導致數量變動時全服廣播一次。
     /// 量小、不入高頻快照。前端據此顯示「🌊 海上漂著 N 只瓶」。
     BottleSeaCount { count: u32 },
+    /// 夜空天燈列表（ROADMAP 372）：全服當前在空的所有天燈。
+    /// 何時送：(a) 玩家連線時直送一次（拿到當前夜空已有的燈）；(b) 有人放新燈或有燈燃盡導致
+    /// 數量變動時全服廣播一次。量小（≤60），不入高頻快照、不做 AOI——前端依各盞 `seed` 自行
+    /// 推算升空飄移軌跡並渲染，依 id 去重。純呈現、不送物品/乙太/戰力，零平衡風險、零持久化。
+    SkyLanterns { lanterns: Vec<LanternView> },
     /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣
     /// 更新（名牌徽記即時刷、不必等下次快照）。`giver_name` = 喝采者；`target_id`/`target_name`

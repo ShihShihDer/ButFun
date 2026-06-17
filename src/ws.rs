@@ -445,6 +445,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 放天燈（ROADMAP 372）：進場後直送一次當前夜空所有在空的天燈，玩家一連上就看見眾人的燈海。
+    {
+        let msg = build_sky_lanterns_msg(&app);
+        if let Ok(text) = serde_json::to_string(&msg) {
+            let _ = sender.send(Message::Text(text)).await;
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
@@ -686,6 +694,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 連線層擋封包洪流，每人持有量／信箱量另由 bottle_drift 上限把關。
     let mut rl_bottle_win = std::time::Instant::now();
     let mut rl_bottle_n: u32 = 0;
+    // 放天燈限流（ROADMAP 372）：放燈會放大成全服列表廣播＋一行世界頻道，比照漂流瓶從嚴
+    // （每秒至多 3 次，超量靜默丟棄）——連線層擋封包洪流，每人在空量另由 sky_lantern 上限把關。
+    let mut rl_lantern_win = std::time::Instant::now();
+    let mut rl_lantern_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -1042,6 +1054,55 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 離線就留在信箱等他下次連線領取（出鎖後送，守 prod-deadlock）。
                     if let Some((author_id, _)) = routed {
                         deliver_bottle_inbox(&app, author_id);
+                    }
+                }
+                Ok(ClientMsg::ReleaseLantern { wish }) => {
+                    // 放天燈（ROADMAP 372）：夜裡挑一句祝願，放一盞天燈升上全服共享的夜空。
+                    use crate::daynight::Phase;
+                    if rl_lantern_win.elapsed().as_secs() >= 1 {
+                        rl_lantern_win = std::time::Instant::now();
+                        rl_lantern_n = 0;
+                    }
+                    rl_lantern_n += 1;
+                    if rl_lantern_n > 3 {
+                        continue;
+                    }
+                    // 只有登入玩家放得了燈（author_name 才穩定、每人在空上限才算得準）。未登入靜默忽略。
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    // 只在夜裡放得了天燈（白天看不見、也不合氛圍）。非夜間靜默忽略。
+                    let is_night = {
+                        let dn = app.daynight.read().unwrap();
+                        dn.phase() == Phase::Night
+                    };
+                    if !is_night {
+                        continue;
+                    }
+                    // 查白名單：只接受預設祝願 key，杜絕自由文字／XSS。未知 key 靜默忽略。
+                    if !crate::sky_lantern::is_valid_wish_key(&wish) {
+                        continue;
+                    }
+                    // 讀玩家自己的即時名（改名也對），與 players 鎖不嵌套。
+                    let name = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| p.name.clone())
+                    };
+                    if let Some(name) = name {
+                        let released = {
+                            let mut sky = app.sky_lanterns.write().unwrap();
+                            sky.release(id, name.clone(), &wish)
+                        };
+                        // 放成功 → 夜空列表變動，全服重播最新列表＋世界頻道飄一行（皆出鎖後送，守 prod-deadlock）。
+                        if released.is_some() {
+                            broadcast_sky_lanterns(&app);
+                            if let Some(zh) = crate::sky_lantern::wish_text(&wish) {
+                                let _ = app.tx_chat.send(format!(
+                                    "🏮 {} 放了一盞天燈，祈願「{}」",
+                                    name, zh
+                                ));
+                            }
+                        }
                     }
                 }
                 Ok(ClientMsg::HighFive) => {
@@ -6755,6 +6816,32 @@ fn build_wayposts_msg(app: &AppState) -> ServerMsg {
 fn broadcast_bottle_sea_count(app: &AppState) {
     let count = app.bottles.read().unwrap().drifting_count() as u32;
     let _ = app.tx.send(std::sync::Arc::new(ServerMsg::BottleSeaCount { count }));
+}
+
+/// 組一則「當前夜空所有在空天燈」訊息（ROADMAP 372）。連線初送與全服重播共用。
+/// 讀鎖內只做純對映、鎖出函式即放（呼叫端再送，守 prod-deadlock）。
+fn build_sky_lanterns_msg(app: &AppState) -> ServerMsg {
+    let sky = app.sky_lanterns.read().unwrap();
+    let lanterns = sky
+        .lanterns()
+        .iter()
+        .map(|l| crate::protocol::LanternView {
+            id: l.id,
+            wish: l.wish_key.clone(),
+            author_name: l.author_name.clone(),
+            age_secs: l.age,
+            ttl_secs: crate::sky_lantern::LANTERN_TTL_SECS,
+            seed: l.seed,
+        })
+        .collect();
+    ServerMsg::SkyLanterns { lanterns }
+}
+
+/// 全服重播一次夜空天燈列表（ROADMAP 372）。放新燈或有燈燃盡導致數量變動時呼叫。
+/// build 讀鎖在函式內即放、出鎖後才對 tx 送（守 prod-deadlock）。
+fn broadcast_sky_lanterns(app: &AppState) {
+    let msg = build_sky_lanterns_msg(app);
+    let _ = app.tx.send(std::sync::Arc::new(msg));
 }
 
 /// 把某玩家信箱裡的回贈整批送給他（ROADMAP 354）——僅在他在線（有單播通道）時送，

@@ -549,6 +549,7 @@
         <button type="button" class="dock-btn" id="dockAtlas" data-win="winAtlas" aria-label="探索圖鑑">🗺️</button>
         <button type="button" class="dock-btn" id="dockSky" data-win="winSky" aria-label="天象圖鑑">🌌</button>
         <button type="button" class="dock-btn" id="dockStargaze" data-win="winStargaze" aria-label="觀星連星座">🔭</button>
+        <button type="button" class="dock-btn" id="dockLantern" data-win="winLantern" aria-label="放天燈">🏮</button>
         <button type="button" class="dock-btn" id="dockReconcile" data-win="winReconcile" aria-label="居民和解委託">🕊️</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-keyshortcuts="G" aria-label="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockFriend" data-win="winFriend" aria-label="好友清單">👥</button>
@@ -697,6 +698,14 @@
         <button type="button" class="win-close" data-close="winStargaze" aria-label="關閉觀星面板">✕</button>
       </div>
       <div id="stargazeBody"></div>
+    </div>
+    <!-- 放天燈面板（ROADMAP 372）：夜裡挑一句祝願放一盞天燈，升上全服共享的夜空、隨真實時間飄移後燃盡。 -->
+    <div id="winLantern" class="hud-window hidden" role="dialog" aria-labelledby="lanternTitle">
+      <div class="win-head">
+        <span class="win-title" id="lanternTitle">🏮 放天燈</span>
+        <button type="button" class="win-close" data-close="winLantern" aria-label="關閉放天燈面板">✕</button>
+      </div>
+      <div id="lanternBody"></div>
     </div>
     <!-- 居民和解委託面板（ROADMAP 364）：玩家第一次能牽動 NPC↔NPC 關係——替鬧僵的鎮民居中緩頰。 -->
     <div id="winReconcile" class="hud-window hidden" role="dialog" aria-labelledby="reconcileTitle">

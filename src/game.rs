@@ -1640,6 +1640,30 @@ pub fn spawn(app: AppState) {
                     ));
                 }
             }
+            // 放天燈（ROADMAP 372）：推進每盞燈升空；有燈燃盡導致夜空數量變動時，全服重播一次
+            // 最新天燈列表（讀鎖取完即放、出鎖後才送，守 prod-deadlock）。
+            {
+                let changed = app.sky_lanterns.write().unwrap().tick(dt);
+                if changed {
+                    let lanterns: Vec<crate::protocol::LanternView> = {
+                        let sky = app.sky_lanterns.read().unwrap();
+                        sky.lanterns()
+                            .iter()
+                            .map(|l| crate::protocol::LanternView {
+                                id: l.id,
+                                wish: l.wish_key.clone(),
+                                author_name: l.author_name.clone(),
+                                age_secs: l.age,
+                                ttl_secs: crate::sky_lantern::LANTERN_TTL_SECS,
+                                seed: l.seed,
+                            })
+                            .collect()
+                    };
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::SkyLanterns { lanterns },
+                    ));
+                }
+            }
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器；下雨時給 1.5x 加成。

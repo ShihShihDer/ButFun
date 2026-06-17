@@ -1183,6 +1183,10 @@ pub struct AppState {
     /// 第二條非同步玩家↔玩家互動（點對點、可回贈，與路標的定點廣播換骨架）。
     /// 記憶體模式、有界、會過期；遊戲迴圈每 tick 推進過期、海上數量變動時廣播 `ServerMsg::BottleSeaCount`。
     pub bottles: Arc<RwLock<crate::bottle_drift::BottleSea>>,
+    /// 放天燈（ROADMAP 372）：夜裡玩家親手放上夜空的祝願燈，全服共享、隨真實時間飄移後燃盡。
+    /// 夜空維度的第一個玩家能動性玩法（天象台/觀星/月相/流星皆被動，這裡玩家主動留下點什麼）。
+    /// 記憶體模式、有界、會燃盡；遊戲迴圈每 tick 推進、數量變動時廣播 `ServerMsg::SkyLanterns`。
+    pub sky_lanterns: Arc<RwLock<crate::sky_lantern::LanternSky>>,
     /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
     /// 記憶體模式，重啟重新在固定座標生成。
     pub wildlife_manager: Arc<RwLock<crate::wildlife::WildlifeManager>>,
@@ -1394,6 +1398,7 @@ impl AppState {
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
             wayposts: Arc::new(RwLock::new(crate::wayposts::WaypostBoard::new())),
             bottles: Arc::new(RwLock::new(crate::bottle_drift::BottleSea::new())),
+            sky_lanterns: Arc::new(RwLock::new(crate::sky_lantern::LanternSky::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             monster_species: Arc::new(RwLock::new(crate::species_relations::MonsterSpeciesRelations::new())),
