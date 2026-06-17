@@ -5990,7 +5990,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         })
                     };
                     if let Some((persona, name, rx, ry, seed)) = found {
-                        let reply_text = crate::resident_chat::get_chat(persona, seed).to_string();
+                        // ROADMAP 360：搭話內容反映「此刻城鎮」——季節／天氣／繁榮／生態警戒。
+                        // 各為臨時短讀鎖（語句結束即釋放、彼此不巢狀），守 prod-deadlock 鐵律。
+                        let talk_ctx = crate::resident_chat::TownTalkContext {
+                            phase: app.daynight.read().unwrap().phase(),
+                            weather: app.weather.read().unwrap().weather_type,
+                            season: app.season.read().unwrap().current,
+                            prosperity_level: app.residents.read().unwrap().prosperity_level(),
+                            eco_alarmed: app.director.read().unwrap().eco_pressure()
+                                >= crate::resident_chat::ECO_ALARM_PRESSURE,
+                        };
+                        let reply_text =
+                            crate::resident_chat::get_chat(persona, &talk_ctx, seed).to_string();
                         // 私人回應（NpcReply，只有本人看到）
                         if let Ok(json) = serde_json::to_string(&crate::protocol::ServerMsg::NpcReply {
                             npc: resident_id.clone(),
