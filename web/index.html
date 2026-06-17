@@ -527,6 +527,7 @@
         <button type="button" class="dock-btn" id="dockSkill" data-win="winSkill" aria-keyshortcuts="Z" aria-label="主動技能（Z）">🔮</button>
         <button type="button" class="dock-btn" id="dockPet" data-win="winPet" aria-keyshortcuts="P" aria-label="寵物夥伴（P）">🐾</button>
         <button type="button" class="dock-btn" id="dockFish" data-win="winFish" aria-keyshortcuts="F" aria-label="釣魚（F）">🎣</button>
+        <button type="button" class="dock-btn" id="dockMine" data-win="winMine" aria-keyshortcuts="2" aria-label="採礦（2）">⛏️</button>
         <button type="button" class="dock-btn" id="dockRanch" data-win="winRanch" aria-keyshortcuts="N" aria-label="牧場（N）">🐔</button>
         <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-keyshortcuts="T" aria-label="農作（T）">🌾</button>
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-keyshortcuts="X" aria-label="夜採星晶（X）">✨</button>
@@ -657,6 +658,14 @@
         <button type="button" class="win-close" data-close="winFish" aria-label="關閉釣魚面板">✕</button>
       </div>
       <div id="fishBody"></div>
+    </div>
+    <!-- 礦脈深掘面板（ROADMAP 348）：站岩地旁開礦脈，越挖越深礦量越多但會崩塌——見好就收。 -->
+    <div id="winMine" class="hud-window hidden" role="dialog" aria-labelledby="mineTitle">
+      <div class="win-head">
+        <span class="win-title" id="mineTitle">⛏️ 採礦</span>
+        <button type="button" class="win-close" data-close="winMine" aria-label="關閉採礦面板">✕</button>
+      </div>
+      <div id="mineBody"></div>
     </div>
     <!-- 觀星連星座面板（ROADMAP 347）：夜裡開星圖，把散落的星點依今夜星座連成線。 -->
     <div id="winStargaze" class="hud-window hidden" role="dialog" aria-labelledby="stargazeTitle">
@@ -1021,6 +1030,7 @@
           <div class="menu-items">
             <button type="button" class="menu-item" data-target="dockCraft">🔧 合成台</button>
             <button type="button" class="menu-item" data-target="dockFish">🎣 釣魚</button>
+            <button type="button" class="menu-item" data-target="dockMine">⛏️ 採礦</button>
             <button type="button" class="menu-item" data-target="dockRanch">🐔 牧場</button>
             <button type="button" class="menu-item" data-target="dockFarmCrop">🌾 農作</button>
             <button type="button" class="menu-item" data-target="dockStarCrystal">✨ 夜採星晶</button>

@@ -224,6 +224,17 @@ pub struct Player {
     /// 進行中的一趟釣魚小遊戲（ROADMAP 346）：拋竿後等咬鉤／反應窗口。
     /// 記憶體前置、不持久化、重啟清空（沒在釣＝None）。由 game.rs 每 tick 推進。
     pub fishing: Option<crate::fishing_bite::FishingCast>,
+
+    // ── 礦脈深掘（ROADMAP 348）────────────────────────────────────────────
+    /// 採礦冷卻剩餘秒數（0.0 = 可開新礦脈；> 0 = 冷卻中）。一輪結束（收礦／崩塌）後起算，
+    /// 由 game.rs 每 tick 遞減。注意：冷卻只擋「開新礦脈」，不擋已開礦脈的續敲／收礦。
+    pub mine_cooldown: f32,
+    /// 採礦嘗試計數（讓每條礦脈的隱藏崩塌深度偽隨機不同；記憶體前置，重啟清空）。
+    pub mine_attempt_count: u64,
+    /// 進行中的一條礦脈（ROADMAP 348）：press-your-luck 步步深掘／見好就收。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在挖＝None）。
+    pub mining: Option<crate::mining_vein::MiningVein>,
+
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
     /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
@@ -397,6 +408,13 @@ impl Player {
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 346：進行中釣魚小遊戲的階段（沒在釣＝None，略過序列化）。
             fishing_phase: self.fishing.map(|c| c.phase().as_str()),
+            // ROADMAP 348：採礦冷卻＋是否站在岩地旁（前端採礦鈕依此啟用／顯示倒數）。
+            mine_cooldown: self.mine_cooldown,
+            near_rock: crate::mining_vein::is_near_rock(self.x, self.y),
+            // ROADMAP 348：進行中礦脈的深度／累積袋量／震動等級（沒在挖＝None，略過序列化）。
+            mining_depth: self.mining.map(|v| v.depth()),
+            mining_haul: self.mining.map(|v| v.haul()),
+            mining_tremor: self.mining.map(|v| v.tremor().as_str()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1412,6 +1430,9 @@ mod tests {
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            mine_cooldown: 0.0,
+            mine_attempt_count: 0,
+            mining: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,

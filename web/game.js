@@ -1680,6 +1680,9 @@
             // ROADMAP 346：釣魚小遊戲階段（waiting/biting/null）。新咬鉤（→biting）記時，供浮標「❗」彈出動畫起算。
             if (existing.fishing_phase !== "biting" && p.fishing_phase === "biting") existing._fishBiteAt = performance.now();
             existing.fishing_phase = p.fishing_phase || null;
+            // ROADMAP 348：礦脈深掘——進行中礦脈的深度／震動（供頭頂畫「⛏️ 深度＋震動晃動」世界訊號）。
+            existing.mining_depth = (typeof p.mining_depth === "number") ? p.mining_depth : null;
+            existing.mining_tremor = p.mining_tremor || null;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -1930,6 +1933,7 @@
           updateStatUnspentHud(me.stat_points_unspent || 0); // 未分配點數 pill
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
+          updateMiningPanel(me, isGuest); // 礦脈深掘面板（ROADMAP 348）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
@@ -2243,6 +2247,30 @@
         } else if (msg.outcome === "escaped") {
           floaters.push({ wx, wy, text: "💨 魚脫鉤跑了…", color: "190,190,190", born: now });
           announce("等太久，魚脫鉤跑了");
+        }
+        break;
+      }
+      case "mine_result": {
+        // 礦脈深掘結果（ROADMAP 348）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        if (msg.outcome === "struck") {
+          // 敲到礦：震動越強顏色越警示（severe＝紅、faint＝橙、calm＝綠）。
+          const color = msg.tremor === "severe" ? "255,120,90"
+                      : msg.tremor === "faint"  ? "255,190,90"
+                      :                           "170,225,170";
+          const ore = msg.ore || 0;
+          floaters.push({ wx, wy, text: `⛏️ +${ore} 礦石（深 ${msg.depth || 0}）`, color, born: now });
+          if (msg.tremor === "severe") announce(`挖到深 ${msg.depth} 層，劇烈搖晃，再深恐崩塌`);
+          else if (msg.tremor === "faint") announce(`挖到深 ${msg.depth} 層，細微落石`);
+        } else if (msg.outcome === "collapsed") {
+          floaters.push({ wx, wy, text: "💥 礦脈崩塌！整袋礦全埋", color: "255,90,90", born: now });
+          announce("貪心了，礦脈崩塌，整袋礦全埋");
+        } else if (msg.outcome === "hauled") {
+          const haul = msg.haul || 0;
+          floaters.push({ wx, wy, text: `🪨 收礦撤出 +${haul} 礦石`, color: "120,200,255", born: now });
+          announce(`收礦撤出，落袋 ${haul} 礦石`);
         }
         break;
       }
@@ -3697,7 +3725,8 @@
         (e.key === "y" || e.key === "Y") ? "dockExpedition" :
         (e.key === "o" || e.key === "O") ? "dockProcurement" :
         (e.key === "w" || e.key === "W") ? "dockWarehouse" :
-        (e.key === "1") ? "dockFarmFair" : null;
+        (e.key === "1") ? "dockFarmFair" :
+        (e.key === "2") ? "dockMine" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -4476,6 +4505,28 @@
         ctx.fillText("❗", 0, 0);
         ctx.restore();
       }
+    }
+
+    // 礦脈深掘世界訊號（ROADMAP 348）：正在挖礦的玩家頭頂冒「⛏️ 深度」標記——
+    // 震動越強左右晃越明顯（severe＝紅、faint＝橙），把「越挖越險」做成一眼可讀的世界訊號
+    // （自己與旁觀者都看得到，深度／震動隨快照廣播）。reduceMotion 下不晃、只留靜態標記。
+    if (typeof p.mining_depth === "number") {
+      const now = performance.now();
+      const tremor = p.mining_tremor || "calm";
+      const color = tremor === "severe" ? "#ff785a" : tremor === "faint" ? "#ffbe5a" : "#c8e6c8";
+      // 震動晃動幅度（reduceMotion 關）。
+      let shake = 0;
+      if (!reduceMotion) {
+        const amp = tremor === "severe" ? 2.2 : tremor === "faint" ? 1.0 : 0;
+        shake = amp ? Math.sin(now / 50) * amp : 0;
+      }
+      ctx.save();
+      ctx.translate(sx + shake, by - 30);
+      ctx.font = "bold 14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = color;
+      ctx.fillText(`⛏️${p.mining_depth}`, 0, 0);
+      ctx.restore();
     }
   }
 
@@ -17924,6 +17975,87 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;";
     tip.textContent = "拋竿後等魚咬鉤（浮標抖動冒「❗」），把握反應窗口收竿——反應越快、魚越好！太早收會把魚嚇跑。每趟 5 秒冷卻、給農夫熟練度 +10 XP。";
+    body.appendChild(tip);
+  }
+
+  // ── 礦脈深掘面板（ROADMAP 348）──────────────────────────────────────────────
+  // 站岩地旁開礦脈，press-your-luck：越敲越深、礦量越多，但某個隱藏深度會崩塌、整袋礦全埋。
+  // 互動＝「步步深掘、見好就收」的抉擇（與釣魚的反應計時、觀星的空間連線換骨架）。
+  let lastMineSig = null;
+  function updateMiningPanel(me, isGuestUser) {
+    const body = document.getElementById("mineBody");
+    if (!body) return;
+    const cooldown = me ? (me.mine_cooldown || 0) : 0;
+    const nearRock = me ? !!me.near_rock : false;
+    // 進行中礦脈：深度（number）＋震動（calm/faint/severe）；沒在挖＝null。
+    const depth = me && typeof me.mining_depth === "number" ? me.mining_depth : null;
+    const haul = me && typeof me.mining_haul === "number" ? me.mining_haul : null;
+    const tremor = me ? (me.mining_tremor || null) : null;
+    const active = depth !== null;
+    // 冷卻每秒刷新；深度/袋量/震動/站位都納入 sig 即時切鈕。
+    const sig = [isGuestUser, Math.ceil(cooldown), nearRock, depth, haul, tremor].join("|");
+    if (sig === lastMineSig) return;
+    lastMineSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能採礦";
+      body.appendChild(hint);
+      return;
+    }
+
+    if (active) {
+      // 進行中礦脈：顯示深度＋礦袋＋震動警示，兩顆鈕「再挖一層／收礦撤出」。
+      const status = document.createElement("div");
+      status.style.cssText = "font-size:.85rem;line-height:1.6;margin-bottom:6px;color:#ddd;";
+      const tremorTxt = tremor === "severe" ? '<span style="color:#ff785a;font-weight:bold;">劇烈搖晃！再深恐崩塌</span>'
+                      : tremor === "faint"  ? '<span style="color:#ffbe5a;">細微落石…開始深了</span>'
+                      :                       '<span style="color:#aadcaa;">坑道穩定</span>';
+      status.innerHTML = `深度 <b style="color:#fff;">${depth}</b> 層　／　礦袋 <b style="color:#ffd24a;">${haul || 0}</b> 礦石<br>${tremorTxt}`;
+      body.appendChild(status);
+
+      const digBtn = document.createElement("button");
+      digBtn.type = "button";
+      digBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #c08040;border-radius:8px;background:rgba(192,128,64,.12);color:#ffc488;cursor:pointer;font-size:.95rem;margin-bottom:6px;";
+      digBtn.textContent = "⛏️ 再挖深一層（更多礦，但有崩塌風險）";
+      digBtn.addEventListener("click", () => { safeSend({ type: "mine" }); });
+      body.appendChild(digBtn);
+
+      const haulBtn = document.createElement("button");
+      haulBtn.type = "button";
+      haulBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #4080d0;border-radius:8px;background:rgba(64,128,208,.12);color:#88c4ff;cursor:pointer;font-size:.95rem;margin-bottom:8px;font-weight:bold;";
+      haulBtn.textContent = `🪨 收礦撤出（落袋 ${haul || 0} 礦石）`;
+      haulBtn.addEventListener("click", () => { safeSend({ type: "mine_haul" }); });
+      body.appendChild(haulBtn);
+    } else {
+      // 沒在挖：一顆「開挖」鈕（站岩地旁＋冷卻到期才亮）。
+      const startBtn = document.createElement("button");
+      startBtn.type = "button";
+      startBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #c08040;border-radius:8px;background:transparent;color:#ffc488;cursor:pointer;font-size:.95rem;margin-bottom:8px;";
+      if (nearRock && cooldown <= 0) {
+        startBtn.textContent = "⛏️ 開挖礦脈（站在岩地旁）";
+        startBtn.addEventListener("click", () => { safeSend({ type: "mine" }); });
+      } else if (cooldown > 0) {
+        startBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
+        startBtn.disabled = true;
+        startBtn.style.color = "#666";
+        startBtn.style.borderColor = "#444";
+        startBtn.style.cursor = "default";
+      } else {
+        startBtn.textContent = "⛏️ 走近岩地（灰褐石地）才能採礦";
+        startBtn.disabled = true;
+        startBtn.style.color = "#666";
+        startBtn.style.borderColor = "#444";
+        startBtn.style.cursor = "default";
+      }
+      body.appendChild(startBtn);
+    }
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:4px;";
+    tip.textContent = "在岩地旁開礦脈：越挖越深、礦量越多，但礦脈會在某個說不準的深度崩塌、把整袋礦全埋。看震動警示「見好就收」——撤得越深、礦與探索熟練度回報越高。一輪結束 8 秒冷卻。";
     body.appendChild(tip);
   }
 

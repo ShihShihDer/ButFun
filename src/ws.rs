@@ -145,6 +145,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            mine_cooldown: 0.0,
+            mine_attempt_count: 0,
+            mining: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -235,6 +238,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            mine_cooldown: 0.0,
+            mine_attempt_count: 0,
+            mining: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -3163,6 +3169,126 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     };
                     // 2. 出鎖後才廣播（前端只對自己 id 演出飄字）。
+                    if let Some(msg) = outcome_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+
+                // ── 敲礦／往更深一層挖（ROADMAP 348 礦脈深掘）────────────────────────
+                Ok(ClientMsg::Mine) => {
+                    // 沒在挖→驗未倒地、站岩地旁、冷卻到期→開一條新礦脈並挖第一層；
+                    // 已在挖→直接再往下敲一層（冷卻不擋續敲，只擋開新礦脈）。
+                    // 全程同一把 players 寫鎖、純記憶體；崩塌只清狀態不發礦。廣播在出鎖後送。
+                    use crate::mining_vein::{is_near_rock, MiningVein, StrikeOutcome};
+                    let outcome_msg = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            // 倒地不能挖。
+                            if p.vitals.is_downed() {
+                                None
+                            } else {
+                                // 沒在挖→嘗試開新礦脈（須冷卻到期＋站岩地旁）。
+                                if p.mining.is_none() {
+                                    if p.mine_cooldown <= 0.0 && is_near_rock(p.x, p.y) {
+                                        let seed = {
+                                            let id_bytes = p.id.as_u128();
+                                            ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+                                                ^ p.mine_attempt_count
+                                        };
+                                        p.mine_attempt_count = p.mine_attempt_count.wrapping_add(1);
+                                        p.mining = Some(MiningVein::open(seed));
+                                    } else {
+                                        // 沒站岩地旁或冷卻中：開不了礦脈，靜默忽略。
+                                    }
+                                }
+                                // 有礦脈（含剛開的）→ 敲一層。
+                                if let Some(vein) = p.mining.as_mut() {
+                                    match vein.strike() {
+                                        StrikeOutcome::Struck { ore, haul, depth, tremor } => {
+                                            tracing::debug!(
+                                                player = %p.name, depth, haul, "敲礦"
+                                            );
+                                            Some(ServerMsg::MineResult {
+                                                player_id: id,
+                                                outcome: "struck".into(),
+                                                ore: Some(ore),
+                                                haul: Some(haul),
+                                                depth: Some(depth),
+                                                tremor: Some(tremor.as_str().to_string()),
+                                                x: p.x,
+                                                y: p.y,
+                                            })
+                                        }
+                                        StrikeOutcome::Collapsed => {
+                                            // 崩塌：清礦脈、不給任何礦、起冷卻。
+                                            p.mining = None;
+                                            p.mine_cooldown =
+                                                crate::mining_vein::MINE_COOLDOWN_SECS;
+                                            tracing::info!(player = %p.name, "礦脈崩塌、整袋礦全埋");
+                                            Some(ServerMsg::MineResult {
+                                                player_id: id,
+                                                outcome: "collapsed".into(),
+                                                ore: None,
+                                                haul: None,
+                                                depth: None,
+                                                tremor: None,
+                                                x: p.x,
+                                                y: p.y,
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(msg) = outcome_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+
+                // ── 收礦撤出（ROADMAP 348 礦脈深掘）──────────────────────────────────
+                Ok(ClientMsg::MineHaul) => {
+                    // 把目前礦脈累積袋量落袋（礦石進背包＋探索熟練度），結束礦脈、起冷卻。
+                    // 沒在挖則靜默忽略。同一把寫鎖，廣播出鎖後送（守 prod-deadlock 鐵律）。
+                    use crate::mining_vein::{MiningVein, MINE_COOLDOWN_SECS};
+                    let outcome_msg = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            match p.mining.take() {
+                                None => None,
+                                Some(vein) => {
+                                    let (ore, xp) = vein.haul_out();
+                                    let depth = vein.depth();
+                                    if ore > 0 {
+                                        p.add_item_overflow(MiningVein::ore_kind(), ore);
+                                    }
+                                    if xp > 0 {
+                                        p.masteries.gain_explorer(xp);
+                                    }
+                                    p.mine_cooldown = MINE_COOLDOWN_SECS;
+                                    tracing::info!(
+                                        player = %p.name, ore, depth, "收礦撤出"
+                                    );
+                                    Some(ServerMsg::MineResult {
+                                        player_id: id,
+                                        outcome: "hauled".into(),
+                                        ore: None,
+                                        haul: Some(ore),
+                                        depth: Some(depth),
+                                        tremor: None,
+                                        x: p.x,
+                                        y: p.y,
+                                    })
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    };
                     if let Some(msg) = outcome_msg {
                         let _ = app.tx.send(Arc::new(msg));
                     }
