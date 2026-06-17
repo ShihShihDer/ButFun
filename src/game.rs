@@ -1602,6 +1602,8 @@ pub fn spawn(app: AppState) {
             app.npc_level_greet.write().unwrap().tick(dt);
             // 街坊相認（ROADMAP 331）：推進「玩家×NPC」崗位招呼冷卻倒數（歸零者自動剔除）。
             app.npc_recognition.write().unwrap().tick(dt);
+            // 鎮民認得你的夥伴（ROADMAP 359）：推進「玩家×NPC」寵物評論冷卻倒數（歸零者自動剔除）。
+            app.pet_greeting.write().unwrap().tick(dt);
             // 探索者路標（ROADMAP 353）：推進過期；有路標消失時全服重播一次路標列表（出鎖後送）。
             {
                 let changed = app.wayposts.write().unwrap().tick(dt);
@@ -1816,6 +1818,72 @@ pub fn spawn(app: AppState) {
                                         wy,
                                     },
                                 ));
+                            }
+                        }
+
+                        // 鎮民認得你的夥伴（ROADMAP 359）：複用上面收好的「在崗 NPC（working）」，
+                        // 讓帶著寵物走近的玩家被搭一句評論寵物個性（358）的就地泡泡。與 331 街坊相認
+                        // 刻意分工——那條認的是「玩家是誰」（依午餐相熟度點名），這條認的是「你帶的是
+                        // 什麼脾氣的夥伴」（依寵物個性，不需任何相熟度，人人帶寵物路過都可能被搭話）。
+                        if !working.is_empty() {
+                            // 快照在線、室外、帶著寵物的玩家及其寵物個性（鍵＝玩家 id，與冷卻帳本一致）。
+                            // 個性由「主人帳號＋寵物種類」確定性算出（純函式、零鎖、無 IO，與 358 跟隨一致）。
+                            let pet_walkers: Vec<(uuid::Uuid, f32, f32, crate::pet_personality::PetPersonality)> = {
+                                let players = app.players.read().unwrap();
+                                players
+                                    .values()
+                                    .filter(|p| !p.vitals.is_downed() && p.indoor_plot_id.is_none())
+                                    .filter_map(|p| {
+                                        let kind = p.pet?;
+                                        let personality = crate::pet_personality::personality_for(
+                                            p.id.as_bytes(),
+                                            kind,
+                                        );
+                                        Some((p.id, p.x, p.y, personality))
+                                    })
+                                    .collect()
+                            };
+                            if !pet_walkers.is_empty() {
+                                // 在冷卻寫鎖內判定要評論誰、說哪一句（持鎖期間不送訊息）。
+                                let mut pet_greets: Vec<(String, String, String, f32, f32)> = Vec::new();
+                                {
+                                    let mut book = app.pet_greeting.write().unwrap();
+                                    for &(npc_id, nx, ny) in &working {
+                                        for &(pid, px, py, personality) in &pet_walkers {
+                                            if !crate::pet_greeting::within_reach(nx, ny, px, py) {
+                                                continue;
+                                            }
+                                            let player_key = pid.to_string();
+                                            if !book.ready(&player_key, npc_id) {
+                                                continue;
+                                            }
+                                            if let Some(text) = book.greet(npc_id, personality) {
+                                                book.mark(&player_key, npc_id);
+                                                pet_greets.push((
+                                                    npc_id.to_string(),
+                                                    crate::lunch_chatter::display_name(npc_id)
+                                                        .to_string(),
+                                                    text.to_string(),
+                                                    nx,
+                                                    ny,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                // 鎖外廣播 NpcSpeech 評論泡泡（就地定位在 NPC 崗位上，不洗世界聊天）。
+                                for (npc_id, npc_name, text, wx, wy) in pet_greets {
+                                    let _ = app.tx.send(std::sync::Arc::new(
+                                        crate::protocol::ServerMsg::NpcSpeech {
+                                            npc_id,
+                                            npc_name,
+                                            text,
+                                            display_secs: 6,
+                                            wx,
+                                            wy,
+                                        },
+                                    ));
+                                }
                             }
                         }
                     }
