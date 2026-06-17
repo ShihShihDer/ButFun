@@ -125,6 +125,7 @@ mod popularity_gathering;
 mod weather;
 mod rainbow;
 mod reconcile;
+mod social_dynamics;
 mod friends;
 mod party;
 mod sprinkler;

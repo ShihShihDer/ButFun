@@ -2774,6 +2774,36 @@ pub fn spawn(app: AppState) {
                     app.npc_relations.write().unwrap().tick_decay_all();
                 }
             }
+            // NPC 社交平衡漣漪（ROADMAP 365）：每 SOCIAL_TICK_SECS 秒，讓關係網依社會平衡理論
+            // 自我演化一步（朋友的朋友更親、朋友的敵人漸疏）——玩家在 364 替兩位鎮民和解的善意
+            // 會自己漾開到他們共同的朋友身上。比衰減/派系（5 分鐘）更頻繁，讓人情變化在一場遊玩中就感受得到。
+            // 鎖序（守 prod-deadlock）：先讀鎖算漂移→放掉；再寫鎖逐筆套用→放掉；最後 social_dynamics
+            // 寫鎖挑廣播（warmth_after 已純算進 SocialDrift，挑廣播不需再讀 relations，不巢狀上鎖）；廣播一律出鎖後送。
+            {
+                const SOCIAL_TICK_SECS: u64 = 90;
+                let social_ticks = SOCIAL_TICK_SECS * TICK_HZ as u64;
+                if tick % social_ticks == 0 && tick > 0 {
+                    let drifts = {
+                        let rel = app.npc_relations.read().unwrap();
+                        crate::social_dynamics::compute_drift(&rel)
+                    };
+                    if !drifts.is_empty() {
+                        let mut rel = app.npc_relations.write().unwrap();
+                        for d in &drifts {
+                            rel.nudge_pair(d.a, d.b, d.delta);
+                        }
+                        drop(rel);
+                        let line = app
+                            .social_dynamics
+                            .write()
+                            .unwrap()
+                            .pick_announcement(&drifts);
+                        if let Some(text) = line {
+                            let _ = app.tx_chat.send(text);
+                        }
+                    }
+                }
+            }
             // NPC 派系自主湧現（ROADMAP 71）：在關係網衰減後，偵測是否有 NPC 對的好惡值越過
             // 結盟（≥80）或競爭（≤22）門檻，廣播派系事件到全服聊天頻道。
             // 同週期（5 分鐘）：關係剛衰減完，是最佳時機偵測狀態變化。
