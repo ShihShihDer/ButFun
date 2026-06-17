@@ -433,6 +433,12 @@ const scenarios = [
   // 抖動浮標＋漣漪＋「❗」彈出，附 _fishBiteAt 起算彈出動畫）。確認浮標渲染零繪製例外。
   variant("釣魚上鉤(等咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "waiting"; }),
   variant("釣魚上鉤(魚咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "biting"; m._fishBiteAt = 0; }),
+  // 礦脈深掘（ROADMAP 348）：玩家挖礦中 → 跑 drawPlayer 的「⛏️ 深度」頭頂標記分支（震動晃動＋
+  // 依等級換色）。覆蓋三檔震動：① 淺層穩定（calm）；② 細微落石（faint，輕晃）；③ 劇烈搖晃
+  // （severe，大晃＋紅字）。確認採礦世界訊號渲染零繪製例外。
+  variant("採礦深掘(穩定)",   (s) => { const m = s.players[0]; m.mining_depth = 1; m.mining_tremor = "calm"; }),
+  variant("採礦深掘(細微落石)", (s) => { const m = s.players[0]; m.mining_depth = 3; m.mining_tremor = "faint"; }),
+  variant("採礦深掘(劇烈搖晃)", (s) => { const m = s.players[0]; m.mining_depth = 5; m.mining_tremor = "severe"; }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

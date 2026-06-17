@@ -376,6 +376,14 @@ pub enum ClientMsg {
     /// 收竿（ROADMAP 346）：拋竿後在魚咬鉤的反應窗口內送出即釣到魚（反應越快魚越好）；
     /// 魚還沒咬就收會嚇跑魚、空手而回。沒有進行中的釣魚則靜默忽略。
     Reel,
+    /// 敲礦／往更深一層挖（ROADMAP 348 礦脈深掘）：站在岩地（`Biome::Rocky`）邊緣（80px 內）敲擊。
+    /// 沒有進行中的礦脈→開一條新礦脈（須冷卻到期）並挖第一層；已有→再往下敲一層。
+    /// 越深礦量越多但某個隱藏深度會崩塌、整袋礦全埋。不在岩地旁 / 倒地中靜默忽略；
+    /// 冷卻只擋「開新礦脈」，不擋已開礦脈續敲。
+    Mine,
+    /// 收礦撤出（ROADMAP 348）：把目前礦脈累積的礦袋落袋為安（外加探索熟練度），結束這條礦脈、
+    /// 起算冷卻。沒有進行中的礦脈則靜默忽略。
+    MineHaul,
     /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
     /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
     RequestStarMap,
@@ -974,6 +982,26 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 礦脈深掘結果（ROADMAP 348）：一次性事件、廣播；前端只對 `player_id == 自己` 演出飄字／震動。
+    /// `outcome`："struck"（敲到礦、可繼續挖或收礦）／"collapsed"（崩塌、整袋礦全埋）／
+    /// "hauled"（收礦撤出成功落袋）。
+    /// struck 帶 `ore`（這一下挖出的礦）、`haul`（目前累積袋量）、`depth`、`tremor`(calm/faint/severe)；
+    /// hauled 帶 `haul`（落袋總礦量）、`depth`；collapsed 僅旗標。`x`/`y` ＝ 玩家當下座標（飄字定位）。
+    /// 不入快照、不持久化、零 migration。
+    MineResult {
+        player_id: Uuid,
+        outcome: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ore: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        haul: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        depth: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tremor: Option<String>,
+        x: f32,
+        y: f32,
+    },
     /// 今夜星圖（ROADMAP 347 觀星連星座）：回應 `RequestStarMap`，僅單播給請求者本人。
     /// `available=false` 表示非夜間（看不見星空）、其餘欄位為佔位。`traced` 表示本玩家是否已連過今夜這座。
     StarMap {
@@ -1185,6 +1213,24 @@ pub struct PlayerView {
     /// 沒在釣＝None（略過序列化）。前端據此畫浮標狀態與「❗」咬鉤提示。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fishing_phase: Option<&'static str>,
+
+    // ── 礦脈深掘（ROADMAP 348）────────────────────────────────────────────────
+    /// 採礦冷卻剩餘秒數（0.0 = 可開新礦脈）。前端採礦面板顯示倒數。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub mine_cooldown: f32,
+    /// 玩家是否站在岩地（`Biome::Rocky`）邊緣（80px 內）。前端採礦鈕依此啟用／禁用。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_rock: bool,
+    /// 進行中礦脈的目前深度（層）；沒在挖＝None（略過序列化）。前端據此畫深度與「再挖／收礦」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_depth: Option<u32>,
+    /// 進行中礦脈目前累積、尚未落袋的礦量；沒在挖＝None。前端顯示「礦袋 N」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_haul: Option<u32>,
+    /// 進行中礦脈目前的震動警示："calm"／"faint"／"severe"；沒在挖＝None。
+    /// 前端據此顯示「細微落石／劇烈搖晃」危險提示（崩塌確切層數不洩漏）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mining_tremor: Option<&'static str>,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -1750,6 +1796,11 @@ mod tests {
                 fish_cooldown: 0.0,
                 near_water: false,
                 fishing_phase: None,
+                mine_cooldown: 0.0,
+                near_rock: false,
+                mining_depth: None,
+                mining_haul: None,
+                mining_tremor: None,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2000,6 +2051,11 @@ mod tests {
             fish_cooldown: 0.0,
             near_water: false,
             fishing_phase: None,
+            mine_cooldown: 0.0,
+            near_rock: false,
+            mining_depth: None,
+            mining_haul: None,
+            mining_tremor: None,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -2237,7 +2293,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2295,7 +2351,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
