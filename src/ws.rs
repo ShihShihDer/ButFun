@@ -152,6 +152,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cook_attempt_count: 0,
             cooking: None,
             perfect_dishes: 0,
+            aether_draw: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -249,6 +250,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cook_attempt_count: 0,
             cooking: None,
             perfect_dishes: 0,
+            aether_draw: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -5951,21 +5953,83 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
                 // ── 流星雨星塵採集 end ───────────────────────────────────────────
 
-                // ── 夜間乙太泉採集（ROADMAP 162）─────────────────────────────────────
+                // ── 夜間乙太泉：開始汲取（ROADMAP 162 走近 → ROADMAP 350 汲泉小遊戲）───────
                 Ok(ClientMsg::CollectSpringNode { node_id }) => {
+                    // ROADMAP 350：不再立即得乙太，而是開一趟「擺盪準星汲取小遊戲」。
+                    // 驗格：玩家在範圍內＋節點未採＋夜間＋目前沒在汲取 → 開始汲取（準星擺盪）。
+                    // 真正給乙太在 DrawAether 鎖定時才結算。純記憶體、零鎖內 IO。
                     let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
-                    let collected = player_pos.map(|(px, py)| {
-                        app.night_springs.write().unwrap().try_collect(node_id, px, py)
-                    }).unwrap_or(false);
-                    if collected {
-                        let all_done = app.night_springs.read().unwrap().all_collected();
-                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            p.ether = p.ether.saturating_add(crate::night_aether_springs::ETHER_REWARD);
-                            tracing::info!(player = %p.name, node_id, "採集夜間乙太泉");
+                    if let Some((px, py)) = player_pos {
+                        let can = app.night_springs.read().unwrap().can_collect(node_id, px, py);
+                        if can {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if p.aether_draw.is_none() {
+                                    p.aether_draw = Some(crate::aether_draw::AetherDraw::start(node_id));
+                                    tracing::debug!(player = %p.name, node_id, "開始汲取乙太泉");
+                                }
+                            }
                         }
-                        // 全部採集完成時記入城鎮記憶石（一晚只記一次）。
+                    }
+                }
+                // ── 夜間乙太泉：鎖定汲取（ROADMAP 350 汲泉聚精）──────────────────────────
+                Ok(ClientMsg::DrawAether) => {
+                    // 玩家在準星掃過甜蜜區時鎖定：以當下準星位置判檔位（峰湧/豐盈/涓滴），
+                    // try_collect 真採該泉眼（已被搶先 / 走離範圍則空手而回）、給對應乙太、清汲取狀態。
+                    // 廣播在出鎖後送（守 prod-deadlock 鐵律）。
+                    use crate::aether_draw::DrawBand;
+                    let (result_msg, all_done) = {
+                        // 先取出這趟汲取（node_id＋當下檔位）並清狀態，再去採泉眼。
+                        let drawn = {
+                            let mut players = app.players.write().unwrap();
+                            match players.get_mut(&id) {
+                                Some(p) => p.aether_draw.take().map(|d| (d.node_id(), d.lock(), p.x, p.y)),
+                                None => None,
+                            }
+                        };
+                        match drawn {
+                            None => (None, false),
+                            Some((node_id, band, px, py)) => {
+                                let collected = app.night_springs.write().unwrap()
+                                    .try_collect(node_id, px, py);
+                                if collected {
+                                    let reward = band.reward();
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                        p.ether = p.ether.saturating_add(reward);
+                                        tracing::info!(
+                                            player = %p.name, node_id, band = band.as_str(), reward,
+                                            "汲取夜間乙太泉"
+                                        );
+                                    }
+                                    let all_done = app.night_springs.read().unwrap().all_collected();
+                                    (Some(ServerMsg::AetherDrawResult {
+                                        player_id: id,
+                                        outcome: "drawn".into(),
+                                        band: Some(band.as_str().to_string()),
+                                        ether: Some(reward),
+                                        x: px,
+                                        y: py,
+                                    }), all_done)
+                                } else {
+                                    // 泉眼被別人搶先採走、或玩家鎖定時已走離範圍：空手而回。
+                                    (Some(ServerMsg::AetherDrawResult {
+                                        player_id: id,
+                                        outcome: "missed".into(),
+                                        band: None,
+                                        ether: None,
+                                        x: px,
+                                        y: py,
+                                    }), false)
+                                }
+                            }
+                        }
+                    };
+                    if let Some(msg) = result_msg {
+                        let _ = app.tx.send(std::sync::Arc::new(msg));
+                    }
+                    // 全部採集完成時記入城鎮記憶石（一晚只記一次）。
+                    if all_done {
                         let mut ns = app.night_springs.write().unwrap();
-                        if all_done && !ns.all_collected_announced {
+                        if !ns.all_collected_announced {
                             ns.all_collected_announced = true;
                             drop(ns);
                             let player_name = app.players.read().unwrap()
@@ -5979,7 +6043,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
-                // ── 夜間乙太泉採集 end ────────────────────────────────────────────────
+                // ── 夜間乙太泉 end ────────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {

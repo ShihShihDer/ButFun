@@ -439,6 +439,11 @@ const scenarios = [
   variant("採礦深掘(穩定)",   (s) => { const m = s.players[0]; m.mining_depth = 1; m.mining_tremor = "calm"; }),
   variant("採礦深掘(細微落石)", (s) => { const m = s.players[0]; m.mining_depth = 3; m.mining_tremor = "faint"; }),
   variant("採礦深掘(劇烈搖晃)", (s) => { const m = s.players[0]; m.mining_depth = 5; m.mining_tremor = "severe"; }),
+  // 夜泉汲取（ROADMAP 350 汲泉聚精）：玩家汲取中 → 跑 drawPlayer 的頭頂「擺盪準星量表」分支
+  // （軌道＋豐盈帶＋峰湧甜蜜區＋準星＋自己才顯示的提示字）。covers 準星掃到甜蜜區（中心）與
+  // 量表左端兩種準星位置，確認汲取量表渲染零繪製例外。
+  variant("夜泉汲取(準星峰湧)", (s) => { const m = s.players[0]; m.aether_draw_secs = 0.4167; m._drawRecvAt = performance.now(); }),
+  variant("夜泉汲取(準星左端)", (s) => { const m = s.players[0]; m.aether_draw_secs = 0; m._drawRecvAt = performance.now(); }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

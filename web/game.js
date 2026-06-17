@@ -1683,6 +1683,14 @@
             // ROADMAP 348：礦脈深掘——進行中礦脈的深度／震動（供頭頂畫「⛏️ 深度＋震動晃動」世界訊號）。
             existing.mining_depth = (typeof p.mining_depth === "number") ? p.mining_depth : null;
             existing.mining_tremor = p.mining_tremor || null;
+            // ROADMAP 350：夜泉汲取——進行中汲取的經過秒數。每收一筆快照就重錨「收到時間」，
+            // 前端用同一條三角波公式（aetherCursor）以本地時鐘自由推進準星、與伺服器對齊。
+            if (typeof p.aether_draw_secs === "number") {
+              existing.aether_draw_secs = p.aether_draw_secs;
+              existing._drawRecvAt = performance.now();
+            } else {
+              existing.aether_draw_secs = null;
+            }
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -2271,6 +2279,26 @@
           const haul = msg.haul || 0;
           floaters.push({ wx, wy, text: `🪨 收礦撤出 +${haul} 礦石`, color: "120,200,255", born: now });
           announce(`收礦撤出，落袋 ${haul} 礦石`);
+        }
+        break;
+      }
+      case "aether_draw_result": {
+        // 夜泉汲取結果（ROADMAP 350 汲泉聚精）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        if (msg.outcome === "drawn") {
+          // 檔位越高顏色越亮（峰湧＝亮青、豐盈＝藍紫、涓滴＝灰）。
+          const color = msg.band === "surge"     ? "150,235,255"
+                      : msg.band === "bountiful"  ? "150,120,235"
+                      :                             "190,190,190";
+          const blabel = AETHER_BAND_LABEL[msg.band] || "汲取";
+          const ether = msg.ether || 0;
+          floaters.push({ wx, wy, text: `💧 ${blabel}！+${ether} 乙太`, color, born: now });
+          announce(`汲取${blabel}，得 ${ether} 乙太`);
+        } else if (msg.outcome === "missed") {
+          floaters.push({ wx, wy, text: "💨 慢了一步，泉湧散了…", color: "190,190,190", born: now });
+          announce("汲取落空，泉湧散了");
         }
         break;
       }
@@ -3710,10 +3738,12 @@
     // 用 e.repeat 擋住長按連發(一次按一次,跟滑鼠單擊一致)。
     if (e.key === " " || e.key === "e" || e.key === "E" || e.key === "f" || e.key === "F") {
       if (!e.repeat) {
+        // ROADMAP 350：夜泉汲取進行中時，這些互動鍵改為「鎖定汲取」——把握準星掃過峰湧的瞬間。
         // ROADMAP 346：釣魚進行中時，這些互動鍵改為「收竿」——讓沒開面板的玩家也能即時把握
-        // 咬鉤窗口（水邊本就無田可農作，不會誤觸）。沒在釣才走原本的腳下田格互動。
+        // 咬鉤窗口（水邊本就無田可農作，不會誤觸）。都沒在進行才走原本的腳下田格互動。
         const meFish = myId ? players.get(myId) : null;
-        if (meFish && meFish.fishing_phase) safeSend({ type: "reel" });
+        if (meFish && typeof meFish.aether_draw_secs === "number") safeSend({ type: "draw_aether" });
+        else if (meFish && meFish.fishing_phase) safeSend({ type: "reel" });
         else farmAtPlayer();
       }
       e.preventDefault();
@@ -3868,9 +3898,13 @@
     // 附近有星塵節點時採集（ROADMAP 133）。
     const dn = nearestDustNode(me);
     if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
-    // 附近有夜間乙太泉時採集（ROADMAP 162）。
+    // 附近有夜間乙太泉時：汲取中→鎖定（ROADMAP 350），否則開始汲取（ROADMAP 162→350）。
     const spn = nearestSpringNode(me);
-    if (spn) { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); return; }
+    if (spn) {
+      if (typeof me.aether_draw_secs === "number") ws.send(JSON.stringify({ type: "draw_aether" }));
+      else { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); }
+      return;
+    }
     // 附近有季節性節點時採集（ROADMAP 154）。
     const sn = nearestSeasonalNode(me);
     if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
@@ -4555,6 +4589,49 @@
       ctx.textAlign = "center";
       ctx.fillStyle = color;
       ctx.fillText(`⛏️${p.mining_depth}`, 0, 0);
+      ctx.restore();
+    }
+
+    // 夜泉汲取量表（ROADMAP 350 汲泉聚精）：正在汲取的玩家頭頂畫一條擺盪準星量表——
+    // 中央是「峰湧」甜蜜區（停在這裡汲到最多乙太），準星左右來回掃，停得越準回報越高。
+    // 自己與旁觀者都看得到（汲取秒數隨快照廣播）；準星位置用與後端同一條三角波公式渲染，
+    // 確保玩家看到的位置就是伺服器判定的位置。準星移動屬玩法核心，reduceMotion 不關。
+    const drawElapsed = aetherDrawElapsed(p);
+    if (drawElapsed !== null) {
+      const cur = aetherCursor(drawElapsed);
+      const w = 64, h = 7;
+      const mx = sx - w / 2;       // 量表左緣
+      const myy = by - 46;         // 量表 y（頭頂上方）
+      ctx.save();
+      // 軌道外框＋底
+      ctx.fillStyle = "rgba(18,10,36,0.80)";
+      ctx.fillRect(mx - 2, myy - 2, w + 4, h + 4);
+      ctx.fillStyle = "rgba(70,40,120,0.60)";
+      ctx.fillRect(mx, myy, w, h);
+      // 豐盈帶（中央較寬）
+      ctx.fillStyle = "rgba(120,90,220,0.78)";
+      ctx.fillRect(mx + (0.5 - AETHER_BOUNTIFUL_HALF) * w, myy, AETHER_BOUNTIFUL_HALF * 2 * w, h);
+      // 峰湧甜蜜區（中央窄、亮）
+      ctx.fillStyle = "rgba(150,235,255,0.95)";
+      ctx.fillRect(mx + (0.5 - AETHER_SURGE_HALF) * w, myy, AETHER_SURGE_HALF * 2 * w, h);
+      // 準星
+      const cx = mx + cur * w;
+      ctx.fillStyle = "#fff7d0";
+      ctx.fillRect(cx - 1.5, myy - 3, 3, h + 6);
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 0.6;
+      ctx.strokeRect(cx - 1.5, myy - 3, 3, h + 6);
+      // 自己才顯示提示字（旁觀者只看量表、不被文字洗版）。
+      if (p.id === myId) {
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("💧 汲取！停在峰湧 [E]", sx, myy - 6);
+        ctx.fillStyle = "rgba(180,230,255,0.96)";
+        ctx.fillText("💧 汲取！停在峰湧 [E]", sx, myy - 6);
+      }
       ctx.restore();
     }
   }
@@ -6780,6 +6857,27 @@
     return best;
   }
 
+  // ROADMAP 350 汲泉聚精：與後端 aether_draw.rs 對齊的擺盪準星參數（同一條三角波公式，
+  // 伺服器鎖定判檔位、前端只負責渲染，玩家看到的準星與伺服器一致）。
+  const AETHER_SWEEP_HZ = 0.6;     // 準星擺盪頻率（每秒一個完整來回）
+  const AETHER_SURGE_HALF = 0.06;  // 甜蜜區半寬（峰湧）
+  const AETHER_BOUNTIFUL_HALF = 0.18; // 豐盈半寬
+  // 汲取檔位中文標籤（i18n 佔位；與後端 DrawBand::label 對齊）。
+  const AETHER_BAND_LABEL = { trickle: "涓滴", bountiful: "豐盈", surge: "峰湧" };
+  // 三角波準星：經過秒數 → 量表位置 [0,1]（0→1→0 來回）。
+  function aetherCursor(elapsedSecs) {
+    let ph = (Math.max(0, elapsedSecs) * AETHER_SWEEP_HZ) % 1;
+    if (ph < 0) ph += 1;
+    return ph < 0.5 ? ph * 2 : (1 - ph) * 2;
+  }
+  // 玩家進行中汲取的「目前經過秒數」：以收到快照時錨點 + 本地時鐘自由推進；沒在汲取回 null。
+  function aetherDrawElapsed(p) {
+    if (!p || typeof p.aether_draw_secs !== "number") return null;
+    const base = p.aether_draw_secs;
+    const recv = p._drawRecvAt || performance.now();
+    return base + (performance.now() - recv) / 1000;
+  }
+
   // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。
   const SPRING_COLLECT_REACH = 80;
   function nearestSpringNode(me) {
@@ -6837,9 +6935,9 @@
         const ty = sy - 36;
         ctx.lineWidth = 3;
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
-        ctx.strokeText("🌙 採集乙太泉 [E]", sx, ty);
+        ctx.strokeText("🌙 汲取乙太泉 [E]", sx, ty);
         ctx.fillStyle = "rgba(220,160,255,0.95)";
-        ctx.fillText("🌙 採集乙太泉 [E]", sx, ty);
+        ctx.fillText("🌙 汲取乙太泉 [E]", sx, ty);
       }
       ctx.restore();
     }
@@ -20511,8 +20609,9 @@
         const twy = clientY - rect0.top + lastCam.y;
         const dx = spn.wx - twx, dy = spn.wy - twy;
         if (dx * dx + dy * dy <= 40 * 40) {
-          ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id }));
-          spawnTapFlash(spn.wx, spn.wy);
+          // ROADMAP 350：汲取中→鎖定，否則開始汲取。
+          if (typeof me.aether_draw_secs === "number") ws.send(JSON.stringify({ type: "draw_aether" }));
+          else { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); }
           return;
         }
       }
@@ -20685,10 +20784,14 @@
       const dn = nearestDustNode(me);
       if (dn) { ws.send(JSON.stringify({ type: "collect_dust_node", node_id: dn.id })); spawnTapFlash(dn.wx, dn.wy); return; }
     }
-    // 次判夜間乙太泉採集（ROADMAP 162）。
+    // 次判夜間乙太泉（ROADMAP 162→350）：汲取中→鎖定，否則開始汲取。
     {
       const spn = nearestSpringNode(me);
-      if (spn) { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); return; }
+      if (spn) {
+        if (typeof me.aether_draw_secs === "number") ws.send(JSON.stringify({ type: "draw_aether" }));
+        else { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); }
+        return;
+      }
     }
     // 次判季節性節點採集（ROADMAP 154）。
     {

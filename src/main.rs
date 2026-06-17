@@ -65,6 +65,7 @@ mod fishing;
 mod fishing_bite;
 mod mining_vein;
 mod cooking_steps;
+mod aether_draw;
 mod constellation;
 mod field_guide;
 mod terrain_atlas;
