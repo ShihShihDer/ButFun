@@ -7,10 +7,21 @@
 //! 這是 Phase 2「深度與自動化」的第一步：在自己買的農田地塊上看到雞在跑，
 //! 並多了一條農夫熟練度提升的活動路線。
 //!
+//! ## ROADMAP 368：牧群孳息（flock brood & hatch）
+//! 自 48 起，雞群就只能「花錢買」、買到 3 隻就到頂、之後永遠原地不動——你照不照顧
+//! 牠都一個樣。本切片第一次讓**你的照料有後果**：細心收蛋（讓母雞安心）、又在窩裡
+//! 留下一兩顆蛋讓牠孵，母雞就會孵出小雞、小雞長成新的母雞——牧群**不花一文錢、靠你
+//! 用心養，自己越養越熱鬧**。湧現由「玩家怎麼照料」驅動（真能動性），且雞越多窩越暖、
+//! 孵得越快（個體數牽動群體孵化），是非社交、非環境調制維度的另一種群體成長。
+//!   - **孵化只能養出 1 隻 earned 母雞**（`FLOCK_CAP`=4 > 購買上限 `MAX_CHICKENS`=3）：
+//!     第 4 隻只能靠孵、買不到——「圓滿的牧群只能用心養出來」。經濟近乎零擾動：至多
+//!     多 1 隻雞、且孵化會**吃掉一顆窩裡的蛋**（一顆蛋換一隻雞，緩慢、難得），蛋上限
+//!     仍是 10、每顆收成乙太不變。
+//!
 //! 設計取捨：
 //!   - **記憶體模式**：雞與蛋不寫 DB（同 pet.rs 做法），重啟後玩家重新購入。
 //!     好處：零 migration 風險，快速上線；代價：每次伺服器重啟要重買雞。
-//!   - **每塊農田最多 3 隻雞**：避免堆雞刷蛋；後續版本可鬆綁或加飼料機制。
+//!   - **每塊農田最多買 3 隻雞**：避免堆雞刷蛋；第 4 隻得靠孵化「掙」來。
 //!   - **蛋最多堆 10 顆**：防無限堆積，逼玩家定期來收。
 
 use std::collections::HashMap;
@@ -24,16 +35,37 @@ pub const EGG_INTERVAL_SECS: f32 = 60.0;
 /// 農夫熟練度 XP（每次收雞蛋操作）。
 pub const COLLECT_FARMER_XP: u32 = 8;
 
-/// 單塊農田地塊最多可養的雞隻數。
+/// 單塊農田地塊**可購買**的雞隻上限（花乙太買到此數就到頂）。
 pub const MAX_CHICKENS: u32 = 3;
+
+/// 牧群的**實際**上限（含孵化掙來的）。比購買上限多 1：第 `FLOCK_CAP` 隻買不到，
+/// 只能靠細心照料孵出來——「圓滿的牧群只能用心養出來」。
+pub const FLOCK_CAP: u32 = 4;
 
 /// 農田地塊上雞蛋的最大堆積數。
 pub const MAX_EGGS: u32 = 10;
 
+// ─── ROADMAP 368：牧群孳息（brood & hatch）─────────────────────────────────────
+//
+// 機制：母雞「安心」（玩家近期收過蛋＝有在照料）且窩裡留有蛋可孵時，會累積孵育進度；
+// 雞越多窩越暖、孵得越快（個體數牽動群體）。進度滿則孵化一隻小雞（吃掉窩裡一顆蛋），
+// 小雞經一段時間長成新母雞。全程純啟發式、確定性、零 LLM、零持久化、記憶體模式。
+
+/// 收一次蛋後「母雞安心」的維持秒數——這段時間內牧群才會孵育。逼玩家**規律照料**
+/// （長時間不來收蛋，母雞便不再孵）。
+pub const TENDED_WINDOW_SECS: f32 = 240.0;
+
+/// 孵育滿格所需的「安心孵育」累計量（單位＝雞·秒）。孵育速率＝當前母雞數（雞越多越快），
+/// 故 1 隻雞約需 `BROOD_THRESHOLD` 秒、2 隻約半、3 隻約 1/3——刻意偏長，讓添丁緩慢難得。
+pub const BROOD_THRESHOLD: f32 = 300.0;
+
+/// 小雞長成母雞所需的時間（秒）。
+pub const CHICK_MATURE_SECS: f32 = 180.0;
+
 /// 單一農田地塊的牧場狀態（記憶體模式）。
 #[derive(Debug, Clone)]
 pub struct RanchState {
-    /// 現有雞隻數（0~MAX_CHICKENS）。
+    /// 現有成年母雞數（0~FLOCK_CAP；購買至多 MAX_CHICKENS，其餘靠孵化）。
     pub chicken_count: u32,
     /// 目前堆積的蛋數（0~MAX_EGGS）。
     pub egg_count: u32,
@@ -41,6 +73,13 @@ pub struct RanchState {
     pub egg_timer: f32,
     /// 本地塊已完成的下蛋批次（用於偽隨機種子）。
     pub egg_batches: u64,
+    /// ROADMAP 368：「母雞安心」剩餘秒數——收蛋時補滿 `TENDED_WINDOW_SECS`，每 tick 遞減；
+    /// >0 表示近期有照料、牧群會孵育。
+    pub tended_secs: f32,
+    /// ROADMAP 368：累計孵育進度（雞·秒），滿 `BROOD_THRESHOLD` 即孵化一隻小雞。
+    pub brood_accum: f32,
+    /// ROADMAP 368：小雞成長剩餘秒數；>0 表示窩裡有一隻小雞正在長大（同時至多孵一隻）。
+    pub chick_secs: f32,
 }
 
 impl RanchState {
@@ -50,7 +89,15 @@ impl RanchState {
             egg_count: 0,
             egg_timer: EGG_INTERVAL_SECS,
             egg_batches: 0,
+            tended_secs: 0.0,
+            brood_accum: 0.0,
+            chick_secs: 0.0,
         }
+    }
+
+    /// 窩裡是否有一隻小雞正在長大。
+    pub fn has_chick(&self) -> bool {
+        self.chick_secs > 0.0
     }
 }
 
@@ -89,6 +136,8 @@ impl RanchRegistry {
             return (0, 0);
         }
         state.egg_count = 0;
+        // ROADMAP 368：來收過蛋＝有在照料，母雞安心，重置安心計時器。牧群只在被規律照料時孵育。
+        state.tended_secs = TENDED_WINDOW_SECS;
         (eggs, COLLECT_FARMER_XP)
     }
 
@@ -97,10 +146,23 @@ impl RanchRegistry {
         self.plots.get(&plot_id).map(|s| (s.chicken_count, s.egg_count)).unwrap_or((0, 0))
     }
 
-    /// 每遊戲 tick 更新所有有雞地塊的蛋計時器。
+    /// 取得某地塊是否有正在長大的小雞（供測試／快照）。地塊不存在回 `false`。
+    pub fn has_chick(&self, plot_id: u32) -> bool {
+        self.plots.get(&plot_id).map(|s| s.has_chick()).unwrap_or(false)
+    }
+
+    /// 每遊戲 tick 更新所有有雞地塊的蛋計時器，並推進 ROADMAP 368 孵育/成長。
     pub fn tick(&mut self, dt: f32) {
+        // 防呆：非有限或非正的 dt 直接跳過（守 prod 既有早退慣例）。
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
         for state in self.plots.values_mut() {
             if state.chicken_count == 0 {
+                // 無雞：清掉殘留的孵育/安心進度（避免賣光雞後又回填），不產蛋。
+                state.tended_secs = 0.0;
+                state.brood_accum = 0.0;
+                state.chick_secs = 0.0;
                 continue;
             }
             state.egg_timer -= dt;
@@ -113,6 +175,30 @@ impl RanchRegistry {
                 let produced = (batch * state.chicken_count).min(MAX_EGGS - state.egg_count.min(MAX_EGGS));
                 state.egg_count = (state.egg_count + produced).min(MAX_EGGS);
             }
+
+            // ── ROADMAP 368：牧群孳息 ──
+            // 安心計時器遞減（收蛋時補滿）。
+            state.tended_secs = (state.tended_secs - dt).max(0.0);
+            if state.has_chick() {
+                // 已有小雞在長大：推進成長，到期長成一隻新母雞（封頂 FLOCK_CAP）。
+                state.chick_secs -= dt;
+                if state.chick_secs <= 0.0 {
+                    state.chick_secs = 0.0;
+                    state.chicken_count = (state.chicken_count + 1).min(FLOCK_CAP);
+                }
+            } else {
+                // 尚無小雞：在「安心＋有蛋可孵＋未滿群」時累積孵育，雞越多越快。
+                let rate = brood_rate(state.chicken_count, state.tended_secs > 0.0, state.egg_count);
+                if rate > 0.0 {
+                    state.brood_accum += rate * dt;
+                    if state.brood_accum >= BROOD_THRESHOLD {
+                        // 孵化：吃掉窩裡一顆蛋換一隻小雞，重置孵育進度、起跑成長計時。
+                        state.brood_accum = 0.0;
+                        state.egg_count = state.egg_count.saturating_sub(1);
+                        state.chick_secs = CHICK_MATURE_SECS;
+                    }
+                }
+            }
         }
     }
 
@@ -124,6 +210,9 @@ impl RanchRegistry {
                 plot_id,
                 chicken_count: s.chicken_count,
                 egg_count: s.egg_count,
+                chick: s.has_chick(),
+                brooding: !s.has_chick()
+                    && brood_rate(s.chicken_count, s.tended_secs > 0.0, s.egg_count) > 0.0,
             })
             .collect()
     }
@@ -134,12 +223,29 @@ pub fn roll_egg_batch(seed: u64) -> u32 {
     if seed % 2 == 0 { 2 } else { 1 }
 }
 
+/// ROADMAP 368：孵育速率（雞·秒／秒）——純函式、確定性、好測。
+/// 只在「有母雞 ＆ 近期有照料（安心）＆ 窩裡有蛋可孵 ＆ 牧群未滿」時 > 0，
+/// 且速率＝當前母雞數（雞越多窩越暖、孵得越快——個體數牽動群體）。否則回 0。
+pub fn brood_rate(chicken_count: u32, tended: bool, egg_count: u32) -> f32 {
+    if chicken_count >= 1 && chicken_count < FLOCK_CAP && tended && egg_count >= 1 {
+        chicken_count as f32
+    } else {
+        0.0
+    }
+}
+
 /// 快照裡一塊農田地塊的牧場可見狀態（送給前端）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RanchPlotView {
     pub plot_id: u32,
     pub chicken_count: u32,
     pub egg_count: u32,
+    /// ROADMAP 368：窩裡是否有一隻小雞正在長大（前端畫 🐤）。
+    #[serde(default)]
+    pub chick: bool,
+    /// ROADMAP 368：是否正在孵育中（安心＋有蛋＋未滿群，前端可提示「孵育中」）。
+    #[serde(default)]
+    pub brooding: bool,
 }
 
 // ─── 單元測試 ───────────────────────────────────────────────────────────────
@@ -245,5 +351,150 @@ mod tests {
     #[test]
     fn buy_chicken_cost_is_reasonable() {
         assert!(BUY_CHICKEN_COST >= 1 && BUY_CHICKEN_COST <= 100);
+    }
+
+    // ─── ROADMAP 368：牧群孳息 ───────────────────────────────────────────────
+
+    /// 購買到頂只到 MAX_CHICKENS（3），第 4 隻買不到（得靠孵化）。
+    #[test]
+    fn buy_capped_below_flock_cap() {
+        let mut reg = RanchRegistry::new();
+        for _ in 0..MAX_CHICKENS {
+            assert!(reg.buy_chicken(0));
+        }
+        assert!(!reg.buy_chicken(0), "購買不得超過 MAX_CHICKENS");
+        assert_eq!(reg.state_of(0).0, MAX_CHICKENS);
+        assert!(MAX_CHICKENS < FLOCK_CAP, "孵化上限應高於購買上限");
+    }
+
+    /// brood_rate：齊備條件才 > 0，且雞越多越快。
+    #[test]
+    fn brood_rate_conditions() {
+        // 無雞 → 0
+        assert_eq!(brood_rate(0, true, 5), 0.0);
+        // 未照料 → 0
+        assert_eq!(brood_rate(2, false, 5), 0.0);
+        // 窩裡無蛋 → 0
+        assert_eq!(brood_rate(2, true, 0), 0.0);
+        // 牧群已滿（FLOCK_CAP）→ 0
+        assert_eq!(brood_rate(FLOCK_CAP, true, 5), 0.0);
+        // 齊備：速率＝雞數，雞越多越快
+        assert_eq!(brood_rate(1, true, 1), 1.0);
+        assert!(brood_rate(3, true, 1) > brood_rate(1, true, 1), "雞越多孵越快");
+    }
+
+    /// 收蛋會讓母雞「安心」（補滿 tended_secs）。
+    #[test]
+    fn collect_eggs_marks_tended() {
+        let mut reg = RanchRegistry::new();
+        assert!(reg.buy_chicken(1));
+        reg.plots.get_mut(&1).unwrap().egg_count = 2;
+        assert_eq!(reg.plots.get(&1).unwrap().tended_secs, 0.0);
+        reg.collect_eggs(1);
+        assert_eq!(reg.plots.get(&1).unwrap().tended_secs, TENDED_WINDOW_SECS);
+    }
+
+    /// 孵化瞬間：達門檻時孵出一隻小雞、**吃掉窩裡一顆蛋**、重置孵育進度。
+    #[test]
+    fn hatch_consumes_one_egg() {
+        let mut reg = RanchRegistry::new();
+        assert!(reg.buy_chicken(2)); // 1 隻母雞
+        {
+            let s = reg.plots.get_mut(&2).unwrap();
+            s.tended_secs = TENDED_WINDOW_SECS;
+            s.egg_count = 5;
+            s.brood_accum = BROOD_THRESHOLD - 0.5; // 差一步達標
+            s.egg_timer = 100.0; // 大到單次 tick 不會下蛋，孤立蛋數斷言
+        }
+        reg.tick(1.0); // rate=1.0 → 越過門檻 → 孵化
+        assert!(reg.has_chick(2), "達門檻後應孵出一隻小雞");
+        assert_eq!(reg.state_of(2).1, 4, "孵化吃掉窩裡一顆蛋（5→4）");
+        assert_eq!(reg.plots.get(&2).unwrap().brood_accum, 0.0, "孵化後孵育進度歸零");
+        assert_eq!(reg.state_of(2).0, 1, "小雞長大前母雞仍 1 隻");
+    }
+
+    /// 完整成長流程：孵出小雞後，經 CHICK_MATURE_SECS 長成一隻新母雞。
+    #[test]
+    fn chick_matures_into_new_hen() {
+        let mut reg = RanchRegistry::new();
+        assert!(reg.buy_chicken(9));
+        reg.plots.get_mut(&9).unwrap().chick_secs = CHICK_MATURE_SECS;
+        let mut t = 0.0;
+        while t < CHICK_MATURE_SECS + 5.0 && reg.state_of(9).0 < 2 {
+            reg.tick(1.0);
+            t += 1.0;
+        }
+        assert_eq!(reg.state_of(9).0, 2, "小雞長成後母雞應 +1");
+        assert!(!reg.has_chick(9), "長成後窩裡不再有小雞");
+    }
+
+    /// 牧群孵化封頂於 FLOCK_CAP（不會無限孵）。
+    #[test]
+    fn flock_growth_capped_at_flock_cap() {
+        let mut reg = RanchRegistry::new();
+        for _ in 0..MAX_CHICKENS {
+            reg.buy_chicken(3);
+        }
+        // 持續供給安心＋蛋，狂跑很久。
+        for _ in 0..5000 {
+            {
+                let s = reg.plots.get_mut(&3).unwrap();
+                s.tended_secs = TENDED_WINDOW_SECS;
+                if s.egg_count == 0 {
+                    s.egg_count = MAX_EGGS;
+                }
+            }
+            reg.tick(1.0);
+        }
+        assert_eq!(reg.state_of(3).0, FLOCK_CAP, "牧群不得超過 FLOCK_CAP");
+    }
+
+    /// 不照料（tended_secs 自然歸零）就不孵育——孵育進度不增長。
+    #[test]
+    fn no_brood_without_tending() {
+        let mut reg = RanchRegistry::new();
+        assert!(reg.buy_chicken(4));
+        {
+            let s = reg.plots.get_mut(&4).unwrap();
+            s.tended_secs = 0.0; // 從未照料
+            s.egg_count = MAX_EGGS;
+        }
+        for _ in 0..1000 {
+            // 每輪都把蛋補滿、但絕不照料。
+            reg.plots.get_mut(&4).unwrap().egg_count = MAX_EGGS;
+            reg.tick(1.0);
+        }
+        assert!(!reg.has_chick(4), "未照料不應孵化");
+        assert_eq!(reg.state_of(4).0, 1, "未照料牧群不長");
+    }
+
+    /// 賣光雞後（chicken_count=0）孵育/安心/小雞進度全清零。
+    #[test]
+    fn clears_progress_when_no_chickens() {
+        let mut reg = RanchRegistry::new();
+        reg.plots.insert(7, RanchState {
+            chicken_count: 0,
+            egg_count: 0,
+            egg_timer: EGG_INTERVAL_SECS,
+            egg_batches: 0,
+            tended_secs: 100.0,
+            brood_accum: 100.0,
+            chick_secs: 50.0,
+        });
+        reg.tick(1.0);
+        let s = reg.plots.get(&7).unwrap();
+        assert_eq!((s.tended_secs, s.brood_accum, s.chick_secs), (0.0, 0.0, 0.0));
+    }
+
+    /// tick 對非有限/非正 dt 早退、不 panic。
+    #[test]
+    fn tick_guards_bad_dt() {
+        let mut reg = RanchRegistry::new();
+        reg.buy_chicken(8);
+        reg.tick(f32::NAN);
+        reg.tick(-1.0);
+        reg.tick(0.0);
+        // 不 panic、狀態不變即可。
+        assert_eq!(reg.state_of(8), (1, 0));
     }
 }
