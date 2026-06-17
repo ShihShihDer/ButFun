@@ -116,6 +116,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cheers: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
+            seen_mastery_tiers: [0; 5],
             // 重連還原：工會成員資料 keyed by uid 存在 GuildStore，登入玩家重連時從中還原
             // 工會標籤——否則一刷新就「看起來不在工會」（guild_tag 被建成 None，已知 bug）。
             guild_tag: app.guilds.tag_of(user.id),
@@ -216,6 +217,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cheers: 0,
             planet: crate::state::PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
+            seen_mastery_tiers: [0; 5],
             guild_tag: None,
             party_id: None,
             hair_style: 0,
@@ -325,6 +327,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         p.exp = s.exp;
                         // 五條熟練度從 DB 還原（ROADMAP 38）。
                         p.masteries = s.masteries;
+                        // 階梯榮銜（ROADMAP 351）：以還原後的熟練度種下「已見階級」快照，使已是
+                        // 高階的回鍋玩家不會被回放歷史晉階慶賀；重連後再苦練跨階才觸發。
+                        p.seen_mastery_tiers = p.masteries.tier_snapshot();
                         // 屬性加點從 DB 還原（ROADMAP 152）。
                         p.stats = s.stats;
                         // 技能使用型熟練度從 DB 還原（ROADMAP 153）。
