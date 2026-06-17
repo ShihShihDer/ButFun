@@ -2624,6 +2624,14 @@
         // 連星座結果（ROADMAP 347）：對／錯回饋，連對首次入錄給獎。
         applyConstellationResult(msg);
         break;
+      case "reconcile_offer":
+        // 居民和解委託（ROADMAP 364）：開窗時伺服器回鎮上可促成的和解（或續辦中的委託）。
+        applyReconcileOffer(msg);
+        break;
+      case "reconcile_result":
+        // 居民和解結果（ROADMAP 364）：接下／交付回饋，送達成功給獎＋全服同慶。
+        applyReconcileResult(msg);
+        break;
       case "village_event":
         // 里長自主辦村落節慶（ROADMAP 64）：全服廣播，顯示公告。
         addChat("🎉 村落節慶", msg.message || "村落節慶開始！");
@@ -19065,6 +19073,96 @@
     safeSend({ type: "request_star_map" });
   }
 
+  // ── 居民和解委託（ROADMAP 364）：玩家第一次能牽動 NPC↔NPC 關係 ──────────────
+  // 開「🕊️ 和解」面板即向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
+  const reconcileState = { offer: null };
+
+  function requestReconcile() {
+    safeSend({ type: "request_reconcile" });
+  }
+
+  // 伺服器回 reconcile_offer：可接的新委託 / 進行中的委託 / 鎮上一片祥和。
+  function applyReconcileOffer(msg) {
+    reconcileState.offer = msg || null;
+    renderReconcile();
+  }
+
+  // 把當前委託狀態畫進面板（純文字＋按鈕，零畫布；面向玩家字串集中此處留 i18n 空間）。
+  function renderReconcile() {
+    const body = document.getElementById("reconcileBody");
+    if (!body) return;
+    const o = reconcileState.offer;
+    body.innerHTML = "";
+
+    if (!o) {
+      body.innerHTML = "<p style='color:#b9c4d4;margin:6px 0'>正在打聽鎮上的近況…</p>";
+      return;
+    }
+    if (!o.available) {
+      body.innerHTML = "<p style='color:#b9c4d4;margin:6px 0'>🕊️ 鎮上一片祥和，眼下沒有需要居中緩頰的鄰里。</p>";
+      return;
+    }
+
+    const intro = document.createElement("p");
+    intro.style.cssText = "margin:6px 0;line-height:1.5;color:#e7dcc4";
+    if (o.active) {
+      // 進行中：估算與對象 NPC 的距離給一行就近提示（權威仍在後端，前端僅作引導）。
+      const me = myId ? players.get(myId) : null;
+      let hint = "";
+      if (me) {
+        const dx = me.x - (o.to_x || 0), dy = me.y - (o.to_y || 0);
+        const near = (dx * dx + dy * dy) <= (140 * 140);
+        hint = near
+          ? "（你就在他身旁，按下交付吧）"
+          : "（往城鎮工位走近他一些，再交付）";
+      }
+      intro.innerHTML = `進行中的委託：把 <b>${o.token}</b> 送到 <b>${o.to_name}</b> 身旁，替 <b>${o.from_name}</b> 捎句和解的話。<br><span style='color:#9fb6cf'>${hint}</span>`;
+    } else {
+      intro.innerHTML = `${o.plea}`;
+      intro.style.color = "#e7dcc4";
+    }
+    body.appendChild(intro);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.cssText = "margin-top:10px;padding:7px 16px;background:rgba(201,162,75,0.18);border:1px solid var(--brass,#c9a24b);border-radius:8px;color:#f1e6cf;cursor:pointer;font-size:.9rem";
+    if (o.active) {
+      btn.textContent = `🕊️ 把信物交給 ${o.to_name}`;
+      btn.addEventListener("click", () => safeSend({ type: "deliver_reconcile" }));
+    } else {
+      btn.textContent = "🤝 接下這樁和解委託";
+      btn.addEventListener("click", () => safeSend({ type: "accept_reconcile", from_id: o.from_id, to_id: o.to_id }));
+    }
+    body.appendChild(btn);
+  }
+
+  // 伺服器回 reconcile_result：接下／交付的回饋。
+  function applyReconcileResult(msg) {
+    if (msg.accepted) {
+      // 剛接下委託 → 重新向伺服器要狀態（轉成「進行中」顯示交付指引）。
+      announce(`接下了替 ${msg.from_name} 向 ${msg.to_name} 和解的委託`);
+      requestReconcile();
+      return;
+    }
+    if (msg.done) {
+      if (msg.reward_ether > 0) {
+        announce(`你促成了 ${msg.from_name} 與 ${msg.to_name} 的和解，獲得 ${msg.reward_ether} 乙太`);
+        const me = myId ? players.get(myId) : null;
+        if (me) floaters.push({ wx: me.x, wy: me.y - 44, text: `🕊️ 和解達成　+${msg.reward_ether} 乙太`, color: "182,224,182", born: performance.now() });
+      } else {
+        announce(`${msg.from_name} 與 ${msg.to_name} 已經和好了`);
+      }
+      reconcileState.offer = null;
+      // 送達後刷新面板：看看鎮上還有沒有下一樁可促成的和解。
+      requestReconcile();
+      return;
+    }
+    // ok=false 且未完成 → 離對象太遠，提示再靠近。
+    announce(`再靠近 ${msg.to_name} 一點才能交付`);
+    const me = myId ? players.get(myId) : null;
+    if (me) floaters.push({ wx: me.x, wy: me.y - 40, text: `再靠近 ${msg.to_name} 一點`, color: "224,200,144", born: performance.now() });
+  }
+
   // 在面板裡建一次 DOM（畫布 + 控制鈕），之後只更新內容、重繪畫布。
   function buildStargazePanel() {
     const body = document.getElementById("stargazeBody");
@@ -21896,6 +21994,8 @@
       openBtn = btn;
       // 觀星面板（ROADMAP 347）：一開窗就向伺服器要今夜星圖（夜間才看得見）。
       if (win.id === "winStargaze") requestStarMap();
+      // 和解面板（ROADMAP 364）：一開窗就向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
+      if (win.id === "winReconcile") requestReconcile();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();

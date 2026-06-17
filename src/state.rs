@@ -264,6 +264,11 @@ pub struct Player {
     /// 以避免同一座重複領獎（首次連對才給乙太＋熟練度）。
     pub traced_constellations: u64,
 
+    /// 進行中的居民和解委託（ROADMAP 364）：`Some` 表玩家已接下一樁、正帶著信物
+    /// 要送給 `to` NPC；送達後清回 `None`。記憶體前置、不入快照、不持久化、零 migration
+    /// （鏡像 `traced_constellations` 等記憶體切片）；重啟＝未接委託，可重新接。
+    pub reconcile_errand: Option<crate::reconcile::Errand>,
+
     // ── 席間舉杯（ROADMAP 329：玩家加入午餐社交）──────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
     /// 記憶體前置、不持久化（純社交互動，重啟清零無妨）。
@@ -1493,6 +1498,7 @@ mod tests {
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,

@@ -110,6 +110,17 @@ impl NpcRelationsState {
         *v = (*v + delta).clamp(0, 100);
     }
 
+    /// 玩家促成和解（ROADMAP 364）：對 (a→b) 與 (b→a) 雙向各加 `delta`，
+    /// 回傳和解後的雙向平均好惡值（0~100）。純記憶體調整、clamp 安全；
+    /// `delta` 亦可為負（保留通用性，目前只用於正向回暖）。
+    pub fn nudge_pair(&mut self, a: &str, b: &str, delta: i32) -> i32 {
+        self.adjust(a, b, delta);
+        self.adjust(b, a, delta);
+        let ab = self.get(a, b).unwrap_or(NEUTRAL);
+        let ba = self.get(b, a).unwrap_or(NEUTRAL);
+        (ab + ba) / 2
+    }
+
     /// 取得 A 對 B 的好惡值；未知 NPC 對回 `None`。
     pub fn get(&self, from: &str, to: &str) -> Option<i32> {
         self.affinities.get(from)?.get(to).copied()
