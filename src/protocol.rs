@@ -232,6 +232,16 @@ pub enum ClientMsg {
     /// game.rs 每幀挑「同區、最近、過了冷卻」的另一名玩家當對象，替**對方**人氣 +1、迸掌聲特效。
     /// 無 payload——對象一律用喝采者自己的權威座標挑（防隔空喝采）。未登入 / 冷卻中 / 超量靜默忽略。
     Cheer,
+    /// 逗玩接物（ROADMAP 345）：玩家朝面前 `(dx, dy)` 方向丟出玩具，寵物便衝去叼回。
+    /// 伺服器以玩家自己的權威座標算玩具落點（`pet_fetch::throw_spot`，防隔空丟），在寵物身上
+    /// 開一趟接物（game.rs 每幀推進：衝去叼→叼回主人）。`(dx, dy)` 可為任意長度（內部正規化），
+    /// 近乎零時預設朝右。沒寵物 / 在室內 / 已在接物中 / 超量靜默忽略。
+    PlayWithPet {
+        #[serde(default)]
+        dx: f32,
+        #[serde(default)]
+        dy: f32,
+    },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -1095,6 +1105,17 @@ pub struct PlayerView {
     /// 兩寵物間播放歡樂特效（額外蹦跳＋上飄愛心 / 音符）。沒玩耍時 false、序列化略過。
     #[serde(default, skip_serializing_if = "is_false")]
     pub pet_playing: bool,
+    /// 逗玩接物中的玩具世界座標（ROADMAP 345「寵物逗玩接物」）。接物進行中，伺服器把玩具位置
+    /// 隨快照送來：追逐階段是玩具落點、叼回階段每 tick 等於寵物座標（玩具被叼著走）。前端據此
+    /// 畫出玩具。沒接物時為 0（隨 `pet_fetching` 一併略過序列化）。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub pet_toy_x: f32,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub pet_toy_y: f32,
+    /// 寵物此刻是否正在逗玩接物（ROADMAP 345）。前端據此把寵物畫成「興奮衝刺」並畫出玩具、
+    /// 暫停待機輕浮。沒接物時 false、序列化略過。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pet_fetching: bool,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
@@ -1664,7 +1685,7 @@ mod tests {
                 active_skill_flags: vec![],
                 auto_skills: vec![],
                 pet_kind: None,
-                pet_x: 0.0, pet_y: 0.0, pet_playing: false,
+                pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
                 fish_cooldown: 0.0,
                 near_water: false,
                 toast_cooldown: 0.0,
@@ -1913,7 +1934,7 @@ mod tests {
             active_skill_flags: vec![],
             auto_skills: vec![],
             pet_kind: None,
-            pet_x: 0.0, pet_y: 0.0, pet_playing: false,
+            pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
             fish_cooldown: 0.0,
             near_water: false,
             toast_cooldown: 0.0,
@@ -2153,7 +2174,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2211,7 +2232,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

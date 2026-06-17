@@ -140,6 +140,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet_x: crate::state::WORLD_WIDTH / 2.0,
             pet_y: crate::state::WORLD_HEIGHT / 2.0,
             pet_playing: false,
+            pet_fetch: None,
+            pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
@@ -226,6 +228,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet_x: crate::state::WORLD_WIDTH / 2.0,
             pet_y: crate::state::WORLD_HEIGHT / 2.0,
             pet_playing: false,
+            pet_fetch: None,
+            pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             toast_cooldown: 0.0,
@@ -592,6 +596,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 連線層擋封包洪流，每對象 60s 冷卻另由 game.rs 把關，雙重防洗榜。
     let mut rl_cheer_win = std::time::Instant::now();
     let mut rl_cheer_n: u32 = 0;
+    // 逗玩接物限流（ROADMAP 345）：比照 emote／擊掌／喝采從嚴（每秒至多 3 次，超量靜默丟棄）——
+    // 擋封包洪流；一趟接物未結束前不重複開新接物另由 game.rs 把關（`pet_fetch.is_none()` 才丟得出）。
+    let mut rl_petfetch_win = std::time::Instant::now();
+    let mut rl_petfetch_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -848,6 +856,32 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 對象身上、且對象需是已登入玩家才持久化得了，訪客互喝采重啟即逝、無妨）。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.cheer_offer = crate::player_cheer::OFFER_TICKS;
+                    }
+                }
+                Ok(ClientMsg::PlayWithPet { dx, dy }) => {
+                    // 逗玩接物（ROADMAP 345）：玩家朝面前丟出玩具，寵物衝去叼回。這裡只在寵物身上
+                    // 開一趟接物（玩具落點＋追逐階段），真正的「衝去叼→叼回」推進交給 game.rs 每幀做。
+                    // 限流（比照喝采：每秒至多 3 次，超量靜默丟棄，不懲罰多按）。
+                    if rl_petfetch_win.elapsed().as_secs() >= 1 {
+                        rl_petfetch_win = std::time::Instant::now();
+                        rl_petfetch_n = 0;
+                    }
+                    rl_petfetch_n += 1;
+                    if rl_petfetch_n > 3 {
+                        continue;
+                    }
+                    // 有寵物、在室外、且目前沒有正在進行的接物，才丟得出玩具（用玩家自己的權威座標
+                    // 算落點，防隔空丟）。一趟接物未叼回前不重複開新的（天然防洗螢幕）。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if p.pet.is_some() && p.indoor_plot_id.is_none() && p.pet_fetch.is_none() {
+                            let (tx, ty) = crate::pet_fetch::throw_spot(p.x, p.y, dx, dy);
+                            p.pet_fetch = Some(crate::pet_fetch::PetFetch {
+                                toy_x: tx,
+                                toy_y: ty,
+                                phase: crate::pet_fetch::FetchPhase::Chasing,
+                            });
+                            p.pet_fetching = true;
+                        }
                     }
                 }
                 Ok(ClientMsg::Farm { x, y }) => {

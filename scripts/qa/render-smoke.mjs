@@ -423,6 +423,11 @@ const scenarios = [
   // glyph 分支（依 pet_x 奇偶挑選）各畫一回，確認玩耍特效渲染零繪製例外。
   variant("寵物玩伴嬉戲(愛心)", (s) => { const m = s.players[0]; m.pet_kind = "coral_crab"; m.pet_x = m.x + 4; m.pet_y = m.y + 2; m.pet_playing = true; }),
   variant("寵物玩伴嬉戲(音符)", (s) => { const m = s.players[0]; m.pet_kind = "jade_wraith"; m.pet_x = m.x + 12; m.pet_y = m.y + 2; m.pet_playing = true; }),
+  // 寵物逗玩接物（ROADMAP 345）：玩家丟出玩具、寵物正在接物 → 跑 drawPlayer 的接物分支（興奮衝刺
+  // 彈跳＋玩具 🎾 繪製）。覆蓋兩種玩具狀態：① 落地待叼（玩具離寵物遠＝追逐階段，畫落地玩具＋影子）；
+  // ② 被叼著走（玩具貼著寵物＜16px＝叼回階段，畫在寵物嘴邊）。確認接物渲染零繪製例外。
+  variant("寵物逗玩接物(衝去叼)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 20; m.pet_y = m.y; m.pet_fetching = true; m.pet_toy_x = m.x + 120; m.pet_toy_y = m.y; }),
+  variant("寵物逗玩接物(叼回來)", (s) => { const m = s.players[0]; m.pet_kind = "crystal_golem"; m.pet_x = m.x + 60; m.pet_y = m.y + 10; m.pet_fetching = true; m.pet_toy_x = m.x + 60; m.pet_toy_y = m.y + 10; }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

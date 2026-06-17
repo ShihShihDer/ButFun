@@ -1667,6 +1667,12 @@
             existing.pet_x = p.pet_x;
             existing.pet_y = p.pet_y;
             existing.pet_playing = !!p.pet_playing; // ROADMAP 344：寵物是否正在跟別的寵物玩耍
+            // ROADMAP 345：逗玩接物——玩具座標 ＋ 是否正在接物。新一趟接物開始（false→true）時，
+            // 記下「丟出時間」供前端把玩具畫成一道從主人手中飛向落點的拋物線。
+            if (!existing.pet_fetching && p.pet_fetching) existing._petThrowAt = performance.now();
+            existing.pet_fetching = !!p.pet_fetching;
+            existing.pet_toy_x = p.pet_toy_x || 0;
+            existing.pet_toy_y = p.pet_toy_y || 0;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -4308,10 +4314,13 @@
       // 寵物玩伴嬉戲（ROADMAP 344）：附近有寵物玩伴時，寵物會湊到中間玩耍——這時牠玩得更興奮，
       // 蹦跳更歡快、頭頂飄出愛心 / 音符，與獨自跟隨的輕浮明顯區隔。
       const playing = !!p.pet_playing;
-      // 追趕主人時（離主人較遠）走動彈跳明顯些、歇腳時只輕輕浮動；玩耍時蹦得最歡。
+      // 逗玩接物（ROADMAP 345）：玩家丟出玩具、寵物正衝去叼／叼回——這時牠玩得最起勁，
+      // 興奮地大幅快速彈跳衝刺，比追趕主人還急。
+      const fetching = !!p.pet_fetching;
+      // 追趕主人時（離主人較遠）走動彈跳明顯些、歇腳時只輕輕浮動；玩耍／接物時蹦得最歡。
       const chasing = Math.hypot(ppx - p.rx, ppy - p.ry) > 34;
-      const bobAmp = playing ? 3.4 : (chasing ? 2.6 : 1.2);
-      const bobRate = playing ? 130 : 220; // 玩耍時蹦得更快更歡
+      const bobAmp = fetching ? 3.8 : (playing ? 3.4 : (chasing ? 2.6 : 1.2));
+      const bobRate = fetching ? 110 : (playing ? 130 : 220); // 接物時衝得最急、蹦得最快
       const petBob = reduceMotion ? 0 : Math.abs(Math.sin(petNow / bobRate + p.pet_x * 0.05)) * bobAmp;
       // 新夥伴登場的蹦跳歡迎（單次拋物線跳一下，~0.6s）。
       let hop = 0;
@@ -4339,6 +4348,33 @@
           ctx.fillText(glyph, psx + Math.sin(cyc * Math.PI * 2) * 3, psy - 14 - rise);
           ctx.globalAlpha = 1;
         }
+      }
+      // 逗玩接物（ROADMAP 345）：畫出玩具 🎾。剛丟出的 ~320ms 內，玩具自主人手中飛向落點、
+      // 走一道拋物線（純前端演出）；之後落地等寵物來叼（追逐階段）或被叼著走（叼回階段：
+      // 伺服器已把玩具座標每 tick 跟到寵物身上，這裡偵測玩具貼著寵物就畫在牠嘴邊）。
+      if (fetching && (p.pet_toy_x || p.pet_toy_y)) {
+        const toyWx = p.pet_toy_x, toyWy = p.pet_toy_y;
+        let tsx = toyWx - camX, tsy = toyWy - camY;
+        let arcLift = 0;
+        const throwDt = p._petThrowAt ? (petNow - p._petThrowAt) : 9999;
+        if (throwDt < 320 && !reduceMotion) {
+          // 拋物線：從主人當前位置飛向落點，中途拱起。
+          const f = throwDt / 320;
+          tsx = (p.rx - camX) + ((toyWx - camX) - (p.rx - camX)) * f;
+          tsy = (p.ry - camY) + ((toyWy - camY) - (p.ry - camY)) * f;
+          arcLift = Math.sin(f * Math.PI) * 22; // 飛行途中拱高
+        }
+        // 玩具貼著寵物（叼回階段，伺服器讓玩具座標跟到寵物）→ 畫在牠嘴邊、隨牠一起蹦。
+        const carried = Math.hypot(toyWx - ppx, toyWy - ppy) < 16;
+        if (carried && throwDt >= 320) {
+          tsx = psx + 7;
+          tsy = psy - petBob - 2;
+        } else if (throwDt >= 320) {
+          drawGroundShadow(tsx, tsy + 5, 4, 1.5, 0.16); // 落地的玩具有影子
+        }
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("🎾", tsx, tsy - arcLift);
       }
     }
   }
@@ -17636,6 +17672,9 @@
     const sig = [petKind, isGuestUser].join("|");
     if (sig === lastPetSig) return;
     lastPetSig = sig;
+    // ROADMAP 345：有寵物才顯示「🎾 逗寵物」鈕（沒寵物時丟玩具沒意義，隱藏免誤觸）。
+    const petFetchBtn = document.getElementById("petFetchBtn");
+    if (petFetchBtn) petFetchBtn.classList.toggle("hidden", !(petKind && !isGuestUser));
     body.innerHTML = "";
 
     if (isGuestUser) {
@@ -20778,6 +20817,24 @@
       cheerBtn.addEventListener("click", () => {
         safeSend({ type: "cheer" });
         announce("替附近的玩家鼓掌喝采");
+      });
+    }
+    // 🎾 逗寵物（ROADMAP 345）：朝面前丟出玩具，寵物衝去叼回。方向＝正在按的移動方向，
+    //    沒在動就用朝向（facing）；伺服器以玩家權威座標算落點。沒寵物 / 接物中 / 室內靜默忽略。
+    const petFetchBtn = document.getElementById("petFetchBtn");
+    if (petFetchBtn) {
+      petFetchBtn.addEventListener("click", () => {
+        const me = myId ? players.get(myId) : null;
+        if (!me || !me.pet_kind) return;
+        let dx = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+        let dy = (keys.down ? 1 : 0) - (keys.up ? 1 : 0);
+        if (dx === 0 && dy === 0) {
+          const f = me.facing === undefined ? Math.PI / 2 : me.facing;
+          dx = Math.cos(f);
+          dy = Math.sin(f);
+        }
+        safeSend({ type: "play_with_pet", dx, dy });
+        announce("朝面前丟出玩具，逗你的寵物去叼回");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）
