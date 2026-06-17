@@ -1041,6 +1041,9 @@ pub struct AppState {
     /// NPC 派系自主湧現（ROADMAP 71）：追蹤已公開的結盟/競爭對，偵測派系事件並廣播到聊天頻道；
     /// 對話時注入 system prompt 讓 NPC 自然流露對盟友/對手的口吻。記憶體模式，重啟清零。
     pub npc_factions: Arc<RwLock<crate::npc_factions::NpcFactionState>>,
+    /// NPC 社交平衡漣漪（ROADMAP 365）：關係網依社會平衡理論自我演化（朋友的朋友更親、
+    /// 朋友的敵人漸疏），並對「人情漸染」的回暖漣漪管理每對廣播冷卻。記憶體模式，重啟清零。
+    pub social_dynamics: Arc<RwLock<crate::social_dynamics::SocialDynamicsState>>,
     /// NPC 作息與移動管理器（ROADMAP 73）。
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
     /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
@@ -1320,6 +1323,7 @@ impl AppState {
             npc_needs: Arc::new(RwLock::new(crate::npc_needs::NpcNeedsState::new())),
             npc_relations: Arc::new(RwLock::new(crate::npc_relations::NpcRelationsState::new())),
             npc_factions: Arc::new(RwLock::new(crate::npc_factions::NpcFactionState::new())),
+            social_dynamics: Arc::new(RwLock::new(crate::social_dynamics::SocialDynamicsState::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
