@@ -678,7 +678,7 @@ pub enum ClientMsg {
         pub is_rainbow: bool,
     }
 
-/// 快照裡的夜間乙太泉節點（ROADMAP 162）。
+/// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
     /// 節點唯一 ID（用於 CollectSpringNode ClientMsg）。
@@ -687,6 +687,8 @@ pub struct SpringNodeView {
     pub wx: f32,
     /// 世界座標 Y。
     pub wy: f32,
+    /// ROADMAP 362：是否為滿月夜的「月華泉」（前端據此畫銀金月暈；舊前端忽略此欄位、向後相容）。
+    pub moonlit: bool,
 }
 
 /// 快照裡的季節性野外採集節點（ROADMAP 154）。

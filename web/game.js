@@ -7196,6 +7196,7 @@
   }
 
   // 繪製夜間乙太泉節點（ROADMAP 162）：紫色脈動光圈，夜間探索感。
+  // ROADMAP 362：滿月夜的「月華泉」(n.moonlit) 改畫銀金月暈＋🌕 點綴，與尋常紫泉一眼區隔。
   function drawNightSprings(camX, camY, now) {
     if (nightSpringNodes.length === 0) return;
     const me = myId ? players.get(myId) : null;
@@ -7204,27 +7205,36 @@
       const sx = n.wx - camX;
       const sy = n.wy - camY;
       if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
+      const moonlit = !!n.moonlit;
+      // 配色：尋常泉=藍紫；月華泉=銀金（呼應滿月）。
+      const halo = moonlit ? "255,224,150" : "160,80,255";
+      const core = moonlit ? "230,200,120" : "120,60,220";
+      const edge = moonlit ? "255,240,200" : "200,140,255";
       ctx.save();
       const pulse = 0.55 + 0.45 * Math.sin(now * 0.00420 + n.id * 1.3);
-      // 外層光暈（紫色）
+      // 外層光暈
       ctx.beginPath();
-      ctx.arc(sx, sy, 28 + 6 * pulse, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(160,80,255,${(0.08 + 0.07 * pulse).toFixed(3)})`;
+      ctx.arc(sx, sy, (moonlit ? 32 : 28) + 6 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${halo},${(0.08 + 0.07 * pulse).toFixed(3)})`;
       ctx.fill();
-      // 內核（藍紫色）
+      // 內核
       ctx.beginPath();
       ctx.arc(sx, sy, 16, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(120,60,220,${(0.65 + 0.25 * pulse).toFixed(3)})`;
+      ctx.fillStyle = `rgba(${core},${(0.65 + 0.25 * pulse).toFixed(3)})`;
       ctx.fill();
       // 邊框
-      ctx.strokeStyle = `rgba(200,140,255,${(0.75 + 0.2 * pulse).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(${edge},${(0.75 + 0.2 * pulse).toFixed(3)})`;
       ctx.lineWidth = 2;
       ctx.stroke();
-      // 中心圖示
+      // 中心圖示（月華泉疊一枚 🌕 在水滴上方點綴）
       ctx.font = "16px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("💧", sx, sy + 1);
+      if (moonlit) {
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.fillText("🌕", sx, sy - 16);
+      }
       // 靠近時顯示互動提示
       if (n === nearest) {
         ctx.strokeStyle = "rgba(200,140,255,0.9)";

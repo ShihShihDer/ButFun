@@ -2699,18 +2699,38 @@ pub fn spawn(app: AppState) {
                 }
             }
 
-            // 夜間乙太泉 tick（ROADMAP 162）：黃昏轉夜晚時生成 5 個城外乙太泉採集點。
+            // 夜間乙太泉 tick（ROADMAP 162；ROADMAP 362 滿月乙太潮）：黃昏轉夜晚時生成城外乙太泉採集點，
+            // 滿月夜（同 1914 行掠食者嗥月的權威月相）額外多生 3 口月華泉。
             {
                 use crate::night_aether_springs::SpringsEvent;
                 let current_phase = app.daynight.read().unwrap().phase();
-                let ev = app.night_springs.write().unwrap().tick(current_phase);
+                // 本幀權威月相（鏡像本檔掠食者嗥月的算法；前後端 moon 公式一致）。
+                let moon_full = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| crate::moon::is_full_moon(d.as_millis() as f64))
+                    .unwrap_or(false);
+                // 守 prod-deadlock：鎖內 tick 並讀出本夜資訊即釋放鎖，出鎖後才廣播。
+                let (ev, moonlit_tonight, live_count) = {
+                    let mut ns = app.night_springs.write().unwrap();
+                    let ev = ns.tick(current_phase, moon_full);
+                    (ev, ns.moonlit_tonight, ns.nodes.len())
+                };
                 match ev {
                     Some(SpringsEvent::Activated) => {
-                        let msg = format!(
-                            "🌙 夜幕降臨，{} 個乙太泉在城外湧現——夜探者可在天亮前採集，各得 {} 乙太！",
-                            crate::night_aether_springs::SPRING_COUNT,
-                            crate::night_aether_springs::ETHER_REWARD,
-                        );
+                        let msg = if moonlit_tonight {
+                            format!(
+                                "🌕 滿月乙太潮——月華泉格外豐沛！城外共 {} 口乙太泉湧現（含 {} 口滿月限定月華泉），夜探者可在天亮前採集，各得 {} 乙太！",
+                                live_count,
+                                crate::night_aether_springs::MOONLIT_SPRING_COUNT,
+                                crate::night_aether_springs::ETHER_REWARD,
+                            )
+                        } else {
+                            format!(
+                                "🌙 夜幕降臨，{} 個乙太泉在城外湧現——夜探者可在天亮前採集，各得 {} 乙太！",
+                                crate::night_aether_springs::SPRING_COUNT,
+                                crate::night_aether_springs::ETHER_REWARD,
+                            )
+                        };
                         let _ = app.tx_chat.send(msg);
                     }
                     Some(SpringsEvent::Deactivated) => {
@@ -3608,7 +3628,7 @@ pub fn spawn(app: AppState) {
                         },
                         // 夜間乙太泉（ROADMAP 162）。
                         night_spring_nodes: app.night_springs.read().unwrap().active_nodes()
-                            .map(|n| crate::protocol::SpringNodeView { id: n.id, wx: n.wx, wy: n.wy })
+                            .map(|n| crate::protocol::SpringNodeView { id: n.id, wx: n.wx, wy: n.wy, moonlit: n.moonlit })
                             .collect(),
                         // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
                         monster_species_attitudes: app.monster_species.read().unwrap().views(),
