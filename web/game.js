@@ -9073,8 +9073,13 @@
         ctx.font = "22px sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        // 雞 emoji（微微抖動提示有生命）
-        ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 3)), sx, sy - 10);
+        // 雞 emoji（微微抖動提示有生命）。ROADMAP 368：牧群可孵到 4 隻。
+        ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 4)), sx, sy - 10);
+        // ROADMAP 368：窩裡正在長大的小雞畫一隻 🐤 依偎在雞群旁。
+        if (rp.chick) {
+          ctx.font = "16px sans-serif";
+          ctx.fillText("🐤", sx + 6 + Math.min(rp.chicken_count, 4) * 9, sy - 10);
+        }
         if (rp.egg_count > 0) {
           ctx.font = "bold 11px sans-serif";
           ctx.fillStyle = "#fffde0";
@@ -19391,8 +19396,11 @@
     const ranch = myPlot ? ranchPlots.find(r => r.plot_id === myPlot.plot_id) : null;
     const chickens = ranch ? ranch.chicken_count : 0;
     const eggs = ranch ? ranch.egg_count : 0;
+    const chick = ranch ? !!ranch.chick : false;       // ROADMAP 368：窩裡有小雞在長大
+    const brooding = ranch ? !!ranch.brooding : false;  // ROADMAP 368：正在孵育中
     const ether = me ? me.ether : 0;
-    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, ether].join("|");
+    // sig 納入 chick/brooding，避免孵育狀態變了面板卻不重繪（panel-sig-stale）。
+    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, chick, brooding, ether].join("|");
     if (sig === lastRanchSig) return;
     lastRanchSig = sig;
     body.innerHTML = "";
@@ -19417,8 +19425,18 @@
     const status = document.createElement("div");
     status.style.cssText = "margin-bottom:10px;font-size:.9rem;line-height:1.6;";
     status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
-      + `<div>🐔 雞隻數：<b style="color:#ffe066;">${chickens} / 3</b></div>`
+      + `<div>🐔 雞隻數：<b style="color:#ffe066;">${chickens} / 4</b></div>`
       + `<div>🥚 待收蛋：<b style="color:#ffe066;">${eggs}</b>（最多堆積 10 顆）</div>`;
+    // ROADMAP 368：牧群孳息狀態——正在長大的小雞 / 孵育中 / 養出新成員的鼓勵。
+    if (chick) {
+      status.innerHTML += `<div style="color:#ffd86b;">🐤 窩裡有隻小雞正在長大……</div>`;
+    } else if (brooding) {
+      status.innerHTML += `<div style="color:#9fe0a0;">🪺 母雞正安心孵育——留幾顆蛋在窩裡，牠會孵出小雞</div>`;
+    } else if (chickens >= 1 && chickens < 4) {
+      status.innerHTML += `<div style="color:#888;font-size:.8rem;">細心收蛋、再留幾顆蛋在窩裡，母雞就會孵出新成員（第 4 隻只能養出來，買不到）</div>`;
+    } else if (chickens >= 4) {
+      status.innerHTML += `<div style="color:#ffd86b;font-size:.85rem;">🎉 你用心養出了圓滿的牧群！</div>`;
+    }
     body.appendChild(status);
 
     // 購雞按鈕
