@@ -428,6 +428,11 @@ const scenarios = [
   // ② 被叼著走（玩具貼著寵物＜16px＝叼回階段，畫在寵物嘴邊）。確認接物渲染零繪製例外。
   variant("寵物逗玩接物(衝去叼)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 20; m.pet_y = m.y; m.pet_fetching = true; m.pet_toy_x = m.x + 120; m.pet_toy_y = m.y; }),
   variant("寵物逗玩接物(叼回來)", (s) => { const m = s.players[0]; m.pet_kind = "crystal_golem"; m.pet_x = m.x + 60; m.pet_y = m.y + 10; m.pet_fetching = true; m.pet_toy_x = m.x + 60; m.pet_toy_y = m.y + 10; }),
+  // 釣魚上鉤小遊戲（ROADMAP 346）：玩家拋竿後 → 跑 drawPlayer 的釣魚浮標分支（釣線＋浮標＋
+  // 咬鉤漣漪＋頭頂「❗」）。覆蓋兩階段：① 等咬鉤（waiting，平靜浮標）；② 魚上鉤（biting，
+  // 抖動浮標＋漣漪＋「❗」彈出，附 _fishBiteAt 起算彈出動畫）。確認浮標渲染零繪製例外。
+  variant("釣魚上鉤(等咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "waiting"; }),
+  variant("釣魚上鉤(魚咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "biting"; m._fishBiteAt = 0; }),
   // 住家窗景（ROADMAP 326）：玩家在室內 → 跑 drawIndoorScene 的北牆開窗分支（homeWindowScene
   // ＋drawHomeWindow＋drawWindowParticles＋窗光）。遍歷時辰／天氣／季節／居家風格，覆蓋
   // 全部天體（sun/lowsun/moon＋星點）與飄落物（rain/sand/dust/mist/snow/none）分支零繪製例外。

@@ -642,6 +642,10 @@
   // 收成得乙太、採集進背包時的「+N」飄字（純表現，從權威數值差值推得，不嵌任何遊戲規則）。
   // 每筆 { wx, wy, text, color, born }：以世界座標固定在獲得當下的玩家位置上方，隨時間上飄淡出。
   const floaters = [];
+  // ROADMAP 346 釣魚結果飄字對照（魚 key → 中文名／emoji；反應品質 → 中文標籤）。
+  const FISH_NAME_BY_KEY = { fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚" };
+  const FISH_EMOJI_BY_KEY = { fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈" };
+  const FISH_QUALITY_LABEL = { ok: "上鉤", good: "漂亮", perfect: "完美" };
   // 互動確認漣漪（純表現）：點/輕點田格送出農作意圖時，在該格畫一圈短暫擴張淡出的亮環，
   // 讓玩家「按下就有回饋」——尤其手機沒有桌面的 hover 高亮,輕點後到下一個快照回來前
   // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
@@ -1673,6 +1677,9 @@
             existing.pet_fetching = !!p.pet_fetching;
             existing.pet_toy_x = p.pet_toy_x || 0;
             existing.pet_toy_y = p.pet_toy_y || 0;
+            // ROADMAP 346：釣魚小遊戲階段（waiting/biting/null）。新咬鉤（→biting）記時，供浮標「❗」彈出動畫起算。
+            if (existing.fishing_phase !== "biting" && p.fishing_phase === "biting") existing._fishBiteAt = performance.now();
+            existing.fishing_phase = p.fishing_phase || null;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -2212,6 +2219,30 @@
         const g = hid ? popGatherings.get(hid) : null;
         if (g && g.endAt === null) {
           g.endAt = performance.now() + 700; // 0.7s 淡出，與其他多人特效收尾節奏一致
+        }
+        break;
+      }
+      case "fish_result": {
+        // 釣魚收竿結果（ROADMAP 346）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        if (msg.outcome === "caught") {
+          const fname = FISH_NAME_BY_KEY[msg.fish] || "魚";
+          const femoji = FISH_EMOJI_BY_KEY[msg.fish] || "🐟";
+          const qlabel = FISH_QUALITY_LABEL[msg.quality] || "上鉤";
+          // 品質越高顏色越亮（完美＝金、不錯＝藍、普通＝綠）。
+          const color = msg.quality === "perfect" ? "255,210,74"
+                      : msg.quality === "good"    ? "120,200,255"
+                      :                             "170,225,170";
+          floaters.push({ wx, wy, text: `${femoji} ${qlabel}！${fname}`, color, born: now });
+          announce(`釣到${fname}（${qlabel}）`);
+        } else if (msg.outcome === "too_early") {
+          floaters.push({ wx, wy, text: "💨 太早了，魚跑了…", color: "190,190,190", born: now });
+          announce("收竿太早，把魚嚇跑了");
+        } else if (msg.outcome === "escaped") {
+          floaters.push({ wx, wy, text: "💨 魚脫鉤跑了…", color: "190,190,190", born: now });
+          announce("等太久，魚脫鉤跑了");
         }
         break;
       }
@@ -3613,7 +3644,13 @@
     // 採集鍵:空白鍵 / E / F 對腳下田格互動,讓沒滑鼠的玩家也能農作。
     // 用 e.repeat 擋住長按連發(一次按一次,跟滑鼠單擊一致)。
     if (e.key === " " || e.key === "e" || e.key === "E" || e.key === "f" || e.key === "F") {
-      if (!e.repeat) farmAtPlayer();
+      if (!e.repeat) {
+        // ROADMAP 346：釣魚進行中時，這些互動鍵改為「收竿」——讓沒開面板的玩家也能即時把握
+        // 咬鉤窗口（水邊本就無田可農作，不會誤觸）。沒在釣才走原本的腳下田格互動。
+        const meFish = myId ? players.get(myId) : null;
+        if (meFish && meFish.fishing_phase) safeSend({ type: "reel" });
+        else farmAtPlayer();
+      }
       e.preventDefault();
       return;
     }
@@ -4375,6 +4412,61 @@
         ctx.font = "12px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText("🎾", tsx, tsy - arcLift);
+      }
+    }
+
+    // 釣魚浮標（ROADMAP 346）：拋竿後在玩家前方水面畫浮標——等咬鉤時平靜浮動，
+    // 魚上鉤（biting）時浮標下沉抖動＋頭頂彈出「❗」，把「該收竿了」做成一眼可讀的世界訊號
+    // （自己與旁觀者都看得到，phase 隨快照廣播）。浮標與線皆原創 canvas 繪製，非外部素材。
+    // reduceMotion 下不抖不漣漪、只留靜態浮標與「❗」。
+    if (p.fishing_phase === "waiting" || p.fishing_phase === "biting") {
+      const biting = p.fishing_phase === "biting";
+      const now = performance.now();
+      const fx = sx + 16;          // 浮標落點：玩家前方偏側（像甩在附近水面）
+      const baseY = sy + 6;
+      let bobY = 0;
+      if (!reduceMotion) {
+        bobY = biting ? Math.sin(now / 60) * 2 + 2   // 咬鉤：快抖 + 略下沉
+                      : Math.sin(now / 400) * 1.5;   // 等待：慢浮
+      }
+      const fy = baseY + bobY;
+      // 釣線：玩家手部 → 浮標。
+      ctx.strokeStyle = "rgba(220,235,255,.5)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(sx + 4, by - 6);
+      ctx.lineTo(fx, fy);
+      ctx.stroke();
+      // 浮標本體：紅上白邊小圓。
+      ctx.beginPath();
+      ctx.arc(fx, fy, 3, 0, Math.PI * 2);
+      ctx.fillStyle = biting ? "#ff5040" : "#ff8a8a";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,.85)";
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      if (biting) {
+        // 咬鉤水面漣漪（reduceMotion 關）。
+        if (!reduceMotion) {
+          const rt = ((now - (p._fishBiteAt || now)) % 600) / 600;
+          ctx.beginPath();
+          ctx.arc(fx, fy + 1, 3 + rt * 6, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(120,200,255,${0.5 * (1 - rt)})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        // 頭頂「❗」：剛咬鉤放大彈出，之後穩定顯示。
+        const since = now - (p._fishBiteAt || now);
+        const pop = reduceMotion ? 1 : Math.min(1, since / 150);
+        const scale = reduceMotion ? 1 : (1 + (1 - pop) * 0.8);
+        ctx.save();
+        ctx.translate(sx, by - 30);
+        ctx.scale(scale, scale);
+        ctx.font = "bold 16px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffd24a";
+        ctx.fillText("❗", 0, 0);
+        ctx.restore();
       }
     }
   }
@@ -17756,8 +17848,10 @@
     if (!body) return;
     const cooldown = me ? (me.fish_cooldown || 0) : 0;
     const nearWater = me ? !!me.near_water : false;
-    // sig 用整秒數而非布林:冷卻倒數每秒要刷新,否則秒數凍結在初值直到歸零。
-    const sig = [isGuestUser, Math.ceil(cooldown), nearWater].join("|");
+    // ROADMAP 346：進行中釣魚階段（"waiting"＝等咬鉤、"biting"＝該收竿）。
+    const phase = me ? (me.fishing_phase || null) : null;
+    // sig 用整秒數而非布林:冷卻倒數每秒要刷新,否則秒數凍結在初值直到歸零。phase 也納入即時切鈕。
+    const sig = [isGuestUser, Math.ceil(cooldown), nearWater, phase].join("|");
     if (sig === lastFishSig) return;
     lastFishSig = sig;
     body.innerHTML = "";
@@ -17770,15 +17864,26 @@
       return;
     }
 
-    // 垂釣按鈕（近水才可用）。
+    // 釣魚按鈕：依小遊戲階段切換拋竿／收竿（ROADMAP 346）。
     const castBtn = document.createElement("button");
     castBtn.type = "button";
     castBtn.style.cssText = "width:100%;padding:8px 0;border:1px solid #4080d0;border-radius:8px;background:transparent;color:#88c4ff;cursor:pointer;font-size:.95rem;margin-bottom:8px;";
-    if (nearWater && cooldown <= 0) {
-      castBtn.textContent = "🎣 垂釣（站在水邊）";
-      castBtn.addEventListener("click", () => {
-        safeSend({ type: "fish" });
-      });
+    if (phase === "biting") {
+      // 魚上鉤了！高亮提示快收竿（反應越快魚越好）。
+      castBtn.textContent = "❗ 收竿！快！";
+      castBtn.style.color = "#ffd24a";
+      castBtn.style.borderColor = "#ffb300";
+      castBtn.style.background = "rgba(255,179,0,.12)";
+      castBtn.style.fontWeight = "bold";
+      castBtn.addEventListener("click", () => { safeSend({ type: "reel" }); });
+    } else if (phase === "waiting") {
+      // 等魚上鉤；此時收竿＝太早，會把魚嚇跑（玩法的一部分，故仍可按）。
+      castBtn.textContent = "⏳ 等魚上鉤…（耐心，咬鉤再收）";
+      castBtn.style.color = "#9fd0ff";
+      castBtn.addEventListener("click", () => { safeSend({ type: "reel" }); });
+    } else if (nearWater && cooldown <= 0) {
+      castBtn.textContent = "🎣 拋竿（站在水邊）";
+      castBtn.addEventListener("click", () => { safeSend({ type: "fish" }); });
     } else if (cooldown > 0) {
       castBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
       castBtn.disabled = true;
@@ -17810,7 +17915,7 @@
 
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;";
-    tip.textContent = "垂釣每 5 秒可一次，每次給農夫熟練度 +10 XP。烹飪配方見合成台。";
+    tip.textContent = "拋竿後等魚咬鉤（浮標抖動冒「❗」），把握反應窗口收竿——反應越快、魚越好！太早收會把魚嚇跑。每趟 5 秒冷卻、給農夫熟練度 +10 XP。";
     body.appendChild(tip);
   }
 

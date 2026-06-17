@@ -144,6 +144,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            fishing: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -232,6 +233,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            fishing: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -3072,31 +3074,95 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
 
-                // ── 釣魚（ROADMAP 47）──────────────────────────────────────────────
+                // ── 拋竿（ROADMAP 47 釣魚 / ROADMAP 346 上鉤小遊戲）──────────────────
                 Ok(ClientMsg::Fish) => {
-                    // 1. 驗：未倒地、冷卻到期、站在水邊（80px 內有 Water biome）。
-                    // 2. 偽隨機上鉤魚種（小魚 70%/星星魚 25%/深海魚 5%）。
-                    // 3. 給魚進背包 + 農夫熟練度 +10 XP。
-                    use crate::fishing::{is_near_water, roll_fish, FISH_COOLDOWN_SECS, FISH_FARMER_XP};
+                    // 拋竿：驗未倒地、冷卻到期、站水邊、目前沒在釣 → 開一趟「等咬鉤」。
+                    // 不再立即得魚；魚會在 1.5~4.5 秒後咬鉤（game.rs 每 tick 推進），
+                    // 玩家須在咬鉤反應窗口內送 Reel 收竿。同一把 players 寫鎖、純記憶體。
+                    use crate::fishing::{is_near_water, FISH_COOLDOWN_SECS};
+                    use crate::fishing_bite::FishingCast;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         if !p.vitals.is_downed()
                             && p.fish_cooldown <= 0.0
+                            && p.fishing.is_none()
                             && is_near_water(p.x, p.y)
                         {
-                            // 種子：player id 低 64 位 XOR fish_attempt_count
+                            // 種子：player id 低 64 位 XOR fish_attempt_count（每趟咬鉤時機不同）。
                             let seed = {
                                 let id_bytes = p.id.as_u128();
-                                ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
-                                    ^ p.fish_attempt_count
+                                ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64) ^ p.fish_attempt_count
                             };
-                            let fish = roll_fish(seed);
                             p.fish_attempt_count = p.fish_attempt_count.wrapping_add(1);
+                            // 拋竿即起冷卻（防連拋刷竿）；收竿成敗都不重置冷卻。
                             p.fish_cooldown = FISH_COOLDOWN_SECS;
-                            p.add_item_overflow(fish, 1);
-                            // 農夫熟練度 XP（讓農夫路線不只是種田）。
-                            p.masteries.gain_farmer(FISH_FARMER_XP);
-                            tracing::info!(player = %p.name, fish = ?fish, "釣到魚");
+                            p.fishing = Some(FishingCast::cast(seed));
+                            tracing::debug!(player = %p.name, "拋竿");
                         }
+                    }
+                }
+
+                // ── 收竿（ROADMAP 346 釣魚上鉤小遊戲）────────────────────────────────
+                Ok(ClientMsg::Reel) => {
+                    // 在魚咬鉤的反應窗口內收竿＝釣到魚（反應越快魚越好）；
+                    // 魚還沒咬就收會嚇跑魚、空手而回。全程同一把 players 寫鎖、純記憶體，
+                    // 廣播在出鎖後才送（守 prod-deadlock 鐵律：鎖內不送廣播）。
+                    use crate::fishing::FISH_FARMER_XP;
+                    use crate::fishing_bite::{roll_fish_quality, ReelOutcome};
+                    // 1. 鎖內判定結果、給魚、清狀態；把要廣播的資料帶出鎖外。
+                    let outcome_msg = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            match p.fishing.take() {
+                                // 沒在釣：靜默忽略，不廣播。
+                                None => None,
+                                Some(cast) => match cast.reel() {
+                                    ReelOutcome::Caught(quality) => {
+                                        // 反應品質決定魚種加權；種子沿用 attempt_count 推進。
+                                        let seed = {
+                                            let id_bytes = p.id.as_u128();
+                                            ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+                                                ^ p.fish_attempt_count
+                                        };
+                                        p.fish_attempt_count =
+                                            p.fish_attempt_count.wrapping_add(1);
+                                        let fish = roll_fish_quality(seed, quality);
+                                        p.add_item_overflow(fish, 1);
+                                        p.masteries.gain_farmer(FISH_FARMER_XP);
+                                        tracing::info!(
+                                            player = %p.name, fish = ?fish, quality = ?quality,
+                                            "收竿釣到魚"
+                                        );
+                                        // 魚物品 → snake_case 線格式（serde 約定，鏡像 state.rs decay key）。
+                                        let fish_key = serde_json::to_value(fish)
+                                            .ok()
+                                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                            .unwrap_or_default();
+                                        Some(ServerMsg::FishResult {
+                                            player_id: id,
+                                            outcome: "caught".into(),
+                                            fish: Some(fish_key),
+                                            quality: Some(quality.as_str().to_string()),
+                                            x: p.x,
+                                            y: p.y,
+                                        })
+                                    }
+                                    ReelOutcome::TooEarly => Some(ServerMsg::FishResult {
+                                        player_id: id,
+                                        outcome: "too_early".into(),
+                                        fish: None,
+                                        quality: None,
+                                        x: p.x,
+                                        y: p.y,
+                                    }),
+                                },
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    // 2. 出鎖後才廣播（前端只對自己 id 演出飄字）。
+                    if let Some(msg) = outcome_msg {
+                        let _ = app.tx.send(Arc::new(msg));
                     }
                 }
 

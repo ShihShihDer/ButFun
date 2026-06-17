@@ -220,6 +220,9 @@ pub struct Player {
     pub fish_cooldown: f32,
     /// 釣魚嘗試計數（確保每次釣魚偽隨機結果不同；記憶體前置，重啟清空）。
     pub fish_attempt_count: u64,
+    /// 進行中的一趟釣魚小遊戲（ROADMAP 346）：拋竿後等咬鉤／反應窗口。
+    /// 記憶體前置、不持久化、重啟清空（沒在釣＝None）。由 game.rs 每 tick 推進。
+    pub fishing: Option<crate::fishing_bite::FishingCast>,
 
     // ── 席間舉杯（ROADMAP 329：玩家加入午餐社交）──────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -386,6 +389,8 @@ impl Player {
             pet_fetching: self.pet.is_some() && self.pet_fetching,
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
+            // ROADMAP 346：進行中釣魚小遊戲的階段（沒在釣＝None，略過序列化）。
+            fishing_phase: self.fishing.map(|c| c.phase().as_str()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1396,6 +1401,7 @@ mod tests {
             pet_fetching: false,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
+            fishing: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
