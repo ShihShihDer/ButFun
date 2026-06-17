@@ -31,6 +31,7 @@ mod economy;
 mod enemy_field;
 mod field;
 mod field_store;
+mod field_thrive;
 mod game;
 mod gather;
 mod gather_field;

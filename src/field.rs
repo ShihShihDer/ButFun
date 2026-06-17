@@ -257,11 +257,31 @@ impl Field {
         None
     }
 
+    /// 把每格「是否種了作物」攤成 row-major 的佔用遮罩（連片沃土判定的輸入）。純函式。
+    fn planted_mask(&self) -> Vec<bool> {
+        self.tiles
+            .iter()
+            .map(|t| matches!(t, Tile::Planted(_)))
+            .collect()
+    }
+
     /// 推進 `dt` 秒：讓地裡所有作物成長（無濕度的不會長，見 `Crop::grow`）。
+    /// ROADMAP 367 連片沃土：先算「哪些格屬於連片田畝」，連片格的作物以
+    /// `THRIVE_GROWTH_MULT` 加速成長（濕度仍按真實 `dt` 消耗，見 `Crop::grow_boosted`）。
     pub fn tick(&mut self, dt: f32) {
-        for t in &mut self.tiles {
+        let thriving = crate::field_thrive::thriving_mask(
+            &self.planted_mask(),
+            FIELD_COLS,
+            crate::field_thrive::THRIVE_MIN_PATCH,
+        );
+        for (i, t) in self.tiles.iter_mut().enumerate() {
             if let Tile::Planted(c) = t {
-                c.grow(dt);
+                let mult = if thriving[i] {
+                    crate::field_thrive::THRIVE_GROWTH_MULT
+                } else {
+                    1.0
+                };
+                c.grow_boosted(dt, mult);
             }
         }
     }
@@ -327,7 +347,19 @@ impl Field {
             cols: FIELD_COLS,
             rows: self.rows(),
             reach: FARM_REACH,
-            cells: self.tiles.iter().map(tile_view).collect(),
+            // ROADMAP 367：每格帶上「是否屬於連片沃土」，前端把連片田畝畫得更蒼翠。
+            cells: {
+                let thriving = crate::field_thrive::thriving_mask(
+                    &self.planted_mask(),
+                    FIELD_COLS,
+                    crate::field_thrive::THRIVE_MIN_PATCH,
+                );
+                self.tiles
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| tile_view(t, thriving[i]))
+                    .collect()
+            },
         }
     }
 }
@@ -349,16 +381,19 @@ impl Field {
 }
 
 /// 一格 → 前端可見狀態。純函式。
-/// state：0=自然地 1=空土 2=種子 3=發芽 4=成熟；dry 只在「未成熟且已乾」時為真。
-fn tile_view(tile: &Tile) -> TileView {
+/// state：0=自然地 1=空土 2=種子 3=發芽 4=成熟；dry 只在「未成熟且已乾」時為真；
+/// thriving 在「這格屬於連片沃土（ROADMAP 367）」時為真（由 `view()` 算好整片再傳入）。
+fn tile_view(tile: &Tile, thriving: bool) -> TileView {
     match tile {
         Tile::Untilled => TileView {
             state: 0,
             dry: false,
+            thriving: false,
         },
         Tile::Tilled => TileView {
             state: 1,
             dry: false,
+            thriving: false,
         },
         Tile::Planted(c) => {
             let state = match c.stage() {
@@ -369,6 +404,7 @@ fn tile_view(tile: &Tile) -> TileView {
             TileView {
                 state,
                 dry: !c.is_ripe() && c.needs_water(),
+                thriving,
             }
         }
     }
@@ -653,10 +689,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false });
     }
 
     #[test]
@@ -793,7 +829,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         // 成熟即使濕度耗盡也不該再叫玩家澆水。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false });
     }
 
     #[test]
@@ -816,5 +852,59 @@ mod tests {
         // 只有翻土格和未翻土格，不應 panic。
         f.till(0, 0);
         f.water_all_planted(); // 不應 panic
+    }
+
+    // ─── ROADMAP 367：連片沃土 ───────────────────────────────────────────────
+
+    /// 種好澆好某格的小工具。
+    fn sow(f: &mut Field, col: usize, row: usize) {
+        f.till(col, row);
+        f.plant(col, row);
+        f.water(col, row);
+    }
+
+    #[test]
+    fn thriving_patch_grows_faster_than_isolated_crop() {
+        let mut f = Field::new();
+        // 三格相鄰連成一片（沃土）+ 一格孤立對照。
+        sow(&mut f, 0, 0);
+        sow(&mut f, 1, 0);
+        sow(&mut f, 2, 0);
+        sow(&mut f, 5, 3); // 遠角孤格，不成片
+        // tick 25 秒（< SPROUT_AT=30）：孤格成長 25 仍是種子；連片格成長 25×1.5=37.5 已發芽。
+        f.tick(25.0);
+        assert_eq!(
+            f.crop_stage(0, 0),
+            Some(CropStage::Sprout),
+            "連片沃土的作物加速成長，25 秒應已發芽"
+        );
+        assert_eq!(
+            f.crop_stage(5, 3),
+            Some(CropStage::Seed),
+            "孤立作物無加速，25 秒仍是種子"
+        );
+    }
+
+    #[test]
+    fn view_marks_thriving_only_for_connected_patch() {
+        let mut f = Field::new();
+        // 三格橫向連片 → 皆 thriving；遠處單格 → 非 thriving。
+        sow(&mut f, 0, 0);
+        sow(&mut f, 1, 0);
+        sow(&mut f, 2, 0);
+        sow(&mut f, 5, 3);
+        let cells = f.view().cells;
+        assert!(cells[0].thriving && cells[1].thriving && cells[2].thriving);
+        assert!(!cells[5 + 3 * FIELD_COLS].thriving, "孤格不成片");
+    }
+
+    #[test]
+    fn two_adjacent_crops_not_yet_thriving() {
+        let mut f = Field::new();
+        // 兩格相鄰仍不足三格門檻：不算沃土、不加速。
+        sow(&mut f, 0, 0);
+        sow(&mut f, 1, 0);
+        let cells = f.view().cells;
+        assert!(!cells[0].thriving && !cells[1].thriving);
     }
 }

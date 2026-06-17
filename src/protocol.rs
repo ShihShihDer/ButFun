@@ -1917,6 +1917,10 @@ pub struct TileView {
     pub state: u8,
     /// 種了作物但已乾、需要澆水（給前端做「該澆水了」提示）。
     pub dry: bool,
+    /// ROADMAP 367：這格屬於「連片沃土」（三格以上四方相鄰連成的田畝），
+    /// 前端把連片田畝畫得更蒼翠。新增欄、舊前端忽略即可（向後相容）。
+    #[serde(default)]
+    pub thriving: bool,
 }
 
 #[cfg(test)]
@@ -2113,6 +2117,7 @@ mod tests {
                 cells: vec![TileView {
                     state: 2,
                     dry: true,
+                    thriving: false,
                 }],
             }],
             nodes: vec![NodeView {
