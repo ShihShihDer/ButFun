@@ -2246,6 +2246,14 @@
         }
         break;
       }
+      case "star_map":
+        // 今夜星圖（ROADMAP 347）：開觀星窗時伺服器回傳；單播給本人。
+        applyStarMap(msg);
+        break;
+      case "constellation_result":
+        // 連星座結果（ROADMAP 347）：對／錯回饋，連對首次入錄給獎。
+        applyConstellationResult(msg);
+        break;
       case "village_event":
         // 里長自主辦村落節慶（ROADMAP 64）：全服廣播，顯示公告。
         addChat("🎉 村落節慶", msg.message || "村落節慶開始！");
@@ -17919,6 +17927,216 @@
     body.appendChild(tip);
   }
 
+  // ── 觀星連星座面板（ROADMAP 347）──────────────────────────────────────────
+  // 夜裡開星圖，把散落的星點依今夜星座連成線。互動＝空間連線（與釣魚的反應計時換骨架）：
+  // 點星點依序連成一條走線，伺服器把「邊的集合」與今夜星座比對，連對且首次即記入星座錄。
+  // 星圖資料只信伺服器（開窗時請求 star_map）；玩家送的是星點索引對，伺服器以權威今夜星座驗證。
+  const stargaze = {
+    available: false,
+    key: "", name: "", emoji: "", stars: [], traced: false,
+    total: 0, catalogTotal: 0,
+    picks: [],          // 玩家依序點的星點索引（相鄰兩點構成一條邊）
+    msg: "",            // 面板底部即時提示
+    msgColor: "#9fd0ff",
+    built: false,
+    canvas: null, ctx: null,
+  };
+
+  function requestStarMap() {
+    safeSend({ type: "request_star_map" });
+  }
+
+  // 在面板裡建一次 DOM（畫布 + 控制鈕），之後只更新內容、重繪畫布。
+  function buildStargazePanel() {
+    const body = document.getElementById("stargazeBody");
+    if (!body || stargaze.built) return;
+    body.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.id = "stargazeHead";
+    head.style.cssText = "font-size:.85rem;color:#cfe3ff;margin-bottom:6px;line-height:1.4;";
+    body.appendChild(head);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 260; canvas.height = 260;
+    canvas.style.cssText = "width:260px;max-width:100%;height:auto;display:block;margin:0 auto;border:1px solid #2a3550;border-radius:10px;background:radial-gradient(circle at 50% 40%,#0e1730,#060a16);touch-action:none;cursor:crosshair;";
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "今夜星圖：點星點把它們連成星座");
+    body.appendChild(canvas);
+    stargaze.canvas = canvas;
+    stargaze.ctx = canvas.getContext("2d");
+    canvas.addEventListener("pointerdown", onStargazeCanvasPointer);
+
+    const status = document.createElement("div");
+    status.id = "stargazeStatus";
+    status.style.cssText = "min-height:1.3em;font-size:.85rem;margin:6px 0;text-align:center;";
+    body.appendChild(status);
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;justify-content:center;margin-bottom:6px;";
+    const submitBtn = document.createElement("button");
+    submitBtn.type = "button"; submitBtn.id = "stargazeSubmit";
+    submitBtn.textContent = "✦ 完成連線";
+    submitBtn.style.cssText = "flex:1;padding:7px 0;border:1px solid #4080d0;border-radius:8px;background:transparent;color:#88c4ff;cursor:pointer;font-size:.9rem;";
+    submitBtn.addEventListener("click", submitStargaze);
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.textContent = "↺ 重連";
+    clearBtn.style.cssText = "padding:7px 14px;border:1px solid #555;border-radius:8px;background:transparent;color:#bbb;cursor:pointer;font-size:.9rem;";
+    clearBtn.addEventListener("click", () => { stargaze.picks = []; stargaze.msg = ""; renderStargaze(); });
+    row.appendChild(submitBtn); row.appendChild(clearBtn);
+    body.appendChild(row);
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#667;font-size:.74rem;line-height:1.5;";
+    tip.textContent = "夜裡才看得見星空。依星圖把星點一顆顆連成今夜的星座（連到岔路就走回上一顆再連別條），連對即記入星座錄、給乙太＋探索熟練度。每夜輪替一座，連對過的仍可再連賞玩。";
+    body.appendChild(tip);
+
+    stargaze.built = true;
+  }
+
+  // 畫布座標 → 最近星點索引（夠近才算選中）。
+  function nearestStarIndex(cx, cy) {
+    const W = stargaze.canvas.width, H = stargaze.canvas.height, pad = 24;
+    let best = -1, bestD = 26 * 26; // 命中半徑 26px
+    for (let i = 0; i < stargaze.stars.length; i++) {
+      const sx = pad + stargaze.stars[i][0] * (W - pad * 2);
+      const sy = pad + stargaze.stars[i][1] * (H - pad * 2);
+      const d = (sx - cx) * (sx - cx) + (sy - cy) * (sy - cy);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+
+  function onStargazeCanvasPointer(e) {
+    if (!stargaze.available) return;
+    e.preventDefault();
+    const rect = stargaze.canvas.getBoundingClientRect();
+    // 畫布以 CSS 縮放過，換算回內部座標。
+    const cx = (e.clientX - rect.left) * (stargaze.canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (stargaze.canvas.height / rect.height);
+    const idx = nearestStarIndex(cx, cy);
+    if (idx < 0) return;
+    // 連按同一顆＝無動作（避免自環）；否則接到走線末端。
+    const last = stargaze.picks.length ? stargaze.picks[stargaze.picks.length - 1] : -1;
+    if (idx === last) return;
+    stargaze.picks.push(idx);
+    stargaze.msg = "";
+    renderStargaze();
+  }
+
+  // 把玩家連的相鄰點對轉成邊陣列（送給伺服器；方向／重複由伺服器正規化）。
+  function picksToEdges() {
+    const edges = [];
+    for (let i = 1; i < stargaze.picks.length; i++) {
+      edges.push([stargaze.picks[i - 1], stargaze.picks[i]]);
+    }
+    return edges;
+  }
+
+  function submitStargaze() {
+    if (!stargaze.available) { stargaze.msg = "夜裡才看得見星空"; stargaze.msgColor = "#999"; renderStargaze(); return; }
+    const edges = picksToEdges();
+    if (edges.length === 0) { stargaze.msg = "先點亮幾顆星、把它們連起來"; stargaze.msgColor = "#999"; renderStargaze(); return; }
+    safeSend({ type: "trace_constellation", edges });
+  }
+
+  function renderStargaze() {
+    if (!stargaze.built) return;
+    const head = document.getElementById("stargazeHead");
+    const status = document.getElementById("stargazeStatus");
+    const submitBtn = document.getElementById("stargazeSubmit");
+    if (head) {
+      if (stargaze.available) {
+        head.innerHTML = `今夜星座：<b style="color:#ffe08a;">${stargaze.emoji} ${stargaze.name}</b>`
+          + `　<span style="color:#8aa;">星座錄 ${stargaze.total}/${stargaze.catalogTotal}</span>`
+          + (stargaze.traced ? `　<span style="color:#7fd49a;">✓ 已連過</span>` : "");
+      } else {
+        head.innerHTML = `<span style="color:#8893a8;">🌙 天還沒黑——夜裡才看得見星空。</span>`
+          + `　<span style="color:#8aa;">星座錄 ${stargaze.total}/${stargaze.catalogTotal}</span>`;
+      }
+    }
+    if (status) { status.textContent = stargaze.msg || ""; status.style.color = stargaze.msgColor; }
+    if (submitBtn) submitBtn.disabled = !stargaze.available;
+
+    const ctx = stargaze.ctx;
+    if (!ctx) return;
+    const W = stargaze.canvas.width, H = stargaze.canvas.height, pad = 24;
+    ctx.clearRect(0, 0, W, H);
+    if (!stargaze.available || stargaze.stars.length === 0) {
+      ctx.fillStyle = "#445"; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("🌙 等天黑再來觀星", W / 2, H / 2);
+      return;
+    }
+    const px = (i) => pad + stargaze.stars[i][0] * (W - pad * 2);
+    const py = (i) => pad + stargaze.stars[i][1] * (H - pad * 2);
+    // 玩家連的走線。
+    if (stargaze.picks.length >= 2) {
+      ctx.strokeStyle = "rgba(255,224,138,.85)"; ctx.lineWidth = 2;
+      ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(px(stargaze.picks[0]), py(stargaze.picks[0]));
+      for (let i = 1; i < stargaze.picks.length; i++) ctx.lineTo(px(stargaze.picks[i]), py(stargaze.picks[i]));
+      ctx.stroke();
+    }
+    // 星點（已選的較亮、帶光暈）。
+    const lastIdx = stargaze.picks.length ? stargaze.picks[stargaze.picks.length - 1] : -1;
+    for (let i = 0; i < stargaze.stars.length; i++) {
+      const x = px(i), y = py(i);
+      const picked = stargaze.picks.includes(i);
+      if (picked) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, 10);
+        g.addColorStop(0, "rgba(255,236,170,.95)"); g.addColorStop(1, "rgba(255,236,170,0)");
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = picked ? "#fff3c4" : "#bcd0ff";
+      ctx.beginPath(); ctx.arc(x, y, i === lastIdx ? 4.5 : 3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // 收到伺服器今夜星圖：更新狀態、（重新開窗時）清空上一輪走線、重繪。
+  function applyStarMap(msg) {
+    buildStargazePanel();
+    stargaze.available = !!msg.available;
+    stargaze.key = msg.key || "";
+    stargaze.name = msg.name || "";
+    stargaze.emoji = msg.emoji || "";
+    stargaze.stars = Array.isArray(msg.stars) ? msg.stars : [];
+    stargaze.traced = !!msg.traced;
+    stargaze.total = msg.total || 0;
+    stargaze.catalogTotal = msg.catalog_total || 0;
+    stargaze.picks = [];
+    stargaze.msg = "";
+    renderStargaze();
+  }
+
+  // 收到連星座結果：對／錯回饋；連對首次入錄給飄字＋報讀器。
+  function applyConstellationResult(msg) {
+    buildStargazePanel();
+    if (msg.ok) {
+      stargaze.traced = true;
+      stargaze.total = msg.total || stargaze.total;
+      stargaze.catalogTotal = msg.catalog_total || stargaze.catalogTotal;
+      if (msg.reward_ether > 0) {
+        stargaze.msg = `${msg.emoji || "✦"} 連對了！「${msg.name}」記入星座錄　+${msg.reward_ether} 乙太`;
+        stargaze.msgColor = "#ffe08a";
+        announce(`連對星座 ${msg.name}，記入星座錄，獲得 ${msg.reward_ether} 乙太`);
+        // 在玩家頭上也迸一筆飄字（與其他得獎回饋一致）。
+        const me = players.get(myId);
+        if (me) floaters.push({ wx: me.x, wy: me.y - 44, text: `${msg.emoji || "✦"} ${msg.name}！`, color: "255,224,138", born: performance.now() });
+      } else {
+        stargaze.msg = `${msg.emoji || "✦"} 「${msg.name}」連對了（這座先前已連過）`;
+        stargaze.msgColor = "#9fd0ff";
+        announce(`${msg.name} 連對了，先前已記入星座錄`);
+      }
+    } else {
+      stargaze.msg = "✗ 圖形跟今夜星座對不上，看著星圖再連連看";
+      stargaze.msgColor = "#e09090";
+      announce("連的圖形跟今夜星座不符");
+    }
+    renderStargaze();
+  }
+
   // ── 牧場面板（ROADMAP 48）──────────────────────────────────────────────────
   let lastRanchSig = null;
   function updateRanchPanel(me, isGuestUser) {
@@ -20547,6 +20765,8 @@
       btn.setAttribute("aria-expanded", "true");
       openWin = win;
       openBtn = btn;
+      // 觀星面板（ROADMAP 347）：一開窗就向伺服器要今夜星圖（夜間才看得見）。
+      if (win.id === "winStargaze") requestStarMap();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();

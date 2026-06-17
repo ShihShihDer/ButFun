@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::AtomicU64;
 
 use std::time::Instant;
 use tokio::sync::{broadcast, Semaphore};
@@ -223,6 +224,11 @@ pub struct Player {
     /// 進行中的一趟釣魚小遊戲（ROADMAP 346）：拋竿後等咬鉤／反應窗口。
     /// 記憶體前置、不持久化、重啟清空（沒在釣＝None）。由 game.rs 每 tick 推進。
     pub fishing: Option<crate::fishing_bite::FishingCast>,
+    /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
+    /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
+    /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
+    /// 以避免同一座重複領獎（首次連對才給乙太＋熟練度）。
+    pub traced_constellations: u64,
 
     // ── 席間舉杯（ROADMAP 329：玩家加入午餐社交）──────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -919,6 +925,9 @@ pub struct AppState {
     pub farm_crops: Arc<RwLock<FarmCropRegistry>>,
     /// 夜採星晶礦脈（ROADMAP 50）：夜間生成、白天清除；記憶體模式。
     pub star_crystals: Arc<RwLock<StarCrystalField>>,
+    /// 觀星夜數（ROADMAP 347）：`game.rs` 每進入一次夜晚就 +1，決定「今夜星座」逐夜輪替。
+    /// 記憶體模式、重啟歸零（從第 0 座重新開始輪替）；lock-free 原子，伺服器各處可無鎖讀取。
+    pub night_index: Arc<AtomicU64>,
     /// 地塊產權持久化 store：啟動時載回、購買時 fire-and-forget upsert。
     pub land_plot_store: LandPlotStore,
     /// NPC 浮動收購價市場（ROADMAP 40）：記憶體前置，重啟後商人回基準價。
@@ -1207,6 +1216,7 @@ impl AppState {
             ranch: Arc::new(RwLock::new(RanchRegistry::new())),
             farm_crops: Arc::new(RwLock::new(FarmCropRegistry::new())),
             star_crystals: Arc::new(RwLock::new(StarCrystalField::new())),
+            night_index: Arc::new(AtomicU64::new(0)),
             dynamic_prices: Arc::new(RwLock::new(DynamicPriceMarket::new())),
             director: Arc::new(RwLock::new(crate::director::DirectorState::new())),
             npc_memory: Arc::new(RwLock::new({
@@ -1402,6 +1412,7 @@ mod tests {
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,

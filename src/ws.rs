@@ -145,6 +145,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -234,6 +235,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
+            traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -3163,6 +3165,117 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 2. 出鎖後才廣播（前端只對自己 id 演出飄字）。
                     if let Some(msg) = outcome_msg {
                         let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+
+                // ── 觀星連星座：索取今夜星圖（ROADMAP 347）────────────────────────────
+                Ok(ClientMsg::RequestStarMap) => {
+                    // 夜裡才看得見星空：非夜間回 available=false，前端據此提示。
+                    // 今夜星座由共享夜數決定（伺服器權威），逐夜輪替；只單播給請求者本人。
+                    use crate::daynight::Phase;
+                    use std::sync::atomic::Ordering;
+                    let is_night = {
+                        let dn = app.daynight.read().unwrap();
+                        dn.phase() == Phase::Night
+                    };
+                    let traced_mask = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).map(|p| p.traced_constellations).unwrap_or(0)
+                    };
+                    let msg = if is_night {
+                        let night = app.night_index.load(Ordering::Relaxed);
+                        let c = crate::constellation::tonight(night);
+                        let bit = crate::constellation::index_of(c.key).unwrap_or(0);
+                        let traced = traced_mask & (1u64 << bit) != 0;
+                        ServerMsg::StarMap {
+                            available: true,
+                            key: c.key.to_string(),
+                            name: c.name.to_string(),
+                            emoji: c.emoji.to_string(),
+                            stars: c.stars.iter().map(|s| (s.x, s.y)).collect(),
+                            traced,
+                            total: traced_mask.count_ones(),
+                            catalog_total: crate::constellation::TOTAL as u32,
+                        }
+                    } else {
+                        ServerMsg::StarMap {
+                            available: false,
+                            key: String::new(),
+                            name: String::new(),
+                            emoji: String::new(),
+                            stars: Vec::new(),
+                            traced: false,
+                            total: traced_mask.count_ones(),
+                            catalog_total: crate::constellation::TOTAL as u32,
+                        }
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+
+                // ── 觀星連星座：玩家送出連好的邊、由伺服器驗證（ROADMAP 347）──────────
+                Ok(ClientMsg::TraceConstellation { edges }) => {
+                    // 以**伺服器重算的今夜星座**為準驗證（前端送的星座不算數，防作弊）；
+                    // 連對且首次即記入星座錄＋給乙太與探索熟練度。全程同一把 players 寫鎖、純記憶體，
+                    // 廣播在出鎖後才送（守 prod-deadlock 鐵律：鎖內不送廣播）。
+                    use crate::daynight::Phase;
+                    use std::sync::atomic::Ordering;
+                    // 非夜間一律不受理（看不見星空就連不了）。
+                    let is_night = {
+                        let dn = app.daynight.read().unwrap();
+                        dn.phase() == Phase::Night
+                    };
+                    if !is_night {
+                        continue;
+                    }
+                    let night = app.night_index.load(Ordering::Relaxed);
+                    let c = crate::constellation::tonight(night);
+                    let bit = crate::constellation::index_of(c.key).unwrap_or(0);
+                    let correct = crate::constellation::check_trace(c, &edges);
+                    // 鎖內判定／給獎／set bit，把要回傳的資料帶出鎖外。
+                    let result = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            if !correct {
+                                Some((false, 0u32, p.traced_constellations.count_ones()))
+                            } else {
+                                let already = p.traced_constellations & (1u64 << bit) != 0;
+                                if already {
+                                    // 先前已連過：仍算連對，但不重複給獎（冪等，鏡像 sky_codex witness）。
+                                    Some((true, 0u32, p.traced_constellations.count_ones()))
+                                } else {
+                                    p.traced_constellations |= 1u64 << bit;
+                                    p.ether = p.ether.saturating_add(crate::constellation::ETHER_REWARD);
+                                    p.masteries.gain_explorer(crate::constellation::EXPLORER_XP);
+                                    tracing::info!(
+                                        player = %p.name, constellation = c.key,
+                                        "連對今夜星座、記入星座錄"
+                                    );
+                                    Some((
+                                        true,
+                                        crate::constellation::ETHER_REWARD,
+                                        p.traced_constellations.count_ones(),
+                                    ))
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    // 出鎖後才回覆（僅單播給本人，前端演出星座入錄飄字）。
+                    if let Some((ok, reward_ether, total)) = result {
+                        let msg = ServerMsg::ConstellationResult {
+                            ok,
+                            name: c.name.to_string(),
+                            emoji: c.emoji.to_string(),
+                            reward_ether,
+                            total,
+                            catalog_total: crate::constellation::TOTAL as u32,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
                     }
                 }
 
