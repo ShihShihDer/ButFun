@@ -596,6 +596,11 @@ for (const sc of scenarios) {
     { npc_a: "bounty_npc", npc_b: "workshop_npc", npc_a_name: "獵手蘭卡", npc_b_name: "工匠鐸恩", bond: "rivalry", affinity: 15 },
     { npc_a: "village_chief", npc_b: "farm_fair_npc", npc_a_name: "凱爾長老", npc_b_name: "評審卡特", bond: "bogus_unknown_bond", affinity: 50 },
   ];
+  // 鎮民陣營（ROADMAP 366）：驗證「陣營」段渲染（核心 👑＋成員＋凝聚配色）、size<3 保底略過皆不拋例外。
+  fSnap.town_blocs = [
+    { members: ["merchant", "workshop_npc", "bounty_npc"], member_names: ["商人薇拉", "工匠鐸恩", "獵手蘭卡"], figurehead: "workshop_npc", figurehead_name: "工匠鐸恩", cohesion: 86 },
+    { members: ["village_chief", "farm_fair_npc"], member_names: ["凱爾長老", "評審卡特"], figurehead: "village_chief", figurehead_name: "凱爾長老", cohesion: 90 },
+  ];
   lastWS.onmessage({ data: JSON.stringify({ ...fSnap, type: "snapshot" }) });
   const r = pump("鎮民派系", 6);
   // 再餵一份「無派系」snapshot，驗證面板自動隱去路徑不拋例外。

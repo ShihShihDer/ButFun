@@ -9,6 +9,7 @@ mod auth;
 mod class;
 mod director;
 mod combat;
+mod town_blocs;
 mod town_project;
 mod town_project_store;
 mod observatory;
