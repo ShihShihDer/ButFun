@@ -453,6 +453,16 @@ const scenarios = [
   // ② 被叼著走（玩具貼著寵物＜16px＝叼回階段，畫在寵物嘴邊）。確認接物渲染零繪製例外。
   variant("寵物逗玩接物(衝去叼)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 20; m.pet_y = m.y; m.pet_fetching = true; m.pet_toy_x = m.x + 120; m.pet_toy_y = m.y; }),
   variant("寵物逗玩接物(叼回來)", (s) => { const m = s.players[0]; m.pet_kind = "crystal_golem"; m.pet_x = m.x + 60; m.pet_y = m.y + 10; m.pet_fetching = true; m.pet_toy_x = m.x + 60; m.pet_toy_y = m.y + 10; }),
+  // 寵物性格（ROADMAP 358）：歇腳發呆的寵物帶 pet_personality → 跑 drawPlayer 的性格心情泡泡分支
+  // （依性格每隔幾秒頭頂飄一枚 🎵/💤/❓/💕）。寵物貼近主人（歇腳、非追趕、非玩耍／接物）才會進這分支；
+  // 覆蓋全部四種性格各畫一回，確認待機心情泡泡渲染零繪製例外。
+  variant("寵物性格(活潑)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 10; m.pet_y = m.y + 6; m.pet_personality = "playful"; }),
+  variant("寵物性格(慵懶)", (s) => { const m = s.players[0]; m.pet_kind = "coral_crab"; m.pet_x = m.x + 12; m.pet_y = m.y + 4; m.pet_personality = "lazy"; }),
+  variant("寵物性格(好奇)", (s) => { const m = s.players[0]; m.pet_kind = "jade_wraith"; m.pet_x = m.x - 12; m.pet_y = m.y + 4; m.pet_personality = "curious"; }),
+  variant("寵物性格(黏人)", (s) => { const m = s.players[0]; m.pet_kind = "origin_guardian"; m.pet_x = m.x + 8; m.pet_y = m.y + 6; m.pet_personality = "clingy"; }),
+  // 未知性格 wire key（向後相容／前端保底）：帶寵物但 personality 是前端不認得的字串 → 性格分支
+  // 應靜默略過（PET_PERSONALITY[key] 為 undefined），不畫泡泡也不丟例外。
+  variant("寵物性格(未知key保底)", (s) => { const m = s.players[0]; m.pet_kind = "flutter_sprite"; m.pet_x = m.x + 10; m.pet_y = m.y + 6; m.pet_personality = "mystery_mood"; }),
   // 釣魚上鉤小遊戲（ROADMAP 346）：玩家拋竿後 → 跑 drawPlayer 的釣魚浮標分支（釣線＋浮標＋
   // 咬鉤漣漪＋頭頂「❗」）。覆蓋兩階段：① 等咬鉤（waiting，平靜浮標）；② 魚上鉤（biting，
   // 抖動浮標＋漣漪＋「❗」彈出，附 _fishBiteAt 起算彈出動畫）。確認浮標渲染零繪製例外。

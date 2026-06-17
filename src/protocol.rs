@@ -1321,6 +1321,11 @@ pub struct PlayerView {
     /// 暫停待機輕浮。沒接物時 false、序列化略過。
     #[serde(default, skip_serializing_if = "is_false")]
     pub pet_fetching: bool,
+    /// 寵物性格 wire key（ROADMAP 358「寵物有了脾氣」）：`playful` / `lazy` / `curious` / `clingy`。
+    /// 由「主人帳號 ＋ 寵物種類」確定性算出（同主人同種寵物永遠同脾氣），前端據此在寵物面板顯示
+    /// 性格、並讓待機時頭頂飄出對應的心情泡泡。沒寵物時 None、序列化略過。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_personality: Option<String>,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
@@ -1943,7 +1948,7 @@ mod tests {
                 active_skill_flags: vec![],
                 auto_skills: vec![],
                 pet_kind: None,
-                pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
+                pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None,
                 fish_cooldown: 0.0,
                 near_water: false,
                 fishing_phase: None,
@@ -2201,7 +2206,7 @@ mod tests {
             active_skill_flags: vec![],
             auto_skills: vec![],
             pet_kind: None,
-            pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
+            pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None,
             fish_cooldown: 0.0,
             near_water: false,
             fishing_phase: None,
@@ -2508,7 +2513,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2566,7 +2571,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

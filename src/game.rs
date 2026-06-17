@@ -1139,8 +1139,21 @@ pub fn spawn(app: AppState) {
                             p.pet_playing = true;
                             p.pet_fetching = false;
                         } else {
-                            let (nx, ny, _moving) =
-                                crate::pet_follow::follow_step((p.pet_x, p.pet_y), (p.x, p.y), dt);
+                            // 寵物性格（ROADMAP 358）：歇腳距離隨性格而異（黏人貼最近、慵懶／好奇
+                            // 愛在後頭）。性格由「主人帳號 ＋ 寵物種類」確定性算出（純函式、零鎖、無 IO）。
+                            let stop = p
+                                .pet
+                                .map(|k| {
+                                    crate::pet_personality::personality_for(p.id.as_bytes(), k)
+                                        .follow_stop()
+                                })
+                                .unwrap_or(crate::pet_follow::FOLLOW_STOP);
+                            let (nx, ny, _moving) = crate::pet_follow::follow_step_with_stop(
+                                (p.pet_x, p.pet_y),
+                                (p.x, p.y),
+                                dt,
+                                stop,
+                            );
                             p.pet_x = nx;
                             p.pet_y = ny;
                             p.pet_playing = false;

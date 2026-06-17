@@ -27,8 +27,21 @@ pub const FOLLOW_SNAP: f32 = 600.0;
 /// 推進一步寵物跟隨：給定寵物當前座標、主人當前座標、時間增量 `dt`（秒），
 /// 回傳寵物的新座標與「這一步是否在移動」（供前端判斷要不要播走路彈跳）。
 ///
-/// 純函式、無狀態、結果確定可重現（相同輸入必得相同輸出），便於自動測試。
+/// 用預設歇腳距離 `FOLLOW_STOP`（無性格 / 預設手感）。純函式、無狀態、結果確定可重現。
 pub fn follow_step(pet: (f32, f32), owner: (f32, f32), dt: f32) -> (f32, f32, bool) {
+    follow_step_with_stop(pet, owner, dt, FOLLOW_STOP)
+}
+
+/// 同 `follow_step`，但可指定歇腳距離 `stop`（px）——供 ROADMAP 358 寵物性格用：黏人貼最近、
+/// 慵懶／好奇愛在後頭，由性格決定停在離主人多近的環上。`stop` 由呼叫端保證為正、合理範圍內。
+///
+/// 純函式、無狀態、結果確定可重現（相同輸入必得相同輸出），便於自動測試。
+pub fn follow_step_with_stop(
+    pet: (f32, f32),
+    owner: (f32, f32),
+    dt: f32,
+    stop: f32,
+) -> (f32, f32, bool) {
     let dx = owner.0 - pet.0;
     let dy = owner.1 - pet.1;
     let dist = (dx * dx + dy * dy).sqrt();
@@ -39,14 +52,14 @@ pub fn follow_step(pet: (f32, f32), owner: (f32, f32), dt: f32) -> (f32, f32, bo
     }
 
     // 已在歇腳圈內 → 待在原地歇著（不貼著主人重疊、也不抖動）。
-    if dist <= FOLLOW_STOP {
+    if dist <= stop {
         return (pet.0, pet.1, false);
     }
 
-    // 朝主人移動，但停在 `FOLLOW_STOP` 環上（不蓋住主人），單幀位移受 `FOLLOW_SPEED` 上限約束、
-    // 且絕不越過歇腳環（`dist - FOLLOW_STOP`）。
-    let step = (FOLLOW_SPEED * dt).min(dist - FOLLOW_STOP).max(0.0);
-    let inv = 1.0 / dist; // dist > FOLLOW_STOP > 0，除法安全
+    // 朝主人移動，但停在歇腳環上（不蓋住主人），單幀位移受 `FOLLOW_SPEED` 上限約束、
+    // 且絕不越過歇腳環（`dist - stop`）。
+    let step = (FOLLOW_SPEED * dt).min(dist - stop).max(0.0);
+    let inv = 1.0 / dist; // dist > stop >= 0，除法安全（stop 由呼叫端保證 < dist）
     let nx = pet.0 + dx * inv * step;
     let ny = pet.1 + dy * inv * step;
     (nx, ny, step > f32::EPSILON)
@@ -144,6 +157,48 @@ mod tests {
         let a = follow_step(pet, owner, 0.1);
         let b = follow_step(pet, owner, 0.1);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn custom_stop_settles_on_that_ring() {
+        // 性格化歇腳：用較大的 stop（如慵懶 46）→ 寵物停在那個環上、不再貼近。
+        let pet = (0.0, 0.0);
+        let owner = (200.0, 0.0);
+        let stop = 46.0;
+        let (nx, ny, _moving) = follow_step_with_stop(pet, owner, 100.0, stop);
+        let d = dist((nx, ny), owner);
+        assert!((d - stop).abs() < 0.01, "應停在指定歇腳環上，d={d}");
+    }
+
+    #[test]
+    fn clingy_stops_closer_than_lazy() {
+        // 黏人（小 stop）最終停得比慵懶（大 stop）更貼主人。
+        let owner = (300.0, 0.0);
+        let settle = |stop: f32| {
+            let mut pet = (0.0, 0.0);
+            for _ in 0..400 {
+                let (nx, ny, moving) = follow_step_with_stop(pet, owner, 0.05, stop);
+                pet = (nx, ny);
+                if !moving {
+                    break;
+                }
+            }
+            dist(pet, owner)
+        };
+        let clingy = settle(20.0);
+        let lazy = settle(46.0);
+        assert!(clingy < lazy, "黏人應停得比慵懶更貼主人：{clingy} < {lazy}");
+    }
+
+    #[test]
+    fn follow_step_matches_default_stop() {
+        // follow_step 應等價於用預設 FOLLOW_STOP 呼叫 follow_step_with_stop。
+        let pet = (12.0, 34.0);
+        let owner = (456.0, 78.0);
+        assert_eq!(
+            follow_step(pet, owner, 0.1),
+            follow_step_with_stop(pet, owner, 0.1, FOLLOW_STOP)
+        );
     }
 
     #[test]

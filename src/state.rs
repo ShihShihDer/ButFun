@@ -427,6 +427,12 @@ impl Player {
             pet_toy_x: if self.pet.is_some() { self.pet_fetch.map(|f| f.toy_x).unwrap_or(0.0) } else { 0.0 },
             pet_toy_y: if self.pet.is_some() { self.pet_fetch.map(|f| f.toy_y).unwrap_or(0.0) } else { 0.0 },
             pet_fetching: self.pet.is_some() && self.pet_fetching,
+            // ROADMAP 358：有寵物才送性格 wire key（由主人帳號＋寵物種類確定性算出，沒寵物時 None、略過）。
+            pet_personality: self.pet.map(|k| {
+                crate::pet_personality::personality_for(self.id.as_bytes(), k)
+                    .as_str()
+                    .to_string()
+            }),
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 346：進行中釣魚小遊戲的階段（沒在釣＝None，略過序列化）。

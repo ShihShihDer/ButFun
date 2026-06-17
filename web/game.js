@@ -1846,6 +1846,7 @@
             existing.pet_fetching = !!p.pet_fetching;
             existing.pet_toy_x = p.pet_toy_x || 0;
             existing.pet_toy_y = p.pet_toy_y || 0;
+            existing.pet_personality = p.pet_personality || null; // ROADMAP 358：寵物性格 wire key
             // ROADMAP 346：釣魚小遊戲階段（waiting/biting/null）。新咬鉤（→biting）記時，供浮標「❗」彈出動畫起算。
             if (existing.fishing_phase !== "biting" && p.fishing_phase === "biting") existing._fishBiteAt = performance.now();
             existing.fishing_phase = p.fishing_phase || null;
@@ -4706,6 +4707,29 @@
           ctx.globalAlpha = Math.max(0, 1 - cyc); // 漸淡
           ctx.fillText(glyph, psx + Math.sin(cyc * Math.PI * 2) * 3, psy - 14 - rise);
           ctx.globalAlpha = 1;
+        }
+      } else if (!fetching && !chasing && p.pet_personality) {
+        // 寵物性格（ROADMAP 358）：歇腳發呆時，依性格每隔幾秒在頭頂飄出一枚對應的心情泡泡
+        // （活潑🎵／慵懶💤／好奇❓／黏人💕），讓寵物看起來「有脾氣」而非只是個會跟隨的身體。
+        // 慢循環（~4.6s 一輪、只在前半段現身），不是每幀都掛、不喧賓奪主。
+        const persona = PET_PERSONALITY[p.pet_personality];
+        if (persona) {
+          ctx.font = "11px system-ui, sans-serif";
+          if (reduceMotion) {
+            // 不閃不飄：靜態淡淡掛一枚，仍傳達性格、但不造成動態干擾。
+            ctx.globalAlpha = 0.5;
+            ctx.fillText(persona.mood, psx, psy - 16);
+            ctx.globalAlpha = 1;
+          } else {
+            const cyc = (petNow / 4600 + p.pet_x * 0.011) % 1; // 0→1 慢循環（依座標錯開、不齊步）
+            if (cyc < 0.5) {
+              const t = cyc / 0.5;                  // 0→1 在現身段內
+              const rise = t * 12;                  // 緩緩上飄
+              ctx.globalAlpha = Math.sin(t * Math.PI) * 0.85; // 淡入再淡出
+              ctx.fillText(persona.mood, psx, psy - 14 - rise);
+              ctx.globalAlpha = 1;
+            }
+          }
         }
       }
       // 逗玩接物（ROADMAP 345）：畫出玩具 🎾。剛丟出的 ~320ms 內，玩具自主人手中飛向落點、
@@ -18020,6 +18044,15 @@
     jade_wraith:     { emoji: "👻", name: "翠幽魅影",   desc: "攻擊力 +4。馴化費 35 乙太。" },
     origin_guardian: { emoji: "🌟", name: "源晶守護者", desc: "攻擊力 +6、防禦 +3。馴化費 60 乙太（最強）。" },
   };
+  // 寵物性格（ROADMAP 358）：wire key → { 標籤, 心情泡泡 emoji, 一句描述 }。
+  // 性格由後端依「主人帳號＋寵物種類」確定性算出送來，前端只負責顯示與待機心情泡泡。
+  // 面向玩家字串集中於此，保留 i18n 空間。
+  const PET_PERSONALITY = {
+    playful: { label: "活潑",   mood: "🎵", desc: "精力旺盛，總在你腳邊蹦蹦跳跳。" },
+    lazy:    { label: "慵懶",   mood: "💤", desc: "愛在後頭悠悠地晃，走得最放鬆。" },
+    curious: { label: "好奇",   mood: "❓", desc: "總想離你遠一點東張西望。" },
+    clingy:  { label: "黏人",   mood: "💕", desc: "寸步不離，貼著你最安心。" },
+  };
   // ── 屬性加點 HUD pill（ROADMAP 152）：有未分配點數時亮起提示 ────────────────
   let lastStatUnspentCount = -1;
   function updateStatUnspentHud(unspent) {
@@ -18469,7 +18502,8 @@
     const body = document.getElementById("petBody");
     if (!body) return;
     const petKind = me ? me.pet_kind : null;
-    const sig = [petKind, isGuestUser].join("|");
+    const petPersonality = me ? me.pet_personality : null; // ROADMAP 358
+    const sig = [petKind, petPersonality, isGuestUser].join("|");
     if (sig === lastPetSig) return;
     lastPetSig = sig;
     // ROADMAP 345：有寵物才顯示「🎾 逗寵物」鈕（沒寵物時丟玩具沒意義，隱藏免誤觸）。
@@ -18505,6 +18539,14 @@
       descEl.style.cssText = "color:#aaa;font-size:.8rem;margin-top:2px;line-height:1.4;";
       descEl.textContent = info.desc;
       textDiv.appendChild(descEl);
+      // ROADMAP 358：寵物性格——同種寵物對每個主人脾氣不同，這是這隻寵物的「個性」。
+      const persona = PET_PERSONALITY[petPersonality];
+      if (persona) {
+        const personaEl = document.createElement("div");
+        personaEl.style.cssText = "color:#c9a24b;font-size:.78rem;margin-top:3px;line-height:1.4;";
+        personaEl.textContent = `${persona.mood} 性格：${persona.label} — ${persona.desc}`;
+        textDiv.appendChild(personaEl);
+      }
       card.appendChild(textDiv);
 
       const releaseBtn = document.createElement("button");
