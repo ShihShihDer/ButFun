@@ -426,6 +426,45 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // ── ROADMAP 351 階梯榮銜：偵測熟練度跨階，前端慶賀＋跨師匠以上世界同慶 ──
+            // 熟練度 XP 在 ws.rs 各活動處累加，但「跨階」需逐幀比對：以每位玩家的
+            // seen_mastery_tiers（上次已見階級 tier 快照）與當前 masteries.tier_snapshot() 比對；
+            // 某條 tier 升高即晉階——更新快照（前端據既有 masteries 廣播自行噴本地慶賀），跨到師匠
+            // 以上（is_high）才另蒐集世界頻道同慶台詞（避免每個學徒洗頻）。連線／重連時快照已以當前
+            // 熟練度種下，故只有「在線苦練跨階」才觸發、回鍋高階玩家不會被回放歷史晉階。
+            // 只新開一把 players 寫鎖、純記憶體＋純函式、廣播一律出鎖後送（守 prod-deadlock 鐵律）。
+            {
+                let mut rank_up_msgs: Vec<String> = Vec::new();
+                {
+                    let mut players = app.players.write().unwrap();
+                    for p in players.values_mut() {
+                        let now = p.masteries.tier_snapshot();
+                        if now == p.seen_mastery_tiers {
+                            continue;
+                        }
+                        for (i, class) in crate::class::JobClass::ALL.iter().enumerate() {
+                            if now[i] > p.seen_mastery_tiers[i] {
+                                let rank = p.masteries.rank(*class);
+                                if rank.is_high() {
+                                    let line = crate::class::rank_up_line(*class, rank, &p.name);
+                                    let chat = crate::protocol::ServerMsg::Chat {
+                                        from: "系統".into(),
+                                        text: line,
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&chat) {
+                                        rank_up_msgs.push(json);
+                                    }
+                                }
+                            }
+                        }
+                        p.seen_mastery_tiers = now;
+                    }
+                }
+                for msg in rank_up_msgs {
+                    let _ = app.tx_chat.send(msg);
+                }
+            }
+
             // ── ROADMAP 336 探索圖鑑：玩家走近各種奇景地形即「探索」、點亮圖鑑、首見給乙太 ──
             // 奇景地形多為實心格、玩家被碰撞擋在外緣，故在玩家四周取樣（中心＋八方向，
             // 半徑 EXPLORE_REACH），任一取樣點落在收錄地形上就記下。地形來源走 tile_deltas_snap

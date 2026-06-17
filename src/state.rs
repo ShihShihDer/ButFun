@@ -147,6 +147,12 @@ pub struct Player {
     pub planet: String,
     /// 玩家五條熟練度 XP（ROADMAP 38 兼修熟練度）。重連從 DB 載回；每次活動自動累積。
     pub masteries: crate::class::Masteries,
+    /// 五條熟練度「上次已見階級 tier」快照（ROADMAP 351 階梯榮銜）。順序對齊
+    /// `class::JobClass::ALL`（warrior／farmer／artisan／explorer／merchant）。`game.rs` 每幀比對
+    /// 當前 `masteries.tier_snapshot()`：某條 tier 升高即「晉階」（前端噴慶賀、跨到師匠以上世界同慶）。
+    /// **記憶體前置、不持久化**——連線／重連時即以當前 masteries 種下，故已是高階的回鍋玩家
+    /// 不會被回放歷史晉階；之後苦練跨階才觸發。
+    pub seen_mastery_tiers: [u8; 5],
     /// 玩家所屬公會的標籤快取（ROADMAP 29）。None = 不在任何公會。
     /// 公會建立 / 加入 / 離開時由 ws.rs 同步更新，PlayerView 直接讀此欄位。
     pub guild_tag: Option<String>,
@@ -1425,6 +1431,7 @@ mod tests {
             cheers: 0,
             planet: PLANET_HOME.to_string(),
             masteries: crate::class::Masteries::new(),
+            seen_mastery_tiers: [0; 5],
             guild_tag: None,
             party_id: None,
             hair_style: 0,

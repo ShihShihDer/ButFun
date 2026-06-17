@@ -1630,6 +1630,7 @@
           etherKnown = false;
           hpKnown = false; // 同乙太:重連後第一份快照重建血量基準,別把既有血量當成一次受擊/回血
           myLevel = null; // 重連後重建等級基準,避免把既有等級當升級公告
+          lastMasteryTiers = null; // 同理:重連後重建熟練度階級基準,別把既有高階當成剛晉階（ROADMAP 351）
           presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
           enemiesSynced = false; // 同上:重連後第一份快照重建敵人基準,別把換版後的血量差當成受擊
         }
@@ -1933,6 +1934,7 @@
           updateMarketPanel(listings, inv, me.ether, isGuest ? null : me.id); // 市場:附近掛單/張貼/取消
           updateShopPanel(npcs, me); // NPC 商店:靠近商人才能買賣
           updateClassPanel(me.masteries || null, me.job_class || null, isGuest); // 熟練度面板（ROADMAP 38）
+          detectMasteryRankUp(me.masteries || null, isGuest); // 階梯榮銜（ROADMAP 351）：晉階本地慶賀
           updateSkillPanel(me, isGuest); // 主動技能面板（ROADMAP 45）
           updateStatPanel(me, isGuest);  // 屬性加點面板（ROADMAP 152）
           updateCodexPanel(me);          // 生態圖鑑面板（ROADMAP 333）：偵測新發現噴飄字＋更新蒐集進度
@@ -17410,6 +17412,52 @@
   // ── 隊伍系統 end ─────────────────────────────────────────────────────────
 
   let lastClassSig = null;
+  let lastMasteryTiers = null; // ROADMAP 351：上一快照五條熟練度的階級 tier，用於本地晉階慶賀
+
+  // ── 階梯榮銜（ROADMAP 351，鏡像後端 class.rs：i18n 佔位、可集中替換）──────────
+  // 階級門檻：未入門(Lv0)→學徒(1–4)→匠人(5–9)→師匠(10–19)→宗師(20+)。
+  const MASTERY_RANK_LABELS = ["未入門", "學徒", "匠人", "師匠", "宗師"];
+  // 由 XP 推導階級 tier（0~4），與後端 MasteryRank::from_level 一致。
+  function masteryTierOf(xp) {
+    const lv = Math.floor((xp || 0) / 10);
+    if (lv <= 0) return 0;
+    if (lv < 5) return 1;
+    if (lv < 10) return 2;
+    if (lv < 20) return 3;
+    return 4;
+  }
+  // 五條熟練度的階梯加成表（index = tier），鏡像後端各 *_table，供面板顯示「當前階加成」。
+  const MASTERY_TRACKS = [
+    { key: "warrior",  label: "⚔️ 戰士",  color: "#e06060",
+      perk: (t) => `攻擊 +${[0,5,8,12,18][t]}、最大 HP +${[0,10,18,28,42][t]}` },
+    { key: "farmer",   label: "🌾 農夫",  color: "#80c060",
+      perk: (t) => `收割 +${[0,3,4,6,9][t]} 乙太、NPC 收購 +${[0,25,32,40,50][t]}%` },
+    { key: "artisan",  label: "🔧 工匠",  color: "#80a0e0",
+      perk: (t) => `合成素材 -${[0,1,2,3,4][t]}（最少 1）` },
+    { key: "explorer", label: "🧭 探索者", color: "#d0a040",
+      perk: (t) => `旅行費 -${[0,10,18,28,40][t]} 乙太` },
+    { key: "merchant", label: "💰 商人",  color: "#c080e0",
+      perk: (t) => `NPC 所有收購 +${[0,50,62,78,100][t]}%` },
+  ];
+
+  // 本地晉階偵測（ROADMAP 351）：鏡像升級偵測，比對每條熟練度的階級 tier，跨階即慶賀。
+  // 師匠以上（tier≥3）的同慶由伺服器世界頻道送（人人看得到），這裡本地只對「未達師匠」的
+  // 晉階補一筆 addChat（學徒／匠人），避免與伺服器世界頻道重複；announce 給報讀器（所有階）。
+  function detectMasteryRankUp(masteries, isGuestUser) {
+    if (isGuestUser || !masteries) { lastMasteryTiers = null; return; }
+    const now = MASTERY_TRACKS.map((t) => masteryTierOf(masteries[t.key]));
+    if (lastMasteryTiers) {
+      for (let i = 0; i < MASTERY_TRACKS.length; i++) {
+        if (now[i] > lastMasteryTiers[i]) {
+          const t = MASTERY_TRACKS[i];
+          const rankName = MASTERY_RANK_LABELS[now[i]];
+          announce(`晉升為 ${t.label.replace(/^\S+\s/, "")}${rankName}！`);
+          if (now[i] < 3) addChat("系統", `🏅 你晉升為「${t.label} ${rankName}」！`);
+        }
+      }
+    }
+    lastMasteryTiers = now;
+  }
   // masteries = { warrior, farmer, artisan, explorer, merchant }（XP 值），titleClass = 頭銜職業字串或 null
   function updateClassPanel(masteries, titleClass, isGuestUser) {
     const body = document.getElementById("classBody");
@@ -17430,37 +17478,40 @@
 
     const intro = document.createElement("div");
     intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
-    intro.textContent = "做什麼練什麼，五條同時生效。每 10 XP 升一級即解鎖加成。";
+    intro.textContent = "做什麼練什麼，五條同時生效。階級越高加成越強：學徒→匠人(Lv5)→師匠(Lv10)→宗師(Lv20)。";
     body.appendChild(intro);
 
     const XP_PER_LEVEL = 10;
-    const tracks = [
-      { key: "warrior",  label: "⚔️ 戰士",  desc: "攻擊 +5、最大 HP +10",        color: "#e06060" },
-      { key: "farmer",   label: "🌾 農夫",   desc: "收割 +3 乙太、NPC 收購 +25%", color: "#80c060" },
-      { key: "artisan",  label: "🔧 工匠",   desc: "合成素材 -1（最少 1）",        color: "#80a0e0" },
-      { key: "explorer", label: "🧭 探索者", desc: "旅行費 -10 乙太",              color: "#d0a040" },
-      { key: "merchant", label: "💰 商人",   desc: "NPC 所有收購 +50%",           color: "#c080e0" },
-    ];
 
-    for (const t of tracks) {
+    for (const t of MASTERY_TRACKS) {
       const xp    = (m[t.key] || 0);
       const lv    = Math.floor(xp / XP_PER_LEVEL);
       const prog  = xp % XP_PER_LEVEL;
+      const tier  = masteryTierOf(xp);
+      const rankName = MASTERY_RANK_LABELS[tier];
       const isTitle = titleClass === t.key;
 
       const row = document.createElement("div");
       row.style.cssText = `margin-bottom:8px;padding:6px 8px;border-radius:6px;background:#1a2030;border:1px solid ${isTitle ? "var(--brass)" : "#2a3040"};`;
 
-      // 標頭行：名稱 + 等級 + 頭銜標記
+      // 標頭行：名稱 + 階級徽標 + 等級 + 頭銜標記
       const head = document.createElement("div");
       head.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:3px;";
       const lblEl = document.createElement("span");
       lblEl.style.cssText = `font-weight:600;font-size:.83rem;color:${isTitle ? "var(--brass)" : "#c8d0e0"};flex:1;`;
       lblEl.textContent = t.label + (isTitle ? "  ★ 頭銜" : "");
+      head.appendChild(lblEl);
+      // 階級徽標（學徒/匠人/師匠/宗師），解鎖後才顯示，師匠以上以職業色高亮。靠右、緊鄰等級。
+      if (tier > 0) {
+        const rankEl = document.createElement("span");
+        const hi = tier >= 3;
+        rankEl.style.cssText = `font-size:.72rem;font-weight:700;padding:1px 6px;border-radius:8px;color:${hi ? "#1a2030" : t.color};background:${hi ? t.color : "transparent"};border:1px solid ${t.color};`;
+        rankEl.textContent = rankName;
+        head.appendChild(rankEl);
+      }
       const lvEl = document.createElement("span");
       lvEl.style.cssText = "font-size:.78rem;color:#8899aa;";
       lvEl.textContent = lv > 0 ? `Lv.${lv}` : "未解鎖";
-      head.appendChild(lblEl);
       head.appendChild(lvEl);
       row.appendChild(head);
 
@@ -17480,7 +17531,8 @@
       xpText.textContent = lv > 0 ? `${prog}/${XP_PER_LEVEL} XP → Lv.${lv+1}` : `${xp}/${XP_PER_LEVEL} XP → Lv.1`;
       const descEl = document.createElement("span");
       descEl.style.cssText = `color:${lv > 0 ? t.color : "#556070"};`;
-      descEl.textContent = t.desc;
+      // 顯示「當前階級」的加成（隨階梯成長）；未解鎖時顯示學徒階作為下一步預覽。
+      descEl.textContent = t.perk(tier > 0 ? tier : 1);
       foot.appendChild(xpText);
       foot.appendChild(descEl);
       row.appendChild(foot);
