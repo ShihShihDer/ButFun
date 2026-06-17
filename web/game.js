@@ -693,6 +693,10 @@
   const FISH_NAME_BY_KEY = { fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚" };
   const FISH_EMOJI_BY_KEY = { fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈" };
   const FISH_QUALITY_LABEL = { ok: "上鉤", good: "漂亮", perfect: "完美" };
+  // ROADMAP 363 季節漁汛：四季各有「當季當紅魚」。**此表必須與後端 fishing_bite::signature_fish
+  // 完全同步**（後端是權威擲骰，前端僅據此顯示提示與慶祝，不可各說各話）。
+  const SEASON_FISHING_RUN = { spring: "春汛", summer: "夏汛", autumn: "秋汛", winter: "冬汛" };
+  const SEASON_SIGNATURE_FISH = { spring: "fish_star", summer: "fish_small", autumn: "fish_deep", winter: "fish_star" };
   // 互動確認漣漪（純表現）：點/輕點田格送出農作意圖時，在該格畫一圈短暫擴張淡出的亮環，
   // 讓玩家「按下就有回饋」——尤其手機沒有桌面的 hover 高亮,輕點後到下一個快照回來前
   // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
@@ -2523,6 +2527,13 @@
                       :                             "170,225,170";
           floaters.push({ wx, wy, text: `${femoji} ${qlabel}！${fname}`, color, born: now });
           announce(`釣到${fname}（${qlabel}）`);
+          // ROADMAP 363：釣到「當季當紅魚」——多疊一道漁汛慶祝飄字（金色、上方），讓玩家
+          // 明顯感到「這個季節水裡的魚不一樣」。尊重 reduceMotion：仍顯示字、只是不另堆動畫。
+          if (msg.in_season === true) {
+            const runName = SEASON_FISHING_RUN[currentSeason] || "漁汛";
+            floaters.push({ wx, wy: wy - 22, text: `🎣 ${runName}！當季上鉤`, color: "255,225,120", born: now });
+            announce(`${runName}，釣到當季當紅魚`);
+          }
         } else if (msg.outcome === "too_early") {
           floaters.push({ wx, wy, text: "💨 太早了，魚跑了…", color: "190,190,190", born: now });
           announce("收竿太早，把魚嚇跑了");
@@ -4866,6 +4877,19 @@
         ctx.fillStyle = "#ffd24a";
         ctx.fillText("❗", 0, 0);
         ctx.restore();
+      }
+      // ROADMAP 363 本季漁汛提示：只對自己、垂釣中時，在浮標旁標出「當季當紅魚」，
+      // 讓玩家在收竿前就知道「這個季節哪種魚特別容易上鉤」（季節第一次漫進釣魚）。
+      if (p.id === myId) {
+        const sigKey = SEASON_SIGNATURE_FISH[currentSeason];
+        const runName = SEASON_FISHING_RUN[currentSeason];
+        if (sigKey && runName) {
+          const sigEmoji = FISH_EMOJI_BY_KEY[sigKey] || "🐟";
+          ctx.font = "11px system-ui, sans-serif";
+          ctx.textAlign = "left";
+          ctx.fillStyle = "rgba(255,225,120,.92)";
+          ctx.fillText(`🎣 ${runName}·${sigEmoji}當季`, fx + 8, fy + 3);
+        }
       }
     }
 

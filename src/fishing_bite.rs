@@ -10,6 +10,7 @@
 //! 不進任何戰鬥／經濟核心結算 → 即便反應好提高了好魚機率，仍是**零平衡風險**。
 
 use crate::inventory::ItemKind;
+use crate::season::Season;
 
 /// 拋竿後到魚咬鉤的最短等待（秒）。
 pub const BITE_MIN_SECS: f32 = 1.5;
@@ -142,6 +143,71 @@ pub fn roll_fish_quality(seed: u64, quality: FishQuality) -> ItemKind {
     if r <= small_max {
         ItemKind::FishSmall
     } else if r <= star_max {
+        ItemKind::FishStar
+    } else {
+        ItemKind::FishDeep
+    }
+}
+
+// ─── 季節漁汛（ROADMAP 363：季節第一次漫進釣魚）────────────────────────────────
+//
+// 季節早已驅動農業成長、野生動物季節行為、季節採集節點與 NPC 攀談，唯獨「釣魚」
+// 至今與四季無關。本切片把釣魚接進這條季節生態環——四季水域各有一種「當季當紅魚」，
+// 當季那種魚上鉤率明顯提高（玩家會明顯感到「這個季節水裡的魚不一樣」）。
+//
+// 零平衡風險的關鍵：這是**漁獲組成的重分配，不是新增獎勵**——你每段時間能釣的魚數量
+// 仍受冷卻／反應小遊戲節制（總量不變），漁汛只改變「同樣這幾尾裡，哪種魚更常上鉤」。
+// 不開新獎勵路徑、不送乙太、不碰任何結算。
+
+/// 當季當紅魚的權重加成（百分點，疊加在 `roll_fish_quality` 的品質基礎權重上）。
+///
+/// 取中等值：當季魚明顯更常上鉤、玩家有感，但仍不會把稀有魚變成隨手可得
+/// （最有利情形＝完美收竿的秋汛，深海魚約 32/132 ≈ 24%；其餘季節遠低於此）。
+pub const SEASON_SIGNATURE_BONUS: u32 = 12;
+
+/// 今季「當季當紅魚」——四季各對應一種釣魚掉落（與既有三種魚對應，不新增物品）。
+///
+/// 對應的季節氣味：
+///   - 春：融雪洄游季，星星魚成群回到淺灘繁殖。
+///   - 夏：盛夏淺灘水暖，小魚成群躍水。
+///   - 秋：秋寒水位下降，深海魚靠岸覓食。
+///   - 冬：寒冬星星魚群聚深潭避寒。
+/// （三種魚對四季，星星魚於春／冬各領一季——氣味文案不同、玩家仍每季有感。）
+pub fn signature_fish(season: Season) -> ItemKind {
+    match season {
+        Season::Spring => ItemKind::FishStar,
+        Season::Summer => ItemKind::FishSmall,
+        Season::Autumn => ItemKind::FishDeep,
+        Season::Winter => ItemKind::FishStar,
+    }
+}
+
+/// 季節加權版的魚種擲骰：先取品質基礎權重，再把「當季當紅魚」的權重 +`SEASON_SIGNATURE_BONUS`，
+/// 於放大後的總權重上重新擲骰。品質越高仍越容易出好魚（與 `roll_fish_quality` 同向），
+/// 季節只是把當季那種魚的那一份加厚。
+///
+/// 種子建議同 `roll_fish_quality`（`player_id_low64 ^ fish_attempt_count`）。
+pub fn roll_fish_seasonal(seed: u64, quality: FishQuality, season: Season) -> ItemKind {
+    // 品質基礎權重（小魚／星星魚／深海魚），總和恆為 100，與 roll_fish_quality 的分檔一致。
+    let mut weights: [u32; 3] = match quality {
+        FishQuality::Ok => [70, 25, 5],
+        FishQuality::Good => [55, 35, 10],
+        FishQuality::Perfect => [40, 40, 20],
+    };
+    // 當季當紅魚那一份加厚。
+    let sig_idx = match signature_fish(season) {
+        ItemKind::FishSmall => 0,
+        ItemKind::FishStar => 1,
+        _ => 2, // FishDeep
+    };
+    weights[sig_idx] += SEASON_SIGNATURE_BONUS;
+
+    // 於放大後的總權重上擲骰，走累積區間。
+    let total = weights[0] + weights[1] + weights[2];
+    let r = seed % total as u64;
+    if r < weights[0] as u64 {
+        ItemKind::FishSmall
+    } else if r < (weights[0] + weights[1]) as u64 {
         ItemKind::FishStar
     } else {
         ItemKind::FishDeep
@@ -357,6 +423,77 @@ mod tests {
         let (perf_small, perf_deep) = count(FishQuality::Perfect);
         assert!(perf_deep > good_deep && good_deep > ok_deep, "深海魚應隨品質升高");
         assert!(perf_small < good_small && good_small < ok_small, "小魚應隨品質降低");
+    }
+
+    // ── 季節漁汛（ROADMAP 363）─────────────────────────────────────────────
+    #[test]
+    fn signature_fish_covers_four_seasons() {
+        // 四季各有對應當紅魚；春／冬同為星星魚，夏小魚，秋深海魚。
+        assert_eq!(signature_fish(Season::Spring), ItemKind::FishStar);
+        assert_eq!(signature_fish(Season::Summer), ItemKind::FishSmall);
+        assert_eq!(signature_fish(Season::Autumn), ItemKind::FishDeep);
+        assert_eq!(signature_fish(Season::Winter), ItemKind::FishStar);
+    }
+
+    #[test]
+    fn seasonal_roll_always_returns_fish() {
+        for season in [Season::Spring, Season::Summer, Season::Autumn, Season::Winter] {
+            for q in [FishQuality::Ok, FishQuality::Good, FishQuality::Perfect] {
+                for seed in 0u64..200 {
+                    let f = roll_fish_seasonal(seed, q, season);
+                    assert!(
+                        matches!(
+                            f,
+                            ItemKind::FishSmall | ItemKind::FishStar | ItemKind::FishDeep
+                        ),
+                        "roll_fish_seasonal({seed},{q:?},{season:?}) 回傳非魚: {f:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn in_season_fish_is_more_likely_than_baseline() {
+        // 對每季：當季當紅魚在季節加權下的出現次數，應「嚴格多於」同品質非季節版。
+        let count_sig = |roll: &dyn Fn(u64) -> ItemKind, sig: ItemKind| {
+            (0u64..1000).filter(|&s| roll(s) == sig).count()
+        };
+        for season in [Season::Spring, Season::Summer, Season::Autumn, Season::Winter] {
+            let sig = signature_fish(season);
+            for q in [FishQuality::Ok, FishQuality::Good, FishQuality::Perfect] {
+                let base = count_sig(&|s| roll_fish_quality(s, q), sig);
+                let seasoned = count_sig(&|s| roll_fish_seasonal(s, q, season), sig);
+                assert!(
+                    seasoned > base,
+                    "{season:?}/{q:?}: 當季魚 {sig:?} 季節版({seasoned}) 應多於基礎版({base})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seasonal_roll_total_catch_count_unchanged() {
+        // 零平衡風險佐證：季節加權只改「組成」，不改「總漁獲尾數」——
+        // 同一批種子，每顆都恰好回傳一尾魚（不多不少），與基礎版一樣。
+        let n = 500u64;
+        let caught = (0..n)
+            .filter(|&s| {
+                matches!(
+                    roll_fish_seasonal(s, FishQuality::Good, Season::Autumn),
+                    ItemKind::FishSmall | ItemKind::FishStar | ItemKind::FishDeep
+                )
+            })
+            .count();
+        assert_eq!(caught as u64, n, "每次擲骰都應恰好得一尾魚");
+    }
+
+    #[test]
+    fn seasonal_roll_deterministic() {
+        assert_eq!(
+            roll_fish_seasonal(42, FishQuality::Perfect, Season::Spring),
+            roll_fish_seasonal(42, FishQuality::Perfect, Season::Spring)
+        );
     }
 
     #[test]

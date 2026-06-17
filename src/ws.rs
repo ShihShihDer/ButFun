@@ -3314,7 +3314,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 魚還沒咬就收會嚇跑魚、空手而回。全程同一把 players 寫鎖、純記憶體，
                     // 廣播在出鎖後才送（守 prod-deadlock 鐵律：鎖內不送廣播）。
                     use crate::fishing::FISH_FARMER_XP;
-                    use crate::fishing_bite::{roll_fish_quality, ReelOutcome};
+                    use crate::fishing_bite::{roll_fish_seasonal, signature_fish, ReelOutcome};
+                    // ROADMAP 363：先取當季（短讀鎖、語句即釋放），再進 players 寫鎖——
+                    // 季節鎖與 players 鎖不巢狀，守 prod-deadlock 鐵律。
+                    let season_now = app.season.read().unwrap().current;
                     // 1. 鎖內判定結果、給魚、清狀態；把要廣播的資料帶出鎖外。
                     let outcome_msg = {
                         let mut players = app.players.write().unwrap();
@@ -3332,11 +3335,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         };
                                         p.fish_attempt_count =
                                             p.fish_attempt_count.wrapping_add(1);
-                                        let fish = roll_fish_quality(seed, quality);
+                                        // ROADMAP 363：季節加權擲骰——當季當紅魚更易上鉤。
+                                        let fish = roll_fish_seasonal(seed, quality, season_now);
+                                        let in_season = fish == signature_fish(season_now);
                                         p.add_item_overflow(fish, 1);
                                         p.masteries.gain_farmer(FISH_FARMER_XP);
                                         tracing::info!(
                                             player = %p.name, fish = ?fish, quality = ?quality,
+                                            season = ?season_now, in_season,
                                             "收竿釣到魚"
                                         );
                                         // 魚物品 → snake_case 線格式（serde 約定，鏡像 state.rs decay key）。
@@ -3349,6 +3355,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             outcome: "caught".into(),
                                             fish: Some(fish_key),
                                             quality: Some(quality.as_str().to_string()),
+                                            in_season: Some(in_season),
                                             x: p.x,
                                             y: p.y,
                                         })
@@ -3358,6 +3365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         outcome: "too_early".into(),
                                         fish: None,
                                         quality: None,
+                                        in_season: None,
                                         x: p.x,
                                         y: p.y,
                                     }),

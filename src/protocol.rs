@@ -1063,6 +1063,7 @@ pub enum ServerMsg {
     /// 釣魚收竿結果（ROADMAP 346）：一次性事件、廣播；前端只對 `player_id == 自己` 演出飄字。
     /// `outcome`："caught"（釣到魚）／"escaped"（等太久脫鉤）／"too_early"（魚還沒咬就收、嚇跑）。
     /// `fish` ＝ 釣到的魚物品 snake_case（僅 caught）；`quality` ＝ 反應品質 ok/good/perfect（僅 caught）。
+    /// `in_season` ＝ 這尾是否為「當季當紅魚」（ROADMAP 363；僅 caught，true 時前端演出漁汛慶祝飄字）。
     /// `x`/`y` ＝ 玩家當下世界座標（飄字定位）。不入快照、不持久化、零 migration。
     FishResult {
         player_id: Uuid,
@@ -1071,6 +1072,8 @@ pub enum ServerMsg {
         fish: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         quality: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_season: Option<bool>,
         x: f32,
         y: f32,
     },
