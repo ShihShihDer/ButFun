@@ -601,6 +601,16 @@ for (const sc of scenarios) {
     { members: ["merchant", "workshop_npc", "bounty_npc"], member_names: ["商人薇拉", "工匠鐸恩", "獵手蘭卡"], figurehead: "workshop_npc", figurehead_name: "工匠鐸恩", cohesion: 86 },
     { members: ["village_chief", "farm_fair_npc"], member_names: ["凱爾長老", "評審卡特"], figurehead: "village_chief", figurehead_name: "凱爾長老", cohesion: 90 },
   ];
+  // 親手植樹成蔭（ROADMAP 370）：注入四個成長階段的世界樹（含視野外一棵、畸形 stage），
+  // 驗證 drawWorldGroves 各階段圖示／柔影／擺動／剔除路徑皆不拋例外。
+  fSnap.world_groves = [
+    { x: 120, y: 140, stage: 0 },   // 🌱 嫩芽
+    { x: 200, y: 160, stage: 1 },   // 🌿 樹苗
+    { x: 280, y: 180, stage: 2 },   // 🌲 幼樹
+    { x: 360, y: 200, stage: 3 },   // 🌳 大樹
+    { x: 99999, y: 99999, stage: 3 }, // 視野外：應被剔除
+    { x: 150, y: 150, stage: 7 },   // 畸形 stage：應被夾到合法範圍
+  ];
   lastWS.onmessage({ data: JSON.stringify({ ...fSnap, type: "snapshot" }) });
   const r = pump("鎮民派系", 6);
   // 再餵一份「無派系」snapshot，驗證面板自動隱去路徑不拋例外。

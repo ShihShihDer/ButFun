@@ -2873,6 +2873,15 @@ pub fn spawn(app: AppState) {
                     }
                 }
             }
+            // 親手植樹成蔭（ROADMAP 370）：每幀推進所有玩家種下的樹的成長（隨真實時間長大）；
+            // 若本幀有樹剛長成大樹（過了冷卻），飄一句世界頻道暖訊。鎖序（守 prod-deadlock）：
+            // world_grove 寫鎖內純算（不碰其他鎖、無 IO），廣播一律出鎖後送。
+            {
+                let matured = app.world_grove.write().unwrap().tick(dt);
+                if let Some(line) = matured {
+                    let _ = app.tx_chat.send(line);
+                }
+            }
 
             // 怪物王咆哮（ROADMAP 75）：每 tick 推進各菁英精英的咆哮冷卻計時；
             // 冷卻歸零時非同步呼叫 LLM（Groq→ollama→罐頭），結果廣播至全服聊天頻道。
@@ -3766,6 +3775,19 @@ pub fn spawn(app: AppState) {
                         },
                         // 鎮民互助分享（ROADMAP 369）：進行中的送禮手勢（至多一樁），無則 None。
                         town_share: app.town_share.read().unwrap().view(),
+                        // 親手植樹成蔭（ROADMAP 370）：全服共享的世界樹群快照（隨真實時間長大）。
+                        world_groves: app
+                            .world_grove
+                            .read()
+                            .unwrap()
+                            .view()
+                            .into_iter()
+                            .map(|t| crate::protocol::TreeView {
+                                x: t.x,
+                                y: t.y,
+                                stage: t.stage,
+                            })
+                            .collect(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
