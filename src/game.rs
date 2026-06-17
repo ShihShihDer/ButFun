@@ -1003,6 +1003,8 @@ pub fn spawn(app: AppState) {
             // （tile_deltas_snap 已在敵人段前快照，玩家碰撞沿用同一份。）
             // 易腐品腐壞通知（ROADMAP 106）：在鎖外送訊息，避免死鎖。
             let mut decay_notifications: Vec<(uuid::Uuid, Vec<crate::perishable::DecayEvent>)> = Vec::new();
+            // 釣魚脫鉤（ROADMAP 346）：等太久沒收竿的玩家，出鎖後廣播「魚跑了」。
+            let mut fish_escapes: Vec<(uuid::Uuid, f32, f32)> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
                 // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
@@ -1113,6 +1115,15 @@ pub fn spawn(app: AppState) {
                     if p.fish_cooldown > 0.0 {
                         p.fish_cooldown = (p.fish_cooldown - dt).max(0.0);
                     }
+                    // 釣魚上鉤小遊戲推進（ROADMAP 346）：等咬鉤→咬鉤→脫鉤。
+                    // advance 純函式、零鎖無 IO；JustBit 只讓 phase 轉 Biting（隨快照廣播、
+                    // 前端抖浮標），Escaped 才清狀態、出鎖後廣播「魚跑了」（守 prod-deadlock）。
+                    if let Some(cast) = p.fishing.as_mut() {
+                        if cast.advance(dt) == crate::fishing_bite::BiteEvent::Escaped {
+                            p.fishing = None;
+                            fish_escapes.push((p.id, p.x, p.y));
+                        }
+                    }
                     // 席間舉杯冷卻倒數（ROADMAP 329）。
                     if p.toast_cooldown > 0.0 {
                         p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
@@ -1188,6 +1199,18 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
+            }
+
+            // 釣魚脫鉤廣播（ROADMAP 346）：鎖已釋放，安全廣播「魚跑了」（前端只對自己 id 飄字）。
+            for (pid, x, y) in fish_escapes {
+                let _ = app.tx.send(std::sync::Arc::new(ServerMsg::FishResult {
+                    player_id: pid,
+                    outcome: "escaped".into(),
+                    fish: None,
+                    quality: None,
+                    x,
+                    y,
+                }));
             }
 
             // 宇宙裂縫事件（ROADMAP 26）：推進事件計時器；觸發時注入守護者 + 廣播聊天公告。

@@ -368,11 +368,14 @@ pub enum ClientMsg {
     TamePet,
     /// 放生寵物（ROADMAP 46）：解除目前的寵物（加成一併取消）。無寵物靜默忽略。
     ReleasePet,
-    /// 釣魚（ROADMAP 47）：站在水域邊緣（80px 內有 Water biome）垂釣。
-    /// 伺服器驗距離、冷卻是否到期；成功後依機率（小魚 70%/星星魚 25%/深海魚 5%）
-    /// 加一條魚進背包，並給 10 點農夫熟練度 XP。
-    /// 不在水邊 / 冷卻中 / 倒地中靜默忽略。
+    /// 拋竿（ROADMAP 47 釣魚／ROADMAP 346 上鉤小遊戲）：站在水域邊緣（80px 內有 Water biome）甩竿。
+    /// 伺服器驗距離、冷卻是否到期、目前未在釣；通過後開一趟「等咬鉤」，魚會在 1.5~4.5 秒後上鉤。
+    /// 不再立即得魚——要等魚咬鉤（前端浮標抖動）後送 `Reel` 收竿。
+    /// 不在水邊 / 冷卻中 / 倒地中 / 已在釣靜默忽略。
     Fish,
+    /// 收竿（ROADMAP 346）：拋竿後在魚咬鉤的反應窗口內送出即釣到魚（反應越快魚越好）；
+    /// 魚還沒咬就收會嚇跑魚、空手而回。沒有進行中的釣魚則靜默忽略。
+    Reel,
     /// 購入雞（ROADMAP 48）：在自己的農田地塊花乙太購入一隻雞。
     /// `plot_id`：要購雞的農田地塊編號（必須是本人擁有的 Farm 類型地塊）。
     /// 乙太不足（BUY_CHICKEN_COST=15）/ 非農田 / 非本人地塊 / 達 MAX_CHICKENS 靜默忽略。
@@ -950,6 +953,20 @@ pub enum ServerMsg {
     PopGatheringEnded {
         host_id: Uuid,
     },
+    /// 釣魚收竿結果（ROADMAP 346）：一次性事件、廣播；前端只對 `player_id == 自己` 演出飄字。
+    /// `outcome`："caught"（釣到魚）／"escaped"（等太久脫鉤）／"too_early"（魚還沒咬就收、嚇跑）。
+    /// `fish` ＝ 釣到的魚物品 snake_case（僅 caught）；`quality` ＝ 反應品質 ok/good/perfect（僅 caught）。
+    /// `x`/`y` ＝ 玩家當下世界座標（飄字定位）。不入快照、不持久化、零 migration。
+    FishResult {
+        player_id: Uuid,
+        outcome: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fish: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        quality: Option<String>,
+        x: f32,
+        y: f32,
+    },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
     /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
@@ -1124,6 +1141,10 @@ pub struct PlayerView {
     /// 玩家是否站在水域邊緣（80px 內有 Water biome）。前端釣魚按鈕依此啟用/禁用。
     #[serde(default, skip_serializing_if = "is_false")]
     pub near_water: bool,
+    /// 進行中釣魚小遊戲的階段（ROADMAP 346）："waiting"＝等咬鉤、"biting"＝魚已上鉤該收竿；
+    /// 沒在釣＝None（略過序列化）。前端據此畫浮標狀態與「❗」咬鉤提示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fishing_phase: Option<&'static str>,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -1688,6 +1709,7 @@ mod tests {
                 pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
                 fish_cooldown: 0.0,
                 near_water: false,
+                fishing_phase: None,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -1937,6 +1959,7 @@ mod tests {
             pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false,
             fish_cooldown: 0.0,
             near_water: false,
+            fishing_phase: None,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -2174,7 +2197,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2232,7 +2255,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
