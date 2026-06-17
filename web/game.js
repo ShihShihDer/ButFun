@@ -8990,6 +8990,7 @@
     stocktaking: "📦", // 採購清點備貨
     judging: "📋",     // 評審打分
     patrolling: "👀",  // 里長巡視
+    visiting: "🤝",    // 黃昏串門子：與盟友攤前寒暄（ROADMAP 356）
   };
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
@@ -9041,7 +9042,7 @@
       const actIcon = npc.activity ? NPC_ACTIVITY_ICON[npc.activity] : null;
       if (actIcon && myPlanet === "home") {
         // 隨呼吸般和緩起落，工作中的活力感；休憩 / 聚食等歇腳時更慢更小一點（ROADMAP 327）。
-        const calm = npc.activity === "resting" || npc.activity === "lunching";
+        const calm = npc.activity === "resting" || npc.activity === "lunching" || npc.activity === "visiting";
         const amp = reduceMotion ? 0 : (calm ? 1.2 : 2.2);
         const speed = calm ? 1.4 : 2.6;
         const iconBob = Math.sin(t * speed + npc.x * 0.02) * amp;

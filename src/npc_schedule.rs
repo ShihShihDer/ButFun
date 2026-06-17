@@ -28,6 +28,10 @@ pub const PLAZA_POS: Pos = Pos::new(2400.0, 2260.0);
 /// 互相重疊，而是各自落在環繞鎮心一圈的座位上，看起來像圍著一桌坐下用餐。
 const LUNCH_SEAT_RADIUS: f32 = 64.0;
 
+/// 黃昏串門子（ROADMAP 356）：訪客 NPC 走到主人崗位旁站定的橫向偏移（像素）。
+/// 不直接踩到主人身上，而是並肩站在攤前一點，看起來像兩人湊在一塊寒暄。
+const VISIT_BESIDE_OFFSET: f32 = 56.0;
+
 /// 取得某 NPC 正午聚食時的「座位」座標（ROADMAP 328）。
 ///
 /// 七大 NPC 依其在 `VILLAGE_NPCS` 中的固定次序，等角分佈在以 `PLAZA_POS` 為圓心、
@@ -106,6 +110,8 @@ pub enum NpcActivity {
     Judging,
     /// 里長巡視村務。
     Patrolling,
+    /// 黃昏串門子（ROADMAP 356）：與盟友結伴——黃昏時離崗走到結盟 NPC 的攤前寒暄。
+    Visiting,
 }
 
 impl NpcActivity {
@@ -123,6 +129,7 @@ impl NpcActivity {
             NpcActivity::Stocktaking => "stocktaking",
             NpcActivity::Judging => "judging",
             NpcActivity::Patrolling => "patrolling",
+            NpcActivity::Visiting => "visiting",
         }
     }
 }
@@ -169,6 +176,47 @@ pub fn work_activity(id: &str, phase: Phase, lunching: bool, commuting: bool) ->
 /// 是否為故鄉七大 NPC（在 `VILLAGE_NPCS` 名單內）。
 pub fn is_village_npc(id: &str) -> bool {
     VILLAGE_NPCS.iter().any(|s| s.id == id)
+}
+
+/// 取得某故鄉 NPC 的白天崗位座標（不在名單內回 `None`）。純查表、可測。
+pub fn station_pos(id: &str) -> Option<Pos> {
+    VILLAGE_NPCS.iter().find(|s| s.id == id).map(|s| s.station_pos)
+}
+
+/// 黃昏串門子計畫（ROADMAP 356）：把「當前結盟配對」轉成「誰去拜訪誰」的對應表。純函式、可測。
+///
+/// 輸入 `alliances`：當下結盟的 NPC 有序對（取自 355 `current_standings` 過濾出 `Alliance`，
+/// 已照「最鐵的盟友排前」排好）。輸出：`visitor_id → host_id`。
+///
+/// 規則（確定性、無隨機）：
+/// - 只結盟對才串門子（敵對／中性不來往，呼叫端已過濾）。
+/// - 依傳入次序貪婪挑選：每個 NPC 至多參與一段串門關係（當訪客**或**當主人其一），
+///   已被佔用的 NPC 出現在後續配對裡就跳過——確保兩人不對撞、全鎮錯開、誰也不會分身兩地。
+/// - 里長（`village_chief`）守在鎮上不外出串門，只當「被拜訪的主人」（延續既有「里長守在原地」設定）。
+/// - 其餘配對固定取 id 字典序較小者當訪客、較大者當主人（與輸入排序無關，結果穩定可重現）。
+pub fn dusk_visit_plan<'a>(alliances: &[(&'a str, &'a str)]) -> HashMap<&'a str, &'a str> {
+    let mut plan: HashMap<&'a str, &'a str> = HashMap::new();
+    let mut busy: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    for &(a, b) in alliances {
+        // 任一方已在別段串門關係中（當訪客或主人）→ 跳過，避免分身／對撞。
+        if busy.contains(a) || busy.contains(b) {
+            continue;
+        }
+        // 決定主人與訪客：里長一律當主人；否則 id 字典序小者當訪客。
+        let (visitor, host) = if a == "village_chief" {
+            (b, a)
+        } else if b == "village_chief" {
+            (a, b)
+        } else if a <= b {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        plan.insert(visitor, host);
+        busy.insert(visitor);
+        busy.insert(host);
+    }
+    plan
 }
 
 /// NPC 位置定義。
@@ -265,27 +313,45 @@ impl NpcScheduleManager {
     }
 
     /// 依據目前時刻推進 NPC 位置。
-    pub fn tick(&mut self, dt: f32, daynight: &DayNight) {
+    ///
+    /// `visits`（ROADMAP 356 黃昏串門子）：`visitor_id → host_id` 的計畫——黃昏時，名單上的訪客 NPC
+    /// 離崗走到結盟主人 NPC 的攤前並肩寒暄。空 map（非黃昏或無結盟）時退回原本作息，行為完全不變、向後相容。
+    pub fn tick(&mut self, dt: f32, daynight: &DayNight, visits: &HashMap<&str, &str>) {
         let phase = daynight.phase();
         // 正午聚食判定（ROADMAP 327）：白天午休窗內，七大 NPC 離崗聚到鎮中廣場。
         let lunching = is_lunch_time(phase, daynight.fraction());
+        // 串門子只在黃昏發生；其餘時段一律當作沒有串門計畫（即使誤傳 visits 也不生效，邊界安全）。
+        let visiting_window = phase == Phase::Dusk;
 
         for s in VILLAGE_NPCS {
             if let Some(state) = self.npcs.get_mut(s.id) {
-                // 決定當前目標：夜晚回夜宿點、正午聚到廣場、其餘時段在崗位。
-                let target = if phase == Phase::Night {
+                // 黃昏串門子：若此 NPC 是訪客且能查到主人崗位，目標改為主人攤前（並肩偏移，不重疊）。
+                let visit_target = if visiting_window {
+                    visits
+                        .get(s.id)
+                        .and_then(|host| station_pos(host))
+                        .map(|host_station| Pos::new(host_station.x + VISIT_BESIDE_OFFSET, host_station.y))
+                } else {
+                    None
+                };
+                let visiting = visit_target.is_some();
+
+                // 決定當前目標：黃昏串門 > 夜晚回夜宿點 > 正午聚到廣場 > 其餘時段在崗位。
+                let target = if let Some(vt) = visit_target {
+                    vt
+                } else if phase == Phase::Night {
                     s.night_pos
                 } else if lunching {
                     lunch_seat(s.id) // 正午聚食：離崗走到鎮中廣場的專屬座位（ROADMAP 328 圍桌錯開）
                 } else {
-                    s.station_pos // 破曉、午前午後白天、黃昏都在崗位上
+                    s.station_pos // 破曉、午前午後白天在崗位上（黃昏未被指派串門者亦在崗位）
                 };
 
                 // 向目標移動。
                 let dx = target.x - state.x;
                 let dy = target.y - state.y;
                 let dist_sq = dx * dx + dy * dy;
-                
+
                 let commuting = dist_sq > ARRIVED_EPS_SQ;
                 if commuting {
                     let dist = dist_sq.sqrt();
@@ -298,7 +364,12 @@ impl NpcScheduleManager {
                 }
 
                 // 重算工作 / 活動狀態（ROADMAP 324 + 327）：趕路中、夜間休憩、正午聚食、或白天各職責工作。
-                state.activity = work_activity(s.id, phase, lunching, commuting);
+                let mut activity = work_activity(s.id, phase, lunching, commuting);
+                // ROADMAP 356：已抵達盟友攤前（黃昏串門、非趕路中）→ 覆寫成「串門寒暄」。
+                if visiting && !commuting {
+                    activity = Some(NpcActivity::Visiting);
+                }
+                state.activity = activity;
             }
         }
     }
@@ -348,7 +419,7 @@ mod tests {
         assert_eq!(dn.phase(), Phase::Night);
 
         let initial_x = mgr.npcs.get("merchant").unwrap().x;
-        mgr.tick(1.0, &dn); // 走 1 秒
+        mgr.tick(1.0, &dn, &HashMap::new()); // 走 1 秒
         let after_x = mgr.npcs.get("merchant").unwrap().x;
         
         assert!(after_x > initial_x, "商人在夜裡應該往右移 (2120 -> 2400)");
@@ -358,7 +429,7 @@ mod tests {
     fn npcs_stay_at_target_when_reached() {
         let mut mgr = NpcScheduleManager::new();
         let dn = DayNight::new(); // Day
-        mgr.tick(1.0, &dn);
+        mgr.tick(1.0, &dn, &HashMap::new());
         let merchant = mgr.npcs.get("merchant").unwrap();
         assert_eq!(merchant.x, 2120.0);
         assert_eq!(merchant.y, 2328.0);
@@ -458,7 +529,7 @@ mod tests {
         assert_eq!(dn.phase(), Phase::Night);
         // 走久一點讓所有 NPC 都抵達夜宿點。
         for _ in 0..30 {
-            mgr.tick(1.0, &dn);
+            mgr.tick(1.0, &dn, &HashMap::new());
         }
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Resting));
     }
@@ -468,7 +539,7 @@ mod tests {
         // 夜裡剛起步、還沒走到夜宿點時，活動是 Commuting。
         let mut mgr = NpcScheduleManager::new();
         let dn = DayNight::at(500.0); // Night
-        mgr.tick(0.1, &dn); // 只走一小步，必定還在路上（merchant 2120→2400）
+        mgr.tick(0.1, &dn, &HashMap::new()); // 只走一小步，必定還在路上（merchant 2120→2400）
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Commuting));
     }
 
@@ -554,7 +625,7 @@ mod tests {
         assert!(is_lunch_time(dn.phase(), dn.fraction()), "noon_secs 應落在午休窗內");
         // 走久一點讓所有 NPC 都抵達廣場（最遠約 360px，NPC_SPEED 64 → 約 6 秒）。
         for _ in 0..30 {
-            mgr.tick(1.0, &dn);
+            mgr.tick(1.0, &dn, &HashMap::new());
         }
         for s in VILLAGE_NPCS {
             let (x, y) = mgr.get_pos(s.id).unwrap();
@@ -576,7 +647,7 @@ mod tests {
         // 午休剛開始、還沒走到廣場時，活動是 Commuting。
         let mut mgr = NpcScheduleManager::new();
         let dn = DayNight::at(noon_secs());
-        mgr.tick(0.1, &dn); // 只走一小步，必定還在去廣場的路上
+        mgr.tick(0.1, &dn, &HashMap::new()); // 只走一小步，必定還在去廣場的路上
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Commuting));
     }
 
@@ -586,13 +657,13 @@ mod tests {
         let mut mgr = NpcScheduleManager::new();
         // 先在正午把商人帶到廣場。
         let noon = DayNight::at(noon_secs());
-        for _ in 0..30 { mgr.tick(1.0, &noon); }
+        for _ in 0..30 { mgr.tick(1.0, &noon, &HashMap::new()); }
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Lunching));
         // 切到午後（白天、午休窗外）。
         let afternoon = DayNight::at(0.45 * crate::daynight::DAY_LENGTH_SECS);
         assert_eq!(afternoon.phase(), Phase::Day);
         assert!(!is_lunch_time(afternoon.phase(), afternoon.fraction()));
-        for _ in 0..30 { mgr.tick(1.0, &afternoon); }
+        for _ in 0..30 { mgr.tick(1.0, &afternoon, &HashMap::new()); }
         let (x, y) = mgr.get_pos("merchant").unwrap();
         assert!((x - 2120.0).abs() < 1.0 && (y - 2328.0).abs() < 1.0, "午後商人應回崗位");
         assert_eq!(mgr.get_activity("merchant"), Some(NpcActivity::Tallying));
@@ -632,5 +703,105 @@ mod tests {
         // 同一 id 永遠回同一座位；非村落 NPC 回鎮心本身。
         assert_eq!(lunch_seat("merchant"), lunch_seat("merchant"));
         assert_eq!(lunch_seat("unknown_npc"), PLAZA_POS);
+    }
+
+    // —— ROADMAP 356：黃昏串門子 ——
+
+    #[test]
+    fn station_pos_known_and_unknown() {
+        // 已知 NPC 回其崗位；未知 NPC 回 None。
+        assert_eq!(station_pos("merchant"), Some(Pos::new(2120.0, 2328.0)));
+        assert_eq!(station_pos("village_chief"), Some(Pos::new(2720.0, 2080.0)));
+        assert_eq!(station_pos("traveler"), None);
+    }
+
+    #[test]
+    fn visit_plan_empty_when_no_alliances() {
+        // 沒有結盟對 → 沒人串門子。
+        assert!(dusk_visit_plan(&[]).is_empty());
+    }
+
+    #[test]
+    fn visit_plan_assigns_lexicographic_visitor() {
+        // 一般結盟對：id 字典序小者當訪客、大者當主人（與輸入次序無關）。
+        let plan = dusk_visit_plan(&[("merchant", "workshop_npc")]);
+        assert_eq!(plan.get("merchant"), Some(&"workshop_npc"));
+        // 反序輸入結果相同（穩定可重現）。
+        let plan2 = dusk_visit_plan(&[("workshop_npc", "merchant")]);
+        assert_eq!(plan2.get("merchant"), Some(&"workshop_npc"));
+    }
+
+    #[test]
+    fn visit_plan_chief_is_always_host() {
+        // 里長守在原地：永遠當被拜訪的主人，不外出串門。
+        let plan = dusk_visit_plan(&[("merchant", "village_chief")]);
+        assert_eq!(plan.get("merchant"), Some(&"village_chief"));
+        assert!(plan.get("village_chief").is_none(), "里長不該當訪客");
+    }
+
+    #[test]
+    fn visit_plan_no_npc_double_booked() {
+        // 每個 NPC 至多參與一段串門關係：商人已和工匠配對後，與獵手的後續配對被跳過。
+        let plan = dusk_visit_plan(&[
+            ("merchant", "workshop_npc"),
+            ("merchant", "bounty_npc"),
+        ]);
+        assert_eq!(plan.len(), 1, "商人已佔用，第二對應被跳過");
+        assert_eq!(plan.get("merchant"), Some(&"workshop_npc"));
+        // 互不重疊的兩對則都成立。
+        let plan2 = dusk_visit_plan(&[
+            ("merchant", "workshop_npc"),
+            ("bounty_npc", "expedition_npc"),
+        ]);
+        assert_eq!(plan2.len(), 2);
+    }
+
+    #[test]
+    fn visitor_walks_to_host_at_dusk() {
+        // 黃昏時，被指派為訪客的 NPC 朝主人崗位旁移動（離開自己崗位）。
+        let mut mgr = NpcScheduleManager::new();
+        let dusk = DayNight::at(330.0); // fraction 0.55 → Dusk
+        assert_eq!(dusk.phase(), Phase::Dusk);
+        let mut visits: HashMap<&str, &str> = HashMap::new();
+        visits.insert("merchant", "village_chief"); // 商人去拜訪里長
+
+        let start_x = mgr.npcs.get("merchant").unwrap().x; // 2120
+        // 走幾秒讓位移看得出來。
+        for _ in 0..5 {
+            mgr.tick(1.0, &dusk, &visits);
+        }
+        let after_x = mgr.npcs.get("merchant").unwrap().x;
+        // 里長崗位在 x=2720（更右），訪客應往右靠近主人攤前。
+        assert!(after_x > start_x, "商人黃昏串門應朝里長攤前（右）移動：{} -> {}", start_x, after_x);
+    }
+
+    #[test]
+    fn visitor_arrives_and_shows_visiting_activity() {
+        // 訪客抵達主人攤前後，活動狀態為 Visiting。
+        let mut mgr = NpcScheduleManager::new();
+        let dusk = DayNight::at(330.0);
+        let mut visits: HashMap<&str, &str> = HashMap::new();
+        visits.insert("merchant", "village_chief");
+        // 走久一點讓商人抵達里長攤前（距離夠遠，多 tick 幾次）。
+        for _ in 0..600 {
+            mgr.tick(1.0, &dusk, &visits);
+        }
+        let m = mgr.npcs.get("merchant").unwrap();
+        let host = station_pos("village_chief").unwrap();
+        assert!((m.x - (host.x + VISIT_BESIDE_OFFSET)).abs() < 2.0, "商人應停在里長攤前並肩位");
+        assert_eq!(m.activity, Some(NpcActivity::Visiting), "抵達後應為串門寒暄狀態");
+    }
+
+    #[test]
+    fn no_visiting_outside_dusk() {
+        // 非黃昏（白天）即使誤傳 visits，也不生效——商人照常守崗位、不串門。
+        let mut mgr = NpcScheduleManager::new();
+        let day = DayNight::new(); // Day
+        let mut visits: HashMap<&str, &str> = HashMap::new();
+        visits.insert("merchant", "village_chief");
+        mgr.tick(1.0, &day, &visits);
+        let m = mgr.npcs.get("merchant").unwrap();
+        assert_eq!(m.x, 2120.0, "白天商人應守在崗位、不串門");
+        assert_eq!(m.activity, Some(NpcActivity::Tallying));
     }
 }
