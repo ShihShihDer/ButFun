@@ -1122,6 +1122,10 @@ pub fn spawn(app: AppState) {
                     if p.mine_cooldown > 0.0 {
                         p.mine_cooldown = (p.mine_cooldown - dt).max(0.0);
                     }
+                    // 開灶冷卻倒數（ROADMAP 349）：開灶起算，只擋開新一趟掌勺。
+                    if p.cook_cooldown > 0.0 {
+                        p.cook_cooldown = (p.cook_cooldown - dt).max(0.0);
+                    }
                     // 釣魚上鉤小遊戲推進（ROADMAP 346）：等咬鉤→咬鉤→脫鉤。
                     // advance 純函式、零鎖無 IO；JustBit 只讓 phase 轉 Biting（隨快照廣播、
                     // 前端抖浮標），Escaped 才清狀態、出鎖後廣播「魚跑了」（守 prod-deadlock）。

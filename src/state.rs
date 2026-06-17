@@ -235,6 +235,17 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在挖＝None）。
     pub mining: Option<crate::mining_vein::MiningVein>,
 
+    // ── 掌勺照譜烹調（ROADMAP 349）────────────────────────────────────────
+    /// 開灶冷卻剩餘秒數（0.0 = 可開灶；> 0 = 冷卻中）。開灶起算，由 game.rs 每 tick 遞減。
+    pub cook_cooldown: f32,
+    /// 掌勺嘗試計數（讓每趟步序偽隨機不同；記憶體前置，重啟清空）。
+    pub cook_attempt_count: u64,
+    /// 進行中的一趟掌勺（ROADMAP 349）：照譜下料的順序記憶小遊戲。
+    /// 記憶體前置、不入快照、不持久化、零 migration、重啟清空（沒在煮＝None）。
+    pub cooking: Option<crate::cooking_steps::CookSession>,
+    /// 累計煮出的「完美料理」道數（ROADMAP 349）：記憶體前置、不持久化、純成就感計數。
+    pub perfect_dishes: u32,
+
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
     /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
@@ -415,6 +426,8 @@ impl Player {
             mining_depth: self.mining.map(|v| v.depth()),
             mining_haul: self.mining.map(|v| v.haul()),
             mining_tremor: self.mining.map(|v| v.tremor().as_str()),
+            // ROADMAP 349：開灶冷卻，供前端料理「掌勺」鈕顯示冷卻倒數。
+            cook_cooldown: self.cook_cooldown,
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1433,6 +1446,10 @@ mod tests {
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            cook_cooldown: 0.0,
+            cook_attempt_count: 0,
+            cooking: None,
+            perfect_dishes: 0,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,

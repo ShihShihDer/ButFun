@@ -64,6 +64,7 @@ mod pet_play;
 mod fishing;
 mod fishing_bite;
 mod mining_vein;
+mod cooking_steps;
 mod constellation;
 mod field_guide;
 mod terrain_atlas;

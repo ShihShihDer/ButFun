@@ -2274,6 +2274,35 @@
         }
         break;
       }
+      case "cook_start": {
+        // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        openCookOverlay(msg.recipe_id, Array.isArray(msg.steps) ? msg.steps : []);
+        break;
+      }
+      case "cook_result": {
+        // 掌勺結果（ROADMAP 349）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        closeCookOverlay();
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        const gLabel = COOK_GRADE_LABEL[msg.grade] || "出菜";
+        // 評級越高顏色越亮（完美＝金、美味＝藍、家常＝綠、手忙腳亂＝灰）。
+        const color = msg.grade === "perfect" ? "255,210,74"
+                    : msg.grade === "tasty"   ? "120,200,255"
+                    : msg.grade === "common"  ? "170,225,170"
+                    :                           "190,190,190";
+        const dishName = msg.dish ? (ITEM_NAME[msg.dish] || "料理") : null;
+        const dishIco = msg.dish ? (ITEM_LOOK[msg.dish] || "🍽️") : "🍽️";
+        if (dishName) {
+          floaters.push({ wx, wy, text: `${dishIco} ${gLabel}！${dishName}`, color, born: now });
+          announce(`掌勺${gLabel}，煮出了${dishName}`);
+        } else {
+          floaters.push({ wx, wy, text: "🍽️ 食材不夠，沒能上菜…", color: "190,190,190", born: now });
+          announce("食材不夠，沒能上菜");
+        }
+        break;
+      }
       case "star_map":
         // 今夜星圖（ROADMAP 347）：開觀星窗時伺服器回傳；單播給本人。
         applyStarMap(msg);
@@ -15430,9 +15459,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240", alpha_crystal: "220,180,255", alpha_force: "255,220,60", legendary_core: "255,215,0", legendary_blade: "255,240,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -15543,7 +15572,172 @@
     { id: "alpha_force", out: "alpha_force", outQty: 1, inputs: [["alpha_crystal", 2], ["ether", 5]] },
     // 傳說古 Alpha 限定武器（ROADMAP 173）：傳說晶核×1 + Alpha晶石×3 + 乙太×30 → 傳說戰刃。攻擊力 +55。
     { id: "legendary_blade", out: "legendary_blade", outQty: 1, inputs: [["legendary_core", 1], ["alpha_crystal", 3], ["ether", 30]], atk: 55 },
+    // ── 掌勺料理（ROADMAP 349 照譜烹調）──────────────────────────────────────
+    // 這 8 道食物配方伺服器自 ROADMAP 47 起就有、卻從沒前端入口；本切片首次收錄並標 cook:true，
+    // 按鈕改「👨‍🍳 掌勺」，點下開順序記憶小遊戲（送 start_cook，步序由 cook_start 回來）。
+    // 與後端 cooking_steps.rs 的可烹表＋既有 crafting.rs 配方對齊。
+    { id: "grilled_fish",  out: "grilled_fish",  outQty: 1, inputs: [["fish_small", 2]], cook: true },
+    { id: "star_sashimi",  out: "star_sashimi",  outQty: 1, inputs: [["fish_star", 1]], cook: true },
+    { id: "deep_broth",    out: "deep_broth",    outQty: 1, inputs: [["fish_deep", 1]], cook: true },
+    { id: "fried_egg",     out: "fried_egg",     outQty: 1, inputs: [["egg", 2]], cook: true },
+    { id: "bread",         out: "bread",         outQty: 1, inputs: [["wheat_grain", 3]], cook: true },
+    { id: "carrot_soup",   out: "carrot_soup",   outQty: 1, inputs: [["carrot", 2]], cook: true },
+    { id: "potato_gratin", out: "potato_gratin", outQty: 1, inputs: [["potato", 2]], cook: true },
+    { id: "night_potion",  out: "night_potion",  outQty: 1, inputs: [["star_crystal_shard", 3]], cook: true },
   ];
+
+  // ── 掌勺照譜烹調覆蓋層（ROADMAP 349）──────────────────────────────────────────
+  // 順序記憶小遊戲：先依序閃示步驟（看譜），再讓玩家憑記憶把步驟鈕依序敲回（敲滿自動送出）。
+  // 與後端 cooking_steps.rs 的 CookStep / CookGrade 線格式（snake_case）對齊。
+  const COOK_STEP_META = {
+    heat:   { emoji: "🔥", label: "起鍋" },
+    add:    { emoji: "🥬", label: "下料" },
+    stir:   { emoji: "🥄", label: "翻炒" },
+    flip:   { emoji: "🍳", label: "翻面" },
+    season: { emoji: "🧂", label: "調味" },
+  };
+  const COOK_STEP_ORDER = ["heat", "add", "stir", "flip", "season"];
+  const COOK_GRADE_LABEL = { botched: "手忙腳亂", common: "家常", tasty: "美味", perfect: "完美" };
+
+  let cookOverlayEl = null;   // 目前掌勺覆蓋層 DOM（沒在煮＝null）
+  let cookFlashTimers = [];   // 看譜階段排定的 setTimeout id（關層時清掉，避免殘留）
+
+  // 收掉覆蓋層與所有排定計時器（出菜結果到、或玩家取消時呼叫）。
+  function closeCookOverlay() {
+    cookFlashTimers.forEach((t) => clearTimeout(t));
+    cookFlashTimers = [];
+    if (cookOverlayEl && cookOverlayEl.parentNode) cookOverlayEl.parentNode.removeChild(cookOverlayEl);
+    cookOverlayEl = null;
+  }
+
+  // 開一趟掌勺：recipeId＝這道菜、steps＝伺服器送來的標準步序（snake_case 陣列）。
+  function openCookOverlay(recipeId, steps) {
+    closeCookOverlay(); // 保險：清掉任何殘留的上一趟
+    if (!steps.length) return;
+    const dishName = ITEM_NAME[recipeId] || "料理";
+    const dishIco = ITEM_LOOK[recipeId] || "🍽️";
+
+    const ov = document.createElement("div");
+    ov.className = "cook-overlay";
+    ov.setAttribute("role", "dialog");
+    ov.setAttribute("aria-label", `掌勺 ${dishName}`);
+    ov.style.cssText =
+      "position:fixed;inset:0;z-index:9000;display:flex;align-items:center;justify-content:center;" +
+      "background:rgba(8,10,18,0.72);";
+    const card = document.createElement("div");
+    card.style.cssText =
+      "background:#1b2030;border:2px solid #3a4566;border-radius:14px;padding:18px 20px;max-width:92vw;" +
+      "box-shadow:0 8px 30px rgba(0,0,0,0.5);color:#e8ecf4;text-align:center;font-size:15px;";
+    ov.appendChild(card);
+    cookOverlayEl = ov;
+    (document.body || document.documentElement).appendChild(ov);
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-weight:700;margin-bottom:4px;";
+    title.textContent = `${dishIco} 掌勺 ${dishName}`;
+    card.appendChild(title);
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:#9fb0d0;font-size:13px;margin-bottom:12px;";
+    card.appendChild(hint);
+
+    // 步驟序列顯示列（看譜時逐顆點亮，敲回時顯示進度）。
+    const seqRow = document.createElement("div");
+    seqRow.style.cssText = "display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;min-height:46px;";
+    const seqCells = steps.map((key) => {
+      const m = COOK_STEP_META[key] || { emoji: "❓", label: "?" };
+      const cell = document.createElement("div");
+      cell.style.cssText =
+        "width:42px;height:42px;border-radius:9px;display:flex;align-items:center;justify-content:center;" +
+        "font-size:22px;background:#2a3144;border:1px solid #3a4566;opacity:0.35;transition:opacity .12s,transform .12s;";
+      cell.textContent = m.emoji;
+      seqRow.appendChild(cell);
+      return cell;
+    });
+    card.appendChild(seqRow);
+
+    // 五顆步驟鈕（敲回階段才啟用）。
+    const padRow = document.createElement("div");
+    padRow.style.cssText = "display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:6px;";
+    let inputs = [];          // 玩家已敲入的步驟（snake_case）
+    let accepting = false;    // 是否處於可敲回階段
+
+    function submitIfDone() {
+      if (inputs.length >= steps.length) {
+        accepting = false;
+        padBtns.forEach((b) => (b.disabled = true));
+        hint.textContent = "出菜中…";
+        try { ws.send(JSON.stringify({ type: "submit_cook", steps: inputs.slice() })); } catch {}
+        // 保險：若伺服器沒回（理論上會回 cook_result），4 秒後自動收層避免卡住。
+        cookFlashTimers.push(setTimeout(closeCookOverlay, 4000));
+      }
+    }
+
+    const padBtns = COOK_STEP_ORDER.map((key) => {
+      const m = COOK_STEP_META[key];
+      const b = document.createElement("button");
+      b.type = "button";
+      b.disabled = true;
+      b.style.cssText =
+        "width:54px;height:54px;border-radius:11px;font-size:24px;background:#2f6b4f;color:#fff;" +
+        "border:none;cursor:pointer;";
+      b.textContent = m.emoji;
+      b.setAttribute("aria-label", m.label);
+      b.title = m.label;
+      b.addEventListener("click", () => {
+        if (!accepting || inputs.length >= steps.length) return;
+        const i = inputs.length;
+        inputs.push(key);
+        // 敲對與否前端不判（伺服器權威評級）；只把對應格點亮、推進進度。
+        if (seqCells[i]) { seqCells[i].style.opacity = "1"; seqCells[i].style.transform = reduceMotion ? "none" : "scale(1.08)"; }
+        announce(`${m.label}（${inputs.length}/${steps.length}）`);
+        submitIfDone();
+      });
+      padRow.appendChild(b);
+      return b;
+    });
+    card.appendChild(padRow);
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "離開";
+    cancel.style.cssText = "margin-top:8px;background:none;border:1px solid #4a5577;color:#9fb0d0;border-radius:8px;padding:4px 14px;cursor:pointer;font-size:13px;";
+    cancel.addEventListener("click", closeCookOverlay);
+    card.appendChild(cancel);
+
+    // 看譜階段：逐顆點亮步序，亮完進入敲回。reduceMotion 時直接一次顯示全部、縮短等待。
+    function startInputPhase() {
+      seqCells.forEach((c) => { c.style.opacity = "0.35"; c.style.transform = "none"; });
+      accepting = true;
+      inputs = [];
+      padBtns.forEach((b) => (b.disabled = false));
+      hint.textContent = `照剛才的順序敲回 ${steps.length} 步`;
+      announce(`照譜敲回 ${steps.length} 步`);
+    }
+
+    if (reduceMotion) {
+      // 不閃爍：一次顯示全部步序，給一段固定時間記憶後進入敲回。
+      hint.textContent = "記住下面的步驟順序";
+      seqCells.forEach((c) => (c.style.opacity = "1"));
+      cookFlashTimers.push(setTimeout(() => {
+        seqCells.forEach((c) => (c.style.opacity = "0.35"));
+        startInputPhase();
+      }, 600 + steps.length * 700));
+    } else {
+      hint.textContent = "看好步驟順序…";
+      const FLASH_MS = 560;       // 每步點亮時長
+      steps.forEach((key, i) => {
+        cookFlashTimers.push(setTimeout(() => {
+          seqCells.forEach((c, j) => { c.style.opacity = j === i ? "1" : "0.35"; c.style.transform = j === i ? "scale(1.12)" : "none"; });
+        }, i * FLASH_MS));
+      });
+      cookFlashTimers.push(setTimeout(() => {
+        seqCells.forEach((c) => { c.style.opacity = "0.35"; c.style.transform = "none"; });
+      }, steps.length * FLASH_MS));
+      cookFlashTimers.push(setTimeout(startInputPhase, steps.length * FLASH_MS + 220));
+    }
+  }
+
   // 擴地價格（與伺服器 src/economy.rs 對齊;規則只在伺服器,前端只拿來顯示與反灰提示）：
   // 基準 10 乙太、逐格線性漲（第 n+1 格 = 10×(n+1)）、一塊地最多擴 12 格。
   const EXPANSION_BASE_COST = 10;
@@ -16190,7 +16384,10 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "craft-btn";
-      btn.textContent = "合成";
+      // ROADMAP 349：料理（cook:true）改走「掌勺」順序記憶小遊戲；其餘維持一鍵合成。
+      const isCook = !!r.cook;
+      const verb = isCook ? "掌勺" : "合成";
+      btn.textContent = isCook ? "👨‍🍳 掌勺" : "合成";
       btn.disabled = !ok;
       // 報讀器把整條配方念清楚:夠料念「合成 鎬子,需要 木材×3、石頭×2」,缺料補「(素材不足)」。
       const needLabel = r.inputs
@@ -16202,11 +16399,17 @@
         : !matOk ? "（素材不足）" : "";
       btn.setAttribute(
         "aria-label",
-        `合成 ${outName},需要 ${needLabel}${disabledReason}`
+        `${verb} ${outName},需要 ${needLabel}${disabledReason}`
       );
-      btn.title = ok ? `合成 ${outName}` : disabledReason.replace(/[（）]/g, "");
+      btn.title = ok ? `${verb} ${outName}` : disabledReason.replace(/[（）]/g, "");
       btn.addEventListener("click", () => {
         if (btn.disabled) return;
+        if (isCook) {
+          // 料理：送開灶意圖,伺服器回 cook_start 帶這趟步序,前端開覆蓋層閃示再讓玩家敲回。
+          try { ws.send(JSON.stringify({ type: "start_cook", recipe_id: r.id })); } catch {}
+          announce(`開灶掌勺 ${outName}`);
+          return;
+        }
         // 只送意圖:伺服器查配方扣料、產物隨既有背包快照回來(規則只在伺服器,前端不自行加道具)。
         // 欄位用 recipe_id 對齊伺服器 ClientMsg::Craft{recipe_id}——serde 的 rename_all="snake_case"
         // 只改 variant 名、不串到 struct 欄位(既有 name/species/text 皆原 Rust 名),故欄位即 recipe_id。
