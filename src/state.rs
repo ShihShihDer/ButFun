@@ -1146,6 +1146,9 @@ pub struct AppState {
     /// 季節性野外採集節點（ROADMAP 154）：每季節在城外 3 個固定節點，各 3 次共用採集次數。
     /// 記憶體模式，季節切換自動重置；重啟從當前季節重新生成。
     pub seasonal_nodes: Arc<RwLock<crate::seasonal_nodes::SeasonalNodesState>>,
+    /// 探索者路標（ROADMAP 353）：玩家在世界裡立的留言路標，非同步的玩家↔玩家痕跡。
+    /// 記憶體模式、有界、會過期；遊戲迴圈每 tick 推進過期、立牌/過期時廣播 `ServerMsg::Wayposts`。
+    pub wayposts: Arc<RwLock<crate::wayposts::WaypostBoard>>,
     /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
     /// 記憶體模式，重啟重新在固定座標生成。
     pub wildlife_manager: Arc<RwLock<crate::wildlife::WildlifeManager>>,
@@ -1349,6 +1352,7 @@ impl AppState {
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
+            wayposts: Arc::new(RwLock::new(crate::wayposts::WaypostBoard::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             monster_species: Arc::new(RwLock::new(crate::species_relations::MonsterSpeciesRelations::new())),

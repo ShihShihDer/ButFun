@@ -15,6 +15,7 @@ mod observatory;
 mod meteor_shower;
 mod night_aether_springs;
 mod wandering_merchant;
+mod wayposts;
 mod connections;
 mod equipment;
 mod refinement;
