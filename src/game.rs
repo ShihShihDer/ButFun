@@ -2113,20 +2113,19 @@ pub fn spawn(app: AppState) {
                             // ROADMAP 169：Alpha 咆哮指揮——決定戰術並非同步生成台詞廣播。
                             MonsterColonyEvent::AlphaCommandReady { alpha_id, colony_name, kind, hp_pct, alpha_x, alpha_y } => {
                                 let kind_name = kind.display_name();
-                                // 計算 Alpha 周圍 COMMAND_RADIUS 內的玩家數（附近才算）。
-                                let command_radius = crate::boss_ai::COMMAND_RADIUS;
-                                let player_count = {
+                                // ROADMAP 371：收集 Alpha 感知半徑內的玩家座標，算出陣形（人數＋離散度）。
+                                // 先讀 players 取座標即放鎖，後續純函式計算、不巢狀上鎖（守 prod-deadlock）。
+                                let player_positions: Vec<(f32, f32)> = {
                                     let players = app.players.read().unwrap();
-                                    players.values()
-                                        .filter(|p| {
-                                            let dx = p.x - alpha_x;
-                                            let dy = p.y - alpha_y;
-                                            dx * dx + dy * dy <= command_radius * command_radius
-                                        })
-                                        .count()
+                                    players.values().map(|p| (p.x, p.y)).collect()
                                 };
-                                // 同步決定戰術（零延遲），寫回 Alpha 狀態（前端快照可見）。
-                                let tactic = crate::boss_ai::canned_tactic(hp_pct, player_count);
+                                let (nearby_players, spread_px) = crate::boss_ai::formation_of(
+                                    (alpha_x, alpha_y),
+                                    &player_positions,
+                                    crate::boss_ai::PERCEPTION_RADIUS,
+                                );
+                                // 同步決定戰術（零延遲、讀陣反制），寫回 Alpha 狀態（前端快照可見）。
+                                let tactic = crate::boss_ai::adaptive_tactic(hp_pct, nearby_players, spread_px);
                                 let tactic_name = tactic.display_name().to_string();
                                 app.monster_colonies.write().unwrap()
                                     .set_alpha_tactic(alpha_id, tactic_name.clone());
@@ -2920,7 +2919,12 @@ pub fn spawn(app: AppState) {
             // 戰術由罐頭邏輯即時決定（零延遲），AI 非同步生成廣播台詞。
             // ROADMAP 114：0 玩家時仍持續運轉，讓世界不因無人而沉默。
             {
-                let player_count = app.players.read().unwrap().len();
+                // ROADMAP 371：先取一次全玩家座標，供每隻怪物王各自讀陣＋套用戰術共用
+                // （先讀即放鎖，純函式算陣形，不巢狀上鎖、守 prod-deadlock）。
+                let players_pos: Vec<(f32, f32)> = app.players.read().unwrap()
+                    .values()
+                    .map(|p| (p.x, p.y))
+                    .collect();
                 let tactic_inputs: Vec<_> = app
                     .enemies
                     .read()
@@ -2928,22 +2932,28 @@ pub fn spawn(app: AppState) {
                     .enemies()
                     .into_iter()
                     .filter(|e| e.enemy.is_alive() && e.level >= e.base_level.saturating_add(3))
-                    .map(|e| crate::boss_ai::TacticInput {
-                        id: e.id,
-                        kind_name: e.enemy.kind().display_name(),
-                        level: e.level,
-                        x: e.x,
-                        y: e.y,
-                        hp_pct: e.enemy.remaining_hp() as f32 / e.enemy.max_hp().max(1) as f32,
+                    .map(|e| {
+                        // 每隻怪物王讀自己感知半徑內的玩家陣形。
+                        let (nearby_players, spread_px) = crate::boss_ai::formation_of(
+                            (e.x, e.y),
+                            &players_pos,
+                            crate::boss_ai::PERCEPTION_RADIUS,
+                        );
+                        crate::boss_ai::TacticInput {
+                            id: e.id,
+                            kind_name: e.enemy.kind().display_name(),
+                            level: e.level,
+                            x: e.x,
+                            y: e.y,
+                            hp_pct: e.enemy.remaining_hp() as f32 / e.enemy.max_hp().max(1) as f32,
+                            nearby_players,
+                            spread_px,
+                        }
                     })
                     .collect();
-                let candidate = app.boss_ai.write().unwrap().tick(dt, &tactic_inputs, player_count);
+                let candidate = app.boss_ai.write().unwrap().tick(dt, &tactic_inputs);
                 if let Some(c) = candidate {
                     // 立即套用戰術（機制效果，同步），不等 AI 台詞。
-                    let players_pos: Vec<(f32, f32)> = app.players.read().unwrap()
-                        .values()
-                        .map(|p| (p.x, p.y))
-                        .collect();
                     app.enemies.write().unwrap()
                         .broadcast_boss_command(c.id, c.x, c.y, &c.tactic, &players_pos);
                     // 非同步生成廣播台詞（AI 台詞或罐頭降級）。
