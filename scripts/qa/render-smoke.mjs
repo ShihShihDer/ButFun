@@ -910,6 +910,31 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 雨打水面漣漪：乾淨");
 }
 
+// 雨後彩虹（ROADMAP 361）：伺服器權威全服天象。送 rainbow.active=true 的快照 → 跑彩虹弧
+// 「淡入→駐留」與「彩虹祝福」HUD pill 路徑；再送 active=false → 跑「伺服器宣告結束→淡出→熄滅」
+// 路徑（一般情境碰不到的淡出分支）。drawRainbow 改伺服器驅動後，這條確保兩個生命週期分支零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：雨後彩虹（全服天象，連跑驅動淡入駐留→宣告結束淡出，含祝福 HUD pill）──");
+  const rbSnap = JSON.parse(JSON.stringify(snapshot));
+  rbSnap.daynight = { phase: "day", light: 0.7, night_danger: false }; // 雨過天青、白天
+  rbSnap.weather = { weather_type: "clear", intensity: 0.0 };
+  rbSnap.rainbow = { active: true, remaining_secs: 45 };
+  lastWS.onmessage({ data: JSON.stringify({ ...rbSnap, type: "snapshot" }) });
+  let r = pump("雨後彩虹·點燃", 120); // 淡入後駐留
+  // 伺服器宣告彩虹結束 → 前端進入淡出分支。
+  if (!(r instanceof Error)) {
+    const offSnap = JSON.parse(JSON.stringify(rbSnap));
+    offSnap.rainbow = { active: false, remaining_secs: 0 };
+    lastWS.onmessage({ data: JSON.stringify({ ...offSnap, type: "snapshot" }) });
+    r = pump("雨後彩虹·淡出", 360); // 淡出 4.5s 內熄滅、釋放狀態
+  }
+  if (r instanceof Error) { failed = true; console.error("  ❌ 雨後彩虹：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雨後彩虹：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 雨後彩虹：乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

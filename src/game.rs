@@ -2944,6 +2944,12 @@ pub fn spawn(app: AppState) {
             // 天氣系統（ROADMAP 93）：推進天氣計時器，切換時廣播聊天公告。
             // 下雨澆田（ROADMAP 109）：雨停時提示玩家農地需手動澆水。
             {
+                // 雨後彩虹（ROADMAP 361）只在「天還亮著、有日光」時架起（夜裡不出，符合天象真實感）。
+                // 先以獨立語句讀一次日夜相位（鎖即放、不與後面 weather/rainbow 寫鎖巢狀，守 prod-deadlock）。
+                let is_daytime = !matches!(
+                    app.daynight.read().unwrap().phase(),
+                    crate::daynight::Phase::Night
+                );
                 let switched = app.weather.write().unwrap().advance(dt);
                 if let Some(new_type) = switched {
                     let _ = app.tx_chat.send(new_type.announce_text().to_string());
@@ -2952,7 +2958,34 @@ pub fn spawn(app: AppState) {
                         let _ = app.tx_chat.send(
                             "🌤️ 雨停了！農地恢復乾燥，記得幫作物澆水喔！".to_string()
                         );
+                        // ROADMAP 361：雨過天青且日光仍在 → 架起全服彩虹、開啟「彩虹祝福」療癒光環。
+                        if is_daytime {
+                            app.rainbow.write().unwrap().appear();
+                            let _ = app.tx_chat.send(crate::rainbow::APPEAR_TEXT.to_string());
+                        }
                     }
+                }
+            }
+
+            // 雨後彩虹療癒光環（ROADMAP 361）：天象級全服共享療癒——彩虹高掛期間，每隔
+            // HEAL_PULSE_SECS 讓全服存活玩家獲得一次溫和回血（療癒向，非走近採集；刻意不複製
+            // 流星雨／夜間乙太泉／季節節點那套「節點」骨架）。多數時刻無彩虹 → tick 立即早退、
+            // 連 players 寫鎖都不開、零成本。回血在鎖內、公告在出鎖後送（守 prod-deadlock 鐵律：
+            // rainbow 寫鎖於上一語句即釋放，與 players 寫鎖不巢狀）。
+            {
+                let rt = app.rainbow.write().unwrap().tick(dt);
+                if rt.heal_pulse {
+                    let mut players = app.players.write().unwrap();
+                    for p in players.values_mut() {
+                        // 倒地休息中的玩家須先自然復原，不吃彩虹祝福（heal 對 hp==0 本就 no-op，這裡明示）。
+                        if p.vitals.is_downed() {
+                            continue;
+                        }
+                        p.vitals.heal(crate::rainbow::HEAL_AMOUNT);
+                    }
+                }
+                if rt.vanished {
+                    let _ = app.tx_chat.send(crate::rainbow::VANISH_TEXT.to_string());
                 }
             }
 
@@ -3472,6 +3505,8 @@ pub fn spawn(app: AppState) {
                         },
                         village_treasury: *app.village_treasury.read().unwrap(),
                         weather: app.weather.read().unwrap().view(),
+                        // 雨後彩虹（ROADMAP 361）：伺服器權威全服天象，前端據此畫彩虹弧＋祝福 pill。
+                        rainbow: app.rainbow.read().unwrap().view(),
                         sprinklers: app.sprinklers.read().unwrap().views(),
                         // 廣場聚會剩餘秒數（ROADMAP 124）：0 = 無聚會；>0 = 全服 EXP +20%。
                         gathering_secs: app.community_gathering.read().unwrap().remaining_secs(),

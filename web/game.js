@@ -345,9 +345,14 @@
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
-  // 雨後彩虹（ROADMAP 191）：偵測「雨→停」轉換用的前一幀降雨狀態與彩虹點燃時刻。
-  let _wasRaining = false;       // 上一幀是否正在下雨（草原雨）
+  // 雨後彩虹（ROADMAP 191→361）：191 是各客戶端各自偵測「雨→停」的純裝飾彩虹；361 把它
+  // 升級為**伺服器權威的全服共享天象**——以下旗標改由快照 msg.rainbow 驅動，全服同時看見
+  // 同一道彩虹、且彩虹在＝「彩虹祝福」療癒光環在（與後端回血脈衝同步）。
+  let _wasRaining = false;       // 上一幀是否正在下雨（草原雨；保留供其他天氣判斷沿用）
   let _rainbowStartMs = 0;       // 當前彩虹點燃的 performance.now() 時刻（0=無彩虹）
+  let _rainbowFadeOutStart = 0;  // 伺服器宣告彩虹結束、進入淡出的時刻（0=未在淡出）
+  let rainbowActive = false;     // 伺服器權威：此刻是否有彩虹高掛（祝福生效中）
+  let rainbowRemainingSecs = 0;  // 伺服器權威：彩虹剩餘秒數（HUD pill 倒數用）
   // 夜空流星（ROADMAP 192）：入夜後偶發一道劃過上半天邊的流星，純視覺天象——
   // 與玩法事件「流星雨（133，含採集節點/星塵）」刻意區隔：這裡無玩法、無節點、不可採集，
   // 只是夜空獎勵，是白天雨後彩虹（191）的夜晚對偶。下面記錄當前流星點燃時刻、下次排程時刻與路徑幾何。
@@ -1024,6 +1029,44 @@
       t.style.background = info.bg;
       t.style.color = info.color;
       t.style.border = `1px solid ${info.border}`;
+      t.style.display = "block";
+      t.textContent = text;
+    }
+  }
+
+  // 彩虹祝福 HUD pill（ROADMAP 361）：彩虹高掛期間常駐顯示「🌈 彩虹祝福（剩 Ns）」，
+  // 讓玩家清楚知道此刻正受全服共享的療癒祝福。倒數由伺服器 rainbowRemainingSecs 驅動，
+  // 彩虹隱去（rainbowActive=false）即隱藏。沿用季節 pill 的 banner 欄位佈局與早退快取。
+  let lastRainbowHudText = null;
+  function updateRainbowHud() {
+    const pill = document.getElementById("hudRainbow");
+    if (!rainbowActive) {
+      // 沒有彩虹：隱藏 pill、清快取（下次出現時重建顯示）。
+      if (pill) pill.style.display = "none";
+      lastRainbowHudText = null;
+      return;
+    }
+    const secs = Math.max(0, rainbowRemainingSecs);
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    const timeStr = mins > 0 ? `${mins}m${rem}s` : `${rem}s`;
+    const text = `🌈 彩虹祝福（剩 ${timeStr}）`;
+    if (text === lastRainbowHudText) return;
+    lastRainbowHudText = text;
+    if (!pill) {
+      const el = document.createElement("div");
+      el.id = "hudRainbow";
+      el.style.cssText = [
+        "order:7",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px",
+        "background:#10182a", "color:#bfe3ff", "border:1px solid #6aa9ff",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudRainbow");
+    if (t) {
       t.style.display = "block";
       t.textContent = text;
     }
@@ -2046,6 +2089,16 @@
           weatherType = msg.weather.weather_type || "clear";
           weatherIntensity = msg.weather.intensity || 0.0;
         }
+        // 雨後彩虹（ROADMAP 361）：伺服器權威全服天象。前端據此畫彩虹弧＋顯示「彩虹祝福」HUD pill。
+        // 舊伺服器無此欄位時 msg.rainbow 為 undefined → 維持 false（向後相容）。
+        if (msg.rainbow) {
+          rainbowActive = !!msg.rainbow.active;
+          rainbowRemainingSecs = msg.rainbow.remaining_secs || 0;
+        } else {
+          rainbowActive = false;
+          rainbowRemainingSecs = 0;
+        }
+        updateRainbowHud();
         // 公民投票（ROADMAP 156）：同步當前投票狀態與生效效果。
         window._lastCivicVoteData = msg.civic_vote || null;
         updateCivicVoteHud(msg.civic_vote, msg.civic_effect_secs, msg.civic_effect_kind);
@@ -12138,21 +12191,33 @@
     return 1;                                                       // 駐留
   }
 
-  // 每幀偵測「雨→停」轉換並繪製彩虹（螢幕座標、不隨鏡頭移動）。由獨立 safeDraw 呼叫。
+  // 純函式：依「伺服器是否仍宣告彩虹高掛」推出此刻彩虹不透明度係數 [0,1]。無 DOM、可測。
+  //   active 時：自點燃起淡入到 1 後駐留（壽命由伺服器掌控，不自行喊停）。
+  //   伺服器宣告結束（!active）後：自 fadeOutStart 起在 fadeOut 內線性淡去。
+  function rainbowAlphaServer(now, startMs, active, fadeOutStart, fadeIn, fadeOut) {
+    if (startMs === 0) return 0;
+    if (active) return Math.min(1, (now - startMs) / fadeIn); // 淡入後恆 1，隨伺服器駐留
+    if (fadeOutStart === 0) return 1; // 剛宣告結束、淡出尚未起算（下一幀才開始）
+    return Math.max(0, 1 - (now - fadeOutStart) / fadeOut);   // 線性淡去
+  }
+
+  // 繪製彩虹（螢幕座標、不隨鏡頭移動）。ROADMAP 361 起改由伺服器 rainbowActive 驅動：
+  // 全服同時點燃同一道彩虹、彩虹在＝祝福在。由獨立 safeDraw 每幀呼叫。
   function drawRainbow(now) {
-    // 偵測雨剛停＋白天 → 點燃彩虹（_wasRaining 每幀更新，故放在效能早退之前）
-    const rainingNow = isRainingState(weatherType, weatherIntensity);
-    const light = daynight ? daynight.light : 1;
-    if (_wasRaining && !rainingNow && _rainbowStartMs === 0 && light >= RAINBOW_DAY_LIGHT) {
-      _rainbowStartMs = now;
+    // 伺服器說彩虹高掛 → 點燃（若尚未點燃），並清掉任何殘留的淡出狀態。
+    if (rainbowActive) {
+      if (_rainbowStartMs === 0) _rainbowStartMs = now;
+      _rainbowFadeOutStart = 0;
+    } else if (_rainbowStartMs !== 0 && _rainbowFadeOutStart === 0) {
+      // 伺服器剛宣告彩虹結束 → 起算淡出。
+      _rainbowFadeOutStart = now;
     }
-    _wasRaining = rainingNow;
 
     if (_rainbowStartMs === 0) return;
-    if (reduceMotion || !_parallaxEnabled) { _rainbowStartMs = 0; return; } // 弱機不畫、清狀態
+    if (reduceMotion || !_parallaxEnabled) { _rainbowStartMs = 0; _rainbowFadeOutStart = 0; return; } // 弱機不畫、清狀態
 
-    const a = rainbowAlpha(now - _rainbowStartMs, RAINBOW_DURATION_MS, RAINBOW_FADE_IN_MS, RAINBOW_FADE_OUT_MS);
-    if (a <= 0) { _rainbowStartMs = 0; return; } // 壽命耗盡：熄滅、釋放狀態
+    const a = rainbowAlphaServer(now, _rainbowStartMs, rainbowActive, _rainbowFadeOutStart, RAINBOW_FADE_IN_MS, RAINBOW_FADE_OUT_MS);
+    if (a <= 0) { _rainbowStartMs = 0; _rainbowFadeOutStart = 0; return; } // 淡盡：熄滅、釋放狀態
 
     // 半透明七色同心弧：圓心落在畫面下方外側 → 弧線拱在上半天邊，像真彩虹橫跨天空。
     const cx = viewW / 2;

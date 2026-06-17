@@ -123,6 +123,7 @@ mod emote_resonance;
 mod player_cheer;
 mod popularity_gathering;
 mod weather;
+mod rainbow;
 mod friends;
 mod party;
 mod sprinkler;

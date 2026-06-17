@@ -813,6 +813,11 @@ pub enum ServerMsg {
         village_treasury: u32,
         /// 天氣狀態（ROADMAP 93）：目前天氣類型與粒子強度。前端據此畫粒子特效。
         weather: WeatherView,
+        /// 雨後彩虹（ROADMAP 361）：伺服器權威的全服共享天象。`active` 時前端畫彩虹弧、
+        /// 顯示「🌈 彩虹祝福」HUD pill；高掛期間全服存活玩家同享溫和緩回血。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 active=false）。
+        #[serde(default)]
+        rainbow: RainbowView,
         /// 世界上所有灑水器（ROADMAP 112）：位置與歸屬。前端在農地上畫小圖示。
         sprinklers: Vec<crate::sprinkler::SprinklerView>,
         /// 居民廣場聚會剩餘秒數（ROADMAP 124）。0 表示無活躍聚會；>0 時全服 EXP +20%。
@@ -1772,6 +1777,16 @@ pub struct WeatherView {
     pub intensity: f32,
 }
 
+/// 雨後彩虹狀態（ROADMAP 361）：伺服器權威的全服共享天象。
+/// 前端據 `active` 決定是否畫彩虹弧、據 `remaining_secs` 顯示「彩虹祝福」HUD pill 倒數。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RainbowView {
+    /// 此刻是否有彩虹高掛（祝福生效中）。
+    pub active: bool,
+    /// 彩虹剩餘秒數（0 = 無彩虹）。
+    pub remaining_secs: u32,
+}
+
 /// 一條全服社群任務的可見狀態（ROADMAP 27）。
 #[derive(Debug, Clone, Serialize)]
 pub struct QuestView {
@@ -2074,6 +2089,7 @@ mod tests {
             village_buff_remaining_secs: 0,
             village_treasury: 0,
             weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
+            rainbow: RainbowView::default(),
             sprinklers: vec![],
             gathering_secs: 0,
             active_help_requests: vec![],
