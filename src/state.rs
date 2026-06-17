@@ -246,6 +246,12 @@ pub struct Player {
     /// 累計煮出的「完美料理」道數（ROADMAP 349）：記憶體前置、不持久化、純成就感計數。
     pub perfect_dishes: u32,
 
+    // ── 汲泉聚精（ROADMAP 350）────────────────────────────────────────────
+    /// 進行中的一趟夜泉乙太汲取（擺盪準星甜蜜區小遊戲）：開始汲取後等準星掃到甜蜜區鎖定。
+    /// 記憶體前置、不入快照（僅 elapsed 隨 PlayerView 廣播以渲染準星）、不持久化、零 migration、
+    /// 重啟清空（沒在汲取＝None）。由 game.rs 每 tick 推進（逾時即中斷）。
+    pub aether_draw: Option<crate::aether_draw::AetherDraw>,
+
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
     /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
@@ -428,6 +434,9 @@ impl Player {
             mining_tremor: self.mining.map(|v| v.tremor().as_str()),
             // ROADMAP 349：開灶冷卻，供前端料理「掌勺」鈕顯示冷卻倒數。
             cook_cooldown: self.cook_cooldown,
+            // ROADMAP 350：進行中夜泉汲取的經過秒數（沒在汲取＝None，略過序列化）；
+            // 前端據此用同一條三角波公式渲染擺盪準星位置。
+            aether_draw_secs: self.aether_draw.map(|d| d.elapsed()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1450,6 +1459,7 @@ mod tests {
             cook_attempt_count: 0,
             cooking: None,
             perfect_dishes: 0,
+            aether_draw: None,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,

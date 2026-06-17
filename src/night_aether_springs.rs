@@ -108,6 +108,19 @@ impl NightAetherSprings {
         None
     }
 
+    /// 唯讀檢查：指定節點目前是否「可採集」（夜間、存在、未採、玩家在 COLLECT_REACH 內）。
+    /// 不改狀態——供 ROADMAP 350 汲取小遊戲在「開始汲取」時驗格而不立即採走（鎖定時才真採）。
+    pub fn can_collect(&self, node_id: u32, px: f32, py: f32) -> bool {
+        if !self.active { return false; }
+        self.nodes.iter().any(|n| {
+            n.id == node_id && !n.collected && {
+                let dx = n.wx - px;
+                let dy = n.wy - py;
+                dx * dx + dy * dy <= COLLECT_REACH * COLLECT_REACH
+            }
+        })
+    }
+
     /// 嘗試採集指定節點。玩家需在 COLLECT_REACH 範圍內。
     /// 回傳 `true` 表示成功採集，`false` 表示失敗（不在範圍/已採集/不存在）。
     pub fn try_collect(&mut self, node_id: u32, px: f32, py: f32) -> bool {
@@ -282,6 +295,21 @@ mod tests {
         s.try_collect(id, wx, wy);
         let result = s.try_collect(id, wx, wy);
         assert!(!result, "同一節點不能重複採集");
+    }
+
+    #[test]
+    fn can_collect_readonly_does_not_mutate() {
+        // can_collect 只驗格、不採走（ROADMAP 350 開始汲取用）。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night);
+        let node = &s.nodes[0];
+        let (wx, wy, id) = (node.wx, node.wy, node.id);
+        assert!(s.can_collect(id, wx + 5.0, wy), "範圍內應可採");
+        assert!(s.can_collect(id, wx + 5.0, wy), "唯讀檢查不應改變狀態，仍可採");
+        assert!(!s.nodes.iter().find(|n| n.id == id).unwrap().collected, "不應被採走");
+        assert!(!s.can_collect(id, wx + 999.0, wy), "超出範圍不可採");
+        assert!(!s.can_collect(99999, wx, wy), "不存在的節點不可採");
     }
 
     #[test]

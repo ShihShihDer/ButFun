@@ -391,6 +391,10 @@ pub enum ClientMsg {
     /// 收尾掌勺（ROADMAP 349）：把玩家憑記憶敲回的步驟次序送出。伺服器以開灶時存下的標準步序評級，
     /// 走既有 `recipe.craft` 扣料產菜、依評級回饋工匠熟練度，回 `CookResult`。沒有進行中的掌勺則靜默忽略。
     SubmitCook { steps: Vec<String> },
+    /// 鎖定汲取（ROADMAP 350 汲泉聚精）：夜泉汲取小遊戲進行中，玩家在準星掃過甜蜜區時送出鎖定。
+    /// 伺服器以汲取當下準星位置判定檔位（峰湧／豐盈／涓滴）給對應乙太、結束這趟、回 `AetherDrawResult`。
+    /// 鎖定時若泉眼已被搶先採走或玩家走離範圍，則空手而回。沒有進行中的汲取則靜默忽略。
+    DrawAether,
     /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
     /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
     RequestStarMap,
@@ -528,8 +532,10 @@ pub enum ClientMsg {
     /// 成功後：節點標為已採集、玩家獲得 StarDust×1。
     #[serde(rename = "collect_dust_node")]
     CollectDustNode { node_id: u32 },
-    /// 採集夜間乙太泉（ROADMAP 162）。玩家必須在 COLLECT_REACH 範圍內且是夜晚。
-    /// 成功後：節點標為已採集、玩家獲得 +8 乙太。
+    /// 走近夜間乙太泉（ROADMAP 162）。玩家必須在 COLLECT_REACH 範圍內且是夜晚。
+    /// ROADMAP 350 起：此訊息不再立即得乙太，而是**開一趟「擺盪準星汲取小遊戲」**——
+    /// 開始汲取後等準星掃到甜蜜區再送 `DrawAether` 鎖定，停得越準汲到越多乙太。
+    /// 不在範圍 / 非夜晚 / 已在汲取則靜默忽略。
     #[serde(rename = "collect_spring_node")]
     CollectSpringNode { node_id: u32 },
     /// 向旅行商人購買（ROADMAP 135）。玩家需在 TRADE_REACH 範圍內、登入、持有足夠乙太。
@@ -1009,6 +1015,20 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 夜泉汲取結果（ROADMAP 350 汲泉聚精）：回應 `DrawAether`，廣播；前端只對 `player_id == 自己` 演出飄字。
+    /// `outcome`："drawn"（汲到乙太、附 `band`+`ether`）／"missed"（泉眼被搶先或走離、空手而回）。
+    /// `band` ＝檔位 trickle/bountiful/surge（僅 drawn）；`ether` ＝這趟汲到的乙太（僅 drawn）。
+    /// `x`/`y` ＝玩家當下座標（飄字定位）。不入快照、不持久化、零 migration。
+    AetherDrawResult {
+        player_id: Uuid,
+        outcome: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        band: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ether: Option<u32>,
+        x: f32,
+        y: f32,
+    },
     /// 開灶步序（ROADMAP 349 照譜烹調）：回應 `StartCook`，廣播（前端只對自己 `player_id` 演出）。
     /// `steps` ＝這趟要照著閃示／敲回的步驟次序（snake_case：heat/add/stir/flip/season）。
     /// 前端先依序閃示（看譜），再讓玩家憑記憶敲回。不入快照、不持久化、零 migration。
@@ -1264,6 +1284,13 @@ pub struct PlayerView {
     /// 開灶冷卻剩餘秒數（0.0 = 可開灶）。前端料理「掌勺」鈕依此顯示冷卻倒數。
     #[serde(default, skip_serializing_if = "is_zero_f32")]
     pub cook_cooldown: f32,
+
+    // ── 汲泉聚精（ROADMAP 350）────────────────────────────────────────────────
+    /// 進行中夜泉乙太汲取的經過秒數；沒在汲取＝None（略過序列化）。
+    /// 前端用同一條三角波公式（`SWEEP_HZ`）渲染玩家頭頂量表上來回擺盪的準星位置，
+    /// 自己與旁觀者都看得到（旁觀者看別人正在汲泉）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aether_draw_secs: Option<f32>,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -1835,6 +1862,7 @@ mod tests {
                 mining_haul: None,
                 mining_tremor: None,
                 cook_cooldown: 0.0,
+                aether_draw_secs: None,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2091,6 +2119,7 @@ mod tests {
             mining_haul: None,
             mining_tremor: None,
             cook_cooldown: 0.0,
+            aether_draw_secs: None,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -2387,7 +2416,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2445,7 +2474,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

@@ -1135,6 +1135,13 @@ pub fn spawn(app: AppState) {
                             fish_escapes.push((p.id, p.x, p.y));
                         }
                     }
+                    // 夜泉汲取推進（ROADMAP 350 汲泉聚精）：advance 累時間、逾時即中斷這趟
+                    // （泉眼留著、可重試）。純函式、零鎖無 IO；準星位置由前端用同一公式渲染。
+                    if let Some(d) = p.aether_draw.as_mut() {
+                        if d.advance(dt) {
+                            p.aether_draw = None;
+                        }
+                    }
                     // 席間舉杯冷卻倒數（ROADMAP 329）。
                     if p.toast_cooldown > 0.0 {
                         p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
