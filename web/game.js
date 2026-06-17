@@ -286,6 +286,28 @@
   // 收到 player_emote 事件時寫入（同一玩家連發會覆蓋上一個），drawPlayerEmotes 每幀
   // 讀取、彈跳浮起後淡出。純前端動畫，不入快照。
   const playerEmotes = new Map();
+  // 探索者路標（ROADMAP 353）：全服當前路標列表，由 ws "wayposts" 整批覆蓋。
+  // 每塊 { id, x, y, owner_name, message_key, remaining_secs }。drawWayposts 每幀渲染、
+  // updateWaypostPanel 列出可立的預設訊息。seenWaypostIds 記已「走近發現」過的 id，避免重複飄字。
+  let wayposts = [];
+  const seenWaypostIds = new Set();
+  // 預設路標訊息（ROADMAP 353）：wire key → 面向玩家顯示句。與後端 `wayposts::PRESET_MESSAGES`
+  // 的 key 一一對應（顯示句以此處為準，集中前端便於 i18n）。新增句子兩邊 key 要同步。
+  const WAYPOST_MESSAGES = [
+    { key: "hello", label: "路過打聲招呼～" },
+    { key: "good_view", label: "此處景色宜人，值得停留" },
+    { key: "watch_out", label: "小心野怪出沒" },
+    { key: "good_fishing", label: "這附近魚很多" },
+    { key: "rich_ore", label: "這裡礦藏不錯" },
+    { key: "rest_here", label: "在這歇口氣吧" },
+    { key: "this_way", label: "好東西在這個方向" },
+    { key: "thanks", label: "謝謝你來到這個世界" },
+  ];
+  // 由 wire key 取顯示句（找不到回 key 本身當保底）。
+  function waypostLabel(key) {
+    const m = WAYPOST_MESSAGES.find((x) => x.key === key);
+    return m ? m.label : key;
+  }
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -1954,6 +1976,7 @@
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateMiningPanel(me, isGuest); // 礦脈深掘面板（ROADMAP 348）
+          updateWaypostPanel(me, isGuest); // 探索者路標面板（ROADMAP 353）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
@@ -2161,6 +2184,17 @@
           startMs: now,
           expireAt: now + (msg.display_secs || 4) * 1000,
         });
+        break;
+      }
+      case "wayposts": {
+        // 探索者路標（ROADMAP 353）：整批覆蓋當前路標列表。過期的會在新列表裡消失。
+        wayposts = Array.isArray(msg.posts) ? msg.posts : [];
+        // 清掉已不存在的 seen id（避免 Set 無限增長；路標量小）。
+        const live = new Set(wayposts.map((w) => w.id));
+        for (const sid of Array.from(seenWaypostIds)) {
+          if (!live.has(sid)) seenWaypostIds.delete(sid);
+        }
+        updateWaypostPanel();
         break;
       }
       case "high_five_match": {
@@ -3797,7 +3831,8 @@
         (e.key === "o" || e.key === "O") ? "dockProcurement" :
         (e.key === "w" || e.key === "W") ? "dockWarehouse" :
         (e.key === "1") ? "dockFarmFair" :
-        (e.key === "2") ? "dockMine" : null;
+        (e.key === "2") ? "dockMine" :
+        (e.key === "3") ? "dockWaypost" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -4775,6 +4810,7 @@
     safeDraw("wildlife", () => drawWildlife(camX, camY)); // 中立野生動物（ROADMAP 140）
     safeDraw("carionOrbs", () => drawCarionOrbs(camX, camY)); // 乙太微粒（ROADMAP 142）
     safeDraw("wanderingMerchant", () => drawWanderingMerchant(camX, camY)); // 旅行商人（135）
+    safeDraw("wayposts", () => drawWayposts(camX, camY)); // 探索者路標（ROADMAP 353）
     safeDraw("npcSpeechBubbles", () => drawNpcSpeechBubbles(camX, camY)); // 對話泡泡（92）
     safeDraw("playerEmotes", () => drawPlayerEmotes(camX, camY)); // 玩家表情動作（338）
     safeDraw("highFives", () => drawHighFives(camX, camY)); // 玩家擊掌特效（339）
@@ -11373,6 +11409,78 @@
       ctx.fillText(e.glyph, ex, ey);
     }
 
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 探索者路標（ROADMAP 353）：把全服路標畫在世界裡——一塊 🪧 立牌，近處再浮一張小紙條
+  // 顯示留言與立牌人。走近沒見過的路標會「發現」一次（飄字＋報讀器播報）。純前端呈現、不入快照。
+  function drawWayposts(camX, camY) {
+    if (!wayposts.length) return;
+    const now = performance.now();
+    const me = myId ? players.get(myId) : null;
+    const DISCOVER_DIST = 140;      // 走多近算「發現」
+    const BUBBLE_DIST = 520;        // 多近才浮出留言紙條（遠處只見立牌，免畫面雜亂）
+    ctx.save();
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    for (const w of wayposts) {
+      const wx = w.x || 0;
+      const wy = w.y || 0;
+      const sx = wx - camX;
+      const sy = wy - camY;
+      // 螢幕外不畫。
+      if (sx < -80 || sx > viewW + 80 || sy < -120 || sy > viewH + 120) continue;
+      // 即將消失（最後 30 秒）漸淡，給「路標會散去」的世界訊號。
+      const rem = typeof w.remaining_secs === "number" ? w.remaining_secs : 999;
+      const alpha = rem < 30 ? Math.max(0.25, rem / 30) : 1.0;
+
+      // 與本地玩家的距離：決定是否浮紙條 + 是否觸發「發現」。
+      let distSq = Infinity;
+      if (me) {
+        const dx = wx - me.x;
+        const dy = wy - me.y;
+        distSq = dx * dx + dy * dy;
+      }
+      // 首次走近 → 發現一次（飄字＋播報），記入 seen 不重複。
+      if (me && distSq <= DISCOVER_DIST * DISCOVER_DIST && !seenWaypostIds.has(w.id)) {
+        seenWaypostIds.add(w.id);
+        const label = waypostLabel(w.message_key);
+        floaters.push({ wx, wy: wy - 30, text: `🪧 ${w.owner_name || "某位旅人"}：${label}`, color: "240,216,160", born: now });
+        announce(`你發現 ${w.owner_name || "某位旅人"} 留下的路標：${label}`);
+      }
+
+      ctx.globalAlpha = alpha;
+      // 立牌本體 🪧（錨在地面）。
+      ctx.font = "24px sans-serif";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.strokeText("🪧", sx, sy - 12);
+      ctx.fillText("🪧", sx, sy - 12);
+
+      // 近處浮一張小紙條：留言 + 立牌人。
+      if (distSq <= BUBBLE_DIST * BUBBLE_DIST) {
+        const label = waypostLabel(w.message_key);
+        const by = "— " + (w.owner_name || "旅人");
+        ctx.font = "12px sans-serif";
+        const w1 = ctx.measureText(label).width;
+        const w2 = ctx.measureText(by).width;
+        const boxW = Math.max(w1, w2) + 16;
+        const boxH = 34;
+        const bx = sx - boxW / 2;
+        const byTop = sy - 12 - 18 - boxH;
+        ctx.fillStyle = `rgba(28,24,16,${0.82 * alpha})`;
+        ctx.strokeStyle = `rgba(201,162,75,${0.9 * alpha})`;
+        ctx.lineWidth = 1;
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, byTop, boxW, boxH, 6); ctx.fill(); ctx.stroke(); }
+        else { ctx.fillRect(bx, byTop, boxW, boxH); ctx.strokeRect(bx, byTop, boxW, boxH); }
+        ctx.fillStyle = `rgba(240,216,160,${alpha})`;
+        ctx.fillText(label, sx, byTop + 11);
+        ctx.fillStyle = `rgba(170,160,140,${alpha})`;
+        ctx.font = "10px sans-serif";
+        ctx.fillText(by, sx, byTop + 24);
+      }
+    }
     ctx.globalAlpha = 1.0;
     ctx.restore();
   }
@@ -18419,6 +18527,63 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:4px;";
     tip.textContent = "在岩地旁開礦脈：越挖越深、礦量越多，但礦脈會在某個說不準的深度崩塌、把整袋礦全埋。看震動警示「見好就收」——撤得越深、礦與探索熟練度回報越高。一輪結束 8 秒冷卻。";
+    body.appendChild(tip);
+  }
+
+  // ── 探索者路標面板（ROADMAP 353）──────────────────────────────────────────
+  // 在自己腳下立一塊留言路標，選一句預設訊息（零自由文字）。下方顯示附近活躍路標數。
+  let lastWaypostSig = null;
+  function updateWaypostPanel(me, isGuestUser) {
+    const body = document.getElementById("waypostBody");
+    if (!body) return;
+    // 附近（800px 內）活躍路標數，給玩家「這附近有人留過話」的線索。
+    let nearbyCount = 0;
+    if (me) {
+      for (const w of wayposts) {
+        const dx = (w.x || 0) - me.x;
+        const dy = (w.y || 0) - me.y;
+        if (dx * dx + dy * dy <= 800 * 800) nearbyCount++;
+      }
+    }
+    // sig：登入狀態 + 全服路標數 + 附近數變了才重建（守 panel-sig 病；面板主體是靜態鈕）。
+    const sig = [isGuestUser, wayposts.length, nearbyCount].join("|");
+    if (sig === lastWaypostSig) return;
+    lastWaypostSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能立路標，把話留給後來的旅人。";
+      body.appendChild(hint);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#ddd;font-size:.85rem;margin-bottom:8px;line-height:1.5;";
+    intro.textContent = "在你站的位置立一塊路標，選一句話留給路過的人。路標會留在原地、一陣子後自然消失。";
+    body.appendChild(intro);
+
+    // 預設訊息按鈕（每顆送 place_waypost）。
+    WAYPOST_MESSAGES.forEach((m) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.style.cssText = "display:block;width:100%;text-align:left;padding:7px 10px;margin-bottom:5px;border:1px solid #c9a24b;border-radius:8px;background:rgba(201,162,75,.10);color:#f0d8a0;cursor:pointer;font-size:.9rem;";
+      btn.textContent = "🪧 " + m.label;
+      btn.addEventListener("click", () => { safeSend({ type: "place_waypost", message_key: m.key }); });
+      body.appendChild(btn);
+    });
+
+    const status = document.createElement("div");
+    status.style.cssText = "color:#9fd0ff;font-size:.78rem;margin-top:6px;";
+    status.textContent = nearbyCount > 0
+      ? `📍 這附近有 ${nearbyCount} 塊路標`
+      : "這附近還沒有人立過路標——當第一個吧。";
+    body.appendChild(status);
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:4px;line-height:1.5;";
+    tip.textContent = "每人最多同時留 3 塊（立第 4 塊會頂掉自己最舊的）。走近別人的路標就會讀到那句話。";
     body.appendChild(tip);
   }
 

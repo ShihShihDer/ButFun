@@ -242,6 +242,11 @@ pub enum ClientMsg {
         #[serde(default)]
         dy: f32,
     },
+    /// 立路標（ROADMAP 353）：玩家在「自己當下的權威座標」立一塊路標，留一句預設訊息給後來的人。
+    /// `message_key` 必須是 `wayposts::PRESET_MESSAGES` 白名單內的 wire key（杜絕自由文字／XSS）。
+    /// 伺服器查白名單、用玩家自己的權威座標放置（防隔空立牌），並全服廣播 `ServerMsg::Wayposts`。
+    /// 未登入 / 未知 key / 超量靜默忽略。
+    PlaceWaypost { message_key: String },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -683,6 +688,23 @@ pub struct SeasonalNodeView {
     pub charges: u8,
 }
 
+/// 一塊路標的快照（ROADMAP 353）。隨 `ServerMsg::Wayposts` 廣播，前端據此渲染與去重。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WaypostView {
+    /// 路標唯一 ID（前端去重、做「首次發現」判定）。
+    pub id: u64,
+    /// 世界座標 X。
+    pub x: f32,
+    /// 世界座標 Y。
+    pub y: f32,
+    /// 立牌者顯示名。
+    pub owner_name: String,
+    /// 訊息 wire key（白名單內；前端對照成顯示句，i18n 友善）。
+    pub message_key: String,
+    /// 剩餘存在秒數（前端可顯示「即將消失」漸淡）。
+    pub remaining_secs: f32,
+}
+
 /// 城鎮入侵警報快照（ROADMAP 158/161）——供前端 HUD 顯示入侵狀態與倒數。
 #[derive(Debug, Clone, Serialize)]
 pub struct InvasionView {
@@ -952,6 +974,11 @@ pub enum ServerMsg {
         size: u32,
         display_secs: u32,
     },
+    /// 路標列表（ROADMAP 353）：全服當前所有探索者路標。
+    /// 何時送：(a) 玩家連線時直送一次（拿到當前世界已有的路標）；(b) 有人立新路標或有路標過期時
+    /// 全服廣播一次。量小（≤24），不入高頻快照、不做 AOI——前端自行依相機可視範圍渲染、依 id 去重。
+    /// 純呈現、不送物品/乙太/戰力，零平衡風險、零持久化。
+    Wayposts { posts: Vec<WaypostView> },
     /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣
     /// 更新（名牌徽記即時刷、不必等下次快照）。`giver_name` = 喝采者；`target_id`/`target_name`

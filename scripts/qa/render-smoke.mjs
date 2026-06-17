@@ -510,6 +510,26 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log(`  ✅ ${sc.name}：乾淨`);
 }
 
+// ── 探索者路標（ROADMAP 353）──
+// 路標走獨立 `wayposts` ServerMsg（非快照）。驗證：收到後 drawWayposts 能渲染「立牌＋近處紙條」
+// 兩條路徑零繪製例外（一塊近處＝會浮紙條＋觸發發現、一塊遠處＝只見立牌、一塊即將消失＝漸淡）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：探索者路標（近處紙條＋遠處立牌＋即將消失，連跑 6 幀）──");
+  const wpSnap = JSON.parse(JSON.stringify(snapshot));
+  lastWS.onmessage({ data: JSON.stringify({ ...wpSnap, type: "snapshot" }) });
+  lastWS.onmessage({ data: JSON.stringify({ type: "wayposts", posts: [
+    { id: 1, x: me0.x + 30, y: me0.y + 10, owner_name: "阿光", message_key: "good_view", remaining_secs: 540 },
+    { id: 2, x: me0.x + 900, y: me0.y, owner_name: "小美", message_key: "watch_out", remaining_secs: 300 },
+    { id: 3, x: me0.x + 80, y: me0.y - 40, owner_name: "旅人", message_key: "bogus_unknown_key", remaining_secs: 12 },
+  ] }) });
+  const r = pump("探索者路標", 6);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 探索者路標：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 探索者路標：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 探索者路標：近處紙條＋遠處立牌＋未知 key 保底＋即將消失漸淡皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {

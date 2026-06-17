@@ -1589,6 +1589,30 @@ pub fn spawn(app: AppState) {
             app.npc_level_greet.write().unwrap().tick(dt);
             // 街坊相認（ROADMAP 331）：推進「玩家×NPC」崗位招呼冷卻倒數（歸零者自動剔除）。
             app.npc_recognition.write().unwrap().tick(dt);
+            // 探索者路標（ROADMAP 353）：推進過期；有路標消失時全服重播一次路標列表（出鎖後送）。
+            {
+                let changed = app.wayposts.write().unwrap().tick(dt);
+                if changed {
+                    let posts: Vec<crate::protocol::WaypostView> = app
+                        .wayposts
+                        .read()
+                        .unwrap()
+                        .posts()
+                        .iter()
+                        .map(|p| crate::protocol::WaypostView {
+                            id: p.id,
+                            x: p.x,
+                            y: p.y,
+                            owner_name: p.owner_name.clone(),
+                            message_key: p.message_key.clone(),
+                            remaining_secs: p.remaining,
+                        })
+                        .collect();
+                    let _ = app
+                        .tx
+                        .send(std::sync::Arc::new(crate::protocol::ServerMsg::Wayposts { posts }));
+                }
+            }
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器；下雨時給 1.5x 加成。

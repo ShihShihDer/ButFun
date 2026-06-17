@@ -407,6 +407,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 探索者路標（ROADMAP 353）：進場後立刻直送一次當前路標列表，讓剛上線的玩家也看得到
+    // 世界裡別人已留下的路標（不必等下一次有人立牌才廣播）。
+    {
+        let msg = build_wayposts_msg(&app);
+        if let Ok(text) = serde_json::to_string(&msg) {
+            let _ = sender.send(Message::Text(text)).await;
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
@@ -625,6 +634,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 擋封包洪流；一趟接物未結束前不重複開新接物另由 game.rs 把關（`pet_fetch.is_none()` 才丟得出）。
     let mut rl_petfetch_win = std::time::Instant::now();
     let mut rl_petfetch_n: u32 = 0;
+    // 立路標限流（ROADMAP 353）：每則立牌走 broadcast 放大給全服，比照 emote／擊掌從嚴
+    // （每秒至多 3 次，超量靜默丟棄）——連線層擋封包洪流，每人持有量另由 wayposts 板上限把關。
+    let mut rl_waypost_win = std::time::Instant::now();
+    let mut rl_waypost_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -845,6 +858,44 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 wy,
                                 display_secs: crate::player_emote::EMOTE_DISPLAY_SECS,
                             }));
+                        }
+                    }
+                }
+                Ok(ClientMsg::PlaceWaypost { message_key }) => {
+                    // 立路標（ROADMAP 353）：玩家在自己當下的權威座標立一塊留言路標。
+                    // 限流（比照 emote：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_waypost_win.elapsed().as_secs() >= 1 {
+                        rl_waypost_win = std::time::Instant::now();
+                        rl_waypost_n = 0;
+                    }
+                    rl_waypost_n += 1;
+                    if rl_waypost_n > 3 {
+                        continue;
+                    }
+                    // 只有登入玩家能立牌（owner_name 才穩定、可被別人認得；訪客名是暫時的）。
+                    // 未登入靜默忽略。
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    // 查白名單：只接受預設訊息 key，杜絕自由文字／XSS。未知 key 靜默忽略。
+                    if !crate::wayposts::is_valid_message_key(&message_key) {
+                        continue;
+                    }
+                    // 讀玩家自己的**權威座標 + 即時名**（防隔空立牌、改名也對）。
+                    let loc = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| (p.name.clone(), p.x, p.y))
+                    };
+                    if let Some((owner_name, x, y)) = loc {
+                        // 放上路標板（與 players 鎖不嵌套：上面已先取完座標放掉 players 讀鎖）。
+                        let placed = {
+                            let mut board = app.wayposts.write().unwrap();
+                            board.place(id, owner_name, x, y, &message_key)
+                        };
+                        // 立牌成功 → 全服廣播最新路標列表（出鎖後送，守 prod-deadlock）。
+                        if placed.is_some() {
+                            let msg = build_wayposts_msg(&app);
+                            let _ = app.tx.send(std::sync::Arc::new(msg));
                         }
                     }
                 }
@@ -6261,6 +6312,27 @@ fn broadcast_party_update(app: &AppState, party_id: Uuid, members: &[Uuid], lead
         }
     }
     let _ = party_id; // 目前僅用 members，保留 party_id 供未來擴充
+}
+
+/// 把當前路標板組成一則 `ServerMsg::Wayposts`（ROADMAP 353）。連線初送與立牌/過期廣播共用。
+fn build_wayposts_msg(app: &AppState) -> ServerMsg {
+    use crate::protocol::WaypostView;
+    let posts: Vec<WaypostView> = app
+        .wayposts
+        .read()
+        .unwrap()
+        .posts()
+        .iter()
+        .map(|p| WaypostView {
+            id: p.id,
+            x: p.x,
+            y: p.y,
+            owner_name: p.owner_name.clone(),
+            message_key: p.message_key.clone(),
+            remaining_secs: p.remaining,
+        })
+        .collect();
+    ServerMsg::Wayposts { posts }
 }
 
 fn build_friend_list_msg(app: &AppState, user_id: Uuid) -> ServerMsg {

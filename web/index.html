@@ -531,6 +531,7 @@
         <button type="button" class="dock-btn" id="dockPet" data-win="winPet" aria-keyshortcuts="P" aria-label="寵物夥伴（P）">🐾</button>
         <button type="button" class="dock-btn" id="dockFish" data-win="winFish" aria-keyshortcuts="F" aria-label="釣魚（F）">🎣</button>
         <button type="button" class="dock-btn" id="dockMine" data-win="winMine" aria-keyshortcuts="2" aria-label="採礦（2）">⛏️</button>
+        <button type="button" class="dock-btn" id="dockWaypost" data-win="winWaypost" aria-keyshortcuts="3" aria-label="立路標（3）">🪧</button>
         <button type="button" class="dock-btn" id="dockRanch" data-win="winRanch" aria-keyshortcuts="N" aria-label="牧場（N）">🐔</button>
         <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-keyshortcuts="T" aria-label="農作（T）">🌾</button>
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-keyshortcuts="X" aria-label="夜採星晶（X）">✨</button>
@@ -669,6 +670,14 @@
         <button type="button" class="win-close" data-close="winMine" aria-label="關閉採礦面板">✕</button>
       </div>
       <div id="mineBody"></div>
+    </div>
+    <!-- 探索者路標面板（ROADMAP 353）：在自己腳下立一塊留言路標，選一句預設訊息給後來的人。 -->
+    <div id="winWaypost" class="hud-window hidden" role="dialog" aria-labelledby="waypostTitle">
+      <div class="win-head">
+        <span class="win-title" id="waypostTitle">🪧 立路標</span>
+        <button type="button" class="win-close" data-close="winWaypost" aria-label="關閉路標面板">✕</button>
+      </div>
+      <div id="waypostBody"></div>
     </div>
     <!-- 觀星連星座面板（ROADMAP 347）：夜裡開星圖，把散落的星點依今夜星座連成線。 -->
     <div id="winStargaze" class="hud-window hidden" role="dialog" aria-labelledby="stargazeTitle">
