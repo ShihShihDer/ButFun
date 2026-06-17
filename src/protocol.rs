@@ -907,6 +907,11 @@ pub enum ServerMsg {
         /// 前端在生態面板顯示金色慶典橫幅（剩餘分鐘 + 乙太獎勵）。
         #[serde(default)]
         eco_festival: Option<crate::eco_festival::EcoFestivalView>,
+        /// 鎮民派系一覽（ROADMAP 355）：七大 NPC 之間「此刻」所有明顯的結盟／敵對配對快照。
+        /// 空陣列＝目前村民相處平和、無明顯派系。前端「鎮民派系」HUD 面板據此顯示，
+        /// 讓玩家隨時看得到村落社會結構的自然湧現（不必剛好在 15 分鐘一次的廣播瞬間在線）。
+        #[serde(default)]
+        town_factions: Vec<FactionStandingView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1729,6 +1734,25 @@ pub struct DayNightView {
     pub lunch_time: bool,
 }
 
+/// 鎮民派系一覽中的一筆配對（ROADMAP 355）：七大 NPC 之間一段明顯的結盟或敵對關係。
+/// 後端只送穩定 id、bond wire key 與雙向好惡值；面向玩家的文案由前端鏡像 id→名稱與 bond→圖示，
+/// 保留 i18n 空間（名稱欄位僅作前端對不到 id 時的後備顯示）。
+#[derive(Debug, Clone, Serialize)]
+pub struct FactionStandingView {
+    /// 配對中次序較前的 NPC id（穩定字串，與 npc_relations 一致）。
+    pub npc_a: String,
+    /// 配對中次序較後的 NPC id。
+    pub npc_b: String,
+    /// `npc_a` 的顯示名（後備用；前端優先以 id 鏡像在地化名稱）。
+    pub npc_a_name: String,
+    /// `npc_b` 的顯示名（後備用）。
+    pub npc_b_name: String,
+    /// 關係類型 wire key：`alliance`（結盟）/ `rivalry`（敵對）。
+    pub bond: String,
+    /// 雙向平均好惡值（0–100）：結盟越高越鐵、敵對越低越僵，前端可畫親疏條。
+    pub affinity: i32,
+}
+
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherView {
@@ -2088,6 +2112,7 @@ mod tests {
             eco_bounty: None,
             ancient_alpha: None,
             eco_festival: None,
+            town_factions: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

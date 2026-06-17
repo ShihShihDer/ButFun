@@ -3492,6 +3492,23 @@ pub fn spawn(app: AppState) {
                         ancient_alpha: app.monster_colonies.read().unwrap().ancient_alpha_view(),
                         // 生態豐收節（ROADMAP 178）：進行中的全城慶典（無則為 None）。
                         eco_festival: app.eco_festival.read().unwrap().view(),
+                        // 鎮民派系一覽（ROADMAP 355）：讀當前 NPC 關係，純算出此刻所有明顯的
+                        // 結盟／敵對配對送前端「鎮民派系」面板。純讀取、確定性、量小（七大 NPC ≤21 對，
+                        // 通常寥寥數筆）；和平相處時為空陣列。
+                        town_factions: {
+                            let rel = app.npc_relations.read().unwrap();
+                            crate::npc_factions::current_standings(&rel)
+                                .into_iter()
+                                .map(|s| crate::protocol::FactionStandingView {
+                                    npc_a: s.npc_a.to_string(),
+                                    npc_b: s.npc_b.to_string(),
+                                    npc_a_name: crate::npc_factions::npc_display_name(s.npc_a).to_string(),
+                                    npc_b_name: crate::npc_factions::npc_display_name(s.npc_b).to_string(),
+                                    bond: s.bond.wire_key().to_string(),
+                                    affinity: s.affinity,
+                                })
+                                .collect()
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

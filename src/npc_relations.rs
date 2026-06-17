@@ -115,6 +115,13 @@ impl NpcRelationsState {
         self.affinities.get(from)?.get(to).copied()
     }
 
+    /// 測試輔助：直接設定一對 NPC 的雙向好惡值（僅供單元測試構造特定關係場景）。
+    #[cfg(test)]
+    pub fn set_pair_for_test(&mut self, a: &str, b: &str, a_to_b: i32, b_to_a: i32) {
+        self.set(a, b, a_to_b);
+        self.set(b, a, b_to_a);
+    }
+
     /// 收集 `major_id` 對其他主要 NPC 的「顯著」關係，供動態八卦話題使用
     /// （ROADMAP 244 街頭攀談 / 255 向大人物搭話共用）。
     ///

@@ -563,6 +563,31 @@ for (const sc of scenarios) {
   else if (!threw && !(r instanceof Error)) console.log("  ✅ 星海寄語：海上數量＋撈到瓶（回贈鈕）＋空海保底＋未知 key 保底＋信箱列出皆乾淨");
 }
 
+// ── 鎮民派系一覽（ROADMAP 355）──
+// town_factions 是 snapshot 內欄位（非獨立 ServerMsg），驗證 updateTownFactionsHud 重建 HUD
+// 不拋例外：結盟＋敵對列出、未知 bond 保底略過、收合徽章路徑，最後切回「無派系（和平）」面板自動隱去。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：鎮民派系（結盟＋敵對＋未知 bond 保底＋和平隱去，連跑 6 幀）──");
+  const fSnap = JSON.parse(JSON.stringify(snapshot));
+  fSnap.town_factions = [
+    { npc_a: "merchant", npc_b: "procurement_npc", npc_a_name: "商人薇拉", npc_b_name: "採購代理人諾亞", bond: "alliance", affinity: 88 },
+    { npc_a: "bounty_npc", npc_b: "workshop_npc", npc_a_name: "獵手蘭卡", npc_b_name: "工匠鐸恩", bond: "rivalry", affinity: 15 },
+    { npc_a: "village_chief", npc_b: "farm_fair_npc", npc_a_name: "凱爾長老", npc_b_name: "評審卡特", bond: "bogus_unknown_bond", affinity: 50 },
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...fSnap, type: "snapshot" }) });
+  const r = pump("鎮民派系", 6);
+  // 再餵一份「無派系」snapshot，驗證面板自動隱去路徑不拋例外。
+  const peaceSnap = JSON.parse(JSON.stringify(snapshot));
+  peaceSnap.town_factions = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...peaceSnap, type: "snapshot" }) });
+  const r2 = pump("鎮民派系和平", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 鎮民派系：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 鎮民派系：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 鎮民派系：結盟＋敵對列出＋未知 bond 保底＋和平自動隱去皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {
