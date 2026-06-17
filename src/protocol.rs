@@ -384,6 +384,13 @@ pub enum ClientMsg {
     /// 收礦撤出（ROADMAP 348）：把目前礦脈累積的礦袋落袋為安（外加探索熟練度），結束這條礦脈、
     /// 起算冷卻。沒有進行中的礦脈則靜默忽略。
     MineHaul,
+    /// 開灶掌勺（ROADMAP 349 照譜烹調）：對某道可烹菜餚（8 道食物配方之一）開一趟順序記憶小遊戲。
+    /// 伺服器驗未倒地＋冷卻到期＋是可烹菜＋當下夠料 → 產該趟步序、起冷卻，隨 `CookStart` 送回前端閃示。
+    /// 非可烹 / 不夠料 / 冷卻中 / 倒地中靜默忽略。
+    StartCook { recipe_id: String },
+    /// 收尾掌勺（ROADMAP 349）：把玩家憑記憶敲回的步驟次序送出。伺服器以開灶時存下的標準步序評級，
+    /// 走既有 `recipe.craft` 扣料產菜、依評級回饋工匠熟練度，回 `CookResult`。沒有進行中的掌勺則靜默忽略。
+    SubmitCook { steps: Vec<String> },
     /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
     /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
     RequestStarMap,
@@ -1002,6 +1009,27 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 開灶步序（ROADMAP 349 照譜烹調）：回應 `StartCook`，廣播（前端只對自己 `player_id` 演出）。
+    /// `steps` ＝這趟要照著閃示／敲回的步驟次序（snake_case：heat/add/stir/flip/season）。
+    /// 前端先依序閃示（看譜），再讓玩家憑記憶敲回。不入快照、不持久化、零 migration。
+    CookStart {
+        player_id: Uuid,
+        recipe_id: String,
+        steps: Vec<String>,
+    },
+    /// 掌勺結果（ROADMAP 349）：回應 `SubmitCook`，廣播；前端只對自己 `player_id` 演出飄字。
+    /// `grade` ＝評級 botched/common/tasty/perfect；`dish` ＝煮出的料理 snake_case（產出成功才有）；
+    /// `perfect_total` ＝累計完美料理道數。`x`/`y` ＝玩家當下座標（飄字定位）。
+    /// 不入快照、不持久化、零 migration。
+    CookResult {
+        player_id: Uuid,
+        grade: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dish: Option<String>,
+        perfect_total: u32,
+        x: f32,
+        y: f32,
+    },
     /// 今夜星圖（ROADMAP 347 觀星連星座）：回應 `RequestStarMap`，僅單播給請求者本人。
     /// `available=false` 表示非夜間（看不見星空）、其餘欄位為佔位。`traced` 表示本玩家是否已連過今夜這座。
     StarMap {
@@ -1231,6 +1259,11 @@ pub struct PlayerView {
     /// 前端據此顯示「細微落石／劇烈搖晃」危險提示（崩塌確切層數不洩漏）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mining_tremor: Option<&'static str>,
+
+    // ── 掌勺照譜烹調（ROADMAP 349）────────────────────────────────────────────
+    /// 開灶冷卻剩餘秒數（0.0 = 可開灶）。前端料理「掌勺」鈕依此顯示冷卻倒數。
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub cook_cooldown: f32,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -1801,6 +1834,7 @@ mod tests {
                 mining_depth: None,
                 mining_haul: None,
                 mining_tremor: None,
+                cook_cooldown: 0.0,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2056,6 +2090,7 @@ mod tests {
             mining_depth: None,
             mining_haul: None,
             mining_tremor: None,
+            cook_cooldown: 0.0,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -2234,6 +2269,65 @@ mod tests {
         assert!(matches!(msg, ClientMsg::LeaveParty));
     }
 
+    /// 前端送的 start_cook / submit_cook 要能被解析（ROADMAP 349 掌勺 wire contract）。
+    #[test]
+    fn cook_messages_parse_correctly() {
+        let start: ClientMsg =
+            serde_json::from_str(r#"{"type":"start_cook","recipe_id":"grilled_fish"}"#).unwrap();
+        match start {
+            ClientMsg::StartCook { recipe_id } => assert_eq!(recipe_id, "grilled_fish"),
+            _ => panic!("start_cook 應解析成 StartCook"),
+        }
+        let submit: ClientMsg =
+            serde_json::from_str(r#"{"type":"submit_cook","steps":["heat","add","stir"]}"#).unwrap();
+        match submit {
+            ClientMsg::SubmitCook { steps } => assert_eq!(steps, vec!["heat", "add", "stir"]),
+            _ => panic!("submit_cook 應解析成 SubmitCook"),
+        }
+    }
+
+    /// CookStart / CookResult 序列化欄位 snake_case 穩定（ROADMAP 349 wire contract）。
+    #[test]
+    fn cook_server_msgs_serialize_snake_case() {
+        let start = ServerMsg::CookStart {
+            player_id: Uuid::nil(),
+            recipe_id: "deep_broth".into(),
+            steps: vec!["heat".into(), "season".into()],
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&start).unwrap()).unwrap();
+        assert_eq!(v["type"], "cook_start");
+        assert_eq!(v["recipe_id"], "deep_broth");
+        assert_eq!(v["steps"][0], "heat");
+
+        let result = ServerMsg::CookResult {
+            player_id: Uuid::nil(),
+            grade: "perfect".into(),
+            dish: Some("deep_broth".into()),
+            perfect_total: 3,
+            x: 1.0,
+            y: 2.0,
+        };
+        let v2: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(v2["type"], "cook_result");
+        assert_eq!(v2["grade"], "perfect");
+        assert_eq!(v2["dish"], "deep_broth");
+        assert_eq!(v2["perfect_total"], 3);
+        // dish 為 None 時略過序列化（向後相容）。
+        let no_dish = ServerMsg::CookResult {
+            player_id: Uuid::nil(),
+            grade: "botched".into(),
+            dish: None,
+            perfect_total: 0,
+            x: 0.0,
+            y: 0.0,
+        };
+        let v3: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&no_dish).unwrap()).unwrap();
+        assert!(v3.get("dish").is_none(), "dish=None 應略過序列化");
+    }
+
     #[test]
     fn decline_party_message_parses_correctly() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"decline_party"}"#).unwrap();
@@ -2293,7 +2387,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2351,7 +2445,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

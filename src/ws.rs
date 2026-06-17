@@ -148,6 +148,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            cook_cooldown: 0.0,
+            cook_attempt_count: 0,
+            cooking: None,
+            perfect_dishes: 0,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -241,6 +245,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            cook_cooldown: 0.0,
+            cook_attempt_count: 0,
+            cooking: None,
+            perfect_dishes: 0,
             traced_constellations: 0,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -3280,6 +3288,124 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         haul: Some(ore),
                                         depth: Some(depth),
                                         tremor: None,
+                                        x: p.x,
+                                        y: p.y,
+                                    })
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(msg) = outcome_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+
+                // ── 開灶掌勺（ROADMAP 349 照譜烹調）─────────────────────────────────────
+                Ok(ClientMsg::StartCook { recipe_id }) => {
+                    // 對可烹菜餚開一趟順序記憶小遊戲：驗未倒地＋冷卻到期＋是可烹菜＋繁榮/等級達標＋
+                    // 當下夠料 → 產步序、存 session、起冷卻，CookStart 送回前端閃示。
+                    // 繁榮門檻在取 players 鎖前先算完（residents read 鎖為臨時、語句結束即釋放），
+                    // 開灶只開一把 players 寫鎖、純記憶體；廣播出鎖後送（守 prod-deadlock 鐵律）。
+                    use crate::cooking_steps::{is_cookable, recipe_steps, CookSession, COOK_COOLDOWN_SECS};
+                    let start_msg = match crate::crafting::recipe_by_id(&recipe_id) {
+                        Some(recipe) if is_cookable(recipe.id) => {
+                            // 繁榮 / 等級門檻（8 道料理目前皆無門檻，仍比照 Craft 一致檢查以防未來加門檻）。
+                            let min_pros = crate::crafting::recipe_min_prosperity(recipe.id);
+                            let prosperity_ok = min_pros == 0
+                                || app.residents.read().unwrap().prosperity_level() >= min_pros;
+                            let min_lv = crate::crafting::recipe_min_level(recipe.id);
+                            let mut players = app.players.write().unwrap();
+                            match players.get_mut(&id) {
+                                Some(p)
+                                    if !p.vitals.is_downed()
+                                        && p.cook_cooldown <= 0.0
+                                        && prosperity_ok
+                                        && (min_lv == 0 || p.level() >= min_lv)
+                                        && recipe.can_craft(&p.inventory) =>
+                                {
+                                    // 種子：player id 低 64 位 XOR cook_attempt_count（每趟步序不同）。
+                                    let seed = {
+                                        let id_bytes = p.id.as_u128();
+                                        ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+                                            ^ p.cook_attempt_count
+                                    };
+                                    p.cook_attempt_count = p.cook_attempt_count.wrapping_add(1);
+                                    let target = recipe_steps(recipe.id, seed);
+                                    let steps: Vec<String> =
+                                        target.iter().map(|s| s.as_str().to_string()).collect();
+                                    // 開灶即起冷卻（擋連開刷灶）；收尾成敗都不重置冷卻。
+                                    p.cook_cooldown = COOK_COOLDOWN_SECS;
+                                    p.cooking = Some(CookSession { recipe_id: recipe.id, target });
+                                    tracing::debug!(player = %p.name, recipe = recipe.id, "開灶掌勺");
+                                    Some(ServerMsg::CookStart {
+                                        player_id: id,
+                                        recipe_id: recipe.id.to_string(),
+                                        steps,
+                                    })
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(msg) = start_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+
+                // ── 收尾掌勺（ROADMAP 349）──────────────────────────────────────────────
+                Ok(ClientMsg::SubmitCook { steps }) => {
+                    // 以開灶時存下的標準步序評級，走既有 recipe.craft 扣料產菜、依評級回饋工匠熟練度。
+                    // 沒在煮則靜默忽略。同一把 players 寫鎖、純記憶體；廣播出鎖後送（守 prod-deadlock）。
+                    use crate::cooking_steps::{score_cook, CookStep};
+                    // 解析玩家敲回的步驟（我方前端只送 heat/add/stir/flip/season；未知字串被丟掉＝少敲＝扣分，
+                    // 對作弊客戶端不利、對正常玩家無影響）。
+                    let input: Vec<CookStep> =
+                        steps.iter().filter_map(|s| CookStep::from_str(s)).collect();
+                    let outcome_msg = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            match p.cooking.take() {
+                                // 沒在煮：靜默忽略，不廣播。
+                                None => None,
+                                Some(session) => {
+                                    let grade = score_cook(&session.target, &input);
+                                    // 走既有配方扣料產菜（與一鍵合成同一條產出路徑，不另開經濟）。
+                                    let dish = match crate::crafting::recipe_by_id(session.recipe_id)
+                                    {
+                                        Some(recipe) => {
+                                            let discount =
+                                                crate::class::crafting_reduction(&p.masteries);
+                                            if recipe.craft_with_discount(&mut p.inventory, discount)
+                                            {
+                                                // 評級回饋工匠熟練度（比照 346 釣魚回饋農夫熟練度）。
+                                                p.masteries.gain_artisan(grade.artisan_xp());
+                                                if grade.is_perfect() {
+                                                    p.perfect_dishes =
+                                                        p.perfect_dishes.saturating_add(1);
+                                                }
+                                                tracing::info!(
+                                                    player = %p.name, recipe = session.recipe_id,
+                                                    grade = grade.as_str(), "掌勺出菜"
+                                                );
+                                                // 料理產物 → snake_case 線格式（serde 約定，鏡像 fish_key）。
+                                                serde_json::to_value(recipe.output).ok().and_then(
+                                                    |v| v.as_str().map(|s| s.to_string()),
+                                                )
+                                            } else {
+                                                // 開灶後料被別處用掉了：產不出菜（罕見）。
+                                                None
+                                            }
+                                        }
+                                        None => None,
+                                    };
+                                    Some(ServerMsg::CookResult {
+                                        player_id: id,
+                                        grade: grade.as_str().to_string(),
+                                        dish,
+                                        perfect_total: p.perfect_dishes,
                                         x: p.x,
                                         y: p.y,
                                     })
