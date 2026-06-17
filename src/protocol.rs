@@ -457,6 +457,11 @@ pub enum ClientMsg {
     /// 需未倒地、距離 ≤ FEED_REACH、背包有野花種子 → 成功，該物種態度升高。
     #[serde(rename = "feed_wildlife")]
     FeedWildlife { wildlife_id: u32 },
+    /// 驅趕掠食者（ROADMAP 357）：驅趕一隻**正在追獵**的掠食者（狼／狐），救下牠盯上的獵物。
+    /// 需未倒地、距離 ≤ SCARE_PREDATOR_REACH、目標為掠食者且處 Stalking/Hunting → 成功；
+    /// 掠食者背向玩家驚逃，被救獵物親近度升高（接 205 馴養線）。
+    #[serde(rename = "scare_predator")]
+    ScarePredator { wildlife_id: u32 },
     /// 挑戰巢穴 Alpha（ROADMAP 168）：對指定 Alpha 發動一次攻擊。
     /// 需未倒地、距離 ≤ ALPHA_ATTACK_REACH、alpha_id 存在 → 成功；Alpha 死亡觸發獎勵廣播。
     #[serde(rename = "attack_alpha")]

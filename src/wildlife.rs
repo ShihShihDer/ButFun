@@ -310,6 +310,21 @@ const CURIOUS_COMFORT_DIST: f32 = 110.0;
 /// 好奇趨近的速度（像素/秒）——比馴養跟隨(60)更慢、更猶豫，走走停停地試探。
 const CURIOUS_SPEED: f32 = 38.0;
 
+// ─── ROADMAP 357：野外守護者（驅趕掠食者、救下獵物）───────────────────────────
+// 野外食物鏈裡掠食者（狼／狐）會 Stalking→Hunting 撲咬獵物；獵物群至多只能圍攻(Mobbing)
+// 「閒晃」的掠食者，對「正在追獵」的束手無策。本切片把那道缺口交給玩家：走近一隻**正在追獵**
+// 的掠食者、按「驅趕」把牠背向你嚇逃(flee_from)、放棄狩獵，救下牠盯上的那隻獵物；被救的獵物
+// 對你湧起一次性的「救命恩情」（親近度提升、接上 205 餵食馴養線——救得夠多次也能馴養）。
+// 野外生態第一次「因玩家的選擇而不同」：你可以當獵人(attack)，也可以當守護者(scare)。
+// 零 LLM、零持久化、純啟發式。
+/// 玩家驅趕掠食者的作用距離（像素）——刻意大於攻擊野生動物(64)、略小於餵食(100)：
+/// 救援要趕在獵物被撲倒前出手，給玩家一點提前量，但仍須真的靠到掠食者身邊。
+pub const SCARE_PREDATOR_REACH: f32 = 90.0;
+/// 救下一隻獵物，牠對玩家湧起的親近度增量——刻意低於餵食一次(0.25)：救命是偶發的一次性恩情、
+/// 餵食是日常維繫，兩者都通往馴養(0.8)，但驅趕不可刷（掠食者一驅即背身逃竄、不再追同一隻，
+/// 同一波追獵救一次就結束）。
+const RESCUE_FAMILIARITY_GAIN: f32 = 0.2;
+
 // ─── ROADMAP 206：群聚結伴 ───────────────────────────────────────────────────
 // 同種野生動物（獵物）漫遊時，選下一個閒晃目標會朝「附近同種夥伴的平均位置」
 // 拉一把，於是鬆散成群移動：草原上的野鹿三兩成群、野鳥成簇飄移，
@@ -3900,6 +3915,17 @@ impl Wildlife {
     }
 }
 
+/// ROADMAP 357：一次成功「驅趕掠食者」的結果——供 ws.rs 廣播救援見聞。
+/// `prey_kind` 為被救獵物種類（追獵途中已死／找不到則 `None`，僅驅趕掠食者本身）；
+/// `newly_tamed` 表示這次救援恰好讓該獵物跨過馴養門檻（接上 205）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScareRescue {
+    pub predator_kind: WildlifeKind,
+    pub prey_kind: Option<WildlifeKind>,
+    pub prey_familiarity: f32,
+    pub newly_tamed: bool,
+}
+
 // ─── 管理器 ──────────────────────────────────────────────────────────────────
 
 pub struct WildlifeManager {
@@ -4129,6 +4155,53 @@ impl WildlifeManager {
         a.familiarity = (a.familiarity + FEED_FAMILIARITY_GAIN).min(MAX_FAMILIARITY);
         let now_tamed = a.familiarity >= TAME_FAMILIARITY;
         Some((a.kind, a.familiarity, now_tamed && !was_tamed))
+    }
+
+    /// ROADMAP 357：玩家驅趕「正在追獵」的掠食者，救下牠盯上的那隻獵物。
+    /// 只有掠食者（trophic = Predator）、且正處 Stalking/Hunting、且在 `reach` 內才可被驅趕
+    ///（閒晃的掠食者本就由獵物群自行圍攻 Mobbing 攆走，不需玩家）。驅趕成功該掠食者背向玩家
+    /// 驚逃(flee_from)、放棄狩獵；被牠鎖定的獵物（若還活著）親近度提升 `RESCUE_FAMILIARITY_GAIN`
+    ///（接上 205 餵食馴養線）。回傳 `Some(ScareRescue)`；非掠食者／未在追獵／超距離／找不到則 `None`。
+    /// 距離由本函式檢查、玩家座標由呼叫端（ws.rs）以權威座標傳入。
+    pub fn scare_predator(
+        &mut self,
+        predator_id: u32,
+        px: f32,
+        py: f32,
+        reach: f32,
+    ) -> Option<ScareRescue> {
+        let reach2 = reach * reach;
+        // 第一步：定位正在追獵、且在作用距離內的掠食者，取其獵物目標後讓牠背身驚逃。
+        let (predator_kind, target_id) = {
+            let a = self.animals.iter_mut().find(|a| {
+                a.id == predator_id
+                    && a.alive
+                    && (a.x - px).powi(2) + (a.y - py).powi(2) <= reach2
+            })?;
+            if a.kind.trophic_level() != TrophicLevel::Predator {
+                return None; // 只有掠食者可被「驅趕」（獵物受驚自己會逃，不需玩家驅趕）
+            }
+            let target_id = match a.state {
+                WildlifeState::Stalking { target_id, .. }
+                | WildlifeState::Hunting { target_id, .. } => target_id,
+                _ => return None, // 不在追獵（閒晃／休息）——交給獵物群圍攻，玩家無從「救援」
+            };
+            let kind = a.kind;
+            a.flee_from(px, py); // 背向玩家驚逃、放棄狩獵
+            (kind, target_id)
+        };
+        // 第二步：被救的獵物（若還活著）對玩家湧起救命恩情——接上 205 餵食馴養線。
+        let mut prey_kind = None;
+        let mut prey_familiarity = 0.0;
+        let mut newly_tamed = false;
+        if let Some(prey) = self.animals.iter_mut().find(|a| a.id == target_id && a.alive) {
+            let was_tamed = prey.familiarity >= TAME_FAMILIARITY;
+            prey.familiarity = (prey.familiarity + RESCUE_FAMILIARITY_GAIN).min(MAX_FAMILIARITY);
+            prey_kind = Some(prey.kind);
+            prey_familiarity = prey.familiarity;
+            newly_tamed = prey.familiarity >= TAME_FAMILIARITY && !was_tamed;
+        }
+        Some(ScareRescue { predator_kind, prey_kind, prey_familiarity, newly_tamed })
     }
 
     /// ROADMAP 165：回傳所有存活野生動物的快照（ID, 種類, x, y）。
@@ -8329,6 +8402,92 @@ mod tests {
         mgr.tick(0.1, &[(5040.0, 5000.0)], &att, &[(EnemyKind::ScrapDrone, 5050.0, 5000.0)], false);
         let a = mgr.animals.iter().find(|a| a.id == id).unwrap();
         assert!(matches!(a.state, WildlifeState::Fleeing { .. }), "馴養個體仍應逃離掠食怪物，實際: {:?}", a.state);
+    }
+
+    // ─── ROADMAP 357：野外守護者（驅趕掠食者） 測試 ─────────────────────────
+    /// 安置一隻掠食者(狼)正在追獵指定獵物，回傳 (狼 id, 獵物 id)。狼與獵物同位置便於測距。
+    fn place_hunting_wolf(mgr: &mut WildlifeManager, x: f32, y: f32, prey_familiarity: f32) -> (u32, u32) {
+        let prey_id = place_test_animal(mgr, WildlifeKind::WildDeer, x, y, prey_familiarity);
+        let wolf_id = place_test_animal(mgr, WildlifeKind::WildWolf, x, y, 0.0);
+        let wolf = mgr.animals.iter_mut().find(|a| a.id == wolf_id).unwrap();
+        wolf.state = WildlifeState::Hunting { target_id: prey_id, hunt_timer: 10.0 };
+        (wolf_id, prey_id)
+    }
+
+    #[test]
+    fn scare_hunting_predator_flees_and_rescues_prey() {
+        let mut mgr = WildlifeManager::new();
+        let (wolf_id, prey_id) = place_hunting_wolf(&mut mgr, 5000.0, 5000.0, 0.0);
+        let r = mgr.scare_predator(wolf_id, 5010.0, 5000.0, SCARE_PREDATOR_REACH)
+            .expect("近距離驅趕追獵中的狼應成功");
+        assert_eq!(r.predator_kind, WildlifeKind::WildWolf);
+        assert_eq!(r.prey_kind, Some(WildlifeKind::WildDeer));
+        assert!(r.prey_familiarity >= RESCUE_FAMILIARITY_GAIN, "被救獵物應獲得救命恩情親近度");
+        // 掠食者放棄狩獵、背向玩家驚逃。
+        let wolf = mgr.animals.iter().find(|a| a.id == wolf_id).unwrap();
+        assert!(matches!(wolf.state, WildlifeState::Fleeing { .. }), "被驅趕的掠食者應驚逃，實際: {:?}", wolf.state);
+        // 被救獵物親近度確實上升。
+        let prey = mgr.animals.iter().find(|a| a.id == prey_id).unwrap();
+        assert!((prey.familiarity - RESCUE_FAMILIARITY_GAIN).abs() < 1e-5, "親近度應 +{}", RESCUE_FAMILIARITY_GAIN);
+    }
+
+    #[test]
+    fn scare_non_predator_returns_none() {
+        let mut mgr = WildlifeManager::new();
+        let deer_id = place_test_animal(&mut mgr, WildlifeKind::WildDeer, 5000.0, 5000.0, 0.0);
+        assert!(mgr.scare_predator(deer_id, 5005.0, 5000.0, SCARE_PREDATOR_REACH).is_none(),
+            "獵物不是掠食者，不可被『驅趕』");
+    }
+
+    #[test]
+    fn scare_idle_predator_returns_none() {
+        let mut mgr = WildlifeManager::new();
+        // 狼在休息（非追獵）——交給獵物群圍攻，玩家無從『救援』。
+        let wolf_id = place_test_animal(&mut mgr, WildlifeKind::WildWolf, 5000.0, 5000.0, 0.0);
+        assert!(mgr.scare_predator(wolf_id, 5005.0, 5000.0, SCARE_PREDATOR_REACH).is_none(),
+            "未在追獵的掠食者不可被玩家驅趕");
+    }
+
+    #[test]
+    fn scare_out_of_range_returns_none() {
+        let mut mgr = WildlifeManager::new();
+        let (wolf_id, _) = place_hunting_wolf(&mut mgr, 5000.0, 5000.0, 0.0);
+        // 玩家遠在作用距離外。
+        assert!(mgr.scare_predator(wolf_id, 5000.0 + SCARE_PREDATOR_REACH + 50.0, 5000.0, SCARE_PREDATOR_REACH).is_none(),
+            "超出作用距離不可驅趕");
+    }
+
+    #[test]
+    fn scare_unknown_id_returns_none() {
+        let mut mgr = WildlifeManager::new();
+        assert!(mgr.scare_predator(999_999, 0.0, 0.0, SCARE_PREDATOR_REACH).is_none(),
+            "不存在的 ID 應回傳 None");
+    }
+
+    #[test]
+    fn rescue_can_tame_prey_exactly_once() {
+        let mut mgr = WildlifeManager::new();
+        // 獵物親近度恰好差一次救援就跨過馴養門檻。
+        let start = TAME_FAMILIARITY - RESCUE_FAMILIARITY_GAIN + 0.01;
+        let (wolf_id, prey_id) = place_hunting_wolf(&mut mgr, 5000.0, 5000.0, start);
+        let r = mgr.scare_predator(wolf_id, 5010.0, 5000.0, SCARE_PREDATOR_REACH).unwrap();
+        assert!(r.newly_tamed, "這次救援應恰好讓獵物跨過馴養門檻");
+        let prey = mgr.animals.iter().find(|a| a.id == prey_id).unwrap();
+        assert!(prey.is_tamed(), "被救獵物此時應已馴養");
+    }
+
+    #[test]
+    fn scare_predator_with_dead_prey_still_scares() {
+        let mut mgr = WildlifeManager::new();
+        let (wolf_id, prey_id) = place_hunting_wolf(&mut mgr, 5000.0, 5000.0, 0.0);
+        // 獵物在玩家趕到前已倒下（被撲咬）——驅趕仍把掠食者嚇逃，只是沒有獵物可救。
+        mgr.animals.iter_mut().find(|a| a.id == prey_id).unwrap().alive = false;
+        let r = mgr.scare_predator(wolf_id, 5010.0, 5000.0, SCARE_PREDATOR_REACH)
+            .expect("即使獵物已死，驅趕掠食者本身仍應成立");
+        assert_eq!(r.prey_kind, None, "獵物已死，無獵物可救");
+        assert!(!r.newly_tamed);
+        let wolf = mgr.animals.iter().find(|a| a.id == wolf_id).unwrap();
+        assert!(matches!(wolf.state, WildlifeState::Fleeing { .. }), "掠食者仍應驚逃");
     }
 
     #[test]

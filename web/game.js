@@ -1225,6 +1225,49 @@
   // 席間舉杯按鈕（ROADMAP 329）：午休聚食時段，玩家走到鎮中廣場餐桌旁時顯示浮動按鈕，
   // 按下後鄰近就座的 NPC 會轉頭回敬一句（NpcSpeech 泡泡）——玩家第一次能加入城鎮社交。
   // 鎮中廣場座標與半徑與後端 npc_schedule::PLAZA_POS / lunch_chatter::LUNCH_TOAST_REACH 對齊。
+  // 驅趕掠食者按鈕（ROADMAP 357）：附近有一隻「正在追獵」的掠食者（狼／狐）時顯示浮動按鈕，
+  // 按下後驅趕牠、救下牠盯上的獵物。只有掠食者會進 hunting/stalking 狀態（獵物從不追獵），
+  // 故只需判狀態、不必另查種類。作用距離與後端 wildlife::SCARE_PREDATOR_REACH(90) 對齊。
+  const SCARE_REACH_PX = 90;
+  function isHuntingPredator(w) {
+    return w && w.alive !== false && (w.state === "hunting" || w.state === "stalking");
+  }
+  function updateScarePredatorBtn() {
+    let btn = document.getElementById("hudScarePredator");
+    const me = myId ? players.get(myId) : null;
+    const nearest = me && wildlifeList.find(w =>
+      isHuntingPredator(w)
+      && (w.x - me.x) ** 2 + (w.y - me.y) ** 2 <= SCARE_REACH_PX ** 2
+    );
+    if (!nearest) {
+      if (btn) btn.style.display = "none";
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "hudScarePredator";
+      btn.style.cssText = [
+        "position:fixed", "bottom:96px", "right:140px",
+        "background:rgba(80,50,40,0.82)", "border:1px solid #d98",
+        "border-radius:10px", "color:#ffd0a0",
+        "font-size:.8rem", "font-family:monospace",
+        "padding:4px 12px", "z-index:1001", "cursor:pointer",
+      ].join(";");
+      document.body.appendChild(btn);
+    }
+    btn.style.display = "block";
+    btn.textContent = `🛡️ 驅趕 ${nearest.name}`;
+    btn.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "scare_predator", wildlife_id: nearest.id }));
+        // 即時手感回饋：飄字＋報讀器（成敗的權威結果由伺服器的「🛡️ 世界」頻道廣播確認）。
+        const m = players.get(myId);
+        if (m) floaters.push({ wx: m.x, wy: m.y - 34, text: "🛡️ 驅趕！", color: "255,208,160", born: performance.now() });
+        announce(`你驅趕了${nearest.name}`);
+      }
+    };
+  }
+
   const PLAZA_X = 2400, PLAZA_Y = 2260;
   const LUNCH_TOAST_REACH_PX = 140;
   function updateLunchToastBtn() {
@@ -5074,6 +5117,7 @@
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
+      updateScarePredatorBtn();             // 驅趕正在追獵的掠食者按鈕（ROADMAP 357）
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
 
