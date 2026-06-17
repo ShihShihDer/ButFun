@@ -1110,6 +1110,11 @@ pub struct AppState {
     /// 天氣系統（ROADMAP 93）：目前天氣類型與粒子強度，每 8 分鐘輪換一次，切換時廣播聊天公告。
     /// 對應生態域採集時給 +1 加成；記憶體模式，重啟從晴天開始（天氣不需持久化）。
     pub weather: Arc<RwLock<crate::weather::WeatherState>>,
+    /// 雨後彩虹（ROADMAP 361）：草原細雨停下、天還亮著的瞬間架起的全服共享天象。
+    /// 彩虹高掛期間，全服存活玩家每隔數秒同享一次溫和的「🌈 彩虹祝福」緩回血（療癒向，
+    /// 非採集節點）。伺服器權威、全服同步，前端據此畫彩虹弧並顯示祝福 HUD pill。
+    /// 純記憶體模式，重啟清零（天象不需持久化）。
+    pub rainbow: Arc<RwLock<crate::rainbow::RainbowState>>,
     /// 每條線上連線的直達單播通道（ROADMAP 95 私聊密語）：player_id → tx_direct。
     /// 連線建立時插入、離線時移除；讓密語可直達目標而不廣播全服。
     pub whisper_senders: Arc<RwLock<HashMap<Uuid, tokio::sync::mpsc::Sender<String>>>>,
@@ -1343,6 +1348,7 @@ impl AppState {
             npc_expedition_boost: Arc::new(RwLock::new(crate::npc_expedition_boost::NpcExpeditionBoostState::new())),
             npc_workshop_boost: Arc::new(RwLock::new(crate::npc_workshop_boost::NpcWorkshopBoostState::new())),
             weather: Arc::new(RwLock::new(crate::weather::WeatherState::new())),
+            rainbow: Arc::new(RwLock::new(crate::rainbow::RainbowState::new())),
             whisper_senders: Arc::new(RwLock::new(HashMap::new())),
             friends,
             parties: crate::party::PartyStore::default(),
