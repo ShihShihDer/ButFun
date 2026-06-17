@@ -150,6 +150,9 @@ pub fn spawn(app: AppState) {
             if is_night && !prev_is_night {
                 // 剛進入夜間：生成本夜礦脈。
                 app.star_crystals.write().unwrap().spawn_for_night();
+                // 觀星連星座（ROADMAP 347）：夜數 +1，讓「今夜星座」逐夜輪替（lock-free 原子）。
+                app.night_index
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             } else if !is_night && prev_is_night {
                 // 剛退出夜間：清除所有礦脈。
                 app.star_crystals.write().unwrap().clear();

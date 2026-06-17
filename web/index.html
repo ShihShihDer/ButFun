@@ -541,6 +541,7 @@
         <button type="button" class="dock-btn" id="dockCodex" data-win="winCodex" aria-label="生態圖鑑">📕</button>
         <button type="button" class="dock-btn" id="dockAtlas" data-win="winAtlas" aria-label="探索圖鑑">🗺️</button>
         <button type="button" class="dock-btn" id="dockSky" data-win="winSky" aria-label="天象圖鑑">🌌</button>
+        <button type="button" class="dock-btn" id="dockStargaze" data-win="winStargaze" aria-label="觀星連星座">🔭</button>
         <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-keyshortcuts="G" aria-label="公會（G）">⚜️</button>
         <button type="button" class="dock-btn" id="dockFriend" data-win="winFriend" aria-label="好友清單">👥</button>
         <button type="button" class="dock-btn" id="dockParty" data-win="winParty" aria-label="隊伍">⚔️</button>
@@ -656,6 +657,14 @@
         <button type="button" class="win-close" data-close="winFish" aria-label="關閉釣魚面板">✕</button>
       </div>
       <div id="fishBody"></div>
+    </div>
+    <!-- 觀星連星座面板（ROADMAP 347）：夜裡開星圖，把散落的星點依今夜星座連成線。 -->
+    <div id="winStargaze" class="hud-window hidden" role="dialog" aria-labelledby="stargazeTitle">
+      <div class="win-head">
+        <span class="win-title" id="stargazeTitle">🔭 觀星</span>
+        <button type="button" class="win-close" data-close="winStargaze" aria-label="關閉觀星面板">✕</button>
+      </div>
+      <div id="stargazeBody"></div>
     </div>
     <!-- 牧場面板（ROADMAP 48）：農田地塊養雞產蛋，農夫熟練度第三活動路線。 -->
     <div id="winRanch" class="hud-window hidden" role="dialog" aria-labelledby="ranchTitle">

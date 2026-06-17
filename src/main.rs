@@ -63,6 +63,7 @@ mod pet_follow;
 mod pet_play;
 mod fishing;
 mod fishing_bite;
+mod constellation;
 mod field_guide;
 mod terrain_atlas;
 mod sky_codex;

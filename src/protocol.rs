@@ -376,6 +376,13 @@ pub enum ClientMsg {
     /// 收竿（ROADMAP 346）：拋竿後在魚咬鉤的反應窗口內送出即釣到魚（反應越快魚越好）；
     /// 魚還沒咬就收會嚇跑魚、空手而回。沒有進行中的釣魚則靜默忽略。
     Reel,
+    /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
+    /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
+    RequestStarMap,
+    /// 連星座（ROADMAP 347）：玩家把今夜星座的星點兩兩連起來、送出整串邊（星點索引對）。
+    /// 伺服器以**伺服器重算的今夜星座**為準驗證（前端送什麼星座都不算數，防作弊）；
+    /// 連對且首次即記入星座錄＋給一小筆乙太與探索熟練度。非夜間 / 連錯靜默回 `ConstellationResult`。
+    TraceConstellation { edges: Vec<(u8, u8)> },
     /// 購入雞（ROADMAP 48）：在自己的農田地塊花乙太購入一隻雞。
     /// `plot_id`：要購雞的農田地塊編號（必須是本人擁有的 Farm 類型地塊）。
     /// 乙太不足（BUY_CHICKEN_COST=15）/ 非農田 / 非本人地塊 / 達 MAX_CHICKENS 靜默忽略。
@@ -966,6 +973,39 @@ pub enum ServerMsg {
         quality: Option<String>,
         x: f32,
         y: f32,
+    },
+    /// 今夜星圖（ROADMAP 347 觀星連星座）：回應 `RequestStarMap`，僅單播給請求者本人。
+    /// `available=false` 表示非夜間（看不見星空）、其餘欄位為佔位。`traced` 表示本玩家是否已連過今夜這座。
+    StarMap {
+        /// 是否看得見星空（夜間才 true）。
+        available: bool,
+        /// 今夜星座的穩定 wire key（available=false 時為空字串）。
+        key: String,
+        /// 今夜星座顯示名。
+        name: String,
+        /// 今夜星座 emoji。
+        emoji: String,
+        /// 星點座標（正規化到 0..1），索引即星的編號（連線時前端送這些索引對）。
+        stars: Vec<(f32, f32)>,
+        /// 本玩家是否已把今夜這座連入星座錄（已連過則仍可連、但不再給獎）。
+        traced: bool,
+        /// 已連入星座錄的總數 / 星座目錄總數（面板顯示「N / M」進度）。
+        total: u32,
+        catalog_total: u32,
+    },
+    /// 連星座結果（ROADMAP 347）：回應 `TraceConstellation`，僅單播給請求者本人。
+    /// `ok=true` 連對（`reward_ether>0` 表首次入錄領獎；`=0` 表先前已連過、只是再連一次）；
+    /// `ok=false` 連錯（圖形不符）。
+    ConstellationResult {
+        ok: bool,
+        /// 連對時為今夜星座顯示名 / emoji，連錯時為今夜星座（供前端提示「再看看星圖」）。
+        name: String,
+        emoji: String,
+        /// 首次入錄的乙太獎勵（0＝先前已連過或連錯）。
+        reward_ether: u32,
+        /// 已連入星座錄的總數 / 目錄總數。
+        total: u32,
+        catalog_total: u32,
     },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
