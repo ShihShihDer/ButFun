@@ -530,6 +530,39 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 探索者路標：近處紙條＋遠處立牌＋未知 key 保底＋即將消失漸淡皆乾淨");
 }
 
+// ── 星海寄語 / 漂流瓶（ROADMAP 354）──
+// 漂流瓶是純面板互動（無世界座標渲染），驗證三條 ServerMsg（海上數量／撈瓶結果／回贈信箱）
+// 進來時 message handler ＋ updateBottlePanel 重建 DOM 不拋例外（含撈到瓶顯示回贈鈕、空海保底、
+// 未知 key label 保底、信箱列出），且 render 迴圈照樣乾淨。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：星海寄語 / 漂流瓶（海上數量＋撈到瓶＋空海＋回贈信箱，連跑 6 幀）──");
+  const bSnap = JSON.parse(JSON.stringify(snapshot));
+  lastWS.onmessage({ data: JSON.stringify({ ...bSnap, type: "snapshot" }) });
+  let threw = null;
+  try {
+    // 海上數量。
+    lastWS.onmessage({ data: JSON.stringify({ type: "bottle_sea_count", count: 7 }) });
+    // 撈到一只瓶（合法 key → 應出現回贈鈕）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "bottle_drawn", from_name: "遠方旅人", message_key: "keep_going" }) });
+    // 撈到未知 key（label 保底回原字串、不拋）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "bottle_drawn", from_name: "旅人", message_key: "bogus_unknown_key" }) });
+    // 空海。
+    lastWS.onmessage({ data: JSON.stringify({ type: "bottle_drawn", from_name: null, message_key: null }) });
+    // 回贈信箱（含一筆缺名、一筆未知 key 的保底）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "bottle_inbox", replies: [
+      { from_name: "小美", message_key: "smile" },
+      { from_name: null, message_key: "bogus_unknown_key" },
+    ] }) });
+  } catch (e) { threw = e; }
+  if (threw) { failed = true; console.error(`  ❌ 星海寄語：message handler 拋例外：${threw && threw.message}`); }
+  const r = pump("星海寄語", 6);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 星海寄語：未捕捉例外"); }
+  const newCaught2 = caughtRenderErrors.slice(before);
+  if (newCaught2.length) { failed = true; console.error(`  ❌ 星海寄語：safeRender 攔下 ${newCaught2.length} 個繪製例外（底層真 bug）`); }
+  else if (!threw && !(r instanceof Error)) console.log("  ✅ 星海寄語：海上數量＋撈到瓶（回贈鈕）＋空海保底＋未知 key 保底＋信箱列出皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {

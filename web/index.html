@@ -532,6 +532,7 @@
         <button type="button" class="dock-btn" id="dockFish" data-win="winFish" aria-keyshortcuts="F" aria-label="釣魚（F）">🎣</button>
         <button type="button" class="dock-btn" id="dockMine" data-win="winMine" aria-keyshortcuts="2" aria-label="採礦（2）">⛏️</button>
         <button type="button" class="dock-btn" id="dockWaypost" data-win="winWaypost" aria-keyshortcuts="3" aria-label="立路標（3）">🪧</button>
+        <button type="button" class="dock-btn" id="dockBottle" data-win="winBottle" aria-keyshortcuts="4" aria-label="星海寄語（4）">🍾</button>
         <button type="button" class="dock-btn" id="dockRanch" data-win="winRanch" aria-keyshortcuts="N" aria-label="牧場（N）">🐔</button>
         <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-keyshortcuts="T" aria-label="農作（T）">🌾</button>
         <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-keyshortcuts="X" aria-label="夜採星晶（X）">✨</button>
@@ -678,6 +679,14 @@
         <button type="button" class="win-close" data-close="winWaypost" aria-label="關閉路標面板">✕</button>
       </div>
       <div id="waypostBody"></div>
+    </div>
+    <!-- 星海寄語 / 漂流瓶面板（ROADMAP 354）：拋一句話給陌生旅人、撈一只瓶讀別人的話、回贈一句。 -->
+    <div id="winBottle" class="hud-window hidden" role="dialog" aria-labelledby="bottleTitle">
+      <div class="win-head">
+        <span class="win-title" id="bottleTitle">🍾 星海寄語</span>
+        <button type="button" class="win-close" data-close="winBottle" aria-label="關閉星海寄語面板">✕</button>
+      </div>
+      <div id="bottleBody"></div>
     </div>
     <!-- 觀星連星座面板（ROADMAP 347）：夜裡開星圖，把散落的星點依今夜星座連成線。 -->
     <div id="winStargaze" class="hud-window hidden" role="dialog" aria-labelledby="stargazeTitle">

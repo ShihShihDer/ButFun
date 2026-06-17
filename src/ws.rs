@@ -416,6 +416,33 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 星海寄語 / 漂流瓶（ROADMAP 354）：進場後直送一次「海上漂著幾只瓶」，並領取離線期間
+    // 累積在信箱裡的回贈（領取即從伺服器信箱清掉＝已送達）。登入玩家 id 跨重連穩定，回贈找得回來；
+    // 訪客 id 為臨時、信箱必空，drain 無害。
+    {
+        let (count, replies) = {
+            let mut sea = app.bottles.write().unwrap();
+            (sea.drifting_count() as u32, sea.take_inbox(id))
+        };
+        if let Ok(text) = serde_json::to_string(&ServerMsg::BottleSeaCount { count }) {
+            let _ = sender.send(Message::Text(text)).await;
+        }
+        if !replies.is_empty() {
+            let inbox_msg = ServerMsg::BottleInbox {
+                replies: replies
+                    .into_iter()
+                    .map(|r| crate::protocol::BottleReplyView {
+                        from_name: r.from_name,
+                        message_key: r.message_key,
+                    })
+                    .collect(),
+            };
+            if let Ok(text) = serde_json::to_string(&inbox_msg) {
+                let _ = sender.send(Message::Text(text)).await;
+            }
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
@@ -638,6 +665,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // （每秒至多 3 次，超量靜默丟棄）——連線層擋封包洪流，每人持有量另由 wayposts 板上限把關。
     let mut rl_waypost_win = std::time::Instant::now();
     let mut rl_waypost_n: u32 = 0;
+    // 漂流瓶限流（ROADMAP 354）：拋瓶/撈瓶會放大成全服數量廣播、回贈會單播給人，
+    // 比照 emote／路標從嚴（拋撈回三者共用一個窗，每秒至多 3 次，超量靜默丟棄）——
+    // 連線層擋封包洪流，每人持有量／信箱量另由 bottle_drift 上限把關。
+    let mut rl_bottle_win = std::time::Instant::now();
+    let mut rl_bottle_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -897,6 +929,103 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let msg = build_wayposts_msg(&app);
                             let _ = app.tx.send(std::sync::Arc::new(msg));
                         }
+                    }
+                }
+                Ok(ClientMsg::CastBottle { message_key }) => {
+                    // 拋漂流瓶（ROADMAP 354）：把一句預設訊息封進瓶裡拋向星海。
+                    if rl_bottle_win.elapsed().as_secs() >= 1 {
+                        rl_bottle_win = std::time::Instant::now();
+                        rl_bottle_n = 0;
+                    }
+                    rl_bottle_n += 1;
+                    if rl_bottle_n > 3 {
+                        continue;
+                    }
+                    // 只有登入玩家能拋瓶（author_name 才穩定、信箱跨重連找得回來）。未登入靜默忽略。
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    // 查白名單：只接受預設訊息 key，杜絕自由文字／XSS。未知 key 靜默忽略。
+                    if !crate::bottle_drift::is_valid_message_key(&message_key) {
+                        continue;
+                    }
+                    // 讀玩家自己的即時名（改名也對），與 players 鎖不嵌套。
+                    let name = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| p.name.clone())
+                    };
+                    if let Some(name) = name {
+                        let cast = {
+                            let mut sea = app.bottles.write().unwrap();
+                            sea.cast(id, name, &message_key)
+                        };
+                        // 拋成功 → 海上數量變動，全服廣播最新數量（出鎖後送，守 prod-deadlock）。
+                        if cast.is_some() {
+                            broadcast_bottle_sea_count(&app);
+                        }
+                    }
+                }
+                Ok(ClientMsg::DrawBottle) => {
+                    // 撈漂流瓶（ROADMAP 354）：從星海撈起最舊的、非自己拋的瓶。
+                    if rl_bottle_win.elapsed().as_secs() >= 1 {
+                        rl_bottle_win = std::time::Instant::now();
+                        rl_bottle_n = 0;
+                    }
+                    rl_bottle_n += 1;
+                    if rl_bottle_n > 3 {
+                        continue;
+                    }
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    let drawn = {
+                        let mut sea = app.bottles.write().unwrap();
+                        sea.draw_for(id)
+                    };
+                    let msg = match &drawn {
+                        Some(b) => ServerMsg::BottleDrawn {
+                            from_name: Some(b.author_name.clone()),
+                            message_key: Some(b.message_key.clone()),
+                        },
+                        None => ServerMsg::BottleDrawn { from_name: None, message_key: None },
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                    // 撈走一只 → 海上數量變動，全服廣播。
+                    if drawn.is_some() {
+                        broadcast_bottle_sea_count(&app);
+                    }
+                }
+                Ok(ClientMsg::ReplyBottle { message_key }) => {
+                    // 回贈一句（ROADMAP 354）：對剛撈到的那只瓶的作者回贈，投進對方信箱。
+                    if rl_bottle_win.elapsed().as_secs() >= 1 {
+                        rl_bottle_win = std::time::Instant::now();
+                        rl_bottle_n = 0;
+                    }
+                    rl_bottle_n += 1;
+                    if rl_bottle_n > 3 {
+                        continue;
+                    }
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    if !crate::bottle_drift::is_valid_message_key(&message_key) {
+                        continue;
+                    }
+                    let name = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| p.name.clone())
+                    };
+                    let Some(name) = name else { continue };
+                    let routed = {
+                        let mut sea = app.bottles.write().unwrap();
+                        sea.reply(id, name, &message_key)
+                    };
+                    // 回贈成功路由 → 若原作者在線即把他的信箱整批送過去（含這封、並從伺服器清掉）；
+                    // 離線就留在信箱等他下次連線領取（出鎖後送，守 prod-deadlock）。
+                    if let Some((author_id, _)) = routed {
+                        deliver_bottle_inbox(&app, author_id);
                     }
                 }
                 Ok(ClientMsg::HighFive) => {
@@ -6333,6 +6462,38 @@ fn build_wayposts_msg(app: &AppState) -> ServerMsg {
         })
         .collect();
     ServerMsg::Wayposts { posts }
+}
+
+/// 廣播一次「海上漂著幾只瓶」給全服（ROADMAP 354）。拋瓶／撈瓶／沉沒導致數量變動時呼叫。
+/// 先讀完數字、出鎖後才送（守 prod-deadlock：不在持有 bottles 鎖時對 tx 送）。
+fn broadcast_bottle_sea_count(app: &AppState) {
+    let count = app.bottles.read().unwrap().drifting_count() as u32;
+    let _ = app.tx.send(std::sync::Arc::new(ServerMsg::BottleSeaCount { count }));
+}
+
+/// 把某玩家信箱裡的回贈整批送給他（ROADMAP 354）——僅在他在線（有單播通道）時送，
+/// 送出即從伺服器信箱清掉（已送達）。離線就不取走、保留在信箱，等他下次連線初送時領取
+/// （避免取走又送不出去而遺失）。
+fn deliver_bottle_inbox(app: &AppState, target_id: Uuid) {
+    // 先確認在線（有單播通道）才取走信箱。
+    let target_tx = app.whisper_senders.read().unwrap().get(&target_id).cloned();
+    let Some(tx) = target_tx else { return };
+    let replies = { app.bottles.write().unwrap().take_inbox(target_id) };
+    if replies.is_empty() {
+        return;
+    }
+    let msg = ServerMsg::BottleInbox {
+        replies: replies
+            .into_iter()
+            .map(|r| crate::protocol::BottleReplyView {
+                from_name: r.from_name,
+                message_key: r.message_key,
+            })
+            .collect(),
+    };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        let _ = tx.try_send(json);
+    }
 }
 
 fn build_friend_list_msg(app: &AppState, user_id: Uuid) -> ServerMsg {

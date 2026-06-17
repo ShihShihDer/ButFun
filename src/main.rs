@@ -16,6 +16,7 @@ mod meteor_shower;
 mod night_aether_springs;
 mod wandering_merchant;
 mod wayposts;
+mod bottle_drift;
 mod connections;
 mod equipment;
 mod refinement;
