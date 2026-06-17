@@ -8,6 +8,7 @@
 use crate::resident_npc::ResidentPersona;
 use crate::daynight::Phase;
 use crate::weather::WeatherType;
+use crate::season::Season;
 
 /// 居民思想泡泡 + 對話所需的世界上下文。
 #[derive(Debug, Clone)]
@@ -15,6 +16,33 @@ pub struct ResidentContext {
     pub phase: Phase,
     pub weather: WeatherType,
 }
+
+/// 玩家攀談時，居民話語所反映的「此刻城鎮」上下文（ROADMAP 360）。
+///
+/// 與 `ResidentContext`（只供思想泡泡，僅看時段／天氣）刻意分開：攀談是玩家**主動**
+/// 觸發的互動，理應讓居民把當下整個世界（季節／天氣／繁榮／生態警戒）都納進嘴邊——
+/// 讓滿城路人從「千篇一律的罐頭」變成「活在當下世界裡的人」。純資料、零 LLM。
+#[derive(Debug, Clone, Copy)]
+pub struct TownTalkContext {
+    /// 目前日夜時段。
+    pub phase: Phase,
+    /// 目前天氣。
+    pub weather: WeatherType,
+    /// 目前季節。
+    pub season: Season,
+    /// 城鎮繁榮等級（沿用 `ResidentManager::prosperity_level`）。
+    pub prosperity_level: u8,
+    /// 是否正逢生態警戒（生態壓力過高、怪物逼近城鎮）。
+    pub eco_alarmed: bool,
+}
+
+/// 生態壓力達此值（0～100）即視為「生態警戒」，居民攀談時會流露不安。
+/// 刻意對齊 ROADMAP 172 清剿委託的發布門檻（≥60），讓「居民開始擔心」與
+/// 「全服清剿委託發布」是同一道生態紅線、世界感受一致。
+pub const ECO_ALARM_PRESSURE: f32 = 60.0;
+
+/// 繁榮等級達此值即視為「興旺」，居民攀談時偶爾流露對城鎮的自豪。
+pub const PROSPERITY_PROUD_LEVEL: u8 = 3;
 
 // ── 思想泡泡模板（短句，顯示於 NpcSpeech 泡泡 5 秒）────────────────────────────
 
@@ -418,14 +446,136 @@ pub fn get_hero_gratitude(resident_name: &str, hero_name: &str, seed: usize) -> 
         .replace("{player}", hero_name)
 }
 
-/// 取得居民對玩家搭話的回應文字。
-pub fn get_chat(persona: ResidentPersona, seed: usize) -> &'static str {
-    let pool: &[&str] = match persona {
+/// persona 本色的搭話池（不分世界情境的基底）。
+fn persona_chat(persona: ResidentPersona) -> &'static [&'static str] {
+    match persona {
         ResidentPersona::MarketBrowser => MARKET_CHAT,
         ResidentPersona::FarmWorker    => FARM_CHAT,
         ResidentPersona::TownSquare    => SQUARE_CHAT,
         ResidentPersona::Wanderer      => WANDER_CHAT,
-    };
+    }
+}
+
+// ── 此刻城鎮搭話池（ROADMAP 360）─────────────────────────────────────────────
+// 全城共感、不分 persona：季節／天氣／生態警戒／繁榮是「整座城鎮共同的當下」，
+// 由誰來搭話都會聊到。第一人稱口語，沿用 NpcReply/NpcSpeech 泡泡層渲染。
+// 面向玩家字串，將來在地化時集中替換。
+
+/// 生態警戒：怪物逼近、生態壓力高漲時，居民流露不安（壓過一切閒聊，這是當下最要緊的事）。
+static ECO_ALARM_CHAT: &[&str] = &[
+    "你也感覺到了吧？城外那股不安的氣息……最近怪物多得嚇人。",
+    "聽說生態亂了套，掠食者都往城邊靠了，出門可得當心。",
+    "蘭卡正忙著張羅清剿的事呢，這陣子真不太平。",
+    "夜裡都不大敢往城外走了，怪物的動靜越來越大。",
+    "你是冒險者吧？要是能幫忙壓一壓城外那些怪物，全城都會謝你的。",
+];
+
+/// 雨天（草原細雨）。
+static RAIN_CHAT: &[&str] = &[
+    "這雨下得正好，田裡的作物都樂壞了吧。",
+    "下雨天嘛，慢慢走、別滑著了。",
+    "我躲在屋簷下跟你聊兩句，雨一停就接著忙。",
+];
+
+/// 沙塵 / 晶塵 / 海霧等惡劣天氣（非晴非雨）：眯眼、掩面、行色匆匆。
+static HARSH_WEATHER_CHAT: &[&str] = &[
+    "這天氣真折騰人，眯著眼都快看不清路了。",
+    "風沙這麼大，咱們長話短說吧，回頭天晴了再好好聊。",
+    "這種天最好待在屋裡，你還在外頭跑，辛苦啦。",
+];
+
+/// 夜晚 / 黃昏：燈火、歸途、夜談。
+static NIGHT_CHAT: &[&str] = &[
+    "這麼晚還在外頭啊？小心腳下，早點回去歇著。",
+    "夜裡的城鎮安靜得很，跟你說兩句話倒也愜意。",
+    "燈一盞盞亮起來了，我也該往家走了。",
+];
+
+/// 春季氛圍。
+static SPRING_CHAT: &[&str] = &[
+    "春天來了，到處都冒出新芽，看著就有精神。",
+    "這個時節最適合下種了，農夫們都忙開了呢。",
+    "春風一吹，整座城鎮都活了過來似的。",
+];
+
+/// 夏季氛圍。
+static SUMMER_CHAT: &[&str] = &[
+    "這大熱天的，記得多喝口水啊。",
+    "夏天日頭毒，我都挑樹蔭底下走。",
+    "天熱歸熱，作物倒是長得飛快。",
+];
+
+/// 秋季氛圍。
+static AUTUMN_CHAT: &[&str] = &[
+    "秋收的時節到了，倉裡的乙太總算寬裕些了。",
+    "你看這滿城的金黃，秋天真是最美的時候。",
+    "天涼了，添件衣裳吧，別著了風。",
+];
+
+/// 冬季氛圍。
+static WINTER_CHAT: &[&str] = &[
+    "這天寒地凍的，你還在外頭跑，真不容易。",
+    "冬天田裡歇著了，大夥兒就圍著爐火聊天打發日子。",
+    "下回見著我，記得我說過——冬天要把自己裹暖和了。",
+];
+
+/// 城鎮興旺時的自豪。
+static PROSPERITY_PROUD_CHAT: &[&str] = &[
+    "你瞧這城鎮多熱鬧！這些年總算興旺起來了。",
+    "人氣越來越旺，新面孔也越來越多，住在這兒真好。",
+    "大夥兒齊心，這座城鎮一天比一天有模有樣了。",
+];
+
+/// 季節對應的氛圍搭話池。
+fn season_chat(season: Season) -> &'static [&'static str] {
+    match season {
+        Season::Spring => SPRING_CHAT,
+        Season::Summer => SUMMER_CHAT,
+        Season::Autumn => AUTUMN_CHAT,
+        Season::Winter => WINTER_CHAT,
+    }
+}
+
+/// 非晴朗天氣對應的搭話池；晴天回 `None`（交由季節／繁榮／persona 接手）。
+fn weather_chat(weather: WeatherType) -> Option<&'static [&'static str]> {
+    match weather {
+        WeatherType::Clear => None,
+        WeatherType::GrasslandRain => Some(RAIN_CHAT),
+        // 沙塵 / 晶塵 / 海霧皆屬「惡劣天氣」，共用一組掩面匆匆的話。
+        _ => Some(HARSH_WEATHER_CHAT),
+    }
+}
+
+/// 取得居民對玩家搭話的回應文字（ROADMAP 360：反映此刻城鎮）。
+///
+/// 確定性依 `seed` 取模選句。挑句優先序＝「居民當下最掛心的事」：
+/// 生態警戒（怪物逼近）＞ 惡劣天氣／雨 ＞ 入夜 ＞ 晴朗白天時，季節氛圍與 persona 本色
+/// 交替（並在城鎮興旺時偶爾流露自豪）。如此季節／天氣／生態／繁榮每一條世界線都會在
+/// 居民嘴邊現身，而 persona 本色（既有 MARKET/FARM/SQUARE/WANDER_CHAT）仍保留約半數的
+/// 晴日攀談，不被淹沒。純函式、零 LLM、確定可測。
+pub fn get_chat(persona: ResidentPersona, ctx: &TownTalkContext, seed: usize) -> &'static str {
+    // 1. 生態警戒壓過一切——怪物逼近時，沒人有心情閒聊天氣。
+    if ctx.eco_alarmed {
+        return ECO_ALARM_CHAT[seed % ECO_ALARM_CHAT.len()];
+    }
+    // 2. 惡劣天氣／雨——最直接的當下體感。
+    if let Some(pool) = weather_chat(ctx.weather) {
+        return pool[seed % pool.len()];
+    }
+    // 3. 入夜（夜／黃昏）——歸途與燈火。
+    if matches!(ctx.phase, Phase::Night | Phase::Dusk) {
+        return NIGHT_CHAT[seed % NIGHT_CHAT.len()];
+    }
+    // 4. 晴朗白天：城鎮興旺時偶爾自豪一句（約 1/4）。
+    if ctx.prosperity_level >= PROSPERITY_PROUD_LEVEL && seed % 4 == 0 {
+        return PROSPERITY_PROUD_CHAT[seed % PROSPERITY_PROUD_CHAT.len()];
+    }
+    // 5. 其餘晴日：季節氛圍與 persona 本色交替（各約半數），兩種味道都嚐得到。
+    if seed % 2 == 0 {
+        let pool = season_chat(ctx.season);
+        return pool[seed % pool.len()];
+    }
+    let pool = persona_chat(persona);
     pool[seed % pool.len()]
 }
 
@@ -758,17 +908,120 @@ mod tests {
         assert!(!t.is_empty());
     }
 
+    fn talk_clear_day() -> TownTalkContext {
+        TownTalkContext {
+            phase: Phase::Day,
+            weather: WeatherType::Clear,
+            season: Season::Spring,
+            prosperity_level: 0,
+            eco_alarmed: false,
+        }
+    }
+
     #[test]
     fn chat_returns_nonempty_for_all_personas() {
+        let ctx = talk_clear_day();
         for (persona, seed) in [
             (ResidentPersona::MarketBrowser, 0usize),
             (ResidentPersona::FarmWorker, 1),
             (ResidentPersona::TownSquare, 2),
             (ResidentPersona::Wanderer, 3),
         ] {
-            let r = get_chat(persona, seed);
+            let r = get_chat(persona, &ctx, seed);
             assert!(!r.is_empty(), "persona {:?} chat empty", persona);
         }
+    }
+
+    #[test]
+    fn chat_eco_alarm_overrides_everything() {
+        // 生態警戒時，不論 persona／季節／天氣／時段，一律回不安的警戒語。
+        let ctx = TownTalkContext {
+            phase: Phase::Day,
+            weather: WeatherType::GrasslandRain, // 連雨天也被警戒壓過
+            season: Season::Summer,
+            prosperity_level: 9,
+            eco_alarmed: true,
+        };
+        for persona in [
+            ResidentPersona::MarketBrowser,
+            ResidentPersona::FarmWorker,
+            ResidentPersona::TownSquare,
+            ResidentPersona::Wanderer,
+        ] {
+            for seed in 0..ECO_ALARM_CHAT.len() + 3 {
+                let r = get_chat(persona, &ctx, seed);
+                assert!(ECO_ALARM_CHAT.contains(&r), "eco 警戒應回警戒語，got: {r}");
+            }
+        }
+    }
+
+    #[test]
+    fn chat_rain_uses_rain_pool() {
+        let ctx = TownTalkContext { weather: WeatherType::GrasslandRain, ..talk_clear_day() };
+        for seed in 0..6 {
+            let r = get_chat(ResidentPersona::FarmWorker, &ctx, seed);
+            assert!(RAIN_CHAT.contains(&r), "雨天應回雨天語，got: {r}");
+        }
+    }
+
+    #[test]
+    fn chat_harsh_weather_uses_harsh_pool() {
+        // 沙塵 / 晶塵 / 海霧皆走惡劣天氣池。
+        for w in [
+            WeatherType::DesertSandstorm,
+            WeatherType::RockyCrystalDust,
+            WeatherType::WaterSeaMist,
+        ] {
+            let ctx = TownTalkContext { weather: w, ..talk_clear_day() };
+            let r = get_chat(ResidentPersona::Wanderer, &ctx, 1);
+            assert!(HARSH_WEATHER_CHAT.contains(&r), "{w:?} 應回惡劣天氣語，got: {r}");
+        }
+    }
+
+    #[test]
+    fn chat_night_uses_night_pool() {
+        // 晴朗夜／黃昏皆回夜談語。
+        for phase in [Phase::Night, Phase::Dusk] {
+            let ctx = TownTalkContext { phase, ..talk_clear_day() };
+            let r = get_chat(ResidentPersona::TownSquare, &ctx, 2);
+            assert!(NIGHT_CHAT.contains(&r), "{phase:?} 應回夜談語，got: {r}");
+        }
+    }
+
+    #[test]
+    fn chat_clear_day_surfaces_season_or_persona() {
+        // 晴朗白天、無警戒、繁榮普通：seed 偶數→季節氛圍、奇數→persona 本色，兩種都嚐得到。
+        let ctx = talk_clear_day(); // Spring
+        let even = get_chat(ResidentPersona::MarketBrowser, &ctx, 0);
+        assert!(SPRING_CHAT.contains(&even), "偶數 seed 晴日應回季節語，got: {even}");
+        let odd = get_chat(ResidentPersona::MarketBrowser, &ctx, 1);
+        assert!(MARKET_CHAT.contains(&odd), "奇數 seed 晴日應回 persona 本色，got: {odd}");
+    }
+
+    #[test]
+    fn chat_all_seasons_have_lines() {
+        for season in [Season::Spring, Season::Summer, Season::Autumn, Season::Winter] {
+            let ctx = TownTalkContext { season, ..talk_clear_day() };
+            // 偶數 seed 走季節池。
+            let r = get_chat(ResidentPersona::Wanderer, &ctx, 0);
+            assert!(season_chat(season).contains(&r), "{season:?} 季節語缺失，got: {r}");
+        }
+    }
+
+    #[test]
+    fn chat_prosperity_proud_appears_when_thriving() {
+        // 興旺城鎮、晴朗白天、seed % 4 == 0 → 自豪語。
+        let ctx = TownTalkContext { prosperity_level: PROSPERITY_PROUD_LEVEL, ..talk_clear_day() };
+        let r = get_chat(ResidentPersona::TownSquare, &ctx, 0);
+        assert!(PROSPERITY_PROUD_CHAT.contains(&r), "興旺時 seed%4==0 應回自豪語，got: {r}");
+    }
+
+    #[test]
+    fn chat_is_deterministic() {
+        let ctx = talk_clear_day();
+        let a = get_chat(ResidentPersona::FarmWorker, &ctx, 7);
+        let b = get_chat(ResidentPersona::FarmWorker, &ctx, 7);
+        assert_eq!(a, b, "相同輸入應回相同句（確定性）");
     }
 
     #[test]
@@ -780,8 +1033,18 @@ mod tests {
 
     #[test]
     fn chat_seed_wraps_around() {
-        let r = get_chat(ResidentPersona::MarketBrowser, 9999);
-        assert!(!r.is_empty());
+        // 各條世界線（警戒／天氣／夜／晴日）大 seed 取模皆不 panic、必非空。
+        let bases = [
+            talk_clear_day(),
+            TownTalkContext { eco_alarmed: true, ..talk_clear_day() },
+            TownTalkContext { weather: WeatherType::DesertSandstorm, ..talk_clear_day() },
+            TownTalkContext { phase: Phase::Night, ..talk_clear_day() },
+            TownTalkContext { prosperity_level: 9, ..talk_clear_day() },
+        ];
+        for ctx in bases {
+            let r = get_chat(ResidentPersona::MarketBrowser, &ctx, 9999);
+            assert!(!r.is_empty());
+        }
     }
 
     #[test]
