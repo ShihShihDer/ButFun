@@ -185,6 +185,23 @@ if (lastWS.onopen) lastWS.onopen({});
 if (lastWS.onmessage) lastWS.onmessage({ data: JSON.stringify({ type: "welcome", id: myId, world: { width: 100000, height: 100000 } }) });
 console.log("✅ welcome 已送（myId =", myId + "）");
 
+// ── ROADMAP 352：🌍 世界頻道 raw-fallback ──
+// 後端大量「全服世界事件」走 tx_chat 直送純字串（NPC 宣告、里程碑同慶、生態見聞…），
+// 非 JSON。舊版前端 ws.onmessage 的 JSON.parse 失敗即 return，把這些事件默默吞掉。
+// 驗證：非 JSON 純文字會被當世界訊息送進 #chatLog；空白訊息忽略；合法 JSON 不誤入此路。
+{
+  let worldLines = 0;
+  const chatLog = makeEl("chatLog");
+  chatLog.appendChild = (c) => { worldLines++; return c; };
+  lastWS.onmessage({ data: "🏅 阿狼 完成了生態清剿委託！獲得 120 乙太" }); // 非 JSON → 應顯示
+  lastWS.onmessage({ data: "   " });                                       // 空白 → 應忽略
+  if (worldLines !== 1) {
+    console.error(`❌ 世界頻道 raw-fallback：預期 1 行進 chatLog，實得 ${worldLines}`);
+    process.exit(2);
+  }
+  console.log("✅ 世界頻道 raw-fallback：非 JSON 全服事件已顯示、空白訊息已忽略");
+}
+
 // ── 跑 render 數幀：先空跑(無 snapshot)、再餵真實城鎮 snapshot 連跑多幀 ──
 function pump(label, frames) {
   for (let i = 0; i < frames; i++) {
