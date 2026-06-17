@@ -308,6 +308,26 @@
     const m = WAYPOST_MESSAGES.find((x) => x.key === key);
     return m ? m.label : key;
   }
+  // 星海寄語 / 漂流瓶（ROADMAP 354）：非同步、點對點、可回贈的玩家↔玩家互動（與路標的定點廣播換骨架）。
+  // seaCount＝海上漂著幾只瓶（ws "bottle_sea_count" 更新）；drawn＝剛撈到、待回贈的瓶
+  // { from_name, message_key }（null＝手上沒瓶）；inbox＝別人回贈給我、尚未讀掉的話（dock 徽記用）。
+  const bottleState = { seaCount: 0, drawn: null, inbox: [] };
+  // 預設訊息（ROADMAP 354）：wire key → 面向玩家顯示句。與後端 `bottle_drift::PRESET_MESSAGES`
+  // 的 key 一一對應（顯示句以此處為準，集中前端便於 i18n）。拋瓶與回贈共用。新增句子兩邊 key 要同步。
+  const BOTTLE_MESSAGES = [
+    { key: "hello_stranger", label: "嗨，陌生的旅人，願你今天順心～" },
+    { key: "not_alone", label: "在這片星海裡，你並不孤單" },
+    { key: "keep_going", label: "辛苦了，再撐一下，你做得很好" },
+    { key: "good_luck", label: "祝你旅途順利、滿載而歸" },
+    { key: "take_a_break", label: "別太累了，記得歇口氣" },
+    { key: "thanks_for_being_here", label: "謝謝你也在這個世界裡" },
+    { key: "good_fortune", label: "我在遠方挖到了好東西，也分你一點好運" },
+    { key: "smile", label: "對著螢幕笑一個吧 :)" },
+  ];
+  function bottleLabel(key) {
+    const m = BOTTLE_MESSAGES.find((x) => x.key === key);
+    return m ? m.label : key;
+  }
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -1977,6 +1997,7 @@
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateMiningPanel(me, isGuest); // 礦脈深掘面板（ROADMAP 348）
           updateWaypostPanel(me, isGuest); // 探索者路標面板（ROADMAP 353）
+          updateBottlePanel(me, isGuest); // 星海寄語 / 漂流瓶面板（ROADMAP 354）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
           updateFarmCropPanel(me, isGuest); // 農作面板（ROADMAP 49）
           updateStarCrystalPanel(me, isGuest); // 夜採星晶面板（ROADMAP 50）
@@ -2195,6 +2216,41 @@
           if (!live.has(sid)) seenWaypostIds.delete(sid);
         }
         updateWaypostPanel();
+        break;
+      }
+      case "bottle_sea_count": {
+        // 星海漂流瓶數量（ROADMAP 354）：海上漂著幾只瓶。
+        bottleState.seaCount = Math.max(0, msg.count | 0);
+        updateBottlePanel();
+        break;
+      }
+      case "bottle_drawn": {
+        // 撈瓶結果（ROADMAP 354）：撈到一只瓶（可回贈）或空海。
+        const me = myId ? players.get(myId) : null;
+        if (msg.message_key) {
+          bottleState.drawn = { from_name: msg.from_name || "某位旅人", message_key: msg.message_key };
+          if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: "🍾 你撈到了一只漂流瓶", color: "159,208,255", born: performance.now() });
+          announce(`你撈到一只漂流瓶，來自${bottleState.drawn.from_name}：${bottleLabel(bottleState.drawn.message_key)}`);
+        } else {
+          bottleState.drawn = null;
+          if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: "🌊 海上暫時沒有瓶子", color: "150,150,150", born: performance.now() });
+          announce("海上暫時沒有漂流瓶，過會兒再來看看");
+        }
+        updateBottlePanel();
+        break;
+      }
+      case "bottle_inbox": {
+        // 回贈信箱（ROADMAP 354）：別人回贈給我的話，整批收進信箱（dock 亮徽記）。
+        const replies = Array.isArray(msg.replies) ? msg.replies : [];
+        if (replies.length) {
+          const me = myId ? players.get(myId) : null;
+          bottleState.inbox.push(...replies);
+          if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: `📨 有人回贈了你 ${replies.length} 句話`, color: "240,216,160", born: performance.now() });
+          announce(`你收到 ${replies.length} 句漂流瓶的回贈，打開星海寄語面板讀讀看`);
+          const dockBtn = document.getElementById("dockBottle");
+          if (dockBtn) dockBtn.classList.add("dock-active");
+        }
+        updateBottlePanel();
         break;
       }
       case "high_five_match": {
@@ -3832,7 +3888,8 @@
         (e.key === "w" || e.key === "W") ? "dockWarehouse" :
         (e.key === "1") ? "dockFarmFair" :
         (e.key === "2") ? "dockMine" :
-        (e.key === "3") ? "dockWaypost" : null;
+        (e.key === "3") ? "dockWaypost" :
+        (e.key === "4") ? "dockBottle" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -18584,6 +18641,146 @@
     const tip = document.createElement("div");
     tip.style.cssText = "color:#666;font-size:.72rem;margin-top:4px;line-height:1.5;";
     tip.textContent = "每人最多同時留 3 塊（立第 4 塊會頂掉自己最舊的）。走近別人的路標就會讀到那句話。";
+    body.appendChild(tip);
+  }
+
+  // ── 星海寄語 / 漂流瓶面板（ROADMAP 354）────────────────────────────────────
+  // 非同步、點對點、可回贈的玩家↔玩家互動（與路標的定點廣播換骨架）：
+  // 拋一句話進星海漂給陌生旅人、撈一只別人的瓶讀他的話、就地回贈一句寄回他信箱。
+  let lastBottleSig = null;
+  function updateBottlePanel(me, isGuestUser) {
+    const body = document.getElementById("bottleBody");
+    if (!body) return;
+    const drawn = bottleState.drawn;
+    const inbox = bottleState.inbox;
+    // sig：登入狀態 + 海上瓶數 + 手上撈到的瓶 + 信箱回贈數 變了才重建（守 panel-sig 病）。
+    const drawnSig = drawn ? `${drawn.from_name}:${drawn.message_key}` : "-";
+    const sig = [isGuestUser, bottleState.seaCount, drawnSig, inbox.length].join("|");
+    if (sig === lastBottleSig) return;
+    lastBottleSig = sig;
+    body.innerHTML = "";
+
+    if (isGuestUser) {
+      const hint = document.createElement("div");
+      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.textContent = "登入後才能拋瓶、撈瓶、回贈，把一句話送給遠方素未謀面的旅人。";
+      body.appendChild(hint);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#ddd;font-size:.85rem;margin-bottom:8px;line-height:1.5;";
+    intro.textContent = "把一句話封進瓶裡拋向星海，漂給某位陌生旅人；也撈一只別人的瓶，讀他的話、回贈一句。";
+    body.appendChild(intro);
+
+    // 海上現況。
+    const status = document.createElement("div");
+    status.style.cssText = "color:#9fd0ff;font-size:.82rem;margin-bottom:8px;";
+    status.textContent = bottleState.seaCount > 0
+      ? `🌊 星海上漂著 ${bottleState.seaCount} 只瓶`
+      : "🌊 星海此刻空蕩蕩——拋出第一只瓶吧。";
+    body.appendChild(status);
+
+    // ── 撈瓶區 ──
+    const drawBtn = document.createElement("button");
+    drawBtn.type = "button";
+    drawBtn.style.cssText = "display:block;width:100%;text-align:center;padding:9px 10px;margin-bottom:6px;border:1px solid #4080d0;border-radius:8px;background:rgba(64,128,208,.12);color:#9fd0ff;cursor:pointer;font-size:.92rem;";
+    drawBtn.textContent = "🎣 撈一只漂流瓶";
+    drawBtn.addEventListener("click", () => { safeSend({ type: "draw_bottle" }); });
+    body.appendChild(drawBtn);
+
+    // 撈到的瓶＋就地回贈。
+    if (drawn) {
+      const card = document.createElement("div");
+      card.style.cssText = "border:1px solid #4080d0;border-radius:10px;background:rgba(64,128,208,.08);padding:9px 11px;margin-bottom:10px;";
+      const quote = document.createElement("div");
+      quote.style.cssText = "color:#cfe3ff;font-size:.92rem;line-height:1.5;";
+      quote.textContent = `「${bottleLabel(drawn.message_key)}」`;
+      const who = document.createElement("div");
+      who.style.cssText = "color:#7aa0c8;font-size:.76rem;margin-top:4px;";
+      who.textContent = `— 來自 ${drawn.from_name}`;
+      card.appendChild(quote);
+      card.appendChild(who);
+
+      const replyHint = document.createElement("div");
+      replyHint.style.cssText = "color:#bbb;font-size:.78rem;margin-top:8px;margin-bottom:4px;";
+      replyHint.textContent = "回贈一句給他（限這會兒）：";
+      card.appendChild(replyHint);
+
+      BOTTLE_MESSAGES.forEach((m) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.style.cssText = "display:block;width:100%;text-align:left;padding:6px 9px;margin-bottom:4px;border:1px solid #4f8050;border-radius:7px;background:rgba(80,160,90,.10);color:#bfe6c4;cursor:pointer;font-size:.84rem;";
+        btn.textContent = "↩ " + m.label;
+        btn.addEventListener("click", () => {
+          safeSend({ type: "reply_bottle", message_key: m.key });
+          // 一只瓶只能回贈一次：就地清掉手上的瓶、給回饋。
+          bottleState.drawn = null;
+          if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: "↩ 你的回贈漂回了遠方", color: "191,230,196", born: performance.now() });
+          announce("你的回贈已漂向遠方，等他下次撈起信箱就會讀到");
+          updateBottlePanel();
+        });
+        card.appendChild(btn);
+      });
+      body.appendChild(card);
+    }
+
+    // ── 拋瓶區 ──
+    const castHint = document.createElement("div");
+    castHint.style.cssText = "color:#bbb;font-size:.8rem;margin-top:4px;margin-bottom:4px;";
+    castHint.textContent = "🍾 拋一句話進星海：";
+    body.appendChild(castHint);
+
+    BOTTLE_MESSAGES.forEach((m) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.style.cssText = "display:block;width:100%;text-align:left;padding:7px 10px;margin-bottom:5px;border:1px solid #c9a24b;border-radius:8px;background:rgba(201,162,75,.10);color:#f0d8a0;cursor:pointer;font-size:.88rem;";
+      btn.textContent = "🍾 " + m.label;
+      btn.addEventListener("click", () => {
+        safeSend({ type: "cast_bottle", message_key: m.key });
+        if (me) floaters.push({ wx: me.x, wy: me.y - 34, text: "🍾 你把瓶子拋向了星海", color: "240,216,160", born: performance.now() });
+        announce("你把一只漂流瓶拋向星海，它會漂到某位陌生旅人腳邊");
+      });
+      body.appendChild(btn);
+    });
+
+    // ── 回贈信箱 ──
+    if (inbox.length) {
+      const inboxHead = document.createElement("div");
+      inboxHead.style.cssText = "color:#f0d8a0;font-size:.82rem;margin-top:10px;margin-bottom:4px;";
+      inboxHead.textContent = `📨 你收到的回贈（${inbox.length}）：`;
+      body.appendChild(inboxHead);
+
+      inbox.forEach((r) => {
+        const item = document.createElement("div");
+        item.style.cssText = "border:1px solid #6a5a2a;border-radius:8px;background:rgba(240,216,160,.06);padding:6px 9px;margin-bottom:5px;";
+        const q = document.createElement("div");
+        q.style.cssText = "color:#f0e0b8;font-size:.86rem;line-height:1.45;";
+        q.textContent = `「${bottleLabel(r.message_key)}」`;
+        const f = document.createElement("div");
+        f.style.cssText = "color:#a89860;font-size:.74rem;margin-top:3px;";
+        f.textContent = `— ${r.from_name || "某位旅人"} 回贈`;
+        item.appendChild(q);
+        item.appendChild(f);
+        body.appendChild(item);
+      });
+
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.style.cssText = "display:block;width:100%;text-align:center;padding:6px;margin-top:2px;border:1px solid #555;border-radius:7px;background:transparent;color:#bbb;cursor:pointer;font-size:.82rem;";
+      clearBtn.textContent = "✓ 讀過了，清空信箱";
+      clearBtn.addEventListener("click", () => {
+        bottleState.inbox = [];
+        const dockBtn = document.getElementById("dockBottle");
+        if (dockBtn) dockBtn.classList.remove("dock-active");
+        updateBottlePanel();
+      });
+      body.appendChild(clearBtn);
+    }
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:8px;line-height:1.5;";
+    tip.textContent = "瓶子漂在海上約 30 分鐘沒人撈就會沉沒；撈到的是別人拋的最舊一只。每人最多同時漂 3 只。回贈會寄進對方信箱，等他下次上線讀到。";
     body.appendChild(tip);
   }
 

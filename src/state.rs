@@ -1149,6 +1149,10 @@ pub struct AppState {
     /// 探索者路標（ROADMAP 353）：玩家在世界裡立的留言路標，非同步的玩家↔玩家痕跡。
     /// 記憶體模式、有界、會過期；遊戲迴圈每 tick 推進過期、立牌/過期時廣播 `ServerMsg::Wayposts`。
     pub wayposts: Arc<RwLock<crate::wayposts::WaypostBoard>>,
+    /// 星海寄語 / 漂流瓶（ROADMAP 354）：玩家拋向星海、漂到陌生旅人腳邊的留言瓶，
+    /// 第二條非同步玩家↔玩家互動（點對點、可回贈，與路標的定點廣播換骨架）。
+    /// 記憶體模式、有界、會過期；遊戲迴圈每 tick 推進過期、海上數量變動時廣播 `ServerMsg::BottleSeaCount`。
+    pub bottles: Arc<RwLock<crate::bottle_drift::BottleSea>>,
     /// 中立野生動物（ROADMAP 140）：野鳥/野鹿/小動物。
     /// 記憶體模式，重啟重新在固定座標生成。
     pub wildlife_manager: Arc<RwLock<crate::wildlife::WildlifeManager>>,
@@ -1353,6 +1357,7 @@ impl AppState {
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
             wayposts: Arc::new(RwLock::new(crate::wayposts::WaypostBoard::new())),
+            bottles: Arc::new(RwLock::new(crate::bottle_drift::BottleSea::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),
             species_relations: Arc::new(RwLock::new(crate::species_relations::SpeciesRelations::new())),
             monster_species: Arc::new(RwLock::new(crate::species_relations::MonsterSpeciesRelations::new())),

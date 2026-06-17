@@ -1613,6 +1613,17 @@ pub fn spawn(app: AppState) {
                         .send(std::sync::Arc::new(crate::protocol::ServerMsg::Wayposts { posts }));
                 }
             }
+            // 星海寄語 / 漂流瓶（ROADMAP 354）：推進漂流瓶／回贈／待回贈過期；有瓶子沉沒導致
+            // 海上數量變動時全服重播一次最新數量（出鎖後送，守 prod-deadlock）。
+            {
+                let changed = app.bottles.write().unwrap().tick(dt);
+                if changed {
+                    let count = app.bottles.read().unwrap().drifting_count() as u32;
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::BottleSeaCount { count },
+                    ));
+                }
+            }
             // 牧場系統（ROADMAP 48）：推進所有有雞地塊的下蛋計時器。
             app.ranch.write().unwrap().tick(dt);
             // 農地作物系統（ROADMAP 49）：推進所有農田地塊的作物生長計時器；下雨時給 1.5x 加成。

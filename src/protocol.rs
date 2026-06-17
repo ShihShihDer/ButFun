@@ -247,6 +247,17 @@ pub enum ClientMsg {
     /// 伺服器查白名單、用玩家自己的權威座標放置（防隔空立牌），並全服廣播 `ServerMsg::Wayposts`。
     /// 未登入 / 未知 key / 超量靜默忽略。
     PlaceWaypost { message_key: String },
+    /// 拋一只漂流瓶（ROADMAP 354）：玩家把一句預設訊息封進瓶裡拋向星海，漂給隨機某位陌生旅人。
+    /// `message_key` 必須是 `bottle_drift::PRESET_MESSAGES` 白名單內的 wire key（杜絕自由文字／XSS）。
+    /// 未登入 / 未知 key / 超量靜默忽略。
+    CastBottle { message_key: String },
+    /// 撈一只漂流瓶（ROADMAP 354）：玩家從星海撈起最舊的、非自己拋的瓶，讀到陌生人的話。
+    /// 伺服器以玩家自己的 id 判定（不撈到自己拋的瓶），回 `ServerMsg::BottleDrawn`。未登入靜默忽略。
+    DrawBottle,
+    /// 回贈一句（ROADMAP 354）：對「剛撈到的那只瓶」的作者回贈一句預設訊息，投進對方信箱。
+    /// 伺服器以剛才的撈瓶記錄決定收件人（不信任前端傳對象，防偽造投遞）。
+    /// `message_key` 須在白名單內。未登入 / 未撈過 / 回贈窗已過 / 未知 key 靜默忽略。
+    ReplyBottle { message_key: String },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -705,6 +716,15 @@ pub struct WaypostView {
     pub remaining_secs: f32,
 }
 
+/// 一則漂流瓶回贈（ROADMAP 354）。隨 `ServerMsg::BottleInbox` 送給原作者，前端列出。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BottleReplyView {
+    /// 回贈者顯示名。
+    pub from_name: String,
+    /// 訊息 wire key（白名單內；前端對照成顯示句，i18n 友善）。
+    pub message_key: String,
+}
+
 /// 城鎮入侵警報快照（ROADMAP 158/161）——供前端 HUD 顯示入侵狀態與倒數。
 #[derive(Debug, Clone, Serialize)]
 pub struct InvasionView {
@@ -979,6 +999,21 @@ pub enum ServerMsg {
     /// 全服廣播一次。量小（≤24），不入高頻快照、不做 AOI——前端自行依相機可視範圍渲染、依 id 去重。
     /// 純呈現、不送物品/乙太/戰力，零平衡風險、零持久化。
     Wayposts { posts: Vec<WaypostView> },
+    /// 撈瓶結果（ROADMAP 354）：玩家送 `DrawBottle` 後單播回來的結果。
+    /// `from_name`/`message_key` 為 `Some` 表示撈到一只瓶（陌生人的話，可回贈一句）；
+    /// 皆為 `None`（前端視為空海）表示海上暫時沒有可撈的瓶。純呈現、零平衡風險。
+    BottleDrawn {
+        from_name: Option<String>,
+        message_key: Option<String>,
+    },
+    /// 回贈信箱（ROADMAP 354）：把寄給某玩家的回贈整批送給他。
+    /// 何時送：(a) 玩家連線時直送一次（領取離線期間累積的回贈）；(b) 有人回贈、且收件人在線時即送。
+    /// 送出即從伺服器信箱清掉（已送達）。純呈現、不送物品/乙太/戰力，零平衡風險、零持久化。
+    BottleInbox { replies: Vec<BottleReplyView> },
+    /// 星海漂流瓶數量（ROADMAP 354）：海上目前漂著幾只瓶。
+    /// 何時送：玩家連線時直送一次；有人拋瓶/撈瓶/瓶子沉沒導致數量變動時全服廣播一次。
+    /// 量小、不入高頻快照。前端據此顯示「🌊 海上漂著 N 只瓶」。
+    BottleSeaCount { count: u32 },
     /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣
     /// 更新（名牌徽記即時刷、不必等下次快照）。`giver_name` = 喝采者；`target_id`/`target_name`
