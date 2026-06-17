@@ -468,6 +468,9 @@ const scenarios = [
   // 抖動浮標＋漣漪＋「❗」彈出，附 _fishBiteAt 起算彈出動畫）。確認浮標渲染零繪製例外。
   variant("釣魚上鉤(等咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "waiting"; }),
   variant("釣魚上鉤(魚咬鉤)", (s) => { const m = s.players[0]; m.fishing_phase = "biting"; m._fishBiteAt = 0; }),
+  // 季節漁汛（ROADMAP 363）：垂釣中時自己浮標旁多畫一行「🎣 秋汛·🦈當季」本季當紅魚提示——
+  // 換成秋季（深海魚當季）走非預設季節的映射分支。確認季節漁汛提示渲染零繪製例外。
+  variant("季節漁汛(秋汛·垂釣中)", (s) => { s.current_season = "autumn"; const m = s.players[0]; m.fishing_phase = "waiting"; }),
   // 礦脈深掘（ROADMAP 348）：玩家挖礦中 → 跑 drawPlayer 的「⛏️ 深度」頭頂標記分支（震動晃動＋
   // 依等級換色）。覆蓋三檔震動：① 淺層穩定（calm）；② 細微落石（faint，輕晃）；③ 劇烈搖晃
   // （severe，大晃＋紅字）。確認採礦世界訊號渲染零繪製例外。

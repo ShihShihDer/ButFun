@@ -1278,6 +1278,7 @@ pub fn spawn(app: AppState) {
                     outcome: "escaped".into(),
                     fish: None,
                     quality: None,
+                    in_season: None,
                     x,
                     y,
                 }));
