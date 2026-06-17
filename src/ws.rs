@@ -155,6 +155,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -254,6 +255,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
             high_five_offer: 0,
@@ -3727,6 +3729,197 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = tx_direct.try_send(json);
                         }
+                    }
+                }
+
+                // ── 居民和解委託：玩家詢問鎮上有沒有可促成的和解（ROADMAP 364）──────────
+                Ok(ClientMsg::RequestReconcile) => {
+                    use crate::npc_factions::npc_display_name;
+                    use crate::reconcile;
+                    // 手上已有進行中的委託 → 回該委託的續辦資訊（active=true，前端顯示交付指引）。
+                    let active_errand = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| p.reconcile_errand.clone())
+                    };
+                    let msg = if let Some(e) = active_errand {
+                        let (tx, ty) = crate::npc_schedule::fallback_pos(&e.to);
+                        ServerMsg::ReconcileOffer {
+                            available: true,
+                            active: true,
+                            from_id: e.from.clone(),
+                            from_name: npc_display_name(&e.from).to_string(),
+                            to_id: e.to.clone(),
+                            to_name: npc_display_name(&e.to).to_string(),
+                            to_x: tx,
+                            to_y: ty,
+                            token: reconcile::peace_token(&e.from).to_string(),
+                            plea: reconcile::plea_line(&e.from, &e.to),
+                        }
+                    } else {
+                        // 沒接委託 → 找鎮上最該和解的一對（伺服器權威、確定性挑選）。
+                        let pair = {
+                            let rel = app.npc_relations.read().unwrap();
+                            reconcile::most_strained_pair(&rel)
+                        };
+                        match pair {
+                            Some(e) => {
+                                let (tx, ty) = crate::npc_schedule::fallback_pos(&e.to);
+                                ServerMsg::ReconcileOffer {
+                                    available: true,
+                                    active: false,
+                                    from_id: e.from.clone(),
+                                    from_name: npc_display_name(&e.from).to_string(),
+                                    to_id: e.to.clone(),
+                                    to_name: npc_display_name(&e.to).to_string(),
+                                    to_x: tx,
+                                    to_y: ty,
+                                    token: reconcile::peace_token(&e.from).to_string(),
+                                    plea: reconcile::plea_line(&e.from, &e.to),
+                                }
+                            }
+                            None => ServerMsg::ReconcileOffer {
+                                available: false,
+                                active: false,
+                                from_id: String::new(),
+                                from_name: String::new(),
+                                to_id: String::new(),
+                                to_name: String::new(),
+                                to_x: 0.0,
+                                to_y: 0.0,
+                                token: String::new(),
+                                plea: String::new(),
+                            },
+                        }
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+
+                // ── 居民和解委託：玩家接下委託（ROADMAP 364）──────────────────────────
+                Ok(ClientMsg::AcceptReconcile { from_id, to_id }) => {
+                    use crate::npc_factions::npc_display_name;
+                    use crate::reconcile;
+                    // 伺服器重算：兩者都是故鄉七大 NPC、互不相同、且這對仍鬧僵（可修補帶）才受理；
+                    // 前端送的 from/to 僅供比對，不採信其判斷（防接下任意 / 假對）。
+                    let valid = {
+                        let rel = app.npc_relations.read().unwrap();
+                        crate::npc_schedule::is_village_npc(&from_id)
+                            && crate::npc_schedule::is_village_npc(&to_id)
+                            && from_id != to_id
+                            && reconcile::is_mendable(&rel, &from_id, &to_id)
+                    };
+                    let accepted = if valid {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            // 已有進行中委託則不覆蓋（一次只跑一樁）。
+                            Some(p) if p.reconcile_errand.is_none() => {
+                                p.reconcile_errand = Some(reconcile::Errand {
+                                    from: from_id.clone(),
+                                    to: to_id.clone(),
+                                });
+                                true
+                            }
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    if accepted {
+                        let msg = ServerMsg::ReconcileResult {
+                            ok: true,
+                            accepted: true,
+                            done: false,
+                            from_name: npc_display_name(&from_id).to_string(),
+                            to_name: npc_display_name(&to_id).to_string(),
+                            warmth: 0,
+                            reward_ether: 0,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                    }
+                    // 不受理 → 靜默忽略（前端維持原狀）。
+                }
+
+                // ── 居民和解委託：玩家把信物送達對象 NPC（ROADMAP 364）──────────────────
+                Ok(ClientMsg::DeliverReconcile) => {
+                    use crate::npc_factions::npc_display_name;
+                    use crate::reconcile;
+                    // 取玩家委託與當前權威座標。
+                    let errand_and_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).map(|p| (p.reconcile_errand.clone(), p.x, p.y))
+                    };
+                    let Some((Some(e), px, py)) = errand_and_pos else {
+                        continue; // 沒接委託 → 靜默忽略。
+                    };
+                    // 必須走到對象 NPC 工位的 DELIVER_REACH 內才算送達（保留跑腿的空間玩法）。
+                    let (tx, ty) = crate::npc_schedule::fallback_pos(&e.to);
+                    let dx = px - tx;
+                    let dy = py - ty;
+                    let near = dx * dx + dy * dy
+                        <= reconcile::DELIVER_REACH * reconcile::DELIVER_REACH;
+                    if !near {
+                        // 太遠 → 回提示，不消耗委託、不回暖。
+                        let msg = ServerMsg::ReconcileResult {
+                            ok: false,
+                            accepted: false,
+                            done: false,
+                            from_name: npc_display_name(&e.from).to_string(),
+                            to_name: npc_display_name(&e.to).to_string(),
+                            warmth: 0,
+                            reward_ether: 0,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                        continue;
+                    }
+                    // 先在 players 寫鎖內**檢查並消耗**委託＋給獎（防同一委託被重複交付重複領），
+                    // 再開 npc_relations 寫鎖回暖——兩把寫鎖依序取放、不巢狀（守 prod-deadlock）。
+                    let consumed = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) if p.reconcile_errand.as_ref() == Some(&e) => {
+                                p.reconcile_errand = None;
+                                p.ether = p.ether.saturating_add(reconcile::REWARD_ETHER);
+                                p.masteries.gain_explorer(reconcile::EXPLORER_XP);
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    let warmth = if consumed {
+                        let mut rel = app.npc_relations.write().unwrap();
+                        rel.nudge_pair(&e.from, &e.to, reconcile::RECONCILE_BUMP)
+                    } else {
+                        // 已被另一次交付消耗（競態）：回當前平均值，不重複回暖。
+                        let rel = app.npc_relations.read().unwrap();
+                        crate::npc_factions::mutual_avg(&rel, &e.from, &e.to)
+                    };
+                    // 出鎖後才回覆本人並廣播（守 prod-deadlock：鎖內不送）。
+                    let msg = ServerMsg::ReconcileResult {
+                        ok: true,
+                        accepted: false,
+                        done: true,
+                        from_name: npc_display_name(&e.from).to_string(),
+                        to_name: npc_display_name(&e.to).to_string(),
+                        warmth,
+                        reward_ether: if consumed { reconcile::REWARD_ETHER } else { 0 },
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                    // 只有真的消耗了委託（首次交付）才同慶＋記錄，避免競態重複廣播。
+                    if consumed {
+                        tracing::info!(
+                            from = %e.from, to = %e.to, warmth,
+                            "玩家促成居民和解"
+                        );
+                        let line = reconcile::celebrate_line(&e.from, &e.to, warmth);
+                        let _ = app.tx_chat.send(line.clone());
+                        app.town_memory.write().unwrap().push_event("🕊️", line);
                     }
                 }
 

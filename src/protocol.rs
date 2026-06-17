@@ -418,6 +418,19 @@ pub enum ClientMsg {
     /// 伺服器以**伺服器重算的今夜星座**為準驗證（前端送什麼星座都不算數，防作弊）；
     /// 連對且首次即記入星座錄＋給一小筆乙太與探索熟練度。非夜間 / 連錯靜默回 `ConstellationResult`。
     TraceConstellation { edges: Vec<(u8, u8)> },
+    /// 詢問是否有居民和解委託可接（ROADMAP 364）：玩家開「🕊️ 和解」面板時送。
+    /// 伺服器找鎮上最該和解的一對 NPC 回 `ReconcileOffer`；玩家已有進行中的委託時，
+    /// 回該委託的續辦資訊（`active=true`）。無可修補對時回 `available=false`。
+    RequestReconcile,
+    /// 接下居民和解委託（ROADMAP 364）：玩家在面板上按「接下委託」。
+    /// 伺服器以**伺服器重算**的這對是否仍鬧僵為準受理（前端送的 from/to 僅供比對、不算數），
+    /// 受理後把委託記到玩家身上。已有進行中委託 / 該對已不鬧僵則靜默忽略。
+    AcceptReconcile { from_id: String, to_id: String },
+    /// 交付和解信物（ROADMAP 364）：玩家走到對象 NPC 工位旁按「交付」。
+    /// 伺服器以玩家身上委託的 `to` NPC 工位座標驗證就近（`DELIVER_REACH` 內）才算送達；
+    /// 送達即雙向回暖好惡值、給玩家乙太＋探索熟練度、清掉委託、世界同慶。
+    /// 未接委託 / 離對象太遠則回 `ReconcileResult{ok=false}` 提示再靠近。
+    DeliverReconcile,
     /// 購入雞（ROADMAP 48）：在自己的農田地塊花乙太購入一隻雞。
     /// `plot_id`：要購雞的農田地塊編號（必須是本人擁有的 Farm 類型地塊）。
     /// 乙太不足（BUY_CHICKEN_COST=15）/ 非農田 / 非本人地塊 / 達 MAX_CHICKENS 靜默忽略。
@@ -1203,6 +1216,42 @@ pub enum ServerMsg {
     /// 城鎮記憶石列表（ROADMAP 157）：回應 ReadTownMemory，單播給請求的玩家。
     TownMemoryList {
         entries: Vec<crate::town_memory::MemoryEntry>,
+    },
+    /// 居民和解委託提供（ROADMAP 364）：回應 `RequestReconcile`，僅單播給請求者本人。
+    /// `available=false` 表此刻鎮上無鬧僵可修補的 NPC 對（其餘欄位為佔位）。
+    /// `active=true` 表玩家已接下這樁、正在送的途中（前端顯示「進行中」與交付指引）。
+    ReconcileOffer {
+        /// 此刻是否有可促成的和解（或玩家手上已有進行中的委託）。
+        available: bool,
+        /// 玩家是否已接下此委託（true＝進行中，顯示交付指引；false＝可接）。
+        active: bool,
+        /// 委託人 NPC 的 wire id 與顯示名。
+        from_id: String,
+        from_name: String,
+        /// 和解對象 NPC 的 wire id 與顯示名。
+        to_id: String,
+        to_name: String,
+        /// 對象 NPC 工位座標（前端標示「去哪找」、估算距離）。
+        to_x: f32,
+        to_y: f32,
+        /// 和解信物的描述（面向玩家字串；後端集中於 reconcile 模組，保留 i18n 空間）。
+        token: String,
+        /// 委託人開口請玩家緩頰的台詞。
+        plea: String,
+    },
+    /// 居民和解結果（ROADMAP 364）：回應 `AcceptReconcile` / `DeliverReconcile`，單播本人。
+    /// `accepted=true` 表剛接下委託（前端轉「進行中」）；`done=true` 表剛送達成功
+    /// （回暖值 `warmth`、獎勵 `reward_ether`）。`ok=false`＋`done=false` 表交付失敗
+    /// （離對象太遠，前端提示再靠近 `to_name`）。
+    ReconcileResult {
+        ok: bool,
+        accepted: bool,
+        done: bool,
+        from_name: String,
+        to_name: String,
+        /// 送達後該對的雙向平均好惡值（done=true 時有意義）。
+        warmth: i32,
+        reward_ether: u32,
     },
 }
 

@@ -609,6 +609,52 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 鎮民派系：結盟＋敵對列出＋未知 bond 保底＋和平自動隱去皆乾淨");
 }
 
+// 居民和解委託（ROADMAP 364）：reconcile_offer / reconcile_result 是獨立 ServerMsg，
+// 驗證面板渲染（可接委託→進行中→送達回饋）與「鎮上祥和」保底皆不拋例外、有寫入 DOM。
+{
+  console.log("── 情境：居民和解委託（可接→進行中→送達＋祥和保底）──");
+  let ok = true;
+  try {
+    // 1. 可接的新委託 → renderReconcile 走「列出請求台詞＋接下鈕」分支。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_offer", available: true, active: false,
+      from_id: "bounty_npc", from_name: "獵手蘭卡", to_id: "workshop_npc", to_name: "工匠鐸恩",
+      to_x: 2120, to_y: 2080, token: "一包野地帶回的乾糧",
+      plea: "獵手蘭卡：我和工匠鐸恩前陣子鬧得有點僵……能替我捎去嗎？",
+    }) });
+    // 2. 進行中的委託 → 走「交付指引＋就近提示＋交付鈕」分支（含本機距離估算）。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_offer", available: true, active: true,
+      from_id: "bounty_npc", from_name: "獵手蘭卡", to_id: "workshop_npc", to_name: "工匠鐸恩",
+      to_x: 2120, to_y: 2080, token: "一包野地帶回的乾糧", plea: "",
+    }) });
+    // 3. 接下回饋（accepted 分支→重新請求）。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_result", ok: true, accepted: true, done: false,
+      from_name: "獵手蘭卡", to_name: "工匠鐸恩", warmth: 0, reward_ether: 0,
+    }) });
+    // 4. 送達成功回饋（done 分支→給獎飄字＋刷新）。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_result", ok: true, accepted: false, done: true,
+      from_name: "獵手蘭卡", to_name: "工匠鐸恩", warmth: 61, reward_ether: 8,
+    }) });
+    // 5. 交付太遠回饋（ok=false 分支→提示再靠近）。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_result", ok: false, accepted: false, done: false,
+      from_name: "獵手蘭卡", to_name: "工匠鐸恩", warmth: 0, reward_ether: 0,
+    }) });
+    // 6. 鎮上祥和保底（available=false 分支）。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "reconcile_offer", available: false, active: false,
+      from_id: "", from_name: "", to_id: "", to_name: "", to_x: 0, to_y: 0, token: "", plea: "",
+    }) });
+  } catch (e) {
+    ok = false; console.error("  ❌ 居民和解委託：拋出例外", e && e.message);
+  }
+  if (!ok) failed = true;
+  else console.log("  ✅ 居民和解委託：可接→進行中→接下→送達→太遠→祥和保底全分支皆乾淨、無例外");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {
