@@ -1,8 +1,13 @@
-//! 夜間乙太泉（ROADMAP 162）。
+//! 夜間乙太泉（ROADMAP 162；ROADMAP 362 滿月乙太潮）。
 //!
 //! 每當日夜循環由黃昏轉入夜晚時，在城外隨機散布 5 個「乙太泉」採集點。
 //! 玩家走近 80px 以內互動，可獲得 +8 乙太（無需登入，登入者才真的加）。
 //! 天亮（Night → Dawn）時，剩餘節點自動消失。
+//!
+//! ROADMAP 362：若該夜恰逢滿月（由 `crate::moon::is_full_moon` 這份權威月相判定——
+//! 同一份月相早已驅動「滿月夜掠食者嗥月」），則在 5 口尋常泉之外，再多生 3 口「月華泉」，
+//! 讓「月相」第一次對玩家有善意後果、把月相與夜間探索兩條線接起來。月華泉只是「多出來的泉眼」，
+//! 採集與獎勵路徑與尋常泉完全一致（走 ROADMAP 350 汲泉小遊戲），不碰任何獎勵平衡。
 //!
 //! 設計紀律：
 //! - 純記憶體模式，重啟清零。零 migration，零 LLM。
@@ -18,6 +23,15 @@ pub const COLLECT_REACH: f32 = 80.0;
 pub const SPRING_COUNT: usize = 5;
 /// 採集一個乙太泉獲得的乙太數。
 pub const ETHER_REWARD: u32 = 8;
+/// ROADMAP 362：滿月夜額外湧現的「月華泉」數量（疊加在 SPRING_COUNT 之上）。
+pub const MOONLIT_SPRING_COUNT: usize = 3;
+
+/// 滿月夜額外的 3 口月華泉座標（與 SPRING_POSITIONS 不重疊，皆經測試確認落在城鎮保護圈外）。
+const MOONLIT_POSITIONS: [(f32, f32); MOONLIT_SPRING_COUNT] = [
+    (600.0, 600.0),    // 城西北（gx=18, gy=18，兩軸均超出保護圈）
+    (600.0, 3800.0),   // 城西南（gx=18, gy=118，兩軸均超出）
+    (3800.0, 3800.0),  // 城東南（gx=118, gy=118，兩軸均超出）
+];
 
 /// 5 個乙太泉的絕對世界座標。
 /// 主城保護圈：以格子 (73,71) 為中心、chebyshev 半徑 34+8=42 格（42×32=1344px）。
@@ -41,6 +55,8 @@ pub struct SpringNode {
     pub wy: f32,
     /// 是否已被採集。
     pub collected: bool,
+    /// ROADMAP 362：是否為滿月夜額外湧現的「月華泉」（僅供前端區隔渲染；採集/獎勵與尋常泉一致）。
+    pub moonlit: bool,
 }
 
 /// 夜間乙太泉系統狀態（純記憶體，重啟清零）。
@@ -55,6 +71,8 @@ pub struct NightAetherSprings {
     node_counter: u32,
     /// 本夜是否已廣播過「全部採集完成」。
     pub all_collected_announced: bool,
+    /// ROADMAP 362：今夜是否恰逢滿月（夜晚開始時定格，天亮清零）。供廣播文案切換用。
+    pub moonlit_tonight: bool,
 }
 
 impl NightAetherSprings {
@@ -65,6 +83,7 @@ impl NightAetherSprings {
             last_phase: Phase::Day,
             node_counter: 0,
             all_collected_announced: false,
+            moonlit_tonight: false,
         }
     }
 
@@ -78,12 +97,12 @@ impl NightAetherSprings {
         self.nodes.iter().filter(|n| !n.collected)
     }
 
-    /// 推進時間。回傳 `SpringsEvent`。
+    /// 推進時間。`moon_full` 為今夜是否恰逢滿月（ROADMAP 362，由 game.rs 餵入權威月相）。回傳 `SpringsEvent`。
     ///
     /// - `None`：無特殊事件。
-    /// - `Some(SpringsEvent::Activated)`：這個 tick 夜晚剛開始，節點已生成。
+    /// - `Some(SpringsEvent::Activated)`：這個 tick 夜晚剛開始，節點已生成（滿月則含月華泉）。
     /// - `Some(SpringsEvent::Deactivated)`：這個 tick 天亮，節點已清除。
-    pub fn tick(&mut self, current_phase: Phase) -> Option<SpringsEvent> {
+    pub fn tick(&mut self, current_phase: Phase, moon_full: bool) -> Option<SpringsEvent> {
         let transition_to_night =
             (self.last_phase == Phase::Dusk || self.last_phase == Phase::Day)
             && current_phase == Phase::Night;
@@ -95,12 +114,14 @@ impl NightAetherSprings {
         if transition_to_night && !self.active {
             self.active = true;
             self.all_collected_announced = false;
-            self.nodes = self.spawn_nodes();
+            self.moonlit_tonight = moon_full;
+            self.nodes = self.spawn_nodes(moon_full);
             return Some(SpringsEvent::Activated);
         }
 
         if transition_to_dawn && self.active {
             self.active = false;
+            self.moonlit_tonight = false;
             self.nodes.clear();
             return Some(SpringsEvent::Deactivated);
         }
@@ -138,15 +159,21 @@ impl NightAetherSprings {
         false
     }
 
-    /// 生成 SPRING_COUNT 個節點，五方位各一個（決定性，可測試）。
-    fn spawn_nodes(&mut self) -> Vec<SpringNode> {
-        let nodes = SPRING_POSITIONS.iter().enumerate().map(|(i, &(wx, wy))| SpringNode {
-            id: self.node_counter.wrapping_add(i as u32),
-            wx,
-            wy,
-            collected: false,
+    /// 生成節點：尋常 SPRING_COUNT 口（五方位各一），滿月夜再追加 MOONLIT_SPRING_COUNT 口月華泉
+    /// （決定性，可測試）。所有節點 id 取自同一遞增計數器，確保跨泉、跨夜皆不重複。
+    fn spawn_nodes(&mut self, moon_full: bool) -> Vec<SpringNode> {
+        let mut nodes: Vec<SpringNode> = SPRING_POSITIONS.iter().map(|&(wx, wy)| {
+            let id = self.node_counter;
+            self.node_counter = self.node_counter.wrapping_add(1);
+            SpringNode { id, wx, wy, collected: false, moonlit: false }
         }).collect();
-        self.node_counter = self.node_counter.wrapping_add(SPRING_COUNT as u32);
+        if moon_full {
+            for &(wx, wy) in MOONLIT_POSITIONS.iter() {
+                let id = self.node_counter;
+                self.node_counter = self.node_counter.wrapping_add(1);
+                nodes.push(SpringNode { id, wx, wy, collected: false, moonlit: true });
+            }
+        }
         nodes
     }
 }
@@ -183,7 +210,7 @@ mod tests {
     fn activates_on_dusk_to_night_transition() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        let ev = s.tick(Phase::Night);
+        let ev = s.tick(Phase::Night, false);
         assert_eq!(ev, Some(SpringsEvent::Activated));
         assert!(s.active);
         assert_eq!(s.nodes.len(), SPRING_COUNT);
@@ -193,9 +220,9 @@ mod tests {
     fn does_not_reactivate_if_already_active() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         // 再 tick 一次（仍是 Night → Night）
-        let ev = s.tick(Phase::Night);
+        let ev = s.tick(Phase::Night, false);
         assert_eq!(ev, None, "已啟動時不應再次觸發");
         assert_eq!(s.nodes.len(), SPRING_COUNT);
     }
@@ -204,8 +231,8 @@ mod tests {
     fn deactivates_on_night_to_dawn_transition() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
-        let ev = s.tick(Phase::Dawn);
+        s.tick(Phase::Night, false);
+        let ev = s.tick(Phase::Dawn, false);
         assert_eq!(ev, Some(SpringsEvent::Deactivated));
         assert!(!s.active);
         assert!(s.nodes.is_empty());
@@ -215,16 +242,16 @@ mod tests {
     fn no_event_during_steady_night() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
-        let ev = s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
+        let ev = s.tick(Phase::Night, false);
         assert_eq!(ev, None);
     }
 
     #[test]
     fn no_event_during_day() {
         let mut s = NightAetherSprings::new();
-        s.tick(Phase::Dawn);
-        let ev = s.tick(Phase::Day);
+        s.tick(Phase::Dawn, false);
+        let ev = s.tick(Phase::Day, false);
         assert_eq!(ev, None);
         assert!(!s.active);
     }
@@ -233,7 +260,7 @@ mod tests {
     fn nodes_have_unique_ids() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let ids: Vec<u32> = s.nodes.iter().map(|n| n.id).collect();
         let mut sorted = ids.clone();
         sorted.dedup();
@@ -244,11 +271,11 @@ mod tests {
     fn ids_differ_across_nights() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let ids_first: Vec<u32> = s.nodes.iter().map(|n| n.id).collect();
-        s.tick(Phase::Dawn);
+        s.tick(Phase::Dawn, false);
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let ids_second: Vec<u32> = s.nodes.iter().map(|n| n.id).collect();
         for id in &ids_second {
             assert!(!ids_first.contains(id), "第二晚節點 id 不應與第一晚重複");
@@ -259,7 +286,7 @@ mod tests {
     fn try_collect_succeeds_in_range() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let node = &s.nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
         let result = s.try_collect(id, wx + 10.0, wy + 10.0);
@@ -271,7 +298,7 @@ mod tests {
     fn try_collect_fails_out_of_range() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let node = &s.nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
         let result = s.try_collect(id, wx + 200.0, wy + 200.0);
@@ -289,7 +316,7 @@ mod tests {
     fn try_collect_already_collected_fails() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let node = &s.nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
         s.try_collect(id, wx, wy);
@@ -302,7 +329,7 @@ mod tests {
         // can_collect 只驗格、不採走（ROADMAP 350 開始汲取用）。
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let node = &s.nodes[0];
         let (wx, wy, id) = (node.wx, node.wy, node.id);
         assert!(s.can_collect(id, wx + 5.0, wy), "範圍內應可採");
@@ -316,7 +343,7 @@ mod tests {
     fn active_nodes_excludes_collected() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         let id = s.nodes[0].id;
         let wx = s.nodes[0].wx;
         let wy = s.nodes[0].wy;
@@ -329,7 +356,7 @@ mod tests {
     fn all_collected_check() {
         let mut s = NightAetherSprings::new();
         s.last_phase = Phase::Dusk;
-        s.tick(Phase::Night);
+        s.tick(Phase::Night, false);
         assert!(!s.all_collected());
         for i in 0..SPRING_COUNT {
             let node = &s.nodes[i];
@@ -348,5 +375,79 @@ mod tests {
                 "乙太泉節點 ({wx},{wy}) 不應在城鎮保護圈內（鼓勵夜間外出探索）"
             );
         }
+    }
+
+    // ─── ROADMAP 362：滿月乙太潮 ─────────────────────────────────────────────
+
+    #[test]
+    fn full_moon_spawns_extra_moonlit_springs() {
+        // 滿月夜應在 5 口尋常泉之外多生 MOONLIT_SPRING_COUNT 口月華泉。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        let ev = s.tick(Phase::Night, true);
+        assert_eq!(ev, Some(SpringsEvent::Activated));
+        assert_eq!(s.nodes.len(), SPRING_COUNT + MOONLIT_SPRING_COUNT);
+        assert!(s.moonlit_tonight, "滿月夜 moonlit_tonight 應為真");
+        let moonlit = s.nodes.iter().filter(|n| n.moonlit).count();
+        assert_eq!(moonlit, MOONLIT_SPRING_COUNT, "恰好 MOONLIT_SPRING_COUNT 口標記為月華泉");
+    }
+
+    #[test]
+    fn normal_night_has_no_moonlit_springs() {
+        // 平夜不生月華泉，且 moonlit_tonight 為否。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night, false);
+        assert_eq!(s.nodes.len(), SPRING_COUNT);
+        assert!(!s.moonlit_tonight);
+        assert!(s.nodes.iter().all(|n| !n.moonlit), "平夜任何泉都不該是月華泉");
+    }
+
+    #[test]
+    fn moonlit_positions_outside_safe_zone() {
+        // 三口月華泉座標皆須落在城鎮保護圈外（鼓勵夜間外出探索）。
+        for &(wx, wy) in &MOONLIT_POSITIONS {
+            assert!(
+                !crate::positions::is_in_safe_zone(wx, wy),
+                "月華泉節點 ({wx},{wy}) 不應在城鎮保護圈內"
+            );
+        }
+    }
+
+    #[test]
+    fn moonlit_tonight_resets_on_dawn() {
+        // 天亮後 moonlit_tonight 應歸零（與節點一併清除）。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night, true);
+        assert!(s.moonlit_tonight);
+        s.tick(Phase::Dawn, false);
+        assert!(!s.moonlit_tonight, "天亮後 moonlit_tonight 應歸零");
+        assert!(s.nodes.is_empty());
+    }
+
+    #[test]
+    fn moonlit_and_normal_ids_all_unique() {
+        // 月華泉與尋常泉取自同一遞增計數器，所有 id 須不重複。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night, true);
+        let ids: Vec<u32> = s.nodes.iter().map(|n| n.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "月華泉與尋常泉 id 不應重複");
+    }
+
+    #[test]
+    fn moonlit_spring_is_collectable() {
+        // 月華泉採集行為與尋常泉一致（try_collect 在範圍內成功）。
+        let mut s = NightAetherSprings::new();
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night, true);
+        let node = s.nodes.iter().find(|n| n.moonlit).expect("應有月華泉");
+        let (wx, wy, id) = (node.wx, node.wy, node.id);
+        assert!(s.try_collect(id, wx + 10.0, wy + 10.0), "月華泉在範圍內應可採集");
+        assert!(s.nodes.iter().find(|n| n.id == id).unwrap().collected);
     }
 }
