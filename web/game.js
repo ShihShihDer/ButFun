@@ -21236,10 +21236,26 @@
     }
   }
 
+  // ROADMAP 367 連片沃土：屬於「三格以上四方相鄰連成的田畝」的格，墊一層淡綠生機罩
+  // ——讓玩家一眼看出「種成連片的田畝更蒼翠、長得更旺」。純表現、只讀快照旗標(cell.thriving)、
+  // 不嵌任何規則(連通/加速判定全在伺服器 field_thrive.rs)。低 alpha、單純 fill+inner stroke,
+  // 不蓋住作物、效能近乎零。
+  function drawThrive(sx, sy, ts) {
+    ctx.save();
+    ctx.fillStyle = "rgba(126,200,80,0.14)"; // 淡綠生機水洗
+    ctx.fillRect(sx + 1, sy + 1, ts - 2, ts - 2);
+    ctx.strokeStyle = "rgba(126,200,80,0.45)"; // 蒼翠內框,圈出連片田畝
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(sx + 1.5, sy + 1.5, ts - 3, ts - 3);
+    ctx.restore();
+  }
+
   function drawTile(sx, sy, ts, cell) {
     if (artOk("field")) {
       const dx = Math.round(sx), dy = Math.round(sy);
       ctx.drawImage(ART.field, fieldColumn(cell) * TS, 0, TS, TS, dx, dy, ts, ts);
+      // 連片沃土生機罩(墊在作物層之上、缺水/成熟特效之下,綠意打底不搶作物焦點)。
+      if (cell.thriving) drawThrive(sx, sy, ts);
       // 缺水疊圖(藍點 overlay,欄 7),只在有作物且缺水時。
       if (cell.dry && cell.state >= 2 && cell.state <= 4) {
         ctx.drawImage(ART.field, 7 * TS, 0, TS, TS, dx, dy, ts, ts);
@@ -21267,6 +21283,8 @@
     ctx.strokeStyle = "rgba(0,0,0,0.35)";
     ctx.lineWidth = 1;
     ctx.strokeRect(sx + 0.5, sy + 0.5, ts - 1, ts - 1);
+    // 連片沃土生機罩(墊在土底之上、作物之下,綠意打底不搶作物焦點)。
+    if (cell.thriving) drawThrive(sx, sy, ts);
 
     const cx = sx + ts / 2;
     const cy = sy + ts / 2;

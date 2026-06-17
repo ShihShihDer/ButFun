@@ -72,12 +72,24 @@ impl Crop {
     /// 推進 `dt` 秒。只有在有濕度時才成長，並同步消耗濕度。
     /// 成長與濕度都不會超過各自界線。抽成純函式以便測試。
     pub fn grow(&mut self, dt: f32) {
+        self.grow_boosted(dt, 1.0);
+    }
+
+    /// 推進 `dt` 秒，但成長速度乘上 `growth_mult`（ROADMAP 367 連片沃土：連片照料的作物
+    /// 成長加速）。**濕度仍按真實 `dt` 消耗**、不因成長加速而更快乾——加速只回饋在「長得快」，
+    /// 不讓沃土更耗水，維持公平。`growth_mult ≤ 0` 或非有限時退回不加速（防呆）。
+    pub fn grow_boosted(&mut self, dt: f32, growth_mult: f32) {
         if self.moisture <= 0.0 || dt <= 0.0 {
             return;
         }
-        // 這段時間內實際能長多久，受限於剩餘濕度。
+        let mult = if growth_mult.is_finite() && growth_mult > 0.0 {
+            growth_mult
+        } else {
+            1.0
+        };
+        // 這段時間內實際能長多久，受限於剩餘濕度（加速放大的是成長、非耗水）。
         let effective = dt.min(self.moisture);
-        self.growth = (self.growth + effective).min(RIPE_AT);
+        self.growth = (self.growth + effective * mult).min(RIPE_AT);
         self.moisture = (self.moisture - dt).max(0.0);
     }
 
