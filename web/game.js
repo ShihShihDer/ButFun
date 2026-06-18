@@ -227,6 +227,7 @@
   let _parallaxFpsBuf = [];
   let _parallaxEnabled = !reduceMotion;
   let _prevRenderNow = 0;
+  let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
   // 所有聲音用振盪器即時合成；需要使用者互動後建立 AudioContext（規避自動播放政策）。
@@ -287,6 +288,193 @@
         [[659, 0], [784, 80], [1047, 180], [1319, 310]].forEach(([f, dt]) =>
           setTimeout(() => _tone(f, "sine", 0.01, 0.10, 0.28, 0.32), dt)
         );
+      },
+    };
+  })();
+
+  // ---- 環境音效引擎（ROADMAP 377）：雨聲／夜蟲鳴／晨鳥啼，純 Web Audio 合成，零音檔 ----
+  // ambientOn 預設 true，玩家可在設定面板關閉，結果存 localStorage。
+  // 與互動音效（SFX）獨立控制：背景環境聲需要持續播放與柔順淡入淡出，策略不同。
+  const AMBIENT = (() => {
+    let _ctx = null;
+    let _on = localStorage.getItem("butfun.ambient") !== "0";
+
+    function _getCtx() {
+      if (!_ctx) {
+        try { _ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+      }
+      if (_ctx && _ctx.state === "suspended") { try { _ctx.resume(); } catch {} }
+      return _ctx;
+    }
+
+    // ─── 雨聲層：白噪音 + 低通濾波，音量隨降雨強度調整 ───────────────────
+    let _rainSrc = null, _rainGain = null, _rainOn = false;
+
+    function _makeNoiseBuffer(ctx) {
+      const sr = ctx.sampleRate;
+      const len = Math.floor(sr * 2);
+      const buf = ctx.createBuffer(1, len, sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      return buf;
+    }
+
+    function _startRain(intensity) {
+      if (_rainOn) { _setRainVol(intensity); return; }
+      const ctx = _getCtx(); if (!ctx) return;
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = _makeNoiseBuffer(ctx);
+        src.loop = true;
+        const flt = ctx.createBiquadFilter();
+        flt.type = "lowpass"; flt.frequency.value = 1400; flt.Q.value = 0.8;
+        const gn = ctx.createGain();
+        const vol = Math.min(1, intensity) * 0.14;
+        gn.gain.setValueAtTime(0, ctx.currentTime);
+        gn.gain.linearRampToValueAtTime(vol, ctx.currentTime + 1.5);
+        src.connect(flt); flt.connect(gn); gn.connect(ctx.destination);
+        src.start();
+        _rainSrc = src; _rainGain = gn; _rainOn = true;
+      } catch {}
+    }
+
+    function _setRainVol(intensity) {
+      if (!_rainGain || !_ctx) return;
+      try {
+        _rainGain.gain.linearRampToValueAtTime(
+          Math.min(1, intensity) * 0.14, _ctx.currentTime + 0.5
+        );
+      } catch {}
+    }
+
+    function _stopRain() {
+      if (!_rainOn || !_rainGain || !_ctx) return;
+      try {
+        _rainGain.gain.linearRampToValueAtTime(0, _ctx.currentTime + 1.2);
+        const src = _rainSrc;
+        setTimeout(() => { try { src.stop(); } catch {} }, 1500);
+        _rainSrc = null; _rainGain = null; _rainOn = false;
+      } catch {}
+    }
+
+    // ─── 夜蟲鳴層：AM 調製振盪器模擬蟋蟀低鳴 ──────────────────────────────
+    let _cricketOsc = null, _cricketLfo = null, _cricketGain = null, _cricketOn = false;
+
+    function _startCricket() {
+      if (_cricketOn) return;
+      const ctx = _getCtx(); if (!ctx) return;
+      try {
+        const osc = ctx.createOscillator();
+        osc.type = "sine"; osc.frequency.value = 4100;
+        const lfo = ctx.createOscillator();
+        lfo.type = "sine"; lfo.frequency.value = 16; // 16Hz 模擬蟋蟀節律
+        const lfoAmp = ctx.createGain(); lfoAmp.gain.value = 0.028;
+        const master = ctx.createGain();
+        // 淡入：從 0 緩升到 0.028（LFO 讓 gain 在 0~0.056 之間震盪）
+        master.gain.setValueAtTime(0, ctx.currentTime);
+        master.gain.linearRampToValueAtTime(0.028, ctx.currentTime + 2.5);
+        lfo.connect(lfoAmp); lfoAmp.connect(master.gain); // AudioParam 調幅
+        osc.connect(master); master.connect(ctx.destination);
+        osc.start(); lfo.start();
+        _cricketOsc = osc; _cricketLfo = lfo; _cricketGain = master; _cricketOn = true;
+      } catch {}
+    }
+
+    function _stopCricket() {
+      if (!_cricketOn || !_cricketGain || !_ctx) return;
+      try {
+        _cricketGain.gain.cancelScheduledValues(_ctx.currentTime);
+        _cricketGain.gain.linearRampToValueAtTime(0, _ctx.currentTime + 1.5);
+        const osc = _cricketOsc, lfo = _cricketLfo;
+        setTimeout(() => { try { osc.stop(); lfo.stop(); } catch {} }, 1800);
+        _cricketOsc = null; _cricketLfo = null; _cricketGain = null; _cricketOn = false;
+      } catch {}
+    }
+
+    // ─── 晨鳥啼：白天且不下雨時，每隔 8~25 秒冒一聲短鳥鳴 ───────────────────
+    let _birdTimer = null, _birdActive = false;
+
+    function _chirp() {
+      const ctx = _getCtx();
+      if (!ctx || !_on || !_birdActive) return;
+      try {
+        // 三種隨機鳥鳴音型（音高序列 + 時間偏移 ms）
+        const patterns = [
+          [[2400, 0], [2800, 80], [2200, 160]],
+          [[3000, 0], [2600, 60], [3200, 130]],
+          [[2000, 0], [2500, 100], [2000, 200]],
+        ];
+        const pat = patterns[Math.floor(Math.random() * patterns.length)];
+        pat.forEach(([freq, dt]) => {
+          setTimeout(() => {
+            try {
+              const osc = ctx.createOscillator();
+              const gn = ctx.createGain();
+              osc.connect(gn); gn.connect(ctx.destination);
+              osc.type = "sine"; osc.frequency.value = freq;
+              const t = ctx.currentTime;
+              gn.gain.setValueAtTime(0, t);
+              gn.gain.linearRampToValueAtTime(0.09, t + 0.02);
+              gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.13);
+              osc.start(t); osc.stop(t + 0.16);
+            } catch {}
+          }, dt);
+        });
+      } catch {}
+      if (_birdActive && _on) {
+        _birdTimer = setTimeout(_chirp, 8000 + Math.floor(Math.random() * 17000));
+      }
+    }
+
+    function _startBird() {
+      if (_birdActive) return;
+      _birdActive = true;
+      // 初次延遲 5~12 秒，避免進場即爆音
+      _birdTimer = setTimeout(_chirp, 5000 + Math.floor(Math.random() * 7000));
+    }
+
+    function _stopBird() {
+      _birdActive = false;
+      if (_birdTimer !== null) { clearTimeout(_birdTimer); _birdTimer = null; }
+    }
+
+    function _stopAll() {
+      _stopRain(); _stopCricket(); _stopBird();
+      _prevRain = false; _prevNight = false; _prevBird = false;
+    }
+
+    // 狀態快取：只在真正改變時才啟停，避免每次 tick 重建音源
+    let _prevRain = false, _prevNight = false, _prevBird = false;
+
+    return {
+      get on() { return _on; },
+      setOn(v) {
+        _on = !!v;
+        try { localStorage.setItem("butfun.ambient", _on ? "1" : "0"); } catch {}
+        if (!_on) _stopAll();
+      },
+      // tick()：每次遊戲狀態有變時呼叫（外部節流至約 2 秒一次）。
+      tick(isRaining, rainIntensity, isNight, isDaytime) {
+        if (!_on) return;
+        // 雨聲
+        if (isRaining !== _prevRain) {
+          _prevRain = isRaining;
+          if (isRaining) _startRain(rainIntensity); else _stopRain();
+        } else if (isRaining && _rainOn) {
+          _setRainVol(rainIntensity);
+        }
+        // 夜蟲鳴（夜裡且不下雨）
+        const wantCricket = isNight && !isRaining;
+        if (wantCricket !== _prevNight) {
+          _prevNight = wantCricket;
+          if (wantCricket) _startCricket(); else _stopCricket();
+        }
+        // 晨鳥啼（白天且不下雨）
+        const wantBird = isDaytime && !isRaining;
+        if (wantBird !== _prevBird) {
+          _prevBird = wantBird;
+          if (wantBird) _startBird(); else _stopBird();
+        }
       },
     };
   })();
@@ -5511,6 +5699,19 @@
       updateScarePredatorBtn();             // 驅趕正在追獵的掠食者按鈕（ROADMAP 357）
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
+
+    // 環境音效節流更新（ROADMAP 377）：每 2 秒同步一次天氣/晝夜狀態給 AMBIENT，
+    // 避免每幀重建音源；用 renderNow（已算好）而非再呼叫 performance.now()。
+    if (renderNow - _ambientTickLast > 2000) {
+      _ambientTickLast = renderNow;
+      const _isNight = !!(daynight && daynight.light < 0.42);
+      AMBIENT.tick(
+        isRainingState(weatherType, weatherIntensity),
+        weatherIntensity,
+        _isNight,
+        !_isNight
+      );
+    }
 
     scheduleRender();
   }
@@ -22696,6 +22897,14 @@
       optSfx.addEventListener("change", () => {
         SFX.setOn(optSfx.checked);
         if (optSfx.checked) SFX.click(); // 開啟時播一聲確認
+      });
+    }
+    // ⚙ 設定：環境音效開關（ROADMAP 377）。
+    const optAmbient = document.getElementById("optAmbient");
+    if (optAmbient) {
+      optAmbient.checked = AMBIENT.on;
+      optAmbient.addEventListener("change", () => {
+        AMBIENT.setOn(optAmbient.checked);
       });
     }
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
