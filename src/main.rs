@@ -157,6 +157,7 @@ mod eco_report;
 mod eco_bounty;
 mod eco_festival;
 mod item_rarity;
+mod element_affinity;
 
 use std::net::SocketAddr;
 

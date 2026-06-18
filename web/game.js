@@ -3078,6 +3078,16 @@
         announce(`${qlabel}品質採集，獲得 ${iname} ×${qty}`);
         break;
       }
+      case "elem_bonus": {
+        // 元素克制命中（ROADMAP 380）：自己的附魔剋中敵人弱點時顯示金色飄字。旁觀者忽略。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 54;
+        const info = ELEM_INFO[msg.elem] || {};
+        const emoji = info.emoji || "⚡";
+        floaters.push({ wx, wy, text: `${emoji} 元素克制 ×1.5！`, color: "255,210,60", born: performance.now() });
+        announce(`元素克制，傷害提升 1.5 倍`);
+        break;
+      }
       case "cook_start": {
         // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;
@@ -8135,6 +8145,40 @@
     aether_specter:    "霧醚幻靈",
     origin_guardian:   "源晶守護者",
     rift_guardian:     "裂縫守護者",
+  };
+
+  // 元素克制系統（ROADMAP 380）：敵人種類 → 元素 wire key。與後端 element_affinity.rs 對齊。
+  const ENEMY_ELEMENT = {
+    scrap_drone:       "mechanical", // 機械
+    ether_wisp:        "ether",      // 乙太
+    flutter_sprite:    "nature",     // 自然
+    mushroom_stalker:  "nature",     // 自然
+    crystal_golem:     "crystal",    // 晶石
+    rune_guardian:     "crystal",    // 晶石
+    coral_crab:        "nature",     // 自然（海洋生靈）
+    jade_wraith:       "void",       // 虛空
+    steam_construct:   "fire",       // 火焰（蒸汽構裝）
+    void_phantom:      "void",       // 虛空
+    aether_specter:    "ether",      // 乙太
+    origin_guardian:   "crystal",    // 晶石
+    rift_guardian:     "void",       // 虛空
+    ether_overlord:    "ether",      // 乙太
+  };
+
+  // 元素 wire key → 顯示資訊（emoji、中文名、被哪種附魔克制）。
+  const ELEM_INFO = {
+    fire:       { emoji: "🔥", name: "火焰", weakTo: "ether" },
+    ether:      { emoji: "✨", name: "乙太", weakTo: null },
+    nature:     { emoji: "🌿", name: "自然", weakTo: "fire" },
+    crystal:    { emoji: "💠", name: "晶石", weakTo: null },
+    void:       { emoji: "🌀", name: "虛空", weakTo: "ether" },
+    mechanical: { emoji: "⚙️", name: "機械", weakTo: "fire" },
+  };
+
+  // 附魔 wire key → 元素 wire key（有元素性的附魔才有值）。
+  const ENCHANT_ELEMENT = {
+    burn_burst:       "fire",
+    aether_resonance: "ether",
   };
 
   // 廢鐵無人機：蒸汽龐克機械偵查器。機身＋雙旋翼＋銅天線＋紅色警示核心眼。ROADMAP 89 精緻化。
@@ -16683,7 +16727,9 @@
         const tierTag = attEntry
           ? (attEntry.tier === "friendly" ? " ♥" : attEntry.tier === "wary" ? " △" : attEntry.tier === "hostile" ? " ⚠" : "")
           : "";
-        const tag = `${prefix}Lv.${e.level} ${kindName}${tierTag}`;
+        // 元素標籤（ROADMAP 380）：在怪物名前顯示元素 emoji，讓玩家一眼辨別弱點
+        const elemTag = ELEM_INFO[ENEMY_ELEMENT[e.kind]]?.emoji || "";
+        const tag = `${prefix}Lv.${e.level} ${elemTag}${kindName}${tierTag}`;
         ctx.font = e.notorious ? "bold 10px sans-serif" : "bold 9px sans-serif";
         ctx.textAlign = "center";
         ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : e.resting ? "rgba(0,20,40,0.5)" : "rgba(0,0,0,0.55)";
@@ -17454,11 +17500,13 @@
   };
 
   // 附魔碎片清單（碎片 → 附魔名/效果說明）。
+  // 元素克制（ROADMAP 380）：灼燒=🔥火焰系、克制 🌿 自然系 / ⚙️ 機械系；
+  //                           共鳴=✨乙太系、克制 🌀 虛空系 / 🔥 火焰系。
   const ENCHANT_SHARDS = [
     { shard: "jade_shard",    name: "吸血",  desc: "擊殺時回復 2 HP（翠幽碎片）" },
-    { shard: "lava_crystal",  name: "灼燒",  desc: "命中時額外 3 點火焰傷害（熔晶碎片）" },
+    { shard: "lava_crystal",  name: "灼燒",  desc: "命中時額外 3 點火焰傷害（熔晶碎片）⚔️ 克制 🌿 自然系 / ⚙️ 機械系怪物 ×1.5" },
     { shard: "void_shard",    name: "暴擊",  desc: "每 5 次攻擊一次雙倍傷害（虛空碎片）" },
-    { shard: "aether_shard",  name: "共鳴",  desc: "命中時額外 2 點霧醚傷害（霧醚碎片）" },
+    { shard: "aether_shard",  name: "共鳴",  desc: "命中時額外 2 點霧醚傷害（霧醚碎片）⚔️ 克制 🌀 虛空系 / 🔥 火焰系怪物 ×1.5" },
     { shard: "origin_shard",  name: "增幅",  desc: "擊殺經驗值 +30%（源晶碎片）" },
   ];
 

@@ -2243,6 +2243,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                     let (use_warcry, warcry_bonus_reach) = app.players.read().unwrap()
                         .get(&id).map(|p| (p.pending_warcry, p.skill_masteries.warcry_bonus_reach_px())).unwrap_or((false, 0.0));
+                    // 元素克制倍率（ROADMAP 380）：單攻才套用（戰吼群攻一律 power 原值）。
+                    // 讀鎖窺探最近敵人種類；守 prod-deadlock 鐵律：讀鎖內純算、不含 IO。
+                    let (power, elem_bonus_elem): (u32, Option<String>) = if !use_warcry {
+                        let target_kind = app.enemies.read().unwrap().peek_nearest_kind(px, py, attack_reach);
+                        let mult = target_kind
+                            .map(|k| crate::element_affinity::damage_multiplier(enchant, k))
+                            .unwrap_or(1.0);
+                        let elem_str = if mult > 1.0 {
+                            enchant
+                                .and_then(crate::element_affinity::enchant_to_element)
+                                .map(|e| e.wire_str().to_owned())
+                        } else {
+                            None
+                        };
+                        (((power as f32) * mult) as u32, elem_str)
+                    } else {
+                        (power, None)
+                    };
                     let results: Vec<_> = if use_warcry {
                         // 戰吼：熟練度加成群攻範圍（ROADMAP 153）。
                         let effective_reach = attack_reach + warcry_bonus_reach;
@@ -2257,6 +2275,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let _ = app.tx.send(std::sync::Arc::new(
                             crate::protocol::ServerMsg::RangedHit { from_x: px, from_y: py, hit }
                         ));
+                    }
+                    // 元素克制命中廣播（ROADMAP 380）：有效命中（results 非空）才廣播；
+                    // 前端只對 player_id == 自己 演出飄字（旁觀者忽略）。出鎖後廣播，守 prod-deadlock 鐵律。
+                    if let Some(elem_str) = &elem_bonus_elem {
+                        if !results.is_empty() {
+                            let _ = app.tx.send(std::sync::Arc::new(
+                                crate::protocol::ServerMsg::ElemBonus {
+                                    player_id: id,
+                                    x: px,
+                                    y: py,
+                                    elem: elem_str.clone(),
+                                }
+                            ));
+                        }
                     }
                     // 取第一筆的兇名狀態（單攻時只有最多一筆，群攻取第一隻兇名）
                     let was_notorious = results.iter().any(|(_, _, n, _)| *n);
