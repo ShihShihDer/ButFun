@@ -894,6 +894,8 @@
   // 以固定順序輸出同一批敵人(spawn 槽位穩定、被打倒只是原地重生),同槽同 kind 才比對,
   // 避免序變誤觸。只在血量下降／轉被打倒時觸發,不在前端判任何戰鬥規則(伺服器權威)。
   let enemyFx = []; // 每槽 { until:ms, lethal:bool };render 依剩餘時間淡出
+  // 升等炫光（ROADMAP 382）：升等瞬間觸發金色衝擊波環＋射線動畫。{ x, y, start }，start=ms；null=無動畫。
+  let levelUpFx = null;
   // 怪物死亡淡出（ROADMAP 150）：alive→false 的瞬間記錄淡出截止時間。
   // 淡出期間以漸減 alpha 繪製定住的軀體；超時後完全隱藏，不再殘留幽靈。
   const ENEMY_DEATH_FADE_MS = 600;
@@ -2675,6 +2677,15 @@
               announce(`恭喜升到 ${me.level} 級！⚔️+${Math.floor(me.level/2)} ❤️+${me.level * 2}`);
               addChat("系統", `✨ ${me.name} 升到 ${me.level} 級！`);
               SFX.levelUp(); // 升等音效（ROADMAP 376）
+              // 升等炫光（ROADMAP 382）：觸發金色衝擊波環動畫＋大型飄字。
+              levelUpFx = { x: me.x, y: me.y, start: performance.now() };
+              hitFloaters.push({
+                wx: me.x, wy: me.y - 36,
+                text: `⭐ Lv.${me.level}！`,
+                color: "255,215,0",
+                size: 24,
+                born: performance.now(),
+              });
             }
             myLevel = me.level;
           }
@@ -5657,6 +5668,7 @@
       if (p.id !== myId) safeDraw("otherPlayer", () => drawPlayer(p, camX, camY));
     }
     if (me) safeDraw("self", () => drawPlayer(me, camX, camY));
+    safeDraw("levelUpFx", () => drawLevelUpFx(camX, camY, renderNow)); // 升等炫光（ROADMAP 382）
     safeDraw("playerChatBubbles", () => drawPlayerChatBubbles(camX, camY)); // 玩家聊天氣泡（ROADMAP 378）
 
     // 疊加層（日夜染色→環境光→星星→微光→視差→大氣→特效/飄字→邊緣指標）：多為本地特效、
@@ -12326,6 +12338,60 @@
     }
 
     ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 升等炫光（ROADMAP 382）：升等瞬間在玩家位置爆出 3 圈金色衝擊波環＋8 道金射線，持續 2 秒。
+  // reduceMotion 模式只畫靜態光圈不做擴張動畫。
+  const LEVEL_UP_FX_MS = 2000;
+  function drawLevelUpFx(camX, camY, now) {
+    if (!levelUpFx) return;
+    const age = now - levelUpFx.start;
+    if (age >= LEVEL_UP_FX_MS) { levelUpFx = null; return; }
+    const sx = levelUpFx.x - camX;
+    const sy = levelUpFx.y - camY;
+    const prog = age / LEVEL_UP_FX_MS; // 0→1 over 2s
+
+    ctx.save();
+
+    // 8 道金射線（前 600ms 向外延伸後淡出）
+    if (age < 600) {
+      const rayProg = age / 600;
+      const rayAlpha = (1 - rayProg) * 0.9;
+      ctx.globalAlpha = rayAlpha;
+      ctx.strokeStyle = "#fffacd";
+      ctx.lineWidth = 2.5;
+      const NUM_RAYS = 8;
+      for (let i = 0; i < NUM_RAYS; i++) {
+        const angle = (i / NUM_RAYS) * Math.PI * 2;
+        const inner = reduceMotion ? 22 : 18 + rayProg * 10;
+        const outer = reduceMotion ? 40 : inner + rayProg * 48;
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(angle) * inner, sy + Math.sin(angle) * inner);
+        ctx.lineTo(sx + Math.cos(angle) * outer, sy + Math.sin(angle) * outer);
+        ctx.stroke();
+      }
+    }
+
+    // 3 圈金色衝擊波環，各延遲 0 / 300 / 600 ms 起算
+    const RING_DELAYS = [0, 300, 600];
+    for (let ri = 0; ri < RING_DELAYS.length; ri++) {
+      const delay = RING_DELAYS[ri];
+      const ringAge = age - delay;
+      if (ringAge <= 0) continue;
+      const ringDur = LEVEL_UP_FX_MS - delay;
+      const rProg = Math.min(ringAge / ringDur, 1);
+      const r = reduceMotion ? 24 + ri * 14 : 18 + rProg * 72;
+      const alpha = (1 - rProg) * (ri === 0 ? 0.95 : 0.7);
+      if (alpha <= 0) continue;
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = ri === 0 ? "#ffd700" : (ri === 1 ? "#ffe566" : "#fff8a0");
+      ctx.lineWidth = reduceMotion ? 2 : 3 - rProg * 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
