@@ -125,8 +125,11 @@
     #dockCats { display: flex; gap: 6px; }
     #hudDock .dock-group { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
     #hudDock .dock-group.hidden { display: none; }
-    .dock-cat { font-size: 1.15rem; width: 46px; height: 38px; line-height: 1; cursor: pointer;
-      background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; position: relative; }
+    /* ROADMAP 372：分類標籤——圖示＋中文（垂直堆疊），手機一眼看懂 */
+    .dock-cat { font-size: 1.05rem; width: auto; min-width: 50px; height: 42px; line-height: 1; cursor: pointer;
+      background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; position: relative;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 7px; gap: 1px; }
+    .cat-lbl { font-size: 0.68em; color: var(--ink); opacity: 0.82; }
     .dock-cat:hover { border-color: var(--brass); }
     .dock-cat[aria-expanded="true"] { border-color: var(--brass); background: rgba(201,162,75,0.18); }
     .dock-cat:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
@@ -146,7 +149,9 @@
     #hudDock .dock-btn.dock-active::after { content: ""; position: absolute; top: 3px; right: 3px;
       width: 8px; height: 8px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 4px var(--brass); }
     /* 尊重「減少動態」:小點不脈動(本就靜態),這裡保留語彙位置不另加動效。 */
-    /* ROADMAP 138：精簡常駐列——只剩背包快捷 + ☰ 選單 */
+    /* ROADMAP 372：分類展開按鈕顯示圖示＋中文標籤（RO 風圖文鈕，取代原本純 emoji 的 40px 方塊） */
+    .dock-group .dock-btn { width: auto !important; padding: 0 10px !important; min-width: 60px; font-size: 0.88rem !important; gap: 4px; }
+    /* ROADMAP 372：背包常駐列（只剩一顆，分類標籤見 #dockCats） */
     #dockSlim { display: flex; gap: 6px; }
     .dock-slim-btn { width: auto !important; padding: 0 12px !important; min-width: 60px; font-size: 0.95rem !important; gap: 4px; }
     /* ☰ 選單視窗：比一般 hud-window 稍寬、可捲動 */
@@ -506,60 +511,78 @@
     <!-- 表情輪（ROADMAP 338）：按「😊 表情」展開的浮層，挑一個情緒廣播給附近玩家。
          按鈕由 game.js 依後端表情白名單動態生成，標籤集中於此（i18n 友善）。 -->
     <div id="emotePopup" class="hidden" role="menu" aria-label="表情動作" style="position:fixed;z-index:50;background:rgba(20,24,32,0.96);border:1px solid #3a4250;border-radius:12px;padding:8px;display:flex;flex-wrap:wrap;gap:6px;max-width:200px;box-shadow:0 6px 20px rgba(0,0,0,0.5);"></div>
-    <!-- dock（ROADMAP 138 HUD 重設計）：常駐只留背包快捷 + ☰ 選單，全功能收進選單分類 -->
+    <!-- dock（ROADMAP 372 HUD 重設計）：背包常駐＋RO 風五類分類標籤＋展開式圖文按鈕，手機一眼看懂 -->
     <div id="hudDock">
-      <!-- 精簡常駐列：兩顆按鈕，不佔螢幕 -->
+      <!-- 背包常駐：最高頻操作一鍵到 -->
       <div id="dockSlim">
         <button type="button" class="dock-btn dock-slim-btn" id="dockBag"
                 data-win="winBag" aria-haspopup="dialog" aria-expanded="false"
                 aria-keyshortcuts="B" aria-label="背包（B）" title="背包（B）">🎒 背包</button>
-        <button type="button" class="dock-btn dock-slim-btn" id="dockMenuBtn"
-                data-win="winMenu" aria-haspopup="dialog" aria-expanded="false"
-                aria-label="開啟功能選單" title="開啟功能選單（所有系統入口）">☰ 選單</button>
       </div>
-      <!-- ROADMAP 187：玩家從 ☰ 選單釘選的常用面板快捷鈕（由 game.js 依 localStorage 動態填入；空時不佔版面） -->
+      <!-- RO 風五類分類標籤（圖示＋文字垂直堆疊，手機一眼看懂） -->
+      <div id="dockCats">
+        <button type="button" class="dock-cat" data-group="dockGrpCombat" aria-expanded="false" title="戰鬥">⚔️<span class="cat-lbl">戰鬥</span></button>
+        <button type="button" class="dock-cat" data-group="dockGrpProduce" aria-expanded="false" title="生產">🌾<span class="cat-lbl">生產</span></button>
+        <button type="button" class="dock-cat" data-group="dockGrpChar"    aria-expanded="false" title="角色">🎭<span class="cat-lbl">角色</span></button>
+        <button type="button" class="dock-cat" data-group="dockGrpSocial"  aria-expanded="false" title="社群">👥<span class="cat-lbl">社群</span></button>
+        <button type="button" class="dock-cat" data-group="dockGrpOther"   aria-expanded="false" title="其他">🌍<span class="cat-lbl">其他</span></button>
+      </div>
+      <!-- ROADMAP 187：玩家釘選的常用面板快捷鈕（由 game.js 依 localStorage 動態填入；空時不佔版面） -->
       <div id="dockPinned"></div>
-      <!-- 隱藏容器：保留所有 dock-btn 讓鍵盤捷徑繼續用（display:none 仍可 .click()） -->
-      <div id="dockHidden" style="display:none">
-        <button type="button" class="dock-btn" id="dockCraft" data-win="winCraft" aria-keyshortcuts="C" aria-label="合成台（C）">🔧</button>
-        <button type="button" class="dock-btn" id="dockMarket" data-win="winMarket" aria-label="市場">🏪</button>
-        <button type="button" class="dock-btn" id="dockShop" data-win="winShop" aria-label="商店">💰</button>
-        <button type="button" class="dock-btn" id="dockExpand" data-win="winExpand" aria-label="購地">🌱</button>
-        <button type="button" class="dock-btn" id="dockWarehouse" data-win="winWarehouse" aria-keyshortcuts="W" aria-label="倉庫（W）">🗄️</button>
-        <button type="button" class="dock-btn" id="dockEquip" data-win="winEquip" aria-keyshortcuts="I" aria-label="裝備（I）">⚔️</button>
-        <button type="button" class="dock-btn" id="dockRefine" data-win="winRefine" aria-keyshortcuts="R" aria-label="精煉附魔（R）">⚒️</button>
-        <button type="button" class="dock-btn" id="dockSkill" data-win="winSkill" aria-keyshortcuts="Z" aria-label="主動技能（Z）">🔮</button>
-        <button type="button" class="dock-btn" id="dockPet" data-win="winPet" aria-keyshortcuts="P" aria-label="寵物夥伴（P）">🐾</button>
-        <button type="button" class="dock-btn" id="dockFish" data-win="winFish" aria-keyshortcuts="F" aria-label="釣魚（F）">🎣</button>
-        <button type="button" class="dock-btn" id="dockMine" data-win="winMine" aria-keyshortcuts="2" aria-label="採礦（2）">⛏️</button>
-        <button type="button" class="dock-btn" id="dockWaypost" data-win="winWaypost" aria-keyshortcuts="3" aria-label="立路標（3）">🪧</button>
-        <button type="button" class="dock-btn" id="dockBottle" data-win="winBottle" aria-keyshortcuts="4" aria-label="星海寄語（4）">🍾</button>
-        <button type="button" class="dock-btn" id="dockRanch" data-win="winRanch" aria-keyshortcuts="N" aria-label="牧場（N）">🐔</button>
-        <button type="button" class="dock-btn" id="dockFarmCrop" data-win="winFarmCrop" aria-keyshortcuts="T" aria-label="農作（T）">🌾</button>
-        <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-keyshortcuts="X" aria-label="夜採星晶（X）">✨</button>
-        <button type="button" class="dock-btn" id="dockTrade" data-win="winTrade" aria-keyshortcuts="V" aria-label="星際貿易（V）">📦</button>
-        <button type="button" class="dock-btn" id="dockWorkshop" data-win="winWorkshop" aria-keyshortcuts="K" aria-label="工匠工坊（K）">🔨</button>
-        <button type="button" class="dock-btn" id="dockBounty" data-win="winBounty" aria-keyshortcuts="U" aria-label="懸賞告示板（U）">📜</button>
-        <button type="button" class="dock-btn" id="dockExpedition" data-win="winExpedition" aria-keyshortcuts="Y" aria-label="古蹟探勘（Y）">🗺️</button>
-        <button type="button" class="dock-btn" id="dockProcurement" data-win="winProcurement" aria-keyshortcuts="O" aria-label="星際採購（O）">📦</button>
-        <button type="button" class="dock-btn" id="dockFarmFair" data-win="winFarmFair" aria-keyshortcuts="1" aria-label="農展評審（1）">🏅</button>
-        <button type="button" class="dock-btn" id="dockClass" data-win="winClass" aria-keyshortcuts="J" aria-label="職業選擇（J）">🎭</button>
-        <button type="button" class="dock-btn" id="dockStat" data-win="winStat" aria-keyshortcuts="S" aria-label="屬性加點（S）">🎯</button>
-        <button type="button" class="dock-btn" id="dockCodex" data-win="winCodex" aria-label="生態圖鑑">📕</button>
-        <button type="button" class="dock-btn" id="dockAtlas" data-win="winAtlas" aria-label="探索圖鑑">🗺️</button>
-        <button type="button" class="dock-btn" id="dockSky" data-win="winSky" aria-label="天象圖鑑">🌌</button>
-        <button type="button" class="dock-btn" id="dockStargaze" data-win="winStargaze" aria-label="觀星連星座">🔭</button>
-        <button type="button" class="dock-btn" id="dockReconcile" data-win="winReconcile" aria-label="居民和解委託">🕊️</button>
-        <button type="button" class="dock-btn" id="dockGuild" data-win="winGuild" aria-keyshortcuts="G" aria-label="公會（G）">⚜️</button>
-        <button type="button" class="dock-btn" id="dockFriend" data-win="winFriend" aria-label="好友清單">👥</button>
-        <button type="button" class="dock-btn" id="dockParty" data-win="winParty" aria-label="隊伍">⚔️</button>
-        <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-keyshortcuts="A" aria-label="成就（A）">🏆</button>
-        <button type="button" class="dock-btn" id="dockDailyQuest" data-win="winDailyQuest" aria-keyshortcuts="D" aria-label="每日任務（D）">📅</button>
-        <button type="button" class="dock-btn" id="dockLeaderboard" data-win="winLeaderboard" aria-keyshortcuts="L" aria-label="排行榜（L）">🏅</button>
-        <button type="button" class="dock-btn" id="dockWorldMap" data-win="winWorldMap" aria-label="世界地圖">🗺️</button>
-        <button type="button" class="dock-btn" id="dockQuest" data-win="winQuest" aria-label="全服任務（Q）">📋</button>
-        <button type="button" class="dock-btn" id="dockHelp" data-win="winHelp" aria-keyshortcuts="H" aria-label="操作說明（H）">📖</button>
-        <button type="button" class="dock-btn" id="dockSettings" data-win="winSettings" aria-label="設定">⚙️</button>
+      <!-- 戰鬥：裝備、技能、寵物等 -->
+      <div id="dockGrpCombat" class="dock-group hidden">
+        <button type="button" class="dock-btn" id="dockEquip"  data-win="winEquip"  aria-keyshortcuts="I" aria-label="裝備（I）">⚔️ 裝備</button>
+        <button type="button" class="dock-btn" id="dockRefine" data-win="winRefine" aria-keyshortcuts="R" aria-label="精煉附魔（R）">⚒️ 精煉</button>
+        <button type="button" class="dock-btn" id="dockSkill"  data-win="winSkill"  aria-keyshortcuts="Z" aria-label="主動技能（Z）">🔮 技能</button>
+        <button type="button" class="dock-btn" id="dockPet"    data-win="winPet"    aria-keyshortcuts="P" aria-label="寵物夥伴（P）">🐾 寵物</button>
+        <button type="button" class="dock-btn" id="dockBounty" data-win="winBounty" aria-keyshortcuts="U" aria-label="懸賞告示板（U）">📜 懸賞</button>
+        <button type="button" class="dock-btn" id="dockParty"  data-win="winParty"  aria-label="隊伍">⚔️ 隊伍</button>
+      </div>
+      <!-- 生產採集：合成、農作、釣魚等 -->
+      <div id="dockGrpProduce" class="dock-group hidden">
+        <button type="button" class="dock-btn" id="dockCraft"       data-win="winCraft"       aria-keyshortcuts="C" aria-label="合成台（C）">🔧 合成</button>
+        <button type="button" class="dock-btn" id="dockFarmCrop"    data-win="winFarmCrop"    aria-keyshortcuts="T" aria-label="農作（T）">🌾 農作</button>
+        <button type="button" class="dock-btn" id="dockFish"        data-win="winFish"        aria-keyshortcuts="F" aria-label="釣魚（F）">🎣 釣魚</button>
+        <button type="button" class="dock-btn" id="dockMine"        data-win="winMine"        aria-keyshortcuts="2" aria-label="採礦（2）">⛏️ 採礦</button>
+        <button type="button" class="dock-btn" id="dockRanch"       data-win="winRanch"       aria-keyshortcuts="N" aria-label="牧場（N）">🐔 牧場</button>
+        <button type="button" class="dock-btn" id="dockStarCrystal" data-win="winStarCrystal" aria-keyshortcuts="X" aria-label="夜採星晶（X）">✨ 星晶</button>
+        <button type="button" class="dock-btn" id="dockExpedition"  data-win="winExpedition"  aria-keyshortcuts="Y" aria-label="古蹟探勘（Y）">🗺️ 探勘</button>
+        <button type="button" class="dock-btn" id="dockFarmFair"    data-win="winFarmFair"    aria-keyshortcuts="1" aria-label="農展評審（1）">🏅 農展</button>
+        <button type="button" class="dock-btn" id="dockWaypost"     data-win="winWaypost"     aria-keyshortcuts="3" aria-label="立路標（3）">🪧 路標</button>
+        <button type="button" class="dock-btn" id="dockBottle"      data-win="winBottle"      aria-keyshortcuts="4" aria-label="星海寄語（4）">🍾 寄語</button>
+      </div>
+      <!-- 角色養成：職業、屬性、成就等 -->
+      <div id="dockGrpChar" class="dock-group hidden">
+        <button type="button" class="dock-btn" id="dockClass"       data-win="winClass"       aria-keyshortcuts="J" aria-label="職業選擇（J）">🎭 職業</button>
+        <button type="button" class="dock-btn" id="dockStat"        data-win="winStat"        aria-keyshortcuts="S" aria-label="屬性加點（S）">🎯 屬性</button>
+        <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-keyshortcuts="A" aria-label="成就（A）">🏆 成就</button>
+        <button type="button" class="dock-btn" id="dockDailyQuest"  data-win="winDailyQuest"  aria-keyshortcuts="D" aria-label="每日任務（D）">📅 每日</button>
+        <button type="button" class="dock-btn" id="dockLeaderboard" data-win="winLeaderboard" aria-keyshortcuts="L" aria-label="排行榜（L）">🏅 排行</button>
+        <button type="button" class="dock-btn" id="dockCodex"       data-win="winCodex"       aria-label="生態圖鑑">📕 生態</button>
+        <button type="button" class="dock-btn" id="dockAtlas"       data-win="winAtlas"       aria-label="探索圖鑑">🗺️ 地圖</button>
+        <button type="button" class="dock-btn" id="dockSky"         data-win="winSky"         aria-label="天象圖鑑">🌌 天象</button>
+        <button type="button" class="dock-btn" id="dockStargaze"    data-win="winStargaze"    aria-label="觀星連星座">🔭 觀星</button>
+        <button type="button" class="dock-btn" id="dockProcurement" data-win="winProcurement" aria-keyshortcuts="O" aria-label="星際採購（O）">📦 採購</button>
+        <button type="button" class="dock-btn" id="dockReconcile"   data-win="winReconcile"   aria-label="居民和解委託">🕊️ 和解</button>
+      </div>
+      <!-- 社群：公會、好友 -->
+      <div id="dockGrpSocial" class="dock-group hidden">
+        <button type="button" class="dock-btn" id="dockGuild"  data-win="winGuild"  aria-keyshortcuts="G" aria-label="公會（G）">⚜️ 公會</button>
+        <button type="button" class="dock-btn" id="dockFriend" data-win="winFriend" aria-label="好友清單">👥 好友</button>
+      </div>
+      <!-- 活動與其他：市場、倉庫、設定等 -->
+      <div id="dockGrpOther" class="dock-group hidden">
+        <button type="button" class="dock-btn" id="dockMarket"    data-win="winMarket"    aria-label="市場">🏪 市場</button>
+        <button type="button" class="dock-btn" id="dockShop"      data-win="winShop"      aria-label="商店">💰 商店</button>
+        <button type="button" class="dock-btn" id="dockExpand"    data-win="winExpand"    aria-label="購地">🌱 購地</button>
+        <button type="button" class="dock-btn" id="dockWarehouse" data-win="winWarehouse" aria-keyshortcuts="W" aria-label="倉庫（W）">🗄️ 倉庫</button>
+        <button type="button" class="dock-btn" id="dockTrade"     data-win="winTrade"     aria-keyshortcuts="V" aria-label="星際貿易（V）">📦 貿易</button>
+        <button type="button" class="dock-btn" id="dockWorkshop"  data-win="winWorkshop"  aria-keyshortcuts="K" aria-label="工匠工坊（K）">🔨 工坊</button>
+        <button type="button" class="dock-btn" id="dockWorldMap"  data-win="winWorldMap"  aria-label="世界地圖">🗺️ 世界</button>
+        <button type="button" class="dock-btn" id="dockQuest"     data-win="winQuest"     aria-label="全服任務（Q）">📋 任務</button>
+        <button type="button" class="dock-btn" id="dockHelp"      data-win="winHelp"      aria-keyshortcuts="H" aria-label="操作說明（H）">📖 說明</button>
+        <button type="button" class="dock-btn" id="dockSettings"  data-win="winSettings"  aria-label="設定">⚙️ 設定</button>
+        <button type="button" class="dock-btn" id="dockMenuBtn"   data-win="winMenu"      aria-haspopup="dialog" aria-expanded="false" aria-label="釘選管理" title="管理常駐快捷（釘選常用面板）">📌 釘選</button>
       </div>
     </div>
     <div id="hudName" class="hud-sub hidden">你：—</div>

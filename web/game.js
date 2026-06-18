@@ -22209,17 +22209,7 @@
         if (target) openWinFor(target);
       });
     }
-    // 隱藏容器的任一 dock-btn 有 dock-active（可做事黃點）→ ☰ 選單鈕也亮黃點。
-    const dockMenuBtnEl = document.getElementById("dockMenuBtn");
-    const dockHiddenEl = document.getElementById("dockHidden");
-    const syncMenuDot = () => {
-      if (!dockMenuBtnEl || !dockHiddenEl) return;
-      dockMenuBtnEl.classList.toggle("dock-active", !!dockHiddenEl.querySelector(".dock-btn.dock-active"));
-    };
-    if (dockHiddenEl) {
-      new MutationObserver(syncMenuDot).observe(dockHiddenEl, { subtree: true, attributes: true, attributeFilter: ["class"] });
-    }
-    syncMenuDot();
+    // ROADMAP 372：分類標籤取代 ☰ 選單，syncCatDots 已統一同步黃點，不再需要 syncMenuDot。
 
     // ── ROADMAP 187：常用面板釘選回常駐欄（玩家自訂快捷）──────────────────────────
     // PLAN_UI_REDESIGN step 3：☰ 選單裡每個面板可按 📌 釘到常駐欄，常用功能一鍵直達（不必每次
@@ -22309,14 +22299,15 @@
       row.appendChild(pin);
     }
 
-    // 常駐快捷鈕也跟著快照「可做事」黃點亮（鏡像隱藏容器來源鈕的 dock-active）。
-    if (dockHiddenEl && dockPinnedEl) {
-      new MutationObserver(() => {
+    // 常駐快捷鈕也跟著快照「可做事」黃點亮（從各分組找來源鈕，ROADMAP 372 改觀察整個 dock）。
+    if (dockPinnedEl) {
+      const syncPinActiveDots = () => {
         for (const b of dockPinnedEl.querySelectorAll(".dock-pin-btn")) {
-          const srcBtn = document.querySelector(`#dockHidden .dock-btn[data-win="${b.dataset.win}"]`);
+          const srcBtn = dock.querySelector(`.dock-btn[data-win="${b.dataset.win}"]`);
           b.classList.toggle("dock-active", !!(srcBtn && srcBtn.classList.contains("dock-active")));
         }
-      }).observe(dockHiddenEl, { subtree: true, attributes: true, attributeFilter: ["class"] });
+      };
+      new MutationObserver(syncPinActiveDots).observe(dock, { subtree: true, attributes: true, attributeFilter: ["class"] });
     }
 
     renderDockPins();
