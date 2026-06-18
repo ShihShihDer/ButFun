@@ -3143,6 +3143,25 @@
         }
         break;
       }
+      case "craft_ceremony": {
+        // 合成儀式（ROADMAP 388）：玩家完成高階物品合成，全服可見。
+        // 世界首次有特殊金色飄字；玩家本人看到的文字更大、有星光色。
+        const { player_id: pid, player_name: pname, item_name: iname, world_first: wf } = msg;
+        const prefix = wf ? "⚒️🌟" : "⚒️";
+        addChat("⚒️ 工藝", wf
+          ? `🌟 世界首次！${pname} 鍛造了【${iname}】！`
+          : `${pname} 鍛造了【${iname}】！`);
+        // 對合成者本人：在自身位置噴出金色飄字
+        if (pid === myId) {
+          const me = players.get(myId);
+          if (me) {
+            const color = wf ? "255,220,40" : "180,255,180";
+            const text = wf ? `✨${iname}✨` : `${prefix}${iname}`;
+            hitFloaters.push({ wx: me.x, wy: me.y - 40, text, color, size: wf ? 22 : 18, born: performance.now() });
+          }
+        }
+        break;
+      }
       case "cook_start": {
         // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;

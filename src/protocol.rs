@@ -1364,6 +1364,14 @@ pub enum ServerMsg {
         is_kill: bool,
         is_crit: bool,
     },
+    /// 合成儀式廣播（ROADMAP 388）：玩家完成高階物品合成，全服同慶。
+    CraftCeremony {
+        player_id: Uuid,
+        player_name: String,
+        recipe_id: String,
+        item_name: String,
+        world_first: bool,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
