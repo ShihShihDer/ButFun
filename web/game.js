@@ -228,6 +228,69 @@
   let _parallaxEnabled = !reduceMotion;
   let _prevRenderNow = 0;
 
+  // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
+  // 所有聲音用振盪器即時合成；需要使用者互動後建立 AudioContext（規避自動播放政策）。
+  // sfxOn 預設 true（首次進場），玩家可在設定面板關閉，結果存 localStorage。
+  const SFX = (() => {
+    let _ctx = null;
+    let _on = localStorage.getItem("butfun.sfx") !== "0";
+
+    function _getCtx() {
+      if (!_ctx) {
+        try { _ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+      }
+      if (_ctx && _ctx.state === "suspended") { try { _ctx.resume(); } catch {} }
+      return _ctx;
+    }
+
+    // freq=頻率Hz  type=波形  a=起音s  s=持音s  d=衰音s  g=音量峰值
+    function _tone(freq, type, a, s, d, g) {
+      if (!_on) return;
+      const ac = _getCtx(); if (!ac) return;
+      try {
+        const osc = ac.createOscillator();
+        const gn = ac.createGain();
+        osc.connect(gn); gn.connect(ac.destination);
+        osc.type = type; osc.frequency.value = freq;
+        const t = ac.currentTime;
+        gn.gain.setValueAtTime(0, t);
+        gn.gain.linearRampToValueAtTime(g, t + a);
+        gn.gain.setValueAtTime(g, t + a + s);
+        gn.gain.exponentialRampToValueAtTime(0.0001, t + a + s + d);
+        osc.start(t); osc.stop(t + a + s + d + 0.05);
+      } catch {}
+    }
+
+    return {
+      get on() { return _on; },
+      setOn(v) {
+        _on = !!v;
+        try { localStorage.setItem("butfun.sfx", _on ? "1" : "0"); } catch {}
+      },
+      // UI 點擊：輕短回饋
+      click()       { _tone(660, "sine", 0.005, 0, 0.07, 0.12); },
+      // 採集/成功：兩段上揚
+      success() {
+        _tone(523, "sine", 0.01, 0.04, 0.12, 0.22);
+        setTimeout(() => _tone(659, "sine", 0.01, 0.04, 0.12, 0.22), 70);
+      },
+      // 乙太獲得：輕盈高音
+      etherGain()   { _tone(880, "sine", 0.01, 0.03, 0.10, 0.14); },
+      // 升等：四音上揚曲
+      levelUp() {
+        [[523, 0], [659, 100], [784, 200], [1046, 320]].forEach(([f, dt]) =>
+          setTimeout(() => _tone(f, "sine", 0.01, 0.08, 0.20, 0.28), dt)
+        );
+      },
+      // 成就解鎖：四音燦爛曲
+      achievement() {
+        [[659, 0], [784, 80], [1047, 180], [1319, 310]].forEach(([f, dt]) =>
+          setTimeout(() => _tone(f, "sine", 0.01, 0.10, 0.28, 0.32), dt)
+        );
+      },
+    };
+  })();
+
   // ---- 狀態 ----
   let ws = null;
   // 安全送出：斷線／連線未就緒時靜默忽略，避免 onclick 直接 ws.send 在斷線時拋例外。
@@ -682,6 +745,7 @@
   let hpKnown = false;
   let wasDownedLastTick = false; // 上一快照是否倒地，用於偵測「傳回新手村」瞬間
   let myLevel = null; // 上一快照等級，用於偵測升級
+  let _lastAchCount = null; // 成就數量基準，用於偵測新解鎖（ROADMAP 376）
   let myFurniture = []; // 住家家具列表（ROADMAP 155）：快照帶回的已放置家具陣列
   let myHomeStyle = "wood_cabin"; // 居家風格主題（ROADMAP 325）：快照帶回的風格代碼，預設木屋
   // 受擊時畫面邊緣紅光一閃(damage vignette):看得到畫面的玩家受擊時,HUD 只有一個小數字在變、
@@ -1256,6 +1320,7 @@
       ].join(";");
       btn.textContent = "🌿 餵食";
       btn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
         const w = wildlifeList.find(w => w.alive !== false);
         if (w && ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "feed_wildlife", wildlife_id: w.id }));
@@ -1266,6 +1331,7 @@
     btn.style.display = "block";
     btn.textContent = `🌿 餵食 ${nearest.name}`;
     btn.onclick = () => {
+      SFX.click(); // 點擊音效 ROADMAP 376
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "feed_wildlife", wildlife_id: nearest.id }));
       }
@@ -1308,6 +1374,7 @@
     btn.style.display = "block";
     btn.textContent = `🛡️ 驅趕 ${nearest.name}`;
     btn.onclick = () => {
+      SFX.click(); // 點擊音效 ROADMAP 376
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "scare_predator", wildlife_id: nearest.id }));
         // 即時手感回饋：飄字＋報讀器（成敗的權威結果由伺服器的「🛡️ 世界」頻道廣播確認）。
@@ -1342,7 +1409,7 @@
         "font-size:.8rem", "font-family:monospace",
         "padding:4px 12px", "z-index:1001", "cursor:pointer",
       ].join(";");
-      btn.addEventListener("click", () => { safeSend({ type: "join_lunch_toast" }); });
+      btn.addEventListener("click", () => { SFX.click(); safeSend({ type: "join_lunch_toast" }); });
       document.body.appendChild(btn);
     }
     btn.style.display = "block";
@@ -2304,6 +2371,7 @@
             // 飄字看不到畫面的玩家收不到——比照採集(下方 gained)補一句 aria-live 播報,
             // 讓報讀器玩家照顧作物收成時也即時聽到「+N 乙太」。延續採集/背包/日夜的無障礙弧線。
             announce(`收成 ${me.ether - myEther} 乙太`);
+            SFX.etherGain(); // 乙太收成音效（ROADMAP 376）
           }
           myEther = me.ether;
           etherKnown = true;
@@ -2418,6 +2486,7 @@
             if (typeof myLevel === "number" && me.level > myLevel) {
               announce(`恭喜升到 ${me.level} 級！⚔️+${Math.floor(me.level/2)} ❤️+${me.level * 2}`);
               addChat("系統", `✨ ${me.name} 升到 ${me.level} 級！`);
+              SFX.levelUp(); // 升等音效（ROADMAP 376）
             }
             myLevel = me.level;
           }
@@ -2482,6 +2551,10 @@
 
           // 成就 HUD（ROADMAP 30）：更新成就計數器，偵測新成就解鎖。
           if (typeof me.achievement_count === "number") {
+            if (typeof _lastAchCount === "number" && me.achievement_count > _lastAchCount) {
+              SFX.achievement(); // 成就解鎖音效（ROADMAP 376）
+            }
+            _lastAchCount = me.achievement_count;
             updateAchievementHud(me.achievement_count, me.achievements || []);
             updateAchievementPanel(me.achievements || []);
           }
@@ -2723,6 +2796,7 @@
                       :                             "170,225,170";
           floaters.push({ wx, wy, text: `${femoji} ${qlabel}！${fname}`, color, born: now });
           announce(`釣到${fname}（${qlabel}）`);
+          SFX.success(); // 釣魚成功音效（ROADMAP 376）
           // ROADMAP 363：釣到「當季當紅魚」——多疊一道漁汛慶祝飄字（金色、上方），讓玩家
           // 明顯感到「這個季節水裡的魚不一樣」。尊重 reduceMotion：仍顯示字、只是不另堆動畫。
           if (msg.in_season === true) {
@@ -2760,6 +2834,7 @@
           const haul = msg.haul || 0;
           floaters.push({ wx, wy, text: `🪨 收礦撤出 +${haul} 礦石`, color: "120,200,255", born: now });
           announce(`收礦撤出，落袋 ${haul} 礦石`);
+          SFX.success(); // 收礦成功音效（ROADMAP 376）
         }
         break;
       }
@@ -2777,6 +2852,7 @@
           const ether = msg.ether || 0;
           floaters.push({ wx, wy, text: `💧 ${blabel}！+${ether} 乙太`, color, born: now });
           announce(`汲取${blabel}，得 ${ether} 乙太`);
+          SFX.success(); // 汲泉成功音效（ROADMAP 376）
         } else if (msg.outcome === "missed") {
           floaters.push({ wx, wy, text: "💨 慢了一步，泉湧散了…", color: "190,190,190", born: now });
           announce("汲取落空，泉湧散了");
@@ -22345,7 +22421,7 @@
     }
 
     for (const btn of dock.querySelectorAll(".dock-btn")) {
-      btn.addEventListener("click", () => openWinFor(btn));
+      btn.addEventListener("click", () => { SFX.click(); openWinFor(btn); }); // 點擊音效 ROADMAP 376
     }
 
     // ── dock 分類二層：點分類鈕展開該組（同時收其他組），再點一次收合 ──
@@ -22353,6 +22429,7 @@
     const dockGroups = dock.querySelectorAll(".dock-group");
     for (const cat of dockCats) {
       cat.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
         const g = document.getElementById(cat.dataset.group);
         const opening = g.classList.contains("hidden");
         for (const grp of dockGroups) grp.classList.add("hidden");
@@ -22612,10 +22689,20 @@
         setRenderStyle(optClay.checked ? "clay" : "pixel");
       });
     }
+    // ⚙ 設定：音效開關（ROADMAP 376）。
+    const optSfx = document.getElementById("optSfx");
+    if (optSfx) {
+      optSfx.checked = SFX.on;
+      optSfx.addEventListener("change", () => {
+        SFX.setOn(optSfx.checked);
+        if (optSfx.checked) SFX.click(); // 開啟時播一聲確認
+      });
+    }
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
     const recallBtn = document.getElementById("recallBtn");
     if (recallBtn) {
       recallBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "return_home" }));
           announce("回城：傳回新手村");
@@ -22730,6 +22817,7 @@
     const plantTreeBtn = document.getElementById("plantTreeBtn");
     if (plantTreeBtn) {
       plantTreeBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
         const me = myId ? players.get(myId) : null;
         if (!me || me.indoor_plot_id != null) return;
         safeSend({ type: "plant_tree" });
