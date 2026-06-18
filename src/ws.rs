@@ -1509,7 +1509,6 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 合成儀式廣播（ROADMAP 388）：鎖外取 craft_ceremony 狀態、廣播出鎖後送。
                             if let Some((pname, item_name)) = ceremony_info {
                                 let world_first = app.craft_ceremony.write().unwrap().record(&recipe_id);
-                                let text = crate::craft_ceremony::ceremony_text(&pname, item_name, world_first);
                                 let _ = app.tx.send(Arc::new(ServerMsg::CraftCeremony {
                                     player_id: id,
                                     player_name: pname,
@@ -1517,7 +1516,6 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     item_name: item_name.to_string(),
                                     world_first,
                                 }));
-                                let _ = app.tx_chat.send(text);
                             }
                         }
                     }
