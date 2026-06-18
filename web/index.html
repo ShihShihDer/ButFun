@@ -241,6 +241,24 @@
       color: var(--brass); border: 1px solid var(--brass); border-radius: 7px;
       padding: 6px; text-decoration: none; font-weight: 600; }
     #onboardCard .ob-login:hover { background: rgba(201,162,75,0.12); }
+    /* 回訪摘要卡（ROADMAP 374）：登入玩家進場，一眼看到「等你的東西」，8 秒自動淡出可提前關 */
+    #returnCard {
+      position: fixed; right: 14px; top: 56px;
+      width: min(230px, calc(100vw - 28px));
+      background: #1a2030; border: 1px solid #3a4a6a; border-radius: 12px;
+      padding: 10px 12px 8px; z-index: 200;
+      box-shadow: 0 4px 18px rgba(0,0,0,0.55); font-size: 0.84em;
+      transition: opacity 0.4s;
+    }
+    #returnCard.fading { opacity: 0; pointer-events: none; }
+    #returnCard .rc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    #returnCard .rc-title { color: #7ab8f5; font-weight: 600; font-size: 0.88em; }
+    #returnCard .rc-close { font: inherit; font-size: 0.85em; background: none; border: none;
+      color: #555; cursor: pointer; padding: 1px 0; line-height: 1; }
+    #returnCard .rc-close:hover { color: #999; }
+    #returnCard .rc-row { display: flex; align-items: center; gap: 7px; margin: 3px 0; }
+    #returnCard .rc-val { color: #e8e8e8; font-weight: 600; }
+    #returnCard .rc-lbl { color: #888; }
     /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作聊天收合的玩家看得到焦點落在哪。
        focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
     #chatToggle:focus-visible {
@@ -1205,6 +1223,10 @@
   <!-- 新手引導卡（ROADMAP 373）：三步驟引導，第一次進場顯示，做完自動收。
        position:fixed 所以放在 #hud 之外，不影響 HUD 佈局。 -->
   <div id="onboardCard" class="hidden" role="region" aria-label="新手引導" aria-live="polite"></div>
+
+  <!-- 回訪摘要卡（ROADMAP 374）：登入玩家進場，顯示「等你的東西」，8 秒自動淡出。
+       position:fixed 右上角，不擋主畫面，可提前按 × 關閉。 -->
+  <div id="returnCard" class="hidden" role="status" aria-label="回訪摘要" aria-live="polite"></div>
 
   <script src="game.js?v=20260610-leaderboard"></script>
 </body>
