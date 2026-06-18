@@ -900,6 +900,10 @@
   // 淡出期間以漸減 alpha 繪製定住的軀體；超時後完全隱藏，不再殘留幽靈。
   const ENEMY_DEATH_FADE_MS = 600;
   let enemyDeathFade = []; // 每槽 { until:ms } or undefined
+  // 擊殺爆彩粒子（ROADMAP 383）：怪物死亡瞬間依元素色爆出粒子雲。
+  const DEATH_PARTICLE_LIFE_MS = 600;
+  const DEATH_PARTICLE_CAP = 40; // 防 AoE 洗爆
+  let deathParticles = [];
   // 是否已同步過初始敵人快照。和乙太/背包/血量同理:進場/重連的第一份快照不拿來比 hp 差值
   // (伺服器若換版重啟,敵人血量可能不同,會誤閃一輪),之後的快照差值才是真的受擊。
   let enemiesSynced = false;
@@ -2411,7 +2415,10 @@
               if (dmg > 0) spawnEnemyDmgFloater(dmg, ne.x, ne.y, died);
             }
             // 死亡淡出（ROADMAP 150）：alive 轉 false 的瞬間啟動淡出計時。
-            if (died) enemyDeathFade[i] = { until: fxNow + ENEMY_DEATH_FADE_MS };
+            if (died) {
+              enemyDeathFade[i] = { until: fxNow + ENEMY_DEATH_FADE_MS };
+              spawnDeathBurst(ne.x, ne.y, ne.kind); // 擊殺爆彩（ROADMAP 383）
+            }
           }
         }
         enemies = nextEnemies;
@@ -3557,6 +3564,21 @@
     hitFloaters.push({ wx, wy: wy - 18, text, color, size, born: performance.now() });
   }
 
+  // 擊殺爆彩（ROADMAP 383）：在怪物死亡位置爆出 10 顆元素色粒子向外放射。
+  function spawnDeathBurst(wx, wy, kind) {
+    if (reduceMotion) return;
+    if (deathParticles.length >= DEATH_PARTICLE_CAP) return;
+    const color = ENEMY_KILL_COLOR[kind] || "255,255,255";
+    const COUNT = 10;
+    for (let i = 0; i < COUNT; i++) {
+      // 均勻角度 + 確定性微抖（用 kind 首字元碼與序號混合，免 Math.random）
+      const jitter = ((kind.charCodeAt(0) * 7 + i * 13) % 17) * 0.02;
+      const angle = (i / COUNT) * Math.PI * 2 + jitter;
+      const speed = 0.8; // px/ms
+      deathParticles.push({ wx, wy, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, born: performance.now(), color });
+    }
+  }
+
   function spawnPlayerDmgFloater(dmg, wx, wy) {
     hitFloaters.push({ wx, wy: wy - 24, text: `-${dmg}`, color: "255,80,80", size: 14, born: performance.now() });
   }
@@ -3585,6 +3607,27 @@
       ctx.fillText(f.text, sx, sy);
       ctx.restore();
     }
+  }
+
+  // 擊殺爆彩渲染（ROADMAP 383）：每幀更新並繪製所有死亡粒子。
+  function drawDeathParticles(camX, camY, now) {
+    ctx.save();
+    for (let i = deathParticles.length - 1; i >= 0; i--) {
+      const p = deathParticles[i];
+      const age = now - p.born;
+      if (age >= DEATH_PARTICLE_LIFE_MS) { deathParticles.splice(i, 1); continue; }
+      const t = age / DEATH_PARTICLE_LIFE_MS;
+      const alpha = (1 - t) * (1 - t); // 二次緩出
+      const cx = (p.wx + p.vx * age) - camX;
+      const cy = (p.wy + p.vy * age) - camY;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = `rgba(${p.color},${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
   }
 
   // 把飄字逐一上飄、淡出，過了壽命就移除。畫在日夜染色之後（當回饋 HUD，不被夜色蓋暗）。
@@ -5629,6 +5672,7 @@
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
+    safeDraw("deathParticles", () => drawDeathParticles(camX, camY, renderNow)); // 擊殺爆彩（ROADMAP 383）
     safeDraw("villageLandmark", () => drawVillageLandmark(camX, camY)); // 新手村地標
     safeDraw("townDecor", () => drawTownDecor(camX, camY)); // 城鎮裝飾:名牌+城門守衛
     safeDraw("townBuildings", () => drawTownBuildings(camX, camY)); // 城鎮建築（ROADMAP 110）
@@ -8202,6 +8246,24 @@
     origin_guardian:   "crystal",    // 晶石
     rift_guardian:     "void",       // 虛空
     ether_overlord:    "ether",      // 乙太
+  };
+
+  // 擊殺爆彩顏色表（ROADMAP 383）：怪物種類 → RGB 字串，對齊 element_affinity.rs 六元素。
+  const ENEMY_KILL_COLOR = {
+    scrap_drone:      "192,160,96",  // 銅色/機械
+    steam_construct:  "255,128,48",  // 橙紅/火焰
+    ether_wisp:       "128,160,255", // 藍紫/乙太
+    aether_specter:   "128,160,255",
+    ether_overlord:   "128,160,255",
+    flutter_sprite:   "96,208,96",   // 翠綠/自然
+    mushroom_stalker: "96,208,96",
+    coral_crab:       "96,208,96",
+    crystal_golem:    "64,216,224",  // 青藍/晶石
+    rune_guardian:    "64,216,224",
+    origin_guardian:  "64,216,224",
+    jade_wraith:      "144,64,192",  // 深紫/虛空
+    void_phantom:     "144,64,192",
+    rift_guardian:    "144,64,192",
   };
 
   // 元素 wire key → 顯示資訊（emoji、中文名、被哪種附魔克制）。
