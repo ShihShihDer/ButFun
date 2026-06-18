@@ -943,6 +943,10 @@
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
   let damageFlashUntil = 0;
   let damageFlashLethal = false; // 被打趴(hp<=0)時閃得更重一點
+  // 精英血條（ROADMAP 386）：視野內有兇名精英時頂端大型 HP 血條。
+  const BOSS_BAR_REACH = 520; // 感知半徑（世界像素）
+  let _bossBarAlpha = 0;       // 渲染 alpha [0,1]，淡入淡出
+  let _bossBarBoss = null;     // 目前鎖定的兇名敵人快照（EnemyView Object 或 null）
   // 收成得乙太、採集進背包時的「+N」飄字（純表現，從權威數值差值推得，不嵌任何遊戲規則）。
   // 每筆 { wx, wy, text, color, born }：以世界座標固定在獲得當下的玩家位置上方，隨時間上飄淡出。
   const floaters = [];
@@ -3596,6 +3600,112 @@
     }
   }
 
+  // ---- 精英血條（ROADMAP 386）：視野內最近兇名精英的 HP 血條（畫面頂端大型 HUD）----
+  // 純前端：讀既有 enemies 快照的 notorious/hp/max_hp；零後端、零協議、零 migration。
+  function updateBossBar(camX, camY) {
+    if (!enemies || !enemies.length) { _bossBarBoss = null; return; }
+    const px = camX + viewW / 2;
+    const py = camY + viewH / 2;
+    let closest = null;
+    let minD2 = BOSS_BAR_REACH * BOSS_BAR_REACH;
+    for (const e of enemies) {
+      if (!e.alive || !e.notorious) continue;
+      const dx = e.x - px, dy = e.y - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < minD2) { minD2 = d2; closest = e; }
+    }
+    _bossBarBoss = closest;
+  }
+
+  function drawBossBar(now) {
+    // 每幀平滑調整 alpha：有 boss→1、無 boss→0；reduceMotion 下即時跳。
+    const target = _bossBarBoss ? 1 : 0;
+    const step = reduceMotion ? 1 : 0.055;
+    if (_bossBarAlpha < target) {
+      _bossBarAlpha = Math.min(1, _bossBarAlpha + step);
+    } else {
+      _bossBarAlpha = Math.max(0, _bossBarAlpha - step);
+    }
+    if (_bossBarAlpha < 0.01) return;
+
+    // 淡出期間沿用最後一幀 boss 快照（避免 "0/0"）
+    const boss = _bossBarBoss || { kind: "scrap_drone", level: 0, hp: 1, max_hp: 1 };
+    const pct = boss.max_hp > 0 ? Math.max(0, Math.min(1, boss.hp / boss.max_hp)) : 0;
+
+    const barW = Math.min(Math.round(viewW * 0.54), 430);
+    const barH = 14;
+    const padX = 12, padY = 7;
+    const labelH = 13, gapY = 5;
+    const panelH = padY + labelH + gapY + barH + padY;
+    const bx = Math.round((viewW - barW) / 2);
+    const by = 10; // 距頂端 10px
+
+    ctx.save();
+    ctx.globalAlpha = _bossBarAlpha;
+
+    // 背景面板（深色半透明 + 深紅框線）
+    ctx.beginPath();
+    ctx.roundRect(bx - padX, by, barW + padX * 2, panelH, 5);
+    ctx.fillStyle = "rgba(10,3,3,0.85)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(180,40,40,0.72)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // 怪物名稱 + 等級 + 元素 emoji
+    const name = ENEMY_NAME[boss.kind] || boss.kind;
+    const elemEmoji = (ELEM_INFO[ENEMY_ELEMENT[boss.kind]] || {}).emoji || "";
+    const label = `💀 兇名精英  ${name}  Lv.${boss.level}  ${elemEmoji}`;
+    const labelY = by + padY + labelH;
+    ctx.font = "bold 11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.strokeText(label, bx + barW / 2, labelY);
+    ctx.fillStyle = "#ff9999";
+    ctx.fillText(label, bx + barW / 2, labelY);
+
+    // HP 槽底色
+    const barY = by + padY + labelH + gapY;
+    ctx.fillStyle = "rgba(55,0,0,0.9)";
+    ctx.fillRect(bx, barY, barW, barH);
+
+    // HP 填充（顏色隨血量變化；瀕死時緩慢脈動）
+    if (pct > 0.001) {
+      const fillW = Math.round(barW * pct);
+      const grad = ctx.createLinearGradient(bx, 0, bx + barW, 0);
+      if (pct > 0.55) {
+        // 高血量：深紅→亮紅
+        grad.addColorStop(0, "#991111");
+        grad.addColorStop(1, "#cc2222");
+      } else if (pct > 0.25) {
+        // 中血量：橙紅
+        grad.addColorStop(0, "#bb3300");
+        grad.addColorStop(1, "#ee5500");
+      } else {
+        // 瀕死（≤25%）：深紅脈動
+        const pulse = (0.85 + Math.sin(now * 0.006) * 0.15).toFixed(2);
+        grad.addColorStop(0, `rgba(102,0,0,${pulse})`);
+        grad.addColorStop(1, `rgba(185,18,18,${pulse})`);
+      }
+      ctx.fillStyle = grad;
+      ctx.fillRect(bx, barY, fillW, barH);
+    }
+
+    // HP 數字（中心白描邊保可讀）
+    if (_bossBarBoss) {
+      ctx.font = "10px monospace";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "rgba(0,0,0,0.9)";
+      ctx.strokeText(`${boss.hp} / ${boss.max_hp}`, bx + barW / 2, barY + barH - 2);
+      ctx.fillStyle = "#ffcccc";
+      ctx.fillText(`${boss.hp} / ${boss.max_hp}`, bx + barW / 2, barY + barH - 2);
+    }
+
+    ctx.restore();
+  }
+
   // 把飄字逐一上飄、淡出，過了壽命就移除。畫在日夜染色之後（當回饋 HUD，不被夜色蓋暗）。
   const FLOAT_MS = 1100;
   function drawFloaters(camX, camY, now) {
@@ -5613,6 +5723,9 @@
       return;
     }
 
+    // 精英血條（ROADMAP 386）：每幀更新鎖定目標（camX/camY 確定後、繪製前）。
+    updateBossBar(camX, camY);
+
     // 每個繪製各自包 safeDraw：某個實體繪製對某筆資料拋例外時，只損失那一項、絕不連帶把它
     // 後面的角色／小地圖／HUD 跳過（那正是「人物突然不見」的成因）。label 供 console 定位是誰炸的。
     updateGroundTint(_weatherDt); // 四季草色（235）：先把地面季節染色向當季目標推進一幀，再畫地表
@@ -5737,6 +5850,9 @@
     // 雷雨閃電（ROADMAP 243）：獨立 safeDraw，草原暴雨時天空偶發一記全屏泛光＋分叉電光。
     // 排在天象最上層、小地圖之前——閃電要照亮整片天地（含地面），覆在所有世界元素之上。
     safeDraw("lightning", () => drawLightning(renderNow));
+
+    // 精英血條（ROADMAP 386）：在小地圖前畫，蓋在世界層之上、不遮小地圖。
+    safeDraw("bossBar", () => drawBossBar(renderNow));
 
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
