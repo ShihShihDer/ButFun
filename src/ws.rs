@@ -1480,19 +1480,42 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     }
                                 }
                             }
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                let discount = crate::class::crafting_reduction(&p.masteries);
-                                if recipe.craft_with_discount(&mut p.inventory, discount) {
-                                    // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品；熟練加成再加（ROADMAP 153）。
-                                    let used_precision = p.pending_precision;
-                                    if used_precision {
-                                        p.pending_precision = false;
-                                        let bonus_out = p.skill_masteries.precision_bonus_output();
-                                        p.add_item_overflow(recipe.output, 1 + bonus_out);
+                            // 合成：鎖 players 扣料＋產出＋取玩家名；出鎖後處理儀式（守 prod-deadlock）。
+                            let ceremony_info = {
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&id) {
+                                    let discount = crate::class::crafting_reduction(&p.masteries);
+                                    if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                        // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品；熟練加成再加（ROADMAP 153）。
+                                        let used_precision = p.pending_precision;
+                                        if used_precision {
+                                            p.pending_precision = false;
+                                            let bonus_out = p.skill_masteries.precision_bonus_output();
+                                            p.add_item_overflow(recipe.output, 1 + bonus_out);
+                                        }
+                                        p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
+                                        tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
+                                        // 若屬儀式配方，帶出玩家名供後續廣播（鎖外再取儀式狀態）。
+                                        crate::craft_ceremony::is_ceremonial(&recipe_id)
+                                            .map(|item_name| (p.name.clone(), item_name))
+                                    } else {
+                                        None
                                     }
-                                    p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
-                                    tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
+                                } else {
+                                    None
                                 }
+                            }; // players 鎖到此放掉
+
+                            // 合成儀式廣播（ROADMAP 388）：鎖外取 craft_ceremony 狀態、廣播出鎖後送。
+                            if let Some((pname, item_name)) = ceremony_info {
+                                let world_first = app.craft_ceremony.write().unwrap().record(&recipe_id);
+                                let _ = app.tx.send(Arc::new(ServerMsg::CraftCeremony {
+                                    player_id: id,
+                                    player_name: pname,
+                                    recipe_id: recipe_id.clone(),
+                                    item_name: item_name.to_string(),
+                                    world_first,
+                                }));
                             }
                         }
                     }

@@ -1072,6 +1072,8 @@ pub struct AppState {
     pub world_grove: Arc<RwLock<crate::world_grove::WorldGrove>>,
     /// 世界冒險日報（ROADMAP 385）：追蹤今日精彩、黎明時廣播回顧。純記憶體、重啟清零。
     pub daily_recap: Arc<RwLock<crate::daily_recap::DailyHighlights>>,
+    /// 合成儀式世界首次追蹤（ROADMAP 388）：記憶體模式，重啟清零。
+    pub craft_ceremony: Arc<RwLock<crate::craft_ceremony::CraftCeremonyState>>,
     /// NPC 作息與移動管理器（ROADMAP 73）。
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
     /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
@@ -1356,6 +1358,7 @@ impl AppState {
             town_share: Arc::new(RwLock::new(crate::town_share::TownShareState::new())),
             world_grove: Arc::new(RwLock::new(crate::world_grove::WorldGrove::new())),
             daily_recap: Arc::new(RwLock::new(crate::daily_recap::DailyHighlights::new())),
+            craft_ceremony: Arc::new(RwLock::new(crate::craft_ceremony::CraftCeremonyState::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
