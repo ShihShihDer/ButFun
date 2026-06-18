@@ -2776,6 +2776,8 @@
             updateAchievementHud(me.achievement_count, me.achievements || []);
             updateAchievementPanel(me.achievements || []);
           }
+          // 稱號面板（ROADMAP 389）：每次快照更新稱號選擇區。
+          updateTitlePanel(me.unlocked_titles || [], me.active_title || null);
 
           // 訪客在 HUD 看到自己的遊戲代號——進場後才知道自己叫什麼,也確認顯示的是代號非真名。
           if (isGuest) {
@@ -3158,6 +3160,31 @@
             const color = wf ? "255,220,40" : "180,255,180";
             const text = wf ? `✨${iname}✨` : `${prefix}${iname}`;
             hitFloaters.push({ wx: me.x, wy: me.y - 40, text, color, size: wf ? 22 : 18, born: performance.now() });
+          }
+        }
+        break;
+      }
+      case "title_unlocked": {
+        // 稱號解鎖（ROADMAP 389）：全服廣播（world_first=true）或只對本人（world_first=false）。
+        const { player_id: tid, player_name: tname, title_name: ttname, world_first: twf } = msg;
+        if (twf) {
+          addChat("🏅 稱號", `🌟 世界首次！${tname} 解鎖了稱號【${ttname}】！`);
+          const tplayer = players.get(tid);
+          if (tplayer) {
+            hitFloaters.push({ wx: tplayer.x, wy: tplayer.y - 50, text: `🏅${ttname}`, color: "255,220,40", size: 20, born: performance.now() });
+          }
+        } else if (tid === myId) {
+          addChat("🏅 稱號", `你解鎖了稱號【${ttname}】！在角色面板選擇展示。`);
+          const me = players.get(myId);
+          if (me) {
+            hitFloaters.push({ wx: me.x, wy: me.y - 50, text: `🏅${ttname}`, color: "160,230,255", size: 18, born: performance.now() });
+          }
+          // 本地暫存新稱號，觸發稱號選擇區重繪（無需等下次快照）。
+          const meNow = players.get(myId);
+          if (meNow) {
+            if (!Array.isArray(meNow.unlocked_titles)) meNow.unlocked_titles = [];
+            if (!meNow.unlocked_titles.includes(msg.title_key)) meNow.unlocked_titles.push(msg.title_key);
+            updateTitlePanel(meNow.unlocked_titles, meNow.active_title || null);
           }
         }
         break;
@@ -5393,6 +5420,19 @@
     // 自己恆金色(一眼找到自己);別人依代號材質詞(族群)上色,讓不同族群在名牌就分得開。
     ctx.fillStyle = isMe ? "#ffd24a" : kinAccent(p.name);
     ctx.fillText(p.name, sx, sy - 24);
+
+    // 稱號標籤（ROADMAP 389）：玩家選擇展示的稱號顯示在名字正下方，小字灰色，全服可見。
+    if (p.active_title) {
+      const titleDisp = TITLE_NAMES[p.active_title] || p.active_title;
+      ctx.font = "italic 9px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.fillStyle = "#b0d8ff";
+      ctx.strokeText(`「${titleDisp}」`, sx, sy - 13);
+      ctx.fillText(`「${titleDisp}」`, sx, sy - 13);
+    }
 
     // 玩家血條:活著但不滿血才畫,畫在腳下。鏡像敵人血條(走近會自動開打、敵我都該一眼看出血量)
     // 的對稱面——原本只有敵人頭上有條,玩家自己/別人挨打後即使站著也看不出血量,只剩 HUD 一個小數字
@@ -17145,6 +17185,15 @@
   };
   const COOK_STEP_ORDER = ["heat", "add", "stir", "flip", "season"];
   const COOK_GRADE_LABEL = { botched: "手忙腳亂", common: "家常", tasty: "美味", perfect: "完美" };
+  // 稱號顯示名（ROADMAP 389）：wire key → 中文稱號名。
+  const TITLE_NAMES = {
+    level_10: "旅者",
+    level_20: "冒險家",
+    level_30: "傳說",
+    first_craft: "工匠",
+    inscription: "考古學家",
+    epic_gather: "福星",
+  };
 
   let cookOverlayEl = null;   // 目前掌勺覆蓋層 DOM（沒在煮＝null）
   let cookFlashTimers = [];   // 看譜階段排定的 setTimeout id（關層時清掉，避免殘留）
@@ -18271,6 +18320,35 @@
         if (done) html += `<span style="margin-left:auto;color:#7ec87e;font-size:.85em">✓</span>`;
         html += `</div>`;
       }
+    }
+    body.innerHTML = html;
+  }
+
+  // 稱號面板（ROADMAP 389）：在成就面板底部顯示已解鎖稱號供選擇。
+  let lastTitleSig = null;
+  function updateTitlePanel(unlockedTitles, activeTitle) {
+    const body = document.getElementById("titleBody");
+    if (!body) return;
+    const sig = unlockedTitles.slice().sort().join(",") + "|" + (activeTitle || "");
+    if (sig === lastTitleSig) return;
+    lastTitleSig = sig;
+    if (!unlockedTitles.length) {
+      body.innerHTML = `<div style="color:#666;font-size:.85em">尚無稱號—升級、鍛造、採集史詩材料等即可解鎖。</div>`;
+      return;
+    }
+    let html = `<div style="color:var(--brass);font-weight:600;margin-bottom:6px">🏅 我的稱號</div>`;
+    for (const key of unlockedTitles) {
+      const name = TITLE_NAMES[key] || key;
+      const isActive = key === activeTitle;
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">`;
+      html += `<span style="color:${isActive ? "#ffd700" : "#b0d8ff"};font-size:1em">「${escHtml(name)}」</span>`;
+      if (isActive) {
+        html += `<span style="color:#7ec87e;font-size:.85em">✓ 展示中</span>`;
+        html += `<button type="button" onclick="ws&&ws.send(JSON.stringify({type:'set_title',title:''}))" style="margin-left:auto;font-size:.78em;padding:1px 6px;background:#333;border:1px solid #555;color:#bbb;border-radius:4px;cursor:pointer">取消</button>`;
+      } else {
+        html += `<button type="button" onclick="ws&&ws.send(JSON.stringify({type:'set_title',title:'${key}'}))" style="margin-left:auto;font-size:.78em;padding:1px 6px;background:#2a3040;border:1px solid #556;color:#a8d8ff;border-radius:4px;cursor:pointer">展示</button>`;
+      }
+      html += `</div>`;
     }
     body.innerHTML = html;
   }

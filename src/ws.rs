@@ -127,6 +127,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             costume: user.costume,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            title_set: crate::player_title::TitleSet::new(),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
@@ -230,6 +231,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             costume: 0,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            title_set: crate::player_title::TitleSet::new(),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
@@ -1356,6 +1358,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if gather_level_up.is_some() {
                             app.daily_recap.write().unwrap().on_level_up();
                         }
+                        // 稱號鉤（ROADMAP 389）：採集路徑升等時解鎖等級稱號。
+                        if let Some((ref pname, new_lv)) = gather_level_up {
+                            if let Some(t) = crate::player_title::title_for_level(new_lv) {
+                                grant_title_if_new(&app, &app.tx, &tx_direct, id, pname, t);
+                            }
+                        }
                         // NPC 升等賀詞（ROADMAP 84）：採集升等時凱爾長老私信賀詞 / 全服廣播。
                         if let Some((pname, new_lv)) = gather_level_up {
                             let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
@@ -1402,6 +1410,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     rarity.emoji(),
                                     &item_zh,
                                 );
+                            }
+                            // 稱號鉤（ROADMAP 389）：史詩品質採集解鎖「福星」稱號。
+                            if rarity == crate::item_rarity::Rarity::Epic {
+                                grant_title_if_new(&app, &app.tx, &tx_direct, id, &pname,
+                                    crate::player_title::Title::EpicGather);
                             }
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
@@ -1511,11 +1524,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let world_first = app.craft_ceremony.write().unwrap().record(&recipe_id);
                                 let _ = app.tx.send(Arc::new(ServerMsg::CraftCeremony {
                                     player_id: id,
-                                    player_name: pname,
+                                    player_name: pname.clone(),
                                     recipe_id: recipe_id.clone(),
                                     item_name: item_name.to_string(),
                                     world_first,
                                 }));
+                                // 稱號鉤（ROADMAP 389）：首次鍛造儀式配方解鎖「工匠」稱號。
+                                grant_title_if_new(&app, &app.tx, &tx_direct, id, &pname,
+                                    crate::player_title::Title::FirstCraft);
                             }
                         }
                     }
@@ -2473,6 +2489,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if combat_level_up.is_some() {
                         app.daily_recap.write().unwrap().on_level_up();
                     }
+                    // 稱號鉤（ROADMAP 389）：戰鬥路徑升等時解鎖等級稱號。
+                    if let Some((ref pname, new_lv)) = combat_level_up {
+                        if let Some(t) = crate::player_title::title_for_level(new_lv) {
+                            grant_title_if_new(&app, &app.tx, &tx_direct, id, pname, t);
+                        }
+                    }
                     // NPC 升等賀詞（ROADMAP 84）：戰鬥升等時凱爾長老私信賀詞 / 全服廣播。
                     if let Some((pname, new_lv)) = combat_level_up {
                         let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
@@ -3349,6 +3371,44 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 // ROADMAP 38：職業改兼修熟練度，SetClass 已不再使用；舊客戶端訊息靜默忽略。
                 Ok(ClientMsg::SetClass { .. }) => {}
 
+                // ── 設定展示稱號（ROADMAP 389）─────────────────────────────────────
+                Ok(ClientMsg::SetTitle { title }) => {
+                    // 只有已登入玩家才能設稱號。
+                    if authed_uid.is_none() { continue; }
+                    // 空字串代表清除展示稱號；否則驗 wire key 合法 + 玩家已持有。
+                    let active_opt = if title.is_empty() {
+                        Some(None) // 清除
+                    } else {
+                        crate::player_title::Title::from_wire_key(&title)
+                            .map(|t| Some(t))
+                    };
+                    let Some(target_title) = active_opt else { continue; };
+                    let ok = {
+                        let mut players = app.players.write().unwrap();
+                        players.get_mut(&id)
+                            .map(|p| p.title_set.set_active(target_title))
+                            .unwrap_or(false)
+                    };
+                    // 設成功才推一次快照讓前端即時更新名牌。
+                    if ok {
+                        let view = {
+                            let players = app.players.read().unwrap();
+                            let sch = app.npc_schedule.read().unwrap();
+                            let wandering_active = app.wandering_merchant.read().unwrap().is_active();
+                            let traveler_xy = {
+                                let tv = app.traveler.read().unwrap();
+                                if tv.is_visible() { Some((tv.x, tv.y)) } else { None }
+                            };
+                            players.get(&id).map(|p| p.view(&sch, traveler_xy, wandering_active))
+                        };
+                        if let Some(v) = view {
+                            if let Ok(json) = serde_json::to_string(&v) {
+                                let _ = tx_direct.try_send(json);
+                            }
+                        }
+                    }
+                }
+
                 // ── 主動技能（ROADMAP 45）─────────────────────────────────────────
                 Ok(ClientMsg::UseSkill { kind }) => {
                     use crate::active_skill::{ActiveSkillKind, GALE_DASH_PX};
@@ -4068,6 +4128,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }));
                             // 日報鉤（ROADMAP 385）：首次解碼才計入日報（鎖外、純記憶體）。
                             app.daily_recap.write().unwrap().on_inscription();
+                            // 稱號鉤（ROADMAP 389）：首次解讀古代秘文解鎖「考古學家」稱號。
+                            grant_title_if_new(&app, &app.tx, &tx_direct, id, &player_name,
+                                crate::player_title::Title::Inscription);
                         }
                     }
                 }
@@ -7115,6 +7178,65 @@ fn build_guild_view(app: &AppState, player_id: Uuid, guild_id: Uuid) -> Option<c
         member_count: g.member_count(),
         treasury: g.treasury,
     })
+}
+
+/// 稱號解鎖輔助（ROADMAP 389）：鎖外取 world_title_first、若全服首位則廣播；
+/// 無論是否首位都單播個人通知；鎖序：players 寫鎖 → 放鎖 → world_title_first 寫鎖 → 放鎖 → 廣播。
+fn grant_title_if_new(
+    app: &AppState,
+    tx: &tokio::sync::broadcast::Sender<Arc<ServerMsg>>,
+    tx_direct: &tokio::sync::mpsc::Sender<String>,
+    player_id: uuid::Uuid,
+    player_name: &str,
+    title: crate::player_title::Title,
+) {
+    // 鎖內：解鎖稱號，若已持有直接早退（避免重複廣播）。
+    let is_new = {
+        let mut players = app.players.write().unwrap();
+        match players.get_mut(&player_id) {
+            Some(p) => p.title_set.unlock(title),
+            None => return,
+        }
+    };
+    if !is_new { return; }
+    // 查全服首位：若 world_title_first 尚未記錄此 wire key 則為首位。
+    let world_first = {
+        let mut wf = app.world_title_first.write().unwrap();
+        let key = title.wire_key().to_string();
+        if !wf.contains_key(&key) {
+            wf.insert(key, player_name.to_string());
+            true
+        } else {
+            false
+        }
+    };
+    // 廣播：全服首位用 tx 廣播全體；個人通知走 tx_direct。
+    if world_first {
+        let _ = tx.send(Arc::new(ServerMsg::TitleUnlocked {
+            player_id,
+            player_name: player_name.to_string(),
+            title_key: title.wire_key().to_string(),
+            title_name: title.display_name().to_string(),
+            world_first: true,
+        }));
+        let _ = tx.send(Arc::new(ServerMsg::Chat {
+            from: "世界".to_string(),
+            text: crate::player_title::world_first_text(player_name, title),
+        }));
+    }
+    // 個人通知（未登入訪客也可以解鎖稱號，但只單播；world_first 廣播已含本人）。
+    if !world_first {
+        let msg = ServerMsg::TitleUnlocked {
+            player_id,
+            player_name: player_name.to_string(),
+            title_key: title.wire_key().to_string(),
+            title_name: title.display_name().to_string(),
+            world_first: false,
+        };
+        if let Ok(json) = serde_json::to_string(&msg) {
+            let _ = tx_direct.try_send(json);
+        }
+    }
 }
 
 /// 玩家離線清理。先放掉這條連線；只有當這是該玩家的**最後一條**連線（同帳號其餘分頁

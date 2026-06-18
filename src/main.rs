@@ -14,6 +14,7 @@ mod town_share;
 mod world_grove;
 mod daily_recap;
 mod craft_ceremony;
+mod player_title;
 mod town_project;
 mod town_project_store;
 mod observatory;
