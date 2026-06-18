@@ -5163,6 +5163,14 @@
     }
   }
 
+  // 單一 rAF 排程真相來源：每次排程前先取消舊的，確保不論從哪裡觸發都只有一條
+  // requestAnimationFrame 迴圈在飛，避免切換標籤頁/App 時多條迴圈疊加（ROADMAP 375 缺陷修正）。
+  let _rafId = 0;
+  function scheduleRender() {
+    cancelAnimationFrame(_rafId);
+    _rafId = requestAnimationFrame(safeRender);
+  }
+
   function render() {
     // 每幀重設基準變換(dpr 縮放),確保前一幀任何 save/restore 失衡也不會累積偏移。
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -5249,7 +5257,7 @@
       drawActionButton(me);
       drawDamageFlash(renderNow);
       updateVillageBuffHud();
-      requestAnimationFrame(safeRender);
+      scheduleRender();
       return;
     }
 
@@ -5428,7 +5436,7 @@
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
 
-    requestAnimationFrame(safeRender);
+    scheduleRender();
   }
 
   // 單格繪製安全網（人物消失善後）：把 render 主序列「每一個」繪製呼叫各自包 try/catch。
@@ -5464,12 +5472,13 @@
         safeRender._warned = true;
       }
       // render() 內部排下一幀的程式碼可能在拋例外前就沒跑到，這裡補排確保迴圈不斷。
-      requestAnimationFrame(safeRender);
+      scheduleRender();
     }
   }
   // 標籤頁重新可見時重啟渲染迴圈（配合 safeRender 的 document.hidden 早退）。
+  // scheduleRender 會先 cancel 瀏覽器仍暫停的那個舊 rAF，確保恢復可見時只有一條迴圈在飛。
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) requestAnimationFrame(safeRender);
+    if (!document.hidden) scheduleRender();
   });
 
   // ── 居家風格色票（ROADMAP 325）────────────────────────────────────────────────
@@ -23037,7 +23046,7 @@
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
     }
-    requestAnimationFrame(safeRender);
+    scheduleRender();
     initOnboard(); // 新手引導卡（ROADMAP 373）
   }
 
