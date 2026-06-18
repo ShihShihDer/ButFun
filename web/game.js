@@ -2686,6 +2686,22 @@
               atkEl.textContent = `⚔️ ${me.attack}`;
               atkEl.title = `攻擊力 ${me.attack}（武器基礎 + 等級加成 +${Math.floor(me.level/2)}）`;
             }
+
+            // 連殺熱度 HUD（ROADMAP 381）：有連殺就亮，讓玩家看到自己的戰意熱度。
+            {
+              const ksEl = document.getElementById("hudKillStreak");
+              if (ksEl) {
+                const ks = me.kill_streak || 0;
+                if (ks >= 2) {
+                  const pct = ks >= 8 ? 35 : ks >= 4 ? 20 : 10;
+                  ksEl.textContent = `🔥 ×${ks} +${pct}%`;
+                  ksEl.title = `連殺 ${ks} 隻！傷害 +${pct}%（8 秒內再殺可繼續累積，最高 ×8 +35%）`;
+                  ksEl.classList.remove("hidden");
+                } else {
+                  ksEl.classList.add("hidden");
+                }
+              }
+            }
           }
 
           // 防禦力 HUD（ROADMAP 19 生態裝備）：持有護甲時顯示減傷值。
@@ -3086,6 +3102,17 @@
         const emoji = info.emoji || "⚡";
         floaters.push({ wx, wy, text: `${emoji} 元素克制 ×1.5！`, color: "255,210,60", born: performance.now() });
         announce(`元素克制，傷害提升 1.5 倍`);
+        break;
+      }
+      case "kill_streak": {
+        // 連殺里程碑（ROADMAP 381）：在 8 秒內連續擊殺達 2/4/8 隻時顯示熱度飄字。旁觀者忽略。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 60;
+        const s = msg.streak || 0;
+        const ksColor = s >= 8 ? "255,120,80" : s >= 4 ? "255,190,60" : "220,255,120";
+        const ksText = s >= 8 ? `🔥×${s} 戰意爆發！` : s >= 4 ? `🔥×${s} 殺意漸濃！` : `🔥×${s} 連殺！`;
+        floaters.push({ wx, wy, text: ksText, color: ksColor, born: performance.now() });
+        announce(`連殺 ${s} 隻，傷害加成 ${s >= 8 ? 35 : s >= 4 ? 20 : 10}%`);
         break;
       }
       case "cook_start": {
@@ -8176,11 +8203,6 @@
   };
 
   // 附魔 wire key → 元素 wire key（有元素性的附魔才有值）。
-  const ENCHANT_ELEMENT = {
-    burn_burst:       "fire",
-    aether_resonance: "ether",
-  };
-
   // 廢鐵無人機：蒸汽龐克機械偵查器。機身＋雙旋翼＋銅天線＋紅色警示核心眼。ROADMAP 89 精緻化。
   function drawScrapDrone(cx, cy, t, phase) {
     // 黏土風廢鐵無人機：以本體中心對齊的黏土 sprite（不另畫柔影——呼叫端已畫地面影）。

@@ -180,6 +180,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             indoor_x: 0.0,
             indoor_y: 0.0,
             inventory_extra_kinds: 0,
+            kill_streak: 0,
+            streak_last_kill: None,
         }
     } else {
         // 等 Join
@@ -280,6 +282,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             indoor_x: 0.0,
             indoor_y: 0.0,
             inventory_extra_kinds: 0,
+            kill_streak: 0,
+            streak_last_kill: None,
         }
     };
     let id = player.id;
@@ -2204,9 +2208,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let weapon_kind = p.equipment.weapon
                             .and_then(crate::combat::weapon_from_item)
                             .unwrap_or(crate::combat::WeaponKind::Unarmed);
-                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant, weapon_kind)
+                        // ROADMAP 381 連殺熱度：讀出當下快照供衰退判斷。
+                        let streak_snap = (p.kill_streak, p.streak_last_kill);
+                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant, weapon_kind, streak_snap)
                     });
-                    let Some((px, py, downed, cooldown, power, enchant, weapon_kind)) = info else { continue; };
+                    let Some((px, py, downed, cooldown, power, enchant, weapon_kind, streak_snap)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
 
                     // 遠程武器：使用較大射程；在安全區內時禁止給獎勵（防龜城刷怪）。
@@ -2245,19 +2251,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         .get(&id).map(|p| (p.pending_warcry, p.skill_masteries.warcry_bonus_reach_px())).unwrap_or((false, 0.0));
                     // 元素克制倍率（ROADMAP 380）：單攻才套用（戰吼群攻一律 power 原值）。
                     // 讀鎖窺探最近敵人種類；守 prod-deadlock 鐵律：讀鎖內純算、不含 IO。
+                    // 連殺熱度（ROADMAP 381）：衰退判斷在鎖外做（pure function），再疊乘進 power。
+                    // 戰吼群攻不套連殺加成（避免雪球效應），連殺計數也只由單攻推進。
+                    let (mut streak_count, mut streak_last) = streak_snap;
+                    crate::kill_streak::decay_if_expired(&mut streak_count, &mut streak_last, std::time::Instant::now());
+                    let streak_mult = if !use_warcry {
+                        crate::kill_streak::streak_bonus_mult(streak_count)
+                    } else { 1.0 };
                     let (power, elem_bonus_elem): (u32, Option<String>) = if !use_warcry {
                         let target_kind = app.enemies.read().unwrap().peek_nearest_kind(px, py, attack_reach);
-                        let mult = target_kind
+                        let elem_mult = target_kind
                             .map(|k| crate::element_affinity::damage_multiplier(enchant, k))
                             .unwrap_or(1.0);
-                        let elem_str = if mult > 1.0 {
+                        let elem_str = if elem_mult > 1.0 {
                             enchant
                                 .and_then(crate::element_affinity::enchant_to_element)
                                 .map(|e| e.wire_str().to_owned())
                         } else {
                             None
                         };
-                        (((power as f32) * mult) as u32, elem_str)
+                        (((power as f32) * elem_mult * streak_mult) as u32, elem_str)
                     } else {
                         (power, None)
                     };
@@ -2295,6 +2308,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>)> =
                         results.iter().find(|(_, _, _, loot)| loot.is_some()).cloned();
                     let mut combat_level_up: Option<(String, u32)> = None;
+                    // 連殺里程碑廣播資料暫存（鎖外廣播，守 prod-deadlock 鐵律）。
+                    let mut streak_milestone: Option<(u8, f32, f32)> = None;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         // 攻擊速度加點縮短攻擊冷卻（ROADMAP 152）。
                         p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
@@ -2372,6 +2387,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.vitals.set_max_hp_full(p.vitals.max_hp() + bonus);
                             }
                         }
+                        // 連殺熱度（ROADMAP 381）：有擊殺且非戰吼才推進（防雪球）；
+                        // 里程碑結果存成 Option 在鎖外廣播（守 prod-deadlock 鐵律）。
+                        if had_kill && !use_warcry && !suppress_rewards {
+                            let now_i = std::time::Instant::now();
+                            crate::kill_streak::decay_if_expired(&mut p.kill_streak, &mut p.streak_last_kill, now_i);
+                            let (new_count, is_milestone) = crate::kill_streak::on_kill(&mut p.kill_streak, &mut p.streak_last_kill, now_i);
+                            if is_milestone {
+                                streak_milestone = Some((new_count, px, py));
+                            }
+                        }
+                    }
+                    // 連殺里程碑廣播（ROADMAP 381）：在鎖外廣播，守 prod-deadlock 鐵律。
+                    // 前端只對 player_id == 自己演出特效（旁觀者忽略）。
+                    if let Some((streak, sx, sy)) = streak_milestone {
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::KillStreak {
+                                player_id: id,
+                                streak,
+                                x: sx,
+                                y: sy,
+                            }
+                        ));
                     }
                     // NPC 升等賀詞（ROADMAP 84）：戰鬥升等時凱爾長老私信賀詞 / 全服廣播。
                     if let Some((pname, new_lv)) = combat_level_up {
