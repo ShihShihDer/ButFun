@@ -403,19 +403,22 @@
   // 與既有元素區隔：195~199 是「地表反光提亮」、201 是「實體腳下投影」、本項是「天上雲遮日在地面拖過的大片暗斑」。
   const cloudShadows = [];       // [{nx,ny,rx,ry,weight}]（nx/ny=窗格內相位 [0,1)；rx/ry=橢圓半徑；weight=濃淡權重）
   let _cloudShadowInit = false;  // 雲影斑塊池是否已生成
+  // ROADMAP 375 手機體驗打磨：觸控裝置粒子池縮 55%（畫面小、省 GPU 已夠看）。
+  // 桌機維持原量；`isTouch` 在上方第 270 行已定義。
+  const _pm = isTouch ? 0.55 : 1.0;
   // 粒子池：max 80 粒子，重複利用避免 GC 壓力。
-  const WEATHER_MAX_PARTICLES = 80;
+  const WEATHER_MAX_PARTICLES = (80 * _pm) | 0;
   const weatherParticles = [];
   // 冬日飄雪（ROADMAP 226）：四季系統（137）至今只有 HUD pill 看得見，世界外觀從不隨季節變。
   // 本切片把「冬季」第一次畫出來——冬天時天空飄落柔白雪花、覆一層極淡薄霜白幕。純前端、
   // 讀既有 currentSeason、零後端。粒子池上限放低（雪緩降、不需太密），跨季以 _snowFade 平滑淡入淡出。
-  const SNOW_MAX_PARTICLES = 90;
+  const SNOW_MAX_PARTICLES = (90 * _pm) | 0;
   const snowParticles = [];
   let _snowFade = 0;             // 冬季雪勢淡入淡出進度 [0,1]（非冬季→0，冬季→1，逐幀趨近不突兀）
   // 秋日落葉（ROADMAP 227）：226 讓「冬季」第一次看得見（飄雪），本切片回頭補上「秋季」——
   // 秋天時天空飄落一片片暖色枯葉、邊打著旋邊緩降、覆一層極淡暖金薄幕，與冬雪對成季節視覺一對。
   // 純前端、讀既有 currentSeason、零後端。粒子池上限與雪同低（葉緩降、不需太密），以 _leafFade 平滑淡入淡出。
-  const LEAF_MAX_PARTICLES = 70;
+  const LEAF_MAX_PARTICLES = (70 * _pm) | 0;
   const leafParticles = [];
   let _leafFade = 0;             // 秋季落葉淡入淡出進度 [0,1]（非秋季→0，秋季→1，逐幀趨近不突兀）
   // 落葉暖色盤（[r,g,b]）：琥珀／鏽紅／金黃／枯褐，隨葉隨機取一色，賣「秋天的層次」。
@@ -423,7 +426,7 @@
   // 春日花飛（ROADMAP 228）：226 冬雪、227 秋葉讓「冬／秋」看得見，本切片回頭補上「春季」——
   // 春天時天空飄落一片片淡粉花瓣（櫻色），隨風橫飄、盪得比葉更遠、邊飄邊輕輕翻轉，覆一層極淡
   // 粉幕，與冬雪、秋葉湊成季節視覺三聯。純前端、讀既有 currentSeason、零後端。以 _petalFade 平滑淡入淡出。
-  const PETAL_MAX_PARTICLES = 80;
+  const PETAL_MAX_PARTICLES = (80 * _pm) | 0;
   const petalParticles = [];
   let _petalFade = 0;            // 春季花瓣淡入淡出進度 [0,1]（非春季→0，春季→1，逐幀趨近不突兀）
   // 花瓣淡粉色盤（[r,g,b]）：櫻粉／淺桃／近白粉／玫瑰粉，隨瓣隨機取一色，賣「春天的柔」。
@@ -433,7 +436,7 @@
   // 閃爍、橫向搖曳），再覆一層極淡暖金幕，賣「慵懶炎夏午後的熱氣浮光」。與雪（白圓直降）、葉（暖
   // 橢圓打旋降）、櫻（粉瓣橫飄降）三方刻意區隔——夏絮是暖白小點、唯一「往上飄」、邊飄邊忽明忽暗。
   // 純前端、讀既有 currentSeason、零後端。以 _moteFade 平滑淡入淡出（與雪／葉／櫻同模式）。
-  const MOTE_MAX_PARTICLES = 80;
+  const MOTE_MAX_PARTICLES = (80 * _pm) | 0;
   const moteParticles = [];
   let _moteFade = 0;             // 夏季浮塵淡入淡出進度 [0,1]（非夏季→0，夏季→1，逐幀趨近不突兀）
   // 夏絮暖色盤（[r,g,b]）：暖白／米金／淺鵝黃／陽光奶白，隨絮隨機取一色，賣「被夏陽照亮的浮絮」。
@@ -464,7 +467,7 @@
   //（金色、散佈全畫面、勻緩明滅）也刻意區隔：螢火是黃綠色、只在下半草地高度、一閃一滅的脈衝節奏、
   // 且只在春夜出現。純前端、讀既有 currentSeason＋daynight.light、零後端。
   const FIREFLY_NIGHT_LIGHT = 0.42;  // daynight.light 低於此值算「夜」（與極光／銀河同調）
-  const FIREFLY_COUNT = 36;          // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
+  const FIREFLY_COUNT = ((36 * _pm) | 0) || 1;  // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
   let _fireflyFade = 0;              // 春夜螢火淡入淡出進度 [0,1]（非春夜→0，春夜→1，逐幀緩緩趨近）
   let _fireflies = null;             // 惰性生成的螢火蟲池（畫面比例座標的位置、緩游速度、閃爍相位、尺寸）
   // 春夏彩蝶（ROADMAP 236）：233 春夜螢火給了春季「夜、貼地、明滅游移的點點生靈」，本切片補上它的
@@ -485,7 +488,7 @@
   // 翅膀高頻嗡振。與白晝飛鳥（194，高空成群橫越的剪影）也區隔——蜻蜓貼地花叢高度單飛點停、不結隊。
   // 純前端、讀既有 currentSeason＋daynight.light、零後端、零協議改動。
   const DRAGONFLY_DAY_LIGHT = 0.42;  // daynight.light 高於此值算「白天」（與彩蝶／夜門檻同口徑）
-  const DRAGONFLY_COUNT = 12;        // 紅蜻蜓隻數（秋日偶見、蜻蜓懸停顯眼，比彩蝶更少不鋪滿）
+  const DRAGONFLY_COUNT = ((12 * _pm) | 0) || 1; // 紅蜻蜓隻數（秋日偶見、蜻蜓懸停顯眼，比彩蝶更少不鋪滿）
   let _dragonflyFade = 0;            // 秋日紅蜻蜓淡入淡出進度 [0,1]（非秋日白天→0，秋日白天→1，逐幀緩緩趨近）
   let _dragonflies = null;           // 惰性生成的紅蜻蜓池（畫面比例座標的位置、停—衝起訖點/相位、翅振相位、朝向、尺寸）
   // 冬日寒雀（ROADMAP 238）：233 春夜螢火、236 春夏彩蝶、237 秋日紅蜻蜓給了春夜、春夏白天、秋日白天
@@ -497,7 +500,7 @@
   //（194，天際剪影）也區隔——寒雀在草地花叢高度、單隻蹦跳、不結隊橫越。純前端、讀既有 currentSeason
   // ＋daynight.light、零後端、零協議改動。
   const SPARROW_DAY_LIGHT = 0.42;    // daynight.light 高於此值算「白天」（與彩蝶／蜻蜓同口徑、與夜門檻方向相反）
-  const SPARROW_COUNT = 10;          // 寒雀隻數（冬日偶見、雀蹦跳顯眼，比蜻蜓更少不鋪滿）
+  const SPARROW_COUNT = ((10 * _pm) | 0) || 1;   // 寒雀隻數（冬日偶見、雀蹦跳顯眼，比蜻蜓更少不鋪滿）
   let _sparrowFade = 0;              // 冬日寒雀淡入淡出進度 [0,1]（非冬日白天→0，冬日白天→1，逐幀緩緩趨近）
   let _sparrows = null;              // 惰性生成的寒雀池（畫面比例座標的位置、蹦跳起訖點/相位、啄食點頭相位、朝向、尺寸、色）
   // 寒雀褐灰調色盤（[r,g,b]）：麻褐／灰褐／暖栗，各雀生成時隨機取一色，賣「雪地上樸實的小麻雀」、與彩蝶花色／蜻蜓赤紅刻意拉開。
@@ -547,7 +550,7 @@
   //（草原花絮／森林落葉／沙漠熱氣／礦區乙太微塵／水域浮光）。與天氣（93）不同——
   // 天氣是後端驅動的動態天候、氛圍是恆常的生態氣息；天氣作用時氛圍自動淡出讓位。
   // 池上限比天氣更省（常駐層）；reduceMotion／低幀自動關閉。用畫面座標，每幀更新。
-  const AMBIENT_MAX_PARTICLES = 28;
+  const AMBIENT_MAX_PARTICLES = (28 * _pm) | 0;
   // 夜間氛圍切換（ROADMAP 190）：daynight.light 低於此值算「夜」，各生態氛圍切換成
   // 夜間限定的發光生命（森林螢火蟲／草原夜光花粉／水域磷光…）；跨日夜時清池換樣。
   const AMBIENT_NIGHT_LIGHT = 0.42;
@@ -1898,7 +1901,8 @@
     safeArea.left = parseFloat(cs.paddingLeft) || 0;
   }
   function resize() {
-    dpr = window.devicePixelRatio || 1;
+    // ROADMAP 375 手機體驗打磨：DPR 上限 2，3x 螢幕省 44% GPU 工作量，像素風 2x 已足夠銳利。
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
     viewW = window.innerWidth;
     viewH = window.innerHeight;
     readSafeArea();
@@ -5159,6 +5163,14 @@
     }
   }
 
+  // 單一 rAF 排程真相來源：每次排程前先取消舊的，確保不論從哪裡觸發都只有一條
+  // requestAnimationFrame 迴圈在飛，避免切換標籤頁/App 時多條迴圈疊加（ROADMAP 375 缺陷修正）。
+  let _rafId = 0;
+  function scheduleRender() {
+    cancelAnimationFrame(_rafId);
+    _rafId = requestAnimationFrame(safeRender);
+  }
+
   function render() {
     // 每幀重設基準變換(dpr 縮放),確保前一幀任何 save/restore 失衡也不會累積偏移。
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -5245,7 +5257,7 @@
       drawActionButton(me);
       drawDamageFlash(renderNow);
       updateVillageBuffHud();
-      requestAnimationFrame(safeRender);
+      scheduleRender();
       return;
     }
 
@@ -5318,29 +5330,30 @@
     // 較不易拋例外，整段包一層 safeDraw 即可——萬一某個拋了，也不會連帶把下面的小地圖/HUD 跳過。
     // 繪製順序維持原樣（順序決定圖層疊壓，不可亂動）。
     safeDraw("overlay", () => {
+      // ROADMAP 375：統一用幀頭算好的 renderNow，省 ~20 次 performance.now() 呼叫，同幀時間一致。
       drawDayNightTint();                              // 日夜染色（疊在世界與玩家上）
-      drawAmbientLight(camX, camY, performance.now()); // 環境光與日夜光暈（ROADMAP 90）
-      drawNightStars(performance.now());               // 夜空星星 + 遠方行星（ROADMAP 19）
-      drawGalaxy(performance.now(), _weatherDt);        // 夏夜銀河（232），晴朗夏夜斜掛的銀色星河、與星空同層
-      drawNightMotes(performance.now());               // 夜晚漂浮的乙太微光
-      drawFireflies(performance.now(), _weatherDt);    // 春夜螢火（233），春夜草地上點點黃綠明滅游移的螢火蟲
-      drawAutumnMist(performance.now(), _weatherDt);    // 秋夜薄霧（234），秋夜草地上瀰漫橫流的銀白薄霧
+      drawAmbientLight(camX, camY, renderNow);         // 環境光與日夜光暈（ROADMAP 90）
+      drawNightStars(renderNow);                       // 夜空星星 + 遠方行星（ROADMAP 19）
+      drawGalaxy(renderNow, _weatherDt);               // 夏夜銀河（232），晴朗夏夜斜掛的銀色星河、與星空同層
+      drawNightMotes(renderNow);                       // 夜晚漂浮的乙太微光
+      drawFireflies(renderNow, _weatherDt);            // 春夜螢火（233），春夜草地上點點黃綠明滅游移的螢火蟲
+      drawAutumnMist(renderNow, _weatherDt);           // 秋夜薄霧（234），秋夜草地上瀰漫橫流的銀白薄霧
       drawBiomeParallax(camX, camY, renderNow);        // 生態背景視差層次（ROADMAP 91）
-      drawLumenNightGlow(camX, camY, performance.now()); // 燐光族夜視光環
-      drawNightDangerVignette(performance.now());      // 夜間危機暈輪
-      drawVerdantAtmosphere(performance.now());        // 各星球大氣染色（ROADMAP 20）
-      drawCrimsonAtmosphere(performance.now());
-      drawVoidAtmosphere(performance.now());
-      drawAetherAtmosphere(performance.now());
-      drawOriginAtmosphere(performance.now());
-      drawRangedHits(performance.now(), camX, camY);   // 遠程命中特效
-      drawTravelFlash(performance.now());              // 星際旅行傳送閃光（ROADMAP 20）
-      drawSkillFlashes(performance.now(), camX, camY); // 主動技能圈形特效（ROADMAP 45）
-      drawFloaters(camX, camY, performance.now());     // 採集/收成「+N」飄字
-      drawHitFloaters(camX, camY, performance.now());  // 戰鬥傷害數字飄字（ROADMAP 94）
-      drawTapFlashes(camX, camY, performance.now());   // 互動確認漣漪
-      drawGatherFx(camX, camY, performance.now());     // 採集動作特效
-      drawAttackFx(camX, camY, performance.now());
+      drawLumenNightGlow(camX, camY, renderNow);       // 燐光族夜視光環
+      drawNightDangerVignette(renderNow);              // 夜間危機暈輪
+      drawVerdantAtmosphere(renderNow);                // 各星球大氣染色（ROADMAP 20）
+      drawCrimsonAtmosphere(renderNow);
+      drawVoidAtmosphere(renderNow);
+      drawAetherAtmosphere(renderNow);
+      drawOriginAtmosphere(renderNow);
+      drawRangedHits(renderNow, camX, camY);           // 遠程命中特效
+      drawTravelFlash(renderNow);                      // 星際旅行傳送閃光（ROADMAP 20）
+      drawSkillFlashes(renderNow, camX, camY);         // 主動技能圈形特效（ROADMAP 45）
+      drawFloaters(camX, camY, renderNow);             // 採集/收成「+N」飄字
+      drawHitFloaters(camX, camY, renderNow);          // 戰鬥傷害數字飄字（ROADMAP 94）
+      drawTapFlashes(camX, camY, renderNow);           // 互動確認漣漪
+      drawGatherFx(camX, camY, renderNow);             // 採集動作特效
+      drawAttackFx(camX, camY, renderNow);
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
     });
@@ -5351,33 +5364,32 @@
 
     // 冬夜極光（ROADMAP 231）：獨立 safeDraw，冬季夜晚天邊緩緩流動的綠青紫光幕。排在太陽/月亮之前
     // ——極光是夜空背後的光幕，月亮在其上發光（晝雪 226 的夜晚對偶，把四季視覺首次延伸進夜空）。
-    safeDraw("aurora", () => drawAurora(performance.now(), _weatherDt));
+    safeDraw("aurora", () => drawAurora(renderNow, _weatherDt));
 
     // 天空太陽/月亮（200）已依玩家回饋移除（螢幕固定的白光球、觀感廉價）。日夜光照/陰影不受影響（走 daynight.light）。drawCelestialBody 函式保留未呼叫。
 
     // 天邊流雲（ROADMAP 193）：獨立 safeDraw，白天天邊飄雲、破曉/黃昏染金、入夜淡出。
-    safeDraw("clouds", () => drawClouds(performance.now()));
+    safeDraw("clouds", () => drawClouds(renderNow));
 
     // 白晝飛鳥（ROADMAP 194）：獨立 safeDraw，白天偶發一小群拍翅鳥剪影橫越上半天邊（流星的白天對偶）。
-    safeDraw("daytimeBirds", () => drawDaytimeBirds(performance.now()));
+    safeDraw("daytimeBirds", () => drawDaytimeBirds(renderNow));
 
     // 雨後彩虹（ROADMAP 191）：獨立 safeDraw，每幀偵測「雨→停」轉換並繪製天邊彩虹。
-    safeDraw("rainbow", () => drawRainbow(performance.now()));
+    safeDraw("rainbow", () => drawRainbow(renderNow));
 
     // 夜空流星（ROADMAP 192）：獨立 safeDraw，入夜偶發一道流星劃過上半天邊。
-    safeDraw("shootingStar", () => drawShootingStar(performance.now()));
+    safeDraw("shootingStar", () => drawShootingStar(renderNow));
 
     // 雷雨閃電（ROADMAP 243）：獨立 safeDraw，草原暴雨時天空偶發一記全屏泛光＋分叉電光。
     // 排在天象最上層、小地圖之前——閃電要照亮整片天地（含地面），覆在所有世界元素之上。
-    safeDraw("lightning", () => drawLightning(performance.now()));
+    safeDraw("lightning", () => drawLightning(renderNow));
 
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
 
     // 萬用動作鈕：按住時連發（約每 0.2 秒一次），再把鈕畫在 HUD 層（蓋在世界上）。
     if (actionTouchId !== null) {
-      const nowA = performance.now();
-      if (nowA - lastSmartAction >= 200) { lastSmartAction = nowA; smartAction(); }
+      if (renderNow - lastSmartAction >= 200) { lastSmartAction = renderNow; smartAction(); }
     }
     safeDraw("actionButton", () => drawActionButton(me));
 
@@ -5409,7 +5421,7 @@
     // 受擊紅光 + 各 HUD 計時器/狀態 pill 更新：整段包一層 safeDraw——某個 update*Hud 對某筆資料
     // 拋例外時不會連帶把其餘 HUD 更新與下一幀排程跳過（rAF 在最後，靠 safeRender 兜底仍會續排）。
     safeDraw("hud", () => {
-      drawDamageFlash(performance.now());   // 受擊紅光（畫在最上層）
+      drawDamageFlash(renderNow);           // 受擊紅光（畫在最上層）
       updateVillageBuffHud();               // 村落節慶加成計時器（ROADMAP 64）
       updateGatheringHud();                 // 廣場聚會加成計時器（ROADMAP 124）
       updateProsperityHud();                // 城鎮繁榮儀（ROADMAP 128）
@@ -5424,7 +5436,7 @@
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
     });
 
-    requestAnimationFrame(safeRender);
+    scheduleRender();
   }
 
   // 單格繪製安全網（人物消失善後）：把 render 主序列「每一個」繪製呼叫各自包 try/catch。
@@ -5449,6 +5461,9 @@
   // 出錯只記一次 console（避免洗版），仍排下一幀，讓暫時性的實體繪製錯誤（某物種／屍光／
   // 聚落資料一時異常）能在下一幀自我恢復，而不是讓整個世界畫面整個掛掉。
   function safeRender() {
+    // ROADMAP 375 手機體驗打磨：標籤頁隱藏時暫停渲染，省電省 GPU。
+    // visibilitychange 監聽器（下方）會在重新可見時補排一幀、重啟迴圈。
+    if (document.hidden) return;
     try {
       render();
     } catch (e) {
@@ -5457,9 +5472,14 @@
         safeRender._warned = true;
       }
       // render() 內部排下一幀的程式碼可能在拋例外前就沒跑到，這裡補排確保迴圈不斷。
-      requestAnimationFrame(safeRender);
+      scheduleRender();
     }
   }
+  // 標籤頁重新可見時重啟渲染迴圈（配合 safeRender 的 document.hidden 早退）。
+  // scheduleRender 會先 cancel 瀏覽器仍暫停的那個舊 rAF，確保恢復可見時只有一條迴圈在飛。
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) scheduleRender();
+  });
 
   // ── 居家風格色票（ROADMAP 325）────────────────────────────────────────────────
   // 後端只傳風格代碼，色票與中文名稱集中在前端（繪製/在地化層）。
@@ -23026,7 +23046,7 @@
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
     }
-    requestAnimationFrame(safeRender);
+    scheduleRender();
     initOnboard(); // 新手引導卡（ROADMAP 373）
   }
 
