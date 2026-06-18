@@ -155,6 +155,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            inscriptions_mask: 0,
             reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -257,6 +258,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            inscriptions_mask: 0,
             reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
@@ -3891,6 +3893,118 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = tx_direct.try_send(json);
+                        }
+                    }
+                }
+
+                // ── 古代啟靈：請求符文挑戰（ROADMAP 384）────────────────────────────
+                Ok(ClientMsg::RequestInscription) => {
+                    use crate::ancient_inscription as ai;
+                    // 鎖內：確認在 Sand 生態域、扣材料、取出當前 mask。
+                    // 以伺服器側 near_ruin 判定為準（前端 near_ruin 只用來顯示按鈕，防作弊）。
+                    let result = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            if !ai::is_near_ruin(p.x, p.y) {
+                                // 不在沙漠遺跡區，忽略。
+                                None
+                            } else if p.inventory.count(crate::inventory::ItemKind::AncientFragment) < ai::FRAGMENT_COST {
+                                // 材料不足，忽略。
+                                None
+                            } else {
+                                // 扣材料（FRAGMENT_COST 塊古代碎片）。
+                                p.inventory.take(crate::inventory::ItemKind::AncientFragment, ai::FRAGMENT_COST);
+                                // 依玩家 id 確定性選秘文（每次啟靈選同一篇，讓玩家練熟後收集）。
+                                // 選法：id xor 已解碼數，對 TOTAL 取模 → 讓解碼進度影響分配。
+                                let idx = ((p.id.as_u128() as u64) ^ (p.inscriptions_mask.count_ones() as u64))
+                                    % ai::TOTAL as u64;
+                                let ins = &ai::CATALOG[idx as usize];
+                                let bit = idx as u8;
+                                let already = p.inscriptions_mask & (1u8 << bit) != 0;
+                                let total_decoded = p.inscriptions_mask.count_ones() as u8;
+                                Some((ins, bit, already, total_decoded))
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    // 出鎖後送 InscriptionChallenge（單播給本人）。
+                    if let Some((ins, _bit, _already, total_decoded)) = result {
+                        let msg = ServerMsg::InscriptionChallenge {
+                            key: ins.key.to_string(),
+                            name: ins.name.to_string(),
+                            emoji: ins.emoji.to_string(),
+                            symbols: ai::sequence_keys(ins).iter().map(|&s| s.to_string()).collect(),
+                            total_decoded,
+                            catalog_total: ai::TOTAL as u8,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                    }
+                }
+
+                // ── 古代啟靈：玩家送出符文序列（ROADMAP 384）────────────────────────────
+                Ok(ClientMsg::SolveInscription { inscription_key, sequence }) => {
+                    use crate::ancient_inscription as ai;
+                    // 驗證序列是否正確（伺服器以靜態目錄為準，防作弊）。
+                    let ins = match ai::by_key(&inscription_key) {
+                        Some(i) => i,
+                        None => continue, // 未知 key，忽略。
+                    };
+                    let correct = ai::check_sequence(ins, &sequence);
+                    let bit = match ai::index_of(&inscription_key) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    // 鎖內：給獎、set bit，把要廣播的資料帶出鎖外。
+                    let result = {
+                        let mut players = app.players.write().unwrap();
+                        if let Some(p) = players.get_mut(&id) {
+                            if !correct {
+                                Some((false, 0u32, p.inscriptions_mask.count_ones() as u8, p.name.clone()))
+                            } else {
+                                let already = p.inscriptions_mask & (1u8 << bit) != 0;
+                                let reward = if already { ai::ETHER_REPEAT } else { ai::ETHER_FIRST };
+                                p.ether = p.ether.saturating_add(reward);
+                                p.masteries.gain_explorer(ai::EXPLORER_XP);
+                                if !already {
+                                    p.inscriptions_mask |= 1u8 << bit;
+                                    tracing::info!(
+                                        player = %p.name, inscription = inscription_key,
+                                        "解碼古代秘文、記入秘文錄"
+                                    );
+                                }
+                                let total_decoded = p.inscriptions_mask.count_ones() as u8;
+                                Some((true, reward, total_decoded, p.name.clone()))
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    // 出鎖後回覆（單播給本人）＋首次解碼才全服廣播。
+                    if let Some((ok, reward_ether, total_decoded, player_name)) = result {
+                        let msg = ServerMsg::InscriptionResult {
+                            ok,
+                            name: ins.name.to_string(),
+                            emoji: ins.emoji.to_string(),
+                            reward_ether,
+                            total_decoded,
+                            catalog_total: ai::TOTAL as u8,
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
+                        // 首次解碼才廣播世界同慶（重複解碼不重複廣播）。
+                        if ok && reward_ether == ai::ETHER_FIRST {
+                            let announce = format!(
+                                "📜 【{}】解讀了古代秘文《{}》{} —— 遺跡的秘密又解開了一章！",
+                                player_name, ins.name, ins.emoji
+                            );
+                            let _ = app.tx.send(std::sync::Arc::new(ServerMsg::Chat {
+                                from: "世界".to_string(),
+                                text: announce,
+                            }));
                         }
                     }
                 }

@@ -2617,6 +2617,7 @@
           updatePetPanel(me, isGuest);  // 寵物夥伴面板（ROADMAP 46）
           updateFishPanel(me, isGuest); // 釣魚面板（ROADMAP 47）
           updateMiningPanel(me, isGuest); // 礦脈深掘面板（ROADMAP 348）
+          updateInscriptionDock(me, isGuest); // 古代啟靈 dock 鈕（ROADMAP 384）
           updateWaypostPanel(me, isGuest); // 探索者路標面板（ROADMAP 353）
           updateBottlePanel(me, isGuest); // 星海寄語 / 漂流瓶面板（ROADMAP 354）
           updateRanchPanel(me, isGuest); // 牧場面板（ROADMAP 48）
@@ -3162,6 +3163,14 @@
       case "constellation_result":
         // 連星座結果（ROADMAP 347）：對／錯回饋，連對首次入錄給獎。
         applyConstellationResult(msg);
+        break;
+      case "inscription_challenge":
+        // 古代啟靈挑戰（ROADMAP 384）：扣碎片後伺服器送出4步符文序列，前端播放記憶動畫。
+        applyInscriptionChallenge(msg);
+        break;
+      case "inscription_result":
+        // 古代啟靈結果（ROADMAP 384）：玩家送出序列後回傳對錯與獎勵。
+        applyInscriptionResult(msg);
         break;
       case "reconcile_offer":
         // 居民和解委託（ROADMAP 364）：開窗時伺服器回鎮上可促成的和解（或續辦中的委託）。
@@ -20029,6 +20038,304 @@
     if (me) floaters.push({ wx: me.x, wy: me.y - 40, text: `再靠近 ${msg.to_name} 一點`, color: "224,200,144", born: performance.now() });
   }
 
+  // ── 古代啟靈 dock 按鈕（ROADMAP 384）─────────────────────────────────────────
+  // 玩家在 Sand 生態域附近時亮起 dock-active，離開後恢復。
+  let lastInscriptionDockSig = null;
+  function updateInscriptionDock(me, isGuestUser) {
+    const nearRuin = me ? !!me.near_ruin : false;
+    const fragCount = me
+      ? ((me.inventory || []).find(i => i.item === "ancient_fragment") || {}).qty || 0
+      : 0;
+    const sig = [nearRuin, isGuestUser, fragCount >= 3].join("|");
+    if (sig === lastInscriptionDockSig) return;
+    lastInscriptionDockSig = sig;
+    const dockBtn = document.getElementById("dockInscription");
+    if (dockBtn) {
+      // dock-active（金色光暈）：在遺跡區＋有足夠碎片時提示玩家可互動。
+      dockBtn.classList.toggle("dock-active", nearRuin && fragCount >= 3 && !isGuestUser);
+    }
+    // 若面板已開且在 idle 階段，重繪以反映最新狀態（碎片數量改變）。
+    const win = document.getElementById("winInscription");
+    if (win && !win.classList.contains("hidden") && inscrState.phase === "idle") {
+      renderInscriptionIdle();
+    }
+  }
+
+  // ── 古代啟靈面板（ROADMAP 384）────────────────────────────────────────────────
+  // 沙漠遺跡的符文石板藏著古代秘文；消耗 3 塊古代碎片「啟靈」後，伺服器送出 4 步符文序列，
+  // 前端依序閃現每個符文（記憶視窗 ~4 秒）後隱藏；玩家在 12 秒內點按 6 顆符文鈕的正確順序。
+  // 骨架：序列記憶（Simon Says）——與釣魚的「反應計時」、觀星的「空間連線」皆不同。
+  // 6 個符文：🌙⭐🔥💎⚡🌊，wire key 對應 SYMBOLS 陣列（與後端 ancient_inscription.rs 穩定契約）。
+
+  const INSCRIPTION_SYMBOLS = [
+    { key: "moon",    emoji: "🌙", label: "月" },
+    { key: "star",    emoji: "⭐", label: "星" },
+    { key: "flame",   emoji: "🔥", label: "焰" },
+    { key: "gem",     emoji: "💎", label: "晶" },
+    { key: "thunder", emoji: "⚡", label: "雷" },
+    { key: "wave",    emoji: "🌊", label: "浪" },
+  ];
+
+  // 啟靈面板狀態機。
+  const inscrState = {
+    phase: "idle",        // "idle" | "flashing" | "input" | "done"
+    challenge: null,      // 從伺服器來的挑戰物件
+    flashIdx: 0,          // 目前閃到第幾個符文
+    flashTimer: null,     // setTimeout handle
+    inputSeq: [],         // 玩家已點按的序列 (wire key 陣列)
+    inputDeadline: 0,     // 輸入時限（performance.now 毫秒）
+    inputTimer: null,
+    totalDecoded: 0,
+    catalogTotal: 0,
+  };
+
+  // 繪製閒置狀態（面板初始／完成後）。
+  function renderInscriptionIdle() {
+    const body = document.getElementById("inscriptionBody");
+    if (!body) return;
+    inscrState.phase = "idle";
+    if (inscrState.flashTimer) { clearTimeout(inscrState.flashTimer); inscrState.flashTimer = null; }
+    if (inscrState.inputTimer) { clearTimeout(inscrState.inputTimer); inscrState.inputTimer = null; }
+    body.innerHTML = "";
+
+    const me = myId ? players.get(myId) : null;
+    const nearRuin = me ? !!me.near_ruin : false;
+    const fragCount = me
+      ? ((me.inventory || []).find(i => i.item === "ancient_fragment") || {}).qty || 0
+      : 0;
+
+    const desc = document.createElement("div");
+    desc.style.cssText = "font-size:.85rem;color:#e0d2b0;line-height:1.6;margin-bottom:8px;";
+    desc.innerHTML =
+      `沙漠遺跡的石板背後藏著<b>古代秘文</b>。消耗 <b>3 塊古代碎片</b> 「啟靈」，`+
+      `石板會閃現一串符文序列——記住順序，再按出來。<br>`+
+      `<span style="color:#b9a878">已解讀：${inscrState.totalDecoded} / ${inscrState.catalogTotal || 6} 篇</span>`;
+    body.appendChild(desc);
+
+    const fragLine = document.createElement("div");
+    fragLine.style.cssText = "font-size:.82rem;color:#a09080;margin-bottom:10px;";
+    fragLine.textContent = `背包古代碎片：${fragCount} 塊`;
+    body.appendChild(fragLine);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.cssText = "width:100%;padding:9px 0;border-radius:8px;font-size:1rem;cursor:pointer;";
+    if (!nearRuin) {
+      btn.textContent = "📜 走進沙漠遺跡區才能啟靈";
+      btn.disabled = true;
+      btn.style.cssText += "background:transparent;border:1px solid #555;color:#666;";
+    } else if (fragCount < 3) {
+      btn.textContent = `📜 碎片不足（需 3 塊，有 ${fragCount} 塊）`;
+      btn.disabled = true;
+      btn.style.cssText += "background:transparent;border:1px solid #555;color:#666;";
+    } else {
+      btn.textContent = "📜 啟靈（消耗 3 古代碎片）";
+      btn.style.cssText += "background:rgba(180,150,80,.15);border:1px solid #c9a24b;color:#f1e6cf;";
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        safeSend({ type: "request_inscription" });
+      });
+    }
+    body.appendChild(btn);
+  }
+
+  // 伺服器送來挑戰：播放符文閃現動畫（Simon Says 的「展示」階段）。
+  function applyInscriptionChallenge(msg) {
+    inscrState.challenge = msg;
+    inscrState.totalDecoded = msg.total_decoded || 0;
+    inscrState.catalogTotal = msg.catalog_total || 6;
+    inscrState.inputSeq = [];
+    inscrState.phase = "flashing";
+    inscrState.flashIdx = 0;
+    renderInscriptionFlashing();
+  }
+
+  // 逐步閃現符文（每符文亮 900ms，間隔 300ms）。
+  function renderInscriptionFlashing() {
+    const body = document.getElementById("inscriptionBody");
+    if (!body || !inscrState.challenge) return;
+    body.innerHTML = "";
+
+    const seq = inscrState.challenge.symbols; // 長度4的陣列
+    const idx = inscrState.flashIdx;
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:.9rem;color:#c9a24b;margin-bottom:8px;text-align:center;";
+    title.textContent = `記住符文順序（${idx + 1} / ${seq.length}）`;
+    body.appendChild(title);
+
+    // 4 個符文位置（idx 之前的灰色，idx 高亮，之後的待顯示）。
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;justify-content:center;gap:12px;margin:16px 0 24px;";
+    seq.forEach((key, i) => {
+      const sym = INSCRIPTION_SYMBOLS.find(s => s.key === key);
+      const box = document.createElement("div");
+      box.style.cssText = "width:52px;height:52px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:2rem;transition:all .2s;";
+      if (i < idx) {
+        // 已閃過：暗灰
+        box.style.background = "rgba(80,80,80,.3)";
+        box.style.border = "1px solid #444";
+        box.style.opacity = "0.4";
+        box.textContent = sym ? sym.emoji : "?";
+      } else if (i === idx) {
+        // 正在閃：高亮金框
+        box.style.background = "rgba(200,160,60,.25)";
+        box.style.border = "2px solid #c9a24b";
+        box.style.boxShadow = "0 0 14px rgba(200,160,60,.5)";
+        box.textContent = sym ? sym.emoji : "?";
+      } else {
+        // 未到：空框
+        box.style.background = "rgba(40,40,60,.3)";
+        box.style.border = "1px solid #333";
+        box.textContent = "？";
+      }
+      row.appendChild(box);
+    });
+    body.appendChild(row);
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "text-align:center;font-size:.82rem;color:#9090a0;";
+    hint.textContent = "記好後輪到你輸入……";
+    body.appendChild(hint);
+
+    // 排好下一步：閃完 4 個後進入輸入模式。
+    inscrState.flashTimer = setTimeout(() => {
+      inscrState.flashIdx++;
+      if (inscrState.flashIdx < seq.length) {
+        renderInscriptionFlashing();
+      } else {
+        // 全部閃完，進入輸入階段。
+        inscrState.phase = "input";
+        inscrState.inputSeq = [];
+        inscrState.inputDeadline = performance.now() + 12000;
+        renderInscriptionInput();
+      }
+    }, idx < seq.length - 1 ? 1200 : 1600); // 最後一個多停 400ms 再進輸入
+  }
+
+  // 輸入階段：顯示 6 顆符文按鈕，玩家按 4 次，超時自動送出（錯誤）。
+  function renderInscriptionInput() {
+    const body = document.getElementById("inscriptionBody");
+    if (!body || !inscrState.challenge) return;
+    body.innerHTML = "";
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:.9rem;color:#9fd0ff;margin-bottom:6px;text-align:center;";
+    title.textContent = "按出你記住的順序！";
+    body.appendChild(title);
+
+    // 已按序列顯示（空格＝待填）。
+    const ansRow = document.createElement("div");
+    ansRow.id = "inscrAnsRow";
+    ansRow.style.cssText = "display:flex;justify-content:center;gap:10px;margin:10px 0 16px;";
+    const seqLen = inscrState.challenge.symbols.length;
+    for (let i = 0; i < seqLen; i++) {
+      const box = document.createElement("div");
+      box.style.cssText = "width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;border:1px solid #444;background:rgba(40,40,60,.4);color:#999;";
+      const key = inscrState.inputSeq[i];
+      const sym = key ? INSCRIPTION_SYMBOLS.find(s => s.key === key) : null;
+      box.textContent = sym ? sym.emoji : "_";
+      if (key) {
+        box.style.border = "1px solid #6080c0";
+        box.style.background = "rgba(60,80,160,.2)";
+        box.style.color = "#fff";
+      }
+      ansRow.appendChild(box);
+    }
+    body.appendChild(ansRow);
+
+    // 6 顆符文按鈕。
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;";
+    INSCRIPTION_SYMBOLS.forEach(sym => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.style.cssText = "padding:10px 0;border-radius:9px;font-size:1.5rem;cursor:pointer;background:rgba(60,70,100,.2);border:1px solid #505070;color:#ddd;";
+      btn.textContent = sym.emoji;
+      btn.title = sym.label;
+      btn.addEventListener("click", () => {
+        if (inscrState.phase !== "input") return;
+        inscrState.inputSeq.push(sym.key);
+        if (inscrState.inputSeq.length >= seqLen) {
+          // 輸滿了，送出。
+          submitInscriptionAnswer();
+        } else {
+          renderInscriptionInput();
+        }
+      });
+      grid.appendChild(btn);
+    });
+    body.appendChild(grid);
+
+    // 倒數計時器（每秒更新）。
+    const timerDiv = document.createElement("div");
+    timerDiv.id = "inscrTimer";
+    timerDiv.style.cssText = "text-align:center;font-size:.82rem;color:#909090;";
+    body.appendChild(timerDiv);
+
+    // 清前一個 timer，重新啟動。
+    if (inscrState.inputTimer) clearInterval(inscrState.inputTimer);
+    inscrState.inputTimer = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((inscrState.inputDeadline - performance.now()) / 1000));
+      const el = document.getElementById("inscrTimer");
+      if (el) el.textContent = remaining > 0 ? `剩餘 ${remaining} 秒` : "時間到！";
+      if (remaining <= 0) {
+        clearInterval(inscrState.inputTimer);
+        inscrState.inputTimer = null;
+        if (inscrState.phase === "input") submitInscriptionAnswer();
+      }
+    }, 500);
+  }
+
+  // 送出玩家輸入的序列。
+  function submitInscriptionAnswer() {
+    if (inscrState.phase !== "input") return;
+    inscrState.phase = "done";
+    if (inscrState.inputTimer) { clearInterval(inscrState.inputTimer); inscrState.inputTimer = null; }
+    const key = inscrState.challenge ? inscrState.challenge.key : "";
+    const seq = inscrState.inputSeq.slice();
+    // 補足不夠的長度（超時就把空格補 "moon" 當佔位）。
+    const needed = inscrState.challenge ? inscrState.challenge.symbols.length : 4;
+    while (seq.length < needed) seq.push("moon");
+    safeSend({ type: "solve_inscription", inscription_key: key, sequence: seq });
+  }
+
+  // 伺服器回傳解碼結果。
+  function applyInscriptionResult(msg) {
+    inscrState.totalDecoded = msg.total_decoded || 0;
+    inscrState.catalogTotal = msg.catalog_total || 6;
+    const body = document.getElementById("inscriptionBody");
+    if (!body) return;
+    body.innerHTML = "";
+
+    const me = myId ? players.get(myId) : null;
+    const resultDiv = document.createElement("div");
+    resultDiv.style.cssText = "text-align:center;padding:16px 0;";
+    if (msg.ok) {
+      resultDiv.innerHTML =
+        `<div style="font-size:2.2rem;margin-bottom:4px;">${msg.emoji}</div>`+
+        `<div style="font-size:1rem;color:#f1e6cf;margin-bottom:8px;">《${msg.name}》已解讀！</div>`+
+        (msg.reward_ether > 0
+          ? `<div style="color:#ffd700;font-size:.95rem;margin-bottom:12px;">+${msg.reward_ether} 乙太　+探索熟練度</div>`
+          : `<div style="color:#c9a24b;font-size:.85rem;margin-bottom:12px;">重複解讀，得少量乙太</div>`)+
+        `<div style="font-size:.8rem;color:#9090a0;">已解讀 ${inscrState.totalDecoded} / ${inscrState.catalogTotal} 篇</div>`;
+      announce(`解讀古代秘文《${msg.name}》${msg.emoji}！+${msg.reward_ether} 乙太`);
+      if (me) floaters.push({ wx: me.x, wy: me.y - 48, text: `📜 《${msg.name}》+${msg.reward_ether}⚗️`, color: "200,160,80", born: performance.now() });
+    } else {
+      resultDiv.innerHTML =
+        `<div style="font-size:2rem;margin-bottom:8px;">❌</div>`+
+        `<div style="color:#e07060;font-size:.95rem;margin-bottom:6px;">符文序列有誤——碎片已消耗</div>`+
+        `<div style="color:#888;font-size:.82rem;">想再試試嗎？回到遺跡再消耗 3 塊碎片啟靈。</div>`;
+    }
+    body.appendChild(resultDiv);
+
+    // 3 秒後自動回到閒置（讓玩家再試）。
+    setTimeout(() => {
+      inscrState.phase = "idle";
+      renderInscriptionIdle();
+    }, 3000);
+  }
+
   // 在面板裡建一次 DOM（畫布 + 控制鈕），之後只更新內容、重繪畫布。
   function buildStargazePanel() {
     const body = document.getElementById("stargazeBody");
@@ -22893,6 +23200,8 @@
       if (win.id === "winStargaze") requestStarMap();
       // 和解面板（ROADMAP 364）：一開窗就向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
       if (win.id === "winReconcile") requestReconcile();
+      // 啟靈面板（ROADMAP 384）：一開窗就重繪啟靈面板的初始狀態（顯示說明＋啟動按鈕）。
+      if (win.id === "winInscription") renderInscriptionIdle();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();
