@@ -1716,6 +1716,112 @@
     try { localStorage.setItem("butfun.gatheredOnce", "1"); } catch {}
   }
 
+  // ---- 新手引導（ROADMAP 373）----
+  // 三步驟引導卡：移動 → 採集 → 種田（已登入）或 登入領地（訪客）。
+  // 只對全新玩家顯示：onboardingDone=1 或已有 tendedOnce/gatheredOnce（老玩家）時靜默略過。
+  let onboardDone = false;
+  try { onboardDone = localStorage.getItem("butfun.onboardingDone") === "1"; } catch {}
+  // 老玩家（引導上線前就在玩，已有採集或農耕紀錄）：靜默標記完成，不打擾回訪者。
+  if (!onboardDone && (tendedOnce || gatheredOnce)) {
+    onboardDone = true;
+    try { localStorage.setItem("butfun.onboardingDone", "1"); } catch {}
+  }
+  let onboardStep = 0; // 0=移動, 1=採集, 2=種田/登入
+  let onboardSpawnPos = null; // 進場時的座標，偵測「是否真的走動了」
+
+  // 步驟定義：所有面向玩家的文字集中在此（i18n 替換點）。
+  const OB_STEPS_GUEST = [
+    { icon: "🚶", name: "走走看", hint: "按方向鍵移動，或輕點地板走過去" },
+    { icon: "🌿", name: "採集資源", hint: "走近草叢或礦石，按空白鍵採集" },
+    { icon: "🔑", name: "登入領地", hint: "登入後可獲得專屬農田、開始種田" },
+  ];
+  const OB_STEPS_AUTH = [
+    { icon: "🚶", name: "走走看", hint: "按方向鍵移動，或輕點地板走過去" },
+    { icon: "🌿", name: "採集資源", hint: "走近草叢或礦石，按空白鍵採集" },
+    { icon: "🌾", name: "照顧農地", hint: "找到你的農田，走近後照顧作物" },
+  ];
+
+  function renderOnboard() {
+    const card = document.getElementById("onboardCard");
+    if (!card) return;
+    const steps = isGuest ? OB_STEPS_GUEST : OB_STEPS_AUTH;
+    const cur = steps[onboardStep] || steps[steps.length - 1];
+    const dots = steps.map((_, i) => {
+      const cls = i < onboardStep ? "ob-dot done" : i === onboardStep ? "ob-dot active" : "ob-dot";
+      return `<span class="${cls}"></span>`;
+    }).join("");
+    // 訪客第三步：加「立即登入」直連按鈕，讓目標動作一目了然。
+    const loginRow = (isGuest && onboardStep === 2)
+      ? `<a href="/auth/google" class="ob-login" id="obLoginLink">🔑 立即登入 Google</a>` : "";
+    card.innerHTML = `
+      <div class="ob-head">
+        <span class="ob-title">🎮 新手引導</span>
+        <button type="button" class="ob-skip" id="obSkipBtn">跳過</button>
+      </div>
+      <div class="ob-dots">${dots}</div>
+      <div class="ob-row">
+        <span class="ob-icon">${cur.icon}</span>
+        <div>
+          <div class="ob-name">${cur.name}</div>
+          <div class="ob-hint">${cur.hint}</div>
+        </div>
+      </div>
+      ${loginRow}`;
+    document.getElementById("obSkipBtn").addEventListener("click", finishOnboard);
+    if (loginRow) {
+      document.getElementById("obLoginLink").addEventListener("click", finishOnboard);
+    }
+  }
+
+  function initOnboard() {
+    if (onboardDone) return;
+    const card = document.getElementById("onboardCard");
+    if (!card) return;
+    card.classList.remove("hidden");
+    renderOnboard();
+  }
+
+  function finishOnboard() {
+    if (onboardDone) return;
+    onboardDone = true;
+    try { localStorage.setItem("butfun.onboardingDone", "1"); } catch {}
+    const card = document.getElementById("onboardCard");
+    if (!card) return;
+    card.classList.add("fading");
+    setTimeout(() => card.classList.add("hidden"), 450);
+  }
+
+  // 每份快照呼叫一次：根據玩家當前狀態推進引導步驟（polling 取代 hook，更不容易跳號）。
+  function tickOnboard(me) {
+    if (onboardDone) return;
+    const steps = isGuest ? OB_STEPS_GUEST : OB_STEPS_AUTH;
+    let changed = false;
+
+    if (onboardStep === 0) {
+      // 步驟0：偵測移動——座標距進場點超過 80 像素視為「已走動」。
+      if (!onboardSpawnPos) {
+        onboardSpawnPos = { x: me.x, y: me.y };
+      } else if (Math.abs(me.x - onboardSpawnPos.x) > 80 || Math.abs(me.y - onboardSpawnPos.y) > 80) {
+        onboardStep = 1;
+        changed = true;
+      }
+    }
+
+    if (onboardStep === 1 && gatheredOnce) {
+      // 步驟1：gatheredOnce 由 markGatheredOnce() 在本 session 設旗後即可進步。
+      onboardStep = 2;
+      changed = true;
+    }
+
+    if (onboardStep === 2 && !isGuest && tendedOnce) {
+      // 步驟2（已登入）：照顧過田 → 引導完成。
+      finishOnboard();
+      return;
+    }
+
+    if (changed) renderOnboard();
+  }
+
   // 上一拍「最近可採節點」的穩定鍵（kind@x,y）。看得到的玩家走進可採範圍會看到黃環+「採X」+
   // 「按空白鍵或點一下」;報讀器玩家原本毫無回饋,只能到處亂按鍵碰運氣。用來在「走進新可採節點
   // 範圍」那拍播一句給報讀器,延續採空/採到/連線/日夜的無障礙弧線。離開再進來(鍵變了)才重播,
@@ -2344,6 +2450,8 @@
             // (登入即有專屬田)。登入者 isGuest=false 永不顯示,不打擾老玩家。
             document.getElementById("hudGuestHint").classList.remove("hidden");
           }
+          // 新手引導（ROADMAP 373）：每份快照讀 me 座標 + in-memory 旗標，推進引導步驟。
+          tickOnboard(me);
           // 住家按鈕顯示/隱藏（ROADMAP 111）
           updateHomeBtn(me);
           // 住家家具面板（ROADMAP 155）
@@ -22871,6 +22979,7 @@
       document.getElementById(id).classList.remove("hidden");
     }
     requestAnimationFrame(safeRender);
+    initOnboard(); // 新手引導卡（ROADMAP 373）
   }
 
   // 訪客新玩家也配個與主題相襯的隨機代號(玩家建議:新玩家用隨機角色名稱)。
