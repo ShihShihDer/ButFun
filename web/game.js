@@ -3057,6 +3057,27 @@
         }
         break;
       }
+      case "gather_quality": {
+        // 採集稀有度（ROADMAP 379）：廣播事件，只對自己 id 演出彩色飄字（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 44;
+        const now = performance.now();
+        // 稀有度顏色：史詩=金、稀有=青藍、不凡=淡紫。
+        const qcolor = msg.rarity === "epic"     ? "255,215,80"
+                     : msg.rarity === "rare"      ? "110,210,255"
+                     :                              "200,160,255"; // uncommon
+        const qlabel = msg.rarity === "epic"     ? "史詩"
+                     : msg.rarity === "rare"      ? "稀有"
+                     :                              "不凡";
+        const qemoji = msg.rarity === "epic"     ? "🌟"
+                     : msg.rarity === "rare"      ? "💎"
+                     :                              "✨";
+        const qty = msg.total_qty || 1;
+        const iname = msg.item_name || "物品";
+        floaters.push({ wx, wy, text: `${qemoji} ${qlabel}採集！${iname} ×${qty}`, color: qcolor, born: now });
+        announce(`${qlabel}品質採集，獲得 ${iname} ×${qty}`);
+        break;
+      }
       case "cook_start": {
         // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;

@@ -1283,6 +1283,20 @@ pub enum ServerMsg {
         warmth: i32,
         reward_ether: u32,
     },
+    /// 採集品質光環（ROADMAP 379）：採到不凡以上品質時廣播；前端只對 `player_id == 自己` 演出
+    /// 飄字（旁觀者忽略）；稀有以上額外在世界頻道宣告（ws.rs 另發 Chat）。
+    /// `rarity` ＝ wire 字串（uncommon/rare/epic）；`item_name` ＝ 中文物品名；
+    /// `total_qty` ＝ 這次採集最終入袋量（含品質加成）；`x`/`y` ＝ 玩家座標（飄字定位）。
+    /// 不入快照、不持久化、零 migration。
+    GatherQuality {
+        player_id: Uuid,
+        player_name: String,
+        rarity: String,
+        item_name: String,
+        total_qty: u32,
+        x: f32,
+        y: f32,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
