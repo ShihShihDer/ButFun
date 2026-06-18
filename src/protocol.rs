@@ -1307,6 +1307,15 @@ pub enum ServerMsg {
         y: f32,
         elem: String,
     },
+    /// 連殺里程碑（ROADMAP 381）：玩家達到 2 / 4 / 8 連殺時廣播。
+    /// 前端只對 player_id == 自己 演出特效；旁觀者忽略。
+    KillStreak {
+        player_id: Uuid,
+        /// 達到的連殺數（2 / 4 / 8）。
+        streak: u8,
+        x: f32,
+        y: f32,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -1663,6 +1672,13 @@ pub struct PlayerView {
     /// 議價術使用次數。0 時省略。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub skill_mastery_haggle: u32,
+
+    // ── 連殺熱度（ROADMAP 381）────────────────────────────────────────────────
+    /// 目前連殺數（在 GAP_SECS 內連續擊殺怪物的計數）。
+    /// 只有「本人」的快照才有意義（前端據此顯示熱度 HUD）；0 時省略流量。
+    /// 記憶體前置，重啟歸零——玩家斷線重連後連殺也從 0 起算。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub kill_streak: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2098,6 +2114,7 @@ mod tests {
                 level: 0,
                 attack: 2,
                 defense: 0,
+                kill_streak: 0,
                 planet: "home".into(),
                 job_class: None,
                 masteries: crate::class::Masteries::default(),
@@ -2439,6 +2456,7 @@ mod tests {
             skill_mastery_precision: 0,
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
+            kill_streak: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2718,6 +2736,7 @@ mod tests {
             skill_mastery_precision: 0,
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
+            kill_streak: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2776,6 +2795,7 @@ mod tests {
             skill_mastery_precision: 0,
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
+            kill_streak: 0,
         }
     }
 

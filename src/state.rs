@@ -357,6 +357,14 @@ pub struct Player {
     /// 乙太箱帶來的背包額外種類槽（0 = 無乙太箱；3 = 有一個乙太箱）。
     /// 記憶體模式：與 home_furnishings 同步，重啟歸零。
     pub inventory_extra_kinds: u32,
+
+    // ── 連殺熱度（ROADMAP 381）────────────────────────────────────────────
+    /// 目前連殺數（GAP_SECS 秒內連續擊殺怪物的累計次數）。
+    /// 記憶體前置、不持久化、零 migration——重啟歸零；由 ws.rs 攻擊路徑推進。
+    pub kill_streak: u8,
+    /// 最後一次擊殺怪物的時間戳（供 decay_if_expired 判斷是否逾時歸零）。
+    /// 記憶體前置、不持久化。
+    pub streak_last_kill: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -712,6 +720,9 @@ impl Player {
             skill_mastery_precision: self.skill_masteries.precision,
             skill_mastery_gale:      self.skill_masteries.gale,
             skill_mastery_haggle:    self.skill_masteries.haggle,
+            // ROADMAP 381：連殺熱度，只有本人快照才有意義；
+            // 衰退判斷由 ws.rs 在出招前呼叫 decay_if_expired，此處只取當下值。
+            kill_streak: self.kill_streak,
         }
     }
 
@@ -1538,6 +1549,8 @@ mod tests {
             indoor_x: 0.0,
             indoor_y: 0.0,
             inventory_extra_kinds: 0,
+            kill_streak: 0,
+            streak_last_kill: None,
         }
     }
 
