@@ -328,6 +328,10 @@ pub enum ClientMsg {
     /// `class` 為職業 wire key（"warrior" / "farmer" / "artisan" / "explorer" / "merchant"）。
     /// 未登入 / 無效職業靜默忽略；可隨時更換職業（職業加成立即生效）。
     SetClass { class: String },
+    /// 設定展示稱號（ROADMAP 389）：玩家在角色面板選一個已解鎖的稱號展示在名牌旁。
+    /// `title` 為 wire key（"level_10" 等）；空字串 "" 代表清除展示稱號。
+    /// 未登入 / 未持有該稱號靜默忽略；可隨時更換。
+    SetTitle { title: String },
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -1372,6 +1376,14 @@ pub enum ServerMsg {
         item_name: String,
         world_first: bool,
     },
+    /// 稱號解鎖通知（ROADMAP 389）：廣播給全服（world_first=true 時）或單播給本人。
+    TitleUnlocked {
+        player_id: Uuid,
+        player_name: String,
+        title_key: String,
+        title_name: String,
+        world_first: bool,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -1741,6 +1753,15 @@ pub struct PlayerView {
     /// 記憶體前置，重啟歸零——玩家斷線重連後連殺也從 0 起算。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub kill_streak: u8,
+
+    // ── 角色稱號（ROADMAP 389）────────────────────────────────────────────────
+    /// 玩家目前選擇展示的稱號 wire key（如 "level_10"）。None = 不展示；省略時不佔流量。
+    /// 全玩家快照都帶此欄，前端據此在每個人名牌旁顯示稱號標籤。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_title: Option<String>,
+    /// 玩家已解鎖的稱號 wire key 清單（只在自己的快照有值，他人省略）。前端稱號面板顯示。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlocked_titles: Vec<String>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2256,6 +2277,8 @@ mod tests {
                 skill_mastery_precision: 0,
                 skill_mastery_gale: 0,
                 skill_mastery_haggle: 0,
+                active_title: None,
+                unlocked_titles: vec![],
             }],
             fields: vec![FieldView {
                 owner,
@@ -2521,6 +2544,8 @@ mod tests {
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
             kill_streak: 0,
+            active_title: None,
+            unlocked_titles: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2801,6 +2826,8 @@ mod tests {
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
             kill_streak: 0,
+            active_title: None,
+            unlocked_titles: vec![],
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2860,6 +2887,8 @@ mod tests {
             skill_mastery_gale: 0,
             skill_mastery_haggle: 0,
             kill_streak: 0,
+            active_title: None,
+            unlocked_titles: vec![],
         }
     }
 

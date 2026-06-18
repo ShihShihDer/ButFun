@@ -171,6 +171,8 @@ pub struct Player {
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
     pub kill_count: u32,
+    /// 玩家已解鎖的稱號集合（ROADMAP 389）。記憶體前置，重啟清空。
+    pub title_set: crate::player_title::TitleSet,
     /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
     /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
     pub refine_attempt_count: u64,
@@ -415,6 +417,8 @@ impl Player {
             guild_tag: self.guild_tag.clone(),
             achievement_count: self.achievements.count() as u32,
             achievements: self.achievements.as_wire_keys().into_iter().map(|s| s.to_string()).collect(),
+            active_title: self.title_set.active_wire_key().map(|s| s.to_string()),
+            unlocked_titles: self.title_set.unlocked_wire_keys().into_iter().map(|s| s.to_string()).collect(),
             equipped_weapon: self.equipment.weapon
                 .map(crate::equipment::item_to_wire_key),
             equipped_armor: self.equipment.armor
@@ -1074,6 +1078,8 @@ pub struct AppState {
     pub daily_recap: Arc<RwLock<crate::daily_recap::DailyHighlights>>,
     /// 合成儀式世界首次追蹤（ROADMAP 388）：記憶體模式，重啟清零。
     pub craft_ceremony: Arc<RwLock<crate::craft_ceremony::CraftCeremonyState>>,
+    /// 稱號系統世界首次追蹤（ROADMAP 389）：wire key → 首位解鎖者名稱。記憶體模式，重啟清零。
+    pub world_title_first: Arc<RwLock<std::collections::HashMap<String, String>>>,
     /// NPC 作息與移動管理器（ROADMAP 73）。
     pub npc_schedule: Arc<RwLock<crate::npc_schedule::NpcScheduleManager>>,
     /// 城外旅人 NPC（ROADMAP 74）：每 15 分鐘到訪一次，純記憶體模式，重啟清零。
@@ -1359,6 +1365,7 @@ impl AppState {
             world_grove: Arc::new(RwLock::new(crate::world_grove::WorldGrove::new())),
             daily_recap: Arc::new(RwLock::new(crate::daily_recap::DailyHighlights::new())),
             craft_ceremony: Arc::new(RwLock::new(crate::craft_ceremony::CraftCeremonyState::new())),
+            world_title_first: Arc::new(RwLock::new(std::collections::HashMap::new())),
             npc_schedule: Arc::new(RwLock::new(crate::npc_schedule::NpcScheduleManager::new())),
             traveler: Arc::new(RwLock::new(crate::traveler_npc::TravelerNpc::new())),
             residents: Arc::new(RwLock::new(crate::resident_npc::ResidentManager::new())),
@@ -1509,6 +1516,7 @@ mod tests {
             costume: 0,
             achievements: AchievementSet::new(),
             kill_count: 0,
+            title_set: crate::player_title::TitleSet::new(),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
