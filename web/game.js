@@ -1822,6 +1822,49 @@
     if (changed) renderOnboard();
   }
 
+  // ---- 回訪摘要卡（ROADMAP 374）----
+  // 登入玩家進場時，伺服器送一次 ReturnSummary；有待辦事項才顯示，8 秒自動淡出。
+  let returnCardTimer = null;
+  function showReturnCard(data) {
+    // 沒有任何有意義的資訊時靜默：剛登入、農場為空、尚無每日任務記錄。
+    if (!data.ripe_crops && !data.eggs_ready && !data.daily_quests_total) return;
+    const card = document.getElementById("returnCard");
+    if (!card) return;
+
+    // 組成各行資訊（只把「有東西」的行顯示出來）。
+    const rows = [];
+    if (data.ripe_crops > 0)
+      rows.push(`<div class="rc-row">🌾 <span class="rc-val">${data.ripe_crops}</span><span class="rc-lbl"> 株作物待收割</span></div>`);
+    if (data.eggs_ready > 0)
+      rows.push(`<div class="rc-row">🥚 <span class="rc-val">${data.eggs_ready}</span><span class="rc-lbl"> 顆蛋待領取</span></div>`);
+    if (data.daily_quests_total > 0) {
+      const done = data.daily_quests_done, total = data.daily_quests_total;
+      const lbl = done >= total ? "今日任務全完成 ✅" : `今日任務 ${done}/${total}`;
+      rows.push(`<div class="rc-row">📋 <span class="rc-val">${lbl}</span></div>`);
+    }
+    if (!rows.length) return;
+
+    card.innerHTML = `
+      <div class="rc-head">
+        <span class="rc-title">🌟 歡迎回來</span>
+        <button type="button" class="rc-close" id="rcCloseBtn" aria-label="關閉">×</button>
+      </div>
+      ${rows.join("")}`;
+
+    document.getElementById("rcCloseBtn").addEventListener("click", dismissReturnCard);
+    card.classList.remove("hidden");
+    // 8 秒後自動淡出。
+    if (returnCardTimer) clearTimeout(returnCardTimer);
+    returnCardTimer = setTimeout(dismissReturnCard, 8000);
+  }
+  function dismissReturnCard() {
+    if (returnCardTimer) { clearTimeout(returnCardTimer); returnCardTimer = null; }
+    const card = document.getElementById("returnCard");
+    if (!card || card.classList.contains("hidden")) return;
+    card.classList.add("fading");
+    setTimeout(() => card.classList.add("hidden"), 450);
+  }
+
   // 上一拍「最近可採節點」的穩定鍵（kind@x,y）。看得到的玩家走進可採範圍會看到黃環+「採X」+
   // 「按空白鍵或點一下」;報讀器玩家原本毫無回饋,只能到處亂按鍵碰運氣。用來在「走進新可採節點
   // 範圍」那拍播一句給報讀器,延續採空/採到/連線/日夜的無障礙弧線。離開再進來(鍵變了)才重播,
@@ -2557,6 +2600,11 @@
           announce("海上暫時沒有漂流瓶，過會兒再來看看");
         }
         updateBottlePanel();
+        break;
+      }
+      case "return_summary": {
+        // 回訪摘要（ROADMAP 374）：登入玩家進場一次，顯示農田/牧場/任務待辦。
+        showReturnCard(msg);
         break;
       }
       case "bottle_inbox": {

@@ -445,6 +445,27 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 回訪摘要（ROADMAP 374）：登入玩家進場時送一次「等你的東西」摘要，讓他知道有沒有
+    // 作物待收、蛋待領、每日任務待完成。純讀，不送物品/乙太，零平衡風險。只給已登入玩家。
+    if let Some(uid) = authed_uid {
+        let summary = {
+            let land_plots = app.land_plots.read().unwrap();
+            let farm_crops = app.farm_crops.read().unwrap();
+            let ranch = app.ranch.read().unwrap();
+            let daily_quests = app.daily_quests.read().unwrap();
+            crate::return_hook::build_return_summary(uid, &land_plots, &farm_crops, &ranch, &daily_quests)
+        };
+        let msg = ServerMsg::ReturnSummary {
+            ripe_crops: summary.ripe_crops,
+            eggs_ready: summary.eggs_ready,
+            daily_quests_done: summary.daily_quests_done,
+            daily_quests_total: summary.daily_quests_total,
+        };
+        if let Ok(text) = serde_json::to_string(&msg) {
+            let _ = sender.send(Message::Text(text)).await;
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action
