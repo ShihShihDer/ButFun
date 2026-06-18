@@ -2410,9 +2410,7 @@
             const died = oe.alive && !ne.alive;
             if (died || (ne.alive && ne.hp < oe.hp)) {
               enemyFx[i] = { until: fxNow + (died ? 480 : 280), lethal: died };
-              // 傷害數字飄字（ROADMAP 94）：HP 下降量 or 擊殺時剩餘 HP
-              const dmg = died ? oe.hp : (oe.hp - ne.hp);
-              if (dmg > 0) spawnEnemyDmgFloater(dmg, ne.x, ne.y, died);
+              // 傷害數字已由 AttackHit 事件（ROADMAP 387）即時廣播，此處不再重複產生飄字。
             }
             // 死亡淡出（ROADMAP 150）：alive 轉 false 的瞬間啟動淡出計時。
             if (died) enemyDeathFade[i] = { until: fxNow + ENEMY_DEATH_FADE_MS };
@@ -3129,6 +3127,20 @@
         const ksText = s >= 8 ? `🔥×${s} 戰意爆發！` : s >= 4 ? `🔥×${s} 殺意漸濃！` : `🔥×${s} 連殺！`;
         floaters.push({ wx, wy, text: ksText, color: ksColor, born: performance.now() });
         announce(`連殺 ${s} 隻，傷害加成 ${s >= 8 ? 35 : s >= 4 ? 20 : 10}%`);
+        break;
+      }
+      case "attack_hit": {
+        // 命中即時數字（ROADMAP 387）：伺服器廣播，所有玩家都能看到附近攻擊數字。
+        // 暴擊＝金色大字⚡；擊殺＝紅色💀；普通命中＝橘色。
+        const { ex, ey, dmg, is_kill: isKill, is_crit: isCrit } = msg;
+        if (!dmg || dmg <= 0) break;
+        if (isCrit) {
+          hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,220,40", size: 22, born: performance.now() });
+        } else if (isKill) {
+          hitFloaters.push({ wx: ex, wy: ey - 18, text: `💀-${dmg}`, color: "220,50,50", size: 20, born: performance.now() });
+        } else {
+          hitFloaters.push({ wx: ex, wy: ey - 18, text: `-${dmg}`, color: "255,140,0", size: 15, born: performance.now() });
+        }
         break;
       }
       case "cook_start": {
