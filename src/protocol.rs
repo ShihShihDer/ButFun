@@ -1353,6 +1353,17 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 攻擊命中通知（ROADMAP 387）：玩家攻擊命中敵人時廣播，前端據此即時顯示傷害數字。
+    /// 暴擊（CritStrike 附魔每 5 次 1 次雙傷）時 is_crit = true，前端顯示金色大字。
+    /// 廣播給全服——所有玩家都能看到附近玩家的攻擊數字，增加多人戰鬥臨場感。
+    AttackHit {
+        player_id: Uuid,
+        ex: f32,
+        ey: f32,
+        dmg: u32,
+        is_kill: bool,
+        is_crit: bool,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。

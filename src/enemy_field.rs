@@ -481,7 +481,9 @@ impl EnemyField {
         }
     }
 
-    /// 回傳 `(種類, 等級, 擊殺前是否兇名精英, 掉落)`；等級用於呼叫端縮放 exp。
+    /// 回傳 `(種類, 等級, 擊殺前是否兇名精英, 掉落, ex, ey, actual_dmg)`。
+    /// 等級用於呼叫端縮放 exp；`ex/ey` 為敵人世界座標（ROADMAP 387 命中數字用）；
+    /// `actual_dmg = min(power, 擊中前剩餘HP)`（擊殺時為擊殺前 HP）。
     /// 若敵人被打倒（掉落 = Some），其等級重置為 base_level、HP 上限也同步回撥。
     pub fn attack_nearest(
         &mut self,
@@ -489,7 +491,7 @@ impl EnemyField {
         py: f32,
         power: u32,
         reach: f32,
-    ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
+    ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
@@ -526,7 +528,7 @@ impl EnemyField {
 
         // 用「實際找到的 chunk」重查;查不到一律回 None——**絕不 unwrap**:None 一 unwrap 整個
         // 遊戲迴圈 panic 死掉、全服收不到快照(玩家進去只有場景沒角色),就是這次踩的雷。
-        let mut result: Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> = None;
+        let mut result: Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> = None;
         let mut pack_kind: Option<EnemyKind> = None;
         let mut trigger_flee_cry = false;
 
@@ -536,7 +538,11 @@ impl EnemyField {
                     let kind = placed.enemy.kind();
                     let pre_kill_level = placed.level;
                     let was_notorious = placed.level >= placed.base_level.saturating_add(3);
+                    // 命中數字（ROADMAP 387）：記錄攻擊前 HP 與敵人位置，用於計算實際傷害。
+                    let pre_hp = placed.enemy.remaining_hp();
+                    let (ex, ey) = (placed.x, placed.y);
                     let loot = placed.enemy.attack(power);
+                    let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
                         // 被打倒：等級重置為地理基準值，HP 上限同步回撥（重生時滿基準血）。
                         placed.level = placed.base_level;
@@ -549,7 +555,7 @@ impl EnemyField {
                             / placed.enemy.max_hp().max(1) as f32;
                         trigger_flee_cry = hp_ratio < LOW_HP_THRESHOLD;
                     }
-                    result = Some((kind, pre_kill_level, was_notorious, loot));
+                    result = Some((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg));
                 }
             }
         }
@@ -609,13 +615,14 @@ impl EnemyField {
 
     /// 戰吼（ROADMAP 45）：打中 ATTACK_REACH 內所有存活敵人，回傳全部戰利品清單。
     /// 與 `attack_nearest` 語意相同，差別在不只打最近的那隻。
+    /// 回傳 7-tuple，同 `attack_nearest`（ROADMAP 387 命中數字用）。
     pub fn attack_all_in_reach(
         &mut self,
         px: f32,
         py: f32,
         power: u32,
         reach: f32,
-    ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>)> {
+    ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
         if !px.is_finite() || !py.is_finite() {
             return Vec::new();
         }
@@ -651,7 +658,11 @@ impl EnemyField {
                     let kind = placed.enemy.kind();
                     let pre_kill_level = placed.level;
                     let was_notorious = placed.level >= placed.base_level.saturating_add(3);
+                    // 命中數字（ROADMAP 387）：記錄攻擊前 HP 與敵人位置。
+                    let pre_hp = placed.enemy.remaining_hp();
+                    let (ex, ey) = (placed.x, placed.y);
                     let loot = placed.enemy.attack(power);
+                    let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
                         placed.level = placed.base_level;
                         placed.enemy.reset_max_hp_to_base_level(placed.base_level);
@@ -662,7 +673,7 @@ impl EnemyField {
                             / placed.enemy.max_hp().max(1) as f32;
                         pack_flee = hp_ratio < LOW_HP_THRESHOLD;
                     }
-                    results.push((kind, pre_kill_level, was_notorious, loot));
+                    results.push((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg));
                 }
             }
             // 狼群警報（與 attack_nearest 一致）
@@ -1397,7 +1408,7 @@ mod tests {
         // 用一萬點傷害確保一擊必殺
         let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
         assert!(result.is_some(), "應能攻擊到敵人");
-        let (_, _, was_notorious, loot) = result.unwrap();
+        let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
         assert!(loot.is_some(), "應有掉落（代表擊殺）");
         assert!(was_notorious, "等級為 base+4 應為兇名精英");
         // 擊殺後 level 應重置為 base_level
@@ -1462,7 +1473,7 @@ mod tests {
         }
         let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
         let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
-        let (_, _, was_notorious, loot) = result.unwrap();
+        let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
         assert!(loot.is_some());
         assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
     }
@@ -1834,4 +1845,79 @@ mod tests {
     }
 
     const ROUT_TEST_DUR: f32 = 6.0;
+
+    // ── ROADMAP 387：attack_nearest / attack_all_in_reach 命中資料 ──────────────
+
+    #[test]
+    fn attack_nearest_returns_actual_dmg_nonzero() {
+        // 確認命中時 actual_dmg > 0。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (8000.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);
+        let result = f.attack_nearest(ox, oy, 5, 300.0);
+        let (_, _, _, _, _, _, actual_dmg) = result.unwrap();
+        assert!(actual_dmg > 0, "命中存活怪，actual_dmg 應 > 0");
+    }
+
+    #[test]
+    fn attack_nearest_actual_dmg_capped_at_remaining_hp() {
+        // 過殺時 actual_dmg 只等於敵人剩餘 HP，不超過。
+        let mut f2 = EnemyField::new();
+        let (ox2, oy2) = (8400.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f2, 0, ox2, oy2, EnemyKind::ScrapDrone);
+        let res = f2.attack_nearest(ox2, oy2, 99999, 300.0);
+        let (_, _, _, _, _, _, actual_dmg) = res.unwrap();
+        assert!(actual_dmg <= 99999, "actual_dmg 不得超過攻擊力");
+        assert!(actual_dmg > 0, "擊殺時 actual_dmg 應等於怪物初始 HP");
+    }
+
+    #[test]
+    fn attack_nearest_returns_enemy_position() {
+        // 確認回傳的 (ex, ey) 落在攻擊範圍內。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (8600.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox + 50.0, oy + 30.0, EnemyKind::ScrapDrone);
+        let result = f.attack_nearest(ox, oy, 5, 300.0);
+        let (_, _, _, _, ex, ey, _) = result.unwrap();
+        let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
+        assert!(dist < 300.0, "回傳座標應在攻擊範圍內，dist={dist}");
+    }
+
+    #[test]
+    fn attack_nearest_no_hit_if_out_of_range() {
+        // 超出攻擊範圍時應回傳 None。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (8800.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox + 500.0, oy, EnemyKind::ScrapDrone);
+        let result = f.attack_nearest(ox, oy, 5, 50.0);
+        assert!(result.is_none(), "超出範圍不應命中");
+    }
+
+    #[test]
+    fn attack_all_in_reach_returns_dmg_for_each_hit() {
+        // AOE 打多隻，每個結果的 actual_dmg 都 > 0。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (9000.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox + 10.0, oy, EnemyKind::ScrapDrone);
+        push_test_enemy(&mut f, 1, ox - 10.0, oy, EnemyKind::ScrapDrone);
+        let results = f.attack_all_in_reach(ox, oy, 5, 200.0);
+        assert!(!results.is_empty(), "AOE 應至少命中一隻");
+        for (_, _, _, _, _, _, actual_dmg) in &results {
+            assert!(*actual_dmg > 0, "每隻命中的 actual_dmg 應 > 0");
+        }
+    }
+
+    #[test]
+    fn attack_all_in_reach_includes_position() {
+        // AOE 每個命中結果都有有效座標。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (9200.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox + 20.0, oy + 10.0, EnemyKind::ScrapDrone);
+        let results = f.attack_all_in_reach(ox, oy, 5, 200.0);
+        assert!(!results.is_empty());
+        for (_, _, _, _, ex, ey, _) in &results {
+            let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
+            assert!(dist < 200.0, "AOE 命中座標應在攻擊範圍內，dist={dist}");
+        }
+    }
 }
