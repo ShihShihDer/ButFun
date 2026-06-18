@@ -214,6 +214,33 @@
     #hudGuestHint { color: var(--brass); margin: 2px 0; padding: 3px 7px; border: 1px solid var(--brass);
       border-radius: 6px; opacity: 0.92; }
     #hudGuestHint b { color: #ffd24a; }
+    /* 新手引導卡（ROADMAP 373）：三步驟引導，新玩家第一次進場顯示，做完自動收起 */
+    #onboardCard {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: 72px; width: min(300px, calc(100vw - 24px));
+      background: #1a2030; border: 1px solid var(--brass); border-radius: 12px;
+      padding: 12px 14px 10px; z-index: 200;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.55); font-size: 0.87em;
+      transition: opacity 0.4s;
+    }
+    #onboardCard.fading { opacity: 0; pointer-events: none; }
+    #onboardCard .ob-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    #onboardCard .ob-title { color: var(--brass); font-weight: 600; font-size: 0.9em; }
+    #onboardCard .ob-skip { font: inherit; font-size: 0.82em; background: none; border: none;
+      color: #666; cursor: pointer; padding: 2px 0; }
+    #onboardCard .ob-skip:hover { color: #999; }
+    #onboardCard .ob-dots { display: flex; gap: 6px; margin-bottom: 10px; }
+    #onboardCard .ob-dot { width: 8px; height: 8px; border-radius: 50%; background: #333; flex: none; }
+    #onboardCard .ob-dot.done { background: var(--brass); }
+    #onboardCard .ob-dot.active { background: #ffd24a; box-shadow: 0 0 5px #ffd24a88; }
+    #onboardCard .ob-row { display: flex; align-items: flex-start; gap: 10px; }
+    #onboardCard .ob-icon { font-size: 1.6em; line-height: 1; }
+    #onboardCard .ob-name { color: #e8e8e8; font-weight: 600; }
+    #onboardCard .ob-hint { color: #888; font-size: 0.88em; margin-top: 2px; }
+    #onboardCard .ob-login { display: block; margin-top: 10px; text-align: center;
+      color: var(--brass); border: 1px solid var(--brass); border-radius: 7px;
+      padding: 6px; text-decoration: none; font-weight: 600; }
+    #onboardCard .ob-login:hover { background: rgba(201,162,75,0.12); }
     /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作聊天收合的玩家看得到焦點落在哪。
        focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
     #chatToggle:focus-visible {
@@ -1174,6 +1201,10 @@
       </div>
     </div>
   </div>
+
+  <!-- 新手引導卡（ROADMAP 373）：三步驟引導，第一次進場顯示，做完自動收。
+       position:fixed 所以放在 #hud 之外，不影響 HUD 佈局。 -->
+  <div id="onboardCard" class="hidden" role="region" aria-label="新手引導" aria-live="polite"></div>
 
   <script src="game.js?v=20260610-leaderboard"></script>
 </body>
