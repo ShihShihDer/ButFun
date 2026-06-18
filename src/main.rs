@@ -12,6 +12,7 @@ mod combat;
 mod town_blocs;
 mod town_share;
 mod world_grove;
+mod daily_recap;
 mod town_project;
 mod town_project_store;
 mod observatory;

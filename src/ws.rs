@@ -1352,6 +1352,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, mult, bounty_bonus, level = p.level(), "採集入背包+exp");
                         }
+                        // 日報鉤（ROADMAP 385）：採集路徑升等事件（鎖外、純記憶體）。
+                        if gather_level_up.is_some() {
+                            app.daily_recap.write().unwrap().on_level_up();
+                        }
                         // NPC 升等賀詞（ROADMAP 84）：採集升等時凱爾長老私信賀詞 / 全服廣播。
                         if let Some((pname, new_lv)) = gather_level_up {
                             let action = app.npc_level_greet.write().unwrap().on_level_up(&pname, new_lv);
@@ -1388,6 +1392,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     rarity.emoji(), pname, rarity.emoji(), rarity.display_zh(), item_zh
                                 );
                                 let _ = app.tx_chat.send(world_msg);
+                            }
+                            // 日報鉤（ROADMAP 385）：記錄今日最稀有採集（只記 notable，普通靜默）。
+                            if rarity.is_notable() {
+                                app.daily_recap.write().unwrap().update_gather(
+                                    &pname,
+                                    rarity.qty_bonus(),
+                                    rarity.display_zh(),
+                                    rarity.emoji(),
+                                    &item_zh,
+                                );
                             }
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
@@ -2411,6 +2425,16 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 y: sy,
                             }
                         ));
+                        // 日報鉤（ROADMAP 385）：記錄今日最高連殺（鎖外讀取名稱、純記憶體）。
+                        let recap_name = app.players.read().unwrap()
+                            .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                        if !recap_name.is_empty() {
+                            app.daily_recap.write().unwrap().update_streak(&recap_name, streak);
+                        }
+                    }
+                    // 日報鉤（ROADMAP 385）：戰鬥路徑升等事件（鎖外、純記憶體）。
+                    if combat_level_up.is_some() {
+                        app.daily_recap.write().unwrap().on_level_up();
                     }
                     // NPC 升等賀詞（ROADMAP 84）：戰鬥升等時凱爾長老私信賀詞 / 全服廣播。
                     if let Some((pname, new_lv)) = combat_level_up {
@@ -4005,6 +4029,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 from: "世界".to_string(),
                                 text: announce,
                             }));
+                            // 日報鉤（ROADMAP 385）：首次解碼才計入日報（鎖外、純記憶體）。
+                            app.daily_recap.write().unwrap().on_inscription();
                         }
                     }
                 }

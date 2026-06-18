@@ -3234,6 +3234,20 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 世界冒險日報（ROADMAP 385）：黎明轉換時廣播今日精彩回顧。
+            // 在晨喚（凱爾長老）之後、午鐘（老胡）之前，讓日報夾在兩則 NPC 播報之間。
+            {
+                let current_phase = app.daynight.read().unwrap().phase();
+                if let Some(lines) = app.daily_recap.write().unwrap().tick(dt, current_phase) {
+                    let tx_chat = app.tx_chat.clone();
+                    tokio::spawn(async move {
+                        for line in lines {
+                            let _ = tx_chat.send(line);
+                        }
+                    });
+                }
+            }
+
             // NPC 午鐘廣播（ROADMAP 79）：黎明→白天轉換時，工匠老胡廣播開工令。
             // 與晨喚（凱爾長老）和暮告（薇拉）形成三時段節律：黎明/日出/黃昏。
             // ROADMAP 114：0 玩家時仍持續，讓世界保持日夜節律。
