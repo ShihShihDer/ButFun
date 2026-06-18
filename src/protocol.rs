@@ -1297,6 +1297,16 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 元素克制命中（ROADMAP 380）：玩家附魔剋中敵人弱點時廣播；
+    /// 前端只對 `player_id == 自己` 演出飄字（旁觀者忽略）。
+    /// `elem` ＝ 攻擊方元素 wire 字串（fire/ether）；`x`/`y` ＝ 玩家座標（飄字定位）。
+    /// 不入快照、不持久化、零 migration。
+    ElemBonus {
+        player_id: Uuid,
+        x: f32,
+        y: f32,
+        elem: String,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。

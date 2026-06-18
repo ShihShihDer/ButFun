@@ -578,6 +578,35 @@ impl EnemyField {
         result
     }
 
+    /// 窺探最近存活敵人的種類，**不攻擊**（唯讀）。
+    /// 用於 ws.rs 在實際攻擊前先查元素弱點倍率（ROADMAP 380 元素剋制）。
+    /// 回傳 `None` 表示範圍內無存活敵人（結果與 `attack_nearest` 的目標選擇邏輯一致）。
+    pub fn peek_nearest_kind(&self, px: f32, py: f32, reach: f32) -> Option<EnemyKind> {
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = reach * reach;
+        let chunk_r = (reach / CHUNK_SIZE as f32).ceil() as i32 + 1;
+        let mut best: Option<(EnemyKind, f32)> = None;
+        for dy in -chunk_r..=chunk_r {
+            for dx in -chunk_r..=chunk_r {
+                if let Some(enemies) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for placed in enemies {
+                        if !placed.enemy.is_alive() { continue; }
+                        let dist_sq = (placed.x - px) * (placed.x - px) + (placed.y - py) * (placed.y - py);
+                        if dist_sq <= reach_sq {
+                            if best.as_ref().map_or(true, |(_, b)| dist_sq < *b) {
+                                best = Some((placed.enemy.kind(), dist_sq));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(k, _)| k)
+    }
+
     /// 戰吼（ROADMAP 45）：打中 ATTACK_REACH 內所有存活敵人，回傳全部戰利品清單。
     /// 與 `attack_nearest` 語意相同，差別在不只打最近的那隻。
     pub fn attack_all_in_reach(
