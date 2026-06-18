@@ -2782,6 +2782,16 @@
       }
       case "chat":
         addChat(msg.from, msg.text);
+        // 玩家頭頂聊天氣泡（ROADMAP 378）：系統訊息靜默不冒泡，只顯示玩家親口說的話。
+        if (msg.from && msg.from !== "系統" && msg.from !== "系統訊息") {
+          const _now = performance.now();
+          for (const _p of players.values()) {
+            if (_p.name === msg.from) {
+              _p._chatBubble = { text: msg.text, expireAt: _now + 5500 };
+              break;
+            }
+          }
+        }
         break;
       case "player_left":
         players.delete(msg.id);
@@ -5589,6 +5599,7 @@
       if (p.id !== myId) safeDraw("otherPlayer", () => drawPlayer(p, camX, camY));
     }
     if (me) safeDraw("self", () => drawPlayer(me, camX, camY));
+    safeDraw("playerChatBubbles", () => drawPlayerChatBubbles(camX, camY)); // 玩家聊天氣泡（ROADMAP 378）
 
     // 疊加層（日夜染色→環境光→星星→微光→視差→大氣→特效/飄字→邊緣指標）：多為本地特效、
     // 較不易拋例外，整段包一層 safeDraw 即可——萬一某個拋了，也不會連帶把下面的小地圖/HUD 跳過。
@@ -12204,6 +12215,115 @@
       ctx.stroke();
 
       // 小尾巴（三角指向 NPC 頭頂）
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(sx - 6, by + bubbleH);
+      ctx.lineTo(sx + 6, by + bubbleH);
+      ctx.lineTo(sx, by + bubbleH + 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(sx - 6, by + bubbleH);
+      ctx.lineTo(sx, by + bubbleH + 8);
+      ctx.lineTo(sx + 6, by + bubbleH);
+      ctx.stroke();
+
+      // 文字
+      ctx.fillStyle = "#333";
+      ctx.globalAlpha = alpha;
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], bx + BUBBLE_PAD_X, by + BUBBLE_PAD_Y + i * LINE_H);
+      }
+    }
+
+    ctx.globalAlpha = 1.0;
+    ctx.restore();
+  }
+
+  // 玩家頭頂聊天氣泡（ROADMAP 378）：玩家說話時在頭頂顯示聊天泡泡，幾秒後自動淡出。
+  // 與 NPC 對話泡泡（92）同款圓角白框風格，讓玩家一眼看出「這個人在說話」而非「NPC 在說話」。
+  // 使用 p._chatBubble 瞬態欄位（不持久化、快照不覆蓋），player_left 時隨整個物件自然消滅。
+  function drawPlayerChatBubbles(camX, camY) {
+    const now = performance.now();
+    const FADE_MS = 1200;      // 最後 1.2 秒漸隱（與 NPC 泡泡一致）
+    const BUBBLE_W_MAX = 160;  // 最大泡泡寬度（像素）
+    const BUBBLE_PAD_X = 10;
+    const BUBBLE_PAD_Y = 6;
+    const FONT_SIZE = 11;
+    const LINE_H = FONT_SIZE + 3;
+
+    ctx.save();
+    ctx.font = `${FONT_SIZE}px sans-serif`;
+    ctx.textBaseline = "top";
+
+    for (const p of players.values()) {
+      const b = p._chatBubble;
+      if (!b) continue;
+      const remaining = b.expireAt - now;
+      if (remaining <= 0) { delete p._chatBubble; continue; }
+
+      // 玩家插值畫面座標（rx/ry 是每幀更新的插值世界座標）
+      const sx = p.rx - camX;
+      const sy = p.ry - camY;
+
+      // 玩家在螢幕外就不畫（省效能）
+      if (sx < -BUBBLE_W_MAX - 20 || sx > viewW + BUBBLE_W_MAX + 20 ||
+          sy < -120 || sy > viewH + 60) continue;
+
+      // 淡出 alpha
+      const alpha = remaining < FADE_MS ? remaining / FADE_MS : 1.0;
+
+      // 文字折行（最大寬度 BUBBLE_W_MAX - 2*PAD），逐字拆——中英文通用
+      const maxTextW = BUBBLE_W_MAX - BUBBLE_PAD_X * 2;
+      const lines = [];
+      let line = "";
+      for (const ch of b.text) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxTextW && line.length > 0) {
+          lines.push(line);
+          if (lines.length >= 3) break; // 最多三行，超長截斷
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line && lines.length < 3) lines.push(line);
+      if (!lines.length) continue;
+
+      const bubbleH = BUBBLE_PAD_Y * 2 + lines.length * LINE_H;
+      const bubbleW = Math.min(
+        BUBBLE_W_MAX,
+        Math.max(...lines.map(l => ctx.measureText(l).width)) + BUBBLE_PAD_X * 2
+      );
+
+      // 玩家頭頂往上偏移（約 40px 角色頭高 + 泡泡高度 + 尾巴 8px）
+      const bx = sx - bubbleW / 2;
+      const by = sy - 40 - bubbleH - 8;
+
+      ctx.globalAlpha = alpha * 0.92;
+
+      // 泡泡背景（圓角白框 + 淺陰影）——與 NPC 泡泡同款
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#888";
+      ctx.lineWidth = 1.5;
+      const r = 8;
+      ctx.beginPath();
+      ctx.moveTo(bx + r, by);
+      ctx.lineTo(bx + bubbleW - r, by);
+      ctx.arcTo(bx + bubbleW, by, bx + bubbleW, by + r, r);
+      ctx.lineTo(bx + bubbleW, by + bubbleH - r);
+      ctx.arcTo(bx + bubbleW, by + bubbleH, bx + bubbleW - r, by + bubbleH, r);
+      ctx.lineTo(bx + r, by + bubbleH);
+      ctx.arcTo(bx, by + bubbleH, bx, by + bubbleH - r, r);
+      ctx.lineTo(bx, by + r);
+      ctx.arcTo(bx, by, bx + r, by, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // 小尾巴（三角指向角色頭頂）
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
       ctx.moveTo(sx - 6, by + bubbleH);
