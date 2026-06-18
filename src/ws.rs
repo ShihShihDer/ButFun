@@ -1255,6 +1255,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if app.weather.read().unwrap().is_gather_bonus_biome(biome_str) { 1 } else { 0 }
                         };
                         let mut gather_level_up: Option<(String, u32)> = None;
+                        // 稀有度通知暫存（ROADMAP 379）：(player_name, x, y, item_zh, rarity, total_qty)
+                        // 出鎖後才廣播，守 prod-deadlock 鐵律。
+                        let mut gather_rarity_notify: Option<(String, f32, f32, String, crate::item_rarity::Rarity, u32)> = None;
                         if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                             let item: crate::inventory::ItemKind = kind.into();
                             // 工具效用(1-D):背包有鎬子/強化鎬就採更多(乘工具倍率)——
@@ -1274,7 +1277,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     crate::observatory::StarForecastBonus::gather_extra_qty()
                                 } else { 0 }
                             };
-                            let (added, _wh, _drop) = p.add_item_overflow(item, amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather);
+                            // 採集稀有度（ROADMAP 379）：以 UID ⊕ EXP 為種子確定性滾動品質，
+                            // 在背包加總前算好——exp 尚未累加，每次採集 seed 都不同。
+                            let has_enhanced = p.inventory.count(crate::inventory::ItemKind::ReinforcedPickaxe) > 0;
+                            let rarity_seed = id.as_u128() as u64 ^ p.exp as u64;
+                            let rarity = crate::item_rarity::roll_rarity(rarity_seed, p.level(), has_enhanced);
+                            let rarity_bonus = rarity.qty_bonus();
+                            let base_qty = amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather;
+                            let total_qty = base_qty + rarity_bonus;
+                            let (added, _wh, _drop) = p.add_item_overflow(item, total_qty);
+                            // 品質不凡以上才通知（普通靜默落袋）；記下出鎖後廣播所需資料。
+                            if rarity.is_notable() {
+                                let item_zh = crate::npc_deal::item_display_zh(item);
+                                gather_rarity_notify = Some((p.name.clone(), p.x, p.y, item_zh.to_string(), rarity, added));
+                            }
+                            let _ = added; // 避免未使用警告（已被 gather_rarity_notify 消費）
                             // 採集得 exp（鼓勵探索）；村落節慶加成 +30%（ROADMAP 64）；廣場聚會加成 +20%（ROADMAP 124）；繁榮紅利 +15/+30%（ROADMAP 129）。
                             let village_gather_pct = {
                                 let lock = app.village_buff_until.read().unwrap();
@@ -1345,6 +1362,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         crate::npc_level_greet::CHIEF_DISPLAY_NAME, message
                                     ));
                                 }
+                            }
+                        }
+                        // 採集稀有度廣播（ROADMAP 379）：出鎖後廣播 GatherQuality；稀有以上加發世界頻道。
+                        if let Some((pname, px, py, item_zh, rarity, total_qty)) = gather_rarity_notify {
+                            let msg = ServerMsg::GatherQuality {
+                                player_id: id,
+                                player_name: pname.clone(),
+                                rarity: rarity.wire_str().to_string(),
+                                item_name: item_zh.clone(),
+                                total_qty,
+                                x: px,
+                                y: py,
+                            };
+                            let _ = app.tx.send(Arc::new(msg));
+                            if rarity.is_world_announce() {
+                                let world_msg = format!(
+                                    "{} 【{}】{} 採集到了{}品質的{}！",
+                                    rarity.emoji(), pname, rarity.emoji(), rarity.display_zh(), item_zh
+                                );
+                                let _ = app.tx_chat.send(world_msg);
                             }
                         }
                         // 通知社群任務（ROADMAP 27）：採集事件推進進度並廣播完成公告。
