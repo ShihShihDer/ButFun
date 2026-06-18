@@ -264,6 +264,11 @@ pub struct Player {
     /// 以避免同一座重複領獎（首次連對才給乙太＋熟練度）。
     pub traced_constellations: u64,
 
+    /// 已解碼的古代秘文 bitmask（ROADMAP 384）：第 i 位對應 `ancient_inscription::CATALOG[i]`。
+    /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 `traced_constellations`）；
+    /// 重啟清空＝秘文錄歸零、可重新解、重新領較小獎勵（ws.rs 判定首次 vs 重複）。
+    pub inscriptions_mask: u8,
+
     /// 進行中的居民和解委託（ROADMAP 364）：`Some` 表玩家已接下一樁、正帶著信物
     /// 要送給 `to` NPC；送達後清回 `None`。記憶體前置、不入快照、不持久化、零 migration
     /// （鏡像 `traced_constellations` 等記憶體切片）；重啟＝未接委託，可重新接。
@@ -450,6 +455,8 @@ impl Player {
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 346：進行中釣魚小遊戲的階段（沒在釣＝None，略過序列化）。
             fishing_phase: self.fishing.map(|c| c.phase().as_str()),
+            // ROADMAP 384：是否在沙漠生態域附近（有遺跡可供啟靈）。
+            near_ruin: crate::ancient_inscription::is_near_ruin(self.x, self.y),
             // ROADMAP 348：採礦冷卻＋是否站在岩地旁（前端採礦鈕依此啟用／顯示倒數）。
             mine_cooldown: self.mine_cooldown,
             near_rock: crate::mining_vein::is_near_rock(self.x, self.y),
@@ -1524,6 +1531,7 @@ mod tests {
             perfect_dishes: 0,
             aether_draw: None,
             traced_constellations: 0,
+            inscriptions_mask: 0,
             reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,

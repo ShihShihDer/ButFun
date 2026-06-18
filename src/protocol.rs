@@ -422,6 +422,14 @@ pub enum ClientMsg {
     /// 伺服器以**伺服器重算的今夜星座**為準驗證（前端送什麼星座都不算數，防作弊）；
     /// 連對且首次即記入星座錄＋給一小筆乙太與探索熟練度。非夜間 / 連錯靜默回 `ConstellationResult`。
     TraceConstellation { edges: Vec<(u8, u8)> },
+    /// 啟靈請求（ROADMAP 384）：玩家在沙漠遺跡區開啟「📜 啟靈」面板時送。
+    /// 伺服器檢查玩家是否在 Sand 生態域、背包有 ≥ FRAGMENT_COST 古代碎片，
+    /// 符合則扣材料、回 `InscriptionChallenge`（4 個符文依序閃現）；否則靜默。
+    RequestInscription,
+    /// 解答符文序列（ROADMAP 384）：玩家在時限內點按完 4 個符文後送出。
+    /// 伺服器以對應秘文的固定序列驗證；正確則解鎖秘文、給獎勵、全服廣播；
+    /// 錯誤則靜默（碎片已消耗，不退還）。
+    SolveInscription { inscription_key: String, sequence: Vec<String> },
     /// 詢問是否有居民和解委託可接（ROADMAP 364）：玩家開「🕊️ 和解」面板時送。
     /// 伺服器找鎮上最該和解的一對 NPC 回 `ReconcileOffer`；玩家已有進行中的委託時，
     /// 回該委託的續辦資訊（`active=true`）。無可修補對時回 `available=false`。
@@ -1208,6 +1216,35 @@ pub enum ServerMsg {
         total: u32,
         catalog_total: u32,
     },
+    /// 啟靈挑戰（ROADMAP 384）：回應 `RequestInscription`，僅單播給請求者本人。
+    /// `symbols` 是長度 4 的符文 wire key 陣列（如 `["star","moon","flame","wave"]`）；
+    /// 前端依序閃現每個符文（每個顯示約 1 秒）後隱藏，玩家在 12 秒內點按正確順序。
+    InscriptionChallenge {
+        /// 本次秘文的 wire key（玩家提交 `SolveInscription` 時需帶回）。
+        key: String,
+        /// 秘文顯示名。
+        name: String,
+        /// 秘文 emoji。
+        emoji: String,
+        /// 4 步符文序列（wire key 陣列，給前端用來顯示）。
+        symbols: Vec<String>,
+        /// 玩家已解碼的秘文數 / 目錄總數（面板「N / M」進度）。
+        total_decoded: u8,
+        catalog_total: u8,
+    },
+    /// 啟靈結果（ROADMAP 384）：回應 `SolveInscription`，僅單播給請求者本人。
+    /// `ok=true` 解碼正確；`ok=false` 輸入錯誤（碎片已耗、不退還）。
+    InscriptionResult {
+        ok: bool,
+        /// 秘文顯示名（成功時附上名稱給玩家感受「解開了什麼」）。
+        name: String,
+        emoji: String,
+        /// 乙太獎勵（首次解碼較多；重複解碼小量；錯誤時 0）。
+        reward_ether: u32,
+        /// 解碼成功後已解碼的秘文數 / 目錄總數。
+        total_decoded: u8,
+        catalog_total: u8,
+    },
     /// 一對一密語（ROADMAP 95）：只送給寄件人（回顯）和收件人。
     /// `from` = 寄件人顯示名；`to` = 收件人顯示名；`text` = 訊息內容。
     /// 後端保證：非本人相關的密語不會送達（零廣播，純單播）。
@@ -1478,6 +1515,12 @@ pub struct PlayerView {
     /// 前端據此顯示「細微落石／劇烈搖晃」危險提示（崩塌確切層數不洩漏）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mining_tremor: Option<&'static str>,
+
+    // ── 古代啟靈（ROADMAP 384）────────────────────────────────────────────────
+    /// 玩家是否在沙漠生態域（Sand biome）附近（80px 內）——代表有遺跡可供啟靈。
+    /// 前端「📜 啟靈」按鈕依此啟用／禁用。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub near_ruin: bool,
 
     // ── 掌勺照譜烹調（ROADMAP 349）────────────────────────────────────────────
     /// 開灶冷卻剩餘秒數（0.0 = 可開灶）。前端料理「掌勺」鈕依此顯示冷卻倒數。
@@ -2140,6 +2183,7 @@ mod tests {
                 mining_depth: None,
                 mining_haul: None,
                 mining_tremor: None,
+                near_ruin: false,
                 cook_cooldown: 0.0,
                 aether_draw_secs: None,
                 toast_cooldown: 0.0,
@@ -2403,6 +2447,7 @@ mod tests {
             mining_depth: None,
             mining_haul: None,
             mining_tremor: None,
+            near_ruin: false,
             cook_cooldown: 0.0,
             aether_draw_secs: None,
             toast_cooldown: 0.0,
@@ -2702,7 +2747,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2761,7 +2806,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

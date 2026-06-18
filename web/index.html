@@ -611,6 +611,7 @@
         <button type="button" class="dock-btn" id="dockStargaze"    data-win="winStargaze"    aria-label="觀星連星座">🔭 觀星</button>
         <button type="button" class="dock-btn" id="dockProcurement" data-win="winProcurement" aria-keyshortcuts="O" aria-label="星際採購（O）">📦 採購</button>
         <button type="button" class="dock-btn" id="dockReconcile"   data-win="winReconcile"   aria-label="居民和解委託">🕊️ 和解</button>
+        <button type="button" class="dock-btn" id="dockInscription" data-win="winInscription" aria-label="古代啟靈">📜 啟靈</button>
       </div>
       <!-- 社群：公會、好友 -->
       <div id="dockGrpSocial" class="dock-group hidden">
@@ -767,6 +768,14 @@
         <button type="button" class="win-close" data-close="winStargaze" aria-label="關閉觀星面板">✕</button>
       </div>
       <div id="stargazeBody"></div>
+    </div>
+    <!-- 古代啟靈面板（ROADMAP 384）：沙漠遺跡的符文石板藏著古代秘文，消耗碎片啟靈、依序記憶符文。 -->
+    <div id="winInscription" class="hud-window hidden" role="dialog" aria-labelledby="inscriptionTitle">
+      <div class="win-head">
+        <span class="win-title" id="inscriptionTitle">📜 古代啟靈</span>
+        <button type="button" class="win-close" data-close="winInscription" aria-label="關閉啟靈面板">✕</button>
+      </div>
+      <div id="inscriptionBody"></div>
     </div>
     <!-- 居民和解委託面板（ROADMAP 364）：玩家第一次能牽動 NPC↔NPC 關係——替鬧僵的鎮民居中緩頰。 -->
     <div id="winReconcile" class="hud-window hidden" role="dialog" aria-labelledby="reconcileTitle">
