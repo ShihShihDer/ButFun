@@ -826,6 +826,8 @@ impl Player {
             onboarding: self.onboarding.is_active().then(|| crate::protocol::OnboardView {
                 done: self.onboarding.mask(),
                 count: self.onboarding.done_count(),
+                // ROADMAP 413：當前該做的下一步 index（教學順序中第一個未完成步），前端據此引路。
+                next: self.onboarding.next_step().map(|s| s as u8),
             }),
         }
     }

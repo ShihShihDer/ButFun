@@ -473,7 +473,11 @@
     #onboardGuide ul { list-style: none; margin: 0; padding: 0; }
     #onboardGuide li { display: flex; gap: 6px; align-items: baseline; }
     #onboardGuide li.ob-done { color: #8fbf80; text-decoration: line-through; opacity: 0.75; }
+    /* ROADMAP 413：當前該做的下一步高亮 + 情境化「怎麼做」提示。 */
+    #onboardGuide li.ob-current { color: #ffe9a0; font-weight: 700; }
     #onboardGuide .ob-box { width: 1.1em; flex: none; }
+    #onboardGuide .ob-hint { color: #cfe6b8; font-size: 0.78rem; line-height: 1.4; margin-top: 6px;
+      padding-top: 6px; border-top: 1px solid rgba(127,191,106,0.3); }
     /* 沒有 JavaScript 時的告示:整個遊戲(canvas 世界、進場、農作)都靠 JS,關掉 JS
        的玩家(隱私瀏覽器/擋腳本的擴充/受限網路)只會看到登入畫面、按「以訪客進場」毫無
        反應卻不知為何。這層全屏告示蓋過登入畫面,明說需要開 JavaScript——只有在 JS 沒跑

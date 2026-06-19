@@ -2050,6 +2050,11 @@ pub struct OnboardView {
     pub done: u8,
     /// 已完成步驟數（0~5），供 HUD 顯示「N/5」。
     pub count: u8,
+    /// 當前該做的「下一步」index（0~4，教學順序中第一個未完成的步驟；ROADMAP 413）。
+    /// 前端據此高亮當前目標、顯示情境化提示、並畫世界動線指引。
+    /// `#[serde(default)]` 向後相容（舊前端忽略此欄、舊伺服器不送時前端退回自算）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<u8>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
