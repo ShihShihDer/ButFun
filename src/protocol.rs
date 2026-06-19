@@ -278,6 +278,10 @@ pub enum ClientMsg {
     /// 農地擴張意圖：玩家點「擴地」按鈕，花乙太把自己農地多開一列。
     /// 伺服器驗餘額（economy::expansion_cost）、扣乙太、農地 grow()；結果隨下一次快照回來。
     BuyExpansion,
+    /// 設定家園擺飾（ROADMAP 402）：玩家從擺飾選擇器挑一件小物擺在自己田上（`index`=0 撤掉）。
+    /// 伺服器只改玩家**自己**的田（`fields[id]`，訪客無田 → 靜默忽略），索引越界一律當不擺。
+    /// 結果隨下一次快照的 `FieldView.home_decor` 回給田主與訪客。
+    SetHomeDecor { index: u8 },
     /// 市場掛單：從背包取出 qty 個 item 以每單位 price_per 乙太掛單出售。
     /// 伺服器驗背包庫存後移出物品並建立掛單；失敗靜默忽略（量不夠 / 未登入）。
     PostListing { item: ItemKind, qty: u32, price_per: u32 },
@@ -1999,6 +2003,10 @@ pub struct FieldView {
     pub reach: f32,
     /// row-major 的每格狀態，長度為 `cols * rows`。
     pub cells: Vec<TileView>,
+    /// 家園擺飾索引（ROADMAP 402）：0=不擺，1..=`home_decor::DECOR_COUNT` 各對應一件療癒小物。
+    /// 田主與訪客都收得到（前端依索引在田上畫對應 emoji/小物）。多數田沒擺 → 0 時略去省流量。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub home_decor: u8,
 }
 
 /// 快照裡的一筆市場掛單（玩家對玩家交易）。
@@ -2417,6 +2425,7 @@ mod tests {
                     dry: true,
                     thriving: false,
                 }],
+                home_decor: 0,
             }],
             nodes: vec![NodeView {
                 kind: NodeKind::Tree,

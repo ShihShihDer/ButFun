@@ -150,6 +150,7 @@ mod warehouse;
 mod perishable;
 mod home_interior;
 mod home_furniture;
+mod home_decor;
 mod resident_npc;
 mod resident_chat;
 mod town_prosperity;

@@ -8417,6 +8417,19 @@
     return myId ? fields.find((f) => f.owner === myId) : null;
   }
 
+  // 家園擺飾目錄（ROADMAP 402）：索引↔emoji/標籤。索引 0=不擺，1..6 各一件療癒小物。
+  // 與後端 `home_decor::DECOR_COUNT`(=6) 對齊：陣列長度須為 7（含 0=不擺）。後端只驗索引
+  // 範圍、不知外觀；外觀與標籤一律住這裡（單一呈現來源、好在地化）。要加新擺飾＝兩端各補一格。
+  const HOME_DECOR = [
+    { glyph: "",   label: "不擺" },   // 0：素地（撤掉擺飾）
+    { glyph: "🌷", label: "花圃" },   // 1
+    { glyph: "🏮", label: "石燈籠" }, // 2
+    { glyph: "🎐", label: "風鈴" },   // 3
+    { glyph: "⛩️", label: "鳥居" },   // 4
+    { glyph: "🌲", label: "小松" },   // 5
+    { glyph: "🍄", label: "蘑菇" },   // 6
+  ];
+
   // 公共農地（owner === nil UUID）；伺服器啟動後一直存在。
   const PUB_FIELD_OWNER = "00000000-0000-0000-0000-000000000000";
   function pubField() {
@@ -18700,12 +18713,14 @@
     if (!summary || !body || !toggle) return;
     const ether = (me && me.ether) || 0;
     const owned = (me && me.expansions) || 0; // 防呆:伺服器還沒接擴地 → 視為一格都還沒買
-    const hasField = !!myField(); // 已有領地才顯示擴地；尚無領地則先顯示「購買領地」按鈕
+    const mf = myField();
+    const hasField = !!mf; // 已有領地才顯示擴地；尚無領地則先顯示「購買領地」按鈕
+    const curDecor = (mf && (mf.home_decor | 0)) || 0; // 目前擺飾索引（ROADMAP 402）
     // 城外地塊：我已有哪塊、有多少可買
     const myLandPlot = myId ? landPlots.find(p => p.owner_id === myId) : null;
     const availCount = landPlots.filter(p => !p.owner_id).length;
-    // 簽章把城外地塊狀態（含用途）納入，讓購買後立刻更新面板。
-    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}|${myLandPlot ? myLandPlot.plot_id + ":" + (myLandPlot.purpose || "") : "none"}|${availCount}`;
+    // 簽章把城外地塊狀態（含用途）＋目前擺飾納入，讓購買/換擺飾後立刻更新面板（含選中高亮）。
+    const sig = `${ether}|${owned}|${hasField ? "1" : "0"}|${myLandPlot ? myLandPlot.plot_id + ":" + (myLandPlot.purpose || "") : "none"}|${availCount}|d${curDecor}`;
     if (sig === lastExpandSig) return;
     lastExpandSig = sig;
     body.innerHTML = "";
@@ -18790,6 +18805,42 @@
       row.appendChild(btn);
     }
     body.appendChild(row);
+
+    // ── 家園擺飾（ROADMAP 402）──────────────────────────────────────────────
+    // 已有領地才顯示：田主從目錄挑一件療癒小物擺在自己田上，訪客也看得到。點一下換、
+    // 點目前選中的「不擺」撤掉。只送 set_home_decor 意圖，伺服器只改自己的田、結果隨快照回。
+    {
+      const decorSep = document.createElement("hr");
+      decorSep.style.cssText = "margin:6px 0;opacity:0.3;";
+      body.appendChild(decorSep);
+      const decorTitle = document.createElement("div");
+      decorTitle.style.cssText = "font-size:0.75em;opacity:0.75;margin-bottom:4px;";
+      decorTitle.textContent = "🏵️ 家園擺飾";
+      body.appendChild(decorTitle);
+      const grid = document.createElement("div");
+      grid.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;";
+      for (let i = 0; i < HOME_DECOR.length; i++) {
+        const d = HOME_DECOR[i];
+        const dbtn = document.createElement("button");
+        dbtn.type = "button";
+        dbtn.className = "expand-btn";
+        dbtn.textContent = i === 0 ? "🚫 不擺" : `${d.glyph} ${d.label}`;
+        const selected = i === curDecor;
+        dbtn.style.cssText =
+          `font-size:0.82em;padding:2px 6px;${selected ? "border-color:#ffd24a;background:rgba(255,210,74,0.15);" : ""}`;
+        dbtn.setAttribute("aria-pressed", selected ? "true" : "false");
+        dbtn.setAttribute("aria-label",
+          i === 0 ? "撤掉家園擺飾" : `把${d.label}擺在自己的田上${selected ? "（目前選中）" : ""}`);
+        dbtn.title = dbtn.getAttribute("aria-label");
+        dbtn.addEventListener("click", () => {
+          if (i === curDecor) return; // 已是這個就不重送
+          try { ws.send(JSON.stringify({ type: "set_home_decor", index: i })); } catch {}
+          announce(i === 0 ? "撤掉家園擺飾" : `把${d.label}擺在田上`);
+        });
+        grid.appendChild(dbtn);
+      }
+      body.appendChild(grid);
+    }
 
     // ── 城外產權地塊（ROADMAP 34）──────────────────────────────────────────
     const sep = document.createElement("hr");
@@ -23227,6 +23278,28 @@
     // 柵欄:把田圈成「圍起來的農莊」。有 fence.png(蒸汽龐克 sprite)就沿田邊圍一圈、
     // 底邊中段留柵門缺口;沒載好退回程式木樁(artOk 把關,跟 tree/rock 同一套 fallback)。
     drawFence(fx, fy, fw, fh, ts);
+
+    // 家園擺飾（ROADMAP 402）：田主自選的療癒小物，畫在田的右上角內側（避開作物格與名牌）。
+    // 田主與訪客都看得到——廣場上第一次「每塊田都帶點主人的個性」。0=不擺則不畫。
+    const decorIdx = f.home_decor | 0;
+    if (decorIdx > 0 && decorIdx < HOME_DECOR.length) {
+      const glyph = HOME_DECOR[decorIdx].glyph;
+      if (glyph) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        const dx = fx + fw - ts * 0.5;
+        const dy = fy + ts * 0.72;
+        // 腳底一抹淡影,讓擺飾像「立」在田上而非浮空。
+        ctx.fillStyle = "rgba(0,0,0,0.18)";
+        ctx.beginPath();
+        ctx.ellipse(dx, dy + 4, ts * 0.26, ts * 0.1, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = `${Math.round(ts * 0.78)}px system-ui, sans-serif`;
+        ctx.fillText(glyph, dx, dy);
+        ctx.restore();
+      }
+    }
 
     // 田地名字標籤：自己的→「你的乙太田」，公共→「公共農地」，別人的→地主名。
     const owner = players.get(f.owner);
