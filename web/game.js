@@ -134,6 +134,22 @@
   const CLAY_STEP_TILT = [0.07, 0, -0.07, 0];         // 左右搖擺角（弧度 ~4°），繞腳底旋轉做 waddle
   const CLAY_BREATHE = [1.0, 1.01];                   // 站立極輕微呼吸（2 階定格）
 
+  // 黏土微縮世界·停格生命感（ROADMAP 392）：claymation 的靈魂是 stop-motion——
+  // 連「靜物」也該定格一格一格地微微呼吸。給活物（樹／作物／星晶／乙太球）一套**極輕的待機定格動作**，
+  // 讓黏土世界看起來是手工捏塑、有人在一格格挪動，而非貼上的平面圖。石頭/礦脈刻意維持靜止（無生命、做對比）。
+  // 純表現、定格跳階（非平滑），尊重 reduceMotion（呼叫端不傳 idle 即靜止）。
+  const CLAY_IDLE_TILT = [0.016, 0, -0.016, 0];       // 微幅左右搖（~0.9°，4 階定格）
+  const CLAY_IDLE_SQY  = [1.0, 1.015, 1.0, 0.985];    // 縱向呼吸（4 階：原寸→略長→原寸→略扁）
+  // 依物件種子推一組待機形變：`seed` 讓每個物件錯開時間相位與起始階，整片世界呼吸**不同步**（有機感）。
+  // 純函式（只看 seed/now）、確定可重現，便於單元測試。回 { tilt, sqy }。
+  function clayIdleMotion(seed, now) {
+    const n = (seed >>> 0);                            // 正規化成非負整數，避免負 seed 取模出負索引
+    const t = now + (n % 4000);                        // 每物件時間相位錯開（最多錯開 4 秒）
+    const phase = Math.floor(t / 700) + (n % CLAY_IDLE_TILT.length); // 慢速跳階（每 0.7s 一格）＋起始階錯開
+    const i = ((phase % CLAY_IDLE_TILT.length) + CLAY_IDLE_TILT.length) % CLAY_IDLE_TILT.length;
+    return { tilt: CLAY_IDLE_TILT[i], sqy: CLAY_IDLE_SQY[i] };
+  }
+
   // drawClaySprite：renderStyle==='clay' 且該 key 黏土圖載到了才畫，否則回傳 false
   // 讓呼叫端 fallback 回原本畫法。x,y 為「世界座標扣相機」後的螢幕座標（呼叫端算好）。
   // 約定：sprite 底部對齊 (x, y)（腳/底貼地），水平置中於 x。
@@ -167,6 +183,12 @@
         const idx = Math.floor(now / 600) % CLAY_BREATHE.length;
         sqy = CLAY_BREATHE[idx];
       }
+    } else if (opts.idle != null && !reduceMotion) {
+      // 待機生命感（ROADMAP 392）：非角色活物（樹/作物/星晶/乙太球）的極輕停格呼吸＋微搖。
+      const m = clayIdleMotion(opts.idle, now);
+      tilt = m.tilt;
+      sqy = m.sqy;
+      sqx = 2 - sqy; // 體積守恆：縱向呼吸時橫向反向補償
     }
     // 落地柔影（接地感）：固定在地面、不跟著彈跳。
     if (opts.shadow > 0) {
@@ -8251,8 +8273,10 @@
       const wob = nodeHitWobble(n, now);
       const dx = wob > 0 ? Math.sin(now * 0.045) * 5 * wob : 0;
       ctx.save();
-      // 黏土風採集節點（樹/石/乙太礦皆有黏土圖）：靜態 sprite + 落地柔影；其餘照舊。
-      const drewClayNode = (renderStyle === "clay") && drawClaySprite(n.kind, sx + dx, sy + 8, 46, { shadow: 14 });
+      // 黏土風採集節點（樹/石/乙太礦皆有黏土圖）：樹是活物→加待機停格生命感（ROADMAP 392）；
+      // 石/礦脈無生命刻意維持靜止（做對比、也更像真石頭）。被採時的橫向抖（dx）獨立疊加。
+      const nodeIdle = n.kind === "tree" ? { idle: Math.round(n.x * 3 + n.y * 7) } : null;
+      const drewClayNode = (renderStyle === "clay") && drawClaySprite(n.kind, sx + dx, sy + 8, 46, { shadow: 14, ...(nodeIdle || {}) });
       const spriteName = NODE_SPRITE[n.kind];
       if (drewClayNode) {
         // 已用黏土圖畫好節點本體。
@@ -10016,7 +10040,8 @@
           for (let ci = 0; ci < shown.length; ci++) {
             const c = shown[ci];
             const cx = baseX + ci * gap;
-            if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9 })) {
+            // 作物是活物：加待機停格生命感（ROADMAP 392），整片田像微微在風裡呼吸；每株錯開不同步。
+            if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9, idle: Math.round(cx * 5 + sy * 3 + ci * 131) })) {
               // 該作物沒黏土圖：退回 emoji。
               ctx.font = "18px sans-serif";
               ctx.textAlign = "center";
@@ -10056,8 +10081,8 @@
         const sx = sc.x - camX;
         const sy = sc.y - camY;
         if (sx < -30 || sy < -30 || sx > viewW + 30 || sy > viewH + 30) continue;
-        // 黏土風星晶：靜態黏土 sprite（中心對齊）+ 落地柔影；其餘照舊閃爍 emoji。
-        if (renderStyle === "clay" && drawClaySprite("star_crystal", sx, sy + 14, 34, { shadow: 11 })) {
+        // 黏土風星晶：黏土 sprite（中心對齊）+ 落地柔影 + 待機停格呼吸（ROADMAP 392，活的魔法寶石微微脈動）。
+        if (renderStyle === "clay" && drawClaySprite("star_crystal", sx, sy + 14, 34, { shadow: 11, idle: Math.round(sc.x * 7 + sc.y * 3) })) {
           continue;
         }
         // 脈動效果：大小在 0.7~1.3 之間震盪
@@ -12171,7 +12196,7 @@
 
       // 黏土風乙太球：以球中心對齊的黏土 sprite + 落地柔影；其餘照舊發光漸層。
       // 標籤（+N✨）與近身採集環沿用原路徑，仍會疊在黏土球上，不漏資訊。
-      if (renderStyle === "clay" && drawClaySprite("ether_orb", sx, sy + 14, 30, { shadow: 9 })) {
+      if (renderStyle === "clay" && drawClaySprite("ether_orb", sx, sy + 14, 30, { shadow: 9, idle: Math.round(orb.x * 7 + orb.y * 3) })) {
         // 已用黏土圖畫好乙太球本體，跳過程式光暈本體；標籤仍由下方原碼補上。
         ctx.save();
         ctx.translate(sx, sy);
