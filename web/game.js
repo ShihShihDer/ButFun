@@ -309,11 +309,30 @@
   // 動態——角色踏步彈跳、夜晚乙太微光的飄移與明滅、收成「+N 乙太」飄字的上飄、輕點田格
   // 漣漪的擴張、重連橫幅的脈動。靜態的畫面照樣資訊完整（夜色濃淡、微光位置、飄字的 +N、
   // 漣漪框住的那格、重連橫幅本身都還在），只是不再動。純表現層、不嵌遊戲規則。
+  // 畫面動態偏好（ROADMAP 425）：過去 reduceMotion 的「唯一來源」是作業系統的
+  // prefers-reduced-motion，玩家在遊戲內無從覆寫。本切片補上「畫面動態」設定讓玩家自己決定：
+  //   - "auto"（預設）：跟隨系統偏好——維持原行為。
+  //   - "rich"（精緻全開）：即使系統開了減少動態，遊戲內照樣保留所有純裝飾動態（高階裝置/想看滿版動畫）。
+  //   - "calm"（省電靜謐）：強制減少動態，關掉飄動／彈跳／粒子／視差——手機省電、靜心、前庭友善。
+  // effectiveReduceMotion 為純函式（確定性、零副作用、好測）：把偏好與系統值解析成單一有效布林。
+  function effectiveReduceMotion(pref, osReduce) {
+    if (pref === "calm") return true;   // 強制靜謐
+    if (pref === "rich") return false;  // 強制全開（覆寫系統）
+    return !!osReduce;                  // auto／未知值：跟隨系統
+  }
+  let motionPref = "auto";
+  try {
+    const _mp = localStorage.getItem("butfun.motion");
+    if (_mp === "rich" || _mp === "calm" || _mp === "auto") motionPref = _mp;
+  } catch {}
+
   const reduceMotionMQ = window.matchMedia
     ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
-  let reduceMotion = !!(reduceMotionMQ && reduceMotionMQ.matches);
+  let motionOsReduce = !!(reduceMotionMQ && reduceMotionMQ.matches);
+  let reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce);
   if (reduceMotionMQ) {
-    const onRM = (e) => { reduceMotion = e.matches; };
+    // 系統偏好變動時，連同玩家偏好一起重算（auto 模式才會真的改變結果）。
+    const onRM = (e) => { motionOsReduce = e.matches; reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce); };
     // 舊瀏覽器只有 addListener;兩種都掛以求相容。
     if (reduceMotionMQ.addEventListener) reduceMotionMQ.addEventListener("change", onRM);
     else if (reduceMotionMQ.addListener) reduceMotionMQ.addListener(onRM);
@@ -323,6 +342,18 @@
   let _parallaxFpsBuf = [];
   let _parallaxEnabled = !reduceMotion;
   let _prevRenderNow = 0;
+
+  // 套用玩家選的畫面動態偏好（ROADMAP 425）：寫回 localStorage、即時重算 reduceMotion，
+  // 並把視差旗標立即反映（之後仍由既有幀率感知微調）。全遊戲純裝飾動態每幀即時讀 reduceMotion，
+  // 故翻動這一個布林即同步讓整個世界安靜／熱鬧起來，無需散落各系統改動。
+  function setMotionPref(pref) {
+    motionPref = (pref === "rich" || pref === "calm") ? pref : "auto";
+    try { localStorage.setItem("butfun.motion", motionPref); } catch {}
+    reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce);
+    _parallaxEnabled = !reduceMotion;
+  }
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
@@ -26426,6 +26457,16 @@
         AMBIENT.setOn(optAmbient.checked);
       });
     }
+    // ⚙ 設定：畫面動態（ROADMAP 425）——玩家三選一覆寫系統的減少動態偏好。
+    // 各 radio 綁定其對應偏好的閉包（不依賴 el.value），啟動反映當前偏好、點選即套用＋一聲確認音。
+    [["optMotionAuto", "auto"], ["optMotionRich", "rich"], ["optMotionCalm", "calm"]].forEach(([id, pref]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.checked = (motionPref === pref);
+      el.addEventListener("change", () => {
+        if (el.checked) { setMotionPref(pref); SFX.click(); }
+      });
+    });
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
     const recallBtn = document.getElementById("recallBtn");
     if (recallBtn) {
