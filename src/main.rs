@@ -59,6 +59,7 @@ mod npc;
 mod npc_chat;
 mod inventory;
 mod inventory_store;
+mod journey;
 mod tile_store;
 mod tiles;
 mod vitals;

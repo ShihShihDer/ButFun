@@ -262,6 +262,10 @@ pub enum ClientMsg {
     /// 伺服器以剛才的撈瓶記錄決定收件人（不信任前端傳對象，防偽造投遞）。
     /// `message_key` 須在白名單內。未登入 / 未撈過 / 回贈窗已過 / 未知 key 靜默忽略。
     ReplyBottle { message_key: String },
+    /// 索取旅人手帳（ROADMAP 415）：玩家開啟「📖 旅人手帳」面板時送來，伺服器以玩家自己的
+    /// 永久成長數據（等級／三圖鑑／人氣）算出 `ServerMsg::JourneyReport` 單播回去。
+    /// 純讀、不改任何狀態、不廣播；未登入也可（訪客看自己的當前進度，亦能當引導）。
+    RequestJourney,
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -801,6 +805,30 @@ pub struct BottleReplyView {
     pub message_key: String,
 }
 
+/// 旅人手帳的一條成長軌跡（ROADMAP 415）。隨 `ServerMsg::JourneyReport` 送出。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct JourneyTrackView {
+    /// 軌跡 wire key（`journey::TRACK_*`；前端對照成標籤／圖示，i18n 友善）。
+    pub key: String,
+    /// 目前數值。
+    pub current: u32,
+    /// 下一個里程碑目標值；`0` = 已圓滿（無下一目標）。
+    pub goal: u32,
+    /// 已達成的里程碑數（階位）。
+    pub tier: u32,
+}
+
+/// 旅人手帳的「差一點就達成」頭條提示（ROADMAP 415）。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct JourneyHeadlineView {
+    /// 該軌跡 wire key。
+    pub key: String,
+    /// 距離下一個里程碑還差多少。
+    pub remaining: u32,
+    /// 下一個里程碑目標值。
+    pub goal: u32,
+}
+
 /// 城鎮入侵警報快照（ROADMAP 158/161）——供前端 HUD 顯示入侵狀態與倒數。
 #[derive(Debug, Clone, Serialize)]
 pub struct InvasionView {
@@ -1117,6 +1145,13 @@ pub enum ServerMsg {
     /// 何時送：玩家連線時直送一次；有人拋瓶/撈瓶/瓶子沉沒導致數量變動時全服廣播一次。
     /// 量小、不入高頻快照。前端據此顯示「🌊 海上漂著 N 只瓶」。
     BottleSeaCount { count: u32 },
+    /// 旅人手帳（ROADMAP 415）：玩家送 `RequestJourney` 後單播回來的成長總覽。
+    /// `tracks` 為各永久成長軌跡的當前進度；`headline` 為「差一點就達成」的下一步提示
+    /// （`None` = 所有里程碑皆圓滿）。純呈現、不送物品/乙太/戰力，零平衡風險、零持久化。
+    JourneyReport {
+        tracks: Vec<JourneyTrackView>,
+        headline: Option<JourneyHeadlineView>,
+    },
     /// 回訪摘要（ROADMAP 374）：登入玩家進場時，一次性告知「等你的東西」。
     /// 純讀現有記憶體狀態，不新增經濟、不送物品/乙太。只在已登入玩家連線時送一次。
     /// 前端據此顯示可消除的「歡迎回來」卡片。

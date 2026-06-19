@@ -806,6 +806,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 連線層擋封包洪流，每人持有量／信箱量另由 bottle_drift 上限把關。
     let mut rl_bottle_win = std::time::Instant::now();
     let mut rl_bottle_n: u32 = 0;
+    // 旅人手帳限流（ROADMAP 415）：純讀、只單播回自己、不放大全服；仍比照從嚴擋封包洪流
+    // （每秒至多 3 次，超量靜默丟棄）。
+    let mut rl_journey_win = std::time::Instant::now();
+    let mut rl_journey_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -1166,6 +1170,52 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 離線就留在信箱等他下次連線領取（出鎖後送，守 prod-deadlock）。
                     if let Some((author_id, _)) = routed {
                         deliver_bottle_inbox(&app, author_id);
+                    }
+                }
+                Ok(ClientMsg::RequestJourney) => {
+                    // 旅人手帳（ROADMAP 415）：以玩家自己的永久成長數據算出成長總覽，單播回去。
+                    // 純讀、不改任何狀態、不廣播（出鎖後送，守 prod-deadlock）。
+                    if rl_journey_win.elapsed().as_secs() >= 1 {
+                        rl_journey_win = std::time::Instant::now();
+                        rl_journey_n = 0;
+                    }
+                    rl_journey_n += 1;
+                    if rl_journey_n > 3 {
+                        continue;
+                    }
+                    // 讀玩家自己的永久成長欄位（與其他鎖不嵌套；讀完即放鎖）。
+                    let stats = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| crate::journey::JourneyStats {
+                            level: p.level(),
+                            eco_seen: crate::field_guide::count(p.codex),
+                            terrain_seen: crate::terrain_atlas::count(p.atlas),
+                            sky_seen: crate::sky_codex::count(p.skylog),
+                            cheers: p.cheers as u32,
+                        })
+                    };
+                    if let Some(stats) = stats {
+                        let report = crate::journey::compute(stats);
+                        let msg = ServerMsg::JourneyReport {
+                            tracks: report
+                                .tracks
+                                .iter()
+                                .map(|t| crate::protocol::JourneyTrackView {
+                                    key: t.key.to_string(),
+                                    current: t.current,
+                                    goal: t.next_goal.unwrap_or(0),
+                                    tier: t.tier,
+                                })
+                                .collect(),
+                            headline: report.headline.map(|h| crate::protocol::JourneyHeadlineView {
+                                key: h.key.to_string(),
+                                remaining: h.remaining,
+                                goal: h.goal,
+                            }),
+                        };
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = tx_direct.try_send(json);
+                        }
                     }
                 }
                 Ok(ClientMsg::HighFive) => {
