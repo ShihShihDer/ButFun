@@ -1501,6 +1501,15 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 並肩協作默契（ROADMAP 414）：某玩家在採集當下身旁有 `partners` 名並肩同伴，
+    /// 觸發勞動默契加成。廣播給附近玩家——你會看見隊友頭頂浮起一枚 🤝，知道「一起忙更有收穫」。
+    /// 不入快照、不持久化。
+    CoopLabour {
+        player_id: Uuid,
+        partners: u8,
+        x: f32,
+        y: f32,
+    },
     /// 元素克制命中（ROADMAP 380）：玩家附魔剋中敵人弱點時廣播；
     /// 前端只對 `player_id == 自己` 演出飄字（旁觀者忽略）。
     /// `elem` ＝ 攻擊方元素 wire 字串（fire/ether）；`x`/`y` ＝ 玩家座標（飄字定位）。

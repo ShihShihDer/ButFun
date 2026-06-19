@@ -90,6 +90,7 @@ mod mining_vein;
 mod cooking_steps;
 mod aether_draw;
 mod woodcutting;
+mod coop_labour; // ROADMAP 414 並肩協作·結伴勞動默契加成
 mod constellation;
 mod ancient_inscription;
 mod field_guide;
