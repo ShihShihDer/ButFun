@@ -956,6 +956,8 @@ pub fn spawn(app: AppState) {
                 let mut downed_positions: Vec<(f32, f32)> = Vec::new();
                 // ROADMAP 83：同步收集倒地玩家名稱，供 NPC 落敗反應使用。
                 let mut newly_downed_names: Vec<String> = Vec::new();
+                // ROADMAP 410：本拍翻滾閃掉反擊的玩家（出鎖後廣播「閃避！」飄字）。
+                let mut evaded_dodges: Vec<(uuid::Uuid, f32, f32)> = Vec::new();
                 if !dmgs.is_empty() {
                     let mut players = app.players.write().unwrap();
                     for (pid, dmg) in dmgs {
@@ -969,6 +971,16 @@ pub fn spawn(app: AppState) {
                             if let Some(shield) = p.guard_shield {
                                 actual_dmg = shield.reduce(actual_dmg);
                             }
+                            // 翻滾閃避（ROADMAP 410）：翻滾的恩典窗內完全閃掉這次反擊（零傷）。
+                            // 與護盾正交——先卸傷再判閃避，閃中即歸零；只在真有傷可閃時記事件。
+                            if actual_dmg > 0 {
+                                if let Some(d) = p.dodging {
+                                    if d.in_grace() {
+                                        actual_dmg = 0;
+                                        evaded_dodges.push((p.id, p.x, p.y));
+                                    }
+                                }
+                            }
                             if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
                                 tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");
                                 if let Some(&(px, py)) = pos_map.get(&pid) {
@@ -978,6 +990,13 @@ pub fn spawn(app: AppState) {
                             }
                         }
                     }
+                }
+                // 翻滾閃避成功廣播（ROADMAP 410）：出鎖後送，守 prod-deadlock 鐵律；
+                // 前端只對 player_id == 自己 演出「閃避！」飄字。
+                for (pid, ex, ey) in evaded_dodges {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::DodgeEvaded { player_id: pid, x: ex, y: ey }
+                    ));
                 }
                 // 玩家倒地 → 最近敵人升一級（ROADMAP 42）。
                 // 分開持 enemies 寫鎖，避免與上方 players 寫鎖同時持有。
@@ -1256,6 +1275,17 @@ pub fn spawn(app: AppState) {
                     if let Some(s) = p.guard_shield.as_mut() {
                         if s.advance(dt) {
                             p.guard_shield = None;
+                        }
+                    }
+                    // 翻滾冷卻倒數（ROADMAP 410）：翻滾結算後起算，只擋開新一趟翻滾。
+                    if p.dodge_cooldown > 0.0 {
+                        p.dodge_cooldown = (p.dodge_cooldown - dt).max(0.0);
+                    }
+                    // 翻滾推進（ROADMAP 410 翻滾閃避）：advance 累時間、恩典窗過即落幕這趟。
+                    // 純函式、零鎖無 IO；翻身位移由前端用 elapsed 演出；反擊迴圈讀 in_grace 判免傷。
+                    if let Some(d) = p.dodging.as_mut() {
+                        if d.advance(dt) {
+                            p.dodging = None;
                         }
                     }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。

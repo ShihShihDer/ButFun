@@ -10,6 +10,7 @@ mod class;
 mod director;
 mod combat;
 mod guard;
+mod dodge;
 mod town_blocs;
 mod town_share;
 mod world_grove;

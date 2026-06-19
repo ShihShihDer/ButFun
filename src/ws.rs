@@ -167,6 +167,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
+            dodge_cooldown: 0.0,
+            dodging: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -291,6 +293,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
+            dodge_cooldown: 0.0,
+            dodging: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -7415,6 +7419,37 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 臨陣格擋 end ──────────────────────────────────────────────────────
+
+                // ── 翻滾閃避（ROADMAP 410）────────────────────────────────────────────
+                Ok(ClientMsg::Dodge) => {
+                    // 被敵人威脅時往移動方向翻身閃開：恩典窗內完全閃掉接下來那一次反擊。
+                    // 驗格鏡像 BeginGuard：未倒地＋此刻確有敵人威脅＋冷卻過＋沒在翻滾。
+                    // 純記憶體、零鎖內 IO；翻身位移由前端權威座標演出，伺服器只管免不免傷。
+                    // 鎖序：先讀 players 取位置＋驗狀態 → 讀 enemies 查威脅 → 寫 players 開翻滾。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() || p.dodge_cooldown > 0.0 || p.dodging.is_some() {
+                                None
+                            } else {
+                                Some((p.x, p.y))
+                            }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        let threatened = app.enemies.read().unwrap().threat_at(px, py) > 0;
+                        if threatened {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if p.dodging.is_none() {
+                                    p.dodging = Some(crate::dodge::DodgeRoll::start());
+                                    p.dodge_cooldown = crate::dodge::DODGE_COOLDOWN_SECS;
+                                    tracing::debug!(player = %p.name, "翻滾閃避");
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 翻滾閃避 end ──────────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {
