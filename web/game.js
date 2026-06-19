@@ -2458,6 +2458,8 @@
             existing.mining_tremor = p.mining_tremor || null;
             // ROADMAP 391：安靜打坐——是否正在打坐（前端畫呼吸光圈）。
             existing.meditating = !!p.meditating;
+            // ROADMAP 399：廣場獻奏——是否正在獻奏（前端畫頭頂飄動音符）。
+            existing.busking = !!p.busking;
             // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
             existing.well_fed = (typeof p.well_fed === "number") ? p.well_fed : null;
             // ROADMAP 350：夜泉汲取——進行中汲取的經過秒數。每收一筆快照就重錨「收到時間」，
@@ -2978,6 +2980,8 @@
           updatePlantTreeBtn(me, isGuest);
           // 安靜打坐按鈕（ROADMAP 391）：黃昏/夜晚/黎明、已登入、戶外才顯示
           updateMeditateBtn(me, isGuest);
+          // 廣場獻奏按鈕（ROADMAP 399）：已登入、戶外、靠近村落廣場才顯示
+          updateBuskBtn(me, isGuest);
         }
         break;
       }
@@ -3472,6 +3476,55 @@
         break;
       }
       // ── 安靜打坐 end ─────────────────────────────────────────────────────────────
+
+      // ── 廣場獻奏（ROADMAP 399）──────────────────────────────────────────────────
+      case "busk_start": {
+        // 廣播給所有人：開始獻奏。即時更新 busking 旗標，前端立刻畫頭頂音符。
+        const bsPid = msg.player_id;
+        if (!bsPid) break;
+        const bsPlayer = players.get(bsPid);
+        if (bsPlayer) bsPlayer.busking = true;
+        if (bsPid === myId) {
+          announce(`開始街頭獻奏，靜止演奏 ${msg.duration_secs || 15} 秒——身旁聆賞的人越多，打賞越豐；移動會中斷`);
+        }
+        break;
+      }
+      case "busk_complete": {
+        // 廣播給所有人：獻奏完成。本人冒打賞飄字＋音效＋播報。
+        const bcPid = msg.player_id;
+        if (!bcPid) break;
+        const bcPlayer = players.get(bcPid);
+        if (bcPlayer) {
+          bcPlayer.busking = false;
+          if (bcPid === myId) {
+            const now = performance.now();
+            hitFloaters.push({ wx: bcPlayer.x, wy: bcPlayer.y - 46, text: "🎶 獻奏完成", color: "255, 210, 90", size: 18, born: now });
+            if (msg.ether_gained > 0) {
+              const lis = msg.listeners || 0;
+              const tip = lis > 0 ? `+${msg.ether_gained} 乙太（${lis} 人聆賞）` : `+${msg.ether_gained} 乙太`;
+              hitFloaters.push({ wx: bcPlayer.x, wy: bcPlayer.y - 68, text: tip, color: "140,240,255", size: 15, born: now });
+            }
+            SFX.success(); // 輕柔上揚音效（ROADMAP 376）
+            const cnt = msg.busk_count ? `（第 ${msg.busk_count} 場）` : "";
+            announce(`獻奏完成！${msg.listeners || 0} 人聆賞，獲打賞 ${msg.ether_gained || 0} 乙太${cnt}`);
+          }
+        }
+        break;
+      }
+      case "busk_aborted": {
+        // 廣播給所有人：獻奏被打斷。
+        const baPid = msg.player_id;
+        if (!baPid) break;
+        const baPlayer = players.get(baPid);
+        if (baPlayer) {
+          baPlayer.busking = false;
+          if (baPid === myId) {
+            announce("獻奏中斷——移動了，需要靜止才能獻奏");
+          }
+        }
+        break;
+      }
+      // ── 廣場獻奏 end ─────────────────────────────────────────────────────────────
 
       case "cook_start": {
         // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
@@ -5549,6 +5602,10 @@
     // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
     if (p.meditating) drawMeditationGlow(sx, sy + 8);
 
+    // 廣場獻奏音符（ROADMAP 399）：正在街頭獻奏的玩家頭頂飄出輕快音符，
+    // 讓旁觀者一眼看出「有人在演奏」，廣場因此熱鬧起來。畫在角色本體之上。
+    if (p.busking) drawBuskingNotes(sx, by - 34);
+
     // 暖食飽足光暈（ROADMAP 395）：剛吃過料理的玩家頭頂浮一圈暖橙光暈＋🍲，
     // 讓世界一眼看見「有人吃飽了、正被暖暖地療癒著」。進度愈低（飽足將散）愈淡。
     if (typeof p.well_fed === "number" && p.well_fed > 0) drawWellFedGlow(sx, by - 30, p.well_fed);
@@ -6860,6 +6917,30 @@
     }
   }
   // ── 安靜打坐按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 廣場獻奏按鈕（ROADMAP 399）────────────────────────────────────────────────
+  /** 每幀更新「🎶 獻奏」按鈕：已登入、戶外、靠近村落廣場才顯示；獻奏中改顯示「⏹ 停止獻奏」。
+   *  靠近判定用村落中心半徑近似（後端 town_protected_at 為權威；邊緣偶有落差可接受）。 */
+  function updateBuskBtn(me, isGuestUser) {
+    const btn = document.getElementById("buskBtn");
+    if (!btn) return;
+    let nearPlaza = false;
+    if (me) {
+      const dx = me.x - 2344, dy = me.y - 2296; // 村落中心（與 SAFE_ZONE 對齊）
+      nearPlaza = dx * dx + dy * dy <= 700 * 700;
+    }
+    const canShow = !!me && !isGuestUser && nearPlaza && me.indoor_plot_id == null;
+    btn.classList.toggle("hidden", !canShow);
+    if (!canShow) return;
+    if (me.busking) {
+      btn.textContent = "⏹ 停止獻奏";
+      btn.style.color = "#ffb347";
+    } else {
+      btn.textContent = "🎶 獻奏";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 廣場獻奏按鈕 end ──────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -13388,6 +13469,30 @@
     ctx.restore();
   }
   // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
+
+  // ── 廣場獻奏音符（ROADMAP 399）────────────────────────────────────────────────
+  // 由 drawPlayer 對 busking=true 的玩家頭頂呼叫；飄出兩枚輕快音符（左右錯落、上下浮動），
+  // 讓旁觀者一眼看出「有人在街頭獻奏」。尊重 reduceMotion（不浮動、只靜態擺兩枚音符）。
+  const BUSK_NOTE_GLYPHS = ["🎵", "🎶", "🎼"];
+  function drawBuskingNotes(cx, cy) {
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // 兩枚音符左右錯開，各自以不同相位上下浮動（reduceMotion 時相位固定）。
+    const t = reduceMotion ? 0 : renderNow / 520;
+    for (let i = 0; i < 2; i++) {
+      const phase = t + i * Math.PI;
+      const bob = reduceMotion ? 0 : Math.sin(phase) * 4;
+      const nx = cx + (i === 0 ? -8 : 9);
+      const ny = cy - 2 + bob;
+      const glyph = BUSK_NOTE_GLYPHS[(Math.floor(t / Math.PI) + i) % BUSK_NOTE_GLYPHS.length];
+      ctx.globalAlpha = reduceMotion ? 0.85 : 0.6 + 0.35 * (0.5 + 0.5 * Math.cos(phase));
+      ctx.font = `${13 + i}px system-ui, sans-serif`;
+      ctx.fillText(glyph, nx, ny);
+    }
+    ctx.restore();
+  }
+  // ── 廣場獻奏音符 end ─────────────────────────────────────────────────────────
 
   // ── 暖食飽足光暈（ROADMAP 395）────────────────────────────────────────────────
   // 由 drawPlayer 對 well_fed>0 的玩家頭頂呼叫；畫一圈暖橙柔光＋一顆 🍲，
@@ -24353,6 +24458,21 @@
         } else {
           safeSend({ type: "begin_meditate" });
           announce("準備打坐，靜止 30 秒可恢復生命與乙太——移動即中斷");
+        }
+      });
+    }
+    // 🎶 廣場獻奏（ROADMAP 399）：在村落廣場靜止獻奏 15 秒，得打賞乙太（隨聆賞人數遞增）。
+    const buskBtn = document.getElementById("buskBtn");
+    if (buskBtn) {
+      buskBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (me.busking) {
+          safeSend({ type: "cancel_busk" });
+        } else {
+          safeSend({ type: "begin_busk" });
+          announce("準備街頭獻奏，靜止 15 秒——身旁聆賞的人越多，打賞越豐；移動即中斷");
         }
       });
     }

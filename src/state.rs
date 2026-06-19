@@ -180,6 +180,13 @@ pub struct Player {
     pub meditation: Option<crate::meditation::Meditation>,
     /// 上次打坐完成的時間點（冷卻追蹤，ROADMAP 391）。記憶體前置，重啟清空。
     pub last_meditate: Option<std::time::Instant>,
+    /// 進行中的廣場獻奏（ROADMAP 399）。None = 沒在獻奏；Some = 獻奏中（含開始時間與起始座標）。
+    /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 檢查移動中斷與完成。
+    pub busking: Option<crate::busking::Busking>,
+    /// 上次獻奏完成的時間點（冷卻追蹤，ROADMAP 399）。記憶體前置，重啟清空。
+    pub last_busk: Option<std::time::Instant>,
+    /// 累積的獻奏資歷（ROADMAP 399）——完成一場 +1，純記憶體，重啟清零；完成時回給玩家看「第 N 場」。
+    pub busk_count: u32,
     /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
     /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
     pub meal_buff: Option<crate::meal_buff::MealBuff>,
@@ -757,6 +764,8 @@ impl Player {
             chain_links: self.activity_chain.link_count(),
             // ROADMAP 391：是否正在打坐（廣播給所有人，前端畫呼吸光圈）。
             meditating: self.meditation.is_some(),
+            // ROADMAP 399：是否正在廣場獻奏（廣播給所有人，前端畫頭頂飄動音符）。
+            busking: self.busking.is_some(),
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
             well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
             // ROADMAP 396：新手引導進度（只對引導啟用中的全新玩家有值；老玩家／已畢業＝None）。
@@ -1555,6 +1564,9 @@ mod tests {
             activity_chain: crate::activity_chain::ActivityChain::new(0),
             meditation: None,
             last_meditate: None,
+            busking: None,
+            last_busk: None,
+            busk_count: 0,
             meal_buff: None,
             onboarding: crate::onboarding::Onboarding::default(),
             refine_attempt_count: 0,

@@ -337,6 +337,11 @@ pub enum ClientMsg {
     BeginMeditate,
     /// 取消打坐（ROADMAP 391）：主動中止進行中的打坐。未在打坐中靜默忽略。
     CancelMeditate,
+    /// 開始廣場獻奏（ROADMAP 399）：在安全村落廣場靜止獻奏約 15 秒，完成得打賞乙太（隨鄰近聽眾遞增）。
+    /// 已在獻奏中 / 不在安全區 / 冷卻中 / 倒地靜默忽略。
+    BeginBusk,
+    /// 取消獻奏（ROADMAP 399）：主動中止進行中的獻奏。未在獻奏中靜默忽略。
+    CancelBusk,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -1440,6 +1445,28 @@ pub enum ServerMsg {
     MeditationAborted {
         player_id: Uuid,
     },
+
+    // ── 廣場獻奏（ROADMAP 399）──────────────────────────────────────────────
+    /// 獻奏開始確認（ROADMAP 399）：廣播給所有人，前端對獻奏者頭頂畫飄動音符。
+    BuskStart {
+        player_id: Uuid,
+        /// 獻奏所需秒數（前端進度顯示用）。
+        duration_secs: f32,
+    },
+    /// 獻奏完成（ROADMAP 399）：廣播全服——旁觀者看到音符散去、自己看到打賞飄字。
+    BuskComplete {
+        player_id: Uuid,
+        /// 打賞乙太（隨聆賞的鄰近玩家人數遞增）。
+        ether_gained: u32,
+        /// 聆賞的鄰近玩家人數（前端「N 人聆賞」呈現）。
+        listeners: u32,
+        /// 累積到第幾場獻奏（資歷，前端「第 N 場」呈現）。
+        busk_count: u32,
+    },
+    /// 獻奏被打斷（ROADMAP 399）：廣播全服，音符消散。
+    BuskAborted {
+        player_id: Uuid,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -1828,6 +1855,11 @@ pub struct PlayerView {
     /// 玩家目前是否正在打坐。true 時前端在該玩家身旁畫呼吸光圈。false 時省略流量。
     #[serde(default, skip_serializing_if = "is_false")]
     pub meditating: bool,
+
+    // ── 廣場獻奏（ROADMAP 399）───────────────────────────────────────────────
+    /// 玩家目前是否正在廣場獻奏。true 時前端在該玩家頭頂畫飄動音符。false 時省略流量。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub busking: bool,
 
     // ── 暖食飽足（ROADMAP 395）───────────────────────────────────────────────
     /// 暖食飽足進度 0.0~1.0（剩餘比例）。Some 時前端在該玩家頭頂畫暖食光暈＋倒數。
@@ -2368,6 +2400,7 @@ mod tests {
                 unlocked_titles: vec![],
                 chain_links: 0,
                 meditating: false,
+                busking: false,
                 well_fed: None,
                 onboarding: None,
             }],
@@ -2639,6 +2672,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            busking: false,
             well_fed: None,
             onboarding: None,
         };
@@ -2925,6 +2959,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            busking: false,
             well_fed: None,
             onboarding: None,
         };
@@ -2990,6 +3025,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            busking: false,
             well_fed: None,
             onboarding: None,
         }
