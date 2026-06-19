@@ -286,6 +286,10 @@ pub enum ClientMsg {
     /// 伺服器只改玩家**自己**的田（`fields[id]`，訪客無田 → 靜默忽略），索引越界一律當不擺。
     /// 結果隨下一次快照的 `FieldView.home_decor` 回給田主與訪客。
     SetHomeDecor { index: u8 },
+    /// 設定家園庭園某個擺放位的小物（ROADMAP 416）：把第 `slot` 格設成 `index`（0=該位撤掉）。
+    /// 伺服器只改玩家**自己**的田（`fields[id]`，訪客無田 → 靜默忽略）；`slot` 超界或 `index`
+    /// 越界一律安全處理（忽略 / 當不擺）。結果隨下一次快照的 `FieldView.garden` 回給田主與訪客。
+    SetGardenSlot { slot: u8, index: u8 },
     /// 市場掛單：從背包取出 qty 個 item 以每單位 price_per 乙太掛單出售。
     /// 伺服器驗背包庫存後移出物品並建立掛單；失敗靜默忽略（量不夠 / 未登入）。
     PostListing { item: ItemKind, qty: u32, price_per: u32 },
@@ -2225,6 +2229,11 @@ pub struct FieldView {
     /// 田主與訪客都收得到（前端依索引在田上畫對應 emoji/小物）。多數田沒擺 → 0 時略去省流量。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub home_decor: u8,
+    /// 家園庭園的擺放位（ROADMAP 416）：每格一個擺飾索引（0=該位不擺），長度至多
+    /// `home_decor::GARDEN_SLOTS`。田主與訪客都收得到，前端依各格在田面對應位置畫小物。
+    /// 全空（沒佈置任何庭園）時略去省流量；舊伺服器不送此欄→前端退回單件 `home_decor` 繪製。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub garden: Vec<u8>,
 }
 
 /// 快照裡的一筆市場掛單（玩家對玩家交易）。
@@ -2664,6 +2673,7 @@ mod tests {
                     quality: 0,
                 }],
                 home_decor: 0,
+                garden: vec![],
             }],
             nodes: vec![NodeView {
                 kind: NodeKind::Tree,
