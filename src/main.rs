@@ -9,6 +9,7 @@ mod auth;
 mod class;
 mod director;
 mod combat;
+mod guard;
 mod town_blocs;
 mod town_share;
 mod world_grove;

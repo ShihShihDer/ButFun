@@ -597,6 +597,11 @@
   // （旁邊有節點就採、面前是牆就挖、空格+選材料就放、其餘照顧田）。按住連發。
   let actionTouchId = null;
   let lastSmartAction = 0;
+  // ROADMAP 408 臨陣格擋：格擋鈕的觸控手指 id（與動作鈕分開，可同時按住攻擊＋另一指格擋）；
+  // lastGuardTime 供前端估冷卻、把鈕暫時淡掉（真正冷卻仍由伺服器權威把關）。
+  let guardTouchId = null;
+  let lastGuardTime = 0;
+  const GUARD_COOLDOWN_MS = 3500; // 與 guard::GUARD_COOLDOWN_SECS 對齊（僅供前端鈕的淡化估算）
   const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
@@ -2557,6 +2562,15 @@
             } else {
               existing.chop_secs = null;
             }
+            // ROADMAP 408：臨陣格擋——進行中備防的經過秒數＋此刻護盾強度。每收一筆快照重錨「收到時間」，
+            // 前端用同一條公式（guardBeatFraction）以本地時鐘自由推進格擋環、與伺服器對齊。
+            if (typeof p.guard_secs === "number") {
+              existing.guard_secs = p.guard_secs;
+              existing._guardRecvAt = performance.now();
+            } else {
+              existing.guard_secs = null;
+            }
+            existing.guard_shield_pct = (typeof p.guard_shield_pct === "number") ? p.guard_shield_pct : null;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -3418,6 +3432,25 @@
         } else if (msg.outcome === "missed") {
           floaters.push({ wx, wy, text: "💨 樹沒了…空手而回", color: "190,190,190", born: now });
           announce("揮到最後，樹已被採走");
+        }
+        break;
+      }
+      case "guard_result": {
+        // 臨陣格擋結果（ROADMAP 408）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 42;
+        const now = performance.now();
+        if (msg.outcome === "perfect") {
+          floaters.push({ wx, wy, text: "🛡️ 完美格擋！", color: "150,215,255", born: now });
+          announce("完美格擋，凝起乙太護盾");
+          SFX.success();
+        } else if (msg.outcome === "partial") {
+          floaters.push({ wx, wy, text: "🛡️ 擋下一部分", color: "170,200,225", born: now });
+          announce("擋下一部分反擊");
+          SFX.click();
+        } else {
+          floaters.push({ wx, wy, text: "💥 沒擋好…", color: "200,170,170", born: now });
+          announce("格擋沒抓到時機");
         }
         break;
       }
@@ -5253,6 +5286,12 @@
       e.preventDefault();
       return;
     }
+    // ROADMAP 408 臨陣格擋：被敵人威脅時，G＝格擋（看準甜蜜點按下，最高優先）；
+    // 不在戰鬥時 G 仍照下方開公會面板（情境化、不奪既有功能）。用 e.repeat 擋長按連發。
+    if ((e.key === "g" || e.key === "G") && !e.repeat) {
+      const meG = myId ? players.get(myId) : null;
+      if (meG && guardAvailable(meG)) { doGuard(meG); e.preventDefault(); return; }
+    }
     // M:收起／展開小地圖(給鍵盤玩家一條與 canvas 收合鈕等效的入口,觸控/滑鼠點鈕亦可)。
     if (e.key === "m" || e.key === "M") {
       if (!e.repeat) toggleMinimap();
@@ -5379,6 +5418,25 @@
     // 右側中下，避開右下角的小地圖，仍在右拇指好按的範圍。
     return { cx: viewW - r - 26, cy: Math.round(viewH * 0.58), r };
   }
+  // ROADMAP 408 臨陣格擋：格擋鈕在動作鈕正上方（戰鬥時才出現），可同時按住攻擊＋另一指格擋。
+  function guardButtonRect() {
+    const a = actionButtonRect();
+    const r = 38;
+    return { cx: a.cx, cy: a.cy - a.r - r - 16, r };
+  }
+  // 此刻是否該顯示格擋鈕：被敵人威脅、或正在格擋備防中。
+  function guardAvailable(me) {
+    if (!me || me.indoor_plot_id != null) return false;
+    if (typeof me.guard_secs === "number") return true; // 備防中：鈕變「按下」
+    return !!nearestEnemy(me);
+  }
+  // 格擋一次：備防中→按下（guard_tap）；否則→開格擋（begin_guard）。鍵盤(G)／觸控鈕／滑鼠點共用。
+  function doGuard(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
+    if (typeof me.guard_secs === "number") { ws.send(JSON.stringify({ type: "guard_tap" })); return; }
+    ws.send(JSON.stringify({ type: "begin_guard" }));
+    lastGuardTime = performance.now();
+  }
   // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
   function currentActionKind(me) {
     if (!me) return "farm";
@@ -5462,10 +5520,52 @@
     ctx.restore();
   }
 
+  // ROADMAP 408 臨陣格擋：戰鬥時在動作鈕上方畫一顆 🛡️ 格擋鈕（觸控專屬）。
+  // 備防中＝亮起（提示「按下卡時機」）；剛格擋完的冷卻內＝淡掉（伺服器權威把關，這只是視覺）。
+  function drawGuardButton(me) {
+    if (!isTouch || !guardAvailable(me)) return;
+    const b = guardButtonRect();
+    const guarding = typeof me.guard_secs === "number";
+    const coolPct = Math.max(0, 1 - (performance.now() - lastGuardTime) / GUARD_COOLDOWN_MS);
+    const onCool = !guarding && coolPct > 0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.cx, b.cy, b.r, 0, Math.PI * 2);
+    if (guardTouchId !== null || guarding) {
+      ctx.fillStyle = "rgba(90,150,210,0.62)"; // 備防中：乙太藍亮起
+    } else if (onCool) {
+      ctx.fillStyle = "rgba(28,36,46,0.30)";   // 冷卻中：淡
+    } else {
+      ctx.fillStyle = "rgba(40,70,110,0.46)";
+    }
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = guarding ? "rgba(150,210,255,0.95)" : "rgba(200,220,245,0.55)";
+    ctx.stroke();
+    ctx.font = "26px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.globalAlpha = onCool ? 0.5 : 1;
+    ctx.fillText("🛡️", b.cx, b.cy + 1);
+    ctx.restore();
+  }
+
   canvas.addEventListener("touchstart", (e) => {
     const rect = canvas.getBoundingClientRect();
     const b = actionButtonRect();
+    const meT = myId ? players.get(myId) : null;
+    const gb = guardButtonRect();
+    const showGuard = guardAvailable(meT);
     for (const t of e.changedTouches) {
+      // ROADMAP 408：按到格擋鈕 → 格擋一次（單次點按、不連發；備防中＝按下卡時機）。
+      if (showGuard && guardTouchId === null) {
+        const gx = t.clientX - rect.left, gy = t.clientY - rect.top;
+        if ((gx - gb.cx) * (gx - gb.cx) + (gy - gb.cy) * (gy - gb.cy) <= gb.r * gb.r) {
+          guardTouchId = t.identifier;
+          doGuard(meT);
+          continue;
+        }
+      }
       // 按到萬用鈕 → 當「動作手指」：立刻做一次、之後按住連發；不當搖桿。
       if (actionTouchId === null) {
         const lx = t.clientX - rect.left, ly = t.clientY - rect.top;
@@ -5504,6 +5604,12 @@
     if (actionTouchId !== null) {
       for (const ct of e.changedTouches) {
         if (ct.identifier === actionTouchId) { actionTouchId = null; break; }
+      }
+    }
+    // ROADMAP 408：格擋鈕手指抬起 → 釋放（單次點按，不連發）。
+    if (guardTouchId !== null) {
+      for (const ct of e.changedTouches) {
+        if (ct.identifier === guardTouchId) { guardTouchId = null; break; }
       }
     }
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
@@ -6262,6 +6368,70 @@
       }
       ctx.restore();
     }
+
+    // 臨陣格擋環（ROADMAP 408）：正在格擋備防的玩家頭頂畫一圈格擋環——一顆亮點繞圈跑，
+    // 環頂是「甜蜜點」（乙太藍的甜蜜弧），亮點掃進甜蜜弧的瞬間按下＝完美格擋。自己與旁觀者
+    // 都看得到（格擋秒數隨快照廣播）；相位用與後端同一條公式（guardBeatFraction）渲染，
+    // 玩家看到的甜蜜點就是伺服器判定的甜蜜點。屬玩法核心，reduceMotion 不關。
+    const guardElapsed = guardElapsedOf(p);
+    if (guardElapsed !== null) {
+      const frac = guardBeatFraction(guardElapsed);
+      const ringR = 19;
+      const cyr = by - 44;
+      const halfAng = (GUARD_PERFECT_WINDOW / GUARD_BEAT_SECS) * Math.PI * 2;
+      const top = -Math.PI / 2;
+      const onBeat = Math.min(frac, 1 - frac) <= GUARD_PERFECT_WINDOW / GUARD_BEAT_SECS;
+      ctx.save();
+      // 底環（暗）
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(18,26,40,0.80)";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      // 甜蜜弧（環頂乙太藍，亮點掃過此處＝完美格擋）
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR, top - halfAng, top + halfAng);
+      ctx.strokeStyle = "rgba(150,210,255,0.95)";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      // 繞圈的亮點
+      const ang = top + frac * Math.PI * 2;
+      const dotX = sx + Math.cos(ang) * ringR;
+      const dotY = cyr + Math.sin(ang) * ringR;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, onBeat ? 5 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = onBeat ? "#e6f4ff" : "#a8c8ff";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      if (p.id === myId) {
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("🛡️ 格擋！對準頂點 [G]", sx, cyr - ringR - 6);
+        ctx.fillStyle = onBeat ? "rgba(180,225,255,0.98)" : "rgba(200,215,240,0.96)";
+        ctx.fillText("🛡️ 格擋！對準頂點 [G]", sx, cyr - ringR - 6);
+      }
+      ctx.restore();
+    }
+
+    // 乙太護盾微光（ROADMAP 408）：上盾的玩家身上罩一圈乙太藍光環，強度隨卸傷百分比、輕脈動。
+    // 自己與旁觀者都看得到（旁觀者看別人剛擋下一擊）。脈動屬輕裝飾，reduceMotion 時不脈動。
+    if (typeof p.guard_shield_pct === "number" && p.guard_shield_pct > 0) {
+      const strength = Math.min(1, p.guard_shield_pct / 85);
+      const pulse = reduceMotion ? 0 : Math.sin(performance.now() / 180) * 1.5;
+      const r = 16 + pulse;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(sx, by - 16, r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(140,200,255,${(0.35 + strength * 0.45).toFixed(3)})`;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 單一 rAF 排程真相來源：每次排程前先取消舊的，確保不論從哪裡觸發都只有一條
@@ -6516,6 +6686,7 @@
       if (!choppingNow && renderNow - lastSmartAction >= 200) { lastSmartAction = renderNow; smartAction(); }
     }
     safeDraw("actionButton", () => drawActionButton(me));
+    safeDraw("guardButton", () => drawGuardButton(me)); // ROADMAP 408 格擋鈕（戰鬥時才出現）
 
     // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
     // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。
@@ -8853,6 +9024,21 @@
     if (!p || typeof p.chop_secs !== "number") return null;
     const recv = p._chopRecvAt || performance.now();
     return p.chop_secs + (performance.now() - recv) / 1000;
+  }
+  // ROADMAP 408 臨陣格擋：格擋環常數（與 guard.rs 對齊），玩家看到的甜蜜點就是伺服器判定的甜蜜點。
+  const GUARD_BEAT_SECS = 1.2;     // 環脈動週期（與 guard::GUARD_BEAT_SECS 對齊）
+  const GUARD_PERFECT_WINDOW = 0.16; // 完美格擋窗秒數（與 guard::PERFECT_WINDOW 對齊）
+  // 按下時刻 → 環相位 [0,1)；0＝正落在甜蜜點上（鏡像 guard::beat_fraction）。
+  function guardBeatFraction(elapsedSecs) {
+    let f = (Math.max(0, elapsedSecs) / GUARD_BEAT_SECS) % 1;
+    if (f < 0) f += 1;
+    return f;
+  }
+  // 玩家進行中格擋備防的「目前經過秒數」：以收到快照時錨點 + 本地時鐘自由推進；沒在格擋回 null。
+  function guardElapsedOf(p) {
+    if (!p || typeof p.guard_secs !== "number") return null;
+    const recv = p._guardRecvAt || performance.now();
+    return p.guard_secs + (performance.now() - recv) / 1000;
   }
 
   // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。

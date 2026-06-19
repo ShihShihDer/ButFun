@@ -709,6 +709,40 @@ for (const sc of scenarios) {
   else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋旁觀者忽略皆乾淨");
 }
 
+// 臨陣格擋（ROADMAP 408）：備防中的玩家頭頂畫脈動格擋環（drawGuardRing），上盾時身上罩乙太藍護盾微光；
+// guard_result 事件對自己 id 演出三檔飄字（完美／一部分／沒擋好），旁觀者忽略。連跑多幀逼出相位推進，
+// 並把護盾百分比設到封頂值試卸傷強度上限分支。驗證格擋環＋護盾微光＋三檔飄字皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：臨陣格擋（格擋環脈動＋護盾微光＋格擋飄字 perfect/partial/whiff）──");
+  let ok = true;
+  try {
+    const gSnap = JSON.parse(JSON.stringify(snapshot));
+    // 自己備防中（guard_secs 觸發格擋環）＋上盾（guard_shield_pct 觸發護盾微光，設到封頂 85 試強度上限）。
+    if (gSnap.players && gSnap.players[0]) {
+      gSnap.players[0] = { ...gSnap.players[0], guard_secs: 0.5, guard_shield_pct: 85 };
+    }
+    // 旁觀者（第二名玩家）也在格擋，驗證別人 id 的格擋環同樣乾淨繪製。
+    if (gSnap.players && gSnap.players[1]) {
+      gSnap.players[1] = { ...gSnap.players[1], guard_secs: 1.0, guard_shield_pct: 40 };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...gSnap, type: "snapshot" }) });
+    pump("格擋環＋護盾微光", 8); // 連跑多幀逼出相位推進與脈動
+    // 三檔結果飄字：自己 id 才演出。
+    for (const outcome of ["perfect", "partial", "whiff"]) {
+      lastWS.onmessage({ data: JSON.stringify({ type: "guard_result", player_id: myId, outcome, x: me0.x, y: me0.y }) });
+    }
+    // 旁觀者（別人 id）應被忽略、不拋例外。
+    lastWS.onmessage({ data: JSON.stringify({ type: "guard_result", player_id: "someone_else", outcome: "perfect", x: me0.x, y: me0.y }) });
+    pump("格擋飄字", 3);
+  } catch (e) {
+    ok = false; console.error("  ❌ 臨陣格擋：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 臨陣格擋：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 臨陣格擋：格擋環脈動＋護盾微光＋三檔飄字＋旁觀者忽略皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {

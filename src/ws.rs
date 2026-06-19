@@ -164,6 +164,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            guard_cooldown: 0.0,
+            guarding: None,
+            guard_shield: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -285,6 +288,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            guard_cooldown: 0.0,
+            guarding: None,
+            guard_shield: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -7314,6 +7320,69 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 林間揮斧 end ──────────────────────────────────────────────────────
+
+                // ── 臨陣格擋：開格擋（ROADMAP 408）──────────────────────────────────────
+                Ok(ClientMsg::BeginGuard) => {
+                    // 被敵人威脅時開一趟格擋備防。驗格：未倒地＋此刻確有敵人威脅＋冷卻過＋沒在格擋。
+                    // 真正凝護盾＋給熟練度在 GuardTap 按下時才結算。純記憶體、零鎖內 IO。
+                    // 鎖序鏡像 BeginChop：先讀 players 取位置＋驗狀態 → 讀 enemies 查威脅 → 寫 players 開備防。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() || p.guard_cooldown > 0.0 || p.guarding.is_some() {
+                                None
+                            } else {
+                                Some((p.x, p.y))
+                            }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        let threatened = app.enemies.read().unwrap().threat_at(px, py) > 0;
+                        if threatened {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if p.guarding.is_none() {
+                                    p.guarding = Some(crate::guard::GuardBrace::start());
+                                    tracing::debug!(player = %p.name, "開格擋備防");
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 臨陣格擋：按下格擋（ROADMAP 408）────────────────────────────────────
+                Ok(ClientMsg::GuardTap) => {
+                    // 按下格擋：以當下時刻判定檔位，成功則凝一面限時護盾＋給戰士熟練度＋起冷卻。
+                    // 全在 players 寫鎖內結算（純記憶體、無跨鎖 IO），廣播一律出鎖後送（守 prod-deadlock）。
+                    let result_msg = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) => p.guarding.take().map(|brace| {
+                                let tier = brace.resolve();
+                                // 解除備防＋起冷卻（不論成敗，避免連續格擋無敵）。
+                                p.guard_cooldown = crate::guard::GUARD_COOLDOWN_SECS;
+                                // 成功（完美／一部分）才凝護盾＋給熟練度。
+                                if let Some(shield) = crate::guard::GuardShield::from_tier(tier) {
+                                    p.guard_shield = Some(shield);
+                                    p.masteries.gain_warrior(tier.mastery_xp());
+                                    tracing::info!(
+                                        player = %p.name, tier = tier.wire(), pct = shield.pct(),
+                                        "格擋成功，凝起乙太護盾"
+                                    );
+                                }
+                                ServerMsg::GuardResult {
+                                    player_id: id,
+                                    outcome: tier.wire().into(),
+                                    x: p.x,
+                                    y: p.y,
+                                }
+                            }),
+                            None => None,
+                        }
+                    };
+                    if let Some(msg) = result_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+                // ── 臨陣格擋 end ──────────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {

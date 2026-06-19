@@ -298,6 +298,17 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在伐＝None）；
     /// 僅 elapsed 隨 PlayerView 廣播以渲染節拍環。由 game.rs 每 tick 推進（逾時即中斷）。
     pub chopping: Option<crate::woodcutting::ChopSwing>,
+    /// 格擋結算後的冷卻（ROADMAP 408）：只擋開新一趟格擋，避免連續格擋達成永久無敵。
+    /// 記憶體前置、不持久化、零 migration、重啟清零。由 game.rs 每 tick 遞減。
+    pub guard_cooldown: f32,
+    /// 進行中的一趟格擋備防（ROADMAP 408 臨陣格擋）：看準甜蜜點按下的反應格擋。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在格擋＝None）；
+    /// 僅 elapsed 隨 PlayerView 廣播以渲染格擋環。由 game.rs 每 tick 推進（逾時即解除）。
+    pub guarding: Option<crate::guard::GuardBrace>,
+    /// 一面凝起的乙太護盾（ROADMAP 408）：限時卸掉反擊傷害的一部分。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒上盾＝None）；
+    /// 反擊迴圈讀它卸傷，game.rs 每 tick 遞減其剩餘秒數（消散即清空）。
+    pub guard_shield: Option<crate::guard::GuardShield>,
 
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
@@ -515,6 +526,12 @@ impl Player {
             // ROADMAP 403：進行中伐木連揮的經過秒數（沒在伐＝None，略過序列化）；
             // 前端據此用同一條公式渲染脈動的節拍環。
             chop_secs: self.chopping.map(|c| c.elapsed()),
+            // ROADMAP 408：進行中格擋備防的經過秒數（沒在格擋＝None，略過序列化）；
+            // 廣播給所有人，前端據此用同一條公式渲染收束的格擋環。
+            guard_secs: self.guarding.map(|g| g.elapsed()),
+            // ROADMAP 408：此刻乙太護盾的卸傷強度（沒上盾＝None，略過序列化）；
+            // 廣播給所有人，前端畫頭頂護盾微光。
+            guard_shield_pct: self.guard_shield.map(|s| s.pct()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1620,6 +1637,9 @@ mod tests {
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            guard_cooldown: 0.0,
+            guarding: None,
+            guard_shield: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
