@@ -624,6 +624,12 @@
   let dodgeTouchId = null;
   let lastDodgeTime = 0;
   const DODGE_COOLDOWN_MS = 3000;  // 與 dodge::DODGE_COOLDOWN_SECS 對齊（僅供前端鈕的淡化估算）
+  // ROADMAP 423 蓄力重擊：蓄力鈕的觸控手指 id／鍵盤(V)按住旗標（與動作鈕／格擋鈕／翻滾鈕分開，可同時按住）。
+  // 按住起蓄、放開出擊；lastChargeTime 供前端估冷卻把鈕暫時淡掉（真正冷卻仍由伺服器權威把關）。
+  let chargeTouchId = null;
+  let chargeKeyHeld = false;
+  let lastChargeTime = 0;
+  const CHARGE_COOLDOWN_MS = 2500; // 與 charged_strike::CHARGE_COOLDOWN_SECS 對齊（僅供前端鈕的淡化估算）
   const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
@@ -2632,6 +2638,9 @@
             } else {
               existing.dodge_secs = null;
             }
+            // ROADMAP 423：蓄力重擊——進行中蓄力的進度 [0,1]（沒在蓄力＝null）。
+            // 自己與旁觀者都看得到，前端據此渲染逐漸收束、滿蓄即圓滿的蓄力環。
+            existing.charge_progress = (typeof p.charge_progress === "number") ? p.charge_progress : null;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -3646,9 +3655,14 @@
       case "attack_hit": {
         // 命中即時數字（ROADMAP 387）：伺服器廣播，所有玩家都能看到附近攻擊數字。
         // 暴擊＝金色大字⚡；擊殺＝紅色💀；普通命中＝橘色。
-        const { ex, ey, dmg, is_kill: isKill, is_crit: isCrit } = msg;
+        const { ex, ey, dmg, is_kill: isKill, is_crit: isCrit, charge_tier: chargeTier } = msg;
         if (!dmg || dmg <= 0) break;
-        if (isCrit) {
+        // 蓄力重擊命中（ROADMAP 423）：滿蓄💥／半蓄⚡，傷害數字更大、帶熾金/琥珀色（優先於普通暴擊演出）。
+        if (chargeTier === 2) {
+          hitFloaters.push({ wx: ex, wy: ey - 26, text: `💥-${dmg}`, color: "255,214,90", size: 26, born: performance.now() });
+        } else if (chargeTier === 1) {
+          hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,176,70", size: 22, born: performance.now() });
+        } else if (isCrit) {
           hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,220,40", size: 22, born: performance.now() });
         } else if (isKill) {
           hitFloaters.push({ wx: ex, wy: ey - 18, text: `💀-${dmg}`, color: "220,50,50", size: 20, born: performance.now() });
@@ -5718,6 +5732,13 @@
       const meC = myId ? players.get(myId) : null;
       if (meC && nearestEnemy(meC) && meC.indoor_plot_id == null) { doDodge(meC); e.preventDefault(); return; }
     }
+    // ROADMAP 423 蓄力重擊：被敵人威脅時，按住 V＝起蓄（放開出擊，見 keyup）。e.repeat 擋長按重送 begin。
+    if ((e.key === "v" || e.key === "V") && !e.repeat) {
+      const meV = myId ? players.get(myId) : null;
+      if (meV && nearestEnemy(meV) && meV.indoor_plot_id == null) {
+        chargeKeyHeld = true; beginCharge(meV); e.preventDefault(); return;
+      }
+    }
     // M:收起／展開小地圖(給鍵盤玩家一條與 canvas 收合鈕等效的入口,觸控/滑鼠點鈕亦可)。
     if (e.key === "m" || e.key === "M") {
       if (!e.repeat) toggleMinimap();
@@ -5767,6 +5788,12 @@
   });
   window.addEventListener("keyup", (e) => {
     if (e.key === "Shift") { keys.run = false; sendInputIfChanged(); return; }
+    // ROADMAP 423 蓄力重擊：放開 V＝結算蓄力並出擊。
+    if ((e.key === "v" || e.key === "V") && chargeKeyHeld) {
+      chargeKeyHeld = false;
+      releaseChargeAndStrike(myId ? players.get(myId) : null);
+      e.preventDefault(); return;
+    }
     const dir = keyToDir(e);
     if (dir) { keys[dir] = false; sendInputIfChanged(); }
   });
@@ -5778,6 +5805,8 @@
   function releaseAllKeys() {
     keys.up = keys.down = keys.left = keys.right = keys.run = false;
     sendInputIfChanged();
+    // ROADMAP 423：失焦時若還按著蓄力鍵，補結算一次（避免蓄力環卡住、伺服器待擊逾時消散）。
+    if (chargeKeyHeld) { chargeKeyHeld = false; releaseChargeAndStrike(myId ? players.get(myId) : null); }
   }
   window.addEventListener("blur", releaseAllKeys);
   document.addEventListener("visibilitychange", () => {
@@ -5852,6 +5881,12 @@
     const r = 38;
     return { cx: a.cx, cy: a.cy - a.r - r - 16, r };
   }
+  // ROADMAP 423 蓄力重擊：蓄力鈕在動作鈕左上對角（戰鬥時才出現），避開格擋（上）／翻滾（左）兩鈕，可同時按住。
+  function chargeButtonRect() {
+    const a = actionButtonRect();
+    const r = 36;
+    return { cx: a.cx - 75, cy: a.cy - 75, r };
+  }
   // 此刻是否該顯示格擋鈕：被敵人威脅、或正在格擋備防中。
   function guardAvailable(me) {
     if (!me || me.indoor_plot_id != null) return false;
@@ -5882,6 +5917,25 @@
     if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
     ws.send(JSON.stringify({ type: "dodge" }));
     lastDodgeTime = performance.now();
+  }
+  // ROADMAP 423 蓄力重擊：此刻是否該顯示蓄力鈕——被敵人威脅、或正在蓄力中（鈕亮起）。室內不顯示。
+  function chargeAvailable(me) {
+    if (!me || me.indoor_plot_id != null) return false;
+    if (typeof me.charge_progress === "number") return true; // 蓄力中：鈕亮起
+    return !!nearestEnemy(me);
+  }
+  // 起蓄一記重擊（伺服器驗格：未倒地＋冷卻過才開）。鍵盤(按住 V)／觸控鈕共用。
+  function beginCharge(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
+    if (me.indoor_plot_id != null || !nearestEnemy(me)) return;
+    ws.send(JSON.stringify({ type: "begin_charge" }));
+  }
+  // 放開蓄力並緊接著出擊：伺服器依蓄力時間結算檔位、備好待擊重擊，隨即由 attack 兌現。
+  function releaseChargeAndStrike(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "release_charge" }));
+    lastChargeTime = performance.now();
+    sendAttack(); // 兌現：待擊重擊套在這一擊（伺服器消費）；沒蓄出加成則只是普通一擊
   }
   // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
   function currentActionKind(me) {
@@ -6026,6 +6080,36 @@
     ctx.restore();
   }
 
+  // ROADMAP 423 蓄力重擊：戰鬥時在動作鈕左上對角畫一顆 ⚡ 蓄力鈕（觸控專屬）。
+  // 按住起蓄（鈕亮起、玩家頭頂蓄力環同步填滿）、放開出擊；剛出擊的冷卻內＝淡掉（伺服器權威把關，這只是視覺提示）。
+  function drawChargeButton(me) {
+    if (!isTouch || !chargeAvailable(me)) return;
+    const b = chargeButtonRect();
+    const charging = typeof me.charge_progress === "number";
+    const coolPct = Math.max(0, 1 - (performance.now() - lastChargeTime) / CHARGE_COOLDOWN_MS);
+    const onCool = !charging && coolPct > 0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.cx, b.cy, b.r, 0, Math.PI * 2);
+    if (chargeTouchId !== null || charging) {
+      ctx.fillStyle = "rgba(210,150,60,0.62)"; // 蓄力中：熾金亮起
+    } else if (onCool) {
+      ctx.fillStyle = "rgba(28,36,46,0.30)";   // 冷卻中：淡
+    } else {
+      ctx.fillStyle = "rgba(110,80,40,0.46)";
+    }
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = charging ? "rgba(255,214,120,0.95)" : "rgba(245,225,200,0.55)";
+    ctx.stroke();
+    ctx.font = "26px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.globalAlpha = onCool ? 0.5 : 1;
+    ctx.fillText("⚡", b.cx, b.cy + 1);
+    ctx.restore();
+  }
+
   canvas.addEventListener("touchstart", (e) => {
     const rect = canvas.getBoundingClientRect();
     const b = actionButtonRect();
@@ -6034,6 +6118,8 @@
     const showGuard = guardAvailable(meT);
     const db = dodgeButtonRect();
     const showDodge = dodgeAvailable(meT);
+    const cb = chargeButtonRect();
+    const showCharge = chargeAvailable(meT);
     for (const t of e.changedTouches) {
       // ROADMAP 408：按到格擋鈕 → 格擋一次（單次點按、不連發；備防中＝按下卡時機）。
       if (showGuard && guardTouchId === null) {
@@ -6050,6 +6136,15 @@
         if ((dx - db.cx) * (dx - db.cx) + (dy - db.cy) * (dy - db.cy) <= db.r * db.r) {
           dodgeTouchId = t.identifier;
           doDodge(meT);
+          continue;
+        }
+      }
+      // ROADMAP 423：按住蓄力鈕 → 起蓄（放開出擊，在 endTouch 結算）。
+      if (showCharge && chargeTouchId === null) {
+        const cx = t.clientX - rect.left, cy = t.clientY - rect.top;
+        if ((cx - cb.cx) * (cx - cb.cx) + (cy - cb.cy) * (cy - cb.cy) <= cb.r * cb.r) {
+          chargeTouchId = t.identifier;
+          beginCharge(meT);
           continue;
         }
       }
@@ -6103,6 +6198,16 @@
     if (dodgeTouchId !== null) {
       for (const ct of e.changedTouches) {
         if (ct.identifier === dodgeTouchId) { dodgeTouchId = null; break; }
+      }
+    }
+    // ROADMAP 423：蓄力鈕手指抬起 → 結算蓄力並出擊。
+    if (chargeTouchId !== null) {
+      for (const ct of e.changedTouches) {
+        if (ct.identifier === chargeTouchId) {
+          chargeTouchId = null;
+          releaseChargeAndStrike(myId ? players.get(myId) : null);
+          break;
+        }
       }
     }
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
@@ -6962,6 +7067,46 @@
       ctx.stroke();
       ctx.restore();
     }
+
+    // 蓄力重擊環（ROADMAP 423）：正在蓄力的玩家頭頂畫一圈逐漸填滿的蓄力環——進度從 0 填到滿，
+    // 半蓄（≥45%）轉琥珀、滿蓄（=100%）轉熾金並輕脈動，提示「放開即重擊」。自己與旁觀者都看得到
+    // （蓄力進度隨快照廣播），屬玩法核心回饋、reduceMotion 仍顯示（只是滿蓄不脈動）。
+    if (typeof p.charge_progress === "number") {
+      const prog = Math.max(0, Math.min(1, p.charge_progress));
+      const full = prog >= 1 - 1e-3;
+      const half = prog >= 0.45;
+      const ringR = 20;
+      const cyr = by - 44;
+      const top = -Math.PI / 2;
+      const pulse = (full && !reduceMotion) ? Math.sin(performance.now() / 90) * 1.2 : 0;
+      ctx.save();
+      // 底環（暗）
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(18,26,40,0.80)";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      // 進度弧（從環頂順時針填到當前進度）：未到半蓄＝灰青、半蓄＝琥珀、滿蓄＝熾金。
+      const fillCol = full ? "rgba(255,214,110,0.98)" : half ? "rgba(255,176,84,0.96)" : "rgba(150,196,205,0.85)";
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR + pulse, top, top + prog * Math.PI * 2);
+      ctx.strokeStyle = fillCol;
+      ctx.lineWidth = full ? 6 : 5;
+      ctx.lineCap = "round";
+      ctx.stroke();
+      if (p.id === myId) {
+        const label = full ? "⚡ 滿蓄！放開重擊 [V]" : "⚡ 蓄力中…放開出擊 [V]";
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText(label, sx, cyr - ringR - 6);
+        ctx.fillStyle = full ? "rgba(255,224,150,0.98)" : "rgba(245,210,180,0.96)";
+        ctx.fillText(label, sx, cyr - ringR - 6);
+      }
+      ctx.restore();
+    }
   }
 
   // 單一 rAF 排程真相來源：每次排程前先取消舊的，確保不論從哪裡觸發都只有一條
@@ -7220,6 +7365,7 @@
     safeDraw("actionButton", () => drawActionButton(me));
     safeDraw("guardButton", () => drawGuardButton(me)); // ROADMAP 408 格擋鈕（戰鬥時才出現）
     safeDraw("dodgeButton", () => drawDodgeButton(me)); // ROADMAP 410 翻滾鈕（戰鬥時才出現）
+    safeDraw("chargeButton", () => drawChargeButton(me)); // ROADMAP 423 蓄力鈕（戰鬥時才出現）
 
     // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
     // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。

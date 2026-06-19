@@ -11,6 +11,7 @@ mod director;
 mod combat;
 mod guard;
 mod dodge;
+mod charged_strike;
 mod wayfaring;
 mod town_blocs;
 mod town_share;

@@ -169,6 +169,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guard_shield: None,
             dodge_cooldown: 0.0,
             dodging: None,
+            charge_cooldown: 0.0,
+            charging: None,
+            charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
@@ -296,6 +299,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             guard_shield: None,
             dodge_cooldown: 0.0,
             dodging: None,
+            charge_cooldown: 0.0,
+            charging: None,
+            charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
@@ -2595,9 +2601,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .unwrap_or(crate::combat::WeaponKind::Unarmed);
                         // ROADMAP 381 連殺熱度：讀出當下快照供衰退判斷。
                         let streak_snap = (p.kill_streak, p.streak_last_kill);
-                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant, weapon_kind, streak_snap, is_crit)
+                        // ROADMAP 423 蓄力重擊：讀出待擊的重擊（Copy）；下面只對單攻套用、消費後清空。
+                        let charge_snap = p.charge_ready;
+                        (p.x, p.y, p.vitals.is_downed(), p.attack_cooldown, power, enchant, weapon_kind, streak_snap, is_crit, charge_snap)
                     });
-                    let Some((px, py, downed, cooldown, power, enchant, weapon_kind, streak_snap, is_crit)) = info else { continue; };
+                    let Some((px, py, downed, cooldown, power, enchant, weapon_kind, streak_snap, is_crit, charge_snap)) = info else { continue; };
                     if downed || cooldown > 0.0 { continue; }
 
                     // 遠程武器：使用較大射程；在安全區內時禁止給獎勵（防龜城刷怪）。
@@ -2643,6 +2651,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let streak_mult = if !use_warcry {
                         crate::kill_streak::streak_bonus_mult(streak_count)
                     } else { 1.0 };
+                    // 蓄力重擊倍率（ROADMAP 423）：單攻才套用（戰吼群攻一律不吃蓄力，與暴擊／連殺一致）。
+                    // 待擊存在＝這一單攻是蓄力重擊；倍率疊乘進 power、檔位帶進命中廣播；放開後一律消費（消費在攻擊後寫鎖）。
+                    let charge_mult = if !use_warcry { charge_snap.map(|r| r.damage_mult()).unwrap_or(1.0) } else { 1.0 };
+                    let charge_tier_wire = if !use_warcry { charge_snap.map(|r| r.tier().wire()).unwrap_or(0) } else { 0 };
                     let (power, elem_bonus_elem): (u32, Option<String>) = if !use_warcry {
                         let target_kind = app.enemies.read().unwrap().peek_nearest_kind(px, py, attack_reach);
                         let elem_mult = target_kind
@@ -2655,7 +2667,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         } else {
                             None
                         };
-                        (((power as f32) * elem_mult * streak_mult) as u32, elem_str)
+                        (((power as f32) * elem_mult * streak_mult * charge_mult) as u32, elem_str)
                     } else {
                         (power, None)
                     };
@@ -2701,6 +2713,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     dmg: *actual_dmg,
                                     is_kill: loot.is_some(),
                                     is_crit: hit_is_crit,
+                                    charge_tier: charge_tier_wire, // ROADMAP 423：蓄力重擊命中強度
                                 }
                             ));
                         }
@@ -2716,6 +2729,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 攻擊速度加點縮短攻擊冷卻（ROADMAP 152）。
                         p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
                         if use_warcry { p.pending_warcry = false; }
+                        // 蓄力重擊消費（ROADMAP 423）：單攻揮出即消費這記待擊（命中或落空皆然，
+                        // 避免把蓄好的重擊無限期存著）；戰吼不吃蓄力故保留給下一記單攻。
+                        if !use_warcry { p.charge_ready = None; }
                         // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
                         // 安全區防呆：遠程在城內打城外怪不給獎勵。
                         let mut had_kill = false;
@@ -7687,6 +7703,36 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 翻滾閃避 end ──────────────────────────────────────────────────────
+
+                // ── 蓄力重擊：起蓄（ROADMAP 423）──────────────────────────────────────
+                Ok(ClientMsg::BeginCharge) => {
+                    // 按住攻擊鈕起蓄一記重擊。驗格：未倒地＋冷卻過。已在蓄力則重新起蓄。
+                    // 蓄力本身無副作用（不碰傷害、不威脅敵人）——重擊在放開（ReleaseCharge）兌現。
+                    // 純記憶體、零鎖內 IO；蓄力進度隨快照廣播，前端用 progress 渲染蓄力環。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if !p.vitals.is_downed() && p.charge_cooldown <= 0.0 {
+                            p.charging = Some(crate::charged_strike::ChargedStrike::start());
+                        }
+                    }
+                }
+                // ── 蓄力重擊：放開（ROADMAP 423）──────────────────────────────────────
+                Ok(ClientMsg::ReleaseCharge) => {
+                    // 放開攻擊鈕：依蓄力時間結算檔位。蓄足半蓄以上即備一記「待擊」重擊
+                    // （限時存活、被緊接著的 Attack 消費）＋起冷卻；蓄不足則只是輕揮、不備重擊。
+                    // 全在 players 寫鎖內結算（純記憶體、無跨鎖 IO）。
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        if let Some(cs) = p.charging.take() {
+                            let tier = cs.tier();
+                            if tier.has_bonus() {
+                                p.charge_ready = Some(crate::charged_strike::ChargeReady::new(tier));
+                                p.charge_cooldown = crate::charged_strike::CHARGE_COOLDOWN_SECS;
+                                tracing::debug!(player = %p.name, tier = tier.wire(), "蓄力重擊待擊");
+                            }
+                            // 蓄不足門檻：輕揮，不備重擊、不耗冷卻（可立即再蓄）。
+                        }
+                    }
+                }
+                // ── 蓄力重擊 end ──────────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {

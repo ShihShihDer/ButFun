@@ -317,6 +317,18 @@ pub struct Player {
     /// 僅 elapsed 隨 PlayerView 廣播以渲染翻身位移。由 game.rs 每 tick 推進（恩典窗過即落幕）；
     /// 反擊迴圈讀它的 `in_grace()` 判斷此刻是否免傷。
     pub dodging: Option<crate::dodge::DodgeRoll>,
+    /// 放開蓄力後的冷卻（ROADMAP 423 蓄力重擊）：只擋開新一趟蓄力，確保蓄力是換爆發、非疊 DPS。
+    /// 記憶體前置、不持久化、零 migration、重啟清零。由 game.rs 每 tick 遞減。
+    pub charge_cooldown: f32,
+    /// 進行中的一趟蓄力（ROADMAP 423）：按住攻擊鈕凝聚乙太，蓄越久放開那一擊越重。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在蓄力＝None）；
+    /// 僅 elapsed 隨 PlayerView 廣播以渲染蓄力環。由 game.rs 每 tick 推進（夾在滿蓄上限、不自行結束）；
+    /// 放開（ReleaseCharge）時結算檔位、清空。
+    pub charging: Option<crate::charged_strike::ChargedStrike>,
+    /// 蓄好待擊的一記重擊（ROADMAP 423）：放開後限時存活，被下一次攻擊消費或逾時消散。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒待擊＝None）；
+    /// 攻擊管線讀它的傷害倍率疊乘進 power，game.rs 每 tick 倒數其存活窗（消散即清空）。
+    pub charge_ready: Option<crate::charged_strike::ChargeReady>,
     /// 本趟遠遊足跡（ROADMAP 411 遠遊見聞）：記得這趟連線踏足過哪些 locale，踏進沒去過的新地方
     /// ＝一次「初次踏足」（攢少量探索者熟練度、增足跡計數）。記憶體前置、不持久化、零 migration、
     /// 重啟清空。由 game.rs 的地名偵測（鏡像 398 `current_locale`）順手推進。
@@ -547,6 +559,9 @@ impl Player {
             // ROADMAP 410：進行中翻滾的經過秒數（沒在翻滾＝None，略過序列化）；
             // 廣播給所有人，前端據此演出翻身位移與翻滾環。
             dodge_secs: self.dodging.map(|d| d.elapsed()),
+            // ROADMAP 423：進行中蓄力的進度 [0,1]（沒在蓄力＝None，略過序列化）；
+            // 廣播給所有人，前端據此渲染逐漸收束的蓄力環（滿蓄＝環滿）。
+            charge_progress: self.charging.map(|c| c.progress()),
             // ROADMAP 411：本趟遠遊踏足過的不同地方數（0＝略過序列化）；前端 HUD 畫足跡計數。
             wayfare_count: self.wayfaring.tally(),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
@@ -1670,6 +1685,9 @@ mod tests {
             guard_shield: None,
             dodge_cooldown: 0.0,
             dodging: None,
+            charge_cooldown: 0.0,
+            charging: None,
+            charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,

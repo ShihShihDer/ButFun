@@ -751,6 +751,38 @@ for (const sc of scenarios) {
   else console.log("  ✅ 臨陣格擋：格擋環脈動＋護盾微光＋三檔飄字＋旁觀者忽略皆乾淨");
 }
 
+// 蓄力重擊（ROADMAP 423）：蓄力中的玩家頭頂畫逐漸填滿的蓄力環（charge_progress 0→滿蓄脈動）；
+// attack_hit 帶 charge_tier 時演出更大的熾金/琥珀重擊傷害飄字。連跑多幀逼出滿蓄脈動分支。
+// 驗證半蓄環／滿蓄環（自己＋旁觀者）＋半蓄/滿蓄/普通命中飄字皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：蓄力重擊（蓄力環填滿＋滿蓄脈動＋重擊飄字 half/full）──");
+  let ok = true;
+  try {
+    const cSnap = JSON.parse(JSON.stringify(snapshot));
+    // 自己滿蓄（charge_progress=1 觸發熾金脈動環＋「滿蓄！」提示）。
+    if (cSnap.players && cSnap.players[0]) {
+      cSnap.players[0] = { ...cSnap.players[0], charge_progress: 1.0 };
+    }
+    // 旁觀者（第二名玩家）半蓄中（charge_progress=0.6 觸發琥珀環、無提示文字）。
+    if (cSnap.players && cSnap.players[1]) {
+      cSnap.players[1] = { ...cSnap.players[1], charge_progress: 0.6 };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...cSnap, type: "snapshot" }) });
+    pump("蓄力環填滿＋滿蓄脈動", 8); // 連跑多幀逼出滿蓄脈動
+    // 三種命中飄字：滿蓄(2)💥／半蓄(1)⚡／普通(0)，皆不拋例外。
+    for (const charge_tier of [2, 1, 0]) {
+      lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x + 20, ey: me0.y, dmg: 88, is_kill: false, is_crit: false, charge_tier }) });
+    }
+    pump("重擊飄字", 3);
+  } catch (e) {
+    ok = false; console.error("  ❌ 蓄力重擊：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 蓄力重擊：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 蓄力重擊：蓄力環填滿＋滿蓄脈動＋重擊飄字（half/full/普通）＋旁觀者皆乾淨");
+}
+
 // 遠遊見聞（ROADMAP 411）：locale_entered 帶 first_footfall 時，地名卡綴「✨初次踏足」金緞＋XP 飄字、
 // 報讀；snapshot 帶 wayfare_count 時小地圖左下角畫足跡計數。驗證初次踏足卡／舊地重遊卡／進場 initial
 // 靜默／旁觀者忽略＋足跡計數 HUD 皆不拋例外。
