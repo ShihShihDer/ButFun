@@ -1216,6 +1216,17 @@ pub enum ServerMsg {
         name: String,
         subtitle: String,
         initial: bool,
+        /// 遠遊見聞（ROADMAP 411）：這次踏入是否為「本趟初次踏足這處」。
+        /// true ＝地名卡綴「✨初次踏足」、響發現清音、報讀；false ＝舊地重遊（純地名卡）。
+        /// `#[serde(default)]` 向後相容（舊前端忽略即可）。
+        #[serde(default)]
+        first_footfall: bool,
+        /// 本趟至此踏足過的不同地方數（足跡計數，僅 `first_footfall` 時有意義）。
+        #[serde(default)]
+        tally: u32,
+        /// 這次初次踏足攢的探索者熟練度 XP（可能為 0：本趟 XP 已封頂，仍是真初次踏足）。
+        #[serde(default)]
+        xp_reward: u32,
     },
     /// 夜泉汲取結果（ROADMAP 350 汲泉聚精）：回應 `DrawAether`，廣播；前端只對 `player_id == 自己` 演出飄字。
     /// `outcome`："drawn"（汲到乙太、附 `band`+`ether`）／"missed"（泉眼被搶先或走離、空手而回）。
@@ -1774,6 +1785,12 @@ pub struct PlayerView {
     /// 前端據此演出翻身位移與翻滾環，自己與旁觀者都看得到（旁觀者看別人翻身閃開）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dodge_secs: Option<f32>,
+
+    // ── 遠遊見聞（ROADMAP 411）────────────────────────────────────────────────
+    /// 本趟遠遊踏足過的不同地方數；0＝還沒踏足記錄（略過序列化）。
+    /// 前端 HUD 畫「🧭 遠遊見聞 N 處」足跡計數，隨自身快照廣播。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub wayfare_count: u32,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -2503,7 +2520,7 @@ mod tests {
                 mining_tremor: None,
                 near_ruin: false,
                 cook_cooldown: 0.0,
-                aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None,
+                aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, wayfare_count: 0,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2778,7 +2795,7 @@ mod tests {
             mining_tremor: None,
             near_ruin: false,
             cook_cooldown: 0.0,
-            aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None,
+            aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, wayfare_count: 0,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -3084,7 +3101,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -3151,7 +3168,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
