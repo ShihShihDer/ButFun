@@ -1361,6 +1361,56 @@ for (const sc of scenarios) {
   }
 }
 
+// 水畔魚汛（ROADMAP 431）：單元斷言純函式 fishSchoolPoint 的幾何——與後端 fish_school.rs 同公式。
+// 魚群中心須：確定性、恆落在自身分區內（「循汛」只查自身分區的前提）、相位回捲連續不跳、壞相位安全。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.fishSchoolPoint;
+  const CELL = 1536.0, PERIOD = 2100.0;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 水畔魚汛：game.js 未導出 fishSchoolPoint");
+  } else {
+    const checks = [];
+    // 確定性：同輸入同輸出。
+    const d1 = fn(1, 1, 100), d2 = fn(1, 1, 100);
+    checks.push(["確定性", d1.x === d2.x && d1.y === d2.y]);
+    // 恆落在自身分區內（掃整個相位週期、數個分區）。
+    let inBounds = true;
+    for (let cx = -2; cx <= 2 && inBounds; cx++) {
+      for (let cy = -2; cy <= 2 && inBounds; cy++) {
+        for (let ph = 0; ph < PERIOD; ph += 53) {
+          const s = fn(cx, cy, ph);
+          if (s.x < cx * CELL || s.x > (cx + 1) * CELL || s.y < cy * CELL || s.y > (cy + 1) * CELL) {
+            inBounds = false; break;
+          }
+        }
+      }
+    }
+    checks.push(["魚群恆落在自身分區內", inBounds]);
+    // 相位回捲連續：phase 與 phase+PERIOD 幾乎同點（兩軸各走完整數圈）。
+    let cont = true;
+    for (const ph of [0, 12.3, 199, 871.5, 2099]) {
+      const a = fn(2, -1, ph), b = fn(2, -1, ph + PERIOD);
+      if (Math.abs(a.x - b.x) > 0.05 || Math.abs(a.y - b.y) > 0.05) { cont = false; break; }
+    }
+    checks.push(["相位回捲連續不跳位", cont]);
+    // 不同分區此刻的「格內相對位移」不應完全相同（彼此錯開）。
+    const ra = fn(0, 0, 50), rb = fn(1, 0, 50);
+    checks.push(["相鄰分區魚群錯開",
+      Math.abs((ra.x - 0.5 * CELL) - (rb.x - 1.5 * CELL)) > 1 ||
+      Math.abs((ra.y - 0.5 * CELL) - (rb.y - 0.5 * CELL)) > 1]);
+    // 壞相位（NaN）安全：回有限座標、不丟例外。
+    const bad = fn(0, 0, NaN);
+    checks.push(["壞相位安全回有限座標", Number.isFinite(bad.x) && Number.isFinite(bad.y)]);
+    let nbad = 0;
+    for (const [name, ok] of checks) {
+      if (!ok) { nbad++; console.error(`  ❌ 水畔魚汛：${name}`); }
+    }
+    if (nbad) failed = true;
+    else console.log(`  ✅ 水畔魚汛·魚群幾何真值表：${checks.length}/${checks.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

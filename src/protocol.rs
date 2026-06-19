@@ -2467,6 +2467,9 @@ pub struct WeatherView {
     /// 世界風場（ROADMAP 430）：全服共享的風向＋風力，前端據此讓樹/作物一致搖曳。
     /// 純新增欄位（WeatherView 僅 derive Serialize），舊前端忽略即可。
     pub wind: crate::wind::Wind,
+    /// 水畔魚汛（ROADMAP 431）：全服共享的累積相位，前端據此在可見水面繪出
+    /// 同步漂移的魚群漣漪。純新增欄位（WeatherView 僅 derive Serialize），舊前端忽略即可。
+    pub fish_phase: f32,
 }
 
 /// 氣象預報台（405）：未來一筆天氣的預報——類型字串＋距現在開始的秒數。
@@ -2829,7 +2832,7 @@ mod tests {
             star_crystals: vec![],
             village_buff_remaining_secs: 0,
             village_treasury: 0,
-            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0, remaining_secs: 0.0, forecast: vec![], wind: crate::wind::Wind::default() },
+            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0, remaining_secs: 0.0, forecast: vec![], wind: crate::wind::Wind::default(), fish_phase: 0.0 },
             rainbow: RainbowView::default(),
             sprinklers: vec![],
             gathering_secs: 0,

@@ -4085,6 +4085,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 玩家須在咬鉤反應窗口內送 Reel 收竿。同一把 players 寫鎖、純記憶體。
                     use crate::fishing::{is_near_water, FISH_COOLDOWN_SECS};
                     use crate::fishing_bite::FishingCast;
+                    // 水畔魚汛相位（ROADMAP 431）：先取全服共享相位（短讀鎖、語句即釋放），
+                    // 再進 players 寫鎖——weather 鎖與 players 鎖不巢狀，守 prod-deadlock 鐵律。
+                    let fish_phase = app.weather.read().unwrap().fish_phase();
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         if !p.vitals.is_downed()
                             && p.fish_cooldown <= 0.0
@@ -4099,8 +4102,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             p.fish_attempt_count = p.fish_attempt_count.wrapping_add(1);
                             // 拋竿即起冷卻（防連拋刷竿）；收竿成敗都不重置冷卻。
                             p.fish_cooldown = FISH_COOLDOWN_SECS;
-                            p.fishing = Some(FishingCast::cast(seed));
-                            tracing::debug!(player = %p.name, "拋竿");
+                            // 循汛判定（ROADMAP 431）：站在自身分區魚群半徑內、且魚群中心確實落在
+                            // 水面上，才算「循汛」（與前端只在水面繪漣漪一致）；循汛下竿咬鉤略快。
+                            let in_school = {
+                                let (sx, sy) =
+                                    crate::fish_school::school_near(p.x, p.y, fish_phase);
+                                crate::fish_school::within_school(p.x, p.y, fish_phase)
+                                    && world_core::biome_at(sx as f64, sy as f64)
+                                        == world_core::Biome::Water
+                            };
+                            p.fishing = Some(FishingCast::cast_hastened(seed, in_school));
+                            tracing::debug!(player = %p.name, in_school, "拋竿");
                         }
                     }
                 }
