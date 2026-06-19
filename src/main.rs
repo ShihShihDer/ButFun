@@ -84,6 +84,7 @@ mod fishing_bite;
 mod mining_vein;
 mod cooking_steps;
 mod aether_draw;
+mod woodcutting;
 mod constellation;
 mod ancient_inscription;
 mod field_guide;

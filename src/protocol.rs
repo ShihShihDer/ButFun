@@ -433,6 +433,14 @@ pub enum ClientMsg {
     /// 伺服器以汲取當下準星位置判定檔位（峰湧／豐盈／涓滴）給對應乙太、結束這趟、回 `AetherDrawResult`。
     /// 鎖定時若泉眼已被搶先採走或玩家走離範圍，則空手而回。沒有進行中的汲取則靜默忽略。
     DrawAether,
+    /// 開揮伐木（ROADMAP 403 林間揮斧）：玩家走近可採的樹按「🪓 伐木」開一趟「連揮」。
+    /// 伺服器驗格（未倒地＋附近有可採節點＋冷卻過＋沒在伐）後開一趟節奏連擊小遊戲（拍子脈動）。
+    /// 真正放倒、給木材在揮滿時才結算。沒滿足條件則靜默忽略。
+    BeginChop,
+    /// 揮一斧（ROADMAP 403）：連揮進行中，玩家踩著拍點送出。伺服器以當下時刻判定是否踩準拍點、
+    /// 累計乾淨擊；揮滿即放倒樹（依乾淨擊數抱走木材）＋給工匠熟練度，回 `ChopResult`。
+    /// 沒有進行中的連揮則靜默忽略。
+    ChopStrike,
     /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
     /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
     RequestStarMap,
@@ -1200,6 +1208,26 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 伐木揮斧結果（ROADMAP 403 林間揮斧）：回應 `ChopStrike`，廣播；前端只對 `player_id == 自己` 演出。
+    /// `outcome`："strike"（揮了一斧、尚未放倒，附 `clean`+`strikes`+`total_clean`）／
+    /// "felled"（這一斧放倒了樹，附上述欄位＋ `wood` 抱走的木材）／
+    /// "missed"（揮滿時樹已被別人採走或自己走離範圍、空手而回）。
+    /// `clean` ＝這一斧是否踩準拍點；`strikes` ＝累計揮斧數；`total_clean` ＝累計乾淨擊數；
+    /// `wood` ＝放倒時抱走的木材（僅 felled）。`x`/`y` ＝玩家當下座標。不入快照、不持久化、零 migration。
+    ChopResult {
+        player_id: Uuid,
+        outcome: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        clean: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        strikes: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_clean: Option<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wood: Option<u32>,
+        x: f32,
+        y: f32,
+    },
     /// 開灶步序（ROADMAP 349 照譜烹調）：回應 `StartCook`，廣播（前端只對自己 `player_id` 演出）。
     /// `steps` ＝這趟要照著閃示／敲回的步驟次序（snake_case：heat/add/stir/flip/season）。
     /// 前端先依序閃示（看譜），再讓玩家憑記憶敲回。不入快照、不持久化、零 migration。
@@ -1651,6 +1679,13 @@ pub struct PlayerView {
     /// 自己與旁觀者都看得到（旁觀者看別人正在汲泉）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aether_draw_secs: Option<f32>,
+
+    // ── 林間揮斧（ROADMAP 403）────────────────────────────────────────────────
+    /// 進行中伐木連揮的經過秒數；沒在伐＝None（略過序列化）。
+    /// 前端用同一條公式（`woodcutting::beat_fraction`）渲染玩家頭頂脈動的節拍環，
+    /// 自己與旁觀者都看得到（旁觀者看別人正踩著拍子伐木）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chop_secs: Option<f32>,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -2352,7 +2387,7 @@ mod tests {
                 mining_tremor: None,
                 near_ruin: false,
                 cook_cooldown: 0.0,
-                aether_draw_secs: None,
+                aether_draw_secs: None, chop_secs: None,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2624,7 +2659,7 @@ mod tests {
             mining_tremor: None,
             near_ruin: false,
             cook_cooldown: 0.0,
-            aether_draw_secs: None,
+            aether_draw_secs: None, chop_secs: None,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -2929,7 +2964,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -2995,7 +3030,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

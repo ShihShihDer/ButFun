@@ -162,6 +162,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cooking: None,
             perfect_dishes: 0,
             aether_draw: None,
+            chop_cooldown: 0.0,
+            chopping: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -280,6 +282,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             cooking: None,
             perfect_dishes: 0,
             aether_draw: None,
+            chop_cooldown: 0.0,
+            chopping: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -7107,6 +7111,115 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 夜間乙太泉 end ────────────────────────────────────────────────────
+
+                // ── 林間揮斧：開揮伐木（ROADMAP 403）────────────────────────────────────
+                Ok(ClientMsg::BeginChop) => {
+                    // 走近可採的樹開一趟「連揮」節奏小遊戲。驗格：未倒地＋附近有可採節點＋
+                    // 冷卻過＋沒在伐。真正放倒、給木材在 ChopStrike 揮滿時才結算。純記憶體、零鎖內 IO。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() || p.chop_cooldown > 0.0 || p.chopping.is_some() {
+                                None
+                            } else {
+                                Some((p.x, p.y))
+                            }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        let near_tree = app.nodes.write().unwrap().has_harvestable_near(px, py);
+                        if near_tree {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if p.chopping.is_none() {
+                                    p.chopping = Some(crate::woodcutting::ChopSwing::start());
+                                    tracing::debug!(player = %p.name, "開揮伐木");
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 林間揮斧：揮一斧（ROADMAP 403）──────────────────────────────────────
+                Ok(ClientMsg::ChopStrike) => {
+                    // 揮一斧：判定踩準拍點與否、累計乾淨擊；揮滿即放倒樹（採該樹節點、依乾淨擊數抱走木材）。
+                    // 鎖序鏡像汲泉／釣魚：在 players 寫鎖內推進並取出「這一斧結果＋座標」，放倒時於鎖外採節點，
+                    // 再回 players 鎖加木材＋熟練度；廣播一律出鎖後送（守 prod-deadlock 鐵律）。
+                    let strike = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) => p.chopping.as_mut().map(|c| {
+                                let r = c.strike();
+                                (r, p.x, p.y)
+                            }),
+                            None => None,
+                        }
+                    };
+                    let result_msg = match strike {
+                        // 沒在伐：靜默忽略，不廣播。
+                        None => None,
+                        Some((r, px, py)) => {
+                            if r.felled {
+                                // 揮滿了：先清狀態＋起冷卻，再去採該樹（最多吃掉 fell_takes 段耐久）。
+                                {
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&id) {
+                                        p.chopping = None;
+                                        p.chop_cooldown = crate::woodcutting::CHOP_COOLDOWN_SECS;
+                                    }
+                                }
+                                let takes = crate::woodcutting::fell_takes(r.total_clean);
+                                // 連採 takes 下（被別人搶先採光 / 走離範圍 → gather_near 回 None 即止）。
+                                let mut wood_total: u32 = 0;
+                                let mut item_kind: Option<crate::inventory::ItemKind> = None;
+                                {
+                                    let mut nodes = app.nodes.write().unwrap();
+                                    for _ in 0..takes {
+                                        match nodes.gather_near(px, py) {
+                                            Some((kind, amount)) => {
+                                                item_kind = Some(kind.into());
+                                                wood_total = wood_total.saturating_add(amount);
+                                            }
+                                            None => break,
+                                        }
+                                    }
+                                }
+                                if let (Some(item), true) = (item_kind, wood_total > 0) {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                        p.add_item_overflow(item, wood_total);
+                                        p.masteries.gain_artisan(crate::woodcutting::mastery_xp(r.total_clean));
+                                        tracing::info!(
+                                            player = %p.name, wood = wood_total, clean = r.total_clean,
+                                            "伐木放倒一棵樹"
+                                        );
+                                    }
+                                    Some(ServerMsg::ChopResult {
+                                        player_id: id, outcome: "felled".into(),
+                                        clean: Some(r.clean), strikes: Some(r.strikes),
+                                        total_clean: Some(r.total_clean), wood: Some(wood_total),
+                                        x: px, y: py,
+                                    })
+                                } else {
+                                    // 樹已被搶先採光 / 走離範圍：空手而回。
+                                    Some(ServerMsg::ChopResult {
+                                        player_id: id, outcome: "missed".into(),
+                                        clean: Some(r.clean), strikes: Some(r.strikes),
+                                        total_clean: Some(r.total_clean), wood: None, x: px, y: py,
+                                    })
+                                }
+                            } else {
+                                // 還沒揮滿：回報這一斧（前端演出飛屑＋連擊數）。
+                                Some(ServerMsg::ChopResult {
+                                    player_id: id, outcome: "strike".into(),
+                                    clean: Some(r.clean), strikes: Some(r.strikes),
+                                    total_clean: Some(r.total_clean), wood: None, x: px, y: py,
+                                })
+                            }
+                        }
+                    };
+                    if let Some(msg) = result_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                }
+                // ── 林間揮斧 end ──────────────────────────────────────────────────────
 
                 // ── 旅行商人交易（ROADMAP 135）───────────────────────────────────────
                 Ok(ClientMsg::BuyFromWanderer { item, qty }) => {
