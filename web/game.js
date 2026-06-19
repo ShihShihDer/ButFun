@@ -3392,9 +3392,24 @@
         // initial＝進場首次定位：只靜默更新小地圖地名標，不彈大卡（避免登入時擾人）。
         // 真的換地方才淡入地名卡＋報讀器播報。reduceMotion 下不彈卡（只更新標＋報讀）。
         if (!msg.initial) {
-          announce(`你來到了${myLocale.name}。${myLocale.subtitle}`);
+          // 遠遊見聞（ROADMAP 411）：本趟初次踏足這處＝多一句發現、地名卡綴「✨初次踏足」、XP 飄字。
+          const firstFootfall = !!msg.first_footfall;
+          const tally = msg.tally || 0;
+          const xpReward = msg.xp_reward || 0;
+          if (firstFootfall) {
+            announce(`初次踏足${myLocale.name}。${myLocale.subtitle}。遠遊見聞已達 ${tally} 處`);
+            const me = players.get(myId);
+            if (me) {
+              floaters.push({ wx: me.x, wy: me.y - 48, text: `✨ 初次踏足·${myLocale.name}`, color: "233,214,160", born: performance.now() });
+              if (xpReward > 0) {
+                floaters.push({ wx: me.x, wy: me.y - 30, text: `🧭 探索者 +${xpReward}`, color: "150,225,200", born: performance.now() + 1 });
+              }
+            }
+          } else {
+            announce(`你來到了${myLocale.name}。${myLocale.subtitle}`);
+          }
           if (!reduceMotion) {
-            localeCard = { name: myLocale.name, subtitle: myLocale.subtitle, born: performance.now() };
+            localeCard = { name: myLocale.name, subtitle: myLocale.subtitle, born: performance.now(), firstFootfall, tally };
           }
         }
         break;
@@ -7671,6 +7686,17 @@
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.textAlign = "center";
+    // 遠遊見聞（ROADMAP 411）：本趟初次踏足這處——名上方綴一道「✨初次踏足」金緞＋足跡計數。
+    if (localeCard.firstFootfall) {
+      ctx.font = "bold 12px system-ui, sans-serif";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(10,16,30,0.85)";
+      const ribbon = `✨ 初次踏足 · 遠遊見聞 ${localeCard.tally || 0} 處`;
+      ctx.strokeText(ribbon, cx, cy - 24);
+      ctx.fillStyle = "rgba(245,224,150,0.95)";
+      ctx.fillText(ribbon, cx, cy - 24);
+    }
     // 地名（大、黃銅金）。
     ctx.font = "bold 26px 'Noto Serif TC', Georgia, serif";
     ctx.textBaseline = "alphabetic";
@@ -8133,6 +8159,21 @@
       ctx.fillText(myLocale.name, ox + size / 2, ly);
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
+    }
+    // 遠遊見聞（ROADMAP 411）：本趟踏足過多少不同地方，常駐小地圖左下角的足跡計數，
+    // 讓「往外走、去新地方」這件事看得見地累積（0＝還沒踏足記錄就不畫，不擾新玩家）。
+    const meMM = myId ? players.get(myId) : null;
+    const wayfare = meMM && meMM.wayfare_count ? meMM.wayfare_count : 0;
+    if (wayfare > 0) {
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+      const wt = `🧭 遠遊見聞 ${wayfare} 處`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(10,16,30,0.9)";
+      ctx.strokeText(wt, ox + 3, oy + size - 4);
+      ctx.fillStyle = "rgba(233,214,160,0.95)";
+      ctx.fillText(wt, ox + 3, oy + size - 4);
     }
   }
 

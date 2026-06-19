@@ -1081,7 +1081,16 @@ pub fn spawn(app: AppState) {
             let mut busk_aborts: Vec<uuid::Uuid> = Vec::new();
             // 在地地名變更（ROADMAP 398 天地有名）：踏入新 locale，出鎖後廣播地名卡。
             // (player_id, name, subtitle, initial) — initial=true 為進場首次定位（前端不彈大卡）。
-            let mut locale_changes: Vec<(uuid::Uuid, &'static str, &'static str, bool)> = Vec::new();
+            // (pid, name, subtitle, initial, first_footfall, tally, xp_reward) — ROADMAP 398＋411。
+            let mut locale_changes: Vec<(
+                uuid::Uuid,
+                &'static str,
+                &'static str,
+                bool,
+                bool,
+                u32,
+                u32,
+            )> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
                 // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
@@ -1237,7 +1246,34 @@ pub fn spawn(app: AppState) {
                             // 首次定位（None）只靜默更新標、不彈大卡；真的換地方才彈卡＋報讀。
                             let initial = p.current_locale.is_none();
                             p.current_locale = Some(loc.id);
-                            locale_changes.push((p.id, loc.name, loc.subtitle, initial));
+                            // 遠遊見聞（ROADMAP 411）：進場起點靜默記為已踏足、不慶賀；真的換到本趟
+                            // 沒去過的新地方才是「初次踏足」（攢探索者 XP、增足跡計數）。
+                            let (first_footfall, tally, xp_reward) = if initial {
+                                p.wayfaring.mark_seen(loc.id);
+                                (false, 0, 0)
+                            } else {
+                                match p.wayfaring.discover(loc.id) {
+                                    crate::wayfaring::WayfareOutcome::FirstFootfall {
+                                        tally,
+                                        xp_reward,
+                                    } => {
+                                        if xp_reward > 0 {
+                                            p.masteries.gain_explorer(xp_reward);
+                                        }
+                                        (true, tally, xp_reward)
+                                    }
+                                    crate::wayfaring::WayfareOutcome::Known => (false, 0, 0),
+                                }
+                            };
+                            locale_changes.push((
+                                p.id,
+                                loc.name,
+                                loc.subtitle,
+                                initial,
+                                first_footfall,
+                                tally,
+                                xp_reward,
+                            ));
                         }
                     }
                     // 釣魚上鉤小遊戲推進（ROADMAP 346）：等咬鉤→咬鉤→脫鉤。
@@ -1470,13 +1506,16 @@ pub fn spawn(app: AppState) {
             }
 
             // 天地有名廣播（ROADMAP 398）：鎖已釋放，安全廣播地名卡（前端只對自己 id 演出）。
-            for (pid, name, subtitle, initial) in locale_changes {
+            for (pid, name, subtitle, initial, first_footfall, tally, xp_reward) in locale_changes {
                 let _ = app.tx.send(std::sync::Arc::new(
                     crate::protocol::ServerMsg::LocaleEntered {
                         player_id: pid,
                         name: name.to_string(),
                         subtitle: subtitle.to_string(),
                         initial,
+                        first_footfall,
+                        tally,
+                        xp_reward,
                     },
                 ));
             }

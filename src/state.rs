@@ -317,6 +317,10 @@ pub struct Player {
     /// 僅 elapsed 隨 PlayerView 廣播以渲染翻身位移。由 game.rs 每 tick 推進（恩典窗過即落幕）；
     /// 反擊迴圈讀它的 `in_grace()` 判斷此刻是否免傷。
     pub dodging: Option<crate::dodge::DodgeRoll>,
+    /// 本趟遠遊足跡（ROADMAP 411 遠遊見聞）：記得這趟連線踏足過哪些 locale，踏進沒去過的新地方
+    /// ＝一次「初次踏足」（攢少量探索者熟練度、增足跡計數）。記憶體前置、不持久化、零 migration、
+    /// 重啟清空。由 game.rs 的地名偵測（鏡像 398 `current_locale`）順手推進。
+    pub wayfaring: crate::wayfaring::Wayfaring,
 
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
@@ -543,6 +547,8 @@ impl Player {
             // ROADMAP 410：進行中翻滾的經過秒數（沒在翻滾＝None，略過序列化）；
             // 廣播給所有人，前端據此演出翻身位移與翻滾環。
             dodge_secs: self.dodging.map(|d| d.elapsed()),
+            // ROADMAP 411：本趟遠遊踏足過的不同地方數（0＝略過序列化）；前端 HUD 畫足跡計數。
+            wayfare_count: self.wayfaring.tally(),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1653,6 +1659,7 @@ mod tests {
             guard_shield: None,
             dodge_cooldown: 0.0,
             dodging: None,
+            wayfaring: crate::wayfaring::Wayfaring::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,

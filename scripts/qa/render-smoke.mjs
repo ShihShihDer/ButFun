@@ -743,6 +743,44 @@ for (const sc of scenarios) {
   else console.log("  ✅ 臨陣格擋：格擋環脈動＋護盾微光＋三檔飄字＋旁觀者忽略皆乾淨");
 }
 
+// 遠遊見聞（ROADMAP 411）：locale_entered 帶 first_footfall 時，地名卡綴「✨初次踏足」金緞＋XP 飄字、
+// 報讀；snapshot 帶 wayfare_count 時小地圖左下角畫足跡計數。驗證初次踏足卡／舊地重遊卡／進場 initial
+// 靜默／旁觀者忽略＋足跡計數 HUD 皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：遠遊見聞（初次踏足卡＋XP 飄字＋足跡計數 HUD）──");
+  let ok = true;
+  try {
+    // 先讓 snapshot 帶上足跡計數，逼出小地圖左下角的「🧭 遠遊見聞 N 處」常駐標。
+    const wSnap = JSON.parse(JSON.stringify(snapshot));
+    if (wSnap.players && wSnap.players[0]) {
+      wSnap.players[0] = { ...wSnap.players[0], wayfare_count: 3 };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...wSnap, type: "snapshot" }) });
+    pump("足跡計數 HUD", 3);
+    // 初次踏足：first_footfall=true，地名卡綴金緞＋探索者 XP 飄字＋報讀。
+    lastWS.onmessage({ data: JSON.stringify({ type: "locale_entered", player_id: myId, name: "晨露谷", subtitle: "薄霧在草尖上打盹", initial: false, first_footfall: true, tally: 3, xp_reward: 2 }) });
+    pump("初次踏足卡", 6);
+    // 本趟 XP 已封頂的初次踏足（xp_reward=0 仍是初次踏足、不畫 XP 飄字）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "locale_entered", player_id: myId, name: "微風原", subtitle: "野花一路鋪到天邊", initial: false, first_footfall: true, tally: 7, xp_reward: 0 }) });
+    pump("封頂初次踏足卡", 6);
+    // 舊地重遊：first_footfall=false，純地名卡（沿用 398 行為）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "locale_entered", player_id: myId, name: "翡翠林", subtitle: "苔蘚把石頭都養綠了", initial: false, first_footfall: false }) });
+    pump("舊地重遊卡", 6);
+    // 進場 initial：靜默、不彈卡。
+    lastWS.onmessage({ data: JSON.stringify({ type: "locale_entered", player_id: myId, name: "搖籃丘", subtitle: "風把草浪梳成同一個方向", initial: true, first_footfall: false }) });
+    pump("進場 initial 靜默", 2);
+    // 旁觀者（別人 id）應被忽略、不拋例外。
+    lastWS.onmessage({ data: JSON.stringify({ type: "locale_entered", player_id: "someone_else", name: "綠歌平野", subtitle: "陽光在這裡走得很慢", initial: false, first_footfall: true, tally: 1, xp_reward: 2 }) });
+    pump("旁觀者忽略", 2);
+  } catch (e) {
+    ok = false; console.error("  ❌ 遠遊見聞：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 遠遊見聞：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 遠遊見聞：初次踏足卡＋XP 飄字＋足跡計數＋舊地重遊＋initial 靜默＋旁觀者忽略皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {
