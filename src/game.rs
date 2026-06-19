@@ -1196,6 +1196,10 @@ pub fn spawn(app: AppState) {
                     if p.cook_cooldown > 0.0 {
                         p.cook_cooldown = (p.cook_cooldown - dt).max(0.0);
                     }
+                    // 伐木冷卻倒數（ROADMAP 403）：放倒樹後起算，只擋開新一趟連揮。
+                    if p.chop_cooldown > 0.0 {
+                        p.chop_cooldown = (p.chop_cooldown - dt).max(0.0);
+                    }
                     // 天地有名（ROADMAP 398）：戶外玩家踏入新「在地地名」locale 即記錄，出鎖後廣播地名卡。
                     // 室內（自家屋內）不算進世界地名。locale_at 純函式、零鎖無 IO，確定性。
                     if p.indoor_plot_id.is_none() {
@@ -1221,6 +1225,13 @@ pub fn spawn(app: AppState) {
                     if let Some(d) = p.aether_draw.as_mut() {
                         if d.advance(dt) {
                             p.aether_draw = None;
+                        }
+                    }
+                    // 伐木連揮推進（ROADMAP 403 林間揮斧）：advance 累時間、逾時即中斷這趟
+                    // （樹留著、可重來）。純函式、零鎖無 IO；節拍由前端用同一公式渲染。
+                    if let Some(c) = p.chopping.as_mut() {
+                        if c.advance(dt) {
+                            p.chopping = None;
                         }
                     }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。

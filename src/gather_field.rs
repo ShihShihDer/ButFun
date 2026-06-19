@@ -132,6 +132,34 @@ impl NodeField {
         }
     }
 
+    /// 唯讀判定：玩家在 `(px, py)` 的 `GATHER_REACH` 內是否有可採的節點（樹）。
+    /// 供伐木連揮小遊戲（ROADMAP 403）開揮前驗格用——只看、不採。
+    pub fn has_harvestable_near(&mut self, px: f32, py: f32) -> bool {
+        if !px.is_finite() || !py.is_finite() {
+            return false;
+        }
+        self.ensure_chunks_around(px, py, GATHER_REACH);
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = GATHER_REACH * GATHER_REACH;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(nodes) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for placed in nodes {
+                        if !placed.node.is_harvestable() {
+                            continue;
+                        }
+                        let dist_x = placed.x - px;
+                        let dist_y = placed.y - py;
+                        if dist_x * dist_x + dist_y * dist_y <= reach_sq {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// 暫時保留對舊存檔的相容性。
     pub fn from_saved(saved: Vec<ResourceNode>) -> Option<Self> {
         let mut field = Self::new();

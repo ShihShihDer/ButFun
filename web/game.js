@@ -2470,6 +2470,14 @@
             } else {
               existing.aether_draw_secs = null;
             }
+            // ROADMAP 403：伐木連揮——進行中連揮的經過秒數。每收一筆快照就重錨「收到時間」，
+            // 前端用同一條公式（beatFraction）以本地時鐘自由推進節拍環、與伺服器對齊。
+            if (typeof p.chop_secs === "number") {
+              existing.chop_secs = p.chop_secs;
+              existing._chopRecvAt = performance.now();
+            } else {
+              existing.chop_secs = null;
+            }
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -3279,6 +3287,34 @@
         } else if (msg.outcome === "missed") {
           floaters.push({ wx, wy, text: "💨 慢了一步，泉湧散了…", color: "190,190,190", born: now });
           announce("汲取落空，泉湧散了");
+        }
+        break;
+      }
+      case "chop_result": {
+        // 伐木揮斧結果（ROADMAP 403 林間揮斧）：廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        if (msg.outcome === "strike") {
+          // 揮了一斧、還沒放倒：踩準＝亮綠「乾淨！」、沒踩準＝灰「偏了」。輕量飄字＋短音效。
+          if (msg.clean) {
+            floaters.push({ wx, wy, text: "🪓 乾淨！", color: "170,225,170", born: now });
+            SFX.click();
+          } else {
+            floaters.push({ wx, wy, text: "🪓 偏了…", color: "190,190,190", born: now });
+          }
+        } else if (msg.outcome === "felled") {
+          // 放倒了：乾淨擊越多木材越多（全乾淨＝金光「俐落放倒」）。
+          const wood = msg.wood || 0;
+          const clean = msg.total_clean || 0;
+          const perfect = clean >= 4;
+          const color = perfect ? "255,210,74" : (clean >= 2 ? "120,200,255" : "170,225,170");
+          floaters.push({ wx, wy, text: `🌳 +${wood} 木材${perfect ? "（俐落放倒！）" : ""}`, color, born: now });
+          announce(perfect ? `俐落放倒一棵樹，抱走 ${wood} 木材` : `放倒一棵樹，得 ${wood} 木材`);
+          SFX.success(); // 放倒成功音效（ROADMAP 376）
+        } else if (msg.outcome === "missed") {
+          floaters.push({ wx, wy, text: "💨 樹沒了…空手而回", color: "190,190,190", born: now });
+          announce("揮到最後，樹已被採走");
         }
         break;
       }
@@ -5225,6 +5261,8 @@
   // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
   function currentActionKind(me) {
     if (!me) return "farm";
+    // ROADMAP 403：正在伐木連揮時，動作＝揮斧（最高優先，踩著拍子連揮）。
+    if (me && typeof me.chop_secs === "number") return "chop";
     if (nearestEnemy(me)) return "attack";
     if (nearestDustNode(me)) return "collect_dust";
     if (nearestSpringNode(me)) return "collect_spring";
@@ -5242,6 +5280,8 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
+    // ROADMAP 403：正在伐木連揮時，動作鍵＝揮一斧（踩著拍子連揮，最高優先）。
+    if (typeof me.chop_secs === "number") { ws.send(JSON.stringify({ type: "chop_strike" })); return; }
     // 附近有敵人時優先攻擊。
     if (nearestEnemy(me)) { sendAttack(); return; }
     // 附近有星塵節點時採集（ROADMAP 133）。
@@ -5257,6 +5297,11 @@
     // 附近有季節性節點時採集（ROADMAP 154）。
     const sn = nearestSeasonalNode(me);
     if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
+    // ROADMAP 403：近旁有可採的樹 → 開一趟伐木連揮（取代樹的一鍵採；石／礦脈仍走 farmAtScreen）。
+    {
+      const tree = nearestTree(me);
+      if (tree) { ws.send(JSON.stringify({ type: "begin_chop" })); spawnGatherHit(tree); return; }
+    }
     const rect = canvas.getBoundingClientRect();
     // 挖/放的方向：優先用「正在按的方向」(keys)——在隧道裡你被牆擋住、無法轉身改 facing，
     // 但按左就該能挖左牆/側壁。沒按方向才退回 facing（朝向）。
@@ -5288,7 +5333,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
-    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧" }[currentActionKind(me)] || "✋";
+    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧", chop: "🪓" }[currentActionKind(me)] || "✋";
     ctx.font = "30px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -6044,6 +6089,58 @@
       }
       ctx.restore();
     }
+
+    // 林間揮斧節拍環（ROADMAP 403）：正在伐木的玩家頭頂畫一圈節拍環——一顆亮點繞圈跑，
+    // 環頂是「拍點」（亮綠的甜蜜弧），亮點掃進甜蜜弧的瞬間揮斧＝乾淨的一擊。自己與旁觀者
+    // 都看得到（伐木秒數隨快照廣播）；相位用與後端同一條公式（beatFraction）渲染，玩家看到
+    // 的拍點就是伺服器判定的拍點。節拍移動屬玩法核心，reduceMotion 不關。
+    const chopElapsed = chopElapsedOf(p);
+    if (chopElapsed !== null) {
+      const frac = beatFraction(chopElapsed);              // 拍內相位 [0,1)
+      const ringR = 20;
+      const cyr = by - 44;                                 // 環心（頭頂上方）
+      // 甜蜜弧半角：窗口秒數佔一拍的比例 → 圓周角（與 is_clean_strike 同一判準）。
+      const halfAng = (CHOP_HIT_WINDOW / CHOP_BEAT_SECS) * Math.PI * 2;
+      const top = -Math.PI / 2;                            // 拍點在環頂（12 點鐘）
+      // 亮點是否落在甜蜜弧內（＝這一刻揮斧會是乾淨擊）：相位距最近拍點 ≤ 窗口比例。
+      const onBeat = Math.min(frac, 1 - frac) <= CHOP_HIT_WINDOW / CHOP_BEAT_SECS;
+      ctx.save();
+      // 底環（暗）
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(30,22,14,0.78)";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      // 甜蜜弧（環頂亮綠，亮點掃過此處＝乾淨擊）
+      ctx.beginPath();
+      ctx.arc(sx, cyr, ringR, top - halfAng, top + halfAng);
+      ctx.strokeStyle = "rgba(150,235,150,0.92)";
+      ctx.lineWidth = 5;
+      ctx.stroke();
+      // 繞圈的亮點（順時針從拍點起跑）
+      const ang = top + frac * Math.PI * 2;
+      const dotX = sx + Math.cos(ang) * ringR;
+      const dotY = cyr + Math.sin(ang) * ringR;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, onBeat ? 5 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = onBeat ? "#eaffea" : "#ffd8a8";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      // 自己才顯示提示字（旁觀者只看環、不被文字洗版）。
+      if (p.id === myId) {
+        ctx.font = "11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("🪓 揮斧！對準頂點 [E]", sx, cyr - ringR - 6);
+        ctx.fillStyle = onBeat ? "rgba(180,255,180,0.98)" : "rgba(255,225,180,0.96)";
+        ctx.fillText("🪓 揮斧！對準頂點 [E]", sx, cyr - ringR - 6);
+      }
+      ctx.restore();
+    }
   }
 
   // 單一 rAF 排程真相來源：每次排程前先取消舊的，確保不論從哪裡觸發都只有一條
@@ -6291,8 +6388,11 @@
     safeDraw("localeCard", () => drawLocaleCard());
 
     // 萬用動作鈕：按住時連發（約每 0.2 秒一次），再把鈕畫在 HUD 層（蓋在世界上）。
+    // ROADMAP 403：伐木連揮要「踩拍點」逐下點——按住不自動連揮（否則每 0.2 秒自動揮、毀了節奏），
+    // 玩家須一拍一點。第一下仍會開揮，之後改用逐次點擊揮斧。
     if (actionTouchId !== null) {
-      if (renderNow - lastSmartAction >= 200) { lastSmartAction = renderNow; smartAction(); }
+      const choppingNow = me && typeof me.chop_secs === "number";
+      if (!choppingNow && renderNow - lastSmartAction >= 200) { lastSmartAction = renderNow; smartAction(); }
     }
     safeDraw("actionButton", () => drawActionButton(me));
 
@@ -8530,6 +8630,40 @@
     return best;
   }
 
+  // ROADMAP 403 林間揮斧：回傳玩家搆得到的最近「可採的樹」（kind==="tree"），沒有就 null。
+  // 樹改走伐木連揮小遊戲（石／礦脈仍走既有一鍵採），所以單獨挑出來。
+  function nearestTree(me) {
+    if (!me) return null;
+    let best = null;
+    let bestD = GATHER_REACH * GATHER_REACH;
+    for (const n of nodes) {
+      if (!n.harvestable || n.kind !== "tree") continue;
+      const dx = n.x - me.x;
+      const dy = n.y - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = n; }
+    }
+    return best;
+  }
+
+  // ROADMAP 403：把「伐木」意圖統一成一個動作，給三條動作派發（觸控鈕／鍵盤／點擊）共用、
+  // 不各寫一套規則。伐木中→揮一斧（踩拍點）；否則近旁有可採的樹→開揮一趟連揮。
+  // 攔截成功回 true（呼叫端據此 return，不再走後續一般採集）。
+  function tryWoodcutting(me) {
+    if (!me || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (typeof me.chop_secs === "number") {
+      ws.send(JSON.stringify({ type: "chop_strike" }));
+      return true;
+    }
+    const tree = nearestTree(me);
+    if (tree) {
+      ws.send(JSON.stringify({ type: "begin_chop" }));
+      spawnGatherHit(tree); // 開揮的第一下也噴碎屑，給「斧子下去了」的回饋
+      return true;
+    }
+    return false;
+  }
+
   // 回傳玩家搆得到（80px 內）的最近有餘次季節性節點，沒有就 null（ROADMAP 154）。
   const SEASONAL_NODE_REACH = 80;
   function nearestSeasonalNode(me) {
@@ -8580,6 +8714,23 @@
     const base = p.aether_draw_secs;
     const recv = p._drawRecvAt || performance.now();
     return base + (performance.now() - recv) / 1000;
+  }
+
+  // ROADMAP 403 林間揮斧：與後端 woodcutting.rs 對齊的節拍參數（同一條公式，
+  // 伺服器判定踩準與否、前端只負責渲染，玩家看到的拍點就是伺服器判定的拍點）。
+  const CHOP_BEAT_SECS = 1.1;    // 拍子週期（與 woodcutting::BEAT_SECS 對齊）
+  const CHOP_HIT_WINDOW = 0.2;   // 乾淨擊窗口秒數（與 woodcutting::HIT_WINDOW 對齊）
+  // 揮斧時刻 → 拍內相位 [0,1)；0＝正落在拍點上（鏡像 woodcutting::beat_fraction）。
+  function beatFraction(elapsedSecs) {
+    let f = (Math.max(0, elapsedSecs) / CHOP_BEAT_SECS) % 1;
+    if (f < 0) f += 1;
+    return f;
+  }
+  // 玩家進行中伐木的「目前經過秒數」：以收到快照時錨點 + 本地時鐘自由推進；沒在伐回 null。
+  function chopElapsedOf(p) {
+    if (!p || typeof p.chop_secs !== "number") return null;
+    const recv = p._chopRecvAt || performance.now();
+    return p.chop_secs + (performance.now() - recv) / 1000;
   }
 
   // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。
@@ -23671,6 +23822,13 @@
         const dx = gn.x - twx;
         const dy = gn.y - twy;
         if (dx * dx + dy * dy <= 34 * 34) {
+          // ROADMAP 403：點到樹 → 伐木連揮（伐木中＝揮一斧、否則開揮）；石／礦脈仍走一鍵採。
+          if (gn.kind === "tree") {
+            ws.send(JSON.stringify({ type: typeof me.chop_secs === "number" ? "chop_strike" : "begin_chop" }));
+            markGatheredOnce();
+            spawnGatherHit(gn);
+            return;
+          }
           ws.send(JSON.stringify({ type: "gather" }));
           markGatheredOnce();
           spawnGatherHit(gn); // 揮擊命中 + 碎屑噴出(治「沒有採集動作」)
@@ -23767,6 +23925,8 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
+    // ROADMAP 403：伐木連揮中 → 動作鍵＝揮一斧（踩拍點，最高優先，鎖在節奏小遊戲裡）。
+    if (typeof me.chop_secs === "number") { ws.send(JSON.stringify({ type: "chop_strike" })); return; }
     // 最優先：附近有存活敵人就主動攻擊。
     if (nearestEnemy(me)) { sendAttack(); return; }
     // 次判星塵採集（ROADMAP 133）：附近有活躍星塵節點時採集。
@@ -23787,6 +23947,11 @@
     {
       const sn = nearestSeasonalNode(me);
       if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
+    }
+    // ROADMAP 403：近旁有可採的樹 → 開一趟伐木連揮（取代樹的一鍵採；石／礦脈仍走下面一鍵採）。
+    {
+      const tree = nearestTree(me);
+      if (tree) { ws.send(JSON.stringify({ type: "begin_chop" })); spawnGatherHit(tree); return; }
     }
     // 次判採集:站在搆得到的可採節點旁,按動作鍵就採集。
     {

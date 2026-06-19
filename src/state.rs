@@ -286,6 +286,15 @@ pub struct Player {
     /// 重啟清空（沒在汲取＝None）。由 game.rs 每 tick 推進（逾時即中斷）。
     pub aether_draw: Option<crate::aether_draw::AetherDraw>,
 
+    // ── 林間揮斧（ROADMAP 403）────────────────────────────────────────────
+    /// 伐木冷卻剩餘秒數（0.0 = 可開新一趟連揮；> 0 = 冷卻中）。放倒樹後起算，
+    /// 由 game.rs 每 tick 遞減；冷卻只擋「開新連揮」。
+    pub chop_cooldown: f32,
+    /// 進行中的一趟伐木連揮（ROADMAP 403）：踩節拍的節奏連擊小遊戲。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在伐＝None）；
+    /// 僅 elapsed 隨 PlayerView 廣播以渲染節拍環。由 game.rs 每 tick 推進（逾時即中斷）。
+    pub chopping: Option<crate::woodcutting::ChopSwing>,
+
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
     /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
@@ -499,6 +508,9 @@ impl Player {
             // ROADMAP 350：進行中夜泉汲取的經過秒數（沒在汲取＝None，略過序列化）；
             // 前端據此用同一條三角波公式渲染擺盪準星位置。
             aether_draw_secs: self.aether_draw.map(|d| d.elapsed()),
+            // ROADMAP 403：進行中伐木連揮的經過秒數（沒在伐＝None，略過序列化）；
+            // 前端據此用同一條公式渲染脈動的節拍環。
+            chop_secs: self.chopping.map(|c| c.elapsed()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1597,6 +1609,8 @@ mod tests {
             cooking: None,
             perfect_dishes: 0,
             aether_draw: None,
+            chop_cooldown: 0.0,
+            chopping: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
