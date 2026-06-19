@@ -1117,6 +1117,9 @@
   const gatherParticles = [];
   // 主動攻擊命中特效:每筆 { wx, wy, born } 在敵人位置畫一下紅色衝擊圈。純表現。
   const attackHits = [];
+  // 怪物王重擊衝擊波（ROADMAP 424）：每筆 { wx, wy, radius, born } 在落點畫一圈向外炸開、擴張到
+  // 重擊半徑後淡去的紅色衝擊環。純表現（傷害已由伺服器結算），收到 boss_slam 廣播時 push。
+  const bossSlams = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
@@ -3588,6 +3591,23 @@
         SFX.click();
         break;
       }
+      case "boss_slam": {
+        // 怪物王預警重擊落下（ROADMAP 424）：在落點演出向外炸開的衝擊波環。
+        // 全服都看得到（無論是否在圈內）；若自己就在重擊圈內，額外報讀＋警示飄字。
+        const wx = msg.x || 0, wy = msg.y || 0;
+        const radius = msg.radius || BOSS_SLAM_RADIUS;
+        bossSlams.push({ wx, wy, radius, born: performance.now() });
+        const me = players.get(myId);
+        if (me) {
+          const dx = me.x - wx, dy = me.y - wy;
+          if (dx * dx + dy * dy <= radius * radius) {
+            floaters.push({ wx: me.x, wy: me.y - 44, text: "💥 重擊！", color: "255,120,80", born: performance.now() });
+            announce("怪物王砸下一記重擊——格擋或翻滾可化解");
+          }
+        }
+        SFX.click();
+        break;
+      }
       case "honey_harvest": {
         // 採蜜（養蜂釀蜜 ROADMAP 412）：從自家蜂巢採收蜂蜜。
         // 廣播事件，只對自己 id 演出金黃飄字＋報讀器（旁觀者忽略，他們看得到田角的蜂箱即可）。
@@ -4625,6 +4645,40 @@
         ctx.beginPath();
         ctx.moveTo(sx + Math.cos(ang) * r0, sy + Math.sin(ang) * r0);
         ctx.lineTo(sx + Math.cos(ang) * r1, sy + Math.sin(ang) * r1);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+
+  // 畫怪物王重擊衝擊波（ROADMAP 424）：從落點向外炸開、擴張至重擊半徑後淡去的紅色衝擊環，
+  // 配合地面預警圈的「蓄滿瞬間」收尾。純表現，不影響判定（傷害已由伺服器結算）。reduceMotion 仍畫。
+  function drawBossSlamFx(camX, camY, now) {
+    const SLAM_FX_MS = 520;
+    for (let i = bossSlams.length - 1; i >= 0; i--) {
+      const s = bossSlams[i];
+      const age = now - s.born;
+      if (age >= SLAM_FX_MS) { bossSlams.splice(i, 1); continue; }
+      const t = age / SLAM_FX_MS;
+      const sx = s.wx - camX;
+      const sy = s.wy - camY;
+      const rr = (s.radius || BOSS_SLAM_RADIUS);
+      const r = rr * (0.35 + 0.65 * t);   // 由內向外擴張到重擊半徑
+      const ry = r * 0.5;                  // 地面透視壓扁
+      ctx.save();
+      ctx.translate(sx, sy + 13);
+      ctx.scale(1, ry / r);
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,70,40,${(0.9 * (1 - t)).toFixed(3)})`;
+      ctx.lineWidth = (5 + 4 * (1 - t));
+      ctx.stroke();
+      // 內側亮環，剛炸開時最白、迅速淡去，增加「重擊」的爆發感。
+      if (t < 0.5) {
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,220,180,${(0.7 * (1 - t * 2)).toFixed(3)})`;
+        ctx.lineWidth = 3 * (1 - t * 2);
         ctx.stroke();
       }
       ctx.restore();
@@ -7306,6 +7360,7 @@
       drawTapFlashes(camX, camY, renderNow);           // 互動確認漣漪
       drawGatherFx(camX, camY, renderNow);             // 採集動作特效
       drawAttackFx(camX, camY, renderNow);
+      drawBossSlamFx(camX, camY, renderNow);           // 怪物王重擊衝擊波（ROADMAP 424）
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
       drawOnboardBeacon(camX, camY, renderNow);        // 新手引導當前步驟的動線指引（ROADMAP 413）
@@ -16103,6 +16158,36 @@
     ctx.fill();
   }
 
+  // 怪物王預警重擊半徑（世界像素）：鏡像後端 boss_slam::SLAM_RADIUS，畫地面預警圈與衝擊波用。
+  const BOSS_SLAM_RADIUS = 150;
+
+  // 怪物王蓄力中的地面預警圈（ROADMAP 424）。(cx,cy)＝怪物王腳下地面點；prog∈[0,1]＝蓄力進度；
+  // t＝動畫時間（秒）供脈動。畫成俯視壓扁的橢圓圈：外緣紅環 + 由上順時針填滿的扇形（progress），
+  // 越接近蓄滿越紅越亮並脈動，讀作「快砸下來了，閃開！」。reduceMotion 仍畫，只是不脈動。
+  function drawSlamWindup(cx, cy, prog, t) {
+    const r = BOSS_SLAM_RADIUS;
+    const ry = r * 0.5; // 地面透視壓扁
+    const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(t * 8);
+    const intensity = 0.25 + 0.55 * prog; // 蓄越滿越明顯
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, ry / r); // 之後用正圓座標畫，靠縮放壓成地面橢圓
+    // 已蓄滿的扇形填充（由正上方順時針掃出 prog 圈）：半透明紅，讀作「填滿進度」。
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * prog, false);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(220,40,30,${(0.12 + 0.20 * prog).toFixed(3)})`;
+    ctx.fill();
+    // 外緣警示環：蓄越滿越亮、越接近滿越脈動。
+    ctx.lineWidth = 2 + 2 * prog;
+    ctx.strokeStyle = `rgba(255,${Math.round(70 - 50 * prog)},${Math.round(50 - 40 * prog)},${(0.5 + 0.45 * prog * pulse).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // ── 白晝飛鳥（ROADMAP 194）────────────────────────────────────────────────
   // 白天偶爾一小群 V 字編隊的鳥剪影緩緩拍翅、橫越上半天邊、飛遠即逝；夜裡或弱機不出。
   // 純前端視覺、零後端：依既有 daynight.light 判白天（與彩虹 191 同口徑），自排下群出現時刻。
@@ -18910,6 +18995,12 @@
         : 0;
       ctx.save();
       if (e.resting) ctx.globalAlpha = 0.42; // 夜間休息中（ROADMAP 148）
+      // 怪物王預警重擊地面圈（ROADMAP 424）：怪物王蓄力時，腳下浮現一個逐漸填滿的紅色預警圈，
+      // 蓄滿（progress→1）瞬間砸下範圍重擊。玩家看圈反應——走出去、臨陣格擋（408）或翻滾閃避（410）。
+      // 畫在影子層上、生物造型前（怪物王站在預警圈中央）。reduceMotion 仍完整顯示，只是不脈動。
+      if (e.alive && typeof e.slam_windup === "number") {
+        drawSlamWindup(sx, sy + 13, Math.max(0, Math.min(1, e.slam_windup)), t);
+      }
       // 影子(定在地面、不隨浮動)；日影晷（201）：投影隨太陽/月亮方位偏移、晨昏拉長
       drawGroundShadow(sx, sy + 13, 12, 4, 0.22);
       // 生物造型(走近會動、會追——這層只負責長相)

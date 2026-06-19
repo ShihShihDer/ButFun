@@ -325,22 +325,34 @@ pub fn spawn(app: AppState) {
                     .filter(|p| p.enemy.is_alive())
                     .map(|p| (p.enemy.kind(), p.x, p.y))
                     .collect();
+                // ROADMAP 424：怪物王預警重擊的蓄力進度由「伺服器時鐘 + 怪物 id」決定性推導，
+                // 不存任何新狀態。now_secs 與下方傷害結算用的時鐘同源（皆由 tick 換算）。
+                let now_secs = tick as f64 / TICK_HZ as f64;
                 let views = if want_broadcast {
                     enemies
                         .enemies()
                         .iter()
-                        .map(|p| EnemyView {
-                            kind: p.enemy.kind(),
-                            x: p.x,
-                            y: p.y,
-                            level: p.level,
-                            hp: p.enemy.remaining_hp(),
-                            max_hp: p.enemy.max_hp(),
-                            alive: p.enemy.is_alive(),
-                            notorious: p.level >= p.base_level.saturating_add(3),
-                            resting: is_night && crate::enemy_field::is_night_rester(p.id),
-                            // ROADMAP 183：retreat_timer>0 → 潰逃中，前端畫 💨。
-                            routing: p.retreat_timer > 0.0,
+                        .map(|p| {
+                            let notorious = p.level >= p.base_level.saturating_add(3);
+                            EnemyView {
+                                kind: p.enemy.kind(),
+                                x: p.x,
+                                y: p.y,
+                                level: p.level,
+                                hp: p.enemy.remaining_hp(),
+                                max_hp: p.enemy.max_hp(),
+                                alive: p.enemy.is_alive(),
+                                notorious,
+                                resting: is_night && crate::enemy_field::is_night_rester(p.id),
+                                // ROADMAP 183：retreat_timer>0 → 潰逃中，前端畫 💨。
+                                routing: p.retreat_timer > 0.0,
+                                // ROADMAP 424：只有存活的怪物王在蓄力窗內才帶蓄力進度（地面預警圈）。
+                                slam_windup: if notorious && p.enemy.is_alive() {
+                                    crate::boss_slam::windup_progress(p.id, now_secs)
+                                } else {
+                                    None
+                                },
+                            }
                         })
                         .collect()
                 } else {
@@ -952,6 +964,8 @@ pub fn spawn(app: AppState) {
                         .collect()
                 };
                 let mut dmgs: Vec<(uuid::Uuid, u32)> = Vec::new();
+                // ROADMAP 424：本拍剛砸下重擊的怪物王落點（出鎖後廣播衝擊波）。
+                let mut slam_events: Vec<(f32, f32, f32)> = Vec::new();
                 {
                     let enemies = app.enemies.read().unwrap();
                     for (pid, px, py, downed) in &positions {
@@ -959,6 +973,24 @@ pub fn spawn(app: AppState) {
                         let threat = enemies.threat_at(*px, *py);
                         if threat > 0 {
                             dmgs.push((*pid, threat));
+                        }
+                    }
+                    // ROADMAP 424：怪物王預警重擊——本傷害結算每秒一次，故以 (now-1s, now) 偵測
+                    // 「上一秒到這一秒之間蓄滿砸下」的怪物王；命中圈內未倒地玩家加一發爆發傷害，
+                    // 該傷害與一般威脅共用下方減傷鏈（護甲→格擋→翻滾），格擋／翻滾可完全化解。
+                    let now_secs = tick as f64 / TICK_HZ as f64;
+                    let prev_secs = now_secs - 1.0;
+                    for (id, bx, by, level) in enemies.notorious_slammers() {
+                        if !crate::boss_slam::just_struck(id, prev_secs, now_secs) {
+                            continue;
+                        }
+                        slam_events.push((bx, by, crate::boss_slam::SLAM_RADIUS));
+                        let dmg = crate::boss_slam::slam_damage(level);
+                        for (pid, px, py, downed) in &positions {
+                            if *downed { continue; }
+                            if crate::boss_slam::is_in_blast(bx, by, *px, *py) {
+                                dmgs.push((*pid, dmg));
+                            }
                         }
                     }
                 }
@@ -1008,6 +1040,13 @@ pub fn spawn(app: AppState) {
                 for (pid, ex, ey) in evaded_dodges {
                     let _ = app.tx.send(std::sync::Arc::new(
                         crate::protocol::ServerMsg::DodgeEvaded { player_id: pid, x: ex, y: ey }
+                    ));
+                }
+                // 怪物王重擊衝擊波廣播（ROADMAP 424）：出鎖後送，守 prod-deadlock 鐵律；
+                // 全服都看得到落點的衝擊波環（無論自己是否在圈內），傷害已於上方結算。
+                for (bx, by, radius) in slam_events {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::BossSlam { x: bx, y: by, radius }
                     ));
                 }
                 // 玩家倒地 → 最近敵人升一級（ROADMAP 42）。
