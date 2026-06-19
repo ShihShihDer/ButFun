@@ -2018,6 +2018,10 @@ pub struct NodeView {
     pub remaining: u32,
     /// 現在可不可以採（耐久 > 0）。前端據此把可採的標亮、採空的畫暗。
     pub harvestable: bool,
+    /// 重生進度 0.0..=1.0（ROADMAP 404 林相復甦）：可採＝1.0（已長成）；採空中由 0（剛伐倒的樹樁）
+    /// 隨重生倒數升到趨近 1（快長回），前端據此把採空的樹從樹樁漸畫成新苗→小樹→大樹。
+    /// 新增欄位、向後相容（舊前端忽略即可）。
+    pub regrow: f32,
 }
 
 /// 快照裡的農地狀態：固定位置 / 大小的格陣列，讓前端能畫出每格。
@@ -2468,6 +2472,7 @@ mod tests {
                 y: 240.0,
                 remaining: 5,
                 harvestable: true,
+                regrow: 1.0,
             }],
             enemies: vec![EnemyView {
                 kind: EnemyKind::ScrapDrone,

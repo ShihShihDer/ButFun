@@ -8856,16 +8856,88 @@
   }
 
   // 畫世界上的採集節點。可採的亮、採空(重生中)的壓暗;玩家搆得到的那顆描一圈亮環提示「可採」。
+  // ROADMAP 404 林相復甦：把一棵採空的樹依重生進度 p(0..1) 從「樹樁」漸畫成
+  // 「新苗 → 小樹」。錨在地面點 (gx, gy=樹底),純 canvas 形狀、不靠 sprite,故黏土／
+  // 像素風皆能畫得一致,世界第一次看得見被伐倒的樹在自己長回來。
+  function drawRegrowingTree(gx, gy, p, now) {
+    const t = Math.max(0, Math.min(1, p));
+    ctx.save();
+    // 1) 樹樁:伐倒後一直在,提醒「這裡曾有棵樹、正在長回」。
+    const stumpW = 13;
+    const stumpH = 9;
+    ctx.fillStyle = "#6b4a2b"; // 樹皮褐
+    ctx.beginPath();
+    ctx.moveTo(gx - stumpW / 2, gy);
+    ctx.lineTo(gx + stumpW / 2, gy);
+    ctx.lineTo(gx + stumpW / 2 - 1.5, gy - stumpH);
+    ctx.lineTo(gx - stumpW / 2 + 1.5, gy - stumpH);
+    ctx.closePath();
+    ctx.fill();
+    // 樹樁頂的鋸面年輪。
+    ctx.fillStyle = "#caa472";
+    ctx.beginPath();
+    ctx.ellipse(gx, gy - stumpH, stumpW / 2 - 1.5, 2.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(107,74,43,0.7)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.ellipse(gx, gy - stumpH, (stumpW / 2 - 1.5) * 0.5, 1.3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // 2) 新苗 / 小樹:進度過了萌芽點才冒出,隨 p 抽高、樹冠長大。
+    const SPROUT_AT = 0.28; // 之前只是光禿樹樁
+    if (t > SPROUT_AT) {
+      const g = (t - SPROUT_AT) / (1 - SPROUT_AT); // 0..1 的「苗→樹」成長度
+      const stemBase = gy - stumpH + 1;
+      const stemH = 6 + g * 26; // 莖高 6→32
+      const sway = Math.sin(now * 0.0022 + gx * 0.05) * (1.6 * (1 - g * 0.6)); // 越小越搖
+      const topX = gx + sway;
+      const topY = stemBase - stemH;
+      // 嫩莖。
+      ctx.strokeStyle = "#5b8c3a";
+      ctx.lineWidth = 1.6 + g * 1.8;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(gx, stemBase);
+      ctx.quadraticCurveTo((gx + topX) / 2, stemBase - stemH * 0.5, topX, topY);
+      ctx.stroke();
+      // 樹冠:一叢綠,半徑隨成長變大、顏色由嫩綠轉深綠。
+      const canopyR = 4 + g * 11;
+      const leaf = g < 0.5 ? "#7fc24a" : "#5ea83a";
+      ctx.fillStyle = leaf;
+      const puffs = g < 0.45 ? 1 : 3;
+      if (puffs === 1) {
+        ctx.beginPath();
+        ctx.arc(topX, topY, canopyR, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        for (const [ox, oy, rr] of [
+          [0, -canopyR * 0.5, canopyR],
+          [-canopyR * 0.7, 0, canopyR * 0.8],
+          [canopyR * 0.7, 0, canopyR * 0.8],
+        ]) {
+          ctx.beginPath();
+          ctx.arc(topX + ox, topY + oy, rr, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
   function drawNodes(camX, camY) {
     const me = myId ? players.get(myId) : null;
     const reachable = nearestHarvestable(me);
     const now = performance.now();
     for (const n of nodes) {
-      // 採空即「消失」(麥塊式:挖完不見、稍後在他處重生)——重生倒數中的節點不畫。
-      if (!n.harvestable) continue;
       const sx = n.x - camX;
       const sy = n.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
+      // 採空的節點:樹會留下樹樁、依重生進度漸長回來(ROADMAP 404);其餘節點(石/礦)仍
+      // 沿用「採空即消失、稍後在他處重生」的麥塊式手感、不畫。
+      if (!n.harvestable) {
+        if (n.kind === "tree") drawRegrowingTree(sx, sy + 8, n.regrow ?? 0, now);
+        continue;
+      }
       const look = NODE_LOOK[n.kind] || { icon: "❔", tint: "#555" };
       // 剛被採的節點橫向抖一下(被砍/被敲的反應),強度隨時間漸消。
       const wob = nodeHitWobble(n, now);
