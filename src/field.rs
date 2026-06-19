@@ -232,6 +232,15 @@ impl Field {
         }
     }
 
+    /// 蜜源：田裡正在生長中（已種、未收成）的作物格數。
+    /// 養蜂釀蜜（ROADMAP 412）：蜂巢產蜜速率隨自家田裡的蜜源放大——種得越多、蜜釀越快。
+    pub fn blooming_count(&self) -> u32 {
+        self.tiles
+            .iter()
+            .filter(|t| matches!(t, Tile::Planted(_)))
+            .count() as u32
+    }
+
     /// 翻土：只有自然地能翻成空土。成功回 `true`，否則（已翻 / 已種 / 越界）回 `false`。
     pub fn till(&mut self, col: usize, row: usize) -> bool {
         match self.index_at(col, row) {

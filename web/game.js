@@ -2056,6 +2056,7 @@
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
   let landPlots = []; // ROADMAP 34 城外產權地塊 [{plot_id, min_gx,min_gy,max_gx,max_gy, owner_id, owner_name}]
   let ranchPlots = []; // ROADMAP 48 牧場狀態 [{plot_id, chicken_count, egg_count}]
+  let hives = []; // ROADMAP 412 養蜂釀蜜 [{owner, honey, stage, blooms}]
   let farmCropPlots = []; // ROADMAP 49 農作狀態 [{plot_id, crops:[{kind,ripe}]}]
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
   let sprinklers = []; // ROADMAP 112 灑水器 [{owner, wx, wy}]
@@ -2662,6 +2663,7 @@
         updateQuestPanel();
         landPlots = msg.land_plots || [];
         ranchPlots = msg.ranch_plots || [];
+        hives = msg.hives || []; // ROADMAP 412 養蜂釀蜜
         farmCropPlots = msg.farm_crop_plots || [];
         starCrystals = msg.star_crystals || [];
         sprinklers = msg.sprinklers || [];
@@ -3489,6 +3491,17 @@
         const wx = msg.x || 0, wy = (msg.y || 0) - 42;
         floaters.push({ wx, wy, text: "🤸 閃避！", color: "180,235,200", born: performance.now() });
         announce("翻滾閃開了一次反擊");
+        SFX.click();
+        break;
+      }
+      case "honey_harvest": {
+        // 採蜜（養蜂釀蜜 ROADMAP 412）：從自家蜂巢採收蜂蜜。
+        // 廣播事件，只對自己 id 演出金黃飄字＋報讀器（旁觀者忽略，他們看得到田角的蜂箱即可）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 44;
+        const n = msg.honey || 0;
+        floaters.push({ wx, wy, text: `🍯 採蜜 +${n}`, color: "255,205,90", born: performance.now() });
+        announce(`從蜂巢採收了 ${n} 罐蜂蜜`);
         SFX.click();
         break;
       }
@@ -11221,6 +11234,46 @@
       }
     }
 
+    // 農地田角的蜂箱（養蜂釀蜜 ROADMAP 412）：用 owner 對到該玩家的農田地塊，在田右上角畫蜂箱 🐝 + 蜂蜜量。
+    if (hives.length) {
+      for (const hv of hives) {
+        // 找這位巢主的農田地塊（一人一農地一蜂箱）。
+        const lp = landPlots.find(l => l.owner_id === hv.owner && l.purpose === "farm");
+        if (!lp) continue;
+        const wx = lp.min_gx * TILE_PX;
+        const wy = lp.min_gy * TILE_PX;
+        const w  = (lp.max_gx - lp.min_gx + 1) * TILE_PX;
+        // 擺在田的右上角，避免和雞群（畫在中央）疊在一起。
+        const sx = wx - camX + w - 14;
+        const sy = wy - camY + 14;
+        if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        // 蜂箱本體。蜂巢非空時蜜蜂繞著飛（尊重 reduceMotion）。
+        ctx.font = "20px sans-serif";
+        ctx.fillText("🐝", sx, sy);
+        if (hv.stage && hv.stage !== "empty" && !reduceMotion) {
+          // 一隻採蜜歸來的蜜蜂沿小圈繞行，暗示「正在釀蜜」。
+          const a = animClock * 2;
+          ctx.font = "11px sans-serif";
+          ctx.fillText("🐝", sx + Math.cos(a) * 12, sy + Math.sin(a) * 8 - 14);
+        }
+        // 蜂蜜量（滿巢金光、其餘淡黃）。滿巢提醒玩家來採收。
+        if (hv.honey > 0) {
+          ctx.font = "bold 11px sans-serif";
+          const full = hv.stage === "full";
+          ctx.fillStyle = full ? "#ffd54a" : "#fff0b8";
+          if (full && !reduceMotion) {
+            ctx.shadowColor = "#ffd54a";
+            ctx.shadowBlur = 8;
+          }
+          ctx.fillText(`🍯×${hv.honey}`, sx, sy + 16);
+        }
+        ctx.restore();
+      }
+    }
+
     // 農田地塊上的作物（ROADMAP 49）：在有作物的農田地塊畫出種類 emoji + 成熟標示。
     if (farmCropPlots.length) {
       const CROP_EMOJI = { wheat: "🌾", carrot: "🥕", potato: "🥔" };
@@ -18477,9 +18530,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240", alpha_crystal: "220,180,255", alpha_force: "255,220,60", legendary_core: "255,215,0", legendary_blade: "255,240,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -22280,8 +22333,13 @@
     const hearts = ranch ? (ranch.bond_hearts || 0) : 0; // ROADMAP 409：牧群羈絆愛心數 0~3
     const golden = ranch ? !!ranch.golden : false;       // ROADMAP 409：窩裡有暖心金蛋
     const ether = me ? me.ether : 0;
-    // sig 納入 chick/brooding/hearts/golden，避免狀態變了面板卻不重繪（panel-sig-stale）。
-    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, chick, brooding, hearts, golden, ether].join("|");
+    // ROADMAP 412 養蜂釀蜜：本人的蜂巢（一人一巢，按 owner 對到自己 id）。
+    const myHive = myId ? hives.find(h => h.owner === myId) : null;
+    const honey = myHive ? (myHive.honey || 0) : 0;
+    const hiveStage = myHive ? (myHive.stage || "empty") : null;
+    const hiveBlooms = myHive ? (myHive.blooms || 0) : 0;
+    // sig 納入 chick/brooding/hearts/golden 與蜂巢欄位，避免狀態變了面板卻不重繪（panel-sig-stale）。
+    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, chick, brooding, hearts, golden, ether, !!myHive, honey, hiveStage, hiveBlooms].join("|");
     if (sig === lastRanchSig) return;
     lastRanchSig = sig;
     body.innerHTML = "";
@@ -22376,6 +22434,75 @@
     tip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
     tip.textContent = "雞每 60 秒產 1~2 顆蛋（視雞數）。每次收蛋給農夫熟練度 +8 XP。雞蛋可賣 NPC（2 乙太/顆）或合成台做煎蛋（回血 10）。";
     body.appendChild(tip);
+
+    // ── 蜂房（養蜂釀蜜 ROADMAP 412）─────────────────────────────────────────
+    // 在自家農地安置蜂箱，蜜蜂採田裡作物的花蜜釀蜜——田裡作物越多，蜜釀得越快。
+    const HIVE_MAX = 12; // 對齊後端 apiary::MAX_HONEY
+    const HIVE_COST = 20; // 對齊後端 apiary::PLACE_HIVE_COST
+    const apiaryWrap = document.createElement("div");
+    apiaryWrap.style.cssText = "margin-top:12px;padding-top:10px;border-top:1px solid #3a3a3a;";
+    const title = document.createElement("div");
+    title.style.cssText = "color:#ffd86b;font-size:.92rem;margin-bottom:6px;";
+    title.textContent = "🍯 蜂房";
+    apiaryWrap.appendChild(title);
+
+    if (!myHive) {
+      // 尚無蜂箱：說明 + 安置鈕。
+      const desc = document.createElement("div");
+      desc.style.cssText = "color:#aaa;font-size:.82rem;line-height:1.5;margin-bottom:8px;";
+      desc.textContent = "在自家農地安置一座蜂箱，蜜蜂會採田裡作物的花蜜，隨時間自己釀成蜂蜜。田裡種得越多、蜜釀得越快。";
+      apiaryWrap.appendChild(desc);
+      const placeBtn = document.createElement("button");
+      placeBtn.type = "button";
+      placeBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #c0a030;border-radius:8px;background:transparent;color:#ffe066;cursor:pointer;font-size:.9rem;";
+      const canPlace = ether >= HIVE_COST;
+      placeBtn.textContent = `🐝 安置蜂箱（${HIVE_COST} 乙太）`;
+      if (!canPlace) {
+        placeBtn.disabled = true;
+        placeBtn.style.color = "#555";
+        placeBtn.style.borderColor = "#333";
+        placeBtn.style.cursor = "default";
+      } else {
+        placeBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "place_hive" }));
+        });
+      }
+      apiaryWrap.appendChild(placeBtn);
+    } else {
+      // 已有蜂箱：狀態 + 採蜜鈕。
+      const STAGE_LABEL = { empty: "空巢", filling: "漸滿", brimming: "滿溢前", full: "滿巢歇息" };
+      const hstatus = document.createElement("div");
+      hstatus.style.cssText = "margin-bottom:8px;font-size:.88rem;line-height:1.6;";
+      hstatus.innerHTML = `<div>🍯 蜂蜜：<b style="color:#ffe066;">${honey} / ${HIVE_MAX}</b> <span style="color:#999;font-size:.8rem;">（${STAGE_LABEL[hiveStage] || "—"}）</span></div>`
+        + `<div>🌸 蜜源：<b style="color:#9fe0a0;">${hiveBlooms}</b> <span style="color:#999;font-size:.8rem;">株生長中作物（種越多釀越快）</span></div>`;
+      if (hiveStage === "full") {
+        hstatus.innerHTML += `<div style="color:#ffd54a;font-size:.85rem;">蜂巢滿了，蜂群歇息中——採收後牠們就會再忙起來</div>`;
+      } else if (hiveBlooms === 0) {
+        hstatus.innerHTML += `<div style="color:#999;font-size:.8rem;">田裡沒有生長中的作物，蜂群只能採野地零星花蜜（很慢）。種點作物吧</div>`;
+      }
+      apiaryWrap.appendChild(hstatus);
+      const harvestBtn = document.createElement("button");
+      harvestBtn.type = "button";
+      harvestBtn.style.cssText = "width:100%;padding:7px 0;border:1px solid #c09030;border-radius:8px;background:transparent;color:#ffe066;cursor:pointer;font-size:.9rem;";
+      if (honey > 0) {
+        harvestBtn.textContent = `🍯 採蜜（${honey} 罐）`;
+        harvestBtn.addEventListener("click", () => {
+          ws.send(JSON.stringify({ type: "harvest_honey" }));
+        });
+      } else {
+        harvestBtn.textContent = "🍯 蜂蜜還在釀……";
+        harvestBtn.disabled = true;
+        harvestBtn.style.color = "#555";
+        harvestBtn.style.borderColor = "#333";
+        harvestBtn.style.cursor = "default";
+      }
+      apiaryWrap.appendChild(harvestBtn);
+      const htip = document.createElement("div");
+      htip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
+      htip.textContent = "蜂蜜可食用（回血 6＋暖食飽足）或賣 NPC。每罐採收給農夫熟練度 +3 XP。蜂巢最多堆到 12 罐就會滿巢歇息。";
+      apiaryWrap.appendChild(htip);
+    }
+    body.appendChild(apiaryWrap);
   }
 
   // ── 農作面板（ROADMAP 49）─────────────────────────────────────────────────

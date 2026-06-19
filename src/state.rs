@@ -1093,6 +1093,9 @@ pub struct AppState {
     pub land_plots: Arc<RwLock<LandPlotRegistry>>,
     /// 農田地塊牧場狀態（ROADMAP 48）：記憶體模式，重啟歸零。
     pub ranch: Arc<RwLock<RanchRegistry>>,
+    /// 養蜂釀蜜（ROADMAP 412）：按 owner 鍵的蜂巢狀態，蜜蜂採自家田裡作物花蜜釀蜜。
+    /// 記憶體模式，重啟歸零；蜂蜜本身入持久化背包，不丟。
+    pub apiary: Arc<RwLock<crate::apiary::ApiaryRegistry>>,
     /// 農田地塊作物狀態（ROADMAP 49）：記憶體模式，重啟歸零。
     pub farm_crops: Arc<RwLock<FarmCropRegistry>>,
     /// 夜採星晶礦脈（ROADMAP 50）：夜間生成、白天清除；記憶體模式。
@@ -1422,6 +1425,7 @@ impl AppState {
             land_plots: Arc::new(RwLock::new(land_plot_registry)),
             land_plot_store,
             ranch: Arc::new(RwLock::new(RanchRegistry::new())),
+            apiary: Arc::new(RwLock::new(crate::apiary::ApiaryRegistry::new())),
             farm_crops: Arc::new(RwLock::new(FarmCropRegistry::new())),
             star_crystals: Arc::new(RwLock::new(StarCrystalField::new())),
             night_index: Arc::new(AtomicU64::new(0)),

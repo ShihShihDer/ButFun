@@ -489,6 +489,12 @@ pub enum ClientMsg {
     /// `plot_id`：目標農田地塊（必須是本人擁有的地塊且有雞蛋）。
     /// 無蛋 / 非本人地塊 / 倒地中靜默忽略。
     CollectEggs { plot_id: u32 },
+    /// 安置蜂箱（養蜂釀蜜 ROADMAP 412）：在自家農地安置蜂箱（一人一巢）。
+    /// 花乙太（PLACE_HIVE_COST=20）。未登入 / 沒有農地 / 乙太不足 / 已有蜂箱靜默忽略。
+    PlaceHive,
+    /// 採蜜（養蜂釀蜜 ROADMAP 412）：收取蜂巢釀好的蜂蜜進背包，並給農夫熟練度 XP。
+    /// 未登入 / 無蜂箱 / 空巢 / 倒地中靜默忽略。
+    HarvestHoney,
     /// 種植作物（ROADMAP 49）：在自己的農田地塊種植作物，花乙太購入種苗。
     /// `plot_id`：目標農田地塊（必須是本人擁有的 Farm 類型地塊）。
     /// `crop_type`：作物種類 wire key（"wheat"/"carrot"/"potato"）。
@@ -865,6 +871,10 @@ pub enum ServerMsg {
         /// 農田地塊牧場狀態（ROADMAP 48）：只送有雞或有蛋的地塊（稀疏）。
         /// 前端在農田地塊上繪製雞 emoji 🐔 與蛋計數。
         ranch_plots: Vec<crate::ranching::RanchPlotView>,
+        /// 蜂巢狀態（養蜂釀蜜 ROADMAP 412）：每個有蜂箱的玩家一筆（稀疏）。
+        /// 前端用 `owner` 對到該玩家農地座標、在田角繪製蜂箱 🐝 與蜂蜜量。
+        #[serde(default)]
+        hives: Vec<crate::apiary::HiveView>,
         /// 農田地塊作物狀態（ROADMAP 49）：只送有種植作物的地塊（稀疏）。
         /// 前端在農田地塊上繪製作物 emoji 與成熟狀態。
         farm_crop_plots: Vec<crate::farm_crops::FarmCropPlotView>,
@@ -1328,6 +1338,15 @@ pub enum ServerMsg {
     GoldenEgg {
         player_id: Uuid,
         count: u32,
+        x: f32,
+        y: f32,
+    },
+    /// 採蜜（養蜂釀蜜 ROADMAP 412）：玩家從蜂巢採收蜂蜜時廣播；
+    /// 前端只對自己 `player_id` 演出金黃飄字＋報讀（旁觀者忽略）。`honey` ＝這次採到的蜂蜜罐數，
+    /// `x`/`y` ＝玩家座標。不入快照、不持久化、零 migration。
+    HoneyHarvest {
+        player_id: Uuid,
+        honey: u32,
         x: f32,
         y: f32,
     },
@@ -2643,6 +2662,7 @@ mod tests {
             quests: vec![],
             land_plots: vec![],
             ranch_plots: vec![],
+            hives: vec![],
             farm_crop_plots: vec![],
             star_crystals: vec![],
             village_buff_remaining_secs: 0,

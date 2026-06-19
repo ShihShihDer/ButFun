@@ -97,6 +97,7 @@ pub fn meal_buff_for(item: ItemKind) -> Option<MealBuff> {
     let (secs, per_sec) = match item {
         ItemKind::GrilledFish => (20.0, 0.4),  // 烤魚——基礎療癒食物
         ItemKind::FriedEgg => (24.0, 0.4),     // 煎蛋
+        ItemKind::Honey => (18.0, 0.3),        // 蜂蜜——甜食，輕盈的暖食飽足
         ItemKind::CarrotSoup => (28.0, 0.4),   // 蔬菜湯
         ItemKind::Bread => (30.0, 0.5),        // 麵包
         ItemKind::PotatoGratin => (34.0, 0.6), // 焗烤馬鈴薯——農地最豐盛
