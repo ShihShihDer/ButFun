@@ -441,6 +441,14 @@ pub enum ClientMsg {
     /// 累計乾淨擊；揮滿即放倒樹（依乾淨擊數抱走木材）＋給工匠熟練度，回 `ChopResult`。
     /// 沒有進行中的連揮則靜默忽略。
     ChopStrike,
+    /// 臨陣格擋：開格擋（ROADMAP 408）。玩家被敵人威脅時按「🛡️ 格擋」開一趟備防。
+    /// 伺服器驗格（未倒地＋此刻確有敵人威脅＋冷卻過＋沒在格擋）後開一趟格擋判定（環脈動）。
+    /// 不滿足條件則靜默忽略。
+    BeginGuard,
+    /// 臨陣格擋：按下格擋（ROADMAP 408）。備防進行中，玩家瞄準甜蜜點送出。
+    /// 伺服器以當下時刻判定檔位（完美／一部分／沒抓到），成功則凝一面限時護盾卸掉接下來的反擊傷害
+    /// ＋給戰士熟練度，回 `GuardResult`，並起冷卻。沒有進行中的備防則靜默忽略。
+    GuardTap,
     /// 索取今夜星圖（ROADMAP 347 觀星連星座）：玩家在夜裡開星圖，伺服器回今夜星座的星點與
     /// （已連過與否）狀態（`StarMap`）。非夜間時回 `available=false`，前端據此提示「夜裡才看得見星空」。
     RequestStarMap,
@@ -1239,6 +1247,15 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 臨陣格擋結果（ROADMAP 408）：回應 `GuardTap`，廣播；前端只對 `player_id == 自己` 演出。
+    /// `outcome`："perfect"（完美格擋，凝最強護盾）／"partial"（擋下一部分）／"whiff"（沒抓到時機）。
+    /// `x`/`y` ＝玩家當下座標。不入快照、不持久化、零 migration。
+    GuardResult {
+        player_id: Uuid,
+        outcome: String,
+        x: f32,
+        y: f32,
+    },
     /// 開灶步序（ROADMAP 349 照譜烹調）：回應 `StartCook`，廣播（前端只對自己 `player_id` 演出）。
     /// `steps` ＝這趟要照著閃示／敲回的步驟次序（snake_case：heat/add/stir/flip/season）。
     /// 前端先依序閃示（看譜），再讓玩家憑記憶敲回。不入快照、不持久化、零 migration。
@@ -1709,6 +1726,17 @@ pub struct PlayerView {
     /// 自己與旁觀者都看得到（旁觀者看別人正踩著拍子伐木）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chop_secs: Option<f32>,
+
+    // ── 臨陣格擋（ROADMAP 408）────────────────────────────────────────────────
+    /// 進行中格擋備防的經過秒數；沒在格擋＝None（略過序列化）。
+    /// 前端用同一條公式（`guard::beat_fraction`）渲染玩家頭頂收束的格擋環，
+    /// 自己與旁觀者都看得到（旁觀者看別人正看準時機格擋）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_secs: Option<f32>,
+    /// 此刻乙太護盾的卸傷強度（0~85）；沒上盾＝None（略過序列化）。
+    /// 前端據此在玩家身上畫一圈護盾微光，強度隨百分比。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_shield_pct: Option<u32>,
 
     // ── 席間舉杯（ROADMAP 329）────────────────────────────────────────────────
     /// 舉杯同席冷卻剩餘秒數（0.0 = 可舉杯）。前端「舉杯同席」鈕依此顯示冷卻倒數。
@@ -2438,7 +2466,7 @@ mod tests {
                 mining_tremor: None,
                 near_ruin: false,
                 cook_cooldown: 0.0,
-                aether_draw_secs: None, chop_secs: None,
+                aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -2713,7 +2741,7 @@ mod tests {
             mining_tremor: None,
             near_ruin: false,
             cook_cooldown: 0.0,
-            aether_draw_secs: None, chop_secs: None,
+            aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -3019,7 +3047,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -3086,7 +3114,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

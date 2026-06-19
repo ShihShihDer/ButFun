@@ -963,7 +963,12 @@ pub fn spawn(app: AppState) {
                             // 護甲減傷：讀裝備槽（ROADMAP 36）+ 寵物加成（ROADMAP 46）。
                             let defense = crate::equipment::equipped_armor_defense(&p.equipment)
                                 + p.pet.map(|pk| pk.bonus_defense()).unwrap_or(0);
-                            let actual_dmg = dmg.saturating_sub(defense);
+                            let mut actual_dmg = dmg.saturating_sub(defense);
+                            // 臨陣格擋（ROADMAP 408）：若此刻有乙太護盾，卸掉一部分反擊傷害
+                            //（封頂 85%、永不完全免傷）。護盾在主迴圈每 tick 遞減、消散即清空。
+                            if let Some(shield) = p.guard_shield {
+                                actual_dmg = shield.reduce(actual_dmg);
+                            }
                             if actual_dmg > 0 && p.vitals.take_damage(actual_dmg) {
                                 tracing::info!(player = %p.name, defense, actual_dmg, "被敵人打趴，休息復原中");
                                 if let Some(&(px, py)) = pos_map.get(&pid) {
@@ -1201,6 +1206,10 @@ pub fn spawn(app: AppState) {
                     if p.chop_cooldown > 0.0 {
                         p.chop_cooldown = (p.chop_cooldown - dt).max(0.0);
                     }
+                    // 格擋冷卻倒數（ROADMAP 408）：格擋結算後起算，只擋開新一趟格擋。
+                    if p.guard_cooldown > 0.0 {
+                        p.guard_cooldown = (p.guard_cooldown - dt).max(0.0);
+                    }
                     // 天地有名（ROADMAP 398）：戶外玩家踏入新「在地地名」locale 即記錄，出鎖後廣播地名卡。
                     // 室內（自家屋內）不算進世界地名。locale_at 純函式、零鎖無 IO，確定性。
                     if p.indoor_plot_id.is_none() {
@@ -1233,6 +1242,20 @@ pub fn spawn(app: AppState) {
                     if let Some(c) = p.chopping.as_mut() {
                         if c.advance(dt) {
                             p.chopping = None;
+                        }
+                    }
+                    // 格擋備防推進（ROADMAP 408 臨陣格擋）：advance 累時間、逾時即解除這趟
+                    // （不罰冷卻、可重來）。純函式、零鎖無 IO；格擋環由前端用同一公式渲染。
+                    if let Some(g) = p.guarding.as_mut() {
+                        if g.advance(dt) {
+                            p.guarding = None;
+                        }
+                    }
+                    // 乙太護盾消散（ROADMAP 408）：advance 遞減剩餘秒數、歸零即清空。
+                    // 反擊迴圈（每秒一次）讀它卸掉反擊傷害。
+                    if let Some(s) = p.guard_shield.as_mut() {
+                        if s.advance(dt) {
+                            p.guard_shield = None;
                         }
                     }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
