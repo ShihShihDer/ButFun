@@ -6283,6 +6283,10 @@
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
 
+    // 回家羅盤（ROADMAP 401）：自家田跑出畫面外時，邊緣浮一枚指向田的羅盤＋距離。
+    // 單獨包，例外不連累其餘 HUD；室內／訪客／田在畫面內時自動不顯示。
+    safeDraw("homeWayfinder", () => drawHomeWayfinder(me, camX, camY));
+
     // 天地有名地名卡（ROADMAP 398）：踏入新地方時於畫面上緣淡入的卡片，單獨包不連累其餘 HUD。
     safeDraw("localeCard", () => drawLocaleCard());
 
@@ -7143,6 +7147,114 @@
       ctx.fillStyle = "rgba(230,232,238,0.92)";
       ctx.fillText(localeCard.subtitle, cx, cy + 26);
     }
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
+  // ── 回家羅盤·指路歸途（ROADMAP 401）────────────────────────────────────
+  // 自家田離得遠、跑出畫面外時，畫面邊緣浮一枚指向田的黃銅羅盤＋距離，
+  // 讓玩家（尤其手機新手）隨時知道「家在哪個方向、還有多遠」、回頭找路有了地標。
+  // 以下幾個純幾何輔助無副作用、確定性，方便心算驗證與日後 i18n。
+
+  // 矩形（農地）中心的世界座標。
+  function rectCenterWorld(f) {
+    return {
+      x: f.origin_x + (f.cols * f.tile_size) / 2,
+      y: f.origin_y + (f.rows * f.tile_size) / 2,
+    };
+  }
+  // 世界座標點是否落在目前視窗（含 margin 內縮）內——在畫面內就不必指路。
+  function pointOnScreen(wx, wy, camX, camY, vw, vh, margin) {
+    const sx = wx - camX, sy = wy - camY;
+    return sx >= margin && sx <= vw - margin && sy >= margin && sy <= vh - margin;
+  }
+  // 從 (px,py) 指向 (tx,ty) 的方位角（畫面座標、y 向下）。
+  function bearingRad(px, py, tx, ty) {
+    return Math.atan2(ty - py, tx - px);
+  }
+  // 沿方位角，把羅盤釘在視窗「內緣矩形」上的落點：自中心沿射線推到內緣最近的一邊。
+  function compassEdgePoint(angle, vw, vh, inset) {
+    const cx = vw / 2, cy = vh / 2;
+    const hx = Math.max(8, vw / 2 - inset);
+    const hy = Math.max(8, vh / 2 - inset);
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+    const tx = Math.abs(dx) < 1e-6 ? Infinity : hx / Math.abs(dx);
+    const ty = Math.abs(dy) < 1e-6 ? Infinity : hy / Math.abs(dy);
+    const t = Math.min(tx, ty);
+    return { x: cx + dx * t, y: cy + dy * t };
+  }
+  // 像素距離 → 玩家可讀的步數（粗略換算，避免假精密；很近就直接說「就在附近」）。
+  function fmtWalkDist(distPx) {
+    const steps = Math.round(distPx / 32); // 約 32px / 步
+    if (steps <= 1) return "就在附近";
+    return steps + " 步";
+  }
+  // 是否該顯示羅盤：田在畫面外、且離得夠遠（避免擦邊時抖進抖出）。
+  function shouldShowWayfinder(onScreen, distPx) {
+    return !onScreen && distPx > 240;
+  }
+
+  function drawHomeWayfinder(me, camX, camY) {
+    if (!me || me.indoor_plot_id != null) return; // 室內不指路（畫的是室內場景）
+    const f = myField();
+    if (!f) return; // 訪客／尚無領地：沒有「家」可指
+    const c = rectCenterWorld(f);
+    const onScreen = pointOnScreen(c.x, c.y, camX, camY, viewW, viewH, 48);
+    const px = me.rx, py = me.ry;
+    const distPx = Math.hypot(c.x - px, c.y - py);
+    if (!shouldShowWayfinder(onScreen, distPx)) return;
+
+    const angle = bearingRad(px, py, c.x, c.y);
+    // 內縮量含安全區，避免被瀏海／圓角切到；下緣多留些避免壓到動作鈕。
+    const inset = 70 + Math.max(safeArea.top, safeArea.bottom);
+    const p = compassEdgePoint(angle, viewW, viewH, inset);
+
+    // 輕脈動（尊重 reduceMotion：靜止）。
+    const pulse = reduceMotion ? 0 : Math.sin(performance.now() / 600) * 0.08;
+    const R = 18 * (1 + pulse);
+
+    ctx.save();
+    // 黃銅圓盤底。
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, R, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(28,22,14,0.82)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(201,162,75,0.9)";
+    ctx.stroke();
+    // 指向田的箭頭。
+    ctx.translate(p.x, p.y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(R * 0.62, 0);
+    ctx.lineTo(-R * 0.32, -R * 0.42);
+    ctx.lineTo(-R * 0.12, 0);
+    ctx.lineTo(-R * 0.32, R * 0.42);
+    ctx.closePath();
+    ctx.fillStyle = "#e9d6a0";
+    ctx.fill();
+    ctx.restore();
+
+    // 標籤「🏠 你的田」＋距離：擺在羅盤朝畫面中心那一側，避免被切出畫面。
+    const towardCx = viewW / 2 - p.x;
+    const towardCy = viewH / 2 - p.y;
+    const lx = p.x + (towardCx >= 0 ? 1 : -1) * (R + 6);
+    const ly = p.y - R - 6;
+    ctx.save();
+    ctx.textAlign = towardCx >= 0 ? "left" : "right";
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "bold 12px system-ui, sans-serif";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(10,16,30,0.85)";
+    const label = "🏠 你的田";
+    ctx.strokeText(label, lx, ly);
+    ctx.fillStyle = "#e9d6a0";
+    ctx.fillText(label, lx, ly);
+    ctx.font = "11px system-ui, sans-serif";
+    const dist = fmtWalkDist(distPx);
+    ctx.strokeText(dist, lx, ly + 14);
+    ctx.fillStyle = "rgba(230,232,238,0.92)";
+    ctx.fillText(dist, lx, ly + 14);
     ctx.restore();
     ctx.textAlign = "left";
   }
