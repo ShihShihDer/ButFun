@@ -602,6 +602,11 @@
   let guardTouchId = null;
   let lastGuardTime = 0;
   const GUARD_COOLDOWN_MS = 3500; // 與 guard::GUARD_COOLDOWN_SECS 對齊（僅供前端鈕的淡化估算）
+  // ROADMAP 410 翻滾閃避：翻滾鈕的觸控手指 id（與動作鈕／格擋鈕分開，可同時按住）；
+  // lastDodgeTime 供前端估冷卻、把鈕暫時淡掉（真正冷卻仍由伺服器權威把關）。
+  let dodgeTouchId = null;
+  let lastDodgeTime = 0;
+  const DODGE_COOLDOWN_MS = 3000;  // 與 dodge::DODGE_COOLDOWN_SECS 對齊（僅供前端鈕的淡化估算）
   const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
   // 伺服器廣播的各玩家農地（per-player，每塊含 owner / origin / 每格 state·dry）；
   // 進場前為空陣列。自己那塊靠 owner === myId 認出（見 myField）。
@@ -2571,6 +2576,14 @@
               existing.guard_secs = null;
             }
             existing.guard_shield_pct = (typeof p.guard_shield_pct === "number") ? p.guard_shield_pct : null;
+            // ROADMAP 410：翻滾閃避——進行中翻滾的經過秒數。每收一筆快照重錨「收到時間」，
+            // 前端用本地時鐘自由推進翻身位移與翻滾揚塵，與伺服器恩典窗對齊。
+            if (typeof p.dodge_secs === "number") {
+              existing.dodge_secs = p.dodge_secs;
+              existing._dodgeRecvAt = performance.now();
+            } else {
+              existing.dodge_secs = null;
+            }
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -3452,6 +3465,16 @@
           floaters.push({ wx, wy, text: "💥 沒擋好…", color: "200,170,170", born: now });
           announce("格擋沒抓到時機");
         }
+        break;
+      }
+      case "dodge_evaded": {
+        // 翻滾閃避成功（ROADMAP 410）：恩典窗內閃掉了一次敵人反擊（零傷）。
+        // 廣播事件，只對自己 id 演出飄字＋報讀器（旁觀者忽略，他們看得到翻身動畫即可）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 42;
+        floaters.push({ wx, wy, text: "🤸 閃避！", color: "180,235,200", born: performance.now() });
+        announce("翻滾閃開了一次反擊");
+        SFX.click();
         break;
       }
       case "gather_quality": {
@@ -5317,6 +5340,12 @@
       const meG = myId ? players.get(myId) : null;
       if (meG && guardAvailable(meG)) { doGuard(meG); e.preventDefault(); return; }
     }
+    // ROADMAP 410 翻滾閃避：被敵人威脅時，C＝翻滾（往移動方向翻身閃開，最高優先）；
+    // 不在戰鬥時 C 仍照下方開合成台面板（情境化、不奪既有功能）。用 e.repeat 擋長按連發。
+    if ((e.key === "c" || e.key === "C") && !e.repeat) {
+      const meC = myId ? players.get(myId) : null;
+      if (meC && nearestEnemy(meC) && meC.indoor_plot_id == null) { doDodge(meC); e.preventDefault(); return; }
+    }
     // M:收起／展開小地圖(給鍵盤玩家一條與 canvas 收合鈕等效的入口,觸控/滑鼠點鈕亦可)。
     if (e.key === "m" || e.key === "M") {
       if (!e.repeat) toggleMinimap();
@@ -5462,6 +5491,24 @@
     ws.send(JSON.stringify({ type: "begin_guard" }));
     lastGuardTime = performance.now();
   }
+  // ROADMAP 410 翻滾閃避：翻滾鈕在動作鈕左側（戰鬥時才出現），可同時按住攻擊／格擋＋另一指翻滾。
+  function dodgeButtonRect() {
+    const a = actionButtonRect();
+    const r = 38;
+    return { cx: a.cx - a.r - r - 16, cy: a.cy, r };
+  }
+  // 此刻是否該顯示翻滾鈕：被敵人威脅、或正在翻滾中（鈕亮起）。室內不顯示。
+  function dodgeAvailable(me) {
+    if (!me || me.indoor_plot_id != null) return false;
+    if (dodgeElapsedOf(me) !== null) return true; // 翻滾中：鈕亮起
+    return !!nearestEnemy(me);
+  }
+  // 翻滾一次：往移動方向翻身閃開（伺服器驗格：被威脅＋冷卻過＋沒在翻滾才開）。鍵盤(C)／觸控鈕共用。
+  function doDodge(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
+    ws.send(JSON.stringify({ type: "dodge" }));
+    lastDodgeTime = performance.now();
+  }
   // 依「面前是什麼」算這次該做的動作（也給鈕挑圖示）：採 / 挖 / 放 / 照顧。
   function currentActionKind(me) {
     if (!me) return "farm";
@@ -5575,12 +5622,44 @@
     ctx.restore();
   }
 
+  // ROADMAP 410 翻滾閃避：戰鬥時在動作鈕左側畫一顆 🤸 翻滾鈕（觸控專屬）。
+  // 翻滾中＝亮起；剛翻完的冷卻內＝淡掉（伺服器權威把關，這只是視覺提示）。
+  function drawDodgeButton(me) {
+    if (!isTouch || !dodgeAvailable(me)) return;
+    const b = dodgeButtonRect();
+    const rolling = dodgeElapsedOf(me) !== null;
+    const coolPct = Math.max(0, 1 - (performance.now() - lastDodgeTime) / DODGE_COOLDOWN_MS);
+    const onCool = !rolling && coolPct > 0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.cx, b.cy, b.r, 0, Math.PI * 2);
+    if (dodgeTouchId !== null || rolling) {
+      ctx.fillStyle = "rgba(90,200,130,0.62)"; // 翻滾中：身法綠亮起
+    } else if (onCool) {
+      ctx.fillStyle = "rgba(28,36,46,0.30)";   // 冷卻中：淡
+    } else {
+      ctx.fillStyle = "rgba(40,100,70,0.46)";
+    }
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = rolling ? "rgba(150,255,190,0.95)" : "rgba(205,240,220,0.55)";
+    ctx.stroke();
+    ctx.font = "26px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.globalAlpha = onCool ? 0.5 : 1;
+    ctx.fillText("🤸", b.cx, b.cy + 1);
+    ctx.restore();
+  }
+
   canvas.addEventListener("touchstart", (e) => {
     const rect = canvas.getBoundingClientRect();
     const b = actionButtonRect();
     const meT = myId ? players.get(myId) : null;
     const gb = guardButtonRect();
     const showGuard = guardAvailable(meT);
+    const db = dodgeButtonRect();
+    const showDodge = dodgeAvailable(meT);
     for (const t of e.changedTouches) {
       // ROADMAP 408：按到格擋鈕 → 格擋一次（單次點按、不連發；備防中＝按下卡時機）。
       if (showGuard && guardTouchId === null) {
@@ -5588,6 +5667,15 @@
         if ((gx - gb.cx) * (gx - gb.cx) + (gy - gb.cy) * (gy - gb.cy) <= gb.r * gb.r) {
           guardTouchId = t.identifier;
           doGuard(meT);
+          continue;
+        }
+      }
+      // ROADMAP 410：按到翻滾鈕 → 翻滾一次（單次點按、不連發）。
+      if (showDodge && dodgeTouchId === null) {
+        const dx = t.clientX - rect.left, dy = t.clientY - rect.top;
+        if ((dx - db.cx) * (dx - db.cx) + (dy - db.cy) * (dy - db.cy) <= db.r * db.r) {
+          dodgeTouchId = t.identifier;
+          doDodge(meT);
           continue;
         }
       }
@@ -5635,6 +5723,12 @@
     if (guardTouchId !== null) {
       for (const ct of e.changedTouches) {
         if (ct.identifier === guardTouchId) { guardTouchId = null; break; }
+      }
+    }
+    // ROADMAP 410：翻滾鈕手指抬起 → 釋放（單次點按，不連發）。
+    if (dodgeTouchId !== null) {
+      for (const ct of e.changedTouches) {
+        if (ct.identifier === dodgeTouchId) { dodgeTouchId = null; break; }
       }
     }
     // 只在「搖桿那根手指」抬起／取消時才收掉搖桿;別根手指放開不影響移動。
@@ -6394,6 +6488,42 @@
       ctx.restore();
     }
 
+    // 翻滾閃避（ROADMAP 410）：正在翻滾的玩家腳邊揚起一圈旋轉揚塵＋身法綠殘影，
+    // 讓自己與旁觀者一眼看出「他翻身閃開了」。翻身在前 DODGE_ROLL_SECS 完成（旋塵最盛），
+    // 之後到恩典窗結束殘留一抹淡綠餘光（提示「此刻仍免傷」）。屬玩法核心回饋，reduceMotion 仍畫
+    // （只把旋轉換成靜態光環，避免旋暈）。位移本身由玩家自身移動帶動，這裡只演出翻身的塵與光。
+    const dodgeElapsed = dodgeElapsedOf(p);
+    if (dodgeElapsed !== null && dodgeElapsed < DODGE_GRACE_SECS) {
+      const rolling = dodgeElapsed < DODGE_ROLL_SECS;
+      // 翻身期 0→1 推進旋塵；恩典餘光期淡出。
+      const rollT = Math.min(1, dodgeElapsed / DODGE_ROLL_SECS);
+      const fadeT = Math.max(0, 1 - (dodgeElapsed - DODGE_ROLL_SECS) / (DODGE_GRACE_SECS - DODGE_ROLL_SECS));
+      const cyr = by;
+      ctx.save();
+      if (rolling) {
+        // 旋轉揚塵：四撮塵點繞著腳邊轉一圈（reduceMotion 時定格不轉）。
+        const baseAng = reduceMotion ? 0 : rollT * Math.PI * 2.2;
+        const ringR = 13 + rollT * 6;
+        for (let i = 0; i < 4; i++) {
+          const a = baseAng + i * Math.PI / 2;
+          const dxp = sx + Math.cos(a) * ringR;
+          const dyp = cyr + 8 + Math.sin(a) * ringR * 0.5; // 壓扁成地面塵圈
+          ctx.beginPath();
+          ctx.arc(dxp, dyp, 3 - rollT * 1.2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(180,235,200,${(0.55 * (1 - rollT) + 0.2).toFixed(3)})`;
+          ctx.fill();
+        }
+      } else {
+        // 恩典餘光：腳邊一圈淡綠光環，提示「翻完了但這一拍反擊仍閃得掉」。
+        ctx.beginPath();
+        ctx.arc(sx, cyr + 6, 15, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(150,230,180,${(0.4 * fadeT).toFixed(3)})`;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // 臨陣格擋環（ROADMAP 408）：正在格擋備防的玩家頭頂畫一圈格擋環——一顆亮點繞圈跑，
     // 環頂是「甜蜜點」（乙太藍的甜蜜弧），亮點掃進甜蜜弧的瞬間按下＝完美格擋。自己與旁觀者
     // 都看得到（格擋秒數隨快照廣播）；相位用與後端同一條公式（guardBeatFraction）渲染，
@@ -6712,6 +6842,7 @@
     }
     safeDraw("actionButton", () => drawActionButton(me));
     safeDraw("guardButton", () => drawGuardButton(me)); // ROADMAP 408 格擋鈕（戰鬥時才出現）
+    safeDraw("dodgeButton", () => drawDodgeButton(me)); // ROADMAP 410 翻滾鈕（戰鬥時才出現）
 
     // 觸控搖桿視覺(只在按住時出現)。讓畫面忠實反映「角色現在到底有沒有被這根手指驅動」:
     // 推桿一按下就跟著手指,但要拖過 TAP_SLOP 才升級成搖桿、且每軸超過 TOUCH_DEAD 才真的送方向。
@@ -9064,6 +9195,16 @@
     if (!p || typeof p.guard_secs !== "number") return null;
     const recv = p._guardRecvAt || performance.now();
     return p.guard_secs + (performance.now() - recv) / 1000;
+  }
+
+  // ROADMAP 410 翻滾閃避：翻滾常數（與 dodge.rs 對齊）。
+  const DODGE_ROLL_SECS = 0.5;   // 翻身位移動畫時長（與 dodge::DODGE_ROLL_SECS 對齊）
+  const DODGE_GRACE_SECS = 1.05; // 閃避恩典窗（與 dodge::DODGE_GRACE_SECS 對齊，僅供前端揚塵淡出估算）
+  // 玩家進行中翻滾的「目前經過秒數」：以收到快照時錨點 + 本地時鐘自由推進；沒在翻滾回 null。
+  function dodgeElapsedOf(p) {
+    if (!p || typeof p.dodge_secs !== "number") return null;
+    const recv = p._dodgeRecvAt || performance.now();
+    return p.dodge_secs + (performance.now() - recv) / 1000;
   }
 
   // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。

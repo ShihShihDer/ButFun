@@ -309,6 +309,14 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒上盾＝None）；
     /// 反擊迴圈讀它卸傷，game.rs 每 tick 遞減其剩餘秒數（消散即清空）。
     pub guard_shield: Option<crate::guard::GuardShield>,
+    /// 翻滾結算後的冷卻（ROADMAP 410 翻滾閃避）：只擋開新一趟翻滾，避免連續翻滾達成永久免傷。
+    /// 記憶體前置、不持久化、零 migration、重啟清零。由 game.rs 每 tick 遞減。
+    pub dodge_cooldown: f32,
+    /// 進行中的一趟翻滾（ROADMAP 410）：往移動方向翻身閃開，恩典窗內完全閃掉一次敵人反擊。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在翻滾＝None）；
+    /// 僅 elapsed 隨 PlayerView 廣播以渲染翻身位移。由 game.rs 每 tick 推進（恩典窗過即落幕）；
+    /// 反擊迴圈讀它的 `in_grace()` 判斷此刻是否免傷。
+    pub dodging: Option<crate::dodge::DodgeRoll>,
 
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
@@ -532,6 +540,9 @@ impl Player {
             // ROADMAP 408：此刻乙太護盾的卸傷強度（沒上盾＝None，略過序列化）；
             // 廣播給所有人，前端畫頭頂護盾微光。
             guard_shield_pct: self.guard_shield.map(|s| s.pct()),
+            // ROADMAP 410：進行中翻滾的經過秒數（沒在翻滾＝None，略過序列化）；
+            // 廣播給所有人，前端據此演出翻身位移與翻滾環。
+            dodge_secs: self.dodging.map(|d| d.elapsed()),
             // ROADMAP 329：舉杯同席冷卻，供前端在廣場餐桌旁的「舉杯」鈕顯示冷卻倒數。
             toast_cooldown: self.toast_cooldown,
             trade_cargo: self.trade_cargo.as_ref().map(|c| crate::protocol::TradeCargoBrief {
@@ -1640,6 +1651,8 @@ mod tests {
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
+            dodge_cooldown: 0.0,
+            dodging: None,
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
