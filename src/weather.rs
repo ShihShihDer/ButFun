@@ -45,8 +45,20 @@ impl WeatherType {
         }
     }
 
+    /// snake_case 類型字串（與前端 / WeatherView 契約一致）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WeatherType::Clear => "clear",
+            WeatherType::GrasslandRain => "grassland_rain",
+            WeatherType::DesertSandstorm => "desert_sandstorm",
+            WeatherType::RockyCrystalDust => "rocky_crystal_dust",
+            WeatherType::WaterSeaMist => "water_sea_mist",
+        }
+    }
+
     /// 輪換到下一個天氣類型（Clear→Rain→Sandstorm→Crystal→SeaMist→Clear→…）。
-    fn next(self) -> WeatherType {
+    /// `pub` 供氣象預報台（405）確定性推演接下來的天氣序列。
+    pub fn next(self) -> WeatherType {
         match self {
             WeatherType::Clear => WeatherType::GrasslandRain,
             WeatherType::GrasslandRain => WeatherType::DesertSandstorm,
@@ -59,6 +71,9 @@ impl WeatherType {
 
 /// 每次天氣持續的秒數（8 分鐘）。
 pub const WEATHER_DURATION_SECS: f32 = 480.0;
+
+/// 氣象預報台（405）：對外預報接下來幾種天氣（含當前的下一個起算）。
+pub const FORECAST_LEN: usize = 3;
 
 /// 強度淡入/淡出的比例（前後各 15% 時間用來漸變強度）。
 const FADE_FRACTION: f32 = 0.15;
@@ -111,6 +126,28 @@ impl WeatherState {
         }
     }
 
+    /// 本次天氣還剩多少秒就切換（氣象預報台 405 倒數用）。
+    /// 夾在 `[0, WEATHER_DURATION_SECS]`，永不為負（防壞值）。
+    pub fn remaining_secs(&self) -> f32 {
+        (WEATHER_DURATION_SECS - self.elapsed).clamp(0.0, WEATHER_DURATION_SECS)
+    }
+
+    /// 確定性推演接下來的 `n` 種天氣與各自「還有多久才開始」（秒）。
+    /// 天氣是固定輪換（見 `WeatherType::next`）＋固定時長，故未來完全可預期。
+    /// 回傳 `[(類型, 距現在開始的秒數)]`：第 1 筆＝下一個天氣（eta＝本次剩餘秒），
+    /// 第 k 筆 eta＝本次剩餘秒 +（k−1）×時長。eta 單調遞增、必為正。
+    pub fn forecast(&self, n: usize) -> Vec<(WeatherType, f32)> {
+        let mut out = Vec::with_capacity(n);
+        let mut ty = self.weather_type;
+        let base = self.remaining_secs();
+        for k in 0..n {
+            ty = ty.next();
+            let eta = base + (k as f32) * WEATHER_DURATION_SECS;
+            out.push((ty, eta));
+        }
+        out
+    }
+
     /// 目前是否正在下雨（草原細雨）——用來決定露天農地是否自動澆灌。
     pub fn is_raining(&self) -> bool {
         self.weather_type == WeatherType::GrasslandRain
@@ -128,17 +165,20 @@ impl WeatherState {
 
     /// 給快照廣播用的可見狀態（返回 `protocol::WeatherView`）。
     pub fn view(&self) -> crate::protocol::WeatherView {
-        let weather_type = match self.weather_type {
-            WeatherType::Clear => "clear",
-            WeatherType::GrasslandRain => "grassland_rain",
-            WeatherType::DesertSandstorm => "desert_sandstorm",
-            WeatherType::RockyCrystalDust => "rocky_crystal_dust",
-            WeatherType::WaterSeaMist => "water_sea_mist",
-        }
-        .to_string();
+        // 氣象預報台（405）：附帶本次剩餘秒與接下來 3 種天氣的確定性預報。
+        let forecast = self
+            .forecast(FORECAST_LEN)
+            .into_iter()
+            .map(|(ty, eta)| crate::protocol::WeatherForecastView {
+                weather_type: ty.as_str().to_string(),
+                eta_secs: eta,
+            })
+            .collect();
         crate::protocol::WeatherView {
-            weather_type,
+            weather_type: self.weather_type.as_str().to_string(),
             intensity: self.intensity(),
+            remaining_secs: self.remaining_secs(),
+            forecast,
         }
     }
 }
@@ -256,6 +296,95 @@ mod tests {
         w.advance(WEATHER_DURATION_SECS); // → GrasslandRain
         let v2 = w.view();
         assert_eq!(v2.weather_type, "grassland_rain");
+    }
+
+    // ── 氣象預報台（405）─────────────────────────────────────────────────
+
+    #[test]
+    fn as_str_round_trips_all_types() {
+        // as_str 與 view 的字串契約一致，五型全覆蓋。
+        let mut w = WeatherState::new();
+        assert_eq!(w.weather_type.as_str(), "clear");
+        let expected = [
+            "grassland_rain",
+            "desert_sandstorm",
+            "rocky_crystal_dust",
+            "water_sea_mist",
+            "clear",
+        ];
+        for exp in expected {
+            w.advance(WEATHER_DURATION_SECS);
+            assert_eq!(w.weather_type.as_str(), exp);
+        }
+    }
+
+    #[test]
+    fn remaining_secs_counts_down_within_clamp() {
+        let mut w = WeatherState::new();
+        // 剛起步：整段時長都還剩。
+        assert!((w.remaining_secs() - WEATHER_DURATION_SECS).abs() < 1e-3);
+        w.advance(WEATHER_DURATION_SECS * 0.25);
+        // 過了 1/4，剩約 3/4。
+        assert!((w.remaining_secs() - WEATHER_DURATION_SECS * 0.75).abs() < 1e-2);
+        // 永遠夾在 [0, DURATION]，不為負。
+        assert!(w.remaining_secs() >= 0.0);
+        assert!(w.remaining_secs() <= WEATHER_DURATION_SECS);
+    }
+
+    #[test]
+    fn forecast_predicts_deterministic_rotation() {
+        // 從晴天起算，接下來依序＝雨→沙暴→晶塵。
+        let w = WeatherState::new();
+        let f = w.forecast(3);
+        assert_eq!(f.len(), 3);
+        assert_eq!(f[0].0, WeatherType::GrasslandRain);
+        assert_eq!(f[1].0, WeatherType::DesertSandstorm);
+        assert_eq!(f[2].0, WeatherType::RockyCrystalDust);
+    }
+
+    #[test]
+    fn forecast_eta_is_monotonic_and_positive() {
+        let mut w = WeatherState::new();
+        w.advance(WEATHER_DURATION_SECS * 0.5); // 本次過半
+        let f = w.forecast(3);
+        // 第 1 筆 eta＝本次剩餘秒（約半段）。
+        assert!((f[0].1 - WEATHER_DURATION_SECS * 0.5).abs() < 1e-2);
+        // eta 逐筆遞增、每筆相差一個完整時長、皆為正。
+        assert!(f[0].1 > 0.0);
+        assert!(f[1].1 > f[0].1);
+        assert!(f[2].1 > f[1].1);
+        assert!((f[1].1 - f[0].1 - WEATHER_DURATION_SECS).abs() < 1e-2);
+        assert!((f[2].1 - f[1].1 - WEATHER_DURATION_SECS).abs() < 1e-2);
+    }
+
+    #[test]
+    fn forecast_wraps_around_cycle() {
+        // 從海霧起算，下一個應繞回晴天。
+        let mut w = WeatherState::new();
+        for _ in 0..4 {
+            w.advance(WEATHER_DURATION_SECS); // Clear→Rain→Sand→Crystal→SeaMist
+        }
+        assert_eq!(w.weather_type, WeatherType::WaterSeaMist);
+        let f = w.forecast(2);
+        assert_eq!(f[0].0, WeatherType::Clear);
+        assert_eq!(f[1].0, WeatherType::GrasslandRain);
+    }
+
+    #[test]
+    fn forecast_zero_len_is_empty() {
+        let w = WeatherState::new();
+        assert!(w.forecast(0).is_empty());
+    }
+
+    #[test]
+    fn view_carries_forecast_and_remaining() {
+        let w = WeatherState::new();
+        let v = w.view();
+        assert_eq!(v.forecast.len(), FORECAST_LEN);
+        assert_eq!(v.forecast[0].weather_type, "grassland_rain");
+        assert!(v.remaining_secs > 0.0);
+        // 預報 eta 與類型字串契約一致。
+        assert!(v.forecast[0].eta_secs > 0.0);
     }
 
     #[test]

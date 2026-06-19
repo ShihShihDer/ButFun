@@ -2187,6 +2187,19 @@ pub struct WeatherView {
     pub weather_type: String,
     /// 粒子強度 [0.0, 1.0]。晴天為 0，其餘淡入淡出。
     pub intensity: f32,
+    /// 本次天氣還剩多少秒就切換（氣象預報台 405 倒數用）。
+    pub remaining_secs: f32,
+    /// 接下來幾種天氣的確定性預報（氣象預報台 405）；純新增欄位，舊前端忽略即可。
+    pub forecast: Vec<WeatherForecastView>,
+}
+
+/// 氣象預報台（405）：未來一筆天氣的預報——類型字串＋距現在開始的秒數。
+#[derive(Debug, Clone, Serialize)]
+pub struct WeatherForecastView {
+    /// snake_case 天氣類型字串（同 `WeatherView::weather_type`）。
+    pub weather_type: String,
+    /// 距現在還有多少秒這種天氣才開始（單調遞增、必為正）。
+    pub eta_secs: f32,
 }
 
 /// 雨後彩虹狀態（ROADMAP 361）：伺服器權威的全服共享天象。
@@ -2516,7 +2529,7 @@ mod tests {
             star_crystals: vec![],
             village_buff_remaining_secs: 0,
             village_treasury: 0,
-            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0 },
+            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0, remaining_secs: 0.0, forecast: vec![] },
             rainbow: RainbowView::default(),
             sprinklers: vec![],
             gathering_secs: 0,
