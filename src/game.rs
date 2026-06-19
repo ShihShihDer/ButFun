@@ -3838,7 +3838,19 @@ pub fn spawn(app: AppState) {
 
                     ServerMsg::Snapshot {
                         tick,
-                        players: players.values().map(|p| p.view(&sch, traveler_xy, app.wandering_merchant.read().unwrap().is_active())).collect(),
+                        players: players.values().map(|p| {
+                            let mut pv = p.view(&sch, traveler_xy, app.wandering_merchant.read().unwrap().is_active());
+                            // ROADMAP 418 歸家羅盤：對「已買地」的玩家補上回家方位／距離／八方位。
+                            // app.plots 為內部 Mutex（index_of 只短暫上鎖、不碰 players），於此持 players
+                            // 讀鎖時呼叫安全——claim 路徑一律先放掉 players 再碰 plots，鎖序一致不死鎖。
+                            if let Some(idx) = app.plots.index_of(p.id) {
+                                let g = crate::wayfinding::guide_home(p.x, p.y, idx);
+                                pv.home_bearing = Some(g.bearing);
+                                pv.home_dist = Some(g.distance);
+                                pv.home_dir = Some(g.cardinal as u8);
+                            }
+                            pv
+                        }).collect(),
                         fields: field_views,
                         nodes: node_views,
                         enemies: enemy_views,

@@ -2109,6 +2109,20 @@ pub struct PlayerView {
     /// （省略流量、永不顯示）。只對引導啟用中的全新玩家有值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onboarding: Option<OnboardView>,
+
+    // ── 歸家羅盤（ROADMAP 418）─────────────────────────────────────────────────
+    /// 回家方位角（度，0=北、順時針）。**只對擁有農地的玩家有值**；沒地的新手＝None，
+    /// 前端不顯示羅盤。由伺服器在快照層用 `wayfinding::guide_home` 從「該玩家自身座標」
+    /// 算到「自家田中心」——每位玩家算自己的、每 tick 更新，前端讀自己那筆即可，零鏡像。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_bearing: Option<f32>,
+    /// 到自家田直線距離（像素）。None＝沒地。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dist: Option<f32>,
+    /// 回家八方位 wire 索引（0=北，順時針到 7=西北；對齊 `wayfinding::Cardinal as u8`）。
+    /// 前端查繁中字（i18n 集中在前端）。None＝沒地。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<u8>,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -2677,6 +2691,9 @@ mod tests {
                 well_fed: None,
                 well_fed_tier: None,
                 onboarding: None,
+                home_bearing: None,
+                home_dist: None,
+                home_dir: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -2955,6 +2972,9 @@ mod tests {
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
+            home_bearing: None,
+            home_dist: None,
+            home_dir: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -3243,6 +3263,9 @@ mod tests {
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
+            home_bearing: None,
+            home_dist: None,
+            home_dir: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -3310,6 +3333,9 @@ mod tests {
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
+            home_bearing: None,
+            home_dist: None,
+            home_dir: None,
         }
     }
 
