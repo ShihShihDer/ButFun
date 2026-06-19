@@ -1208,6 +1208,46 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 雨後彩虹：乾淨");
 }
 
+// 畫面動態偏好（ROADMAP 425）：先單元斷言純函式 effectiveReduceMotion 的真值表，
+// 再強制進入「省電靜謐」（reduceMotion=true）連跑數幀，確保 calm 路徑零 render 例外
+// （預設 smoke 下系統 matchMedia matches=false，calm 繪製路徑平時碰不到）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.effectiveReduceMotion;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 畫面動態：game.js 未導出 effectiveReduceMotion");
+  } else {
+    // [pref, osReduce, 期望有效減少動態]
+    const cases = [
+      ["calm", false, true], ["calm", true, true],          // calm 恆強制靜謐
+      ["rich", false, false], ["rich", true, false],        // rich 恆全開（覆寫系統）
+      ["auto", false, false], ["auto", true, true],         // auto 跟隨系統
+      ["bogus", false, false], ["bogus", true, true],       // 未知值＝auto
+      [undefined, true, true],                              // 缺值＝auto
+    ];
+    let bad = 0;
+    for (const [pref, os, want] of cases) {
+      if (fn(pref, os) !== want) { bad++; console.error(`  ❌ 畫面動態：effectiveReduceMotion(${pref}, ${os}) 期望 ${want}`); }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 畫面動態·偏好解析真值表：${cases.length}/${cases.length}`);
+  }
+
+  const setPref = sandbox.__bfTest && sandbox.__bfTest.setMotionPref;
+  if (typeof setPref === "function") {
+    const before = caughtRenderErrors.length;
+    console.log("── 情境：畫面動態·省電靜謐（強制 reduceMotion 後連跑）──");
+    setPref("calm");
+    lastWS.onmessage({ data: JSON.stringify({ ...snapshot, type: "snapshot" }) });
+    const r = pump("省電靜謐", 30);
+    setPref("auto"); // 還原，免影響後續判讀
+    if (r instanceof Error) { failed = true; console.error("  ❌ 省電靜謐：未捕捉例外"); }
+    const newCaught = caughtRenderErrors.slice(before);
+    if (newCaught.length) { failed = true; console.error(`  ❌ 省電靜謐：safeRender 攔下 ${newCaught.length} 個繪製例外`); }
+    else if (!(r instanceof Error)) console.log("  ✅ 省電靜謐：乾淨");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
