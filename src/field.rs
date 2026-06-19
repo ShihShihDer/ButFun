@@ -80,6 +80,12 @@ pub struct Field {
     /// 欄，舊存檔無此欄時 `#[serde(default)]` 回 0=不擺，向後相容、免 migration）。
     #[serde(default)]
     home_decor: u8,
+    /// 家園庭園的擺放位（ROADMAP 416）：長度至多 `home_decor::GARDEN_SLOTS`，每格一個擺飾索引
+    /// （0=該位不擺）。把 402 的「單件」深化成「一座可佈置的庭園」。**入存檔**（整塊 `Field`
+    /// 序列化，舊存檔無此欄時 `#[serde(default)]` 回空陣列、向後相容、免 migration；舊存檔只有
+    /// `home_decor` 時於 `reseated` 自動升成 slot 0，既有擺飾零損失）。
+    #[serde(default)]
+    garden: Vec<u8>,
 }
 
 impl Field {
@@ -100,6 +106,7 @@ impl Field {
             origin_x,
             origin_y,
             home_decor: 0,
+            garden: Vec::new(),
         }
     }
 
@@ -131,14 +138,38 @@ impl Field {
 
     /// 設定家園擺飾（ROADMAP 402）：把玩家選的索引夾成合法值後存下（越界→0=不擺）。
     /// 改的是哪塊地由呼叫端決定（`ws.rs` 只取得玩家自己的田），這裡不做所有權判斷。
+    /// ROADMAP 416：legacy 單件入口統一委派到庭園 slot 0——舊前端（只送 `SetHomeDecor`）也會
+    /// 寫進新的庭園資料、`home_decor` 永遠等於 `garden[0]`，新舊兩端共用同一份權威狀態。
     pub fn set_home_decor(&mut self, index: u8) {
-        self.home_decor = crate::home_decor::sanitize(index);
+        self.set_garden_slot(0, index);
     }
 
     /// 目前的家園擺飾索引（0=不擺）。
     #[cfg(test)]
     pub fn home_decor(&self) -> u8 {
         self.home_decor
+    }
+
+    /// 設定家園庭園某個擺放位的小物（ROADMAP 416）：把第 `slot` 格設成 `index`（夾成合法值）。
+    /// `slot` 超出 `GARDEN_SLOTS` 一律忽略（防偽造）。內部把 garden 補齊到 `GARDEN_SLOTS` 長以
+    /// 便定位寫入，並把 legacy `home_decor` 同步成 slot 0，讓**舊前端**仍看得到第一格那件擺飾。
+    /// 改的是哪塊地由呼叫端決定（`ws.rs` 只取得玩家自己的田），這裡不做所有權判斷。
+    pub fn set_garden_slot(&mut self, slot: u8, index: u8) {
+        let slot = slot as usize;
+        if slot >= crate::home_decor::GARDEN_SLOTS {
+            return;
+        }
+        if self.garden.len() < crate::home_decor::GARDEN_SLOTS {
+            self.garden.resize(crate::home_decor::GARDEN_SLOTS, 0);
+        }
+        self.garden[slot] = crate::home_decor::sanitize(index);
+        // legacy 同步：舊前端只讀 home_decor，讓它對齊 slot 0（向後相容、不丟第一格那件）。
+        self.home_decor = self.garden.first().copied().unwrap_or(0);
+    }
+
+    /// 目前的家園庭園擺放位（ROADMAP 416）。全空時回空切片（前端／快照據此略過繪製）。
+    pub fn garden(&self) -> &[u8] {
+        &self.garden
     }
 
     /// 這塊地左上角在世界中的座標（像素）。
@@ -169,6 +200,7 @@ impl Field {
             origin_x,
             origin_y,
             home_decor: 0,
+            garden: Vec::new(),
         })
     }
 
@@ -178,8 +210,17 @@ impl Field {
     /// 否則重啟載入會把玩家擺好的家園擺飾默默清掉。順手 `sanitize` 防壞檔塞髒索引。
     pub fn reseated(self, index: usize) -> Option<Self> {
         let decor = crate::home_decor::sanitize(self.home_decor);
+        // garden 也要一起接回（from_tiles 只搬 tiles），載入時順手夾合法。
+        let mut garden = self.garden;
+        crate::home_decor::sanitize_garden(&mut garden);
         Self::from_tiles(index, self.tiles).map(|mut f| {
             f.home_decor = decor;
+            f.garden = garden;
+            // 舊存檔遷移（ROADMAP 416）：只有 legacy home_decor、還沒有庭園資料時，把那一件
+            // 升成 slot 0，玩家原本擺好的擺飾零損失。set_garden_slot 會同步把 home_decor 設回。
+            if decor > 0 && f.garden.iter().all(|&x| x == 0) {
+                f.set_garden_slot(0, decor);
+            }
             f
         })
     }
@@ -403,6 +444,12 @@ impl Field {
             },
             // ROADMAP 402：帶上家園擺飾索引，前端依此在田上畫對應小物（0=不擺則不畫）。
             home_decor: self.home_decor,
+            // ROADMAP 416：帶上整座庭園的擺放位；全空則略去省流量（skip_serializing_if）。
+            garden: if self.garden.iter().any(|&x| x != 0) {
+                self.garden.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -831,6 +878,45 @@ mod tests {
         );
         let back = serde_json::from_str::<Field>(&json).unwrap().reseated(0).unwrap();
         assert_eq!(back.home_decor(), 0);
+        assert!(back.garden().iter().all(|&x| x == 0), "舊存檔載回庭園全空");
+    }
+
+    // ── ROADMAP 416 庭園 ────────────────────────────────────────────────────
+    #[test]
+    fn garden_slots_persist_through_serde_and_reseat() {
+        // 多格庭園入存檔且 reseated 接回——否則重啟會把玩家佈置好的庭園清掉。
+        let mut f = Field::for_plot(3);
+        f.set_garden_slot(0, 2);
+        f.set_garden_slot(2, 9);
+        f.set_garden_slot(5, 11);
+        let json = serde_json::to_string(&f).unwrap();
+        let back = serde_json::from_str::<Field>(&json).unwrap().reseated(3).unwrap();
+        assert_eq!(back.garden(), &[2, 0, 9, 0, 0, 11], "整座庭園撐過序列化＋reseat");
+        assert_eq!(back.home_decor(), 2, "legacy home_decor 同步成 slot 0");
+        assert_eq!(back, f);
+    }
+
+    #[test]
+    fn old_single_decor_save_migrates_into_garden_slot_zero() {
+        // 向後相容遷移：舊存檔只有 home_decor（無 garden 欄）時，reseated 把那件升成庭園 slot 0，
+        // 玩家原本擺好的擺飾零損失。
+        let json = format!(
+            "{{\"tiles\":{},\"home_decor\":4}}",
+            serde_json::to_string(&vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS]).unwrap()
+        );
+        let back = serde_json::from_str::<Field>(&json).unwrap().reseated(0).unwrap();
+        assert_eq!(back.home_decor(), 4, "legacy 那件仍在");
+        assert_eq!(back.garden().first().copied(), Some(4), "自動升成庭園 slot 0");
+    }
+
+    #[test]
+    fn set_garden_slot_ignores_out_of_range_slot_and_sanitizes_index() {
+        // 超界 slot（防偽造）一律忽略；越界 index 夾成 0=不擺。
+        let mut f = Field::for_plot(1);
+        f.set_garden_slot(crate::home_decor::GARDEN_SLOTS as u8, 5); // 超界 slot
+        assert!(f.garden().iter().all(|&x| x == 0), "超界 slot 不寫入任何格");
+        f.set_garden_slot(1, 250); // 越界 index
+        assert_eq!(f.garden().get(1).copied(), Some(0), "越界 index 回 0=不擺");
     }
 
     #[test]
