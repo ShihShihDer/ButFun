@@ -5147,16 +5147,83 @@
     dusk: "黃昏了，天色漸暗",
     night: "入夜了，怪物加速，小心！",
   };
+  // 天時盤（ROADMAP 419）：點 #hudTime 浮層裡「此刻適合做什麼」一句引導。集中於此（i18n 友善）。
+  // 直接回應玩家反覆反映的「夜間/各時段不知道能做什麼」——把每個時段最合適的療癒行動講白。
+  const PHASE_HINTS = {
+    dawn: "🌅 拂曉時分，作物長得最歡——趁這會兒回田播種、照料最划算。",
+    day: "☀️ 大白天，光線正好——出門探索、採集、和旅人居民攀談的好時候。",
+    dusk: "🌇 暮色將至，夜要來了——收個尾、回家看看，或找個安全處歇腳打坐。",
+    night: "🌙 夜深了，野怪變強要當心——靜止打坐能慢慢回血回乙太，也適合抬頭賞夜空天象。",
+  };
   // 首份快照只建基準、不報(比照 presenceKnown:進場/重連不該把「現在的時段」當成切換)。
   let lastPhase = null;
+  // 倒數錨點：收到快照當下記 secs_to_next 與當時的本地時鐘，之後每幀自由倒數(比照天氣倒數)，
+  // 不必等下一份快照就能平滑遞減。null＝還沒收過帶天時盤欄位的快照(舊伺服器/進場前)。
+  let _dayClock = null;
+  let _lastClockSec = -1; // 上次寫進 DOM 的整數秒，變了才更新(避免每幀重排版面)。
   function updateDayNightHud(dn) {
-    const el = document.getElementById("hudTime");
-    if (el) el.textContent = PHASE_LABELS[dn.phase] || "—";
+    // 錨定倒數：新欄位缺席(舊伺服器)時 secsToNext 設 null，前端優雅退回「只顯示時段、不顯示倒數」。
+    _dayClock = {
+      phase: dn.phase,
+      nextPhase: dn.next_phase || null,
+      secsToNext: (typeof dn.secs_to_next === "number") ? dn.secs_to_next : null,
+      dayFraction: (typeof dn.day_fraction === "number") ? dn.day_fraction : null,
+      anchorMs: performance.now(),
+    };
+    _lastClockSec = -1; // 強制本次重繪
+    renderDayClock();
     // 只在階段真的變了、且已過基準時報讀器播一句,避免每幀重唸。
     if (dn.phase !== lastPhase) {
       if (lastPhase !== null && PHASE_ANNOUNCE[dn.phase]) announce(PHASE_ANNOUNCE[dn.phase]);
       lastPhase = dn.phase;
     }
+  }
+  // 把剩餘秒數格式化成 m:ss。
+  function fmtClock(secs) {
+    const s = Math.max(0, Math.floor(secs));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  // 依錨點＋本地時鐘算出當下剩餘秒；無錨點或缺欄位回 null。
+  function clockRemaining() {
+    if (!_dayClock || _dayClock.secsToNext == null) return null;
+    const elapsed = (performance.now() - _dayClock.anchorMs) / 1000;
+    return Math.max(0, _dayClock.secsToNext - elapsed);
+  }
+  // 把當下天時寫進 HUD pill 與浮層。pill 只在整數秒變動時改寫(省排版)；浮層開著才更新其內文。
+  function renderDayClock() {
+    if (!_dayClock) return;
+    const remain = clockRemaining();
+    const sec = remain == null ? -1 : Math.floor(remain);
+    if (sec !== _lastClockSec) {
+      _lastClockSec = sec;
+      const pill = document.getElementById("hudTime");
+      if (pill) {
+        const label = PHASE_LABELS[_dayClock.phase] || "—";
+        pill.textContent = remain == null ? label : `${label} · ${fmtClock(remain)}`;
+      }
+    }
+    // 浮層內容：開著時即時刷新(關著就略過，開啟時會立即補一次)。
+    const pop = document.getElementById("timePopup");
+    if (pop && !pop.classList.contains("hidden")) fillTimePopup(remain);
+  }
+  // 填入天時盤浮層的大字時段／倒數句／進度條／引導句。
+  function fillTimePopup(remain) {
+    if (!_dayClock) return;
+    const phaseEl = document.getElementById("timePopPhase");
+    const cdEl = document.getElementById("timePopCountdown");
+    const barEl = document.getElementById("timePopBar");
+    const hintEl = document.getElementById("timePopHint");
+    if (phaseEl) phaseEl.textContent = PHASE_LABELS[_dayClock.phase] || "—";
+    if (cdEl) {
+      const r = remain == null ? clockRemaining() : remain;
+      const nextLabel = _dayClock.nextPhase ? (PHASE_LABELS[_dayClock.nextPhase] || "") : "";
+      cdEl.textContent = (r == null || !nextLabel) ? "" : `再過 ${fmtClock(r)} 進入 ${nextLabel}`;
+    }
+    if (barEl) {
+      const pct = (_dayClock.dayFraction == null) ? 0 : Math.max(0, Math.min(1, _dayClock.dayFraction)) * 100;
+      barEl.style.width = pct + "%";
+    }
+    if (hintEl) hintEl.textContent = PHASE_HINTS[_dayClock.phase] || "";
   }
 
   // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
@@ -6884,6 +6951,7 @@
 
     const me = myId ? players.get(myId) : null;
     maybeAutoDig(me); // 智慧自動挖（⚙ 開才生效，只挖天然岩石、不挖你蓋的牆）
+    renderDayClock(); // 天時盤倒數平滑遞減（只在整數秒變動時改寫 DOM，省排版）
     // 時間插值所有玩家位置：在「上一個快照位置 px,py」與「這個快照位置 x,y」之間，依到達後
     // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
     // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
@@ -26127,6 +26195,48 @@
       });
       document.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape" && !emotePopup.classList.contains("hidden")) hideEmotePopup();
+      });
+    }
+    // 🕰️ 天時盤（ROADMAP 419）：點 #hudTime 展開「此刻適合做什麼」浮層；定位、外點/Esc 關閉皆比照表情輪。
+    const hudTimeBtn = document.getElementById("hudTime");
+    const timePopup = document.getElementById("timePopup");
+    if (hudTimeBtn && timePopup) {
+      const hideTimePopup = () => {
+        timePopup.classList.add("hidden");
+        hudTimeBtn.setAttribute("aria-expanded", "false");
+      };
+      const showTimePopup = () => {
+        fillTimePopup(); // 開啟即補一次最新內容（之後每幀由 renderDayClock 刷新）
+        const r = hudTimeBtn.getBoundingClientRect();
+        timePopup.classList.remove("hidden");
+        const pw = timePopup.offsetWidth || 240;
+        const ph = timePopup.offsetHeight || 120;
+        let left = r.left;
+        if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+        if (left < 8) left = 8;
+        let top = r.bottom + 8;
+        if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 8); // 下方放不下改放上方
+        timePopup.style.left = left + "px";
+        timePopup.style.top = top + "px";
+        hudTimeBtn.setAttribute("aria-expanded", "true");
+      };
+      const toggleTimePopup = (ev) => {
+        ev.stopPropagation();
+        if (timePopup.classList.contains("hidden")) showTimePopup();
+        else hideTimePopup();
+      };
+      hudTimeBtn.addEventListener("click", toggleTimePopup);
+      // 鍵盤平權：聚焦 pill 後 Enter/Space 也能開（pill 設了 role=button tabindex=0）。
+      hudTimeBtn.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggleTimePopup(ev); }
+      });
+      document.addEventListener("click", (ev) => {
+        if (timePopup.classList.contains("hidden")) return;
+        if (ev.target === hudTimeBtn || timePopup.contains(ev.target)) return;
+        hideTimePopup();
+      });
+      document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && !timePopup.classList.contains("hidden")) hideTimePopup();
       });
     }
     // ✋ 擊掌（ROADMAP 339）：玩家↔玩家雙向同步動作。按一下伸手；伺服器把同區、靠得夠近、

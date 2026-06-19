@@ -2342,6 +2342,16 @@ pub struct DayNightView {
     /// 讓玩家能在午休時加入城鎮 NPC 的圍桌共食。`serde(default)` 向後相容舊客戶端。
     #[serde(default)]
     pub lunch_time: bool,
+    /// 下一個即將到來的階段（ROADMAP 419 天時盤）：前端顯示「再過 X 進入 ◯◯」。
+    /// 純外送欄位（DayNightView 只序列化外送、不從磁碟反序列化），新增零風險；舊客戶端忽略即可。
+    #[serde(default)]
+    pub next_phase: Phase,
+    /// 距「下一個階段開始」還剩幾秒（已向上取整）：前端錨定本地時鐘平滑倒數（比照天氣倒數）。
+    #[serde(default)]
+    pub secs_to_next: u32,
+    /// 目前在整輪日夜循環中的比例 `[0,1)`：前端畫一條日循環進度條，一眼看出「天走到哪了」。
+    #[serde(default)]
+    pub day_fraction: f32,
 }
 
 /// 鎮民派系一覽中的一筆配對（ROADMAP 355）：七大 NPC 之間一段明顯的結盟或敵對關係。
@@ -2737,6 +2747,9 @@ mod tests {
                 light: 0.5, // 0.5 在 f32 可精確表示，避免序列化後比對浮點誤差
                 night_danger: false,
                 lunch_time: false,
+                next_phase: Phase::Dusk,
+                secs_to_next: 60,
+                day_fraction: 0.3,
             },
             listings: vec![],
             npcs: vec![NpcView {

@@ -51,6 +51,25 @@ pub enum Phase {
     Night,
 }
 
+impl Phase {
+    /// 循環中緊接其後的下一個階段（破曉→白天→黃昏→夜晚→破曉…）。純函式。
+    /// 供「天時盤」（ROADMAP 419）顯示「再過 X 分進入 ◯◯」用，與 `phase_for`／
+    /// `PHASE_STARTS` 的邊界順序一致。
+    pub fn next(self) -> Phase {
+        match self {
+            Phase::Dawn => Phase::Day,
+            Phase::Day => Phase::Dusk,
+            Phase::Dusk => Phase::Night,
+            Phase::Night => Phase::Dawn,
+        }
+    }
+}
+
+/// 各階段的「起點比例」（升冪），與 `phase_for` 的門檻一致：
+/// 破曉 0.0 起、白天 0.15 起、黃昏 0.5 起、夜晚 0.65 起。`secs_to_next_phase_for`
+/// 用它找「下一個階段邊界」，避免兩處門檻各寫一份而漂移。
+const PHASE_STARTS: [f32; 4] = [0.15, 0.5, 0.65, 1.0];
+
 /// 依在循環中的比例 `f`（[0,1)）推導目前階段。純函式。
 /// 邊界刻意對齊亮度曲線的感受：破曉短、白天長、黃昏短、夜晚長。
 pub fn phase_for(f: f32) -> Phase {
@@ -63,6 +82,23 @@ pub fn phase_for(f: f32) -> Phase {
     } else {
         Phase::Night
     }
+}
+
+/// 距離「下一個階段開始」還剩幾秒（純函式，依在循環中的比例 `f` 推導）。
+/// 取 `PHASE_STARTS` 中第一個嚴格大於 `f` 的邊界（`1.0` 代表夜→破曉的繞回），
+/// 乘上一輪循環長度。結果恆落在 `(0, DAY_LENGTH_SECS]` 且有限：`f` 非有限時退回 0
+/// （不讓壞值算出 NaN 倒數）、先 `rem_euclid(1.0)` 把界外比例繞回安全範圍。
+pub fn secs_to_next_phase_for(f: f32) -> f32 {
+    if !f.is_finite() {
+        return 0.0;
+    }
+    let frac = f.rem_euclid(1.0);
+    let next = PHASE_STARTS
+        .iter()
+        .copied()
+        .find(|&b| b > frac)
+        .unwrap_or(1.0);
+    ((next - frac) * DAY_LENGTH_SECS).max(0.0)
 }
 
 /// 依在循環中的比例 `f` 推導環境亮度，落在 `[MIN_LIGHT, 1.0]`。純函式。
@@ -155,6 +191,11 @@ impl DayNight {
         light_for(self.fraction())
     }
 
+    /// 距離下一個階段開始還剩幾秒（天時盤倒數用）。由當下比例推導，純委派 `secs_to_next_phase_for`。
+    pub fn secs_to_next_phase(&self) -> f32 {
+        secs_to_next_phase_for(self.fraction())
+    }
+
     /// 目前的作物成長倍率，`[MIN_GROWTH_RATE, MAX_GROWTH_RATE]`。
     /// 由當下亮度推導（白天快、夜裡慢），遊戲迴圈用它縮放農地成長的 `dt`。
     pub fn growth_rate(&self) -> f32 {
@@ -170,6 +211,12 @@ impl DayNight {
             lunch_time: crate::npc_schedule::is_lunch_time(phase, self.fraction()),
             phase,
             light: self.light_level(),
+            // ROADMAP 419 天時盤：下一個階段＋距其開始的秒數＋整輪進度，供前端顯示
+            // 「🌇 黃昏 · 2:30 後入夜」與一條日循環進度條。`secs_to_next` 向上取整，
+            // 避免倒數提早歸零顯示 0:00。
+            next_phase: phase.next(),
+            secs_to_next: self.secs_to_next_phase().ceil() as u32,
+            day_fraction: self.fraction(),
         }
     }
 }
@@ -255,6 +302,84 @@ mod tests {
         assert_eq!(phase_for(0.64), Phase::Dusk);
         assert_eq!(phase_for(0.65), Phase::Night);
         assert_eq!(phase_for(0.999), Phase::Night);
+    }
+
+    #[test]
+    fn phase_next_cycles_in_order() {
+        // 破曉→白天→黃昏→夜晚→破曉，繞回一圈。
+        assert_eq!(Phase::Dawn.next(), Phase::Day);
+        assert_eq!(Phase::Day.next(), Phase::Dusk);
+        assert_eq!(Phase::Dusk.next(), Phase::Night);
+        assert_eq!(Phase::Night.next(), Phase::Dawn);
+    }
+
+    #[test]
+    fn phase_next_matches_boundary_phase() {
+        // 「下一階段」必須等於「越過下一個邊界後的階段」——兩條推導不可漂移。
+        for i in 0..1000 {
+            let f = i as f32 / 1000.0;
+            let secs = secs_to_next_phase_for(f);
+            // 略過邊界後一點點的比例，看落在哪個階段。
+            let after = (f + secs / DAY_LENGTH_SECS + 1e-4).rem_euclid(1.0);
+            assert_eq!(
+                phase_for(f).next(),
+                phase_for(after),
+                "f={f} 的下一階段與越界後階段不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn secs_to_next_phase_within_bounds_and_decreasing() {
+        // 倒數恆為正、不超過一輪長度，且在同一階段內隨時間遞減（給玩家穩定的時間節奏感）。
+        let mut prev = f32::INFINITY;
+        let mut prev_phase = phase_for(0.0);
+        for i in 0..600 {
+            let f = i as f32 / 600.0;
+            let s = secs_to_next_phase_for(f);
+            assert!(s.is_finite() && s > 0.0 && s <= DAY_LENGTH_SECS, "界外 secs={s} f={f}");
+            let phase = phase_for(f);
+            if phase == prev_phase {
+                assert!(s <= prev + 1e-3, "同階段內倒數沒遞減 f={f} s={s} prev={prev}");
+            }
+            prev = s;
+            prev_phase = phase;
+        }
+    }
+
+    #[test]
+    fn secs_to_next_phase_at_phase_starts() {
+        // 剛踏入一個階段時，倒數應約等於該階段的完整長度。
+        // 白天 [0.15,0.5)：長 0.35 圈 → 0.35*600=210s。
+        assert!((secs_to_next_phase_for(0.15) - 0.35 * DAY_LENGTH_SECS).abs() < 1e-2);
+        // 黃昏 [0.5,0.65)：長 0.15 圈 → 90s。
+        assert!((secs_to_next_phase_for(0.5) - 0.15 * DAY_LENGTH_SECS).abs() < 1e-2);
+        // 夜晚 [0.65,1.0)：長 0.35 圈 → 繞回破曉。
+        assert!((secs_to_next_phase_for(0.65) - 0.35 * DAY_LENGTH_SECS).abs() < 1e-2);
+    }
+
+    #[test]
+    fn secs_to_next_phase_falls_back_on_non_finite() {
+        // 壞值不該算出 NaN 倒數，退回 0。
+        assert_eq!(secs_to_next_phase_for(f32::NAN), 0.0);
+        assert_eq!(secs_to_next_phase_for(f32::INFINITY), 0.0);
+        // 界外比例先繞回再算，仍落在合法範圍。
+        let s = secs_to_next_phase_for(2.3);
+        assert!(s.is_finite() && s > 0.0 && s <= DAY_LENGTH_SECS);
+    }
+
+    #[test]
+    fn view_carries_clock_dial_fields() {
+        // 天時盤欄位（ROADMAP 419）：next_phase＝目前階段的下一個、day_fraction＝當下比例、
+        // secs_to_next＝向上取整的倒數秒。
+        let mut d = DayNight::new();
+        d.advance(DAY_LENGTH_SECS * 0.55); // 黃昏
+        let v = d.view();
+        assert_eq!(v.phase, Phase::Dusk);
+        assert_eq!(v.next_phase, Phase::Night);
+        assert!((v.day_fraction - d.fraction()).abs() < 1e-6);
+        assert!(v.secs_to_next > 0);
+        assert!((v.secs_to_next as f32) >= d.secs_to_next_phase() - 1e-3);
     }
 
     #[test]
