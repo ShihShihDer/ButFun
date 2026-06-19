@@ -2342,6 +2342,8 @@
             // ROADMAP 348：礦脈深掘——進行中礦脈的深度／震動（供頭頂畫「⛏️ 深度＋震動晃動」世界訊號）。
             existing.mining_depth = (typeof p.mining_depth === "number") ? p.mining_depth : null;
             existing.mining_tremor = p.mining_tremor || null;
+            // ROADMAP 391：安靜打坐——是否正在打坐（前端畫呼吸光圈）。
+            existing.meditating = !!p.meditating;
             // ROADMAP 350：夜泉汲取——進行中汲取的經過秒數。每收一筆快照就重錨「收到時間」，
             // 前端用同一條三角波公式（aetherCursor）以本地時鐘自由推進準星、與伺服器對齊。
             if (typeof p.aether_draw_secs === "number") {
@@ -2827,6 +2829,8 @@
           updateCarionOrbBtn(me);
           // 親手植樹按鈕（ROADMAP 370）：戶外、已登入才顯示
           updatePlantTreeBtn(me, isGuest);
+          // 安靜打坐按鈕（ROADMAP 391）：黃昏/夜晚/黎明、已登入、戶外才顯示
+          updateMeditateBtn(me, isGuest);
         }
         break;
       }
@@ -3233,6 +3237,57 @@
         if (me) me.chain_links = clLinks;
         break;
       }
+
+      // ── 安靜打坐（ROADMAP 391）──────────────────────────────────────────────────
+      case "meditation_start": {
+        // 廣播給所有人：開始打坐。本人收到才播報給報讀器。
+        const msPid = msg.player_id;
+        if (!msPid) break;
+        const msPlayer = players.get(msPid);
+        // 即時更新 meditating 旗標（不等下一幀快照），前端立刻畫光圈。
+        if (msPlayer) msPlayer.meditating = true;
+        if (msPid === myId) {
+          announce(`開始打坐，靜止 ${msg.duration_secs || 30} 秒可恢復生命與乙太——移動會中斷打坐`);
+        }
+        break;
+      }
+      case "meditation_complete": {
+        // 廣播給所有人：打坐完成。本人冒飄字＋音效＋播報。
+        const mcPid = msg.player_id;
+        if (!mcPid) break;
+        const mcPlayer = players.get(mcPid);
+        if (mcPlayer) {
+          mcPlayer.meditating = false;
+          if (mcPid === myId) {
+            const now = performance.now();
+            hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 46, text: "🧘 打坐完成", color: "255, 210, 90", size: 18, born: now });
+            if (msg.hp_healed > 0) {
+              hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 68, text: `+${msg.hp_healed} HP`, color: "120,255,160", size: 15, born: now });
+            }
+            if (msg.ether_gained > 0) {
+              hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 88, text: `+${msg.ether_gained} 乙太`, color: "140,240,255", size: 15, born: now });
+            }
+            SFX.success(); // 採集成功音效，輕柔上揚（ROADMAP 376）
+            announce(`打坐完成！恢復 ${msg.hp_healed || 0} HP ＋ ${msg.ether_gained || 0} 乙太`);
+          }
+        }
+        break;
+      }
+      case "meditation_aborted": {
+        // 廣播給所有人：打坐被打斷。
+        const maPid = msg.player_id;
+        if (!maPid) break;
+        const maPlayer = players.get(maPid);
+        if (maPlayer) {
+          maPlayer.meditating = false;
+          if (maPid === myId) {
+            announce("打坐中斷——移動了，需要靜止才能打坐");
+          }
+        }
+        break;
+      }
+      // ── 安靜打坐 end ─────────────────────────────────────────────────────────────
+
       case "cook_start": {
         // 開灶步序（ROADMAP 349 照譜烹調）：廣播事件，只對自己 id 開掌勺覆蓋層（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;
@@ -5305,6 +5360,10 @@
     // 隨主人即時座標走（圈跟著主人移動）。reduceMotion 下不旋轉、只留靜態柔光圈。
     drawPopGathering(p.id, sx, sy + 11);
 
+    // 安靜打坐光圈（ROADMAP 391）：正在打坐的玩家身旁漾出金色呼吸光圈，
+    // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
+    if (p.meditating) drawMeditationGlow(sx, sy + 8);
+
     // 種族光環：在陰影上方、角色本體下方，讓各族玩家一眼分辨。
     // 自己不畫（自己已有金色名牌 + 鏡頭跟隨，夠清晰）。
     if (!isMe) {
@@ -6584,6 +6643,26 @@
     btn.classList.toggle("hidden", !canPlant);
   }
   // ── 親手植樹按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 安靜打坐按鈕（ROADMAP 391）────────────────────────────────────────────────
+  /** 每幀更新「🧘 打坐」按鈕：已登入、戶外、黃昏/夜晚/黎明才顯示；打坐中改顯示「⏹ 取消打坐」。 */
+  function updateMeditateBtn(me, isGuestUser) {
+    const btn = document.getElementById("meditateBtn");
+    if (!btn) return;
+    // 黃昏/夜晚/黎明才允許打坐，與後端 is_calm_phase 同口徑。
+    const calmPhase = daynight && (daynight.phase === "dusk" || daynight.phase === "night" || daynight.phase === "dawn");
+    const canShow = !!me && !isGuestUser && !!calmPhase && me.indoor_plot_id == null;
+    btn.classList.toggle("hidden", !canShow);
+    if (!canShow) return;
+    if (me.meditating) {
+      btn.textContent = "⏹ 取消打坐";
+      btn.style.color = "#ffb347";
+    } else {
+      btn.textContent = "🧘 打坐";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 安靜打坐按鈕 end ──────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -13021,6 +13100,29 @@
 
   // 人氣聚會圈（ROADMAP 342）：在「正在當聚會主人」的玩家腳下，畫一圈發光旋轉的人氣聚會圈，
   // 讓全世界看見人潮正圍著這位受歡迎的人。與 339/340/341 那些「迸完就散」的瞬間特效不同——
+  // ── 安靜打坐光圈（ROADMAP 391）──────────────────────────────────────────────
+  // 由 drawPlayer 在 meditating=true 的玩家身上呼叫；畫一個金色呼吸光圈，
+  // 讓旁觀者一眼看出「有人在靜心」。尊重 reduceMotion（關呼吸動畫、只留靜態光圈）。
+  function drawMeditationGlow(cx, cy) {
+    const pulse = reduceMotion ? 0.55 : 0.45 + 0.45 * Math.sin(renderNow / 900);
+    const r = reduceMotion ? 26 : 22 + pulse * 6;
+    ctx.save();
+    const grad = ctx.createRadialGradient(cx, cy, 3, cx, cy, r);
+    grad.addColorStop(0, `rgba(255, 215, 100, ${0.55 * pulse})`);
+    grad.addColorStop(0.6, `rgba(255, 200, 80, ${0.25 * pulse})`);
+    grad.addColorStop(1, "rgba(255, 200, 80, 0)");
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // 外圓環：柔和金邊
+    ctx.strokeStyle = `rgba(255, 210, 90, ${0.5 * pulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+  // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
+
   // 這是一個只要人潮還在就**持續存在**、且**跟著主人移動**的社交節點（圈畫在主人即時腳下座標）。
   // 由 drawPlayer 對每名玩家呼叫；非主人（map 沒這 id）直接早退、近乎零成本。
   // 尊重 reduceMotion（關旋轉光點與脈動、只留靜態柔光圈）。
@@ -23886,6 +23988,21 @@
         if (!me || me.indoor_plot_id != null) return;
         safeSend({ type: "plant_tree" });
         announce("在腳邊種下一株嫩芽，它會隨時間慢慢長成大樹");
+      });
+    }
+    // 🧘 安靜打坐（ROADMAP 391）：在黃昏/夜晚/黎明的安全地帶靜止 30 秒，恢復 HP＋乙太。
+    const meditateBtn = document.getElementById("meditateBtn");
+    if (meditateBtn) {
+      meditateBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (me.meditating) {
+          safeSend({ type: "cancel_meditate" });
+        } else {
+          safeSend({ type: "begin_meditate" });
+          announce("準備打坐，靜止 30 秒可恢復生命與乙太——移動即中斷");
+        }
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）
