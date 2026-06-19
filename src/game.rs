@@ -1050,6 +1050,10 @@ pub fn spawn(app: AppState) {
             // 打坐事件（ROADMAP 391）：完成或中斷，出鎖後廣播並給獎勵。
             // (player_id, x, y, kind) — kind: true=完成, false=移動中斷
             let mut meditation_events: Vec<(uuid::Uuid, f32, f32, bool, u32, u32)> = Vec::new();
+            // 廣場獻奏事件（ROADMAP 399）：完成或中斷，出鎖後廣播並給打賞。
+            // 完成：(player_id, ether_gained, listeners, busk_count)；中斷另記。
+            let mut busk_completes: Vec<(uuid::Uuid, u32, u32, u32)> = Vec::new();
+            let mut busk_aborts: Vec<uuid::Uuid> = Vec::new();
             // 在地地名變更（ROADMAP 398 天地有名）：踏入新 locale，出鎖後廣播地名卡。
             // (player_id, name, subtitle, initial) — initial=true 為進場首次定位（前端不彈大卡）。
             let mut locale_changes: Vec<(uuid::Uuid, &'static str, &'static str, bool)> = Vec::new();
@@ -1077,6 +1081,14 @@ pub fn spawn(app: AppState) {
                     }
                     m
                 };
+                // 廣場獻奏聽眾快照（ROADMAP 399）：在進入可變迴圈前，先記下所有在線、未倒地玩家的
+                // (id, 星球, 座標)，供下方獻奏「完成」時數算身旁聆賞的鄰近玩家人數（不在可變借用中
+                // 重新走訪 map、不巢狀上鎖）。位置一 tick 內幾乎不動，用幀初快照足夠。
+                let busk_listener_snap: Vec<(uuid::Uuid, String, f32, f32)> = players
+                    .values()
+                    .filter(|p| !p.vitals.is_downed())
+                    .map(|p| (p.id, p.planet.clone(), p.x, p.y))
+                    .collect();
                 for p in players.values_mut() {
                     p.step(dt, |x: f32, y: f32| {
                         let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
@@ -1230,6 +1242,31 @@ pub fn spawn(app: AppState) {
                             meditation_events.push((p.id, p.x, p.y, true, ether, actual_hp));
                         }
                     }
+                    // 廣場獻奏推進（ROADMAP 399）：每 tick 檢查移動中斷或完成；完成時依身旁聆賞的
+                    // 鄰近玩家人數計打賞乙太、累積資歷，出鎖後廣播。鎖序與打坐相同（鎖內結算、鎖外廣播）。
+                    if let Some(b) = p.busking {
+                        let now = std::time::Instant::now();
+                        if b.is_interrupted(p.x, p.y) {
+                            p.busking = None;
+                            busk_aborts.push(p.id);
+                        } else if b.is_complete(now) {
+                            p.busking = None;
+                            p.last_busk = Some(now);
+                            // 數算聆賞者：同星球、未倒地、在半徑內的其他在線玩家（排除自己）。
+                            let listeners = busk_listener_snap
+                                .iter()
+                                .filter(|(oid, oplanet, ox, oy)| {
+                                    *oid != p.id
+                                        && *oplanet == p.planet
+                                        && crate::busking::within_listen_range(p.x, p.y, *ox, *oy)
+                                })
+                                .count() as u32;
+                            let ether = crate::busking::tip_ether(listeners);
+                            p.ether = p.ether.saturating_add(ether);
+                            p.busk_count = p.busk_count.saturating_add(1);
+                            busk_completes.push((p.id, ether, listeners, p.busk_count));
+                        }
+                    }
                     // 暖食飽足回復（ROADMAP 395）：吃料理後一段時間 HP 緩慢回復、過期自動清。
                     // 先在 meal_buff 借用內取出本幀回血量與是否續存，借用結束後再動 vitals／清欄位，
                     // 避免同時可變借用 p 的兩個欄位。
@@ -1348,6 +1385,23 @@ pub fn spawn(app: AppState) {
                     ));
                 }
                 let _ = (px, py); // 座標備而不用，前端從快照讀取
+            }
+
+            // 廣場獻奏廣播（ROADMAP 399）：鎖已釋放，安全廣播完成或中斷事件。
+            for (pid, ether, listeners, busk_count) in busk_completes {
+                let _ = app.tx.send(std::sync::Arc::new(
+                    crate::protocol::ServerMsg::BuskComplete {
+                        player_id: pid,
+                        ether_gained: ether,
+                        listeners,
+                        busk_count,
+                    }
+                ));
+            }
+            for pid in busk_aborts {
+                let _ = app.tx.send(std::sync::Arc::new(
+                    crate::protocol::ServerMsg::BuskAborted { player_id: pid }
+                ));
             }
 
             // 天地有名廣播（ROADMAP 398）：鎖已釋放，安全廣播地名卡（前端只對自己 id 演出）。

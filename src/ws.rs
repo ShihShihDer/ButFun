@@ -193,6 +193,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             streak_last_kill: None,
             meditation: None,
             last_meditate: None,
+            busking: None,
+            last_busk: None,
+            busk_count: 0,
             meal_buff: None,
             onboarding: crate::onboarding::Onboarding::default(),
         }
@@ -308,6 +311,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             streak_last_kill: None,
             meditation: None,
             last_meditate: None,
+            busking: None,
+            last_busk: None,
+            busk_count: 0,
             meal_buff: None,
             onboarding: crate::onboarding::Onboarding::default(),
         }
@@ -3558,6 +3564,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if was_meditating {
                         let _ = app.tx.send(std::sync::Arc::new(
                             crate::protocol::ServerMsg::MeditationAborted { player_id: id }
+                        ));
+                    }
+                }
+
+                // ── 廣場獻奏（ROADMAP 399）────────────────────────────────────────
+                Ok(ClientMsg::BeginBusk) => {
+                    // 需登入、需在安全村落廣場、需冷卻已過、需未在獻奏、需未倒地。不限時段（與打坐刻意分流）。
+                    if authed_uid.is_none() { continue; }
+                    let now = std::time::Instant::now();
+                    let started = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            None => false,
+                            Some(p) => {
+                                let in_safe = crate::positions::is_in_safe_zone(p.x, p.y);
+                                let can = crate::busking::can_busk(p.last_busk, now);
+                                let not_busking = p.busking.is_none();
+                                let alive = p.vitals.hp() > 0;
+                                if in_safe && can && not_busking && alive {
+                                    p.busking = Some(crate::busking::Busking::new(now, p.x, p.y));
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+                    };
+                    if started {
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::BuskStart {
+                                player_id: id,
+                                duration_secs: crate::busking::BUSK_DURATION_SECS,
+                            }
+                        ));
+                        tracing::debug!(player = %id, "開始廣場獻奏");
+                    }
+                }
+
+                Ok(ClientMsg::CancelBusk) => {
+                    // 主動取消獻奏。
+                    let was_busking = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) if p.busking.is_some() => {
+                                p.busking = None;
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    if was_busking {
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::BuskAborted { player_id: id }
                         ));
                     }
                 }

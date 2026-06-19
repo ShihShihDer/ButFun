@@ -17,6 +17,7 @@ mod craft_ceremony;
 mod player_title;
 mod activity_chain;
 mod meditation;
+mod busking;
 mod meal_buff;
 mod onboarding;
 mod town_project;
