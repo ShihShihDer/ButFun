@@ -190,6 +190,10 @@ pub struct Player {
     /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
     /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
     pub meal_buff: Option<crate::meal_buff::MealBuff>,
+    /// 拿手菜熟練（ROADMAP 407）：各道料理累積烹煮次數 → 熟練階位 → 放大暖食飽足。
+    /// 記憶體前置、不持久化、零 migration（鏡像 `meal_buff` / `pet`）；煮成時 ws.rs 記一次，
+    /// 進食時依階位放大 `meal_buff`。純療癒向、零平衡風險（只讓飽足更綿長）。
+    pub dish_mastery: crate::dish_mastery::DishMastery,
     /// 新手引導（ROADMAP 396）。全新玩家連線時種成啟用、五步走完即畢業；老玩家／訪客種成
     /// 已畢業（永不顯示）。記憶體前置、不持久化、零 migration；由 ws.rs 連線時 `seed` 種下、
     /// 各核心動作鉤子推進。`Default` = 不顯示（占位／訪客的安全預設）。
@@ -780,6 +784,10 @@ impl Player {
             busking: self.busking.is_some(),
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
             well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
+            // ROADMAP 407：此刻飽足來自的料理熟練階位（順手／拿手才標記；生手與沒飽足＝None，省流量）。
+            well_fed_tier: self.meal_buff.as_ref()
+                .and_then(|b| self.dish_mastery.tier_of(b.kind).badge())
+                .map(|s| s.to_string()),
             // ROADMAP 396：新手引導進度（只對引導啟用中的全新玩家有值；老玩家／已畢業＝None）。
             onboarding: self.onboarding.is_active().then(|| crate::protocol::OnboardView {
                 done: self.onboarding.mask(),
@@ -1580,6 +1588,7 @@ mod tests {
             last_busk: None,
             busk_count: 0,
             meal_buff: None,
+            dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),

@@ -199,6 +199,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             last_busk: None,
             busk_count: 0,
             meal_buff: None,
+            dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
         }
     } else {
@@ -319,6 +320,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             last_busk: None,
             busk_count: 0,
             meal_buff: None,
+            dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
         }
     };
@@ -1596,11 +1598,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                             // 合成：鎖 players 扣料＋產出＋取玩家名；出鎖後處理儀式（守 prod-deadlock）。
                             // 回傳 (craft_ok, ceremony_info)：craft_ok 供活動鏈環計數，ceremony_info 供廣播。
+                            // ROADMAP 407 拿手菜：一鍵合成料理也算一次烹煮；升階則鎖外廣播慶賀（守 prod-deadlock）。
+                            let mut mastery_msg: Option<ServerMsg> = None;
                             let (craft_ok, ceremony_info) = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
                                     let discount = crate::class::crafting_reduction(&p.masteries);
                                     if recipe.craft_with_discount(&mut p.inventory, discount) {
+                                        // 拿手菜：記一次烹煮（非料理回 None 不入帳）；剛升階收集事件。
+                                        if let Some(rec) = p.dish_mastery.record_cook(recipe.output) {
+                                            if rec.tier_up {
+                                                if let Some(k) = serde_json::to_value(rec.item)
+                                                    .ok()
+                                                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                                {
+                                                    mastery_msg = Some(ServerMsg::DishMastered {
+                                                        player_id: id,
+                                                        dish: k,
+                                                        tier: rec.tier.wire_str().to_string(),
+                                                        count: rec.count,
+                                                        x: p.x,
+                                                        y: p.y,
+                                                    });
+                                                }
+                                            }
+                                        }
                                         // 精密合成（ROADMAP 45）：下次合成額外 +1 個成品；熟練加成再加（ROADMAP 153）。
                                         let used_precision = p.pending_precision;
                                         if used_precision {
@@ -1621,6 +1643,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     (false, None)
                                 }
                             }; // players 鎖到此放掉
+
+                            // 拿手菜升階慶賀（ROADMAP 407）：出鎖後廣播，前端只對自己演飄字。
+                            if let Some(msg) = mastery_msg {
+                                let _ = app.tx.send(Arc::new(msg));
+                            }
 
                             // 合成儀式廣播（ROADMAP 388）：鎖外取 craft_ceremony 狀態、廣播出鎖後送。
                             if let Some((pname, item_name)) = ceremony_info {
@@ -3115,7 +3142,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 烤魚：回復 8 HP（小魚×2 烹飪而成，基礎療癒食物）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(8);
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用烤魚回血");
                                 }
                             }
@@ -3123,7 +3154,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 星燦刺身：回復 15 HP（星星魚烹飪，稀有漁獲料理）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(15);
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用星燦刺身回血");
                                 }
                             }
@@ -3131,7 +3166,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 深海濃湯：回復至等級滿血（最稀有漁獲換最強效果）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(p.vitals.max_hp());
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "飲用深海濃湯滿血復原");
                                 }
                             }
@@ -3140,7 +3179,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 煎蛋：回復 10 HP（雞蛋×2 烹飪，農田地塊自產療癒食物）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(10);
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用煎蛋回血");
                                 }
                             }
@@ -3149,7 +3192,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 麵包：回復 12 HP（小麥×3 烹飪）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(12);
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用麵包回血");
                                 }
                             }
@@ -3158,7 +3205,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(10);
                                     p.vitals.reset_regen_cooldown();
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用蔬菜湯回血+重置回血冷卻");
                                 }
                             }
@@ -3166,7 +3217,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 焗烤馬鈴薯：回復 15 HP（馬鈴薯×2 烹飪，農地料理最豐盛）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(15);
-                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    // ROADMAP 407 拿手菜：依這道料理的熟練階位放大暖食飽足（生手＝原樣）。
+                                    p.meal_buff = crate::dish_mastery::scale_meal(
+                                        crate::meal_buff::meal_buff_for(item),
+                                        p.dish_mastery.tier_of(item),
+                                    );
                                     tracing::info!(player = %p.name, gained, "食用焗烤馬鈴薯回血");
                                 }
                             }
@@ -4092,6 +4147,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 對作弊客戶端不利、對正常玩家無影響）。
                     let input: Vec<CookStep> =
                         steps.iter().filter_map(|s| CookStep::from_str(s)).collect();
+                    // ROADMAP 407 拿手菜：煮成升階時收集慶賀事件，鎖外廣播（守 prod-deadlock）。
+                    let mut mastery_msg: Option<ServerMsg> = None;
                     let outcome_msg = {
                         let mut players = app.players.write().unwrap();
                         if let Some(p) = players.get_mut(&id) {
@@ -4118,6 +4175,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                     player = %p.name, recipe = session.recipe_id,
                                                     grade = grade.as_str(), "掌勺出菜"
                                                 );
+                                                // ROADMAP 407 拿手菜：記一次烹煮；剛升階就收集慶賀事件。
+                                                if let Some(rec) = p.dish_mastery.record_cook(recipe.output) {
+                                                    if rec.tier_up {
+                                                        if let Some(k) = serde_json::to_value(rec.item)
+                                                            .ok()
+                                                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                                        {
+                                                            mastery_msg = Some(ServerMsg::DishMastered {
+                                                                player_id: id,
+                                                                dish: k,
+                                                                tier: rec.tier.wire_str().to_string(),
+                                                                count: rec.count,
+                                                                x: p.x,
+                                                                y: p.y,
+                                                            });
+                                                        }
+                                                    }
+                                                }
                                                 // 料理產物 → snake_case 線格式（serde 約定，鏡像 fish_key）。
                                                 serde_json::to_value(recipe.output).ok().and_then(
                                                     |v| v.as_str().map(|s| s.to_string()),
@@ -4144,6 +4219,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     };
                     if let Some(msg) = outcome_msg {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                    if let Some(msg) = mastery_msg {
                         let _ = app.tx.send(Arc::new(msg));
                     }
                 }

@@ -19,6 +19,7 @@ mod activity_chain;
 mod meditation;
 mod busking;
 mod meal_buff;
+mod dish_mastery;
 mod onboarding;
 mod town_project;
 mod town_project_store;

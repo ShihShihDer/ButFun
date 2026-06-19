@@ -66,6 +66,18 @@ impl MealBuff {
         self.remaining_secs > 0.0
     }
 
+    /// 依拿手熟練倍率放大這份飽足（總時長＋每秒回血）——ROADMAP 407 拿手菜。
+    /// **剛吃下時**呼叫（剩餘＝放大後的總時長）。倍率非有限或 < 1 一律保守當作 1.0
+    /// （絕不縮短／削弱玩家本來就有的飽足）。詳見 `dish_mastery::scale_meal`。
+    pub fn nourished(mut self, dur_mult: f32, regen_mult: f32) -> Self {
+        let dm = if dur_mult.is_finite() && dur_mult >= 1.0 { dur_mult } else { 1.0 };
+        let rm = if regen_mult.is_finite() && regen_mult >= 1.0 { regen_mult } else { 1.0 };
+        self.total_secs *= dm;
+        self.remaining_secs = self.total_secs;
+        self.hp_per_sec *= rm;
+        self
+    }
+
     /// 飽足進度 0.0~1.0（剩餘比例，1.0＝剛吃飽、0.0＝即將散去），給前端畫光暈／倒數。
     pub fn progress(&self) -> f32 {
         if self.total_secs <= 0.0 {
