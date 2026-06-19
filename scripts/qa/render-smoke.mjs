@@ -781,6 +781,29 @@ for (const sc of scenarios) {
   else console.log("  ✅ 遠遊見聞：初次踏足卡＋XP 飄字＋足跡計數＋舊地重遊＋initial 靜默＋旁觀者忽略皆乾淨");
 }
 
+// 旅途明信片（ROADMAP 417）：收到 postcard 單播後框成風景卡。驗證正常明信片、換片重建、
+// 欄位缺漏／髒值容錯皆不拋例外（純 DOM 面板，非 canvas render 路徑，故以 try/catch 直接接
+// 面板建構的例外；下載合成本身已內部 try/catch 包覆、永不外傳）。
+{
+  console.log("── 情境：旅途明信片（風景卡建構＋換片＋髒值容錯）──");
+  let ok = true;
+  try {
+    // 正常一張明信片。
+    lastWS.onmessage({ data: JSON.stringify({ type: "postcard", title: "晨光・🌸 春", place: "晨露谷", subtitle: "薄霧在草尖上打盹", rank: "旅者", flavor: "晨露沾著新芽，一天剛要醒來。", level: 12 }) });
+    pump("明信片風景卡", 2);
+    // 換一張（不同時辰季節）：sig 變、重建。
+    lastWS.onmessage({ data: JSON.stringify({ type: "postcard", title: "星夜・❄️ 冬", place: "翡翠林", subtitle: "苔蘚把石頭都養綠了", rank: "冒險家", flavor: "寒夜寂靜，每一顆星都格外亮。", level: 25 }) });
+    pump("重新留影", 2);
+    // 欄位缺漏／型別錯亂：容錯不拋（字串退空、level 退 0）。
+    lastWS.onmessage({ data: JSON.stringify({ type: "postcard", title: null, place: 123, level: "x" }) });
+    pump("明信片髒值容錯", 2);
+  } catch (e) {
+    ok = false; console.error("  ❌ 旅途明信片：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; }
+  else console.log("  ✅ 旅途明信片：風景卡建構＋換片＋髒值容錯皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {

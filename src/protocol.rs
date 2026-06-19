@@ -266,6 +266,10 @@ pub enum ClientMsg {
     /// 永久成長數據（等級／三圖鑑／人氣）算出 `ServerMsg::JourneyReport` 單播回去。
     /// 純讀、不改任何狀態、不廣播；未登入也可（訪客看自己的當前進度，亦能當引導）。
     RequestJourney,
+    /// 索取旅途明信片（ROADMAP 417）：玩家按下「📷 留影」時送來，伺服器以當下的權威狀態
+    /// （所在地名／地誌氛圍／季節／時辰／旅人資歷）組出 `ServerMsg::Postcard` 單播回去。
+    /// 純讀、不改任何狀態、不廣播；未登入也可（訪客也能把此刻的世界留成一張風景卡）。
+    RequestPostcard,
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -1155,6 +1159,22 @@ pub enum ServerMsg {
     JourneyReport {
         tracks: Vec<JourneyTrackView>,
         headline: Option<JourneyHeadlineView>,
+    },
+    /// 旅途明信片（ROADMAP 417）：玩家送 `RequestPostcard` 後單播回來的一張明信片內容。
+    /// 前端據此把「此刻的世界」框成風景卡，玩家可下載收藏／分享。純呈現、不送物品/乙太，零平衡風險、零持久化。
+    Postcard {
+        /// 標頭，如「晨光・🌸 春」。
+        title: String,
+        /// 所在地名。
+        place: String,
+        /// 地誌氛圍副標。
+        subtitle: String,
+        /// 旅人資歷稱號。
+        rank: String,
+        /// 此刻風景印記（手寫感的一句話）。
+        flavor: String,
+        /// 旅人等級（落款用）。
+        level: u32,
     },
     /// 回訪摘要（ROADMAP 374）：登入玩家進場時，一次性告知「等你的東西」。
     /// 純讀現有記憶體狀態，不新增經濟、不送物品/乙太。只在已登入玩家連線時送一次。
