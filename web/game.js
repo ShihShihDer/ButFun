@@ -2539,6 +2539,8 @@
             existing.busking = !!p.busking;
             // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
             existing.well_fed = (typeof p.well_fed === "number") ? p.well_fed : null;
+            // ROADMAP 407：拿手菜熟練——飽足來自順手／拿手料理時的徽記（生手＝無）。
+            existing.well_fed_tier = p.well_fed_tier || null;
             // ROADMAP 350：夜泉汲取——進行中汲取的經過秒數。每收一筆快照就重錨「收到時間」，
             // 前端用同一條三角波公式（aetherCursor）以本地時鐘自由推進準星、與伺服器對齊。
             if (typeof p.aether_draw_secs === "number") {
@@ -3691,6 +3693,24 @@
           floaters.push({ wx, wy, text: "🍽️ 食材不夠，沒能上菜…", color: "190,190,190", born: now });
           announce("食材不夠，沒能上菜");
         }
+        break;
+      }
+      case "dish_mastered": {
+        // 拿手菜升階（ROADMAP 407）：某玩家把一道料理煮到更高熟練階位時廣播；只對自己 id 演飄字。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 52;
+        const now = performance.now();
+        const dishName = msg.dish ? (ITEM_NAME[msg.dish] || "料理") : "料理";
+        const dishIco = msg.dish ? (ITEM_LOOK[msg.dish] || "🍳") : "🍳";
+        // 拿手＝金、順手＝暖綠。
+        const isSig = msg.tier === "signature";
+        const tierLabel = isSig ? "拿手菜" : "順手菜";
+        const color = isSig ? "255,210,74" : "170,225,170";
+        const line = isSig
+          ? `🍳【${dishName}】成了你的拿手菜！`
+          : `🍳【${dishName}】越煮越順手了`;
+        floaters.push({ wx, wy, text: line, color, born: now });
+        announce(`${dishIco} ${dishName} 升為${tierLabel}（已煮 ${msg.count || 0} 次），吃下去飽足更綿長`);
         break;
       }
       case "star_map":

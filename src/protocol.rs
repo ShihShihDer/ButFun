@@ -1260,6 +1260,18 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 拿手菜升階（ROADMAP 407）：某玩家把一道料理煮到更高熟練階位（順手／拿手）時廣播；
+    /// 前端只對自己 `player_id` 演出慶賀飄字（旁觀者忽略）。`dish` ＝料理 snake_case，
+    /// `tier` ＝新階位（`skilled`/`signature`），`count` ＝累積烹煮次數，`x`/`y` ＝玩家座標。
+    /// 不入快照、不持久化、零 migration。
+    DishMastered {
+        player_id: Uuid,
+        dish: String,
+        tier: String,
+        count: u32,
+        x: f32,
+        y: f32,
+    },
     /// 今夜星圖（ROADMAP 347 觀星連星座）：回應 `RequestStarMap`，僅單播給請求者本人。
     /// `available=false` 表示非夜間（看不見星空）、其餘欄位為佔位。`traced` 表示本玩家是否已連過今夜這座。
     StarMap {
@@ -1917,6 +1929,12 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub well_fed: Option<f32>,
 
+    // ── 拿手菜熟練（ROADMAP 407）─────────────────────────────────────────────
+    /// 此刻飽足來自的拿手菜熟練階位 wire key：`skilled`（順手）/ `signature`（拿手）。
+    /// Some 時前端在暖食光暈／HUD 標上熟練徽記；生手與沒飽足＝None（省略流量）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub well_fed_tier: Option<String>,
+
     // ── 新手引導（ROADMAP 396）───────────────────────────────────────────────
     /// 新手引導進度。Some 時前端在 HUD 顯示「最初幾步」清單；None＝老玩家／已畢業
     /// （省略流量、永不顯示）。只對引導啟用中的全新玩家有值。
@@ -2478,6 +2496,7 @@ mod tests {
                 meditating: false,
                 busking: false,
                 well_fed: None,
+                well_fed_tier: None,
                 onboarding: None,
             }],
             fields: vec![FieldView {
@@ -2753,6 +2772,7 @@ mod tests {
             meditating: false,
             busking: false,
             well_fed: None,
+            well_fed_tier: None,
             onboarding: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -3040,6 +3060,7 @@ mod tests {
             meditating: false,
             busking: false,
             well_fed: None,
+            well_fed_tier: None,
             onboarding: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -3106,6 +3127,7 @@ mod tests {
             meditating: false,
             busking: false,
             well_fed: None,
+            well_fed_tier: None,
             onboarding: None,
         }
     }
