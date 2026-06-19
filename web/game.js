@@ -3746,6 +3746,31 @@
         announce(`${dishIco} ${dishName} 升為${tierLabel}（已煮 ${msg.count || 0} 次），吃下去飽足更綿長`);
         break;
       }
+      case "flock_bond": {
+        // 牧群羈絆升階（ROADMAP 409）：用心收蛋讓母雞跟你更親；只對自己 id 演飄字。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 52;
+        const now = performance.now();
+        // 階位 → 暖心文字。集中於此，保留 i18n 空間。
+        const FLOCK_BOND_LABEL = { familiar: "熟悉", close: "親近", cuddly: "黏人" };
+        const tierLabel = FLOCK_BOND_LABEL[msg.tier] || "更親";
+        const cuddly = msg.tier === "cuddly";
+        const line = cuddly ? "🐔💗 母雞們黏上你了！" : `🐔💗 母雞跟你更${tierLabel}了`;
+        floaters.push({ wx, wy, text: line, color: "255,170,190", born: now });
+        announce(`你的牧群跟你${tierLabel}了——常來照顧，母雞越養越親`);
+        break;
+      }
+      case "golden_egg": {
+        // 暖心金蛋（ROADMAP 409）：親近以上的牧群偶爾下的金蛋；只對自己 id 演飄字。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 52;
+        const now = performance.now();
+        const n = msg.count || 1;
+        const line = n > 1 ? `🥚✨ 暖心金蛋 ×${n}！` : "🥚✨ 暖心金蛋！";
+        floaters.push({ wx, wy, text: line, color: "255,213,74", born: now });
+        announce(`收到母雞下的暖心金蛋，心頭一暖（暖食飽足回血）`);
+        break;
+      }
       case "star_map":
         // 今夜星圖（ROADMAP 347）：開觀星窗時伺服器回傳；單播給本人。
         applyStarMap(msg);
@@ -10978,16 +11003,37 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         // 雞 emoji（微微抖動提示有生命）。ROADMAP 368：牧群可孵到 4 隻。
-        ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 4)), sx, sy - 10);
+        // ROADMAP 409：黏人（3 愛心）的牧群會雀躍——母雞輕輕上下蹦（尊重 reduceMotion）。
+        const cuddly = (rp.bond_hearts || 0) >= 3;
+        let bob = 0;
+        if (cuddly && !reduceMotion) bob = Math.sin(animClock * 5 + rp.plot_id) * 2;
+        ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 4)), sx, sy - 10 + bob);
         // ROADMAP 368：窩裡正在長大的小雞畫一隻 🐤 依偎在雞群旁。
         if (rp.chick) {
           ctx.font = "16px sans-serif";
           ctx.fillText("🐤", sx + 6 + Math.min(rp.chicken_count, 4) * 9, sy - 10);
         }
+        // ROADMAP 409：牧群羈絆——在牧場上方畫愛心（1 熟悉／2 親近／3 黏人），讓「越養越親」一眼可見。
+        const hearts = rp.bond_hearts || 0;
+        if (hearts > 0) {
+          ctx.font = "12px sans-serif";
+          ctx.fillText("💗".repeat(hearts), sx, sy - 30);
+        }
         if (rp.egg_count > 0) {
           ctx.font = "bold 11px sans-serif";
           ctx.fillStyle = "#fffde0";
           ctx.fillText(`🥚×${rp.egg_count}`, sx, sy + 14);
+        }
+        // ROADMAP 409：窩裡有暖心金蛋待收——畫一顆金光閃閃的蛋（金光脈動尊重 reduceMotion）。
+        if (rp.golden) {
+          ctx.font = "16px sans-serif";
+          const pulse = reduceMotion ? 1 : 0.7 + 0.3 * Math.abs(Math.sin(animClock * 3));
+          ctx.save();
+          ctx.globalAlpha = pulse;
+          ctx.shadowColor = "#ffd54a";
+          ctx.shadowBlur = 10;
+          ctx.fillText("🥚", sx + 18, sy + 14);
+          ctx.restore();
         }
         ctx.restore();
       }
@@ -22049,9 +22095,11 @@
     const eggs = ranch ? ranch.egg_count : 0;
     const chick = ranch ? !!ranch.chick : false;       // ROADMAP 368：窩裡有小雞在長大
     const brooding = ranch ? !!ranch.brooding : false;  // ROADMAP 368：正在孵育中
+    const hearts = ranch ? (ranch.bond_hearts || 0) : 0; // ROADMAP 409：牧群羈絆愛心數 0~3
+    const golden = ranch ? !!ranch.golden : false;       // ROADMAP 409：窩裡有暖心金蛋
     const ether = me ? me.ether : 0;
-    // sig 納入 chick/brooding，避免孵育狀態變了面板卻不重繪（panel-sig-stale）。
-    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, chick, brooding, ether].join("|");
+    // sig 納入 chick/brooding/hearts/golden，避免狀態變了面板卻不重繪（panel-sig-stale）。
+    const sig = [isGuestUser, myPlot?.plot_id, chickens, eggs, chick, brooding, hearts, golden, ether].join("|");
     if (sig === lastRanchSig) return;
     lastRanchSig = sig;
     body.innerHTML = "";
@@ -22078,6 +22126,18 @@
     status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
       + `<div>🐔 雞隻數：<b style="color:#ffe066;">${chickens} / 4</b></div>`
       + `<div>🥚 待收蛋：<b style="color:#ffe066;">${eggs}</b>（最多堆積 10 顆）</div>`;
+    // ROADMAP 409：牧群羈絆——常來收蛋，母雞越養越親（陌生→熟悉→親近→黏人）。
+    if (chickens >= 1) {
+      const BOND_LABEL = ["陌生", "熟悉", "親近", "黏人"];
+      status.innerHTML += `<div>💗 牧群羈絆：<b style="color:#ff9fc0;">${"💗".repeat(hearts) || "—"}</b> <span style="color:#999;font-size:.8rem;">${BOND_LABEL[hearts] || "陌生"}</span></div>`;
+      if (golden) {
+        status.innerHTML += `<div style="color:#ffd54a;font-size:.85rem;">🥚✨ 窩裡有一顆暖心金蛋待收——撿起來心頭一暖</div>`;
+      } else if (hearts >= 2) {
+        status.innerHTML += `<div style="color:#999;font-size:.8rem;">親近的母雞偶爾會下暖心金蛋（吃下去暖食回血）</div>`;
+      } else {
+        status.innerHTML += `<div style="color:#999;font-size:.8rem;">常親手來收蛋，母雞會越來越認得你（親近後偶爾下暖心金蛋）</div>`;
+      }
+    }
     // ROADMAP 368：牧群孳息狀態——正在長大的小雞 / 孵育中 / 養出新成員的鼓勵。
     if (chick) {
       status.innerHTML += `<div style="color:#ffd86b;">🐤 窩裡有隻小雞正在長大……</div>`;

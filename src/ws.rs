@@ -4783,12 +4783,44 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if is_owner {
                             let downed = app.players.read().unwrap().get(&uid).map(|p| p.vitals.is_downed()).unwrap_or(true);
                             if !downed {
-                                let (eggs, xp) = app.ranch.write().unwrap().collect_eggs(plot_id);
-                                if eggs > 0 {
+                                let out = app.ranch.write().unwrap().collect_eggs(plot_id);
+                                if out.eggs > 0 {
+                                    // ROADMAP 409：羈絆升階／暖心金蛋事件鎖內收集，出鎖後才廣播（守 prod-deadlock）。
+                                    let mut events: Vec<ServerMsg> = Vec::new();
                                     if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
-                                        p.add_item_overflow(crate::inventory::ItemKind::Egg, eggs);
-                                        p.masteries.gain_farmer(xp);
-                                        tracing::info!(player = %p.name, eggs, "收雞蛋");
+                                        p.add_item_overflow(crate::inventory::ItemKind::Egg, out.eggs);
+                                        p.masteries.gain_farmer(out.xp);
+                                        if out.golden > 0 {
+                                            // 暖心金蛋：撿起即得一份暖食飽足（沿用煎蛋的療癒 buff、純緩慢回血、
+                                            // 零經濟、零新物品）；只在當前無有效暖食時套用，絕不縮短玩家本有的飽足。
+                                            let has_active = p.meal_buff.map_or(false, |b| b.is_active());
+                                            if !has_active {
+                                                if let Some(buff) = crate::meal_buff::meal_buff_for(
+                                                    crate::inventory::ItemKind::FriedEgg,
+                                                ) {
+                                                    p.meal_buff = Some(buff);
+                                                }
+                                            }
+                                            events.push(ServerMsg::GoldenEgg {
+                                                player_id: uid,
+                                                count: out.golden,
+                                                x: p.x,
+                                                y: p.y,
+                                            });
+                                        }
+                                        if let Some(tier) = out.bond_up {
+                                            events.push(ServerMsg::FlockBond {
+                                                plot_id,
+                                                player_id: uid,
+                                                tier: tier.wire().to_string(),
+                                                x: p.x,
+                                                y: p.y,
+                                            });
+                                        }
+                                        tracing::info!(player = %p.name, eggs = out.eggs, golden = out.golden, "收雞蛋");
+                                    }
+                                    for msg in events {
+                                        let _ = app.tx.send(Arc::new(msg));
                                     }
                                 }
                             }

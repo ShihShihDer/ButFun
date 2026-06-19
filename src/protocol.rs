@@ -1289,6 +1289,25 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 牧群羈絆升階（ROADMAP 409）：地主用心收蛋讓牧群對他的感情跨上新階位（熟悉／親近／黏人）時廣播；
+    /// 前端只對自己 `player_id` 演出慶賀飄字（旁觀者忽略）。`tier` ＝新階位 wire key
+    /// （`familiar`/`close`/`cuddly`），`x`/`y` ＝玩家座標。不入快照、不持久化、零 migration。
+    FlockBond {
+        plot_id: u32,
+        player_id: Uuid,
+        tier: String,
+        x: f32,
+        y: f32,
+    },
+    /// 暖心金蛋（ROADMAP 409）：親近以上的牧群偶爾下的金蛋，地主收到時廣播；
+    /// 前端只對自己 `player_id` 演出金光飄字＋報讀（旁觀者忽略）。`count` ＝這次收到的金蛋顆數，
+    /// `x`/`y` ＝玩家座標。不入快照、不持久化、零 migration。
+    GoldenEgg {
+        player_id: Uuid,
+        count: u32,
+        x: f32,
+        y: f32,
+    },
     /// 今夜星圖（ROADMAP 347 觀星連星座）：回應 `RequestStarMap`，僅單播給請求者本人。
     /// `available=false` 表示非夜間（看不見星空）、其餘欄位為佔位。`traced` 表示本玩家是否已連過今夜這座。
     StarMap {
