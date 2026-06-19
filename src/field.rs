@@ -482,12 +482,14 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
             dry: false,
             thriving: false,
             quality: 0,
+            grow: 0,
         },
         Tile::Tilled => TileView {
             state: 1,
             dry: false,
             thriving: false,
             quality: 0,
+            grow: 0,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -502,6 +504,8 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
                 thriving,
                 // 只有成熟作物才把品質顯給前端；未熟時品質尚未定（渴秒數還在累積）。
                 quality: if ripe { c.quality().code() } else { 0 },
+                // ROADMAP 421：成長中作物的熟成進度百分比（0~100）；成熟一律 100，給前端畫進度條。
+                grow: (c.progress() * 100.0).round() as u8,
             }
         }
     }
@@ -790,10 +794,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0 });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0 });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0 });
     }
 
     #[test]
@@ -1003,7 +1007,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2 });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100 });
     }
 
     #[test]
