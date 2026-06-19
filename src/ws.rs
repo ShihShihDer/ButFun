@@ -193,6 +193,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             meditation: None,
             last_meditate: None,
             meal_buff: None,
+            onboarding: crate::onboarding::Onboarding::default(),
         }
     } else {
         // 等 Join
@@ -306,6 +307,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             meditation: None,
             last_meditate: None,
             meal_buff: None,
+            onboarding: crate::onboarding::Onboarding::default(),
         }
     };
     let id = player.id;
@@ -392,6 +394,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 {
                     p.inventory_extra_kinds = crate::home_furniture::CHEST_CAPACITY_BONUS as u32;
                 }
+                // 新手引導（ROADMAP 396）：還原完所有持久化進度後，依玩家是否「看起來全新」種下引導。
+                // 有任何累積（經驗／乙太／背包／熟練度）的回鍋玩家種成已畢業（永不顯示）；只有
+                // 全零的全新帳號才啟用「最初幾步」引導。與 seen_mastery_tiers 同模式：連線即以當前狀態種下。
+                let mastery_total = p.masteries.warrior
+                    + p.masteries.farmer
+                    + p.masteries.artisan
+                    + p.masteries.explorer
+                    + p.masteries.merchant;
+                p.onboarding = crate::onboarding::Onboarding::seed(
+                    crate::onboarding::looks_like_new_player(
+                        p.exp,
+                        p.ether,
+                        p.inventory.is_empty(),
+                        mastery_total,
+                    ),
+                );
             }
             players.insert(id, p);
         }
@@ -955,6 +973,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }));
                             // 活動鏈：社交環（ROADMAP 390）。使用表情即算社交互動。
                             advance_activity_chain(&app, id, crate::activity_chain::ActivityKind::Social, &tx_direct);
+                            // 新手引導：打招呼（ROADMAP 396）。送出表情即算向鎮民打招呼。
+                            advance_onboarding(&app, id, crate::onboarding::OnboardStep::Greet, &tx_direct);
                         }
                     }
                 }
@@ -1448,6 +1468,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 活動鏈：採集環（ROADMAP 390）。
                         if let Some(uid) = authed_uid {
                             advance_activity_chain(&app, uid, crate::activity_chain::ActivityKind::Gather, &tx_direct);
+                            // 新手引導：採集一份資源（ROADMAP 396）。
+                            advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Gather, &tx_direct);
                         }
                         // 旅行商人限時委託：採集事件（ROADMAP 136）。
                         if let Some(uid) = authed_uid {
@@ -1562,6 +1584,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 活動鏈：合成環（ROADMAP 390）。合成任何配方成功即算一環。
                             if craft_ok {
                                 advance_activity_chain(&app, id, crate::activity_chain::ActivityKind::Craft, &tx_direct);
+                                // 新手引導：親手合成一樣東西（ROADMAP 396）。
+                                advance_onboarding(&app, id, crate::onboarding::OnboardStep::Craft, &tx_direct);
                             }
                         }
                     }
@@ -4593,6 +4617,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             p.ether = p.ether.saturating_sub(cost);
                                             tracing::info!(player = %p.name, ?kind, plot_id, "種植作物");
                                         }
+                                        // 新手引導：種下第一棵作物（ROADMAP 396）。
+                                        advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Plant, &tx_direct);
                                     }
                                 }
                             }
@@ -4617,6 +4643,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.masteries.gain_farmer(xp);
                                         tracing::info!(player = %p.name, plot_id, items = items.len(), "收割作物");
                                     }
+                                    // 新手引導：收成你的作物（ROADMAP 396）。
+                                    advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Harvest, &tx_direct);
                                 }
                             }
                         }
@@ -7607,6 +7635,39 @@ fn advance_activity_chain(
                 "🔗 {} 今日完成了所有活動鏈！戰鬥、採集、合成、社交、探索——全部達成！",
                 pname
             ));
+        }
+    }
+}
+
+/// 推進新手引導一步（ROADMAP 396）。鏡像 `advance_activity_chain` 的鎖序：
+/// 鎖內標記步驟、若全程走完就把迎新乙太加進玩家身上、取結果後放鎖；鎖外單播畢業通知。
+/// 引導未啟用（老玩家／訪客／已畢業）或該步早已完成皆為 no-op，安全可重複呼叫。
+fn advance_onboarding(
+    app: &AppState,
+    player_id: uuid::Uuid,
+    step: crate::onboarding::OnboardStep,
+    tx_direct: &tokio::sync::mpsc::Sender<String>,
+) {
+    use crate::onboarding::OnboardOutcome;
+    // 鎖內：標記步驟、取結果；若走完全程，迎新乙太同時加進玩家身上。
+    let outcome = {
+        let mut players = app.players.write().unwrap();
+        if let Some(p) = players.get_mut(&player_id) {
+            let out = p.onboarding.complete(step);
+            if let OnboardOutcome::Finished { reward } = out {
+                p.ether = p.ether.saturating_add(reward);
+            }
+            out
+        } else {
+            OnboardOutcome::NoChange
+        }
+    }; // players 鎖到此放掉
+
+    // 只有走完全程才單播畢業通知（中途進度由快照自然更新 HUD，不必額外送訊）。
+    if let OnboardOutcome::Finished { reward } = outcome {
+        let notif = crate::protocol::ServerMsg::OnboardDone { player_id, ether_reward: reward };
+        if let Ok(j) = serde_json::to_string(&notif) {
+            let _ = tx_direct.try_send(j);
         }
     }
 }

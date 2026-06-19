@@ -439,6 +439,23 @@
     @media (prefers-reduced-motion: reduce) {
       #connStatus { animation: none; opacity: 1; }
     }
+
+    /* 新手引導卡片(ROADMAP 396):只對全新玩家顯示的「最初幾步」清單,走完五步即自動消失。
+       固定在右下角、不擋操作;手機上窄一點。純客戶端 UI,只讀快照,不碰遊戲規則。 */
+    #onboardGuide {
+      position: fixed; right: calc(12px + env(safe-area-inset-right));
+      bottom: calc(96px + env(safe-area-inset-bottom));
+      z-index: 6; width: min(232px, 64vw);
+      background: rgba(30, 42, 30, 0.92); color: #e8f5e0;
+      border: 1px solid #7fbf6a; border-radius: 12px;
+      padding: 11px 13px; box-shadow: 0 3px 14px rgba(0,0,0,0.45);
+      font-size: 0.82rem; line-height: 1.5; pointer-events: none;
+    }
+    #onboardGuide .ob-title { font-weight: 700; color: #b6e89a; margin-bottom: 5px; font-size: 0.9rem; }
+    #onboardGuide ul { list-style: none; margin: 0; padding: 0; }
+    #onboardGuide li { display: flex; gap: 6px; align-items: baseline; }
+    #onboardGuide li.ob-done { color: #8fbf80; text-decoration: line-through; opacity: 0.75; }
+    #onboardGuide .ob-box { width: 1.1em; flex: none; }
     /* 沒有 JavaScript 時的告示:整個遊戲(canvas 世界、進場、農作)都靠 JS,關掉 JS
        的玩家(隱私瀏覽器/擋腳本的擴充/受限網路)只會看到登入畫面、按「以訪客進場」毫無
        反應卻不知為何。這層全屏告示蓋過登入畫面,明說需要開 JavaScript——只有在 JS 沒跑
@@ -1219,6 +1236,9 @@
   <div id="suggestBtn" class="hidden"><button aria-haspopup="dialog">💡 給點建議</button></div>
 
   <div id="connStatus" class="hidden">⚠ 連線中斷，重新連線中…</div>
+
+  <!-- 新手引導卡片（ROADMAP 396）：只對全新玩家顯示，走完五步即自動消失。內容由 game.js 依快照填入。 -->
+  <div id="onboardGuide" class="hidden" aria-live="polite"></div>
 
   <!-- 螢幕報讀器即時播報區:上方重連橫幅是純視覺(脈動色塊),看不到畫面的玩家斷線時
        毫無回饋。這條視覺隱藏的 aria-live 區只在斷線／接回等重要切換時更新文字,讓報讀器

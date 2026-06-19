@@ -183,6 +183,10 @@ pub struct Player {
     /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
     /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
     pub meal_buff: Option<crate::meal_buff::MealBuff>,
+    /// 新手引導（ROADMAP 396）。全新玩家連線時種成啟用、五步走完即畢業；老玩家／訪客種成
+    /// 已畢業（永不顯示）。記憶體前置、不持久化、零 migration；由 ws.rs 連線時 `seed` 種下、
+    /// 各核心動作鉤子推進。`Default` = 不顯示（占位／訪客的安全預設）。
+    pub onboarding: crate::onboarding::Onboarding,
     /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
     /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
     pub refine_attempt_count: u64,
@@ -750,6 +754,11 @@ impl Player {
             meditating: self.meditation.is_some(),
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
             well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
+            // ROADMAP 396：新手引導進度（只對引導啟用中的全新玩家有值；老玩家／已畢業＝None）。
+            onboarding: self.onboarding.is_active().then(|| crate::protocol::OnboardView {
+                done: self.onboarding.mask(),
+                count: self.onboarding.done_count(),
+            }),
         }
     }
 
@@ -1537,6 +1546,7 @@ mod tests {
             meditation: None,
             last_meditate: None,
             meal_buff: None,
+            onboarding: crate::onboarding::Onboarding::default(),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),

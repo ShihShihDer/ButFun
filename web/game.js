@@ -2819,6 +2819,37 @@
             }
           }
 
+          // 新手引導卡片（ROADMAP 396）：只對引導啟用中的全新玩家顯示「最初幾步」清單，
+          // 走完五步即 me.onboarding 變 undefined → 卡片自動隱藏。純讀快照、不碰規則。
+          {
+            const obEl = document.getElementById("onboardGuide");
+            if (obEl) {
+              const ob = me.onboarding;
+              if (ob && typeof ob.done === "number") {
+                // 步驟標籤對齊後端 bitmask 位元 0~4（採集／種植／收成／打招呼／合成）。
+                const ONBOARD_STEPS = [
+                  "採集一份資源",
+                  "種下一棵作物",
+                  "收成你的作物",
+                  "向鎮民打聲招呼",
+                  "親手合成一樣東西",
+                ];
+                const cnt = ob.count || 0;
+                const items = ONBOARD_STEPS.map((label, i) => {
+                  const done = (ob.done & (1 << i)) !== 0;
+                  const box = done ? "✅" : "⬜";
+                  const cls = done ? ' class="ob-done"' : "";
+                  return `<li${cls}><span class="ob-box">${box}</span><span>${label}</span></li>`;
+                }).join("");
+                obEl.innerHTML =
+                  `<div class="ob-title">🌱 最初幾步 ${cnt}/5</div><ul>${items}</ul>`;
+                obEl.classList.remove("hidden");
+              } else {
+                obEl.classList.add("hidden");
+              }
+            }
+          }
+
           // 防禦力 HUD（ROADMAP 19 生態裝備）：持有護甲時顯示減傷值。
           if (typeof me.defense === "number") {
             const defEl = document.getElementById("hudDefense");
@@ -3316,6 +3347,25 @@
         }
         // 更新本人快照的 chain_links 欄位，觸發 HUD 即時重繪。
         if (me) me.chain_links = clLinks;
+        break;
+      }
+
+      // ── 新手引導畢業（ROADMAP 396）─────────────────────────────────────────────
+      case "onboard_done": {
+        // 全程走完通知：單播給本人，含迎新乙太（已在伺服器加進玩家身上，此處只顯示飄字）。
+        const obId = msg.player_id;
+        if (obId !== myId) break;
+        const me = players.get(myId);
+        const wx = me ? me.x : 0;
+        const wy = me ? me.y - 50 : 0;
+        const now = performance.now();
+        hitFloaters.push({ wx, wy, text: "🌱 踏出第一步，歡迎來到這個世界！", color: "182,232,154", size: 19, born: now });
+        const obEther = msg.ether_reward || 0;
+        if (obEther > 0) {
+          hitFloaters.push({ wx, wy: wy - 30, text: `+${obEther} 乙太`, color: "140,240,255", size: 16, born: now });
+        }
+        announce(`新手引導完成，歡迎來到這個世界！獲得 ${obEther} 乙太。`);
+        // 本人快照的 onboarding 由下一幀全幀快照自然清除（已畢業 → None），卡片隨之隱藏。
         break;
       }
 
