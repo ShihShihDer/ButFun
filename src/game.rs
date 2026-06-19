@@ -3897,12 +3897,32 @@ pub fn spawn(app: AppState) {
                             // ROADMAP 418 歸家羅盤：對「已買地」的玩家補上回家方位／距離／八方位。
                             // app.plots 為內部 Mutex（index_of 只短暫上鎖、不碰 players），於此持 players
                             // 讀鎖時呼叫安全——claim 路徑一律先放掉 players 再碰 plots，鎖序一致不死鎖。
-                            if let Some(idx) = app.plots.index_of(p.id) {
+                            let has_plot = app.plots.index_of(p.id);
+                            if let Some(idx) = has_plot {
                                 let g = crate::wayfinding::guide_home(p.x, p.y, idx);
                                 pv.home_bearing = Some(g.bearing);
                                 pv.home_dist = Some(g.distance);
                                 pv.home_dir = Some(g.cardinal as u8);
                             }
+                            // ROADMAP 426：情境下一步提示——讀此刻情境，對已畢業玩家挑一句溫柔提示。
+                            // 全部訊號便宜可得（無新增鎖、無新增持久化）；夜晚是這份提示的主場。
+                            let nudge_ctx = crate::idle_nudge::NudgeCtx {
+                                onboarding_active: p.onboarding.is_active(),
+                                busy: p.fishing.is_some()
+                                    || p.mining.is_some()
+                                    || p.charging.is_some()
+                                    || p.aether_draw.is_some()
+                                    || p.chopping.is_some()
+                                    || p.cooking.is_some(),
+                                downed: p.vitals.is_downed(),
+                                is_visitor: has_plot.is_none(),
+                                low_hp: (p.vitals.hp() as f32)
+                                    < (p.vitals.max_hp() as f32) * crate::idle_nudge::LOW_HP_FRAC,
+                                is_nightish: is_night || is_dusk,
+                                near_water: crate::fishing::is_near_water(p.x, p.y),
+                            };
+                            pv.idle_nudge =
+                                crate::idle_nudge::suggest(&nudge_ctx).map(|n| n.wire_key().to_string());
                             pv
                         }).collect(),
                         fields: field_views,

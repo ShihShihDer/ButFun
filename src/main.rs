@@ -26,6 +26,7 @@ mod apiary;
 mod meal_buff;
 mod dish_mastery;
 mod onboarding;
+mod idle_nudge;
 mod town_project;
 mod town_project_store;
 mod visit_streak;

@@ -849,6 +849,9 @@ impl Player {
             home_bearing: None,
             home_dist: None,
             home_dir: None,
+            // ROADMAP 426：情境下一步提示——同樣由快照層（game.rs，握得到 is_night 等情境）
+            // 對已畢業玩家補上，這裡先留 None。
+            idle_nudge: None,
         }
     }
 
