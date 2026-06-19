@@ -173,6 +173,8 @@ pub struct Player {
     pub kill_count: u32,
     /// 玩家已解鎖的稱號集合（ROADMAP 389）。記憶體前置，重啟清空。
     pub title_set: crate::player_title::TitleSet,
+    /// 今日活動鏈狀態（ROADMAP 390）。記憶體前置，重啟清空，零 migration。
+    pub activity_chain: crate::activity_chain::ActivityChain,
     /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
     /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
     pub refine_attempt_count: u64,
@@ -734,6 +736,8 @@ impl Player {
             // ROADMAP 381：連殺熱度，只有本人快照才有意義；
             // 衰退判斷由 ws.rs 在出招前呼叫 decay_if_expired，此處只取當下值。
             kill_streak: self.kill_streak,
+            // ROADMAP 390：今日活動鏈環數（0~5）。只在自己的快照裡有意義，他人省略（is_zero_u8 略過）。
+            chain_links: self.activity_chain.link_count(),
         }
     }
 
@@ -1517,6 +1521,7 @@ mod tests {
             achievements: AchievementSet::new(),
             kill_count: 0,
             title_set: crate::player_title::TitleSet::new(),
+            activity_chain: crate::activity_chain::ActivityChain::new(0),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),

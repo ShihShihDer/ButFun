@@ -128,6 +128,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
             title_set: crate::player_title::TitleSet::new(),
+            activity_chain: crate::activity_chain::ActivityChain::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            ),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
@@ -232,6 +238,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
             title_set: crate::player_title::TitleSet::new(),
+            activity_chain: crate::activity_chain::ActivityChain::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            ),
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),
@@ -935,6 +947,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 wy,
                                 display_secs: crate::player_emote::EMOTE_DISPLAY_SECS,
                             }));
+                            // 活動鏈：社交環（ROADMAP 390）。使用表情即算社交互動。
+                            advance_activity_chain(&app, id, crate::activity_chain::ActivityKind::Social, &tx_direct);
                         }
                     }
                 }
@@ -1425,6 +1439,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(uid) = authed_uid {
                             advance_daily_gather(&app, uid, item, amount, &tx_direct);
                         }
+                        // 活動鏈：採集環（ROADMAP 390）。
+                        if let Some(uid) = authed_uid {
+                            advance_activity_chain(&app, uid, crate::activity_chain::ActivityKind::Gather, &tx_direct);
+                        }
                         // 旅行商人限時委託：採集事件（ROADMAP 136）。
                         if let Some(uid) = authed_uid {
                             let quest_result = app.wandering_merchant.write().unwrap().on_gather(item, amount as u32);
@@ -1494,7 +1512,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                             // 合成：鎖 players 扣料＋產出＋取玩家名；出鎖後處理儀式（守 prod-deadlock）。
-                            let ceremony_info = {
+                            // 回傳 (craft_ok, ceremony_info)：craft_ok 供活動鏈環計數，ceremony_info 供廣播。
+                            let (craft_ok, ceremony_info) = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
                                     let discount = crate::class::crafting_reduction(&p.masteries);
@@ -1509,13 +1528,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.masteries.gain_artisan(2); // 工匠熟練度（ROADMAP 38）
                                         tracing::info!(player = %p.name, recipe = %recipe_id, discount, precision = used_precision, "合成成功");
                                         // 若屬儀式配方，帶出玩家名供後續廣播（鎖外再取儀式狀態）。
-                                        crate::craft_ceremony::is_ceremonial(&recipe_id)
-                                            .map(|item_name| (p.name.clone(), item_name))
+                                        let ceremony = crate::craft_ceremony::is_ceremonial(&recipe_id)
+                                            .map(|item_name| (p.name.clone(), item_name));
+                                        (true, ceremony)
                                     } else {
-                                        None
+                                        (false, None)
                                     }
                                 } else {
-                                    None
+                                    (false, None)
                                 }
                             }; // players 鎖到此放掉
 
@@ -1532,6 +1552,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 稱號鉤（ROADMAP 389）：首次鍛造儀式配方解鎖「工匠」稱號。
                                 grant_title_if_new(&app, &app.tx, &tx_direct, id, &pname,
                                     crate::player_title::Title::FirstCraft);
+                            }
+                            // 活動鏈：合成環（ROADMAP 390）。合成任何配方成功即算一環。
+                            if craft_ok {
+                                advance_activity_chain(&app, id, crate::activity_chain::ActivityKind::Craft, &tx_direct);
                             }
                         }
                     }
@@ -2648,6 +2672,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             advance_daily_kill(&app, uid, kill_kind, &tx_direct);
                         }
                     }
+                    // 活動鏈：戰鬥環（ROADMAP 390）。安全區遠程擊殺同樣不計入。
+                    if !suppress_rewards {
+                        if let (Some(uid), Some((_, _, _, Some(_), _, _, _))) = (authed_uid, result) {
+                            advance_activity_chain(&app, uid, crate::activity_chain::ActivityKind::Battle, &tx_direct);
+                        }
+                    }
                     // 懸賞告示板：擊殺事件（ROADMAP 53）。
                     // 安全區遠程擊殺不結算懸賞，防止城牆龜縮刷賞。
                     if !suppress_rewards {
@@ -3360,6 +3390,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     }
                                     // 每日任務：旅行事件（ROADMAP 32）。
                                     advance_daily_travel(&app, uid, p, &tx_direct);
+                                    // 活動鏈：探索環（ROADMAP 390）。旅行到非故鄉星球即算探索。
+                                    advance_activity_chain(&app, uid, crate::activity_chain::ActivityKind::Explore, &tx_direct);
                                 }
                             }
                         }
@@ -7451,6 +7483,63 @@ fn advance_daily_travel(
     });
     if let Some(Some((views, done, all))) = result {
         on_daily_task_completed(app, uid, views, done, all, tx);
+    }
+}
+
+/// 活動鏈推進輔助（ROADMAP 390）：記錄一種活動類型，若有新環或獎勵則單播通知本人，
+/// 達全鏈（5/5）時在世界頻道廣播。各自取放鎖、不巢狀（守 prod-deadlock 鐵律）。
+fn advance_activity_chain(
+    app: &AppState,
+    player_id: uuid::Uuid,
+    kind: crate::activity_chain::ActivityKind,
+    tx_direct: &tokio::sync::mpsc::Sender<String>,
+) {
+    use crate::activity_chain::{ActivityChain, TOTAL_KINDS};
+    // 取目前時刻（用於重置判斷）。
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // 鎖內：記錄活動、取得結果；若有乙太獎勵，同時加進玩家身上。
+    let update = {
+        let mut players = app.players.write().unwrap();
+        if let Some(p) = players.get_mut(&player_id) {
+            let up = p.activity_chain.record(kind, now_secs);
+            if up.is_new_link() && up.ether_reward > 0 {
+                p.ether = p.ether.saturating_add(up.ether_reward);
+            }
+            Some(up)
+        } else {
+            None
+        }
+    }; // players 鎖到此放掉
+
+    let Some(up) = update else { return };
+    if !up.is_new_link() { return; }
+
+    // 單播給本人：新環通知（含獎勵乙太數）。
+    let notif = crate::protocol::ServerMsg::ChainLink {
+        player_id,
+        links: up.links_after,
+        total: TOTAL_KINDS,
+        ether_reward: up.ether_reward,
+    };
+    if let Ok(j) = serde_json::to_string(&notif) {
+        let _ = tx_direct.try_send(j);
+    }
+
+    // 若全鏈完成（5/5），取玩家名後世界頻道廣播。
+    if up.is_chain_complete() {
+        let pname = {
+            let players = app.players.read().unwrap();
+            players.get(&player_id).map(|p| p.name.clone()).unwrap_or_default()
+        };
+        if !pname.is_empty() {
+            let _ = app.tx_chat.send(format!(
+                "🔗 {} 今日完成了所有活動鏈！戰鬥、採集、合成、社交、探索——全部達成！",
+                pname
+            ));
+        }
     }
 }
 
