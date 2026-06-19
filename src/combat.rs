@@ -273,6 +273,7 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::DeepBroth
         | ItemKind::Egg
         | ItemKind::FriedEgg
+        | ItemKind::Honey
         | ItemKind::WheatGrain
         | ItemKind::Carrot
         | ItemKind::Potato
@@ -379,6 +380,7 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::DeepBroth
         | ItemKind::Egg
         | ItemKind::FriedEgg
+        | ItemKind::Honey
         | ItemKind::WheatGrain
         | ItemKind::Carrot
         | ItemKind::Potato

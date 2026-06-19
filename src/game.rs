@@ -168,6 +168,10 @@ pub fn spawn(app: AppState) {
             // 同時把每塊地轉成快照、並戳上擁有者 id（`Field` 自己不知道屬於誰）。短暫持鎖，不跨 await。
             // 成長無條件推進(每塊地 tick);view 只在要廣播時才在同一把鎖內多走一趟建。
             let effective_growth = growth_rate * season_growth;
+            // 養蜂釀蜜（ROADMAP 412）：在農地寫鎖內順手收集每位巢主的「蜜源」（田裡生長中作物數），
+            // 出鎖後餵給蜂巢 tick——蜜源越豐、產蜜越快（不巢狀上鎖、守 prod-deadlock）。
+            let mut blooms_by_owner: std::collections::HashMap<uuid::Uuid, u32> =
+                std::collections::HashMap::new();
             let field_views: Vec<FieldView> = {
                 let mut fields = app.fields.write().unwrap();
                 // 灑水器自動澆灌：每個灑水器對主人的農地 tick，倒數到 0 時澆周圍格。
@@ -182,12 +186,17 @@ pub fn spawn(app: AppState) {
                         }
                     }
                 }
-                for (_owner, field) in fields.iter_mut() {
+                for (owner, field) in fields.iter_mut() {
                     // 草原細雨時先替所有缺水作物補水，再正常 tick 成長。
                     if is_raining {
                         field.water_all_planted();
                     }
                     field.tick(dt * effective_growth);
+                    // 記下這塊地的蜜源（生長中作物數），供蜂巢產蜜放大。
+                    let blooms = field.blooming_count();
+                    if blooms > 0 {
+                        blooms_by_owner.insert(*owner, blooms);
+                    }
                 }
                 // 公共農地與個人地塊同步成長，廣播時以 owner=nil 加入列表讓前端辨識。
                 let pub_view = {
@@ -221,6 +230,9 @@ pub fn spawn(app: AppState) {
                     Vec::new()
                 }
             };
+
+            // 養蜂釀蜜（ROADMAP 412）：依各巢主的蜜源推進蜂巢產蜜（fields 鎖已釋放，獨立取 apiary 寫鎖）。
+            app.apiary.write().unwrap().tick(dt, &blooms_by_owner);
 
             // 推進採集節點重生（採空的倒數補耐久,其餘 no-op）。重生無條件跑;view 只在廣播時建。
             // ③ 無限世界: 先確保玩家周圍區塊已載入。
@@ -3857,6 +3869,8 @@ pub fn spawn(app: AppState) {
                         },
                         // 牧場狀態（ROADMAP 48）：只送有雞或有蛋的地塊。
                         ranch_plots: app.ranch.read().unwrap().all_active_views(),
+                        // 蜂巢狀態（養蜂釀蜜 ROADMAP 412）：每個有蜂箱的玩家一筆。
+                        hives: app.apiary.read().unwrap().all_views(),
                         // 農地作物狀態（ROADMAP 49）：只送有種植作物的地塊。
                         farm_crop_plots: app.farm_crops.read().unwrap().all_active_views(),
                         // 夜採星晶礦脈（ROADMAP 50）：夜間有節點，白天空陣列。

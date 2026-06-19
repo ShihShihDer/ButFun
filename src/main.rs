@@ -21,6 +21,7 @@ mod player_title;
 mod activity_chain;
 mod meditation;
 mod busking;
+mod apiary;
 mod meal_buff;
 mod dish_mastery;
 mod onboarding;

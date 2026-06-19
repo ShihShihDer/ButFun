@@ -583,7 +583,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -621,6 +621,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         land_plots: land_plots.clone(),
                                         // 牧場狀態全部送出（稀疏，通常很少地塊有雞）。
                                         ranch_plots: ranch_plots.clone(),
+                                        // 蜂巢全送（量小且稀疏，與牧場同；前端用 owner 對到農地座標渲染）。
+                                        hives: hives.clone(),
                                         // 農地作物狀態全部送出（稀疏，通常很少地塊有種植）。
                                         farm_crop_plots: farm_crop_plots.clone(),
                                         // 夜採星晶礦脈：夜間節點依 AOI 剔除，白天空陣列直接傳。
@@ -3199,6 +3201,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     tracing::info!(player = %p.name, gained, "食用煎蛋回血");
                                 }
                             }
+                            // ── 養蜂釀蜜（ROADMAP 412）────────────────────────────
+                            ItemKind::Honey => {
+                                // 蜂蜜：甜食，回復 6 HP 並獲得暖食飽足（自家蜂箱釀的甜蜜能量）。
+                                if !p.vitals.is_downed() && p.inventory.take(item, 1) {
+                                    let gained = p.vitals.heal(6);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
+                                    tracing::info!(player = %p.name, gained, "食用蜂蜜回血");
+                                }
+                            }
                             // ── 農地料理（ROADMAP 49）────────────────────────────
                             ItemKind::Bread => {
                                 // 麵包：回復 12 HP（小麥×3 烹飪）。
@@ -4828,6 +4839,56 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     for msg in events {
                                         let _ = app.tx.send(Arc::new(msg));
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 養蜂釀蜜（ROADMAP 412）──────────────────────────────────────────
+                Ok(ClientMsg::PlaceHive) => {
+                    // 安置蜂箱：需登入、擁有農地（有田才養得了蜂）、乙太足夠、尚無蜂箱。
+                    use crate::apiary::PLACE_HIVE_COST;
+                    if let Some(uid) = authed_uid {
+                        let has_field = app.fields.read().unwrap().contains_key(&uid);
+                        let already = app.apiary.read().unwrap().has_hive(uid);
+                        if has_field && !already {
+                            let ether = app.players.read().unwrap().get(&uid).map(|p| p.ether).unwrap_or(0);
+                            if ether >= PLACE_HIVE_COST {
+                                // 先取 apiary 寫鎖安置；成功後才取 players 寫鎖扣費（不巢狀上鎖）。
+                                let ok = app.apiary.write().unwrap().place_hive(uid);
+                                if ok {
+                                    if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                        p.ether = p.ether.saturating_sub(PLACE_HIVE_COST);
+                                        tracing::info!(player = %p.name, "安置蜂箱");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::HarvestHoney) => {
+                    // 採蜜：需登入、未倒地、有蜂箱且蜂巢非空。
+                    if let Some(uid) = authed_uid {
+                        let downed = app.players.read().unwrap().get(&uid).map(|p| p.vitals.is_downed()).unwrap_or(true);
+                        if !downed {
+                            let out = app.apiary.write().unwrap().harvest(uid);
+                            if let Some(out) = out {
+                                // 蜂蜜入背包、給農夫熟練度；採蜜事件鎖內收集，出鎖後才廣播（守 prod-deadlock）。
+                                let mut event: Option<ServerMsg> = None;
+                                if let Some(p) = app.players.write().unwrap().get_mut(&uid) {
+                                    p.add_item_overflow(crate::inventory::ItemKind::Honey, out.honey);
+                                    p.masteries.gain_farmer(out.xp);
+                                    event = Some(ServerMsg::HoneyHarvest {
+                                        player_id: uid,
+                                        honey: out.honey,
+                                        x: p.x,
+                                        y: p.y,
+                                    });
+                                    tracing::info!(player = %p.name, honey = out.honey, "採蜜");
+                                }
+                                if let Some(msg) = event {
+                                    let _ = app.tx.send(Arc::new(msg));
                                 }
                             }
                         }

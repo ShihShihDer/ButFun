@@ -55,6 +55,8 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::FishDeep,         price_per: 10 },
     // 牧場產物（ROADMAP 48）：雞蛋 2 乙太/顆，確保死蛋有出口。
     ShopEntry { item: ItemKind::Egg,              price_per: 2  },
+    // 養蜂產物（ROADMAP 412）：蜂蜜 3 乙太/罐——比雞蛋略高（蜂蜜釀得慢），給養蜂路線乙太出口。
+    ShopEntry { item: ItemKind::Honey,            price_per: 3  },
     // 農地作物（ROADMAP 49）：按種植成本遞增溢價，讓農田路線有穩定乙太出口。
     ShopEntry { item: ItemKind::WheatGrain,       price_per: 2  },
     ShopEntry { item: ItemKind::Carrot,           price_per: 3  },

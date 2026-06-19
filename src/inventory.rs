@@ -186,6 +186,9 @@ pub enum ItemKind {
     Egg,
     /// 煎蛋🍳（合成：雞蛋×2 → 煎蛋×1）。使用後回復 10 HP。
     FriedEgg,
+    /// 蜂蜜🍯（養蜂釀蜜 ROADMAP 412：自家農地安置蜂箱，蜜蜂採田裡作物花蜜釀成）。
+    /// 甜食：使用後回復 6 HP 並獲得暖食飽足；亦可賣 NPC。蜜源（田裡作物）越豐、釀得越快。
+    Honey,
 
     // ── 農地作物（ROADMAP 49 農田地塊種作物）────────────────────────────────
     /// 小麥🌾（農田地塊種植收割）。可賣 NPC 2 乙太，或 ×3 合成麵包。
@@ -380,6 +383,7 @@ impl ItemKind {
         ItemKind::DeepBroth,
         ItemKind::Egg,
         ItemKind::FriedEgg,
+        ItemKind::Honey,
         ItemKind::WheatGrain,
         ItemKind::Carrot,
         ItemKind::Potato,
@@ -687,6 +691,7 @@ mod tests {
                 | ItemKind::DeepBroth
                 | ItemKind::Egg
                 | ItemKind::FriedEgg
+                | ItemKind::Honey
                 | ItemKind::WheatGrain
                 | ItemKind::Carrot
                 | ItemKind::Potato
@@ -739,8 +744,8 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 92 種（含 ROADMAP 173：傳說古 Alpha 戰利品 2 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 92, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 93 種（含 ROADMAP 412：養蜂釀蜜 蜂蜜 1 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 93, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -902,6 +907,8 @@ mod tests {
             );
             // 牧場可得（ROADMAP 48）：農田地塊養雞，雞自動產蛋。
             let egg_ranchable = item == ItemKind::Egg;
+            // 養蜂可得（ROADMAP 412）：農地安置蜂箱，蜜蜂採田裡作物花蜜釀成蜂蜜。
+            let apiary_brewable = item == ItemKind::Honey;
             // 農地種植可得（ROADMAP 49）：農田地塊種作物，成熟後收割。
             let farm_croppable = matches!(
                 item,
@@ -922,7 +929,7 @@ mod tests {
             // 傳說古 Alpha 擊倒可得（ROADMAP 173）：擊倒世界頭目後殺手得 LegendaryCore。
             let ancient_alpha_kill_drop = item == ItemKind::LegendaryCore;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop,
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || apiary_brewable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集／非 Alpha 擊殺掉落）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );
@@ -1012,6 +1019,8 @@ mod tests {
                     | ItemKind::DeepBroth
                     // 牧場料理（ROADMAP 48 煎蛋）：食用即消耗，回血 10。
                     | ItemKind::FriedEgg
+                    // 養蜂釀蜜（ROADMAP 412 蜂蜜）：食用即消耗，回血 6＋暖食飽足。
+                    | ItemKind::Honey
                     // 農地料理（ROADMAP 49）：食用即消耗，各自回血。
                     | ItemKind::Bread
                     | ItemKind::CarrotSoup
