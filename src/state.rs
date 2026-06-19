@@ -829,6 +829,11 @@ impl Player {
                 // ROADMAP 413：當前該做的下一步 index（教學順序中第一個未完成步），前端據此引路。
                 next: self.onboarding.next_step().map(|s| s as u8),
             }),
+            // ROADMAP 418：歸家羅盤——這裡 view() 拿不到 plots 登記表，故先留 None，
+            // 由快照層（game.rs，握得到 app.plots）對「有地玩家」補上回家方位／距離／八方位。
+            home_bearing: None,
+            home_dist: None,
+            home_dir: None,
         }
     }
 

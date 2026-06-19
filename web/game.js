@@ -5249,7 +5249,9 @@
   // 純從農地世界座標 + 鏡頭推得的表現層回饋，不嵌任何遊戲規則（WebXR renderer 可各自實作）。
   function drawFarmPointer(camX, camY) {
     const mf = myField();
-    if (!mf || !mf.cols || !mf.rows) return;
+    // 走遠探索後，自家田離開廣播範圍、myField() 變 null——而這正是最需要「回家方向」的時候。
+    // 改用伺服器權威的歸家羅盤接力（ROADMAP 418），不管跑多遠都指得回家。
+    if (!mf || !mf.cols || !mf.rows) { drawHomeCompassFar(); return; }
     // 農地中心（世界座標）→ 螢幕座標。
     const cx = mf.origin_x + (mf.cols * mf.tile_size) / 2;
     const cy = mf.origin_y + (mf.rows * mf.tile_size) / 2;
@@ -5307,6 +5309,71 @@
     ctx.fillStyle = dry ? "#bfe0ff" : ripe ? "#ffe9a0" : "#e8e0cf";
     ctx.fillText(label, lx, ly);
     ctx.textBaseline = "alphabetic"; // 復原預設，免得影響其後文字繪製
+  }
+
+  // 歸家八方位的繁中字（ROADMAP 418）：索引對齊後端 `wayfinding::Cardinal as u8`
+  // （0=北，順時針到 7=西北）。面向玩家字串集中在這裡，方便日後在地化。
+  const CARDINAL_ZH = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+  // 回家距離格式化：上千改用「k」收短，免畫面塞一長串數字（純呈現、無假精度單位）。
+  function fmtHomeDist(px) {
+    if (!isFinite(px) || px < 0) return "";
+    return px >= 1000 ? (px / 1000).toFixed(1) + "k" : String(Math.round(px));
+  }
+
+  // 歸家羅盤的遠距接力（ROADMAP 418）：玩家走遠後自家田離開廣播範圍、drawFarmPointer 的
+  // myField() 變 null——改用伺服器權威下發的回家方位／距離／八方位（me.home_bearing /
+  // home_dist / home_dir，只有買了地的玩家才有），在畫面邊緣畫一枚永遠指向自家田的箭頭＋
+  // 八方位＋距離，不管跑多遠都找得回家。純表現層、零遊戲規則；箭頭定向、不動畫（reduceMotion 無涉）。
+  function drawHomeCompassFar() {
+    const me = myId ? players.get(myId) : null;
+    if (!me || typeof me.home_bearing !== "number") return; // 沒地玩家無此值＝不畫羅盤
+    // 方位角（0=北/上、順時針）→ 螢幕方向向量（北＝上＝-y），與後端 bearing 慣例天生對齊。
+    const rad = (me.home_bearing * Math.PI) / 180;
+    const vx = Math.sin(rad), vy = -Math.cos(rad);
+    const ccx = viewW / 2, ccy = viewH / 2;
+    const ang = Math.atan2(vy, vx);
+    const m = 46; // 與田指標同套邊距，避開 HUD / 小地圖最外圈
+    // 從畫面中心朝家方向射一條長線、夾到安全框內側當箭頭落點（與村莊指標同安全區）。
+    const px = Math.max(m + safeArea.left, Math.min(viewW - m - safeArea.right, ccx + vx * viewW));
+    const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, ccy + vy * viewH));
+
+    ctx.save();
+    // 底盤圓，讓箭頭在任何地表都讀得到。
+    ctx.beginPath();
+    ctx.arc(px, py, 15, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,16,30,0.6)";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(201,162,75,0.85)";
+    ctx.stroke();
+    // 三角箭頭，尖端指向家。
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(9, 0);
+    ctx.lineTo(-5, -6);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(201,162,75,0.92)";
+    ctx.fill();
+    ctx.restore();
+
+    // 「🏠 西北 1.2k」標籤，擺在箭頭背向家那側、不擋指向。
+    const dir = typeof me.home_dir === "number" ? CARDINAL_ZH[me.home_dir] || "" : "";
+    const label = "🏠" + (dir ? " " + dir : "") + " " + fmtHomeDist(me.home_dist || 0);
+    const lx = px - Math.cos(ang) * 26;
+    const ly = py - Math.sin(ang) * 26;
+    ctx.save();
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.strokeText(label, lx, ly);
+    ctx.fillStyle = "#e8e0cf";
+    ctx.fillText(label, lx, ly);
+    ctx.restore();
   }
 
   // 「往新手村」邊緣指標：村子（出生點 / 安全區中心）離開畫面時，永遠在畫面邊緣指出方向 + 距離，

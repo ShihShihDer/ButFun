@@ -151,6 +151,7 @@ mod rainbow;
 mod reconcile;
 mod return_hook;
 mod region_name;
+mod wayfinding;
 mod social_dynamics;
 mod friends;
 mod party;
