@@ -207,6 +207,7 @@
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
     #hudRipe { color: #ffd24a; }
+    #hudPlant { color: #8fcf7a; }
     /* 武器:pill 與引導行都走攻擊紅(呼應背包/飄字的武器色 232,96,84),跟乙太黃、缺水藍一眼分得開 */
     #hudWeapon { color: #ff9d8f; }
     #hudWeaponHint { color: #e8847a; }
@@ -711,6 +712,9 @@
     <div id="hudFarm" class="hud-sub hidden"></div>
     <!-- 收成提醒:有成熟格時提示「去收乙太」,把種田迴圈的回報那步顯到 HUD(純從快照每格 state 數得)。沒有可收成格時隱藏。 -->
     <div id="hudRipe" class="hud-sub hidden"></div>
+    <!-- 農地待辦小結(ROADMAP 427):缺水/可收成已有專屬行;這行補上過去 HUD 完全沒呈現的兩態——
+         「空地可種·去播種」與「都照顧好了·靜待成長」。只在沒有更急的缺水/可收時才現,零畫面重複。 -->
+    <div id="hudPlant" class="hud-sub hidden"></div>
     <!-- 武器引導:還沒合出武器時一行提示「合一把更痛」,把「採集→合成→變強打怪」那步顯到 HUD;
          合出後改由上面的 🗡️ pill 亮起、這行隱藏(純前端引導,配方與合成台/伺服器一致,不嵌規則)。 -->
     <div id="hudWeaponHint" class="hud-sub hidden"></div>

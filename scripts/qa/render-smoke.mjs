@@ -1248,6 +1248,40 @@ for (const sc of scenarios) {
   }
 }
 
+// 農地待辦小結（ROADMAP 427）：單元斷言純函式 farmDigest 的優先序與計數。
+// 把一塊田的格子彙整成「下一步最該做的一件農事」，回應建議箱反覆出現的待辦/優先指引/總結回饋。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.farmDigest;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 農地待辦：game.js 未導出 farmDigest");
+  } else {
+    const cell = (state, dry) => ({ state, dry: !!dry });
+    // [說明, cells, 期望 kind, 期望 n]
+    const cases = [
+      ["空/無田", [], "none", 0],
+      ["全自然地未開墾", [cell(0), cell(0)], "none", 0],
+      ["只有空土→去播種", [cell(1), cell(1), cell(1)], "plant", 3],
+      ["作物全照顧好→休整", [cell(2), cell(3)], "allgood", 2],
+      ["有成熟→去收成", [cell(4), cell(3), cell(1)], "harvest", 1],
+      ["缺水最優先(凌駕收成/空地)", [cell(2, true), cell(4), cell(1)], "water", 1],
+      ["缺水只算未成熟作物格", [cell(2, true), cell(3, true), cell(0)], "water", 2],
+      ["成熟凌駕空地", [cell(4), cell(1), cell(1)], "harvest", 1],
+      ["壞值容錯(null/缺欄)", [null, {}, cell(1)], "plant", 1],
+    ];
+    let bad = 0;
+    for (const [desc, cells, wantKind, wantN] of cases) {
+      const d = fn(cells);
+      if (d.kind !== wantKind || d.n !== wantN) {
+        bad++;
+        console.error(`  ❌ 農地待辦：${desc} 期望 {${wantKind},${wantN}} 得到 {${d.kind},${d.n}}`);
+      }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 農地待辦小結·優先序真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
