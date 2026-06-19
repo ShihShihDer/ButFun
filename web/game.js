@@ -689,6 +689,15 @@
     journeyState.requested = true;
     safeSend({ type: "request_journey" });
   }
+
+  // 旅途明信片（ROADMAP 417）：一鍵把「此刻的世界」框成一張可下載收藏／分享的風景卡。
+  // 開窗／按「重新留影」時向伺服器 request_postcard 索取，收到 postcard 後框成卡片。
+  // 純呈現、不送物品/乙太、零持久化。card＝伺服器組好的明信片內容（null＝尚未收到）。
+  const postcardState = { card: null };
+  // 向伺服器索取一張此刻的明信片（斷線時 safeSend 靜默忽略）。
+  function requestPostcard() {
+    safeSend({ type: "request_postcard" });
+  }
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -3250,6 +3259,19 @@
         updateJourneyPanel();
         break;
       }
+      case "postcard": {
+        // 旅途明信片（ROADMAP 417）：伺服器組好的「此刻的世界」內容單播回來，框成風景卡。
+        postcardState.card = {
+          title: typeof msg.title === "string" ? msg.title : "",
+          place: typeof msg.place === "string" ? msg.place : "",
+          subtitle: typeof msg.subtitle === "string" ? msg.subtitle : "",
+          rank: typeof msg.rank === "string" ? msg.rank : "",
+          flavor: typeof msg.flavor === "string" ? msg.flavor : "",
+          level: Number.isFinite(msg.level) ? msg.level : 0,
+        };
+        updatePostcardPanel();
+        break;
+      }
       case "return_summary": {
         // 回訪摘要（ROADMAP 374）：登入玩家進場一次，顯示農田/牧場/任務待辦。
         showReturnCard(msg);
@@ -5570,7 +5592,8 @@
         (e.key === "2") ? "dockMine" :
         (e.key === "3") ? "dockWaypost" :
         (e.key === "4") ? "dockBottle" :
-        (e.key === "6") ? "dockJourney" : null;
+        (e.key === "6") ? "dockJourney" :
+        (e.key === "7") ? "dockPostcard" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -22029,6 +22052,147 @@
     body.appendChild(foot);
   }
 
+  // ── 旅途明信片面板（ROADMAP 417）─────────────────────────────────────────
+  // 一鍵把「此刻的世界」框成一張暖色風景卡（地名／氛圍／季節時辰／旅人資歷＋一句風景印記），
+  // 玩家可下載收藏／分享。資料只信伺服器（開窗請求 request_postcard、收 postcard 後框）；
+  // 純呈現、不送物品/乙太、零持久化。
+  let lastPostcardSig = null;
+  function updatePostcardPanel() {
+    const body = document.getElementById("postcardBody");
+    if (!body) return;
+    const card = postcardState.card;
+    // sig：未收到資料前顯示「框起中」；明信片內容變了才重建（守 panel-sig 病）。
+    const sig = card
+      ? `${card.title}|${card.place}|${card.subtitle}|${card.rank}|${card.flavor}|${card.level}`
+      : "loading";
+    if (sig === lastPostcardSig) return;
+    lastPostcardSig = sig;
+    body.innerHTML = "";
+
+    if (!card) {
+      const wait = document.createElement("div");
+      wait.style.cssText = "color:#888;font-size:.82rem;";
+      wait.textContent = "正在框起此刻的風景……";
+      body.appendChild(wait);
+      return;
+    }
+
+    // 明信片本體：暖色「紙感」卡，與深色 HUD 形成對比，像一張真的留影。
+    const pc = document.createElement("div");
+    pc.style.cssText =
+      "border:1px solid #c9a24b;border-radius:12px;padding:16px 16px 14px;line-height:1.5;" +
+      "background:linear-gradient(155deg,#f7efdc,#efe3c4);color:#4a3b22;box-shadow:0 2px 10px rgba(0,0,0,.35);";
+
+    const eyebrow = document.createElement("div");
+    eyebrow.style.cssText = "font-size:.7rem;letter-spacing:.08em;color:#9a7d3e;margin-bottom:6px;";
+    eyebrow.textContent = "📷 ButFun · 旅途明信片";
+    pc.appendChild(eyebrow);
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:.95rem;color:#7a5e25;margin-bottom:4px;";
+    title.textContent = card.title;
+    pc.appendChild(title);
+
+    const place = document.createElement("div");
+    place.style.cssText = "font-size:1.45rem;font-weight:700;color:#42351c;margin-bottom:2px;";
+    place.textContent = card.place;
+    pc.appendChild(place);
+
+    const subtitle = document.createElement("div");
+    subtitle.style.cssText = "font-style:italic;font-size:.86rem;color:#8a7340;margin-bottom:12px;";
+    subtitle.textContent = card.subtitle;
+    pc.appendChild(subtitle);
+
+    const flavor = document.createElement("div");
+    flavor.style.cssText = "font-size:1.02rem;color:#4a3b22;border-top:1px dashed #c7ab6a;padding-top:11px;margin-bottom:11px;";
+    flavor.textContent = card.flavor;
+    pc.appendChild(flavor);
+
+    const sign = document.createElement("div");
+    sign.style.cssText = "text-align:right;font-size:.84rem;color:#7a5e25;";
+    sign.textContent = `— ${card.rank} · Lv.${card.level}`;
+    pc.appendChild(sign);
+
+    body.appendChild(pc);
+
+    // 動作列：下載收藏 ＋ 重新留影（換到別處／別的時辰再按，明信片就不一樣）。
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;margin-top:12px;";
+
+    const dl = document.createElement("button");
+    dl.type = "button";
+    dl.className = "dock-btn";
+    dl.style.cssText = "flex:1;padding:7px 0;";
+    dl.textContent = "📥 下載圖片";
+    dl.addEventListener("click", () => downloadPostcardImage(card));
+    actions.appendChild(dl);
+
+    const again = document.createElement("button");
+    again.type = "button";
+    again.className = "dock-btn";
+    again.style.cssText = "flex:1;padding:7px 0;";
+    again.textContent = "🔄 重新留影";
+    again.addEventListener("click", () => requestPostcard());
+    actions.appendChild(again);
+
+    body.appendChild(actions);
+
+    const tip = document.createElement("div");
+    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:10px;line-height:1.5;";
+    tip.textContent = "明信片捕捉的是你「此刻」站在世界的這一處——換個地方、換個季節時辰，再按「重新留影」，框出的風景就不一樣。";
+    body.appendChild(tip);
+  }
+
+  // 把明信片畫到離屏 canvas 並觸發下載（best-effort：canvas/toBlob 不支援時靜默略過，不擾流程）。
+  function downloadPostcardImage(card) {
+    try {
+      const W = 880, H = 560;
+      const cv = document.createElement("canvas");
+      cv.width = W; cv.height = H;
+      const c = cv.getContext && cv.getContext("2d");
+      if (!c) return; // jsdom／不支援 canvas：靜默略過
+      // 紙感底（暖色斜向漸層；不支援漸層時退回單色）＋外框。
+      let bg = "#f2e7c9";
+      if (c.createLinearGradient) {
+        const g = c.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, "#f7efdc"); g.addColorStop(1, "#efe3c4");
+        bg = g;
+      }
+      c.fillStyle = bg;
+      c.fillRect(0, 0, W, H);
+      c.strokeStyle = "#c9a24b"; c.lineWidth = 6;
+      c.strokeRect(14, 14, W - 28, H - 28);
+      c.textBaseline = "top";
+      c.fillStyle = "#9a7d3e";
+      c.font = "22px sans-serif";
+      c.fillText("📷 ButFun · 旅途明信片", 56, 56);
+      c.fillStyle = "#7a5e25";
+      c.font = "30px sans-serif";
+      c.fillText(card.title, 56, 110);
+      c.fillStyle = "#42351c";
+      c.font = "bold 64px sans-serif";
+      c.fillText(card.place, 56, 168);
+      c.fillStyle = "#8a7340";
+      c.font = "italic 26px sans-serif";
+      c.fillText(card.subtitle, 56, 256);
+      c.fillStyle = "#4a3b22";
+      c.font = "34px sans-serif";
+      c.fillText(card.flavor, 56, 340);
+      c.fillStyle = "#7a5e25";
+      c.font = "28px sans-serif";
+      const sign = `— ${card.rank} · Lv.${card.level}`;
+      const sw = (c.measureText ? c.measureText(sign).width : 0) || 0;
+      c.fillText(sign, W - 56 - sw, H - 96);
+      // 觸發下載。
+      const a = document.createElement("a");
+      a.download = "butfun-明信片.png";
+      a.href = cv.toDataURL ? cv.toDataURL("image/png") : "";
+      if (a.href) { a.click(); }
+    } catch (_e) {
+      // 下載是加分項，失敗不影響面板呈現——靜默吞掉。
+    }
+  }
+
   // ── 觀星連星座面板（ROADMAP 347）──────────────────────────────────────────
   // 夜裡開星圖，把散落的星點依今夜星座連成線。互動＝空間連線（與釣魚的反應計時換骨架）：
   // 點星點依序連成一條走線，伺服器把「邊的集合」與今夜星座比對，連對且首次即記入星座錄。
@@ -25471,6 +25635,8 @@
       if (win.id === "winInscription") renderInscriptionIdle();
       // 旅人手帳（ROADMAP 415）：一開窗就向伺服器索取自己的永久成長總覽。
       if (win.id === "winJourney") requestJourney();
+      // 旅途明信片（ROADMAP 417）：一開窗就向伺服器索取一張「此刻的世界」明信片。
+      if (win.id === "winPostcard") requestPostcard();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();

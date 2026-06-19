@@ -810,6 +810,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // （每秒至多 3 次，超量靜默丟棄）。
     let mut rl_journey_win = std::time::Instant::now();
     let mut rl_journey_n: u32 = 0;
+    // 旅途明信片限流（ROADMAP 417）：純讀、只單播回自己、不放大全服；比照手帳從嚴擋封包洪流。
+    let mut rl_postcard_win = std::time::Instant::now();
+    let mut rl_postcard_n: u32 = 0;
     // 讀取迴圈：更新此玩家的輸入意圖、處理聊天。
     while let Some(Ok(msg)) = receiver.next().await {
         // H2：訊息總量限流（每秒上限）。合法操作（移動/動作）遠低於此；超量靜默丟棄。
@@ -1216,6 +1219,48 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = tx_direct.try_send(json);
                         }
+                    }
+                }
+                Ok(ClientMsg::RequestPostcard) => {
+                    // 旅途明信片（ROADMAP 417）：以當下世界狀態組一張明信片，單播回去。
+                    // 純讀、不改任何狀態、不廣播（各鎖讀完即放、互不嵌套，守 prod-deadlock）。
+                    if rl_postcard_win.elapsed().as_secs() >= 1 {
+                        rl_postcard_win = std::time::Instant::now();
+                        rl_postcard_n = 0;
+                    }
+                    rl_postcard_n += 1;
+                    if rl_postcard_n > 3 {
+                        continue;
+                    }
+                    // 讀玩家自己的座標與等級（讀完即放鎖）；訪客無座標時退回原點。
+                    let (px, py, level) = {
+                        let ps = app.players.read().unwrap();
+                        match ps.get(&id) {
+                            Some(p) => (p.x as f64, p.y as f64, p.level()),
+                            None => (0.0, 0.0, 0),
+                        }
+                    };
+                    // 季節與時辰各自取讀鎖讀完即放（不與 players 鎖或彼此嵌套）。
+                    let season = app.season.read().unwrap().current;
+                    let phase = app.daynight.read().unwrap().phase();
+                    let loc = crate::region_name::locale_at(px, py);
+                    let card = crate::postcard::compose(crate::postcard::PostcardInput {
+                        level,
+                        place: loc.name.to_string(),
+                        subtitle: loc.subtitle.to_string(),
+                        phase,
+                        season,
+                    });
+                    let msg = ServerMsg::Postcard {
+                        title: card.title,
+                        place: card.place,
+                        subtitle: card.subtitle,
+                        rank: card.rank.to_string(),
+                        flavor: card.flavor.to_string(),
+                        level: card.level,
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
                     }
                 }
                 Ok(ClientMsg::HighFive) => {

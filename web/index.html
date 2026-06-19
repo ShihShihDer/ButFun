@@ -647,6 +647,7 @@
         <button type="button" class="dock-btn" id="dockStat"        data-win="winStat"        aria-keyshortcuts="S" aria-label="屬性加點（S）">🎯 屬性</button>
         <button type="button" class="dock-btn" id="dockAchievement" data-win="winAchievement" aria-keyshortcuts="A" aria-label="成就（A）">🏆 成就</button>
         <button type="button" class="dock-btn" id="dockJourney"     data-win="winJourney"     aria-keyshortcuts="6" aria-label="旅人手帳（6）">📖 手帳</button>
+        <button type="button" class="dock-btn" id="dockPostcard"    data-win="winPostcard"    aria-keyshortcuts="7" aria-label="旅途明信片（7）">📷 留影</button>
         <button type="button" class="dock-btn" id="dockDailyQuest"  data-win="winDailyQuest"  aria-keyshortcuts="D" aria-label="每日任務（D）">📅 每日</button>
         <button type="button" class="dock-btn" id="dockLeaderboard" data-win="winLeaderboard" aria-keyshortcuts="L" aria-label="排行榜（L）">🏅 排行</button>
         <button type="button" class="dock-btn" id="dockCodex"       data-win="winCodex"       aria-label="生態圖鑑">📕 生態</button>
@@ -812,6 +813,14 @@
         <button type="button" class="win-close" data-close="winJourney" aria-label="關閉旅人手帳面板">✕</button>
       </div>
       <div id="journeyBody"></div>
+    </div>
+    <!-- 旅途明信片面板（ROADMAP 417）：一鍵把「此刻的世界」框成一張可下載收藏／分享的風景卡。 -->
+    <div id="winPostcard" class="hud-window hidden" role="dialog" aria-labelledby="postcardTitle">
+      <div class="win-head">
+        <span class="win-title" id="postcardTitle">📷 旅途明信片</span>
+        <button type="button" class="win-close" data-close="winPostcard" aria-label="關閉旅途明信片面板">✕</button>
+      </div>
+      <div id="postcardBody"></div>
     </div>
     <!-- 觀星連星座面板（ROADMAP 347）：夜裡開星圖，把散落的星點依今夜星座連成線。 -->
     <div id="winStargaze" class="hud-window hidden" role="dialog" aria-labelledby="stargazeTitle">
