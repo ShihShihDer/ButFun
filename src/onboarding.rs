@@ -45,6 +45,17 @@ impl OnboardStep {
     }
 }
 
+/// 引導步驟的「教學順序」——前端據此高亮「當前該做的下一步」並畫世界動線指引（ROADMAP 413）。
+/// 順序＝採集→種植→收成→打招呼→合成（療癒農作核心循環，由易到難、先農後社交）。
+/// 與 bitmask 位元值一致，但分開列出以明確「順序」這個獨立契約。
+const STEPS_IN_ORDER: [OnboardStep; STEP_COUNT as usize] = [
+    OnboardStep::Gather,
+    OnboardStep::Plant,
+    OnboardStep::Harvest,
+    OnboardStep::Greet,
+    OnboardStep::Craft,
+];
+
 /// 新手引導狀態。記憶體前置、零持久化、零 migration。
 ///
 /// `Default` = 引導關閉（`active=false`）——對訪客／尚未種下的占位玩家而言「不顯示」是安全預設。
@@ -103,6 +114,15 @@ impl Onboarding {
     /// 已完成步驟 bitmask（供前端逐格點亮）。
     pub fn mask(&self) -> u8 {
         self.done
+    }
+
+    /// 當前「該做的下一步」——教學順序中第一個尚未完成的步驟（ROADMAP 413）。
+    /// 引導未啟用或已全數完成回 `None`（前端據此隱藏動線指引）。純函式、確定可重現。
+    pub fn next_step(&self) -> Option<OnboardStep> {
+        if !self.is_active() {
+            return None;
+        }
+        STEPS_IN_ORDER.into_iter().find(|&step| !self.is_done(step))
     }
 
     /// 標記某步驟完成。冪等：引導未啟用、或該步已完成皆回 `NoChange`。
@@ -227,6 +247,43 @@ mod tests {
             }
         }
         assert_eq!(finishes, 1);
+    }
+
+    #[test]
+    fn next_step_is_first_uncompleted_in_order() {
+        let mut ob = Onboarding::fresh();
+        // 全新玩家：第一步＝採集。
+        assert_eq!(ob.next_step(), Some(OnboardStep::Gather));
+        ob.complete(OnboardStep::Gather);
+        assert_eq!(ob.next_step(), Some(OnboardStep::Plant));
+        ob.complete(OnboardStep::Plant);
+        assert_eq!(ob.next_step(), Some(OnboardStep::Harvest));
+    }
+
+    #[test]
+    fn next_step_skips_out_of_order_completions() {
+        let mut ob = Onboarding::fresh();
+        // 先完成靠後的「合成」：下一步仍指向順序中最前的未完成步（採集），不被打亂。
+        ob.complete(OnboardStep::Craft);
+        assert_eq!(ob.next_step(), Some(OnboardStep::Gather));
+        ob.complete(OnboardStep::Gather);
+        ob.complete(OnboardStep::Plant);
+        ob.complete(OnboardStep::Harvest);
+        // 只剩「打招呼」未完成（合成早已完成）。
+        assert_eq!(ob.next_step(), Some(OnboardStep::Greet));
+    }
+
+    #[test]
+    fn next_step_none_when_inactive_or_done() {
+        // 訪客／已畢業：無下一步。
+        assert_eq!(Onboarding::default().next_step(), None);
+        assert_eq!(Onboarding::graduated().next_step(), None);
+        // 走完全程後（畢業）也無下一步。
+        let mut ob = Onboarding::fresh();
+        for s in STEPS_IN_ORDER {
+            ob.complete(s);
+        }
+        assert_eq!(ob.next_step(), None);
     }
 
     #[test]

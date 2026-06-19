@@ -2992,15 +2992,33 @@
                   "向鎮民打聲招呼",
                   "親手合成一樣東西",
                 ];
+                // ROADMAP 413：每步的情境化「怎麼做」提示（面向玩家字串集中於此、便於 i18n）。
+                const ONBOARD_HINTS = [
+                  "走到發亮的資源旁，按空白鍵採一份素材",
+                  "打開背包選一份種子，種在腳下的公共農地上",
+                  "等作物長大後點它收成",
+                  "走到鎮民身旁，送出一個表情打聲招呼",
+                  "按 C 打開合成台，親手做一樣東西",
+                ];
                 const cnt = ob.count || 0;
+                // 當前該做的下一步：後端權威下發 ob.next；舊伺服器沒這欄時退回「第一個未完成位元」。
+                let nextStep = (typeof ob.next === "number") ? ob.next : -1;
+                if (nextStep < 0) {
+                  for (let i = 0; i < ONBOARD_STEPS.length; i++) {
+                    if ((ob.done & (1 << i)) === 0) { nextStep = i; break; }
+                  }
+                }
                 const items = ONBOARD_STEPS.map((label, i) => {
                   const done = (ob.done & (1 << i)) !== 0;
-                  const box = done ? "✅" : "⬜";
-                  const cls = done ? ' class="ob-done"' : "";
+                  const isCur = !done && i === nextStep;
+                  const box = done ? "✅" : isCur ? "👉" : "⬜";
+                  const cls = done ? ' class="ob-done"' : isCur ? ' class="ob-current"' : "";
                   return `<li${cls}><span class="ob-box">${box}</span><span>${label}</span></li>`;
                 }).join("");
+                const hint = (nextStep >= 0 && ONBOARD_HINTS[nextStep]) ? ONBOARD_HINTS[nextStep] : "";
                 obEl.innerHTML =
-                  `<div class="ob-title">🌱 最初幾步 ${cnt}/5</div><ul>${items}</ul>`;
+                  `<div class="ob-title">🌱 最初幾步 ${cnt}/5</div><ul>${items}</ul>` +
+                  (hint ? `<div class="ob-hint">✨ ${hint}</div>` : "");
                 obEl.classList.remove("hidden");
               } else {
                 obEl.classList.add("hidden");
@@ -5280,6 +5298,106 @@
     ctx.restore();
   }
 
+  // ROADMAP 413 引路星塵：新手引導「當前步驟」的世界動線指引。
+  // 只對引導啟用中的全新玩家（me.onboarding 有值）顯示；走完即畢業、me.onboarding 變空、自動消失。
+  // 後端權威下發「下一步」index（me.onboarding.next）；前端用已渲染的世界物件解析該步的空間目標：
+  //   採集(0)→最近可採集節點、打招呼(3)→最近 NPC；其餘步驟（種植/收成/合成）就地完成，靠清單提示、無箭頭。
+  function onboardBeaconTarget(me) {
+    const ob = me && me.onboarding;
+    if (!ob || typeof ob.next !== "number") return null;
+    const step = ob.next; // 0採集 1種植 2收成 3打招呼 4合成
+    if (step === 0) {
+      // 最近的採集節點：優先還沒採空的（harvestable !== false）。
+      let best = null, bestD2 = Infinity;
+      for (const n of nodes) {
+        if (n.harvestable === false) continue;
+        const dx = n.x - me.x, dy = n.y - me.y, d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; best = n; }
+      }
+      if (!best) {
+        // 全採空了也指一個最近的，至少給方向。
+        for (const n of nodes) {
+          const dx = n.x - me.x, dy = n.y - me.y, d2 = dx * dx + dy * dy;
+          if (d2 < bestD2) { bestD2 = d2; best = n; }
+        }
+      }
+      return best ? { x: best.x, y: best.y, icon: "🌿", color: "#9be89b" } : null;
+    }
+    if (step === 3) {
+      // 最近的 NPC（打招呼對象）。
+      let best = null, bestD2 = Infinity;
+      for (const npc of npcs) {
+        const dx = npc.x - me.x, dy = npc.y - me.y, d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; best = npc; }
+      }
+      return best ? { x: best.x, y: best.y, icon: "💬", color: "#ffd24a" } : null;
+    }
+    return null; // 種植/收成/合成：就地行為，靠引導清單的情境提示即可
+  }
+
+  function drawOnboardBeacon(camX, camY, now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me) return;
+    const tgt = onboardBeaconTarget(me);
+    if (!tgt) return;
+    const sx = tgt.x - camX, sy = tgt.y - camY;
+    const onScreen = sx > 30 && sx < viewW - 30 && sy > 30 && sy < viewH - 30;
+    // 柔和呼吸脈動（reduceMotion 下定格成穩定中值，不閃動）。
+    const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(now / 380);
+    ctx.save();
+    if (onScreen) {
+      // 目標在畫面內：在目標上方輕輕暈一圈柔光 + 圖示，溫和提示「就是這裡」。
+      const r = 17 + pulse * 6;
+      ctx.beginPath();
+      ctx.arc(sx, sy - 4, r, 0, Math.PI * 2);
+      ctx.strokeStyle = tgt.color;
+      ctx.globalAlpha = 0.3 + pulse * 0.4;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.globalAlpha = 0.95;
+      ctx.font = "15px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(tgt.icon, sx, sy - 4 - r - 9);
+      ctx.textBaseline = "alphabetic";
+    } else {
+      // 目標在畫面外：邊緣箭頭指向它（沿用 farm/village pointer 的安全區夾邊與底盤圓風格）。
+      const ccx = viewW / 2, ccy = viewH / 2;
+      const ang = Math.atan2(sy - ccy, sx - ccx);
+      const m = 58;
+      const px = Math.max(m + safeArea.left, Math.min(viewW - m - safeArea.right, sx));
+      const py = Math.max(m + safeArea.top, Math.min(viewH - m - safeArea.bottom, sy));
+      ctx.globalAlpha = 0.72 + pulse * 0.26;
+      ctx.beginPath();
+      ctx.arc(px, py, 16, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(10,16,30,0.6)";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = tgt.color;
+      ctx.stroke();
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(10, 0);
+      ctx.lineTo(-5, -6);
+      ctx.lineTo(-5, 6);
+      ctx.closePath();
+      ctx.fillStyle = tgt.color;
+      ctx.fill();
+      ctx.restore();
+      // 圖示標籤擺在箭頭背向目標那側，不擋指向。
+      const lx = px - Math.cos(ang) * 26, ly = py - Math.sin(ang) * 26;
+      ctx.globalAlpha = 1;
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(tgt.icon, lx, ly);
+      ctx.textBaseline = "alphabetic";
+    }
+    ctx.restore();
+  }
+
   // ---- 輸入 ----
   function sendInputIfChanged() {
     const sig = `${keys.up}${keys.down}${keys.left}${keys.right}${keys.run}`;
@@ -6815,6 +6933,7 @@
       drawAttackFx(camX, camY, renderNow);
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
+      drawOnboardBeacon(camX, camY, renderNow);        // 新手引導當前步驟的動線指引（ROADMAP 413）
     });
 
     // 晨昏霞光天幕（ROADMAP 204）：獨立 safeDraw，破曉/黃昏時天邊朝著太陽/月亮升落的方位泛起
