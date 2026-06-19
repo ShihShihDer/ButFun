@@ -23873,6 +23873,62 @@
         setRenderStyle(optClay.checked ? "clay" : "pixel");
       });
     }
+    // ⚙ 設定：畫風即時預覽選擇器（ROADMAP 393 搶先體驗）——把「畫風」從沒人按的純文字核取方塊，
+    // 升級成兩格可點縮圖（像素／黏土），玩家第一次能一眼看見、一鍵試玩旗艦黏土微縮世界；
+    // 與上方核取方塊雙向同步。純前端、純表現層，沿用既有 renderStyle 機制、不動任何權威狀態。
+    (function setupStylePicker() {
+      const picker = document.getElementById("stylePicker");
+      if (!picker) return;
+      const cvPixel = document.getElementById("styleThumbPixel");
+      const cvClay = document.getElementById("styleThumbClay");
+      loadClayArt(); // 確保黏土縮圖素材開始惰性載入（即使尚未切到 clay）
+      // 把來源圖等比縮入縮圖 canvas（底部置中）；未就緒時畫個柔色捏塑感占位塊。
+      function blit(c, img, sx, sy, sw, sh, smooth) {
+        if (!c) return;
+        const g = c.getContext("2d");
+        g.clearRect(0, 0, c.width, c.height);
+        if (img && img.complete && img.naturalWidth && sw > 0 && sh > 0) {
+          const scale = Math.min(c.width / sw, c.height / sh);
+          const dw = sw * scale, dh = sh * scale;
+          g.imageSmoothingEnabled = !!smooth;
+          g.drawImage(img, sx, sy, sw, sh, (c.width - dw) / 2, c.height - dh, dw, dh);
+          return;
+        }
+        g.fillStyle = "rgba(170,148,112,0.40)";
+        g.beginPath(); g.arc(c.width / 2, c.height / 2, c.width * 0.30, 0, Math.PI * 2); g.fill();
+      }
+      function redraw() {
+        // 像素：玩家 spritesheet 正面站立首格（frame0/dir0，左上 TS×TS）。
+        const px = ART.player;
+        blit(cvPixel, (px && px.complete && px.naturalWidth) ? px : null, 0, 0, TS, TS, false);
+        // 黏土：單張黏土玩家底圖整張（等比縮圖、平滑）。
+        const cl = CLAY.player;
+        blit(cvClay, cl, 0, 0, cl ? cl.naturalWidth : 0, cl ? cl.naturalHeight : 0, true);
+        // 高亮目前畫風那一格（琥珀色）。
+        const tiles = picker.querySelectorAll(".style-tile");
+        for (const tile of tiles) {
+          const active = tile.getAttribute("data-style") === renderStyle;
+          tile.style.borderColor = active ? "#d9b75a" : "rgba(180,160,120,0.35)";
+          tile.style.background = active ? "rgba(217,183,90,0.18)" : "rgba(255,255,255,0.04)";
+        }
+      }
+      // 點縮圖 → 即時切換畫風、同步核取方塊、播點擊音效（ROADMAP 376）。
+      picker.addEventListener("click", (e) => {
+        const tile = e.target && e.target.closest && e.target.closest(".style-tile");
+        if (!tile) return;
+        const style = tile.getAttribute("data-style");
+        if (style !== "pixel" && style !== "clay") return;
+        setRenderStyle(style);
+        if (optClay) optClay.checked = renderStyle === "clay";
+        SFX.click();
+        redraw();
+      });
+      // 勾核取方塊也同步縮圖高亮。
+      if (optClay) optClay.addEventListener("change", redraw);
+      // 縮圖素材可能稍後才載到：有界重試（300ms×8 後自停，零常駐輪詢），載到即補畫。
+      let tries = 0;
+      (function retry() { redraw(); if (tries++ < 8) setTimeout(retry, 300); })();
+    })();
     // ⚙ 設定：音效開關（ROADMAP 376）。
     const optSfx = document.getElementById("optSfx");
     if (optSfx) {
