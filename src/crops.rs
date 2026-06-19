@@ -32,8 +32,78 @@ pub const SPROUT_AT: f32 = 30.0;
 pub const RIPE_AT: f32 = 90.0;
 /// 一次澆水給的濕度（秒）：可支撐這麼久的成長後才需要再澆。
 pub const MOISTURE_PER_WATER: f32 = 60.0;
-/// 收成一株成熟作物得到的乙太量。
+/// 收成一株成熟作物得到的乙太量（平凡品質的基礎量）。
 pub const ETHER_PER_HARVEST: u32 = 3;
+
+// ── 用心栽培·作物品質（ROADMAP 406）────────────────────────────────────────────
+//
+// 在此之前，澆水只是「不讓作物乾死停滯」——細心一路顧著澆與隨手放著乾涸，收成
+// 完全一樣（都拿 ETHER_PER_HARVEST）。本切片讓「照顧的用心程度」第一次有回報：
+// 作物記住成長期間「渴著停滯（乾涸又還沒成熟）」累積的秒數，收成時據此分品質——
+// 從頭到尾不讓它渴的細心照料拿「優質」收成、多得乙太；放著乾涸越久品質越低。
+// 純記憶體＋持久化欄位（serde default 向後相容），零 migration、零 LLM、療癒向。
+
+/// 渴秒數在此（含）以內 → 優質收成（⭐）。
+/// 留一點寬容餘地（而非嚴格 0）：每幀推進的離散誤差、或澆水稍慢一兩秒都仍算用心。
+pub const PREMIUM_MAX_PARCHED: f32 = 3.0;
+/// 渴秒數在此（含）以內、但超過 `PREMIUM_MAX_PARCHED` → 用心收成（🌿）。
+pub const FINE_MAX_PARCHED: f32 = 30.0;
+/// 用心收成（Fine）相對基礎多得的乙太。
+pub const ETHER_BONUS_FINE: u32 = 1;
+/// 優質收成（Premium）相對基礎多得的乙太。
+pub const ETHER_BONUS_PREMIUM: u32 = 2;
+
+/// 一株作物收成時的品質——由成長期累積的「渴秒數」推導，越用心照顧（越少渴著）越高。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CropQuality {
+    /// 平凡：放任乾涸較久，只得基礎乙太。
+    Plain,
+    /// 用心：大致顧著澆，略有疏失。
+    Fine,
+    /// 優質：從不讓它渴，最細心的照料。
+    Premium,
+}
+
+impl CropQuality {
+    /// 線格式字串（前端據此挑飄字顏色／文案；snake_case 對齊既有事件約定）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CropQuality::Plain => "plain",
+            CropQuality::Fine => "fine",
+            CropQuality::Premium => "premium",
+        }
+    }
+
+    /// 線格式碼（隨田格快照下傳：0=平凡 1=用心 2=優質），給前端在成熟作物上畫品質光點。
+    pub fn code(self) -> u8 {
+        match self {
+            CropQuality::Plain => 0,
+            CropQuality::Fine => 1,
+            CropQuality::Premium => 2,
+        }
+    }
+
+    /// 這個品質相對基礎收成多得的乙太（平凡 0）。純函式。
+    pub fn ether_bonus(self) -> u32 {
+        match self {
+            CropQuality::Plain => 0,
+            CropQuality::Fine => ETHER_BONUS_FINE,
+            CropQuality::Premium => ETHER_BONUS_PREMIUM,
+        }
+    }
+}
+
+/// 依成長期累積的渴秒數推導品質。純函式——伺服器結算與測試共用同一套門檻。
+pub fn quality_for(parched: f32) -> CropQuality {
+    // 壞值（NaN/負）保守當作最用心（不冤枉玩家），但正常流程不會產生。
+    if !(parched > PREMIUM_MAX_PARCHED) {
+        CropQuality::Premium
+    } else if parched <= FINE_MAX_PARCHED {
+        CropQuality::Fine
+    } else {
+        CropQuality::Plain
+    }
+}
 
 /// 依累積成長時間推導目前階段。純函式。
 pub fn stage_for(growth: f32) -> CropStage {
@@ -53,6 +123,11 @@ pub struct Crop {
     growth: f32,
     /// 剩餘濕度（秒）。澆水補滿，成長時被消耗；歸零後停止成長。
     moisture: f32,
+    /// ROADMAP 406 用心栽培：成長期間「渴著停滯」（已開始成長、尚未成熟、且乾涸）
+    /// 累積的秒數，越大表示越疏於照顧、收成品質越低。`#[serde(default)]` 讓舊存檔
+    /// 安全讀回 0（在途作物一次性視為最用心，向後相容、不破壞玩家資料）。
+    #[serde(default)]
+    parched: f32,
 }
 
 impl Crop {
@@ -61,6 +136,7 @@ impl Crop {
         Self {
             growth: 0.0,
             moisture: 0.0,
+            parched: 0.0,
         }
     }
 
@@ -80,6 +156,12 @@ impl Crop {
     /// 不讓沃土更耗水，維持公平。`growth_mult ≤ 0` 或非有限時退回不加速（防呆）。
     pub fn grow_boosted(&mut self, dt: f32, growth_mult: f32) {
         if self.moisture <= 0.0 || dt <= 0.0 {
+            // 乾涸（或無效 dt）不成長。ROADMAP 406：若作物「已開始成長、尚未成熟」卻渴著停滯，
+            // 累積渴秒數（收成品質的扣分依據）。剛播下還沒澆過的種子（growth==0）不計，避免懲罰起步；
+            // 已成熟的（growth>=RIPE_AT）品質已定，不再累積。dt 須為有限正值才計（防 NaN 汙染）。
+            if dt > 0.0 && dt.is_finite() && self.moisture <= 0.0 && self.growth > 0.0 && self.growth < RIPE_AT {
+                self.parched += dt;
+            }
             return;
         }
         let mult = if growth_mult.is_finite() && growth_mult > 0.0 {
@@ -108,6 +190,12 @@ impl Crop {
         self.moisture <= 0.0
     }
 
+    /// ROADMAP 406：依成長期累積的渴秒數推導的收成品質（越用心照顧越高）。
+    /// 對任何階段都可問，但只有成熟（`is_ripe`）作物收成時才真正套用。
+    pub fn quality(&self) -> CropQuality {
+        quality_for(self.parched)
+    }
+
     /// 從存檔載入的值是否「健全」：成長與濕度都是有限且非負。
     /// 這是與調校常數無關的最小不變式——正常流程（`plant` 起 0、`water` 補滿、
     /// `grow` 一律夾在 `>= 0`）絕不會產生 `NaN` / `Inf` / 負值，所以這些只會來自
@@ -119,14 +207,16 @@ impl Crop {
     pub fn is_loadable(&self) -> bool {
         self.growth.is_finite()
             && self.moisture.is_finite()
+            && self.parched.is_finite()
             && self.growth >= 0.0
             && self.moisture >= 0.0
+            && self.parched >= 0.0
     }
 
     /// 測試用：直接組出指定 `growth` / `moisture`（含壞值）的作物，驗證載入防線。
     #[cfg(test)]
     pub fn from_raw(growth: f32, moisture: f32) -> Self {
-        Self { growth, moisture }
+        Self { growth, moisture, parched: 0.0 }
     }
 
     /// 收成：成熟才給乙太，並把這格重置成可再種的新種子。
@@ -246,6 +336,105 @@ mod tests {
         assert!(!Crop::from_raw(0.0, f32::INFINITY).is_loadable());
         assert!(!Crop::from_raw(-1.0, 0.0).is_loadable());
         assert!(!Crop::from_raw(0.0, -1.0).is_loadable());
+    }
+
+    // ── 用心栽培·作物品質（ROADMAP 406）────────────────────────────────────────
+
+    #[test]
+    fn attentive_care_yields_premium() {
+        // 全程不讓它渴：澆水→長到濕度將盡前再澆，渴秒數累積為 0 → 優質。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(MOISTURE_PER_WATER); // 長 60，濕度剛好歸零，但這一刻還沒「停滯」累渴
+        c.water(); // 馬上補水
+        c.grow(RIPE_AT - MOISTURE_PER_WATER); // 長到成熟
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Premium, "從不讓它渴＝優質");
+    }
+
+    #[test]
+    fn long_neglect_yields_plain() {
+        // 長時間渴著停滯（遠超 FINE_MAX_PARCHED）→ 平凡。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(SPROUT_AT); // 開始成長、濕度仍有餘
+        c.grow(MOISTURE_PER_WATER); // 把濕度用乾（已開始成長、未成熟）
+        c.grow(FINE_MAX_PARCHED + 20.0); // 乾涸停滯一大段，累積渴秒數
+        c.water();
+        c.grow(RIPE_AT); // 補水長到成熟
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Plain, "放任乾涸越久越平凡");
+    }
+
+    #[test]
+    fn mild_neglect_yields_fine() {
+        // 渴著一小段（介於 PREMIUM 與 FINE 門檻之間）→ 用心（非滿分也非墊底）。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(SPROUT_AT); // 開始成長
+        c.grow(MOISTURE_PER_WATER); // 用乾濕度
+        c.grow(15.0); // 渴 15 秒（>3、<=30）
+        c.water();
+        c.grow(RIPE_AT);
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Fine);
+    }
+
+    #[test]
+    fn unwatered_seed_does_not_accrue_neglect() {
+        // 剛播下、還沒澆過的種子放著乾，不該累積渴秒數（不懲罰起步）。
+        let mut c = Crop::plant();
+        c.grow(100.0); // 乾種子放很久（growth 仍為 0）
+        assert_eq!(c, Crop::plant(), "未澆過的種子放著＝完全沒推進、零渴");
+        assert_eq!(c.quality(), CropQuality::Premium);
+    }
+
+    #[test]
+    fn ripe_crop_stops_accruing_neglect() {
+        // 成熟後放著沒收（且乾），品質已定、不再下降。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(MOISTURE_PER_WATER);
+        c.water();
+        c.grow(RIPE_AT - MOISTURE_PER_WATER); // 用心長到成熟＝優質
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Premium);
+        c.grow(500.0); // 成熟後乾放很久
+        assert_eq!(c.quality(), CropQuality::Premium, "成熟後品質鎖定不再下降");
+    }
+
+    #[test]
+    fn quality_for_thresholds_and_bonus() {
+        assert_eq!(quality_for(0.0), CropQuality::Premium);
+        assert_eq!(quality_for(PREMIUM_MAX_PARCHED), CropQuality::Premium);
+        assert_eq!(quality_for(PREMIUM_MAX_PARCHED + 0.1), CropQuality::Fine);
+        assert_eq!(quality_for(FINE_MAX_PARCHED), CropQuality::Fine);
+        assert_eq!(quality_for(FINE_MAX_PARCHED + 0.1), CropQuality::Plain);
+        // 壞值保守不冤枉玩家。
+        assert_eq!(quality_for(f32::NAN), CropQuality::Premium);
+        // 品質越高加成越多、平凡為 0。
+        assert_eq!(CropQuality::Plain.ether_bonus(), 0);
+        assert!(CropQuality::Fine.ether_bonus() > CropQuality::Plain.ether_bonus());
+        assert!(CropQuality::Premium.ether_bonus() > CropQuality::Fine.ether_bonus());
+        // 線格式碼遞增、字串穩定。
+        assert_eq!(CropQuality::Plain.code(), 0);
+        assert_eq!(CropQuality::Premium.code(), 2);
+        assert_eq!(CropQuality::Premium.as_str(), "premium");
+    }
+
+    #[test]
+    fn harvest_resets_neglect_for_next_crop() {
+        // 收成後回到全新種子，渴秒數歸零，下一輪重新計品質。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(SPROUT_AT);
+        c.grow(MOISTURE_PER_WATER);
+        c.grow(FINE_MAX_PARCHED + 20.0); // 累渴
+        c.water();
+        c.grow(RIPE_AT);
+        assert_eq!(c.quality(), CropQuality::Plain);
+        assert_eq!(c.harvest(), Some(ETHER_PER_HARVEST));
+        assert_eq!(c, Crop::plant(), "收成後渴秒數隨整株重置歸零");
     }
 
     #[test]

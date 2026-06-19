@@ -52,8 +52,9 @@ pub enum FarmOutcome {
     Planted,
     /// 替作物澆了水。
     Watered,
-    /// 收成了成熟作物，拿到這麼多乙太。
-    Harvested(u32),
+    /// 收成了成熟作物，拿到這麼多乙太（已含品質加成），並帶上這次收成的品質
+    /// （ROADMAP 406 用心栽培，供上層演出「優質收成」飄字）。
+    Harvested(u32, crate::crops::CropQuality),
     /// 沒對應到任何格或無事可做。
     Nothing,
 }
@@ -269,14 +270,17 @@ impl Field {
 
     /// 收成：成熟才給乙太，並把該格回復成翻好的空土（可直接再播種）。
     /// 未成熟 / 沒種 / 越界回 `None`、不改變狀態。
-    pub fn harvest(&mut self, col: usize, row: usize) -> Option<u32> {
+    /// ROADMAP 406：回傳「乙太（已含品質加成）＋品質」——品質由成長期是否用心照顧決定。
+    pub fn harvest(&mut self, col: usize, row: usize) -> Option<(u32, crate::crops::CropQuality)> {
         let i = self.index_at(col, row)?;
         if let Tile::Planted(c) = &mut self.tiles[i] {
+            // 收成前先讀品質（harvest 會把這株重置，事後就讀不到了）。
+            let quality = c.quality();
             // 先借出可變參考收成；成熟才會回 Some 並消費這格。
-            if let Some(ether) = c.harvest() {
+            if let Some(base) = c.harvest() {
                 // 收成後不留新種子，回到空土讓玩家自行決定要不要再種。
                 self.tiles[i] = Tile::Tilled;
-                return Some(ether);
+                return Some((base + quality.ether_bonus(), quality));
             }
         }
         None
@@ -357,7 +361,10 @@ impl Field {
                 self.water(col, row);
                 FarmOutcome::Watered
             }
-            Act::Harvest => FarmOutcome::Harvested(self.harvest(col, row).unwrap_or(0)),
+            Act::Harvest => match self.harvest(col, row) {
+                Some((ether, quality)) => FarmOutcome::Harvested(ether, quality),
+                None => FarmOutcome::Nothing,
+            },
         }
     }
 
@@ -409,20 +416,25 @@ impl Field {
 
 /// 一格 → 前端可見狀態。純函式。
 /// state：0=自然地 1=空土 2=種子 3=發芽 4=成熟；dry 只在「未成熟且已乾」時為真；
-/// thriving 在「這格屬於連片沃土（ROADMAP 367）」時為真（由 `view()` 算好整片再傳入）。
+/// thriving 在「這格屬於連片沃土（ROADMAP 367）」時為真（由 `view()` 算好整片再傳入）；
+/// quality（ROADMAP 406）只在「成熟」時有意義：0=平凡 1=用心 2=優質，前端據此在成熟作物上
+/// 畫品質光點，讓「用心照顧」在收成前就一眼看得見。
 fn tile_view(tile: &Tile, thriving: bool) -> TileView {
     match tile {
         Tile::Untilled => TileView {
             state: 0,
             dry: false,
             thriving: false,
+            quality: 0,
         },
         Tile::Tilled => TileView {
             state: 1,
             dry: false,
             thriving: false,
+            quality: 0,
         },
         Tile::Planted(c) => {
+            let ripe = c.is_ripe();
             let state = match c.stage() {
                 CropStage::Seed => 2,
                 CropStage::Sprout => 3,
@@ -430,8 +442,10 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
             };
             TileView {
                 state,
-                dry: !c.is_ripe() && c.needs_water(),
+                dry: !ripe && c.needs_water(),
                 thriving,
+                // 只有成熟作物才把品質顯給前端；未熟時品質尚未定（渴秒數還在累積）。
+                quality: if ripe { c.quality().code() } else { 0 },
             }
         }
     }
@@ -648,10 +662,14 @@ mod tests {
         f.interact(0, 0); // 再澆一次
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         assert_eq!(f.crop_stage(0, 0), Some(CropStage::Ripe));
-        // 成熟作物 → 收成拿乙太，回到空土
+        // 成熟作物 → 收成拿乙太，回到空土。全程不讓它渴＝優質收成（ROADMAP 406），
+        // 乙太＝基礎＋優質加成。
         assert_eq!(
             f.interact(0, 0),
-            FarmOutcome::Harvested(crate::crops::ETHER_PER_HARVEST)
+            FarmOutcome::Harvested(
+                crate::crops::ETHER_PER_HARVEST + crate::crops::ETHER_BONUS_PREMIUM,
+                crate::crops::CropQuality::Premium
+            )
         );
         assert_eq!(f.tile(0, 0), Some(&Tile::Tilled));
     }
@@ -716,10 +734,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0 });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0 });
     }
 
     #[test]
@@ -889,8 +907,8 @@ mod tests {
         f.tick(MOISTURE_PER_WATER);
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
-        // 成熟即使濕度耗盡也不該再叫玩家澆水。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false });
+        // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2 });
     }
 
     #[test]

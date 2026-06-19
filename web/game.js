@@ -3337,6 +3337,25 @@
         }
         break;
       }
+      case "harvest_result": {
+        // 用心栽培（ROADMAP 406）：農地收成結果。廣播事件，只對自己 id 演出飄字（旁觀者忽略）。
+        // 品質由成長期是否用心照顧決定：優質⭐金、用心🌿綠、平凡🌾。尊重 reduceMotion（仍顯示字、不另堆動畫）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 40;
+        const now = performance.now();
+        const ether = msg.ether || 0;
+        if (msg.quality === "premium") {
+          floaters.push({ wx, wy, text: `⭐ 優質收成！+${ether} 乙太`, color: "255,224,130", born: now });
+          announce(`用心照顧有成，優質收成，得到 ${ether} 乙太`);
+          SFX.success(); // 優質收成的小慶賀音效（ROADMAP 376）
+        } else if (msg.quality === "fine") {
+          floaters.push({ wx, wy, text: `🌿 用心收成 +${ether} 乙太`, color: "150,220,140", born: now });
+          announce(`用心收成，得到 ${ether} 乙太`);
+        } else {
+          floaters.push({ wx, wy, text: `🌾 +${ether} 乙太`, color: "170,225,170", born: now });
+        }
+        break;
+      }
       case "locale_entered": {
         // 天地有名（ROADMAP 398）：踏入新「在地地名」。廣播事件，只對自己 id 演出（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;
@@ -23716,6 +23735,37 @@
     ctx.restore();
   }
 
+  // ROADMAP 406 用心栽培：成熟作物依「收成品質」點一枚光點——優質(quality 2)＝金色四芒小星、
+  // 用心(quality 1)＝柔綠小點，讓「用心照顧」在收成前就一眼看得見。純表現、只讀快照碼
+  // (cell.quality 由伺服器 crops.rs 權威算)，不嵌任何規則；靜態繪製，reduceMotion 一樣顯示。
+  function drawQualityGlint(sx, sy, ts, quality) {
+    if (!quality) return; // 0=平凡，不點
+    const gx = sx + ts - 6, gy = sy + 6; // 右上角，不蓋住作物本體
+    ctx.save();
+    if (quality >= 2) {
+      ctx.globalCompositeOperation = "lighter"; // 金光疊加、夜裡更亮
+      ctx.fillStyle = "rgba(255,224,130,0.95)";
+      drawSparkle(gx, gy, 4.2);
+    } else {
+      ctx.fillStyle = "rgba(150,220,140,0.9)"; // 柔綠小點
+      ctx.beginPath(); ctx.arc(gx, gy, 2.4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  // 四芒小星（8 頂點交替外/內半徑）。給優質收成的金色光點用。
+  function drawSparkle(cx, cy, r) {
+    const inner = r * 0.36;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4 - Math.PI / 2;
+      const rad = (i % 2 === 0) ? r : inner;
+      const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
   function drawTile(sx, sy, ts, cell) {
     if (artOk("field")) {
       const dx = Math.round(sx), dy = Math.round(sy);
@@ -23736,6 +23786,7 @@
         ctx.fillStyle = g;
         ctx.fillRect(sx, sy, ts, ts);
         ctx.restore();
+        drawQualityGlint(sx, sy, ts, cell.quality); // 成熟作物的品質光點（ROADMAP 406）
       }
       drawStagePips(sx, sy, ts, cell);
       return;
@@ -23772,6 +23823,7 @@
       ctx.fillStyle = "#ffd24a";
       ctx.beginPath(); ctx.arc(cx, cy - 6, 6, 0, Math.PI * 2); ctx.fill();
       ctx.shadowBlur = 0;
+      drawQualityGlint(sx, sy, ts, cell.quality); // 成熟作物的品質光點（ROADMAP 406）
     }
     // 需澆水：藍色虛線框提示。
     if (cell.dry) {
