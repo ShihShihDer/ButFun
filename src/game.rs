@@ -1336,6 +1336,21 @@ pub fn spawn(app: AppState) {
                             p.dodging = None;
                         }
                     }
+                    // 蓄力冷卻倒數（ROADMAP 423 蓄力重擊）：放開後起算，只擋開新一趟蓄力。
+                    if p.charge_cooldown > 0.0 {
+                        p.charge_cooldown = (p.charge_cooldown - dt).max(0.0);
+                    }
+                    // 蓄力推進（ROADMAP 423）：advance 累時間並夾在滿蓄上限，不自行結束——
+                    // 蓄力靠玩家放開（ReleaseCharge）結算。純函式、零鎖無 IO；蓄力環由前端用 progress 渲染。
+                    if let Some(c) = p.charging.as_mut() {
+                        c.advance(dt);
+                    }
+                    // 待擊重擊存活窗倒數（ROADMAP 423）：放開後限時存活，逾時未攻擊即消散。
+                    if let Some(r) = p.charge_ready.as_mut() {
+                        if r.advance(dt) {
+                            p.charge_ready = None;
+                        }
+                    }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
                     if let Some(m) = p.meditation {
                         let now = std::time::Instant::now();
