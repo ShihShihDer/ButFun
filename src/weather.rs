@@ -84,6 +84,10 @@ pub struct WeatherState {
     pub weather_type: WeatherType,
     /// 目前天氣已持續的秒數，`[0, WEATHER_DURATION_SECS)`。
     elapsed: f32,
+    /// 世界風向用的累積時間（ROADMAP 430）。與 `elapsed` 並行、但**不隨天氣切換歸零**，
+    /// 故風向能在天氣交替間連續緩轉；`rem_euclid(wind::DIR_PERIOD)` 防浮點長大。
+    /// 記憶體前置、零持久化、零 migration（重啟從 0 重新起風）。
+    age: f32,
 }
 
 impl WeatherState {
@@ -92,6 +96,7 @@ impl WeatherState {
         WeatherState {
             weather_type: WeatherType::Clear,
             elapsed: 0.0,
+            age: 0.0,
         }
     }
 
@@ -100,6 +105,8 @@ impl WeatherState {
         if !dt.is_finite() || dt <= 0.0 {
             return None;
         }
+        // 風向時間：持續累加並回捲（不隨天氣切換歸零，讓風向連續緩轉）。
+        self.age = (self.age + dt).rem_euclid(crate::wind::DIR_PERIOD);
         self.elapsed += dt;
         if self.elapsed >= WEATHER_DURATION_SECS {
             self.elapsed = self.elapsed.rem_euclid(WEATHER_DURATION_SECS);
@@ -148,6 +155,24 @@ impl WeatherState {
         out
     }
 
+    /// 此天氣帶來的「額外風力」（ROADMAP 430）：晴天 0（只剩保底微風），
+    /// 起風天氣按烈度排序（沙暴最強、細雨次之）。純資料對應、無副作用。
+    pub fn wind_base(&self) -> f32 {
+        match self.weather_type {
+            WeatherType::Clear => 0.0,
+            WeatherType::GrasslandRain => 0.35,
+            WeatherType::DesertSandstorm => 0.8,
+            WeatherType::RockyCrystalDust => 0.2,
+            WeatherType::WaterSeaMist => 0.3,
+        }
+    }
+
+    /// 目前的世界風（ROADMAP 430）：由此天氣的額外風力、當下強度（淡入淡出）、
+    /// 累積時間 `age`（決定風向）組成。全服共享、伺服器權威。
+    pub fn wind(&self) -> crate::wind::Wind {
+        crate::wind::wind_for(self.wind_base(), self.intensity(), self.age)
+    }
+
     /// 目前是否正在下雨（草原細雨）——用來決定露天農地是否自動澆灌。
     pub fn is_raining(&self) -> bool {
         self.weather_type == WeatherType::GrasslandRain
@@ -179,6 +204,7 @@ impl WeatherState {
             intensity: self.intensity(),
             remaining_secs: self.remaining_secs(),
             forecast,
+            wind: self.wind(), // ROADMAP 430 世界風：隨天氣快照每幀廣播
         }
     }
 }

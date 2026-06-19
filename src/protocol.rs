@@ -2464,6 +2464,9 @@ pub struct WeatherView {
     pub remaining_secs: f32,
     /// 接下來幾種天氣的確定性預報（氣象預報台 405）；純新增欄位，舊前端忽略即可。
     pub forecast: Vec<WeatherForecastView>,
+    /// 世界風場（ROADMAP 430）：全服共享的風向＋風力，前端據此讓樹/作物一致搖曳。
+    /// 純新增欄位（WeatherView 僅 derive Serialize），舊前端忽略即可。
+    pub wind: crate::wind::Wind,
 }
 
 /// 氣象預報台（405）：未來一筆天氣的預報——類型字串＋距現在開始的秒數。
@@ -2826,7 +2829,7 @@ mod tests {
             star_crystals: vec![],
             village_buff_remaining_secs: 0,
             village_treasury: 0,
-            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0, remaining_secs: 0.0, forecast: vec![] },
+            weather: WeatherView { weather_type: "clear".to_string(), intensity: 0.0, remaining_secs: 0.0, forecast: vec![], wind: crate::wind::Wind::default() },
             rainbow: RainbowView::default(),
             sprinklers: vec![],
             gathering_secs: 0,

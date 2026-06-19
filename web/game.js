@@ -353,8 +353,29 @@
     reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce);
     _parallaxEnabled = !reduceMotion;
   }
-  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol }); } catch {}
+  // ---- 世界風（ROADMAP 430）：伺服器權威、全服共享的風，讓樹/作物一致搖曳 ----
+  // worldWind 由天氣快照同步（缺欄位＝靜風）；dirX/dirY 為單位向量、strength∈[0,1]。
+  let worldWind = { dirX: 1, dirY: 0, strength: 0 };
+  // windSwayAngle：某物件此刻的搖曳角（弧度，繞底部錨點旋轉用）。純函式、確定性、無副作用，
+  // 不在內部讀 reduceMotion（由呼叫端決定是否歸零），以便單元斷言。
+  //   - 順風靜態傾斜（dirX 決定傾向）＋陣風正弦擺盪；
+  //   - 以物件「世界座標」相位錯開，整片田/整排樹不會整齊劃一地同步擺；
+  //   - strength 縮放幅度（風愈強擺愈大）。
+  function windSwayAngle(wx, wy, now, wind) {
+    if (!wind) return 0;
+    const s = Math.max(0, Math.min(1, +wind.strength || 0));
+    if (s <= 0) return 0;
+    const dirX = Number.isFinite(wind.dirX) ? wind.dirX : 1;
+    const px = Number.isFinite(wx) ? wx : 0, py = Number.isFinite(wy) ? wy : 0; // 壞座標退 0、不汙染相位
+    const phase = px * 0.013 + py * 0.017;                 // 座標相位：錯開各物件
+    const t = (Number.isFinite(now) ? now : 0) * 0.0011;   // 緩慢擺盪
+    const lean = dirX * (0.03 + 0.05 * s);                  // 順風靜態傾斜
+    const gust = Math.sin(t + phase) * (0.025 + 0.05 * s);  // 陣風擺盪
+    return lean + gust;
+  }
+
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2920,6 +2941,14 @@
           weatherRemainingSecs = msg.weather.remaining_secs || 0;
           weatherForecast = Array.isArray(msg.weather.forecast) ? msg.weather.forecast : [];
           _weatherAnchorMs = performance.now();
+          // 世界風（ROADMAP 430）：伺服器權威風向＋風力，讓全服樹/作物一致搖曳。
+          // 舊伺服器無此欄位時退回靜風（向後相容）。
+          const ww = msg.weather.wind;
+          if (ww && typeof ww.strength === "number") {
+            worldWind = { dirX: +ww.dir_x || 0, dirY: +ww.dir_y || 0, strength: Math.max(0, Math.min(1, ww.strength)) };
+          } else {
+            worldWind = { dirX: 1, dirY: 0, strength: 0 };
+          }
         }
         // 雨後彩虹（ROADMAP 361）：伺服器權威全服天象。前端據此畫彩虹弧＋顯示「彩虹祝福」HUD pill。
         // 舊伺服器無此欄位時 msg.rainbow 為 undefined → 維持 false（向後相容）。
@@ -10187,6 +10216,15 @@
       const wob = nodeHitWobble(n, now);
       const dx = wob > 0 ? Math.sin(now * 0.045) * 5 * wob : 0;
       ctx.save();
+      // 世界風搖曳（ROADMAP 430）：只有「活物」樹會隨風擺（石/礦脈無生命、刻意不動）。
+      // 繞底部錨點（sx+dx, sy+8）旋轉，樹冠順風搖、根不動；reduceMotion（含 425 calm）時歸零＝靜止。
+      if (n.kind === "tree" && !reduceMotion) {
+        const sway = windSwayAngle(n.x, n.y, now, worldWind);
+        if (sway) {
+          const ax = sx + dx, ay = sy + 8;
+          ctx.translate(ax, ay); ctx.rotate(sway); ctx.translate(-ax, -ay);
+        }
+      }
       // 黏土風採集節點（樹/石/乙太礦皆有黏土圖）：樹是活物→加待機停格生命感（ROADMAP 392）；
       // 石/礦脈無生命刻意維持靜止（做對比、也更像真石頭）。被採時的橫向抖（dx）獨立疊加。
       const nodeIdle = n.kind === "tree" ? { idle: Math.round(n.x * 3 + n.y * 7) } : null;
@@ -12005,6 +12043,15 @@
         const sy = wy - camY + h / 2;
         if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
         ctx.save();
+        // 世界風搖曳（ROADMAP 430）：作物是活物→整畦隨風一致擺。繞田底錨點（sx, sy+12）旋轉、
+        // 以田的世界座標相位錯開（每塊田不同步），reduceMotion（含 425 calm）時歸零＝靜止。
+        if (!reduceMotion) {
+          const sway = windSwayAngle(wx, wy, performance.now(), worldWind);
+          if (sway) {
+            const ay = sy + 12;
+            ctx.translate(sx, ay); ctx.rotate(sway); ctx.translate(-sx, -ay);
+          }
+        }
         // 黏土風作物：把作物排成一列黏土 sprite（最多 4 株，避免擠）；成熟在腳邊綠勾。
         // 只要這格至少一種作物有黏土圖就走黏土路徑；無圖的作物該株退回 emoji。
         const clayCrops = renderStyle === "clay" && fp.crops.some(c => clayOk(c.kind));

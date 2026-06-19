@@ -1323,6 +1323,44 @@ for (const sc of scenarios) {
   }
 }
 
+// 世界風（ROADMAP 430）：單元斷言純函式 windSwayAngle 的搖曳角行為。
+// 風只決定畫面擺動（純表現層）：靜風回 0、強風擺幅大於弱風、相位隨座標錯開、壞值安全。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.windSwayAngle;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 世界風：game.js 未導出 windSwayAngle");
+  } else {
+    const checks = [];
+    // 靜風（strength 0）／無 wind／負強度 → 一律 0（不擺）。
+    checks.push(["靜風 strength=0 回 0", fn(100, 200, 5000, { dirX: 1, dirY: 0, strength: 0 }) === 0]);
+    checks.push(["無 wind 回 0", fn(100, 200, 5000, null) === 0]);
+    checks.push(["負強度視為 0", fn(100, 200, 5000, { dirX: 1, strength: -0.5 }) === 0]);
+    // 有風時為有限數、且不為 0（含靜態傾斜）。
+    const a = fn(100, 200, 0, { dirX: 1, dirY: 0, strength: 0.5 });
+    checks.push(["有風回有限數", Number.isFinite(a)]);
+    // 強風擺幅應大於弱風（取同相位下的振盪極值近似：比較某時刻絕對角度上限）。
+    // 以相同座標/時間，strength 大者 |lean|+|gust 上限| 較大。
+    const tSample = 1000;
+    const weak = Math.abs(fn(0, 0, tSample, { dirX: 1, dirY: 0, strength: 0.1 }));
+    const strong = Math.abs(fn(0, 0, tSample, { dirX: 1, dirY: 0, strength: 1.0 }));
+    checks.push(["強風擺幅大於弱風", strong > weak]);
+    // 相位隨座標錯開：不同世界座標、同時間，角度不應完全相同（整片不同步）。
+    const p1 = fn(0, 0, tSample, { dirX: 1, dirY: 0, strength: 1.0 });
+    const p2 = fn(500, 300, tSample, { dirX: 1, dirY: 0, strength: 1.0 });
+    checks.push(["相位隨座標錯開", Math.abs(p1 - p2) > 1e-6]);
+    // 壞值（NaN 座標/時間、缺 dirX）安全：回有限數、不丟例外。
+    const bad = fn(NaN, NaN, NaN, { strength: 0.5 });
+    checks.push(["壞值安全回有限數", Number.isFinite(bad)]);
+    let nbad = 0;
+    for (const [name, ok] of checks) {
+      if (!ok) { nbad++; console.error(`  ❌ 世界風：${name}`); }
+    }
+    if (nbad) failed = true;
+    else console.log(`  ✅ 世界風·搖曳角度真值表：${checks.length}/${checks.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
