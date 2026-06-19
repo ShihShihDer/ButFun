@@ -675,6 +675,11 @@
   // 天氣狀態（ROADMAP 93）：伺服器快照每幀同步。前端不自己計時，完全由後端驅動。
   let weatherType = "clear";   // 目前天氣類型字串
   let weatherIntensity = 0.0;  // 粒子強度 [0.0, 1.0]
+  // 氣象預報台（ROADMAP 405）：伺服器把確定性的天氣輪換預報下來，前端掛一張 HUD 預報、
+  // 以收到快照當下為錨點＋本地時鐘自由倒數（不自己算天氣、只把伺服器的剩餘秒往前推）。
+  let weatherRemainingSecs = 0; // 本次天氣還剩幾秒（快照同步）
+  let weatherForecast = [];     // [{weather_type, eta_secs}] 接下來幾種天氣（快照同步）
+  let _weatherAnchorMs = 0;     // 收到上述天氣快照的 performance.now()，供本地倒數推進
   // 雨後彩虹（ROADMAP 191→361）：191 是各客戶端各自偵測「雨→停」的純裝飾彩虹；361 把它
   // 升級為**伺服器權威的全服共享天象**——以下旗標改由快照 msg.rainbow 驅動，全服同時看見
   // 同一道彩虹、且彩虹在＝「彩虹祝福」療癒光環在（與後端回血脈衝同步）。
@@ -1307,6 +1312,78 @@
     }
     const t = document.getElementById("hudMeteorShower");
     if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
+  // 氣象預報台 HUD（ROADMAP 405）：把伺服器確定性的天氣輪換顯影成一張可規劃的預報。
+  // 天氣（93）每 8 分鐘固定輪換、下雨會自動澆露天田，但過去玩家只能等公告才知道變了；
+  // 這張 pill 常駐顯示「現在天氣 → 接著什麼天氣、還有多久」，雨快來時特別點亮（先別急著澆水）。
+  // 面向玩家字串集中於此（i18n 替換點）；emoji 跨語通用。
+  const WEATHER_INFO = {
+    clear:              { glyph: "☀️", name: "晴朗" },
+    grassland_rain:     { glyph: "🌧️", name: "細雨" },
+    desert_sandstorm:   { glyph: "🌪️", name: "風沙" },
+    rocky_crystal_dust: { glyph: "✨", name: "晶塵" },
+    water_sea_mist:     { glyph: "🌊", name: "海霧" },
+  };
+  function _weatherInfo(t) { return WEATHER_INFO[t] || { glyph: "🌫️", name: "未知" }; }
+  // 秒數→「m:ss」倒數字串（個位秒補零）。
+  function _fmtCountdown(secs) {
+    const s = Math.max(0, Math.ceil(secs));
+    const m = (s / 60) | 0;
+    const r = s % 60;
+    return `${m}:${r < 10 ? "0" : ""}${r}`;
+  }
+  let _lastWeatherForecastText = null;
+  function updateWeatherForecastHud() {
+    let pill = document.getElementById("hudWeatherForecast");
+    // 沒有預報資料（舊伺服器／尚未連上）→ 隱藏。
+    if (!weatherForecast.length) {
+      if (pill) pill.style.display = "none";
+      _lastWeatherForecastText = null;
+      return;
+    }
+    // 以錨點＋本地時鐘把伺服器剩餘秒往前推（不自己算天氣，只倒數）。
+    const elapsed = (performance.now() - _weatherAnchorMs) / 1000;
+    const next = weatherForecast[0];
+    const nextEta = (next.eta_secs || 0) - elapsed;
+    const cur = _weatherInfo(weatherType);
+    const nx = _weatherInfo(next.weather_type);
+    // 主體：現在天氣 → 下一個天氣＋倒數。再附帶第二個預報（只列類型，不重複倒數）。
+    let text = `🛰️ ${cur.glyph}${cur.name} → ${nx.glyph}${nx.name} ${_fmtCountdown(nextEta)}`;
+    const after = weatherForecast[1];
+    if (after) {
+      const af = _weatherInfo(after.weather_type);
+      text += ` → ${af.glyph}${af.name}`;
+    }
+    // 雨即將降臨（露天田會自動澆灌）→ 加一句療癒提示，並換成藍色點亮。
+    const rainSoon = next.weather_type === "grassland_rain" && nextEta <= 90;
+    if (rainSoon) text += " 💧雨將至，露天田免澆";
+    if (text === _lastWeatherForecastText) return;
+    _lastWeatherForecastText = text;
+    if (!pill) {
+      pill = document.createElement("div");
+      pill.id = "hudWeatherForecast";
+      pill.style.cssText = [
+        "order:5",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px",
+        "transition:background .4s,color .4s,border-color .4s",
+      ].join(";");
+      _ensureBannerColumn().appendChild(pill);
+    }
+    // 配色：平時黃銅暖調；雨將至時轉藍點亮，呼應澆灌語彙。
+    if (rainSoon) {
+      pill.style.background = "#0d1a2a";
+      pill.style.color = "#9fd0ff";
+      pill.style.border = "1px solid #4488bb";
+    } else {
+      pill.style.background = "#1a160d";
+      pill.style.color = "#d8c890";
+      pill.style.border = "1px solid #7a6a3a";
+    }
+    pill.style.display = "block";
+    pill.textContent = text;
   }
 
   // 旅行商人 HUD pill（ROADMAP 135）。
@@ -2666,6 +2743,11 @@
         if (msg.weather) {
           weatherType = msg.weather.weather_type || "clear";
           weatherIntensity = msg.weather.intensity || 0.0;
+          // 氣象預報台（405）：剩餘秒＋預報序列以收到當下為錨，之後本地時鐘自由倒數。
+          // 舊伺服器無此欄位時退回 0／空陣列（向後相容，HUD 自動隱藏）。
+          weatherRemainingSecs = msg.weather.remaining_secs || 0;
+          weatherForecast = Array.isArray(msg.weather.forecast) ? msg.weather.forecast : [];
+          _weatherAnchorMs = performance.now();
         }
         // 雨後彩虹（ROADMAP 361）：伺服器權威全服天象。前端據此畫彩虹弧＋顯示「彩虹祝福」HUD pill。
         // 舊伺服器無此欄位時 msg.rainbow 為 undefined → 維持 false（向後相容）。
@@ -6430,6 +6512,7 @@
       updateProsperityHud();                // 城鎮繁榮儀（ROADMAP 128）
       updateStarForecastHud();              // 天文台星象預報（ROADMAP 132）
       updateMeteorShowerHud();              // 流星雨（ROADMAP 133）
+      updateWeatherForecastHud();           // 氣象預報台（ROADMAP 405）
       updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
