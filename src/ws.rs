@@ -1288,12 +1288,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         FarmOutcome::Nothing
                     };
 
-                    if let FarmOutcome::Harvested(ether) = outcome {
-                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            let bonus = crate::class::harvest_ether_bonus(&p.masteries);
-                            p.ether = p.ether.saturating_add(ether).saturating_add(bonus);
-                            p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
-                            tracing::info!(player = %p.name, ether = p.ether, bonus, "農地收成乙太");
+                    if let FarmOutcome::Harvested(ether, quality) = outcome {
+                        // 鎖內：加乙太＋熟練度，並順手抓玩家座標供出鎖後定位飄字（守 prod-deadlock：
+                        // 廣播一律出鎖再送，不在持 players 寫鎖時送 tx）。
+                        let harvest_evt = {
+                            let mut players = app.players.write().unwrap();
+                            players.get_mut(&id).map(|p| {
+                                let bonus = crate::class::harvest_ether_bonus(&p.masteries);
+                                // `ether` 已含 ROADMAP 406 品質加成；class 收成加成另計。
+                                p.ether = p.ether.saturating_add(ether).saturating_add(bonus);
+                                p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
+                                tracing::info!(player = %p.name, ether = p.ether, bonus, quality = quality.as_str(), "農地收成乙太");
+                                ServerMsg::HarvestResult {
+                                    player_id: id,
+                                    quality: quality.as_str().to_string(),
+                                    ether,
+                                    x: p.x,
+                                    y: p.y,
+                                }
+                            })
+                        };
+                        if let Some(msg) = harvest_evt {
+                            let _ = app.tx.send(Arc::new(msg));
                         }
                     }
                 }

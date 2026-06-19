@@ -1184,6 +1184,17 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 農地收成結果（ROADMAP 406 用心栽培）：一次性事件、廣播；前端只對 `player_id == 自己` 演出飄字。
+    /// `quality`＝收成品質 plain/fine/premium（由成長期是否用心照顧決定）；`ether`＝這次入袋乙太
+    /// （已含品質加成，不含 class 收成加成——那是另計）。`x`/`y`＝玩家當下座標（飄字定位）。
+    /// 不入快照、不持久化、零 migration。
+    HarvestResult {
+        player_id: Uuid,
+        quality: String,
+        ether: u32,
+        x: f32,
+        y: f32,
+    },
     /// 踏入新「在地地名」（ROADMAP 398 天地有名）：一次性事件、廣播；前端只對 `player_id == 自己` 演出。
     /// `name`／`subtitle` ＝該地名與氛圍副標（伺服器權威，純由座標確定性算出）。
     /// `initial` ＝ true 時為「進場首次定位」：前端只靜默更新小地圖地名標，**不**淡入大卡（避免登入時擾人）；
@@ -2270,6 +2281,11 @@ pub struct TileView {
     /// 前端把連片田畝畫得更蒼翠。新增欄、舊前端忽略即可（向後相容）。
     #[serde(default)]
     pub thriving: bool,
+    /// ROADMAP 406 用心栽培：成熟作物的收成品質（0=平凡 1=用心 2=優質），由成長期是否
+    /// 用心照顧決定；非成熟一律 0。前端據此在成熟作物上畫品質光點。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default)]
+    pub quality: u8,
 }
 
 #[cfg(test)]
@@ -2476,6 +2492,7 @@ mod tests {
                     state: 2,
                     dry: true,
                     thriving: false,
+                    quality: 0,
                 }],
                 home_decor: 0,
             }],

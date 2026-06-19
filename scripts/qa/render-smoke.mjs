@@ -677,6 +677,38 @@ for (const sc of scenarios) {
   else console.log("  ✅ 居民和解委託：可接→進行中→接下→送達→太遠→祥和保底全分支皆乾淨、無例外");
 }
 
+// 用心栽培·作物品質（ROADMAP 406）：成熟作物依品質碼點光點（優質 2 金星／用心 1 綠點／平凡 0 不點），
+// 收成事件 harvest_result 走自己 id 的飄字。驗證 drawQualityGlint 與 harvest_result handler 皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：用心栽培作物品質（成熟品質光點＋收成飄字 premium/fine/plain）──");
+  let ok = true;
+  try {
+    const qSnap = JSON.parse(JSON.stringify(snapshot));
+    if (qSnap.fields && qSnap.fields[0] && Array.isArray(qSnap.fields[0].cells)) {
+      const cells = qSnap.fields[0].cells;
+      // 把前幾格設成成熟＋不同品質，逼出金星／綠點／不點三條繪製分支。
+      if (cells[0]) cells[0] = { ...cells[0], state: 4, dry: false, quality: 2 }; // 優質金星
+      if (cells[1]) cells[1] = { ...cells[1], state: 4, dry: false, quality: 1 }; // 用心綠點
+      if (cells[2]) cells[2] = { ...cells[2], state: 4, dry: false, quality: 0 }; // 平凡不點
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...qSnap, type: "snapshot" }) });
+    pump("作物品質光點", 4);
+    // 收成飄字：三種品質各一則（自己 id 才演出）。
+    for (const q of ["premium", "fine", "plain"]) {
+      lastWS.onmessage({ data: JSON.stringify({ type: "harvest_result", player_id: myId, quality: q, ether: 5, x: me0.x, y: me0.y }) });
+    }
+    // 旁觀者（別人 id）應被忽略、不拋例外。
+    lastWS.onmessage({ data: JSON.stringify({ type: "harvest_result", player_id: "someone_else", quality: "premium", ether: 5, x: me0.x, y: me0.y }) });
+    pump("作物收成飄字", 3);
+  } catch (e) {
+    ok = false; console.error("  ❌ 用心栽培作物品質：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 用心栽培作物品質：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋旁觀者忽略皆乾淨");
+}
+
 // 夜空流星（192）：入夜後偶發流星，首顆延遲 ~1.5s 才點燃，故需連跑較多幀（每幀 +16ms）
 // 才會實跑「點燃→繪製漸層尾巴→熄滅→排下一顆」完整路徑（一般情境的 6 幀碰不到）。
 {
