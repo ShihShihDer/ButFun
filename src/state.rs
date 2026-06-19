@@ -175,6 +175,11 @@ pub struct Player {
     pub title_set: crate::player_title::TitleSet,
     /// 今日活動鏈狀態（ROADMAP 390）。記憶體前置，重啟清空，零 migration。
     pub activity_chain: crate::activity_chain::ActivityChain,
+    /// 進行中的打坐（ROADMAP 391）。None = 沒在打坐；Some = 打坐中（含開始時間與起始座標）。
+    /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 檢查移動中斷與完成。
+    pub meditation: Option<crate::meditation::Meditation>,
+    /// 上次打坐完成的時間點（冷卻追蹤，ROADMAP 391）。記憶體前置，重啟清空。
+    pub last_meditate: Option<std::time::Instant>,
     /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
     /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
     pub refine_attempt_count: u64,
@@ -738,6 +743,8 @@ impl Player {
             kill_streak: self.kill_streak,
             // ROADMAP 390：今日活動鏈環數（0~5）。只在自己的快照裡有意義，他人省略（is_zero_u8 略過）。
             chain_links: self.activity_chain.link_count(),
+            // ROADMAP 391：是否正在打坐（廣播給所有人，前端畫呼吸光圈）。
+            meditating: self.meditation.is_some(),
         }
     }
 
@@ -1522,6 +1529,8 @@ mod tests {
             kill_count: 0,
             title_set: crate::player_title::TitleSet::new(),
             activity_chain: crate::activity_chain::ActivityChain::new(0),
+            meditation: None,
+            last_meditate: None,
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),

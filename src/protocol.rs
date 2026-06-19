@@ -332,6 +332,11 @@ pub enum ClientMsg {
     /// `title` 為 wire key（"level_10" 等）；空字串 "" 代表清除展示稱號。
     /// 未登入 / 未持有該稱號靜默忽略；可隨時更換。
     SetTitle { title: String },
+    /// 開始打坐（ROADMAP 391）：在安全地帶的黃昏/夜晚/黎明靜止不動 30 秒，
+    /// 恢復 30% HP ＋ 15 乙太。已在打坐中 / 不在安全區 / 時段不對 / 冷卻中靜默忽略。
+    BeginMeditate,
+    /// 取消打坐（ROADMAP 391）：主動中止進行中的打坐。未在打坐中靜默忽略。
+    CancelMeditate,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -1391,6 +1396,24 @@ pub enum ServerMsg {
         total: u8,
         ether_reward: u32,
     },
+
+    // ── 安靜打坐（ROADMAP 391）──────────────────────────────────────────────
+    /// 打坐開始確認（ROADMAP 391）：廣播給所有人，前端對打坐者畫呼吸光圈。
+    MeditationStart {
+        player_id: Uuid,
+        /// 打坐所需秒數（前端倒數顯示用）。
+        duration_secs: f32,
+    },
+    /// 打坐完成（ROADMAP 391）：廣播全服——旁觀者看到光圈消散、自己看到獎勵飄字。
+    MeditationComplete {
+        player_id: Uuid,
+        ether_gained: u32,
+        hp_healed: u32,
+    },
+    /// 打坐被打斷（ROADMAP 391）：廣播全服，光圈消散。
+    MeditationAborted {
+        player_id: Uuid,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -1774,6 +1797,11 @@ pub struct PlayerView {
     /// 今日活動鏈環數（0~5）。只在自己的快照有值（他人省略，0 時省略）。前端 HUD 顯示。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub chain_links: u8,
+
+    // ── 安靜打坐（ROADMAP 391）───────────────────────────────────────────────
+    /// 玩家目前是否正在打坐。true 時前端在該玩家身旁畫呼吸光圈。false 時省略流量。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub meditating: bool,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2292,6 +2320,7 @@ mod tests {
                 active_title: None,
                 unlocked_titles: vec![],
                 chain_links: 0,
+                meditating: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -2560,6 +2589,7 @@ mod tests {
             active_title: None,
             unlocked_titles: vec![],
             chain_links: 0,
+            meditating: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2843,6 +2873,7 @@ mod tests {
             active_title: None,
             unlocked_titles: vec![],
             chain_links: 0,
+            meditating: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2905,6 +2936,7 @@ mod tests {
             active_title: None,
             unlocked_titles: vec![],
             chain_links: 0,
+            meditating: false,
         }
     }
 

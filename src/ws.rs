@@ -190,6 +190,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             inventory_extra_kinds: 0,
             kill_streak: 0,
             streak_last_kill: None,
+            meditation: None,
+            last_meditate: None,
         }
     } else {
         // 等 Join
@@ -300,6 +302,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             inventory_extra_kinds: 0,
             kill_streak: 0,
             streak_last_kill: None,
+            meditation: None,
+            last_meditate: None,
         }
     };
     let id = player.id;
@@ -3438,6 +3442,61 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = tx_direct.try_send(json);
                             }
                         }
+                    }
+                }
+
+                // ── 安靜打坐（ROADMAP 391）────────────────────────────────────────
+                Ok(ClientMsg::BeginMeditate) => {
+                    // 需登入、需在安全區、需黃昏/夜晚/黎明、需冷卻已過、需未在打坐、需 HP > 0。
+                    if authed_uid.is_none() { continue; }
+                    let now = std::time::Instant::now();
+                    let current_phase = app.daynight.read().unwrap().phase();
+                    if !crate::meditation::is_calm_phase(current_phase) { continue; }
+                    let result = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            None => None,
+                            Some(p) => {
+                                let in_safe = crate::positions::is_in_safe_zone(p.x, p.y);
+                                let can = crate::meditation::can_meditate(p.last_meditate, now);
+                                let not_meditating = p.meditation.is_none();
+                                let alive = p.vitals.hp() > 0;
+                                if in_safe && can && not_meditating && alive {
+                                    p.meditation = Some(crate::meditation::Meditation::new(now, p.x, p.y));
+                                    Some((p.x, p.y))
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                    };
+                    if let Some((px, py)) = result {
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::MeditationStart {
+                                player_id: id,
+                                duration_secs: crate::meditation::MEDITATE_DURATION_SECS,
+                            }
+                        ));
+                        tracing::debug!(player = %id, px, py, "開始打坐");
+                    }
+                }
+
+                Ok(ClientMsg::CancelMeditate) => {
+                    // 主動取消打坐。
+                    let was_meditating = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) if p.meditation.is_some() => {
+                                p.meditation = None;
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    if was_meditating {
+                        let _ = app.tx.send(std::sync::Arc::new(
+                            crate::protocol::ServerMsg::MeditationAborted { player_id: id }
+                        ));
                     }
                 }
 

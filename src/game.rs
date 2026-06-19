@@ -1047,6 +1047,9 @@ pub fn spawn(app: AppState) {
             let mut decay_notifications: Vec<(uuid::Uuid, Vec<crate::perishable::DecayEvent>)> = Vec::new();
             // 釣魚脫鉤（ROADMAP 346）：等太久沒收竿的玩家，出鎖後廣播「魚跑了」。
             let mut fish_escapes: Vec<(uuid::Uuid, f32, f32)> = Vec::new();
+            // 打坐事件（ROADMAP 391）：完成或中斷，出鎖後廣播並給獎勵。
+            // (player_id, x, y, kind) — kind: true=完成, false=移動中斷
+            let mut meditation_events: Vec<(uuid::Uuid, f32, f32, bool, u32, u32)> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
                 // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
@@ -1194,6 +1197,25 @@ pub fn spawn(app: AppState) {
                             p.aether_draw = None;
                         }
                     }
+                    // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
+                    if let Some(m) = p.meditation {
+                        let now = std::time::Instant::now();
+                        if m.is_interrupted(p.x, p.y) {
+                            p.meditation = None;
+                            meditation_events.push((p.id, p.x, p.y, false, 0, 0));
+                        } else if m.is_complete(now) {
+                            p.meditation = None;
+                            p.last_meditate = Some(now);
+                            let hp_healed = crate::meditation::hp_heal(
+                                p.vitals.max_hp(),
+                                crate::meditation::MEDITATE_HP_PCT,
+                            );
+                            let actual_hp = p.vitals.heal(hp_healed);
+                            let ether = crate::meditation::MEDITATE_ETHER;
+                            p.ether = p.ether.saturating_add(ether);
+                            meditation_events.push((p.id, p.x, p.y, true, ether, actual_hp));
+                        }
+                    }
                     // 席間舉杯冷卻倒數（ROADMAP 329）。
                     if p.toast_cooldown > 0.0 {
                         p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
@@ -1282,6 +1304,24 @@ pub fn spawn(app: AppState) {
                     x,
                     y,
                 }));
+            }
+
+            // 安靜打坐廣播（ROADMAP 391）：鎖已釋放，安全廣播完成或中斷事件。
+            for (pid, px, py, completed, ether, hp_healed) in meditation_events {
+                if completed {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::MeditationComplete {
+                            player_id: pid,
+                            ether_gained: ether,
+                            hp_healed,
+                        }
+                    ));
+                } else {
+                    let _ = app.tx.send(std::sync::Arc::new(
+                        crate::protocol::ServerMsg::MeditationAborted { player_id: pid }
+                    ));
+                }
+                let _ = (px, py); // 座標備而不用，前端從快照讀取
             }
 
             // 宇宙裂縫事件（ROADMAP 26）：推進事件計時器；觸發時注入守護者 + 廣播聊天公告。
