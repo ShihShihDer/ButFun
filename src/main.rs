@@ -150,6 +150,7 @@ mod emote_resonance;
 mod player_cheer;
 mod popularity_gathering;
 mod weather;
+mod wind; // ROADMAP 430 微風拂過微縮世界·世界級風場
 mod rainbow;
 mod reconcile;
 mod return_hook;
