@@ -1293,6 +1293,36 @@ for (const sc of scenarios) {
   }
 }
 
+// 主音量（ROADMAP 429）：單元斷言純函式 audioVol 的字串→[0,1] 夾鉗真值表。
+// 把 localStorage 存的偏好（字串／null／壞值）解析成乘在音訊上的響度係數，夾進合法區間。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.audioVol;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 主音量：game.js 未導出 audioVol");
+  } else {
+    // [輸入, 期望係數]
+    const cases = [
+      ["0.7", 0.7], ["1", 1], ["0", 0], ["0.5", 0.5], ["0.05", 0.05],
+      ["-0.5", 0], ["-1", 0],            // 負值夾 0（靜音）
+      ["1.5", 1], ["2", 1], ["100", 1],  // 超界夾 1（滿）
+      [null, 0.7], [undefined, 0.7],     // 缺值＝預設 70%
+      ["", 0.7], ["abc", 0.7], ["NaN", 0.7], // 非數字＝預設
+      [0.3, 0.3], [-2, 0],               // 直接傳數字也吃
+    ];
+    let bad = 0;
+    for (const [input, want] of cases) {
+      const got = fn(input);
+      if (Math.abs(got - want) > 1e-9) {
+        bad++;
+        console.error(`  ❌ 主音量：audioVol(${JSON.stringify(input)}) 期望 ${want} 得到 ${got}`);
+      }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 主音量·音量解析真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
