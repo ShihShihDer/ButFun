@@ -2208,6 +2208,37 @@
     setTimeout(() => card.classList.add("hidden"), 450);
   }
 
+  // ---- 連日歸鄉迎歸卡（ROADMAP 397）----
+  // 登入玩家進場時，若這天的回訪讓歸鄉印記前進，伺服器送一次 VisitStreak。上緣中央浮一張暖卡。
+  let streakCardTimer = null;
+  function showStreakCard(data) {
+    // 只有真的前進了才顯示（同日重複上線伺服器根本不送、這裡再防一手）。
+    if (!data || !data.advanced) return;
+    const card = document.getElementById("streakCard");
+    if (!card) return;
+    const streak = data.streak | 0;
+    const reward = data.reward | 0;
+    const sub = data.milestone
+      ? `🎉 連訪里程碑！故鄉備了一份暖禮${reward ? `　<span class="sc-reward">+${reward} 乙太</span>` : ""}`
+      : `故鄉記得你常回家看看${reward ? `　<span class="sc-reward">+${reward} 乙太</span>` : ""}`;
+    card.classList.toggle("milestone", !!data.milestone);
+    card.innerHTML =
+      `<span class="sc-title">🏮 連日歸鄉 ${streak} 天</span>` +
+      `<span class="sc-sub">${sub}</span>`;
+    card.classList.remove("hidden", "fading");
+    announce(`連日歸鄉第 ${streak} 天，故鄉歡迎你回來${reward ? `，獲得迎歸乙太 ${reward}` : ""}`);
+    // 7 秒後自動淡出。
+    if (streakCardTimer) clearTimeout(streakCardTimer);
+    streakCardTimer = setTimeout(dismissStreakCard, 7000);
+  }
+  function dismissStreakCard() {
+    if (streakCardTimer) { clearTimeout(streakCardTimer); streakCardTimer = null; }
+    const card = document.getElementById("streakCard");
+    if (!card || card.classList.contains("hidden")) return;
+    card.classList.add("fading");
+    setTimeout(() => card.classList.add("hidden"), 450);
+  }
+
   // 上一拍「最近可採節點」的穩定鍵（kind@x,y）。看得到的玩家走進可採範圍會看到黃環+「採X」+
   // 「按空白鍵或點一下」;報讀器玩家原本毫無回饋,只能到處亂按鍵碰運氣。用來在「走進新可採節點
   // 範圍」那拍播一句給報讀器,延續採空/採到/連線/日夜的無障礙弧線。離開再進來(鍵變了)才重播,
@@ -3046,6 +3077,11 @@
       case "return_summary": {
         // 回訪摘要（ROADMAP 374）：登入玩家進場一次，顯示農田/牧場/任務待辦。
         showReturnCard(msg);
+        break;
+      }
+      case "visit_streak": {
+        // 連日歸鄉（ROADMAP 397）：登入玩家進場一次，印記前進時浮迎歸卡。
+        showStreakCard(msg);
         break;
       }
       case "bottle_inbox": {

@@ -1209,6 +1209,8 @@ pub struct AppState {
     pub town_project: Arc<RwLock<crate::town_project::TownProjectState>>,
     /// 城鎮大工程持久化 store。
     pub town_project_store: crate::town_project_store::TownProjectStore,
+    /// 連日歸鄉·歸鄉印記持久化 store（ROADMAP 397）：keyed by user_id，跨重啟保留留存印記。
+    pub visit_streaks: crate::visit_streak_store::VisitStreakStore,
     /// 天文台星象預報狀態（ROADMAP 132）：天文台竣工後每個黎明廣播星象、啟用全服加成。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub observatory: Arc<RwLock<crate::observatory::ObservatoryState>>,
@@ -1287,6 +1289,7 @@ impl AppState {
             crate::sprinkler::SprinklerPersist::new(),
             vec![],
             crate::town_project_store::TownProjectStore::new(),
+            crate::visit_streak_store::VisitStreakStore::new(),
         )
     }
 
@@ -1309,6 +1312,7 @@ impl AppState {
         sprinkler_persist: crate::sprinkler::SprinklerPersist,
         sprinkler_preload: Vec<(uuid::Uuid, crate::sprinkler::SprinklerData)>,
         town_project_store: crate::town_project_store::TownProjectStore,
+        visit_streaks: crate::visit_streak_store::VisitStreakStore,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(256);
         // 聊天頻道：量極低、給足緩衝，正常使用幾乎不會 Lagged。
@@ -1441,6 +1445,7 @@ impl AppState {
                 town_project_store.saved_project().unwrap_or_else(crate::town_project::TownProjectState::new_observatory)
             )),
             town_project_store,
+            visit_streaks,
             observatory: Arc::new(RwLock::new(crate::observatory::ObservatoryState::new())),
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),

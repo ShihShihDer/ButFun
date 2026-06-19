@@ -1091,6 +1091,16 @@ pub enum ServerMsg {
         /// 今日任務總條數（尚無記錄時為 0）。
         daily_quests_total: u32,
     },
+    /// 連日歸鄉·歸鄉印記（ROADMAP 397）：登入玩家進場時，若這天的回訪讓印記前進，
+    /// 伺服器單播一次（同 ReturnSummary，一次性、不入快照）。前端浮一張迎歸卡。
+    /// `streak` = 推進後的連續回訪天數；`reward` = 這次的迎歸乙太（已加進玩家身上，供前端顯示）；
+    /// `milestone` = 是否踏上 3／7／14／30… 天里程碑（讓卡片金光更盛）。
+    VisitStreak {
+        streak: u32,
+        advanced: bool,
+        reward: u32,
+        milestone: bool,
+    },
     /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣
     /// 更新（名牌徽記即時刷、不必等下次快照）。`giver_name` = 喝采者；`target_id`/`target_name`
