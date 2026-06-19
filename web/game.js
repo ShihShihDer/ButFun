@@ -352,8 +352,8 @@
     reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce);
     _parallaxEnabled = !reduceMotion;
   }
-  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref }); } catch {}
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
@@ -5366,6 +5366,36 @@
     if (hintEl) hintEl.textContent = PHASE_HINTS[_dayClock.phase] || "";
   }
 
+  // 農地待辦小結（ROADMAP 427）：把一塊田的所有格子彙整成「下一步最該做的一件農事」。
+  // 純函式、無副作用、確定性，好測。回 { kind, n, dry, ripe, empty }：
+  //   kind = "water"   有缺水格（會卡住生長，最急）→ n=缺水格數
+  //        | "harvest" 有成熟可收（回報在等）       → n=可收格數
+  //        | "plant"   有空地可種（機會）           → n=空土格數
+  //        | "allgood" 有作物且全照顧好（安心）     → n=生長中作物數
+  //        | "none"    沒有田／全是未開墾自然地     → n=0
+  // 優先序鏡像種田迴圈的輕重緩急（缺水＞收成＞播種＞休整＞無田），回應建議箱反覆出現的
+  // 「待辦提示／優先指引／本日無需操作總結」回饋。state 對齊 field.rs：
+  //   0=自然地 1=空土(可種) 2=種子 3=發芽 4=成熟；dry 對齊 drawTile 藍點（作物 state 2~4 且 dry）。
+  function farmDigest(cells) {
+    let dry = 0, ripe = 0, empty = 0, crops = 0;
+    if (Array.isArray(cells)) {
+      for (const c of cells) {
+        if (!c) continue;
+        const s = c.state | 0;
+        if (c.dry && s >= 2 && s <= 4) dry++;
+        if (s === 4) ripe++;        // 4=成熟可收成
+        else if (s === 1) empty++;  // 1=空土可種
+        if (s >= 2 && s <= 4) crops++;
+      }
+    }
+    let kind = "none", n = 0;
+    if (dry > 0) { kind = "water"; n = dry; }
+    else if (ripe > 0) { kind = "harvest"; n = ripe; }
+    else if (empty > 0) { kind = "plant"; n = empty; }
+    else if (crops > 0) { kind = "allgood"; n = crops; }
+    return { kind, n, dry, ripe, empty };
+  }
+
   // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
   // 探索時也知道作物渴了該回去澆水。缺水格的判定刻意對齊 drawTile 畫藍點的條件
   //（state 2~4 且 dry），HUD 數字與看得到的提示點一致；沒有缺水格時隱藏整行。
@@ -5373,14 +5403,10 @@
   function updateFarmHud(f) {
     const el = document.getElementById("hudFarm");
     const ripeEl = document.getElementById("hudRipe");
-    let dry = 0;
-    let ripe = 0;
-    if (f && f.cells) {
-      for (const cell of f.cells) {
-        if (cell.dry && cell.state >= 2 && cell.state <= 4) dry++;
-        if (cell.state === 4) ripe++; // 4=成熟可收成(鏡像 field.rs 的 state 定義)
-      }
-    }
+    const plantEl = document.getElementById("hudPlant");
+    const digest = farmDigest(f && f.cells);
+    const dry = digest.dry;
+    const ripe = digest.ripe;
     farmDryCount = dry;
     farmRipeCount = ripe;
     if (el) {
@@ -5413,6 +5439,21 @@
         ripeEl.classList.remove("hidden");
       } else {
         ripeEl.classList.add("hidden");
+      }
+    }
+    // 農地待辦小結（ROADMAP 427）：缺水/可收成已有專屬行（上面兩段），這行補上過去 HUD
+    // 完全沒呈現的兩個狀態——「空地可種」與「都照顧好了」。digest 的優先序保證只在沒有
+    // 更急的缺水/可收時 kind 才會落到 plant/allgood，故這行只在那兩態才現，畫面零重複；
+    // 直擊建議箱反覆出現的「不知該種什麼／本日是否無需操作」空轉感。
+    if (plantEl) {
+      if (digest.kind === "plant") {
+        plantEl.textContent = `🌱 ${digest.n} 格空地 · 去播種`;
+        plantEl.classList.remove("hidden");
+      } else if (digest.kind === "allgood") {
+        plantEl.textContent = "🌿 農地都照顧好了，靜待成長";
+        plantEl.classList.remove("hidden");
+      } else {
+        plantEl.classList.add("hidden");
       }
     }
   }
