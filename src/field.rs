@@ -74,6 +74,11 @@ pub struct Field {
     origin_x: f32,
     #[serde(skip)]
     origin_y: f32,
+    /// 家園擺飾索引（ROADMAP 402）：0=不擺，1..=`home_decor::DECOR_COUNT` 各對應一件療癒小物。
+    /// 純裝飾、不影響耕作，由田主自選、訪客看得到。**入存檔**（整塊 `Field` 序列化進既有 `tiles`
+    /// 欄，舊存檔無此欄時 `#[serde(default)]` 回 0=不擺，向後相容、免 migration）。
+    #[serde(default)]
+    home_decor: u8,
 }
 
 impl Field {
@@ -93,6 +98,7 @@ impl Field {
             tiles: vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS],
             origin_x,
             origin_y,
+            home_decor: 0,
         }
     }
 
@@ -122,6 +128,18 @@ impl Field {
         self.tiles.len() / FIELD_COLS
     }
 
+    /// 設定家園擺飾（ROADMAP 402）：把玩家選的索引夾成合法值後存下（越界→0=不擺）。
+    /// 改的是哪塊地由呼叫端決定（`ws.rs` 只取得玩家自己的田），這裡不做所有權判斷。
+    pub fn set_home_decor(&mut self, index: u8) {
+        self.home_decor = crate::home_decor::sanitize(index);
+    }
+
+    /// 目前的家園擺飾索引（0=不擺）。
+    #[cfg(test)]
+    pub fn home_decor(&self) -> u8 {
+        self.home_decor
+    }
+
     /// 這塊地左上角在世界中的座標（像素）。
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn origin(&self) -> (f32, f32) {
@@ -149,13 +167,20 @@ impl Field {
             tiles,
             origin_x,
             origin_y,
+            home_decor: 0,
         })
     }
 
     /// 把（serde 還原後 origin 退回 (0,0) 的）農地安置回第 `index` 塊地——持久化載入入口。
     /// 驗證不過（壞檔）回 `None`，呼叫端可退回全新地。
+    /// `from_tiles` 只用 `tiles` 重建（origin 由序號決定），故這裡要把擺飾索引接回去——
+    /// 否則重啟載入會把玩家擺好的家園擺飾默默清掉。順手 `sanitize` 防壞檔塞髒索引。
     pub fn reseated(self, index: usize) -> Option<Self> {
-        Self::from_tiles(index, self.tiles)
+        let decor = crate::home_decor::sanitize(self.home_decor);
+        Self::from_tiles(index, self.tiles).map(|mut f| {
+            f.home_decor = decor;
+            f
+        })
     }
 
     /// (col,row) → tiles 陣列索引；超出範圍（含超過目前列數）回 `None`。
@@ -360,6 +385,8 @@ impl Field {
                     .map(|(i, t)| tile_view(t, thriving[i]))
                     .collect()
             },
+            // ROADMAP 402：帶上家園擺飾索引，前端依此在田上畫對應小物（0=不擺則不畫）。
+            home_decor: self.home_decor,
         }
     }
 }
@@ -743,6 +770,40 @@ mod tests {
         let back = raw.reseated(2).unwrap();
         assert_eq!(back, f); // 序號 2 的 origin 重建後整塊一致
         assert_eq!(back.origin(), crate::plots::plot_origin(2));
+    }
+
+    #[test]
+    fn home_decor_persists_through_serde_and_reseat() {
+        // ROADMAP 402：擺飾索引入存檔（整塊 Field 序列化），且 reseated 會把它接回——
+        // 否則重啟載入會把玩家擺好的擺飾清掉。預設 0、設了之後序列化進出仍在。
+        let mut f = Field::for_plot(2);
+        assert_eq!(f.home_decor(), 0, "新地預設不擺");
+        f.set_home_decor(3);
+        let json = serde_json::to_string(&f).unwrap();
+        let back = serde_json::from_str::<Field>(&json).unwrap().reseated(2).unwrap();
+        assert_eq!(back.home_decor(), 3, "擺飾索引須撐過序列化＋reseat");
+        assert_eq!(back, f);
+    }
+
+    #[test]
+    fn set_home_decor_sanitizes_out_of_range() {
+        // 越界索引（偽造／髒值）一律當「不擺」處理，不被默默解讀成某件真擺飾。
+        let mut f = Field::new();
+        f.set_home_decor(crate::home_decor::DECOR_COUNT); // 邊界合法值
+        assert_eq!(f.home_decor(), crate::home_decor::DECOR_COUNT);
+        f.set_home_decor(250); // 越界
+        assert_eq!(f.home_decor(), 0);
+    }
+
+    #[test]
+    fn old_save_without_decor_field_defaults_to_none() {
+        // 向後相容：舊存檔（tiles 欄 JSON 無 home_decor）載回時 serde(default) 回 0=不擺。
+        let json = format!(
+            "{{\"tiles\":{}}}",
+            serde_json::to_string(&vec![Tile::Untilled; FIELD_COLS * FIELD_ROWS]).unwrap()
+        );
+        let back = serde_json::from_str::<Field>(&json).unwrap().reseated(0).unwrap();
+        assert_eq!(back.home_decor(), 0);
     }
 
     #[test]

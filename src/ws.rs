@@ -1680,6 +1680,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::SetHomeDecor { index }) => {
+                    // 家園擺飾（ROADMAP 402）：只改玩家**自己**的田。`fields.get_mut(&id)` 天然
+                    // 只取得自己那塊（訪客 / 無地者取不到 → 靜默忽略），不必另做所有權判斷。
+                    // 索引由 `set_home_decor` 夾成合法值（越界→不擺）。改動隨下一次快照廣播給田主
+                    // 與訪客，並由遊戲迴圈既有的定期 flush 持久化（鏡像 Farm 不在此同步寫 DB）。
+                    if let Some(field) = app.fields.write().unwrap().get_mut(&id) {
+                        field.set_home_decor(index);
+                    }
+                }
                 Ok(ClientMsg::PostListing { item, qty, price_per }) => {
                     // 掛單：已登入 + 背包夠量才執行。扣背包→建掛單，原子操作（同一把 players 鎖）。
                     // 防外掛：price_per/qty 須 >0，且單價封頂（防超大數溢出與洗錢式天價掛單）。
