@@ -24976,6 +24976,34 @@
     ctx.fill();
   }
 
+  // ROADMAP 421 作物熟成進度：成長中（種子／發芽，尚未成熟）的作物格，沿底緣畫一條細進度條，
+  // 讓玩家在離散三階段之間也一眼看出「離收成還差多遠」——回應建議箱多次反映的「想看到作物
+  // 週期進度、感受接近目標的動能、少一點空轉感」。純表現：進度值 cell.grow（0~100）由伺服器
+  // crops.rs 權威算，這裡只把它畫成條，不嵌任何規則；靜態繪製、reduceMotion 一樣顯示。
+  function drawGrowBar(sx, sy, ts, cell) {
+    // 只在「種了、成長中、未成熟」時畫：state 2=種子 3=發芽（4=成熟已有金光，不需進度條）。
+    if (cell.state !== 2 && cell.state !== 3) return;
+    const p = Math.max(0, Math.min(100, cell.grow | 0)) / 100;
+    const m = Math.max(3, ts * 0.1);        // 左右內縮，避開格線
+    const bw = ts - m * 2;                   // 條總寬
+    const bh = Math.max(2.5, ts * 0.07);     // 條高（隨格大小略縮放）
+    const bx = sx + m;
+    const by = sy + ts - bh - Math.max(2, ts * 0.06); // 貼近底緣、留一點邊
+    ctx.save();
+    // 底槽：深色半透明，讓進度條在作物/土色任何底上都讀得清。
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(bx, by, bw, bh);
+    // 進度填色：一般青綠；快成熟（≥80%）轉暖金，給「就快可收了」的期待感；
+    // 缺水停滯時壓成暗灰藍，呼應既有缺水藍提示、讀作「進度卡住了、該澆水」。
+    let fill;
+    if (cell.dry) fill = "rgba(120,150,180,0.85)";       // 停滯（缺水）
+    else if (p >= 0.8) fill = "rgba(255,210,90,0.95)";   // 即將成熟
+    else fill = "rgba(110,210,120,0.95)";                // 成長中
+    ctx.fillStyle = fill;
+    ctx.fillRect(bx, by, bw * p, bh);
+    ctx.restore();
+  }
+
   function drawTile(sx, sy, ts, cell) {
     if (artOk("field")) {
       const dx = Math.round(sx), dy = Math.round(sy);
@@ -24998,6 +25026,7 @@
         ctx.restore();
         drawQualityGlint(sx, sy, ts, cell.quality); // 成熟作物的品質光點（ROADMAP 406）
       }
+      drawGrowBar(sx, sy, ts, cell); // 成長中作物的熟成進度條（ROADMAP 421）
       drawStagePips(sx, sy, ts, cell);
       return;
     }
@@ -25043,6 +25072,7 @@
       ctx.strokeRect(sx + 2, sy + 2, ts - 4, ts - 4);
       ctx.setLineDash([]);
     }
+    drawGrowBar(sx, sy, ts, cell); // 成長中作物的熟成進度條（ROADMAP 421）
     drawStagePips(sx, sy, ts, cell);
   }
 

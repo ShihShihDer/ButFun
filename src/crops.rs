@@ -105,6 +105,19 @@ pub fn quality_for(parched: f32) -> CropQuality {
     }
 }
 
+/// 依累積成長時間推導「離成熟還有多少」的進度（0.0=剛播下、1.0=成熟可收）。純函式。
+/// ROADMAP 421 作物熟成進度：前端據此在成長中的作物格畫一條熟成進度條，讓玩家在離散的
+/// 種子／發芽／成熟三階段之間，也一眼看得出「還差多久收成」——回應建議箱多次反映的
+/// 「想看到作物週期進度、感受接近目標的動能、少一點空轉感」。壞值（NaN/負）夾回 0、
+/// 超過上限夾回 1，永遠回傳 [0,1]。
+pub fn progress_for(growth: f32) -> f32 {
+    if !(growth > 0.0) {
+        // NaN 或 ≤0 一律當作剛起步（0 進度）；不讓壞值汙染前端進度條。
+        return 0.0;
+    }
+    (growth / RIPE_AT).min(1.0)
+}
+
 /// 依累積成長時間推導目前階段。純函式。
 pub fn stage_for(growth: f32) -> CropStage {
     if growth >= RIPE_AT {
@@ -183,6 +196,11 @@ impl Crop {
     /// 是否成熟可收。
     pub fn is_ripe(&self) -> bool {
         self.stage() == CropStage::Ripe
+    }
+
+    /// ROADMAP 421：離成熟還有多少的進度（0.0~1.0）。前端據此畫熟成進度條。
+    pub fn progress(&self) -> f32 {
+        progress_for(self.growth)
     }
 
     /// 是否需要澆水（已乾）。
@@ -435,6 +453,36 @@ mod tests {
         assert_eq!(c.quality(), CropQuality::Plain);
         assert_eq!(c.harvest(), Some(ETHER_PER_HARVEST));
         assert_eq!(c, Crop::plant(), "收成後渴秒數隨整株重置歸零");
+    }
+
+    // ── 作物熟成進度（ROADMAP 421）──────────────────────────────────────────────
+
+    #[test]
+    fn progress_spans_zero_to_one_over_growth() {
+        // 剛播下＝0、長到一半＝0.5、到成熟＝1（並夾住超出上限）。
+        assert_eq!(progress_for(0.0), 0.0);
+        assert!((progress_for(RIPE_AT / 2.0) - 0.5).abs() < 1e-6);
+        assert_eq!(progress_for(RIPE_AT), 1.0);
+        assert_eq!(progress_for(RIPE_AT * 2.0), 1.0, "超過上限夾回 1");
+    }
+
+    #[test]
+    fn progress_clamps_bad_values() {
+        // 壞值（NaN / 負）一律回 0，不讓進度條被汙染。
+        assert_eq!(progress_for(f32::NAN), 0.0);
+        assert_eq!(progress_for(-5.0), 0.0);
+    }
+
+    #[test]
+    fn crop_progress_tracks_growth() {
+        let mut c = Crop::plant();
+        assert_eq!(c.progress(), 0.0, "剛播下進度 0");
+        c.water();
+        c.grow(SPROUT_AT); // 長到發芽（30/90）
+        assert!((c.progress() - SPROUT_AT / RIPE_AT).abs() < 1e-6);
+        c.water();
+        c.grow(RIPE_AT); // 補水長到成熟
+        assert_eq!(c.progress(), 1.0, "成熟＝滿進度");
     }
 
     #[test]

@@ -2507,6 +2507,12 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
     #[serde(default)]
     pub quality: u8,
+    /// ROADMAP 421 作物熟成進度：成長中作物「離成熟還有多少」的百分比（0~100），由伺服器
+    /// `crops.rs` 權威算。前端據此在成長中的格子畫一條熟成進度條，讓離散三階段之間也看得出
+    /// 「還差多久收成」。只在種了未熟（state 2/3）時有意義；空地與成熟一律 100/0 不畫。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default)]
+    pub grow: u8,
 }
 
 #[cfg(test)]
@@ -2718,6 +2724,7 @@ mod tests {
                     dry: true,
                     thriving: false,
                     quality: 0,
+                    grow: 0,
                 }],
                 home_decor: 0,
                 garden: vec![],
