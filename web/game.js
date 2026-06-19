@@ -5262,10 +5262,24 @@
     farmRipeCount = ripe;
     if (el) {
       if (dry > 0) {
-        el.textContent = `🌱 ${dry} 格作物缺水`;
+        // 缺水提示同時當「💧一鍵澆水」按鈕：建議箱反覆有人反映「逐格點太累、想要快速澆水鈕」
+        //（ROADMAP 422）。點一下就送 water_all，伺服器在農地可及範圍內把整塊田缺水的一次澆滿。
+        el.textContent = `🌱 ${dry} 格作物缺水 · 💧一鍵澆水`;
         el.classList.remove("hidden");
+        // 提示這行可點：游標、無障礙語義（每幀重設冪等、不累積監聽器）。
+        el.style.cursor = "pointer";
+        el.setAttribute("role", "button");
+        el.setAttribute("tabindex", "0");
+        el.setAttribute("aria-label", `一鍵澆水：替 ${dry} 格缺水作物澆水`);
+        el.onclick = waterAll;
+        el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); waterAll(); } };
       } else {
         el.classList.add("hidden");
+        el.onclick = null;
+        el.onkeydown = null;
+        el.style.cursor = "";
+        el.removeAttribute("role");
+        el.removeAttribute("tabindex");
       }
     }
     // 收成提醒:有熟透的格子就告訴玩家「去收乙太」,把迴圈的回報那步顯到 HUD,
@@ -25365,6 +25379,14 @@
     markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(wx, wy); // 純確認回饋:這一下已送出
   }
+  // ROADMAP 422 一鍵澆水：把整塊田所有缺水作物一次澆滿，省去逐格點擊（建議箱反覆出現的回饋）。
+  // 只送意圖、不在客戶端判規則——伺服器用玩家自己的權威座標判是否在農地可及範圍、實際澆水並回報
+  // 澆了幾株（離田太遠會回「走近農地」提示）。
+  function waterAll() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "water_all" }));
+  }
+
   // 純鍵盤/無滑鼠玩家:對「自己腳下這格」送農作意圖(空白鍵 / E / F)。玩家回饋
   // 「不一定有滑鼠」——走得動卻點不到田格。這裡只挑目標格(自己的位置)送原始世界
   // 座標,做什麼仍由權威伺服器決定,不在客戶端判規則。
