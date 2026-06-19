@@ -1424,6 +1424,46 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::WaterAll) => {
+                    // 一鍵澆水（ROADMAP 422）：把整塊田所有缺水作物一次澆滿，省去逐格點擊
+                    //（建議箱反覆出現的回饋）。被打趴時不能照顧農地——倒地定身。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
+                    // 取玩家自己的權威座標（鎖讀完即放、不與後面 fields/pub_field 寫鎖巢狀，守 prod-deadlock）。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    // 在自家私有地可及範圍內就澆自家田；否則若已登入且在公共田可及範圍內就澆公共田。
+                    // 鏡像 Farm 的「先私有後公共」與 within_reach 防隔空判定，每把鎖各取各放、不互鎖。
+                    let mut watered: u32 = 0;
+                    let mut in_reach = false;
+                    {
+                        let mut fields = app.fields.write().unwrap();
+                        if let Some(field) = fields.get_mut(&id) {
+                            if player_pos.map(|(px, py)| field.within_reach(px, py)).unwrap_or(false) {
+                                in_reach = true;
+                                watered += field.water_all_planted();
+                            }
+                        }
+                    }
+                    if !in_reach && authed_uid.is_some() {
+                        let mut pf = app.pub_field.write().unwrap();
+                        if player_pos.map(|(px, py)| pf.within_reach(px, py)).unwrap_or(false) {
+                            in_reach = true;
+                            watered += pf.water_all_planted();
+                        }
+                    }
+                    // 單播回報：澆到就報幾株、在田邊但沒缺水的就安心一句、離田太遠就溫和提示走近。
+                    // 走 tx_direct + ServerMsg::Chat（既有單播管道，零新協議；改動隨下張快照讓田格藍點消失）。
+                    let note = if watered > 0 {
+                        format!("💧 一鍵澆水：替 {watered} 株缺水作物補滿了水！")
+                    } else if in_reach {
+                        "💧 作物都不渴，這塊田水分剛剛好。".to_string()
+                    } else {
+                        "🚶 走近自己的農地才能一鍵澆水喔。".to_string()
+                    };
+                    let msg = ServerMsg::Chat { from: "系統".into(), text: note };
+                    if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                }
                 Ok(ClientMsg::Gather) => {
                     // 被打趴時不能採集——倒地定身，等復原傳回新手村再繼續。
                     if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {

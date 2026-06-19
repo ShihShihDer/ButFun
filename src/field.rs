@@ -365,16 +365,20 @@ impl Field {
         }
     }
 
-    /// 降雨自動澆灌：對所有缺水的作物格補滿濕度（ROADMAP 109）。
-    /// 呼叫前不需判斷生態域——由遊戲迴圈負責只在草原細雨時呼叫。
-    pub fn water_all_planted(&mut self) {
+    /// 降雨自動澆灌／一鍵澆水：對所有缺水的作物格補滿濕度，回傳「實際澆到」的格數。
+    /// （ROADMAP 109 降雨呼叫此函式只圖補水、不看回傳；ROADMAP 422 一鍵澆水用回傳值
+    /// 告訴玩家澆了幾株。）呼叫前不需判斷生態域——由呼叫端負責決定要不要澆。
+    pub fn water_all_planted(&mut self) -> u32 {
+        let mut watered = 0;
         for t in &mut self.tiles {
             if let Tile::Planted(c) = t {
                 if c.needs_water() {
                     c.water();
+                    watered += 1;
                 }
             }
         }
+        watered
     }
 
     /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
@@ -1022,6 +1026,25 @@ mod tests {
         let cells = f.view().cells;
         assert_eq!(cells[0].state, 3, "乾種子被雨水澆後 tick 到 SPROUT_AT 應成為發芽");
         assert_eq!(cells[1].state, 3, "已澆水的 tick 到 SPROUT_AT 也應成為發芽");
+    }
+
+    #[test]
+    fn water_all_planted_returns_count_of_dry_crops() {
+        let mut f = Field::new();
+        // 兩株乾、一株已澆水 → 只應澆到 2 株。
+        f.till(0, 0); f.plant(0, 0); // 乾
+        f.till(1, 0); f.plant(1, 0); // 乾
+        f.till(2, 0); f.plant(2, 0); f.water(2, 0); // 已澆水
+        assert_eq!(f.water_all_planted(), 2, "應只澆到 2 株缺水作物");
+        // 再澆一次：都已濕，沒有缺水的可澆 → 回 0（一鍵澆水按了沒作物可澆時不誤報）。
+        assert_eq!(f.water_all_planted(), 0, "全濕後再澆應回 0");
+    }
+
+    #[test]
+    fn water_all_planted_empty_field_returns_zero() {
+        let mut f = Field::new();
+        // 沒種任何作物 → 澆到 0 株、不 panic。
+        assert_eq!(f.water_all_planted(), 0);
     }
 
     #[test]
