@@ -240,6 +240,14 @@ const me0 = snapshot.players[0];
 const scenarios = [
   { name: "原始城鎮", s: snapshot },
   variant("含屍光carion_orbs", (s) => { s.carion_orbs = [{ id: 1, x: me0.x + 40, y: me0.y }, { id: 2, x: me0.x - 30, y: me0.y + 20 }]; }),
+  // 黏土角色轉身（420）：玩家朝左移動 → 在 clay 模式走 player_side 側面圖路徑（pickClayPlayerSprite）。
+  // 朝右另設一名其他玩家走 flip=false 分支。零 render 例外即通過（BUTFUN_SMOKE_STYLE=clay 跑到）。
+  variant("黏土玩家側走轉身(420)", (s) => {
+    if (s.players?.length) {
+      s.players[0] = { ...s.players[0], facing: Math.PI, moving: true, walk: 2 };       // 朝左
+      if (s.players[1]) s.players[1] = { ...s.players[1], facing: 0, moving: true, walk: 1 }; // 朝右
+    }
+  }),
   variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
