@@ -249,14 +249,15 @@
       sqx = 2 - sqy; // 體積守恆：縱向呼吸時橫向反向補償
     }
     // 落地柔影（接地感）：固定在地面、不跟著彈跳。
+    // 黏土日影晷（ROADMAP 428）：黏土微縮世界的萬物影子也接上既有「日影晷」（201）——
+    // 改走 drawGroundShadow，讓影子隨太陽方位偏移／晨昏拉長／夜裡轉冷淡，與玩家本體（早已
+    // 走 drawGroundShadow）和整個像素世界一致。先前黏土物件用的是固定腳下小圓，太陽掃過時
+    // 只有玩家的影子在動、樹／作物／星晶等卻紋風不動，破壞「桌上模型被一盞會移動的燈照著」的
+    // 一致感；接線後整桌微縮世界的影子一起掃過。無日夜資訊（訪客/未載入＝_shadowCast 為 null）
+    // 時 drawGroundShadow 自動退回同一顆固定小圓（中心 y-2、半徑 shadow×0.4、alpha 0.22），
+    // 與接線前像素級一致、零回歸風險。
     if (opts.shadow > 0) {
-      ctx.save();
-      ctx.globalAlpha = 0.22;
-      ctx.fillStyle = "#000";
-      ctx.beginPath();
-      ctx.ellipse(x, y - 2, opts.shadow, opts.shadow * 0.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      drawGroundShadow(x, y - 2, opts.shadow, opts.shadow * 0.4, 0.22);
     }
     const img = CLAY[key];
     const dw = s * sqx;
