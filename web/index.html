@@ -1228,6 +1228,14 @@
           <input type="checkbox" id="optAmbient" style="margin-top:3px;flex:none;" checked>
           <span>🌿 環境音效<br><small style="opacity:.8">下雨時有雨聲、夜裡有蟲鳴、白天偶聞鳥啼。純本機合成、無音檔下載，可與互動音效獨立開關。</small></span>
         </label>
+        <!-- 主音量（ROADMAP 429）：疊在互動／環境音效之上的總響度，0=靜音、100=滿；純本機偏好。 -->
+        <label class="setting-row" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 0;">
+          <span style="margin-top:1px;flex:none;">🔉</span>
+          <span style="flex:1 1 auto;">主音量 <small id="optVolLabel" style="opacity:.8;">70%</small><br>
+            <input type="range" id="optVol" min="0" max="100" step="5" value="70" style="width:100%;margin-top:4px;" aria-label="主音量">
+            <small style="opacity:.8;display:block;">整體響度的總開關，疊在上面兩個音效開關之上。覺得太吵就拉小、想安靜就拉到 0。</small>
+          </span>
+        </label>
         <!-- 畫面動態（ROADMAP 425）：玩家自己決定純裝飾動態要多熱鬧；覆寫系統的 prefers-reduced-motion。純本機偏好。 -->
         <fieldset class="setting-row" style="display:block;border:none;margin:0;padding:6px 0;">
           <legend style="padding:0;float:none;width:auto;">✨ 畫面動態<br><small style="opacity:.8">飄動／彈跳／粒子／視差等<b>純裝飾</b>動態要多熱鬧（資訊照樣完整）。「🪶 省電靜謐」一鍵讓畫面安靜下來——手機更省電、靜心耕作更舒服；「精緻全開」即使系統開了減少動態也保留滿版動畫。</small></legend>

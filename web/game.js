@@ -354,8 +354,30 @@
     _parallaxEnabled = !reduceMotion;
   }
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
+
+  // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
+  // 互動音效（SFX）與環境音效（AMBIENT）各自仍有獨立開關；主音量是疊在兩者之上的「總響度」
+  // 縮放係數（0=靜音、1=滿）。各引擎把自己所有聲源接到一個 master GainNode、再把它的 gain
+  // 設成這個係數，調滑桿即時生效（連正在播的雨聲／蟲鳴也跟著變）。純前端、零後端、零協議。
+  // audioVol：把存進 localStorage 的字串（或 null）解析成 [0,1] 的純量；壞值／缺值退回預設。
+  // 抽成純函式以便 render-smoke 單元斷言真值表（無副作用、決定性）。
+  function audioVol(pref) {
+    const v = parseFloat(pref);
+    if (!Number.isFinite(v)) return 0.7; // 缺值／非數字（含 null）＝預設 70%
+    if (v < 0) return 0;                 // 下界夾 0（靜音）
+    if (v > 1) return 1;                 // 上界夾 1（滿）
+    return v;
+  }
+  let _audioVol = audioVol((() => { try { return localStorage.getItem("butfun.vol"); } catch { return null; } })());
+  // setAudioVol：把原始字串／數字夾成 [0,1]、存 localStorage、即時推給兩個音訊引擎的 master 節點。
+  function setAudioVol(raw) {
+    _audioVol = audioVol(raw);
+    try { localStorage.setItem("butfun.vol", String(_audioVol)); } catch {}
+    try { SFX.setVol(_audioVol); } catch {}
+    try { AMBIENT.setVol(_audioVol); } catch {}
+  }
 
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
   // 所有聲音用振盪器即時合成；需要使用者互動後建立 AudioContext（規避自動播放政策）。
@@ -372,6 +394,17 @@
       return _ctx;
     }
 
+    // 主音量節點（ROADMAP 429）：所有 SFX 聲源接到它、它再接 destination；調主音量即改它的 gain。
+    let _master = null;
+    function _masterNode(ac) {
+      if (!_master) {
+        _master = ac.createGain();
+        _master.gain.value = _audioVol;
+        _master.connect(ac.destination);
+      }
+      return _master;
+    }
+
     // freq=頻率Hz  type=波形  a=起音s  s=持音s  d=衰音s  g=音量峰值
     function _tone(freq, type, a, s, d, g) {
       if (!_on) return;
@@ -379,7 +412,7 @@
       try {
         const osc = ac.createOscillator();
         const gn = ac.createGain();
-        osc.connect(gn); gn.connect(ac.destination);
+        osc.connect(gn); gn.connect(_masterNode(ac));
         osc.type = type; osc.frequency.value = freq;
         const t = ac.currentTime;
         gn.gain.setValueAtTime(0, t);
@@ -396,6 +429,9 @@
         _on = !!v;
         try { localStorage.setItem("butfun.sfx", _on ? "1" : "0"); } catch {}
       },
+      // 主音量改變時即時套用到 master 節點（ROADMAP 429）；節點還沒建（沒播過聲音）時純略過，
+      // 下次建立時會讀到最新 _audioVol。
+      setVol(v) { if (_master && _ctx) { try { _master.gain.setValueAtTime(v, _ctx.currentTime); } catch {} } },
       // UI 點擊：輕短回饋
       click()       { _tone(660, "sine", 0.005, 0, 0.07, 0.12); },
       // 採集/成功：兩段上揚
@@ -435,6 +471,18 @@
       return _ctx;
     }
 
+    // 主音量節點（ROADMAP 429）：雨聲／蟲鳴／鳥啼全接到它再接 destination；調主音量即改其 gain，
+    // 連正在播的環境聲也即時跟著變。
+    let _amaster = null;
+    function _masterNode(ctx) {
+      if (!_amaster) {
+        _amaster = ctx.createGain();
+        _amaster.gain.value = _audioVol;
+        _amaster.connect(ctx.destination);
+      }
+      return _amaster;
+    }
+
     // ─── 雨聲層：白噪音 + 低通濾波，音量隨降雨強度調整 ───────────────────
     let _rainSrc = null, _rainGain = null, _rainOn = false;
 
@@ -460,7 +508,7 @@
         const vol = Math.min(1, intensity) * 0.14;
         gn.gain.setValueAtTime(0, ctx.currentTime);
         gn.gain.linearRampToValueAtTime(vol, ctx.currentTime + 1.5);
-        src.connect(flt); flt.connect(gn); gn.connect(ctx.destination);
+        src.connect(flt); flt.connect(gn); gn.connect(_masterNode(ctx));
         src.start();
         _rainSrc = src; _rainGain = gn; _rainOn = true;
       } catch {}
@@ -502,7 +550,7 @@
         master.gain.setValueAtTime(0, ctx.currentTime);
         master.gain.linearRampToValueAtTime(0.028, ctx.currentTime + 2.5);
         lfo.connect(lfoAmp); lfoAmp.connect(master.gain); // AudioParam 調幅
-        osc.connect(master); master.connect(ctx.destination);
+        osc.connect(master); master.connect(_masterNode(ctx));
         osc.start(); lfo.start();
         _cricketOsc = osc; _cricketLfo = lfo; _cricketGain = master; _cricketOn = true;
       } catch {}
@@ -538,7 +586,7 @@
             try {
               const osc = ctx.createOscillator();
               const gn = ctx.createGain();
-              osc.connect(gn); gn.connect(ctx.destination);
+              osc.connect(gn); gn.connect(_masterNode(ctx));
               osc.type = "sine"; osc.frequency.value = freq;
               const t = ctx.currentTime;
               gn.gain.setValueAtTime(0, t);
@@ -581,6 +629,8 @@
         try { localStorage.setItem("butfun.ambient", _on ? "1" : "0"); } catch {}
         if (!_on) _stopAll();
       },
+      // 主音量改變時即時套用到 master 節點（ROADMAP 429）；節點還沒建時略過，下次建立讀最新值。
+      setVol(v) { if (_amaster && _ctx) { try { _amaster.gain.setValueAtTime(v, _ctx.currentTime); } catch {} } },
       // tick()：每次遊戲狀態有變時呼叫（外部節流至約 2 秒一次）。
       tick(isRaining, rainIntensity, isNight, isDaytime) {
         if (!_on) return;
@@ -26522,6 +26572,21 @@
       optAmbient.addEventListener("change", () => {
         AMBIENT.setOn(optAmbient.checked);
       });
+    }
+    // ⚙ 設定：主音量滑桿（ROADMAP 429）——疊在互動／環境音效之上的總響度，0~100%。
+    // 初始反映 localStorage 的 _audioVol；拖動即時推給兩引擎並更新百分比標籤；放開時播一聲試聽。
+    const optVol = document.getElementById("optVol");
+    const optVolLabel = document.getElementById("optVolLabel");
+    if (optVol) {
+      const pct = Math.round(_audioVol * 100);
+      optVol.value = String(pct);
+      if (optVolLabel) optVolLabel.textContent = pct + "%";
+      optVol.addEventListener("input", () => {
+        setAudioVol((parseInt(optVol.value, 10) || 0) / 100);
+        if (optVolLabel) optVolLabel.textContent = Math.round(_audioVol * 100) + "%";
+      });
+      // 放開滑桿時播一聲，讓玩家立刻聽到新音量（音量為 0 時 _tone 仍會播但聽不到，符合預期）。
+      optVol.addEventListener("change", () => { SFX.click(); });
     }
     // ⚙ 設定：畫面動態（ROADMAP 425）——玩家三選一覆寫系統的減少動態偏好。
     // 各 radio 綁定其對應偏好的閉包（不依賴 el.value），啟動反映當前偏好、點選即套用＋一聲確認音。
