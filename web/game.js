@@ -2718,6 +2718,24 @@
             }
           }
 
+          // 活動鏈 HUD（ROADMAP 390）：今日活動鏈環數，0 時隱藏。
+          {
+            const chainEl = document.getElementById("hudActivityChain");
+            if (chainEl) {
+              const cl = me.chain_links || 0;
+              if (cl > 0) {
+                const CHAIN_TOTAL = 5;
+                const filled = "🔗".repeat(cl);
+                const empty = "○".repeat(CHAIN_TOTAL - cl);
+                chainEl.textContent = `${filled}${empty} ${cl}/${CHAIN_TOTAL}`;
+                chainEl.title = `今日活動鏈 ${cl}/${CHAIN_TOTAL}：完成不同活動增加環數，3 環 +20 乙太，全鏈 +50 乙太`;
+                chainEl.classList.remove("hidden");
+              } else {
+                chainEl.classList.add("hidden");
+              }
+            }
+          }
+
           // 防禦力 HUD（ROADMAP 19 生態裝備）：持有護甲時顯示減傷值。
           if (typeof me.defense === "number") {
             const defEl = document.getElementById("hudDefense");
@@ -3187,6 +3205,32 @@
             updateTitlePanel(meNow.unlocked_titles, meNow.active_title || null);
           }
         }
+        break;
+      }
+      case "chain_link": {
+        // 活動鏈新環通知（ROADMAP 390）：單播給本人，含環數與乙太獎勵。
+        const { player_id: clId, links: clLinks, total: clTotal, ether_reward: clEther } = msg;
+        if (clId !== myId) break;
+        const me = players.get(myId);
+        const wx = me ? me.x : 0;
+        const wy = me ? me.y - 50 : 0;
+        const now = performance.now();
+        if (clLinks >= clTotal) {
+          // 全鏈完成（5/5）：金色大字慶賀
+          hitFloaters.push({ wx, wy, text: `🔗 活動全鏈！${clLinks}/${clTotal}`, color: "255,210,74", size: 22, born: now });
+          if (clEther > 0) {
+            hitFloaters.push({ wx, wy: wy - 30, text: `+${clEther} 乙太`, color: "140,240,255", size: 17, born: now });
+          }
+          announce(`活動鏈完成！${clLinks}/${clTotal} 環全達成！`);
+        } else {
+          // 加一環：藍綠色提示
+          hitFloaters.push({ wx, wy, text: `🔗 活動鏈 ${clLinks}/${clTotal}`, color: "100,220,200", size: 17, born: now });
+          if (clEther > 0) {
+            hitFloaters.push({ wx, wy: wy - 28, text: `+${clEther} 乙太`, color: "140,240,255", size: 15, born: now });
+          }
+        }
+        // 更新本人快照的 chain_links 欄位，觸發 HUD 即時重繪。
+        if (me) me.chain_links = clLinks;
         break;
       }
       case "cook_start": {

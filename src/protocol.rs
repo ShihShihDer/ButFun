@@ -1384,6 +1384,13 @@ pub enum ServerMsg {
         title_name: String,
         world_first: bool,
     },
+    /// 活動鏈新增環通知（ROADMAP 390）：單播給完成者，含目前環數與獎勵乙太（0=無獎勵）。
+    ChainLink {
+        player_id: Uuid,
+        links: u8,
+        total: u8,
+        ether_reward: u32,
+    },
 }
 
 /// 好友清單單筆條目（ROADMAP 96）。
@@ -1762,6 +1769,11 @@ pub struct PlayerView {
     /// 玩家已解鎖的稱號 wire key 清單（只在自己的快照有值，他人省略）。前端稱號面板顯示。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlocked_titles: Vec<String>,
+
+    // ── 活動鏈（ROADMAP 390）─────────────────────────────────────────────────
+    /// 今日活動鏈環數（0~5）。只在自己的快照有值（他人省略，0 時省略）。前端 HUD 顯示。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub chain_links: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2279,6 +2291,7 @@ mod tests {
                 skill_mastery_haggle: 0,
                 active_title: None,
                 unlocked_titles: vec![],
+                chain_links: 0,
             }],
             fields: vec![FieldView {
                 owner,
@@ -2546,6 +2559,7 @@ mod tests {
             kill_streak: 0,
             active_title: None,
             unlocked_titles: vec![],
+            chain_links: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2828,6 +2842,7 @@ mod tests {
             kill_streak: 0,
             active_title: None,
             unlocked_titles: vec![],
+            chain_links: 0,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2889,6 +2904,7 @@ mod tests {
             kill_streak: 0,
             active_title: None,
             unlocked_titles: vec![],
+            chain_links: 0,
         }
     }
 
