@@ -478,6 +478,18 @@
     #onboardGuide .ob-box { width: 1.1em; flex: none; }
     #onboardGuide .ob-hint { color: #cfe6b8; font-size: 0.78rem; line-height: 1.4; margin-top: 6px;
       padding-top: 6px; border-top: 1px solid rgba(127,191,106,0.3); }
+    /* ROADMAP 426 情境下一步提示：低調的黃銅小橫幅，浮在新手卡上方同一側；
+       訪客／低血／入夜等情境才現，溫柔不喧賓奪主、不擋點擊（pointer-events:none）。 */
+    #idleNudge {
+      position: fixed; right: calc(12px + env(safe-area-inset-right));
+      bottom: calc(150px + env(safe-area-inset-bottom));
+      z-index: 6; width: min(232px, 64vw);
+      background: rgba(40, 36, 26, 0.92); color: #f0e6d2;
+      border: 1px solid var(--brass); border-radius: 12px;
+      padding: 9px 12px; box-shadow: 0 3px 14px rgba(0,0,0,0.45);
+      font-size: 0.8rem; line-height: 1.45; pointer-events: none;
+    }
+    #idleNudge .nudge-lead { color: var(--brass); font-weight: 700; margin-right: 4px; }
     /* 沒有 JavaScript 時的告示:整個遊戲(canvas 世界、進場、農作)都靠 JS,關掉 JS
        的玩家(隱私瀏覽器/擋腳本的擴充/受限網路)只會看到登入畫面、按「以訪客進場」毫無
        反應卻不知為何。這層全屏告示蓋過登入畫面,明說需要開 JavaScript——只有在 JS 沒跑
@@ -1301,6 +1313,8 @@
 
   <!-- 新手引導卡片（ROADMAP 396）：只對全新玩家顯示，走完五步即自動消失。內容由 game.js 依快照填入。 -->
   <div id="onboardGuide" class="hidden" aria-live="polite"></div>
+  <!-- ROADMAP 426 情境下一步提示：已畢業玩家當下情境的「現在何不…」溫柔提示（夜晚是主場）。 -->
+  <div id="idleNudge" class="hidden" aria-live="polite"></div>
 
   <!-- 螢幕報讀器即時播報區:上方重連橫幅是純視覺(脈動色塊),看不到畫面的玩家斷線時
        毫無回饋。這條視覺隱藏的 aria-live 區只在斷線／接回等重要切換時更新文字,讓報讀器

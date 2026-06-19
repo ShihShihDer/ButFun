@@ -3116,6 +3116,30 @@
             }
           }
 
+          // ROADMAP 426 情境下一步提示：依後端權威下發的 wire key 顯示一句溫柔提示；
+          // None（沒有特別該提示的情境）時隱藏。面向玩家文案集中於此（i18n 替換點）。
+          {
+            const nudgeEl = document.getElementById("idleNudge");
+            if (nudgeEl) {
+              // wire key 對齊後端 idle_nudge::Nudge::wire_key。
+              const NUDGE_TEXT = {
+                claim_land: "這片世界正等你落腳——找塊空地按下「開墾」，就有了自己的一方田。",
+                rest: "傷得不輕，先找個安全角落歇口氣，血會慢慢回來的。",
+                night_fish: "夜河靜謐，正是垂釣的好時辰——何不下竿試試手氣？",
+                night_stargaze: "夜深了，何不放慢腳步，抬頭看看滿天星斗、等天明？",
+                fish: "水邊風光正好——何不停下來，悠悠垂釣片刻？",
+              };
+              const key = me.idle_nudge;
+              const text = (typeof key === "string") ? NUDGE_TEXT[key] : null;
+              if (text) {
+                nudgeEl.innerHTML = `<span class="nudge-lead">💡 現在何不…</span>${text}`;
+                nudgeEl.classList.remove("hidden");
+              } else {
+                nudgeEl.classList.add("hidden");
+              }
+            }
+          }
+
           // 防禦力 HUD（ROADMAP 19 生態裝備）：持有護甲時顯示減傷值。
           if (typeof me.defense === "number") {
             const defEl = document.getElementById("hudDefense");

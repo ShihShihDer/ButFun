@@ -2153,6 +2153,13 @@ pub struct PlayerView {
     /// 前端查繁中字（i18n 集中在前端）。None＝沒地。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_dir: Option<u8>,
+
+    // ── 情境下一步提示（ROADMAP 426）─────────────────────────────────────────
+    /// 已畢業玩家當下情境的「現在何不…」提示 wire key（見 `idle_nudge::Nudge::wire_key`）。
+    /// None＝沒有特別該提示的情境（不顯示，避免常駐嘮叨）；前端只對自己那筆顯示一句溫柔提示，
+    /// 面向玩家文案由前端依 key 對應（i18n 集中前端）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_nudge: Option<String>,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -2744,6 +2751,7 @@ mod tests {
                 home_bearing: None,
                 home_dist: None,
                 home_dir: None,
+                idle_nudge: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3030,6 +3038,7 @@ mod tests {
             home_bearing: None,
             home_dist: None,
             home_dir: None,
+            idle_nudge: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -3321,6 +3330,7 @@ mod tests {
             home_bearing: None,
             home_dist: None,
             home_dir: None,
+            idle_nudge: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -3391,6 +3401,7 @@ mod tests {
             home_bearing: None,
             home_dist: None,
             home_dir: None,
+            idle_nudge: None,
         }
     }
 
