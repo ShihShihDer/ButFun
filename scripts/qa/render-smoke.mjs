@@ -1411,6 +1411,49 @@ for (const sc of scenarios) {
   }
 }
 
+// 天氣隨風飄（ROADMAP 432）：純函式 weatherWindVel 把世界風（430）換算成天氣粒子（93）的附加速度。
+// 須：靜風/缺 wind/負強度/未知天氣回零位移；有風時順風向、橫向為主；風愈強漂愈快；壞值安全。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.weatherWindVel;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 天氣隨風飄：game.js 未導出 weatherWindVel");
+  } else {
+    const checks = [];
+    const z = (v) => v.vx === 0 && v.vy === 0;
+    // 零位移情境：缺 wind／strength=0（晴天本就無粒子）／負強度／未知天氣型別。
+    checks.push(["無 wind 回零位移", z(fn(null, "grassland_rain"))]);
+    checks.push(["靜風 strength=0 回零位移", z(fn({ dirX: 1, dirY: 0, strength: 0 }, "grassland_rain"))]);
+    checks.push(["負強度回零位移", z(fn({ dirX: 1, dirY: 0, strength: -0.5 }, "grassland_rain"))]);
+    checks.push(["未知天氣回零位移", z(fn({ dirX: 1, dirY: 0, strength: 1 }, "clear"))]);
+    // 有風時順風向（dirX>0 → vx>0；dirX<0 → vx<0），且為有限數。
+    const east = fn({ dirX: 1, dirY: 0, strength: 0.5 }, "grassland_rain");
+    const west = fn({ dirX: -1, dirY: 0, strength: 0.5 }, "grassland_rain");
+    checks.push(["順風向：東風 vx>0", east.vx > 0 && Number.isFinite(east.vx)]);
+    checks.push(["順風向：西風 vx<0", west.vx < 0]);
+    // 橫向為主：同強度同向下 |vx| 應大於 |vy|（垂直分量被壓低）。
+    const diag = fn({ dirX: 0.8, dirY: 0.8, strength: 1 }, "desert_sandstorm");
+    checks.push(["橫向為主 |vx|>|vy|", Math.abs(diag.vx) > Math.abs(diag.vy)]);
+    // 風愈強漂愈快：strength 1 的 |vx| 大於 strength 0.2。
+    const weak = Math.abs(fn({ dirX: 1, dirY: 0, strength: 0.2 }, "desert_sandstorm").vx);
+    const strong = Math.abs(fn({ dirX: 1, dirY: 0, strength: 1.0 }, "desert_sandstorm").vx);
+    checks.push(["風愈強漂愈快", strong > weak]);
+    // 沙暴比海霧更易感（同風同強度，沙暴漂得更快）。
+    const sand = Math.abs(fn({ dirX: 1, dirY: 0, strength: 1 }, "desert_sandstorm").vx);
+    const mist = Math.abs(fn({ dirX: 1, dirY: 0, strength: 1 }, "water_sea_mist").vx);
+    checks.push(["沙暴比海霧更易感", sand > mist]);
+    // 壞值安全：strength 非有限、dirX 非有限 → 回有限數、不丟例外。
+    const bad = fn({ dirX: NaN, dirY: NaN, strength: NaN }, "grassland_rain");
+    checks.push(["壞值安全回有限位移", Number.isFinite(bad.vx) && Number.isFinite(bad.vy)]);
+    let nbad = 0;
+    for (const [name, ok] of checks) {
+      if (!ok) { nbad++; console.error(`  ❌ 天氣隨風飄：${name}`); }
+    }
+    if (nbad) failed = true;
+    else console.log(`  ✅ 天氣隨風飄·風速換算真值表：${checks.length}/${checks.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

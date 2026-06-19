@@ -377,6 +377,31 @@
     return lean + gust;
   }
 
+  // ---- 天氣隨風飄（ROADMAP 432）：讓天氣粒子（93）跟著世界的風（430）一起斜飛 ----
+  // 至今雨絲只直直落、沙塵只固定朝右橫飛——和同一陣會吹彎樹梢/田壟的世界風（430）各走各的，
+  // 同一片天底下兩套互不相干的方向，看起來不一致。本函式把世界風換算成「附加到天氣粒子的速度」
+  // （px/s），使颳大風時雨斜得更兇、沙塵晶塵海霧一律順著風向漂——和樹的傾斜同向，整片天才一致。
+  // 純函式、確定性、無副作用、壞值安全（缺 wind／非有限／負強度一律回零位移），便於單元斷言。
+  //   - 各天氣對風的「易感度」不同：沙暴本就橫掃故最敏感、雨重次之、晶塵海霧最輕盈飄得最遠；
+  //   - 風以橫向為主（dirX），垂直分量（dirY）壓低，雨重不致被吹著飛上天；
+  //   - strength 線性縮放（風愈強漂愈快），strength 0（如晴天，本就無粒子）回零、與接線前等價。
+  const WEATHER_WIND_SUSCEPT = {
+    grassland_rain: 60,     // 雨絲：被橫風吹斜
+    desert_sandstorm: 75,   // 風沙：本就隨風橫掃，最敏感
+    rocky_crystal_dust: 48, // 晶塵：輕盈、飄移明顯
+    water_sea_mist: 40,     // 海霧：最輕、漂得最遠最慢
+  };
+  function weatherWindVel(wind, weatherType) {
+    if (!wind) return { vx: 0, vy: 0 };
+    const s = Math.max(0, Math.min(1, +wind.strength || 0));
+    if (s <= 0) return { vx: 0, vy: 0 };
+    const k = WEATHER_WIND_SUSCEPT[weatherType] || 0;
+    if (k <= 0) return { vx: 0, vy: 0 };
+    const dx = Number.isFinite(wind.dirX) ? wind.dirX : 0;
+    const dy = Number.isFinite(wind.dirY) ? wind.dirY : 0;
+    return { vx: dx * s * k, vy: dy * s * k * 0.4 }; // 垂直分量壓四成：風主要橫吹
+  }
+
   // ---- 水畔魚汛幾何（ROADMAP 431）：與後端 fish_school.rs 同一套確定性公式（純函式、可單測） ----
   // 把世界切成與地名 locale 同尺度的分區，每塊分區恆有一處魚群；魚群中心隨全服共享相位
   // fishPhase 做緩慢的 Lissajous 巡游。**此處常數／公式必須與後端 src/fish_school.rs 一字不差**，
@@ -400,7 +425,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -17581,10 +17606,14 @@
     ctx.save();
     ctx.globalAlpha = weatherIntensity * 0.7;
 
+    // 世界風（430）→ 附加到每顆粒子的速度（432）：整片天氣與樹梢同向斜飛、不再各走各的。
+    const wv = weatherWindVel(worldWind, weatherType);
+
     for (let i = weatherParticles.length - 1; i >= 0; i--) {
       const p = weatherParticles[i];
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
+      const evx = p.vx + wv.vx, evy = p.vy + wv.vy; // 疊加風後的實際速度
+      p.x += evx * dt;
+      p.y += evy * dt;
       p.life -= dt;
 
       if (p.life <= 0 || p.y > H + 20 || p.x < -20 || p.x > W + 20) {
@@ -17597,7 +17626,7 @@
 
       switch (weatherType) {
         case "grassland_rain":
-          drawRainDrop(p);
+          drawRainDrop(p, evx, evy); // 雨絲沿「疊加風後的速度」傾斜，視覺與移動一致
           break;
         case "desert_sandstorm":
           drawSandDust(p);
@@ -17631,13 +17660,15 @@
     }
   }
 
-  function drawRainDrop(p) {
-    // 藍綠色細斜線
+  function drawRainDrop(p, evx, evy) {
+    // 藍綠色細斜線；線段沿「疊加世界風後的實際速度」延伸，颳橫風時雨絲明顯斜飛、與樹的傾斜同向。
+    const vx = Number.isFinite(evx) ? evx : p.vx;
+    const vy = Number.isFinite(evy) ? evy : p.vy;
     ctx.strokeStyle = "#88ccff";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.moveTo(p.x, p.y);
-    ctx.lineTo(p.x + p.vx * 0.04, p.y + p.vy * 0.04);
+    ctx.lineTo(p.x + vx * 0.04, p.y + vy * 0.04);
     ctx.stroke();
   }
 
