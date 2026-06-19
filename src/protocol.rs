@@ -1361,6 +1361,14 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 怪物王預警重擊落下（ROADMAP 424）：兇名精英蓄滿後砸下一記範圍重擊時，於落點廣播。
+    /// `x`/`y` ＝重擊中心（怪物王座標）、`radius` ＝波及半徑。前端在此演出向外擴張的衝擊波環，
+    /// 圈內被命中的玩家血條會掉（傷害走既有減傷鏈、格擋／翻滾可完全化解）。不入快照、不持久化、零 migration。
+    BossSlam {
+        x: f32,
+        y: f32,
+        radius: f32,
+    },
     /// 開灶步序（ROADMAP 349 照譜烹調）：回應 `StartCook`，廣播（前端只對自己 `player_id` 演出）。
     /// `steps` ＝這趟要照著閃示／敲回的步驟次序（snake_case：heat/add/stir/flip/season）。
     /// 前端先依序閃示（看譜），再讓玩家憑記憶敲回。不入快照、不持久化、零 migration。
@@ -2199,6 +2207,10 @@ pub struct EnemyView {
     /// 潰逃中（ROADMAP 183）：retreat_timer>0 強制逃離玩家，前端在頭頂畫 💨 逃竄符號。
     #[serde(default, skip_serializing_if = "is_false")]
     pub routing: bool,
+    /// 預警重擊蓄力進度（ROADMAP 424）：怪物王正在蓄力時 `Some(0.0..=1.0)`（地面預警圈填滿程度），
+    /// 否則略去。前端據此畫逐漸填滿的紅色預警圈，玩家看圈反應（走開／格擋／翻滾）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slam_windup: Option<f32>,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -2770,6 +2782,7 @@ mod tests {
                 notorious: false,
                 resting: false,
                 routing: false,
+                slam_windup: None,
             }],
             daynight: DayNightView {
                 phase: Phase::Day,

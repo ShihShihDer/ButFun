@@ -783,6 +783,41 @@ for (const sc of scenarios) {
   else console.log("  ✅ 蓄力重擊：蓄力環填滿＋滿蓄脈動＋重擊飄字（half/full/普通）＋旁觀者皆乾淨");
 }
 
+// 怪物王預警重擊（ROADMAP 424）：兇名精英 enemies[0] 帶 slam_windup（地面預警圈逐漸填滿、近滿脈動）；
+// 蓄滿後伺服器廣播 boss_slam，於落點演出向外炸開的衝擊波。驗證：蓄力圈（半蓄→近滿）＋落點衝擊波
+// （自己在圈內：警示飄字＋報讀／自己在圈外：純衝擊波）皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：怪物王預警重擊（地面預警圈填滿＋衝擊波，自己在圈內/圈外）──");
+  let ok = true;
+  try {
+    // 半蓄中的怪物王（slam_windup=0.4 → 預警圈淡填）。
+    const s1 = JSON.parse(JSON.stringify(snapshot));
+    if (s1.enemies && s1.enemies[0]) {
+      s1.enemies[0] = { ...s1.enemies[0], x: me0.x + 60, y: me0.y, level: 8, alive: true, notorious: true, slam_windup: 0.4 };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...s1, type: "snapshot" }) });
+    pump("預警圈半蓄", 4);
+    // 近蓄滿（slam_windup=0.97 → 預警圈幾乎填滿、外環脈動）。
+    const s2 = JSON.parse(JSON.stringify(s1));
+    if (s2.enemies && s2.enemies[0]) {
+      s2.enemies[0] = { ...s2.enemies[0], slam_windup: 0.97 };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...s2, type: "snapshot" }) });
+    pump("預警圈近滿脈動", 6);
+    // 重擊落下：自己在圈內（落點 = me0 附近）→ 警示飄字＋報讀＋衝擊波。
+    lastWS.onmessage({ data: JSON.stringify({ type: "boss_slam", x: me0.x + 60, y: me0.y, radius: 150 }) });
+    // 另一記落在遠方（自己在圈外）→ 只演衝擊波、無自身飄字。
+    lastWS.onmessage({ data: JSON.stringify({ type: "boss_slam", x: me0.x + 5000, y: me0.y, radius: 150 }) });
+    pump("重擊衝擊波", 6);
+  } catch (e) {
+    ok = false; console.error("  ❌ 怪物王預警重擊：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 怪物王預警重擊：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 怪物王預警重擊：預警圈（半蓄/近滿脈動）＋衝擊波（圈內警示/圈外純波）皆乾淨");
+}
+
 // 遠遊見聞（ROADMAP 411）：locale_entered 帶 first_footfall 時，地名卡綴「✨初次踏足」金緞＋XP 飄字、
 // 報讀；snapshot 帶 wayfare_count 時小地圖左下角畫足跡計數。驗證初次踏足卡／舊地重遊卡／進場 initial
 // 靜默／旁觀者忽略＋足跡計數 HUD 皆不拋例外。

@@ -201,6 +201,18 @@ impl EnemyField {
         self.chunks.values().flatten().cloned().collect()
     }
 
+    /// ROADMAP 424：回傳所有「存活的兇名精英（怪物王）」的精簡資料 `(id, x, y, level)`，
+    /// 供預警重擊系統判定蓄力／落點。只帶必要欄位（不 clone 整隻 `PlacedEnemy`），
+    /// 怪物王數量本就稀少，這趟掃描很輕。
+    pub fn notorious_slammers(&self) -> Vec<((i32, i32, usize), f32, f32, u32)> {
+        self.chunks
+            .values()
+            .flatten()
+            .filter(|p| p.enemy.is_alive() && p.level >= p.base_level.saturating_add(3))
+            .map(|p| (p.id, p.x, p.y, p.level))
+            .collect()
+    }
+
     /// ROADMAP 183：族群潰逃——把以 (cx,cy) 為圓心、`radius` 半徑內、種類為 `kind`、
     /// 存活的怪物設定 `retreat_timer = duration`，令其士氣崩潰、強制逃離玩家奔回巢穴
     /// （沿用 ROADMAP 117 既有 retreat 逃跑路徑，零移動架構改動）。
