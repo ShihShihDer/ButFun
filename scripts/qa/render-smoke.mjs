@@ -52,7 +52,14 @@ function makeEl(id) {
     options: [],
     addEventListener: (type, fn) => { (handlers[type] = handlers[type] || []).push(fn); },
     removeEventListener: () => {},
-    getContext: isCanvas ? () => ctxSingleton : () => null,
+    // 主遊戲畫布共用 ctxSingleton；其餘任何元素（含程式 createElement 的離屏 canvas，
+    // 如畫風縮圖 styleThumb*、黏土地面烘焙離屏 canvas）按需各給一個各自的假 2d ctx，
+    // 讓 getContext("2d") 永不回 null（真實瀏覽器上 canvas 一定有 2d ctx）。
+    getContext: (type) => {
+      if (type && type !== "2d") return null;
+      if (isCanvas) return ctxSingleton;
+      return real.__ctx || (real.__ctx = makeCtx(real));
+    },
     getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0 }),
     appendChild: (c) => c, removeChild: () => {}, remove: () => {}, insertBefore: (c) => c,
     setAttribute: () => {}, removeAttribute: () => {}, getAttribute: () => null, hasAttribute: () => false,
