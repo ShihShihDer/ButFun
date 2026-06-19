@@ -10041,7 +10041,8 @@
             const c = shown[ci];
             const cx = baseX + ci * gap;
             // 作物是活物：加待機停格生命感（ROADMAP 392），整片田像微微在風裡呼吸；每株錯開不同步。
-            if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9, idle: Math.round(cx * 5 + sy * 3 + ci * 131) })) {
+            // seed 用田的世界座標（非螢幕座標），跟樹/星晶/乙太球一致；否則相機一移動相位會亂跳、四格定格間抖動。
+            if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9, idle: Math.round(wx * 3 + wy * 7 + ci * 131) })) {
               // 該作物沒黏土圖：退回 emoji。
               ctx.font = "18px sans-serif";
               ctx.textAlign = "center";
