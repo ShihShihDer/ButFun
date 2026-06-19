@@ -1802,6 +1802,12 @@ pub struct PlayerView {
     /// 玩家目前是否正在打坐。true 時前端在該玩家身旁畫呼吸光圈。false 時省略流量。
     #[serde(default, skip_serializing_if = "is_false")]
     pub meditating: bool,
+
+    // ── 暖食飽足（ROADMAP 395）───────────────────────────────────────────────
+    /// 暖食飽足進度 0.0~1.0（剩餘比例）。Some 時前端在該玩家頭頂畫暖食光暈＋倒數。
+    /// None＝沒在飽足（省略流量）。廣播給所有人，世界裡看得見誰剛吃飽。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub well_fed: Option<f32>,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2321,6 +2327,7 @@ mod tests {
                 unlocked_titles: vec![],
                 chain_links: 0,
                 meditating: false,
+                well_fed: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -2590,6 +2597,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            well_fed: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2874,6 +2882,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            well_fed: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2937,6 +2946,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            well_fed: None,
         }
     }
 

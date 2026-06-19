@@ -180,6 +180,9 @@ pub struct Player {
     pub meditation: Option<crate::meditation::Meditation>,
     /// 上次打坐完成的時間點（冷卻追蹤，ROADMAP 391）。記憶體前置，重啟清空。
     pub last_meditate: Option<std::time::Instant>,
+    /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
+    /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
+    pub meal_buff: Option<crate::meal_buff::MealBuff>,
     /// 精煉嘗試計數（ROADMAP 37）：每次精煉操作（成功或失敗）都遞增，確保
     /// `refine_fails` 的確定性偽隨機在連續嘗試間能得到不同結果。記憶體前置，重啟清空。
     pub refine_attempt_count: u64,
@@ -745,6 +748,8 @@ impl Player {
             chain_links: self.activity_chain.link_count(),
             // ROADMAP 391：是否正在打坐（廣播給所有人，前端畫呼吸光圈）。
             meditating: self.meditation.is_some(),
+            // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
+            well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
         }
     }
 
@@ -1531,6 +1536,7 @@ mod tests {
             activity_chain: crate::activity_chain::ActivityChain::new(0),
             meditation: None,
             last_meditate: None,
+            meal_buff: None,
             refine_attempt_count: 0,
             equipment: crate::equipment::EquipmentSlots::default(),
             skill_cooldowns: crate::active_skill::SkillCooldowns::default(),

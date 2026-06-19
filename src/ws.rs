@@ -192,6 +192,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             streak_last_kill: None,
             meditation: None,
             last_meditate: None,
+            meal_buff: None,
         }
     } else {
         // 等 Join
@@ -304,6 +305,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             streak_last_kill: None,
             meditation: None,
             last_meditate: None,
+            meal_buff: None,
         }
     };
     let id = player.id;
@@ -3025,6 +3027,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 烤魚：回復 8 HP（小魚×2 烹飪而成，基礎療癒食物）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(8);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用烤魚回血");
                                 }
                             }
@@ -3032,6 +3035,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 星燦刺身：回復 15 HP（星星魚烹飪，稀有漁獲料理）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(15);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用星燦刺身回血");
                                 }
                             }
@@ -3039,6 +3043,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 深海濃湯：回復至等級滿血（最稀有漁獲換最強效果）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(p.vitals.max_hp());
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "飲用深海濃湯滿血復原");
                                 }
                             }
@@ -3047,6 +3052,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 煎蛋：回復 10 HP（雞蛋×2 烹飪，農田地塊自產療癒食物）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(10);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用煎蛋回血");
                                 }
                             }
@@ -3055,6 +3061,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 麵包：回復 12 HP（小麥×3 烹飪）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(12);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用麵包回血");
                                 }
                             }
@@ -3063,6 +3070,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(10);
                                     p.vitals.reset_regen_cooldown();
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用蔬菜湯回血+重置回血冷卻");
                                 }
                             }
@@ -3070,6 +3078,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 焗烤馬鈴薯：回復 15 HP（馬鈴薯×2 烹飪，農地料理最豐盛）。
                                 if !p.vitals.is_downed() && p.inventory.take(item, 1) {
                                     let gained = p.vitals.heal(15);
+                                    p.meal_buff = crate::meal_buff::meal_buff_for(item);
                                     tracing::info!(player = %p.name, gained, "食用焗烤馬鈴薯回血");
                                 }
                             }

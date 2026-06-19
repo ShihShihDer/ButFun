@@ -2423,6 +2423,8 @@
             existing.mining_tremor = p.mining_tremor || null;
             // ROADMAP 391：安靜打坐——是否正在打坐（前端畫呼吸光圈）。
             existing.meditating = !!p.meditating;
+            // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
+            existing.well_fed = (typeof p.well_fed === "number") ? p.well_fed : null;
             // ROADMAP 350：夜泉汲取——進行中汲取的經過秒數。每收一筆快照就重錨「收到時間」，
             // 前端用同一條三角波公式（aetherCursor）以本地時鐘自由推進準星、與伺服器對齊。
             if (typeof p.aether_draw_secs === "number") {
@@ -5442,6 +5444,10 @@
     // 安靜打坐光圈（ROADMAP 391）：正在打坐的玩家身旁漾出金色呼吸光圈，
     // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
     if (p.meditating) drawMeditationGlow(sx, sy + 8);
+
+    // 暖食飽足光暈（ROADMAP 395）：剛吃過料理的玩家頭頂浮一圈暖橙光暈＋🍲，
+    // 讓世界一眼看見「有人吃飽了、正被暖暖地療癒著」。進度愈低（飽足將散）愈淡。
+    if (typeof p.well_fed === "number" && p.well_fed > 0) drawWellFedGlow(sx, by - 30, p.well_fed);
 
     // 種族光環：在陰影上方、角色本體下方，讓各族玩家一眼分辨。
     // 自己不畫（自己已有金色名牌 + 鏡頭跟隨，夠清晰）。
@@ -13210,6 +13216,35 @@
     ctx.restore();
   }
   // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
+
+  // ── 暖食飽足光暈（ROADMAP 395）────────────────────────────────────────────────
+  // 由 drawPlayer 對 well_fed>0 的玩家頭頂呼叫；畫一圈暖橙柔光＋一顆 🍲，
+  // 表現「剛吃過料理、正被暖暖地飽足療癒著」。progress 1.0=剛吃飽、0.0=即將散去——
+  // 整體 alpha 隨 progress 漸淡，給「飽足會慢慢退去」的訊號。尊重 reduceMotion（不脈動）。
+  function drawWellFedGlow(cx, cy, progress) {
+    const fade = Math.max(0, Math.min(1, progress)); // 進度即不透明度基準（將散去時自然淡出）
+    const pulse = reduceMotion ? 0.7 : 0.6 + 0.4 * Math.sin(renderNow / 700);
+    const r = 11 + (reduceMotion ? 0 : pulse * 2);
+    ctx.save();
+    ctx.globalAlpha = fade;
+    // 暖橙柔光暈
+    const grad = ctx.createRadialGradient(cx, cy, 1, cx, cy, r);
+    grad.addColorStop(0, `rgba(255, 196, 120, ${0.5 * pulse})`);
+    grad.addColorStop(0.6, `rgba(255, 170, 90, ${0.22 * pulse})`);
+    grad.addColorStop(1, "rgba(255, 170, 90, 0)");
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // 暖食小圖示
+    ctx.globalAlpha = fade * 0.95;
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🍲", cx, cy);
+    ctx.restore();
+  }
+  // ── 暖食飽足光暈 end ─────────────────────────────────────────────────────────
 
   // 這是一個只要人潮還在就**持續存在**、且**跟著主人移動**的社交節點（圈畫在主人即時腳下座標）。
   // 由 drawPlayer 對每名玩家呼叫；非主人（map 沒這 id）直接早退、近乎零成本。
