@@ -243,6 +243,7 @@ pub fn spawn(app: AppState) {
                             y: p.y,
                             remaining: p.node.remaining(),
                             harvestable: p.node.is_harvestable(),
+                            regrow: p.node.regrowth_progress(),
                         })
                         .collect()
                 } else {

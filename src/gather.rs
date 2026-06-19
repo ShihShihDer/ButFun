@@ -123,6 +123,29 @@ impl ResourceNode {
         }
     }
 
+    /// 重生進度 0.0..=1.0：給前端畫「林相復甦」用（ROADMAP 404）。
+    ///
+    /// - 還能採（未採空）的節點＝**已完全長成**，回 `1.0`。
+    /// - 採空的節點：剛被伐倒（`respawn_timer == respawn_secs`）回 `0.0`，
+    ///   隨倒數遞減而升，快補滿耐久時趨近 `1.0`，據此把同一棵樹從「樹樁」漸畫成
+    ///   「新苗 → 小樹 → 大樹」，世界第一次看得見資源在自己長回來。
+    ///
+    /// 純函式、單調遞增（採空後隨時間只增不減）、夾在 `[0,1]`，與調校常數無關，便於測試。
+    /// 重生秒數若為非正 / 非有限（壞檔），無從計算進度，保守當「已長成」回 `1.0`，
+    /// 不讓前端把一棵明明該畫滿的樹卡在樹樁狀態。
+    pub fn regrowth_progress(&self) -> f32 {
+        if self.remaining > 0 {
+            return 1.0;
+        }
+        let span = self.kind.respawn_secs();
+        if !span.is_finite() || span <= 0.0 {
+            return 1.0;
+        }
+        // respawn_timer 由 `gather` 種成 span、`tick` 夾在 >= 0，故 elapsed 落在 [0, span]。
+        let elapsed = span - self.respawn_timer;
+        (elapsed / span).clamp(0.0, 1.0)
+    }
+
     /// 從存檔載入的值是否「健全」：耐久不超過該種類上限、重生倒數有限且非負。
     /// 這是與調校常數無關的最小不變式——正常流程（`new` 滿耐久、`gather` 只遞減、
     /// `tick` 倒數一律夾在 `>= 0`）絕不會產生界外耐久或 `NaN`/`Inf`/負倒數，所以這些
@@ -242,6 +265,72 @@ mod tests {
         assert!(n.is_harvestable());
         // 重生後又能再採一輪。
         assert_eq!(n.gather(), Some(NodeKind::Tree.yield_per_gather()));
+    }
+
+    #[test]
+    fn harvestable_node_is_fully_regrown() {
+        // 還能採（含剛生、半採）的節點一律＝已完全長成，回 1.0。
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        assert_eq!(n.regrowth_progress(), 1.0);
+        n.gather(); // 半採仍可採
+        assert!(n.is_harvestable());
+        assert_eq!(n.regrowth_progress(), 1.0);
+    }
+
+    #[test]
+    fn freshly_felled_node_starts_at_zero_regrowth() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
+            n.gather();
+        }
+        assert!(n.is_depleted());
+        // 剛伐倒：重生倒數滿格 → 進度 0（畫成樹樁）。
+        assert_eq!(n.regrowth_progress(), 0.0);
+    }
+
+    #[test]
+    fn regrowth_progress_rises_monotonically_to_one() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
+            n.gather();
+        }
+        let span = NodeKind::Tree.respawn_secs();
+        let mut prev = n.regrowth_progress();
+        assert_eq!(prev, 0.0);
+        // 一步步推進重生，進度只增不減、夾在 [0,1]。
+        let steps = 10;
+        for _ in 0..steps {
+            n.tick(span / steps as f32);
+            let p = n.regrowth_progress();
+            assert!((0.0..=1.0).contains(&p), "progress 出界: {p}");
+            assert!(p >= prev, "進度不該倒退: {prev} -> {p}");
+            prev = p;
+        }
+        // 推滿後補滿耐久、回到可採＝完全長成。
+        assert!(n.is_harvestable());
+        assert_eq!(n.regrowth_progress(), 1.0);
+    }
+
+    #[test]
+    fn regrowth_progress_is_half_at_midpoint() {
+        let mut n = ResourceNode::new(NodeKind::Tree);
+        for _ in 0..NodeKind::Tree.max_durability() {
+            n.gather();
+        }
+        // 推進一半重生時間 → 進度約 0.5（小苗→小樹的中段）。
+        n.tick(NodeKind::Tree.respawn_secs() / 2.0);
+        let p = n.regrowth_progress();
+        assert!((p - 0.5).abs() < 1e-3, "中點進度應約 0.5，實得 {p}");
+    }
+
+    #[test]
+    fn regrowth_progress_never_panics_on_corrupt_timer() {
+        // 健壯性：採空但帶壞重生倒數（NaN/Inf/負）時不可 panic。span 本身是健全常數，
+        // 故此處測的是「timer 壞了也安全」——正常流程 tick 一律把 timer 夾在 >= 0，不會走到。
+        for bad in [f32::NAN, f32::INFINITY, -10.0] {
+            let n = ResourceNode::from_raw(NodeKind::Tree, 0, bad);
+            let _ = n.regrowth_progress(); // 只要不 panic 即可
+        }
     }
 
     #[test]
