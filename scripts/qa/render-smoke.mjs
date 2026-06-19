@@ -248,6 +248,17 @@ const scenarios = [
       if (s.players[1]) s.players[1] = { ...s.players[1], facing: 0, moving: true, walk: 1 }; // 朝右
     }
   }),
+  // 黏土日影晷（428）：破曉低光（_shadowCast 非 null、拉長偏移）下，讓黏土世界的物件（採集節點／
+  // 作物／星晶）走 drawClaySprite→drawGroundShadow 的方向性投影路徑。clay 模式（BUTFUN_SMOKE_STYLE=clay）
+  // 才會走黏土 sprite；零 render 例外即通過（驗證接線後低光偏移/拉長/調色不拋例外）。
+  variant("黏土日影晷破曉投影(428)", (s) => {
+    s.daynight = { phase: "dawn", light: 0.25, night_danger: false };
+    // 確保場上有會落黏土影子的物件：採集節點（樹/石）＋星晶。破曉低光下 _shadowCast 非 null，
+    // drawClaySprite→drawGroundShadow 會走「偏移＋拉長＋調色」分支（clay 模式才走黏土 sprite）。
+    s.nodes = [{ kind: "tree", x: me0.x + 40, y: me0.y, remaining: 5, harvestable: true },
+               { kind: "rock", x: me0.x - 36, y: me0.y + 18, remaining: 5, harvestable: true }];
+    s.star_crystals = [{ id: 903, x: me0.x + 60, y: me0.y - 20 }];
+  }),
   variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
