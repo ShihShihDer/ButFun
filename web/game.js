@@ -2943,7 +2943,8 @@
             }
             _lastAchCount = me.achievement_count;
             updateAchievementHud(me.achievement_count, me.achievements || []);
-            updateAchievementPanel(me.achievements || []);
+            // ROADMAP 400：帶入自身擊殺數/等級，面板對可量化成就顯示進度與「最接近達成」高亮。
+            updateAchievementPanel(me.achievements || [], { kills: me.kill_count || 0, level: me.level || 0 });
           }
           // 稱號面板（ROADMAP 389）：每次快照更新稱號選擇區。
           updateTitlePanel(me.unlocked_titles || [], me.active_title || null);
@@ -18826,6 +18827,21 @@
     { key: "quest_hero",     icon: "🎉", name: "任務英雄",    desc: "參與完成一次全服任務",         cat: "社交" },
   ];
 
+  // 成就進程（ROADMAP 400）：可量化成就的門檻表（對齊後端 achievement.rs：hunter=50、
+  // level_five/ten/twenty=5/10/20）。首次型/事件型成就（星際先驅、公會、任務英雄）沒有
+  // 「還差多少」可言，不在表內。
+  const ACH_TARGET = { hunter: 50, level_five: 5, level_ten: 10, level_twenty: 20 };
+
+  /** 純函式：成就 wire key + 玩家現況 → { current, target }（可量化成就）或 null（無進度可言）。
+   *  current 一律夾鉗在 [0, target]；是否「已達標」交給面板既有的解鎖集合判定，這裡只算進度。 */
+  function achievementProgress(key, stats) {
+    const target = ACH_TARGET[key];
+    if (!target) return null; // 首次型/事件型：沒有進度條
+    const raw = key === "hunter" ? (stats && stats.kills) : (stats && stats.level);
+    const cur = Math.max(0, Math.min(target, Math.floor(Number(raw) || 0)));
+    return { current: cur, target };
+  }
+
   let lastAchievements = [];  // 上一幀成就清單，用來偵測新解鎖
   let lastAchSig = null;       // 面板簽章，未變就不重建
 
@@ -18841,28 +18857,58 @@
   }
 
   // 更新成就面板：列出 12 個成就的解鎖狀態。
-  function updateAchievementPanel(unlocked) {
+  // ROADMAP 400：未解鎖且可量化的成就多畫一條進度條與「n/m」，並在頂端高亮最接近達成的一個。
+  // stats = { kills, level }（皆來自自身快照既有欄位；缺則進度視為 0）。
+  function updateAchievementPanel(unlocked, stats) {
     const body = document.getElementById("achievementBody");
     const summary = document.getElementById("achievementSummary");
     if (!body) return;
-    const sig = unlocked.slice().sort().join(",");
+    const unlockedSet = new Set(unlocked);
+    // 簽章納入可量化成就的進度數字，數字變動才重建（否則早退不重繪，鏡像既有 sig 早退）。
+    const kills = (stats && stats.kills) || 0;
+    const level = (stats && stats.level) || 0;
+    const sig = unlocked.slice().sort().join(",") + `|k${kills}|l${level}`;
     if (sig === lastAchSig) return;
     lastAchSig = sig;
-    const unlockedSet = new Set(unlocked);
     const count = unlockedSet.size;
     if (summary) summary.textContent = `：${count}/12`;
+
+    // 先挑「最接近達成」：未解鎖、有進度、完成度最高且尚未達標的那一個（用於頂端高亮）。
+    let closest = null, closestFrac = -1;
+    for (const a of ACHIEVEMENTS) {
+      if (unlockedSet.has(a.key)) continue;
+      const prog = achievementProgress(a.key, stats);
+      if (!prog || prog.current <= 0 || prog.current >= prog.target) continue;
+      const frac = prog.current / prog.target;
+      if (frac > closestFrac) { closestFrac = frac; closest = { a, prog }; }
+    }
+
+    let html = "";
+    if (closest) {
+      html += `<div style="background:rgba(201,162,75,0.12);border:1px solid rgba(201,162,75,0.4);border-radius:6px;padding:5px 8px;margin-bottom:6px;font-size:.85em;color:#e8d5a0">`
+        + `🎯 再接再厲：${escHtml(closest.a.name)} <span style="color:var(--brass);font-weight:600">${closest.prog.current}/${closest.prog.target}</span></div>`;
+    }
+
     // 依分類分組顯示。
     const cats = ["探索", "戰鬥", "成長", "社交"];
-    let html = "";
     for (const cat of cats) {
       const catAchs = ACHIEVEMENTS.filter(a => a.cat === cat);
       html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${cat}</div>`;
       for (const a of catAchs) {
         const done = unlockedSet.has(a.key);
+        const prog = done ? null : achievementProgress(a.key, stats);
         html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:${done ? "1" : "0.4"}">`;
         html += `<span style="font-size:1.2em;width:1.4em;text-align:center">${a.icon}</span>`;
-        html += `<div><div style="font-weight:${done ? "600" : "400"};color:${done ? "#e8d5a0" : "#888"}">${escHtml(a.name)}</div>`;
-        html += `<div style="font-size:.78em;color:#888">${escHtml(a.desc)}</div></div>`;
+        html += `<div style="flex:1;min-width:0"><div style="font-weight:${done ? "600" : "400"};color:${done ? "#e8d5a0" : "#888"}">${escHtml(a.name)}</div>`;
+        html += `<div style="font-size:.78em;color:#888">${escHtml(a.desc)}</div>`;
+        // 進度條（未解鎖且可量化才畫）：深底槽 + 黃銅金填充 + n/m 數字。
+        if (prog) {
+          const pct = Math.round((prog.current / prog.target) * 100);
+          html += `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">`
+            + `<div style="flex:1;height:5px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--brass)"></div></div>`
+            + `<span style="font-size:.72em;color:#c9a24b;white-space:nowrap">${prog.current}/${prog.target}</span></div>`;
+        }
+        html += `</div>`;
         if (done) html += `<span style="margin-left:auto;color:#7ec87e;font-size:.85em">✓</span>`;
         html += `</div>`;
       }
