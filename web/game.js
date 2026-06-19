@@ -150,6 +150,63 @@
     return { tilt: CLAY_IDLE_TILT[i], sqy: CLAY_IDLE_SQY[i] };
   }
 
+  // 黏土微縮世界·桌上模型暖光（ROADMAP 394）：黏土公仔本來就立在一個個小底座上（見 player_1 等素材），
+  // 整個世界讀起來該像「擺在桌上、被一盞暖燈照著的微縮模型」。本後製層在 clay 模式下，繪製完世界與天象後、
+  // 蓋一層全屏「暖色片光 + 桌上聚光暈影」：把散落各處、各自捏出的黏土物件統一烘成同一塊陶土的暖色調（一致性），
+  // 並用中央偏上的一圈暖亮、四周柔暗，框出「微縮模型在燈下」的景框感。純表現、單點全屏（非散落 spot-fix）、
+  // 只在 clay 模式跑、與既有日夜染色等全屏疊加層同一成本量級（每幀兩次全屏 fill）。
+  // 暖橙片光顏色與不透明度（soft-light 疊色，溫和不洗白；定格非動畫，reduceMotion 下照常顯示）。
+  const CLAY_GRADE_WARM = "rgb(255, 196, 128)";
+  const CLAY_GRADE_ALPHA = 0.22;
+  // 桌上聚光暈影漸層規格（純函式、確定可重現，便於測試）：中心暖燈微亮 → 中段透明過渡 → 邊緣暖暗。
+  // 焦點略偏畫面上方（cy = h*0.42），呼應「燈從斜上方照下、模型立在桌面」的視角。
+  function clayDioramaVignetteSpec(w, h) {
+    const cx = w / 2;
+    const cy = h * 0.42;
+    const r = Math.max(w, h) * 0.72; // 暈影半徑略大於畫面，邊角才壓得夠暗
+    return {
+      cx, cy, r,
+      stops: [
+        [0.00, "rgba(255, 244, 224, 0.06)"], // 中心：暖燈微亮，像被燈照到的高光
+        [0.46, "rgba(0, 0, 0, 0)"],          // 中段：透明，不干擾主體
+        [1.00, "rgba(34, 24, 16, 0.50)"],    // 邊緣：暖暗，框出桌上景框
+      ],
+    };
+  }
+  // 暈影漸層快取：尺寸不變就重用同一個 CanvasGradient（resize 後 key 變才重建）。
+  let _clayVignette = null;
+  let _clayVignetteKey = "";
+  function clayDioramaVignette() {
+    const key = viewW + "x" + viewH;
+    if (_clayVignette && _clayVignetteKey === key) return _clayVignette;
+    const spec = clayDioramaVignetteSpec(viewW, viewH);
+    const g = ctx.createRadialGradient(spec.cx, spec.cy, 0, spec.cx, spec.cy, spec.r);
+    for (const [at, col] of spec.stops) g.addColorStop(at, col);
+    _clayVignette = g;
+    _clayVignetteKey = key;
+    return g;
+  }
+  // 在 clay 模式下蓋上「暖色片光 + 桌上聚光暈影」。非 clay 立即早退、零成本。
+  function drawClayDiorama() {
+    if (renderStyle !== "clay") return;
+    // 1) 暖色片光：soft-light 把整個世界烘成一致暖陶色（同一塊黏土捏出來的手感）。
+    ctx.save();
+    ctx.globalCompositeOperation = "soft-light";
+    ctx.globalAlpha = CLAY_GRADE_ALPHA;
+    ctx.fillStyle = CLAY_GRADE_WARM;
+    ctx.fillRect(0, 0, viewW, viewH);
+    ctx.restore();
+    // 2) 桌上聚光暈影：中央偏上暖亮、四周柔暗，框出「微縮模型在燈下」的景框。
+    const vg = clayDioramaVignette();
+    if (vg) {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, viewW, viewH);
+      ctx.restore();
+    }
+  }
+
   // drawClaySprite：renderStyle==='clay' 且該 key 黏土圖載到了才畫，否則回傳 false
   // 讓呼叫端 fallback 回原本畫法。x,y 為「世界座標扣相機」後的螢幕座標（呼叫端算好）。
   // 約定：sprite 底部對齊 (x, y)（腳/底貼地），水平置中於 x。
@@ -6046,6 +6103,11 @@
     // 雷雨閃電（ROADMAP 243）：獨立 safeDraw，草原暴雨時天空偶發一記全屏泛光＋分叉電光。
     // 排在天象最上層、小地圖之前——閃電要照亮整片天地（含地面），覆在所有世界元素之上。
     safeDraw("lightning", () => drawLightning(renderNow));
+
+    // 黏土微縮世界·桌上模型暖光（ROADMAP 394）：clay 模式下，繪完世界與天象後蓋一層暖色片光＋桌上聚光暈影，
+    // 把整個黏土世界框成「擺在桌上、被暖燈照著的微縮模型」。排在天象之上、精英血條/小地圖/HUD 之前——
+    // 暈染只罩世界層，血條與小地圖等 UI 仍清晰銳利。非 clay 模式 drawClayDiorama 立即早退、零成本。
+    safeDraw("clayDiorama", () => drawClayDiorama());
 
     // 精英血條（ROADMAP 386）：在小地圖前畫，蓋在世界層之上、不遮小地圖。
     safeDraw("bossBar", () => drawBossBar(renderNow));
