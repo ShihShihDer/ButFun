@@ -1396,6 +1396,12 @@ pub enum ServerMsg {
         total: u8,
         ether_reward: u32,
     },
+    /// 新手引導全程走完通知（ROADMAP 396）：單播給畢業者，前端噴慶賀飄字＋報讀器播報。
+    /// 含迎新乙太獎勵（已在伺服器加進玩家身上，此處供前端顯示飄字）。
+    OnboardDone {
+        player_id: Uuid,
+        ether_reward: u32,
+    },
 
     // ── 安靜打坐（ROADMAP 391）──────────────────────────────────────────────
     /// 打坐開始確認（ROADMAP 391）：廣播給所有人，前端對打坐者畫呼吸光圈。
@@ -1808,6 +1814,21 @@ pub struct PlayerView {
     /// None＝沒在飽足（省略流量）。廣播給所有人，世界裡看得見誰剛吃飽。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub well_fed: Option<f32>,
+
+    // ── 新手引導（ROADMAP 396）───────────────────────────────────────────────
+    /// 新手引導進度。Some 時前端在 HUD 顯示「最初幾步」清單；None＝老玩家／已畢業
+    /// （省略流量、永不顯示）。只對引導啟用中的全新玩家有值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub onboarding: Option<OnboardView>,
+}
+
+/// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnboardView {
+    /// 已完成步驟 bitmask（位元 0~4 對齊採集／種植／收成／打招呼／合成）。
+    pub done: u8,
+    /// 已完成步驟數（0~5），供 HUD 顯示「N/5」。
+    pub count: u8,
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -2328,6 +2349,7 @@ mod tests {
                 chain_links: 0,
                 meditating: false,
                 well_fed: None,
+                onboarding: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -2598,6 +2620,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             well_fed: None,
+            onboarding: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -2883,6 +2906,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             well_fed: None,
+            onboarding: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -2947,6 +2971,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             well_fed: None,
+            onboarding: None,
         }
     }
 

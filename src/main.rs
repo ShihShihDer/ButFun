@@ -18,6 +18,7 @@ mod player_title;
 mod activity_chain;
 mod meditation;
 mod meal_buff;
+mod onboarding;
 mod town_project;
 mod town_project_store;
 mod observatory;
