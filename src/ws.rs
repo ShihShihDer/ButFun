@@ -510,6 +510,33 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 連日歸鄉·歸鄉印記（ROADMAP 397）：登入玩家進場時推進一次跨日的回訪計數。
+    // 同一天重複上線不前進、不重複領（純邏輯把關）；連續一天回來印記 +1、發小小迎歸乙太；
+    // 斷日溫和重置。前進且有獎勵時，鎖內把乙太加進玩家身上（隨既有位置持久化自然存檔），
+    // 鎖外單播 VisitStreak 讓前端浮迎歸卡。只給已登入玩家（訪客 id 臨時、計數無意義）。
+    if let Some(uid) = authed_uid {
+        let today = crate::visit_streak::today_utc_day();
+        let outcome = app.visit_streaks.advance(uid, today).await;
+        if outcome.advanced {
+            if outcome.reward > 0 {
+                // 鎖內加獎、鎖外送訊（不巢狀上鎖，守 prod-deadlock）。
+                let mut players = app.players.write().unwrap();
+                if let Some(p) = players.get_mut(&id) {
+                    p.ether = p.ether.saturating_add(outcome.reward);
+                }
+            }
+            let msg = ServerMsg::VisitStreak {
+                streak: outcome.streak,
+                advanced: outcome.advanced,
+                reward: outcome.reward,
+                milestone: outcome.milestone,
+            };
+            if let Ok(text) = serde_json::to_string(&msg) {
+                let _ = sender.send(Message::Text(text)).await;
+            }
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action

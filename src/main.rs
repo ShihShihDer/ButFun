@@ -21,6 +21,8 @@ mod meal_buff;
 mod onboarding;
 mod town_project;
 mod town_project_store;
+mod visit_streak;
+mod visit_streak_store;
 mod observatory;
 mod meteor_shower;
 mod night_aether_springs;
@@ -201,7 +203,7 @@ async fn main() {
     // 視為設定錯誤、直接中止（不要默默跑沒持久化的記憶體模式,免得又像換版洗檔那樣丟資料）。
     // 位置、背包、農地共用同一個連線池（PgPool 內部是 Arc,clone 便宜）：三個 store 各自獨立
     // 載回 / flush,沒有寫入順序耦合（見 0002_inventories.sql / 0003_fields.sql 為何不設外鍵）。
-    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store, friends, guilds, sprinkler_persist, sprinkler_preload, tp_store) =
+    let (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store, friends, guilds, sprinkler_persist, sprinkler_preload, tp_store, visit_streaks) =
         match db::connect()
             .await
             .expect("Postgres 連線或 migration 失敗")
@@ -223,8 +225,9 @@ async fn main() {
                 let friends = friends::FriendStore::from_pool(pool.clone()).await;
                 let guilds = guild::GuildStore::from_pool(pool.clone()).await;
                 let tp_store = town_project_store::TownProjectStore::from_pool(pool.clone()).await;
+                let visit_streaks = visit_streak_store::VisitStreakStore::from_pool(pool.clone()).await;
                 let (sp, sp_rows) = sprinkler::SprinklerPersist::from_pool(pool).await;
-                (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store, friends, guilds, sp, sp_rows, tp_store)
+                (positions, inventories, fields, daynight_store, users, suggestions, tile_store, land_plot_store, npc_memory_store, friends, guilds, sp, sp_rows, tp_store, visit_streaks)
             }
             None => {
                 tracing::warn!(
@@ -245,6 +248,7 @@ async fn main() {
                     sprinkler::SprinklerPersist::new(),
                     vec![],
                     town_project_store::TownProjectStore::new(),
+                    visit_streak_store::VisitStreakStore::new(),
                 )
             }
         };
@@ -264,6 +268,7 @@ async fn main() {
         sprinkler_persist,
         sprinkler_preload,
         tp_store,
+        visit_streaks,
     );
     if app_state.auth.is_some() {
         tracing::info!("Google OAuth 已啟用(/auth/google/start)");
