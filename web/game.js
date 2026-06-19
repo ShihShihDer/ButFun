@@ -61,6 +61,7 @@
     clayLoadStarted = true;
     const names = ["tree", "rock", "ether_ore", "star_crystal", "scrap_drone",
                    "ether_orb", "wheat", "carrot", "potato", "resident", "player",
+                   "player_side",
                    "player_1", "player_2", "player_3", "player_4", "player_5",
                    "resident_1", "resident_2", "resident_3", "resident_4", "resident_5"];
     for (const n of names) {
@@ -284,6 +285,22 @@
     if (deg >= 45 && deg < 135) return 0;   // 下
     if (deg >= -135 && deg < -45) return 3; // 上
     return 1;                                // 左
+  }
+
+  // 黏土角色轉身（ROADMAP 420）：黏土風玩家依朝向挑 sprite——左右改用側面黏土圖
+  // `player_side`（朝左再水平翻轉），上下沿用正面變體圖，讓走路方向真的「轉成側臉」、
+  // 不再永遠正對鏡頭只左右鏡射。side 圖還沒載到（sideReady=false）時退回「正面變體圖＋
+  // 朝左翻轉」，與接線前完全一致、避免側走時 clay 圖與 pixel/程式路徑互閃。
+  // 純函式、無副作用、好測。
+  //   dir:      facingToDir 結果（0 下 / 1 左 / 2 右 / 3 上）
+  //   baseKey:  該玩家的正面變體 key（clayVariantKey 算好；side 無 per-player 變體故僅正面帶色）
+  //   sideReady: player_side 黏土圖是否已可繪（呼叫端傳 clayOk("player_side")）
+  // 回傳 { key, flip }。
+  function pickClayPlayerSprite(dir, baseKey, sideReady) {
+    if (sideReady && (dir === 1 || dir === 2)) {
+      return { key: "player_side", flip: dir === 1 };
+    }
+    return { key: baseKey, flip: dir === 1 };
   }
 
   // ---- 無障礙：尊重系統「減少動態」偏好 ----
@@ -6360,11 +6377,12 @@
     // dir/frame 提前計算，sprite 和程式繪製兩路徑都會用到。
     const dir = facingToDir(p.facing);
     const frame = p.moving ? (Math.floor(p.walk) % 4) : 0;
-    // 黏土風玩家：單張底圖 + 停格式彈跳/擠壓（移動）或呼吸（站立），朝左水平翻轉。
-    // 走 clay 路徑自帶停格 bob，故以 sy（地面）為底，不用 by（避免與既有 bob 疊加）。
+    // 黏土風玩家：依朝向轉身（左右側面圖 / 上下正面圖，ROADMAP 420）+ 停格式彈跳/擠壓（移動）
+    // 或呼吸（站立）。走 clay 路徑自帶停格 bob，故以 sy（地面）為底，不用 by（避免與既有 bob 疊加）。
     // 上方 drawGroundShadow 已畫過腳下柔影，這裡不重複畫 shadow。
-    const drewClayPlayer = (renderStyle === "clay") && drawClaySprite(clayVariantKey("player", p.id, 5), sx, sy + 14, 40, {
-      animate: true, moving: p.moving, walk: p.walk, flip: dir === 1,
+    const claySpr = pickClayPlayerSprite(dir, clayVariantKey("player", p.id, 5), clayOk("player_side"));
+    const drewClayPlayer = (renderStyle === "clay") && drawClaySprite(claySpr.key, sx, sy + 14, 40, {
+      animate: true, moving: p.moving, walk: p.walk, flip: claySpr.flip,
     });
     if (drewClayPlayer) {
       // 已用黏土圖畫好玩家本體，跳過像素/程式路徑。
