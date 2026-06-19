@@ -1167,6 +1167,16 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 踏入新「在地地名」（ROADMAP 398 天地有名）：一次性事件、廣播；前端只對 `player_id == 自己` 演出。
+    /// `name`／`subtitle` ＝該地名與氛圍副標（伺服器權威，純由座標確定性算出）。
+    /// `initial` ＝ true 時為「進場首次定位」：前端只靜默更新小地圖地名標，**不**淡入大卡（避免登入時擾人）；
+    /// false 為「真的換了地方」：前端淡入地名卡＋報讀器播報＋更新標。不入快照、不持久化、零 migration。
+    LocaleEntered {
+        player_id: Uuid,
+        name: String,
+        subtitle: String,
+        initial: bool,
+    },
     /// 夜泉汲取結果（ROADMAP 350 汲泉聚精）：回應 `DrawAether`，廣播；前端只對 `player_id == 自己` 演出飄字。
     /// `outcome`："drawn"（汲到乙太、附 `band`+`ether`）／"missed"（泉眼被搶先或走離、空手而回）。
     /// `band` ＝檔位 trickle/bountiful/surge（僅 drawn）；`ether` ＝這趟汲到的乙太（僅 drawn）。
