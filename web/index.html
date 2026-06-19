@@ -1121,6 +1121,17 @@
           <input type="checkbox" id="optClayStyle" style="margin-top:3px;flex:none;">
           <span>黏土動畫畫風（實驗）<br><small style="opacity:.8">把樹、石、乙太礦、星晶、作物、居民、敵人與你的角色換成<b>黏土捏塑風</b>外觀，角色帶停格式動作。預設關閉，<b>只影響你看到的畫面</b>、不改玩法。沒有黏土圖的東西維持原樣。</small></span>
         </label>
+        <!-- 畫風即時預覽選擇器（ROADMAP 393 搶先體驗）：兩格縮圖一鍵切換並 showcase 旗艦黏土美術；與上方核取方塊雙向同步。 -->
+        <div id="stylePicker" style="display:flex;gap:10px;padding:0 0 8px 26px;align-items:stretch;">
+          <button type="button" class="style-tile" data-style="pixel" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border:2px solid rgba(180,160,120,0.35);border-radius:10px;background:rgba(255,255,255,0.04);color:inherit;font:inherit;cursor:pointer;">
+            <canvas id="styleThumbPixel" width="48" height="48" style="image-rendering:pixelated;border-radius:6px;"></canvas>
+            <span style="font-size:12px;">像素</span>
+          </button>
+          <button type="button" class="style-tile" data-style="clay" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px;border:2px solid rgba(180,160,120,0.35);border-radius:10px;background:rgba(255,255,255,0.04);color:inherit;font:inherit;cursor:pointer;">
+            <canvas id="styleThumbClay" width="48" height="48" style="border-radius:6px;"></canvas>
+            <span style="font-size:12px;">🎨 黏土 <small style="opacity:.7;">搶先體驗</small></span>
+          </button>
+        </div>
         <!-- 音效開關（ROADMAP 376 互動音效骨架）：Web Audio 合成，零音檔，預設開啟。 -->
         <label class="setting-row" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer;padding:6px 0;">
           <input type="checkbox" id="optSfx" style="margin-top:3px;flex:none;" checked>
