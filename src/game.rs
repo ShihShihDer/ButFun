@@ -1050,6 +1050,9 @@ pub fn spawn(app: AppState) {
             // 打坐事件（ROADMAP 391）：完成或中斷，出鎖後廣播並給獎勵。
             // (player_id, x, y, kind) — kind: true=完成, false=移動中斷
             let mut meditation_events: Vec<(uuid::Uuid, f32, f32, bool, u32, u32)> = Vec::new();
+            // 在地地名變更（ROADMAP 398 天地有名）：踏入新 locale，出鎖後廣播地名卡。
+            // (player_id, name, subtitle, initial) — initial=true 為進場首次定位（前端不彈大卡）。
+            let mut locale_changes: Vec<(uuid::Uuid, &'static str, &'static str, bool)> = Vec::new();
             {
                 let mut players = app.players.write().unwrap();
                 // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
@@ -1180,6 +1183,17 @@ pub fn spawn(app: AppState) {
                     // 開灶冷卻倒數（ROADMAP 349）：開灶起算，只擋開新一趟掌勺。
                     if p.cook_cooldown > 0.0 {
                         p.cook_cooldown = (p.cook_cooldown - dt).max(0.0);
+                    }
+                    // 天地有名（ROADMAP 398）：戶外玩家踏入新「在地地名」locale 即記錄，出鎖後廣播地名卡。
+                    // 室內（自家屋內）不算進世界地名。locale_at 純函式、零鎖無 IO，確定性。
+                    if p.indoor_plot_id.is_none() {
+                        let loc = crate::region_name::locale_at(p.x as f64, p.y as f64);
+                        if p.current_locale != Some(loc.id) {
+                            // 首次定位（None）只靜默更新標、不彈大卡；真的換地方才彈卡＋報讀。
+                            let initial = p.current_locale.is_none();
+                            p.current_locale = Some(loc.id);
+                            locale_changes.push((p.id, loc.name, loc.subtitle, initial));
+                        }
                     }
                     // 釣魚上鉤小遊戲推進（ROADMAP 346）：等咬鉤→咬鉤→脫鉤。
                     // advance 純函式、零鎖無 IO；JustBit 只讓 phase 轉 Biting（隨快照廣播、
@@ -1334,6 +1348,18 @@ pub fn spawn(app: AppState) {
                     ));
                 }
                 let _ = (px, py); // 座標備而不用，前端從快照讀取
+            }
+
+            // 天地有名廣播（ROADMAP 398）：鎖已釋放，安全廣播地名卡（前端只對自己 id 演出）。
+            for (pid, name, subtitle, initial) in locale_changes {
+                let _ = app.tx.send(std::sync::Arc::new(
+                    crate::protocol::ServerMsg::LocaleEntered {
+                        player_id: pid,
+                        name: name.to_string(),
+                        subtitle: subtitle.to_string(),
+                        initial,
+                    },
+                ));
             }
 
             // 宇宙裂縫事件（ROADMAP 26）：推進事件計時器；觸發時注入守護者 + 廣播聊天公告。

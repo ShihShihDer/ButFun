@@ -257,6 +257,11 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在挖＝None）。
     pub mining: Option<crate::mining_vein::MiningVein>,
 
+    /// 玩家目前所在「在地地名」locale 的 id（ROADMAP 398 天地有名）。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（None＝尚未定位）。
+    /// game.rs 每 tick 比對：踏入新 locale 即廣播 `LocaleEntered`、更新此值。
+    pub current_locale: Option<i64>,
+
     // ── 掌勺照譜烹調（ROADMAP 349）────────────────────────────────────────
     /// 開灶冷卻剩餘秒數（0.0 = 可開灶；> 0 = 冷卻中）。開灶起算，由 game.rs 每 tick 遞減。
     pub cook_cooldown: f32,
@@ -1574,6 +1579,7 @@ mod tests {
             mine_cooldown: 0.0,
             mine_attempt_count: 0,
             mining: None,
+            current_locale: None,
             cook_cooldown: 0.0,
             cook_attempt_count: 0,
             cooking: None,

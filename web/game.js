@@ -1055,6 +1055,10 @@
   // 裂縫事件 → 狀態列小 pill（取代會壓到血量列的頂部大橫幅）。同字不重寫 DOM。
   let lastEventPillText = null;
   let hordeEvent = null; // { phase, site_x, site_y, site_label, secs_left } | null — 獸潮攻城（ROADMAP 44）
+  // 天地有名（ROADMAP 398）：當前所在「在地地名」（伺服器權威），小地圖角落常駐顯示。
+  let myLocale = null;   // { name, subtitle } | null
+  // 踏入新地方時的淡入地名卡（reduceMotion 下略過動畫，直接不彈卡只更新標）。
+  let localeCard = null; // { name, subtitle, born } | null
   let lastHordeBannerText = null; // 防止重複 DOM 操作
   function updateWorldEventPill(ev) {
     const pill = document.getElementById("hudEvent");
@@ -3235,6 +3239,20 @@
           floaters.push({ wx, wy, text: `🪨 收礦撤出 +${haul} 礦石`, color: "120,200,255", born: now });
           announce(`收礦撤出，落袋 ${haul} 礦石`);
           SFX.success(); // 收礦成功音效（ROADMAP 376）
+        }
+        break;
+      }
+      case "locale_entered": {
+        // 天地有名（ROADMAP 398）：踏入新「在地地名」。廣播事件，只對自己 id 演出（旁觀者忽略）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        myLocale = { name: msg.name || "", subtitle: msg.subtitle || "" };
+        // initial＝進場首次定位：只靜默更新小地圖地名標，不彈大卡（避免登入時擾人）。
+        // 真的換地方才淡入地名卡＋報讀器播報。reduceMotion 下不彈卡（只更新標＋報讀）。
+        if (!msg.initial) {
+          announce(`你來到了${myLocale.name}。${myLocale.subtitle}`);
+          if (!reduceMotion) {
+            localeCard = { name: myLocale.name, subtitle: myLocale.subtitle, born: performance.now() };
+          }
         }
         break;
       }
@@ -6207,6 +6225,9 @@
     // 小地圖（右下角縮圖）：單獨包，疊加層萬一拋例外也不影響小地圖顯示。
     safeDraw("minimap", () => drawMinimap());
 
+    // 天地有名地名卡（ROADMAP 398）：踏入新地方時於畫面上緣淡入的卡片，單獨包不連累其餘 HUD。
+    safeDraw("localeCard", () => drawLocaleCard());
+
     // 萬用動作鈕：按住時連發（約每 0.2 秒一次），再把鈕畫在 HUD 層（蓋在世界上）。
     if (actionTouchId !== null) {
       if (renderNow - lastSmartAction >= 200) { lastSmartAction = renderNow; smartAction(); }
@@ -6995,6 +7016,55 @@
     const shorter = Math.min(viewW, viewH);
     return Math.round(Math.max(MM.minSize, Math.min(MM.maxSize, shorter * 0.26)));
   }
+  // 天地有名地名卡（ROADMAP 398）：踏入新地方時，畫面上緣淡入一張「地名＋氛圍副標」卡，
+  // 隨即淡出。純表現層、不嵌規則；reduceMotion 下根本不建卡（見訊息處理）。約 4.2 秒生命週期。
+  const LOCALE_CARD_MS = 4200;
+  function drawLocaleCard() {
+    if (!localeCard) return;
+    const t = performance.now() - localeCard.born;
+    if (t < 0 || t > LOCALE_CARD_MS) { localeCard = null; return; }
+    // 淡入 0.5s、停留、淡出 0.9s。
+    const fadeIn = 500, fadeOut = 900;
+    let alpha = 1;
+    if (t < fadeIn) alpha = t / fadeIn;
+    else if (t > LOCALE_CARD_MS - fadeOut) alpha = (LOCALE_CARD_MS - t) / fadeOut;
+    alpha = Math.max(0, Math.min(1, alpha));
+    // 進場時輕微上浮（10px → 0），收尾不動，呼應「地方在眼前浮現」。
+    const rise = t < fadeIn ? (1 - t / fadeIn) * 10 : 0;
+    const cx = viewW / 2;
+    const cy = viewH * 0.16 + safeArea.top - rise;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = "center";
+    // 地名（大、黃銅金）。
+    ctx.font = "bold 26px 'Noto Serif TC', Georgia, serif";
+    ctx.textBaseline = "alphabetic";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(10,16,30,0.85)";
+    ctx.strokeText(localeCard.name, cx, cy);
+    ctx.fillStyle = "#e9d6a0";
+    ctx.fillText(localeCard.name, cx, cy);
+    // 名下一道細金線分隔（寬度依文字略估，居中）。
+    const lineW = Math.max(60, localeCard.name.length * 26 * 0.7);
+    ctx.strokeStyle = "rgba(201,162,75,0.6)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - lineW / 2, cy + 8);
+    ctx.lineTo(cx + lineW / 2, cy + 8);
+    ctx.stroke();
+    // 氛圍副標（小、柔白）。
+    if (localeCard.subtitle) {
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(10,16,30,0.8)";
+      ctx.strokeText(localeCard.subtitle, cx, cy + 26);
+      ctx.fillStyle = "rgba(230,232,238,0.92)";
+      ctx.fillText(localeCard.subtitle, cx, cy + 26);
+    }
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
   function drawMinimap() {
     if (!world || !world.width || !world.height) return;
     // 收合狀態:只畫一顆小「展開地圖」鈕在右下角,省下整塊縮圖的空間。
@@ -7305,6 +7375,22 @@
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     mmZoomHit = { x: zx, y: zy, w: zw, h: zh };
+
+    // 天地有名（ROADMAP 398）：當前所在「在地地名」常駐標，置中於面板頂列、夾在縮放鈕與收合鈕之間，
+    // 讓玩家隨時知道「我在哪裡」。地名都短（3~4 字），不裁切；無地名（剛進尚未定位）就不畫。
+    if (myLocale && myLocale.name) {
+      ctx.font = "bold 11px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const ly = zy + zh / 2 + 1;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(10,16,30,0.9)"; // 深描邊，任何底色上都讀得清
+      ctx.strokeText(myLocale.name, ox + size / 2, ly);
+      ctx.fillStyle = "#e9d6a0";
+      ctx.fillText(myLocale.name, ox + size / 2, ly);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
   }
 
   // 命中小地圖收合鈕的熱區?(螢幕座標)命中即切換顯示並回 true,讓點擊不被當作農作。
