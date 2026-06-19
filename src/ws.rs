@@ -1341,6 +1341,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let gathered = player_pos
                         .and_then(|(px, py)| app.nodes.write().unwrap().gather_near(px, py));
                     if let Some((kind, amount)) = gathered {
+                        // 並肩協作默契（ROADMAP 414）：先讀一次在線玩家座標，數出採集當下身旁
+                        // 並肩勞動的同伴數（排除自己與倒地者）。此讀鎖在此處取放，**出鎖後**才進
+                        // 下方採集寫鎖——絕不在同一把 std RwLock 同執行緒二次上鎖（守 prod-deadlock）。
+                        let coop_partners = if let Some((px, py)) = player_pos {
+                            let ps = app.players.read().unwrap();
+                            let others: Vec<(f32, f32)> = ps
+                                .iter()
+                                .filter(|(oid, op)| **oid != id && !op.vitals.is_downed())
+                                .map(|(_, op)| (op.x, op.y))
+                                .collect();
+                            crate::coop_labour::count_partners((px, py), &others)
+                        } else {
+                            0
+                        };
                         // 豐饒術自動施放（ROADMAP 151）：設定自動且冷卻到期就自動觸發。
                         {
                             use crate::active_skill::ActiveSkillKind;
@@ -1402,7 +1416,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let rarity_seed = id.as_u128() as u64 ^ p.exp as u64;
                             let rarity = crate::item_rarity::roll_rarity(rarity_seed, p.level(), has_enhanced);
                             let rarity_bonus = rarity.qty_bonus();
-                            let base_qty = amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather;
+                            // 並肩協作默契加成（ROADMAP 414）：身旁每位並肩同伴 +1 採集量（封頂 +3）。
+                            let coop_qty = crate::coop_labour::coop_yield_bonus(coop_partners);
+                            let base_qty = amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather + coop_qty;
                             let total_qty = base_qty + rarity_bonus;
                             let (added, _wh, _drop) = p.add_item_overflow(item, total_qty);
                             // 品質不凡以上才通知（普通靜默落袋）；記下出鎖後廣播所需資料。
@@ -1450,7 +1466,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 crate::civic_vote::FARMING_FESTIVAL_EXP_BONUS_PCT
                             } else { 0 };
                             // 合併所有百分比加成（避免 5*N/100=0 截斷），一次整數乘法。
-                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct + plant_pct + farming_festival_pct) + 50) / 100;
+                            // 並肩協作默契（ROADMAP 414）：身旁每位並肩同伴 +5% 採集經驗（封頂 +15%）。
+                            let coop_exp_pct = crate::coop_labour::coop_exp_pct(coop_partners);
+                            let gather_exp = (gather_exp_base * (100 + prosperity_pct + star_amulet_pct + plant_pct + farming_festival_pct + coop_exp_pct) + 50) / 100;
                             let old_level = p.level();
                             p.exp = p.exp.saturating_add(gather_exp);
                             if p.level() > old_level {
@@ -1464,6 +1482,18 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
                             tracing::info!(player = %p.name, ?item, added, mult, bounty_bonus, level = p.level(), "採集入背包+exp");
+                        }
+                        // 並肩協作默契廣播（ROADMAP 414）：身旁有並肩同伴才廣播，**出鎖後**才送
+                        // （守 prod-deadlock）。附近玩家會看見這位隊友頭頂浮起一枚 🤝，知道一起忙更有收穫。
+                        if coop_partners > 0 {
+                            if let Some((px, py)) = player_pos {
+                                let _ = app.tx.send(Arc::new(ServerMsg::CoopLabour {
+                                    player_id: id,
+                                    partners: coop_partners as u8,
+                                    x: px,
+                                    y: py,
+                                }));
+                            }
                         }
                         // 日報鉤（ROADMAP 385）：採集路徑升等事件（鎖外、純記憶體）。
                         if gather_level_up.is_some() {

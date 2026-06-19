@@ -3544,6 +3544,17 @@
         announce(`${qlabel}品質採集，獲得 ${iname} ×${qty}`);
         break;
       }
+      case "coop_labour": {
+        // 並肩協作默契（ROADMAP 414）：某玩家身旁有並肩同伴一起採集而觸發。
+        // 這是正向社交信號——**不只自己看得到**：附近玩家都會看見這位隊友頭頂浮起 🤝，
+        // 知道「一起忙更有收穫」，鼓勵大家湊在一起勞動。報讀器只對自己播報（不打擾旁人）。
+        const cn = msg.partners || 0;
+        if (cn <= 0) break;
+        const wx = msg.x || 0, wy = (msg.y || 0) - 50;
+        floaters.push({ wx, wy, text: `🤝 默契 +${cn}`, color: "255,205,120", born: performance.now() });
+        if (msg.player_id === myId) announce(`並肩協作，身旁 ${cn} 位同伴，採集與經驗加成`);
+        break;
+      }
       case "elem_bonus": {
         // 元素克制命中（ROADMAP 380）：自己的附魔剋中敵人弱點時顯示金色飄字。旁觀者忽略。
         if (!msg.player_id || msg.player_id !== myId) break;
