@@ -1216,6 +1216,18 @@ pub fn spawn(app: AppState) {
                             meditation_events.push((p.id, p.x, p.y, true, ether, actual_hp));
                         }
                     }
+                    // 暖食飽足回復（ROADMAP 395）：吃料理後一段時間 HP 緩慢回復、過期自動清。
+                    // 先在 meal_buff 借用內取出本幀回血量與是否續存，借用結束後再動 vitals／清欄位，
+                    // 避免同時可變借用 p 的兩個欄位。
+                    let meal_step = p.meal_buff.as_mut().map(|b| (b.tick(dt), b.is_active()));
+                    if let Some((healed, active)) = meal_step {
+                        if healed > 0 {
+                            p.vitals.heal(healed); // 倒地時 heal 自動 no-op，飽足不會把趴著的人拉起
+                        }
+                        if !active {
+                            p.meal_buff = None;
+                        }
+                    }
                     // 席間舉杯冷卻倒數（ROADMAP 329）。
                     if p.toast_cooldown > 0.0 {
                         p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
