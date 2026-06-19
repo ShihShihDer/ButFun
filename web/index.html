@@ -578,7 +578,8 @@
       <!-- 貿易包裹指示器（ROADMAP 51 星際貿易）：攜帶包裹時顯示目的地；按 V 開啟面板。 -->
       <span class="hud-pill hidden" id="hudTrade" title="攜帶中的貿易包裹（按 V 開啟面板）" style="color:#f0b060;cursor:pointer">📦 →</span>
       <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
-      <span class="hud-pill" id="hudTime">—</span>
+      <!-- 天時盤（ROADMAP 419）：時段標籤＋距下一時段倒數，點開查看「此刻適合做什麼」與日循環進度。 -->
+      <span class="hud-pill" id="hudTime" title="目前時段（點開查看此刻適合做的事）" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" style="cursor:pointer">—</span>
       </span>
       <!-- ↑↑ 次要狀態群結束。回城是常用便利功能(快速返家、無代價無冷卻)→常駐可見,不被收合藏起
            (先前誤收進次要群→手機預設收合下玩家找不到);情境動作鈕(搭話/幫忙/採集)靠近才亮、提示永遠看得到。 -->
@@ -601,6 +602,17 @@
     <!-- 表情輪（ROADMAP 338）：按「😊 表情」展開的浮層，挑一個情緒廣播給附近玩家。
          按鈕由 game.js 依後端表情白名單動態生成，標籤集中於此（i18n 友善）。 -->
     <div id="emotePopup" class="hidden" role="menu" aria-label="表情動作" style="position:fixed;z-index:50;background:rgba(20,24,32,0.96);border:1px solid #3a4250;border-radius:12px;padding:8px;display:flex;flex-wrap:wrap;gap:6px;max-width:200px;box-shadow:0 6px 20px rgba(0,0,0,0.5);"></div>
+    <!-- 天時盤浮層（ROADMAP 419）：點 #hudTime 展開——大字時段＋距下一時段倒數＋一條日循環進度條＋
+         「此刻適合做什麼」一句引導。內容由 game.js 依後端權威 daynight 即時填入（i18n 文案集中於 game.js）。 -->
+    <div id="timePopup" class="hidden" role="dialog" aria-label="天時盤" style="position:fixed;z-index:50;background:rgba(20,24,32,0.97);border:1px solid #3a4250;border-radius:12px;padding:12px 14px;max-width:240px;box-shadow:0 6px 20px rgba(0,0,0,0.5);font-size:0.9rem;line-height:1.5;">
+      <div id="timePopPhase" style="font-size:1.15rem;font-weight:600;margin-bottom:2px;">—</div>
+      <div id="timePopCountdown" style="color:#9fb0c4;font-size:0.85rem;margin-bottom:8px;">—</div>
+      <!-- 日循環進度條：底槽 + 由暖到冷的漸層填充，標出「天走到哪了」。 -->
+      <div style="height:6px;border-radius:3px;background:#2a3140;overflow:hidden;margin-bottom:10px;">
+        <div id="timePopBar" style="height:100%;width:0%;border-radius:3px;background:linear-gradient(90deg,#ffd27a,#ffe9a8,#9fc2ff,#5a6fa0);transition:width 0.4s linear;"></div>
+      </div>
+      <div id="timePopHint" style="color:var(--ink);">—</div>
+    </div>
     <!-- dock（ROADMAP 372 HUD 重設計）：背包常駐＋RO 風五類分類標籤＋展開式圖文按鈕，手機一眼看懂 -->
     <div id="hudDock">
       <!-- 背包常駐：最高頻操作一鍵到 -->
