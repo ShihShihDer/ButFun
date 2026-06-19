@@ -16,6 +16,8 @@ use crate::season::Season;
 pub const BITE_MIN_SECS: f32 = 1.5;
 /// 拋竿後到魚咬鉤的最長等待（秒）。
 pub const BITE_MAX_SECS: f32 = 4.5;
+/// 循汛（ROADMAP 431）縮短後的咬鉤等待下限（秒）：再快也保留這麼點等待，避免一拋就咬。
+pub const BITE_MIN_HASTENED: f32 = 0.7;
 /// 魚咬鉤後的反應窗口（秒）：超過這段沒收竿，魚就脫鉤跑掉。
 pub const BITE_WINDOW_SECS: f32 = 1.4;
 /// 「完美」反應的上限（秒）：咬鉤後這麼快收竿＝完美。
@@ -217,10 +219,22 @@ pub fn roll_fish_seasonal(seed: u64, quality: FishQuality, season: Season) -> It
 impl FishingCast {
     /// 拋竿，開一趟新的釣魚（`Waiting`），咬鉤時刻由種子決定。
     pub fn cast(seed: u64) -> Self {
+        Self::cast_hastened(seed, false)
+    }
+
+    /// 拋竿，可指定是否「循汛」（站在水畔魚汛裡，ROADMAP 431）。
+    /// 循汛時**咬鉤等待**縮短（乘 `fish_school::BITE_HASTE`，並保底不低於 `BITE_MIN_HASTENED`，
+    /// 避免一拋就咬）；**反應窗口不變**，故只是少等一會兒、收竿難度照舊。
+    /// 因釣魚 5 秒冷卻不變、仍主導每分鐘下竿次數，對產出近乎零擾動——只是手感回報。
+    pub fn cast_hastened(seed: u64, in_school: bool) -> Self {
+        let mut bite_at = bite_delay(seed);
+        if in_school {
+            bite_at = (bite_at * crate::fish_school::BITE_HASTE).max(BITE_MIN_HASTENED);
+        }
         FishingCast {
             phase: FishingPhase::Waiting,
             elapsed: 0.0,
-            bite_at: bite_delay(seed),
+            bite_at,
         }
     }
 
@@ -302,6 +316,26 @@ mod tests {
         // 不同種子至少能拉開差距（端點覆蓋）。
         assert!((bite_delay(0) - BITE_MIN_SECS).abs() < 1e-6);
         assert!(bite_delay(999) > bite_delay(0));
+    }
+
+    #[test]
+    fn hastened_cast_bites_sooner_but_not_instant() {
+        // 循汛（ROADMAP 431）：同一種子下，循汛的咬鉤等待應比不循汛短，且不低於下限。
+        for seed in [0u64, 1, 250, 500, 999, 1500] {
+            let plain = FishingCast::cast_hastened(seed, false);
+            let school = FishingCast::cast_hastened(seed, true);
+            assert!(
+                school.bite_at <= plain.bite_at,
+                "循汛咬鉤不應比不循汛慢（seed={seed}）"
+            );
+            assert!(
+                school.bite_at >= BITE_MIN_HASTENED,
+                "循汛咬鉤等待不應低於下限（seed={seed} bite_at={}）",
+                school.bite_at
+            );
+        }
+        // cast() 等同不循汛。
+        assert_eq!(FishingCast::cast(77).bite_at, FishingCast::cast_hastened(77, false).bite_at);
     }
 
     #[test]

@@ -88,6 +88,7 @@ mod pet_follow;
 mod pet_greeting;
 mod pet_personality;
 mod pet_play;
+mod fish_school;
 mod fishing;
 mod fishing_bite;
 mod mining_vein;

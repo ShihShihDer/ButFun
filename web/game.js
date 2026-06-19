@@ -356,6 +356,9 @@
   // ---- 世界風（ROADMAP 430）：伺服器權威、全服共享的風，讓樹/作物一致搖曳 ----
   // worldWind 由天氣快照同步（缺欄位＝靜風）；dirX/dirY 為單位向量、strength∈[0,1]。
   let worldWind = { dirX: 1, dirY: 0, strength: 0 };
+  // ---- 水畔魚汛（ROADMAP 431）：伺服器權威、全服共享的相位，前端據此在可見水面繪魚群漣漪 ----
+  // fishPhase 由天氣快照同步（缺欄位＝NaN → 不畫魚汛，向後相容）。
+  let fishPhase = NaN;
   // windSwayAngle：某物件此刻的搖曳角（弧度，繞底部錨點旋轉用）。純函式、確定性、無副作用，
   // 不在內部讀 reduceMotion（由呼叫端決定是否歸零），以便單元斷言。
   //   - 順風靜態傾斜（dirX 決定傾向）＋陣風正弦擺盪；
@@ -374,8 +377,30 @@
     return lean + gust;
   }
 
-  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle }); } catch {}
+  // ---- 水畔魚汛幾何（ROADMAP 431）：與後端 fish_school.rs 同一套確定性公式（純函式、可單測） ----
+  // 把世界切成與地名 locale 同尺度的分區，每塊分區恆有一處魚群；魚群中心隨全服共享相位
+  // fishPhase 做緩慢的 Lissajous 巡游。**此處常數／公式必須與後端 src/fish_school.rs 一字不差**，
+  // 否則前端畫的漣漪會與後端「循汛加速」判定錯位。回捲週期取兩軸最小公倍數，魚群連續不跳位。
+  const FISH_CELL = 1536.0;
+  const FISH_SCHOOL_RADIUS = 132.0;
+  const FISH_DRIFT = FISH_CELL * 0.5 - FISH_SCHOOL_RADIUS - 96.0;
+  const FISH_W_X = (Math.PI * 2) / 300.0;
+  const FISH_W_Y = (Math.PI * 2) / 420.0;
+  // 某分區 (cx,cy) 在相位 phase 時的魚群中心（世界座標）。phase 非有限退回不漂移、永不 NaN。
+  function fishSchoolPoint(cx, cy, phase) {
+    const centerX = (cx + 0.5) * FISH_CELL;
+    const centerY = (cy + 0.5) * FISH_CELL;
+    const p = Number.isFinite(phase) ? phase : 0;
+    // 每格固定的小相位偏移（小整數，與後端 Rust 算得一致），讓各格魚群彼此錯開。
+    const mod8 = (n) => ((n % 8) + 8) % 8;
+    const h = mod8(cx) * 3 + mod8(cy) * 5;
+    const dx = Math.sin(p * FISH_W_X + h) * FISH_DRIFT;
+    const dy = Math.cos(p * FISH_W_Y + (h * 0.5 + 1.0)) * FISH_DRIFT;
+    return { x: centerX + dx, y: centerY + dy };
+  }
+
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2949,6 +2974,9 @@
           } else {
             worldWind = { dirX: 1, dirY: 0, strength: 0 };
           }
+          // 水畔魚汛（ROADMAP 431）：伺服器權威、全服共享的相位，前端據此在可見水面
+          // 同步繪出緩緩漂移的魚群漣漪。舊伺服器無此欄位時退回 NaN → drawFishSchools 早退（向後相容）。
+          fishPhase = (typeof msg.weather.fish_phase === "number") ? msg.weather.fish_phase : NaN;
         }
         // 雨後彩虹（ROADMAP 361）：伺服器權威全服天象。前端據此畫彩虹弧＋顯示「彩虹祝福」HUD pill。
         // 舊伺服器無此欄位時 msg.rainbow 為 undefined → 維持 false（向後相容）。
@@ -7450,6 +7478,7 @@
     safeDraw("cloudShadow", () => drawCloudShadow(camX, camY, renderNow)); // 雲影掠地（203），白天雲遮日在地表拖過的大片緩移柔暗斑、貼地表之上其餘反光/實體之下
     safeDraw("waterShimmer", () => drawWaterShimmer(camX, camY, renderNow)); // 水域波光粼粼（195），貼著水面、其餘實體之下
     safeDraw("rainRipples", () => drawRainRipples(camX, camY, renderNow)); // 雨打水面漣漪（247），下雨時水面被雨點打出一圈圈擴散的漣漪、貼波光之上映日映月之下
+    safeDraw("fishSchool", () => drawFishSchools(camX, camY, renderNow)); // 水畔魚汛（431），全服共享魚群在水面漂移的漣漪魚影、波光之上映日映月之下
     safeDraw("waterIce", () => drawWaterIce(camX, camY)); // 冬日結冰水面（242），冬季水面覆冷白冰光＋淡裂紋、波光之上映日映月之下
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
@@ -16530,6 +16559,66 @@
   // 每幀把冰覆向當季目標推進一格。在畫水面冰之前呼叫（與 updateGroundTint 同模式）。
   function updateWaterIce(dt) {
     _iceCover = iceFadeStep(_iceCover, iceTargetCover(currentSeason), dt);
+  }
+
+  // ── 水畔魚汛漣漪（ROADMAP 431）────────────────────────────────────────────────
+  // 釣魚（47／346）一直都在，但水面始終靜止、沒有半點線索告訴玩家「這裡有魚、可以下竿」。
+  // 本層把「水裡有魚」這件一直隱形的事顯影到水面：把世界切成與地名同尺度的分區，每塊分區
+  // 恆有一處魚群，魚群中心隨**伺服器權威、全服共享**的相位 fishPhase 緩緩巡游——所有玩家
+  // 眼裡同一塊水域的魚汛在同一處、同一節拍漂移（和世界風 430 同血脈：真實世界狀態，非本地裝飾）。
+  // 站到魚汛裡下竿，咬鉤會略快（後端循汛加速；見 fish_school.rs）。
+  // 只畫「魚群中心確實落在水面 tile 上」的魚汛（與後端循汛判定一致）；魚群在陸上時自然不顯。
+  // 漣漪一圈圈擴散是純本地時鐘的呼吸動畫（位置才是權威）；reduceMotion／calm 下改畫靜態淡環。
+  // 純前端 Canvas 2D、效能優先（只掃可見分區、每處幾個圓）、clay/pixel 共用、零後端額外成本。
+  const FISH_RIPPLE_RINGS = 3;        // 每處魚汛同時擴散的同心漣漪圈數
+  const FISH_RIPPLE_PERIOD_MS = 2600; // 一圈漣漪由生到滅的週期（毫秒）
+  function drawFishSchools(camX, camY, now) {
+    if (!Number.isFinite(fishPhase)) return; // 舊伺服器無相位：不畫（向後相容）
+    // 可見世界範圍 → 掃過的魚汛分區索引範圍（分區大、通常只 1~2 格）。
+    const cx0 = Math.floor(camX / FISH_CELL);
+    const cy0 = Math.floor(camY / FISH_CELL);
+    const cx1 = Math.floor((camX + viewW) / FISH_CELL);
+    const cy1 = Math.floor((camY + viewH) / FISH_CELL);
+    // 漣漪呼吸相位（0..1）：reduceMotion 時固定取一個中段定格，畫靜態淡環。
+    const breathing = !reduceMotion;
+    ctx.save();
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const sp = fishSchoolPoint(cx, cy, fishPhase);
+        // 只在魚群中心真的落在水面上才顯影（與後端循汛判定同口徑）。
+        if (biomeAt(sp.x, sp.y) !== "water") continue;
+        const sx = sp.x - camX;
+        const sy = sp.y - camY;
+        if (sx < -80 || sy < -80 || sx > viewW + 80 || sy > viewH + 80) continue;
+        // 幾道擴散同心圈：半徑由內向外擴張、愈外愈淡（呼吸）。
+        for (let i = 0; i < FISH_RIPPLE_RINGS; i++) {
+          const f = breathing
+            ? ((now / FISH_RIPPLE_PERIOD_MS + i / FISH_RIPPLE_RINGS) % 1)
+            : (i + 0.5) / FISH_RIPPLE_RINGS; // 定格：均勻三環
+          const r = 6 + f * (FISH_SCHOOL_RADIUS * 0.42);
+          const a = (1 - f) * 0.22;
+          if (a <= 0.01) continue;
+          ctx.strokeStyle = `rgba(225,245,255,${a.toFixed(3)})`;
+          ctx.lineWidth = 1.3;
+          ctx.beginPath();
+          ctx.arc(sx, sy, r, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // 中心幾抹銀亮魚背弧（確定性錯開，靜態小弧暗示水下游動的魚群）。
+        ctx.strokeStyle = "rgba(210,238,255,0.5)";
+        ctx.lineWidth = 2;
+        for (let k = 0; k < 3; k++) {
+          const ah = sceneryHash(cx * 13 + k * 7 + 3, cy * 17 + k * 5 + 2);
+          const ox = (ah - 0.5) * 34;
+          const ah2 = sceneryHash(cx * 5 + k * 11 + 9, cy * 23 + k * 3 + 6);
+          const oy = (ah2 - 0.5) * 20;
+          ctx.beginPath();
+          ctx.arc(sx + ox, sy + oy, 5, Math.PI * 0.15, Math.PI * 0.85);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
   }
 
   // 每幀在可見水域 tile 上覆一層冬日冰光＋幾道淡裂紋。由獨立 safeDraw 呼叫，畫在波光（195）之上、

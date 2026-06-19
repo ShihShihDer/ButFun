@@ -88,6 +88,10 @@ pub struct WeatherState {
     /// 故風向能在天氣交替間連續緩轉；`rem_euclid(wind::DIR_PERIOD)` 防浮點長大。
     /// 記憶體前置、零持久化、零 migration（重啟從 0 重新起風）。
     age: f32,
+    /// 水畔魚汛用的累積相位（ROADMAP 431）。與風向 `age` 同模式但獨立週期，
+    /// `rem_euclid(fish_school::FISH_PERIOD)` 防浮點長大、且回捲處魚群連續不跳位。
+    /// 記憶體前置、零持久化、零 migration（重啟從 0 重攢魚汛）。
+    fish_age: f32,
 }
 
 impl WeatherState {
@@ -97,6 +101,7 @@ impl WeatherState {
             weather_type: WeatherType::Clear,
             elapsed: 0.0,
             age: 0.0,
+            fish_age: 0.0,
         }
     }
 
@@ -107,6 +112,8 @@ impl WeatherState {
         }
         // 風向時間：持續累加並回捲（不隨天氣切換歸零，讓風向連續緩轉）。
         self.age = (self.age + dt).rem_euclid(crate::wind::DIR_PERIOD);
+        // 魚汛相位：同模式獨立累加並回捲（回捲週期取兩軸最小公倍數，魚群位置連續不跳）。
+        self.fish_age = (self.fish_age + dt).rem_euclid(crate::fish_school::FISH_PERIOD);
         self.elapsed += dt;
         if self.elapsed >= WEATHER_DURATION_SECS {
             self.elapsed = self.elapsed.rem_euclid(WEATHER_DURATION_SECS);
@@ -188,6 +195,12 @@ impl WeatherState {
         }
     }
 
+    /// 水畔魚汛（ROADMAP 431）的全服共享相位：供「玩家是否循汛」判定與快照廣播。
+    /// 與風向 `age` 同樣伺服器權威、全服共享。
+    pub fn fish_phase(&self) -> f32 {
+        self.fish_age
+    }
+
     /// 給快照廣播用的可見狀態（返回 `protocol::WeatherView`）。
     pub fn view(&self) -> crate::protocol::WeatherView {
         // 氣象預報台（405）：附帶本次剩餘秒與接下來 3 種天氣的確定性預報。
@@ -205,6 +218,7 @@ impl WeatherState {
             remaining_secs: self.remaining_secs(),
             forecast,
             wind: self.wind(), // ROADMAP 430 世界風：隨天氣快照每幀廣播
+            fish_phase: self.fish_age, // ROADMAP 431 水畔魚汛：全服共享相位，前端據此繪魚群漣漪
         }
     }
 }
