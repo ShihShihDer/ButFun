@@ -668,6 +668,27 @@
     const m = BOTTLE_MESSAGES.find((x) => x.key === key);
     return m ? m.label : key;
   }
+  // 旅人手帳（ROADMAP 415）：把玩家「永久累積」的成長維度統整成一頁，並指出「差一點就達成」的下一步。
+  // tracks＝各成長軌跡 { key, current, goal(0=圓滿), tier }；headline＝最接近達成的下一步提示（null=全圓滿）。
+  // 開窗時向伺服器 request_journey 索取、收到 journey_report 後填面板。純呈現、不送物品/乙太、零持久化。
+  const journeyState = { tracks: [], headline: null, requested: false };
+  // 各成長軌跡 wire key → { 圖示, 標籤, 單位 }。與後端 `journey::TRACK_*` 一一對應；
+  // 顯示字串集中前端便於 i18n（後端只送 key＋數字）。
+  const JOURNEY_TRACKS = {
+    level:   { icon: "⭐", label: "等級",     unit: "級" },
+    eco:     { icon: "🌿", label: "生態圖鑑", unit: "種" },
+    terrain: { icon: "🗺️", label: "探索圖鑑", unit: "處" },
+    sky:     { icon: "🌌", label: "天象圖鑑", unit: "象" },
+    cheers:  { icon: "👏", label: "人氣",     unit: "采" },
+  };
+  function journeyTrackMeta(key) {
+    return JOURNEY_TRACKS[key] || { icon: "•", label: key, unit: "" };
+  }
+  // 向伺服器索取旅人手帳（斷線時 safeSend 靜默忽略）。
+  function requestJourney() {
+    journeyState.requested = true;
+    safeSend({ type: "request_journey" });
+  }
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -3222,6 +3243,13 @@
         updateBottlePanel();
         break;
       }
+      case "journey_report": {
+        // 旅人手帳（ROADMAP 415）：永久成長總覽單播回來，填面板。
+        journeyState.tracks = Array.isArray(msg.tracks) ? msg.tracks : [];
+        journeyState.headline = msg.headline || null;
+        updateJourneyPanel();
+        break;
+      }
       case "return_summary": {
         // 回訪摘要（ROADMAP 374）：登入玩家進場一次，顯示農田/牧場/任務待辦。
         showReturnCard(msg);
@@ -5541,7 +5569,8 @@
         (e.key === "1") ? "dockFarmFair" :
         (e.key === "2") ? "dockMine" :
         (e.key === "3") ? "dockWaypost" :
-        (e.key === "4") ? "dockBottle" : null;
+        (e.key === "4") ? "dockBottle" :
+        (e.key === "6") ? "dockJourney" : null;
       if (winBtn) {
         if (!e.repeat) toggleDockWin(winBtn);
         e.preventDefault();
@@ -21851,6 +21880,95 @@
     body.appendChild(tip);
   }
 
+  // ── 旅人手帳面板（ROADMAP 415）───────────────────────────────────────────
+  // 一頁看見「永久累積」的成長（等級／生態圖鑑／探索圖鑑／天象圖鑑／人氣）＋「差一點就達成」的下一步。
+  // 資料只信伺服器（開窗時請求 request_journey、收 journey_report 後填）；純呈現、不送物品/乙太。
+  let lastJourneySig = null;
+  function updateJourneyPanel() {
+    const body = document.getElementById("journeyBody");
+    if (!body) return;
+    const tracks = journeyState.tracks || [];
+    const hl = journeyState.headline;
+    // sig：未收到資料前顯示「載入中」；軌跡與頭條變了才重建（守 panel-sig 病）。
+    const sig = tracks.length
+      ? tracks.map((t) => `${t.key}:${t.current}/${t.goal}:${t.tier}`).join("|") +
+        "#" + (hl ? `${hl.key}:${hl.remaining}/${hl.goal}` : "-")
+      : "loading";
+    if (sig === lastJourneySig) return;
+    lastJourneySig = sig;
+    body.innerHTML = "";
+
+    if (!tracks.length) {
+      const wait = document.createElement("div");
+      wait.style.cssText = "color:#888;font-size:.82rem;";
+      wait.textContent = "正在翻開你的旅人手帳……";
+      body.appendChild(wait);
+      return;
+    }
+
+    const intro = document.createElement("div");
+    intro.style.cssText = "color:#ddd;font-size:.85rem;margin-bottom:8px;line-height:1.5;";
+    intro.textContent = "你一路走來累積的成長，都記在這裡。";
+    body.appendChild(intro);
+
+    // ── 頭條：差一點就達成的下一步（回訪 / 引導鉤子）──
+    if (hl) {
+      const meta = journeyTrackMeta(hl.key);
+      const banner = document.createElement("div");
+      banner.style.cssText = "border:1px solid #c9a24b;border-radius:10px;background:rgba(201,162,75,.12);padding:9px 11px;margin-bottom:10px;";
+      const head = document.createElement("div");
+      head.style.cssText = "color:#f0d8a0;font-size:.8rem;margin-bottom:2px;";
+      head.textContent = "✨ 差一點就達成";
+      const line = document.createElement("div");
+      line.style.cssText = "color:#f5e6bb;font-size:.95rem;line-height:1.5;";
+      line.textContent = `${meta.icon} 再 ${hl.remaining} ${meta.unit}，${meta.label}就到 ${hl.goal} 了！`;
+      banner.appendChild(head);
+      banner.appendChild(line);
+      body.appendChild(banner);
+    } else {
+      const done = document.createElement("div");
+      done.style.cssText = "border:1px solid #4f8050;border-radius:10px;background:rgba(80,160,90,.12);padding:9px 11px;margin-bottom:10px;color:#bfe6c4;font-size:.92rem;line-height:1.5;";
+      done.textContent = "🏆 所有里程碑皆已圓滿，你已是這片星海的老旅人！";
+      body.appendChild(done);
+    }
+
+    // ── 各成長軌跡進度條 ──
+    tracks.forEach((t) => {
+      const meta = journeyTrackMeta(t.key);
+      const maxed = !t.goal; // goal 0 = 圓滿
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:9px;";
+
+      const label = document.createElement("div");
+      label.style.cssText = "display:flex;justify-content:space-between;color:#ddd;font-size:.84rem;margin-bottom:3px;";
+      const name = document.createElement("span");
+      name.textContent = `${meta.icon} ${meta.label}`;
+      const val = document.createElement("span");
+      val.style.color = maxed ? "#bfe6c4" : "#9fd0ff";
+      val.textContent = maxed ? `${t.current}（圓滿 ✦）` : `${t.current} / ${t.goal} ${meta.unit}`;
+      label.appendChild(name);
+      label.appendChild(val);
+      row.appendChild(label);
+
+      // 進度條：以「0 → 下一個里程碑」的整段進度填色（圓滿則填滿），直觀好懂。
+      const span = Math.max(1, maxed ? t.current : t.goal);
+      const filled = Math.max(0, Math.min(1, t.current / span));
+      const pct = maxed ? 100 : Math.round(filled * 100);
+      const bar = document.createElement("div");
+      bar.style.cssText = "height:8px;border-radius:5px;background:rgba(255,255,255,.08);overflow:hidden;";
+      const fill = document.createElement("div");
+      fill.style.cssText = `height:100%;width:${pct}%;border-radius:5px;background:${maxed ? "#4f8050" : "#c9a24b"};`;
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      body.appendChild(row);
+    });
+
+    const foot = document.createElement("div");
+    foot.style.cssText = "color:#666;font-size:.72rem;margin-top:8px;line-height:1.5;";
+    foot.textContent = "這些都是會永久保留的成長——升級、踏遍奇景、認識生態與天象、累積人氣。隨時回來看看你又走遠了多少。";
+    body.appendChild(foot);
+  }
+
   // ── 觀星連星座面板（ROADMAP 347）──────────────────────────────────────────
   // 夜裡開星圖，把散落的星點依今夜星座連成線。互動＝空間連線（與釣魚的反應計時換骨架）：
   // 點星點依序連成一條走線，伺服器把「邊的集合」與今夜星座比對，連對且首次即記入星座錄。
@@ -25281,6 +25399,8 @@
       if (win.id === "winReconcile") requestReconcile();
       // 啟靈面板（ROADMAP 384）：一開窗就重繪啟靈面板的初始狀態（顯示說明＋啟動按鈕）。
       if (win.id === "winInscription") renderInscriptionIdle();
+      // 旅人手帳（ROADMAP 415）：一開窗就向伺服器索取自己的永久成長總覽。
+      if (win.id === "winJourney") requestJourney();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
       const closeBtn = win.querySelector(".win-close");
       if (closeBtn) closeBtn.focus();
