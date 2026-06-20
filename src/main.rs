@@ -24,6 +24,7 @@ mod meditation;
 mod busking;
 mod apiary;
 mod meal_buff;
+mod meal_share;
 mod dish_mastery;
 mod onboarding;
 mod idle_nudge;
