@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -12931,21 +12931,34 @@
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
               ctx.fillText("✅", cx, sy + 12);
+            } else if (c.grow != null) {
+              // 成長中：腳邊畫熟成進度條（ROADMAP 457，對齊公田 421）。
+              drawCropSlotBar(cx, sy + 11, c.grow);
             }
           }
           ctx.restore();
           continue;
         }
-        ctx.font = `18px ${UI_FONT}`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const emojis = fp.crops.map(c => (CROP_EMOJI[c.kind] || "🌱") + (c.ripe ? "✅" : "")).join(" ");
-        ctx.fillText(emojis, sx, sy - 12);
-        const ripeCount = fp.crops.filter(c => c.ripe).length;
-        if (ripeCount > 0) {
-          ctx.font = `bold 10px ${UI_FONT}`;
-          ctx.fillStyle = "#90ffb0";
-          ctx.fillText(`成熟 ${ripeCount}`, sx, sy + 10);
+        // 無黏土圖的 emoji 路徑：與黏土路徑同樣排成一列 per-crop，好讓每株都擺得下熟成進度條
+        // （ROADMAP 457，對齊公田 421）。佈局比照黏土路徑（gap 22、最多 MAX_CROPS=3 株）。
+        {
+          const shown = fp.crops.slice(0, 4);
+          const gap = 22;
+          const baseX = sx - ((shown.length - 1) * gap) / 2;
+          for (let ci = 0; ci < shown.length; ci++) {
+            const c = shown[ci];
+            const cx = baseX + ci * gap;
+            ctx.font = `18px ${UI_FONT}`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText((CROP_EMOJI[c.kind] || "🌱"), cx, sy - 10);
+            if (c.ripe) {
+              ctx.font = `11px ${UI_FONT}`;
+              ctx.fillText("✅", cx, sy + 12);
+            } else if (c.grow != null) {
+              drawCropSlotBar(cx, sy + 11, c.grow);
+            }
+          }
         }
         ctx.restore();
       }
@@ -13121,6 +13134,15 @@
       { trunkW: 5,   trunkH: 20, crownR: 17, crownLift: 27 },  // 3 大樹：粗幹＋飽滿大冠
     ];
     return TABLE[s];
+  }
+
+  // 個人地塊作物熟成進度條（ROADMAP 457，對齊公田 421）填色判定（純函式、好測）：
+  // 進度 p∈[0,1]，≥80% 轉暖金 "soon"（給「就快可收了」的期待感）、其餘青綠 "grow"；
+  // 壞值（NaN／非數）保守當「成長中」回 "grow"，不爆。確定性、只看 p。
+  function cropBarFillKind(p) {
+    const v = Number(p);
+    if (!Number.isFinite(v)) return "grow";
+    return v >= 0.8 ? "soon" : "grow";
   }
 
   // 畫一株黏土世界樹（clay 路徑）：暖褐黏土樹幹＋本色填底的圓潤黏土樹冠＋一抹象牙頂光，
@@ -26674,6 +26696,26 @@
     else if (p >= 0.8) fill = "rgba(255,210,90,0.95)";   // 即將成熟
     else fill = "rgba(110,210,120,0.95)";                // 成長中
     ctx.fillStyle = fill;
+    ctx.fillRect(bx, by, bw * p, bh);
+    ctx.restore();
+  }
+
+  // 個人地塊作物熟成進度條（ROADMAP 457，對齊公田 421）：個人地塊（farm_crops.rs）作物排成
+  // 一列 sprite/emoji，成長中的作物在 sprite 下方畫一條細進度條，讓玩家在自己買的田也一眼看出
+  // 「離收成還差多遠」。grow（0~100）由 farm_crops.rs 權威即時推導，這裡只畫不嵌規則；靜態繪製、
+  // reduceMotion 一樣顯示。cx＝該株螢幕中心 x、by＝條頂 y。
+  function drawCropSlotBar(cx, by, grow) {
+    const p = Math.max(0, Math.min(100, grow | 0)) / 100;
+    const bw = 16, bh = 3;
+    const bx = cx - bw / 2;
+    ctx.save();
+    // 底槽：深色半透明，任何作物/土色底上都讀得清。
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(bx, by, bw, bh);
+    // 填色：一般青綠；≥80% 轉暖金（「就快可收了」）——沿用公田 421 的視覺語彙。
+    ctx.fillStyle = cropBarFillKind(p) === "soon"
+      ? "rgba(255,210,90,0.95)"
+      : "rgba(110,210,120,0.95)";
     ctx.fillRect(bx, by, bw * p, bh);
     ctx.restore();
   }
