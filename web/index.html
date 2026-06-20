@@ -1774,6 +1774,12 @@
              tagName=INPUT 故全域快捷鍵守衛（keydown 早退）自動讓位，打字不會走動角色。 -->
         <input type="search" id="menuSearch" placeholder="🔍 搜尋功能（如「釣魚」「市場」）" aria-label="搜尋功能" autocomplete="off" enterkeyhint="search" />
         <div id="menuSearchEmpty" class="hidden">找不到符合的功能</div>
+        <!-- ROADMAP 460：最近開啟——game.js 依 localStorage 動態填入你剛用過的面板（空時/搜尋時 hidden）。
+             探索三角第三軸：搜尋(459)打字找、釘選(187)手動常駐、最近(自動零操作)浮回頂部一點直達。 -->
+        <div class="menu-group hidden" id="menuRecentGroup">
+          <div class="menu-group-title">🕘 最近開啟</div>
+          <div class="menu-items" id="menuRecentItems"></div>
+        </div>
         <div class="menu-group">
           <div class="menu-group-title">⚔️ 戰鬥</div>
           <div class="menu-items">
