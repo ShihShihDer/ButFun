@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -6024,11 +6024,16 @@
   // 循環順序與後端 CropVariety::ALL 同序；code 對齊後端 `CropVariety::code`（隨田格快照下傳）。
   // 每個品種一句「特性」給玩家權衡（高報酬配長成長為代價，平衡在後端）。面向玩家字串集中
   // 於此，便於日後 i18n。tint＝種了該品種的田格上點的品種色點（速生青嫩／主食麥黃／乙太瓜紫）。
+  // ROADMAP 453 季節偏好：peak＝該品種最旺的季節、lean＝最淡的季節（線格式字串，null＝四季皆宜），
+  // 鏡像後端 `CropVariety::peak_season`／`season_affinity`（主食穀無偏好、速生菜耐寒、乙太瓜戀夏畏寒）；
+  // 權威數值在後端 crop_variety.rs，這裡只用來在播種列標「當季旺長／淡季慢長」的提示。
   const SEED_VARIETIES = [
-    { wire: "sprout",     code: 1, emoji: "🥬", name: "速生菜", trait: "長得快·收得少", tint: "120,220,90" },
-    { wire: "staple",     code: 0, emoji: "🌾", name: "主食穀", trait: "成長收成均衡",   tint: "230,200,90" },
-    { wire: "etherbloom", code: 2, emoji: "🪻", name: "乙太瓜", trait: "長得慢·收得多", tint: "190,130,240" },
+    { wire: "sprout",     code: 1, emoji: "🥬", name: "速生菜", trait: "長得快·收得少", tint: "120,220,90", peak: "winter", lean: "summer" },
+    { wire: "staple",     code: 0, emoji: "🌾", name: "主食穀", trait: "成長收成均衡",   tint: "230,200,90", peak: null,     lean: null },
+    { wire: "etherbloom", code: 2, emoji: "🪻", name: "乙太瓜", trait: "長得慢·收得多", tint: "190,130,240", peak: "summer", lean: "winter" },
   ];
+  // 季節中文短名（含 emoji），給播種列的季節提示用。對齊 SEASON_INFO 的標籤語彙。
+  const SEASON_SHORT = { spring: "🌸春", summer: "☀️夏", autumn: "🍂秋", winter: "❄️冬" };
   // 由線格式字串取品種中介資料；未知／空／缺一律退主食穀（對齊後端 `from_wire` 永不失敗）。
   function seedVarietyMeta(wire) {
     return SEED_VARIETIES.find((v) => v.wire === wire) || SEED_VARIETIES[1];
@@ -6042,6 +6047,17 @@
   // 由品種碼（0/1/2，後端隨田格快照下傳的 cell.kind）取中介資料；未知碼退主食穀。
   function seedVarietyByCode(code) {
     return SEED_VARIETIES.find((v) => v.code === (code | 0)) || SEED_VARIETIES[1];
+  }
+  // 某品種在某季節的種植提示（ROADMAP 453）。純函式、好測。回 { tag, label }：
+  //   "peak" → 當季旺長（這季正適合種它）／"lean" → 淡季慢長（這季長得吃力）／"" → 無偏好或平季。
+  // 鏡像後端 `season_affinity`：主食穀四季皆宜（恆 ""）、速生菜冬旺夏淡、乙太瓜夏旺冬淡。
+  // 未知品種／未知季節保守當「無偏好」，永不騙玩家。
+  function seedSeasonHint(wire, season) {
+    const meta = seedVarietyMeta(wire);
+    if (!meta.peak) return { tag: "", label: "" };       // 主食穀：四季皆宜
+    if (season === meta.peak) return { tag: "peak", label: "🌟當季旺長" };
+    if (season === meta.lean) return { tag: "lean", label: "🍃淡季慢長" };
+    return { tag: "", label: "" };                         // 平季：不特別提示
   }
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
   let selectedSeedVariety = "staple";
@@ -6146,12 +6162,17 @@
     if (seedEl) {
       if (f) {
         const meta = seedVarietyMeta(selectedSeedVariety);
-        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）· 點我換種`;
+        // ROADMAP 453：依當前季節標「當季旺長／淡季慢長」，讓玩家看得出「現在這季適不適合種它」。
+        const hint = seedSeasonHint(selectedSeedVariety, currentSeason);
+        const hintTxt = hint.label ? ` ${hint.label}` : "";
+        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）${hintTxt} · 點我換種`;
         seedEl.classList.remove("hidden");
         seedEl.style.cursor = "pointer";
         seedEl.setAttribute("role", "button");
         seedEl.setAttribute("tabindex", "0");
-        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}。點選切換下一個品種`);
+        // 報讀器把季節提示講白話（旺長／慢長），不只唸 emoji。
+        const a11yHint = hint.tag === "peak" ? "，當季旺長" : hint.tag === "lean" ? "，當季長得慢" : "";
+        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}${a11yHint}。點選切換下一個品種`);
         seedEl.onclick = cycleSelectedSeed;
         seedEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycleSelectedSeed(); } };
       } else {
@@ -6171,7 +6192,9 @@
     selectedSeedVariety = cycleSeedVariety(selectedSeedVariety);
     const meta = seedVarietyMeta(selectedSeedVariety);
     updateFarmHud(myField()); // 即時刷新這行文字
-    announce(`播種品種已切換為 ${meta.name}，${meta.trait}`);
+    const hint = seedSeasonHint(selectedSeedVariety, currentSeason);
+    const spoken = hint.tag === "peak" ? "，當季旺長" : hint.tag === "lean" ? "，當季長得慢" : "";
+    announce(`播種品種已切換為 ${meta.name}，${meta.trait}${spoken}`);
   }
 
   // ---- 全服社群任務面板（ROADMAP 27）----

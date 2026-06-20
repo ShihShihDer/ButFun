@@ -336,11 +336,12 @@ mod tests {
     /// 蓋一塊種到一半的地（序號 `index`），用來驗持久化進出。
     fn growing_field(index: usize) -> Field {
         use crate::crops::SPROUT_AT;
+        use crate::season::Season;
         let mut f = Field::for_plot(index);
         f.till(0, 0);
         f.plant(0, 0);
         f.water(0, 0);
-        f.tick(SPROUT_AT + 1.0);
+        f.tick(SPROUT_AT + 1.0, Season::Summer);
         f
     }
 

@@ -1466,6 +1466,47 @@ for (const sc of scenarios) {
   }
 }
 
+// 作物品種季節偏好（ROADMAP 453）：單元斷言純函式 seedSeasonHint 的真值表——
+// 鏡像後端 crop_variety.rs::season_affinity/peak_season（主食穀四季皆宜、速生菜冬旺夏淡、乙太瓜夏旺冬淡）。
+{
+  const hint = sandbox.__bfTest && sandbox.__bfTest.seedSeasonHint;
+  if (typeof hint !== "function") {
+    failed = true;
+    console.error("  ❌ 季節偏好：game.js 未導出 seedSeasonHint");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 季節偏好：${msg}`); } };
+    const SEASONS = ["spring", "summer", "autumn", "winter"];
+    // 主食穀：四季皆宜，任何季節都無提示（tag 恆 ""）。
+    for (const s of SEASONS) expect(hint("staple", s).tag === "", `主食穀 ${s} 應無提示`);
+    // 速生菜：冬旺、夏淡，春秋平季無提示。
+    expect(hint("sprout", "winter").tag === "peak", "速生菜冬旺");
+    expect(hint("sprout", "summer").tag === "lean", "速生菜夏淡");
+    expect(hint("sprout", "spring").tag === "", "速生菜春平季");
+    expect(hint("sprout", "autumn").tag === "", "速生菜秋平季");
+    // 乙太瓜：夏旺、冬淡，春秋平季無提示。
+    expect(hint("etherbloom", "summer").tag === "peak", "乙太瓜夏旺");
+    expect(hint("etherbloom", "winter").tag === "lean", "乙太瓜冬淡");
+    expect(hint("etherbloom", "spring").tag === "", "乙太瓜春平季");
+    expect(hint("etherbloom", "autumn").tag === "", "乙太瓜秋平季");
+    // 旺季／淡季提示必帶可見文字（玩家看得到「當季旺長／淡季慢長」）。
+    expect(hint("etherbloom", "summer").label.length > 0, "旺季須有文字");
+    expect(hint("sprout", "summer").label.length > 0, "淡季須有文字");
+    // 未知品種／未知季節保守當無偏好，永不騙玩家。
+    expect(hint("turnip", "summer").tag === "", "未知品種無偏好");
+    expect(hint("etherbloom", "monsoon").tag === "", "未知季節無偏好");
+    // 每個有偏好的品種，四季裡恰有一個旺季與一個淡季（對齊後端單峰單谷）。
+    for (const w of ["sprout", "etherbloom"]) {
+      const peaks = SEASONS.filter((s) => hint(w, s).tag === "peak").length;
+      const leans = SEASONS.filter((s) => hint(w, s).tag === "lean").length;
+      expect(peaks === 1, `${w} 恰一個旺季`);
+      expect(leans === 1, `${w} 恰一個淡季`);
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 作物品種·季節偏好真值表：通過");
+  }
+}
+
 // 主音量（ROADMAP 429）：單元斷言純函式 audioVol 的字串→[0,1] 夾鉗真值表。
 // 把 localStorage 存的偏好（字串／null／壞值）解析成乘在音訊上的響度係數，夾進合法區間。
 {
