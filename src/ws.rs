@@ -4391,6 +4391,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 None => None,
                                 Some(session) => {
                                     let grade = score_cook(&session.target, &input);
+                                    // ROADMAP 435 火候到家：完美掌勺多盛一份的份數（其餘評級為 0）。
+                                    let mut bonus_portions = 0u32;
                                     // 走既有配方扣料產菜（與一鍵合成同一條產出路徑，不另開經濟）。
                                     let dish = match crate::crafting::recipe_by_id(session.recipe_id)
                                     {
@@ -4404,6 +4406,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 if grade.is_perfect() {
                                                     p.perfect_dishes =
                                                         p.perfect_dishes.saturating_add(1);
+                                                }
+                                                // ROADMAP 435 火候到家：完美掌勺用同份食材多盛一份同款料理
+                                                // （產不出菜＝沒扣到料時不加贈）。
+                                                bonus_portions = grade.bonus_output();
+                                                if bonus_portions > 0 {
+                                                    p.add_item_overflow(
+                                                        recipe.output,
+                                                        bonus_portions,
+                                                    );
                                                 }
                                                 tracing::info!(
                                                     player = %p.name, recipe = session.recipe_id,
@@ -4443,6 +4454,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         grade: grade.as_str().to_string(),
                                         dish,
                                         perfect_total: p.perfect_dishes,
+                                        bonus: bonus_portions,
                                         x: p.x,
                                         y: p.y,
                                     })

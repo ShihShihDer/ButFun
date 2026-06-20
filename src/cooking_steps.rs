@@ -191,6 +191,16 @@ impl CookGrade {
     pub fn is_perfect(self) -> bool {
         matches!(self, CookGrade::Perfect)
     }
+
+    /// 火候到家的額外盛盤份數（ROADMAP 435）：完美掌勺多盛一份同款料理，
+    /// 其餘評級不加贈。把照譜小遊戲的「手藝」第一次連到實際產出——
+    /// 不是新經濟水龍頭：用的是同一份食材、且需全對才觸發，由小遊戲難度與冷卻自然夾住。
+    pub fn bonus_output(self) -> u32 {
+        match self {
+            CookGrade::Perfect => 1,
+            CookGrade::Botched | CookGrade::Common | CookGrade::Tasty => 0,
+        }
+    }
 }
 
 /// 比對玩家敲回的步序（`input`）與標準答案（`target`），分級。
@@ -395,5 +405,23 @@ mod tests {
         assert!(CookGrade::Common.artisan_xp() >= CookGrade::Botched.artisan_xp());
         assert!(CookGrade::Perfect.is_perfect());
         assert!(!CookGrade::Tasty.is_perfect());
+    }
+
+    #[test]
+    fn perfect_cook_grants_one_bonus_portion() {
+        // ROADMAP 435：只有完美掌勺多盛一份，其餘評級不加贈（手藝才有回報、非數值水龍頭）。
+        assert_eq!(CookGrade::Perfect.bonus_output(), 1);
+        assert_eq!(CookGrade::Tasty.bonus_output(), 0);
+        assert_eq!(CookGrade::Common.bonus_output(), 0);
+        assert_eq!(CookGrade::Botched.bonus_output(), 0);
+        // 完美才有加贈：bonus 與 is_perfect 對齊。
+        for g in [
+            CookGrade::Botched,
+            CookGrade::Common,
+            CookGrade::Tasty,
+            CookGrade::Perfect,
+        ] {
+            assert_eq!(g.bonus_output() > 0, g.is_perfect(), "{g:?}");
+        }
     }
 }
