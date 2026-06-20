@@ -714,7 +714,7 @@ for (const sc of scenarios) {
 // 收成事件 harvest_result 走自己 id 的飄字。驗證 drawQualityGlint 與 harvest_result handler 皆不拋例外。
 {
   const before = caughtRenderErrors.length;
-  console.log("── 情境：用心栽培作物品質（成熟品質光點＋收成飄字 premium/fine/plain）──");
+  console.log("── 情境：用心栽培作物品質（成熟品質光點＋收成飄字 premium/fine/plain）＋豐收迸發（458 金光揚穀）──");
   let ok = true;
   try {
     const qSnap = JSON.parse(JSON.stringify(snapshot));
@@ -739,7 +739,7 @@ for (const sc of scenarios) {
   }
   const newCaught = caughtRenderErrors.slice(before);
   if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 用心栽培作物品質：${newCaught.length} 個繪製例外`); }
-  else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋旁觀者忽略皆乾淨");
+  else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋豐收迸發（458）spawn/draw＋旁觀者忽略皆乾淨");
 }
 
 // 一鍵收成（ROADMAP 446）：田裡有成熟作物時，hudRipe 那行同時當「✨一鍵收成」按鈕——對稱於
@@ -1571,6 +1571,48 @@ for (const sc of scenarios) {
     expect(fn("0.9") === "soon", "字串數字照常解析（≥0.8）");
     if (bad) failed = true;
     else console.log("  ✅ 個人地塊作物·進度條填色真值表：通過");
+  }
+}
+
+// 豐收迸發（ROADMAP 458）：單元斷言純函式 harvestBurstSpec 的金穀外觀真值表——
+// 收成揚穀：剛迸（t=0）最大最實、不揚（lift=0）；揚到末了（t=1）縮小淡盡、揚至頂（lift=46）；
+// 半徑隨年齡遞減、不透明遞減、上揚量遞增（單調）；壞值（NaN／undefined／越界）夾鉗成「揚到末了」、不爆。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.harvestBurstSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 豐收迸發：game.js 未導出 harvestBurstSpec");
+  } else {
+    let bad = 0;
+    const approx = (a, b) => Math.abs(a - b) < 1e-9;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 豐收迸發：${msg}`); } };
+    const s0 = fn(0), sh = fn(0.5), s1 = fn(1);
+    // 兩端外觀
+    expect(approx(s0.r, 2.4) && approx(s0.alpha, 1) && approx(s0.lift, 0), "t=0 最大最實、不揚");
+    expect(approx(s1.r, 1.2) && approx(s1.alpha, 0) && approx(s1.lift, 46), "t=1 最小淡盡、揚至頂");
+    // 單調：半徑遞減、不透明遞減、上揚遞增
+    expect(s0.r > sh.r && sh.r > s1.r, "半徑隨年齡單調遞減");
+    expect(s0.alpha > sh.alpha && sh.alpha > s1.alpha, "不透明隨年齡單調遞減");
+    expect(s0.lift < sh.lift && sh.lift < s1.lift, "上揚量隨年齡單調遞增");
+    // 有界且有限：r 恆 > 0、alpha∈[0,1]、lift∈[0,46]
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const s = fn(t);
+      expect(Number.isFinite(s.r) && s.r > 0, `t=${t} 半徑有限且 > 0`);
+      expect(Number.isFinite(s.alpha) && s.alpha >= 0 && s.alpha <= 1, `t=${t} 不透明∈[0,1]`);
+      expect(Number.isFinite(s.lift) && s.lift >= 0 && s.lift <= 46, `t=${t} 上揚∈[0,46]`);
+    }
+    // 非有限壞值（NaN/undefined/非數字字串/±Infinity）一律退「揚到末了」端；上界越界（2）夾成末了。
+    for (const bv of [NaN, undefined, "x", Infinity, -Infinity, 2]) {
+      const s = fn(bv);
+      expect(approx(s.lift, 46) && approx(s.alpha, 0), `壞值/上界越界 ${String(bv)} 夾鉗成末了`);
+    }
+    // 下界越界（負值）夾成「剛迸」端（lift=0、alpha=1），仍不爆。
+    {
+      const s = fn(-1);
+      expect(approx(s.lift, 0) && approx(s.alpha, 1), "下界越界 -1 夾鉗成剛迸");
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 豐收迸發·金穀外觀真值表：通過");
   }
 }
 

@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1616,6 +1616,12 @@
   // 怪物王重擊衝擊波（ROADMAP 424）：每筆 { wx, wy, radius, born } 在落點畫一圈向外炸開、擴張到
   // 重擊半徑後淡去的紅色衝擊環。純表現（傷害已由伺服器結算），收到 boss_slam 廣播時 push。
   const bossSlams = [];
+  // 豐收迸發（ROADMAP 458）：收成成熟作物的那一刻，在收成者身上迸開一抹金光＋揚起一捧金穀。
+  // 採集樹石礦早有 drawGatherFx 的星芒＋碎屑回饋，收成卻一直只有「+N 乙太」飄字、世界畫面悄無聲息；
+  // 本陣列補上收成這個高頻療癒動作的世界格上對等回饋。harvestBursts＝中心金光暈 { wx, wy, born, quality }；
+  // harvestGrains＝向上揚起的金穀粒子 { wx, wy, vx, vy, born, color }。純表現、不嵌規則。
+  const harvestBursts = [];
+  const harvestGrains = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
@@ -4132,6 +4138,9 @@
           floaters.push({ wx, wy: wy + 32, text: `🛒 搶手 +${demand} 乙太`, color: "255,210,120", born: now + 2 });
           announce(`正逢市集搶手，多得 ${demand} 乙太`);
         }
+        // 豐收迸發（ROADMAP 458）：在收成者身上（玩家世界座標，飄字在頭頂、金光在身上）迸開豐收金光、
+        // 揚起一捧金穀；品質越高穀粒越多越金。收成這個高頻療癒動作第一次在世界畫面裡也有迸發回饋。
+        spawnHarvestBurst(msg.x || 0, msg.y || 0, msg.quality);
         break;
       }
       case "locale_entered": {
@@ -5315,6 +5324,100 @@
       } else {
         ctx.fillStyle = `rgba(${p.color},${(1 - t).toFixed(3)})`;
         ctx.fillRect(px - 2, py - 2, 4, 4);
+      }
+    }
+  }
+
+  // 豐收迸發（ROADMAP 458）相關常數。中心金光暈與揚起的金穀粒子各有壽命；品質決定光暈色（呼應收成飄字）。
+  const HARVEST_FX_MS = 560;     // 中心金光暈壽命
+  const HARVEST_GRAIN_MS = 880;  // 金穀粒子壽命（比光暈長，讓穀粒揚起後再緩緩淡散）
+  const HARVEST_GLOW = { premium: "255,224,130", fine: "170,220,140", plain: "210,225,170" };
+  const HARVEST_GRAIN = { premium: "255,224,130", fine: "190,225,150", plain: "230,210,150" };
+
+  // 純函式：豐收金穀粒子隨年齡 t∈[0,1] 的外觀——半徑 r、不透明 alpha、上揚量 lift（像素）。
+  // 收成是「捧起豐收、把穀粒往上揚起」的喜悅，故穀粒剛迸出最大最實、隨年齡向上揚（lift 遞增）並縮小淡出，
+  // 與採集碎屑「向外飛濺、受重力落下」刻意相反。確定性、只看 t；壞值（NaN／越界）夾鉗成「揚到末了、近乎不可見」，
+  // render 不爆。比照 clayCrumbSpec(450) 的純函式範式、可單元自驗。
+  function harvestBurstSpec(t) {
+    let tt = Number(t);
+    if (!Number.isFinite(tt)) tt = 1;
+    tt = Math.max(0, Math.min(1, tt));
+    const r = 2.4 * (1 - 0.5 * tt);   // 2.4 → 1.2，恆 > 0（圓潤金穀、不縮成點）
+    const alpha = 1 - tt;             // 線性淡出
+    const lift = 46 * tt;             // 持續上揚（單調遞增）——豐收揚穀往上飄
+    return { r, alpha, lift };
+  }
+
+  // 在收成者位置（wx,wy＝玩家世界座標，伺服器 HarvestResult 帶來）迸開一抹豐收金光、揚起一捧金穀。
+  // 單格收成與一鍵收成都走此處（兩者都發 HarvestResult）。品質越高、穀粒越多越金。
+  // reduceMotion 下只留中心光暈、不揚穀粒（鏡像 spawnGatherHit：靜態玩家保留命中標記、不堆飛散動畫）。
+  function spawnHarvestBurst(wx, wy, quality) {
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+    const q = (quality === "premium" || quality === "fine") ? quality : "plain";
+    const now = performance.now();
+    harvestBursts.push({ wx, wy, born: now, quality: q });
+    if (reduceMotion) return;
+    const n = q === "premium" ? 12 : q === "fine" ? 8 : 6;
+    const color = HARVEST_GRAIN[q];
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6; // 朝上的扇形散開
+      const sp = 24 + Math.random() * 46;
+      harvestGrains.push({
+        wx,
+        wy: wy - 16,
+        vx: Math.cos(a) * sp,
+        born: now,
+        color,
+        premium: q === "premium",
+      });
+    }
+  }
+
+  // 畫豐收迸發（ROADMAP 458）：中心金光暈 + 向上揚起的金穀粒子。畫在收成者之上、當回饋層。
+  // clay／pixel 共用同一套金光（豐收暖金在兩種畫風皆和諧、與 clay 微縮世界的暖象牙調相融），零渲染分支。
+  function drawHarvestFx(camX, camY, now) {
+    for (let i = harvestBursts.length - 1; i >= 0; i--) {
+      const b = harvestBursts[i];
+      const age = now - b.born;
+      if (age >= HARVEST_FX_MS) { harvestBursts.splice(i, 1); continue; }
+      const t = age / HARVEST_FX_MS;
+      const sx = b.wx - camX;
+      const sy = b.wy - camY - 18;
+      const glow = HARVEST_GLOW[b.quality] || HARVEST_GLOW.plain;
+      ctx.save();
+      const rr = 6 + t * 22;
+      ctx.strokeStyle = `rgba(${glow},${(0.7 * (1 - t)).toFixed(3)})`;
+      ctx.lineWidth = 2.4 * (1 - t);
+      ctx.beginPath();
+      ctx.arc(sx, sy, rr, 0, Math.PI * 2);
+      ctx.stroke();
+      if (b.quality === "premium") {
+        // 優質收成多一圈內暈，金光更盛。
+        ctx.strokeStyle = `rgba(${glow},${(0.45 * (1 - t)).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, rr * 0.55, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    for (let i = harvestGrains.length - 1; i >= 0; i--) {
+      const p = harvestGrains[i];
+      const age = now - p.born;
+      if (age >= HARVEST_GRAIN_MS) { harvestGrains.splice(i, 1); continue; }
+      const sec = age / 1000;
+      const spec = harvestBurstSpec(age / HARVEST_GRAIN_MS);
+      const px = p.wx + p.vx * sec - camX;
+      const py = p.wy - spec.lift - camY; // 純上揚（無重力）——豐收揚穀往上飄
+      ctx.fillStyle = `rgba(${p.color},${spec.alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(px, py, spec.r, spec.r * 1.25, 0, 0, Math.PI * 2); // 微縱長＝穀粒感
+      ctx.fill();
+      if (p.premium) {
+        // 優質穀粒綴一抹頂光，更晶亮。
+        ctx.fillStyle = `rgba(255,250,238,${(spec.alpha * 0.6).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(px - spec.r * 0.3, py - spec.r * 0.4, spec.r * 0.45, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
   }
@@ -8232,6 +8335,7 @@
       drawHitFloaters(camX, camY, renderNow);          // 戰鬥傷害數字飄字（ROADMAP 94）
       drawTapFlashes(camX, camY, renderNow);           // 互動確認漣漪
       drawGatherFx(camX, camY, renderNow);             // 採集動作特效
+      drawHarvestFx(camX, camY, renderNow);            // 豐收迸發（ROADMAP 458）：收成的金光與揚穀
       drawAttackFx(camX, camY, renderNow);
       drawBossSlamFx(camX, camY, renderNow);           // 怪物王重擊衝擊波（ROADMAP 424）
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
