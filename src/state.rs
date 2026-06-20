@@ -334,6 +334,12 @@ pub struct Player {
     /// 重啟清空。由 game.rs 的地名偵測（鏡像 398 `current_locale`）順手推進。
     pub wayfaring: crate::wayfaring::Wayfaring,
 
+    /// 釣魚個人最大尾紀錄（ROADMAP 449 漁夫的驕傲）：這趟連線各魚種釣到的最大體長。
+    /// 釣到更大的同種魚＝刷新紀錄、響獎盃慶賀，給釣魚迴圈第一個「破自己紀錄」的續釣動機。
+    /// 記憶體前置、不持久化、零 migration（鏡像 wayfaring／traced_constellations）；重啟清空、
+    /// 重新攢。尺寸不進戰鬥／經濟結算（純炫耀向），零平衡風險。
+    pub fish_records: crate::fish_size::FishRecords,
+
     /// 觀星已連過的星座 bitmask（ROADMAP 347）：第 i 位對應 `constellation::CATALOG[i]`。
     /// 記憶體前置、不入快照、不持久化、零 migration（鏡像 fishing／pet 等記憶體切片）；
     /// 重啟清空＝星座錄歸零、可重新連、重新領那一小筆獎勵。用來判定「今夜星座是否已連過」
@@ -1697,6 +1703,7 @@ mod tests {
             charging: None,
             charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
+            fish_records: crate::fish_size::FishRecords::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,

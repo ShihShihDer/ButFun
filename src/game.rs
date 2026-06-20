@@ -1554,6 +1554,9 @@ pub fn spawn(app: AppState) {
                     fish: None,
                     quality: None,
                     in_season: None,
+                    size_cm: None,
+                    personal_best: None,
+                    prev_best_cm: None,
                     x,
                     y,
                 }));
