@@ -43,7 +43,53 @@
   <link rel="apple-touch-icon" href="/assets/icon-180.png" />
   <title>ButFun — 邊境星拓荒</title>
   <style>
-    :root { --ink: #e8e0cf; --brass: #c9a24b; --panel: rgba(20, 24, 30, 0.85); }
+    /* 拉皮總綱「黏土繪本・暖琥珀」語意 token——這套變數同步寫進 game.js 的 PALETTE 物件，
+       色值一一對應。北極星＝手作黃銅微縮＋暖象牙白，禁用螢光/純白/冷藍灰混搭。
+       目的是把全檔散落 hex 收斂到約 28 個 token，立共同語彙給後續所有拉皮 PR 共用。 */
+    :root {
+      /* 黃銅家族（品牌主色，三階） */
+      --brass: #c9a24b;            /* 正，品牌主色 */
+      --brass-light: #e6c478;      /* 亮，hover/高亮 */
+      --brass-dark: #8f6f2e;       /* 暗，描邊/陰影 */
+      /* 墨色（暖象牙，取代冷白與灰） */
+      --ink: #e8e0cf;              /* 主文字 */
+      --ink-dim: rgba(232, 224, 207, 0.62);   /* 次級說明 */
+      --ink-faint: rgba(232, 224, 207, 0.38); /* 最弱 */
+      /* 底與面板 */
+      --bg: #0b0d12;
+      --panel: rgba(20, 24, 30, 0.88);
+      --panel-solid: #161b22;
+      /* 邊框 */
+      --line: #3a4250;                         /* 容器外框實線 */
+      --hairline: rgba(201, 162, 75, 0.20);    /* 內部分隔線（走黃銅讓分隔也有主題感） */
+      /* 語意色（柔和非螢光） */
+      --success: #8db86a;          /* 琥珀綠 */
+      --danger: #d98a72;           /* 磚紅 */
+      --warn: #e0b252;
+      --info: #7fa8d9;
+      /* 狀態專色（HUD 既有，token 化） */
+      --ether: #ffd24a;            /* 乙太黃 */
+      --hp: #ff9d8f;               /* 生命紅 */
+      --xp: var(--brass);
+      --field: #7fbfff;            /* 農地藍 */
+      /* 圓角（4 階） */
+      --r-sm: 6px;                 /* 標籤/pip */
+      --r-md: 8px;                 /* 按鈕/輸入 */
+      --r-lg: 12px;                /* 面板/卡片/modal */
+      --r-pill: 999px;             /* 狀態藥丸 */
+      /* 陰影（3 階 elevation，光源由上方） */
+      --shadow-1: 0 2px 8px rgba(0, 0, 0, .35);    /* 提示 */
+      --shadow-2: 0 6px 20px rgba(0, 0, 0, .45);   /* 面板 */
+      --shadow-3: 0 10px 32px rgba(0, 0, 0, .55);  /* modal */
+      /* 間距尺度（8 基準） */
+      --sp-1: 4px;
+      --sp-2: 8px;
+      --sp-3: 12px;
+      --sp-4: 16px;
+      --sp-5: 24px;
+      /* 字體 */
+      --ui-font: system-ui, "Noto Sans TC", sans-serif;
+    }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12;
       font-family: system-ui, "Noto Sans TC", sans-serif; color: var(--ink); }
