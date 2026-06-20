@@ -94,6 +94,14 @@ impl CropSlot {
     pub fn is_ripe(&self) -> bool {
         self.grow_timer >= GROW_TIME_SECS
     }
+
+    /// 熟成進度 [0,1]（`grow_timer / GROW_TIME_SECS`，夾住上下界；壞值回 0）。
+    /// 與城鎮公田 `crops.rs` 的進度同口徑，供前端在個人地塊作物 sprite 下畫熟成進度條
+    /// （ROADMAP 457，對齊公田 421）。純函式、只看自身狀態，好測。
+    pub fn progress(&self) -> f32 {
+        let p = self.grow_timer / GROW_TIME_SECS;
+        if p.is_finite() { p.clamp(0.0, 1.0) } else { 0.0 }
+    }
 }
 
 /// 單一農田地塊的作物狀態（記憶體模式）。
@@ -164,6 +172,7 @@ impl FarmCropRegistry {
             .map(|s| s.crops.iter().map(|c| CropSlotView {
                 kind: c.kind.as_str().to_string(),
                 ripe: c.is_ripe(),
+                grow: (c.progress() * 100.0).round() as u8,
             }).collect())
             .unwrap_or_default()
     }
@@ -191,6 +200,7 @@ impl FarmCropRegistry {
                 crops: s.crops.iter().map(|c| CropSlotView {
                     kind: c.kind.as_str().to_string(),
                     ripe: c.is_ripe(),
+                    grow: (c.progress() * 100.0).round() as u8,
                 }).collect(),
             })
             .collect()
@@ -202,6 +212,9 @@ impl FarmCropRegistry {
 pub struct CropSlotView {
     pub kind: String,
     pub ripe: bool,
+    /// 熟成進度百分比（0~100，成熟＝100；ROADMAP 457）。前端在 sprite 下畫熟成進度條。
+    /// 由 `grow_timer` 即時推導、不入存檔（零持久化新欄）；Serialize-only，舊前端忽略即可。
+    pub grow: u8,
 }
 
 /// 快照裡一塊農田地塊的作物可見狀態（送給前端）。
@@ -346,5 +359,50 @@ mod tests {
         reg_dry.plant(10, CropKind::Wheat);
         reg_dry.tick(dt, false); // 60 < 90 → 未成熟
         assert!(!reg_dry.state_of(10)[0].ripe, "晴天相同時間應尚未成熟");
+    }
+
+    // ─── 熟成進度（ROADMAP 457，對齊公田 421）─────────────────────────────
+
+    /// 進度從 0（剛種）跨到中段再到成熟＝1，且全程夾在 [0,1]。
+    #[test]
+    fn progress_spans_zero_to_one() {
+        let mut c = CropSlot::new(CropKind::Wheat);
+        assert_eq!(c.progress(), 0.0, "剛種＝0");
+        c.grow_timer = GROW_TIME_SECS / 2.0;
+        assert!((c.progress() - 0.5).abs() < 1e-6, "半程＝0.5");
+        c.grow_timer = GROW_TIME_SECS; // 成熟
+        assert_eq!(c.progress(), 1.0, "成熟＝1");
+        c.grow_timer = GROW_TIME_SECS * 2.0; // 過熟仍夾 1
+        assert_eq!(c.progress(), 1.0, "過熟仍夾在 1");
+    }
+
+    /// 壞值（NaN／負）一律回 0，不汙染前端進度條。
+    #[test]
+    fn progress_clamps_bad_values() {
+        let mut c = CropSlot::new(CropKind::Carrot);
+        c.grow_timer = f32::NAN;
+        assert_eq!(c.progress(), 0.0, "NaN 退 0");
+        c.grow_timer = -10.0;
+        assert_eq!(c.progress(), 0.0, "負值夾 0");
+    }
+
+    /// 快照 view 的 `grow` 隨 `grow_timer` 正確推進（state_of 與 all_active_views 一致）。
+    #[test]
+    fn view_grow_tracks_timer() {
+        let mut reg = FarmCropRegistry::new();
+        reg.plant(20, CropKind::Wheat);
+        // 剛種：grow＝0。
+        assert_eq!(reg.state_of(20)[0].grow, 0, "剛種 grow＝0");
+        // 推進半程：grow≈50。
+        reg.tick(GROW_TIME_SECS / 2.0, false);
+        let g = reg.state_of(20)[0].grow;
+        assert!((49..=51).contains(&g), "半程 grow 應約 50，實得 {g}");
+        // 兩處快照建構口徑一致。
+        let active = reg.all_active_views();
+        let view_g = active.iter().find(|p| p.plot_id == 20).unwrap().crops[0].grow;
+        assert_eq!(view_g, g, "state_of 與 all_active_views 的 grow 應一致");
+        // 推進到成熟：grow＝100。
+        reg.tick(GROW_TIME_SECS, false);
+        assert_eq!(reg.state_of(20)[0].grow, 100, "成熟 grow＝100");
     }
 }

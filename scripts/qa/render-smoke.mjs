@@ -259,6 +259,20 @@ const scenarios = [
                { kind: "rock", x: me0.x - 36, y: me0.y + 18, remaining: 5, harvestable: true }];
     s.star_crystals = [{ id: 903, x: me0.x + 60, y: me0.y - 20 }];
   }),
+  // 個人地塊作物熟成進度條（ROADMAP 457）：給玩家腳邊的地塊注入幾株作物——含成長中（青綠／暖金門檻
+  // 兩側）與已成熟的——驗證 drawCropSlotBar 在 clay 與 emoji 兩條渲染路徑都不拋例外。把 plot 0 移到
+  // 玩家身邊（me0≈3000,3000；TILE_PX=32→格 ~93）才畫得到（否則視野外剔除、不跑進度條）。
+  variant("個人地塊作物熟成進度條(457)", (s) => {
+    s.land_plots = JSON.parse(JSON.stringify(s.land_plots || []));
+    if (s.land_plots[0]) {
+      Object.assign(s.land_plots[0], { plot_id: 0, min_gx: 90, min_gy: 90, max_gx: 97, max_gy: 97, owner_id: me0.id, purpose: "farm" });
+    }
+    s.farm_crop_plots = [{ plot_id: 0, crops: [
+      { kind: "wheat",  ripe: false, grow: 30 },   // 成長中·青綠
+      { kind: "carrot", ripe: false, grow: 90 },   // 即將成熟·暖金（≥80%）
+      { kind: "potato", ripe: true,  grow: 100 },  // 已成熟·✅
+    ] }];
+  }),
   variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
@@ -1532,6 +1546,31 @@ for (const sc of scenarios) {
     expect(fn(undefined) === "staple", "缺季節退主食穀");
     if (bad) failed = true;
     else console.log("  ✅ 作物品種·市集行情真值表：通過");
+  }
+}
+
+// 個人地塊作物熟成進度條（ROADMAP 457，對齊公田 421）：單元斷言純函式 cropBarFillKind 的填色門檻——
+// <0.8 青綠 "grow"、≥0.8 暖金 "soon"、壞值保守退 "grow"。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.cropBarFillKind;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 個人地塊作物進度條：game.js 未導出 cropBarFillKind");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 個人地塊作物進度條：${msg}`); } };
+    expect(fn(0) === "grow", "0→青綠");
+    expect(fn(0.5) === "grow", "0.5→青綠");
+    expect(fn(0.79) === "grow", "0.79（門檻下）→青綠");
+    expect(fn(0.8) === "soon", "0.8（門檻）→暖金");
+    expect(fn(0.95) === "soon", "0.95→暖金");
+    expect(fn(1) === "soon", "1→暖金");
+    // 壞值保守退青綠（永不爆、永不騙玩家「快好了」）。
+    expect(fn(NaN) === "grow", "NaN 退青綠");
+    expect(fn(undefined) === "grow", "undefined 退青綠");
+    expect(fn("0.9") === "soon", "字串數字照常解析（≥0.8）");
+    if (bad) failed = true;
+    else console.log("  ✅ 個人地塊作物·進度條填色真值表：通過");
   }
 }
 
