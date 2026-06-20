@@ -1316,6 +1316,37 @@ for (const sc of scenarios) {
   }
 }
 
+// 背景旋律（ROADMAP 442）：單元斷言樂理純函式 bgmScaleHz／bgmNextDegree／bgmChordDegrees。
+// 純客戶端、零後端；只驗決定性樂理真值表（jsdom 無 AudioContext，實際發聲不在 smoke 範圍）。
+{
+  const scaleHz = sandbox.__bfTest && sandbox.__bfTest.bgmScaleHz;
+  const nextDeg = sandbox.__bfTest && sandbox.__bfTest.bgmNextDegree;
+  const chord = sandbox.__bfTest && sandbox.__bfTest.bgmChordDegrees;
+  if (typeof scaleHz !== "function" || typeof nextDeg !== "function" || typeof chord !== "function") {
+    failed = true;
+    console.error("  ❌ 背景旋律：game.js 未導出 bgmScaleHz／bgmNextDegree／bgmChordDegrees");
+  } else {
+    let bad = 0;
+    // bgmScaleHz：回傳必為正、階數夾鉗、音階上行嚴格遞增。
+    if (!(scaleHz(0) > 0)) { bad++; console.error("  ❌ 背景旋律：scaleHz(0) 應為正"); }
+    if (scaleHz(-5) !== scaleHz(0)) { bad++; console.error("  ❌ 背景旋律：負階應夾到最低階"); }
+    if (scaleHz(999) !== scaleHz(9)) { bad++; console.error("  ❌ 背景旋律：超界應夾到最高階"); }
+    if (!(scaleHz(0) < scaleHz(5) && scaleHz(5) < scaleHz(9))) { bad++; console.error("  ❌ 背景旋律：音階應上行嚴格遞增"); }
+    // bgmNextDegree：行進夾在 [0,9]、級進正確、壞值退 0。
+    if (nextDeg(4, 1) !== 5) { bad++; console.error("  ❌ 背景旋律：nextDegree(4,1) 期望 5"); }
+    if (nextDeg(0, -3) !== 0) { bad++; console.error("  ❌ 背景旋律：下界應夾 0"); }
+    if (nextDeg(9, 5) !== 9) { bad++; console.error("  ❌ 背景旋律：上界應夾 9"); }
+    if (nextDeg(undefined, undefined) !== 0) { bad++; console.error("  ❌ 背景旋律：缺值應退 0"); }
+    // bgmChordDegrees：循環取用、回非空陣列、元素皆合法階數。
+    const c0 = chord(0), cw = chord(4); // 4 段循環，索引 4 應回到索引 0
+    if (!Array.isArray(c0) || c0.length === 0) { bad++; console.error("  ❌ 背景旋律：和弦應為非空陣列"); }
+    if (JSON.stringify(c0) !== JSON.stringify(cw)) { bad++; console.error("  ❌ 背景旋律：和弦進行應循環"); }
+    if (c0.some((d) => !(scaleHz(d) > 0))) { bad++; console.error("  ❌ 背景旋律：和弦階數應皆有效"); }
+    if (bad) failed = true;
+    else console.log("  ✅ 背景旋律·樂理真值表：通過");
+  }
+}
+
 // 農地待辦小結（ROADMAP 427）：單元斷言純函式 farmDigest 的優先序與計數。
 // 把一塊田的格子彙整成「下一步最該做的一件農事」，回應建議箱反覆出現的待辦/優先指引/總結回饋。
 {

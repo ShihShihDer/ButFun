@@ -485,8 +485,36 @@
     return { x: centerX + dx, y: centerY + dy };
   }
 
-  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx }); } catch {}
+  // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
+  // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
+  // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
+  // 三全音，亂走也不刺耳）、慢速稀疏、柔和淡入，騎在主音量之下。下面三個純函式是樂理基底，
+  // 引擎只負責照它們排程發聲，故樂理可在 render-smoke 單元斷言真值表（無副作用、決定性）。
+
+  // 大調五聲音階（C 起），跨約一個半八度共 10 階：C4 D4 E4 G4 A4 C5 D5 E5 G5 A5（Hz）。
+  const BGM_SCALE_HZ = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00];
+  // 音階階數 → 頻率（Hz）。階數夾鉗在 [0, len-1]，回傳必為正、決定性、上行遞增。
+  function bgmScaleHz(degree) {
+    const i = Math.max(0, Math.min(BGM_SCALE_HZ.length - 1, Math.floor(Number(degree) || 0)));
+    return BGM_SCALE_HZ[i];
+  }
+  // 旋律行進：給前一階與位移，回下一階（夾在 [0, len-1]，步幅小＝級進為主、偶爾小跳）。
+  // 位移序列由引擎以固定計數器推進（無 Math.random），故旋律可重現、可測。
+  function bgmNextDegree(prev, step) {
+    const p = Math.floor(Number(prev) || 0);
+    const s = Math.floor(Number(step) || 0);
+    return Math.max(0, Math.min(BGM_SCALE_HZ.length - 1, p + s));
+  }
+  // 和聲鋪底：四段柔和進行循環，每段回傳該和弦的音階階數陣列（根音＋三度＋五度，皆五聲協和）。
+  const BGM_CHORDS = [[0, 2, 4], [3, 5, 7], [1, 3, 5], [0, 2, 4]];
+  function bgmChordDegrees(chordIndex) {
+    const n = BGM_CHORDS.length;
+    const i = ((Math.floor(Number(chordIndex) || 0) % n) + n) % n;
+    return BGM_CHORDS[i].slice();
+  }
+
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -509,6 +537,7 @@
     try { localStorage.setItem("butfun.vol", String(_audioVol)); } catch {}
     try { SFX.setVol(_audioVol); } catch {}
     try { AMBIENT.setVol(_audioVol); } catch {}
+    try { MUSIC.setVol(_audioVol); } catch {}
   }
 
   // ---- 觸覺回饋引擎（ROADMAP 440）：手機 navigator.vibrate 輕震，補上互動回饋的第三感官 ----
@@ -835,6 +864,142 @@
           if (wantBird) _startBird(); else _stopBird();
         }
       },
+    };
+  })();
+
+  // ---- 背景旋律引擎（ROADMAP 442）：Web Audio 生成式柔樂，零音檔、零網路請求 ----
+  // musicOn 預設開（與 376 音效／377 環境音一致），玩家可在設定面板獨立關閉，結果存 localStorage。
+  // 與環境音效（噪音層：雨／蟲／鳥）刻意分開：這是「樂音層」（旋律＋和聲鋪底）。
+  // 全程極低增益、慢速稀疏、柔和淡入，當療癒底色不搶戲；接到主音量 master 之下，調總響度即同步。
+  // 樂理走上面的純函式（bgmScaleHz／bgmNextDegree／bgmChordDegrees），引擎只負責照表排程發聲。
+  const MUSIC = (() => {
+    let _ctx = null;
+    let _on = localStorage.getItem("butfun.music") !== "0"; // 預設開（首次進場）
+    let _started = false;
+    let _melodyTimer = null;
+    let _pad = null;        // { oscs:[根音, 五度], gain } 持續鋪底
+    let _chordIdx = 0;      // 和弦進行計數（循環取用 BGM_CHORDS）
+    let _degree = 4;        // 旋律當前階（從音階中段起音，較不極端）
+    let _stepIdx = 0;       // 位移序列計數器（決定性、無亂數）
+
+    function _getCtx() {
+      if (!_ctx) {
+        try { _ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+      }
+      if (_ctx && _ctx.state === "suspended") { try { _ctx.resume(); } catch {} }
+      return _ctx;
+    }
+
+    // 主音量節點（ROADMAP 429）：旋律與鋪底全接到它再接 destination；調主音量即改其 gain。
+    let _mmaster = null;
+    function _masterNode(ctx) {
+      if (!_mmaster) {
+        _mmaster = ctx.createGain();
+        _mmaster.gain.value = _audioVol;
+        _mmaster.connect(ctx.destination);
+      }
+      return _mmaster;
+    }
+
+    // 旋律位移序列：固定柔和的級進／小跳樣式（決定性、無亂數），循環取用＝旋律緩緩起伏不刺耳。
+    const _STEPS = [1, 1, -1, 2, -1, -2, 1, -1, 1, -2, 2, -1];
+
+    // 鋪底：兩顆持續振盪器（根音＋五度，皆降一八度更厚），極低增益，和弦切換時平滑重調頻率。
+    function _ensurePad(ctx) {
+      if (_pad) return _pad;
+      try {
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.035, ctx.currentTime + 4); // 柔和淡入，進場不爆音
+        gain.connect(_masterNode(ctx));
+        const oscs = [];
+        for (let k = 0; k < 2; k++) {
+          const o = ctx.createOscillator();
+          o.type = "sine";
+          o.connect(gain);
+          o.start();
+          oscs.push(o);
+        }
+        _pad = { oscs, gain };
+      } catch {}
+      return _pad;
+    }
+
+    // 切到下一段和弦：把鋪底兩顆振盪器平滑滑到新的根音／五度（降八度鋪厚）。
+    function _applyChord(ctx) {
+      if (!_pad) return;
+      const degs = bgmChordDegrees(_chordIdx);
+      const f0 = bgmScaleHz(degs[0]);
+      const f1 = bgmScaleHz(degs[2] != null ? degs[2] : degs[0]);
+      try {
+        const t = ctx.currentTime;
+        if (_pad.oscs[0]) _pad.oscs[0].frequency.linearRampToValueAtTime(f0 / 2, t + 2);
+        if (_pad.oscs[1]) _pad.oscs[1].frequency.linearRampToValueAtTime(f1 / 2, t + 2);
+      } catch {}
+      _chordIdx++;
+    }
+
+    // 一記旋律音：柔和正弦，慢起音（0.3s）＋長釋音（~1.8s），低增益，像遠處的鐘鳴。
+    function _playNote(ctx, hz) {
+      try {
+        const osc = ctx.createOscillator();
+        const gn = ctx.createGain();
+        osc.type = "sine"; osc.frequency.value = hz;
+        osc.connect(gn); gn.connect(_masterNode(ctx));
+        const t = ctx.currentTime;
+        gn.gain.setValueAtTime(0, t);
+        gn.gain.linearRampToValueAtTime(0.05, t + 0.3);
+        gn.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
+        osc.start(t); osc.stop(t + 2.0);
+      } catch {}
+    }
+
+    // 自我重排的旋律迴圈：每 4 顆音切一次和弦，間隔 2.6~3.4s（計數器決定，無亂數），稀疏不擾人。
+    function _scheduleNext() {
+      const ctx = _getCtx();
+      if (!ctx || !_on) return;
+      if (_stepIdx % 4 === 0) _applyChord(ctx);
+      _degree = bgmNextDegree(_degree, _STEPS[_stepIdx % _STEPS.length]);
+      _stepIdx++;
+      _playNote(ctx, bgmScaleHz(_degree));
+      const gap = 2600 + (_stepIdx % 5) * 200;
+      _melodyTimer = setTimeout(_scheduleNext, gap);
+    }
+
+    function _start() {
+      if (_started || !_on) return;
+      const ctx = _getCtx();
+      if (!ctx) return; // 尚未取得音訊（未互動／不支援）→ 下次 tick 再試
+      _ensurePad(ctx);
+      _started = true;
+      _scheduleNext();
+    }
+
+    function _stop() {
+      _started = false;
+      if (_melodyTimer !== null) { clearTimeout(_melodyTimer); _melodyTimer = null; }
+      if (_pad && _ctx) {
+        try {
+          _pad.gain.gain.cancelScheduledValues(_ctx.currentTime);
+          _pad.gain.gain.linearRampToValueAtTime(0, _ctx.currentTime + 1.2);
+          const oscs = _pad.oscs;
+          setTimeout(() => { oscs.forEach((o) => { try { o.stop(); } catch {} }); }, 1500);
+        } catch {}
+        _pad = null;
+      }
+    }
+
+    return {
+      get on() { return _on; },
+      setOn(v) {
+        _on = !!v;
+        try { localStorage.setItem("butfun.music", _on ? "1" : "0"); } catch {}
+        if (_on) _start(); else _stop();
+      },
+      // 主音量改變時即時套用到 master 節點（節點還沒建時略過，下次建立讀最新 _audioVol）。
+      setVol(v) { if (_mmaster && _ctx) { try { _mmaster.gain.setValueAtTime(v, _ctx.currentTime); } catch {} } },
+      // tick()：每次節流更新呼叫；開著但尚未啟動（剛取得音訊解鎖）就啟動。
+      tick() { if (_on && !_started) _start(); },
     };
   })();
 
@@ -7896,6 +8061,7 @@
         _isNight,
         !_isNight
       );
+      MUSIC.tick(); // 背景旋律（ROADMAP 442）：開著但尚未啟動就啟動（音訊解鎖後第一個 tick）
     }
 
     scheduleRender();
@@ -27055,6 +27221,14 @@
       optAmbient.checked = AMBIENT.on;
       optAmbient.addEventListener("change", () => {
         AMBIENT.setOn(optAmbient.checked);
+      });
+    }
+    // ⚙ 設定：背景旋律開關（ROADMAP 442）。開啟即啟動生成式柔樂；關閉即柔順淡出停止。
+    const optMusic = document.getElementById("optMusic");
+    if (optMusic) {
+      optMusic.checked = MUSIC.on;
+      optMusic.addEventListener("change", () => {
+        MUSIC.setOn(optMusic.checked);
       });
     }
     // ⚙ 設定：觸覺回饋開關（ROADMAP 440）。不支援 vibrate 的裝置（多數桌面）停用並標註，免得勾了沒反應。
