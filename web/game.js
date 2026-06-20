@@ -5,6 +5,33 @@
 (() => {
   "use strict";
 
+  // ============================================================================
+  // 拉皮總綱「黏土繪本・暖琥珀」設計 token（canvas 繪製端）
+  // ----------------------------------------------------------------------------
+  // 與 index.html :root 的 CSS 變數一一對應（色值完全相同）。canvas 的 ctx.fillStyle /
+  // ctx.font 無法直接讀 CSS 變數，故這裡複製一份 JS 常數，讓 HUD 文字、世界標籤、飄字、
+  // 名牌、陰影全走同一套語彙。北極星＝手作黃銅微縮＋暖象牙白，禁螢光/純白/冷藍灰混搭。
+  // 改色只改這裡＋:root 兩處，全檔散落 hex 收斂到約 28 個 token。
+  // ============================================================================
+  const PALETTE = {
+    // 黃銅家族（品牌主色，三階）
+    brass: "#c9a24b", brassLight: "#e6c478", brassDark: "#8f6f2e",
+    // 墨色（暖象牙，取代冷白 #eee/#e8e8e8 與灰 #888/#999/#666）
+    ink: "#e8e0cf",
+    inkDim: "rgba(232,224,207,0.62)",
+    inkFaint: "rgba(232,224,207,0.38)",
+    // 底與面板
+    bg: "#0b0d12", panel: "rgba(20,24,30,0.88)", panelSolid: "#161b22",
+    // 邊框
+    line: "#3a4250", hairline: "rgba(201,162,75,0.20)",
+    // 語意色（柔和非螢光）
+    success: "#8db86a", danger: "#d98a72", warn: "#e0b252", info: "#7fa8d9",
+    // 狀態專色（HUD 既有）
+    ether: "#ffd24a", hp: "#ff9d8f", field: "#7fbfff",
+  };
+  // UI 字型常數：全檔 ctx.font 與動態 CSS 統一引用，淘汰裸 sans-serif（會 fallback 掉字）。
+  const UI_FONT = 'system-ui, "Noto Sans TC", sans-serif';
+
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
 
@@ -2060,7 +2087,7 @@
       btn.style.cssText = [
         // 比餵食鈕（bottom:60px）高一截堆疊，避免兩鈕在同一角落重疊。
         "position:fixed", "bottom:100px", "right:140px",
-        "background:rgba(90,60,30,0.82)", "border:1px solid #d8a84a",
+        "background:rgba(90,60,30,0.82)", "border:1px solid #c9a24b",
         "border-radius:10px", "color:#ffdb99",
         "font-size:.8rem", "font-family:monospace",
         "padding:4px 12px", "z-index:1001", "cursor:pointer",
@@ -2184,7 +2211,7 @@
         <div style="color:#ffaa33;font-size:.62rem;margin-bottom:1px;">📋 生態清剿委託</div>
         <div style="color:#ffe08a;font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${b.colony_name}</div>
         <div style="color:#ffcc66;font-size:.63rem;">${bBar} ${b.kills_so_far}/${b.kill_target} 隻</div>
-        <div style="color:#cc9944;font-size:.6rem;">⏱ ${minsLeft}分鐘 · 🪙 ${b.reward_per_player}乙太/人</div>
+        <div style="color:#c9a24b;font-size:.6rem;">⏱ ${minsLeft}分鐘 · 🪙 ${b.reward_per_player}乙太/人</div>
       </div>`;
     }
 
@@ -2205,7 +2232,7 @@
       const color = TIER_COLOR[s.tier] || "#c0c8d0";
       const filled = Math.max(0, Math.min(10, Math.round((s.attitude || 0) / 10)));
       const bar = "█".repeat(filled) + "░".repeat(10 - filled);
-      return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
+      return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:rgba(232,224,207,0.62);font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
     }).join("");
     const wildSection = `<div style="color:#668;font-size:.62rem;margin:0 0 2px;">🌿 野生物種</div>${wildRows}`;
 
@@ -2220,7 +2247,7 @@
         const color = TIER_COLOR[s.tier] || "#c0c8d0";
         const filled = Math.max(0, Math.min(10, Math.round((s.attitude || 0) / 10)));
         const bar = "█".repeat(filled) + "░".repeat(10 - filled);
-        return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:#888;font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
+        return `<div style="color:${color};margin:1px 0;">${icon} <span style="color:rgba(232,224,207,0.62);font-size:.62rem;">${bar}</span> ${s.attitude}</div>`;
       }).join("");
       monsterSection = `<div style="color:#668;font-size:.62rem;margin:4px 0 2px;">👹 怪物物種</div>${monsterRows}`;
     }
@@ -4388,7 +4415,7 @@
       ctx.arc(sx, sy - 20, radius, 0, Math.PI * 2);
       ctx.stroke();
       ctx.globalAlpha = alpha;
-      ctx.font = "1.2rem sans-serif";
+      ctx.font = `1.2rem ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText(SKILL_EMOJIS[f.kind] || "✨", sx, sy - 20 - radius - 4);
       ctx.restore();
@@ -4666,7 +4693,7 @@
       const sx = f.wx - camX;
       const sy = f.wy - camY - (reduceMotion ? 0 : t * 44); // reduceMotion 下只淡出不上飄
       ctx.save();
-      ctx.font = `bold ${f.size}px system-ui, sans-serif`;
+      ctx.font = `bold ${f.size}px ${UI_FONT}`;
       ctx.textAlign = "center";
       // 黑色描邊，確保任何背景下都可讀
       ctx.lineWidth = 3;
@@ -4735,7 +4762,7 @@
     const elemEmoji = (ELEM_INFO[ENEMY_ELEMENT[boss.kind]] || {}).emoji || "";
     const label = `💀 兇名精英  ${name}  Lv.${boss.level}  ${elemEmoji}`;
     const labelY = by + padY + labelH;
-    ctx.font = "bold 11px system-ui, sans-serif";
+    ctx.font = `bold 11px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(0,0,0,0.8)";
@@ -4796,7 +4823,7 @@
       const sx = f.wx - camX;
       // 開「減少動態」時不上飄,只在原地淡出（+N 的資訊由文字本身傳達,上飄純裝飾）。
       const sy = f.wy - camY - (reduceMotion ? 0 : t * 34);
-      ctx.font = "bold 15px system-ui, sans-serif";
+      ctx.font = `bold 15px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillStyle = `rgba(0,0,0,${(alpha * 0.5).toFixed(3)})`;
       ctx.fillText(f.text, sx + 1, sy + 1); // 描影,任何地表上都讀得到
@@ -5247,7 +5274,7 @@
       const have = invSet.has(g.item);
       return `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;${have ? "" : "opacity:0.45;"}">
         <span>${g.icon}</span>
-        <span style="color:${have ? "#c0ffd0" : "#888"}">${g.name}</span>
+        <span style="color:${have ? "#c0ffd0" : "rgba(232,224,207,0.62)"}">${g.name}</span>
         <span style="font-size:0.8em;color:#778">${g.biome}</span>
         <span style="margin-left:auto;font-size:0.85em">${have ? "✅ 持有" : "❌ 未得"}</span>
       </div>`;
@@ -5270,99 +5297,99 @@
     let travelBtn = "";
     if (myPlanet === "home" && allCollected) {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(40,160,80,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0ffd8" : "#888"};border:1px solid ${canAfford ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(40,160,80,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0ffd8" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🚀 前往翠幽星（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
       if (hasJadeShard) {
         const canAfford2 = myEther >= CRIMSON_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelCrimson" style="margin-top:8px;padding:9px 20px;background:${canAfford2 ? "rgba(180,60,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford2 ? "#ffe0c0" : "#888"};border:1px solid ${canAfford2 ? "#d07040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford2 ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelCrimson" style="margin-top:8px;padding:9px 20px;background:${canAfford2 ? "rgba(180,60,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford2 ? "#ffe0c0" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford2 ? "#d07040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford2 ? "pointer" : "default"};width:100%;margin-top:8px;">
           🔴 前往赤焰星（${CRIMSON_TRAVEL_COST} 乙太）${canAfford2 ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasLavaCrystal) {
         const canAffordVoid = myEther >= VOID_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "#888"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasVoidShard) {
         const canAffordAether = myEther >= AETHER_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasAetherShard) {
         const canAffordOrigin = myEther >= ORIGIN_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "#888"};border:1px solid ${canAffordOrigin ? "#d0b040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordOrigin ? "#c9a24b" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌟 前往星源星（${ORIGIN_TRAVEL_COST} 乙太）${canAffordOrigin ? "" : " — 乙太不足"}
         </button>`;
       }
     } else if (myPlanet === "home") {
       // 武裝未齊但在故鄉：顯示直購路按鈕（ROADMAP 39）。
       const canAffordDirect = myEther >= VERDANT_DIRECT_COST;
-      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAffordDirect ? "rgba(40,160,80,0.7)" : "rgba(60,60,60,0.6)"};color:${canAffordDirect ? "#d0ffd8" : "#888"};border:1px solid ${canAffordDirect ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordDirect ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelVerdant" style="margin-top:10px;padding:9px 20px;background:${canAffordDirect ? "rgba(40,160,80,0.7)" : "rgba(60,60,60,0.6)"};color:${canAffordDirect ? "#d0ffd8" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordDirect ? "#60d090" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordDirect ? "pointer" : "default"};width:100%;">
         🎫 直購航票前往翠幽星（${VERDANT_DIRECT_COST} 乙太）${canAffordDirect ? "" : " — 乙太不足"}
       </button>
       <div style="color:#8090c0;font-size:0.8em;margin-top:5px;text-align:center;">或收集五大生態武裝，僅需 ${TRAVEL_COST} 乙太出發</div>`;
     } else if (myPlanet === "verdant") {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
     } else if (myPlanet === "crimson") {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
       if (hasLavaCrystal) {
         const canAffordVoid = myEther >= VOID_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "#888"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelVoid" style="margin-top:8px;padding:9px 20px;background:${canAffordVoid ? "rgba(80,20,160,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordVoid ? "#e0c0ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordVoid ? "#9040d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordVoid ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌑 前往虛空星（${VOID_TRAVEL_COST} 乙太）${canAffordVoid ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasVoidShard) {
         const canAffordAether = myEther >= AETHER_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasAetherShard) {
         const canAffordOrigin = myEther >= ORIGIN_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "#888"};border:1px solid ${canAffordOrigin ? "#d0b040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordOrigin ? "#c9a24b" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌟 前往星源星（${ORIGIN_TRAVEL_COST} 乙太）${canAffordOrigin ? "" : " — 乙太不足"}
         </button>`;
       }
     } else if (myPlanet === "void") {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
       if (hasVoidShard) {
         const canAffordAether = myEther >= AETHER_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "#888"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelAether" style="margin-top:8px;padding:9px 20px;background:${canAffordAether ? "rgba(20,100,180,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordAether ? "#c0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordAether ? "#40a0d0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordAether ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌫️ 前往霧醚星（${AETHER_TRAVEL_COST} 乙太）${canAffordAether ? "" : " — 乙太不足"}
         </button>`;
       }
       if (hasAetherShard) {
         const canAffordOrigin = myEther >= ORIGIN_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "#888"};border:1px solid ${canAffordOrigin ? "#d0b040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordOrigin ? "#c9a24b" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌟 前往星源星（${ORIGIN_TRAVEL_COST} 乙太）${canAffordOrigin ? "" : " — 乙太不足"}
         </button>`;
       }
     } else if (myPlanet === "aether") {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
       if (hasAetherShard) {
         const canAffordOrigin = myEther >= ORIGIN_TRAVEL_COST;
-        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "#888"};border:1px solid ${canAffordOrigin ? "#d0b040" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
+        travelBtn += `<button id="btnTravelOrigin" style="margin-top:8px;padding:9px 20px;background:${canAffordOrigin ? "rgba(160,130,20,0.85)" : "rgba(60,60,60,0.6)"};color:${canAffordOrigin ? "#fff8c0" : "rgba(232,224,207,0.62)"};border:1px solid ${canAffordOrigin ? "#c9a24b" : "#444"};border-radius:8px;font-size:1em;cursor:${canAffordOrigin ? "pointer" : "default"};width:100%;margin-top:8px;">
           🌟 前往星源星（${ORIGIN_TRAVEL_COST} 乙太）${canAffordOrigin ? "" : " — 乙太不足"}
         </button>`;
       }
     } else if (myPlanet === "origin") {
       const canAfford = myEther >= TRAVEL_COST;
-      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "#888"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
+      travelBtn = `<button id="btnTravelHome" style="margin-top:10px;padding:9px 20px;background:${canAfford ? "rgba(80,120,200,0.85)" : "rgba(60,60,60,0.6)"};color:${canAfford ? "#d0e8ff" : "rgba(232,224,207,0.62)"};border:1px solid ${canAfford ? "#80a0e0" : "#444"};border-radius:8px;font-size:1em;cursor:${canAfford ? "pointer" : "default"};width:100%;">
         🏠 返回故鄉星球（${TRAVEL_COST} 乙太）${canAfford ? "" : " — 乙太不足"}
       </button>`;
     }
@@ -5389,10 +5416,10 @@
         <div style="font-size:2.2em;margin-bottom:8px;">🗺️ 星圖展開</div>
         <div style="font-size:1.05em;color:#c8d8ff;margin-bottom:14px;">你的星圖記錄了四顆遠方星球的訊號⋯⋯</div>
         <div style="text-align:left;background:rgba(0,0,0,0.3);border-radius:8px;padding:12px 16px;margin-bottom:12px;">
-          <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:#aaa;">超巨型生態系，古老樹靈守護著星球意識。</span></div>
-          <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:#aaa;">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
-          <div style="margin-bottom:8px;">🌑 <b>虛空星</b> — <span style="color:#c080ff;">宇宙深淵邊界。</span><br><span style="font-size:0.9em;color:#aaa;">黑暗晶石遍布，虛空幽靈在深淵中低語。</span></div>
-          <div>🌫️ <b>霧醚星</b> — <span style="color:#60c8ff;">乙太迷霧世界。</span><br><span style="font-size:0.9em;color:#aaa;">青白晶霧飄盪，霧醚幽靈在薄霧中若隱若現。</span></div>
+          <div style="margin-bottom:8px;">🟢 <b>翠幽星</b> — <span style="color:#60d090;">茂密叢林星球。</span><br><span style="font-size:0.9em;color:rgba(232,224,207,0.62);">超巨型生態系，古老樹靈守護著星球意識。</span></div>
+          <div style="margin-bottom:8px;">🔴 <b>赤焰星</b> — <span style="color:#e09060;">蒸汽龐克工業世界。</span><br><span style="font-size:0.9em;color:rgba(232,224,207,0.62);">熔岩遍布，古老機械都市在岩漿上方升騰。</span></div>
+          <div style="margin-bottom:8px;">🌑 <b>虛空星</b> — <span style="color:#c080ff;">宇宙深淵邊界。</span><br><span style="font-size:0.9em;color:rgba(232,224,207,0.62);">黑暗晶石遍布，虛空幽靈在深淵中低語。</span></div>
+          <div>🌫️ <b>霧醚星</b> — <span style="color:#60c8ff;">乙太迷霧世界。</span><br><span style="font-size:0.9em;color:rgba(232,224,207,0.62);">青白晶霧飄盪，霧醚幽靈在薄霧中若隱若現。</span></div>
         </div>
         <div style="text-align:left;background:rgba(0,0,0,0.25);border-radius:8px;padding:10px 14px;margin-bottom:12px;">
           <div style="color:#c8d8ff;font-size:0.88em;margin-bottom:6px;font-weight:bold;">⚔️ 五大生態武裝 ${collected}/${biomeGear.length}</div>
@@ -5788,7 +5815,7 @@
     ctx.restore();
 
     // 圖示（與 HUD 缺水提示同一顆 🌱）+ 缺水格數，貼在箭頭旁。
-    ctx.font = "12px system-ui, sans-serif";
+    ctx.font = `12px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     const label = dry ? `🌱${farmDryCount}` : ripe ? `✨${farmRipeCount}` : "🌱";
@@ -5857,7 +5884,7 @@
     const lx = px - Math.cos(ang) * 26;
     const ly = py - Math.sin(ang) * 26;
     ctx.save();
-    ctx.font = "12px system-ui, sans-serif";
+    ctx.font = `12px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
@@ -5907,7 +5934,7 @@
     const lx = px - Math.cos(ang) * 26;
     const ly = py - Math.sin(ang) * 26;
     ctx.save();
-    ctx.font = "12px system-ui, sans-serif";
+    ctx.font = `12px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
@@ -5976,7 +6003,7 @@
       ctx.lineWidth = 3;
       ctx.stroke();
       ctx.globalAlpha = 0.95;
-      ctx.font = "15px system-ui, sans-serif";
+      ctx.font = `15px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(tgt.icon, sx, sy - 4 - r - 9);
@@ -6010,7 +6037,7 @@
       // 圖示標籤擺在箭頭背向目標那側，不擋指向。
       const lx = px - Math.cos(ang) * 26, ly = py - Math.sin(ang) * 26;
       ctx.globalAlpha = 1;
-      ctx.font = "13px system-ui, sans-serif";
+      ctx.font = `13px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(tgt.icon, lx, ly);
@@ -6394,7 +6421,7 @@
     ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
     const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧", chop: "🪓" }[currentActionKind(me)] || "✋";
-    ctx.font = "30px system-ui, sans-serif";
+    ctx.font = `30px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(icon, b.cx, b.cy + 1);
@@ -6423,7 +6450,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = guarding ? "rgba(150,210,255,0.95)" : "rgba(200,220,245,0.55)";
     ctx.stroke();
-    ctx.font = "26px system-ui, sans-serif";
+    ctx.font = `26px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.globalAlpha = onCool ? 0.5 : 1;
@@ -6453,7 +6480,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = rolling ? "rgba(150,255,190,0.95)" : "rgba(205,240,220,0.55)";
     ctx.stroke();
-    ctx.font = "26px system-ui, sans-serif";
+    ctx.font = `26px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.globalAlpha = onCool ? 0.5 : 1;
@@ -6483,7 +6510,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = charging ? "rgba(255,214,120,0.95)" : "rgba(245,225,200,0.55)";
     ctx.stroke();
-    ctx.font = "26px system-ui, sans-serif";
+    ctx.font = `26px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.globalAlpha = onCool ? 0.5 : 1;
@@ -6656,7 +6683,7 @@
     { body: "#6b3d1e", pants: "#4a2e10", boots: "#2e1808", belt: "#c87820", rivet: "#c87820", name: "工匠皮甲" },   // 1 棕皮革
     { body: "#2d5038", pants: "#1e3828", boots: "#162818", belt: "#7ab848", rivet: "#7ab848", name: "商人馬甲" },   // 2 墨綠
     { body: "#5a1c2c", pants: "#3c1018", belt: "#d04848", rivet: "#d04848", boots: "#280c10", name: "旅人斗篷" },   // 3 深紅
-    { body: "#8b7040", pants: "#6a5830", boots: "#4a3818", belt: "#d0a840", rivet: "#d0a840", name: "農夫工作服" }, // 4 卡其
+    { body: "#8b7040", pants: "#6a5830", boots: "#4a3818", belt: "#c9a24b", rivet: "#c9a24b", name: "農夫工作服" }, // 4 卡其
     { body: "#505868", pants: "#383e4a", boots: "#202830", belt: "#a0b8d0", rivet: "#d0e8f8", name: "武士鎧甲" },   // 5 銀灰金屬
   ];
 
@@ -6773,7 +6800,7 @@
       ctx.fillStyle = "#7a4a18";
       ctx.fillRect(cx - 13, cy - 17, 26, 3);
       ctx.fillRect(cx - 7,  cy - 23, 14, 7);
-      ctx.fillStyle = "#c8a050";
+      ctx.fillStyle = "#c9a24b";
       ctx.fillRect(cx - 7,  cy - 17, 14, 2);
     } else if (hs === 3) {
       // 3：露髮（頭頂不戴帽，改畫短髮）
@@ -6791,7 +6818,7 @@
       ctx.fillRect(cx - 7,  cy - 17, 14, 2.5);
       // 船錨徽章
       ctx.fillStyle = "#d4a830";
-      ctx.font = "6px sans-serif";
+      ctx.font = `6px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText("⚓", cx, cy - 19);
     }
@@ -6921,7 +6948,7 @@
     if (downed) {
       ctx.globalAlpha = 1;
       // 頭上掛 💤:被打趴/休息復原中的持續標記(對稱敵人被打倒的一閃,這個是長駐狀態)。
-      ctx.font = "14px system-ui, sans-serif";
+      ctx.font = `14px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText("💤", sx + 12, sy - 26);
     }
@@ -6930,7 +6957,7 @@
     // level 缺值（訪客/舊快照）時不畫，向後相容。
     if (typeof p.level === "number" && p.level >= 0) {
       const lvText = "Lv." + p.level;
-      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.font = `bold 10px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2.5;
@@ -6944,7 +6971,7 @@
     if (p.job_class) {
       const classEmoji = { warrior:"⚔️", farmer:"🌾", artisan:"🔧", explorer:"🧭", merchant:"💰" }[p.job_class];
       if (classEmoji) {
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillText(classEmoji, sx + 20, sy - 36);
       }
@@ -6952,7 +6979,7 @@
 
     // 公會標籤（ROADMAP 29）：在名字左方顯示 [TAG]，讓玩家一眼看出彼此所屬公會。
     if (p.guild_tag) {
-      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.font = `bold 10px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2;
@@ -6965,7 +6992,7 @@
     }
     // 隊伍標記（ROADMAP 97）：有隊伍時在名字右方顯示 [隊]，讓隊員一眼看出組隊狀態。
     if (p.in_party) {
-      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.font = `bold 10px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2;
@@ -6981,7 +7008,7 @@
     // 純由廣播的 codex bitmask 推導（codexTitleFor），零新協議；只配戴最高階一枚、不擠名牌。
     const codexTitle = codexTitleFor(p.codex);
     if (codexTitle) {
-      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.font = `bold 10px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2;
@@ -6999,7 +7026,7 @@
     const popTier = popularityFor(p.cheers);
     if (popTier) {
       const popY = codexTitle ? sy - 52 : sy - 38;
-      ctx.font = "bold 10px system-ui, sans-serif";
+      ctx.font = `bold 10px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2;
@@ -7013,7 +7040,7 @@
     // 自己的名字描金,讓玩家一眼找到自己。先描一圈深色外框再填字——白天的亮草地
     // 紋理上米白字會糊掉(飄字/小地圖都有襯底,唯獨頭上名字沒有),描邊讓名字在任何
     // 地表、任何日夜亮度下都讀得清。lineJoin=round 讓尖角不溢出成毛刺。
-    ctx.font = "13px system-ui, sans-serif";
+    ctx.font = `13px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.lineJoin = "round";
     ctx.lineWidth = 3;
@@ -7026,7 +7053,7 @@
     // 稱號標籤（ROADMAP 389）：玩家選擇展示的稱號顯示在名字正下方，小字灰色，全服可見。
     if (p.active_title) {
       const titleDisp = TITLE_NAMES[p.active_title] || p.active_title;
-      ctx.font = "italic 9px system-ui, sans-serif";
+      ctx.font = `italic 9px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.lineJoin = "round";
       ctx.lineWidth = 2;
@@ -7092,14 +7119,14 @@
       }
       // 腳下小陰影，把寵物「踩」在世界地面上（區別於舊版黏名牌旁的貼圖感）。
       drawGroundShadow(psx, psy + 7, 6, 2, 0.18);
-      ctx.font = "15px system-ui, sans-serif";
+      ctx.font = `15px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
       // 玩耍中：頭頂飄一枚循環上升淡出的愛心 / 音符，傳達「夥伴們玩得很開心」。
       // reduceMotion 下退成一枚靜態小愛心、不上飄不閃。
       if (playing) {
         const glyph = (Math.floor(p.pet_x * 0.13) & 1) ? "💕" : "🎵"; // 依寵物穩定挑一種，避免逐幀亂跳
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         if (reduceMotion) {
           ctx.globalAlpha = 0.9;
           ctx.fillText(glyph, psx, psy - 16);
@@ -7117,7 +7144,7 @@
         // 慢循環（~4.6s 一輪、只在前半段現身），不是每幀都掛、不喧賓奪主。
         const persona = PET_PERSONALITY[p.pet_personality];
         if (persona) {
-          ctx.font = "11px system-ui, sans-serif";
+          ctx.font = `11px ${UI_FONT}`;
           if (reduceMotion) {
             // 不閃不飄：靜態淡淡掛一枚，仍傳達性格、但不造成動態干擾。
             ctx.globalAlpha = 0.5;
@@ -7158,7 +7185,7 @@
         } else if (throwDt >= 320) {
           drawGroundShadow(tsx, tsy + 5, 4, 1.5, 0.16); // 落地的玩具有影子
         }
-        ctx.font = "12px system-ui, sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillText("🎾", tsx, tsy - arcLift);
       }
@@ -7211,7 +7238,7 @@
         ctx.save();
         ctx.translate(sx, by - 30);
         ctx.scale(scale, scale);
-        ctx.font = "bold 16px system-ui, sans-serif";
+        ctx.font = `bold 16px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillStyle = "#ffd24a";
         ctx.fillText("❗", 0, 0);
@@ -7224,7 +7251,7 @@
         const runName = SEASON_FISHING_RUN[currentSeason];
         if (sigKey && runName) {
           const sigEmoji = FISH_EMOJI_BY_KEY[sigKey] || "🐟";
-          ctx.font = "11px system-ui, sans-serif";
+          ctx.font = `11px ${UI_FONT}`;
           ctx.textAlign = "left";
           ctx.fillStyle = "rgba(255,225,120,.92)";
           ctx.fillText(`🎣 ${runName}·${sigEmoji}當季`, fx + 8, fy + 3);
@@ -7247,7 +7274,7 @@
       }
       ctx.save();
       ctx.translate(sx + shake, by - 30);
-      ctx.font = "bold 14px system-ui, sans-serif";
+      ctx.font = `bold 14px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillStyle = color;
       ctx.fillText(`⛏️${p.mining_depth}`, 0, 0);
@@ -7285,7 +7312,7 @@
       ctx.strokeRect(cx - 1.5, myy - 3, 3, h + 6);
       // 自己才顯示提示字（旁觀者只看量表、不被文字洗版）。
       if (p.id === myId) {
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
         ctx.lineWidth = 3;
@@ -7337,7 +7364,7 @@
       ctx.stroke();
       // 自己才顯示提示字（旁觀者只看環、不被文字洗版）。
       if (p.id === myId) {
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
         ctx.lineWidth = 3;
@@ -7422,7 +7449,7 @@
       ctx.lineWidth = 1;
       ctx.stroke();
       if (p.id === myId) {
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
         ctx.lineWidth = 3;
@@ -7477,7 +7504,7 @@
       ctx.stroke();
       if (p.id === myId) {
         const label = full ? "⚡ 滿蓄！放開重擊 [V]" : "⚡ 蓄力中…放開出擊 [V]";
-        ctx.font = "11px system-ui, sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "alphabetic";
         ctx.lineWidth = 3;
@@ -8078,7 +8105,7 @@
           ctx.fill();
           // 出口提示文字
           ctx.fillStyle = "rgba(255,255,255,0.7)";
-          ctx.font = "9px system-ui,sans-serif";
+          ctx.font = `9px ${UI_FONT}`;
           ctx.textAlign = "center";
           ctx.fillText("出口", sx + TILE / 2, sy + TILE - 3);
         } else {
@@ -8129,7 +8156,7 @@
     ctx.roundRect(6, 6, 230, 24, 6);
     ctx.fill();
     ctx.fillStyle = "#f0e8d0";
-    ctx.font = "bold 12px system-ui,sans-serif";
+    ctx.font = `bold 12px ${UI_FONT}`;
     ctx.textAlign = "left";
     ctx.fillText(`🏠 住家室內 · 地塊 #${me.indoor_plot_id} · ${pal.name}`, 14, 23);
 
@@ -8139,7 +8166,7 @@
     ctx.roundRect(viewW - 134, 6, 128, 24, 6);
     ctx.fill();
     ctx.fillStyle = "#c9c9c9";
-    ctx.font = "11px system-ui,sans-serif";
+    ctx.font = `11px ${UI_FONT}`;
     ctx.textAlign = "right";
     ctx.fillText("按「離開室內」返回", viewW - 10, 23);
 
@@ -8327,7 +8354,7 @@
     </div>`;
     // 已放置
     if (myFurniture.length > 0) {
-      html += `<div style="color:#aaa;font-size:.75rem;margin-bottom:3px;">已放置</div>`;
+      html += `<div style="color:rgba(232,224,207,0.62);font-size:.75rem;margin-bottom:3px;">已放置</div>`;
       myFurniture.forEach((f, idx) => {
         const nameKey = Object.entries(FURNITURE_KIND_MAP).find(([, v]) => v === f.kind)?.[0] || f.kind.toLowerCase();
         const name = ITEM_NAME[nameKey] || f.kind;
@@ -8347,7 +8374,7 @@
     const canPlace = myFurniture.length < 5;
     const placeableItems = FURNITURE_ITEMS.filter(k => (inv.find(s => s.item === k)?.qty || 0) > 0);
     if (placeableItems.length > 0) {
-      html += `<div style="color:#aaa;font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
+      html += `<div style="color:rgba(232,224,207,0.62);font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
       // ROADMAP 323：家具擺在玩家當前所站的室內格——先走到想擺的位置再按放置。
       html += `<div style="color:#8c8;font-size:.66rem;margin:0 0 4px;">🚶 走到想擺放的位置，再按「放置」</div>`;
       placeableItems.forEach(k => {
@@ -8367,7 +8394,7 @@
     }
     // 風格區塊永遠在，故空提示改以「沒有任何家具」判斷（ROADMAP 325）。
     if (myFurniture.length === 0 && placeableItems.length === 0) {
-      html += `<div style="color:#666;font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
+      html += `<div style="color:rgba(232,224,207,0.38);font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
     }
     body.innerHTML = html;
 
@@ -8657,7 +8684,7 @@
     ctx.textAlign = "center";
     // 遠遊見聞（ROADMAP 411）：本趟初次踏足這處——名上方綴一道「✨初次踏足」金緞＋足跡計數。
     if (localeCard.firstFootfall) {
-      ctx.font = "bold 12px system-ui, sans-serif";
+      ctx.font = `bold 12px ${UI_FONT}`;
       ctx.textBaseline = "alphabetic";
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(10,16,30,0.85)";
@@ -8684,7 +8711,7 @@
     ctx.stroke();
     // 氛圍副標（小、柔白）。
     if (localeCard.subtitle) {
-      ctx.font = "13px system-ui, sans-serif";
+      ctx.font = `13px ${UI_FONT}`;
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(10,16,30,0.8)";
       ctx.strokeText(localeCard.subtitle, cx, cy + 26);
@@ -8787,14 +8814,14 @@
     ctx.save();
     ctx.textAlign = towardCx >= 0 ? "left" : "right";
     ctx.textBaseline = "alphabetic";
-    ctx.font = "bold 12px system-ui, sans-serif";
+    ctx.font = `bold 12px ${UI_FONT}`;
     ctx.lineWidth = 3;
     ctx.strokeStyle = "rgba(10,16,30,0.85)";
     const label = "🏠 你的田";
     ctx.strokeText(label, lx, ly);
     ctx.fillStyle = "#e9d6a0";
     ctx.fillText(label, lx, ly);
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = `11px ${UI_FONT}`;
     const dist = fmtWalkDist(distPx);
     ctx.strokeText(dist, lx, ly + 14);
     ctx.fillStyle = "rgba(230,232,238,0.92)";
@@ -8816,7 +8843,7 @@
       ctx.lineWidth = 1.5;
       ctx.strokeRect(bx, by, bw, bh);
       ctx.fillStyle = "#c9a24b";
-      ctx.font = "16px system-ui, sans-serif";
+      ctx.font = `16px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("🗺", bx + bw / 2, by + bh / 2 + 1);
@@ -8882,7 +8909,7 @@
     // 新手村「家」標記(D-3):在安全區中心標一顆小房子或 H,方便在隧道迷宮裡找路。
     const hx = toMiniX(2344), hy = toMiniY(2296);
     if (hx > ox && hx < ox + size && hy > oy && hy < oy + size) {
-      ctx.font = "14px system-ui, sans-serif";
+      ctx.font = `14px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("🏠", hx, hy);
@@ -8940,7 +8967,7 @@
       if (rx >= ox && rx <= ox + size && ry >= oy && ry <= oy + size) {
         const pulse2 = 0.55 + 0.35 * Math.sin(performance.now() / 400);
         ctx.globalAlpha = pulse2;
-        ctx.font = "13px system-ui, sans-serif";
+        ctx.font = `13px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("🌀", rx, ry);
@@ -8951,7 +8978,7 @@
     if (expeditionTarget) {
       const rx = toMiniX(expeditionTarget[0]), ry = toMiniY(expeditionTarget[1]);
       if (rx >= ox && rx <= ox + size && ry >= oy && ry <= oy + size) {
-        ctx.font = "13px system-ui, sans-serif";
+        ctx.font = `13px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("📍", rx, ry);
@@ -8965,7 +8992,7 @@
       if (hx >= ox && hx <= ox + size && hy >= oy && hy <= oy + size) {
         const pulse3 = 0.5 + 0.4 * Math.sin(performance.now() / 300);
         ctx.globalAlpha = pulse3;
-        ctx.font = "13px system-ui, sans-serif";
+        ctx.font = `13px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("⚔️", hx, hy);
@@ -8979,7 +9006,7 @@
       if (npc.is_expedition) {
         const nx = toMiniX(npc.x), ny = toMiniY(npc.y);
         if (nx >= ox && nx <= ox + size && ny >= oy && ny <= oy + size) {
-          ctx.font = "11px system-ui, sans-serif";
+          ctx.font = `11px ${UI_FONT}`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
           ctx.fillText("🏹", nx, ny);
@@ -9045,7 +9072,7 @@
         { t: "東", x: ox + size - dirInset, y: oy + size / 2 },
         { t: "西", x: ox + dirInset,        y: oy + size / 2 },
       ];
-      ctx.font = "9px system-ui, sans-serif";
+      ctx.font = `9px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.lineWidth = 2;
@@ -9062,7 +9089,7 @@
     const mmColW = size / 3;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    ctx.font = "9px system-ui, sans-serif";
+    ctx.font = `9px ${UI_FONT}`;
     MM_LEGEND.forEach((it, i) => {
       const lx = ox + (i % 3) * mmColW + 2;
       const ly = oy + size + 9 + Math.floor(i / 3) * 12;
@@ -9089,7 +9116,7 @@
     ctx.lineWidth = 1;
     ctx.strokeRect(tx, ty, tb, tb);
     ctx.fillStyle = "#c9a24b";
-    ctx.font = "14px system-ui, sans-serif";
+    ctx.font = `14px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("–", tx + tb / 2, ty + tb / 2 + 1);
@@ -9106,7 +9133,7 @@
     ctx.lineWidth = 1;
     ctx.strokeRect(zx, zy, zw, zh);
     ctx.fillStyle = "#c9a24b";
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = `11px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("🔍" + MM_ZOOM_LABEL[minimapZoom], zx + zw / 2, zy + zh / 2 + 1);
@@ -9117,7 +9144,7 @@
     // 天地有名（ROADMAP 398）：當前所在「在地地名」常駐標，置中於面板頂列、夾在縮放鈕與收合鈕之間，
     // 讓玩家隨時知道「我在哪裡」。地名都短（3~4 字），不裁切；無地名（剛進尚未定位）就不畫。
     if (myLocale && myLocale.name) {
-      ctx.font = "bold 11px system-ui, sans-serif";
+      ctx.font = `bold 11px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       const ly = zy + zh / 2 + 1;
@@ -9134,7 +9161,7 @@
     const meMM = myId ? players.get(myId) : null;
     const wayfare = meMM && meMM.wayfare_count ? meMM.wayfare_count : 0;
     if (wayfare > 0) {
-      ctx.font = "10px system-ui, sans-serif";
+      ctx.font = `10px ${UI_FONT}`;
       ctx.textAlign = "left";
       ctx.textBaseline = "alphabetic";
       const wt = `🧭 遠遊見聞 ${wayfare} 處`;
@@ -10036,7 +10063,7 @@
   function drawSprinklers(camX, camY) {
     if (!sprinklers.length) return;
     ctx.save();
-    ctx.font = "18px serif";
+    ctx.font = `18px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     for (const s of sprinklers) {
@@ -10283,12 +10310,12 @@
       ctx.lineWidth = 2;
       ctx.stroke();
       // 中心圖示（月華泉疊一枚 🌕 在水滴上方點綴）
-      ctx.font = "16px system-ui, sans-serif";
+      ctx.font = `16px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("💧", sx, sy + 1);
       if (moonlit) {
-        ctx.font = "12px system-ui, sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.fillText("🌕", sx, sy - 16);
       }
       // 靠近時顯示互動提示
@@ -10298,7 +10325,7 @@
         ctx.beginPath();
         ctx.arc(sx, sy, 26, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.font = "12px system-ui, sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textBaseline = "alphabetic";
         const ty = sy - 36;
         ctx.lineWidth = 3;
@@ -10473,7 +10500,7 @@
         ctx.arc(sx + dx, sy, 16, 0, Math.PI * 2);
         ctx.fillStyle = look.tint;
         ctx.fill();
-        ctx.font = "20px system-ui, sans-serif";
+        ctx.font = `20px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(look.icon, sx + dx, sy + 1);
@@ -10501,7 +10528,7 @@
         // 光描黃環,沒採過的玩家仍不知道那是要按鍵的——在節點正上方標出「採什麼」,
         // 第一次再多帶一行「怎麼按」(鏡像農地腳下格提示)。採過一次(gatheredOnce)
         // 就只留動作詞,不長期擾人。動作詞純讀節點 kind,不在前端判規則。
-        ctx.font = "12px system-ui, sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         const ty = sy - 24; // 貼在圖示上方
         ctx.lineWidth = 3; // 深色描邊讓字在任何地表上都讀得清
@@ -10510,7 +10537,7 @@
         ctx.fillStyle = "rgba(255,235,180,0.95)";
         ctx.fillText(look.act, sx, ty);
         if (!gatheredOnce) {
-          ctx.font = "10px system-ui, sans-serif";
+          ctx.font = `10px ${UI_FONT}`;
           const hint = "按空白鍵或點一下";
           const hy = ty - 13; // 疊在動作詞正上方
           ctx.strokeText(hint, sx, hy);
@@ -10547,7 +10574,7 @@
         ctx.strokeStyle = `hsla(${hue},100%,80%,${(0.9 + 0.1 * pulse).toFixed(3)})`;
         ctx.lineWidth = 3;
         ctx.stroke();
-        ctx.font = "18px system-ui, sans-serif";
+        ctx.font = `18px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("🌈", sx, sy + 1);
@@ -10557,7 +10584,7 @@
           ctx.beginPath();
           ctx.arc(sx, sy, 24, 0, Math.PI * 2);
           ctx.stroke();
-          ctx.font = "12px system-ui, sans-serif";
+          ctx.font = `12px ${UI_FONT}`;
           ctx.textBaseline = "alphabetic";
           const ty = sy - 30;
           ctx.lineWidth = 3;
@@ -10579,7 +10606,7 @@
         ctx.strokeStyle = `rgba(180,220,255,${(0.7 + 0.3 * pulse).toFixed(3)})`;
         ctx.lineWidth = 2;
         ctx.stroke();
-        ctx.font = "16px system-ui, sans-serif";
+        ctx.font = `16px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("☄️", sx, sy + 1);
@@ -10589,7 +10616,7 @@
           ctx.beginPath();
           ctx.arc(sx, sy, 20, 0, Math.PI * 2);
           ctx.stroke();
-          ctx.font = "12px system-ui, sans-serif";
+          ctx.font = `12px ${UI_FONT}`;
           ctx.textBaseline = "alphabetic";
           const ty = sy - 26;
           ctx.lineWidth = 3;
@@ -10636,12 +10663,12 @@
       ctx.lineWidth = 2;
       ctx.stroke();
       // 季節 emoji
-      ctx.font = "14px system-ui, sans-serif";
+      ctx.font = `14px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(c.emoji, sx, sy + 1);
       // 剩餘充能格數
-      ctx.font = "bold 11px system-ui, sans-serif";
+      ctx.font = `bold 11px ${UI_FONT}`;
       ctx.textBaseline = "alphabetic";
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = "rgba(0,0,0,0.55)";
@@ -10655,7 +10682,7 @@
         ctx.beginPath();
         ctx.arc(sx, sy, 22, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.font = "12px system-ui, sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         const label = `${c.emoji}採集`;
         const ty = sy - 32;
         ctx.lineWidth = 3;
@@ -11222,7 +11249,7 @@
     // 胸前壓力表（圓形）
     ctx.fillStyle = "#2a2020";
     ctx.beginPath(); ctx.arc(cx, cy - 6 + bob, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = "#888"; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.strokeStyle = "rgba(232,224,207,0.62)"; ctx.lineWidth = 0.8; ctx.stroke();
     const needle = t * 2.5 + phase;
     ctx.strokeStyle = "#e03020"; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(cx, cy - 6 + bob); ctx.lineTo(cx + Math.cos(needle) * 3, cy - 6 + bob + Math.sin(needle) * 3); ctx.stroke();
@@ -11520,7 +11547,7 @@
     ctx.strokeStyle = "rgba(255,240,180,0.9)";
     ctx.stroke();
     // 名牌
-    ctx.font = "13px system-ui, sans-serif";
+    ctx.font = `13px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
     ctx.lineJoin = "round";
@@ -11548,7 +11575,7 @@
           ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx, sy - 38); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(sx, sy - 35); ctx.lineTo(sx + 20, sy - 30); ctx.lineTo(sx, sy - 25); ctx.closePath();
           ctx.fillStyle = "#8fb8d8"; ctx.fill();
-          ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
+          ctx.font = `12px ${UI_FONT}`; ctx.textAlign = "center";
           ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,0.6)";
           ctx.strokeText(`🏘️ ${t.name}`, sx, sy - 46);
           ctx.fillStyle = "#dfe8f0"; ctx.fillText(`🏘️ ${t.name}`, sx, sy - 46);
@@ -11621,12 +11648,12 @@
 
   // 每棟建築的色盤（wall=主牆色、roof=屋頂色、trim=黃銅邊飾色、win=窗玻璃色）
   const _BLDG_COLORS = {
-    shop:        { wall: "#c8a054", roof: "#5c3d1e", trim: "#e8c068", win: "#2040a0" },
+    shop:        { wall: "#c9a24b", roof: "#5c3d1e", trim: "#e8c068", win: "#2040a0" },
     workshop:    { wall: "#4a5c6a", roof: "#7a6848", trim: "#c08030", win: "#182840" },
     bounty:      { wall: "#6a3028", roof: "#4a1818", trim: "#c06820", win: "#3a1008" },
     expedition:  { wall: "#2a5838", roof: "#1a3820", trim: "#60c868", win: "#0a2818" },
     procurement: { wall: "#3c2860", roof: "#261840", trim: "#8060c0", win: "#180838" },
-    fair:        { wall: "#8a6838", roof: "#5a3818", trim: "#d4a840", win: "#2a1808" },
+    fair:        { wall: "#8a6838", roof: "#5a3818", trim: "#c9a24b", win: "#2a1808" },
     chief:       { wall: "#6a3808", roof: "#3a1804", trim: "#d4a820", win: "#1a0c04" },
     observatory: { wall: "#546e7a", roof: "#78909c", trim: "#cfd8dc", win: "#00bcd4" },
   };
@@ -11636,7 +11663,7 @@
   // 在城裡（天文台入鏡）被 safeRender 整幀攔下 → 角色/小地圖/HUD 連帶消失（「進城人物不見」根因）。
   function _drawSign(sx, y, sign, trim = "#cfd8dc") {
     if (!sign) return;
-    ctx.font = "bold 9px sans-serif";
+    ctx.font = `bold 9px ${UI_FONT}`;
     ctx.textAlign = "center";
     const sw = ctx.measureText(sign).width + 14;
     ctx.fillStyle = "#241008";
@@ -11696,7 +11723,7 @@
     ctx.shadowColor = "#60a8e0";
     ctx.shadowBlur = 8;
     ctx.fillStyle = "#a0d4f8";
-    ctx.font = "bold 14px sans-serif";
+    ctx.font = `bold 14px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("✦", sx, wb - 35);
@@ -11746,12 +11773,12 @@
       ctx.rotate(-Math.PI / 4);
       ctx.fillStyle = "#5d4037";
       ctx.fillRect(0, 0, 45, 12);
-      ctx.fillStyle = "#d4af37"; // 金色鏡頭
+      ctx.fillStyle = "#c9a24b"; // 金色鏡頭
       ctx.fillRect(40, -2, 8, 16);
       ctx.restore();
 
       // 裝飾銅環
-      ctx.strokeStyle = "#d4af37";
+      ctx.strokeStyle = "#c9a24b";
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(sx - BW/2 - 2, wt + 5);
@@ -11790,7 +11817,7 @@
       ctx.strokeStyle = "#000"; ctx.lineWidth = 1;
       ctx.strokeRect(sx - 15, wb - 15, 30, 20);
       ctx.fillStyle = "#000";
-      ctx.font = "bold 9px sans-serif";
+      ctx.font = `bold 9px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText("施工中", sx, wb - 2);
     }
@@ -11910,7 +11937,7 @@
     }
 
     // ── 招牌（掛在屋脊下方） ──
-    ctx.font = "bold 9px sans-serif";
+    ctx.font = `bold 9px ${UI_FONT}`;
     ctx.textAlign = "center";
     const sw = ctx.measureText(sign).width + 14;
     ctx.fillStyle = "#241008";
@@ -11943,7 +11970,7 @@
     ctx.fillStyle = C.trim;
     ctx.beginPath(); ctx.arc(sx, wt + 36, 7, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = C.wall;
-    ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center";
+    ctx.font = `bold 9px ${UI_FONT}`; ctx.textAlign = "center";
     ctx.fillText("Ξ", sx, wt + 40);
   }
 
@@ -12062,7 +12089,7 @@
     ctx.stroke();
     ctx.setLineDash([]);
     // 牆上穀穗圖示
-    ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+    ctx.font = `13px ${UI_FONT}`; ctx.textAlign = "center";
     ctx.fillText("🌾", sx, wt + 40);
   }
 
@@ -12093,7 +12120,7 @@
     ctx.beginPath(); ctx.roundRect(sx - 22, wb - 27, 44, 11, 2); ctx.fill();
     ctx.strokeStyle = C.trim; ctx.lineWidth = 0.8; ctx.stroke();
     ctx.fillStyle = C.trim;
-    ctx.font = "bold 7px sans-serif"; ctx.textAlign = "center";
+    ctx.font = `bold 7px ${UI_FONT}`; ctx.textAlign = "center";
     ctx.fillText("里長屋", sx, wb - 19);
   }
 
@@ -12149,7 +12176,7 @@
       // 地主名牌或「空地」標籤
       const cx2 = sx + w / 2;
       const cy2 = sy + h / 2;
-      ctx.font = "bold 11px sans-serif";
+      ctx.font = `bold 11px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       if (isMine) {
@@ -12178,7 +12205,7 @@
         const sy = wy - camY + h / 2;
         if (sx < -50 || sy < -50 || sx > viewW + 50 || sy > viewH + 50) continue;
         ctx.save();
-        ctx.font = "22px sans-serif";
+        ctx.font = `22px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         // 雞 emoji（微微抖動提示有生命）。ROADMAP 368：牧群可孵到 4 隻。
@@ -12189,23 +12216,23 @@
         ctx.fillText("🐔".repeat(Math.min(rp.chicken_count, 4)), sx, sy - 10 + bob);
         // ROADMAP 368：窩裡正在長大的小雞畫一隻 🐤 依偎在雞群旁。
         if (rp.chick) {
-          ctx.font = "16px sans-serif";
+          ctx.font = `16px ${UI_FONT}`;
           ctx.fillText("🐤", sx + 6 + Math.min(rp.chicken_count, 4) * 9, sy - 10);
         }
         // ROADMAP 409：牧群羈絆——在牧場上方畫愛心（1 熟悉／2 親近／3 黏人），讓「越養越親」一眼可見。
         const hearts = rp.bond_hearts || 0;
         if (hearts > 0) {
-          ctx.font = "12px sans-serif";
+          ctx.font = `12px ${UI_FONT}`;
           ctx.fillText("💗".repeat(hearts), sx, sy - 30);
         }
         if (rp.egg_count > 0) {
-          ctx.font = "bold 11px sans-serif";
+          ctx.font = `bold 11px ${UI_FONT}`;
           ctx.fillStyle = "#fffde0";
           ctx.fillText(`🥚×${rp.egg_count}`, sx, sy + 14);
         }
         // ROADMAP 409：窩裡有暖心金蛋待收——畫一顆金光閃閃的蛋（金光脈動尊重 reduceMotion）。
         if (rp.golden) {
-          ctx.font = "16px sans-serif";
+          ctx.font = `16px ${UI_FONT}`;
           const pulse = reduceMotion ? 1 : 0.7 + 0.3 * Math.abs(Math.sin(animClock * 3));
           ctx.save();
           ctx.globalAlpha = pulse;
@@ -12235,17 +12262,17 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         // 蜂箱本體。蜂巢非空時蜜蜂繞著飛（尊重 reduceMotion）。
-        ctx.font = "20px sans-serif";
+        ctx.font = `20px ${UI_FONT}`;
         ctx.fillText("🐝", sx, sy);
         if (hv.stage && hv.stage !== "empty" && !reduceMotion) {
           // 一隻採蜜歸來的蜜蜂沿小圈繞行，暗示「正在釀蜜」。
           const a = animClock * 2;
-          ctx.font = "11px sans-serif";
+          ctx.font = `11px ${UI_FONT}`;
           ctx.fillText("🐝", sx + Math.cos(a) * 12, sy + Math.sin(a) * 8 - 14);
         }
         // 蜂蜜量（滿巢金光、其餘淡黃）。滿巢提醒玩家來採收。
         if (hv.honey > 0) {
-          ctx.font = "bold 11px sans-serif";
+          ctx.font = `bold 11px ${UI_FONT}`;
           const full = hv.stage === "full";
           ctx.fillStyle = full ? "#ffd54a" : "#fff0b8";
           if (full && !reduceMotion) {
@@ -12296,13 +12323,13 @@
             // seed 用田的世界座標（非螢幕座標），跟樹/星晶/乙太球一致；否則相機一移動相位會亂跳、四格定格間抖動。
             if (!drawClaySprite(c.kind, cx, sy + 4, 26, { shadow: 9, idle: Math.round(wx * 3 + wy * 7 + ci * 131) })) {
               // 該作物沒黏土圖：退回 emoji。
-              ctx.font = "18px sans-serif";
+              ctx.font = `18px ${UI_FONT}`;
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
               ctx.fillText((CROP_EMOJI[c.kind] || "🌱"), cx, sy - 10);
             }
             if (c.ripe) {
-              ctx.font = "11px sans-serif";
+              ctx.font = `11px ${UI_FONT}`;
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
               ctx.fillText("✅", cx, sy + 12);
@@ -12311,14 +12338,14 @@
           ctx.restore();
           continue;
         }
-        ctx.font = "18px sans-serif";
+        ctx.font = `18px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const emojis = fp.crops.map(c => (CROP_EMOJI[c.kind] || "🌱") + (c.ripe ? "✅" : "")).join(" ");
         ctx.fillText(emojis, sx, sy - 12);
         const ripeCount = fp.crops.filter(c => c.ripe).length;
         if (ripeCount > 0) {
-          ctx.font = "bold 10px sans-serif";
+          ctx.font = `bold 10px ${UI_FONT}`;
           ctx.fillStyle = "#90ffb0";
           ctx.fillText(`成熟 ${ripeCount}`, sx, sy + 10);
         }
@@ -12343,7 +12370,7 @@
         ctx.save();
         ctx.translate(sx, sy);
         ctx.scale(pulse, pulse);
-        ctx.font = "20px sans-serif";
+        ctx.font = `20px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("✨", 0, 0);
@@ -12409,7 +12436,7 @@
         // 未知 NPC：退回通用外觀
         ctx.fillStyle = "#777";
         ctx.beginPath(); ctx.arc(sx, by, 10, 0, Math.PI * 2); ctx.fill();
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillText(npc.id, sx, by - 15);
       }
@@ -12422,7 +12449,7 @@
         const amp = reduceMotion ? 0 : (calm ? 1.2 : 2.2);
         const speed = calm ? 1.4 : 2.6;
         const iconBob = Math.sin(t * speed + npc.x * 0.02) * amp;
-        ctx.font = "16px sans-serif";
+        ctx.font = `16px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.globalAlpha = calm ? 0.8 : 1.0;
@@ -12472,7 +12499,7 @@
     ctx.arc(px, py, haloR, 0, Math.PI * 2);
     ctx.fill();
     // 光禮本體。
-    ctx.font = "18px sans-serif";
+    ctx.font = `18px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("🎁", px, py);
@@ -12511,7 +12538,7 @@
       ctx.fill();
       // 樹身。
       ctx.globalAlpha = 1;
-      ctx.font = `${sz}px sans-serif`;
+      ctx.font = `${sz}px ${UI_FONT}`;
       ctx.fillText(GLYPH[stage], sx + sway, sy);
     }
     ctx.restore();
@@ -12577,7 +12604,7 @@
         ctx.fill();
       }
       // 聚落圖示 + 名稱(更小更淡)。靠近時掛在圈邊緣上方,遠時掛在中心點上方。
-      ctx.font = "11px sans-serif";
+      ctx.font = `11px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       const label = style.icon + " " + c.name;
@@ -12643,7 +12670,7 @@
         ctx.setLineDash([]);
       }
       // 巢穴圖示 + 名稱 + 密度。
-      ctx.font = "12px sans-serif";
+      ctx.font = `12px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       const icon = MONSTER_COLONY_ICON[c.kind] || "⚠️";
@@ -12678,7 +12705,7 @@
         const alliancePulse = 0.6 + 0.4 * Math.abs(Math.sin(now / 500));
         ctx.save();
         ctx.globalAlpha = alliancePulse;
-        ctx.font = "14px sans-serif";
+        ctx.font = `14px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🤝", sx + 14, sy - 18);
@@ -12689,7 +12716,7 @@
         const clashPulse = 0.5 + 0.5 * Math.abs(Math.sin(now / 150));
         ctx.save();
         ctx.globalAlpha = clashPulse;
-        ctx.font = "14px sans-serif";
+        ctx.font = `14px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("⚔️", sx - 14, sy - 18);
@@ -12758,7 +12785,7 @@
       ctx.setLineDash([]);
 
       // 圖示
-      ctx.font = "22px sans-serif";
+      ctx.font = `22px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(icon, sx, sy);
@@ -12775,7 +12802,7 @@
       ctx.strokeRect(bx, by, barW, barH);
 
       // 皇冠標記（覺醒時改 🔥👑；霸主時改 👑👑）
-      ctx.font = "14px sans-serif";
+      ctx.font = `14px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       ctx.fillText(isAwakened ? "🔥👑" : isDominant ? "👑👑" : "👑", sx, by);
@@ -12784,7 +12811,7 @@
       const kindName = MONSTER_DISPLAY_NAME[a.kind] || a.kind;
       const crownPrefix = isAwakened ? "🔥👑" : isDominant ? "👑👑" : "👑";
       const label = `${crownPrefix} ${kindName}·霸主`;
-      ctx.font = "bold 11px sans-serif";
+      ctx.font = `bold 11px ${UI_FONT}`;
       const lw = ctx.measureText(label).width + 8;
       const lx = sx, ly = sy + 32;
       ctx.fillStyle = isClashing ? "rgba(100,20,20,0.8)" : isAwakened ? "rgba(120,10,10,0.85)" : isDominant ? "rgba(100,70,0,0.88)" : "rgba(80,50,0,0.75)";
@@ -12797,7 +12824,7 @@
       if (isLastStand) {
         const lsPulse = 0.78 + 0.22 * Math.abs(Math.sin(now / 110));
         const lsLabel = "🩸 背水死戰";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const lw2 = ctx.measureText(lsLabel).width + 10;
         const lsx = sx, lsy = ly + 8;
         ctx.fillStyle = `rgba(150,0,0,${(0.95 * lsPulse).toFixed(3)})`;
@@ -12811,7 +12838,7 @@
       } else if (isClashing) {
         const clashPulse = 0.85 + 0.15 * Math.sin(now / 150);
         const clashLabel = "⚔️ 衝突中";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const cw = ctx.measureText(clashLabel).width + 10;
         const cx2 = sx, cy2 = ly + 8;
         ctx.fillStyle = `rgba(180,20,20,${(0.92 * clashPulse).toFixed(3)})`;
@@ -12826,7 +12853,7 @@
         // ROADMAP 175：覺醒徽章（深赤底，閃爍）
         const awakenPulse = 0.8 + 0.2 * Math.abs(Math.sin(now / 250));
         const awakenLabel = "🔥 覺醒中";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const awkenW = ctx.measureText(awakenLabel).width + 10;
         const awkenX = sx, awkenY = ly + 8;
         ctx.fillStyle = `rgba(160,10,10,${(0.95 * awakenPulse).toFixed(3)})`;
@@ -12841,7 +12868,7 @@
         // ROADMAP 176：霸主徽章（深金色底，閃爍提示擊殺有額外乙太）
         const domPulse = 0.85 + 0.15 * Math.sin(now / 700);
         const domLabel = "👑 稱霸中 +乙太";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const dw = ctx.measureText(domLabel).width + 10;
         const dx2 = sx, dy2 = ly + 8;
         ctx.fillStyle = `rgba(130,90,0,${(0.92 * domPulse).toFixed(3)})`;
@@ -12856,7 +12883,7 @@
         // ROADMAP 174：結盟徽章（金色底，深色字）
         const alliancePulse = 0.88 + 0.12 * Math.sin(now / 450);
         const allyLabel = "🤝 結盟中";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const aw = ctx.measureText(allyLabel).width + 10;
         const alx = sx, aly = ly + 8;
         ctx.fillStyle = `rgba(160,120,0,${(0.92 * alliancePulse).toFixed(3)})`;
@@ -12871,7 +12898,7 @@
         // ROADMAP 169：指揮氣泡——無衝突時才顯示橙色徽章
         const tacticPulse = 0.85 + 0.15 * Math.sin(now / 300);
         const tacticLabel = `📣 ${a.active_tactic}`;
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = `bold 10px ${UI_FONT}`;
         const tw = ctx.measureText(tacticLabel).width + 10;
         const tx = sx, ty = ly + 8;
         ctx.fillStyle = `rgba(200,80,0,${(0.88 * tacticPulse).toFixed(3)})`;
@@ -12924,7 +12951,7 @@
     ctx.stroke();
 
     // 主圖示（比普通 Alpha 更大）
-    ctx.font = "36px sans-serif";
+    ctx.font = `36px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("⚡", sx, sy);
@@ -12942,19 +12969,19 @@
     ctx.strokeRect(bx, by, barW, barH);
 
     // HP 文字
-    ctx.font = "bold 10px sans-serif";
+    ctx.font = `bold 10px ${UI_FONT}`;
     ctx.fillStyle = "#fff";
     ctx.textBaseline = "middle";
     ctx.fillText(`${ancientAlpha.hp}/${ancientAlpha.max_hp}`, sx, by + barH / 2);
 
     // 皇冠圖示
-    ctx.font = "18px sans-serif";
+    ctx.font = `18px ${UI_FONT}`;
     ctx.textBaseline = "bottom";
     ctx.fillText("👑", sx, by);
 
     // 名牌
     const label = "⚡ 傳說古 Alpha";
-    ctx.font = "bold 13px sans-serif";
+    ctx.font = `bold 13px ${UI_FONT}`;
     const lw = ctx.measureText(label).width + 12;
     const lx = sx, ly = sy + 46;
     ctx.fillStyle = "rgba(60,0,100,0.85)";
@@ -13257,7 +13284,7 @@
         if (st && st.until > now) {
           const t = 1 - (st.until - now) / STARTLE_MS; // 0→1 隨時間推進
           ctx.globalAlpha = Math.max(0, 1 - t);        // 漸淡
-          ctx.font = "13px sans-serif";
+          ctx.font = `13px ${UI_FONT}`;
           ctx.textAlign = "center";
           ctx.textBaseline = "bottom";
           ctx.fillText("❗", 0, -30 - t * 10);          // 邊淡邊上飄
@@ -13270,7 +13297,7 @@
       // 由既有 daynight.phase（夜）＋ 物種（非掠食者）＋ 狀態（resting）推得。
       if (!isPredator && w.state === "resting" && daynight && daynight.phase === "night") {
         ctx.globalAlpha = 0.5 + 0.2 * Math.sin(now / 600); // 緩緩呼吸般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💤", 8, -24);
@@ -13282,7 +13309,7 @@
       // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天平靜時才會給獵物此狀態）。
       if (w.state === "grazing") {
         ctx.save();
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13296,7 +13323,7 @@
       // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天成群時才會給某隻此狀態）。
       if (w.state === "watching") {
         ctx.save();
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + Math.sin(now / 540) * 3, -24); // 像左右張望般緩緩平移
@@ -13311,7 +13338,7 @@
       if (w.state === "stalking") {
         ctx.save();
         ctx.globalAlpha = 0.7 + 0.25 * Math.sin(now / 300); // 緩緩起伏，像屏息潛行
-        ctx.font = "10px sans-serif";
+        ctx.font = `10px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🐾", 8, -22);
@@ -13323,7 +13350,7 @@
       // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在成體護幼衝刺時才給此狀態）。
       if (isDefending) {
         ctx.save();
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0 + Math.sin(now / 70) * 1.5, -24); // 微微抖動，像憤而護幼的緊繃
@@ -13336,7 +13363,7 @@
       // 純前端、零協議欄位：直接讀伺服器廣播的 w.state（後端只在白天幼獸平靜依偎時才給此狀態）。
       if (w.state === "frolicking") {
         ctx.save();
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0, -24 - Math.abs(Math.sin(now / 130)) * 3); // 上下彈跳，像蹦蹦跳跳的雀躍
@@ -13353,7 +13380,7 @@
         ctx.save();
         const gr = (Math.sin(now / 150) + 1) / 2; // 0→1 一口一口地起落，像跟著媽媽低頭啃嫩草
         ctx.globalAlpha = 0.5 + 0.4 * gr;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0, -19 - gr * 3); // 隨每一口輕輕一頓一頓地下沉又抬起
@@ -13370,7 +13397,7 @@
         ctx.save();
         const br = (Math.sin(now / 600) + 1) / 2; // 0→1 緩緩一呼一吸，比別的氣泡慢，賣睡得安穩
         ctx.globalAlpha = 0.45 + 0.4 * br;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0, -24 - br * 2); // 隨睡息輕輕浮沉
@@ -13385,7 +13412,7 @@
       if (w.state === "grooming") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 600)); // 像依偎時的輕柔呼吸般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💕", 8, -22);
@@ -13399,7 +13426,7 @@
       if (w.state === "tending") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 640)); // 像俯身舐毛時的輕柔呼吸般明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💗", 8, -22);
@@ -13413,7 +13440,7 @@
       if (w.state === "feigning") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.3 * Math.abs(Math.sin(now / 700)); // 像斷了氣般微弱明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13431,7 +13458,7 @@
         ctx.save();
         const cbt = Math.abs(Math.sin(now / 480)); // 像心跳般徐徐一脹一縮
         ctx.globalAlpha = 0.55 + 0.4 * cbt;
-        ctx.font = `${12 + cbt * 2}px sans-serif`;
+        ctx.font = `${12 + cbt * 2}px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("❤️", 8, -22);
@@ -13447,7 +13474,7 @@
         ctx.save();
         const mbt = Math.abs(Math.sin(now / 1100)); // 極緩明滅，像低首靜默的呼吸
         ctx.globalAlpha = 0.4 + 0.35 * mbt;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🥀", 8, -22);
@@ -13463,7 +13490,7 @@
         ctx.save();
         const sbt = Math.abs(Math.sin(now / 220)); // 輕快閃爍，像初長成的雀躍
         ctx.globalAlpha = 0.6 + 0.4 * sbt;
-        ctx.font = `${13 + sbt * 3}px sans-serif`;
+        ctx.font = `${13 + sbt * 3}px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("✨", 8, -22);
@@ -13479,7 +13506,7 @@
         ctx.save();
         const nbt = Math.abs(Math.sin(now / 320)); // 徐緩脹縮，像新生兒怯生生的第一口呼吸
         ctx.globalAlpha = 0.55 + 0.4 * nbt;
-        ctx.font = `${12 + nbt * 3}px sans-serif`;
+        ctx.font = `${12 + nbt * 3}px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🐣", 0, -20);
@@ -13494,7 +13521,7 @@
         ctx.save();
         const spt = Math.abs(Math.sin(now / 90)); // 與身體頂撞同步、一脹一縮，像力道的一推一退
         ctx.globalAlpha = 0.55 + 0.4 * spt;
-        ctx.font = `${11 + spt * 2}px sans-serif`; // 隨頂撞節奏一脹一縮
+        ctx.font = `${11 + spt * 2}px ${UI_FONT}`; // 隨頂撞節奏一脹一縮
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💥", 0, -24);
@@ -13509,7 +13536,7 @@
       if (w.state === "vigilant") {
         ctx.save();
         ctx.globalAlpha = 0.6 + 0.35 * Math.abs(Math.sin(now / 240)); // 像屏息戒備時的不安心跳般明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(Math.sin(now / 55) * 1.2, -24); // 微微發顫，像僵立緊盯時繃緊的神經
@@ -13526,7 +13553,7 @@
       if (w.state === "howling") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.4 * Math.abs(Math.sin(now / 520)); // 像一聲嗥叫的起落般明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(0, -24 - Math.abs(Math.sin(now / 700)) * 2); // 像仰首時微微上揚
@@ -13542,7 +13569,7 @@
       if (w.state === "sated") {
         ctx.save();
         ctx.globalAlpha = 0.45 + 0.25 * Math.sin(now / 640); // 緩緩呼吸般明滅，像飽足後的酣憩
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("😴", 8, -23);
@@ -13558,7 +13585,7 @@
         ctx.save();
         const dz = (Math.sin(now / 720) + 1) / 2; // 0→1 緩緩起落
         ctx.globalAlpha = 0.45 + 0.3 * dz; // 緩緩呼吸般明滅，像補眠時的酣憩
-        ctx.font = (10.5 + dz * 1.5).toFixed(1) + "px sans-serif"; // 隨呼吸徐徐脹縮
+        ctx.font = (10.5 + dz * 1.5).toFixed(1) + "px " + UI_FONT; // 隨呼吸徐徐脹縮
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("😪", 8, -23);
@@ -13574,7 +13601,7 @@
       if (w.state === "greeting") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 520)); // 像重逢致意時的輕快心跳般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🧡", 8, -22); // 偏向夥伴一側，讀起來像兩頭狼頭挨著頭
@@ -13590,7 +13617,7 @@
       if (w.state === "licking") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 240)); // 隨一舔一舔的節奏明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + Math.sin(now / 200) * 1.5, -23); // 隨舔毛節奏左右一頓一頓地擺
@@ -13607,7 +13634,7 @@
       if (w.state === "marking") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.4 * Math.abs(Math.sin(now / 300)); // 隨「標一下」徐徐沁出般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -14 + Math.sin(now / 260) * 1.0); // 貼地低處、一滴緩緩沁落
@@ -13625,7 +13652,7 @@
       if (w.state === "sniffing") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.4 * Math.abs(Math.sin(now / 240)); // 隨一嗅一頓地明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -19 + Math.sin(now / 200) * 1.2); // 抬頭朝空中嗅，比留味的 💧 更高
@@ -13643,7 +13670,7 @@
       if (w.state === "skirting") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.4 * Math.abs(Math.sin(now / 280)); // 像隱約嗅到危險時的不安般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7 + Math.sin(now / 150) * 1.0, -22); // 微微發顫，透出提防的不安
@@ -13659,7 +13686,7 @@
       if (w.state === "sheltering") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 360)); // 像細雨綿綿般和緩明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -22);
@@ -13675,7 +13702,7 @@
       if (w.state === "shaking") {
         ctx.save();
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 90)); // 急促明滅，像甩水時的一陣抖動
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7 + Math.sin(now / 55) * 2.5, -22); // 高頻小幅左右急抖——渾身一抖、水珠四濺
@@ -13692,7 +13719,7 @@
         ctx.save();
         const pulse = 0.6 + 0.3 * Math.abs(Math.sin(now / 520)); // 徐徐脹縮、如暖意般和緩明滅
         ctx.globalAlpha = pulse;
-        ctx.font = (11 * pulse) + "px sans-serif"; // 隨明滅微微脹縮，透出曬太陽的暖意
+        ctx.font = (11 * pulse) + "px " + UI_FONT; // 隨明滅微微脹縮，透出曬太陽的暖意
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -22);
@@ -13709,7 +13736,7 @@
         ctx.save();
         const pulse = 0.6 + 0.3 * Math.abs(Math.sin(now / 480)); // 徐徐脹縮、如水光般和緩明滅
         ctx.globalAlpha = pulse;
-        ctx.font = (11 * pulse) + "px sans-serif"; // 隨明滅微微脹縮，透出啜飲時的水光
+        ctx.font = (11 * pulse) + "px " + UI_FONT; // 隨明滅微微脹縮，透出啜飲時的水光
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -22);
@@ -13726,7 +13753,7 @@
         ctx.save();
         const pulse = 0.55 + 0.4 * Math.abs(Math.sin(now / 520)); // 徐徐明滅、如流星劃過般和緩明暗
         ctx.globalAlpha = pulse;
-        ctx.font = (12 * pulse) + "px sans-serif"; // 隨明滅微微脹縮，透出仰望時的流光
+        ctx.font = (12 * pulse) + "px " + UI_FONT; // 隨明滅微微脹縮，透出仰望時的流光
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -22);
@@ -13742,7 +13769,7 @@
         ctx.save();
         const pulse = 1.0 + Math.abs(Math.sin(now / 110)) * 0.25; // 急速脹縮 [1.0, 1.25]
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 110)); // 急促明滅
-        ctx.font = (12 * pulse) + "px sans-serif";
+        ctx.font = (12 * pulse) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13758,7 +13785,7 @@
         ctx.save();
         const jitter = Math.sin(now / 55) * 1.6; // 左右急速抖動 [-1.6, 1.6]px
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 90)); // 冷顫明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + jitter, -22);
@@ -13775,7 +13802,7 @@
         const rise = (Math.sin(now / 520) + 1) / 2; // 0→1 緩緩起落，像白霧一口口呼出又飄散
         const grow = 1.0 + rise * 0.35;             // 徐徐脹大 [1.0, 1.35]
         ctx.globalAlpha = 0.3 + 0.45 * (1 - rise);  // 升得越高越淡（呼出時清晰、飄散時轉淡）
-        ctx.font = (12 * grow) + "px sans-serif";
+        ctx.font = (12 * grow) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22 - rise * 6); // 隨 rise 徐徐向上飄升
@@ -13792,7 +13819,7 @@
         ctx.save();
         const breathe = 1.0 + Math.abs(Math.sin(now / 480)) * 0.18; // 和緩脹縮 [1.0, 1.18]，依偎取暖的呼吸起伏
         ctx.globalAlpha = 0.7 + 0.25 * Math.abs(Math.sin(now / 480)); // 隨呼吸微微明滅
-        ctx.font = (12 * breathe) + "px sans-serif";
+        ctx.font = (12 * breathe) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13808,7 +13835,7 @@
       if (w.state === "flocking") {
         ctx.save();
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 520)); // 隨遷徙躁動微微明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + Math.sin(now / 600) * 1.5, -22); // 輕輕左右擺動，像探尋南行的方向
@@ -13825,7 +13852,7 @@
       if (w.state === "trekking" || w.state === "following") {
         ctx.save();
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 360)); // 隨步伐微微明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22 + Math.sin(now / 300) * 1.5); // 輕輕上下挪移，像邁步行進的節奏
@@ -13842,7 +13869,7 @@
         ctx.save();
         const bloom = 1.0 + Math.abs(Math.sin(now / 540)) * 0.22; // 和緩脹縮 [1.0, 1.22]，湊近嗅花的呼吸起伏
         ctx.globalAlpha = 0.65 + 0.3 * Math.abs(Math.sin(now / 540)); // 隨呼吸微微明滅
-        ctx.font = (12 * bloom) + "px sans-serif";
+        ctx.font = (12 * bloom) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13859,7 +13886,7 @@
         ctx.save();
         const nr = (Math.sin(now / 200) + 1) / 2; // 0→1 一頓一頓地起落，像銜起枝條安放、再低頭去銜下一根
         ctx.globalAlpha = 0.55 + 0.4 * nr;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🪺 隨整巢的節奏輕輕一頓一頓地下沉又抬起，讀起來像正銜枝築巢
@@ -13876,7 +13903,7 @@
         ctx.save();
         const pulse = 1.0 + Math.abs(Math.sin(now / 110)) * 0.25; // 急速脹縮 [1.0, 1.25]，與 307 喘氣同節奏的急促感
         ctx.globalAlpha = 0.6 + 0.3 * Math.abs(Math.sin(now / 110)); // 急促明滅
-        ctx.font = (12 * pulse) + "px sans-serif";
+        ctx.font = (12 * pulse) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13895,7 +13922,7 @@
         const swell = (Math.sin(now / 600) + 1) / 2;   // 0→1 緩緩鼓脹又收，像羽毛一鼓一收地蓬起保暖
         const grow = 1.0 + swell * 0.45;               // 徐徐脹大到飽滿 [1.0, 1.45]——脹幅大於 310 偎暖，讀起來更圓飽
         ctx.globalAlpha = 0.6 + 0.35 * swell;          // 鼓得越蓬越清晰（蓬起時飽滿、收下時轉淡）
-        ctx.font = (12 * grow) + "px sans-serif";
+        ctx.font = (12 * grow) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22);
@@ -13912,7 +13939,7 @@
         ctx.save();
         const fr = (Math.sin(now / 260) + 1) / 2; // 0→1 一頓一頓地起落，像低頭咬一口、再抬頭嚼一嚼
         ctx.globalAlpha = 0.55 + 0.4 * fr;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🍂 隨進食的節奏沉穩地一頓一頓下沉又抬起，讀起來像正埋頭啃食增膘
@@ -13931,7 +13958,7 @@
         ctx.save();
         const cf = (Math.sin(now / 240) + 1) / 2; // 0→1 一頓一頓地起落，像前蹄刨一下、再低頭啃一口
         ctx.globalAlpha = 0.55 + 0.4 * cf;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // ❄️ 隨刨雪的節奏輕輕一頓一頓下沉又飄回，讀起來像蹄子刨開覆雪、揚起一陣細雪
@@ -13951,7 +13978,7 @@
         const lf = Math.sin(now / 150);          // -1→1 左右打旋
         const lb = (Math.sin(now / 110) + 1) / 2; // 0→1 輕輕浮沉
         ctx.globalAlpha = 0.6 + 0.35 * lb;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🍃 隨追逐左右打著旋兒、上下輕輕翻飛，讀起來像一片在風裡打旋飄落、惹得小獸竄出去追撲的枯葉
@@ -13971,7 +13998,7 @@
         ctx.save();
         const rf = Math.sin(now / 130);          // -1→1 左右一下一下蹭動
         ctx.globalAlpha = 0.6 + 0.35 * Math.abs(rf);
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🌳 隨磨角的節奏橫向一下一下往復蹭動，讀起來像鹿角抵著樹幹來回磨
@@ -13989,7 +14016,7 @@
         ctx.save();
         const sf = Math.sin(now / 70);           // 急促左右快擺——蚊蠅亂竄
         ctx.globalAlpha = 0.55 + 0.4 * Math.abs(sf);
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🪰 急促地左右快擺、忽上忽下打轉，像驅之不散的飛蟲
@@ -14006,7 +14033,7 @@
       if (w.state === "curious") {
         ctx.save();
         ctx.globalAlpha = 0.5 + 0.35 * Math.abs(Math.sin(now / 460)); // 像試探時的猶疑般明滅
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + Math.sin(now / 380) * 1.5, -23); // 微微探頭、左右打量
@@ -14022,7 +14049,7 @@
         ctx.save();
         const wt = (Math.sin(now / 700) + 1) / 2; // 0→1 緩緩起落，像朝陽升起又微微明滅
         ctx.globalAlpha = 0.55 + 0.4 * wt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8, -22 - wt * 3); // 像朝陽緩緩升起般微微上移
@@ -14042,7 +14069,7 @@
         ctx.save();
         const ct = (Math.sin(now / 240) + 1) / 2; // 0→1 輕快起落，像一串清亮的鳥鳴
         ctx.globalAlpha = 0.55 + 0.4 * ct;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(7, -23 - ct * 3); // 像音符隨鳴聲輕輕上下跳動
@@ -14061,7 +14088,7 @@
         ctx.save();
         const pr = (Math.sin(now / 360) + 1) / 2; // 0→1 緩緩起落，像一根羽毛輕輕飄墜又揚起
         ctx.globalAlpha = 0.4 + 0.4 * pr;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 羽毛一邊緩緩飄落（隨 pr 上下浮沉）、一邊隨梳理輕輕左右搖，像剛被理鬆抖落的一片絨羽
@@ -14081,7 +14108,7 @@
         const st = (Math.sin(now / 620) + 1) / 2;   // 0→1 緩緩張開又收起，像懶懶地把翅膀抻開再收回
         const grow = 1.0 + st * 0.4;                // 徐徐脹大到飽滿 [1.0, 1.4]——讀起來像整邊翅膀慢慢展開
         ctx.globalAlpha = 0.5 + 0.4 * st;           // 展得越開越清晰（抻開時飽滿、收回時轉淡）
-        ctx.font = (12 * grow) + "px sans-serif";
+        ctx.font = (12 * grow) + "px " + UI_FONT;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(8 + st * 3, -21);             // 隨翅膀展開微微朝一側偏移，賣出「單側展翅」的舒展感
@@ -14098,7 +14125,7 @@
         ctx.save();
         const kr = (Math.sin(now / 130) + 1) / 2; // 0→1 一啄一啄地起落，像鳥喙一下一下啄向地面
         ctx.globalAlpha = 0.5 + 0.4 * kr;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🌾 隨每一啄輕輕一頓一頓地下沉又抬起（kr 大時頭頂的穗子被啄得低些），讀起來像正低頭啄籽
@@ -14115,7 +14142,7 @@
         ctx.save();
         const sr = (Math.sin(now / 90) + 1) / 2; // 0→1 快速起落，像後腿飛快地一搔一搔（比理羽急促）
         ctx.globalAlpha = 0.55 + 0.35 * sr;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🐾 隨搔抓輕輕抖動（高頻小幅震），像耳後正被後腿一下一下撓著
@@ -14132,7 +14159,7 @@
         ctx.save();
         const yr = (Math.sin(now / 480) + 1) / 2; // 0→1 緩緩脹放又收回，像一個張口又閉上的長呵欠（比搔癢慢）
         ctx.globalAlpha = 0.45 + 0.4 * yr;
-        ctx.font = (11 + yr * 3) + "px sans-serif"; // 隨呵欠張口緩緩脹大、再收小
+        ctx.font = (11 + yr * 3) + "px " + UI_FONT; // 隨呵欠張口緩緩脹大、再收小
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🥱", 6, -20 - yr * 3); // 隨呵欠輕輕往上飄一點
@@ -14146,7 +14173,7 @@
       if (w.state === "flushing") {
         ctx.save();
         ctx.globalAlpha = 0.55 + 0.35 * Math.abs(Math.sin(now / 70)); // 隨撲騰急促明滅
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💨", 9, -22 - flushLift); // 隨竄起的鳥身一起往上竄的一縷驚風
@@ -14161,7 +14188,7 @@
         ctx.save();
         const dr = (Math.sin(now / 200) + 1) / 2; // 0→1 緩緩翻騰，像揚起的塵霧一陣一陣地飄散
         ctx.globalAlpha = 0.4 + 0.35 * dr;
-        ctx.font = (11 + dr * 2) + "px sans-serif"; // 隨揚塵緩緩脹大、再收小
+        ctx.font = (11 + dr * 2) + "px " + UI_FONT; // 隨揚塵緩緩脹大、再收小
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🌫️ 隨翻滾在腳邊低處左右飄移（揚起的塵土貼著地面散開），比其他自理的頭頂信使更低、更貼地
@@ -14178,7 +14205,7 @@
         ctx.save();
         const pk = (Math.sin(now / 130) + 1) / 2; // 0→1 一啄一啄地點頭，像低頭啄蟲又抬起
         ctx.globalAlpha = 0.6 + 0.35 * pk;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🐛", 6, -19 - pk * 3); // 啄起的小蟲，隨低頭啄食一上一下點動
@@ -14193,7 +14220,7 @@
         ctx.save();
         const ct = (Math.sin(now / 170) + 1) / 2; // 0→1 一下一下地刨土埋藏，像低頭扒土又抬起
         ctx.globalAlpha = 0.55 + 0.4 * ct;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🥜 隨刨土在腳邊低處一上一下（埋進土裡的堅果），比啃咬的 🌰 更低、更貼地——存起而非捧在身前吃
@@ -14210,7 +14237,7 @@
         ctx.save();
         const bt = (Math.sin(now / 170) + 1) / 2; // 0→1 一下一下地刨土埋藏，與 282 囤糧同律動
         ctx.globalAlpha = 0.55 + 0.4 * bt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🦴 隨刨土在腳邊低處一上一下（埋進土裡的獵肉），比囤糧的 🥜 同樣貼地——存起吃不完的肉
@@ -14228,7 +14255,7 @@
         ctx.save();
         const rt = (Math.sin(now / 170) + 1) / 2; // 0→1 一下一下地刨開取回，與 303 埋藏同律動
         ctx.globalAlpha = 0.55 + 0.4 * rt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         // 🦴 隨刨土在腳邊低處一上一下（刨開土取回的存糧），與 303 埋藏同樣貼地——取回先前藏的肉
@@ -14244,7 +14271,7 @@
         ctx.save();
         const rm = (Math.sin(now / 520) + 1) / 2; // 0→1 慢條斯理地回嚼（比呵欠更慢，反芻是悠長的活兒）
         ctx.globalAlpha = 0.5 + 0.35 * rm;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("😌", Math.sin(now / 260) * 2, -20); // 隨嘴巴一左一右地慢嚼輕輕左右晃
@@ -14259,7 +14286,7 @@
         ctx.save();
         const sh = (Math.sin(now / 110) + 1) / 2; // 0→1 飛蟲被揮得快速嗡嗡打轉（比慢動作的自理急促）
         ctx.globalAlpha = 0.55 + 0.4 * sh;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🪰", Math.sin(now / 90) * 5, -20 - sh * 2); // 隨甩尾被揮開、左右上下亂竄打轉
@@ -14274,7 +14301,7 @@
         ctx.save();
         const nt = (Math.sin(now / 200) + 1) / 2; // 0→1 一小口一小口、輕輕起伏地啃
         ctx.globalAlpha = 0.6 + 0.35 * nt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🌰", 6, -22 - nt * 2); // 捧在身前的食物，隨啃咬微微一動一動
@@ -14289,7 +14316,7 @@
         ctx.save();
         const pt = Math.abs(Math.sin(now / 120)); // 與躍起同步、急促起伏
         ctx.globalAlpha = 0.5 + 0.45 * pt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("💨", 9, -22 - pounceLift); // 隨撲躍往上竄的一縷勁風（跟著抬起的狐身）
@@ -14304,7 +14331,7 @@
         ctx.save();
         const tt = Math.abs(Math.sin(now / 260)); // 與一嗅一頓同步、緩緩明滅
         ctx.globalAlpha = 0.45 + 0.45 * tt;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("👃", 9, -20 + trackLower); // 跟著壓低的狼身略往下的一記嗅探
@@ -14320,7 +14347,7 @@
         ctx.save();
         const ft = Math.abs(Math.sin(now / 180)); // 與一口口啃咬同步、緩緩明滅
         ctx.globalAlpha = 0.5 + 0.45 * ft;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🍖", 9, -20 + feastLower); // 跟著埋頭的狼身略往下的一塊分食
@@ -14336,7 +14363,7 @@
         ctx.save();
         const st = Math.abs(Math.sin(now / 130)); // 與一啄一啄同步、緩緩明滅
         ctx.globalAlpha = 0.5 + 0.45 * st;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🍖", 8, -18 + scavPeck); // 跟著點頭啄食的鳥身一頓一頓往下的一塊殘骸
@@ -14354,7 +14381,7 @@
         ctx.save();
         const ft = Math.abs(Math.sin(now / 110)); // 與一啄一啄同步、緩緩明滅
         ctx.globalAlpha = 0.5 + 0.45 * ft;
-        ctx.font = "11px sans-serif";
+        ctx.font = `11px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("🐛", 8, -18 + foragePeck); // 跟著點頭啄食的鳥身一頓一頓往下的一隻小蟲
@@ -14369,7 +14396,7 @@
       if (w.state === "mobbing") {
         ctx.save();
         ctx.globalAlpha = 0.6 + 0.35 * Math.abs(Math.sin(now / 90)); // 急促明滅，像鼓譟時的躁動
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.translate(Math.sin(now / 38) * 2.0, -22); // 抖得比別的氣泡急，賣一擁而上的躁動
@@ -14382,7 +14409,7 @@
       if (w.juvenile && w.state !== "frolicking" && w.state !== "napping" && w.state !== "sheltering" && w.state !== "shaking" && w.state !== "basking" && w.state !== "drinking" && w.state !== "stargazing" && w.state !== "panting" && w.state !== "shivering" && w.state !== "puffing" && w.state !== "huddling" && w.state !== "flocking" && w.state !== "nuzzling" && w.state !== "gaping" && w.state !== "fattening" && w.state !== "cratering" && w.state !== "fluffing" && w.state !== "stretching" && w.state !== "trekking" && w.state !== "following" && w.state !== "leaf_chasing" && w.state !== "swishing") {
         const fade = Math.max(0, Math.min(1, (1 - scale) / (1 - 0.45))); // 剛生最亮、長大漸隱
         ctx.globalAlpha = fade * (0.55 + 0.3 * Math.sin(now / 220));
-        ctx.font = "10px sans-serif";
+        ctx.font = `10px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.fillText("✨", 0, -24);
@@ -14414,13 +14441,13 @@
       // 尚未馴養但已開始累積親近度時，畫一顆漸滿的小心形作為「快馴服了」的回饋。
       if (w.tamed) {
         const beat = 1 + 0.12 * Math.sin(now / 260);
-        ctx.font = (11 * beat).toFixed(1) + "px sans-serif";
+        ctx.font = (11 * beat).toFixed(1) + "px " + UI_FONT;
         ctx.textBaseline = "bottom";
         ctx.fillText("💛", 0, -36);
       } else if (w.familiarity > 0.01) {
         // 進度心：底色淡灰、依親近度由下往上染成粉紅，暗示「再餵幾次就馴服」。
         const f = Math.max(0, Math.min(1, w.familiarity));
-        ctx.font = "9px sans-serif";
+        ctx.font = `9px ${UI_FONT}`;
         ctx.textBaseline = "bottom";
         ctx.globalAlpha = 0.35 + 0.5 * f;
         ctx.fillText("🤍", 0, -36);
@@ -14569,7 +14596,7 @@
     ctx.ellipse(0, 2, 11, 7, 0, 0, Math.PI * 2);
     ctx.fill();
     // 頸
-    ctx.fillStyle = "#c8985c";
+    ctx.fillStyle = "#c9a24b";
     ctx.beginPath();
     ctx.moveTo(7, -2);
     ctx.lineTo(10, -8);
@@ -14842,7 +14869,7 @@
     const LINE_H = FONT_SIZE + 3;
 
     ctx.save();
-    ctx.font = `${FONT_SIZE}px sans-serif`;
+    ctx.font = `${FONT_SIZE}px ${UI_FONT}`;
     ctx.textBaseline = "top";
 
     for (const [npcId, b] of npcSpeechBubbles) {
@@ -14893,7 +14920,7 @@
 
       // 泡泡背景（圓角白框 + 淺陰影）
       ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#888";
+      ctx.strokeStyle = "rgba(232,224,207,0.62)";
       ctx.lineWidth = 1.5;
       const r = 8;
       ctx.beginPath();
@@ -14918,7 +14945,7 @@
       ctx.lineTo(sx, by + bubbleH + 8);
       ctx.closePath();
       ctx.fill();
-      ctx.strokeStyle = "#888";
+      ctx.strokeStyle = "rgba(232,224,207,0.62)";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(sx - 6, by + bubbleH);
@@ -15005,7 +15032,7 @@
     const LINE_H = FONT_SIZE + 3;
 
     ctx.save();
-    ctx.font = `${FONT_SIZE}px sans-serif`;
+    ctx.font = `${FONT_SIZE}px ${UI_FONT}`;
     ctx.textBaseline = "top";
 
     for (const p of players.values()) {
@@ -15056,7 +15083,7 @@
 
       // 泡泡背景（圓角白框 + 淺陰影）——與 NPC 泡泡同款
       ctx.fillStyle = "#ffffff";
-      ctx.strokeStyle = "#888";
+      ctx.strokeStyle = "rgba(232,224,207,0.62)";
       ctx.lineWidth = 1.5;
       const r = 8;
       ctx.beginPath();
@@ -15081,7 +15108,7 @@
       ctx.lineTo(sx, by + bubbleH + 8);
       ctx.closePath();
       ctx.fill();
-      ctx.strokeStyle = "#888";
+      ctx.strokeStyle = "rgba(232,224,207,0.62)";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(sx - 6, by + bubbleH);
@@ -15157,7 +15184,7 @@
       const ey = sy - 52 - rise; // 頭頂上方再往上飄
 
       ctx.globalAlpha = alpha;
-      ctx.font = `${size}px sans-serif`;
+      ctx.font = `${size}px ${UI_FONT}`;
       // 淺描邊讓 emoji 在各種背景上都看得清。
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
@@ -15208,7 +15235,7 @@
 
       ctx.globalAlpha = alpha;
       // 立牌本體 🪧（錨在地面）。
-      ctx.font = "24px sans-serif";
+      ctx.font = `24px ${UI_FONT}`;
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(0,0,0,0.5)";
       ctx.strokeText("🪧", sx, sy - 12);
@@ -15218,7 +15245,7 @@
       if (distSq <= BUBBLE_DIST * BUBBLE_DIST) {
         const label = waypostLabel(w.message_key);
         const by = "— " + (w.owner_name || "旅人");
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         const w1 = ctx.measureText(label).width;
         const w2 = ctx.measureText(by).width;
         const boxW = Math.max(w1, w2) + 16;
@@ -15233,7 +15260,7 @@
         ctx.fillStyle = `rgba(240,216,160,${alpha})`;
         ctx.fillText(label, sx, byTop + 11);
         ctx.fillStyle = `rgba(170,160,140,${alpha})`;
-        ctx.font = "10px sans-serif";
+        ctx.font = `10px ${UI_FONT}`;
         ctx.fillText(by, sx, byTop + 24);
       }
     }
@@ -15298,7 +15325,7 @@
       const size = BASE_SIZE * scale;
 
       ctx.globalAlpha = alpha;
-      ctx.font = `${size}px sans-serif`;
+      ctx.font = `${size}px ${UI_FONT}`;
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.strokeText("✋", sx, sy - 30);
@@ -15365,7 +15392,7 @@
       const size = BASE_SIZE * scale;
 
       ctx.globalAlpha = alpha;
-      ctx.font = `${size}px sans-serif`;
+      ctx.font = `${size}px ${UI_FONT}`;
       ctx.lineWidth = 3;
       ctx.strokeStyle = "rgba(255,255,255,0.85)";
       ctx.strokeText("👏", sx, sy - 30);
@@ -15418,7 +15445,7 @@
       const ny = cy - 2 + bob;
       const glyph = BUSK_NOTE_GLYPHS[(Math.floor(t / Math.PI) + i) % BUSK_NOTE_GLYPHS.length];
       ctx.globalAlpha = reduceMotion ? 0.85 : 0.6 + 0.35 * (0.5 + 0.5 * Math.cos(phase));
-      ctx.font = `${13 + i}px system-ui, sans-serif`;
+      ctx.font = `${13 + i}px ${UI_FONT}`;
       ctx.fillText(glyph, nx, ny);
     }
     ctx.restore();
@@ -15446,7 +15473,7 @@
     ctx.fill();
     // 暖食小圖示
     ctx.globalAlpha = fade * 0.95;
-    ctx.font = "11px system-ui, sans-serif";
+    ctx.font = `11px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("🍲", cx, cy);
@@ -15559,7 +15586,7 @@
         const spread = Math.min(1, age / 600); // 0→1 往外擴
         const N = Math.min(10, 4 + size);       // 人越多撒越多
         ctx.globalAlpha = alpha * 0.85;
-        ctx.font = `${baseSize * 0.42}px sans-serif`;
+        ctx.font = `${baseSize * 0.42}px ${UI_FONT}`;
         for (let k = 0; k < N; k++) {
           const ang = (Math.PI * 2 * k) / N - Math.PI / 2;
           const r = 10 + spread * (baseSize * 1.3);
@@ -15577,7 +15604,7 @@
         scale += Math.sin(t * Math.PI) * 0.24;  // 過衝凸起
       }
       ctx.globalAlpha = alpha;
-      ctx.font = `${baseSize * scale}px sans-serif`;
+      ctx.font = `${baseSize * scale}px ${UI_FONT}`;
       ctx.lineWidth = 4;
       ctx.strokeStyle = "rgba(255,255,255,0.9)";
       ctx.strokeText(fx.glyph, sx, cy);
@@ -17850,7 +17877,7 @@
 
   function drawSandDust(p) {
     // 棕黃色橢圓粒子，帶旋轉
-    ctx.fillStyle = "#c8a060";
+    ctx.fillStyle = "#c9a24b";
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.rotate(p.angle || 0);
@@ -19181,12 +19208,12 @@
     ctx.fillRect(sx + 6, sy - 4, 8, 10);
     // 名字與提示
     ctx.fillStyle = "#ffcc66";
-    ctx.font = "bold 11px sans-serif";
+    ctx.font = `bold 11px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.fillText("🧳 旅行商人", sx, sy - 28);
     if (inRange) {
       ctx.fillStyle = "#ffe08a";
-      ctx.font = "10px sans-serif";
+      ctx.font = `10px ${UI_FONT}`;
       ctx.fillText("（點擊面板購買稀有物品）", sx, sy - 40);
     }
     ctx.restore();
@@ -19257,7 +19284,7 @@
     ctx.lineTo(sx + 12, by - 12);
     ctx.fill();
     // 商人名牌
-    ctx.font = "bold 10px sans-serif";
+    ctx.font = `bold 10px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.fillStyle = "#c9a24b";
     ctx.fillText(name, sx, by - 30);
@@ -19274,7 +19301,7 @@
     ctx.fillRect(sx-10, by-17, 20, 5); ctx.fillRect(sx-5, by-22, 10, 6);
     ctx.strokeStyle = "#c08a3a"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sx+12, by-20); ctx.lineTo(sx+12, by-8); ctx.stroke();
     ctx.fillStyle = "#4a80c0"; ctx.beginPath(); ctx.moveTo(sx+12, by-20); ctx.lineTo(sx+20, by-16); ctx.lineTo(sx+12, by-12); ctx.fill();
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80b8e8"; ctx.fillText(name, sx, by - 30);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#80b8e8"; ctx.fillText(name, sx, by - 30);
   }
 
   function drawBountyLook(sx, by, t, name) {
@@ -19283,8 +19310,8 @@
     ctx.fillStyle = "#a06030";
     ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#3a2010"; ctx.beginPath(); ctx.ellipse(sx, by - 16, 13, 4, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(sx - 6, by - 20, 12, 6);
-    ctx.fillStyle = "#7a5020"; ctx.fillRect(sx - 24, by - 14, 14, 18); ctx.fillStyle = "#c8a060"; ctx.fillRect(sx - 23, by - 13, 12, 7); ctx.fillRect(sx - 23, by - 4, 12, 6);
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#ffb060"; ctx.fillText(name, sx, by - 30);
+    ctx.fillStyle = "#7a5020"; ctx.fillRect(sx - 24, by - 14, 14, 18); ctx.fillStyle = "#c9a24b"; ctx.fillRect(sx - 23, by - 13, 12, 7); ctx.fillRect(sx - 23, by - 4, 12, 6);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#ffb060"; ctx.fillText(name, sx, by - 30);
   }
 
   function drawExpeditionLook(sx, by, t, name) {
@@ -19293,9 +19320,9 @@
     ctx.fillStyle = "#c08050";
     ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#6a5010"; ctx.beginPath(); ctx.ellipse(sx, by - 16, 12, 3.5, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = "#8a7020"; ctx.fillRect(sx - 5, by - 20, 10, 6);
-    ctx.fillStyle = "#d4a850"; ctx.fillRect(sx + 10, by - 8, 10, 14); ctx.fillStyle = "#b08830"; ctx.fillRect(sx + 10, by - 9, 10, 3); ctx.fillRect(sx + 10, by + 4, 10, 3);
+    ctx.fillStyle = "#c9a24b"; ctx.fillRect(sx + 10, by - 8, 10, 14); ctx.fillStyle = "#b08830"; ctx.fillRect(sx + 10, by - 9, 10, 3); ctx.fillRect(sx + 10, by + 4, 10, 3);
     ctx.strokeStyle = "#3a1a00"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(sx + 12, by - 4); ctx.lineTo(sx + 18, by + 2); ctx.stroke();
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80e080"; ctx.fillText(name, sx, by - 30);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#80e080"; ctx.fillText(name, sx, by - 30);
   }
 
   function drawProcurementLook(sx, by, t, name) {
@@ -19306,7 +19333,7 @@
     ctx.fillStyle = "#1a0a3a"; ctx.fillRect(sx - 5, by - 20, 10, 8); ctx.beginPath(); ctx.ellipse(sx, by - 20, 8, 2.5, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#8060c0"; ctx.fillRect(sx - 18, by - 4, 12, 10); ctx.fillStyle = "#6040a0"; ctx.beginPath(); ctx.moveTo(sx-12, by-6); ctx.lineTo(sx-6, by-4); ctx.lineTo(sx-12, by-2); ctx.closePath(); ctx.fill();
     ctx.strokeStyle = "#e0c060"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(sx-18, by+1); ctx.lineTo(sx-6, by+1); ctx.moveTo(sx-12, by-4); ctx.lineTo(sx-12, by+6); ctx.stroke();
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#a0a0ff"; ctx.fillText(name, sx, by - 30);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#a0a0ff"; ctx.fillText(name, sx, by - 30);
   }
 
   function drawFairLook(sx, by, t, name) {
@@ -19314,12 +19341,12 @@
     ctx.beginPath(); ctx.ellipse(sx, by + 10, 11, 14, 0, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = "#d4a870";
     ctx.beginPath(); ctx.arc(sx, by - 8, 9, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#d4b040"; ctx.fillRect(sx-5, by-18, 10, 6); ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = "#a08020"; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.fillStyle = "#c9a24b"; ctx.fillRect(sx-5, by-18, 10, 6); ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = "#a08020"; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(sx, by-18, 13, 3, 0, 0, Math.PI*2); ctx.stroke();
     ctx.fillStyle = "#8b5e3c"; ctx.beginPath(); ctx.roundRect(sx-20, by-2, 14, 10, 3); ctx.fill();
     ctx.fillStyle = "#e0522b"; ctx.beginPath(); ctx.arc(sx-17, by-1, 3, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#2da84e"; ctx.beginPath(); ctx.arc(sx-13, by-2, 3, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#f5c542"; ctx.beginPath(); ctx.arc(sx-9, by-1, 3, 0, Math.PI*2); ctx.fill();
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#80d060"; ctx.fillText(name, sx, by - 30);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#80d060"; ctx.fillText(name, sx, by - 30);
   }
 
   function drawChiefLook(sx, by, t, name) {
@@ -19331,7 +19358,7 @@
     ctx.strokeStyle = "#6b4226"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(sx+14, by-10); ctx.lineTo(sx+14, by+20); ctx.stroke();
     ctx.fillStyle = "#f0c030"; ctx.beginPath(); ctx.arc(sx+14, by-13, 4, 0, Math.PI*2); ctx.fill();
     const glowAlpha = 0.15 + 0.1 * Math.sin(t * 2.5); ctx.fillStyle = `rgba(240,192,48,${glowAlpha})`; ctx.beginPath(); ctx.arc(sx+14, by-13, 8, 0, Math.PI*2); ctx.fill();
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center"; ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
   }
 
   // 城外旅人（ROADMAP 74）：行腳探險家外觀——深棕風衣、斗笠、行囊、旅途風塵感。
@@ -19362,7 +19389,7 @@
     ctx.fillStyle = `rgba(200,160,60,${glowA})`;
     ctx.beginPath(); ctx.arc(sx, by, 18, 0, Math.PI * 2); ctx.fill();
     // 名字（旅人顯示帶 🧳）
-    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center";
+    ctx.font = `bold 10px ${UI_FONT}`; ctx.textAlign = "center";
     ctx.fillStyle = "#d4a820"; ctx.fillText(name, sx, by - 30);
   }
 
@@ -19402,7 +19429,7 @@
       }
     }
     // 名字（比深度 NPC 更小更淡，不搶鏡）
-    ctx.font = "9px sans-serif"; ctx.textAlign = "center";
+    ctx.font = `9px ${UI_FONT}`; ctx.textAlign = "center";
     ctx.fillStyle = isExpedition ? "#ffd700" : "rgba(220,200,160,0.75)";
     const label = isExpedition ? `🏹 ${name}` : name;
     ctx.fillText(label, sx, by - 18);
@@ -19419,19 +19446,19 @@
     // 快樂心型（ROADMAP 126）：happiness >= 70 時在名字左側顯示小 💛
     const mood = residentMoods.get(id);
     if (mood != null && mood >= HAPPINESS_HAPPY_THRESHOLD) {
-      ctx.font = "7px sans-serif";
+      ctx.font = `7px ${UI_FONT}`;
       ctx.fillText("💛", sx - ctx.measureText(name).width / 2 - 6, by - 18);
     }
 
     // 生態危機避難（ROADMAP 180）：頭頂浮現 😰 焦慮泡泡，輕微上下跳動暗示驚慌。
     if (alarmed) {
       const bob = reduceMotion ? 0 : Math.sin(t * 6 + sx * 0.05) * 1.5;
-      ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.font = `13px ${UI_FONT}`; ctx.textAlign = "center";
       ctx.fillText("😰", sx, by - 24 + bob);
     } else if (celebrating) {
       // 凱旋歡慶（ROADMAP 185）：頭頂浮現 🎉 慶賀泡泡，活潑上下跳動（比 😰 更快更高，暗示雀躍）。
       const hop = reduceMotion ? 0 : Math.abs(Math.sin(t * 9 + sx * 0.05)) * 3.5;
-      ctx.font = "14px sans-serif"; ctx.textAlign = "center";
+      ctx.font = `14px ${UI_FONT}`; ctx.textAlign = "center";
       ctx.fillText("🎉", sx, by - 25 - hop);
     }
   }
@@ -19538,7 +19565,7 @@
       // 沿用既有名牌層、無新面板；reduceMotion 不抖動。
       if (e.alive && e.routing) {
         const wob = reduceMotion ? 0 : Math.sin(t * 9 + phase) * 2;
-        ctx.font = "12px sans-serif";
+        ctx.font = `12px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillText("💨", sx + 13 + wob, sy - 14);
         ctx.textAlign = "left";
@@ -19593,7 +19620,7 @@
         // 元素標籤（ROADMAP 380）：在怪物名前顯示元素 emoji，讓玩家一眼辨別弱點
         const elemTag = ELEM_INFO[ENEMY_ELEMENT[e.kind]]?.emoji || "";
         const tag = `${prefix}Lv.${e.level} ${elemTag}${kindName}${tierTag}`;
-        ctx.font = e.notorious ? "bold 10px sans-serif" : "bold 9px sans-serif";
+        ctx.font = e.notorious ? `bold 10px ${UI_FONT}` : `bold 9px ${UI_FONT}`;
         ctx.textAlign = "center";
         ctx.fillStyle = e.notorious ? "rgba(80,0,0,0.7)" : e.resting ? "rgba(0,20,40,0.5)" : "rgba(0,0,0,0.55)";
         ctx.fillText(tag, sx + 1, sy - 29);
@@ -20184,7 +20211,7 @@
     title.textContent = "📖 城鎮記憶石";
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
-    closeBtn.style.cssText = "background:transparent;border:none;color:#888;cursor:pointer;font-size:1rem";
+    closeBtn.style.cssText = "background:transparent;border:none;color:rgba(232,224,207,0.62);cursor:pointer;font-size:1rem";
     closeBtn.addEventListener("click", () => { panel.style.display = "none"; });
     header.appendChild(title);
     header.appendChild(closeBtn);
@@ -20192,7 +20219,7 @@
 
     if (!entries || entries.length === 0) {
       const empty = document.createElement("div");
-      empty.style.cssText = "color:#666;text-align:center;padding:20px 0";
+      empty.style.cssText = "color:rgba(232,224,207,0.38);text-align:center;padding:20px 0";
       empty.textContent = "石碑沉默無語……城鎮的故事尚未開始。";
       panel.appendChild(empty);
       return;
@@ -21033,8 +21060,8 @@
         const prog = done ? null : achievementProgress(a.key, stats);
         html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:${done ? "1" : "0.4"}">`;
         html += `<span style="font-size:1.2em;width:1.4em;text-align:center">${a.icon}</span>`;
-        html += `<div style="flex:1;min-width:0"><div style="font-weight:${done ? "600" : "400"};color:${done ? "#e8d5a0" : "#888"}">${escHtml(a.name)}</div>`;
-        html += `<div style="font-size:.78em;color:#888">${escHtml(a.desc)}</div>`;
+        html += `<div style="flex:1;min-width:0"><div style="font-weight:${done ? "600" : "400"};color:${done ? "#e8d5a0" : "rgba(232,224,207,0.62)"}">${escHtml(a.name)}</div>`;
+        html += `<div style="font-size:.78em;color:rgba(232,224,207,0.62)">${escHtml(a.desc)}</div>`;
         // 進度條（未解鎖且可量化才畫）：深底槽 + 黃銅金填充 + n/m 數字。
         if (prog) {
           const pct = Math.round((prog.current / prog.target) * 100);
@@ -21059,7 +21086,7 @@
     if (sig === lastTitleSig) return;
     lastTitleSig = sig;
     if (!unlockedTitles.length) {
-      body.innerHTML = `<div style="color:#666;font-size:.85em">尚無稱號—升級、鍛造、採集史詩材料、或達成成就即可解鎖。</div>`;
+      body.innerHTML = `<div style="color:rgba(232,224,207,0.38);font-size:.85em">尚無稱號—升級、鍛造、採集史詩材料、或達成成就即可解鎖。</div>`;
       return;
     }
     let html = `<div style="color:var(--brass);font-weight:600;margin-bottom:6px">🏅 我的稱號</div>`;
@@ -21112,7 +21139,7 @@
     if (summary) summary.textContent = ` ${doneCount}/3`;
 
     if (!tasks || tasks.length === 0) {
-      body.innerHTML = '<div style="color:#888;font-size:.85rem">請先登入才有每日任務</div>';
+      body.innerHTML = '<div style="color:rgba(232,224,207,0.62);font-size:.85rem">請先登入才有每日任務</div>';
       return;
     }
 
@@ -21124,7 +21151,7 @@
       html += `<div style="margin-bottom:10px;padding:8px;border-radius:6px;border:1px solid ${done ? "#5a8a5a" : "#2a3040"};background:${done ? "#1a2a1a" : "#141820"}">`;
       html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">`;
       html += `<span style="font-weight:${done ? "600" : "400"};color:${done ? "#7ec87e" : "#c8d0e0"};font-size:.88rem">${escHtml(t.description)}</span>`;
-      html += `<span style="font-size:.8rem;color:${done ? "#7ec87e" : "#888"};margin-left:8px">${t.progress}/${t.goal}${done ? " ✓" : ""}</span>`;
+      html += `<span style="font-size:.8rem;color:${done ? "#7ec87e" : "rgba(232,224,207,0.62)"};margin-left:8px">${t.progress}/${t.goal}${done ? " ✓" : ""}</span>`;
       html += `</div>`;
       // 進度條
       html += `<div style="height:5px;border-radius:3px;background:#2a3040;overflow:hidden">`;
@@ -21161,7 +21188,7 @@
                : lbData.kills_top;
     const unit = lbTab === "level" ? "級" : lbTab === "ether" ? "乙太" : "擊殺";
     if (!list || list.length === 0) {
-      body.innerHTML = '<div style="color:#888;font-size:.85rem;text-align:center;padding:16px">暫無資料（連線後將更新）</div>';
+      body.innerHTML = '<div style="color:rgba(232,224,207,0.62);font-size:.85rem;text-align:center;padding:16px">暫無資料（連線後將更新）</div>';
       return;
     }
     const medals = ["🥇","🥈","🥉"];
@@ -21215,7 +21242,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能建立或加入公會";
       body.appendChild(hint);
       return;
@@ -21226,7 +21253,7 @@
       const info = document.createElement("div");
       info.style.cssText = "margin-bottom:10px;";
       info.innerHTML = `<div style="color:var(--brass);font-weight:600;font-size:.95rem">⚜️ ${escHtml(guild.name)} <span style="color:#ffd580;font-size:.8rem">[${escHtml(guild.tag)}]</span></div>
-        <div style="color:#aaa;font-size:.8rem;margin-top:3px">成員 ${guild.member_count} 人 · 金庫 ${guild.treasury} ✨${guild.is_founder ? " · 你是會長" : ""}</div>`;
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:3px">成員 ${guild.member_count} 人 · 金庫 ${guild.treasury} ✨${guild.is_founder ? " · 你是會長" : ""}</div>`;
       body.appendChild(info);
 
       // 捐贈金庫。
@@ -21366,7 +21393,7 @@
 
     if (isGuest) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能加好友";
       body.appendChild(hint);
       return;
@@ -21397,7 +21424,7 @@
 
     if (friends.length === 0) {
       const empty = document.createElement("div");
-      empty.style.cssText = "color:#888;font-size:.8rem;margin-top:4px;";
+      empty.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:4px;";
       empty.textContent = "還沒有好友，輸入名字加入吧！";
       body.appendChild(empty);
       return;
@@ -21422,7 +21449,7 @@
       if (!f.online && !shownOfflineLabel) {
         shownOfflineLabel = true;
         const sec = document.createElement("div");
-        sec.style.cssText = "color:#666;font-size:.75rem;font-weight:600;margin-top:6px;margin-bottom:4px;";
+        sec.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;font-weight:600;margin-top:6px;margin-bottom:4px;";
         sec.textContent = "○ 離線";
         body.appendChild(sec);
       }
@@ -21687,7 +21714,7 @@
       perk: (t) => `收割 +${[0,3,4,6,9][t]} 乙太、NPC 收購 +${[0,25,32,40,50][t]}%` },
     { key: "artisan",  label: "🔧 工匠",  color: "#80a0e0",
       perk: (t) => `合成素材 -${[0,1,2,3,4][t]}（最少 1）` },
-    { key: "explorer", label: "🧭 探索者", color: "#d0a040",
+    { key: "explorer", label: "🧭 探索者", color: "#c9a24b",
       perk: (t) => `旅行費 -${[0,10,18,28,40][t]} 乙太` },
     { key: "merchant", label: "💰 商人",  color: "#c080e0",
       perk: (t) => `NPC 所有收購 +${[0,50,62,78,100][t]}%` },
@@ -21723,14 +21750,14 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能解鎖熟練度";
       body.appendChild(hint);
       return;
     }
 
     const intro = document.createElement("div");
-    intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
+    intro.style.cssText = "color:rgba(232,224,207,0.62);font-size:.78rem;margin-bottom:8px;line-height:1.4;";
     intro.textContent = "做什麼練什麼，五條同時生效。階級越高加成越強：學徒→匠人(Lv5)→師匠(Lv10)→宗師(Lv20)。";
     body.appendChild(intro);
 
@@ -21831,14 +21858,14 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能使用主動技能";
       body.appendChild(hint);
       return;
     }
 
     const intro = document.createElement("div");
-    intro.style.cssText = "color:#aaa;font-size:.78rem;margin-bottom:8px;line-height:1.4;";
+    intro.style.cssText = "color:rgba(232,224,207,0.62);font-size:.78rem;margin-bottom:8px;line-height:1.4;";
     intro.textContent = "各熟練度 Lv.5 解鎖對應主動技能。開啟「⚡ 自動」後，冷卻好時會在對應行動自動施放，無需手動點按。";
     body.appendChild(intro);
 
@@ -21868,12 +21895,12 @@
       info.style.cssText = "flex:1;";
 
       const nameEl = document.createElement("div");
-      nameEl.style.cssText = `font-size:.9rem;font-weight:bold;color:${unlocked ? "#eee" : "#888"};`;
+      nameEl.style.cssText = `font-size:.9rem;font-weight:bold;color:${unlocked ? "#e8e0cf" : "rgba(232,224,207,0.62)"};`;
       nameEl.textContent = `${def.name}${isPending ? " ✨" : ""}${isAuto ? " ⚡" : ""}`;
       info.appendChild(nameEl);
 
       const descEl = document.createElement("div");
-      descEl.style.cssText = "color:#aaa;font-size:.75rem;margin-top:2px;line-height:1.3;";
+      descEl.style.cssText = "color:rgba(232,224,207,0.62);font-size:.75rem;margin-top:2px;line-height:1.3;";
       descEl.textContent = def.desc;
       info.appendChild(descEl);
 
@@ -21905,7 +21932,7 @@
       }
 
       const statusEl = document.createElement("div");
-      statusEl.style.cssText = "color:#888;font-size:.72rem;margin-top:2px;";
+      statusEl.style.cssText = "color:rgba(232,224,207,0.62);font-size:.72rem;margin-top:2px;";
       if (!unlocked) {
         statusEl.textContent = `熟練度 Lv.${def.lv} 解鎖（目前 Lv.${masteryLv}）`;
       } else if (isAuto && cd > 0) {
@@ -21933,7 +21960,7 @@
         padding:5px 10px; border:none; border-radius:6px; cursor:pointer;
         font-size:.8rem; min-width:52px;
         background:${ready && !isAuto ? "#5080f0" : "#333"};
-        color:${ready && !isAuto ? "#fff" : "#666"};
+        color:${ready && !isAuto ? "#fff" : "rgba(232,224,207,0.38)"};
       `;
       btn.textContent = cd > 0 ? `${cd}s` : (unlocked ? "施放" : "未解鎖");
       btn.disabled = !ready || isAuto;
@@ -21953,7 +21980,7 @@
           padding:3px 8px; border:1px solid ${isAuto ? "#f0c050" : "#444"}; border-radius:5px;
           cursor:pointer; font-size:.72rem; min-width:52px;
           background:${isAuto ? "#3a3010" : "#222"};
-          color:${isAuto ? "#f0c050" : "#666"};
+          color:${isAuto ? "#f0c050" : "rgba(232,224,207,0.38)"};
         `;
         autoBtn.textContent = isAuto ? "⚡ 自動開" : "⚡ 自動";
         autoBtn.title = isAuto ? "關閉自動施放" : "開啟自動施放（冷卻好時自動觸發）";
@@ -22034,7 +22061,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能使用屬性加點";
       body.appendChild(hint);
       return;
@@ -22044,7 +22071,7 @@
     const header = document.createElement("div");
     header.style.cssText = "margin-bottom:10px;";
     const unspentLabel = document.createElement("div");
-    unspentLabel.style.cssText = "color:" + (unspent > 0 ? "#ffd580" : "#aaa") + ";font-size:.9rem;font-weight:bold;";
+    unspentLabel.style.cssText = "color:" + (unspent > 0 ? "#ffd580" : "rgba(232,224,207,0.62)") + ";font-size:.9rem;font-weight:bold;";
     unspentLabel.textContent = unspent > 0
       ? "🎯 可分配屬性點：" + unspent + " 點"
       : "🎯 屬性點：升等後可分配";
@@ -22075,11 +22102,11 @@
       const info = document.createElement("div");
       info.style.cssText = "flex:1;";
       const nameEl = document.createElement("div");
-      nameEl.style.cssText = "font-size:.9rem;font-weight:bold;color:#eee;";
+      nameEl.style.cssText = "font-size:.9rem;font-weight:bold;color:#e8e0cf;";
       nameEl.textContent = def.name;
       info.appendChild(nameEl);
       const descEl = document.createElement("div");
-      descEl.style.cssText = "color:#aaa;font-size:.76rem;margin-top:2px;";
+      descEl.style.cssText = "color:rgba(232,224,207,0.62);font-size:.76rem;margin-top:2px;";
       descEl.textContent = def.desc(def.current);
       info.appendChild(descEl);
       row.appendChild(info);
@@ -22228,7 +22255,7 @@
 
     let html = "";
     html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已發現 ${found} / ${total} 種</div>`;
-    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">走近野生動物或守護者怪物即可發現、永久記入圖鑑；每種首次發現給一筆乙太獎勵。</div>`;
+    html += `<div style="color:rgba(232,224,207,0.62);font-size:.76em;margin-bottom:8px">走近野生動物或守護者怪物即可發現、永久記入圖鑑；每種首次發現給一筆乙太獎勵。</div>`;
     const groups = [
       { cat: "wildlife", title: "🌿 野生動物" },
       { cat: "guardian", title: "🛡️ 守護者怪物" },
@@ -22261,7 +22288,7 @@
         + `opacity:${achieved ? "1" : "0.7"}">`
         + `<span style="font-size:1.1em">${achieved ? "🏅" : "🔒"}</span>`
         + `<span style="flex:1;color:${achieved ? "#ffd75a" : "#cdd8e4"}">`
-        + `${escHtml(m.name)}<span style="color:#888;font-size:.82em">（集滿${escHtml(m.label)}）</span></span>`
+        + `${escHtml(m.name)}<span style="color:rgba(232,224,207,0.62);font-size:.82em">（集滿${escHtml(m.label)}）</span></span>`
         + `<span style="color:${achieved ? "#ffd75a" : "#8aa0b8"};font-size:.82em">`
         + `${achieved ? `+${m.reward} 乙太 ✓` : `${mFound}/${entries.length}`}</span>`
         + `</div>`;
@@ -22324,7 +22351,7 @@
 
     let html = "";
     html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已探索 ${found} / ${total} 種地形</div>`;
-    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">走近世界各處的奇景地形即可探索、永久記入圖鑑；愈稀有、愈遠的地形首次踏足給的乙太愈豐厚。</div>`;
+    html += `<div style="color:rgba(232,224,207,0.62);font-size:.76em;margin-bottom:8px">走近世界各處的奇景地形即可探索、永久記入圖鑑；愈稀有、愈遠的地形首次踏足給的乙太愈豐厚。</div>`;
     // 依稀有度分三段（常見／稀有／傳奇），由近而遠、由易而難。
     const groups = [
       { tier: "common",    title: "🌿 常見奇景" },
@@ -22403,7 +22430,7 @@
 
     let html = "";
     html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已目睹 ${found} / ${total} 種天象</div>`;
-    html += `<div style="color:#888;font-size:.76em;margin-bottom:8px">身處某種天象之下即可目睹、永久記入圖鑑；愈難遇上的天象首次親見給的乙太愈豐厚。流星雨與滿月需正好在線、抬頭趕上。</div>`;
+    html += `<div style="color:rgba(232,224,207,0.62);font-size:.76em;margin-bottom:8px">身處某種天象之下即可目睹、永久記入圖鑑；愈難遇上的天象首次親見給的乙太愈豐厚。流星雨與滿月需正好在線、抬頭趕上。</div>`;
     // 依稀有度分三段（常見／稀有／傳奇），由常駐輪替到可遇難求。
     const groups = [
       { tier: "common",    title: "🌤️ 常見天象" },
@@ -22446,7 +22473,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能馴化寵物";
       body.appendChild(hint);
       return;
@@ -22465,11 +22492,11 @@
       const textDiv = document.createElement("div");
       textDiv.style.cssText = "flex:1;";
       const nameEl = document.createElement("div");
-      nameEl.style.cssText = "font-size:.95rem;font-weight:bold;color:#eee;";
+      nameEl.style.cssText = "font-size:.95rem;font-weight:bold;color:#e8e0cf;";
       nameEl.textContent = info.name;
       textDiv.appendChild(nameEl);
       const descEl = document.createElement("div");
-      descEl.style.cssText = "color:#aaa;font-size:.8rem;margin-top:2px;line-height:1.4;";
+      descEl.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;line-height:1.4;";
       descEl.textContent = info.desc;
       textDiv.appendChild(descEl);
       // ROADMAP 358：寵物性格——同種寵物對每個主人脾氣不同，這是這隻寵物的「個性」。
@@ -22493,7 +22520,7 @@
       body.appendChild(card);
     } else {
       const none = document.createElement("div");
-      none.style.cssText = "color:#888;font-size:.85rem;margin-bottom:8px;";
+      none.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;margin-bottom:8px;";
       none.textContent = "尚無寵物夥伴";
       body.appendChild(none);
     }
@@ -22509,7 +22536,7 @@
     body.appendChild(tameBtn);
 
     const howTo = document.createElement("div");
-    howTo.style.cssText = "color:#aaa;font-size:.78rem;margin-top:8px;line-height:1.5;";
+    howTo.style.cssText = "color:rgba(232,224,207,0.62);font-size:.78rem;margin-top:8px;line-height:1.5;";
     howTo.innerHTML = [
       "<b style='color:#c9a24b'>馴化方法</b>",
       "將怪物打到 HP &lt; 25%，靠近後點上方「馴化」鈕。",
@@ -22541,7 +22568,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能釣魚";
       body.appendChild(hint);
       return;
@@ -22570,13 +22597,13 @@
     } else if (cooldown > 0) {
       castBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
       castBtn.disabled = true;
-      castBtn.style.color = "#666";
+      castBtn.style.color = "rgba(232,224,207,0.38)";
       castBtn.style.borderColor = "#444";
       castBtn.style.cursor = "default";
     } else {
       castBtn.textContent = "🎣 走近水邊才能垂釣";
       castBtn.disabled = true;
-      castBtn.style.color = "#666";
+      castBtn.style.color = "rgba(232,224,207,0.38)";
       castBtn.style.borderColor = "#444";
       castBtn.style.cursor = "default";
     }
@@ -22589,15 +22616,15 @@
       const row = document.createElement("div");
       row.style.cssText = "display:flex;align-items:flex-start;gap:6px;padding:4px 0;border-bottom:1px solid #222;";
       row.innerHTML = `<span style="font-size:1.1rem;">${f.emoji}</span>`
-        + `<div style="flex:1;"><b style="color:#eee;">${f.name}</b>`
-        + `<span style="color:#666;"> (${f.pct})</span><br>`
-        + `<span style="color:#aaa;">賣 NPC: ${f.npc} 乙太 ／ 烹飪: ${f.recipe}</span></div>`;
+        + `<div style="flex:1;"><b style="color:#e8e0cf;">${f.name}</b>`
+        + `<span style="color:rgba(232,224,207,0.38);"> (${f.pct})</span><br>`
+        + `<span style="color:rgba(232,224,207,0.62);">賣 NPC: ${f.npc} 乙太 ／ 烹飪: ${f.recipe}</span></div>`;
       table.appendChild(row);
     });
     body.appendChild(table);
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:8px;";
     tip.textContent = "拋竿後等魚咬鉤（浮標抖動冒「❗」），把握反應窗口收竿——反應越快、魚越好！太早收會把魚嚇跑。每趟 5 秒冷卻、給農夫熟練度 +10 XP。";
     body.appendChild(tip);
   }
@@ -22624,7 +22651,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能採礦";
       body.appendChild(hint);
       return;
@@ -22664,13 +22691,13 @@
       } else if (cooldown > 0) {
         startBtn.textContent = `⏳ 冷卻中（${Math.ceil(cooldown)}s）`;
         startBtn.disabled = true;
-        startBtn.style.color = "#666";
+        startBtn.style.color = "rgba(232,224,207,0.38)";
         startBtn.style.borderColor = "#444";
         startBtn.style.cursor = "default";
       } else {
         startBtn.textContent = "⛏️ 走近岩地（灰褐石地）才能採礦";
         startBtn.disabled = true;
-        startBtn.style.color = "#666";
+        startBtn.style.color = "rgba(232,224,207,0.38)";
         startBtn.style.borderColor = "#444";
         startBtn.style.cursor = "default";
       }
@@ -22678,7 +22705,7 @@
     }
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:4px;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:4px;";
     tip.textContent = "在岩地旁開礦脈：越挖越深、礦量越多，但礦脈會在某個說不準的深度崩塌、把整袋礦全埋。看震動警示「見好就收」——撤得越深、礦與探索熟練度回報越高。一輪結束 8 秒冷卻。";
     body.appendChild(tip);
   }
@@ -22706,7 +22733,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能立路標，把話留給後來的旅人。";
       body.appendChild(hint);
       return;
@@ -22735,7 +22762,7 @@
     body.appendChild(status);
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:4px;line-height:1.5;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:4px;line-height:1.5;";
     tip.textContent = "每人最多同時留 3 塊（立第 4 塊會頂掉自己最舊的）。走近別人的路標就會讀到那句話。";
     body.appendChild(tip);
   }
@@ -22758,7 +22785,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能拋瓶、撈瓶、回贈，把一句話送給遠方素未謀面的旅人。";
       body.appendChild(hint);
       return;
@@ -22875,7 +22902,7 @@
     }
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:8px;line-height:1.5;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:8px;line-height:1.5;";
     tip.textContent = "瓶子漂在海上約 30 分鐘沒人撈就會沉沒；撈到的是別人拋的最舊一只。每人最多同時漂 3 只。回贈會寄進對方信箱，等他下次上線讀到。";
     body.appendChild(tip);
   }
@@ -22900,7 +22927,7 @@
 
     if (!tracks.length) {
       const wait = document.createElement("div");
-      wait.style.cssText = "color:#888;font-size:.82rem;";
+      wait.style.cssText = "color:rgba(232,224,207,0.62);font-size:.82rem;";
       wait.textContent = "正在翻開你的旅人手帳……";
       body.appendChild(wait);
       return;
@@ -22964,7 +22991,7 @@
     });
 
     const foot = document.createElement("div");
-    foot.style.cssText = "color:#666;font-size:.72rem;margin-top:8px;line-height:1.5;";
+    foot.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:8px;line-height:1.5;";
     foot.textContent = "這些都是會永久保留的成長——升級、踏遍奇景、認識生態與天象、累積人氣。隨時回來看看你又走遠了多少。";
     body.appendChild(foot);
   }
@@ -22988,7 +23015,7 @@
 
     if (!card) {
       const wait = document.createElement("div");
-      wait.style.cssText = "color:#888;font-size:.82rem;";
+      wait.style.cssText = "color:rgba(232,224,207,0.62);font-size:.82rem;";
       wait.textContent = "正在框起此刻的風景……";
       body.appendChild(wait);
       return;
@@ -23055,7 +23082,7 @@
     body.appendChild(actions);
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.72rem;margin-top:10px;line-height:1.5;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:10px;line-height:1.5;";
     tip.textContent = "明信片捕捉的是你「此刻」站在世界的這一處——換個地方、換個季節時辰，再按「重新留影」，框出的風景就不一樣。";
     body.appendChild(tip);
   }
@@ -23304,11 +23331,11 @@
     if (!nearRuin) {
       btn.textContent = "📜 走進沙漠遺跡區才能啟靈";
       btn.disabled = true;
-      btn.style.cssText += "background:transparent;border:1px solid #555;color:#666;";
+      btn.style.cssText += "background:transparent;border:1px solid #555;color:rgba(232,224,207,0.38);";
     } else if (fragCount < 3) {
       btn.textContent = `📜 碎片不足（需 3 塊，有 ${fragCount} 塊）`;
       btn.disabled = true;
-      btn.style.cssText += "background:transparent;border:1px solid #555;color:#666;";
+      btn.style.cssText += "background:transparent;border:1px solid #555;color:rgba(232,224,207,0.38);";
     } else {
       btn.textContent = "📜 啟靈（消耗 3 古代碎片）";
       btn.style.cssText += "background:rgba(180,150,80,.15);border:1px solid #c9a24b;color:#f1e6cf;";
@@ -23412,7 +23439,7 @@
     const seqLen = inscrState.challenge.symbols.length;
     for (let i = 0; i < seqLen; i++) {
       const box = document.createElement("div");
-      box.style.cssText = "width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;border:1px solid #444;background:rgba(40,40,60,.4);color:#999;";
+      box.style.cssText = "width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;border:1px solid #444;background:rgba(40,40,60,.4);color:rgba(232,224,207,0.62);";
       const key = inscrState.inputSeq[i];
       const sym = key ? INSCRIPTION_SYMBOLS.find(s => s.key === key) : null;
       box.textContent = sym ? sym.emoji : "_";
@@ -23506,7 +23533,7 @@
       resultDiv.innerHTML =
         `<div style="font-size:2rem;margin-bottom:8px;">❌</div>`+
         `<div style="color:#e07060;font-size:.95rem;margin-bottom:6px;">符文序列有誤——碎片已消耗</div>`+
-        `<div style="color:#888;font-size:.82rem;">想再試試嗎？回到遺跡再消耗 3 塊碎片啟靈。</div>`;
+        `<div style="color:rgba(232,224,207,0.62);font-size:.82rem;">想再試試嗎？回到遺跡再消耗 3 塊碎片啟靈。</div>`;
     }
     body.appendChild(resultDiv);
 
@@ -23606,9 +23633,9 @@
   }
 
   function submitStargaze() {
-    if (!stargaze.available) { stargaze.msg = "夜裡才看得見星空"; stargaze.msgColor = "#999"; renderStargaze(); return; }
+    if (!stargaze.available) { stargaze.msg = "夜裡才看得見星空"; stargaze.msgColor = "rgba(232,224,207,0.62)"; renderStargaze(); return; }
     const edges = picksToEdges();
-    if (edges.length === 0) { stargaze.msg = "先點亮幾顆星、把它們連起來"; stargaze.msgColor = "#999"; renderStargaze(); return; }
+    if (edges.length === 0) { stargaze.msg = "先點亮幾顆星、把它們連起來"; stargaze.msgColor = "rgba(232,224,207,0.62)"; renderStargaze(); return; }
     safeSend({ type: "trace_constellation", edges });
   }
 
@@ -23635,7 +23662,7 @@
     const W = stargaze.canvas.width, H = stargaze.canvas.height, pad = 24;
     ctx.clearRect(0, 0, W, H);
     if (!stargaze.available || stargaze.stars.length === 0) {
-      ctx.fillStyle = "#445"; ctx.font = "13px sans-serif"; ctx.textAlign = "center";
+      ctx.fillStyle = "#445"; ctx.font = `13px ${UI_FONT}`; ctx.textAlign = "center";
       ctx.fillText("🌙 等天黑再來觀星", W / 2, H / 2);
       return;
     }
@@ -23735,7 +23762,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能使用牧場";
       body.appendChild(hint);
       return;
@@ -23743,7 +23770,7 @@
 
     if (!myPlot) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.5;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.5;";
       hint.textContent = "你還沒有農田地塊。請先在「購地」面板購買農田類型地塊，才能養雞。";
       body.appendChild(hint);
       return;
@@ -23752,19 +23779,19 @@
     // 狀態區
     const status = document.createElement("div");
     status.style.cssText = "margin-bottom:10px;font-size:.9rem;line-height:1.6;";
-    status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
+    status.innerHTML = `<div style="color:#e8e0cf;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
       + `<div>🐔 雞隻數：<b style="color:#ffe066;">${chickens} / 4</b></div>`
       + `<div>🥚 待收蛋：<b style="color:#ffe066;">${eggs}</b>（最多堆積 10 顆）</div>`;
     // ROADMAP 409：牧群羈絆——常來收蛋，母雞越養越親（陌生→熟悉→親近→黏人）。
     if (chickens >= 1) {
       const BOND_LABEL = ["陌生", "熟悉", "親近", "黏人"];
-      status.innerHTML += `<div>💗 牧群羈絆：<b style="color:#ff9fc0;">${"💗".repeat(hearts) || "—"}</b> <span style="color:#999;font-size:.8rem;">${BOND_LABEL[hearts] || "陌生"}</span></div>`;
+      status.innerHTML += `<div>💗 牧群羈絆：<b style="color:#ff9fc0;">${"💗".repeat(hearts) || "—"}</b> <span style="color:rgba(232,224,207,0.62);font-size:.8rem;">${BOND_LABEL[hearts] || "陌生"}</span></div>`;
       if (golden) {
         status.innerHTML += `<div style="color:#ffd54a;font-size:.85rem;">🥚✨ 窩裡有一顆暖心金蛋待收——撿起來心頭一暖</div>`;
       } else if (hearts >= 2) {
-        status.innerHTML += `<div style="color:#999;font-size:.8rem;">親近的母雞偶爾會下暖心金蛋（吃下去暖食回血）</div>`;
+        status.innerHTML += `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;">親近的母雞偶爾會下暖心金蛋（吃下去暖食回血）</div>`;
       } else {
-        status.innerHTML += `<div style="color:#999;font-size:.8rem;">常親手來收蛋，母雞會越來越認得你（親近後偶爾下暖心金蛋）</div>`;
+        status.innerHTML += `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;">常親手來收蛋，母雞會越來越認得你（親近後偶爾下暖心金蛋）</div>`;
       }
     }
     // ROADMAP 368：牧群孳息狀態——正在長大的小雞 / 孵育中 / 養出新成員的鼓勵。
@@ -23773,7 +23800,7 @@
     } else if (brooding) {
       status.innerHTML += `<div style="color:#9fe0a0;">🪺 母雞正安心孵育——留幾顆蛋在窩裡，牠會孵出小雞</div>`;
     } else if (chickens >= 1 && chickens < 4) {
-      status.innerHTML += `<div style="color:#888;font-size:.8rem;">細心收蛋、再留幾顆蛋在窩裡，母雞就會孵出新成員（第 4 隻只能養出來，買不到）</div>`;
+      status.innerHTML += `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;">細心收蛋、再留幾顆蛋在窩裡，母雞就會孵出新成員（第 4 隻只能養出來，買不到）</div>`;
     } else if (chickens >= 4) {
       status.innerHTML += `<div style="color:#ffd86b;font-size:.85rem;">🎉 你用心養出了圓滿的牧群！</div>`;
     }
@@ -23820,7 +23847,7 @@
     }
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:6px;line-height:1.4;";
     tip.textContent = "雞每 60 秒產 1~2 顆蛋（視雞數）。每次收蛋給農夫熟練度 +8 XP。雞蛋可賣 NPC（2 乙太/顆）或合成台做煎蛋（回血 10）。";
     body.appendChild(tip);
 
@@ -23838,7 +23865,7 @@
     if (!myHive) {
       // 尚無蜂箱：說明 + 安置鈕。
       const desc = document.createElement("div");
-      desc.style.cssText = "color:#aaa;font-size:.82rem;line-height:1.5;margin-bottom:8px;";
+      desc.style.cssText = "color:rgba(232,224,207,0.62);font-size:.82rem;line-height:1.5;margin-bottom:8px;";
       desc.textContent = "在自家農地安置一座蜂箱，蜜蜂會採田裡作物的花蜜，隨時間自己釀成蜂蜜。田裡種得越多、蜜釀得越快。";
       apiaryWrap.appendChild(desc);
       const placeBtn = document.createElement("button");
@@ -23862,12 +23889,12 @@
       const STAGE_LABEL = { empty: "空巢", filling: "漸滿", brimming: "滿溢前", full: "滿巢歇息" };
       const hstatus = document.createElement("div");
       hstatus.style.cssText = "margin-bottom:8px;font-size:.88rem;line-height:1.6;";
-      hstatus.innerHTML = `<div>🍯 蜂蜜：<b style="color:#ffe066;">${honey} / ${HIVE_MAX}</b> <span style="color:#999;font-size:.8rem;">（${STAGE_LABEL[hiveStage] || "—"}）</span></div>`
-        + `<div>🌸 蜜源：<b style="color:#9fe0a0;">${hiveBlooms}</b> <span style="color:#999;font-size:.8rem;">株生長中作物（種越多釀越快）</span></div>`;
+      hstatus.innerHTML = `<div>🍯 蜂蜜：<b style="color:#ffe066;">${honey} / ${HIVE_MAX}</b> <span style="color:rgba(232,224,207,0.62);font-size:.8rem;">（${STAGE_LABEL[hiveStage] || "—"}）</span></div>`
+        + `<div>🌸 蜜源：<b style="color:#9fe0a0;">${hiveBlooms}</b> <span style="color:rgba(232,224,207,0.62);font-size:.8rem;">株生長中作物（種越多釀越快）</span></div>`;
       if (hiveStage === "full") {
         hstatus.innerHTML += `<div style="color:#ffd54a;font-size:.85rem;">蜂巢滿了，蜂群歇息中——採收後牠們就會再忙起來</div>`;
       } else if (hiveBlooms === 0) {
-        hstatus.innerHTML += `<div style="color:#999;font-size:.8rem;">田裡沒有生長中的作物，蜂群只能採野地零星花蜜（很慢）。種點作物吧</div>`;
+        hstatus.innerHTML += `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;">田裡沒有生長中的作物，蜂群只能採野地零星花蜜（很慢）。種點作物吧</div>`;
       }
       apiaryWrap.appendChild(hstatus);
       const harvestBtn = document.createElement("button");
@@ -23887,7 +23914,7 @@
       }
       apiaryWrap.appendChild(harvestBtn);
       const htip = document.createElement("div");
-      htip.style.cssText = "color:#666;font-size:.75rem;margin-top:6px;line-height:1.4;";
+      htip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:6px;line-height:1.4;";
       htip.textContent = "蜂蜜可食用（回血 6＋暖食飽足）或賣 NPC。每罐採收給農夫熟練度 +3 XP。蜂巢最多堆到 12 罐就會滿巢歇息。";
       apiaryWrap.appendChild(htip);
     }
@@ -23915,7 +23942,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能使用農作";
       body.appendChild(hint);
       return;
@@ -23923,7 +23950,7 @@
 
     if (!myPlot) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.5;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.5;";
       hint.textContent = "你還沒有農田地塊。請先在「購地」面板購買農田類型地塊，才能種作物。";
       body.appendChild(hint);
       return;
@@ -23938,7 +23965,7 @@
           const def = CROP_DEFS.find(d => d.key === c.kind);
           return `${def ? def.emoji : "🌱"}${def ? def.label : c.kind}${c.ripe ? " <b style='color:#90ffb0;'>成熟</b>" : ""}`;
         }).join("、");
-    status.innerHTML = `<div style="color:#eee;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
+    status.innerHTML = `<div style="color:#e8e0cf;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
       + `<div>作物（${plotCrops.crops.length}/3）：${cropDesc}</div>`;
     body.appendChild(status);
 
@@ -23985,7 +24012,7 @@
     }
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:8px;line-height:1.4;";
     tip.textContent = "作物 90 秒成熟，收割給農夫熟練度 +10 XP。小麥→麵包（回血12）、胡蘿蔔→蔬菜湯（回血10）、馬鈴薯→焗烤馬鈴薯（回血15）。";
     body.appendChild(tip);
   }
@@ -24007,7 +24034,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能採集星晶";
       body.appendChild(hint);
       return;
@@ -24020,13 +24047,13 @@
     if (!isNight) {
       gatherBtn.textContent = "✨ 等待夜晚降臨…";
       gatherBtn.disabled = true;
-      gatherBtn.style.color = "#666";
+      gatherBtn.style.color = "rgba(232,224,207,0.38)";
       gatherBtn.style.borderColor = "#444";
       gatherBtn.style.cursor = "default";
     } else if (!nearCrystal) {
       gatherBtn.textContent = `✨ 走近星晶礦脈才能採集（剩 ${remaining} 個）`;
       gatherBtn.disabled = true;
-      gatherBtn.style.color = "#666";
+      gatherBtn.style.color = "rgba(232,224,207,0.38)";
       gatherBtn.style.borderColor = "#444";
       gatherBtn.style.cursor = "default";
     } else {
@@ -24043,19 +24070,19 @@
     info.innerHTML = `
       <div style="padding:4px 0;border-bottom:1px solid #222;">
         <b style="color:#c8a0ff;">✨ 星晶碎片</b>
-        <span style="color:#aaa;"> — 夜間星晶礦脈採集可得</span><br>
-        <span style="color:#888;">賣 NPC: 5 乙太 ／ 合成: 夜幻藥水（×3 → 回血 20）</span>
+        <span style="color:rgba(232,224,207,0.62);"> — 夜間星晶礦脈採集可得</span><br>
+        <span style="color:rgba(232,224,207,0.62);">賣 NPC: 5 乙太 ／ 合成: 夜幻藥水（×3 → 回血 20）</span>
       </div>
       <div style="padding:4px 0;border-bottom:1px solid #222;">
         <b style="color:#9080ff;">🌙 夜幻藥水</b>
-        <span style="color:#aaa;"> — 星晶碎片×3 合成</span><br>
-        <span style="color:#888;">使用後回復 20 HP——夜間探索最強效補給</span>
+        <span style="color:rgba(232,224,207,0.62);"> — 星晶碎片×3 合成</span><br>
+        <span style="color:rgba(232,224,207,0.62);">使用後回復 20 HP——夜間探索最強效補給</span>
       </div>
     `;
     body.appendChild(info);
 
     const tip = document.createElement("div");
-    tip.style.cssText = "color:#666;font-size:.75rem;margin-top:8px;line-height:1.4;";
+    tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.75rem;margin-top:8px;line-height:1.4;";
     tip.textContent = "星晶礦脈每夜生成 20 個，天亮消失。採集給探索者熟練度 +15 XP，鼓勵夜間競速探索。";
     body.appendChild(tip);
   }
@@ -24101,7 +24128,7 @@
 
     if (isGuestUser) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;";
       hint.textContent = "登入後才能使用星際貿易";
       body.appendChild(hint);
       return;
@@ -24132,7 +24159,7 @@
         });
       } else if (isAtDest) {
         deliverBtn.textContent = `靠近 ${PLANET_NAMES[cargo.dest] || cargo.dest} 商人才能交付`;
-        deliverBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        deliverBtn.style.cssText += "border:1px solid #444;background:transparent;color:rgba(232,224,207,0.38);cursor:default;";
         deliverBtn.disabled = true;
       } else {
         deliverBtn.textContent = `前往 ${PLANET_NAMES[cargo.dest] || cargo.dest} 交付`;
@@ -24156,7 +24183,7 @@
     const routes = TRADE_ROUTES.filter(r => r.origin === planet);
     if (!nearNpc || routes.length === 0) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       if (routes.length === 0) {
         hint.textContent = `目前所在星球（${PLANET_NAMES[planet] || planet}）沒有可接取的貿易路線。`;
       } else {
@@ -24174,7 +24201,7 @@
         row.style.cssText = "background:#1a1a2a;border:1px solid #404060;border-radius:8px;padding:8px;margin-bottom:6px;";
         row.innerHTML = `
           <div style="color:#e8c870;margin-bottom:4px;">${r.cargoName}</div>
-          <div style="color:#aaa;font-size:.8rem;">目的地：<b style="color:#80ffc0">${PLANET_NAMES[r.dest] || r.dest}</b> ／ 報酬：<b style="color:#ffd580">${r.reward} 乙太</b> + 商人 XP</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">目的地：<b style="color:#80ffc0">${PLANET_NAMES[r.dest] || r.dest}</b> ／ 報酬：<b style="color:#ffd580">${r.reward} 乙太</b> + 商人 XP</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
@@ -24190,7 +24217,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在一個星球商人接取包裹，前往目標星球商人交付，換取乙太 + 商人熟練度 XP。每條路線 5 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24225,7 +24252,7 @@
 
     if (isGuestUser || planet !== "home") {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = isGuestUser ? "登入後才能使用工匠工坊" : "工匠工坊只在故鄉星球提供服務。";
       body.appendChild(hint);
       return;
@@ -24245,7 +24272,7 @@
       activeDiv.style.cssText = "background:#1a2a1a;border:1px solid #408040;border-radius:8px;padding:10px;margin-bottom:10px;";
       activeDiv.innerHTML = `
         <div style="color:#80ff80;font-weight:600;margin-bottom:4px;">🔨 進行中：${active.name}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：${itemName} × ${active.qty}（背包：${haveCnt}）</div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:2px;">需要：${itemName} × ${active.qty}（背包：${haveCnt}）</div>
         <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 工匠 XP</div>
         <div style="color:${active.remaining_secs < 30 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
       `;
@@ -24262,11 +24289,11 @@
         });
       } else if (!nearWorkshop) {
         fulfillBtn.textContent = "靠近工坊 NPC 才能交付";
-        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:rgba(232,224,207,0.38);cursor:default;";
         fulfillBtn.disabled = true;
       } else {
         fulfillBtn.textContent = `背包不足（還需 ${active.qty - haveCnt} 個 ${itemName}）`;
-        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:#666;cursor:default;";
+        fulfillBtn.style.cssText += "border:1px solid #444;background:transparent;color:rgba(232,224,207,0.38);cursor:default;";
         fulfillBtn.disabled = true;
       }
       body.appendChild(fulfillBtn);
@@ -24287,7 +24314,7 @@
       const mins = Math.floor(cooldown / 60);
       const secs = Math.floor(cooldown % 60);
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
       hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新訂單。`;
       body.appendChild(hint);
       return;
@@ -24296,7 +24323,7 @@
     // 顯示可接取的 5 張訂單。
     if (!nearWorkshop) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = "靠近主城工坊 NPC（🔨）才能接取訂單。";
       body.appendChild(hint);
     } else {
@@ -24313,8 +24340,8 @@
         row.style.cssText = `background:#1a1a2a;border:1px solid #404060;border-radius:8px;padding:8px;margin-bottom:6px;`;
         row.innerHTML = `
           <div style="color:#e8c870;margin-bottom:4px;">${o.name}</div>
-          <div style="color:#aaa;font-size:.8rem;">需要：<b style="color:${enough ? "#80ff80" : "#ff8080"}">${itemName} × ${o.qty}</b>（背包：${haveCnt}）</div>
-          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 工匠 XP ${o.xp}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">需要：<b style="color:${enough ? "#80ff80" : "#ff8080"}">${itemName} × ${o.qty}</b>（背包：${haveCnt}）</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 工匠 XP ${o.xp}</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
@@ -24330,7 +24357,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在主城工坊 NPC 接取加急訂單，收集指定材料後回來交付，換取乙太 + 工匠熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24354,7 +24381,7 @@
 
     if (isGuestUser || planet !== "home") {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = isGuestUser ? "登入後才能使用懸賞告示板" : "懸賞告示板只在故鄉星球提供服務。";
       body.appendChild(hint);
       return;
@@ -24372,8 +24399,8 @@
       activeDiv.style.cssText = "background:#1a1a10;border:1px solid #806020;border-radius:8px;padding:10px;margin-bottom:10px;";
       activeDiv.innerHTML = `
         <div style="color:#ffc060;font-weight:600;margin-bottom:4px;">📜 進行中：${active.name}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">目標：${active.target_name}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">進度：<b style="color:${progress >= total ? "#80ff80" : "#ffe080"}">${progress} / ${total}</b></div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:2px;">目標：${active.target_name}</div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:4px;">進度：<b style="color:${progress >= total ? "#80ff80" : "#ffe080"}">${progress} / ${total}</b></div>
         <div style="background:#333;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px;">
           <div style="background:#c08030;height:100%;width:${Math.min(100, progress / total * 100)}%;transition:width .3s;"></div>
         </div>
@@ -24392,7 +24419,7 @@
       body.appendChild(abandonBtn);
 
       const note = document.createElement("div");
-      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:8px;";
       note.textContent = "提示：去外頭獵殺目標怪物，擊殺後自動計進度，達標即自動完成並發放獎勵！";
       body.appendChild(note);
       return;
@@ -24403,7 +24430,7 @@
       const mins = Math.floor(cooldown / 60);
       const secs = Math.floor(cooldown % 60);
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
       hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
       body.appendChild(hint);
       return;
@@ -24412,7 +24439,7 @@
     // 顯示可接取的 5 張懸賞令。
     if (!nearBoard) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = "靠近主城懸賞告示板（📜）才能接取任務。";
       body.appendChild(hint);
     } else {
@@ -24426,13 +24453,13 @@
         row.style.cssText = `background:#1a1a10;border:1px solid #604020;border-radius:8px;padding:8px;margin-bottom:6px;`;
         row.innerHTML = `
           <div style="color:#ffc060;margin-bottom:4px;">${c.name}</div>
-          <div style="color:#aaa;font-size:.8rem;">目標：<b style="color:#ffb060">${c.target_name}</b> × ${c.required_kills} 隻</div>
-          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${c.reward} 乙太</b> + 戰士 XP ${c.xp}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">目標：<b style="color:#ffb060">${c.target_name}</b> × ${c.required_kills} 隻</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${c.reward} 乙太</b> + 戰士 XP ${c.xp}</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
         btn.textContent = "📜 接取";
-        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #806030;border-radius:6px;background:transparent;color:#c8a060;cursor:pointer;font-size:.85rem;";
+        btn.style.cssText = "margin-top:6px;padding:5px 14px;border:1px solid #806030;border-radius:6px;background:transparent;color:#c9a24b;cursor:pointer;font-size:.85rem;";
         btn.addEventListener("click", () => {
           ws.send(JSON.stringify({ type: "AcceptBounty", card_id: c.card_id }));
         });
@@ -24443,7 +24470,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在主城懸賞告示板接取狩獵令，出城獵殺指定怪物，達標後自動完成並獲得乙太 + 戰士熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24467,7 +24494,7 @@
 
     if (isGuestUser || planet !== "home") {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = isGuestUser ? "登入後才能使用探勘公告欄" : "探勘公告欄只在故鄉星球提供服務。";
       body.appendChild(hint);
       return;
@@ -24483,8 +24510,8 @@
       activeDiv.style.cssText = "background:#0a1a0a;border:1px solid #208040;border-radius:8px;padding:10px;margin-bottom:10px;";
       activeDiv.innerHTML = `
         <div style="color:#80e080;font-weight:600;margin-bottom:4px;">🗺️ 進行中：${active.name}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">目標生態域：<b style="color:#80ffa0">${active.biome_name}</b></div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">與主城距離：至少 <b style="color:#ffe080">${active.min_dist} 像素</b></div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:2px;">目標生態域：<b style="color:#80ffa0">${active.biome_name}</b></div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:4px;">與主城距離：至少 <b style="color:#ffe080">${active.min_dist} 像素</b></div>
         <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 探索者 XP</div>
         <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
       `;
@@ -24509,7 +24536,7 @@
       body.appendChild(abandonBtn);
 
       const note = document.createElement("div");
-      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:8px;";
       note.textContent = "提示：前往指定生態域的深處（遠離主城），到達後按「採樣」即完成！";
       body.appendChild(note);
       return;
@@ -24520,7 +24547,7 @@
       const mins = Math.floor(cooldown / 60);
       const secs = Math.floor(cooldown % 60);
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
       hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
       body.appendChild(hint);
       return;
@@ -24529,7 +24556,7 @@
     // 顯示可接取的 5 張探勘令。
     if (!nearBoard) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = "靠近主城探勘公告欄（🗺️）才能接取任務。";
       body.appendChild(hint);
     } else {
@@ -24543,9 +24570,9 @@
         row.style.cssText = `background:#0a1a0a;border:1px solid #206040;border-radius:8px;padding:8px;margin-bottom:6px;`;
         row.innerHTML = `
           <div style="color:#80e080;margin-bottom:4px;">${o.name}</div>
-          <div style="color:#aaa;font-size:.8rem;">目標：<b style="color:#80ffa0">${o.biome_name}</b> 生態域</div>
-          <div style="color:#aaa;font-size:.8rem;">最小距離：<b style="color:#ffe080">${o.min_dist} 像素</b></div>
-          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 探索者 XP ${o.xp}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">目標：<b style="color:#80ffa0">${o.biome_name}</b> 生態域</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">最小距離：<b style="color:#ffe080">${o.min_dist} 像素</b></div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 探索者 XP ${o.xp}</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
@@ -24561,7 +24588,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在主城探勘公告欄接取探勘令，前往指定生態域的遠處採樣，完成後立即獲得乙太 + 探索者熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24587,7 +24614,7 @@
 
     if (isGuestUser || planet !== "home") {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = isGuestUser ? "登入後才能使用採購代理人" : "採購代理人只在故鄉星球提供服務。";
       body.appendChild(hint);
       return;
@@ -24606,8 +24633,8 @@
       activeDiv.style.cssText = "background:#0a0a1a;border:1px solid #404080;border-radius:8px;padding:10px;margin-bottom:10px;";
       activeDiv.innerHTML = `
         <div style="color:#8080ff;font-weight:600;margin-bottom:4px;">📦 進行中：${active.name}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0a0ff">${active.item_name}</b> × ${active.required_qty}</div>
-        <div style="color:#aaa;font-size:.8rem;margin-bottom:4px;">背包：<b style="color:${haveQty >= active.required_qty ? "#80ffa0" : "#ff8080"}">${haveQty} / ${active.required_qty}</b></div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0a0ff">${active.item_name}</b> × ${active.required_qty}</div>
+        <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:4px;">背包：<b style="color:${haveQty >= active.required_qty ? "#80ffa0" : "#ff8080"}">${haveQty} / ${active.required_qty}</b></div>
         <div style="color:#ffd580;font-size:.8rem;margin-bottom:2px;">報酬：${active.reward} 乙太 + 商人 XP</div>
         <div style="color:${active.remaining_secs < 60 ? "#ff8080" : "#80c0ff"};font-size:.8rem;">剩餘：${timeStr}</div>
       `;
@@ -24633,7 +24660,7 @@
       body.appendChild(abandonBtn);
 
       const note = document.createElement("div");
-      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:8px;";
       note.textContent = "提示：前往指定星球採集或擊殺怪物取得碎片，返回主城靠近代理人後點「交付」即完成！";
       body.appendChild(note);
       return;
@@ -24644,7 +24671,7 @@
       const mins = Math.floor(cooldown / 60);
       const secs = Math.floor(cooldown % 60);
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
       hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新任務。`;
       body.appendChild(hint);
       return;
@@ -24653,7 +24680,7 @@
     // 顯示可接取的 5 張採購令。
     if (!nearAgent) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = "靠近主城採購代理人（📦）才能接取任務。";
       body.appendChild(hint);
     } else {
@@ -24669,9 +24696,9 @@
         const haveQty = itemInv ? itemInv.qty : 0;
         row.innerHTML = `
           <div style="color:#8080ff;margin-bottom:4px;">${o.name}</div>
-          <div style="color:#aaa;font-size:.8rem;">需要：<b style="color:#a0a0ff">${o.item_name}</b> × ${o.required_qty}</div>
-          <div style="color:#aaa;font-size:.8rem;">手上碎片：<b style="color:${haveQty >= o.required_qty ? "#80ffa0" : "#aaa"}">${haveQty} 個</b></div>
-          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 商人 XP ${o.xp}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">需要：<b style="color:#a0a0ff">${o.item_name}</b> × ${o.required_qty}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;">手上碎片：<b style="color:${haveQty >= o.required_qty ? "#80ffa0" : "rgba(232,224,207,0.62)"}">${haveQty} 個</b></div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 商人 XP ${o.xp}</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
@@ -24687,7 +24714,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在主城採購代理人接取採購令，前往指定星球採集特產碎片，返回主城靠近代理人交付，立即獲得乙太 + 商人熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24713,7 +24740,7 @@
 
     if (isGuestUser || planet !== "home") {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = isGuestUser ? "登入後才能使用農展評審" : "農展評審只在故鄉星球提供服務。";
       body.appendChild(hint);
       return;
@@ -24737,7 +24764,7 @@
       const reqHtml = reqs.map(r => {
         const have = (inv.find(s => s.item === r.item) || {}).qty || 0;
         const ok = have >= r.qty;
-        return `<div style="color:#aaa;font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
+        return `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-bottom:2px;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
           <span style="color:${ok ? "#80ffa0" : "#ff8080"}">（背包：${have}）</span></div>`;
       }).join("");
       activeDiv.innerHTML = `
@@ -24768,7 +24795,7 @@
       body.appendChild(abandonBtn);
 
       const note = document.createElement("div");
-      note.style.cssText = "font-size:.75rem;color:#666;margin-top:8px;";
+      note.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:8px;";
       note.textContent = "提示：備齊所有展品後靠近農展評審，點「提交展品」即完成！";
       body.appendChild(note);
       return;
@@ -24779,7 +24806,7 @@
       const mins = Math.floor(cooldown / 60);
       const secs = Math.floor(cooldown % 60);
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.85rem;line-height:1.6;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px;";
       hint.textContent = `⏳ 冷卻中：${mins}:${secs.toString().padStart(2, "0")} 後可接取新委託。`;
       body.appendChild(hint);
       return;
@@ -24788,7 +24815,7 @@
     // 顯示可接取的 5 張展覽委託。
     if (!nearJudge) {
       const hint = document.createElement("div");
-      hint.style.cssText = "color:#888;font-size:.8rem;line-height:1.6;";
+      hint.style.cssText = "color:rgba(232,224,207,0.62);font-size:.8rem;line-height:1.6;";
       hint.textContent = "靠近主城農展評審（🏅）才能接取委託。";
       body.appendChild(hint);
     } else {
@@ -24803,13 +24830,13 @@
         const reqHtml = (o.reqs || []).map(r => {
           const have = (inv.find(s => s.item === r.item) || {}).qty || 0;
           const ok = have >= r.qty;
-          return `<div style="color:#aaa;font-size:.8rem;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
-            <span style="color:${ok ? "#80ffa0" : "#aaa"}">（背包：${have}）</span></div>`;
+          return `<div style="color:rgba(232,224,207,0.62);font-size:.8rem;">需要：<b style="color:#a0ffa0">${r.item_name}</b> × ${r.qty}
+            <span style="color:${ok ? "#80ffa0" : "rgba(232,224,207,0.62)"}">（背包：${have}）</span></div>`;
         }).join("");
         row.innerHTML = `
           <div style="color:#80d060;margin-bottom:4px;">${o.name}</div>
           ${reqHtml}
-          <div style="color:#aaa;font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 農夫 XP ${o.xp}</div>
+          <div style="color:rgba(232,224,207,0.62);font-size:.8rem;margin-top:2px;">報酬：<b style="color:#ffd580">${o.reward} 乙太</b> + 農夫 XP ${o.xp}</div>
         `;
         const btn = document.createElement("button");
         btn.type = "button";
@@ -24825,7 +24852,7 @@
 
     // 說明。
     const info = document.createElement("div");
-    info.style.cssText = "font-size:.75rem;color:#666;margin-top:10px;line-height:1.5;";
+    info.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.38);margin-top:10px;line-height:1.5;";
     info.textContent = "在主城農展評審接取展覽委託，備齊指定農產品（可從釣魚、牧場、農田種植取得），靠近評審提交即得乙太 + 農夫熟練度 XP。完成後 8 分鐘冷卻。";
     body.appendChild(info);
   }
@@ -24872,7 +24899,7 @@
     // 節慶 buff 狀態。
     if (buffSecs > 0) {
       const buffEl = document.createElement("p");
-      buffEl.style.cssText = "margin:4px 0;font-size:.85rem;color:#d4af37;";
+      buffEl.style.cssText = "margin:4px 0;font-size:.85rem;color:#c9a24b;";
       const mins = Math.floor(buffSecs / 60), secs = buffSecs % 60;
       buffEl.textContent = `🎉 村慶加成 +30% EXP 中（剩 ${mins}:${secs.toString().padStart(2,"0")}）`;
       body.appendChild(buffEl);
@@ -24951,7 +24978,7 @@
       if (tp.top_contributors && tp.top_contributors.length > 0) {
         const board = document.createElement("div");
         board.style.cssText = "margin-top: 12px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px;";
-        board.innerHTML = `<div style="font-size: .75rem; color: #aaa; margin-bottom: 4px; border-bottom: 1px solid #333;">🏆 貢獻排行</div>`;
+        board.innerHTML = `<div style="font-size: .75rem; color: rgba(232,224,207,0.62); margin-bottom: 4px; border-bottom: 1px solid #333;">🏆 貢獻排行</div>`;
         tp.top_contributors.forEach((c, i) => {
           const crow = document.createElement("div");
           crow.style.cssText = "display: flex; justify-content: space-between; font-size: .75rem; color: #ddd;";
@@ -25037,7 +25064,7 @@
     title.textContent = "🧳 旅行商人特賣";
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "✕";
-    closeBtn.style.cssText = "background:transparent;border:none;color:#888;cursor:pointer;font-size:1rem";
+    closeBtn.style.cssText = "background:transparent;border:none;color:rgba(232,224,207,0.62);cursor:pointer;font-size:1rem";
     closeBtn.addEventListener("click", () => { panel.style.display = "none"; });
     header.appendChild(title);
     header.appendChild(closeBtn);
@@ -25050,7 +25077,7 @@
 
     if (wanderingCatalog.length === 0) {
       const empty = document.createElement("div");
-      empty.style.color = "#666";
+      empty.style.color = "rgba(232,224,207,0.38)";
       empty.textContent = "今日貨物已售罄";
       panel.appendChild(empty);
       return;
@@ -25065,13 +25092,13 @@
       row.innerHTML = `<span style="font-size:1.1em">${icon}</span>
         <span style="flex:1">${name}</span>
         <span style="color:#aaffaa">${e.price_ether}⚡</span>
-        <span style="color:#888;font-size:.8em">剩${e.remaining}</span>`;
+        <span style="color:rgba(232,224,207,0.62);font-size:.8em">剩${e.remaining}</span>`;
       const btn = document.createElement("button");
       btn.textContent = soldOut ? "售完" : "買1";
       btn.disabled = soldOut || isGuest;
       btn.style.cssText = `padding:2px 8px;border-radius:6px;border:1px solid #aa7700;
         background:${soldOut ? "#333" : "#4a2800"};
-        color:${soldOut ? "#666" : "#ffcc66"};
+        color:${soldOut ? "rgba(232,224,207,0.38)" : "#ffcc66"};
         cursor:${soldOut ? "default" : "pointer"}`;
       if (!soldOut && !isGuest) {
         const itemKey = e.item;
@@ -25106,14 +25133,14 @@
         qname.style.cssText = "font-weight:bold;color:#ffcc66";
         qname.textContent = q.name;
         const qstatus = document.createElement("span");
-        qstatus.style.cssText = "font-size:.78rem;" + (q.completed ? "color:#88ff88" : q.accepted ? "color:#88aaff" : "color:#888");
+        qstatus.style.cssText = "font-size:.78rem;" + (q.completed ? "color:#88ff88" : q.accepted ? "color:#88aaff" : "color:rgba(232,224,207,0.62)");
         qstatus.textContent = q.completed ? "✅已完成" : q.accepted ? "📌進行中" : "待接取";
         qheader.appendChild(qname);
         qheader.appendChild(qstatus);
         qrow.appendChild(qheader);
 
         const qdesc = document.createElement("div");
-        qdesc.style.cssText = "color:#cc9944;font-size:.8rem;margin-bottom:4px";
+        qdesc.style.cssText = "color:#c9a24b;font-size:.8rem;margin-bottom:4px";
         qdesc.textContent = q.description;
         qrow.appendChild(qdesc);
 
@@ -25127,7 +25154,7 @@
           barWrap.appendChild(bar);
           qrow.appendChild(barWrap);
           const prog = document.createElement("div");
-          prog.style.cssText = "font-size:.75rem;color:#888;text-align:right";
+          prog.style.cssText = "font-size:.75rem;color:rgba(232,224,207,0.62);text-align:right";
           prog.textContent = `${q.progress}/${q.required}`;
           qrow.appendChild(prog);
         }
@@ -25256,7 +25283,7 @@
 
       if (!postItems.length) {
         const empty = document.createElement("div");
-        empty.style.cssText = "font-size:.8rem;color:#888;";
+        empty.style.cssText = "font-size:.8rem;color:rgba(232,224,207,0.62);";
         empty.textContent = "背包是空的，無可掛單物品";
         body.appendChild(empty);
       } else {
@@ -25313,7 +25340,7 @@
     } else {
       // 訪客提示
       const hint = document.createElement("div");
-      hint.style.cssText = "font-size:.8rem;color:#888;margin-top:6px;";
+      hint.style.cssText = "font-size:.8rem;color:rgba(232,224,207,0.62);margin-top:6px;";
       hint.textContent = "登入後才能掛單或購買";
       body.appendChild(hint);
     }
@@ -25404,7 +25431,7 @@
       // 若此物品在收購清單內，顯示買賣利差提示（讓玩家明白轉賣會虧本）
       const buyBack = buyPriceMap.get(entry.item);
       const spreadHint = buyBack != null
-        ? ` <span style="color:#888;font-size:0.78em">（賣回僅 ${buyBack}✨）</span>` : "";
+        ? ` <span style="color:rgba(232,224,207,0.62);font-size:0.78em">（賣回僅 ${buyBack}✨）</span>` : "";
       // 庫存標示（ROADMAP 104）
       let stockHint = "";
       if (entry.stock != null && entry.max_stock != null) {
@@ -25539,7 +25566,7 @@
           const act = tendActionLabel(f.cells[frow * f.cols + fcol]);
           if (act) {
             ctx.save();
-            ctx.font = "12px system-ui, sans-serif";
+            ctx.font = `12px ${UI_FONT}`;
             ctx.textAlign = "center";
             const tx = ex + ts / 2;
             const ty = ey - 3; // 貼在虛線框正上方
@@ -25551,7 +25578,7 @@
             // 新手第一次:動作詞上方再補一行「怎麼按」——光標出動詞還不夠,沒按過的玩家不知道
             // 要按空白鍵或點一下才會發生。照顧過一次(markTendedOnce)就不再顯示,不長期擾人。
             if (!tendedOnce) {
-              ctx.font = "10px system-ui, sans-serif";
+              ctx.font = `10px ${UI_FONT}`;
               const hint = "按空白鍵或點一下";
               const hy = ty - 13; // 疊在動作詞正上方,兩行一起貼在田格上緣
               ctx.strokeText(hint, tx, hy);
@@ -25587,7 +25614,7 @@
       ctx.beginPath();
       ctx.ellipse(dx, dy + 4, ts * 0.24, ts * 0.09, 0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.font = `${Math.round(ts * 0.7)}px system-ui, sans-serif`;
+      ctx.font = `${Math.round(ts * 0.7)}px ${UI_FONT}`;
       ctx.fillText(glyph, dx, dy);
       ctx.restore();
     };
@@ -25611,7 +25638,7 @@
         : isPublic ? "公共農地 🌿（誰種誰得）"
         : `${owner ? owner.name : "拓荒者"} 的乙太田`;
     ctx.fillStyle = (mine || isPublic) ? "rgba(232,224,207,0.9)" : "rgba(232,224,207,0.7)";
-    ctx.font = "13px system-ui, sans-serif";
+    ctx.font = `13px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.fillText(label, fx + fw / 2, fy - 8);
 
@@ -25619,7 +25646,7 @@
 
     if (canInteract && !reachable) {
       ctx.fillStyle = "rgba(232,224,207,0.85)";
-      ctx.font = "12px system-ui, sans-serif";
+      ctx.font = `12px ${UI_FONT}`;
       ctx.textAlign = "center";
       const hintText = mine ? "(走近一點才能照顧)" : "(走近公共農地才能耕作)";
       ctx.fillText(hintText, fx + fw / 2, fy + fh + 18);
