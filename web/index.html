@@ -1251,6 +1251,16 @@
             <label style="display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="radio" name="optMotion" id="optMotionCalm" value="calm"> 🪶 省電靜謐</label>
           </div>
         </fieldset>
+        <!-- 介面字級（ROADMAP 441）：無障礙＋手機可讀性。調整 <html> 根字級，HUD／面板的 rem／em 文字等比放大；
+             不影響 Canvas 世界畫面與玩法數值。純本機偏好，預設標準。 -->
+        <fieldset class="setting-row" style="display:block;border:none;margin:0;padding:6px 0;">
+          <legend style="padding:0;float:none;width:auto;">🔠 介面字級<br><small style="opacity:.8">放大 HUD 狀態列、面板與選單的<b>文字大小</b>，方便小螢幕、老花或想看清楚一點的玩家。只放大介面文字，不影響遊戲世界畫面與玩法。</small></legend>
+          <div id="uiFontPicker" style="display:flex;flex-wrap:wrap;gap:12px;padding:8px 0 0 26px;">
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="radio" name="optUiFont" id="optUiFontStd" value="std"> 標準</label>
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="radio" name="optUiFont" id="optUiFontLarge" value="large"> 大</label>
+            <label style="display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="radio" name="optUiFont" id="optUiFontXLarge" value="xlarge"> 特大</label>
+          </div>
+        </fieldset>
       </div>
     </div>
     <!-- ☰ 選單視窗（ROADMAP 138 HUD 重設計）：分類 + 圖示 + 文字標籤，讓玩家看得懂找得到 -->

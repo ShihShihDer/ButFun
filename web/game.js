@@ -353,6 +353,40 @@
     reduceMotion = effectiveReduceMotion(motionPref, motionOsReduce);
     _parallaxEnabled = !reduceMotion;
   }
+
+  // ---- 介面字級（ROADMAP 441）：無障礙＋手機可讀性 ----
+  // 這是個手機握在手裡玩的遊戲，HUD 狀態列、面板、選單的文字一直只有單一固定大小——
+  // 小螢幕、老花、或單純覺得字太小的玩家，遊戲內無從調整。本切片補上「介面字級」設定：
+  // 三段（標準／大／特大）即時放大 HUD 與面板文字。原理是調整根元素 <html> 的字級，
+  // 介面廣泛使用的 rem／em 尺寸會等比跟著放大（rem 正是為此而生）；Canvas 世界畫面不受影響、
+  // 玩法數值一行不動。純前端、零後端、零協議、零 migration，偏好只存本機 localStorage。
+  // uiFontPx 為純函式（確定性、零副作用、好測）：把偏好字串解析成根字級（px），壞值／缺值退標準。
+  const UI_FONT_BASE = 16;   // 標準（瀏覽器預設根字級，= 100%）
+  const UI_FONT_LARGE = 18;  // 大（約 112%）
+  const UI_FONT_XLARGE = 20; // 特大（約 125%）
+  function uiFontPx(pref) {
+    if (pref === "large") return UI_FONT_LARGE;
+    if (pref === "xlarge") return UI_FONT_XLARGE;
+    return UI_FONT_BASE; // "std"／未知／null：標準
+  }
+  let uiFontPref = "std";
+  try {
+    const _uf = localStorage.getItem("butfun.uifont");
+    if (_uf === "large" || _uf === "xlarge" || _uf === "std") uiFontPref = _uf;
+  } catch {}
+  // 套用根字級：翻動 <html> 的 font-size，rem／em 介面尺寸即等比縮放，無需散落各處改 CSS。
+  function applyUiFont() {
+    try {
+      const el = document.documentElement;
+      if (el) el.style.fontSize = uiFontPx(uiFontPref) + "px";
+    } catch {}
+  }
+  function setUiFontPref(pref) {
+    uiFontPref = (pref === "large" || pref === "xlarge") ? pref : "std";
+    try { localStorage.setItem("butfun.uifont", uiFontPref); } catch {}
+    applyUiFont();
+  }
+  applyUiFont(); // 進場前即套用，連登入畫面與既有 HUD 都跟著放大
   // ---- 世界風（ROADMAP 430）：伺服器權威、全服共享的風，讓樹/作物一致搖曳 ----
   // worldWind 由天氣快照同步（缺欄位＝靜風）；dirX/dirY 為單位向量、strength∈[0,1]。
   let worldWind = { dirX: 1, dirY: 0, strength: 0 };
@@ -425,7 +459,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -26980,6 +27014,15 @@
       el.checked = (motionPref === pref);
       el.addEventListener("change", () => {
         if (el.checked) { setMotionPref(pref); SFX.click(); }
+      });
+    });
+    // 介面字級（ROADMAP 441）：三段 radio，點選即時放大 HUD／面板文字＋一聲確認音。
+    [["optUiFontStd", "std"], ["optUiFontLarge", "large"], ["optUiFontXLarge", "xlarge"]].forEach(([id, pref]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.checked = (uiFontPref === pref);
+      el.addEventListener("change", () => {
+        if (el.checked) { setUiFontPref(pref); SFX.click(); }
       });
     });
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
