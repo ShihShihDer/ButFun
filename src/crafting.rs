@@ -607,6 +607,13 @@ pub const RECIPES: &[Recipe] = &[
         output: ItemKind::AncientDeco,
         output_qty: 1,
     },
+    /// 水族缸：木材×3 + 石頭×3 → 水族缸×1。放置後依背包養著的魚種數每 25 秒回血（ROADMAP 437）。
+    Recipe {
+        id: "aquarium",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Stone, 3)],
+        output: ItemKind::Aquarium,
+        output_qty: 1,
+    },
 
     // ── 入侵首領限定合成（ROADMAP 160）────────────────────────────────────────
     /// 守城戰刃：霸主晶核×2 + 乙太×20 → 守城戰刃×1。攻擊力 +28。

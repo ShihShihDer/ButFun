@@ -8064,9 +8064,86 @@
         const gx = col * TILE + TILE / 2 - iCamX;
         const gy = row * TILE + TILE * 0.7 - iCamY;
         if (gx + TILE < 0 || gx > viewW || gy + TILE < 0 || gy > viewH) return;
+        // 水族缸（ROADMAP 437）：不只貼 emoji，畫一座小玻璃缸，裡頭養著的魚會游動——
+        // 魚的數量＝你背包現在養著的不同魚種數（小魚／星星魚／深海魚），把「世界長大了」擺到眼前。
+        if (f.kind === "aquarium") {
+          drawAquariumTank(gx, gy, now, TILE);
+          ctx.font = `${Math.floor(TILE * 0.8)}px system-ui`; // 還原迴圈共用字型，供後續家具沿用
+          ctx.textAlign = "center";
+          return;
+        }
         ctx.fillText(f.emoji || "🪑", gx, gy);
       });
     }
+  }
+
+  // 背包現在養著的不同魚種數（0~3）——水族缸回血與水景活力都看它。
+  const AQUARIUM_FISH = ["fish_small", "fish_star", "fish_deep"];
+  function keptFishSpecies() {
+    let n = 0;
+    for (const k of AQUARIUM_FISH) if ((myInv.get(k) || 0) > 0) n++;
+    return n;
+  }
+
+  // 畫一座室內小水族缸：玻璃缸＋水＋游動的魚（魚數＝背包養著的魚種數）。
+  // reduceMotion 時魚靜止、無氣泡，仍畫得出缸與魚（核心回饋不抽掉，只去掉動態）。
+  function drawAquariumTank(cx, baseY, now, TILE) {
+    const w = TILE * 0.96, h = TILE * 0.72;
+    const left = cx - w / 2, bottom = baseY + TILE * 0.06, top = bottom - h;
+    const species = keptFishSpecies();
+    const t = (Number.isFinite(now) ? now : 0) * 0.001;
+    ctx.save();
+    // 缸座（木架）
+    ctx.fillStyle = "#5a4632";
+    ctx.fillRect(left - 1, bottom, w + 2, 3);
+    // 水（養越多魚種、水色越飽和生動）
+    const waterTop = top + h * 0.16;
+    const sat = 40 + species * 12;
+    ctx.fillStyle = `hsl(196,${sat}%,55%)`;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(left, waterTop, w, bottom - waterTop);
+    ctx.globalAlpha = 1;
+    // 水面微光
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.fillRect(left, waterTop, w, 1.5);
+    // 魚（每種一隻，顏色區分；reduceMotion 則靜止）
+    const FISH_COLOR = ["#e8e2d0", "#ffd86a", "#7fb6ff"]; // 小魚銀／星星魚金／深海魚藍
+    for (let i = 0; i < species; i++) {
+      const lane = (i + 1) / (species + 1);
+      const fy = waterTop + (bottom - waterTop) * (0.3 + 0.4 * lane);
+      const swing = reduceMotion ? 0 : Math.sin(t * 1.3 + i * 2.1) * (w * 0.22);
+      const fx = left + w * lane + swing;
+      const fr = TILE * 0.07;
+      ctx.fillStyle = FISH_COLOR[i] || "#e8e2d0";
+      ctx.beginPath();
+      ctx.ellipse(fx, fy, fr, fr * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 尾鰭（朝游動反向）
+      const dir = swing >= 0 ? -1 : 1;
+      ctx.beginPath();
+      ctx.moveTo(fx + dir * fr, fy);
+      ctx.lineTo(fx + dir * fr * 1.8, fy - fr * 0.5);
+      ctx.lineTo(fx + dir * fr * 1.8, fy + fr * 0.5);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 氣泡（僅在有魚且未減動效時）
+    if (species > 0 && !reduceMotion) {
+      ctx.fillStyle = "rgba(255,255,255,0.5)";
+      for (let b = 0; b < 3; b++) {
+        const bx = left + w * (0.2 + 0.3 * b);
+        const phase = (t * 0.6 + b * 0.4) % 1;
+        const by = bottom - phase * (bottom - waterTop);
+        ctx.beginPath();
+        ctx.arc(bx, by, 1 + b * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // 玻璃缸框
+    ctx.strokeStyle = "rgba(220,240,255,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(left, top, w, h);
+    ctx.restore();
   }
 
   // 住家按鈕顯示/隱藏控制（ROADMAP 111）
@@ -8093,10 +8170,10 @@
     }
   }
   // ── 住家家具面板（ROADMAP 155）────────────────────────────────────────────────
-  const FURNITURE_ITEMS = ["steam_bed", "aether_chest", "ether_plant", "star_lantern", "ancient_deco"];
+  const FURNITURE_ITEMS = ["steam_bed", "aether_chest", "ether_plant", "star_lantern", "ancient_deco", "aquarium"];
   const FURNITURE_KIND_MAP = {
     steam_bed: "SteamBed", aether_chest: "AetherChest", ether_plant: "EtherPlant",
-    star_lantern: "StarLantern", ancient_deco: "AncientDeco"
+    star_lantern: "StarLantern", ancient_deco: "AncientDeco", aquarium: "Aquarium"
   };
   const FURNITURE_EFFECTS = {
     SteamBed: "每 30 秒回 2 HP",
@@ -8104,6 +8181,7 @@
     EtherPlant: "採集 EXP +8%",
     StarLantern: "夜間攻擊 +2",
     AncientDeco: "NPC 賣出 +10%",
+    Aquarium: "養越多魚種，靜心回血越多",
   };
   let lastFurnitureSig = "";
   let furniturePanelEl = null;
@@ -19457,9 +19535,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", axe: "🪓", fishing_rod: "🎣", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", axe: "🪓", fishing_rod: "🎣", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", aquarium: "🐠", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", axe: "斧頭", fishing_rod: "釣竿", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", axe: "斧頭", fishing_rod: "釣竿", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", aquarium: "水族缸", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", axe: "190,150,110", fishing_rod: "120,180,225", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240", alpha_crystal: "220,180,255", alpha_force: "255,220,60", legendary_core: "255,215,0", legendary_blade: "255,240,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -19570,6 +19648,7 @@
     { id: "ether_plant",  out: "ether_plant",  outQty: 1, inputs: [["wild_flower", 2], ["wood", 2]] },
     { id: "star_lantern", out: "star_lantern", outQty: 1, inputs: [["star_crystal_shard", 2], ["stone", 2]] },
     { id: "ancient_deco", out: "ancient_deco", outQty: 1, inputs: [["ancient_fragment", 2], ["stone", 1]] },
+    { id: "aquarium",     out: "aquarium",     outQty: 1, inputs: [["wood", 3], ["stone", 3]] },
     // 入侵首領限定武器（ROADMAP 160）：霸主晶核×2 + 乙太×20 → 守城戰刃。攻擊力 +28。
     { id: "ether_overlord_blade", out: "ether_overlord_blade", outQty: 1, inputs: [["ether_overlord_core", 2], ["ether", 20]], atk: 28 },
     // 巢穴 Alpha 戰利品合成（ROADMAP 168）：Alpha 晶石×2 + 乙太×5 → Alpha 原力。使用後全回血+25乙太。
@@ -19844,6 +19923,7 @@
       ether_plant:  "採集 EXP +8% 🪴 野花×2＋木材×2",
       star_lantern: "夜間攻擊力 +2 🔮 星晶碎片×2＋石頭×2",
       ancient_deco: "NPC 賣出收入 +10% 🏺 古代碎片×2＋石頭×1",
+      aquarium:     "室內每 25 秒依養著的魚種數回血（每種 +1，最多 +3）🐠 木材×3＋石頭×3",
     };
     const CONSUMABLE = new Set(Object.keys(CONSUMABLE_DESC));
     body.innerHTML = inv

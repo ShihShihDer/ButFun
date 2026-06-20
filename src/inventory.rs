@@ -320,6 +320,9 @@ pub enum ItemKind {
     StarLantern,
     /// 古代擺件🏺（合成：古代碎片×2 + 石頭×1）。放置住家後 NPC 收購 +10%。
     AncientDeco,
+    /// 水族缸🐟（合成：木材×3 + 石頭×3）。放置住家後依背包養著的魚種數每 25 秒回血
+    /// （每種魚 +1，最多 +3）；空缸只是裝飾（ROADMAP 437）。
+    Aquarium,
 
     // ── 入侵首領戰利品（ROADMAP 160）────────────────────────────────────────
     /// 霸主晶核💠（擊殺乙太霸主時全服在線玩家各得 1 顆）。合成守城戰刃的核心材料。
@@ -443,6 +446,7 @@ impl ItemKind {
         ItemKind::EtherPlant,
         ItemKind::StarLantern,
         ItemKind::AncientDeco,
+        ItemKind::Aquarium,
         // ROADMAP 160 入侵首領戰利品
         ItemKind::EtherOverlordCore,
         ItemKind::EtherOverlordBlade,
@@ -751,6 +755,7 @@ mod tests {
                 | ItemKind::EtherPlant
                 | ItemKind::StarLantern
                 | ItemKind::AncientDeco
+                | ItemKind::Aquarium
                 // ROADMAP 160 入侵首領戰利品
                 | ItemKind::EtherOverlordCore
                 | ItemKind::EtherOverlordBlade
@@ -764,8 +769,8 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 95 種（含 ROADMAP 434：工欲善其釣 釣竿 1 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 95, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 96 種（含 ROADMAP 437：家中水族缸 水族缸 1 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 96, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -1072,6 +1077,7 @@ mod tests {
                     | ItemKind::EtherPlant
                     | ItemKind::StarLantern
                     | ItemKind::AncientDeco
+                    | ItemKind::Aquarium
             );
             // 10. 是被動加成護符（持有時全程生效，不消耗）。
             // 星光護符持有時採集/戰鬥 EXP +10%（ROADMAP 133）；
