@@ -601,6 +601,30 @@
       color: var(--brass); border: 1px solid var(--brass); border-radius: 7px;
       padding: 6px; text-decoration: none; font-weight: 600; }
     #onboardCard .ob-login:hover { background: rgba(201,162,75,0.12); }
+    /* 探索接力指引卡（ROADMAP 463）：onboard 頭三步畢業後接力，柔和地一次推薦一個還沒試過的核心功能。
+       與 #onboardCard 同位、時序互斥（onboard 收起後才出現），沿用同一套黃銅描邊視覺語彙。 */
+    #guideCard {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: 72px; width: min(300px, calc(100vw - 24px));
+      background: #1a2030; border: 1px solid var(--brass); border-radius: 12px;
+      padding: 12px 14px 10px; z-index: 200;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.55); font-size: 0.87em;
+      transition: opacity 0.4s;
+    }
+    #guideCard.fading { opacity: 0; pointer-events: none; }
+    #guideCard .gd-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    #guideCard .gd-title { color: var(--brass); font-weight: 600; font-size: 0.9em; }
+    #guideCard .gd-skip { font: inherit; font-size: 0.82em; background: none; border: none;
+      color: #666; cursor: pointer; padding: 2px 0; }
+    #guideCard .gd-skip:hover { color: #999; }
+    #guideCard .gd-dots { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+    #guideCard .gd-dot { width: 8px; height: 8px; border-radius: 50%; background: #333; flex: none; }
+    #guideCard .gd-dot.done { background: var(--brass); }
+    #guideCard .gd-dot.active { background: #ffd24a; box-shadow: 0 0 5px #ffd24a88; }
+    #guideCard .gd-row { display: flex; align-items: flex-start; gap: 10px; }
+    #guideCard .gd-icon { font-size: 1.6em; line-height: 1; }
+    #guideCard .gd-name { color: #e8e8e8; font-weight: 600; }
+    #guideCard .gd-hint { color: #888; font-size: 0.88em; margin-top: 2px; }
     /* 回訪摘要卡（ROADMAP 374）：登入玩家進場，一眼看到「等你的東西」，8 秒自動淡出可提前關 */
     #returnCard {
       position: fixed; right: 14px; top: 56px;
@@ -1894,6 +1918,7 @@
   <!-- 新手引導卡（ROADMAP 373）：三步驟引導，第一次進場顯示，做完自動收。
        position:fixed 所以放在 #hud 之外，不影響 HUD 佈局。 -->
   <div id="onboardCard" class="hidden" role="region" aria-label="新手引導" aria-live="polite"></div>
+  <div id="guideCard" class="hidden" role="region" aria-label="探索接力指引" aria-live="polite"></div>
 
   <!-- 回訪摘要卡（ROADMAP 374）：登入玩家進場，顯示「等你的東西」，8 秒自動淡出。
        position:fixed 右上角，不擋主畫面，可提前按 × 關閉。 -->

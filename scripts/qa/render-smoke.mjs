@@ -2146,6 +2146,32 @@ for (const sc of scenarios) {
   }
 }
 
+// 探索接力指引（ROADMAP 463）：單元斷言純函式 nextGuideStep——回傳第一個還沒試過步驟的索引，
+// 全部試過/輸入異常退 -1（畢業）；保序、忽略未知/壞 id、Set 與陣列皆可、空安全。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.nextGuideStep;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 探索接力指引：game.js 未導出 nextGuideStep");
+  } else {
+    let bad = 0;
+    const S = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const chk = (name, got, want) => { if (got !== want) { bad++; console.error(`  ❌ 探索接力指引：${name} 得 ${got}，期望 ${want}`); } };
+    chk("沒試過任何 → 第 0 個", fn(S, []), 0);
+    chk("試過第 0 個 → 第 1 個", fn(S, ["a"]), 1);
+    chk("中間缺一仍取最前未試", fn(S, ["a", "c"]), 1);
+    chk("全部試過 → -1 畢業", fn(S, ["a", "b", "c"]), -1);
+    chk("末步未試 → 取末步", fn(S, ["a", "b"]), 2);
+    chk("未知/壞 id 忽略不影響", fn(S, ["x", 7, null]), 0);
+    chk("壞 opened 當作沒試過 → 第 0 個", fn(S, null), 0);
+    chk("壞 steps → -1", fn(null, []), -1);
+    chk("空 steps → -1", fn([], []), -1);
+    chk("steps 內壞元素跳過取下一個", fn([null, { id: "b" }], []), 1);
+    if (bad) failed = true;
+    else console.log("  ✅ 探索接力指引·下一步真值表：10/10");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

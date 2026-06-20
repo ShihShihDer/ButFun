@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, nextGuideStep }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2830,9 +2830,10 @@
     onboardDone = true;
     try { localStorage.setItem("butfun.onboardingDone", "1"); } catch {}
     const card = document.getElementById("onboardCard");
-    if (!card) return;
+    if (!card) { activateGuide(); return; }
     card.classList.add("fading");
-    setTimeout(() => card.classList.add("hidden"), 450);
+    // 頭三步畢業 → onboard 卡淡出收起後，接力啟動「下一步試試看」指引（ROADMAP 463）。
+    setTimeout(() => { card.classList.add("hidden"); activateGuide(); }, 450);
   }
 
   // 每份快照呼叫一次：根據玩家當前狀態推進引導步驟（polling 取代 hook，更不容易跳號）。
@@ -2864,6 +2865,128 @@
     }
 
     if (changed) renderOnboard();
+  }
+
+  // ---- 探索接力指引（ROADMAP 463）----
+  // onboard 卡（373）只帶完「移動→採集→種田」頭三步就永久退場，之後新玩家常反映「不知道接著做
+  // 什麼、走出農地沒方向」（見建議箱反覆回饋）。本卡接力：onboard 畢業後柔和地一次推薦一個還沒試
+  // 過的核心功能，玩家在 ☰ 選單點開它（沿用 459 搜尋／460 最近開啟）就推進到下一個，全部探索過或
+  // 主動關閉就溫暖收尾。純前端、零後端、零協議、零經濟；面向玩家字串集中於 GUIDE_STEPS（i18n 點）。
+  // 推薦清單：id = 對應 dock 面板按鈕 id（開啟即視為「試過」）；3~6 步刻意把人從農地引向釣魚/賞金/職業。
+  const GUIDE_STEPS = [
+    { id: "dockBag",        icon: "🎒", name: "翻翻背包",   hint: "看看你一路採集到的寶貝" },
+    { id: "dockCraft",      icon: "🔨", name: "動手合成",   hint: "把材料合成有用的道具" },
+    { id: "dockFish",       icon: "🎣", name: "到水邊釣魚", hint: "拋下釣竿，釣一條魚放鬆一下" },
+    { id: "dockDailyQuest", icon: "📅", name: "每日任務",   hint: "每天三個小目標，完成領暖心獎勵" },
+    { id: "dockBounty",     icon: "🎯", name: "接張賞金",   hint: "到野外闖闖，完成賞金換獎勵" },
+    { id: "dockClass",      icon: "🎭", name: "選個職業",   hint: "走出屬於你自己的那條路" },
+  ];
+
+  // 純函式：回傳「下一個還沒試過」步驟的索引；全部試過或輸入異常 → -1（畢業/不顯示）。確定性、零副作用、好測。
+  function nextGuideStep(steps, opened) {
+    if (!Array.isArray(steps) || steps.length === 0) return -1;
+    const done = new Set(Array.isArray(opened) ? opened : []); // 壞值/缺值當作「都沒試過」
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i];
+      if (s && typeof s.id === "string" && !done.has(s.id)) return i;
+    }
+    return -1; // 全部試過 → 畢業
+  }
+
+  let guideDone = false;    // 已畢業 / 已主動關閉（永不再顯示）
+  let guideActive = false;  // onboard 畢業後接力啟動；跨 session 持續到畢業（veteran 從未啟動 → 不打擾）
+  let guideOpened = [];     // 已試過（已開過）的面板 id 清單，持久化於 localStorage
+  try { guideDone = localStorage.getItem("butfun.guideDone") === "1"; } catch {}
+  try { guideActive = localStorage.getItem("butfun.guideActive") === "1"; } catch {}
+  try { guideOpened = JSON.parse(localStorage.getItem("butfun.guideOpened") || "[]"); } catch {}
+  if (!Array.isArray(guideOpened)) guideOpened = [];
+
+  function renderGuide() {
+    const card = document.getElementById("guideCard");
+    if (!card) return;
+    const idx = nextGuideStep(GUIDE_STEPS, guideOpened);
+    if (idx < 0) { graduateGuide(); return; } // 全部試過 → 畢業收尾
+    const cur = GUIDE_STEPS[idx];
+    const doneCount = GUIDE_STEPS.filter((s) => guideOpened.includes(s.id)).length;
+    const dots = GUIDE_STEPS.map((s, i) => {
+      const cls = guideOpened.includes(s.id) ? "gd-dot done" : i === idx ? "gd-dot active" : "gd-dot";
+      return `<span class="${cls}"></span>`;
+    }).join("");
+    card.innerHTML = `
+      <div class="gd-head">
+        <span class="gd-title">🧭 下一步試試看（${doneCount}/${GUIDE_STEPS.length}）</span>
+        <button type="button" class="gd-skip" id="gdSkipBtn">知道了</button>
+      </div>
+      <div class="gd-dots">${dots}</div>
+      <div class="gd-row">
+        <span class="gd-icon">${cur.icon}</span>
+        <div>
+          <div class="gd-name">${cur.name}</div>
+          <div class="gd-hint">${cur.hint}　<span style="color:#6a7a8a">在 ☰ 選單點開（可直接搜尋名稱）</span></div>
+        </div>
+      </div>`;
+    const skip = document.getElementById("gdSkipBtn");
+    if (skip) skip.addEventListener("click", dismissGuide);
+  }
+
+  function initGuide() {
+    if (guideDone || !guideActive) return;
+    const card = document.getElementById("guideCard");
+    if (!card) return;
+    if (nextGuideStep(GUIDE_STEPS, guideOpened) < 0) { // 載入時就已全部試過：靜默標記畢業，不打擾
+      guideDone = true;
+      try { localStorage.setItem("butfun.guideDone", "1"); } catch {}
+      return;
+    }
+    card.classList.remove("hidden", "fading");
+    renderGuide();
+  }
+
+  // onboard 畢業時呼叫：接力啟動指引（只啟動一次；veteran 因從不呼叫 finishOnboard 故永不啟動）。
+  function activateGuide() {
+    if (guideDone || guideActive) return;
+    guideActive = true;
+    try { localStorage.setItem("butfun.guideActive", "1"); } catch {}
+    initGuide();
+  }
+
+  function dismissGuide() {
+    if (guideDone) return;
+    guideDone = true;
+    try { localStorage.setItem("butfun.guideDone", "1"); } catch {}
+    const card = document.getElementById("guideCard");
+    if (!card) return;
+    card.classList.add("fading");
+    setTimeout(() => card.classList.add("hidden"), 450);
+  }
+
+  // 全部功能都試過 → 溫暖收尾後淡出退場（療癒基調，不催不逼）。
+  function graduateGuide() {
+    if (guideDone) return;
+    guideDone = true;
+    try { localStorage.setItem("butfun.guideDone", "1"); } catch {}
+    const card = document.getElementById("guideCard");
+    if (!card) return;
+    card.innerHTML = `
+      <div class="gd-row">
+        <span class="gd-icon">🌱</span>
+        <div>
+          <div class="gd-name">你已經摸熟這個世界了</div>
+          <div class="gd-hint">想做什麼都行——慢慢來，這裡會一直在。</div>
+        </div>
+      </div>`;
+    setTimeout(() => { card.classList.add("fading"); setTimeout(() => card.classList.add("hidden"), 450); }, 3500);
+  }
+
+  // openWinFor 開任一面板時呼叫：若該面板在指引清單且尚未試過 → 記一筆、推進指引卡。
+  function guidePanelOpened(id) {
+    if (guideDone || !guideActive || !id) return;
+    if (!GUIDE_STEPS.some((s) => s.id === id)) return;
+    if (guideOpened.includes(id)) return;
+    guideOpened.push(id);
+    try { localStorage.setItem("butfun.guideOpened", JSON.stringify(guideOpened)); } catch {}
+    const card = document.getElementById("guideCard");
+    if (card && !card.classList.contains("hidden")) renderGuide();
   }
 
   // ---- 回訪摘要卡（ROADMAP 374）----
@@ -27839,6 +27962,8 @@
       // ROADMAP 460：記下「剛開了哪個面板」——讓它浮回 ☰ 選單頂部的「最近開啟」。
       // 走 btn.id（＝可釘選面板 id），常駐欄釘選快捷鈕無 id 故不重複記（它本就排除在最近之外）。
       if (onPanelOpen && btn.id) onPanelOpen(btn.id);
+      // ROADMAP 463：開了某面板 → 若它在「下一步試試看」指引清單，記一筆並推進指引卡。
+      if (btn.id) guidePanelOpened(btn.id);
       // 觀星面板（ROADMAP 347）：一開窗就向伺服器要今夜星圖（夜間才看得見）。
       if (win.id === "winStargaze") requestStarMap();
       // 和解面板（ROADMAP 364）：一開窗就向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
@@ -28898,6 +29023,7 @@
     }
     scheduleRender();
     initOnboard(); // 新手引導卡（ROADMAP 373）
+    initGuide();   // 探索接力指引卡（ROADMAP 463）：onboard 畢業後接力，跨 session 續顯示
   }
 
   // 訪客新玩家也配個與主題相襯的隨機代號(玩家建議:新玩家用隨機角色名稱)。
