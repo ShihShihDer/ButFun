@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch, recordRecentPanel, recentPanelIds }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -12370,6 +12370,25 @@
     observatory: { wall: "#546e7a", roof: "#78909c", trim: "#cfd8dc", win: "#00bcd4" },
   };
 
+  // ── clay 城鎮建築（ROADMAP 461）──
+  // 黏土微縮世界北極星：clay 畫風下，城鎮建築不再是鋼龐克平塗色，而是一棟棟暖陶土捏出來的小屋——
+  // 補上 clay 模式最後一處大塊割離（玩家／NPC／樹／採集／地形皆已黏土化，唯獨整座城鎮主結構還飄著平塗）。
+  // 每棟保留各自的色相身份（商店暖赭／工坊石青／賞金鏽紅／遠征苔綠／採購紫／市集琥珀／里長深金），
+  // 但全部換成柔和陶土調，與 player_*/resident_*/tree 等既有黏土資產一氣呵成。窗用較亮的暖色（黏土屋的窗不走冷藍）。
+  const _CLAY_BLDG_COLORS = {
+    shop:        { wall: "#c98a52", roof: "#9a5a34", trim: "#e8c489", win: "#7a92b4" },
+    workshop:    { wall: "#7f8c93", roof: "#586a74", trim: "#d2a86a", win: "#8aa0b0" },
+    bounty:      { wall: "#b5664c", roof: "#8a4030", trim: "#e0a060", win: "#d39a78" },
+    expedition:  { wall: "#7fa06a", roof: "#52703f", trim: "#bcd49a", win: "#a8c488" },
+    procurement: { wall: "#9a7eb0", roof: "#6a5088", trim: "#c8b0e0", win: "#bda6d6" },
+    fair:        { wall: "#c8a468", roof: "#9a7038", trim: "#e8cf94", win: "#dcc088" },
+    chief:       { wall: "#c08a4a", roof: "#8a5824", trim: "#e8c878", win: "#d6b072" },
+  };
+  // clay 建築色盤查表（純函式、好測）：未知 type 一律回中性陶土盤——永不回 undefined，render 不爆。
+  function clayBuildingPalette(type) {
+    return _CLAY_BLDG_COLORS[type] || { wall: "#b89a72", roof: "#8a6a48", trim: "#e0c89a", win: "#cdb48c" };
+  }
+
   // 建築招牌/名牌：深色底牌 + 描邊 + 置中文字，以 (sx, y) 為中心畫。天文台呼叫此函式畫招牌，
   // 但它過去從未被定義 → ReferenceError，連同上面的 `lastSnapshot` 一起讓天文台每幀拋例外、
   // 在城裡（天文台入鏡）被 safeRender 整幀攔下 → 角色/小地圖/HUD 連帶消失（「進城人物不見」根因）。
@@ -12546,25 +12565,44 @@
     const wt = wb - WH; // 牆壁頂
     const rp = wt - RH; // 屋脊（最高點）
 
-    const C = _BLDG_COLORS[type] || { wall: "#607080", roof: "#404050", trim: "#a0b0b8", win: "#102030" };
+    // clay 畫風（461）：換暖陶土黏土色盤，並在牆體疊象牙頂光＋基緣暖陰影＝一塊塊捏出來的黏土。
+    const clay = renderStyle === "clay";
+    const C = clay
+      ? clayBuildingPalette(type)
+      : (_BLDG_COLORS[type] || { wall: "#607080", roof: "#404050", trim: "#a0b0b8", win: "#102030" });
 
     // ── 地面陰影 ──日影晷（201）：建築投影隨太陽/月亮方位偏移、晨昏拉長
     drawGroundShadow(sx, wb + 8, BW * 0.5, 7, 0.20);
 
-    // ── 主牆體 ──
+    // ── 主牆體 ──（黏土捏的牆角更圓）
     ctx.fillStyle = C.wall;
     ctx.beginPath();
-    ctx.roundRect(sx - BW / 2, wt, BW, WH, 4);
+    ctx.roundRect(sx - BW / 2, wt, BW, WH, clay ? 8 : 4);
     ctx.fill();
 
-    // 磚縫水平紋（輕量視覺質感）
-    ctx.strokeStyle = "rgba(0,0,0,0.10)";
-    ctx.lineWidth = 0.7;
-    for (let ly = wt + 11; ly < wb - 3; ly += 9) {
+    if (clay) {
+      // 黏土體積：裁切在牆內，疊上左上象牙頂光（呼應微縮世界桌上暖燈）與底緣暖陶土陰影，讀作圓鼓鼓的黏土。
+      ctx.save();
       ctx.beginPath();
-      ctx.moveTo(sx - BW / 2 + 4, ly);
-      ctx.lineTo(sx + BW / 2 - 4, ly);
-      ctx.stroke();
+      ctx.roundRect(sx - BW / 2, wt, BW, WH, 8);
+      ctx.clip();
+      ctx.fillStyle = "rgba(255,250,238,0.26)";
+      ctx.beginPath();
+      ctx.ellipse(sx - BW * 0.16, wt + WH * 0.24, BW * 0.46, WH * 0.36, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(48,30,18,0.20)";
+      ctx.fillRect(sx - BW / 2, wb - 11, BW, 11);
+      ctx.restore();
+    } else {
+      // 磚縫水平紋（輕量視覺質感）—— 黏土不是磚，只在像素風畫。
+      ctx.strokeStyle = "rgba(0,0,0,0.10)";
+      ctx.lineWidth = 0.7;
+      for (let ly = wt + 11; ly < wb - 3; ly += 9) {
+        ctx.beginPath();
+        ctx.moveTo(sx - BW / 2 + 4, ly);
+        ctx.lineTo(sx + BW / 2 - 4, ly);
+        ctx.stroke();
+      }
     }
 
     // ── 屋頂（三角形） ──
@@ -12575,6 +12613,17 @@
     ctx.lineTo(sx, rp);
     ctx.closePath();
     ctx.fill();
+
+    if (clay) {
+      // 黏土屋頂左斜面一抹象牙頂光（柔亮面，與牆體頂光同方向）。
+      ctx.fillStyle = "rgba(255,250,238,0.20)";
+      ctx.beginPath();
+      ctx.moveTo(sx - BW / 2 - 7, wt + 2);
+      ctx.lineTo(sx, rp);
+      ctx.lineTo(sx - BW * 0.16, wt + 2);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     // 屋脊裝飾邊線
     ctx.strokeStyle = C.trim;
