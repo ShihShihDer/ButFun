@@ -60,9 +60,10 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         ItemKind::ReinforcedPickaxe => Some(ToolKind::ReinforcedPickaxe),
         // 資源材料、武器、消耗道具不是採集工具（戰鬥那側由 `combat::weapon_power` 查表）。
         // 斧頭（ROADMAP 433）是「伐木」工具、不加速一鍵採集，故這裡回 None；其效用走
-        // `woodcutting` 的放倒門檻／木材加成，不經這條採集倍率路徑。
+        // `woodcutting` 的放倒門檻／木材加成，不經這條採集倍率路徑。釣竿（ROADMAP 434）同理是
+        // 「釣魚」工具、不加速一鍵採集，回 None；其效用走 `fishing_bite::quality_with_rod` 的魚品質提升。
         ItemKind::Wood | ItemKind::Dirt | ItemKind::Stone | ItemKind::Ether
-        | ItemKind::Weapon | ItemKind::Axe | ItemKind::CrystalShard | ItemKind::MushroomSpore
+        | ItemKind::Weapon | ItemKind::Axe | ItemKind::FishingRod | ItemKind::CrystalShard | ItemKind::MushroomSpore
         | ItemKind::AncientFragment | ItemKind::DeepSeaPearl | ItemKind::WildflowerSeed
         | ItemKind::HealingPotion | ItemKind::CrystalPotion | ItemKind::MushroomElixir
         | ItemKind::EtherPill | ItemKind::PearlPotion

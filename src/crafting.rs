@@ -126,6 +126,18 @@ fn axe() -> Recipe {
     }
 }
 
+/// 釣竿配方 (ROADMAP 434 工欲善其釣的工具進程)：木×3 + 乙太×2 -> 釣竿×1。
+/// 木桿配上一縷乙太織成的釣線——身上有它，收竿釣到的魚品質提升一階（好魚機率明顯變高）。
+/// 給釣魚這條一直徒手的活動第一個工具，把「採集→合成→活動更好」正回饋圈擴到水邊。
+fn fishing_rod() -> Recipe {
+    Recipe {
+        id: "fishing_rod",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Ether, 2)],
+        output: ItemKind::FishingRod,
+        output_qty: 1,
+    }
+}
+
 /// 全域配方目錄。
 pub const RECIPES: &[Recipe] = &[
     Recipe {
@@ -155,6 +167,13 @@ pub const RECIPES: &[Recipe] = &[
         id: "axe",
         inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 3)],
         output: ItemKind::Axe,
+        output_qty: 1,
+    },
+    /// 釣竿 (ROADMAP 434)：木×3 + 乙太×2 → 釣竿×1。釣魚工具，身上有它收竿釣到的魚品質提升一階。
+    Recipe {
+        id: "fishing_rod",
+        inputs: &[(ItemKind::Wood, 3), (ItemKind::Ether, 2)],
+        output: ItemKind::FishingRod,
         output_qty: 1,
     },
     /// 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
@@ -689,6 +708,31 @@ mod tests {
         assert_eq!(inv.count(ItemKind::Axe), 1);
         assert_eq!(inv.count(ItemKind::Wood), 0);
         assert_eq!(inv.count(ItemKind::Stone), 0);
+    }
+
+    #[test]
+    fn fishing_rod_recipe_requires_wood_and_ether() {
+        // ROADMAP 434：釣竿＝木×3＋乙太×2。料不齊不能合，齊了才行。
+        let mut inv = Inventory::new();
+        let r = fishing_rod();
+        assert!(!r.can_craft(&inv));
+        inv.add(ItemKind::Wood, 3);
+        assert!(!r.can_craft(&inv));
+        inv.add(ItemKind::Ether, 2);
+        assert!(r.can_craft(&inv));
+        // 全域目錄查得到、id 對齊前端。
+        assert!(recipe_by_id("fishing_rod").is_some(), "釣竿配方應在全域目錄");
+    }
+
+    #[test]
+    fn fishing_rod_craft_consumes_and_yields() {
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Wood, 3);
+        inv.add(ItemKind::Ether, 2);
+        assert!(fishing_rod().craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::FishingRod), 1);
+        assert_eq!(inv.count(ItemKind::Wood), 0);
+        assert_eq!(inv.count(ItemKind::Ether), 0);
     }
 
     #[test]

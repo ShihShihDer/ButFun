@@ -4123,7 +4123,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 魚還沒咬就收會嚇跑魚、空手而回。全程同一把 players 寫鎖、純記憶體，
                     // 廣播在出鎖後才送（守 prod-deadlock 鐵律：鎖內不送廣播）。
                     use crate::fishing::FISH_FARMER_XP;
-                    use crate::fishing_bite::{roll_fish_seasonal, signature_fish, ReelOutcome};
+                    use crate::fishing_bite::{
+                        quality_with_rod, roll_fish_seasonal, signature_fish, ReelOutcome,
+                    };
                     // ROADMAP 363：先取當季（短讀鎖、語句即釋放），再進 players 寫鎖——
                     // 季節鎖與 players 鎖不巢狀，守 prod-deadlock 鐵律。
                     let season_now = app.season.read().unwrap().current;
@@ -4135,7 +4137,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 // 沒在釣：靜默忽略，不廣播。
                                 None => None,
                                 Some(cast) => match cast.reel() {
-                                    ReelOutcome::Caught(quality) => {
+                                    ReelOutcome::Caught(react_quality) => {
                                         // 反應品質決定魚種加權；種子沿用 attempt_count 推進。
                                         let seed = {
                                             let id_bytes = p.id.as_u128();
@@ -4144,6 +4146,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         };
                                         p.fish_attempt_count =
                                             p.fish_attempt_count.wrapping_add(1);
+                                        // ROADMAP 434 工欲善其釣：身上有釣竿就把品質往上提一階
+                                        // （好魚機率明顯變高）；徒手則原樣。魚不進核心結算，零平衡風險。
+                                        let has_rod = p
+                                            .inventory
+                                            .count(crate::inventory::ItemKind::FishingRod)
+                                            > 0;
+                                        let quality = quality_with_rod(react_quality, has_rod);
                                         // ROADMAP 363：季節加權擲骰——當季當紅魚更易上鉤。
                                         let fish = roll_fish_seasonal(seed, quality, season_now);
                                         let in_season = fish == signature_fish(season_now);

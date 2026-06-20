@@ -126,6 +126,23 @@ pub fn reaction_quality(react_secs: f32) -> FishQuality {
     }
 }
 
+/// ROADMAP 434 工欲善其釣——持有釣竿時，把收竿品質往上提一階（鋒利的浮標、順手的線輪，
+/// 讓同一個反應釣到更好的魚）：上鉤→漂亮、漂亮→完美、完美維持完美（已封頂）。
+/// 沒有釣竿（`has_rod == false`）原樣回傳，徒手釣魚與 ROADMAP 47/346 行為完全不變。
+///
+/// 純函式、確定性、無副作用——鏡像「鎬子採礦更快、斧頭伐木更俐落」的工具效用模型，
+/// 是釣魚這條一直沒有工具的活動的第一個工具加成。魚不進戰鬥／經濟核心結算，提升品質仍零平衡風險。
+pub fn quality_with_rod(quality: FishQuality, has_rod: bool) -> FishQuality {
+    if !has_rod {
+        return quality;
+    }
+    match quality {
+        FishQuality::Ok => FishQuality::Good,
+        FishQuality::Good => FishQuality::Perfect,
+        FishQuality::Perfect => FishQuality::Perfect,
+    }
+}
+
 /// 依品質加權擲出魚種。品質越高，星星魚／深海魚機率越高。
 ///
 /// 三檔分布（小魚／星星魚／深海魚）：
@@ -298,6 +315,42 @@ impl FishingCast {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ROADMAP 434 釣竿品質提升（quality_with_rod）─────────────────────────────
+
+    #[test]
+    fn rod_bumps_quality_one_tier() {
+        // 持竿：上鉤→漂亮、漂亮→完美、完美維持完美（已封頂）。
+        assert_eq!(quality_with_rod(FishQuality::Ok, true), FishQuality::Good);
+        assert_eq!(quality_with_rod(FishQuality::Good, true), FishQuality::Perfect);
+        assert_eq!(quality_with_rod(FishQuality::Perfect, true), FishQuality::Perfect);
+    }
+
+    #[test]
+    fn no_rod_is_identity() {
+        // 沒竿：原樣回傳，徒手釣魚行為與 ROADMAP 47/346 完全不變。
+        for q in [FishQuality::Ok, FishQuality::Good, FishQuality::Perfect] {
+            assert_eq!(quality_with_rod(q, false), q);
+        }
+    }
+
+    #[test]
+    fn rod_is_strictly_better_for_lowest_tier() {
+        // 不變式錨點（every_item_has_a_sink 也依此確認釣竿真有用）：最低品質檔持竿後嚴格改變。
+        assert_ne!(quality_with_rod(FishQuality::Ok, true), FishQuality::Ok);
+    }
+
+    #[test]
+    fn rod_never_lowers_deep_fish_odds() {
+        // 持竿後同一檔位的深海魚（最稀有）機率不該下降——逐檔比較「品質→深海魚權重」單調不減。
+        // 以 roll_fish_quality 的分檔（Ok 5% / Good 10% / Perfect 20%）為據：提升一階＝深海魚更常見。
+        fn deep_share(q: FishQuality) -> u32 {
+            (0u64..100).filter(|&s| roll_fish_quality(s, q) == ItemKind::FishDeep).count() as u32
+        }
+        for q in [FishQuality::Ok, FishQuality::Good, FishQuality::Perfect] {
+            assert!(deep_share(quality_with_rod(q, true)) >= deep_share(q));
+        }
+    }
 
     #[test]
     fn bite_delay_within_bounds() {
