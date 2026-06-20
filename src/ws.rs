@@ -1459,11 +1459,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
-                Ok(ClientMsg::Farm { x, y }) => {
+                Ok(ClientMsg::Farm { x, y, kind }) => {
                     // 被打趴時不能耕種——倒地定身，等復原傳回新手村再繼續。
                     if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
                         continue;
                     }
+                    // ROADMAP 452：玩家當下選的作物品種（只在這一下恰好落在「空土→播種」時生效）。
+                    // 未帶／未知字串一律退預設主食穀（`from_wire` 永不失敗），不破壞耕作。
+                    let variety = crate::crop_variety::CropVariety::from_wire(kind.as_deref().unwrap_or(""));
                     // 農地互動：先嘗試自己的私有農地；座標不在私有地內則嘗試公共農地。
                     // 私有地：只有擁有者能互動（`id` 即 uid，訪客沒有地塊 → 取不到 → 不能耕種）。
                     // 公共地：任何已登入玩家均可互動（軟劫掠：誰先採誰得）。
@@ -1480,7 +1483,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         .map(|(px, py)| field.within_reach(px, py))
                                         .unwrap_or(false) =>
                                 {
-                                    Some(field.interact(col, row))
+                                    Some(field.interact_kind(col, row, variety))
                                 }
                                 // 座標不在私有地（或太遠）→ 留給公共農地試試。
                                 _ => None,
@@ -1500,7 +1503,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     .map(|(px, py)| pf.within_reach(px, py))
                                     .unwrap_or(false) =>
                             {
-                                pf.interact(col, row)
+                                pf.interact_kind(col, row, variety)
                             }
                             _ => FarmOutcome::Nothing,
                         }

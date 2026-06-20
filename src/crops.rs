@@ -15,6 +15,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::crop_variety::CropVariety;
+
 /// 作物的成長階段（依累積成長時間推導）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropStage {
@@ -141,16 +143,33 @@ pub struct Crop {
     /// 安全讀回 0（在途作物一次性視為最用心，向後相容、不破壞玩家資料）。
     #[serde(default)]
     parched: f32,
+    /// ROADMAP 452 作物品種：這株是哪個品種，決定成長速度（`grow_boosted` 取其 `grow_rate`）
+    /// 與收成乙太（`harvest` 取其 `harvest_ether`）。`#[serde(default)]` 讓舊存檔／無品種欄的
+    /// 在途作物安全讀回預設 `Staple`（＝改動前的單一作物數值），向後相容、零 migration、不破壞玩家資料。
+    #[serde(default)]
+    kind: CropVariety,
 }
 
 impl Crop {
-    /// 播下一株新種子（乾的，需要澆水才會開始長）。
+    /// 播下一株新種子（乾的，需要澆水才會開始長）——預設品種主食穀。
+    /// 既有呼叫端與測試沿用此入口；要指定品種走 `plant_kind`。
     pub fn plant() -> Self {
+        Self::plant_kind(CropVariety::default())
+    }
+
+    /// 播下指定品種的一株新種子（ROADMAP 452）。除品種外與 `plant` 完全相同。
+    pub fn plant_kind(kind: CropVariety) -> Self {
         Self {
             growth: 0.0,
             moisture: 0.0,
             parched: 0.0,
+            kind,
         }
+    }
+
+    /// 這株作物的品種（ROADMAP 452）。供田格快照下傳給前端畫品種微異。
+    pub fn kind(&self) -> CropVariety {
+        self.kind
     }
 
     /// 澆水：把濕度補滿。
@@ -182,9 +201,12 @@ impl Crop {
         } else {
             1.0
         };
+        // ROADMAP 452：品種的成長速度倍率（速生菜快、乙太瓜慢；主食穀＝1.0 與改動前一致）。
+        // 與沃土加速（`mult`）相乘——兩者都只放大「長得多快」、不多耗水，維持公平。
+        let kind_rate = self.kind.grow_rate();
         // 這段時間內實際能長多久，受限於剩餘濕度（加速放大的是成長、非耗水）。
         let effective = dt.min(self.moisture);
-        self.growth = (self.growth + effective * mult).min(RIPE_AT);
+        self.growth = (self.growth + effective * mult * kind_rate).min(RIPE_AT);
         self.moisture = (self.moisture - dt).max(0.0);
     }
 
@@ -234,7 +256,7 @@ impl Crop {
     /// 測試用：直接組出指定 `growth` / `moisture`（含壞值）的作物，驗證載入防線。
     #[cfg(test)]
     pub fn from_raw(growth: f32, moisture: f32) -> Self {
-        Self { growth, moisture, parched: 0.0 }
+        Self { growth, moisture, parched: 0.0, kind: CropVariety::default() }
     }
 
     /// 收成：成熟才給乙太，並把這格重置成可再種的新種子。
@@ -243,8 +265,13 @@ impl Crop {
         if !self.is_ripe() {
             return None;
         }
-        *self = Crop::plant();
-        Some(ETHER_PER_HARVEST)
+        // ROADMAP 452：收成乙太依品種（主食穀＝既有 ETHER_PER_HARVEST）。
+        let ether = self.kind.harvest_ether();
+        // 收成後回到「同品種」的新乾種子：這格本來種什麼、重置後仍是什麼（field 層收成後實際會把
+        // 格子改回空土另行重種，這裡保留品種只為 crops 層語意自洽與測試可預期）。
+        let kind = self.kind;
+        *self = Crop::plant_kind(kind);
+        Some(ether)
     }
 }
 
@@ -492,5 +519,98 @@ mod tests {
         let before = c.clone();
         c.grow(0.0);
         assert_eq!(c, before);
+    }
+
+    // ── 作物品種（ROADMAP 452）─────────────────────────────────────────────────
+
+    #[test]
+    fn default_plant_is_staple_matching_legacy_growth() {
+        // 無品種入口＝主食穀，成長速度＝1.0：與改動前完全一致（向後相容地基）。
+        let mut c = Crop::plant();
+        assert_eq!(c.kind(), CropVariety::Staple);
+        c.water();
+        c.grow(SPROUT_AT); // 主食穀長 30 秒 → 剛好發芽（與改動前同）
+        assert_eq!(c.stage(), CropStage::Sprout);
+    }
+
+    #[test]
+    fn sprout_grows_faster_than_staple() {
+        // 速生菜倍率 >1：同樣澆一次水、長同樣的真實秒數，速生菜累積更多有效成長。
+        let mut sprout = Crop::plant_kind(CropVariety::Sprout);
+        let mut staple = Crop::plant_kind(CropVariety::Staple);
+        sprout.water();
+        staple.water();
+        sprout.grow(40.0);
+        staple.grow(40.0);
+        // 速生菜倍率 1.6：40×1.6=64 → 已成熟（>=90? 不，64<90）但比主食穀（40）更接近。
+        assert!(sprout.progress() > staple.progress(), "速生菜長得比主食穀快");
+    }
+
+    #[test]
+    fn sprout_ripens_within_one_water_but_staple_needs_more() {
+        // 速生菜一次澆水（60 秒濕度）就能成熟：60×1.6=96 >= RIPE_AT(90)。
+        let mut sprout = Crop::plant_kind(CropVariety::Sprout);
+        sprout.water();
+        sprout.grow(MOISTURE_PER_WATER);
+        assert!(sprout.is_ripe(), "速生菜一次澆水即可成熟");
+        // 主食穀一次澆水只長 60 < 90，還沒熟（與改動前一致）。
+        let mut staple = Crop::plant_kind(CropVariety::Staple);
+        staple.water();
+        staple.grow(MOISTURE_PER_WATER);
+        assert!(!staple.is_ripe(), "主食穀一次澆水還不夠成熟");
+    }
+
+    #[test]
+    fn harvest_ether_differs_by_variety() {
+        // 各品種收成基礎乙太不同：速生菜少、主食穀＝既有、乙太瓜多。
+        fn ripen_and_harvest(kind: CropVariety) -> u32 {
+            let mut c = Crop::plant_kind(kind);
+            // 多澆幾次水確保任何品種都長到成熟（乙太瓜倍率低需更久）。
+            for _ in 0..6 {
+                c.water();
+                c.grow(MOISTURE_PER_WATER);
+            }
+            assert!(c.is_ripe(), "{:?} 應已成熟", kind);
+            c.harvest().expect("成熟可收")
+        }
+        assert_eq!(ripen_and_harvest(CropVariety::Staple), ETHER_PER_HARVEST);
+        assert!(ripen_and_harvest(CropVariety::Sprout) < ETHER_PER_HARVEST, "速生菜收得少");
+        assert!(ripen_and_harvest(CropVariety::Etherbloom) > ETHER_PER_HARVEST, "乙太瓜收得多");
+    }
+
+    #[test]
+    fn harvest_preserves_variety_for_next_crop() {
+        // 收成後回到「同品種」的新乾種子（field 層另會改回空土，但 crops 層語意自洽）。
+        let mut c = Crop::plant_kind(CropVariety::Etherbloom);
+        for _ in 0..6 {
+            c.water();
+            c.grow(MOISTURE_PER_WATER);
+        }
+        assert!(c.harvest().is_some());
+        assert_eq!(c.kind(), CropVariety::Etherbloom, "收成後品種沿用");
+        assert_eq!(c, Crop::plant_kind(CropVariety::Etherbloom));
+    }
+
+    #[test]
+    fn quality_is_orthogonal_to_variety() {
+        // 品質仍由「是否用心照顧」決定，與品種無關：速生菜全程不渴也拿優質。
+        let mut c = Crop::plant_kind(CropVariety::Sprout);
+        c.water();
+        c.grow(MOISTURE_PER_WATER); // 一次水就熟（速生菜），全程沒渴
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Premium, "用心照顧＝優質，與品種正交");
+    }
+
+    #[test]
+    fn variety_survives_serde_round_trip_and_legacy_defaults_to_staple() {
+        // 帶品種的作物序列化往返後品種不變（持久化地基）。
+        let c = Crop::plant_kind(CropVariety::Etherbloom);
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Crop = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.kind(), CropVariety::Etherbloom);
+        // 舊存檔（無 kind 欄）反序列化退回預設主食穀——向後相容、不破壞玩家資料。
+        let legacy: Crop =
+            serde_json::from_str(r#"{"growth":12.0,"moisture":30.0,"parched":0.0}"#).unwrap();
+        assert_eq!(legacy.kind(), CropVariety::Staple);
     }
 }

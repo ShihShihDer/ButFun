@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::crop_variety::CropVariety;
 use crate::crops::{Crop, CropStage};
 use crate::protocol::{FieldView, TileView};
 
@@ -340,11 +341,17 @@ impl Field {
         }
     }
 
-    /// 播種：只有翻好的空土能播。成功回 `true`，否則回 `false`。
+    /// 播種（預設品種主食穀）：只有翻好的空土能播。成功回 `true`，否則回 `false`。
+    /// 保留既有無品種入口供內部／測試沿用；要指定品種走 `plant_kind`。
     pub fn plant(&mut self, col: usize, row: usize) -> bool {
+        self.plant_kind(col, row, CropVariety::default())
+    }
+
+    /// 播種指定品種（ROADMAP 452）：只有翻好的空土能播。除品種外與 `plant` 完全相同。
+    pub fn plant_kind(&mut self, col: usize, row: usize, kind: CropVariety) -> bool {
         match self.index_at(col, row) {
             Some(i) if self.tiles[i] == Tile::Tilled => {
-                self.tiles[i] = Tile::Planted(Crop::plant());
+                self.tiles[i] = Tile::Planted(Crop::plant_kind(kind));
                 true
             }
             _ => false,
@@ -478,10 +485,17 @@ impl Field {
         s
     }
 
-    /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
-    /// 自然地→翻土、空土→播種、未熟作物→澆水、成熟作物→收成。
-    /// 越界回 `Nothing`。把「該做哪個動作」的判斷集中在這裡，前端只要送座標。
+    /// 「一鍵照顧」（預設品種主食穀）：保留既有無品種入口供內部／測試沿用。
+    /// 要在播種時指定品種（ROADMAP 452）走 `interact_kind`。
     pub fn interact(&mut self, col: usize, row: usize) -> FarmOutcome {
+        self.interact_kind(col, row, CropVariety::default())
+    }
+
+    /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
+    /// 自然地→翻土、空土→播種（種下 `kind` 品種，ROADMAP 452）、未熟作物→澆水、成熟作物→收成。
+    /// `kind` 只在「空土→播種」這步用到，其餘動作忽略它。
+    /// 越界回 `Nothing`。把「該做哪個動作」的判斷集中在這裡，前端只要送座標＋想種的品種。
+    pub fn interact_kind(&mut self, col: usize, row: usize, kind: CropVariety) -> FarmOutcome {
         let Some(i) = self.index_at(col, row) else {
             return FarmOutcome::Nothing;
         };
@@ -505,7 +519,7 @@ impl Field {
                 FarmOutcome::Tilled
             }
             Act::Plant => {
-                self.plant(col, row);
+                self.plant_kind(col, row, kind);
                 FarmOutcome::Planted
             }
             Act::Water => {
@@ -595,6 +609,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
             quality: 0,
             grow: 0,
             soil: 0,
+            kind: 0,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -603,6 +618,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
             quality: 0,
             grow: 0,
             soil,
+            kind: 0,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -621,6 +637,8 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
                 grow: (c.progress() * 100.0).round() as u8,
                 // 種了作物的格不顯地力（地力已鎖住、待收成兌現；視覺焦點留給作物本身）。
                 soil: 0,
+                // ROADMAP 452：作物品種碼，供前端畫品種微異／面板顯示。
+                kind: c.kind().code(),
             }
         }
     }
@@ -1015,10 +1033,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0 });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0 });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0 });
     }
 
     #[test]
@@ -1231,7 +1249,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0 });
     }
 
     #[test]
