@@ -414,6 +414,29 @@
     applyUiFont();
   }
   applyUiFont(); // 進場前即套用，連登入畫面與既有 HUD 都跟著放大
+  // ---- 進場小貼士（ROADMAP 443）：登入畫面常駐輪播一則精選玩法提示 ----
+  // 每位玩家進場前都會停在登入畫面，是最高槓桿卻最被忽略的引導表面。與其讓它乾等，
+  // 不如被動把核心玩法一則則餵給新手，降低上手門檻。純前端、零後端、零持久化。
+  // 文案集中成一個陣列（i18n 友善：日後在地化只改這一處），繁中、療癒語氣、不喧賓奪主。
+  const LOGIN_TIPS = [
+    "✨ 走近野怪會自動開打，記得邊打邊留意血量。",
+    "🌧️ 下雨天會自動幫農作物澆水，省下你不少功夫。",
+    "🌾 種田、採集、打怪都能累積經驗，慢慢升級變強。",
+    "🧭 自家農地跑遠了？畫面邊緣會浮出黃銅羅盤指路回家。",
+    "🤝 城裡的居民都能聊天，多走動認識大家、人情會慢慢變好。",
+    "⛏️ 朝岩壁走會自動鑿隧道，但絕不會挖到你親手蓋的牆。",
+    "🌙 夜裡想歇會兒？在安全處靜靜打坐 30 秒能回血回乙太。",
+    "🎣 水邊偶有魚汛，魚群浮現時下竿更容易上鉤。",
+    "💎 採集偶爾會迸出稀有好手氣，多採幾次碰碰運氣。",
+    "⚙️ 覺得太吵或字太小？右下「設定」能調音量、字級與畫面動態。",
+  ];
+  // nextTipIndex 為純函式（確定性、零副作用、好測）：循序推進到下一則貼士並循環回頭。
+  // 壞值／空陣列一律退回 0，確保索引永遠落在合法範圍內。
+  function nextTipIndex(cur, len) {
+    if (!Number.isInteger(len) || len <= 0) return 0;
+    if (!Number.isInteger(cur) || cur < 0 || cur >= len) return 0;
+    return (cur + 1) % len;
+  }
   // ---- 世界風（ROADMAP 430）：伺服器權威、全服共享的風，讓樹/作物一致搖曳 ----
   // worldWind 由天氣快照同步（缺欄位＝靜風）；dirX/dirY 為單位向量、strength∈[0,1]。
   let worldWind = { dirX: 1, dirY: 0, strength: 0 };
@@ -514,7 +537,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -27916,6 +27939,32 @@
         }
       })
       .catch(() => {}); // 連不上就留空，不打擾
+  })();
+
+  // 進場小貼士輪播（ROADMAP 443）：登入畫面常駐，每幾秒柔和淡入淡出換一則玩法提示。
+  // document.hidden 時暫停（省電、不空轉）；登入畫面收起（進場完成）後自動停止計時器。
+  // reduceMotion 下不淡入、直接換字（尊重「畫面動態·省電靜謐」與系統 prefers-reduced-motion）。
+  (function rotateLoginTips() {
+    const box = document.getElementById("loginTips");
+    if (!box || !LOGIN_TIPS.length) return;
+    const textEl = box.querySelector(".tip-text");
+    if (!textEl) return;
+    let idx = 0;
+    textEl.textContent = LOGIN_TIPS[idx]; // 開頁立即顯示第一則，不留空
+    const ROTATE_MS = 7000; // 從容的步調，療癒向、不催促玩家
+    const timer = setInterval(() => {
+      const loginEl = document.getElementById("login");
+      // 登入畫面已收起（welcome→enterGame 完成）→ 停止輪播、釋放計時器。
+      if (loginEl && loginEl.classList.contains("hidden")) { clearInterval(timer); return; }
+      if (document.hidden) return; // 分頁切到背景：略過這一拍，省電
+      idx = nextTipIndex(idx, LOGIN_TIPS.length);
+      if (reduceMotion) { textEl.textContent = LOGIN_TIPS[idx]; return; } // 減少動態：直接換字、不淡入
+      box.classList.add("tip-fading"); // 觸發 CSS 淡出
+      setTimeout(() => {
+        textEl.textContent = LOGIN_TIPS[idx];
+        box.classList.remove("tip-fading"); // 換好字再淡入新貼士
+      }, 230); // 對齊 CSS transition 220ms
+    }, ROTATE_MS);
   })();
 
   // 開頁就查 /auth/me:已登入就跳過進場畫面、直接連線(同一帳號跨裝置同一玩家)

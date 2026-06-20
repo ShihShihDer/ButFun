@@ -1542,6 +1542,34 @@ for (const sc of scenarios) {
   }
 }
 
+// 進場小貼士（ROADMAP 443）：單元斷言純函式 nextTipIndex（目前索引→下一則，循環＋壞值防護）。
+// 純客戶端、零後端；只驗循序輪播的決定性真值表（實際 DOM 輪播/淡入不在 smoke 範圍）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.nextTipIndex;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 進場小貼士：game.js 未導出 nextTipIndex");
+  } else {
+    let bad = 0;
+    // [目前索引, 陣列長度, 期望下一索引]：循序 +1、到尾循環回 0、壞值/空陣列退 0。
+    const cases = [
+      [0, 10, 1], [5, 10, 6], [8, 10, 9], [9, 10, 0], // 正常循序＋尾端循環
+      [-1, 10, 0], [10, 10, 0], [99, 10, 0],           // 越界/負值退 0
+      [NaN, 10, 0], [1.5, 10, 0],                       // 非整數/NaN 退 0
+      [3, 0, 0], [0, -1, 0], [0, NaN, 0],               // 空陣列/壞長度退 0
+    ];
+    for (const [cur, len, want] of cases) {
+      if (fn(cur, len) !== want) { bad++; console.error(`  ❌ 進場小貼士：nextTipIndex(${cur}, ${len}) 期望 ${want}`); }
+    }
+    // 不變式：任何輸入都落在 [0, len) 內（壞 len 視為 0）；連續推進能走遍整圈。
+    let cur = 0, seen = new Set();
+    for (let i = 0; i < 10; i++) { seen.add(cur); cur = fn(cur, 10); }
+    if (seen.size !== 10) { bad++; console.error("  ❌ 進場小貼士：連續推進應走遍全部 10 則貼士"); }
+    if (bad) failed = true;
+    else console.log(`  ✅ 進場小貼士·循序輪播真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
