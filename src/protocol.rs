@@ -23,6 +23,14 @@ pub struct TradeCargoBrief {
     pub reward: u32,
 }
 
+/// 新手見面禮的一筆物品（ROADMAP 444）：item 走 snake_case wire 字串（前端有 ITEM_LOOK／
+/// ITEM_NAME 對應 emoji 與中文名），qty 為實際授予量。供 `WelcomeKit` 單播逐項顯示。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WelcomeKitItem {
+    pub item: ItemKind,
+    pub qty: u32,
+}
+
 /// 工坊訂單摘要（送進快照，前端面板顯示用）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WorkshopOrderBrief {
@@ -1211,6 +1219,13 @@ pub enum ServerMsg {
         advanced: bool,
         reward: u32,
         milestone: bool,
+    },
+    /// 新手見面禮（ROADMAP 444）：玩家**第一次登入**時，伺服器單播一次（一次性、不入快照）。
+    /// `items` = 已塞進背包的起手物品（逐項 wire 字串 + 數量）；`ether` = 已加進玩家身上的迎新乙太。
+    /// 前端據此浮一張暖暖的「見面禮」卡，逐項列出新人拿到了什麼。已領過的帳號不會再收到。
+    WelcomeKit {
+        items: Vec<WelcomeKitItem>,
+        ether: u32,
     },
     /// 喝采成功（ROADMAP 341）：一名玩家替附近另一名玩家鼓掌，伺服器替**對方**人氣 +1，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「👏 啪！」掌聲特效，並就地把對方的人氣

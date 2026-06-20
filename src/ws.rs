@@ -569,6 +569,41 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
         }
     }
 
+    // 新手見面禮·故鄉的起手禮（ROADMAP 444）：玩家**第一次登入**時，故鄉送一份一次性起手禮
+    // （鎬子＋木材＋一小撮迎新乙太），讓新人不必空手摸索就能踏進採集→合成循環。冪等由
+    // `welcome_kits.claim` 把關（原子 test-and-set，只有第一次回 true）；前進時鎖內把物品塞背包、
+    // 乙太加身上（隨既有持久化自然存檔），鎖外單播 WelcomeKit 讓前端浮見面禮卡。只給已登入玩家
+    // （訪客 id 臨時、發了也跨重連找不回，與訪客不留世界痕跡一致）。
+    if let Some(uid) = authed_uid {
+        if app.welcome_kits.claim(uid).await {
+            // 鎖內：塞背包＋加乙太，並就地組出「實際授予了什麼」（鎖外才送訊，不巢狀上鎖，守 prod-deadlock）。
+            let granted = {
+                let mut players = app.players.write().unwrap();
+                if let Some(p) = players.get_mut(&id) {
+                    let items = crate::welcome_kit::apply_kit(&mut p.inventory);
+                    p.ether = p.ether.saturating_add(crate::welcome_kit::KIT_ETHER);
+                    items
+                } else {
+                    Vec::new()
+                }
+            };
+            // 至少有一項物品才送（理論上全新玩家背包空、必有；保守防一手）。
+            if !granted.is_empty() {
+                let items = granted
+                    .into_iter()
+                    .map(|g| crate::protocol::WelcomeKitItem { item: g.item, qty: g.qty })
+                    .collect();
+                let msg = ServerMsg::WelcomeKit {
+                    items,
+                    ether: crate::welcome_kit::KIT_ETHER,
+                };
+                if let Ok(text) = serde_json::to_string(&msg) {
+                    let _ = sender.send(Message::Text(text)).await;
+                }
+            }
+        }
+    }
+
     // 轉發任務：把兩條廣播推給這個客戶端。
     // 快照（高頻、會淹）走 tx；聊天（低頻、一次性、漏了就永久看不到）走獨立的 tx_chat，
     // 這樣追快照造成的 Lagged 不會把同段時間捲過的聊天一起丟掉。兩條各自用 forward_action

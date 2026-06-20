@@ -603,6 +603,25 @@
     @media (prefers-reduced-motion: reduce) {
       #streakCard, #streakCard.fading { transition: opacity 0.4s; transform: translateX(-50%); }
     }
+    /* 新手見面禮卡（ROADMAP 444）：第一次登入時上緣中央浮一張暖琥珀禮卡，逐項列出起手禮。 */
+    #welcomeKitCard {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      top: calc(56px + env(safe-area-inset-top));
+      max-width: min(320px, calc(100vw - 28px));
+      background: #2a2113; border: 1px solid #e8c04a; border-radius: 14px;
+      padding: 11px 18px; z-index: 211; text-align: center;
+      box-shadow: 0 0 26px rgba(232,192,74,0.42); font-size: 0.9em;
+      transition: opacity 0.4s, transform 0.4s;
+    }
+    #welcomeKitCard.fading { opacity: 0; transform: translateX(-50%) translateY(-8px); pointer-events: none; }
+    #welcomeKitCard .wk-title { color: #f0c870; font-weight: 700; display: block; }
+    #welcomeKitCard .wk-sub { color: #cbb98a; font-size: 0.82em; margin-top: 2px; display: block; }
+    #welcomeKitCard .wk-items { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 12px; margin-top: 7px; }
+    #welcomeKitCard .wk-item { color: #ffe6b0; font-weight: 600; font-size: 0.9em; }
+    #welcomeKitCard .wk-item .wk-qty { color: #ffd479; }
+    @media (prefers-reduced-motion: reduce) {
+      #welcomeKitCard, #welcomeKitCard.fading { transition: opacity 0.4s; transform: translateX(-50%); }
+    }
     /* 鍵盤聚焦時給黃銅描邊:用鍵盤(Tab)操作聊天收合的玩家看得到焦點落在哪。
        focus-visible 只在鍵盤導航時亮,滑鼠點不會多冒框。 */
     #chatToggle:focus-visible {
@@ -1827,6 +1846,7 @@
        position:fixed 右上角，不擋主畫面，可提前按 × 關閉。 -->
   <div id="returnCard" class="hidden" role="status" aria-label="回訪摘要" aria-live="polite"></div>
   <div id="streakCard" class="hidden" role="status" aria-label="連日歸鄉" aria-live="polite"></div>
+  <div id="welcomeKitCard" class="hidden" role="status" aria-label="新手見面禮" aria-live="polite"></div>
 
   <script src="game.js?v=20260610-leaderboard"></script>
 </body>
