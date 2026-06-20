@@ -110,8 +110,8 @@ log "turn=$turn"
 case "$turn" in
   work|done)  # done 也跑 worker：ROADMAP 主軸做完時改進自主提案模式，絕不空轉（AI 自營運）
     WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"
-    git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true
-    cd "$WT" 2>/dev/null || cd "$REPO"
+    git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }
+    cd "$WT" || { log "❌ worker worktree ($WT) 不可用，本輪中止——絕不 fallback 到主樹(免在主樹留 WIP 弄髒、擋部署一整天)"; exit 1; }
     "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
     log "worker：先試 Gemini（獨立額度，但也有限會見底）"
     # 注意：set -e 下「gout=$(gemini…)」失敗會直接 kill 腳本、根本跑不到 fallback——故用 && / || 保住 grc
@@ -120,7 +120,7 @@ case "$turn" in
     # Gemini 失敗（額度用盡 429 或任何錯）→ fallback 改用 Claude Sonnet（agentic、比 Opus 省、受 80% 守衛保護）
     if [ "$grc" -ne 0 ]; then
       log "Gemini 失敗/額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
-      cd "$WT" 2>/dev/null || cd "$REPO"
+      cd "$WT" || { log "❌ worker worktree 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }
       exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
     fi
     ;;
@@ -128,9 +128,9 @@ case "$turn" in
     log "reviewer（Claude $REVIEW_MODEL）把關"
     "$HERE/notify.sh" beat "🔍 $(date '+%H:%M') 正在檢查剛做好的東西（跑測試,約 5-8 分）…" >/dev/null 2>&1 || true
     RWT="${BUTFUN_REVIEW_WORKTREE:-/tmp/bf-review}"
-    git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$RWT" >/dev/null 2>&1 || true
+    git -C "$RWT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$RWT" >/dev/null 2>&1 || true; }
     before="$(git -C "$REPO" rev-parse origin/main 2>/dev/null)"
-    cd "$RWT" 2>/dev/null || cd "$REPO"
+    cd "$RWT" || { log "❌ reviewer worktree ($RWT) 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }
     claude -p --dangerously-skip-permissions --model "$REVIEW_MODEL" "$(cat "$HERE/reviewer.prompt")" || true
     # 版本更新通知（backstop，不靠 reviewer 記得）：本輪若 origin/main 前進＝有 PR 被 merge → 推 update
     git -C "$REPO" fetch -q origin main 2>/dev/null || true
@@ -147,5 +147,5 @@ case "$turn" in
     fi
     log "turn=human：(已推播) 等人處理 for_human.md，閒置"; exit 0 ;;
   # 註：done 不再單獨閒置，已併入上面 work|done)＝改跑自主提案模式（AI 自營運，絕不空轉）。
-  *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || git worktree add --detach "$WT" >/dev/null 2>&1 || true; cd "$WT" 2>/dev/null || cd "$REPO"; exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" ;;
+  *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }; cd "$WT" || { log "❌ worker worktree 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }; exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" ;;
 esac
