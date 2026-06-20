@@ -173,6 +173,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             charging: None,
             charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
+            fish_records: crate::fish_size::FishRecords::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -303,6 +304,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             charging: None,
             charge_ready: None,
             wayfaring: crate::wayfaring::Wayfaring::default(),
+            fish_records: crate::fish_size::FishRecords::default(),
             traced_constellations: 0,
             inscriptions_mask: 0,
             reconcile_errand: None,
@@ -4345,9 +4347,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         let in_season = fish == signature_fish(season_now);
                                         p.add_item_overflow(fish, 1);
                                         p.masteries.gain_farmer(FISH_FARMER_XP);
+                                        // ROADMAP 449 漁夫的驕傲：算這一尾體長、更新個人最大尾。
+                                        // 尺寸沿用同顆種子（roll_size_mm 內混鹽值、與魚種擲骰不同相），
+                                        // 純記憶體紀錄、不入戰鬥／經濟結算（零平衡風險）。
+                                        let size_mm =
+                                            crate::fish_size::roll_size_mm(fish, quality, seed);
+                                        let (personal_best, prev_best_cm) =
+                                            match p.fish_records.record(fish, size_mm) {
+                                                crate::fish_size::CatchRecord::NewBest {
+                                                    prev_mm,
+                                                    ..
+                                                } => (true, prev_mm.map(|mm| mm as f32 / 10.0)),
+                                                crate::fish_size::CatchRecord::NotBest {
+                                                    ..
+                                                } => (false, None),
+                                            };
                                         tracing::info!(
                                             player = %p.name, fish = ?fish, quality = ?quality,
                                             season = ?season_now, in_season,
+                                            size_mm, personal_best,
                                             "收竿釣到魚"
                                         );
                                         // 魚物品 → snake_case 線格式（serde 約定，鏡像 state.rs decay key）。
@@ -4361,6 +4379,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             fish: Some(fish_key),
                                             quality: Some(quality.as_str().to_string()),
                                             in_season: Some(in_season),
+                                            size_cm: Some(size_mm as f32 / 10.0),
+                                            personal_best: Some(personal_best),
+                                            prev_best_cm,
                                             x: p.x,
                                             y: p.y,
                                         })
@@ -4371,6 +4392,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         fish: None,
                                         quality: None,
                                         in_season: None,
+                                        size_cm: None,
+                                        personal_best: None,
+                                        prev_best_cm: None,
                                         x: p.x,
                                         y: p.y,
                                     }),

@@ -4032,9 +4032,22 @@
           const color = msg.quality === "perfect" ? "255,210,74"
                       : msg.quality === "good"    ? "120,200,255"
                       :                             "170,225,170";
-          floaters.push({ wx, wy, text: `${femoji} ${qlabel}！${fname}`, color, born: now });
-          announce(`釣到${fname}（${qlabel}）`);
+          // ROADMAP 449 漁夫的驕傲：每尾魚現在都有體長（公分），釣到的飄字／報讀都帶上尺寸。
+          const sizeStr = (typeof msg.size_cm === "number" && isFinite(msg.size_cm))
+            ? `${msg.size_cm.toFixed(1)}cm` : "";
+          const sizeSuffix = sizeStr ? ` ${sizeStr}` : "";
+          floaters.push({ wx, wy, text: `${femoji} ${qlabel}！${fname}${sizeSuffix}`, color, born: now });
+          announce(`釣到${fname}（${qlabel}）${sizeStr ? `，${sizeStr}` : ""}`);
           SFX.success(); // 釣魚成功音效（ROADMAP 376）
+          // ROADMAP 449：刷新這個魚種的個人最大尾＝獎盃慶賀（金色、最上方），給釣魚迴圈
+          // 第一個「破自己紀錄」的續釣動機。尊重 reduceMotion：仍顯示字、只是不另堆動畫。
+          if (msg.personal_best === true) {
+            floaters.push({ wx, wy: wy - 44, text: `🏆 個人最大尾！${fname}${sizeSuffix}`, color: "255,215,90", born: now });
+            const prevStr = (typeof msg.prev_best_cm === "number" && isFinite(msg.prev_best_cm))
+              ? `，刷新舊紀錄 ${msg.prev_best_cm.toFixed(1)}cm` : "（這趟第一尾）";
+            announce(`個人最大尾！${fname}${sizeStr ? ` ${sizeStr}` : ""}${prevStr}`);
+            SFX.success();
+          }
           // ROADMAP 363：釣到「當季當紅魚」——多疊一道漁汛慶祝飄字（金色、上方），讓玩家
           // 明顯感到「這個季節水裡的魚不一樣」。尊重 reduceMotion：仍顯示字、只是不另堆動畫。
           if (msg.in_season === true) {

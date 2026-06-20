@@ -1290,6 +1290,15 @@ pub enum ServerMsg {
         quality: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         in_season: Option<bool>,
+        /// 這一尾的體長（公分，含一位小數；ROADMAP 449 漁夫的驕傲）。僅 caught 帶。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size_cm: Option<f32>,
+        /// 是否刷新了這個魚種的個人最大尾（ROADMAP 449）；true 時前端演獎盃慶賀。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal_best: Option<bool>,
+        /// 破紀錄時的舊紀錄體長（公分）；這趟第一次釣到此種則不帶（ROADMAP 449）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prev_best_cm: Option<f32>,
         x: f32,
         y: f32,
     },
