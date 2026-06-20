@@ -1785,10 +1785,21 @@ pub fn spawn(app: AppState) {
                                 );
                                 continue;
                             }
+                            // 全域軟上限：世界已夠擠時不再往裡塞獸潮怪（人多才容許更多）。
+                            // 先取在線存活人數快照，再鎖 enemies（鎖序：players 不在 enemies 寫鎖內二次上鎖）。
+                            let alive_players = {
+                                let players = app.players.read().unwrap();
+                                players.values().filter(|p| !p.vitals.is_downed()).count()
+                            };
+                            let softcap = crate::enemy_field::global_enemy_softcap(alive_players);
                             // 注入第一波怪物（全部在保護圈外確認）。
                             let mut enemies = app.enemies.write().unwrap();
                             let mut injected = 0u32;
                             for (wx, wy, kind) in wave {
+                                if enemies.total_count() >= softcap {
+                                    tracing::debug!(softcap, alive_players, "全世界敵數達軟上限，略過獸潮注入");
+                                    break;
+                                }
                                 if world_core::town_protected_at(wx as f64, wy as f64) {
                                     tracing::warn!(x = wx, y = wy, "獸潮波次位置在保護圈內，跳過");
                                     continue;
@@ -2539,9 +2550,19 @@ pub fn spawn(app: AppState) {
                             MonsterColonyEvent::MonsterKilledInDominantColony => {}
                             // ROADMAP 179：怪物王號令援軍——注入援軍小怪並廣播全服警示。
                             MonsterColonyEvent::AlphaSummonedReinforcements { colony_name, kind, count, positions } => {
+                                // 全域軟上限：世界已夠擠時 Alpha 援軍也不再注入（先取人數快照再鎖 enemies）。
+                                let alive_players = {
+                                    let players = app.players.read().unwrap();
+                                    players.values().filter(|p| !p.vitals.is_downed()).count()
+                                };
+                                let softcap = crate::enemy_field::global_enemy_softcap(alive_players);
                                 {
                                     let mut enemies = app.enemies.write().unwrap();
                                     for (x, y) in &positions {
+                                        if enemies.total_count() >= softcap {
+                                            tracing::debug!(softcap, alive_players, "全世界敵數達軟上限，略過 Alpha 援軍注入");
+                                            break;
+                                        }
                                         enemies.inject_event_enemy(*x, *y, kind);
                                     }
                                 }

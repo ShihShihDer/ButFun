@@ -57,6 +57,18 @@ const NOTORIOUS_AURA_RADIUS: f32 = 240.0;
 /// 兇名精英光環傷害加成比例（+15%）。
 const NOTORIOUS_DAMAGE_BONUS: f32 = 0.15;
 
+/// 全世界敵人總量「軟上限」基準（人少時的封頂）。
+/// 事件怪（獸潮／Alpha 援軍等）注入前先檢查此上限，超過則靜默略過本次注入，
+/// 避免人少時超限怪累積爆炸（巢穴一般補充不受此限，沿用既有 max_population）。
+pub const ENEMY_SOFTCAP_BASE: usize = 120;
+/// 每名在線（存活）玩家可額外容納的事件怪數量——人多才容許更多怪。
+pub const ENEMY_SOFTCAP_PER_PLAYER: usize = 30;
+
+/// 依在線（存活）人數縮放的全世界敵人總量軟上限。
+pub fn global_enemy_softcap(alive_players: usize) -> usize {
+    ENEMY_SOFTCAP_BASE + alive_players * ENEMY_SOFTCAP_PER_PLAYER
+}
+
 /// 根據怪物 ID 雜湊決定此怪是否為「夜間休息型」（約 40% 的怪）。
 /// 夜間這類怪回巢靜止、AGGRO 歸零，給玩家安全喘息時段。純函式、確定性、無隨機。
 pub fn is_night_rester(id: (i32, i32, usize)) -> bool {
@@ -199,6 +211,12 @@ impl EnemyField {
 
     pub fn enemies(&self) -> Vec<PlacedEnemy> {
         self.chunks.values().flatten().cloned().collect()
+    }
+
+    /// 目前全世界的敵人總數（含尚未被擊殺的全部 placed enemy）。
+    /// 供事件怪注入前比對全域軟上限用——輕量計數，不 clone。
+    pub fn total_count(&self) -> usize {
+        self.chunks.values().map(|v| v.len()).sum()
     }
 
     /// ROADMAP 424：回傳所有「存活的兇名精英（怪物王）」的精簡資料 `(id, x, y, level)`，
@@ -1931,5 +1949,40 @@ mod tests {
             let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
             assert!(dist < 200.0, "AOE 命中座標應在攻擊範圍內，dist={dist}");
         }
+    }
+
+    #[test]
+    fn softcap_scales_with_players() {
+        // 軟上限 = 基準 + 在線人數 × 每人加成。
+        assert_eq!(global_enemy_softcap(0), ENEMY_SOFTCAP_BASE);
+        assert_eq!(
+            global_enemy_softcap(5),
+            ENEMY_SOFTCAP_BASE + 5 * ENEMY_SOFTCAP_PER_PLAYER
+        );
+        // 人多容許更多怪。
+        assert!(global_enemy_softcap(10) > global_enemy_softcap(2));
+    }
+
+    #[test]
+    fn injection_skipped_once_softcap_reached() {
+        // 模擬 game.rs 注入前的軟上限閘：總敵數達上限後，後續事件怪注入被略過。
+        let mut f = EnemyField::new();
+        let alive_players = 0usize;
+        let softcap = global_enemy_softcap(alive_players); // = ENEMY_SOFTCAP_BASE
+        // 注入直到達到軟上限——超過則閘門 break，不再注入。
+        let mut injected = 0usize;
+        let mut blocked = 0usize;
+        for i in 0..(softcap + 50) {
+            if f.total_count() >= softcap {
+                blocked += 1; // 達上限後本應被略過
+                continue;
+            }
+            // 散開到不同 chunk，避免單一 chunk 過度集中影響計數正確性。
+            push_test_enemy(&mut f, i, (i as f32) * 200.0, 9000.0, EnemyKind::ScrapDrone);
+            injected += 1;
+        }
+        assert_eq!(injected, softcap, "注入數應正好封頂在軟上限");
+        assert_eq!(f.total_count(), softcap, "總敵數應停在軟上限");
+        assert_eq!(blocked, 50, "達上限後的注入嘗試都應被略過");
     }
 }
