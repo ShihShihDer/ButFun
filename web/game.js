@@ -437,6 +437,16 @@
     if (!Number.isInteger(cur) || cur < 0 || cur >= len) return 0;
     return (cur + 1) % len;
   }
+  // menuSearchMatch 為純函式（ROADMAP 459，確定性、零副作用、好測）：判斷某個功能項
+  // 標籤是否符合搜尋字串。空查詢（含純空白／壞值）一律視為「全部符合」（不過濾）；否則
+  // 比對採大小寫不敏感的子字串包含——中文（如「釣魚」）原樣比對、拉丁字母統一小寫，
+  // emoji 前綴留著無妨（"🎣 釣魚".includes("釣") 仍成立）。
+  function menuSearchMatch(query, label) {
+    const q = (typeof query === "string" ? query : "").trim().toLowerCase();
+    if (q === "") return true; // 空查詢＝不過濾，顯示全部
+    const l = (typeof label === "string" ? label : "").toLowerCase();
+    return l.includes(q);
+  }
   // glimpseThemeClass 為純函式（ROADMAP 445）：把後端 /api/status 給的時辰主題 key 映成
   // 登入畫面要套的 CSS class；只認白名單四值，其餘（壞值/未知/缺欄位）一律退回 ""（不套色、保底）。
   const GLIMPSE_THEMES = ["dawn", "day", "dusk", "night"];
@@ -565,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -27664,9 +27674,12 @@
       if (win.id === "winJourney") requestJourney();
       // 旅途明信片（ROADMAP 417）：一開窗就向伺服器索取一張「此刻的世界」明信片。
       if (win.id === "winPostcard") requestPostcard();
+      // 功能選單（ROADMAP 459）：一開窗就把搜尋框清乾淨、還原全部項目。
+      if (win.id === "winMenu") resetMenuSearch();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
-      const closeBtn = win.querySelector(".win-close");
-      if (closeBtn) closeBtn.focus();
+      // 例外：功能選單聚焦搜尋框，讓玩家一開窗就能直接打字找功能（ROADMAP 459）。
+      const focusTarget = (win.id === "winMenu" && menuSearchEl) ? menuSearchEl : win.querySelector(".win-close");
+      if (focusTarget) focusTarget.focus();
     }
 
     for (const btn of dock.querySelectorAll(".dock-btn")) {
@@ -27712,6 +27725,45 @@
       });
     }
     // ROADMAP 372：分類標籤取代 ☰ 選單，syncCatDots 已統一同步黃點，不再需要 syncMenuDot。
+
+    // ── ROADMAP 459：面板快速搜尋 ────────────────────────────────────────────────
+    // ☰ 選單頂部一條搜尋框：邊打字邊過濾功能項（純前端、零後端／協議）。功能一多（40+ 面板）
+    // 也能一秒找到——直擊「一面牆 emoji、找不到想要的功能」這個上線品質痛點。比對走純函式
+    // menuSearchMatch；隱藏不符的 .menu-row 與整組變空的 .menu-group，無任何結果時提示一行。
+    const menuSearchEl = document.getElementById("menuSearch");
+    const menuSearchEmptyEl = document.getElementById("menuSearchEmpty");
+    function applyMenuSearch() {
+      if (!menuSearchEl) return;
+      const q = menuSearchEl.value;
+      let anyVisible = false;
+      for (const grp of document.querySelectorAll("#winMenu .menu-group")) {
+        let grpVisible = false;
+        for (const row of grp.querySelectorAll(".menu-row")) {
+          const it = row.querySelector(".menu-item");
+          const ok = menuSearchMatch(q, it ? it.textContent : "");
+          row.classList.toggle("search-hidden", !ok);
+          if (ok) grpVisible = true;
+        }
+        grp.classList.toggle("search-hidden", !grpVisible);
+        if (grpVisible) anyVisible = true;
+      }
+      if (menuSearchEmptyEl) menuSearchEmptyEl.classList.toggle("hidden", anyVisible);
+    }
+    // 每次開選單都從乾淨狀態起（清空查詢、還原全部項目），不殘留上次的過濾。
+    function resetMenuSearch() {
+      if (menuSearchEl) menuSearchEl.value = "";
+      applyMenuSearch();
+    }
+    if (menuSearchEl) {
+      menuSearchEl.addEventListener("input", applyMenuSearch);
+      // 搜尋框內按 Esc：有字先清空（不關窗）；沒字才讓 Esc 照常冒泡去關窗。
+      menuSearchEl.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && menuSearchEl.value !== "") {
+          e.stopPropagation();
+          resetMenuSearch();
+        }
+      });
+    }
 
     // ── ROADMAP 187：常用面板釘選回常駐欄（玩家自訂快捷）──────────────────────────
     // PLAN_UI_REDESIGN step 3：☰ 選單裡每個面板可按 📌 釘到常駐欄，常用功能一鍵直達（不必每次
