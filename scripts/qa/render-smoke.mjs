@@ -1429,6 +1429,43 @@ for (const sc of scenarios) {
   }
 }
 
+// 作物品種（ROADMAP 452）：單元斷言三支純函式 seedVarietyMeta／cycleSeedVariety／seedVarietyByCode
+// 的真值表——對齊後端 crop_variety.rs（線格式字串往返、未知退主食穀、品種碼 0/1/2、循環順序）。
+{
+  const meta = sandbox.__bfTest && sandbox.__bfTest.seedVarietyMeta;
+  const cycle = sandbox.__bfTest && sandbox.__bfTest.cycleSeedVariety;
+  const byCode = sandbox.__bfTest && sandbox.__bfTest.seedVarietyByCode;
+  if (typeof meta !== "function" || typeof cycle !== "function" || typeof byCode !== "function") {
+    failed = true;
+    console.error("  ❌ 作物品種：game.js 未導出 seedVarietyMeta/cycleSeedVariety/seedVarietyByCode");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 作物品種：${msg}`); } };
+    // 線格式 → 品種碼（對齊後端 CropVariety::code：主食穀 0 / 速生菜 1 / 乙太瓜 2）。
+    expect(meta("sprout").code === 1, "sprout→碼1");
+    expect(meta("staple").code === 0, "staple→碼0");
+    expect(meta("etherbloom").code === 2, "etherbloom→碼2");
+    // 未知／空字串保守退主食穀（對齊後端 from_wire 永不失敗），不破壞耕作。
+    expect(meta("turnip").wire === "staple", "未知字串退主食穀");
+    expect(meta("").wire === "staple", "空字串退主食穀");
+    expect(meta(undefined).wire === "staple", "undefined 退主食穀");
+    // 品種碼 → 中介資料；未知碼退主食穀。
+    expect(byCode(0).wire === "staple", "碼0→主食穀");
+    expect(byCode(1).wire === "sprout", "碼1→速生菜");
+    expect(byCode(2).wire === "etherbloom", "碼2→乙太瓜");
+    expect(byCode(99).wire === "staple", "未知碼退主食穀");
+    // 循環：sprout→staple→etherbloom→sprout（與後端 ALL 同序）；未知值當主食穀、下一個是乙太瓜。
+    expect(cycle("sprout") === "staple", "sprout 循環→staple");
+    expect(cycle("staple") === "etherbloom", "staple 循環→etherbloom");
+    expect(cycle("etherbloom") === "sprout", "etherbloom 循環→sprout");
+    expect(cycle("???") === "etherbloom", "未知值當主食穀、循環→etherbloom");
+    // 循環三次回到原點（封閉、不漏品種）。
+    expect(cycle(cycle(cycle("sprout"))) === "sprout", "循環三次回原點");
+    if (bad) failed = true;
+    else console.log("  ✅ 作物品種·品種解析/循環真值表：通過");
+  }
+}
+
 // 主音量（ROADMAP 429）：單元斷言純函式 audioVol 的字串→[0,1] 夾鉗真值表。
 // 把 localStorage 存的偏好（字串／null／壞值）解析成乘在音訊上的響度係數，夾進合法區間。
 {

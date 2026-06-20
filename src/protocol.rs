@@ -287,7 +287,15 @@ pub enum ClientMsg {
     },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
-    Farm { x: f32, y: f32 },
+    /// ROADMAP 452：`kind` 是玩家當下選的作物品種（線格式字串如 "sprout"/"staple"/"etherbloom"），
+    /// 只在這一下恰好落在「空土→播種」時生效；其餘動作忽略。`#[serde(default)]` 讓舊前端
+    /// 不帶此欄時退回 `None`＝預設品種（主食穀），向後相容、不破壞既有客戶端。
+    Farm {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        kind: Option<String>,
+    },
     /// 一鍵澆水（ROADMAP 422）：玩家站在自己農地旁按「💧 一鍵澆水」，把整塊田所有缺水作物
     /// 一次澆滿，省去逐格點擊（建議箱反覆出現的回饋）。不帶座標——伺服器一律用玩家自己的
     /// 權威座標判定是否在農地可及範圍內（防隔空澆水）。在範圍內才澆、澆完單播回報澆了幾株；
@@ -2619,6 +2627,11 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
     #[serde(default)]
     pub soil: u8,
+    /// ROADMAP 452 作物品種：這格作物的品種碼（0=主食穀 1=速生菜 2=乙太瓜），只在種了作物
+    /// （state 2~4）時有意義；空地與自然地一律 0。前端據此畫品種微異／面板顯示品種。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 0＝主食穀）。
+    #[serde(default)]
+    pub kind: u8,
 }
 
 #[cfg(test)]
@@ -2626,13 +2639,28 @@ mod tests {
     use super::*;
 
     /// 前端送的 farm 訊息要能被解析成 `ClientMsg::Farm`（鎖住線上 JSON 契約）。
+    /// 舊前端不帶 kind：向後相容退回 `None`（＝預設品種主食穀）。
     #[test]
     fn parses_farm_message() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"farm","x":12.5,"y":-3.0}"#).unwrap();
         match msg {
-            ClientMsg::Farm { x, y } => {
+            ClientMsg::Farm { x, y, kind } => {
                 assert_eq!(x, 12.5);
                 assert_eq!(y, -3.0);
+                assert_eq!(kind, None, "不帶 kind 欄時退回 None");
+            }
+            other => panic!("解析成非預期變體：{other:?}"),
+        }
+    }
+
+    /// ROADMAP 452：新前端送的 farm 訊息帶 kind，要能解析出品種字串（鎖住線上 JSON 契約）。
+    #[test]
+    fn parses_farm_message_with_kind() {
+        let msg: ClientMsg =
+            serde_json::from_str(r#"{"type":"farm","x":1.0,"y":2.0,"kind":"etherbloom"}"#).unwrap();
+        match msg {
+            ClientMsg::Farm { kind, .. } => {
+                assert_eq!(kind.as_deref(), Some("etherbloom"));
             }
             other => panic!("解析成非預期變體：{other:?}"),
         }
@@ -2833,6 +2861,7 @@ mod tests {
                     quality: 0,
                     grow: 0,
                     soil: 0,
+                    kind: 0,
                 }],
                 home_decor: 0,
                 garden: vec![],

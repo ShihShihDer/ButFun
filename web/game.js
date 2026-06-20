@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -6019,6 +6019,33 @@
   // 優先序鏡像種田迴圈的輕重緩急（缺水＞收成＞播種＞休整＞無田），回應建議箱反覆出現的
   // 「待辦提示／優先指引／本日無需操作總結」回饋。state 對齊 field.rs：
   //   0=自然地 1=空土(可種) 2=種子 3=發芽 4=成熟；dry 對齊 drawTile 藍點（作物 state 2~4 且 dry）。
+  // ── 作物品種（ROADMAP 452）─────────────────────────────────────────────────
+  // 玩家播種前選的品種。線格式字串對齊後端 crop_variety.rs（snake_case）、順序＝播種選單
+  // 循環順序與後端 CropVariety::ALL 同序；code 對齊後端 `CropVariety::code`（隨田格快照下傳）。
+  // 每個品種一句「特性」給玩家權衡（高報酬配長成長為代價，平衡在後端）。面向玩家字串集中
+  // 於此，便於日後 i18n。tint＝種了該品種的田格上點的品種色點（速生青嫩／主食麥黃／乙太瓜紫）。
+  const SEED_VARIETIES = [
+    { wire: "sprout",     code: 1, emoji: "🥬", name: "速生菜", trait: "長得快·收得少", tint: "120,220,90" },
+    { wire: "staple",     code: 0, emoji: "🌾", name: "主食穀", trait: "成長收成均衡",   tint: "230,200,90" },
+    { wire: "etherbloom", code: 2, emoji: "🪻", name: "乙太瓜", trait: "長得慢·收得多", tint: "190,130,240" },
+  ];
+  // 由線格式字串取品種中介資料；未知／空／缺一律退主食穀（對齊後端 `from_wire` 永不失敗）。
+  function seedVarietyMeta(wire) {
+    return SEED_VARIETIES.find((v) => v.wire === wire) || SEED_VARIETIES[1];
+  }
+  // 循環到下一個品種（播種選單點一下換下一種）；未知值當作主食穀、從它的下一個起。
+  function cycleSeedVariety(wire) {
+    const i = SEED_VARIETIES.findIndex((v) => v.wire === wire);
+    const base = i < 0 ? 1 : i; // 未知→主食穀(index 1)
+    return SEED_VARIETIES[(base + 1) % SEED_VARIETIES.length].wire;
+  }
+  // 由品種碼（0/1/2，後端隨田格快照下傳的 cell.kind）取中介資料；未知碼退主食穀。
+  function seedVarietyByCode(code) {
+    return SEED_VARIETIES.find((v) => v.code === (code | 0)) || SEED_VARIETIES[1];
+  }
+  // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
+  let selectedSeedVariety = "staple";
+
   function farmDigest(cells) {
     let dry = 0, ripe = 0, empty = 0, crops = 0;
     if (Array.isArray(cells)) {
@@ -6113,6 +6140,38 @@
         plantEl.classList.add("hidden");
       }
     }
+    // 作物品種選擇（ROADMAP 452）：有自己的田時，顯示「現在播種會種哪個品種」並可點一下循環換種。
+    // 種田第一次要做「選種什麼」的取捨——只在玩家擁有田（f 非空）時顯示，訪客無田不打擾。
+    const seedEl = document.getElementById("hudSeed");
+    if (seedEl) {
+      if (f) {
+        const meta = seedVarietyMeta(selectedSeedVariety);
+        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）· 點我換種`;
+        seedEl.classList.remove("hidden");
+        seedEl.style.cursor = "pointer";
+        seedEl.setAttribute("role", "button");
+        seedEl.setAttribute("tabindex", "0");
+        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}。點選切換下一個品種`);
+        seedEl.onclick = cycleSelectedSeed;
+        seedEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycleSelectedSeed(); } };
+      } else {
+        seedEl.classList.add("hidden");
+        seedEl.onclick = null;
+        seedEl.onkeydown = null;
+        seedEl.style.cursor = "";
+        seedEl.removeAttribute("role");
+        seedEl.removeAttribute("tabindex");
+      }
+    }
+  }
+
+  // 點「播種品種」列：循環到下一個品種，立刻回饋新選擇（更新 HUD 文字＋報讀器播報）。
+  // 純前端偏好，不送伺服器——品種只在實際播種那一下隨 farm 訊息帶上去。
+  function cycleSelectedSeed() {
+    selectedSeedVariety = cycleSeedVariety(selectedSeedVariety);
+    const meta = seedVarietyMeta(selectedSeedVariety);
+    updateFarmHud(myField()); // 即時刷新這行文字
+    announce(`播種品種已切換為 ${meta.name}，${meta.trait}`);
   }
 
   // ---- 全服社群任務面板（ROADMAP 27）----
@@ -26200,18 +26259,28 @@
           // 收成),讓玩家不必先試一次才知道腳下這格按下去的結果——新手最常卡在「站在田上卻
           // 不知道下一步」。動作詞鏡像 field.rs interact() 只讀快照 state:規則仍在伺服器,
           // 這裡純把權威狀態翻成一個可讀詞,不自己判斷能不能做。
-          const act = tendActionLabel(f.cells[frow * f.cols + fcol]);
+          const footCell = f.cells[frow * f.cols + fcol];
+          const act = tendActionLabel(footCell);
           if (act) {
             ctx.save();
             ctx.font = `12px ${UI_FONT}`;
             ctx.textAlign = "center";
             const tx = ex + ts / 2;
             const ty = ey - 3; // 貼在虛線框正上方
+            // ROADMAP 452：站在已種作物格上時，動作詞綴上品種名（速生菜/主食穀/乙太瓜），
+            // 讓玩家看得出「腳下這格種的是哪一種」；空地播種前則綴上「現在會種什麼」品種，
+            // 對齊 hudSeed 的選擇，種下去前就知道結果。其餘格（自然地）只顯動作詞。
+            let label = act;
+            if (footCell.state >= 2 && footCell.state <= 4) {
+              label = `${act}·${seedVarietyByCode(footCell.kind).name}`;
+            } else if (footCell.state === 1) {
+              label = `${act} ${seedVarietyMeta(selectedSeedVariety).name}`;
+            }
             ctx.lineWidth = 3; // 深色描邊讓字在土黃/作物任何底色上都讀得清
             ctx.strokeStyle = "rgba(0,0,0,0.6)";
-            ctx.strokeText(act, tx, ty);
+            ctx.strokeText(label, tx, ty);
             ctx.fillStyle = "rgba(255,235,180,0.95)";
-            ctx.fillText(act, tx, ty);
+            ctx.fillText(label, tx, ty);
             // 新手第一次:動作詞上方再補一行「怎麼按」——光標出動詞還不夠,沒按過的玩家不知道
             // 要按空白鍵或點一下才會發生。照顧過一次(markTendedOnce)就不再顯示,不長期擾人。
             if (!tendedOnce) {
@@ -26417,6 +26486,29 @@
     }
     ctx.restore();
   }
+
+  // ROADMAP 452 作物品種：種了非預設品種的田格，在左上角點一枚品種色點，讓玩家一眼看出
+  // 「這格種的是哪一種」。主食穀（碼 0＝預設／既有作物）不點，維持舊田乾淨、不增雜訊；
+  // 速生菜青嫩綠、乙太瓜瑪瑙紫，色彩沿用 SEED_VARIETIES 的 tint。深描邊讓它在任何底色上都讀得清。
+  // 純表現層：只讀權威快照碼 cell.kind（由伺服器 field.rs 下傳），不嵌任何規則；靜態繪製，
+  // reduceMotion 一樣顯示（核心回饋＝看得出種了什麼品種）。
+  function drawVarietyMark(sx, sy, ts, cell) {
+    if (cell.state < 2 || cell.state > 4) return; // 只在種了作物（種子/發芽/成熟）時標
+    const code = cell.kind | 0;
+    if (code === 0) return; // 主食穀＝預設，不點（含舊存檔讀回 0）
+    const meta = seedVarietyByCode(code);
+    const mx = sx + 6, my = sy + 6; // 左上角，避開右上的階段點/品質光與底緣進度條
+    const r = Math.max(2.2, ts * 0.055);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(mx, my, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${meta.tint},0.95)`;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, r * 0.4);
+    ctx.strokeStyle = "rgba(0,0,0,0.6)"; // 深描邊，亮土／作物底上都讀得清
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // 四芒小星（8 頂點交替外/內半徑）。給優質收成的金色光點用。
   function drawSparkle(cx, cy, r) {
     const inner = r * 0.36;
@@ -26485,6 +26577,7 @@
       // 空翻好土的地力濃淡（ROADMAP 438），墊在空心環之下。
       if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
       drawStagePips(sx, sy, ts, cell);
+      drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
       return;
     }
 
@@ -26533,6 +26626,7 @@
     // 空翻好土的地力濃淡（ROADMAP 438），墊在空心環之下。
     if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
     drawStagePips(sx, sy, ts, cell);
+    drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
   }
 
   // fence.png:192×32 = 6 件×32px autotile(欄 0 水平 rail / 1 垂直 rail / 2 角=連 E+S,
@@ -26794,7 +26888,7 @@
       const inPub = wx >= pf.origin_x && wx < pf.origin_x + pf.cols * pf.tile_size
           && wy >= pf.origin_y && wy < pf.origin_y + pf.rows * pf.tile_size;
       if (inPub) {
-        ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+        ws.send(JSON.stringify({ type: "farm", x: wx, y: wy, kind: selectedSeedVariety }));
         markTendedOnce();
         spawnTapFlash(wx, wy);
         return;
@@ -26820,7 +26914,7 @@
       }
       return;
     }
-    ws.send(JSON.stringify({ type: "farm", x: wx, y: wy }));
+    ws.send(JSON.stringify({ type: "farm", x: wx, y: wy, kind: selectedSeedVariety }));
     markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(wx, wy); // 純確認回饋:這一下已送出
   }
@@ -26903,7 +26997,7 @@
 
     // 站在公共農地旁（已登入）→ 允許動作（私有地取不到或太遠時也適用）。
     if (pf && withinFieldReach(pf, me.x, me.y)) {
-      ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
+      ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y, kind: selectedSeedVariety }));
       markTendedOnce();
       spawnTapFlash(me.x, me.y);
       return;
@@ -26917,7 +27011,7 @@
       }
       return;
     }
-    ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y }));
+    ws.send(JSON.stringify({ type: "farm", x: me.x, y: me.y, kind: selectedSeedVariety }));
     markTendedOnce(); // 照顧過一次就不再顯示「怎麼按」新手提示
     spawnTapFlash(me.x, me.y); // 純確認回饋:這一下已送出
   }
