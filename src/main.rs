@@ -158,6 +158,7 @@ mod return_hook;
 mod region_name;
 mod wayfinding;
 mod social_dynamics;
+mod soil_vitality;
 mod friends;
 mod party;
 mod sprinkler;

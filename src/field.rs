@@ -52,9 +52,10 @@ pub enum FarmOutcome {
     Planted,
     /// 替作物澆了水。
     Watered,
-    /// 收成了成熟作物，拿到這麼多乙太（已含品質加成），並帶上這次收成的品質
-    /// （ROADMAP 406 用心栽培，供上層演出「優質收成」飄字）。
-    Harvested(u32, crate::crops::CropQuality),
+    /// 收成了成熟作物，拿到這麼多乙太（已含品質加成＋沃土加成），並帶上這次收成的品質
+    /// （ROADMAP 406 用心栽培，供上層演出「優質收成」飄字）與沃土加成乙太
+    /// （ROADMAP 438，已含進總乙太裡，供上層演出「🌱 沃土 +N」飄字；0=這格沒養出地力）。
+    Harvested(u32, crate::crops::CropQuality, u32),
     /// 沒對應到任何格或無事可做。
     Nothing,
 }
@@ -86,6 +87,12 @@ pub struct Field {
     /// `home_decor` 時於 `reseated` 自動升成 slot 0，既有擺飾零損失）。
     #[serde(default)]
     garden: Vec<u8>,
+    /// 每格「地力」（ROADMAP 438 沃土輪休），row-major 與 `tiles` 等長、細格點存
+    /// （0..=`soil_vitality::SOIL_MAX_FINE`）。翻好卻空著（休耕）的格子隨時間養出地力，
+    /// 收成時換成額外乙太、收成後歸零。**入存檔**（整塊 `Field` 序列化；舊存檔無此欄時
+    /// `#[serde(default)]` 回空 Vec，由 `ensure_soil` 惰性補零對齊 `tiles`，向後相容、免 migration）。
+    #[serde(default)]
+    soil: Vec<u16>,
 }
 
 impl Field {
@@ -107,6 +114,8 @@ impl Field {
             origin_y,
             home_decor: 0,
             garden: Vec::new(),
+            // 地力惰性配置：留空，首次 tick/harvest 由 `ensure_soil` 補零對齊（與 serde 載入同路徑）。
+            soil: Vec::new(),
         }
     }
 
@@ -129,6 +138,18 @@ impl Field {
     /// 擴張一列（FIELD_COLS 格自然地）；即 `buy_expansion` 成功後呼叫。
     pub fn grow(&mut self) {
         self.tiles.extend(vec![Tile::Untilled; FIELD_COLS]);
+        // 地力陣列若已對齊，同步補上新一列的零地力（新翻自然地從貧土起算）。
+        if !self.soil.is_empty() {
+            self.soil.resize(self.tiles.len(), 0);
+        }
+    }
+
+    /// 把地力陣列惰性補齊到與 `tiles` 等長（ROADMAP 438）。舊存檔 / 新建田的 `soil` 為空，
+    /// 首次需要讀寫地力前呼叫一次即可——既往格子全當「貧土」（0）起算，向後相容、零 migration。
+    fn ensure_soil(&mut self) {
+        if self.soil.len() != self.tiles.len() {
+            self.soil.resize(self.tiles.len(), 0);
+        }
     }
 
     /// 目前列數（初始 FIELD_ROWS；每次 `grow()` +1）。
@@ -201,6 +222,7 @@ impl Field {
             origin_y,
             home_decor: 0,
             garden: Vec::new(),
+            soil: Vec::new(),
         })
     }
 
@@ -213,9 +235,15 @@ impl Field {
         // garden 也要一起接回（from_tiles 只搬 tiles），載入時順手夾合法。
         let mut garden = self.garden;
         crate::home_decor::sanitize_garden(&mut garden);
+        // ROADMAP 438：地力陣列也要接回（from_tiles 只搬 tiles），否則重啟會把養好的地默默清掉。
+        let soil = self.soil;
         Self::from_tiles(index, self.tiles).map(|mut f| {
             f.home_decor = decor;
             f.garden = garden;
+            // 接回地力：長度若與 tiles 對不上（舊存檔空 Vec／壞檔）一律當貧土重來（ensure_soil 補零）。
+            if soil.len() == f.tiles.len() {
+                f.soil = soil;
+            }
             // 舊存檔遷移（ROADMAP 416）：只有 legacy home_decor、還沒有庭園資料時，把那一件
             // 升成 slot 0，玩家原本擺好的擺飾零損失。set_garden_slot 會同步把 home_decor 設回。
             if decor > 0 && f.garden.iter().all(|&x| x == 0) {
@@ -321,16 +349,22 @@ impl Field {
     /// 收成：成熟才給乙太，並把該格回復成翻好的空土（可直接再播種）。
     /// 未成熟 / 沒種 / 越界回 `None`、不改變狀態。
     /// ROADMAP 406：回傳「乙太（已含品質加成）＋品質」——品質由成長期是否用心照顧決定。
-    pub fn harvest(&mut self, col: usize, row: usize) -> Option<(u32, crate::crops::CropQuality)> {
+    /// ROADMAP 438：回傳值多帶「沃土加成乙太」——這格休耕養出的地力換成的額外乙太
+    /// （已含進總乙太），供上層演出「🌱 沃土 +N」飄字；收成後該格地力歸零（被作物吸收）。
+    pub fn harvest(&mut self, col: usize, row: usize) -> Option<(u32, crate::crops::CropQuality, u32)> {
         let i = self.index_at(col, row)?;
+        self.ensure_soil();
         if let Tile::Planted(c) = &mut self.tiles[i] {
             // 收成前先讀品質（harvest 會把這株重置，事後就讀不到了）。
             let quality = c.quality();
             // 先借出可變參考收成；成熟才會回 Some 並消費這格。
             if let Some(base) = c.harvest() {
-                // 收成後不留新種子，回到空土讓玩家自行決定要不要再種。
+                // ROADMAP 438：把這格累積的地力換成額外乙太（純正向、永不倒扣），收成後歸零。
+                let soil_bonus = crate::soil_vitality::harvest_bonus(self.soil[i]);
+                self.soil[i] = 0;
+                // 收成後不留新種子，回到空土讓玩家自行決定要不要再種（也從零重新養地）。
                 self.tiles[i] = Tile::Tilled;
-                return Some((base + quality.ether_bonus(), quality));
+                return Some((base + quality.ether_bonus() + soil_bonus, quality, soil_bonus));
             }
         }
         None
@@ -353,14 +387,24 @@ impl Field {
             FIELD_COLS,
             crate::field_thrive::THRIVE_MIN_PATCH,
         );
+        self.ensure_soil();
         for (i, t) in self.tiles.iter_mut().enumerate() {
-            if let Tile::Planted(c) = t {
-                let mult = if thriving[i] {
-                    crate::field_thrive::THRIVE_GROWTH_MULT
-                } else {
-                    1.0
-                };
-                c.grow_boosted(dt, mult);
+            match t {
+                Tile::Planted(c) => {
+                    let mult = if thriving[i] {
+                        crate::field_thrive::THRIVE_GROWTH_MULT
+                    } else {
+                        1.0
+                    };
+                    c.grow_boosted(dt, mult);
+                    // 種了作物：地力「鎖住」不再累積（待收成兌現），也不流失。
+                }
+                // ROADMAP 438：空翻好土歇著就慢慢養出地力（休耕養地）。
+                // 自然地（Untilled）尚未開墾、不養地（維持 0）。
+                Tile::Tilled => {
+                    self.soil[i] = crate::soil_vitality::accrue(self.soil[i], dt);
+                }
+                Tile::Untilled => {}
             }
         }
     }
@@ -416,7 +460,9 @@ impl Field {
                 FarmOutcome::Watered
             }
             Act::Harvest => match self.harvest(col, row) {
-                Some((ether, quality)) => FarmOutcome::Harvested(ether, quality),
+                Some((ether, quality, soil_bonus)) => {
+                    FarmOutcome::Harvested(ether, quality, soil_bonus)
+                }
                 None => FarmOutcome::Nothing,
             },
         }
@@ -443,7 +489,13 @@ impl Field {
                 self.tiles
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| tile_view(t, thriving[i]))
+                    .map(|(i, t)| {
+                        // ROADMAP 438：地力顯示等級（0~3）。soil 可能尚未惰性配置（空）→當貧土 0。
+                        let soil_level = crate::soil_vitality::display_level(
+                            self.soil.get(i).copied().unwrap_or(0),
+                        );
+                        tile_view(t, thriving[i], soil_level)
+                    })
                     .collect()
             },
             // ROADMAP 402：帶上家園擺飾索引，前端依此在田上畫對應小物（0=不擺則不畫）。
@@ -479,7 +531,9 @@ impl Field {
 /// thriving 在「這格屬於連片沃土（ROADMAP 367）」時為真（由 `view()` 算好整片再傳入）；
 /// quality（ROADMAP 406）只在「成熟」時有意義：0=平凡 1=用心 2=優質，前端據此在成熟作物上
 /// 畫品質光點，讓「用心照顧」在收成前就一眼看得見。
-fn tile_view(tile: &Tile, thriving: bool) -> TileView {
+/// soil（ROADMAP 438）：這格的地力顯示等級（0~3），只在「空翻好土（state 1）」時有意義
+/// ——讓玩家一眼看出哪幾格歇夠了、種下去更甜。自然地與種了作物的格一律 0（不顯地力）。
+fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
     match tile {
         Tile::Untilled => TileView {
             state: 0,
@@ -487,6 +541,7 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
             thriving: false,
             quality: 0,
             grow: 0,
+            soil: 0,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -494,6 +549,7 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
             thriving: false,
             quality: 0,
             grow: 0,
+            soil,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -510,6 +566,8 @@ fn tile_view(tile: &Tile, thriving: bool) -> TileView {
                 quality: if ripe { c.quality().code() } else { 0 },
                 // ROADMAP 421：成長中作物的熟成進度百分比（0~100）；成熟一律 100，給前端畫進度條。
                 grow: (c.progress() * 100.0).round() as u8,
+                // 種了作物的格不顯地力（地力已鎖住、待收成兌現；視覺焦點留給作物本身）。
+                soil: 0,
             }
         }
     }
@@ -689,6 +747,110 @@ mod tests {
         assert_eq!(f.crop_stage(0, 0), Some(CropStage::Seed));
     }
 
+    // ── ROADMAP 438 沃土輪休 ──────────────────────────────────────────────
+
+    /// 收成一格成熟作物的便捷流程（翻土→播種→澆兩次水→長熟→收成），回傳收成結果。
+    /// `rest_before_plant` ＝播種前讓這格空翻好土休耕多少秒（養地）。
+    fn grow_and_harvest(f: &mut Field, col: usize, row: usize, rest_before_plant: f32) -> FarmOutcome {
+        f.till(col, row);
+        if rest_before_plant > 0.0 {
+            f.tick(rest_before_plant); // 空翻好土休耕養地
+        }
+        f.plant(col, row);
+        f.water(col, row);
+        f.tick(MOISTURE_PER_WATER);
+        f.water(col, row);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.interact(col, row) // 成熟 → 收成
+    }
+
+    #[test]
+    fn fallow_rest_pays_off_at_harvest() {
+        // 休耕養滿地力（≥150 秒）的格子，收成會多拿沃土加成乙太；剛翻就種的不會。
+        let mut rested = Field::new();
+        let out_rested = grow_and_harvest(&mut rested, 0, 0, 160.0);
+        let mut hasty = Field::new();
+        let out_hasty = grow_and_harvest(&mut hasty, 0, 0, 0.0);
+        match (out_rested, out_hasty) {
+            (
+                FarmOutcome::Harvested(ether_r, _, bonus_r),
+                FarmOutcome::Harvested(ether_h, _, bonus_h),
+            ) => {
+                assert_eq!(bonus_h, 0, "剛翻就種、沒休耕 → 無沃土加成");
+                assert_eq!(bonus_r, crate::soil_vitality::MAX_BONUS, "養滿地力 → 拿滿沃土加成");
+                assert!(ether_r > ether_h, "休耕養地的收成應比急著種的多（純正向）");
+                assert_eq!(ether_r - ether_h, bonus_r, "兩者差額恰為沃土加成（其餘條件相同）");
+            }
+            other => panic!("應為兩筆收成，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn harvest_resets_soil_so_it_must_rest_again() {
+        // 收成後地力歸零：同格立刻再種一輪（中間不休耕）就拿不到沃土加成，得重新養。
+        let mut f = Field::new();
+        let first = grow_and_harvest(&mut f, 0, 0, 160.0);
+        assert!(
+            matches!(first, FarmOutcome::Harvested(_, _, b) if b == crate::soil_vitality::MAX_BONUS),
+            "第一輪養滿地力應拿滿加成"
+        );
+        // 收成後該格回到空土、地力歸零；不再休耕、立刻播種再收。
+        f.plant(0, 0);
+        f.water(0, 0);
+        f.tick(MOISTURE_PER_WATER);
+        f.water(0, 0);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        let second = f.interact(0, 0);
+        assert!(
+            matches!(second, FarmOutcome::Harvested(_, _, 0)),
+            "收成後地力歸零、立刻再種 → 無沃土加成（得重新休耕養地），得到 {second:?}"
+        );
+    }
+
+    #[test]
+    fn planted_cell_does_not_accrue_soil() {
+        // 種了作物的格在成長期不養地：種下後 tick 一大段時間，收成仍無沃土加成。
+        let mut f = Field::new();
+        f.till(0, 0);
+        f.plant(0, 0); // 立刻種、之後整段時間都「種著」
+        f.water(0, 0);
+        f.tick(MOISTURE_PER_WATER);
+        f.water(0, 0);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER + 300.0); // 多跑 300 秒（作物期不累積地力）
+        let out = f.interact(0, 0);
+        assert!(
+            matches!(out, FarmOutcome::Harvested(_, _, 0)),
+            "作物成長期不養地 → 無沃土加成，得到 {out:?}"
+        );
+    }
+
+    #[test]
+    fn soil_survives_serde_round_trip() {
+        // 養出地力的田序列化再還原，地力原封不動（持久化格式涵蓋 soil 欄）。
+        let mut f = Field::new();
+        f.till(0, 0);
+        f.tick(80.0); // 養一點地力
+        let json = serde_json::to_string(&f).unwrap();
+        let back: Field = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.soil, f.soil, "地力欄應隨整塊地序列化往返保留");
+        assert!(back.soil[0] > 0, "休耕養出的地力應被保存");
+    }
+
+    #[test]
+    fn old_save_without_soil_field_loads_as_barren() {
+        // 舊存檔沒有 soil 欄：serde default 回空 Vec，惰性補零當貧土，向後相容、不 panic。
+        let mut f = Field::new();
+        f.till(0, 0);
+        // 模擬舊存檔：手動移除 soil 欄。
+        let mut v: serde_json::Value = serde_json::to_value(&f).unwrap();
+        v.as_object_mut().unwrap().remove("soil");
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert!(back.soil.is_empty(), "舊存檔無 soil 欄 → default 空 Vec");
+        // view() 對空 soil 安全（當貧土 0），不 panic。
+        let view = back.view();
+        assert_eq!(view.cells[0].soil, 0);
+    }
+
     #[test]
     fn tick_only_grows_watered_crops() {
         let mut f = Field::new();
@@ -730,9 +892,11 @@ mod tests {
         // 乙太＝基礎＋優質加成。
         assert_eq!(
             f.interact(0, 0),
+            // 翻土後立刻播種、整個成長期作物都「種著」，這格從沒休耕過 → 地力 0、沃土加成 0。
             FarmOutcome::Harvested(
                 crate::crops::ETHER_PER_HARVEST + crate::crops::ETHER_BONUS_PREMIUM,
-                crate::crops::CropQuality::Premium
+                crate::crops::CropQuality::Premium,
+                0,
             )
         );
         assert_eq!(f.tile(0, 0), Some(&Tile::Tilled));
@@ -798,10 +962,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0 });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0 });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0 });
     }
 
     #[test]
@@ -825,9 +989,12 @@ mod tests {
         // 這裡先確認單純 serde 還原把 tiles 原封不動帶回（origin 退回預設 0,0）。
         let raw: Field = serde_json::from_str(&json).unwrap();
         assert_eq!(raw.origin(), (0.0, 0.0));
-        // 真正的載入入口：把同一份 tiles 配上序號 0（全域農地位置）重建，整塊一模一樣。
-        let back = Field::from_tiles(0, raw.tiles.clone()).unwrap();
-        assert_eq!(back, f); // 整塊地（含中段的 growth/moisture）＋ origin 原封不動
+        // from_tiles 只搬 tiles（origin 由序號重建；home_decor/garden/soil 等附屬欄由 reseated 接回）。
+        let bare = Field::from_tiles(0, raw.tiles.clone()).unwrap();
+        assert_eq!(bare.tiles, f.tiles, "tiles（含中段 growth/moisture）原封不動");
+        // 真正的載入入口 reseated：整塊地（含 ROADMAP 438 地力）配上序號 0 重建，一模一樣。
+        let back = raw.reseated(0).unwrap();
+        assert_eq!(back, f); // 整塊地（含中段的 growth/moisture、地力）＋ origin 原封不動
                              // 階段也跟著保留。
         assert_eq!(back.tile(0, 0), Some(&Tile::Tilled));
         assert_eq!(back.crop_stage(1, 0), Some(CropStage::Seed));
@@ -1011,7 +1178,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100 });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0 });
     }
 
     #[test]
