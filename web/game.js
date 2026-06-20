@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1352,6 +1352,18 @@
   const FIREFLY_COUNT = ((36 * _pm) | 0) || 1;  // 螢火蟲隻數（春夜偶見、不該鋪滿，壓到偏低）
   let _fireflyFade = 0;              // 春夜螢火淡入淡出進度 [0,1]（非春夜→0，春夜→1，逐幀緩緩趨近）
   let _fireflies = null;             // 惰性生成的螢火蟲池（畫面比例座標的位置、緩游速度、閃爍相位、尺寸）
+  // 春夜拾螢（ROADMAP 451）：233 春夜螢火至今是「只能看」的純背景裝飾——它的白天對偶彩蝶（236）正因
+  // 「跟著鏡頭的螢幕座標裝飾、觀感廉價」被玩家回饋移除，而建議箱最反覆的一類心聲是「夜晚只能等待與觀察、
+  // 缺一件主動可做的小事與達成感」。本切片把春夜螢火從被動裝飾升級成一件溫柔的夜間小活動：春夜走在草地上，
+  // 偶有一隻流螢游近你身邊（鏡頭跟隨自己→你恆在畫面中心），就被你輕輕拾起——明滅一閃化作光點、計數 +1，
+  // 那隻螢火再從畫面下緣緩緩游回補上。拾螢數逐夜累積（localStorage、跟著帳號，鏡像 448 拓圖足跡），
+  // 湊到里程碑（10／25／50…）便道一聲賀。給夜晚第一件「不必等、走著走著就有收穫」的微目標，也順手回應
+  // 彩蝶被點名的「裝飾要有目的」。純前端、零後端／零協議／零經濟，沿用既有 233 螢火池（不另起第二套螢火
+  // 系統，保一致）。reduceMotion 下 233 螢火本就不顯示，拾螢自然不觸發（這是一件以「看著流螢游動」為前提的活動）。
+  const FIREFLY_CATCH_R = 46;          // 拾螢半徑（螢幕像素）：流螢游進你（畫面中心）這麼近即被拾起
+  const FIREFLY_CATCH_COOLDOWN = 0.55; // 兩次拾螢最短間隔（秒）：放慢節奏、一次只溫柔收一隻、不爆量
+  const FIREFLY_MILESTONES = [10, 25, 50, 100, 250, 500, 1000]; // 拾螢里程碑（湊到便道賀）
+  let _fireflyCatchCd = 0;             // 拾螢冷卻倒數（秒），每幀於 drawFireflies 遞減
   // 春夏彩蝶（ROADMAP 236）：233 春夜螢火給了春季「夜、貼地、明滅游移的點點生靈」，本切片補上它的
   // 白天對偶——當季節為春或夏、且為白天，草地上空翩翩飛起一群彩色蝴蝶：各自循正弦繞圈翩飛、邊飛邊
   // 緩緩開合拍翅，飛色取自暖系花圃調色盤（粉橘／鵝黃／天藍／藕紫／奶白隨蝶隨機）。與春夜螢火刻意對偶
@@ -19027,6 +19039,75 @@
     return startleOffset(dx, dy, fly._st, STARTLE_PUSH);
   }
 
+  // ── ROADMAP 451: 春夜拾螢（沿用 233 螢火池）────────────────────────────────
+  // 純函式：春夜（螢火可拾）回 true。season/light 與 fireflyTargetIntensity 同口徑。
+  function fireflyCatchable(season, light) {
+    return fireflyTargetIntensity(season, light) > 0;
+  }
+  // 純函式：流螢螢幕座標 (fx,fy) 是否已游進玩家（畫面中心 cx,cy）的 catch 半徑 r 內。壞值（NaN）安全退 false。
+  function withinCatchRadius(fx, fy, cx, cy, r) {
+    if (!(r > 0)) return false;
+    const dx = Number(fx) - Number(cx), dy = Number(fy) - Number(cy);
+    if (!(dx === dx) || !(dy === dy)) return false; // NaN 防呆（NaN !== NaN）
+    return dx * dx + dy * dy <= r * r;
+  }
+  // 純函式：拾螢數從 prev 增到 next，回傳這一步跨過的「最高里程碑」（沒跨過回 0）。milestones 須遞增、壞值安全。
+  function fireflyMilestoneCrossed(prev, next, milestones) {
+    const p = Number(prev) || 0, n = Number(next) || 0;
+    if (!(n > p) || !Array.isArray(milestones)) return 0;
+    let hit = 0;
+    for (const m of milestones) {
+      const mm = Number(m);
+      if (mm === mm && mm > p && mm <= n && mm > hit) hit = mm;
+    }
+    return hit;
+  }
+  // 拾螢累計（localStorage 持久化、跟著帳號；鏡像 448 拓圖足跡的存讀／節流範式）。
+  let fireflyTally = 0;             // 生涯拾螢數
+  let fireflyTallyLoadedFor = null; // 已載入的帳號 key（換帳號自動重載，不互相污染）
+  let fireflyTallyDirty = false;    // 有新拾螢未存
+  let fireflyTallySaveLast = 0;     // 上次寫 localStorage 的時間戳（節流用）
+  function fireflyTallyKey(uid) { return "butfun.fireflies." + (uid || "guest"); }
+  function loadFireflyTally(uid) {
+    if (fireflyTallyLoadedFor === uid) return;
+    fireflyTallyLoadedFor = uid;
+    fireflyTally = 0;
+    fireflyTallyDirty = false;
+    try {
+      const raw = localStorage.getItem(fireflyTallyKey(uid));
+      const n = raw == null ? 0 : parseInt(raw, 10);
+      if (n === n && n > 0) fireflyTally = n; // NaN 防呆
+    } catch {}
+  }
+  function saveFireflyTally(now) {
+    if (!fireflyTallyDirty) return;
+    if (now - fireflyTallySaveLast < 4000) return;
+    fireflyTallySaveLast = now;
+    fireflyTallyDirty = false;
+    try { localStorage.setItem(fireflyTallyKey(fireflyTallyLoadedFor), String(fireflyTally)); } catch {}
+  }
+  // 拾起一隻螢火：累計 +1、標記待存，回傳新的累計數。
+  function recordFireflyCatch() {
+    fireflyTally += 1;
+    fireflyTallyDirty = true;
+    return fireflyTally;
+  }
+  function fireflyTallyCount() { return fireflyTally; }
+  // 拾起一隻螢火後的回饋：輕巧飄字＋柔音；湊到里程碑時另道一聲賀（飄字＋報讀＋成就音）。
+  function onFireflyCaught(total) {
+    const meF = myId ? players.get(myId) : null;
+    const milestone = fireflyMilestoneCrossed(total - 1, total, FIREFLY_MILESTONES);
+    try { SFX.etherGain(); } catch {}
+    if (meF && !reduceMotion) {
+      floaters.push({ wx: meF.x, wy: meF.y - 30, text: `✦ 拾螢 ${total}`, color: "190,255,150", born: performance.now() });
+    }
+    if (milestone > 0) {
+      if (meF) floaters.push({ wx: meF.x, wy: meF.y - 52, text: `🪰✨ 拾螢 ${milestone} 隻！`, color: "255,236,150", born: performance.now() + 1 });
+      try { SFX.achievement(); } catch {}
+      announce(`拾螢里程碑 ${milestone} 隻`);
+    }
+  }
+
   // 每幀更新並繪製春夜螢火。非春夜時 _fireflyFade 緩緩歸零、池清空、零開銷早退。
   // 畫在夜空與乙太微光（19/232）之後——螢火是貼地的前景氛圍，比天象更靠近觀者；用畫面座標、不隨鏡頭平移。
   function drawFireflies(now, dt) {
@@ -19043,6 +19124,11 @@
 
     const ptr = activePointerPx();   // 游標螢幕座標（驚動用），無 hover 回 null
 
+    // 拾螢（451）：載入本帳號累計、遞減冷卻；玩家恆在畫面中心（鏡頭跟隨自己）。
+    loadFireflyTally(myId || "guest");
+    _fireflyCatchCd = Math.max(0, _fireflyCatchCd - step);
+    const ccx = W / 2, ccy = H / 2;
+
     ctx.save();
     ctx.globalCompositeOperation = "lighter";   // 加色，螢火像疊在夜色上的點點黃綠光
     for (const f of _fireflies) {
@@ -19055,6 +19141,15 @@
       if (a < 0.02) continue;
       const { ox, oy } = flyStartle(f, f.x * W, f.y * H, ptr, step);   // 游標驚動：朝外閃避的螢幕像素偏移
       const px = f.x * W + ox, py = f.y * H + oy;
+      // 拾螢（451）：流螢游進你（畫面中心）身邊就被輕輕拾起——化光、計數、從下緣游回補上。
+      if (_fireflyCatchCd <= 0 && withinCatchRadius(px, py, ccx, ccy, FIREFLY_CATCH_R)) {
+        _fireflyCatchCd = FIREFLY_CATCH_COOLDOWN;
+        onFireflyCaught(recordFireflyCatch());
+        f.x = Math.random();
+        f.y = 0.96;     // 從畫面下緣草地高度緩緩游回（池維持滿、不會越拾越少）
+        f._st = 0;
+        continue;       // 這隻本幀不再畫（已被拾起）
+      }
       const r = f.size * 2.4;
       const g = ctx.createRadialGradient(px, py, 0, px, py, r);
       g.addColorStop(0, `rgba(190,255,130,${(a * 0.9).toFixed(3)})`);  // 中心黃綠
@@ -19065,6 +19160,7 @@
       ctx.fill();
     }
     ctx.restore();
+    saveFireflyTally(now);   // 拾螢累計節流寫回（最多每 4 秒、且有新拾螢才寫）
   }
 
   // ── ROADMAP 236: 春夏彩蝶（春夜螢火 233 的白天對偶）────────────────────────

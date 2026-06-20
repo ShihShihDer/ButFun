@@ -1742,6 +1742,41 @@ for (const sc of scenarios) {
   }
 }
 
+// 春夜拾螢（ROADMAP 451）：單元斷言拾螢純函式——只在春夜可拾、catch 半徑命中判定、里程碑跨越偵測、壞值防呆。
+{
+  const catchable = sandbox.__bfTest && sandbox.__bfTest.fireflyCatchable;
+  const within = sandbox.__bfTest && sandbox.__bfTest.withinCatchRadius;
+  const crossed = sandbox.__bfTest && sandbox.__bfTest.fireflyMilestoneCrossed;
+  if (typeof catchable !== "function" || typeof within !== "function" || typeof crossed !== "function") {
+    failed = true;
+    console.error("  ❌ 春夜拾螢：game.js 未導出 fireflyCatchable/withinCatchRadius/fireflyMilestoneCrossed");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 春夜拾螢：${label}`); } };
+    const MS = [10, 25, 50, 100, 250, 500, 1000];
+    // 只在春夜（season=spring 且 light<0.42）可拾；其餘季節／白天皆不可拾。
+    check("春夜可拾", catchable("spring", 0.2) === true);
+    check("春日不可拾", catchable("spring", 0.9) === false);
+    check("夏夜不可拾", catchable("summer", 0.2) === false);
+    check("缺光（白天預設）不可拾", catchable("spring", undefined) === false);
+    // catch 半徑：圓內命中、圓外不中；壞值（NaN）／非正半徑安全退 false。
+    check("中心命中", within(100, 100, 100, 100, 46) === true);
+    check("半徑內命中", within(130, 100, 100, 100, 46) === true);
+    check("半徑外不中", within(150, 100, 100, 100, 46) === false);
+    check("壞值不中", within(NaN, 100, 100, 100, 46) === false);
+    check("非正半徑不中", within(100, 100, 100, 100, 0) === false);
+    // 里程碑跨越：剛跨過回該里程碑、一步跨多個回最高、未跨回 0、回退不觸發、壞值安全。
+    check("剛跨 10", crossed(9, 10, MS) === 10);
+    check("一步跨多個回最高", crossed(20, 60, MS) === 50);
+    check("未跨任何回 0", crossed(11, 24, MS) === 0);
+    check("停在里程碑上一格不重觸發", crossed(10, 11, MS) === 0);
+    check("回退不觸發", crossed(30, 20, MS) === 0);
+    check("壞值安全回 0", crossed(undefined, NaN, MS) === 0 && crossed(5, 12, null) === 0);
+    if (bad) failed = true;
+    else console.log("  ✅ 春夜拾螢·拾螢純函式真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
