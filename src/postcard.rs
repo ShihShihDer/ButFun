@@ -59,6 +59,51 @@ pub fn flavor_for(phase: Phase, season: Season) -> &'static str {
     }
 }
 
+/// 星塵印記的稀有度（ROADMAP 447）：這張明信片有沒有封進流星雨採集來的星塵。
+/// `None`＝一般明信片；`Stardust`＝封進星塵；`Rainbow`＝封進每場流星雨僅一粒的彩虹星塵。
+/// 把長久以來只能堆在背包 / 賣 NPC 的星塵（ROADMAP 133／134）接到「留念」這個既有去處。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StarTier {
+    /// 沒封星塵的一般明信片。
+    None,
+    /// 封進一粒星塵。
+    Stardust,
+    /// 封進罕見的彩虹星塵。
+    Rainbow,
+}
+
+impl StarTier {
+    /// wire key（snake_case 契約；前端據此切換星光呈現，留 i18n 空間）。
+    pub fn wire_key(self) -> &'static str {
+        match self {
+            StarTier::None => "none",
+            StarTier::Stardust => "stardust",
+            StarTier::Rainbow => "rainbow",
+        }
+    }
+}
+
+/// 星塵印記的一句話（封進星塵後，明信片底下多出的那行星空留言）。
+/// 一般明信片（`None`）沒有星塵印記、回 `None`；封了星塵則依時辰確定性挑一句，
+/// 彩虹星塵更稀有、用另一套更亮的句子。同一時辰永遠回同一句（可重現、零亂數）。
+pub fn star_line_for(phase: Phase, tier: StarTier) -> Option<&'static str> {
+    match tier {
+        StarTier::None => None,
+        StarTier::Stardust => Some(match phase {
+            Phase::Dawn => "晨星未散，把一撮星塵也收進了這張卡裡。",
+            Phase::Day => "白日裡握著的星塵，仍記得昨夜的那場流星。",
+            Phase::Dusk => "暮色剛起，星塵在指間悄悄亮了一下。",
+            Phase::Night => "流星雨落下的星塵，正和滿天星子一起閃。",
+        }),
+        StarTier::Rainbow => Some(match phase {
+            Phase::Dawn => "晨光裡，一粒彩虹星塵把七彩都揉進了卡角。",
+            Phase::Day => "罕見的彩虹星塵在掌心折出一道小小的虹。",
+            Phase::Dusk => "晚霞與彩虹星塵同色，這一刻被永遠框住了。",
+            Phase::Night => "整場流星雨只此一粒的彩虹星塵，在卡上靜靜生輝。",
+        }),
+    }
+}
+
 /// 組明信片的輸入（呼叫端從既有權威狀態填入：地名／副標來自 region_name，季節／時辰來自世界時鐘）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostcardInput {
@@ -72,6 +117,8 @@ pub struct PostcardInput {
     pub phase: Phase,
     /// 當下季節。
     pub season: Season,
+    /// 星塵印記（ROADMAP 447）：呼叫端依玩家是否消耗了星塵／彩虹星塵填入。一般明信片用 `StarTier::None`。
+    pub star: StarTier,
 }
 
 /// 組好的一張明信片（純文字內容；前端據此框成風景卡，留 i18n 空間）。
@@ -89,6 +136,10 @@ pub struct Postcard {
     pub flavor: &'static str,
     /// 旅人等級（明信片落款用）。
     pub level: u32,
+    /// 星塵印記稀有度（ROADMAP 447）：前端據此切換星光呈現。
+    pub star_tier: StarTier,
+    /// 星塵印記留言（封了星塵才有；一般明信片為 `None`）。
+    pub star_line: Option<&'static str>,
 }
 
 /// 以當下世界狀態組一張明信片。確定性、零副作用。
@@ -101,6 +152,8 @@ pub fn compose(input: PostcardInput) -> Postcard {
         rank: rank_for(input.level),
         flavor: flavor_for(input.phase, input.season),
         level: input.level,
+        star_tier: input.star,
+        star_line: star_line_for(input.phase, input.star),
     }
 }
 
@@ -156,6 +209,7 @@ mod tests {
             subtitle: "薄霧在草尖上打盹".into(),
             phase: Phase::Dawn,
             season: Season::Spring,
+            star: StarTier::None,
         });
         assert!(pc.title.contains("晨光"));
         assert!(pc.title.contains("春"));
@@ -170,6 +224,7 @@ mod tests {
             subtitle: "苔蘚把石頭都養綠了".into(),
             phase: Phase::Night,
             season: Season::Winter,
+            star: StarTier::None,
         });
         assert_eq!(pc.place, "翡翠林");
         assert_eq!(pc.subtitle, "苔蘚把石頭都養綠了");
@@ -187,7 +242,101 @@ mod tests {
             subtitle: "野花一路鋪到天邊".into(),
             phase: Phase::Day,
             season: Season::Summer,
+            star: StarTier::None,
         };
         assert_eq!(compose(mk()), compose(mk()));
+    }
+
+    // ── 星塵印記（ROADMAP 447）────────────────────────────────────────────
+
+    /// 一般明信片（未封星塵）沒有星塵留言，所有時辰皆回 None。
+    #[test]
+    fn star_line_none_for_plain_postcard() {
+        for p in [Phase::Dawn, Phase::Day, Phase::Dusk, Phase::Night] {
+            assert_eq!(star_line_for(p, StarTier::None), None);
+        }
+    }
+
+    /// 封了星塵／彩虹星塵後，每個時辰都有一句非空的星塵留言。
+    #[test]
+    fn star_line_present_and_non_empty_when_starlit() {
+        for p in [Phase::Dawn, Phase::Day, Phase::Dusk, Phase::Night] {
+            for t in [StarTier::Stardust, StarTier::Rainbow] {
+                let line = star_line_for(p, t).expect("封了星塵應有留言");
+                assert!(!line.is_empty(), "({:?},{:?}) 星塵留言不可為空", p, t);
+            }
+        }
+    }
+
+    /// 彩虹星塵的留言與一般星塵不同（更稀有的呈現），同時辰兩者不撞句。
+    #[test]
+    fn rainbow_line_differs_from_stardust() {
+        for p in [Phase::Dawn, Phase::Day, Phase::Dusk, Phase::Night] {
+            assert_ne!(
+                star_line_for(p, StarTier::Stardust),
+                star_line_for(p, StarTier::Rainbow),
+                "{:?} 的彩虹星塵留言不該與一般星塵相同",
+                p
+            );
+        }
+    }
+
+    /// 星塵留言確定性：同（時辰, 稀有度）每次都回同一句。
+    #[test]
+    fn star_line_is_deterministic() {
+        assert_eq!(
+            star_line_for(Phase::Night, StarTier::Rainbow),
+            star_line_for(Phase::Night, StarTier::Rainbow)
+        );
+    }
+
+    /// wire key 三檔互不相同（前端切換呈現的契約）。
+    #[test]
+    fn star_tier_wire_keys_distinct() {
+        let keys = [
+            StarTier::None.wire_key(),
+            StarTier::Stardust.wire_key(),
+            StarTier::Rainbow.wire_key(),
+        ];
+        assert_eq!(keys[0], "none");
+        assert_eq!(keys[1], "stardust");
+        assert_eq!(keys[2], "rainbow");
+        // 兩兩不同
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[1], keys[2]);
+        assert_ne!(keys[0], keys[2]);
+    }
+
+    /// compose 帶過星塵印記：封了星塵時 star_tier／star_line 都對得上 star_line_for。
+    #[test]
+    fn compose_carries_star_imprint() {
+        let pc = compose(PostcardInput {
+            level: 18,
+            place: "流星崖".into(),
+            subtitle: "星塵在夜風裡打轉".into(),
+            phase: Phase::Night,
+            season: Season::Autumn,
+            star: StarTier::Rainbow,
+        });
+        assert_eq!(pc.star_tier, StarTier::Rainbow);
+        assert_eq!(pc.star_line, star_line_for(Phase::Night, StarTier::Rainbow));
+        assert!(pc.star_line.is_some());
+        // 其餘欄位不受星塵影響（風景印記仍照時辰季節組）。
+        assert_eq!(pc.flavor, flavor_for(Phase::Night, Season::Autumn));
+    }
+
+    /// compose 一般明信片：未封星塵時 star_tier=None、star_line=None。
+    #[test]
+    fn compose_plain_has_no_star_imprint() {
+        let pc = compose(PostcardInput {
+            level: 3,
+            place: "微風原".into(),
+            subtitle: "野花一路鋪到天邊".into(),
+            phase: Phase::Day,
+            season: Season::Summer,
+            star: StarTier::None,
+        });
+        assert_eq!(pc.star_tier, StarTier::None);
+        assert_eq!(pc.star_line, None);
     }
 }

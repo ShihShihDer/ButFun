@@ -278,6 +278,13 @@ pub enum ClientMsg {
     /// （所在地名／地誌氛圍／季節／時辰／旅人資歷）組出 `ServerMsg::Postcard` 單播回去。
     /// 純讀、不改任何狀態、不廣播；未登入也可（訪客也能把此刻的世界留成一張風景卡）。
     RequestPostcard,
+    /// 星光明信片（ROADMAP 447）：把流星雨採集的星塵封進一張會發光的留念明信片。
+    /// 伺服器驗背包：有對應星塵才消耗 1 顆並組「星光版」明信片（`use_rainbow=true` 用彩虹星塵）；
+    /// 沒有則保守退回一張一般明信片（不消耗），單播 `ServerMsg::Postcard` 回去。
+    RequestStarlitPostcard {
+        /// true＝用罕見的彩虹星塵；false＝用一般星塵。
+        use_rainbow: bool,
+    },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     Farm { x: f32, y: f32 },
@@ -1202,6 +1209,13 @@ pub enum ServerMsg {
         flavor: String,
         /// 旅人等級（落款用）。
         level: u32,
+        /// 星塵印記稀有度（ROADMAP 447）：`"none"`／`"stardust"`／`"rainbow"`。
+        /// `#[serde(default)]` 向後相容——舊客戶端 / 一般明信片皆視為無星塵。
+        #[serde(default)]
+        star_tier: String,
+        /// 星塵印記留言（封了星塵才有；一般明信片為 `None`）。前端據此在卡片底下多畫一行星空留言。
+        #[serde(default)]
+        star_line: Option<String>,
     },
     /// 回訪摘要（ROADMAP 374）：登入玩家進場時，一次性告知「等你的東西」。
     /// 純讀現有記憶體狀態，不新增經濟、不送物品/乙太。只在已登入玩家連線時送一次。

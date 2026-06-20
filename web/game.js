@@ -542,8 +542,30 @@
     return BGM_CHORDS[i].slice();
   }
 
-  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass }); } catch {}
+  // 星光明信片的呈現樣式（ROADMAP 447）：依星塵印記稀有度回傳明信片該怎麼框。
+  // 純函式、決定性、無副作用——面板與下載圖共用，並可在 render-smoke 單元斷言真值表。
+  // 壞值 / 未知字串保守視為一般明信片（不發光、不冤枉）。
+  function postcardStarStyle(starTier) {
+    const isRainbow = starTier === "rainbow";
+    const starlit = starTier === "stardust" || isRainbow;
+    return {
+      starlit,
+      isRainbow,
+      // 抬頭：彩虹 > 一般星光 > 一般明信片。
+      eyebrow: isRainbow
+        ? "🌈 ButFun · 彩虹星光明信片"
+        : starlit
+          ? "✨ ButFun · 星光明信片"
+          : "📷 ButFun · 旅途明信片",
+      // 外框色：彩虹紫 / 星光金 / 一般暖金。
+      border: isRainbow ? "#b478dc" : (starlit ? "#e0b85a" : "#c9a24b"),
+      // 星塵留言前綴 emoji（彩虹 vs 一般）。
+      prefix: isRainbow ? "🌈 " : "✨ ",
+    };
+  }
+
+  // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1177,6 +1199,11 @@
   // 向伺服器索取一張此刻的明信片（斷線時 safeSend 靜默忽略）。
   function requestPostcard() {
     safeSend({ type: "request_postcard" });
+  }
+  // 向伺服器索取一張「星光明信片」（ROADMAP 447）：把背包裡的星塵封進留念卡。
+  // useRainbow=true 用罕見的彩虹星塵。伺服器驗背包：有才消耗 1 顆，沒有則退回一般明信片。
+  function requestStarlitPostcard(useRainbow) {
+    safeSend({ type: "request_starlit_postcard", use_rainbow: !!useRainbow });
   }
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
@@ -3873,6 +3900,9 @@
           rank: typeof msg.rank === "string" ? msg.rank : "",
           flavor: typeof msg.flavor === "string" ? msg.flavor : "",
           level: Number.isFinite(msg.level) ? msg.level : 0,
+          // 星塵印記（ROADMAP 447）：none/stardust/rainbow；star_line＝封了星塵才有的那行星空留言。
+          starTier: typeof msg.star_tier === "string" ? msg.star_tier : "none",
+          starLine: typeof msg.star_line === "string" ? msg.star_line : "",
         };
         updatePostcardPanel();
         break;
@@ -23312,9 +23342,15 @@
     const body = document.getElementById("postcardBody");
     if (!body) return;
     const card = postcardState.card;
+    // 自身背包裡的星塵數（決定要不要顯示「星光留影」鈕）。
+    const me = myId ? players.get(myId) : null;
+    const invMap = new Map((me ? me.inventory || [] : []).map((s) => [s.item, s.qty]));
+    const dustN = invMap.get("star_dust") || 0;
+    const rainbowN = invMap.get("rainbow_star_dust") || 0;
     // sig：未收到資料前顯示「框起中」；明信片內容變了才重建（守 panel-sig 病）。
+    // 星塵印記與背包星塵數一併納入 sig，封了星塵的卡 / 撿到星塵後重繪都不 stale。
     const sig = card
-      ? `${card.title}|${card.place}|${card.subtitle}|${card.rank}|${card.flavor}|${card.level}`
+      ? `${card.title}|${card.place}|${card.subtitle}|${card.rank}|${card.flavor}|${card.level}|${card.starTier}|${card.starLine}|${dustN}|${rainbowN}`
       : "loading";
     if (sig === lastPostcardSig) return;
     lastPostcardSig = sig;
@@ -23328,15 +23364,27 @@
       return;
     }
 
+    // 星塵印記（ROADMAP 447）：封了星塵的卡換成會發光的星光版（彩虹星塵更亮）。
+    const ss = postcardStarStyle(card.starTier);
+    const starlit = ss.starlit;
+    const isRainbow = ss.isRainbow;
+
     // 明信片本體：暖色「紙感」卡，與深色 HUD 形成對比，像一張真的留影。
+    // 封了星塵時加一圈星光外暈（彩虹星塵用七彩暈），讓「會發光」一眼有感。
     const pc = document.createElement("div");
+    let pcGlow = "0 2px 10px rgba(0,0,0,.35)";
+    if (isRainbow) {
+      pcGlow = "0 0 18px rgba(180,120,220,.55),0 2px 10px rgba(0,0,0,.35)";
+    } else if (starlit) {
+      pcGlow = "0 0 14px rgba(201,162,75,.6),0 2px 10px rgba(0,0,0,.35)";
+    }
     pc.style.cssText =
-      "border:1px solid #c9a24b;border-radius:12px;padding:16px 16px 14px;line-height:1.5;" +
-      "background:linear-gradient(155deg,#f7efdc,#efe3c4);color:#4a3b22;box-shadow:0 2px 10px rgba(0,0,0,.35);";
+      "border:1px solid " + ss.border + ";border-radius:12px;padding:16px 16px 14px;line-height:1.5;" +
+      "background:linear-gradient(155deg,#f7efdc,#efe3c4);color:#4a3b22;box-shadow:" + pcGlow + ";";
 
     const eyebrow = document.createElement("div");
     eyebrow.style.cssText = "font-size:.7rem;letter-spacing:.08em;color:#9a7d3e;margin-bottom:6px;";
-    eyebrow.textContent = "📷 ButFun · 旅途明信片";
+    eyebrow.textContent = ss.eyebrow;
     pc.appendChild(eyebrow);
 
     const title = document.createElement("div");
@@ -23358,6 +23406,15 @@
     flavor.style.cssText = "font-size:1.02rem;color:#4a3b22;border-top:1px dashed #c7ab6a;padding-top:11px;margin-bottom:11px;";
     flavor.textContent = card.flavor;
     pc.appendChild(flavor);
+
+    // 星塵留言（ROADMAP 447）：封了星塵才有的那行星空話，著色與一般風景印記區分。
+    if (starlit && card.starLine) {
+      const star = document.createElement("div");
+      star.style.cssText =
+        "font-size:.94rem;margin-bottom:11px;color:" + (isRainbow ? "#8a4fb0" : "#9a7d3e") + ";";
+      star.textContent = ss.prefix + card.starLine;
+      pc.appendChild(star);
+    }
 
     const sign = document.createElement("div");
     sign.style.cssText = "text-align:right;font-size:.84rem;color:#7a5e25;";
@@ -23388,9 +23445,36 @@
 
     body.appendChild(actions);
 
+    // 星光留影列（ROADMAP 447）：背包有星塵才出現。按下消耗 1 顆星塵，框出會發光的星光明信片。
+    if (dustN > 0 || rainbowN > 0) {
+      const starActions = document.createElement("div");
+      starActions.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+      if (dustN > 0) {
+        const sb = document.createElement("button");
+        sb.type = "button";
+        sb.className = "dock-btn";
+        sb.style.cssText = "flex:1;padding:7px 0;";
+        sb.textContent = `✨ 星光留影 (${dustN})`;
+        sb.addEventListener("click", () => requestStarlitPostcard(false));
+        starActions.appendChild(sb);
+      }
+      if (rainbowN > 0) {
+        const rb = document.createElement("button");
+        rb.type = "button";
+        rb.className = "dock-btn";
+        rb.style.cssText = "flex:1;padding:7px 0;";
+        rb.textContent = `🌈 彩虹留影 (${rainbowN})`;
+        rb.addEventListener("click", () => requestStarlitPostcard(true));
+        starActions.appendChild(rb);
+      }
+      body.appendChild(starActions);
+    }
+
     const tip = document.createElement("div");
     tip.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:10px;line-height:1.5;";
-    tip.textContent = "明信片捕捉的是你「此刻」站在世界的這一處——換個地方、換個季節時辰，再按「重新留影」，框出的風景就不一樣。";
+    tip.textContent = (dustN > 0 || rainbowN > 0)
+      ? "明信片捕捉的是你「此刻」站在世界的這一處。流星雨採到的星塵，可按「星光留影」封進一張會發光的明信片留念。"
+      : "明信片捕捉的是你「此刻」站在世界的這一處——換個地方、換個季節時辰，再按「重新留影」，框出的風景就不一樣。流星雨採到星塵後，還能封進會發光的星光明信片。";
     body.appendChild(tip);
   }
 
@@ -23411,12 +23495,17 @@
       }
       c.fillStyle = bg;
       c.fillRect(0, 0, W, H);
-      c.strokeStyle = "#c9a24b"; c.lineWidth = 6;
+      // 星塵印記（ROADMAP 447）：封了星塵的下載版換成星光外框與抬頭，並多印一行星空留言。
+      const ss = postcardStarStyle(card.starTier);
+      const starlit = ss.starlit;
+      const isRainbow = ss.isRainbow;
+      c.strokeStyle = ss.border;
+      c.lineWidth = 6;
       c.strokeRect(14, 14, W - 28, H - 28);
       c.textBaseline = "top";
       c.fillStyle = "#9a7d3e";
       c.font = "22px sans-serif";
-      c.fillText("📷 ButFun · 旅途明信片", 56, 56);
+      c.fillText(ss.eyebrow, 56, 56);
       c.fillStyle = "#7a5e25";
       c.font = "30px sans-serif";
       c.fillText(card.title, 56, 110);
@@ -23429,6 +23518,11 @@
       c.fillStyle = "#4a3b22";
       c.font = "34px sans-serif";
       c.fillText(card.flavor, 56, 340);
+      if (starlit && card.starLine) {
+        c.fillStyle = isRainbow ? "#8a4fb0" : "#9a7d3e";
+        c.font = "28px sans-serif";
+        c.fillText(ss.prefix + card.starLine, 56, 396);
+      }
       c.fillStyle = "#7a5e25";
       c.font = "28px sans-serif";
       const sign = `— ${card.rank} · Lv.${card.level}`;
