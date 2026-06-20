@@ -481,6 +481,17 @@
     /* ☰ 選單視窗：比一般 hud-window 稍寬、可捲動 */
     #winMenu { width: min(320px, 90vw) !important; }
     #menuBody { display: flex; flex-direction: column; gap: 10px; }
+    /* ROADMAP 459：面板快速搜尋——選單頂部一條搜尋框，邊打字邊過濾所有功能，
+       功能一多（40+ 面板）也能一秒找到。輸入框走 HUD 深色系，與整體一致。 */
+    #menuSearch { width: 100%; box-sizing: border-box; padding: 9px 11px; font: inherit; font-size: 0.9em;
+      color: var(--ink); background: rgba(0,0,0,0.25); border: 1px solid #3a4250; border-radius: 8px;
+      -webkit-appearance: none; appearance: none; }
+    #menuSearch::placeholder { color: #8893a3; }
+    #menuSearch:focus { outline: none; border-color: var(--brass); background: rgba(201,162,75,0.06); }
+    /* 過濾時隱藏不符的項目列與整組空群；空結果時提示一行。 */
+    .menu-row.search-hidden, .menu-group.search-hidden { display: none; }
+    #menuSearchEmpty { color: #8893a3; font-size: 0.85em; text-align: center; padding: 8px 0; }
+    #menuSearchEmpty.hidden { display: none; }
     .menu-group-title { font-size: 0.78em; color: var(--brass); opacity: 0.85; padding: 3px 0 3px 0;
       border-bottom: 1px solid rgba(201,162,75,0.25); margin-bottom: 4px; }
     .menu-items { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1759,6 +1770,10 @@
         <button type="button" class="win-close" data-close="winMenu" aria-label="關閉選單">✕</button>
       </div>
       <div id="menuBody">
+        <!-- ROADMAP 459：面板快速搜尋——type=search 讓手機軟鍵盤顯示搜尋鍵、自帶清除叉；
+             tagName=INPUT 故全域快捷鍵守衛（keydown 早退）自動讓位，打字不會走動角色。 -->
+        <input type="search" id="menuSearch" placeholder="🔍 搜尋功能（如「釣魚」「市場」）" aria-label="搜尋功能" autocomplete="off" enterkeyhint="search" />
+        <div id="menuSearchEmpty" class="hidden">找不到符合的功能</div>
         <div class="menu-group">
           <div class="menu-group-title">⚔️ 戰鬥</div>
           <div class="menu-items">

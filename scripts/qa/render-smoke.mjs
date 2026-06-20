@@ -1994,6 +1994,54 @@ for (const sc of scenarios) {
   }
 }
 
+// 面板快速搜尋（ROADMAP 459）：單元斷言純函式 menuSearchMatch 的過濾真值表——
+// 空查詢（含純空白／壞值）＝全部符合（不過濾）；否則大小寫不敏感子字串包含；中文原樣比對、
+// emoji 前綴不影響；查無對應回 false。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.menuSearchMatch;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 面板快速搜尋：game.js 未導出 menuSearchMatch");
+  } else {
+    // [查詢, 標籤, 期望]
+    const cases = [
+      // 空查詢一律全部符合（不過濾）
+      ["", "🎣 釣魚", true],
+      ["   ", "🎣 釣魚", true],
+      [null, "🎣 釣魚", true],
+      [undefined, "🏪 市場", true],
+      // 中文子字串命中（emoji 前綴不擋）
+      ["釣", "🎣 釣魚", true],
+      ["釣魚", "🎣 釣魚", true],
+      ["市場", "🏪 市場", true],
+      ["市", "🏪 市場", true],
+      // 不相符
+      ["釣", "🏪 市場", false],
+      ["公會", "🎣 釣魚", false],
+      // 前後空白先 trim
+      ["  市場  ", "🏪 市場", true],
+      // 拉丁字母大小寫不敏感
+      ["hud", "HUD 設定", true],
+      ["HUD", "hud 設定", true],
+      // 壞值標籤安全（非字串）：非空查詢對非字串標籤＝不符
+      ["釣", null, false],
+      ["釣", undefined, false],
+      // 壞值查詢（非字串）視為空＝全部符合
+      [123, "🎣 釣魚", true],
+    ];
+    let bad = 0;
+    for (const [q, label, want] of cases) {
+      const got = fn(q, label);
+      if (got !== want) {
+        bad++;
+        console.error(`  ❌ 面板快速搜尋：menuSearchMatch(${JSON.stringify(q)}, ${JSON.stringify(label)})=${got}，期望 ${want}`);
+      }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 面板快速搜尋·過濾真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
