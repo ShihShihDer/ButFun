@@ -60,6 +60,25 @@ pub enum FarmOutcome {
     Nothing,
 }
 
+/// 一鍵收成（ROADMAP 446）的彙總結果：把整塊田所有成熟作物一次收完後，回報這次共收了
+/// 幾株、總共拿到多少乙太（已含品質與沃土加成）、其中沃土加成乙太合計，以及各品質的株數。
+/// 供上層演出「🌾 一鍵收成：N 株 +M 乙太」摘要與飄字。純資料、確定性、好測。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HarvestAllSummary {
+    /// 這次共收成幾株成熟作物。
+    pub count: u32,
+    /// 總乙太（已含每株品質加成＋沃土加成；不含 class 收成加成，那由 ws 層另計）。
+    pub ether: u32,
+    /// 其中沃土加成乙太合計（ROADMAP 438；已含進 `ether`，供演出「🌱 沃土 +N」）。
+    pub soil_bonus: u32,
+    /// ⭐優質株數（ROADMAP 406）。
+    pub premium: u32,
+    /// 🌿用心株數。
+    pub fine: u32,
+    /// 🌾平凡株數。
+    pub plain: u32,
+}
+
 /// 一塊可擴張農地（row-major 的格子陣列），知道自己在世界裡的左上角 origin。
 ///
 /// 衍生 serde 作為持久化格式地基（接 0-E）：每格 `Tile` 可序列化存回、重啟載入。
@@ -423,6 +442,40 @@ impl Field {
             }
         }
         watered
+    }
+
+    /// 一鍵收成（ROADMAP 446）：把整塊田所有「已成熟」的作物一次收完，回傳彙總
+    /// （株數／總乙太／沃土加成／各品質株數）。逐格沿用與 `harvest` 完全相同的結算
+    /// （品質加成＋沃土加成＋收成後歸零地力＋格子回到空土），故與「逐格手收 N 次」在
+    /// 經濟上完全等價——只是省去逐格點擊（對稱於 422 一鍵澆水）。未成熟的格略過、不受影響。
+    /// 純邏輯、無 IO；class 收成加成由 ws 層按 `count` 另計（與單格收成一致）。
+    pub fn harvest_all_ripe(&mut self) -> HarvestAllSummary {
+        self.ensure_soil();
+        let mut s = HarvestAllSummary::default();
+        for i in 0..self.tiles.len() {
+            if let Tile::Planted(c) = &mut self.tiles[i] {
+                // 收成前先讀品質（harvest 會把這株重置，事後就讀不到了）。
+                let quality = c.quality();
+                // 只有成熟才回 Some 並消費這格；未熟回 None、原樣留著。
+                if let Some(base) = c.harvest() {
+                    let soil_bonus = crate::soil_vitality::harvest_bonus(self.soil[i]);
+                    self.soil[i] = 0;
+                    self.tiles[i] = Tile::Tilled;
+                    let gained = base
+                        .saturating_add(quality.ether_bonus())
+                        .saturating_add(soil_bonus);
+                    s.count = s.count.saturating_add(1);
+                    s.ether = s.ether.saturating_add(gained);
+                    s.soil_bonus = s.soil_bonus.saturating_add(soil_bonus);
+                    match quality {
+                        crate::crops::CropQuality::Premium => s.premium = s.premium.saturating_add(1),
+                        crate::crops::CropQuality::Fine => s.fine = s.fine.saturating_add(1),
+                        crate::crops::CropQuality::Plain => s.plain = s.plain.saturating_add(1),
+                    }
+                }
+            }
+        }
+        s
     }
 
     /// 「一鍵照顧」：依某格目前狀態自動決定要做什麼，並執行：
@@ -1220,6 +1273,83 @@ mod tests {
         // 只有翻土格和未翻土格，不應 panic。
         f.till(0, 0);
         f.water_all_planted(); // 不應 panic
+    }
+
+    // ─── ROADMAP 446：一鍵收成 ───────────────────────────────────────────────
+
+    /// 測試小工具：把某格全程用心照顧到成熟（＝優質）。
+    fn ripen(f: &mut Field, col: usize, row: usize) {
+        f.till(col, row);
+        f.plant(col, row);
+        f.water(col, row);
+        f.tick(MOISTURE_PER_WATER); // 補一次水撐過第二段成長
+        f.water(col, row);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER); // 補滿成長到成熟，全程不渴＝優質
+    }
+
+    #[test]
+    fn harvest_all_ripe_empty_field_returns_default() {
+        let mut f = Field::new();
+        // 沒種任何作物 → 收到 0 株、不 panic、彙總全為 0。
+        let s = f.harvest_all_ripe();
+        assert_eq!(s, HarvestAllSummary::default());
+        assert_eq!(s.count, 0);
+        assert_eq!(s.ether, 0);
+    }
+
+    #[test]
+    fn harvest_all_ripe_collects_only_ripe_and_resets_tiles() {
+        let mut f = Field::new();
+        // 兩株熟透、一株剛播下（未熟）。
+        ripen(&mut f, 0, 0);
+        ripen(&mut f, 1, 0);
+        f.till(2, 0);
+        f.plant(2, 0); // 種子，未熟
+        let s = f.harvest_all_ripe();
+        assert_eq!(s.count, 2, "只應收成 2 株成熟作物");
+        assert!(s.ether > 0, "收成成熟作物應拿到乙太");
+        // 收成的兩格回到空土（state=1），未熟那格仍是作物（state>=2）。
+        let cells = f.view().cells;
+        assert_eq!(cells[0].state, 1, "收成後該格回到空土");
+        assert_eq!(cells[1].state, 1, "收成後該格回到空土");
+        assert!(cells[2].state >= 2, "未熟的種子不該被收成");
+        // 再按一次：沒有成熟的可收 → 回 0（按了沒東西可收時不誤報）。
+        assert_eq!(f.harvest_all_ripe().count, 0, "全收完後再按應回 0 株");
+    }
+
+    #[test]
+    fn harvest_all_ripe_equivalent_to_single_harvests() {
+        // 一鍵收成的總乙太必須與「逐格手收 N 次」完全等價（純省點擊、不改經濟）。
+        let mut batch = Field::new();
+        let mut single = Field::new();
+        for col in 0..3 {
+            ripen(&mut batch, col, 0);
+            ripen(&mut single, col, 0);
+        }
+        let s = batch.harvest_all_ripe();
+        let mut single_total = 0u32;
+        for col in 0..3 {
+            if let Some((ether, _q, _soil)) = single.harvest(col, 0) {
+                single_total += ether;
+            }
+        }
+        assert_eq!(s.count, 3);
+        assert_eq!(s.ether, single_total, "一鍵收成的總乙太應等於逐格手收的總和");
+    }
+
+    #[test]
+    fn harvest_all_ripe_counts_quality_breakdown() {
+        let mut f = Field::new();
+        // 全程用心照顧到成熟＝優質；本測種兩株都用心 → 應計 2 株優質、無平凡/用心。
+        ripen(&mut f, 0, 0);
+        ripen(&mut f, 1, 0);
+        let s = f.harvest_all_ripe();
+        assert_eq!(s.count, 2);
+        assert_eq!(s.premium, 2, "全程不渴的成熟作物應記為優質");
+        assert_eq!(s.fine, 0);
+        assert_eq!(s.plain, 0);
+        // 各品質株數加總應等於 count（不漏算、不重算）。
+        assert_eq!(s.premium + s.fine + s.plain, s.count);
     }
 
     // ─── ROADMAP 367：連片沃土 ───────────────────────────────────────────────

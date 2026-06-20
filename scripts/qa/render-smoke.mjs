@@ -728,6 +728,54 @@ for (const sc of scenarios) {
   else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋旁觀者忽略皆乾淨");
 }
 
+// 一鍵收成（ROADMAP 446）：田裡有成熟作物時，hudRipe 那行同時當「✨一鍵收成」按鈕——對稱於
+// 缺水行的一鍵澆水。驗證 updateFarmHud 把 ripeEl 接成可點、點下會送 harvest_all；無成熟時解除點按。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：一鍵收成（hudRipe 可點→送 harvest_all、無成熟則解除）──");
+  let ok = true;
+  try {
+    // 有成熟作物的快照（fields[0] 設成自己的地，updateFarmHud 才會數到自家田）。
+    const hSnap = JSON.parse(JSON.stringify(snapshot));
+    if (hSnap.fields && hSnap.fields[0] && Array.isArray(hSnap.fields[0].cells)) {
+      hSnap.fields[0].owner = myId;
+      const cells = hSnap.fields[0].cells;
+      if (cells[0]) cells[0] = { ...cells[0], state: 4, dry: false, quality: 2 }; // 成熟可收
+      if (cells[1]) cells[1] = { ...cells[1], state: 4, dry: false, quality: 0 }; // 成熟可收
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...hSnap, type: "snapshot" }) });
+    pump("一鍵收成 HUD", 2);
+    // 點 hudRipe 應送出 harvest_all（暫時攔截 send 擷取，不污染其他情境）。
+    const ripeEl = documentStub.getElementById("hudRipe");
+    let sent = null;
+    const origSend = lastWS.send;
+    lastWS.send = (s) => { sent = s; };
+    if (typeof ripeEl.onclick === "function") ripeEl.onclick();
+    lastWS.send = origSend;
+    const msg = sent ? JSON.parse(sent) : null;
+    if (!msg || msg.type !== "harvest_all") {
+      ok = false; console.error("  ❌ 一鍵收成：點 hudRipe 沒送出 harvest_all，實得", sent);
+    }
+    // 無成熟作物的快照 → hudRipe 應解除點按（onclick 清成 null）。
+    const emptySnap = JSON.parse(JSON.stringify(snapshot));
+    if (emptySnap.fields && emptySnap.fields[0] && Array.isArray(emptySnap.fields[0].cells)) {
+      emptySnap.fields[0].owner = myId;
+      for (const c of emptySnap.fields[0].cells) { if (c) { c.state = 1; c.dry = false; } } // 全空土、無成熟
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...emptySnap, type: "snapshot" }) });
+    pump("一鍵收成 HUD 解除", 2);
+    const ripeEl2 = documentStub.getElementById("hudRipe");
+    if (ripeEl2.onclick) {
+      ok = false; console.error("  ❌ 一鍵收成：無成熟作物時 hudRipe 仍綁著點按（未解除）");
+    }
+  } catch (e) {
+    ok = false; console.error("  ❌ 一鍵收成：拋出例外", e && e.message);
+  }
+  const newCaught2 = caughtRenderErrors.slice(before);
+  if (!ok || newCaught2.length) { failed = true; console.error(`  ❌ 一鍵收成：${newCaught2.length} 個繪製例外`); }
+  else console.log("  ✅ 一鍵收成：有成熟→可點送 harvest_all、無成熟→解除點按皆乾淨");
+}
+
 // 臨陣格擋（ROADMAP 408）：備防中的玩家頭頂畫脈動格擋環（drawGuardRing），上盾時身上罩乙太藍護盾微光；
 // guard_result 事件對自己 id 演出三檔飄字（完美／一部分／沒擋好），旁觀者忽略。連跑多幀逼出相位推進，
 // 並把護盾百分比設到封頂值試卸傷強度上限分支。驗證格擋環＋護盾微光＋三檔飄字皆不拋例外。

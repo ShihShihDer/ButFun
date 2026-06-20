@@ -5981,12 +5981,26 @@
     }
     // 收成提醒:有熟透的格子就告訴玩家「去收乙太」,把迴圈的回報那步顯到 HUD,
     // 跟缺水提醒對稱;沒有就隱藏不佔行。純從權威快照數得,不嵌任何遊戲規則。
+    // ROADMAP 446：這行同時當「✨一鍵收成」按鈕——對稱於缺水行的一鍵澆水。點一下就送
+    // harvest_all，伺服器在農地可及範圍內把整塊田成熟的一次收完，省去逐格點擊。
     if (ripeEl) {
       if (ripe > 0) {
-        ripeEl.textContent = `✨ ${ripe} 格可收成`;
+        ripeEl.textContent = `✨ ${ripe} 格可收成 · ✨一鍵收成`;
         ripeEl.classList.remove("hidden");
+        // 提示這行可點：游標、無障礙語義（每幀重設冪等、不累積監聽器）。
+        ripeEl.style.cursor = "pointer";
+        ripeEl.setAttribute("role", "button");
+        ripeEl.setAttribute("tabindex", "0");
+        ripeEl.setAttribute("aria-label", `一鍵收成：收成 ${ripe} 格成熟作物`);
+        ripeEl.onclick = harvestAll;
+        ripeEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); harvestAll(); } };
       } else {
         ripeEl.classList.add("hidden");
+        ripeEl.onclick = null;
+        ripeEl.onkeydown = null;
+        ripeEl.style.cursor = "";
+        ripeEl.removeAttribute("role");
+        ripeEl.removeAttribute("tabindex");
       }
     }
     // 農地待辦小結（ROADMAP 427）：缺水/可收成已有專屬行（上面兩段），這行補上過去 HUD
@@ -26490,6 +26504,14 @@
   function waterAll() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ type: "water_all" }));
+  }
+
+  // ROADMAP 446 一鍵收成：把整塊田所有成熟作物一次收完，省去逐格點擊（對稱於 422 一鍵澆水）。
+  // 只送意圖、不在客戶端判規則——伺服器用玩家自己的權威座標判是否在農地可及範圍、實際收成並回報
+  // 收了幾株、拿了多少乙太（離田太遠會回「走近農地」提示）。
+  function harvestAll() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "harvest_all" }));
   }
 
   // 純鍵盤/無滑鼠玩家:對「自己腳下這格」送農作意圖(空白鍵 / E / F)。玩家回饋
