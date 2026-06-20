@@ -307,6 +307,7 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::EtherPlant
         | ItemKind::StarLantern
         | ItemKind::AncientDeco
+        | ItemKind::Aquarium
         | ItemKind::EtherOverlordCore
         | ItemKind::AlphaCrystal
         | ItemKind::AlphaForce
@@ -419,6 +420,7 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::EtherPlant
         | ItemKind::StarLantern
         | ItemKind::AncientDeco
+        | ItemKind::Aquarium
         | ItemKind::EtherOverlordCore
         | ItemKind::EtherOverlordBlade
         | ItemKind::AlphaCrystal

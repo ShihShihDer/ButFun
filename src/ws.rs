@@ -7154,6 +7154,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             Some(FurnitureKind::EtherPlant)  => Some(ItemKind::EtherPlant),
                             Some(FurnitureKind::StarLantern) => Some(ItemKind::StarLantern),
                             Some(FurnitureKind::AncientDeco) => Some(ItemKind::AncientDeco),
+                            Some(FurnitureKind::Aquarium)    => Some(ItemKind::Aquarium),
                             None => None,
                         };
                         if let (Some(fkind), Some(iitem)) = (fkind, item_kind) {
@@ -7193,6 +7194,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 crate::home_furniture::FurnitureKind::EtherPlant  => ItemKind::EtherPlant,
                                 crate::home_furniture::FurnitureKind::StarLantern => ItemKind::StarLantern,
                                 crate::home_furniture::FurnitureKind::AncientDeco => ItemKind::AncientDeco,
+                                crate::home_furniture::FurnitureKind::Aquarium    => ItemKind::Aquarium,
                             };
                             let mut players = app.players.write().unwrap();
                             if let Some(p) = players.get_mut(&uid) {

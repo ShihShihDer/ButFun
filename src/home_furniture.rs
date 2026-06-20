@@ -7,6 +7,7 @@
 //!   🪴 乙太花盆   → 採集 EXP +8%
 //!   🔮 星魂燈     → 夜間攻擊力 +2
 //!   🏺 古代擺件   → NPC 收購 +10%
+//!   🐟 水族缸     → 在室內每 25 秒，依背包養著的魚種數回血（每種魚 +1，最多 +3）（ROADMAP 437）
 //!
 //! 記憶體模式（重啟清空家具列表，效果仍可持續到材料不在為止，但因純記憶體 → 重啟即空，
 //! 行為等同「進住家後才能再放」；不需 migration）。
@@ -30,6 +31,9 @@ pub enum FurnitureKind {
     StarLantern,
     /// 🏺 古代擺件（AncientFragment×2 + Stone×1）：NPC 收購 +10%。
     AncientDeco,
+    /// 🐟 水族缸（Wood×3 + Stone×3）：在室內每 25 秒，依背包養著的魚種數回血
+    /// （每種魚 +1，最多 +3）。空缸只是裝飾、不回血——把釣到的魚養著才有療癒水景（ROADMAP 437）。
+    Aquarium,
 }
 
 impl FurnitureKind {
@@ -41,6 +45,7 @@ impl FurnitureKind {
             Self::EtherPlant  => "🪴",
             Self::StarLantern => "🔮",
             Self::AncientDeco => "🏺",
+            Self::Aquarium    => "🐠",
         }
     }
 
@@ -52,6 +57,7 @@ impl FurnitureKind {
             Self::EtherPlant  => "乙太花盆",
             Self::StarLantern => "星魂燈",
             Self::AncientDeco => "古代擺件",
+            Self::Aquarium    => "水族缸",
         }
     }
 
@@ -63,6 +69,7 @@ impl FurnitureKind {
             Self::EtherPlant  => "採集 EXP +8%",
             Self::StarLantern => "夜間攻擊力 +2",
             Self::AncientDeco => "NPC 收購 +10%",
+            Self::Aquarium    => "養越多魚種，靜心回血越多（每 25 秒最多回 3）",
         }
     }
 
@@ -74,6 +81,7 @@ impl FurnitureKind {
             "ether_plant"  => Some(Self::EtherPlant),
             "star_lantern" => Some(Self::StarLantern),
             "ancient_deco" => Some(Self::AncientDeco),
+            "aquarium"     => Some(Self::Aquarium),
             _ => None,
         }
     }
@@ -85,9 +93,25 @@ pub const CHEST_ITEM: &str = "aether_chest";
 pub const PLANT_ITEM: &str = "ether_plant";
 pub const LANTERN_ITEM: &str = "star_lantern";
 pub const DECO_ITEM: &str = "ancient_deco";
+pub const AQUARIUM_ITEM: &str = "aquarium";
 
 /// 每個住家最多可放幾件家具。
 pub const MAX_FURNITURE: usize = 5;
+
+/// 水族缸回血間隔（秒）——刻意與蒸汽床（30s）錯開，自成一條節奏。
+pub const AQUARIUM_REGEN_INTERVAL_SECS: f32 = 25.0;
+
+/// 水族缸可計入回血的魚種數上限（小魚／星星魚／深海魚共 3 種，封頂防爆）。
+pub const AQUARIUM_MAX_FISH_SPECIES: u32 = 3;
+
+/// 水族缸每次回血量＝背包養著的不同魚種數（封頂 `AQUARIUM_MAX_FISH_SPECIES`）。
+///
+/// 純函式、確定可重現：空缸（0 種）回 0（只是裝飾），養越多魚種回越多。
+/// 這讓「把釣到的魚留著養」與 ROADMAP 436「煮好的菜賣乙太」形成取捨——
+/// 賣掉換乙太、或留著當療癒水景，由玩家權衡。
+pub fn aquarium_regen_hp(distinct_fish_species: u32) -> u32 {
+    distinct_fish_species.min(AQUARIUM_MAX_FISH_SPECIES)
+}
 
 /// 床鋪回血間隔（秒）。
 pub const BED_REGEN_INTERVAL_SECS: f32 = 30.0;
@@ -194,6 +218,10 @@ impl HomeFurnishings {
     /// 是否有古代擺件。
     pub fn has_deco(&self) -> bool {
         self.has_kind(FurnitureKind::AncientDeco)
+    }
+
+    pub fn has_aquarium(&self) -> bool {
+        self.has_kind(FurnitureKind::Aquarium)
     }
 
     /// 目前已放幾件。
@@ -334,6 +362,29 @@ mod tests {
     }
 
     #[test]
+    fn has_aquarium_check() {
+        let mut h = HomeFurnishings::default();
+        assert!(!h.has_aquarium());
+        h.place(FurnitureKind::Aquarium, 1, 1);
+        assert!(h.has_aquarium());
+        h.remove(0);
+        assert!(!h.has_aquarium());
+    }
+
+    #[test]
+    fn aquarium_regen_scales_and_caps() {
+        // 空缸不回血（只是裝飾）。
+        assert_eq!(aquarium_regen_hp(0), 0);
+        // 養越多魚種回越多。
+        assert_eq!(aquarium_regen_hp(1), 1);
+        assert_eq!(aquarium_regen_hp(2), 2);
+        assert_eq!(aquarium_regen_hp(3), 3);
+        // 封頂：再多也不超過 3（防爆）。
+        assert_eq!(aquarium_regen_hp(3), AQUARIUM_MAX_FISH_SPECIES);
+        assert_eq!(aquarium_regen_hp(99), AQUARIUM_MAX_FISH_SPECIES);
+    }
+
+    #[test]
     fn has_cleared_after_remove() {
         let mut h = HomeFurnishings::default();
         h.place(FurnitureKind::SteamBed, 1, 1);
@@ -349,6 +400,7 @@ mod tests {
         assert_eq!(FurnitureKind::from_str("ether_plant"),  Some(FurnitureKind::EtherPlant));
         assert_eq!(FurnitureKind::from_str("star_lantern"), Some(FurnitureKind::StarLantern));
         assert_eq!(FurnitureKind::from_str("ancient_deco"), Some(FurnitureKind::AncientDeco));
+        assert_eq!(FurnitureKind::from_str("aquarium"),     Some(FurnitureKind::Aquarium));
         assert!(FurnitureKind::from_str("unknown").is_none());
     }
 

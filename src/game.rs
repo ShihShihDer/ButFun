@@ -1488,6 +1488,29 @@ pub fn spawn(app: AppState) {
                             p.vitals.heal(crate::home_furniture::BED_REGEN_HP);
                         }
                     }
+                    // 水族缸靜心回血（ROADMAP 437）：每 25 秒，在室內且擁有水族缸的玩家，
+                    // 依背包養著的不同魚種數回血（每種魚 +1，最多 +3）；空缸只是裝飾、不回血。
+                    // 這給「把釣到的魚留著養」一個療癒回報，與 436「煮好的菜賣乙太」形成取捨。
+                    let aqua_interval =
+                        crate::home_furniture::AQUARIUM_REGEN_INTERVAL_SECS as u64 * TICK_HZ as u64;
+                    if tick % aqua_interval == 0 && p.indoor_plot_id.is_some() && !p.vitals.is_downed() {
+                        let has_aqua = app.home_furnishings.read().unwrap()
+                            .get(&p.id).map(|h| h.has_aquarium()).unwrap_or(false);
+                        if has_aqua {
+                            let species = [
+                                crate::inventory::ItemKind::FishSmall,
+                                crate::inventory::ItemKind::FishStar,
+                                crate::inventory::ItemKind::FishDeep,
+                            ]
+                            .iter()
+                            .filter(|f| p.inventory.count(**f) > 0)
+                            .count() as u32;
+                            let hp = crate::home_furniture::aquarium_regen_hp(species);
+                            if hp > 0 {
+                                p.vitals.heal(hp);
+                            }
+                        }
+                    }
                     let was_downed = p.vitals.is_downed();
                     p.vitals.tick(dt); // 離戰一陣子自動回血 / 被打趴的休息倒數
                     // 從倒地復原的那一 tick：傳回新手村（公共農地中央）。
