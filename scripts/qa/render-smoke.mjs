@@ -1294,6 +1294,28 @@ for (const sc of scenarios) {
   }
 }
 
+// 介面字級（ROADMAP 441）：單元斷言純函式 uiFontPx（偏好→根字級 px）。純客戶端、零後端。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.uiFontPx;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 介面字級：game.js 未導出 uiFontPx");
+  } else {
+    let bad = 0;
+    // [偏好, 期望根字級 px]：標準＝預設，大／特大遞增，壞值／缺值一律退標準。
+    const cases = [["std", 16], ["large", 18], ["xlarge", 20], ["bogus", 16], [null, 16], [undefined, 16]];
+    for (const [pref, want] of cases) {
+      if (fn(pref) !== want) { bad++; console.error(`  ❌ 介面字級：uiFontPx(${pref}) 期望 ${want}`); }
+    }
+    // 單調遞增不變式：標準 < 大 < 特大（放大方向不可錯亂）。
+    if (!(fn("std") < fn("large") && fn("large") < fn("xlarge"))) {
+      bad++; console.error("  ❌ 介面字級：字級應隨 標準<大<特大 嚴格遞增");
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 介面字級·偏好解析真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 // 農地待辦小結（ROADMAP 427）：單元斷言純函式 farmDigest 的優先序與計數。
 // 把一塊田的格子彙整成「下一步最該做的一件農事」，回應建議箱反覆出現的待辦/優先指引/總結回饋。
 {
