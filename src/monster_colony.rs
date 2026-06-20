@@ -131,6 +131,10 @@ const ALPHA_SUMMON_COUNT: u32 = 3;
 const ALPHA_SUMMON_RADIUS: f32 = 90.0;
 /// 援軍兵力上限保護：該巢穴族群超過 max + 此值時暫停召喚（防病態洗怪）。
 const ALPHA_SUMMON_MAX_EXTRA: u32 = 6;
+/// 全域節流：單一 tick 內最多允許 N 隻 Alpha 同時召喚援軍。
+/// 多巢穴的多隻 Alpha 可能在同幀各自重傷、各自獨立判斷召喚（最壞 5 巢×3=15/幀），
+/// 此閘把每幀召喚的 Alpha 數截斷到 N，其餘 Alpha 本幀略過、留待下一輪（冷卻後）再說。
+const ALPHA_SUMMON_MAX_PER_TICK: usize = 1;
 /// 召喚指揮氣泡顯示文字（沿用 ROADMAP 169 前端指揮氣泡渲染）。
 const SUMMON_TACTIC_NAME: &str = "號令援軍";
 
@@ -722,6 +726,13 @@ impl MonsterColonyManager {
             if is_elite && a.hp > 0 && hp_pct < ALPHA_SUMMON_HP_THRESHOLD && !on_cd {
                 to_summon.push((a.id, a.colony_id));
             }
+        }
+
+        // 全域節流（防多巢穴同幀齊召喚 +15）：本幀最多 N 隻 Alpha 出援軍。
+        // 以 alpha_id 穩定排序後取前 N，其餘 Alpha 本幀不召喚（未進冷卻，下一輪可再判）。
+        if to_summon.len() > ALPHA_SUMMON_MAX_PER_TICK {
+            to_summon.sort_by_key(|(id, _)| *id);
+            to_summon.truncate(ALPHA_SUMMON_MAX_PER_TICK);
         }
 
         // 第二遍：執行召喚。
@@ -2797,6 +2808,47 @@ mod tests {
         assert!(
             mgr.alpha_summon_cd.get(&alpha_id).copied().unwrap_or(0.0) > 0.0,
             "超上限仍應設冷卻"
+        );
+    }
+
+    #[test]
+    fn summon_throttled_to_max_per_tick() {
+        // 全域節流：多隻菁英 Alpha 在同一 tick 各自重傷、各自符合召喚條件，
+        // 本幀最多只允許 ALPHA_SUMMON_MAX_PER_TICK 隻出援軍（防多巢穴同幀齊召喚爆量）。
+        let mut mgr = MonsterColonyManager::new();
+        // 在三個不同（既有）巢穴各植入一隻覺醒重傷 Alpha，座標取各巢穴中心、彼此遠離避免爭奪互擾。
+        let setups: [(u32, EnemyKind); 3] = [
+            (0, EnemyKind::FlutterSprite),
+            (1, EnemyKind::MushroomStalker),
+            (2, EnemyKind::ScrapDrone),
+        ];
+        for (colony_id, kind) in setups {
+            let (cx, cy, name) = mgr.colonies.iter()
+                .find(|c| c.id == colony_id)
+                .map(|c| (c.cx, c.cy, c.name))
+                .unwrap();
+            let id = mgr.next_alpha_id;
+            mgr.next_alpha_id += 1;
+            mgr.alphas.push(ColonyAlpha {
+                id, colony_id, kind, x: cx, y: cy,
+                hp: 1, max_hp: 100, // 重傷（遠低於 50%）
+                colony_name: name,
+                command_cooldown: 9999.0, // 壓住指令事件，聚焦召喚
+                active_tactic: None,
+                tactic_remaining: 0.0,
+                clash_target_id: None,
+                allied_to_id: None,
+                awakened: true, // 菁英資格
+                last_stand: false,
+            });
+        }
+        let events = mgr.tick(0.1, KEEP_AWAKE_PRESSURE);
+        let summons = events.iter()
+            .filter(|e| matches!(e, MonsterColonyEvent::AlphaSummonedReinforcements { .. }))
+            .count();
+        assert_eq!(
+            summons, ALPHA_SUMMON_MAX_PER_TICK,
+            "三隻同幀重傷菁英 Alpha，本幀召喚數應被節流到上限值"
         );
     }
 
