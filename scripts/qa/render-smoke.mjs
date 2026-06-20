@@ -1676,6 +1676,39 @@ for (const sc of scenarios) {
   }
 }
 
+// 拓圖足跡（ROADMAP 448）：單元斷言足跡格邏輯——key 穩定、記錄揭露周圍一圈、未踏=未揭露、壞值防呆。
+{
+  const key = sandbox.__bfTest && sandbox.__bfTest.exploreCellKey;
+  const rec = sandbox.__bfTest && sandbox.__bfTest.recordExplored;
+  const seen = sandbox.__bfTest && sandbox.__bfTest.isExplored;
+  const cnt = sandbox.__bfTest && sandbox.__bfTest.exploredCount;
+  if (typeof key !== "function" || typeof rec !== "function" || typeof seen !== "function") {
+    failed = true;
+    console.error("  ❌ 拓圖足跡：game.js 未導出 exploreCellKey/recordExplored/isExplored");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 拓圖足跡：${label}`); } };
+    // key 確定性：同格座標同 key，跨格不同 key；96px 一格。
+    check("同格同 key", key(0, 0) === key(95, 95));
+    check("跨格不同 key", key(0, 0) !== key(96, 0));
+    check("負座標分格正確", key(-1, -1) === "-1,-1" && key(-96, 0) === "-1,0");
+    // 壞值防呆：NaN/undefined/字串一律當 0 格、不 throw。
+    check("壞值當原點", key(undefined, NaN) === "0,0" && key("x", null) === "0,0");
+    // 記錄前：遠處未揭露。記錄某點後：該格＋周圍一圈（±1）揭露、再外一圈仍未揭露。
+    const before = cnt();
+    check("記錄前未踏", seen(500 * 96, 500 * 96) === false);
+    const added = rec(500 * 96 + 10, 500 * 96 + 10); // 落在 (500,500) 格內
+    check("中心格已揭露", seen(500 * 96 + 10, 500 * 96 + 10) === true);
+    check("周圍一圈已揭露", seen(501 * 96, 500 * 96) === true && seen(500 * 96, 499 * 96) === true);
+    check("再外一圈仍未揭露", seen(503 * 96, 500 * 96) === false);
+    check("新增 3x3=9 格", added === 9 && cnt() === before + 9);
+    // 重複記錄同點不再新增（冪等）。
+    check("重複記錄不增", rec(500 * 96 + 10, 500 * 96 + 10) === 0);
+    if (bad) failed = true;
+    else console.log("  ✅ 拓圖足跡·足跡格揭露真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

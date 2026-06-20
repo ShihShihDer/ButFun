@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -7949,6 +7949,14 @@
     lastCam.x = camX;
     lastCam.y = camY;
 
+    // 拓圖足跡（ROADMAP 448）：記下本幀站位（連同周圍一圈）已踏過，供小地圖揭露。
+    // 帳號 key 隨 myId 變動自動重載（不同帳號同瀏覽器各有各的地圖）；節流寫回 localStorage。
+    if (me) {
+      loadExplored(myId || "guest");
+      recordExplored(me.rx, me.ry);
+      saveExplored(renderNow);
+    }
+
     // 住家室內模式（ROADMAP 111）：玩家在室內時改畫室內場景，跳過戶外世界渲染。
     if (me && me.indoor_plot_id != null) {
       drawIndoorScene(me, renderNow);
@@ -8973,6 +8981,76 @@
     ctx.fillRect(0, 0, viewW, viewH);
   }
 
+  // ---- 拓圖足跡（ROADMAP 448）：小地圖記得你走過的路 ----
+  // 無限世界的探索一直「走過就忘」——小地圖只即時顯示身邊地貌，離開那塊就什麼都沒留下，
+  // 走再遠也沒有「我探索出了一片地圖」的成就感。這裡給世界第一層「製圖師足跡」：把你踏過的
+  // 每一格粗世界格子記下來（localStorage 持久化、跟著帳號），未踏之地在小地圖上蒙一層霧、
+  // 走過的地方永久揭露，回頭再訪時地圖已替你記得。純前端、加法、預設即生效；霧是靜態的，
+  // reduceMotion 不受影響。與「初次踏足／遠遊見聞」(415／wayfaring，追蹤"已命名地區"計數)
+  // 互補——這條是全新的"地圖視覺揭露"維度，不重複既有的踏足計數。
+  const EXPLORE_CELL = 96;          // 足跡格邊長（世界 px）：夠粗省記憶體、又看得出一條揭露的路徑
+  const EXPLORE_REVEAL_R = 1;       // 站立時連同周圍 N 格一起揭露（揭出一塊小範圍而非單點）
+  const EXPLORE_MAX_CELLS = 40000;  // localStorage 上限（約 40k 格 ~ 一大片地圖）；溢出丟最舊
+  // 世界座標 → 足跡格 key（穩定字串；純函式、確定可重現、好測）。
+  function exploreCellKey(wx, wy) {
+    const cx = Math.floor((Number(wx) || 0) / EXPLORE_CELL);
+    const cy = Math.floor((Number(wy) || 0) / EXPLORE_CELL);
+    return cx + "," + cy;
+  }
+  let exploredCells = new Set();    // 已踏足格子（Set 保插入序，溢出時丟最舊）
+  let exploredLoadedFor = null;     // 已載入的帳號 key（換帳號自動重載，地圖不互相污染）
+  let exploredDirty = false;        // 有新格未存
+  let exploredSaveLast = 0;         // 上次寫 localStorage 的時間戳（節流用）
+  function exploredStorageKey(uid) { return "butfun.explored." + (uid || "guest"); }
+  // 載入某帳號的足跡（同一帳號重複呼叫直接早退）。
+  function loadExplored(uid) {
+    if (exploredLoadedFor === uid) return;
+    exploredLoadedFor = uid;
+    exploredCells = new Set();
+    exploredDirty = false;
+    try {
+      const raw = localStorage.getItem(exploredStorageKey(uid));
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) for (const k of arr) if (typeof k === "string") exploredCells.add(k);
+      }
+    } catch {}
+  }
+  // 節流寫回（最多每 4 秒、且有新格才寫）。
+  function saveExplored(now) {
+    if (!exploredDirty) return;
+    if (now - exploredSaveLast < 4000) return;
+    exploredSaveLast = now;
+    exploredDirty = false;
+    try {
+      localStorage.setItem(exploredStorageKey(exploredLoadedFor), JSON.stringify([...exploredCells]));
+    } catch {}
+  }
+  // 記錄此刻位置（連同周圍 EXPLORE_REVEAL_R 圈）已被踏過。回傳本次新解鎖的格數（測試／未來成就用）。
+  function recordExplored(wx, wy) {
+    const ccx = Math.floor((Number(wx) || 0) / EXPLORE_CELL);
+    const ccy = Math.floor((Number(wy) || 0) / EXPLORE_CELL);
+    let added = 0;
+    for (let dy = -EXPLORE_REVEAL_R; dy <= EXPLORE_REVEAL_R; dy++) {
+      for (let dx = -EXPLORE_REVEAL_R; dx <= EXPLORE_REVEAL_R; dx++) {
+        const k = (ccx + dx) + "," + (ccy + dy);
+        if (!exploredCells.has(k)) { exploredCells.add(k); added++; }
+      }
+    }
+    if (added) {
+      exploredDirty = true;
+      // 溢出保護：丟最舊（Set 保插入序），避免 localStorage 無上限長大。
+      while (exploredCells.size > EXPLORE_MAX_CELLS) {
+        const oldest = exploredCells.values().next().value;
+        exploredCells.delete(oldest);
+      }
+    }
+    return added;
+  }
+  // 某世界座標所屬格子是否已揭露。
+  function isExplored(wx, wy) { return exploredCells.has(exploreCellKey(wx, wy)); }
+  function exploredCount() { return exploredCells.size; }
+
   // ---- 小地圖（玩家建議：2000x2000 大世界容易迷路）----
   // 右下角畫一張固定大小的世界縮圖：世界邊界、農地位置、自己（亮點）、其他玩家（暗點）。
   // 純螢幕座標、每幀依最新快照重畫，不參與鏡頭換算。
@@ -9251,6 +9329,11 @@
           ctx.fillStyle = kind === "town_wall" ? "#8a6d35" : kind === "crystal" ? "#4a1f8a" : kind === "mushroom" ? "#1a5c28" : kind === "ancient_ruin" ? "#7a5c1a" : kind === "coral_reef" ? "#0a5a6a" : kind === "wild_flower" ? "#8a7a10" : kind === "jade_vine" ? "#1a6a40" : kind === "lava_rock" ? "#8a2c0a" : kind === "void_crystal" ? "#2a0a4a" : kind === "aether_mist" ? "#0a3a5a" : kind === "origin_crystal" ? "#5a4a0a" : kind === "ore" ? "#7a6533" : kind === "stone" ? "#444" : "#5d4037";
         }
         ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
+        // 拓圖足跡（ROADMAP 448）：未踏之地蒙一層霧，蓋住地貌只留你走過的路；走過即永久揭露。
+        if (!isExplored(wx, wy)) {
+          ctx.fillStyle = "rgba(8,12,24,0.72)";
+          ctx.fillRect(ox + xx, oy + yy, MM_STEP + 1, MM_STEP + 1);
+        }
       }
     }
 
