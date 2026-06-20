@@ -19689,6 +19689,8 @@
   const COOK_STEP_ORDER = ["heat", "add", "stir", "flip", "season"];
   const COOK_GRADE_LABEL = { botched: "手忙腳亂", common: "家常", tasty: "美味", perfect: "完美" };
   // 稱號顯示名（ROADMAP 389）：wire key → 中文稱號名。
+  // ROADMAP 439：成就稱號——每個成就解鎖時同步授予一枚同名可展示稱號，
+  // wire key 沿用成就自己的 key（與基礎稱號 key 不重疊），名稱與後端 achievement.rs 對齊。
   const TITLE_NAMES = {
     level_10: "旅者",
     level_20: "冒險家",
@@ -19696,6 +19698,19 @@
     first_craft: "工匠",
     inscription: "考古學家",
     epic_gather: "福星",
+    // ── 成就稱號（ROADMAP 439）──
+    travel_verdant: "翠幽先驅者",
+    travel_crimson: "赤焰先驅者",
+    travel_void: "虛空先驅者",
+    travel_aether: "霧醚先驅者",
+    travel_origin: "星源先驅者",
+    first_kill: "初次獵殺",
+    hunter: "老練獵人",
+    level_five: "Lv.5 冒險者",
+    level_ten: "Lv.10 精英",
+    level_twenty: "Lv.20 傳說",
+    guild_member: "公會成員",
+    quest_hero: "任務英雄",
   };
 
   let cookOverlayEl = null;   // 目前掌勺覆蓋層 DOM（沒在煮＝null）
@@ -20961,7 +20976,7 @@
     if (sig === lastTitleSig) return;
     lastTitleSig = sig;
     if (!unlockedTitles.length) {
-      body.innerHTML = `<div style="color:#666;font-size:.85em">尚無稱號—升級、鍛造、採集史詩材料等即可解鎖。</div>`;
+      body.innerHTML = `<div style="color:#666;font-size:.85em">尚無稱號—升級、鍛造、採集史詩材料、或達成成就即可解鎖。</div>`;
       return;
     }
     let html = `<div style="color:var(--brass);font-weight:600;margin-bottom:6px">🏅 我的稱號</div>`;

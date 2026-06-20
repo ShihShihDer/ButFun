@@ -2988,6 +2988,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 let _ = app.tx_chat.send(format!(
                                     "🏆 {} 解鎖成就「{}」！", pname, ach.display_name()
                                 ));
+                                // ROADMAP 439：解鎖成就同時解鎖一枚同名成就稱號（可配戴炫耀）。
+                                grant_title_if_new(
+                                    &app, &app.tx, &tx_direct, id, &pname,
+                                    crate::player_title::title_for_achievement(ach),
+                                );
                             }
                         }
                     }
@@ -3756,6 +3761,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                                 "🏆 {} 解鎖成就「{}」！",
                                                 pname, ach.display_name()
                                             ));
+                                            // ROADMAP 439：成就稱號同步解鎖。
+                                            grant_title_if_new(
+                                                &app, &app.tx, &tx_direct, uid, &pname,
+                                                crate::player_title::title_for_achievement(ach),
+                                            );
                                         }
                                     }
                                     // 每日任務：旅行事件（ROADMAP 32）。
@@ -6623,6 +6633,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         pname,
                                         crate::achievement::Achievement::GuildMember.display_name()
                                     ));
+                                    // ROADMAP 439：成就稱號同步解鎖。
+                                    grant_title_if_new(
+                                        &app, &app.tx, &tx_direct, uid, &pname,
+                                        crate::player_title::title_for_achievement(
+                                            crate::achievement::Achievement::GuildMember,
+                                        ),
+                                    );
                                 }
                                 // 回傳公會詳情給本人。
                                 let view = build_guild_view(&app, uid, gid);
@@ -6666,6 +6683,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         pname,
                                         crate::achievement::Achievement::GuildMember.display_name()
                                     ));
+                                    // ROADMAP 439：成就稱號同步解鎖。
+                                    grant_title_if_new(
+                                        &app, &app.tx, &tx_direct, uid, &pname,
+                                        crate::player_title::title_for_achievement(
+                                            crate::achievement::Achievement::GuildMember,
+                                        ),
+                                    );
                                 }
                                 let view = build_guild_view(&app, uid, guild_id);
                                 let msg = ServerMsg::GuildUpdate { guild: view };
@@ -8175,13 +8199,21 @@ fn notify_quest_complete(app: &AppState, completed_descs: Vec<String>) {
             crate::quest::QUEST_COMPLETE_REWARD * completed_descs.len() as u32
         );
         let is_new = p.achievements.unlock(crate::achievement::Achievement::QuestHero);
+        // ROADMAP 439：成就稱號同步解鎖。任務英雄是全服同時觸發的成就，沒有單一連線
+        // 的 tx_direct 可走 grant_title_if_new；改在同一把寫鎖內就地解鎖稱號，下一份
+        // 快照的 unlocked_titles 便會帶上，稱號面板自動亮起（不做全服首位儀式）。
+        if is_new {
+            p.title_set.unlock(crate::player_title::title_for_achievement(
+                crate::achievement::Achievement::QuestHero,
+            ));
+        }
         newly_heroes.push((p.name.clone(), is_new));
     }
     drop(players);
     for (pname, is_new) in newly_heroes {
         if is_new {
             let _ = app.tx_chat.send(format!(
-                "🏆 {} 解鎖成就「{}」！",
+                "🏆 {} 解鎖成就「{}」，同名稱號已可在角色面板配戴！",
                 pname,
                 crate::achievement::Achievement::QuestHero.display_name()
             ));
