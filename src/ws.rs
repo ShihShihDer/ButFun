@@ -1291,6 +1291,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         subtitle: loc.subtitle.to_string(),
                         phase,
                         season,
+                        star: crate::postcard::StarTier::None,
                     });
                     let msg = ServerMsg::Postcard {
                         title: card.title,
@@ -1299,6 +1300,71 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         rank: card.rank.to_string(),
                         flavor: card.flavor.to_string(),
                         level: card.level,
+                        star_tier: card.star_tier.wire_key().to_string(),
+                        star_line: card.star_line.map(|s| s.to_string()),
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = tx_direct.try_send(json);
+                    }
+                }
+                Ok(ClientMsg::RequestStarlitPostcard { use_rainbow }) => {
+                    // 星光明信片（ROADMAP 447）：把流星雨採集的星塵封進一張會發光的留念明信片。
+                    // 共用一般明信片的限流（每秒至多 3 次）。與一般明信片唯一差別：成功消耗 1 顆星塵。
+                    if rl_postcard_win.elapsed().as_secs() >= 1 {
+                        rl_postcard_win = std::time::Instant::now();
+                        rl_postcard_n = 0;
+                    }
+                    rl_postcard_n += 1;
+                    if rl_postcard_n > 3 {
+                        continue;
+                    }
+                    let want = if use_rainbow {
+                        crate::inventory::ItemKind::RainbowStarDust
+                    } else {
+                        crate::inventory::ItemKind::StarDust
+                    };
+                    // 在同一把 players 寫鎖內讀座標／等級並嘗試扣 1 顆星塵（讀完即放，不嵌套其他鎖，守 prod-deadlock）。
+                    // 背包異動由 game.rs 每幀 flush 持久化（不必手動寫回；零 migration）。
+                    let (px, py, level, star) = {
+                        let mut ps = app.players.write().unwrap();
+                        match ps.get_mut(&id) {
+                            Some(p) => {
+                                // 有對應星塵才消耗並封進星光印記；沒有則保守退回一般明信片（不冤枉、不消耗）。
+                                let tier = if p.inventory.take(want, 1) {
+                                    if use_rainbow {
+                                        crate::postcard::StarTier::Rainbow
+                                    } else {
+                                        crate::postcard::StarTier::Stardust
+                                    }
+                                } else {
+                                    crate::postcard::StarTier::None
+                                };
+                                (p.x as f64, p.y as f64, p.level(), tier)
+                            }
+                            None => (0.0, 0.0, 0, crate::postcard::StarTier::None),
+                        }
+                    };
+                    // 季節與時辰各自取讀鎖讀完即放（不與 players 鎖或彼此嵌套）。
+                    let season = app.season.read().unwrap().current;
+                    let phase = app.daynight.read().unwrap().phase();
+                    let loc = crate::region_name::locale_at(px, py);
+                    let card = crate::postcard::compose(crate::postcard::PostcardInput {
+                        level,
+                        place: loc.name.to_string(),
+                        subtitle: loc.subtitle.to_string(),
+                        phase,
+                        season,
+                        star,
+                    });
+                    let msg = ServerMsg::Postcard {
+                        title: card.title,
+                        place: card.place,
+                        subtitle: card.subtitle,
+                        rank: card.rank.to_string(),
+                        flavor: card.flavor.to_string(),
+                        level: card.level,
+                        star_tier: card.star_tier.wire_key().to_string(),
+                        star_line: card.star_line.map(|s| s.to_string()),
                     };
                     if let Ok(json) = serde_json::to_string(&msg) {
                         let _ = tx_direct.try_send(json);

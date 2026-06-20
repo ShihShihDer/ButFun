@@ -1642,6 +1642,40 @@ for (const sc of scenarios) {
   }
 }
 
+// 星光明信片（ROADMAP 447）：單元斷言純函式 postcardStarStyle（星塵印記稀有度→明信片呈現）。
+// 把流星雨採集的星塵封進留念卡：none＝一般明信片、stardust＝星光、rainbow＝彩虹星光；壞值保守當一般。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.postcardStarStyle;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 星光明信片：game.js 未導出 postcardStarStyle");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 星光明信片：${label}`); } };
+    const none = fn("none");
+    const dust = fn("stardust");
+    const rainbow = fn("rainbow");
+    // 一般明信片：不發光、不是彩虹、抬頭為旅途明信片。
+    check("none 非星光", none.starlit === false && none.isRainbow === false);
+    check("none 抬頭", none.eyebrow.includes("旅途明信片"));
+    // 星塵：發光但非彩虹，抬頭為星光明信片。
+    check("stardust 星光", dust.starlit === true && dust.isRainbow === false);
+    check("stardust 抬頭", dust.eyebrow.includes("星光明信片"));
+    // 彩虹星塵：既星光又彩虹，抬頭為彩虹星光。
+    check("rainbow 星光", rainbow.starlit === true && rainbow.isRainbow === true);
+    check("rainbow 抬頭", rainbow.eyebrow.includes("彩虹"));
+    // 三檔外框色兩兩不同（一眼可辨）。
+    check("外框色互異", none.border !== dust.border && dust.border !== rainbow.border && none.border !== rainbow.border);
+    // 壞值 / 未知字串保守當一般明信片，不發光、不 throw。
+    for (const junk of [undefined, null, "", "???", 42]) {
+      const r = fn(junk);
+      check(`壞值 ${JSON.stringify(junk)} 當一般`, r.starlit === false && r.isRainbow === false);
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 星光明信片·星塵印記呈現真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
