@@ -1959,6 +1959,31 @@ for (const sc of scenarios) {
   }
 }
 
+// clay 城鎮建築（ROADMAP 461）：單元斷言純函式 clayBuildingPalette（建築 type→暖陶土黏土色盤）。
+// clay 畫風下城鎮建築改捏成陶土小屋：每棟有合法 wall/roof/trim/win 色；未知 type 退中性陶土盤、永不 undefined。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.clayBuildingPalette;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ clay 城鎮建築：game.js 未導出 clayBuildingPalette");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ clay 城鎮建築：${label}`); } };
+    const TYPES = ["shop", "workshop", "bounty", "expedition", "procurement", "fair", "chief"];
+    const isHex = (s) => typeof s === "string" && /^#[0-9a-fA-F]{6}$/.test(s);
+    const validPal = (p) => p && isHex(p.wall) && isHex(p.roof) && isHex(p.trim) && isHex(p.win);
+    // 每個建築 type 都回完整合法的四色盤（wall/roof/trim/win 皆 #rrggbb）。
+    check("各建築 type 皆回合法色盤", TYPES.every((t) => validPal(fn(t))));
+    // 未知／壞 type 安全退中性陶土盤（不回 undefined、render 不爆）。
+    check("未知 type 退合法陶土盤", validPal(fn("nope")) && validPal(fn(undefined)) && validPal(fn(null)));
+    // 各 type 的色盤是各自獨立的（牆色不全相同＝保留色相身份，不是一坨同色）。
+    const walls = new Set(TYPES.map((t) => fn(t).wall));
+    check("各建築牆色保留色相身份", walls.size >= TYPES.length - 1);
+    if (bad) failed = true;
+    else console.log("  ✅ clay 城鎮建築·陶土色盤真值表：通過");
+  }
+}
+
 // 春夜拾螢（ROADMAP 451）：單元斷言拾螢純函式——只在春夜可拾、catch 半徑命中判定、里程碑跨越偵測、壞值防呆。
 {
   const catchable = sandbox.__bfTest && sandbox.__bfTest.fireflyCatchable;
