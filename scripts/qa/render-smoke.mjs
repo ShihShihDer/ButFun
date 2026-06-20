@@ -1848,6 +1848,36 @@ for (const sc of scenarios) {
   }
 }
 
+// 黏土世界樹（ROADMAP 456）：單元斷言純函式 clayGroveSpec（成長階段 stage→黏土樹幾何）。
+// clay 畫風下玩家親手種的世界樹（370）改捏成黏土造型：由小到大、樹幹樹冠隨階段長大；壞 stage 夾鉗、不爆。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.clayGroveSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 黏土世界樹：game.js 未導出 clayGroveSpec");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 黏土世界樹：${label}`); } };
+    const s0 = fn(0), s1 = fn(1), s2 = fn(2), s3 = fn(3);
+    const all = [s0, s1, s2, s3];
+    // 四階段由小到大：樹幹高、樹冠半徑、樹冠抬升都隨階段單調遞增。
+    check("樹幹隨階段變高", s0.trunkH < s1.trunkH && s1.trunkH < s2.trunkH && s2.trunkH < s3.trunkH);
+    check("樹冠隨階段變大", s0.crownR < s1.crownR && s1.crownR < s2.crownR && s2.crownR < s3.crownR);
+    check("樹冠抬升隨階段增", s0.crownLift < s1.crownLift && s1.crownLift < s2.crownLift && s2.crownLift < s3.crownLift);
+    check("樹幹隨階段變粗", s0.trunkW < s3.trunkW);
+    // 各欄皆有限正值（render 不會畫出負尺寸／NaN）。
+    check("各欄有限正值", all.every((g) => [g.trunkW, g.trunkH, g.crownR, g.crownLift].every((v) => Number.isFinite(v) && v > 0)));
+    // 壞 stage 夾鉗：越界夾到端點、非整數四捨五入、NaN/undefined 退階段 0、不爆。
+    check("stage>3 夾成大樹", fn(5) === s3 || (fn(5).crownR === s3.crownR && fn(5).trunkH === s3.trunkH));
+    check("stage<0 夾成嫩芽", fn(-2).crownR === s0.crownR && fn(-2).trunkH === s0.trunkH);
+    check("非整數四捨五入", fn(2.4).crownR === s2.crownR && fn(2.6).crownR === s3.crownR);
+    check("NaN 退嫩芽", fn(NaN).crownR === s0.crownR);
+    check("undefined 退嫩芽", fn(undefined).crownR === s0.crownR);
+    if (bad) failed = true;
+    else console.log("  ✅ 黏土世界樹·樹形幾何真值表：通過");
+  }
+}
+
 // 春夜拾螢（ROADMAP 451）：單元斷言拾螢純函式——只在春夜可拾、catch 半徑命中判定、里程碑跨越偵測、壞值防呆。
 {
   const catchable = sandbox.__bfTest && sandbox.__bfTest.fireflyCatchable;
