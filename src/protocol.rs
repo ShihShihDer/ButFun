@@ -1387,6 +1387,10 @@ pub enum ServerMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         dish: Option<String>,
         perfect_total: u32,
+        /// 火候到家的額外盛盤份數（ROADMAP 435）：完美掌勺多盛一份時為 1，其餘為 0。
+        /// 純新增欄位、向後相容（舊前端忽略即可，預設 0 不演出加贈飄字）。
+        #[serde(default)]
+        bonus: u32,
         x: f32,
         y: f32,
     },
@@ -3208,6 +3212,7 @@ mod tests {
             grade: "perfect".into(),
             dish: Some("deep_broth".into()),
             perfect_total: 3,
+            bonus: 1,
             x: 1.0,
             y: 2.0,
         };
@@ -3217,12 +3222,14 @@ mod tests {
         assert_eq!(v2["grade"], "perfect");
         assert_eq!(v2["dish"], "deep_broth");
         assert_eq!(v2["perfect_total"], 3);
+        assert_eq!(v2["bonus"], 1);
         // dish 為 None 時略過序列化（向後相容）。
         let no_dish = ServerMsg::CookResult {
             player_id: Uuid::nil(),
             grade: "botched".into(),
             dish: None,
             perfect_total: 0,
+            bonus: 0,
             x: 0.0,
             y: 0.0,
         };

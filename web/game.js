@@ -4088,9 +4088,17 @@
                     :                           "190,190,190";
         const dishName = msg.dish ? (ITEM_NAME[msg.dish] || "料理") : null;
         const dishIco = msg.dish ? (ITEM_LOOK[msg.dish] || "🍽️") : "🍽️";
+        // ROADMAP 435 火候到家：完美掌勺多盛一份，飄字加註、報讀器也提一句。
+        const bonus = msg.bonus || 0;
         if (dishName) {
           floaters.push({ wx, wy, text: `${dishIco} ${gLabel}！${dishName}`, color, born: now });
-          announce(`掌勺${gLabel}，煮出了${dishName}`);
+          if (bonus > 0) {
+            // 加贈飄字稍高一階、金色點亮，讓玩家一眼看到「火候到家、多了一份」。
+            floaters.push({ wx, wy: wy - 22, text: `✨ 火候到家，多盛一份！`, color: "255,210,74", born: now + 1 });
+            announce(`掌勺${gLabel}，煮出了${dishName}，火候到家多盛一份`);
+          } else {
+            announce(`掌勺${gLabel}，煮出了${dishName}`);
+          }
         } else {
           floaters.push({ wx, wy, text: "🍽️ 食材不夠，沒能上菜…", color: "190,190,190", born: now });
           announce("食材不夠，沒能上菜");
