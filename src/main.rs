@@ -146,6 +146,7 @@ mod npc_deal;
 mod npc_stock;
 mod supply_chain;
 mod world_log;
+mod world_glimpse; // ROADMAP 445 世界此刻一瞥·登入畫面映出當下時辰/季節/天氣
 mod player_log;
 mod player_emote;
 mod high_five;
@@ -396,9 +397,32 @@ static SERVER_START: std::sync::LazyLock<std::time::Instant> =
 /// 任何個體資訊（公開端點，最小揭露）。
 async fn api_status(State(app): State<AppState>) -> impl IntoResponse {
     let online = app.players.read().map(|p| p.len()).unwrap_or(0);
+    // ROADMAP 445：彙整「世界此刻」一瞥（時辰／季節／天氣），讓登入畫面映出當下世界。
+    // 全是全域世界狀態（公開、本就互相可見），不含任何玩家身分／座標，守最小揭露。
+    let phase = app
+        .daynight
+        .read()
+        .map(|d| d.phase())
+        .unwrap_or(crate::daynight::Phase::Day);
+    let season = app
+        .season
+        .read()
+        .map(|s| s.current)
+        .unwrap_or(crate::season::Season::Spring);
+    let weather = app
+        .weather
+        .read()
+        .map(|w| w.weather_type)
+        .unwrap_or(crate::weather::WeatherType::Clear);
+    let glimpse = crate::world_glimpse::compose(phase, season, weather, online);
     Json(serde_json::json!({
         "online": online,
         "uptime_secs": SERVER_START.elapsed().as_secs(),
+        "glimpse": {
+            "theme": glimpse.theme,
+            "headline": glimpse.headline,
+            "subline": glimpse.subline,
+        },
     }))
 }
 

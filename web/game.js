@@ -437,6 +437,12 @@
     if (!Number.isInteger(cur) || cur < 0 || cur >= len) return 0;
     return (cur + 1) % len;
   }
+  // glimpseThemeClass 為純函式（ROADMAP 445）：把後端 /api/status 給的時辰主題 key 映成
+  // 登入畫面要套的 CSS class；只認白名單四值，其餘（壞值/未知/缺欄位）一律退回 ""（不套色、保底）。
+  const GLIMPSE_THEMES = ["dawn", "day", "dusk", "night"];
+  function glimpseThemeClass(theme) {
+    return GLIMPSE_THEMES.includes(theme) ? "glimpse-" + theme : "";
+  }
   // ---- 世界風（ROADMAP 430）：伺服器權威、全服共享的風，讓樹/作物一致搖曳 ----
   // worldWind 由天氣快照同步（缺欄位＝靜風）；dirX/dirY 為單位向量、strength∈[0,1]。
   let worldWind = { dirX: 1, dirY: 0, strength: 0 };
@@ -537,7 +543,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -27969,19 +27975,41 @@
   // 純展示、連不上就靜默留空，不影響任何進場流程。
   (function fetchLiveCount() {
     const el = document.getElementById("liveCount");
-    if (!el) return;
     fetch("/api/status", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
       .then((s) => {
+        if (!s) return;
         // 後端 /api/status 只給彙總數字（見記憶:只准彙總、別加個資）。容錯各種欄位命名。
-        const n = s && (s.online ?? s.players_online ?? s.online_players ?? s.players);
-        if (typeof n === "number" && n > 0) {
+        const n = s.online ?? s.players_online ?? s.online_players ?? s.players;
+        if (el && typeof n === "number" && n > 0) {
           el.innerHTML = `🌍 此刻有 <b></b> 位拓荒者在線上`;
           el.querySelector("b").textContent = String(n);
         }
+        // 世界此刻一瞥（ROADMAP 445）：拉到 glimpse 才填、才套時辰氛圍色；缺欄位則維持隱藏（向後相容）。
+        renderWorldGlimpse(s.glimpse);
       })
       .catch(() => {}); // 連不上就留空，不打擾
   })();
+  // 把後端組好的「世界此刻」一瞥填進登入畫面，並依時辰主題替 #login 換一層柔和氛圍色。
+  // 字串一律用 textContent（後端組句、但仍走安全路徑，杜絕任何注入）；缺資料/壞值就保持隱藏。
+  function renderWorldGlimpse(g) {
+    const box = document.getElementById("worldGlimpse");
+    if (!box) return;
+    const head = g && typeof g.headline === "string" ? g.headline : "";
+    const sub = g && typeof g.subline === "string" ? g.subline : "";
+    const headEl = box.querySelector(".wg-headline");
+    const subEl = box.querySelector(".wg-subline");
+    if (head && headEl) headEl.textContent = head;
+    if (subEl) subEl.textContent = sub;
+    box.hidden = !head; // 至少要有主行才顯示，否則維持不佔版面
+    // 依時辰套登入畫面氛圍色（白名單外不套，保底）。
+    const loginEl = document.getElementById("login");
+    if (loginEl) {
+      loginEl.classList.remove("glimpse-dawn", "glimpse-day", "glimpse-dusk", "glimpse-night");
+      const cls = glimpseThemeClass(g && g.theme);
+      if (cls) loginEl.classList.add(cls);
+    }
+  }
 
   // 進場小貼士輪播（ROADMAP 443）：登入畫面常駐，每幾秒柔和淡入淡出換一則玩法提示。
   // document.hidden 時暫停（省電、不空轉）；登入畫面收起（進場完成）後自動停止計時器。

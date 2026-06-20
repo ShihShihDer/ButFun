@@ -1570,6 +1570,30 @@ for (const sc of scenarios) {
   }
 }
 
+// 世界此刻一瞥（ROADMAP 445）：單元斷言純函式 glimpseThemeClass（時辰主題 key→登入畫面 CSS class）。
+// 純客戶端、零後端；只驗白名單映射＋壞值保底的決定性真值表（實際 DOM 填字/套色不在 smoke 範圍）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.glimpseThemeClass;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 世界此刻一瞥：game.js 未導出 glimpseThemeClass");
+  } else {
+    let bad = 0;
+    // [主題 key, 期望 class]：四個合法時辰各自加前綴，其餘一律退回 ""（不套色保底）。
+    const cases = [
+      ["dawn", "glimpse-dawn"], ["day", "glimpse-day"],
+      ["dusk", "glimpse-dusk"], ["night", "glimpse-night"],
+      ["", ""], ["unknown", ""], ["DAWN", ""], ["glimpse-dawn", ""], // 未知/大小寫/已加前綴皆退 ""
+      [null, ""], [undefined, ""], [42, ""], [{}, ""],                 // 壞型別退 ""
+    ];
+    for (const [theme, want] of cases) {
+      if (fn(theme) !== want) { bad++; console.error(`  ❌ 世界此刻一瞥：glimpseThemeClass(${JSON.stringify(theme)}) 期望 ${want}`); }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 世界此刻一瞥·時辰主題映射真值表：${cases.length}/${cases.length}`);
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
