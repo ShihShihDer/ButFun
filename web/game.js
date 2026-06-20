@@ -425,7 +425,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -449,6 +449,52 @@
     try { SFX.setVol(_audioVol); } catch {}
     try { AMBIENT.setVol(_audioVol); } catch {}
   }
+
+  // ---- 觸覺回饋引擎（ROADMAP 440）：手機 navigator.vibrate 輕震，補上互動回饋的第三感官 ----
+  // 互動回饋此前只有聽覺（376 音效）與視覺（飄字），手機握在手裡卻沒有「碰一下有回應」的觸感。
+  // 採集成功／乙太入袋／升等／解成就時讓手機輕輕震一下，療癒向、絕不長震轟手。
+  // 純客戶端、零後端、零協議；桌面與不支援 vibrate 的裝置無痛跳過。預設開啟，可在設定面板關閉。
+
+  // 觸覺事件 → navigator.vibrate 的毫秒波形（純函式：確定性、零副作用、好測）。
+  // 回傳 null＝該事件不震（如太頻繁的 UI 點按，交給音效就好，免得每點一下都震、擾人耗電）；
+  // 數字＝單段震動毫秒；陣列＝[震,停,震,停…] 多段節奏。全部短而輕，療癒不轟手。
+  function hapticPattern(kind) {
+    switch (kind) {
+      case "success":     return 18;                   // 採集／釣魚／汲泉／伐木成功：一記輕短
+      case "etherGain":   return 12;                   // 乙太入袋：更輕的一觸
+      case "levelUp":     return [22, 50, 22];         // 升等：雙震慶祝
+      case "achievement": return [16, 40, 16, 40, 28]; // 成就解鎖：燦爛三連
+      case "click":       return null;                 // UI 點按太頻繁＝不震（交給點擊音效）
+      default:            return null;                 // 未知事件保守不震
+    }
+  }
+  // 是否真的要震：開關開著＋裝置支援 vibrate 才震（純函式，好測）。
+  function hapticEnabled(on, supported) { return !!on && !!supported; }
+
+  const HAPTIC = (() => {
+    // 能力偵測：桌面與不支援的瀏覽器沒有 navigator.vibrate，整條無痛跳過。
+    const _supported = typeof navigator !== "undefined" && typeof navigator.vibrate === "function";
+    let _on = localStorage.getItem("butfun.haptic") !== "0"; // 預設開（首次進場）
+    function _fire(kind) {
+      if (!hapticEnabled(_on, _supported)) return;
+      const pat = hapticPattern(kind);
+      if (pat == null) return;
+      try { navigator.vibrate(pat); } catch {}
+    }
+    return {
+      get on() { return _on; },
+      get supported() { return _supported; },
+      setOn(v) {
+        _on = !!v;
+        try { localStorage.setItem("butfun.haptic", _on ? "1" : "0"); } catch {}
+      },
+      click()       { _fire("click"); },
+      success()     { _fire("success"); },
+      etherGain()   { _fire("etherGain"); },
+      levelUp()     { _fire("levelUp"); },
+      achievement() { _fire("achievement"); },
+    };
+  })();
 
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
   // 所有聲音用振盪器即時合成；需要使用者互動後建立 AudioContext（規避自動播放政策）。
@@ -503,26 +549,29 @@
       // 主音量改變時即時套用到 master 節點（ROADMAP 429）；節點還沒建（沒播過聲音）時純略過，
       // 下次建立時會讀到最新 _audioVol。
       setVol(v) { if (_master && _ctx) { try { _master.gain.setValueAtTime(v, _ctx.currentTime); } catch {} } },
-      // UI 點擊：輕短回饋
-      click()       { _tone(660, "sine", 0.005, 0, 0.07, 0.12); },
-      // 採集/成功：兩段上揚
+      // UI 點擊：輕短回饋（觸覺 click 預設不震，交給音效，見 hapticPattern）
+      click()       { _tone(660, "sine", 0.005, 0, 0.07, 0.12); HAPTIC.click(); },
+      // 採集/成功：兩段上揚＋一記輕震（ROADMAP 440 觸覺同步）
       success() {
         _tone(523, "sine", 0.01, 0.04, 0.12, 0.22);
         setTimeout(() => _tone(659, "sine", 0.01, 0.04, 0.12, 0.22), 70);
+        HAPTIC.success();
       },
-      // 乙太獲得：輕盈高音
-      etherGain()   { _tone(880, "sine", 0.01, 0.03, 0.10, 0.14); },
-      // 升等：四音上揚曲
+      // 乙太獲得：輕盈高音＋更輕的觸震
+      etherGain()   { _tone(880, "sine", 0.01, 0.03, 0.10, 0.14); HAPTIC.etherGain(); },
+      // 升等：四音上揚曲＋雙震慶祝
       levelUp() {
         [[523, 0], [659, 100], [784, 200], [1046, 320]].forEach(([f, dt]) =>
           setTimeout(() => _tone(f, "sine", 0.01, 0.08, 0.20, 0.28), dt)
         );
+        HAPTIC.levelUp();
       },
-      // 成就解鎖：四音燦爛曲
+      // 成就解鎖：四音燦爛曲＋燦爛三連震
       achievement() {
         [[659, 0], [784, 80], [1047, 180], [1319, 310]].forEach(([f, dt]) =>
           setTimeout(() => _tone(f, "sine", 0.01, 0.10, 0.28, 0.32), dt)
         );
+        HAPTIC.achievement();
       },
     };
   })();
@@ -26886,6 +26935,27 @@
       optAmbient.addEventListener("change", () => {
         AMBIENT.setOn(optAmbient.checked);
       });
+    }
+    // ⚙ 設定：觸覺回饋開關（ROADMAP 440）。不支援 vibrate 的裝置（多數桌面）停用並標註，免得勾了沒反應。
+    const optHaptic = document.getElementById("optHaptic");
+    if (optHaptic) {
+      if (!HAPTIC.supported) {
+        optHaptic.checked = false;
+        optHaptic.disabled = true;
+        const row = document.getElementById("optHapticRow");
+        if (row) {
+          row.style.opacity = "0.5";
+          row.style.cursor = "default";
+          const small = row.querySelector("small");
+          if (small) small.textContent = "此裝置不支援震動回饋（多在手機上才有）。";
+        }
+      } else {
+        optHaptic.checked = HAPTIC.on;
+        optHaptic.addEventListener("change", () => {
+          HAPTIC.setOn(optHaptic.checked);
+          if (optHaptic.checked) HAPTIC.success(); // 開啟時震一下試觸
+        });
+      }
     }
     // ⚙ 設定：主音量滑桿（ROADMAP 429）——疊在互動／環境音效之上的總響度，0~100%。
     // 初始反映 localStorage 的 _audioVol；拖動即時推給兩引擎並更新百分比標籤；放開時播一聲試聽。
