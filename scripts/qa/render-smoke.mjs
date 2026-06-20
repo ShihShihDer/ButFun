@@ -1259,6 +1259,41 @@ for (const sc of scenarios) {
   }
 }
 
+// 觸覺回饋（ROADMAP 440）：單元斷言純函式 hapticPattern（事件→震動波形）與 hapticEnabled（開關＋支援）。
+// 純客戶端、零後端；只驗純邏輯真值表（jsdom 無 navigator.vibrate，實際震動不在 smoke 範圍）。
+{
+  const pat = sandbox.__bfTest && sandbox.__bfTest.hapticPattern;
+  const en = sandbox.__bfTest && sandbox.__bfTest.hapticEnabled;
+  if (typeof pat !== "function" || typeof en !== "function") {
+    failed = true;
+    console.error("  ❌ 觸覺回饋：game.js 未導出 hapticPattern／hapticEnabled");
+  } else {
+    let bad = 0;
+    // 強回饋事件要有波形（非 null）；UI 點按與未知事件不震（null）。
+    if (pat("success") == null) { bad++; console.error("  ❌ 觸覺回饋：success 應有震動波形"); }
+    if (pat("etherGain") == null) { bad++; console.error("  ❌ 觸覺回饋：etherGain 應有震動波形"); }
+    if (pat("levelUp") == null) { bad++; console.error("  ❌ 觸覺回饋：levelUp 應有震動波形"); }
+    if (pat("achievement") == null) { bad++; console.error("  ❌ 觸覺回饋：achievement 應有震動波形"); }
+    if (pat("click") !== null) { bad++; console.error("  ❌ 觸覺回饋：click 應不震（null）"); }
+    if (pat("bogus") !== null) { bad++; console.error("  ❌ 觸覺回饋：未知事件應不震（null）"); }
+    // 波形上限保險：所有段不應出現「轟手」級長震（單段 ≤ 60ms）。
+    for (const k of ["success", "etherGain", "levelUp", "achievement"]) {
+      const p = pat(k);
+      const segs = Array.isArray(p) ? p : [p];
+      if (segs.some((ms) => typeof ms !== "number" || ms > 60)) {
+        bad++; console.error(`  ❌ 觸覺回饋：${k} 波形含過長震動段（應 ≤ 60ms）`);
+      }
+    }
+    // hapticEnabled 真值表：開關與裝置支援都為真才震。
+    const enCases = [[true, true, true], [true, false, false], [false, true, false], [false, false, false]];
+    for (const [on, sup, want] of enCases) {
+      if (en(on, sup) !== want) { bad++; console.error(`  ❌ 觸覺回饋：hapticEnabled(${on}, ${sup}) 期望 ${want}`); }
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 觸覺回饋·波形與開關真值表：通過");
+  }
+}
+
 // 農地待辦小結（ROADMAP 427）：單元斷言純函式 farmDigest 的優先序與計數。
 // 把一塊田的格子彙整成「下一步最該做的一件農事」，回應建議箱反覆出現的待辦/優先指引/總結回饋。
 {
