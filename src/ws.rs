@@ -1506,6 +1506,81 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let msg = ServerMsg::Chat { from: "系統".into(), text: note };
                     if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
                 }
+                Ok(ClientMsg::HarvestAll) => {
+                    // 一鍵收成（ROADMAP 446）：把整塊田所有已成熟作物一次收完，省去逐格點擊
+                    //（對稱於 422 一鍵澆水）。被打趴時不能照顧農地——倒地定身。
+                    if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
+                        continue;
+                    }
+                    // 取玩家自己的權威座標（鎖讀完即放、不與後面 fields/pub_field 寫鎖巢狀，守 prod-deadlock）。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    // 在自家私有地可及範圍內就收自家田；否則若已登入且在公共田可及範圍內就收公共田。
+                    // 鏡像 Farm／WaterAll 的「先私有後公共」與 within_reach 防隔空判定，每把鎖各取各放、不互鎖。
+                    let mut summary = crate::field::HarvestAllSummary::default();
+                    let mut in_reach = false;
+                    {
+                        let mut fields = app.fields.write().unwrap();
+                        if let Some(field) = fields.get_mut(&id) {
+                            if player_pos.map(|(px, py)| field.within_reach(px, py)).unwrap_or(false) {
+                                in_reach = true;
+                                summary = field.harvest_all_ripe();
+                            }
+                        }
+                    }
+                    if !in_reach && authed_uid.is_some() {
+                        let mut pf = app.pub_field.write().unwrap();
+                        if player_pos.map(|(px, py)| pf.within_reach(px, py)).unwrap_or(false) {
+                            in_reach = true;
+                            summary = pf.harvest_all_ripe();
+                        }
+                    }
+                    // 收到成熟作物：在 players 寫鎖內加乙太（含 class 收成加成、按株數計）＋農夫熟練度，
+                    // 並順手抓座標供出鎖後定位飄字（守 prod-deadlock：廣播一律出鎖再送）。
+                    let harvest_evt = if summary.count > 0 {
+                        let mut players = app.players.write().unwrap();
+                        players.get_mut(&id).map(|p| {
+                            // class 收成加成與單格收成一致（每株一份），照株數累加。
+                            let per = crate::class::harvest_ether_bonus(&p.masteries);
+                            let class_bonus = per.saturating_mul(summary.count);
+                            p.ether = p.ether.saturating_add(summary.ether).saturating_add(class_bonus);
+                            p.masteries.gain_farmer(summary.count); // 農夫熟練度（每株一份，與逐格收成等價）
+                            tracing::info!(player = %p.name, count = summary.count, ether = p.ether, "一鍵收成乙太");
+                            // 取「最高品質」當飄字代表（有優質就慶優質，否則用心，再否則平凡），
+                            // 重用既有 HarvestResult 收成飄字／音效，一次彙總演出。
+                            let best = if summary.premium > 0 {
+                                crate::crops::CropQuality::Premium
+                            } else if summary.fine > 0 {
+                                crate::crops::CropQuality::Fine
+                            } else {
+                                crate::crops::CropQuality::Plain
+                            };
+                            ServerMsg::HarvestResult {
+                                player_id: id,
+                                quality: best.as_str().to_string(),
+                                ether: summary.ether,
+                                soil_bonus: summary.soil_bonus,
+                                x: p.x,
+                                y: p.y,
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(msg) = harvest_evt {
+                        let _ = app.tx.send(Arc::new(msg));
+                    }
+                    // 單播文字回報：收到就報幾株＋多少乙太、在田邊但沒成熟的安心一句、離田太遠就溫和提示。
+                    // 走 tx_direct + ServerMsg::Chat（既有單播管道，零新協議；田格回到空土隨下張快照更新）。
+                    let note = if summary.count > 0 {
+                        format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太！", summary.count, summary.ether)
+                    } else if in_reach {
+                        "🌱 田裡還沒有成熟的作物，再耐心等等吧。".to_string()
+                    } else {
+                        "🚶 走近自己的農地才能一鍵收成喔。".to_string()
+                    };
+                    let msg = ServerMsg::Chat { from: "系統".into(), text: note };
+                    if let Ok(j) = serde_json::to_string(&msg) { let _ = tx_direct.try_send(j); }
+                }
                 Ok(ClientMsg::Gather) => {
                     // 被打趴時不能採集——倒地定身，等復原傳回新手村再繼續。
                     if app.players.read().unwrap().get(&id).map(|p| p.vitals.is_downed()).unwrap_or(false) {
