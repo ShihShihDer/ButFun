@@ -287,6 +287,18 @@
       opacity: 0.82; font-size: 0.8rem; margin: 0; max-width: 320px;
       text-align: center; line-height: 1.5; color: var(--ink-dim);
     }
+    /* 進場小貼士輪播（ROADMAP 443）：登入畫面底部一條柔和的提示帶，文字淡入淡出輪播。 */
+    #login .login-tips {
+      display: flex; align-items: center; gap: 8px; max-width: 340px;
+      margin: var(--sp-1) 0 0; padding: 8px 14px;
+      border: 1px solid var(--hairline); border-radius: var(--r-pill);
+      background: rgba(255,255,255,0.03);
+      font-size: 0.8rem; line-height: 1.5; color: var(--ink-dim);
+      min-height: 1.5em;
+    }
+    #login .login-tips .tip-ico { flex: none; opacity: 0.9; }
+    #login .login-tips .tip-text { flex: 1 1 auto; opacity: 1; transition: opacity 220ms ease; }
+    #login .login-tips.tip-fading .tip-text { opacity: 0; }
     /* 名字輸入下方的小提示。 */
     #login .guest-note {
       opacity: 0.78; font-size: 0.76rem; margin: 0; max-width: 320px;
@@ -946,6 +958,14 @@
            這條 aria-live 狀態列在連線中／重試中顯示文字（前面轉黃銅 spinner），讓視覺與
            報讀器玩家都知道「正在連、別急著重按」。延續重連橫幅 / srStatus 的韌性回饋弧線。 -->
       <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
+
+      <!-- 進場小貼士（ROADMAP 443）：登入畫面常駐輪播一則精選玩法提示。每位玩家進場前都會
+           停在這張卡片上，是最高槓桿卻最被忽略的引導表面——與其乾等，不如被動把核心玩法
+           一則則餵給新手，降低上手門檻。文案集中於 game.js 的 LOGIN_TIPS（i18n 友善），
+           game.js rotateLoginTips 每幾秒柔和淡入淡出換一則；aria-live polite 報讀器友善。 -->
+      <div id="loginTips" class="login-tips" role="status" aria-live="polite" aria-label="玩法小貼士">
+        <span class="tip-ico" aria-hidden="true">💡</span><span class="tip-text"></span>
+      </div>
     </div>
   </div>
 
