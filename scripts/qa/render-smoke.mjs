@@ -1709,6 +1709,39 @@ for (const sc of scenarios) {
   }
 }
 
+// 黏土碎屑（ROADMAP 450）：單元斷言純函式 clayCrumbSpec（採集碎屑年齡 t→外觀 r/alpha/hi）。
+// 黏土畫風下採集回饋的圓潤屑：剛迸出最大最實、飛行中縮小淡出；壞值/越界夾鉗成近不可見、不爆。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.clayCrumbSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 黏土碎屑：game.js 未導出 clayCrumbSpec");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 黏土碎屑：${label}`); } };
+    const a0 = fn(0), a1 = fn(1), ah = fn(0.5);
+    // 剛迸出（t=0）：最不透明、頂光最亮、半徑最大。
+    check("t=0 全不透明", a0.alpha === 1);
+    check("t=0 頂光最亮", Math.abs(a0.hi - 0.55) < 1e-9);
+    check("t=0 半徑最大", Math.abs(a0.r - 2.7) < 1e-9);
+    // 飛行末了（t=1）：完全淡出、頂光熄、半徑仍 > 0（圓潤、不縮成點）。
+    check("t=1 完全淡出", a1.alpha === 0);
+    check("t=1 頂光熄", a1.hi === 0);
+    check("t=1 半徑仍正", a1.r > 0);
+    // 單調：半徑與不透明隨 t 遞減（中點介於兩端）。
+    check("alpha 隨 t 遞減", a0.alpha > ah.alpha && ah.alpha > a1.alpha);
+    check("半徑隨 t 遞減", a0.r > ah.r && ah.r > a1.r);
+    // 壞值/越界夾鉗：NaN/undefined 當「飛行末了」（alpha=0）；t<0 夾成 0；t>1 夾成 1；皆有限數。
+    check("NaN 當末了", fn(NaN).alpha === 0);
+    check("undefined 當末了", fn(undefined).alpha === 0);
+    check("t<0 夾成起點", fn(-1).alpha === 1);
+    check("t>1 夾成末了", fn(2).alpha === 0);
+    check("輸出皆有限數", [a0, a1, ah].every((s) => Number.isFinite(s.r) && Number.isFinite(s.alpha) && Number.isFinite(s.hi)));
+    if (bad) failed = true;
+    else console.log("  ✅ 黏土碎屑·採集屑外觀真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
