@@ -2873,6 +2873,43 @@
     setTimeout(() => card.classList.add("hidden"), 450);
   }
 
+  // ---- 新手見面禮卡（ROADMAP 444）----
+  // 玩家第一次登入時，伺服器單播一次 WelcomeKit。上緣中央浮一張暖琥珀禮卡，逐項列出起手禮，
+  // 讓新人一進場就知道故鄉送了什麼、可以拿去做什麼。10 秒自動淡出。
+  let welcomeKitTimer = null;
+  function showWelcomeKitCard(data) {
+    if (!data) return;
+    const card = document.getElementById("welcomeKitCard");
+    if (!card) return;
+    const ether = data.ether | 0;
+    // 逐項：emoji + 中文名 + ×數量（用既有 ITEM_LOOK / ITEM_NAME 對應，未知物品退回原始 key）。
+    const items = Array.isArray(data.items) ? data.items : [];
+    const cells = items
+      .filter(it => it && it.item && (it.qty | 0) > 0)
+      .map(it => {
+        const look = ITEM_LOOK[it.item] || "🎁";
+        const name = ITEM_NAME[it.item] || it.item;
+        return `<span class="wk-item">${look} ${name}<span class="wk-qty"> ×${it.qty | 0}</span></span>`;
+      });
+    if (ether > 0) cells.push(`<span class="wk-item">✨ 乙太<span class="wk-qty"> ×${ether}</span></span>`);
+    if (!cells.length) return;
+    card.innerHTML =
+      `<span class="wk-title">🎁 故鄉的見面禮</span>` +
+      `<span class="wk-sub">歡迎來到故鄉！這份起手禮陪你踏出第一步</span>` +
+      `<div class="wk-items">${cells.join("")}</div>`;
+    card.classList.remove("hidden", "fading");
+    announce(`收到故鄉的新手見面禮：${items.map(it => `${ITEM_NAME[it.item] || it.item} ${it.qty | 0} 個`).join("、")}${ether > 0 ? `，乙太 ${ether}` : ""}`);
+    if (welcomeKitTimer) clearTimeout(welcomeKitTimer);
+    welcomeKitTimer = setTimeout(dismissWelcomeKitCard, 10000);
+  }
+  function dismissWelcomeKitCard() {
+    if (welcomeKitTimer) { clearTimeout(welcomeKitTimer); welcomeKitTimer = null; }
+    const card = document.getElementById("welcomeKitCard");
+    if (!card || card.classList.contains("hidden")) return;
+    card.classList.add("fading");
+    setTimeout(() => card.classList.add("hidden"), 450);
+  }
+
   // 上一拍「最近可採節點」的穩定鍵（kind@x,y）。看得到的玩家走進可採範圍會看到黃環+「採X」+
   // 「按空白鍵或點一下」;報讀器玩家原本毫無回饋,只能到處亂按鍵碰運氣。用來在「走進新可採節點
   // 範圍」那拍播一句給報讀器,延續採空/採到/連線/日夜的無障礙弧線。離開再進來(鍵變了)才重播,
@@ -3842,6 +3879,11 @@
       case "visit_streak": {
         // 連日歸鄉（ROADMAP 397）：登入玩家進場一次，印記前進時浮迎歸卡。
         showStreakCard(msg);
+        break;
+      }
+      case "welcome_kit": {
+        // 新手見面禮（ROADMAP 444）：玩家第一次登入時送一次，浮見面禮卡列出起手禮。
+        showWelcomeKitCard(msg);
         break;
       }
       case "bottle_inbox": {
