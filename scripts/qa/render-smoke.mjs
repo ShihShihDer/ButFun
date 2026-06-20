@@ -1507,6 +1507,34 @@ for (const sc of scenarios) {
   }
 }
 
+// 作物品種·市集行情（ROADMAP 455）：單元斷言純函式 cropDemandVariety 的真值表——
+// 鏡像後端 crop_demand.rs::demand_variety（春主食穀／夏速生菜／秋乙太瓜／冬主食穀）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.cropDemandVariety;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 市集行情：game.js 未導出 cropDemandVariety");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 市集行情：${msg}`); } };
+    // 四季搶手品種（必須與後端 demand_variety 一字不差）。
+    expect(fn("spring") === "staple", "春→主食穀搶手");
+    expect(fn("summer") === "sprout", "夏→速生菜搶手");
+    expect(fn("autumn") === "etherbloom", "秋→乙太瓜搶手");
+    expect(fn("winter") === "staple", "冬→主食穀搶手");
+    // 一輪四季裡三個品種各至少當令一次（對齊後端 every_variety_demanded_across_year）。
+    const demanded = new Set(["spring", "summer", "autumn", "winter"].map(fn));
+    for (const w of ["staple", "sprout", "etherbloom"]) {
+      expect(demanded.has(w), `${w} 一年內至少當令一次`);
+    }
+    // 未知季節保守退主食穀（永不騙玩家、永不 undefined）。
+    expect(fn("monsoon") === "staple", "未知季節退主食穀");
+    expect(fn(undefined) === "staple", "缺季節退主食穀");
+    if (bad) failed = true;
+    else console.log("  ✅ 作物品種·市集行情真值表：通過");
+  }
+}
+
 // 主音量（ROADMAP 429）：單元斷言純函式 audioVol 的字串→[0,1] 夾鉗真值表。
 // 把 localStorage 存的偏好（字串／null／壞值）解析成乘在音訊上的響度係數，夾進合法區間。
 {

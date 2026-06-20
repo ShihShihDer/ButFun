@@ -55,9 +55,10 @@ pub enum FarmOutcome {
     /// 替作物澆了水。
     Watered,
     /// 收成了成熟作物，拿到這麼多乙太（已含品質加成＋沃土加成），並帶上這次收成的品質
-    /// （ROADMAP 406 用心栽培，供上層演出「優質收成」飄字）與沃土加成乙太
-    /// （ROADMAP 438，已含進總乙太裡，供上層演出「🌱 沃土 +N」飄字；0=這格沒養出地力）。
-    Harvested(u32, crate::crops::CropQuality, u32),
+    /// （ROADMAP 406 用心栽培，供上層演出「優質收成」飄字）、沃土加成乙太
+    /// （ROADMAP 438，已含進總乙太裡，供上層演出「🌱 沃土 +N」飄字；0=這格沒養出地力），
+    /// 以及這株的品種（ROADMAP 455 市集行情，供上層依「品種 × 當季搶手」算收成溢價）。
+    Harvested(u32, crate::crops::CropQuality, u32, crate::crop_variety::CropVariety),
     /// 沒對應到任何格或無事可做。
     Nothing,
 }
@@ -79,6 +80,9 @@ pub struct HarvestAllSummary {
     pub fine: u32,
     /// 🌾平凡株數。
     pub plain: u32,
+    /// 各品種收成株數（ROADMAP 455 市集行情），以 `CropVariety::code()` 為索引
+    /// （[0]=主食穀 [1]=速生菜 [2]=乙太瓜）。ws 層據此 × 當季搶手品種算市集溢價。
+    pub kind_counts: [u32; 3],
 }
 
 /// 一塊可擴張農地（row-major 的格子陣列），知道自己在世界裡的左上角 origin。
@@ -406,7 +410,11 @@ impl Field {
     /// ROADMAP 406：回傳「乙太（已含品質加成）＋品質」——品質由成長期是否用心照顧決定。
     /// ROADMAP 438：回傳值多帶「沃土加成乙太」——這格休耕養出的地力換成的額外乙太
     /// （已含進總乙太），供上層演出「🌱 沃土 +N」飄字；收成後該格地力歸零（被作物吸收）。
-    pub fn harvest(&mut self, col: usize, row: usize) -> Option<(u32, crate::crops::CropQuality, u32)> {
+    pub fn harvest(
+        &mut self,
+        col: usize,
+        row: usize,
+    ) -> Option<(u32, crate::crops::CropQuality, u32, crate::crop_variety::CropVariety)> {
         let i = self.index_at(col, row)?;
         self.ensure_soil();
         self.ensure_last_kind();
@@ -423,7 +431,8 @@ impl Field {
                 self.last_kind[i] = crate::crop_rotation::encode(Some(kind));
                 // 收成後不留新種子，回到空土讓玩家自行決定要不要再種（也從零重新養地）。
                 self.tiles[i] = Tile::Tilled;
-                return Some((base + quality.ether_bonus() + soil_bonus, quality, soil_bonus));
+                // 品種一併回傳（ROADMAP 455）：上層 ws 依「品種 × 當季搶手」算市集溢價（本層不知世界季節）。
+                return Some((base + quality.ether_bonus() + soil_bonus, quality, soil_bonus, kind));
             }
         }
         None
@@ -528,6 +537,12 @@ impl Field {
                         crate::crops::CropQuality::Fine => s.fine = s.fine.saturating_add(1),
                         crate::crops::CropQuality::Plain => s.plain = s.plain.saturating_add(1),
                     }
+                    // ROADMAP 455：記下各品種收成株數，供 ws 層依「當季搶手品種」算市集溢價
+                    //（一鍵收成可能混收多品種，逐株分類；溢價計算與世界季節在 ws 層才知道）。
+                    let ki = kind.code() as usize;
+                    if ki < s.kind_counts.len() {
+                        s.kind_counts[ki] = s.kind_counts[ki].saturating_add(1);
+                    }
                 }
             }
         }
@@ -576,8 +591,8 @@ impl Field {
                 FarmOutcome::Watered
             }
             Act::Harvest => match self.harvest(col, row) {
-                Some((ether, quality, soil_bonus)) => {
-                    FarmOutcome::Harvested(ether, quality, soil_bonus)
+                Some((ether, quality, soil_bonus, kind)) => {
+                    FarmOutcome::Harvested(ether, quality, soil_bonus, kind)
                 }
                 None => FarmOutcome::Nothing,
             },
@@ -912,8 +927,8 @@ mod tests {
         let out_hasty = grow_and_harvest(&mut hasty, 0, 0, 0.0);
         match (out_rested, out_hasty) {
             (
-                FarmOutcome::Harvested(ether_r, _, bonus_r),
-                FarmOutcome::Harvested(ether_h, _, bonus_h),
+                FarmOutcome::Harvested(ether_r, _, bonus_r, _),
+                FarmOutcome::Harvested(ether_h, _, bonus_h, _),
             ) => {
                 assert_eq!(bonus_h, 0, "剛翻就種、沒休耕 → 無沃土加成");
                 assert_eq!(bonus_r, crate::soil_vitality::MAX_BONUS, "養滿地力 → 拿滿沃土加成");
@@ -930,7 +945,7 @@ mod tests {
         let mut f = Field::new();
         let first = grow_and_harvest(&mut f, 0, 0, 160.0);
         assert!(
-            matches!(first, FarmOutcome::Harvested(_, _, b) if b == crate::soil_vitality::MAX_BONUS),
+            matches!(first, FarmOutcome::Harvested(_, _, b, _) if b == crate::soil_vitality::MAX_BONUS),
             "第一輪養滿地力應拿滿加成"
         );
         // 收成後該格回到空土、地力歸零；不再休耕、立刻播種再收。
@@ -941,7 +956,7 @@ mod tests {
         f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         let second = f.interact(0, 0);
         assert!(
-            matches!(second, FarmOutcome::Harvested(_, _, 0)),
+            matches!(second, FarmOutcome::Harvested(_, _, 0, _)),
             "收成後地力歸零、立刻再種 → 無沃土加成（得重新休耕養地），得到 {second:?}"
         );
     }
@@ -958,7 +973,7 @@ mod tests {
         f.tick(RIPE_AT - MOISTURE_PER_WATER + 300.0, Season::Summer); // 多跑 300 秒（作物期不累積地力）
         let out = f.interact(0, 0);
         assert!(
-            matches!(out, FarmOutcome::Harvested(_, _, 0)),
+            matches!(out, FarmOutcome::Harvested(_, _, 0, _)),
             "作物成長期不養地 → 無沃土加成，得到 {out:?}"
         );
     }
@@ -1128,6 +1143,7 @@ mod tests {
                 crate::crops::ETHER_PER_HARVEST + crate::crops::ETHER_BONUS_PREMIUM,
                 crate::crops::CropQuality::Premium,
                 0,
+                crate::crop_variety::CropVariety::Staple,
             )
         );
         assert_eq!(f.tile(0, 0), Some(&Tile::Tilled));
@@ -1507,7 +1523,7 @@ mod tests {
         let s = batch.harvest_all_ripe();
         let mut single_total = 0u32;
         for col in 0..3 {
-            if let Some((ether, _q, _soil)) = single.harvest(col, 0) {
+            if let Some((ether, _q, _soil, _kind)) = single.harvest(col, 0) {
                 single_total += ether;
             }
         }
