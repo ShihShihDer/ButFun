@@ -10,8 +10,12 @@
 //! - 首次鍛造儀式配方 → 工匠
 //! - 首次解讀古代秘文 → 考古學家
 //! - 史詩品質採集 → 福星
+//! - 解鎖任一成就（ROADMAP 439）→ 同名「成就稱號」（`Title::Achieved`，把一直只是
+//!   通知一閃而過、毫無去處的成就，接上既有名牌展示管線，成為可永久配戴炫耀的收藏）
 
 use std::collections::HashSet;
+
+use crate::achievement::Achievement;
 
 /// 所有可解鎖的稱號。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,9 +32,14 @@ pub enum Title {
     Inscription,
     /// 史詩品質採集（機率 ~1%）
     EpicGather,
+    /// 成就稱號（ROADMAP 439）：解鎖某個成就同時解鎖一枚同名可展示稱號。
+    /// 名稱／wire key 都委派給被包住的成就，零重複定義。
+    Achieved(Achievement),
 }
 
 impl Title {
+    /// 六個里程碑基礎稱號（不含成就稱號；成就稱號數量隨成就清單浮動，另由
+    /// [`Achievement::all`] 列舉）。`from_wire_key` 會兩邊都查。
     pub fn all() -> &'static [Title] {
         use Title::*;
         &[Level10, Level20, Level30, FirstCraft, Inscription, EpicGather]
@@ -46,10 +55,12 @@ impl Title {
             FirstCraft => "工匠",
             Inscription => "考古學家",
             EpicGather => "福星",
+            Achieved(a) => a.display_name(),
         }
     }
 
-    /// Wire key（前後端通訊用，snake_case）。
+    /// Wire key（前後端通訊用，snake_case）。成就稱號沿用成就自己的 wire key
+    /// （與基礎稱號的 key 互不重疊，前端 TITLE_NAMES 兩套都有對照）。
     pub fn wire_key(self) -> &'static str {
         use Title::*;
         match self {
@@ -59,13 +70,25 @@ impl Title {
             FirstCraft => "first_craft",
             Inscription => "inscription",
             EpicGather => "epic_gather",
+            Achieved(a) => a.wire_key(),
         }
     }
 
-    /// 從 wire key 反查（前端送 SetTitle 時用）。
+    /// 從 wire key 反查（前端送 SetTitle 時用）。先查基礎稱號，再退而查成就稱號。
     pub fn from_wire_key(key: &str) -> Option<Title> {
-        Title::all().iter().find(|t| t.wire_key() == key).copied()
+        if let Some(t) = Title::all().iter().find(|t| t.wire_key() == key).copied() {
+            return Some(t);
+        }
+        Achievement::all()
+            .iter()
+            .find(|a| a.wire_key() == key)
+            .map(|a| Title::Achieved(*a))
     }
+}
+
+/// 成就 → 對應的成就稱號（純函式，供 ws.rs 解鎖成就時順手解鎖同名稱號）。
+pub fn title_for_achievement(a: Achievement) -> Title {
+    Title::Achieved(a)
 }
 
 /// 玩家的稱號集合（記憶體前置，重啟清空）。
@@ -236,5 +259,54 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted, "wire keys 應依字母排序");
+    }
+
+    // ── ROADMAP 439：成就稱號 ──────────────────────────────────────────────
+
+    #[test]
+    fn achievement_title_delegates_name_and_key() {
+        let a = Achievement::Hunter;
+        let t = title_for_achievement(a);
+        assert_eq!(t.display_name(), a.display_name(), "成就稱號顯示名委派給成就");
+        assert_eq!(t.wire_key(), a.wire_key(), "成就稱號 wire key 委派給成就");
+    }
+
+    #[test]
+    fn achievement_title_round_trips_via_wire_key() {
+        // 每個成就都能由其 wire key 反查回對應的成就稱號。
+        for a in Achievement::all() {
+            let key = a.wire_key();
+            assert_eq!(
+                Title::from_wire_key(key),
+                Some(Title::Achieved(*a)),
+                "成就稱號應能由 wire key 反查"
+            );
+        }
+    }
+
+    #[test]
+    fn achievement_title_keys_disjoint_from_base() {
+        // 成就稱號的 wire key 不可與六個基礎稱號撞號，否則 from_wire_key 會反查錯。
+        let base: std::collections::HashSet<&str> =
+            Title::all().iter().map(|t| t.wire_key()).collect();
+        for a in Achievement::all() {
+            assert!(
+                !base.contains(a.wire_key()),
+                "成就稱號 {} 不可與基礎稱號撞號",
+                a.wire_key()
+            );
+        }
+    }
+
+    #[test]
+    fn achievement_titles_are_collectible_and_displayable() {
+        // 解鎖某成就稱號後可持有、可設為展示。
+        let mut set = TitleSet::new();
+        let t = title_for_achievement(Achievement::QuestHero);
+        assert!(set.unlock(t), "首次解鎖回 true");
+        assert!(!set.unlock(t), "重複解鎖回 false");
+        assert!(set.has(t));
+        assert!(set.set_active(Some(t)), "持有後可展示");
+        assert_eq!(set.active_display_name(), Some(Achievement::QuestHero.display_name()));
     }
 }
