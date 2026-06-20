@@ -26532,6 +26532,37 @@
     ctx.restore();
   }
 
+  // ROADMAP 454 作物輪作：這格作物若正吃到「輪作加成」（cell.rotated，上一輪這格收成的是
+  // 不同品種，換種後長得更旺），在左下角畫一枚小小的「輪作旋環」記號——一圈帶缺口的清新嫩綠
+  // 環＋一支小箭頭，讀作「換過新土、循環種植」。讓「這格上次種了啥、該換種」的決定一眼看得見。
+  // 位置避開左上的品種色點、右上的階段／品質光、底緣的熟成進度條。
+  // 純表現層：只讀權威快照旗標 cell.rotated（由伺服器 field.rs 依上輪品種算好下傳），不嵌任何規則；
+  // 靜態繪製、reduceMotion 一樣顯示（核心回饋＝看得出這格因換種而旺長）。
+  function drawRotationMark(sx, sy, ts, cell) {
+    if (cell.state < 2 || cell.state > 4) return; // 只在種了作物時標
+    if (!cell.rotated) return;
+    const r = Math.max(2.4, ts * 0.06);
+    const mx = sx + 6 + r, my = sy + ts - 6 - r; // 左下角內側
+    ctx.save();
+    ctx.lineWidth = Math.max(1.4, r * 0.45);
+    ctx.strokeStyle = "rgba(120,220,110,0.95)"; // 清新嫩綠＝換新土的生機
+    // 帶缺口的環（約 300°），缺口處接一支小箭頭，構成「循環」意象。
+    ctx.beginPath();
+    ctx.arc(mx, my, r, Math.PI * 0.15, Math.PI * 1.75);
+    ctx.stroke();
+    // 箭頭（環尾端指向旋轉方向），用兩短劃勾出。
+    const ax = mx + Math.cos(Math.PI * 1.75) * r;
+    const ay = my + Math.sin(Math.PI * 1.75) * r;
+    const a = r * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - a * 0.9, ay - a * 0.2);
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - a * 0.1, ay - a * 0.95);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // 四芒小星（8 頂點交替外/內半徑）。給優質收成的金色光點用。
   function drawSparkle(cx, cy, r) {
     const inner = r * 0.36;
@@ -26601,6 +26632,7 @@
       if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
       drawStagePips(sx, sy, ts, cell);
       drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
+    drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
       return;
     }
 
@@ -26650,6 +26682,7 @@
     if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
     drawStagePips(sx, sy, ts, cell);
     drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
+    drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
   }
 
   // fence.png:192×32 = 6 件×32px autotile(欄 0 水平 rail / 1 垂直 rail / 2 角=連 E+S,

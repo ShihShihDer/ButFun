@@ -84,6 +84,18 @@ impl CropVariety {
         }
     }
 
+    /// 由線格式碼還原品種（`code` 的反向）；未知碼回 `None`。
+    /// ROADMAP 454 輪作：田格的「上輪品種記憶」以細碼存（`code`+1，0 保留給「無紀錄」），
+    /// 解碼時用本函式還原成品種來比對是否換種。純函式。
+    pub fn from_code(code: u8) -> Option<CropVariety> {
+        match code {
+            0 => Some(CropVariety::Staple),
+            1 => Some(CropVariety::Sprout),
+            2 => Some(CropVariety::Etherbloom),
+            _ => None,
+        }
+    }
+
     /// 這個品種的成長速度倍率（作用在每 tick 的有效成長量上；澆水耗水仍按真實時間，不受影響）。
     /// 主食穀＝1.0（基準、與改動前一致）。純函式。
     pub fn grow_rate(self) -> f32 {
@@ -169,6 +181,12 @@ mod tests {
         assert_eq!(CropVariety::Staple.code(), 0);
         assert_eq!(CropVariety::Sprout.code(), 1);
         assert_eq!(CropVariety::Etherbloom.code(), 2);
+        // from_code 是 code 的反向：每個品種往返不變，未知碼回 None（ROADMAP 454 輪作解碼）。
+        for v in CropVariety::ALL {
+            assert_eq!(CropVariety::from_code(v.code()), Some(v), "{} code 往返", v.as_str());
+        }
+        assert_eq!(CropVariety::from_code(3), None);
+        assert_eq!(CropVariety::from_code(250), None);
     }
 
     #[test]

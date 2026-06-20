@@ -114,6 +114,13 @@ pub struct Field {
     /// `#[serde(default)]` 回空 Vec，由 `ensure_soil` 惰性補零對齊 `tiles`，向後相容、免 migration）。
     #[serde(default)]
     soil: Vec<u16>,
+    /// 每格「上一輪收成的品種」紀錄（ROADMAP 454 輪作），row-major 與 `tiles` 等長、細碼存
+    /// （0=這格還沒收成過任何作物；否則＝品種 `code`+1，見 `crop_rotation::encode`）。收成時記下剛收
+    /// 的品種；下一輪播種若**換**一個不同品種，新作物吃到輪作成長加成。**入存檔**（整塊 `Field`
+    /// 序列化；舊存檔無此欄時 `#[serde(default)]` 回空 Vec，由 `ensure_last_kind` 惰性補零對齊
+    /// `tiles`——既往格子全當「無上輪紀錄」＝首次種＝改動前行為，向後相容、免 migration）。
+    #[serde(default)]
+    last_kind: Vec<u8>,
 }
 
 impl Field {
@@ -137,6 +144,8 @@ impl Field {
             garden: Vec::new(),
             // 地力惰性配置：留空，首次 tick/harvest 由 `ensure_soil` 補零對齊（與 serde 載入同路徑）。
             soil: Vec::new(),
+            // 上輪品種紀錄惰性配置：留空，首次需要時由 `ensure_last_kind` 補零（皆當「無上輪紀錄」）。
+            last_kind: Vec::new(),
         }
     }
 
@@ -163,6 +172,10 @@ impl Field {
         if !self.soil.is_empty() {
             self.soil.resize(self.tiles.len(), 0);
         }
+        // 上輪品種陣列若已對齊，同步補上新一列的「無上輪紀錄」（0）。
+        if !self.last_kind.is_empty() {
+            self.last_kind.resize(self.tiles.len(), 0);
+        }
     }
 
     /// 把地力陣列惰性補齊到與 `tiles` 等長（ROADMAP 438）。舊存檔 / 新建田的 `soil` 為空，
@@ -170,6 +183,14 @@ impl Field {
     fn ensure_soil(&mut self) {
         if self.soil.len() != self.tiles.len() {
             self.soil.resize(self.tiles.len(), 0);
+        }
+    }
+
+    /// 把上輪品種陣列惰性補齊到與 `tiles` 等長（ROADMAP 454 輪作）。舊存檔／新建田為空 Vec，
+    /// 首次讀寫前呼叫一次——既往格子全當「無上輪紀錄」（0＝首次種），向後相容、零 migration。
+    fn ensure_last_kind(&mut self) {
+        if self.last_kind.len() != self.tiles.len() {
+            self.last_kind.resize(self.tiles.len(), 0);
         }
     }
 
@@ -244,6 +265,7 @@ impl Field {
             home_decor: 0,
             garden: Vec::new(),
             soil: Vec::new(),
+            last_kind: Vec::new(),
         })
     }
 
@@ -258,12 +280,18 @@ impl Field {
         crate::home_decor::sanitize_garden(&mut garden);
         // ROADMAP 438：地力陣列也要接回（from_tiles 只搬 tiles），否則重啟會把養好的地默默清掉。
         let soil = self.soil;
+        // ROADMAP 454：上輪品種紀錄也要接回，否則重啟會把輪作歷史默默清掉（下輪換種拿不到加成）。
+        let last_kind = self.last_kind;
         Self::from_tiles(index, self.tiles).map(|mut f| {
             f.home_decor = decor;
             f.garden = garden;
             // 接回地力：長度若與 tiles 對不上（舊存檔空 Vec／壞檔）一律當貧土重來（ensure_soil 補零）。
             if soil.len() == f.tiles.len() {
                 f.soil = soil;
+            }
+            // 接回上輪品種紀錄：長度對不上（舊存檔空 Vec／壞檔）一律當「無上輪紀錄」重來。
+            if last_kind.len() == f.tiles.len() {
+                f.last_kind = last_kind;
             }
             // 舊存檔遷移（ROADMAP 416）：只有 legacy home_decor、還沒有庭園資料時，把那一件
             // 升成 slot 0，玩家原本擺好的擺飾零損失。set_garden_slot 會同步把 home_decor 設回。
@@ -381,14 +409,18 @@ impl Field {
     pub fn harvest(&mut self, col: usize, row: usize) -> Option<(u32, crate::crops::CropQuality, u32)> {
         let i = self.index_at(col, row)?;
         self.ensure_soil();
+        self.ensure_last_kind();
         if let Tile::Planted(c) = &mut self.tiles[i] {
-            // 收成前先讀品質（harvest 會把這株重置，事後就讀不到了）。
+            // 收成前先讀品質與品種（harvest 會把這株重置，但品種仍沿用，故事後讀仍正確）。
             let quality = c.quality();
+            let kind = c.kind();
             // 先借出可變參考收成；成熟才會回 Some 並消費這格。
             if let Some(base) = c.harvest() {
                 // ROADMAP 438：把這格累積的地力換成額外乙太（純正向、永不倒扣），收成後歸零。
                 let soil_bonus = crate::soil_vitality::harvest_bonus(self.soil[i]);
                 self.soil[i] = 0;
+                // ROADMAP 454：記下這格剛收成的品種，下一輪換種不同品種才吃得到輪作加成。
+                self.last_kind[i] = crate::crop_rotation::encode(Some(kind));
                 // 收成後不留新種子，回到空土讓玩家自行決定要不要再種（也從零重新養地）。
                 self.tiles[i] = Tile::Tilled;
                 return Some((base + quality.ether_bonus() + soil_bonus, quality, soil_bonus));
@@ -418,6 +450,7 @@ impl Field {
             crate::field_thrive::THRIVE_MIN_PATCH,
         );
         self.ensure_soil();
+        self.ensure_last_kind();
         for (i, t) in self.tiles.iter_mut().enumerate() {
             match t {
                 Tile::Planted(c) => {
@@ -426,8 +459,14 @@ impl Field {
                     } else {
                         1.0
                     };
-                    // 品種 × 當季偏好：與連片沃土倍率正交、各自獨立疊乘。
-                    let mult = patch_mult * c.kind().season_affinity(season);
+                    // ROADMAP 454 輪作：這格上輪收成的品種與這株不同 → 換過的土長得更旺（純正向）；
+                    // 首次種／連種同品種＝基準 1.0（向後相容、不懲罰）。與下面兩條倍率正交、獨立疊乘。
+                    let rotation_mult = crate::crop_rotation::rotation_bonus(
+                        crate::crop_rotation::decode(self.last_kind[i]),
+                        c.kind(),
+                    );
+                    // 品種 × 當季偏好 × 輪作：三者各自獨立、與連片沃土倍率正交，皆只放大成長、不多耗水。
+                    let mult = patch_mult * c.kind().season_affinity(season) * rotation_mult;
                     c.grow_boosted(dt, mult);
                     // 種了作物：地力「鎖住」不再累積（待收成兌現），也不流失。
                 }
@@ -464,15 +503,19 @@ impl Field {
     /// 純邏輯、無 IO；class 收成加成由 ws 層按 `count` 另計（與單格收成一致）。
     pub fn harvest_all_ripe(&mut self) -> HarvestAllSummary {
         self.ensure_soil();
+        self.ensure_last_kind();
         let mut s = HarvestAllSummary::default();
         for i in 0..self.tiles.len() {
             if let Tile::Planted(c) = &mut self.tiles[i] {
-                // 收成前先讀品質（harvest 會把這株重置，事後就讀不到了）。
+                // 收成前先讀品質與品種（harvest 重置該株但品種沿用）。
                 let quality = c.quality();
+                let kind = c.kind();
                 // 只有成熟才回 Some 並消費這格；未熟回 None、原樣留著。
                 if let Some(base) = c.harvest() {
                     let soil_bonus = crate::soil_vitality::harvest_bonus(self.soil[i]);
                     self.soil[i] = 0;
+                    // ROADMAP 454：記下剛收成的品種供下輪輪作判定。
+                    self.last_kind[i] = crate::crop_rotation::encode(Some(kind));
                     self.tiles[i] = Tile::Tilled;
                     let gained = base
                         .saturating_add(quality.ether_bonus())
@@ -567,7 +610,20 @@ impl Field {
                         let soil_level = crate::soil_vitality::display_level(
                             self.soil.get(i).copied().unwrap_or(0),
                         );
-                        tile_view(t, thriving[i], soil_level)
+                        // ROADMAP 454：這格作物是否吃到輪作加成（上輪品種與這株不同）。
+                        // last_kind 可能尚未惰性配置（空）→當「無上輪紀錄」＝不算輪作。只讀不寫（view 不可變）。
+                        let rotated = match t {
+                            Tile::Planted(c) => {
+                                crate::crop_rotation::rotation_bonus(
+                                    crate::crop_rotation::decode(
+                                        self.last_kind.get(i).copied().unwrap_or(0),
+                                    ),
+                                    c.kind(),
+                                ) > 1.0
+                            }
+                            _ => false,
+                        };
+                        tile_view(t, thriving[i], soil_level, rotated)
                     })
                     .collect()
             },
@@ -606,7 +662,9 @@ impl Field {
 /// 畫品質光點，讓「用心照顧」在收成前就一眼看得見。
 /// soil（ROADMAP 438）：這格的地力顯示等級（0~3），只在「空翻好土（state 1）」時有意義
 /// ——讓玩家一眼看出哪幾格歇夠了、種下去更甜。自然地與種了作物的格一律 0（不顯地力）。
-fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
+/// rotated（ROADMAP 454）：這格作物是否正吃到「輪作加成」（上輪換了不同品種），只在種了作物
+/// （state 2~4）時有意義——前端據此在換種旺長的作物上標一枚輪作記號。其餘狀態一律 false。
+fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
     match tile {
         Tile::Untilled => TileView {
             state: 0,
@@ -616,6 +674,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
             grow: 0,
             soil: 0,
             kind: 0,
+            rotated: false,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -625,6 +684,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
             grow: 0,
             soil,
             kind: 0,
+            rotated: false,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -645,6 +705,8 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8) -> TileView {
                 soil: 0,
                 // ROADMAP 452：作物品種碼，供前端畫品種微異／面板顯示。
                 kind: c.kind().code(),
+                // ROADMAP 454：這株是否吃到輪作加成（換種旺長），由 view() 依上輪品種算好傳入。
+                rotated,
             }
         }
     }
@@ -928,6 +990,97 @@ mod tests {
         assert_eq!(view.cells[0].soil, 0);
     }
 
+    // ── ROADMAP 454 作物輪作 ──────────────────────────────────────────────
+
+    /// 種好澆好某品種、長到成熟並收成的小工具（回收成結果）。用來建立／推進輪作歷史。
+    fn grow_and_harvest_kind(f: &mut Field, col: usize, row: usize, kind: CropVariety) -> FarmOutcome {
+        // 該格此刻應是空土（自然地要先翻）。
+        if f.tile(col, row) == Some(&Tile::Untilled) {
+            f.till(col, row);
+        }
+        f.plant_kind(col, row, kind);
+        f.water(col, row);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
+        f.water(col, row);
+        // 乙太瓜倍率低，多澆幾次確保任何品種都長到成熟。
+        for _ in 0..6 {
+            f.water(col, row);
+            f.tick(MOISTURE_PER_WATER, Season::Summer);
+        }
+        f.interact_kind(col, row, kind)
+    }
+
+    #[test]
+    fn switching_variety_grows_faster_than_replanting_same() {
+        // 比「換種」與「連種」的成長速度：兩邊第二輪都種速生菜（同品種、排除品種速度差），
+        // 差別只在上一輪——sw 上輪主食穀（換種、吃輪作加成）、sm 上輪速生菜（連種、無加成）。
+        let mut sw = Field::new(); // 上輪主食穀 → 這輪速生菜（換種）
+        let mut sm = Field::new(); // 上輪速生菜 → 這輪速生菜（連種）
+        let _ = grow_and_harvest_kind(&mut sw, 0, 0, CropVariety::Staple);
+        let _ = grow_and_harvest_kind(&mut sm, 0, 0, CropVariety::Sprout);
+        // 第二輪兩邊同樣播下速生菜、澆同樣水、tick 同樣時間，比成長進度。
+        sw.plant_kind(0, 0, CropVariety::Sprout);
+        sm.plant_kind(0, 0, CropVariety::Sprout);
+        sw.water(0, 0);
+        sm.water(0, 0);
+        sw.tick(20.0, Season::Summer);
+        sm.tick(20.0, Season::Summer);
+        let sw_grow = sw.view().cells[0].grow;
+        let sm_grow = sm.view().cells[0].grow;
+        assert!(
+            sw_grow > sm_grow,
+            "換種（上輪主食穀→速生菜）應比連種（上輪速生菜→速生菜）長得快：{sw_grow} vs {sm_grow}"
+        );
+    }
+
+    #[test]
+    fn view_marks_rotated_only_after_switching_variety() {
+        let mut f = Field::new();
+        // 第一輪：首次種，沒有上輪紀錄 → 不算輪作。
+        f.till(0, 0);
+        f.plant_kind(0, 0, CropVariety::Staple);
+        assert!(!f.view().cells[0].rotated, "首次種無上輪紀錄＝不算輪作");
+        // 收成一輪後再換種不同品種 → rotated 為真。
+        let _ = grow_and_harvest_kind(&mut f, 0, 0, CropVariety::Staple);
+        f.plant_kind(0, 0, CropVariety::Sprout); // 換種
+        assert!(f.view().cells[0].rotated, "上輪主食穀、這輪換速生菜＝輪作");
+        // 再收成、這次連種同品種 → rotated 為假（連種不算）。
+        let _ = grow_and_harvest_kind(&mut f, 0, 0, CropVariety::Sprout);
+        f.plant_kind(0, 0, CropVariety::Sprout); // 連種同品種
+        assert!(!f.view().cells[0].rotated, "上輪速生菜、這輪又速生菜＝連種、不算輪作");
+    }
+
+    #[test]
+    fn last_kind_survives_serde_round_trip() {
+        // 收成建立上輪紀錄後，序列化再 reseat，輪作歷史原封不動（持久化格式涵蓋 last_kind 欄）。
+        let mut f = Field::new();
+        let _ = grow_and_harvest_kind(&mut f, 0, 0, CropVariety::Etherbloom);
+        assert_eq!(f.last_kind[0], crate::crop_rotation::encode(Some(CropVariety::Etherbloom)));
+        let json = serde_json::to_string(&f).unwrap();
+        let back = serde_json::from_str::<Field>(&json).unwrap().reseated(0).unwrap();
+        assert_eq!(back.last_kind, f.last_kind, "上輪品種紀錄須撐過序列化＋reseat");
+        // 還原後同格換種不同品種仍認得是輪作。
+        let mut back2 = back;
+        back2.plant_kind(0, 0, CropVariety::Sprout);
+        assert!(back2.view().cells[0].rotated, "還原的歷史仍驅動輪作判定");
+    }
+
+    #[test]
+    fn old_save_without_last_kind_field_loads_neutral() {
+        // 舊存檔沒有 last_kind 欄：serde default 回空 Vec，惰性補零當「無上輪紀錄」，
+        // 向後相容、不 panic、首次種無加成（行為與改動前一致）。
+        let mut f = Field::new();
+        f.till(0, 0);
+        let mut v: serde_json::Value = serde_json::to_value(&f).unwrap();
+        v.as_object_mut().unwrap().remove("last_kind");
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert!(back.last_kind.is_empty(), "舊存檔無 last_kind 欄 → default 空 Vec");
+        // view() 對空 last_kind 安全（當無紀錄），不 panic、不標輪作。
+        let mut back = back;
+        back.plant_kind(0, 0, CropVariety::Sprout);
+        assert!(!back.view().cells[0].rotated, "無上輪紀錄＝首次種、不算輪作");
+    }
+
     #[test]
     fn tick_only_grows_watered_crops() {
         let mut f = Field::new();
@@ -1040,10 +1193,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0 });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false });
     }
 
     #[test]
@@ -1256,7 +1409,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0 });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false });
     }
 
     #[test]
