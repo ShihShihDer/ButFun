@@ -205,6 +205,29 @@
     #login .live-count { font-size: 0.8rem; color: var(--ink-dim); margin: 0; min-height: 1.1em; }
     #login .live-count b { color: var(--success); font-weight: 700; }
 
+    /* 世界此刻一瞥（ROADMAP 445）：登入畫面映出當下時辰/季節/天氣的暖句。
+       連不上 /api/status 就維持 hidden、不佔版面。純展示、不擋任何進場流程。 */
+    #login .world-glimpse {
+      margin: 0; max-width: 320px; text-align: center;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    #login .world-glimpse .wg-headline { margin: 0; font-size: 0.9rem; color: var(--ink); }
+    #login .world-glimpse .wg-subline { margin: 0; font-size: 0.78rem; color: var(--ink-dim); }
+    /* 依時辰替登入畫面頂部換一層柔和氛圍光（疊加在既有暖琥珀光暈之上）。
+       破曉粉金、白天清亮、黃昏橘紅、夜晚靛藍——刻意低透明度，只當底色暗示、不搶焦點。 */
+    #login.glimpse-dawn  { background:
+        radial-gradient(ellipse 120% 70% at 50% 0%, rgba(240,170,150,0.16), transparent 60%),
+        radial-gradient(circle at 50% 28%, #1a1b26, var(--bg) 72%); }
+    #login.glimpse-day   { background:
+        radial-gradient(ellipse 120% 70% at 50% 0%, rgba(210,200,140,0.15), transparent 60%),
+        radial-gradient(circle at 50% 28%, #181d27, var(--bg) 72%); }
+    #login.glimpse-dusk  { background:
+        radial-gradient(ellipse 120% 70% at 50% 0%, rgba(220,130,90,0.16), transparent 60%),
+        radial-gradient(circle at 50% 28%, #1b1820, var(--bg) 72%); }
+    #login.glimpse-night { background:
+        radial-gradient(ellipse 120% 70% at 50% 0%, rgba(110,130,200,0.16), transparent 62%),
+        radial-gradient(circle at 50% 28%, #12151f, var(--bg) 74%); }
+
     /* 共用輸入/select/button 基底（沿用，token 化 padding/圓角/邊框/字型）。 */
     #login input, #login select, #login button, #chatText, .modal input, .modal textarea, .modal button {
       font-family: var(--ui-font); padding: 10px 14px; border-radius: var(--r-md);
@@ -912,6 +935,12 @@
       </div>
       <!-- 線上人數（/api/status 拉到才填，連不上就維持空）。 -->
       <p class="live-count" id="liveCount" aria-live="polite"></p>
+
+      <!-- 世界此刻一瞥（ROADMAP 445）：/api/status 拉到當下時辰/季節/天氣才填，連不上就維持空。 -->
+      <div id="worldGlimpse" class="world-glimpse" role="status" aria-live="polite" aria-label="世界此刻" hidden>
+        <p class="wg-headline"></p>
+        <p class="wg-subline"></p>
+      </div>
 
       <!-- 主進場路徑：深玻璃 Google 鈕 + 左置彩色 G。 -->
       <a id="googleBtn" href="/auth/google/start" class="primary-link">
