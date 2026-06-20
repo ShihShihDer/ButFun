@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4125,6 +4125,13 @@
           floaters.push({ wx, wy: wy + 16, text: `🌱 沃土 +${soilBonus} 乙太`, color: "150,200,110", born: now + 1 });
           announce(`這塊地歇養出地力，沃土加成多得 ${soilBonus} 乙太`);
         }
+        // 市集行情（ROADMAP 455）：收到「本季搶手品種」，收成多綴一行「🛒 搶手 +N」金色飄字，
+        // 讓「順著行情種」的回報一眼看得見（疊在沃土飄字再下方一點、再晚一拍冒出）。
+        const demand = msg.demand || 0;
+        if (demand > 0) {
+          floaters.push({ wx, wy: wy + 32, text: `🛒 搶手 +${demand} 乙太`, color: "255,210,120", born: now + 2 });
+          announce(`正逢市集搶手，多得 ${demand} 乙太`);
+        }
         break;
       }
       case "locale_entered": {
@@ -6059,6 +6066,14 @@
     if (season === meta.lean) return { tag: "lean", label: "🍃淡季慢長" };
     return { tag: "", label: "" };                         // 平季：不特別提示
   }
+  // 本季「搶手品種」（ROADMAP 455 市集行情）：每季市集對某一品種需求高漲，收成它多得乙太。
+  // 純函式、鏡像後端 `crop_demand::demand_variety`（春主食穀／夏速生菜／秋乙太瓜／冬主食穀），
+  // 讀既有 currentSeason、零協議改動。回品種 wire 字串；未知季節保守退主食穀（永不騙玩家）。
+  const SEASON_DEMAND = { spring: "staple", summer: "sprout", autumn: "etherbloom", winter: "staple" };
+  function cropDemandVariety(season) {
+    return SEASON_DEMAND[season] || "staple";
+  }
+
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
   let selectedSeedVariety = "staple";
 
@@ -6165,14 +6180,18 @@
         // ROADMAP 453：依當前季節標「當季旺長／淡季慢長」，讓玩家看得出「現在這季適不適合種它」。
         const hint = seedSeasonHint(selectedSeedVariety, currentSeason);
         const hintTxt = hint.label ? ` ${hint.label}` : "";
-        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）${hintTxt} · 點我換種`;
+        // ROADMAP 455 市集行情：若選中的正是「本季搶手品種」，標「🛒搶手」提示收成多得乙太。
+        const isHot = cropDemandVariety(currentSeason) === selectedSeedVariety;
+        const hotTxt = isHot ? " 🛒搶手" : "";
+        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）${hintTxt}${hotTxt} · 點我換種`;
         seedEl.classList.remove("hidden");
         seedEl.style.cursor = "pointer";
         seedEl.setAttribute("role", "button");
         seedEl.setAttribute("tabindex", "0");
-        // 報讀器把季節提示講白話（旺長／慢長），不只唸 emoji。
+        // 報讀器把季節提示與行情講白話（旺長／慢長／搶手），不只唸 emoji。
         const a11yHint = hint.tag === "peak" ? "，當季旺長" : hint.tag === "lean" ? "，當季長得慢" : "";
-        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}${a11yHint}。點選切換下一個品種`);
+        const a11yHot = isHot ? "，本季市集搶手、收成多得乙太" : "";
+        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}${a11yHint}${a11yHot}。點選切換下一個品種`);
         seedEl.onclick = cycleSelectedSeed;
         seedEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycleSelectedSeed(); } };
       } else {
@@ -6194,7 +6213,8 @@
     updateFarmHud(myField()); // 即時刷新這行文字
     const hint = seedSeasonHint(selectedSeedVariety, currentSeason);
     const spoken = hint.tag === "peak" ? "，當季旺長" : hint.tag === "lean" ? "，當季長得慢" : "";
-    announce(`播種品種已切換為 ${meta.name}，${meta.trait}${spoken}`);
+    const hotSpoken = cropDemandVariety(currentSeason) === selectedSeedVariety ? "，本季市集搶手" : "";
+    announce(`播種品種已切換為 ${meta.name}，${meta.trait}${spoken}${hotSpoken}`);
   }
 
   // ---- 全服社群任務面板（ROADMAP 27）----

@@ -1511,22 +1511,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         FarmOutcome::Nothing
                     };
 
-                    if let FarmOutcome::Harvested(ether, quality, soil_bonus) = outcome {
+                    if let FarmOutcome::Harvested(ether, quality, soil_bonus, kind) = outcome {
+                        // ROADMAP 455 市集行情：若剛收的是「本季搶手品種」，多得一筆乙太溢價（純正向）。
+                        // 世界季節是 ws 層才知道的權威（field 不持有），故溢價在此算（鎖外讀季節、不與 players 鎖巢狀）。
+                        let season = app.season.read().unwrap().current;
+                        let demand = crate::crop_demand::demand_bonus_ether(kind, season);
                         // 鎖內：加乙太＋熟練度，並順手抓玩家座標供出鎖後定位飄字（守 prod-deadlock：
                         // 廣播一律出鎖再送，不在持 players 寫鎖時送 tx）。
                         let harvest_evt = {
                             let mut players = app.players.write().unwrap();
                             players.get_mut(&id).map(|p| {
                                 let bonus = crate::class::harvest_ether_bonus(&p.masteries);
-                                // `ether` 已含 ROADMAP 406 品質加成；class 收成加成另計。
-                                p.ether = p.ether.saturating_add(ether).saturating_add(bonus);
+                                // `ether` 已含 ROADMAP 406 品質加成；class 收成加成與 455 市集溢價另計。
+                                p.ether = p.ether
+                                    .saturating_add(ether)
+                                    .saturating_add(bonus)
+                                    .saturating_add(demand);
                                 p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
-                                tracing::info!(player = %p.name, ether = p.ether, bonus, quality = quality.as_str(), "農地收成乙太");
+                                tracing::info!(player = %p.name, ether = p.ether, bonus, demand, quality = quality.as_str(), "農地收成乙太");
                                 ServerMsg::HarvestResult {
                                     player_id: id,
                                     quality: quality.as_str().to_string(),
-                                    ether,
+                                    // `ether` 仍是田裡那株的乙太（品質＋沃土，已含）；市集溢價走 demand 欄另綴飄字。
+                                    ether: ether.saturating_add(demand),
                                     soil_bonus, // ROADMAP 438：沃土加成乙太（已含進 ether），供飄字綴「🌱 沃土 +N」
+                                    demand,     // ROADMAP 455：市集搶手溢價（已含進 ether），供飄字綴「🛒 搶手 +N」
                                     x: p.x,
                                     y: p.y,
                                 }
@@ -1607,15 +1616,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                     // 收到成熟作物：在 players 寫鎖內加乙太（含 class 收成加成、按株數計）＋農夫熟練度，
                     // 並順手抓座標供出鎖後定位飄字（守 prod-deadlock：廣播一律出鎖再送）。
+                    // ROADMAP 455 市集行情：一鍵收成可能混收多品種，逐品種按「當季搶手」算溢價合計
+                    //（與逐格手收等價：每株搶手品種＋一份 demand_bonus_ether）。鎖外讀季節、不與 players 鎖巢狀。
+                    let demand_total = if summary.count > 0 {
+                        let season = app.season.read().unwrap().current;
+                        let hot = crate::crop_demand::demand_variety(season);
+                        let per = crate::crop_demand::demand_bonus_ether(hot, season);
+                        summary.kind_counts[hot.code() as usize].saturating_mul(per)
+                    } else {
+                        0
+                    };
                     let harvest_evt = if summary.count > 0 {
                         let mut players = app.players.write().unwrap();
                         players.get_mut(&id).map(|p| {
                             // class 收成加成與單格收成一致（每株一份），照株數累加。
                             let per = crate::class::harvest_ether_bonus(&p.masteries);
                             let class_bonus = per.saturating_mul(summary.count);
-                            p.ether = p.ether.saturating_add(summary.ether).saturating_add(class_bonus);
+                            p.ether = p.ether
+                                .saturating_add(summary.ether)
+                                .saturating_add(class_bonus)
+                                .saturating_add(demand_total);
                             p.masteries.gain_farmer(summary.count); // 農夫熟練度（每株一份，與逐格收成等價）
-                            tracing::info!(player = %p.name, count = summary.count, ether = p.ether, "一鍵收成乙太");
+                            tracing::info!(player = %p.name, count = summary.count, ether = p.ether, demand = demand_total, "一鍵收成乙太");
                             // 取「最高品質」當飄字代表（有優質就慶優質，否則用心，再否則平凡），
                             // 重用既有 HarvestResult 收成飄字／音效，一次彙總演出。
                             let best = if summary.premium > 0 {
@@ -1628,8 +1650,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             ServerMsg::HarvestResult {
                                 player_id: id,
                                 quality: best.as_str().to_string(),
-                                ether: summary.ether,
+                                ether: summary.ether.saturating_add(demand_total),
                                 soil_bonus: summary.soil_bonus,
+                                demand: demand_total, // ROADMAP 455：市集搶手溢價（已含進 ether）
                                 x: p.x,
                                 y: p.y,
                             }
@@ -1643,7 +1666,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 單播文字回報：收到就報幾株＋多少乙太、在田邊但沒成熟的安心一句、離田太遠就溫和提示。
                     // 走 tx_direct + ServerMsg::Chat（既有單播管道，零新協議；田格回到空土隨下張快照更新）。
                     let note = if summary.count > 0 {
-                        format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太！", summary.count, summary.ether)
+                        let total = summary.ether.saturating_add(demand_total);
+                        if demand_total > 0 {
+                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太（含 🛒 搶手 +{}）！", summary.count, total, demand_total)
+                        } else {
+                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太！", summary.count, total)
+                        }
                     } else if in_reach {
                         "🌱 田裡還沒有成熟的作物，再耐心等等吧。".to_string()
                     } else {

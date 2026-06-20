@@ -1343,6 +1343,11 @@ pub enum ServerMsg {
         /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
         #[serde(default)]
         soil_bonus: u32,
+        /// ROADMAP 455 市集行情：這次收成裡「當季搶手品種」帶來的乙太溢價（已含進 `ether`）。
+        /// >0 時前端飄字綴「🛒 搶手 +N」，讓「順著行情種」的回報一眼看得見；0 ＝沒收到搶手品種。
+        /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+        #[serde(default)]
+        demand: u32,
         x: f32,
         y: f32,
     },
