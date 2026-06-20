@@ -166,13 +166,13 @@
     /* 會自動隱藏的小提醒(訪客引導/缺水/收成)各自成一行,藥丸底以便在地表上讀得清。 */
     #hud .hud-sub { background: var(--panel); padding: 3px 9px; border-radius: 8px; margin-top: 4px; display: inline-block; }
 
-    /* dock:星露谷風一排小圖示鈕,點開對應視窗。觸控尺寸 40×38,手機桌面都好按。 */
+    /* dock:星露谷風一排小圖示鈕,點開對應視窗。觸控尺寸拉到 44×44(iOS/Android 觸控下限),手機桌面都好按;鈕間距 ≥8px 防誤觸。 */
     #hudDock { margin-top: 6px; }
-    #dockCats { display: flex; gap: 6px; }
-    #hudDock .dock-group { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    #dockCats { display: flex; gap: 8px; }
+    #hudDock .dock-group { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
     #hudDock .dock-group.hidden { display: none; }
     /* ROADMAP 372：分類標籤——圖示＋中文（垂直堆疊），手機一眼看懂 */
-    .dock-cat { font-size: 1.05rem; width: auto; min-width: 50px; height: 42px; line-height: 1; cursor: pointer;
+    .dock-cat { font-size: 1.05rem; width: auto; min-width: 50px; height: 44px; line-height: 1; cursor: pointer;
       background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; position: relative;
       display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 7px; gap: 1px; }
     .cat-lbl { font-size: 0.68em; color: var(--ink); opacity: 0.82; }
@@ -184,7 +184,7 @@
       width: 7px; height: 7px; border-radius: 50%; background: #ffd34d; }
     /* 計數類 pill(成就/每日)收進對應面板看,不佔常駐版面(玩家回饋「東西被遮住」) */
     #hudAchievement, #hudDailyQuest { display: none !important; }
-    #hudDock .dock-btn { font-size: 1.15rem; width: 40px; height: 38px; line-height: 1; cursor: pointer;
+    #hudDock .dock-btn { font-size: 1.15rem; width: 44px; height: 44px; line-height: 1; cursor: pointer;
       background: var(--panel); border: 1px solid #3a4250; border-radius: 9px; color: var(--ink);
       display: flex; align-items: center; justify-content: center; position: relative; padding: 0; }
     #hudDock .dock-btn:hover { border-color: var(--brass); }
@@ -196,17 +196,17 @@
       width: 8px; height: 8px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 4px var(--brass); }
     /* 尊重「減少動態」:小點不脈動(本就靜態),這裡保留語彙位置不另加動效。 */
     /* ROADMAP 372：分類展開按鈕顯示圖示＋中文標籤（RO 風圖文鈕，取代原本純 emoji 的 40px 方塊） */
-    .dock-group .dock-btn { width: auto !important; padding: 0 10px !important; min-width: 60px; font-size: 0.88rem !important; gap: 4px; }
+    .dock-group .dock-btn { width: auto !important; height: 44px; padding: 0 12px !important; min-width: 60px; font-size: 0.88rem !important; gap: 4px; }
     /* ROADMAP 372：背包常駐列（只剩一顆，分類標籤見 #dockCats） */
-    #dockSlim { display: flex; gap: 6px; }
+    #dockSlim { display: flex; gap: 8px; }
     .dock-slim-btn { width: auto !important; padding: 0 12px !important; min-width: 60px; font-size: 0.95rem !important; gap: 4px; }
     /* ☰ 選單視窗：比一般 hud-window 稍寬、可捲動 */
     #winMenu { width: min(320px, 90vw) !important; }
     #menuBody { display: flex; flex-direction: column; gap: 10px; }
     .menu-group-title { font-size: 0.78em; color: var(--brass); opacity: 0.85; padding: 3px 0 3px 0;
       border-bottom: 1px solid rgba(201,162,75,0.25); margin-bottom: 4px; }
-    .menu-items { display: flex; flex-wrap: wrap; gap: 4px; }
-    .menu-item { display: flex; align-items: center; gap: 5px; padding: 7px 10px; min-height: 36px;
+    .menu-items { display: flex; flex-wrap: wrap; gap: 6px; }
+    .menu-item { display: flex; align-items: center; gap: 5px; padding: 8px 10px; min-height: 40px;
       min-width: 110px; border: 1px solid #3a4250; border-radius: 8px; background: transparent;
       color: var(--ink); cursor: pointer; font: inherit; font-size: 0.88em; text-align: left; }
     .menu-item:hover { border-color: var(--brass); background: rgba(201,162,75,0.08); }
@@ -214,14 +214,15 @@
     /* ROADMAP 187：每個選單項右側併一顆 📌 釘選鈕（包進 .menu-row 以免按鈕巢狀；視覺上與項目連成一片）。 */
     .menu-row { display: inline-flex; align-items: stretch; }
     .menu-row .menu-item { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    /* 釘選鈕命中區補足:min-width 40 + 高度隨 .menu-row stretch 對齊項目(≥36),手機好按。 */
     .menu-pin { border: 1px solid #3a4250; border-left: none; border-radius: 0 8px 8px 0;
       background: transparent; color: var(--ink); cursor: pointer; font: inherit; font-size: 0.82em;
-      padding: 0 8px; opacity: 0.4; }
+      padding: 0 11px; min-width: 40px; opacity: 0.4; }
     .menu-pin:hover { opacity: 0.9; border-color: var(--brass); }
     .menu-pin:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
     .menu-pin.pinned { opacity: 1; border-color: var(--brass); background: rgba(201,162,75,0.18); }
     /* ROADMAP 187：釘選後出現在常駐欄的一排快捷鈕（沿用 .dock-btn 樣式；空時 :empty 不佔版面）。 */
-    #dockPinned { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+    #dockPinned { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
     #dockPinned:empty { display: none; }
     #dockPinned.pin-full { animation: pinShake 0.3s ease; }
     @keyframes pinShake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
@@ -245,10 +246,25 @@
     /* 已被玩家拖曳擺放過的浮動視窗:脫離左上容器槽位、改用相對視野的 fixed 定位(座標由 JS 寫 inline)。 */
     .hud-window.win-floated { position: fixed; }
     .hud-window .win-title { color: var(--brass); font-weight: 600; flex: 1; }
-    .hud-window .win-close { font: inherit; cursor: pointer; width: 28px; height: 28px; line-height: 1;
+    /* 關閉鈕命中區補到 38×38(手機觸控下限),桌面看起來仍精巧;flex:none 不被標題撐壓。 */
+    .hud-window .win-close { font: inherit; cursor: pointer; width: 38px; height: 38px; line-height: 1;
       border-radius: 7px; border: 1px solid #3a4250; background: #161b22; color: var(--ink); padding: 0; flex: none; }
     .hud-window .win-close:hover { border-color: var(--brass); }
     .hud-window .win-close:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 排行榜分頁鈕：在 hud-window 內(不吃 #hudDock 的方塊尺寸),自帶 dock 風樣式＋44px 觸控高、字級 14px。 */
+    .lb-tab { font: inherit; font-size: 14px; height: 44px; line-height: 1; cursor: pointer;
+      background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; color: var(--ink);
+      display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 10px; position: relative; }
+    .lb-tab:hover { border-color: var(--brass); }
+    .lb-tab.dock-active { border-color: var(--brass); background: rgba(201,162,75,0.18); }
+    .lb-tab:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* iOS Safari 防聚焦縮放:任何 <16px 的文字輸入框,聚焦時 iOS 會自動放大整頁(玩家「卡放大」根因)。
+       把 HUD／面板／聊天／建議箱裡所有文字輸入強制 ≥16px(視覺幾乎無感、但 iOS 就不再縮放)。
+       用 !important 蓋過 NPC 聊天輸入的 inline font:inherit。桌面同樣 16px 也好讀。 */
+    .hud-window input[type="text"], .hud-window input[type="search"], .hud-window input:not([type]),
+    #chatText, #suggestFrom, .modal input[type="text"], .modal input:not([type]), .modal textarea {
+      font-size: 16px !important;
+    }
     #hud .brass { color: var(--brass); }
     /* 缺水提醒用淡藍(對齊田格的藍色澆水提示語彙),跟乙太的黃銅一眼分得開 */
     #hudFarm { color: #7fbfff; }
@@ -406,7 +422,7 @@
     #craftBody .craft-need.lack { color: #e0795f; }
     /* 合成鈕:夠料亮黃銅、缺料反灰停用(disabled),套深色主題語彙(同登入/建議鈕)。 */
     #craftBody .craft-btn {
-      font: inherit; cursor: pointer; padding: 3px 12px; font-size: 0.85rem; white-space: nowrap;
+      font: inherit; cursor: pointer; padding: 8px 12px; min-height: 40px; font-size: 0.85rem; white-space: nowrap;
       border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
     }
     #craftBody .craft-btn:hover:not(:disabled) { filter: brightness(1.1); }
@@ -425,7 +441,7 @@
     #expandBody .expand-cost { color: var(--brass); }
     #expandBody .expand-cost.lack { color: #e0795f; }
     #expandBody .expand-btn {
-      font: inherit; cursor: pointer; padding: 3px 12px; font-size: 0.85rem; white-space: nowrap;
+      font: inherit; cursor: pointer; padding: 8px 12px; min-height: 40px; font-size: 0.85rem; white-space: nowrap;
       border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
     }
     #expandBody .expand-btn:hover:not(:disabled) { filter: brightness(1.1); }
@@ -470,6 +486,17 @@
     #chatLog .whisper .who { color: #c090f0; font-weight: 600; }
     #chatForm { display: flex; gap: 6px; }
     #chatText { flex: 1; }
+
+    /* 橫式矮螢幕(手機橫拿，垂直空間極少)專屬重排：聊天紀錄壓到 22dvh 不再吃掉半個地表；
+       面板高度上限收緊以免上下被切；右下萬用動作鈕／小地圖的避讓交由 game.js 依 safeArea 動態算
+       (見 actionButtonRect / drawMinimap)。純呈現層，不動任何玩法。 */
+    @media (orientation: landscape) and (max-height: 480px) {
+      #chatLog { max-height: 22vh; max-height: 22dvh; }
+      .hud-window {
+        max-height: min(82vh, calc(100vh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+        max-height: min(82dvh, calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+      }
+    }
 
     /* 建議箱按鈕 + modal */
     #suggestBtn { position: fixed; right: calc(12px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); z-index: 5; cursor: pointer; }
@@ -1159,9 +1186,9 @@
         <button type="button" class="win-close" data-close="winLeaderboard" aria-label="關閉排行榜">✕</button>
       </div>
       <div style="display:flex;gap:6px;margin-bottom:6px">
-        <button type="button" class="lb-tab dock-btn dock-active" id="lbTabLevel" style="flex:1;font-size:12px">⭐ 等級</button>
-        <button type="button" class="lb-tab dock-btn" id="lbTabEther" style="flex:1;font-size:12px">💎 乙太</button>
-        <button type="button" class="lb-tab dock-btn" id="lbTabKills" style="flex:1;font-size:12px">⚔️ 殺怪</button>
+        <button type="button" class="lb-tab dock-active" id="lbTabLevel" style="flex:1">⭐ 等級</button>
+        <button type="button" class="lb-tab" id="lbTabEther" style="flex:1">💎 乙太</button>
+        <button type="button" class="lb-tab" id="lbTabKills" style="flex:1">⚔️ 殺怪</button>
       </div>
       <div id="leaderboardBody" style="font-size:13px;min-width:240px;max-height:320px;overflow-y:auto">載入中…</div>
     </div>

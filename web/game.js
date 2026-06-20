@@ -6281,7 +6281,16 @@
   function actionButtonRect() {
     const r = 46;
     // 右側中下，避開右下角的小地圖，仍在右拇指好按的範圍。
-    return { cx: viewW - r - 26, cy: Math.round(viewH * 0.58), r };
+    // cx 補減 safeArea.right：橫式瀏海/圓角機在右側有安全區時，鈕內縮才不被切掉。
+    const cx = viewW - r - 26 - safeArea.right;
+    // 直式預設貼在 0.58×高處；橫式矮螢幕(垂直空間少)時往上挪，騰出右下角給小地圖、兩者不疊。
+    const landscapeShort = viewW > viewH && viewH <= 480;
+    let cy = Math.round(viewH * (landscapeShort ? 0.42 : 0.58));
+    // cy 夾在安全區內：上不頂瀏海(留一個半徑)、下不被底部手勢條切到。
+    const minCy = r + safeArea.top + 8;
+    const maxCy = viewH - r - safeArea.bottom - 8;
+    cy = Math.max(minCy, Math.min(maxCy, cy));
+    return { cx, cy, r };
   }
   // ROADMAP 408 臨陣格擋：格擋鈕在動作鈕正上方（戰鬥時才出現），可同時按住攻擊＋另一指格擋。
   function guardButtonRect() {
@@ -8832,18 +8841,20 @@
 
   function drawMinimap() {
     if (!world || !world.width || !world.height) return;
-    // 收合狀態:只畫一顆小「展開地圖」鈕在右下角,省下整塊縮圖的空間。
+    // 收合狀態:只畫一顆「展開地圖」鈕在右下角,省下整塊縮圖的空間。
+    // 觸控下限 44×44(手機好按);錨點除了安全區外再多內縮 4px,避開底部手勢條/右側瀏海。
     if (minimapHidden) {
-      const bw = 34, bh = 26;
-      const bx = viewW - MM.margin - safeArea.right - bw;
-      const by = viewH - MM.margin - safeArea.bottom - bh;
+      const bw = 44, bh = 44;
+      const inset = 4; // 比安全區再退一點，notched 手機不被手勢條/圓角擦邊
+      const bx = viewW - MM.margin - safeArea.right - bw - inset;
+      const by = viewH - MM.margin - safeArea.bottom - bh - inset;
       ctx.fillStyle = "rgba(10,16,30,0.7)";
       ctx.fillRect(bx, by, bw, bh);
       ctx.strokeStyle = "rgba(201,162,75,0.7)";
       ctx.lineWidth = 1.5;
       ctx.strokeRect(bx, by, bw, bh);
       ctx.fillStyle = "#c9a24b";
-      ctx.font = `16px ${UI_FONT}`;
+      ctx.font = `20px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("🗺", bx + bw / 2, by + bh / 2 + 1);
