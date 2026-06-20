@@ -2632,6 +2632,12 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 0＝主食穀）。
     #[serde(default)]
     pub kind: u8,
+    /// ROADMAP 454 作物輪作：這格作物是否正吃到「輪作加成」——上一輪這格收成的是不同品種，
+    /// 換種後新作物在換過的土裡長得更旺。只在種了作物（state 2~4）時有意義；其餘一律 false。
+    /// 前端據此在換種旺長的作物上標一枚輪作記號，讓「這格上次種了啥、該換種」的決定一眼看得見。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
+    #[serde(default)]
+    pub rotated: bool,
 }
 
 #[cfg(test)]
@@ -2862,6 +2868,7 @@ mod tests {
                     grow: 0,
                     soil: 0,
                     kind: 0,
+                    rotated: false,
                 }],
                 home_decor: 0,
                 garden: vec![],

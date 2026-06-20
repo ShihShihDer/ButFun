@@ -43,6 +43,7 @@ mod connections;
 mod equipment;
 mod refinement;
 mod crafting;
+mod crop_rotation;
 mod crop_variety;
 mod crops;
 mod daynight;
