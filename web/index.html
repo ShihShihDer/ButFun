@@ -98,46 +98,184 @@
        但**保留雙指縮放**(viewport 沒鎖縮放，弱視玩家仍可放大讀 HUD)。 */
     #hud, #hud button, .dock-btn, .dock-cat, .menu-item, .hud-window, .hud-window button { touch-action: manipulation; }
 
-    /* 進場畫面 */
+    /* ───────────────────────────────────────────────────────────────────────
+       進場畫面（登入首印象重做・拉皮切片 4/5）
+       北極星「黏土繪本・暖琥珀」：暖底光暈 + 黃銅星徽 hero + 浮雕品牌字 +
+       深玻璃 Google 鈕 + 4 張可點種族卡 + 漸進揭露的自訂角色。
+       純呈現重做：所有功能入口/行為（googleBtn href、nameInput、speciesInput
+       value、joinBtn、rerollBtn、loginStatus）原封不動。 */
     #login {
       position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: safe center; gap: 16px;
+      align-items: center; justify-content: safe center; gap: var(--sp-3);
       /* 短螢幕(手機橫式)上元素疊起來會超過視窗高:body 是 overflow:hidden,純
          justify-content:center 會把頂/底裁掉、進場按鈕點不到。safe center 在會溢出時
          自動退回頂端對齊,再加自身捲動 + 留白,確保所有控制項都搆得到。 */
       overflow-y: auto;
-      padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-               calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
-      background: radial-gradient(circle at 50% 30%, #1a2230, #0b0d12 70%); z-index: 10;
+      padding: calc(var(--sp-5) + env(safe-area-inset-top)) calc(var(--sp-4) + env(safe-area-inset-right))
+               calc(var(--sp-5) + env(safe-area-inset-bottom)) calc(var(--sp-4) + env(safe-area-inset-left));
+      font-family: var(--ui-font);
+      /* 暖琥珀光暈：上方黃銅微光暈 + 暖底，取代偏冷的藍灰漸層。 */
+      background:
+        radial-gradient(ellipse 120% 80% at 50% 0%, rgba(201,162,75,0.12), transparent 60%),
+        radial-gradient(circle at 50% 28%, #161c26, var(--bg) 72%);
+      z-index: 10;
     }
-    #login h1 { color: var(--brass); margin: 0; font-size: 2rem; letter-spacing: 2px; }
-    #login p { opacity: 0.7; margin: 0 0 8px; max-width: 320px; text-align: center; line-height: 1.6; }
+    /* 進場卡片：單欄置中、上限 360px，手機一手可讀；面板玻璃感 + 黃銅 hairline 外框。 */
+    #login .login-card {
+      width: 100%; max-width: 360px; display: flex; flex-direction: column;
+      align-items: center; gap: var(--sp-3);
+    }
+    /* hero 星徽：內嵌 SVG 黃銅星環行星，零素材檔、惰性向量、單色路徑走品牌色。 */
+    #login .hero {
+      width: clamp(72px, 22vw, 96px); height: clamp(72px, 22vw, 96px);
+      margin-bottom: calc(-1 * var(--sp-1)); filter: drop-shadow(var(--shadow-2));
+    }
+    #login .hero svg { width: 100%; height: 100%; display: block; }
+    /* 黃銅浮雕品牌字（CSS background-clip 漸層 + 細描影，給手作識別，不外掛字檔）。 */
+    #login h1 {
+      margin: 0; font-size: clamp(2rem, 7vw, 2.6rem); letter-spacing: 3px; font-weight: 800;
+      background: linear-gradient(180deg, var(--brass-light), var(--brass) 55%, var(--brass-dark));
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+      color: var(--brass); /* 不支援 background-clip 時的後備色 */
+      text-shadow: 0 1px 0 rgba(0,0,0,0.35); line-height: 1.05;
+    }
+    #login .tagline {
+      opacity: 0.82; margin: 0; max-width: 320px; text-align: center; line-height: 1.6;
+      color: var(--ink); font-size: 0.95rem;
+    }
+    /* 利益點小字：免註冊・瀏覽器直接玩・和真人種田——降低新玩家動手門檻的社交證明帶。 */
+    #login .perks {
+      display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-1) var(--sp-2);
+      margin: calc(-1 * var(--sp-1)) 0 var(--sp-1); max-width: 340px;
+    }
+    #login .perks span {
+      font-size: 0.78rem; color: var(--brass-light); opacity: 0.95;
+      border: 1px solid var(--hairline); border-radius: var(--r-pill);
+      padding: 3px 10px; white-space: nowrap;
+    }
+    /* 線上人數社交證明（/api/status 拉到才顯示）。 */
+    #login .live-count { font-size: 0.8rem; color: var(--ink-dim); margin: 0; min-height: 1.1em; }
+    #login .live-count b { color: var(--success); font-weight: 700; }
+
+    /* 共用輸入/select/button 基底（沿用，token 化 padding/圓角/邊框/字型）。 */
     #login input, #login select, #login button, #chatText, .modal input, .modal textarea, .modal button {
-      font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid #3a4250;
-      background: #161b22; color: var(--ink);
+      font-family: var(--ui-font); padding: 10px 14px; border-radius: var(--r-md);
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink);
     }
+    /* iOS 聚焦防縮放：HUD/登入內所有文字輸入強制 16px。 */
+    #login input { font-size: 16px; }
     #login button, .modal button.primary {
       background: var(--brass); color: #1a1206; border: none; font-weight: 700; cursor: pointer;
     }
-    #login button:hover { filter: brightness(1.1); }
+    #login button:hover { filter: brightness(1.08); }
+
+    /* 主進場路徑：深玻璃 Google 鈕（取代純白），左置彩色 G + 黃銅描邊，看起來像主題內按鈕。 */
     #login .primary-link {
-      display: inline-block; padding: 12px 22px; border-radius: 8px;
-      background: #fff; color: #1a1206; font-weight: 700; text-decoration: none;
-      border: 1px solid #ccc; min-width: 240px; text-align: center;
+      display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+      width: 100%; min-height: 48px; padding: 12px 20px; border-radius: var(--r-md);
+      background: rgba(20,24,30,0.72); color: var(--ink); font-weight: 700; font-size: 1rem;
+      text-decoration: none; border: 1px solid var(--brass); box-shadow: var(--shadow-1);
+      transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
     }
-    #login .primary-link:hover { filter: brightness(0.96); }
-    #login .or-sep { opacity: 0.5; font-size: 0.85rem; margin: 8px 0 4px; }
-    /* Google 登入下方的隱私小提示:玩家擔心 Google 登入會公開真名(玩家建議),
-       這裡明說系統只配遊戲代號、不公開真名,讓會在意隱私的人敢按登入。 */
+    #login .primary-link:hover { background: rgba(201,162,75,0.14); border-color: var(--brass-light); }
+    #login .primary-link:active { transform: translateY(1px); }
+    /* 彩色 G 圖標：以四色內嵌 SVG，深底上仍是 Google 識別色（避免純白底違和）。 */
+    #login .g-icon { width: 20px; height: 20px; flex: 0 0 auto; }
+
+    /* 折疊式自訂角色（訪客流程）：突出單一進場路徑，把細節收進可展開區塊。 */
+    #login .guest-toggle {
+      background: none; border: none; color: var(--brass); font-weight: 600; cursor: pointer;
+      padding: var(--sp-1) var(--sp-2); font-size: 0.9rem; opacity: 0.85;
+      min-height: 36px; border-radius: var(--r-sm); list-style: none; display: inline-block;
+    }
+    /* 移除 <summary> 預設三角標記（用自繪 chevron 取代）。 */
+    #login .guest-toggle::-webkit-details-marker { display: none; }
+    #login details > summary { list-style: none; }
+    #login .guest-toggle:hover { opacity: 1; filter: none; }
+    #login .guest-toggle .chevron { display: inline-block; transition: transform 160ms ease; }
+    #login details[open] .guest-toggle .chevron { transform: rotate(90deg); }
+    #login .guest-panel {
+      display: flex; flex-direction: column; align-items: stretch; gap: var(--sp-2);
+      width: 100%; padding: var(--sp-3); margin-top: var(--sp-1);
+      background: var(--panel); border: 1px solid var(--hairline); border-radius: var(--r-lg);
+      box-shadow: var(--shadow-1);
+    }
+    /* 名字列：輸入框 + 重骰鈕並排。 */
+    #login .name-row { display: flex; gap: var(--sp-2); align-items: stretch; }
+    #login .name-row input { flex: 1 1 auto; min-width: 0; }
+    #login #rerollBtn {
+      flex: 0 0 auto; min-height: 44px; min-width: 44px; padding: 8px 12px;
+      background: transparent; color: var(--brass); border: 1px solid var(--brass);
+      font-weight: 600; border-radius: var(--r-md);
+    }
+    #login #rerollBtn:hover { background: rgba(201,162,75,0.12); filter: none; }
+
+    /* 種族卡片（取代原生 select）：4 張可點卡，emoji + 名稱 + 專長 + 代表色左側 accent。 */
+    #login .species-label { font-size: 0.82rem; color: var(--ink-dim); align-self: flex-start; }
+    #login .species-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-2);
+    }
+    #login .species-card {
+      display: flex; flex-direction: column; gap: 2px; text-align: left;
+      padding: 10px 12px 10px 14px; min-height: 60px; cursor: pointer;
+      background: var(--panel-solid); color: var(--ink);
+      border: 1px solid var(--line); border-left: 3px solid var(--sp-accent, var(--line));
+      border-radius: var(--r-md); transition: border-color 120ms ease, background 120ms ease;
+    }
+    #login .species-card:hover { border-color: var(--brass); }
+    #login .species-card[aria-pressed="true"] {
+      border-color: var(--brass); background: rgba(201,162,75,0.12);
+      box-shadow: inset 0 0 0 1px var(--brass);
+    }
+    #login .species-card .sp-name { font-weight: 700; font-size: 0.92rem; }
+    #login .species-card .sp-name .sp-emoji { margin-right: 4px; }
+    #login .species-card .sp-trait { font-size: 0.74rem; color: var(--ink-dim); }
+
+    /* 進場按鈕（訪客）：實心黃銅主鈕。 */
+    #login #joinBtn { width: 100%; min-height: 48px; font-size: 1rem; border-radius: var(--r-md); }
+
+    /* Google 鈕下方的隱私小提示（對比拉到 0.82）。 */
     #login .login-note {
-      opacity: 0.6; font-size: 0.8rem; margin: -8px 0 0; max-width: 320px;
-      text-align: center; line-height: 1.5;
+      opacity: 0.82; font-size: 0.8rem; margin: 0; max-width: 320px;
+      text-align: center; line-height: 1.5; color: var(--ink-dim);
     }
-    /* 訪客名字輸入下方的小提示:玩家問「能不能改名/名字會不會公開」(玩家建議),
-       這裡明說這個名字是公開顯示給其他玩家看的、可自己改或重骰,消除疑慮。 */
+    /* 名字輸入下方的小提示。 */
     #login .guest-note {
-      opacity: 0.55; font-size: 0.75rem; margin: 2px 0 0; max-width: 320px;
-      text-align: center; line-height: 1.5;
+      opacity: 0.78; font-size: 0.76rem; margin: 0; max-width: 320px;
+      text-align: center; line-height: 1.5; color: var(--ink-dim);
+    }
+    /* 「或以訪客」分隔——對比提到 0.82，兩側細黃銅 hairline。 */
+    #login .or-sep {
+      display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+      opacity: 0.82; font-size: 0.85rem; color: var(--ink-dim); margin: var(--sp-1) 0;
+    }
+    #login .or-sep::before, #login .or-sep::after {
+      content: ""; flex: 1 1 auto; height: 1px; background: var(--hairline);
+    }
+    /* 登入連線狀態列（連線中/重試中）。 */
+    #login #loginStatus:not(:empty) {
+      display: flex; align-items: center; justify-content: center; gap: var(--sp-2);
+      opacity: 0.9;
+    }
+    /* 連線中 spinner——loginStatus 有文字時前面轉一個黃銅小環；reduceMotion 改靜態點。 */
+    #login #loginStatus:not(:empty)::before {
+      content: ""; width: 14px; height: 14px; flex: 0 0 auto; border-radius: 50%;
+      border: 2px solid var(--hairline); border-top-color: var(--brass);
+      animation: login-spin 0.8s linear infinite;
+    }
+
+    /* 登入→世界進場過場：#login 淡出、canvas 淡入（由 game.js enterGame 觸發 class）。 */
+    #login { transition: opacity 240ms ease; }
+    #login.leaving { opacity: 0; pointer-events: none; }
+    #game { transition: opacity 280ms ease; }
+    #game.world-fade-in { opacity: 1; }
+
+    @keyframes login-spin { to { transform: rotate(360deg); } }
+    /* 種族卡/折疊/Google 鈕的微進場——尊重 reduceMotion 全數關閉。 */
+    @media (prefers-reduced-motion: reduce) {
+      #login, #game, #login .primary-link, #login .species-card,
+      #login .guest-toggle .chevron { transition: none !important; }
+      #login #loginStatus:not(:empty)::before { animation: none; border-top-color: var(--brass); }
     }
 
     /* HUD（星露谷風）*/
@@ -567,31 +705,105 @@
     </div>
   </noscript>
 
+  <!-- 登入/首印象（拉皮切片 4/5）：黏土繪本・暖琥珀。hero 星徽 + 浮雕品牌字 +
+       深玻璃 Google 主鈕 + 折疊式自訂角色（種族卡）。功能入口全保留：googleBtn href、
+       nameInput / rerollBtn / speciesInput value / joinBtn / loginStatus 行為不變。 -->
   <div id="login">
-    <h1>ButFun</h1>
-    <p>「大靜默」之後，乙太緩緩回流。你回到這顆邊境星，準備在廢墟上重建家園。</p>
-    <a id="googleBtn" href="/auth/google/start" class="primary-link">以 Google 登入</a>
-    <div class="login-note">🔒 不會公開你的 Google 真名——系統只給你一個遊戲代號。</div>
-    <div class="or-sep">或以訪客身份(只記在這台瀏覽器)</div>
-    <!-- placeholder 不是無障礙標籤(報讀器逐欄位巡覽時唸不到、輸入後也消失),
-         每個欄位補一條 aria-label,讓只用報讀器的玩家也知道這格在填什麼。 -->
-    <!-- enterkeyhint=go:手機軟鍵盤的 Enter 鍵顯示「前往」而非通用換行——名字欄按 Enter
-         會直接進場(見 game.js nameInput keydown→joinBtn.click),讓鍵帽語意對得上動作。 -->
-    <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" enterkeyhint="go" aria-label="你的名字（訪客代號）" />
-    <button id="rerollBtn" type="button" style="opacity:.85">🎲 換一個代號</button>
-    <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
-    <select id="speciesInput" aria-label="選擇種族">
-      <option value="terran">🌾 地球人（索爾人）— 擅農耕・暖琥珀</option>
-      <option value="shilaya">🚀 施拉雅人（商會飛船）— 擅貿易・星海藍</option>
-      <option value="busi">⚙️ 布司人（礦星齒輪）— 擅採礦・烈銅橙</option>
-      <option value="lumen">✨ 燐光族（乙太霧星）— 擅乙太・霜白輝</option>
-    </select>
-    <button id="joinBtn">以訪客進場</button>
-    <!-- 進場連線回饋:按下進場到收到 welcome 之間,登入畫面原本毫無動靜——伺服器慢或
-         連不上時(手機網路一抖很常見)按鈕看起來像壞了,玩家會狂點、疊出多條連線。
-         這條 aria-live 狀態列在連線中／重試中顯示文字,讓視覺與報讀器玩家都知道「正在連、
-         別急著重按」。延續重連橫幅 / srStatus 的韌性回饋弧線。 -->
-    <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
+    <div class="login-card">
+      <!-- hero 黃銅星徽：內嵌 SVG 向量、零素材檔、惰性、單色路徑走品牌色（蒸汽龐克小行星環）。 -->
+      <div class="hero" aria-hidden="true">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="heroGlow" cx="50%" cy="42%" r="55%">
+              <stop offset="0%" stop-color="#e6c478"/>
+              <stop offset="100%" stop-color="#8f6f2e"/>
+            </radialGradient>
+          </defs>
+          <!-- 行星本體 -->
+          <circle cx="50" cy="46" r="20" fill="url(#heroGlow)"/>
+          <circle cx="50" cy="46" r="20" fill="none" stroke="#8f6f2e" stroke-width="1.5" opacity="0.6"/>
+          <!-- 黃銅光環（斜橢圓） -->
+          <ellipse cx="50" cy="50" rx="38" ry="13" fill="none" stroke="#c9a24b" stroke-width="3"
+                   transform="rotate(-22 50 50)"/>
+          <!-- 環上小星點 -->
+          <circle cx="14" cy="58" r="2.4" fill="#e6c478"/>
+          <circle cx="86" cy="42" r="2.4" fill="#e6c478"/>
+        </svg>
+      </div>
+      <h1>ButFun</h1>
+      <p class="tagline">「大靜默」之後，乙太緩緩回流。你回到這顆邊境星，準備在廢墟上重建家園。</p>
+      <!-- 利益點（社交證明帶）：免註冊・瀏覽器直接玩・和真人種田。 -->
+      <div class="perks" aria-hidden="true">
+        <span>免註冊</span><span>瀏覽器直接玩</span><span>和真人種田</span>
+      </div>
+      <!-- 線上人數（/api/status 拉到才填，連不上就維持空）。 -->
+      <p class="live-count" id="liveCount" aria-live="polite"></p>
+
+      <!-- 主進場路徑：深玻璃 Google 鈕 + 左置彩色 G。 -->
+      <a id="googleBtn" href="/auth/google/start" class="primary-link">
+        <svg class="g-icon" viewBox="0 0 48 48" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+          <path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/>
+          <path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/>
+          <path fill="#FBBC05" d="M11.69 28.18C11.25 26.86 11 25.45 11 24s.25-2.86.69-4.18v-5.7H4.34A21.99 21.99 0 002 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"/>
+          <path fill="#EA4335" d="M24 9.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 2.97 29.93 1 24 1 15.4 1 7.96 5.93 4.34 13.12l7.35 5.7C13.42 13.62 18.27 9.75 24 9.75z"/>
+        </svg>
+        <span>以 Google 登入</span>
+      </a>
+      <div class="login-note">🔒 不會公開你的 Google 真名——系統只給你一個遊戲代號。</div>
+
+      <!-- 漸進揭露：自訂角色預設收摺，突出單一進場路徑；展開才見名字/種族細節。 -->
+      <details id="guestDetails">
+        <summary class="guest-toggle"><span class="chevron">▸</span> 自訂角色 · 以訪客進場</summary>
+        <div class="guest-panel">
+          <div class="or-sep">只記在這台瀏覽器</div>
+          <!-- placeholder 不是無障礙標籤(報讀器逐欄位巡覽時唸不到、輸入後也消失),
+               每個欄位補一條 aria-label,讓只用報讀器的玩家也知道這格在填什麼。 -->
+          <!-- enterkeyhint=go:手機軟鍵盤的 Enter 鍵顯示「前往」而非通用換行——名字欄按 Enter
+               會直接進場(見 game.js nameInput keydown→joinBtn.click),讓鍵帽語意對得上動作。 -->
+          <div class="name-row">
+            <input id="nameInput" maxlength="24" placeholder="你的名字" autocomplete="off" enterkeyhint="go" aria-label="你的名字（訪客代號）" />
+            <button id="rerollBtn" type="button" title="換一個隨機代號" aria-label="換一個隨機代號">🎲</button>
+          </div>
+          <div class="guest-note">這個名字其他玩家看得到——可自己改或按 🎲 重骰</div>
+
+          <span class="species-label">選擇種族</span>
+          <!-- 種族卡片（可點）寫回隱藏的 speciesInput value——既有讀寫/localStorage/選項驗證
+               邏輯(game.js)完全不動,卡片只是 select 的視覺前臉。 -->
+          <select id="speciesInput" aria-label="選擇種族" hidden>
+            <option value="terran">🌾 地球人（索爾人）— 擅農耕・暖琥珀</option>
+            <option value="shilaya">🚀 施拉雅人（商會飛船）— 擅貿易・星海藍</option>
+            <option value="busi">⚙️ 布司人（礦星齒輪）— 擅採礦・烈銅橙</option>
+            <option value="lumen">✨ 燐光族（乙太霧星）— 擅乙太・霜白輝</option>
+          </select>
+          <div class="species-grid" id="speciesGrid" role="group" aria-label="選擇種族">
+            <button type="button" class="species-card" data-species="terran" style="--sp-accent:#c9a24b" aria-pressed="false">
+              <span class="sp-name"><span class="sp-emoji">🌾</span>地球人</span>
+              <span class="sp-trait">擅農耕・暖琥珀</span>
+            </button>
+            <button type="button" class="species-card" data-species="shilaya" style="--sp-accent:#7fa8d9" aria-pressed="false">
+              <span class="sp-name"><span class="sp-emoji">🚀</span>施拉雅人</span>
+              <span class="sp-trait">擅貿易・星海藍</span>
+            </button>
+            <button type="button" class="species-card" data-species="busi" style="--sp-accent:#d98a72" aria-pressed="false">
+              <span class="sp-name"><span class="sp-emoji">⚙️</span>布司人</span>
+              <span class="sp-trait">擅採礦・烈銅橙</span>
+            </button>
+            <button type="button" class="species-card" data-species="lumen" style="--sp-accent:#e8e0cf" aria-pressed="false">
+              <span class="sp-name"><span class="sp-emoji">✨</span>燐光族</span>
+              <span class="sp-trait">擅乙太・霜白輝</span>
+            </button>
+          </div>
+
+          <button id="joinBtn">以訪客進場</button>
+        </div>
+      </details>
+
+      <!-- 進場連線回饋:按下進場到收到 welcome 之間,登入畫面原本毫無動靜——伺服器慢或
+           連不上時(手機網路一抖很常見)按鈕看起來像壞了,玩家會狂點、疊出多條連線。
+           這條 aria-live 狀態列在連線中／重試中顯示文字（前面轉黃銅 spinner），讓視覺與
+           報讀器玩家都知道「正在連、別急著重按」。延續重連橫幅 / srStatus 的韌性回饋弧線。 -->
+      <div id="loginStatus" class="login-note" role="status" aria-live="polite"></div>
+    </div>
   </div>
 
   <!-- 星露谷風 HUD（總監定調:左上常駐欄太佔空間,改成「精簡狀態列 + 一排小圖示」）。

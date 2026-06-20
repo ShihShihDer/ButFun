@@ -27556,7 +27556,25 @@
     initDock(); // 星露谷風 dock + 視窗(取代原本 help/bag/craft/expand 的 inline 收合)
     updateCraftPanel([]); // 首個背包快照前先畫出配方(全反灰),不留空面板
     initChatKeyboardLift();
-    document.getElementById("login").classList.add("hidden");
+    // 進場過場（拉皮切片 4/5）：#login 淡出、世界 canvas 淡入。reduceMotion 下直接切換、不動畫。
+    const loginEl = document.getElementById("login");
+    const fadeMs = 240; // 與 index.html #login transition 對齊
+    if (loginEl && !reduceMotion) {
+      // 先淡出登入畫面（class 觸發 CSS opacity transition），動畫結束才真正 hidden。
+      loginEl.classList.add("leaving");
+      const gameEl = document.getElementById("game");
+      if (gameEl) {
+        gameEl.style.opacity = "0";
+        // 下一幀加 class 觸發淡入（先設 opacity:0 再轉到 1，避免初值即終值不觸發 transition）。
+        requestAnimationFrame(() => {
+          gameEl.classList.add("world-fade-in");
+          gameEl.style.opacity = "";
+        });
+      }
+      setTimeout(() => { loginEl.classList.add("hidden"); loginEl.classList.remove("leaving"); }, fadeMs);
+    } else if (loginEl) {
+      loginEl.classList.add("hidden"); // reduceMotion：直接隱藏
+    }
     for (const id of ["hud", "suggestBtn", "chat"]) {
       document.getElementById(id).classList.remove("hidden");
     }
@@ -27613,6 +27631,49 @@
   document.getElementById("rerollBtn").addEventListener("click", () => {
     document.getElementById("nameInput").value = randomCodename();
   });
+
+  // 種族卡片（拉皮切片 4/5）：可點卡片只是隱藏 <select id="speciesInput"> 的視覺前臉——
+  // 點卡片把 value 寫回 select、刷新 aria-pressed 高亮；既有讀寫/localStorage/驗證邏輯不動。
+  (function initSpeciesCards() {
+    const sel = document.getElementById("speciesInput");
+    const grid = document.getElementById("speciesGrid");
+    if (!sel || !grid) return;
+    const cards = [...grid.querySelectorAll(".species-card")];
+    // 把目前 select.value 反映到卡片高亮（含 localStorage 帶回的選擇）。
+    function syncCards() {
+      for (const c of cards) {
+        c.setAttribute("aria-pressed", c.dataset.species === sel.value ? "true" : "false");
+      }
+    }
+    for (const c of cards) {
+      c.addEventListener("click", () => {
+        // 寫回隱藏 select；只挑有效（未停用）的選項，行為對齊既有 join 讀取。
+        if ([...sel.options].some((o) => o.value === c.dataset.species && !o.disabled)) {
+          sel.value = c.dataset.species;
+          syncCards();
+        }
+      });
+    }
+    syncCards(); // 初次同步（restore 區塊已先設好 sel.value）
+  })();
+
+  // 線上人數社交證明（拉皮切片 4/5）：拉 /api/status 的彙總數字填進 hero 下方一行。
+  // 純展示、連不上就靜默留空，不影響任何進場流程。
+  (function fetchLiveCount() {
+    const el = document.getElementById("liveCount");
+    if (!el) return;
+    fetch("/api/status", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        // 後端 /api/status 只給彙總數字（見記憶:只准彙總、別加個資）。容錯各種欄位命名。
+        const n = s && (s.online ?? s.players_online ?? s.online_players ?? s.players);
+        if (typeof n === "number" && n > 0) {
+          el.innerHTML = `🌍 此刻有 <b></b> 位拓荒者在線上`;
+          el.querySelector("b").textContent = String(n);
+        }
+      })
+      .catch(() => {}); // 連不上就留空，不打擾
+  })();
 
   // 開頁就查 /auth/me:已登入就跳過進場畫面、直接連線(同一帳號跨裝置同一玩家)
   fetch("/auth/me", { credentials: "same-origin" })
