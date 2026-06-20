@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -13104,12 +13104,61 @@
     ctx.restore();
   }
 
+  // 黏土微縮世界·你種的樹也是黏土捏的（ROADMAP 456）：clay 畫風下，玩家親手種下的世界樹群
+  // （370）若仍以扁平 emoji 畫出，會是這座暖象牙色微縮模型裡最刺眼的一處割離——玩家、節點、
+  // 作物、居民早已黏土化，唯獨「玩家親手形塑世界」的那株樹還飄著一枚平面 emoji。本純函式給
+  // clay 路徑算出各成長階段的黏土樹幾何（樹幹寬高、樹冠半徑與抬升），讓嫩芽→樹苗→幼樹→大樹
+  // 一路捏成圓鼓鼓的黏土造型。確定性、只看 stage、無 DOM，可單元自驗（比照 clayCrumbSpec 範式）。
+  // 壞 stage（NaN／越界／非整數）一律夾鉗到合法 [0,3]，render 不爆。
+  function clayGroveSpec(stage) {
+    const s = Math.max(0, Math.min(3, Number.isFinite(+stage) ? Math.round(+stage) : 0));
+    // 四階段的黏土樹尺寸（px）：由小到大，與既有 emoji 字級 [13,20,28,38] 同量級對齊。
+    // trunkW/trunkH＝樹幹；crownR＝樹冠半徑；crownLift＝樹冠中心相對樹腳的抬升。
+    const TABLE = [
+      { trunkW: 1.6, trunkH: 4,  crownR: 5,  crownLift: 6 },   // 0 嫩芽：幾乎只有一小撮冠
+      { trunkW: 2.4, trunkH: 8,  crownR: 8,  crownLift: 11 },  // 1 樹苗：細幹小冠
+      { trunkW: 3.6, trunkH: 14, crownR: 12, crownLift: 19 },  // 2 幼樹：明顯樹幹＋圓錐冠
+      { trunkW: 5,   trunkH: 20, crownR: 17, crownLift: 27 },  // 3 大樹：粗幹＋飽滿大冠
+    ];
+    return TABLE[s];
+  }
+
+  // 畫一株黏土世界樹（clay 路徑）：暖褐黏土樹幹＋本色填底的圓潤黏土樹冠＋一抹象牙頂光，
+  // 讀作一塊塊被捏出來的立體黏土，與 450 採集碎屑／微縮世界暖調一氣呵成。sway 已含風擺。
+  function drawClayGroveTree(sx, sy, stage, sway) {
+    const g = clayGroveSpec(stage);
+    const cx = sx + sway;               // 樹冠隨風擺，樹幹腳定在地面
+    const crownY = sy - g.crownLift;
+    // 樹幹（暖褐黏土，微圓角矩形＝手捏感）。
+    ctx.fillStyle = "#8a6a4a";
+    ctx.beginPath();
+    ctx.ellipse(sx + sway * 0.4, sy - g.trunkH * 0.5, g.trunkW, g.trunkH * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 樹冠本體（黏土綠，微壓扁橢圓＝圓鼓鼓的黏土團）。
+    ctx.fillStyle = "#7a9a55";
+    ctx.beginPath();
+    ctx.ellipse(cx, crownY, g.crownR, g.crownR * 0.9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 樹冠下半的暖陰影（讓黏土團有體積、不扁）。
+    ctx.fillStyle = "rgba(60,82,40,0.35)";
+    ctx.beginPath();
+    ctx.ellipse(cx, crownY + g.crownR * 0.32, g.crownR * 0.8, g.crownR * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 象牙頂光（左上一抹高光，呼應微縮世界的桌上暖燈）。
+    ctx.fillStyle = "rgba(255,250,238,0.45)";
+    ctx.beginPath();
+    ctx.arc(cx - g.crownR * 0.32, crownY - g.crownR * 0.32, g.crownR * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // 親手植樹成蔭（ROADMAP 370）：玩家在戶外種下、隨真實時間長大的世界樹群。
   // 後端每幀送來各樹的世界座標與成長階段（0=🌱嫩芽 1=🌿樹苗 2=🌲幼樹 3=🌳大樹）；
   // 前端據階段選圖示與大小，由小到大畫出——玩家親眼看見自己種下的嫩芽一點點長成綠蔭。
   // 純表現、只讀快照、不嵌任何規則；貼地表、畫在角色之下（樹是景物，不擋玩家）。
+  // clay 畫風（456）：改畫黏土捏的世界樹，與黏土微縮世界一致；像素／emoji 路徑原封不動。
   function drawWorldGroves(camX, camY, renderNow) {
     if (!worldGroves || !worldGroves.length) return;
+    const clay = renderStyle === "clay";
     // 階段 → 圖示與字級（px）。大樹最醒目，嫩芽最小。
     const GLYPH = ["🌱", "🌿", "🌲", "🌳"];
     const SIZE = [13, 20, 28, 38];
@@ -13136,8 +13185,12 @@
       ctx.fill();
       // 樹身。
       ctx.globalAlpha = 1;
-      ctx.font = `${sz}px ${UI_FONT}`;
-      ctx.fillText(GLYPH[stage], sx + sway, sy);
+      if (clay) {
+        drawClayGroveTree(sx, sy, stage, sway);
+      } else {
+        ctx.font = `${sz}px ${UI_FONT}`;
+        ctx.fillText(GLYPH[stage], sx + sway, sy);
+      }
     }
     ctx.restore();
   }
