@@ -236,6 +236,7 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         // 資源原料、建造材料、採集工具、消耗品、護甲都不是武器。
         ItemKind::Wood
         | ItemKind::Axe
+        | ItemKind::FishingRod
         | ItemKind::Dirt
         | ItemKind::Stone
         | ItemKind::Ether
@@ -337,6 +338,7 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         ItemKind::CosmicShield => Some(ArmorKind::Cosmic),
         ItemKind::Wood
         | ItemKind::Axe
+        | ItemKind::FishingRod
         | ItemKind::Dirt
         | ItemKind::Stone
         | ItemKind::Ether
