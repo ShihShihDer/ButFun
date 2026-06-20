@@ -1881,29 +1881,32 @@
     if (!panel) {
       panel = document.createElement("div");
       panel.id = "civicVotePanel";
+      // 拉皮（切片 3）：投票面板改走暖琥珀面板語彙——黃銅框、暖象牙字、UI 字體，
+      // 淘汰原本的紫底 + monospace 終端機風。
       panel.style.cssText = [
         "position:fixed", "top:60px", "left:50%", "transform:translateX(-50%)",
-        "background:rgba(20,15,40,0.92)", "border:1px solid #8060c0",
-        "border-radius:12px", "padding:10px 16px", "z-index:1100",
+        "background:var(--panel)", "border:1px solid var(--brass)",
+        "border-radius:var(--r-lg)", "padding:12px 16px", "z-index:1100",
         "max-width:360px", "width:90%", "box-sizing:border-box",
-        "font-family:monospace", "color:#d0b8ff", "font-size:.8rem",
+        "box-shadow:var(--shadow-2)",
+        "font-family:var(--ui-font)", "color:var(--ink)", "font-size:.85rem",
         "text-align:center",
       ].join(";");
       document.body.appendChild(panel);
     }
     const secs = voteData.vote_remaining_secs;
     const timeStr = secs > 60 ? `${Math.floor(secs/60)}m${secs%60}s` : `${secs}s`;
-    const btnDisabled = civicHasVoted ? 'disabled style="opacity:0.5;cursor:default"' : '';
-    const votedHint = civicHasVoted ? '<div style="color:#a070e0;margin-top:4px;font-size:.7rem">已投票</div>' : '';
+    const btnDisabled = civicHasVoted ? 'disabled' : '';
+    const votedHint = civicHasVoted ? '<div style="color:var(--ink-dim);margin-top:6px;font-size:.72rem">已投票</div>' : '';
+    // 拉皮（切片 3）：投票鈕改套統一語意按鈕——讚成走實心黃銅 .btn-primary、反對走磚紅描邊
+    // .btn-danger，淘汰螢光綠紅 + monospace；資訊行改暖琥珀語意色（成功綠/磚紅）。
     panel.innerHTML = `
-      <div style="color:#b09fe0;font-size:.7rem;margin-bottom:4px">🏅 代言人：${voteData.spokesman_name}</div>
-      <div style="color:#ffe0a0;margin-bottom:6px;line-height:1.4">${voteData.proposal_text.replace(/請在\d+秒內投票！$/, '')}</div>
-      <div style="color:#80d080;font-size:.7rem;margin-bottom:6px">✅ ${voteData.vote_yes}票 ❌ ${voteData.vote_no}票 ⏱ ${timeStr}</div>
-      <div style="display:flex;gap:8px;justify-content:center">
-        <button ${btnDisabled} onclick="window._castCivicVote(true)"
-          style="background:#2a5a2a;border:1px solid #4a9a4a;border-radius:8px;color:#a0ffa0;padding:4px 14px;cursor:pointer;font-family:monospace">✅ 讚成</button>
-        <button ${btnDisabled} onclick="window._castCivicVote(false)"
-          style="background:#5a2a2a;border:1px solid #9a4a4a;border-radius:8px;color:#ffa0a0;padding:4px 14px;cursor:pointer;font-family:monospace">❌ 反對</button>
+      <div style="color:var(--brass);font-size:.72rem;margin-bottom:4px">🏅 代言人：${voteData.spokesman_name}</div>
+      <div style="color:var(--ink);margin-bottom:8px;line-height:1.4">${voteData.proposal_text.replace(/請在\d+秒內投票！$/, '')}</div>
+      <div style="font-size:.72rem;margin-bottom:8px"><span style="color:var(--success)">✅ ${voteData.vote_yes}票</span> <span style="color:var(--danger)">❌ ${voteData.vote_no}票</span> <span style="color:var(--ink-dim)">⏱ ${timeStr}</span></div>
+      <div style="display:flex;gap:10px;justify-content:center">
+        <button class="btn-primary" ${btnDisabled} onclick="window._castCivicVote(true)">✅ 讚成</button>
+        <button class="btn-danger" ${btnDisabled} onclick="window._castCivicVote(false)">❌ 反對</button>
       </div>
       ${votedHint}
     `;
@@ -8373,17 +8376,18 @@
     if (!furniturePanelEl) {
       furniturePanelEl = document.createElement("div");
       furniturePanelEl.id = "furniturePanel";
+      // 拉皮（切片 3）：住家家具面板統一面板語彙——暖琥珀面板底、黃銅框、token 圓角/陰影/字體。
       furniturePanelEl.style.cssText = [
         "position:fixed", "right:12px", "top:50%",
         "transform:translateY(-50%)",
-        "background:#1a1210", "border:2px solid #7a5838",
-        "border-radius:10px", "padding:10px 14px",
-        "z-index:1500", "min-width:200px", "max-width:240px",
-        "color:#f0e8d0", "font-size:.85rem", "max-height:60vh", "overflow-y:auto",
+        "background:var(--panel-solid)", "border:1px solid var(--brass)",
+        "border-radius:var(--r-lg)", "padding:10px 14px", "box-shadow:var(--shadow-2)",
+        "z-index:1500", "min-width:200px", "max-width:240px", "font-family:var(--ui-font)",
+        "color:var(--ink)", "font-size:.85rem", "max-height:60vh", "overflow-y:auto",
       ].join(";");
       const titleEl = document.createElement("div");
       titleEl.className = "panel-header";
-      titleEl.style.cssText = "font-weight:bold;margin-bottom:8px;font-size:.9rem;";
+      titleEl.style.cssText = "font-weight:600;margin-bottom:8px;font-size:.9rem;color:var(--brass);";
       furniturePanelEl.appendChild(titleEl);
       const bodyEl = document.createElement("div");
       bodyEl.className = "panel-body";
@@ -8406,28 +8410,28 @@
     const curStyleName = homePalette(myHomeStyle).name;
     const nextCode = HOME_STYLE_ORDER[(HOME_STYLE_ORDER.indexOf(myHomeStyle) + 1) % HOME_STYLE_ORDER.length];
     const nextStyleName = homePalette(nextCode).name;
-    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0 7px;border-bottom:1px solid #3a2a1a;margin-bottom:5px;">
+    html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0 7px;border-bottom:1px solid var(--hairline);margin-bottom:5px;">
       <div style="flex:1;min-width:0">
         <div style="font-size:.82rem">🎨 居家風格</div>
-        <div style="font-size:.72rem;color:#cda">${curStyleName}</div>
+        <div style="font-size:.72rem;color:var(--ink-dim)">${curStyleName}</div>
       </div>
-      <button id="cycleStyleBtn" title="換成「${nextStyleName}」" style="font-size:.68rem;padding:1px 5px;background:#347;border:1px solid #58a;color:#bdf;border-radius:3px;cursor:pointer;">換風格</button>
+      <button id="cycleStyleBtn" class="btn-secondary" title="換成「${nextStyleName}」" style="font-size:.72rem;padding:6px 12px;min-height:34px;">換風格</button>
     </div>`;
     // 已放置
     if (myFurniture.length > 0) {
-      html += `<div style="color:rgba(232,224,207,0.62);font-size:.75rem;margin-bottom:3px;">已放置</div>`;
+      html += `<div style="color:var(--ink-dim);font-size:.75rem;margin-bottom:3px;">已放置</div>`;
       myFurniture.forEach((f, idx) => {
         const nameKey = Object.entries(FURNITURE_KIND_MAP).find(([, v]) => v === f.kind)?.[0] || f.kind.toLowerCase();
         const name = ITEM_NAME[nameKey] || f.kind;
         const emoji = ITEM_LOOK[nameKey] || "🪑";
         const effect = FURNITURE_EFFECTS[f.kind] || "";
-        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #3a2a1a;">
+        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--hairline);">
           <span style="font-size:1.2em">${emoji}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:.82rem">${name}</div>
-            <div style="font-size:.68rem;color:#8df">${effect}</div>
+            <div style="font-size:.68rem;color:var(--info)">${effect}</div>
           </div>
-          <button data-idx="${idx}" style="font-size:.68rem;padding:1px 5px;background:#552;border:1px solid #885;color:#fc8;border-radius:3px;cursor:pointer;">移除</button>
+          <button data-idx="${idx}" class="btn-danger" style="font-size:.72rem;padding:6px 12px;min-height:34px;">移除</button>
         </div>`;
       });
     }
@@ -8435,27 +8439,27 @@
     const canPlace = myFurniture.length < 5;
     const placeableItems = FURNITURE_ITEMS.filter(k => (inv.find(s => s.item === k)?.qty || 0) > 0);
     if (placeableItems.length > 0) {
-      html += `<div style="color:rgba(232,224,207,0.62);font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
+      html += `<div style="color:var(--ink-dim);font-size:.75rem;margin:6px 0 3px;">背包可放置</div>`;
       // ROADMAP 323：家具擺在玩家當前所站的室內格——先走到想擺的位置再按放置。
-      html += `<div style="color:#8c8;font-size:.66rem;margin:0 0 4px;">🚶 走到想擺放的位置，再按「放置」</div>`;
+      html += `<div style="color:var(--success);font-size:.66rem;margin:0 0 4px;">🚶 走到想擺放的位置，再按「放置」</div>`;
       placeableItems.forEach(k => {
         const name = ITEM_NAME[k] || k;
         const emoji = ITEM_LOOK[k] || "🪑";
         const effect = FURNITURE_EFFECTS[FURNITURE_KIND_MAP[k]] || "";
         const disabled = !canPlace;
-        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid #3a2a1a;">
+        html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--hairline);">
           <span style="font-size:1.2em">${emoji}</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:.82rem">${name}</div>
-            <div style="font-size:.68rem;color:#8df">${effect}</div>
+            <div style="font-size:.68rem;color:var(--info)">${effect}</div>
           </div>
-          <button data-kind="${k}" ${disabled ? "disabled" : ""} style="font-size:.68rem;padding:1px 5px;background:${disabled?"#333":"#255"};border:1px solid ${disabled?"#555":"#585"};color:${disabled?"#777":"#8fc"};border-radius:3px;cursor:${disabled?"default":"pointer"};">放置</button>
+          <button data-kind="${k}" class="btn-secondary" ${disabled ? "disabled" : ""} style="font-size:.72rem;padding:6px 12px;min-height:34px;">放置</button>
         </div>`;
       });
     }
     // 風格區塊永遠在，故空提示改以「沒有任何家具」判斷（ROADMAP 325）。
     if (myFurniture.length === 0 && placeableItems.length === 0) {
-      html += `<div style="color:rgba(232,224,207,0.38);font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
+      html += `<div style="color:var(--ink-faint);font-size:.78rem;text-align:center;padding:8px;">先到合成台製作家具吧！</div>`;
     }
     body.innerHTML = html;
 
@@ -21326,7 +21330,9 @@
       donateInput.type = "number";
       donateInput.min = "1";
       donateInput.placeholder = "捐贈乙太";
-      donateInput.style.cssText = "width:90px;padding:4px 6px;background:#1a2030;border:1px solid #3a4250;color:#c8d0e0;border-radius:4px;font-size:.8rem;";
+      // 拉皮（切片 3）：公會捐贈輸入框統一走 .field（黃銅 focus 框、16px 防 iOS 縮放）。
+      donateInput.className = "field";
+      donateInput.style.width = "100px";
       const donateBtn = document.createElement("button");
       donateBtn.type = "button";
       donateBtn.className = "expand-btn";
@@ -24960,7 +24966,9 @@
       const btn = document.createElement("button");
       btn.textContent = `捐款 10 乙太入村庫`;
       btn.disabled = ether < 10;
-      btn.style.cssText = "margin-top:8px;padding:4px 10px;cursor:pointer;";
+      // 拉皮（切片 3）：捐獻鈕改套統一主要動作語彙 .btn-primary（取代裸 button）。
+      btn.className = "btn-primary";
+      btn.style.marginTop = "8px";
       btn.onclick = () => ws && ws.readyState === WebSocket.OPEN
         && ws.send(JSON.stringify({ type: "donate_to_village" }));
       body.appendChild(btn);
@@ -24969,12 +24977,12 @@
     // ── 城鎮大工程（ROADMAP 131） ── tp 已於上方 sig 計算時宣告，沿用同一份。
     if (tp) {
       const divider = document.createElement("div");
-      divider.style.cssText = "border-top: 1px solid #444; margin: 12px 0;";
+      divider.style.cssText = "border-top: 1px solid var(--hairline); margin: 12px 0;";
       body.appendChild(divider);
 
       const title = document.createElement("h3");
       title.textContent = `🏗️ 大工程：${tp.name}`;
-      title.style.cssText = "margin: 0 0 8px 0; font-size: 1rem; color: #80c0ff;";
+      title.style.cssText = "margin: 0 0 8px 0; font-size: 1rem; color: var(--info);";
       body.appendChild(title);
 
       if (tp.status === "completed") {
@@ -25015,7 +25023,9 @@
             btn.textContent = `捐 ${qty}`;
             const have = m.item === null ? ether : (myInv.get(m.item) || 0);
             btn.disabled = have < qty || m.cur >= m.target;
-            btn.style.cssText = "padding: 2px 6px; font-size: .75rem; cursor: pointer;";
+            // 拉皮（切片 3）：大工程捐獻鈕走次要動作語彙 .btn-secondary，壓窄成列內小鈕。
+            btn.className = "btn-secondary";
+            btn.style.cssText = "padding: 4px 10px; min-height: 32px; font-size: .75rem;";
             btn.onclick = () => ws.send(JSON.stringify({ type: "donate_to_project", item: m.item, qty }));
             row.appendChild(btn);
           }
@@ -26938,7 +26948,7 @@
       // 旅行入口：有星圖直接展開；沒有就教怎麼做一張。
       const hasChart = (myInv.get("star_chart") || 0) > 0;
       document.getElementById("wmTravel").innerHTML = hasChart
-        ? `<button id="wmTravelBtn" style="width:100%;padding:9px;background:rgba(120,100,200,0.5);border:1px solid #a08ce0;border-radius:8px;color:#e0d8ff;font:inherit;cursor:pointer">🗺️ 展開星圖（星際旅行）</button>`
+        ? `<button id="wmTravelBtn" class="btn-secondary" style="width:100%">🗺️ 展開星圖（星際旅行）</button>`
         : `🚀 <b>想去其他星球？</b><br><small style="opacity:0.85">① 到 🔧 合成台做一張 🗺️ <b>星圖</b> ② 從 🎒 背包點「使用」展開星圖即可選星球出發（跨星航行需 30～150 乙太；首航翠幽星：集滿五大生態武裝需 30 乙太，或直購航票需 300 乙太）。</small>`;
     }
     const wmWin = document.getElementById("winWorldMap");

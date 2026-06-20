@@ -89,7 +89,55 @@
       --sp-5: 24px;
       /* 字體 */
       --ui-font: system-ui, "Noto Sans TC", sans-serif;
+      /* 面板統一寬度（切片 3：取代各面板 body min-width 各寫一套） */
+      --win-w: min(320px, 88vw);
     }
+
+    /* ── 面板元件語言（切片 3）────────────────────────────────────────────────
+       4 語意按鈕 class：取代面板層 8 種互不相容的按鈕長相。星球／種族專色只當左
+       accent border、不整顆換底。全部走 --r-md、min-height 40px、統一 padding，
+       手機觸控下限達標。 */
+    .btn-primary, .btn-secondary, .btn-ghost, .btn-danger {
+      font: inherit; font-family: var(--ui-font); cursor: pointer;
+      min-height: 40px; padding: 8px 16px; border-radius: var(--r-md);
+      line-height: 1.2; white-space: nowrap; display: inline-flex;
+      align-items: center; justify-content: center; gap: 6px;
+      transition: filter 0.12s, background 0.12s, border-color 0.12s;
+    }
+    .btn-primary { background: var(--brass); color: #1a1206; border: none; font-weight: 700; }
+    .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+    .btn-secondary { background: transparent; color: var(--brass); border: 1px solid var(--brass); }
+    .btn-secondary:hover:not(:disabled) { background: rgba(201,162,75,0.15); }
+    .btn-ghost { background: rgba(201,162,75,0.08); color: var(--ink); border: 1px solid var(--line); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--brass); background: rgba(201,162,75,0.14); }
+    .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); font-weight: 600; }
+    .btn-danger:hover:not(:disabled) { background: rgba(217,138,114,0.16); }
+    .btn-primary:disabled, .btn-secondary:disabled, .btn-ghost:disabled, .btn-danger:disabled {
+      cursor: default; opacity: 0.45; filter: none;
+      background: var(--panel-solid); color: var(--ink-dim); border: 1px solid var(--line); font-weight: 400;
+    }
+    .btn-primary:focus-visible, .btn-secondary:focus-visible,
+    .btn-ghost:focus-visible, .btn-danger:focus-visible {
+      outline: 2px solid var(--brass); outline-offset: 2px;
+    }
+
+    /* 統一輸入框：面板層所有 text/number input 共用，黃銅 focus 框、16px 防 iOS 聚焦縮放。 */
+    .field {
+      font: inherit; font-family: var(--ui-font); font-size: 16px;
+      padding: 8px 12px; border-radius: var(--r-md);
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink);
+      min-width: 0;
+    }
+    .field:focus-visible { outline: none; border-color: var(--brass); }
+
+    /* NPC 聊天組件（取代面板內 6 份複製的聊天 log + 輸入列）。
+       統一 log 高度、分隔線走 hairline、送出鈕走 .btn-secondary 語彙。 */
+    .npc-chat { margin-top: var(--sp-3); border-top: 1px solid var(--hairline); padding-top: var(--sp-2); }
+    .npc-chat-hint { font-size: 0.8em; color: var(--ink-dim); margin-bottom: var(--sp-1); }
+    .npc-chat-log { max-height: 110px; overflow-y: auto; font-size: 0.85em; line-height: 1.5; margin-bottom: var(--sp-2); }
+    .npc-chat-row { display: flex; gap: var(--sp-2); }
+    .npc-chat-row .field { flex: 1; }
+    .npc-chat-send { min-height: 40px; padding: 8px 14px; flex: none; }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12;
       font-family: system-ui, "Noto Sans TC", sans-serif; color: var(--ink); }
@@ -428,22 +476,30 @@
     #hudWindows { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top)); z-index: 7; }
     /* 視窗別佔滿視野:再透一點 + 毛玻璃模糊(看得到後面遊戲、字仍清楚),
        高度限到約 2/3 螢幕(內部捲動),寬度略收;手機上不再蓋住整片畫面。 */
-    .hud-window { background: rgba(18, 22, 30, 0.7); border: 1px solid #3a4250; border-radius: 10px;
-      backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
-      padding: 8px 12px 10px; width: min(300px, 84vw); box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+    .hud-window { background: rgba(18, 22, 30, 0.7); border: 1px solid var(--line); border-radius: var(--r-lg);
+      backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); font-family: var(--ui-font);
+      padding: 8px 12px 10px; width: var(--win-w); box-shadow: var(--shadow-2);
       max-height: min(66vh, calc(100vh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
       max-height: min(66dvh, calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); overflow-y: auto; }
+    /* 面板進場：輕量 opacity + 上移淡入（120~160ms），開窗時由 game.js 移除 .hidden 即觸發。
+       prefers-reduced-motion 後備 transition:none，前庭敏感的玩家不受位移動效影響。 */
+    .hud-window:not(.hidden) { animation: winIn 140ms ease-out; }
+    @keyframes winIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { .hud-window:not(.hidden) { animation: none; } }
     /* 標題列＝拖曳把手(ROADMAP 181)：游標提示可拖、觸控時不誤觸發捲動/縮放、拖曳中不選字。
        視窗內文(overflow-y:auto)的捲動不受影響——touch-action:none 只落在這條標題列。 */
-    .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+    .hud-window .win-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      padding-bottom: 6px; border-bottom: 1px solid var(--hairline); /* 黃銅 hairline 標題帶，讓每個面板有一致的標題分隔 */
       cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
     .hud-window .win-head:active { cursor: grabbing; }
     /* 已被玩家拖曳擺放過的浮動視窗:脫離左上容器槽位、改用相對視野的 fixed 定位(座標由 JS 寫 inline)。 */
     .hud-window.win-floated { position: fixed; }
     .hud-window .win-title { color: var(--brass); font-weight: 600; flex: 1; }
-    /* 關閉鈕命中區補到 38×38(手機觸控下限),桌面看起來仍精巧;flex:none 不被標題撐壓。 */
-    .hud-window .win-close { font: inherit; cursor: pointer; width: 38px; height: 38px; line-height: 1;
-      border-radius: 7px; border: 1px solid #3a4250; background: #161b22; color: var(--ink); padding: 0; flex: none; }
+    /* 關閉鈕:命中區 38×38(手機觸控下限,取自 #614),flex 置中＋token 化邊框(本切片語彙)。
+       在 win-head 內、拖曳處理已 closest("button") 略過,點 ✕ 不會誤觸發拖曳。 */
+    .hud-window .win-close { font: inherit; font-family: var(--ui-font); cursor: pointer; width: 38px; height: 38px; line-height: 1;
+      border-radius: var(--r-md); border: 1px solid var(--line); background: var(--panel-solid); color: var(--ink); padding: 0; flex: none;
+      display: flex; align-items: center; justify-content: center; }
     .hud-window .win-close:hover { border-color: var(--brass); }
     .hud-window .win-close:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
     /* 排行榜分頁鈕：在 hud-window 內(不吃 #hudDock 的方塊尺寸),自帶 dock 風樣式＋44px 觸控高、字級 14px。 */
@@ -575,18 +631,20 @@
     @keyframes decay-blink { 0%,100%{opacity:1} 50%{opacity:0.5} }
     /* 裝備面板（ROADMAP 36）：三槽顯示 + ATK/DEF 數值。 */
     #equipBody { padding: 4px 0; }
-    .equip-slot { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .equip-slot { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-bottom: 1px solid var(--hairline); }
     .equip-slot.empty { opacity: 0.5; }
     .equip-slot-label { min-width: 52px; font-size: 0.85em; color: var(--ink); }
     .equip-slot-ico { font-size: 1.3em; }
     .equip-slot-name { flex: 1; }
     .equip-slot-empty { flex: 1; color: var(--ink); font-size: 0.85em; }
-    .equip-unequip-btn { padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,120,120,0.5); background: transparent; color: #ff9090; cursor: pointer; font-size: 0.85em; }
-    .equip-unequip-btn:hover { background: rgba(255,120,120,0.2); }
+    /* 卸下鈕：磚紅描邊（同 .btn-danger 語彙）。 */
+    .equip-unequip-btn { padding: 8px 12px; min-height: 36px; border-radius: var(--r-md); border: 1px solid var(--danger); background: transparent; color: var(--danger); cursor: pointer; font: inherit; font-size: 0.85em; }
+    .equip-unequip-btn:hover { background: rgba(217,138,114,0.16); }
+    .equip-unequip-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
     .equip-stats { display: flex; gap: 20px; padding: 10px 6px 4px; color: var(--brass); font-size: 0.9em; }
     /* 精煉/附魔面板（ROADMAP 37）。 */
     .refine-head { font-size: 0.8em; color: var(--brass); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
-    .refine-section { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 8px 10px; margin: 4px 0; }
+    .refine-section { background: rgba(201,162,75,0.05); border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 8px 10px; margin: 4px 0; }
     .refine-item-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
     .refine-item-ico { font-size: 1.2em; }
     .refine-item-name { flex: 1; font-size: 0.95em; }
@@ -594,18 +652,24 @@
     .refine-pips { display: flex; gap: 3px; margin: 4px 0; }
     .refine-pip { width: 14px; height: 6px; border-radius: 2px; background: rgba(255,255,255,0.12); }
     .refine-pip.filled { background: var(--brass); }
-    .refine-btn { margin-top: 6px; padding: 5px 10px; border: 1px solid var(--brass); border-radius: 5px; background: rgba(201,162,75,0.12); color: #eee; font-size: 0.85em; cursor: pointer; width: 100%; }
-    .refine-btn:hover:not(.disabled) { background: rgba(201,162,75,0.25); }
-    .refine-btn.disabled, .refine-btn:disabled { opacity: 0.4; cursor: default; }
-    .refine-maxed { display: block; text-align: center; color: #e8c04a; font-size: 0.85em; margin-top: 4px; }
-    .refine-empty { color: var(--ink); font-size: 0.85em; text-align: center; padding: 6px 0; }
-    .refine-note { color: var(--ink); font-size: 0.75em; margin-top: 6px; }
+    /* 精煉鈕：黃銅描邊（次要動作語彙，同 .btn-secondary），達標時可點、不足反灰。 */
+    .refine-btn { margin-top: 6px; padding: 8px 12px; min-height: 40px; border: 1px solid var(--brass); border-radius: var(--r-md);
+      background: rgba(201,162,75,0.10); color: var(--brass); font: inherit; font-size: 0.85em; cursor: pointer; width: 100%; }
+    .refine-btn:hover:not(.disabled):not(:disabled) { background: rgba(201,162,75,0.20); }
+    .refine-btn.disabled, .refine-btn:disabled { opacity: 0.45; cursor: default; }
+    .refine-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    .refine-maxed { display: block; text-align: center; color: var(--brass-light); font-size: 0.85em; margin-top: 4px; }
+    .refine-empty { color: var(--ink-dim); font-size: 0.85em; text-align: center; padding: 6px 0; }
+    .refine-note { color: var(--ink-dim); font-size: 0.75em; margin-top: 6px; }
     .enchant-title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.9em; }
     .enchant-current { color: var(--brass); font-size: 0.85em; margin-left: auto; }
-    .enchant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-    .enchant-btn { padding: 5px 6px; border: 1px solid rgba(255,255,255,0.2); border-radius: 5px; background: rgba(255,255,255,0.06); color: #eee; font-size: 0.8em; cursor: pointer; }
-    .enchant-btn:hover:not(.disabled) { border-color: var(--brass); background: rgba(201,162,75,0.15); }
-    .enchant-btn.disabled, .enchant-btn:disabled { opacity: 0.4; cursor: default; }
+    .enchant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-1); }
+    /* 附魔選項鈕：淡底可點（同 .btn-ghost 語彙），hover 走黃銅高亮。 */
+    .enchant-btn { padding: 8px 8px; min-height: 40px; border: 1px solid var(--line); border-radius: var(--r-md);
+      background: rgba(201,162,75,0.06); color: var(--ink); font: inherit; font-size: 0.8em; cursor: pointer; }
+    .enchant-btn:hover:not(.disabled):not(:disabled) { border-color: var(--brass); background: rgba(201,162,75,0.14); }
+    .enchant-btn.disabled, .enchant-btn:disabled { opacity: 0.45; cursor: default; }
+    .enchant-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
     /* 合成台視窗:列出配方(產物 ← 素材),夠料才亮「合成」鈕。送出 craft 意圖、產物走既有背包
        快照回來(零契約變更),規則扣料仍由伺服器說了算。摘要(#craftSummary)用 ink 與標題分層。 */
     #craftSummary { color: var(--ink); }
@@ -614,18 +678,21 @@
     /* 配方描述「產物 ← 素材」佔滿剩餘寬度,缺料的素材標紅讓玩家一眼知道差什麼。 */
     #craftBody .craft-desc { flex: 1; }
     #craftBody .craft-out { color: var(--brass); }
-    #craftBody .craft-need.lack { color: #e0795f; }
-    /* 合成鈕:夠料亮黃銅、缺料反灰停用(disabled),套深色主題語彙(同登入/建議鈕)。 */
-    #craftBody .craft-btn {
-      font: inherit; cursor: pointer; padding: 8px 12px; min-height: 40px; font-size: 0.85rem; white-space: nowrap;
-      border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
+    #craftBody .craft-need.lack { color: var(--danger); }
+    /* 合成鈕:夠料亮黃銅、缺料反灰停用(disabled),套統一按鈕語彙(同 .btn-primary)。
+       craft-btn / expand-btn 是面板層既有的「主要動作鈕」共用 class（散見 40+ 處），
+       這裡統一其長相為 token 化的實心黃銅鈕。min-height 40px 守手機觸控下限(取自 #614)。 */
+    .craft-btn, .expand-btn {
+      font: inherit; font-family: var(--ui-font); cursor: pointer; padding: 8px 14px; min-height: 40px;
+      font-size: 0.85rem; white-space: nowrap; line-height: 1.2;
+      border-radius: var(--r-md); border: none; background: var(--brass); color: #1a1206; font-weight: 700;
     }
-    #craftBody .craft-btn:hover:not(:disabled) { filter: brightness(1.1); }
-    #craftBody .craft-btn:disabled {
-      cursor: default; background: #161b22; color: var(--ink);
-      border: 1px solid #3a4250; font-weight: 400; opacity: 0.55;
+    .craft-btn:hover:not(:disabled), .expand-btn:hover:not(:disabled) { filter: brightness(1.1); }
+    .craft-btn:disabled, .expand-btn:disabled {
+      cursor: default; background: var(--panel-solid); color: var(--ink-dim);
+      border: 1px solid var(--line); font-weight: 400; opacity: 0.55;
     }
-    #craftBody .craft-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    .craft-btn:focus-visible, .expand-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
 
     /* 擴地視窗:沿用合成台反灰語彙(乙太夠亮黃銅、不夠或達上限反灰停用)。「下一格要多少乙太」
        佔滿剩餘寬度,乙太不足時價格標紅讓玩家一眼知道還差多少。摘要(#expandSummary)用 ink 分層。 */
@@ -634,17 +701,8 @@
     #expandBody .expand-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
     #expandBody .expand-desc { flex: 1; }
     #expandBody .expand-cost { color: var(--brass); }
-    #expandBody .expand-cost.lack { color: #e0795f; }
-    #expandBody .expand-btn {
-      font: inherit; cursor: pointer; padding: 8px 12px; min-height: 40px; font-size: 0.85rem; white-space: nowrap;
-      border-radius: 8px; border: none; background: var(--brass); color: #1a1206; font-weight: 700;
-    }
-    #expandBody .expand-btn:hover:not(:disabled) { filter: brightness(1.1); }
-    #expandBody .expand-btn:disabled {
-      cursor: default; background: #161b22; color: var(--ink);
-      border: 1px solid #3a4250; font-weight: 400; opacity: 0.55;
-    }
-    #expandBody .expand-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    #expandBody .expand-cost.lack { color: var(--danger); }
+    /* expand-btn 的長相已統一在上方 .craft-btn,.expand-btn 共用規則。 */
 
     /* 聊天 */
     #chat { position: fixed; left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); width: min(360px, 70vw); z-index: 5;
@@ -702,12 +760,13 @@
       overflow-y: auto;
       padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
                calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); }
-    .modal { background: #11151c; border: 1px solid #3a4250; border-radius: 12px;
+    .modal { background: #11151c; border: 1px solid var(--line); border-radius: var(--r-lg);
+      box-shadow: var(--shadow-3); font-family: var(--ui-font);
       padding: 20px; width: min(420px, 90vw); display: flex; flex-direction: column; gap: 10px; }
     .modal h2 { margin: 0; color: var(--brass); font-size: 1.2rem; }
-    .modal p { margin: 0; opacity: 0.7; font-size: 0.85rem; }
+    .modal p { margin: 0; color: var(--ink-dim); font-size: 0.85rem; }
     .modal textarea { resize: vertical; min-height: 90px; }
-    .modal .row { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal .row { display: flex; gap: var(--sp-2); justify-content: flex-end; }
     .modal button { cursor: pointer; }
     #suggestStatus { font-size: 0.85rem; min-height: 1.2em; }
 
@@ -1267,12 +1326,12 @@
         <button type="button" class="win-close" data-close="winBounty" aria-label="關閉懸賞面板">✕</button>
       </div>
       <div id="bountyBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟獵手蘭卡聊聊（他會記得你）</div>
-        <div id="npcChatLog_bounty_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_bounty_npc" type="text" maxlength="200" placeholder="跟蘭卡說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_bounty_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟獵手蘭卡聊聊（他會記得你）</div>
+        <div id="npcChatLog_bounty_npc" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_bounty_npc" type="text" maxlength="200" placeholder="跟蘭卡說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_bounty_npc" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1283,12 +1342,12 @@
         <button type="button" class="win-close" data-close="winExpedition" aria-label="關閉探勘面板">✕</button>
       </div>
       <div id="expeditionBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟探勘員芙利亞聊聊（她會記得你）</div>
-        <div id="npcChatLog_expedition_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_expedition_npc" type="text" maxlength="200" placeholder="跟芙利亞說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_expedition_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟探勘員芙利亞聊聊（她會記得你）</div>
+        <div id="npcChatLog_expedition_npc" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_expedition_npc" type="text" maxlength="200" placeholder="跟芙利亞說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_expedition_npc" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1299,12 +1358,12 @@
         <button type="button" class="win-close" data-close="winProcurement" aria-label="關閉採購面板">✕</button>
       </div>
       <div id="procurementBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟採購代理人吉爾聊聊（他會記得你）</div>
-        <div id="npcChatLog_procurement_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_procurement_npc" type="text" maxlength="200" placeholder="跟吉爾說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_procurement_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟採購代理人吉爾聊聊（他會記得你）</div>
+        <div id="npcChatLog_procurement_npc" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_procurement_npc" type="text" maxlength="200" placeholder="跟吉爾說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_procurement_npc" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1315,12 +1374,12 @@
         <button type="button" class="win-close" data-close="winFarmFair" aria-label="關閉農展面板">✕</button>
       </div>
       <div id="farmFairBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟評審老農聊聊（他會記得你）</div>
-        <div id="npcChatLog_farm_fair_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_farm_fair_npc" type="text" maxlength="200" placeholder="跟老農說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_farm_fair_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟評審老農聊聊（他會記得你）</div>
+        <div id="npcChatLog_farm_fair_npc" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_farm_fair_npc" type="text" maxlength="200" placeholder="跟老農說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_farm_fair_npc" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1331,12 +1390,12 @@
         <button type="button" class="win-close" data-close="winVillageChief" aria-label="關閉里長面板">✕</button>
       </div>
       <div id="villageChiefBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(212,168,32,0.35);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟凱爾長老說說（他記得每一位拓荒者）</div>
-        <div id="npcChatLog_village_chief" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_village_chief" type="text" maxlength="200" placeholder="跟長老說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_village_chief" class="hud-pill" style="cursor:pointer;border:1px solid #d4a820">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟凱爾長老說說（他記得每一位拓荒者）</div>
+        <div id="npcChatLog_village_chief" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_village_chief" type="text" maxlength="200" placeholder="跟長老說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_village_chief" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1346,13 +1405,13 @@
         <span class="win-title" id="travelerTitle">🧳 旅人</span>
         <button type="button" class="win-close" data-close="winTraveler" aria-label="關閉旅人面板">✕</button>
       </div>
-      <div id="travelerOrigin" style="font-size:0.85em;opacity:0.75;margin-bottom:8px">走近的旅人正在廣場歇息，可以跟他說說話。</div>
-      <div style="margin-top:4px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟旅人聊聊（他不久就要繼續上路了）</div>
-        <div id="npcChatLog_traveler" style="max-height:110px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_traveler" type="text" maxlength="200" placeholder="跟旅人說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_traveler" class="hud-pill" style="cursor:pointer;border:1px solid #d4a820">送出</button>
+      <div id="travelerOrigin" style="font-size:0.85em;color:var(--ink-dim);margin-bottom:8px">走近的旅人正在廣場歇息，可以跟他說說話。</div>
+      <div class="npc-chat" style="margin-top:4px">
+        <div class="npc-chat-hint">💬 跟旅人聊聊（他不久就要繼續上路了）</div>
+        <div id="npcChatLog_traveler" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_traveler" type="text" maxlength="200" placeholder="跟旅人說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_traveler" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1363,12 +1422,12 @@
         <button type="button" class="win-close" data-close="winWorkshop" aria-label="關閉工坊面板">✕</button>
       </div>
       <div id="workshopBody"></div>
-      <div style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟工匠老胡聊聊（他會記得你）</div>
-        <div id="npcChatLog_workshop_npc" style="max-height:100px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput_workshop_npc" type="text" maxlength="200" placeholder="跟老胡說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend_workshop_npc" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div class="npc-chat">
+        <div class="npc-chat-hint">💬 跟工匠老胡聊聊（他會記得你）</div>
+        <div id="npcChatLog_workshop_npc" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput_workshop_npc" type="text" maxlength="200" placeholder="跟老胡說點什麼…" class="field" />
+          <button type="button" id="npcChatSend_workshop_npc" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
@@ -1413,12 +1472,12 @@
       </div>
       <div id="shopBody"><div style="opacity:0.6;font-size:0.85em">走近商人才能使用商店</div></div>
       <!-- 會動腦的 NPC 對話（第一塊）：走近商人可直接打字跟他聊，他用地端 AI 回話、會記得你。 -->
-      <div id="npcChatBox" style="margin-top:10px;border-top:1px solid rgba(201,162,75,0.25);padding-top:8px">
-        <div style="font-size:0.8em;opacity:0.7;margin-bottom:4px">💬 跟商人聊聊（他會記得你）</div>
-        <div id="npcChatLog" style="max-height:120px;overflow-y:auto;font-size:0.85em;line-height:1.5;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px">
-          <input id="npcChatInput" type="text" maxlength="200" placeholder="跟商人說點什麼…" style="flex:1;min-width:0;padding:6px 8px;border-radius:6px;border:1px solid #3a4250;background:rgba(0,0,0,0.3);color:var(--ink);font:inherit" />
-          <button type="button" id="npcChatSend" class="hud-pill" style="cursor:pointer;border:1px solid var(--brass)">送出</button>
+      <div id="npcChatBox" class="npc-chat">
+        <div class="npc-chat-hint">💬 跟商人聊聊（他會記得你）</div>
+        <div id="npcChatLog" class="npc-chat-log"></div>
+        <div class="npc-chat-row">
+          <input id="npcChatInput" type="text" maxlength="200" placeholder="跟商人說點什麼…" class="field" />
+          <button type="button" id="npcChatSend" class="btn-secondary npc-chat-send">送出</button>
         </div>
       </div>
     </div>
