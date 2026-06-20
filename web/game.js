@@ -3660,6 +3660,7 @@
         const wx = msg.x || 0, wy = (msg.y || 0) - 40;
         const now = performance.now();
         const ether = msg.ether || 0;
+        const soilBonus = msg.soil_bonus || 0; // ROADMAP 438：休耕養出的地力換得的額外乙太（已含進 ether）
         if (msg.quality === "premium") {
           floaters.push({ wx, wy, text: `⭐ 優質收成！+${ether} 乙太`, color: "255,224,130", born: now });
           announce(`用心照顧有成，優質收成，得到 ${ether} 乙太`);
@@ -3669,6 +3670,12 @@
           announce(`用心收成，得到 ${ether} 乙太`);
         } else {
           floaters.push({ wx, wy, text: `🌾 +${ether} 乙太`, color: "170,225,170", born: now });
+        }
+        // 沃土輪休（ROADMAP 438）：這格歇夠了養出地力，收成多綴一行「🌱 沃土 +N」，
+        // 讓「讓地歇口氣」的回報一眼看得見（疊在乙太飄字下方一點、晚一拍冒出）。
+        if (soilBonus > 0) {
+          floaters.push({ wx, wy: wy + 16, text: `🌱 沃土 +${soilBonus} 乙太`, color: "150,200,110", born: now + 1 });
+          announce(`這塊地歇養出地力，沃土加成多得 ${soilBonus} 乙太`);
         }
         break;
       }
@@ -25609,6 +25616,28 @@
     ctx.restore();
   }
 
+  // ROADMAP 438 沃土輪休：空翻好土（state 1）休耕養出的「地力」由淺到濃疊一層腐殖質沃土色澤，
+  // 讓玩家一眼看出「哪幾格歇夠了、種下去收成更甜」。等級 cell.soil（0~3）由伺服器
+  // soil_vitality.rs 權威算（空著休耕越久越高、種了作物/剛收成歸零），這裡只把它畫成濃淡，
+  // 不嵌任何規則；純表現、墊在空心環之下、低 alpha 不搶視覺；靜態繪製，reduceMotion 一樣顯示
+  //（核心回饋＝看得出哪格肥，只是不另堆動畫）。
+  function drawSoilVitality(sx, sy, ts, level) {
+    const lv = level | 0;
+    if (lv <= 0) return; // 0=貧土（剛翻好/剛收成），不疊，與生地一樣
+    ctx.save();
+    // 養越久越濃的腐殖質深褐（帶一絲生機綠調），讀作「養肥了的鬆軟好土」；alpha 隨等級加深。
+    const a = 0.12 + Math.min(3, lv) * 0.10; // lv1≈.22 / lv2≈.32 / lv3≈.42
+    ctx.fillStyle = `rgba(70,50,26,${a})`;
+    ctx.fillRect(sx + 1, sy + 1, ts - 2, ts - 2);
+    // 養滿（lv3）再綴一圈嫩芽綠內框，標出「最肥、最值得現在種」的格。
+    if (lv >= 3) {
+      ctx.strokeStyle = "rgba(150,200,110,0.5)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx + 1.5, sy + 1.5, ts - 3, ts - 3);
+    }
+    ctx.restore();
+  }
+
   // ROADMAP 406 用心栽培：成熟作物依「收成品質」點一枚光點——優質(quality 2)＝金色四芒小星、
   // 用心(quality 1)＝柔綠小點，讓「用心照顧」在收成前就一眼看得見。純表現、只讀快照碼
   // (cell.quality 由伺服器 crops.rs 權威算)，不嵌任何規則；靜態繪製，reduceMotion 一樣顯示。
@@ -25691,6 +25720,8 @@
         drawQualityGlint(sx, sy, ts, cell.quality); // 成熟作物的品質光點（ROADMAP 406）
       }
       drawGrowBar(sx, sy, ts, cell); // 成長中作物的熟成進度條（ROADMAP 421）
+      // 空翻好土的地力濃淡（ROADMAP 438），墊在空心環之下。
+      if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
       drawStagePips(sx, sy, ts, cell);
       return;
     }
@@ -25737,6 +25768,8 @@
       ctx.setLineDash([]);
     }
     drawGrowBar(sx, sy, ts, cell); // 成長中作物的熟成進度條（ROADMAP 421）
+    // 空翻好土的地力濃淡（ROADMAP 438），墊在空心環之下。
+    if (cell.state === 1) drawSoilVitality(sx, sy, ts, cell.soil);
     drawStagePips(sx, sy, ts, cell);
   }
 

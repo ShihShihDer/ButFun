@@ -1286,6 +1286,11 @@ pub enum ServerMsg {
         player_id: Uuid,
         quality: String,
         ether: u32,
+        /// ROADMAP 438 沃土輪休：這次收成裡「休耕養出的地力」換得的額外乙太（已含進 `ether`）。
+        /// >0 時前端飄字綴「🌱 沃土 +N」，讓「讓地歇口氣」的回報一眼看得見；0 ＝這格沒養出地力。
+        /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+        #[serde(default)]
+        soil_bonus: u32,
         x: f32,
         y: f32,
     },
@@ -2564,6 +2569,12 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
     #[serde(default)]
     pub grow: u8,
+    /// ROADMAP 438 沃土輪休：這格的「地力」顯示等級（0=貧 1 2 3=沃），只在「空翻好土」
+    /// （state 1）時有意義——空著休耕越久地力越高，前端據此把土色由淺到濃疊上沃土感，
+    /// 玩家一眼看出哪幾格歇夠了、種下去收成更甜。其餘狀態一律 0。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default)]
+    pub soil: u8,
 }
 
 #[cfg(test)]
@@ -2777,6 +2788,7 @@ mod tests {
                     thriving: false,
                     quality: 0,
                     grow: 0,
+                    soil: 0,
                 }],
                 home_decor: 0,
                 garden: vec![],

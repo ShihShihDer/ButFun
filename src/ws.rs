@@ -1405,7 +1405,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         FarmOutcome::Nothing
                     };
 
-                    if let FarmOutcome::Harvested(ether, quality) = outcome {
+                    if let FarmOutcome::Harvested(ether, quality, soil_bonus) = outcome {
                         // 鎖內：加乙太＋熟練度，並順手抓玩家座標供出鎖後定位飄字（守 prod-deadlock：
                         // 廣播一律出鎖再送，不在持 players 寫鎖時送 tx）。
                         let harvest_evt = {
@@ -1420,6 +1420,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     player_id: id,
                                     quality: quality.as_str().to_string(),
                                     ether,
+                                    soil_bonus, // ROADMAP 438：沃土加成乙太（已含進 ether），供飄字綴「🌱 沃土 +N」
                                     x: p.x,
                                     y: p.y,
                                 }
