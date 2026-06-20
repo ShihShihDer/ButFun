@@ -23,6 +23,7 @@ mod activity_chain;
 mod meditation;
 mod busking;
 mod apiary;
+mod companion_revive;
 mod meal_buff;
 mod meal_share;
 mod dish_mastery;

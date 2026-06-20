@@ -832,6 +832,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 連線層擋封包洪流，每對象 60s 冷卻另由 game.rs 把關，雙重防洗榜。
     let mut rl_cheer_win = std::time::Instant::now();
     let mut rl_cheer_n: u32 = 0;
+    // 同伴扶起限流（ROADMAP 464）：比照 emote／擊掌／喝采從嚴（每秒至多 3 次，超量靜默丟棄）。
+    let mut rl_helpup_win = std::time::Instant::now();
+    let mut rl_helpup_n: u32 = 0;
     // 逗玩接物限流（ROADMAP 345）：比照 emote／擊掌／喝采從嚴（每秒至多 3 次，超量靜默丟棄）——
     // 擋封包洪流；一趟接物未結束前不重複開新接物另由 game.rs 把關（`pet_fetch.is_none()` 才丟得出）。
     let mut rl_petfetch_win = std::time::Instant::now();
@@ -1405,6 +1408,80 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 對象身上、且對象需是已登入玩家才持久化得了，訪客互喝采重啟即逝、無妨）。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.cheer_offer = crate::player_cheer::OFFER_TICKS;
+                    }
+                }
+                Ok(ClientMsg::HelpUp) => {
+                    // 同伴扶起（ROADMAP 464）：把附近倒下的旅人就地扶起來（半血起身、不再被傳回
+                    // 新手村）。限流（比照 emote／擊掌：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_helpup_win.elapsed().as_secs() >= 1 {
+                        rl_helpup_win = std::time::Instant::now();
+                        rl_helpup_n = 0;
+                    }
+                    rl_helpup_n += 1;
+                    if rl_helpup_n > 3 {
+                        continue;
+                    }
+                    // 一輪寫鎖內完成：先讀扶人者權威座標 + 蒐倒地候選 → 純函式挑最近搆得著的 →
+                    // 扶起那一位。全程同一把 players 寫鎖、不巢狀上鎖；廣播待出鎖後才送（守 prod
+                    // 死鎖鐵律）。對象一律用扶人者自己的權威座標判定（防隔空救人）。
+                    let revived: Option<(uuid::Uuid, String, uuid::Uuid, String, f32, f32)> = {
+                        let mut players = app.players.write().unwrap();
+                        // 扶人者須存在、自己沒倒地、不在室內（室內無同伴可救、座標也另一套）。
+                        let rescuer = players
+                            .get(&id)
+                            .filter(|p| !p.vitals.is_downed() && p.indoor_plot_id.is_none())
+                            .map(|p| (p.name.clone(), p.x, p.y));
+                        if let Some((rescuer_name, rx, ry)) = rescuer {
+                            // 蒐集所有「倒地、不在室內、不是自己」的候選者（id 與座標一一對應）。
+                            let mut ids: Vec<uuid::Uuid> = Vec::new();
+                            let mut pts: Vec<(f32, f32)> = Vec::new();
+                            for other in players.values() {
+                                if other.id != id
+                                    && other.vitals.is_downed()
+                                    && other.indoor_plot_id.is_none()
+                                {
+                                    ids.push(other.id);
+                                    pts.push((other.x, other.y));
+                                }
+                            }
+                            match crate::companion_revive::nearest_revivable(rx, ry, &pts) {
+                                Some(idx) => {
+                                    let target_id = ids[idx];
+                                    // 扶起（純函式 revive：只有倒地才生效，半血就地起身、清復原倒數）。
+                                    if let Some(t) = players.get_mut(&target_id) {
+                                        if t.vitals.revive() {
+                                            Some((id, rescuer_name, target_id, t.name.clone(), t.x, t.y))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                }
+                                None => None,
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    // 真的扶起人才廣播那一瞬（出鎖後送，守 prod 死鎖鐵律）。
+                    if let Some((rescuer_id, rescuer, target_id, target, x, y)) = revived {
+                        tracing::info!(rescuer = %rescuer, target = %target, "同伴扶起倒地旅人");
+                        let _ = app.tx.send(std::sync::Arc::new(ServerMsg::PlayerRevived {
+                            rescuer_id,
+                            rescuer,
+                            target_id,
+                            target,
+                            x,
+                            y,
+                        }));
+                        // 活動鏈：扶起同伴是一種社交互動（比照 emote 計入社交環）。
+                        advance_activity_chain(
+                            &app,
+                            id,
+                            crate::activity_chain::ActivityKind::Social,
+                            &tx_direct,
+                        );
                     }
                 }
                 Ok(ClientMsg::PlayWithPet { dx, dy }) => {

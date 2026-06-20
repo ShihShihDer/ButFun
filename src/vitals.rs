@@ -171,6 +171,27 @@ impl Vitals {
         self.regen_accum = 0.0;
     }
 
+    /// 被同伴扶起時就地恢復的血量：最大血量的一半，至少 1（半血起身——免去回新手村的折返，
+    /// 但仍留一點戰鬥張力，不是滿血白嫖）。純函式。
+    pub fn revive_hp(&self) -> u32 {
+        (self.max_hp / 2).max(1)
+    }
+
+    /// 被附近同伴扶起（ROADMAP 464）：**只有倒地（hp == 0）時有效**。半血就地起身、把復原倒數
+    /// 清零（故遊戲迴圈那條「自然復原→傳回新手村」的判定不會對被救者觸發，他留在原地），
+    /// 並補一段回血冷卻（剛被扶起不立刻自然回血、保留戰鬥張力）。
+    /// 回傳「是否真的扶起了」：非倒地時為 no-op、回 `false`（站著的人扶不起來、也不會被亂動血量）。
+    pub fn revive(&mut self) -> bool {
+        if self.hp != 0 {
+            return false;
+        }
+        self.hp = self.revive_hp();
+        self.recovery_timer = 0.0;
+        self.regen_cooldown = REGEN_DELAY_SECS;
+        self.regen_accum = 0.0;
+        true
+    }
+
     /// 道具回血（活力藥水等）：立即恢復 `amount` HP，不超過 `self.max_hp`。
     /// 倒地（hp == 0）時無效，回傳 0。正常回傳實際回復量（可能因接近上限而小於 amount）。
     pub fn heal(&mut self, amount: u32) -> u32 {
@@ -308,6 +329,48 @@ mod tests {
         let before = v.clone();
         assert!(!v.take_damage(0));
         assert_eq!(v, before);
+    }
+
+    #[test]
+    fn revive_only_works_when_downed() {
+        // 站著的人扶不起來：no-op、回 false、狀態完全不動。
+        let mut v = Vitals::new();
+        let before = v.clone();
+        assert!(!v.revive());
+        assert_eq!(v, before);
+        // 把他打趴後才扶得起來。
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        assert!(v.revive());
+    }
+
+    #[test]
+    fn revive_stands_up_at_half_hp_and_clears_recovery() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        assert!(v.revive());
+        // 半血起身（基礎等級 max=MAX_HP → 半血）、不再倒地。
+        assert_eq!(v.hp(), MAX_HP / 2);
+        assert!(v.is_alive());
+        assert!(!v.is_downed());
+        // 復原倒數已清零：遊戲迴圈的「自然復原→傳回新手村」判定不會對被救者觸發。
+        // 再 tick 一大段時間也只會自然回血、絕不再被當成「剛從倒地滿血復原」而傳走。
+        v.tick(RECOVERY_SECS + 10.0);
+        assert!(v.is_alive());
+    }
+
+    #[test]
+    fn revive_hp_scales_with_max_and_is_at_least_one() {
+        // 高等級玩家半血起身用的是縮放後的最大血量。
+        let mut v = Vitals::new();
+        v.set_max_hp_full(level_max_hp(5)); // max = 30
+        v.take_damage(v.max_hp());
+        assert!(v.is_downed());
+        assert!(v.revive());
+        assert_eq!(v.hp(), level_max_hp(5) / 2);
+        // revive_hp 永不為 0（即使極小 max 也至少 1）。
+        assert!(v.revive_hp() >= 1);
     }
 
     #[test]
