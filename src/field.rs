@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crop_variety::CropVariety;
 use crate::crops::{Crop, CropStage};
+use crate::season::Season;
 use crate::protocol::{FieldView, TileView};
 
 /// 每格耕地的邊長（世界像素）。
@@ -407,7 +408,10 @@ impl Field {
     /// 推進 `dt` 秒：讓地裡所有作物成長（無濕度的不會長，見 `Crop::grow`）。
     /// ROADMAP 367 連片沃土：先算「哪些格屬於連片田畝」，連片格的作物以
     /// `THRIVE_GROWTH_MULT` 加速成長（濕度仍按真實 `dt` 消耗，見 `Crop::grow_boosted`）。
-    pub fn tick(&mut self, dt: f32) {
+    /// ROADMAP 453 作物品種季節偏好：每株再依「品種 × 當季」疊一層偏好倍率
+    /// （`CropVariety::season_affinity`，主食穀恆 1.0＝向後相容；速生菜耐寒、乙太瓜戀夏畏寒）。
+    /// `season` 是世界當前季節（呼叫端 game.rs 從 `app.season` 取得）。
+    pub fn tick(&mut self, dt: f32, season: Season) {
         let thriving = crate::field_thrive::thriving_mask(
             &self.planted_mask(),
             FIELD_COLS,
@@ -417,11 +421,13 @@ impl Field {
         for (i, t) in self.tiles.iter_mut().enumerate() {
             match t {
                 Tile::Planted(c) => {
-                    let mult = if thriving[i] {
+                    let patch_mult = if thriving[i] {
                         crate::field_thrive::THRIVE_GROWTH_MULT
                     } else {
                         1.0
                     };
+                    // 品種 × 當季偏好：與連片沃土倍率正交、各自獨立疊乘。
+                    let mult = patch_mult * c.kind().season_affinity(season);
                     c.grow_boosted(dt, mult);
                     // 種了作物：地力「鎖住」不再累積（待收成兌現），也不流失。
                 }
@@ -799,9 +805,9 @@ mod tests {
         f.plant(0, 0);
         // 單次澆水只夠長 MOISTURE_PER_WATER 秒，需再澆一次才到成熟。
         assert!(f.water(0, 0));
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         assert!(f.water(0, 0));
-        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         assert_eq!(f.crop_stage(0, 0), Some(CropStage::Ripe));
         // 收成拿到乙太，該格回到翻好的空土。
         assert!(f.harvest(0, 0).is_some());
@@ -825,13 +831,13 @@ mod tests {
     fn grow_and_harvest(f: &mut Field, col: usize, row: usize, rest_before_plant: f32) -> FarmOutcome {
         f.till(col, row);
         if rest_before_plant > 0.0 {
-            f.tick(rest_before_plant); // 空翻好土休耕養地
+            f.tick(rest_before_plant, Season::Summer); // 空翻好土休耕養地
         }
         f.plant(col, row);
         f.water(col, row);
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         f.water(col, row);
-        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         f.interact(col, row) // 成熟 → 收成
     }
 
@@ -868,9 +874,9 @@ mod tests {
         // 收成後該格回到空土、地力歸零；不再休耕、立刻播種再收。
         f.plant(0, 0);
         f.water(0, 0);
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         f.water(0, 0);
-        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         let second = f.interact(0, 0);
         assert!(
             matches!(second, FarmOutcome::Harvested(_, _, 0)),
@@ -885,9 +891,9 @@ mod tests {
         f.till(0, 0);
         f.plant(0, 0); // 立刻種、之後整段時間都「種著」
         f.water(0, 0);
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         f.water(0, 0);
-        f.tick(RIPE_AT - MOISTURE_PER_WATER + 300.0); // 多跑 300 秒（作物期不累積地力）
+        f.tick(RIPE_AT - MOISTURE_PER_WATER + 300.0, Season::Summer); // 多跑 300 秒（作物期不累積地力）
         let out = f.interact(0, 0);
         assert!(
             matches!(out, FarmOutcome::Harvested(_, _, 0)),
@@ -900,7 +906,7 @@ mod tests {
         // 養出地力的田序列化再還原，地力原封不動（持久化格式涵蓋 soil 欄）。
         let mut f = Field::new();
         f.till(0, 0);
-        f.tick(80.0); // 養一點地力
+        f.tick(80.0, Season::Summer); // 養一點地力
         let json = serde_json::to_string(&f).unwrap();
         let back: Field = serde_json::from_str(&json).unwrap();
         assert_eq!(back.soil, f.soil, "地力欄應隨整塊地序列化往返保留");
@@ -930,7 +936,8 @@ mod tests {
         f.till(1, 0);
         f.plant(1, 0);
         f.water(1, 0); // 澆了水
-        f.tick(SPROUT_AT);
+        // 預設品種＝主食穀，季節偏好恆 1.0，故任一季節 tick 行為與改動前一致。
+        f.tick(SPROUT_AT, Season::Summer);
         assert_eq!(f.crop_stage(0, 0), Some(CropStage::Seed)); // 乾的沒長
         assert_eq!(f.crop_stage(1, 0), Some(CropStage::Sprout)); // 濕的長了
     }
@@ -955,9 +962,9 @@ mod tests {
         // 未熟作物 → 澆水
         assert_eq!(f.interact(0, 0), FarmOutcome::Watered);
         // 長到成熟
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         f.interact(0, 0); // 再澆一次
-        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         assert_eq!(f.crop_stage(0, 0), Some(CropStage::Ripe));
         // 成熟作物 → 收成拿乙太，回到空土。全程不讓它渴＝優質收成（ROADMAP 406），
         // 乙太＝基礎＋優質加成。
@@ -1052,7 +1059,7 @@ mod tests {
         f.plant(2, 0);
         f.water(2, 0);
         // 發芽、濕度也消耗到一半，停在階段中段；留 (3,0) 為自然地當對照。
-        f.tick(SPROUT_AT + 5.0);
+        f.tick(SPROUT_AT + 5.0, Season::Summer);
 
         let json = serde_json::to_string(&f).unwrap();
         // origin 刻意不入存檔（`#[serde(skip)]`）：載入時由該玩家的序號重建供入，
@@ -1082,7 +1089,7 @@ mod tests {
         f.till(0, 0);
         f.plant(0, 0);
         f.water(0, 0);
-        f.tick(SPROUT_AT + 3.0);
+        f.tick(SPROUT_AT + 3.0, Season::Summer);
 
         let json = serde_json::to_string(&f).unwrap();
         let raw: Field = serde_json::from_str(&json).unwrap();
@@ -1245,9 +1252,9 @@ mod tests {
         f.till(0, 0);
         f.plant(0, 0);
         f.water(0, 0);
-        f.tick(MOISTURE_PER_WATER);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
         f.water(0, 0);
-        f.tick(RIPE_AT - MOISTURE_PER_WATER);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
         assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0 });
     }
@@ -1260,7 +1267,7 @@ mod tests {
         f.till(1, 0); f.plant(1, 0); f.water(1, 0); // 已澆水
         f.water_all_planted();
         // 兩株都應能繼續成長（有濕度）；tick(SPROUT_AT) 後應達到發芽 state=3。
-        f.tick(SPROUT_AT);
+        f.tick(SPROUT_AT, Season::Summer);
         let cells = f.view().cells;
         assert_eq!(cells[0].state, 3, "乾種子被雨水澆後 tick 到 SPROUT_AT 應成為發芽");
         assert_eq!(cells[1].state, 3, "已澆水的 tick 到 SPROUT_AT 也應成為發芽");
@@ -1300,9 +1307,9 @@ mod tests {
         f.till(col, row);
         f.plant(col, row);
         f.water(col, row);
-        f.tick(MOISTURE_PER_WATER); // 補一次水撐過第二段成長
+        f.tick(MOISTURE_PER_WATER, Season::Summer); // 補一次水撐過第二段成長
         f.water(col, row);
-        f.tick(RIPE_AT - MOISTURE_PER_WATER); // 補滿成長到成熟，全程不渴＝優質
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer); // 補滿成長到成熟，全程不渴＝優質
     }
 
     #[test]
@@ -1388,7 +1395,7 @@ mod tests {
         sow(&mut f, 2, 0);
         sow(&mut f, 5, 3); // 遠角孤格，不成片
         // tick 25 秒（< SPROUT_AT=30）：孤格成長 25 仍是種子；連片格成長 25×1.5=37.5 已發芽。
-        f.tick(25.0);
+        f.tick(25.0, Season::Summer);
         assert_eq!(
             f.crop_stage(0, 0),
             Some(CropStage::Sprout),
