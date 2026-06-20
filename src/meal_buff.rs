@@ -85,6 +85,35 @@ impl MealBuff {
         }
         (self.remaining_secs / self.total_secs).clamp(0.0, 1.0)
     }
+
+    /// 圍爐分食（ROADMAP 462）：把這份暖食的一份暖意「分」給身旁旅人——
+    /// 時長按 `frac` 縮短（半份＝順手暖一下、不是把整鍋端給人），每秒回血照舊（溫柔不打折），
+    /// `kind` 沿用同一道料理（前端共用同一圈暖食光暈）。**剛分到時**呼叫（剩餘＝縮短後的總時長、回血累積歸零）。
+    /// `frac` 非有限或越界一律保守夾進 `(0, 1]`；分出的時長保底至少 `MIN_SHARE_SECS` 秒（不致一閃即逝）、
+    /// 且絕不超過來源（分享永遠 ≤ 自己吃下的那份）。純函式、不改自身。
+    pub fn shared(&self, frac: f32) -> MealBuff {
+        let f = if frac.is_finite() && frac > 0.0 { frac.min(1.0) } else { 0.5 };
+        // 縮短後仍保底一小段、但封頂在來源時長（frac≤1 時本就成立，保險再夾一次）。
+        let secs = (self.total_secs * f).clamp(MIN_SHARE_SECS.min(self.total_secs), self.total_secs);
+        MealBuff {
+            kind: self.kind,
+            total_secs: secs,
+            remaining_secs: secs,
+            hp_per_sec: self.hp_per_sec,
+            accum: 0.0,
+        }
+    }
+}
+
+/// 分食時長保底（秒）：分到的暖意再短也留這麼一小段，免得「聞個味就沒了」。
+pub const MIN_SHARE_SECS: f32 = 6.0;
+
+#[cfg(test)]
+impl MealBuff {
+    /// 測試用公開建構子：讓其他模組（如 `meal_share`）的單元測試也能造一份已知參數的 buff。
+    pub fn new_for_test(kind: ItemKind, total_secs: f32, hp_per_sec: f32) -> Self {
+        MealBuff::new(kind, total_secs, hp_per_sec)
+    }
 }
 
 /// 查表：某件道具吃下去會不會帶來暖食飽足 buff，會的話帶什麼參數。
@@ -204,5 +233,35 @@ mod tests {
         assert_eq!(b.tick(f32::NAN), 0);
         assert_eq!(b.tick(f32::INFINITY), 0);
         assert!((b.remaining_secs - 10.0).abs() < 1e-6); // 完全沒推進
+    }
+
+    #[test]
+    fn shared_is_half_duration_same_regen() {
+        // ROADMAP 462 圍爐分食：分給旅人的是「半份」——時長減半、每秒回血照舊、品種沿用。
+        let src = MealBuff::new(ItemKind::DeepBroth, 50.0, 0.9);
+        let s = src.shared(0.5);
+        assert_eq!(s.kind, src.kind, "分食沿用同一道料理");
+        assert!((s.total_secs - 25.0).abs() < 1e-6, "時長減半");
+        assert!((s.remaining_secs - 25.0).abs() < 1e-6, "剛分到＝滿剩餘");
+        assert!((s.hp_per_sec - 0.9).abs() < 1e-6, "每秒回血不打折");
+        assert!(s.is_active());
+    }
+
+    #[test]
+    fn shared_never_exceeds_source_and_has_floor() {
+        // 分享永遠 ≤ 自己吃下的那份（frac 越界也夾住）；再短也保底 MIN_SHARE_SECS、不致一閃即逝。
+        let src = MealBuff::new(ItemKind::GrilledFish, 20.0, 0.4);
+        // frac 上界越界（2.0）夾成 1.0 → 至多等於來源，不會「分得比自己還多」。
+        let full = src.shared(2.0);
+        assert!(full.total_secs <= src.total_secs + 1e-6, "分食不超過來源");
+        // frac 壞值退預設 0.5。
+        let nan = src.shared(f32::NAN);
+        assert!((nan.total_secs - 10.0).abs() < 1e-6, "壞 frac 退半份");
+        // 極小 frac 仍保底至少 MIN_SHARE_SECS（來源夠長時）。
+        let tiny = src.shared(0.001);
+        assert!((tiny.total_secs - MIN_SHARE_SECS).abs() < 1e-6, "極小份額仍保底");
+        // 來源本身比保底還短時，分食不會「無中生有」拉長到超過來源。
+        let short = MealBuff::new(ItemKind::Honey, 3.0, 0.3);
+        assert!(short.shared(0.5).total_secs <= 3.0 + 1e-6, "短來源不被分食拉長");
     }
 }

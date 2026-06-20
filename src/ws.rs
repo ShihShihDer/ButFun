@@ -3471,7 +3471,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::UseItem { item }) => {
                     // 使用道具：消耗一個指定道具，觸發對應效果。倒地 / 背包不足靜默忽略。
                     use crate::inventory::ItemKind;
+                    // 圍爐分食（ROADMAP 462）：若本次吃下的是帶暖食 buff 的料理，待放掉玩家寫鎖後
+                    // 另開一輪把半份暖意分給身旁旅人；先在這收集分食上下文 (吃飯者座標、名、那份 buff)。
+                    let mut meal_share_ctx: Option<(f32, f32, String, crate::meal_buff::MealBuff)> = None;
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        // 記下吃前這道料理的數量，用以判斷本次是否真的吃下一份（成功扣到背包）。
+                        let meal_count_before = p.inventory.count(item);
                         match item {
                             ItemKind::HealingPotion => {
                                 // 活力藥水：回復 6 HP。
@@ -3719,6 +3724,49 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                             _ => {} // 非消耗品，忽略
+                        }
+                        // 圍爐分食（ROADMAP 462）：真的吃下一道帶暖食的料理（背包確實扣掉一份、
+                        // 且此刻身上有飽足）→ 備妥分食上下文，待放掉本寫鎖後再分給身旁旅人。
+                        if crate::meal_buff::meal_buff_for(item).is_some()
+                            && p.inventory.count(item) < meal_count_before
+                        {
+                            if let Some(buff) = p.meal_buff {
+                                meal_share_ctx = Some((p.x, p.y, p.name.clone(), buff));
+                            }
+                        }
+                    }
+                    // 玩家寫鎖已隨上面的 if let 結束而釋放。圍爐分食另開一輪寫鎖、把半份暖意分給
+                    // 半徑內的其他旅人——**順序上鎖、不巢狀**（守 prod 死鎖鐵律：同把 std RwLock
+                    // 不在同執行緒二次上鎖）。受惠者頭頂暖食光暈本就隨快照 well_fed 同步亮起。
+                    if let Some((ex, ey, eater_name, src_buff)) = meal_share_ctx {
+                        let portion = crate::meal_share::portion(&src_buff);
+                        let mut recipients: u32 = 0;
+                        {
+                            let mut players = app.players.write().unwrap();
+                            for other in players.values_mut() {
+                                if other.id == id || other.vitals.is_downed() {
+                                    continue;
+                                }
+                                if !crate::meal_share::within_share_range(ex, ey, other.x, other.y) {
+                                    continue;
+                                }
+                                if crate::meal_share::should_refresh(other.meal_buff.as_ref(), &portion) {
+                                    other.meal_buff = Some(portion);
+                                    recipients += 1;
+                                    if recipients as usize >= crate::meal_share::MAX_RECIPIENTS {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // 真的分到人才廣播分食的那一瞬（前端在吃飯者腳下飄一陣暖食香氣）。
+                        if recipients > 0 {
+                            let _ = app.tx.send(std::sync::Arc::new(ServerMsg::MealShared {
+                                eater: eater_name,
+                                x: ex,
+                                y: ey,
+                                recipients,
+                            }));
                         }
                     }
                 }

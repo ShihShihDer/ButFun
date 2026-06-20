@@ -1616,6 +1616,49 @@ for (const sc of scenarios) {
   }
 }
 
+// 圍爐分食香氣（ROADMAP 462）：單元斷言純函式 mealAromaSpec 的暖香外觀真值表——
+// 暖香一縷：剛飄起（t=0）最濃（alpha=0.85）、貼鍋不揚（lift=0）、暈最小（r=3）；
+// 飄到末了（t=1）淡盡（alpha=0）、揚至頂（lift=34）、暈微擴（r=8）；
+// 不透明隨上飄單調遞減、上揚量單調遞增、半徑單調遞增；壞值／越界夾鉗成「飄到末了」、不爆。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.mealAromaSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 圍爐分食：game.js 未導出 mealAromaSpec");
+  } else {
+    let bad = 0;
+    const approx = (a, b) => Math.abs(a - b) < 1e-9;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 圍爐分食：${msg}`); } };
+    const s0 = fn(0), sh = fn(0.5), s1 = fn(1);
+    // 兩端外觀
+    expect(approx(s0.alpha, 0.85) && approx(s0.lift, 0) && approx(s0.r, 3), "t=0 最濃、不揚、暈最小");
+    expect(approx(s1.alpha, 0) && approx(s1.lift, 34) && approx(s1.r, 8), "t=1 淡盡、揚至頂、暈微擴");
+    // 單調：不透明遞減、上揚遞增、半徑遞增
+    expect(s0.alpha > sh.alpha && sh.alpha > s1.alpha, "不透明隨上飄單調遞減");
+    expect(s0.lift < sh.lift && sh.lift < s1.lift, "上揚量隨上飄單調遞增");
+    expect(s0.r < sh.r && sh.r < s1.r, "半徑隨上飄單調遞增");
+    // 有界且有限：alpha∈[0,0.85]、lift∈[0,34]、r∈[3,8]
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const s = fn(t);
+      expect(Number.isFinite(s.alpha) && s.alpha >= 0 && s.alpha <= 0.85, `t=${t} 不透明∈[0,0.85]`);
+      expect(Number.isFinite(s.lift) && s.lift >= 0 && s.lift <= 34, `t=${t} 上揚∈[0,34]`);
+      expect(Number.isFinite(s.r) && s.r >= 3 && s.r <= 8, `t=${t} 半徑∈[3,8]`);
+    }
+    // 非有限壞值（NaN/undefined/非數字字串/±Infinity）一律退「飄到末了」端；上界越界（2）夾成末了。
+    for (const bv of [NaN, undefined, "x", Infinity, -Infinity, 2]) {
+      const s = fn(bv);
+      expect(approx(s.lift, 34) && approx(s.alpha, 0), `壞值/上界越界 ${String(bv)} 夾鉗成末了`);
+    }
+    // 下界越界（負值）夾成「剛飄起」端（lift=0、alpha=0.85），仍不爆。
+    {
+      const s = fn(-1);
+      expect(approx(s.lift, 0) && approx(s.alpha, 0.85), "下界越界 -1 夾鉗成剛飄起");
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 圍爐分食·暖香外觀真值表：通過");
+  }
+}
+
 // 主音量（ROADMAP 429）：單元斷言純函式 audioVol 的字串→[0,1] 夾鉗真值表。
 // 把 localStorage 存的偏好（字串／null／壞值）解析成乘在音訊上的響度係數，夾進合法區間。
 {

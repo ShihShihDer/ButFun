@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1632,6 +1632,12 @@
   // harvestGrains＝向上揚起的金穀粒子 { wx, wy, vx, vy, born, color }。純表現、不嵌規則。
   const harvestBursts = [];
   const harvestGrains = [];
+  // 圍爐分食（ROADMAP 462）：有人在旅人身旁吃下暖食料理時，香氣分給附近的人——
+  // 在吃飯者腳下飄一陣暖食香氣。mealAromas＝中心暖香暈＋🍲 { wx, wy, born }；
+  // mealAromaWisps＝向上飄散的熱氣縷 { wx, wy, drift, born }。純表現、不嵌規則（受惠者
+  // 頭頂的暖食光暈本就隨快照 well_fed 同步亮起，此陣列只演「分食的那一瞬」）。
+  const mealAromas = [];
+  const mealAromaWisps = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
@@ -4153,6 +4159,17 @@
         spawnHarvestBurst(msg.x || 0, msg.y || 0, msg.quality);
         break;
       }
+      case "meal_shared": {
+        // 圍爐分食（ROADMAP 462）：有人在旅人身旁吃下暖食料理，香氣分了半份暖意給附近的人。
+        // 全服在吃飯者腳下飄一陣暖食香氣；受惠者頭頂的暖食光暈本就隨快照 well_fed 同步亮起。
+        spawnMealAroma(Number(msg.x), Number(msg.y), msg.recipients || 0);
+        // 只有吃飯者本人收到一句溫馨提示（避免全服洗頻；旁觀者看畫面香氣即可）。
+        if (msg.eater && msg.eater === myName) {
+          const n = msg.recipients || 0;
+          announce(`🍲 暖食的香氣分給了身旁的 ${n} 位旅人，大家都暖了起來`);
+        }
+        break;
+      }
       case "locale_entered": {
         // 天地有名（ROADMAP 398）：踏入新「在地地名」。廣播事件，只對自己 id 演出（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;
@@ -5431,6 +5448,77 @@
       }
     }
   }
+
+  // ── 圍爐分食香氣（ROADMAP 462）────────────────────────────────────────────────
+  const MEAL_AROMA_MS = 1100;   // 一縷暖香上飄的壽命（較久、慵懶）
+  const MEAL_AROMA_LIFT = 34;   // 暖香上飄到頂的高度（像素）
+  // 暖香一縷的外觀真值表（純函式，給 render-smoke 斷言）：t＝年齡比例 0~1。
+  // 剛飄起（t=0）最濃、貼著鍋（lift=0、最小暈）；飄到末了（t=1）淡盡、揚至頂、暈微擴。
+  // 不透明隨上飄單調遞減、上揚量單調遞增、半徑單調遞增；壞值／越界夾鉗成「飄到末了」端、不爆。
+  function mealAromaSpec(t) {
+    const tt = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 1;
+    return {
+      alpha: 0.85 * (1 - tt),          // 隨上飄漸淡
+      lift: MEAL_AROMA_LIFT * tt,      // 單調上飄
+      r: 3 + tt * 5,                   // 暖香暈隨上飄微微擴散
+    };
+  }
+  // 在 (wx,wy) 飄起一陣暖食香氣：中心暖香暈＋一鍋 🍲，外加幾縷上飄熱氣（分到越多人香氣越盛）。
+  function spawnMealAroma(wx, wy, recipients) {
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+    const now = performance.now();
+    mealAromas.push({ wx, wy, born: now });
+    if (reduceMotion) return; // 尊重「減少動態」：只留中心暖香、不放飄散熱氣縷
+    const n = Math.min(6, 2 + (recipients | 0));
+    for (let i = 0; i < n; i++) {
+      mealAromaWisps.push({
+        wx: wx + (Math.random() - 0.5) * 16,
+        wy,
+        drift: (Math.random() - 0.5) * 14, // 上飄時的水平漂移
+        born: now + i * 70,                // 錯開生成，像熱氣一縷縷冒
+      });
+    }
+  }
+  // 畫圍爐分食香氣：暖橙香暈＋🍲 緩緩上飄淡出，幾縷熱氣縷隨之飄散。clay／pixel 共用同一套暖象牙暖橙調。
+  function drawMealAroma(camX, camY, now) {
+    for (let i = mealAromas.length - 1; i >= 0; i--) {
+      const a = mealAromas[i];
+      const age = now - a.born;
+      if (age >= MEAL_AROMA_MS) { mealAromas.splice(i, 1); continue; }
+      const sp = mealAromaSpec(age / MEAL_AROMA_MS);
+      const sx = a.wx - camX;
+      const sy = a.wy - camY - 20 - sp.lift;
+      ctx.save();
+      ctx.globalAlpha = sp.alpha;
+      ctx.fillStyle = "rgba(255, 190, 120, 0.5)";
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, sp.r, sp.r * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = sp.alpha * 0.95;
+      ctx.font = `13px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🍲", sx, sy);
+      ctx.restore();
+    }
+    for (let i = mealAromaWisps.length - 1; i >= 0; i--) {
+      const w = mealAromaWisps[i];
+      const age = now - w.born;
+      if (age < 0) continue;                 // 錯開生成、尚未現身
+      if (age >= MEAL_AROMA_MS) { mealAromaWisps.splice(i, 1); continue; }
+      const sp = mealAromaSpec(age / MEAL_AROMA_MS);
+      const sx = w.wx + w.drift * (age / 1000) - camX;
+      const sy = w.wy - camY - 18 - sp.lift;
+      ctx.save();
+      ctx.globalAlpha = sp.alpha * 0.7;
+      ctx.fillStyle = "rgba(255, 210, 150, 0.6)";
+      ctx.beginPath();
+      ctx.arc(sx, sy, sp.r * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  // ── 圍爐分食香氣 end ─────────────────────────────────────────────────────────
 
   // 畫主動攻擊命中特效：擴散紅圈，從敵人位置爆開。純表現，不影響判定。
   function drawAttackFx(camX, camY, now) {
@@ -8346,6 +8434,7 @@
       drawTapFlashes(camX, camY, renderNow);           // 互動確認漣漪
       drawGatherFx(camX, camY, renderNow);             // 採集動作特效
       drawHarvestFx(camX, camY, renderNow);            // 豐收迸發（ROADMAP 458）：收成的金光與揚穀
+      drawMealAroma(camX, camY, renderNow);            // 圍爐分食（ROADMAP 462）：暖食分享的香氣
       drawAttackFx(camX, camY, renderNow);
       drawBossSlamFx(camX, camY, renderNow);           // 怪物王重擊衝擊波（ROADMAP 424）
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
