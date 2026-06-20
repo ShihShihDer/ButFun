@@ -196,6 +196,7 @@ mod kill_streak;
 use std::net::SocketAddr;
 
 use axum::extract::State;
+use axum::http::header;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -330,7 +331,13 @@ async fn main() {
         .merge(profile::profile_router())
         // 外觀自訂(捏臉)——需登入,見 appearance.rs
         .merge(appearance::appearance_router())
-        // 其餘路徑交給靜態前端（web/）。
+        // 首頁與 index.html：經後端動態注入 game.js 的內容雜湊版本，並回 no-cache，
+        // 讓前端部署後玩家立刻拿到新版（根治「快取卡 4h」——見 serve_index）。
+        // 必須放在 fallback_service(ServeDir) 之前才會優先命中。
+        .route("/", get(serve_index))
+        .route("/index.html", get(serve_index))
+        // 其餘路徑（game.js、assets、wasm…）交給靜態前端（web/）。game.js 維持可
+        // 快取——它的 URL 帶內容雜湊，內容一變 URL 就變，CF/瀏覽器自然抓新版。
         .fallback_service(ServeDir::new("web"))
         .layer(TraceLayer::new_for_http())
         .with_state(app_state.clone());
@@ -388,6 +395,86 @@ async fn shutdown_signal() {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// 把 HTML 裡的 `game.js?v=...` 版本字串換成「game.js 內容的 sha256 前 12 個 hex 字元」。
+///
+/// 根治「前端部署後玩家約 4h 看不到新版」的快取 bug：原本 index.html 寫死
+/// `game.js?v=20260610-leaderboard`（手動、卡在 6/10、沒人更新），而 `/` 走純
+/// `ServeDir` 靜態 serve、URL 不隨 game.js 內容變→Cloudflare(HIT,max-age 14400)＋
+/// 瀏覽器快取會持續送舊的 game.js。改成內容雜湊後，game.js 內容一變版本字串就變→
+/// URL 一變→CF/瀏覽器自然抓新版，立刻到位。
+///
+/// 穩健替換：找每一處 `game.js?v=` 後面到下一個 `"` 為止那段，整段換成新雜湊；
+/// 找不到 `game.js?v=` 就原樣返回（不硬塞）。抽成純函式好測。
+fn inject_gamejs_version(html: &str, gamejs: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(gamejs);
+    // 取前 12 個 hex 字元（6 bytes）當版本——夠長到不會碰撞、夠短到 URL 乾淨。
+    let version: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+
+    let needle = "game.js?v=";
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(pos) = rest.find(needle) {
+        // 寫入 needle（含）之前的內容 + needle 本身。
+        let after = pos + needle.len();
+        out.push_str(&rest[..after]);
+        // 從 needle 之後找下一個 `"`，那之間是舊版本字串，整段換成新雜湊。
+        let tail = &rest[after..];
+        match tail.find('"') {
+            Some(q) => {
+                out.push_str(&version);
+                rest = &tail[q..]; // 保留 `"` 起繼續掃（可能有多處）
+            }
+            // 沒有結尾 `"`（理論上不會）：保守起見原樣接上、停止替換。
+            None => {
+                out.push_str(tail);
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 啟動時算一次並快取的首頁 HTML（game.js 版本已換成內容雜湊）。
+/// 用 `LazyLock` 確保只讀檔/算雜湊一次，避免每請求摸大檔。
+/// server cwd＝repo 根，相對路徑 `web/game.js`、`web/index.html` 可讀；deploy 重啟
+/// server → 每次部署自動重算雜湊。讀檔失敗時退回原樣 index.html（不 panic、不擋服務）。
+static INDEX_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let html = match std::fs::read_to_string("web/index.html") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("讀 web/index.html 失敗，serve_index 將回空白：{e}");
+            return String::new();
+        }
+    };
+    match std::fs::read("web/game.js") {
+        Ok(gamejs) => {
+            let injected = inject_gamejs_version(&html, &gamejs);
+            tracing::info!("serve_index：已把 index.html 的 game.js 版本注入為內容雜湊");
+            injected
+        }
+        // 讀不到 game.js（理論上不會）：退回原樣 index.html，至少首頁能出。
+        Err(e) => {
+            tracing::warn!("讀 web/game.js 失敗，index.html 沿用原版本字串：{e}");
+            html
+        }
+    }
+});
+
+/// 首頁 handler：回「已注入 game.js 內容雜湊」的 index.html，並帶 no-cache 標頭。
+/// HTML 永遠新鮮（極小、無快取）；game.js 的 URL 隨內容雜湊變，照舊可被快取。
+async fn serve_index() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache, must-revalidate"),
+        ],
+        INDEX_HTML.as_str(),
+    )
 }
 
 /// 行程啟動時刻（算 uptime 用）。`LazyLock` 在 main 啟動早期第一次被讀到時定錨。
@@ -540,3 +627,64 @@ async fn post_suggestion(
 }
 
 // 註：刻意不再提供 `list_suggestions` HTTP handler——建議清單不對外公開（見上方路由註解）。
+
+#[cfg(test)]
+mod tests {
+    use super::inject_gamejs_version;
+
+    /// sha256(content) 前 12 hex 字元——測試用的期望版本算法（與函式一致）。
+    fn expected_version(gamejs: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(gamejs)
+            .iter()
+            .take(6)
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    #[test]
+    fn 替換舊版本字串為內容雜湊() {
+        let html = r#"<html><body><script src="game.js?v=20260610-leaderboard"></script></body></html>"#;
+        let gamejs = b"console.log('hello butfun');";
+        let out = inject_gamejs_version(html, gamejs);
+
+        let ver = expected_version(gamejs);
+        // 新版本字串應出現，舊的應消失。
+        assert!(out.contains(&format!("game.js?v={ver}")), "應注入內容雜湊版本: {out}");
+        assert!(!out.contains("20260610-leaderboard"), "舊版本字串應被換掉: {out}");
+        // 雜湊取 12 個 hex 字元。
+        assert_eq!(ver.len(), 12);
+    }
+
+    #[test]
+    fn 雜湊隨內容變而變() {
+        let html = r#"<script src="game.js?v=old"></script>"#;
+        let a = inject_gamejs_version(html, b"version A");
+        let b = inject_gamejs_version(html, b"version B");
+        assert_ne!(a, b, "不同 game.js 內容應產生不同版本字串");
+
+        // 同內容應穩定（同 HTML 同內容 → 同輸出）。
+        let a2 = inject_gamejs_version(html, b"version A");
+        assert_eq!(a, a2, "相同內容應產生相同版本字串");
+    }
+
+    #[test]
+    fn 替換多處且保留其餘html() {
+        let html = r#"<a href="game.js?v=x">a</a> mid <script src="game.js?v=y"></script>"#;
+        let gamejs = b"abc";
+        let out = inject_gamejs_version(html, gamejs);
+        let ver = expected_version(gamejs);
+        // 兩處都換成同一雜湊。
+        let count = out.matches(&format!("game.js?v={ver}")).count();
+        assert_eq!(count, 2, "兩處 game.js?v= 都應被替換: {out}");
+        // 其餘文字（mid）原樣保留。
+        assert!(out.contains(" mid "), "非版本內容應保留: {out}");
+    }
+
+    #[test]
+    fn 沒有版本字串時原樣返回() {
+        let html = "<html>no script here</html>";
+        let out = inject_gamejs_version(html, b"whatever");
+        assert_eq!(out, html, "沒有 game.js?v= 應原樣返回");
+    }
+}
