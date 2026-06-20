@@ -1469,6 +1469,51 @@
     return col;
   }
 
+  // 拉皮：右上 banner 欄只該留「臨時全服事件」，且最多露 2-3 條——多的折成一顆「+N 則」徽。
+  // 每幀末跑一次：數出目前真正顯示中的事件 pill，超過上限就把多的暫時藏起、補一顆計數徽；
+  // 季節/未分配點等常駐資訊已收回頂部狀態列，不再進這欄。純前端表現、不動任何事件邏輯。
+  const BANNER_VISIBLE_CAP = 3;       // 同時最多露幾條全服事件 pill
+  let _lastBannerFoldText = null;     // 折疊徽上次文字，變了才改 DOM
+  function _bannerPillVisible(el) {
+    // 判斷一條 banner pill「在折疊以外」是否本該顯示——折疊用獨立 class 不碰各 update*Hud
+    // 寫的 inline display，這裡先排除折疊 class 再判斷其真實意圖（display!=none 且非 .hidden）。
+    if (!el || el.id === "hudBannerMore") return false;
+    if (el.classList && el.classList.contains("hidden")) return false;
+    return el.style.display !== "none";
+  }
+  function foldBannerColumn() {
+    const col = document.getElementById("hudBanners");
+    if (!col) return;
+    const all = Array.from(col.children).filter((el) => el.id !== "hudBannerMore");
+    // 先卸下上一輪的折疊 class，讓每條 pill 回到各自 update*Hud 寫的真實顯隱意圖（折疊用 class
+    // 帶 !important，不覆蓋 inline display，因此各 update 的早退快取仍正確、不會被我們攪亂）。
+    for (const el of all) el.classList.remove("banner-folded");
+    const shown = all.filter(_bannerPillVisible);
+    let more = document.getElementById("hudBannerMore");
+    if (shown.length <= BANNER_VISIBLE_CAP) {
+      if (more) more.style.display = "none";
+      _lastBannerFoldText = null;
+      return;
+    }
+    const overflow = shown.slice(BANNER_VISIBLE_CAP);
+    for (const el of overflow) el.classList.add("banner-folded");
+    if (!more) {
+      more = document.createElement("div");
+      more.id = "hudBannerMore";
+      more.style.cssText = [
+        "order:99",
+        "background:var(--panel-solid)", "color:var(--ink-dim)",
+        "border:1px solid var(--hairline)", "border-radius:var(--r-pill)",
+        "font-size:.75rem", "font-weight:600", "padding:3px 10px",
+      ].join(";");
+      more.title = "還有其他進行中的全服事件（點開狀態欄查看）";
+      _ensureBannerColumn().appendChild(more);
+    }
+    const text = `＋${overflow.length} 則事件`;
+    if (text !== _lastBannerFoldText) { more.textContent = text; _lastBannerFoldText = text; }
+    more.style.display = "block";
+  }
+
   // 村落節慶加成 HUD pill（ROADMAP 64）：活躍時在 HUD 顯示金色計時器。
   let lastVillageBuffText = null;
   function updateVillageBuffHud() {
@@ -1758,34 +1803,21 @@
   };
   let lastSeasonText = null;
   function updateSeasonHud() {
-    let pill = document.getElementById("hudSeason");
+    // 拉皮：季節 pill 已從右上 banner 欄收回頂部主狀態列（HTML #hudSeason，與晝夜時段並排），
+    // 這裡只更新文字與當季染色、不再動態建 banner pill。當季淡色描邊維持三層語彙的「資訊」分量。
+    const t = document.getElementById("hudSeason");
+    if (!t) return;
     const info = SEASON_INFO[currentSeason] || SEASON_INFO.spring;
     const mins = Math.floor(seasonRemainingSecs / 60);
     const secs = seasonRemainingSecs % 60;
     const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
-    const text = `${info.label}（${timeStr}）`;
+    const text = `${info.label} ${timeStr}`;
     if (text === lastSeasonText) return;
     lastSeasonText = text;
-    if (!pill) {
-      const el = document.createElement("div");
-      el.id = "hudSeason";
-      el.style.cssText = [
-        "order:6",
-        "border-radius:12px",
-        "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px",
-        "transition:background .4s,color .4s",
-      ].join(";");
-      _ensureBannerColumn().appendChild(el);
-    }
-    const t = document.getElementById("hudSeason");
-    if (t) {
-      t.style.background = info.bg;
-      t.style.color = info.color;
-      t.style.border = `1px solid ${info.border}`;
-      t.style.display = "block";
-      t.textContent = text;
-    }
+    t.style.color = info.color;
+    t.title = `目前季節：${info.label}（剩 ${timeStr}）`;
+    t.textContent = text;
+    t.classList.remove("hidden");
   }
 
   // 彩虹祝福 HUD pill（ROADMAP 361）：彩虹高掛期間常駐顯示「🌈 彩虹祝福（剩 Ns）」，
@@ -3246,8 +3278,20 @@
             if (lvEl) {
               const nextExp = (me.level + 1) * 100;
               const curExp = me.exp % 100;
-              lvEl.textContent = `⭐ Lv.${me.level} (${curExp}/100)`;
-              lvEl.title = `等級 ${me.level}・累積 ${me.exp} exp・下一級還需 ${nextExp - me.exp} exp`;
+              // 拉皮：pill 文字縮短為「⭐ N」，exp 進度交給底部黃銅進度條（不再塞 (n/100) 數字進 pill）。
+              // 只改值節點與條寬，保留 .pill-lbl 短標與 .lv-bar 進度條（避免 textContent 一把抹掉）。
+              const valNode = lvEl.querySelector(".lv-val");
+              if (valNode) {
+                valNode.textContent = `⭐ ${me.level}`;
+              } else {
+                // 後備：HTML 沒有 .lv-val 包裹時，重建內部結構一次（保住短標與進度條）。
+                lvEl.innerHTML =
+                  '<span class="pill-lbl">Lv</span><span class="lv-val">⭐ ' + me.level +
+                  '</span><span class="lv-bar"></span>';
+              }
+              const bar = lvEl.querySelector(".lv-bar");
+              if (bar) bar.style.width = Math.max(0, Math.min(100, curExp)) + "%";
+              lvEl.title = `等級 ${me.level}・累積 ${me.exp} exp・下一級還需 ${nextExp - me.exp} exp（進度 ${curExp}/100）`;
             }
             // 升級偵測:前一幀 level 比現在小 → 升級了。
             if (typeof myLevel === "number" && me.level > myLevel) {
@@ -5536,6 +5580,13 @@
     dusk: "🌇 黃昏",
     night: "🌙 夜晚 ⚠️",
   };
+  // 拉皮：晝夜時段收回頂部主狀態列後，pill 用「圖示＋短詞」更精煉（夜晚的 ⚠️ 噪訊只留在浮層/報讀）。
+  const PHASE_LABELS_SHORT = {
+    dawn: "🌅 清晨",
+    day: "☀️ 白天",
+    dusk: "🌇 黃昏",
+    night: "🌙 夜",
+  };
   // 階段「換場」時播給報讀器的整句（不帶 emoji——報讀器唸 emoji 名稱常突兀）。
   // 視覺上日夜變化已有 HUD 文字＋夜晚乙太微光,看不到畫面的玩家卻完全收不到時段切換,
   // 補上這條讓報讀器在天色轉換時報一句,延續 srStatus(連線/聊天)的無障礙弧線。
@@ -5596,7 +5647,7 @@
       _lastClockSec = sec;
       const pill = document.getElementById("hudTime");
       if (pill) {
-        const label = PHASE_LABELS[_dayClock.phase] || "—";
+        const label = PHASE_LABELS_SHORT[_dayClock.phase] || "—";
         pill.textContent = remain == null ? label : `${label} · ${fmtClock(remain)}`;
       }
     }
@@ -7828,6 +7879,7 @@
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
       updateScarePredatorBtn();             // 驅趕正在追獵的掠食者按鈕（ROADMAP 357）
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
+      foldBannerColumn();                   // 右上事件欄折疊（最多露 3 條，多的折「＋N 則」）
     });
 
     // 環境音效節流更新（ROADMAP 377）：每 2 秒同步一次天氣/晝夜狀態給 AMBIENT，
@@ -22029,30 +22081,17 @@
   function updateStatUnspentHud(unspent) {
     if (unspent === lastStatUnspentCount) return;
     lastStatUnspentCount = unspent;
-    let pill = document.getElementById("hudStatUnspent");
+    // 拉皮：未分配屬性點從右上 banner 欄那條長 pill 收回——改成貼在等級 pill 旁的小黃銅圓徽
+    //（#hudStatBadge），有點才亮，視覺上「升級了、去加點」直接黏在等級邊。
+    const badge = document.getElementById("hudStatBadge");
+    if (!badge) return;
     if (unspent <= 0) {
-      if (pill) pill.style.display = "none";
+      badge.classList.add("hidden");
       return;
     }
-    if (!pill) {
-      pill = document.createElement("div");
-      pill.id = "hudStatUnspent";
-      pill.style.cssText = [
-        "order:5",
-        "background:#5a3a00", "color:#ffd580",
-        "border:1px solid #c9a24b", "border-radius:12px",
-        "font-size:.75rem", "font-weight:600",
-        "padding:3px 10px", "cursor:pointer",
-      ].join(";");
-      pill.title = "有未分配屬性點，按 S 開啟加點面板";
-      pill.addEventListener("click", () => {
-        const btn = document.getElementById("dockStat");
-        if (btn) btn.click();
-      });
-      _ensureBannerColumn().appendChild(pill);
-    }
-    pill.style.display = "block";
-    pill.textContent = "🎯 " + unspent + " 點可分配（S）";
+    badge.textContent = "+" + unspent;
+    badge.title = `有 ${unspent} 點未分配屬性點，點開屬性加點面板（S）`;
+    badge.classList.remove("hidden");
   }
 
   // ── 屬性加點面板（ROADMAP 152）──────────────────────────────────────────────
@@ -27063,6 +27102,15 @@
         if (el.checked) { setUiFontPref(pref); SFX.click(); }
       });
     });
+    // 拉皮：未分配屬性點小徽（貼等級 pill 旁）點一下＝開屬性加點面板（沿用 dockStat 入口）。
+    const statBadge = document.getElementById("hudStatBadge");
+    if (statBadge) {
+      statBadge.addEventListener("click", () => {
+        SFX.click();
+        const btn = document.getElementById("dockStat");
+        if (btn) btn.click();
+      });
+    }
     // 🏠 回城：傳回新手村（伺服器把位置設回出生點）。
     const recallBtn = document.getElementById("recallBtn");
     if (recallBtn) {

@@ -149,8 +149,8 @@
     #hud { position: fixed; left: calc(12px + env(safe-area-inset-left)); top: calc(12px + env(safe-area-inset-top));
       z-index: 5; font-size: 0.85rem; max-width: min(340px, 88vw); overflow-wrap: break-word; }
     /* HUD 收合鈕：點一下收起狀態列 + dock + 提示，只留這顆鈕，把版面讓出來。狀態存 localStorage。 */
-    #hudToggle { background: var(--panel); border: 1px solid #3a4250; border-radius: 8px; color: var(--ink);
-      cursor: pointer; font: inherit; padding: 3px 9px; margin-bottom: 5px; line-height: 1.2; }
+    #hudToggle { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--ink);
+      cursor: pointer; font: inherit; padding: var(--sp-1) var(--sp-2); margin-bottom: 5px; line-height: 1.2; }
     #hudToggle:hover { border-color: var(--brass); }
     /* 收合(▸ HUD)時只藏「次要狀態」與引導列,核心數值列(乙太/血量/等級/攻擊)與 dock(背包/選單)
        永遠留著——手機預設收合,只剩 4 個核心數值,大幅減少版面擁擠。 */
@@ -159,12 +159,69 @@
     /* 次要狀態藥丸群:平時 display:contents 讓子元素融入 .hud-row 的 flex 排版(與直接平鋪無異);
        收合時整組一次隱藏,只留核心。 */
     .hud-secondary { display: contents; }
-    /* 狀態列:小圖示+數字橫排成藥丸,省空間、一眼可讀;窄螢幕放不下會自動換行。 */
-    #hud .hud-row { display: flex; flex-wrap: wrap; gap: 6px; }
-    #hud .hud-pill { background: var(--panel); padding: 4px 9px; border-radius: 999px; line-height: 1.4; white-space: nowrap; }
-    #hud .hud-pill.brass { color: var(--brass); }
+    /* ── 頂部狀態列：拉皮後「只放資訊 pill」（情境/社交動作鈕已物理分離到底部情境動作條）──
+       三層 pill 語彙：
+       (1) 資源/生命＝實心填色＋細描邊（一眼是「數值」，不可點）；
+       (2) 可點＝黃銅描邊＋hover 高亮（看起來像按鈕）；
+       (3) 次要計時＝最弱（淡墨、無框）。 */
+    #hud .hud-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+    #hud .hud-pill { background: var(--panel); padding: 4px 10px; border-radius: var(--r-pill);
+      line-height: 1.4; white-space: nowrap; border: 1px solid var(--hairline);
+      font-size: clamp(0.9rem, 0.85rem + 0.4vw, 1.05rem); }
+    /* pill 內短文字標籤（乙太/生命/Lv/攻）：新手核心 pill 的引導小字，比數字弱一階。 */
+    #hud .hud-pill .pill-lbl { font-size: 0.78em; color: var(--ink-dim); margin-right: 3px; font-weight: 600; }
+    /* (1) 資源/生命實心填色語彙：乙太黃銅、生命磚紅，帶比例填充感的厚描邊。 */
+    #hud .hud-pill.brass { color: var(--brass); border-color: var(--brass-dark);
+      background: linear-gradient(rgba(201,162,75,0.14), rgba(201,162,75,0.07)); }
+    #hud .hud-pill.pill-hp { color: var(--hp); border-color: rgba(217,138,114,0.5);
+      background: linear-gradient(rgba(217,138,114,0.13), rgba(217,138,114,0.06)); }
+    /* (2) 可點 pill：黃銅描邊 + hover 高亮，看起來像按鈕（時段/成就/每日/貿易等）。 */
+    #hud .hud-pill.pill-action { cursor: pointer; border-color: var(--brass-dark); }
+    #hud .hud-pill.pill-action:hover { border-color: var(--brass); background: rgba(201,162,75,0.16); }
+    #hud .hud-pill.pill-action:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* (3) 次要計時 pill：最弱，淡墨無強框（線上人數、連殺、活動鏈等） */
+    #hud .hud-pill.pill-faint { color: var(--ink-dim); border-color: var(--hairline); }
+    /* 等級 pill：⭐Lv.N ＋底部黃銅進度條（縮短文字、把 exp 進度交給條）。 */
+    #hud #hudLevel { position: relative; overflow: hidden; }
+    #hud #hudLevel .lv-bar { position: absolute; left: 0; bottom: 0; height: 3px;
+      background: var(--brass); border-radius: 0 0 var(--r-pill) var(--r-pill); transition: width 0.3s ease; }
+    @media (prefers-reduced-motion: reduce) { #hud #hudLevel .lv-bar { transition: none; } }
+    /* 未分配屬性點 badge：貼在等級 pill 旁的小黃銅圓徽（取代 banner 欄那條長 pill）。 */
+    #hud #hudStatBadge { cursor: pointer; min-width: 1.5em; text-align: center; padding: 2px 7px;
+      background: var(--brass); color: #1a1206; border: none; font-weight: 700; font-size: 0.82em;
+      border-radius: var(--r-pill); line-height: 1.4; }
+    #hud #hudStatBadge:hover { filter: brightness(1.1); }
     /* 會自動隱藏的小提醒(訪客引導/缺水/收成)各自成一行,藥丸底以便在地表上讀得清。 */
-    #hud .hud-sub { background: var(--panel); padding: 3px 9px; border-radius: 8px; margin-top: 4px; display: inline-block; }
+    #hud .hud-sub { background: var(--panel); padding: 3px 9px; border-radius: var(--r-md); margin-top: 4px; display: inline-block; }
+
+    /* ── 情境動作條（拉皮切片 2：與資訊狀態列「物理分離」）──
+       情境/社交動作鈕（回城/表情/擊掌/喝采/逗寵物/植樹/打坐/獻奏/搭話…）從頂部狀態列抽出，
+       獨立成底部置中的一條浮列：靠近誰、能做什麼，就亮哪幾顆（同時通常只 1-2 顆）。
+       與下方搖桿/dock 錯開高度，手機單手可及；空的時候整條 :empty 不佔位。 */
+    #hudActions {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: calc(118px + env(safe-area-inset-bottom)); z-index: 6;
+      display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-2);
+      max-width: min(94vw, 460px); pointer-events: none;
+    }
+    /* 情境動作鈕：實心黃銅描邊的「可點」語彙，min 44px 觸控下限、繪本柔影。 */
+    #hudActions .act-btn {
+      pointer-events: auto; cursor: pointer; font: inherit;
+      font-size: clamp(0.85rem, 0.8rem + 0.3vw, 0.98rem); line-height: 1;
+      min-height: 44px; padding: 0 14px; display: inline-flex; align-items: center; gap: 5px;
+      color: var(--ink); background: var(--panel); border: 1px solid var(--brass-dark);
+      border-radius: var(--r-pill); box-shadow: var(--shadow-1); white-space: nowrap;
+    }
+    #hudActions .act-btn:hover { border-color: var(--brass); background: rgba(201,162,75,0.16); }
+    #hudActions .act-btn:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+    /* 採集乙太微粒走琥珀綠「生命能量」語彙，與一般社交動作一眼分得開。 */
+    #hudActions .act-btn.act-life { border-color: var(--success); color: var(--success); }
+    #hudActions .act-btn.act-life:hover { border-color: var(--success); background: rgba(141,184,106,0.16); }
+    /* 收合 HUD 時連情境動作條一起讓位（保持版面乾淨；核心數值仍在）。 */
+    #hud.collapsed #hudActions { display: none !important; }
+    /* 右上事件欄折疊（拉皮）：被折進「＋N 則」徽的事件 pill 暫時收起。用 !important class
+       不覆蓋各 update*Hud 寫的 inline display，下一輪卸下 class 即恢復原顯隱意圖。 */
+    #hudBanners .banner-folded { display: none !important; }
 
     /* dock:星露谷風一排小圖示鈕,點開對應視窗。觸控尺寸拉到 44×44(iOS/Android 觸控下限),手機桌面都好按;鈕間距 ≥8px 防誤觸。 */
     #hudDock { margin-top: 6px; }
@@ -629,61 +686,73 @@
   <div id="hud" class="hidden">
     <button type="button" id="hudToggle" aria-expanded="true" title="收合 / 展開狀態列" aria-label="收合或展開狀態列">▾ HUD</button>
     <div class="hud-row">
-      <span class="hud-pill brass" id="hudEther" title="乙太">✨ 0</span>
+      <!-- 核心 pill 帶短文字標籤（乙太/生命/Lv/攻），新手一眼看懂每個數字是什麼。
+           三層語彙：資源/生命＝實心填色（.brass / .pill-hp）；其餘資訊＝弱描邊。 -->
+      <span class="hud-pill brass" id="hudEther" title="乙太"><span class="pill-lbl">乙太</span>✨ 0</span>
       <!-- 生命（戰鬥 1-F）:走近敵人自動開打、反擊扣血。低血變紅、被打趴顯示休息中(由 game.js 設色)。 -->
-      <span class="hud-pill" id="hudHp" title="生命">❤ —</span>
-      <!-- 等級（ROADMAP 17 升級系統）:殺怪/採礦累積 exp，每 100 exp 升一級。 -->
-      <span class="hud-pill" id="hudLevel" title="等級與經驗值">⭐ Lv.0</span>
+      <span class="hud-pill pill-hp" id="hudHp" title="生命"><span class="pill-lbl">生命</span>❤ —</span>
+      <!-- 等級（ROADMAP 17 升級系統）:殺怪/採礦累積 exp，每 100 exp 升一級。文字縮短為 ⭐Lv.N，
+           exp 進度交給底部黃銅進度條（.lv-bar，由 game.js 撐寬）；未分配點 badge 貼在右邊。 -->
+      <span class="hud-pill" id="hudLevel" title="等級與經驗值"><span class="pill-lbl">Lv</span><span class="lv-val">⭐ 0</span><span class="lv-bar" style="width:0%"></span></span>
+      <!-- 未分配屬性點 badge（拉皮：從右上 banner 欄收回、貼在等級 pill 旁；點開屬性加點面板）。 -->
+      <button type="button" class="hidden" id="hudStatBadge" title="有未分配屬性點，點開屬性加點面板（S）" aria-label="未分配屬性點，點開加點面板">+0</button>
       <!-- 攻擊力（ROADMAP 18 升級加成）:基礎武器力 + 等級加成，讓玩家感受到升級帶來的成長。 -->
-      <span class="hud-pill" id="hudAttack" title="目前攻擊力（武器力 + 等級加成）" style="color:#ff9d8f">⚔️ 2</span>
+      <span class="hud-pill" id="hudAttack" title="目前攻擊力（武器力 + 等級加成）" style="color:var(--hp)"><span class="pill-lbl">攻</span>⚔️ 2</span>
       <!-- 連殺熱度（ROADMAP 381）：8 秒內連殺 2/4/8 隻時顯示加成；無連殺時隱藏。 -->
-      <span class="hud-pill hidden" id="hudKillStreak" title="連殺熱度：8 秒內連殺越多，攻擊加成越高（+10%/+20%/+35%）" style="color:#ffb060">🔥 ×0</span>
+      <span class="hud-pill pill-faint hidden" id="hudKillStreak" title="連殺熱度：8 秒內連殺越多，攻擊加成越高（+10%/+20%/+35%）" style="color:#ffb060">🔥 ×0</span>
       <!-- 活動鏈（ROADMAP 390）：今日已完成的活動鏈環數，0 時隱藏；3 環 +20 乙太、5 環全鏈 +50 乙太。 -->
-      <span class="hud-pill hidden" id="hudActivityChain" title="今日活動鏈（完成不同活動加環，3 環 +20 乙太，全鏈 +50 乙太）" style="color:#64dcc8">🔗 0/5</span>
+      <span class="hud-pill pill-faint hidden" id="hudActivityChain" title="今日活動鏈（完成不同活動加環，3 環 +20 乙太，全鏈 +50 乙太）" style="color:#64dcc8">🔗 0/5</span>
+      <!-- 季節（ROADMAP 137）：拉皮把季節從右上 banner 欄收回頂部主狀態列（與晝夜時段並排，
+           不再與資訊割裂）。樣式由 game.js updateSeasonHud 依當季染色。 -->
+      <span class="hud-pill pill-faint hidden" id="hudSeason" title="目前季節"></span>
+      <!-- 天時盤（ROADMAP 419）：時段標籤＋距下一時段倒數，點開查看「此刻適合做什麼」與日循環進度。
+           拉皮：晝夜時段亦收回頂部主狀態列、走「可點」語彙（黃銅描邊像按鈕）。 -->
+      <span class="hud-pill pill-action" id="hudTime" title="目前時段（點開查看此刻適合做的事）" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">—</span>
       <!-- ↓↓ 次要狀態群（HUD 抗擁擠）：手機預設收合，點「▾ HUD」展開。核心數值（上面 4 個）永遠在。 -->
       <span class="hud-secondary">
       <!-- 防禦力（ROADMAP 19 生態裝備）：持有護甲時顯示，每次受傷減少的傷害點數。 -->
-      <span class="hud-pill hidden" id="hudDefense" title="目前防禦（每次受傷減少的傷害點數）" style="color:#8ec4f0">🛡️ 0</span>
+      <span class="hud-pill pill-faint hidden" id="hudDefense" title="目前防禦（每次受傷減少的傷害點數）" style="color:#8ec4f0">🛡️ 0</span>
       <!-- 星球指示器（ROADMAP 20 多星球旅程）：不在故鄉時顯示目前所在星球。 -->
-      <span class="hud-pill hidden" id="hudPlanet" title="目前所在星球" style="color:#80ffc0">🌿 翠幽星</span>
+      <span class="hud-pill pill-faint hidden" id="hudPlanet" title="目前所在星球" style="color:#80ffc0">🌿 翠幽星</span>
       <!-- 職業指示器（ROADMAP 28 職業選擇）：已登入玩家選擇職業後顯示；未選時提示按 J 選擇。 -->
-      <span class="hud-pill hidden" id="hudClass" title="目前職業（按 J 開啟職業選擇）" style="color:#c8b8ff">🎭 職業</span>
+      <span class="hud-pill pill-faint hidden" id="hudClass" title="目前職業（按 J 開啟職業選擇）" style="color:#c8b8ff">🎭 職業</span>
       <!-- 公會指示器（ROADMAP 29 公會系統）：加入公會後顯示公會標籤；按 G 開啟公會面板。 -->
-      <span class="hud-pill hidden" id="hudGuild" title="目前公會（按 G 開啟公會面板）" style="color:#ffd580">⚜️ —</span>
+      <span class="hud-pill pill-faint hidden" id="hudGuild" title="目前公會（按 G 開啟公會面板）" style="color:#ffd580">⚜️ —</span>
       <!-- 每日任務指示器（ROADMAP 32）：顯示今日完成任務數；按 D 開啟每日任務面板。 -->
-      <span class="hud-pill hidden" id="hudDailyQuest" title="每日任務（按 D 開啟）" style="color:#80e8ff;cursor:pointer">📅 0/3</span>
+      <span class="hud-pill pill-action hidden" id="hudDailyQuest" title="每日任務（按 D 開啟）" style="color:#80e8ff">📅 0/3</span>
       <!-- 成就指示器（ROADMAP 30 成就系統）：顯示已解鎖成就數；按 A 開啟成就面板。 -->
-      <span class="hud-pill" id="hudAchievement" title="成就（按 A 開啟成就面板）" style="color:#ffd580;cursor:pointer">🏆 0/12</span>
+      <span class="hud-pill pill-action" id="hudAchievement" title="成就（按 A 開啟成就面板）" style="color:#ffd580">🏆 0/12</span>
       <!-- 宇宙裂縫事件倒數（取代頂部大橫幅——橫幅會疊在血量列上）：詳情看 title 與小地圖 🌀。 -->
-      <span class="hud-pill hidden" id="hudEvent" style="color:#e080ff">🌀 —</span>
+      <span class="hud-pill pill-faint hidden" id="hudEvent" style="color:#e080ff">🌀 —</span>
       <!-- 手上武器（接 PLAN「手上武器小圖示」）:背包有 weapon 才亮。伺服器 combat 接線後
            身上有武器→自動戰鬥傷害更高,這裡只如實畫出「有沒有武器」,不在繪製碼算傷害(規則只在伺服器)。 -->
-      <span class="hud-pill hidden" id="hudWeapon" title="武器">🗡️ 武器</span>
+      <span class="hud-pill pill-faint hidden" id="hudWeapon" title="武器">🗡️ 武器</span>
       <!-- C-4 建造：選取材料時亮起，右鍵點空格放置；再按一次取消。 -->
-      <span class="hud-pill hidden" id="hudBuildMode" title="放置模式（右鍵點空格放置；再按取消）">🏗️ —</span>
+      <span class="hud-pill pill-faint hidden" id="hudBuildMode" title="放置模式（右鍵點空格放置；再按取消）">🏗️ —</span>
       <!-- 貿易包裹指示器（ROADMAP 51 星際貿易）：攜帶包裹時顯示目的地；按 V 開啟面板。 -->
-      <span class="hud-pill hidden" id="hudTrade" title="攜帶中的貿易包裹（按 V 開啟面板）" style="color:#f0b060;cursor:pointer">📦 →</span>
-      <span class="hud-pill" id="hudPlayers" title="線上玩家">🌐 —</span>
-      <!-- 天時盤（ROADMAP 419）：時段標籤＋距下一時段倒數，點開查看「此刻適合做什麼」與日循環進度。 -->
-      <span class="hud-pill" id="hudTime" title="目前時段（點開查看此刻適合做的事）" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false" style="cursor:pointer">—</span>
+      <span class="hud-pill pill-action hidden" id="hudTrade" title="攜帶中的貿易包裹（按 V 開啟面板）" style="color:#f0b060">📦 →</span>
+      <span class="hud-pill pill-faint" id="hudPlayers" title="線上玩家">🌐 —</span>
       </span>
-      <!-- ↑↑ 次要狀態群結束。回城是常用便利功能(快速返家、無代價無冷卻)→常駐可見,不被收合藏起
-           (先前誤收進次要群→手機預設收合下玩家找不到);情境動作鈕(搭話/幫忙/採集)靠近才亮、提示永遠看得到。 -->
-      <button type="button" class="hud-pill" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 回城</button>
+    </div>
+    <!-- ── 情境動作條（拉皮切片 2）：與頂部資訊狀態列物理分離，獨立浮在底部置中。
+         回城是常用便利功能(快速返家、無代價無冷卻)→常駐可見；情境/社交動作鈕(搭話/幫忙/採集/植樹…)
+         靠近才亮、同時通常只 1-2 顆。按鈕 id/class("hidden" 顯隱)沿用，game.js 的 toggle 邏輯零改動。 -->
+    <div id="hudActions">
+      <button type="button" class="act-btn" id="recallBtn" title="回新手村（傳回村子）" aria-label="回新手村">🏠 回城</button>
       <!-- 表情動作（ROADMAP 338）：按一下展開表情輪，挑一個情緒，附近玩家會看到你頭頂彈出該表情。 -->
-      <button type="button" class="hud-pill" id="emoteBtn" title="比個表情給附近玩家看（揮手、比讚、愛心…）" aria-label="表情動作" aria-haspopup="true" aria-expanded="false" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">😊 表情</button>
+      <button type="button" class="act-btn" id="emoteBtn" title="比個表情給附近玩家看（揮手、比讚、愛心…）" aria-label="表情動作" aria-haspopup="true" aria-expanded="false">😊 表情</button>
       <!-- 玩家擊掌（ROADMAP 339）：靠近另一名玩家、兩人都按一下，就會在中間「啪」地擊掌。 -->
-      <button type="button" class="hud-pill" id="highFiveBtn" title="伸手和靠近的玩家擊掌（兩人都按、又站得夠近才成）" aria-label="擊掌" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">✋ 擊掌</button>
-      <button type="button" class="hud-pill" id="cheerBtn" title="替靠近的玩家鼓掌喝采，替他累積人氣（攢到階名牌上會亮起人氣徽記）" aria-label="喝采" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">👏 喝采</button>
-      <button type="button" class="hud-pill hidden" id="petFetchBtn" title="朝面前丟出玩具，你的寵物會衝去把它叼回來（需要先馴一隻寵物）" aria-label="逗寵物" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🎾 逗寵物</button>
-      <button type="button" class="hud-pill hidden" id="plantTreeBtn" title="在腳邊種下一株嫩芽，它會隨真實時間慢慢長成大樹，全服都看得見——故鄉的大地會因你而漸漸蒙上綠蔭" aria-label="植樹" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🌳 植樹</button>
-      <button type="button" class="hud-pill hidden" id="meditateBtn" title="在黃昏或夜晚的安全地帶靜止不動 30 秒，緩緩恢復生命與乙太（打坐期間移動即中斷；每 10 分鐘可打坐一次）" aria-label="打坐" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🧘 打坐</button>
-      <button type="button" class="hud-pill hidden" id="buskBtn" title="在村落廣場站定、靜止獻奏 15 秒，完成可得打賞乙太——身旁聆賞的玩家越多、打賞越豐（獻奏期間移動即中斷；每 5 分鐘可獻奏一次）" aria-label="廣場獻奏" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🎶 獻奏</button>
-      <button type="button" class="hud-pill hidden" id="homeBtn" title="進入住家（需靠近建地中心）" aria-label="進入住家" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🏠 進入住家</button>
-      <button type="button" class="hud-pill hidden" id="residentBtn" title="和附近居民搭話" aria-label="搭話" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">💬 搭話</button>
-      <button type="button" class="hud-pill hidden" id="majorNpcBtn" title="和附近的城鎮大人物攀談" aria-label="攀談" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🗣️ 攀談</button>
-      <button type="button" class="hud-pill hidden" id="helpResidentBtn" title="協助附近需要幫忙的居民" aria-label="幫忙" style="cursor:pointer;border:1px solid #3a4250;color:var(--ink);font:inherit;">🤝 幫忙</button>
-      <button type="button" class="hud-pill hidden" id="carionOrbBtn" title="採集乙太微粒（死亡的生命能量）" aria-label="採集乙太微粒" style="cursor:pointer;border:1px solid #28a850;color:#a8f0a8;font:inherit;">🌿 採集乙太微粒</button>
+      <button type="button" class="act-btn" id="highFiveBtn" title="伸手和靠近的玩家擊掌（兩人都按、又站得夠近才成）" aria-label="擊掌">✋ 擊掌</button>
+      <button type="button" class="act-btn" id="cheerBtn" title="替靠近的玩家鼓掌喝采，替他累積人氣（攢到階名牌上會亮起人氣徽記）" aria-label="喝采">👏 喝采</button>
+      <button type="button" class="act-btn hidden" id="petFetchBtn" title="朝面前丟出玩具，你的寵物會衝去把它叼回來（需要先馴一隻寵物）" aria-label="逗寵物">🎾 逗寵物</button>
+      <button type="button" class="act-btn hidden" id="plantTreeBtn" title="在腳邊種下一株嫩芽，它會隨真實時間慢慢長成大樹，全服都看得見——故鄉的大地會因你而漸漸蒙上綠蔭" aria-label="植樹">🌳 植樹</button>
+      <button type="button" class="act-btn hidden" id="meditateBtn" title="在黃昏或夜晚的安全地帶靜止不動 30 秒，緩緩恢復生命與乙太（打坐期間移動即中斷；每 10 分鐘可打坐一次）" aria-label="打坐">🧘 打坐</button>
+      <button type="button" class="act-btn hidden" id="buskBtn" title="在村落廣場站定、靜止獻奏 15 秒，完成可得打賞乙太——身旁聆賞的玩家越多、打賞越豐（獻奏期間移動即中斷；每 5 分鐘可獻奏一次）" aria-label="廣場獻奏">🎶 獻奏</button>
+      <button type="button" class="act-btn hidden" id="homeBtn" title="進入住家（需靠近建地中心）" aria-label="進入住家">🏠 進入住家</button>
+      <button type="button" class="act-btn hidden" id="residentBtn" title="和附近居民搭話" aria-label="搭話">💬 搭話</button>
+      <button type="button" class="act-btn hidden" id="majorNpcBtn" title="和附近的城鎮大人物攀談" aria-label="攀談">🗣️ 攀談</button>
+      <button type="button" class="act-btn hidden" id="helpResidentBtn" title="協助附近需要幫忙的居民" aria-label="幫忙">🤝 幫忙</button>
+      <button type="button" class="act-btn act-life hidden" id="carionOrbBtn" title="採集乙太微粒（死亡的生命能量）" aria-label="採集乙太微粒">🌿 採集乙太微粒</button>
     </div>
     <!-- 表情輪（ROADMAP 338）：按「😊 表情」展開的浮層，挑一個情緒廣播給附近玩家。
          按鈕由 game.js 依後端表情白名單動態生成，標籤集中於此（i18n 友善）。 -->
