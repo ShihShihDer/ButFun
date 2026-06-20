@@ -115,6 +115,17 @@ fn weapon() -> Recipe {
     }
 }
 
+/// 斧頭配方 (ROADMAP 433 林間揮斧工具進程)：木×4 + 石×3 -> 斧頭×1。
+/// 比鎬子（木×3＋石×2）略貴，是另一條「採集→合成→更快採」的工具，專加速伐木。
+fn axe() -> Recipe {
+    Recipe {
+        id: "axe",
+        inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 3)],
+        output: ItemKind::Axe,
+        output_qty: 1,
+    }
+}
+
 /// 全域配方目錄。
 pub const RECIPES: &[Recipe] = &[
     Recipe {
@@ -137,6 +148,13 @@ pub const RECIPES: &[Recipe] = &[
         id: "weapon",
         inputs: &[(ItemKind::Stone, 4), (ItemKind::Ether, 2)],
         output: ItemKind::Weapon,
+        output_qty: 1,
+    },
+    /// 斧頭 (ROADMAP 433)：木×4 + 石×3 → 斧頭×1。伐木工具，身上有它放倒一棵樹更快、木材更多。
+    Recipe {
+        id: "axe",
+        inputs: &[(ItemKind::Wood, 4), (ItemKind::Stone, 3)],
+        output: ItemKind::Axe,
         output_qty: 1,
     },
     /// 活力藥水：野花種子×3 → 活力藥水×1。讓生態資源有「賣給 NPC」之外的「自用保命」出路。
@@ -646,6 +664,31 @@ mod tests {
         // 齊了。
         inv.add(ItemKind::Stone, 2);
         assert!(p.can_craft(&inv));
+    }
+
+    #[test]
+    fn axe_recipe_requires_wood_and_stone() {
+        // ROADMAP 433：斧頭＝木×4＋石×3。料不齊不能合，齊了才行。
+        let mut inv = Inventory::new();
+        let a = axe();
+        assert!(!a.can_craft(&inv));
+        inv.add(ItemKind::Wood, 4);
+        assert!(!a.can_craft(&inv));
+        inv.add(ItemKind::Stone, 3);
+        assert!(a.can_craft(&inv));
+        // 全域目錄查得到、id 對齊前端。
+        assert!(recipe_by_id("axe").is_some(), "斧頭配方應在全域目錄");
+    }
+
+    #[test]
+    fn axe_craft_consumes_and_yields() {
+        let mut inv = Inventory::new();
+        inv.add(ItemKind::Wood, 4);
+        inv.add(ItemKind::Stone, 3);
+        assert!(axe().craft(&mut inv));
+        assert_eq!(inv.count(ItemKind::Axe), 1);
+        assert_eq!(inv.count(ItemKind::Wood), 0);
+        assert_eq!(inv.count(ItemKind::Stone), 0);
     }
 
     #[test]

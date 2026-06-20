@@ -54,6 +54,14 @@ pub enum ItemKind {
     /// 「採集→合成→戰鬥變強」正回饋圈。工具也好、武器也好都只是背包物品（沿用同一容器），
     /// 故只在此 enum 加一個變體即可。放在工具之後，既有 `entries` 排序不動。
     Weapon,
+    /// 斧頭（合成產物，ROADMAP 433 林間揮斧的工具進程）：背包裡第一件「伐木」工具。
+    /// 鎬子之於採礦、斧頭之於伐木——身上有它，403 連揮放倒一棵樹要的斧數更少（更快），
+    /// 且每棵樹多抱走一份木材（鋒利的刃多削下一束）。它給合成素材（木／石）開出「伐木更快」
+    /// 這條新去處，把「採集→合成→更快採」正回饋圈從採礦擴到木材這條（採礦早有鎬子、伐木一直缺）。
+    /// 工具也是背包物品（沿用同一容器），故只在此 enum 加一個變體即可。刻意先只做一階斧頭
+    /// （對齊鎬子當年「先只做一條」的薄切片）；日後可循強化鎬的模式補「強化斧」第二階進程。
+    /// 放在工具／武器叢集之後，既有採集／生態物品排序不動。
+    Axe,
     /// 晶石碎片（挖掘 Crystal 地形格掉落，ROADMAP 10 深層晶洞生態域）。
     /// 可賣給 NPC 換取高額乙太（premium 素材），給探索型玩家一條「深挖有額外回報」的路線。
     CrystalShard,
@@ -341,6 +349,7 @@ impl ItemKind {
         ItemKind::Pickaxe,
         ItemKind::ReinforcedPickaxe,
         ItemKind::Weapon,
+        ItemKind::Axe,
         ItemKind::CrystalShard,
         ItemKind::MushroomSpore,
         ItemKind::AncientFragment,
@@ -649,6 +658,7 @@ mod tests {
                 | ItemKind::Pickaxe
                 | ItemKind::ReinforcedPickaxe
                 | ItemKind::Weapon
+                | ItemKind::Axe
                 | ItemKind::CrystalShard
                 | ItemKind::MushroomSpore
                 | ItemKind::AncientFragment
@@ -744,8 +754,8 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 93 種（含 ROADMAP 412：養蜂釀蜜 蜂蜜 1 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 93, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 94 種（含 ROADMAP 433：林間揮斧 斧頭 1 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 94, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -1058,11 +1068,18 @@ mod tests {
             // 星際守護符持有時採集/戰鬥 EXP +15%（ROADMAP 134）。
             let passive_amulet = item == ItemKind::StarAmulet
                 || item == ItemKind::StarGuardianAmulet;
+            // 11. 是有效用的伐木工具（ROADMAP 433 斧頭）：持有時 woodcutting 放倒一棵樹的斧數嚴格更少。
+            // 斧頭不加速一鍵採集（故 `tool_from_item` 回 None、不算 useful_tool），其去處在伐木小遊戲；
+            // 用 woodcutting 放倒門檻當執行期錨點，確認「斧頭真的更快」、不是只進不出的死庫存。
+            let useful_woodcutting_tool = item == ItemKind::Axe
+                && crate::woodcutting::strikes_to_fell(true)
+                    < crate::woodcutting::strikes_to_fell(false);
 
             assert!(
                 consumed_by_recipe || useful_tool || spendable_currency || useful_weapon
                     || building_material || npc_sellable || usable_consumable || useful_armor
-                    || navigation_tool || placeable_functional || passive_amulet,
+                    || navigation_tool || placeable_functional || passive_amulet
+                    || useful_woodcutting_tool,
                 "物品 {item:?} 沒有任何去處（不被任何配方消耗／不是有效用的工具／不是乙太貨幣／\
                  不是有效用的武器或防具／不是建造材料／不可賣給 NPC／不是可用消耗品）——玩家持有它卻無處可用，\
                  是只進不出的死庫存，違反 GDD「有產出也要有去處」紀律；請給它一個去處或更新本不變式"

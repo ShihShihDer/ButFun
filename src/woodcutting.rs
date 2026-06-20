@@ -24,8 +24,22 @@ pub const BEAT_SECS: f32 = 1.1;
 /// 療癒向、刻意寬鬆好上手。
 pub const HIT_WINDOW: f32 = 0.2;
 
-/// 放倒一棵樹要揮幾斧。
+/// 放倒一棵樹要揮幾斧（徒手／沒斧頭時）。
 pub const STRIKES_TO_FELL: u8 = 4;
+
+/// 帶斧頭時放倒一棵樹要揮幾斧（ROADMAP 433）：比徒手少一斧（更俐落、更快放倒）。
+/// 刻意只少一斧而非砍半：保留「踩準節拍」的玩法份量，工具是錦上添花、不是跳過小遊戲。
+pub const AXE_STRIKES_TO_FELL: u8 = 3;
+
+/// 帶斧頭放倒時，額外多抱走的木材份數（ROADMAP 433）：鋒利的刃多削下一束。
+/// 補回「斧數變少→可累積的乾淨擊上限變少→木材反而變少」這個反直覺缺口，
+/// 讓斧頭在「速度」與「每棵樹產出」兩面都不會比徒手差——升級該是嚴格變好。
+pub const AXE_WOOD_BONUS: u32 = 1;
+
+/// 依「身上有沒有斧頭」回放倒一棵樹要揮的斧數。純查表、可測。
+pub fn strikes_to_fell(has_axe: bool) -> u8 {
+    if has_axe { AXE_STRIKES_TO_FELL } else { STRIKES_TO_FELL }
+}
 
 /// 連揮逾時（秒）：開揮後這麼久沒揮滿就放棄這趟（樹留著、可重來）。
 pub const CHOP_TIMEOUT_SECS: f32 = 12.0;
@@ -52,11 +66,12 @@ pub fn is_clean_strike(elapsed_secs: f32) -> bool {
     dist_secs <= HIT_WINDOW
 }
 
-/// 放倒一棵樹時，依乾淨擊數決定一次吃掉幾段樹身耐久（＝抱走幾份木材）。
+/// 放倒一棵樹時，依乾淨擊數＋有無斧頭決定一次吃掉幾段樹身耐久（＝抱走幾份木材）。
 /// 乾淨擊越多、放倒越俐落、木材越多；全亂揮（0 乾淨）仍有 1，與一鍵採一下同量級。
+/// 帶斧頭再 +`AXE_WOOD_BONUS`（鋒利的刃多削一束），補回斧數變少導致的乾淨擊上限縮減。
 /// 上限是樹的耐久本身（在呼叫端以實際採到的份數封頂，不會無中生有）。
-pub fn fell_takes(clean: u8) -> u32 {
-    clean as u32 + 1
+pub fn fell_takes(clean: u8, has_axe: bool) -> u32 {
+    clean as u32 + 1 + if has_axe { AXE_WOOD_BONUS } else { 0 }
 }
 
 /// 放倒一棵樹得的工匠熟練度：與乾淨擊數同向（俐落的伐木更精進手藝）。
@@ -73,6 +88,8 @@ pub struct ChopSwing {
     strikes: u8,
     /// 其中踩準拍點的乾淨擊數。
     clean: u8,
+    /// 開揮當下身上有沒有斧頭（決定放倒門檻與木材加成；一趟內鎖定，中途換裝不影響本趟）。
+    has_axe: bool,
 }
 
 /// 一次揮斧的判定結果，供呼叫端廣播給前端演出（每斧一則、放倒那斧帶 `felled=true`）。
@@ -89,9 +106,14 @@ pub struct StrikeResult {
 }
 
 impl ChopSwing {
-    /// 開一趟新的連揮。
-    pub fn start() -> Self {
-        ChopSwing { elapsed: 0.0, strikes: 0, clean: 0 }
+    /// 開一趟新的連揮。`has_axe`＝開揮當下身上有沒有斧頭（鎖定本趟的放倒門檻與木材加成）。
+    pub fn start(has_axe: bool) -> Self {
+        ChopSwing { elapsed: 0.0, strikes: 0, clean: 0, has_axe }
+    }
+
+    /// 本趟開揮時身上有沒有斧頭（呼叫端結算木材時用，與放倒門檻一致）。
+    pub fn has_axe(self) -> bool {
+        self.has_axe
     }
 
     /// 距開揮經過的時間（秒）——隨快照廣播給前端，渲染節拍環的脈動相位。
@@ -109,9 +131,9 @@ impl ChopSwing {
         self.clean
     }
 
-    /// 是否已揮滿（達放倒門檻）。
+    /// 是否已揮滿（達放倒門檻）。門檻依本趟有無斧頭而定（帶斧頭更少斧即放倒）。
     pub fn is_complete(self) -> bool {
-        self.strikes >= STRIKES_TO_FELL
+        self.strikes >= strikes_to_fell(self.has_axe)
     }
 
     /// 推進一個 tick：累加時間，回傳是否已逾時（呼叫端據此清掉這趟、樹留著可重來）。
@@ -186,13 +208,45 @@ mod tests {
 
     #[test]
     fn fell_takes_increases_with_clean() {
-        assert_eq!(fell_takes(0), 1, "全亂揮仍有 1，與一鍵採一下同量級");
-        assert!(fell_takes(STRIKES_TO_FELL) > fell_takes(0));
+        assert_eq!(fell_takes(0, false), 1, "全亂揮仍有 1，與一鍵採一下同量級");
+        assert!(fell_takes(STRIKES_TO_FELL, false) > fell_takes(0, false));
         for c in 0..STRIKES_TO_FELL {
-            assert!(fell_takes(c + 1) > fell_takes(c), "乾淨擊越多木材越多");
+            assert!(fell_takes(c + 1, false) > fell_takes(c, false), "乾淨擊越多木材越多");
         }
         // 全乾淨（4 擊）剛好吃掉整棵樹的耐久（5）。
-        assert_eq!(fell_takes(STRIKES_TO_FELL), 5);
+        assert_eq!(fell_takes(STRIKES_TO_FELL, false), 5);
+    }
+
+    #[test]
+    fn axe_fells_in_fewer_strikes() {
+        // 斧頭把放倒門檻從 4 斧降到 3 斧（更快放倒），徒手仍 4 斧。
+        assert_eq!(strikes_to_fell(false), STRIKES_TO_FELL);
+        assert_eq!(strikes_to_fell(true), AXE_STRIKES_TO_FELL);
+        assert!(AXE_STRIKES_TO_FELL < STRIKES_TO_FELL, "斧頭該嚴格更快");
+    }
+
+    #[test]
+    fn axe_is_never_worse_on_wood() {
+        // 升級鐵律：同樣乾淨擊數，帶斧頭抱走的木材 ≥ 徒手（多 AXE_WOOD_BONUS，不會反而更少）。
+        for c in 0..=STRIKES_TO_FELL {
+            assert!(fell_takes(c, true) >= fell_takes(c, false), "斧頭木材不該比徒手少");
+            assert_eq!(fell_takes(c, true), fell_takes(c, false) + AXE_WOOD_BONUS);
+        }
+        // 各自滿乾淨的一棵樹：帶斧頭(3 乾淨)與徒手(4 乾淨)抱走的木材打平（速度才是淨賺）。
+        assert_eq!(fell_takes(AXE_STRIKES_TO_FELL, true), fell_takes(STRIKES_TO_FELL, false));
+    }
+
+    #[test]
+    fn axe_run_fells_at_three_strikes() {
+        // 帶斧頭：揮滿 3 斧即放倒（第 3 斧 felled）、第 2 斧還沒。
+        let mut c = ChopSwing::start(true);
+        assert!(c.has_axe());
+        let _ = c.strike();
+        let r2 = c.strike();
+        assert!(!r2.felled, "帶斧頭第 2 斧還沒放倒");
+        let r3 = c.strike();
+        assert!(r3.felled, "帶斧頭第 3 斧放倒");
+        assert!(c.is_complete());
     }
 
     #[test]
@@ -203,7 +257,7 @@ mod tests {
 
     #[test]
     fn start_is_zeroed() {
-        let c = ChopSwing::start();
+        let c = ChopSwing::start(false);
         assert!((c.elapsed() - 0.0).abs() < 1e-6);
         assert_eq!(c.strikes(), 0);
         assert_eq!(c.clean(), 0);
@@ -212,14 +266,14 @@ mod tests {
 
     #[test]
     fn advance_accumulates_and_times_out() {
-        let mut c = ChopSwing::start();
+        let mut c = ChopSwing::start(false);
         assert!(!c.advance(CHOP_TIMEOUT_SECS - 0.5));
         assert!(c.advance(1.0), "累過逾時門檻回 true");
     }
 
     #[test]
     fn advance_ignores_non_positive_dt() {
-        let mut c = ChopSwing::start();
+        let mut c = ChopSwing::start(false);
         let before = c;
         assert!(!c.advance(0.0));
         assert!(!c.advance(-2.0));
@@ -228,7 +282,7 @@ mod tests {
 
     #[test]
     fn strike_counts_and_marks_clean() {
-        let mut c = ChopSwing::start();
+        let mut c = ChopSwing::start(false);
         // 開揮時 elapsed=0 落在拍點上＝乾淨。
         let r1 = c.strike();
         assert!(r1.clean);
@@ -245,7 +299,7 @@ mod tests {
 
     #[test]
     fn fells_at_threshold() {
-        let mut c = ChopSwing::start();
+        let mut c = ChopSwing::start(false);
         let mut last = c.strike();
         for _ in 1..STRIKES_TO_FELL {
             last = c.strike();
@@ -257,7 +311,7 @@ mod tests {
     #[test]
     fn all_clean_run_fells_with_full_haul() {
         // 每一斧都踩在拍點上：累積滿乾淨擊、放倒時吃掉整棵樹。
-        let mut c = ChopSwing::start();
+        let mut c = ChopSwing::start(false);
         let mut r = c.strike();
         for k in 1..STRIKES_TO_FELL {
             c.advance(BEAT_SECS); // 整拍推進，仍落在拍點上
@@ -266,6 +320,6 @@ mod tests {
         }
         assert!(r.felled);
         assert_eq!(r.total_clean, STRIKES_TO_FELL);
-        assert_eq!(fell_takes(r.total_clean), 5);
+        assert_eq!(fell_takes(r.total_clean, false), 5);
     }
 }

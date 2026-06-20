@@ -7517,23 +7517,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::BeginChop) => {
                     // 走近可採的樹開一趟「連揮」節奏小遊戲。驗格：未倒地＋附近有可採節點＋
                     // 冷卻過＋沒在伐。真正放倒、給木材在 ChopStrike 揮滿時才結算。純記憶體、零鎖內 IO。
+                    // ROADMAP 433：開揮當下身上有沒有斧頭，鎖進這趟連揮（決定放倒門檻與木材加成）。
                     let player_pos = {
                         let players = app.players.read().unwrap();
                         players.get(&id).and_then(|p| {
                             if p.vitals.is_downed() || p.chop_cooldown > 0.0 || p.chopping.is_some() {
                                 None
                             } else {
-                                Some((p.x, p.y))
+                                let has_axe = p.inventory.count(crate::inventory::ItemKind::Axe) > 0;
+                                Some((p.x, p.y, has_axe))
                             }
                         })
                     };
-                    if let Some((px, py)) = player_pos {
+                    if let Some((px, py, has_axe)) = player_pos {
                         let near_tree = app.nodes.write().unwrap().has_harvestable_near(px, py);
                         if near_tree {
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 if p.chopping.is_none() {
-                                    p.chopping = Some(crate::woodcutting::ChopSwing::start());
-                                    tracing::debug!(player = %p.name, "開揮伐木");
+                                    p.chopping = Some(crate::woodcutting::ChopSwing::start(has_axe));
+                                    tracing::debug!(player = %p.name, has_axe, "開揮伐木");
                                 }
                             }
                         }
@@ -7548,8 +7550,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let mut players = app.players.write().unwrap();
                         match players.get_mut(&id) {
                             Some(p) => p.chopping.as_mut().map(|c| {
+                                let has_axe = c.has_axe();
                                 let r = c.strike();
-                                (r, p.x, p.y)
+                                (r, has_axe, p.x, p.y)
                             }),
                             None => None,
                         }
@@ -7557,7 +7560,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let result_msg = match strike {
                         // 沒在伐：靜默忽略，不廣播。
                         None => None,
-                        Some((r, px, py)) => {
+                        Some((r, has_axe, px, py)) => {
                             if r.felled {
                                 // 揮滿了：先清狀態＋起冷卻，再去採該樹（最多吃掉 fell_takes 段耐久）。
                                 {
@@ -7567,7 +7570,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         p.chop_cooldown = crate::woodcutting::CHOP_COOLDOWN_SECS;
                                     }
                                 }
-                                let takes = crate::woodcutting::fell_takes(r.total_clean);
+                                let takes = crate::woodcutting::fell_takes(r.total_clean, has_axe);
                                 // 連採 takes 下（被別人搶先採光 / 走離範圍 → gather_near 回 None 即止）。
                                 let mut wood_total: u32 = 0;
                                 let mut item_kind: Option<crate::inventory::ItemKind> = None;
