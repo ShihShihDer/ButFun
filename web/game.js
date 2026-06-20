@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, menuSearchMatch, recordRecentPanel, recentPanelIds }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -27631,6 +27631,39 @@
     return { pins: cur, changed: true, full: false };
   }
 
+  // ROADMAP 460：「最近開啟」清單的純函式管理（無 DOM／無副作用，便於單獨驗證）。
+  // 探索三角的第三軸——搜尋（459，打字找）＋釘選（187，手動常駐）＋最近（自動、零操作）。
+  // recordRecentPanel：把剛開的面板 id 推到最前、去重保序、夾在上限內（重開舊的＝浮回最前；
+  // 重開最前面那個＝原樣不變）。壞 id／壞上限一律保守退回（不汙染清單、不冤枉玩家）。
+  function recordRecentPanel(list, id, max) {
+    const cap = Math.max(0, Number.isInteger(max) ? max : 0);
+    const prev = Array.isArray(list) ? list.filter((x) => typeof x === "string" && x !== "") : [];
+    if (typeof id !== "string" || id === "") return prev.slice(0, cap); // 壞 id：原樣（夾上限）退回
+    const out = [id];
+    for (const x of prev) {
+      if (x === id || out.includes(x)) continue; // 去重（剛推到最前的不重複）
+      out.push(x);
+      if (out.length >= cap) break;
+    }
+    return out.slice(0, cap);
+  }
+  // recentPanelIds：從原始清單推導「實際要顯示」的最近面板——只留仍存在的面板 id（面板改版被移除
+  // 時自動剔除）、且排除已釘選的（釘選的早在常駐欄一鍵直達，不必在此重複佔位），去重保序、夾上限。
+  function recentPanelIds(recent, pinned, validIds, max) {
+    const valid = new Set(Array.isArray(validIds) ? validIds : []);
+    const pin = new Set(Array.isArray(pinned) ? pinned : []);
+    const seen = new Set();
+    const out = [];
+    const cap = Math.max(0, Number.isInteger(max) ? max : 0);
+    for (const id of Array.isArray(recent) ? recent : []) {
+      if (typeof id !== "string" || !valid.has(id) || pin.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+      if (out.length >= cap) break;
+    }
+    return out;
+  }
+
   // ---- 星露谷風工具列(dock)+ 可開關視窗 ----
   // 總監定調:左上常駐欄太佔空間。常駐只留精簡狀態(乙太/生命/線上/時段);背包/合成/擴地/操作說明
   // 改成 dock 一排小圖示,點圖示才開對應視窗。規則:同時只開一個;再點同一顆、按 ✕、按 Esc、
@@ -27642,6 +27675,7 @@
     if (!dock) return;
     let openWin = null; // 目前開著的視窗元素
     let openBtn = null; // 開它的 dock 鈕(關閉時把鍵盤焦點還回去)
+    let onPanelOpen = null; // ROADMAP 460：開啟某面板時的回呼（「最近開啟」清單接線後賦值）
 
     function closeWin(returnFocus = true) {
       if (!openWin) return;
@@ -27664,6 +27698,9 @@
       btn.setAttribute("aria-expanded", "true");
       openWin = win;
       openBtn = btn;
+      // ROADMAP 460：記下「剛開了哪個面板」——讓它浮回 ☰ 選單頂部的「最近開啟」。
+      // 走 btn.id（＝可釘選面板 id），常駐欄釘選快捷鈕無 id 故不重複記（它本就排除在最近之外）。
+      if (onPanelOpen && btn.id) onPanelOpen(btn.id);
       // 觀星面板（ROADMAP 347）：一開窗就向伺服器要今夜星圖（夜間才看得見）。
       if (win.id === "winStargaze") requestStarMap();
       // 和解面板（ROADMAP 364）：一開窗就向伺服器問鎮上有沒有可促成的和解（或續辦中的委託）。
@@ -27737,6 +27774,7 @@
       const q = menuSearchEl.value;
       let anyVisible = false;
       for (const grp of document.querySelectorAll("#winMenu .menu-group")) {
+        if (grp.id === "menuRecentGroup") continue; // ROADMAP 460：最近開啟組不參與搜尋過濾，由 renderRecentPanels 管可見性
         let grpVisible = false;
         for (const row of grp.querySelectorAll(".menu-row")) {
           const it = row.querySelector(".menu-item");
@@ -27748,6 +27786,8 @@
         if (grpVisible) anyVisible = true;
       }
       if (menuSearchEmptyEl) menuSearchEmptyEl.classList.toggle("hidden", anyVisible);
+      // ROADMAP 460：搜尋進行中隱藏「最近開啟」捷徑（打字時要搜全部、別被捷徑干擾）；清空時還原。
+      if (typeof renderRecentPanels === "function") renderRecentPanels();
     }
     // 每次開選單都從乾淨狀態起（清空查詢、還原全部項目），不殘留上次的過濾。
     function resetMenuSearch() {
@@ -27849,6 +27889,7 @@
         saveDockPins(dockPins);
         renderDockPins();
         syncPinButtons();
+        renderRecentPanels(); // ROADMAP 460：剛釘選的面板要從「最近開啟」捷徑撤下（取消釘選則可能浮回）
       });
       row.appendChild(pin);
     }
@@ -27866,6 +27907,62 @@
 
     renderDockPins();
     syncPinButtons();
+
+    // ── ROADMAP 460：最近開啟——選單頂部自動浮現你剛用過的面板 ─────────────────────
+    // 探索三角的第三軸：搜尋（459，打字找）＋釘選（187，手動常駐）＋最近（自動、零操作）。
+    // 手機上最常見的動作就是「重開剛剛用過的那個面板」——把最近 RECENT_MAX 個開過的面板浮到
+    // ☰ 選單最上方，一眼就在、一點直達，不必再翻分類或重打字。純前端、零後端／協議；清單存
+    // localStorage 跨重開記得；排除已釘選者（那些已在常駐欄）；搜尋進行中讓位給全文搜尋。
+    const RECENT_KEY = "butfun_recentpanels_v1";
+    const RECENT_MAX = 6;
+    const recentGroupEl = document.getElementById("menuRecentGroup");
+    const recentItemsEl = document.getElementById("menuRecentItems");
+    function loadRecentPanels() {
+      try {
+        // 載入時用 recentPanelIds 清洗掉已不存在的面板 id（pinned 傳空＝此處不剔釘選，顯示時才濾）。
+        return recentPanelIds(JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"), [], pinnableIds, RECENT_MAX);
+      } catch { return []; }
+    }
+    function saveRecentPanels(list) {
+      try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch {}
+    }
+    let recentPanels = loadRecentPanels();
+
+    // 依目前「最近清單 ×（排除釘選）×（仍存在）」重建頂部捷徑列；搜尋進行中或無項目則整組隱藏。
+    function renderRecentPanels() {
+      if (!recentGroupEl || !recentItemsEl) return;
+      const ids = recentPanelIds(recentPanels, dockPins, pinnableIds, RECENT_MAX);
+      recentItemsEl.textContent = "";
+      for (const id of ids) {
+        const src = document.getElementById(id);
+        if (!src) continue;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "menu-item";       // 沿用選單同款樣式（不另包 .menu-row／不加釘選鈕，最近是過渡捷徑）
+        b.dataset.target = id;
+        b.textContent = pinLabelOf(id);  // 沿用選單同款「圖示＋標籤」（面向玩家字串集中於 HTML）
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const t = document.getElementById(id);
+          if (t) openWinFor(t);
+        });
+        recentItemsEl.appendChild(b);
+      }
+      const searching = !!(menuSearchEl && (menuSearchEl.value || "").trim() !== "");
+      recentGroupEl.classList.toggle("hidden", ids.length === 0 || searching);
+    }
+
+    // 開啟某面板時記一筆（openWinFor 透過 onPanelOpen 回呼進來）：浮到最前、只在真有變動時存＋重繪。
+    onPanelOpen = (id) => {
+      if (!pinnableIds.includes(id)) return; // 只記可釘選的正式面板（與釘選同一 id 空間）
+      const next = recordRecentPanel(recentPanels, id, RECENT_MAX);
+      if (next.length === recentPanels.length && next.every((x, i) => x === recentPanels[i])) return; // 無變化（重開最前者）：免存免重繪
+      recentPanels = next;
+      saveRecentPanels(recentPanels);
+      renderRecentPanels();
+    };
+
+    renderRecentPanels();
 
     // ── 🗺️ 世界地圖：星球帶 + 本星鳥瞰（生態底色/城鎮/你的位置/裂縫）+ 旅行入口 ──
     // 解玩家痛點「不知道自己在哪、其他星球怎麼去」——旅行原本埋在「合成星圖→背包使用」

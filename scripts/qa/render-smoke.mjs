@@ -2042,6 +2042,42 @@ for (const sc of scenarios) {
   }
 }
 
+// 最近開啟（ROADMAP 460）：單元斷言純函式 recordRecentPanel／recentPanelIds——
+// recordRecentPanel：新開的浮到最前、去重保序、夾上限、壞 id/壞上限保守；
+// recentPanelIds：只留仍存在的、排除已釘選的、去重保序夾上限。
+{
+  const rec = sandbox.__bfTest && sandbox.__bfTest.recordRecentPanel;
+  const ids = sandbox.__bfTest && sandbox.__bfTest.recentPanelIds;
+  if (typeof rec !== "function" || typeof ids !== "function") {
+    failed = true;
+    console.error("  ❌ 最近開啟：game.js 未導出 recordRecentPanel／recentPanelIds");
+  } else {
+    let bad = 0;
+    const eq = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+    const chk = (name, got, want) => { if (!eq(got, want)) { bad++; console.error(`  ❌ 最近開啟：${name} 得 ${JSON.stringify(got)}，期望 ${JSON.stringify(want)}`); } };
+    // recordRecentPanel
+    chk("新開浮到最前", rec(["a", "b"], "c", 6), ["c", "a", "b"]);
+    chk("重開舊的浮回最前(去重)", rec(["a", "b", "c"], "c", 6), ["c", "a", "b"]);
+    chk("重開最前者原樣不變", rec(["a", "b"], "a", 6), ["a", "b"]);
+    chk("夾上限(滿了擠掉最舊)", rec(["a", "b", "c"], "d", 3), ["d", "a", "b"]);
+    chk("空清單", rec([], "a", 6), ["a"]);
+    chk("壞清單退回空+加新", rec(null, "a", 6), ["a"]);
+    chk("壞 id 原樣退回(夾上限)", rec(["a", "b"], 123, 6), ["a", "b"]);
+    chk("壞 id 且夾上限", rec(["a", "b", "c"], "", 2), ["a", "b"]);
+    chk("壞上限退 0(不留)", rec(["a"], "b", "x"), []);
+    chk("清單內壞值濾掉", rec(["a", null, "b", 7], "c", 6), ["c", "a", "b"]);
+    // recentPanelIds
+    chk("排除已釘選", ids(["a", "b", "c"], ["b"], ["a", "b", "c"], 6), ["a", "c"]);
+    chk("只留仍存在(剔除已移除面板)", ids(["a", "x", "b"], [], ["a", "b"], 6), ["a", "b"]);
+    chk("去重保序", ids(["a", "a", "b"], [], ["a", "b"], 6), ["a", "b"]);
+    chk("顯示夾上限", ids(["a", "b", "c"], [], ["a", "b", "c"], 2), ["a", "b"]);
+    chk("全壞輸入退空", ids(null, null, null, 6), []);
+    chk("全被釘選退空", ids(["a", "b"], ["a", "b"], ["a", "b"], 6), []);
+    if (bad) failed = true;
+    else console.log("  ✅ 最近開啟·清單真值表：16/16");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
