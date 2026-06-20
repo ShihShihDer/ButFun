@@ -67,6 +67,19 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::StarDust,         price_per: 3  },
     // 彩虹星塵（ROADMAP 134）：流星雨稀有彩虹節點限定，8 乙太/顆，稀有溢價。
     ShopEntry { item: ItemKind::RainbowStarDust,  price_per: 8  },
+    // ── 家常料理·加工增值（ROADMAP 436）──────────────────────────────────────
+    // 以前煮好的菜只能自己吃、賣不掉；現在故鄉商人也收家常菜。
+    // 鐵律「加工增值」：每道料理的收購價 **嚴格大於** 其生食材收購價總和——
+    // 先下廚再賣永遠比賣生料多賺，回報「烹飪」這一步（見下方 cooked_dishes_pay_off 測試把關）。
+    // 漲幅刻意保守（每道 +2~3 乙太），純療癒向、由食材採集量封頂，不是乙太水龍頭；
+    // 料理一律不在任何販售清單→買不回來，杜絕同 NPC 套利。
+    ShopEntry { item: ItemKind::GrilledFish,      price_per: 6  }, // 小魚×2(4)→+2
+    ShopEntry { item: ItemKind::StarSashimi,      price_per: 7  }, // 星星魚×1(5)→+2
+    ShopEntry { item: ItemKind::DeepBroth,        price_per: 13 }, // 深海魚×1(10)→+3
+    ShopEntry { item: ItemKind::FriedEgg,         price_per: 6  }, // 雞蛋×2(4)→+2
+    ShopEntry { item: ItemKind::Bread,            price_per: 8  }, // 小麥穗×3(6)→+2
+    ShopEntry { item: ItemKind::CarrotSoup,       price_per: 8  }, // 胡蘿蔔×2(6)→+2
+    ShopEntry { item: ItemKind::PotatoGratin,     price_per: 10 }, // 馬鈴薯×2(8)→+2
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。
@@ -534,6 +547,44 @@ mod tests {
                 "物資 {item:?} 不在 NPC 收購清單，玩家賣不出去"
             );
         }
+    }
+
+    #[test]
+    fn cooked_dishes_pay_off() {
+        // 加工增值不變量（ROADMAP 436）：每道「煮好的料理」（有飽足 buff＝家常菜）
+        // 只要它的生食材全在 NPC 收購清單，料理本身也必須在收購清單，
+        // 且收購價 **嚴格大於** 生食材收購價總和——保證「下廚再賣 > 賣生料」，回報烹飪。
+        use crate::crafting::RECIPES;
+        use crate::meal_buff::meal_buff_for;
+
+        let buy_price = |item: ItemKind| -> Option<u32> {
+            NPC_BUY_LIST.iter().find(|e| e.item == item).map(|e| e.price_per)
+        };
+
+        let mut checked = 0;
+        for r in RECIPES {
+            // 只看「煮好的料理」：有飽足 buff 者才是家常菜（藥水／工具等排除）。
+            if meal_buff_for(r.output).is_none() {
+                continue;
+            }
+            // 生食材全可收購才納入（否則無從比較「賣生料」基準）。
+            let raw_total: Option<u32> = r.inputs.iter().try_fold(0u32, |acc, &(item, qty)| {
+                buy_price(item).map(|p| acc + p * qty)
+            });
+            let Some(raw_total) = raw_total else { continue };
+
+            let dish_price = buy_price(r.output).unwrap_or_else(|| {
+                panic!("家常菜 {:?} 的生食材都能賣、料理本身卻不在收購清單", r.output)
+            });
+            assert!(
+                dish_price > raw_total,
+                "家常菜 {:?} 收購價 {} 未高於生食材總價 {}：下廚反而虧，加工增值不成立",
+                r.output, dish_price, raw_total
+            );
+            checked += 1;
+        }
+        // 確保真的有料理被驗到（避免將來改動讓迴圈空轉而假性通過）。
+        assert!(checked >= 7, "應至少驗到 7 道家常菜，實際 {checked}");
     }
 
     #[test]

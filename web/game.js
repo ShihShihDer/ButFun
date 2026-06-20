@@ -25186,13 +25186,18 @@
 
     // —— 賣給商人（NPC 收購）——
     html += `<div style="color:var(--brass);font-weight:bold;margin:2px 0 4px">📤 賣給商人（換乙太）</div>`;
+    // 家常菜判定（ROADMAP 436）：重用合成表 cook 旗標標出「煮好的料理」，
+    // 在賣出列加「🍳家常菜」標籤，讓玩家一眼看到「煮過再賣比賣生料更划算」。
+    const cookedDishes_ = new Set(CRAFT_RECIPES.filter((r) => r.cook).map((r) => r.out));
     for (const entry of nearNpc.buy_list) {
       const name = ITEM_NAME_[entry.item] || entry.item;
       const have = invMap.get(entry.item) || 0;
       const maxSell = have;
       const canSell = !isGuest_ && have > 0;
+      const cookedTag = cookedDishes_.has(entry.item)
+        ? ' <span style="color:#e0a85f;font-size:0.78em">🍳家常菜</span>' : "";
       html += `<div class="craft-row" style="margin:3px 0;display:flex;align-items:center;gap:6px">
-        <span style="flex:1">${name} ×<input id="shopSellQty_${entry.item}" type="number" min="1" max="${maxSell || 1}" value="1"
+        <span style="flex:1">${name}${cookedTag} ×<input id="shopSellQty_${entry.item}" type="number" min="1" max="${maxSell || 1}" value="1"
           style="width:40px;background:#1a1f26;color:var(--ink);border:1px solid #3a4250;border-radius:4px;padding:1px 3px"
           ${!canSell ? "disabled" : ""}></span>
         <span style="color:var(--brass)">+${entry.price_per}✨/個${entry.trend === "down" ? ' <span style="color:#ff9966;font-size:0.82em">↘市場供給過剩</span>' : ""}</span>
