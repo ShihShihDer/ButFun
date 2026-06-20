@@ -2172,6 +2172,49 @@ for (const sc of scenarios) {
   }
 }
 
+// 同伴扶起·暖光救援（ROADMAP 464）：單元斷言純函式 reviveGlowSpec 的救援暖光外觀真值表——
+// 剛迸起（t=0）最亮（alpha=0.7）、環最小（r=8）、🤝 未揚（lift=0）；
+// 散盡（t=1）淡盡（alpha=0）、環擴至最大（r=48）、🤝 揚至頂（lift=22）；
+// 不透明隨時間單調遞減、半徑與上揚單調遞增；壞值／越界夾鉗成「散到末了」端、不爆。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.reviveGlowSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 同伴扶起：game.js 未導出 reviveGlowSpec");
+  } else {
+    let bad = 0;
+    const approx = (a, b) => Math.abs(a - b) < 1e-9;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 同伴扶起：${msg}`); } };
+    const s0 = fn(0), sh = fn(0.5), s1 = fn(1);
+    // 兩端外觀
+    expect(approx(s0.alpha, 0.7) && approx(s0.r, 8) && approx(s0.lift, 0), "t=0 最亮、環最小、未揚");
+    expect(approx(s1.alpha, 0) && approx(s1.r, 48) && approx(s1.lift, 22), "t=1 淡盡、環最大、揚至頂");
+    // 單調：不透明遞減、半徑遞增、上揚遞增
+    expect(s0.alpha > sh.alpha && sh.alpha > s1.alpha, "不透明隨時間單調遞減");
+    expect(s0.r < sh.r && sh.r < s1.r, "半徑隨時間單調遞增");
+    expect(s0.lift < sh.lift && sh.lift < s1.lift, "上揚量隨時間單調遞增");
+    // 有界且有限：alpha∈[0,0.7]、r∈[8,48]、lift∈[0,22]
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const s = fn(t);
+      expect(Number.isFinite(s.alpha) && s.alpha >= 0 && s.alpha <= 0.7, `t=${t} 不透明∈[0,0.7]`);
+      expect(Number.isFinite(s.r) && s.r >= 8 && s.r <= 48, `t=${t} 半徑∈[8,48]`);
+      expect(Number.isFinite(s.lift) && s.lift >= 0 && s.lift <= 22, `t=${t} 上揚∈[0,22]`);
+    }
+    // 非有限壞值（NaN/undefined/非數字字串/±Infinity）與上界越界（2）一律退「散到末了」端。
+    for (const bv of [NaN, undefined, "x", Infinity, -Infinity, 2]) {
+      const s = fn(bv);
+      expect(approx(s.alpha, 0) && approx(s.r, 48) && approx(s.lift, 22), `壞值/上界越界 ${String(bv)} 夾鉗成末了`);
+    }
+    // 下界越界（負值）夾成「剛迸起」端（alpha=0.7、r=8、lift=0），仍不爆。
+    {
+      const s = fn(-1);
+      expect(approx(s.alpha, 0.7) && approx(s.r, 8) && approx(s.lift, 0), "下界越界 -1 夾鉗成剛迸起");
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 同伴扶起·暖光救援真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, nextGuideStep }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, nextGuideStep, reviveGlowSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1638,6 +1638,10 @@
   // 頭頂的暖食光暈本就隨快照 well_fed 同步亮起，此陣列只演「分食的那一瞬」）。
   const mealAromas = [];
   const mealAromaWisps = [];
+  // 同伴扶起（ROADMAP 464）：有人把倒下的旅人扶起來時，在被救者起身處迸一道暖光救援特效。
+  // reviveGlows＝向外擴散的暖光環＋🤝 { wx, wy, born }。純表現、不嵌規則（被救者血條本就
+  // 隨快照血量同步回滿一半，此陣列只演「被扶起的那一瞬」）。
+  const reviveGlows = [];
   // 伺服器廣播的日夜狀態 { phase, light }；進場前為 null（render 時當白天、不疊夜色）。
   let daynight = null;
   let worldEvent = null; // { x, y, remaining_secs } | null — 來自伺服器快照的宇宙裂縫事件
@@ -4293,6 +4297,25 @@
         }
         break;
       }
+      case "player_revived": {
+        // 同伴扶起（ROADMAP 464）：有人把倒下的旅人就地扶了起來（半血起身、不再被傳回新手村）。
+        // 全服在被救者起身處迸一道暖光救援特效；兩位當事人各收到一句溫馨播報＋飄字。
+        const wx = Number(msg.x) || 0, wy = Number(msg.y) || 0;
+        spawnReviveGlow(wx, wy);
+        const now = performance.now();
+        if (msg.target_id && msg.target_id === myId) {
+          // 我被扶起來了：最暖的一刻——免去回新手村的折返，就地重新站穩。
+          floaters.push({ wx, wy: wy - 46, text: `🤝 ${msg.rescuer || "有人"} 把你扶了起來！`, color: "255,210,120", born: now });
+          announce(`${msg.rescuer || "一位旅人"} 把你扶了起來，你重新站穩了腳步`);
+          SFX.success();
+        } else if (msg.rescuer_id && msg.rescuer_id === myId) {
+          // 我扶起了倒下的同伴：付出善意的小回饋。
+          floaters.push({ wx, wy: wy - 46, text: `🤝 扶起了 ${msg.target || "旅人"}`, color: "255,210,120", born: now });
+          announce(`你扶起了倒下的 ${msg.target || "旅人"}`);
+          SFX.click();
+        }
+        break;
+      }
       case "locale_entered": {
         // 天地有名（ROADMAP 398）：踏入新「在地地名」。廣播事件，只對自己 id 演出（旁觀者忽略）。
         if (!msg.player_id || msg.player_id !== myId) break;
@@ -5643,6 +5666,59 @@
   }
   // ── 圍爐分食香氣 end ─────────────────────────────────────────────────────────
 
+  // ── 同伴扶起·暖光救援（ROADMAP 464）───────────────────────────────────────────
+  const REVIVE_GLOW_MS = 1000;   // 一道救援暖光環的壽命
+  // 救援暖光環的外觀真值表（純函式，給 render-smoke 斷言）：t＝年齡比例 0~1。
+  // 剛迸起（t=0）最亮、最小環；散盡（t=1）淡盡、環擴至最大。
+  // 不透明隨時間單調遞減、半徑單調遞增；壞值／越界夾鉗成「散到末了」端、不爆。
+  function reviveGlowSpec(t) {
+    const tt = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 1;
+    return {
+      alpha: 0.7 * (1 - tt),     // 隨時間漸淡
+      r: 8 + tt * 40,            // 暖光環向外擴散
+      lift: 22 * tt,             // 🤝 隨光環緩緩上揚
+    };
+  }
+  // 在 (wx,wy) 迸一道救援暖光：向外擴散的暖橙光環＋一雙 🤝。
+  function spawnReviveGlow(wx, wy) {
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+    reviveGlows.push({ wx, wy, born: performance.now() });
+  }
+  // 畫同伴扶起的暖光救援：暖橙光環向外擴散淡出，🤝 隨之微微上揚。reduceMotion 下仍畫
+  // （核心回饋），只是光環不靠動畫擴張感取勝、改以柔光呈現——splice 安全、render 不爆。
+  function drawReviveGlow(camX, camY, now) {
+    for (let i = reviveGlows.length - 1; i >= 0; i--) {
+      const g = reviveGlows[i];
+      const age = now - g.born;
+      if (age >= REVIVE_GLOW_MS) { reviveGlows.splice(i, 1); continue; }
+      const sp = reviveGlowSpec(age / REVIVE_GLOW_MS);
+      const sx = g.wx - camX;
+      const sy = g.wy - camY - 6;
+      ctx.save();
+      // 暖光環（描邊，向外擴散）。
+      ctx.globalAlpha = sp.alpha;
+      ctx.strokeStyle = "rgba(255, 205, 120, 0.8)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sp.r, 0, Math.PI * 2);
+      ctx.stroke();
+      // 中心柔光暈。
+      ctx.globalAlpha = sp.alpha * 0.6;
+      ctx.fillStyle = "rgba(255, 220, 150, 0.5)";
+      ctx.beginPath();
+      ctx.arc(sx, sy, sp.r * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+      // 上揚的 🤝。
+      ctx.globalAlpha = sp.alpha * 0.95;
+      ctx.font = `15px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🤝", sx, sy - 14 - sp.lift);
+      ctx.restore();
+    }
+  }
+  // ── 同伴扶起·暖光救援 end ─────────────────────────────────────────────────────
+
   // 畫主動攻擊命中特效：擴散紅圈，從敵人位置爆開。純表現，不影響判定。
   function drawAttackFx(camX, camY, now) {
     const ATTACK_HIT_MS = 300;
@@ -6948,6 +7024,7 @@
         const meFish = myId ? players.get(myId) : null;
         if (meFish && typeof meFish.aether_draw_secs === "number") safeSend({ type: "draw_aether" });
         else if (meFish && meFish.fishing_phase) safeSend({ type: "reel" });
+        // 都沒在進行就走中央互動分派（farmAtPlayer 內已把「扶起倒地同伴」列為最高優先）。
         else farmAtPlayer();
       }
       e.preventDefault();
@@ -8558,6 +8635,7 @@
       drawGatherFx(camX, camY, renderNow);             // 採集動作特效
       drawHarvestFx(camX, camY, renderNow);            // 豐收迸發（ROADMAP 458）：收成的金光與揚穀
       drawMealAroma(camX, camY, renderNow);            // 圍爐分食（ROADMAP 462）：暖食分享的香氣
+      drawReviveGlow(camX, camY, renderNow);           // 同伴扶起（ROADMAP 464）：暖光救援特效
       drawAttackFx(camX, camY, renderNow);
       drawBossSlamFx(camX, camY, renderNow);           // 怪物王重擊衝擊波（ROADMAP 424）
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
@@ -11294,6 +11372,38 @@
       if (d <= bestD) { bestD = d; best = e; }
     }
     return best;
+  }
+
+  // 同伴扶起（ROADMAP 464）：搆得著扶起的半徑（像素，鏡像後端 companion_revive::REVIVE_RADIUS_PX）。
+  const REVIVE_RANGE = 72;
+  // 找出離我「最近、且搆得著」的倒地同伴（hp<=0、不是我自己、不在室內）。沒人倒地回 null。
+  // 純讀權威快照血量判定「誰倒了」，不在前端嵌任何戰鬥規則；伺服器仍是扶起的最終把關。
+  function nearestDownedAlly(me) {
+    if (!me || me.indoor_plot_id != null) return null;
+    let best = null;
+    let bestD = REVIVE_RANGE * REVIVE_RANGE;
+    for (const p of players.values()) {
+      if (p.id === myId) continue;
+      const downed = typeof p.hp === "number" && p.max_hp > 0 && p.hp <= 0;
+      if (!downed || p.indoor_plot_id != null) continue;
+      const dx = p.x - me.x;
+      const dy = p.y - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = p; }
+    }
+    return best;
+  }
+  // 此刻是否能扶人（附近有搆得著的倒地同伴、且我自己沒倒地）：供觸控鈕浮現與互動鍵情境化判斷。
+  function reviveAvailable(me) {
+    if (!me || me.indoor_plot_id != null) return false;
+    if (typeof me.hp === "number" && me.max_hp > 0 && me.hp <= 0) return false; // 自己倒地中扶不了人
+    return !!nearestDownedAlly(me);
+  }
+  // 扶起最近的倒地同伴（伺服器以扶人者權威座標挑最近搆得著者扶起）。觸控鈕／互動鍵共用。
+  function doHelpUp(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !me) return;
+    if (!reviveAvailable(me)) return;
+    ws.send(JSON.stringify({ type: "help_up" }));
   }
 
   // 送主動攻擊訊息。客戶端也做冷卻節流，避免狂送（伺服器仍有最終驗証）。
@@ -27487,6 +27597,10 @@
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const me = myId ? players.get(myId) : null;
     if (!me) return;
+    // ROADMAP 464 同伴扶起：身旁有搆得著的倒地同伴時，動作鍵最優先＝扶起（救人重於農作／採集／
+    // 攻擊）。集中放在這條所有輸入源（鍵盤·E/F／手把臉鈕／觸控動作鈕）共用的中央分派，手機玩家
+    // 也扶得起人。伺服器仍以扶人者權威座標做最終把關。
+    if (reviveAvailable(me)) { doHelpUp(me); return; }
     // ROADMAP 403：伐木連揮中 → 動作鍵＝揮一斧（踩拍點，最高優先，鎖在節奏小遊戲裡）。
     if (typeof me.chop_secs === "number") { ws.send(JSON.stringify({ type: "chop_strike" })); return; }
     // 最優先：附近有存活敵人就主動攻擊。
