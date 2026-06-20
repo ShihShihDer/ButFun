@@ -565,7 +565,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5225,8 +5225,25 @@
     }
   }
 
+  // 純函式：黏土碎屑隨年齡 t∈[0,1] 的外觀——半徑 r、整體不透明 alpha、頂光 hi（ROADMAP 450）。
+  // 從黏土雕塑削下的屑剛迸出時最大最實、飛行中縮小淡出。確定性、只看 t；壞值（NaN／越界）
+  // 一律夾鉗成「飛行末了、近乎不可見」，render 不爆。比照 clayIdleMotion 的純函式範式、可單元自驗。
+  function clayCrumbSpec(t) {
+    let tt = Number(t);
+    if (!Number.isFinite(tt)) tt = 1;
+    tt = Math.max(0, Math.min(1, tt));
+    const r = 2.7 * (1 - 0.55 * tt);   // 2.7 → ~1.215，恆 > 0（圓潤黏土屑、不會縮成點）
+    const alpha = 1 - tt;              // 線性淡出
+    const hi = 0.55 * (1 - tt);        // 頂端高光隨之淡
+    return { r, alpha, hi };
+  }
+
   // 畫採集特效:命中星芒 + 飛散碎屑(受重力、淡出)。畫在節點之上、當回饋層。
+  // 黏土畫風（450）：把像素白星芒與扁方塊屑換成手捏黏土該有的「缺口暖光 + 圓潤立體碎屑」，
+  // 讓削樹／敲石／鑿礦像在削一座黏土雕塑——屑一塊塊圓鼓鼓地崩落。純渲染分支、沿用既有粒子
+  // 生命週期（零新狀態）；只在 clay 模式生效，像素玩家完全不受影響。reduceMotion 下本就不噴屑。
   function drawGatherFx(camX, camY, now) {
+    const clay = renderStyle === "clay";
     for (let i = gatherHits.length - 1; i >= 0; i--) {
       const h = gatherHits[i];
       const age = now - h.born;
@@ -5235,15 +5252,25 @@
       const sx = h.wx - camX;
       const sy = h.wy - camY - 14;
       ctx.save();
-      const r = 6 + t * 18;
-      ctx.strokeStyle = `rgba(255,255,255,${(0.9 * (1 - t)).toFixed(3)})`;
-      ctx.lineWidth = 2.5 * (1 - t);
-      for (let k = 0; k < 4; k++) {
-        const ang = (k * Math.PI) / 2 + 0.4;
+      if (clay) {
+        // 黏土缺口暖光：被削處泛起一圈柔和暖光（取代冷白星芒），隨命中淡開，呼應微縮世界暖調。
+        const rr = 5 + t * 14;
+        ctx.strokeStyle = `rgba(255,206,150,${(0.6 * (1 - t)).toFixed(3)})`;
+        ctx.lineWidth = 2.2 * (1 - t);
         ctx.beginPath();
-        ctx.moveTo(sx + Math.cos(ang) * r * 0.4, sy + Math.sin(ang) * r * 0.4);
-        ctx.lineTo(sx + Math.cos(ang) * r, sy + Math.sin(ang) * r);
+        ctx.arc(sx, sy, rr, 0, Math.PI * 2);
         ctx.stroke();
+      } else {
+        const r = 6 + t * 18;
+        ctx.strokeStyle = `rgba(255,255,255,${(0.9 * (1 - t)).toFixed(3)})`;
+        ctx.lineWidth = 2.5 * (1 - t);
+        for (let k = 0; k < 4; k++) {
+          const ang = (k * Math.PI) / 2 + 0.4;
+          ctx.beginPath();
+          ctx.moveTo(sx + Math.cos(ang) * r * 0.4, sy + Math.sin(ang) * r * 0.4);
+          ctx.lineTo(sx + Math.cos(ang) * r, sy + Math.sin(ang) * r);
+          ctx.stroke();
+        }
       }
       ctx.restore();
     }
@@ -5255,8 +5282,21 @@
       const t = age / PARTICLE_MS;
       const px = p.wx + p.vx * tt - camX;
       const py = p.wy + p.vy * tt + 240 * tt * tt - camY; // 重力
-      ctx.fillStyle = `rgba(${p.color},${(1 - t).toFixed(3)})`;
-      ctx.fillRect(px - 2, py - 2, 4, 4);
+      if (clay) {
+        // 圓潤黏土屑：本色填底（微壓扁＝黏土塊感）+ 一抹頂端高光，讀作一小塊被削下的立體黏土。
+        const spec = clayCrumbSpec(t);
+        ctx.fillStyle = `rgba(${p.color},${spec.alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(px, py, spec.r, spec.r * 0.82, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(255,250,238,${spec.hi.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(px - spec.r * 0.3, py - spec.r * 0.3, spec.r * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = `rgba(${p.color},${(1 - t).toFixed(3)})`;
+        ctx.fillRect(px - 2, py - 2, 4, 4);
+      }
     }
   }
 
