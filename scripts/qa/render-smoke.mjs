@@ -2349,6 +2349,38 @@ for (const sc of scenarios) {
   }
 }
 
+// 敵人毒襲（ROADMAP 469）：單元斷言純函式 poisonBubbleSpec 的真值表——
+// 固定回 3 顆毒泡；每顆 alpha 落在 [0, 0.55]、半徑為正、dy 為負（在頭頂上方）；
+// 同 (now, seed) 決定性可重現；reduceMotion 路徑（now=0）仍回有效泡規格（定格不動）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.poisonBubbleSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 敵人毒襲：game.js 未導出 poisonBubbleSpec");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 敵人毒襲：${msg}`); } };
+    const bs = fn(1234, 42);
+    expect(Array.isArray(bs) && bs.length === 3, "固定回 3 顆毒泡");
+    expect(bs.every(b => b.alpha >= 0 && b.alpha <= 0.55), "每顆不透明度落在 [0, 0.55]");
+    expect(bs.every(b => b.r > 0), "每顆半徑為正");
+    expect(bs.every(b => b.dy < 0), "每顆在頭頂上方（dy < 0）");
+    // 決定性：同 (now, seed) 必同規格。
+    const a = fn(1234, 42), b = fn(1234, 42);
+    expect(JSON.stringify(a) === JSON.stringify(b), "同 (now, seed) 決定性可重現");
+    // 不同 seed 多半錯落（dx 不全相同）。
+    const c = fn(1234, 99);
+    expect(JSON.stringify(c.map(x => x.dx)) !== JSON.stringify(a.map(x => x.dx)), "不同 seed 毒泡左右錯落");
+    // reduceMotion 路徑（now=0）仍回有效規格、不爆。
+    const stat = fn(0, 7);
+    expect(Array.isArray(stat) && stat.length === 3 && stat.every(b => b.r > 0), "reduceMotion（now=0）仍回有效泡");
+    // 壞值保守：non-number 入參不爆（Number()→0/NaN→0）。
+    expect(Array.isArray(fn(undefined, undefined)) && fn(undefined, undefined).length === 3, "壞入參不爆、仍回 3 顆");
+    if (bad) failed = true;
+    else console.log("  ✅ 敵人毒襲·毒泡真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

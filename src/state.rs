@@ -329,6 +329,11 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒待擊＝None）；
     /// 攻擊管線讀它的傷害倍率疊乘進 power，game.rs 每 tick 倒數其存活窗（消散即清空）。
     pub charge_ready: Option<crate::charged_strike::ChargeReady>,
+    /// 身上的中毒狀態（ROADMAP 469 敵人毒襲）：被乙太迷霧／孢子系敵人擊中時注入，之後即使走出
+    /// 攻擊範圍，毒仍穿透護甲持續流失生命，直到自然代謝或回城加速解毒。記憶體前置、不持久化、
+    /// 零 migration、重啟清零（比照 guard_shield／dodging：暫態戰鬥狀態不該存檔）。由 game.rs
+    /// 反擊迴圈注入、每秒結算毒傷；`is_active()` 隨 PlayerView 廣播供前端畫毒泡。
+    pub poison: crate::affliction::Poison,
     /// 本趟遠遊足跡（ROADMAP 411 遠遊見聞）：記得這趟連線踏足過哪些 locale，踏進沒去過的新地方
     /// ＝一次「初次踏足」（攢少量探索者熟練度、增足跡計數）。記憶體前置、不持久化、零 migration、
     /// 重啟清空。由 game.rs 的地名偵測（鏡像 398 `current_locale`）順手推進。
@@ -858,6 +863,8 @@ impl Player {
             // ROADMAP 426：情境下一步提示——同樣由快照層（game.rs，握得到 is_night 等情境）
             // 對已畢業玩家補上，這裡先留 None。
             idle_nudge: None,
+            // ROADMAP 469：中毒狀態隨快照廣播，前端據此畫毒泡。
+            poisoned: self.poison.is_active(),
         }
     }
 
@@ -1702,6 +1709,7 @@ mod tests {
             charge_cooldown: 0.0,
             charging: None,
             charge_ready: None,
+            poison: crate::affliction::Poison::new(),
             wayfaring: crate::wayfaring::Wayfaring::default(),
             fish_records: crate::fish_size::FishRecords::default(),
             traced_constellations: 0,

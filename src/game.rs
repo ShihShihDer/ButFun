@@ -966,6 +966,8 @@ pub fn spawn(app: AppState) {
                         .collect()
                 };
                 let mut dmgs: Vec<(uuid::Uuid, u32)> = Vec::new();
+                // ROADMAP 469：本拍受擊、且身旁有乙太迷霧／孢子系敵人的玩家，待注入中毒 (pid, 秒數)。
+                let mut poison_apply: Vec<(uuid::Uuid, f32)> = Vec::new();
                 // ROADMAP 424：本拍剛砸下重擊的怪物王落點（出鎖後廣播衝擊波）。
                 let mut slam_events: Vec<(f32, f32, f32)> = Vec::new();
                 {
@@ -975,6 +977,11 @@ pub fn spawn(app: AppState) {
                         let threat = enemies.threat_at(*px, *py);
                         if threat > 0 {
                             dmgs.push((*pid, threat));
+                            // ROADMAP 469：受到反擊傷害的同時，若身旁有帶毒敵人就注入中毒。
+                            let psecs = enemies.poison_secs_at(*px, *py);
+                            if psecs > 0.0 {
+                                poison_apply.push((*pid, psecs));
+                            }
                         }
                     }
                     // ROADMAP 424：怪物王預警重擊——本傷害結算每秒一次，故以 (now-1s, now) 偵測
@@ -1004,8 +1011,16 @@ pub fn spawn(app: AppState) {
                 let mut newly_downed_names: Vec<String> = Vec::new();
                 // ROADMAP 410：本拍翻滾閃掉反擊的玩家（出鎖後廣播「閃避！」飄字）。
                 let mut evaded_dodges: Vec<(uuid::Uuid, f32, f32)> = Vec::new();
-                if !dmgs.is_empty() {
+                {
                     let mut players = app.players.write().unwrap();
+                    // ROADMAP 469：先注入本拍的中毒（受擊且身旁有帶毒敵人）。
+                    for (pid, secs) in poison_apply {
+                        if let Some(p) = players.get_mut(&pid) {
+                            if !p.vitals.is_downed() {
+                                p.poison.apply(secs);
+                            }
+                        }
+                    }
                     for (pid, dmg) in dmgs {
                         if let Some(p) = players.get_mut(&pid) {
                             // 護甲減傷：讀裝備槽（ROADMAP 36）+ 寵物加成（ROADMAP 46）。
@@ -1034,6 +1049,22 @@ pub fn spawn(app: AppState) {
                                 }
                                 newly_downed_names.push(p.name.clone());
                             }
+                        }
+                    }
+                    // ROADMAP 469：中毒結算——對所有中毒玩家推進 1 秒（本分支每秒一次），毒傷穿透
+                    // 護甲／格擋／翻滾直接流失（體內毒、減傷鏈擋不住），城鎮安全圈內加速代謝解毒。
+                    // 走出敵人範圍仍會繼續掉血，逼玩家撤離 / 回鎮——這是中毒帶來的新空間決策。
+                    // 毒傷打趴也算被怪擊倒（最近敵人升級、NPC 落敗反應走同一條路徑）。
+                    for p in players.values_mut() {
+                        if p.vitals.is_downed() || !p.poison.is_active() {
+                            continue;
+                        }
+                        let in_town = crate::affliction::near_town_cleanse(p.x, p.y);
+                        let pdmg = p.poison.tick(1.0, in_town);
+                        if pdmg > 0 && p.vitals.take_damage(pdmg) {
+                            tracing::info!(player = %p.name, pdmg, "中毒流盡，休息復原中");
+                            downed_positions.push((p.x, p.y));
+                            newly_downed_names.push(p.name.clone());
                         }
                     }
                 }
