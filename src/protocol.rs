@@ -251,6 +251,11 @@ pub enum ClientMsg {
     /// game.rs 廣播一句「這場流星雨，N 位旅人一同許下了願望」。沒有流星雨 / 在室內 / 重複許願 /
     /// 超量一律靜默忽略。零經濟、零持久化、純記憶體、重啟清零（鏡像流星雨本體）。
     MakeWish,
+    /// 野營篝火（ROADMAP 474）：玩家按「🔥 生火」在自己腳下升起一堆篝火。
+    /// 無 payload——一律用玩家自己的權威座標升火（防隔空生火）；火光暖意把附近野獸逼退，
+    /// 替自己與同伴在野外圍出一塊敵人不來犯的安全角落。升火有每人冷卻＋全服上限，
+    /// 在室內 / 冷卻中 / 已達上限 / 超量一律靜默忽略。零經濟、零持久化、純記憶體、重啟清零。
+    LightCampfire,
     /// 逗玩接物（ROADMAP 345）：玩家朝面前 `(dx, dy)` 方向丟出玩具，寵物便衝去叼回。
     /// 伺服器以玩家自己的權威座標算玩具落點（`pet_fetch::throw_spot`，防隔空丟），在寵物身上
     /// 開一趟接物（game.rs 每幀推進：衝去叼→叼回主人）。`(dx, dy)` 可為任意長度（內部正規化），
@@ -817,6 +822,19 @@ pub enum ClientMsg {
         pub is_rainbow: bool,
     }
 
+    /// 快照裡的野營篝火（ROADMAP 474）。前端在世界座標畫篝火與暖意光圈（入夜更亮）。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct CampfireView {
+        /// 篝火唯一 ID。
+        pub id: u32,
+        /// 世界座標 X。
+        pub wx: f32,
+        /// 世界座標 Y。
+        pub wy: f32,
+        /// 剩餘燃燒秒數（前端可據此讓火光在熄滅前漸弱）。
+        pub remaining_secs: u32,
+    }
+
 /// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
@@ -1010,6 +1028,10 @@ pub enum ServerMsg {
         meteor_shower_secs: u32,
         /// 活躍星塵採集點清單（ROADMAP 133）。流星雨期間前端在各節點位置顯示採集點。
         dust_nodes: Vec<DustNodeView>,
+        /// 全服燃燒中的野營篝火（ROADMAP 474）。前端在各篝火位置畫火光與暖意光圈。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時為空）。
+        #[serde(default)]
+        campfires: Vec<CampfireView>,
         /// 旅行商人剩餘秒數（ROADMAP 135）。0=不在城鎮；>0 時前端顯示商人 NPC。
         wandering_merchant_secs: u32,
         /// 旅行商人當前商品目錄（ROADMAP 135）；商人不在城鎮時為空陣列。
@@ -3040,6 +3062,7 @@ mod tests {
             star_forecast_bonus: String::new(),
             meteor_shower_secs: 0,
             dust_nodes: vec![],
+            campfires: vec![],
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
             merchant_quests: vec![],

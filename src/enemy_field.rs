@@ -23,6 +23,10 @@ pub const ATTACK_REACH: f32 = 64.0;
 /// 敵人察覺玩家、開始追擊的半徑。
 pub const AGGRO_RADIUS: f32 = 260.0;
 
+/// 野營篝火安撫持續秒數（ROADMAP 474）：落入篝火暖意圈的敵人 `calm_timer` 被設成這個值，
+/// 略長於一般幀距以橋接幀與幀之間；只要還在圈內每幀都會被重設滿，離開後 1 秒內自然回神。
+const CAMPFIRE_CALM_SECS: f32 = 1.0;
+
 /// 追擊速度（像素/秒）。
 const CHASE_SPEED: f32 = 105.0;
 
@@ -106,6 +110,9 @@ pub struct PlacedEnemy {
     /// ROADMAP 165：怪物食物鏈目標——此怪物正在追獵的野生動物（ID, 種類, x, y）。
     /// 每幀由 update_wildlife_targets 更新；玩家在 aggro 範圍內時清空（玩家優先）。
     pub hunting_wildlife_target: Option<(u32, WildlifeKind, f32, f32)>,
+    /// 野營篝火安撫剩餘秒數（ROADMAP 474）：> 0 時此怪被附近篝火的火光逼退、暫時放棄追擊。
+    /// 由 `apply_campfire_calm` 在落入暖意半徑時設滿、`advance` 每幀遞減；純記憶體、不持久化。
+    pub calm_timer: f32,
 }
 
 /// `level_up_nearest_killer` 的回傳值，供呼叫端決定是否廣播兇名精英通告。
@@ -283,6 +290,36 @@ impl EnemyField {
         }
     }
 
+    /// 野營篝火安撫（ROADMAP 474）：把落在任一篝火暖意半徑（`crate::campfire::WARMTH_RADIUS`）
+    /// 內的活著敵人的 `calm_timer` 設滿，使其在 `advance` 中暫時放棄追擊玩家。
+    /// 每幀於 `advance` 之前呼叫；`calm_timer` 由 `advance` 自然遞減，故玩家踏出暖意圈或火燒完後
+    /// 敵人很快回神。純記憶體、確定性，無 IO。`centers` 為各篝火世界座標。
+    pub fn apply_campfire_calm(&mut self, centers: &[(f32, f32)]) {
+        if centers.is_empty() {
+            return;
+        }
+        let r2 = crate::campfire::WARMTH_RADIUS * crate::campfire::WARMTH_RADIUS;
+        for enemies in self.chunks.values_mut() {
+            for placed in enemies.iter_mut() {
+                if !placed.enemy.is_alive() {
+                    continue;
+                }
+                for &(cx, cy) in centers {
+                    if !cx.is_finite() || !cy.is_finite() {
+                        continue;
+                    }
+                    let dx = cx - placed.x;
+                    let dy = cy - placed.y;
+                    if dx * dx + dy * dy <= r2 {
+                        // 設成「比一幀略長」以橋接幀與幀之間：只要還在圈內每幀都會被重設滿。
+                        placed.calm_timer = CAMPFIRE_CALM_SECS;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// 推進敵人移動。`tile_solid(x, y)` 回傳該世界像素座標是否為實心地形格（C-3 碰撞，
     /// 傳 `|_, _| false` 可關閉、保留舊行為）。敵人撞牆會沿單軸滑行、不穿牆也不整個卡死。
     /// `is_night` 為 true 時，追擊速度乘以 1.4——夜間怪物更具侵略性，給玩家危機感。
@@ -328,6 +365,12 @@ impl EnemyField {
                     continue;
                 }
 
+                // 野營篝火安撫遞減（ROADMAP 474）：每幀讓火光安撫計時自然衰減；
+                // 仍在暖意圈內者由 apply_campfire_calm 每幀重新設滿，離開後很快回神追擊。
+                if placed.calm_timer > 0.0 {
+                    placed.calm_timer = (placed.calm_timer - dt).max(0.0);
+                }
+
                 // ROADMAP 148：夜間休息型怪物（約 40%）直接回巢靜止，不追玩家。
                 // 非休息型怪物夜間照常（含 1.4× 速度加成），給玩家「夜有危機但有空隙」的體感。
                 if is_night && is_night_rester(placed.id) {
@@ -369,6 +412,13 @@ impl EnemyField {
                     if d2 <= kind_aggro_sq && nearest.is_none_or(|(_, _, b)| d2 < b) {
                         nearest = Some((tx, ty, d2));
                     }
+                }
+
+                // 野營篝火（ROADMAP 474）：被火光逼退（calm_timer>0）的怪放棄追擊玩家——
+                // 在篝火暖意圈內替玩家圍出一塊敵人不來犯的安全角落。仍會獵野生動物、漂回家，
+                // 只是不撲人；火一燒完安撫即逝，敵人回神。
+                if placed.calm_timer > 0.0 {
+                    nearest = None;
                 }
 
                 // 呼救加速（ROADMAP 43）：若附近有殘血同種怪正在逃跑，設定加速計時器。
@@ -884,6 +934,7 @@ impl EnemyField {
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
     }
 
@@ -899,6 +950,7 @@ impl EnemyField {
                 x, y, base_level, level: base_level, enemy, id,
                 pack_target: None, pack_target_timer: 0.0, flee_boost_timer: 0.0,
                 retreat_timer: 0.0, hunting_wildlife_target: None,
+                calm_timer: 0.0,
             });
         }
         Some(field)
@@ -1132,6 +1184,7 @@ fn generate_chunk(cx: i32, cy: i32) -> Vec<PlacedEnemy> {
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
     }
     enemies
@@ -1662,6 +1715,7 @@ mod tests {
             flee_boost_timer: 0.0,
             retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
 
         // 精英本身也在 ATTACK_REACH 內（10px），會加入 threat；
@@ -1671,6 +1725,90 @@ mod tests {
             aura_threat > base_threat,
             "兇名精英光環應使附近同種怪威脅提升，base={base_threat} aura={aura_threat}"
         );
+    }
+
+    #[test]
+    fn campfire_calm_stops_enemy_from_chasing_player() {
+        // ROADMAP 474：落在篝火暖意圈內的敵人被火光逼退、放棄追擊——
+        // 同一情境下，被安撫的怪離玩家應比未安撫的更遠（未朝玩家撲來）。
+        use crate::combat::{Enemy, EnemyKind};
+        use world_core::chunk_key;
+
+        let player = (8000.0_f32, 8000.0_f32);
+        let ex = 8120.0_f32; // 距玩家 120px，在 AGGRO_RADIUS(260) 內 → 平時必追
+        let ey = 8000.0_f32;
+        let key = chunk_key(ex, ey);
+
+        let make = || {
+            let mut f = EnemyField::new();
+            f.chunks.entry(key).or_default().push(PlacedEnemy {
+                id: (key.0, key.1, 0),
+                x: ex,
+                y: ey,
+                base_level: 1,
+                level: 1,
+                enemy: Enemy::new_leveled(EnemyKind::ScrapDrone, 1),
+                pack_target: None,
+                pack_target_timer: 0.0,
+                flee_boost_timer: 0.0,
+                retreat_timer: 0.0,
+                hunting_wildlife_target: None,
+                calm_timer: 0.0,
+            });
+            f
+        };
+        let dist_to_player =
+            |x: f32, y: f32| ((x - player.0).powi(2) + (y - player.1).powi(2)).sqrt();
+
+        // 無篝火：怪朝玩家靠近（白天 is_night=false，非休息態照常追擊）。
+        let mut f1 = make();
+        f1.advance(0.5, &[player], false, |_, _| false);
+        let d1 = dist_to_player(f1.chunks[&key][0].x, f1.chunks[&key][0].y);
+
+        // 有篝火（暖意中心就在怪身上）：先安撫、再推進——怪放棄追擊。
+        let mut f2 = make();
+        f2.apply_campfire_calm(&[(ex, ey)]);
+        assert!(f2.chunks[&key][0].calm_timer > 0.0, "落入暖意圈的怪應被安撫");
+        f2.advance(0.5, &[player], false, |_, _| false);
+        let d2 = dist_to_player(f2.chunks[&key][0].x, f2.chunks[&key][0].y);
+
+        assert!(
+            d2 > d1,
+            "被篝火安撫的怪離玩家應比未安撫的更遠（未追擊）：calmed={d2:.1} chasing={d1:.1}"
+        );
+    }
+
+    #[test]
+    fn campfire_calm_ignores_enemies_outside_warmth() {
+        // 暖意圈外的怪不受安撫，calm_timer 維持 0。
+        use crate::combat::{Enemy, EnemyKind};
+        use world_core::chunk_key;
+
+        let ex = 9000.0_f32;
+        let ey = 9000.0_f32;
+        let key = chunk_key(ex, ey);
+        let mut f = EnemyField::new();
+        f.chunks.entry(key).or_default().push(PlacedEnemy {
+            id: (key.0, key.1, 0),
+            x: ex,
+            y: ey,
+            base_level: 1,
+            level: 1,
+            enemy: Enemy::new_leveled(EnemyKind::ScrapDrone, 1),
+            pack_target: None,
+            pack_target_timer: 0.0,
+            flee_boost_timer: 0.0,
+            retreat_timer: 0.0,
+            hunting_wildlife_target: None,
+            calm_timer: 0.0,
+        });
+        // 篝火遠在暖意半徑之外。
+        let far = ex + crate::campfire::WARMTH_RADIUS + 50.0;
+        f.apply_campfire_calm(&[(far, ey)]);
+        assert_eq!(f.chunks[&key][0].calm_timer, 0.0, "圈外的怪不應被安撫");
+        // 空篝火清單同樣不安撫任何怪。
+        f.apply_campfire_calm(&[]);
+        assert_eq!(f.chunks[&key][0].calm_timer, 0.0);
     }
 
     #[test]
@@ -1694,6 +1832,7 @@ mod tests {
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
         // minion 100px 旁邊，在 COMMAND_RADIUS(500px) 內。
         f.chunks.entry(key).or_default().push(PlacedEnemy {
@@ -1703,6 +1842,7 @@ mod tests {
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
 
         let players = vec![(boss_x + 300.0, boss_y)];
@@ -1759,6 +1899,7 @@ mod tests {
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
         // 野鳥在 200px 旁（在 WILDLIFE_HUNT_RADIUS=300 內）。
         let snap = vec![(42u32, WildlifeKind::WildBird, mx + 200.0, my)];
@@ -1788,6 +1929,7 @@ mod tests {
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
         // 野鹿在 200px 旁。
         let snap = vec![(77u32, WildlifeKind::WildDeer, mx + 200.0, my)];
@@ -1819,6 +1961,7 @@ mod tests {
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             // 野生動物在 10px 旁（在 WILDLIFE_KILL_RADIUS=24 內）。
             hunting_wildlife_target: Some((55u32, WildlifeKind::SmallCritter, mx + 10.0, my)),
+            calm_timer: 0.0,
         });
         let kills = f.collect_wildlife_kills();
         assert_eq!(kills.len(), 1, "應收集到一筆擊殺事件");
@@ -1844,6 +1987,7 @@ mod tests {
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             // 野生動物在 100px 外（超過 WILDLIFE_KILL_RADIUS=24）。
             hunting_wildlife_target: Some((66u32, WildlifeKind::WildBird, mx + 100.0, my)),
+            calm_timer: 0.0,
         });
         let kills = f.collect_wildlife_kills();
         assert!(kills.is_empty(), "距離超過擊殺半徑時不應有擊殺事件");
@@ -1862,6 +2006,7 @@ mod tests {
             pack_target: None, pack_target_timer: 0.0,
             flee_boost_timer: 0.0, retreat_timer: 0.0,
             hunting_wildlife_target: None,
+            calm_timer: 0.0,
         });
         id
     }

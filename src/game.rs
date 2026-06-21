@@ -289,6 +289,11 @@ pub fn spawn(app: AppState) {
                 app.wildlife_manager.read().unwrap().alive_snapshot()
             };
 
+            // 野營篝火（ROADMAP 474）：取各篝火暖意中心（讀鎖即放，不與下方 enemies 寫鎖巢狀）。
+            let campfire_centers: Vec<(f32, f32)> = {
+                app.campfires.read().unwrap().warmth_centers()
+            };
+
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
             // view 只在廣播時建。怪會動起來——撲向玩家、沒人時漂回家,世界因此活起來。
             // ③ 無限世界: 先確保玩家周圍區塊已載入。
@@ -301,6 +306,9 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 enemies.tick(dt);
+                // 野營篝火（ROADMAP 474）：advance 之前先安撫落入篝火暖意圈的敵人，
+                // 使其本幀放棄追擊玩家——在火堆旁圍出一塊敵人不來犯的安全角落。
+                enemies.apply_campfire_calm(&campfire_centers);
                 // ROADMAP 163：依怪物物種態度層級更新每種怪的 aggro 倍率。
                 {
                     let mults = app.monster_species.read().unwrap().aggro_multipliers_snapshot();
@@ -3121,6 +3129,10 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 野營篝火 tick（ROADMAP 474）：各篝火燃燒倒數、燒完自動熄滅；玩家升火冷卻一併遞減。
+            // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
+            app.campfires.write().unwrap().tick(dt);
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4153,6 +4165,15 @@ pub fn spawn(app: AppState) {
                         meteor_shower_secs: app.meteor_shower.read().unwrap().remaining_secs(),
                         dust_nodes: app.meteor_shower.read().unwrap().active_nodes()
                             .map(|n| crate::protocol::DustNodeView { id: n.id, wx: n.wx, wy: n.wy, is_rainbow: n.is_rainbow })
+                            .collect(),
+                        // 野營篝火（ROADMAP 474）。
+                        campfires: app.campfires.read().unwrap().active().iter()
+                            .map(|c| crate::protocol::CampfireView {
+                                id: c.id,
+                                wx: c.wx,
+                                wy: c.wy,
+                                remaining_secs: c.remaining.ceil().max(0.0) as u32,
+                            })
                             .collect(),
                         // 旅行商人（ROADMAP 135）。
                         wandering_merchant_secs: app.wandering_merchant.read().unwrap().remaining_secs(),
