@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, nextGuideStep, reviveGlowSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -12711,6 +12711,32 @@
     return _CLAY_BLDG_COLORS[type] || { wall: "#b89a72", roof: "#8a6a48", trim: "#e0c89a", win: "#cdb48c" };
   }
 
+  // ── clay 城鎮地標（ROADMAP 465）──
+  // 黏土微縮世界北極星收口：461 已把一般城鎮建築（商店／工坊／賞金…）捏成陶土小屋，
+  // 唯獨兩座「特殊繪製」的城鎮地標——蒸汽天文台（132，走 _drawObservatory）與城鎮記憶石（157，走 _drawMemoryStone）
+  // ——仍飄著鋼龐克冷調（天文台板岩牆＋冷藍、記憶石暗紫灰），是 clay 模式城鎮裡最後兩處最顯眼的平塗割離。
+  // 這裡只換「色」（接線進 clay 路徑，不生任何新美術、不改造型／互動／玩法數值）：把冷金屬調換成暖陶土，
+  // 與 player_*/resident_*/建築 等既有黏土資產一氣呵成。銅件（望遠鏡鏡頭、裝飾環）天生暖、與陶土相融故保留銅金，
+  // 記憶石的乙太符文（✦ 藍輝）是跨畫風一致的魔法強調色（同 ether_orb），不動。
+  const _CLAY_LANDMARK_COLORS = {
+    observatory: {
+      wallEdge: "#7c715f", wall: "#9a8e7a",   // 暖石灰陶土圓柱牆（取代冷板岩 #455a64/#546e7a）
+      dome: "#bf8a55", domeEdge: "#9a6638",   // 陶土暖銅圓頂
+      brass: "#e6c489", tube: "#7a5236",      // 望遠鏡黃銅鏡頭＋暖木鏡身、裝飾環
+      brick: "#bcaa8e", scaffold: "#a98c6a", fence: "#9a7a52", // 施工期：陶土磚／木鷹架／圍欄
+    },
+    memory_stone: {
+      base: "#6e5238", baseEdge: "#8c6a48",   // 暖陶土石基
+      body: "#7c5c40", bodyEdge: "#9c7850",   // 暖陶土碑身（取代暗紫灰 #2a2438）
+      crack: "#6a4c34",                       // 碑面紋路
+    },
+  };
+  // clay 地標色盤查表（純函式、好測）：只認得 observatory／memory_stone；其餘一律回 null，
+  // 呼叫端據此退回原本像素冷調（零回歸：非 clay 或未知地標都吃不到暖陶土分支）。
+  function clayLandmarkPalette(type) {
+    return _CLAY_LANDMARK_COLORS[type] || null;
+  }
+
   // 建築招牌/名牌：深色底牌 + 描邊 + 置中文字，以 (sx, y) 為中心畫。天文台呼叫此函式畫招牌，
   // 但它過去從未被定義 → ReferenceError，連同上面的 `lastSnapshot` 一起讓天文台每幀拋例外、
   // 在城裡（天文台入鏡）被 safeRender 整幀攔下 → 角色/小地圖/HUD 連帶消失（「進城人物不見」根因）。
@@ -12731,18 +12757,20 @@
   // 城鎮記憶石（ROADMAP 157）：直立石碑，刻著藍色乙太符文，記錄城鎮歷史。
   function _drawMemoryStone(sx, sy, sign) {
     const wb = sy - 10;
+    // clay 地標（465）：暖陶土色盤；null＝非 clay／未知，吃原本暗紫灰冷調（零回歸）。
+    const L = renderStyle === "clay" ? clayLandmarkPalette("memory_stone") : null;
     // 地面陰影——日影晷（201）：不動的石碑，影子隨太陽/月亮整日繞、晨昏長長拉出
     drawGroundShadow(sx, wb + 6, 22, 6, 0.18);
     // 底座石基
-    ctx.fillStyle = "#3a3040";
+    ctx.fillStyle = L ? L.base : "#3a3040";
     ctx.beginPath();
     ctx.roundRect(sx - 18, wb - 4, 36, 8, 2);
     ctx.fill();
-    ctx.strokeStyle = "#6a5878";
+    ctx.strokeStyle = L ? L.baseEdge : "#6a5878";
     ctx.lineWidth = 1;
     ctx.stroke();
     // 石碑主體（錐形：下寬上窄）
-    ctx.fillStyle = "#2a2438";
+    ctx.fillStyle = L ? L.body : "#2a2438";
     ctx.beginPath();
     ctx.moveTo(sx - 12, wb - 4);
     ctx.lineTo(sx + 12, wb - 4);
@@ -12750,19 +12778,36 @@
     ctx.lineTo(sx - 8, wb - 54);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = "#5a4870";
+    ctx.strokeStyle = L ? L.bodyEdge : "#5a4870";
     ctx.lineWidth = 1;
     ctx.stroke();
     // 石碑頂部圓弧（半圓）
-    ctx.fillStyle = "#2a2438";
+    ctx.fillStyle = L ? L.body : "#2a2438";
     ctx.beginPath();
     ctx.arc(sx, wb - 54, 8, Math.PI, 0);
     ctx.fill();
-    ctx.strokeStyle = "#5a4870";
+    ctx.strokeStyle = L ? L.bodyEdge : "#5a4870";
     ctx.lineWidth = 1;
     ctx.stroke();
+    if (L) {
+      // 黏土體積：裁切在碑身內，疊左上象牙頂光（呼應桌上暖燈），讀作圓鼓鼓捏出來的陶土碑。
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(sx - 12, wb - 4);
+      ctx.lineTo(sx + 12, wb - 4);
+      ctx.lineTo(sx + 8, wb - 54);
+      ctx.arc(sx, wb - 54, 8, 0, Math.PI);
+      ctx.lineTo(sx - 8, wb - 54);
+      ctx.closePath();
+      ctx.clip();
+      ctx.fillStyle = "rgba(255,250,238,0.22)";
+      ctx.beginPath();
+      ctx.ellipse(sx - 4, wb - 40, 7, 18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     // 石碑表面紋路（橫線裂紋感）
-    ctx.strokeStyle = "#3e3252";
+    ctx.strokeStyle = L ? L.crack : "#3e3252";
     ctx.lineWidth = 0.5;
     for (let i = 0; i < 4; i++) {
       const yy = wb - 15 - i * 10;
@@ -12791,6 +12836,8 @@
     const p = townProject || { status: "building", progress_pct: 0 };
     const BW = 84;
     const wb = sy - 10;
+    // clay 地標（465）：暖陶土色盤；null＝非 clay／未知，吃原本鋼龐克冷調（零回歸）。
+    const L = renderStyle === "clay" ? clayLandmarkPalette("observatory") : null;
 
     // ── 地面陰影 ──日影晷（201）：高塔投影隨太陽/月亮方位偏移、晨昏拉長
     drawGroundShadow(sx, wb + 8, BW * 0.55, 8, 0.20);
@@ -12803,20 +12850,33 @@
 
       // 主牆體（圓柱感）
       const grad = ctx.createLinearGradient(sx - BW/2, wt, sx + BW/2, wt);
-      grad.addColorStop(0, "#455a64");
-      grad.addColorStop(0.5, C.wall);
-      grad.addColorStop(1, "#455a64");
+      grad.addColorStop(0, L ? L.wallEdge : "#455a64");
+      grad.addColorStop(0.5, L ? L.wall : C.wall);
+      grad.addColorStop(1, L ? L.wallEdge : "#455a64");
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.roundRect(sx - BW / 2, wt, BW, WH, 6);
       ctx.fill();
 
+      if (L) {
+        // 黏土體積：裁切在牆內，疊左上象牙頂光（呼應桌上暖燈），讀作圓鼓鼓捏出來的陶土塔。
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(sx - BW / 2, wt, BW, WH, 6);
+        ctx.clip();
+        ctx.fillStyle = "rgba(255,250,238,0.22)";
+        ctx.beginPath();
+        ctx.ellipse(sx - BW * 0.16, wt + WH * 0.26, BW * 0.42, WH * 0.34, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
       // 銅質圓頂
-      ctx.fillStyle = "#b08d57"; // 銅色
+      ctx.fillStyle = L ? L.dome : "#b08d57"; // 銅色
       ctx.beginPath();
       ctx.arc(sx, wt + 5, BW / 2 + 4, Math.PI, 0);
       ctx.fill();
-      ctx.strokeStyle = "#8d6e63";
+      ctx.strokeStyle = L ? L.domeEdge : "#8d6e63";
       ctx.lineWidth = 2;
       ctx.stroke();
 
@@ -12824,14 +12884,14 @@
       ctx.save();
       ctx.translate(sx + 10, wt - 15);
       ctx.rotate(-Math.PI / 4);
-      ctx.fillStyle = "#5d4037";
+      ctx.fillStyle = L ? L.tube : "#5d4037";
       ctx.fillRect(0, 0, 45, 12);
-      ctx.fillStyle = "#c9a24b"; // 金色鏡頭
+      ctx.fillStyle = L ? L.brass : "#c9a24b"; // 金色鏡頭
       ctx.fillRect(40, -2, 8, 16);
       ctx.restore();
 
       // 裝飾銅環
-      ctx.strokeStyle = "#c9a24b";
+      ctx.strokeStyle = L ? L.brass : "#c9a24b";
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(sx - BW/2 - 2, wt + 5);
@@ -12841,14 +12901,14 @@
     } else {
       // 建設中：畫施工現場
       const pct = p.progress_pct;
-      
+
       // 圍欄
-      ctx.strokeStyle = "#795548";
+      ctx.strokeStyle = L ? L.fence : "#795548";
       ctx.lineWidth = 4;
       ctx.strokeRect(sx - BW/2 - 10, wb - 20, BW + 20, 30);
-      
+
       // 地基與部分牆磚（隨進度變多）
-      ctx.fillStyle = "#90a4ae";
+      ctx.fillStyle = L ? L.brick : "#90a4ae";
       const rows = Math.ceil(pct * 6);
       for(let i=0; i<rows; i++) {
         const y = wb - 5 - i*8;
@@ -12856,7 +12916,7 @@
       }
 
       // 鷹架（木質框架）
-      ctx.strokeStyle = "#8d6e63";
+      ctx.strokeStyle = L ? L.scaffold : "#8d6e63";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(sx - BW/2, wb); ctx.lineTo(sx - BW/2, wb - 50);
