@@ -2456,6 +2456,59 @@ for (const sc of scenarios) {
   }
 }
 
+// 打水漂（ROADMAP 475）：單元斷言純函式 skipGaugeValue／skipStoneCount 的真值表——
+// 力道計三角波（兩端見底、半週期滿格、負時間與壞值保守 0）；放手力道→彈跳次數
+//（甜蜜點 0.82 跳最多 5、偏離遞減、兩端至少 1、壞值保守 1、恆在 [1,5]），常數須與後端 skipstone.rs 對齊。
+{
+  const gauge = sandbox.__bfTest && sandbox.__bfTest.skipGaugeValue;
+  const count = sandbox.__bfTest && sandbox.__bfTest.skipStoneCount;
+  if (typeof gauge !== "function" || typeof count !== "function") {
+    failed = true;
+    console.error("  ❌ 打水漂：game.js 未導出 skipGaugeValue／skipStoneCount");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 打水漂：${msg}`); } };
+    const GAUGE_SECS = 1.4, SWEET = 0.82, FALLOFF = 0.13; // 對齊 skipstone.rs
+    // 力道計三角波。
+    expect(Math.abs(gauge(0)) < 1e-6, "起點力道見底（0）");
+    expect(Math.abs(gauge(GAUGE_SECS * 0.5) - 1) < 1e-4, "半週期力道滿格（1）");
+    expect(Math.abs(gauge(GAUGE_SECS)) < 1e-4, "整週期回到見底");
+    expect(Math.abs(gauge(GAUGE_SECS * 1.5) - 1) < 1e-4, "一個半週期又回滿格（來回擺盪）");
+    expect(gauge(-3) === 0 && gauge(NaN) === 0 && gauge(Infinity) === 0, "負時間／壞值保守見底 0");
+    for (let i = 0; i <= 100; i++) { const v = gauge(i * 0.03); if (!(v >= 0 && v <= 1)) { expect(false, `力道值越界 @${i}`); break; } }
+    // 放手力道 → 彈跳次數。
+    expect(count(SWEET) === 5, "甜蜜點跳最多（5）");
+    expect(count(SWEET + FALLOFF) <= count(SWEET) && count(SWEET - FALLOFF) <= count(SWEET), "偏離甜蜜點不增");
+    expect(count(SWEET + 2 * FALLOFF) <= count(SWEET + FALLOFF), "往上偏越遠跳越少（單調不增）");
+    expect(count(0) === 1 && count(1) >= 1, "兩端極弱極猛仍至少 1 跳");
+    expect(count(NaN) === 1 && count(Infinity) === 1, "壞值保守回最少 1");
+    for (let i = 0; i <= 100; i++) { const n = count(i / 100); if (!(n >= 1 && n <= 5)) { expect(false, `跳次數越界 @${i}`); break; } }
+    if (bad) failed = true;
+    else console.log("  ✅ 打水漂·力道計與彈跳次數真值表：通過");
+  }
+}
+
+// 打水漂（ROADMAP 475）：餵一份帶蓄力（skip_charge）的 snapshot 驗力道條渲染，再注入 skip_stone_result
+// 事件（含滿跳 5、視野外、壞方向）驗 drawSkipStones 石頭彈跳＋漣漪＋剔除路徑連跑多幀皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：打水漂（蓄力力道條＋甩出彈跳＋漣漪＋視野外剔除，連跑 6 幀）──");
+  const sSnap = JSON.parse(JSON.stringify(snapshot));
+  sSnap.players[0].skip_charge = 0.6;       // 自己正在蓄力（畫力道條）
+  sSnap.players[0].near_water = true;
+  lastWS.onmessage({ data: JSON.stringify({ ...sSnap, type: "snapshot" }) });
+  const me = sSnap.players[0];
+  // 甩出事件：自己滿跳 5、另一筆壞方向、另一筆視野外。
+  lastWS.onmessage({ data: JSON.stringify({ type: "skip_stone_result", player_id: me.id, skips: 5, x: me.x, y: me.y, dir_x: 1, dir_y: 0 }) });
+  lastWS.onmessage({ data: JSON.stringify({ type: "skip_stone_result", player_id: "other", skips: 1, x: me.x + 30, y: me.y, dir_x: 0, dir_y: 0 }) }); // 壞方向（0,0）
+  lastWS.onmessage({ data: JSON.stringify({ type: "skip_stone_result", player_id: "other", skips: 3, x: 99999, y: 99999, dir_x: NaN, dir_y: 1 }) }); // 視野外＋壞值
+  const r = pump("打水漂", 6);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 打水漂：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 打水漂：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 打水漂：力道條＋石頭彈跳＋漣漪＋視野外剔除＋壞值皆乾淨");
+}
+
 // 野營篝火（ROADMAP 474）：注入數堆篝火（含視野外一堆、快燒完一堆、壞 remaining），
 // 驗證 drawCampfires 暖意光暈／虛線邊界／火焰跳動／剔除路徑連跑多幀皆不拋例外。
 {

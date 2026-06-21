@@ -622,6 +622,34 @@
     return { x, y, angle, soar };
   }
 
+  // ---- 打水漂（ROADMAP 475）：水域第一個玩的動詞 ----
+  // 水至今只是釣魚（47）的場景。本切片給水第一個純粹「跟它玩」的動作：撿石蓄力、瞄準甜蜜點
+  // 放手，石頭便貼著水面一路彈跳出去——力道拿捏得好漂得又遠又多跳，過猛或太軟便噗通沉底。
+  // 下面兩個純函式是力道計與彈跳次數的源頭，常數與後端 `src/skipstone.rs` 一字對齊
+  //（一份契約、兩邊一致），確定性、零副作用、壞值安全，故可在 render-smoke 單元斷言真值表。
+  const SKIP_GAUGE_SECS = 1.4;   // 力道計擺盪一個完整來回所需秒數（對齊 skipstone.rs GAUGE_SECS）
+  const SKIP_SWEET_SPOT = 0.82;  // 甜蜜點：力道計上甩得最漂亮的位置（對齊 SWEET_SPOT）
+  const SKIP_FALLOFF    = 0.13;  // 每偏離甜蜜點這麼多力道少跳一次（對齊 SKIP_FALLOFF）
+  const SKIP_MAX        = 5;     // 一顆漂亮石頭最多彈跳次數（對齊 MAX_SKIPS）
+  const SKIP_MIN        = 1;     // 最少跳幾次（對齊 MIN_SKIPS）
+  // 力道計當下值 [0,1]：三角波，前半漲（0→1）、後半落（1→0）來回擺盪。
+  // 負時間／壞值保守回 0（鏡像後端 gauge_value）。
+  function skipGaugeValue(elapsed) {
+    const e = +elapsed;
+    if (!Number.isFinite(e) || e <= 0) return 0;
+    const phase = (e / SKIP_GAUGE_SECS) % 1; // [0,1)
+    return phase < 0.5 ? phase * 2 : 2 - phase * 2;
+  }
+  // 放手力道值 → 石頭彈跳次數：越貼近甜蜜點跳越多，每偏離 falloff 少一跳，最差仍有 SKIP_MIN。
+  // 壞值保守回 SKIP_MIN（鏡像後端 skip_count）。
+  function skipStoneCount(gauge) {
+    const g = +gauge;
+    if (!Number.isFinite(g)) return SKIP_MIN;
+    const c = Math.max(0, Math.min(1, g));
+    const lost = Math.floor(Math.abs(c - SKIP_SWEET_SPOT) / SKIP_FALLOFF);
+    return Math.max(SKIP_MIN, SKIP_MAX - lost);
+  }
+
   // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
   // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
   // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
@@ -673,7 +701,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1714,6 +1742,9 @@
   // 全無反饋會覺得沒點到。每筆 { wx, wy, born }（世界座標,鏡頭移動也黏在原格）。不嵌任何
   // 遊戲規則:做不做得成仍由權威伺服器決定,這裡只確認「這一下送出去了」。
   const tapFlashes = [];
+  // 打水漂特效（ROADMAP 475）：每次甩出記一筆 { wx, wy, dirX, dirY, skips, born }，
+  // render 依經過時間讓石頭沿 dir 貼水彈跳、每跳濺一圈漣漪；附近所有人都看得見（水域共享）。
+  const skipStoneFx = [];
   // 採集「動作」特效（治「點擊沒有採集動作」）:每次採集在目標節點記一筆揮擊 { wx, wy, born, kind },
   // 用來畫衝擊星芒 + 讓那顆節點短暫晃動;同時噴出資源碎屑(下方 gatherParticles)。
   const gatherHits = [];
@@ -3460,6 +3491,14 @@
             } else {
               existing.chop_secs = null;
             }
+            // ROADMAP 475：打水漂——進行中蓄力的經過秒數。每收一筆快照就重錨「收到時間」，
+            // 前端用同一條公式（skipGaugeValue）以本地時鐘自由推進力道條、與伺服器對齊。
+            if (typeof p.skip_charge === "number") {
+              existing.skip_charge = p.skip_charge;
+              existing._skipRecvAt = performance.now();
+            } else {
+              existing.skip_charge = null;
+            }
             // ROADMAP 408：臨陣格擋——進行中備防的經過秒數＋此刻護盾強度。每收一筆快照重錨「收到時間」，
             // 前端用同一條公式（guardBeatFraction）以本地時鐘自由推進格擋環、與伺服器對齊。
             if (typeof p.guard_secs === "number") {
@@ -4074,6 +4113,8 @@
           updateKiteBtn(me, isGuest);
           // 野營篝火按鈕（ROADMAP 474）：已登入、戶外、未倒地才顯示
           updateCampfireBtn(me, isGuest);
+          // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
+          updateSkipStoneBtn(me, isGuest);
         }
         break;
       }
@@ -4532,6 +4573,26 @@
         } else if (msg.outcome === "missed") {
           floaters.push({ wx, wy, text: "💨 樹沒了…空手而回", color: "190,190,190", born: now });
           announce("揮到最後，樹已被採走");
+        }
+        break;
+      }
+      case "skip_stone_result": {
+        // 打水漂甩出結果（ROADMAP 475）：廣播事件，附近所有人都演出石頭貼水彈跳＋漣漪（水域共享）；
+        // 飄字＋報讀器只對自己（旁觀者只看石頭，不被文字洗版）。
+        const skips = Math.max(1, (msg.skips | 0) || 1);
+        const ox = msg.x || 0, oy = msg.y || 0;
+        let dx = Number.isFinite(msg.dir_x) ? msg.dir_x : 1;
+        let dy = Number.isFinite(msg.dir_y) ? msg.dir_y : 0;
+        const len = Math.hypot(dx, dy) || 1;
+        dx /= len; dy /= len;
+        skipStoneFx.push({ wx: ox, wy: oy, dirX: dx, dirY: dy, skips, born: performance.now() });
+        if (msg.player_id === myId) {
+          const great = skips >= 5;
+          const good = skips >= 3;
+          const color = great ? "190,240,255" : (good ? "150,205,235" : "180,195,210");
+          floaters.push({ wx: ox, wy: oy - 40, text: `🪨 漂了 ${skips} 下！${great ? "（漂亮！）" : ""}`, color, born: performance.now() });
+          announce(great ? `石頭漂了 ${skips} 下，漂亮的一甩` : `石頭漂了 ${skips} 下`);
+          SFX.click();
         }
         break;
       }
@@ -5538,6 +5599,55 @@
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // 打水漂特效（ROADMAP 475）：石頭沿甩出方向貼著水面一路彈跳，每跳濺一圈擴張淡出的漣漪；
+  // 跳越多漂越遠（漂亮的一甩看得出來）。附近所有人都看得見（水域共享）。世界座標、鏡頭移動黏在原處。
+  // reduceMotion 時石頭不彈起、只沿線滑行、漣漪不擴張（核心「漂了幾下」仍由落點圈數傳達）。
+  const SKIP_FX_MS = 1100;
+  function drawSkipStones(camX, camY, now) {
+    const HOP_LEN = 34; // 每跳前進的世界像素
+    for (let i = skipStoneFx.length - 1; i >= 0; i--) {
+      const f = skipStoneFx[i];
+      const age = now - f.born;
+      if (age >= SKIP_FX_MS) { skipStoneFx.splice(i, 1); continue; }
+      const t = age / SKIP_FX_MS;            // 0..1
+      const span = Math.max(1, f.skips) * HOP_LEN; // 總漂行距離
+      const ox = f.wx - camX, oy = f.wy - camY;
+      ctx.save();
+      // 各落點漣漪：第 k 跳落在距起點 k*HOP_LEN 處，石頭漂過後才開始擴張淡出。
+      for (let k = 1; k <= f.skips; k++) {
+        const bounceT = (k * HOP_LEN) / span;
+        if (t < bounceT) break;              // 還沒漂到這點，後面更不用畫
+        const rippleAge = Math.min(1, (t - bounceT) / (1 - bounceT + 1e-3));
+        const bx = ox + f.dirX * k * HOP_LEN;
+        const by = oy + f.dirY * k * HOP_LEN;
+        const rr = reduceMotion ? 5 : 4 + rippleAge * 9;
+        ctx.lineWidth = 1.6 * (1 - rippleAge);
+        ctx.strokeStyle = `rgba(190,225,250,${(0.55 * (1 - rippleAge)).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(bx, by, rr, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // 飛行中的石頭：沿 dir 前進、每跳一道拋物線彈起（reduceMotion 時不彈、只滑行）。
+      if (t < 1) {
+        const d = t * span;
+        const px = ox + f.dirX * d;
+        const py = oy + f.dirY * d;
+        const phase = (d % HOP_LEN) / HOP_LEN;
+        const hopIdx = Math.floor(d / HOP_LEN);
+        const decay = Math.max(0.25, 1 - hopIdx * 0.16); // 每跳越來越低
+        const arcH = reduceMotion ? 0 : Math.sin(phase * Math.PI) * 11 * decay;
+        ctx.fillStyle = "#cdd6df";
+        ctx.beginPath();
+        ctx.arc(px, py - arcH, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }
@@ -8468,6 +8578,54 @@
       ctx.restore();
     }
 
+    // 打水漂力道條（ROADMAP 475）：正在蓄力的玩家頭頂畫一道直立力道條——亮點隨力道上下擺盪，
+    // 中上段有一條「亮藍甜蜜帶」（停在這裡甩得最漂亮、跳最多）。自己與旁觀者都看得到（蓄力秒數
+    // 隨快照廣播）；力道用與後端同一條公式（skipGaugeValue）渲染，玩家看到的力道就是伺服器判定的。
+    // 力道擺盪屬玩法核心，reduceMotion 不關。
+    const skipElapsed = skipElapsedOf(p);
+    if (skipElapsed !== null) {
+      const gauge = skipGaugeValue(skipElapsed);           // 力道 [0,1]
+      const barH = 30, barW = 6;
+      const baseY = by - 30;                               // 條底（頭頂上方）
+      const topY = baseY - barH;                           // 條頂
+      const yOf = (g) => baseY - Math.max(0, Math.min(1, g)) * barH; // 力道 → 螢幕 y
+      // 甜蜜帶上下界（停在此區間＝最多跳；與 skipStoneCount 的 lost==0 區間一致）。
+      const sweetLoY = yOf(SKIP_SWEET_SPOT - SKIP_FALLOFF);
+      const sweetHiY = yOf(Math.min(1, SKIP_SWEET_SPOT + SKIP_FALLOFF));
+      const inSweet = Math.abs(gauge - SKIP_SWEET_SPOT) < SKIP_FALLOFF;
+      ctx.save();
+      // 底軌（暗）
+      ctx.fillStyle = "rgba(20,28,38,0.78)";
+      ctx.fillRect(sx - barW / 2, topY, barW, barH);
+      // 甜蜜帶（亮藍）
+      ctx.fillStyle = "rgba(120,205,255,0.55)";
+      ctx.fillRect(sx - barW / 2, sweetHiY, barW, sweetLoY - sweetHiY);
+      // 已蓄力道填充（自底往上）
+      const fy = yOf(gauge);
+      ctx.fillStyle = inSweet ? "rgba(190,240,255,0.95)" : "rgba(150,200,235,0.9)";
+      ctx.fillRect(sx - barW / 2, fy, barW, baseY - fy);
+      // 力道頂端的亮點
+      ctx.beginPath();
+      ctx.arc(sx, fy, inSweet ? 4.5 : 3, 0, Math.PI * 2);
+      ctx.fillStyle = inSweet ? "#eaffff" : "#cfe6ff";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      // 自己才顯示提示字（旁觀者只看條、不被文字洗版）。
+      if (p.id === myId) {
+        ctx.font = `11px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("🪨 放手！停在亮藍帶 [E]", sx, topY - 6);
+        ctx.fillStyle = inSweet ? "rgba(190,240,255,0.98)" : "rgba(205,225,245,0.96)";
+        ctx.fillText("🪨 放手！停在亮藍帶 [E]", sx, topY - 6);
+      }
+      ctx.restore();
+    }
+
     // 翻滾閃避（ROADMAP 410）：正在翻滾的玩家腳邊揚起一圈旋轉揚塵＋身法綠殘影，
     // 讓自己與旁觀者一眼看出「他翻身閃開了」。翻身在前 DODGE_ROLL_SECS 完成（旋塵最盛），
     // 之後到恩典窗結束殘留一抹淡綠餘光（提示「此刻仍免傷」）。屬玩法核心回饋，reduceMotion 仍畫
@@ -8855,6 +9013,7 @@
       drawFloaters(camX, camY, renderNow);             // 採集/收成「+N」飄字
       drawHitFloaters(camX, camY, renderNow);          // 戰鬥傷害數字飄字（ROADMAP 94）
       drawTapFlashes(camX, camY, renderNow);           // 互動確認漣漪
+      drawSkipStones(camX, camY, renderNow);           // 打水漂石頭彈跳＋漣漪（ROADMAP 475）
       drawGatherFx(camX, camY, renderNow);             // 採集動作特效
       drawHarvestFx(camX, camY, renderNow);            // 豐收迸發（ROADMAP 458）：收成的金光與揚穀
       drawMealAroma(camX, camY, renderNow);            // 圍爐分食（ROADMAP 462）：暖食分享的香氣
@@ -9686,6 +9845,27 @@
     btn.classList.toggle("hidden", !canShow);
   }
   // ── 野營篝火按鈕 end ──────────────────────────────────────────────────────────────
+
+  // ── 打水漂按鈕（ROADMAP 475）──────────────────────────────────────────────────────
+  /** 每幀更新「🪨 打水漂」按鈕：已登入、戶外、未倒地、站在水邊才顯示；蓄力中改顯示「🤚 放手」。
+   *  打水漂是跟水玩的療癒小動作，不送獎勵、不影響移動，站在水邊即可（與釣魚同一套水域判定）。 */
+  function updateSkipStoneBtn(me, isGuestUser) {
+    const btn = document.getElementById("skipStoneBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    // 站在水邊（near_water，與釣魚同一判定）、戶外、已登入、未倒地才能打水漂。
+    const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed && !!me.near_water;
+    btn.classList.toggle("hidden", !canShow);
+    if (!canShow) return;
+    if (typeof me.skip_charge === "number") {
+      btn.textContent = "🤚 放手";
+      btn.style.color = "#9fd6ff";
+    } else {
+      btn.textContent = "🪨 打水漂";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 打水漂按鈕 end ──────────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -11543,6 +11723,12 @@
     if (!p || typeof p.chop_secs !== "number") return null;
     const recv = p._chopRecvAt || performance.now();
     return p.chop_secs + (performance.now() - recv) / 1000;
+  }
+  // 玩家進行中打水漂的「目前蓄力經過秒數」：以收到快照時錨點 + 本地時鐘自由推進；沒在蓄回 null。
+  function skipElapsedOf(p) {
+    if (!p || typeof p.skip_charge !== "number") return null;
+    const recv = p._skipRecvAt || performance.now();
+    return p.skip_charge + (performance.now() - recv) / 1000;
   }
   // ROADMAP 408 臨陣格擋：格擋環常數（與 guard.rs 對齊），玩家看到的甜蜜點就是伺服器判定的甜蜜點。
   const GUARD_BEAT_SECS = 1.2;     // 環脈動週期（與 guard::GUARD_BEAT_SECS 對齊）
@@ -29507,6 +29693,23 @@
         if (!me || me.indoor_plot_id != null) return;
         safeSend({ type: "light_campfire" });
         announce("升起一堆篝火——火光暖意把附近的野獸逼退，圍出一塊喘息的安全角落（燒完即熄）");
+      });
+    }
+    // 🪨 打水漂（ROADMAP 475）：站在水邊撿石蓄力，瞄準甜蜜帶放手甩出，石頭貼水彈跳。
+    const skipStoneBtn = document.getElementById("skipStoneBtn");
+    if (skipStoneBtn) {
+      skipStoneBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (typeof me.skip_charge === "number") {
+          // 蓄力中 → 放手甩出。
+          safeSend({ type: "release_skip_stone" });
+        } else {
+          // 撿石開蓄。
+          safeSend({ type: "begin_skip_stone" });
+          announce("撿起一顆石頭蓄力——力道條擺盪到亮藍甜蜜帶時放手，石頭就漂得最多下");
+        }
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

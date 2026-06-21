@@ -508,6 +508,14 @@ pub enum ClientMsg {
     /// 累計乾淨擊；揮滿即放倒樹（依乾淨擊數抱走木材）＋給工匠熟練度，回 `ChopResult`。
     /// 沒有進行中的連揮則靜默忽略。
     ChopStrike,
+    /// 打水漂：撿石開蓄（ROADMAP 475）。玩家站在水邊按「🪨 打水漂」撿起一顆石頭開始蓄力。
+    /// 伺服器驗格（未倒地＋附近有水域＋冷卻過＋沒在蓄）後開一趟力道計擺盪；
+    /// 真正甩出在 `ReleaseSkipStone` 放手時才結算。不滿足條件則靜默忽略。
+    BeginSkipStone,
+    /// 打水漂：放手甩出（ROADMAP 475）。蓄力進行中，玩家在瞄準甜蜜點時放手送出。
+    /// 伺服器以當下力道值算出石頭彈跳次數＋朝最近水域的方向，廣播 `SkipStoneResult`。
+    /// 沒有進行中的蓄力則靜默忽略。
+    ReleaseSkipStone,
     /// 臨陣格擋：開格擋（ROADMAP 408）。玩家被敵人威脅時按「🛡️ 格擋」開一趟備防。
     /// 伺服器驗格（未倒地＋此刻確有敵人威脅＋冷卻過＋沒在格擋）後開一趟格擋判定（環脈動）。
     /// 不滿足條件則靜默忽略。
@@ -1474,6 +1482,19 @@ pub enum ServerMsg {
         x: f32,
         y: f32,
     },
+    /// 打水漂甩出結果（ROADMAP 475 打水漂）：回應 `ReleaseSkipStone`，廣播。
+    /// 前端對「附近所有人」演出（旁觀者也看得見別人甩出的石頭與漣漪，貼合「水域共享」）。
+    /// `skips` ＝石頭在水面彈跳幾次（甜蜜點放手最多）；`x`/`y` ＝甩出起點（玩家座標）；
+    /// `dir_x`/`dir_y` ＝朝最近水域的單位方向（石頭沿此方向貼水彈跳）。
+    /// 不入快照、不持久化、零 migration。
+    SkipStoneResult {
+        player_id: Uuid,
+        skips: u32,
+        x: f32,
+        y: f32,
+        dir_x: f32,
+        dir_y: f32,
+    },
     /// 臨陣格擋結果（ROADMAP 408）：回應 `GuardTap`，廣播；前端只對 `player_id == 自己` 演出。
     /// `outcome`："perfect"（完美格擋，凝最強護盾）／"partial"（擋下一部分）／"whiff"（沒抓到時機）。
     /// `x`/`y` ＝玩家當下座標。不入快照、不持久化、零 migration。
@@ -2014,6 +2035,13 @@ pub struct PlayerView {
     /// 自己與旁觀者都看得到（旁觀者看別人正踩著拍子伐木）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chop_secs: Option<f32>,
+
+    // ── 打水漂（ROADMAP 475）──────────────────────────────────────────────────
+    /// 進行中蓄力甩石的經過秒數；沒在蓄＝None（略過序列化）。
+    /// 前端用同一條公式（`skipstone::gauge_value`）渲染玩家頭頂擺盪的力道條，
+    /// 自己與旁觀者都看得到（旁觀者看別人正瞄準甜蜜點蓄力）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_charge: Option<f32>,
 
     // ── 臨陣格擋（ROADMAP 408）────────────────────────────────────────────────
     /// 進行中格擋備防的經過秒數；沒在格擋＝None（略過序列化）。
@@ -2890,7 +2918,7 @@ mod tests {
                 mining_tremor: None,
                 near_ruin: false,
                 cook_cooldown: 0.0,
-                aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
+                aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -3185,7 +3213,7 @@ mod tests {
             mining_tremor: None,
             near_ruin: false,
             cook_cooldown: 0.0,
-            aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
+            aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -3501,7 +3529,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -3575,7 +3603,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

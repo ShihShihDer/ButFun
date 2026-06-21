@@ -38,6 +38,40 @@ pub fn is_near_water(px: f32, py: f32) -> bool {
     false
 }
 
+/// ROADMAP 475 打水漂：回傳由玩家指向「最近一格水域」的單位方向（甩石朝水面飛）。
+/// 與 `is_near_water` 同一套採樣（`FISH_REACH` 內），但取最近的 Water 格、回正規化方向；
+/// 周遭沒有水域則回 `None`（呼叫端應已先以 `is_near_water` 把關，理論上不會走到）。
+/// 站在水格正上方（offset≈0）時退而回一個預設方向（向右），避免除以零。
+pub fn water_dir_near(px: f32, py: f32) -> Option<(f32, f32)> {
+    const FISH_REACH: f32 = 80.0;
+    const STEP: f32 = 24.0;
+
+    let mut best: Option<(f32, f32, f32)> = None; // (dist2, dx, dy)
+    let mut dx = -FISH_REACH;
+    while dx <= FISH_REACH {
+        let mut dy = -FISH_REACH;
+        while dy <= FISH_REACH {
+            let d2 = dx * dx + dy * dy;
+            if d2 <= FISH_REACH * FISH_REACH
+                && biome_at((px + dx) as f64, (py + dy) as f64) == Biome::Water
+                && best.map_or(true, |(bd2, _, _)| d2 < bd2)
+            {
+                best = Some((d2, dx, dy));
+            }
+            dy += STEP;
+        }
+        dx += STEP;
+    }
+    best.map(|(d2, bdx, bdy)| {
+        let len = d2.sqrt();
+        if len > 1e-3 {
+            (bdx / len, bdy / len)
+        } else {
+            (1.0, 0.0) // 正站在水格上：退一個預設方向，永不除零
+        }
+    })
+}
+
 /// 依確定性種子決定上鉤的魚種（小魚 70%、星星魚 25%、深海魚 5%）。
 ///
 /// 種子建議帶入 `player_id_u64 ^ tick ^ fish_attempt_count`，確保每次釣魚結果不同。

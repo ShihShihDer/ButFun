@@ -1353,6 +1353,10 @@ pub fn spawn(app: AppState) {
                     if p.chop_cooldown > 0.0 {
                         p.chop_cooldown = (p.chop_cooldown - dt).max(0.0);
                     }
+                    // 打水漂冷卻倒數（ROADMAP 475）：甩出後起算，只擋開新一趟蓄力。
+                    if p.skip_cooldown > 0.0 {
+                        p.skip_cooldown = (p.skip_cooldown - dt).max(0.0);
+                    }
                     // 格擋冷卻倒數（ROADMAP 408）：格擋結算後起算，只擋開新一趟格擋。
                     if p.guard_cooldown > 0.0 {
                         p.guard_cooldown = (p.guard_cooldown - dt).max(0.0);
@@ -1418,6 +1422,13 @@ pub fn spawn(app: AppState) {
                             p.chopping = None;
                         }
                     }
+                    // 打水漂蓄力推進（ROADMAP 475 打水漂）：advance 累時間、逾時即作罷這趟
+                    // （沒甩出、可重來）。純函式、零鎖無 IO；力道條由前端用同一公式渲染。
+                    if let Some(s) = p.skipping.as_mut() {
+                        if s.advance(dt) {
+                            p.skipping = None;
+                        }
+                    }
                     // 格擋備防推進（ROADMAP 408 臨陣格擋）：advance 累時間、逾時即解除這趟
                     // （不罰冷卻、可重來）。純函式、零鎖無 IO；格擋環由前端用同一公式渲染。
                     if let Some(g) = p.guarding.as_mut() {
@@ -1462,6 +1473,11 @@ pub fn spawn(app: AppState) {
                     // 純暫態旗標、無 IO、無廣播（收線狀態隨既有快照自然傳出）。
                     if p.flying_kite && p.vitals.is_downed() {
                         p.flying_kite = false;
+                    }
+                    // 打水漂（ROADMAP 475）：倒地（休息復原中）時自動作罷蓄力——躺平的人甩不了石頭。
+                    // 純暫態、無 IO、無廣播（沒在蓄的狀態隨既有快照自然傳出）。
+                    if p.skipping.is_some() && p.vitals.is_downed() {
+                        p.skipping = None;
                     }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
                     if let Some(m) = p.meditation {
