@@ -4115,6 +4115,8 @@
           updateCampfireBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
+          // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
+          updateScarecrowBtn(me, isGuest);
         }
         break;
       }
@@ -9866,6 +9868,39 @@
     }
   }
   // ── 打水漂按鈕 end ──────────────────────────────────────────────────────────────
+
+  // ── 立稻草人按鈕（ROADMAP 476）────────────────────────────────────────────────────
+  /** 算玩家腳下落在自己哪一格田（沒站在自己田上回 null）。鏡像 drawField 的腳下格算法。 */
+  function scarecrowFootCell(me) {
+    const f = myField();
+    if (!me || !f) return null;
+    const ts = f.tile_size;
+    const col = Math.floor((me.x - f.origin_x) / ts);
+    const row = Math.floor((me.y - f.origin_y) / ts);
+    if (col < 0 || row < 0 || col >= f.cols || row >= f.rows) return null;
+    return { f, col, row };
+  }
+  /** 每幀更新「🦅 立稻草人」按鈕：已登入、戶外、未倒地、站在自己田格上才顯示；
+   *  若腳下這格已有稻草人改顯示「🚫 撤稻草人」。稻草人守護半徑內的成熟作物免遭田鴉啄食。 */
+  function updateScarecrowBtn(me, isGuestUser) {
+    const btn = document.getElementById("scarecrowBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const foot = (!!me && !isGuestUser && me.indoor_plot_id == null && !downed) ? scarecrowFootCell(me) : null;
+    const canShow = !!foot;
+    btn.classList.toggle("hidden", !canShow);
+    if (!canShow) return;
+    const sc = Array.isArray(foot.f.scarecrow) ? foot.f.scarecrow : null;
+    const here = sc && (sc[0] | 0) === foot.col && (sc[1] | 0) === foot.row;
+    if (here) {
+      btn.textContent = "🚫 撤稻草人";
+      btn.style.color = "#ffb347";
+    } else {
+      btn.textContent = "🦅 立稻草人";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 立稻草人按鈕 end ──────────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -27651,6 +27686,9 @@
       }
     }
 
+    // ROADMAP 476 稻草人守望：田主立的稻草人（含守護範圍虛線）畫在作物層之上、田主與訪客都看得到。
+    drawScarecrow(f, camX, camY);
+
     // hover 高亮 + 腳下格指示:在「可互動且夠近」的農地（私有或公共）上畫——
     // 讓玩家知道「點下去會作用在這格」。公共農地用青綠色系與私有地黃銅區分。
     const hFill   = isPublic ? "rgba(74,184,160,0.12)"  : "rgba(255,210,74,0.12)";
@@ -28003,6 +28041,141 @@
     ctx.restore();
   }
 
+  // ROADMAP 476 田鴉啄食：這格成熟作物若久置無人看守、已遭田鴉啄食（cell.pecked，收成品質已被
+  // 後端折一階），在格子上方停一隻小小的黑田鴉＋一道淺淺啄痕——讀作「該回來收了／快去立稻草人」。
+  // 位置取上緣中段（避開左上品種色點、右上階段光、右下漚肥記號、底緣進度條、左下輪作環）。
+  // 純表現層：只讀權威快照旗標 cell.pecked（由伺服器 field.rs 依 crop_raid 判定下傳），不嵌任何
+  // 規則；靜態繪製、reduceMotion 一樣顯示（核心回饋＝看得出這格被啄了、品質受損）。
+  function drawPeckMark(sx, sy, ts, cell) {
+    if (cell.state !== 4) return; // 只在成熟作物上標（被啄只發生在成熟後）
+    if (!cell.pecked) return;
+    const r = Math.max(2.6, ts * 0.07);
+    const bx = sx + ts * 0.5, by = sy + 6 + r; // 上緣中段內側
+    ctx.save();
+    // 一隻側身的小黑田鴉：橢圓身軀＋圓頭＋楔形尖喙＋一道收攏的翼線。
+    ctx.fillStyle = "rgba(28,26,32,0.92)"; // 烏羽近黑、帶一點冷藍灰
+    ctx.beginPath();
+    ctx.ellipse(bx, by, r * 1.15, r * 0.72, 0, 0, Math.PI * 2); // 身軀
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(bx + r * 0.95, by - r * 0.45, r * 0.55, 0, Math.PI * 2); // 頭
+    ctx.fill();
+    // 尖喙（朝下啄）。
+    ctx.beginPath();
+    ctx.moveTo(bx + r * 1.45, by - r * 0.35);
+    ctx.lineTo(bx + r * 2.05, by - r * 0.05);
+    ctx.lineTo(bx + r * 1.45, by + r * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    // 收攏的翼線（一筆淺色挑出羽形，免得整團黑糊）。
+    ctx.strokeStyle = "rgba(90,86,98,0.9)";
+    ctx.lineWidth = Math.max(0.8, r * 0.22);
+    ctx.beginPath();
+    ctx.moveTo(bx - r * 0.7, by - r * 0.15);
+    ctx.lineTo(bx + r * 0.4, by + r * 0.2);
+    ctx.stroke();
+    // 作物上一道淺淺啄痕（兩三點小缺口），讀作「被啄過、品質受損」。
+    ctx.fillStyle = "rgba(120,70,40,0.85)";
+    for (let i = 0; i < 3; i++) {
+      const px = sx + ts * (0.4 + i * 0.1);
+      const py = sy + ts * 0.62;
+      ctx.beginPath();
+      ctx.arc(px, py, Math.max(0.8, r * 0.2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ROADMAP 476 稻草人守望：在田主立稻草人的格子畫一座原創稻草人（十字木架＋稻草頭＋尖帽＋
+  // 攤開的雙臂），並把守護半徑（切比雪夫 1＝3×3）用一圈琥珀虛線標出來——讀作「這一圈內的成熟
+  // 作物不怕田鴉啄食」。守護範圍夾在田界內，不畫出田外。純向量、pixel/clay 兩畫風共用；靜態繪製、
+  // reduceMotion 一樣顯示。座標來自權威快照 f.scarecrow=[col,row]，前端只渲染、不決定規則。
+  function drawScarecrow(f, camX, camY) {
+    const sc = Array.isArray(f.scarecrow) ? f.scarecrow : null;
+    if (!sc) return;
+    const ts = f.tile_size;
+    const col = sc[0] | 0, row = sc[1] | 0;
+    if (col < 0 || row < 0 || col >= f.cols || row >= f.rows) return;
+    const RADIUS = 1; // 鏡像後端 crop_raid::SCARECROW_GUARD_RADIUS
+    // 守護範圍（切比雪夫半徑，夾進田界）的琥珀虛線框。
+    const gc0 = Math.max(0, col - RADIUS), gr0 = Math.max(0, row - RADIUS);
+    const gc1 = Math.min(f.cols - 1, col + RADIUS), gr1 = Math.min(f.rows - 1, row + RADIUS);
+    const gx = f.origin_x + gc0 * ts - camX;
+    const gy = f.origin_y + gr0 * ts - camY;
+    const gw = (gc1 - gc0 + 1) * ts, gh = (gr1 - gr0 + 1) * ts;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,196,84,0.7)"; // 琥珀＝守護圈
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(gx + 1, gy + 1, gw - 2, gh - 2);
+    ctx.setLineDash([]);
+    // 稻草人本體：畫在所在格中央偏上，像「立」在田裡。
+    const cx = f.origin_x + col * ts + ts * 0.5 - camX;
+    const baseY = f.origin_y + row * ts + ts * 0.82 - camY; // 腳底
+    const h = ts * 0.95; // 整體高度
+    // 腳底淡影。
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    ctx.beginPath();
+    ctx.ellipse(cx, baseY + 2, ts * 0.26, ts * 0.09, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 立柱（深褐木樁）。
+    ctx.strokeStyle = "#6b4a2c";
+    ctx.lineWidth = Math.max(2, ts * 0.07);
+    ctx.beginPath();
+    ctx.moveTo(cx, baseY);
+    ctx.lineTo(cx, baseY - h);
+    ctx.stroke();
+    // 橫桿（攤開的雙臂）。
+    const armY = baseY - h * 0.62;
+    const armW = ts * 0.42;
+    ctx.beginPath();
+    ctx.moveTo(cx - armW, armY);
+    ctx.lineTo(cx + armW, armY);
+    ctx.stroke();
+    // 飄在臂端的破布（一點生氣）。
+    ctx.strokeStyle = "rgba(176,92,64,0.9)";
+    ctx.lineWidth = Math.max(1.2, ts * 0.03);
+    ctx.beginPath();
+    ctx.moveTo(cx - armW, armY);
+    ctx.lineTo(cx - armW + ts * 0.06, armY + ts * 0.16);
+    ctx.moveTo(cx + armW, armY);
+    ctx.lineTo(cx + armW - ts * 0.06, armY + ts * 0.16);
+    ctx.stroke();
+    // 稻草頭（暖黃圓球）。
+    const headR = ts * 0.16;
+    const headY = baseY - h + headR * 0.6;
+    ctx.fillStyle = "#d9b25a"; // 稻草黃
+    ctx.beginPath();
+    ctx.arc(cx, headY, headR, 0, Math.PI * 2);
+    ctx.fill();
+    // 散出的稻草（幾根短線從頭邊岔出）。
+    ctx.strokeStyle = "rgba(196,154,72,0.95)";
+    ctx.lineWidth = Math.max(0.8, ts * 0.018);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * headR * 0.8, headY + Math.sin(a) * headR * 0.8);
+      ctx.lineTo(cx + Math.cos(a) * headR * 1.5, headY + Math.sin(a) * headR * 1.5);
+      ctx.stroke();
+    }
+    // 尖頂草帽（三角＋帽簷）。
+    ctx.fillStyle = "#9c6b3a";
+    ctx.beginPath();
+    ctx.moveTo(cx, headY - headR * 2.0);
+    ctx.lineTo(cx - headR * 1.0, headY - headR * 0.4);
+    ctx.lineTo(cx + headR * 1.0, headY - headR * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillRect(cx - headR * 1.3, headY - headR * 0.5, headR * 2.6, Math.max(1.5, ts * 0.03));
+    // 兩點小眼（嚇鳥的臉）。
+    ctx.fillStyle = "rgba(40,30,20,0.9)";
+    ctx.beginPath();
+    ctx.arc(cx - headR * 0.4, headY + headR * 0.1, Math.max(0.8, headR * 0.16), 0, Math.PI * 2);
+    ctx.arc(cx + headR * 0.4, headY + headR * 0.1, Math.max(0.8, headR * 0.16), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // 四芒小星（8 頂點交替外/內半徑）。給優質收成的金色光點用。
   function drawSparkle(cx, cy, r) {
     const inner = r * 0.36;
@@ -28094,6 +28267,7 @@
       drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
     drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
     drawNourishMark(sx, sy, ts, cell); // 漚肥滋養的堆肥記號（ROADMAP 473）
+    drawPeckMark(sx, sy, ts, cell); // 被田鴉啄食的記號（ROADMAP 476）
       return;
     }
 
@@ -28145,6 +28319,7 @@
     drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
     drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
     drawNourishMark(sx, sy, ts, cell); // 漚肥滋養的堆肥記號（ROADMAP 473）
+    drawPeckMark(sx, sy, ts, cell); // 被田鴉啄食的記號（ROADMAP 476）
   }
 
   // fence.png:192×32 = 6 件×32px autotile(欄 0 水平 rail / 1 垂直 rail / 2 角=連 E+S,
@@ -29709,6 +29884,25 @@
           // 撿石開蓄。
           safeSend({ type: "begin_skip_stone" });
           announce("撿起一顆石頭蓄力——力道條擺盪到亮藍甜蜜帶時放手，石頭就漂得最多下");
+        }
+      });
+    }
+    // 🦅 立／撤稻草人（ROADMAP 476）：站在自己田格上立稻草人，守護半徑內成熟作物免遭田鴉啄食。
+    const scarecrowBtn = document.getElementById("scarecrowBtn");
+    if (scarecrowBtn) {
+      scarecrowBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        const foot = scarecrowFootCell(me);
+        if (!foot || (me && me.indoor_plot_id != null)) return;
+        const sc = Array.isArray(foot.f.scarecrow) ? foot.f.scarecrow : null;
+        const here = sc && (sc[0] | 0) === foot.col && (sc[1] | 0) === foot.row;
+        if (here) {
+          safeSend({ type: "remove_scarecrow" });
+          announce("撤走了稻草人");
+        } else {
+          safeSend({ type: "place_scarecrow", col: foot.col, row: foot.row });
+          announce("立起一座稻草人——守護半徑內的成熟作物不再怕田鴉啄食");
         }
       });
     }

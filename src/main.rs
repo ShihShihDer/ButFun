@@ -51,6 +51,7 @@ mod equipment;
 mod refinement;
 mod crafting;
 mod crop_demand;
+mod crop_raid;
 mod crop_rotation;
 mod crop_variety;
 mod crops;

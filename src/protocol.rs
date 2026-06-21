@@ -344,6 +344,12 @@ pub enum ClientMsg {
     /// 伺服器只改玩家**自己**的田（`fields[id]`，訪客無田 → 靜默忽略）；`slot` 超界或 `index`
     /// 越界一律安全處理（忽略 / 當不擺）。結果隨下一次快照的 `FieldView.garden` 回給田主與訪客。
     SetGardenSlot { slot: u8, index: u8 },
+    /// 立稻草人（ROADMAP 476）：在自己田的 (col,row) 格立一座稻草人（一塊地至多一座，重送即搬位）。
+    /// 伺服器只改玩家**自己**的田（`fields[id]`，訪客無田 → 靜默忽略）；座標越界一律忽略（防偽造）。
+    /// 結果隨下一次快照的 `FieldView.scarecrow` 回給田主與訪客。守護半徑內的成熟作物免遭田鴉啄食。
+    PlaceScarecrow { col: usize, row: usize },
+    /// 撤稻草人（ROADMAP 476）：移除自己田上的稻草人（沒立則無變化）。只改玩家自己的田。
+    RemoveScarecrow,
     /// 市場掛單：從背包取出 qty 個 item 以每單位 price_per 乙太掛單出售。
     /// 伺服器驗背包庫存後移出物品並建立掛單；失敗靜默忽略（量不夠 / 未登入）。
     PostListing { item: ItemKind, qty: u32, price_per: u32 },
@@ -2495,6 +2501,11 @@ pub struct FieldView {
     /// 全空（沒佈置任何庭園）時略去省流量；舊伺服器不送此欄→前端退回單件 `home_decor` 繪製。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub garden: Vec<u8>,
+    /// ROADMAP 476 稻草人守望：稻草人所在格 `[col, row]`；沒立則略去（None）。田主與訪客都收得到，
+    /// 前端在該格畫一座稻草人、並把守護半徑內畫出守護感。多數地沒立 → None 時略去省流量；
+    /// 舊伺服器不送此欄 → 前端退回不畫（向後相容、零 migration）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scarecrow: Option<[usize; 2]>,
 }
 
 /// 快照裡的一筆市場掛單（玩家對玩家交易）。
@@ -2769,6 +2780,12 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
     #[serde(default)]
     pub nourished: bool,
+    /// ROADMAP 476 稻草人守望：這格的成熟作物是否曾被田鴉啄食（久置無人看守 → 收成品質折一階）。
+    /// 只在成熟（state 4）時有意義；其餘一律 false。前端據此在被啄作物上標一枚啄痕＋停一隻田鴉，
+    /// 讓「該回來收了／快去立稻草人」一眼看得見。品質折扣已折進 `quality` 欄。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
+    #[serde(default)]
+    pub pecked: bool,
 }
 
 #[cfg(test)]
@@ -3004,10 +3021,12 @@ mod tests {
                     kind: 0,
                     rotated: false,
                     nourished: false,
+                    pecked: false,
                 }],
                 compost: 0,
                 home_decor: 0,
                 garden: vec![],
+                scarecrow: None,
             }],
             nodes: vec![NodeView {
                 kind: NodeKind::Tree,

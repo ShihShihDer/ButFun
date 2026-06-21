@@ -742,6 +742,58 @@ for (const sc of scenarios) {
   else console.log("  ✅ 用心栽培作物品質：品質光點三分支＋收成飄字三品質＋豐收迸發（458）spawn/draw＋旁觀者忽略皆乾淨");
 }
 
+// 稻草人守望·田鴉啄食（ROADMAP 476）：田裡立稻草人（守護半徑虛線＋稻草人本體）、成熟作物被啄
+// （cell.pecked → 黑田鴉＋啄痕）、立稻草人按鈕（站自己田格上顯示、腳下有稻草人改顯示撤）。
+// 驗證 drawScarecrow / drawPeckMark / updateScarecrowBtn 全分支連跑多幀皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：稻草人守望＋田鴉啄食（守護圈＋稻草人＋被啄田鴉＋立／撤鈕）──");
+  let ok = true;
+  try {
+    const sSnap = JSON.parse(JSON.stringify(snapshot));
+    if (sSnap.fields && sSnap.fields[0] && Array.isArray(sSnap.fields[0].cells)) {
+      sSnap.fields[0].owner = myId; // 自己的田，按鈕與守望才生效
+      sSnap.fields[0].scarecrow = [1, 0]; // 在 (1,0) 立稻草人 → 守護圈夾田界
+      const cells = sSnap.fields[0].cells;
+      // 守護圈內成熟未被啄（受守護）。
+      if (cells[0]) cells[0] = { ...cells[0], state: 4, dry: false, quality: 2, pecked: false };
+      if (cells[1]) cells[1] = { ...cells[1], state: 4, dry: false, quality: 2, pecked: false };
+      // 出守護圈、久置被啄（黑田鴉＋啄痕＋品質折一階）。
+      if (cells[5]) cells[5] = { ...cells[5], state: 4, dry: false, quality: 1, pecked: true };
+      if (cells[6]) cells[6] = { ...cells[6], state: 4, dry: false, quality: 0, pecked: true };
+    }
+    lastWS.onmessage({ data: JSON.stringify({ ...sSnap, type: "snapshot" }) });
+    pump("稻草人守望＋被啄田鴉", 4);
+    // 立稻草人按鈕：把玩家挪到自己田的某格上，逼出「站田格上→顯示」與點擊送 place_scarecrow。
+    const scBtn = documentStub.getElementById("scarecrowBtn");
+    const fld = sSnap.fields[0];
+    const meNow = JSON.parse(JSON.stringify(me0));
+    // 站到 (3,1) 那格中央（非稻草人格）→ 按鈕應顯示「立稻草人」。
+    meNow.x = fld.origin_x + 3 * fld.tile_size + fld.tile_size * 0.5;
+    meNow.y = fld.origin_y + 1 * fld.tile_size + fld.tile_size * 0.5;
+    const pSnap = { ...sSnap, players: [meNow, ...sSnap.players.filter((p) => p.id !== myId)] };
+    lastWS.onmessage({ data: JSON.stringify({ ...pSnap, type: "snapshot" }) });
+    pump("站田格上→立稻草人鈕", 2);
+    let sent = null;
+    const origSend = lastWS.send;
+    lastWS.send = (s) => { sent = s; };
+    if (scBtn && typeof scBtn.onclick === "function") scBtn.onclick();
+    else if (scBtn && scBtn.click) scBtn.click();
+    lastWS.send = origSend;
+    // 站到稻草人那格 (1,0) → 按鈕應改成「撤稻草人」、點擊送 remove_scarecrow（不強驗訊息，只確保零例外）。
+    meNow.x = fld.origin_x + 1 * fld.tile_size + fld.tile_size * 0.5;
+    meNow.y = fld.origin_y + 0 * fld.tile_size + fld.tile_size * 0.5;
+    const rSnap = { ...sSnap, players: [meNow, ...sSnap.players.filter((p) => p.id !== myId)] };
+    lastWS.onmessage({ data: JSON.stringify({ ...rSnap, type: "snapshot" }) });
+    pump("站稻草人格上→撤鈕", 2);
+  } catch (e) {
+    ok = false; console.error("  ❌ 稻草人守望：拋出例外", e && e.message);
+  }
+  const newCaughtSc = caughtRenderErrors.slice(before);
+  if (!ok || newCaughtSc.length) { failed = true; console.error(`  ❌ 稻草人守望：${newCaughtSc.length} 個繪製例外`); }
+  else console.log("  ✅ 稻草人守望：守護圈＋稻草人本體＋被啄田鴉＋啄痕＋立／撤鈕全分支連跑多幀皆乾淨");
+}
+
 // 一鍵收成（ROADMAP 446）：田裡有成熟作物時，hudRipe 那行同時當「✨一鍵收成」按鈕——對稱於
 // 缺水行的一鍵澆水。驗證 updateFarmHud 把 ripeEl 接成可點、點下會送 harvest_all；無成熟時解除點按。
 {
