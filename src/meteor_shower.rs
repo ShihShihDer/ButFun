@@ -6,6 +6,9 @@
 //!
 //! 成本紀律：純本機邏輯，**不呼叫任何 LLM**；零 migration，記憶體模式，重啟清零。
 
+use std::collections::HashSet;
+use uuid::Uuid;
+
 /// 流星雨觸發間隔（秒）——30 分鐘。
 pub const SHOWER_INTERVAL_SECS: f32 = 1800.0;
 /// 首次觸發等待（秒）——天文台完工後 3 分鐘才首次觸發。
@@ -43,6 +46,18 @@ pub struct DustNode {
     pub is_rainbow: bool,
 }
 
+/// 流星雨 tick 的結果（給呼叫端決定要不要廣播什麼）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShowerTick {
+    /// 本 tick 無事發生。
+    None,
+    /// 本 tick 新觸發了一場流星雨（用於廣播「流星雨降臨」公告）。
+    Started,
+    /// 本 tick 一場流星雨剛落幕；`wishes` = 本場累計的不重複許願人數
+    ///（用於廣播「N 位旅人一同許下了願望」共願落幕公告；為 0 時呼叫端通常靜默）。
+    Ended { wishes: u32 },
+}
+
 /// 流星雨狀態（純記憶體，重啟清零）。
 pub struct MeteorShowerState {
     /// 距下次觸發的冷卻倒數（秒）。
@@ -53,6 +68,9 @@ pub struct MeteorShowerState {
     pub dust_nodes: Vec<DustNode>,
     /// 節點 ID 計數器（遞增，確保每輪節點 id 不重複）。
     pub node_counter: u32,
+    /// 本場流星雨的許願者集合（ROADMAP 471 共願）。每場開場清空、落幕清空；
+    /// 每人每場至多算一次（冪等），純記憶體、重啟清零。
+    wishers: HashSet<Uuid>,
 }
 
 impl MeteorShowerState {
@@ -62,6 +80,27 @@ impl MeteorShowerState {
             active_secs: 0.0,
             dust_nodes: vec![],
             node_counter: 0,
+            wishers: HashSet::new(),
+        }
+    }
+
+    /// 本場目前的不重複許願人數（ROADMAP 471）。
+    pub fn wish_count(&self) -> u32 {
+        self.wishers.len() as u32
+    }
+
+    /// 嘗試替玩家 `pid` 向當前這場流星雨許願（ROADMAP 471）。
+    /// 回傳 `Some(total)` 表示這是本場**新**許願（`total` = 含這次的累計許願人數）；
+    /// `None` 表示沒在效（無流星雨）或本場已許過願（冪等、不重複計數）。
+    /// 純邏輯、確定性，呼叫端負責全程同一把寫鎖內完成、出鎖後才廣播。
+    pub fn make_wish(&mut self, pid: Uuid) -> Option<u32> {
+        if !self.is_active() {
+            return None;
+        }
+        if self.wishers.insert(pid) {
+            Some(self.wishers.len() as u32)
+        } else {
+            None
         }
     }
 
@@ -81,32 +120,39 @@ impl MeteorShowerState {
     }
 
     /// 推進時間（`dt` 秒）。`project_completed` = 天文台是否已完工。
-    /// 回傳 `true` 表示本 tick 新觸發了一場流星雨（用於廣播公告）。
-    pub fn tick(&mut self, dt: f32, project_completed: bool) -> bool {
+    /// 回傳 `ShowerTick`：`Started` = 本 tick 新觸發一場、`Ended` = 本 tick 一場剛落幕
+    ///（附本場共願人數）、`None` = 無事。
+    ///（落幕與開場不會在同一 tick 同時發生：開場時冷卻就已重設為 30 分鐘 ≫ 5 分鐘場長。）
+    pub fn tick(&mut self, dt: f32, project_completed: bool) -> ShowerTick {
         // 活躍倒計時。
         if self.active_secs > 0.0 {
             self.active_secs -= dt;
             if self.active_secs <= 0.0 {
                 self.active_secs = 0.0;
                 self.dust_nodes.clear();
+                // 本場落幕：先結算共願人數再清空許願者集合，回報給呼叫端廣播。
+                let wishes = self.wishers.len() as u32;
+                self.wishers.clear();
+                return ShowerTick::Ended { wishes };
             }
         }
 
         // 未完工時不觸發。
         if !project_completed {
-            return false;
+            return ShowerTick::None;
         }
 
         self.cooldown -= dt;
         if self.cooldown > 0.0 {
-            return false;
+            return ShowerTick::None;
         }
 
-        // 觸發新一場流星雨。
+        // 觸發新一場流星雨（開場清空上一場殘留的許願者，以防萬一）。
         self.cooldown = SHOWER_INTERVAL_SECS;
         self.active_secs = SHOWER_DURATION_SECS;
         self.dust_nodes = self.spawn_nodes();
-        true
+        self.wishers.clear();
+        ShowerTick::Started
     }
 
     /// 嘗試採集指定節點（驗證距離）。
@@ -166,22 +212,19 @@ mod tests {
     #[test]
     fn does_not_trigger_if_not_completed() {
         let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
-        let triggered = s.tick(1.0, false);
-        assert!(!triggered, "未完工時不應觸發流星雨");
+        assert_eq!(s.tick(1.0, false), ShowerTick::None, "未完工時不應觸發流星雨");
     }
 
     #[test]
     fn does_not_trigger_before_cooldown_expires() {
         let mut s = MeteorShowerState { cooldown: 100.0, ..MeteorShowerState::new() };
-        let triggered = s.tick(1.0, true);
-        assert!(!triggered, "冷卻未結束時不觸發");
+        assert_eq!(s.tick(1.0, true), ShowerTick::None, "冷卻未結束時不觸發");
     }
 
     #[test]
     fn triggers_when_cooldown_expires_and_completed() {
         let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
-        let triggered = s.tick(0.1, true);
-        assert!(triggered, "冷卻結束且完工後應觸發");
+        assert_eq!(s.tick(0.1, true), ShowerTick::Started, "冷卻結束且完工後應觸發");
         assert!(s.is_active());
         assert_eq!(s.dust_nodes.len(), DUST_NODE_COUNT);
         assert_eq!(s.remaining_secs(), SHOWER_DURATION_SECS.ceil() as u32);
@@ -280,5 +323,69 @@ mod tests {
         let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
         s.tick(0.1, true);
         assert!(s.cooldown > 0.0, "觸發後冷卻應重設為 SHOWER_INTERVAL_SECS");
+    }
+
+    // ── ROADMAP 471 共願 ─────────────────────────────────────────────────────
+
+    #[test]
+    fn wish_fails_when_no_shower() {
+        let mut s = MeteorShowerState::new();
+        assert!(!s.is_active());
+        assert_eq!(s.make_wish(Uuid::from_u128(1)), None, "無流星雨時許願應失敗");
+        assert_eq!(s.wish_count(), 0);
+    }
+
+    #[test]
+    fn wish_succeeds_during_shower_and_counts() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        assert_eq!(s.make_wish(Uuid::from_u128(1)), Some(1), "首位許願者計 1");
+        assert_eq!(s.make_wish(Uuid::from_u128(2)), Some(2), "第二位許願者計 2");
+        assert_eq!(s.wish_count(), 2);
+    }
+
+    #[test]
+    fn wish_is_idempotent_per_player_per_shower() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        assert_eq!(s.make_wish(Uuid::from_u128(7)), Some(1));
+        assert_eq!(s.make_wish(Uuid::from_u128(7)), None, "同一人本場重複許願不再計數");
+        assert_eq!(s.wish_count(), 1, "重複許願不應膨脹人數");
+    }
+
+    #[test]
+    fn shower_end_reports_wish_count_then_clears() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        s.make_wish(Uuid::from_u128(1));
+        s.make_wish(Uuid::from_u128(2));
+        s.make_wish(Uuid::from_u128(3));
+        // 快進超過場長 → 落幕應回報 3 人共願。
+        let ended = s.tick(SHOWER_DURATION_SECS + 1.0, true);
+        assert_eq!(ended, ShowerTick::Ended { wishes: 3 }, "落幕應回報本場共願人數");
+        assert_eq!(s.wish_count(), 0, "落幕後許願者集合應清空");
+    }
+
+    #[test]
+    fn new_shower_resets_wishers() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        s.make_wish(Uuid::from_u128(1));
+        // 結束本場。
+        s.tick(SHOWER_DURATION_SECS + 1.0, true);
+        // 觸發新一場。
+        s.cooldown = -1.0;
+        assert_eq!(s.tick(0.1, true), ShowerTick::Started);
+        assert_eq!(s.wish_count(), 0, "新一場流星雨許願者應歸零");
+        // 上一場已許願的人在新一場可再次許願。
+        assert_eq!(s.make_wish(Uuid::from_u128(1)), Some(1), "新場同一人可再許願");
+    }
+
+    #[test]
+    fn wish_count_zero_at_shower_end_when_nobody_wished() {
+        let mut s = MeteorShowerState { cooldown: -1.0, ..MeteorShowerState::new() };
+        s.tick(0.1, true);
+        let ended = s.tick(SHOWER_DURATION_SECS + 1.0, true);
+        assert_eq!(ended, ShowerTick::Ended { wishes: 0 }, "無人許願時落幕回報 0");
     }
 }
