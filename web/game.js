@@ -1341,6 +1341,14 @@
   function requestStarlitPostcard(useRainbow) {
     safeSend({ type: "request_starlit_postcard", use_rainbow: !!useRainbow });
   }
+  // 把明信片寄給身旁旅人（ROADMAP 480）：伺服器以「此刻世界」組卡＋你的手寫話，投進
+  // 最近那位旅人的信箱。note＝選填手寫留言（伺服器會清理／截長）。斷線時 safeSend 靜默忽略。
+  function sendPostcardToTraveler(note) {
+    safeSend({ type: "send_postcard", note: String(note || "") });
+  }
+  // 收到的明信片信箱（ROADMAP 480）：身旁旅人寄來的明信片收進這裡，本面板逐張呈現。
+  // 純前端、僅本場連線累積（伺服器不持久化、重啟即清；社交暖意當下收到即足）。
+  const receivedPostcards = [];
   // 玩家擊掌特效（ROADMAP 339）：每收到一次 high_five_match 就 push 一筆 { mx, my, startMs,
   // expireAt }。drawHighFives 每幀在中點迸出「✋ 啪！」＋火花上飄淡出，過期自動清掉。純前端動畫。
   const highFiveFx = [];
@@ -4248,6 +4256,34 @@
           starLine: typeof msg.star_line === "string" ? msg.star_line : "",
         };
         updatePostcardPanel();
+        break;
+      }
+      case "postcard_from_traveler": {
+        // 明信片寄達·收件（ROADMAP 480）：身旁旅人寄來一張明信片，收進信箱＋浮一張暖訊。
+        receivedPostcards.push({
+          fromName: typeof msg.from_name === "string" ? msg.from_name : "一位旅人",
+          fromLevel: typeof msg.from_level === "number" ? msg.from_level : 0,
+          title: typeof msg.title === "string" ? msg.title : "",
+          place: typeof msg.place === "string" ? msg.place : "",
+          subtitle: typeof msg.subtitle === "string" ? msg.subtitle : "",
+          flavor: typeof msg.flavor === "string" ? msg.flavor : "",
+          note: typeof msg.note === "string" ? msg.note : "",
+        });
+        // 信箱只留近 40 張，避免長場累積無上限。
+        if (receivedPostcards.length > 40) receivedPostcards.splice(0, receivedPostcards.length - 40);
+        const who = (typeof msg.from_name === "string" && msg.from_name) ? msg.from_name : "一位旅人";
+        const place = (typeof msg.place === "string" && msg.place) ? msg.place : "遠方";
+        announce(`📬 ${who} 從 ${place} 寄來一張明信片（開「📷 留影」面板可收藏）`);
+        updatePostcardPanel();
+        break;
+      }
+      case "postcard_sent": {
+        // 明信片寄出·回報（ROADMAP 480）：告知寄到了誰手上，或附近沒有可寄的旅人。
+        if (msg.to_name) {
+          announce(`✉️ 明信片已寄給 ${msg.to_name}`);
+        } else {
+          announce("附近沒有可寄的旅人——走近一位旅人再寄哦");
+        }
         break;
       }
       case "return_summary": {
@@ -25447,8 +25483,8 @@
     // sig：未收到資料前顯示「框起中」；明信片內容變了才重建（守 panel-sig 病）。
     // 星塵印記與背包星塵數一併納入 sig，封了星塵的卡 / 撿到星塵後重繪都不 stale。
     const sig = card
-      ? `${card.title}|${card.place}|${card.subtitle}|${card.rank}|${card.flavor}|${card.level}|${card.starTier}|${card.starLine}|${dustN}|${rainbowN}`
-      : "loading";
+      ? `${card.title}|${card.place}|${card.subtitle}|${card.rank}|${card.flavor}|${card.level}|${card.starTier}|${card.starLine}|${dustN}|${rainbowN}|rx:${receivedPostcards.length}`
+      : `loading|rx:${receivedPostcards.length}`;
     if (sig === lastPostcardSig) return;
     lastPostcardSig = sig;
     body.innerHTML = "";
@@ -25458,6 +25494,7 @@
       wait.style.cssText = "color:rgba(232,224,207,0.62);font-size:.82rem;";
       wait.textContent = "正在框起此刻的風景……";
       body.appendChild(wait);
+      appendReceivedPostcards(body);
       return;
     }
 
@@ -25542,6 +25579,32 @@
 
     body.appendChild(actions);
 
+    // 寄給附近旅人（ROADMAP 480）：把這張「此刻世界」明信片，當禮物寄進身旁旅人的信箱。
+    // 一行手寫話（選填）＋寄出鈕；伺服器以你的權威座標挑最近的在場旅人投遞。
+    const mailRow = document.createElement("div");
+    mailRow.style.cssText = "display:flex;gap:8px;margin-top:8px;";
+    const noteInput = document.createElement("input");
+    noteInput.type = "text";
+    noteInput.maxLength = 60;
+    noteInput.placeholder = "寫一句話一起寄出（選填）";
+    noteInput.setAttribute("aria-label", "明信片手寫留言");
+    noteInput.style.cssText = "flex:1;min-width:0;padding:7px 9px;border-radius:8px;border:1px solid rgba(201,162,75,0.3);background:rgba(0,0,0,0.18);color:#e8e0cf;font:inherit;font-size:.82rem;";
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "dock-btn";
+    send.style.cssText = "padding:7px 12px;white-space:nowrap;";
+    send.textContent = "✉️ 寄給旅人";
+    send.addEventListener("click", () => {
+      sendPostcardToTraveler(noteInput.value);
+      noteInput.value = "";
+    });
+    noteInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); send.click(); }
+    });
+    mailRow.appendChild(noteInput);
+    mailRow.appendChild(send);
+    body.appendChild(mailRow);
+
     // 星光留影列（ROADMAP 447）：背包有星塵才出現。按下消耗 1 顆星塵，框出會發光的星光明信片。
     if (dustN > 0 || rainbowN > 0) {
       const starActions = document.createElement("div");
@@ -25573,6 +25636,50 @@
       ? "明信片捕捉的是你「此刻」站在世界的這一處。流星雨採到的星塵，可按「星光留影」封進一張會發光的明信片留念。"
       : "明信片捕捉的是你「此刻」站在世界的這一處——換個地方、換個季節時辰，再按「重新留影」，框出的風景就不一樣。流星雨採到星塵後，還能封進會發光的星光明信片。";
     body.appendChild(tip);
+
+    appendReceivedPostcards(body);
+  }
+
+  // 渲染「📬 收到的明信片」收件區（ROADMAP 480）：身旁旅人寄來的明信片逐張列出（最新在上）。
+  // 純呈現、只讀 receivedPostcards；玩家手寫留言一律用 textContent 寫入（杜絕 XSS）。
+  function appendReceivedPostcards(body) {
+    if (!receivedPostcards.length) return;
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "margin-top:14px;border-top:1px solid rgba(201,162,75,0.18);padding-top:10px;";
+    const head = document.createElement("div");
+    head.style.cssText = "color:#c9a24b;font-size:.8rem;font-weight:600;margin-bottom:8px;";
+    head.textContent = `📬 收到的明信片（${receivedPostcards.length}）`;
+    wrap.appendChild(head);
+    // 最新收到的在最上面；最多列出近 12 張，避免面板過長。
+    const recent = receivedPostcards.slice(-12).reverse();
+    for (const rc of recent) {
+      const cardEl = document.createElement("div");
+      cardEl.style.cssText = "background:rgba(244,236,220,0.92);color:#3a3326;border-radius:8px;padding:9px 11px;margin-bottom:7px;box-shadow:0 1px 5px rgba(0,0,0,.28);";
+      const line1 = document.createElement("div");
+      line1.style.cssText = "font-size:.82rem;font-weight:600;";
+      line1.textContent = `${rc.title}・${rc.place}`;
+      cardEl.appendChild(line1);
+      const line2 = document.createElement("div");
+      line2.style.cssText = "font-size:.72rem;color:#6b5f48;margin-top:1px;";
+      line2.textContent = rc.subtitle;
+      cardEl.appendChild(line2);
+      const flav = document.createElement("div");
+      flav.style.cssText = "font-size:.76rem;margin-top:5px;font-style:italic;";
+      flav.textContent = `「${rc.flavor}」`;
+      cardEl.appendChild(flav);
+      if (rc.note) {
+        const noteEl = document.createElement("div");
+        noteEl.style.cssText = "font-size:.78rem;margin-top:5px;color:#8a3b2e;";
+        noteEl.textContent = `✍️ ${rc.note}`;
+        cardEl.appendChild(noteEl);
+      }
+      const sign = document.createElement("div");
+      sign.style.cssText = "font-size:.72rem;color:#6b5f48;margin-top:6px;text-align:right;";
+      sign.textContent = `— ${rc.fromName} Lv.${rc.fromLevel} 寄達`;
+      cardEl.appendChild(sign);
+      wrap.appendChild(cardEl);
+    }
+    body.appendChild(wrap);
   }
 
   // 把明信片畫到離屏 canvas 並觸發下載（best-effort：canvas/toBlob 不支援時靜默略過，不擾流程）。
