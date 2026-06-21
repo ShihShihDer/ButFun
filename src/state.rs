@@ -187,6 +187,10 @@ pub struct Player {
     pub last_busk: Option<std::time::Instant>,
     /// 累積的獻奏資歷（ROADMAP 399）——完成一場 +1，純記憶體，重啟清零；完成時回給玩家看「第 N 場」。
     pub busk_count: u32,
+    /// 是否正在放風箏（ROADMAP 470）。true = 拿出風箏跟世界風（430）玩。
+    /// 暫態 bool（鏡像 `guard_shield`／`dodging`／獻奏旗標）：記憶體前置、不持久化、零 migration，
+    /// 斷線／重啟清零；倒地時 game.rs 自動收線。放進快照廣播，旁觀者看得見「有人在放風箏」。
+    pub flying_kite: bool,
     /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
     /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
     pub meal_buff: Option<crate::meal_buff::MealBuff>,
@@ -842,6 +846,8 @@ impl Player {
             meditating: self.meditation.is_some(),
             // ROADMAP 399：是否正在廣場獻奏（廣播給所有人，前端畫頭頂飄動音符）。
             busking: self.busking.is_some(),
+            // ROADMAP 470：是否正在放風箏（廣播給所有人，前端畫順風飄揚的風箏）。
+            flying_kite: self.flying_kite,
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
             well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
             // ROADMAP 407：此刻飽足來自的料理熟練階位（順手／拿手才標記；生手與沒飽足＝None，省流量）。
@@ -1668,6 +1674,7 @@ mod tests {
             busking: None,
             last_busk: None,
             busk_count: 0,
+            flying_kite: false,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),

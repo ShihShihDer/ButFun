@@ -574,6 +574,54 @@
     return out;
   }
 
+  // ---- 放風箏（ROADMAP 470）：風箏跟世界風（430）互動的飛行幾何 ----
+  // 430 給世界吹起伺服器權威、全服共享、隨時間轉向的風，但風至今只吹樹／作物（搖曳）與天氣
+  // 粒子（432 雨絲斜飛），玩家碰不到它。放風箏是玩家第一次能「握住這陣風」：風箏順著全服共享
+  // 的世界風飄揚、起風時越飛越高、隨陣風擺盪；鄰近玩家都看得見、且大家的風箏朝同一風向斜飛。
+  // 下面三個純函式是飛行幾何的源頭，常數與後端 `src/kite.rs` 一字對齊（一份契約、兩邊一致），
+  // 確定性、零副作用、壞值安全，故可在 render-smoke 單元斷言真值表。
+  const KITE_SOAR_FLOOR = 0.35;  // 無風時仍維持的最低飛行高度因子（對齊 kite.rs SOAR_FLOOR）
+  const KITE_SOAR_GAIN  = 0.65;  // 風力對高度的增益（對齊 SOAR_GAIN）：滿風時 floor+gain=1.0
+  const KITE_SWAY_BASE  = 0.20;  // 基礎擺幅因子（對齊 SWAY_BASE）
+  const KITE_SWAY_GAIN  = 0.80;  // 風力對擺幅的增益（對齊 SWAY_GAIN）
+  // 飛行高度因子 [0,1]：風越強飛越高；無風回 floor；壞值保守回 floor（鏡像後端 kite_soar）。
+  function kiteSoar(strength) {
+    const s = +strength;
+    if (!Number.isFinite(s)) return KITE_SOAR_FLOOR;
+    const c = Math.max(0, Math.min(1, s));
+    return Math.max(0, Math.min(1, KITE_SOAR_FLOOR + KITE_SOAR_GAIN * c));
+  }
+  // 擺幅因子（≥0）：風越大擺越兇；壞值保守回 base（鏡像後端 kite_sway_amp）。
+  function kiteSwayAmp(strength) {
+    const s = +strength;
+    if (!Number.isFinite(s)) return KITE_SWAY_BASE;
+    const c = Math.max(0, Math.min(1, s));
+    return KITE_SWAY_BASE + KITE_SWAY_GAIN * c;
+  }
+  // 風箏此刻相對「持線玩家手部錨點」的飛行規格：{x, y, angle, soar}（x/y 為相對偏移、像素）。
+  //   - 順風飄揚：高度隨 soar 上升、水平朝下風處（dirX）漂移；
+  //   - 陣風擺盪：以 seed（玩家 id 雜湊）錯開相位，整片天的風箏不會整齊劃一同擺；
+  //   - reduceMotion 下呼叫端傳固定 now → 擺盪定格（仍看得見「在放風箏」這件事）。
+  const KITE_HEIGHT_MIN = 30, KITE_HEIGHT_MAX = 72; // 手上方像素：微風時 30、滿風飛到 72
+  const KITE_LEAN_PX = 26;                          // 滿風時最大下風漂移
+  function kiteFlightSpec(wind, now, seed) {
+    const w = wind || {};
+    const strength = Math.max(0, Math.min(1, +w.strength || 0));
+    const dirX = Number.isFinite(w.dirX) ? w.dirX : 0;
+    const soar = kiteSoar(strength);
+    const amp = kiteSwayAmp(strength);
+    const t = (Number.isFinite(+now) ? +now : 0) * 0.0014;
+    const s = (Number(seed) >>> 0);
+    const phase = ((s % 100) / 100) * Math.PI * 2;       // 每位玩家錯開相位
+    const swayPx = Math.sin(t + phase) * amp * 9;        // 左右擺盪（px）
+    const bobPx = Math.cos(t * 0.8 + phase) * amp * 3;   // 輕微上下浮（px）
+    const height = KITE_HEIGHT_MIN + soar * (KITE_HEIGHT_MAX - KITE_HEIGHT_MIN);
+    const x = dirX * soar * KITE_LEAN_PX + swayPx;       // 朝下風漂 + 陣風擺
+    const y = -height + bobPx;                            // 往上飛（畫布 y 向下故負）
+    const angle = dirX * (0.15 + 0.35 * strength) + Math.sin(t + phase) * 0.12; // 順風傾斜＋擺動
+    return { x, y, angle, soar };
+  }
+
   // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
   // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
   // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
@@ -625,7 +673,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3372,6 +3420,8 @@
             existing.meditating = !!p.meditating;
             // ROADMAP 399：廣場獻奏——是否正在獻奏（前端畫頭頂飄動音符）。
             existing.busking = !!p.busking;
+            // ROADMAP 470：放風箏——是否正在放風箏（前端畫順風飄揚的風箏）。
+            existing.flying_kite = !!p.flying_kite;
             // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
             existing.well_fed = (typeof p.well_fed === "number") ? p.well_fed : null;
             // ROADMAP 407：拿手菜熟練——飽足來自順手／拿手料理時的徽記（生手＝無）。
@@ -3998,6 +4048,8 @@
           updateMeditateBtn(me, isGuest);
           // 廣場獻奏按鈕（ROADMAP 399）：已登入、戶外、靠近村落廣場才顯示
           updateBuskBtn(me, isGuest);
+          // 放風箏按鈕（ROADMAP 470）：已登入、戶外、未倒地才顯示
+          updateKiteBtn(me, isGuest);
         }
         break;
       }
@@ -7856,6 +7908,17 @@
     // 讓旁觀者一眼看出「有人在演奏」，廣場因此熱鬧起來。畫在角色本體之上。
     if (p.busking) drawBuskingNotes(sx, by - 34);
 
+    // 放風箏（ROADMAP 470）：放風箏的玩家上方飛著一只順著世界風（430）飄揚的風箏——起風時飛得更高、
+    // 朝下風斜，鄰近玩家都看得見、整片天的風箏朝同一風向同步斜飛。畫在角色本體之上。
+    // reduceMotion 下傳固定相位 → 擺盪定格（仍看得見「在放風箏」這件事）。
+    if (p.flying_kite) {
+      let kseed = 0;
+      const kpid = typeof p.id === "string" ? p.id : "";
+      for (let i = 0; i < kpid.length; i++) kseed = (kseed * 31 + kpid.charCodeAt(i)) >>> 0;
+      const kNow = reduceMotion ? 0 : performance.now();
+      drawKite(sx, sy - 4, kiteFlightSpec(worldWind, kNow, kseed), kseed);
+    }
+
     // 暖食飽足光暈（ROADMAP 395）：剛吃過料理的玩家頭頂浮一圈暖橙光暈＋🍲，
     // 讓世界一眼看見「有人吃飽了、正被暖暖地療癒著」。進度愈低（飽足將散）愈淡。
     if (typeof p.well_fed === "number" && p.well_fed > 0) drawWellFedGlow(sx, by - 30, p.well_fed);
@@ -9523,6 +9586,27 @@
     }
   }
   // ── 廣場獻奏按鈕 end ──────────────────────────────────────────────────────────
+
+  // ── 放風箏按鈕（ROADMAP 470）──────────────────────────────────────────────────
+  /** 每幀更新「🪁 放風箏」按鈕：已登入、戶外、未倒地才顯示；放風箏中改顯示「⏹ 收線」。
+   *  放風箏是跟世界風（430）玩的療癒小動作，不送獎勵、不影響移動，隨處可放（不限廣場）。 */
+  function updateKiteBtn(me, isGuestUser) {
+    const btn = document.getElementById("kiteBtn");
+    if (!btn) return;
+    // 戶外、已登入、未倒地才能放（室內天空看不見；倒地休息中後端也會自動收線）。
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed;
+    btn.classList.toggle("hidden", !canShow);
+    if (!canShow) return;
+    if (me.flying_kite) {
+      btn.textContent = "⏹ 收線";
+      btn.style.color = "#ffb347";
+    } else {
+      btn.textContent = "🪁 放風箏";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 放風箏按鈕 end ────────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -16926,6 +17010,62 @@
     ctx.restore();
   }
   // ── 廣場獻奏音符 end ─────────────────────────────────────────────────────────
+
+  // ── 放風箏（ROADMAP 470）────────────────────────────────────────────────────
+  // 由 drawPlayer 對 flying_kite=true 的玩家呼叫；在玩家手部上方畫一只順著世界風（430）飄揚的
+  // 原創菱形風箏——一條線從手牽到風箏、菱形箏面隨風傾斜、尾巴朝下風飄。spec 由純函式
+  // `kiteFlightSpec` 算好（飛行偏移／傾角／高度因子），這裡只負責畫；reduceMotion 時 spec 已定格。
+  // 暖色調（珊瑚＋琥珀）呼應療癒繪本北極星；clay／pixel 一致（純幾何、不依賴外部素材）。
+  function drawKite(cx, cy, spec, seed) {
+    const s = spec || {};
+    const ox = Number.isFinite(+s.x) ? +s.x : 0;
+    const oy = Number.isFinite(+s.y) ? +s.y : -40;
+    const angle = Number.isFinite(+s.angle) ? +s.angle : 0;
+    const soar = Math.max(0, Math.min(1, Number.isFinite(+s.soar) ? +s.soar : 0.5));
+    const kx = cx + ox, ky = cy + oy;
+    // 依玩家 id 種子在暖色相間微調，讓整片天的風箏不致全同色。
+    const hue = 14 + ((seed >>> 0) % 26); // 珊瑚→琥珀
+    ctx.save();
+    // 1) 線：從手牽到風箏（略帶弧度感用直線近似即可）。風越大線拉得越直、越亮。
+    ctx.strokeStyle = `rgba(120,96,80,${0.30 + 0.25 * soar})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(kx, ky);
+    ctx.stroke();
+    // 2) 箏面：以風箏中心為原點、依風向傾斜的菱形。
+    ctx.translate(kx, ky);
+    ctx.rotate(angle);
+    const w = 7, h = 10; // 半寬／上下半高（上短下長的經典風箏菱形）
+    ctx.beginPath();
+    ctx.moveTo(0, -h);          // 上尖
+    ctx.lineTo(w, -1);          // 右
+    ctx.lineTo(0, h);           // 下尖
+    ctx.lineTo(-w, -1);         // 左
+    ctx.closePath();
+    ctx.fillStyle = `hsl(${hue},78%,62%)`;
+    ctx.fill();
+    ctx.strokeStyle = `hsl(${hue},60%,38%)`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 十字骨架，給一點手作繪本感。
+    ctx.strokeStyle = `hsla(${hue},45%,30%,0.6)`;
+    ctx.beginPath();
+    ctx.moveTo(0, -h); ctx.lineTo(0, h);
+    ctx.moveTo(-w, -1); ctx.lineTo(w, -1);
+    ctx.stroke();
+    // 3) 尾巴：自下尖朝下風飄三段小結（reduceMotion 時 spec 定格→尾巴亦靜止）。
+    ctx.fillStyle = `hsl(${(hue + 30) % 360},70%,66%)`;
+    for (let i = 1; i <= 3; i++) {
+      const ty = h + i * 5;
+      const tx = Math.sin(i * 1.3) * 2.2;
+      ctx.beginPath();
+      ctx.arc(tx, ty, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // ── 放風箏 end ─────────────────────────────────────────────────────────────
 
   // ── 暖食飽足光暈（ROADMAP 395）────────────────────────────────────────────────
   // 由 drawPlayer 對 well_fed>0 的玩家頭頂呼叫；畫一圈暖橙柔光＋一顆 🍲，
@@ -29121,6 +29261,21 @@
         } else {
           safeSend({ type: "begin_busk" });
           announce("準備街頭獻奏，靜止 15 秒——身旁聆賞的人越多，打賞越豐；移動即中斷");
+        }
+      });
+    }
+    // 🪁 放風箏（ROADMAP 470）：拿出／收起風箏，跟全服共享的世界風（430）玩。
+    const kiteBtn = document.getElementById("kiteBtn");
+    if (kiteBtn) {
+      kiteBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (me.flying_kite) {
+          safeSend({ type: "cancel_kite" });
+        } else {
+          safeSend({ type: "begin_kite" });
+          announce("拿出風箏，跟著今天的風飄起來——整片天的風箏都朝同一風向斜飛");
         }
       });
     }

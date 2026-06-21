@@ -2381,6 +2381,53 @@ for (const sc of scenarios) {
   }
 }
 
+// 放風箏（ROADMAP 470）：單元斷言純函式 kiteSoar／kiteSwayAmp／kiteFlightSpec 的真值表——
+// 飛行高度因子恆在 [0,1]、隨風單調遞增、無風回 floor、壞值保守回 floor；擺幅隨風變大；
+// 飛行規格 soar∈[0,1]、確定可重現、壞風物件不爆。常數須與後端 src/kite.rs 一字對齊。
+{
+  const soar = sandbox.__bfTest && sandbox.__bfTest.kiteSoar;
+  const sway = sandbox.__bfTest && sandbox.__bfTest.kiteSwayAmp;
+  const flight = sandbox.__bfTest && sandbox.__bfTest.kiteFlightSpec;
+  if (typeof soar !== "function" || typeof sway !== "function" || typeof flight !== "function") {
+    failed = true;
+    console.error("  ❌ 放風箏：game.js 未導出 kiteSoar／kiteSwayAmp／kiteFlightSpec");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 放風箏：${msg}`); } };
+    const FLOOR = 0.35; // 對齊 kite.rs SOAR_FLOOR
+    const BASE = 0.20;  // 對齊 kite.rs SWAY_BASE
+    expect(Math.abs(soar(0) - FLOOR) < 1e-6, "無風時飛行高度回 floor");
+    expect(Math.abs(soar(1) - 1.0) < 1e-6, "滿風時飛行高度抵達 1.0");
+    // 高度恆在 [0,1] 且隨風單調遞增。
+    let prev = soar(0), mono = true, inrange = true;
+    for (let i = 0; i <= 10; i++) {
+      const h = soar(i / 10);
+      if (h < 0 || h > 1) inrange = false;
+      if (h < prev - 1e-9) mono = false;
+      prev = h;
+    }
+    expect(inrange, "飛行高度恆在 [0,1]");
+    expect(mono, "飛行高度隨風單調不減");
+    // 壞值保守回 floor / base，不產生 NaN。
+    expect(Math.abs(soar(NaN) - FLOOR) < 1e-6 && Math.abs(soar(Infinity) - FLOOR) < 1e-6, "高度壞值保守回 floor");
+    expect(soar(-5) === FLOOR || Math.abs(soar(-5) - FLOOR) < 1e-6, "負風強夾回 floor");
+    expect(sway(1) > sway(0) && Math.abs(sway(0) - BASE) < 1e-6, "擺幅隨風變大、無風回 base");
+    expect(Math.abs(sway(NaN) - BASE) < 1e-6, "擺幅壞值保守回 base");
+    // 飛行規格：soar∈[0,1]、x/y/angle 皆有限數、確定可重現。
+    const w = { dirX: 1, dirY: 0, strength: 0.6 };
+    const fa = flight(w, 1000, 42), fb = flight(w, 1000, 42);
+    expect(fa.soar >= 0 && fa.soar <= 1, "飛行規格 soar∈[0,1]");
+    expect([fa.x, fa.y, fa.angle].every(Number.isFinite), "飛行規格 x/y/angle 皆有限數");
+    expect(fa.y < 0, "風箏在手部上方（y<0）");
+    expect(JSON.stringify(fa) === JSON.stringify(fb), "同 (wind, now, seed) 決定性可重現");
+    // 壞風物件 / reduceMotion（now=0）不爆。
+    const f0 = flight(null, 0, 7);
+    expect(Number.isFinite(f0.x) && Number.isFinite(f0.y) && f0.soar >= 0, "壞風物件與 now=0 仍回有效規格");
+    if (bad) failed = true;
+    else console.log("  ✅ 放風箏·風箏飛行幾何真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
