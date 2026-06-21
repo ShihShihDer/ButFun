@@ -1396,6 +1396,102 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let _ = tx_direct.try_send(json);
                     }
                 }
+                Ok(ClientMsg::SendPostcard { note }) => {
+                    // 明信片寄給同行旅人（ROADMAP 480）：把「此刻世界」明信片投進身旁最近
+                    // 那位旅人的信箱。共用明信片限流（每秒至多 3 次）。
+                    if rl_postcard_win.elapsed().as_secs() >= 1 {
+                        rl_postcard_win = std::time::Instant::now();
+                        rl_postcard_n = 0;
+                    }
+                    rl_postcard_n += 1;
+                    if rl_postcard_n > 3 {
+                        continue;
+                    }
+                    // 只限已登入玩家寄（署名穩定、對方認得出是誰）。未登入靜默忽略。
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    let note = crate::postcard_mail::sanitize_note(&note);
+                    // 一輪 players 讀鎖內：取寄件者權威座標／署名／等級（須不在室內——明信片寄的是
+                    // 「此刻戶外世界」，身旁旅人也以世界座標判定），同時蒐集在場收件候選。讀完即放鎖，
+                    // 投遞待出鎖後才做（守 prod 死鎖鐵律：不在 players 鎖內碰 whisper_senders）。
+                    let sender: Option<(f32, f32, String, u32)>;
+                    let candidates: Vec<crate::postcard_mail::Recipient>;
+                    {
+                        let ps = app.players.read().unwrap();
+                        sender = ps
+                            .get(&id)
+                            .filter(|p| p.indoor_plot_id.is_none())
+                            .map(|p| (p.x, p.y, p.name.clone(), p.level()));
+                        candidates = ps
+                            .iter()
+                            .map(|(uid, p)| crate::postcard_mail::Recipient {
+                                id: *uid,
+                                name: p.name.clone(),
+                                x: p.x,
+                                y: p.y,
+                                indoor: p.indoor_plot_id.is_some(),
+                            })
+                            .collect();
+                    }
+                    if let Some((px, py, _from_name, level)) = sender {
+                        match crate::postcard_mail::pick_recipient(id, px, py, &candidates) {
+                            Some((target_id, target_name)) => {
+                                // 以寄件者當下世界狀態組明信片（各鎖讀完即放、互不嵌套）。
+                                let season = app.season.read().unwrap().current;
+                                let phase = app.daynight.read().unwrap().phase();
+                                let loc = crate::region_name::locale_at(px as f64, py as f64);
+                                let card = crate::postcard::compose(crate::postcard::PostcardInput {
+                                    level,
+                                    place: loc.name.to_string(),
+                                    subtitle: loc.subtitle.to_string(),
+                                    phase,
+                                    season,
+                                    star: crate::postcard::StarTier::None,
+                                });
+                                // 寄件者署名取最新權威名（避免改名後落款不一致）。
+                                let from_name = app
+                                    .players
+                                    .read()
+                                    .unwrap()
+                                    .get(&id)
+                                    .map(|p| p.name.clone())
+                                    .unwrap_or_default();
+                                // ① 投進收件人信箱（whisper 通道單播，人在何處都收得到）。
+                                let to_msg = ServerMsg::PostcardFromTraveler {
+                                    from_name,
+                                    from_level: card.level,
+                                    title: card.title.clone(),
+                                    place: card.place.clone(),
+                                    subtitle: card.subtitle.clone(),
+                                    flavor: card.flavor.to_string(),
+                                    note,
+                                };
+                                if let Ok(json) = serde_json::to_string(&to_msg) {
+                                    if let Some(btx) =
+                                        app.whisper_senders.read().unwrap().get(&target_id)
+                                    {
+                                        let _ = btx.try_send(json);
+                                    }
+                                }
+                                // ② 回報寄件者「寄到了誰手上」。
+                                let ack = ServerMsg::PostcardSent {
+                                    to_name: Some(target_name),
+                                };
+                                if let Ok(json) = serde_json::to_string(&ack) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                            None => {
+                                // 附近沒有可寄的旅人：回報空，前端提示「走近一位旅人再寄」。
+                                let ack = ServerMsg::PostcardSent { to_name: None };
+                                if let Ok(json) = serde_json::to_string(&ack) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
+                        }
+                    }
+                }
                 Ok(ClientMsg::HighFive) => {
                     // 擊掌意願（ROADMAP 339）：玩家伸手想擊掌。這裡只點亮一個短暫的意願，
                     // 真正的配對與特效廣播交給 game.rs 每幀做（同區、靠得夠近、也正在比的兩人配成對）。

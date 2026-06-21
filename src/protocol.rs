@@ -313,6 +313,15 @@ pub enum ClientMsg {
         /// true＝用罕見的彩虹星塵；false＝用一般星塵。
         use_rainbow: bool,
     },
+    /// 把明信片寄給身旁旅人（ROADMAP 480）：玩家按下「✉️ 寄給附近旅人」時送來。
+    /// 伺服器以寄件者**權威座標**挑最近的在場旅人，組一張「此刻世界」明信片＋一句手寫話
+    /// 投進對方信箱（`ServerMsg::PostcardFromTraveler`），並單播 `PostcardSent` 回報寄件者。
+    /// 只限已登入玩家寄（署名才穩定可認）；`note` 是選填手寫留言，伺服器會清理／截長。
+    SendPostcard {
+        /// 玩家手寫的一句話（可空）。伺服器以 `postcard_mail::sanitize_note` 清理後才投遞。
+        #[serde(default)]
+        note: String,
+    },
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     /// ROADMAP 452：`kind` 是玩家當下選的作物品種（線格式字串如 "sprout"/"staple"/"etherbloom"），
@@ -1361,6 +1370,31 @@ pub enum ServerMsg {
         /// 星塵印記留言（封了星塵才有；一般明信片為 `None`）。前端據此在卡片底下多畫一行星空留言。
         #[serde(default)]
         star_line: Option<String>,
+    },
+    /// 明信片寄達·收件（ROADMAP 480）：身旁某位旅人把一張「此刻世界」明信片寄進你的信箱。
+    /// 走單播（whisper 通道）只送給收件人，不廣播。前端據此把它收進「📬 收到的明信片」面板
+    /// 並浮一張暖訊。內含寄件者署名＋等級＋明信片風景內容＋一句手寫話（已清理）。純社交、零經濟。
+    PostcardFromTraveler {
+        /// 寄件者署名（即時暱稱）。
+        from_name: String,
+        /// 寄件者旅人等級（落款用）。
+        from_level: u32,
+        /// 明信片標頭，如「晨光・🌸 春」。
+        title: String,
+        /// 寄件者當時的所在地名。
+        place: String,
+        /// 地誌氛圍副標。
+        subtitle: String,
+        /// 此刻風景印記（手寫感的一句話，明信片既有 flavor）。
+        flavor: String,
+        /// 寄件者手寫的一句話（已清理／截長；可為空字串＝沒寫話）。
+        note: String,
+    },
+    /// 明信片寄出·回報（ROADMAP 480）：單播回寄件者，告知這張明信片寄到了誰手上。
+    /// `to_name` 為 `None` 代表「附近沒有可寄的旅人」（前端據此提示「走近一位旅人再寄」）。
+    PostcardSent {
+        /// 成功時＝收件旅人的署名；附近無人時＝`None`。
+        to_name: Option<String>,
     },
     /// 回訪摘要（ROADMAP 374）：登入玩家進場時，一次性告知「等你的東西」。
     /// 純讀現有記憶體狀態，不新增經濟、不送物品/乙太。只在已登入玩家連線時送一次。

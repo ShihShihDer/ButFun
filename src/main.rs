@@ -78,6 +78,7 @@ mod inventory;
 mod inventory_store;
 mod journey;
 mod postcard;
+mod postcard_mail;
 mod tile_store;
 mod tiles;
 mod vitals;
