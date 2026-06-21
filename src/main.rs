@@ -26,6 +26,7 @@ mod meditation;
 mod busking;
 mod busking_ensemble;
 mod kite;
+mod firefly_lantern;
 mod apiary;
 mod companion_revive;
 mod meal_buff;

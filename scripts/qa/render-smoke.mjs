@@ -794,6 +794,39 @@ for (const sc of scenarios) {
   else console.log("  ✅ 稻草人守望：守護圈＋稻草人本體＋被啄田鴉＋啄痕＋立／撤鈕全分支連跑多幀皆乾淨");
 }
 
+// 夜螢提燈（ROADMAP 477）：夜間城外浮現螢群（firefly_swarms）＋玩家提燈柔光（lantern_fireflies）。
+// 連跑多幀觸發 drawFireflySwarms（群光暈＋螢點飄動＋靠近互動提示）與 drawLanternGlow（玩家身邊
+// 暖黃柔光＋小提燈＋繞飛螢點）。同時驗髒值（remaining 超界／負、lantern 超界）不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：夜螢提燈（夜間螢群＋玩家提燈柔光，連跑多幀觸發群光與提燈繪製）──");
+  let ok = true;
+  try {
+    const fSnap = JSON.parse(JSON.stringify(snapshot));
+    fSnap.daynight = { phase: "night", light: 0.14, night_danger: true };
+    fSnap.weather = { weather_type: "clear", intensity: 0.0 };
+    // 在玩家身邊放一群（觸發「最近螢群」互動提示），另放一群在別處、含髒值。
+    const px = fSnap.players[0].x;
+    const py = fSnap.players[0].y;
+    fSnap.firefly_swarms = [
+      { id: 1, wx: px + 30, wy: py + 10, remaining: 4 },
+      { id: 2, wx: px + 400, wy: py + 200, remaining: 1 },
+      { id: 3, wx: px - 350, wy: py - 150, remaining: 99 },  // 超界 remaining → 應夾住、不爆
+      { id: 4, wx: px + 100, wy: py - 300, remaining: -3 },  // 負值 → 應視為 0、不畫螢點
+    ];
+    // 玩家提燈裡有螢火（含一個超界值驗夾住）。
+    fSnap.players[0].lantern_fireflies = 8;
+    if (fSnap.players[1]) fSnap.players[1].lantern_fireflies = 200; // 超界 → drawLanternGlow 應夾在 12
+    lastWS.onmessage({ data: JSON.stringify({ ...fSnap, type: "snapshot" }) });
+    pump("夜螢提燈", 60);
+  } catch (e) {
+    ok = false; console.error("  ❌ 夜螢提燈：拋出例外", e && e.message);
+  }
+  const newCaughtFf = caughtRenderErrors.slice(before);
+  if (!ok || newCaughtFf.length) { failed = true; console.error(`  ❌ 夜螢提燈：${newCaughtFf.length} 個繪製例外`); }
+  else console.log("  ✅ 夜螢提燈：螢群光暈＋螢點飄動＋互動提示＋玩家提燈柔光（含髒值）全分支連跑多幀皆乾淨");
+}
+
 // 一鍵收成（ROADMAP 446）：田裡有成熟作物時，hudRipe 那行同時當「✨一鍵收成」按鈕——對稱於
 // 缺水行的一鍵澆水。驗證 updateFarmHud 把 ripeEl 接成可點、點下會送 harvest_all；無成熟時解除點按。
 {

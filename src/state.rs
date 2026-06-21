@@ -195,6 +195,10 @@ pub struct Player {
     /// 暫態 bool（鏡像 `guard_shield`／`dodging`／獻奏旗標）：記憶體前置、不持久化、零 migration，
     /// 斷線／重啟清零；倒地時 game.rs 自動收線。放進快照廣播，旁觀者看得見「有人在放風箏」。
     pub flying_kite: bool,
+    /// 夜螢提燈裡的螢火數（ROADMAP 477）。0 = 提燈空著；>0 = 夜裡捕了幾隻螢火，越多身邊柔光越亮。
+    /// 記憶體前置、不持久化、零 migration、零經濟；天亮（game.rs 偵測夜→晨）時全員清零，
+    /// 一夜一更新。放進快照廣播，旁觀者夜裡看得見「誰提著一盞螢火燈」（自我表達）。
+    pub lantern_fireflies: u8,
     /// 暖食飽足 buff（ROADMAP 395）。None = 沒在飽足；Some = 吃料理後的限時 HP 緩慢回復。
     /// 記憶體前置、不持久化、零 migration；game.rs 每 tick 推進回血、過期自動清除。
     pub meal_buff: Option<crate::meal_buff::MealBuff>,
@@ -867,6 +871,8 @@ impl Player {
             ensemble: self.ensemble_size,
             // ROADMAP 470：是否正在放風箏（廣播給所有人，前端畫順風飄揚的風箏）。
             flying_kite: self.flying_kite,
+            // ROADMAP 477：夜螢提燈螢火數（夜間廣播給所有人，前端畫身邊柔光暈）。
+            lantern_fireflies: self.lantern_fireflies,
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
             well_fed: self.meal_buff.as_ref().map(|b| b.progress()),
             // ROADMAP 407：此刻飽足來自的料理熟練階位（順手／拿手才標記；生手與沒飽足＝None，省流量）。
@@ -1361,6 +1367,9 @@ pub struct AppState {
     /// 夜間乙太泉（ROADMAP 162）：每當日夜轉入夜晚時在城外生成 5 個乙太泉採集點。
     /// 玩家靠近採集得 +8 乙太；天亮自動清除。純記憶體模式，重啟清零。
     pub night_springs: Arc<RwLock<crate::night_aether_springs::NightAetherSprings>>,
+    /// 夜螢提燈（ROADMAP 477）：每當日夜轉入夜晚時在城外生成 6 群螢火蟲，玩家走近輕捕入提燈，
+    /// 提燈柔光全服可見；天亮自動清除螢群並清空各玩家提燈。純記憶體模式，重啟清零、零經濟。
+    pub firefly_lantern: Arc<RwLock<crate::firefly_lantern::FireflyLantern>>,
     /// 旅行商人狀態（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘，限時出售稀有物品。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub wandering_merchant: Arc<RwLock<crate::wandering_merchant::WanderingMerchantState>>,
@@ -1594,6 +1603,7 @@ impl AppState {
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             campfires: Arc::new(RwLock::new(crate::campfire::CampfireField::new())),
             night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
+            firefly_lantern: Arc::new(RwLock::new(crate::firefly_lantern::FireflyLantern::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
@@ -1699,6 +1709,7 @@ mod tests {
             busk_count: 0,
             ensemble_size: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),

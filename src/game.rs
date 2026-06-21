@@ -3226,6 +3226,35 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 夜螢提燈 tick（ROADMAP 477）：黃昏轉夜晚時城外浮現 6 群螢火蟲，玩家走近捕螢入提燈；
+            // 天亮（夜→晨）清除螢群並清空各玩家提燈（一夜一更新、不囤積）。
+            {
+                use crate::firefly_lantern::FireflyEvent;
+                let current_phase = app.daynight.read().unwrap().phase();
+                // 守 prod-deadlock：先在 firefly 鎖內 tick 取事件即釋放，出鎖後才動 players／廣播。
+                let ev = {
+                    let mut fl = app.firefly_lantern.write().unwrap();
+                    fl.tick(current_phase)
+                };
+                match ev {
+                    Some(FireflyEvent::Activated) => {
+                        let _ = app.tx_chat.send(format!(
+                            "🪄 入夜，城外草間浮起 {} 群螢火蟲——走近輕輕一捕即可收進隨身提燈，越捕身邊越亮，天亮前螢火會飛回草間。",
+                            crate::firefly_lantern::SWARM_COUNT,
+                        ));
+                    }
+                    Some(FireflyEvent::Deactivated) => {
+                        // 天亮：螢火飛回草間，清空所有玩家提燈（夜→晨僅此一幀，量小）。
+                        // 另開 players 寫鎖（未與 firefly 鎖巢狀，守鎖序鐵律）。
+                        let mut players = app.players.write().unwrap();
+                        for p in players.values_mut() {
+                            p.lantern_fireflies = 0;
+                        }
+                    }
+                    None => {}
+                }
+            }
+
             // 旅行商人（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘。
             {
                 let (arrived, departed) = app.wandering_merchant.write().unwrap().tick(dt);
@@ -4274,6 +4303,10 @@ pub fn spawn(app: AppState) {
                         // 夜間乙太泉（ROADMAP 162）。
                         night_spring_nodes: app.night_springs.read().unwrap().active_nodes()
                             .map(|n| crate::protocol::SpringNodeView { id: n.id, wx: n.wx, wy: n.wy, moonlit: n.moonlit })
+                            .collect(),
+                        // 夜螢群（ROADMAP 477）：尚有螢火可捕的螢群。
+                        firefly_swarms: app.firefly_lantern.read().unwrap().active_swarms()
+                            .map(|s| crate::protocol::FireflySwarmView { id: s.id, wx: s.wx, wy: s.wy, remaining: s.remaining })
                             .collect(),
                         // 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
                         monster_species_attitudes: app.monster_species.read().unwrap().views(),

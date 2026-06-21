@@ -717,6 +717,10 @@ pub enum ClientMsg {
     /// 不在範圍 / 非夜晚 / 已在汲取則靜默忽略。
     #[serde(rename = "collect_spring_node")]
     CollectSpringNode { node_id: u32 },
+    /// 夜螢提燈（ROADMAP 477）：從指定螢群捕一隻螢火進提燈。玩家需在 CATCH_REACH 內、夜間、
+    /// 螢群尚有剩。捕成功則提燈 +1（封頂 LANTERN_MAX）；不在範圍 / 非夜晚 / 螢群已散則靜默忽略。
+    #[serde(rename = "catch_firefly")]
+    CatchFirefly { swarm_id: u32 },
     /// 向旅行商人購買（ROADMAP 135）。玩家需在 TRADE_REACH 範圍內、登入、持有足夠乙太。
     /// 成功後：扣乙太、玩家背包增加 item×qty。
     #[serde(rename = "buy_from_wanderer")]
@@ -860,6 +864,19 @@ pub struct SpringNodeView {
     pub wy: f32,
     /// ROADMAP 362：是否為滿月夜的「月華泉」（前端據此畫銀金月暈；舊前端忽略此欄位、向後相容）。
     pub moonlit: bool,
+}
+
+/// 快照裡的夜螢群（ROADMAP 477）：夜間城外浮現、可走近捕螢入提燈。天亮後為空陣列。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FireflySwarmView {
+    /// 螢群唯一 ID（用於 CatchFirefly ClientMsg）。
+    pub id: u32,
+    /// 世界座標 X。
+    pub wx: f32,
+    /// 世界座標 Y。
+    pub wy: f32,
+    /// 還剩幾隻可捕（前端據此讓螢群在捕光前漸稀疏）。
+    pub remaining: u8,
 }
 
 /// 快照裡的季節性野外採集節點（ROADMAP 154）。
@@ -1094,6 +1111,10 @@ pub enum ServerMsg {
         /// 夜間乙太泉（ROADMAP 162）：活躍中的乙太泉節點清單（夜晚期間）。
         /// 天亮後為空陣列。前端在節點位置顯示紫色脈動光圈。
         night_spring_nodes: Vec<SpringNodeView>,
+        /// 夜螢群（ROADMAP 477）：活躍中、尚有螢火可捕的螢群清單（夜晚期間）。天亮後為空陣列。
+        /// 前端在節點位置畫一簇閃爍的暖黃螢光，可走近捕螢入提燈。
+        #[serde(default)]
+        firefly_swarms: Vec<FireflySwarmView>,
         /// 怪物物種態度（ROADMAP 163）：各怪物種類對人類的態度值與層級。
         /// 前端依層級在怪物名牌顯示層級色彩標記（⚠/△/♥）；空陣列=全Neutral。
         #[serde(default)]
@@ -2302,6 +2323,12 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_false")]
     pub flying_kite: bool,
 
+    // ── 夜螢提燈（ROADMAP 477）───────────────────────────────────────────────
+    /// 提燈裡的螢火數（0 省略）。夜裡 >0 時前端在該玩家身邊畫一圈暖黃柔光暈，越多越亮，
+    /// 旁觀者一眼看見「誰提著一盞螢火燈」（自我表達）；白天恆 0、不畫。舊前端忽略此欄位、向後相容。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub lantern_fireflies: u8,
+
     // ── 暖食飽足（ROADMAP 395）───────────────────────────────────────────────
     /// 暖食飽足進度 0.0~1.0（剩餘比例）。Some 時前端在該玩家頭頂畫暖食光暈＋倒數。
     /// None＝沒在飽足（省略流量）。廣播給所有人，世界裡看得見誰剛吃飽。
@@ -2994,6 +3021,7 @@ mod tests {
                 busking: false,
                 ensemble: 0,
                 flying_kite: false,
+                lantern_fireflies: 0,
                 well_fed: None,
                 well_fed_tier: None,
                 onboarding: None,
@@ -3127,6 +3155,7 @@ mod tests {
             civic_effect_kind: String::new(),
             invasion: InvasionView { active: false, remaining_secs: 0.0, wave_count: 0, boss_alive: false, wave_level: 1, consecutive_successes: 0 },
             night_spring_nodes: vec![],
+            firefly_swarms: vec![],
             monster_species_attitudes: vec![],
             monster_colony_views: vec![],
             eco_pressure_value: 0.0,
@@ -3292,6 +3321,7 @@ mod tests {
             busking: false,
             ensemble: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
@@ -3590,6 +3620,7 @@ mod tests {
             busking: false,
             ensemble: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
@@ -3664,6 +3695,7 @@ mod tests {
             busking: false,
             ensemble: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,

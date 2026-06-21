@@ -213,6 +213,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             busk_count: 0,
             ensemble_size: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
@@ -349,6 +350,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             busk_count: 0,
             ensemble_size: 0,
             flying_kite: false,
+            lantern_fireflies: 0,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
@@ -636,7 +638,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -766,6 +768,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         invasion: invasion.clone(),
                                         // 夜間乙太泉（ROADMAP 162）：全服廣播（量少，最多 5 顆）。
                                         night_spring_nodes: night_spring_nodes.clone(),
+                                        // 夜螢群（ROADMAP 477）：全服廣播（量少，最多 6 群）。
+                                        firefly_swarms: firefly_swarms.clone(),
                                         // 怪物物種態度（ROADMAP 163）：全服廣播。
                                         monster_species_attitudes: monster_species_attitudes.clone(),
                                         // 怪物巢穴（ROADMAP 164）：全服廣播（量少，5 個巢穴）。
@@ -7944,6 +7948,22 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     p.aether_draw = Some(crate::aether_draw::AetherDraw::start(node_id));
                                     tracing::debug!(player = %p.name, node_id, "開始汲取乙太泉");
                                 }
+                            }
+                        }
+                    }
+                }
+                // ── 夜螢提燈：捕螢入提燈（ROADMAP 477）────────────────────────────────
+                Ok(ClientMsg::CatchFirefly { swarm_id }) => {
+                    // 走近螢群、按互動鍵捕一隻螢火進提燈。純記憶體、零經濟、無回血。
+                    // 守 prod-deadlock 鐵律：三步皆不巢狀鎖——① 讀玩家座標即放；② 另開 firefly
+                    // 寫鎖試捕即放；③ 捕到才開 players 寫鎖把螢火加進提燈（封頂 LANTERN_MAX）。
+                    let player_pos = app.players.read().unwrap().get(&id).map(|p| (p.x, p.y));
+                    if let Some((px, py)) = player_pos {
+                        let caught = app.firefly_lantern.write().unwrap().try_catch(swarm_id, px, py);
+                        if caught {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.lantern_fireflies =
+                                    crate::firefly_lantern::add_to_lantern(p.lantern_fireflies, true);
                             }
                         }
                     }
