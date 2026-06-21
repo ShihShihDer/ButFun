@@ -638,7 +638,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -710,6 +710,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         dust_nodes: dust_nodes.iter().filter(|n| filter_pos(n.wx, n.wy)).cloned().collect(),
                                         // 野營篝火（ROADMAP 474）：只送視野內的，省頻寬。
                                         campfires: campfires.iter().filter(|c| filter_pos(c.wx, c.wy)).cloned().collect(),
+                                        // 雪季雪人（ROADMAP 478）：只送視野內的，省頻寬。
+                                        snowmen: snowmen.iter().filter(|s| filter_pos(s.wx, s.wy)).cloned().collect(),
                                         // 旅行商人（ROADMAP 135）：全服廣播。
                                         wandering_merchant_secs: *wandering_merchant_secs,
                                         wandering_catalog: wandering_catalog.clone(),
@@ -1480,6 +1482,31 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 一律用升火者自己的權威座標升火（防隔空生火）。升起的火會進下一幀快照、
                         // 附近玩家自然看見，無須額外廣播。
                         let _ = app.campfires.write().unwrap().light(id, px, py);
+                    }
+                }
+                Ok(ClientMsg::BuildSnowman) => {
+                    // 雪季堆雪人（ROADMAP 478）：隆冬時在玩家腳下堆起一座署名雪人。
+                    // 先讀堆雪者權威座標＋暱稱（讀鎖即取即放）：須已登入、且不在室內（室內不堆雪）。
+                    // 堆雪頻率由 SnowmanField 的每人冷卻＋全服上限把關，故此處不另設限流。
+                    let builder_pos: Option<(f32, f32, String)> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| p.indoor_plot_id.is_none())
+                            .map(|p| (p.x, p.y, p.name.clone()))
+                    };
+                    if let Some((px, py, name)) = builder_pos {
+                        // 冬季限定：只有當前季節是冬天才堆得起來（讀鎖即取即放，不與其他鎖巢狀）。
+                        let is_winter = {
+                            app.season.read().unwrap().current == crate::season::Season::Winter
+                        };
+                        if is_winter {
+                            // 另開雪人寫鎖堆雪（不與 players／season 鎖巢狀；守 prod 死鎖鐵律）。
+                            // build 回 Some(id)=成功；None=冷卻中／達全服上限／座標非有限值——靜默忽略。
+                            // 一律用堆雪者自己的權威座標（防隔空堆雪）。堆好的雪人會進下一幀快照、
+                            // 附近玩家自然看見，無須額外廣播。
+                            let _ = app.snowmen.write().unwrap().build(id, name, px, py);
+                        }
                     }
                 }
                 Ok(ClientMsg::HelpUp) => {

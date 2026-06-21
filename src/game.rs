@@ -3149,6 +3149,11 @@ pub fn spawn(app: AppState) {
             // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
             app.campfires.write().unwrap().tick(dt);
 
+            // 雪季雪人 tick（ROADMAP 478）：冬季內雪人常駐、玩家堆雪冷卻遞減；
+            // 季節一離開冬季（is_winter==false）就整批融化清空。寫鎖內只 tick 即釋放
+            // （守 prod-deadlock，不與其他鎖巢狀）。
+            app.snowmen.write().unwrap().tick(dt, is_winter);
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4218,6 +4223,16 @@ pub fn spawn(app: AppState) {
                                 wx: c.wx,
                                 wy: c.wy,
                                 remaining_secs: c.remaining.ceil().max(0.0) as u32,
+                            })
+                            .collect(),
+                        // 雪季雪人（ROADMAP 478）。
+                        snowmen: app.snowmen.read().unwrap().active().iter()
+                            .map(|s| crate::protocol::SnowmanView {
+                                id: s.id,
+                                wx: s.wx,
+                                wy: s.wy,
+                                builder: s.builder.clone(),
+                                style: s.style,
                             })
                             .collect(),
                         // 旅行商人（ROADMAP 135）。

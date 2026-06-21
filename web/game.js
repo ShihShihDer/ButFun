@@ -701,7 +701,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2813,6 +2813,7 @@
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
   let sprinklers = []; // ROADMAP 112 灑水器 [{owner, wx, wy}]
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
+  let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
@@ -3607,6 +3608,7 @@
         starCrystals = msg.star_crystals || [];
         sprinklers = msg.sprinklers || [];
         campfires = msg.campfires || []; // ROADMAP 474 野營篝火
+        snowmen = msg.snowmen || []; // ROADMAP 478 雪季雪人
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -4117,6 +4119,8 @@
           updateKiteBtn(me, isGuest);
           // 野營篝火按鈕（ROADMAP 474）：已登入、戶外、未倒地才顯示
           updateCampfireBtn(me, isGuest);
+          // 堆雪人按鈕（ROADMAP 478）：冬季、已登入、戶外、未倒地才顯示
+          updateSnowmanBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -8956,6 +8960,7 @@
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
+    safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
@@ -9862,6 +9867,30 @@
     btn.classList.toggle("hidden", !canShow);
   }
   // ── 野營篝火按鈕 end ──────────────────────────────────────────────────────────────
+
+  // ── 堆雪人（ROADMAP 478）──────────────────────────────────────────────────────────
+  // 雪人外觀樣式表（純函式：style → 圍巾色＋表情），與後端 snowman::SNOWMAN_STYLES(4) 對齊。
+  // 同 id 永遠同樣式，每座雪人圍巾／表情略有不同，堆起來各有個性。未知樣式保守退第 0 款。
+  const SNOWMAN_STYLES = [
+    { scarf: "#d4533f", face: "🙂" }, // 紅圍巾
+    { scarf: "#3f7bd4", face: "😊" }, // 藍圍巾
+    { scarf: "#3fae72", face: "😌" }, // 綠圍巾
+    { scarf: "#c46fd0", face: "🤗" }, // 紫圍巾
+  ];
+  function snowmanStyleSpec(style) {
+    const n = SNOWMAN_STYLES.length;
+    const i = Number.isFinite(style) ? ((Math.trunc(style) % n) + n) % n : 0;
+    return SNOWMAN_STYLES[i];
+  }
+  // 堆雪人按鈕：只有冬季＋戶外＋已登入＋未倒地才顯示（非冬季沒得堆，後端也會擋）。
+  function updateSnowmanBtn(me, isGuestUser) {
+    const btn = document.getElementById("snowmanBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed && currentSeason === "winter";
+    btn.classList.toggle("hidden", !canShow);
+  }
+  // ── 堆雪人 end ────────────────────────────────────────────────────────────────────
 
   // ── 打水漂按鈕（ROADMAP 475）──────────────────────────────────────────────────────
   /** 每幀更新「🪨 打水漂」按鈕：已登入、戶外、未倒地、站在水邊才顯示；蓄力中改顯示「🤚 放手」。
@@ -11610,6 +11639,82 @@
       ctx.fillText("🔥", 0, 0);
       ctx.restore();
       ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // 雪季雪人（ROADMAP 478）：冬季玩家在腳下堆起的署名雪人——兩球疊起的雪身、煤炭眼、
+  // 胡蘿蔔鼻、樹枝手，外加一條依樣式換色的圍巾，頭頂標著是誰堆的。整個冬天都立著，
+  // 天一回暖（季節離開冬季）後端就把它清空、這裡自然不再畫。純表現、無玩法增益。
+  // reduceMotion 下不做任何擺動，照顧暈眩敏感的玩家。
+  function drawSnowmen(camX, camY, nowMs) {
+    if (!snowmen.length) return;
+    const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const s of snowmen) {
+      const sx = s.wx - camX;
+      const sy = s.wy - camY;
+      // 視窗剔除：整個雪人（連名字）在畫面外就略過。
+      if (sx < -48 || sx > viewW + 48 || sy < -64 || sy > viewH + 48) continue;
+      const spec = snowmanStyleSpec(s.style);
+      // 極輕微的左右搖（像被雪風吹），reduceMotion 下完全靜止。
+      const sway = reduce ? 0 : Math.sin(nowMs / 900 + (s.id || 0)) * 0.6;
+      ctx.save();
+      ctx.translate(sx + sway, sy);
+      // 腳下一圈淡藍雪堆陰影。
+      ctx.fillStyle = "rgba(150,180,210,0.30)";
+      ctx.beginPath();
+      ctx.ellipse(0, 6, 16, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 下雪球（身體）。
+      ctx.fillStyle = "#f6fbff";
+      ctx.strokeStyle = "rgba(150,175,205,0.55)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(0, -2, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 樹枝手臂（左右各一）。
+      ctx.strokeStyle = "#7a5230";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-9, -8); ctx.lineTo(-18, -14);
+      ctx.moveTo(9, -8); ctx.lineTo(18, -14);
+      ctx.stroke();
+      // 圍巾（依樣式換色）：繞在上下雪球之間。
+      ctx.fillStyle = spec.scarf;
+      ctx.fillRect(-8, -16, 16, 4);
+      ctx.fillRect(4, -15, 4, 9); // 垂下的一角
+      // 上雪球（頭）。
+      ctx.fillStyle = "#f9fdff";
+      ctx.strokeStyle = "rgba(150,175,205,0.55)";
+      ctx.beginPath();
+      ctx.arc(0, -20, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 煤炭眼。
+      ctx.fillStyle = "#33373b";
+      ctx.beginPath(); ctx.arc(-3, -22, 1.3, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(3, -22, 1.3, 0, Math.PI * 2); ctx.fill();
+      // 胡蘿蔔鼻。
+      ctx.fillStyle = "#e8893a";
+      ctx.beginPath();
+      ctx.moveTo(0, -20); ctx.lineTo(7, -19); ctx.lineTo(0, -18);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      // 堆雪人者署名（頭頂；面向玩家字串，集中於此）。
+      const who = (s.builder || "").slice(0, 12);
+      if (who) {
+        ctx.font = `11px ${UI_FONT}`;
+        const label = `⛄ ${who}`;
+        const w = ctx.measureText(label).width + 8;
+        ctx.fillStyle = "rgba(20,32,48,0.55)";
+        ctx.fillRect(sx - w / 2, sy - 44, w, 14);
+        ctx.fillStyle = "#eaf4ff";
+        ctx.fillText(label, sx, sy - 37);
+      }
     }
     ctx.restore();
   }
@@ -30024,6 +30129,18 @@
         if (!me || me.indoor_plot_id != null) return;
         safeSend({ type: "light_campfire" });
         announce("升起一堆篝火——火光暖意把附近的野獸逼退，圍出一塊喘息的安全角落（燒完即熄）");
+      });
+    }
+    // ⛄ 雪季堆雪人（ROADMAP 478）：隆冬時在腳下堆起一座署名雪人，全服可見、回暖即融。
+    const snowmanBtn = document.getElementById("snowmanBtn");
+    if (snowmanBtn) {
+      snowmanBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (currentSeason !== "winter") { announce("只有冬天才堆得了雪人——等下雪的季節再來吧"); return; }
+        safeSend({ type: "build_snowman" });
+        announce("堆起一個雪人——立在世界裡，附近的旅人都看得見，整個冬天都在（天回暖就融化）");
       });
     }
     // 🪨 打水漂（ROADMAP 475）：站在水邊撿石蓄力，瞄準甜蜜帶放手甩出，石頭貼水彈跳。

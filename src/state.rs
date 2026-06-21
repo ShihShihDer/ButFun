@@ -1364,6 +1364,9 @@ pub struct AppState {
     /// 野營篝火（ROADMAP 474）：玩家在荒野升起的篝火，火光暖意把附近野獸逼退。
     /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
     pub campfires: Arc<RwLock<crate::campfire::CampfireField>>,
+    /// 雪季堆雪人（ROADMAP 478）：隆冬時玩家堆起的署名雪人，全服可見、天回暖即融化。
+    /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
+    pub snowmen: Arc<RwLock<crate::snowman::SnowmanField>>,
     /// 夜間乙太泉（ROADMAP 162）：每當日夜轉入夜晚時在城外生成 5 個乙太泉採集點。
     /// 玩家靠近採集得 +8 乙太；天亮自動清除。純記憶體模式，重啟清零。
     pub night_springs: Arc<RwLock<crate::night_aether_springs::NightAetherSprings>>,
@@ -1602,6 +1605,7 @@ impl AppState {
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             campfires: Arc::new(RwLock::new(crate::campfire::CampfireField::new())),
+            snowmen: Arc::new(RwLock::new(crate::snowman::SnowmanField::new())),
             night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
             firefly_lantern: Arc::new(RwLock::new(crate::firefly_lantern::FireflyLantern::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),

@@ -2620,6 +2620,59 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 野營篝火：暖意圈＋火焰＋將熄漸弱＋視野外剔除＋無火早退皆乾淨");
 }
 
+// 雪季雪人（ROADMAP 478）：單元斷言純函式 snowmanStyleSpec 的真值表——
+// 四款樣式各有圍巾色＋表情；超界以模數環繞（與後端 SNOWMAN_STYLES=4 對齊）、壞值保守退第 0 款。
+{
+  const spec = sandbox.__bfTest && sandbox.__bfTest.snowmanStyleSpec;
+  if (typeof spec !== "function") {
+    failed = true;
+    console.error("  ❌ 堆雪人：game.js 未導出 snowmanStyleSpec");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 堆雪人：${msg}`); } };
+    const STYLES = 4; // 對齊 snowman::SNOWMAN_STYLES
+    for (let i = 0; i < STYLES; i++) {
+      const s = spec(i);
+      expect(s && typeof s.scarf === "string" && typeof s.face === "string", `樣式 ${i} 應有圍巾色＋表情`);
+    }
+    expect(spec(STYLES) === spec(0), "超界 styleN 模數環繞回第 0 款");
+    expect(spec(STYLES + 2) === spec(2), "超界環繞對齊（N+2→2）");
+    expect(spec(-1) === spec(STYLES - 1), "負樣式環繞到最後一款");
+    expect(spec(NaN) === spec(0) && spec(Infinity) === spec(0), "壞值保守退第 0 款");
+    if (bad) failed = true;
+    else console.log("  ✅ 堆雪人·樣式表真值表（環繞＋壞值保守）：通過");
+  }
+}
+
+// 雪季雪人（ROADMAP 478）：注入數座雪人（含視野外一座、四種樣式、超界樣式、空署名、長署名、壞 id），
+// 驗證 drawSnowmen 雪身／圍巾／署名牌／剔除路徑連跑多幀皆不拋例外；再餵無雪人 snapshot 驗早退。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：雪季雪人（雪身＋圍巾＋署名牌＋視野外剔除，連跑 5 幀）──");
+  const wSnap = JSON.parse(JSON.stringify(snapshot));
+  wSnap.current_season = "winter";
+  const me = wSnap.players[0];
+  wSnap.snowmen = [
+    { id: 0, wx: me.x + 40, wy: me.y + 20, builder: "小雪", style: 0 },
+    { id: 1, wx: me.x - 90, wy: me.y - 40, builder: "阿白", style: 1 },
+    { id: 2, wx: me.x + 10, wy: me.y - 80, builder: "", style: 7 },           // 空署名＋超界樣式
+    { id: 3, wx: me.x - 30, wy: me.y + 60, builder: "好長的名字一二三四五六七八", style: 3 }, // 長署名截斷
+    { id: 4, wx: 99999, wy: 99999, builder: "遠方", style: 2 },               // 視野外：應被剔除
+    { id: NaN, wx: me.x, wy: me.y, builder: "壞值", style: NaN },             // 壞 id／壞樣式：保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...wSnap, type: "snapshot" }) });
+  const r = pump("雪季雪人", 5);
+  // 再餵一份「無雪人」snapshot（回暖），驗證早退路徑不拋例外。
+  const thaw = JSON.parse(JSON.stringify(snapshot));
+  thaw.snowmen = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...thaw, type: "snapshot" }) });
+  const r2 = pump("雪季雪人回暖", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 雪季雪人：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雪季雪人：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 雪季雪人：雪身＋圍巾＋署名牌＋視野外剔除＋回暖早退＋壞值皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

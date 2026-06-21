@@ -256,6 +256,11 @@ pub enum ClientMsg {
     /// 替自己與同伴在野外圍出一塊敵人不來犯的安全角落。升火有每人冷卻＋全服上限，
     /// 在室內 / 冷卻中 / 已達上限 / 超量一律靜默忽略。零經濟、零持久化、純記憶體、重啟清零。
     LightCampfire,
+    /// 雪季堆雪人（ROADMAP 478）：隆冬時玩家按「⛄ 堆雪人」在自己腳下堆起一座雪人。
+    /// 無 payload——一律用玩家自己的權威座標堆雪（防隔空堆雪）；雪人全服可見、上頭署名，
+    /// 整個冬天都立著，天一回暖即整批融化。只有冬季戶外能堆，堆雪有每人冷卻＋全服上限，
+    /// 非冬季 / 在室內 / 冷卻中 / 已達上限 / 超量一律靜默忽略。零經濟、零持久化、純記憶體、重啟清零。
+    BuildSnowman,
     /// 逗玩接物（ROADMAP 345）：玩家朝面前 `(dx, dy)` 方向丟出玩具，寵物便衝去叼回。
     /// 伺服器以玩家自己的權威座標算玩具落點（`pet_fetch::throw_spot`，防隔空丟），在寵物身上
     /// 開一趟接物（game.rs 每幀推進：衝去叼→叼回主人）。`(dx, dy)` 可為任意長度（內部正規化），
@@ -853,6 +858,21 @@ pub enum ClientMsg {
         pub remaining_secs: u32,
     }
 
+    /// 快照裡的雪人（ROADMAP 478）。前端在世界座標畫一座署名的雪人，天回暖即消失。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct SnowmanView {
+        /// 雪人唯一 ID。
+        pub id: u32,
+        /// 世界座標 X。
+        pub wx: f32,
+        /// 世界座標 Y。
+        pub wy: f32,
+        /// 堆雪人的玩家暱稱（前端在雪人上方顯示）。
+        pub builder: String,
+        /// 外觀樣式（0..SNOWMAN_STYLES）——前端據此換圍巾色／表情。
+        pub style: u8,
+    }
+
 /// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
@@ -1063,6 +1083,9 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時為空）。
         #[serde(default)]
         campfires: Vec<CampfireView>,
+        /// 雪季雪人（ROADMAP 478）。`#[serde(default)]` 向後相容（無此欄位時為空）。
+        #[serde(default)]
+        snowmen: Vec<SnowmanView>,
         /// 旅行商人剩餘秒數（ROADMAP 135）。0=不在城鎮；>0 時前端顯示商人 NPC。
         wandering_merchant_secs: u32,
         /// 旅行商人當前商品目錄（ROADMAP 135）；商人不在城鎮時為空陣列。
@@ -3138,6 +3161,7 @@ mod tests {
             meteor_shower_secs: 0,
             dust_nodes: vec![],
             campfires: vec![],
+            snowmen: vec![],
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
             merchant_quests: vec![],
