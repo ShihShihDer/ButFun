@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -12939,6 +12939,49 @@
     _drawSign(sx, wb - 15, sign);
   }
 
+  // ── 入夜燈火（ROADMAP 466）──
+  // 環境光精緻化（autonomous 視覺精緻化·環境光）：白天城鎮的窗只是一格冷色玻璃，
+  // 入夜後該一盞盞透出暖光——讓玩家一眼看見「天黑了，城鎮亮起燈火」。把既有的晝夜節律
+  // （daynight.light）第一次帶進城鎮建築本體：在此之前所有夜景都掛在天空（星空 19／流星 192／
+  // 冬夜極光 231／夏夜銀河 232／春夜螢火 233），地面的城鎮入夜後卻一片黯然、與活著的天空割裂。
+  // 純前端、讀既有 daynight.light、零後端／協議／migration／美術；像素與 clay 兩種畫風皆套用。
+  // windowGlowStrength：把 daynight.light 映成窗戶暖光強度 [0,1]——黃昏前（light≥DUSK）全暗回 0、
+  // 深夜（light≤NIGHT）全亮回 1、之間線性點燈。抽成純函式以便 render-smoke 單元斷言真值表
+  // （無副作用、決定性；非數字／NaN／±Infinity 等壞值保守回 0＝不亮、永不爆）。
+  const WINDOW_GLOW_DUSK_LIGHT = 0.55;   // 高於此＝白天，窗不亮
+  const WINDOW_GLOW_NIGHT_LIGHT = 0.28;  // 低於此＝深夜，窗全亮
+  function windowGlowStrength(light) {
+    if (typeof light !== "number" || !Number.isFinite(light)) return 0;
+    if (light >= WINDOW_GLOW_DUSK_LIGHT) return 0;
+    if (light <= WINDOW_GLOW_NIGHT_LIGHT) return 1;
+    return (WINDOW_GLOW_DUSK_LIGHT - light) / (WINDOW_GLOW_DUSK_LIGHT - WINDOW_GLOW_NIGHT_LIGHT);
+  }
+
+  // 在一扇窗上疊暖光：暖燈黃窗芯（蓋過冷玻璃）＋ additive 柔光暈外溢（光從窗縫透出來的感覺）。
+  // strength≤0 不畫。render-safe：自有 save/restore，composite 用完即還原；無動畫（穩定不閃）
+  // ＝天生尊重 reduceMotion，不依賴時間、決定性。
+  function _drawWindowGlow(cx, cy, w, h, strength) {
+    if (!(strength > 0)) return;
+    const s = strength > 1 ? 1 : strength;
+    ctx.save();
+    // 窗芯：暖燈黃覆蓋冷玻璃，alpha 隨入夜加深
+    ctx.fillStyle = `rgba(255,206,122,${0.85 * s})`;
+    ctx.beginPath();
+    ctx.roundRect(cx, cy, w, h, 2);
+    ctx.fill();
+    // 柔光暈：additive 疊一圈外溢暖光
+    ctx.globalCompositeOperation = "lighter";
+    const gx = cx + w / 2, gy = cy + h / 2, gr = w * 1.5;
+    const g = ctx.createRadialGradient(gx, gy, 1, gx, gy, gr);
+    g.addColorStop(0, `rgba(255,200,110,${0.5 * s})`);
+    g.addColorStop(1, "rgba(255,200,110,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(gx, gy, gr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   function _drawBuilding(sx, sy, type, sign) {
     const BW = 74;   // 建築寬度（像素）
     const WH = 54;   // 牆壁高度
@@ -13067,6 +13110,13 @@
     ctx.moveTo(wx2, wwy + WHS / 2);
     ctx.lineTo(wx2 + WWS, wwy + WHS / 2);
     ctx.stroke();
+
+    // ── 入夜燈火（466）──兩扇窗在夜裡透出暖燈黃。日間 strength=0 直接略過、零額外成本。
+    const _glow = daynight ? windowGlowStrength(daynight.light) : 0;
+    if (_glow > 0) {
+      _drawWindowGlow(sx - BW / 2 + 7, wwy, WWS, WHS, _glow);
+      _drawWindowGlow(wx2, wwy, WWS, WHS, _glow);
+    }
 
     // ── 各建築類型特色裝飾 ──
     switch (type) {

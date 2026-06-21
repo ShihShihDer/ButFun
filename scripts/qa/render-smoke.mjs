@@ -2243,6 +2243,43 @@ for (const sc of scenarios) {
   }
 }
 
+// 入夜燈火·城鎮窗暖光（ROADMAP 466）：單元斷言純函式 windowGlowStrength 的點燈真值表——
+// 白天（light≥0.55）窗全暗回 0、深夜（light≤0.28）窗全亮回 1、之間隨入夜單調遞增線性點燈；
+// 結果恆在 [0,1] 有界；非數字／NaN／±Infinity 等壞值一律保守回 0（不亮、永不爆）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.windowGlowStrength;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 入夜燈火：game.js 未導出 windowGlowStrength");
+  } else {
+    let bad = 0;
+    const approx = (a, b) => Math.abs(a - b) < 1e-9;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 入夜燈火：${msg}`); } };
+    // 兩端：白天全暗、深夜全亮（含邊界值與越界）
+    expect(approx(fn(0.85), 0), "大白天 light=0.85 → 0");
+    expect(approx(fn(0.55), 0), "黃昏門檻 light=0.55（含邊界）→ 0");
+    expect(approx(fn(0.6), 0), "傍晚前 light=0.6 → 0");
+    expect(approx(fn(0.28), 1), "深夜門檻 light=0.28（含邊界）→ 1");
+    expect(approx(fn(0.12), 1), "深夜 light=0.12 → 1");
+    expect(approx(fn(0), 1), "全黑 light=0 → 1");
+    // 中段：點燈中（0<g<1），且隨入夜（light 下降）單調遞增
+    const mid = fn(0.42);
+    expect(mid > 0 && mid < 1, "黃昏 light=0.42 → 點燈中（0~1）");
+    expect(fn(0.5) < fn(0.42) && fn(0.42) < fn(0.32), "light 越低暖光越強（單調遞增）");
+    // 有界且有限
+    for (const l of [0, 0.12, 0.28, 0.35, 0.42, 0.5, 0.55, 0.7, 1]) {
+      const g = fn(l);
+      expect(Number.isFinite(g) && g >= 0 && g <= 1, `light=${l} → ∈[0,1]`);
+    }
+    // 壞值（NaN/undefined/字串/±Infinity）一律保守回 0＝不亮
+    for (const bv of [NaN, undefined, null, "x", Infinity, -Infinity]) {
+      expect(approx(fn(bv), 0), `壞值 ${String(bv)} → 0（不亮）`);
+    }
+    if (bad) failed = true;
+    else console.log("  ✅ 入夜燈火·城鎮窗暖光真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
