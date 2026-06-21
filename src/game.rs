@@ -1144,6 +1144,11 @@ pub fn spawn(app: AppState) {
                 u32,
                 u32,
             )> = Vec::new();
+            // 林蔭小憩（ROADMAP 467）：先取一份「成樹座標」快照——grove 讀鎖即取即放（回傳擁有的
+            // Vec、不綁變數，敘述句結束即釋放讀鎖），故下方 players 寫鎖期間不與 grove 鎖巢狀（守
+            // prod-deadlock 鐵律）。供玩家迴圈判定誰正站在社群種大的樹蔭下、加速其脫戰回血。
+            let shade_trees: Vec<(f32, f32)> =
+                app.world_grove.read().unwrap().mature_positions();
             {
                 let mut players = app.players.write().unwrap();
                 // 寵物玩伴嬉戲（ROADMAP 344）：先讀一遍「有寵物、在室外」的玩家位置，偵測寵物玩伴
@@ -1521,6 +1526,15 @@ pub fn spawn(app: AppState) {
                         p.x = sx;
                         p.y = sy;
                         tracing::info!(player = %p.name, "從倒地復原，傳回新手村");
+                    }
+                    // 林蔭小憩（ROADMAP 467）：站在社群親手種大的成樹樹蔭下（室外）、脫離戰鬥時
+                    // 回血更快。`shade_regen` 內部已自守倒地／剛挨打／滿血一律 no-op，這裡只先濾掉
+                    // 室內與「世界上根本沒有成樹」兩種無謂呼叫。
+                    if !shade_trees.is_empty()
+                        && p.indoor_plot_id.is_none()
+                        && crate::world_grove::in_shade(p.x, p.y, &shade_trees)
+                    {
+                        p.vitals.shade_regen(dt);
                     }
                 }
             }

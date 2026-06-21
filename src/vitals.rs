@@ -28,6 +28,11 @@ pub const REGEN_DELAY_SECS: f32 = 5.0;
 /// 脫離戰鬥後每秒自然回復的生命值。
 pub const REGEN_PER_SEC: f32 = 1.0;
 
+/// 林蔭小憩（ROADMAP 467）：在社群親手種大的成樹樹蔭下，脫離戰鬥時「額外」加速自然回血的每秒量。
+/// 疊在 `REGEN_PER_SEC` 之上（樹蔭下總回血 ≈ 自然 + 此值），刻意溫和——讓社群種成的樹林成為
+/// 受傷旅人療傷小憩的去處，但仍受 `regen_cooldown` 約束（剛挨打不生效），不破壞戰鬥張力。
+pub const SHADE_REGEN_PER_SEC: f32 = 1.0;
+
 /// 依等級計算玩家的最大血量（基礎 20，每升一級 +2）。純函式，可測試。
 pub fn level_max_hp(level: u32) -> u32 {
     MAX_HP + level * 2
@@ -201,6 +206,35 @@ impl Vitals {
         let before = self.hp;
         self.hp = (self.hp + amount).min(self.max_hp);
         self.hp - before
+    }
+
+    /// 林蔭小憩額外回血（ROADMAP 467）：在社群種大的成樹樹蔭下、且脫離戰鬥（`regen_cooldown`
+    /// 已歸零）、存活且未滿血時，於自然回血之外每秒額外回 `SHADE_REGEN_PER_SEC`，回傳本次實際
+    /// 加上去的血量。倒地／剛挨打／已滿血／壞 `dt` 一律 no-op、回 0（不破壞戰鬥張力、不無謂動血量）。
+    /// 與 `tick` 共用 `regen_accum` 累積器（等同把樹蔭下的自然回血速率調快、湊滿整數點才加血），
+    /// 並維持 `regen_accum ∈ [0, 1)` 的載入不變式。純函式可測。
+    /// 呼叫慣例：遊戲迴圈在 `tick(dt)` 之後、僅當玩家正站在 `world_grove::in_shade` 內才呼叫。
+    pub fn shade_regen(&mut self, dt: f32) -> u32 {
+        if dt <= 0.0 || !dt.is_finite() {
+            return 0;
+        }
+        if self.hp == 0 || self.hp >= self.max_hp || self.regen_cooldown > 0.0 {
+            return 0;
+        }
+        self.regen_accum += SHADE_REGEN_PER_SEC * dt;
+        let whole = self.regen_accum.floor();
+        let mut healed = 0;
+        if whole >= 1.0 {
+            let before = self.hp;
+            self.hp = (self.hp + whole as u32).min(self.max_hp);
+            self.regen_accum -= whole;
+            healed = self.hp - before;
+        }
+        // 滿血後清掉殘餘累積，維持 `regen_accum ∈ [0, 1)`（與 `tick` 同一不變式）。
+        if self.hp >= self.max_hp {
+            self.regen_accum = 0.0;
+        }
+        healed
     }
 
     /// 推進 `dt` 秒：被打趴時倒數復原，存活且脫離戰鬥時自然回血。
@@ -629,5 +663,62 @@ mod tests {
         v.tick(RECOVERY_SECS);
         assert!(v.is_alive());
         assert_eq!(v.hp(), 30, "復原後應回滿等級對應的最大血量");
+    }
+
+    // ─── 林蔭小憩 shade_regen（ROADMAP 467） ──────────────────────────────────
+
+    #[test]
+    fn shade_regen_heals_when_out_of_combat() {
+        let mut v = Vitals::new();
+        v.take_damage(10); // 10/20，並起算 regen_cooldown
+        // 脫離戰鬥後（冷卻歸零）站在樹蔭下，整秒應額外回血一點。
+        v.tick(REGEN_DELAY_SECS); // 把回血冷卻走完（此步不回血）
+        let healed = v.shade_regen(1.0);
+        assert_eq!(healed, 1, "脫戰後在樹蔭下整秒應額外回 1 點");
+        assert_eq!(v.hp(), 11);
+    }
+
+    #[test]
+    fn shade_regen_blocked_right_after_damage() {
+        let mut v = Vitals::new();
+        v.take_damage(10); // 剛挨打：regen_cooldown > 0
+        // 樹蔭也救不了剛挨打的人：保留戰鬥張力。
+        assert_eq!(v.shade_regen(1.0), 0, "剛挨打期間樹蔭不生效");
+        assert_eq!(v.hp(), 10);
+    }
+
+    #[test]
+    fn shade_regen_noop_when_downed_or_full_or_bad_dt() {
+        // 倒地：no-op。
+        let mut downed = Vitals::new();
+        downed.take_damage(MAX_HP);
+        assert_eq!(downed.shade_regen(1.0), 0);
+        assert!(downed.is_downed());
+        // 滿血：no-op（不無謂動血量）。新建滿血者 regen_cooldown 本就為 0。
+        let mut full = Vitals::new();
+        assert_eq!(full.shade_regen(1.0), 0);
+        assert_eq!(full.hp(), MAX_HP);
+        // 壞 dt（非正／非有限）：no-op。
+        let mut hurt = Vitals::new();
+        hurt.take_damage(5);
+        hurt.reset_regen_cooldown();
+        assert_eq!(hurt.shade_regen(0.0), 0);
+        assert_eq!(hurt.shade_regen(-1.0), 0);
+        assert_eq!(hurt.shade_regen(f32::NAN), 0);
+        assert_eq!(hurt.shade_regen(f32::INFINITY), 0);
+        assert_eq!(hurt.hp(), MAX_HP - 5);
+    }
+
+    #[test]
+    fn shade_regen_keeps_loadable_invariant_and_clamps_to_max() {
+        let mut v = Vitals::new();
+        v.take_damage(2); // 18/20
+        v.reset_regen_cooldown();
+        // 連續推進足以回滿，accum 不破壞 [0,1) 不變式、血量夾在上限。
+        for _ in 0..200 {
+            v.shade_regen(0.05);
+        }
+        assert_eq!(v.hp(), MAX_HP, "樹蔭回血應夾在最大血量");
+        assert!(v.is_loadable(), "shade_regen 後仍須滿足載入不變式（regen_accum ∈ [0,1)）");
     }
 }
