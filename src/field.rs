@@ -125,6 +125,16 @@ pub struct Field {
     /// `tiles`——既往格子全當「無上輪紀錄」＝首次種＝改動前行為，向後相容、免 migration）。
     #[serde(default)]
     last_kind: Vec<u8>,
+    /// 堆肥原料計數（ROADMAP 473 堆肥循環）：每收成一株作物 +1，攢滿 `compost::HARVESTS_PER_CHARGE`
+    /// 株就轉成一份堆肥（`compost` +1）、原料歸零。**入存檔**（整塊 `Field` 序列化；舊存檔無此欄時
+    /// `#[serde(default)]` 回 0＝沒攢過原料，向後相容、免 migration）。
+    #[serde(default)]
+    compost_matter: u8,
+    /// 囤積的堆肥份數（ROADMAP 473）：收成回收攢成，封頂 `compost::COMPOST_MAX`。播種時若 >0 就
+    /// 消耗一份、那株作物得「滋養」加成（成長加速＋收成多得乙太）。**入存檔**（整塊 `Field` 序列化；
+    /// 舊存檔無此欄時 `#[serde(default)]` 回 0＝沒堆肥，向後相容、免 migration）。
+    #[serde(default)]
+    compost: u8,
 }
 
 impl Field {
@@ -150,6 +160,9 @@ impl Field {
             soil: Vec::new(),
             // 上輪品種紀錄惰性配置：留空，首次需要時由 `ensure_last_kind` 補零（皆當「無上輪紀錄」）。
             last_kind: Vec::new(),
+            // 堆肥從零攢起（ROADMAP 473）。
+            compost_matter: 0,
+            compost: 0,
         }
     }
 
@@ -270,6 +283,9 @@ impl Field {
             garden: Vec::new(),
             soil: Vec::new(),
             last_kind: Vec::new(),
+            // 堆肥計數由 `reseated` 從存檔接回（from_tiles 只搬 tiles）。
+            compost_matter: 0,
+            compost: 0,
         })
     }
 
@@ -286,9 +302,15 @@ impl Field {
         let soil = self.soil;
         // ROADMAP 454：上輪品種紀錄也要接回，否則重啟會把輪作歷史默默清掉（下輪換種拿不到加成）。
         let last_kind = self.last_kind;
+        // ROADMAP 473：堆肥原料與份數也要接回，否則重啟會把攢好的堆肥默默清掉。
+        let compost_matter = self.compost_matter;
+        let compost = self.compost;
         Self::from_tiles(index, self.tiles).map(|mut f| {
             f.home_decor = decor;
             f.garden = garden;
+            // ROADMAP 473：接回堆肥（純量、無長度耦合，直接套回；上限由 `compost::accrue` 維持）。
+            f.compost_matter = compost_matter;
+            f.compost = compost.min(crate::compost::COMPOST_MAX);
             // 接回地力：長度若與 tiles 對不上（舊存檔空 Vec／壞檔）一律當貧土重來（ensure_soil 補零）。
             if soil.len() == f.tiles.len() {
                 f.soil = soil;
@@ -381,10 +403,15 @@ impl Field {
     }
 
     /// 播種指定品種（ROADMAP 452）：只有翻好的空土能播。除品種外與 `plant` 完全相同。
+    /// ROADMAP 473 堆肥：若這塊地囤有堆肥（`compost>0`），播種時自動漚進一份、消耗一份份數，
+    /// 那株作物從一開始就帶「滋養」加成（成長加速＋收成多得乙太）。沒堆肥則照常種（向後相容）。
     pub fn plant_kind(&mut self, col: usize, row: usize, kind: CropVariety) -> bool {
         match self.index_at(col, row) {
             Some(i) if self.tiles[i] == Tile::Tilled => {
-                self.tiles[i] = Tile::Planted(Crop::plant_kind(kind));
+                // 有堆肥就漚一份進這株（純函式決定，鎖在 field 內、不外漏狀態細節）。
+                let (left, nourished) = crate::compost::consume_for_planting(self.compost);
+                self.compost = left;
+                self.tiles[i] = Tile::Planted(Crop::plant_kind_nourished(kind, nourished));
                 true
             }
             _ => false,
@@ -419,9 +446,11 @@ impl Field {
         self.ensure_soil();
         self.ensure_last_kind();
         if let Tile::Planted(c) = &mut self.tiles[i] {
-            // 收成前先讀品質與品種（harvest 會把這株重置，但品種仍沿用，故事後讀仍正確）。
+            // 收成前先讀品質、品種與滋養（harvest 會把這株重置，但這些值收成當下已定，故事先讀正確）。
             let quality = c.quality();
             let kind = c.kind();
+            // ROADMAP 473：這株是否漚過堆肥（滋養）——收成多得一筆乙太。
+            let nourished = c.nourished();
             // 先借出可變參考收成；成熟才會回 Some 並消費這格。
             if let Some(base) = c.harvest() {
                 // ROADMAP 438：把這格累積的地力換成額外乙太（純正向、永不倒扣），收成後歸零。
@@ -431,11 +460,28 @@ impl Field {
                 self.last_kind[i] = crate::crop_rotation::encode(Some(kind));
                 // 收成後不留新種子，回到空土讓玩家自行決定要不要再種（也從零重新養地）。
                 self.tiles[i] = Tile::Tilled;
+                // ROADMAP 473：把這次收成回收成堆肥原料（攢滿一份門檻就 +1 份堆肥，封頂）。
+                self.accrue_compost();
+                // ROADMAP 473：滋養作物多得一筆乙太（純正向、永不倒扣）。
+                let nourish_bonus = if nourished { crate::compost::NOURISH_ETHER_BONUS } else { 0 };
                 // 品種一併回傳（ROADMAP 455）：上層 ws 依「品種 × 當季搶手」算市集溢價（本層不知世界季節）。
-                return Some((base + quality.ether_bonus() + soil_bonus, quality, soil_bonus, kind));
+                return Some((
+                    base + quality.ether_bonus() + soil_bonus + nourish_bonus,
+                    quality,
+                    soil_bonus,
+                    kind,
+                ));
             }
         }
         None
+    }
+
+    /// 把一次收成回收成堆肥原料（ROADMAP 473）：純函式 `compost::accrue` 決定攢/轉/封頂，
+    /// 本方法只把結果寫回 field 狀態。單格收成與一鍵收成共用，行為一致。
+    fn accrue_compost(&mut self) {
+        let (matter, charges) = crate::compost::accrue(self.compost_matter, self.compost);
+        self.compost_matter = matter;
+        self.compost = charges;
     }
 
     /// 把每格「是否種了作物」攤成 row-major 的佔用遮罩（連片沃土判定的輸入）。純函式。
@@ -474,8 +520,16 @@ impl Field {
                         crate::crop_rotation::decode(self.last_kind[i]),
                         c.kind(),
                     );
-                    // 品種 × 當季偏好 × 輪作：三者各自獨立、與連片沃土倍率正交，皆只放大成長、不多耗水。
-                    let mult = patch_mult * c.kind().season_affinity(season) * rotation_mult;
+                    // ROADMAP 473 堆肥：漚過堆肥的作物多一條滋養加速倍率（純正向）；未滋養＝1.0
+                    //（向後相容、不影響沒漚肥的作物）。與下列各條倍率正交、獨立疊乘。
+                    let nourish_mult = if c.nourished() {
+                        crate::compost::NOURISH_GROWTH_MULT
+                    } else {
+                        1.0
+                    };
+                    // 品種 × 當季偏好 × 輪作 × 堆肥滋養：各自獨立、與連片沃土倍率正交，皆只放大成長、不多耗水。
+                    let mult =
+                        patch_mult * c.kind().season_affinity(season) * rotation_mult * nourish_mult;
                     c.grow_boosted(dt, mult);
                     // 種了作物：地力「鎖住」不再累積（待收成兌現），也不流失。
                 }
@@ -516,9 +570,11 @@ impl Field {
         let mut s = HarvestAllSummary::default();
         for i in 0..self.tiles.len() {
             if let Tile::Planted(c) = &mut self.tiles[i] {
-                // 收成前先讀品質與品種（harvest 重置該株但品種沿用）。
+                // 收成前先讀品質、品種與滋養（harvest 重置該株但這些值收成當下已定）。
                 let quality = c.quality();
                 let kind = c.kind();
+                // ROADMAP 473：這株是否漚過堆肥（滋養）——收成多得一筆乙太。
+                let nourished = c.nourished();
                 // 只有成熟才回 Some 並消費這格；未熟回 None、原樣留著。
                 if let Some(base) = c.harvest() {
                     let soil_bonus = crate::soil_vitality::harvest_bonus(self.soil[i]);
@@ -526,9 +582,15 @@ impl Field {
                     // ROADMAP 454：記下剛收成的品種供下輪輪作判定。
                     self.last_kind[i] = crate::crop_rotation::encode(Some(kind));
                     self.tiles[i] = Tile::Tilled;
+                    // ROADMAP 473：每株收成都回收成堆肥原料（與單格收成同口徑、一致）。
+                    self.accrue_compost();
+                    // ROADMAP 473：滋養作物多得一筆乙太（純正向）。
+                    let nourish_bonus =
+                        if nourished { crate::compost::NOURISH_ETHER_BONUS } else { 0 };
                     let gained = base
                         .saturating_add(quality.ether_bonus())
-                        .saturating_add(soil_bonus);
+                        .saturating_add(soil_bonus)
+                        .saturating_add(nourish_bonus);
                     s.count = s.count.saturating_add(1);
                     s.ether = s.ether.saturating_add(gained);
                     s.soil_bonus = s.soil_bonus.saturating_add(soil_bonus);
@@ -642,6 +704,9 @@ impl Field {
                     })
                     .collect()
             },
+            // ROADMAP 473：帶上這塊地囤積的堆肥份數，前端在農地面板顯示「🌿 堆肥 ×N」、
+            // 讓玩家一眼看出收成回收攢了多少、下次播種會自動漚進去。0 時略去省流量。
+            compost: self.compost,
             // ROADMAP 402：帶上家園擺飾索引，前端依此在田上畫對應小物（0=不擺則不畫）。
             home_decor: self.home_decor,
             // ROADMAP 416：帶上整座庭園的擺放位；全空則略去省流量（skip_serializing_if）。
@@ -679,6 +744,8 @@ impl Field {
 /// ——讓玩家一眼看出哪幾格歇夠了、種下去更甜。自然地與種了作物的格一律 0（不顯地力）。
 /// rotated（ROADMAP 454）：這格作物是否正吃到「輪作加成」（上輪換了不同品種），只在種了作物
 /// （state 2~4）時有意義——前端據此在換種旺長的作物上標一枚輪作記號。其餘狀態一律 false。
+/// nourished（ROADMAP 473）：這格作物是否漚過堆肥、帶滋養加成（成長加速＋收成多得乙太），
+/// 只在種了作物（state 2~4）時有意義——前端據此在滋養的作物上標一枚堆肥記號。其餘狀態一律 false。
 fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
     match tile {
         Tile::Untilled => TileView {
@@ -690,6 +757,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             soil: 0,
             kind: 0,
             rotated: false,
+            nourished: false,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -700,6 +768,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             soil,
             kind: 0,
             rotated: false,
+            nourished: false,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -722,6 +791,8 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
                 kind: c.kind().code(),
                 // ROADMAP 454：這株是否吃到輪作加成（換種旺長），由 view() 依上輪品種算好傳入。
                 rotated,
+                // ROADMAP 473：這株是否漚過堆肥、帶滋養加成（成長加速＋收成多得乙太）。
+                nourished: c.nourished(),
             }
         }
     }
@@ -1209,10 +1280,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false });
     }
 
     #[test]
@@ -1425,7 +1496,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false, nourished: false });
     }
 
     #[test]
@@ -1544,6 +1615,93 @@ mod tests {
         assert_eq!(s.plain, 0);
         // 各品質株數加總應等於 count（不漏算、不重算）。
         assert_eq!(s.premium + s.fine + s.plain, s.count);
+    }
+
+    // ─── ROADMAP 473：堆肥循環 ───────────────────────────────────────────────
+
+    /// 收成回收攢堆肥：收滿 HARVESTS_PER_CHARGE 株就攢出一份堆肥，快照也帶得出去。
+    #[test]
+    fn harvesting_accrues_compost_charge() {
+        use crate::compost::HARVESTS_PER_CHARGE;
+        let mut f = Field::new();
+        assert_eq!(f.compost, 0, "新地沒堆肥");
+        for k in 0..HARVESTS_PER_CHARGE as usize {
+            ripen(&mut f, k, 0);
+            assert!(f.harvest(k, 0).is_some());
+        }
+        assert_eq!(f.compost, 1, "收滿一份門檻該攢出一份堆肥");
+        assert_eq!(f.view().compost, 1, "堆肥份數隨快照下傳前端");
+    }
+
+    /// 有堆肥時播種，作物標記為滋養並消耗一份；堆肥用完後種的作物不滋養（向後相容對照）。
+    #[test]
+    fn planting_with_compost_nourishes_crop() {
+        let mut f = Field::new();
+        f.compost = 1;
+        f.till(0, 0);
+        f.plant(0, 0); // 播種自動漚一份
+        assert_eq!(f.compost, 0, "播種消耗一份堆肥");
+        assert!(f.view().cells[0].nourished, "漚過堆肥的作物標記為滋養");
+        // 對照：沒堆肥了，再種一格＝不滋養（沒漚肥的作物跟改動前一樣）。
+        f.till(1, 0);
+        f.plant(1, 0);
+        assert!(!f.view().cells[1].nourished, "沒堆肥種的作物不滋養");
+    }
+
+    /// 滋養的作物成長更快（漚過堆肥 ×NOURISH_GROWTH_MULT），同段時間先發芽。
+    #[test]
+    fn nourished_crop_grows_faster_than_plain() {
+        let mut f = Field::new();
+        f.compost = 1;
+        // 滋養格（漚肥）與孤立平凡格（堆肥已用完），兩格不相鄰＝皆不算連片沃土。
+        f.till(0, 0);
+        f.plant(0, 0);
+        f.water(0, 0);
+        f.till(5, 3);
+        f.plant(5, 3);
+        f.water(5, 3);
+        // tick 24 秒：平凡格長 24（<30）仍種子；滋養格 24×1.35=32.4（≥30）已發芽。
+        f.tick(24.0, Season::Summer);
+        assert_eq!(
+            f.crop_stage(0, 0),
+            Some(CropStage::Sprout),
+            "滋養作物加速成長，24 秒應已發芽"
+        );
+        assert_eq!(
+            f.crop_stage(5, 3),
+            Some(CropStage::Seed),
+            "未滋養作物無加速，24 秒仍是種子"
+        );
+    }
+
+    /// 滋養作物收成多得 NOURISH_ETHER_BONUS 乙太（與同條件平凡作物相比，恰好多這麼多）。
+    #[test]
+    fn nourished_crop_harvest_yields_bonus_ether() {
+        use crate::compost::NOURISH_ETHER_BONUS;
+        let mut f = Field::new();
+        // 平凡收成（無堆肥）。
+        ripen(&mut f, 0, 0);
+        let (plain_ether, ..) = f.harvest(0, 0).unwrap();
+        // 滋養收成（先給一份堆肥，ripen 內的 plant 會漚掉它）。
+        f.compost = 1;
+        ripen(&mut f, 1, 0);
+        let (nourished_ether, ..) = f.harvest(1, 0).unwrap();
+        assert_eq!(
+            nourished_ether,
+            plain_ether + NOURISH_ETHER_BONUS,
+            "滋養作物收成恰多得 NOURISH_ETHER_BONUS 乙太"
+        );
+    }
+
+    /// 重啟（reseated 載入路徑）後堆肥份數與原料都接回、不被默默清掉。
+    #[test]
+    fn reseated_preserves_compost() {
+        let mut f = Field::for_plot(2);
+        f.compost = 4;
+        f.compost_matter = 2;
+        let reseated = f.reseated(2).expect("合法田該能安置回去");
+        assert_eq!(reseated.compost, 4, "重啟後堆肥份數接回");
+        assert_eq!(reseated.compost_matter, 2, "重啟後堆肥原料接回");
     }
 
     // ─── ROADMAP 367：連片沃土 ───────────────────────────────────────────────

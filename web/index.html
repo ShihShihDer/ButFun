@@ -567,6 +567,7 @@
     #hudFarm { color: #7fbfff; }
     #hudRipe { color: #ffd24a; }
     #hudPlant { color: #8fcf7a; }
+    #hudCompost { color: #c7a06a; }
     /* 武器:pill 與引導行都走攻擊紅(呼應背包/飄字的武器色 232,96,84),跟乙太黃、缺水藍一眼分得開 */
     #hudWeapon { color: #ff9d8f; }
     #hudWeaponHint { color: #e8847a; }
@@ -1232,6 +1233,9 @@
     <!-- 農地待辦小結(ROADMAP 427):缺水/可收成已有專屬行;這行補上過去 HUD 完全沒呈現的兩態——
          「空地可種·去播種」與「都照顧好了·靜待成長」。只在沒有更急的缺水/可收時才現,零畫面重複。 -->
     <div id="hudPlant" class="hud-sub hidden"></div>
+    <!-- 堆肥循環(ROADMAP 473):收成回收攢成的堆肥份數;>0 時提示「下次播種會自動漚進去、作物長更壯」。
+         讓「收成→漚肥→種得更壯」的循環在 HUD 看得見。沒攢到堆肥時隱藏。 -->
+    <div id="hudCompost" class="hud-sub hidden"></div>
     <!-- 作物品種選擇(ROADMAP 452):有自己的田時顯示「現在會種哪個品種」,點一下循環換下一種——
          種田第一次要「選種什麼」。速生菜快而少/主食穀均衡/乙太瓜慢而多,各有取捨。 -->
     <div id="hudSeed" class="hud-sub hidden"></div>
