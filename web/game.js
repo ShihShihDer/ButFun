@@ -575,7 +575,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2713,6 +2713,7 @@
   let townBlocs = [];               // ROADMAP 366 鎮民陣營 [{members, member_names, figurehead, figurehead_name, cohesion}]
   let townShare = null;             // ROADMAP 369 鎮民互助分享送禮手勢 {giver, receiver, t}（null = 無人正在分享）
   let worldGroves = [];             // ROADMAP 370 玩家親手種下、隨真實時間長大的世界樹群 [{x, y, stage}]
+  let groveShadeTrees = [];         // ROADMAP 467 成樹(🌳)座標快取，每幀由 drawWorldGroves 重建，供林蔭小憩判定
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -7791,6 +7792,13 @@
     // 安靜打坐光圈（ROADMAP 391）：正在打坐的玩家身旁漾出金色呼吸光圈，
     // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
     if (p.meditating) drawMeditationGlow(sx, sy + 8);
+
+    // 林蔭小憩（ROADMAP 467）：站在社群種大的成樹樹蔭下、未倒地的旅人，腳邊漾起一圈柔和涼意
+    // 光暈＋偶爾飄起一片 🌿——讓世界一眼看見「有人正在樹蔭下歇腳療傷」（後端同步加速其脫戰回血）。
+    // 純表現、只讀座標快取；畫在陰影之上、角色本體之下。
+    if (!downed && inGroveShade(p.rx, p.ry, groveShadeTrees, GROVE_SHADE_RADIUS)) {
+      drawShadeRest(sx, sy + 10);
+    }
 
     // 廣場獻奏音符（ROADMAP 399）：正在街頭獻奏的玩家頭頂飄出輕快音符，
     // 讓旁觀者一眼看出「有人在演奏」，廣場因此熱鬧起來。畫在角色本體之上。
@@ -13773,7 +13781,28 @@
   // 前端據階段選圖示與大小，由小到大畫出——玩家親眼看見自己種下的嫩芽一點點長成綠蔭。
   // 純表現、只讀快照、不嵌任何規則；貼地表、畫在角色之下（樹是景物，不擋玩家）。
   // clay 畫風（456）：改畫黏土捏的世界樹，與黏土微縮世界一致；像素／emoji 路徑原封不動。
+  // 林蔭小憩（ROADMAP 467）：成樹樹蔭的庇蔭半徑（px）。須與後端 `world_grove::SHADE_RADIUS`
+  // 對齊（同一契約）——後端據此加速樹蔭下玩家的脫戰回血，前端據此畫樹蔭涼影與小憩光暈，兩邊同步。
+  const GROVE_SHADE_RADIUS = 44;
+
+  // 林蔭小憩（ROADMAP 467）純函式：座標 (px,py) 是否落在任一成樹的樹蔭半徑內，與後端
+  // `world_grove::in_shade` 同一判定。座標非有限一律保守回 false（防呆，永不爆）。可單元自驗。
+  function inGroveShade(px, py, mature, radius) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    if (!Array.isArray(mature) || !mature.length) return false;
+    const r = Number.isFinite(radius) && radius > 0 ? radius : GROVE_SHADE_RADIUS;
+    for (const t of mature) {
+      if (!t || !Number.isFinite(t.x) || !Number.isFinite(t.y)) continue;
+      if (Math.hypot(t.x - px, t.y - py) <= r) return true;
+    }
+    return false;
+  }
+
   function drawWorldGroves(camX, camY, renderNow) {
+    // 每幀重建成樹座標快取（供 drawPlayer 判定林蔭小憩）——即使無樹也先清空，免留上幀殘影。
+    groveShadeTrees = (worldGroves || [])
+      .filter((t) => (t.stage | 0) === 3)
+      .map((t) => ({ x: t.x, y: t.y }));
     if (!worldGroves || !worldGroves.length) return;
     const clay = renderStyle === "clay";
     // 階段 → 圖示與字級（px）。大樹最醒目，嫩芽最小。
@@ -13790,6 +13819,17 @@
       const sz = SIZE[stage];
       // 視野外剔除（留一棵樹的邊界裕度）。
       if (sx < -sz || sy < -sz * 2 || sx > viewW + sz || sy > viewH + sz) continue;
+      // 林蔭小憩（ROADMAP 467）：成樹（🌳）在腳邊投下一汪清涼樹蔭——讓玩家一眼看出「這棵社群
+      // 親手種大的樹能遮蔭、能在底下小憩回血」。只有成樹畫（嫩芽/樹苗/幼樹還成不了蔭）；純靜態
+      // 柔影、無動畫（天生尊重 reduceMotion）、自有 globalAlpha 收尾。半徑對齊 GROVE_SHADE_RADIUS。
+      if (stage === 3) {
+        ctx.globalAlpha = 0.13;
+        ctx.fillStyle = "#3f6b3a"; // 清涼草綠樹蔭
+        ctx.beginPath();
+        ctx.ellipse(sx, sy + 2, GROVE_SHADE_RADIUS, GROVE_SHADE_RADIUS * 0.42, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
       // 幼樹／大樹隨風輕擺（reduceMotion 下不擺）；嫩芽樹苗太小不擺。
       const sway = (reduceMotion || stage < 2)
         ? 0
@@ -16695,6 +16735,35 @@
     ctx.restore();
   }
   // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
+
+  // ── 林蔭小憩光暈（ROADMAP 467）─────────────────────────────────────────────────
+  // 由 drawPlayer 對「站在成樹樹蔭下、未倒地」的玩家腳邊呼叫；漾起一圈柔和的清涼綠意光暈，
+  // 偶爾飄起一片 🌿 葉影——表現「正在社群種大的樹蔭下歇腳療傷」（後端同步加速其脫戰回血）。
+  // 尊重 reduceMotion（不脈動、不飄葉，只留靜態柔光）。自有 save/restore，render-safe。
+  function drawShadeRest(cx, cy) {
+    const pulse = reduceMotion ? 0.5 : 0.4 + 0.35 * Math.sin(renderNow / 1100);
+    const r = reduceMotion ? 20 : 17 + pulse * 5;
+    ctx.save();
+    const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+    grad.addColorStop(0, `rgba(150, 220, 150, ${0.34 * pulse})`);
+    grad.addColorStop(0.7, `rgba(120, 200, 130, ${0.15 * pulse})`);
+    grad.addColorStop(1, "rgba(120, 200, 130, 0)");
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, r, r * 0.5, 0, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // 偶爾飄起一片葉影（reduceMotion 時不飄，避免持續動態造成不適）。
+    if (!reduceMotion) {
+      const t = (renderNow / 2200) % 1; // 0→1 的緩慢上飄循環
+      ctx.globalAlpha = 0.5 * (1 - t);
+      ctx.font = `11px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("🌿", cx + Math.sin(renderNow / 700) * 5, cy - 6 - t * 16);
+    }
+    ctx.restore();
+  }
+  // ── 林蔭小憩光暈 end ─────────────────────────────────────────────────────────
 
   // ── 廣場獻奏音符（ROADMAP 399）────────────────────────────────────────────────
   // 由 drawPlayer 對 busking=true 的玩家頭頂呼叫；飄出兩枚輕快音符（左右錯落、上下浮動），

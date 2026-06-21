@@ -36,6 +36,12 @@ pub const GLOBAL_CAP: usize = 80;
 /// 成樹廣播的冷卻秒數——多棵同時成熟時，只飄一行暖訊、不洗世界頻道。
 pub const ANNOUNCE_COOLDOWN_SECS: f32 = 45.0;
 
+/// 林蔭小憩（ROADMAP 467）：一株「已長成大樹（🌳 Mature）」的庇蔭半徑（px）。站在成樹冠下
+/// 這個範圍內、脫離戰鬥時回血更快（見 `vitals::shade_regen`）。取值貼合樹冠、略小於樹距
+/// `MIN_SPACING`(46)——要真的「走到樹下」才庇蔭，不會整片樹蔭連成一塊大澡堂。
+/// 前端 `inGroveShade` 須與此值對齊（同一契約），改這裡記得同步前端。
+pub const SHADE_RADIUS: f32 = 44.0;
+
 /// 一株樹的成長階段（前端據此選圖示與大小，由小到大）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrowStage {
@@ -187,6 +193,17 @@ impl WorldGrove {
         None
     }
 
+    /// 林蔭小憩（ROADMAP 467）：所有「已長成大樹（🌳 Mature）」的座標——只有成樹才成蔭，
+    /// 嫩芽／樹苗／幼樹不算。供遊戲迴圈每幀取一份快照（grove 讀鎖即取即放、不與 players 寫鎖
+    /// 巢狀），判定哪些玩家正站在社群種大的樹蔭下。
+    pub fn mature_positions(&self) -> Vec<(f32, f32)> {
+        self.trees
+            .iter()
+            .filter(|t| stage_for_age(t.age) == GrowStage::Mature)
+            .map(|t| (t.x, t.y))
+            .collect()
+    }
+
     /// 全世界的樹快照（供前端在世界座標上繪製）。
     pub fn view(&self) -> Vec<TreeSnapshot> {
         self.trees
@@ -203,6 +220,17 @@ impl WorldGrove {
 /// 一株玩家種下的樹長成大樹時，飄向世界頻道的暖訊（面向玩家、i18n 替換點）。
 pub fn mature_announce_text() -> String {
     "🌳 一株玩家親手種下的樹苗，靜靜長成了亭亭大樹——故鄉的大地，又添了一抹綠蔭。".to_string()
+}
+
+/// 林蔭小憩（ROADMAP 467）純函式：座標 `(px, py)` 是否落在任一成樹的樹蔭半徑（`SHADE_RADIUS`）內。
+/// 座標非有限（NaN／±∞）一律保守回 `false`（防呆、不 panic）。確定性、零副作用，可獨立單元測試。
+pub fn in_shade(px: f32, py: f32, mature: &[(f32, f32)]) -> bool {
+    if !px.is_finite() || !py.is_finite() {
+        return false;
+    }
+    mature
+        .iter()
+        .any(|&(tx, ty)| (tx - px).hypot(ty - py) <= SHADE_RADIUS)
 }
 
 #[cfg(test)]
@@ -362,5 +390,44 @@ mod tests {
         g.tick(-1.0);
         g.tick(f32::NAN);
         assert_eq!(g.view()[0].stage, GrowStage::Sprout.wire(), "壞 dt 不應推進成長");
+    }
+
+    // ─── 林蔭小憩 mature_positions / in_shade（ROADMAP 467） ───────────────────
+
+    #[test]
+    fn mature_positions_only_lists_grown_trees() {
+        let mut g = WorldGrove::new();
+        g.plant(pid(1), 0.0, 0.0); // 待會長成大樹
+        g.plant(pid(1), 500.0, 0.0); // 剛種下、仍是嫩芽
+        // 推到第一株成樹門檻（但第二株也一起長了，故兩株都會成樹）——改用分開的樹齡不易測，
+        // 這裡直接驗：剛種完一律無成樹。
+        assert!(g.mature_positions().is_empty(), "剛種下都還是嫩芽，無成樹成蔭");
+        // 全部跨過成樹門檻後，兩株都列入。
+        g.tick(YOUNG_SECS + 1.0);
+        let pos = g.mature_positions();
+        assert_eq!(pos.len(), 2, "兩株都長成大樹，皆應成蔭");
+    }
+
+    #[test]
+    fn in_shade_true_only_within_radius() {
+        let mature = vec![(100.0_f32, 100.0_f32)];
+        // 正中樹下：成蔭。
+        assert!(in_shade(100.0, 100.0, &mature));
+        // 半徑內邊緣：成蔭。
+        assert!(in_shade(100.0 + SHADE_RADIUS - 0.5, 100.0, &mature));
+        // 略出半徑：不成蔭。
+        assert!(!in_shade(100.0 + SHADE_RADIUS + 1.0, 100.0, &mature));
+        // 遠處：不成蔭。
+        assert!(!in_shade(1000.0, 1000.0, &mature));
+        // 沒有任何成樹：永不成蔭。
+        assert!(!in_shade(100.0, 100.0, &[]));
+    }
+
+    #[test]
+    fn in_shade_rejects_bad_coords() {
+        let mature = vec![(0.0_f32, 0.0_f32)];
+        assert!(!in_shade(f32::NAN, 0.0, &mature));
+        assert!(!in_shade(0.0, f32::INFINITY, &mature));
+        assert!(!in_shade(f32::NEG_INFINITY, f32::NAN, &mature));
     }
 }

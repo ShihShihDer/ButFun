@@ -2280,6 +2280,40 @@ for (const sc of scenarios) {
   }
 }
 
+// 林蔭小憩·成樹樹蔭判定（ROADMAP 467）：單元斷言純函式 inGroveShade 的真值表——
+// 與後端 world_grove::in_shade 同一判定：座標落在任一成樹的樹蔭半徑（44px）內回 true、
+// 半徑外回 false；無成樹／空清單永不成蔭；座標非有限（NaN/±Infinity）一律保守回 false。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.inGroveShade;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 林蔭小憩：game.js 未導出 inGroveShade");
+  } else {
+    let bad = 0;
+    const R = 44;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 林蔭小憩：${msg}`); } };
+    const trees = [{ x: 100, y: 100 }, { x: 500, y: 300 }];
+    // 正中樹下／半徑內邊緣：成蔭
+    expect(fn(100, 100, trees, R) === true, "正中樹下 → 成蔭");
+    expect(fn(100 + R - 1, 100, trees, R) === true, "半徑內邊緣 → 成蔭");
+    expect(fn(500, 300, trees, R) === true, "第二株樹下 → 成蔭");
+    // 略出半徑／遠處：不成蔭
+    expect(fn(100 + R + 2, 100, trees, R) === false, "略出半徑 → 不成蔭");
+    expect(fn(2000, 2000, trees, R) === false, "遠處 → 不成蔭");
+    // 無成樹／空清單／壞清單：永不成蔭
+    expect(fn(100, 100, [], R) === false, "空清單 → 不成蔭");
+    expect(fn(100, 100, null, R) === false, "非陣列 → 不成蔭");
+    // 座標非有限：保守回 false
+    for (const [px, py] of [[NaN, 100], [100, Infinity], [-Infinity, NaN]]) {
+      expect(fn(px, py, trees, R) === false, `壞座標 (${px},${py}) → false`);
+    }
+    // 清單內壞元素被跳過、不爆
+    expect(fn(100, 100, [null, { x: NaN, y: 0 }, { x: 100, y: 100 }], R) === true, "清單含壞元素仍正確判定");
+    if (bad) failed = true;
+    else console.log("  ✅ 林蔭小憩·成樹樹蔭判定真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
