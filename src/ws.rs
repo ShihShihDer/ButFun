@@ -1509,6 +1509,47 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                 }
+                Ok(ClientMsg::CheerSnowman { id: snowman_id }) => {
+                    // 雪人讚賞（ROADMAP 479）：走近別人堆的雪人按個讚，捎去暖意。
+                    // 先讀讚賞者權威座標＋暱稱（讀鎖即取即放）：須已登入、且不在室內
+                    //（雪人都在戶外世界座標，室內玩家搆不著）。
+                    let cheerer: Option<(f32, f32, String)> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| p.indoor_plot_id.is_none())
+                            .map(|p| (p.x, p.y, p.name.clone()))
+                    };
+                    if let Some((px, py, by_name)) = cheerer {
+                        // 另開雪人寫鎖按讚（不與 players 鎖巢狀；守 prod 死鎖鐵律）。
+                        // cheer 純函式把關：搆得著、不是自己堆的、一座只能讚一次。
+                        let outcome = app.snowmen.write().unwrap().cheer(snowman_id, id, px, py);
+                        if let crate::snowman::CheerOutcome::Ok {
+                            cheers,
+                            builder_pid,
+                            builder_name,
+                        } = outcome
+                        {
+                            // 出鎖後才送通知（守鎖序）。一則 SnowmanCheered 同時：
+                            // ① 確認給讚賞者（tx_direct 直達自己）；
+                            // ② 暖心道賀給堆雪者（whisper_senders 找堆雪者的單播通道，人在何處都收得到）。
+                            let msg = ServerMsg::SnowmanCheered {
+                                id: snowman_id,
+                                cheers,
+                                by_name,
+                                builder_name,
+                            };
+                            if let Ok(j) = serde_json::to_string(&msg) {
+                                let _ = tx_direct.try_send(j.clone());
+                                if let Some(btx) =
+                                    app.whisper_senders.read().unwrap().get(&builder_pid)
+                                {
+                                    let _ = btx.try_send(j);
+                                }
+                            }
+                        }
+                    }
+                }
                 Ok(ClientMsg::HelpUp) => {
                     // 同伴扶起（ROADMAP 464）：把附近倒下的旅人就地扶起來（半血起身、不再被傳回
                     // 新手村）。限流（比照 emote／擊掌：每秒至多 3 次，超量靜默丟棄）。

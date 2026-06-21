@@ -2644,6 +2644,40 @@ for (const sc of scenarios) {
   }
 }
 
+// 雪人讚賞（ROADMAP 479）：單元斷言純函式 snowmanCheerTarget 的真值表——
+// 挑離我最近、搆得著（半徑內）、不是我堆的、也還沒讚過的雪人 id；都沒有回 null；壞值保守略過。
+{
+  const pick = sandbox.__bfTest && sandbox.__bfTest.snowmanCheerTarget;
+  if (typeof pick !== "function") {
+    failed = true;
+    console.error("  ❌ 雪人讚賞：game.js 未導出 snowmanCheerTarget");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 雪人讚賞：${msg}`); } };
+    const R = 80; // 對齊 snowman::CHEER_RADIUS
+    const list = [
+      { id: 10, wx: 100, wy: 100, builder: "甲" },  // 近、別人堆的
+      { id: 11, wx: 130, wy: 100, builder: "乙" },  // 較遠、別人堆的
+      { id: 12, wx: 105, wy: 100, builder: "我" },  // 很近、但是我堆的
+      { id: 13, wx: 100, wy: 100, builder: "丙" },  // 同點、但稍後標記為已讚
+    ];
+    const seen = new Set([13]);
+    // 站在 (100,100)：最近可讚的是 10（同點的 12 是自己、13 已讚）。
+    expect(pick(list, 100, 100, "我", seen, R) === 10, "應挑最近、非自己、未讚的雪人");
+    // 半徑外：站很遠應回 null。
+    expect(pick(list, 100, 300, "我", seen, R) === null, "全部搆不著時回 null");
+    // 不傳已讚集合時，最近的別人雪人仍可選（同點 13 builder=丙 可被選）。
+    expect(pick(list, 100, 100, "我", new Set(), R) === 13 || pick(list, 100, 100, "我", new Set(), R) === 10, "未讚集合空時挑得到最近的別人雪人");
+    // 我堆的全跳過：清單只剩自己的 → null。
+    expect(pick([{ id: 20, wx: 100, wy: 100, builder: "我" }], 100, 100, "我", new Set(), R) === null, "只有自己的雪人應回 null");
+    // 壞值保守：座標 NaN／清單非陣列 → null，不爆。
+    expect(pick(list, NaN, 100, "我", new Set(), R) === null, "壞座標回 null");
+    expect(pick(null, 100, 100, "我", new Set(), R) === null, "非陣列清單回 null");
+    if (bad) failed = true;
+    else console.log("  ✅ 雪人讚賞·選靶真值表（最近/半徑/自己/已讚/壞值）：通過");
+  }
+}
+
 // 雪季雪人（ROADMAP 478）：注入數座雪人（含視野外一座、四種樣式、超界樣式、空署名、長署名、壞 id），
 // 驗證 drawSnowmen 雪身／圍巾／署名牌／剔除路徑連跑多幀皆不拋例外；再餵無雪人 snapshot 驗早退。
 {
@@ -2653,14 +2687,16 @@ for (const sc of scenarios) {
   wSnap.current_season = "winter";
   const me = wSnap.players[0];
   wSnap.snowmen = [
-    { id: 0, wx: me.x + 40, wy: me.y + 20, builder: "小雪", style: 0 },
-    { id: 1, wx: me.x - 90, wy: me.y - 40, builder: "阿白", style: 1 },
-    { id: 2, wx: me.x + 10, wy: me.y - 80, builder: "", style: 7 },           // 空署名＋超界樣式
-    { id: 3, wx: me.x - 30, wy: me.y + 60, builder: "好長的名字一二三四五六七八", style: 3 }, // 長署名截斷
-    { id: 4, wx: 99999, wy: 99999, builder: "遠方", style: 2 },               // 視野外：應被剔除
-    { id: NaN, wx: me.x, wy: me.y, builder: "壞值", style: NaN },             // 壞 id／壞樣式：保守不爆
+    { id: 0, wx: me.x + 40, wy: me.y + 20, builder: "小雪", style: 0, cheers: 3 },   // 含愛心數標
+    { id: 1, wx: me.x - 90, wy: me.y - 40, builder: "阿白", style: 1, cheers: 0 },
+    { id: 2, wx: me.x + 10, wy: me.y - 80, builder: "", style: 7 },           // 空署名＋超界樣式＋缺 cheers
+    { id: 3, wx: me.x - 30, wy: me.y + 60, builder: "好長的名字一二三四五六七八", style: 3, cheers: 999 }, // 長署名＋大愛心數
+    { id: 4, wx: 99999, wy: 99999, builder: "遠方", style: 2, cheers: 1 },    // 視野外：應被剔除
+    { id: NaN, wx: me.x, wy: me.y, builder: "壞值", style: NaN, cheers: NaN }, // 壞 id／樣式／愛心：保守不爆
   ];
   lastWS.onmessage({ data: JSON.stringify({ ...wSnap, type: "snapshot" }) });
+  // 餵一則雪人讚賞事件（ROADMAP 479），驗證 snowman_cheered 處理＋愛心飄浮特效不拋例外。
+  lastWS.onmessage({ data: JSON.stringify({ type: "snowman_cheered", id: 0, cheers: 4, by_name: "旅人", builder_name: "小雪" }) });
   const r = pump("雪季雪人", 5);
   // 再餵一份「無雪人」snapshot（回暖），驗證早退路徑不拋例外。
   const thaw = JSON.parse(JSON.stringify(snapshot));

@@ -4233,6 +4233,7 @@ pub fn spawn(app: AppState) {
                                 wy: s.wy,
                                 builder: s.builder.clone(),
                                 style: s.style,
+                                cheers: s.cheers,
                             })
                             .collect(),
                         // 旅行商人（ROADMAP 135）。

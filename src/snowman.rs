@@ -18,7 +18,7 @@
 //! - 冬季限定的判定（只有冬天能堆）由呼叫端（ws 層，季節狀態在那）把關；本模組只負責
 //!   「回暖即融化」與堆雪的速率／上限，保持純邏輯、確定性、好測。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 /// 全服同時存在的雪人上限——超過則堆雪靜默失敗，避免畫面被洗爆。
@@ -28,6 +28,29 @@ pub const MAX_SNOWMEN: usize = 60;
 pub const REBUILD_COOLDOWN_SECS: f32 = 6.0;
 /// 雪人外觀樣式種類數——由 id 決定性取模，讓每座雪人圍巾／表情略有不同，堆起來各有個性。
 pub const SNOWMAN_STYLES: u8 = 4;
+/// 讚賞雪人的搆得著半徑（世界座標單位）——玩家須走近到這個距離內才能替雪人按讚，
+/// 防止隔空讚賞。比照其他「走近才能互動」的世界物件半徑。
+pub const CHEER_RADIUS: f32 = 80.0;
+
+/// 替雪人按讚的結果（純邏輯，供 ws 層決定要不要送通知）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheerOutcome {
+    /// 成功讚賞：`cheers` = 該雪人最新累積愛心數；`builder_pid`/`builder_name` =
+    /// 堆雪者（ws 層據此把暖心通知單播給堆雪者）。
+    Ok {
+        cheers: u16,
+        builder_pid: Uuid,
+        builder_name: String,
+    },
+    /// 找不到這座雪人（已融化／id 不存在）。
+    NotFound,
+    /// 太遠了，搆不著（不在 `CHEER_RADIUS` 內，或座標非有限值）。
+    OutOfRange,
+    /// 不能讚賞自己堆的雪人。
+    Own,
+    /// 已經讚賞過這座雪人了（一人一座一次）。
+    AlreadyCheered,
+}
 
 /// 一座雪人（純記憶體）。
 #[derive(Debug, Clone)]
@@ -37,8 +60,14 @@ pub struct Snowman {
     pub wy: f32,
     /// 堆雪人的玩家暱稱（面向玩家字串，前端在雪人上方顯示「❄️ XXX 堆的」）。
     pub builder: String,
+    /// 堆雪者的玩家 id（伺服器端用：擋自讚、被讚時找堆雪者單播道賀；不外送前端）。
+    pub builder_pid: Uuid,
     /// 外觀樣式（0..SNOWMAN_STYLES）——由 id 決定，前端據此換圍巾色／表情。
     pub style: u8,
+    /// 累積愛心數（ROADMAP 479 雪人讚賞）——附近玩家走近按讚就 +1，全服可見、隨快照廣播。
+    pub cheers: u16,
+    /// 已讚賞過這座雪人的玩家（伺服器端用：保證一人一座只能讚一次；不外送前端）。
+    cheered_by: HashSet<Uuid>,
 }
 
 /// 全服雪人狀態（純記憶體，重啟清零）。
@@ -117,10 +146,47 @@ impl SnowmanField {
             wx: px,
             wy: py,
             builder,
+            builder_pid: pid,
             style,
+            cheers: 0,
+            cheered_by: HashSet::new(),
         });
         self.cooldowns.insert(pid, REBUILD_COOLDOWN_SECS);
         Some(id)
+    }
+
+    /// 替雪人 `snowman_id` 按一個讚——讚賞者 `by`（在權威座標 `(bx, by)`）須走近到
+    /// `CHEER_RADIUS` 內、不是自己堆的、且還沒讚過這座。成功則愛心 +1 並記下讚賞者，
+    /// 回傳含最新愛心數與堆雪者資訊的 `CheerOutcome::Ok`（ws 層據此把暖心通知送給堆雪者）。
+    /// 純邏輯、確定性、壞值保守（非有限座標一律當搆不著）；呼叫端負責先讀讚賞者權威座標
+    /// （防隔空讚賞）、出鎖後才送通知。
+    pub fn cheer(&mut self, snowman_id: u32, by: Uuid, bx: f32, by_y: f32) -> CheerOutcome {
+        let Some(s) = self.snowmen.iter_mut().find(|s| s.id == snowman_id) else {
+            return CheerOutcome::NotFound;
+        };
+        // 不能讚自己堆的雪人。
+        if s.builder_pid == by {
+            return CheerOutcome::Own;
+        }
+        // 座標壞值或太遠都搆不著。
+        if !bx.is_finite() || !by_y.is_finite() {
+            return CheerOutcome::OutOfRange;
+        }
+        let dx = s.wx - bx;
+        let dy = s.wy - by_y;
+        if dx * dx + dy * dy > CHEER_RADIUS * CHEER_RADIUS {
+            return CheerOutcome::OutOfRange;
+        }
+        // 一人一座只能讚一次。
+        if !s.cheered_by.insert(by) {
+            return CheerOutcome::AlreadyCheered;
+        }
+        s.cheers = s.cheers.saturating_add(1);
+        CheerOutcome::Ok {
+            cheers: s.cheers,
+            builder_pid: s.builder_pid,
+            builder_name: s.builder.clone(),
+        }
     }
 }
 
@@ -247,5 +313,82 @@ mod tests {
         f.tick(0.0, true);
         f.tick(-5.0, true);
         assert_eq!(f.len(), 1, "壞 dt 在冬季不應影響雪人");
+    }
+
+    #[test]
+    fn cheer_succeeds_for_nearby_other_player() {
+        let mut f = SnowmanField::new();
+        let id = f.build(pid(1), "小雪".into(), 100.0, 100.0).unwrap();
+        // 另一位玩家走到雪人旁（搆得著）按讚。
+        let out = f.cheer(id, pid(2), 110.0, 105.0);
+        match out {
+            CheerOutcome::Ok { cheers, builder_pid, builder_name } => {
+                assert_eq!(cheers, 1, "首次讚賞愛心數應為 1");
+                assert_eq!(builder_pid, pid(1), "應回報堆雪者 id");
+                assert_eq!(builder_name, "小雪", "應回報堆雪者暱稱");
+            }
+            other => panic!("應讚賞成功，卻得到 {other:?}"),
+        }
+        assert_eq!(f.active()[0].cheers, 1, "雪人愛心數應已累加");
+    }
+
+    #[test]
+    fn cheer_rejects_own_snowman() {
+        let mut f = SnowmanField::new();
+        let id = f.build(pid(1), "a".into(), 0.0, 0.0).unwrap();
+        assert_eq!(f.cheer(id, pid(1), 0.0, 0.0), CheerOutcome::Own, "不能讚自己的雪人");
+        assert_eq!(f.active()[0].cheers, 0, "自讚被擋，愛心數不動");
+    }
+
+    #[test]
+    fn cheer_rejects_out_of_range_and_bad_coords() {
+        let mut f = SnowmanField::new();
+        let id = f.build(pid(1), "a".into(), 0.0, 0.0).unwrap();
+        // 太遠（超過 CHEER_RADIUS）。
+        assert_eq!(
+            f.cheer(id, pid(2), CHEER_RADIUS + 10.0, 0.0),
+            CheerOutcome::OutOfRange,
+            "搆不著不能讚"
+        );
+        // 邊界內側恰好可讚。
+        assert!(
+            matches!(f.cheer(id, pid(2), CHEER_RADIUS - 1.0, 0.0), CheerOutcome::Ok { .. }),
+            "半徑內應可讚"
+        );
+        // 壞座標保守當搆不著。
+        assert_eq!(f.cheer(id, pid(3), f32::NAN, 0.0), CheerOutcome::OutOfRange, "NaN 座標搆不著");
+        assert_eq!(f.cheer(id, pid(3), 0.0, f32::INFINITY), CheerOutcome::OutOfRange, "Inf 座標搆不著");
+    }
+
+    #[test]
+    fn cheer_is_once_per_player_per_snowman() {
+        let mut f = SnowmanField::new();
+        let id = f.build(pid(1), "a".into(), 0.0, 0.0).unwrap();
+        assert!(matches!(f.cheer(id, pid(2), 0.0, 0.0), CheerOutcome::Ok { cheers: 1, .. }));
+        assert_eq!(f.cheer(id, pid(2), 0.0, 0.0), CheerOutcome::AlreadyCheered, "同人不能重複讚");
+        // 不同玩家可各讚一次，累加。
+        assert!(matches!(f.cheer(id, pid(3), 0.0, 0.0), CheerOutcome::Ok { cheers: 2, .. }));
+        assert_eq!(f.active()[0].cheers, 2, "兩位玩家各讚一次 = 2");
+    }
+
+    #[test]
+    fn cheer_unknown_snowman_is_not_found() {
+        let mut f = SnowmanField::new();
+        f.build(pid(1), "a".into(), 0.0, 0.0).unwrap();
+        assert_eq!(f.cheer(9999, pid(2), 0.0, 0.0), CheerOutcome::NotFound, "不存在的雪人 id");
+    }
+
+    #[test]
+    fn cheers_reset_when_snowmen_melt() {
+        let mut f = SnowmanField::new();
+        let id = f.build(pid(1), "a".into(), 0.0, 0.0).unwrap();
+        f.cheer(id, pid(2), 0.0, 0.0);
+        assert_eq!(f.active()[0].cheers, 1);
+        // 回暖融化後重堆，是全新雪人、愛心歸零（換個沒在冷卻的玩家堆，避開堆雪冷卻）。
+        f.tick(1.0, false);
+        assert!(f.is_empty(), "回暖整批融化");
+        let id2 = f.build(pid(7), "b".into(), 0.0, 0.0).unwrap();
+        assert_eq!(f.active()[0].cheers, 0, "重堆的雪人愛心從零開始");
+        assert_ne!(id, id2, "新雪人 id 與舊的不同");
     }
 }

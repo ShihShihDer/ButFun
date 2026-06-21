@@ -701,7 +701,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4121,6 +4121,8 @@
           updateCampfireBtn(me, isGuest);
           // 堆雪人按鈕（ROADMAP 478）：冬季、已登入、戶外、未倒地才顯示
           updateSnowmanBtn(me, isGuest);
+          // 雪人讚賞按鈕（ROADMAP 479）：走近一座別人堆的、還沒讚過的雪人時才顯示
+          updateCheerSnowmanBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -4335,6 +4337,27 @@
           announce(
             "你替 " + (msg.target_name || "另一位玩家") + " 喝采（人氣 " + (msg.target_cheers || 0) + "）"
           );
+        }
+        break;
+      }
+      case "snowman_cheered": {
+        // 雪人讚賞（ROADMAP 479）：單播只送給讚賞者與堆雪者兩方。把該雪人最新愛心數就地刷新，
+        // 並在雪人旁迸一顆愛心；依自己是堆雪者還是讚賞者顯示不同暖心字句。
+        const sid = msg.id;
+        const cheers = typeof msg.cheers === "number" ? msg.cheers : 0;
+        const sm = snowmen.find((s) => s.id === sid);
+        if (sm) {
+          sm.cheers = cheers; // 即時刷新愛心數，不必等下次快照
+          const now = performance.now();
+          snowmanCheerFx.push({ wx: sm.wx, wy: sm.wy, startMs: now, expireAt: now + 1500 });
+        }
+        if (msg.builder_name && myName && msg.builder_name === myName) {
+          // 我是堆雪者：有人讚賞了我的雪人。
+          announce(`❄️ ${msg.by_name || "一位旅人"} 讚賞了你的雪人——共 ${cheers} 個愛心 ♥`);
+        } else if (msg.by_name && myName && msg.by_name === myName) {
+          // 我是讚賞者：確認按讚成功。
+          cheeredSnowmanIds.add(sid);
+          announce(`你給 ${msg.builder_name || "一位旅人"} 的雪人按了讚 ♥（共 ${cheers} 個）`);
         }
         break;
       }
@@ -8987,6 +9010,7 @@
     safeDraw("highFives", () => drawHighFives(camX, camY)); // 玩家擊掌特效（339）
     safeDraw("emoteResonances", () => drawEmoteResonances(camX, camY)); // 表情共鳴特效（340）
     safeDraw("cheers", () => drawCheers(camX, camY)); // 喝采特效（341）
+    safeDraw("snowmanCheerFx", () => drawSnowmanCheerFx(camX, camY, renderNow)); // 雪人讚賞愛心（479）
     safeDraw("ambientParticles", () => drawAmbientParticles(camX, camY, renderNow, _weatherDt)); // 生態氛圍粒子（189）
     safeDraw("weatherParticles", () => drawWeatherParticles(renderNow, _weatherDt)); // 天氣（93）
     safeDraw("snow", () => drawSnow(renderNow, _weatherDt)); // 冬日飄雪（226）
@@ -9889,6 +9913,46 @@
     const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
     const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed && currentSeason === "winter";
     btn.classList.toggle("hidden", !canShow);
+  }
+
+  // 雪人讚賞（ROADMAP 479）：讚賞搆得著半徑，與後端 snowman::CHEER_RADIUS(80) 對齊。
+  const SNOWMAN_CHEER_RADIUS = 80;
+  // 我這場連線已讚賞過的雪人 id（一座只能讚一次；server 端也用 builder_pid 把關）。
+  const cheeredSnowmanIds = new Set();
+  // 雪人被讚時的愛心飄浮特效 [{wx, wy, startMs, expireAt}]，drawSnowmanCheerFx 畫。
+  let snowmanCheerFx = [];
+  // 純函式：在 `list` 雪人中，挑出離 `(mx,my)` 最近、搆得著（半徑內）、不是自己堆的（暱稱比對）、
+  // 也還沒讚過的那一座，回傳其 id；都沒有則回 null。壞值座標保守略過。供讚賞按鈕判斷與測試。
+  function snowmanCheerTarget(list, mx, my, myNick, cheeredSet, radius) {
+    if (!Array.isArray(list) || !Number.isFinite(mx) || !Number.isFinite(my)) return null;
+    const r = Number.isFinite(radius) && radius > 0 ? radius : SNOWMAN_CHEER_RADIUS;
+    const r2 = r * r;
+    let bestId = null;
+    let bestD2 = Infinity;
+    for (const s of list) {
+      if (!s || !Number.isFinite(s.wx) || !Number.isFinite(s.wy)) continue;
+      if (cheeredSet && cheeredSet.has(s.id)) continue; // 已讚過
+      if (myNick && s.builder === myNick) continue;      // 自己堆的（server 以 pid 為準）
+      const dx = s.wx - mx;
+      const dy = s.wy - my;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= r2 && d2 < bestD2) {
+        bestD2 = d2;
+        bestId = s.id;
+      }
+    }
+    return bestId;
+  }
+  // 讚賞按鈕：走近一座別人堆的、還沒讚過的雪人時才顯示（戶外、已登入、未倒地）。
+  function updateCheerSnowmanBtn(me, isGuestUser) {
+    const btn = document.getElementById("cheerSnowmanBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const target =
+      !!me && !isGuestUser && me.indoor_plot_id == null && !downed
+        ? snowmanCheerTarget(snowmen, me.x, me.y, myName, cheeredSnowmanIds, SNOWMAN_CHEER_RADIUS)
+        : null;
+    btn.classList.toggle("hidden", target == null);
   }
   // ── 堆雪人 end ────────────────────────────────────────────────────────────────────
 
@@ -11704,11 +11768,13 @@
       ctx.moveTo(0, -20); ctx.lineTo(7, -19); ctx.lineTo(0, -18);
       ctx.closePath(); ctx.fill();
       ctx.restore();
-      // 堆雪人者署名（頭頂；面向玩家字串，集中於此）。
+      // 堆雪人者署名（頭頂；面向玩家字串，集中於此）。累積愛心數 > 0 時在署名後綴「♥ N」，
+      // 全服走近的玩家都看得到這座雪人被多少人讚賞過（ROADMAP 479）。
       const who = (s.builder || "").slice(0, 12);
       if (who) {
         ctx.font = `11px ${UI_FONT}`;
-        const label = `⛄ ${who}`;
+        const cheers = typeof s.cheers === "number" && s.cheers > 0 ? s.cheers : 0;
+        const label = cheers > 0 ? `⛄ ${who}　♥ ${cheers}` : `⛄ ${who}`;
         const w = ctx.measureText(label).width + 8;
         ctx.fillStyle = "rgba(20,32,48,0.55)";
         ctx.fillRect(sx - w / 2, sy - 44, w, 14);
@@ -11716,6 +11782,28 @@
         ctx.fillText(label, sx, sy - 37);
       }
     }
+    ctx.restore();
+  }
+
+  // 雪人被讚賞時的愛心飄浮特效（ROADMAP 479）：在雪人頭頂迸一顆愛心、緩緩上浮淡出。
+  // reduceMotion 下不上浮、只短暫定點顯示，照顧暈眩敏感的玩家。
+  function drawSnowmanCheerFx(camX, camY, nowMs) {
+    if (!snowmanCheerFx.length) return;
+    snowmanCheerFx = snowmanCheerFx.filter((f) => f.expireAt > nowMs);
+    if (!snowmanCheerFx.length) return;
+    const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `16px ${UI_FONT}`;
+    for (const f of snowmanCheerFx) {
+      const t = (nowMs - f.startMs) / (f.expireAt - f.startMs); // 0→1
+      const sx = f.wx - camX;
+      const sy = f.wy - camY - 30 - (reduce ? 0 : t * 22); // 緩緩上浮
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.fillText("♥", sx, sy);
+    }
+    ctx.globalAlpha = 1;
     ctx.restore();
   }
 
@@ -30141,6 +30229,20 @@
         if (currentSeason !== "winter") { announce("只有冬天才堆得了雪人——等下雪的季節再來吧"); return; }
         safeSend({ type: "build_snowman" });
         announce("堆起一個雪人——立在世界裡，附近的旅人都看得見，整個冬天都在（天回暖就融化）");
+      });
+    }
+    // ♥ 雪人讚賞（ROADMAP 479）：走近一座別人堆的雪人，給它按個讚捎去暖意；堆雪者會收到通知。
+    const cheerSnowmanBtn = document.getElementById("cheerSnowmanBtn");
+    if (cheerSnowmanBtn) {
+      cheerSnowmanBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        const sid = snowmanCheerTarget(snowmen, me.x, me.y, myName, cheeredSnowmanIds, SNOWMAN_CHEER_RADIUS);
+        if (sid == null) { announce("附近沒有可以讚賞的雪人——走近別人堆的雪人再試試"); return; }
+        cheeredSnowmanIds.add(sid); // 樂觀記下，避免連點重送（server 也以一人一座把關）
+        safeSend({ type: "cheer_snowman", id: sid });
+        announce("給這座雪人按了個讚 ♥——堆雪人的旅人會收到你的暖意");
       });
     }
     // 🪨 打水漂（ROADMAP 475）：站在水邊撿石蓄力，瞄準甜蜜帶放手甩出，石頭貼水彈跳。
