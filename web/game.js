@@ -524,6 +524,35 @@
     return { x: centerX + dx, y: centerY + dy };
   }
 
+  // ---- 鎮民撐傘避雨（ROADMAP 468）：草原細雨時，戶外的居民與旅人撐起一把小傘擋雨 ----
+  // 至今天氣（93）只影響農作（109 下雨澆田）、採集加成與「對話台詞」，城鎮裡活著的人對天氣
+  // 卻沒有半點「看得見」的反應；野獸早會雨中縮身避雨（296），鎮民卻照常淋雨走動。本切片把既有
+  // 天氣系統與活著的城鎮第一次在畫面上連起來——與 296 野獸避雨對成「荒野縮身／城鎮撐傘」一對，
+  // 雨一落，整座鎮的人撐起一把把暖色小傘，雨歇即收。純前端、零後端／協議／成本：只讀既有天氣狀態。
+  // 傘色由 npcId 確定性雜湊選一枚暖色（蒸汽龐克暖調、非隨機），同一居民恆撐同色、整排鎮民色彩錯落。
+  const UMBRELLA_HUES = [
+    { canopy: "#c9a24b", rib: "#8f6f2e" }, // 黃銅
+    { canopy: "#c97b4b", rib: "#8a4f2c" }, // 陶土橘
+    { canopy: "#8fae6b", rib: "#5f7a44" }, // 苔綠
+    { canopy: "#c98fa2", rib: "#8a5d6c" }, // 暮玫瑰
+    { canopy: "#7d8fae", rib: "#505f7d" }, // 霧藍
+  ];
+  // 純函式：草原細雨且強度足夠（沿用 isRainingState 的雨況門檻）時，回傳該居民的傘規格，否則 null。
+  // 傘色依 id 確定性、不透明度隨雨勢由疏到密微漸顯。確定性、無副作用、壞值安全（非下雨／壞 id 一律
+  // 回 null），便於單元斷言。
+  function residentUmbrellaSpec(weatherType, intensity, npcId) {
+    if (!isRainingState(weatherType, intensity)) return null;
+    if (typeof npcId !== "string" || !npcId) return null;
+    // 由 id 字元確定性選色：同一居民恆為同一色、彼此錯落（FNV 風格雜湊，無隨機）。
+    let h = 0;
+    for (let i = 0; i < npcId.length; i++) h = (h * 31 + npcId.charCodeAt(i)) >>> 0;
+    const hue = UMBRELLA_HUES[h % UMBRELLA_HUES.length];
+    // 雨勢 0.2→1.0 映成不透明度 0.80→1.0（細雨時傘也清楚可見、不要太淡）。
+    const clampI = Math.max(0.2, Math.min(1, +intensity || 0));
+    const alpha = 0.80 + (clampI - 0.2) / 0.8 * 0.20;
+    return { canopy: hue.canopy, rib: hue.rib, alpha };
+  }
+
   // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
   // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
   // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
@@ -575,7 +604,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -13610,6 +13639,50 @@
     visiting: "🤝",    // 黃昏串門子：與盟友攤前寒暄（ROADMAP 356）
   };
 
+  // 鎮民撐傘避雨（ROADMAP 468）：在 (cx, topY) 畫一把小傘——圓頂傘面＋幾條傘骨＋短柄，
+  // 繞「柄底」依 sway 弧度輕輕擺盪（沿用世界風 430 的 windSwayAngle，整排傘不會整齊劃一同擺）。
+  // 純表現：只吃 residentUmbrellaSpec 的色與不透明度；尺寸固定、清爽不搶戲。
+  function drawResidentUmbrella(cx, topY, spec, sway) {
+    const W = 11;       // 傘面半寬
+    const H = 8;        // 傘面拱高（自 topY 往上）
+    const HANDLE = 7;   // 短柄長（自 topY 往下，懸浮式不接到手、避免壓到名牌）
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, spec.alpha));
+    // 繞柄底 (cx, topY+HANDLE) 旋轉做擺盪。
+    ctx.translate(cx, topY + HANDLE);
+    ctx.rotate(sway || 0);
+    ctx.translate(-cx, -(topY + HANDLE));
+    // 傘柄＋柄底小勾。
+    ctx.strokeStyle = spec.rib;
+    ctx.lineCap = "round";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(cx, topY);
+    ctx.lineTo(cx, topY + HANDLE);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx - 2, topY + HANDLE - 0.5, 2, -0.3, Math.PI * 0.95);
+    ctx.stroke();
+    // 傘面（圓頂：自左緣拱到頂、再落到右緣；下緣兩瓣淺扇貝）。
+    ctx.fillStyle = spec.canopy;
+    ctx.beginPath();
+    ctx.moveTo(cx - W, topY);
+    ctx.quadraticCurveTo(cx, topY - H * 2.1, cx + W, topY);
+    ctx.quadraticCurveTo(cx + W * 0.5, topY + H * 0.55, cx, topY + H * 0.32);
+    ctx.quadraticCurveTo(cx - W * 0.5, topY + H * 0.55, cx - W, topY);
+    ctx.closePath();
+    ctx.fill();
+    // 傘骨（幾條淡線自頂點輻射到緣）。
+    ctx.strokeStyle = spec.rib;
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(cx, topY - H); ctx.lineTo(cx - W, topY);
+    ctx.moveTo(cx, topY - H); ctx.lineTo(cx, topY + H * 0.3);
+    ctx.moveTo(cx, topY - H); ctx.lineTo(cx + W, topY);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
   function drawNpcs(camX, camY) {
     const me = myId ? players.get(myId) : null;
@@ -13669,6 +13742,16 @@
         ctx.globalAlpha = calm ? 0.8 : 1.0;
         ctx.fillText(actIcon, sx, by - 34 + iconBob);
         ctx.globalAlpha = 1.0;
+      }
+
+      // 鎮民撐傘避雨（ROADMAP 468）：草原細雨時，戶外的居民與旅人撐起一把小傘擋雨，隨世界的風
+      // 輕輕擺盪——既有天氣系統第一次讓活著的城鎮也隨雨而動（七大定點 NPC 多在棚下，不撐）。
+      if (npc.id.startsWith("resident_") || npc.id === "traveler") {
+        const uspec = residentUmbrellaSpec(weatherType, weatherIntensity, npc.id);
+        if (uspec) {
+          const sway = reduceMotion ? 0 : windSwayAngle(npc.x, npc.y, performance.now(), worldWind);
+          drawResidentUmbrella(sx, by - 28, uspec, sway);
+        }
       }
 
       ctx.restore();
