@@ -10,6 +10,7 @@ mod auth;
 mod class;
 mod director;
 mod combat;
+mod compost;
 mod guard;
 mod dodge;
 mod charged_strike;

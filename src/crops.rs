@@ -148,28 +148,47 @@ pub struct Crop {
     /// 在途作物安全讀回預設 `Staple`（＝改動前的單一作物數值），向後相容、零 migration、不破壞玩家資料。
     #[serde(default)]
     kind: CropVariety,
+    /// ROADMAP 473 堆肥循環：這株播種時是否漚進了一份堆肥。滋養的作物成長更快（`field::tick`
+    /// 疊上 `compost::NOURISH_GROWTH_MULT`）、收成多得乙太（`field::harvest` 加 `NOURISH_ETHER_BONUS`）。
+    /// `#[serde(default)]` 讓舊存檔／無此欄的在途作物安全讀回 `false`＝未滋養（＝改動前數值），
+    /// 向後相容、零 migration、不破壞玩家資料。
+    #[serde(default)]
+    nourished: bool,
 }
 
 impl Crop {
-    /// 播下一株新種子（乾的，需要澆水才會開始長）——預設品種主食穀。
-    /// 既有呼叫端與測試沿用此入口；要指定品種走 `plant_kind`。
+    /// 播下一株新種子（乾的，需要澆水才會開始長）——預設品種主食穀、未滋養。
+    /// 既有呼叫端與測試沿用此入口；要指定品種走 `plant_kind`、要漚堆肥走 `plant_kind_nourished`。
     pub fn plant() -> Self {
         Self::plant_kind(CropVariety::default())
     }
 
-    /// 播下指定品種的一株新種子（ROADMAP 452）。除品種外與 `plant` 完全相同。
+    /// 播下指定品種的一株新種子（ROADMAP 452）。除品種外與 `plant` 完全相同（未滋養）。
     pub fn plant_kind(kind: CropVariety) -> Self {
+        Self::plant_kind_nourished(kind, false)
+    }
+
+    /// 播下指定品種、且可指定是否漚過堆肥的一株新種子（ROADMAP 473）。
+    /// `nourished=true` 時這株帶滋養加成（成長加速＋收成多得乙太）。
+    pub fn plant_kind_nourished(kind: CropVariety, nourished: bool) -> Self {
         Self {
             growth: 0.0,
             moisture: 0.0,
             parched: 0.0,
             kind,
+            nourished,
         }
     }
 
     /// 這株作物的品種（ROADMAP 452）。供田格快照下傳給前端畫品種微異。
     pub fn kind(&self) -> CropVariety {
         self.kind
+    }
+
+    /// 這株是否漚過堆肥、帶滋養加成（ROADMAP 473）。供 `field` 算成長倍率／收成乙太，
+    /// 並隨田格快照下傳給前端畫「滋養」記號。
+    pub fn nourished(&self) -> bool {
+        self.nourished
     }
 
     /// 澆水：把濕度補滿。
@@ -256,7 +275,7 @@ impl Crop {
     /// 測試用：直接組出指定 `growth` / `moisture`（含壞值）的作物，驗證載入防線。
     #[cfg(test)]
     pub fn from_raw(growth: f32, moisture: f32) -> Self {
-        Self { growth, moisture, parched: 0.0, kind: CropVariety::default() }
+        Self { growth, moisture, parched: 0.0, kind: CropVariety::default(), nourished: false }
     }
 
     /// 收成：成熟才給乙太，並把這格重置成可再種的新種子。

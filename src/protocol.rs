@@ -2435,6 +2435,11 @@ pub struct FieldView {
     /// 田主與訪客都收得到（前端依索引在田上畫對應 emoji/小物）。多數田沒擺 → 0 時略去省流量。
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub home_decor: u8,
+    /// ROADMAP 473 堆肥循環：這塊地囤積的堆肥份數（0..=`compost::COMPOST_MAX`）。收成回收攢成，
+    /// 下次播種自動漚進一份讓作物得滋養。前端在農地面板顯示「🌿 堆肥 ×N」，讓玩家一眼看出攢了多少。
+    /// 多數地沒堆肥 → 0 時略去省流量；舊伺服器不送此欄 → 前端退回不顯示（向後相容、零 migration）。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub compost: u8,
     /// 家園庭園的擺放位（ROADMAP 416）：每格一個擺飾索引（0=該位不擺），長度至多
     /// `home_decor::GARDEN_SLOTS`。田主與訪客都收得到，前端依各格在田面對應位置畫小物。
     /// 全空（沒佈置任何庭園）時略去省流量；舊伺服器不送此欄→前端退回單件 `home_decor` 繪製。
@@ -2708,6 +2713,12 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
     #[serde(default)]
     pub rotated: bool,
+    /// ROADMAP 473 堆肥循環：這格作物是否漚過堆肥、帶「滋養」加成（成長加速＋收成多得乙太）。
+    /// 只在種了作物（state 2~4）時有意義；其餘一律 false。前端據此在滋養的作物上標一枚堆肥記號，
+    /// 讓「漚過肥的作物長得特別旺」一眼看得見。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
+    #[serde(default)]
+    pub nourished: bool,
 }
 
 #[cfg(test)]
@@ -2942,7 +2953,9 @@ mod tests {
                     soil: 0,
                     kind: 0,
                     rotated: false,
+                    nourished: false,
                 }],
+                compost: 0,
                 home_decor: 0,
                 garden: vec![],
             }],

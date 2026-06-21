@@ -6707,6 +6707,22 @@
         plantEl.classList.add("hidden");
       }
     }
+    // 堆肥循環（ROADMAP 473）：收成回收攢成的堆肥份數（f.compost，0 時伺服器略去欄→ undefined）。
+    // >0 時提示玩家「攢了 N 份堆肥，下次播種會自動漚進去、作物長更壯」——把「收成→漚肥→種得更壯」
+    // 的循環顯到 HUD。純從權威快照顯示，不嵌任何規則；0／無欄時隱藏不佔行。
+    const compostEl = document.getElementById("hudCompost");
+    if (compostEl) {
+      const charges = (f && f.compost) | 0;
+      if (charges > 0) {
+        compostEl.textContent = `🌿 堆肥 ×${charges} · 播種會更壯`;
+        compostEl.classList.remove("hidden");
+        compostEl.setAttribute("aria-label",
+          `攢了 ${charges} 份堆肥，下次播種會自動漚進去，作物成長更快、收成多得乙太`);
+      } else {
+        compostEl.classList.add("hidden");
+        compostEl.removeAttribute("aria-label");
+      }
+    }
     // 作物品種選擇（ROADMAP 452）：有自己的田時，顯示「現在播種會種哪個品種」並可點一下循環換種。
     // 種田第一次要做「選種什麼」的取捨——只在玩家擁有田（f 非空）時顯示，訪客無田不打擾。
     const seedEl = document.getElementById("hudSeed");
@@ -27700,6 +27716,40 @@
     ctx.restore();
   }
 
+  // ROADMAP 473 堆肥循環：這格作物若漚過堆肥、帶「滋養」加成（cell.nourished，成長加速＋收成
+  // 多得乙太），在右下角畫一枚小小的「堆肥」記號——一抔暖褐腐殖土小堆＋一點嫩芽，讀作「漚過
+  // 肥的沃土，作物長得特別旺」。讓「收成回收漚肥→種得更壯」的循環一眼看得見。
+  // 位置避開左上的品種色點、右上的階段／品質光、底緣的熟成進度條、左下的輪作旋環（各佔一角）。
+  // 純表現層：只讀權威快照旗標 cell.nourished（由伺服器 field.rs 依這株是否漚肥下傳），不嵌任何
+  // 規則；靜態繪製、reduceMotion 一樣顯示（核心回饋＝看得出這格因漚肥而旺長）。
+  function drawNourishMark(sx, sy, ts, cell) {
+    if (cell.state < 2 || cell.state > 4) return; // 只在種了作物時標
+    if (!cell.nourished) return;
+    const r = Math.max(2.2, ts * 0.055);
+    const mx = sx + ts - 6 - r, my = sy + ts - 6 - r; // 右下角內側
+    ctx.save();
+    // 一抔暖褐腐殖土小堆（三顆疊出土堆感）。
+    ctx.fillStyle = "rgba(122,84,52,0.95)"; // 暖褐＝漚熟的腐殖土
+    ctx.beginPath();
+    ctx.arc(mx - r * 0.7, my + r * 0.5, r * 0.7, 0, Math.PI * 2);
+    ctx.arc(mx + r * 0.7, my + r * 0.5, r * 0.7, 0, Math.PI * 2);
+    ctx.arc(mx, my + r * 0.1, r * 0.85, 0, Math.PI * 2);
+    ctx.fill();
+    // 土堆上冒一點嫩芽（短莖＋小葉），讀作「漚肥養出的生機」。
+    ctx.strokeStyle = "rgba(120,210,110,0.95)";
+    ctx.lineWidth = Math.max(1.1, r * 0.4);
+    ctx.beginPath();
+    ctx.moveTo(mx, my + r * 0.1);
+    ctx.lineTo(mx, my - r * 1.1);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(120,210,110,0.95)";
+    ctx.beginPath();
+    ctx.arc(mx - r * 0.55, my - r * 0.8, r * 0.5, 0, Math.PI * 2);
+    ctx.arc(mx + r * 0.55, my - r * 1.0, r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // 四芒小星（8 頂點交替外/內半徑）。給優質收成的金色光點用。
   function drawSparkle(cx, cy, r) {
     const inner = r * 0.36;
@@ -27790,6 +27840,7 @@
       drawStagePips(sx, sy, ts, cell);
       drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
     drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
+    drawNourishMark(sx, sy, ts, cell); // 漚肥滋養的堆肥記號（ROADMAP 473）
       return;
     }
 
@@ -27840,6 +27891,7 @@
     drawStagePips(sx, sy, ts, cell);
     drawVarietyMark(sx, sy, ts, cell); // 作物品種色點（ROADMAP 452）
     drawRotationMark(sx, sy, ts, cell); // 換種旺長的輪作記號（ROADMAP 454）
+    drawNourishMark(sx, sy, ts, cell); // 漚肥滋養的堆肥記號（ROADMAP 473）
   }
 
   // fence.png:192×32 = 6 件×32px autotile(欄 0 水平 rail / 1 垂直 rail / 2 角=連 E+S,
