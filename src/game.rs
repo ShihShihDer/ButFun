@@ -4236,6 +4236,18 @@ pub fn spawn(app: AppState) {
                                 cheers: s.cheers,
                             })
                             .collect(),
+                        // 旅人明信片牆（ROADMAP 482）：全服共見、最近 12 張，讀完即放鎖。
+                        postcard_wall: app.postcard_wall.read().unwrap().cards()
+                            .map(|c| crate::protocol::WallCardView {
+                                by: c.by.clone(),
+                                title: c.title.clone(),
+                                place: c.place.clone(),
+                                flavor: c.flavor.clone(),
+                                rank: c.rank.clone(),
+                                level: c.level,
+                                phase: c.phase.clone(),
+                            })
+                            .collect(),
                         // 旅行商人（ROADMAP 135）。
                         wandering_merchant_secs: app.wandering_merchant.read().unwrap().remaining_secs(),
                         wandering_catalog: {

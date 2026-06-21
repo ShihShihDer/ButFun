@@ -638,7 +638,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, postcard_wall, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -712,6 +712,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         campfires: campfires.iter().filter(|c| filter_pos(c.wx, c.wy)).cloned().collect(),
                                         // 雪季雪人（ROADMAP 478）：只送視野內的，省頻寬。
                                         snowmen: snowmen.iter().filter(|s| filter_pos(s.wx, s.wy)).cloned().collect(),
+                                        // 明信片牆全服共見（固定在廣場、內容少，不做 AOI 剔除；前端只在走近廣場才畫）。
+                                        postcard_wall: postcard_wall.clone(),
                                         // 旅行商人（ROADMAP 135）：全服廣播。
                                         wandering_merchant_secs: *wandering_merchant_secs,
                                         wandering_catalog: wandering_catalog.clone(),
@@ -1490,6 +1492,59 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                         }
+                    }
+                }
+                Ok(ClientMsg::PinPostcard) => {
+                    // 旅人明信片牆（ROADMAP 482）：把當下框下的「此刻風景」明信片貼進廣場那面全服共見的牆。
+                    // 共用明信片限流（每秒至多 3 次）。只限已登入玩家貼（署名穩定可認），未登入靜默忽略。
+                    if rl_postcard_win.elapsed().as_secs() >= 1 {
+                        rl_postcard_win = std::time::Instant::now();
+                        rl_postcard_n = 0;
+                    }
+                    rl_postcard_n += 1;
+                    if rl_postcard_n > 3 {
+                        continue;
+                    }
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    // 一輪 players 讀鎖內取貼牆者權威座標／署名／等級，讀完即放（不嵌套其他鎖，守 prod 死鎖鐵律）。
+                    let who = {
+                        let ps = app.players.read().unwrap();
+                        ps.get(&id).map(|p| (p.x as f64, p.y as f64, p.name.clone(), p.level()))
+                    };
+                    if let Some((px, py, name, level)) = who {
+                        // 季節與時辰各自取讀鎖讀完即放（不與 players 鎖或彼此嵌套）。
+                        let season = app.season.read().unwrap().current;
+                        let phase = app.daynight.read().unwrap().phase();
+                        let loc = crate::region_name::locale_at(px, py);
+                        let card = crate::postcard::compose(crate::postcard::PostcardInput {
+                            level,
+                            place: loc.name.to_string(),
+                            subtitle: loc.subtitle.to_string(),
+                            phase,
+                            season,
+                            star: crate::postcard::StarTier::None,
+                        });
+                        // 時辰 wire key（前端據此替小卡上暖／冷色調）。
+                        let phase_key = match phase {
+                            crate::daynight::Phase::Dawn => "dawn",
+                            crate::daynight::Phase::Day => "day",
+                            crate::daynight::Phase::Dusk => "dusk",
+                            crate::daynight::Phase::Night => "night",
+                        };
+                        let wall_card = crate::postcard_wall::WallCard {
+                            key: id.to_string(),
+                            by: crate::postcard_wall::sanitize_by(&name),
+                            title: card.title,
+                            place: card.place,
+                            flavor: card.flavor.to_string(),
+                            rank: card.rank.to_string(),
+                            level: card.level,
+                            phase: phase_key.to_string(),
+                        };
+                        // 單一寫鎖內貼上牆即釋（牆內容由下一幀全域快照夾帶廣播，不另開廣播迴圈）。
+                        app.postcard_wall.write().unwrap().pin(wall_card);
                     }
                 }
                 Ok(ClientMsg::HighFive) => {

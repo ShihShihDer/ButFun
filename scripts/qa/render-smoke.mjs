@@ -2748,6 +2748,62 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 雪季雪人：雪身＋圍巾＋署名牌＋視野外剔除＋回暖早退＋壞值皆乾淨");
 }
 
+// 旅人明信片牆（ROADMAP 482）：單元斷言純函式 postcardWallTint（時辰→暖/冷底色，壞值退中性暖米、
+// 永不 undefined）與 withinPostcardWall（搆得著半徑判定、壞值保守 false）的真值表。
+{
+  const tint = sandbox.__bfTest && sandbox.__bfTest.postcardWallTint;
+  const within = sandbox.__bfTest && sandbox.__bfTest.withinPostcardWall;
+  if (typeof tint !== "function" || typeof within !== "function") {
+    failed = true;
+    console.error("  ❌ 旅人明信片牆：game.js 未導出 postcardWallTint / withinPostcardWall");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 旅人明信片牆：${msg}`); } };
+    const hex = /^#[0-9a-fA-F]{6}$/;
+    for (const p of ["dawn", "day", "dusk", "night"]) {
+      expect(hex.test(tint(p)), `時辰 ${p} 應回合法 #rrggbb 底色`);
+    }
+    expect(hex.test(tint("???")) && hex.test(tint(undefined)) && hex.test(tint(null)), "未知/壞時辰退合法中性底色、不回 undefined");
+    expect(tint("???") === tint("day"), "未知時辰退中性暖米（同 day）");
+    expect(tint("dawn") !== tint("night"), "破曉暖、夜晚冷，底色有別");
+    // withinPostcardWall：站在牆中心搆得著、站很遠搆不著、壞值保守 false。
+    expect(within(2400, 2328) === true, "站在牆中心應搆得著");
+    expect(within(9999, 9999) === false, "站很遠搆不著");
+    expect(within(NaN, 2328) === false && within(2400, Infinity) === false, "壞座標保守回 false");
+    if (bad) failed = true;
+    else console.log("  ✅ 旅人明信片牆·底色＋搆距真值表（四時辰/壞值/半徑）：通過");
+  }
+}
+
+// 旅人明信片牆（ROADMAP 482）：注入一面含多張卡片（含未知時辰、空署名、長地名、缺欄）的牆 snapshot，
+// 驗證 drawPostcardWall 木板＋小卡＋圖釘＋頂楣連跑多幀不拋例外；再餵空牆驗「等待第一張風景」早退路徑。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：旅人明信片牆（木板＋小卡＋圖釘，連跑 4 幀）──");
+  const pwSnap = JSON.parse(JSON.stringify(snapshot));
+  const pme = pwSnap.players[0];
+  // 把玩家挪到牆邊，讓牆進鏡頭。
+  pme.x = 2400; pme.y = 2360;
+  pwSnap.postcard_wall = [
+    { by: "小光", title: "晨光・🌸 春", place: "翠幽谷", flavor: "陽光把花香曬得滿地都是。", rank: "旅者", level: 12, phase: "day" },
+    { by: "", title: "暮色・🍂 秋", place: "好長的地名一二三四五六七八九十", flavor: "夕陽和落葉同一個顏色。", rank: "冒險家", level: 21, phase: "dusk" },
+    { by: "夜行者", title: "星夜・❄️ 冬", place: "寒霜原", flavor: "寒夜寂靜，每一顆星都格外亮。", rank: "傳說旅人", level: 40, phase: "night" },
+    { by: "破曉人", title: "破曉・🌸 春", place: "曦光崖", flavor: "晨露沾著新芽。", rank: "見習旅人", level: 3, phase: "dawn" },
+    { by: "怪卡", title: "", place: "", flavor: "", rank: "", level: 0, phase: "???" }, // 缺欄＋未知時辰：保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...pwSnap, type: "snapshot" }) });
+  const rPw = pump("旅人明信片牆", 4);
+  // 再餵空牆 snapshot，驗「等待第一張風景」早退路徑不拋例外。
+  const emptyWall = JSON.parse(JSON.stringify(pwSnap));
+  emptyWall.postcard_wall = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...emptyWall, type: "snapshot" }) });
+  const rPw2 = pump("旅人明信片牆空牆", 2);
+  if (rPw instanceof Error || rPw2 instanceof Error) { failed = true; console.error("  ❌ 旅人明信片牆：未捕捉例外"); }
+  const newCaughtPw = caughtRenderErrors.slice(before);
+  if (newCaughtPw.length) { failed = true; console.error(`  ❌ 旅人明信片牆：safeRender 攔下 ${newCaughtPw.length} 個繪製例外（底層真 bug）`); }
+  else if (!(rPw instanceof Error) && !(rPw2 instanceof Error)) console.log("  ✅ 旅人明信片牆：木板＋小卡＋圖釘＋空牆早退＋壞值皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

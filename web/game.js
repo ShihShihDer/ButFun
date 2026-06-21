@@ -701,7 +701,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, postcardWallTint, withinPostcardWall }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1345,6 +1345,11 @@
   // 最近那位旅人的信箱。note＝選填手寫留言（伺服器會清理／截長）。斷線時 safeSend 靜默忽略。
   function sendPostcardToTraveler(note) {
     safeSend({ type: "send_postcard", note: String(note || "") });
+  }
+  // 把此刻框下的「此刻風景」明信片貼上廣場的旅人明信片牆（ROADMAP 482）：伺服器以你的權威座標／署名／
+  // 等級組一張明信片貼進全服共見的牆（最近 12 張、同人只留最新）。斷線時 safeSend 靜默忽略。
+  function pinPostcardToWall() {
+    safeSend({ type: "pin_postcard" });
   }
   // 收到的明信片信箱（ROADMAP 480）：身旁旅人寄來的明信片收進這裡，本面板逐張呈現。
   // 純前端、僅本場連線累積（伺服器不持久化、重啟即清；社交暖意當下收到即足）。
@@ -2821,6 +2826,22 @@
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
   let sprinklers = []; // ROADMAP 112 灑水器 [{owner, wx, wy}]
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
+  let postcardWall = []; // ROADMAP 482 旅人明信片牆 [{by, title, place, flavor, rank, level, phase}]——廣場全服共見的公共風景牆，最新在前
+  // 旅人明信片牆的世界座標（廣場下排、商店與天文台之間的空地，與其他建築同一排讀來像鎮上的一座結構）。
+  const POSTCARD_WALL = { wx: 2400, wy: 2328 };
+  // 走近此半徑（像素）內才顯示「📮 明信片牆」按鈕、可貼可看。
+  const POSTCARD_WALL_REACH = 96;
+  // 純函式：把時辰 wire key 映成小卡的暖／冷底色（破曉/黃昏暖橘、白天暖米、夜晚靛藍）。
+  // 壞值／未知一律退中性暖米，永不回 undefined（render 不爆）。確定性、好單元自驗。
+  function postcardWallTint(phase) {
+    switch (phase) {
+      case "dawn": return "#e8b888";
+      case "day":  return "#ecd9a8";
+      case "dusk": return "#e0a070";
+      case "night": return "#7a86b8";
+      default: return "#ecd9a8";
+    }
+  }
   let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
@@ -3617,6 +3638,7 @@
         sprinklers = msg.sprinklers || [];
         campfires = msg.campfires || []; // ROADMAP 474 野營篝火
         snowmen = msg.snowmen || []; // ROADMAP 478 雪季雪人
+        postcardWall = msg.postcard_wall || []; // ROADMAP 482 旅人明信片牆
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -4131,6 +4153,8 @@
           updateSnowmanBtn(me, isGuest);
           // 雪人讚賞按鈕（ROADMAP 479）：走近一座別人堆的、還沒讚過的雪人時才顯示
           updateCheerSnowmanBtn(me, isGuest);
+          // 旅人明信片牆按鈕（ROADMAP 482）：已登入、走近廣場明信片牆時才顯示
+          updatePostcardWallBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -9020,6 +9044,7 @@
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
+    safeDraw("postcardWall", () => drawPostcardWall(camX, camY, renderNow)); // 旅人明信片牆（ROADMAP 482），廣場結構、地表之上玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
@@ -9991,6 +10016,79 @@
     btn.classList.toggle("hidden", target == null);
   }
   // ── 堆雪人 end ────────────────────────────────────────────────────────────────────
+
+  // ── 旅人明信片牆（ROADMAP 482）──────────────────────────────────────────────────
+  // 純函式：玩家 (mx,my) 是否搆得著廣場的明信片牆（半徑內）。壞值座標保守回 false。供按鈕判斷與測試。
+  function withinPostcardWall(mx, my) {
+    if (!Number.isFinite(mx) || !Number.isFinite(my)) return false;
+    const dx = POSTCARD_WALL.wx - mx;
+    const dy = POSTCARD_WALL.wy - my;
+    return dx * dx + dy * dy <= POSTCARD_WALL_REACH * POSTCARD_WALL_REACH;
+  }
+  // 明信片牆按鈕：走近廣場的明信片牆時才顯示（已登入、戶外、未倒地）。
+  function updatePostcardWallBtn(me, isGuestUser) {
+    const btn = document.getElementById("postcardWallBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const canShow =
+      !!me && !isGuestUser && me.indoor_plot_id == null && !downed && withinPostcardWall(me.x, me.y);
+    btn.classList.toggle("hidden", !canShow);
+    // 面板開著時即時刷新內容（牆會隨他人貼卡更新）。
+    const win = document.getElementById("winPostcardWall");
+    if (win && !win.classList.contains("hidden")) renderPostcardWallPanel();
+  }
+  // 填入明信片牆面板：列出最近旅人貼上的「此刻風景」＋一個把自己此刻風景貼上牆的動作。
+  // 面向玩家字串集中於此，留 i18n 空間；XSS 防護走 textContent（不插 HTML）。
+  function renderPostcardWallPanel() {
+    const body = document.getElementById("postcardWallBody");
+    if (!body) return;
+    body.textContent = "";
+    // 貼牆動作列
+    const pinRow = document.createElement("div");
+    pinRow.style.cssText = "margin-bottom:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;";
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = "act-btn";
+    pinBtn.textContent = "📌 把此刻風景貼上牆";
+    pinBtn.addEventListener("click", () => {
+      pinPostcardToWall();
+      // 給即時回饋；實際牆內容由下一幀快照更新後重繪。
+      pinBtn.textContent = "📌 已貼上！";
+      pinBtn.disabled = true;
+      setTimeout(() => { pinBtn.textContent = "📌 把此刻風景貼上牆"; pinBtn.disabled = false; }, 2500);
+    });
+    pinRow.appendChild(pinBtn);
+    body.appendChild(pinRow);
+
+    if (!postcardWall.length) {
+      const empty = document.createElement("div");
+      empty.style.cssText = "color:#999; font-size:0.9em; padding:6px 0;";
+      empty.textContent = "牆上還沒有任何風景——當第一個把此刻貼上牆的旅人吧。";
+      body.appendChild(empty);
+      return;
+    }
+    for (const c of postcardWall) {
+      const card = document.createElement("div");
+      card.style.cssText =
+        "border:1px solid rgba(180,140,90,0.5); border-left:4px solid " +
+        postcardWallTint(c.phase) +
+        "; border-radius:6px; padding:7px 9px; margin-bottom:7px; background:rgba(60,44,28,0.25);";
+      const title = document.createElement("div");
+      title.style.cssText = "color:var(--brass); font-weight:600; font-size:0.92em;";
+      title.textContent = `${c.title || ""}　${c.place || ""}`;
+      const flavor = document.createElement("div");
+      flavor.style.cssText = "color:#cfc4b4; font-size:0.86em; margin:3px 0;";
+      flavor.textContent = c.flavor || "";
+      const by = document.createElement("div");
+      by.style.cssText = "color:#9a8f80; font-size:0.8em;";
+      by.textContent = `— ${c.by || "無名旅人"}・${c.rank || ""} Lv.${c.level ?? ""}`;
+      card.appendChild(title);
+      card.appendChild(flavor);
+      card.appendChild(by);
+      body.appendChild(card);
+    }
+  }
+  // ── 旅人明信片牆 end ────────────────────────────────────────────────────────────
 
   // ── 打水漂按鈕（ROADMAP 475）──────────────────────────────────────────────────────
   /** 每幀更新「🪨 打水漂」按鈕：已登入、戶外、未倒地、站在水邊才顯示；蓄力中改顯示「🤚 放手」。
@@ -11776,6 +11874,75 @@
         ctx.restore();
       }
       ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // 旅人明信片牆（ROADMAP 482）：廣場上一面木質佈告牆，釘著最近旅人貼上的「此刻風景」小卡。
+  // 純表現、無玩法增益。卡片內容由伺服器全域快照 postcard_wall 夾帶（最新在前）；走近才看得清、
+  // 按「📮 明信片牆」開面板細讀並貼上自己的風景。clay／pixel 共用同一暖木調，reduceMotion 不影響（靜態）。
+  function drawPostcardWall(camX, camY, nowMs) {
+    const bx = POSTCARD_WALL.wx - camX;
+    const by = POSTCARD_WALL.wy - camY;
+    // 視窗剔除：整座牆在畫面外就略過。
+    if (bx < -120 || bx > viewW + 120 || by < -120 || by > viewH + 80) return;
+    const BW = 96;        // 板寬
+    const BH = 52;        // 板高
+    const topY = by - 58; // 板上緣
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // 地面陰影
+    drawGroundShadow(bx, by + 6, BW * 0.5, 7, 0.18);
+    // 兩根立柱
+    ctx.fillStyle = "#6e4d30";
+    ctx.fillRect(bx - BW / 2 + 6, topY + BH, 7, 22);
+    ctx.fillRect(bx + BW / 2 - 13, topY + BH, 7, 22);
+    // 木板主體（暖木＋描邊）
+    ctx.fillStyle = "#8a6238";
+    ctx.beginPath();
+    ctx.roundRect(bx - BW / 2, topY, BW, BH, 5);
+    ctx.fill();
+    ctx.strokeStyle = "#5c3f24";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 頂楣（軟陶土暖橘橫條，呼應明信片暖色）
+    ctx.fillStyle = "#c98a4e";
+    ctx.beginPath();
+    ctx.roundRect(bx - BW / 2, topY - 9, BW, 12, 4);
+    ctx.fill();
+    ctx.fillStyle = "#fff4e0";
+    ctx.font = `bold 9px ${UI_FONT}`;
+    ctx.fillText("📮 旅人明信片牆", bx, topY - 3);
+    // 釘上的小卡（最多 6 張，3×2 排），依時辰上暖／冷底色＋一枚紅釘。
+    const shown = postcardWall.slice(0, 6);
+    if (shown.length === 0) {
+      ctx.fillStyle = "rgba(255,244,224,0.6)";
+      ctx.font = `8px ${UI_FONT}`;
+      ctx.fillText("等待第一張風景…", bx, topY + BH / 2);
+    } else {
+      const cw = 22, ch = 16, gapX = 4, gapY = 4;
+      const cols = 3;
+      const totalW = cols * cw + (cols - 1) * gapX;
+      const startX = bx - totalW / 2;
+      const startY = topY + 6;
+      for (let i = 0; i < shown.length; i++) {
+        const col = i % cols, row = Math.floor(i / cols);
+        const cx = startX + col * (cw + gapX);
+        const cy = startY + row * (ch + gapY);
+        ctx.fillStyle = postcardWallTint(shown[i].phase);
+        ctx.beginPath();
+        ctx.roundRect(cx, cy, cw, ch, 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(60,40,24,0.5)";
+        ctx.lineWidth = 0.6;
+        ctx.stroke();
+        // 紅色圖釘
+        ctx.fillStyle = "#d04a3a";
+        ctx.beginPath();
+        ctx.arc(cx + cw / 2, cy + 2, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
@@ -29662,6 +29829,8 @@
       if (win.id === "winJourney") requestJourney();
       // 旅途明信片（ROADMAP 417）：一開窗就向伺服器索取一張「此刻的世界」明信片。
       if (win.id === "winPostcard") requestPostcard();
+      // 旅人明信片牆（ROADMAP 482）：一開窗就用最新快照重繪牆面（之後每幀隨快照即時刷新）。
+      if (win.id === "winPostcardWall") renderPostcardWallPanel();
       // 功能選單（ROADMAP 459）：一開窗就把搜尋框清乾淨、還原全部項目。
       if (win.id === "winMenu") resetMenuSearch();
       // 開窗把焦點移到關閉鈕:鍵盤/報讀器玩家可直接操作、Esc 也能關。
@@ -30320,6 +30489,13 @@
         safeSend({ type: "cheer" });
         announce("替附近的玩家鼓掌喝采");
       });
+    }
+    // 📮 旅人明信片牆（ROADMAP 482）：走近廣場明信片牆時按一下開面板——看大家貼了哪些風景、
+    //    也把自己此刻站著的風景貼上牆。開窗就重繪一次面板內容（之後隨快照即時刷新）。
+    const postcardWallBtn = document.getElementById("postcardWallBtn");
+    if (postcardWallBtn) {
+      // 走 openWinFor 共用視窗系統（同時只開一個、close 鈕／Esc／記住位置都自動生效）。
+      postcardWallBtn.addEventListener("click", () => { SFX.click(); openWinFor(postcardWallBtn); });
     }
     // 🎾 逗寵物（ROADMAP 345）：朝面前丟出玩具，寵物衝去叼回。方向＝正在按的移動方向，
     //    沒在動就用朝向（facing）；伺服器以玩家權威座標算落點。沒寵物 / 接物中 / 室內靜默忽略。

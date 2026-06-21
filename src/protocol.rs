@@ -322,6 +322,11 @@ pub enum ClientMsg {
         #[serde(default)]
         note: String,
     },
+    /// 把當下框下的「此刻風景」明信片貼上廣場的明信片牆（ROADMAP 482）。玩家走近廣場明信片牆、
+    /// 按下「📌 貼上明信片牆」時送來。伺服器以貼牆者**權威座標／署名／等級**組一張明信片，貼進
+    /// 全服共見的牆（最近 12 張、同人只留最新）。只限已登入玩家貼（署名才穩定可認）；未登入靜默忽略。
+    /// 共用明信片限流（每秒至多 3 次）。純記憶體、零持久化、零經濟。
+    PinPostcard,
     /// 農地互動：玩家點地表某個世界座標。伺服器換算成耕地格後，依該格目前狀態
     /// 自動決定動作（翻土 / 播種 / 澆水 / 收成）——「一鍵照顧」。
     /// ROADMAP 452：`kind` 是玩家當下選的作物品種（線格式字串如 "sprout"/"staple"/"etherbloom"），
@@ -893,6 +898,26 @@ pub enum ClientMsg {
         pub cheers: u16,
     }
 
+    /// 快照裡的明信片牆卡片（ROADMAP 482）。前端在廣場的明信片牆上框成一張風景小卡。
+    /// 只送前端要顯示的純文字內容；貼牆者的內部身分（去重用）不外送。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct WallCardView {
+        /// 署名（貼牆者暱稱）。
+        pub by: String,
+        /// 標頭，如「晨光・🌸 春」。
+        pub title: String,
+        /// 所在地名。
+        pub place: String,
+        /// 此刻風景印記（手寫感的一句話）。
+        pub flavor: String,
+        /// 旅人資歷稱號。
+        pub rank: String,
+        /// 旅人等級。
+        pub level: u32,
+        /// 當下時辰 wire key（`dawn`／`day`／`dusk`／`night`）——前端據此替小卡上暖／冷色調。
+        pub phase: String,
+    }
+
 /// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
@@ -1106,6 +1131,10 @@ pub enum ServerMsg {
         /// 雪季雪人（ROADMAP 478）。`#[serde(default)]` 向後相容（無此欄位時為空）。
         #[serde(default)]
         snowmen: Vec<SnowmanView>,
+        /// 旅人明信片牆（ROADMAP 482）：廣場上全服共見的公共風景牆，最近 12 張。
+        /// `#[serde(default, skip_serializing_if)]` 向後相容、空牆時不佔頻寬。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        postcard_wall: Vec<WallCardView>,
         /// 旅行商人剩餘秒數（ROADMAP 135）。0=不在城鎮；>0 時前端顯示商人 NPC。
         wandering_merchant_secs: u32,
         /// 旅行商人當前商品目錄（ROADMAP 135）；商人不在城鎮時為空陣列。
@@ -3220,6 +3249,7 @@ mod tests {
             dust_nodes: vec![],
             campfires: vec![],
             snowmen: vec![],
+            postcard_wall: vec![],
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
             merchant_quests: vec![],
