@@ -4662,6 +4662,16 @@
           floaters.push({ wx: ox, wy: oy - 40, text: `🪨 漂了 ${skips} 下！${great ? "（漂亮！）" : ""}`, color, born: performance.now() });
           announce(great ? `石頭漂了 ${skips} 下，漂亮的一甩` : `石頭漂了 ${skips} 下`);
           SFX.click();
+          // ROADMAP 483 撈寶：漣漪震上水底寶物時，疊一行回饋飄字（只對自己）。
+          const findEther = msg.find_ether | 0;
+          if (msg.find_pearl) {
+            floaters.push({ wx: ox, wy: oy - 64, text: "🦪 震起一顆深海珍珠！", color: "255,225,150", born: performance.now() + 120 });
+            announce("水漂震起一顆深海珍珠");
+            SFX.success();
+          } else if (findEther > 0) {
+            floaters.push({ wx: ox, wy: oy - 64, text: `✨ 撈到 ${findEther} 乙太`, color: "180,235,200", born: performance.now() + 120 });
+            announce(`水漂撈到 ${findEther} 乙太`);
+          }
         }
         break;
       }

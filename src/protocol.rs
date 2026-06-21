@@ -1602,6 +1602,13 @@ pub enum ServerMsg {
         y: f32,
         dir_x: f32,
         dir_y: f32,
+        /// 這趟撈寶震上的乙太（ROADMAP 483）：0＝沒撈到。前端只對 `player_id == 自己` 飄字。
+        /// `#[serde(default, skip_serializing_if)]` 向後相容、沒撈到時不佔頻寬。
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        find_ether: u32,
+        /// 這趟是否震起一顆深海珍珠（ROADMAP 483）：罕見，前端只對自己飄字。
+        #[serde(default, skip_serializing_if = "is_false")]
+        find_pearl: bool,
     },
     /// 臨陣格擋結果（ROADMAP 408）：回應 `GuardTap`，廣播；前端只對 `player_id == 自己` 演出。
     /// `outcome`："perfect"（完美格擋，凝最強護盾）／"partial"（擋下一部分）／"whiff"（沒抓到時機）。
