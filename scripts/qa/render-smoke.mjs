@@ -273,6 +273,13 @@ const scenarios = [
       { kind: "potato", ripe: true,  grow: 100 },  // 已成熟·✅
     ] }];
   }),
+  // clay 玩家建造物（ROADMAP 481）：在玩家腳邊擺一座署名雪人（478）＋一堆野營篝火（474）——
+  // clay 模式（BUTFUN_SMOKE_STYLE=clay）下走暖陶土／黏土木柴火舌分支，pixel 模式走冷雪藍／emoji 分支。
+  // 含愛心讚賞數（479）與快燒完的篝火（remaining_secs 小→暖意圈漸弱）。零 render 例外即通過。
+  variant("黏土玩家建造物·雪人篝火(481)", (s) => {
+    s.snowmen = [{ id: 71, wx: me0.x + 36, wy: me0.y - 10, builder: "雪人匠", style: 1, cheers: 3 }];
+    s.campfires = [{ id: 72, wx: me0.x - 36, wy: me0.y + 12, remaining_secs: 6 }];
+  }),
   variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
@@ -2137,6 +2144,38 @@ for (const sc of scenarios) {
     check("未知 type 回 null", fn("shop") === null && fn("nope") === null && fn(undefined) === null && fn(null) === null);
     if (bad) failed = true;
     else console.log("  ✅ clay 城鎮地標·陶土色盤真值表：通過");
+  }
+}
+
+// clay 玩家建造物（ROADMAP 481）：單元斷言純函式 clayBuiltPalette——雪人（478）／稻草人（476）／
+// 野營篝火（474）三種「玩家親手立在世界裡的署名建造物」clay 化的暖陶土色盤；只認得這三個 kind，
+// 其餘回 null（呼叫端退回像素／emoji 畫法＝零回歸）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.clayBuiltPalette;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ clay 玩家建造物：game.js 未導出 clayBuiltPalette");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ clay 玩家建造物：${label}`); } };
+    const isHex = (s) => typeof s === "string" && /^#[0-9a-fA-F]{6}$/.test(s);
+    const isRgba = (s) => typeof s === "string" && /^rgba?\(/.test(s);
+    const allHex = (p, keys) => p && keys.every((k) => isHex(p[k]));
+    // 雪人色盤：暖象牙陶土身／暖褐邊（皆 #rrggbb）＋陶土影／象牙頂光（rgba）。
+    const snow = fn("snowman");
+    check("雪人回完整暖陶土色盤", allHex(snow, ["body", "edge"]) && isRgba(snow.shadow) && isRgba(snow.top));
+    // 確實離開冷雪藍白（不再是 #f6fbff／冷藍邊）：身色已換暖陶土。
+    check("雪人已離冷雪藍白", snow && snow.body !== "#f6fbff" && snow.body !== "#f9fdff");
+    // 稻草人色盤：木樁／稻草／稻草邊／草帽（皆 #rrggbb）＋影／頂光（rgba）。
+    const scare = fn("scarecrow");
+    check("稻草人回完整暖陶土色盤", allHex(scare, ["post", "straw", "strawEdge", "hat"]) && isRgba(scare.shadow) && isRgba(scare.top));
+    // 篝火色盤：黏土木柴／木柴邊／火舌／火核／火舌邊（皆 #rrggbb）。
+    const fire = fn("campfire");
+    check("篝火回完整暖陶土色盤", allHex(fire, ["log", "logEdge", "flame", "flameCore", "flameEdge"]));
+    // 未知／壞 kind 一律回 null——呼叫端據此退回像素／emoji 畫法（零回歸）。
+    check("未知 kind 回 null", fn("postcard") === null && fn("nope") === null && fn(undefined) === null && fn(null) === null);
+    if (bad) failed = true;
+    else console.log("  ✅ clay 玩家建造物·陶土色盤真值表：通過");
   }
 }
 

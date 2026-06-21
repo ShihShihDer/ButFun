@@ -701,7 +701,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -11699,6 +11699,9 @@
   function drawCampfires(camX, camY, nowMs) {
     if (!campfires.length) return;
     const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    // clay 畫風（481）：把 emoji 🪵🔥 換成捏出來的暖褐黏土木柴＋暖橙黏土火舌；
+    // null＝非 clay＝吃原本 emoji 畫法（零回歸）。暖意光暈是「光」、跨畫風一致故不動。
+    const C = renderStyle === "clay" ? clayBuiltPalette("campfire") : null;
     ctx.save();
     for (const c of campfires) {
       const sx = c.wx - camX;
@@ -11727,17 +11730,51 @@
       ctx.restore();
       // 火堆本體：木柴＋跳動的火焰。火焰隨時間輕微縮放，像在劈啪燃燒。
       const flick = reduce ? 1 : 1 + 0.12 * Math.sin(nowMs / 110 + (c.id || 0));
-      ctx.font = `16px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.globalAlpha = fade;
-      ctx.fillText("🪵", sx, sy + 4);
-      ctx.save();
-      ctx.translate(sx, sy - 6);
-      ctx.scale(flick, flick);
-      ctx.font = `20px ${UI_FONT}`;
-      ctx.fillText("🔥", 0, 0);
-      ctx.restore();
+      if (C) {
+        // 黏土木柴：兩根交叉的暖褐黏土橢圓（手捏感）。
+        ctx.save();
+        ctx.translate(sx, sy + 5);
+        ctx.fillStyle = C.log;
+        ctx.strokeStyle = C.logEdge;
+        ctx.lineWidth = 1;
+        ctx.rotate(0.5);
+        ctx.beginPath(); ctx.ellipse(0, 0, 9, 3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.rotate(-1.0);
+        ctx.beginPath(); ctx.ellipse(0, 0, 9, 3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.restore();
+        // 黏土火舌：暖橙水滴形＋象牙暖核，隨 flick 縮放（reduceMotion 下 flick=1＝靜止）。
+        ctx.save();
+        ctx.translate(sx, sy - 4);
+        ctx.scale(flick, flick);
+        ctx.fillStyle = C.flame;
+        ctx.strokeStyle = C.flameEdge;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, -14);
+        ctx.quadraticCurveTo(7, -4, 0, 5);
+        ctx.quadraticCurveTo(-7, -4, 0, -14);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = C.flameCore;
+        ctx.beginPath();
+        ctx.moveTo(0, -8);
+        ctx.quadraticCurveTo(3.5, -1, 0, 4);
+        ctx.quadraticCurveTo(-3.5, -1, 0, -8);
+        ctx.fill();
+        ctx.restore();
+      } else {
+        // 原 emoji 路徑（像素／預設）。
+        ctx.font = `16px ${UI_FONT}`;
+        ctx.fillText("🪵", sx, sy + 4);
+        ctx.save();
+        ctx.translate(sx, sy - 6);
+        ctx.scale(flick, flick);
+        ctx.font = `20px ${UI_FONT}`;
+        ctx.fillText("🔥", 0, 0);
+        ctx.restore();
+      }
       ctx.globalAlpha = 1;
     }
     ctx.restore();
@@ -11759,23 +11796,32 @@
       // 視窗剔除：整個雪人（連名字）在畫面外就略過。
       if (sx < -48 || sx > viewW + 48 || sy < -64 || sy > viewH + 48) continue;
       const spec = snowmanStyleSpec(s.style);
+      // clay 畫風（481）：暖象牙陶土色盤；null＝非 clay／吃原本冷雪藍白（零回歸）。
+      const C = renderStyle === "clay" ? clayBuiltPalette("snowman") : null;
       // 極輕微的左右搖（像被雪風吹），reduceMotion 下完全靜止。
       const sway = reduce ? 0 : Math.sin(nowMs / 900 + (s.id || 0)) * 0.6;
       ctx.save();
       ctx.translate(sx + sway, sy);
-      // 腳下一圈淡藍雪堆陰影。
-      ctx.fillStyle = "rgba(150,180,210,0.30)";
+      // 腳下一圈陰影（clay＝暖陶土影；像素＝淡藍雪堆影）。
+      ctx.fillStyle = C ? C.shadow : "rgba(150,180,210,0.30)";
       ctx.beginPath();
       ctx.ellipse(0, 6, 16, 5, 0, 0, Math.PI * 2);
       ctx.fill();
-      // 下雪球（身體）。
-      ctx.fillStyle = "#f6fbff";
-      ctx.strokeStyle = "rgba(150,175,205,0.55)";
+      // 下雪球（身體）。clay 下換暖象牙陶土＋暖褐邊。
+      ctx.fillStyle = C ? C.body : "#f6fbff";
+      ctx.strokeStyle = C ? C.edge : "rgba(150,175,205,0.55)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(0, -2, 12, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      // clay 體積頂光（左上一抹象牙高光，讓雪球讀作圓鼓鼓的黏土團；像素路徑不畫＝零回歸）。
+      if (C) {
+        ctx.fillStyle = C.top;
+        ctx.beginPath();
+        ctx.arc(-4, -6, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
       // 樹枝手臂（左右各一）。
       ctx.strokeStyle = "#7a5230";
       ctx.lineWidth = 1.5;
@@ -11787,13 +11833,19 @@
       ctx.fillStyle = spec.scarf;
       ctx.fillRect(-8, -16, 16, 4);
       ctx.fillRect(4, -15, 4, 9); // 垂下的一角
-      // 上雪球（頭）。
-      ctx.fillStyle = "#f9fdff";
-      ctx.strokeStyle = "rgba(150,175,205,0.55)";
+      // 上雪球（頭）。clay 下同樣換暖象牙陶土＋頂光。
+      ctx.fillStyle = C ? C.body : "#f9fdff";
+      ctx.strokeStyle = C ? C.edge : "rgba(150,175,205,0.55)";
       ctx.beginPath();
       ctx.arc(0, -20, 8, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      if (C) {
+        ctx.fillStyle = C.top;
+        ctx.beginPath();
+        ctx.arc(-2.5, -22.5, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
       // 煤炭眼。
       ctx.fillStyle = "#33373b";
       ctx.beginPath(); ctx.arc(-3, -22, 1.3, 0, Math.PI * 2); ctx.fill();
@@ -13592,6 +13644,26 @@
   // 呼叫端據此退回原本像素冷調（零回歸：非 clay 或未知地標都吃不到暖陶土分支）。
   function clayLandmarkPalette(type) {
     return _CLAY_LANDMARK_COLORS[type] || null;
+  }
+
+  // ── clay 玩家建造物（ROADMAP 481）──
+  // 黏土微縮世界一致性收口：clay 路徑下玩家／NPC／居民／作物／節點／世界樹（456）都已捏成黏土，
+  // 唯獨最近長出來的「玩家親手立在世界裡的署名建造物」——雪人（478）／稻草人（476）／野營篝火（474）
+  // ——還飄著冷調平塗或平面 emoji，是這座暖象牙微縮模型裡最後幾處最刺眼的割離。本表只換「色／質感」
+  // （接線進 clay 路徑，不生新美術、不改造型／互動／玩法數值）：把冷雪藍換暖象牙陶土、把篝火的 emoji
+  // 木柴火焰換成捏出來的黏土塊與暖橙火舌，與既有黏土資產一氣呵成。確定性、只看 kind、無 DOM，可單元自驗。
+  const _CLAY_BUILT_COLORS = {
+    // 雪人：冷雪藍白（#f6fbff/rgba(150,175,205)）→ 暖象牙陶土＋暖褐邊＋象牙頂光（呼應微縮世界桌上暖燈）。
+    snowman:   { body: "#f4ecdd", edge: "#cdb79a", shadow: "rgba(150,120,84,0.30)", top: "rgba(255,250,238,0.5)" },
+    // 稻草人：本就暖木／稻草調，clay 化加深陶土飽和＋暖頂光，與黏土樹幹同色系。
+    scarecrow: { post: "#8a6a4a", straw: "#dcb35a", strawEdge: "#b8924a", hat: "#a9763e", shadow: "rgba(80,56,32,0.26)", top: "rgba(255,250,238,0.4)" },
+    // 篝火：把 emoji 🪵🔥 換成捏出來的暖褐黏土木柴＋暖橙黏土火舌（暖意光暈是「光」、跨畫風一致故不動）。
+    campfire:  { log: "#8a6a4a", logEdge: "#6a4c30", flame: "#f0a64c", flameCore: "#ffe0a0", flameEdge: "#d97a30" },
+  };
+  // clay 玩家建造物色盤查表（純函式、好測）：只認得 snowman／scarecrow／campfire；其餘一律回 null，
+  // 呼叫端據此退回原本像素／emoji 畫法（零回歸：非 clay 或未知建造物吃不到暖陶土分支）。
+  function clayBuiltPalette(kind) {
+    return _CLAY_BUILT_COLORS[kind] || null;
   }
 
   // 建築招牌/名牌：深色底牌 + 描邊 + 置中文字，以 (sx, y) 為中心畫。天文台呼叫此函式畫招牌，
@@ -28542,6 +28614,8 @@
   function drawScarecrow(f, camX, camY) {
     const sc = Array.isArray(f.scarecrow) ? f.scarecrow : null;
     if (!sc) return;
+    // clay 畫風（481）：暖陶土色盤，與黏土樹幹／木柴同色系；null＝非 clay＝吃原本木樁稻草調（零回歸）。
+    const C = renderStyle === "clay" ? clayBuiltPalette("scarecrow") : null;
     const ts = f.tile_size;
     const col = sc[0] | 0, row = sc[1] | 0;
     if (col < 0 || row < 0 || col >= f.cols || row >= f.rows) return;
@@ -28567,8 +28641,8 @@
     ctx.beginPath();
     ctx.ellipse(cx, baseY + 2, ts * 0.26, ts * 0.09, 0, 0, Math.PI * 2);
     ctx.fill();
-    // 立柱（深褐木樁）。
-    ctx.strokeStyle = "#6b4a2c";
+    // 立柱（深褐木樁；clay＝暖陶土褐）。
+    ctx.strokeStyle = C ? C.post : "#6b4a2c";
     ctx.lineWidth = Math.max(2, ts * 0.07);
     ctx.beginPath();
     ctx.moveTo(cx, baseY);
@@ -28593,12 +28667,19 @@
     // 稻草頭（暖黃圓球）。
     const headR = ts * 0.16;
     const headY = baseY - h + headR * 0.6;
-    ctx.fillStyle = "#d9b25a"; // 稻草黃
+    ctx.fillStyle = C ? C.straw : "#d9b25a"; // 稻草黃（clay＝飽和暖陶土黃）
     ctx.beginPath();
     ctx.arc(cx, headY, headR, 0, Math.PI * 2);
     ctx.fill();
+    // clay 體積頂光（左上一抹象牙高光，把稻草頭讀成捏出來的黏土球；像素路徑不畫＝零回歸）。
+    if (C) {
+      ctx.fillStyle = C.top;
+      ctx.beginPath();
+      ctx.arc(cx - headR * 0.35, headY - headR * 0.35, headR * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+    }
     // 散出的稻草（幾根短線從頭邊岔出）。
-    ctx.strokeStyle = "rgba(196,154,72,0.95)";
+    ctx.strokeStyle = C ? C.strawEdge : "rgba(196,154,72,0.95)";
     ctx.lineWidth = Math.max(0.8, ts * 0.018);
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
@@ -28607,8 +28688,8 @@
       ctx.lineTo(cx + Math.cos(a) * headR * 1.5, headY + Math.sin(a) * headR * 1.5);
       ctx.stroke();
     }
-    // 尖頂草帽（三角＋帽簷）。
-    ctx.fillStyle = "#9c6b3a";
+    // 尖頂草帽（三角＋帽簷；clay＝暖陶土褐）。
+    ctx.fillStyle = C ? C.hat : "#9c6b3a";
     ctx.beginPath();
     ctx.moveTo(cx, headY - headR * 2.0);
     ctx.lineTo(cx - headR * 1.0, headY - headR * 0.4);
