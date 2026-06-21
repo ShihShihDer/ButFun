@@ -2314,6 +2314,41 @@ for (const sc of scenarios) {
   }
 }
 
+// 鎮民撐傘避雨（ROADMAP 468）：單元斷言純函式 residentUmbrellaSpec 的真值表——
+// 草原細雨且強度 > 0.2 才回傘規格、否則 null；傘色由 npcId 確定性（同 id 同色）；
+// 非下雨／壞天氣／壞 id 一律保守回 null；不透明度隨雨勢落在 [0.80, 1.0]。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.residentUmbrellaSpec;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 鎮民撐傘：game.js 未導出 residentUmbrellaSpec");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 鎮民撐傘：${msg}`); } };
+    // 下雨且強度足夠：回傘規格（含色與不透明度）。
+    const s = fn("grassland_rain", 0.6, "resident_2");
+    expect(s && typeof s.canopy === "string" && typeof s.rib === "string", "細雨中 → 回傘規格（含色）");
+    expect(s && s.alpha >= 0.80 && s.alpha <= 1.0, "不透明度落在 [0.80, 1.0]");
+    // 確定性：同一 id 恆同色。
+    const a = fn("grassland_rain", 0.5, "resident_3");
+    const b = fn("grassland_rain", 0.9, "resident_3");
+    expect(a && b && a.canopy === b.canopy && a.rib === b.rib, "同一居民恆撐同色傘");
+    // 雨勢越大不透明度不減。
+    expect(a && b && b.alpha >= a.alpha, "雨越大傘越清楚（不透明度不減）");
+    // 非下雨／強度不足／其他天氣：一律 null。
+    expect(fn("clear", 0.9, "resident_1") === null, "晴天 → 不撐傘");
+    expect(fn("grassland_rain", 0.1, "resident_1") === null, "強度不足（≤0.2）→ 不撐傘");
+    expect(fn("desert_sandstorm", 0.9, "resident_1") === null, "沙暴 → 不撐傘");
+    // 壞 id：保守回 null、不爆。
+    expect(fn("grassland_rain", 0.6, "") === null, "空 id → null");
+    expect(fn("grassland_rain", 0.6, null) === null, "非字串 id → null");
+    // 壞強度值：不爆（NaN 視為不足 → null）。
+    expect(fn("grassland_rain", NaN, "resident_1") === null, "壞強度 NaN → null");
+    if (bad) failed = true;
+    else console.log("  ✅ 鎮民撐傘避雨·撐傘真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
