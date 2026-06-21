@@ -164,6 +164,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            skip_cooldown: 0.0,
+            skipping: None,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
@@ -298,6 +300,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            skip_cooldown: 0.0,
+            skipping: None,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
@@ -8114,6 +8118,63 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                 }
                 // ── 林間揮斧 end ──────────────────────────────────────────────────────
+
+                // ── 打水漂：撿石開蓄（ROADMAP 475）────────────────────────────────────
+                Ok(ClientMsg::BeginSkipStone) => {
+                    // 站在水邊撿顆石頭開一趟蓄力。驗格：未倒地＋附近有水域＋冷卻過＋沒在蓄。
+                    // 真正甩出在 ReleaseSkipStone 放手時才結算。純記憶體、零鎖內 IO。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() || p.skip_cooldown > 0.0 || p.skipping.is_some() {
+                                None
+                            } else {
+                                Some((p.x, p.y))
+                            }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        // 站在水邊才能打水漂（與釣魚同一套水域判定）。
+                        if crate::fishing::is_near_water(px, py) {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                if p.skipping.is_none() {
+                                    p.skipping = Some(crate::skipstone::StoneSkip::start());
+                                    tracing::debug!(player = %p.name, "撿石開蓄打水漂");
+                                }
+                            }
+                        }
+                    }
+                }
+                // ── 打水漂：放手甩出（ROADMAP 475）────────────────────────────────────
+                Ok(ClientMsg::ReleaseSkipStone) => {
+                    // 放手甩出：以當下力道值算彈跳次數，清狀態＋起冷卻，朝最近水域方向廣播給附近所有人演出。
+                    // 鎖序：players 寫鎖內取「彈跳次數＋座標」並清狀態（water_dir_near 純查地形、零鎖無 IO，
+                    // 可在鎖內安全呼叫），出鎖後才廣播（守 prod-deadlock 鐵律）。
+                    let thrown = {
+                        let mut players = app.players.write().unwrap();
+                        match players.get_mut(&id) {
+                            Some(p) => p.skipping.take().map(|s| {
+                                p.skip_cooldown = crate::skipstone::SKIP_COOLDOWN_SECS;
+                                (s.release(), p.x, p.y)
+                            }),
+                            None => None,
+                        }
+                    };
+                    if let Some((skips, px, py)) = thrown {
+                        // 朝最近一格水域甩出（站在水邊故理應有水；萬一沒有則退預設向右）。
+                        let (dir_x, dir_y) =
+                            crate::fishing::water_dir_near(px, py).unwrap_or((1.0, 0.0));
+                        let _ = app.tx.send(Arc::new(ServerMsg::SkipStoneResult {
+                            player_id: id,
+                            skips,
+                            x: px,
+                            y: py,
+                            dir_x,
+                            dir_y,
+                        }));
+                    }
+                }
+                // ── 打水漂 end ────────────────────────────────────────────────────────
 
                 // ── 臨陣格擋：開格擋（ROADMAP 408）──────────────────────────────────────
                 Ok(ClientMsg::BeginGuard) => {

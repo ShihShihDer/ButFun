@@ -306,6 +306,16 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在伐＝None）；
     /// 僅 elapsed 隨 PlayerView 廣播以渲染節拍環。由 game.rs 每 tick 推進（逾時即中斷）。
     pub chopping: Option<crate::woodcutting::ChopSwing>,
+
+    // ── 打水漂（ROADMAP 475）──────────────────────────────────────────────
+    /// 甩石冷卻剩餘秒數（0.0 = 可撿下一顆石頭開蓄；> 0 = 冷卻中）。甩出後起算，
+    /// 由 game.rs 每 tick 遞減；冷卻只擋「開新一趟蓄力」。記憶體前置、不持久化、零 migration。
+    pub skip_cooldown: f32,
+    /// 進行中的一趟蓄力甩石（ROADMAP 475）：力道計擺盪、甜蜜點放手甩得最漂亮。
+    /// 記憶體前置、不持久化、零 migration、重啟清空（沒在蓄＝None）；
+    /// 僅 elapsed 隨 PlayerView 廣播以渲染力道條。由 game.rs 每 tick 推進（逾時即中斷）。
+    pub skipping: Option<crate::skipstone::StoneSkip>,
+
     /// 格擋結算後的冷卻（ROADMAP 408）：只擋開新一趟格擋，避免連續格擋達成永久無敵。
     /// 記憶體前置、不持久化、零 migration、重啟清零。由 game.rs 每 tick 遞減。
     pub guard_cooldown: f32,
@@ -569,6 +579,9 @@ impl Player {
             // ROADMAP 403：進行中伐木連揮的經過秒數（沒在伐＝None，略過序列化）；
             // 前端據此用同一條公式渲染脈動的節拍環。
             chop_secs: self.chopping.map(|c| c.elapsed()),
+            // ROADMAP 475：進行中蓄力甩石的經過秒數（沒在蓄＝None，略過序列化）；
+            // 前端據此用同一條公式渲染擺盪的力道條。
+            skip_charge: self.skipping.map(|s| s.elapsed()),
             // ROADMAP 408：進行中格擋備防的經過秒數（沒在格擋＝None，略過序列化）；
             // 廣播給所有人，前端據此用同一條公式渲染收束的格擋環。
             guard_secs: self.guarding.map(|g| g.elapsed()),
@@ -1719,6 +1732,8 @@ mod tests {
             aether_draw: None,
             chop_cooldown: 0.0,
             chopping: None,
+            skip_cooldown: 0.0,
+            skipping: None,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
