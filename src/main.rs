@@ -23,6 +23,7 @@ mod player_title;
 mod activity_chain;
 mod meditation;
 mod busking;
+mod kite;
 mod apiary;
 mod companion_revive;
 mod meal_buff;

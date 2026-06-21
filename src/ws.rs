@@ -209,6 +209,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             busking: None,
             last_busk: None,
             busk_count: 0,
+            flying_kite: false,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
@@ -341,6 +342,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             busking: None,
             last_busk: None,
             busk_count: 0,
+            flying_kite: false,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
@@ -4262,6 +4264,28 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         let _ = app.tx.send(std::sync::Arc::new(
                             crate::protocol::ServerMsg::BuskAborted { player_id: id }
                         ));
+                    }
+                }
+
+                // ── 放風箏（ROADMAP 470）──────────────────────────────────────────
+                // 拿出／收起風箏。純暫態旗標、跟世界風（430）玩；不送獎勵、不廣播專屬訊息——
+                // 放風箏狀態隨既有玩家快照（`flying_kite`）每 tick 廣播，旁觀者自然看得見。
+                Ok(ClientMsg::BeginKite) => {
+                    // 需登入、未倒地才放得了風箏（倒地休息中放不了；game.rs 倒地時也會自動收線）。
+                    if authed_uid.is_none() { continue; }
+                    let mut players = app.players.write().unwrap();
+                    if let Some(p) = players.get_mut(&id) {
+                        if crate::kite::can_fly_kite(p.vitals.is_downed()) {
+                            p.flying_kite = true;
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::CancelKite) => {
+                    // 主動收線。未在放風箏時 set false 為 no-op、無害。
+                    let mut players = app.players.write().unwrap();
+                    if let Some(p) = players.get_mut(&id) {
+                        p.flying_kite = false;
                     }
                 }
 

@@ -1428,6 +1428,11 @@ pub fn spawn(app: AppState) {
                             p.charge_ready = None;
                         }
                     }
+                    // 放風箏（ROADMAP 470）：倒地（休息復原中）時自動收線——躺平的人放不了風箏。
+                    // 純暫態旗標、無 IO、無廣播（收線狀態隨既有快照自然傳出）。
+                    if p.flying_kite && p.vitals.is_downed() {
+                        p.flying_kite = false;
+                    }
                     // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
                     if let Some(m) = p.meditation {
                         let now = std::time::Instant::now();

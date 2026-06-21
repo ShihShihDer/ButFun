@@ -397,6 +397,11 @@ pub enum ClientMsg {
     BeginBusk,
     /// 取消獻奏（ROADMAP 399）：主動中止進行中的獻奏。未在獻奏中靜默忽略。
     CancelBusk,
+    /// 拿出風箏（ROADMAP 470）：開始放風箏，跟世界風（430）玩。倒地時靜默忽略。
+    /// 純表現／社交，不影響移動或其他動作；放風箏旗標放進快照廣播。
+    BeginKite,
+    /// 收線（ROADMAP 470）：收起風箏。未在放風箏時靜默忽略。
+    CancelKite,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -2215,6 +2220,12 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_false")]
     pub busking: bool,
 
+    // ── 放風箏（ROADMAP 470）─────────────────────────────────────────────────
+    /// 玩家目前是否正在放風箏。true 時前端在該玩家頭頂畫一只順著世界風（430）飄揚的風箏，
+    /// 旁觀者一眼看見「有人在放風箏」、整片天的風箏都朝同一風向斜飛。false 時省略流量。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub flying_kite: bool,
+
     // ── 暖食飽足（ROADMAP 395）───────────────────────────────────────────────
     /// 暖食飽足進度 0.0~1.0（剩餘比例）。Some 時前端在該玩家頭頂畫暖食光暈＋倒數。
     /// None＝沒在飽足（省略流量）。廣播給所有人，世界裡看得見誰剛吃飽。
@@ -2883,6 +2894,7 @@ mod tests {
                 chain_links: 0,
                 meditating: false,
                 busking: false,
+                flying_kite: false,
                 well_fed: None,
                 well_fed_tier: None,
                 onboarding: None,
@@ -3174,6 +3186,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            flying_kite: false,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
@@ -3470,6 +3483,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            flying_kite: false,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
@@ -3542,6 +3556,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            flying_kite: false,
             well_fed: None,
             well_fed_tier: None,
             onboarding: None,
