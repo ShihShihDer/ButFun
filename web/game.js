@@ -2826,6 +2826,7 @@
   let dustNodes = [];           // ROADMAP 133 活躍星塵採集點 [{id, wx, wy}]
   let lastMeteorShowerText = null;
   let nightSpringNodes = [];    // ROADMAP 162 夜間乙太泉採集點 [{id, wx, wy}]
+  let fireflySwarms = [];       // ROADMAP 477 夜螢群 [{id, wx, wy, remaining}]
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
@@ -3471,6 +3472,8 @@
             existing.ensemble = (p.ensemble | 0) || 0;
             // ROADMAP 470：放風箏——是否正在放風箏（前端畫順風飄揚的風箏）。
             existing.flying_kite = !!p.flying_kite;
+            // ROADMAP 477：夜螢提燈——提燈裡的螢火數（夜裡 >0 在身邊畫一圈暖黃柔光，越多越亮）。
+            existing.lantern_fireflies = (p.lantern_fireflies | 0) || 0;
             // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
             existing.well_fed = (typeof p.well_fed === "number") ? p.well_fed : null;
             // ROADMAP 407：拿手菜熟練——飽足來自順手／拿手料理時的徽記（生手＝無）。
@@ -3637,6 +3640,7 @@
         dustNodes = Array.isArray(msg.dust_nodes) ? msg.dust_nodes : [];
         // 夜間乙太泉（ROADMAP 162）。
         nightSpringNodes = Array.isArray(msg.night_spring_nodes) ? msg.night_spring_nodes : [];
+        fireflySwarms = Array.isArray(msg.firefly_swarms) ? msg.firefly_swarms : [];
         // 旅行商人（ROADMAP 135）。
         if (msg.wandering_merchant_secs > 0) {
           wanderingMerchantUntilMs = performance.now() + msg.wandering_merchant_secs * 1000;
@@ -7533,6 +7537,7 @@
     if (nearestEnemy(me)) return "attack";
     if (nearestDustNode(me)) return "collect_dust";
     if (nearestSpringNode(me)) return "collect_spring";
+    if (nearestFireflySwarm(me)) return "catch_firefly";
     if (nearestSeasonalNode(me)) return "gather_seasonal";
     if (nearestHarvestable(me)) return "gather";
     const f = me.facing === undefined ? Math.PI / 2 : me.facing;
@@ -7561,6 +7566,8 @@
       else { ws.send(JSON.stringify({ type: "collect_spring_node", node_id: spn.id })); spawnTapFlash(spn.wx, spn.wy); }
       return;
     }
+    // 附近有夜螢群時捕螢入提燈（ROADMAP 477）。
+    if (tryCatchFirefly(me)) return;
     // 附近有季節性節點時採集（ROADMAP 154）。
     const sn = nearestSeasonalNode(me);
     if (sn) { ws.send(JSON.stringify({ type: "GatherSeasonalNode", node_id: sn.id })); spawnTapFlash(sn.wx, sn.wy); return; }
@@ -7600,7 +7607,7 @@
     ctx.lineWidth = 3;
     ctx.strokeStyle = isAttacking ? `rgba(255,120,120,${(0.5 + attackCoolPct * 0.3).toFixed(3)})` : "rgba(220,230,240,0.5)";
     ctx.stroke();
-    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧", chop: "🪓" }[currentActionKind(me)] || "✋";
+    const icon = { attack: "⚔️", gather: "✋", dig: "⛏️", build: "🏗️", farm: "🌱", collect_dust: "☄️", collect_spring: "💧", catch_firefly: "🪄", chop: "🪓" }[currentActionKind(me)] || "✋";
     ctx.font = `30px ${UI_FONT}`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -8060,6 +8067,13 @@
     // 安靜打坐光圈（ROADMAP 391）：正在打坐的玩家身旁漾出金色呼吸光圈，
     // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
     if (p.meditating) drawMeditationGlow(sx, sy + 8);
+
+    // 夜螢提燈（ROADMAP 477）：夜裡提燈有螢火的玩家，身邊漾起一圈暖黃柔光（越多越亮），
+    // 並在身側畫一盞螢火燈——全服旁觀者一眼看見「誰提著一盞螢火燈」（自我表達）。畫在陰影之上、
+    // 角色本體之下。只在夜色夠暗時畫（與後端「夜間才有螢火」一致；白天提燈恆空）。
+    if ((p.lantern_fireflies | 0) > 0 && daynight && daynight.light < 0.6) {
+      drawLanternGlow(sx, sy + 8, p.lantern_fireflies | 0);
+    }
 
     // 林蔭小憩（ROADMAP 467）：站在社群種大的成樹樹蔭下、未倒地的旅人，腳邊漾起一圈柔和涼意
     // 光暈＋偶爾飄起一片 🌿——讓世界一眼看見「有人正在樹蔭下歇腳療傷」（後端同步加速其脫戰回血）。
@@ -8945,6 +8959,7 @@
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
+    safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
     safeDraw("villageLandmark", () => drawVillageLandmark(camX, camY)); // 新手村地標
@@ -11806,6 +11821,47 @@
     return best;
   }
 
+  // 夜螢提燈（ROADMAP 477）：回傳玩家搆得到的最近螢群（與後端 CATCH_REACH=70 對齊），沒有就 null。
+  const FIREFLY_CATCH_REACH = 70;
+  function nearestFireflySwarm(me) {
+    if (!me || fireflySwarms.length === 0) return null;
+    let best = null;
+    let bestD = FIREFLY_CATCH_REACH * FIREFLY_CATCH_REACH;
+    for (const s of fireflySwarms) {
+      const dx = s.wx - me.x;
+      const dy = s.wy - me.y;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = s; }
+    }
+    return best;
+  }
+  // 點擊版：把螢群依「點到哪」找（與乙太泉同 40px 命中圈）。供 farmAtScreen 點擊分派用。
+  function nearestFireflySwarm0(clientX, clientY) {
+    if (fireflySwarms.length === 0) return null;
+    const rect0 = canvas.getBoundingClientRect();
+    const twx = clientX - rect0.left + lastCam.x;
+    const twy = clientY - rect0.top + lastCam.y;
+    let best = null;
+    let bestD = 40 * 40;
+    for (const s of fireflySwarms) {
+      const dx = s.wx - twx;
+      const dy = s.wy - twy;
+      const d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = s; }
+    }
+    return best;
+  }
+  // 嘗試捕一隻螢火入提燈：身旁有螢群就送 CatchFirefly 並閃一下，回傳是否處理了。
+  // 集中成一個 helper，供三條輸入分派（鍵盤／手把／觸控動作鍵、點擊）共用，骨架不重複。
+  function tryCatchFirefly(me) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    const sw = nearestFireflySwarm(me);
+    if (!sw) return false;
+    ws.send(JSON.stringify({ type: "catch_firefly", swarm_id: sw.id }));
+    spawnTapFlash(sw.wx, sw.wy);
+    return true;
+  }
+
   // 繪製夜間乙太泉節點（ROADMAP 162）：紫色脈動光圈，夜間探索感。
   // ROADMAP 362：滿月夜的「月華泉」(n.moonlit) 改畫銀金月暈＋🌕 點綴，與尋常紫泉一眼區隔。
   function drawNightSprings(camX, camY, now) {
@@ -11861,6 +11917,52 @@
         ctx.strokeText("🌙 汲取乙太泉 [E]", sx, ty);
         ctx.fillStyle = "rgba(220,160,255,0.95)";
         ctx.fillText("🌙 汲取乙太泉 [E]", sx, ty);
+      }
+      ctx.restore();
+    }
+  }
+
+  // 繪製夜螢群（ROADMAP 477）：每群是一簇閃爍的暖黃螢光，剩越多螢點越密。
+  // 純前端：螢點以 id＋index 錯開相位飄動、緩慢明滅，弱機友善（無 reduceMotion 也只是輕微浮動）。
+  function drawFireflySwarms(camX, camY, now) {
+    if (fireflySwarms.length === 0) return;
+    const me = myId ? players.get(myId) : null;
+    const nearest = nearestFireflySwarm(me);
+    const t = now * 0.001;
+    for (const s of fireflySwarms) {
+      const sx = s.wx - camX;
+      const sy = s.wy - camY;
+      if (sx < -60 || sy < -60 || sx > viewW + 60 || sy > viewH + 60) continue;
+      const remaining = Math.max(0, Math.min(8, s.remaining | 0));
+      ctx.save();
+      // 群體柔光暈（暖黃綠，呼應螢火）
+      const pulse = 0.5 + 0.5 * Math.sin(t * 1.6 + s.id * 0.9);
+      ctx.beginPath();
+      ctx.arc(sx, sy, 22 + 4 * pulse, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(200,240,140,${(0.05 + 0.05 * pulse).toFixed(3)})`;
+      ctx.fill();
+      // 一群螢點：每隻沿小橢圓緩飄、各自明滅（剩幾隻畫幾顆，最多 8 顆免過密）
+      for (let i = 0; i < remaining; i++) {
+        const ph = s.id * 1.7 + i * 2.399; // 黃金角錯開，分布自然
+        const fx = sx + Math.cos(t * 0.9 + ph) * (10 + (i % 3) * 4);
+        const fy = sy + Math.sin(t * 1.3 + ph * 1.4) * (8 + (i % 2) * 4);
+        const blink = 0.45 + 0.55 * Math.sin(t * 3.0 + ph * 2.1);
+        ctx.beginPath();
+        ctx.arc(fx, fy, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(225,255,170,${(0.35 + 0.6 * blink).toFixed(3)})`;
+        ctx.fill();
+      }
+      // 靠近時的互動提示
+      if (s === nearest) {
+        ctx.font = `12px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        const ty = sy - 30;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("🪄 捕螢入提燈 [E]", sx, ty);
+        ctx.fillStyle = "rgba(230,255,180,0.95)";
+        ctx.fillText("🪄 捕螢入提燈 [E]", sx, ty);
       }
       ctx.restore();
     }
@@ -17307,6 +17409,53 @@
     ctx.restore();
   }
   // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
+
+  // ── 夜螢提燈柔光（ROADMAP 477）─────────────────────────────────────────────────
+  // 由 drawPlayer 對「夜裡提燈有螢火」的玩家腳邊呼叫：漾起一圈暖黃綠柔光（螢火越多越亮越大，
+  // 封頂在 LANTERN_MAX=12），並在身側點一盞小提燈、繞著幾點螢光。純表現、自我表達，
+  // 全服旁觀者皆可見。尊重 reduceMotion（不脈動、不繞飛，只留靜態柔光＋燈）。自有 save/restore。
+  function drawLanternGlow(cx, cy, count) {
+    const n = Math.max(1, Math.min(12, count | 0));
+    const frac = n / 12;                                   // 0~1：螢火越多越亮
+    const pulse = reduceMotion ? 0.6 : 0.45 + 0.35 * Math.sin(renderNow / 1000);
+    const r = (reduceMotion ? 20 : 17 + pulse * 5) + frac * 14; // 半徑隨數量成長
+    ctx.save();
+    const a = (0.18 + 0.4 * frac) * pulse;                 // 暖黃綠光暈
+    const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+    grad.addColorStop(0, `rgba(230, 250, 160, ${(0.5 * a).toFixed(3)})`);
+    grad.addColorStop(0.55, `rgba(210, 240, 130, ${(0.28 * a).toFixed(3)})`);
+    grad.addColorStop(1, "rgba(200, 235, 120, 0)");
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // 身側的小提燈（暖黃，畫在腳邊偏右）
+    const lx = cx + 10;
+    const ly = cy - 4;
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 232, 150, ${(0.7 + 0.3 * pulse).toFixed(3)})`;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(180, 140, 60, 0.8)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // 繞著提燈飛的幾點螢火（最多 4 點，隨數量現身；reduceMotion 下定點）
+    const dots = Math.min(4, Math.ceil(n / 3));
+    for (let i = 0; i < dots; i++) {
+      const ang = reduceMotion
+        ? (i / dots) * Math.PI * 2
+        : renderNow / 600 + (i / dots) * Math.PI * 2;
+      const fx = cx + Math.cos(ang) * (r * 0.5);
+      const fy = cy + Math.sin(ang) * (r * 0.32);
+      const blink = reduceMotion ? 0.7 : 0.4 + 0.5 * Math.sin(renderNow / 250 + i * 1.7);
+      ctx.beginPath();
+      ctx.arc(fx, fy, 1.7, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(235, 255, 175, ${(0.4 + 0.5 * blink).toFixed(3)})`;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  // ── 夜螢提燈柔光 end ─────────────────────────────────────────────────────────
 
   // ── 林蔭小憩光暈（ROADMAP 467）─────────────────────────────────────────────────
   // 由 drawPlayer 對「站在成樹樹蔭下、未倒地」的玩家腳邊呼叫；漾起一圈柔和的清涼綠意光暈，
@@ -28450,6 +28599,11 @@
         }
       }
     }
+    // ROADMAP 477：點到夜螢群就捕一隻入提燈（伺服器以玩家權威座標把關 CATCH_REACH）。
+    {
+      const sw = nearestFireflySwarm0(clientX, clientY);
+      if (sw) { ws.send(JSON.stringify({ type: "catch_firefly", swarm_id: sw.id })); spawnTapFlash(sw.wx, sw.wy); return; }
+    }
     // ROADMAP 154：點到季節性節點就採集。
     {
       const sn = nearestSeasonalNode(me);
@@ -28656,6 +28810,8 @@
         return;
       }
     }
+    // 次判夜螢群捕螢（ROADMAP 477）：身旁有螢群就捕一隻入提燈。
+    if (tryCatchFirefly(me)) return;
     // 次判季節性節點採集（ROADMAP 154）。
     {
       const sn = nearestSeasonalNode(me);
