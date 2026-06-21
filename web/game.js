@@ -2782,6 +2782,8 @@
   let starCrystals = []; // ROADMAP 50 夜採星晶礦脈 [{x, y}] — 只有夜間非空
   let sprinklers = []; // ROADMAP 112 灑水器 [{owner, wx, wy}]
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
+  let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
+  const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
   let gatheringUntilMs = 0;  // ROADMAP 124 廣場聚會加成到期的 performance.now() 時刻（0=無聚會）
@@ -3562,6 +3564,7 @@
         farmCropPlots = msg.farm_crop_plots || [];
         starCrystals = msg.star_crystals || [];
         sprinklers = msg.sprinklers || [];
+        campfires = msg.campfires || []; // ROADMAP 474 野營篝火
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -4069,6 +4072,8 @@
           updateBuskBtn(me, isGuest);
           // 放風箏按鈕（ROADMAP 470）：已登入、戶外、未倒地才顯示
           updateKiteBtn(me, isGuest);
+          // 野營篝火按鈕（ROADMAP 474）：已登入、戶外、未倒地才顯示
+          updateCampfireBtn(me, isGuest);
         }
         break;
       }
@@ -8776,6 +8781,7 @@
     safeDraw("terrain", () => drawTerrain(camX, camY)); // 可挖地形方塊（C-1 純顯示）
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
+    safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
@@ -9669,6 +9675,17 @@
     }
   }
   // ── 放風箏按鈕 end ────────────────────────────────────────────────────────────
+
+  // ── 野營篝火按鈕（ROADMAP 474）──────────────────────────────────────────────────
+  function updateCampfireBtn(me, isGuestUser) {
+    const btn = document.getElementById("campfireBtn");
+    if (!btn) return;
+    // 戶外、已登入、未倒地才能升火（室內不生野火；升火頻率由後端每人冷卻＋全服上限把關）。
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed;
+    btn.classList.toggle("hidden", !canShow);
+  }
+  // ── 野營篝火按鈕 end ──────────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -11313,6 +11330,56 @@
       // 過去用 canvas.width(=viewW*dpr 裝置像素)當邊界，dpr≥2 時剔除框過大，畫面外的灑水器仍嘗試繪製。
       if (sx < -32 || sx > viewW + 32 || sy < -32 || sy > viewH + 32) continue;
       ctx.fillText("💧", sx, sy);
+    }
+    ctx.restore();
+  }
+
+  // 野營篝火（ROADMAP 474）：畫一圈暖意光暈＋跳動的火焰。落入光暈的野獸會被火光逼退，
+  // 替玩家在野外圍出一塊敵人不來犯的安全角落。光暈半徑與後端暖意判定同口徑（CAMPFIRE_WARMTH_RADIUS）。
+  // reduceMotion 下火焰停止抖動（仍看得見火堆與暖意圈），照顧暈眩敏感的玩家。
+  function drawCampfires(camX, camY, nowMs) {
+    if (!campfires.length) return;
+    const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    ctx.save();
+    for (const c of campfires) {
+      const sx = c.wx - camX;
+      const sy = c.wy - camY;
+      const r = CAMPFIRE_WARMTH_RADIUS;
+      // 視窗剔除：連同暖意圈整個在畫面外才略過。
+      if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
+      // 火快燒完（remaining_secs 小）時暖意圈與火光一起漸弱，預告「火要熄了」。
+      const fade = Math.max(0.25, Math.min(1, (c.remaining_secs || 0) / 12));
+      // 暖意光暈：橙黃徑向漸層，由內而外淡出；外圈一道虛線標出「敵人不來犯」的邊界。
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      grad.addColorStop(0, `rgba(255,176,84,${0.22 * fade})`);
+      grad.addColorStop(0.5, `rgba(255,140,60,${0.10 * fade})`);
+      grad.addColorStop(1, "rgba(255,120,40,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.setLineDash([6, 8]);
+      ctx.strokeStyle = `rgba(255,170,90,${0.30 * fade})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      // 火堆本體：木柴＋跳動的火焰。火焰隨時間輕微縮放，像在劈啪燃燒。
+      const flick = reduce ? 1 : 1 + 0.12 * Math.sin(nowMs / 110 + (c.id || 0));
+      ctx.font = `16px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.globalAlpha = fade;
+      ctx.fillText("🪵", sx, sy + 4);
+      ctx.save();
+      ctx.translate(sx, sy - 6);
+      ctx.scale(flick, flick);
+      ctx.font = `20px ${UI_FONT}`;
+      ctx.fillText("🔥", 0, 0);
+      ctx.restore();
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
   }
@@ -29429,6 +29496,17 @@
           safeSend({ type: "begin_kite" });
           announce("拿出風箏，跟著今天的風飄起來——整片天的風箏都朝同一風向斜飛");
         }
+      });
+    }
+    // 🔥 野營篝火（ROADMAP 474）：在腳下升起一堆篝火，火光暖意逼退附近野獸。
+    const campfireBtn = document.getElementById("campfireBtn");
+    if (campfireBtn) {
+      campfireBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        safeSend({ type: "light_campfire" });
+        announce("升起一堆篝火——火光暖意把附近的野獸逼退，圍出一塊喘息的安全角落（燒完即熄）");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

@@ -2456,6 +2456,32 @@ for (const sc of scenarios) {
   }
 }
 
+// 野營篝火（ROADMAP 474）：注入數堆篝火（含視野外一堆、快燒完一堆、壞 remaining），
+// 驗證 drawCampfires 暖意光暈／虛線邊界／火焰跳動／剔除路徑連跑多幀皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：野營篝火（暖意圈＋火焰＋將熄漸弱＋視野外剔除，連跑 5 幀）──");
+  const cSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = cSnap.players[0];
+  cSnap.campfires = [
+    { id: 1, wx: me.x + 40, wy: me.y + 20, remaining_secs: 90 }, // 剛升起、滿燃
+    { id: 2, wx: me.x - 120, wy: me.y - 60, remaining_secs: 5 }, // 快燒完、漸弱
+    { id: 3, wx: 99999, wy: 99999, remaining_secs: 60 },         // 視野外：應被剔除
+    { id: 4, wx: me.x, wy: me.y, remaining_secs: 0 },            // 邊界 remaining=0：漸弱保底不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...cSnap, type: "snapshot" }) });
+  const r = pump("野營篝火", 5);
+  // 再餵一份「無篝火」snapshot，驗證早退路徑不拋例外。
+  const noFire = JSON.parse(JSON.stringify(snapshot));
+  noFire.campfires = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...noFire, type: "snapshot" }) });
+  const r2 = pump("野營篝火無火", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 野營篝火：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 野營篝火：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 野營篝火：暖意圈＋火焰＋將熄漸弱＋視野外剔除＋無火早退皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
