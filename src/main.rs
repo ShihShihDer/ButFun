@@ -5,6 +5,7 @@
 
 mod achievement;
 mod active_skill;
+mod affliction;
 mod auth;
 mod class;
 mod director;

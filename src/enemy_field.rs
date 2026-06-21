@@ -833,6 +833,37 @@ impl EnemyField {
         total
     }
 
+    /// ROADMAP 469（敵人毒襲）：此座標附近「會施毒的存活敵人」注入的中毒秒數，
+    /// 取範圍內最大值（0＝附近沒有帶毒敵人）。鏡像 `threat_at` 的 3×3 chunk + `ATTACK_REACH`
+    /// 範圍判定，由 `game.rs` 在「本秒受到反擊傷害」時呼叫，決定要不要替玩家注入中毒。
+    pub fn poison_secs_at(&self, px: f32, py: f32) -> f32 {
+        if !px.is_finite() || !py.is_finite() {
+            return 0.0;
+        }
+        let (cx, cy) = chunk_key(px, py);
+        let reach_sq = ATTACK_REACH * ATTACK_REACH;
+        let mut max_secs = 0.0f32;
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if let Some(enemies) = self.chunks.get(&(cx + dx, cy + dy)) {
+                    for placed in enemies {
+                        if !placed.enemy.is_alive() {
+                            continue;
+                        }
+                        let dist_x = placed.x - px;
+                        let dist_y = placed.y - py;
+                        if dist_x * dist_x + dist_y * dist_y <= reach_sq {
+                            if let Some(secs) = crate::affliction::poison_on_hit(placed.enemy.kind()) {
+                                max_secs = max_secs.max(secs);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        max_secs
+    }
+
     /// 在指定世界座標注入一隻事件敵人（如宇宙裂縫守護者）。
     /// 使用 `index + RIFT_ID_OFFSET` 確保 ID 不與確定性生成的 ID 衝突。
     pub fn inject_event_enemy(&mut self, x: f32, y: f32, kind: EnemyKind) {

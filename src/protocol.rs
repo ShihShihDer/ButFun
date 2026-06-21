@@ -2253,6 +2253,13 @@ pub struct PlayerView {
     /// 面向玩家文案由前端依 key 對應（i18n 集中前端）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_nudge: Option<String>,
+
+    // ── 中毒狀態（ROADMAP 469 敵人毒襲）─────────────────────────────────────────
+    /// 此玩家此刻是否中毒（被乙太迷霧／孢子系敵人擊中所致）。廣播給所有人——
+    /// 前端對中毒玩家畫頭頂飄散的綠色毒泡，自己中毒時 HUD 一眼看得到該撤離 / 回鎮解毒。
+    /// false 時略過序列化（省頻寬，絕大多數玩家平時不中毒）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub poisoned: bool,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -2883,6 +2890,7 @@ mod tests {
                 home_dist: None,
                 home_dir: None,
                 idle_nudge: None,
+                poisoned: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3173,6 +3181,7 @@ mod tests {
             home_dist: None,
             home_dir: None,
             idle_nudge: None,
+            poisoned: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -3468,6 +3477,7 @@ mod tests {
             home_dist: None,
             home_dir: None,
             idle_nudge: None,
+            poisoned: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -3539,6 +3549,7 @@ mod tests {
             home_dist: None,
             home_dir: None,
             idle_nudge: None,
+            poisoned: false,
         }
     }
 

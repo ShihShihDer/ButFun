@@ -553,6 +553,27 @@
     return { canopy: hue.canopy, rib: hue.rib, alpha };
   }
 
+  // 中毒毒泡（ROADMAP 469 敵人毒襲）：中毒玩家頭頂飄散的毒綠氣泡規格。純函式、決定性、零副作用，
+  // 故可在 render-smoke 單元斷言真值表。給時間 now(ms) 與 seed（由玩家 id 雜湊而得，讓各泡錯落），
+  // 回傳 POISON_BUBBLE_COUNT 顆泡的 {dx, dy, r, alpha}：每顆在約 1.4s 週期內由頭頂往上飄、邊升邊淡出。
+  // 呼叫端：reduceMotion 下傳固定 now（定格不動，仍看得到「中毒」這件事），否則傳 performance.now()。
+  const POISON_BUBBLE_COUNT = 3;
+  function poisonBubbleSpec(now, seed) {
+    const t = Number(now) || 0;
+    const s = (Number(seed) >>> 0);
+    const out = [];
+    for (let i = 0; i < POISON_BUBBLE_COUNT; i++) {
+      // 每顆泡有自己的相位（由 seed+i 決定起點），週期 ~1.4s 內 [0,1) 由下往上。
+      const phase = ((t / 1400) + ((s % 100) / 100) + i / POISON_BUBBLE_COUNT) % 1;
+      const dy = -6 - phase * 14;                       // 由頭頂 -6 往上飄到 -20
+      const dx = ((((s >> (i * 3)) & 7) - 3.5)) * 2.2;  // 依 seed 左右錯落 [-7.7, 7.7]
+      const r = 1.6 + (1 - phase) * 1.4;                // 升起時略大、頂端縮小
+      const alpha = 0.55 * (1 - phase);                 // 升起淡出
+      out.push({ dx, dy, r, alpha });
+    }
+    return out;
+  }
+
   // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
   // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
   // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
@@ -604,7 +625,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3391,6 +3412,8 @@
             // ROADMAP 423：蓄力重擊——進行中蓄力的進度 [0,1]（沒在蓄力＝null）。
             // 自己與旁觀者都看得到，前端據此渲染逐漸收束、滿蓄即圓滿的蓄力環。
             existing.charge_progress = (typeof p.charge_progress === "number") ? p.charge_progress : null;
+            // ROADMAP 469：中毒旗標（沒中毒時快照略過序列化＝undefined→false）。前端據此畫頭頂毒泡。
+            existing.poisoned = !!p.poisoned;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -8421,6 +8444,38 @@
       ctx.strokeStyle = `rgba(140,200,255,${(0.35 + strength * 0.45).toFixed(3)})`;
       ctx.lineWidth = 2.5;
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // 中毒毒泡（ROADMAP 469 敵人毒襲）：中毒的玩家頭頂飄散毒綠氣泡——自己與旁觀者都看得到
+    // （poisoned 隨快照廣播），一眼提示「中毒了、該撤離 / 回鎮解毒」。屬玩法回饋，reduceMotion
+    // 下定格不動（傳固定相位）仍顯示，不靠動畫才看得懂。
+    if (p.poisoned) {
+      // 由 id 確定性算 seed，讓每位玩家的泡錯落、但同一人穩定。
+      let seed = 0;
+      const pid = typeof p.id === "string" ? p.id : "";
+      for (let i = 0; i < pid.length; i++) seed = (seed * 31 + pid.charCodeAt(i)) >>> 0;
+      const nowMs = reduceMotion ? 0 : performance.now();
+      const bubbles = poisonBubbleSpec(nowMs, seed);
+      ctx.save();
+      for (const b of bubbles) {
+        if (b.alpha <= 0) continue;
+        ctx.beginPath();
+        ctx.arc(sx + b.dx, by - 14 + b.dy, b.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(150,210,90,${b.alpha.toFixed(3)})`;
+        ctx.fill();
+      }
+      // 自己中毒時補一句溫柔提示：毒會穿甲持續掉血，回鎮可加速解毒（面向玩家字串，i18n 集中前端）。
+      if (p.id === myId) {
+        ctx.font = `11px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.strokeText("☠️ 中毒中…回鎮解毒", sx, by - 30);
+        ctx.fillStyle = "rgba(186,236,120,0.98)";
+        ctx.fillText("☠️ 中毒中…回鎮解毒", sx, by - 30);
+      }
       ctx.restore();
     }
 
