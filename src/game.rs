@@ -3083,20 +3083,35 @@ pub fn spawn(app: AppState) {
             {
                 let project_completed = app.town_project.read().unwrap().status
                     == crate::town_project::TownProjectStatus::Completed;
-                let triggered = app.meteor_shower.write().unwrap().tick(dt, project_completed);
-                if triggered {
-                    let dur_min = (crate::meteor_shower::SHOWER_DURATION_SECS / 60.0) as u32;
-                    let msg = format!(
-                        "☄️ 流星雨降臨！城鎮周圍出現 {} 個星塵採集點，限時 {} 分鐘——快去採集吧！",
-                        crate::meteor_shower::DUST_NODE_COUNT,
-                        dur_min,
-                    );
-                    let _ = app.tx_chat.send(msg);
-                    // 城鎮記憶石（ROADMAP 157）：流星雨是稀有天象，值得留存。
-                    app.town_memory.write().unwrap().push_event(
-                        "🌠",
-                        format!("流星雨降臨！城鎮周圍出現 {} 個星塵採集點", crate::meteor_shower::DUST_NODE_COUNT),
-                    );
+                // 守 prod-deadlock：寫鎖內只 tick 並取出結果即釋放鎖，出鎖後才廣播。
+                let shower_tick = app.meteor_shower.write().unwrap().tick(dt, project_completed);
+                match shower_tick {
+                    crate::meteor_shower::ShowerTick::Started => {
+                        let dur_min = (crate::meteor_shower::SHOWER_DURATION_SECS / 60.0) as u32;
+                        let msg = format!(
+                            "☄️ 流星雨降臨！城鎮周圍出現 {} 個星塵採集點，限時 {} 分鐘——快去採集、向流星許個願吧！",
+                            crate::meteor_shower::DUST_NODE_COUNT,
+                            dur_min,
+                        );
+                        let _ = app.tx_chat.send(msg);
+                        // 城鎮記憶石（ROADMAP 157）：流星雨是稀有天象，值得留存。
+                        app.town_memory.write().unwrap().push_event(
+                            "🌠",
+                            format!("流星雨降臨！城鎮周圍出現 {} 個星塵採集點", crate::meteor_shower::DUST_NODE_COUNT),
+                        );
+                    }
+                    // 流星雨共願落幕（ROADMAP 471）：有人許過願才廣播共願總結（無人許願靜默）。
+                    crate::meteor_shower::ShowerTick::Ended { wishes } if wishes > 0 => {
+                        let _ = app.tx_chat.send(format!(
+                            "🌠 這場流星雨，{} 位旅人一同許下了願望——願星河記得每一個心願。",
+                            wishes,
+                        ));
+                        app.town_memory.write().unwrap().push_event(
+                            "✨",
+                            format!("一場流星雨下，{} 位旅人一同許願", wishes),
+                        );
+                    }
+                    crate::meteor_shower::ShowerTick::Ended { .. } | crate::meteor_shower::ShowerTick::None => {}
                 }
             }
 

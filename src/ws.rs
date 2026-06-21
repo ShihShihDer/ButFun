@@ -839,6 +839,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // 同伴扶起限流（ROADMAP 464）：比照 emote／擊掌／喝采從嚴（每秒至多 3 次，超量靜默丟棄）。
     let mut rl_helpup_win = std::time::Instant::now();
     let mut rl_helpup_n: u32 = 0;
+    // 流星雨共願限流（ROADMAP 471）：比照喝采從嚴（每秒至多 3 次，超量靜默丟棄）。
+    let mut rl_wish_win = std::time::Instant::now();
+    let mut rl_wish_n: u32 = 0;
     // 逗玩接物限流（ROADMAP 345）：比照 emote／擊掌／喝采從嚴（每秒至多 3 次，超量靜默丟棄）——
     // 擋封包洪流；一趟接物未結束前不重複開新接物另由 game.rs 把關（`pet_fetch.is_none()` 才丟得出）。
     let mut rl_petfetch_win = std::time::Instant::now();
@@ -1412,6 +1415,40 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 對象身上、且對象需是已登入玩家才持久化得了，訪客互喝采重啟即逝、無妨）。
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         p.cheer_offer = crate::player_cheer::OFFER_TICKS;
+                    }
+                }
+                Ok(ClientMsg::MakeWish) => {
+                    // 流星雨共願（ROADMAP 471）：向當前這場流星雨許下一個心願——一次全服共享的療癒
+                    // 儀式。限流（比照喝采：每秒至多 3 次，超量靜默丟棄）。
+                    if rl_wish_win.elapsed().as_secs() >= 1 {
+                        rl_wish_win = std::time::Instant::now();
+                        rl_wish_n = 0;
+                    }
+                    rl_wish_n += 1;
+                    if rl_wish_n > 3 {
+                        continue;
+                    }
+                    // 先取許願者名字（讀鎖即取即放）：須已登入、且不在室內（室內看不見星空）。
+                    let wisher_name: Option<String> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| p.indoor_plot_id.is_none())
+                            .map(|p| p.name.clone())
+                    };
+                    if let Some(name) = wisher_name {
+                        // 另開流星雨寫鎖記錄許願（不與 players 鎖巢狀；守 prod 死鎖鐵律）。
+                        // make_wish 回 Some(total)=本場新許願（含這次的累計人數）、None=無流星雨或本場已許過。
+                        let total = app.meteor_shower.write().unwrap().make_wish(id);
+                        if let Some(total) = total {
+                            // 出鎖後才全服廣播共願事件（許願者本人前端報讀、旁人默默更新計數）。
+                            let _ = app.tx.send(std::sync::Arc::new(ServerMsg::WishMade {
+                                player_id: id,
+                                name,
+                                total,
+                            }));
+                        }
+                        // None：無流星雨 / 本場已許願——靜默忽略。
                     }
                 }
                 Ok(ClientMsg::HelpUp) => {

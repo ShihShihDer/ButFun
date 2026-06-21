@@ -2026,7 +2026,10 @@
       return;
     }
     const secs = Math.ceil(remainMs / 1000);
-    const text = `☄️ 流星雨 ${secs}s（採集星塵！）`;
+    // ROADMAP 471 共願：點此 pill 即向流星雨許願；已許願後改顯示共願人數。
+    const text = meteorWished
+      ? `☄️ 流星雨 ${secs}s ✨已許願（${meteorWishTotal} 人共願）`
+      : `☄️ 流星雨 ${secs}s ✨點此許願`;
     if (text === lastMeteorShowerText) return;
     lastMeteorShowerText = text;
     if (!pill) {
@@ -2038,7 +2041,14 @@
         "font-size:.75rem", "font-weight:600",
         "padding:3px 10px",
         "background:#0d1a2a", "color:#88ccff", "border:1px solid #4488bb",
+        "cursor:pointer",
       ].join(";");
+      newPill.title = "向流星雨許下一個心願";
+      // 點擊許願（已許願則無動作；無流星雨時 pill 本就隱藏）。重複送伺服器端冪等、無害。
+      newPill.addEventListener("click", () => {
+        if (meteorWished) return;
+        try { ws.send(JSON.stringify({ type: "make_wish" })); } catch {}
+      });
       _ensureBannerColumn().appendChild(newPill);
     }
     const t = document.getElementById("hudMeteorShower");
@@ -2778,6 +2788,8 @@
   let starForecastUntilMs = 0;  // ROADMAP 132 天文台星象加成到期的 performance.now() 時刻（0=無加成）
   let starForecastBonus = "";   // ROADMAP 132 當前加成類型字串
   let meteorShowerUntilMs = 0;  // ROADMAP 133 流星雨到期的 performance.now() 時刻（0=無流星雨）
+  let meteorWished = false;     // ROADMAP 471 本場流星雨自己是否已許願
+  let meteorWishTotal = 0;      // ROADMAP 471 本場目前累計的共願人數
   let dustNodes = [];           // ROADMAP 133 活躍星塵採集點 [{id, wx, wy}]
   let lastMeteorShowerText = null;
   let nightSpringNodes = [];    // ROADMAP 162 夜間乙太泉採集點 [{id, wx, wy}]
@@ -3569,9 +3581,12 @@
         }
         // 流星雨（ROADMAP 133）。
         if (msg.meteor_shower_secs > 0) {
+          // 新一場流星雨開場（先前無流星雨）→ 重置本場共願狀態（ROADMAP 471）。
+          if (meteorShowerUntilMs <= 0) { meteorWished = false; meteorWishTotal = 0; lastMeteorShowerText = null; }
           meteorShowerUntilMs = performance.now() + msg.meteor_shower_secs * 1000;
         } else if (msg.meteor_shower_secs === 0 && meteorShowerUntilMs > 0) {
           meteorShowerUntilMs = 0;
+          meteorWished = false; meteorWishTotal = 0;
         }
         dustNodes = Array.isArray(msg.dust_nodes) ? msg.dust_nodes : [];
         // 夜間乙太泉（ROADMAP 162）。
@@ -4419,6 +4434,18 @@
           announce(`你扶起了倒下的 ${msg.target || "旅人"}`);
           SFX.click();
         }
+        break;
+      }
+      case "wish_made": {
+        // 流星雨共願（ROADMAP 471）：有人向當前這場流星雨許下了願望。更新本場共願人數；
+        // 許願者本人前端報讀＋標為已許願，旁人只默默更新計數（避免全服洗頻）。
+        meteorWishTotal = Number(msg.total) || meteorWishTotal;
+        if (msg.player_id && msg.player_id === myId) {
+          meteorWished = true;
+          announce(`✨ 你向流星雨許下了願望——目前已有 ${meteorWishTotal} 位旅人一同許願`);
+          if (SFX.success) SFX.success();
+        }
+        lastMeteorShowerText = null; // 強制 HUD pill 重繪反映新計數／已許願態
         break;
       }
       case "locale_entered": {
