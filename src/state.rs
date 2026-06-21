@@ -319,6 +319,9 @@ pub struct Player {
     /// 記憶體前置、不持久化、零 migration、重啟清空（沒在蓄＝None）；
     /// 僅 elapsed 隨 PlayerView 廣播以渲染力道條。由 game.rs 每 tick 推進（逾時即中斷）。
     pub skipping: Option<crate::skipstone::StoneSkip>,
+    /// 打水漂撈寶嘗試計數（ROADMAP 483）：摻進撈寶擲骰 seed，確保每趟結果不同；
+    /// 記憶體前置、不持久化、零 migration、重啟清空。
+    pub skip_attempt_count: u64,
 
     /// 格擋結算後的冷卻（ROADMAP 408）：只擋開新一趟格擋，避免連續格擋達成永久無敵。
     /// 記憶體前置、不持久化、零 migration、重啟清零。由 game.rs 每 tick 遞減。
@@ -1749,6 +1752,7 @@ mod tests {
             chopping: None,
             skip_cooldown: 0.0,
             skipping: None,
+            skip_attempt_count: 0,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,

@@ -113,6 +113,7 @@ mod cooking_steps;
 mod aether_draw;
 mod woodcutting;
 mod skipstone; // ROADMAP 475 打水漂·水域第一個玩的動詞
+mod skip_treasure; // ROADMAP 483 打水漂撈寶·把水漂接進經濟／風險循環
 mod coop_labour; // ROADMAP 414 並肩協作·結伴勞動默契加成
 mod constellation;
 mod ancient_inscription;

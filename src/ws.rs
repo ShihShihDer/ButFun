@@ -166,6 +166,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             chopping: None,
             skip_cooldown: 0.0,
             skipping: None,
+            skip_attempt_count: 0,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
@@ -303,6 +304,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             chopping: None,
             skip_cooldown: 0.0,
             skipping: None,
+            skip_attempt_count: 0,
             guard_cooldown: 0.0,
             guarding: None,
             guard_shield: None,
@@ -8349,17 +8351,39 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 放手甩出：以當下力道值算彈跳次數，清狀態＋起冷卻，朝最近水域方向廣播給附近所有人演出。
                     // 鎖序：players 寫鎖內取「彈跳次數＋座標」並清狀態（water_dir_near 純查地形、零鎖無 IO，
                     // 可在鎖內安全呼叫），出鎖後才廣播（守 prod-deadlock 鐵律）。
+                    // ROADMAP 483 撈寶：放手結算時順手擲一把「水底震上什麼」——skip_find 是純函式、
+                    // 零 IO，可在鎖內安全呼叫；乙太進餘額、珍珠進背包都在 players 寫鎖內就地發放
+                    // （守 prod-deadlock：鎖內不再上別的鎖），把要廣播的回饋帶出鎖外。
                     let thrown = {
                         let mut players = app.players.write().unwrap();
                         match players.get_mut(&id) {
                             Some(p) => p.skipping.take().map(|s| {
                                 p.skip_cooldown = crate::skipstone::SKIP_COOLDOWN_SECS;
-                                (s.release(), p.x, p.y)
+                                let skips = s.release();
+                                // seed：player id 低 64 位 XOR 撈寶嘗試計數（每趟結果不同、可重現）。
+                                let seed = {
+                                    let id_bytes = p.id.as_u128();
+                                    ((id_bytes & 0xFFFF_FFFF_FFFF_FFFF) as u64)
+                                        ^ p.skip_attempt_count
+                                };
+                                p.skip_attempt_count = p.skip_attempt_count.wrapping_add(1);
+                                let find = crate::skip_treasure::skip_find(skips, seed);
+                                let find_ether = find.ether();
+                                if find_ether > 0 {
+                                    p.ether = p.ether.saturating_add(find_ether);
+                                }
+                                if let Some(item) = find.item() {
+                                    p.add_item_overflow(item, 1);
+                                }
+                                (skips, p.x, p.y, find_ether, find.pearl())
                             }),
                             None => None,
                         }
                     };
-                    if let Some((skips, px, py)) = thrown {
+                    if let Some((skips, px, py, find_ether, find_pearl)) = thrown {
+                        if find_ether > 0 || find_pearl {
+                            tracing::debug!(player = %id, skips, find_ether, find_pearl, "打水漂撈寶");
+                        }
                         // 朝最近一格水域甩出（站在水邊故理應有水；萬一沒有則退預設向右）。
                         let (dir_x, dir_y) =
                             crate::fishing::water_dir_near(px, py).unwrap_or((1.0, 0.0));
@@ -8370,6 +8394,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             y: py,
                             dir_x,
                             dir_y,
+                            find_ether,
+                            find_pearl,
                         }));
                     }
                 }
