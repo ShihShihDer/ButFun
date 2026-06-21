@@ -2234,6 +2234,12 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_false")]
     pub busking: bool,
 
+    // ── 街頭合奏·共鳴樂團（ROADMAP 472）──────────────────────────────────────
+    /// 此獻奏者所屬樂團的合奏人數（含自己）。≥2 時前端對其畫漸強的和聲音符與暖光、圍聽者見療癒；
+    /// 0／1（沒在合奏或單獨獻奏）時省略流量。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub ensemble: u8,
+
     // ── 放風箏（ROADMAP 470）─────────────────────────────────────────────────
     /// 玩家目前是否正在放風箏。true 時前端在該玩家頭頂畫一只順著世界風（430）飄揚的風箏，
     /// 旁觀者一眼看見「有人在放風箏」、整片天的風箏都朝同一風向斜飛。false 時省略流量。
@@ -2908,6 +2914,7 @@ mod tests {
                 chain_links: 0,
                 meditating: false,
                 busking: false,
+                ensemble: 0,
                 flying_kite: false,
                 well_fed: None,
                 well_fed_tier: None,
@@ -3200,6 +3207,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            ensemble: 0,
             flying_kite: false,
             well_fed: None,
             well_fed_tier: None,
@@ -3497,6 +3505,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            ensemble: 0,
             flying_kite: false,
             well_fed: None,
             well_fed_tier: None,
@@ -3570,6 +3579,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            ensemble: 0,
             flying_kite: false,
             well_fed: None,
             well_fed_tier: None,

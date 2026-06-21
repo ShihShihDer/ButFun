@@ -2428,6 +2428,34 @@ for (const sc of scenarios) {
   }
 }
 
+// 街頭合奏·共鳴樂團（ROADMAP 472）：單元斷言純函式 withinListenRadius／ensembleNoteCount 的真值表——
+// 聆賞半徑判定（中心／邊界內外／壞值保守 false，半徑須與後端 busking::LISTEN_RADIUS_PX 對齊）；
+// 頭頂音符枚數隨合奏人數從 2 加密、封頂 5、獨奏恆 2。
+{
+  const inRange = sandbox.__bfTest && sandbox.__bfTest.withinListenRadius;
+  const noteCount = sandbox.__bfTest && sandbox.__bfTest.ensembleNoteCount;
+  if (typeof inRange !== "function" || typeof noteCount !== "function") {
+    failed = true;
+    console.error("  ❌ 街頭合奏：game.js 未導出 withinListenRadius／ensembleNoteCount");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 街頭合奏：${msg}`); } };
+    const R = 160; // 對齊後端 busking::LISTEN_RADIUS_PX
+    expect(inRange(0, 0, 0, 0), "正中心算聆賞範圍內");
+    expect(inRange(0, 0, R - 1, 0), "剛好在半徑內算聽眾");
+    expect(!inRange(0, 0, R + 1, 0), "半徑外不算聽眾");
+    expect(!inRange(0, 0, NaN, 0) && !inRange(0, 0, 0, Infinity), "壞座標保守回 false");
+    // 音符枚數：獨奏（<2）恆 2；合奏隨人數加密、封頂 5。
+    expect(noteCount(0) === 2 && noteCount(1) === 2, "獨奏／未成團恆 2 枚音符");
+    expect(noteCount(2) === 3, "兩人合奏 3 枚");
+    expect(noteCount(3) === 4, "三人合奏 4 枚");
+    expect(noteCount(4) === 5, "四人合奏 5 枚");
+    expect(noteCount(99) === 5, "大團封頂 5 枚");
+    if (bad) failed = true;
+    else console.log("  ✅ 街頭合奏·共鳴樂團真值表：通過");
+  }
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

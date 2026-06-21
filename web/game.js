@@ -673,7 +673,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2824,6 +2824,8 @@
   let townShare = null;             // ROADMAP 369 鎮民互助分享送禮手勢 {giver, receiver, t}（null = 無人正在分享）
   let worldGroves = [];             // ROADMAP 370 玩家親手種下、隨真實時間長大的世界樹群 [{x, y, stage}]
   let groveShadeTrees = [];         // ROADMAP 467 成樹(🌳)座標快取，每幀由 drawWorldGroves 重建，供林蔭小憩判定
+  let buskEnsembleCenters = [];     // ROADMAP 472 本幀合奏中(ensemble≥2)獻奏者的 rx/ry，供圍聽療癒 cue 判定
+  const BUSK_LISTEN_RADIUS = 160;   // ROADMAP 472／399 聆賞半徑（像素），與後端 busking::LISTEN_RADIUS_PX 對齊
   let dominantColonyId = null;      // ROADMAP 176 當前霸主巢穴 ID（null = 無霸主）
   let expeditionTarget = null;      // ROADMAP 177 當前採集隊目標 (wx, wy)
   // 是否已進場（已揭開 HUD 並啟動 render 迴圈）。自動重連時 welcome 會再來一次，
@@ -3432,6 +3434,8 @@
             existing.meditating = !!p.meditating;
             // ROADMAP 399：廣場獻奏——是否正在獻奏（前端畫頭頂飄動音符）。
             existing.busking = !!p.busking;
+            // ROADMAP 472：街頭合奏——所屬樂團人數（≥2 畫漸強和聲音符與暖光、圍聽者見療癒）。
+            existing.ensemble = (p.ensemble | 0) || 0;
             // ROADMAP 470：放風箏——是否正在放風箏（前端畫順風飄揚的風箏）。
             existing.flying_kite = !!p.flying_kite;
             // ROADMAP 395：暖食飽足——進度 0~1（前端在頭頂畫暖食光暈）。null＝沒在飽足。
@@ -7933,7 +7937,13 @@
 
     // 廣場獻奏音符（ROADMAP 399）：正在街頭獻奏的玩家頭頂飄出輕快音符，
     // 讓旁觀者一眼看出「有人在演奏」，廣場因此熱鬧起來。畫在角色本體之上。
-    if (p.busking) drawBuskingNotes(sx, by - 34);
+    if (p.busking) drawBuskingNotes(sx, by - 34, p.ensemble | 0, sx, sy + 8);
+
+    // 街頭合奏·圍聽療癒（ROADMAP 472）：未獻奏、且圍在某支合奏樂團（ensemble≥2）聆賞半徑內的玩家，
+    // 頭頂浮一枚柔和的 🎵，讀作「正被合奏的和聲療癒」——後端對其緩緩回血，與此 cue 同一判定半徑。
+    if (!p.busking && buskEnsembleCenters.length && nearBuskEnsemble(p.rx, p.ry)) {
+      drawListenerHeal(sx, by - 30);
+    }
 
     // 放風箏（ROADMAP 470）：放風箏的玩家上方飛著一只順著世界風（430）飄揚的風箏——起風時飛得更高、
     // 朝下風斜，鄰近玩家都看得見、整片天的風箏朝同一風向同步斜飛。畫在角色本體之上。
@@ -8698,6 +8708,15 @@
     const camY = Math.round(me ? me.ry - viewH / 2 : world.height / 2 - viewH / 2);
     lastCam.x = camX;
     lastCam.y = camY;
+
+    // 街頭合奏·共鳴樂團（ROADMAP 472）：蒐集本幀所有「合奏中」獻奏者（ensemble≥2）的 rx/ry，
+    // 供 drawPlayer 對圍在聆賞半徑內、未獻奏的玩家畫「圍聽療癒」cue（後端對其緩緩回血）。
+    buskEnsembleCenters.length = 0;
+    for (const p of players.values()) {
+      if (p.busking && (p.ensemble | 0) >= 2 && Number.isFinite(p.rx) && Number.isFinite(p.ry)) {
+        buskEnsembleCenters.push(p.rx, p.ry);
+      }
+    }
 
     // 拓圖足跡（ROADMAP 448）：記下本幀站位（連同周圍一圈）已踏過，供小地圖揭露。
     // 帳號 key 隨 myId 變動自動重載（不同帳號同瀏覽器各有各的地圖）；節流寫回 localStorage。
@@ -17018,22 +17037,76 @@
   // 由 drawPlayer 對 busking=true 的玩家頭頂呼叫；飄出兩枚輕快音符（左右錯落、上下浮動），
   // 讓旁觀者一眼看出「有人在街頭獻奏」。尊重 reduceMotion（不浮動、只靜態擺兩枚音符）。
   const BUSK_NOTE_GLYPHS = ["🎵", "🎶", "🎼"];
-  function drawBuskingNotes(cx, cy) {
+  // 純函式（可測，render-smoke 真值表用）：聆賞半徑判定，鏡像後端 busking::within_listen_range。
+  function withinListenRadius(ax, ay, bx, by) {
+    if (![ax, ay, bx, by].every(Number.isFinite)) return false;
+    const dx = bx - ax, dy = by - ay;
+    return dx * dx + dy * dy <= BUSK_LISTEN_RADIUS * BUSK_LISTEN_RADIUS;
+  }
+  // 純函式（可測）：依合奏人數決定頭頂音符枚數——獨奏（<2）2 枚，合奏隨人數加密、至多 5 枚。
+  function ensembleNoteCount(ensemble) {
+    ensemble = ensemble | 0;
+    return ensemble >= 2 ? Math.min(2 + (ensemble - 1), 5) : 2;
+  }
+  // 街頭合奏·共鳴樂團（ROADMAP 472）：`ensemble` ≥2 時這位獻奏者正與身旁其他樂手合奏——
+  // 腳下漾開一圈暖光（人越多越亮）、頭頂飄出更多更密的和聲音符，讓「眾人合奏、廣場熱起來」
+  // 一眼可見；圍在身旁聆賞的群眾後端會緩緩回血。獨奏（ensemble<2）時維持 399 的兩枚音符。
+  function drawBuskingNotes(cx, cy, ensemble, footX, footY) {
+    ensemble = ensemble | 0;
+    const harmonizing = ensemble >= 2;
+    // 合奏暖光：以腳邊為圓心畫一圈柔和的琥珀光暈，人越多半徑越大、越亮（封頂避免過曝）。
+    if (harmonizing && Number.isFinite(footX) && Number.isFinite(footY)) {
+      const extra = Math.min(ensemble - 2, 4); // 2→0 … 6+→4，封頂
+      const radius = 26 + extra * 5;
+      const pulse = reduceMotion ? 0 : 0.5 + 0.5 * Math.sin(renderNow / 600);
+      const alpha = 0.10 + 0.03 * extra + (reduceMotion ? 0 : 0.05 * pulse);
+      ctx.save();
+      const g = ctx.createRadialGradient(footX, footY, 2, footX, footY, radius);
+      g.addColorStop(0, `rgba(255, 206, 120, ${alpha.toFixed(3)})`);
+      g.addColorStop(1, "rgba(255, 206, 120, 0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(footX, footY, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    // 兩枚音符左右錯開，各自以不同相位上下浮動（reduceMotion 時相位固定）。
+    // 獨奏兩枚音符；合奏時隨樂團人數加密（最多五枚），讀作「和聲更厚」。
+    const count = ensembleNoteCount(ensemble);
     const t = reduceMotion ? 0 : renderNow / 520;
-    for (let i = 0; i < 2; i++) {
-      const phase = t + i * Math.PI;
+    for (let i = 0; i < count; i++) {
+      const phase = t + i * (Math.PI * 2 / count);
       const bob = reduceMotion ? 0 : Math.sin(phase) * 4;
-      const nx = cx + (i === 0 ? -8 : 9);
+      // 多枚時左右散開排布；兩枚時維持原本的 -8/+9 錯落。
+      const spread = count <= 2 ? (i === 0 ? -8 : 9) : (i - (count - 1) / 2) * 9;
+      const nx = cx + spread;
       const ny = cy - 2 + bob;
       const glyph = BUSK_NOTE_GLYPHS[(Math.floor(t / Math.PI) + i) % BUSK_NOTE_GLYPHS.length];
       ctx.globalAlpha = reduceMotion ? 0.85 : 0.6 + 0.35 * (0.5 + 0.5 * Math.cos(phase));
-      ctx.font = `${13 + i}px ${UI_FONT}`;
+      ctx.font = `${13 + (i % 2)}px ${UI_FONT}`;
       ctx.fillText(glyph, nx, ny);
     }
+    ctx.restore();
+  }
+  // 街頭合奏·圍聽療癒（ROADMAP 472）：座標（rx/ry）是否落在某支合奏樂團的聆賞半徑內。
+  function nearBuskEnsemble(rx, ry) {
+    if (!Number.isFinite(rx) || !Number.isFinite(ry)) return false;
+    for (let i = 0; i + 1 < buskEnsembleCenters.length; i += 2) {
+      if (withinListenRadius(rx, ry, buskEnsembleCenters[i], buskEnsembleCenters[i + 1])) return true;
+    }
+    return false;
+  }
+  // 在圍聽者頭頂畫一枚柔和、輕輕浮動的 🎵，示意「正被合奏療癒」。reduceMotion 時定格不浮動。
+  function drawListenerHeal(cx, cy) {
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const bob = reduceMotion ? 0 : Math.sin(renderNow / 560) * 2.5;
+    ctx.globalAlpha = reduceMotion ? 0.55 : 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(renderNow / 560));
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.fillText("🎵", cx, cy + bob);
     ctx.restore();
   }
   // ── 廣場獻奏音符 end ─────────────────────────────────────────────────────────
