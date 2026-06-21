@@ -154,6 +154,15 @@ pub struct Crop {
     /// 向後相容、零 migration、不破壞玩家資料。
     #[serde(default)]
     nourished: bool,
+    /// ROADMAP 476 稻草人守望：這株「成熟後」累積的曝露秒數（與 `growth` 同單位，由 `grow_boosted`
+    /// 在成熟後逐 tick 累加）。久置無人看守會招田鴉啄食（見 `field::tick` × `crop_raid`）。
+    /// `#[serde(default)]` 讓舊存檔／無此欄的在途作物安全讀回 0＝剛熟（向後相容、零 migration）。
+    #[serde(default)]
+    ripe_secs: f32,
+    /// ROADMAP 476：這株成熟後是否曾被田鴉啄食。為真＝收成品質降一階（折進 `quality()`）。
+    /// 啄食一次定案、不重複扣。`#[serde(default)]` 讓舊存檔安全讀回 `false`＝沒被啄（向後相容、零 migration）。
+    #[serde(default)]
+    pecked: bool,
 }
 
 impl Crop {
@@ -177,6 +186,9 @@ impl Crop {
             parched: 0.0,
             kind,
             nourished,
+            // ROADMAP 476：新種下還沒熟，曝露計時與被啄旗標皆從零起。
+            ripe_secs: 0.0,
+            pecked: false,
         }
     }
 
@@ -206,6 +218,12 @@ impl Crop {
     /// 成長加速）。**濕度仍按真實 `dt` 消耗**、不因成長加速而更快乾——加速只回饋在「長得快」，
     /// 不讓沃土更耗水，維持公平。`growth_mult ≤ 0` 或非有限時退回不加速（防呆）。
     pub fn grow_boosted(&mut self, dt: f32, growth_mult: f32) {
+        // ROADMAP 476：已成熟的作物開始累積「曝露秒數」（不論有沒有水——熟了就等著被收或被啄）。
+        // 放在最前面、與成長／濕度邏輯正交：久置無人看守的成熟作物終會招田鴉（啄食判定在 `field::tick`）。
+        // dt 須為有限正值才計（防 NaN 汙染）；未熟（growth < RIPE_AT）不累積。
+        if dt.is_finite() && dt > 0.0 && self.growth >= RIPE_AT {
+            self.ripe_secs += dt;
+        }
         if self.moisture <= 0.0 || dt <= 0.0 {
             // 乾涸（或無效 dt）不成長。ROADMAP 406：若作物「已開始成長、尚未成熟」卻渴著停滯，
             // 累積渴秒數（收成品質的扣分依據）。剛播下還沒澆過的種子（growth==0）不計，避免懲罰起步；
@@ -251,8 +269,31 @@ impl Crop {
 
     /// ROADMAP 406：依成長期累積的渴秒數推導的收成品質（越用心照顧越高）。
     /// 對任何階段都可問，但只有成熟（`is_ripe`）作物收成時才真正套用。
+    /// ROADMAP 476：若這株成熟後曾被田鴉啄食（`pecked`），品質再降一階——把「久置不收」的
+    /// 代價直接折進品質，故所有讀 `quality()` 的地方（收成乙太、一鍵收成、田格快照顯示）一致生效。
     pub fn quality(&self) -> CropQuality {
-        quality_for(self.parched)
+        let q = quality_for(self.parched);
+        if self.pecked {
+            crate::crop_raid::pecked_quality(q)
+        } else {
+            q
+        }
+    }
+
+    /// ROADMAP 476：這株成熟後累積的曝露秒數（供 `field::tick` 判斷是否該招田鴉啄食）。
+    pub fn ripe_secs(&self) -> f32 {
+        self.ripe_secs
+    }
+
+    /// ROADMAP 476：這株成熟後是否曾被田鴉啄食（供田格快照標記啄痕、收成品質折一階）。
+    pub fn is_pecked(&self) -> bool {
+        self.pecked
+    }
+
+    /// ROADMAP 476：把這株標記為「已被田鴉啄食」。冪等——已標記再標記無變化。
+    /// 守護／曝露判定由 `field::tick` 以 `crop_raid::should_peck` 把關，本方法只負責落旗標。
+    pub fn mark_pecked(&mut self) {
+        self.pecked = true;
     }
 
     /// 從存檔載入的值是否「健全」：成長與濕度都是有限且非負。
@@ -267,15 +308,17 @@ impl Crop {
         self.growth.is_finite()
             && self.moisture.is_finite()
             && self.parched.is_finite()
+            && self.ripe_secs.is_finite()
             && self.growth >= 0.0
             && self.moisture >= 0.0
             && self.parched >= 0.0
+            && self.ripe_secs >= 0.0
     }
 
     /// 測試用：直接組出指定 `growth` / `moisture`（含壞值）的作物，驗證載入防線。
     #[cfg(test)]
     pub fn from_raw(growth: f32, moisture: f32) -> Self {
-        Self { growth, moisture, parched: 0.0, kind: CropVariety::default(), nourished: false }
+        Self { growth, moisture, parched: 0.0, kind: CropVariety::default(), nourished: false, ripe_secs: 0.0, pecked: false }
     }
 
     /// 收成：成熟才給乙太，並把這格重置成可再種的新種子。
@@ -631,5 +674,56 @@ mod tests {
         let legacy: Crop =
             serde_json::from_str(r#"{"growth":12.0,"moisture":30.0,"parched":0.0}"#).unwrap();
         assert_eq!(legacy.kind(), CropVariety::Staple);
+        // ROADMAP 476：舊存檔無 ripe_secs／pecked 欄 → 安全退回 0／false（剛熟、沒被啄）。
+        assert_eq!(legacy.ripe_secs(), 0.0);
+        assert!(!legacy.is_pecked());
+    }
+
+    #[test]
+    fn ripe_secs_accrues_only_after_ripe() {
+        // ROADMAP 476：成熟前不累積曝露秒數（成長中還在長，不是「等著被收」）。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(60.0); // 長到 60 < RIPE_AT(90)，未熟
+        assert!(!c.is_ripe());
+        assert_eq!(c.ripe_secs(), 0.0, "未熟不累積曝露");
+        // 熟了之後即使沒水也持續累積曝露秒數（等著被收或被啄）。
+        c.water();
+        c.grow(30.0); // 補到 90＝成熟
+        assert!(c.is_ripe());
+        let before = c.ripe_secs();
+        c.grow(20.0); // 成熟後再推 20 秒（這時可能已沒水）
+        assert!(c.ripe_secs() >= before + 20.0 - 1e-3, "成熟後逐 tick 累積曝露秒數");
+    }
+
+    #[test]
+    fn pecked_drops_quality_one_tier() {
+        // ROADMAP 476：用心照顧到優質，但被田鴉啄食 → 收成品質折一階成「用心」。
+        // 一次澆水只給 MOISTURE_PER_WATER(60) 濕度，撐不到 RIPE_AT(90)；及時補第二次水
+        // 讓全程不渴＝優質（不補水會在乾旱中累積渴秒數而掉階，那是 406 的事、非本測本意）。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(MOISTURE_PER_WATER); // 第一段：長到 60（濕度剛好用完，未渴）
+        c.water();
+        c.grow(RIPE_AT - MOISTURE_PER_WATER); // 第二段：補水後長到 90＝成熟，全程不渴
+        assert!(c.is_ripe());
+        assert_eq!(c.quality(), CropQuality::Premium);
+        c.mark_pecked();
+        assert!(c.is_pecked());
+        assert_eq!(c.quality(), CropQuality::Fine, "被啄食 → 品質降一階");
+    }
+
+    #[test]
+    fn harvest_resets_pecked_and_ripe_secs() {
+        // ROADMAP 476：收成後這格回到乾淨的新種子——曝露計時與被啄旗標都歸零（不殘留）。
+        let mut c = Crop::plant_kind(CropVariety::Sprout);
+        c.water();
+        c.grow(MOISTURE_PER_WATER); // 速生菜一次水就熟
+        c.grow(crate::crop_raid::RAID_EXPOSURE_SECS); // 久置一段
+        c.mark_pecked();
+        assert!(c.ripe_secs() > 0.0 && c.is_pecked());
+        assert!(c.harvest().is_some());
+        assert_eq!(c.ripe_secs(), 0.0, "收成後曝露計時歸零");
+        assert!(!c.is_pecked(), "收成後被啄旗標清除");
     }
 }

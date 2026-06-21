@@ -135,6 +135,12 @@ pub struct Field {
     /// 舊存檔無此欄時 `#[serde(default)]` 回 0＝沒堆肥，向後相容、免 migration）。
     #[serde(default)]
     compost: u8,
+    /// 稻草人所在格的 row-major 索引（ROADMAP 476 稻草人守望）：`None`＝這塊地沒立稻草人。
+    /// 立著時，其守護半徑（`crop_raid::SCARECROW_GUARD_RADIUS`）內的成熟作物免遭田鴉啄食。
+    /// **入存檔**（整塊 `Field` 序列化；舊存檔無此欄時 `#[serde(default)]` 回 `None`＝沒立，
+    /// 向後相容、免 migration）。載入時於 `reseated` 對 tiles 長度做界內校驗（壞檔／縮田防呆）。
+    #[serde(default)]
+    scarecrow: Option<u16>,
 }
 
 impl Field {
@@ -163,6 +169,8 @@ impl Field {
             // 堆肥從零攢起（ROADMAP 473）。
             compost_matter: 0,
             compost: 0,
+            // 新地沒立稻草人（ROADMAP 476）。
+            scarecrow: None,
         }
     }
 
@@ -214,6 +222,34 @@ impl Field {
     /// 目前列數（初始 FIELD_ROWS；每次 `grow()` +1）。
     pub fn rows(&self) -> usize {
         self.tiles.len() / FIELD_COLS
+    }
+
+    /// ROADMAP 476：稻草人目前所在格 (col,row)；沒立稻草人或索引越界回 `None`。純讀。
+    pub fn scarecrow_cell(&self) -> Option<(usize, usize)> {
+        let idx = self.scarecrow? as usize;
+        if idx < self.tiles.len() {
+            Some((idx % FIELD_COLS, idx / FIELD_COLS))
+        } else {
+            None
+        }
+    }
+
+    /// ROADMAP 476：在 (col,row) 立／移稻草人（一塊地至多一座，重立即搬位）。
+    /// 越界（超出欄數或目前列數）一律忽略回 `false`（防偽造）；成功回 `true`。
+    /// 改的是哪塊地由呼叫端決定（`ws.rs` 只取得玩家自己的田），這裡不做所有權判斷。
+    pub fn place_scarecrow(&mut self, col: usize, row: usize) -> bool {
+        match self.index_at(col, row) {
+            Some(i) => {
+                self.scarecrow = Some(i as u16);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// ROADMAP 476：撤掉稻草人（沒立則無變化）。
+    pub fn remove_scarecrow(&mut self) {
+        self.scarecrow = None;
     }
 
     /// 設定家園擺飾（ROADMAP 402）：把玩家選的索引夾成合法值後存下（越界→0=不擺）。
@@ -286,6 +322,8 @@ impl Field {
             // 堆肥計數由 `reseated` 從存檔接回（from_tiles 只搬 tiles）。
             compost_matter: 0,
             compost: 0,
+            // 稻草人位置由 `reseated` 從存檔接回（from_tiles 只搬 tiles）。
+            scarecrow: None,
         })
     }
 
@@ -305,12 +343,17 @@ impl Field {
         // ROADMAP 473：堆肥原料與份數也要接回，否則重啟會把攢好的堆肥默默清掉。
         let compost_matter = self.compost_matter;
         let compost = self.compost;
+        // ROADMAP 476：稻草人位置也要接回（純量、無長度耦合），界內校驗於下方對齊 tiles 後做。
+        let scarecrow = self.scarecrow;
         Self::from_tiles(index, self.tiles).map(|mut f| {
             f.home_decor = decor;
             f.garden = garden;
             // ROADMAP 473：接回堆肥（純量、無長度耦合，直接套回；上限由 `compost::accrue` 維持）。
             f.compost_matter = compost_matter;
             f.compost = compost.min(crate::compost::COMPOST_MAX);
+            // ROADMAP 476：接回稻草人，但對「現在的 tiles 長度」做界內校驗——
+            // 舊存檔／縮田／壞檔讓索引越界時一律當「沒立稻草人」（防呆，不讓越界索引留進狀態）。
+            f.scarecrow = scarecrow.filter(|&idx| (idx as usize) < f.tiles.len());
             // 接回地力：長度若與 tiles 對不上（舊存檔空 Vec／壞檔）一律當貧土重來（ensure_soil 補零）。
             if soil.len() == f.tiles.len() {
                 f.soil = soil;
@@ -506,6 +549,8 @@ impl Field {
         );
         self.ensure_soil();
         self.ensure_last_kind();
+        // ROADMAP 476：稻草人所在格先快照下來（迴圈裡會可變借用 tiles，無法再借 self）。
+        let scarecrow = self.scarecrow_cell();
         for (i, t) in self.tiles.iter_mut().enumerate() {
             match t {
                 Tile::Planted(c) => {
@@ -531,6 +576,19 @@ impl Field {
                     let mult =
                         patch_mult * c.kind().season_affinity(season) * rotation_mult * nourish_mult;
                     c.grow_boosted(dt, mult);
+                    // ROADMAP 476：成熟後久置無人看守 → 招田鴉啄食（品質折一階）；稻草人守護半徑內免疫。
+                    // 確定性、純看「熟了多久 × 有沒有被守護」（零亂數）；啄食一次定案（`should_peck` 冪等）。
+                    if c.is_ripe() {
+                        let cell = (i % FIELD_COLS, i / FIELD_COLS);
+                        let guarded = crate::crop_raid::guarded(
+                            scarecrow,
+                            cell,
+                            crate::crop_raid::SCARECROW_GUARD_RADIUS,
+                        );
+                        if crate::crop_raid::should_peck(c.ripe_secs(), guarded, c.is_pecked()) {
+                            c.mark_pecked();
+                        }
+                    }
                     // 種了作物：地力「鎖住」不再累積（待收成兌現），也不流失。
                 }
                 // ROADMAP 438：空翻好土歇著就慢慢養出地力（休耕養地）。
@@ -715,6 +773,8 @@ impl Field {
             } else {
                 Vec::new()
             },
+            // ROADMAP 476：帶上稻草人所在格（沒立則 None 略去），前端在該格畫稻草人並標出守護範圍。
+            scarecrow: self.scarecrow_cell().map(|(c, r)| [c, r]),
         }
     }
 }
@@ -758,6 +818,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             kind: 0,
             rotated: false,
             nourished: false,
+            pecked: false,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -769,6 +830,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             kind: 0,
             rotated: false,
             nourished: false,
+            pecked: false,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -793,6 +855,8 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
                 rotated,
                 // ROADMAP 473：這株是否漚過堆肥、帶滋養加成（成長加速＋收成多得乙太）。
                 nourished: c.nourished(),
+                // ROADMAP 476：這株成熟後是否曾被田鴉啄食（前端在格上標啄痕；品質已折進 quality）。
+                pecked: c.is_pecked(),
             }
         }
     }
@@ -1280,10 +1344,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
     }
 
     #[test]
@@ -1496,7 +1560,86 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false, nourished: false });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
+    }
+
+    /// 把 (0,0) 一株作物全程用心照顧種到「優質成熟」的共用前置。
+    #[cfg(test)]
+    fn ripe_premium_crop_at_origin() -> Field {
+        let mut f = Field::new();
+        f.till(0, 0);
+        f.plant(0, 0);
+        f.water(0, 0);
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
+        f.water(0, 0);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
+        f
+    }
+
+    #[test]
+    fn ripe_crop_left_unguarded_gets_pecked_and_loses_a_tier() {
+        // ROADMAP 476：成熟後久置、田裡沒立稻草人 → 招田鴉啄食，品質由優質(2)折成用心(1)。
+        let mut f = ripe_premium_crop_at_origin();
+        assert_eq!(f.view().cells[0].quality, 2, "剛熟＝優質");
+        assert!(!f.view().cells[0].pecked, "剛熟還沒被啄");
+        // 久置一整個曝露窗口（成熟後逐 tick 累積）。
+        f.tick(crate::crop_raid::RAID_EXPOSURE_SECS, Season::Summer);
+        let c = &f.view().cells[0];
+        assert!(c.pecked, "久置無人看守 → 被田鴉啄食");
+        assert_eq!(c.quality, 1, "被啄食 → 品質折一階（優質→用心）");
+    }
+
+    #[test]
+    fn scarecrow_protects_ripe_crop_in_radius() {
+        // ROADMAP 476：田裡立了稻草人、守護半徑內 → 即使久置也不被啄，品質維持優質。
+        let mut f = ripe_premium_crop_at_origin();
+        assert!(f.place_scarecrow(0, 0), "在 (0,0) 立稻草人");
+        f.tick(crate::crop_raid::RAID_EXPOSURE_SECS * 3.0, Season::Summer); // 放更久
+        let c = &f.view().cells[0];
+        assert!(!c.pecked, "守護半徑內不被啄");
+        assert_eq!(c.quality, 2, "受守護 → 品質仍是優質");
+    }
+
+    #[test]
+    fn scarecrow_only_guards_within_radius() {
+        // ROADMAP 476：稻草人守不住整片田——立在角落，遠處（出半徑）的成熟作物照樣被啄。
+        let mut f = Field::new();
+        // 在 (0,0) 與 (5,3) 各種一株、全程用心到優質成熟。
+        for &(c, r) in &[(0usize, 0usize), (5, 3)] {
+            f.till(c, r);
+            f.plant(c, r);
+            f.water(c, r);
+        }
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
+        f.water(0, 0);
+        f.water(5, 3);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
+        // 稻草人立在 (0,0) 角落（守護半徑 1 → 護不到 (5,3)）。
+        assert!(f.place_scarecrow(0, 0));
+        f.tick(crate::crop_raid::RAID_EXPOSURE_SECS, Season::Summer);
+        let cells = f.view().cells;
+        assert!(!cells[0 * FIELD_COLS + 0].pecked, "稻草人腳邊不被啄");
+        assert!(cells[3 * FIELD_COLS + 5].pecked, "出守護半徑的遠處仍被啄");
+    }
+
+    #[test]
+    fn scarecrow_survives_reseated_round_trip() {
+        // ROADMAP 476：稻草人位置入存檔——序列化往返（reseated）後仍在原格守護，重啟不丟。
+        let mut f = Field::for_plot(0);
+        assert!(f.place_scarecrow(2, 1));
+        let json = serde_json::to_string(&f).unwrap();
+        let loaded: Field = serde_json::from_str(&json).unwrap();
+        let back = loaded.reseated(0).expect("reseated 應成功");
+        assert_eq!(back.scarecrow_cell(), Some((2, 1)), "稻草人位置接回原格");
+    }
+
+    #[test]
+    fn place_scarecrow_rejects_out_of_bounds() {
+        // ROADMAP 476：越界座標立稻草人一律拒絕（防偽造），不留越界索引進狀態。
+        let mut f = Field::new();
+        assert!(!f.place_scarecrow(FIELD_COLS, 0), "超出欄數→拒絕");
+        assert!(!f.place_scarecrow(0, f.rows()), "超出列數→拒絕");
+        assert_eq!(f.scarecrow_cell(), None, "拒絕後田裡仍無稻草人");
     }
 
     #[test]
@@ -1606,8 +1749,17 @@ mod tests {
     fn harvest_all_ripe_counts_quality_breakdown() {
         let mut f = Field::new();
         // 全程用心照顧到成熟＝優質；本測種兩株都用心 → 應計 2 株優質、無平凡/用心。
-        ripen(&mut f, 0, 0);
-        ripen(&mut f, 1, 0);
+        // 兩株**並行**成熟（不依序 ripen），否則先熟那株會在後一株成熟的 ticks 間久置
+        // 曝露而招田鴉啄食（ROADMAP 476）掉一階——那是 476 的正當行為、非本測本意。
+        for &(c, r) in &[(0usize, 0usize), (1, 0)] {
+            f.till(c, r);
+            f.plant(c, r);
+            f.water(c, r);
+        }
+        f.tick(MOISTURE_PER_WATER, Season::Summer);
+        f.water(0, 0);
+        f.water(1, 0);
+        f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         let s = f.harvest_all_ripe();
         assert_eq!(s.count, 2);
         assert_eq!(s.premium, 2, "全程不渴的成熟作物應記為優質");
