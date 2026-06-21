@@ -2027,6 +2027,34 @@ for (const sc of scenarios) {
   }
 }
 
+// clay 城鎮地標（ROADMAP 465）：單元斷言純函式 clayLandmarkPalette——天文台（132）／記憶石（157）
+// 兩座特殊繪製地標 clay 化的暖陶土色盤；只認得這兩個 type，其餘回 null（呼叫端退回像素冷調＝零回歸）。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.clayLandmarkPalette;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ clay 城鎮地標：game.js 未導出 clayLandmarkPalette");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ clay 城鎮地標：${label}`); } };
+    const isHex = (s) => typeof s === "string" && /^#[0-9a-fA-F]{6}$/.test(s);
+    const allHex = (p, keys) => p && keys.every((k) => isHex(p[k]));
+    // 天文台色盤：圓柱牆／陶土銅頂／黃銅件／施工期磚木鷹架圍欄，皆合法 #rrggbb。
+    const obs = fn("observatory");
+    check("天文台回完整暖陶土色盤", allHex(obs, ["wallEdge", "wall", "dome", "domeEdge", "brass", "tube", "brick", "scaffold", "fence"]));
+    // 記憶石色盤：石基／碑身／紋路三組暖陶土色，皆合法 #rrggbb。
+    const mem = fn("memory_stone");
+    check("記憶石回完整暖陶土色盤", allHex(mem, ["base", "baseEdge", "body", "bodyEdge", "crack"]));
+    // 確實換成暖調（不再是原本冷藍灰／暗紫灰）：牆／碑身色與舊冷調不同。
+    check("天文台牆已離冷板岩", obs && obs.wall !== "#546e7a" && obs.wallEdge !== "#455a64");
+    check("記憶石碑身已離暗紫灰", mem && mem.body !== "#2a2438");
+    // 未知／壞 type 一律回 null——呼叫端據此退回像素冷調，非 clay 或未知地標吃不到暖陶土分支（零回歸）。
+    check("未知 type 回 null", fn("shop") === null && fn("nope") === null && fn(undefined) === null && fn(null) === null);
+    if (bad) failed = true;
+    else console.log("  ✅ clay 城鎮地標·陶土色盤真值表：通過");
+  }
+}
+
 // 春夜拾螢（ROADMAP 451）：單元斷言拾螢純函式——只在春夜可拾、catch 半徑命中判定、里程碑跨越偵測、壞值防呆。
 {
   const catchable = sandbox.__bfTest && sandbox.__bfTest.fireflyCatchable;
