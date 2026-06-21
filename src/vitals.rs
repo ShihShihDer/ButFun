@@ -237,6 +237,35 @@ impl Vitals {
         healed
     }
 
+    /// 街頭合奏·圍聽療癒（ROADMAP 472）：身旁有 ≥2 位玩家合奏（共鳴樂團）時，圍在聆賞半徑內
+    /// 的群眾於自然回血之外每秒額外回 `per_sec` 點 HP，回傳本次實際加上去的血量。倒地／剛挨打／
+    /// 已滿血／壞 `dt`／非正 `per_sec` 一律 no-op、回 0（脫戰才療癒，不破壞戰鬥張力）。與 `tick`／
+    /// `shade_regen` 共用 `regen_accum` 累積器並維持 `regen_accum ∈ [0, 1)` 的不變式。純函式可測。
+    /// 呼叫慣例：遊戲迴圈在 `tick(dt)` 之後、僅當玩家正圍在 ≥2 人合奏的樂團聆賞半徑內才呼叫，
+    /// `per_sec` 由 `busking_ensemble::harmony_regen_per_sec` 依合奏人數算出。
+    pub fn ensemble_regen(&mut self, dt: f32, per_sec: f32) -> u32 {
+        if dt <= 0.0 || !dt.is_finite() || per_sec <= 0.0 || !per_sec.is_finite() {
+            return 0;
+        }
+        if self.hp == 0 || self.hp >= self.max_hp || self.regen_cooldown > 0.0 {
+            return 0;
+        }
+        self.regen_accum += per_sec * dt;
+        let whole = self.regen_accum.floor();
+        let mut healed = 0;
+        if whole >= 1.0 {
+            let before = self.hp;
+            self.hp = (self.hp + whole as u32).min(self.max_hp);
+            self.regen_accum -= whole;
+            healed = self.hp - before;
+        }
+        // 滿血後清掉殘餘累積，維持 `regen_accum ∈ [0, 1)`（與 `tick`／`shade_regen` 同一不變式）。
+        if self.hp >= self.max_hp {
+            self.regen_accum = 0.0;
+        }
+        healed
+    }
+
     /// 推進 `dt` 秒：被打趴時倒數復原，存活且脫離戰鬥時自然回血。
     /// 非正 / 非有限 `dt` 皆為 no-op（比照 `Enemy::tick` / `Vehicle::step` 擋壞 dt）。
     pub fn tick(&mut self, dt: f32) {
@@ -720,5 +749,59 @@ mod tests {
         }
         assert_eq!(v.hp(), MAX_HP, "樹蔭回血應夾在最大血量");
         assert!(v.is_loadable(), "shade_regen 後仍須滿足載入不變式（regen_accum ∈ [0,1)）");
+    }
+
+    // ─── 街頭合奏·圍聽療癒 ensemble_regen（ROADMAP 472） ─────────────────────────
+
+    #[test]
+    fn ensemble_regen_heals_when_out_of_combat() {
+        let mut v = Vitals::new();
+        v.take_damage(10); // 10/20
+        v.tick(REGEN_DELAY_SECS); // 走完回血冷卻（此步不回血）
+        // 圍在合奏樂團聆賞半徑內、脫戰，整秒按和聲速率回血（每秒 2 點 → 整秒回 2）。
+        let healed = v.ensemble_regen(1.0, 2.0);
+        assert_eq!(healed, 2, "脫戰後圍聽合奏整秒按速率回血");
+        assert_eq!(v.hp(), 12);
+    }
+
+    #[test]
+    fn ensemble_regen_blocked_right_after_damage() {
+        let mut v = Vitals::new();
+        v.take_damage(10); // 剛挨打：regen_cooldown > 0
+        assert_eq!(v.ensemble_regen(1.0, 3.0), 0, "剛挨打期間圍聽療癒不生效");
+        assert_eq!(v.hp(), 10);
+    }
+
+    #[test]
+    fn ensemble_regen_noop_on_bad_inputs() {
+        // 倒地：no-op。
+        let mut downed = Vitals::new();
+        downed.take_damage(MAX_HP);
+        assert_eq!(downed.ensemble_regen(1.0, 3.0), 0);
+        // 滿血：no-op。
+        let mut full = Vitals::new();
+        assert_eq!(full.ensemble_regen(1.0, 3.0), 0);
+        // 壞 dt／非正速率（未成團時速率為 0）：一律 no-op。
+        let mut hurt = Vitals::new();
+        hurt.take_damage(5);
+        hurt.reset_regen_cooldown();
+        assert_eq!(hurt.ensemble_regen(0.0, 3.0), 0);
+        assert_eq!(hurt.ensemble_regen(f32::NAN, 3.0), 0);
+        assert_eq!(hurt.ensemble_regen(1.0, 0.0), 0, "未成團速率 0 → 不回血");
+        assert_eq!(hurt.ensemble_regen(1.0, -1.0), 0);
+        assert_eq!(hurt.ensemble_regen(1.0, f32::INFINITY), 0);
+        assert_eq!(hurt.hp(), MAX_HP - 5);
+    }
+
+    #[test]
+    fn ensemble_regen_keeps_loadable_invariant_and_clamps_to_max() {
+        let mut v = Vitals::new();
+        v.take_damage(2); // 18/20
+        v.reset_regen_cooldown();
+        for _ in 0..200 {
+            v.ensemble_regen(0.05, 3.0);
+        }
+        assert_eq!(v.hp(), MAX_HP, "圍聽療癒回血應夾在最大血量");
+        assert!(v.is_loadable(), "ensemble_regen 後仍須滿足載入不變式（regen_accum ∈ [0,1)）");
     }
 }

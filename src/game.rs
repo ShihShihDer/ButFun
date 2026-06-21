@@ -1212,6 +1212,28 @@ pub fn spawn(app: AppState) {
                     .filter(|p| !p.vitals.is_downed())
                     .map(|p| (p.id, p.planet.clone(), p.x, p.y))
                     .collect();
+                // 街頭合奏·共鳴樂團（ROADMAP 472）：先記下所有正在獻奏者的 (id, 星球, 座標)，
+                // 並算出每位獻奏者的「合奏人數」（同星球、ENSEMBLE_RADIUS 內的獻奏者數，含自己）。
+                // 全在進入可變借用前算好——下方迴圈只讀此快照（廣播合奏人數＋療癒圍聽者），不重走
+                // map、不巢狀上鎖。獻奏者靜止不動（移動即中斷），故幀初快照足夠精確。
+                let busker_snap: Vec<(uuid::Uuid, String, f32, f32)> = players
+                    .values()
+                    .filter(|p| !p.vitals.is_downed() && p.busking.is_some())
+                    .map(|p| (p.id, p.planet.clone(), p.x, p.y))
+                    .collect();
+                let ensemble_sizes: std::collections::HashMap<uuid::Uuid, u8> = busker_snap
+                    .iter()
+                    .map(|(id, planet, x, y)| {
+                        // 同星球的獻奏者座標（含自己）湊一份，數半徑內的人就是這支樂團人數。
+                        let same: Vec<(f32, f32)> = busker_snap
+                            .iter()
+                            .filter(|(_, op, _, _)| op == planet)
+                            .map(|(_, _, ox, oy)| (*ox, *oy))
+                            .collect();
+                        let size = crate::busking_ensemble::cluster_size((*x, *y), &same);
+                        (*id, size.min(u8::MAX as usize) as u8)
+                    })
+                    .collect();
                 for p in players.values_mut() {
                     p.step(dt, |x: f32, y: f32| {
                         let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
@@ -1571,6 +1593,26 @@ pub fn spawn(app: AppState) {
                         && crate::world_grove::in_shade(p.x, p.y, &shade_trees)
                     {
                         p.vitals.shade_regen(dt);
+                    }
+                    // 街頭合奏·共鳴樂團（ROADMAP 472）：把這位獻奏者的合奏人數寫進快照欄位（廣播給
+                    // 前端畫漸強的和聲音符與暖光；非獻奏者一律 0）。圍在 ≥2 人合奏樂團聆賞半徑內、
+                    // 脫戰、室外的群眾隨和聲緩緩回血——獻奏第一次從「一個人賺打賞」長成「眾人合奏、
+                    // 療癒一整圈圍聽者」的正和社交。`ensemble_regen` 內部自守倒地／剛挨打／滿血一律
+                    // no-op，這裡只先濾掉獻奏者本人、室內、與「世上沒人在獻奏」三種無謂呼叫。
+                    p.ensemble_size = ensemble_sizes.get(&p.id).copied().unwrap_or(0);
+                    if p.busking.is_none() && p.indoor_plot_id.is_none() && !busker_snap.is_empty() {
+                        let mut best = 0u8;
+                        for (bid, bplanet, bx, by) in &busker_snap {
+                            if *bplanet == p.planet
+                                && crate::busking::within_listen_range(*bx, *by, p.x, p.y)
+                            {
+                                best = best.max(ensemble_sizes.get(bid).copied().unwrap_or(0));
+                            }
+                        }
+                        let rate = crate::busking_ensemble::harmony_regen_per_sec(best as usize);
+                        if rate > 0.0 {
+                            p.vitals.ensemble_regen(dt, rate);
+                        }
                     }
                 }
             }

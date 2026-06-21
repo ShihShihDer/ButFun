@@ -187,6 +187,10 @@ pub struct Player {
     pub last_busk: Option<std::time::Instant>,
     /// 累積的獻奏資歷（ROADMAP 399）——完成一場 +1，純記憶體，重啟清零；完成時回給玩家看「第 N 場」。
     pub busk_count: u32,
+    /// 街頭合奏·共鳴樂團人數（ROADMAP 472）。0 = 沒在合奏／單獨獻奏；≥2 = 與身旁其他獻奏者
+    /// 湊成的樂團人數。記憶體前置、每 tick 由 game.rs 重算、不持久化、零 migration；放進快照
+    /// 廣播讓前端對樂團畫漸強的和聲音符與暖光。
+    pub ensemble_size: u8,
     /// 是否正在放風箏（ROADMAP 470）。true = 拿出風箏跟世界風（430）玩。
     /// 暫態 bool（鏡像 `guard_shield`／`dodging`／獻奏旗標）：記憶體前置、不持久化、零 migration，
     /// 斷線／重啟清零；倒地時 game.rs 自動收線。放進快照廣播，旁觀者看得見「有人在放風箏」。
@@ -846,6 +850,8 @@ impl Player {
             meditating: self.meditation.is_some(),
             // ROADMAP 399：是否正在廣場獻奏（廣播給所有人，前端畫頭頂飄動音符）。
             busking: self.busking.is_some(),
+            // ROADMAP 472：合奏人數（廣播給所有人，前端對樂團畫漸強和聲音符、圍聽者見療癒）。
+            ensemble: self.ensemble_size,
             // ROADMAP 470：是否正在放風箏（廣播給所有人，前端畫順風飄揚的風箏）。
             flying_kite: self.flying_kite,
             // ROADMAP 395：暖食飽足進度（廣播給所有人，前端畫頭頂暖食光暈）。
@@ -1674,6 +1680,7 @@ mod tests {
             busking: None,
             last_busk: None,
             busk_count: 0,
+            ensemble_size: 0,
             flying_kite: false,
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
