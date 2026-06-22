@@ -3034,6 +3034,48 @@ for (const sc of scenarios) {
   else console.log("  ✅ 破綻直擊飄字：is_weak=true 金色 ❉ 飄字／破綻擊殺 ❉💀／普通命中早退 皆乾淨");
 }
 
+// 戰鬥音效（ROADMAP 490）：驗證 SFX.hit / weakHit / powerHit 可正常呼叫且不拋例外；
+// 同時驗 attack_hit 訊息注入後各分支音效路徑零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：戰鬥音效（ROADMAP 490）──");
+  let ok = true;
+  try {
+    // 純函式層：確認三個新 SFX 方法由 __bfTest 導出且可呼叫（Web Audio 在 Node 無 ctx，應靜默略過）。
+    const sfxHit     = sandbox.__bfTest && sandbox.__bfTest.sfxHit;
+    const sfxWeak    = sandbox.__bfTest && sandbox.__bfTest.sfxWeakHit;
+    const sfxPower   = sandbox.__bfTest && sandbox.__bfTest.sfxPowerHit;
+    if (!sfxHit || !sfxWeak || !sfxPower) {
+      ok = false;
+      console.error("  ❌ 戰鬥音效：game.js 未導出 sfxHit / sfxWeakHit / sfxPowerHit");
+    } else {
+      sfxHit();    // Node 環境無 AudioContext，_getCtx() 回 null 後靜默 return
+      sfxWeak();
+      sfxPower();
+    }
+    // 接線層：注入各 attack_hit 分支，確認音效呼叫路徑不拋例外。
+    const me0 = snapshot.players[0];
+    // 普通命中
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 10, dmg: 20, is_kill: false, is_crit: false, charge_tier: 0, is_weak: false }) });
+    // 暴擊命中
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 15, dmg: 40, is_kill: false, is_crit: true, charge_tier: 0, is_weak: false }) });
+    // 擊殺命中
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 20, dmg: 35, is_kill: true, is_crit: false, charge_tier: 0, is_weak: false }) });
+    // 破綻直擊音效
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 25, dmg: 55, is_kill: false, is_crit: false, charge_tier: 0, is_weak: true }) });
+    // 蓄力重擊音效（tier 2）
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 30, dmg: 88, is_kill: false, is_crit: false, charge_tier: 2, is_weak: false }) });
+    // 半蓄力命中（tier 1）
+    lastWS.onmessage({ data: JSON.stringify({ type: "attack_hit", player_id: myId, ex: me0.x, ey: me0.y - 35, dmg: 30, is_kill: false, is_crit: false, charge_tier: 1, is_weak: false }) });
+    pump("戰鬥音效·全分支", 4);
+  } catch (e) {
+    ok = false; console.error("  ❌ 戰鬥音效：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 戰鬥音效：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 戰鬥音效：sfxHit/weakHit/powerHit 導出完整；普通/暴擊/擊殺/破綻/蓄力/半蓄力六路徑皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

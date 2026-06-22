@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit() }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -858,6 +858,19 @@
           setTimeout(() => _tone(f, "sine", 0.01, 0.10, 0.28, 0.32), dt)
         );
         HAPTIC.achievement();
+      },
+      // 戰鬥音效（ROADMAP 490）：命中敵人時的三種聲音回饋。
+      // 普通命中：低沉短促鈍擊（triangle 柔化方波質感）。
+      hit()     { _tone(180, "triangle", 0.002, 0, 0.07, 0.18); },
+      // 破綻直擊：金屬共鳴雙音（搭配金色 ❉ 飄字；660+990Hz 完全五度，明亮）。
+      weakHit() {
+        _tone(660, "sine", 0.002, 0.01, 0.15, 0.22);
+        setTimeout(() => _tone(990, "sine", 0.001, 0, 0.08, 0.10), 8);
+      },
+      // 蓄力重擊（charge tier 2）：低頻衝擊感（搭配 💥 飄字；鋸齒波下潛）。
+      powerHit() {
+        _tone(110, "sawtooth", 0.001, 0.01, 0.10, 0.22);
+        setTimeout(() => _tone(165, "sine", 0.002, 0, 0.07, 0.10), 15);
       },
     };
   })();
@@ -4846,19 +4859,25 @@
         if (chargeTier === 2) {
           // 滿蓄力重擊：最大最亮。
           hitFloaters.push({ wx: ex, wy: ey - 26, text: `💥-${dmg}`, color: "255,214,90", size: 26, born: performance.now() });
+          SFX.powerHit(); // 蓄力重擊音效（ROADMAP 490）
         } else if (isWeak) {
           // 破綻直擊（ROADMAP 489）：金色 ❉ 大字，讓玩家讀到「我打出了破綻傷害」。
           // 擊殺版加上 💀 前綴；普通版只留 ❉。
           const text = isKill ? `❉💀-${dmg}` : `❉-${dmg}`;
           hitFloaters.push({ wx: ex, wy: ey - 26, text, color: "255,210,0", size: 24, born: performance.now() });
+          SFX.weakHit(); // 破綻直擊金屬共鳴音（ROADMAP 490）
         } else if (chargeTier === 1) {
           hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,176,70", size: 22, born: performance.now() });
+          SFX.hit(); // 半蓄力命中音（ROADMAP 490）
         } else if (isCrit) {
           hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,220,40", size: 22, born: performance.now() });
+          SFX.hit(); // 暴擊命中音（ROADMAP 490）
         } else if (isKill) {
           hitFloaters.push({ wx: ex, wy: ey - 18, text: `💀-${dmg}`, color: "220,50,50", size: 20, born: performance.now() });
+          SFX.hit(); // 擊殺命中音（ROADMAP 490）
         } else {
           hitFloaters.push({ wx: ex, wy: ey - 18, text: `-${dmg}`, color: "255,140,0", size: 15, born: performance.now() });
+          SFX.hit(); // 普通命中音（ROADMAP 490）
         }
         break;
       }
