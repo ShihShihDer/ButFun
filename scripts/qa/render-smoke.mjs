@@ -3243,6 +3243,69 @@ for (const sc of scenarios) {
   else console.log("  ✅ 黏土敵人：十一種敵人 drawClayEnemy 直接呼叫 + clay/pixel 兩模式 render 零例外");
 }
 
+// 廣場蒸汽鐘（ROADMAP 497）：單元斷言純函式 clockHandAngles／gameHourFromFraction 的真值表——
+// 時針在 12 小時一圈（hourRad）、分針在 60 分鐘一圈（minRad）；NaN／無效值保守退回午夜；
+// 負值與超過 1 的分數正確 wrap；結果恆為有限數。
+{
+  const handsF = sandbox.__bfTest && sandbox.__bfTest.clockHandAngles;
+  const hourF  = sandbox.__bfTest && sandbox.__bfTest.gameHourFromFraction;
+  if (typeof handsF !== "function" || typeof hourF !== "function") {
+    failed = true;
+    console.error("  ❌ 廣場蒸汽鐘：game.js 未導出 clockHandAngles／gameHourFromFraction");
+  } else {
+    let bad = 0;
+    const approx = (a, b, tol) => Math.abs(a - b) < (tol || 0.01);
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 廣場蒸汽鐘：${msg}`); } };
+    // 午夜（0）→ 時針、分針皆指正上方（-π/2）
+    const mid = handsF(0);
+    expect(approx(mid.hourRad, -Math.PI / 2) && approx(mid.minRad, -Math.PI / 2), "午夜(0) 時針＋分針皆指正上方");
+    // 正午（0.5）→ 時針也指正上方（12點=0點位置）、分針指正上方（整點）
+    const noon = handsF(0.5);
+    expect(approx(noon.hourRad, -Math.PI / 2) && approx(noon.minRad, -Math.PI / 2), "正午(0.5) 時針＋分針皆指正上方");
+    // 上午6時（0.25）→ 時針指正下方（π/2）、分針指正上方（整點）
+    const six = handsF(0.25);
+    expect(approx(six.hourRad, Math.PI / 2) && approx(six.minRad, -Math.PI / 2), "0.25=6點 時針指正下方、分針指正上方");
+    // NaN 保守退回午夜規格
+    const bad1 = handsF(NaN);
+    expect(approx(bad1.hourRad, -Math.PI / 2) && approx(bad1.minRad, -Math.PI / 2), "NaN 保守退回午夜");
+    // 負值 wrap：-0.25 = 0.75 = 18:00（下午6時）→ 時針指正下方（12小時一圈，18%12=6點）
+    const neg = handsF(-0.25);
+    expect(Number.isFinite(neg.hourRad) && Number.isFinite(neg.minRad), "負值分數輸出仍有限數");
+    // 超過 1 的分數 wrap：1.25 = 0.25 = 6點
+    const over = handsF(1.25);
+    expect(approx(over.hourRad, six.hourRad) && approx(over.minRad, six.minRad), "1.25 wrap 等同 0.25");
+    // gameHourFromFraction 真值表
+    expect(hourF(0) === 0, "午夜(0) → 0點");
+    expect(hourF(0.5) === 12, "正午(0.5) → 12點");
+    expect(hourF(0.25) === 6, "0.25 → 6點");
+    expect(hourF(NaN) === 0, "NaN 退回0點");
+    expect(hourF(-0.1) === 21, "負值 -0.1 wrap → 21點");
+    expect(hourF(1.1) === 2, "超過1的 1.1 wrap → 2點");
+    if (bad) failed = true;
+    else console.log("  ✅ 廣場蒸汽鐘（497）：clockHandAngles + gameHourFromFraction 真值表全綠");
+  }
+}
+
+// 廣場蒸汽鐘（ROADMAP 497）：餵一份玩家靠近廣場蒸汽鐘位置（含 dayClock anchor）的 snapshot，
+// 連跑多幀驗 drawSteamClock 石柱/鐘面/指針/蒸汽裝飾/標籤繪製路徑零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：廣場蒸汽鐘（連跑 6 幀驗石柱/鐘面/指針路徑）──");
+  const clockSnap = JSON.parse(JSON.stringify(snapshot));
+  // 把玩家移到蒸汽鐘旁邊（CLOCK_WX=2700,CLOCK_WY=2020）
+  if (clockSnap.players && clockSnap.players[0]) {
+    clockSnap.players[0].x = 2700;
+    clockSnap.players[0].y = 2020;
+  }
+  // 注入 dayClock anchor（讓 drawSteamClock 的分數計算有值可用）
+  lastWS.onmessage({ data: JSON.stringify({ ...clockSnap, type: "snapshot" }) });
+  const r = pump("廣場蒸汽鐘", 6);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 廣場蒸汽鐘：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 廣場蒸汽鐘：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 廣場蒸汽鐘：石柱/鐘面/指針/裝飾/標籤連跑多幀皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
