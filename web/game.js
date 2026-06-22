@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -8461,9 +8461,17 @@
       }
       // 腳下小陰影，把寵物「踩」在世界地面上（區別於舊版黏名牌旁的貼圖感）。
       drawGroundShadow(psx, psy + 7, 6, 2, 0.18);
-      ctx.font = `15px ${UI_FONT}`;
+      // 黏土小夥伴（ROADMAP 487）：clay 畫風下捏成暖陶土微縮小生物，與整個黏土微縮世界同調；
+      // 非 clay 一字不差吃原本 emoji 畫法（像素／emoji 預設路徑零回歸）。emoji 15px 視覺中心約在
+      // 基準線上方 ~5px，clay 身體中心對齊到同處、半徑 7.5 與 emoji 視覺大小相當。
+      // textAlign 兩路皆置中（後續羈絆愛心條／性格心情泡泡的 fillText 都仰賴置中對齊）。
       ctx.textAlign = "center";
-      ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
+      if (renderStyle === "clay") {
+        drawClayPet(p.pet_kind, psx, psy - petBob - hop - 5, 7.5);
+      } else {
+        ctx.font = `15px ${UI_FONT}`;
+        ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
+      }
       // 寵物羈絆默契條（ROADMAP 484）：養出默契後，在寵物腳邊靜靜墊一排小愛心（實心＝已養的階數），
       // 玩家一眼看得到「越陪牠玩接物、默契越深」。靜態不閃、不上飄，不喧賓奪主；沒默契＝不畫。
       const hearts = petBondHearts(p.pet_bond | 0);
@@ -13809,6 +13817,98 @@
   // 呼叫端據此退回原本像素／emoji 畫法（零回歸：非 clay 或未知建造物吃不到暖陶土分支）。
   function clayBuiltPalette(kind) {
     return _CLAY_BUILT_COLORS[kind] || null;
+  }
+
+  // ── 黏土小夥伴色盤（ROADMAP 487）─────────────────────────────────────────────
+  // clay 畫風下，一路跟在腳邊的寵物至今仍是扁平 emoji（🧚💠🦀👻🌟），是「全黏土世界」北極星下
+  // 最後一處最刺眼、又最常在畫面正中的割離。承接 456 世界樹／461 建築／481 建造物的同一條 clay
+  // 接線弧，把五種寵物各給一套暖陶土色盤：body／edge 暖褐邊／top 象牙頂光（呼應微縮世界桌上暖燈），
+  // 並各保留一筆 accent 識別色（晶石的乙太藍輝、珊瑚的暖橙、翠玉的玉綠、初源的金芒——沿用「魔法
+  // 強調色跨畫風一致」慣例，讓黏土化後仍一眼認得是哪隻）。確定性、只看 kind、無 DOM，可單元自驗。
+  const _CLAY_PET_COLORS = {
+    // 🧚 翩翩靈：柔玫瑰陶土身＋薄象牙翼（accent＝翼／點綴的暖玫瑰）。
+    flutter_sprite: { body: "#e7b9c4", edge: "#c08a98", top: "rgba(255,250,244,0.55)", accent: "#fff3f6" },
+    // 💠 晶石魔像：暖陶土身上嵌一塊乙太藍稜面寶石（accent＝跨畫風一致的乙太藍輝）。
+    crystal_golem:  { body: "#cdb79a", edge: "#9d8362", top: "rgba(255,250,238,0.5)",  accent: "#7fd8ff" },
+    // 🦀 珊瑚蟹：暖珊瑚橙陶土身＋雙螯（accent＝較亮的珊瑚橙）。
+    coral_crab:     { body: "#e08a5a", edge: "#b5633a", top: "rgba(255,248,238,0.5)",  accent: "#ffb98a" },
+    // 👻 翠玉幽靈：玉綠陶土身＋飄尾（accent＝柔玉綠高光）。
+    jade_wraith:    { body: "#a8cdb0", edge: "#7da588", top: "rgba(248,255,248,0.5)",  accent: "#d8f3df" },
+    // 🌟 初源守護者：暖象牙陶土身＋頭頂金芒（accent＝守護者金）。
+    origin_guardian:{ body: "#ead8b0", edge: "#c0a468", top: "rgba(255,250,238,0.55)", accent: "#ffd76a" },
+  };
+  // 保守預設：未知／壞 kind 回一套中性暖陶土色盤（永不回 null／不爆），呼叫端照樣畫得出一隻黏土小獸。
+  const _CLAY_PET_DEFAULT = { body: "#d8c0a0", edge: "#a98c66", top: "rgba(255,250,238,0.5)", accent: "#fff3e0" };
+  // clay 寵物色盤查表（純函式、好測）：永遠回一套可用色盤（未知 kind→保守預設），與 clayBuiltPalette
+  // 「未知回 null」不同——寵物 kind 來自伺服器既定五種，且程序化繪製需要永遠有色可用、絕不漏畫。
+  function clayPetPalette(kind) {
+    return _CLAY_PET_COLORS[kind] || _CLAY_PET_DEFAULT;
+  }
+
+  // 程序化捏一隻黏土小夥伴（ROADMAP 487）：鏡像 drawSnowmen 的 clay 範式——圓潤橢圓身＋暖褐邊＋
+  // 左上一抹象牙頂光（讓身體讀作圓鼓鼓的黏土團），再依物種補一筆識別配件。腳下柔影由呼叫端統一畫
+  // （避免重複、與 emoji 路徑一致），這裡不畫影。(cx,cy)＝身體中心；r＝身體半徑（隨 emoji 字級換算）。
+  // 純繪製、無新狀態、不讀寫 DOM 以外資料；未知 kind 吃保守預設色盤照樣捏得出一隻。
+  function drawClayPet(kind, cx, cy, r) {
+    const C = clayPetPalette(kind);
+    const rx = r, ry = r * 0.9;
+    ctx.save();
+    ctx.translate(cx, cy);
+    // 物種識別配件中「該畫在身體後方」的（翼／飄尾）先畫，才被身體蓋住前緣、讀出層次。
+    if (kind === "flutter_sprite") {
+      // 翩翩靈：身後一對薄象牙翼。
+      ctx.fillStyle = C.accent;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath(); ctx.ellipse(-rx * 0.7, -ry * 0.3, rx * 0.7, ry * 0.95, -0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(rx * 0.7, -ry * 0.3, rx * 0.7, ry * 0.95, 0.5, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if (kind === "jade_wraith") {
+      // 翠玉幽靈：身下三點漸淡的飄尾，傳達「飄浮無足」。
+      ctx.fillStyle = C.body;
+      for (let i = 0; i < 3; i++) {
+        ctx.globalAlpha = 0.5 - i * 0.13;
+        ctx.beginPath(); ctx.arc(0, ry * (0.7 + i * 0.45), rx * (0.5 - i * 0.1), 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    } else if (kind === "coral_crab") {
+      // 珊瑚蟹：身體兩側一對小螯（圓鉗）。
+      ctx.fillStyle = C.accent;
+      ctx.strokeStyle = C.edge; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(-rx * 1.05, ry * 0.1, rx * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(rx * 1.05, ry * 0.1, rx * 0.42, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+    // 圓鼓鼓的黏土身體（暖陶土＋暖褐邊）。
+    ctx.fillStyle = C.body;
+    ctx.strokeStyle = C.edge;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    // 體積頂光（左上象牙高光）。
+    ctx.fillStyle = C.top;
+    ctx.beginPath(); ctx.arc(-rx * 0.35, -ry * 0.4, rx * 0.42, 0, Math.PI * 2); ctx.fill();
+    // 兩顆小煤點眼（跨物種一致的「黏土小獸」表情，溫和不喧賓）。
+    ctx.fillStyle = "#3a322c";
+    ctx.beginPath(); ctx.arc(-rx * 0.3, -ry * 0.05, 1.1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(rx * 0.3, -ry * 0.05, 1.1, 0, Math.PI * 2); ctx.fill();
+    // 身體前方／頂上的識別配件。
+    if (kind === "crystal_golem") {
+      // 晶石魔像：身體中央嵌一塊乙太藍稜面寶石（鑽石形）。
+      ctx.fillStyle = C.accent;
+      ctx.strokeStyle = C.edge; ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(0, -ry * 0.5); ctx.lineTo(rx * 0.4, 0); ctx.lineTo(0, ry * 0.5); ctx.lineTo(-rx * 0.4, 0);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (kind === "origin_guardian") {
+      // 初源守護者：頭頂一枚金芒星（四道光＋亮心）。
+      ctx.strokeStyle = C.accent; ctx.lineWidth = 1.4;
+      const sy = -ry * 1.45, sr = rx * 0.5;
+      ctx.beginPath();
+      ctx.moveTo(-sr, sy); ctx.lineTo(sr, sy);
+      ctx.moveTo(0, sy - sr); ctx.lineTo(0, sy + sr);
+      ctx.stroke();
+      ctx.fillStyle = C.accent;
+      ctx.beginPath(); ctx.arc(0, sy, sr * 0.45, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
   }
 
   // 建築招牌/名牌：深色底牌 + 描邊 + 置中文字，以 (sx, y) 為中心畫。天文台呼叫此函式畫招牌，
