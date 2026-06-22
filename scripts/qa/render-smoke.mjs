@@ -4223,6 +4223,66 @@ for (const sc of scenarios) {
   else console.log("  ✅ 近戰揮砍弧光（ROADMAP 517）：meleeSwingAlpha 真值表(8 cases) + 壞值安全 + drawMeleeSwings 渲染路徑 + reduceMotion 清除 + 到期清除，全路徑零例外");
 }
 
+// ── ROADMAP 518：回血光暈 ────────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const hfa = sandbox.__bfTest && sandbox.__bfTest.healFlashAlpha;
+    const dhf = sandbox.__bfTest && sandbox.__bfTest.drawHealFlash;
+    if (!hfa) throw new Error("healFlashAlpha 未匯出");
+    if (!dhf) throw new Error("drawHealFlash 未匯出");
+
+    // healFlashAlpha 真值表：壞值保守回 0
+    for (const bad of [null, undefined, NaN, Infinity, -Infinity]) {
+      const got = hfa(bad);
+      if (got !== 0) { ok = false; console.error(`  ❌ healFlashAlpha(${bad})=${got}，期望 0`); }
+    }
+    // t <= 0 → 0
+    if (hfa(0) !== 0) { ok = false; console.error(`  ❌ healFlashAlpha(0)=${hfa(0)}，期望 0`); }
+    if (hfa(-1) !== 0) { ok = false; console.error(`  ❌ healFlashAlpha(-1)=${hfa(-1)}，期望 0`); }
+    // t=0.5 → 0.16（線性中點）
+    const half = hfa(0.5);
+    if (Math.abs(half - 0.16) > 0.001) { ok = false; console.error(`  ❌ healFlashAlpha(0.5)=${half}，期望 0.16`); }
+    // t=1 → 0.32（峰值）
+    const peak = hfa(1);
+    if (Math.abs(peak - 0.32) > 0.001) { ok = false; console.error(`  ❌ healFlashAlpha(1)=${peak}，期望 0.32`); }
+    // t=2 → 夾鉗至 0.32（不超過峰值）
+    const over = hfa(2);
+    if (Math.abs(over - 0.32) > 0.001) { ok = false; console.error(`  ❌ healFlashAlpha(2)=${over}，期望 0.32（夾鉗）`); }
+    // 回值非 NaN、非負、≤ 0.32
+    for (const t_ of [0.1, 0.3, 0.7, 0.9]) {
+      const v = hfa(t_);
+      if (typeof v !== "number" || isNaN(v) || v < 0 || v > 0.32) {
+        ok = false; console.error(`  ❌ healFlashAlpha(${t_})=${v}，應為 [0, 0.32]`);
+      }
+    }
+
+    // drawHealFlash 渲染路徑：設定 healFlashUntil，連跑 4 幀零例外
+    const now0 = performance.now();
+    sandbox.healFlashUntil = now0 + 350;
+    for (let f = 0; f < 4; f++) {
+      dhf(now0 + f * 50);
+    }
+
+    // healFlashUntil 已過期時，drawHealFlash 應快速返回不繪製（不 throw）
+    sandbox.healFlashUntil = now0 - 1;
+    dhf(now0);
+
+    // reduceMotion 路徑：effectiveReduceMotion()=true 時應直接 return（不繪製，不 throw）
+    sandbox.__bfTest.setMotionPref("reduce");
+    sandbox.healFlashUntil = performance.now() + 350;
+    dhf(performance.now());
+    sandbox.__bfTest.setMotionPref("no-preference");
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 回血光暈：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 回血光暈（ROADMAP 518）：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 回血光暈（ROADMAP 518）：healFlashAlpha 真值表(9 cases) + 壞值安全 + drawHealFlash 渲染路徑 + 過期快返 + reduceMotion 靜默，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
