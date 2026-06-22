@@ -1751,16 +1751,20 @@
 
   // 敵人受擊／被打倒的視覺回饋(純表現,從快照 hp 差值觸發):你看得到自己正在打中敵人、
   // 把牠打趴——鏡像玩家受擊紅光(damageFlash)的對稱面。敵人血條很細、移動中採集中很容易
-  // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。以陣列索引當身分——伺服器每幀
-  // 以固定順序輸出同一批敵人(spawn 槽位穩定、被打倒只是原地重生),同槽同 kind 才比對,
-  // 避免序變誤觸。只在血量下降／轉被打倒時觸發,不在前端判任何戰鬥規則(伺服器權威)。
-  let enemyFx = []; // 每槽 { until:ms, lethal:bool };render 依剩餘時間淡出
+  // 漏看「我正在輸出」,補這道一閃讓「有來有回」一眼可讀。
+  // ★以穩定 eid 當身分（不再用陣列索引）——AOI 剔除與後端 HashMap 迭代順序不固定，
+  //   會讓同索引前後幀對到不同敵人，造成小怪「打不死／死了又復現／走動跳血破圖」。
+  //   改用 eid 後即使陣列順序變、AOI 進出，每隻敵人身份都對得上。
+  //   只在血量下降／轉被打倒時觸發,不在前端判任何戰鬥規則(伺服器權威)。
+  let enemyFx = Object.create(null); // eid → { until:ms, lethal:bool };render 依剩餘時間淡出
   // 升等炫光（ROADMAP 382）：升等瞬間觸發金色衝擊波環＋射線動畫。{ x, y, start }，start=ms；null=無動畫。
   let levelUpFx = null;
   // 怪物死亡淡出（ROADMAP 150）：alive→false 的瞬間記錄淡出截止時間。
   // 淡出期間以漸減 alpha 繪製定住的軀體；超時後完全隱藏，不再殘留幽靈。
   const ENEMY_DEATH_FADE_MS = 600;
-  let enemyDeathFade = []; // 每槽 { until:ms } or undefined
+  let enemyDeathFade = Object.create(null); // eid → { until:ms }
+  // 上一幀敵人 eid→view 對照表（用來比對受擊/死亡）。
+  let prevEnemyById = new Map();
   // 是否已同步過初始敵人快照。和乙太/背包/血量同理:進場/重連的第一份快照不拿來比 hp 差值
   // (伺服器若換版重啟,敵人血量可能不同,會誤閃一輪),之後的快照差值才是真的受擊。
   let enemiesSynced = false;
@@ -3611,6 +3615,9 @@
           lastMasteryTiers = null; // 同理:重連後重建熟練度階級基準,別把既有高階當成剛晉階（ROADMAP 351）
           presenceKnown = false; // 重連後第一份快照重建在場基準，別把還在線的人當「剛進場」
           enemiesSynced = false; // 同上:重連後第一份快照重建敵人基準,別把換版後的血量差當成受擊
+          prevEnemyById = new Map(); // 重連:清掉舊 eid 對照,避免拿斷線前的快照比 hp
+          enemyFx = Object.create(null);
+          enemyDeathFade = Object.create(null);
         }
         hideConnStatus(); // 接回（或初次連上）就收掉重連橫幅
         enterGame();
@@ -3770,26 +3777,37 @@
           tileDeltaMap.set(`${d.cx},${d.cy},${d.tx},${d.ty}`, d.kind);
           wasmTileDeltaSet(d.cx, d.cy, d.tx, d.ty, d.kind); // 預測碰撞同步看到挖/放
         }
-        // 敵人受擊回饋:比對新舊快照同槽(索引穩定,見 enemyFx 宣告),血量下降就在那隻
-        // 身上閃一下、被打倒(alive 轉 false)閃得更重。純表現,不改任何狀態。
-        const prevEnemies = enemies;
+        // 敵人受擊回饋:以穩定 eid 當身分比對新舊快照(不再用陣列索引,見 enemyFx 宣告)。
+        // 同一 eid 的敵人 hp 下降就閃光、alive 由 true→false(仍在快照內)才播死亡淡出。
+        // 某 eid 整個從新快照消失=離開 AOI 或被移除→靜默清掉,不誤播死亡(這正是修的關鍵)。
         const nextEnemies = msg.enemies || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
+        // 建新快照的 eid→view map。若後端沒帶 eid(舊版相容)就退回用索引當 key,別崩。
+        const nextById = new Map();
+        for (let i = 0; i < nextEnemies.length; i++) {
+          const ne = nextEnemies[i];
+          const key = (ne.eid != null && ne.eid !== "") ? ne.eid : ("#" + i);
+          nextById.set(key, ne);
+        }
         if (enemiesSynced) {
           const fxNow = performance.now();
-          for (let i = 0; i < nextEnemies.length; i++) {
-            const ne = nextEnemies[i];
-            const oe = prevEnemies[i];
-            // 同槽同 kind 才比(避免敵人組成變動時誤觸);hp 下降或被打倒才閃
+          for (const [key, ne] of nextById) {
+            const oe = prevEnemyById.get(key);
+            // 找不到上一幀的同 eid(剛進視野/新生)→不比 hp,避免誤觸
             if (!oe || oe.kind !== ne.kind) continue;
             const died = oe.alive && !ne.alive;
             if (died || (ne.alive && ne.hp < oe.hp)) {
-              enemyFx[i] = { until: fxNow + (died ? 480 : 280), lethal: died };
+              enemyFx[key] = { until: fxNow + (died ? 480 : 280), lethal: died };
               // 傷害數字已由 AttackHit 事件（ROADMAP 387）即時廣播，此處不再重複產生飄字。
             }
-            // 死亡淡出（ROADMAP 150）：alive 轉 false 的瞬間啟動淡出計時。
-            if (died) enemyDeathFade[i] = { until: fxNow + ENEMY_DEATH_FADE_MS };
+            // 死亡淡出（ROADMAP 150）：alive 由 true→false 的瞬間啟動淡出計時。
+            if (died) enemyDeathFade[key] = { until: fxNow + ENEMY_DEATH_FADE_MS };
           }
+          // 清掉已不在快照內的 eid 的 FX/fade 條目,避免無限增長
+          // (也讓「離開 AOI」的敵人不殘留死亡淡出幽靈)。
+          for (const k of Object.keys(enemyFx)) if (!nextById.has(k)) delete enemyFx[k];
+          for (const k of Object.keys(enemyDeathFade)) if (!nextById.has(k)) delete enemyDeathFade[k];
         }
+        prevEnemyById = nextById;
         enemies = nextEnemies;
         enemiesSynced = true;
         daynight = msg.daynight;
@@ -23618,12 +23636,14 @@
       const sx = e.x - camX;
       const sy = e.y - camY;
       if (sx < -40 || sy < -40 || sx > viewW + 40 || sy > viewH + 40) continue;
+      // FX/fade 以穩定 eid 取(舊版後端沒帶 eid 就退回索引,別崩)。
+      const ekey = (e.eid != null && e.eid !== "") ? e.eid : ("#" + i);
       // 每隻用座標當相位 → 動作不同步;上下浮動給生命感(reduceMotion 不動)。
       const phase = e.x * 0.7 + e.y * 0.3;
 
       // 死亡淡出（ROADMAP 150）：alive=false 時用淡出 alpha 繪製靜止軀體，超時完全隱藏。
       if (!e.alive) {
-        const df = enemyDeathFade[i];
+        const df = enemyDeathFade[ekey];
         if (!df || fxNow >= df.until) continue; // 淡出結束，不再殘留
         const fadeT = (df.until - fxNow) / ENEMY_DEATH_FADE_MS;
         ctx.save();
@@ -23652,7 +23672,7 @@
       }
 
       const ey = sy + (reduceMotion ? 0 : Math.sin(t * 3 + phase) * 2.5);
-      const fx = enemyFx[i];
+      const fx = enemyFx[ekey];
       const fxT = fx && fxNow < fx.until
         ? Math.max(0, Math.min(1, (fx.until - fxNow) / (fx.lethal ? 480 : 280)))
         : 0;
