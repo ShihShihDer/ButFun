@@ -221,6 +221,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
+            newcomer_until: None,
         }
     } else {
         // 等 Join
@@ -362,6 +363,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             meal_buff: None,
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
+            newcomer_until: None,
         }
     };
     let id = player.id;
@@ -619,15 +621,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     // （訪客 id 臨時、發了也跨重連找不回，與訪客不留世界痕跡一致）。
     if let Some(uid) = authed_uid {
         if app.welcome_kits.claim(uid).await {
-            // 鎖內：塞背包＋加乙太，並就地組出「實際授予了什麼」（鎖外才送訊，不巢狀上鎖，守 prod-deadlock）。
-            let granted = {
+            // 鎖內：塞背包＋加乙太＋點亮新人徽記，並就地組出「實際授予了什麼＋玩家名」
+            // （鎖外才送訊，不巢狀上鎖，守 prod-deadlock）。
+            let (granted, newcomer_name) = {
                 let mut players = app.players.write().unwrap();
                 if let Some(p) = players.get_mut(&id) {
                     let items = crate::welcome_kit::apply_kit(&mut p.inventory);
                     p.ether = p.ether.saturating_add(crate::welcome_kit::KIT_ETHER);
-                    items
+                    // ROADMAP 506：首次登入點亮 10 分鐘新人徽記（記憶體前置、零 migration）。
+                    p.newcomer_until = Some(
+                        std::time::Instant::now()
+                            + std::time::Duration::from_secs(600),
+                    );
+                    (items, p.name.clone())
                 } else {
-                    Vec::new()
+                    (Vec::new(), String::new())
                 }
             };
             // 至少有一項物品才送（理論上全新玩家背包空、必有；保守防一手）。
@@ -642,6 +650,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 };
                 if let Ok(text) = serde_json::to_string(&msg) {
                     let _ = sender.send(Message::Text(text)).await;
+                }
+                // ROADMAP 506：全服廣播新旅人到來訊息（走聊天頻道，低頻一次性、不被快照 Lagged 丟掉）。
+                if !newcomer_name.is_empty() {
+                    let announce = ServerMsg::Chat {
+                        from: "世界".into(),
+                        text: format!(
+                            "🌟 旅人 {} 首次踏上了故鄉的土地！大家歡迎他！",
+                            newcomer_name
+                        ),
+                    };
+                    if let Ok(json) = serde_json::to_string(&announce) {
+                        let _ = app.tx_chat.send(json);
+                    }
                 }
             }
         }
