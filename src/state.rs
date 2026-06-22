@@ -171,6 +171,10 @@ pub struct Player {
     pub achievements: AchievementSet,
     /// 累計擊殺敵人數（ROADMAP 31 成就觸發用）。記憶體前置，重啟清空。
     pub kill_count: u32,
+    /// 本次對話採集成功次數（ROADMAP 503 英雄碑用）。記憶體前置，重啟清零。
+    pub session_gather_count: u32,
+    /// 本次對話農地收穫次數（ROADMAP 503 英雄碑用）。記憶體前置，重啟清零。
+    pub session_harvest_count: u32,
     /// 玩家已解鎖的稱號集合（ROADMAP 389）。記憶體前置，重啟清空。
     pub title_set: crate::player_title::TitleSet,
     /// 今日活動鏈狀態（ROADMAP 390）。記憶體前置，重啟清空，零 migration。
@@ -1735,6 +1739,8 @@ mod tests {
             costume: 0,
             achievements: AchievementSet::new(),
             kill_count: 0,
+            session_gather_count: 0,
+            session_harvest_count: 0,
             title_set: crate::player_title::TitleSet::new(),
             activity_chain: crate::activity_chain::ActivityChain::new(0),
             meditation: None,

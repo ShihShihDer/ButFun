@@ -1245,6 +1245,9 @@ pub enum ServerMsg {
         /// 戰鬥記跡清單（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號。向後相容（舊客戶端忽略）。
         #[serde(default)]
         combat_marks: Vec<CombatMarkView>,
+        /// 廣場英雄碑（ROADMAP 503）：本次對話採集 / 收穫 / 擊殺三維度各最多的旅人。向後相容。
+        #[serde(default)]
+        session_champions: crate::session_champions::SessionChampionsView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3377,6 +3380,7 @@ mod tests {
             ship_repair: ShipRepairView::default(),
             world_tally: WorldTallyView::default(),
             combat_marks: vec![],
+            session_champions: crate::session_champions::SessionChampionsView::default(),
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

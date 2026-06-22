@@ -127,6 +127,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             costume: user.costume,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            session_gather_count: 0,
+            session_harvest_count: 0,
             title_set: crate::player_title::TitleSet::new(),
             activity_chain: crate::activity_chain::ActivityChain::new(
                 std::time::SystemTime::now()
@@ -266,6 +268,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             costume: 0,
             achievements: crate::achievement::AchievementSet::new(),
             kill_count: 0,
+            session_gather_count: 0,
+            session_harvest_count: 0,
             title_set: crate::player_title::TitleSet::new(),
             activity_chain: crate::activity_chain::ActivityChain::new(
                 std::time::SystemTime::now()
@@ -663,7 +667,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -825,6 +829,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         world_tally: world_tally.clone(),
                                         // 戰鬥記跡（ROADMAP 499）：依 AOI 剔除視野外的記跡，近距離才顯示。
                                         combat_marks: combat_marks.iter().filter(|m| filter_pos(m.wx, m.wy)).cloned().collect(),
+                                        // 廣場英雄碑（ROADMAP 503）：全服廣播（量微小）。
+                                        session_champions: session_champions.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1954,6 +1960,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     .saturating_add(season_bonus)
                                     .saturating_add(rain_bonus);
                                 p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
+                                p.session_harvest_count = p.session_harvest_count.saturating_add(1); // ROADMAP 503 英雄碑
                                 tracing::info!(player = %p.name, ether = p.ether, bonus, demand, season_bonus, rain_bonus, quality = quality.as_str(), "農地收成乙太");
                                 ServerMsg::HarvestResult {
                                     player_id: id,
@@ -2324,6 +2331,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 gather_level_up = Some((p.name.clone(), p.level()));
                             }
                             p.masteries.gain_artisan(1); // 工匠熟練度：採集節點（ROADMAP 38）
+                            p.session_gather_count = p.session_gather_count.saturating_add(1); // ROADMAP 503 英雄碑
                             tracing::info!(player = %p.name, ?item, added, mult, bounty_bonus, level = p.level(), "採集入背包+exp");
                         }
                         // 並肩協作默契廣播（ROADMAP 414）：身旁有並肩同伴才廣播，**出鎖後**才送

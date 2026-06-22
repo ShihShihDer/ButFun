@@ -4498,6 +4498,15 @@ pub fn spawn(app: AppState) {
                         world_tally: app.world_tally.read().unwrap().view(),
                         // 戰鬥記跡（ROADMAP 499）：最近 20 筆擊殺地點，5 分鐘內有效。
                         combat_marks: app.combat_marks.read().unwrap().view(),
+                        // 廣場英雄碑（ROADMAP 503）：掃一遍在線玩家，算本次對話採集/收穫/擊殺冠軍。
+                        session_champions: {
+                            let players_guard = app.players.read().unwrap();
+                            crate::session_champions::compute_champions(
+                                players_guard.values().map(|p| {
+                                    (p.name.as_str(), p.session_gather_count, p.session_harvest_count, p.kill_count)
+                                })
+                            )
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
