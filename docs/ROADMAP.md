@@ -3013,4 +3013,6 @@ D-3. ✅ **小地圖導航**（PR #71）
 
 492. ✅ **廢棄蒸汽星艦共修——世界東北方的墜落星艦第一次能被旅人們合力修好：走近（半徑 150px）貢獻 ×2 木材，進度條在艦身上方即時呈現；多人接力達到 20 次貢獻時星艦發出金色齒輪光、全服公告「某位旅人完成了最後一擊」、齒輪噴出閃耀飄字，飛翔 10 分鐘後再次損毀等待下輪修繕；玩家有個人 5 秒冷卻防刷材（PR #673 MERGED）**
 
-493. **季節豐收獎·在品種旺季收穫第一次有了看得見的慶祝——至今 `season_affinity` 只是成長速度的隱形倍率，玩家完全感受不到「在對的季節種對的品種」有什麼回報；本切片把「旺季收穫」這個動作，第一次變成一個看得見的獎勵瞬間：收成飄出金翠色「🌾 當季旺收！+3 乙太」、全服旺收次數達里程碑（10/30/100）廣播豐收節公告、播種選種面板新增「🌾旺收」標籤讓玩家事前就知道選它有加成（seasonal harvest award／後端純邏輯 `seasonal_harvest_award.rs` + 協議新欄 `season_bonus` + 前端飄字標籤，零 migration、純記憶體，15 條 Rust 單元測試）（本輪 PR）**
+493. ✅ **季節豐收獎·在品種旺季收穫第一次有了看得見的慶祝——至今 `season_affinity` 只是成長速度的隱形倍率，玩家完全感受不到「在對的季節種對的品種」有什麼回報；本切片把「旺季收穫」這個動作，第一次變成一個看得見的獎勵瞬間：收成飄出金翠色「🌾 當季旺收！+3 乙太」、全服旺收次數達里程碑（10/30/100）廣播豐收節公告、播種選種面板新增「🌾旺收」標籤讓玩家事前就知道選它有加成（seasonal harvest award／後端純邏輯 `seasonal_harvest_award.rs` + 協議新欄 `season_bonus` + 前端飄字標籤，零 migration、純記憶體，15 條 Rust 單元測試）（PR #674 MERGED）**
+
+494. **黏土敵人造型·黏土風格下所有怪物換上溫潤的手作感——至今 `renderStyle='clay'` 切換後，scrap_drone 有黏土 sprite，其餘十一種怪物（ether_wisp、flutter_sprite、mushroom_stalker、crystal_golem、rune_guardian、coral_crab、jade_wraith、steam_construct、aether_specter、origin_guardian、rift_guardian）仍維持原本像素程式繪製、與黏土微縮世界的整體風格格格不入；本切片補上這塊缺口：`drawClayEnemy(kind, cx, cy, t, phase)` 統一入口 + 各怪物的黏土程式繪製版本，停格感時間量化（5fps）、圓潤輪廓（roundRect/ellipse/arc）、陶土色系（磚橙/翡翠綠/灰藍/金黃/深紫），共用 `clayBall`（手捏感高光圓球）/`clayEyes`（點眼）兩個小元件；各 drawXxx 函式頂端加早返回鉤子，clay 模式下直接調度黏土版本、非 clay 模式零額外 CPU；純前端、零後端/協議/migration/新框架（本輪 PR）**
