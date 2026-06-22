@@ -1463,6 +1463,9 @@ pub struct AppState {
     /// 戰鬥記跡（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號，全服廣播顯示。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub combat_marks: Arc<RwLock<crate::combat_mark::CombatMarkState>>,
+    /// 黃金礦脈爭奪戰（ROADMAP 521）：每 30 分鐘週期性競技採礦事件（首次 10 分鐘後）。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub gold_rush: Arc<RwLock<crate::gold_rush::GoldRushState>>,
 }
 
 impl AppState {
@@ -1671,6 +1674,7 @@ impl AppState {
             eco_festival: Arc::new(RwLock::new(crate::eco_festival::EcoFestivalState::new())),
             world_tally: Arc::new(RwLock::new(crate::world_tally::WorldTally::new())),
             combat_marks: Arc::new(RwLock::new(crate::combat_mark::CombatMarkState::new())),
+            gold_rush: Arc::new(RwLock::new(crate::gold_rush::GoldRushState::new())),
         }
     }
 

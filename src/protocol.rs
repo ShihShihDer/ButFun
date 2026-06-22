@@ -265,6 +265,10 @@ pub enum ClientMsg {
     /// 伺服器以玩家自己的權威座標判定距離（防隔空修繕）；星艦已修好 / 玩家冷卻中 /
     /// 材料不足 / 超出半徑一律靜默忽略。零持久化、純記憶體、重啟清零。
     ContributeToShip,
+    /// 黃金礦脈爭奪戰搶挖（ROADMAP 521）：玩家走到黃金礦脈附近按「⛏️ 搶挖」一次得 1 顆黃金礦石。
+    /// 伺服器以玩家自己的權威座標判定範圍（防隔空挖礦）；無活躍事件 / 冷卻中 / 礦脈耗盡 / 超出範圍
+    /// 一律靜默忽略。零持久化、純記憶體、重啟清零。
+    MineGoldRush,
     /// 雪人讚賞（ROADMAP 479）：玩家走近別人堆的雪人，按「♥ 讚賞」捎去暖意。`id` = 目標雪人。
     /// 伺服器以讚賞者自己的權威座標判定搆不搆得著（防隔空讚賞）；不能讚自己堆的、一座只能讚一次。
     /// 成功則雪人愛心 +1（隨快照全服可見），並把暖心通知單播給堆雪者。
@@ -897,6 +901,18 @@ pub enum ClientMsg {
         pub cheers: u16,
     }
 
+    /// 黃金礦脈爭奪戰快照（ROADMAP 521）。None = 無活躍事件；Some = 爭奪進行中。
+    /// 前端在礦脈位置畫閃爍金色大礦石、HUD 顯示倒數與即時排名。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct GoldRushView {
+        /// 礦脈剩餘礦量（到 0 代表礦脈耗盡）。
+        pub remaining_ore: u32,
+        /// 剩餘時間（秒，取整數供前端倒數）。
+        pub remaining_secs: u32,
+        /// 目前前三名：`(顯示名稱, 挖礦次數)`，按次數高到低，最多 3 筆。
+        pub top3: Vec<(String, u32)>,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1257,6 +1273,10 @@ pub enum ServerMsg {
         /// 乙太暴走位置 Y（ROADMAP 504）。暴走未啟動時為 0。向後相容。
         #[serde(default)]
         ether_surge_y: f32,
+        /// 黃金礦脈爭奪戰（ROADMAP 521）。None = 無事件；Some = 爭奪進行中（含剩餘礦量/時間/即時排名）。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+        #[serde(default)]
+        gold_rush: Option<GoldRushView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3419,6 +3439,7 @@ mod tests {
             ether_surge_secs: 0,
             ether_surge_x: 0.0,
             ether_surge_y: 0.0,
+            gold_rush: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

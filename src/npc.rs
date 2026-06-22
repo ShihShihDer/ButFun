@@ -80,6 +80,9 @@ pub const NPC_BUY_LIST: &[ShopEntry] = &[
     ShopEntry { item: ItemKind::Bread,            price_per: 8  }, // 小麥穗×3(6)→+2
     ShopEntry { item: ItemKind::CarrotSoup,       price_per: 8  }, // 胡蘿蔔×2(6)→+2
     ShopEntry { item: ItemKind::PotatoGratin,     price_per: 10 }, // 馬鈴薯×2(8)→+2
+    // 黃金礦石（ROADMAP 521）：黃金礦脈爭奪戰限定戰利品，5 乙太/顆。
+    // 純紀念品、不進任何配方，但可賣 NPC 換乙太，讓非前三名玩家的礦石也有出口。
+    ShopEntry { item: ItemKind::GoldOre,          price_per: 5  },
 ];
 
 /// NPC **販售**清單（NPC → 玩家，花乙太）。

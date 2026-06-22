@@ -3252,6 +3252,48 @@ pub fn spawn(app: AppState) {
             // （守 prod-deadlock，不與其他鎖巢狀）。
             app.snowmen.write().unwrap().tick(dt, is_winter);
 
+            // 黃金礦脈爭奪戰 tick（ROADMAP 521）：每 30 分鐘週期性競技採礦事件。
+            // 守 prod-deadlock：寫鎖內只 tick 即釋放；出鎖後才廣播 / 派發乙太。
+            {
+                let rush_tick = app.gold_rush.write().unwrap().tick(dt);
+                match rush_tick {
+                    crate::gold_rush::GoldRushTick::Spawned => {
+                        let dur_min = (crate::gold_rush::DURATION_SECS / 60.0) as u32;
+                        let _ = app.tx_chat.send(format!(
+                            "⛏️ 黃金礦脈出現了！城正東 ({}, {}) 發現 {} 顆黃金礦石，限時 {} 分鐘——手快者得！",
+                            crate::gold_rush::VEIN_WX as i32,
+                            crate::gold_rush::VEIN_WY as i32,
+                            crate::gold_rush::TOTAL_ORE,
+                            dur_min,
+                        ));
+                    }
+                    crate::gold_rush::GoldRushTick::Finished(results) => {
+                        if results.is_empty() {
+                            let _ = app.tx_chat.send("⛏️ 黃金礦脈耗盡，無人搶先抵達，礦石就這樣悄悄沉回大地……".to_string());
+                        } else {
+                            let summary: Vec<String> = results.iter().enumerate().map(|(i, r)| {
+                                let medal = ["🥇", "🥈", "🥉"].get(i).copied().unwrap_or("🏅");
+                                format!("{} {} ×{} 礦石（得 {} 乙太）", medal, r.name, r.count, r.reward)
+                            }).collect();
+                            let _ = app.tx_chat.send(format!(
+                                "⛏️ 黃金礦脈爭奪結束！本場排行：{}",
+                                summary.join("，")
+                            ));
+                            // 獎勵乙太：在 players 鎖內批次更新。
+                            let mut players = app.players.write().unwrap();
+                            for r in &results {
+                                if r.reward > 0 {
+                                    if let Some(p) = players.values_mut().find(|p| p.name == r.name) {
+                                        p.ether = p.ether.saturating_add(r.reward);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::gold_rush::GoldRushTick::None => {}
+                }
+            }
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4525,6 +4567,15 @@ pub fn spawn(app: AppState) {
                         ether_surge_secs: app.ether_surge.read().unwrap().remaining_secs(),
                         ether_surge_x: app.ether_surge.read().unwrap().x,
                         ether_surge_y: app.ether_surge.read().unwrap().y,
+                        // 黃金礦脈爭奪戰（ROADMAP 521）：事件進行中才廣播 view，平時 None 節省頻寬。
+                        gold_rush: {
+                            let gr = app.gold_rush.read().unwrap();
+                            gr.remaining_ore().map(|ore| crate::protocol::GoldRushView {
+                                remaining_ore: ore,
+                                remaining_secs: gr.remaining_secs().unwrap_or(0.0) as u32,
+                                top3: gr.top3(),
+                            })
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
