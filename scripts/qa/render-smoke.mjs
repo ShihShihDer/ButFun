@@ -3612,6 +3612,75 @@ for (const sc of scenarios) {
   else console.log("  ✅ 礦石脈動（ROADMAP 507）：純函式真值表(5+5) + 耗盡→重生脈動觸發，全路徑零例外");
 }
 
+// ── ROADMAP 508 戰鬥連殺 ──────────────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const label  = sandbox.__bfTest && sandbox.__bfTest.killStreakLabel;
+    const alpha  = sandbox.__bfTest && sandbox.__bfTest.killStreakBadgeAlpha;
+    if (!label || !alpha) throw new Error("killStreakLabel / killStreakBadgeAlpha 未匯出");
+
+    // 純函式真值表：killStreakLabel
+    const labelCases = [
+      [0, ""], [1, ""], [-1, ""], [NaN, ""], [Infinity, ""],
+      [2, "⚔️ 雙殺！"], [3, "🔥 三連擊！"], [4, "💥 四殺！"],
+      [5, "🌟 五連殺！"], [6, "🌟 連殺 ×6！"], [10, "🌟 連殺 ×10！"],
+    ];
+    for (const [n, expected] of labelCases) {
+      const got = label(n);
+      if (got !== expected) { ok = false; console.error(`  ❌ killStreakLabel(${n}) = "${got}", 期望 "${expected}"`); }
+    }
+
+    // 純函式真值表：killStreakBadgeAlpha
+    const BADGE_MS = 1800, FADEIN_MS = 220, FADEOUT_MS = 550;
+    const alphaCases = [
+      [-1, 0], [0, 0], [110, 0.5],          // 淡入期間（110/220=0.5）
+      [500, 1], [1100, 1],                    // 持平期間
+      [BADGE_MS - FADEOUT_MS + 1, true],      // 剛進淡出（>0 即可）
+      [BADGE_MS - 1, true],                   // 接近結束（>0 即可）
+      [BADGE_MS, 0], [BADGE_MS + 100, 0],     // 已到期
+    ];
+    for (const [ageMs, expected] of alphaCases) {
+      const got = alpha(ageMs);
+      if (expected === true) {
+        if (!(got > 0 && got <= 1)) { ok = false; console.error(`  ❌ killStreakBadgeAlpha(${ageMs}) = ${got}, 期望 (0,1]`); }
+      } else {
+        if (Math.abs(got - expected) > 0.01) { ok = false; console.error(`  ❌ killStreakBadgeAlpha(${ageMs}) = ${got}, 期望 ${expected}`); }
+      }
+    }
+
+    // 情境：注入兩幀快照製造連殺（kill_count 0→1→2），再跑 4 幀驗 badge 渲染零例外。
+    const killBase = {
+      type: "snapshot", fields: [], listings: [], npcs: [], terrain: [], expedition_target: null,
+      nodes: [], enemies: [], my_ether: 0, my_bag: [], time_fraction: 0.3,
+      prosperity: 0, town_mood: "平靜", newbie_banner: null,
+      ether_surge_secs: 0, ether_surge_x: 0, ether_surge_y: 0,
+    };
+    const makeKillSnap = (killCount) => ({
+      ...killBase,
+      players: [{ ...me0, kill_count: killCount }],
+    });
+
+    // 首幀（kill_count=0）：設定 _prevKillCount，不觸發。
+    lastWS.onmessage({ data: JSON.stringify(makeKillSnap(0)) });
+    if (pump("連殺·首幀", 1) instanceof Error) ok = false;
+
+    // 第一殺（kill_count=1）：連段=1，未達 2，不觸發標語。
+    lastWS.onmessage({ data: JSON.stringify(makeKillSnap(1)) });
+    if (pump("連殺·單殺", 1) instanceof Error) ok = false;
+
+    // 第二殺（kill_count=2，在 8 秒窗口內）：連段=2 → 觸發「雙殺！」標語。
+    lastWS.onmessage({ data: JSON.stringify(makeKillSnap(2)) });
+    if (pump("連殺·雙殺標語渲染", 4) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 戰鬥連殺：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 戰鬥連殺：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 戰鬥連殺（ROADMAP 508）：純函式真值表(11 label / 9 alpha) + 連殺觸發標語渲染，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

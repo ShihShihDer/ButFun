@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3055,6 +3055,10 @@
   const nodeRespawnPulses = new Map();    // ROADMAP 507 礦石脈動：key `${x},${y}`，value = 脈動起始 performance.now()
   const prevNodeHarvestable = new Map();  // ROADMAP 507 礦石脈動：上一快照各節點的 harvestable 狀態
   const RESPAWN_PULSE_MS = 2000;          // ROADMAP 507 礦石脈動持續毫秒數
+  let _killStreakCount = 0;      // ROADMAP 508 連殺：當前連段計數（8 秒窗口內）
+  let _killStreakLastMs = 0;     // ROADMAP 508 連殺：上一次擊殺時刻
+  let _killStreakBadge = null;   // ROADMAP 508 連殺：{text, startMs} | null
+  let _prevKillCount = null;     // ROADMAP 508 連殺：null=首次快照，防進場誤觸發
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
@@ -4080,6 +4084,22 @@
           }
           updateWeaponHud(me);   // 裝備武器 pill（已裝備才亮）+「合武器更痛」引導
           updateEquipPanel(me.equipped_weapon, me.equipped_armor, me.equipped_accessory, me.attack, me.defense, me.kill_count || 0);
+          // 連殺偵測（ROADMAP 508）：首次快照不觸發（_prevKillCount null 防進場誤觸發）。
+          const nowKills = me.kill_count || 0;
+          if (_prevKillCount !== null && nowKills > _prevKillCount) {
+            const streakNowMs = performance.now();
+            const withinWindow = _killStreakLastMs > 0 && (streakNowMs - _killStreakLastMs) < 8000;
+            _killStreakCount = withinWindow ? _killStreakCount + (nowKills - _prevKillCount) : (nowKills - _prevKillCount);
+            _killStreakLastMs = streakNowMs;
+            if (_killStreakCount >= 2) {
+              _killStreakBadge = { text: killStreakLabel(_killStreakCount), startMs: streakNowMs };
+            }
+          } else if (_prevKillCount !== null && nowKills < _prevKillCount) {
+            // 伺服器重啟後計數歸零：重置連段（防舊計數誤觸發）。
+            _killStreakCount = 0;
+            _killStreakLastMs = 0;
+          }
+          _prevKillCount = nowKills;
           updateRefinePanel(me, inv); // 精煉/附魔面板（ROADMAP 37）
           updatePlaceModeHud();  // C-4 放置模式 pill（選取材料才亮）
           updateCraftPanel(inv); // 合成台:夠不夠料的反灰隨背包快照更新
@@ -9675,6 +9695,9 @@
     // 換季煙火（ROADMAP 500）：換季時全螢幕粒子煙火慶典，置於所有 HUD 之上（最頂層、不擋操作）。
     safeDraw("seasonFireworks", () => drawSeasonFireworks(renderNow));
 
+    // 連殺標語（ROADMAP 508）：連殺 2+ 時畫面中央浮出標語，置於所有 HUD 之上（不擋操作）。
+    safeDraw("killStreak", () => drawKillStreakBadge());
+
     // 環境音效節流更新（ROADMAP 377）：每 2 秒同步一次天氣/晝夜狀態給 AMBIENT，
     // 避免每幀重建音源；用 renderNow（已算好）而非再呼叫 performance.now()。
     if (renderNow - _ambientTickLast > 2000) {
@@ -10935,6 +10958,55 @@
     if (t <= 0) return 0.75;
     if (t >= 1) return 0;
     return 0.75 * (1 - t);
+  }
+
+  // 純函式：連殺標語文字（n≥2 才有標語，n<2 或壞值退空）。（ROADMAP 508）
+  function killStreakLabel(n) {
+    if (!Number.isFinite(n) || n < 2) return "";
+    if (n === 2) return "⚔️ 雙殺！";
+    if (n === 3) return "🔥 三連擊！";
+    if (n === 4) return "💥 四殺！";
+    if (n === 5) return "🌟 五連殺！";
+    return `🌟 連殺 ×${n}！`;
+  }
+  // 連殺標語動畫持續時間（毫秒）。（ROADMAP 508）
+  const KILL_STREAK_BADGE_MS = 1800;
+  const KILL_STREAK_FADEIN_MS = 220;
+  const KILL_STREAK_FADEOUT_MS = 550;
+  // 純函式：連殺標語透明度（ageMs=從觸發到現在的毫秒數；到期或越界退 0）。（ROADMAP 508）
+  function killStreakBadgeAlpha(ageMs) {
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs >= KILL_STREAK_BADGE_MS) return 0;
+    if (ageMs < KILL_STREAK_FADEIN_MS) return ageMs / KILL_STREAK_FADEIN_MS;
+    const fadeStart = KILL_STREAK_BADGE_MS - KILL_STREAK_FADEOUT_MS;
+    if (ageMs > fadeStart) return Math.max(0, 1 - (ageMs - fadeStart) / KILL_STREAK_FADEOUT_MS);
+    return 1;
+  }
+  // 繪製連殺標語（ROADMAP 508）：safeDraw 包，例外不連累其餘 HUD。
+  function drawKillStreakBadge() {
+    if (!_killStreakBadge) return;
+    const ageMs = performance.now() - _killStreakBadge.startMs;
+    const alpha = killStreakBadgeAlpha(ageMs);
+    if (alpha <= 0) { _killStreakBadge = null; return; }
+    // 縮放脈衝（fadein 期間從 0.72 放大到 1.0；reduceMotion 下固定 1.0）
+    const scale = reduceMotion ? 1 : Math.min(1, 0.72 + 0.28 * (ageMs / Math.max(1, KILL_STREAK_FADEIN_MS)));
+    const cx = viewW / 2;
+    const cy = viewH * 0.38;   // 畫面中央偏上，不蓋住底部 HP/EXP HUD
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.font = `bold 28px ${UI_FONT}`;
+    ctx.shadowColor = "rgba(0,0,0,0.75)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 2;
+    ctx.fillStyle = "#ff6030";
+    ctx.fillText(_killStreakBadge.text, 0, 0);
+    ctx.restore();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
   }
 
   function drawHomeWayfinder(me, camX, camY) {
