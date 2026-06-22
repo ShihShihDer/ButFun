@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3074,6 +3074,9 @@
   // ROADMAP 511 晨昏橫幅：追蹤上一幀日夜相位，切換時觸發頂端時辰橫幅。
   let _prevDayphase = "";         // 首幀空字串，確保首幀不觸發
   let _dayphaseBanner = null;     // { phase, startMs } 或 null（null = 無橫幅）
+  // ROADMAP 513 生態域入境橫幅：追蹤玩家上一幀所在生態，跨生態時觸發橫幅。
+  let _prevPlayerBiome = "";      // 首幀空字串，確保首幀不觸發
+  let _biomeBanner = null;        // { biome, startMs } 或 null（null = 無橫幅）
   let _sfwParticles = [];         // 換季煙火粒子陣列 [{x,y,vx,vy,alpha,color,life}]
   let _sfwBurstAt = 0;            // 下一次爆炸時間點（ms）
   let _sfwEndAt = 0;              // 煙火結束時間點（ms，0＝未啟動）
@@ -3871,6 +3874,17 @@
             triggerDayphaseBanner(daynight.phase);
           }
           _prevDayphase = daynight.phase;
+        }
+        // 生態域入境橫幅（ROADMAP 513）：偵測玩家踏入新生態，首幀不觸發，橫幅顯示中不疊加。
+        {
+          const _meB = myId ? players.get(myId) : null;
+          if (_meB && typeof _meB.x === "number" && typeof _meB.y === "number") {
+            const _curBiome = biomeAt(_meB.x, _meB.y);
+            if (_prevPlayerBiome && _prevPlayerBiome !== _curBiome && !_biomeBanner) {
+              triggerBiomeBanner(_curBiome);
+            }
+            _prevPlayerBiome = _curBiome;
+          }
         }
         worldEvent = msg.world_event || null;
         updateWorldEventPill(worldEvent);
@@ -9772,6 +9786,8 @@
 
     // 晨昏橫幅（ROADMAP 511）：日夜相位轉換時頂端時辰橫幅，置於所有 HUD 之上（不擋操作）。
     safeDraw("dayphaseBanner", () => drawDayphaseBanner(renderNow));
+    // 生態域入境橫幅（ROADMAP 513）：踏入新生態時頂端橫幅，位置稍低於晨昏橫幅不重疊。
+    safeDraw("biomeBanner", () => drawBiomeBanner(renderNow));
 
     // 連殺標語（ROADMAP 508）：連殺 2+ 時畫面中央浮出標語，置於所有 HUD 之上（不擋操作）。
     safeDraw("killStreak", () => drawKillStreakBadge());
@@ -20679,6 +20695,93 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, W / 2, by + bh / 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+  }
+
+  // ── ROADMAP 513：生態域入境橫幅 ─────────────────────────────────────────────
+  // 玩家踏入新生態時，畫面頂端輕柔淡入 2.5 秒時辰橫幅，讓探索第一次有了「踏上新大地」的儀式感。
+  // （純前端、零後端、零協議、零 migration、零 LLM）
+
+  // 生態代碼→橫幅文字。未知生態回空字串（保守不顯示）。純函式，可測。
+  function biomeEntryLabel(biome) {
+    const TABLE = {
+      water:  "🌊 踏入水域",
+      sand:   "🏖️ 踏上海灘",
+      meadow: "🌿 踏入草原",
+      forest: "🌲 踏入森林",
+      rocky:  "⛰️ 踏上岩地",
+    };
+    return TABLE[biome] || "";
+  }
+
+  // 生態代碼→橫幅背景與文字色調。未知生態回 null（保守不顯示）。純函式，可測。
+  function biomeEntryStyle(biome) {
+    const TABLE = {
+      water:  { bg: "rgba(15,55,100,0.78)",  text: "#b8e8ff" },
+      sand:   { bg: "rgba(120,95,35,0.78)",  text: "#fff3c0" },
+      meadow: { bg: "rgba(25,75,35,0.80)",   text: "#c0f0b0" },
+      forest: { bg: "rgba(12,45,18,0.84)",   text: "#a0e080" },
+      rocky:  { bg: "rgba(55,52,50,0.80)",   text: "#d8d4cc" },
+    };
+    return TABLE[biome] || null;
+  }
+
+  // 觸發生態域橫幅（快照偵測到玩家跨生態時呼叫）。未知生態保守不觸發。
+  function triggerBiomeBanner(biome) {
+    if (!biomeEntryLabel(biome)) return;
+    _biomeBanner = { biome, startMs: performance.now() };
+  }
+
+  const BIOME_FADE_IN  = 300;    // 淡入毫秒
+  const BIOME_SHOW     = 1900;   // 顯示毫秒
+  const BIOME_FADE_OUT = 300;    // 淡出毫秒
+  const BIOME_DUR = BIOME_FADE_IN + BIOME_SHOW + BIOME_FADE_OUT; // 2500ms 總時長
+
+  // 每幀繪製生態域橫幅（由 safeDraw 包護）。
+  function drawBiomeBanner(now) {
+    if (!_biomeBanner) return;
+    const elapsed = now - _biomeBanner.startMs;
+    if (elapsed >= BIOME_DUR) { _biomeBanner = null; return; }
+
+    const label = biomeEntryLabel(_biomeBanner.biome);
+    if (!label) { _biomeBanner = null; return; }
+    const style = biomeEntryStyle(_biomeBanner.biome);
+    if (!style) { _biomeBanner = null; return; }
+
+    // 三段動畫：淡入→顯示→淡出。
+    let alpha;
+    if (elapsed < BIOME_FADE_IN) {
+      alpha = elapsed / BIOME_FADE_IN;
+    } else if (elapsed < BIOME_FADE_IN + BIOME_SHOW) {
+      alpha = 1;
+    } else {
+      alpha = 1 - (elapsed - BIOME_FADE_IN - BIOME_SHOW) / BIOME_FADE_OUT;
+    }
+    // reduceMotion：只在 SHOW 階段顯示靜態文字，跳過淡入淡出動畫。
+    if (effectiveReduceMotion()) {
+      alpha = (elapsed >= BIOME_FADE_IN && elapsed < BIOME_FADE_IN + BIOME_SHOW) ? 1 : 0;
+    }
+    if (alpha <= 0.01) return;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = `bold 20px ${UI_FONT}`;
+    const tw = ctx.measureText(label).width;
+    const pad = 18;
+    const bw = tw + pad * 2;
+    const bh = 38;
+    const bx = viewW / 2 - bw / 2; // 以邏輯寬度置中（正確於任何 dpr）
+    const by = 62;                  // 晨昏橫幅在 y=14，生態橫幅在 y=62，兩者不重疊
+    ctx.fillStyle = style.bg;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, bh / 2);
+    ctx.fill();
+    ctx.fillStyle = style.text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, viewW / 2, by + bh / 2);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     ctx.restore();
