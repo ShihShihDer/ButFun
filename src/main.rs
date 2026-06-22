@@ -213,6 +213,7 @@ mod element_affinity;
 mod kill_streak;
 mod weakpoint;
 mod world_tally; // ROADMAP 495 今日世界戰報·廣場石板第一次有了「全服今天做了什麼」
+mod rain_regen;  // ROADMAP 496 草原細雨庇護·天氣首次影響戰鬥——細雨中戶外玩家緩緩回血
 
 use std::net::SocketAddr;
 

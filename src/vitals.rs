@@ -266,6 +266,33 @@ impl Vitals {
         healed
     }
 
+    /// 草原細雨庇護（ROADMAP 496）：細雨中戶外玩家緩緩回血，感受「天時」帶來的照顧。
+    /// 與 `shade_regen`／`ensemble_regen` 共用 `regen_accum`，維持 `regen_accum ∈ [0, 1)` 不變式。
+    /// `per_sec` 由 `rain_regen::rain_regen_per_sec` 計算（僅 is_raining & outdoor 時 > 0）。
+    /// 倒地（hp==0）／剛挨打（regen_cooldown>0）／已滿血 一律 no-op、回 0。
+    pub fn rain_regen(&mut self, dt: f32, per_sec: f32) -> u32 {
+        if dt <= 0.0 || !dt.is_finite() || per_sec <= 0.0 || !per_sec.is_finite() {
+            return 0;
+        }
+        if self.hp == 0 || self.hp >= self.max_hp || self.regen_cooldown > 0.0 {
+            return 0;
+        }
+        self.regen_accum += per_sec * dt;
+        let whole = self.regen_accum.floor();
+        let mut healed = 0;
+        if whole >= 1.0 {
+            let before = self.hp;
+            self.hp = (self.hp + whole as u32).min(self.max_hp);
+            self.regen_accum -= whole;
+            healed = self.hp - before;
+        }
+        // 滿血後清掉殘餘累積，維持 `regen_accum ∈ [0, 1)`（與 tick／shade_regen 同一不變式）。
+        if self.hp >= self.max_hp {
+            self.regen_accum = 0.0;
+        }
+        healed
+    }
+
     /// 推進 `dt` 秒：被打趴時倒數復原，存活且脫離戰鬥時自然回血。
     /// 非正 / 非有限 `dt` 皆為 no-op（比照 `Enemy::tick` / `Vehicle::step` 擋壞 dt）。
     pub fn tick(&mut self, dt: f32) {
@@ -803,5 +830,72 @@ mod tests {
         }
         assert_eq!(v.hp(), MAX_HP, "圍聽療癒回血應夾在最大血量");
         assert!(v.is_loadable(), "ensemble_regen 後仍須滿足載入不變式（regen_accum ∈ [0,1)）");
+    }
+
+    // --- 草原細雨庇護（ROADMAP 496）---
+
+    #[test]
+    fn rain_regen_heals_when_out_of_combat() {
+        let mut v = Vitals::new();
+        v.take_damage(5); // 15/20
+        v.reset_regen_cooldown();
+        // per_sec=0.1，dt=0.1 → 每步加 0.01，但 0.1f32×0.1f32 ≈ 0.0099999（略低於理論值）；
+        // 120 步（12 模擬秒）≈ 1.2 HP 累積，安全超過 1.0，恰好 floor 為 1 HP。
+        for _ in 0..120 {
+            v.rain_regen(0.1, crate::rain_regen::RAIN_REGEN_PER_SEC);
+        }
+        assert_eq!(v.hp(), 16, "雨中戶外 12 秒應回 1 HP");
+    }
+
+    #[test]
+    fn rain_regen_blocked_right_after_damage() {
+        let mut v = Vitals::new();
+        v.take_damage(3); // 17/20；regen_cooldown > 0
+        // 不 reset_regen_cooldown：剛挨打冷卻中，雨天回血 no-op。
+        let healed = v.rain_regen(5.0, crate::rain_regen::RAIN_REGEN_PER_SEC);
+        assert_eq!(healed, 0, "剛挨打冷卻中不應回血");
+        assert_eq!(v.hp(), 17);
+    }
+
+    #[test]
+    fn rain_regen_noop_on_bad_inputs() {
+        let mut v = Vitals::new();
+        v.take_damage(5);
+        v.reset_regen_cooldown();
+        // 壞 dt
+        assert_eq!(v.rain_regen(-1.0, 0.1), 0);
+        assert_eq!(v.rain_regen(f32::NAN, 0.1), 0);
+        assert_eq!(v.rain_regen(f32::INFINITY, 0.1), 0);
+        // per_sec <= 0：天晴（per_sec=0.0）不回血
+        assert_eq!(v.rain_regen(1.0, 0.0), 0);
+        assert_eq!(v.rain_regen(1.0, -1.0), 0);
+    }
+
+    #[test]
+    fn rain_regen_noop_when_downed_or_full() {
+        // 倒地（hp=0）：no-op。
+        let mut v = Vitals::new();
+        v.take_damage(v.hp()); // 打到 0
+        let healed = v.rain_regen(10.0, crate::rain_regen::RAIN_REGEN_PER_SEC);
+        assert_eq!(healed, 0, "倒地不應從雨中回血");
+        // 滿血：no-op。
+        let mut v2 = Vitals::new();
+        v2.reset_regen_cooldown();
+        let healed2 = v2.rain_regen(10.0, crate::rain_regen::RAIN_REGEN_PER_SEC);
+        assert_eq!(healed2, 0, "滿血不應再回血");
+    }
+
+    #[test]
+    fn rain_regen_keeps_loadable_invariant_and_clamps_to_max() {
+        let mut v = Vitals::new();
+        v.take_damage(2); // 18/20
+        v.reset_regen_cooldown();
+        // 250 步（25 模擬秒）：第一個 +1 HP 在 ~101 步、第二個在 ~202 步；
+        // 250 步給足雙重浮點安全邊界，確保 hp 從 18 爬到 MAX_HP。
+        for _ in 0..250 {
+            v.rain_regen(0.1, crate::rain_regen::RAIN_REGEN_PER_SEC);
+        }
+        assert_eq!(v.hp(), MAX_HP, "雨中回血應夾在最大血量");
+        assert!(v.is_loadable(), "rain_regen 後仍須滿足載入不變式（regen_accum ∈ [0,1)）");
     }
 }
