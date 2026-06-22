@@ -1394,6 +1394,9 @@ pub struct AppState {
     /// 夜螢提燈（ROADMAP 477）：每當日夜轉入夜晚時在城外生成 6 群螢火蟲，玩家走近輕捕入提燈，
     /// 提燈柔光全服可見；天亮自動清除螢群並清空各玩家提燈。純記憶體模式，重啟清零、零經濟。
     pub firefly_lantern: Arc<RwLock<crate::firefly_lantern::FireflyLantern>>,
+    /// 乙太暴走事件（ROADMAP 504）：每約 20 分鐘，地圖某個採集點爆發高濃度乙太，
+    /// 玩家在有效半徑內採集可額外獲得獎勵；持續 90 秒後消退。純記憶體，重啟清零。
+    pub ether_surge: Arc<RwLock<crate::ether_surge::EtherSurge>>,
     /// 旅行商人狀態（ROADMAP 135）：每 2 小時來訪，停留 10 分鐘，限時出售稀有物品。
     /// 純記憶體模式，重啟清零；不破壞玩家資料。
     pub wandering_merchant: Arc<RwLock<crate::wandering_merchant::WanderingMerchantState>>,
@@ -1640,6 +1643,7 @@ impl AppState {
             snowmen: Arc::new(RwLock::new(crate::snowman::SnowmanField::new())),
             night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
             firefly_lantern: Arc::new(RwLock::new(crate::firefly_lantern::FireflyLantern::new())),
+            ether_surge: Arc::new(RwLock::new(crate::ether_surge::EtherSurge::new())),
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),

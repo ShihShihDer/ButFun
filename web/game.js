@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2278,6 +2278,34 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 乙太暴走 HUD pill（ROADMAP 504）：暴走期間在右上角顯示剩餘秒數 + 地圖方向，讓旅人看到機會。
+  let _lastEtherSurgeText = null;
+  function updateEtherSurgeHud() {
+    const pill = document.getElementById("hudEtherSurge");
+    if (etherSurgeSecs <= 0) {
+      if (pill) pill.style.display = "none";
+      _lastEtherSurgeText = null;
+      return;
+    }
+    const text = `⚡ 乙太暴走 +3 ${etherSurgeSecs}s`;
+    if (text === _lastEtherSurgeText) return;
+    _lastEtherSurgeText = text;
+    if (!document.getElementById("hudEtherSurge")) {
+      const el = document.createElement("div");
+      el.id = "hudEtherSurge";
+      el.style.cssText = [
+        "order:4",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:700",
+        "padding:3px 10px",
+        "background:#1a1000", "color:#ffe033", "border:1px solid #cc9900",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudEtherSurge");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3021,6 +3049,9 @@
   let lastMeteorShowerText = null;
   let nightSpringNodes = [];    // ROADMAP 162 夜間乙太泉採集點 [{id, wx, wy}]
   let fireflySwarms = [];       // ROADMAP 477 夜螢群 [{id, wx, wy, remaining}]
+  let etherSurgeSecs = 0;       // ROADMAP 504 乙太暴走剩餘秒數（0=無暴走）
+  let etherSurgeX = 0;          // ROADMAP 504 暴走位置 X（世界座標）
+  let etherSurgeY = 0;          // ROADMAP 504 暴走位置 Y（世界座標）
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
@@ -3920,6 +3951,10 @@
         if (Array.isArray(msg.combat_marks)) combatMarks = msg.combat_marks;
         // 廣場英雄碑（ROADMAP 503）：本次對話採集/收穫/擊殺最多的旅人；舊伺服器無此欄位保持全 null 預設。
         if (msg.session_champions) sessionChampions = msg.session_champions;
+        // 乙太暴走事件（ROADMAP 504）：暴走剩餘秒數＋位置；serde default 0、向後相容。
+        etherSurgeSecs = (msg.ether_surge_secs || 0);
+        etherSurgeX = (msg.ether_surge_x || 0);
+        etherSurgeY = (msg.ether_surge_y || 0);
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9404,6 +9439,7 @@
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
+    safeDraw("etherSurge", () => drawEtherSurge(camX, camY, renderNow)); // 乙太暴走事件（504）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -9580,6 +9616,7 @@
       updateMeteorShowerHud();              // 流星雨（ROADMAP 133）
       updateWeatherForecastHud();           // 氣象預報台（ROADMAP 405）
       updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
+      updateEtherSurgeHud();               // 乙太暴走事件（ROADMAP 504）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
@@ -13188,6 +13225,77 @@
       }
       ctx.restore();
     }
+  }
+
+  // 繪製乙太暴走特效（ROADMAP 504）：暴走點發出強烈電金光暈，玩家在半徑內採集可額外獲得乙太。
+  // 純前端演出：多層同心圓脈衝光暈＋閃電色放射光柱＋⚡圖示；剩餘秒數顯示在光暈上方。
+  function drawEtherSurge(camX, camY, now) {
+    if (etherSurgeSecs <= 0) return;
+    const sx = etherSurgeX - camX;
+    const sy = etherSurgeY - camY;
+    // 視窗外 200px 才略過（光暈大）
+    if (sx < -200 || sy < -200 || sx > viewW + 200 || sy > viewH + 200) return;
+
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.005);   // 緩慢脈衝 [0,1]
+    const fastPulse = 0.5 + 0.5 * Math.sin(now * 0.012); // 快速閃爍 [0,1]
+
+    ctx.save();
+
+    // 最外層擴散光暈（電金色）
+    const outerR = 90 + 18 * pulse;
+    const grad = ctx.createRadialGradient(sx, sy, outerR * 0.2, sx, sy, outerR);
+    grad.addColorStop(0, `rgba(255,230,50,${(0.25 + 0.15 * pulse).toFixed(3)})`);
+    grad.addColorStop(0.5, `rgba(255,180,0,${(0.12 + 0.08 * pulse).toFixed(3)})`);
+    grad.addColorStop(1, "rgba(255,140,0,0)");
+    ctx.beginPath();
+    ctx.arc(sx, sy, outerR, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 中層白熱核心
+    ctx.beginPath();
+    ctx.arc(sx, sy, 24 + 6 * pulse, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,200,${(0.5 + 0.3 * fastPulse).toFixed(3)})`;
+    ctx.fill();
+
+    // 內核電白點
+    ctx.beginPath();
+    ctx.arc(sx, sy, 12, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${(0.8 + 0.15 * fastPulse).toFixed(3)})`;
+    ctx.fill();
+
+    // 邊框
+    ctx.strokeStyle = `rgba(255,220,60,${(0.85 + 0.12 * fastPulse).toFixed(3)})`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // 中心圖示
+    ctx.font = `20px ${UI_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⚡", sx, sy + 1);
+
+    // 剩餘秒數 + 採集加成提示
+    const label = `+${3} ⚡${etherSurgeSecs}s`;
+    ctx.font = `bold 13px ${UI_FONT}`;
+    ctx.textBaseline = "alphabetic";
+    const ty = sy - 48;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.strokeText(label, sx, ty);
+    ctx.fillStyle = "rgba(255,230,50,0.98)";
+    ctx.fillText(label, sx, ty);
+
+    // 暴走半徑指示圓（淡顯）
+    ctx.beginPath();
+    ctx.arc(sx, sy, 180, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,200,40,${(0.15 + 0.08 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
   }
 
   // 繪製夜螢群（ROADMAP 477）：每群是一簇閃爍的暖黃螢光，剩越多螢點越密。
