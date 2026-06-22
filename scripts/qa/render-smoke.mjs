@@ -3874,6 +3874,52 @@ for (const sc of scenarios) {
   else console.log("  ✅ 晨昏橫幅（ROADMAP 511）：純函式真值表(6+5 cases) + 四相位觸發渲染 + 未知相位保守不顯示，全路徑零例外");
 }
 
+// ── ROADMAP 512：低血量危機脈動 ─────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const dpa  = sandbox.__bfTest && sandbox.__bfTest.dangerPulseAlpha;
+    const dpDraw = sandbox.__bfTest && sandbox.__bfTest.drawDangerPulse;
+    if (!dpa)    throw new Error("dangerPulseAlpha 未匯出");
+    if (!dpDraw) throw new Error("drawDangerPulse 未匯出");
+
+    // dangerPulseAlpha 真值表（9 cases）
+    const cases = [
+      [0,    0,   0, 0],         // maxHp=0 → 0
+      [null, 100, 0, 0],         // hp=null → 0
+      [50,   100, 0, 0],         // HP 50% > 30% → 0
+      [31,   100, 0, 0],         // HP 31% > 30% → 0
+      [30,   100, 0, null],      // HP 30% ≤ 30% → alpha > 0
+      [15,   100, 0, null],      // HP 15% 危機加深
+      [1,    100, 0, null],      // HP 1% 接近最大
+      [0,    100, 0, 0],         // HP=0 已倒地 → 0
+      [-1,   100, 0, 0],         // HP 負數 → 0
+    ];
+    for (const [hp, maxHp, now, expected] of cases) {
+      const got = dpa(hp, maxHp, now);
+      if (typeof got !== "number" || isNaN(got) || got < 0 || got > 0.53) {
+        ok = false; console.error(`  ❌ dangerPulseAlpha(${hp},${maxHp},${now})=${got} 超出 [0,0.52]`);
+      }
+      if (expected === 0 && got !== 0) {
+        ok = false; console.error(`  ❌ dangerPulseAlpha(${hp},${maxHp},${now})=${got}，期望 0`);
+      }
+      if (expected === null && got <= 0) {
+        ok = false; console.error(`  ❌ dangerPulseAlpha(${hp},${maxHp},${now})=${got}，期望 > 0`);
+      }
+    }
+
+    // drawDangerPulse：在沒有 me 的 smoke 環境下直接 return，不 throw
+    for (let f = 0; f < 4; f++) dpDraw(performance.now() + f * 100);
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 低血量危機脈動：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 低血量危機脈動：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 低血量危機脈動（ROADMAP 512）：dangerPulseAlpha 真值表(9 cases) + 邊界安全 + drawDangerPulse 零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
