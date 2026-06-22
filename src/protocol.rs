@@ -1224,6 +1224,9 @@ pub enum ServerMsg {
         /// （缺此欄位時預設為損毀零進度，前端正常渲染廢棄星艦）。
         #[serde(default)]
         ship_repair: ShipRepairView,
+        /// 今日世界戰報（ROADMAP 495）：全伺服器今天的行動累計。向後相容（缺欄位時全零）。
+        #[serde(default)]
+        world_tally: WorldTallyView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -2826,6 +2829,19 @@ pub struct TreeView {
     pub stage: u8,
 }
 
+/// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct WorldTallyView {
+    /// 採集成功次數（撿木頭、礦石等）。
+    pub gathers: u64,
+    /// 農地收穫次數。
+    pub harvests: u64,
+    /// 擊殺敵人次數。
+    pub kills: u64,
+    /// 今日登入連線人次。
+    pub players_today: u64,
+}
+
 /// 天氣快照（ROADMAP 93）：目前天氣類型與粒子強度，前端據此畫粒子特效。
 #[derive(Debug, Clone, Serialize)]
 pub struct WeatherView {
@@ -3319,6 +3335,7 @@ mod tests {
             town_share: None,
             world_groves: vec![],
             ship_repair: ShipRepairView::default(),
+            world_tally: WorldTallyView::default(),
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

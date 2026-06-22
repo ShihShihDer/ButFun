@@ -481,6 +481,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
     }
 
     tracing::info!(player = %player.name, %id, "玩家進場");
+    // ROADMAP 495 今日世界戰報：已登入玩家進場計一次（訪客不算）。
+    if authed_uid.is_some() {
+        app.world_tally.write().unwrap().record_player_login();
+    }
 
     // 先送 Welcome。
     let welcome = ServerMsg::Welcome {
@@ -642,7 +646,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -800,6 +804,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         world_groves: world_groves.clone(),
                                         // 蒸汽星艦共修（ROADMAP 492）：全服廣播（固定座標、量微小）。
                                         ship_repair: ship_repair.clone(),
+                                        // 今日世界戰報（ROADMAP 495）：全服廣播（純計數、量微小）。
+                                        world_tally: world_tally.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1939,6 +1945,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         };
                         if let Some(msg) = harvest_evt {
                             let _ = app.tx.send(Arc::new(msg));
+                            // ROADMAP 495 今日世界戰報：計一次農地收穫。
+                            app.world_tally.write().unwrap().record_harvest();
                         }
                     }
                 }
@@ -2354,6 +2362,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 新手引導：採集一份資源（ROADMAP 396）。
                             advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Gather, &tx_direct);
                         }
+                        // ROADMAP 495 今日世界戰報：計一次採集。
+                        app.world_tally.write().unwrap().record_gather();
                         // 旅行商人限時委託：採集事件（ROADMAP 136）。
                         if let Some(uid) = authed_uid {
                             let quest_result = app.wandering_merchant.write().unwrap().on_gather(item, amount as u32);
@@ -3650,6 +3660,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     crate::player_title::title_for_achievement(ach),
                                 );
                             }
+                            // ROADMAP 495 今日世界戰報：計一次擊殺（出鎖後、suppress_rewards 已排除）。
+                            app.world_tally.write().unwrap().record_kill();
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
