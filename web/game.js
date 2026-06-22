@@ -650,6 +650,15 @@
     return Math.max(SKIP_MIN, SKIP_MAX - lost);
   }
 
+  // 寵物羈絆等級（ROADMAP 484）→ 寵物腳邊那排「默契」小愛心：填滿 bond 顆實心 ♥、其餘空心 ♡，
+  // 共 PET_BOND_MAX 顆。bond<=0 回空字串（沒養出默契＝不畫，零干擾）。純字串、決定性、好測。
+  const PET_BOND_MAX = 5;
+  function petBondHearts(bond) {
+    const b = Math.max(0, Math.min(PET_BOND_MAX, bond | 0));
+    if (b <= 0) return "";
+    return "♥".repeat(b) + "♡".repeat(PET_BOND_MAX - b);
+  }
+
   // ---- 背景旋律（ROADMAP 442）：純函式樂理基底（決定性、零副作用、好測）----
   // 「太空歌劇」此前只有事件音效（376）與環境噪音（雨／蟲／鳥，377），缺一條「樂音」層。
   // 本切片補上一條極輕柔的生成式背景旋律當療癒底色：大調五聲音階保證任兩音皆協和（無小二度／
@@ -701,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3467,6 +3476,7 @@
             existing.pet_toy_x = p.pet_toy_x || 0;
             existing.pet_toy_y = p.pet_toy_y || 0;
             existing.pet_personality = p.pet_personality || null; // ROADMAP 358：寵物性格 wire key
+            existing.pet_bond = p.pet_bond | 0; // ROADMAP 484：寵物羈絆等級（0..5），前端畫小愛心默契條
             // ROADMAP 346：釣魚小遊戲階段（waiting/biting/null）。新咬鉤（→biting）記時，供浮標「❗」彈出動畫起算。
             if (existing.fishing_phase !== "biting" && p.fishing_phase === "biting") existing._fishBiteAt = performance.now();
             existing.fishing_phase = p.fishing_phase || null;
@@ -4672,6 +4682,26 @@
             floaters.push({ wx: ox, wy: oy - 64, text: `✨ 撈到 ${findEther} 乙太`, color: "180,235,200", born: performance.now() + 120 });
             announce(`水漂撈到 ${findEther} 乙太`);
           }
+        }
+        break;
+      }
+      case "pet_forage_reward": {
+        // 寵物撈寶（ROADMAP 484）：一趟逗寵物接物完成、小夥伴順手叼回了東西。
+        // 只對自己 id 在寵物腳邊疊一行回饋飄字＋報讀器（旁觀者只看寵物叼玩具、不被文字洗版）。
+        if (!msg.player_id || msg.player_id !== myId) break;
+        const fx = msg.x || 0, fy = (msg.y || 0) - 28;
+        const now = performance.now();
+        const bond = msg.bond | 0;
+        const item = msg.item ? (ITEM_NAME[msg.item] || msg.item) : null;
+        const eth = msg.ether | 0;
+        if (item) {
+          floaters.push({ wx: fx, wy: fy, text: `🐾 小夥伴叼回了${item}！`, color: "210,200,160", born: now });
+          announce(`寵物叼回了${item}${bond >= 5 ? "，你們默契十足" : ""}`);
+          SFX.success();
+        } else if (eth > 0) {
+          floaters.push({ wx: fx, wy: fy, text: `🐾 小夥伴叼回 ${eth} 乙太`, color: "180,235,200", born: now });
+          announce(`寵物叼回 ${eth} 乙太`);
+          SFX.click();
         }
         break;
       }
@@ -8413,6 +8443,17 @@
       ctx.font = `15px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.fillText(PET_EMOJI[p.pet_kind] || "🐾", psx, psy - petBob - hop);
+      // 寵物羈絆默契條（ROADMAP 484）：養出默契後，在寵物腳邊靜靜墊一排小愛心（實心＝已養的階數），
+      // 玩家一眼看得到「越陪牠玩接物、默契越深」。靜態不閃、不上飄，不喧賓奪主；沒默契＝不畫。
+      const hearts = petBondHearts(p.pet_bond | 0);
+      if (hearts) {
+        ctx.save();
+        ctx.font = `8px ${UI_FONT}`;
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = "rgba(232,120,140,0.95)"; // 暖玫瑰紅，與性格泡泡的冷色區隔
+        ctx.fillText(hearts, psx, psy + 15);
+        ctx.restore();
+      }
       // 玩耍中：頭頂飄一枚循環上升淡出的愛心 / 音符，傳達「夥伴們玩得很開心」。
       // reduceMotion 下退成一枚靜態小愛心、不上飄不閃。
       if (playing) {

@@ -2717,6 +2717,55 @@ for (const sc of scenarios) {
   }
 }
 
+// 寵物撈寶（ROADMAP 484）：單元斷言純函式 petBondHearts 的真值表——羈絆等級→寵物腳邊默契愛心條。
+// 填 bond 顆實心 ♥、其餘空心 ♡、共 5 顆；bond<=0（沒養出默契）回空字串；超界與壞值保守夾住。
+{
+  const hearts = sandbox.__bfTest && sandbox.__bfTest.petBondHearts;
+  if (typeof hearts !== "function") {
+    failed = true;
+    console.error("  ❌ 寵物撈寶：game.js 未導出 petBondHearts");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 寵物撈寶：${msg}`); } };
+    expect(hearts(0) === "", "羈絆 0（熱身期）不畫愛心＝空字串");
+    expect(hearts(1) === "♥♡♡♡♡", "羈絆 1＝1 實心 4 空心");
+    expect(hearts(3) === "♥♥♥♡♡", "羈絆 3＝3 實心 2 空心");
+    expect(hearts(5) === "♥♥♥♥♥", "羈絆 5（滿）＝5 實心");
+    // 每階恰好 5 顆心（實心＋空心）。
+    for (let b = 1; b <= 5; b++) expect([...hearts(b)].length === 5, `羈絆 ${b} 應恰 5 顆心`);
+    // 超界與壞值保守：>5 夾到滿、負數／NaN 視為 0（空字串）、字串可解析。
+    expect(hearts(99) === "♥♥♥♥♥", "超界夾到滿");
+    expect(hearts(-3) === "", "負羈絆回空字串");
+    expect(hearts(NaN) === "", "NaN 回空字串");
+    expect(hearts("4") === "♥♥♥♥♡", "字串羈絆可解析（|0）");
+    if (bad) failed = true;
+    else console.log("  ✅ 寵物撈寶·羈絆愛心條真值表（熱身/分階/滿/超界/壞值）：通過");
+  }
+}
+
+// 寵物撈寶（ROADMAP 484）：注入帶羈絆的寵物（腳邊默契愛心條），含壞 bond 與滿羈絆，連跑多幀驗 render 零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：寵物撈寶（羈絆愛心條＋寵物跟隨＋壞值，連跑 4 幀）──");
+  const pSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = pSnap.players[0];
+  me.pet_kind = "flutter_sprite";
+  me.pet_x = me.x + 24; me.pet_y = me.y + 8;
+  me.pet_bond = 3;            // 養出 3 階默契：腳邊應畫 ♥♥♥♡♡
+  me.pet_personality = "playful";
+  lastWS.onmessage({ data: JSON.stringify({ ...pSnap, type: "snapshot" }) });
+  const r = pump("寵物撈寶", 4);
+  // 再餵滿羈絆＋壞 bond，驗證夾界路徑不拋例外。
+  const p2 = JSON.parse(JSON.stringify(pSnap));
+  p2.players[0].pet_bond = 99;   // 超界：應夾到滿、不爆
+  lastWS.onmessage({ data: JSON.stringify({ ...p2, type: "snapshot" }) });
+  const r2 = pump("寵物撈寶滿羈絆", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 寵物撈寶：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 寵物撈寶：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 寵物撈寶：羈絆愛心條＋寵物跟隨＋超界壞值皆乾淨");
+}
+
 // 雪季雪人（ROADMAP 478）：注入數座雪人（含視野外一座、四種樣式、超界樣式、空署名、長署名、壞 id），
 // 驗證 drawSnowmen 雪身／圍巾／署名牌／剔除路徑連跑多幀皆不拋例外；再餵無雪人 snapshot 驗早退。
 {

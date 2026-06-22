@@ -260,6 +260,10 @@ pub struct Player {
     /// 寵物此刻是否正在接物（ROADMAP 345，= `pet_fetch.is_some()` 的快照鏡像）。供前端據此
     /// 把寵物畫成「興奮衝刺」並畫出玩具；沒接物時 false、序列化略過。
     pub pet_fetching: bool,
+    /// 累積完成的逗玩接物趟數（ROADMAP 484 寵物撈寶）：每完成一趟 `game.rs` +1，用來算
+    /// 「羈絆等級」（`pet_forage::bond_level`）＋摻進撈寶 seed。記憶體前置暫態、不持久化、
+    /// 零 migration、重連／重啟歸零（鏡像寵物本身記憶體模式與 `fish_attempt_count`）。
+    pub pet_fetch_count: u64,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可釣；> 0 = 冷卻中）。由 game.rs 每 tick 遞減。
@@ -565,6 +569,13 @@ impl Player {
                     .as_str()
                     .to_string()
             }),
+            // ROADMAP 484：有寵物才送羈絆等級（由累積接物趟數即時算，沒寵物 / 羈絆 0 時為 0、略過序列化）。
+            // 前端據此在寵物腳邊畫一排小愛心、寵物面板顯示「默契」——玩家一眼看得到默契越玩越深。
+            pet_bond: if self.pet.is_some() {
+                crate::pet_forage::bond_level(self.pet_fetch_count)
+            } else {
+                0
+            },
             fish_cooldown: self.fish_cooldown,
             near_water: crate::fishing::is_near_water(self.x, self.y),
             // ROADMAP 346：進行中釣魚小遊戲的階段（沒在釣＝None，略過序列化）。
@@ -1736,6 +1747,7 @@ mod tests {
             pet_playing: false,
             pet_fetch: None,
             pet_fetching: false,
+            pet_fetch_count: 0,
             fish_cooldown: 0.0,
             fish_attempt_count: 0,
             fishing: None,
