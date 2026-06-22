@@ -3981,6 +3981,44 @@ for (const sc of scenarios) {
   else console.log("  ✅ 生態域入境橫幅（ROADMAP 513）：biomeEntryLabel 真值表(7 cases) + biomeEntryStyle 真值表(6 cases) + 五生態觸發渲染 + 未知保守不顯示，全路徑零例外");
 }
 
+// ── ROADMAP 514：守護者圖鑑詳情 ─────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const ts = sandbox.__bfTest && sandbox.__bfTest.threatStars;
+    if (!ts) throw new Error("threatStars 未匯出");
+
+    // threatStars 真值表（8 cases）
+    const cases = [
+      [0,  ""],          // 壞值 0 → 空字串
+      [-1, ""],          // 負數 → 空字串
+      [1,  "★"],         // 1 → 一星
+      [2,  "★"],         // 2 → 一星
+      [3,  "★★"],        // 3 → 二星
+      [4,  "★★"],        // 4 → 二星
+      [5,  "★★★"],       // 5 → 三星（jade_wraith）
+      [11, "★★★★"],      // 11 → 四星（aether_specter）
+      [16, "★★★★★"],     // 16 → 五星（rift_guardian 18, overlord 30）
+      [30, "★★★★★"],     // 30 → 五星（ether_overlord）
+    ];
+    for (const [threat, expected] of cases) {
+      const got = ts(threat);
+      if (got !== expected) {
+        ok = false;
+        console.error(`  ❌ threatStars(${threat})="${got}"，期望"${expected}"`);
+      }
+    }
+    // 壞值安全：null/undefined/NaN 不拋出
+    for (const bad of [null, undefined, NaN, "abc"]) {
+      try { ts(bad); } catch (e) { ok = false; console.error(`  ❌ threatStars(${bad}) 拋出：${e.message}`); }
+    }
+  } catch (e) {
+    ok = false; console.error("  ❌ 守護者圖鑑詳情：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 守護者圖鑑詳情：threatStars 真值表失敗"); }
+  else console.log("  ✅ 守護者圖鑑詳情（ROADMAP 514）：threatStars 真值表(10 cases) + 壞值安全(4 cases)，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
