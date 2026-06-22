@@ -28205,7 +28205,8 @@
     const myPlot = myId ? landPlots.find(l => l.owner_id === myId && l.purpose === "farm") : null;
     const plotCrops = myPlot ? (farmCropPlots.find(fp => fp.plot_id === myPlot.plot_id) || { crops: [] }) : { crops: [] };
     const ether = me ? me.ether : 0;
-    const cropSig = plotCrops.crops.map(c => `${c.kind}:${c.ripe}`).join(",");
+    // ROADMAP 501：eta_secs 每 5 秒一桶，讓面板跟著倒數更新而不是每幀重繪。
+    const cropSig = plotCrops.crops.map(c => `${c.kind}:${c.ripe}:${Math.floor((c.eta_secs || 0) / 5)}`).join(",");
     const sig = [isGuestUser, myPlot?.plot_id, cropSig, ether].join("|");
     if (sig === lastFarmCropSig) return;
     lastFarmCropSig = sig;
@@ -28227,6 +28228,14 @@
       return;
     }
 
+    // ROADMAP 501：將 eta_secs 格式化為「N分X秒」顯示文字。
+    function fmtEta(eta) {
+      if (!eta || eta <= 0) return "";
+      const m = Math.floor(eta / 60);
+      const s = eta % 60;
+      return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+    }
+
     // 作物狀態區
     const status = document.createElement("div");
     status.style.cssText = "margin-bottom:10px;font-size:.9rem;line-height:1.7;";
@@ -28234,10 +28243,19 @@
       ? "（空）"
       : plotCrops.crops.map(c => {
           const def = CROP_DEFS.find(d => d.key === c.kind);
-          return `${def ? def.emoji : "🌱"}${def ? def.label : c.kind}${c.ripe ? " <b style='color:#90ffb0;'>成熟</b>" : ""}`;
-        }).join("、");
+          let stateHtml;
+          if (c.ripe) {
+            stateHtml = " <b style='color:#90ffb0;'>成熟</b>";
+          } else {
+            const eta = fmtEta(c.eta_secs);
+            stateHtml = eta
+              ? ` <span style='color:#a0c8ff;font-size:.8rem;'>約 ${eta} 後成熟</span>`
+              : " <span style='color:#a0c8ff;font-size:.8rem;'>成長中…</span>";
+          }
+          return `${def ? def.emoji : "🌱"}${def ? def.label : c.kind}${stateHtml}`;
+        }).join("<br>");
     status.innerHTML = `<div style="color:#e8e0cf;">農田地塊 <b>#${myPlot.plot_id}</b></div>`
-      + `<div>作物（${plotCrops.crops.length}/3）：${cropDesc}</div>`;
+      + `<div style="line-height:1.9;">作物（${plotCrops.crops.length}/3）：<br>${cropDesc}</div>`;
     body.appendChild(status);
 
     // 種植按鈕（剩餘空槽才顯示）

@@ -2567,6 +2567,10 @@ fn is_zero_u8(v: &u8) -> bool {
     *v == 0
 }
 
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
@@ -3003,6 +3007,11 @@ pub struct TileView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration；舊伺服器無此欄時前端讀到 false＝不標）。
     #[serde(default)]
     pub pecked: bool,
+    /// ROADMAP 501 作物熟成倒數：成長中作物假設持續充足澆水情境下，距成熟的估計剩餘秒數。
+    /// 已成熟（state 4）或空地（state 0/1）一律 0；只在種了未熟（state 2/3）時有意義。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub eta_secs: u16,
 }
 
 #[cfg(test)]
@@ -3240,6 +3249,7 @@ mod tests {
                     rotated: false,
                     nourished: false,
                     pecked: false,
+                    eta_secs: 90,
                 }],
                 compost: 0,
                 home_decor: 0,

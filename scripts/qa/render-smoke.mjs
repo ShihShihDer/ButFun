@@ -3373,6 +3373,46 @@ for (const sc of scenarios) {
   else console.log("  ✅ 換季煙火：純函式真值表（四季顏色/推進/完成判斷）全對；換季觸發後多幀渲染零例外");
 }
 
+// 作物熟成倒數（ROADMAP 501）：注入含 eta_secs 的農田快照，驗農作面板更新路徑零例外，
+// 以及 ETA 格式化（fmtEta）在各種數值下不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：作物熟成倒數（ROADMAP 501）──");
+  let ok = true;
+  try {
+    // 注入含 eta_secs 的 farm_crop_plots 快照：未熟含倒數、已熟為 0。
+    const etaSnap = JSON.parse(JSON.stringify(snapshot));
+    if (etaSnap.land_plots && etaSnap.land_plots[0]) {
+      Object.assign(etaSnap.land_plots[0], {
+        plot_id: 0, min_gx: 90, min_gy: 90, max_gx: 97, max_gy: 97,
+        owner_id: etaSnap.players?.[0]?.id, purpose: "farm",
+      });
+    }
+    etaSnap.farm_crop_plots = [{ plot_id: 0, crops: [
+      { kind: "wheat",     ripe: false, grow: 20,  eta_secs: 72 },   // 1 分 12 秒後成熟
+      { kind: "carrot",    ripe: false, grow: 85,  eta_secs: 14 },   // 14 秒後成熟
+      { kind: "potato",    ripe: true,  grow: 100, eta_secs: 0 },    // 已成熟（eta=0）
+    ] }];
+    lastWS.onmessage({ data: JSON.stringify({ ...etaSnap, type: "snapshot" }) });
+    pump("作物熟成倒數·農田面板含 eta_secs", 4);
+
+    // eta_secs 邊界值：0（成熟）、1（1秒）、60（1分）、3599（59分59秒）。
+    const edgeSnap = JSON.parse(JSON.stringify(etaSnap));
+    edgeSnap.farm_crop_plots = [{ plot_id: 0, crops: [
+      { kind: "wheat",  ripe: false, grow: 0,   eta_secs: 3599 },
+      { kind: "carrot", ripe: false, grow: 50,  eta_secs: 60 },
+      { kind: "potato", ripe: false, grow: 99,  eta_secs: 1 },
+    ] }];
+    lastWS.onmessage({ data: JSON.stringify({ ...edgeSnap, type: "snapshot" }) });
+    pump("作物熟成倒數·邊界值", 4);
+  } catch (e) {
+    ok = false; console.error("  ❌ 作物熟成倒數：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 作物熟成倒數：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 作物熟成倒數（ROADMAP 501）：含 eta_secs 的農田快照多幀渲染零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
