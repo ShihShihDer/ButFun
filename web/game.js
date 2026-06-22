@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -727,6 +727,31 @@
     return v;
   }
   let _audioVol = audioVol((() => { try { return localStorage.getItem("butfun.vol"); } catch { return null; } })());
+
+  // 廣場蒸汽鐘純函式（ROADMAP 497）：把日循環比例轉成指針角度與遊戲整點。
+  // 純函式、確定性、零副作用，供 render-smoke 斷言真值表。
+  // dayFraction ∈ [0,1)：伺服器廣播的 day_fraction（0=午夜、0.25=清晨6點、0.5=正午、0.75=傍晚6點）。
+  // 壞值（NaN／非數字）保守退回午夜 0:00 的角度。
+  function clockHandAngles(dayFraction) {
+    const f = (typeof dayFraction === "number" && isFinite(dayFraction))
+      ? ((dayFraction % 1) + 1) % 1   // 夾進 [0,1)，負值也安全
+      : 0;
+    const totalHours = f * 24;               // [0, 24) game hours
+    const hour12   = totalHours % 12;        // [0, 12)
+    const minute   = (totalHours % 1) * 60; // [0, 60)
+    // 角度從「12點=頂」順時針為正（-π/2 偏移）。
+    const hourRad = (hour12 / 12 + minute / 720) * Math.PI * 2 - Math.PI / 2;
+    const minRad  = (minute / 60) * Math.PI * 2 - Math.PI / 2;
+    return { hourRad, minRad };
+  }
+  // gameHourFromFraction：整數遊戲時 0-23，供整點鐘聲判斷。壞值保守退回 0。
+  function gameHourFromFraction(dayFraction) {
+    const f = (typeof dayFraction === "number" && isFinite(dayFraction))
+      ? ((dayFraction % 1) + 1) % 1
+      : 0;
+    return Math.floor(f * 24);
+  }
+
   // setAudioVol：把原始字串／數字夾成 [0,1]、存 localStorage、即時推給兩個音訊引擎的 master 節點。
   function setAudioVol(raw) {
     _audioVol = audioVol(raw);
@@ -871,6 +896,12 @@
       powerHit() {
         _tone(110, "sawtooth", 0.001, 0.01, 0.10, 0.22);
         setTimeout(() => _tone(165, "sine", 0.002, 0, 0.07, 0.10), 15);
+      },
+      // 廣場蒸汽鐘整點鐘聲（ROADMAP 497）：三諧波疊加、緩慢衰退的溫潤鐘鳴——每個遊戲整點敲一聲。
+      chime() {
+        [[220, 0], [440, 30], [660, 60]].forEach(([freq, dt]) =>
+          setTimeout(() => _tone(freq, "sine", 0.005, 0.05, 1.8, freq === 220 ? 0.28 : 0.14), dt)
+        );
       },
     };
   })();
@@ -2963,6 +2994,9 @@
   let worldTally = { gathers: 0, harvests: 0, kills: 0, players_today: 0 };
   const WORLD_TALLY_WX = 2100; // 廣場西側石板 X（廣場 PLAZA_X=2400，稍偏左）
   const WORLD_TALLY_WY = 2220; // 廣場西側石板 Y（與廣場齊高）
+  // ROADMAP 497 廣場蒸汽鐘——廣場東側固定地標，玩家路過就看到指針在轉、整點聽到鐘鳴。
+  const CLOCK_WX = 2700; // 廣場蒸汽鐘 X（廣場 PLAZA_X=2400，稍偏東）
+  const CLOCK_WY = 2020; // 廣場蒸汽鐘 Y（廣場稍偏北，讓鐘塔底座與廣場齊高）
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
@@ -6905,7 +6939,8 @@
   // 倒數錨點：收到快照當下記 secs_to_next 與當時的本地時鐘，之後每幀自由倒數(比照天氣倒數)，
   // 不必等下一份快照就能平滑遞減。null＝還沒收過帶天時盤欄位的快照(舊伺服器/進場前)。
   let _dayClock = null;
-  let _lastClockSec = -1; // 上次寫進 DOM 的整數秒，變了才更新(避免每幀重排版面)。
+  let _lastClockSec = -1;    // 上次寫進 DOM 的整數秒，變了才更新(避免每幀重排版面)。
+  let _lastChimeHour = -1;   // 上次敲鐘的遊戲整點（-1=初始未知；每整點換一次）ROADMAP 497
   function updateDayNightHud(dn) {
     // 錨定倒數：新欄位缺席(舊伺服器)時 secsToNext 設 null，前端優雅退回「只顯示時段、不顯示倒數」。
     _dayClock = {
@@ -9164,6 +9199,13 @@
     const me = myId ? players.get(myId) : null;
     maybeAutoDig(me); // 智慧自動挖（⚙ 開才生效，只挖天然岩石、不挖你蓋的牆）
     renderDayClock(); // 天時盤倒數平滑遞減（只在整數秒變動時改寫 DOM，省排版）
+    // 廣場蒸汽鐘整點鐘聲（ROADMAP 497）：每遊戲整點換一次就敲鐘，初始幀（_lastChimeHour=-1）靜默不打擾。
+    if (_dayClock && _dayClock.dayFraction != null) {
+      const _clockFrac = ((_dayClock.dayFraction + (performance.now() - _dayClock.anchorMs) / 1000 / 600) % 1 + 1) % 1;
+      const _curHour = gameHourFromFraction(_clockFrac);
+      if (_lastChimeHour >= 0 && _curHour !== _lastChimeHour) { try { SFX.chime(); } catch {} }
+      _lastChimeHour = _curHour;
+    }
     // 時間插值所有玩家位置：在「上一個快照位置 px,py」與「這個快照位置 x,y」之間，依到達後
     // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
     // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
@@ -9305,6 +9347,7 @@
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
     safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
     safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
+    safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
@@ -12397,6 +12440,120 @@
       ctx.fillText(String(row.val), slabX + slabW - 8, ry);
       ctx.textAlign = "left";
     });
+
+    ctx.restore();
+  }
+
+  // 廣場蒸汽鐘（ROADMAP 497）：廣場東側固定地標——石柱頂端鑲著黃銅鐘面，指針依遊戲日循環轉動，
+  // 整點時由後端 SFX.chime() 敲鐘。純前端、零後端、利用現有 _dayClock.dayFraction 錨點資料。
+  // nowMs 用於平滑推進指針（在快照間插值，避免指針每 66ms 跳一格）。
+  function drawSteamClock(camX, camY, nowMs) {
+    const sx = CLOCK_WX - camX;
+    const sy = CLOCK_WY - camY;
+    // 視窗剔除（鐘塔寬約 32px、高約 80px）。
+    if (sx < -50 || sx > viewW + 50 || sy < -100 || sy > viewH + 40) return;
+
+    // 用錨點＋本地時鐘平滑推進 dayFraction（與天時盤倒數同做法）。
+    // DAY_LENGTH_SECS = 600（後端常數），前端鏡像使用。
+    const DAY_LENGTH_S = 600;
+    let dayFrac = 0;
+    if (_dayClock && _dayClock.dayFraction != null) {
+      const elapsed = (nowMs - _dayClock.anchorMs) / 1000;
+      dayFrac = ((_dayClock.dayFraction + elapsed / DAY_LENGTH_S) % 1 + 1) % 1;
+    }
+
+    const { hourRad, minRad } = clockHandAngles(dayFrac);
+
+    ctx.save();
+    // ── 底座（石柱，蒸汽龐克深灰）───────────────────────────────
+    ctx.fillStyle = "#3a3028";
+    ctx.strokeStyle = "#5a4a38";
+    ctx.lineWidth = 1.5;
+    // 柱身
+    ctx.beginPath();
+    ctx.rect(sx - 6, sy - 52, 12, 52);
+    ctx.fill(); ctx.stroke();
+    // 柱頂收窄帽（階梯感）
+    ctx.fillStyle = "#4a3c2a";
+    ctx.beginPath();
+    ctx.rect(sx - 9, sy - 56, 18, 6);
+    ctx.fill(); ctx.stroke();
+    // 底座梯形
+    ctx.fillStyle = "#2a2018";
+    ctx.beginPath();
+    ctx.moveTo(sx - 12, sy);
+    ctx.lineTo(sx + 12, sy);
+    ctx.lineTo(sx + 8,  sy - 10);
+    ctx.lineTo(sx - 8,  sy - 10);
+    ctx.closePath();
+    ctx.fill();
+
+    // ── 鐘面（圓形，黃銅邊框）────────────────────────────────────
+    const cr = 13; // 鐘面半徑
+    const cx = sx, cy = sy - 66; // 鐘面中心
+    // 鐘面外陰影
+    ctx.fillStyle = "rgba(20,12,4,0.38)";
+    ctx.beginPath(); ctx.arc(cx + 1, cy + 1, cr + 2, 0, Math.PI * 2); ctx.fill();
+    // 鐘面底（深棕暖色）
+    ctx.fillStyle = "#2c1f0e";
+    ctx.beginPath(); ctx.arc(cx, cy, cr + 2, 0, Math.PI * 2); ctx.fill();
+    // 黃銅邊框
+    ctx.strokeStyle = "#c8972a";
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, cr, 0, Math.PI * 2); ctx.stroke();
+    // 內圈（象牙色鐘面）
+    ctx.fillStyle = "#f5e8c8";
+    ctx.beginPath(); ctx.arc(cx, cy, cr - 1.5, 0, Math.PI * 2); ctx.fill();
+    // 4 個刻度點（12/3/6/9 點方向）
+    ctx.fillStyle = "#8a6820";
+    [0, 1, 2, 3].forEach(i => {
+      const a = i * Math.PI / 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * (cr - 4), cy + Math.sin(a) * (cr - 4), 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // ── 時針（短粗，深棕）────────────────────────────────────────
+    ctx.strokeStyle = "#3c2810";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(hourRad) * (cr - 6), cy + Math.sin(hourRad) * (cr - 6));
+    ctx.stroke();
+
+    // ── 分針（長細，深棕）────────────────────────────────────────
+    ctx.strokeStyle = "#5a3c18";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(minRad) * (cr - 3), cy + Math.sin(minRad) * (cr - 3));
+    ctx.stroke();
+
+    // ── 中心軸釘（黃銅色圓點）────────────────────────────────────
+    ctx.fillStyle = "#c8972a";
+    ctx.beginPath(); ctx.arc(cx, cy, 2, 0, Math.PI * 2); ctx.fill();
+
+    // ── 鐘面上方「蒸汽龍頭」小裝飾（兩個側面排汽管）────────────
+    ctx.strokeStyle = "#6a5030";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    [-6, 6].forEach(dx => {
+      ctx.beginPath();
+      ctx.moveTo(cx + dx, cy - cr - 1);
+      ctx.lineTo(cx + dx, cy - cr - 8);
+      ctx.stroke();
+      // 排汽孔小圓帽
+      ctx.fillStyle = "#4a3828";
+      ctx.beginPath(); ctx.arc(cx + dx, cy - cr - 9, 2.5, 0, Math.PI * 2); ctx.fill();
+    });
+
+    // ── 「⚙ 蒸汽鐘」標籤（底座正面）────────────────────────────
+    ctx.font = `bold 5px monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#c8972a";
+    ctx.fillText("蒸汽鐘", sx, sy - 5);
 
     ctx.restore();
   }
