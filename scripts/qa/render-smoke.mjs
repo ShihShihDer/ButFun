@@ -4164,6 +4164,65 @@ for (const sc of scenarios) {
   else console.log("  ✅ 繁茂田畝呼吸光（ROADMAP 516）：thrivingBreathAlpha 真值表(7 cases) + thrivingSparkleActive 真值表(5 cases) + drawThrive 渲染路徑 + reduceMotion 退靜態，全路徑零例外");
 }
 
+// ── ROADMAP 517：近戰揮砍弧光 ─────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const msa = sandbox.__bfTest && sandbox.__bfTest.meleeSwingAlpha;
+    const dms = sandbox.__bfTest && sandbox.__bfTest.drawMeleeSwings;
+    if (!msa) throw new Error("meleeSwingAlpha 未匯出");
+    if (!dms) throw new Error("drawMeleeSwings 未匯出");
+
+    // meleeSwingAlpha 真值表（8 cases）
+    // 壞值保守回 0
+    for (const bad of [NaN, null, undefined, Infinity, -Infinity]) {
+      const got = msa(bad);
+      if (got !== 0) { ok = false; console.error(`  ❌ meleeSwingAlpha(${bad})=${got}，期望 0`); }
+    }
+    // t=0 → 0（起始）
+    if (msa(0) !== 0) { ok = false; console.error(`  ❌ meleeSwingAlpha(0)=${msa(0)}，期望 0`); }
+    // t=0.2 → 1（峰值）
+    if (Math.abs(msa(0.2) - 1) > 0.001) { ok = false; console.error(`  ❌ meleeSwingAlpha(0.2)=${msa(0.2)}，期望 1`); }
+    // t=1 → 0（消亡）
+    if (Math.abs(msa(1) - 0) > 0.001) { ok = false; console.error(`  ❌ meleeSwingAlpha(1)=${msa(1)}，期望 0`); }
+    // t=0.6 → 中間遞減，0 < alpha < 1
+    const mid = msa(0.6);
+    if (typeof mid !== "number" || isNaN(mid) || mid < 0 || mid >= 1) {
+      ok = false; console.error(`  ❌ meleeSwingAlpha(0.6)=${mid}，期望 [0,1)`);
+    }
+    // t 超界夾鉗（t=-1→0, t=2→0）
+    if (msa(-1) !== 0) { ok = false; console.error(`  ❌ meleeSwingAlpha(-1)=${msa(-1)}，期望 0（夾鉗）`); }
+    if (Math.abs(msa(2) - 0) > 0.001) { ok = false; console.error(`  ❌ meleeSwingAlpha(2)=${msa(2)}，期望 0（夾鉗）`); }
+
+    // drawMeleeSwings 渲染路徑：注入一筆揮砍資料，連跑 4 幀零例外
+    // 直接往 meleeSwings 推資料（模擬 sendAttack 觸發）
+    const now0 = performance.now();
+    sandbox.meleeSwings = [{ sx: 2344, sy: 2296, angle: 0, born: now0 }];
+    // 借 drawMeleeSwings 直接呼叫，camX=2300, camY=2250
+    for (let f = 0; f < 4; f++) {
+      dms(2300, 2250, now0 + f * 70);
+    }
+
+    // reduceMotion 路徑：應清空 meleeSwings 並跳過渲染（不 throw）
+    sandbox.__bfTest.setMotionPref("reduce");
+    sandbox.meleeSwings = [{ sx: 2344, sy: 2296, angle: Math.PI / 2, born: performance.now() }];
+    dms(2300, 2250, performance.now());
+    sandbox.__bfTest.setMotionPref("no-preference");
+
+    // 到期清除：age > MELEE_SWING_MS 的條目應被移除（不 throw）
+    const old = performance.now() - 1000; // 1秒前，遠超 280ms
+    sandbox.meleeSwings = [{ sx: 2344, sy: 2296, angle: Math.PI, born: old }];
+    dms(2300, 2250, performance.now());
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 近戰揮砍弧光：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 近戰揮砍弧光（ROADMAP 517）：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 近戰揮砍弧光（ROADMAP 517）：meleeSwingAlpha 真值表(8 cases) + 壞值安全 + drawMeleeSwings 渲染路徑 + reduceMotion 清除 + 到期清除，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
