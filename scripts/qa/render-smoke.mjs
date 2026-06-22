@@ -2999,6 +2999,41 @@ for (const sc of scenarios) {
   else if (!(rw instanceof Error) && !(rw2 instanceof Error)) console.log("  ✅ 破綻時機：兇名精英露破綻金光環＋❉＋閉合早退皆乾淨");
 }
 
+// 破綻直擊飄字（ROADMAP 489）：注入 is_weak=true 的 attack_hit，驗證金色 ❉ 飄字路徑不拋例外。
+// 同時測試破綻擊殺（is_weak+is_kill）與普通命中（is_weak=false）的早退路徑。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：破綻直擊飄字（is_weak=true → 金色 ❉ 飄字）──");
+  let ok = true;
+  try {
+    const me0 = snapshot.players[0];
+    // 破綻命中（未擊殺）：應噴 ❉-150 金色大字。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "attack_hit", player_id: myId,
+      ex: me0.x + 40, ey: me0.y - 20, dmg: 150,
+      is_kill: false, is_crit: false, charge_tier: 0, is_weak: true
+    }) });
+    // 破綻擊殺：應噴 ❉💀-200 金色大字。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "attack_hit", player_id: myId,
+      ex: me0.x + 60, ey: me0.y - 30, dmg: 200,
+      is_kill: true, is_crit: false, charge_tier: 0, is_weak: true
+    }) });
+    // 普通命中（is_weak=false）：確認不誤走破綻分支。
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "attack_hit", player_id: myId,
+      ex: me0.x + 80, ey: me0.y, dmg: 30,
+      is_kill: false, is_crit: false, charge_tier: 0, is_weak: false
+    }) });
+    pump("破綻直擊飄字", 4);
+  } catch (e) {
+    ok = false; console.error("  ❌ 破綻直擊飄字：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 破綻直擊飄字：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 破綻直擊飄字：is_weak=true 金色 ❉ 飄字／破綻擊殺 ❉💀／普通命中早退 皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

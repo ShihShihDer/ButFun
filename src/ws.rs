@@ -3245,7 +3245,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // AttackHit 廣播（ROADMAP 387）：命中即時通知全服，含暴擊旗標。
                     // 戰吼（AOE）不算暴擊（與元素克制、連殺熱度一致的設計取捨）。
                     let hit_is_crit = is_crit && !use_warcry;
-                    for (_, _, _, loot, ex, ey, actual_dmg) in &results {
+                    for (_, _, _, loot, ex, ey, actual_dmg, is_weak) in &results {
                         if *actual_dmg > 0 {
                             let _ = app.tx.send(std::sync::Arc::new(
                                 crate::protocol::ServerMsg::AttackHit {
@@ -3256,14 +3256,15 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     is_kill: loot.is_some(),
                                     is_crit: hit_is_crit,
                                     charge_tier: charge_tier_wire, // ROADMAP 423：蓄力重擊命中強度
+                                    is_weak: *is_weak,             // ROADMAP 489：破綻直擊飄字
                                 }
                             ));
                         }
                     }
                     // 取第一筆的兇名狀態（單攻時只有最多一筆，群攻取第一隻兇名）
-                    let was_notorious = results.iter().any(|(_, _, n, _, _, _, _)| *n);
-                    let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>, f32, f32, u32)> =
-                        results.iter().find(|(_, _, _, loot, _, _, _)| loot.is_some()).cloned();
+                    let was_notorious = results.iter().any(|(_, _, n, _, _, _, _, _)| *n);
+                    let result: Option<(crate::combat::EnemyKind, u32, bool, Option<(crate::inventory::ItemKind, u32)>, f32, f32, u32, bool)> =
+                        results.iter().find(|(_, _, _, loot, _, _, _, _)| loot.is_some()).cloned();
                     let mut combat_level_up: Option<(String, u32)> = None;
                     // 連殺里程碑廣播資料暫存（鎖外廣播，守 prod-deadlock 鐵律）。
                     let mut streak_milestone: Option<(u8, f32, f32)> = None;
@@ -3277,7 +3278,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
                         // 安全區防呆：遠程在城內打城外怪不給獎勵。
                         let mut had_kill = false;
-                        for (kind, enemy_level, notorious, loot, _, _, _) in &results {
+                        for (kind, enemy_level, notorious, loot, _, _, _, _) in &results {
                             let Some((item, qty)) = loot else { continue; };
                             if suppress_rewards { continue; }  // 安全區遠程無獎勵
                             had_kill = true;
@@ -3406,7 +3407,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     }
                     // 討伐兇名精英全服廣播（ROADMAP 42）；安全區遠程不觸發（防呆）。
                     if was_notorious && !suppress_rewards {
-                        if let Some((kind, _, _, Some(_), _, _, _)) = result {
+                        if let Some((kind, _, _, Some(_), _, _, _, _)) = result {
                             let pname = app.players.read().unwrap()
                                 .get(&id).map(|p| p.name.clone()).unwrap_or_default();
                             if !pname.is_empty() {
@@ -3448,7 +3449,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // NPC 自主懸賞令：兇名精英討伐 → 檢查是否符合蘭卡通緝目標（ROADMAP 82）。
                     if was_notorious && !suppress_rewards {
                         // 取第一筆兇名擊殺的種類名稱。
-                        if let Some((nk, _, _, _, _, _, _)) = results.iter().find(|(_, _, n, _, _, _, _)| *n) {
+                        if let Some((nk, _, _, _, _, _, _, _)) = results.iter().find(|(_, _, n, _, _, _, _, _)| *n) {
                             let kind_name_str = nk.display_name();
                             if let Some(reward) = app.npc_bounty.write().unwrap()
                                 .on_notorious_killed(kind_name_str, true)
@@ -3479,7 +3480,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 通知社群任務（ROADMAP 27）：擊殺事件推進進度並廣播完成公告。
                     // 安全區遠程擊殺不計數，防止城內架砲刷任務（suppress_rewards 同步守衛）。
                     if !suppress_rewards {
-                        if let Some((kind, _, _, Some(_), _, _, _)) = result {
+                        if let Some((kind, _, _, Some(_), _, _, _, _)) = result {
                             let completed = app.quests.write().unwrap().on_kill(kind);
                             notify_quest_complete(&app, completed);
                         }
@@ -3487,7 +3488,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 成就：擊殺計數里程碑（ROADMAP 31）。
                     // 安全區遠程擊殺不計里程碑，防城內刷牆。
                     if !suppress_rewards {
-                        if let Some((_, _, _, Some(_), _, _, _)) = result {
+                        if let Some((_, _, _, Some(_), _, _, _, _)) = result {
                             let (kill_count, new_level, pname, newly_unlocked) = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&id) {
@@ -3511,7 +3512,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             };
                             let _ = new_level; // 等級升等由 combat_level_up 廣播處理
                             // ROADMAP 147：擊殺通知——單播給玩家，讓他知道討伐了什麼、得到什麼。
-                            if let Some((kill_kind, _, _, Some((item, qty)), _, _, _)) = result {
+                            if let Some((kill_kind, _, _, Some((item, qty)), _, _, _, _)) = result {
                                 let msg = crate::protocol::ServerMsg::KillNotify {
                                     enemy_name: kill_kind.display_name().to_string(),
                                     item_display: format!(
@@ -3540,20 +3541,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 每日任務：擊殺事件（ROADMAP 32）。
                     // 安全區遠程擊殺不算每日任務進度。
                     if !suppress_rewards {
-                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _))) = (authed_uid, result) {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _, _))) = (authed_uid, result) {
                             advance_daily_kill(&app, uid, kill_kind, &tx_direct);
                         }
                     }
                     // 活動鏈：戰鬥環（ROADMAP 390）。安全區遠程擊殺同樣不計入。
                     if !suppress_rewards {
-                        if let (Some(uid), Some((_, _, _, Some(_), _, _, _))) = (authed_uid, result) {
+                        if let (Some(uid), Some((_, _, _, Some(_), _, _, _, _))) = (authed_uid, result) {
                             advance_activity_chain(&app, uid, crate::activity_chain::ActivityKind::Battle, &tx_direct);
                         }
                     }
                     // 懸賞告示板：擊殺事件（ROADMAP 53）。
                     // 安全區遠程擊殺不結算懸賞，防止城牆龜縮刷賞。
                     if !suppress_rewards {
-                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _))) = (authed_uid, result) {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _, _))) = (authed_uid, result) {
                             let bounty_result = {
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.get_mut(&uid) {
@@ -3594,7 +3595,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 旅行商人限時委託：擊殺事件（ROADMAP 136）。
                     // 安全區遠程擊殺不結算委託，防止城牆龜縮刷委託（與懸賞/社群/每日一致）。
                     if !suppress_rewards {
-                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _))) = (authed_uid, result) {
+                        if let (Some(uid), Some((kill_kind, _, _, Some(_), _, _, _, _))) = (authed_uid, result) {
                             let quest_result = app.wandering_merchant.write().unwrap().on_kill(kill_kind);
                             if let Some((qid, qname, ether_reward, reward_item, reward_qty)) = quest_result {
                                 let pname = {
@@ -3622,7 +3623,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         }
                     }
                     // 獸潮攻城（ROADMAP 44）：通知導演統計攻城點附近的擊殺數，達標即全服勝利。
-                    if let Some((_, _, _, Some(_), _, _, _)) = result {
+                    if let Some((_, _, _, Some(_), _, _, _, _)) = result {
                         if let Some(cmd) = app.director.write().unwrap().register_kill_near_site(px, py) {
                             if let crate::director::DirectorCmd::HordeVictory { site_label, kills } = cmd {
                                 let _ = app.tx_chat.send(format!(
@@ -3641,8 +3642,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 安全區遠程擊殺不計入（和其他 suppress_rewards 行為一致）。
                     if !suppress_rewards {
                         let killed_kinds: Vec<crate::combat::EnemyKind> = results.iter()
-                            .filter(|(_, _, _, loot, _, _, _)| loot.is_some())
-                            .map(|(kind, _, _, _, _, _, _)| *kind)
+                            .filter(|(_, _, _, loot, _, _, _, _)| loot.is_some())
+                            .map(|(kind, _, _, _, _, _, _, _)| *kind)
                             .collect();
                         if !killed_kinds.is_empty() {
                             // 鎖序鐵律：monster_species 寫鎖只在這個小區塊持有、用完立刻釋放，絕不與下方
@@ -3746,7 +3747,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 入侵首領擊殺（ROADMAP 159）：乙太霸主被玩家擊倒，通知入侵狀態並廣播。
                     // 安全區遠程擊殺不觸發（防城牆龜縮刷首領）。
                     if !suppress_rewards {
-                        let boss_just_killed = results.iter().any(|(kind, _, _, loot, _, _, _)| {
+                        let boss_just_killed = results.iter().any(|(kind, _, _, loot, _, _, _, _)| {
                             *kind == crate::combat::EnemyKind::EtherOverlord && loot.is_some()
                         });
                         if boss_just_killed {

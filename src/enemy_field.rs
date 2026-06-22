@@ -572,7 +572,7 @@ impl EnemyField {
         power: u32,
         reach: f32,
         now_secs: f64,
-    ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
+    ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32, bool)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
@@ -609,7 +609,7 @@ impl EnemyField {
 
         // 用「實際找到的 chunk」重查;查不到一律回 None——**絕不 unwrap**:None 一 unwrap 整個
         // 遊戲迴圈 panic 死掉、全服收不到快照(玩家進去只有場景沒角色),就是這次踩的雷。
-        let mut result: Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> = None;
+        let mut result: Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32, bool)> = None;
         let mut pack_kind: Option<EnemyKind> = None;
         let mut trigger_flee_cry = false;
 
@@ -623,13 +623,9 @@ impl EnemyField {
                     let pre_hp = placed.enemy.remaining_hp();
                     let (ex, ey) = (placed.x, placed.y);
                     // 破綻直擊（ROADMAP 488）：兇名精英露破綻時命中，傷害加成；否則照常。
-                    let eff_power = if was_notorious
-                        && crate::weakpoint::is_open(placed.id, now_secs)
-                    {
-                        crate::weakpoint::bonus_power(power)
-                    } else {
-                        power
-                    };
+                    // is_weak 追蹤在此一次：供傷害計算與 AttackHit 廣播共用（ROADMAP 489）。
+                    let is_weak = was_notorious && crate::weakpoint::is_open(placed.id, now_secs);
+                    let eff_power = if is_weak { crate::weakpoint::bonus_power(power) } else { power };
                     let loot = placed.enemy.attack(eff_power);
                     let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
@@ -644,7 +640,7 @@ impl EnemyField {
                             / placed.enemy.max_hp().max(1) as f32;
                         trigger_flee_cry = hp_ratio < LOW_HP_THRESHOLD;
                     }
-                    result = Some((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg));
+                    result = Some((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg, is_weak));
                 }
             }
         }
@@ -712,7 +708,7 @@ impl EnemyField {
         power: u32,
         reach: f32,
         now_secs: f64,
-    ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
+    ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32, bool)> {
         if !px.is_finite() || !py.is_finite() {
             return Vec::new();
         }
@@ -752,13 +748,9 @@ impl EnemyField {
                     let pre_hp = placed.enemy.remaining_hp();
                     let (ex, ey) = (placed.x, placed.y);
                     // 破綻直擊（ROADMAP 488）：兇名精英露破綻時命中，傷害加成；否則照常。
-                    let eff_power = if was_notorious
-                        && crate::weakpoint::is_open(placed.id, now_secs)
-                    {
-                        crate::weakpoint::bonus_power(power)
-                    } else {
-                        power
-                    };
+                    // is_weak 追蹤在此一次：供傷害計算與 AttackHit 廣播共用（ROADMAP 489）。
+                    let is_weak = was_notorious && crate::weakpoint::is_open(placed.id, now_secs);
+                    let eff_power = if is_weak { crate::weakpoint::bonus_power(power) } else { power };
                     let loot = placed.enemy.attack(eff_power);
                     let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
@@ -771,7 +763,7 @@ impl EnemyField {
                             / placed.enemy.max_hp().max(1) as f32;
                         pack_flee = hp_ratio < LOW_HP_THRESHOLD;
                     }
-                    results.push((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg));
+                    results.push((kind, pre_kill_level, was_notorious, loot, ex, ey, actual_dmg, is_weak));
                 }
             }
             // 狼群警報（與 attack_nearest 一致）
@@ -1540,7 +1532,7 @@ mod tests {
         // 用一萬點傷害確保一擊必殺
         let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH, 0.0);
         assert!(result.is_some(), "應能攻擊到敵人");
-        let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
+        let (_, _, was_notorious, loot, _, _, _, _) = result.unwrap();
         assert!(loot.is_some(), "應有掉落（代表擊殺）");
         assert!(was_notorious, "等級為 base+4 應為兇名精英");
         // 擊殺後 level 應重置為 base_level
@@ -1605,7 +1597,7 @@ mod tests {
         }
         let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
         let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH, 0.0);
-        let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
+        let (_, _, was_notorious, loot, _, _, _, _) = result.unwrap();
         assert!(loot.is_some());
         assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
     }
@@ -2079,7 +2071,7 @@ mod tests {
         let (ox, oy) = (8000.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);
         let result = f.attack_nearest(ox, oy, 5, 300.0, 0.0);
-        let (_, _, _, _, _, _, actual_dmg) = result.unwrap();
+        let (_, _, _, _, _, _, actual_dmg, _) = result.unwrap();
         assert!(actual_dmg > 0, "命中存活怪，actual_dmg 應 > 0");
     }
 
@@ -2090,7 +2082,7 @@ mod tests {
         let (ox2, oy2) = (8400.0_f32, 8000.0_f32);
         push_test_enemy(&mut f2, 0, ox2, oy2, EnemyKind::ScrapDrone);
         let res = f2.attack_nearest(ox2, oy2, 99999, 300.0, 0.0);
-        let (_, _, _, _, _, _, actual_dmg) = res.unwrap();
+        let (_, _, _, _, _, _, actual_dmg, _) = res.unwrap();
         assert!(actual_dmg <= 99999, "actual_dmg 不得超過攻擊力");
         assert!(actual_dmg > 0, "擊殺時 actual_dmg 應等於怪物初始 HP");
     }
@@ -2102,7 +2094,7 @@ mod tests {
         let (ox, oy) = (8600.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox + 50.0, oy + 30.0, EnemyKind::ScrapDrone);
         let result = f.attack_nearest(ox, oy, 5, 300.0, 0.0);
-        let (_, _, _, _, ex, ey, _) = result.unwrap();
+        let (_, _, _, _, ex, ey, _, _) = result.unwrap();
         let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
         assert!(dist < 300.0, "回傳座標應在攻擊範圍內，dist={dist}");
     }
@@ -2126,7 +2118,7 @@ mod tests {
         push_test_enemy(&mut f, 1, ox - 10.0, oy, EnemyKind::ScrapDrone);
         let results = f.attack_all_in_reach(ox, oy, 5, 200.0, 0.0);
         assert!(!results.is_empty(), "AOE 應至少命中一隻");
-        for (_, _, _, _, _, _, actual_dmg) in &results {
+        for (_, _, _, _, _, _, actual_dmg, _) in &results {
             assert!(*actual_dmg > 0, "每隻命中的 actual_dmg 應 > 0");
         }
     }
@@ -2139,7 +2131,7 @@ mod tests {
         push_test_enemy(&mut f, 0, ox + 20.0, oy + 10.0, EnemyKind::ScrapDrone);
         let results = f.attack_all_in_reach(ox, oy, 5, 200.0, 0.0);
         assert!(!results.is_empty());
-        for (_, _, _, _, ex, ey, _) in &results {
+        for (_, _, _, _, ex, ey, _, _) in &results {
             let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
             assert!(dist < 200.0, "AOE 命中座標應在攻擊範圍內，dist={dist}");
         }
@@ -2178,5 +2170,59 @@ mod tests {
         assert_eq!(injected, softcap, "注入數應正好封頂在軟上限");
         assert_eq!(f.total_count(), softcap, "總敵數應停在軟上限");
         assert_eq!(blocked, 50, "達上限後的注入嘗試都應被略過");
+    }
+
+    // ───── ROADMAP 489 破綻直擊 is_weak 測試 ─────
+
+    #[test]
+    fn attack_nearest_not_weak_for_normal_enemy() {
+        // 一般（非兇名）敵人 is_weak 永遠 false。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (10000.0_f32, 8000.0_f32);
+        push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone); // base_level=1, level=1
+        // 用任意 now_secs 攻擊，非兇名不可能 is_weak。
+        let result = f.attack_nearest(ox, oy, 1, 300.0, 0.0);
+        let (_, _, _, _, _, _, _, is_weak) = result.unwrap();
+        assert!(!is_weak, "非兇名精英 is_weak 應為 false");
+    }
+
+    #[test]
+    fn attack_nearest_is_weak_when_notorious_and_window_open() {
+        // 兇名精英（level >= base+3）在破綻開啟時命中 → is_weak=true；閉合時 → is_weak=false。
+        let mut f = EnemyField::new();
+        let (ox, oy) = (10200.0_f32, 8000.0_f32);
+        let eid = push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);
+        // 手動把等級拉成兇名精英（level == base_level + 3）。
+        let (ck_x, ck_y, idx) = eid;
+        {
+            let chunk = f.chunks.get_mut(&(ck_x, ck_y)).unwrap();
+            chunk[idx].level = chunk[idx].base_level + 3;
+        }
+        // 推算一個「破綻開啟」的時刻：t = (now + phase) mod CYCLE < OPEN_SECS → now = CYCLE - phase。
+        let open_now = crate::weakpoint::WEAKPOINT_CYCLE_SECS - crate::weakpoint::phase_offset(eid);
+        let result_open = f.attack_nearest(ox, oy, 1, 300.0, open_now);
+        let (_, _, _, _, _, _, _, is_weak_open) = result_open.unwrap();
+        assert!(is_weak_open, "兇名精英在破綻開啟時命中，is_weak 應為 true");
+
+        // 破綻閉合時刻（開窗結束後）。
+        let closed_now = open_now + crate::weakpoint::WEAKPOINT_OPEN_SECS + 0.1;
+        // 注意：前一擊可能已打死；重新放一隻。
+        push_test_enemy(&mut f, 1, ox + 10.0, oy, EnemyKind::ScrapDrone);
+        let (ck_x2, ck_y2, idx2) = {
+            use world_core::chunk_key;
+            let (cx, cy) = chunk_key(ox + 10.0, oy);
+            (cx, cy, 1usize)
+        };
+        {
+            let chunk = f.chunks.get_mut(&(ck_x2, ck_y2)).unwrap();
+            if let Some(e) = chunk.iter_mut().find(|e| e.id == (ck_x2, ck_y2, idx2)) {
+                e.level = e.base_level + 3;
+            }
+        }
+        let result_closed = f.attack_nearest(ox, oy, 1, 300.0, closed_now);
+        if let Some((_, _, _, _, _, _, _, is_weak_closed)) = result_closed {
+            assert!(!is_weak_closed, "兇名精英在破綻閉合時命中，is_weak 應為 false");
+        }
+        // 若敵人已死也算通過（前一擊可能順手擊殺了）。
     }
 }

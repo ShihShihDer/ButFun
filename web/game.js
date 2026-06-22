@@ -4838,12 +4838,19 @@
       }
       case "attack_hit": {
         // 命中即時數字（ROADMAP 387）：伺服器廣播，所有玩家都能看到附近攻擊數字。
-        // 暴擊＝金色大字⚡；擊殺＝紅色💀；普通命中＝橘色。
-        const { ex, ey, dmg, is_kill: isKill, is_crit: isCrit, charge_tier: chargeTier } = msg;
+        // 蓄力重擊（ROADMAP 423）：滿蓄💥／半蓄⚡ 優先；破綻直擊（ROADMAP 489）：金色 ❉；
+        // 暴擊：金色 ⚡；擊殺：紅色 💀；普通命中：橘色。
+        const { ex, ey, dmg, is_kill: isKill, is_crit: isCrit,
+                charge_tier: chargeTier, is_weak: isWeak } = msg;
         if (!dmg || dmg <= 0) break;
-        // 蓄力重擊命中（ROADMAP 423）：滿蓄💥／半蓄⚡，傷害數字更大、帶熾金/琥珀色（優先於普通暴擊演出）。
         if (chargeTier === 2) {
+          // 滿蓄力重擊：最大最亮。
           hitFloaters.push({ wx: ex, wy: ey - 26, text: `💥-${dmg}`, color: "255,214,90", size: 26, born: performance.now() });
+        } else if (isWeak) {
+          // 破綻直擊（ROADMAP 489）：金色 ❉ 大字，讓玩家讀到「我打出了破綻傷害」。
+          // 擊殺版加上 💀 前綴；普通版只留 ❉。
+          const text = isKill ? `❉💀-${dmg}` : `❉-${dmg}`;
+          hitFloaters.push({ wx: ex, wy: ey - 26, text, color: "255,210,0", size: 24, born: performance.now() });
         } else if (chargeTier === 1) {
           hitFloaters.push({ wx: ex, wy: ey - 24, text: `⚡-${dmg}`, color: "255,176,70", size: 22, born: performance.now() });
         } else if (isCrit) {
