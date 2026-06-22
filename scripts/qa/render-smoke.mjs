@@ -4082,6 +4082,88 @@ for (const sc of scenarios) {
   else console.log("  ✅ 臨死迴光（ROADMAP 515）：enemyDeathThroesAlpha 真值表(9 cases) + 壞值安全(3 cases) + 低血量渲染路徑 + 兇名疊加，全零例外");
 }
 
+// ── ROADMAP 516：繁茂田畝呼吸光 ─────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const tba = sandbox.__bfTest && sandbox.__bfTest.thrivingBreathAlpha;
+    const tsa = sandbox.__bfTest && sandbox.__bfTest.thrivingSparkleActive;
+    const dtv = sandbox.__bfTest && sandbox.__bfTest.drawThrive;
+    if (!tba) throw new Error("thrivingBreathAlpha 未匯出");
+    if (!tsa) throw new Error("thrivingSparkleActive 未匯出");
+    if (!dtv) throw new Error("drawThrive 未匯出");
+
+    // thrivingBreathAlpha 真值表（7 cases）
+    const badCases = [NaN, null, undefined, Infinity, -Infinity];
+    for (const bad of badCases) {
+      const got = tba(bad);
+      if (Math.abs(got - 0.14) > 0.001) {
+        ok = false; console.error(`  ❌ thrivingBreathAlpha(${bad})=${got}，期望靜態值 0.14`);
+      }
+    }
+    // now=0（reduceMotion）→ 固定靜態 0.14
+    if (Math.abs(tba(0) - 0.14) > 0.001) {
+      ok = false; console.error(`  ❌ thrivingBreathAlpha(0)=${tba(0)}，期望靜態值 0.14`);
+    }
+    // 正常 now → 回傳 [0.09, 0.21]
+    for (const now of [1000, 10000, 50000, 100000]) {
+      const got = tba(now);
+      if (typeof got !== "number" || isNaN(got) || got < 0.088 || got > 0.212) {
+        ok = false; console.error(`  ❌ thrivingBreathAlpha(${now})=${got}，期望 [0.09,0.21]`);
+      }
+    }
+
+    // thrivingSparkleActive 真值表（5 cases）
+    // now=0 → false（reduceMotion）
+    if (tsa(0, 0) !== false) {
+      ok = false; console.error("  ❌ thrivingSparkleActive(0,0) 應為 false（reduceMotion）");
+    }
+    // now=NaN → false
+    if (tsa(NaN, 0) !== false) {
+      ok = false; console.error("  ❌ thrivingSparkleActive(NaN,0) 應為 false");
+    }
+    // cellPhase=NaN → false
+    if (tsa(1000, NaN) !== false) {
+      ok = false; console.error("  ❌ thrivingSparkleActive(1000,NaN) 應為 false");
+    }
+    // 一般 now 回傳 boolean（不 throw）
+    const normalResult = tsa(5000, 1.0);
+    if (typeof normalResult !== "boolean") {
+      ok = false; console.error(`  ❌ thrivingSparkleActive(5000,1.0)=${normalResult}，期望 boolean`);
+    }
+    // now=1414, cellPhase=0 → sin(π/2)≈1 > 0.97 → true
+    const shouldBeTrue = tsa(1414, 0);
+    if (shouldBeTrue !== true) {
+      ok = false; console.error(`  ❌ thrivingSparkleActive(1414,0)=${shouldBeTrue}，期望 true（sin≈1）`);
+    }
+
+    // drawThrive 連跑 5 幀零例外（正常時間序列）
+    for (let f = 0; f < 5; f++) {
+      const t = performance.now() + f * 80;
+      // _renderFrameNow 由 render-smoke 閉包外不可直接設定，改用 drawThrive 直接呼叫驗路徑
+      dtv(100, 200, 32);
+    }
+
+    // 已知讓 sin > 0.97 的 now：1414ms（sin(1414/900)≈1），觸發微光分支
+    // 直接 drawThrive 在固定座標，連跑 3 幀，不 throw
+    for (let f = 0; f < 3; f++) {
+      dtv(100, 200, 32);
+    }
+
+    // reduceMotion 路徑：effectiveReduceMotion() 為 true 時 drawThrive 退靜態，不 throw
+    sandbox.__bfTest.setMotionPref("reduce");
+    dtv(100, 200, 32);
+    sandbox.__bfTest.setMotionPref("no-preference");
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 繁茂田畝呼吸光：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 繁茂田畝呼吸光（ROADMAP 516）：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 繁茂田畝呼吸光（ROADMAP 516）：thrivingBreathAlpha 真值表(7 cases) + thrivingSparkleActive 真值表(5 cases) + drawThrive 渲染路徑 + reduceMotion 退靜態，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

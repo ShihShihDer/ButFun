@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -30929,15 +30929,47 @@
 
   // ROADMAP 367 連片沃土：屬於「三格以上四方相鄰連成的田畝」的格，墊一層淡綠生機罩
   // ——讓玩家一眼看出「種成連片的田畝更蒼翠、長得更旺」。純表現、只讀快照旗標(cell.thriving)、
-  // 不嵌任何規則(連通/加速判定全在伺服器 field_thrive.rs)。低 alpha、單純 fill+inner stroke,
-  // 不蓋住作物、效能近乎零。
+  // 不嵌任何規則(連通/加速判定全在伺服器 field_thrive.rs)。
+  // ROADMAP 516 升級：靜態綠底改為輕柔呼吸脈動光，詳見 thrivingBreathAlpha / thrivingSparkleActive。
+
+  // 純函式（可測）：連片沃土的「呼吸」fill alpha，約 3.8 秒一週期的正弦脈動（[0.09, 0.21]）。
+  // now=0 (reduceMotion) 時回固定值 0.14（= 原靜態版本，保留核心視覺、不閃動）。
+  // 壞值一律回 0.14（保守靜態，不 throw）。
+  function thrivingBreathAlpha(now) {
+    if (typeof now !== 'number' || !isFinite(now)) return 0.14;
+    if (now === 0) return 0.14;
+    return 0.09 + 0.12 * (0.5 + 0.5 * Math.sin(now / 600)); // 0.09~0.21
+  }
+
+  // 純函式（可測）：此格此刻是否閃一枚細小白色微光（以格子位置派生的相位分散各格時序）。
+  // cellPhase 由格子螢幕座標 (sx, sy) 計算，確保各格不同步閃光。
+  // now=0 (reduceMotion) 或壞值一律 false（不閃動）。
+  function thrivingSparkleActive(now, cellPhase) {
+    if (typeof now !== 'number' || !isFinite(now) || now === 0) return false;
+    if (typeof cellPhase !== 'number' || !isFinite(cellPhase)) return false;
+    return Math.sin(now / 900 + cellPhase) > 0.97; // 每格約每 5.7 秒短暫閃 ~360ms
+  }
+
   function drawThrive(sx, sy, ts) {
+    // ROADMAP 516：從靜態綠底升級為呼吸脈動光（reduceMotion 退回靜態）。
+    const now = effectiveReduceMotion() ? 0 : _renderFrameNow;
+    // 格子位置派生相位——讓各格呼吸/微光時序不同步，形成自然的「波動感」。
+    const cellPhase = ((Math.round(sx) * 31 + Math.round(sy) * 17) % 628) / 100;
+    const fillA = thrivingBreathAlpha(now);
+    const borderA = Math.min(0.55, fillA * 2.8); // 邊框同比稍強
     ctx.save();
-    ctx.fillStyle = "rgba(126,200,80,0.14)"; // 淡綠生機水洗
+    ctx.fillStyle = `rgba(126,200,80,${fillA.toFixed(3)})`; // 淡綠生機水洗（輕柔呼吸）
     ctx.fillRect(sx + 1, sy + 1, ts - 2, ts - 2);
-    ctx.strokeStyle = "rgba(126,200,80,0.45)"; // 蒼翠內框,圈出連片田畝
+    ctx.strokeStyle = `rgba(126,200,80,${borderA.toFixed(3)})`; // 蒼翠內框，圈出連片田畝
     ctx.lineWidth = 1.5;
     ctx.strokeRect(sx + 1.5, sy + 1.5, ts - 3, ts - 3);
+    // 偶爾閃一枚細白微光（各格相位不同，避免整排同時閃）。
+    if (thrivingSparkleActive(now, cellPhase)) {
+      ctx.beginPath();
+      ctx.arc(sx + ts / 2, sy + ts / 2, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fill();
+    }
     ctx.restore();
   }
 
