@@ -100,6 +100,7 @@ mod world_event;
 mod ws;
 mod pet;
 mod pet_fetch;
+mod pet_forage; // ROADMAP 484 寵物撈寶·把逗寵物接物接進羈絆→成長→回饋循環
 mod pet_follow;
 mod pet_greeting;
 mod pet_personality;

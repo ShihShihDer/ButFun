@@ -1942,6 +1942,22 @@ pub enum ServerMsg {
         player_id: Uuid,
     },
 
+    /// 寵物撈寶（ROADMAP 484）：一趟逗玩接物完成、且小夥伴替主人叼回了東西時廣播。
+    /// 前端只對 `player_id === 自己` 在寵物腳邊疊一行回饋飄字（旁觀者只看寵物叼玩具、不被文字洗版）。
+    /// `item`＝叼回的背包物品（沒叼物則 None）；`ether`＝叼回的乙太量（沒叼乙太則 0）；
+    /// `bond`＝叼回後的羈絆等級（前端順手在飄字帶出「默契更深了」的暖意）。
+    PetForageReward {
+        player_id: Uuid,
+        /// 叼回地點（寵物座標），前端據此定位飄字。
+        x: f32,
+        y: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<ItemKind>,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        ether: u32,
+        bond: u8,
+    },
+
     // ── 廣場獻奏（ROADMAP 399）──────────────────────────────────────────────
     /// 獻奏開始確認（ROADMAP 399）：廣播給所有人，前端對獻奏者頭頂畫飄動音符。
     BuskStart {
@@ -2095,6 +2111,11 @@ pub struct PlayerView {
     /// 性格、並讓待機時頭頂飄出對應的心情泡泡。沒寵物時 None、序列化略過。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pet_personality: Option<String>,
+    /// 寵物羈絆等級（ROADMAP 484 寵物撈寶）：0..=`pet_forage::MAX_BOND`，由累積接物趟數即時算。
+    /// 前端據此在寵物腳邊畫一排小愛心、寵物面板顯示「默契」——玩家一眼看得到默契越玩越深。
+    /// 沒寵物 / 羈絆 0 時為 0、序列化略過。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub pet_bond: u8,
 
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
@@ -3039,7 +3060,7 @@ mod tests {
                 active_skill_flags: vec![],
                 auto_skills: vec![],
                 pet_kind: None,
-                pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None,
+                pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0,
                 fish_cooldown: 0.0,
                 near_water: false,
                 fishing_phase: None,
@@ -3339,7 +3360,7 @@ mod tests {
             active_skill_flags: vec![],
             auto_skills: vec![],
             pet_kind: None,
-            pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None,
+            pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0,
             fish_cooldown: 0.0,
             near_water: false,
             fishing_phase: None,
@@ -3667,7 +3688,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -3742,7 +3763,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

@@ -1171,6 +1171,10 @@ pub fn spawn(app: AppState) {
             // 完成：(player_id, ether_gained, listeners, busk_count)；中斷另記。
             let mut busk_completes: Vec<(uuid::Uuid, u32, u32, u32)> = Vec::new();
             let mut busk_aborts: Vec<uuid::Uuid> = Vec::new();
+            // 寵物撈寶事件（ROADMAP 484）：一趟接物完成、小夥伴叼回了東西時，出鎖後對主人單播飄字。
+            // (player_id, 寵物 x, 寵物 y, 叼回物 Option<ItemKind>, 乙太量, 羈絆等級)。獎勵已在鎖內發給玩家。
+            let mut pet_forage_events: Vec<(uuid::Uuid, f32, f32, Option<crate::inventory::ItemKind>, u32, u8)> =
+                Vec::new();
             // 在地地名變更（ROADMAP 398 天地有名）：踏入新 locale，出鎖後廣播地名卡。
             // (player_id, name, subtitle, initial) — initial=true 為進場首次定位（前端不彈大卡）。
             // (pid, name, subtitle, initial, first_footfall, tally, xp_reward) — ROADMAP 398＋411。
@@ -1291,12 +1295,41 @@ pub fn spawn(app: AppState) {
                                         );
                                         p.pet_x = nx;
                                         p.pet_y = ny;
-                                        p.pet_fetch = if back {
-                                            None
+                                        if back {
+                                            p.pet_fetch = None;
+                                            // 寵物撈寶（ROADMAP 484）：叼回主人腳邊＝一趟接物完成。累積趟數 +1，
+                                            // 由趟數算羈絆等級，再以「玩家 id 低位 ^ 趟數」確定性擲骰（鏡像打水漂
+                                            // skip_find／釣魚 roll_fish）算這趟小夥伴順手叼回什麼。羈絆熱身期（0）不送。
+                                            // 純函式 + 就地發放，不上第二把鎖（守 prod-deadlock）；廣播延到出鎖後。
+                                            p.pet_fetch_count = p.pet_fetch_count.wrapping_add(1);
+                                            if let Some(pet) = p.pet {
+                                                let bond = crate::pet_forage::bond_level(p.pet_fetch_count);
+                                                let seed = {
+                                                    let lo = u64::from_le_bytes(
+                                                        p.id.as_bytes()[..8].try_into().unwrap(),
+                                                    );
+                                                    lo ^ p.pet_fetch_count
+                                                };
+                                                let gift = crate::pet_forage::forage_gift(pet, bond, seed);
+                                                let ether = gift.ether();
+                                                if ether > 0 {
+                                                    p.ether = p.ether.saturating_add(ether);
+                                                }
+                                                if let Some(item) = gift.item() {
+                                                    // 背包夾上限（add_item_overflow 自理溢位），不會無界成長。
+                                                    p.add_item_overflow(item, 1);
+                                                }
+                                                if ether > 0 || gift.item().is_some() {
+                                                    pet_forage_events.push((
+                                                        p.id, p.pet_x, p.pet_y, gift.item(), ether, bond,
+                                                    ));
+                                                }
+                                            }
                                         } else {
                                             // 玩具被叼著走，每 tick 跟到寵物身上（前端據此畫被叼的玩具）。
-                                            Some(crate::pet_fetch::PetFetch { toy_x: nx, toy_y: ny, ..f })
-                                        };
+                                            p.pet_fetch =
+                                                Some(crate::pet_fetch::PetFetch { toy_x: nx, toy_y: ny, ..f });
+                                        }
                                     }
                                 }
                             }
@@ -1712,6 +1745,20 @@ pub fn spawn(app: AppState) {
             for pid in busk_aborts {
                 let _ = app.tx.send(std::sync::Arc::new(
                     crate::protocol::ServerMsg::BuskAborted { player_id: pid }
+                ));
+            }
+
+            // 寵物撈寶廣播（ROADMAP 484）：鎖已釋放，安全廣播——前端只對自己 id 在寵物腳邊飄字。
+            for (pid, px, py, item, ether, bond) in pet_forage_events {
+                let _ = app.tx.send(std::sync::Arc::new(
+                    crate::protocol::ServerMsg::PetForageReward {
+                        player_id: pid,
+                        x: px,
+                        y: py,
+                        item,
+                        ether,
+                        bond,
+                    }
                 ));
             }
 
