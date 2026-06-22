@@ -42,6 +42,11 @@ impl WorldTally {
         self.players_today = self.players_today.saturating_add(1);
     }
 
+    pub fn gather_count(&self) -> u64 { self.gathers }
+    pub fn harvest_count(&self) -> u64 { self.harvests }
+    pub fn kill_count(&self) -> u64 { self.kills }
+    pub fn login_count(&self) -> u64 { self.players_today }
+
     pub fn view(&self) -> WorldTallyView {
         WorldTallyView {
             gathers: self.gathers,

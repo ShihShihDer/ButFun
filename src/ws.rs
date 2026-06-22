@@ -482,8 +482,25 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
     tracing::info!(player = %player.name, %id, "玩家進場");
     // ROADMAP 495 今日世界戰報：已登入玩家進場計一次（訪客不算）。
+    // ROADMAP 498 全服里程碑喝采：登入人次觸發里程碑時由凱爾長老廣播。
     if authed_uid.is_some() {
-        app.world_tally.write().unwrap().record_player_login();
+        let login_count = {
+            let mut tally = app.world_tally.write().unwrap();
+            tally.record_player_login();
+            tally.login_count()
+        };
+        if let Some(ann) = crate::world_tally_milestone::login_milestone(login_count) {
+            let (wx, wy) = crate::npc_schedule::fallback_pos(ann.npc_id);
+            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                npc_id: ann.npc_id.to_string(),
+                npc_name: ann.npc_display.to_string(),
+                text: ann.text.to_string(),
+                display_secs: 10,
+                wx,
+                wy,
+            }));
+            let _ = app.tx_chat.send(format!("🔔 [{}] {}", ann.npc_display, ann.text));
+        }
     }
 
     // 先送 Welcome。
@@ -1946,7 +1963,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if let Some(msg) = harvest_evt {
                             let _ = app.tx.send(Arc::new(msg));
                             // ROADMAP 495 今日世界戰報：計一次農地收穫。
-                            app.world_tally.write().unwrap().record_harvest();
+                            // ROADMAP 498 全服里程碑喝采：收穫里程碑由評審卡特廣播。
+                            let harvest_count = {
+                                let mut tally = app.world_tally.write().unwrap();
+                                tally.record_harvest();
+                                tally.harvest_count()
+                            };
+                            if let Some(ann) = crate::world_tally_milestone::harvest_milestone(harvest_count) {
+                                let (wx, wy) = crate::npc_schedule::fallback_pos(ann.npc_id);
+                                let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                    npc_id: ann.npc_id.to_string(),
+                                    npc_name: ann.npc_display.to_string(),
+                                    text: ann.text.to_string(),
+                                    display_secs: 10,
+                                    wx,
+                                    wy,
+                                }));
+                                let _ = app.tx_chat.send(format!("🔔 [{}] {}", ann.npc_display, ann.text));
+                            }
                         }
                     }
                 }
@@ -2363,7 +2397,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             advance_onboarding(&app, uid, crate::onboarding::OnboardStep::Gather, &tx_direct);
                         }
                         // ROADMAP 495 今日世界戰報：計一次採集。
-                        app.world_tally.write().unwrap().record_gather();
+                        // ROADMAP 498 全服里程碑喝采：採集里程碑由採購代理人諾亞廣播。
+                        let gather_count = {
+                            let mut tally = app.world_tally.write().unwrap();
+                            tally.record_gather();
+                            tally.gather_count()
+                        };
+                        if let Some(ann) = crate::world_tally_milestone::gather_milestone(gather_count) {
+                            let (wx, wy) = crate::npc_schedule::fallback_pos(ann.npc_id);
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: ann.npc_id.to_string(),
+                                npc_name: ann.npc_display.to_string(),
+                                text: ann.text.to_string(),
+                                display_secs: 10,
+                                wx,
+                                wy,
+                            }));
+                            let _ = app.tx_chat.send(format!("🔔 [{}] {}", ann.npc_display, ann.text));
+                        }
                         // 旅行商人限時委託：採集事件（ROADMAP 136）。
                         if let Some(uid) = authed_uid {
                             let quest_result = app.wandering_merchant.write().unwrap().on_gather(item, amount as u32);
@@ -3661,7 +3712,24 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 );
                             }
                             // ROADMAP 495 今日世界戰報：計一次擊殺（出鎖後、suppress_rewards 已排除）。
-                            app.world_tally.write().unwrap().record_kill();
+                            // ROADMAP 498 全服里程碑喝采：擊殺里程碑由獵手蘭卡廣播。
+                            let kill_count = {
+                                let mut tally = app.world_tally.write().unwrap();
+                                tally.record_kill();
+                                tally.kill_count()
+                            };
+                            if let Some(ann) = crate::world_tally_milestone::kill_milestone(kill_count) {
+                                let (wx, wy) = crate::npc_schedule::fallback_pos(ann.npc_id);
+                                let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                    npc_id: ann.npc_id.to_string(),
+                                    npc_name: ann.npc_display.to_string(),
+                                    text: ann.text.to_string(),
+                                    display_secs: 10,
+                                    wx,
+                                    wy,
+                                }));
+                                let _ = app.tx_chat.send(format!("🔔 [{}] {}", ann.npc_display, ann.text));
+                            }
                         }
                     }
                     // 每日任務：擊殺事件（ROADMAP 32）。
