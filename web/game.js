@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -14138,6 +14138,46 @@
     rift_guardian:     "裂縫守護者",
   };
 
+  // 守護者掉落表（ROADMAP 514）：鏡像後端 combat.rs drop_loot()——穩定契約（掉落邏輯在後端改
+  // 就同步更新這裡）。face向玩家字串走 ITEM_LOOK / ITEM_NAME；純讀、無副作用。
+  const ENEMY_DROP = {
+    scrap_drone:      { item: "stone",              qty: 2 },
+    ether_wisp:       { item: "ether",              qty: 1 },
+    flutter_sprite:   { item: "wildflower_seed",    qty: 1 },
+    mushroom_stalker: { item: "mushroom_spore",     qty: 1 },
+    crystal_golem:    { item: "crystal_shard",      qty: 1 },
+    rune_guardian:    { item: "ancient_fragment",   qty: 1 },
+    coral_crab:       { item: "deep_sea_pearl",     qty: 1 },
+    jade_wraith:      { item: "jade_shard",         qty: 1 },
+    steam_construct:  { item: "lava_crystal",       qty: 1 },
+    void_phantom:     { item: "void_shard",         qty: 1 },
+    aether_specter:   { item: "aether_shard",       qty: 1 },
+    origin_guardian:  { item: "origin_shard",       qty: 1 },
+    rift_guardian:    { item: "rift_shard",          qty: 2 },
+    ether_overlord:   { item: "ether_overlord_core", qty: 1 },
+  };
+
+  // 守護者威脅等級（ROADMAP 514）：鏡像後端 combat.rs threat()——數字越大越危險。
+  const ENEMY_THREAT = {
+    scrap_drone: 2, ether_wisp: 1, flutter_sprite: 1, mushroom_stalker: 2,
+    crystal_golem: 3, rune_guardian: 3, coral_crab: 4, jade_wraith: 5,
+    steam_construct: 6, void_phantom: 8, aether_specter: 11, origin_guardian: 15,
+    rift_guardian: 20, ether_overlord: 10,
+  };
+
+  // 威脅數值 → ★ 等級字串（ROADMAP 514）。
+  // 純函式：確定性、無副作用、壞值（<1）回空字串（不顯示）。
+  // ★ 一級（1-2）/ ★★ 二（3-4）/ ★★★ 三（5-8）/ ★★★★ 四（9-15）/ ★★★★★ 五（16+）。
+  function threatStars(threat) {
+    const t = threat | 0; // 壞值（NaN/null/undefined）→ 0，安全歸零
+    if (t <= 0) return "";
+    if (t <= 2)  return "★";
+    if (t <= 4)  return "★★";
+    if (t <= 8)  return "★★★";
+    if (t <= 15) return "★★★★";
+    return "★★★★★";
+  }
+
   // 元素克制系統（ROADMAP 380）：敵人種類 → 元素 wire key。與後端 element_affinity.rs 對齊。
   const ENEMY_ELEMENT = {
     scrap_drone:       "mechanical", // 機械
@@ -27065,27 +27105,56 @@
     let html = "";
     html += `<div style="color:#bcd6f0;font-weight:600;margin-bottom:4px">已發現 ${found} / ${total} 種</div>`;
     html += `<div style="color:rgba(232,224,207,0.62);font-size:.76em;margin-bottom:8px">走近野生動物或守護者怪物即可發現、永久記入圖鑑；每種首次發現給一筆乙太獎勵。</div>`;
-    const groups = [
-      { cat: "wildlife", title: "🌿 野生動物" },
-      { cat: "guardian", title: "🛡️ 守護者怪物" },
-    ];
-    for (const g of groups) {
-      const entries = CODEX_CATALOG.filter((e) => e.category === g.cat);
-      const gFound = entries.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
-      html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">${g.title}（${gFound}/${entries.length}）</div>`;
-      html += `<div style="display:flex;flex-wrap:wrap;gap:6px">`;
-      for (const e of entries) {
-        const done = codexBitSet(codex, e.bit);
-        // 已發現：亮 emoji + 名稱；未發現：問號剪影 + 「？？？」（蒐集懸念）。
-        html += `<div title="${done ? escHtml(e.name) : "尚未發現"}" style="`
-          + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
-          + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
-          + `background:${done ? "rgba(90,140,200,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
-          + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
-          + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
+    // 野生動物：格狀顯示（名稱為主、無策略資訊）。
+    const wildlife = CODEX_CATALOG.filter((e) => e.category === "wildlife");
+    const wFound = wildlife.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
+    html += `<div style="color:var(--brass);font-weight:600;margin-top:8px;margin-bottom:4px">🌿 野生動物（${wFound}/${wildlife.length}）</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px">`;
+    for (const e of wildlife) {
+      const done = codexBitSet(codex, e.bit);
+      html += `<div title="${done ? escHtml(e.name) : "尚未發現"}" style="`
+        + `display:flex;flex-direction:column;align-items:center;justify-content:center;`
+        + `width:64px;height:60px;border-radius:8px;border:1px solid ${done ? "#3a4a5e" : "#2a2f38"};`
+        + `background:${done ? "rgba(90,140,200,0.12)" : "rgba(255,255,255,0.02)"};opacity:${done ? "1" : "0.55"}">`
+        + `<span style="font-size:1.5em;${done ? "" : "filter:grayscale(1) brightness(0.5)"}">${done ? e.emoji : "❔"}</span>`
+        + `<span style="font-size:.68em;margin-top:2px;color:${done ? "#dce8f4" : "#777"}">${done ? escHtml(e.name) : "？？？"}</span>`
+        + `</div>`;
+    }
+    html += `</div>`;
+
+    // 守護者怪物（ROADMAP 514）：清單格式，已發現的顯示掉落品與威脅 ★ 等級，幫助玩家規劃目標。
+    // 未發現的維持「？？？」懸念，不洩露資訊。
+    const guardians = CODEX_CATALOG.filter((e) => e.category === "guardian");
+    const gFound = guardians.reduce((n, e) => n + (codexBitSet(codex, e.bit) ? 1 : 0), 0);
+    html += `<div style="color:var(--brass);font-weight:600;margin-top:10px;margin-bottom:4px">🛡️ 守護者怪物（${gFound}/${guardians.length}）</div>`;
+    for (const e of guardians) {
+      const done = codexBitSet(codex, e.bit);
+      if (!done) {
+        // 未發現：低調一行問號
+        html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:0.38">`
+          + `<span style="font-size:1.2em;width:1.4em;text-align:center;filter:grayscale(1) brightness(0.5)">❔</span>`
+          + `<span style="color:#666;font-size:.85em">？？？</span>`
           + `</div>`;
+        continue;
       }
-      html += `</div>`;
+      const drop = ENEMY_DROP[e.key];
+      const threat = ENEMY_THREAT[e.key] || 0;
+      const stars = threatStars(threat);
+      const dropIcon  = drop ? (ITEM_LOOK[drop.item]  || "🎁") : "";
+      const dropName  = drop ? (ITEM_NAME[drop.item]  || drop.item) : "";
+      const dropQty   = drop ? drop.qty : 0;
+      // 威脅等級色：★ 綠、★★ 黃、★★★ 橙、★★★★ 紅、★★★★★ 紫
+      const starColor = stars.length <= 1 ? "#7ec87e"
+                      : stars.length <= 2 ? "#e0c060"
+                      : stars.length <= 3 ? "#e08030"
+                      : stars.length <= 4 ? "#e04848"
+                      :                     "#c050e0";
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">`
+        + `<span style="font-size:1.2em;width:1.4em;text-align:center">${e.emoji}</span>`
+        + `<span style="flex:1;font-size:.88em;color:#dce8f4">${escHtml(e.name)}</span>`
+        + `<span style="font-size:.75em;color:${starColor};white-space:nowrap" title="威脅等級">${stars}</span>`
+        + (drop ? `<span style="font-size:.78em;color:#c9a24b;white-space:nowrap" title="掉落">${dropIcon}${escHtml(dropName)}×${dropQty}</span>` : "")
+        + `</div>`;
     }
     // ROADMAP 334：圖鑑里程碑——集滿一整類給一次性大獎、全集滿世界同慶。
     html += `<div style="color:var(--brass);font-weight:600;margin-top:12px;margin-bottom:4px">🏅 蒐集里程碑</div>`;
