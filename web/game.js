@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3023,6 +3023,15 @@
   let townProject = null; // ROADMAP 132 天文台共建工程狀態 {status, progress_pct}（從快照同步；天文台繪製/面板用）
   let currentSeason = "spring";   // ROADMAP 137 目前季節字串（spring/summer/autumn/winter）
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
+  // ROADMAP 500 換季煙火：追蹤上一幀季節，切換時觸發全螢幕粒子煙火慶典。
+  let _prevSeason = "";           // 首幀為空字串，確保首幀不誤觸發
+  let _sfwParticles = [];         // 換季煙火粒子陣列 [{x,y,vx,vy,alpha,color,life}]
+  let _sfwBurstAt = 0;            // 下一次爆炸時間點（ms）
+  let _sfwEndAt = 0;              // 煙火結束時間點（ms，0＝未啟動）
+  let _sfwSeason = "";            // 目前煙火對應季節（決定顏色）
+  let _sfwBannerPhase = 0;        // 橫幅階段 0=無 1=淡入 2=顯示 3=淡出
+  let _sfwBannerStartAt = 0;      // 橫幅開始時間（ms）
+  let _sfwLastFrameMs = 0;        // 上一幀時間（計算粒子 dt）
   let seasonalNodesList = [];     // ROADMAP 154 季節性野外採集節點 [{id, wx, wy, season, charges}]
   let wildlifeList = [];          // ROADMAP 140 中立野生動物 [{id, kind, name, x, y, state}]
   // ROADMAP 209：驚群炸開——記錄每隻動物「上一幀是否在逃竄」與「受驚閃現截止時間」，
@@ -3840,6 +3849,11 @@
         merchantQuests = Array.isArray(msg.merchant_quests) ? msg.merchant_quests : [];
         // 季節循環（ROADMAP 137）：從快照同步目前季節，HUD 常駐顯示。
         if (msg.current_season) {
+          // 換季煙火（ROADMAP 500）：_prevSeason 非空才比較（跳過首幀，避免進場即放炮）。
+          if (_prevSeason && _prevSeason !== msg.current_season) {
+            triggerSeasonFireworks(msg.current_season);
+          }
+          _prevSeason = msg.current_season;
           currentSeason = msg.current_season;
           seasonRemainingSecs = msg.season_remaining_secs || 0;
           updateSeasonHud();
@@ -9543,6 +9557,9 @@
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
       foldBannerColumn();                   // 右上事件欄折疊（最多露 3 條，多的折「＋N 則」）
     });
+
+    // 換季煙火（ROADMAP 500）：換季時全螢幕粒子煙火慶典，置於所有 HUD 之上（最頂層、不擋操作）。
+    safeDraw("seasonFireworks", () => drawSeasonFireworks(renderNow));
 
     // 環境音效節流更新（ROADMAP 377）：每 2 秒同步一次天氣/晝夜狀態給 AMBIENT，
     // 避免每幀重建音源；用 renderNow（已算好）而非再呼叫 performance.now()。
@@ -19841,6 +19858,164 @@
       ctx.stroke();
     }
     ctx.restore();
+  }
+
+  // ── 換季煙火（ROADMAP 500）────────────────────────────────────────────────
+  // 每當季節交替（每 20 分鐘），全螢幕綻放一輪璀璨煙火慶典——讓玩家第一次感受到「季節更迭」
+  // 是世界一起慶祝的時刻，而不只是 HUD 一個數字悄悄變了。
+  // 完全純前端：偵測快照 current_season 切換、無新協議/後端/migration 改動。
+  // reduceMotion 時跳過粒子、只顯示靜態橫幅文字（守無障礙）。
+
+  // 各季節的煙火顏色組（回傳至少一種顏色；壞值／未知季節退回夏季色）。
+  function seasonFireworkColors(season) {
+    const C = {
+      spring: ["#ffb7c5", "#ff8fa3", "#ffeef2", "#ffe0eb", "#f9d9e7"],
+      summer: ["#ffd700", "#ffa500", "#fff7b0", "#ffe066", "#ffcc00"],
+      autumn: ["#ff6b35", "#e74c3c", "#ffc300", "#ff8c42", "#d35400"],
+      winter: ["#b0e2ff", "#e0f0ff", "#ffffff", "#a0cfff", "#d4efff"],
+    };
+    return C[season] || C.summer;
+  }
+
+  // 推進一顆粒子（純函式，dt 秒）。重力 200 px/s²，alpha 以固定速率 0.7/s 衰減。
+  function advanceFireworkParticle(p, dt) {
+    const GRAVITY = 200;   // px/s²，向下加速（模擬拋物線）
+    const FADE   = 0.65;   // alpha 每秒衰減量
+    return {
+      x:     p.x + p.vx * dt,
+      y:     p.y + p.vy * dt,
+      vx:    p.vx,
+      vy:    p.vy + GRAVITY * dt,
+      alpha: Math.max(0, p.alpha - FADE * dt),
+      color: p.color,
+      life:  p.life - dt,
+    };
+  }
+
+  // 判斷煙火是否已全部結束：超時且所有粒子 life ≤ 0 或 alpha ≤ 閾值。
+  function seasonFireworksDone(particles, nowMs, endAtMs) {
+    if (nowMs < endAtMs) return false;
+    return particles.every(p => p.life <= 0 || p.alpha <= 0.03);
+  }
+
+  // 觸發換季煙火（在快照偵測到季節切換時呼叫）。
+  function triggerSeasonFireworks(season) {
+    _sfwSeason = season;
+    _sfwParticles = [];
+    const now = performance.now();
+    _sfwEndAt = now + 11000;       // 11 秒後停止新爆炸（粒子自然淡出需額外 ~1.5 秒）
+    _sfwBurstAt = now;             // 立刻觸發第一爆
+    _sfwLastFrameMs = now;
+    // 橫幅動畫
+    _sfwBannerPhase = 1;           // 進入「淡入」
+    _sfwBannerStartAt = now;
+  }
+
+  // 每幀繪製換季煙火（由 safeDraw 包護）。
+  function drawSeasonFireworks(now) {
+    if (_sfwEndAt === 0) return;   // 未啟動，早退
+
+    // 若所有粒子已滅且超時，重置並停止。
+    if (seasonFireworksDone(_sfwParticles, now, _sfwEndAt)) {
+      _sfwEndAt = 0;
+      _sfwParticles = [];
+      _sfwBannerPhase = 0;
+      return;
+    }
+
+    const W = canvas.width;
+    const H = canvas.height;
+    const dt = Math.min((now - _sfwLastFrameMs) / 1000, 0.05); // 秒，cap 50ms
+    _sfwLastFrameMs = now;
+
+    // ── 生成新爆炸（在結束時間前才繼續生成）──
+    if (!reduceMotion && now >= _sfwBurstAt && now < _sfwEndAt) {
+      _sfwBurstAt = now + 900 + Math.random() * 400; // 0.9-1.3 秒後下一爆
+      const colors = seasonFireworkColors(_sfwSeason);
+      const cx = W * (0.2 + Math.random() * 0.6);   // 水平分佈覆蓋 20~80% 螢幕寬
+      const cy = H * (0.08 + Math.random() * 0.22); // 聚在上方 8~30% 螢幕高
+      const count = 22 + Math.floor(Math.random() * 10);
+      for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + (Math.random() * 0.25 - 0.12);
+        const speed = 110 + Math.random() * 90;
+        _sfwParticles.push({
+          x: cx, y: cy,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 60,
+          alpha: 0.88 + Math.random() * 0.12,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          life: 0.9 + Math.random() * 0.55,
+        });
+      }
+    }
+
+    // ── 推進粒子 ──
+    if (!reduceMotion) {
+      _sfwParticles = _sfwParticles
+        .map(p => advanceFireworkParticle(p, dt))
+        .filter(p => p.life > 0 && p.alpha > 0.02);
+
+      // ── 繪製粒子 ──
+      ctx.save();
+      for (const p of _sfwParticles) {
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // ── 季節橫幅（淡入→顯示→淡出，持續約 3.7 秒）──
+    if (_sfwBannerPhase > 0) {
+      const SEASON_LABEL = {
+        spring: "🌸 春天來了！",
+        summer: "☀️ 夏天來了！",
+        autumn: "🍂 秋天來了！",
+        winter: "❄️ 冬天來了！",
+      };
+      const text = SEASON_LABEL[_sfwSeason] || "季節更替！";
+      const elapsed = now - _sfwBannerStartAt;
+      const FADE_IN  = 500;
+      const SHOW     = 2600;
+      const FADE_OUT = 600;
+      let alpha;
+      if (elapsed < FADE_IN) {
+        alpha = elapsed / FADE_IN;
+        _sfwBannerPhase = 1;
+      } else if (elapsed < FADE_IN + SHOW) {
+        alpha = 1;
+        _sfwBannerPhase = 2;
+      } else if (elapsed < FADE_IN + SHOW + FADE_OUT) {
+        alpha = 1 - (elapsed - FADE_IN - SHOW) / FADE_OUT;
+        _sfwBannerPhase = 3;
+      } else {
+        _sfwBannerPhase = 0;
+      }
+      // reduceMotion：只在 SHOW 階段顯示靜態文字
+      if (reduceMotion) alpha = (_sfwBannerPhase === 2) ? 1 : 0;
+
+      if (alpha > 0.01) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const bw = 220, bh = 56;
+        const bx = W / 2 - bw / 2;
+        const by = H * 0.38;
+        ctx.fillStyle = "rgba(0,0,0,0.48)";
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw, bh, 12);
+        ctx.fill();
+        ctx.font = "bold 26px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(text, W / 2, by + bh / 2);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+        ctx.restore();
+      }
+    }
   }
 
   // ── 天邊流雲（ROADMAP 193）────────────────────────────────────────────────

@@ -3306,6 +3306,73 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 廣場蒸汽鐘：石柱/鐘面/指針/裝飾/標籤連跑多幀皆乾淨");
 }
 
+// 換季煙火（ROADMAP 500）：驗純函式真值表 + 換季觸發後多幀渲染零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：換季煙火（ROADMAP 500）──");
+  let ok = true;
+  try {
+    const sfwColors  = sandbox.__bfTest && sandbox.__bfTest.seasonFireworkColors;
+    const sfwAdvance = sandbox.__bfTest && sandbox.__bfTest.advanceFireworkParticle;
+    const sfwDone    = sandbox.__bfTest && sandbox.__bfTest.seasonFireworksDone;
+    const sfwTrigger = sandbox.__bfTest && sandbox.__bfTest.triggerSeasonFireworks;
+    const sfwDraw    = sandbox.__bfTest && sandbox.__bfTest.drawSeasonFireworks;
+
+    if (!sfwColors || !sfwAdvance || !sfwDone || !sfwTrigger || !sfwDraw) {
+      ok = false;
+      console.error("  ❌ 換季煙火：game.js 未導出必要函式（seasonFireworkColors/advanceFireworkParticle/seasonFireworksDone/triggerSeasonFireworks/drawSeasonFireworks）");
+    } else {
+      // seasonFireworkColors：四季皆回非空陣列且元素為字串。
+      for (const s of ["spring", "summer", "autumn", "winter"]) {
+        const c = sfwColors(s);
+        if (!Array.isArray(c) || c.length === 0) { ok = false; console.error(`  ❌ seasonFireworkColors(${s}) 應回非空陣列`); }
+        if (c.some(v => typeof v !== "string")) { ok = false; console.error(`  ❌ seasonFireworkColors(${s}) 元素應為字串`); }
+      }
+      // 壞值（未知季節）應退回（非空陣列）。
+      const unk = sfwColors("unknown");
+      if (!Array.isArray(unk) || unk.length === 0) { ok = false; console.error("  ❌ sfwColors('unknown') 應有 fallback 非空陣列"); }
+
+      // advanceFireworkParticle：推進後 life 遞減、重力使 vy 增大、alpha 衰減。
+      const p0 = { x: 200, y: 100, vx: 50, vy: -80, alpha: 1, color: "#fff", life: 1.2 };
+      const p1 = sfwAdvance(p0, 0.1);
+      if (p1.life >= p0.life)  { ok = false; console.error("  ❌ advanceFireworkParticle life 應遞減"); }
+      if (p1.vy <= p0.vy)      { ok = false; console.error("  ❌ advanceFireworkParticle vy 應因重力增大"); }
+      if (p1.alpha >= p0.alpha){ ok = false; console.error("  ❌ advanceFireworkParticle alpha 應衰減"); }
+      if (p1.x !== p0.x + p0.vx * 0.1) { ok = false; console.error("  ❌ advanceFireworkParticle x 移動不正確"); }
+
+      // advanceFireworkParticle：alpha 最低夾 0（不為負）。
+      const pLow = { x: 0, y: 0, vx: 0, vy: 0, alpha: 0.01, color: "#fff", life: 0.5 };
+      const pAdv = sfwAdvance(pLow, 1.0);
+      if (pAdv.alpha < 0) { ok = false; console.error("  ❌ advanceFireworkParticle alpha 不得為負"); }
+
+      // seasonFireworksDone：超時且空陣列→ true。
+      if (!sfwDone([], 1000, 500)) { ok = false; console.error("  ❌ sfwDone 超時空陣列應回 true"); }
+      // 未超時→ false（即使陣列空）。
+      if (sfwDone([], 400, 1000)) { ok = false; console.error("  ❌ sfwDone 未超時應回 false"); }
+      // 超時但還有存活粒子→ false。
+      const alive = { x:0, y:0, vx:0, vy:0, alpha:0.5, color:"#fff", life:0.5 };
+      if (sfwDone([alive], 2000, 500)) { ok = false; console.error("  ❌ sfwDone 超時但有存活粒子應回 false"); }
+    }
+
+    // 觸發換季煙火後連跑多幀，確認繪製路徑零例外。
+    if (sfwTrigger) {
+      sfwTrigger("spring");
+      pump("換季煙火·春", 4);
+      sfwTrigger("winter");
+      pump("換季煙火·冬", 4);
+    }
+
+    // 注入換季 snapshot（current_season 從 spring 改成 summer 觸發切換），再跑多幀。
+    lastWS.onmessage({ data: JSON.stringify(Object.assign({}, snapshot, { type: "snapshot", current_season: "summer", season_remaining_secs: 1100 })) });
+    pump("換季 snapshot 觸發", 5);
+  } catch (e) {
+    ok = false; console.error("  ❌ 換季煙火：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 換季煙火：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 換季煙火：純函式真值表（四季顏色/推進/完成判斷）全對；換季觸發後多幀渲染零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
