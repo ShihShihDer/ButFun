@@ -490,6 +490,11 @@ pub struct Player {
     /// 最後一次擊殺怪物的時間戳（供 decay_if_expired 判斷是否逾時歸零）。
     /// 記憶體前置、不持久化。
     pub streak_last_kill: Option<std::time::Instant>,
+
+    /// 旅人到來徽記截止時間戳（ROADMAP 506）：首次登入領見面禮時設為 now + 10 分鐘，
+    /// 期間快照帶 `is_newcomer=true` 讓全服看到名牌旁的「新」徽記；過期後自動 false。
+    /// 記憶體前置、不持久化、零 migration（重啟清零無妨，徽記只是歡迎用、過期就消）。
+    pub newcomer_until: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -914,6 +919,10 @@ impl Player {
             idle_nudge: None,
             // ROADMAP 469：中毒狀態隨快照廣播，前端據此畫毒泡。
             poisoned: self.poison.is_active(),
+            // ROADMAP 506：旅人到來——首次登入 10 分鐘內名牌旁出現「新」徽記，廣播給全服。
+            is_newcomer: self.newcomer_until
+                .map(|t| t > std::time::Instant::now())
+                .unwrap_or(false),
         }
     }
 
@@ -1832,6 +1841,7 @@ mod tests {
             inventory_extra_kinds: 0,
             kill_streak: 0,
             streak_last_kill: None,
+            newcomer_until: None,
         }
     }
 

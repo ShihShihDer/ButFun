@@ -8651,6 +8651,33 @@
       ctx.fillText("[隊]", sx + nameW / 2 + ctx.measureText("[隊]").width / 2 + 4, sy - 24);
     }
 
+    // 新旅人徽記（ROADMAP 506）：首次登入 10 分鐘內顯示「新」徽記在名牌右側，
+    // 讓全服路過的玩家都知道「這是今天剛踏上故鄉的旅人」，自然引發問候與歡迎。
+    // is_newcomer 由後端快照廣播（newcomer_until 倒計時），10 分鐘後自動消失。
+    if (p.is_newcomer) {
+      ctx.font = `bold 9px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 2;
+      const nameW9 = ctx.measureText(p.name).width;
+      const badge = "新";
+      const badgeW = ctx.measureText(badge).width + 6;
+      const bx9 = sx + nameW9 / 2 + badgeW / 2 + 4;
+      // 溫暖琥珀底板
+      ctx.fillStyle = "rgba(220,140,30,0.82)";
+      ctx.beginPath();
+      ctx.roundRect(bx9 - badgeW / 2, sy - 31, badgeW, 14, 3);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.45)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = "#fff7e0";
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 2;
+      ctx.strokeText(badge, bx9, sy - 21);
+      ctx.fillText(badge, bx9, sy - 21);
+    }
+
     // 蒐集稱號徽記（ROADMAP 335）：集滿圖鑑里程碑的玩家，名牌上方配戴一枚稱號，
     // 全世界都看得見你是博物學家／守護者剋星／萬物通——蒐集第一次有了讓人看見的社交身份。
     // 純由廣播的 codex bitmask 推導（codexTitleFor），零新協議；只配戴最高階一枚、不擠名牌。

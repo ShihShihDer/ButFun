@@ -2564,6 +2564,12 @@ pub struct PlayerView {
     /// false 時略過序列化（省頻寬，絕大多數玩家平時不中毒）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub poisoned: bool,
+    /// 此玩家是否為首次登入的新旅人（ROADMAP 506：旅人到來）。
+    /// 首次領見面禮後 10 分鐘內為 true，廣播給全服——前端在名牌右側畫「新」徽記，
+    /// 讓每位路過的玩家都知道「這是今天剛來的旅人」；10 分鐘後自動 false 消失。
+    /// false 時略過序列化（省頻寬，平常絕大多數玩家都不是新人）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_newcomer: bool,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -3252,6 +3258,7 @@ mod tests {
                 home_dir: None,
                 idle_nudge: None,
                 poisoned: false,
+                is_newcomer: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3563,6 +3570,7 @@ mod tests {
             home_dir: None,
             idle_nudge: None,
             poisoned: false,
+            is_newcomer: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -3862,6 +3870,7 @@ mod tests {
             home_dir: None,
             idle_nudge: None,
             poisoned: false,
+            is_newcomer: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -3937,6 +3946,7 @@ mod tests {
             home_dir: None,
             idle_nudge: None,
             poisoned: false,
+            is_newcomer: false,
         }
     }
 
