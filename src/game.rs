@@ -4465,6 +4465,8 @@ pub fn spawn(app: AppState) {
                                 repaired_secs: sv.repaired_secs,
                             }
                         },
+                        // 今日世界戰報（ROADMAP 495）。
+                        world_tally: app.world_tally.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

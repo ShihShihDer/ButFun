@@ -2959,6 +2959,10 @@
   const SHIP_REPAIR_WX = 3200; // 與後端 ship_repair::SHIP_WX 對齊
   const SHIP_REPAIR_WY = 1800; // 與後端 ship_repair::SHIP_WY 對齊
   const SHIP_REPAIR_REACH = 150; // 與後端 ship_repair::REPAIR_REACH 對齊
+  // ROADMAP 495 今日世界戰報——廣場石板，世界座標固定在廣場西側入口
+  let worldTally = { gathers: 0, harvests: 0, kills: 0, players_today: 0 };
+  const WORLD_TALLY_WX = 2100; // 廣場西側石板 X（廣場 PLAZA_X=2400，稍偏左）
+  const WORLD_TALLY_WY = 2220; // 廣場西側石板 Y（與廣場齊高）
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
@@ -3837,6 +3841,8 @@
         if (Array.isArray(msg.world_groves)) worldGroves = msg.world_groves;
         // 蒸汽星艦共修（ROADMAP 492）：同步修繕進度與閃耀剩餘秒數；無此欄位（舊伺服器）保持預設值。
         if (msg.ship_repair) shipRepair = msg.ship_repair;
+        // 今日世界戰報（ROADMAP 495）：同步全伺服器今日行動累計；無此欄位（舊伺服器）保持全零預設。
+        if (msg.world_tally) worldTally = msg.world_tally;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9283,6 +9289,7 @@
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
     safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
+    safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
@@ -12299,6 +12306,85 @@
     ctx.restore();
   }
   // ── 廢棄蒸汽星艦 end ────────────────────────────────────────────────────────────
+
+  // 今日世界戰報石板（ROADMAP 495）：廣場西側入口的一塊蒸汽龐克石板，
+  // 顯示全伺服器自啟動以來今日的採集/收穫/擊殺/登入累計。
+  // 石板座標固定在 WORLD_TALLY_WX / WORLD_TALLY_WY，玩家路過廣場一眼就看得見。
+  function drawWorldTally(camX, camY) {
+    const sx = WORLD_TALLY_WX - camX;
+    const sy = WORLD_TALLY_WY - camY;
+    // 視窗剔除（石板寬約 72px、高約 100px）。
+    if (sx < -80 || sx > viewW + 80 || sy < -120 || sy > viewH + 40) return;
+
+    ctx.save();
+
+    // 石板底座（梯形陰影）
+    ctx.fillStyle = "rgba(30,20,10,0.45)";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 6, 28, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 石板本體（深石灰色圓角矩形）
+    const slabW = 72, slabH = 88;
+    const slabX = sx - slabW / 2, slabY = sy - slabH;
+    const r = 6;
+    ctx.fillStyle = "#3a3428";
+    ctx.strokeStyle = "#6a5a3a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(slabX + r, slabY);
+    ctx.lineTo(slabX + slabW - r, slabY);
+    ctx.quadraticCurveTo(slabX + slabW, slabY, slabX + slabW, slabY + r);
+    ctx.lineTo(slabX + slabW, slabY + slabH - r);
+    ctx.quadraticCurveTo(slabX + slabW, slabY + slabH, slabX + slabW - r, slabY + slabH);
+    ctx.lineTo(slabX + r, slabY + slabH);
+    ctx.quadraticCurveTo(slabX, slabY + slabH, slabX, slabY + slabH - r);
+    ctx.lineTo(slabX, slabY + r);
+    ctx.quadraticCurveTo(slabX, slabY, slabX + r, slabY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 石板內嵌邊框（蒸汽龐克銅邊感）
+    ctx.strokeStyle = "#8a7040";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(slabX + 5, slabY + 5, slabW - 10, slabH - 10);
+
+    // 石板標題——「今日戰報」
+    ctx.font = "bold 8px monospace";
+    ctx.fillStyle = "#d4b870";
+    ctx.textAlign = "center";
+    ctx.fillText("今日戰報", sx, slabY + 16);
+
+    // 分隔線
+    ctx.strokeStyle = "#6a5030";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(slabX + 8, slabY + 20);
+    ctx.lineTo(slabX + slabW - 8, slabY + 20);
+    ctx.stroke();
+
+    // 四項數據
+    ctx.font = "9px monospace";
+    ctx.textAlign = "left";
+    const rows = [
+      { icon: "⛏", label: "採", val: worldTally.gathers },
+      { icon: "🌾", label: "收", val: worldTally.harvests },
+      { icon: "⚔", label: "殺", val: worldTally.kills },
+      { icon: "👤", label: "人", val: worldTally.players_today },
+    ];
+    rows.forEach((row, i) => {
+      const ry = slabY + 30 + i * 15;
+      ctx.fillStyle = "#b09060";
+      ctx.fillText(row.icon + row.label, slabX + 8, ry);
+      ctx.fillStyle = "#e8d8a0";
+      ctx.textAlign = "right";
+      ctx.fillText(String(row.val), slabX + slabW - 8, ry);
+      ctx.textAlign = "left";
+    });
+
+    ctx.restore();
+  }
 
   // 雪季雪人（ROADMAP 478）：冬季玩家在腳下堆起的署名雪人——兩球疊起的雪身、煤炭眼、
   // 胡蘿蔔鼻、樹枝手，外加一條依樣式換色的圍巾，頭頂標著是誰堆的。整個冬天都立著，
