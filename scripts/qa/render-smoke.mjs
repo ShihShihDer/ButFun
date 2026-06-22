@@ -4283,6 +4283,74 @@ for (const sc of scenarios) {
   else console.log("  ✅ 回血光暈（ROADMAP 518）：healFlashAlpha 真值表(9 cases) + 壞值安全 + drawHealFlash 渲染路徑 + 過期快返 + reduceMotion 靜默，全路徑零例外");
 }
 
+// ── ROADMAP 519：玩家足跡印痕 ─────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const fpa  = sandbox.__bfTest && sandbox.__bfTest.footprintAlpha;
+    const fps  = sandbox.__bfTest && sandbox.__bfTest.footprintStyle;
+    const dfp  = sandbox.__bfTest && sandbox.__bfTest.drawFootprints;
+    if (!fpa) throw new Error("footprintAlpha 未匯出");
+    if (!fps) throw new Error("footprintStyle 未匯出");
+    if (!dfp) throw new Error("drawFootprints 未匯出");
+
+    // footprintAlpha 真值表（8 cases）
+    // 壞值→0
+    for (const bad of [null, undefined, NaN, Infinity]) {
+      const got = fpa(bad);
+      if (got !== 0) { ok = false; console.error(`  ❌ footprintAlpha(${bad})=${got}，期望 0`); }
+    }
+    // ageMs=0 → 0.28（剛落地最深）
+    const v0 = fpa(0);
+    if (Math.abs(v0 - 0.28) > 0.001) { ok = false; console.error(`  ❌ footprintAlpha(0)=${v0}，期望 0.28`); }
+    // ageMs=450 → 約 0.14（中點，線性）
+    const v450 = fpa(450);
+    if (v450 < 0 || v450 > 0.28 || isNaN(v450)) { ok = false; console.error(`  ❌ footprintAlpha(450)=${v450}，應在 [0, 0.28]`); }
+    // ageMs=900 → 0（恰好消逝）
+    if (fpa(900) !== 0) { ok = false; console.error(`  ❌ footprintAlpha(900)=${fpa(900)}，期望 0`); }
+    // ageMs=1200 → 0（超期）
+    if (fpa(1200) !== 0) { ok = false; console.error(`  ❌ footprintAlpha(1200)=${fpa(1200)}，期望 0`); }
+
+    // footprintStyle 真值表（5 cases）
+    for (const b of ["meadow", "forest", "sand"]) {
+      const s = fps(b);
+      if (!s || typeof s.r !== "number" || typeof s.g !== "number" || typeof s.b !== "number") {
+        ok = false; console.error(`  ❌ footprintStyle("${b}") 應回 {r,g,b}，got ${JSON.stringify(s)}`);
+      }
+    }
+    if (fps("rocky") !== null) { ok = false; console.error(`  ❌ footprintStyle("rocky") 應回 null`); }
+    if (fps("water") !== null) { ok = false; console.error(`  ❌ footprintStyle("water") 應回 null`); }
+    // 壞值安全
+    for (const bad2 of [null, undefined, NaN]) {
+      try { fps(bad2); } catch(e2) {
+        ok = false; console.error(`  ❌ footprintStyle(${bad2}) 拋出例外: ${e2.message}`);
+      }
+    }
+
+    // drawFootprints 渲染路徑：直接呼叫即可（me 由函式內部從 players.get(myId) 取得）
+    const now0 = performance.now();
+    // 連跑 4 幀，玩家座標在草原，確保走動可能觸發採樣與繪製路徑
+    for (let f = 0; f < 4; f++) {
+      dfp(2300, 2250, now0 + f * 100);
+    }
+
+    // 過期時間（超過 FOOTPRINT_LIFE）不 throw
+    dfp(2300, 2250, now0 + 2000);
+
+    // reduceMotion 路徑：清空印痕陣列不 throw
+    sandbox.__bfTest.setMotionPref("reduce");
+    dfp(2300, 2250, performance.now());
+    sandbox.__bfTest.setMotionPref("no-preference");
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 玩家足跡印痕：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 玩家足跡印痕（ROADMAP 519）：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 玩家足跡印痕（ROADMAP 519）：footprintAlpha 真值表(8 cases) + footprintStyle 真值表(5 cases) + 壞值安全 + drawFootprints 渲染路徑 + 過期清除 + reduceMotion 清空，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
