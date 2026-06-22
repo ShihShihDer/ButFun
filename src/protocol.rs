@@ -1248,6 +1248,15 @@ pub enum ServerMsg {
         /// 廣場英雄碑（ROADMAP 503）：本次對話採集 / 收穫 / 擊殺三維度各最多的旅人。向後相容。
         #[serde(default)]
         session_champions: crate::session_champions::SessionChampionsView,
+        /// 乙太暴走剩餘秒數（ROADMAP 504）。0=無暴走；>0 時前端在暴走點顯示強光特效。向後相容。
+        #[serde(default)]
+        ether_surge_secs: u32,
+        /// 乙太暴走位置 X（ROADMAP 504）。暴走未啟動時為 0。向後相容。
+        #[serde(default)]
+        ether_surge_x: f32,
+        /// 乙太暴走位置 Y（ROADMAP 504）。暴走未啟動時為 0。向後相容。
+        #[serde(default)]
+        ether_surge_y: f32,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3388,6 +3397,9 @@ mod tests {
             world_tally: WorldTallyView::default(),
             combat_marks: vec![],
             session_champions: crate::session_champions::SessionChampionsView::default(),
+            ether_surge_secs: 0,
+            ether_surge_x: 0.0,
+            ether_surge_y: 0.0,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

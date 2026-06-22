@@ -3374,6 +3374,17 @@ pub fn spawn(app: AppState) {
                     );
                 }
             }
+            // 乙太暴走事件（ROADMAP 504）：每約 20 分鐘觸發，玩家趕到暴走點採集可額外獲得乙太。
+            {
+                if let Some((_, _, dir)) = app.ether_surge.write().unwrap().tick(dt) {
+                    let dur_secs = crate::ether_surge::SURGE_DURATION_SECS as u32;
+                    let bonus = crate::ether_surge::SURGE_BONUS;
+                    let _ = app.tx_chat.send(format!(
+                        "⚡ 乙太暴走！{}方向爆發高濃度乙太礦脈，趕過去採集可額外獲得 +{} 乙太！持續 {} 秒！",
+                        dir, bonus, dur_secs,
+                    ));
+                }
+            }
 
             // NPC 需求驅力衰減（ROADMAP 69）：每 DECAY_INTERVAL_SECS 秒，所有 NPC 的需求值向基線緩慢靠近。
             // 讓情緒狀態有明顯持續性（事件影響維持數分鐘）但不永久停在極端值。
@@ -4510,6 +4521,10 @@ pub fn spawn(app: AppState) {
                                 })
                             )
                         },
+                        // 乙太暴走事件（ROADMAP 504）：廣播當前暴走狀態供前端顯示特效。
+                        ether_surge_secs: app.ether_surge.read().unwrap().remaining_secs(),
+                        ether_surge_x: app.ether_surge.read().unwrap().x,
+                        ether_surge_y: app.ether_surge.read().unwrap().y,
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

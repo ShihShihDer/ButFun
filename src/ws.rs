@@ -667,7 +667,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -831,6 +831,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         combat_marks: combat_marks.iter().filter(|m| filter_pos(m.wx, m.wy)).cloned().collect(),
                                         // 廣場英雄碑（ROADMAP 503）：全服廣播（量微小）。
                                         session_champions: session_champions.clone(),
+                                        // 乙太暴走事件（ROADMAP 504）：全服廣播（讓所有旅人看到方向指引）。
+                                        ether_surge_secs: *ether_surge_secs,
+                                        ether_surge_x: *ether_surge_x,
+                                        ether_surge_y: *ether_surge_y,
                                     }
                                 }
                                 other => other.clone(),
@@ -2237,6 +2241,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }).unwrap_or("");
                             if app.weather.read().unwrap().is_gather_bonus_biome(biome_str) { 1 } else { 0 }
                         };
+                        // 乙太暴走加成（ROADMAP 504）：玩家在暴走點 SURGE_RADIUS 內採集額外得 SURGE_BONUS。
+                        // 讀鎖在 players 寫鎖前取放（守 prod-deadlock 鐵律，不巢狀）。
+                        let surge_bonus: u32 = {
+                            let s = app.ether_surge.read().unwrap();
+                            player_pos.map(|(px, py)| {
+                                crate::ether_surge::surge_bonus_at(s.active, s.x, s.y, px, py)
+                            }).unwrap_or(0)
+                        };
                         let mut gather_level_up: Option<(String, u32)> = None;
                         // 稀有度通知暫存（ROADMAP 379）：(player_name, x, y, item_zh, rarity, total_qty)
                         // 出鎖後才廣播，守 prod-deadlock 鐵律。
@@ -2268,7 +2280,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             let rarity_bonus = rarity.qty_bonus();
                             // 並肩協作默契加成（ROADMAP 414）：身旁每位並肩同伴 +1 採集量（封頂 +3）。
                             let coop_qty = crate::coop_labour::coop_yield_bonus(coop_partners);
-                            let base_qty = amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather + coop_qty;
+                            // 乙太暴走加成（ROADMAP 504）已在鎖前計算、此處直接使用。
+                            let base_qty = amount * mult + bounty_bonus + pet_gather + weather_bonus + forecast_gather + coop_qty + surge_bonus;
                             let total_qty = base_qty + rarity_bonus;
                             let (added, _wh, _drop) = p.add_item_overflow(item, total_qty);
                             // 品質不凡以上才通知（普通靜默落袋）；記下出鎖後廣播所需資料。

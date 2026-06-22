@@ -41,6 +41,7 @@ mod visit_streak_store;
 mod welcome_kit;
 mod welcome_kit_store;
 mod observatory;
+mod ether_surge;
 mod meteor_shower;
 mod night_aether_springs;
 mod wandering_merchant;
