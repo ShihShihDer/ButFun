@@ -196,6 +196,7 @@ mod town_prosperity;
 mod community_gathering;
 mod season;
 mod seasonal_harvest_award;
+mod session_champions;
 mod seasonal_nodes;
 mod wildlife;
 mod species_relations;

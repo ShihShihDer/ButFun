@@ -2994,6 +2994,10 @@
   let worldTally = { gathers: 0, harvests: 0, kills: 0, players_today: 0 };
   const WORLD_TALLY_WX = 2100; // 廣場西側石板 X（廣場 PLAZA_X=2400，稍偏左）
   const WORLD_TALLY_WY = 2220; // 廣場西側石板 Y（與廣場齊高）
+  // ROADMAP 503 廣場英雄碑——本次對話採集/收穫/擊殺最多的旅人名字
+  let sessionChampions = { top_gather: null, top_harvest: null, top_kill: null };
+  const CHAMP_STONE_WX = 2000; // 英雄碑 X：世界戰報石板再偏左一格（廣場入口對面）
+  const CHAMP_STONE_WY = 2220; // 英雄碑 Y：與世界戰報石板同高
   // ROADMAP 497 廣場蒸汽鐘——廣場東側固定地標，玩家路過就看到指針在轉、整點聽到鐘鳴。
   const CLOCK_WX = 2700; // 廣場蒸汽鐘 X（廣場 PLAZA_X=2400，稍偏東）
   const CLOCK_WY = 2020; // 廣場蒸汽鐘 Y（廣場稍偏北，讓鐘塔底座與廣場齊高）
@@ -3896,6 +3900,8 @@
         if (msg.world_tally) worldTally = msg.world_tally;
         // 戰鬥記跡（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號；舊伺服器無此欄位保持空陣列。
         if (Array.isArray(msg.combat_marks)) combatMarks = msg.combat_marks;
+        // 廣場英雄碑（ROADMAP 503）：本次對話採集/收穫/擊殺最多的旅人；舊伺服器無此欄位保持全 null 預設。
+        if (msg.session_champions) sessionChampions = msg.session_champions;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9373,6 +9379,7 @@
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
     safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
     safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
+    safeDraw("champStone", () => drawChampStone(camX, camY)); // 廣場英雄碑（ROADMAP 503），世界戰報石板左旁
     safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
     safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
@@ -12469,6 +12476,94 @@
       ctx.textAlign = "right";
       ctx.fillText(String(row.val), slabX + slabW - 8, ry);
       ctx.textAlign = "left";
+    });
+
+    ctx.restore();
+  }
+
+  // 廣場英雄碑（ROADMAP 503）：本次對話採集/收穫/擊殺最多的旅人名字。
+  // 座標 CHAMP_STONE_WX / CHAMP_STONE_WY，與世界戰報石板並排，廣場入口一眼看見。
+  // 若三欄均為 null（尚無人達到對應動作），石碑顯示「—」等待填入。
+  function drawChampStone(camX, camY) {
+    const sx = CHAMP_STONE_WX - camX;
+    const sy = CHAMP_STONE_WY - camY;
+    // 視窗剔除
+    if (sx < -80 || sx > viewW + 80 || sy < -120 || sy > viewH + 40) return;
+
+    ctx.save();
+
+    // 底座陰影
+    ctx.fillStyle = "rgba(30,20,10,0.45)";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 6, 28, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 石碑本體（略帶暖色調，與世界戰報石板有差異）
+    const slabW = 80, slabH = 88;
+    const slabX = sx - slabW / 2, slabY = sy - slabH;
+    const r = 6;
+    ctx.fillStyle = "#332820";
+    ctx.strokeStyle = "#8a6040";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(slabX + r, slabY);
+    ctx.lineTo(slabX + slabW - r, slabY);
+    ctx.quadraticCurveTo(slabX + slabW, slabY, slabX + slabW, slabY + r);
+    ctx.lineTo(slabX + slabW, slabY + slabH - r);
+    ctx.quadraticCurveTo(slabX + slabW, slabY + slabH, slabX + slabW - r, slabY + slabH);
+    ctx.lineTo(slabX + r, slabY + slabH);
+    ctx.quadraticCurveTo(slabX, slabY + slabH, slabX, slabY + slabH - r);
+    ctx.lineTo(slabX, slabY + r);
+    ctx.quadraticCurveTo(slabX, slabY, slabX + r, slabY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 內嵌銅邊框
+    ctx.strokeStyle = "#c09040";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(slabX + 5, slabY + 5, slabW - 10, slabH - 10);
+
+    // 石碑標題——「英雄碑」
+    ctx.font = "bold 8px monospace";
+    ctx.fillStyle = "#ffd080";
+    ctx.textAlign = "center";
+    ctx.fillText("英雄碑", sx, slabY + 16);
+
+    // 分隔線
+    ctx.strokeStyle = "#7a5020";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(slabX + 8, slabY + 20);
+    ctx.lineTo(slabX + slabW - 8, slabY + 20);
+    ctx.stroke();
+
+    // 三欄名字：採集 / 收穫 / 擊殺
+    const rows = [
+      { icon: "⛏", label: "採", champ: sessionChampions.top_gather },
+      { icon: "🌾", label: "收", champ: sessionChampions.top_harvest },
+      { icon: "⚔", label: "殺", champ: sessionChampions.top_kill },
+    ];
+    ctx.font = "7px monospace";
+    ctx.textAlign = "left";
+    rows.forEach((row, i) => {
+      const ry = slabY + 31 + i * 19;
+      // 圖示＋類別
+      ctx.fillStyle = "#c09040";
+      ctx.fillText(row.icon + row.label, slabX + 6, ry);
+      // 旅人名字（截到 5 個字）
+      const name = row.champ ? row.champ.name.slice(0, 6) : "—";
+      const cnt  = row.champ ? row.champ.count : 0;
+      ctx.fillStyle = row.champ ? "#ffe8a0" : "#806040";
+      ctx.textAlign = "left";
+      ctx.fillText(name, slabX + 6, ry + 9);
+      // 計數（右對齊）
+      if (row.champ) {
+        ctx.fillStyle = "#b0c860";
+        ctx.textAlign = "right";
+        ctx.fillText(String(cnt), slabX + slabW - 6, ry + 9);
+        ctx.textAlign = "left";
+      }
     });
 
     ctx.restore();
