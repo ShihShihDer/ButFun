@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b) }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -807,6 +807,19 @@
     };
   })();
 
+  // stepSoundSpec：依地表生態域回傳噪音濾波規格；水域/未知回 null（不發音）。
+  // filterFreq=帶通中心頻率(Hz)  filterQ=品質因數  gain=音量峰值  dur=持續時間(s)
+  // 純函式：無副作用、無狀態，確定性。
+  function stepSoundSpec(biome) {
+    switch (biome) {
+      case "meadow": return { filterFreq: 320, filterQ: 0.8, gain: 0.09, dur: 0.13 };
+      case "forest": return { filterFreq: 280, filterQ: 0.7, gain: 0.08, dur: 0.16 };
+      case "sand":   return { filterFreq: 750, filterQ: 1.4, gain: 0.11, dur: 0.10 };
+      case "rocky":  return { filterFreq: 1100, filterQ: 2.2, gain: 0.10, dur: 0.07 };
+      default: return null; // 水域/未知不發音
+    }
+  }
+
   // ---- 音效引擎（ROADMAP 376）：Web Audio 振盪器合成，零音檔，零網路請求 ----
   // 所有聲音用振盪器即時合成；需要使用者互動後建立 AudioContext（規避自動播放政策）。
   // sfxOn 預設 true（首次進場），玩家可在設定面板關閉，結果存 localStorage。
@@ -902,6 +915,33 @@
         [[220, 0], [440, 30], [660, 60]].forEach(([freq, dt]) =>
           setTimeout(() => _tone(freq, "sine", 0.005, 0.05, 1.8, freq === 220 ? 0.28 : 0.14), dt)
         );
+      },
+      // 地形步伐音（ROADMAP 520）：白噪音過帶通濾波器，依地表材質給不同質感。
+      // meadow→低頻柔沙沙  forest→略低略長  sand→高頻乾燥  rocky→更高更短更脆。
+      step(biome) {
+        if (!_on) return;
+        const spec = stepSoundSpec(biome);
+        if (!spec) return;
+        const ac = _getCtx(); if (!ac) return;
+        try {
+          const { filterFreq, filterQ, gain, dur } = spec;
+          const bufSize = Math.floor(ac.sampleRate * dur);
+          const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+          const data = buf.getChannelData(0);
+          for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+          const src = ac.createBufferSource();
+          src.buffer = buf;
+          const filter = ac.createBiquadFilter();
+          filter.type = "bandpass";
+          filter.frequency.value = filterFreq;
+          filter.Q.value = filterQ;
+          const gn = ac.createGain();
+          const t = ac.currentTime;
+          gn.gain.setValueAtTime(gain, t);
+          gn.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          src.connect(filter); filter.connect(gn); gn.connect(_masterNode(ac));
+          src.start(t); src.stop(t + dur + 0.02);
+        } catch {}
       },
     };
   })();
@@ -1665,6 +1705,12 @@
   const FOOTPRINT_LIFE = 900;        // 每枚存活時間（ms）
   const footprints = [];             // [{ wx, wy, born, style }]
   let _lastFpX = 0, _lastFpY = 0;   // 上次留印的世界座標
+  // 地形步伐音效（ROADMAP 520）：踏上不同地表時播放對應質感的短促噪音，與足跡印痕互補。
+  const STEP_SOUND_DIST = 22;          // 觸發腳步音的最小移動距離（px，與足跡採樣同步）
+  const STEP_SOUND_INTERVAL_MS = 370;  // 腳步音最短間隔（ms），避免滾鍵/高幀連爆
+  let _lastStepSoundAt = 0;            // 上次播放腳步音的時間戳（ms）
+  let _lastStepSoundX = 0;             // 上次採樣位置 X（世界座標）
+  let _lastStepSoundY = 0;             // 上次採樣位置 Y（世界座標）
   // 生態氛圍粒子（ROADMAP 189）：依玩家所在生態常駐飄浮的「生命氣息」粒子
   //（草原花絮／森林落葉／沙漠熱氣／礦區乙太微塵／水域浮光）。與天氣（93）不同——
   // 天氣是後端驅動的動態天候、氛圍是恆常的生態氣息；天氣作用時氛圍自動淡出讓位。
@@ -9621,6 +9667,7 @@
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
     safeDraw("footprints", () => drawFootprints(camX, camY, renderNow)); // 玩家足跡印痕（519），踏過草地/沙地留下的短暫橢圓壓痕、貼地表之上
+    try { tickStepSound(renderNow); } catch {} // 地形步伐音效（ROADMAP 520），與足跡採樣同節奏
     safeDraw("morningDew", () => drawMorningDew(camX, camY, renderNow)); // 破曉晨露（259），破曉時草尖上原地明滅、入晝即散的貼地露光、四季染不同色溫
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
     safeDraw("rockGlint", () => drawRockGlint(camX, camY, renderNow)); // 岩石礦脈微光（199），岩面原地一閃的冷白礦光、貼地表之上
@@ -24199,6 +24246,25 @@
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  // tickStepSound：每幀判斷玩家是否走了足夠距離且間隔足夠長，若是則播放腳步音。
+  // 採樣間距與 FOOTPRINT_SPACING 相同（22px），讓視覺足跡與聽覺腳步在節奏上一致。
+  function tickStepSound(now) {
+    const me = myId ? players.get(myId) : null;
+    if (!me) { _lastStepSoundX = 0; _lastStepSoundY = 0; return; }
+    const dx = me.x - _lastStepSoundX;
+    const dy = me.y - _lastStepSoundY;
+    const dist = Math.hypot(dx, dy);
+    // 傳送/重生大跳——重置取樣點不發音
+    if (dist > 200) {
+      _lastStepSoundX = me.x; _lastStepSoundY = me.y; _lastStepSoundAt = now; return;
+    }
+    if (dist >= STEP_SOUND_DIST && now - _lastStepSoundAt >= STEP_SOUND_INTERVAL_MS) {
+      SFX.step(biomeAt(me.x, me.y));
+      _lastStepSoundX = me.x; _lastStepSoundY = me.y;
+      _lastStepSoundAt = now;
+    }
   }
 
   // ── 旅行商人繪製（ROADMAP 135）──────────────────────────────────────────────

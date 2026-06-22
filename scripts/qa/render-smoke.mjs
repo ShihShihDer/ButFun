@@ -4351,6 +4351,62 @@ for (const sc of scenarios) {
   else console.log("  ✅ 玩家足跡印痕（ROADMAP 519）：footprintAlpha 真值表(8 cases) + footprintStyle 真值表(5 cases) + 壞值安全 + drawFootprints 渲染路徑 + 過期清除 + reduceMotion 清空，全路徑零例外");
 }
 
+// ── ROADMAP 520：地形步伐音效 ──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const sss = sandbox.__bfTest && sandbox.__bfTest.stepSoundSpec;
+    const tss = sandbox.__bfTest && sandbox.__bfTest.tickStepSound;
+    if (!sss) throw new Error("stepSoundSpec 未匯出");
+    if (!tss) throw new Error("tickStepSound 未匯出");
+
+    // stepSoundSpec 真值表：有聲生態域（4 cases）
+    const soundBiomes = ["meadow", "forest", "sand", "rocky"];
+    for (const b of soundBiomes) {
+      const s = sss(b);
+      if (!s) { ok = false; console.error(`  ❌ stepSoundSpec("${b}") 應回非 null`); continue; }
+      if (!(s.filterFreq > 0))  { ok = false; console.error(`  ❌ stepSoundSpec("${b}").filterFreq=${s.filterFreq} 應 > 0`); }
+      if (!(s.filterQ > 0))     { ok = false; console.error(`  ❌ stepSoundSpec("${b}").filterQ=${s.filterQ} 應 > 0`); }
+      if (!(s.gain > 0))        { ok = false; console.error(`  ❌ stepSoundSpec("${b}").gain=${s.gain} 應 > 0`); }
+      if (!(s.dur > 0))         { ok = false; console.error(`  ❌ stepSoundSpec("${b}").dur=${s.dur} 應 > 0`); }
+    }
+
+    // stepSoundSpec 真值表：水域/未知回 null（3 cases）
+    for (const b of ["water", null, "unknown"]) {
+      if (sss(b) !== null) { ok = false; console.error(`  ❌ stepSoundSpec(${JSON.stringify(b)}) 應回 null`); }
+    }
+
+    // tickStepSound：無玩家（!me）不拋
+    {
+      const savedId = sandbox.myId;
+      sandbox.myId = null;
+      try { tss(performance.now()); } catch (e) {
+        ok = false; console.error("  ❌ tickStepSound(!me) 拋出例外:", e && e.message);
+      }
+      sandbox.myId = savedId;
+    }
+
+    // tickStepSound：大位移重置不拋（模擬傳送）
+    const now1 = performance.now();
+    try { tss(now1); tss(now1 + 50); } catch (e) {
+      ok = false; console.error("  ❌ tickStepSound(大位移) 拋出例外:", e && e.message);
+    }
+
+    // tickStepSound：正常移動連跑 5 幀不拋
+    const now2 = performance.now();
+    for (let f = 0; f < 5; f++) {
+      try { tss(now2 + f * 400); } catch (e) {
+        ok = false; console.error("  ❌ tickStepSound(正常移動) 拋出例外:", e && e.message);
+      }
+    }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 地形步伐音效：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 地形步伐音效（ROADMAP 520）：測試失敗"); }
+  else console.log("  ✅ 地形步伐音效（ROADMAP 520）：stepSoundSpec 真值表(7 cases) + 欄位合法 + tickStepSound 無玩家/大位移/正常移動零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
