@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -13283,8 +13283,339 @@
     ctx.beginPath(); ctx.arc(cx + 6, cy - 16 + bob, 2.2, 0, Math.PI * 2); ctx.fill();
   }
 
+  // ────────────────────────────────────────────────────────────────────────────
+  // 黏土風敵人繪製（ROADMAP 494）
+  // renderStyle==='clay' 時，各怪物改用溫潤的黏土手作感造型：
+  //   ・停格感時間量化（5fps）、圓潤輪廓、陶土色系、簡單表情。
+  //   ・scrap_drone 走既有黏土 sprite，其餘在此程式繪製。
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // 量化時間到 5fps 停格感（每 0.2 秒一格）。
+  function clayEnemyT(t) {
+    return reduceMotion ? 0 : Math.floor(t * 5) / 5;
+  }
+
+  // 畫一個黏土質感圓球：內部亮面高光模擬手捏感。
+  function clayBall(x, y, r, baseColor, highlightAlpha) {
+    ctx.fillStyle = baseColor;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    const hi = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, 0, x, y, r);
+    hi.addColorStop(0, `rgba(255,245,235,${highlightAlpha || 0.35})`);
+    hi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = hi;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土小點眼（大多數黏土怪物共用）。
+  function clayEyes(cx, cy, spread, size) {
+    ctx.fillStyle = "#2a1a10";
+    ctx.beginPath(); ctx.arc(cx - spread, cy, size, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + spread, cy, size, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,245,220,0.85)";
+    ctx.beginPath(); ctx.arc(cx - spread - size * 0.35, cy - size * 0.35, size * 0.38, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + spread - size * 0.35, cy - size * 0.35, size * 0.38, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版乙太靈：淡紫黏土球＋環繞小圓（停格旋轉）＋點眼。
+  function clayEtherWisp(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 3 + phase) * 2.5);
+    const orbAngle = reduceMotion ? 0 : Math.floor(ct * 1.5 + phase) * (Math.PI / 6);
+    for (let k = 0; k < 3; k++) {
+      const a = orbAngle + k * (Math.PI * 2 / 3);
+      ctx.fillStyle = "#b8aad0";
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 13, cy + bob + Math.sin(a) * 8, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    clayBall(cx, cy + bob, 11, "#c0b0d8", 0.40);
+    clayEyes(cx, cy + bob - 1, 3.5, 2.0);
+  }
+
+  // 黏土版飄舞精靈：停格拍翅的黏土翅膀＋暖綠圓身＋花冠小圓點。
+  function clayFlutterSprite(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 2.5 + phase) * 2);
+    const flapFrame = reduceMotion ? 1 : Math.floor(ct * 5 + phase) % 3;
+    const flapScale = [0.7, 1.0, 0.85][flapFrame];
+    for (const side of [-1, 1]) {
+      ctx.save();
+      ctx.translate(cx + side * 4, cy - 3 + bob);
+      ctx.scale(flapScale * side, 1);
+      ctx.fillStyle = "rgba(160,220,140,0.65)";
+      ctx.beginPath(); ctx.ellipse(0, 0, 9, 5, -0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(200,240,170,0.45)";
+      ctx.beginPath(); ctx.ellipse(0, 4, 5, 3, 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+    clayBall(cx, cy + 2 + bob, 5, "#88b060", 0.35);
+    clayBall(cx, cy - 5 + bob, 5, "#a0c878", 0.38);
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2 - Math.PI / 2;
+      ctx.fillStyle = k % 2 === 0 ? "#e8b840" : "#e07850";
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 6, cy - 5 + bob + Math.sin(a) * 6, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    clayEyes(cx, cy - 5.5 + bob, 2.0, 1.5);
+  }
+
+  // 黏土版蕈菇潛行者：磚橙蕈帽＋橄欖綠短柄＋白色斑點＋圓點眼。
+  function clayMushroomStalker(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 2 + phase) * 1.5);
+    // 柄
+    ctx.fillStyle = "#8a9a60";
+    ctx.beginPath(); ctx.roundRect(cx - 6, cy + 2 + bob, 12, 14, 5); ctx.fill();
+    const bodyHi = ctx.createLinearGradient(cx - 6, cy + 2, cx + 6, cy + 2);
+    bodyHi.addColorStop(0, "rgba(255,245,220,0.22)"); bodyHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bodyHi;
+    ctx.beginPath(); ctx.roundRect(cx - 6, cy + 2 + bob, 12, 14, 5); ctx.fill();
+    // 蕈帽（下緣磚橙、上緣略深）
+    ctx.fillStyle = "#d08868";
+    ctx.beginPath(); ctx.ellipse(cx, cy - 2 + bob, 16, 9, 0, Math.PI, 0, false); ctx.fill();
+    ctx.fillStyle = "#c07050";
+    ctx.beginPath(); ctx.ellipse(cx, cy - 2 + bob, 16, 9, 0, 0, Math.PI, false); ctx.fill();
+    // 白斑
+    ctx.fillStyle = "rgba(245,235,218,0.65)";
+    ctx.beginPath(); ctx.arc(cx - 6, cy - 5 + bob, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 5, cy - 8 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
+    // 眼（蕈帽下緣）
+    clayEyes(cx, cy - 0.5 + bob, 4.5, 2.0);
+  }
+
+  // 黏土版晶石傀儡：灰藍圓角矩形身＋三根量化晶刺＋單眼寶石。
+  function clayCrystalGolem(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 1.5 + phase) * 1);
+    ctx.fillStyle = "#8090b0";
+    ctx.beginPath(); ctx.roundRect(cx - 11, cy - 12 + bob, 22, 26, 8); ctx.fill();
+    const bodyHi = ctx.createLinearGradient(cx - 11, cy - 12, cx + 11, cy - 12);
+    bodyHi.addColorStop(0, "rgba(255,245,235,0.30)"); bodyHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bodyHi;
+    ctx.beginPath(); ctx.roundRect(cx - 11, cy - 12 + bob, 22, 26, 8); ctx.fill();
+    // 頭頂三晶刺（量化高低）
+    const crystalFrame = reduceMotion ? 0 : Math.floor(ct * 3) % 2;
+    for (let k = 0; k < 3; k++) {
+      const ax = cx - 8 + k * 8;
+      const hh = crystalFrame === 0 ? 8 : 10;
+      ctx.fillStyle = k === 1 ? "#b0d0e8" : "#a0c0d8";
+      ctx.beginPath();
+      ctx.moveTo(ax - 3, cy - 12 + bob); ctx.lineTo(ax + 3, cy - 12 + bob);
+      ctx.lineTo(ax, cy - 12 - hh + bob); ctx.closePath(); ctx.fill();
+    }
+    // 單眼寶石（中央）
+    clayBall(cx, cy - 4 + bob, 6, "#7080c8", 0.45);
+    ctx.fillStyle = "#18103a";
+    ctx.beginPath(); ctx.arc(cx, cy - 4 + bob, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(210,200,255,0.85)";
+    ctx.beginPath(); ctx.arc(cx - 1.5, cy - 5.5 + bob, 1.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版符文守衛：砂石色石碑＋尖頂＋橫刻符文＋琥珀橢圓眼。
+  function clayRuneGuardian(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 1.2 + phase) * 1);
+    ctx.fillStyle = "#b8a878";
+    ctx.beginPath(); ctx.roundRect(cx - 10, cy - 16 + bob, 20, 28, 4); ctx.fill();
+    const stoneHi = ctx.createLinearGradient(cx - 10, cy - 16, cx + 10, cy - 16);
+    stoneHi.addColorStop(0, "rgba(255,245,220,0.30)"); stoneHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = stoneHi;
+    ctx.beginPath(); ctx.roundRect(cx - 10, cy - 16 + bob, 20, 28, 4); ctx.fill();
+    // 尖頂
+    ctx.fillStyle = "#c8b888";
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, cy - 16 + bob); ctx.lineTo(cx + 8, cy - 16 + bob);
+    ctx.lineTo(cx, cy - 23 + bob); ctx.closePath(); ctx.fill();
+    // 橫刻符文（3道）
+    ctx.strokeStyle = "rgba(90,70,30,0.55)"; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.moveTo(cx - 7, cy - 10 + k * 5 + bob);
+      ctx.lineTo(cx + 7, cy - 10 + k * 5 + bob);
+      ctx.stroke();
+    }
+    // 琥珀橢圓眼
+    ctx.fillStyle = "#d09040";
+    ctx.beginPath(); ctx.ellipse(cx - 4, cy - 8 + bob, 2.8, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 4, cy - 8 + bob, 2.8, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,240,200,0.8)";
+    ctx.beginPath(); ctx.arc(cx - 4.5, cy - 8.5 + bob, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3.5, cy - 8.5 + bob, 1, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版珊瑚蟹：珊瑚磚紅圓甲＋停格側行＋大螯＋眼柄。
+  function clayCoralCrab(cx, cy, ct, phase) {
+    const scuttleFrame = reduceMotion ? 0 : Math.floor(ct * 4 + phase) % 2;
+    const sx2 = scuttleFrame === 0 ? -1.5 : 1.5;
+    clayBall(cx + sx2, cy - 2, 15, "#c06850", 0.30);
+    // 甲殼橫紋
+    ctx.strokeStyle = "rgba(90,40,20,0.35)"; ctx.lineWidth = 1.2;
+    for (let k = -2; k <= 2; k++) {
+      const hw = 12 - Math.abs(k) * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx + sx2 - hw, cy - 2 + k * 2.5);
+      ctx.lineTo(cx + sx2 + hw, cy - 2 + k * 2.5);
+      ctx.stroke();
+    }
+    // 大螯（左右）
+    for (const side of [-1, 1]) {
+      ctx.fillStyle = "#d07860";
+      ctx.beginPath(); ctx.ellipse(cx + sx2 + side * 18, cy - 2, 5, 3.5, side * 0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#b86040";
+      ctx.beginPath(); ctx.ellipse(cx + sx2 + side * 14, cy - 2, 4, 7, side * 0.5, 0, Math.PI * 2); ctx.fill();
+    }
+    // 眼柄
+    ctx.strokeStyle = "#803020"; ctx.lineWidth = 2;
+    for (const ex of [-6, 6]) {
+      ctx.beginPath(); ctx.moveTo(cx + sx2 + ex, cy - 14); ctx.lineTo(cx + sx2 + ex, cy - 18); ctx.stroke();
+      ctx.fillStyle = "#200c08";
+      ctx.beginPath(); ctx.arc(cx + sx2 + ex, cy - 18, 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255,225,200,0.8)";
+      ctx.beginPath(); ctx.arc(cx + sx2 + ex - 1, cy - 19, 1.2, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // 黏土版翡翠幽靈：翡翠綠橢圓袍體＋停格漂移＋額頭寶石＋大眼洞。
+  function clayJadeWraith(cx, cy, ct, phase) {
+    const driftFrame = reduceMotion ? 0 : Math.floor(ct * 3 + phase) % 3;
+    const drift = [-2, 0, 2][driftFrame];
+    ctx.fillStyle = "rgba(80,180,130,0.82)";
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy + 2, 13, 17, 0, 0, Math.PI * 2); ctx.fill();
+    const robeHi = ctx.createLinearGradient(cx + drift - 13, cy - 15, cx + drift + 13, cy - 15);
+    robeHi.addColorStop(0, "rgba(255,245,225,0.28)"); robeHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = robeHi;
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy + 2, 13, 17, 0, 0, Math.PI * 2); ctx.fill();
+    clayBall(cx + drift, cy - 12, 4, "#40c880", 0.45);
+    // 大空洞眼
+    ctx.fillStyle = "rgba(8,60,38,0.92)";
+    ctx.beginPath(); ctx.arc(cx + drift - 4.5, cy - 5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4.5, cy - 5, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(160,255,200,0.85)";
+    ctx.beginPath(); ctx.arc(cx + drift - 5, cy - 6, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 4, cy - 6, 1.5, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版蒸汽構體：鐵灰圓角身＋圓頭＋紅眼＋停格蒸汽。
+  function claySteamConstruct(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 2 + phase) * 1.5);
+    // 排氣管
+    ctx.fillStyle = "#5a4840";
+    ctx.fillRect(cx - 13, cy - 18 + bob, 4, 10);
+    ctx.fillRect(cx + 9, cy - 18 + bob, 4, 10);
+    // 停格蒸汽（2幀）
+    const steamFrame = reduceMotion ? 0 : Math.floor(ct * 4) % 2;
+    ctx.fillStyle = "rgba(210,190,180,0.45)";
+    ctx.beginPath(); ctx.arc(cx - 11, cy - 19 + bob - steamFrame * 3, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 11, cy - 19 + bob - steamFrame * 3, 3, 0, Math.PI * 2); ctx.fill();
+    // 身體（圓角矩形）
+    ctx.fillStyle = "#7a7070";
+    ctx.beginPath(); ctx.roundRect(cx - 10, cy - 14 + bob, 20, 24, 6); ctx.fill();
+    const bodyHi = ctx.createLinearGradient(cx - 10, cy - 14, cx + 10, cy - 14);
+    bodyHi.addColorStop(0, "rgba(255,240,225,0.28)"); bodyHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bodyHi;
+    ctx.beginPath(); ctx.roundRect(cx - 10, cy - 14 + bob, 20, 24, 6); ctx.fill();
+    // 頭（圓）
+    clayBall(cx, cy - 16 + bob, 8, "#686060", 0.35);
+    // 紅點眼
+    ctx.fillStyle = "#c03000";
+    ctx.beginPath(); ctx.arc(cx - 3.5, cy - 16 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3.5, cy - 16 + bob, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,180,140,0.9)";
+    ctx.beginPath(); ctx.arc(cx - 4.2, cy - 16.8 + bob, 1, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 2.8, cy - 16.8 + bob, 1, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版霧醚幽靈：冰藍橢圓體＋停格量化漂移＋頂部旋轉小晶片＋冷藍點眼。
+  function clayAetherSpecter(cx, cy, ct, phase) {
+    const driftFrame = reduceMotion ? 0 : Math.floor(ct * 3 + phase) % 3;
+    const drift = [-1.5, 0, 1.5][driftFrame];
+    ctx.fillStyle = "rgba(140,190,215,0.20)";
+    ctx.beginPath(); ctx.arc(cx + drift, cy, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(120,175,200,0.80)";
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy, 12, 16, 0, 0, Math.PI * 2); ctx.fill();
+    const speHi = ctx.createLinearGradient(cx + drift - 12, cy - 16, cx + drift + 12, cy - 16);
+    speHi.addColorStop(0, "rgba(255,245,235,0.30)"); speHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = speHi;
+    ctx.beginPath(); ctx.ellipse(cx + drift, cy, 12, 16, 0, 0, Math.PI * 2); ctx.fill();
+    // 頂部小晶片（量化旋轉）
+    const crystalRot = reduceMotion ? 0 : Math.floor(ct * 1 + phase) * (Math.PI / 4);
+    ctx.save();
+    ctx.translate(cx + drift, cy - 17);
+    ctx.rotate(crystalRot);
+    ctx.fillStyle = "#c8e0f0";
+    ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#a0c8e0"; ctx.lineWidth = 1.5;
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * 4, Math.sin(a) * 4); ctx.lineTo(Math.cos(a) * 7, Math.sin(a) * 7); ctx.stroke();
+    }
+    ctx.restore();
+    // 冷藍點眼
+    ctx.fillStyle = "#202840";
+    ctx.beginPath(); ctx.arc(cx + drift - 3.5, cy - 2, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 3.5, cy - 2, 2.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(200,230,255,0.85)";
+    ctx.beginPath(); ctx.arc(cx + drift - 4, cy - 2.5, 0.9, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + drift + 3, cy - 2.5, 0.9, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版源晶守護者：金黃圓角厚身＋大圓頭＋光環半弧＋黑金點眼。
+  function clayOriginGuardian(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 1.2 + phase) * 1.5);
+    ctx.fillStyle = "#c8a040";
+    ctx.beginPath(); ctx.roundRect(cx - 14, cy - 16 + bob, 28, 32, 10); ctx.fill();
+    const bodyHi = ctx.createLinearGradient(cx - 14, cy - 16, cx + 14, cy - 16);
+    bodyHi.addColorStop(0, "rgba(255,250,220,0.35)"); bodyHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bodyHi;
+    ctx.beginPath(); ctx.roundRect(cx - 14, cy - 16 + bob, 28, 32, 10); ctx.fill();
+    clayBall(cx, cy - 18 + bob, 10, "#d8b050", 0.35);
+    // 光環半弧
+    ctx.strokeStyle = "rgba(255,220,80,0.60)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy - 18 + bob, 14, Math.PI, 0); ctx.stroke();
+    // 黑金眼
+    ctx.fillStyle = "#2a180a";
+    ctx.beginPath(); ctx.arc(cx - 4, cy - 17 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 4, cy - 17 + bob, 2.8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,240,180,0.85)";
+    ctx.beginPath(); ctx.arc(cx - 4.8, cy - 17.8 + bob, 1.2, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx + 3.2, cy - 17.8 + bob, 1.2, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 黏土版裂縫守衛：深紫圓角身＋暗紫圓頭＋量化閃爍裂縫眼。
+  function clayRiftGuardian(cx, cy, ct, phase) {
+    const bob = reduceMotion ? 0 : Math.floor(Math.sin(ct * 1.5 + phase) * 1.5);
+    ctx.fillStyle = "rgba(160,100,220,0.20)";
+    ctx.beginPath(); ctx.arc(cx, cy, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#7040a8";
+    ctx.beginPath(); ctx.roundRect(cx - 12, cy - 14 + bob, 24, 28, 7); ctx.fill();
+    const bodyHi = ctx.createLinearGradient(cx - 12, cy - 14, cx + 12, cy - 14);
+    bodyHi.addColorStop(0, "rgba(230,210,255,0.28)"); bodyHi.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = bodyHi;
+    ctx.beginPath(); ctx.roundRect(cx - 12, cy - 14 + bob, 24, 28, 7); ctx.fill();
+    clayBall(cx, cy - 16 + bob, 9, "#6030a0", 0.38);
+    // 量化閃爍裂縫眼
+    const eyeFrame = reduceMotion ? 1 : Math.floor(ct * 5) % 3;
+    const eyeAlpha = [0.6, 1.0, 0.75][eyeFrame];
+    ctx.fillStyle = `rgba(200,160,255,${eyeAlpha})`;
+    ctx.beginPath(); ctx.ellipse(cx - 3.5, cy - 16 + bob, 3, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 3.5, cy - 16 + bob, 3, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 統一入口：依 kind 分派黏土敵人繪製；回傳 true=已繪製，false=不認識（呼叫端退回原畫法）。
+  function drawClayEnemy(kind, cx, cy, t, phase) {
+    if (renderStyle !== "clay") return false;
+    const ct = clayEnemyT(t);
+    switch (kind) {
+      case "ether_wisp":       clayEtherWisp(cx, cy, ct, phase);       return true;
+      case "flutter_sprite":   clayFlutterSprite(cx, cy, ct, phase);   return true;
+      case "mushroom_stalker": clayMushroomStalker(cx, cy, ct, phase); return true;
+      case "crystal_golem":    clayCrystalGolem(cx, cy, ct, phase);    return true;
+      case "rune_guardian":    clayRuneGuardian(cx, cy, ct, phase);    return true;
+      case "coral_crab":       clayCoralCrab(cx, cy, ct, phase);       return true;
+      case "jade_wraith":      clayJadeWraith(cx, cy, ct, phase);      return true;
+      case "steam_construct":  claySteamConstruct(cx, cy, ct, phase);  return true;
+      case "aether_specter":   clayAetherSpecter(cx, cy, ct, phase);   return true;
+      case "origin_guardian":  clayOriginGuardian(cx, cy, ct, phase);  return true;
+      case "rift_guardian":    clayRiftGuardian(cx, cy, ct, phase);    return true;
+      default: return false;
+    }
+  }
+
   // 迷途乙太靈：野化的乙太生靈。多層光球＋環繞飄帶＋發光雙眼＋浮動符文點。ROADMAP 89 精緻化。
   function drawEtherWisp(cx, cy, t, phase) {
+    if (drawClayEnemy("ether_wisp", cx, cy, t, phase)) return;
     const pulse = 0.80 + 0.20 * Math.sin(t * 3.5 + phase);
     // 外層大光暈
     const outerGlow = ctx.createRadialGradient(cx, cy, 3, cx, cy, 20);
@@ -13324,6 +13655,7 @@
 
   // 飄舞精靈（草原）：花仙子造型，蝶翼＋花冠＋精緻小臉＋花粉軌跡。ROADMAP 89 精緻化。
   function drawFlutterSprite(cx, cy, t, phase) {
+    if (drawClayEnemy("flutter_sprite", cx, cy, t, phase)) return;
     const flapA = Math.sin(t * 7 + phase); // 高頻翅膀拍動
     const bob   = Math.sin(t * 2.5 + phase) * 2.5;
     // 外層光暈
@@ -13384,6 +13716,7 @@
 
   // 蕈菇潛行者（森林）：大型斑點蕈菇帽＋多眼＋發光菌褶＋爬行根足。ROADMAP 89 精緻化。
   function drawMushroomStalker(cx, cy, t, phase) {
+    if (drawClayEnemy("mushroom_stalker", cx, cy, t, phase)) return;
     const bob = Math.sin(t * 2.5 + phase) * 2;
     // 蕈菇柄（厚實身體）
     ctx.fillStyle = "#356240";
@@ -13443,6 +13776,7 @@
 
   // 晶石傀儡（岩地）：多晶塔身＋核心單眼＋碎裂射線＋強烈紫藍內光。ROADMAP 89 精緻化。
   function drawCrystalGolem(cx, cy, t, phase) {
+    if (drawClayEnemy("crystal_golem", cx, cy, t, phase)) return;
     const pulse = 0.55 + 0.45 * Math.sin(t * 2.8 + phase);
     // 大型外光暈
     const outerG = ctx.createRadialGradient(cx, cy, 4, cx, cy, 24);
@@ -13492,6 +13826,7 @@
 
   // 符文守衛（沙漠）：高聳石碑＋多行符文＋旋浮小石＋琥珀眼縫。ROADMAP 89 精緻化。
   function drawRuneGuardian(cx, cy, t, phase) {
+    if (drawClayEnemy("rune_guardian", cx, cy, t, phase)) return;
     const rp = 0.55 + 0.45 * Math.sin(t * 2.5 + phase);
     // 環繞浮石（3塊，慢轉）
     for (let k = 0; k < 3; k++) {
@@ -13548,6 +13883,7 @@
 
   // 珊瑚蟹（水域）：厚甲珊瑚殼＋珊瑚礁裝飾＋大螯＋六足＋眼柄。ROADMAP 89 精緻化。
   function drawCoralCrab(cx, cy, t, phase) {
+    if (drawClayEnemy("coral_crab", cx, cy, t, phase)) return;
     const scuttle = Math.sin(t * 4 + phase) * 2;
     // 甲殼底層光暈
     const shellG = ctx.createRadialGradient(cx + scuttle, cy, 4, cx + scuttle, cy, 20);
@@ -13624,6 +13960,7 @@
 
   // 翠幽鬼（翠幽星）：玉靈飄袍形＋翠玉額寶石＋飄帶觸鬚＋幽光眼。ROADMAP 89 精緻化。
   function drawJadeWraith(cx, cy, t, phase) {
+    if (drawClayEnemy("jade_wraith", cx, cy, t, phase)) return;
     const drift = Math.sin(t * 2.2 + phase) * 3.5;
     const pulse = 0.55 + 0.30 * Math.sin(t * 3.5 + phase);
     ctx.save();
@@ -13671,6 +14008,7 @@
 
   // 蒸汽機械（赤焰星）：類人形蒸汽機器人＋大排氣管＋齒輪肩甲＋赤眼。ROADMAP 89 精緻化。
   function drawSteamConstruct(cx, cy, t, phase) {
+    if (drawClayEnemy("steam_construct", cx, cy, t, phase)) return;
     const bob = Math.sin(t * 2.2 + phase) * 1.8;
     const sa = 0.35 + 0.20 * Math.sin(t * 5.5 + phase); // 蒸汽透明
     // 肩膀齒輪（左右，慢轉）
@@ -13738,6 +14076,7 @@
 
   // 霧醚幽靈（霧醚星）：冰晶框架幽靈＋凍氣拖尾＋六角晶格＋冷冽青白眼。ROADMAP 89 精緻化。
   function drawAetherSpecter(cx, cy, t, phase) {
+    if (drawClayEnemy("aether_specter", cx, cy, t, phase)) return;
     const bob = Math.sin(t * 1.8 + phase) * 3.5;
     const alpha = 0.70 + 0.20 * Math.sin(t * 2.5 + phase);
     ctx.save();
@@ -13803,6 +14142,7 @@
 
   // 源晶守護者（星源星）：神聖多面體巨體＋四軌道晶石＋多眼冠＋金白神光。BOSS 等級。ROADMAP 89 精緻化。
   function drawOriginGuardian(cx, cy, t, phase) {
+    if (drawClayEnemy("origin_guardian", cx, cy, t, phase)) return;
     const bob = Math.sin(t * 1.4 + phase) * 2.5;
     const pulse = 0.65 + 0.25 * Math.sin(t * 2.0 + phase);
     ctx.save();
@@ -13892,6 +14232,7 @@
 
   // 裂縫守護者：宇宙裂縫最強精英，巨型虛空體＋四觸手＋次元裂痕＋猩紅凝視眼。BOSS 等級。ROADMAP 89 精緻化。
   function drawRiftGuardian(cx, cy, t, phase) {
+    if (drawClayEnemy("rift_guardian", cx, cy, t, phase)) return;
     const bob = Math.sin(t * 1.2 + phase) * 3.5;
     const pulse = 0.60 + 0.30 * Math.sin(t * 2.5 + phase);
     ctx.save();

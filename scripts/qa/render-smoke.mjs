@@ -3180,6 +3180,69 @@ for (const sc of scenarios) {
   else console.log("  ✅ 季節豐收獎：cropPeakVariety 五路徑全對；旺收飄字渲染零例外");
 }
 
+// 黏土敵人造型（ROADMAP 494）：切換 clay 模式，注入十一種怪物 snapshot，連跑多幀驗零例外。
+{
+  console.log("── 情境：黏土敵人造型（ROADMAP 494）──");
+  let ok = true;
+  try {
+    const setStyle = sandbox.__bfTest && sandbox.__bfTest.setRenderStyle;
+    const clayFn   = sandbox.__bfTest && sandbox.__bfTest.drawClayEnemy;
+    if (!setStyle || !clayFn) {
+      ok = false;
+      console.error("  ❌ ROADMAP 494：game.js 未導出 setRenderStyle / drawClayEnemy");
+    } else {
+      // 切到 clay 模式
+      setStyle("clay");
+      // 直接呼叫 drawClayEnemy 的十一種敵人，驗不拋例外
+      const kinds = [
+        "ether_wisp", "flutter_sprite", "mushroom_stalker", "crystal_golem",
+        "rune_guardian", "coral_crab", "jade_wraith", "steam_construct",
+        "aether_specter", "origin_guardian", "rift_guardian",
+      ];
+      const beforeDirect = caughtRenderErrors.length;
+      for (const kind of kinds) {
+        try {
+          // cx=400, cy=300, t=1.5, phase=0.7（典型值）
+          clayFn(kind, 400, 300, 1.5, 0.7);
+          // reduceMotion=true 路徑（t 量化後 = 0）
+          clayFn(kind, 400, 300, 0, 0);
+        } catch (e) {
+          ok = false;
+          console.error(`  ❌ drawClayEnemy(${kind}) 拋出例外：${e && e.message}`);
+        }
+      }
+      // 未知 kind → 應回 false（不繪製、不拋例外）
+      const unknownResult = clayFn("unknown_monster_xyz", 400, 300, 1.5, 0.7);
+      if (unknownResult !== false) { ok = false; console.error("  ❌ 未知 kind 應回 false"); }
+      const afterDirect = caughtRenderErrors.length;
+      if (afterDirect > beforeDirect) { ok = false; console.error(`  ❌ 直接呼叫：${afterDirect - beforeDirect} 個渲染例外`); }
+
+      // 注入帶有十一種敵人的 snapshot，連跑多幀驗 render 路徑
+      const clayEnemySnap = JSON.parse(JSON.stringify(snapshot));
+      clayEnemySnap.enemies = kinds.map((kind, i) => ({
+        kind, x: 500 + i * 40, y: 300, level: 3, hp: 10, max_hp: 10, alive: true,
+      }));
+      const before494 = caughtRenderErrors.length;
+      lastWS.onmessage({ data: JSON.stringify({ ...clayEnemySnap, type: "snapshot" }) });
+      pump("黏土敵人 clay render", 4);
+      const after494 = caughtRenderErrors.length;
+      if (after494 > before494) { ok = false; console.error(`  ❌ clay 敵人 render：${after494 - before494} 個渲染例外`); }
+
+      // 切回 pixel 模式，同樣跑一幀確認退回原本畫法不炸
+      setStyle("pixel");
+      const before494px = caughtRenderErrors.length;
+      lastWS.onmessage({ data: JSON.stringify({ ...clayEnemySnap, type: "snapshot" }) });
+      pump("黏土敵人 pixel render", 2);
+      const after494px = caughtRenderErrors.length;
+      if (after494px > before494px) { ok = false; console.error(`  ❌ pixel 模式退回：${after494px - before494px} 個渲染例外`); }
+    }
+  } catch (e) {
+    ok = false; console.error("  ❌ 黏土敵人：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 黏土敵人造型測試失敗"); }
+  else console.log("  ✅ 黏土敵人：十一種敵人 drawClayEnemy 直接呼叫 + clay/pixel 兩模式 render 零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
