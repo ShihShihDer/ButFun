@@ -14162,7 +14162,7 @@
     scrap_drone: 2, ether_wisp: 1, flutter_sprite: 1, mushroom_stalker: 2,
     crystal_golem: 3, rune_guardian: 3, coral_crab: 4, jade_wraith: 5,
     steam_construct: 6, void_phantom: 8, aether_specter: 11, origin_guardian: 15,
-    rift_guardian: 18, ether_overlord: 30,
+    rift_guardian: 20, ether_overlord: 10,
   };
 
   // 威脅數值 → ★ 等級字串（ROADMAP 514）。
