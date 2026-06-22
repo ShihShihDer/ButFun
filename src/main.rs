@@ -49,6 +49,7 @@ mod bottle_drift;
 mod campfire;
 mod ship_repair;
 mod snowman;
+mod combat_mark;
 mod connections;
 mod equipment;
 mod refinement;

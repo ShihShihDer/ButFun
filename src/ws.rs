@@ -663,7 +663,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -823,6 +823,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         ship_repair: ship_repair.clone(),
                                         // 今日世界戰報（ROADMAP 495）：全服廣播（純計數、量微小）。
                                         world_tally: world_tally.clone(),
+                                        // 戰鬥記跡（ROADMAP 499）：依 AOI 剔除視野外的記跡，近距離才顯示。
+                                        combat_marks: combat_marks.iter().filter(|m| filter_pos(m.wx, m.wy)).cloned().collect(),
                                     }
                                 }
                                 other => other.clone(),
@@ -3732,6 +3734,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             }
                         }
                     }
+                    // 戰鬥記跡（ROADMAP 499）：擊殺後在怪物位置留下短暫可見的記號。
+                    // 安全區遠程擊殺不留記跡（suppress_rewards）；讀鎖取玩家名稱，鎖即放不巢狀。
+                    if !suppress_rewards {
+                        let killer_name = app.players.read().unwrap()
+                            .get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                        if !killer_name.is_empty() {
+                            let mut marks = app.combat_marks.write().unwrap();
+                            for (kind, _, _, loot, ex, ey, _, _) in &results {
+                                if loot.is_some() {
+                                    marks.add(*ex, *ey, &killer_name, kind.display_name());
+                                }
+                            }
+                        }
+                    }
+
                     // 每日任務：擊殺事件（ROADMAP 32）。
                     // 安全區遠程擊殺不算每日任務進度。
                     if !suppress_rewards {
