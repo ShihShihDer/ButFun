@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1658,6 +1658,13 @@
   const footDust = [];             // [{wx,wy,vx,vy,life,ttl,size,r,g,b}]
   const _footLastPos = new Map();  // 角色 id → {x,y,acc} 上次取樣位置與未滿一格的累積位移
   let _footDustLast = 0;           // 上次更新時間（推 dt）
+  // 玩家足跡印痕（ROADMAP 519）：踏過草地/沙地時在腳下留下短暫橢圓壓痕，約 900ms 淡出消逝。
+  // 與 footDust（揚塵）不同——印痕貼地不動、靜止後仍可見，僅追蹤自己（不追蹤其他玩家/NPC）。
+  const FOOTPRINT_MAX = 10;          // 同時最多顯示的印痕數
+  const FOOTPRINT_SPACING = 22;      // 每走約這麼多像素才留一枚
+  const FOOTPRINT_LIFE = 900;        // 每枚存活時間（ms）
+  const footprints = [];             // [{ wx, wy, born, style }]
+  let _lastFpX = 0, _lastFpY = 0;   // 上次留印的世界座標
   // 生態氛圍粒子（ROADMAP 189）：依玩家所在生態常駐飄浮的「生命氣息」粒子
   //（草原花絮／森林落葉／沙漠熱氣／礦區乙太微塵／水域浮光）。與天氣（93）不同——
   // 天氣是後端驅動的動態天候、氛圍是恆常的生態氣息；天氣作用時氛圍自動淡出讓位。
@@ -9613,6 +9620,7 @@
     safeDraw("sunGlint", () => drawSunGlint(camX, camY, renderNow)); // 水面映日/映月（202），太陽月亮在水面隨方位的倒影、波光之上其餘實體之下
     safeDraw("shoreFoam", () => drawShoreFoam(camX, camY, renderNow)); // 水岸碎浪（196），水陸交界輕拍岸的浪花、貼地表之上
     safeDraw("windRipple", () => drawWindRipple(camX, camY, renderNow)); // 草原微風/草浪（197），草地隨風掃過的亮帶、貼地表之上
+    safeDraw("footprints", () => drawFootprints(camX, camY, renderNow)); // 玩家足跡印痕（519），踏過草地/沙地留下的短暫橢圓壓痕、貼地表之上
     safeDraw("morningDew", () => drawMorningDew(camX, camY, renderNow)); // 破曉晨露（259），破曉時草尖上原地明滅、入晝即散的貼地露光、四季染不同色溫
     safeDraw("sandGlint", () => drawSandGlint(camX, camY, renderNow)); // 沙漠流沙微光（198），沙面順風飄移的金色微光、貼地表之上
     safeDraw("rockGlint", () => drawRockGlint(camX, camY, renderNow)); // 岩石礦脈微光（199），岩面原地一閃的冷白礦光、貼地表之上
@@ -24124,6 +24132,70 @@
       ctx.fillStyle = `rgba(${d.r},${d.g},${d.b},${a.toFixed(3)})`;
       ctx.beginPath();
       ctx.arc(sx, sy, d.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ── ROADMAP 519: 玩家足跡印痕 ───────────────────────────────────────────────
+  // 踏過草地/沙地時，腳下留下短暫橢圓壓痕，900ms 線性淡出消逝。
+  // 與 footDust（揚起的漂浮塵埃粒子）不同——印痕貼地、靜止後仍可見——
+  // 讓「我走過這裡」第一次在地上留下可見的印記。
+
+  // 依存活時間算印痕透明度（[0, 0.28]，線性淡出，壞值/超期回 0）。
+  function footprintAlpha(ageMs) {
+    // 明確 type check：null/undefined 在 JS 中 null >= 0 = true（隱式轉 0），需顯式排除。
+    if (typeof ageMs !== "number" || !isFinite(ageMs) || ageMs < 0 || ageMs >= FOOTPRINT_LIFE) return 0;
+    return 0.28 * (1 - ageMs / FOOTPRINT_LIFE);
+  }
+
+  // 依生態回印痕 RGB 顏色；只有軟質地面（草/沙）留印，岩地/水域回 null 不留。
+  function footprintStyle(biome) {
+    switch (biome) {
+      case "meadow": return { r: 70,  g: 120, b: 55  }; // 草地稍深壓痕
+      case "forest": return { r: 50,  g: 90,  b: 45  }; // 林地更深壓痕
+      case "sand":   return { r: 165, g: 135, b: 88  }; // 沙地沙痕
+      default: return null; // 岩地/水域/未知不留印
+    }
+  }
+
+  function drawFootprints(camX, camY, now) {
+    const me = myId ? players.get(myId) : null;
+    // 純裝飾：reduceMotion 時清空並重置取樣點，避免恢復時用累積位移瞬間爆出一長條印痕。
+    if (effectiveReduceMotion() || !me) {
+      if (footprints.length) footprints.length = 0;
+      if (me) { _lastFpX = me.x; _lastFpY = me.y; }
+      return;
+    }
+    // 採樣：移動夠遠才留一枚印痕；大位移（傳送/重生）直接重置取樣點。
+    const dstX = me.x - _lastFpX, dstY = me.y - _lastFpY;
+    const dist = Math.hypot(dstX, dstY);
+    if (dist > 200) {
+      // 傳送/重生大跳——重置不留印
+      _lastFpX = me.x; _lastFpY = me.y;
+    } else if (dist >= FOOTPRINT_SPACING) {
+      const style = footprintStyle(biomeAt(me.x, me.y));
+      if (style) {
+        footprints.push({ wx: me.x, wy: me.y + 10, born: now, style });
+        if (footprints.length > FOOTPRINT_MAX) footprints.shift(); // 移除最舊
+      }
+      _lastFpX = me.x; _lastFpY = me.y;
+    }
+    // 繪製（世界座標 → 螢幕座標）
+    if (!footprints.length) return;
+    ctx.save();
+    for (let i = footprints.length - 1; i >= 0; i--) {
+      const fp = footprints[i];
+      const age = now - fp.born;
+      const alpha = footprintAlpha(age);
+      if (alpha <= 0) { footprints.splice(i, 1); continue; } // 過期清除
+      const sx = fp.wx - camX;
+      const sy = fp.wy - camY;
+      if (sx < -20 || sy < -20 || sx > viewW + 20 || sy > viewH + 20) continue; // 視窗外剔除
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = `rgb(${fp.style.r},${fp.style.g},${fp.style.b})`;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, 5, 3, 0, 0, Math.PI * 2); // 扁橢圓 5px×3px，仿俯視腳印輪廓
       ctx.fill();
     }
     ctx.restore();
