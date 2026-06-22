@@ -3568,6 +3568,50 @@ for (const sc of scenarios) {
   else console.log("  ✅ 暴走羅盤（ROADMAP 505）：純函式真值表(4/4) + 遠處暴走/畫面內早退/暴走結束，全路徑零例外");
 }
 
+// ── ROADMAP 507 礦石脈動 ─────────────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const radius = sandbox.__bfTest && sandbox.__bfTest.nodeRespawnPulseRadius;
+    const alpha = sandbox.__bfTest && sandbox.__bfTest.nodeRespawnPulseAlpha;
+    if (!radius || !alpha) throw new Error("nodeRespawnPulseRadius / nodeRespawnPulseAlpha 未匯出");
+
+    // 純函式真值表：半徑邊界夾鉗 + 線性插值
+    const rCases = [[0, 10], [1, 48], [-0.1, 10], [1.1, 48], [0.5, 29]];
+    for (const [t, expected] of rCases) {
+      const got = radius(t);
+      if (Math.abs(got - expected) > 0.01) { ok = false; console.error(`  ❌ nodeRespawnPulseRadius(${t}) = ${got}, 期望 ${expected}`); }
+    }
+    // 純函式真值表：透明度邊界夾鉗 + 線性插值
+    const aCases = [[0, 0.75], [1, 0], [-0.1, 0.75], [1.1, 0], [0.5, 0.375]];
+    for (const [t, expected] of aCases) {
+      const got = alpha(t);
+      if (Math.abs(got - expected) > 0.001) { ok = false; console.error(`  ❌ nodeRespawnPulseAlpha(${t}) = ${got}, 期望 ${expected}`); }
+    }
+
+    // 情境：合成一顆石頭節點，送兩幀快照觸發 harvestable false→true 轉換，再跑 4 幀。
+    const stoneBase = { type: "snapshot", players: [], fields: [], listings: [], npcs: [], terrain: [], expedition_target: null,
+      my_ether: 0, my_bag: [], time_fraction: 0.3, prosperity: 0, town_mood: "平靜", newbie_banner: null,
+      ether_surge_secs: 0, ether_surge_x: 0, ether_surge_y: 0 };
+
+    // 第一幀：石頭耗盡（harvestable: false）
+    const snap1 = { ...stoneBase, nodes: [{ x: 10, y: 20, kind: "stone", harvestable: false }] };
+    lastWS.onmessage({ data: JSON.stringify(snap1) });
+    if (pump("礦石脈動·耗盡幀", 2) instanceof Error) ok = false;
+
+    // 第二幀：石頭重生（harvestable: true）→ 觸發脈動
+    const snap2 = { ...stoneBase, nodes: [{ x: 10, y: 20, kind: "stone", harvestable: true }] };
+    lastWS.onmessage({ data: JSON.stringify(snap2) });
+    if (pump("礦石脈動·重生幀", 4) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 礦石脈動：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 礦石脈動：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 礦石脈動（ROADMAP 507）：純函式真值表(5+5) + 耗盡→重生脈動觸發，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3052,6 +3052,9 @@
   let etherSurgeSecs = 0;       // ROADMAP 504 乙太暴走剩餘秒數（0=無暴走）
   let etherSurgeX = 0;          // ROADMAP 504 暴走位置 X（世界座標）
   let etherSurgeY = 0;          // ROADMAP 504 暴走位置 Y（世界座標）
+  const nodeRespawnPulses = new Map();    // ROADMAP 507 礦石脈動：key `${x},${y}`，value = 脈動起始 performance.now()
+  const prevNodeHarvestable = new Map();  // ROADMAP 507 礦石脈動：上一快照各節點的 harvestable 狀態
+  const RESPAWN_PULSE_MS = 2000;          // ROADMAP 507 礦石脈動持續毫秒數
   let wanderingMerchantUntilMs = 0; // ROADMAP 135 旅行商人到期的 performance.now() 時刻（0=不在城鎮）
   let wanderingCatalog = [];        // ROADMAP 135 旅行商人商品目錄 [{item, price_ether, remaining}]
   let merchantQuests = [];          // ROADMAP 136 旅行商人限時委託 [{id, name, description, required, progress, accepted, completed, reward_ether, reward_item, reward_qty}]
@@ -3797,6 +3800,18 @@
         // 各玩家農地狀態（per-player）+ 世界採集節點 + 我的乙太/背包 + 日夜
         fields = msg.fields || [];
         nodes = msg.nodes || []; // 防呆:舊版伺服器沒這欄 → 空陣列,不崩
+        // ROADMAP 507 礦石脈動：偵測非 tree 節點 harvestable false→true，啟動脈動動畫。
+        // tree 已有 drawRegrowingTree 林相復甦（ROADMAP 404），不重複。
+        {
+          const nowPulse = performance.now();
+          for (const n of nodes) {
+            if (n.kind === "tree") continue;
+            const key = `${n.x},${n.y}`;
+            const prev = prevNodeHarvestable.get(key);
+            if (prev === false && n.harvestable) nodeRespawnPulses.set(key, nowPulse);
+            prevNodeHarvestable.set(key, n.harvestable);
+          }
+        }
         listings = msg.listings || [];
         npcs = msg.npcs || [];
         expeditionTarget = msg.expedition_target || null;
@@ -10909,6 +10924,18 @@
   function surgeShouldShowCompass(onScreen, secs) {
     return secs > 0 && !onScreen;
   }
+  // 純函式：礦石重生脈動半徑（t=0→1 正規化時間，0=剛重生，1=動畫結束）。（ROADMAP 507）
+  function nodeRespawnPulseRadius(t) {
+    if (t <= 0) return 10;
+    if (t >= 1) return 48;
+    return 10 + t * 38;
+  }
+  // 純函式：礦石重生脈動透明度（t=0→1 正規化時間）。（ROADMAP 507）
+  function nodeRespawnPulseAlpha(t) {
+    if (t <= 0) return 0.75;
+    if (t >= 1) return 0;
+    return 0.75 * (1 - t);
+  }
 
   function drawHomeWayfinder(me, camX, camY) {
     if (!me || me.indoor_plot_id != null) return; // 室內不指路（畫的是室內場景）
@@ -13685,6 +13712,35 @@
           ctx.strokeText(hint, sx, hy);
           ctx.fillStyle = "rgba(255,235,180,0.8)";
           ctx.fillText(hint, sx, hy);
+        }
+      }
+      // 礦石重生脈動（ROADMAP 507）：非 tree 節點剛重生時閃出柔翠綠光環。
+      if (n.kind !== "tree") {
+        const pulseKey = `${n.x},${n.y}`;
+        const pulseStart = nodeRespawnPulses.get(pulseKey);
+        if (pulseStart !== undefined) {
+          const ageMs = now - pulseStart;
+          if (ageMs >= RESPAWN_PULSE_MS) {
+            nodeRespawnPulses.delete(pulseKey);
+          } else if (!reduceMotion) {
+            const t = ageMs / RESPAWN_PULSE_MS;
+            const r = nodeRespawnPulseRadius(t);
+            const a = nodeRespawnPulseAlpha(t);
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(180,255,200,${a.toFixed(2)})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            if (t < 0.45) {
+              ctx.globalAlpha = Math.max(0, (0.45 - t) / 0.45 * 0.9);
+              ctx.font = `13px ${UI_FONT}`;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText("✨", sx, sy - 26);
+            }
+            ctx.restore();
+          }
         }
       }
       ctx.restore();
