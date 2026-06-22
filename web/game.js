@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5556,8 +5556,9 @@
         break;
 
       case "ranged_hit":
-        // 遠程攻擊（ROADMAP 146）：在攻擊者位置播放彈道放射特效。
-        showRangedHit(msg.from_x, msg.from_y, msg.hit);
+        // 遠程攻擊（ROADMAP 146）：在攻擊者位置播放彈道放射特效；
+        // ROADMAP 510：命中時附帶目標座標繪製飛矢軌跡。
+        showRangedHit(msg.from_x, msg.from_y, msg.to_x || 0, msg.to_y || 0, msg.hit);
         break;
 
       case "kill_notify":
@@ -5619,10 +5620,25 @@
   }
 
   // 遠程攻擊彈道特效（ROADMAP 146）：多方向擴散粒子，命中時顯示衝擊暈圈。
-  const rangedHits = []; // [{ wx, wy, born, hit }]
-  function showRangedHit(wx, wy, hit) {
-    rangedHits.push({ wx, wy, born: performance.now(), hit });
+  // ROADMAP 510：showRangedHit 同時記錄飛矢軌跡（fromX/fromY → toX/toY）。
+  const rangedHits = [];   // [{ wx, wy, born, hit }] ← wx/wy = 攻擊者位置
+  const rangedTrails = []; // [{ fromX, fromY, toX, toY, born }] ← 命中軌跡
+  function showRangedHit(fromX, fromY, toX, toY, hit) {
+    rangedHits.push({ wx: fromX, wy: fromY, born: performance.now(), hit });
     if (rangedHits.length > 12) rangedHits.shift();
+    // 命中且目標座標有效時，加入飛矢軌跡（ROADMAP 510）。
+    if (hit && (toX !== 0 || toY !== 0)) {
+      rangedTrails.push({ fromX, fromY, toX, toY, born: performance.now() });
+      if (rangedTrails.length > 12) rangedTrails.shift();
+    }
+  }
+
+  // ROADMAP 510：飛矢軌跡純函式——可測試的插值計算。
+  function rangedTrailT(age, dur) {
+    return Math.min(1, age / dur);
+  }
+  function rangedTrailPos(fromX, fromY, toX, toY, t) {
+    return { x: fromX + (toX - fromX) * t, y: fromY + (toY - fromY) * t };
   }
   function drawRangedHits(now, camX, camY) {
     const DUR = 500; // 動畫總時長 ms
@@ -5656,6 +5672,43 @@
         ctx.lineTo(sx + Math.cos(angle) * len, sy + Math.sin(angle) * len);
         ctx.stroke();
       }
+      ctx.restore();
+    }
+  }
+
+  // ROADMAP 510 飛矢軌跡繪製：在遠程命中時動畫一枚從攻擊者飛向目標的光矢。
+  function drawRangedTrails(now, camX, camY) {
+    const DUR = 280; // 飛行總時長 ms
+    const TAIL_FRAC = 0.25; // 軌跡尾巴長度（佔全程的比例）
+    for (let i = rangedTrails.length - 1; i >= 0; i--) {
+      const tr = rangedTrails[i];
+      const age = now - tr.born;
+      if (age > DUR) { rangedTrails.splice(i, 1); continue; }
+      if (effectiveReduceMotion()) continue; // 降低動態模式：跳過飛矢動畫
+      const t = rangedTrailT(age, DUR);
+      const head = rangedTrailPos(tr.fromX, tr.fromY, tr.toX, tr.toY, t);
+      const tail = rangedTrailPos(tr.fromX, tr.fromY, tr.toX, tr.toY, Math.max(0, t - TAIL_FRAC));
+      const hx = head.x - camX, hy = head.y - camY;
+      const tx = tail.x - camX, ty = tail.y - camY;
+      const alpha = t < 0.75 ? 1 : (1 - t) / 0.25; // 最後 25% 淡出
+      ctx.save();
+      ctx.globalAlpha = alpha * 0.88;
+      // 漸層軌跡線（尾透明 → 頭亮白）
+      const grad = ctx.createLinearGradient(tx, ty, hx, hy);
+      grad.addColorStop(0, 'rgba(80,180,255,0)');
+      grad.addColorStop(1, 'rgba(210,245,255,1)');
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      // 矢頭亮點
+      ctx.beginPath();
+      ctx.arc(hx, hy, 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(230,248,255,1)';
+      ctx.fill();
       ctx.restore();
     }
   }
@@ -9366,6 +9419,7 @@
     // 經過的時間等速內插 → 等速度、不再每 66ms 衝一下又減速（解「移動很不順」）。內插窗略大於
     // 1/15s 以吸收網路抖動；跑完(下個快照還沒到)就停在最新位置、不外插以免抖。
     const renderNow = performance.now();
+    _renderFrameNow = renderNow; // 供 drawPlayer 系列子函式存取（它們不在 render() 作用域內）
     // 幀間距（秒），天氣粒子更新用；_prevRenderNow 被覆蓋前先算好。
     const _weatherDt = _prevRenderNow > 0 ? Math.min((renderNow - _prevRenderNow) / 1000, 0.1) : 0.016;
     // 視差效能感知（ROADMAP 91）：追蹤幀間距，連續低於 30 FPS 就關閉視差。
@@ -9577,6 +9631,7 @@
       drawVoidAtmosphere(renderNow);
       drawAetherAtmosphere(renderNow);
       drawOriginAtmosphere(renderNow);
+      drawRangedTrails(renderNow, camX, camY);          // 飛矢軌跡（ROADMAP 510）
       drawRangedHits(renderNow, camX, camY);           // 遠程命中特效
       drawTravelFlash(renderNow);                      // 星際旅行傳送閃光（ROADMAP 20）
       drawSkillFlashes(renderNow, camX, camY);         // 主動技能圈形特效（ROADMAP 45）
@@ -19465,11 +19520,14 @@
 
   // 人氣聚會圈（ROADMAP 342）：在「正在當聚會主人」的玩家腳下，畫一圈發光旋轉的人氣聚會圈，
   // 讓全世界看見人潮正圍著這位受歡迎的人。與 339/340/341 那些「迸完就散」的瞬間特效不同——
+  // 由 render() 每幀更新，供 drawPlayer 系列子函式（不在 render 作用域）存取當前幀時間。
+  let _renderFrameNow = 0;
+
   // ── 安靜打坐光圈（ROADMAP 391）──────────────────────────────────────────────
   // 由 drawPlayer 在 meditating=true 的玩家身上呼叫；畫一個金色呼吸光圈，
   // 讓旁觀者一眼看出「有人在靜心」。尊重 reduceMotion（關呼吸動畫、只留靜態光圈）。
   function drawMeditationGlow(cx, cy) {
-    const pulse = reduceMotion ? 0.55 : 0.45 + 0.45 * Math.sin(renderNow / 900);
+    const pulse = reduceMotion ? 0.55 : 0.45 + 0.45 * Math.sin(_renderFrameNow / 900);
     const r = reduceMotion ? 26 : 22 + pulse * 6;
     ctx.save();
     const grad = ctx.createRadialGradient(cx, cy, 3, cx, cy, r);
@@ -19495,7 +19553,7 @@
   function drawLanternGlow(cx, cy, count) {
     const n = Math.max(1, Math.min(12, count | 0));
     const frac = n / 12;                                   // 0~1：螢火越多越亮
-    const pulse = reduceMotion ? 0.6 : 0.45 + 0.35 * Math.sin(renderNow / 1000);
+    const pulse = reduceMotion ? 0.6 : 0.45 + 0.35 * Math.sin(_renderFrameNow / 1000);
     const r = (reduceMotion ? 20 : 17 + pulse * 5) + frac * 14; // 半徑隨數量成長
     ctx.save();
     const a = (0.18 + 0.4 * frac) * pulse;                 // 暖黃綠光暈
@@ -19522,10 +19580,10 @@
     for (let i = 0; i < dots; i++) {
       const ang = reduceMotion
         ? (i / dots) * Math.PI * 2
-        : renderNow / 600 + (i / dots) * Math.PI * 2;
+        : _renderFrameNow / 600 + (i / dots) * Math.PI * 2;
       const fx = cx + Math.cos(ang) * (r * 0.5);
       const fy = cy + Math.sin(ang) * (r * 0.32);
-      const blink = reduceMotion ? 0.7 : 0.4 + 0.5 * Math.sin(renderNow / 250 + i * 1.7);
+      const blink = reduceMotion ? 0.7 : 0.4 + 0.5 * Math.sin(_renderFrameNow / 250 + i * 1.7);
       ctx.beginPath();
       ctx.arc(fx, fy, 1.7, 0, Math.PI * 2);
       ctx.fillStyle = `rgba(235, 255, 175, ${(0.4 + 0.5 * blink).toFixed(3)})`;
@@ -19540,7 +19598,7 @@
   // 偶爾飄起一片 🌿 葉影——表現「正在社群種大的樹蔭下歇腳療傷」（後端同步加速其脫戰回血）。
   // 尊重 reduceMotion（不脈動、不飄葉，只留靜態柔光）。自有 save/restore，render-safe。
   function drawShadeRest(cx, cy) {
-    const pulse = reduceMotion ? 0.5 : 0.4 + 0.35 * Math.sin(renderNow / 1100);
+    const pulse = reduceMotion ? 0.5 : 0.4 + 0.35 * Math.sin(_renderFrameNow / 1100);
     const r = reduceMotion ? 20 : 17 + pulse * 5;
     ctx.save();
     const grad = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
@@ -19553,12 +19611,12 @@
     ctx.fill();
     // 偶爾飄起一片葉影（reduceMotion 時不飄，避免持續動態造成不適）。
     if (!reduceMotion) {
-      const t = (renderNow / 2200) % 1; // 0→1 的緩慢上飄循環
+      const t = (_renderFrameNow / 2200) % 1; // 0→1 的緩慢上飄循環
       ctx.globalAlpha = 0.5 * (1 - t);
       ctx.font = `11px ${UI_FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("🌿", cx + Math.sin(renderNow / 700) * 5, cy - 6 - t * 16);
+      ctx.fillText("🌿", cx + Math.sin(_renderFrameNow / 700) * 5, cy - 6 - t * 16);
     }
     ctx.restore();
   }
@@ -19589,7 +19647,7 @@
     if (harmonizing && Number.isFinite(footX) && Number.isFinite(footY)) {
       const extra = Math.min(ensemble - 2, 4); // 2→0 … 6+→4，封頂
       const radius = 26 + extra * 5;
-      const pulse = reduceMotion ? 0 : 0.5 + 0.5 * Math.sin(renderNow / 600);
+      const pulse = reduceMotion ? 0 : 0.5 + 0.5 * Math.sin(_renderFrameNow / 600);
       const alpha = 0.10 + 0.03 * extra + (reduceMotion ? 0 : 0.05 * pulse);
       ctx.save();
       const g = ctx.createRadialGradient(footX, footY, 2, footX, footY, radius);
@@ -19606,7 +19664,7 @@
     ctx.textBaseline = "middle";
     // 獨奏兩枚音符；合奏時隨樂團人數加密（最多五枚），讀作「和聲更厚」。
     const count = ensembleNoteCount(ensemble);
-    const t = reduceMotion ? 0 : renderNow / 520;
+    const t = reduceMotion ? 0 : _renderFrameNow / 520;
     for (let i = 0; i < count; i++) {
       const phase = t + i * (Math.PI * 2 / count);
       const bob = reduceMotion ? 0 : Math.sin(phase) * 4;
@@ -19634,8 +19692,8 @@
     ctx.save();
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const bob = reduceMotion ? 0 : Math.sin(renderNow / 560) * 2.5;
-    ctx.globalAlpha = reduceMotion ? 0.55 : 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(renderNow / 560));
+    const bob = reduceMotion ? 0 : Math.sin(_renderFrameNow / 560) * 2.5;
+    ctx.globalAlpha = reduceMotion ? 0.55 : 0.4 + 0.2 * (0.5 + 0.5 * Math.sin(_renderFrameNow / 560));
     ctx.font = `12px ${UI_FONT}`;
     ctx.fillText("🎵", cx, cy + bob);
     ctx.restore();
@@ -19704,7 +19762,7 @@
   // 整體 alpha 隨 progress 漸淡，給「飽足會慢慢退去」的訊號。尊重 reduceMotion（不脈動）。
   function drawWellFedGlow(cx, cy, progress) {
     const fade = Math.max(0, Math.min(1, progress)); // 進度即不透明度基準（將散去時自然淡出）
-    const pulse = reduceMotion ? 0.7 : 0.6 + 0.4 * Math.sin(renderNow / 700);
+    const pulse = reduceMotion ? 0.7 : 0.6 + 0.4 * Math.sin(_renderFrameNow / 700);
     const r = 11 + (reduceMotion ? 0 : pulse * 2);
     ctx.save();
     ctx.globalAlpha = fade;
