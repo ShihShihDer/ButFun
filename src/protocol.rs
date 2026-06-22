@@ -1975,6 +1975,17 @@ pub enum ServerMsg {
         #[serde(default, skip_serializing_if = "is_false")]
         is_weak: bool,
     },
+    /// 戰利品飄字（ROADMAP 509）：擊殺怪物後私信攻擊者，前端在怪物原位飄出道具名稱。
+    /// 一次性事件、不入快照、不持久化——僅私信，零頻寬增量。
+    LootPickup {
+        /// 怪物擊殺位置（世界座標），用於前端飄字定位。
+        ex: f32,
+        ey: f32,
+        /// 道具種類 wire key（`snake_case`，對應前端 `ITEM_NAME`/`ITEM_LOOK`）。
+        item: String,
+        /// 道具數量。
+        qty: u32,
+    },
     /// 合成儀式廣播（ROADMAP 388）：玩家完成高階物品合成，全服同慶。
     CraftCeremony {
         player_id: Uuid,

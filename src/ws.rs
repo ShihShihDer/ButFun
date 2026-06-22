@@ -3504,6 +3504,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let mut combat_level_up: Option<(String, u32)> = None;
                     // 連殺里程碑廣播資料暫存（鎖外廣播，守 prod-deadlock 鐵律）。
                     let mut streak_milestone: Option<(u8, f32, f32)> = None;
+                    // 戰利品飄字資料暫存（ROADMAP 509）：鎖外私訊，守 prod-deadlock 鐵律。
+                    let mut loot_pickups: Vec<(crate::inventory::ItemKind, u32, f32, f32)> = Vec::new();
                     if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                         // 攻擊速度加點縮短攻擊冷卻（ROADMAP 152）。
                         p.attack_cooldown = p.stats.effective_attack_cooldown(ATTACK_COOLDOWN_SECS);
@@ -3514,11 +3516,13 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 彙整所有戰利品（單攻時 results 最多一筆；戰吼時可能多筆）。
                         // 安全區防呆：遠程在城內打城外怪不給獎勵。
                         let mut had_kill = false;
-                        for (kind, enemy_level, notorious, loot, _, _, _, _) in &results {
+                        for (kind, enemy_level, notorious, loot, ex, ey, _, _) in &results {
                             let Some((item, qty)) = loot else { continue; };
                             if suppress_rewards { continue; }  // 安全區遠程無獎勵
                             had_kill = true;
                             p.add_item_overflow(*item, *qty);
+                            // 戰利品飄字（ROADMAP 509）：記錄位置，鎖外私訊。
+                            loot_pickups.push((*item, *qty, *ex, *ey));
                             let base_reward = crate::combat::scaled_exp(kind.exp_reward(), *enemy_level);
                             let notorious_mult = if *notorious { 2.0_f32 } else { 1.0_f32 };
                             // 寵物經驗加成（ROADMAP 46）：珊瑚蟹 +20% 擊殺經驗。
@@ -3611,6 +3615,19 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .get(&id).map(|p| p.name.clone()).unwrap_or_default();
                         if !recap_name.is_empty() {
                             app.daily_recap.write().unwrap().update_streak(&recap_name, streak);
+                        }
+                    }
+                    // 戰利品飄字（ROADMAP 509）：鎖外私訊，前端在怪物原位飄出道具名稱。
+                    // 每筆擊殺（通常單攻=1、戰吼=多筆）都各發一則 LootPickup。
+                    for (item, qty, ex, ey) in loot_pickups {
+                        let item_key = serde_json::to_value(item).ok()
+                            .and_then(|v| v.as_str().map(|s| s.to_owned()))
+                            .unwrap_or_default();
+                        if !item_key.is_empty() {
+                            let msg = crate::protocol::ServerMsg::LootPickup { ex, ey, item: item_key, qty };
+                            if let Ok(j) = serde_json::to_string(&msg) {
+                                let _ = tx_direct.try_send(j);
+                            }
                         }
                     }
                     // 日報鉤（ROADMAP 385）：戰鬥路徑升等事件（鎖外、純記憶體）。

@@ -3681,6 +3681,60 @@ for (const sc of scenarios) {
   else console.log("  ✅ 戰鬥連殺（ROADMAP 508）：純函式真值表(11 label / 9 alpha) + 連殺觸發標語渲染，全路徑零例外");
 }
 
+// ── ROADMAP 509 戰利品飄字 ────────────────────────────────────────────────────
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  try {
+    const lootText = sandbox.__bfTest && sandbox.__bfTest.lootPickupText;
+    if (!lootText) throw new Error("lootPickupText 未匯出");
+
+    // 純函式真值表：已知道具
+    const cases = [
+      { item: "stone",          qty: 2, expectName: "石頭" },
+      { item: "ether",          qty: 1, expectName: "乙太" },
+      { item: "wildflower_seed",qty: 1, expectName: "野花種子" },
+      { item: "crystal_shard",  qty: 1, expectName: "晶石碎片" },
+      { item: "mushroom_spore", qty: 1, expectName: "蕈菇孢子" },
+    ];
+    for (const { item, qty, expectName } of cases) {
+      const got = lootText(item, qty);
+      if (!got.includes(expectName)) {
+        ok = false;
+        console.error(`  ❌ lootPickupText("${item}", ${qty}) = "${got}", 未含道具名「${expectName}」`);
+      }
+      if (!got.includes(`×${qty}`)) {
+        ok = false;
+        console.error(`  ❌ lootPickupText("${item}", ${qty}) = "${got}", 未含數量 ×${qty}`);
+      }
+    }
+    // 未知道具退回 key 本身
+    const unknown = lootText("unknown_thing", 3);
+    if (!unknown.includes("unknown_thing")) {
+      ok = false; console.error(`  ❌ 未知道具應退回 key，got "${unknown}"`);
+    }
+    // qty 壞值夾鉗：NaN/負數退 0
+    const badQty = lootText("stone", NaN);
+    if (!badQty.includes("×0")) {
+      ok = false; console.error(`  ❌ lootPickupText("stone", NaN) 應含 ×0，got "${badQty}"`);
+    }
+
+    // 注入 loot_pickup 訊息，驗多幀渲染零例外
+    lastWS.onmessage({ data: JSON.stringify({ type: "loot_pickup", ex: 2200, ey: 2200, item: "stone", qty: 2 }) });
+    if (pump("戰利品飄字渲染·石頭", 4) instanceof Error) ok = false;
+    lastWS.onmessage({ data: JSON.stringify({ type: "loot_pickup", ex: 2300, ey: 2100, item: "ether", qty: 1 }) });
+    if (pump("戰利品飄字渲染·乙太", 4) instanceof Error) ok = false;
+    // 未知道具不 crash
+    lastWS.onmessage({ data: JSON.stringify({ type: "loot_pickup", ex: 2200, ey: 2200, item: "future_item", qty: 5 }) });
+    if (pump("戰利品飄字渲染·未知道具", 4) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 戰利品飄字：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 戰利品飄字：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 戰利品飄字（ROADMAP 509）：純函式真值表(7 cases) + 三情境 loot_pickup 飄字渲染，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
