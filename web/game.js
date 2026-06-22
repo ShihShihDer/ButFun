@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3071,6 +3071,9 @@
   let seasonRemainingSecs = 0;    // ROADMAP 137 目前季節剩餘秒數
   // ROADMAP 500 換季煙火：追蹤上一幀季節，切換時觸發全螢幕粒子煙火慶典。
   let _prevSeason = "";           // 首幀為空字串，確保首幀不誤觸發
+  // ROADMAP 511 晨昏橫幅：追蹤上一幀日夜相位，切換時觸發頂端時辰橫幅。
+  let _prevDayphase = "";         // 首幀空字串，確保首幀不觸發
+  let _dayphaseBanner = null;     // { phase, startMs } 或 null（null = 無橫幅）
   let _sfwParticles = [];         // 換季煙火粒子陣列 [{x,y,vx,vy,alpha,color,life}]
   let _sfwBurstAt = 0;            // 下一次爆炸時間點（ms）
   let _sfwEndAt = 0;              // 煙火結束時間點（ms，0＝未啟動）
@@ -3862,6 +3865,13 @@
         enemiesSynced = true;
         daynight = msg.daynight;
         if (daynight) updateDayNightHud(daynight);
+        // 晨昏橫幅（ROADMAP 511）：偵測日夜相位切換，首幀（_prevDayphase=""）不觸發。
+        if (daynight && daynight.phase) {
+          if (_prevDayphase && _prevDayphase !== daynight.phase) {
+            triggerDayphaseBanner(daynight.phase);
+          }
+          _prevDayphase = daynight.phase;
+        }
         worldEvent = msg.world_event || null;
         updateWorldEventPill(worldEvent);
         hordeEvent = msg.horde_event || null;
@@ -9758,6 +9768,9 @@
 
     // 換季煙火（ROADMAP 500）：換季時全螢幕粒子煙火慶典，置於所有 HUD 之上（最頂層、不擋操作）。
     safeDraw("seasonFireworks", () => drawSeasonFireworks(renderNow));
+
+    // 晨昏橫幅（ROADMAP 511）：日夜相位轉換時頂端時辰橫幅，置於所有 HUD 之上（不擋操作）。
+    safeDraw("dayphaseBanner", () => drawDayphaseBanner(renderNow));
 
     // 連殺標語（ROADMAP 508）：連殺 2+ 時畫面中央浮出標語，置於所有 HUD 之上（不擋操作）。
     safeDraw("killStreak", () => drawKillStreakBadge());
@@ -20551,6 +20564,95 @@
         ctx.restore();
       }
     }
+  }
+
+  // ── 晨昏橫幅（ROADMAP 511）─────────────────────────────────────────────────
+  // 日夜四相位（破曉/白晝/黃昏/夜晚）切換時，畫面頂端輕柔淡入 3 秒橫幅，
+  // 讓「世界的一天有了儀式感的節拍」——比季節慢（四相位一日循環），比天氣快（可隨時切換）。
+  // 純前端視覺：從快照的 daynight.phase 偵測切換，零後端、零協議、零 migration、零 LLM。
+
+  // 相位對應顯示文字（i18n 替換點）。壞值（未知相位）退回空字串，前端收到空字串不顯示。
+  function dayphaseLabel(phase) {
+    const TABLE = {
+      dawn:  "🌅 破曉了，晨光漸亮",
+      day:   "☀️ 天亮了，旅人出發吧",
+      dusk:  "🌇 黃昏了，夜色將臨",
+      night: "🌙 入夜了，世界更深沉了",
+    };
+    return TABLE[phase] || "";
+  }
+
+  // 相位對應橫幅背景與文字色調。壞值回 null（不顯示）。
+  function dayphaseBannerStyle(phase) {
+    const TABLE = {
+      dawn:  { bg: "rgba(200,100,40,0.72)",  text: "#fff8e8" },
+      day:   { bg: "rgba(40,90,160,0.72)",   text: "#e8f4ff" },
+      dusk:  { bg: "rgba(160,70,30,0.72)",   text: "#fff0e0" },
+      night: { bg: "rgba(20,15,50,0.80)",    text: "#d4c8ff" },
+    };
+    return TABLE[phase] || null;
+  }
+
+  // 觸發晨昏橫幅（在快照偵測到相位切換時呼叫）。未知相位保守不觸發。
+  function triggerDayphaseBanner(phase) {
+    if (!dayphaseLabel(phase)) return;
+    _dayphaseBanner = { phase, startMs: performance.now() };
+  }
+
+  const DAYPH_FADE_IN  = 400;   // 淡入毫秒
+  const DAYPH_SHOW     = 2200;  // 顯示毫秒
+  const DAYPH_FADE_OUT = 400;   // 淡出毫秒
+  const DAYPH_DUR = DAYPH_FADE_IN + DAYPH_SHOW + DAYPH_FADE_OUT; // 3000ms 總時長
+
+  // 每幀繪製晨昏橫幅（由 safeDraw 包護）。
+  function drawDayphaseBanner(now) {
+    if (!_dayphaseBanner) return;
+    const elapsed = now - _dayphaseBanner.startMs;
+    if (elapsed >= DAYPH_DUR) { _dayphaseBanner = null; return; }
+
+    const label = dayphaseLabel(_dayphaseBanner.phase);
+    if (!label) { _dayphaseBanner = null; return; }
+    const style = dayphaseBannerStyle(_dayphaseBanner.phase);
+    if (!style) { _dayphaseBanner = null; return; }
+
+    // 計算當前透明度（三段動畫：淡入→顯示→淡出）。
+    let alpha;
+    if (elapsed < DAYPH_FADE_IN) {
+      alpha = elapsed / DAYPH_FADE_IN;
+    } else if (elapsed < DAYPH_FADE_IN + DAYPH_SHOW) {
+      alpha = 1;
+    } else {
+      alpha = 1 - (elapsed - DAYPH_FADE_IN - DAYPH_SHOW) / DAYPH_FADE_OUT;
+    }
+    // reduceMotion：只在 SHOW 階段顯示靜態文字，跳過淡入淡出動畫。
+    if (effectiveReduceMotion()) {
+      alpha = (elapsed >= DAYPH_FADE_IN && elapsed < DAYPH_FADE_IN + DAYPH_SHOW) ? 1 : 0;
+    }
+    if (alpha <= 0.01) return;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const W = canvas.width;
+    ctx.font = `bold 22px ${UI_FONT}`;
+    const tw = ctx.measureText(label).width;
+    const pad = 20;
+    const bw = tw + pad * 2;
+    const bh = 42;
+    const bx = W / 2 - bw / 2;
+    const by = 14;
+    // 背景圓角 pill
+    ctx.fillStyle = style.bg;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, bh / 2);
+    ctx.fill();
+    // 文字
+    ctx.fillStyle = style.text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, W / 2, by + bh / 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
   }
 
   // ── 天邊流雲（ROADMAP 193）────────────────────────────────────────────────
