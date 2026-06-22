@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit() }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2854,6 +2854,94 @@
     panel.innerHTML = `<div style="color:#988;font-size:.62rem;margin-bottom:2px;">🏛️ 鎮民派系</div>${rows}${blocSection}
       <div style="color:#544;font-size:.56rem;margin-top:3px;">村民關係自然消長</div>
       <div style="color:#544;font-size:.58rem;margin-top:2px;text-align:right;">▾ 點此收合</div>`;
+  }
+
+  // ── 附近冒險者清單（ROADMAP 491）────────────────────────────────────────────
+  // 從既有玩家快照推算「他在做什麼」，純邏輯、無副作用。
+  // 優先序：倒地 > 釣魚 > 採礦 > 伐木 > 放風箏 > 戰鬥 > 探索。
+  function inferPlayerActivity(p) {
+    if (typeof p.hp === "number" && p.max_hp > 0 && p.hp <= 0) return "💤";
+    if (p.fishing_phase) return "🎣";
+    if (typeof p.mining_depth === "number") return "⛏️";
+    if (typeof p.chop_secs === "number") return "🪓";
+    if (p.flying_kite) return "🪁";
+    if (typeof p.charge_progress === "number") return "⚔️";
+    return "🚶";
+  }
+
+  let lastNearbyPlayersSig = null;
+  let nearbyPlayersCollapsed = (() => {
+    try { return localStorage.getItem("butfun.nearbyPlayersCollapsed") === "1"; } catch { return false; }
+  })();
+
+  // 附近冒險者清單 HUD：半徑 640px 內有其他玩家時自動浮出，孤身一人時自動隱藏。
+  // 純前端——利用既有每幀玩家快照、零後端／協議／migration 改動。
+  function updateNearbyPlayersHud(me) {
+    const RADIUS = 640;  // 附近定義半徑（px）
+    const MAX_SHOW = 3;  // 最多顯示幾人
+
+    // 收集附近玩家（排除自己），按距離排序。
+    const nearby = [];
+    if (me) {
+      for (const p of players.values()) {
+        if (p.id === me.id) continue;
+        const dx = p.x - me.x;
+        const dy = p.y - me.y;
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 <= RADIUS * RADIUS) nearby.push({ p, dist: Math.sqrt(dist2) });
+      }
+      nearby.sort((a, b) => a.dist - b.dist);
+    }
+
+    let panel = document.getElementById("hudNearbyPlayers");
+    if (!nearby.length) {
+      // 附近無人→面板整個移除，不留空殼佔版面。
+      if (panel) { panel.remove(); lastNearbyPlayersSig = null; }
+      return;
+    }
+
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "hudNearbyPlayers";
+      panel.style.cssText = [
+        "position:fixed", "bottom:130px", "right:8px",
+        "background:rgba(10,12,20,0.72)", "border:1px solid #346",
+        "border-radius:8px", "padding:5px 8px",
+        "font-size:.72rem", "font-family:monospace",
+        "z-index:1000", "cursor:pointer", "user-select:none",
+      ].join(";");
+      panel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        nearbyPlayersCollapsed = !nearbyPlayersCollapsed;
+        try { localStorage.setItem("butfun.nearbyPlayersCollapsed", nearbyPlayersCollapsed ? "1" : "0"); } catch {}
+        lastNearbyPlayersSig = null; // 強制下一幀重繪
+      });
+      document.body.appendChild(panel);
+    }
+
+    const shown = nearby.slice(0, MAX_SHOW);
+    // sig：展/折 + 人數 + 各人 id/活動/等級 變了才重建 innerHTML（守 panel-sig 病）。
+    const sig = `${nearbyPlayersCollapsed}|${nearby.length}|`
+      + shown.map(({ p }) => `${p.id}:${inferPlayerActivity(p)}:${p.level}`).join(",");
+    if (sig === lastNearbyPlayersSig) return;
+    lastNearbyPlayersSig = sig;
+
+    if (nearbyPlayersCollapsed) {
+      panel.innerHTML = `<span style="color:#9fd0ff;">👥 ${nearby.length} <span style="font-size:.6rem;color:#556;">▸</span></span>`;
+      return;
+    }
+
+    let html = `<div style="color:#9fd0ff;margin-bottom:3px;">👥 附近 ${nearby.length} 人 <span style="font-size:.6rem;color:#556;">▴</span></div>`;
+    for (const { p } of shown) {
+      const act = inferPlayerActivity(p);
+      const name = (p.name || "?").slice(0, 8);
+      const lv = p.level || 1;
+      html += `<div style="color:#ccc;">${act} <span style="color:#8ab;">Lv${lv}</span> ${name}</div>`;
+    }
+    if (nearby.length > MAX_SHOW) {
+      html += `<div style="color:#556;font-size:.65rem;">⋯還有 ${nearby.length - MAX_SHOW} 人</div>`;
+    }
+    panel.innerHTML = html;
   }
 
   let quests = []; // [{description, goal, progress, completed}] — ROADMAP 27 全服社群任務
@@ -9326,6 +9414,7 @@
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
+      updateNearbyPlayersHud(me);           // 附近冒險者清單（ROADMAP 491）
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
       updateScarePredatorBtn();             // 驅趕正在追獵的掠食者按鈕（ROADMAP 357）
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）

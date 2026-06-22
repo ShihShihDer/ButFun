@@ -3076,6 +3076,38 @@ for (const sc of scenarios) {
   else console.log("  ✅ 戰鬥音效：sfxHit/weakHit/powerHit 導出完整；普通/暴擊/擊殺/破綻/蓄力/半蓄力六路徑皆乾淨");
 }
 
+// 附近冒險者清單（ROADMAP 491）：驗 inferPlayerActivity 純函式各分支正確、HUD 更新路徑零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：附近冒險者清單（ROADMAP 491）──");
+  let ok = true;
+  try {
+    const infer = sandbox.__bfTest && sandbox.__bfTest.inferPlayerActivity;
+    if (!infer) {
+      ok = false;
+      console.error("  ❌ 附近冒險者：game.js 未導出 inferPlayerActivity");
+    } else {
+      // 各分支真值表。
+      if (infer({ hp: 0, max_hp: 100 }) !== "💤") { ok = false; console.error("  ❌ 倒地分支應回 💤"); }
+      if (infer({ hp: 50, max_hp: 100, fishing_phase: "waiting" }) !== "🎣") { ok = false; console.error("  ❌ 釣魚分支應回 🎣"); }
+      if (infer({ hp: 50, max_hp: 100, mining_depth: 3 }) !== "⛏️") { ok = false; console.error("  ❌ 採礦分支應回 ⛏️"); }
+      if (infer({ hp: 50, max_hp: 100, chop_secs: 1.2 }) !== "🪓") { ok = false; console.error("  ❌ 伐木分支應回 🪓"); }
+      if (infer({ hp: 50, max_hp: 100, flying_kite: true }) !== "🪁") { ok = false; console.error("  ❌ 放風箏分支應回 🪁"); }
+      if (infer({ hp: 50, max_hp: 100, charge_progress: 0.5 }) !== "⚔️") { ok = false; console.error("  ❌ 戰鬥分支應回 ⚔️"); }
+      if (infer({ hp: 50, max_hp: 100 }) !== "🚶") { ok = false; console.error("  ❌ 預設分支應回 🚶"); }
+      // max_hp=0（無效玩家）不應觸發倒地（避免除以零誤判）。
+      if (infer({ hp: 0, max_hp: 0 }) !== "🚶") { ok = false; console.error("  ❌ max_hp=0 應回 🚶 不誤判倒地"); }
+    }
+    // HUD 更新路徑：快照已含多玩家，連跑多幀確認零例外。
+    pump("附近冒險者 HUD", 4);
+  } catch (e) {
+    ok = false; console.error("  ❌ 附近冒險者：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 附近冒險者：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 附近冒險者：inferPlayerActivity 七路徑＋max_hp=0 保守全對；HUD 更新路徑多幀零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
