@@ -344,6 +344,11 @@ pub enum ItemKind {
     /// 傳說戰刃🌟（合成：傳說晶核×1 + Alpha 晶核×3 + 乙太礦石×30）。
     /// 攻擊力 +55，全遊戲最強武器——傳說古 Alpha 生命力的最終結晶。
     LegendaryBlade,
+
+    // ── 黃金礦脈爭奪戰（ROADMAP 521）────────────────────────────────────────
+    /// 黃金礦石⛏️（黃金礦脈爭奪戰事件中搶挖可得）。純紀念品，可賣 NPC 換乙太。
+    /// 事件結束時 top3 另外從乙太池直接獎勵；礦石本身是「我有挖到」的實體戰利品。
+    GoldOre,
 }
 
 impl ItemKind {
@@ -456,6 +461,8 @@ impl ItemKind {
         // ROADMAP 173 傳說古 Alpha 戰利品
         ItemKind::LegendaryCore,
         ItemKind::LegendaryBlade,
+        // ROADMAP 521 黃金礦脈爭奪戰
+        ItemKind::GoldOre,
     ];
 }
 
@@ -764,13 +771,15 @@ mod tests {
                 | ItemKind::AlphaForce
                 // ROADMAP 173 傳說古 Alpha 戰利品
                 | ItemKind::LegendaryCore
-                | ItemKind::LegendaryBlade => {}
+                | ItemKind::LegendaryBlade
+                // ROADMAP 521 黃金礦脈爭奪戰
+                | ItemKind::GoldOre => {}
             }
         }
         let unique: std::collections::BTreeSet<_> = ItemKind::ALL.iter().collect();
         assert_eq!(unique.len(), ItemKind::ALL.len(), "ItemKind::ALL 有重複條目");
-        // 目前共 96 種（含 ROADMAP 437：家中水族缸 水族缸 1 種）；加變體時連同上面的 match 一起更新。
-        assert_eq!(ItemKind::ALL.len(), 96, "ItemKind::ALL 筆數與變體數不一致");
+        // 目前共 97 種（含 ROADMAP 521：黃金礦石 1 種）；加變體時連同上面的 match 一起更新。
+        assert_eq!(ItemKind::ALL.len(), 97, "ItemKind::ALL 筆數與變體數不一致");
     }
 
     #[test]
@@ -953,8 +962,10 @@ mod tests {
             let alpha_kill_drop = item == ItemKind::AlphaCrystal;
             // 傳說古 Alpha 擊倒可得（ROADMAP 173）：擊倒世界頭目後殺手得 LegendaryCore。
             let ancient_alpha_kill_drop = item == ItemKind::LegendaryCore;
+            // 黃金礦脈爭奪戰搶挖可得（ROADMAP 521）：礦脈活躍期間走近按搶挖，每次得 1 顆。
+            let gold_rush_mineable = item == ItemKind::GoldOre;
             assert!(
-                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || apiary_brewable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop,
+                gatherable_src || craftable_src || droppable_src || tile_diggable || fish_catchable || egg_ranchable || apiary_brewable || farm_croppable || star_crystal_gatherable || meteor_dust_collectible || seasonal_node_collectible || alpha_kill_drop || ancient_alpha_kill_drop || gold_rush_mineable,
                 "物品 {item:?} 沒有任何取得途徑（不可採集／無配方產出／非敵人掉落／非地形挖掘／非釣魚／非牧場／非農地種植／非夜採星晶／非流星雨採集／非季節節點採集／非 Alpha 擊殺掉落）\
                  ——它是玩家永遠拿不到的死物品；請給它一條來源，或更新本不變式"
             );

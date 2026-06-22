@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b) }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2365,6 +2365,52 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 黃金礦脈爭奪戰 HUD pill（ROADMAP 521）：事件進行中顯示倒數＋即時前三名；事件結束則隱藏。
+  // 純函式：組裝搶挖互動提示標籤（可測）。gr = goldRush 快照，回 null 代表不顯示提示。
+  function goldRushNearLabel(gr) {
+    if (!gr || gr.remaining_ore <= 0) return null;
+    const mins = Math.floor((gr.remaining_secs || 0) / 60);
+    const secs = (gr.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    return `⛏️ 搶挖黃金礦脈（剩 ${gr.remaining_ore} 礦 ${timeStr}）[E]`;
+  }
+
+  let _lastGoldRushText = null;
+  function updateGoldRushHud() {
+    const pill = document.getElementById("hudGoldRush");
+    if (!goldRush || goldRush.remaining_ore <= 0) {
+      if (pill) pill.style.display = "none";
+      _lastGoldRushText = null;
+      return;
+    }
+    const mins = Math.floor((goldRush.remaining_secs || 0) / 60);
+    const secs = (goldRush.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const top3Str = Array.isArray(goldRush.top3) && goldRush.top3.length > 0
+      ? goldRush.top3.slice(0, 3).map((e, i) => {
+          const medals = ["🥇", "🥈", "🥉"];
+          return `${medals[i] || ""}${e[0]}×${e[1]}`;
+        }).join(" ")
+      : "";
+    const text = `⛏️ 礦脈 ${goldRush.remaining_ore} | ${timeStr}${top3Str ? " | " + top3Str : ""}`;
+    if (text === _lastGoldRushText) return;
+    _lastGoldRushText = text;
+    if (!document.getElementById("hudGoldRush")) {
+      const el = document.createElement("div");
+      el.id = "hudGoldRush";
+      el.style.cssText = [
+        "order:3",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:700",
+        "padding:3px 10px",
+        "background:#1a1200", "color:#ffd700", "border:1px solid #cc9900",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudGoldRush");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3111,6 +3157,10 @@
   let etherSurgeSecs = 0;       // ROADMAP 504 乙太暴走剩餘秒數（0=無暴走）
   let etherSurgeX = 0;          // ROADMAP 504 暴走位置 X（世界座標）
   let etherSurgeY = 0;          // ROADMAP 504 暴走位置 Y（世界座標）
+  let goldRush = null;           // ROADMAP 521 黃金礦脈爭奪戰快照（null=無事件，非 null 時含 remaining_ore/remaining_secs/top3）
+  const GOLD_RUSH_VEIN_WX = 3800; // 與後端 gold_rush::VEIN_WX 對齊
+  const GOLD_RUSH_VEIN_WY = 2400; // 與後端 gold_rush::VEIN_WY 對齊
+  const GOLD_RUSH_MINE_REACH = 120; // 與後端 gold_rush::MINE_REACH 對齊
   const nodeRespawnPulses = new Map();    // ROADMAP 507 礦石脈動：key `${x},${y}`，value = 脈動起始 performance.now()
   const prevNodeHarvestable = new Map();  // ROADMAP 507 礦石脈動：上一快照各節點的 harvestable 狀態
   const RESPAWN_PULSE_MS = 2000;          // ROADMAP 507 礦石脈動持續毫秒數
@@ -4057,6 +4107,8 @@
         etherSurgeSecs = (msg.ether_surge_secs || 0);
         etherSurgeX = (msg.ether_surge_x || 0);
         etherSurgeY = (msg.ether_surge_y || 0);
+        // 黃金礦脈爭奪戰（ROADMAP 521）：事件進行中才有此欄位（serde default = None），平時 null 節省頻寬。
+        goldRush = msg.gold_rush || null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -4510,6 +4562,8 @@
           updateCheerSnowmanBtn(me, isGuest);
           // 蒸汽星艦修繕按鈕（ROADMAP 492）：已登入、戶外、走近星艦、星艦損毀中才顯示
           updateShipRepairBtn(me, isGuest);
+          // 黃金礦脈搶挖按鈕（ROADMAP 521）：事件進行中、已登入、戶外、走近礦脈才顯示
+          updateMineGoldRushBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -9686,6 +9740,7 @@
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
     safeDraw("etherSurge", () => drawEtherSurge(camX, camY, renderNow)); // 乙太暴走事件（504）
+    safeDraw("goldRush", () => drawGoldRush(camX, camY, renderNow)); // 黃金礦脈爭奪戰（521）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -9870,6 +9925,7 @@
       updateWeatherForecastHud();           // 氣象預報台（ROADMAP 405）
       updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
       updateEtherSurgeHud();               // 乙太暴走事件（ROADMAP 504）
+      updateGoldRushHud();                 // 黃金礦脈爭奪戰（ROADMAP 521）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
@@ -10658,6 +10714,31 @@
     }
   }
   // ── 蒸汽星艦修繕按鈕 end ────────────────────────────────────────────────────────
+
+  // ── 黃金礦脈搶挖按鈕（ROADMAP 521）──────────────────────────────────────────────
+  // 純函式：判斷玩家是否在礦脈互動範圍內（與後端 MINE_REACH 對齊）。
+  function withinGoldRushReach(px, py) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - GOLD_RUSH_VEIN_WX;
+    const dy = py - GOLD_RUSH_VEIN_WY;
+    return dx * dx + dy * dy <= GOLD_RUSH_MINE_REACH * GOLD_RUSH_MINE_REACH;
+  }
+
+  function updateMineGoldRushBtn(me, isGuestUser) {
+    const btn = document.getElementById("mineGoldRushBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    // 黃金礦脈進行中、已登入、戶外、未倒地、在礦脈範圍內才顯示。
+    const isActive = !!goldRush && goldRush.remaining_ore > 0;
+    const near = !!me && withinGoldRushReach(me.x, me.y);
+    const canShow = isActive && !!me && !isGuestUser && me.indoor_plot_id == null && !downed && near;
+    btn.classList.toggle("hidden", !canShow);
+    if (canShow) {
+      const label = goldRushNearLabel(goldRush);
+      if (label) btn.textContent = label;
+    }
+  }
+  // ── 黃金礦脈搶挖按鈕 end ──────────────────────────────────────────────────────
 
   // 雪人讚賞（ROADMAP 479）：讚賞搆得著半徑，與後端 snowman::CHEER_RADIUS(80) 對齊。
   const SNOWMAN_CHEER_RADIUS = 80;
@@ -13778,6 +13859,81 @@
     ctx.strokeStyle = `rgba(255,200,40,${(0.15 + 0.08 * pulse).toFixed(3)})`;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+  }
+
+  // 繪製黃金礦脈爭奪戰特效（ROADMAP 521）：礦脈位置發出閃爍金色光暈，活躍時顯示礦量與倒數。
+  // 純前端演出：多層同心圓脈衝光暈＋⛏️圖示＋礦量標籤；事件結束（goldRush=null）自動消失。
+  function drawGoldRush(camX, camY, now) {
+    if (!goldRush || goldRush.remaining_ore <= 0) return;
+    const sx = GOLD_RUSH_VEIN_WX - camX;
+    const sy = GOLD_RUSH_VEIN_WY - camY;
+    // 視窗外 160px 才略過（光暈大）
+    if (sx < -160 || sy < -160 || sx > viewW + 160 || sy > viewH + 160) return;
+
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.004);        // 緩慢脈衝 [0,1]
+    const fastPulse = 0.5 + 0.5 * Math.sin(now * 0.011);    // 快速閃爍 [0,1]
+    // 礦量越少，光暈越暗（玩家感受到礦脈快耗盡）
+    const oreFrac = Math.max(0, Math.min(1, (goldRush.remaining_ore || 0) / 60));
+
+    ctx.save();
+
+    // 最外層擴散光暈（暖金色）
+    const outerR = 80 + 14 * pulse;
+    const grad = ctx.createRadialGradient(sx, sy, outerR * 0.2, sx, sy, outerR);
+    grad.addColorStop(0, `rgba(255,210,30,${((0.28 + 0.12 * pulse) * oreFrac).toFixed(3)})`);
+    grad.addColorStop(0.5, `rgba(200,150,0,${((0.14 + 0.08 * pulse) * oreFrac).toFixed(3)})`);
+    grad.addColorStop(1, "rgba(180,100,0,0)");
+    ctx.beginPath();
+    ctx.arc(sx, sy, outerR, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 中層礦石核心（多邊形感：8 個頂點的閃石輪廓）
+    const r = 18 + 4 * pulse;
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI * 2) / 8 - Math.PI / 2;
+      const rr = i % 2 === 0 ? r : r * 0.65;
+      if (i === 0) ctx.moveTo(sx + rr * Math.cos(angle), sy + rr * Math.sin(angle));
+      else ctx.lineTo(sx + rr * Math.cos(angle), sy + rr * Math.sin(angle));
+    }
+    ctx.closePath();
+    ctx.fillStyle = `rgba(255,210,40,${(0.7 + 0.25 * fastPulse).toFixed(3)})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255,240,100,${(0.9 + 0.08 * fastPulse).toFixed(3)})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 中心圖示
+    ctx.font = `16px ${UI_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⛏️", sx, sy + 1);
+
+    // 礦量＋倒數標籤
+    const mins = Math.floor((goldRush.remaining_secs || 0) / 60);
+    const secs = (goldRush.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const label = `⛏️ ×${goldRush.remaining_ore} ${timeStr}`;
+    ctx.font = `bold 12px ${UI_FONT}`;
+    ctx.textBaseline = "alphabetic";
+    const ty = sy - 44;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText(label, sx, ty);
+    ctx.fillStyle = "rgba(255,220,50,0.97)";
+    ctx.fillText(label, sx, ty);
+
+    // 互動範圍指示圓（淡顯）
+    ctx.beginPath();
+    ctx.arc(sx, sy, GOLD_RUSH_MINE_REACH, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255,200,30,${(0.12 + 0.07 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 7]);
     ctx.stroke();
     ctx.setLineDash([]);
 
@@ -24756,9 +24912,9 @@
   // 背包明細/飄字/報讀器都跟採集三資源一樣有 emoji、中文名與色,不掉回裸字串。
   // weapon 是合成產物(伺服器 crafting.rs 的 "weapon" 配方,ItemKind::Weapon → snake_case "weapon"),
   // 會隨背包快照回來;補進這三張表,讓合出的武器跟工具一樣有 emoji/中文名/色,不掉回裸字串 "weapon"。
-  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", axe: "🪓", fishing_rod: "🎣", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", aquarium: "🐠", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙" };
+  const ITEM_LOOK = { wood: "🪵", dirt: "🟫", stone: "🪨", ether: "✨", pickaxe: "⛏️", reinforced_pickaxe: "⚒️", weapon: "🗡️", axe: "🪓", fishing_rod: "🎣", crystal_shard: "💎", mushroom_spore: "🍄", ancient_fragment: "🏺", deep_sea_pearl: "🫧", wildflower_seed: "🌸", healing_potion: "🧪", crystal_potion: "🔮", mushroom_elixir: "🫗", ether_pill: "💊", pearl_potion: "💠", crystal_blade: "🔪", coral_lance: "🔱", meadow_amulet: "🍀", crystal_shield: "🛡️", star_chart: "🗺️", mushroom_staff: "🪄", rune_blade: "⚜️", jade_shard: "🟢", jade_elixir: "🍵", jade_blade: "🗡️", lava_crystal: "🔶", steam_elixir: "🔥", crimson_blade: "🗡️", void_shard: "🔮", void_elixir: "🌌", void_blade: "⚔️", aether_shard: "🌫️", aether_essence: "🔵", aether_blade: "🗡️", origin_shard: "🔮", origin_essence: "✨", origin_blade: "🗡️", rift_shard: "🌀", cosmic_shield: "🌌", sprinkler: "💧", town_brew: "🍺", vibrant_elixir: "🌟", wheat_grain: "🌾", star_dust: "☄️", star_amulet: "🌟", rainbow_star_dust: "🌈", star_guardian_amulet: "🌠", star_crystal_shard: "🔮", hardened_blade: "🗡️", star_crystal_blade: "⚔️", rift_blade: "🌀", coral_armor: "🦞", rune_armor: "🛡️", star_crystal_armor: "✨", ether_bow: "🏹", crystal_ballista: "🎯", void_cannon: "💥", wild_flower: "🌼", solar_shard: "🌞", maple_leaf: "🍁", ice_shard: "🧊", spring_sachet: "🌷", summer_elixir: "☀️", autumn_tonic: "🍂", winter_medicine: "❄️", steam_bed: "🛏️", aether_chest: "📦", ether_plant: "🪴", star_lantern: "🔮", ancient_deco: "🏺", aquarium: "🐠", ether_overlord_core: "💠", ether_overlord_blade: "⚔️", alpha_crystal: "💎", alpha_force: "⚡", legendary_core: "💫", legendary_blade: "🌟", fish_small: "🐟", fish_star: "⭐", fish_deep: "🦈", egg: "🥚", carrot: "🥕", potato: "🥔", grilled_fish: "🍢", star_sashimi: "🍣", deep_broth: "🍲", fried_egg: "🍳", honey: "🍯", bread: "🍞", carrot_soup: "🥣", potato_gratin: "🧀", night_potion: "🌙", gold_ore: "🪙" };
   // 報讀器用的品項中文名（emoji 對報讀器無意義,播報時念名字而非圖示）。
-  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", axe: "斧頭", fishing_rod: "釣竿", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", aquarium: "水族缸", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水" };
+  const ITEM_NAME = { wood: "木材", dirt: "土磚", stone: "石頭", ether: "乙太", pickaxe: "鎬子", reinforced_pickaxe: "強化鎬", weapon: "武器", axe: "斧頭", fishing_rod: "釣竿", crystal_shard: "晶石碎片", mushroom_spore: "蕈菇孢子", ancient_fragment: "古代碎片", deep_sea_pearl: "深海珍珠", wildflower_seed: "野花種子", healing_potion: "活力藥水", crystal_potion: "晶石強化液", mushroom_elixir: "蕈菇活化液", ether_pill: "古代乙太丸", pearl_potion: "珍珠復原藥", crystal_blade: "晶石之刃", coral_lance: "珊瑚矛", meadow_amulet: "草原護符", crystal_shield: "晶石護盾", star_chart: "星圖", mushroom_staff: "蕈菇杖", rune_blade: "符文刃", jade_shard: "翠幽碎片", jade_elixir: "翠幽精露", jade_blade: "翠幽刃", lava_crystal: "熔晶碎片", steam_elixir: "蒸汽精粹", crimson_blade: "赤焰刃", void_shard: "虛空碎片", void_elixir: "虛空精粹", void_blade: "虛空刃", aether_shard: "霧醚碎片", aether_essence: "霧醚精粹", aether_blade: "霧醚之刃", origin_shard: "源晶碎片", origin_essence: "源晶精粹", origin_blade: "源晶之刃", rift_shard: "裂縫碎片", cosmic_shield: "宇宙護盾", sprinkler: "灑水器", town_brew: "城鎮特釀", vibrant_elixir: "繁盛精露", wheat_grain: "小麥穗", star_dust: "星塵", star_amulet: "星光護符", rainbow_star_dust: "彩虹星塵", star_guardian_amulet: "星際守護符", star_crystal_shard: "星晶碎片", hardened_blade: "硬化刃", star_crystal_blade: "星晶之刃", rift_blade: "裂縫刃", coral_armor: "珊瑚鎧", rune_armor: "符文鎧", star_crystal_armor: "星晶鎧", ether_bow: "乙太弓", crystal_ballista: "晶石弩", void_cannon: "虛空炮", wild_flower: "野花", solar_shard: "太陽碎片", maple_leaf: "楓葉", ice_shard: "冰晶碎片", spring_sachet: "春日香囊", summer_elixir: "夏日精粹", autumn_tonic: "秋日補藥", winter_medicine: "冬日神藥", steam_bed: "蒸汽床", aether_chest: "乙太箱", ether_plant: "醚草盆栽", star_lantern: "星燈", ancient_deco: "古代裝飾", aquarium: "水族缸", ether_overlord_core: "霸主晶核", ether_overlord_blade: "守城戰刃", alpha_crystal: "Alpha晶石", alpha_force: "Alpha原力", legendary_core: "傳說晶核", legendary_blade: "傳說戰刃", fish_small: "小魚", fish_star: "星星魚", fish_deep: "深海魚", egg: "雞蛋", carrot: "胡蘿蔔", potato: "馬鈴薯", grilled_fish: "烤魚", star_sashimi: "星燦刺身", deep_broth: "深海濃湯", fried_egg: "煎蛋", honey: "蜂蜜", bread: "麵包", carrot_soup: "蔬菜湯", potato_gratin: "焗烤馬鈴薯", night_potion: "夜幻藥水", gold_ore: "黃金礦石" };
   // 採集飄字的品項色（與節點底色同調,讓「採到什麼」一眼可分）。強化鎬比鎬子更金亮一階,呼應升級。武器走攻擊紅。
   const ITEM_FLOAT_COLOR = { wood: "150,210,140", dirt: "190,150,100", stone: "200,205,210", ether: "255,210,74", pickaxe: "210,180,120", reinforced_pickaxe: "230,195,90", weapon: "232,96,84", axe: "190,150,110", fishing_rod: "120,180,225", crystal_shard: "160,100,255", mushroom_spore: "80,220,120", ancient_fragment: "220,185,80", deep_sea_pearl: "80,220,210", wildflower_seed: "255,210,60", healing_potion: "255,120,180", crystal_potion: "160,100,255", mushroom_elixir: "80,220,120", ether_pill: "220,185,80", pearl_potion: "80,220,210", crystal_blade: "120,200,255", coral_lance: "80,220,180", meadow_amulet: "180,255,140", crystal_shield: "140,180,255", star_chart: "220,200,255", mushroom_staff: "60,220,130", rune_blade: "200,150,255", jade_shard: "60,220,150", jade_elixir: "80,240,170", jade_blade: "50,200,130", lava_crystal: "255,120,40", steam_elixir: "255,160,60", crimson_blade: "220,80,40", void_shard: "160,80,255", void_elixir: "200,120,255", void_blade: "140,60,220", aether_shard: "80,200,255", aether_essence: "100,220,255", aether_blade: "60,180,240", origin_shard: "255,220,80", origin_essence: "255,240,160", origin_blade: "255,210,60", hardened_blade: "180,180,200", star_crystal_blade: "200,220,255", rift_blade: "180,120,255", coral_armor: "80,200,180", rune_armor: "200,160,100", star_crystal_armor: "160,200,255", ether_bow: "80,220,255", crystal_ballista: "160,220,255", void_cannon: "180,80,255", ether_overlord_core: "80,180,255", ether_overlord_blade: "100,220,240", alpha_crystal: "220,180,255", alpha_force: "255,220,60", legendary_core: "255,215,0", legendary_blade: "255,240,120" };
   // 合成配方表(前端呈現用,與伺服器 crafting.rs 的 RECIPES 對齊):產物 ← 素材。
@@ -33206,6 +33362,26 @@
         safeSend({ type: "contribute_to_ship" });
         const pct = Math.round(((shipRepair.progress + 1) / (shipRepair.goal || 20)) * 100);
         announce(`⚙️ 貢獻了 2 木材修繕星艦（進度約 ${pct}%）——多位旅人齊力，讓它再度飛翔！`);
+      });
+    }
+    // ⛏️ 黃金礦脈搶挖（ROADMAP 521）：走近礦脈按下搶挖，每人有個別冷卻時間；前三名得乙太大賞。
+    const mineGoldRushBtn = document.getElementById("mineGoldRushBtn");
+    if (mineGoldRushBtn) {
+      mineGoldRushBtn.addEventListener("click", () => {
+        SFX.click();
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (!goldRush || goldRush.remaining_ore <= 0) {
+          announce("黃金礦脈目前沒有活躍事件——等待下一次出現吧");
+          return;
+        }
+        if (!withinGoldRushReach(me.x, me.y)) {
+          announce("離黃金礦脈太遠——走近礦脈（城正東方）再試試");
+          return;
+        }
+        safeSend({ type: "mine_gold_rush" });
+        // 樂觀提示（server 端仍以冷卻/礦量把關，靜默忽略重複請求）
+        announce("⛏️ 搶挖！礦石到手——但要等冷卻才能再挖一次");
       });
     }
     // ♥ 雪人讚賞（ROADMAP 479）：走近一座別人堆的雪人，給它按個讚捎去暖意；堆雪者會收到通知。

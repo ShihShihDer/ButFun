@@ -4407,6 +4407,76 @@ for (const sc of scenarios) {
   else console.log("  ✅ 地形步伐音效（ROADMAP 520）：stepSoundSpec 真值表(7 cases) + 欄位合法 + tickStepSound 無玩家/大位移/正常移動零例外");
 }
 
+// ── ROADMAP 521：黃金礦脈爭奪戰 ──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const gnl = sandbox.__bfTest && sandbox.__bfTest.goldRushNearLabel;
+    const wgr = sandbox.__bfTest && sandbox.__bfTest.withinGoldRushReach;
+    const dgr = sandbox.__bfTest && sandbox.__bfTest.drawGoldRush;
+    if (!gnl) throw new Error("goldRushNearLabel 未匯出");
+    if (!wgr) throw new Error("withinGoldRushReach 未匯出");
+    if (!dgr) throw new Error("drawGoldRush 未匯出");
+
+    // goldRushNearLabel 真值表：事件進行中回非 null 字串
+    {
+      const lbl = gnl({ remaining_ore: 30, remaining_secs: 120, top3: [] });
+      if (typeof lbl !== "string" || !lbl) { ok = false; console.error("  ❌ goldRushNearLabel(進行中) 應回非空字串"); }
+    }
+    // goldRushNearLabel：礦量為 0 回 null
+    {
+      const lbl = gnl({ remaining_ore: 0, remaining_secs: 120, top3: [] });
+      if (lbl !== null) { ok = false; console.error("  ❌ goldRushNearLabel(ore=0) 應回 null"); }
+    }
+    // goldRushNearLabel：null 輸入回 null
+    {
+      if (gnl(null) !== null) { ok = false; console.error("  ❌ goldRushNearLabel(null) 應回 null"); }
+    }
+
+    // withinGoldRushReach：礦脈中心點應在範圍內
+    {
+      const VEIN_WX = 3800, VEIN_WY = 2400;
+      if (!wgr(VEIN_WX, VEIN_WY)) { ok = false; console.error("  ❌ withinGoldRushReach(礦脈中心) 應為 true"); }
+      // 超出範圍（MINE_REACH=120）
+      if (wgr(VEIN_WX + 130, VEIN_WY)) { ok = false; console.error("  ❌ withinGoldRushReach(130px外) 應為 false"); }
+      // 壞座標保守回 false
+      if (wgr(NaN, VEIN_WY)) { ok = false; console.error("  ❌ withinGoldRushReach(NaN,y) 應為 false"); }
+    }
+
+    // drawGoldRush：無事件（goldRush=null）不拋
+    {
+      sandbox.goldRush = null;
+      try { dgr(0, 0, performance.now()); } catch (e) {
+        ok = false; console.error("  ❌ drawGoldRush(無事件) 拋出例外:", e && e.message);
+      }
+    }
+    // drawGoldRush：事件進行中連跑 5 幀不拋
+    {
+      sandbox.goldRush = { remaining_ore: 20, remaining_secs: 90, top3: [["甲", 5], ["乙", 3]] };
+      const now0 = performance.now();
+      for (let f = 0; f < 5; f++) {
+        try { dgr(0, 0, now0 + f * 16); } catch (e) {
+          ok = false; console.error(`  ❌ drawGoldRush(事件進行中 f=${f}) 拋出例外:`, e && e.message);
+        }
+      }
+      sandbox.goldRush = null;
+    }
+    // drawGoldRush：礦量為 0（事件即將結束）不拋
+    {
+      sandbox.goldRush = { remaining_ore: 0, remaining_secs: 0, top3: [] };
+      try { dgr(0, 0, performance.now()); } catch (e) {
+        ok = false; console.error("  ❌ drawGoldRush(ore=0) 拋出例外:", e && e.message);
+      }
+      sandbox.goldRush = null;
+    }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 黃金礦脈爭奪戰：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 黃金礦脈爭奪戰（ROADMAP 521）：測試失敗"); }
+  else console.log("  ✅ 黃金礦脈爭奪戰（ROADMAP 521）：goldRushNearLabel 真值表(3 cases) + withinGoldRushReach 邊界(3 cases) + drawGoldRush 無事件/進行中/ore=0 零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

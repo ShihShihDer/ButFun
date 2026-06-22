@@ -94,7 +94,9 @@ pub fn tool_from_item(item: ItemKind) -> Option<ToolKind> {
         | ItemKind::StarLantern | ItemKind::AncientDeco | ItemKind::Aquarium
         | ItemKind::EtherOverlordCore | ItemKind::EtherOverlordBlade
         | ItemKind::AlphaCrystal | ItemKind::AlphaForce
-        | ItemKind::LegendaryCore | ItemKind::LegendaryBlade => None,
+        | ItemKind::LegendaryCore | ItemKind::LegendaryBlade
+        // ROADMAP 521 黃金礦石：非採集工具，回 None。
+        | ItemKind::GoldOre => None,
     }
 }
 

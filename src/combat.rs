@@ -311,7 +311,9 @@ pub fn weapon_from_item(item: ItemKind) -> Option<WeaponKind> {
         | ItemKind::EtherOverlordCore
         | ItemKind::AlphaCrystal
         | ItemKind::AlphaForce
-        | ItemKind::LegendaryCore => None,
+        | ItemKind::LegendaryCore
+        // ROADMAP 521 黃金礦石：非武器，回 None。
+        | ItemKind::GoldOre => None,
         ItemKind::CrimsonBlade => Some(WeaponKind::CrimsonBlade),
         ItemKind::VoidBlade => Some(WeaponKind::VoidBlade),
         ItemKind::AetherBlade => Some(WeaponKind::AetherBlade),
@@ -426,7 +428,9 @@ pub fn armor_from_item(item: ItemKind) -> Option<ArmorKind> {
         | ItemKind::AlphaCrystal
         | ItemKind::AlphaForce
         | ItemKind::LegendaryCore
-        | ItemKind::LegendaryBlade => None,
+        | ItemKind::LegendaryBlade
+        // ROADMAP 521 黃金礦石：非護甲，回 None。
+        | ItemKind::GoldOre => None,
     }
 }
 

@@ -688,7 +688,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -856,6 +856,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         ether_surge_secs: *ether_surge_secs,
                                         ether_surge_x: *ether_surge_x,
                                         ether_surge_y: *ether_surge_y,
+                                        // 黃金礦脈爭奪戰（ROADMAP 521）：全服廣播事件狀態（平時 None 節省頻寬）。
+                                        gold_rush: gold_rush.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1725,6 +1727,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 一律用堆雪者自己的權威座標（防隔空堆雪）。堆好的雪人會進下一幀快照、
                             // 附近玩家自然看見，無須額外廣播。
                             let _ = app.snowmen.write().unwrap().build(id, name, px, py);
+                        }
+                    }
+                }
+                Ok(ClientMsg::MineGoldRush) => {
+                    // 黃金礦脈爭奪戰搶挖（ROADMAP 521）：玩家走到礦脈附近送出搶挖請求。
+                    // 以玩家自己的權威座標判定範圍（防隔空挖礦）；室內玩家座標在另一空間，
+                    // try_mine 的距離判定會自然排除——不另設室內特判。
+                    let miner: Option<(f32, f32, String)> = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).map(|p| (p.x, p.y, p.name.clone()))
+                    };
+                    if let Some((px, py, name)) = miner {
+                        // 黃金礦脈寫鎖：try_mine 回 Some(total_count)=成功挖到 1 顆，None=靜默忽略。
+                        // 守 prod-deadlock：寫鎖即取即放，出鎖後才改背包。
+                        let mine_result = app.gold_rush.write().unwrap().try_mine(id, &name, px, py);
+                        if let Some(_count) = mine_result {
+                            // 把 1 顆黃金礦石加進玩家背包（背包寫鎖與 gold_rush 鎖不巢狀）。
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&id) {
+                                p.inventory.add(crate::inventory::ItemKind::GoldOre, 1);
+                                // 通知玩家本人（tx_direct 直達自己，接受 JSON 字串）。
+                                let notify = ServerMsg::Chat {
+                                    from: "系統".to_string(),
+                                    text: "⛏️ 你挖到 1 顆黃金礦石！".to_string(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&notify) {
+                                    let _ = tx_direct.try_send(json);
+                                }
+                            }
                         }
                     }
                 }
