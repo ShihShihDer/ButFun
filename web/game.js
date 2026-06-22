@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1330,6 +1330,27 @@
   };
   function journeyTrackMeta(key) {
     return JOURNEY_TRACKS[key] || { icon: "•", label: key, unit: "" };
+  }
+  // 足跡與陪伴·里程碑進度（ROADMAP 486）：把散落在前端的成長線（製圖師踏查格數／拾螢數／
+  // 寵物羈絆）對照各自的里程碑階梯，算出手帳裡顯示用的進度。純函式、確定可重現、壞值保守；
+  // 讀 localStorage／快照拿原始值的雜事留在呼叫端，這裡只做「數值→進度」的純換算、好單元測。
+  //   value ：目前累計值（壞值／負數一律當 0、小數向下取整）
+  //   ladder：遞增的里程碑門檻陣列（會濾掉非正值並排序，容忍亂序／髒值）
+  // 回 { current, goal, tier, toNext, maxed }：goal＝下一個里程碑（已圓滿＝0）、tier＝已達階數、
+  //    toNext＝再多少晉級（已圓滿＝0）、maxed＝是否已達最高里程碑。
+  function milestoneProgress(value, ladder) {
+    let v = Number(value);
+    if (!Number.isFinite(v) || v < 0) v = 0;
+    v = Math.floor(v);
+    const steps = (Array.isArray(ladder) ? ladder : [])
+      .map((n) => Number(n))
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    let tier = 0;
+    for (let i = 0; i < steps.length; i++) if (v >= steps[i]) tier = i + 1;
+    const next = tier < steps.length ? steps[tier] : null;
+    const maxed = next === null;
+    return { current: v, goal: maxed ? 0 : next, tier, toNext: maxed ? 0 : next - v, maxed };
   }
   // 向伺服器索取旅人手帳（斷線時 safeSend 靜默忽略）。
   function requestJourney() {
@@ -25582,10 +25603,14 @@
     if (!body) return;
     const tracks = journeyState.tracks || [];
     const hl = journeyState.headline;
-    // sig：未收到資料前顯示「載入中」；軌跡與頭條變了才重建（守 panel-sig 病）。
+    // 足跡與陪伴（486）：把前端成長線收進手帳同一頁；先算好，順手摺進 sig，走過幾步/拾了螢/
+    // 養深默契後再開都會重繪（守 panel-sig 病）。
+    const localRows = journeyLocalGrowthRows();
+    // sig：未收到資料前顯示「載入中」；軌跡／頭條／足跡與陪伴任一變了才重建（守 panel-sig 病）。
     const sig = tracks.length
       ? tracks.map((t) => `${t.key}:${t.current}/${t.goal}:${t.tier}`).join("|") +
-        "#" + (hl ? `${hl.key}:${hl.remaining}/${hl.goal}` : "-")
+        "#" + (hl ? `${hl.key}:${hl.remaining}/${hl.goal}` : "-") +
+        "@" + localRows.map((r) => `${r.label}:${r.valText}:${r.pct}`).join(",")
       : "loading";
     if (sig === lastJourneySig) return;
     lastJourneySig = sig;
@@ -25656,10 +25681,104 @@
       body.appendChild(row);
     });
 
+    // ── 足跡與陪伴（ROADMAP 486）：把散落在前端的成長線收進手帳同一頁 ──
+    // 製圖師踏查格數（485）／拾螢數（451）／寵物羈絆（484）一直各自躺在世界地圖、夜空與寵物腳邊，
+    // 從不曾和「永久成長」收在一起。這一節讓手帳第一次「一頁看完全部」——伺服器永久軌跡之外，
+    // 也記得你親手揭開的版圖、夜裡拾的螢火、與小夥伴養出的默契。資料源自呼叫端（localStorage／快照），
+    // 進度換算走純函式 milestoneProgress／cartographerRank。
+    if (localRows.length) {
+      const subhead = document.createElement("div");
+      subhead.style.cssText = "color:#bcd6c0;font-size:.8rem;margin:12px 0 6px;border-top:1px solid rgba(255,255,255,.08);padding-top:9px;";
+      subhead.textContent = "🧭 足跡與陪伴";
+      body.appendChild(subhead);
+      for (const r of localRows) {
+        const row = document.createElement("div");
+        row.style.cssText = "margin-bottom:9px;";
+        const label = document.createElement("div");
+        label.style.cssText = "display:flex;justify-content:space-between;color:#ddd;font-size:.84rem;margin-bottom:3px;";
+        const name = document.createElement("span");
+        name.textContent = `${r.icon} ${r.label}`;
+        const val = document.createElement("span");
+        val.style.color = r.maxed ? "#bfe6c4" : "#9fd0ff";
+        val.textContent = r.valText;
+        label.appendChild(name);
+        label.appendChild(val);
+        row.appendChild(label);
+        const bar = document.createElement("div");
+        bar.style.cssText = "height:8px;border-radius:5px;background:rgba(255,255,255,.08);overflow:hidden;";
+        const fill = document.createElement("div");
+        fill.style.cssText = `height:100%;width:${r.pct}%;border-radius:5px;background:${r.maxed ? "#4f8050" : "#c9a24b"};`;
+        bar.appendChild(fill);
+        row.appendChild(bar);
+        if (r.detail) {
+          const d = document.createElement("div");
+          d.style.cssText = "color:rgba(232,224,207,0.5);font-size:.74rem;margin-top:2px;";
+          d.textContent = r.detail;
+          row.appendChild(d);
+        }
+        body.appendChild(row);
+      }
+    }
+
     const foot = document.createElement("div");
     foot.style.cssText = "color:rgba(232,224,207,0.38);font-size:.72rem;margin-top:8px;line-height:1.5;";
-    foot.textContent = "這些都是會永久保留的成長——升級、踏遍奇景、認識生態與天象、累積人氣。隨時回來看看你又走遠了多少。";
+    foot.textContent = "這些都是會永久保留的成長——升級、踏遍奇景、認識生態與天象、累積人氣，還有你的足跡與陪伴。隨時回來看看你又走遠了多少。";
     body.appendChild(foot);
+  }
+
+  // 蒐集「足跡與陪伴」一節要顯示的成長線（ROADMAP 486）：讀 localStorage／快照拿原始值，
+  // 進度換算交給純函式。回一排 { icon, label, valText, pct, maxed, detail }，無資料的線略過。
+  function journeyLocalGrowthRows() {
+    const rows = [];
+    const uid = myId || "guest";
+    // 製圖師·踏查格數（485）：大世界地圖記得的足跡格數＋頭銜階梯。
+    try {
+      const explored = exploredCount();
+      const rank = cartographerRank(explored);
+      const pct = rank.isMax ? 100
+        : Math.max(0, Math.min(100, Math.round(((explored - rank.at) / Math.max(1, rank.nextAt - rank.at)) * 100)));
+      rows.push({
+        icon: "🧭",
+        label: `製圖師·${rank.title}`,
+        valText: rank.isMax ? `${explored} 塊（圓滿 ✦）` : `${explored} / ${rank.nextAt} 塊`,
+        pct,
+        maxed: rank.isMax,
+        detail: rank.isMax ? "已踏遍此疆，大陸測繪宗師" : `再踏查 ${rank.toNext} 塊晉級`,
+      });
+    } catch {}
+    // 拾螢數（451）：夜裡走著走著拾起的流螢，逐夜累積。
+    try {
+      loadFireflyTally(uid);
+      if (fireflyTally > 0) {
+        const mp = milestoneProgress(fireflyTally, FIREFLY_MILESTONES);
+        const pct = mp.maxed ? 100 : Math.max(0, Math.min(100, Math.round((fireflyTally / Math.max(1, mp.goal)) * 100)));
+        rows.push({
+          icon: "🪰",
+          label: "拾螢",
+          valText: mp.maxed ? `${fireflyTally} 隻（圓滿 ✦）` : `${fireflyTally} / ${mp.goal} 隻`,
+          pct,
+          maxed: mp.maxed,
+          detail: mp.maxed ? "夜夜螢火，已拾滿一整片春夜" : `再拾 ${mp.toNext} 隻到下一個里程碑`,
+        });
+      }
+    } catch {}
+    // 寵物羈絆（484）：陪小夥伴玩接物養出來的默契（0~5，有寵物才顯示）。
+    try {
+      const me = myId ? players.get(myId) : null;
+      if (me && me.pet_kind) {
+        const bond = Math.max(0, Math.min(5, Number(me.pet_bond) || 0));
+        const maxed = bond >= 5;
+        rows.push({
+          icon: "🐾",
+          label: "寵物羈絆",
+          valText: petBondHearts(bond) || "♡♡♡♡♡",
+          pct: Math.round((bond / 5) * 100),
+          maxed,
+          detail: maxed ? "默契滿溢，你倆已是最好的搭檔" : "多陪小夥伴玩接物，默契會更深",
+        });
+      }
+    } catch {}
+    return rows;
   }
 
   // ── 旅途明信片面板（ROADMAP 417）─────────────────────────────────────────
