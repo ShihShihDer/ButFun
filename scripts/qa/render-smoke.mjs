@@ -3920,6 +3920,67 @@ for (const sc of scenarios) {
   else console.log("  ✅ 低血量危機脈動（ROADMAP 512）：dangerPulseAlpha 真值表(9 cases) + 邊界安全 + drawDangerPulse 零例外");
 }
 
+// ── ROADMAP 513：生態域入境橫幅 ─────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const bLabel = sandbox.__bfTest && sandbox.__bfTest.biomeEntryLabel;
+    const bStyle = sandbox.__bfTest && sandbox.__bfTest.biomeEntryStyle;
+    const bTrig  = sandbox.__bfTest && sandbox.__bfTest.triggerBiomeBanner;
+    const bDraw  = sandbox.__bfTest && sandbox.__bfTest.drawBiomeBanner;
+    if (!bLabel) throw new Error("biomeEntryLabel 未匯出");
+    if (!bStyle) throw new Error("biomeEntryStyle 未匯出");
+    if (!bTrig)  throw new Error("triggerBiomeBanner 未匯出");
+    if (!bDraw)  throw new Error("drawBiomeBanner 未匯出");
+
+    // biomeEntryLabel 真值表：五生態各回非空字串，未知回空字串
+    const BIOMES = ["water", "sand", "meadow", "forest", "rocky"];
+    for (const b of BIOMES) {
+      const got = bLabel(b);
+      if (!got || typeof got !== "string") {
+        ok = false; console.error(`  ❌ biomeEntryLabel("${b}") = "${got}"，期望非空字串`);
+      }
+    }
+    if (bLabel("bogus") !== "") {
+      ok = false; console.error(`  ❌ biomeEntryLabel("bogus") 應回空字串，got "${bLabel("bogus")}"`);
+    }
+    if (bLabel("") !== "") {
+      ok = false; console.error(`  ❌ biomeEntryLabel("") 應回空字串`);
+    }
+
+    // biomeEntryStyle 真值表：五生態各回 { bg, text }，未知回 null
+    for (const b of BIOMES) {
+      const got = bStyle(b);
+      if (!got || typeof got.bg !== "string" || typeof got.text !== "string") {
+        ok = false; console.error(`  ❌ biomeEntryStyle("${b}") 應回 {bg,text}，got ${JSON.stringify(got)}`);
+      }
+    }
+    if (bStyle("bogus") !== null) {
+      ok = false; console.error(`  ❌ biomeEntryStyle("bogus") 應回 null`);
+    }
+
+    // triggerBiomeBanner + drawBiomeBanner：觸發後多幀渲染零例外
+    for (const b of BIOMES) {
+      bTrig(b);
+      for (let f = 0; f < 4; f++) bDraw(performance.now() + f * 100);
+    }
+    // 未知生態不觸發（保守不顯示）
+    bTrig("bogus");
+    for (let f = 0; f < 3; f++) bDraw(performance.now() + f * 100);
+
+    // drawBiomeBanner 在無 _biomeBanner 時直接 return，不 throw
+    bDraw(performance.now() + 99999); // 超時清除後再呼叫
+    bDraw(performance.now());
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 生態域入境橫幅：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 生態域入境橫幅：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 生態域入境橫幅（ROADMAP 513）：biomeEntryLabel 真值表(7 cases) + biomeEntryStyle 真值表(6 cases) + 五生態觸發渲染 + 未知保守不顯示，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
