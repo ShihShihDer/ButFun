@@ -1399,6 +1399,10 @@ pub struct AppState {
     /// 季節性野外採集節點（ROADMAP 154）：每季節在城外 3 個固定節點，各 3 次共用採集次數。
     /// 記憶體模式，季節切換自動重置；重啟從當前季節重新生成。
     pub seasonal_nodes: Arc<RwLock<crate::seasonal_nodes::SeasonalNodesState>>,
+    /// 本季全服「旺收」累計次數（ROADMAP 493 季節豐收獎）。
+    /// 當玩家在品種旺季收穫時遞增；季節切換時歸零，讓每季里程碑獨立計算。
+    /// 記憶體模式；零 migration、不持久化（重啟清零，行為正確）。
+    pub season_peak_harvest_count: Arc<RwLock<u32>>,
     /// 探索者路標（ROADMAP 353）：玩家在世界裡立的留言路標，非同步的玩家↔玩家痕跡。
     /// 記憶體模式、有界、會過期；遊戲迴圈每 tick 推進過期、立牌/過期時廣播 `ServerMsg::Wayposts`。
     pub wayposts: Arc<RwLock<crate::wayposts::WaypostBoard>>,
@@ -1629,6 +1633,7 @@ impl AppState {
             wandering_merchant: Arc::new(RwLock::new(crate::wandering_merchant::WanderingMerchantState::new())),
             season: Arc::new(RwLock::new(crate::season::SeasonState::new())),
             seasonal_nodes: Arc::new(RwLock::new(crate::seasonal_nodes::SeasonalNodesState::new())),
+            season_peak_harvest_count: Arc::new(RwLock::new(0u32)),
             wayposts: Arc::new(RwLock::new(crate::wayposts::WaypostBoard::new())),
             bottles: Arc::new(RwLock::new(crate::bottle_drift::BottleSea::new())),
             wildlife_manager: Arc::new(RwLock::new(crate::wildlife::WildlifeManager::new())),

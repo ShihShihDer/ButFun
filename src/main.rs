@@ -194,6 +194,7 @@ mod resident_chat;
 mod town_prosperity;
 mod community_gathering;
 mod season;
+mod seasonal_harvest_award;
 mod seasonal_nodes;
 mod wildlife;
 mod species_relations;

@@ -1558,6 +1558,11 @@ pub enum ServerMsg {
         /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
         #[serde(default)]
         demand: u32,
+        /// ROADMAP 493 季節豐收獎：這次收成裡「在品種旺季收穫」帶來的乙太獎勵（已含進 `ether`）。
+        /// >0 時前端飄字綴「🌾 當季旺收！+N」；0 ＝非旺季或品種無旺季（主食穀）。
+        /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        season_bonus: u32,
         x: f32,
         y: f32,
     },
