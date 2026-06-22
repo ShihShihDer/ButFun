@@ -267,6 +267,23 @@ impl Crop {
         self.moisture <= 0.0
     }
 
+    /// ROADMAP 501 作物熟成倒數：假設持續充足澆水情境下，距成熟的估計剩餘秒數。
+    /// 已成熟回 0；未熟依品種成長速率反推（速生菜快、乙太瓜慢）。
+    /// 用於田格快照 `TileView.eta_secs`，讓玩家知道「約幾分鐘後回來收最划算」。
+    pub fn eta_secs(&self) -> u16 {
+        if self.is_ripe() {
+            return 0;
+        }
+        let remaining = (RIPE_AT - self.growth).max(0.0);
+        let rate = self.kind.grow_rate();
+        // rate 絕對正有限（crop_variety 單元測試把關），但防呆仍夾界。
+        if !rate.is_finite() || rate <= 0.0 {
+            return u16::MAX;
+        }
+        let secs = remaining / rate;
+        secs.ceil().min(u16::MAX as f32) as u16
+    }
+
     /// ROADMAP 406：依成長期累積的渴秒數推導的收成品質（越用心照顧越高）。
     /// 對任何階段都可問，但只有成熟（`is_ripe`）作物收成時才真正套用。
     /// ROADMAP 476：若這株成熟後曾被田鴉啄食（`pecked`），品質再降一階——把「久置不收」的
@@ -725,5 +742,75 @@ mod tests {
         assert!(c.harvest().is_some());
         assert_eq!(c.ripe_secs(), 0.0, "收成後曝露計時歸零");
         assert!(!c.is_pecked(), "收成後被啄旗標清除");
+    }
+
+    // ROADMAP 501 作物熟成倒數單元測試 ────────────────────────────────
+
+    #[test]
+    fn eta_secs_ripe_crop_is_zero() {
+        // 成熟作物 eta_secs 必為 0。
+        let mut c = Crop::plant();
+        c.water();
+        c.grow(MOISTURE_PER_WATER);
+        c.water();
+        c.grow(RIPE_AT - MOISTURE_PER_WATER);
+        assert!(c.is_ripe());
+        assert_eq!(c.eta_secs(), 0, "成熟作物應回 0");
+    }
+
+    #[test]
+    fn eta_secs_fresh_seed_matches_full_grow_time() {
+        // 剛播下的主食穀（grow=0, rate=1.0）：eta ≈ RIPE_AT 秒。
+        let c = Crop::plant(); // 主食穀
+        let eta = c.eta_secs() as f32;
+        assert!(
+            (eta - RIPE_AT).abs() < 1.0,
+            "剛播主食穀 eta ≈ {RIPE_AT}，實際 {eta}"
+        );
+    }
+
+    #[test]
+    fn eta_secs_sprout_faster_than_staple() {
+        // 速生菜（grow_rate > 1.0）應比主食穀長得快，eta 應更短。
+        let staple = Crop::plant(); // Staple
+        let sprout = Crop::plant_kind(crate::crop_variety::CropVariety::Sprout);
+        assert!(
+            sprout.eta_secs() < staple.eta_secs(),
+            "速生菜 eta 應 < 主食穀 eta"
+        );
+    }
+
+    #[test]
+    fn eta_secs_etherbloom_slower_than_staple() {
+        // 乙太瓜（grow_rate < 1.0）應比主食穀長得慢，eta 應更長。
+        let staple = Crop::plant();
+        let etherbloom = Crop::plant_kind(crate::crop_variety::CropVariety::Etherbloom);
+        assert!(
+            etherbloom.eta_secs() > staple.eta_secs(),
+            "乙太瓜 eta 應 > 主食穀 eta"
+        );
+    }
+
+    #[test]
+    fn eta_secs_decreases_as_crop_grows() {
+        // 作物越成熟，eta_secs 越小。
+        let mut c = Crop::plant();
+        c.water();
+        let eta_start = c.eta_secs();
+        c.grow(30.0); // 長一段
+        let eta_mid = c.eta_secs();
+        assert!(
+            eta_mid < eta_start,
+            "成長後 eta 應遞減：{eta_mid} < {eta_start}"
+        );
+    }
+
+    #[test]
+    fn eta_secs_never_exceeds_u16_max() {
+        // 任何合法品種 eta_secs 都在 u16 範圍內，不 overflow。
+        for v in &crate::crop_variety::CropVariety::ALL {
+            let c = Crop::plant_kind(*v);
+            let _ = c.eta_secs(); // 不 panic、不 overflow
+        }
     }
 }

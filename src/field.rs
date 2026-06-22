@@ -819,6 +819,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             rotated: false,
             nourished: false,
             pecked: false,
+            eta_secs: 0,
         },
         Tile::Tilled => TileView {
             state: 1,
@@ -831,6 +832,7 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
             rotated: false,
             nourished: false,
             pecked: false,
+            eta_secs: 0,
         },
         Tile::Planted(c) => {
             let ripe = c.is_ripe();
@@ -857,6 +859,8 @@ fn tile_view(tile: &Tile, thriving: bool, soil: u8, rotated: bool) -> TileView {
                 nourished: c.nourished(),
                 // ROADMAP 476：這株成熟後是否曾被田鴉啄食（前端在格上標啄痕；品質已折進 quality）。
                 pecked: c.is_pecked(),
+                // ROADMAP 501：距成熟的估計剩餘秒數（假設持續充足澆水）；已熟或空地為 0。
+                eta_secs: if ripe { 0 } else { c.eta_secs() },
             }
         }
     }
@@ -1344,10 +1348,10 @@ mod tests {
         f.plant(0, 0);
         // 剛種下、還沒澆水：種子且乾。
         let v = f.view();
-        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
+        assert_eq!(v.cells[0], TileView { state: 2, dry: true, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false, eta_secs: 90 });
         // 澆水後不再標乾。
         f.water(0, 0);
-        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
+        assert_eq!(f.view().cells[0], TileView { state: 2, dry: false, thriving: false, quality: 0, grow: 0, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false, eta_secs: 90 });
     }
 
     #[test]
@@ -1560,7 +1564,7 @@ mod tests {
         f.water(0, 0);
         f.tick(RIPE_AT - MOISTURE_PER_WATER, Season::Summer);
         // 成熟即使濕度耗盡也不該再叫玩家澆水；全程用心照顧＝優質（quality 2）。
-        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false });
+        assert_eq!(f.view().cells[0], TileView { state: 4, dry: false, thriving: false, quality: 2, grow: 100, soil: 0, kind: 0, rotated: false, nourished: false, pecked: false, eta_secs: 0 });
     }
 
     /// 把 (0,0) 一株作物全程用心照顧種到「優質成熟」的共用前置。

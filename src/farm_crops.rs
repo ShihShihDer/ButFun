@@ -72,6 +72,10 @@ pub const PLANT_COST_POTATO: u32 = 15;
 /// 作物從種下到成熟所需秒數。
 pub const GROW_TIME_SECS: f32 = 90.0;
 
+fn is_zero_eta(v: &u16) -> bool {
+    *v == 0
+}
+
 /// 每塊農田最多可種的作物株數。
 pub const MAX_CROPS: usize = 3;
 
@@ -169,10 +173,16 @@ impl FarmCropRegistry {
     /// 取得某地塊的作物快照（供廣播用）。地塊不存在回空 vec。
     pub fn state_of(&self, plot_id: u32) -> Vec<CropSlotView> {
         self.plots.get(&plot_id)
-            .map(|s| s.crops.iter().map(|c| CropSlotView {
-                kind: c.kind.as_str().to_string(),
-                ripe: c.is_ripe(),
-                grow: (c.progress() * 100.0).round() as u8,
+            .map(|s| s.crops.iter().map(|c| {
+                let ripe = c.is_ripe();
+                CropSlotView {
+                    kind: c.kind.as_str().to_string(),
+                    ripe,
+                    grow: (c.progress() * 100.0).round() as u8,
+                    eta_secs: if ripe { 0 } else {
+                        (GROW_TIME_SECS - c.grow_timer).max(0.0).ceil().min(u16::MAX as f32) as u16
+                    },
+                }
             }).collect())
             .unwrap_or_default()
     }
@@ -197,10 +207,16 @@ impl FarmCropRegistry {
             .filter(|(_, s)| !s.crops.is_empty())
             .map(|(&plot_id, s)| FarmCropPlotView {
                 plot_id,
-                crops: s.crops.iter().map(|c| CropSlotView {
-                    kind: c.kind.as_str().to_string(),
-                    ripe: c.is_ripe(),
-                    grow: (c.progress() * 100.0).round() as u8,
+                crops: s.crops.iter().map(|c| {
+                    let ripe = c.is_ripe();
+                    CropSlotView {
+                        kind: c.kind.as_str().to_string(),
+                        ripe,
+                        grow: (c.progress() * 100.0).round() as u8,
+                        eta_secs: if ripe { 0 } else {
+                            (GROW_TIME_SECS - c.grow_timer).max(0.0).ceil().min(u16::MAX as f32) as u16
+                        },
+                    }
                 }).collect(),
             })
             .collect()
@@ -215,6 +231,10 @@ pub struct CropSlotView {
     /// 熟成進度百分比（0~100，成熟＝100；ROADMAP 457）。前端在 sprite 下畫熟成進度條。
     /// 由 `grow_timer` 即時推導、不入存檔（零持久化新欄）；Serialize-only，舊前端忽略即可。
     pub grow: u8,
+    /// ROADMAP 501 作物熟成倒數：距成熟的估計剩餘秒數（以無雨條件計；下雨時實際更快）。
+    /// 已成熟一律 0；Serialize-only（`serde(default)` 省略 0 值減少流量）。舊前端忽略即可。
+    #[serde(default, skip_serializing_if = "is_zero_eta")]
+    pub eta_secs: u16,
 }
 
 /// 快照裡一塊農田地塊的作物可見狀態（送給前端）。
