@@ -3146,6 +3146,40 @@ for (const sc of scenarios) {
   else console.log("  ✅ 星艦修繕：withinShipRepairReach 五路徑全對；損毀/閃耀/廣播三態渲染零例外");
 }
 
+// 季節豐收獎（ROADMAP 493）：cropPeakVariety 純函式真值表驗證
+{
+  console.log("── 情境：季節豐收獎（ROADMAP 493）──");
+  let ok = true;
+  try {
+    const peakFn = sandbox.__bfTest && sandbox.__bfTest.cropPeakVariety;
+    if (!peakFn) {
+      ok = false;
+      console.error("  ❌ 季節豐收獎：game.js 未導出 cropPeakVariety");
+    } else {
+      // 冬天旺收 = 速生菜（sprout）
+      if (peakFn("winter") !== "sprout") { ok = false; console.error("  ❌ 冬天旺收應為速生菜(sprout)"); }
+      // 夏天旺收 = 乙太瓜（etherbloom）
+      if (peakFn("summer") !== "etherbloom") { ok = false; console.error("  ❌ 夏天旺收應為乙太瓜(etherbloom)"); }
+      // 春天無旺收品種 → null
+      if (peakFn("spring") !== null) { ok = false; console.error("  ❌ 春天不應有旺收品種"); }
+      // 秋天無旺收品種 → null
+      if (peakFn("autumn") !== null) { ok = false; console.error("  ❌ 秋天不應有旺收品種"); }
+      // 未知季節 → null（保守）
+      if (peakFn("unknown") !== null) { ok = false; console.error("  ❌ 未知季節應回 null"); }
+    }
+    // 模擬 harvest_result 帶 season_bonus：冬天速生菜旺收飄字不炸
+    const before493 = caughtRenderErrors.length;
+    lastWS.onmessage({ data: JSON.stringify({ type: "harvest_result", player_id: myId, quality: "plain", ether: 5, season_bonus: 3, x: 400, y: 300 }) });
+    pump("旺收飄字", 2);
+    const after493 = caughtRenderErrors.length;
+    if (after493 > before493) { ok = false; console.error(`  ❌ 旺收飄字：${after493 - before493} 個渲染例外`); }
+  } catch (e) {
+    ok = false; console.error("  ❌ 季節豐收獎：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 季節豐收獎測試失敗"); }
+  else console.log("  ✅ 季節豐收獎：cropPeakVariety 五路徑全對；旺收飄字渲染零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

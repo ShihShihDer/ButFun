@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4661,6 +4661,13 @@
           floaters.push({ wx, wy: wy + 32, text: `🛒 搶手 +${demand} 乙太`, color: "255,210,120", born: now + 2 });
           announce(`正逢市集搶手，多得 ${demand} 乙太`);
         }
+        // 季節豐收獎（ROADMAP 493）：在品種旺季收穫，多綴一行「🌾 當季旺收！+N」金翠色飄字，
+        // 讓「在對的季節種對的品種」這件事，第一次在收成瞬間有了看得見的慶祝回饋。
+        const seasonBonus = msg.season_bonus || 0;
+        if (seasonBonus > 0) {
+          floaters.push({ wx, wy: wy + 48, text: `🌾 當季旺收！+${seasonBonus} 乙太`, color: "140,220,160", born: now + 3 });
+          announce(`旺季收穫，季節豐收獎多得 ${seasonBonus} 乙太`);
+        }
         // 豐收迸發（ROADMAP 458）：在收成者身上（玩家世界座標，飄字在頭頂、金光在身上）迸開豐收金光、
         // 揚起一捧金穀；品質越高穀粒越多越金。收成這個高頻療癒動作第一次在世界畫面裡也有迸發回饋。
         spawnHarvestBurst(msg.x || 0, msg.y || 0, msg.quality);
@@ -7001,6 +7008,13 @@
     return SEASON_DEMAND[season] || "staple";
   }
 
+  // ROADMAP 493 季節豐收獎：純函式，鏡像後端 `CropVariety::peak_season`（速生菜→冬、乙太瓜→夏；主食穀無旺季）。
+  // 回傳在該季有「當季旺收」加成的品種 wire 字串，null 表示無品種享有旺收（主食穀季節）。
+  const SEASON_PEAK_CROP = { winter: "sprout", summer: "etherbloom" };
+  function cropPeakVariety(season) {
+    return SEASON_PEAK_CROP[season] || null;
+  }
+
   // 玩家當下選的播種品種（線格式字串）。預設主食穀＝既有單一作物：不主動選就跟改動前一模一樣。
   let selectedSeedVariety = "staple";
 
@@ -7126,15 +7140,20 @@
         // ROADMAP 455 市集行情：若選中的正是「本季搶手品種」，標「🛒搶手」提示收成多得乙太。
         const isHot = cropDemandVariety(currentSeason) === selectedSeedVariety;
         const hotTxt = isHot ? " 🛒搶手" : "";
-        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）${hintTxt}${hotTxt} · 點我換種`;
+        // ROADMAP 493 季節豐收獎：若選中的品種正在旺季（peak_season == currentSeason），
+        // 標「🌾旺收」提示收成時將觸發豐收獎（+3 乙太）——讓玩家事前就知道選它有旺收加成。
+        const isPeakSeason = cropPeakVariety(currentSeason) === selectedSeedVariety;
+        const peakTxt = isPeakSeason ? " 🌾旺收" : "";
+        seedEl.textContent = `🌱 播種品種：${meta.emoji} ${meta.name}（${meta.trait}）${hintTxt}${hotTxt}${peakTxt} · 點我換種`;
         seedEl.classList.remove("hidden");
         seedEl.style.cursor = "pointer";
         seedEl.setAttribute("role", "button");
         seedEl.setAttribute("tabindex", "0");
-        // 報讀器把季節提示與行情講白話（旺長／慢長／搶手），不只唸 emoji。
+        // 報讀器把季節提示與行情講白話（旺長／慢長／搶手／旺收），不只唸 emoji。
         const a11yHint = hint.tag === "peak" ? "，當季旺長" : hint.tag === "lean" ? "，當季長得慢" : "";
         const a11yHot = isHot ? "，本季市集搶手、收成多得乙太" : "";
-        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}${a11yHint}${a11yHot}。點選切換下一個品種`);
+        const a11yPeak = isPeakSeason ? "，當季旺收、多得豐收獎" : "";
+        seedEl.setAttribute("aria-label", `播種品種：${meta.name}，${meta.trait}${a11yHint}${a11yHot}${a11yPeak}。點選切換下一個品種`);
         seedEl.onclick = cycleSelectedSeed;
         seedEl.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); cycleSelectedSeed(); } };
       } else {

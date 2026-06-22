@@ -137,6 +137,8 @@ pub fn spawn(app: AppState) {
                     tracing::info!(season = new_season.as_str(), "季節切換");
                     // 季節性野外採集節點（ROADMAP 154）：季節切換時重置節點。
                     app.seasonal_nodes.write().unwrap().on_season_change(new_season);
+                    // ROADMAP 493 季節豐收獎：新季開始，重置本季旺收計數，讓每季里程碑獨立計算。
+                    *app.season_peak_harvest_count.write().unwrap() = 0;
                     // 城鎮記憶石（ROADMAP 157）：季節更替是值得留存的世界大事。
                     app.town_memory.write().unwrap().push_event(
                         "🍂",
