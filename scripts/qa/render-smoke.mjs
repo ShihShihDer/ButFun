@@ -3514,6 +3514,60 @@ for (const sc of scenarios) {
   else console.log("  ✅ 敵人 eid 追蹤：受擊/真死(true→false)/離開AOI(靜默)/重生/舊版無eid退回，全路徑零例外");
 }
 
+// 暴走羅盤（ROADMAP 505）：純函式真值表 + 渲染路徑。
+// ① surgeShouldShowCompass 純函式真值表：
+//    - 無暴走（secs=0）永不顯示；有暴走且在畫面外→顯示；有暴走但在畫面內→不顯示。
+// ② 暴走期間、暴走點在畫面外：餵快照帶 ether_surge_secs>0 且 surge 位置在玩家遠處，
+//    多幀渲染（含 surgeCompass + minimap ⚡）零例外。
+// ③ 暴走結束（secs→0）：多幀後羅盤自動早退，渲染零例外。
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  console.log("── 情境：暴走羅盤（ROADMAP 505）──");
+  try {
+    // ① 純函式真值表
+    const fn = sandbox.__bfTest && sandbox.__bfTest.surgeShouldShowCompass;
+    if (!fn) throw new Error("surgeShouldShowCompass 未掛到 __bfTest");
+    const check = (label, got, want) => {
+      if (got !== want) { ok = false; console.error(`  ❌ ${label}: got ${got} want ${want}`); }
+    };
+    check("無暴走(secs=0)在畫面外→不顯示",  fn(false, 0), false);
+    check("無暴走(secs=0)在畫面內→不顯示",  fn(true,  0), false);
+    check("有暴走、在畫面外→顯示",            fn(false, 30), true);
+    check("有暴走、在畫面內→不顯示",          fn(true,  30), false);
+
+    // ② 暴走中（暴走點在玩家遠處→不在畫面內）：多幀渲染應零例外。
+    const surgeSnap = JSON.parse(JSON.stringify(snapshot));
+    // 暴走點設在玩家位置右方 2000px（遠到必定出畫面），確保 surgeCompass 走完整繪製路徑。
+    surgeSnap.ether_surge_secs = 60;
+    surgeSnap.ether_surge_x = (me0.x || 0) + 2000;
+    surgeSnap.ether_surge_y = (me0.y || 0);
+    lastWS.onmessage({ data: JSON.stringify({ ...surgeSnap, type: "snapshot" }) });
+    if (pump("暴走羅盤·暴走中遠處", 4) instanceof Error) ok = false;
+
+    // 暴走點靠近玩家（在畫面內）：羅盤應早退、不畫，渲染零例外。
+    const surgeNearSnap = JSON.parse(JSON.stringify(snapshot));
+    surgeNearSnap.ether_surge_secs = 45;
+    surgeNearSnap.ether_surge_x = (me0.x || 0) + 50;  // 畫面內
+    surgeNearSnap.ether_surge_y = (me0.y || 0);
+    lastWS.onmessage({ data: JSON.stringify({ ...surgeNearSnap, type: "snapshot" }) });
+    if (pump("暴走羅盤·暴走點在畫面內(早退)", 3) instanceof Error) ok = false;
+
+    // ③ 暴走結束（secs→0）：羅盤早退、小地圖 ⚡ 消失，渲染零例外。
+    const surgeEndSnap = JSON.parse(JSON.stringify(snapshot));
+    surgeEndSnap.ether_surge_secs = 0;
+    surgeEndSnap.ether_surge_x = 0;
+    surgeEndSnap.ether_surge_y = 0;
+    lastWS.onmessage({ data: JSON.stringify({ ...surgeEndSnap, type: "snapshot" }) });
+    if (pump("暴走羅盤·暴走結束(早退)", 3) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 暴走羅盤：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 暴走羅盤：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 暴走羅盤（ROADMAP 505）：純函式真值表(4/4) + 遠處暴走/畫面內早退/暴走結束，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
