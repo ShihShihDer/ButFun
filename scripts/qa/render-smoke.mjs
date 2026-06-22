@@ -3465,6 +3465,55 @@ for (const sc of scenarios) {
   else console.log("  ✅ 雨天豐澤（ROADMAP 502）：下雨橫幅/收成飄字/雨停消失，全路徑零例外");
 }
 
+// ── 敵人穩定 eid 追蹤（修「小怪打不死/死了復現/跳血破圖」）──
+// 前端改用 eid 而非陣列索引追每隻敵人。這裡連餵幾份帶 eid 的敵人快照，
+// 模擬：同 eid 受擊掉血、同 eid alive true→false（真死）、某 eid 整個消失（離開 AOI）。
+// 全程 render 零例外即通過——重點是驗「順序/長度變化＋eid 進出」不再讓渲染撞 undefined。
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  console.log("── 情境：敵人穩定 eid 追蹤（受擊/真死/離開 AOI）──");
+  try {
+    const ex = (snapshot.enemies && snapshot.enemies[0]) || { kind: "scrap_drone", level: 1, max_hp: 6 };
+    const at = (dx, dy) => ({ x: me0.x + dx, y: me0.y + dy });
+    const mk = (eid, hp, alive, dx, dy) => ({
+      ...ex, eid, hp, max_hp: ex.max_hp || 6, alive, level: ex.level || 1,
+      kind: ex.kind || "scrap_drone", ...at(dx, dy),
+    });
+    // 第 1 幀：A 滿血、B 滿血、C 滿血（三隻不同 eid）。
+    const s1 = JSON.parse(JSON.stringify(snapshot));
+    s1.enemies = [mk("0_0_0", 6, true, 50, 0), mk("0_0_1", 6, true, -50, 20), mk("1_2_3", 6, true, 0, 60)];
+    lastWS.onmessage({ data: JSON.stringify({ ...s1, type: "snapshot" }) });
+    if (pump("eid·初始三隻", 2) instanceof Error) ok = false;
+    // 第 2 幀：陣列順序刻意打亂 + A 掉血（受擊閃光應落在 A 而非「同索引」的別隻）。
+    const s2 = JSON.parse(JSON.stringify(snapshot));
+    s2.enemies = [mk("1_2_3", 6, true, 0, 60), mk("0_0_1", 6, true, -50, 20), mk("0_0_0", 3, true, 50, 0)];
+    lastWS.onmessage({ data: JSON.stringify({ ...s2, type: "snapshot" }) });
+    if (pump("eid·順序變+A受擊", 2) instanceof Error) ok = false;
+    // 第 3 幀：A 由 alive true→false（真死，仍在快照內）→ 應播死亡淡出；C(1_2_3) 整個消失（離開 AOI）→ 靜默移除不播死亡。
+    const s3 = JSON.parse(JSON.stringify(snapshot));
+    s3.enemies = [mk("0_0_1", 6, true, -50, 20), mk("0_0_0", 0, false, 50, 0)];
+    lastWS.onmessage({ data: JSON.stringify({ ...s3, type: "snapshot" }) });
+    if (pump("eid·A真死+C離開AOI", 4) instanceof Error) ok = false;
+    // 第 4 幀：A 以同 eid 重生回滿血（重生中→重新活著）→ 渲染不應殘留死亡幽靈、不拋例外。
+    const s4 = JSON.parse(JSON.stringify(snapshot));
+    s4.enemies = [mk("0_0_1", 6, true, -50, 20), mk("0_0_0", 6, true, 50, 0), mk("1_2_3", 6, true, 0, 60)];
+    lastWS.onmessage({ data: JSON.stringify({ ...s4, type: "snapshot" }) });
+    if (pump("eid·A重生+C回視野", 3) instanceof Error) ok = false;
+    // 第 5 幀：完全沒帶 eid 的舊版後端相容快照 → 應退回索引行為、不崩。
+    const s5 = JSON.parse(JSON.stringify(snapshot));
+    s5.enemies = [{ ...ex, hp: 4, alive: true, ...at(40, 0) }, { ...ex, hp: 2, alive: true, ...at(-40, 0) }];
+    delete s5.enemies[0].eid; delete s5.enemies[1].eid;
+    lastWS.onmessage({ data: JSON.stringify({ ...s5, type: "snapshot" }) });
+    if (pump("eid·舊版無eid退回索引", 3) instanceof Error) ok = false;
+  } catch (e) {
+    ok = false; console.error("  ❌ 敵人 eid 追蹤：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 敵人 eid 追蹤：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 敵人 eid 追蹤：受擊/真死(true→false)/離開AOI(靜默)/重生/舊版無eid退回，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

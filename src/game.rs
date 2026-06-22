@@ -350,6 +350,9 @@ pub fn spawn(app: AppState) {
                         .map(|p| {
                             let notorious = p.level >= p.base_level.saturating_add(3);
                             EnemyView {
+                                // 穩定敵人 ID：由 PlacedEnemy.id=(chunk_x, chunk_y, index) 組成。
+                                // 前端用它追蹤每隻敵人，不再被 AOI 剔除/HashMap 順序搞混身份。
+                                eid: format!("{}_{}_{}", p.id.0, p.id.1, p.id.2),
                                 kind: p.enemy.kind(),
                                 x: p.x,
                                 y: p.y,

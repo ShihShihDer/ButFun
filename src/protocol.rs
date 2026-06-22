@@ -2591,6 +2591,12 @@ fn is_false(v: &bool) -> bool {
 /// 快照裡一個世界敵人的可見狀態。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct EnemyView {
+    /// 穩定敵人 ID（由 `PlacedEnemy.id` 組成，格式 `chunkX_chunkY_index`）。
+    /// 前端據此用 ID 追蹤每隻敵人（受擊閃光／死亡淡出），不再用陣列索引——
+    /// AOI 剔除與 HashMap 迭代順序不固定會讓索引前後幀對到不同敵人，造成
+    /// 小怪「打不死／死了又復現／走動跳血破圖」。`#[serde(default)]` 向後相容（舊前端忽略）。
+    #[serde(default)]
+    pub eid: String,
     /// 敵人種類（scrap_drone / ether_wisp）：前端據此選圖示與血色。
     pub kind: EnemyKind,
     pub x: f32,
@@ -3270,6 +3276,7 @@ mod tests {
                 regrow: 1.0,
             }],
             enemies: vec![EnemyView {
+                eid: "0_0_0".to_string(),
                 kind: EnemyKind::ScrapDrone,
                 x: 300.0,
                 y: 400.0,
