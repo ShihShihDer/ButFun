@@ -2860,6 +2860,61 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 寵物撈寶：羈絆愛心條＋寵物跟隨＋超界壞值皆乾淨");
 }
 
+// 黏土小夥伴（ROADMAP 487）：單元斷言純函式 clayPetPalette——五種寵物各回一套含 body/edge/top/accent
+// 的暖陶土色盤、未知／壞 kind 回保守預設（永不回 null／不爆，呼叫端程序化繪製需永遠有色可用）。
+{
+  const pal = sandbox.__bfTest && sandbox.__bfTest.clayPetPalette;
+  if (typeof pal !== "function") {
+    failed = true;
+    console.error("  ❌ 黏土小夥伴：game.js 未導出 clayPetPalette");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 黏土小夥伴：${msg}`); } };
+    const KINDS = ["flutter_sprite", "crystal_golem", "coral_crab", "jade_wraith", "origin_guardian"];
+    const ok = (c) => c && typeof c.body === "string" && typeof c.edge === "string"
+                        && typeof c.top === "string" && typeof c.accent === "string";
+    for (const k of KINDS) expect(ok(pal(k)), `${k} 應回完整色盤（body/edge/top/accent）`);
+    // 五種寵物的色盤彼此相異（至少 body+accent 組合不同）＝黏土化後仍一眼認得是哪隻。
+    const sigs = new Set(KINDS.map((k) => pal(k).body + "|" + pal(k).accent));
+    expect(sigs.size === KINDS.length, "五種寵物色盤應彼此相異");
+    // 晶石魔像 accent＝乙太藍輝（跨畫風一致的魔法強調色），不該被誤套成暖橙。
+    expect(pal("crystal_golem").accent === "#7fd8ff", "晶石魔像 accent 應為乙太藍輝");
+    // 未知／壞 kind：回保守預設（非 null、結構完整），永不漏畫。
+    expect(ok(pal("nonsuch")), "未知 kind 應回保守預設色盤（非 null）");
+    expect(ok(pal(undefined)), "undefined kind 應回保守預設色盤");
+    expect(ok(pal(null)), "null kind 應回保守預設色盤");
+    if (bad) failed = true;
+    else console.log("  ✅ 黏土小夥伴·clayPetPalette 色盤真值表（五種齊全/相異/乙太藍/未知壞值保守）：通過");
+  }
+}
+
+// 黏土小夥伴（ROADMAP 487）：注入五種寵物＋一隻壞 kind（含 clay 各識別配件：靈翼／晶石寶石／蟹螯／
+// 幽靈飄尾／守護者星芒），連跑多幀驗 drawClayPet 與 emoji 兩路皆零例外（clay 路徑於 BUTFUN_SMOKE_STYLE=clay 跑到）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：黏土小夥伴（五種寵物＋壞 kind＋羈絆，連跑多幀）──");
+  const KINDS = ["flutter_sprite", "crystal_golem", "coral_crab", "jade_wraith", "origin_guardian", "nonsuch_kind"];
+  let rr = null;
+  for (let i = 0; i < KINDS.length; i++) {
+    const pSnap = JSON.parse(JSON.stringify(snapshot));
+    const me = pSnap.players[0];
+    me.pet_kind = KINDS[i];
+    me.pet_x = me.x + 24; me.pet_y = me.y + 8;
+    me.pet_px = me.x + 18; me.pet_py = me.y + 4; // 走寵物內插分支
+    me.tArrive = 0;
+    me.pet_bond = i % 6;       // 不同羈絆階（含 0＝不畫愛心）
+    me.pet_playing = i === 1;  // 觸玩耍蹦跳
+    me.pet_fetching = i === 2; // 觸接物衝刺
+    lastWS.onmessage({ data: JSON.stringify({ ...pSnap, type: "snapshot" }) });
+    rr = pump(`黏土小夥伴·${KINDS[i]}`, 2);
+    if (rr instanceof Error) break;
+  }
+  if (rr instanceof Error) { failed = true; console.error("  ❌ 黏土小夥伴：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 黏土小夥伴：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(rr instanceof Error)) console.log("  ✅ 黏土小夥伴：五種寵物＋壞 kind＋羈絆＋玩耍/接物連跑皆乾淨");
+}
+
 // 雪季雪人（ROADMAP 478）：注入數座雪人（含視野外一座、四種樣式、超界樣式、空署名、長署名、壞 id），
 // 驗證 drawSnowmen 雪身／圍巾／署名牌／剔除路徑連跑多幀皆不拋例外；再餵無雪人 snapshot 驗早退。
 {
