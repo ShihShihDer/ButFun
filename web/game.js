@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1808,6 +1808,8 @@
   // 視覺版——純表現,從權威 HP 差值觸發,不嵌任何規則。記下「閃到何時為止」,render 依剩餘時間淡出。
   let damageFlashUntil = 0;
   let damageFlashLethal = false; // 被打趴(hp<=0)時閃得更重一點
+  // 回血光暈（ROADMAP 518）：治癒時畫面邊緣短暫染上柔和綠光，與受擊紅光成一對。
+  let healFlashUntil = 0;
   // 精英血條（ROADMAP 386）：視野內有兇名精英時頂端大型 HP 血條。
   const BOSS_BAR_REACH = 520; // 感知半徑（世界像素）
   let _bossBarAlpha = 0;       // 渲染 alpha [0,1]，淡入淡出
@@ -4186,6 +4188,8 @@
               announce(`恢復生命 ${me.hp}/${me.max_hp}`);
               // 玩家回血飄字（ROADMAP 94）：藥水/技能回血時冒綠字
               spawnPlayerHealFloater(me.hp - myHp, me.x, me.y);
+              // 回血光暈（ROADMAP 518）：治癒那一刻畫面邊緣短暫染綠
+              healFlashUntil = performance.now() + 350;
             }
           }
           wasDownedLastTick = me.hp <= 0;
@@ -4904,6 +4908,8 @@
             born: performance.now(),
           });
         }
+        // 回血光暈（ROADMAP 518）：細雨治癒也觸發畫面邊緣綠光
+        healFlashUntil = performance.now() + 350;
         break;
       }
       case "ship_repaired": {
@@ -9799,6 +9805,7 @@
     // 拋例外時不會連帶把其餘 HUD 更新與下一幀排程跳過（rAF 在最後，靠 safeRender 兜底仍會續排）。
     safeDraw("hud", () => {
       drawDamageFlash(renderNow);           // 受擊紅光（畫在最上層）
+      drawHealFlash(renderNow);             // 回血綠光（ROADMAP 518，與受擊紅光成一對）
       drawDangerPulse(renderNow);           // 低血量危機脈動（ROADMAP 512）
       updateVillageBuffHud();               // 村落節慶加成計時器（ROADMAP 64）
       updateGatheringHud();                 // 廣場聚會加成計時器（ROADMAP 124）
@@ -10836,6 +10843,34 @@
     const g = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
     g.addColorStop(0, "rgba(160,0,0,0)");
     g.addColorStop(1, `rgba(160,0,0,${alpha.toFixed(3)})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, viewW, viewH);
+  }
+
+  // 回血光暈 alpha（ROADMAP 518）：t=[0,1]（1→0 隨時間淡出），回 [0, 0.32] 綠色 alpha。
+  // 與 drawDamageFlash 對仗：受傷邊緣紅光 vs 治癒邊緣綠光，構成完整的 HP 雙向視覺系統。
+  // reduceMotion 時呼叫端傳 t=0 即可（不觸發任何繪製）。
+  // 壞值（null/NaN/Infinity）保守回 0，不 throw；確定性、無副作用。
+  function healFlashAlpha(t) {
+    if (t == null || typeof t !== "number" || !isFinite(t) || t <= 0) return 0;
+    if (t > 1) t = 1;
+    return 0.32 * t; // 線性淡出，峰值 0.32（比受傷 0.38 柔和——治癒應是安慰而非驚嚇）
+  }
+
+  // 在畫面邊緣繪製柔和綠色暈光（「被治癒了」的視覺信號）。
+  // 中央保持透明不擋視線，僅邊緣染色，與 drawDamageFlash 結構對稱。
+  function drawHealFlash(now) {
+    if (now >= healFlashUntil) return;
+    const dur = 350;
+    const t = (healFlashUntil - now) / dur;
+    const alpha = effectiveReduceMotion() ? 0 : healFlashAlpha(t);
+    if (alpha <= 0) return;
+    const cx = viewW / 2, cy = viewH / 2;
+    const inner = Math.min(viewW, viewH) * 0.35;
+    const outer = Math.hypot(viewW, viewH) / 2;
+    const g = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    g.addColorStop(0, "rgba(40,200,100,0)");
+    g.addColorStop(1, `rgba(40,200,100,${alpha.toFixed(3)})`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, viewW, viewH);
   }
