@@ -2541,6 +2541,10 @@ pub struct EnemyView {
     /// 否則略去。前端據此畫逐漸填滿的紅色預警圈，玩家看圈反應（走開／格擋／翻滾）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slam_windup: Option<f32>,
+    /// 破綻時機（ROADMAP 488）：兇名精英此刻露出可乘破綻時為 true，前端在牠身上畫金色破綻光環，
+    /// 提示玩家「現在砍傷害最高」。只對 notorious 敵人有意義（大眾雜魚永遠 false）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub weak: bool,
 }
 
 /// 背包裡的一疊物品（種類 + 數量），給快照序列化用。
@@ -3185,6 +3189,7 @@ mod tests {
                 resting: false,
                 routing: false,
                 slam_windup: None,
+                weak: false,
             }],
             daynight: DayNightView {
                 phase: Phase::Day,

@@ -338,6 +338,9 @@ pub fn spawn(app: AppState) {
                 // ROADMAP 424：怪物王預警重擊的蓄力進度由「伺服器時鐘 + 怪物 id」決定性推導，
                 // 不存任何新狀態。now_secs 與下方傷害結算用的時鐘同源（皆由 tick 換算）。
                 let now_secs = tick as f64 / TICK_HZ as f64;
+                // 破綻時機（ROADMAP 488）：破綻相位由牆上時鐘推導，與 ws.rs 傷害結算同源
+                // （兩處各自呼叫 weakpoint::now_secs 取同一道 wall clock），畫出的破綻光與實際加成窗一致。
+                let wp_now = crate::weakpoint::now_secs();
                 let views = if want_broadcast {
                     enemies
                         .enemies()
@@ -362,6 +365,10 @@ pub fn spawn(app: AppState) {
                                 } else {
                                     None
                                 },
+                                // ROADMAP 488：兇名精英存活且破綻相位開啟時露破綻，前端畫金色破綻光環。
+                                weak: notorious
+                                    && p.enemy.is_alive()
+                                    && crate::weakpoint::is_open(p.id, wp_now),
                             }
                         })
                         .collect()

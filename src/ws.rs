@@ -3216,9 +3216,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let results: Vec<_> = if use_warcry {
                         // 戰吼：熟練度加成群攻範圍（ROADMAP 153）。
                         let effective_reach = attack_reach + warcry_bonus_reach;
-                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power, effective_reach)
+                        app.enemies.write().unwrap().attack_all_in_reach(px, py, power, effective_reach, crate::weakpoint::now_secs())
                     } else {
-                        app.enemies.write().unwrap().attack_nearest(px, py, power, attack_reach)
+                        app.enemies.write().unwrap().attack_nearest(px, py, power, attack_reach, crate::weakpoint::now_secs())
                             .into_iter().collect()
                     };
                     // 遠程攻擊廣播：只要玩家出手就播（命中或未命中皆可），前端負責動畫。

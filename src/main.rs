@@ -209,6 +209,7 @@ mod eco_festival;
 mod item_rarity;
 mod element_affinity;
 mod kill_streak;
+mod weakpoint;
 
 use std::net::SocketAddr;
 

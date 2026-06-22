@@ -2946,6 +2946,59 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 雪季雪人：雪身＋圍巾＋署名牌＋視野外剔除＋回暖早退＋壞值皆乾淨");
 }
 
+// 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
+{
+  const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;
+  if (typeof spec !== "function") {
+    failed = true;
+    console.error("  ❌ 破綻時機：game.js 未導出 weakpointGlowSpec");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 破綻時機：${msg}`); } };
+    const ok = (c) => c && Number.isFinite(c.alpha) && Number.isFinite(c.radius) && Number.isFinite(c.glow);
+    // 動態（reduced=false）：多取樣皆有限、alpha 落在 (0,1]、radius 為正。
+    for (const t of [0, 0.3, 0.6, 1.2, 3.7, 100.0]) {
+      const s = spec(t, false);
+      expect(ok(s), `t=${t} 應回有限規格`);
+      expect(s.alpha > 0 && s.alpha <= 1, `t=${t} alpha 應落在 (0,1]`);
+      expect(s.radius > 0, `t=${t} radius 應為正`);
+    }
+    // reduceMotion：相位鎖中點＝不隨 t 變（確定性、不脈動仍清楚可見）。
+    const a = spec(0, true), b = spec(99, true);
+    expect(a.alpha === b.alpha && a.radius === b.radius && a.glow === b.glow, "reduceMotion 下規格不隨時間變");
+    expect(ok(a), "reduceMotion 規格應有限");
+    // 動態下會脈動：峰谷 alpha 應不同（取兩個相位差半週期的取樣）。
+    const peak = spec(Math.PI / 2 / 5.5, false).alpha; // sin=1
+    const trough = spec(-Math.PI / 2 / 5.5, false).alpha; // sin=-1
+    expect(Math.abs(peak - trough) > 0.1, "動態下破綻光應有明顯脈動");
+    if (bad) failed = true;
+    else console.log("  ✅ 破綻時機·weakpointGlowSpec 真值表（有限/界內/脈動/reduceMotion 鎖定）：通過");
+  }
+}
+
+// 破綻時機（ROADMAP 488）：注入兇名精英 enemies[0] 帶 weak=true（露破綻），連跑多幀驗 drawWeakpointAura
+// 金色光環＋❉ 記號路徑零例外；再餵 weak=false 驗早退（無破綻光）。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：破綻時機（兇名精英露破綻金光環，連跑多幀）──");
+  const wpSnap = JSON.parse(JSON.stringify(snapshot));
+  const me0 = wpSnap.players[0];
+  if (wpSnap.enemies && wpSnap.enemies[0]) {
+    wpSnap.enemies[0] = { ...wpSnap.enemies[0], x: me0.x + 50, y: me0.y, level: 8, alive: true, notorious: true, weak: true };
+  }
+  lastWS.onmessage({ data: JSON.stringify({ ...wpSnap, type: "snapshot" }) });
+  const rw = pump("破綻時機·露破綻", 3);
+  // 破綻閉合（weak=false）：不該畫破綻光、走早退。
+  const closeSnap = JSON.parse(JSON.stringify(wpSnap));
+  if (closeSnap.enemies && closeSnap.enemies[0]) closeSnap.enemies[0].weak = false;
+  lastWS.onmessage({ data: JSON.stringify({ ...closeSnap, type: "snapshot" }) });
+  const rw2 = pump("破綻時機·閉合早退", 2);
+  if (rw instanceof Error || rw2 instanceof Error) { failed = true; console.error("  ❌ 破綻時機：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 破綻時機：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(rw instanceof Error) && !(rw2 instanceof Error)) console.log("  ✅ 破綻時機：兇名精英露破綻金光環＋❉＋閉合早退皆乾淨");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -19353,6 +19353,39 @@
     ctx.restore();
   }
 
+  // 破綻光環規格（ROADMAP 488）：純函式，依時間 t 算金色破綻光的脈動強度與環半徑。
+  // 與兇名紅暈（42）、紅色蓄力預警圈（424）刻意異色——破綻＝金色「機會」訊號（砍下去傷害最高），
+  // 不是危險訊號。reduceMotion 時相位鎖定中點（不脈動，仍清楚可見）。確定性、好測。
+  function weakpointGlowSpec(t, reduced) {
+    const pulse = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 5.5);
+    return {
+      alpha: 0.30 + 0.45 * pulse, // 環的不透明度（隨脈動由淡轉亮）
+      radius: 21 + (reduced ? 1.5 : 3 * pulse), // 環半徑（微微一張一縮）
+      glow: 0.16 + 0.18 * pulse, // 背景柔光圈強度
+    };
+  }
+
+  // 在兇名精英露破綻時畫金色破綻光環（呼叫端已確認 e.alive && e.weak）。
+  function drawWeakpointAura(cx, cy, t) {
+    const spec = weakpointGlowSpec(t, reduceMotion);
+    // 背景柔光圈（金色氣場）
+    const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, spec.radius + 8);
+    g.addColorStop(0, `rgba(255,214,90,${spec.glow.toFixed(3)})`);
+    g.addColorStop(1, "rgba(255,200,60,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, spec.radius + 8, 0, Math.PI * 2); ctx.fill();
+    // 破綻環（金色）
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = `rgba(255,222,120,${spec.alpha.toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, spec.radius, 0, Math.PI * 2); ctx.stroke();
+    // 頂上小破綻記號（❉）：一眼看出「此刻可乘」。
+    ctx.font = `12px ${UI_FONT}`;
+    ctx.textAlign = "center";
+    ctx.fillStyle = `rgba(255,236,160,${(0.6 + 0.4 * (spec.alpha - 0.3)).toFixed(3)})`;
+    ctx.fillText("❉", cx, cy - spec.radius - 4);
+    ctx.textAlign = "left";
+  }
+
   // ── 白晝飛鳥（ROADMAP 194）────────────────────────────────────────────────
   // 白天偶爾一小群 V 字編隊的鳥剪影緩緩拍翅、橫越上半天邊、飛遠即逝；夜裡或弱機不出。
   // 純前端視覺、零後端：依既有 daynight.light 判白天（與彩虹 191 同口徑），自排下群出現時刻。
@@ -22315,6 +22348,11 @@
       // 畫在影子層上、生物造型前（怪物王站在預警圈中央）。reduceMotion 仍完整顯示，只是不脈動。
       if (e.alive && typeof e.slam_windup === "number") {
         drawSlamWindup(sx, sy + 13, Math.max(0, Math.min(1, e.slam_windup)), t);
+      }
+      // 破綻光環（ROADMAP 488）：兇名精英露破綻時，身上罩一圈金色光環＋❉ 記號，
+      // 提示玩家「現在砍傷害最高」。畫在生物造型前當底光（金色「機會」訊號，異於紅色危險訊號）。
+      if (e.alive && e.weak) {
+        drawWeakpointAura(sx, ey, t);
       }
       // 影子(定在地面、不隨浮動)；日影晷（201）：投影隨太陽/月亮方位偏移、晨昏拉長
       drawGroundShadow(sx, sy + 13, 12, 4, 0.22);

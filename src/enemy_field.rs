@@ -571,6 +571,7 @@ impl EnemyField {
         py: f32,
         power: u32,
         reach: f32,
+        now_secs: f64,
     ) -> Option<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
@@ -621,7 +622,15 @@ impl EnemyField {
                     // 命中數字（ROADMAP 387）：記錄攻擊前 HP 與敵人位置，用於計算實際傷害。
                     let pre_hp = placed.enemy.remaining_hp();
                     let (ex, ey) = (placed.x, placed.y);
-                    let loot = placed.enemy.attack(power);
+                    // 破綻直擊（ROADMAP 488）：兇名精英露破綻時命中，傷害加成；否則照常。
+                    let eff_power = if was_notorious
+                        && crate::weakpoint::is_open(placed.id, now_secs)
+                    {
+                        crate::weakpoint::bonus_power(power)
+                    } else {
+                        power
+                    };
+                    let loot = placed.enemy.attack(eff_power);
                     let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
                         // 被打倒：等級重置為地理基準值，HP 上限同步回撥（重生時滿基準血）。
@@ -702,6 +711,7 @@ impl EnemyField {
         py: f32,
         power: u32,
         reach: f32,
+        now_secs: f64,
     ) -> Vec<(EnemyKind, u32, bool, Option<(ItemKind, u32)>, f32, f32, u32)> {
         if !px.is_finite() || !py.is_finite() {
             return Vec::new();
@@ -741,7 +751,15 @@ impl EnemyField {
                     // 命中數字（ROADMAP 387）：記錄攻擊前 HP 與敵人位置。
                     let pre_hp = placed.enemy.remaining_hp();
                     let (ex, ey) = (placed.x, placed.y);
-                    let loot = placed.enemy.attack(power);
+                    // 破綻直擊（ROADMAP 488）：兇名精英露破綻時命中，傷害加成；否則照常。
+                    let eff_power = if was_notorious
+                        && crate::weakpoint::is_open(placed.id, now_secs)
+                    {
+                        crate::weakpoint::bonus_power(power)
+                    } else {
+                        power
+                    };
+                    let loot = placed.enemy.attack(eff_power);
                     let actual_dmg = pre_hp.saturating_sub(placed.enemy.remaining_hp());
                     if loot.is_some() {
                         placed.level = placed.base_level;
@@ -1365,7 +1383,7 @@ mod tests {
         f.advance(1.0, &[(520.0, 256.0)], false, |_, _| false);
 
         // 在新位置附近攻擊，不應 panic
-        let result = f.attack_nearest(516.0, 256.0, 1, ATTACK_REACH);
+        let result = f.attack_nearest(516.0, 256.0, 1, ATTACK_REACH, 0.0);
         assert!(result.is_some());
     }
 
@@ -1374,7 +1392,7 @@ mod tests {
         let mut f = EnemyField::new();
         f.ensure_chunks_around(0.0, 0.0, 100.0);
         let target = f.enemies()[0].clone();
-        let got = f.attack_nearest(target.x, target.y, 1, ATTACK_REACH);
+        let got = f.attack_nearest(target.x, target.y, 1, ATTACK_REACH, 0.0);
         assert!(got.is_some());
         assert_eq!(got.unwrap().0, target.enemy.kind());
     }
@@ -1520,7 +1538,7 @@ mod tests {
             (e.x, e.y, e.base_level)
         };
         // 用一萬點傷害確保一擊必殺
-        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
+        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH, 0.0);
         assert!(result.is_some(), "應能攻擊到敵人");
         let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
         assert!(loot.is_some(), "應有掉落（代表擊殺）");
@@ -1586,7 +1604,7 @@ mod tests {
             chunk[0].level = chunk[0].base_level + 3;
         }
         let (ex, ey) = { let e = &f.chunks[&key][0]; (e.x, e.y) };
-        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH);
+        let result = f.attack_nearest(ex, ey, 10000, ATTACK_REACH, 0.0);
         let (_, _, was_notorious, loot, _, _, _) = result.unwrap();
         assert!(loot.is_some());
         assert!(was_notorious, "level == base+3 時應回傳 was_notorious=true");
@@ -1614,7 +1632,7 @@ mod tests {
                 .unwrap()
         };
         // 只打 1 點傷害，不擊殺，確保仍能廣播狼群警報
-        let _result = f.attack_nearest(target_pos.0, target_pos.1, 1, ATTACK_REACH);
+        let _result = f.attack_nearest(target_pos.0, target_pos.1, 1, ATTACK_REACH, 0.0);
         // 附近同種怪應有 pack_target
         let any_pack = f.chunks.values().flat_map(|v| v.iter()).any(|e| {
             e.enemy.is_alive() && e.enemy.kind() == target_kind && e.pack_target.is_some()
@@ -1633,7 +1651,7 @@ mod tests {
         // 把 HP 降到 10%（殘血）——直接 attack 打到快死
         let max_hp = f.chunks[&key][0].enemy.max_hp();
         let damage = max_hp - max_hp / 10; // 留 10% HP
-        f.attack_nearest(ex, ey, damage, ATTACK_REACH);
+        f.attack_nearest(ex, ey, damage, ATTACK_REACH, 0.0);
         assert!(f.chunks[&key][0].enemy.is_alive(), "怪應仍存活");
 
         // 玩家在怪的右側（ex + 150，在 AGGRO_RADIUS 260 內）
@@ -1672,7 +1690,7 @@ mod tests {
             .find(|e| e.x == fx && e.y == fy)
             .map(|e| e.enemy.max_hp()).unwrap_or(10);
         let damage = max_hp - 1; // 留 1 HP
-        if damage > 0 { f.attack_nearest(fx, fy, damage, ATTACK_REACH); }
+        if damage > 0 { f.attack_nearest(fx, fy, damage, ATTACK_REACH, 0.0); }
 
         // 在殘血怪旁邊放一個玩家，讓 advance 的前置掃描觸發呼救信號
         f.advance(0.05, &[(fx + 50.0, fy)], false, |_, _| false);
@@ -2060,7 +2078,7 @@ mod tests {
         let mut f = EnemyField::new();
         let (ox, oy) = (8000.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox, oy, EnemyKind::ScrapDrone);
-        let result = f.attack_nearest(ox, oy, 5, 300.0);
+        let result = f.attack_nearest(ox, oy, 5, 300.0, 0.0);
         let (_, _, _, _, _, _, actual_dmg) = result.unwrap();
         assert!(actual_dmg > 0, "命中存活怪，actual_dmg 應 > 0");
     }
@@ -2071,7 +2089,7 @@ mod tests {
         let mut f2 = EnemyField::new();
         let (ox2, oy2) = (8400.0_f32, 8000.0_f32);
         push_test_enemy(&mut f2, 0, ox2, oy2, EnemyKind::ScrapDrone);
-        let res = f2.attack_nearest(ox2, oy2, 99999, 300.0);
+        let res = f2.attack_nearest(ox2, oy2, 99999, 300.0, 0.0);
         let (_, _, _, _, _, _, actual_dmg) = res.unwrap();
         assert!(actual_dmg <= 99999, "actual_dmg 不得超過攻擊力");
         assert!(actual_dmg > 0, "擊殺時 actual_dmg 應等於怪物初始 HP");
@@ -2083,7 +2101,7 @@ mod tests {
         let mut f = EnemyField::new();
         let (ox, oy) = (8600.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox + 50.0, oy + 30.0, EnemyKind::ScrapDrone);
-        let result = f.attack_nearest(ox, oy, 5, 300.0);
+        let result = f.attack_nearest(ox, oy, 5, 300.0, 0.0);
         let (_, _, _, _, ex, ey, _) = result.unwrap();
         let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
         assert!(dist < 300.0, "回傳座標應在攻擊範圍內，dist={dist}");
@@ -2095,7 +2113,7 @@ mod tests {
         let mut f = EnemyField::new();
         let (ox, oy) = (8800.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox + 500.0, oy, EnemyKind::ScrapDrone);
-        let result = f.attack_nearest(ox, oy, 5, 50.0);
+        let result = f.attack_nearest(ox, oy, 5, 50.0, 0.0);
         assert!(result.is_none(), "超出範圍不應命中");
     }
 
@@ -2106,7 +2124,7 @@ mod tests {
         let (ox, oy) = (9000.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox + 10.0, oy, EnemyKind::ScrapDrone);
         push_test_enemy(&mut f, 1, ox - 10.0, oy, EnemyKind::ScrapDrone);
-        let results = f.attack_all_in_reach(ox, oy, 5, 200.0);
+        let results = f.attack_all_in_reach(ox, oy, 5, 200.0, 0.0);
         assert!(!results.is_empty(), "AOE 應至少命中一隻");
         for (_, _, _, _, _, _, actual_dmg) in &results {
             assert!(*actual_dmg > 0, "每隻命中的 actual_dmg 應 > 0");
@@ -2119,7 +2137,7 @@ mod tests {
         let mut f = EnemyField::new();
         let (ox, oy) = (9200.0_f32, 8000.0_f32);
         push_test_enemy(&mut f, 0, ox + 20.0, oy + 10.0, EnemyKind::ScrapDrone);
-        let results = f.attack_all_in_reach(ox, oy, 5, 200.0);
+        let results = f.attack_all_in_reach(ox, oy, 5, 200.0, 0.0);
         assert!(!results.is_empty());
         for (_, _, _, _, ex, ey, _) in &results {
             let dist = ((ex - ox).powi(2) + (ey - oy).powi(2)).sqrt();
