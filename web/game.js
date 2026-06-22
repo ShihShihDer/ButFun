@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -9031,8 +9031,26 @@
     // 帳號 key 隨 myId 變動自動重載（不同帳號同瀏覽器各有各的地圖）；節流寫回 localStorage。
     if (me) {
       loadExplored(myId || "guest");
+      const chartedBefore = exploredCount();
       recordExplored(me.rx, me.ry);
       saveExplored(renderNow);
+      // 製圖師里程碑（ROADMAP 485）：本幀移動真的跨過某個踏查門檻 → 晉級慶祝。
+      // cartographerCrossed 只認 before→after 的「即時前進」：重連後已是高格數，不會回頭重觸
+      // 已達成的低門檻，故天然免持久化、不洗版（不必新增 localStorage 欄）。
+      const crossed = cartographerCrossed(chartedBefore, exploredCount());
+      if (crossed > 0) {
+        const rk = cartographerRank(exploredCount());
+        announce(`晉升製圖師頭銜：${rk.title}！已踏查 ${exploredCount()} 塊未知之地`);
+        addChat("系統", `🧭 ${me.name} 晉升為「${rk.title}」——已踏查 ${exploredCount()} 塊地圖！`);
+        SFX.achievement(); // 探索里程碑＝成就級燦爛音（ROADMAP 376）
+        hitFloaters.push({
+          wx: me.x, wy: me.y - 40,
+          text: `🧭 ${rk.title}！`,
+          color: "201,162,75",
+          size: 22,
+          born: performance.now(),
+        });
+      }
     }
 
     // 住家室內模式（ROADMAP 111）：玩家在室內時改畫室內場景，跳過戶外世界渲染。
@@ -10286,6 +10304,61 @@
   // 某世界座標所屬格子是否已揭露。
   function isExplored(wx, wy) { return exploredCells.has(exploreCellKey(wx, wy)); }
   function exploredCount() { return exploredCells.size; }
+
+  // ---- 製圖師里程碑（ROADMAP 485）：把「探索」這件事變成看得見的成長 ----
+  // 拓圖足跡（448）默默累積了你踏過的格數，卻一直只是小地圖角落的一層霧、沒有任何回饋——
+  // 448 註解自己就點名了這個缺口：「走再遠也沒有『我探索出了一片地圖』的成就感」。這裡給探索
+  // 補上第一層「進度＋頭銜」：踏查的格數越過門檻就晉一級製圖師頭銜，世界地圖面板常駐顯示
+  // 「目前頭銜・已踏查 N 塊・再 K 塊晉級」，越級當下淡入一張慶祝卡。純前端、純表現、零經濟、
+  // 零後端、零持久化新欄（沿用 448 既有的 localStorage 足跡資料）。與「初次踏足／遠遊見聞」
+  // （411／415，計「已命名地區」數）互補：那條數的是「踏進幾個有名字的地方」，這條數的是
+  // 「親手揭開了多大一片地圖格」，兩個維度不重複。頭銜中文字串集中於此、保留 i18n 空間。
+  const CARTOGRAPHER_RANKS = [
+    { at: 0,    title: "迷途旅人" },
+    { at: 50,   title: "踏勘學徒" },
+    { at: 150,  title: "見習製圖師" },
+    { at: 400,  title: "製圖師" },
+    { at: 1000, title: "資深製圖師" },
+    { at: 2500, title: "大陸測繪宗師" },
+  ];
+  // 給定已踏查格數，回傳當前製圖師等級資訊（純函式、確定可重現、壞值保守當 0 格）。
+  //   level    ：目前等級索引（0 起）
+  //   title    ：頭銜中文名
+  //   at       ：本級門檻格數
+  //   nextAt   ：下一級門檻格數（已滿級為 null）
+  //   toNext   ：再幾格晉級（已滿級為 0）
+  //   isMax    ：是否已達最高級
+  function cartographerRank(count) {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    let level = 0;
+    for (let i = 0; i < CARTOGRAPHER_RANKS.length; i++) {
+      if (n >= CARTOGRAPHER_RANKS[i].at) level = i;
+      else break;
+    }
+    const cur = CARTOGRAPHER_RANKS[level];
+    const next = CARTOGRAPHER_RANKS[level + 1] || null;
+    return {
+      level,
+      title: cur.title,
+      at: cur.at,
+      nextAt: next ? next.at : null,
+      toNext: next ? Math.max(0, next.at - n) : 0,
+      isMax: !next,
+    };
+  }
+  // 從 prevCount 漲到 newCount 之間，新跨越的最高製圖師等級索引（>0 才代表有新晉級可慶祝）；
+  // 沒有跨任何門檻、或不升反退、或壞值，一律回 0（0 級＝起始「迷途旅人」，人人皆在、不慶祝）。
+  function cartographerCrossed(prevCount, newCount) {
+    const a = Math.max(0, Math.floor(Number(prevCount) || 0));
+    const b = Math.max(0, Math.floor(Number(newCount) || 0));
+    if (b <= a) return 0;
+    let crossed = 0;
+    for (let i = 1; i < CARTOGRAPHER_RANKS.length; i++) {
+      const t = CARTOGRAPHER_RANKS[i].at;
+      if (t > a && t <= b) crossed = i;
+    }
+    return crossed;
+  }
 
   // ---- 小地圖（玩家建議：2000x2000 大世界容易迷路）----
   // 右下角畫一張固定大小的世界縮圖：世界邊界、農地位置、自己（亮點）、其他玩家（暗點）。
@@ -29998,9 +30071,18 @@
       const d = img.data;
       for (let py = 0; py < cv.height; py++) {
         for (let px = 0; px < cv.width; px++) {
-          const rgb = WM_BIOME_RGB[biomeAt(ox + px * S + 16, oy + py * S + 16)] || [20, 24, 32];
+          const sx = ox + px * S + 16, sy = oy + py * S + 16;
+          const rgb = WM_BIOME_RGB[biomeAt(sx, sy)] || [20, 24, 32];
           const o = (py * cv.width + px) * 4;
-          d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
+          // 拓圖足跡（448→485）：未踏之地壓暗成霧（僅留 ~30% 生態底色＋一抹冷藍），走過的地方
+          // 保持全彩——大世界地圖第一次「記得你走過的路」，霧裡浮出你親手揭開的版圖。城鎮框/裂縫/
+          // 你的位置都畫在影像之上（見下），不被霧蓋，定位功能不受影響。
+          if (isExplored(sx, sy)) {
+            d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2];
+          } else {
+            d[o] = Math.round(rgb[0] * 0.3 + 8); d[o + 1] = Math.round(rgb[1] * 0.3 + 12); d[o + 2] = Math.round(rgb[2] * 0.3 + 24);
+          }
+          d[o + 3] = 255;
         }
       }
       c2.putImageData(img, 0, 0);
@@ -30050,6 +30132,16 @@
         locTxt = `📍 (${Math.round(meX)}, ${Math.round(meY)})・離 <b style="color:#c9a24b">${best.name}</b> 約 ${Math.round(bd / TS)} 格，往<b>${dir}</b>走`;
       }
       document.getElementById("wmWhere").innerHTML = locTxt;
+      // 製圖師里程碑（ROADMAP 485）：常駐顯示目前頭銜＋已踏查格數＋距下一級。
+      const exEl = document.getElementById("wmExplore");
+      if (exEl) {
+        const charted = exploredCount();
+        const rk = cartographerRank(charted);
+        const prog = rk.isMax
+          ? `已踏查 <b style="color:#c9a24b">${charted}</b> 塊・<b style="color:#ffd34d">已達巔峰</b>`
+          : `已踏查 <b style="color:#c9a24b">${charted}</b> 塊・再 <b>${rk.toNext}</b> 塊晉級`;
+        exEl.innerHTML = `🧭 製圖師 <b style="color:#c9a24b">${rk.title}</b>　<small style="opacity:0.85">${prog}</small>`;
+      }
       // 旅行入口：有星圖直接展開；沒有就教怎麼做一張。
       const hasChart = (myInv.get("star_chart") || 0) > 0;
       document.getElementById("wmTravel").innerHTML = hasChart

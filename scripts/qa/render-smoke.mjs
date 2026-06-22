@@ -2298,6 +2298,43 @@ for (const sc of scenarios) {
   }
 }
 
+// 製圖師里程碑（ROADMAP 485）：單元斷言純函式 cartographerRank／cartographerCrossed——
+// rank：依已踏查格數定頭銜等級＋下一級門檻＋距離，門檻內單調、壞值保守當 0、滿級 nextAt=null；
+// crossed：只認 before→after 即時前進跨越的最高門檻（>0 才慶祝），不升反退/壞值/起始 0 級回 0。
+{
+  const rank = sandbox.__bfTest && sandbox.__bfTest.cartographerRank;
+  const crossed = sandbox.__bfTest && sandbox.__bfTest.cartographerCrossed;
+  if (typeof rank !== "function" || typeof crossed !== "function") {
+    failed = true;
+    console.error("  ❌ 製圖師里程碑：game.js 未導出 cartographerRank／cartographerCrossed");
+  } else {
+    let bad = 0;
+    const check = (label, cond) => { if (!cond) { bad++; console.error(`  ❌ 製圖師里程碑：${label}`); } };
+    // rank：0 格＝起始級，門檻 50/150/400/1000/2500。
+    const r0 = rank(0), r49 = rank(49), r50 = rank(50), r399 = rank(399), r400 = rank(400), rMax = rank(99999);
+    check("0 格＝Lv0 迷途旅人", r0.level === 0 && r0.title === "迷途旅人" && r0.at === 0);
+    check("0 格下一級門檻 50、距 50", r0.nextAt === 50 && r0.toNext === 50 && r0.isMax === false);
+    check("49 格仍 Lv0", r49.level === 0 && r49.toNext === 1);
+    check("剛好 50 格晉 Lv1", r50.level === 1 && r50.at === 50 && r50.nextAt === 150);
+    check("399 格仍 Lv2、距 1", r399.level === 2 && r399.toNext === 1);
+    check("剛好 400 格晉 Lv3 製圖師", r400.level === 3 && r400.title === "製圖師");
+    check("超大格數＝滿級 isMax、nextAt=null、toNext=0", rMax.isMax === true && rMax.nextAt === null && rMax.toNext === 0);
+    // 壞值保守：NaN/負數/字串一律當 0 格、Lv0、不 throw。
+    check("壞值當 0 格 Lv0", rank(NaN).level === 0 && rank(-99).level === 0 && rank("x").level === 0 && rank(undefined).level === 0);
+    check("小數向下取整", rank(50.9).level === 1 && rank(49.9).level === 0);
+    // crossed：只認真正「漲過門檻」的最高一級。
+    check("49→50 跨 Lv1", crossed(49, 50) === 1);
+    check("0→160 一次跨到 Lv2（取最高）", crossed(0, 160) === 2);
+    check("50→149 沒跨新門檻回 0", crossed(50, 149) === 0);
+    check("起始 0→49 未過任何門檻回 0", crossed(0, 49) === 0);
+    check("不升反退回 0", crossed(500, 100) === 0 && crossed(50, 50) === 0);
+    check("跨多級取最高（0→3000＝Lv5）", crossed(0, 3000) === 5);
+    check("NaN 前值當 0 起算＝0→200 跨 Lv2", crossed(NaN, 200) === 2);
+    if (bad) failed = true;
+    else console.log("  ✅ 製圖師里程碑·頭銜／越級真值表：通過");
+  }
+}
+
 // 探索接力指引（ROADMAP 463）：單元斷言純函式 nextGuideStep——回傳第一個還沒試過步驟的索引，
 // 全部試過/輸入異常退 -1（畢業）；保序、忽略未知/壞 id、Set 與陣列皆可、空安全。
 {
