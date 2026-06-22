@@ -4727,6 +4727,13 @@
           floaters.push({ wx, wy: wy + 48, text: `🌾 當季旺收！+${seasonBonus} 乙太`, color: "140,220,160", born: now + 3 });
           announce(`旺季收穫，季節豐收獎多得 ${seasonBonus} 乙太`);
         }
+        // 雨天豐澤（ROADMAP 502）：草原細雨中收成，多綴一行「🌧️ 雨澤 +N」藍灰飄字，
+        // 讓「在雨中收成」的小驚喜一眼看得見（疊在旺收飄字再下方，再晚一拍冒出）。
+        const rainBonus = msg.rain_bonus || 0;
+        if (rainBonus > 0) {
+          floaters.push({ wx, wy: wy + 64, text: `🌧️ 雨澤 +${rainBonus} 乙太`, color: "130,190,230", born: now + 4 });
+          announce(`雨水滋養豐收，雨天豐澤多得 ${rainBonus} 乙太`);
+        }
         // 豐收迸發（ROADMAP 458）：在收成者身上（玩家世界座標，飄字在頭頂、金光在身上）迸開豐收金光、
         // 揚起一捧金穀；品質越高穀粒越多越金。收成這個高頻療癒動作第一次在世界畫面裡也有迸發回饋。
         spawnHarvestBurst(msg.x || 0, msg.y || 0, msg.quality);
@@ -28206,8 +28213,10 @@
     const plotCrops = myPlot ? (farmCropPlots.find(fp => fp.plot_id === myPlot.plot_id) || { crops: [] }) : { crops: [] };
     const ether = me ? me.ether : 0;
     // ROADMAP 501：eta_secs 每 5 秒一桶，讓面板跟著倒數更新而不是每幀重繪。
+    // ROADMAP 502：把天氣狀態（是否下雨）納入 sig，下雨時橫幅出現、雨停即消。
+    const isRainingNow = isRainingState(weatherType, weatherIntensity);
     const cropSig = plotCrops.crops.map(c => `${c.kind}:${c.ripe}:${Math.floor((c.eta_secs || 0) / 5)}`).join(",");
-    const sig = [isGuestUser, myPlot?.plot_id, cropSig, ether].join("|");
+    const sig = [isGuestUser, myPlot?.plot_id, cropSig, ether, isRainingNow].join("|");
     if (sig === lastFarmCropSig) return;
     lastFarmCropSig = sig;
     body.innerHTML = "";
@@ -28226,6 +28235,26 @@
       hint.textContent = "你還沒有農田地塊。請先在「購地」面板購買農田類型地塊，才能種作物。";
       body.appendChild(hint);
       return;
+    }
+
+    // ROADMAP 502 雨天豐澤：下雨時在面板頂部顯示「🌧️ 雨水滋養中」橫幅，提醒玩家收成有加成。
+    if (isRainingNow) {
+      const banner = document.createElement("div");
+      banner.style.cssText = [
+        "background:rgba(60,100,160,0.28)",
+        "border:1px solid rgba(130,190,230,0.45)",
+        "border-radius:7px",
+        "padding:5px 10px",
+        "margin-bottom:8px",
+        "font-size:.8rem",
+        "color:#a0c8f0",
+        "display:flex",
+        "align-items:center",
+        "gap:6px",
+      ].join(";");
+      banner.innerHTML = "🌧️ <span>雨水滋養中・本次收成每株多 <b style='color:#b8d8f8;'>+1 乙太</b></span>";
+      banner.setAttribute("aria-label", "正在下雨，農作物收成可獲得雨天豐澤加成每株加一乙太");
+      body.appendChild(banner);
     }
 
     // ROADMAP 501：將 eta_secs 格式化為「N分X秒」顯示文字。

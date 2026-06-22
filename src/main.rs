@@ -215,7 +215,8 @@ mod kill_streak;
 mod weakpoint;
 mod world_tally; // ROADMAP 495 今日世界戰報·廣場石板第一次有了「全服今天做了什麼」
 mod world_tally_milestone; // ROADMAP 498 全服里程碑喝采——計數突破門檻時廣場 NPC 鼓舞一句
-mod rain_regen;  // ROADMAP 496 草原細雨庇護·天氣首次影響戰鬥——細雨中戶外玩家緩緩回血
+mod rain_regen;   // ROADMAP 496 草原細雨庇護·天氣首次影響戰鬥——細雨中戶外玩家緩緩回血
+mod rain_harvest; // ROADMAP 502 雨天豐澤·細雨中收成每株多 +1 乙太
 
 use std::net::SocketAddr;
 
