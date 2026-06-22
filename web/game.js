@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -1838,6 +1838,10 @@
   const gatherParticles = [];
   // 主動攻擊命中特效:每筆 { wx, wy, born } 在敵人位置畫一下紅色衝擊圈。純表現。
   const attackHits = [];
+  // 近戰揮砍弧光（ROADMAP 517）：每次近戰攻擊時，在玩家位置沿攻擊方向畫 280ms 漸散的金白扇弧。
+  const MELEE_SWING_MS = 280;
+  const MELEE_HALF_ARC = Math.PI / 3; // ±60°，120° 扇面
+  const meleeSwings = [];
   // 怪物王重擊衝擊波（ROADMAP 424）：每筆 { wx, wy, radius, born } 在落點畫一圈向外炸開、擴張到
   // 重擊半徑後淡去的紅色衝擊環。純表現（傷害已由伺服器結算），收到 boss_slam 廣播時 push。
   const bossSlams = [];
@@ -6544,6 +6548,38 @@
     }
   }
 
+  // 近戰揮砍弧光（ROADMAP 517）純函式：歸一化時間 t→alpha [0,1]。
+  // t=0 起升、t=0.2 峰值、t=1 歸零；壞值（NaN/null/Infinity）保守回 0，不 throw。
+  function meleeSwingAlpha(t) {
+    if (typeof t !== "number" || !isFinite(t)) return 0;
+    const tc = Math.max(0, Math.min(1, t));
+    return tc < 0.2 ? tc / 0.2 : 1 - (tc - 0.2) / 0.8;
+  }
+  // 繪製近戰揮砍弧光：在玩家位置向攻擊方向畫一道漸散的金白扇弧。
+  // reduceMotion 時清空並跳過（不閃動，符合無障礙原則）。
+  function drawMeleeSwings(camX, camY, now) {
+    for (let i = meleeSwings.length - 1; i >= 0; i--) {
+      const sw = meleeSwings[i];
+      const age = now - sw.born;
+      if (age >= MELEE_SWING_MS) { meleeSwings.splice(i, 1); continue; }
+      if (effectiveReduceMotion()) { meleeSwings.splice(i, 1); continue; }
+      const t = age / MELEE_SWING_MS;
+      const alpha = meleeSwingAlpha(t);
+      if (alpha <= 0) continue;
+      const sx = sw.sx - camX;
+      const sy = sw.sy - camY;
+      const r = 14 + t * 20; // 半徑從 14 → 34px 向外擴張
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, sw.angle - MELEE_HALF_ARC, sw.angle + MELEE_HALF_ARC);
+      ctx.strokeStyle = `rgba(255,240,180,${alpha.toFixed(3)})`;
+      ctx.lineWidth = 3 * (1 - t) + 0.5;
+      ctx.lineCap = "round";
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   // 畫怪物王重擊衝擊波（ROADMAP 424）：從落點向外炸開、擴張至重擊半徑後淡去的紅色衝擊環，
   // 配合地面預警圈的「蓄滿瞬間」收尾。純表現，不影響判定（傷害已由伺服器結算）。reduceMotion 仍畫。
   function drawBossSlamFx(camX, camY, now) {
@@ -9668,6 +9704,7 @@
       drawMealAroma(camX, camY, renderNow);            // 圍爐分食（ROADMAP 462）：暖食分享的香氣
       drawReviveGlow(camX, camY, renderNow);           // 同伴扶起（ROADMAP 464）：暖光救援特效
       drawAttackFx(camX, camY, renderNow);
+      drawMeleeSwings(camX, camY, renderNow);          // 近戰揮砍弧光（ROADMAP 517）
       drawBossSlamFx(camX, camY, renderNow);           // 怪物王重擊衝擊波（ROADMAP 424）
       drawFarmPointer(camX, camY);                     // 「回農地」邊緣指標
       drawVillagePointer(camX, camY);                  // 「往新手村」邊緣指標
@@ -13780,6 +13817,8 @@
     lastAttackTime = now;
     ws.send(JSON.stringify({ type: "attack" }));
     attackHits.push({ wx: target.x, wy: target.y, born: now });
+    // 近戰揮砍弧光（ROADMAP 517）：記錄玩家位置與攻擊方向，供 drawMeleeSwings 繪製扇弧。
+    if (me) meleeSwings.push({ sx: me.x, sy: me.y, angle: Math.atan2(target.y - me.y, target.x - me.x), born: now });
   }
 
   // 畫世界上的採集節點。可採的亮、採空(重生中)的壓暗;玩家搆得到的那顆描一圈亮環提示「可採」。
