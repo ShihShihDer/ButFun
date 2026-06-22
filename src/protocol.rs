@@ -261,6 +261,10 @@ pub enum ClientMsg {
     /// 整個冬天都立著，天一回暖即整批融化。只有冬季戶外能堆，堆雪有每人冷卻＋全服上限，
     /// 非冬季 / 在室內 / 冷卻中 / 已達上限 / 超量一律靜默忽略。零經濟、零持久化、純記憶體、重啟清零。
     BuildSnowman,
+    /// 蒸汽星艦共修（ROADMAP 492）：玩家走近星艦廢墟（半徑 150px）按「⚙️ 修繕」貢獻 2 木材。
+    /// 伺服器以玩家自己的權威座標判定距離（防隔空修繕）；星艦已修好 / 玩家冷卻中 /
+    /// 材料不足 / 超出半徑一律靜默忽略。零持久化、純記憶體、重啟清零。
+    ContributeToShip,
     /// 雪人讚賞（ROADMAP 479）：玩家走近別人堆的雪人，按「♥ 讚賞」捎去暖意。`id` = 目標雪人。
     /// 伺服器以讚賞者自己的權威座標判定搆不搆得著（防隔空讚賞）；不能讚自己堆的、一座只能讚一次。
     /// 成功則雪人愛心 +1（隨快照全服可見），並把暖心通知單播給堆雪者。
@@ -893,6 +897,18 @@ pub enum ClientMsg {
         pub cheers: u16,
     }
 
+    /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
+    /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct ShipRepairView {
+        /// 損毀狀態下的修繕進度（0 ~ goal）。閃耀 / 冷卻期間此值為 0。
+        pub progress: u32,
+        /// 修繕目標次數（與後端 `REPAIR_GOAL` 一致）。
+        pub goal: u32,
+        /// 閃耀（修繕完成）剩餘秒數；0 表示星艦未在閃耀。
+        pub repaired_secs: u32,
+    }
+
 /// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
@@ -1204,6 +1220,10 @@ pub enum ServerMsg {
         /// 空陣列＝目前世界上還沒有人種樹。前端在世界座標上繪製對應成長階段的樹。`#[serde(default)]` 向後相容。
         #[serde(default)]
         world_groves: Vec<TreeView>,
+        /// 蒸汽星艦共修狀態（ROADMAP 492）。`#[serde(default)]` 向後相容舊客戶端
+        /// （缺此欄位時預設為損毀零進度，前端正常渲染廢棄星艦）。
+        #[serde(default)]
+        ship_repair: ShipRepairView,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -1296,6 +1316,12 @@ pub enum ServerMsg {
         player_id: Uuid,
         name: String,
         total: u32,
+    },
+    /// 蒸汽星艦修繕完成（ROADMAP 492）：旅人共同把星艦修好了。全服廣播——前端顯示系統公告並
+    /// 在星艦位置迸出金色齒輪特效。`player_name` = 送出最後一擊貢獻的玩家名字。
+    /// 一次性事件、不入快照、不持久化、重啟清零。
+    ShipRepaired {
+        player_name: String,
     },
     /// 玩家擊掌成功（ROADMAP 339）：兩名玩家靠得夠近、又都比了擊掌，伺服器把他們配成一對，
     /// 全服廣播、前端在兩人**之間**的中點迸出一道「啪！」擊掌特效＋火花。`a_id`/`b_id` 與
@@ -3287,6 +3313,7 @@ mod tests {
             town_blocs: vec![],
             town_share: None,
             world_groves: vec![],
+            ship_repair: ShipRepairView::default(),
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

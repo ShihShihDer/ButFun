@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), inferPlayerActivity, withinShipRepairReach }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2954,6 +2954,11 @@
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
+  // ROADMAP 492 廢棄蒸汽星艦共修——進度 + 閃耀剩餘秒數（從快照同步）
+  let shipRepair = { progress: 0, goal: 20, repaired_secs: 0 };
+  const SHIP_REPAIR_WX = 3200; // 與後端 ship_repair::SHIP_WX 對齊
+  const SHIP_REPAIR_WY = 1800; // 與後端 ship_repair::SHIP_WY 對齊
+  const SHIP_REPAIR_REACH = 150; // 與後端 ship_repair::REPAIR_REACH 對齊
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
@@ -3830,6 +3835,8 @@
         townShare = msg.town_share || null;
         // 親手植樹成蔭（ROADMAP 370）：全服共享的世界樹群（隨真實時間長大）；無此欄位（舊伺服器）→ 空。
         if (Array.isArray(msg.world_groves)) worldGroves = msg.world_groves;
+        // 蒸汽星艦共修（ROADMAP 492）：同步修繕進度與閃耀剩餘秒數；無此欄位（舊伺服器）保持預設值。
+        if (msg.ship_repair) shipRepair = msg.ship_repair;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -4263,6 +4270,8 @@
           updateSnowmanBtn(me, isGuest);
           // 雪人讚賞按鈕（ROADMAP 479）：走近一座別人堆的、還沒讚過的雪人時才顯示
           updateCheerSnowmanBtn(me, isGuest);
+          // 蒸汽星艦修繕按鈕（ROADMAP 492）：已登入、戶外、走近星艦、星艦損毀中才顯示
+          updateShipRepairBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -4684,6 +4693,29 @@
           floaters.push({ wx, wy: wy - 46, text: `🤝 扶起了 ${msg.target || "旅人"}`, color: "255,210,120", born: now });
           announce(`你扶起了倒下的 ${msg.target || "旅人"}`);
           SFX.click();
+        }
+        break;
+      }
+      case "ship_repaired": {
+        // 蒸汽星艦修繕完成（ROADMAP 492）：某位旅人完成了最後一擊，全服廣播。
+        // 在星艦位置噴出金色齒輪特效、公告顯示修繕者名字。
+        const repairer = msg.player_name || "某位旅人";
+        announce(`⚙️✨ ${repairer} 完成了最後一擊——蒸汽星艦重新啟動，齒輪轉動、蒸汽升騰！`);
+        if (SFX.success) SFX.success();
+        // 在星艦座標噴出金色齒輪特效（複用 floaters 機制）。
+        for (let i = 0; i < 8; i++) {
+          const angle = (Math.PI * 2 * i) / 8;
+          const dist = 40 + Math.random() * 30;
+          floaters.push({
+            wx: SHIP_REPAIR_WX + Math.cos(angle) * dist,
+            wy: SHIP_REPAIR_WY + Math.sin(angle) * dist,
+            text: "⚙️",
+            color: "#f5c842",
+            size: 22,
+            vy: -60,
+            life: 1.2,
+            age: 0,
+          });
         }
         break;
       }
@@ -9231,6 +9263,7 @@
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
+    safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
@@ -10163,6 +10196,31 @@
     const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed && currentSeason === "winter";
     btn.classList.toggle("hidden", !canShow);
   }
+
+  // ── 蒸汽星艦修繕按鈕（ROADMAP 492）────────────────────────────────────────────────
+  // 純函式：判斷玩家是否在星艦修繕範圍內（與後端 REPAIR_REACH 對齊）。供按鈕判斷與測試導出。
+  function withinShipRepairReach(px, py) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - SHIP_REPAIR_WX;
+    const dy = py - SHIP_REPAIR_WY;
+    return dx * dx + dy * dy <= SHIP_REPAIR_REACH * SHIP_REPAIR_REACH;
+  }
+
+  function updateShipRepairBtn(me, isGuestUser) {
+    const btn = document.getElementById("shipRepairBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    // 已登入、戶外、未倒地、在星艦範圍內、星艦損毀中（未閃耀）才顯示。
+    const near = !!me && withinShipRepairReach(me.x, me.y);
+    const isBroken = shipRepair.repaired_secs === 0;
+    const canShow = !!me && !isGuestUser && me.indoor_plot_id == null && !downed && near && isBroken;
+    btn.classList.toggle("hidden", !canShow);
+    if (canShow) {
+      const pct = Math.round((shipRepair.progress / (shipRepair.goal || 20)) * 100);
+      btn.textContent = `⚙️ 修繕星艦 (×2木 ${pct}%)`;
+    }
+  }
+  // ── 蒸汽星艦修繕按鈕 end ────────────────────────────────────────────────────────
 
   // 雪人讚賞（ROADMAP 479）：讚賞搆得著半徑，與後端 snowman::CHEER_RADIUS(80) 對齊。
   const SNOWMAN_CHEER_RADIUS = 80;
@@ -12047,6 +12105,181 @@
     }
     ctx.restore();
   }
+
+  // ── 廢棄蒸汽星艦（ROADMAP 492）────────────────────────────────────────────────────
+  // 世界東北方固定座標上一艘墜落的蒸汽龐克星艦：流線形艦身、鏽蝕齒輪、破損蒸汽管道。
+  // 損毀狀態：深灰鏽褐；修繕中：進度條懸在艦身上方；修繕完成（閃耀）：金黃光暈。
+  // 永遠渲染（固定世界座標；AOI 外自然被視窗剔除）。
+  function drawShipRepair(camX, camY, nowMs) {
+    const sx = SHIP_REPAIR_WX - camX;
+    const sy = SHIP_REPAIR_WY - camY;
+    // 視窗剔除（含星艦外觀寬高）。
+    if (sx < -160 || sx > viewW + 160 || sy < -120 || sy > viewH + 120) return;
+    const repaired = shipRepair.repaired_secs > 0;
+    ctx.save();
+    // 修繕完成時——金黃光暈。
+    if (repaired) {
+      const glow = ctx.createRadialGradient(sx, sy - 20, 0, sx, sy - 20, 90);
+      glow.addColorStop(0, "rgba(255,210,80,0.45)");
+      glow.addColorStop(0.5, "rgba(255,180,40,0.20)");
+      glow.addColorStop(1, "rgba(255,160,0,0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(sx, sy - 20, 90, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // 艦身——流線橢圓，損毀深灰 / 修繕後暖金。
+    const hullColor = repaired ? "#c8922a" : "#6b5a42";
+    const hullEdge  = repaired ? "#7a5210" : "#3c2e1a";
+    ctx.fillStyle = hullColor;
+    ctx.strokeStyle = hullEdge;
+    ctx.lineWidth = 2.5;
+    // 主艦身（傾斜橢圓，模擬斜插入地面）。
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(-0.15);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 60, 22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    // 艦橋（上方小突起）。
+    ctx.save();
+    ctx.translate(sx - 10, sy - 22);
+    ctx.fillStyle = repaired ? "#b07820" : "#4a3820";
+    ctx.strokeStyle = hullEdge;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 22, 10, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+    // 主齒輪（右側，損毀歪斜）。
+    {
+      const gx = sx + 42, gy = sy + 5;
+      const gearColor = repaired ? "#d4a030" : "#7a6040";
+      const gearEdge  = repaired ? "#8a6010" : "#3c2e18";
+      const teeth = 8;
+      const ri = 12, ro = 16;
+      ctx.save();
+      ctx.translate(gx, gy);
+      // 修繕後緩緩轉動，損毀狀態靜止（歪 0.3 rad）。
+      const rotate = repaired
+        ? (nowMs / 3000) % (Math.PI * 2)
+        : 0.3;
+      ctx.rotate(rotate);
+      ctx.fillStyle = gearColor;
+      ctx.strokeStyle = gearEdge;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let t = 0; t < teeth; t++) {
+        const a0 = (t / teeth) * Math.PI * 2;
+        const a1 = ((t + 0.4) / teeth) * Math.PI * 2;
+        const a2 = ((t + 0.6) / teeth) * Math.PI * 2;
+        const a3 = ((t + 1.0) / teeth) * Math.PI * 2;
+        if (t === 0) ctx.moveTo(Math.cos(a0) * ri, Math.sin(a0) * ri);
+        else ctx.lineTo(Math.cos(a0) * ri, Math.sin(a0) * ri);
+        ctx.lineTo(Math.cos(a1) * ro, Math.sin(a1) * ro);
+        ctx.lineTo(Math.cos(a2) * ro, Math.sin(a2) * ro);
+        ctx.lineTo(Math.cos(a3) * ri, Math.sin(a3) * ri);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // 齒輪中心孔。
+      ctx.fillStyle = repaired ? "#7a5010" : "#2a1e10";
+      ctx.beginPath();
+      ctx.arc(0, 0, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    // 小齒輪（左側）。
+    {
+      const gx = sx - 48, gy = sy - 8;
+      const gearColor = repaired ? "#b07820" : "#5c4828";
+      const gearEdge  = repaired ? "#8a6010" : "#3c2e18";
+      const teeth = 6;
+      const ri = 7, ro = 10;
+      ctx.save();
+      ctx.translate(gx, gy);
+      const rotate = repaired ? -(nowMs / 2500) % (Math.PI * 2) : -0.5;
+      ctx.rotate(rotate);
+      ctx.fillStyle = gearColor;
+      ctx.strokeStyle = gearEdge;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let t = 0; t < teeth; t++) {
+        const a0 = (t / teeth) * Math.PI * 2;
+        const a1 = ((t + 0.4) / teeth) * Math.PI * 2;
+        const a2 = ((t + 0.6) / teeth) * Math.PI * 2;
+        const a3 = ((t + 1.0) / teeth) * Math.PI * 2;
+        if (t === 0) ctx.moveTo(Math.cos(a0) * ri, Math.sin(a0) * ri);
+        else ctx.lineTo(Math.cos(a0) * ri, Math.sin(a0) * ri);
+        ctx.lineTo(Math.cos(a1) * ro, Math.sin(a1) * ro);
+        ctx.lineTo(Math.cos(a2) * ro, Math.sin(a2) * ro);
+        ctx.lineTo(Math.cos(a3) * ri, Math.sin(a3) * ri);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = repaired ? "#7a5010" : "#2a1e10";
+      ctx.beginPath();
+      ctx.arc(0, 0, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    // 蒸汽管道（破損，斜插出艦身頂部）。
+    ctx.save();
+    ctx.translate(sx + 8, sy - 15);
+    ctx.strokeStyle = repaired ? "#9a7830" : "#5a4228";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(10, -25);
+    ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-8, -4);
+    ctx.lineTo(-2, -20);
+    ctx.stroke();
+    ctx.restore();
+    // 修繕中時在艦身上方顯示進度條。
+    if (!repaired && shipRepair.goal > 0) {
+      const barW = 80, barH = 8;
+      const bx = sx - barW / 2;
+      const by = sy - 52;
+      // 背景。
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.beginPath();
+      ctx.roundRect(bx - 1, by - 1, barW + 2, barH + 2, 3);
+      ctx.fill();
+      // 進度填充。
+      const fillW = Math.round((shipRepair.progress / shipRepair.goal) * barW);
+      if (fillW > 0) {
+        ctx.fillStyle = "#f5c842";
+        ctx.beginPath();
+        ctx.roundRect(bx, by, fillW, barH, 2);
+        ctx.fill();
+      }
+      // 標籤。
+      ctx.fillStyle = "#f0e8c8";
+      ctx.font = `bold 9px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`⚙️ ${shipRepair.progress}/${shipRepair.goal}`, sx, by - 2);
+    }
+    // 修繕完成時在艦身上方顯示閃耀計時。
+    if (repaired) {
+      ctx.fillStyle = "#f5c842";
+      ctx.font = `bold 9px ${UI_FONT}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText(`✨ 飛翔中 ${shipRepair.repaired_secs}s`, sx, sy - 52);
+    }
+    ctx.restore();
+  }
+  // ── 廢棄蒸汽星艦 end ────────────────────────────────────────────────────────────
 
   // 雪季雪人（ROADMAP 478）：冬季玩家在腳下堆起的署名雪人——兩球疊起的雪身、煤炭眼、
   // 胡蘿蔔鼻、樹枝手，外加一條依樣式換色的圍巾，頭頂標著是誰堆的。整個冬天都立著，
@@ -30932,6 +31165,26 @@
         if (currentSeason !== "winter") { announce("只有冬天才堆得了雪人——等下雪的季節再來吧"); return; }
         safeSend({ type: "build_snowman" });
         announce("堆起一個雪人——立在世界裡，附近的旅人都看得見，整個冬天都在（天回暖就融化）");
+      });
+    }
+    // ⚙️ 蒸汽星艦修繕（ROADMAP 492）：走近星艦廢墟，貢獻 2 木材協助修繕。
+    const shipRepairBtn = document.getElementById("shipRepairBtn");
+    if (shipRepairBtn) {
+      shipRepairBtn.addEventListener("click", () => {
+        SFX.click();
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (shipRepair.repaired_secs > 0) {
+          announce("星艦正在閃耀飛翔中——等它再次落地損毀才需要修繕");
+          return;
+        }
+        if (!withinShipRepairReach(me.x, me.y)) {
+          announce("離蒸汽星艦太遠——走近一點才能修繕");
+          return;
+        }
+        safeSend({ type: "contribute_to_ship" });
+        const pct = Math.round(((shipRepair.progress + 1) / (shipRepair.goal || 20)) * 100);
+        announce(`⚙️ 貢獻了 2 木材修繕星艦（進度約 ${pct}%）——多位旅人齊力，讓它再度飛翔！`);
       });
     }
     // ♥ 雪人讚賞（ROADMAP 479）：走近一座別人堆的雪人，給它按個讚捎去暖意；堆雪者會收到通知。

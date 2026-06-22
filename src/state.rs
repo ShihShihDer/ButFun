@@ -1378,6 +1378,9 @@ pub struct AppState {
     /// 野營篝火（ROADMAP 474）：玩家在荒野升起的篝火，火光暖意把附近野獸逼退。
     /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
     pub campfires: Arc<RwLock<crate::campfire::CampfireField>>,
+    /// 廢棄蒸汽星艦共修（ROADMAP 492）：多位旅人共同貢獻木材修繕世界東北方的墜落星艦。
+    /// 純記憶體模式，重啟清零；不碰玩家資料與持久化。
+    pub ship_repair: Arc<RwLock<crate::ship_repair::ShipRepairState>>,
     /// 雪季堆雪人（ROADMAP 478）：隆冬時玩家堆起的署名雪人，全服可見、天回暖即融化。
     /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
     pub snowmen: Arc<RwLock<crate::snowman::SnowmanField>>,
@@ -1619,6 +1622,7 @@ impl AppState {
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             campfires: Arc::new(RwLock::new(crate::campfire::CampfireField::new())),
+            ship_repair: Arc::new(RwLock::new(crate::ship_repair::ShipRepairState::new())),
             snowmen: Arc::new(RwLock::new(crate::snowman::SnowmanField::new())),
             night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
             firefly_lantern: Arc::new(RwLock::new(crate::firefly_lantern::FireflyLantern::new())),

@@ -3108,6 +3108,44 @@ for (const sc of scenarios) {
   else console.log("  ✅ 附近冒險者：inferPlayerActivity 七路徑＋max_hp=0 保守全對；HUD 更新路徑多幀零例外");
 }
 
+// 蒸汽星艦共修（ROADMAP 492）：驗 withinShipRepairReach 純函式、損毀/修繕/閃耀三態渲染零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：蒸汽星艦共修（ROADMAP 492）──");
+  let ok = true;
+  try {
+    const reach = sandbox.__bfTest && sandbox.__bfTest.withinShipRepairReach;
+    if (!reach) {
+      ok = false;
+      console.error("  ❌ 星艦修繕：game.js 未導出 withinShipRepairReach");
+    } else {
+      // 在範圍內（星艦正中心）→ true。
+      if (!reach(3200, 1800)) { ok = false; console.error("  ❌ 星艦正中心應在範圍內"); }
+      // 星艦邊緣（149px）→ true。
+      if (!reach(3200 + 149, 1800)) { ok = false; console.error("  ❌ 149px 應在範圍內"); }
+      // 星艦外（151px）→ false。
+      if (reach(3200 + 151, 1800)) { ok = false; console.error("  ❌ 151px 應超出範圍"); }
+      // 壞值保守。
+      if (reach(NaN, 1800)) { ok = false; console.error("  ❌ NaN 座標應回 false"); }
+      if (reach(3200, Infinity)) { ok = false; console.error("  ❌ Infinity 座標應回 false"); }
+    }
+    // 損毀狀態（有進度條）：inject ship_repair snapshot，跑多幀。
+    lastWS.onmessage({ data: JSON.stringify(Object.assign({}, snapshot, { type: "snapshot", ship_repair: { progress: 8, goal: 20, repaired_secs: 0 } })) });
+    pump("星艦損毀進度條", 3);
+    // 閃耀狀態（修繕完成）：inject repaired_secs > 0，跑多幀。
+    lastWS.onmessage({ data: JSON.stringify(Object.assign({}, snapshot, { type: "snapshot", ship_repair: { progress: 0, goal: 20, repaired_secs: 580 } })) });
+    pump("星艦閃耀飛翔", 3);
+    // ship_repaired 一次性廣播事件。
+    lastWS.onmessage({ data: JSON.stringify({ type: "ship_repaired", player_name: "TestPlayer" }) });
+    pump("ship_repaired 廣播", 2);
+  } catch (e) {
+    ok = false; console.error("  ❌ 星艦修繕：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 星艦修繕：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 星艦修繕：withinShipRepairReach 五路徑全對；損毀/閃耀/廣播三態渲染零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

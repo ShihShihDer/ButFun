@@ -3203,6 +3203,16 @@ pub fn spawn(app: AppState) {
             // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
             app.campfires.write().unwrap().tick(dt);
 
+            // 蒸汽星艦共修 tick（ROADMAP 492）：推進閃耀/冷卻計時器；冷卻結束廣播星艦再次損毀。
+            {
+                let repair_tick = app.ship_repair.write().unwrap().tick(dt);
+                if repair_tick == crate::ship_repair::RepairTick::BrokeDown {
+                    let _ = app.tx_chat.send(
+                        "⚙️ 蒸汽星艦的引擎再次熄火……齒輪鏽死、蒸汽管道斷裂，需要旅人們再次伸出援手。".to_string()
+                    );
+                }
+            }
+
             // 雪季雪人 tick（ROADMAP 478）：冬季內雪人常駐、玩家堆雪冷卻遞減；
             // 季節一離開冬季（is_winter==false）就整批融化清空。寫鎖內只 tick 即釋放
             // （守 prod-deadlock，不與其他鎖巢狀）。
@@ -4444,6 +4454,15 @@ pub fn spawn(app: AppState) {
                                 stage: t.stage,
                             })
                             .collect(),
+                        // 蒸汽星艦共修（ROADMAP 492）。
+                        ship_repair: {
+                            let sv = app.ship_repair.read().unwrap().view();
+                            crate::protocol::ShipRepairView {
+                                progress: sv.progress,
+                                goal: sv.goal,
+                                repaired_secs: sv.repaired_secs,
+                            }
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
