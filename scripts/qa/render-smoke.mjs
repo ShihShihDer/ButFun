@@ -4019,6 +4019,69 @@ for (const sc of scenarios) {
   else console.log("  ✅ 守護者圖鑑詳情（ROADMAP 514）：threatStars 真值表(10 cases) + 壞值安全(4 cases)，全路徑零例外");
 }
 
+// ── ROADMAP 515：臨死迴光 ─────────────────────────────────────────────────────
+// ① enemyDeathThroesAlpha 純函式真值表（9 cases）
+// ② 壞值安全（null/NaN/"abc" 不拋出）
+// ③ 低血量快照（hp=1, max_hp=10）連跑 3 幀渲染路徑零例外
+// ④ 兇名同時有低血量（notorious + hp=1）不拋出
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  console.log("── 情境：臨死迴光（ROADMAP 515）──");
+  try {
+    const dta = sandbox.__bfTest && sandbox.__bfTest.enemyDeathThroesAlpha;
+    if (!dta) throw new Error("enemyDeathThroesAlpha 未匯出");
+
+    // 真值表（9 cases）
+    const trueCases = [
+      [0,   100, 0, false],  // maxHp=0 → 0
+      [null, 100, 0, false], // hp=null → 0（型別守衛）
+      [50,  100, 0, false],  // HP=50% → 0
+      [21,  100, 0, false],  // HP=21% → 0（剛超門檻）
+      [20,  100, 50000, true],  // HP=20% → >0（剛到門檻）
+      [10,  100, 50000, true],  // HP=10% → >0
+      [1,   100, 50000, true],  // HP=1% → >0
+      [0,   100, 0, false],  // HP=0（已倒地）→ 0
+      [-1,  100, 0, false],  // HP=-1 → 0
+    ];
+    for (const [hp, maxHp, now, expectPositive] of trueCases) {
+      const got = dta(hp, maxHp, now);
+      if (isNaN(got) || got < 0 || got > 0.55) {
+        ok = false; console.error(`  ❌ enemyDeathThroesAlpha(${hp},${maxHp},${now})=${got} 超出 [0,0.55]`);
+      } else if (expectPositive && got <= 0) {
+        ok = false; console.error(`  ❌ enemyDeathThroesAlpha(${hp},${maxHp},${now})=${got}，期望 > 0`);
+      } else if (!expectPositive && got !== 0) {
+        ok = false; console.error(`  ❌ enemyDeathThroesAlpha(${hp},${maxHp},${now})=${got}，期望 0`);
+      }
+    }
+    // 壞值安全：不拋出
+    for (const bad of [null, NaN, "abc"]) {
+      try { dta(bad, 100, 0); } catch (e) { ok = false; console.error(`  ❌ enemyDeathThroesAlpha(${bad},...) 拋出：${e.message}`); }
+    }
+
+    // 低血量快照：hp=1, max_hp=10（10%）→ drawEnemyDeathThroes 路徑
+    const ex = (snapshot.enemies && snapshot.enemies[0]) || { kind: "scrap_drone", level: 1, max_hp: 10 };
+    const lowHpSnap = JSON.parse(JSON.stringify(snapshot));
+    const me0x = (snapshot.players && snapshot.players[0]) ? snapshot.players[0].x : 0;
+    const me0y = (snapshot.players && snapshot.players[0]) ? snapshot.players[0].y : 0;
+    lowHpSnap.enemies = [{ ...ex, eid: "dt_0", hp: 1, max_hp: 10, alive: true, x: me0x + 60, y: me0y }];
+    lastWS.onmessage({ data: JSON.stringify({ ...lowHpSnap, type: "snapshot" }) });
+    if (pump("臨死迴光·低血量怪物渲染", 3) instanceof Error) ok = false;
+
+    // 兇名同時有低血量
+    const notorSnap = JSON.parse(JSON.stringify(snapshot));
+    notorSnap.enemies = [{ ...ex, eid: "dt_1", hp: 1, max_hp: 10, alive: true, notorious: true, x: me0x + 80, y: me0y }];
+    lastWS.onmessage({ data: JSON.stringify({ ...notorSnap, type: "snapshot" }) });
+    if (pump("臨死迴光·兇名+低血量疊加", 2) instanceof Error) ok = false;
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 臨死迴光：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 臨死迴光（ROADMAP 515）：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 臨死迴光（ROADMAP 515）：enemyDeathThroesAlpha 真值表(9 cases) + 壞值安全(3 cases) + 低血量渲染路徑 + 兇名疊加，全零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
