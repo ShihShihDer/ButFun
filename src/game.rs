@@ -3231,6 +3231,9 @@ pub fn spawn(app: AppState) {
             // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
             app.campfires.write().unwrap().tick(dt);
 
+            // 戰鬥記跡 tick（ROADMAP 499）：推進所有記跡的年齡，移除超過 5 分鐘的。
+            app.combat_marks.write().unwrap().tick(dt);
+
             // 蒸汽星艦共修 tick（ROADMAP 492）：推進閃耀/冷卻計時器；冷卻結束廣播星艦再次損毀。
             {
                 let repair_tick = app.ship_repair.write().unwrap().tick(dt);
@@ -4493,6 +4496,8 @@ pub fn spawn(app: AppState) {
                         },
                         // 今日世界戰報（ROADMAP 495）。
                         world_tally: app.world_tally.read().unwrap().view(),
+                        // 戰鬥記跡（ROADMAP 499）：最近 20 筆擊殺地點，5 分鐘內有效。
+                        combat_marks: app.combat_marks.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

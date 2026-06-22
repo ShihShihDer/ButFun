@@ -2997,6 +2997,9 @@
   // ROADMAP 497 廣場蒸汽鐘——廣場東側固定地標，玩家路過就看到指針在轉、整點聽到鐘鳴。
   const CLOCK_WX = 2700; // 廣場蒸汽鐘 X（廣場 PLAZA_X=2400，稍偏東）
   const CLOCK_WY = 2020; // 廣場蒸汽鐘 Y（廣場稍偏北，讓鐘塔底座與廣場齊高）
+  // ROADMAP 499 戰鬥記跡——玩家擊殺後在地點留下 ⚔️ 記號，走近顯示「XX 擊倒了 YY，N 分前」。
+  let combatMarks = []; // [{wx, wy, killer, enemy_name, age_secs}]
+  const COMBAT_MARK_VIEW_RADIUS = 200; // 走進多少 px 才顯示詳細文字泡泡
   const CAMPFIRE_WARMTH_RADIUS = 210; // 與後端 campfire::WARMTH_RADIUS 對齊（像素）：暖意圈半徑
   let villageBuffUntilMs = 0; // ROADMAP 64 村落節慶加成到期的 performance.now() 時刻（0=無加成）
   let villageTreasury = 0;   // ROADMAP 64 村庫乙太現值，從 Snapshot 同步
@@ -3877,6 +3880,8 @@
         if (msg.ship_repair) shipRepair = msg.ship_repair;
         // 今日世界戰報（ROADMAP 495）：同步全伺服器今日行動累計；無此欄位（舊伺服器）保持全零預設。
         if (msg.world_tally) worldTally = msg.world_tally;
+        // 戰鬥記跡（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號；舊伺服器無此欄位保持空陣列。
+        if (Array.isArray(msg.combat_marks)) combatMarks = msg.combat_marks;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9348,6 +9353,7 @@
     safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
     safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
     safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
+    safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
@@ -12442,6 +12448,72 @@
     });
 
     ctx.restore();
+  }
+
+  // 戰鬥記跡（ROADMAP 499）：玩家擊殺後，後端在怪物位置留下短暫 ⚔️ 記號（5 分鐘後消失）。
+  // 渲染邏輯：① 超出視窗的記跡直接跳過；② 在世界座標畫紅色 ⚔️ 圖示；
+  //           ③ 走進 COMBAT_MARK_VIEW_RADIUS(200px) 時在上方顯示「XX 擊倒了 YY，N 分前」泡泡；
+  //           ④ 記跡越老越透明（age_secs/300 決定 alpha），讓玩家感知記跡「正在消退」。
+  function drawCombatMarks(camX, camY) {
+    if (!combatMarks.length) return;
+    const me = players.get(myId);
+    const mpx = me ? me.rx : 0;
+    const mpy = me ? me.ry : 0;
+
+    for (const m of combatMarks) {
+      const sx = m.wx - camX;
+      const sy = m.wy - camY;
+      // 視窗外跳過（⚔️ 圖示半徑約 12px）
+      if (sx < -20 || sx > viewW + 20 || sy < -20 || sy > viewH + 20) continue;
+
+      // 依年齡計算透明度：剛發生最亮，快消失時淡出
+      const ageFrac = Math.min(1, (m.age_secs || 0) / 300);
+      const alpha = 1 - ageFrac * 0.7; // 最低保持 0.3 可見
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(sx, sy);
+
+      // 紅色 ⚔️ 圖示底部帶黑色描邊確保可見
+      ctx.font = "bold 14px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.strokeStyle = "rgba(0,0,0,0.7)";
+      ctx.lineWidth = 3;
+      ctx.strokeText("⚔️", 0, 0);
+      ctx.fillStyle = "#ff4444";
+      ctx.fillText("⚔️", 0, 0);
+
+      // 走近顯示詳細泡泡
+      const dist = Math.hypot((m.wx - mpx), (m.wy - mpy));
+      if (dist < COMBAT_MARK_VIEW_RADIUS) {
+        const mins = Math.floor((m.age_secs || 0) / 60);
+        const secs = (m.age_secs || 0) % 60;
+        const timeStr = mins > 0 ? `${mins} 分前` : `${secs} 秒前`;
+        const label = `${m.killer} 擊倒了 ${m.enemy_name}，${timeStr}`;
+
+        ctx.font = "10px sans-serif";
+        const tw = ctx.measureText(label).width;
+        const bw = tw + 10;
+        const bh = 16;
+        const bx = -bw / 2;
+        const by = -28;
+
+        // 泡泡背景（深色半透明）
+        ctx.fillStyle = "rgba(20,10,10,0.80)";
+        ctx.beginPath();
+        ctx.roundRect ? ctx.roundRect(bx, by, bw, bh, 4) : ctx.rect(bx, by, bw, bh);
+        ctx.fill();
+
+        // 泡泡文字
+        ctx.fillStyle = "#ffcccc";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, 0, by + bh / 2);
+      }
+
+      ctx.restore();
+    }
   }
 
   // 廣場蒸汽鐘（ROADMAP 497）：廣場東側固定地標——石柱頂端鑲著黃銅鐘面，指針依遊戲日循環轉動，

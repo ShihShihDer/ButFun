@@ -909,6 +909,21 @@ pub enum ClientMsg {
         pub repaired_secs: u32,
     }
 
+/// 戰鬥記跡快照（ROADMAP 499）。前端在世界座標處畫 ⚔️ 記號，走近顯示「XX 擊倒了 YY，N 分前」。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CombatMarkView {
+    /// 擊殺地點的世界座標 X（像素）。
+    pub wx: f32,
+    /// 擊殺地點的世界座標 Y（像素）。
+    pub wy: f32,
+    /// 擊殺者名稱（已截 12 字）。
+    pub killer: String,
+    /// 怪物中文名稱。
+    pub enemy_name: String,
+    /// 記跡已存在的秒數（前端據此淡出；0 = 剛發生）。
+    pub age_secs: u32,
+}
+
 /// 快照裡的夜間乙太泉節點（ROADMAP 162；ROADMAP 362 加 moonlit）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SpringNodeView {
@@ -1227,6 +1242,9 @@ pub enum ServerMsg {
         /// 今日世界戰報（ROADMAP 495）：全伺服器今天的行動累計。向後相容（缺欄位時全零）。
         #[serde(default)]
         world_tally: WorldTallyView,
+        /// 戰鬥記跡清單（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號。向後相容（舊客戶端忽略）。
+        #[serde(default)]
+        combat_marks: Vec<CombatMarkView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3343,6 +3361,7 @@ mod tests {
             world_groves: vec![],
             ship_repair: ShipRepairView::default(),
             world_tally: WorldTallyView::default(),
+            combat_marks: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

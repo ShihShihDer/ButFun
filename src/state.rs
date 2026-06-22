@@ -1444,6 +1444,9 @@ pub struct AppState {
     /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的採集/收穫/擊殺/登入累計。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub world_tally: Arc<RwLock<crate::world_tally::WorldTally>>,
+    /// 戰鬥記跡（ROADMAP 499）：最近 20 筆、5 分鐘內的擊殺地點記號，全服廣播顯示。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub combat_marks: Arc<RwLock<crate::combat_mark::CombatMarkState>>,
 }
 
 impl AppState {
@@ -1650,6 +1653,7 @@ impl AppState {
             eco_bounty: Arc::new(RwLock::new(crate::eco_bounty::EcoBountyState::new())),
             eco_festival: Arc::new(RwLock::new(crate::eco_festival::EcoFestivalState::new())),
             world_tally: Arc::new(RwLock::new(crate::world_tally::WorldTally::new())),
+            combat_marks: Arc::new(RwLock::new(crate::combat_mark::CombatMarkState::new())),
         }
     }
 
