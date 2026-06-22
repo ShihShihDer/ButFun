@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -9565,6 +9565,9 @@
     // 單獨包，例外不連累其餘 HUD；室內／訪客／田在畫面內時自動不顯示。
     safeDraw("homeWayfinder", () => drawHomeWayfinder(me, camX, camY));
 
+    // 暴走羅盤（ROADMAP 505）：乙太暴走期間、暴走點在畫面外時，邊緣浮電金箭頭指向暴走點。
+    safeDraw("surgeCompass", () => drawSurgeCompass(me, camX, camY));
+
     // 天地有名地名卡（ROADMAP 398）：踏入新地方時於畫面上緣淡入的卡片，單獨包不連累其餘 HUD。
     safeDraw("localeCard", () => drawLocaleCard());
 
@@ -10875,6 +10878,10 @@
   function shouldShowWayfinder(onScreen, distPx) {
     return !onScreen && distPx > 240;
   }
+  // 是否該顯示暴走羅盤（ROADMAP 505）：暴走中、且暴走點在畫面外才需要指引。純函式、可測。
+  function surgeShouldShowCompass(onScreen, secs) {
+    return secs > 0 && !onScreen;
+  }
 
   function drawHomeWayfinder(me, camX, camY) {
     if (!me || me.indoor_plot_id != null) return; // 室內不指路（畫的是室內場景）
@@ -10937,6 +10944,61 @@
     ctx.strokeText(dist, lx, ly + 14);
     ctx.fillStyle = "rgba(230,232,238,0.92)";
     ctx.fillText(dist, lx, ly + 14);
+    ctx.restore();
+    ctx.textAlign = "left";
+  }
+
+  // 暴走羅盤（ROADMAP 505）：乙太暴走期間、暴走點在畫面外時，邊緣浮一枚電金箭頭指向暴走點。
+  // 鏡像 drawHomeWayfinder（401）模式——骨架相同、配色差異化（電金 vs 黃銅）讓玩家一眼區分。
+  function drawSurgeCompass(me, camX, camY) {
+    if (etherSurgeSecs <= 0) return; // 無暴走時立即早退
+    const px = me ? me.rx : camX + viewW / 2;
+    const py = me ? me.ry : camY + viewH / 2;
+    const onScreen = pointOnScreen(etherSurgeX, etherSurgeY, camX, camY, viewW, viewH, 60);
+    if (!surgeShouldShowCompass(onScreen, etherSurgeSecs)) return;
+    const angle = bearingRad(px, py, etherSurgeX, etherSurgeY);
+    // 與 homeWayfinder 同樣的內縮算法，避免被瀏海／圓角切到。
+    const inset = 70 + Math.max(safeArea.top, safeArea.bottom);
+    const p = compassEdgePoint(angle, viewW, viewH, inset);
+    // 輕脈動（尊重 reduceMotion：靜止）。
+    const pulse = reduceMotion ? 0 : Math.sin(performance.now() / 380) * 0.11;
+    const R = 18 * (1 + pulse);
+    ctx.save();
+    // 暗底圓盤（比 homeWayfinder 稍深，凸顯電感）。
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, R, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(10,18,34,0.88)";
+    ctx.fill();
+    // 電金色邊框（跟 drawEtherSurge 的外暈同色調）。
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,220,60,0.92)";
+    ctx.stroke();
+    // 指向暴走點的箭頭（電金色，鏡像 homeWayfinder 的箭頭形狀）。
+    ctx.translate(p.x, p.y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(R * 0.62, 0);
+    ctx.lineTo(-R * 0.32, -R * 0.42);
+    ctx.lineTo(-R * 0.12, 0);
+    ctx.lineTo(-R * 0.32, R * 0.42);
+    ctx.closePath();
+    ctx.fillStyle = "#ffe040";
+    ctx.fill();
+    ctx.restore();
+    // 標籤「⚡ 暴走點」：擺在羅盤朝畫面中心那一側。
+    const towardCx = viewW / 2 - p.x;
+    const lx = p.x + (towardCx >= 0 ? 1 : -1) * (R + 6);
+    const ly = p.y - R - 6;
+    ctx.save();
+    ctx.textAlign = towardCx >= 0 ? "left" : "right";
+    ctx.textBaseline = "alphabetic";
+    ctx.font = `bold 12px ${UI_FONT}`;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(10,18,34,0.88)";
+    const surgeLabel = "⚡ 暴走點";
+    ctx.strokeText(surgeLabel, lx, ly);
+    ctx.fillStyle = "#ffe040";
+    ctx.fillText(surgeLabel, lx, ly);
     ctx.restore();
     ctx.textAlign = "left";
   }
@@ -11114,6 +11176,21 @@
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText("⚔️", hx, hy);
+        ctx.globalAlpha = 1;
+        ctx.textBaseline = "alphabetic";
+      }
+    }
+
+    // 乙太暴走點（ROADMAP 505）：暴走期間在小地圖標脈動 ⚡ 符號，讓玩家一眼找到目標。
+    if (etherSurgeSecs > 0) {
+      const smx = toMiniX(etherSurgeX), smy = toMiniY(etherSurgeY);
+      if (smx >= ox && smx <= ox + size && smy >= oy && smy <= oy + size) {
+        const surgePulse = 0.5 + 0.45 * Math.sin(performance.now() / 350);
+        ctx.globalAlpha = surgePulse;
+        ctx.font = `13px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("⚡", smx, smy);
         ctx.globalAlpha = 1;
         ctx.textBaseline = "alphabetic";
       }
