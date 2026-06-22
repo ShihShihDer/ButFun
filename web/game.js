@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -10801,6 +10801,32 @@
     g.addColorStop(1, `rgba(160,0,0,${alpha.toFixed(3)})`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, viewW, viewH);
+  }
+
+  // 臨死迴光 alpha（ROADMAP 515）：HP ≤ 20% 時橘紅脈動光暈強度。
+  // 與 dangerPulseAlpha（512）對仗：那是「玩家快死」，這是「怪物快死」。
+  // 顏色橙紅（異於兇名暗紅/破綻金），脈動週期 ~1.8s（異於 dangerPulse 1.5s，避免同頻）。
+  // 呼叫端 reduceMotion 時傳 now=0（固定相位不脈動，仍保留靜態橘暈）。
+  function enemyDeathThroesAlpha(hp, maxHp, now) {
+    if (typeof hp !== "number" || typeof maxHp !== "number" || maxHp <= 0) return 0;
+    if (hp <= 0 || hp > maxHp * 0.20) return 0;
+    const crisis = Math.max(0, Math.min(1, 1 - hp / (maxHp * 0.20)));
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.0035);
+    return Math.max(0, Math.min(0.55, (0.15 + crisis * 0.35) * (0.6 + 0.4 * pulse)));
+  }
+
+  // 在怪物精靈後方繪製橘紅臨死光暈（呼叫端已確認 alpha > 0）。
+  function drawEnemyDeathThroes(cx, cy, alpha) {
+    // 背景橘紅柔暈
+    const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, 28);
+    g.addColorStop(0, `rgba(255,110,30,${(alpha * 0.65).toFixed(3)})`);
+    g.addColorStop(1, "rgba(255,80,10,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, 28, 0, Math.PI * 2); ctx.fill();
+    // 橘紅細外環（有別於兇名多紅環、破綻金環）
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = `rgba(255,130,60,${alpha.toFixed(3)})`;
+    ctx.beginPath(); ctx.arc(cx, cy, 19, 0, Math.PI * 2); ctx.stroke();
   }
 
   // ---- 拓圖足跡（ROADMAP 448）：小地圖記得你走過的路 ----
@@ -24377,6 +24403,12 @@
       // 提示玩家「現在砍傷害最高」。畫在生物造型前當底光（金色「機會」訊號，異於紅色危險訊號）。
       if (e.alive && e.weak) {
         drawWeakpointAura(sx, ey, t);
+      }
+      // 臨死迴光（ROADMAP 515）：怪物 HP ≤ 20% 時橘紅脈動光暈，提示「快補殺、快結束了」。
+      // 顏色橙紅異於兇名暗紅/破綻金環，非旋轉非蓄力，一眼可分辨三種訊號。
+      if (e.alive && e.max_hp > 0) {
+        const dtA = enemyDeathThroesAlpha(e.hp, e.max_hp, reduceMotion ? 0 : fxNow);
+        if (dtA > 0) drawEnemyDeathThroes(sx, ey, dtA);
       }
       // 影子(定在地面、不隨浮動)；日影晷（201）：投影隨太陽/月亮方位偏移、晨昏拉長
       drawGroundShadow(sx, sy + 13, 12, 4, 0.22);
