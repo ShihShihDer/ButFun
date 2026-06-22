@@ -3458,10 +3458,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .into_iter().collect()
                     };
                     // 遠程攻擊廣播：只要玩家出手就播（命中或未命中皆可），前端負責動畫。
+                    // ROADMAP 510：命中時附上目標座標（to_x/to_y）供前端繪製飛矢軌跡。
                     if is_ranged {
                         let hit = !results.is_empty();
+                        let (to_x, to_y) = results.first()
+                            .map(|(_, _, _, _, ex, ey, _, _)| (*ex, *ey))
+                            .unwrap_or((0.0, 0.0));
                         let _ = app.tx.send(std::sync::Arc::new(
-                            crate::protocol::ServerMsg::RangedHit { from_x: px, from_y: py, hit }
+                            crate::protocol::ServerMsg::RangedHit { from_x: px, from_y: py, to_x, to_y, hit }
                         ));
                     }
                     // 元素克制命中廣播（ROADMAP 380）：有效命中（results 非空）才廣播；

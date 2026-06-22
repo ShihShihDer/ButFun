@@ -3735,6 +3735,76 @@ for (const sc of scenarios) {
   else console.log("  ✅ 戰利品飄字（ROADMAP 509）：純函式真值表(7 cases) + 三情境 loot_pickup 飄字渲染，全路徑零例外");
 }
 
+// ── ROADMAP 510：遠程飛矢軌跡 ─────────────────────────────────────────────────
+{
+  const before = caughtRenderErrors.length;
+  let ok = true;
+  try {
+    const trailT = sandbox.__bfTest && sandbox.__bfTest.rangedTrailT;
+    const trailPos = sandbox.__bfTest && sandbox.__bfTest.rangedTrailPos;
+    if (!trailT) throw new Error("rangedTrailT 未匯出");
+    if (!trailPos) throw new Error("rangedTrailPos 未匯出");
+
+    // rangedTrailT 真值表：age=0→0, age=140→0.5, age=280→1, age=500→1（clamp）
+    const tCases = [
+      { age: 0,   dur: 280, expect: 0   },
+      { age: 140, dur: 280, expect: 0.5 },
+      { age: 280, dur: 280, expect: 1   },
+      { age: 500, dur: 280, expect: 1   },
+    ];
+    for (const { age, dur, expect } of tCases) {
+      const got = trailT(age, dur);
+      if (Math.abs(got - expect) > 0.01) {
+        ok = false;
+        console.error(`  ❌ rangedTrailT(${age},${dur}) = ${got}, 期望 ${expect}`);
+      }
+    }
+
+    // rangedTrailPos 真值表
+    const posCases = [
+      { t: 0,   ex: 100, ey: 100 },
+      { t: 1,   ex: 300, ey: 300 },
+      { t: 0.5, ex: 200, ey: 200 },
+    ];
+    for (const { t, ex, ey } of posCases) {
+      const got = trailPos(100, 100, 300, 300, t);
+      if (Math.abs(got.x - ex) > 0.1 || Math.abs(got.y - ey) > 0.1) {
+        ok = false;
+        console.error(`  ❌ rangedTrailPos(100,100,300,300,${t}) = {x:${got.x},y:${got.y}}, 期望 {x:${ex},y:${ey}}`);
+      }
+    }
+    // 起終點相同不 crash
+    const same = trailPos(200, 200, 200, 200, 0.5);
+    if (same.x !== 200 || same.y !== 200) {
+      ok = false; console.error("  ❌ 起終點相同應返回同點");
+    }
+
+    // 命中（hit=true, to_x/to_y 非零）：軌跡入隊，渲染多幀零例外
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "ranged_hit", from_x: 2100, from_y: 2100, to_x: 2300, to_y: 2200, hit: true,
+    }) });
+    if (pump("飛矢軌跡渲染·命中", 8) instanceof Error) ok = false;
+
+    // miss（hit=false, to_x/to_y=0）：不入 rangedTrails，僅保留既有衝擊環
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "ranged_hit", from_x: 2100, from_y: 2100, to_x: 0, to_y: 0, hit: false,
+    }) });
+    if (pump("飛矢軌跡渲染·miss", 4) instanceof Error) ok = false;
+
+    // 舊協議（缺 to_x/to_y 欄位）：msg.to_x 為 undefined，||0 處理後不入軌跡但不 crash
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "ranged_hit", from_x: 2150, from_y: 2150, hit: true,
+    }) });
+    if (pump("飛矢軌跡渲染·舊協議欄位缺失", 4) instanceof Error) ok = false;
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 飛矢軌跡：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 飛矢軌跡：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 飛矢軌跡（ROADMAP 510）：純函式真值表(8 cases) + 命中/miss/舊協議三情境渲染，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
