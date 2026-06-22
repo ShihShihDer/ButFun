@@ -1893,6 +1893,11 @@ pub enum ServerMsg {
         /// 前端據此把重擊傷害數字演成更大、帶蓄力色的爆裂飄字。
         #[serde(default, skip_serializing_if = "is_zero_u8")]
         charge_tier: u8,
+        /// 破綻直擊（ROADMAP 489）：命中兇名精英的破綻開窗，傷害已加成 ×1.5。
+        /// 前端據此在敵人身上噴金色 ❉ 飄字，讓玩家「讀到」自己打出了破綻直擊。
+        /// 未中破綻（大多數命中）序列化時省略此欄以節省流量。
+        #[serde(default, skip_serializing_if = "is_false")]
+        is_weak: bool,
     },
     /// 合成儀式廣播（ROADMAP 388）：玩家完成高階物品合成，全服同慶。
     CraftCeremony {
