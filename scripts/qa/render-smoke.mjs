@@ -3805,6 +3805,75 @@ for (const sc of scenarios) {
   else console.log("  ✅ 飛矢軌跡（ROADMAP 510）：純函式真值表(8 cases) + 命中/miss/舊協議三情境渲染，全路徑零例外");
 }
 
+// ── ROADMAP 511：晨昏橫幅 ─────────────────────────────────────────────────
+{
+  let ok = true;
+  const before = caughtRenderErrors.length;
+  try {
+    const dpLabel = sandbox.__bfTest && sandbox.__bfTest.dayphaseLabel;
+    const dpStyle = sandbox.__bfTest && sandbox.__bfTest.dayphaseBannerStyle;
+    const dpTrigger = sandbox.__bfTest && sandbox.__bfTest.triggerDayphaseBanner;
+    const dpDraw   = sandbox.__bfTest && sandbox.__bfTest.drawDayphaseBanner;
+    if (!dpLabel)   throw new Error("dayphaseLabel 未匯出");
+    if (!dpStyle)   throw new Error("dayphaseBannerStyle 未匯出");
+    if (!dpTrigger) throw new Error("triggerDayphaseBanner 未匯出");
+    if (!dpDraw)    throw new Error("drawDayphaseBanner 未匯出");
+
+    // dayphaseLabel 真值表：四相位各回對應文字，未知退空字串
+    const labelCases = [
+      ["dawn",  true,  "🌅"],
+      ["day",   true,  "☀️"],
+      ["dusk",  true,  "🌇"],
+      ["night", true,  "🌙"],
+      ["unknown", false, ""],
+      ["",        false, ""],
+    ];
+    for (const [phase, shouldHave, prefix] of labelCases) {
+      const got = dpLabel(phase);
+      if (shouldHave && !got.startsWith(prefix)) {
+        ok = false; console.error(`  ❌ dayphaseLabel("${phase}") = "${got}"，期望以 "${prefix}" 開頭`);
+      }
+      if (!shouldHave && got !== "") {
+        ok = false; console.error(`  ❌ dayphaseLabel("${phase}") = "${got}"，期望空字串`);
+      }
+    }
+
+    // dayphaseBannerStyle 真值表：四相位各回有效樣式，未知回 null
+    for (const phase of ["dawn","day","dusk","night"]) {
+      const s = dpStyle(phase);
+      if (!s || !s.bg || !s.text) {
+        ok = false; console.error(`  ❌ dayphaseBannerStyle("${phase}") 回 null 或缺 bg/text`);
+      }
+    }
+    if (dpStyle("bogus") !== null) {
+      ok = false; console.error("  ❌ dayphaseBannerStyle(\"bogus\") 應回 null");
+    }
+
+    // triggerDayphaseBanner + drawDayphaseBanner：四相位觸發後連跑 5 幀零例外
+    for (const phase of ["dawn","day","dusk","night"]) {
+      dpTrigger(phase);
+      for (let f = 0; f < 5; f++) {
+        const t = performance.now() + f * 50;
+        dpDraw(t);
+      }
+    }
+
+    // 未知相位觸發不應建立橫幅（drawDayphaseBanner 不 throw）
+    dpTrigger("bogus_phase");
+    dpDraw(performance.now());
+
+    // reduceMotion 路徑（SHOW 段）：_dayphaseBanner 先設好，elapsed 在 SHOW 段，零例外
+    dpTrigger("dusk");
+    dpDraw(performance.now() + 600); // 進入 SHOW 段（400ms 後）
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 晨昏橫幅：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 晨昏橫幅：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 晨昏橫幅（ROADMAP 511）：純函式真值表(6+5 cases) + 四相位觸發渲染 + 未知相位保守不顯示，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
