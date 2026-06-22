@@ -1935,28 +1935,35 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         } else {
                             0
                         };
+                        // ROADMAP 502 雨天豐澤：草原細雨中收成每株多 +1 乙太。
+                        // 鎖外讀 weather（讀鎖即放），不與後面 players 寫鎖巢狀（守 prod-deadlock）。
+                        let rain_bonus = crate::rain_harvest::rain_harvest_bonus(
+                            app.weather.read().unwrap().is_raining()
+                        );
                         // 鎖內：加乙太＋熟練度，並順手抓玩家座標供出鎖後定位飄字（守 prod-deadlock：
                         // 廣播一律出鎖再送，不在持 players 寫鎖時送 tx）。
                         let harvest_evt = {
                             let mut players = app.players.write().unwrap();
                             players.get_mut(&id).map(|p| {
                                 let bonus = crate::class::harvest_ether_bonus(&p.masteries);
-                                // `ether` 已含 ROADMAP 406 品質加成；class 收成加成、455 市集溢價、493 旺收獎另計。
+                                // `ether` 已含 ROADMAP 406 品質加成；class 收成加成、455 市集溢價、493 旺收獎、502 雨天豐澤另計。
                                 p.ether = p.ether
                                     .saturating_add(ether)
                                     .saturating_add(bonus)
                                     .saturating_add(demand)
-                                    .saturating_add(season_bonus);
+                                    .saturating_add(season_bonus)
+                                    .saturating_add(rain_bonus);
                                 p.masteries.gain_farmer(1); // 農夫熟練度（ROADMAP 38）
-                                tracing::info!(player = %p.name, ether = p.ether, bonus, demand, season_bonus, quality = quality.as_str(), "農地收成乙太");
+                                tracing::info!(player = %p.name, ether = p.ether, bonus, demand, season_bonus, rain_bonus, quality = quality.as_str(), "農地收成乙太");
                                 ServerMsg::HarvestResult {
                                     player_id: id,
                                     quality: quality.as_str().to_string(),
                                     // `ether` 仍是田裡那株的乙太（品質＋沃土，已含）；溢價各走獨立欄飄字。
-                                    ether: ether.saturating_add(demand).saturating_add(season_bonus),
+                                    ether: ether.saturating_add(demand).saturating_add(season_bonus).saturating_add(rain_bonus),
                                     soil_bonus, // ROADMAP 438：沃土加成（已含進 ether），供飄字綴「🌱 沃土 +N」
                                     demand,     // ROADMAP 455：市集搶手溢價（已含進 ether），供飄字綴「🛒 搶手 +N」
                                     season_bonus, // ROADMAP 493：旺收獎勵（已含進 ether），供飄字綴「🌾 當季旺收！+N」
+                                    rain_bonus,   // ROADMAP 502：雨天豐澤（已含進 ether），供飄字綴「🌧️ 雨澤 +N」
                                     x: p.x,
                                     y: p.y,
                                 }
@@ -2095,6 +2102,12 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     } else {
                         (0, 0)
                     };
+                    // ROADMAP 502 雨天豐澤：草原細雨中每株收成多 +1 乙太；以株數乘算總加成。
+                    // 鎖外讀 weather（讀鎖即放），不與後面 players 寫鎖巢狀（守 prod-deadlock）。
+                    let rain_bonus_per = crate::rain_harvest::rain_harvest_bonus(
+                        app.weather.read().unwrap().is_raining()
+                    );
+                    let rain_bonus_total = rain_bonus_per.saturating_mul(summary.count);
                     let harvest_evt = if summary.count > 0 {
                         let mut players = app.players.write().unwrap();
                         players.get_mut(&id).map(|p| {
@@ -2105,9 +2118,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 .saturating_add(summary.ether)
                                 .saturating_add(class_bonus)
                                 .saturating_add(demand_total)
-                                .saturating_add(season_bonus_total);
+                                .saturating_add(season_bonus_total)
+                                .saturating_add(rain_bonus_total);
                             p.masteries.gain_farmer(summary.count); // 農夫熟練度（每株一份，與逐格收成等價）
-                            tracing::info!(player = %p.name, count = summary.count, ether = p.ether, demand = demand_total, season_bonus = season_bonus_total, "一鍵收成乙太");
+                            tracing::info!(player = %p.name, count = summary.count, ether = p.ether, demand = demand_total, season_bonus = season_bonus_total, rain_bonus = rain_bonus_total, "一鍵收成乙太");
                             // 取「最高品質」當飄字代表（有優質就慶優質，否則用心，再否則平凡），
                             // 重用既有 HarvestResult 收成飄字／音效，一次彙總演出。
                             let best = if summary.premium > 0 {
@@ -2120,10 +2134,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             ServerMsg::HarvestResult {
                                 player_id: id,
                                 quality: best.as_str().to_string(),
-                                ether: summary.ether.saturating_add(demand_total).saturating_add(season_bonus_total),
+                                ether: summary.ether.saturating_add(demand_total).saturating_add(season_bonus_total).saturating_add(rain_bonus_total),
                                 soil_bonus: summary.soil_bonus,
-                                demand: demand_total,       // ROADMAP 455：市集搶手溢價（已含進 ether）
-                                season_bonus: season_bonus_total, // ROADMAP 493：旺收獎勵（已含進 ether）
+                                demand: demand_total,              // ROADMAP 455：市集搶手溢價（已含進 ether）
+                                season_bonus: season_bonus_total,  // ROADMAP 493：旺收獎勵（已含進 ether）
+                                rain_bonus: rain_bonus_total,      // ROADMAP 502：雨天豐澤（已含進 ether）
                                 x: p.x,
                                 y: p.y,
                             }
@@ -2137,15 +2152,17 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 單播文字回報：收到就報幾株＋多少乙太、在田邊但沒成熟的安心一句、離田太遠就溫和提示。
                     // 走 tx_direct + ServerMsg::Chat（既有單播管道，零新協議；田格回到空土隨下張快照更新）。
                     let note = if summary.count > 0 {
-                        let total = summary.ether.saturating_add(demand_total).saturating_add(season_bonus_total);
-                        if demand_total > 0 && season_bonus_total > 0 {
-                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太（含 🛒 搶手 +{}、🌾 旺收 +{}）！", summary.count, total, demand_total, season_bonus_total)
-                        } else if demand_total > 0 {
-                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太（含 🛒 搶手 +{}）！", summary.count, total, demand_total)
-                        } else if season_bonus_total > 0 {
-                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太（含 🌾 旺收 +{}）！", summary.count, total, season_bonus_total)
-                        } else {
+                        let total = summary.ether.saturating_add(demand_total).saturating_add(season_bonus_total).saturating_add(rain_bonus_total);
+                        // 依各加成是否存在組合說明括號（雨天豐澤放在最後）
+                        let extras: Vec<String> = [
+                            (demand_total > 0).then(|| format!("🛒 搶手 +{}", demand_total)),
+                            (season_bonus_total > 0).then(|| format!("🌾 旺收 +{}", season_bonus_total)),
+                            (rain_bonus_total > 0).then(|| format!("🌧️ 雨澤 +{}", rain_bonus_total)),
+                        ].into_iter().flatten().collect();
+                        if extras.is_empty() {
                             format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太！", summary.count, total)
+                        } else {
+                            format!("✨ 一鍵收成：收了 {} 株成熟作物，+{} 乙太（含 {}）！", summary.count, total, extras.join("、"))
                         }
                     } else if in_reach {
                         "🌱 田裡還沒有成熟的作物，再耐心等等吧。".to_string()

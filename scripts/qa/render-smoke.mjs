@@ -3413,6 +3413,58 @@ for (const sc of scenarios) {
   else console.log("  ✅ 作物熟成倒數（ROADMAP 501）：含 eta_secs 的農田快照多幀渲染零例外");
 }
 
+// 雨天豐澤（ROADMAP 502）：模擬下雨天氣快照 + 農作面板開啟，驗農作面板橫幅路徑零例外；
+// 再模擬收成事件 harvest_result 含 rain_bonus，驗飄字路徑零例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：雨天豐澤（ROADMAP 502）──");
+  let ok = true;
+  try {
+    // ① 注入下雨天氣快照，確保 weatherType / weatherIntensity 進入「下雨狀態」。
+    const rainSnap = JSON.parse(JSON.stringify(snapshot));
+    rainSnap.weather = { weather_type: "grassland_rain", intensity: 0.8, remaining_secs: 240, forecast: [], wind: { angle: 0, speed: 0.3 }, fish_phase: 0 };
+    if (rainSnap.land_plots && rainSnap.land_plots[0]) {
+      Object.assign(rainSnap.land_plots[0], {
+        plot_id: 0, min_gx: 90, min_gy: 90, max_gx: 97, max_gy: 97,
+        owner_id: rainSnap.players?.[0]?.id, purpose: "farm",
+      });
+    }
+    rainSnap.farm_crop_plots = [{ plot_id: 0, crops: [
+      { kind: "wheat",  ripe: false, grow: 60, eta_secs: 30 },
+      { kind: "carrot", ripe: true,  grow: 100, eta_secs: 0 },
+    ] }];
+    // 快照觸發 updateFarmCropPanel（在快照訊息處理鏈中被呼叫）；下雨橫幅路徑即運行。
+    lastWS.onmessage({ data: JSON.stringify({ ...rainSnap, type: "snapshot" }) });
+    pump("雨天豐澤·下雨農作面板橫幅", 4);
+
+    // ② 送出 harvest_result 含 rain_bonus，驗飄字路徑。
+    const pid = rainSnap.players?.[0]?.id || "00000000-0000-0000-0000-000000000001";
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "harvest_result",
+      player_id: pid,
+      quality: "fine",
+      ether: 4,
+      soil_bonus: 0,
+      demand: 0,
+      season_bonus: 0,
+      rain_bonus: 1,
+      x: 100, y: 100,
+    }) });
+    pump("雨天豐澤·收成飄字 rain_bonus", 3);
+
+    // ③ 雨停（切回晴天）——驗橫幅消失路徑零例外。
+    const clearSnap = JSON.parse(JSON.stringify(rainSnap));
+    clearSnap.weather = { weather_type: "clear", intensity: 0, remaining_secs: 400, forecast: [], wind: { angle: 0, speed: 0 }, fish_phase: 0 };
+    lastWS.onmessage({ data: JSON.stringify({ ...clearSnap, type: "snapshot" }) });
+    pump("雨天豐澤·雨停橫幅消失", 4);
+  } catch (e) {
+    ok = false; console.error("  ❌ 雨天豐澤：拋出例外", e && e.message);
+  }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (!ok || newCaught.length) { failed = true; console.error(`  ❌ 雨天豐澤：${newCaught.length} 個繪製例外`); }
+  else console.log("  ✅ 雨天豐澤（ROADMAP 502）：下雨橫幅/收成飄字/雨停消失，全路徑零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

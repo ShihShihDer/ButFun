@@ -1591,6 +1591,11 @@ pub enum ServerMsg {
         /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
         #[serde(default, skip_serializing_if = "is_zero_u32")]
         season_bonus: u32,
+        /// ROADMAP 502 雨天豐澤：這次收成裡因「草原細雨」帶來的乙太加成（已含進 `ether`）。
+        /// >0 時前端飄字綴「🌧️ 雨澤 +N」，讓「在雨中收成」的回報一眼看得見；0 ＝未下雨。
+        /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        rain_bonus: u32,
         x: f32,
         y: f32,
     },
