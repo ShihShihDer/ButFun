@@ -2335,6 +2335,63 @@ for (const sc of scenarios) {
   }
 }
 
+// 旅人手帳·足跡與陪伴（ROADMAP 486）：單元斷言純函式 milestoneProgress——把累計值對照里程碑
+// 階梯算出 { current, goal, tier, toNext, maxed }；門檻內單調、剛好達標即晉階、超越最高＝圓滿、
+// 壞值（NaN/負/小數）與髒亂序階梯保守。
+{
+  const mp = sandbox.__bfTest && sandbox.__bfTest.milestoneProgress;
+  if (typeof mp !== "function") {
+    failed = true;
+    console.error("  ❌ 足跡與陪伴：game.js 未導出 milestoneProgress");
+  } else {
+    let bad = 0;
+    const eq = (label, got, want) => {
+      const ok = JSON.stringify(got) === JSON.stringify(want);
+      if (!ok) { bad++; console.error(`  ❌ 足跡與陪伴：${label}（得 ${JSON.stringify(got)}）`); }
+    };
+    const L = [10, 25, 50];
+    eq("0＝第0階、下一站10、距10", mp(0, L), { current: 0, goal: 10, tier: 0, toNext: 10, maxed: false });
+    eq("剛好10＝晉第1階、下一站25", mp(10, L), { current: 10, goal: 25, tier: 1, toNext: 15, maxed: false });
+    eq("24＝仍第1階、距1", mp(24, L), { current: 24, goal: 25, tier: 1, toNext: 1, maxed: false });
+    eq("剛好50＝越過最高＝圓滿", mp(50, L), { current: 50, goal: 0, tier: 3, toNext: 0, maxed: true });
+    eq("999＝圓滿", mp(999, L), { current: 999, goal: 0, tier: 3, toNext: 0, maxed: true });
+    eq("NaN 當 0", mp(NaN, L), { current: 0, goal: 10, tier: 0, toNext: 10, maxed: false });
+    eq("負數當 0", mp(-7, L), { current: 0, goal: 10, tier: 0, toNext: 10, maxed: false });
+    eq("12.9 向下取整＝12", mp(12.9, L), { current: 12, goal: 25, tier: 1, toNext: 13, maxed: false });
+    eq("亂序＋髒值階梯先正規化", mp(30, [50, 10, NaN, -3, 25]), { current: 30, goal: 50, tier: 2, toNext: 20, maxed: false });
+    eq("空階梯＝圓滿", mp(5, []), { current: 5, goal: 0, tier: 0, toNext: 0, maxed: true });
+    if (bad) failed = true;
+    else console.log("  ✅ 足跡與陪伴·里程碑進度真值表（分階/剛好達標/圓滿/壞值/髒階梯/空階梯）：通過");
+  }
+}
+
+// 旅人手帳·足跡與陪伴（ROADMAP 486）：餵一份帶寵物的快照＋journey_report，實際跑 updateJourneyPanel
+// 把「足跡與陪伴」一節（製圖師踏查／拾螢／寵物羈絆）渲染出來，驗證面板建構路徑不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：旅人手帳·足跡與陪伴（製圖師／拾螢／寵物羈絆，渲染面板）──");
+  const jSnap = JSON.parse(JSON.stringify(snapshot));
+  jSnap.players[0].pet_kind = "flutter_sprite";
+  jSnap.players[0].pet_bond = 3;
+  lastWS.onmessage({ data: JSON.stringify({ ...jSnap, type: "snapshot" }) });
+  pump("手帳前快照", 1);
+  let threw = null;
+  try {
+    lastWS.onmessage({ data: JSON.stringify({
+      type: "journey_report",
+      tracks: [
+        { key: "level", current: 7, goal: 10, tier: 1 },
+        { key: "eco", current: 12, goal: 0, tier: 3 },
+      ],
+      headline: { key: "level", remaining: 3, goal: 10 },
+    }) });
+  } catch (e) { threw = e; }
+  if (threw) { failed = true; console.error(`  ❌ 足跡與陪伴：journey_report 渲染拋例外 ${threw && threw.message}`); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 足跡與陪伴：safeRender 攔下 ${newCaught.length} 個繪製例外`); }
+  else if (!threw) console.log("  ✅ 足跡與陪伴：手帳面板（含足跡與陪伴一節）渲染乾淨");
+}
+
 // 探索接力指引（ROADMAP 463）：單元斷言純函式 nextGuideStep——回傳第一個還沒試過步驟的索引，
 // 全部試過/輸入異常退 -1（畢業）；保序、忽略未知/壞 id、Set 與陣列皆可、空安全。
 {
