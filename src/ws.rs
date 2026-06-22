@@ -642,7 +642,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -798,6 +798,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         town_share: town_share.clone(),
                                         // 親手植樹成蔭（ROADMAP 370）：世界樹群全服共享，不做 AOI 剔除（量小、封頂 80）。
                                         world_groves: world_groves.clone(),
+                                        // 蒸汽星艦共修（ROADMAP 492）：全服廣播（固定座標、量微小）。
+                                        ship_repair: ship_repair.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1582,6 +1584,67 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         // 一律用升火者自己的權威座標升火（防隔空生火）。升起的火會進下一幀快照、
                         // 附近玩家自然看見，無須額外廣播。
                         let _ = app.campfires.write().unwrap().light(id, px, py);
+                    }
+                }
+                Ok(ClientMsg::ContributeToShip) => {
+                    // 蒸汽星艦共修（ROADMAP 492）：玩家走近星艦廢墟按「⚙️ 修繕」貢獻 2 木材。
+                    // 守 prod-deadlock：
+                    //   ① 讀玩家位置 + 名字（讀鎖即取即放）
+                    //   ② 寫鎖玩家背包扣木材（若材料不足靜默跳過）
+                    //   ③ 寫鎖星艦貢獻（若被拒退還木材——另開寫鎖，不巢狀）
+                    //   ④ 出鎖後才廣播
+                    let player_info: Option<(f32, f32, String)> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| p.indoor_plot_id.is_none() && !p.vitals.is_downed())
+                            .map(|p| (p.x, p.y, p.name.clone()))
+                    };
+                    if let Some((px, py, pname)) = player_info {
+                        // 嘗試扣木材（寫鎖；扣失敗代表材料不足，靜默放棄）。
+                        let took = {
+                            let mut players = app.players.write().unwrap();
+                            players
+                                .get_mut(&id)
+                                .map(|p| p.inventory.take(
+                                    crate::inventory::ItemKind::Wood,
+                                    crate::ship_repair::COST_WOOD,
+                                ))
+                                .unwrap_or(false)
+                        };
+                        if took {
+                            // 另開星艦寫鎖貢獻（不與 players 鎖巢狀；守 prod 死鎖鐵律）。
+                            let outcome = app.ship_repair.write().unwrap().contribute(id, px, py);
+                            match outcome {
+                                Some(crate::ship_repair::ContributeOutcome::Repaired) => {
+                                    // 修繕完成——廣播全服公告＋一次性事件。
+                                    let _ = app.tx_chat.send(format!(
+                                        "⚙️✨ {} 完成了最後一塊修繕！蒸汽星艦再度啟動——齒輪轉動、蒸汽升騰，它飛起來了！",
+                                        pname
+                                    ));
+                                    app.town_memory.write().unwrap().push_event(
+                                        "⚙️",
+                                        format!("旅人們共同修繕了墜落的蒸汽星艦，由 {} 完成最後一擊", pname),
+                                    );
+                                    let _ = app.tx.send(std::sync::Arc::new(
+                                        crate::protocol::ServerMsg::ShipRepaired { player_name: pname }
+                                    ));
+                                }
+                                Some(crate::ship_repair::ContributeOutcome::Progress(_)) => {
+                                    // 進度推進——透過快照廣播讓全服自然看到進度條更新，無需額外訊息。
+                                }
+                                None => {
+                                    // 貢獻被拒（超出半徑/在冷卻中/星艦已修好）——退還木材。
+                                    let mut players = app.players.write().unwrap();
+                                    if let Some(p) = players.get_mut(&id) {
+                                        p.inventory.add(
+                                            crate::inventory::ItemKind::Wood,
+                                            crate::ship_repair::COST_WOOD,
+                                        );
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(ClientMsg::BuildSnowman) => {

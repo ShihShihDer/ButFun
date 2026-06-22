@@ -47,6 +47,7 @@ mod wandering_merchant;
 mod wayposts;
 mod bottle_drift;
 mod campfire;
+mod ship_repair;
 mod snowman;
 mod connections;
 mod equipment;
