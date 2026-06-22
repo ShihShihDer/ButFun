@@ -4709,6 +4709,21 @@
         }
         break;
       }
+      case "rain_heal": {
+        // 草原細雨庇護（ROADMAP 496）：細雨中戶外的我回了血——在頭頂顯示「🌧️ +N」飄字。
+        // 此訊息只有自己收得到（透過 whisper_senders 私訊），不需判斷 id。
+        const me = Object.values(players).find(p => p.id === myId);
+        if (me) {
+          floaters.push({
+            wx: me.x,
+            wy: me.y - 42,
+            text: `🌧️ +${msg.amount || 1}`,
+            color: "120,200,255",
+            born: performance.now(),
+          });
+        }
+        break;
+      }
       case "ship_repaired": {
         // 蒸汽星艦修繕完成（ROADMAP 492）：某位旅人完成了最後一擊，全服廣播。
         // 在星艦位置噴出金色齒輪特效、公告顯示修繕者名字。

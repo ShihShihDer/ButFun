@@ -1184,6 +1184,9 @@ pub fn spawn(app: AppState) {
             // (player_id, 寵物 x, 寵物 y, 叼回物 Option<ItemKind>, 乙太量, 羈絆等級)。獎勵已在鎖內發給玩家。
             let mut pet_forage_events: Vec<(uuid::Uuid, f32, f32, Option<crate::inventory::ItemKind>, u32, u8)> =
                 Vec::new();
+            // 草原細雨庇護（ROADMAP 496）：細雨中戶外玩家實際回了血時，出鎖後對當事人單播飄字。
+            // (player_id, healed)
+            let mut rain_heal_events: Vec<(uuid::Uuid, u32)> = Vec::new();
             // 在地地名變更（ROADMAP 398 天地有名）：踏入新 locale，出鎖後廣播地名卡。
             // (player_id, name, subtitle, initial) — initial=true 為進場首次定位（前端不彈大卡）。
             // (pid, name, subtitle, initial, first_footfall, tally, xp_reward) — ROADMAP 398＋411。
@@ -1660,6 +1663,17 @@ pub fn spawn(app: AppState) {
                     {
                         p.vitals.shade_regen(dt);
                     }
+                    // 草原細雨庇護（ROADMAP 496）：細雨中戶外玩家緩緩回血——天氣首次影響戰鬥。
+                    // `is_raining` 在 tick 頂端一次讀取（讀鎖即放），這裡直接用，不再上鎖。
+                    // 室內玩家（indoor_plot_id.is_some()）不享有——詩意是「走在雨裡」才有庇護。
+                    // `rain_regen` 內部守倒地／剛挨打／滿血 no-op，無需在外層再判。
+                    if is_raining && p.indoor_plot_id.is_none() {
+                        let per_sec = crate::rain_regen::rain_regen_per_sec(true, true);
+                        let healed = p.vitals.rain_regen(dt, per_sec);
+                        if healed > 0 {
+                            rain_heal_events.push((p.id, healed));
+                        }
+                    }
                     // 街頭合奏·共鳴樂團（ROADMAP 472）：把這位獻奏者的合奏人數寫進快照欄位（廣播給
                     // 前端畫漸強的和聲音符與暖光；非獻奏者一律 0）。圍在 ≥2 人合奏樂團聆賞半徑內、
                     // 脫戰、室外的群眾隨和聲緩緩回血——獻奏第一次從「一個人賺打賞」長成「眾人合奏、
@@ -1701,6 +1715,18 @@ pub fn spawn(app: AppState) {
                                 }
                             };
                             let _ = tx.try_send(msg);
+                        }
+                    }
+                }
+            }
+
+            // 草原細雨庇護廣播（ROADMAP 496）：鎖已釋放，對被回血的玩家單播 RainHeal 事件（飄字）。
+            if !rain_heal_events.is_empty() {
+                let senders = app.whisper_senders.read().unwrap();
+                for (pid, amount) in rain_heal_events {
+                    if let Some(tx) = senders.get(&pid) {
+                        if let Ok(j) = serde_json::to_string(&ServerMsg::RainHeal { amount }) {
+                            let _ = tx.try_send(j);
                         }
                     }
                 }
