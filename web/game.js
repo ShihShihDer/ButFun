@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2634,7 +2634,132 @@
     }
   }
   // ─────────────────────────────────────────────────────────────────────────
+  // 世界守護者（ROADMAP 525）──────────────────────────────────────────────
 
+  // 與後端 world_boss.rs 常數對齊（鏡像，前端距離判定用）。
+  const BOSS_WX = 5800, BOSS_WY = 2400, BOSS_REACH = 100;
+
+  // 純函式：玩家是否在守護者攻擊範圍內（NaN/Infinity 保守 false）。
+  // 鏡像後端 within_boss_reach，供 render-smoke 單元斷言。
+  function withinBossReach(px, py) {
+    if (!isFinite(px) || !isFinite(py)) return false;
+    const dx = px - BOSS_WX, dy = py - BOSS_WY;
+    return dx * dx + dy * dy <= BOSS_REACH * BOSS_REACH;
+  }
+
+  // 純函式：守護者 HP 比例（用於血量條繪製）。
+  // hp < 0 / maxHp <= 0 / 壞值一律回 0，不 throw，供 render-smoke 斷言。
+  function bossHpFraction(hp, maxHp) {
+    if (!(maxHp > 0) || !(hp >= 0)) return 0;
+    return Math.min(1, hp / maxHp);
+  }
+
+  // 繪製世界守護者（巨型岩石守衛 🗿，有紅色脈動光暈＋HP 條）。
+  function drawWorldBoss(camX, camY, now) {
+    if (!worldBoss || worldBoss.hp <= 0) return;
+    const sx = worldBoss.wx - camX, sy = worldBoss.wy - camY;
+    const W = canvas.width, H = canvas.height;
+    if (sx < -250 || sx > W + 250 || sy < -250 || sy > H + 250) return;
+
+    ctx.save();
+    const frac = bossHpFraction(worldBoss.hp, worldBoss.max_hp);
+    // 外層脈動暗紅光暈（血量越低越強）。
+    const pulse = effectiveReduceMotion() ? 0.5 : 0.4 + 0.25 * Math.sin(now * 0.0024);
+    const auraR = 55 + (1 - frac) * 20;
+    const aura = ctx.createRadialGradient(sx, sy, 0, sx, sy, auraR);
+    const auraAlpha = (0.25 + (1 - frac) * 0.3) * pulse;
+    aura.addColorStop(0, `rgba(200,30,20,${(auraAlpha * 1.5).toFixed(3)})`);
+    aura.addColorStop(1, "rgba(200,30,20,0)");
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(sx, sy, auraR, 0, Math.PI * 2);
+    ctx.fill();
+    // 守護者圖示（大 emoji 🗿）。
+    ctx.font = "40px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🗿", sx, sy);
+    // HP 條（紅底綠條）。
+    const barW = 70, barH = 8, bx = sx - barW / 2, by = sy - 38;
+    ctx.fillStyle = "#600";
+    ctx.fillRect(bx, by, barW, barH);
+    ctx.fillStyle = frac > 0.3 ? "#3c3" : "#e83";
+    ctx.fillRect(bx, by, Math.round(barW * frac), barH);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(bx, by, barW, barH);
+    // HP 數字（小字）。
+    ctx.fillStyle = "#fff";
+    ctx.font = "10px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${worldBoss.hp}/${worldBoss.max_hp}`, sx, by - 1);
+    // 參與人數（守護者不在場時隱藏）。
+    if (worldBoss.participant_count > 0) {
+      ctx.textBaseline = "top";
+      ctx.fillStyle = "rgba(255,200,100,0.9)";
+      ctx.fillText(`${worldBoss.participant_count} 人參戰`, sx, sy + 26);
+    }
+    // 「攻擊守護者」互動提示（玩家在範圍內才顯示）。
+    if (me && withinBossReach(me.x, me.y)) {
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "#ffe080";
+      ctx.fillText("⚔️ 點【攻擊守護者】", sx, by - 12);
+    }
+    ctx.restore();
+  }
+
+  // 更新世界守護者 HUD pill（右上角事件欄，動態建立——仿 hudEtherSurge 模式）。
+  let _lastBossHudText = null;
+  function updateWorldBossHud() {
+    if (!worldBoss || worldBoss.hp <= 0) {
+      const el = document.getElementById("worldBossHud");
+      if (el) el.style.display = "none";
+      _lastBossHudText = null;
+      return;
+    }
+    // 計算到守護者的直線距離（僅供玩家參考）。
+    const distStr = me
+      ? (() => {
+          const dx = worldBoss.wx - me.x, dy = worldBoss.wy - me.y;
+          const d = Math.hypot(dx, dy);
+          return d > 1000 ? `${(d / 1000).toFixed(1)}km` : `${Math.round(d)}px`;
+        })()
+      : "?";
+    const frac = bossHpFraction(worldBoss.hp, worldBoss.max_hp);
+    const pct = Math.round(frac * 100);
+    const text = `⚔️ 世界守護者 ❤️${pct}% · ${worldBoss.participant_count}人 · ${distStr}`;
+    if (text === _lastBossHudText) return;
+    _lastBossHudText = text;
+    if (!document.getElementById("worldBossHud")) {
+      const el = document.createElement("div");
+      el.id = "worldBossHud";
+      el.style.cssText = [
+        "order:5",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:700",
+        "padding:3px 10px",
+        "background:#1a0000", "color:#ff6060", "border:1px solid #cc2020",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("worldBossHud");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
+  // 更新「攻擊守護者」按鈕的可見性。
+  function updateAttackBossBtn() {
+    const btn = document.getElementById("attackBossBtn");
+    if (!btn) return;
+    const canAttack = worldBoss && worldBoss.hp > 0
+      && me && !me.downed
+      && withinBossReach(me.x, me.y);
+    btn.style.display = canAttack ? "" : "none";
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3388,6 +3513,7 @@
   let auction = null;            // ROADMAP 522 星際拍賣行快照（null=等待中，非 null 時含 item/current_bid/bidder_name/remaining_secs）
   let fishingContest = null;     // ROADMAP 523 萬尾釣魚大賽快照（null=等待中，非 null 時含 remaining_secs/top3）
   let wonderDiscoveries = [];    // ROADMAP 524 世界奇觀首探·已首探的奇觀陣列（含 key/wx/wy/name_zh/emoji/discoverer_name）
+  let worldBoss = null;          // ROADMAP 525 世界守護者·在場時 {hp,max_hp,wx,wy,participant_count}，否則 null
   const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
   const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
   const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
@@ -4346,6 +4472,8 @@
         fishingContest = msg.fishing_contest || null;
         // 世界奇觀首探（ROADMAP 524）：已首探的奇觀列表（serde default = []）。
         if (Array.isArray(msg.wonder_discoveries)) wonderDiscoveries = msg.wonder_discoveries;
+        // 世界守護者（ROADMAP 525）：在場時 Some（含 hp/max_hp/wx/wy/participant_count），不在場 null。
+        worldBoss = msg.world_boss || null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9982,6 +10110,7 @@
     safeDraw("goldRush", () => drawGoldRush(camX, camY, renderNow)); // 黃金礦脈爭奪戰（521）
     safeDraw("auction", () => drawAuction(camX, camY, renderNow)); // 星際拍賣行（522）
     safeDraw("wonders", () => drawWonders(camX, camY, renderNow)); // 世界奇觀首探（524）
+    safeDraw("worldBoss", () => drawWorldBoss(camX, camY, renderNow)); // 世界守護者（525）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -10169,6 +10298,8 @@
       updateGoldRushHud();                 // 黃金礦脈爭奪戰（ROADMAP 521）
       updateAuctionHud();                  // 星際拍賣行（ROADMAP 522）
       updateFishingContestHud();           // 萬尾釣魚大賽（ROADMAP 523）
+      updateWorldBossHud();                // 世界守護者（ROADMAP 525）
+      updateAttackBossBtn();               // 世界守護者攻擊按鈕（ROADMAP 525）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
@@ -33709,6 +33840,26 @@
       });
     }
     // ⛏️ 黃金礦脈搶挖（ROADMAP 521）：走近礦脈按下搶挖，每人有個別冷卻時間；前三名得乙太大賞。
+    // ⚔️ 世界守護者攻擊（ROADMAP 525）：走到守護者（東方荒野）附近，發動攻擊。
+    const attackBossBtn = document.getElementById("attackBossBtn");
+    if (attackBossBtn) {
+      attackBossBtn.addEventListener("click", () => {
+        SFX.click();
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.downed) return;
+        if (!worldBoss || worldBoss.hp <= 0) {
+          announce("世界守護者目前不在場——等待下一次降臨吧");
+          return;
+        }
+        if (!withinBossReach(me.x, me.y)) {
+          announce("離世界守護者太遠——前往東方荒野靠近再試試");
+          return;
+        }
+        safeSend({ type: "attack_boss" });
+        // 樂觀提示（server 端以冷卻把關，重複請求靜默忽略）
+        announce("⚔️ 攻擊！等冷卻後可再次出擊");
+      });
+    }
     const mineGoldRushBtn = document.getElementById("mineGoldRushBtn");
     if (mineGoldRushBtn) {
       mineGoldRushBtn.addEventListener("click", () => {

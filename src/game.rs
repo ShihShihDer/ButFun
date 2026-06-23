@@ -3421,6 +3421,22 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 世界守護者 tick（ROADMAP 525）：周期降臨的強力 BOSS，現身時全服公告方向。
+            {
+                // 守 prod-deadlock：寫鎖僅推進時鐘並取出事件，出鎖後才廣播。
+                let boss_event = app.world_boss.write().unwrap().tick(dt);
+                match boss_event {
+                    crate::world_boss::BossEvent::Spawned => {
+                        let _ = app.tx_chat.send(format!(
+                            "⚠️ 世界守護者降臨！巨大的存在現身於東方荒野 ({:.0}, {:.0})——召集夥伴前往一決勝負，擊敗者均獲乙太獎勵！",
+                            crate::world_boss::BOSS_WX,
+                            crate::world_boss::BOSS_WY,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4728,6 +4744,17 @@ pub fn spawn(app: AppState) {
                                     discoverer_name: d.discoverer_name.clone(),
                                 })
                             }).collect()
+                        },
+                        world_boss: {
+                            // 世界守護者（ROADMAP 525）：在場時廣播 HP/座標/參與人數。
+                            let wb = app.world_boss.read().unwrap();
+                            wb.current_hp().map(|hp| crate::protocol::WorldBossView {
+                                hp,
+                                max_hp: crate::world_boss::BOSS_MAX_HP,
+                                wx: crate::world_boss::BOSS_WX,
+                                wy: crate::world_boss::BOSS_WY,
+                                participant_count: wb.participant_count(),
+                            })
                         },
                     }
                 };

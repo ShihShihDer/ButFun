@@ -1475,6 +1475,8 @@ pub struct AppState {
     /// 世界奇觀首探（ROADMAP 524）：五處隱藏秘境，首位踏入者留名並得乙太。
     /// 純記憶體，重啟後玩家可重新探索（探索是遊戲體驗，不需持久化）。
     pub wonders: Arc<RwLock<crate::world_wonder::WorldWonderState>>,
+    /// 世界守護者（ROADMAP 525）：周期現身的超強 BOSS，玩家協力擊敗並獲得乙太獎勵。
+    pub world_boss: Arc<RwLock<crate::world_boss::WorldBossState>>,
 }
 
 impl AppState {
@@ -1687,6 +1689,7 @@ impl AppState {
             auction: Arc::new(RwLock::new(crate::auction::AuctionState::new())),
             fishing_contest: Arc::new(RwLock::new(crate::fishing_contest::FishingContest::new())),
             wonders: Arc::new(RwLock::new(crate::world_wonder::WorldWonderState::new())),
+            world_boss: Arc::new(RwLock::new(crate::world_boss::WorldBossState::new())),
         }
     }
 
