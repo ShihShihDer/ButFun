@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2760,6 +2760,106 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // 旅人紀念碑（ROADMAP 526）：廣場北方石碑，靠近時顯示榮耀名錄。
+
+  /** 玩家是否在紀念碑靠近範圍內（純函式，供 render-smoke 測試）。NaN/Infinity → false。 */
+  function isNearMonument(px, py) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - MONUMENT_WX, dy = py - MONUMENT_WY;
+    return dx * dx + dy * dy <= MONUMENT_RADIUS * MONUMENT_RADIUS;
+  }
+
+  /** 純函式：把刻文陣列轉為顯示行（供 render-smoke 測試）。空陣列回 ["暫無刻文"]。 */
+  function monumentEntryLines(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return ["（石碑空白，等待第一位旅人留名……）"];
+    return entries.map(e => `${e.label}  ✦  ${e.player_name}  —  ${e.detail}`);
+  }
+
+  /** 繪製紀念碑石柱（Canvas 2D）。 */
+  function drawMonument(camX, camY, now) {
+    const sx = MONUMENT_WX - camX, sy = MONUMENT_WY - camY;
+    const W = canvas.width, H = canvas.height;
+    // AOI 剔除：石柱不在畫面內就跳過。
+    if (sx < -80 || sx > W + 80 || sy < -120 || sy > H + 40) return;
+
+    // 石柱底座。
+    ctx.save();
+    ctx.fillStyle = "#6b5a4a";
+    ctx.fillRect(sx - 14, sy + 10, 28, 8);
+
+    // 石柱主體。
+    ctx.fillStyle = "#5a4e3f";
+    ctx.fillRect(sx - 9, sy - 40, 18, 52);
+
+    // 石柱頂部發光（有刻文時金光，否則淡灰）。
+    const hasEntries = Array.isArray(monumentEntries) && monumentEntries.length > 0;
+    const pulse = hasEntries
+      ? 0.7 + 0.3 * Math.sin(now / 800)
+      : 0.3;
+    ctx.fillStyle = hasEntries
+      ? `rgba(255,210,60,${pulse})`
+      : `rgba(180,180,160,${pulse})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy - 44, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 石碑符文（▽ 三角刻紋）。
+    ctx.fillStyle = `rgba(200,180,130,0.6)`;
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("▽", sx, sy - 18);
+    ctx.fillText("▽", sx, sy - 6);
+
+    // 名稱標籤。
+    ctx.fillStyle = "rgba(240,220,160,0.9)";
+    ctx.font = "bold 10px sans-serif";
+    ctx.fillText("🏛 紀念碑", sx, sy + 24);
+
+    ctx.restore();
+
+    // 靠近提示：玩家在範圍內時在石柱上方顯示 "F 查看" 提示。
+    if (me && isNearMonument(me.x, me.y)) {
+      ctx.save();
+      ctx.fillStyle = "rgba(30,20,10,0.8)";
+      ctx.beginPath();
+      ctx.roundRect(sx - 36, sy - 76, 72, 22, 6);
+      ctx.fill();
+      ctx.fillStyle = "#f0d890";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("[F] 查看名錄", sx, sy - 60);
+      ctx.restore();
+    }
+  }
+
+  /** 更新紀念碑面板（靠近時顯示，離開時隱藏）。 */
+  function updateMonumentPanel() {
+    const near = me && isNearMonument(me.x, me.y);
+    let panel = document.getElementById("monumentPanel");
+    if (!near) {
+      if (panel) panel.style.display = "none";
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "monumentPanel";
+      panel.style.cssText = [
+        "position:fixed", "bottom:110px", "left:50%", "transform:translateX(-50%)",
+        "min-width:260px", "max-width:360px",
+        "background:rgba(20,15,8,0.93)", "border:1px solid #8b6a30",
+        "border-radius:10px", "padding:10px 14px", "color:#f0d890",
+        "font-size:.8rem", "line-height:1.6", "z-index:50", "pointer-events:none",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    const lines = monumentEntryLines(monumentEntries);
+    panel.style.display = "block";
+    panel.innerHTML =
+      `<div style="font-weight:700;font-size:.9rem;margin-bottom:6px;color:#ffd060">🏛 旅人紀念碑</div>` +
+      lines.map(l => `<div>${l}</div>`).join("");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3514,6 +3614,10 @@
   let fishingContest = null;     // ROADMAP 523 萬尾釣魚大賽快照（null=等待中，非 null 時含 remaining_secs/top3）
   let wonderDiscoveries = [];    // ROADMAP 524 世界奇觀首探·已首探的奇觀陣列（含 key/wx/wy/name_zh/emoji/discoverer_name）
   let worldBoss = null;          // ROADMAP 525 世界守護者·在場時 {hp,max_hp,wx,wy,participant_count}，否則 null
+  let monumentEntries = [];      // ROADMAP 526 旅人紀念碑·刻文陣列（含 label/player_name/detail）
+  const MONUMENT_WX = 0;        // 與後端 monument::MONUMENT_WX 對齊（廣場北方）
+  const MONUMENT_WY = -600;     // 與後端 monument::MONUMENT_WY 對齊
+  const MONUMENT_RADIUS = 150;  // 與後端 monument::MONUMENT_RADIUS 對齊
   const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
   const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
   const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
@@ -4474,6 +4578,8 @@
         if (Array.isArray(msg.wonder_discoveries)) wonderDiscoveries = msg.wonder_discoveries;
         // 世界守護者（ROADMAP 525）：在場時 Some（含 hp/max_hp/wx/wy/participant_count），不在場 null。
         worldBoss = msg.world_boss || null;
+        // 旅人紀念碑（ROADMAP 526）：刻文陣列（含 label/player_name/detail）。
+        if (Array.isArray(msg.monument)) monumentEntries = msg.monument;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -10111,6 +10217,7 @@
     safeDraw("auction", () => drawAuction(camX, camY, renderNow)); // 星際拍賣行（522）
     safeDraw("wonders", () => drawWonders(camX, camY, renderNow)); // 世界奇觀首探（524）
     safeDraw("worldBoss", () => drawWorldBoss(camX, camY, renderNow)); // 世界守護者（525）
+    safeDraw("monument", () => drawMonument(camX, camY, renderNow));   // 旅人紀念碑（526）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -10300,6 +10407,7 @@
       updateFishingContestHud();           // 萬尾釣魚大賽（ROADMAP 523）
       updateWorldBossHud();                // 世界守護者（ROADMAP 525）
       updateAttackBossBtn();               // 世界守護者攻擊按鈕（ROADMAP 525）
+      updateMonumentPanel();               // 旅人紀念碑面板（ROADMAP 526）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）

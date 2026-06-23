@@ -986,6 +986,17 @@ pub enum ClientMsg {
         pub participant_count: u32,
     }
 
+    /// 旅人紀念碑刻文（ROADMAP 526）。玩家靠近廣場紀念碑時由 Snapshot 帶出。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct MonumentEntryView {
+        /// 面向玩家的成就標題（如「💎 星核晶宮首探」）。
+        pub label: String,
+        /// 立功旅人名稱。
+        pub player_name: String,
+        /// 補充說明（如「大膽踏入神秘秘境，留名千古」）。
+        pub detail: String,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1366,6 +1377,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
         #[serde(default)]
         world_boss: Option<WorldBossView>,
+        /// 旅人紀念碑刻文（ROADMAP 526）：空向量 = 尚無成就刻文。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = 空向量，靜默略過）。
+        #[serde(default)]
+        monument: Vec<MonumentEntryView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3533,6 +3548,7 @@ mod tests {
             fishing_contest: None,
             wonder_discoveries: vec![],
             world_boss: None,
+            monument: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

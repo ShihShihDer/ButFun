@@ -3279,6 +3279,12 @@ pub fn spawn(app: AppState) {
                                 "⛏️ 黃金礦脈爭奪結束！本場排行：{}",
                                 summary.join("，")
                             ));
+                            // 紀念碑刻名（ROADMAP 526）：礦脈爭奪冠軍刻石。
+                            if let Some(winner) = results.first() {
+                                app.monument.write().unwrap().record_gold_rush_champion(
+                                    &winner.name, winner.count,
+                                );
+                            }
                             // 獎勵乙太：在 players 鎖內批次更新。
                             let mut players = app.players.write().unwrap();
                             for r in &results {
@@ -3355,6 +3361,14 @@ pub fn spawn(app: AppState) {
                                 "🎣 釣魚大賽結束！本場排行：{}",
                                 summary.join("，")
                             ));
+                            // 紀念碑刻名（ROADMAP 526）：釣魚大賽冠軍刻石。
+                            if let Some(champion) = results.iter().find(|r| r.rank == 1) {
+                                app.monument.write().unwrap().record_fishing_champion(
+                                    &champion.name,
+                                    champion.total_mm / 10,
+                                    champion.catch_count,
+                                );
+                            }
                             // 獎勵乙太：在 players 鎖內批次更新（守 prod-deadlock：不巢狀鎖）。
                             let mut players = app.players.write().unwrap();
                             for r in &results {
@@ -3408,6 +3422,10 @@ pub fn spawn(app: AppState) {
                                     name, wonder.name_zh, wonder.emoji,
                                     crate::world_wonder::DISCOVER_REWARD,
                                 ));
+                                // 紀念碑刻名（ROADMAP 526）：首探即上碑，永久留名。
+                                app.monument.write().unwrap().record_wonder(
+                                    wonder.key, wonder.emoji, wonder.name_zh, &name,
+                                );
                                 // 發放乙太（players 寫鎖，不巢狀持有其他鎖）。
                                 let mut players = app.players.write().unwrap();
                                 if let Some(p) = players.values_mut().find(|p| p.name == name) {
@@ -4755,6 +4773,10 @@ pub fn spawn(app: AppState) {
                                 wy: crate::world_boss::BOSS_WY,
                                 participant_count: wb.participant_count(),
                             })
+                        },
+                        monument: {
+                            // 旅人紀念碑（ROADMAP 526）：廣播所有刻文供前端靠近時顯示。
+                            app.monument.read().unwrap().view()
                         },
                     }
                 };
