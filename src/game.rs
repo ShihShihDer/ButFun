@@ -3326,6 +3326,48 @@ pub fn spawn(app: AppState) {
                     }
                     crate::auction::AuctionTick::None => {}
                 }
+
+                // 萬尾釣魚大賽 tick（ROADMAP 523）
+                let contest_tick = app.fishing_contest.write().unwrap().tick(dt);
+                match contest_tick {
+                    crate::fishing_contest::FishingContestTick::Started => {
+                        let dur_min = (crate::fishing_contest::CONTEST_DURATION_SECS / 60.0) as u32;
+                        let _ = app.tx_chat.send(format!(
+                            "🎣 萬尾釣魚大賽開始！限時 {} 分鐘——誰釣出最重的魚，前三名得乙太大獎！",
+                            dur_min,
+                        ));
+                    }
+                    crate::fishing_contest::FishingContestTick::Finished(results) => {
+                        if results.is_empty() {
+                            let _ = app.tx_chat.send("🎣 釣魚大賽結束，本場無人參賽，魚兒安然無恙……".to_string());
+                        } else {
+                            let summary: Vec<String> = results.iter().map(|r| {
+                                let medal = match r.rank { 1 => "🥇", 2 => "🥈", _ => "🥉" };
+                                format!(
+                                    "{} {} （{}cm 總重，{} 尾，得 {} 乙太）",
+                                    medal, r.name,
+                                    r.total_mm / 10,
+                                    r.catch_count,
+                                    r.ether_reward,
+                                )
+                            }).collect();
+                            let _ = app.tx_chat.send(format!(
+                                "🎣 釣魚大賽結束！本場排行：{}",
+                                summary.join("，")
+                            ));
+                            // 獎勵乙太：在 players 鎖內批次更新（守 prod-deadlock：不巢狀鎖）。
+                            let mut players = app.players.write().unwrap();
+                            for r in &results {
+                                if r.ether_reward > 0 {
+                                    if let Some(p) = players.values_mut().find(|p| p.name == r.name) {
+                                        p.ether = p.ether.saturating_add(r.ether_reward);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    crate::fishing_contest::FishingContestTick::None => {}
+                }
             }
 
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
@@ -4612,6 +4654,14 @@ pub fn spawn(app: AppState) {
                         },
                         // 星際拍賣行（ROADMAP 522）：競標中才廣播 view，等待期 None 節省頻寬。
                         auction: app.auction.read().unwrap().view(),
+                        // 萬尾釣魚大賽（ROADMAP 523）：大賽進行中才廣播 view，等待期 None 節省頻寬。
+                        fishing_contest: {
+                            let fc = app.fishing_contest.read().unwrap();
+                            fc.remaining_secs().map(|secs| crate::protocol::FishingContestView {
+                                remaining_secs: secs as u32,
+                                top3: fc.top3(),
+                            })
+                        },
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));
