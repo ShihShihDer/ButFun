@@ -269,6 +269,10 @@ pub enum ClientMsg {
     /// 伺服器以玩家自己的權威座標判定範圍（防隔空挖礦）；無活躍事件 / 冷卻中 / 礦脈耗盡 / 超出範圍
     /// 一律靜默忽略。零持久化、純記憶體、重啟清零。
     MineGoldRush,
+    /// 攻擊世界守護者（ROADMAP 525）：玩家走到守護者附近發動攻擊。
+    /// 伺服器以玩家自己的權威座標判定是否在 BOSS_REACH 內；守護者不在場 / 玩家倒地 /
+    /// 攻擊冷卻中 / 超出射程一律靜默忽略。零持久化、純記憶體、重啟清零。
+    AttackBoss,
     /// 星際拍賣行出價（ROADMAP 522）：玩家走到拍賣台附近出價 `amount` 乙太。
     /// 伺服器判定：活躍拍賣中 / 玩家位於範圍內 / 玩家乙太足夠 / 出價 ≥ 最低門檻，
     /// 才扣款、退前任、更新最高出價。靜默忽略不合格的出價。零持久化、純記憶體。
@@ -967,6 +971,21 @@ pub enum ClientMsg {
         pub discoverer_name: String,
     }
 
+    /// 世界守護者快照（ROADMAP 525）。None = 守護者不在場；Some = 守護者在場（含 HP/座標/參與人數）。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub struct WorldBossView {
+        /// 當前 HP。
+        pub hp: i32,
+        /// 最大 HP。
+        pub max_hp: i32,
+        /// 世界座標 X（像素）。
+        pub wx: f32,
+        /// 世界座標 Y（像素）。
+        pub wy: f32,
+        /// 目前有效參與人數。
+        pub participant_count: u32,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1343,6 +1362,10 @@ pub enum ServerMsg {
         /// 空向量 = 尚無任何奇觀被首探。`#[serde(default)]` 向後相容。
         #[serde(default)]
         wonder_discoveries: Vec<WonderDiscoveryView>,
+        /// 世界守護者（ROADMAP 525）：None = 守護者不在場；Some = 在場（含 HP/座標/參與人數）。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+        #[serde(default)]
+        world_boss: Option<WorldBossView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3509,6 +3532,7 @@ mod tests {
             auction: None,
             fishing_contest: None,
             wonder_discoveries: vec![],
+            world_boss: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

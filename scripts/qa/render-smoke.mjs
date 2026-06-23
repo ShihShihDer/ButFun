@@ -4650,6 +4650,77 @@ for (const sc of scenarios) {
   else console.log("  ✅ 世界奇觀首探（ROADMAP 524）：withinWonderRadius 邊界(4 cases) + wonderNearLabel 真值表(4 cases)");
 }
 
+// ROADMAP 525 世界守護者：withinBossReach 邊界 + bossHpFraction 真值表 + drawWorldBoss 渲染路徑
+{
+  let ok = true;
+  try {
+    const wbr = sandbox.__bfTest && sandbox.__bfTest.withinBossReach;
+    const bhf = sandbox.__bfTest && sandbox.__bfTest.bossHpFraction;
+    const dwb = sandbox.__bfTest && sandbox.__bfTest.drawWorldBoss;
+    if (!wbr) throw new Error("withinBossReach 未匯出");
+    if (!bhf) throw new Error("bossHpFraction 未匯出");
+    if (!dwb) throw new Error("drawWorldBoss 未匯出");
+
+    // withinBossReach：正中心（BOSS_WX=5800, BOSS_WY=2400）→ true
+    if (!wbr(5800, 2400)) { ok = false; console.error("  ❌ withinBossReach(正中心) 應回 true"); }
+    // withinBossReach：範圍邊緣內（距離=99）→ true
+    if (!wbr(5800 + 99, 2400)) { ok = false; console.error("  ❌ withinBossReach(邊緣內99) 應回 true"); }
+    // withinBossReach：超出範圍（距離=101）→ false
+    if (wbr(5800 + 101, 2400)) { ok = false; console.error("  ❌ withinBossReach(超出101) 應回 false"); }
+    // withinBossReach：NaN → false（不拋）
+    let threw = false;
+    let nanResult;
+    try { nanResult = wbr(NaN, 2400); } catch { threw = true; }
+    if (threw || nanResult !== false) { ok = false; console.error("  ❌ withinBossReach(NaN) 應回 false 且不拋"); }
+    // withinBossReach：Infinity → false（不拋）
+    threw = false;
+    let infResult;
+    try { infResult = wbr(Infinity, 2400); } catch { threw = true; }
+    if (threw || infResult !== false) { ok = false; console.error("  ❌ withinBossReach(Infinity) 應回 false 且不拋"); }
+
+    // bossHpFraction：滿血 → 1
+    const f1 = bhf(800, 800);
+    if (Math.abs(f1 - 1) > 0.001) { ok = false; console.error("  ❌ bossHpFraction(800,800) 應回 1"); }
+    // bossHpFraction：半血 → 0.5
+    const f2 = bhf(400, 800);
+    if (Math.abs(f2 - 0.5) > 0.001) { ok = false; console.error("  ❌ bossHpFraction(400,800) 應回 0.5"); }
+    // bossHpFraction：HP=0 → 0
+    const f3 = bhf(0, 800);
+    if (f3 !== 0) { ok = false; console.error("  ❌ bossHpFraction(0,800) 應回 0"); }
+    // bossHpFraction：null → 0（不拋）
+    threw = false;
+    let nullFrac;
+    try { nullFrac = bhf(null, 800); } catch { threw = true; }
+    if (threw || nullFrac !== 0) { ok = false; console.error("  ❌ bossHpFraction(null,800) 應回 0 且不拋"); }
+
+    // drawWorldBoss 渲染路徑：注入守護者狀態，連跑 4 幀，零例外
+    sandbox.worldBoss = { hp: 400, max_hp: 800, wx: 5800, wy: 2400, participant_count: 3 };
+    sandbox.me = { x: 5800, y: 2400, downed: false };
+    for (let i = 0; i < 4; i++) {
+      threw = false;
+      try { dwb(5700, 2300, performance.now() + i * 16); } catch { threw = true; }
+      if (threw) { ok = false; console.error(`  ❌ drawWorldBoss 第${i+1}幀拋出例外`); }
+    }
+    // HP=0 時不應繪製（守護者已不在場）
+    sandbox.worldBoss = { hp: 0, max_hp: 800, wx: 5800, wy: 2400, participant_count: 0 };
+    threw = false;
+    try { dwb(5700, 2300, performance.now()); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ drawWorldBoss(hp=0) 不應拋出"); }
+    // null 守護者（不在場）
+    sandbox.worldBoss = null;
+    threw = false;
+    try { dwb(5700, 2300, performance.now()); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ drawWorldBoss(null) 不應拋出"); }
+    // 恢復
+    sandbox.worldBoss = null;
+    sandbox.me = null;
+  } catch (e) {
+    ok = false; console.error("  ❌ 世界守護者：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 世界守護者（ROADMAP 525）：測試失敗"); }
+  else console.log("  ✅ 世界守護者（ROADMAP 525）：withinBossReach 邊界(5 cases) + bossHpFraction 真值表(4 cases) + drawWorldBoss 渲染路徑(7 cases)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
