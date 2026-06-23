@@ -1472,6 +1472,9 @@ pub struct AppState {
     /// 萬尾釣魚大賽（ROADMAP 523）：每 45 分鐘全服釣魚競速，前三名得乙太。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub fishing_contest: Arc<RwLock<crate::fishing_contest::FishingContest>>,
+    /// 世界奇觀首探（ROADMAP 524）：五處隱藏秘境，首位踏入者留名並得乙太。
+    /// 純記憶體，重啟後玩家可重新探索（探索是遊戲體驗，不需持久化）。
+    pub wonders: Arc<RwLock<crate::world_wonder::WorldWonderState>>,
 }
 
 impl AppState {
@@ -1683,6 +1686,7 @@ impl AppState {
             gold_rush: Arc::new(RwLock::new(crate::gold_rush::GoldRushState::new())),
             auction: Arc::new(RwLock::new(crate::auction::AuctionState::new())),
             fishing_contest: Arc::new(RwLock::new(crate::fishing_contest::FishingContest::new())),
+            wonders: Arc::new(RwLock::new(crate::world_wonder::WorldWonderState::new())),
         }
     }
 

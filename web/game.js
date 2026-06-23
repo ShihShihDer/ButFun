@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2505,6 +2505,136 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // ─── 世界奇觀首探（ROADMAP 524）───────────────────────────────────────────
+  // 五處奇觀的靜態定義（與 world_wonder.rs ALL_WONDERS 對齊）。
+  const WONDER_DEFS = [
+    { key: "crystal_palace", wx: 5344, wy: 296,  name_zh: "星核晶宮", emoji: "💎" },
+    { key: "jade_tree",      wx: -656, wy: 296,  name_zh: "翡翠古樹", emoji: "🌳" },
+    { key: "moon_temple",    wx: 2344, wy: 5796, name_zh: "黃沙月神殿", emoji: "🏛️" },
+    { key: "coral_city",     wx: -1656, wy: 2296, name_zh: "深洋珊瑚城", emoji: "🪸" },
+    { key: "steam_spring",   wx: 5344, wy: 4796, name_zh: "蒸汽地熱泉", emoji: "♨️" },
+  ];
+  const WONDER_DISCOVER_RADIUS = 120; // 與後端 DISCOVER_RADIUS 對齊（像素）
+
+  // 純函式：玩家是否在某奇觀的探索範圍內。
+  // px/py：玩家世界座標；def：WONDER_DEFS 中某項；回傳 bool（壞值/NaN 安全）。
+  function withinWonderRadius(px, py, def) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - def.wx;
+    const dy = py - def.wy;
+    return dx * dx + dy * dy <= WONDER_DISCOVER_RADIUS * WONDER_DISCOVER_RADIUS;
+  }
+
+  // 純函式：玩家附近是否有未發現的奇觀，回傳 HUD 標籤字串（或 null 無奇觀附近）。
+  // px/py：玩家世界座標；discoveries：wonderDiscoveries 陣列。
+  function wonderNearLabel(px, py, discoveries) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    const discoveredKeys = new Set(Array.isArray(discoveries) ? discoveries.map(d => d && d.key) : []);
+    for (const def of WONDER_DEFS) {
+      if (withinWonderRadius(px, py, def)) {
+        const isDiscovered = discoveredKeys.has(def.key);
+        return isDiscovered
+          ? `${def.emoji} ${def.name_zh}（已首探）`
+          : `${def.emoji} ？ 神秘秘境……（踏入可首探）`;
+      }
+    }
+    return null;
+  }
+
+  // 繪製所有奇觀的世界本體（Canvas）。
+  // 已發現：發光柱 + 名稱 + 發現者姓名。
+  // 未發現：柔光問號 + 神秘輪廓。
+  function drawWonders(camX, camY, now) {
+    const discoveredKeys = new Set(wonderDiscoveries.map(d => d && d.key));
+    for (const def of WONDER_DEFS) {
+      const sx = def.wx - camX;
+      const sy = def.wy - camY;
+      // 視野剔除：超出畫布邊緣 300px 以上不繪製。
+      if (sx < -300 || sx > canvas.width + 300 || sy < -300 || sy > canvas.height + 300) continue;
+
+      const isDiscovered = discoveredKeys.has(def.key);
+      const pulse = 0.5 + 0.5 * Math.sin(now * 0.002);
+
+      if (isDiscovered) {
+        // ── 已發現：黃金發光柱 + emoji + 名稱 ──
+        const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, 40);
+        grd.addColorStop(0, `rgba(255,220,80,${0.35 + 0.15 * pulse})`);
+        grd.addColorStop(1, "rgba(255,180,0,0)");
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 40, 0, Math.PI * 2);
+        ctx.fill();
+        // 外環光圈
+        ctx.beginPath();
+        ctx.arc(sx, sy, 22, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,220,80,${0.5 + 0.4 * pulse})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Emoji
+        ctx.font = "22px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(def.emoji, sx, sy);
+        // 名稱標籤
+        ctx.font = "bold 12px 'Noto Sans TC', sans-serif";
+        ctx.fillStyle = "#ffe080";
+        ctx.fillText(def.name_zh, sx, sy - 32);
+        // 發現者
+        const disc = wonderDiscoveries.find(d => d && d.key === def.key);
+        if (disc) {
+          ctx.font = "10px 'Noto Sans TC', sans-serif";
+          ctx.fillStyle = "rgba(255,220,120,0.75)";
+          ctx.fillText(`首探：${disc.discoverer_name}`, sx, sy - 44);
+        }
+      } else {
+        // ── 未發現：柔光問號輪廓 ──
+        const grd2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, 30);
+        grd2.addColorStop(0, `rgba(150,200,255,${0.15 + 0.1 * pulse})`);
+        grd2.addColorStop(1, "rgba(100,150,255,0)");
+        ctx.fillStyle = grd2;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 30, 0, Math.PI * 2);
+        ctx.fill();
+        // 虛線圓圈
+        ctx.save();
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(150,200,255,${0.3 + 0.2 * pulse})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+        // 問號
+        ctx.font = "bold 16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = `rgba(180,220,255,${0.4 + 0.3 * pulse})`;
+        ctx.fillText("？", sx, sy);
+      }
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+
+  // 在小地圖上標記已發現的奇觀（⭐ 金色星形）。
+  function drawWonderMinimap(mmCtx, mmScale, mmOffsetX, mmOffsetY) {
+    if (!Array.isArray(wonderDiscoveries) || wonderDiscoveries.length === 0) return;
+    for (const disc of wonderDiscoveries) {
+      if (!disc) continue;
+      const def = WONDER_DEFS.find(d => d.key === disc.key);
+      if (!def) continue;
+      const mx = Math.round(def.wx * mmScale + mmOffsetX);
+      const my = Math.round(def.wy * mmScale + mmOffsetY);
+      mmCtx.font = "10px sans-serif";
+      mmCtx.textAlign = "center";
+      mmCtx.textBaseline = "middle";
+      mmCtx.fillText("⭐", mx, my);
+      mmCtx.textAlign = "left";
+      mmCtx.textBaseline = "alphabetic";
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3257,6 +3387,7 @@
   const GOLD_RUSH_MINE_REACH = 120; // 與後端 gold_rush::MINE_REACH 對齊
   let auction = null;            // ROADMAP 522 星際拍賣行快照（null=等待中，非 null 時含 item/current_bid/bidder_name/remaining_secs）
   let fishingContest = null;     // ROADMAP 523 萬尾釣魚大賽快照（null=等待中，非 null 時含 remaining_secs/top3）
+  let wonderDiscoveries = [];    // ROADMAP 524 世界奇觀首探·已首探的奇觀陣列（含 key/wx/wy/name_zh/emoji/discoverer_name）
   const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
   const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
   const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
@@ -4213,6 +4344,8 @@
         auction = msg.auction || null;
         // 萬尾釣魚大賽（ROADMAP 523）：大賽中才有此欄位（serde default = None），平時 null 節省頻寬。
         fishingContest = msg.fishing_contest || null;
+        // 世界奇觀首探（ROADMAP 524）：已首探的奇觀列表（serde default = []）。
+        if (Array.isArray(msg.wonder_discoveries)) wonderDiscoveries = msg.wonder_discoveries;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9848,6 +9981,7 @@
     safeDraw("etherSurge", () => drawEtherSurge(camX, camY, renderNow)); // 乙太暴走事件（504）
     safeDraw("goldRush", () => drawGoldRush(camX, camY, renderNow)); // 黃金礦脈爭奪戰（521）
     safeDraw("auction", () => drawAuction(camX, camY, renderNow)); // 星際拍賣行（522）
+    safeDraw("wonders", () => drawWonders(camX, camY, renderNow)); // 世界奇觀首探（524）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -11821,6 +11955,22 @@
           ctx.fillText("🏹", nx, ny);
           ctx.textBaseline = "alphabetic";
         }
+      }
+    }
+
+    // 世界奇觀（ROADMAP 524）：已首探的奇觀在小地圖標星星。
+    if (Array.isArray(wonderDiscoveries) && wonderDiscoveries.length > 0) {
+      for (const disc of wonderDiscoveries) {
+        if (!disc) continue;
+        const def = WONDER_DEFS.find(d => d.key === disc.key);
+        if (!def) continue;
+        const wx = toMiniX(def.wx), wy = toMiniY(def.wy);
+        if (wx < ox || wx > ox + size || wy < oy || wy > oy + size) continue;
+        ctx.font = `12px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("⭐", wx, wy);
+        ctx.textBaseline = "alphabetic";
       }
     }
 

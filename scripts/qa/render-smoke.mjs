@@ -4597,6 +4597,59 @@ for (const sc of scenarios) {
   else console.log("  ✅ 萬尾釣魚大賽（ROADMAP 523）：fishingContestHudText 真值表(5 cases) + 壞值安全(2 cases)");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// ROADMAP 524 世界奇觀首探：withinWonderRadius 邊界 + wonderNearLabel 真值表
+// ─────────────────────────────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const wwr = sandbox.__bfTest && sandbox.__bfTest.withinWonderRadius;
+    const wnl = sandbox.__bfTest && sandbox.__bfTest.wonderNearLabel;
+    if (!wwr) throw new Error("withinWonderRadius 未匯出");
+    if (!wnl) throw new Error("wonderNearLabel 未匯出");
+
+    // 星核晶宮在 (5344, 296)，DISCOVER_RADIUS=120
+    const crystalDef = { key: "crystal_palace", wx: 5344, wy: 296, name_zh: "星核晶宮", emoji: "💎" };
+
+    // withinWonderRadius：在範圍內（距離=0）→ true
+    if (!wwr(5344, 296, crystalDef)) { ok = false; console.error("  ❌ withinWonderRadius(正中心) 應回 true"); }
+    // withinWonderRadius：在範圍邊緣（距離=119）→ true
+    if (!wwr(5344 + 119, 296, crystalDef)) { ok = false; console.error("  ❌ withinWonderRadius(邊緣內) 應回 true"); }
+    // withinWonderRadius：超出範圍（距離=121）→ false
+    if (wwr(5344 + 121, 296, crystalDef)) { ok = false; console.error("  ❌ withinWonderRadius(範圍外) 應回 false"); }
+    // withinWonderRadius：NaN 座標不拋
+    let threw = false;
+    try { wwr(NaN, NaN, crystalDef); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ withinWonderRadius(NaN) 不應拋出例外"); }
+
+    const defs = [crystalDef];
+    // wonderNearLabel：玩家在奇觀附近→回非空字串（含 emoji 或名稱）
+    const nearDisc = [{ key: "crystal_palace", wx: 5344, wy: 296, name_zh: "星核晶宮", emoji: "💎", discoverer_name: "阿甲" }];
+    const nearLabel = wnl(5344, 296, nearDisc);
+    if (typeof nearLabel !== "string" || !nearLabel) { ok = false; console.error("  ❌ wonderNearLabel(已探奇觀附近) 應回非空字串"); }
+
+    // wonderNearLabel：玩家不在任何奇觀附近→回 null
+    const farLabel = wnl(0, 0, nearDisc);
+    if (farLabel !== null) { ok = false; console.error("  ❌ wonderNearLabel(遠離奇觀) 應回 null"); }
+
+    // wonderNearLabel：discoveries 為空陣列（未探索）→附近仍可回提示或 null，不拋
+    threw = false;
+    let emptyLabel;
+    try { emptyLabel = wnl(5344, 296, []); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ wonderNearLabel(空發現陣列) 不應拋出例外"); }
+
+    // wonderNearLabel：discoveries 為 null 不拋
+    threw = false;
+    try { wnl(5344, 296, null); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ wonderNearLabel(null discoveries) 不應拋出例外"); }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 世界奇觀首探：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 世界奇觀首探（ROADMAP 524）：測試失敗"); }
+  else console.log("  ✅ 世界奇觀首探（ROADMAP 524）：withinWonderRadius 邊界(4 cases) + wonderNearLabel 真值表(4 cases)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
