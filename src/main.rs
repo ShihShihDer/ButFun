@@ -226,6 +226,7 @@ mod gold_rush;         // ROADMAP 521 黃金礦脈爭奪戰·每 30 分鐘週期
 mod auction;           // ROADMAP 522 星際拍賣行·每 2 小時全服競標傳說遺物
 mod fishing_contest;   // ROADMAP 523 萬尾釣魚大賽·每 45 分鐘全服釣魚競速，比總體長
 mod monument;          // ROADMAP 526 旅人紀念碑·廣場石碑銘記守護者首殺/奇觀首探/釣魚冠軍/礦脈冠軍
+mod guardian_blessing; // ROADMAP 533 守護者元素祝福·擊敗守護者的參戰玩家獲元素光環持續 2 小時
 
 use std::net::SocketAddr;
 

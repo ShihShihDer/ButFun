@@ -1802,6 +1802,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                     // 處理擊敗事件。
                     if let crate::world_boss::BossEvent::Defeated { rewards } = boss_event {
+                        // 取本次守護者種類（讀鎖即取即放，在發放乙太前取）。
+                        // defeat_count 已 +1（hit 內部做的），所以現在的 current_variant = 下一隻；
+                        // 本次是上一隻 → 用 defeat_count - 1。
+                        let defeated_variant_idx = app.world_boss.read().unwrap().defeat_count.saturating_sub(1);
+                        let blessing_kind = crate::guardian_blessing::BlessingKind::from_variant_index(defeated_variant_idx);
                         // 發放乙太獎勵（players 寫鎖，不與 world_boss 鎖巢狀）。
                         let mut top_name = name.clone();
                         let mut top_ether = 0u32;
@@ -1817,11 +1822,26 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 }
                             }
                         }
+                        // 授予元素祝福（ROADMAP 533）：參戰玩家均獲對應元素祝福，持續 2 小時。
+                        // guardian_blessings 寫鎖獨立持有，不與 players 鎖巢狀。
+                        {
+                            let mut blessings = app.guardian_blessings.write().unwrap();
+                            for (pid, _, _) in &rewards {
+                                blessings.grant(*pid, blessing_kind);
+                            }
+                        }
                         // 全服公告。
                         let participant_count = rewards.len();
                         let _ = app.tx_chat.send(format!(
                             "🏆 世界守護者已被擊敗！{} 奮勇率先擊破，共 {} 位英雄同場作戰——每位參與者均獲乙太獎勵！4 小時後守護者將再度降臨。",
                             top_name, participant_count,
+                        ));
+                        // 守護者元素祝福廣播（ROADMAP 533）：告知全服哪些英雄獲得元素祝福。
+                        let _ = app.tx_chat.send(format!(
+                            "{} {} 守護者祝福降臨！同場 {} 位英雄獲得{}，角色身上閃耀元素光環，殺敵額外獲得乙太——持續 2 小時。",
+                            blessing_kind.emoji(), blessing_kind.zh_name(),
+                            participant_count,
+                            blessing_kind.zh_name(),
                         ));
                         // 紀念碑刻名（ROADMAP 526）：守護者首殺者上碑，永久留名。
                         app.monument.write().unwrap().record_boss_first_kill(&top_name);
@@ -3743,6 +3763,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             // 吸血：擊殺後回復 2 HP。
                             let ls = crate::refinement::enchant_lifesteal_hp(enchant);
                             if ls > 0 { p.vitals.heal(ls); }
+                            // ROADMAP 533：守護者祝福殺敵紅利——有祝福時每次擊殺額外獲得乙太。
+                            let blessing_bonus = app.guardian_blessings.read().unwrap().kill_bonus_ether(id);
+                            if blessing_bonus > 0 {
+                                p.ether = p.ether.saturating_add(blessing_bonus);
+                            }
                             tracing::info!(player = %p.name, ?item, qty, reward, level = p.level(), notorious, "主動攻擊戰利品+exp");
                         }
                         // 戰士熟練度（ROADMAP 38）：有擊殺才得 1 XP（每次攻擊一次，非每隻）。

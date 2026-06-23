@@ -5139,6 +5139,50 @@ for (const sc of scenarios) {
   else console.log("  ✅ 守護者遺址（ROADMAP 531）：ruinForVariant(5 cases+四位不重複) + ruinGlowAlpha(5 cases+壞值) + withinRuinReach(5 cases) + drawGuardianRuins(3 情境×4 幀+畫面外)");
 }
 
+// ── ROADMAP 533 守護者元素祝福 ─────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const gc = sandbox.__bfTest && sandbox.__bfTest.guardianBlessingColor;
+    const gl = sandbox.__bfTest && sandbox.__bfTest.guardianBlessingLabel;
+    if (typeof gc !== "function") throw new Error("guardianBlessingColor 未掛載");
+    if (typeof gl !== "function") throw new Error("guardianBlessingLabel 未掛載");
+
+    // guardianBlessingColor：四種 wire 字串回有效 rgba，壞值回 null。
+    const kinds = ["chaos", "frost", "flame", "void"];
+    for (const k of kinds) {
+      const c = gc(k);
+      if (typeof c !== "string" || !c.startsWith("rgba(")) {
+        ok = false; console.error(`  ❌ guardianBlessingColor("${k}") 應回 rgba 字串，得 ${c}`);
+      }
+    }
+    const badColor = gc("unknown");
+    if (badColor !== null) { ok = false; console.error(`  ❌ guardianBlessingColor("unknown") 應回 null，得 ${badColor}`); }
+    const nullColor = gc(null);
+    if (nullColor !== null) { ok = false; console.error(`  ❌ guardianBlessingColor(null) 應回 null，得 ${nullColor}`); }
+
+    // guardianBlessingLabel：四種 wire 字串回繁中字串，壞值回 null。
+    for (const k of kinds) {
+      const l = gl(k);
+      if (typeof l !== "string" || l.length === 0) {
+        ok = false; console.error(`  ❌ guardianBlessingLabel("${k}") 應回非空字串，得 ${l}`);
+      }
+    }
+    const badLabel = gl("bogus");
+    if (badLabel !== null) { ok = false; console.error(`  ❌ guardianBlessingLabel("bogus") 應回 null，得 ${badLabel}`); }
+
+    // 四種祝福顏色兩兩不同（各元素有獨立視覺識別）。
+    const colors = kinds.map(gc);
+    const colorSet = new Set(colors);
+    if (colorSet.size !== 4) { ok = false; console.error(`  ❌ 四種祝福顏色應各異，實際：${JSON.stringify(colors)}`); }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 守護者元素祝福：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 守護者元素祝福（ROADMAP 533）：測試失敗"); }
+  else console.log("  ✅ 守護者元素祝福（ROADMAP 533）：guardianBlessingColor(4 種+壞值) + guardianBlessingLabel(4 種+壞值) + 四色各異");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

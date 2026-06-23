@@ -923,6 +923,8 @@ impl Player {
             is_newcomer: self.newcomer_until
                 .map(|t| t > std::time::Instant::now())
                 .unwrap_or(false),
+            // ROADMAP 533：守護者元素祝福——由 game.rs 快照迴圈補填，view() 預設 None。
+            guardian_blessing: None,
         }
     }
 
@@ -1480,6 +1482,9 @@ pub struct AppState {
     /// 旅人紀念碑（ROADMAP 526）：銘記守護者首殺、奇觀首探、釣魚冠軍、礦脈冠軍等首批成就。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub monument: Arc<RwLock<crate::monument::Monument>>,
+    /// 守護者元素祝福（ROADMAP 533）：擊敗守護者的參戰玩家獲得元素光環，持續 2 小時。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub guardian_blessings: Arc<RwLock<crate::guardian_blessing::GuardianBlessingStore>>,
 }
 
 impl AppState {
@@ -1694,6 +1699,7 @@ impl AppState {
             wonders: Arc::new(RwLock::new(crate::world_wonder::WorldWonderState::new())),
             world_boss: Arc::new(RwLock::new(crate::world_boss::WorldBossState::new())),
             monument: Arc::new(RwLock::new(crate::monument::Monument::new())),
+            guardian_blessings: Arc::new(RwLock::new(crate::guardian_blessing::GuardianBlessingStore::new())),
         }
     }
 

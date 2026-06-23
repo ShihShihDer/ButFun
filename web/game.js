@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3680,6 +3680,55 @@
     }
   }
 
+  // 守護者元素祝福 HUD pill（ROADMAP 533）：受到守護者祝福時顯示元素 pill，讓玩家感受討伐意義。
+  // 純函式 guardianBlessingColor：依 wire_str 回元素光環 rgba 字串（壞值回 null，安全早退）。
+  function guardianBlessingColor(kind) {
+    switch (kind) {
+      case "chaos": return "rgba(180,100,255,0.65)"; // 混沌·深紫金
+      case "frost": return "rgba(120,210,255,0.65)"; // 冰霜·冰藍
+      case "flame": return "rgba(255,140,60,0.65)";  // 烈焰·橘紅
+      case "void":  return "rgba(100,40,180,0.65)";  // 虛空·深紫
+      default:      return null;
+    }
+  }
+  // 純函式 guardianBlessingLabel：依 wire_str 回繁中標籤（壞值回 null）。
+  function guardianBlessingLabel(kind) {
+    switch (kind) {
+      case "chaos": return "🗿 混沌祝福";
+      case "frost": return "🐉 冰霜祝福";
+      case "flame": return "🦎 烈焰祝福";
+      case "void":  return "👻 虛空祝福";
+      default:      return null;
+    }
+  }
+  let lastGuardianBlessingKind = null;
+  function updateGuardianBlessingHud(blessingKind) {
+    const pill = document.getElementById("hudGuardianBlessing");
+    if (!blessingKind) {
+      if (pill) pill.style.display = "none";
+      lastGuardianBlessingKind = null;
+      return;
+    }
+    if (blessingKind === lastGuardianBlessingKind) return;
+    lastGuardianBlessingKind = blessingKind;
+    const label = guardianBlessingLabel(blessingKind);
+    if (!label) return;
+    if (!pill) {
+      const el = document.createElement("div");
+      el.id = "hudGuardianBlessing";
+      el.style.cssText = [
+        "order:8",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:600",
+        "padding:3px 10px",
+        "background:#1a0a2e", "color:#c8a0ff", "border:1px solid #9060d0",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudGuardianBlessing");
+    if (t) { t.style.display = "block"; t.textContent = label; }
+  }
+
   // 公民投票 HUD（ROADMAP 156）：投票面板 + 效果 pill。
   let civicHasVoted = false; // 本次提案是否已投票（前端快取，防重複顯示已投）
   let lastCivicVoteId = null; // 以 spokesman_name+proposal_kind 組合識別提案（換提案重設 hasVoted）
@@ -5106,6 +5155,8 @@
             existing.charge_progress = (typeof p.charge_progress === "number") ? p.charge_progress : null;
             // ROADMAP 469：中毒旗標（沒中毒時快照略過序列化＝undefined→false）。前端據此畫頭頂毒泡。
             existing.poisoned = !!p.poisoned;
+            // ROADMAP 533：守護者元素祝福（"chaos"/"frost"/"flame"/"void"；無祝福時 undefined→null）。
+            existing.guardian_blessing = p.guardian_blessing || null;
             if (p.id === myId) reconcilePrediction(p.x, p.y, p.hp); // 權威位置校正預測
           } else {
             players.set(p.id, { ...p, rx: p.x, ry: p.y, px: p.x, py: p.y, tArrive: performance.now() });
@@ -5398,6 +5449,11 @@
           rainbowRemainingSecs = 0;
         }
         updateRainbowHud();
+        // 守護者元素祝福 HUD（ROADMAP 533）：依自己玩家的 guardian_blessing 欄位更新。
+        {
+          const meSnap = msg.players.find((p) => p.id === myId);
+          updateGuardianBlessingHud(meSnap ? (meSnap.guardian_blessing || null) : null);
+        }
         // 公民投票（ROADMAP 156）：同步當前投票狀態與生效效果。
         window._lastCivicVoteData = msg.civic_vote || null;
         updateCivicVoteHud(msg.civic_vote, msg.civic_effect_secs, msg.civic_effect_kind);
@@ -10720,6 +10776,31 @@
       ctx.lineWidth = 2.5;
       ctx.stroke();
       ctx.restore();
+    }
+
+    // 守護者元素祝福光環（ROADMAP 533）：擊敗守護者的參戰玩家，角色外圍閃耀對應元素色彩光環，
+    // 全服可見，持續 2 小時（伺服器計時、重啟清零）。依祝福種類選色：
+    //   chaos（混沌）= 深紫金 / frost（冰霜）= 冰藍 / flame（烈焰）= 橘紅 / void（虛空）= 深紫
+    if (p.guardian_blessing) {
+      const glowColor = guardianBlessingColor(p.guardian_blessing);
+      if (glowColor) {
+        const nowMs = reduceMotion ? 0 : performance.now();
+        const pulse = reduceMotion ? 0 : Math.sin(nowMs / 350) * 2.5;
+        const r = 20 + pulse;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sx, by - 14, r, 0, Math.PI * 2);
+        const grad = ctx.createRadialGradient(sx, by - 14, r * 0.55, sx, by - 14, r);
+        grad.addColorStop(0, "rgba(0,0,0,0)");
+        grad.addColorStop(1, glowColor);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        // 外圈輪廓線（更清晰的視覺邊界）
+        ctx.strokeStyle = glowColor.replace(/,[^,]+\)$/, ",0.75)");
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
     // 中毒毒泡（ROADMAP 469 敵人毒襲）：中毒的玩家頭頂飄散毒綠氣泡——自己與旁觀者都看得到
