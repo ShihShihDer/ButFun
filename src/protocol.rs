@@ -971,7 +971,7 @@ pub enum ClientMsg {
         pub discoverer_name: String,
     }
 
-    /// 世界守護者快照（ROADMAP 525）。None = 守護者不在場；Some = 守護者在場（含 HP/座標/參與人數）。
+    /// 世界守護者快照（ROADMAP 525/530）。None = 守護者不在場；Some = 守護者在場（含 HP/座標/名稱/emoji）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     pub struct WorldBossView {
         /// 當前 HP。
@@ -984,6 +984,12 @@ pub enum ClientMsg {
         pub wy: f32,
         /// 目前有效參與人數。
         pub participant_count: u32,
+        /// 守護者名稱（ROADMAP 530 輪換用）。
+        #[serde(default)]
+        pub boss_name: String,
+        /// 守護者代表 emoji（ROADMAP 530 輪換用）。
+        #[serde(default)]
+        pub boss_emoji: String,
     }
 
     /// 旅人紀念碑刻文（ROADMAP 526）。玩家靠近廣場紀念碑時由 Snapshot 帶出。

@@ -3444,11 +3444,10 @@ pub fn spawn(app: AppState) {
                 // 守 prod-deadlock：寫鎖僅推進時鐘並取出事件，出鎖後才廣播。
                 let boss_event = app.world_boss.write().unwrap().tick(dt);
                 match boss_event {
-                    crate::world_boss::BossEvent::Spawned => {
+                    crate::world_boss::BossEvent::Spawned { variant } => {
                         let _ = app.tx_chat.send(format!(
-                            "⚠️ 世界守護者降臨！巨大的存在現身於東方荒野 ({:.0}, {:.0})——召集夥伴前往一決勝負，擊敗者均獲乙太獎勵！",
-                            crate::world_boss::BOSS_WX,
-                            crate::world_boss::BOSS_WY,
+                            "⚠️ {} {} 降臨！巨大的存在現身於 ({:.0}, {:.0})——召集夥伴前往一決勝負，擊敗者均獲乙太獎勵！",
+                            variant.emoji, variant.name, variant.wx, variant.wy,
                         ));
                     }
                     _ => {}
@@ -4764,14 +4763,19 @@ pub fn spawn(app: AppState) {
                             }).collect()
                         },
                         world_boss: {
-                            // 世界守護者（ROADMAP 525）：在場時廣播 HP/座標/參與人數。
+                            // 世界守護者（ROADMAP 525/530）：在場時廣播 HP/座標/名稱/emoji/參與人數。
                             let wb = app.world_boss.read().unwrap();
-                            wb.current_hp().map(|hp| crate::protocol::WorldBossView {
-                                hp,
-                                max_hp: crate::world_boss::BOSS_MAX_HP,
-                                wx: crate::world_boss::BOSS_WX,
-                                wy: crate::world_boss::BOSS_WY,
-                                participant_count: wb.participant_count(),
+                            wb.current_hp().map(|hp| {
+                                let v = wb.active_variant();
+                                crate::protocol::WorldBossView {
+                                    hp,
+                                    max_hp: v.max_hp,
+                                    wx: v.wx,
+                                    wy: v.wy,
+                                    participant_count: wb.participant_count(),
+                                    boss_name: v.name.to_string(),
+                                    boss_emoji: v.emoji.to_string(),
+                                }
                             })
                         },
                         monument: {

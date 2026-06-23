@@ -2640,10 +2640,10 @@
   const BOSS_WX = 5800, BOSS_WY = 2400, BOSS_REACH = 100;
 
   // 純函式：玩家是否在守護者攻擊範圍內（NaN/Infinity 保守 false）。
-  // 鏡像後端 within_boss_reach，供 render-smoke 單元斷言。
-  function withinBossReach(px, py) {
+  // wx/wy 可選：傳入守護者世界座標（ROADMAP 530 輪換），預設回第一種（東方）。
+  function withinBossReach(px, py, wx = BOSS_WX, wy = BOSS_WY) {
     if (!isFinite(px) || !isFinite(py)) return false;
-    const dx = px - BOSS_WX, dy = py - BOSS_WY;
+    const dx = px - wx, dy = py - wy;
     return dx * dx + dy * dy <= BOSS_REACH * BOSS_REACH;
   }
 
@@ -2678,7 +2678,8 @@
     ctx.font = "40px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("🗿", sx, sy);
+    // ROADMAP 530：依輪換種類顯示守護者 emoji（後端廣播 boss_emoji，舊快照降級為 🗿）。
+    ctx.fillText(worldBoss.boss_emoji || "🗿", sx, sy);
     // HP 條（紅底綠條）。
     const barW = 70, barH = 8, bx = sx - barW / 2, by = sy - 38;
     ctx.fillStyle = "#600";
@@ -2700,8 +2701,8 @@
       ctx.fillStyle = "rgba(255,200,100,0.9)";
       ctx.fillText(`${worldBoss.participant_count} 人參戰`, sx, sy + 26);
     }
-    // 「攻擊守護者」互動提示（玩家在範圍內才顯示）。
-    if (me && withinBossReach(me.x, me.y)) {
+    // 「攻擊守護者」互動提示（玩家在範圍內才顯示；ROADMAP 530 用守護者實際座標）。
+    if (me && withinBossReach(me.x, me.y, worldBoss.wx, worldBoss.wy)) {
       ctx.font = "11px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
@@ -2730,7 +2731,10 @@
       : "?";
     const frac = bossHpFraction(worldBoss.hp, worldBoss.max_hp);
     const pct = Math.round(frac * 100);
-    const text = `⚔️ 世界守護者 ❤️${pct}% · ${worldBoss.participant_count}人 · ${distStr}`;
+    // ROADMAP 530：HUD 顯示輪換守護者的名稱與 emoji（後端廣播 boss_name/boss_emoji）。
+    const bossEmoji = worldBoss.boss_emoji || "🗿";
+    const bossName  = worldBoss.boss_name  || "世界守護者";
+    const text = `${bossEmoji} ${bossName} ❤️${pct}% · ${worldBoss.participant_count}人 · ${distStr}`;
     if (text === _lastBossHudText) return;
     _lastBossHudText = text;
     if (!document.getElementById("worldBossHud")) {
@@ -2753,9 +2757,10 @@
   function updateAttackBossBtn() {
     const btn = document.getElementById("attackBossBtn");
     if (!btn) return;
+    // ROADMAP 530：用守護者實際座標（輪換後方位不同）判定攻擊範圍。
     const canAttack = worldBoss && worldBoss.hp > 0
       && me && !me.downed
-      && withinBossReach(me.x, me.y);
+      && withinBossReach(me.x, me.y, worldBoss.wx, worldBoss.wy);
     btn.style.display = canAttack ? "" : "none";
   }
 
@@ -34511,8 +34516,10 @@
           announce("世界守護者目前不在場——等待下一次降臨吧");
           return;
         }
-        if (!withinBossReach(me.x, me.y)) {
-          announce("離世界守護者太遠——前往東方荒野靠近再試試");
+        // ROADMAP 530：用守護者實際座標判定範圍，並顯示輪換守護者的名稱。
+        if (!withinBossReach(me.x, me.y, worldBoss.wx, worldBoss.wy)) {
+          const bN = worldBoss.boss_name || "世界守護者";
+          announce(`離${bN}太遠——前往守護者所在地靠近再試試`);
           return;
         }
         safeSend({ type: "attack_boss" });
