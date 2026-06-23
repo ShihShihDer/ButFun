@@ -3292,6 +3292,40 @@ pub fn spawn(app: AppState) {
                     }
                     crate::gold_rush::GoldRushTick::None => {}
                 }
+
+                // 星際拍賣行 tick（ROADMAP 522）
+                let auction_tick = app.auction.write().unwrap().tick(dt);
+                match auction_tick {
+                    crate::auction::AuctionTick::Spawned { item, base_price, .. } => {
+                        let item_name = format!("{item:?}");
+                        let _ = app.tx_chat.send(format!(
+                            "🔨 星際拍賣行開槌！今日傳說遺物：{}（底價 {} 乙太），限時 {} 分鐘——走到城鎮廣場競標！",
+                            item_name,
+                            base_price,
+                            (crate::auction::AUCTION_DURATION_SECS / 60.0) as u32,
+                        ));
+                    }
+                    crate::auction::AuctionTick::Finished { winner, item, .. } => {
+                        match winner {
+                            None => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🔨 拍賣結束！{item:?} 流標，下次再戰。"
+                                ));
+                            }
+                            Some((uid, name, amt)) => {
+                                let _ = app.tx_chat.send(format!(
+                                    "🔨 恭喜 {} 以 {} 乙太得標 {item:?}！傳說遺物已入帳！",
+                                    name, amt,
+                                ));
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.get_mut(&uid) {
+                                    p.inventory.add(item, 1);
+                                }
+                            }
+                        }
+                    }
+                    crate::auction::AuctionTick::None => {}
+                }
             }
 
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
@@ -4576,6 +4610,8 @@ pub fn spawn(app: AppState) {
                                 top3: gr.top3(),
                             })
                         },
+                        // 星際拍賣行（ROADMAP 522）：競標中才廣播 view，等待期 None 節省頻寬。
+                        auction: app.auction.read().unwrap().view(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

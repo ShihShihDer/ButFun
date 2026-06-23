@@ -4477,6 +4477,73 @@ for (const sc of scenarios) {
   else console.log("  ✅ 黃金礦脈爭奪戰（ROADMAP 521）：goldRushNearLabel 真值表(3 cases) + withinGoldRushReach 邊界(3 cases) + drawGoldRush 無事件/進行中/ore=0 零例外");
 }
 
+// ── ROADMAP 522：星際拍賣行 ──────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const war = sandbox.__bfTest && sandbox.__bfTest.withinAuctionReach;
+    const abl = sandbox.__bfTest && sandbox.__bfTest.auctionBidLabel;
+    const da  = sandbox.__bfTest && sandbox.__bfTest.drawAuction;
+    if (!war) throw new Error("withinAuctionReach 未匯出");
+    if (!abl) throw new Error("auctionBidLabel 未匯出");
+    if (!da)  throw new Error("drawAuction 未匯出");
+
+    const AUCTION_WX = 2300, AUCTION_WY = 2100, AUCTION_REACH = 200;
+
+    // withinAuctionReach：拍賣台中心點應在範圍內
+    if (!war(AUCTION_WX, AUCTION_WY)) { ok = false; console.error("  ❌ withinAuctionReach(拍賣台中心) 應為 true"); }
+    // 超出範圍（REACH=200）
+    if (war(AUCTION_WX + 210, AUCTION_WY)) { ok = false; console.error("  ❌ withinAuctionReach(210px外) 應為 false"); }
+    // 壞座標保守回 false
+    if (war(NaN, AUCTION_WY)) { ok = false; console.error("  ❌ withinAuctionReach(NaN,y) 應為 false"); }
+
+    // auctionBidLabel：無人出價時回底價標籤
+    {
+      const lbl = abl({ current_bid: 40, base_price: 40, bidder_name: "", remaining_secs: 600 });
+      if (typeof lbl !== "string" || !lbl || !lbl.includes("40")) { ok = false; console.error("  ❌ auctionBidLabel(底價) 應包含出價數字"); }
+    }
+    // auctionBidLabel：有人出價時回最低加價金額
+    {
+      const lbl = abl({ current_bid: 50, base_price: 40, bidder_name: "甲", remaining_secs: 300 });
+      if (typeof lbl !== "string" || !lbl || !lbl.includes("55")) { ok = false; console.error("  ❌ auctionBidLabel(有出價) 應包含 current_bid+5 = 55"); }
+    }
+    // auctionBidLabel：null 輸入回 null
+    if (abl(null) !== null) { ok = false; console.error("  ❌ auctionBidLabel(null) 應回 null"); }
+
+    // drawAuction：無競標（auction=null）不拋
+    {
+      sandbox.auction = null;
+      try { da(0, 0, performance.now()); } catch (e) {
+        ok = false; console.error("  ❌ drawAuction(無競標) 拋出例外:", e && e.message);
+      }
+    }
+    // drawAuction：競標進行中連跑 5 幀不拋
+    {
+      sandbox.auction = { item: "alpha_crystal", qty: 1, base_price: 40, current_bid: 55, bidder_name: "甲", remaining_secs: 300 };
+      const now0 = performance.now();
+      for (let f = 0; f < 5; f++) {
+        try { da(0, 0, now0 + f * 16); } catch (e) {
+          ok = false; console.error(`  ❌ drawAuction(競標中 f=${f}) 拋出例外:`, e && e.message);
+        }
+      }
+      sandbox.auction = null;
+    }
+    // drawAuction：無人出價（bidder_name 空字串）不拋
+    {
+      sandbox.auction = { item: "legendary_core", qty: 1, base_price: 100, current_bid: 100, bidder_name: "", remaining_secs: 60 };
+      try { da(0, 0, performance.now()); } catch (e) {
+        ok = false; console.error("  ❌ drawAuction(無出價人) 拋出例外:", e && e.message);
+      }
+      sandbox.auction = null;
+    }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 星際拍賣行：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 星際拍賣行（ROADMAP 522）：測試失敗"); }
+  else console.log("  ✅ 星際拍賣行（ROADMAP 522）：withinAuctionReach 邊界(3 cases) + auctionBidLabel 真值表(3 cases) + drawAuction 無競標/進行中/無出價人 零例外");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

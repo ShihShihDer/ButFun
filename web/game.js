@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2411,6 +2411,55 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 星際拍賣行（ROADMAP 522）：純函式判定玩家是否在拍賣台互動範圍內（可測）。
+  function withinAuctionReach(px, py) {
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - AUCTION_WX;
+    const dy = py - AUCTION_WY;
+    return dx * dx + dy * dy <= AUCTION_REACH * AUCTION_REACH;
+  }
+
+  // 純函式：組裝出價按鈕標籤（可測）。a = auction 快照，回 null 代表不顯示。
+  function auctionBidLabel(a) {
+    if (!a) return null;
+    const minBid = a.bidder_name ? a.current_bid + AUCTION_MIN_INCREMENT : a.current_bid;
+    const mins = Math.floor((a.remaining_secs || 0) / 60);
+    const secs = (a.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    return `🔨 出價 ${minBid} 乙太（${timeStr}）[E]`;
+  }
+
+  let _lastAuctionHudText = null;
+  function updateAuctionHud() {
+    if (!auction) {
+      const pill = document.getElementById("hudAuction");
+      if (pill) pill.style.display = "none";
+      _lastAuctionHudText = null;
+      return;
+    }
+    const mins = Math.floor((auction.remaining_secs || 0) / 60);
+    const secs = (auction.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const bidderStr = auction.bidder_name ? `${auction.bidder_name} ${auction.current_bid}⊕` : "底價";
+    const text = `🔨 拍賣：${bidderStr} | ${timeStr}`;
+    if (text === _lastAuctionHudText) return;
+    _lastAuctionHudText = text;
+    if (!document.getElementById("hudAuction")) {
+      const el = document.createElement("div");
+      el.id = "hudAuction";
+      el.style.cssText = [
+        "order:3",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:700",
+        "padding:3px 10px",
+        "background:#0d1020", "color:#a0c8ff", "border:1px solid #4060a0",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudAuction");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3161,6 +3210,11 @@
   const GOLD_RUSH_VEIN_WX = 3800; // 與後端 gold_rush::VEIN_WX 對齊
   const GOLD_RUSH_VEIN_WY = 2400; // 與後端 gold_rush::VEIN_WY 對齊
   const GOLD_RUSH_MINE_REACH = 120; // 與後端 gold_rush::MINE_REACH 對齊
+  let auction = null;            // ROADMAP 522 星際拍賣行快照（null=等待中，非 null 時含 item/current_bid/bidder_name/remaining_secs）
+  const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
+  const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
+  const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
+  const AUCTION_MIN_INCREMENT = 5; // 與後端 auction::MIN_BID_INCREMENT 對齊
   const nodeRespawnPulses = new Map();    // ROADMAP 507 礦石脈動：key `${x},${y}`，value = 脈動起始 performance.now()
   const prevNodeHarvestable = new Map();  // ROADMAP 507 礦石脈動：上一快照各節點的 harvestable 狀態
   const RESPAWN_PULSE_MS = 2000;          // ROADMAP 507 礦石脈動持續毫秒數
@@ -4109,6 +4163,8 @@
         etherSurgeY = (msg.ether_surge_y || 0);
         // 黃金礦脈爭奪戰（ROADMAP 521）：事件進行中才有此欄位（serde default = None），平時 null 節省頻寬。
         goldRush = msg.gold_rush || null;
+        // 星際拍賣行（ROADMAP 522）：競標進行中才有此欄位（serde default = None），平時 null 節省頻寬。
+        auction = msg.auction || null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -4564,6 +4620,8 @@
           updateShipRepairBtn(me, isGuest);
           // 黃金礦脈搶挖按鈕（ROADMAP 521）：事件進行中、已登入、戶外、走近礦脈才顯示
           updateMineGoldRushBtn(me, isGuest);
+          // 星際拍賣行出價按鈕（ROADMAP 522）：競標進行中、已登入、戶外、走近拍賣台才顯示
+          updatePlaceBidBtn(me, isGuest);
           // 打水漂按鈕（ROADMAP 475）：已登入、戶外、未倒地、站在水邊才顯示
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
@@ -9741,6 +9799,7 @@
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
     safeDraw("etherSurge", () => drawEtherSurge(camX, camY, renderNow)); // 乙太暴走事件（504）
     safeDraw("goldRush", () => drawGoldRush(camX, camY, renderNow)); // 黃金礦脈爭奪戰（521）
+    safeDraw("auction", () => drawAuction(camX, camY, renderNow)); // 星際拍賣行（522）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -9926,6 +9985,7 @@
       updateWanderingMerchantHud();         // 旅行商人（ROADMAP 135）
       updateEtherSurgeHud();               // 乙太暴走事件（ROADMAP 504）
       updateGoldRushHud();                 // 黃金礦脈爭奪戰（ROADMAP 521）
+      updateAuctionHud();                  // 星際拍賣行（ROADMAP 522）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
@@ -10739,6 +10799,21 @@
     }
   }
   // ── 黃金礦脈搶挖按鈕 end ──────────────────────────────────────────────────────
+
+  // 星際拍賣行出價按鈕（ROADMAP 522）
+  function updatePlaceBidBtn(me, isGuestUser) {
+    const btn = document.getElementById("placeBidBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    const near = !!me && withinAuctionReach(me.x, me.y);
+    const canShow = !!auction && !!me && !isGuestUser && me.indoor_plot_id == null && !downed && near;
+    btn.classList.toggle("hidden", !canShow);
+    if (canShow) {
+      const label = auctionBidLabel(auction);
+      if (label) btn.textContent = label;
+    }
+  }
+  // ── 星際拍賣行出價按鈕 end ──────────────────────────────────────────────────────
 
   // 雪人讚賞（ROADMAP 479）：讚賞搆得著半徑，與後端 snowman::CHEER_RADIUS(80) 對齊。
   const SNOWMAN_CHEER_RADIUS = 80;
@@ -13932,6 +14007,76 @@
     ctx.beginPath();
     ctx.arc(sx, sy, GOLD_RUSH_MINE_REACH, 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(255,200,30,${(0.12 + 0.07 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 7]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.restore();
+  }
+
+  // 繪製星際拍賣行特效（ROADMAP 522）：拍賣台位置發出柔和藍白光暈，競標中顯示物品與出價資訊。
+  // 純前端演出：脈衝光暈＋🔨圖示＋物品/出價標籤；無活躍競標自動消失。
+  function drawAuction(camX, camY, now) {
+    if (!auction) return;
+    const sx = AUCTION_WX - camX;
+    const sy = AUCTION_WY - camY;
+    if (sx < -160 || sy < -160 || sx > viewW + 160 || sy > viewH + 160) return;
+
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.003);
+    ctx.save();
+
+    // 外層藍白光暈
+    const outerR = 70 + 10 * pulse;
+    const grad = ctx.createRadialGradient(sx, sy, outerR * 0.15, sx, sy, outerR);
+    grad.addColorStop(0, `rgba(140,180,255,${(0.25 + 0.1 * pulse).toFixed(3)})`);
+    grad.addColorStop(0.5, `rgba(80,120,220,${(0.10 + 0.05 * pulse).toFixed(3)})`);
+    grad.addColorStop(1, "rgba(40,60,180,0)");
+    ctx.beginPath();
+    ctx.arc(sx, sy, outerR, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 拍賣台核心（六角形鎚印）
+    const r = 14 + 3 * pulse;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * Math.PI * 2) / 6 - Math.PI / 2;
+      if (i === 0) ctx.moveTo(sx + r * Math.cos(angle), sy + r * Math.sin(angle));
+      else ctx.lineTo(sx + r * Math.cos(angle), sy + r * Math.sin(angle));
+    }
+    ctx.closePath();
+    ctx.fillStyle = `rgba(160,210,255,${(0.65 + 0.2 * pulse).toFixed(3)})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(200,230,255,${(0.85 + 0.12 * pulse).toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // 中心圖示
+    ctx.font = `14px ${UI_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🔨", sx, sy + 1);
+
+    // 出價資訊標籤（物品名 + 當前出價）
+    const bidderStr = auction.bidder_name ? `${auction.bidder_name} ${auction.current_bid}⊕` : `底價 ${auction.base_price}⊕`;
+    const mins = Math.floor((auction.remaining_secs || 0) / 60);
+    const secs = (auction.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const label = `🔨 ${bidderStr} ${timeStr}`;
+    ctx.font = `bold 11px ${UI_FONT}`;
+    ctx.textBaseline = "alphabetic";
+    const ty = sy - 38;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.8)";
+    ctx.strokeText(label, sx, ty);
+    ctx.fillStyle = "rgba(180,220,255,0.97)";
+    ctx.fillText(label, sx, ty);
+
+    // 互動範圍指示圓（淡顯）
+    ctx.beginPath();
+    ctx.arc(sx, sy, AUCTION_REACH, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(120,180,255,${(0.10 + 0.05 * pulse).toFixed(3)})`;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 7]);
     ctx.stroke();
@@ -33382,6 +33527,30 @@
         safeSend({ type: "mine_gold_rush" });
         // 樂觀提示（server 端仍以冷卻/礦量把關，靜默忽略重複請求）
         announce("⛏️ 搶挖！礦石到手——但要等冷卻才能再挖一次");
+      });
+    }
+    // 🔨 星際拍賣行出價（ROADMAP 522）：走近拍賣台，以當前最低出價競標傳說遺物。
+    const placeBidBtn = document.getElementById("placeBidBtn");
+    if (placeBidBtn) {
+      placeBidBtn.addEventListener("click", () => {
+        SFX.click();
+        const me = myId ? players.get(myId) : null;
+        if (!me || me.indoor_plot_id != null) return;
+        if (!auction) {
+          announce("拍賣行目前沒有進行中的競標——等待下次開槌");
+          return;
+        }
+        if (!withinAuctionReach(me.x, me.y)) {
+          announce("離拍賣台太遠——走近城鎮廣場拍賣台再試試");
+          return;
+        }
+        const minBid = auction.bidder_name ? auction.current_bid + AUCTION_MIN_INCREMENT : auction.current_bid;
+        if ((me.ether || 0) < minBid) {
+          announce(`乙太不足——此次出價需 ${minBid} 乙太，你目前只有 ${me.ether || 0}`);
+          return;
+        }
+        safeSend({ type: "place_bid", amount: minBid });
+        announce(`🔨 出價 ${minBid} 乙太——等待伺服器確認，若被超標乙太原路退還`);
       });
     }
     // ♥ 雪人讚賞（ROADMAP 479）：走近一座別人堆的雪人，給它按個讚捎去暖意；堆雪者會收到通知。

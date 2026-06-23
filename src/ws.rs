@@ -688,7 +688,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -858,6 +858,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         ether_surge_y: *ether_surge_y,
                                         // 黃金礦脈爭奪戰（ROADMAP 521）：全服廣播事件狀態（平時 None 節省頻寬）。
                                         gold_rush: gold_rush.clone(),
+                                        // 星際拍賣行（ROADMAP 522）：全服廣播競標狀態（平時 None 節省頻寬）。
+                                        auction: auction.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -1755,6 +1757,58 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 if let Ok(json) = serde_json::to_string(&notify) {
                                     let _ = tx_direct.try_send(json);
                                 }
+                            }
+                        }
+                    }
+                }
+                Ok(ClientMsg::PlaceBid { amount }) => {
+                    // 星際拍賣行出價（ROADMAP 522）：玩家走到拍賣台附近出價。
+                    // 守 prod-deadlock：先取 auction 鎖→立刻放→才取 players 鎖，絕不巢狀。
+                    let bidder: Option<(f32, f32, String, u32)> = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).map(|p| (p.x, p.y, p.name.clone(), p.ether))
+                    };
+                    if let Some((px, py, name, ether)) = bidder {
+                        // 距離判定（戶外世界座標；室內玩家座標在另一空間，距離自然超出）。
+                        let dist = ((px - crate::auction::AUCTION_WX).powi(2)
+                            + (py - crate::auction::AUCTION_WY).powi(2))
+                        .sqrt();
+                        if dist <= crate::auction::AUCTION_REACH && ether >= amount {
+                            // 取 auction 寫鎖，純邏輯判定。
+                            let bid_result = app.auction.write().unwrap().try_bid(id, &name, amount);
+                            match bid_result {
+                                crate::auction::BidResult::Accepted { refund_to } => {
+                                    // auction 鎖已放；現在才取 players 寫鎖扣款／退款。
+                                    let mut players = app.players.write().unwrap();
+                                    // 扣出價者乙太。
+                                    if let Some(p) = players.get_mut(&id) {
+                                        p.ether = p.ether.saturating_sub(amount);
+                                    }
+                                    // 退款給前一位出價者。
+                                    if let Some((prev_uid, refund_amt)) = refund_to {
+                                        if let Some(p) = players.get_mut(&prev_uid) {
+                                            p.ether = p.ether.saturating_add(refund_amt);
+                                        }
+                                    }
+                                    // 通知出價者本人。
+                                    let notify = ServerMsg::Chat {
+                                        from: "系統".to_string(),
+                                        text: format!("🔨 出價成功！你以 {} 乙太領先競標。", amount),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&notify) {
+                                        let _ = tx_direct.try_send(json);
+                                    }
+                                }
+                                crate::auction::BidResult::TooLow { minimum } => {
+                                    let notify = ServerMsg::Chat {
+                                        from: "系統".to_string(),
+                                        text: format!("🔨 出價不足！最低需要 {} 乙太。", minimum),
+                                    };
+                                    if let Ok(json) = serde_json::to_string(&notify) {
+                                        let _ = tx_direct.try_send(json);
+                                    }
+                                }
+                                crate::auction::BidResult::NoActiveAuction => {}
                             }
                         }
                     }

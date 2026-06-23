@@ -1466,6 +1466,9 @@ pub struct AppState {
     /// 黃金礦脈爭奪戰（ROADMAP 521）：每 30 分鐘週期性競技採礦事件（首次 10 分鐘後）。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub gold_rush: Arc<RwLock<crate::gold_rush::GoldRushState>>,
+    /// 星際拍賣行（ROADMAP 522）：每 2 小時全服競標一件傳說遺物（首次 5 分鐘後）。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub auction: Arc<RwLock<crate::auction::AuctionState>>,
 }
 
 impl AppState {
@@ -1675,6 +1678,7 @@ impl AppState {
             world_tally: Arc::new(RwLock::new(crate::world_tally::WorldTally::new())),
             combat_marks: Arc::new(RwLock::new(crate::combat_mark::CombatMarkState::new())),
             gold_rush: Arc::new(RwLock::new(crate::gold_rush::GoldRushState::new())),
+            auction: Arc::new(RwLock::new(crate::auction::AuctionState::new())),
         }
     }
 
