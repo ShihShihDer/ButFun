@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2762,6 +2762,213 @@
       && me && !me.downed
       && withinBossReach(me.x, me.y, worldBoss.wx, worldBoss.wy);
     btn.style.display = canAttack ? "" : "none";
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 守護者遺址（ROADMAP 531）：四大方位各有一座永久的古遺址，走近可讀守護者傳說，
+  // BOSS 在場時遺址散發對應元素光暈。純前端，讀取既有 worldBoss 快照，零後端、零 migration。
+
+  // 四大方位遺址定義（與後端 world_boss.rs ALL_VARIANTS 座標對齊）。
+  const GUARDIAN_RUINS = [
+    {
+      variantIdx: 0, wx: 5800, wy: 2400, // 東方
+      name: "世界守護者", emoji: "🗿", color: "#b8966a",
+      lore: [
+        "【第一紀元碑文·東方荒野】",
+        "此地曾立世界之樞，守護者自混沌降生，",
+        "以石之意志鎮守四方，今其形已融入岩地，",
+        "等候有緣者喚醒沉眠之靈。",
+      ],
+    },
+    {
+      variantIdx: 1, wx: 2400, wy: -800, // 北方
+      name: "晶霜巨龍", emoji: "🐉", color: "#70d4f0",
+      lore: [
+        "【冰原龍脈碑文·北方極境】",
+        "極寒之北，晶霜之龍橫亙天地，",
+        "其鱗化為冰晶，呼吸成雪，",
+        "萬年不化，靜候劍客前來一決高下。",
+      ],
+    },
+    {
+      variantIdx: 2, wx: -1000, wy: 2400, // 西方
+      name: "熔焰蜥龍", emoji: "🦎", color: "#f09030",
+      lore: [
+        "【焰域石刻·西方熔地】",
+        "熔焰蜥龍誕於地底岩漿，",
+        "其怒使大地龜裂，其嘯令山石崩塌，",
+        "勇者入此域，需備赤忱鐵膽之心。",
+      ],
+    },
+    {
+      variantIdx: 3, wx: 2400, wy: 5800, // 南方
+      name: "深淵幽靈", emoji: "👻", color: "#b870e8",
+      lore: [
+        "【幽冥刻文·南方深淵】",
+        "南域深淵暗無天日，幽靈自虛無聚形，",
+        "無形無體，以意念纏繞生者，",
+        "光明心者方能驅散其永恆迷霧。",
+      ],
+    },
+  ];
+  const RUIN_REACH = 100; // 玩家走近 100px 內可互動讀取銘文
+
+  /** 取得指定輪換索引的遺址資料（壞值回第 0 個）。確定性、無副作用，供 render-smoke 測試。 */
+  function ruinForVariant(idx) {
+    if (typeof idx !== "number" || !Number.isFinite(idx) || idx < 0) return GUARDIAN_RUINS[0];
+    return GUARDIAN_RUINS[Math.floor(idx) % GUARDIAN_RUINS.length];
+  }
+
+  /** 計算遺址光暈強度（0~0.55）。BOSS 在場且位置匹配時增強，否則輕微常駐光暈。
+   *  純函式、確定性（now 固定則輸出固定）、壞值安全，供 render-smoke 測試。 */
+  function ruinGlowAlpha(ruin, boss, now) {
+    if (!ruin || typeof ruin !== "object") return 0;
+    if (typeof now !== "number" || !Number.isFinite(now)) now = 0;
+    // 基礎常駐微光（遺址始終散發微弱光芒）。
+    const basePulse = 0.5 + 0.5 * Math.sin(now / 2200);
+    const base = 0.08 + 0.04 * basePulse;
+    // BOSS 在場且位置匹配（200px 內視為同位置）：顯著增強。
+    if (boss && typeof boss === "object" && (boss.hp || 0) > 0) {
+      const dx = (typeof boss.wx === "number" ? boss.wx : 0) - ruin.wx;
+      const dy = (typeof boss.wy === "number" ? boss.wy : 0) - ruin.wy;
+      if (dx * dx + dy * dy < 200 * 200) {
+        const activePulse = 0.5 + 0.5 * Math.sin(now / 900);
+        return Math.min(0.55, 0.30 + 0.25 * activePulse);
+      }
+    }
+    return base;
+  }
+
+  /** 玩家是否在指定遺址的互動範圍內。NaN/Infinity → false。純函式，供 render-smoke 測試。 */
+  function withinRuinReach(px, py, ruin) {
+    if (!ruin || !Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const dx = px - ruin.wx, dy = py - ruin.wy;
+    return dx * dx + dy * dy <= RUIN_REACH * RUIN_REACH;
+  }
+
+  /** 繪製單個守護者遺址（Canvas 2D）。sx/sy 為螢幕座標，glowAlpha 為光暈強度。 */
+  function _drawSingleRuin(sx, sy, ruin, glowAlpha) {
+    ctx.save();
+    // 地面元素色光暈（遺址靈氣漫射）。
+    if (glowAlpha > 0.01) {
+      const gr = ctx.createRadialGradient(sx, sy + 5, 0, sx, sy + 5, 58);
+      const [r, g, b] = _hexToRgb(ruin.color);
+      gr.addColorStop(0, `rgba(${r},${g},${b},${glowAlpha})`);
+      gr.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.arc(sx, sy + 5, 58, 0, Math.PI * 2); ctx.fill();
+    }
+    // 底座石台。
+    ctx.fillStyle = "#3e3328";
+    ctx.fillRect(sx - 18, sy + 14, 36, 7);
+    // 左右石柱主體。
+    ctx.fillStyle = "#524537";
+    ctx.fillRect(sx - 15, sy - 48, 11, 63);
+    ctx.fillRect(sx + 4,  sy - 48, 11, 63);
+    // 橫梁（門楣）。
+    ctx.fillStyle = "#6b5442";
+    ctx.fillRect(sx - 18, sy - 54, 36, 9);
+    // 石柱裂紋（歷史感）。
+    ctx.strokeStyle = "rgba(160,130,90,0.4)";
+    ctx.lineWidth = 0.7;
+    ctx.beginPath(); ctx.moveTo(sx - 9, sy - 32); ctx.lineTo(sx - 6, sy - 8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx + 9, sy - 40); ctx.lineTo(sx + 6, sy - 5); ctx.stroke();
+    // 守護者圖騰（emoji，透明度隨光暈強度）。
+    const emojiAlpha = 0.55 + 0.45 * Math.min(1, glowAlpha / 0.55);
+    ctx.globalAlpha = emojiAlpha;
+    ctx.font = "bold 15px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fff";
+    ctx.fillText(ruin.emoji, sx, sy - 18);
+    ctx.globalAlpha = 1;
+    // 遺址名稱標籤。
+    ctx.fillStyle = `rgba(220,195,145,${0.65 + 0.35 * Math.min(1, glowAlpha / 0.55)})`;
+    ctx.font = "bold 9px sans-serif";
+    ctx.fillText(`古遺址·${ruin.name}`, sx, sy + 27);
+    ctx.restore();
+  }
+
+  /** hex 顏色（"#rrggbb"）轉 [r,g,b] 整數（壞值回 [200,180,100]）。 */
+  function _hexToRgb(hex) {
+    if (typeof hex !== "string") return [200, 180, 100];
+    const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+    return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [200, 180, 100];
+  }
+
+  /** 繪製四大方位守護者遺址（ROADMAP 531）。 */
+  function drawGuardianRuins(camX, camY, now) {
+    const W = canvas.width, H = canvas.height;
+    for (const ruin of GUARDIAN_RUINS) {
+      const sx = ruin.wx - camX, sy = ruin.wy - camY;
+      // AOI 剔除：遺址不在畫面內跳過。
+      if (sx < -120 || sx > W + 120 || sy < -130 || sy > H + 50) continue;
+      const glowAlpha = ruinGlowAlpha(ruin, worldBoss, now);
+      _drawSingleRuin(sx, sy, ruin, glowAlpha);
+      // 靠近提示（玩家在互動範圍內）。
+      if (me && withinRuinReach(me.x, me.y, ruin)) {
+        ctx.save();
+        ctx.fillStyle = "rgba(20,12,30,0.85)";
+        ctx.beginPath();
+        ctx.roundRect(sx - 44, sy - 86, 88, 22, 6);
+        ctx.fill();
+        ctx.fillStyle = ruin.color;
+        ctx.font = "bold 11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("[E] 讀取守護者銘文", sx, sy - 70);
+        ctx.restore();
+      }
+    }
+  }
+
+  /** 更新守護者遺址面板（靠近時顯示銘文，離開時隱藏）。每幀呼叫。 */
+  function updateGuardianRuinPanel() {
+    // 找出最近且在互動範圍內的遺址。
+    let nearRuin = null;
+    if (me && Number.isFinite(me.x) && Number.isFinite(me.y)) {
+      for (const ruin of GUARDIAN_RUINS) {
+        if (withinRuinReach(me.x, me.y, ruin)) { nearRuin = ruin; break; }
+      }
+    }
+    // 「讀取銘文」按鈕控制。
+    let ruinReadBtn = document.getElementById("ruinReadBtn");
+    if (!nearRuin) {
+      if (ruinReadBtn) ruinReadBtn.style.display = "none";
+      const panel = document.getElementById("guardianRuinPanel");
+      if (panel) panel.style.display = "none";
+      return;
+    }
+    if (!ruinReadBtn) {
+      ruinReadBtn = document.createElement("button");
+      ruinReadBtn.id = "ruinReadBtn";
+      ruinReadBtn.className = "dock-btn";
+      ruinReadBtn.style.cssText = "position:fixed;bottom:68px;left:50%;transform:translateX(-50%);z-index:62;";
+      ruinReadBtn.onclick = () => {
+        const p = document.getElementById("guardianRuinPanel");
+        if (p) p.style.display = (p.style.display === "none" || !p.style.display) ? "block" : "none";
+      };
+      document.body.appendChild(ruinReadBtn);
+    }
+    ruinReadBtn.textContent = `📜 讀取 ${nearRuin.emoji} 守護者銘文`;
+    ruinReadBtn.style.display = "";
+    // 建立/更新銘文面板。
+    let panel = document.getElementById("guardianRuinPanel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "guardianRuinPanel";
+      panel.style.cssText = [
+        "position:fixed", "bottom:116px", "left:50%", "transform:translateX(-50%)",
+        "min-width:240px", "max-width:380px",
+        "background:rgba(10,8,18,0.94)", "border:1px solid #7b5aac",
+        "border-radius:10px", "padding:12px 16px", "color:#e0d0f8",
+        "font-size:.82rem", "line-height:1.75", "z-index:55", "pointer-events:none",
+        "display:none",
+      ].join(";");
+      document.body.appendChild(panel);
+    }
+    panel.innerHTML = [
+      `<div style="font-weight:700;font-size:.95rem;margin-bottom:8px;color:${nearRuin.color}">${nearRuin.emoji} ${nearRuin.name} 古遺址銘文</div>`,
+      ...nearRuin.lore.map(l => `<div>${l}</div>`),
+    ].join("");
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -10775,6 +10982,7 @@
     safeDraw("wonders", () => drawWonders(camX, camY, renderNow)); // 世界奇觀首探（524）
     safeDraw("worldBoss", () => drawWorldBoss(camX, camY, renderNow)); // 世界守護者（525）
     safeDraw("monument", () => drawMonument(camX, camY, renderNow));   // 旅人紀念碑（526）
+    safeDraw("guardianRuins", () => drawGuardianRuins(camX, camY, renderNow)); // 守護者遺址（531）
     safeDraw("fireflySwarms", () => drawFireflySwarms(camX, camY, renderNow)); // 夜螢群（477）
     safeDraw("seasonalNodes", () => drawSeasonalNodes(camX, camY, renderNow)); // 季節採集節點（154）
     safeDraw("enemies", () => drawEnemies(camX, camY)); // 敵人（戰鬥 1-F）
@@ -10965,6 +11173,7 @@
       updateWorldBossHud();                // 世界守護者（ROADMAP 525）
       updateAttackBossBtn();               // 世界守護者攻擊按鈕（ROADMAP 525）
       updateMonumentPanel();               // 旅人紀念碑面板（ROADMAP 526）
+      updateGuardianRuinPanel();           // 守護者遺址銘文面板（ROADMAP 531）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）
