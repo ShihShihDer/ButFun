@@ -4808,6 +4808,77 @@ for (const sc of scenarios) {
   else console.log("  ✅ 旅人紀念碑（ROADMAP 526）：isNearMonument 邊界(5 cases) + monumentEntryLines 真值表(4 cases) + drawMonument 渲染路徑(3 情境 9 幀)");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// ROADMAP 527 廣場蒸汽噴泉：fountainPhase 真值表 + fountainDropletPos 邊界 + drawFountain 渲染
+// ─────────────────────────────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const fp  = sandbox.__bfTest && sandbox.__bfTest.fountainPhase;
+    const fdp = sandbox.__bfTest && sandbox.__bfTest.fountainDropletPos;
+    const df  = sandbox.__bfTest && sandbox.__bfTest.drawFountain;
+    if (!fp)  throw new Error("fountainPhase 未匯出");
+    if (!fdp) throw new Error("fountainDropletPos 未匯出");
+    if (!df)  throw new Error("drawFountain 未匯出");
+
+    // ── fountainPhase 真值表 ──────────────────────────────────────────────
+    // 壞值（NaN / -1 / null / Infinity）→ spraying=false
+    for (const bad of [NaN, -1, null, Infinity]) {
+      const r = fp(bad);
+      if (r.spraying !== false) { ok = false; console.error(`  ❌ fountainPhase(${bad}) 壞值應回 spraying=false`); }
+    }
+
+    // 噴水期（nowMs=2500，cycle=2500 < SPRAY_DURATION=5000）→ spraying=true，t ∈ [0,1]
+    const during = fp(2500);
+    if (!during.spraying) { ok = false; console.error("  ❌ fountainPhase(2500) 應回 spraying=true"); }
+    if (during.t < 0 || during.t > 1) { ok = false; console.error("  ❌ fountainPhase(2500).t 應在 [0,1]"); }
+
+    // 靜待期（nowMs=10000，cycle=10000 >= 5000）→ spraying=false
+    const idle = fp(10000);
+    if (idle.spraying !== false) { ok = false; console.error("  ❌ fountainPhase(10000) 靜待期應回 spraying=false"); }
+
+    // 下一輪噴水（nowMs=35001，cycle=35001 % 35000=1 < 5000）→ spraying=true
+    const next = fp(35001);
+    if (!next.spraying) { ok = false; console.error("  ❌ fountainPhase(35001) 下一輪應回 spraying=true"); }
+
+    // ── fountainDropletPos 邊界 ───────────────────────────────────────────
+    // 壞值不拋
+    let threw = false;
+    try { fdp(-1, 0, 10); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ fountainDropletPos(t=-1) 不應拋出例外"); }
+    threw = false;
+    try { fdp(0.5, 0, 0); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ fountainDropletPos(total=0) 不應拋出例外"); }
+
+    // 正常值 alpha ∈ [0,1]，dx/dy 為有限數
+    const pos = fdp(0.3, 5, 10);
+    if (pos.alpha < 0 || pos.alpha > 1) { ok = false; console.error("  ❌ fountainDropletPos(t=0.3).alpha 應在 [0,1]"); }
+    if (!isFinite(pos.dx) || !isFinite(pos.dy)) { ok = false; console.error("  ❌ fountainDropletPos(t=0.3) dx/dy 應為有限數"); }
+
+    // ── drawFountain 渲染路徑 ─────────────────────────────────────────────
+    // 四種 nowMs 情境（靜待 / 噴水初期 / 噴水中期 / 下一輪）各連跑 4 幀，零例外
+    for (const nowMs of [10000, 0, 2500, 36000]) {
+      threw = false;
+      try {
+        for (let i = 0; i < 4; i++) df(0, 0, nowMs + i * 16);
+      } catch (e) { threw = true; console.error(`  ❌ drawFountain(now=${nowMs}) 拋出例外`, e && e.message); }
+      if (threw) ok = false;
+    }
+
+    // reduceMotion 靜默不拋
+    sandbox.__bfTest.setMotionPref(true);
+    threw = false;
+    try { df(0, 0, 2500); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ drawFountain(reduceMotion) 不應拋出"); }
+    sandbox.__bfTest.setMotionPref(false);
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 廣場蒸汽噴泉：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 廣場蒸汽噴泉（ROADMAP 527）：測試失敗"); }
+  else console.log("  ✅ 廣場蒸汽噴泉（ROADMAP 527）：fountainPhase 真值表(6 cases) + fountainDropletPos 邊界(3 cases) + drawFountain 渲染(4 情境×4 幀) + reduceMotion");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

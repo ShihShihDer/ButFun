@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2860,6 +2860,183 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  // 廣場蒸汽噴泉（ROADMAP 527）：廣場中央黃銅蒸汽噴泉，30 秒定時噴水柱。
+
+  /**
+   * 純函式：依 nowMs 算噴泉當前相位。
+   * 回 { spraying: bool, t: [0,1] }——spraying=true 時 t 為噴水進度，否則 t=0。
+   * 壞值（負值/NaN/Infinity）保守回靜待狀態，不 throw。
+   */
+  function fountainPhase(nowMs) {
+    if (typeof nowMs !== 'number' || !isFinite(nowMs) || nowMs < 0) return { spraying: false, t: 0 };
+    const cycle = nowMs % (FOUNTAIN_SPRAY_PERIOD + FOUNTAIN_SPRAY_DURATION);
+    if (cycle < FOUNTAIN_SPRAY_DURATION) return { spraying: true, t: cycle / FOUNTAIN_SPRAY_DURATION };
+    return { spraying: false, t: 0 };
+  }
+
+  /**
+   * 純函式：算噴水粒子偏移量。t ∈ [0,1] 為噴水進度，idx=粒子索引，total=粒子總數。
+   * 回 { dx, dy, alpha }——相對噴嘴座標（px），向上為 dy 負。
+   * 壞值保守回原點不動，不 throw。
+   */
+  function fountainDropletPos(t, idx, total) {
+    if (!isFinite(t) || t < 0 || t > 1 || !isFinite(idx) || total <= 0) return { dx: 0, dy: 0, alpha: 0 };
+    const frac = total > 1 ? idx / (total - 1) : 0.5; // [0,1] 在扇面中的位置
+    const angleRad = (-40 + frac * 80) * (Math.PI / 180); // 扇面 ±40°，向上
+    const speed = 60 + (idx % 3) * 22; // px/s，依索引略有差異
+    const dt = t * 1.8; // 噴水弧持續約 1.8 秒
+    const dx = Math.sin(angleRad) * speed * dt;
+    const dy = -Math.cos(angleRad) * speed * dt + 0.5 * 160 * dt * dt; // 重力 160 px/s²
+    const alpha = Math.max(0, 1 - t * 1.1); // 接近噴水尾端逐漸淡出
+    return { dx, dy, alpha };
+  }
+
+  /** 繪製廣場蒸汽噴泉（Canvas 2D，純前端）。 */
+  function drawFountain(camX, camY, now) {
+    const sx = FOUNTAIN_WX - camX;
+    const sy = FOUNTAIN_WY - camY;
+    // 視窗剔除（噴泉寬約 110px、高約 70px）
+    if (sx < -120 || sx > viewW + 120 || sy < -100 || sy > viewH + 60) return;
+
+    const { spraying, t } = fountainPhase(now);
+    const rm = effectiveReduceMotion();
+
+    ctx.save();
+
+    // ── 地面陰影 ──────────────────────────────────────────────────────────
+    ctx.fillStyle = "rgba(20,12,4,0.28)";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy + 4, 54, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── 石砌水盤（俯視橢圓） ───────────────────────────────────────────────
+    ctx.fillStyle = "#6b5840";
+    ctx.strokeStyle = "#9a7c58";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, 50, 18, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // ── 水盤水面 ──────────────────────────────────────────────────────────
+    ctx.fillStyle = "#3a7a9e";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, 43, 15, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ── 常態水面漣漪（動態） ──────────────────────────────────────────────
+    if (!rm) {
+      const rt1 = (now % 2600) / 2600;
+      const rr1 = 8 + rt1 * 30, ra1 = 0.16 * (1 - rt1);
+      if (ra1 > 0.01) {
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, rr1, rr1 * 0.36, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(140,200,230,${ra1.toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      const rt2 = ((now + 1300) % 2600) / 2600;
+      const rr2 = 8 + rt2 * 30, ra2 = 0.10 * (1 - rt2);
+      if (ra2 > 0.01) {
+        ctx.beginPath();
+        ctx.ellipse(sx, sy, rr2, rr2 * 0.36, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(140,200,230,${ra2.toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // ── 中央立柱（黃銅色） ────────────────────────────────────────────────
+    const NOZZLE_Y = sy - 52; // 噴嘴頂部 Y（噴泉最高點）
+
+    // 底部粗柱
+    ctx.fillStyle = "#c8a84b";
+    ctx.strokeStyle = "#a08030";
+    ctx.lineWidth = 1;
+    ctx.fillRect(sx - 5, sy - 26, 10, 26);
+    ctx.strokeRect(sx - 5, sy - 26, 10, 26);
+
+    // 中段小碗（橢圓托盤）
+    ctx.fillStyle = "#c8a84b";
+    ctx.beginPath();
+    ctx.ellipse(sx, sy - 26, 11, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#a08030";
+    ctx.stroke();
+
+    // 上段細管
+    ctx.fillStyle = "#d4b055";
+    ctx.fillRect(sx - 3, NOZZLE_Y, 6, 24);
+    ctx.strokeRect(sx - 3, NOZZLE_Y, 6, 24);
+
+    // 頂部噴嘴（圓形）
+    ctx.fillStyle = "#b8943c";
+    ctx.strokeStyle = "#a08030";
+    ctx.beginPath();
+    ctx.arc(sx, NOZZLE_Y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // ── 兩側裝飾蒸汽管 ────────────────────────────────────────────────────
+    ctx.strokeStyle = "#c8a84b";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(sx + side * 5, sy - 16);
+      ctx.lineTo(sx + side * 22, sy - 16);
+      ctx.lineTo(sx + side * 22, sy - 28);
+      ctx.stroke();
+      // 管帽
+      ctx.fillStyle = "#b8943c";
+      ctx.strokeStyle = "#a08030";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sx + side * 22, sy - 28, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+
+    // ── 水柱粒子（噴水時） ────────────────────────────────────────────────
+    if (!rm && spraying) {
+      const dropCount = 10;
+      for (let i = 0; i < dropCount; i++) {
+        const { dx, dy, alpha } = fountainDropletPos(t, i, dropCount);
+        if (alpha <= 0.01) continue;
+        ctx.beginPath();
+        ctx.arc(sx + dx, NOZZLE_Y + dy, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(130,195,225,${alpha.toFixed(3)})`;
+        ctx.fill();
+      }
+      // 噴嘴頂端白色柔光
+      const glowA = Math.max(0, 0.4 - t * 0.28);
+      if (glowA > 0.01) {
+        ctx.beginPath();
+        ctx.arc(sx, NOZZLE_Y, 10 - t * 4, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(200,235,255,${glowA.toFixed(3)})`;
+        ctx.fill();
+      }
+    }
+
+    // ── 側管蒸汽裊裊 ──────────────────────────────────────────────────────
+    if (!rm) {
+      const steamT = (now % 2400) / 2400;
+      for (const side of [-1, 1]) {
+        const steamY = sy - 28 - steamT * 16;
+        const steamR = 3 + steamT * 4;
+        const steamA = 0.22 * (1 - steamT);
+        ctx.beginPath();
+        ctx.arc(sx + side * 22, steamY, steamR, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(225,225,215,${steamA.toFixed(3)})`;
+        ctx.fill();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3618,6 +3795,11 @@
   const MONUMENT_WX = 0;        // 與後端 monument::MONUMENT_WX 對齊（廣場北方）
   const MONUMENT_WY = -600;     // 與後端 monument::MONUMENT_WY 對齊
   const MONUMENT_RADIUS = 150;  // 與後端 monument::MONUMENT_RADIUS 對齊
+  // ROADMAP 527 廣場蒸汽噴泉——廣場中央黃銅噴泉，30 秒定時噴水柱 + 常態漣漪
+  const FOUNTAIN_WX = 2400;           // 噴泉 X（廣場中心，與 PLAZA_X 對齊）
+  const FOUNTAIN_WY = 2100;           // 噴泉 Y（廣場北側，PLAZA_Y=2260 略北）
+  const FOUNTAIN_SPRAY_PERIOD = 30000; // ms：每次噴水之間的靜待時間
+  const FOUNTAIN_SPRAY_DURATION = 5000; // ms：每次噴水持續時間
   const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
   const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
   const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
@@ -10207,6 +10389,7 @@
     safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
     safeDraw("champStone", () => drawChampStone(camX, camY)); // 廣場英雄碑（ROADMAP 503），世界戰報石板左旁
     safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
+    safeDraw("steamFountain", () => drawFountain(camX, camY, renderNow)); // 廣場蒸汽噴泉（ROADMAP 527），廣場中央
     safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
