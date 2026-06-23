@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3242,6 +3242,165 @@
     ctx.fillStyle = `rgba(0,200,80,${blinkA.toFixed(2)})`; ctx.fill();
 
     ctx.restore();
+  }
+
+  // 廣場四季地景（ROADMAP 529）：廣場地面隨季節積澱不同景色——春花點點、夏光溢金、秋葉成堆、冬雪白積。
+  // 零後端、零 migration，讀既有 currentSeason。視窗外剔除。reduceMotion 時省略動態脈動、保留靜態色。
+  // 換骨架（別於近期）：527=廣場機械設施、528=廣場資訊節點、本切片=廣場「季節韻律」——
+  // 廣場地表隨四季改變外觀，每次上線廣場都有不同季節印記。
+
+  // 純函式：春季花點定義陣列（可測）。非春季回空陣列。
+  // 27 個花點以黃金角螺旋確定性散布，零隨機，每幀固定位置。
+  function plazaFloralDots(season, cx, cy, radius) {
+    if (season !== "spring") return [];
+    const COLORS = ["#ffb3c8", "#ffe0b2", "#ffd6e7"]; // 淡粉、橙白、深粉
+    const dots = [];
+    for (let i = 0; i < 27; i++) {
+      const t = (i * 2.399) % (Math.PI * 2); // 黃金角螺旋，確定性分布
+      const r = (((i * 7 + 3) % 17) / 17) * radius * 0.82 + radius * 0.08;
+      dots.push({ x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r * 0.48, color: COLORS[i % 3] });
+    }
+    return dots;
+  }
+
+  // 純函式：秋季廣場落葉堆定義陣列（可測）。非秋季回空陣列。
+  function plazaLeafPiles(season) {
+    if (season !== "autumn") return [];
+    return [
+      { wx: 2240, wy: 2165, size: 28, angle: 0.3 },
+      { wx: 2558, wy: 2172, size: 24, angle: -0.5 },
+      { wx: 2222, wy: 2348, size: 32, angle: 0.8 },
+      { wx: 2565, wy: 2355, size: 26, angle: -0.2 },
+    ];
+  }
+
+  // 純函式：冬季廣場積雪定義陣列（可測）。非冬季回空陣列。
+  function plazaSnowPatches(season) {
+    if (season !== "winter") return [];
+    return [
+      { wx: 2228, wy: 2182, w: 60, h: 18 },
+      { wx: 2528, wy: 2178, w: 55, h: 16 },
+      { wx: 2202, wy: 2312, w: 68, h: 20 },
+      { wx: 2538, wy: 2318, w: 52, h: 18 },
+      { wx: 2376, wy: 2055, w: 78, h: 14 }, // 噴泉前積雪
+    ];
+  }
+
+  // 繪製廣場四季地景（地面裝飾層，在地面之上、玩家之下）。
+  function drawPlazaSeasonDecor(camX, camY, nowMs) {
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    // 視窗剔除：廣場中心離螢幕超出 450px 時跳過整塊
+    const plazaSx = PLAZA_X - camX, plazaSy = PLAZA_Y - camY;
+    if (plazaSx < -450 || plazaSx > W + 450 || plazaSy < -450 || plazaSy > H + 450) return;
+
+    const season = currentSeason || "spring";
+
+    // ── 春：27 個小花點散落廣場地面 ──
+    if (season === "spring") {
+      const dots = plazaFloralDots(season, PLAZA_X, PLAZA_Y, 175);
+      ctx.save();
+      for (const d of dots) {
+        const sx = d.x - camX, sy = d.y - camY;
+        if (sx < -12 || sx > W + 12 || sy < -12 || sy > H + 12) continue;
+        ctx.globalAlpha = 0.74;
+        ctx.fillStyle = d.color;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3.2, 0, Math.PI * 2); // 花心
+        ctx.fill();
+        ctx.globalAlpha = 0.46;
+        for (let k = 0; k < 4; k++) { // 四片花瓣（四方向小圓）
+          ctx.beginPath();
+          ctx.arc(sx + Math.cos(k * Math.PI / 2) * 2.1, sy + Math.sin(k * Math.PI / 2) * 2.1, 1.7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      // 噴泉周邊淡粉暈（春日花海氛圍）
+      const fsx = FOUNTAIN_WX - camX, fsy = FOUNTAIN_WY - camY;
+      if (fsx > -100 && fsx < W + 100) {
+        ctx.globalAlpha = 1;
+        const grad = ctx.createRadialGradient(fsx, fsy, 14, fsx, fsy, 88);
+        grad.addColorStop(0, "rgba(255,175,210,0.14)");
+        grad.addColorStop(1, "rgba(255,175,210,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(fsx, fsy, 88, 52, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    // ── 夏：廣場中央溢金暈（正午強光感）──
+    if (season === "summer") {
+      const fsx = FOUNTAIN_WX - camX, fsy = FOUNTAIN_WY - camY;
+      if (fsx > -130 && fsx < W + 130) {
+        // reduceMotion 時固定亮度，否則輕微脈動
+        const pulse = reduceMotion ? 0.135 : 0.11 + Math.sin(nowMs / 2400) * 0.032;
+        ctx.save();
+        const grad = ctx.createRadialGradient(fsx, fsy, 0, fsx, fsy, 116);
+        grad.addColorStop(0, `rgba(255,235,88,${(pulse * 0.9).toFixed(3)})`);
+        grad.addColorStop(0.55, `rgba(255,202,65,${(pulse * 0.42).toFixed(3)})`);
+        grad.addColorStop(1, "rgba(255,198,55,0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(fsx, fsy, 116, 67, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // ── 秋：廣場四角落葉堆（確定性黃金角螺旋排列）──
+    if (season === "autumn") {
+      const piles = plazaLeafPiles(season);
+      const LEAF_C = ["#c0612b", "#d4842a", "#b54a1e", "#e8a534", "#8b3a0f", "#cf5522"];
+      for (const pile of piles) {
+        const sx = pile.wx - camX, sy = pile.wy - camY;
+        if (sx < -70 || sx > W + 70 || sy < -70 || sy > H + 70) continue;
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(pile.angle);
+        const cnt = Math.round(pile.size * 0.85);
+        for (let i = 0; i < cnt; i++) {
+          const a = i * 2.399, r2 = (i / cnt) * pile.size * 0.38;
+          const lx = Math.cos(a) * r2, ly = Math.sin(a) * r2 * 0.5;
+          const lr = Math.max(pile.size * 0.075 + (i % 4) * pile.size * 0.018, 1);
+          ctx.globalAlpha = Math.max(0.08, 0.62 - (i % 5) * 0.08);
+          ctx.fillStyle = LEAF_C[i % LEAF_C.length];
+          ctx.beginPath();
+          ctx.ellipse(lx, ly, lr, Math.max(lr * 0.55, 0.5), i * 0.47, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ── 冬：廣場邊緣積雪（白色橢圓弧雪堆）──
+    if (season === "winter") {
+      const patches = plazaSnowPatches(season);
+      ctx.save();
+      for (const p of patches) {
+        const sx = p.wx - camX, sy = p.wy - camY;
+        if (sx < -120 || sx > W + 120 || sy < -30 || sy > H + 30) continue;
+        // 雪堆主體（底半橢圓）
+        ctx.globalAlpha = 0.68;
+        const grad = ctx.createLinearGradient(sx, sy - p.h * 0.55, sx, sy + p.h * 0.55);
+        grad.addColorStop(0, "rgba(238,248,255,0.88)");
+        grad.addColorStop(1, "rgba(192,215,236,0.44)");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(sx + p.w * 0.5, sy, p.w * 0.5, p.h * 0.55, 0, Math.PI, 0); // 下半弧（平底雪堆）
+        ctx.fill();
+        // 雪堆頂高光
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        ctx.beginPath();
+        ctx.ellipse(sx + p.w * 0.5, sy - p.h * 0.18, p.w * 0.3, p.h * 0.27, 0, Math.PI, 0);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -10599,6 +10758,7 @@
     safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
     safeDraw("steamFountain", () => drawFountain(camX, camY, renderNow)); // 廣場蒸汽噴泉（ROADMAP 527），廣場中央
     safeDraw("telegraph",    () => drawTelegraph(camX, camY, renderNow)); // 廣場電報亭（ROADMAP 528），廣場東南角
+    safeDraw("plazaSeasonDecor", () => drawPlazaSeasonDecor(camX, camY, renderNow)); // 廣場四季地景（ROADMAP 529），廣場地面隨季節積澱
     safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下

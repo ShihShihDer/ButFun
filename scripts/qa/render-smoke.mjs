@@ -4985,6 +4985,63 @@ for (const sc of scenarios) {
   else console.log("  ✅ 廣場電報亭（ROADMAP 528）：telegraphWeatherLine(5 cases) + telegraphBossLine(5 cases) + telegraphContestLine(4 cases) + telegraphGoldRushLine(3 cases) + telegraphLines(3 整合) + drawTelegraph(4 情境×4 幀+畫面外)");
 }
 
+// ── ROADMAP 529：廣場四季地景 ──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const pfd = sandbox.__bfTest && sandbox.__bfTest.plazaFloralDots;
+    const plp = sandbox.__bfTest && sandbox.__bfTest.plazaLeafPiles;
+    const psp = sandbox.__bfTest && sandbox.__bfTest.plazaSnowPatches;
+    const dpsd = sandbox.__bfTest && sandbox.__bfTest.drawPlazaSeasonDecor;
+    if (!pfd || !plp || !psp || !dpsd) { ok = false; console.error("  ❌ 廣場四季地景純函式未匯出"); }
+
+    // plazaFloralDots：春季回 27 個有效花點
+    const springDots = pfd("spring", 2400, 2260, 175);
+    if (!Array.isArray(springDots) || springDots.length !== 27) { ok = false; console.error("  ❌ plazaFloralDots(spring) 應回 27 個花點"); }
+    if (springDots.length && (typeof springDots[0].x !== "number" || typeof springDots[0].y !== "number" || typeof springDots[0].color !== "string")) {
+      ok = false; console.error("  ❌ plazaFloralDots 花點欄位型別錯誤"); }
+    // plazaFloralDots：非春季回空陣列
+    if (pfd("summer", 2400, 2260, 175).length !== 0) { ok = false; console.error("  ❌ plazaFloralDots(summer) 應回空陣列"); }
+    if (pfd("autumn", 2400, 2260, 175).length !== 0) { ok = false; console.error("  ❌ plazaFloralDots(autumn) 應回空陣列"); }
+    if (pfd("winter", 2400, 2260, 175).length !== 0) { ok = false; console.error("  ❌ plazaFloralDots(winter) 應回空陣列"); }
+
+    // plazaLeafPiles：秋季回非空陣列，非秋季回空
+    const autumnPiles = plp("autumn");
+    if (!Array.isArray(autumnPiles) || autumnPiles.length === 0) { ok = false; console.error("  ❌ plazaLeafPiles(autumn) 應回非空陣列"); }
+    if (autumnPiles.length && typeof autumnPiles[0].wx !== "number") { ok = false; console.error("  ❌ plazaLeafPiles 欄位型別錯誤"); }
+    if (plp("spring").length !== 0) { ok = false; console.error("  ❌ plazaLeafPiles(spring) 應回空陣列"); }
+    if (plp("winter").length !== 0) { ok = false; console.error("  ❌ plazaLeafPiles(winter) 應回空陣列"); }
+
+    // plazaSnowPatches：冬季回非空陣列，非冬季回空
+    const winterPatches = psp("winter");
+    if (!Array.isArray(winterPatches) || winterPatches.length === 0) { ok = false; console.error("  ❌ plazaSnowPatches(winter) 應回非空陣列"); }
+    if (winterPatches.length && typeof winterPatches[0].w !== "number") { ok = false; console.error("  ❌ plazaSnowPatches 欄位型別錯誤"); }
+    if (psp("spring").length !== 0) { ok = false; console.error("  ❌ plazaSnowPatches(spring) 應回空陣列"); }
+    if (psp("autumn").length !== 0) { ok = false; console.error("  ❌ plazaSnowPatches(autumn) 應回空陣列"); }
+
+    // drawPlazaSeasonDecor：四種季節各跑 4 幀，zero exceptions
+    const SEASONS = ["spring", "summer", "autumn", "winter"];
+    for (const s of SEASONS) {
+      sandbox.currentSeason = s;
+      for (let f = 0; f < 4; f++) {
+        let threw = false;
+        try { dpsd(2300, 2150, 1000 + f * 16); } catch (e) { threw = true; console.error(`  ❌ drawPlazaSeasonDecor(${s},幀${f}) 拋出例外`, e && e.message); }
+        if (threw) { ok = false; }
+      }
+    }
+    // 畫面外不應 throw
+    sandbox.currentSeason = "spring";
+    { let threw = false;
+      try { dpsd(99999, 99999, 1000); } catch (e) { threw = true; console.error("  ❌ drawPlazaSeasonDecor(畫面外) 拋出例外", e && e.message); }
+      if (threw) { ok = false; } }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 廣場四季地景：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 廣場四季地景（ROADMAP 529）：測試失敗"); }
+  else console.log("  ✅ 廣場四季地景（ROADMAP 529）：plazaFloralDots(4 cases) + plazaLeafPiles(4 cases) + plazaSnowPatches(4 cases) + drawPlazaSeasonDecor(四季各4幀+畫面外)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
