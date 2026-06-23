@@ -269,6 +269,13 @@ pub enum ClientMsg {
     /// 伺服器以玩家自己的權威座標判定範圍（防隔空挖礦）；無活躍事件 / 冷卻中 / 礦脈耗盡 / 超出範圍
     /// 一律靜默忽略。零持久化、純記憶體、重啟清零。
     MineGoldRush,
+    /// 星際拍賣行出價（ROADMAP 522）：玩家走到拍賣台附近出價 `amount` 乙太。
+    /// 伺服器判定：活躍拍賣中 / 玩家位於範圍內 / 玩家乙太足夠 / 出價 ≥ 最低門檻，
+    /// 才扣款、退前任、更新最高出價。靜默忽略不合格的出價。零持久化、純記憶體。
+    PlaceBid {
+        /// 出價金額（乙太）。
+        amount: u32,
+    },
     /// 雪人讚賞（ROADMAP 479）：玩家走近別人堆的雪人，按「♥ 讚賞」捎去暖意。`id` = 目標雪人。
     /// 伺服器以讚賞者自己的權威座標判定搆不搆得著（防隔空讚賞）；不能讚自己堆的、一座只能讚一次。
     /// 成功則雪人愛心 +1（隨快照全服可見），並把暖心通知單播給堆雪者。
@@ -913,6 +920,24 @@ pub enum ClientMsg {
         pub top3: Vec<(String, u32)>,
     }
 
+    /// 星際拍賣行快照（ROADMAP 522）。None = 等待中；Some = 競標進行中。
+    /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct AuctionView {
+        /// 本場拍賣物品（snake_case，與 ItemKind 序列化一致）。
+        pub item: String,
+        /// 本場數量（目前均為 1）。
+        pub qty: u32,
+        /// 底價（乙太）。
+        pub base_price: u32,
+        /// 目前最高出價（乙太）。
+        pub current_bid: u32,
+        /// 目前最高出價者名稱（無人出價時為空字串）。
+        pub bidder_name: String,
+        /// 剩餘秒數（取整數，到 0 結束）。
+        pub remaining_secs: u32,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1277,6 +1302,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
         #[serde(default)]
         gold_rush: Option<GoldRushView>,
+        /// 星際拍賣行（ROADMAP 522）。None = 等待中；Some = 競標進行中（含物品/金額/出價者/倒數）。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+        #[serde(default)]
+        auction: Option<AuctionView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3440,6 +3469,7 @@ mod tests {
             ether_surge_x: 0.0,
             ether_surge_y: 0.0,
             gold_rush: None,
+            auction: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
