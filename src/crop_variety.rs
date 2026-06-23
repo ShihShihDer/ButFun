@@ -84,6 +84,15 @@ impl CropVariety {
         }
     }
 
+    /// 面向玩家的繁中品種名稱（用於廣播、UI 等處）。
+    pub fn zh_name(self) -> &'static str {
+        match self {
+            CropVariety::Sprout => "速生菜",
+            CropVariety::Staple => "主食穀",
+            CropVariety::Etherbloom => "乙太瓜",
+        }
+    }
+
     /// 由線格式碼還原品種（`code` 的反向）；未知碼回 `None`。
     /// ROADMAP 454 輪作：田格的「上輪品種記憶」以細碼存（`code`+1，0 保留給「無紀錄」），
     /// 解碼時用本函式還原成品種來比對是否換種。純函式。

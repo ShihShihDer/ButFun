@@ -2333,6 +2333,14 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     if let Some(msg) = harvest_evt {
                         let _ = app.tx.send(Arc::new(msg));
                     }
+                    // ROADMAP 532 大豐收廣播：一鍵收成某品種達門檻，全服世界頻道慶祝豐收。
+                    // 讀玩家名稱二次讀鎖即取即放，不與任何寫鎖巢狀，守 prod-deadlock 鐵律。
+                    if let Some((variety, count)) = crate::bounty_harvest::bountiful_variety(&summary.kind_counts) {
+                        let pname = app.players.read().unwrap().get(&id).map(|p| p.name.clone()).unwrap_or_default();
+                        if !pname.is_empty() {
+                            let _ = app.tx_chat.send(crate::bounty_harvest::bountiful_msg(&pname, variety, count));
+                        }
+                    }
                     // 單播文字回報：收到就報幾株＋多少乙太、在田邊但沒成熟的安心一句、離田太遠就溫和提示。
                     // 走 tx_direct + ServerMsg::Chat（既有單播管道，零新協議；田格回到空土隨下張快照更新）。
                     let note = if summary.count > 0 {
