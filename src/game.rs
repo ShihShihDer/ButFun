@@ -4715,19 +4715,18 @@ pub fn spawn(app: AppState) {
                         },
                         wonder_discoveries: {
                             let ws = app.wonders.read().unwrap();
-                            ws.all_discoveries().iter().map(|d| {
-                                // 找對應定義（key 比對）取座標/名稱/emoji。
+                            ws.all_discoveries().iter().filter_map(|d| {
+                                // 找對應定義（key 比對）取座標/名稱/emoji；找不到時跳過，不 panic。
                                 let def = crate::world_wonder::ALL_WONDERS.iter()
-                                    .find(|w| w.key == d.key)
-                                    .expect("WonderDiscovery key must match ALL_WONDERS");
-                                crate::protocol::WonderDiscoveryView {
+                                    .find(|w| w.key == d.key)?;
+                                Some(crate::protocol::WonderDiscoveryView {
                                     key: d.key.to_string(),
                                     wx: def.wx,
                                     wy: def.wy,
                                     name_zh: def.name_zh.to_string(),
                                     emoji: def.emoji.to_string(),
                                     discoverer_name: d.discoverer_name.clone(),
-                                }
+                                })
                             }).collect()
                         },
                     }
