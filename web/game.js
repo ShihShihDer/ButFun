@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -3032,6 +3032,214 @@
         ctx.fill();
       }
     }
+
+    ctx.restore();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 廣場電報亭（ROADMAP 528）：廣場東南角蒸汽電報機，即時顯示天氣/守護者/賽事狀態。
+
+  const TELEGRAPH_WX = 2600;  // 廣場東南側（噴泉右下，介於噴泉與蒸汽鐘之間）
+  const TELEGRAPH_WY = 2280;  // 廣場平面
+
+  /**
+   * 純函式：天氣狀態行文字。
+   * wtype: 天氣類型字串；remSecs: 剩餘秒數。
+   * 壞值保守回晴天，不 throw。
+   */
+  function telegraphWeatherLine(wtype, remSecs) {
+    const LABELS = {
+      clear:              "☀️ 晴天",
+      grassland_rain:     "🌧️ 草原細雨",
+      desert_sandstorm:   "🌪️ 沙漠風沙",
+      rocky_crystal_dust: "✨ 岩地晶塵",
+      water_sea_mist:     "🌊 水域海霧",
+    };
+    const label = LABELS[typeof wtype === "string" ? wtype : ""] || "☀️ 晴天";
+    if (wtype === "clear" || typeof wtype !== "string") return label;
+    const rem = Number.isFinite(remSecs) && remSecs > 0 ? Math.ceil(remSecs) : 0;
+    if (rem <= 0) return label;
+    const m = Math.floor(rem / 60), s = rem % 60;
+    return `${label} ${m}m${s.toString().padStart(2, "0")}s`;
+  }
+
+  /**
+   * 純函式：世界守護者狀態行。
+   * boss: {hp, max_hp} 或 null。壞值→「待命」。
+   */
+  function telegraphBossLine(boss) {
+    if (!boss || typeof boss.hp !== "number" || typeof boss.max_hp !== "number") {
+      return "🗿 守護者 待命";
+    }
+    const hp  = Math.max(0, boss.hp);
+    const max = boss.max_hp > 0 ? boss.max_hp : 800;
+    const pct = Math.round(hp / max * 100);
+    if (pct <= 0) return "🗿 守護者 待命";
+    return `🗿 守護者 HP${pct}%`;
+  }
+
+  /**
+   * 純函式：釣魚大賽狀態行；無大賽回 null。
+   * fc: {remaining_secs, top3} 或 null。
+   */
+  function telegraphContestLine(fc) {
+    if (!fc || typeof fc.remaining_secs !== "number") return null;
+    const rem = Math.max(0, Math.ceil(fc.remaining_secs));
+    if (rem <= 0) return null;
+    const m = Math.floor(rem / 60), s = rem % 60;
+    const inProgress = Array.isArray(fc.top3) && fc.top3.length > 0;
+    return inProgress
+      ? `🎣 大賽中 ${m}m${s.toString().padStart(2, "0")}s`
+      : `🎣 釣賽 ${m}m${s.toString().padStart(2, "0")}s`;
+  }
+
+  /**
+   * 純函式：礦脈爭奪狀態行；無事件回 null。
+   * gr: {remaining_ore, remaining_secs} 或 null。
+   */
+  function telegraphGoldRushLine(gr) {
+    if (!gr || typeof gr.remaining_secs !== "number") return null;
+    const rem = Math.max(0, Math.ceil(gr.remaining_secs));
+    if (rem <= 0) return null;
+    const ore     = typeof gr.remaining_ore === "number" ? Math.max(0, gr.remaining_ore) : 0;
+    const m = Math.floor(rem / 60), s = rem % 60;
+    const timeStr = `${m}m${s.toString().padStart(2, "0")}s`;
+    return ore > 0 ? `⛏️ 礦脈 ${ore}礦 ${timeStr}` : `⛏️ 礦脈 ${timeStr}`;
+  }
+
+  /**
+   * 純函式：整合所有世界事件狀態行。
+   * 回傳 3-5 條字串：季節、天氣、守護者（固定），賽事 / 礦脈（有事件才附）。
+   * 壞值不 throw，保守顯示基本資訊。
+   */
+  function telegraphLines(wtype, remSecs, boss, fc, gr, season) {
+    const SEASON_LABEL = { spring: "🌸 春", summer: "☀️ 夏", autumn: "🍂 秋", winter: "❄️ 冬" };
+    const lines = [
+      SEASON_LABEL[season] || "🌱 季節",
+      telegraphWeatherLine(wtype, remSecs),
+      telegraphBossLine(boss),
+    ];
+    const contestLine  = telegraphContestLine(fc);
+    if (contestLine)  lines.push(contestLine);
+    const rushLine = telegraphGoldRushLine(gr);
+    if (rushLine)   lines.push(rushLine);
+    return lines;
+  }
+
+  /**
+   * 繪製廣場電報亭（ROADMAP 528）。
+   * 純前端，讀取快照變數（weatherType / weatherRemainingSecs / worldBoss /
+   * fishingContest / goldRush / currentSeason）。
+   */
+  function drawTelegraph(camX, camY, nowMs) {
+    const sx = TELEGRAPH_WX - camX;
+    const sy = TELEGRAPH_WY - camY;
+    // 視窗剔除（電報亭寬約 80px、高約 150px）
+    if (sx < -90 || sx > viewW + 90 || sy < -160 || sy > viewH + 40) return;
+
+    ctx.save();
+
+    // ── 底座石墩 ──
+    ctx.fillStyle = "#5a4030";
+    ctx.beginPath();
+    ctx.roundRect(sx - 30, sy - 8, 60, 12, 3);
+    ctx.fill();
+
+    // ── 主體框架（黃銅） ──
+    ctx.fillStyle = "#b8860b";
+    ctx.beginPath();
+    ctx.roundRect(sx - 24, sy - 118, 48, 112, 4);
+    ctx.fill();
+
+    // 框架高光（左側反光條）
+    ctx.fillStyle = "#d4a820";
+    ctx.fillRect(sx - 22, sy - 116, 3, 108);
+
+    // ── 顯示面板（暗色螢幕） ──
+    ctx.fillStyle = "#0a1a0f";
+    ctx.beginPath();
+    ctx.roundRect(sx - 19, sy - 112, 38, 76, 3);
+    ctx.fill();
+
+    // 螢幕發光邊框
+    ctx.strokeStyle = "#00aa55";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx - 19, sy - 112, 38, 76);
+
+    // 掃描線（緩慢向下移動的半透明光條）
+    const scanY = ((nowMs / 1200) % 1) * 76;
+    ctx.fillStyle = "rgba(0,255,100,0.07)";
+    ctx.fillRect(sx - 19, sy - 112 + scanY, 38, 8);
+
+    // ── 顯示文字 ──
+    const lines = telegraphLines(
+      weatherType, weatherRemainingSecs,
+      worldBoss, fishingContest, goldRush,
+      currentSeason
+    );
+    const VISIBLE = 3;
+    const total   = lines.length;
+    // 超過 3 行時捲動：每 4 秒換一行（帶 0.4s 停頓感）
+    const scrollIdx = total > VISIBLE
+      ? Math.floor((nowMs / 4000) % (total - VISIBLE + 1) + 0.4) | 0
+      : 0;
+
+    ctx.font = "bold 7px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (let i = 0; i < VISIBLE; i++) {
+      const lineIdx = Math.min(scrollIdx + i, total - 1);
+      const raw = lines[lineIdx] || "";
+      // 截斷過長文字（顯示面板寬約 38px，7px 字型約 14 字元）
+      const text = raw.length > 14 ? raw.slice(0, 13) + "…" : raw;
+      ctx.fillStyle = i === 0 ? "#55ff88" : "#00cc66";
+      ctx.fillText(text, sx, sy - 108 + i * 18);
+    }
+
+    // ── 標牌（底部） ──
+    ctx.font = "bold 6px sans-serif";
+    ctx.fillStyle = "#c8a44a";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("⚡ 世界電訊", sx, sy - 22);
+
+    // ── 兩側旋轉齒輪 ──
+    const gearAngle = nowMs / 1000;
+    for (const [side, dir] of [[-1, 1], [1, -1]]) {
+      const gx = sx + side * 28;
+      const gy = sy - 70;
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(gearAngle * dir);
+      ctx.strokeStyle = "#9a7840";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI * 2); ctx.stroke();
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 6, Math.sin(a) * 6);
+        ctx.lineTo(Math.cos(a) * 10, Math.sin(a) * 10);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#7a5c28";
+      ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // ── 天線 ──
+    ctx.strokeStyle = "#9a8060";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 118); ctx.lineTo(sx, sy - 140);
+    ctx.stroke();
+    // 天線頂球
+    ctx.beginPath(); ctx.arc(sx, sy - 142, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = "#d4a820"; ctx.fill();
+    // 信號閃爍光暈
+    const blinkA = 0.25 + 0.2 * Math.sin(nowMs / 400);
+    ctx.beginPath(); ctx.arc(sx, sy - 142, 6, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,200,80,${blinkA.toFixed(2)})`; ctx.fill();
 
     ctx.restore();
   }
@@ -10390,6 +10598,7 @@
     safeDraw("champStone", () => drawChampStone(camX, camY)); // 廣場英雄碑（ROADMAP 503），世界戰報石板左旁
     safeDraw("steamClock", () => drawSteamClock(camX, camY, renderNow)); // 廣場蒸汽鐘（ROADMAP 497），廣場東側地標
     safeDraw("steamFountain", () => drawFountain(camX, camY, renderNow)); // 廣場蒸汽噴泉（ROADMAP 527），廣場中央
+    safeDraw("telegraph",    () => drawTelegraph(camX, camY, renderNow)); // 廣場電報亭（ROADMAP 528），廣場東南角
     safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下

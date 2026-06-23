@@ -4879,6 +4879,112 @@ for (const sc of scenarios) {
   else console.log("  ✅ 廣場蒸汽噴泉（ROADMAP 527）：fountainPhase 真值表(6 cases) + fountainDropletPos 邊界(3 cases) + drawFountain 渲染(4 情境×4 幀) + reduceMotion");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// ROADMAP 528 廣場電報亭：telegraphWeatherLine/BossLine/ContestLine/GoldRushLine/Lines 真值表
+//                         + drawTelegraph 渲染路徑
+// ─────────────────────────────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const twl = sandbox.__bfTest && sandbox.__bfTest.telegraphWeatherLine;
+    const tbl = sandbox.__bfTest && sandbox.__bfTest.telegraphBossLine;
+    const tcl = sandbox.__bfTest && sandbox.__bfTest.telegraphContestLine;
+    const tgl = sandbox.__bfTest && sandbox.__bfTest.telegraphGoldRushLine;
+    const tls = sandbox.__bfTest && sandbox.__bfTest.telegraphLines;
+    const dt  = sandbox.__bfTest && sandbox.__bfTest.drawTelegraph;
+    if (!twl) throw new Error("telegraphWeatherLine 未匯出");
+    if (!tbl) throw new Error("telegraphBossLine 未匯出");
+    if (!tcl) throw new Error("telegraphContestLine 未匯出");
+    if (!tgl) throw new Error("telegraphGoldRushLine 未匯出");
+    if (!tls) throw new Error("telegraphLines 未匯出");
+    if (!dt)  throw new Error("drawTelegraph 未匯出");
+
+    // ── telegraphWeatherLine 真值表 ──────────────────────────────────────
+    // 晴天 → 只顯示標籤（不附時間）
+    { const r = twl("clear", 999); if (!r.includes("晴天")) { ok = false; console.error("  ❌ telegraphWeatherLine(clear) 應含晴天"); } }
+    // 下雨 + 150s → 含 2m30s
+    { const r = twl("grassland_rain", 150); if (!r.includes("2m30s") || !r.includes("草原")) { ok = false; console.error("  ❌ telegraphWeatherLine(grassland_rain,150) 應含2m30s"); } }
+    // 沙暴 + 60s → 含 1m00s
+    { const r = twl("desert_sandstorm", 60); if (!r.includes("1m00s")) { ok = false; console.error("  ❌ telegraphWeatherLine(desert_sandstorm,60) 應含1m00s"); } }
+    // 壞值 wtype → 保守回晴天
+    { const r = twl(null, 0); if (!r.includes("晴天")) { ok = false; console.error("  ❌ telegraphWeatherLine(null) 壞值應含晴天"); } }
+    // 已知類型但 remSecs=0 → 只顯示標籤
+    { const r = twl("rocky_crystal_dust", 0); if (r.includes("m") && !r.includes("岩地")) { ok = false; console.error("  ❌ telegraphWeatherLine(rocky_crystal_dust,0) 不應含時間"); } }
+
+    // ── telegraphBossLine 真值表 ─────────────────────────────────────────
+    // null → 待命
+    { const r = tbl(null); if (!r.includes("待命")) { ok = false; console.error("  ❌ telegraphBossLine(null) 應含待命"); } }
+    // 滿血 → HP100%
+    { const r = tbl({ hp: 800, max_hp: 800 }); if (!r.includes("100%")) { ok = false; console.error("  ❌ telegraphBossLine(満血) 應含100%"); } }
+    // 半血 → HP50%
+    { const r = tbl({ hp: 400, max_hp: 800 }); if (!r.includes("50%")) { ok = false; console.error("  ❌ telegraphBossLine(半血) 應含50%"); } }
+    // hp=0 → 待命（死亡視為待命）
+    { const r = tbl({ hp: 0, max_hp: 800 }); if (!r.includes("待命")) { ok = false; console.error("  ❌ telegraphBossLine(hp=0) 應含待命"); } }
+    // 壞值 hp 型別 → 待命
+    { const r = tbl({ hp: "bad", max_hp: 800 }); if (!r.includes("待命")) { ok = false; console.error("  ❌ telegraphBossLine(hp=string) 壞值應含待命"); } }
+
+    // ── telegraphContestLine 真值表 ──────────────────────────────────────
+    // null → null
+    if (tcl(null) !== null) { ok = false; console.error("  ❌ telegraphContestLine(null) 應回 null"); }
+    // rem=0 → null（已結束）
+    if (tcl({ remaining_secs: 0, top3: [] }) !== null) { ok = false; console.error("  ❌ telegraphContestLine(rem=0) 應回 null"); }
+    // 進行中（top3 非空）→ 含「大賽中」
+    { const r = tcl({ remaining_secs: 90, top3: [{ name: "甲", total_mm: 300 }] });
+      if (!r || !r.includes("大賽中")) { ok = false; console.error("  ❌ telegraphContestLine(進行中) 應含大賽中"); } }
+    // 倒數（top3 空）→ 含「釣賽」
+    { const r = tcl({ remaining_secs: 180, top3: [] });
+      if (!r || !r.includes("釣賽")) { ok = false; console.error("  ❌ telegraphContestLine(倒數) 應含釣賽"); } }
+
+    // ── telegraphGoldRushLine 真值表 ─────────────────────────────────────
+    // null → null
+    if (tgl(null) !== null) { ok = false; console.error("  ❌ telegraphGoldRushLine(null) 應回 null"); }
+    // rem=0 → null
+    if (tgl({ remaining_ore: 10, remaining_secs: 0 }) !== null) { ok = false; console.error("  ❌ telegraphGoldRushLine(rem=0) 應回 null"); }
+    // 進行中 → 含礦量與時間
+    { const r = tgl({ remaining_ore: 30, remaining_secs: 120 });
+      if (!r || !r.includes("30礦") || !r.includes("2m")) { ok = false; console.error("  ❌ telegraphGoldRushLine(進行中) 應含30礦"); } }
+
+    // ── telegraphLines 整合真值表 ────────────────────────────────────────
+    // 無賽事 → 3 行
+    { const ls = tls("clear", 0, null, null, null, "spring");
+      if (!Array.isArray(ls) || ls.length < 3) { ok = false; console.error("  ❌ telegraphLines(無賽事) 應至少 3 行"); }
+      if (!ls[0].includes("春")) { ok = false; console.error("  ❌ telegraphLines 第0行應含季節"); } }
+    // 有釣魚大賽 → 4 行
+    { const ls = tls("grassland_rain", 150, null, { remaining_secs: 90, top3: [{}] }, null, "summer");
+      if (!Array.isArray(ls) || ls.length < 4) { ok = false; console.error("  ❌ telegraphLines(有大賽) 應至少 4 行"); } }
+    // 有守護者+礦脈 → 5 行（含全部）
+    { const ls = tls("clear", 0, { hp: 400, max_hp: 800 }, { remaining_secs: 90, top3: [{}] }, { remaining_ore: 10, remaining_secs: 60 }, "winter");
+      if (!Array.isArray(ls) || ls.length < 5) { ok = false; console.error("  ❌ telegraphLines(全部) 應至少 5 行"); } }
+
+    // ── drawTelegraph 渲染路徑 ────────────────────────────────────────────
+    const drawScenarios = [
+      { label: "無事件",  boss: null,  fc: null, gr: null },
+      { label: "有守護者", boss: { hp: 400, max_hp: 800, wx: 5800, wy: 2400, participant_count: 2 }, fc: null, gr: null },
+      { label: "有大賽",  boss: null,  fc: { remaining_secs: 90, top3: [{ name: "甲", total_mm: 300 }] }, gr: null },
+      { label: "有礦脈",  boss: null,  fc: null, gr: { remaining_ore: 30, remaining_secs: 120, top3: [] } },
+    ];
+    for (const sc of drawScenarios) {
+      sandbox.worldBoss     = sc.boss;
+      sandbox.fishingContest = sc.fc;
+      sandbox.goldRush      = sc.gr;
+      let threw = false;
+      try { for (let f = 0; f < 4; f++) dt(0, 0, f * 16); }
+      catch (e) { threw = true; console.error(`  ❌ drawTelegraph(${sc.label}) 拋出例外`, e && e.message); }
+      if (threw) ok = false;
+    }
+    // 畫面外：也不應 throw
+    sandbox.worldBoss = null; sandbox.fishingContest = null; sandbox.goldRush = null;
+    { let threw = false;
+      try { dt(99999, 99999, 1000); } catch (e) { threw = true; console.error("  ❌ drawTelegraph(畫面外) 拋出例外", e && e.message); }
+      if (threw) { ok = false; } }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 廣場電報亭：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 廣場電報亭（ROADMAP 528）：測試失敗"); }
+  else console.log("  ✅ 廣場電報亭（ROADMAP 528）：telegraphWeatherLine(5 cases) + telegraphBossLine(5 cases) + telegraphContestLine(4 cases) + telegraphGoldRushLine(3 cases) + telegraphLines(3 整合) + drawTelegraph(4 情境×4 幀+畫面外)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
