@@ -3370,6 +3370,57 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 世界奇觀首探（ROADMAP 524）：每 2 秒掃描在線玩家是否踏入尚未首探的奇觀。
+            // 守 prod-deadlock：先取玩家快照（players 讀鎖即放），再查奇觀寫鎖（不巢狀）。
+            if tick % (TICK_HZ as u64 * 2) == 0 {
+                // 快速早返：全五處已探時完全跳過。
+                let all_done = app.wonders.read().unwrap().all_discovered();
+                if !all_done {
+                    // 1. 收集在線玩家座標（players 讀鎖，即時釋放）。
+                    // players map 中的玩家均為在線（斷線時從 map 移除），
+                    // 倒地中的玩家不算「首探」（必須站著才算踏入）。
+                    let player_snapshots: Vec<(String, f32, f32)> = {
+                        let players = app.players.read().unwrap();
+                        players.values()
+                            .filter(|p| !p.vitals.is_downed())
+                            .map(|p| (p.name.clone(), p.x, p.y))
+                            .collect()
+                    };
+                    // 2. 逐一奇觀找首探者。
+                    for wonder in crate::world_wonder::ALL_WONDERS {
+                        {
+                            let s = app.wonders.read().unwrap();
+                            if s.is_discovered(wonder.key) { continue; }
+                        }
+                        // 找踏入範圍的玩家（取第一個即可）。
+                        let discoverer = player_snapshots.iter().find(|(_, px, py)| {
+                            crate::world_wonder::WorldWonderState::is_near(*px, *py, wonder)
+                        });
+                        if let Some((name, _, _)) = discoverer {
+                            let name = name.clone();
+                            // 嘗試首探（寫鎖，立即釋放）。
+                            let newly = app.wonders.write().unwrap()
+                                .try_discover(wonder.key, name.clone());
+                            if newly {
+                                // 全服公告。
+                                let _ = app.tx_chat.send(format!(
+                                    "🌟 世界首探！{} 是第一個踏入【{}】{} 的旅人！獲得 {} 乙太獎勵！",
+                                    name, wonder.name_zh, wonder.emoji,
+                                    crate::world_wonder::DISCOVER_REWARD,
+                                ));
+                                // 發放乙太（players 寫鎖，不巢狀持有其他鎖）。
+                                let mut players = app.players.write().unwrap();
+                                if let Some(p) = players.values_mut().find(|p| p.name == name) {
+                                    p.ether = p.ether.saturating_add(
+                                        crate::world_wonder::DISCOVER_REWARD,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4661,6 +4712,22 @@ pub fn spawn(app: AppState) {
                                 remaining_secs: secs as u32,
                                 top3: fc.top3(),
                             })
+                        },
+                        wonder_discoveries: {
+                            let ws = app.wonders.read().unwrap();
+                            ws.all_discoveries().iter().filter_map(|d| {
+                                // 找對應定義（key 比對）取座標/名稱/emoji；找不到時跳過，不 panic。
+                                let def = crate::world_wonder::ALL_WONDERS.iter()
+                                    .find(|w| w.key == d.key)?;
+                                Some(crate::protocol::WonderDiscoveryView {
+                                    key: d.key.to_string(),
+                                    wx: def.wx,
+                                    wy: def.wy,
+                                    name_zh: def.name_zh.to_string(),
+                                    emoji: def.emoji.to_string(),
+                                    discoverer_name: d.discoverer_name.clone(),
+                                })
+                            }).collect()
                         },
                     }
                 };

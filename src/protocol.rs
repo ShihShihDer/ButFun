@@ -948,6 +948,25 @@ pub enum ClientMsg {
         pub top3: Vec<(String, u32, u32)>,
     }
 
+    /// 世界奇觀首探快照（ROADMAP 524）。列出所有已被首探的奇觀（含發現者名稱與座標）。
+    /// 空向量 = 尚無任何奇觀被首探；前端據此畫小地圖標記與世界內光效。
+    /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = 空向量，靜默略過）。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct WonderDiscoveryView {
+        /// 奇觀識別碼（snake_case，如 "crystal_palace"）。
+        pub key: String,
+        /// 世界 X 座標（像素）。
+        pub wx: f32,
+        /// 世界 Y 座標（像素）。
+        pub wy: f32,
+        /// 繁中名稱（面向玩家顯示）。
+        pub name_zh: String,
+        /// 代表 emoji。
+        pub emoji: String,
+        /// 首探者顯示名稱。
+        pub discoverer_name: String,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1320,6 +1339,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
         #[serde(default)]
         fishing_contest: Option<FishingContestView>,
+        /// 世界奇觀首探（ROADMAP 524）：已被首探的奇觀列表（含座標/名稱/發現者）。
+        /// 空向量 = 尚無任何奇觀被首探。`#[serde(default)]` 向後相容。
+        #[serde(default)]
+        wonder_discoveries: Vec<WonderDiscoveryView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3485,6 +3508,7 @@ mod tests {
             gold_rush: None,
             auction: None,
             fishing_contest: None,
+            wonder_discoveries: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
