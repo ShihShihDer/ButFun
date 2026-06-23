@@ -2340,6 +2340,12 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub pet_bond: u8,
 
+    // ── 守護者元素祝福（ROADMAP 533）─────────────────────────────────────────
+    /// 目前有效的守護者祝福種類 wire 字串（"chaos"/"frost"/"flame"/"void"）。
+    /// None = 無祝福（略過序列化）。前端據此在玩家身上畫對應元素光環，全服可見。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guardian_blessing: Option<String>,
+
     // ── 釣魚（ROADMAP 47）────────────────────────────────────────────────────
     /// 釣魚冷卻剩餘秒數（0.0 = 可立即垂釣）。前端釣魚面板顯示倒數。
     #[serde(default, skip_serializing_if = "is_zero_f32")]
@@ -3401,6 +3407,7 @@ mod tests {
                 idle_nudge: None,
                 poisoned: false,
                 is_newcomer: false,
+                guardian_blessing: None,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3719,6 +3726,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -4019,6 +4027,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -4095,6 +4104,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            guardian_blessing: None,
         }
     }
 

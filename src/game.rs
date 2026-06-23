@@ -3454,6 +3454,9 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 守護者元素祝福 tick（ROADMAP 533）：推進計時、清除過期祝福。
+            app.guardian_blessings.write().unwrap().tick(dt);
+
             // 流星雨 tick（ROADMAP 133）：天文台竣工後每 30 分鐘觸發流星雨，地面出現星塵採集點。
             {
                 let project_completed = app.town_project.read().unwrap().status
@@ -4452,6 +4455,10 @@ pub fn spawn(app: AppState) {
                             };
                             pv.idle_nudge =
                                 crate::idle_nudge::suggest(&nudge_ctx).map(|n| n.wire_key().to_string());
+                            // ROADMAP 533：守護者元素祝福——讀鎖即取即放，守 prod-deadlock。
+                            pv.guardian_blessing = app.guardian_blessings.read().unwrap()
+                                .get(p.id)
+                                .map(|b| b.kind.wire_str().to_string());
                             pv
                         }).collect(),
                         fields: field_views,
