@@ -1785,8 +1785,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let Some((px, py, downed, cooldown, power, name)) = attacker_info else { continue; };
                     // 倒地或冷卻中不能攻擊。
                     if downed || cooldown > 0.0 { continue; }
-                    // 距離判定（守護者世界座標；室內玩家自然超出範圍）。
-                    if !crate::world_boss::within_boss_reach(px, py) { continue; }
+                    // 距離判定（ROADMAP 530：依當前守護者種類的座標，讀鎖即取即放）。
+                    let boss_variant = app.world_boss.read().unwrap().active_variant();
+                    if !crate::world_boss::within_variant_reach(px, py, boss_variant) { continue; }
 
                     // 打一下守護者（world_boss 寫鎖，即取即放）。
                     let boss_event = app.world_boss.write().unwrap().hit(id, name.clone(), power);

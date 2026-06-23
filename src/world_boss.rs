@@ -1,8 +1,11 @@
 //! 世界守護者（ROADMAP 525）：周期性降臨的超強守護者 BOSS。
 //!
-//! 首次等待 1 小時後，世界守護者現身於荒野遠東（距城鎮約 3.4km）；
+//! 首次等待 1 小時後，世界守護者現身於荒野；
 //! 玩家需跋涉前往並協力擊破——擊破後全服公告，參與者皆得乙太獎勵；
 //! 守護者 4 小時後重生，再度等候新的挑戰者。
+//!
+//! ROADMAP 530 守護者輪換：守護者共有四個種類（東/北/西/南方位），
+//! 每次擊敗後換下一種出現，讓玩家探索不同方向的荒野。
 //!
 //! 成本紀律：純本機邏輯，零 LLM，零 migration，純記憶體，重啟清零。
 
@@ -12,19 +15,56 @@ use uuid::Uuid;
 pub const BOSS_FIRST_WAIT_SECS: f32 = 3600.0;
 /// 擊敗後重生間隔（4 小時）。
 pub const BOSS_RESPAWN_SECS: f32 = 14400.0;
-/// 守護者最大 HP。
-pub const BOSS_MAX_HP: i32 = 800;
 /// 玩家發動攻擊的有效半徑（像素）。
 pub const BOSS_REACH: f32 = 100.0;
-/// 守護者世界座標 X（荒野遠東，距城鎮 ~3400px）。
-pub const BOSS_WX: f32 = 5800.0;
-/// 守護者世界座標 Y。
-pub const BOSS_WY: f32 = 2400.0;
 
 /// 造成最高傷害者的乙太獎勵。
 pub const BOSS_REWARD_TOP: u32 = 60;
 /// 所有有效參與者的乙太獎勵（含最高傷害者）。
 pub const BOSS_REWARD_PARTICIPANT: u32 = 20;
+
+// ── ROADMAP 530 守護者種類 ────────────────────────────────────────────────────
+
+/// 守護者種類定義（輪換用）。每種出現在不同方位，讓玩家探索荒野不同角落。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BossVariant {
+    /// 守護者名稱（面向玩家、集中於此以利 i18n）。
+    pub name: &'static str,
+    /// 代表 emoji。
+    pub emoji: &'static str,
+    /// 最大 HP。
+    pub max_hp: i32,
+    /// 世界座標 X（像素）。
+    pub wx: f32,
+    /// 世界座標 Y（像素）。
+    pub wy: f32,
+}
+
+/// 四種守護者輪換清單（東→北→西→南依序）。
+///
+/// 座標設計：各距城鎮中心（約 2400, 2400）至少 3000px，
+/// 讓玩家必須真正「出走荒野」才能挑戰，且每次方位不同。
+pub const ALL_VARIANTS: [BossVariant; 4] = [
+    BossVariant { name: "世界守護者", emoji: "🗿", max_hp: 800, wx: 5800.0, wy: 2400.0 }, // 東方
+    BossVariant { name: "晶霜巨龍",   emoji: "🐉", max_hp: 800, wx: 2400.0, wy: -800.0 }, // 北方
+    BossVariant { name: "熔焰蜥龍",   emoji: "🦎", max_hp: 800, wx: -1000.0, wy: 2400.0 }, // 西方
+    BossVariant { name: "深淵幽靈",   emoji: "👻", max_hp: 800, wx: 2400.0, wy: 5800.0 }, // 南方
+];
+
+/// 依累計擊敗次數回傳本輪的守護者種類（純函式、確定性、零隨機）。
+///
+/// 每擊敗一隻，下一隻換成下一種；走完四種後從頭循環。
+pub fn variant_for_defeat(defeat_count: u32) -> BossVariant {
+    ALL_VARIANTS[(defeat_count as usize) % ALL_VARIANTS.len()]
+}
+
+/// 現在這隻守護者是哪一種（以當前在場的守護者算，傳入「尚未累計本次的 defeat_count」）。
+///
+/// - 第一次降臨時 defeat_count=0 → 取 ALL_VARIANTS[0]（東方）。
+/// - 擊敗後 defeat_count 才 +1，之後新一隻就是 ALL_VARIANTS[defeat_count % 4]。
+pub fn current_variant(defeat_count: u32) -> BossVariant {
+    ALL_VARIANTS[(defeat_count as usize) % ALL_VARIANTS.len()]
+}
 
 // ── 參與者紀錄 ─────────────────────────────────────────────────────────────
 
@@ -41,8 +81,8 @@ pub struct BossParticipant {
 /// `tick` 與 `hit` 回傳的事件。
 pub enum BossEvent {
     None,
-    /// 守護者現身（此幀首次激活）。
-    Spawned,
+    /// 守護者現身（此幀首次激活），附帶本次種類。
+    Spawned { variant: BossVariant },
     /// 守護者被擊敗，附帶參與者列表（id, 名稱, 乙太獎勵）。
     Defeated { rewards: Vec<(Uuid, String, u32)> },
 }
@@ -54,9 +94,11 @@ pub struct WorldBossState {
     /// 距下次出現的冷卻（秒）。
     cooldown: f32,
     /// 當前 HP；None 表示守護者不在場。
-    hp:           Option<i32>,
+    hp: Option<i32>,
     /// 傷害參與紀錄。
     participants: Vec<BossParticipant>,
+    /// 累計擊敗次數（決定下一隻守護者的種類；重啟清零）。
+    pub defeat_count: u32,
 }
 
 impl WorldBossState {
@@ -65,7 +107,13 @@ impl WorldBossState {
             cooldown:     BOSS_FIRST_WAIT_SECS,
             hp:           None,
             participants: Vec::new(),
+            defeat_count: 0,
         }
+    }
+
+    /// 目前在場的守護者種類（若不在場，回傳「下一隻」的種類以利 HUD 預覽）。
+    pub fn active_variant(&self) -> BossVariant {
+        current_variant(self.defeat_count)
     }
 
     /// 守護者目前是否在場。
@@ -90,9 +138,10 @@ impl WorldBossState {
         }
         self.cooldown -= dt;
         if self.cooldown <= 0.0 {
-            self.hp = Some(BOSS_MAX_HP);
+            let v = self.active_variant();
+            self.hp = Some(v.max_hp);
             self.participants.clear();
-            return BossEvent::Spawned;
+            return BossEvent::Spawned { variant: v };
         }
         BossEvent::None
     }
@@ -119,6 +168,8 @@ impl WorldBossState {
         if *hp <= 0 {
             self.hp = None;
             self.cooldown = BOSS_RESPAWN_SECS;
+            // 擊敗後 +1，下次出現為下一種守護者。
+            self.defeat_count = self.defeat_count.saturating_add(1);
             let rewards = self.build_rewards(name);
             self.participants.clear();
             return BossEvent::Defeated { rewards };
@@ -153,13 +204,19 @@ impl WorldBossState {
 
 // ── 純函式（可測、可匯出至前端）─────────────────────────────────────────────
 
-/// 玩家座標是否在守護者攻擊範圍內（NaN/Infinity 保守回 false）。
+/// 玩家座標是否在指定守護者的攻擊範圍內（NaN/Infinity 保守回 false）。
 pub fn within_boss_reach(px: f32, py: f32) -> bool {
+    within_variant_reach(px, py, current_variant(0))
+}
+
+/// 玩家座標是否在某種守護者的攻擊範圍內（NaN/Infinity 保守回 false）。
+/// 接線時傳入 `state.active_variant()` 取當前種類。
+pub fn within_variant_reach(px: f32, py: f32, v: BossVariant) -> bool {
     if !px.is_finite() || !py.is_finite() {
         return false;
     }
-    let dx = px - BOSS_WX;
-    let dy = py - BOSS_WY;
+    let dx = px - v.wx;
+    let dy = py - v.wy;
     dx * dx + dy * dy <= BOSS_REACH * BOSS_REACH
 }
 
@@ -180,31 +237,38 @@ mod tests {
         s
     }
 
+    fn defeat_boss(s: &mut WorldBossState) {
+        let hp = s.active_variant().max_hp as u32;
+        s.hit(Uuid::new_v4(), "英雄".into(), hp);
+    }
+
     // 1. 未到冷卻不現身
     #[test]
     fn boss_does_not_spawn_before_first_wait() {
         let mut s = fresh_state();
         let ev = s.tick(BOSS_FIRST_WAIT_SECS - 1.0);
-        assert!(!matches!(ev, BossEvent::Spawned));
+        assert!(!matches!(ev, BossEvent::Spawned { .. }));
         assert!(!s.is_active());
     }
 
-    // 2. 冷卻到期後現身
+    // 2. 冷卻到期後現身，帶 variant
     #[test]
     fn boss_spawns_after_first_wait() {
         let mut s = fresh_state();
         let ev = s.tick(BOSS_FIRST_WAIT_SECS);
-        assert!(matches!(ev, BossEvent::Spawned));
+        assert!(matches!(ev, BossEvent::Spawned { .. }));
         assert!(s.is_active());
-        assert_eq!(s.current_hp(), Some(BOSS_MAX_HP));
+        let v = ALL_VARIANTS[0];
+        assert_eq!(s.current_hp(), Some(v.max_hp));
     }
 
     // 3. 受傷後 HP 下降
     #[test]
     fn boss_takes_damage_reduces_hp() {
         let mut s = active_state();
+        let max_hp = s.active_variant().max_hp;
         s.hit(Uuid::new_v4(), "甲".into(), 50);
-        assert_eq!(s.current_hp(), Some(BOSS_MAX_HP - 50));
+        assert_eq!(s.current_hp(), Some(max_hp - 50));
     }
 
     // 4. 傷害累積至玩家紀錄
@@ -223,7 +287,8 @@ mod tests {
     fn boss_defeat_when_hp_zero() {
         let mut s = active_state();
         let pid = Uuid::new_v4();
-        let ev = s.hit(pid, "英雄".into(), BOSS_MAX_HP as u32);
+        let max_hp = s.active_variant().max_hp as u32;
+        let ev = s.hit(pid, "英雄".into(), max_hp);
         assert!(matches!(ev, BossEvent::Defeated { .. }));
         assert!(!s.is_active());
     }
@@ -233,7 +298,8 @@ mod tests {
     fn rewards_distributed_on_defeat() {
         let mut s = active_state();
         let pid = Uuid::new_v4();
-        if let BossEvent::Defeated { rewards } = s.hit(pid, "英雄".into(), BOSS_MAX_HP as u32) {
+        let max_hp = s.active_variant().max_hp as u32;
+        if let BossEvent::Defeated { rewards } = s.hit(pid, "英雄".into(), max_hp) {
             assert_eq!(rewards.len(), 1);
             assert_eq!(rewards[0].0, pid);
             assert_eq!(rewards[0].2, BOSS_REWARD_TOP + BOSS_REWARD_PARTICIPANT);
@@ -248,8 +314,9 @@ mod tests {
         let mut s = active_state();
         let pid1 = Uuid::new_v4();
         let pid2 = Uuid::new_v4();
+        let max_hp = s.active_variant().max_hp as u32;
         s.hit(pid1, "小".into(), 100);
-        if let BossEvent::Defeated { rewards } = s.hit(pid2, "大".into(), BOSS_MAX_HP as u32) {
+        if let BossEvent::Defeated { rewards } = s.hit(pid2, "大".into(), max_hp) {
             let r1 = rewards.iter().find(|r| r.0 == pid1).unwrap();
             let r2 = rewards.iter().find(|r| r.0 == pid2).unwrap();
             assert_eq!(r2.2, BOSS_REWARD_TOP + BOSS_REWARD_PARTICIPANT, "最高傷害者");
@@ -259,11 +326,11 @@ mod tests {
         }
     }
 
-    // 8. 擊敗後冷卻重置為 BOSS_RESPAWN_SECS
+    // 8. 擊敗後冷卻重置
     #[test]
     fn boss_respawn_cooldown_after_defeat() {
         let mut s = active_state();
-        s.hit(Uuid::new_v4(), "英雄".into(), BOSS_MAX_HP as u32);
+        defeat_boss(&mut s);
         assert!(!s.is_active());
         assert!((s.cooldown - BOSS_RESPAWN_SECS).abs() < 1.0);
     }
@@ -272,9 +339,9 @@ mod tests {
     #[test]
     fn boss_respawns_after_cooldown() {
         let mut s = active_state();
-        s.hit(Uuid::new_v4(), "英雄".into(), BOSS_MAX_HP as u32);
+        defeat_boss(&mut s);
         let ev = s.tick(BOSS_RESPAWN_SECS);
-        assert!(matches!(ev, BossEvent::Spawned));
+        assert!(matches!(ev, BossEvent::Spawned { .. }));
         assert!(s.is_active());
     }
 
@@ -290,50 +357,119 @@ mod tests {
     #[test]
     fn zero_damage_ignored() {
         let mut s = active_state();
+        let max_hp = s.active_variant().max_hp;
         let ev = s.hit(Uuid::new_v4(), "英雄".into(), 0);
         assert!(matches!(ev, BossEvent::None));
-        assert_eq!(s.current_hp(), Some(BOSS_MAX_HP));
+        assert_eq!(s.current_hp(), Some(max_hp));
     }
 
-    // 12. within_boss_reach 正中心
+    // 12. within_variant_reach 正中心
     #[test]
     fn within_reach_center() {
-        assert!(within_boss_reach(BOSS_WX, BOSS_WY));
+        let v = ALL_VARIANTS[0];
+        assert!(within_variant_reach(v.wx, v.wy, v));
     }
 
-    // 13. within_boss_reach 邊界內
+    // 13. within_variant_reach 邊界內
     #[test]
     fn within_reach_edge_inside() {
-        assert!(within_boss_reach(BOSS_WX + BOSS_REACH - 1.0, BOSS_WY));
+        let v = ALL_VARIANTS[0];
+        assert!(within_variant_reach(v.wx + BOSS_REACH - 1.0, v.wy, v));
     }
 
-    // 14. within_boss_reach 邊界外
+    // 14. within_variant_reach 邊界外
     #[test]
     fn within_reach_edge_outside() {
-        assert!(!within_boss_reach(BOSS_WX + BOSS_REACH + 1.0, BOSS_WY));
+        let v = ALL_VARIANTS[0];
+        assert!(!within_variant_reach(v.wx + BOSS_REACH + 1.0, v.wy, v));
     }
 
-    // 15. within_boss_reach NaN 保守 false
+    // 15. within_variant_reach NaN 保守 false
     #[test]
     fn within_reach_nan_false() {
-        assert!(!within_boss_reach(f32::NAN, BOSS_WY));
+        let v = ALL_VARIANTS[0];
+        assert!(!within_variant_reach(f32::NAN, v.wy, v));
     }
 
-    // 16. within_boss_reach Infinity 保守 false
+    // 16. within_variant_reach Infinity 保守 false
     #[test]
     fn within_reach_infinity_false() {
-        assert!(!within_boss_reach(f32::INFINITY, BOSS_WY));
+        let v = ALL_VARIANTS[0];
+        assert!(!within_variant_reach(f32::INFINITY, v.wy, v));
     }
 
-    // 17. BOSS_WX/WY 距城鎮夠遠
+    // 17. 所有守護者種類距城鎮夠遠（≥ 2000px）
     #[test]
-    fn boss_position_is_far_from_town() {
-        // 城鎮大致座標（安全產生點附近）
+    fn all_variants_far_from_town() {
         let town_x = 2400.0_f32;
         let town_y = 2400.0_f32;
-        let dx = BOSS_WX - town_x;
-        let dy = BOSS_WY - town_y;
-        let dist = (dx * dx + dy * dy).sqrt();
-        assert!(dist >= 2000.0, "守護者應距城鎮 ≥ 2000px，實際 {dist:.0}");
+        for v in &ALL_VARIANTS {
+            let dx = v.wx - town_x;
+            let dy = v.wy - town_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            assert!(dist >= 2000.0, "{} 距城鎮 {dist:.0}px，應 ≥ 2000px", v.name);
+        }
+    }
+
+    // 18. variant_for_defeat 確定性循環（0→1→2→3→0）
+    #[test]
+    fn variant_cycles_deterministically() {
+        assert_eq!(variant_for_defeat(0).name, ALL_VARIANTS[0].name);
+        assert_eq!(variant_for_defeat(1).name, ALL_VARIANTS[1].name);
+        assert_eq!(variant_for_defeat(2).name, ALL_VARIANTS[2].name);
+        assert_eq!(variant_for_defeat(3).name, ALL_VARIANTS[3].name);
+        assert_eq!(variant_for_defeat(4).name, ALL_VARIANTS[0].name); // 循環回頭
+    }
+
+    // 19. 擊敗後 defeat_count 遞增，下一隻換種類
+    #[test]
+    fn defeat_increments_defeat_count_and_rotates_variant() {
+        let mut s = active_state();
+        assert_eq!(s.defeat_count, 0);
+        let first_name = s.active_variant().name;
+        defeat_boss(&mut s);
+        assert_eq!(s.defeat_count, 1);
+        // 下一隻出現時換種類
+        s.cooldown = 0.0;
+        s.tick(0.1);
+        let second_name = s.active_variant().name;
+        assert_ne!(first_name, second_name, "第二隻守護者應換種類");
+    }
+
+    // 20. 四種守護者循環一圈後回到第一種
+    #[test]
+    fn four_defeats_cycle_back_to_first() {
+        let mut s = WorldBossState::new();
+        let first_name = ALL_VARIANTS[0].name;
+        // 模擬 4 次擊敗
+        for _ in 0..4 {
+            s.cooldown = 0.0;
+            s.tick(0.1);
+            defeat_boss(&mut s);
+        }
+        assert_eq!(s.defeat_count, 4);
+        // 第 5 隻應同 index 0（循環回頭）
+        s.cooldown = 0.0;
+        s.tick(0.1);
+        assert_eq!(s.active_variant().name, first_name, "循環回第一種");
+    }
+
+    // 21. 四種守護者名稱與方位全唯一
+    #[test]
+    fn all_variants_unique_names_and_positions() {
+        let names: Vec<&str> = ALL_VARIANTS.iter().map(|v| v.name).collect();
+        let emojis: Vec<&str> = ALL_VARIANTS.iter().map(|v| v.emoji).collect();
+        // 名稱不重複
+        for i in 0..names.len() {
+            for j in (i+1)..names.len() {
+                assert_ne!(names[i], names[j], "守護者名稱重複：{}", names[i]);
+            }
+        }
+        // emoji 不重複
+        for i in 0..emojis.len() {
+            for j in (i+1)..emojis.len() {
+                assert_ne!(emojis[i], emojis[j], "守護者 emoji 重複：{}", emojis[i]);
+            }
+        }
     }
 }
