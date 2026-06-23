@@ -4721,6 +4721,93 @@ for (const sc of scenarios) {
   else console.log("  ✅ 世界守護者（ROADMAP 525）：withinBossReach 邊界(5 cases) + bossHpFraction 真值表(4 cases) + drawWorldBoss 渲染路徑(7 cases)");
 }
 
+// ── ROADMAP 526 旅人紀念碑 ────────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const { isNearMonument, monumentEntryLines, drawMonument } = sandbox.__bfTest;
+    const now = performance.now();
+
+    // isNearMonument：中心點 → true
+    if (!isNearMonument(0, -600)) { ok = false; console.error("  ❌ isNearMonument(0,-600) 應回 true（中心）"); }
+
+    // isNearMonument：邊界內（距離 = 149）→ true
+    if (!isNearMonument(149, -600)) { ok = false; console.error("  ❌ isNearMonument(149,-600) 應回 true（邊界內）"); }
+
+    // isNearMonument：超出（距離 = 151）→ false
+    if (isNearMonument(151, -600)) { ok = false; console.error("  ❌ isNearMonument(151,-600) 應回 false（超出）"); }
+
+    // isNearMonument：NaN → false（不拋）
+    let threw = false, nanR;
+    try { nanR = isNearMonument(NaN, -600); } catch { threw = true; }
+    if (threw || nanR !== false) { ok = false; console.error("  ❌ isNearMonument(NaN) 應回 false 且不拋"); }
+
+    // isNearMonument：Infinity → false（不拋）
+    let infR;
+    try { infR = isNearMonument(Infinity, -600); } catch { threw = true; }
+    if (threw || infR !== false) { ok = false; console.error("  ❌ isNearMonument(Infinity) 應回 false 且不拋"); }
+
+    // monumentEntryLines：空陣列 → 非空提示行
+    const emptyLines = monumentEntryLines([]);
+    if (!Array.isArray(emptyLines) || emptyLines.length === 0) {
+      ok = false; console.error("  ❌ monumentEntryLines([]) 應回非空提示陣列");
+    }
+
+    // monumentEntryLines：有刻文 → 含玩家名的行
+    const entries = [
+      { label: "🗿 守護者首殺", player_name: "英雄甲", detail: "率先擊破" },
+      { label: "💎 星核晶宮首探", player_name: "旅人乙", detail: "大膽踏入秘境" },
+    ];
+    const lines = monumentEntryLines(entries);
+    if (!Array.isArray(lines) || lines.length !== 2) {
+      ok = false; console.error("  ❌ monumentEntryLines(2 entries) 應回長度 2 的陣列");
+    }
+    if (!lines[0].includes("英雄甲")) {
+      ok = false; console.error("  ❌ monumentEntryLines 第一行應含 player_name");
+    }
+
+    // monumentEntryLines：null 輸入不拋
+    let nullLines;
+    try { nullLines = monumentEntryLines(null); } catch (e) { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ monumentEntryLines(null) 不應拋"); }
+
+    // drawMonument：無刻文 + 無玩家（3 幀不拋）
+    sandbox.monumentEntries = [];
+    sandbox.me = null;
+    for (let i = 0; i < 3; i++) {
+      threw = false;
+      try { drawMonument(-100, -700, now + i * 16); } catch { threw = true; }
+      if (threw) { ok = false; console.error(`  ❌ drawMonument 無刻文第${i+1}幀拋出例外`); }
+    }
+
+    // drawMonument：有刻文 + 玩家在附近（4 幀不拋）
+    sandbox.monumentEntries = entries;
+    sandbox.me = { x: 0, y: -600, downed: false };
+    for (let i = 0; i < 4; i++) {
+      threw = false;
+      try { drawMonument(-100, -700, now + i * 16); } catch { threw = true; }
+      if (threw) { ok = false; console.error(`  ❌ drawMonument 有刻文第${i+1}幀拋出例外`); }
+    }
+
+    // drawMonument：玩家不在附近（2 幀不拋）
+    sandbox.me = { x: 5000, y: 5000, downed: false };
+    for (let i = 0; i < 2; i++) {
+      threw = false;
+      try { drawMonument(-100, -700, now + i * 16); } catch { threw = true; }
+      if (threw) { ok = false; console.error(`  ❌ drawMonument 遠離第${i+1}幀拋出例外`); }
+    }
+
+    // 恢復
+    sandbox.monumentEntries = [];
+    sandbox.me = null;
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 旅人紀念碑：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 旅人紀念碑（ROADMAP 526）：測試失敗"); }
+  else console.log("  ✅ 旅人紀念碑（ROADMAP 526）：isNearMonument 邊界(5 cases) + monumentEntryLines 真值表(4 cases) + drawMonument 渲染路徑(3 情境 9 幀)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

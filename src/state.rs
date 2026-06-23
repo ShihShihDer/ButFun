@@ -1477,6 +1477,9 @@ pub struct AppState {
     pub wonders: Arc<RwLock<crate::world_wonder::WorldWonderState>>,
     /// 世界守護者（ROADMAP 525）：周期現身的超強 BOSS，玩家協力擊敗並獲得乙太獎勵。
     pub world_boss: Arc<RwLock<crate::world_boss::WorldBossState>>,
+    /// 旅人紀念碑（ROADMAP 526）：銘記守護者首殺、奇觀首探、釣魚冠軍、礦脈冠軍等首批成就。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub monument: Arc<RwLock<crate::monument::Monument>>,
 }
 
 impl AppState {
@@ -1690,6 +1693,7 @@ impl AppState {
             fishing_contest: Arc::new(RwLock::new(crate::fishing_contest::FishingContest::new())),
             wonders: Arc::new(RwLock::new(crate::world_wonder::WorldWonderState::new())),
             world_boss: Arc::new(RwLock::new(crate::world_boss::WorldBossState::new())),
+            monument: Arc::new(RwLock::new(crate::monument::Monument::new())),
         }
     }
 
