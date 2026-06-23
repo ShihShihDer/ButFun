@@ -5042,6 +5042,103 @@ for (const sc of scenarios) {
   else console.log("  ✅ 廣場四季地景（ROADMAP 529）：plazaFloralDots(4 cases) + plazaLeafPiles(4 cases) + plazaSnowPatches(4 cases) + drawPlazaSeasonDecor(四季各4幀+畫面外)");
 }
 
+// ── ROADMAP 531：守護者遺址 ─────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const rf  = sandbox.__bfTest && sandbox.__bfTest.ruinForVariant;
+    const rga = sandbox.__bfTest && sandbox.__bfTest.ruinGlowAlpha;
+    const wrr = sandbox.__bfTest && sandbox.__bfTest.withinRuinReach;
+    const dgr = sandbox.__bfTest && sandbox.__bfTest.drawGuardianRuins;
+    if (!rf)  throw new Error("ruinForVariant 未匯出");
+    if (!rga) throw new Error("ruinGlowAlpha 未匯出");
+    if (!wrr) throw new Error("withinRuinReach 未匯出");
+    if (!dgr) throw new Error("drawGuardianRuins 未匯出");
+
+    // ── ruinForVariant 真值表（4 種變體 + 壞值）─────────────────────────────
+    const r0 = rf(0); if (!r0 || r0.variantIdx !== 0) { ok = false; console.error("  ❌ ruinForVariant(0) variantIdx 應為 0"); }
+    const r1 = rf(1); if (!r1 || r1.variantIdx !== 1) { ok = false; console.error("  ❌ ruinForVariant(1) variantIdx 應為 1"); }
+    const r2 = rf(2); if (!r2 || r2.variantIdx !== 2) { ok = false; console.error("  ❌ ruinForVariant(2) variantIdx 應為 2"); }
+    const r3 = rf(3); if (!r3 || r3.variantIdx !== 3) { ok = false; console.error("  ❌ ruinForVariant(3) variantIdx 應為 3"); }
+    const r4 = rf(4); if (!r4 || r4.variantIdx !== 0) { ok = false; console.error("  ❌ ruinForVariant(4) 應循環回 0"); }
+    // 壞值保守回 GUARDIAN_RUINS[0]，不拋出。
+    let threw = false;
+    try { rf(-1); rf(NaN); rf("abc"); rf(null); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ ruinForVariant 壞值應保守不拋出"); }
+    // 四個遺址 wx/wy 皆為有限數、均不重複。
+    const positions = [rf(0), rf(1), rf(2), rf(3)].map(r => `${r.wx},${r.wy}`);
+    const uniquePos = new Set(positions);
+    if (uniquePos.size !== 4) { ok = false; console.error("  ❌ 四個遺址位置應全部不同"); }
+
+    // ── ruinGlowAlpha 真值表 ────────────────────────────────────────────────
+    const ruin0 = rf(0); // 東方 wx:5800
+    // 無 BOSS 時：應有小於 0.15 的微弱光暈（不為 0）。
+    const glowNoBoss = rga(ruin0, null, 0);
+    if (typeof glowNoBoss !== "number" || glowNoBoss < 0 || glowNoBoss >= 0.15)
+      { ok = false; console.error(`  ❌ ruinGlowAlpha(無 BOSS) 應在 [0, 0.15)，得 ${glowNoBoss}`); }
+    // BOSS 在場且位置匹配（wx≈5800）：應顯著大於 0.2。
+    const fakeBossMatch = { hp: 400, max_hp: 800, wx: 5800, wy: 2400 };
+    const glowWithBoss = rga(ruin0, fakeBossMatch, 0);
+    if (typeof glowWithBoss !== "number" || glowWithBoss < 0.2)
+      { ok = false; console.error(`  ❌ ruinGlowAlpha(BOSS 匹配) 應 >= 0.2，得 ${glowWithBoss}`); }
+    // BOSS 在場但位置不匹配（遠超 200px）：應仍是小光暈。
+    const fakeBossOther = { hp: 400, max_hp: 800, wx: 2400, wy: -800 };
+    const glowOtherBoss = rga(ruin0, fakeBossOther, 0);
+    if (typeof glowOtherBoss !== "number" || glowOtherBoss >= 0.15)
+      { ok = false; console.error(`  ❌ ruinGlowAlpha(BOSS 不匹配) 應 < 0.15，得 ${glowOtherBoss}`); }
+    // 壞值安全。
+    threw = false;
+    try { rga(null, null, 0); rga(ruin0, null, NaN); rga(ruin0, { hp: NaN }, 0); } catch { threw = true; }
+    if (threw) { ok = false; console.error("  ❌ ruinGlowAlpha 壞值應保守不拋出"); }
+    // 回值應在 [0, 0.55]。
+    const alphaVal = rga(ruin0, fakeBossMatch, 1000);
+    if (alphaVal < 0 || alphaVal > 0.55) { ok = false; console.error(`  ❌ ruinGlowAlpha 應在 [0,0.55]，得 ${alphaVal}`); }
+
+    // ── withinRuinReach 真值表 ──────────────────────────────────────────────
+    const ruin3 = rf(3); // 南方 wx:2400 wy:5800
+    if (!wrr(2400, 5800, ruin3)) { ok = false; console.error("  ❌ withinRuinReach(正中心) 應為 true"); }
+    if (!wrr(2450, 5850, ruin3)) { ok = false; console.error("  ❌ withinRuinReach(70px 內) 應為 true"); }
+    if (wrr(2600, 5800, ruin3))  { ok = false; console.error("  ❌ withinRuinReach(200px 遠) 應為 false"); }
+    if (wrr(NaN,  5800, ruin3))  { ok = false; console.error("  ❌ withinRuinReach(NaN x) 應為 false"); }
+    if (wrr(2400, 5800, null))   { ok = false; console.error("  ❌ withinRuinReach(null ruin) 應為 false"); }
+
+    // ── drawGuardianRuins 渲染路徑 ──────────────────────────────────────────
+    // 無 BOSS，玩家在城鎮中央（不在任何遺址附近）。
+    sandbox.worldBoss = null;
+    sandbox.me = { x: 2400, y: 2400, hp: 50, max_hp: 100, downed: false };
+    for (let i = 0; i < 4; i++) {
+      threw = false;
+      try { dgr(2300, 2150, 1000 + i * 16); } catch (e) { threw = true; console.error(`  ❌ drawGuardianRuins(無 BOSS 幀${i}) 拋出例外`, e && e.message); }
+      if (threw) { ok = false; }
+    }
+    // 玩家走到東方遺址旁（5800, 2400）。
+    sandbox.me = { x: 5820, y: 2410, hp: 50, max_hp: 100, downed: false };
+    for (let i = 0; i < 4; i++) {
+      threw = false;
+      try { dgr(5700, 2300, 1000 + i * 16); } catch (e) { threw = true; console.error(`  ❌ drawGuardianRuins(玩家在東方遺址幀${i}) 拋出例外`, e && e.message); }
+      if (threw) { ok = false; }
+    }
+    // BOSS 在場時（東方）。
+    sandbox.worldBoss = { hp: 400, max_hp: 800, wx: 5800, wy: 2400, participant_count: 2, boss_emoji: "🗿", boss_name: "世界守護者" };
+    for (let i = 0; i < 4; i++) {
+      threw = false;
+      try { dgr(5700, 2300, 1000 + i * 16); } catch (e) { threw = true; console.error(`  ❌ drawGuardianRuins(BOSS 在場幀${i}) 拋出例外`, e && e.message); }
+      if (threw) { ok = false; }
+    }
+    // 畫面外（遺址在視窗外，應靜默跳過）。
+    sandbox.worldBoss = null;
+    sandbox.me = null;
+    threw = false;
+    try { dgr(99999, 99999, 1000); } catch (e) { threw = true; console.error("  ❌ drawGuardianRuins(畫面外) 拋出例外", e && e.message); }
+    if (threw) { ok = false; }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 守護者遺址：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 守護者遺址（ROADMAP 531）：測試失敗"); }
+  else console.log("  ✅ 守護者遺址（ROADMAP 531）：ruinForVariant(5 cases+四位不重複) + ruinGlowAlpha(5 cases+壞值) + withinRuinReach(5 cases) + drawGuardianRuins(3 情境×4 幀+畫面外)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
