@@ -130,6 +130,7 @@ mod star_crystal;
 mod trade_route;
 mod workshop;
 mod bounty_board;
+mod bounty_harvest;
 mod expedition;
 mod procurement;
 mod farm_fair;
