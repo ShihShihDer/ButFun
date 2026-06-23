@@ -1469,6 +1469,9 @@ pub struct AppState {
     /// 星際拍賣行（ROADMAP 522）：每 2 小時全服競標一件傳說遺物（首次 5 分鐘後）。
     /// 純記憶體，重啟清零，零 migration，零持久化。
     pub auction: Arc<RwLock<crate::auction::AuctionState>>,
+    /// 萬尾釣魚大賽（ROADMAP 523）：每 45 分鐘全服釣魚競速，前三名得乙太。
+    /// 純記憶體，重啟清零，零 migration，零持久化。
+    pub fishing_contest: Arc<RwLock<crate::fishing_contest::FishingContest>>,
 }
 
 impl AppState {
@@ -1679,6 +1682,7 @@ impl AppState {
             combat_marks: Arc::new(RwLock::new(crate::combat_mark::CombatMarkState::new())),
             gold_rush: Arc::new(RwLock::new(crate::gold_rush::GoldRushState::new())),
             auction: Arc::new(RwLock::new(crate::auction::AuctionState::new())),
+            fishing_contest: Arc::new(RwLock::new(crate::fishing_contest::FishingContest::new())),
         }
     }
 

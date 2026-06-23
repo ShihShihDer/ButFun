@@ -938,6 +938,16 @@ pub enum ClientMsg {
         pub remaining_secs: u32,
     }
 
+    /// 萬尾釣魚大賽快照（ROADMAP 523）。None = 等待中；Some = 大賽進行中。
+    /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+    pub struct FishingContestView {
+        /// 大賽剩餘秒數（取整數供前端倒數）。
+        pub remaining_secs: u32,
+        /// 當前前三名：`(顯示名稱, 累計體長mm, 尾數)`，按累計體長高到低，最多 3 筆。
+        pub top3: Vec<(String, u32, u32)>,
+    }
+
     /// 蒸汽星艦共修快照（ROADMAP 492）。前端用於顯示進度條、互動提示、閃耀光效。
     /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時預設為損毀零進度）。
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1306,6 +1316,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
         #[serde(default)]
         auction: Option<AuctionView>,
+        /// 萬尾釣魚大賽（ROADMAP 523）。None = 等待中；Some = 大賽進行中（含剩餘秒/即時排名）。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = None，靜默略過）。
+        #[serde(default)]
+        fishing_contest: Option<FishingContestView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -3470,6 +3484,7 @@ mod tests {
             ether_surge_y: 0.0,
             gold_rush: None,
             auction: None,
+            fishing_contest: None,
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");

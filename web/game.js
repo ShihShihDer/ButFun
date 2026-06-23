@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -2460,6 +2460,51 @@
     if (t) { t.style.display = "block"; t.textContent = text; }
   }
 
+  // 純函式：萬尾釣魚大賽 HUD 文字（ROADMAP 523）——確定性、無 DOM 副作用，供 render-smoke 斷言。
+  // fc：快照物件（含 remaining_secs/top3）；null 時回 null（大賽等待中）。
+  function fishingContestHudText(fc) {
+    if (!fc) return null;
+    const mins = Math.floor((fc.remaining_secs || 0) / 60);
+    const secs = (fc.remaining_secs || 0) % 60;
+    const timeStr = mins > 0 ? `${mins}m${secs}s` : `${secs}s`;
+    const top3Str = Array.isArray(fc.top3) && fc.top3.length > 0
+      ? fc.top3.slice(0, 3).map((e, i) => {
+          const medals = ["🥇", "🥈", "🥉"];
+          const cm = Math.floor(((e && e[1]) || 0) / 10);
+          return `${medals[i] || ""}${(e && e[0]) || ""}(${cm}cm)`;
+        }).join(" ")
+      : "無人入榜";
+    return `🎣 釣魚大賽 ${timeStr} | ${top3Str}`;
+  }
+
+  // 萬尾釣魚大賽 HUD pill（ROADMAP 523）：大賽進行中顯示藍綠色倒數 pill 附前三名。
+  let _lastFishingContestText = null;
+  function updateFishingContestHud() {
+    const text = fishingContestHudText(fishingContest);
+    if (!text) {
+      const pill = document.getElementById("hudFishingContest");
+      if (pill) pill.style.display = "none";
+      _lastFishingContestText = null;
+      return;
+    }
+    if (text === _lastFishingContestText) return;
+    _lastFishingContestText = text;
+    if (!document.getElementById("hudFishingContest")) {
+      const el = document.createElement("div");
+      el.id = "hudFishingContest";
+      el.style.cssText = [
+        "order:4",
+        "border-radius:12px",
+        "font-size:.75rem", "font-weight:700",
+        "padding:3px 10px",
+        "background:#001a14", "color:#60e8c0", "border:1px solid #20a080",
+      ].join(";");
+      _ensureBannerColumn().appendChild(el);
+    }
+    const t = document.getElementById("hudFishingContest");
+    if (t) { t.style.display = "block"; t.textContent = text; }
+  }
+
   // 季節 HUD pill（ROADMAP 137）：常駐顯示目前季節，讓玩家感受時間流逝。
   const SEASON_INFO = {
     spring: { label: "🌸 春", color: "#f0c0d0", border: "#c06080", bg: "#2a0a10" },
@@ -3211,6 +3256,7 @@
   const GOLD_RUSH_VEIN_WY = 2400; // 與後端 gold_rush::VEIN_WY 對齊
   const GOLD_RUSH_MINE_REACH = 120; // 與後端 gold_rush::MINE_REACH 對齊
   let auction = null;            // ROADMAP 522 星際拍賣行快照（null=等待中，非 null 時含 item/current_bid/bidder_name/remaining_secs）
+  let fishingContest = null;     // ROADMAP 523 萬尾釣魚大賽快照（null=等待中，非 null 時含 remaining_secs/top3）
   const AUCTION_WX = 2300;       // 與後端 auction::AUCTION_WX 對齊
   const AUCTION_WY = 2100;       // 與後端 auction::AUCTION_WY 對齊
   const AUCTION_REACH = 200;     // 與後端 auction::AUCTION_REACH 對齊
@@ -4165,6 +4211,8 @@
         goldRush = msg.gold_rush || null;
         // 星際拍賣行（ROADMAP 522）：競標進行中才有此欄位（serde default = None），平時 null 節省頻寬。
         auction = msg.auction || null;
+        // 萬尾釣魚大賽（ROADMAP 523）：大賽中才有此欄位（serde default = None），平時 null 節省頻寬。
+        fishingContest = msg.fishing_contest || null;
         // 霸主巢穴（ROADMAP 176）：從 colony_views 中找出 is_dominant 的那個
         dominantColonyId = null;
         if (Array.isArray(msg.monster_colony_views)) {
@@ -9986,6 +10034,7 @@
       updateEtherSurgeHud();               // 乙太暴走事件（ROADMAP 504）
       updateGoldRushHud();                 // 黃金礦脈爭奪戰（ROADMAP 521）
       updateAuctionHud();                  // 星際拍賣行（ROADMAP 522）
+      updateFishingContestHud();           // 萬尾釣魚大賽（ROADMAP 523）
       updateSeasonHud();                    // 季節循環（ROADMAP 137）
       updateSpeciesAttitudeHud();           // 物種態度欄（ROADMAP 144）
       updateTownFactionsHud();              // 鎮民派系一覽（ROADMAP 355）

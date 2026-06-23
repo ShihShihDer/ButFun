@@ -688,7 +688,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction, fishing_contest } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -860,6 +860,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         gold_rush: gold_rush.clone(),
                                         // 星際拍賣行（ROADMAP 522）：全服廣播競標狀態（平時 None 節省頻寬）。
                                         auction: auction.clone(),
+                                        // 萬尾釣魚大賽（ROADMAP 523）：全服廣播，大賽中才有值，平時 None 節省頻寬。
+                                        fishing_contest: fishing_contest.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -5129,6 +5131,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 季節鎖與 players 鎖不巢狀，守 prod-deadlock 鐵律。
                     let season_now = app.season.read().unwrap().current;
                     // 1. 鎖內判定結果、給魚、清狀態；把要廣播的資料帶出鎖外。
+                    // ROADMAP 523：contest_catch 在 players 鎖內填值，出鎖後才取 fishing_contest 鎖，
+                    // 守 prod-deadlock 鐵律（兩把獨立鎖絕不巢狀）。
+                    let mut contest_catch: Option<(String, u32)> = None;
                     let outcome_msg = {
                         let mut players = app.players.write().unwrap();
                         if let Some(p) = players.get_mut(&id) {
@@ -5178,6 +5183,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                             size_mm, personal_best,
                                             "收竿釣到魚"
                                         );
+                                        // ROADMAP 523：players 鎖內只做 clone，出鎖後才記入大賽。
+                                        contest_catch = Some((p.name.clone(), size_mm));
                                         // 魚物品 → snake_case 線格式（serde 約定，鏡像 state.rs decay key）。
                                         let fish_key = serde_json::to_value(fish)
                                             .ok()
@@ -5217,6 +5224,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     // 2. 出鎖後才廣播（前端只對自己 id 演出飄字）。
                     if let Some(msg) = outcome_msg {
                         let _ = app.tx.send(Arc::new(msg));
+                    }
+                    // 3. ROADMAP 523 出鎖後才取 fishing_contest 鎖——兩把鎖絕不巢狀。
+                    if let Some((cname, cmm)) = contest_catch {
+                        app.fishing_contest.write().unwrap().record_catch(id, &cname, cmm);
                     }
                 }
 

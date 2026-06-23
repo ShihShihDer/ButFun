@@ -4544,6 +4544,59 @@ for (const sc of scenarios) {
   else console.log("  ✅ 星際拍賣行（ROADMAP 522）：withinAuctionReach 邊界(3 cases) + auctionBidLabel 真值表(3 cases) + drawAuction 無競標/進行中/無出價人 零例外");
 }
 
+// ── ROADMAP 523：萬尾釣魚大賽 ────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const fcht = sandbox.__bfTest && sandbox.__bfTest.fishingContestHudText;
+    if (!fcht) throw new Error("fishingContestHudText 未匯出");
+
+    // fishingContestHudText(null) → null（大賽等待中）
+    if (fcht(null) !== null) { ok = false; console.error("  ❌ fishingContestHudText(null) 應回 null"); }
+
+    // fishingContestHudText 大賽進行中、無人入榜 → 含「釣魚大賽」且含「無人入榜」
+    {
+      const t = fcht({ remaining_secs: 180, top3: [] });
+      if (typeof t !== "string" || !t.includes("釣魚大賽")) { ok = false; console.error("  ❌ fishingContestHudText(進行中,空榜) 應含「釣魚大賽」"); }
+      if (!t.includes("無人入榜")) { ok = false; console.error("  ❌ fishingContestHudText(進行中,空榜) 應含「無人入榜」"); }
+    }
+
+    // fishingContestHudText 含前三名 → 含名稱與 cm 數
+    {
+      const t = fcht({ remaining_secs: 65, top3: [["甲", 550, 3], ["乙", 300, 2]] });
+      if (!t || !t.includes("甲")) { ok = false; console.error("  ❌ fishingContestHudText(含榜) 應包含「甲」"); }
+      if (!t.includes("55cm")) { ok = false; console.error("  ❌ fishingContestHudText(含榜) 應包含「55cm」（550mm÷10）"); }
+    }
+
+    // fishingContestHudText 倒數 < 60 秒 → 不含 "m" 前綴只顯示秒
+    {
+      const t = fcht({ remaining_secs: 30, top3: [] });
+      if (!t || !t.includes("30s")) { ok = false; console.error("  ❌ fishingContestHudText(30s) 應含「30s」"); }
+      if (t.includes("0m")) { ok = false; console.error("  ❌ fishingContestHudText(30s) 不應含「0m」"); }
+    }
+
+    // fishingContestHudText 壞值（top3=null）不拋
+    {
+      let threw = false;
+      try { fcht({ remaining_secs: 100, top3: null }); } catch { threw = true; }
+      if (threw) { ok = false; console.error("  ❌ fishingContestHudText(top3=null) 不應拋出例外"); }
+    }
+
+    // fishingContestHudText 壞值（remaining_secs=null）不拋、回字串
+    {
+      let threw = false, t;
+      try { t = fcht({ remaining_secs: null, top3: [] }); } catch { threw = true; }
+      if (threw) { ok = false; console.error("  ❌ fishingContestHudText(remaining_secs=null) 不應拋出例外"); }
+      if (typeof t !== "string") { ok = false; console.error("  ❌ fishingContestHudText(remaining_secs=null) 應回字串"); }
+    }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 萬尾釣魚大賽：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 萬尾釣魚大賽（ROADMAP 523）：測試失敗"); }
+  else console.log("  ✅ 萬尾釣魚大賽（ROADMAP 523）：fishingContestHudText 真值表(5 cases) + 壞值安全(2 cases)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
