@@ -17,6 +17,31 @@ use uuid::Uuid;
 /// 騎乘時移動速度倍率（相對步行）。BACKLOG Phase 1-E：「速度比走路快 3 倍」。
 pub const VEHICLE_SPEED_MULT: f32 = 3.0;
 
+// ── 蒸汽衝刺（ROADMAP 539·北極星 Phase 1）─────────────────────────────────────
+// 駕駛按「💨 衝刺」灌一陣蒸汽，短時間內速度從 ×3 拉到 ×5，噴出一團白汽後回復巡航；
+// 觸發後進入冷卻，冷卻退了才能再衝。這給「騎車」加進第一個主動操作動詞——不再只是被動
+// 快 3 倍，而是「看準直線開闊處按下去、嗖一聲衝出去」。療癒向：不用也無妨、不衝也跑得動，
+// 純粹多一層爽感與節奏。零持久化、確定性（完全由「觸發時刻＋牆上時鐘」推導，鏡像 weakpoint 做法）。
+
+/// 衝刺期間的移動速度倍率（相對步行）。比巡航 `VEHICLE_SPEED_MULT`（×3）更快。
+pub const BOOST_SPEED_MULT: f32 = 5.0;
+/// 衝刺加速持續時間（秒）：一陣短促的爆發，過了就回巡航速。
+pub const BOOST_DURATION_SECS: f32 = 1.4;
+/// 衝刺冷卻時間（秒，自觸發起算）：冷卻退了才能再次衝刺，避免一路狂衝失去節奏。
+pub const BOOST_COOLDOWN_SECS: f32 = 6.0;
+
+/// 自衝刺觸發起算 `elapsed_secs` 秒，是否仍在加速窗內（`< BOOST_DURATION_SECS`）。
+/// 確定性、無副作用；壞值（負、NaN、Infinity）保守回 `false`（不加速）。
+pub fn boost_is_active(elapsed_secs: f32) -> bool {
+    elapsed_secs.is_finite() && elapsed_secs >= 0.0 && elapsed_secs < BOOST_DURATION_SECS
+}
+
+/// 距上次衝刺已 `elapsed_secs` 秒，冷卻是否已退、可再次衝刺（`>= BOOST_COOLDOWN_SECS`）。
+/// 確定性、無副作用；壞值保守回 `false`（寧可暫不給衝，也不在壞時鐘下狂觸發）。
+pub fn boost_off_cooldown(elapsed_secs: f32) -> bool {
+    elapsed_secs.is_finite() && elapsed_secs >= BOOST_COOLDOWN_SECS
+}
+
 /// 走近多少像素內可上車（玩家權威座標與車座標的距離門檻）。
 pub const BOARD_RADIUS: f32 = 80.0;
 /// 上車距離門檻平方（省一次開根號）。
@@ -24,10 +49,17 @@ pub const BOARD_RADIUS_SQ: f32 = BOARD_RADIUS * BOARD_RADIUS;
 
 /// 把步進 `dt` 依騎乘狀態縮放——這是「車輛物理整合」的核心純函式：
 /// 騎乘時回 `dt * VEHICLE_SPEED_MULT`（接進 `Player::step` 後等同移動變快、碰撞邏輯一字不改），
-/// 沒騎就回原值。刻意抽成純函式以便自動測試鎖住「騎車就是快 3 倍、否則照舊」這條契約。
-pub fn ride_effective_dt(base_dt: f32, riding: bool) -> f32 {
+/// 沒騎就回原值。衝刺中（`boosting`）拉到 `BOOST_SPEED_MULT`（×5）。刻意抽成純函式以便
+/// 自動測試鎖住「騎車快 3 倍、衝刺快 5 倍、否則照舊」這條契約。`boosting` 僅在 `riding` 時有意義
+/// （呼叫端只對駕駛傳 true）。
+pub fn ride_effective_dt(base_dt: f32, riding: bool, boosting: bool) -> f32 {
     if riding {
-        base_dt * VEHICLE_SPEED_MULT
+        let mult = if boosting {
+            BOOST_SPEED_MULT
+        } else {
+            VEHICLE_SPEED_MULT
+        };
+        base_dt * mult
     } else {
         base_dt
     }
@@ -275,8 +307,46 @@ mod tests {
     #[test]
     fn ride_effective_dt_triples_when_riding() {
         let dt = 0.1_f32;
-        assert!((ride_effective_dt(dt, true) - dt * 3.0).abs() < 1e-6);
-        assert!((ride_effective_dt(dt, false) - dt).abs() < 1e-6);
+        // 巡航：騎乘 ×3、步行 ×1。
+        assert!((ride_effective_dt(dt, true, false) - dt * 3.0).abs() < 1e-6);
+        assert!((ride_effective_dt(dt, false, false) - dt).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ride_effective_dt_boost_only_when_riding() {
+        let dt = 0.1_f32;
+        // 衝刺中且在騎：×5。
+        assert!((ride_effective_dt(dt, true, true) - dt * 5.0).abs() < 1e-6);
+        // 沒在騎，boosting 旗標無效（步行不因 boost 加速）。
+        assert!((ride_effective_dt(dt, false, true) - dt).abs() < 1e-6);
+        // 衝刺一定比巡航快、巡航一定比步行快。
+        assert!(ride_effective_dt(dt, true, true) > ride_effective_dt(dt, true, false));
+        assert!(ride_effective_dt(dt, true, false) > ride_effective_dt(dt, false, false));
+    }
+
+    #[test]
+    fn boost_active_window_is_bounded() {
+        assert!(boost_is_active(0.0), "剛觸發即在加速窗內");
+        assert!(boost_is_active(BOOST_DURATION_SECS - 0.01), "窗結束前仍加速");
+        assert!(!boost_is_active(BOOST_DURATION_SECS), "持續時間到即回巡航");
+        assert!(!boost_is_active(BOOST_DURATION_SECS + 1.0), "窗外不加速");
+        // 壞值保守回 false。
+        assert!(!boost_is_active(-0.5));
+        assert!(!boost_is_active(f32::NAN));
+        assert!(!boost_is_active(f32::INFINITY));
+    }
+
+    #[test]
+    fn boost_cooldown_gates_retrigger() {
+        assert!(!boost_off_cooldown(0.0), "剛觸發仍在冷卻");
+        assert!(!boost_off_cooldown(BOOST_COOLDOWN_SECS - 0.01), "冷卻未退不可再衝");
+        assert!(boost_off_cooldown(BOOST_COOLDOWN_SECS), "冷卻退了可再衝");
+        assert!(boost_off_cooldown(BOOST_COOLDOWN_SECS + 5.0));
+        // 加速窗短於冷卻：衝刺結束後仍要等冷卻才能再衝（節奏不失控）。
+        assert!(BOOST_DURATION_SECS < BOOST_COOLDOWN_SECS);
+        // 壞值保守回 false（不可觸發）。
+        assert!(!boost_off_cooldown(f32::NAN));
+        assert!(!boost_off_cooldown(f32::INFINITY));
     }
 
     #[test]

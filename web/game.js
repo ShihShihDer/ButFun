@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4385,6 +4385,11 @@
   let vehiclePassengerIds = new Set();
   // 上車距離門檻（像素）：鏡像後端 vehicle::BOARD_RADIUS，前後端同一契約。
   const VEHICLE_BOARD_RADIUS = 80;
+  // 蒸汽衝刺（ROADMAP 539）：鏡像後端 vehicle::BOOST_COOLDOWN_SECS，純供本地按鈕冷卻顯示
+  // （權威冷卻仍在伺服器；冷卻中重複按伺服器會靜默忽略，本地僅是把鈕變灰避免無謂送訊）。
+  const VEHICLE_BOOST_COOLDOWN_MS = 6000;
+  // 自己最近一次按下衝刺的時間戳（performance.now()，本地估冷卻用；null＝尚未衝過）。
+  let myBoostAt = null;
   // ROADMAP 492 廢棄蒸汽星艦共修——進度 + 閃耀剩餘秒數（從快照同步）
   let shipRepair = { progress: 0, goal: 20, repaired_secs: 0 };
   const SHIP_REPAIR_WX = 3200; // 與後端 ship_repair::SHIP_WX 對齊
@@ -7983,6 +7988,14 @@
     const tc = Math.max(0, Math.min(1, t));
     return tc < 0.2 ? tc / 0.2 : 1 - (tc - 0.2) / 0.8;
   }
+  // 蒸汽衝刺噴汽（ROADMAP 539）純函式：歸一化飄齡 t∈[0,1]→該團蒸汽的不透明度 [0,1]。
+  // t=0 剛噴出最濃、線性淡出至 t=1 消散；壞值（NaN/null/Infinity/負）保守回 0，不 throw。
+  function boostPuffAlpha(t) {
+    if (typeof t !== "number" || !isFinite(t)) return 0;
+    const tc = Math.max(0, Math.min(1, t));
+    return 1 - tc;
+  }
+
   // 繪製近戰揮砍弧光：在玩家位置向攻擊方向畫一道漸散的金白扇弧。
   // reduceMotion 時清空並跳過（不閃動，符合無障礙原則）。
   function drawMeleeSwings(camX, camY, now) {
@@ -12240,11 +12253,32 @@
     }
     return best;
   }
+  /** 蒸汽衝刺（ROADMAP 539）：本地是否為「駕駛」（騎乘中且非後座乘客）——只有駕駛能衝刺。 */
+  function isLocalDriver(me) {
+    return !!me && !!me.riding && !vehiclePassengerIds.has(myId);
+  }
+  /** 每幀更新「💨 衝刺」按鈕：只在自己是駕駛時顯示；本地冷卻中變灰（避免無謂送訊，權威冷卻在伺服器）。 */
+  function updateBoostBtn(me, downed) {
+    const bbtn = document.getElementById("boostBtn");
+    if (!bbtn) return;
+    if (!isLocalDriver(me) || downed) {
+      bbtn.classList.add("hidden");
+      return;
+    }
+    bbtn.classList.remove("hidden");
+    const cooling =
+      myBoostAt != null && performance.now() - myBoostAt < VEHICLE_BOOST_COOLDOWN_MS;
+    bbtn.disabled = cooling;
+    bbtn.style.opacity = cooling ? "0.45" : "1";
+    bbtn.style.color = cooling ? "#9aa" : "#ffd27a";
+  }
   /** 每幀更新「🚲 上車／🚶 下車」按鈕：騎乘中顯示「下車」；否則走近空車（戶外、已登入、未倒地）顯示「上車」。 */
   function updateVehicleBtns(me, isGuestUser) {
     const btn = document.getElementById("vehicleBtn");
     if (!btn) return;
     const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    // 衝刺鈕與上下車鈕同幀更新（只有駕駛看得到衝刺鈕）。
+    updateBoostBtn(me, downed);
     if (me && me.riding) {
       // 騎乘中：永遠給得了「下車」。
       btn.classList.remove("hidden");
@@ -14933,6 +14967,9 @@
       // 視窗剔除。
       if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
       const ridden = !!v.rider;
+      // 蒸汽衝刺（ROADMAP 539）：駕駛正在加速窗內時噴一團更濃的蒸汽爆發（從快照 boosting 旗標讀）。
+      const rp2 = v.rider ? players.get(v.rider) : null;
+      const boosting = !!(rp2 && rp2.boosting);
       ctx.save();
       ctx.translate(sx, sy);
       // 腳下陰影。
@@ -14985,6 +15022,29 @@
         ctx.beginPath();
         ctx.arc(0.5, -10 - t * 10, 2 + t * 2, 0, Math.PI * 2);
         ctx.fill();
+      }
+      // 蒸汽衝刺爆發（ROADMAP 539）：衝刺中噴出一串更濃更大的白汽團＋兩道速度線，
+      // 一眼看出「這台車正在全力衝」。reduceMotion 下不畫（不閃動，照顧暈眩敏感玩家）。
+      if (boosting && !reduce) {
+        for (let k = 0; k < 4; k++) {
+          // 四團蒸汽以不同相位錯開飄齡，從煙囪往左後上方拖出一條汽尾。
+          const t = ((nowMs / 260) + (v.id || 0) + k * 0.25) % 1;
+          const a = boostPuffAlpha(t);
+          if (a <= 0) continue;
+          ctx.fillStyle = `rgba(245,245,250,${0.6 * a})`;
+          ctx.beginPath();
+          ctx.arc(-2 - t * 16, -10 - t * 12, 2.5 + t * 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // 兩道速度線（往後拖），給「嗖一聲衝出去」的方向感。
+        ctx.strokeStyle = "rgba(255,220,150,0.55)";
+        ctx.lineWidth = 1.5;
+        for (const yoff of [-2, 4]) {
+          ctx.beginPath();
+          ctx.moveTo(-14, yoff);
+          ctx.lineTo(-26, yoff);
+          ctx.stroke();
+        }
       }
       ctx.restore();
     }
@@ -35118,6 +35178,7 @@
         if (!me) return;
         if (me.riding) {
           safeSend({ type: "dismount_vehicle" });
+          myBoostAt = null; // 下車重置本地衝刺冷卻顯示（ROADMAP 539）
           announce(vehiclePassengerIds.has(myId) ? "下了後座，回到步行" : "下了蒸汽腳踏車，回到步行");
         } else {
           if (me.indoor_plot_id != null) return;
@@ -35128,6 +35189,21 @@
             ? "坐上朋友的後座，一同兜風——按「🚶 下車」隨時下車"
             : "騎上蒸汽腳踏車——移動快多了！按「🚶 下車」回到步行");
         }
+      });
+    }
+    // 💨 蒸汽衝刺（ROADMAP 539）：駕駛灌一陣蒸汽短暫加速。冷卻中本地擋掉（鈕已變灰），
+    // 否則送 boost_vehicle 並記下本地冷卻起點（權威冷卻仍在伺服器）。
+    const boostBtn = document.getElementById("boostBtn");
+    if (boostBtn) {
+      boostBtn.addEventListener("click", () => {
+        const me = myId ? players.get(myId) : null;
+        if (!isLocalDriver(me)) return;
+        const now = performance.now();
+        if (myBoostAt != null && now - myBoostAt < VEHICLE_BOOST_COOLDOWN_MS) return;
+        SFX.click(); // 點擊音效 ROADMAP 376
+        myBoostAt = now;
+        safeSend({ type: "boost_vehicle" });
+        announce("蒸汽衝刺！嗖——");
       });
     }
     // 🏠 進入/離開住家室內（ROADMAP 111）

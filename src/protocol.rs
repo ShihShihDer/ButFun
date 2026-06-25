@@ -467,6 +467,9 @@ pub enum ClientMsg {
     /// 下車（Phase 1-E 蒸汽載具 MVP）：玩家按「🚶 下車」回到步行；車就停在下車當下的座標等下一位旅人。
     /// 無 payload——未在騎車時靜默忽略。零持久化、純記憶體。
     DismountVehicle,
+    /// 蒸汽衝刺（ROADMAP 539）：駕駛按「💨 衝刺」灌一陣蒸汽，短時間速度從 ×3 拉到 ×5，過後回巡航。
+    /// 無 payload——非駕駛（步行／後座乘客）／倒地／冷卻未退一律靜默忽略。零持久化、純記憶體。
+    BoostVehicle,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -2746,6 +2749,10 @@ pub struct PlayerView {
     /// 並把那台車畫在玩家腳下（騎乘中車座標跟著人走）。false 時略過序列化（多數玩家平時步行）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub riding: bool,
+    /// 此玩家（駕駛）此刻是否正在蒸汽衝刺加速窗內（ROADMAP 539）。廣播給全服——前端對衝刺者
+    /// 噴一團蒸汽爆發＋速度線。false 時略過序列化（衝刺只是短促爆發，絕大多數幀都不在衝）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub boosting: bool,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -3452,6 +3459,7 @@ mod tests {
                 poisoned: false,
                 is_newcomer: false,
                 riding: false,
+                boosting: false,
                 guardian_blessing: None,
             }],
             fields: vec![FieldView {
@@ -3774,6 +3782,7 @@ mod tests {
             poisoned: false,
             is_newcomer: false,
             riding: false,
+            boosting: false,
             guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -4077,6 +4086,7 @@ mod tests {
             poisoned: false,
             is_newcomer: false,
             riding: false,
+            boosting: false,
             guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -4156,6 +4166,7 @@ mod tests {
             poisoned: false,
             is_newcomer: false,
             riding: false,
+            boosting: false,
             guardian_blessing: None,
         }
     }

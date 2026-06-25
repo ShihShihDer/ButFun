@@ -1263,6 +1263,9 @@ pub fn spawn(app: AppState) {
                     })
                     .collect();
                 for p in players.values_mut() {
+                    // 蒸汽衝刺（ROADMAP 539）：每拍依觸發時刻＋牆上時鐘刷新本拍 boosting，
+                    // step 才能讀到「此刻是否在加速窗內」決定 ×3 還是 ×5。
+                    p.refresh_boost();
                     p.step(dt, |x: f32, y: f32| {
                         let (cx, cy, tx, ty) = crate::tiles::world_to_cell(x, y);
                         let kind = tile_deltas_snap

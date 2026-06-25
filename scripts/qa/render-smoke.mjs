@@ -3027,6 +3027,48 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 雙人共乘：後座乘客錯位繪製＋壞乘客 id 皆乾淨");
 }
 
+// 蒸汽衝刺（ROADMAP 539）：boostPuffAlpha 純函式真值表＋衝刺中的車（rider.boosting）噴汽爆發
+// ＋reduceMotion 早退＋壞值連跑多幀皆不拋例外。
+{
+  const bpa = sandbox.__bfTest && sandbox.__bfTest.boostPuffAlpha;
+  console.log("── 情境：蒸汽衝刺噴汽（boostPuffAlpha 真值表＋衝刺車連跑 4 幀）──");
+  if (!bpa) { failed = true; console.error("  ❌ boostPuffAlpha 未匯出"); }
+  else {
+    let ok = true;
+    // 壞值（非有限／非數）保守回 0。
+    for (const bad of [NaN, Infinity, -Infinity, null, undefined, "x"]) {
+      const got = bpa(bad);
+      if (got !== 0) { ok = false; console.error(`  ❌ boostPuffAlpha(${bad})=${got}，期望 0`); }
+    }
+    // t=0 最濃（1）、t=1 消散（0）、中段在 (0,1)、超界夾鉗（t<0→1、t>1→0）。
+    if (Math.abs(bpa(0) - 1) > 1e-9) { ok = false; console.error(`  ❌ boostPuffAlpha(0)=${bpa(0)}，期望 1`); }
+    if (bpa(1) !== 0) { ok = false; console.error(`  ❌ boostPuffAlpha(1)=${bpa(1)}，期望 0`); }
+    const mid = bpa(0.4);
+    if (!(mid > 0 && mid < 1)) { ok = false; console.error(`  ❌ boostPuffAlpha(0.4)=${mid}，期望 (0,1)`); }
+    if (bpa(2) !== 0) { ok = false; console.error(`  ❌ boostPuffAlpha(2)=${bpa(2)}（超界 t>1 應夾鉗為 0）`); }
+    if (Math.abs(bpa(-0.5) - 1) > 1e-9) { ok = false; console.error(`  ❌ boostPuffAlpha(-0.5)=${bpa(-0.5)}（超界 t<0 應夾鉗為 1）`); }
+    if (!ok) failed = true;
+    if (ok) console.log("  ✅ boostPuffAlpha 真值表（壞值→0、t=0→1、t=1→0、中段∈(0,1)、超界夾鉗）通過");
+  }
+
+  const before = caughtRenderErrors.length;
+  const bSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = bSnap.players[0];
+  me.riding = true;
+  me.boosting = true; // 自己正在衝刺：噴汽爆發＋速度線
+  bSnap.vehicles = [
+    { id: 0, x: me.x, y: me.y, rider: me.id, boosting: true },        // 衝刺中（我駕駛）
+    { id: 1, x: me.x + 60, y: me.y, rider: null },                    // 空車
+    { id: 2, x: me.x, y: me.y, rider: "no-such-player" },             // 壞 rider：查不到玩家、保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...bSnap, type: "snapshot" }) });
+  const r = pump("蒸汽衝刺", 4);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 蒸汽衝刺：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 蒸汽衝刺：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 蒸汽衝刺：衝刺車噴汽爆發＋速度線＋壞 rider 皆乾淨");
+}
+
 // 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
 {
   const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;
