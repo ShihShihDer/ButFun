@@ -842,6 +842,14 @@ impl EnemyField {
         if !px.is_finite() || !py.is_finite() {
             return 0;
         }
+        // 新手村·城鎮保護圈＝絕對庇護所（ROADMAP 542）：人只要站在保護圈內，
+        // 一律免疫敵人近戰反擊。這根治「復原→傳回新手村→在保護圈邊緣被守屍
+        // 打趴→再復原」的死亡循環——ROADMAP 541 的定時喘息恩典只給 3 秒，定點
+        // 守屍時時間一到就再被秒，位置型庇護才是治本。敵人本就不得進保護圈，
+        // 這是「即使有事件敵人漏進來、或玩家貼著圈緣」也保證圈內安全的最後防線。
+        if is_in_safe_zone(px, py) {
+            return 0;
+        }
 
         let (cx, cy) = chunk_key(px, py);
         let reach_sq = ATTACK_REACH * ATTACK_REACH;
@@ -898,6 +906,10 @@ impl EnemyField {
     /// 範圍判定，由 `game.rs` 在「本秒受到反擊傷害」時呼叫，決定要不要替玩家注入中毒。
     pub fn poison_secs_at(&self, px: f32, py: f32) -> f32 {
         if !px.is_finite() || !py.is_finite() {
+            return 0.0;
+        }
+        // 庇護所免疫（ROADMAP 542）：圈內不受近戰反擊，自然也不該中毒，與 `threat_at` 一致。
+        if is_in_safe_zone(px, py) {
             return 0.0;
         }
         let (cx, cy) = chunk_key(px, py);
@@ -1735,6 +1747,42 @@ mod tests {
             aura_threat > base_threat,
             "兇名精英光環應使附近同種怪威脅提升，base={base_threat} aura={aura_threat}"
         );
+    }
+
+    // ───── ROADMAP 542 新手村庇護所免疫 ─────
+
+    #[test]
+    fn safe_zone_player_immune_to_threat() {
+        // 站在新手村·城鎮保護圈內的玩家，即使腳邊有敵人也免疫近戰反擊（threat=0）；
+        // 同一隻敵人若改在圈外貼著玩家，威脅應 > 0——證明歸零來自庇護所、非敵人本身無害。
+        let (sx, sy) = crate::positions::default_spawn();
+        assert!(is_in_safe_zone(sx, sy), "前提：出生點在安全區內");
+
+        let mut f = EnemyField::new();
+        push_test_enemy(&mut f, 0, sx, sy, EnemyKind::ScrapDrone); // 敵人就壓在出生點
+        assert_eq!(f.threat_at(sx, sy), 0, "保護圈內玩家應免疫敵人近戰反擊");
+
+        // 對照組：圈外同款敵人貼著玩家，威脅必須 > 0。
+        let (ox, oy) = (9000.0_f32, 9000.0_f32);
+        assert!(!is_in_safe_zone(ox, oy), "前提：對照點在安全區外");
+        let mut g = EnemyField::new();
+        push_test_enemy(&mut g, 0, ox, oy, EnemyKind::ScrapDrone);
+        assert!(g.threat_at(ox, oy) > 0, "圈外同款敵人應有威脅，證明免疫源自庇護所");
+    }
+
+    #[test]
+    fn safe_zone_player_immune_to_poison() {
+        // 庇護所免疫與 threat_at 一致：圈內不中毒，即使腳邊是會施毒的敵人。
+        let (sx, sy) = crate::positions::default_spawn();
+        let mut f = EnemyField::new();
+        push_test_enemy(&mut f, 0, sx, sy, EnemyKind::EtherWisp); // 帶毒敵人
+        assert_eq!(f.poison_secs_at(sx, sy), 0.0, "保護圈內玩家不該中毒");
+
+        // 對照：圈外同款帶毒敵人應注入中毒秒數 > 0。
+        let (ox, oy) = (9000.0_f32, 9000.0_f32);
+        let mut g = EnemyField::new();
+        push_test_enemy(&mut g, 0, ox, oy, EnemyKind::EtherWisp);
+        assert!(g.poison_secs_at(ox, oy) > 0.0, "圈外帶毒敵人應能注入中毒");
     }
 
     #[test]
