@@ -22,6 +22,12 @@ pub const MAX_HP: u32 = 20;
 /// 被打趴（血歸零）後到滿血復原所需的休息秒數。療癒主題：不是死亡，是小憩。
 pub const RECOVERY_SECS: f32 = 8.0;
 
+/// 倒地復原（或被同伴扶起）後的「喘息恩典窗」秒數：這段期間免疫一切傷害。
+/// 療癒向設計——剛從新手村爬起的旅人，不該一站起來就被殘留的敵人／刷怪立刻再打趴
+/// （線上實況可見「復原→傳回新手村→數秒後又被打趴」的死亡循環）。給一道短暫恩典窗，
+/// 讓人有喘口氣、撤離險地的空間，再回到戰鬥張力。刻意短——夠走開、不足以靠它賴打王。
+pub const RECOVERY_GRACE_SECS: f32 = 3.0;
+
 /// 最後一次受擊後，要過這麼久沒再挨打才開始自然回血（剛挨打不會立刻回，保留戰鬥張力）。
 pub const REGEN_DELAY_SECS: f32 = 5.0;
 
@@ -57,6 +63,11 @@ pub struct Vitals {
     /// 自然回血的小數累積。`hp` 是整數，靠它把每秒不足 1 點的回血量湊滿 1 才加上去，
     /// 恆落在 `[0, 1)`（湊滿就減掉整數部分）。
     regen_accum: f32,
+    /// 復原喘息恩典剩餘秒數（`> 0` 時 `take_damage` 一律免疫）。倒地滿血復原或被同伴
+    /// 扶起時設為 `RECOVERY_GRACE_SECS`，存活時每 tick 遞減到 0。`#[serde(default)]`
+    /// 確保舊存檔向後相容（缺欄＝0＝無恩典）。
+    #[serde(default)]
+    recovery_grace: f32,
 }
 
 fn default_max_hp() -> u32 {
@@ -81,6 +92,7 @@ impl Vitals {
             recovery_timer: 0.0,
             regen_cooldown: 0.0,
             regen_accum: 0.0,
+            recovery_grace: 0.0,
         }
     }
 
@@ -138,6 +150,20 @@ impl Vitals {
         self.hp == 0
     }
 
+    /// 是否正處於復原喘息恩典窗（免疫傷害中）。
+    pub fn in_recovery_grace(&self) -> bool {
+        self.recovery_grace > 0.0
+    }
+
+    /// 復原喘息恩典剩餘秒數，供快照廣播給前端畫護盾微光；無恩典時回 `None`（略過序列化）。
+    pub fn recovery_grace_secs(&self) -> Option<f32> {
+        if self.recovery_grace > 0.0 {
+            Some(self.recovery_grace)
+        } else {
+            None
+        }
+    }
+
     /// 挨一下打，承受 `power` 點傷害。回傳「這一下是否把玩家打趴」。
     ///
     /// 語意刻意對齊 `Enemy::attack`：
@@ -150,6 +176,11 @@ impl Vitals {
     /// 這層只吃整數傷害；過量傷害飽和夾到 0，不 underflow。
     pub fn take_damage(&mut self, power: u32) -> bool {
         if power == 0 || self.hp == 0 {
+            return false;
+        }
+        // 復原喘息恩典窗：剛從倒地爬起／被扶起的短暫無敵期，免疫一切傷害（含毒傷），
+        // 不重置回血冷卻——免得一站起來就被殘留的敵人立刻再打趴。回 false（沒被打趴）。
+        if self.recovery_grace > 0.0 {
             return false;
         }
         // 飽和扣血：傷害超過剩餘血時夾到 0，不會 underflow。
@@ -194,6 +225,8 @@ impl Vitals {
         self.recovery_timer = 0.0;
         self.regen_cooldown = REGEN_DELAY_SECS;
         self.regen_accum = 0.0;
+        // 被扶起也享有喘息恩典窗：半血在險地起身，給一段免疫好撤離（與自行復原同等待遇）。
+        self.recovery_grace = RECOVERY_GRACE_SECS;
         true
     }
 
@@ -300,17 +333,23 @@ impl Vitals {
             return;
         }
         if self.hp == 0 {
-            // 被打趴：休息倒數，到點滿血復原、清掉所有過程量。
+            // 被打趴：休息倒數，到點滿血復原、清掉所有過程量、開啟喘息恩典窗。
             self.recovery_timer -= dt;
             if self.recovery_timer <= 0.0 {
                 self.hp = self.max_hp;
                 self.recovery_timer = 0.0;
                 self.regen_cooldown = 0.0;
                 self.regen_accum = 0.0;
+                // 滿血復原的那一刻起算喘息恩典：免得一爬起來（並被傳回新手村）就被秒回去。
+                self.recovery_grace = RECOVERY_GRACE_SECS;
             }
             return;
         }
-        // 還活著：先走回血冷卻；剛挨打的這段期間不回血。
+        // 還活著：先把喘息恩典窗倒數燒掉（與回血冷卻正交，放在 early-return 前才會逐 tick 遞減）。
+        if self.recovery_grace > 0.0 {
+            self.recovery_grace = (self.recovery_grace - dt).max(0.0);
+        }
+        // 接著走回血冷卻；剛挨打的這段期間不回血。
         if self.regen_cooldown > 0.0 {
             self.regen_cooldown = (self.regen_cooldown - dt).max(0.0);
             return;
@@ -345,6 +384,8 @@ impl Vitals {
             && self.regen_cooldown >= 0.0
             && self.regen_accum.is_finite()
             && (0.0..1.0).contains(&self.regen_accum)
+            && self.recovery_grace.is_finite()
+            && self.recovery_grace >= 0.0
     }
 
     /// 測試用：直接組出指定狀態（含壞值）的生命狀態，驗證載入防線。
@@ -356,6 +397,20 @@ impl Vitals {
             recovery_timer,
             regen_cooldown,
             regen_accum,
+            recovery_grace: 0.0,
+        }
+    }
+
+    /// 測試用：直接組出帶指定喘息恩典值（含壞值）的生命狀態，驗證載入防線涵蓋新欄位。
+    #[cfg(test)]
+    pub fn from_raw_grace(recovery_grace: f32) -> Self {
+        Self {
+            hp: MAX_HP,
+            max_hp: MAX_HP,
+            recovery_timer: 0.0,
+            regen_cooldown: 0.0,
+            regen_accum: 0.0,
+            recovery_grace,
         }
     }
 }
@@ -544,9 +599,119 @@ mod tests {
         v.tick(RECOVERY_SECS);
         assert!(v.is_alive());
         assert_eq!(v.hp(), MAX_HP);
-        // 復原後又能再挨打、再被打趴一次。
+        // 復原後進入喘息恩典窗：免疫傷害，這一下打不趴。
+        assert!(v.in_recovery_grace());
+        assert!(!v.take_damage(MAX_HP));
+        assert!(v.is_alive());
+        // 恩典窗燒完後，又能再挨打、再被打趴一次。
+        v.tick(RECOVERY_GRACE_SECS);
+        assert!(!v.in_recovery_grace());
         assert!(v.take_damage(MAX_HP));
         assert!(v.is_downed());
+    }
+
+    // ── 復原喘息恩典窗（ROADMAP 541）─────────────────────────────────────────
+
+    #[test]
+    fn recovery_grants_grace_window() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        assert!(!v.in_recovery_grace(), "倒地期間還沒有恩典");
+        // 滿血復原的那一刻起算喘息恩典。
+        v.tick(RECOVERY_SECS);
+        assert!(v.is_alive());
+        assert!(v.in_recovery_grace());
+        assert_eq!(v.recovery_grace_secs(), Some(RECOVERY_GRACE_SECS));
+    }
+
+    #[test]
+    fn grace_window_makes_player_immune() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        v.tick(RECOVERY_SECS); // 復原 + 開啟恩典
+        assert!(v.in_recovery_grace());
+        let full = v.hp();
+        // 恩典窗內挨打：完全免疫、血量不動、回 false（沒被打趴）。
+        assert!(!v.take_damage(10));
+        assert_eq!(v.hp(), full);
+        assert!(v.is_alive());
+    }
+
+    #[test]
+    fn grace_window_expires_after_its_duration() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        v.tick(RECOVERY_SECS); // 復原 + 開啟恩典
+        assert!(v.in_recovery_grace());
+        // 走掉一半恩典：仍在恩典中、仍免疫。
+        v.tick(RECOVERY_GRACE_SECS / 2.0);
+        assert!(v.in_recovery_grace());
+        assert!(!v.take_damage(5));
+        // 走完剩餘恩典：恩典結束、又會受傷。
+        v.tick(RECOVERY_GRACE_SECS);
+        assert!(!v.in_recovery_grace());
+        assert_eq!(v.recovery_grace_secs(), None);
+        assert!(!v.take_damage(5)); // 非致命：扣血但不打趴
+        assert_eq!(v.hp(), MAX_HP - 5);
+    }
+
+    #[test]
+    fn revive_also_grants_grace_window() {
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        assert!(v.is_downed());
+        assert!(v.revive());
+        // 被扶起也享有喘息恩典：半血在險地起身、暫時免疫。
+        assert!(v.in_recovery_grace());
+        let hp = v.hp();
+        assert!(!v.take_damage(3));
+        assert_eq!(v.hp(), hp);
+    }
+
+    #[test]
+    fn grace_blocks_the_respawn_death_loop() {
+        // 復刻線上死亡循環：復原→（傳回新手村）→殘敵立刻再打趴。有了恩典窗，
+        // 緊接著的那記攻擊應被擋下，玩家得以喘息撤離而非被秒回倒地。
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        v.tick(RECOVERY_SECS); // 復原
+        // 復原當下殘敵一記重擊：恩典擋下，不再陷入循環。
+        assert!(!v.take_damage(MAX_HP));
+        assert!(v.is_alive());
+    }
+
+    #[test]
+    fn grace_keeps_loadable_invariant_and_rejects_corrupt() {
+        // 正常恩典值可載入。
+        assert!(Vitals::from_raw_grace(0.0).is_loadable());
+        assert!(Vitals::from_raw_grace(RECOVERY_GRACE_SECS).is_loadable());
+        // 壞恩典值（負／NaN／Inf）拒絕載入。
+        assert!(!Vitals::from_raw_grace(-1.0).is_loadable());
+        assert!(!Vitals::from_raw_grace(f32::NAN).is_loadable());
+        assert!(!Vitals::from_raw_grace(f32::INFINITY).is_loadable());
+        // 復原後的恩典中狀態仍須可載入（向後相容 + 不變式）。
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        v.tick(RECOVERY_SECS);
+        assert!(v.in_recovery_grace());
+        assert!(v.is_loadable());
+    }
+
+    #[test]
+    fn grace_serde_round_trips_and_defaults_for_old_saves() {
+        // 恩典中狀態序列化往返一致。
+        let mut v = Vitals::new();
+        v.take_damage(MAX_HP);
+        v.tick(RECOVERY_SECS);
+        let json = serde_json::to_string(&v).unwrap();
+        let back: Vitals = serde_json::from_str(&json).unwrap();
+        assert_eq!(v, back);
+        // 舊存檔缺 recovery_grace 欄位：serde(default) 補 0、無恩典、可載入。
+        let old = r#"{"hp":20,"max_hp":20,"recovery_timer":0.0,"regen_cooldown":0.0,"regen_accum":0.0}"#;
+        let parsed: Vitals = serde_json::from_str(old).unwrap();
+        assert!(!parsed.in_recovery_grace());
+        assert!(parsed.is_loadable());
     }
 
     #[test]

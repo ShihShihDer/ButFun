@@ -2449,6 +2449,13 @@ pub struct PlayerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dodge_secs: Option<f32>,
 
+    // ── 復原喘息恩典窗（ROADMAP 541）──────────────────────────────────────────
+    /// 復原（或被扶起）後的喘息恩典剩餘秒數；沒在恩典中＝None（略過序列化）。
+    /// 恩典窗內免疫一切傷害——前端據此在玩家身上畫一圈柔和的恩典護盾微光，
+    /// 自己與旁觀者都看得到（旁觀者看別人剛爬起、暫時刀槍不入地喘口氣）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_grace_secs: Option<f32>,
+
     /// 進行中蓄力的進度 [0,1]（ROADMAP 423 蓄力重擊）；沒在蓄力＝None（略過序列化）。
     /// 前端據此渲染逐漸收束、滿蓄即圓滿的蓄力環，自己與旁觀者都看得到（旁觀者看別人蓄力）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3394,7 +3401,7 @@ mod tests {
                 mining_tremor: None,
                 near_ruin: false,
                 cook_cooldown: 0.0,
-                aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
+                aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, recovery_grace_secs: None, charge_progress: None, wayfare_count: 0,
                 toast_cooldown: 0.0,
                 trade_cargo: None,
                 near_trade_npc: false,
@@ -3716,7 +3723,7 @@ mod tests {
             mining_tremor: None,
             near_ruin: false,
             cook_cooldown: 0.0,
-            aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0,
+            aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, recovery_grace_secs: None, charge_progress: None, wayfare_count: 0,
             toast_cooldown: 0.0,
             trade_cargo: None,
             near_trade_npc: false,
@@ -4038,7 +4045,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, recovery_grace_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,
@@ -4118,7 +4125,7 @@ mod tests {
             skill_cooldowns: std::collections::HashMap::new(),
             active_skill_flags: vec![],
             auto_skills: vec![],
-            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
+            pet_kind: None, pet_x: 0.0, pet_y: 0.0, pet_playing: false, pet_toy_x: 0.0, pet_toy_y: 0.0, pet_fetching: false, pet_personality: None, pet_bond: 0, fish_cooldown: 0.0, near_water: false, fishing_phase: None, mine_cooldown: 0.0, near_rock: false, mining_depth: None, mining_haul: None, mining_tremor: None, near_ruin: false, cook_cooldown: 0.0, aether_draw_secs: None, chop_secs: None, skip_charge: None, guard_secs: None, guard_shield_pct: None, dodge_secs: None, recovery_grace_secs: None, charge_progress: None, wayfare_count: 0, toast_cooldown: 0.0,
             trade_cargo: None, near_trade_npc: false,
             workshop_orders: vec![], workshop_active: None, workshop_cooldown: 0.0, near_workshop: false,
             bounty_cards: vec![], bounty_active: None, bounty_cooldown: 0.0, near_bounty_board: false,

@@ -3110,6 +3110,42 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 共乘招呼鈴：信標光環＋🔔＋邀請提示＋壞 rider 皆乾淨");
 }
 
+// 復原喘息恩典窗（ROADMAP 541）：recoveryGraceAlpha 純函式真值表＋恩典中的玩家
+// （recovery_grace_secs > 0）連跑多幀畫暖白恩典護盾微光皆零例外。
+{
+  const rga = sandbox.__bfTest && sandbox.__bfTest.recoveryGraceAlpha;
+  console.log("── 情境：復原喘息恩典窗（recoveryGraceAlpha 真值表＋恩典玩家連跑 4 幀）──");
+  if (typeof rga !== "function") { failed = true; console.error("  ❌ recoveryGraceAlpha 未匯出"); }
+  else {
+    let ok = true;
+    // 壞值／非正（沒在恩典中）保守回 0（不畫）。
+    for (const bad of [NaN, Infinity, -Infinity, 0, -1, null, undefined, "x"]) {
+      const got = rga(bad);
+      if (got !== 0) { ok = false; console.error(`  ❌ recoveryGraceAlpha(${bad})=${got}，期望 0`); }
+    }
+    // 滿恩典（3s）→ 1；中段在 (0,1)；超過總長夾鉗到 1。
+    if (Math.abs(rga(3) - 1) > 1e-9) { ok = false; console.error(`  ❌ recoveryGraceAlpha(3)=${rga(3)}，期望 1`); }
+    const mid = rga(1.5);
+    if (!(mid > 0 && mid < 1)) { ok = false; console.error(`  ❌ recoveryGraceAlpha(1.5)=${mid}，期望 (0,1)`); }
+    if (rga(99) !== 1) { ok = false; console.error(`  ❌ recoveryGraceAlpha(99)=${rga(99)}（超界應夾鉗為 1）`); }
+    // 越接近結束越淡：剩 0.5s 的微光應比剩 2.5s 的淡。
+    if (!(rga(0.5) < rga(2.5))) { ok = false; console.error("  ❌ 恩典剩越少微光應越淡"); }
+    if (!ok) failed = true;
+    else console.log("  ✅ recoveryGraceAlpha 真值表（壞值/非正→0、3s→1、中段∈(0,1)、超界夾鉗、漸淡）通過");
+  }
+
+  const before = caughtRenderErrors.length;
+  const gSnap = JSON.parse(JSON.stringify(snapshot));
+  gSnap.players[0].recovery_grace_secs = 3.0;   // 自己剛復原、恩典中：畫恩典護盾微光
+  if (gSnap.players[1]) gSnap.players[1].recovery_grace_secs = 0.4; // 旁人恩典將盡：微光偏淡
+  lastWS.onmessage({ data: JSON.stringify({ ...gSnap, type: "snapshot" }) });
+  const r = pump("復原喘息恩典", 4);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 復原喘息恩典：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 復原喘息恩典：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 復原喘息恩典：暖白恩典護盾微光（自己滿恩典＋旁人將盡）皆乾淨");
+}
+
 // 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
 {
   const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;

@@ -637,6 +637,9 @@ impl Player {
             // ROADMAP 410：進行中翻滾的經過秒數（沒在翻滾＝None，略過序列化）；
             // 廣播給所有人，前端據此演出翻身位移與翻滾環。
             dodge_secs: self.dodging.map(|d| d.elapsed()),
+            // ROADMAP 541：復原喘息恩典剩餘秒數（沒在恩典中＝None，略過序列化）；
+            // 廣播給所有人，前端據此在玩家身上畫一圈柔和的恩典護盾微光。
+            recovery_grace_secs: self.vitals.recovery_grace_secs(),
             // ROADMAP 423：進行中蓄力的進度 [0,1]（沒在蓄力＝None，略過序列化）；
             // 廣播給所有人，前端據此渲染逐漸收束的蓄力環（滿蓄＝環滿）。
             charge_progress: self.charging.map(|c| c.progress()),
