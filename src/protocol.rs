@@ -2790,6 +2790,12 @@ pub struct PlayerView {
     /// 噴一團蒸汽爆發＋速度線。false 時略過序列化（衝刺只是短促爆發，絕大多數幀都不在衝）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub boosting: bool,
+    /// 此玩家此刻是否站在新手村保護圈內（ROADMAP 547·庇護指示）。與 542/543 免疫**同源**
+    /// （皆走 `town_protected_at`），故為 true 時即代表「此刻真的免疫一切敵人傷害」。廣播給全服——
+    /// 前端對「自己那位」亮「🛡️ 庇護中」HUD pill 並在跨越邊界時溫和提示。false 時略過序列化
+    /// （絕大多數在野外的玩家不佔流量），舊客戶端缺欄位＝視為不在保護圈，優雅降級。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub protected: bool,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -3504,6 +3510,7 @@ mod tests {
                 riding: false,
                 boosting: false,
                 guardian_blessing: None,
+                protected: false,
             }],
             fields: vec![FieldView {
                 owner,
@@ -3828,6 +3835,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            protected: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         assert_eq!(v["planet"], "verdant");
@@ -4132,6 +4140,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            protected: false,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
         // in_party=false 時應被 skip_serializing_if 省略，節省流量
@@ -4212,6 +4221,7 @@ mod tests {
             riding: false,
             boosting: false,
             guardian_blessing: None,
+            protected: false,
         }
     }
 

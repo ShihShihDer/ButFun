@@ -280,6 +280,8 @@ const scenarios = [
     s.snowmen = [{ id: 71, wx: me0.x + 36, wy: me0.y - 10, builder: "雪人匠", style: 1, cheers: 3 }];
     s.campfires = [{ id: 72, wx: me0.x - 36, wy: me0.y + 12, remaining_secs: 6 }];
   }),
+  // 庇護指示（547）：自己站在保護圈內（protected=true）→ 亮「🛡️ 庇護中」HUD pill＋走快照處理分支，零 render 例外即通過。
+  variant("受保護·庇護中(547)", (s) => { if (s.players?.length) s.players[0] = { ...s.players[0], protected: true }; }),
   variant("旅行商人在場", (s) => { s.wandering_merchant_secs = 90; s.wandering_catalog = [{ item: "pickaxe", price_ether: 15, remaining: 3 }]; }),
   variant("態度越界(負/超100)", (s) => { if (s.species_attitudes?.length) { s.species_attitudes[0].attitude = -25; s.species_attitudes[0].tier = "hostile"; if (s.species_attitudes[1]) s.species_attitudes[1].attitude = 140; } }),
   variant("居民心情+互助請求", (s) => { s.resident_moods = { "r1": 20, "r2": 95 }; s.active_help_requests = ["r1"]; }),
@@ -1410,6 +1412,31 @@ for (const sc of scenarios) {
     const newCaught = caughtRenderErrors.slice(before);
     if (newCaught.length) { failed = true; console.error(`  ❌ 省電靜謐：safeRender 攔下 ${newCaught.length} 個繪製例外`); }
     else if (!(r instanceof Error)) console.log("  ✅ 省電靜謐：乾淨");
+  }
+}
+
+// 庇護指示（ROADMAP 547）：單元斷言純函式 protectionBannerFor（上一次／這一次是否受保護 → 橫幅）。
+// 首次快照（prev=null）不觸發、沒變不觸發；false→true=進圈、true→false=出圈。純客戶端、零後端。
+{
+  const fn = sandbox.__bfTest && sandbox.__bfTest.protectionBannerFor;
+  if (typeof fn !== "function") {
+    failed = true;
+    console.error("  ❌ 庇護指示：game.js 未導出 protectionBannerFor");
+  } else {
+    let bad = 0;
+    // 首次快照（prev=null）一律不觸發，避免一進場就彈橫幅。
+    if (fn(null, false) !== null) { bad++; console.error("  ❌ 庇護指示：首次快照(未受保護)應不觸發"); }
+    if (fn(null, true)  !== null) { bad++; console.error("  ❌ 庇護指示：首次快照(受保護)應不觸發"); }
+    // 沒變化不觸發。
+    if (fn(false, false) !== null) { bad++; console.error("  ❌ 庇護指示：圈外→圈外應不觸發"); }
+    if (fn(true,  true)  !== null) { bad++; console.error("  ❌ 庇護指示：圈內→圈內應不觸發"); }
+    // 進圈 / 出圈各觸發一種橫幅。
+    const entered = fn(false, true);
+    if (!entered || entered.entered !== true || !entered.label) { bad++; console.error("  ❌ 庇護指示：圈外→圈內應觸發進圈橫幅"); }
+    const left = fn(true, false);
+    if (!left || left.entered !== false || !left.label) { bad++; console.error("  ❌ 庇護指示：圈內→圈外應觸發出圈橫幅"); }
+    if (bad) failed = true;
+    else console.log("  ✅ 庇護指示·跨界橫幅真值表：6/6");
   }
 }
 

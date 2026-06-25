@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, protectionBannerFor, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4480,6 +4480,9 @@
   // ROADMAP 513 生態域入境橫幅：追蹤玩家上一幀所在生態，跨生態時觸發橫幅。
   let _prevPlayerBiome = "";      // 首幀空字串，確保首幀不觸發
   let _biomeBanner = null;        // { biome, startMs } 或 null（null = 無橫幅）
+  // ROADMAP 547 庇護指示：追蹤上一次快照的「是否受保護」，跨越保護圈邊界時觸發溫和橫幅。
+  let _prevProtected = null;      // null = 首次快照（不觸發），之後為 true/false
+  let _sanctuaryBanner = null;    // { entered: bool, startMs } 或 null（null = 無橫幅）
   let _sfwParticles = [];         // 換季煙火粒子陣列 [{x,y,vx,vy,alpha,color,life}]
   let _sfwBurstAt = 0;            // 下一次爆炸時間點（ms）
   let _sfwEndAt = 0;              // 煙火結束時間點（ms，0＝未啟動）
@@ -5301,6 +5304,19 @@
             _prevPlayerBiome = _curBiome;
           }
         }
+        // 庇護指示（ROADMAP 547）：偵測自己跨越新手村保護圈邊界（伺服器權威 me.protected），
+        // 首次快照不觸發；進圈／出圈各放一條溫和橫幅。me.protected 缺欄位（舊伺服器）視為 false。
+        {
+          const _meP = myId ? players.get(myId) : null;
+          if (_meP) {
+            const _nowProt = !!_meP.protected;
+            const _b = protectionBannerFor(_prevProtected, _nowProt);
+            if (_b && !_sanctuaryBanner) {
+              _sanctuaryBanner = { entered: _b.entered, startMs: performance.now() };
+            }
+            _prevProtected = _nowProt;
+          }
+        }
         worldEvent = msg.world_event || null;
         updateWorldEventPill(worldEvent);
         hordeEvent = msg.horde_event || null;
@@ -5792,6 +5808,19 @@
                 defEl.classList.remove("hidden");
               } else {
                 defEl.classList.add("hidden");
+              }
+            }
+          }
+
+          // 庇護指示 HUD（ROADMAP 547）：站在新手村保護圈內時亮「🛡️ 庇護中」，
+          // 一眼告訴玩家「此刻免疫一切敵人傷害」（與 542/543 免疫同源）；離圈即隱藏。
+          {
+            const sancEl = document.getElementById("hudSanctuary");
+            if (sancEl) {
+              if (me.protected) {
+                sancEl.classList.remove("hidden");
+              } else {
+                sancEl.classList.add("hidden");
               }
             }
           }
@@ -11362,6 +11391,8 @@
     safeDraw("dayphaseBanner", () => drawDayphaseBanner(renderNow));
     // 生態域入境橫幅（ROADMAP 513）：踏入新生態時頂端橫幅，位置稍低於晨昏橫幅不重疊。
     safeDraw("biomeBanner", () => drawBiomeBanner(renderNow));
+    // 庇護圈跨界橫幅（ROADMAP 547）：跨越新手村保護圈邊界時頂端橫幅，位置再低一列不重疊。
+    safeDraw("sanctuaryBanner", () => drawSanctuaryBanner(renderNow));
 
     // 連殺標語（ROADMAP 508）：連殺 2+ 時畫面中央浮出標語，置於所有 HUD 之上（不擋操作）。
     safeDraw("killStreak", () => drawKillStreakBadge());
@@ -23126,6 +23157,72 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, viewW / 2, by + bh / 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+  }
+
+  // ── ROADMAP 547：庇護圈跨界橫幅 ─────────────────────────────────────────────
+  // 玩家跨越新手村保護圈邊界時，畫面頂端輕柔淡入一條橫幅：進圈報安全、出圈提醒小心，
+  // 讓「哪裡安全、何時免疫」第一次看得見（補上 542/543 免疫長久缺的視覺回饋）。
+  // 純前端、零後端額外負擔（旗標已隨快照來）、零 migration、零 LLM。
+
+  // 依「上一次／這一次是否受保護」決定要不要放橫幅、放哪一種。純函式、可測：
+  //   prev===null（首次快照）→ 不觸發（避免一進場就彈）；
+  //   false→true ＝ 進圈（entered:true）；true→false ＝ 出圈（entered:false）；
+  //   其餘（沒變）→ null。面向玩家字串集中於此，將來在地化一處可換。
+  function protectionBannerFor(prev, now) {
+    if (prev === null || prev === now) return null;
+    return now
+      ? { entered: true,  label: "🛡️ 回到庇護圈·這裡很安全", bg: "rgba(25,75,40,0.82)", text: "#bff0c4" }
+      : { entered: false, label: "⚠️ 離開庇護圈·當心野獸",   bg: "rgba(95,55,20,0.82)", text: "#ffdcae" };
+  }
+
+  const SANC_FADE_IN  = 300;    // 淡入毫秒
+  const SANC_SHOW     = 2100;   // 顯示毫秒
+  const SANC_FADE_OUT = 300;    // 淡出毫秒
+  const SANC_DUR = SANC_FADE_IN + SANC_SHOW + SANC_FADE_OUT; // 2700ms 總時長
+
+  // 每幀繪製庇護圈跨界橫幅（由 safeDraw 包護）。位置疊在生態橫幅同列略低，互不打架。
+  function drawSanctuaryBanner(now) {
+    if (!_sanctuaryBanner) return;
+    const elapsed = now - _sanctuaryBanner.startMs;
+    if (elapsed >= SANC_DUR) { _sanctuaryBanner = null; return; }
+
+    const spec = protectionBannerFor(!_sanctuaryBanner.entered, _sanctuaryBanner.entered);
+    if (!spec) { _sanctuaryBanner = null; return; }
+
+    // 三段動畫：淡入→顯示→淡出（與生態橫幅同口徑）。
+    let alpha;
+    if (elapsed < SANC_FADE_IN) {
+      alpha = elapsed / SANC_FADE_IN;
+    } else if (elapsed < SANC_FADE_IN + SANC_SHOW) {
+      alpha = 1;
+    } else {
+      alpha = 1 - (elapsed - SANC_FADE_IN - SANC_SHOW) / SANC_FADE_OUT;
+    }
+    if (effectiveReduceMotion()) {
+      alpha = (elapsed >= SANC_FADE_IN && elapsed < SANC_FADE_IN + SANC_SHOW) ? 1 : 0;
+    }
+    if (alpha <= 0.01) return;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.font = `bold 20px ${UI_FONT}`;
+    const tw = ctx.measureText(spec.label).width;
+    const pad = 18;
+    const bw = tw + pad * 2;
+    const bh = 38;
+    const bx = viewW / 2 - bw / 2; // 以邏輯寬度置中（正確於任何 dpr）
+    const by = 106;                 // 晨昏 y=14、生態 y=62、庇護 y=106，三條互不重疊
+    ctx.fillStyle = spec.bg;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, bh / 2);
+    ctx.fill();
+    ctx.fillStyle = spec.text;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(spec.label, viewW / 2, by + bh / 2);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     ctx.restore();

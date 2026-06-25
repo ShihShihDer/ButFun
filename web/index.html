@@ -1083,6 +1083,9 @@
       <!-- 天時盤（ROADMAP 419）：時段標籤＋距下一時段倒數，點開查看「此刻適合做什麼」與日循環進度。
            拉皮：晝夜時段亦收回頂部主狀態列、走「可點」語彙（黃銅描邊像按鈕）。 -->
       <span class="hud-pill pill-action" id="hudTime" title="目前時段（點開查看此刻適合做的事）" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">—</span>
+      <!-- 庇護指示（ROADMAP 547）：站在新手村保護圈內時亮起，一眼告訴玩家「此刻免疫一切敵人傷害」。
+           只在受保護時顯示（多數時候在野外＝隱藏），與 542/543 免疫同源。 -->
+      <span class="hud-pill hidden" id="hudSanctuary" title="你正站在新手村保護圈內——此刻免疫一切敵人傷害" style="color:#9be8a0; border-color:rgba(120,210,140,0.55)">🛡️ 庇護中</span>
       <!-- ↓↓ 次要狀態群（HUD 抗擁擠）：手機預設收合，點「▾ HUD」展開。核心數值（上面 4 個）永遠在。 -->
       <span class="hud-secondary">
       <!-- 防禦力（ROADMAP 19 生態裝備）：持有護甲時顯示，每次受傷減少的傷害點數。 -->

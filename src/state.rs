@@ -957,6 +957,9 @@ impl Player {
             boosting: self.boosting,
             // ROADMAP 533：守護者元素祝福——由 game.rs 快照迴圈補填，view() 預設 None。
             guardian_blessing: None,
+            // ROADMAP 547·庇護指示：此刻是否站在新手村保護圈內。**與 542/543 免疫同源**
+            // （`is_in_safe_zone`→`town_protected_at`），保證「亮 pill」與「真的免疫」永遠一致、零幾何漂移。
+            protected: crate::positions::is_in_safe_zone(self.x, self.y),
         }
     }
 
