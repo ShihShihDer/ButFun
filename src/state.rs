@@ -495,6 +495,11 @@ pub struct Player {
     /// 期間快照帶 `is_newcomer=true` 讓全服看到名牌旁的「新」徽記；過期後自動 false。
     /// 記憶體前置、不持久化、零 migration（重啟清零無妨，徽記只是歡迎用、過期就消）。
     pub newcomer_until: Option<std::time::Instant>,
+
+    // ── 蒸汽載具（Phase 1-E）─────────────────────────────────────────────────
+    /// 玩家正乘騎的蒸汽腳踏車 id。None = 步行；Some(id) = 正騎著該台車（移動快 3 倍）。
+    /// 記憶體前置、不持久化、零 migration——重啟回到步行、車回原位。
+    pub riding: Option<u32>,
 }
 
 impl Player {
@@ -925,6 +930,8 @@ impl Player {
             is_newcomer: self.newcomer_until
                 .map(|t| t > std::time::Instant::now())
                 .unwrap_or(false),
+            // Phase 1-E 蒸汽載具：是否正乘騎，廣播給全服（前端把人畫在車座上）。
+            riding: self.riding.is_some(),
             // ROADMAP 533：守護者元素祝福——由 game.rs 快照迴圈補填，view() 預設 None。
             guardian_blessing: None,
         }
@@ -1085,8 +1092,12 @@ impl Player {
         // 移動數學整段在 world_core::step_with_keys（對角線正規化、水域阻擋、
         // 實心格四角碰撞、受困逃脫）——前端 wasm 預測呼叫同一份，預測==權威。
         // 速度加點＋跑步皆透過縮放 dt 實現，保持碰撞邏輯不變。
+        // 蒸汽載具（Phase 1-E）：騎乘時把步進再放大 `VEHICLE_SPEED_MULT` 倍——移動變快，
+        // 碰撞／對角正規化／水域阻擋全部仍走 world_core::step_with_keys 那唯一一份移動數學
+        // （不另寫車輛物理）；車與人共用同一套碰撞，過不了牆、下不了水。
         let run_mult = if self.input.run { world_core::RUN_MULT } else { 1.0 };
-        let effective_dt = dt * self.stats.speed_mult() * run_mult;
+        let ride_dt = crate::vehicle::ride_effective_dt(dt, self.riding.is_some());
+        let effective_dt = ride_dt * self.stats.speed_mult() * run_mult;
         (self.x, self.y) = world_core::step_with_keys(
             self.x,
             self.y,
@@ -1395,6 +1406,9 @@ pub struct AppState {
     /// 野營篝火（ROADMAP 474）：玩家在荒野升起的篝火，火光暖意把附近野獸逼退。
     /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
     pub campfires: Arc<RwLock<crate::campfire::CampfireField>>,
+    /// 蒸汽載具場（Phase 1-E 北極星「載具」MVP）：故鄉草原上可乘騎的蒸汽腳踏車。
+    /// 純記憶體模式，重啟回到初始車況（車回原位、無人乘騎）；不碰玩家資料與經濟。
+    pub vehicles: Arc<RwLock<crate::vehicle::VehicleField>>,
     /// 廢棄蒸汽星艦共修（ROADMAP 492）：多位旅人共同貢獻木材修繕世界東北方的墜落星艦。
     /// 純記憶體模式，重啟清零；不碰玩家資料與持久化。
     pub ship_repair: Arc<RwLock<crate::ship_repair::ShipRepairState>>,
@@ -1672,6 +1686,7 @@ impl AppState {
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             campfires: Arc::new(RwLock::new(crate::campfire::CampfireField::new())),
+            vehicles: Arc::new(RwLock::new(crate::vehicle::VehicleField::with_default())),
             ship_repair: Arc::new(RwLock::new(crate::ship_repair::ShipRepairState::new())),
             snowmen: Arc::new(RwLock::new(crate::snowman::SnowmanField::new())),
             night_springs: Arc::new(RwLock::new(crate::night_aether_springs::NightAetherSprings::new())),
@@ -1873,6 +1888,7 @@ mod tests {
             kill_streak: 0,
             streak_last_kill: None,
             newcomer_until: None,
+            riding: None,
         }
     }
 

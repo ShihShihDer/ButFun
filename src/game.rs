@@ -4798,6 +4798,10 @@ pub fn spawn(app: AppState) {
                             // 旅人紀念碑（ROADMAP 526）：廣播所有刻文供前端靠近時顯示。
                             app.monument.read().unwrap().view()
                         },
+                        // 蒸汽載具（Phase 1-E）：故鄉草原上的蒸汽腳踏車（含乘客 id）。
+                        vehicles: app.vehicles.read().unwrap().cycles().iter().map(|c| {
+                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider }
+                        }).collect(),
                     }
                 };
                 let _ = app.tx.send(std::sync::Arc::new(snapshot));

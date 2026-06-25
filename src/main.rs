@@ -85,6 +85,7 @@ mod postcard;
 mod postcard_mail;
 mod tile_store;
 mod tiles;
+mod vehicle; // Phase 1-E 蒸汽載具 MVP·北極星「載具」垂直切片
 mod vitals;
 mod land_plot;
 mod land_plot_store;

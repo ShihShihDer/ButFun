@@ -2972,6 +2972,34 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 雪季雪人：雪身＋圍巾＋署名牌＋視野外剔除＋回暖早退＋壞值皆乾淨");
 }
 
+// 蒸汽載具（Phase 1-E）：drawVehicles 銅輪／車架／煙囪噴汽／騎乘跟人／視野外剔除／壞值連跑多幀皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：蒸汽載具（空車＋有乘客跟人＋視野外剔除＋壞值，連跑 5 幀）──");
+  const vSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = vSnap.players[0];
+  // 玩家自己騎著 id=2 那台（rider=自己 id）：車應畫在自己腳下。
+  me.riding = true;
+  vSnap.vehicles = [
+    { id: 0, x: me.x + 50, y: me.y + 10, rider: null },   // 空車（在附近）
+    { id: 1, x: me.x - 70, y: me.y - 30, rider: null },   // 空車
+    { id: 2, x: me.x - 9999, y: me.y, rider: me.id },     // 有乘客＝跟乘客畫（停放座標 stale 也無妨）
+    { id: 3, x: 99999, y: 99999, rider: null },           // 視野外：應被剔除
+    { id: NaN, x: me.x, y: me.y, rider: "no-such-player" }, // 壞 id＋找不到的乘客：保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...vSnap, type: "snapshot" }) });
+  const r = pump("蒸汽載具", 5);
+  // 再餵一份「無載具」snapshot，驗證早退路徑不拋例外。
+  const none = JSON.parse(JSON.stringify(snapshot));
+  none.vehicles = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...none, type: "snapshot" }) });
+  const r2 = pump("蒸汽載具空", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 蒸汽載具：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 蒸汽載具：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 蒸汽載具：銅輪＋車架＋煙囪＋騎乘跟人＋視野外剔除＋無車早退＋壞值皆乾淨");
+}
+
 // 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
 {
   const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;

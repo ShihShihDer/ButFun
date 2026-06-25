@@ -4376,6 +4376,9 @@
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
+  let vehicles = []; // Phase 1-E 蒸汽載具 [{id, x, y, rider}]——故鄉草原可乘騎的蒸汽腳踏車，騎上去快 3 倍
+  // 上車距離門檻（像素）：鏡像後端 vehicle::BOARD_RADIUS，前後端同一契約。
+  const VEHICLE_BOARD_RADIUS = 80;
   // ROADMAP 492 廢棄蒸汽星艦共修——進度 + 閃耀剩餘秒數（從快照同步）
   let shipRepair = { progress: 0, goal: 20, repaired_secs: 0 };
   const SHIP_REPAIR_WX = 3200; // 與後端 ship_repair::SHIP_WX 對齊
@@ -5284,6 +5287,7 @@
         sprinklers = msg.sprinklers || [];
         campfires = msg.campfires || []; // ROADMAP 474 野營篝火
         snowmen = msg.snowmen || []; // ROADMAP 478 雪季雪人
+        vehicles = msg.vehicles || []; // Phase 1-E 蒸汽載具
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -5860,6 +5864,8 @@
           updateSkipStoneBtn(me, isGuest);
           // 立稻草人按鈕（ROADMAP 476）：已登入、戶外、未倒地、站在自己田格上才顯示
           updateScarecrowBtn(me, isGuest);
+          // 蒸汽載具上下車按鈕（Phase 1-E）：走近空車顯示「上車」、騎乘中顯示「下車」
+          updateVehicleBtns(me, isGuest);
         }
         break;
       }
@@ -11064,6 +11070,7 @@
     safeDraw("plazaSeasonDecor", () => drawPlazaSeasonDecor(camX, camY, renderNow)); // 廣場四季地景（ROADMAP 529），廣場地面隨季節積澱
     safeDraw("combatMarks", () => drawCombatMarks(camX, camY)); // 戰鬥記跡（ROADMAP 499），擊殺地點短暫記號
     safeDraw("snowmen", () => drawSnowmen(camX, camY, renderNow)); // 雪季雪人（ROADMAP 478），地表之上、玩家之下
+    safeDraw("vehicles", () => drawVehicles(camX, camY, renderNow)); // 蒸汽載具（Phase 1-E），地表之上、玩家之下
     safeDraw("nodes", () => drawNodes(camX, camY)); // 採集節點畫在地表/農地之上、玩家之下
     safeDraw("dustNodes", () => drawDustNodes(camX, camY, renderNow)); // 流星雨星塵（133）
     safeDraw("nightSprings", () => drawNightSprings(camX, camY, renderNow)); // 夜間乙太泉（162）
@@ -12190,6 +12197,43 @@
     }
   }
   // ── 立稻草人按鈕 end ──────────────────────────────────────────────────────────────
+
+  // ── 蒸汽載具上下車按鈕（Phase 1-E）────────────────────────────────────────────────
+  /** 找玩家權威座標 `VEHICLE_BOARD_RADIUS` 內最近的空車 id（鏡像後端 nearest_boardable）；沒有回 null。 */
+  function nearestBoardableVehicle(me) {
+    if (!me || !Array.isArray(vehicles)) return null;
+    let best = null;
+    let bestD2 = VEHICLE_BOARD_RADIUS * VEHICLE_BOARD_RADIUS;
+    for (const v of vehicles) {
+      if (v.rider) continue; // 只挑空車
+      const dx = v.x - me.x;
+      const dy = v.y - me.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { bestD2 = d2; best = v.id; }
+    }
+    return best;
+  }
+  /** 每幀更新「🚲 上車／🚶 下車」按鈕：騎乘中顯示「下車」；否則走近空車（戶外、已登入、未倒地）顯示「上車」。 */
+  function updateVehicleBtns(me, isGuestUser) {
+    const btn = document.getElementById("vehicleBtn");
+    if (!btn) return;
+    const downed = !!me && (me.downed || (typeof me.hp === "number" && me.hp <= 0));
+    if (me && me.riding) {
+      // 騎乘中：永遠給得了「下車」。
+      btn.classList.remove("hidden");
+      btn.textContent = "🚶 下車";
+      btn.style.color = "#9fd6ff";
+      return;
+    }
+    const canBoard = !!me && !isGuestUser && me.indoor_plot_id == null && !downed
+      && nearestBoardableVehicle(me) != null;
+    btn.classList.toggle("hidden", !canBoard);
+    if (canBoard) {
+      btn.textContent = "🚲 上車";
+      btn.style.color = "var(--ink)";
+    }
+  }
+  // ── 蒸汽載具按鈕 end ──────────────────────────────────────────────────────────────
 
   // ── 向主要 NPC 攀談按鈕（ROADMAP 255）─────────────────────────────────────────
   // 可攀談的城鎮大人物穩定 id（與後端 npc_schedule VILLAGE_NPCS ＋ 旅人對齊）。
@@ -14832,6 +14876,85 @@
         ctx.fillStyle = "#eaf4ff";
         ctx.fillText(label, sx, sy - 37);
       }
+    }
+    ctx.restore();
+  }
+
+  // ── 蒸汽載具（Phase 1-E·北極星「載具」MVP）────────────────────────────────────────
+  /** 畫一台原創蒸汽腳踏車：兩枚銅輪＋車架＋小煙囪噴汽。空車畫在停放座標 (x,y)；
+   *  有乘客的車畫在乘客腳下（騎乘中車跟著人走——後端車座標停在上車處，故騎乘者一律取其插值座標）。
+   *  reduceMotion 下不轉輪、不飄汽，照顧暈眩敏感玩家。 */
+  function drawVehicles(camX, camY, nowMs) {
+    if (!vehicles.length) return;
+    const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    ctx.save();
+    for (const v of vehicles) {
+      // 有乘客 → 畫在乘客腳下（用其插值座標，與人同步）；空車 → 畫在停放座標。
+      let wx = v.x;
+      let wy = v.y;
+      if (v.rider) {
+        const rp = players.get(v.rider);
+        if (rp) { wx = rp.rx; wy = rp.ry; }
+      }
+      const sx = wx - camX;
+      const sy = wy - camY;
+      // 視窗剔除。
+      if (sx < -40 || sx > viewW + 40 || sy < -40 || sy > viewH + 40) continue;
+      const ridden = !!v.rider;
+      ctx.save();
+      ctx.translate(sx, sy);
+      // 腳下陰影。
+      ctx.fillStyle = "rgba(60,50,40,0.28)";
+      ctx.beginPath();
+      ctx.ellipse(0, 12, 18, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // 兩枚銅輪（前後）。輪子隨時間轉（reduceMotion 或停放時不轉）。
+      const spin = (reduce || !ridden) ? 0 : (nowMs / 90 + (v.id || 0));
+      const wheelR = 8;
+      for (const wxoff of [-11, 11]) {
+        ctx.save();
+        ctx.translate(wxoff, 6);
+        ctx.strokeStyle = "#6b4a2a";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, wheelR, 0, Math.PI * 2);
+        ctx.stroke();
+        // 輪輻（四根，隨 spin 旋轉，給「在動」的體感）。
+        ctx.strokeStyle = "#b5832f";
+        ctx.lineWidth = 1;
+        for (let k = 0; k < 4; k++) {
+          const a = spin + (k * Math.PI) / 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(Math.cos(a) * wheelR, Math.sin(a) * wheelR);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      // 車架（連兩輪的梁＋斜撐）。
+      ctx.strokeStyle = "#7a5230";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(-11, 6); ctx.lineTo(0, -4); ctx.lineTo(11, 6); // 三角車架
+      ctx.moveTo(0, -4); ctx.lineTo(2, 6); // 立管到後輪
+      ctx.stroke();
+      // 座墊。
+      ctx.fillStyle = "#5a3d22";
+      ctx.fillRect(-4, -7, 8, 3);
+      // 小銅鍋爐＋煙囪（蒸汽龐克味）。
+      ctx.fillStyle = "#9c6b35";
+      ctx.fillRect(-3, -4, 6, 5);
+      ctx.fillStyle = "#4a3320";
+      ctx.fillRect(-1, -9, 3, 5); // 煙囪
+      // 噴汽（騎乘中且非 reduceMotion 才飄）。
+      if (ridden && !reduce) {
+        const t = (nowMs / 400 + (v.id || 0)) % 1;
+        ctx.fillStyle = `rgba(230,230,235,${0.5 * (1 - t)})`;
+        ctx.beginPath();
+        ctx.arc(0.5, -10 - t * 10, 2 + t * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -34951,6 +35074,23 @@
         } else {
           safeSend({ type: "place_scarecrow", col: foot.col, row: foot.row });
           announce("立起一座稻草人——守護半徑內的成熟作物不再怕田鴉啄食");
+        }
+      });
+    }
+    // 🚲 上／下蒸汽載具（Phase 1-E）：走近空車上車（快 3 倍），騎乘中下車回步行。
+    const vehicleBtn = document.getElementById("vehicleBtn");
+    if (vehicleBtn) {
+      vehicleBtn.addEventListener("click", () => {
+        SFX.click(); // 點擊音效 ROADMAP 376
+        const me = myId ? players.get(myId) : null;
+        if (!me) return;
+        if (me.riding) {
+          safeSend({ type: "dismount_vehicle" });
+          announce("下了蒸汽腳踏車，回到步行");
+        } else {
+          if (me.indoor_plot_id != null) return;
+          safeSend({ type: "board_vehicle" });
+          announce("騎上蒸汽腳踏車——移動快多了！按「🚶 下車」回到步行");
         }
       });
     }
