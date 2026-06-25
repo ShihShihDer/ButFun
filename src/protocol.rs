@@ -459,6 +459,14 @@ pub enum ClientMsg {
     BeginKite,
     /// 收線（ROADMAP 470）：收起風箏。未在放風箏時靜默忽略。
     CancelKite,
+    /// 上車（Phase 1-E 蒸汽載具 MVP）：玩家走近一台空的蒸汽腳踏車按「🚲 上車」即乘上。
+    /// 無 payload——一律用玩家自己的權威座標挑 `vehicle::BOARD_RADIUS` 內最近的空車（防隔空上車）；
+    /// 倒地 / 在室內 / 附近沒有空車 / 已在騎車一律靜默忽略。上車後移動快 3 倍（複用 world-core 移動，
+    /// 只放大步進，碰撞不變）。零持久化、純記憶體。
+    BoardVehicle,
+    /// 下車（Phase 1-E 蒸汽載具 MVP）：玩家按「🚶 下車」回到步行；車就停在下車當下的座標等下一位旅人。
+    /// 無 payload——未在騎車時靜默忽略。零持久化、純記憶體。
+    DismountVehicle,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -1387,6 +1395,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = 空向量，靜默略過）。
         #[serde(default)]
         monument: Vec<MonumentEntryView>,
+        /// 蒸汽載具（Phase 1-E）：世界上可乘騎的蒸汽腳踏車。空向量＝無車。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時 = 空向量，靜默略過）。
+        #[serde(default)]
+        vehicles: Vec<VehicleView>,
     },
     /// 廣播聊天訊息。
     Chat { from: String, text: String },
@@ -2730,6 +2742,10 @@ pub struct PlayerView {
     /// false 時略過序列化（省頻寬，平常絕大多數玩家都不是新人）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_newcomer: bool,
+    /// 此玩家此刻是否正乘騎蒸汽載具（Phase 1-E）。廣播給全服——前端對騎乘者把人畫在車座上、
+    /// 並把那台車畫在玩家腳下（騎乘中車座標跟著人走）。false 時略過序列化（多數玩家平時步行）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub riding: bool,
 }
 
 /// 新手引導的快照視圖（ROADMAP 396）。前端據此逐格點亮「最初幾步」清單。
@@ -3045,6 +3061,18 @@ pub struct TreeView {
     pub y: f32,
     /// 成長階段 wire 值（0=🌱 1=🌿 2=🌲 3=🌳），與 `world_grove::GrowStage::wire` 對齊、別重排。
     pub stage: u8,
+}
+
+/// 一台蒸汽載具的快照（Phase 1-E）。前端據此畫車；`rider` 為 Some 時表示有人乘騎，
+/// 前端會把車畫在那位玩家腳下（騎乘中車跟著人走），空車則畫在 `(x,y)` 停放處。
+#[derive(Debug, Clone, Serialize)]
+pub struct VehicleView {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+    /// 目前乘客玩家 id（None＝空車可上）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rider: Option<Uuid>,
 }
 
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。
@@ -3420,6 +3448,7 @@ mod tests {
                 idle_nudge: None,
                 poisoned: false,
                 is_newcomer: false,
+                riding: false,
                 guardian_blessing: None,
             }],
             fields: vec![FieldView {
@@ -3575,6 +3604,7 @@ mod tests {
             wonder_discoveries: vec![],
             world_boss: None,
             monument: vec![],
+            vehicles: vec![],
             };
         let v: serde_json::Value = serde_json::to_value(&snap).unwrap();
         assert_eq!(v["type"], "snapshot");
@@ -3740,6 +3770,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            riding: false,
             guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -4042,6 +4073,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            riding: false,
             guardian_blessing: None,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&pv).unwrap()).unwrap();
@@ -4120,6 +4152,7 @@ mod tests {
             idle_nudge: None,
             poisoned: false,
             is_newcomer: false,
+            riding: false,
             guardian_blessing: None,
         }
     }

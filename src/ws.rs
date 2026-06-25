@@ -222,6 +222,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
             newcomer_until: None,
+            riding: None,
         }
     } else {
         // 等 Join
@@ -364,6 +365,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             dish_mastery: crate::dish_mastery::DishMastery::default(),
             onboarding: crate::onboarding::Onboarding::default(),
             newcomer_until: None,
+            riding: None,
         }
     };
     let id = player.id;
@@ -688,7 +690,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         Ok(msg) => {
                             // 依玩家權威位置做 AOI 剔除。
                             let filtered = match &*msg {
-                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction, fishing_contest, wonder_discoveries, world_boss, monument } => {
+                                ServerMsg::Snapshot { tick, players, fields, nodes, enemies, daynight, listings, npcs, terrain, world_event, horde_event, quests, land_plots, ranch_plots, hives, farm_crop_plots, star_crystals, village_buff_remaining_secs, village_treasury, weather, rainbow, sprinklers, gathering_secs, active_help_requests, resident_moods, town_prosperity_level, town_project, star_forecast_secs, star_forecast_bonus, meteor_shower_secs, dust_nodes, campfires, snowmen, wandering_merchant_secs, wandering_catalog, merchant_quests, current_season, season_remaining_secs, wildlife, carion_orbs, colonies, species_attitudes, seasonal_nodes, home_furniture: _, home_style: _, civic_vote, civic_effect_secs, civic_effect_kind, invasion, night_spring_nodes, firefly_swarms, monster_species_attitudes, monster_colony_views, eco_pressure_value, alpha_monsters, eco_bounty, ancient_alpha, expedition_target, eco_festival, town_factions, town_blocs, town_share, world_groves, ship_repair, world_tally, combat_marks, session_champions, ether_surge_secs, ether_surge_x, ether_surge_y, gold_rush, auction, fishing_contest, wonder_discoveries, world_boss, monument, vehicles } => {
                                     let (px, py) = {
                                         let ps = app_for_forward.players.read().unwrap();
                                         ps.get(&id).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0))
@@ -868,6 +870,9 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                         world_boss: world_boss.clone(),
                                         // 旅人紀念碑（ROADMAP 526）：全服廣播（量少，最多數十條刻文）。
                                         monument: monument.clone(),
+                                        // 蒸汽載具（Phase 1-E）：全車全服廣播（量極少，僅數台；
+                                        // 騎乘中的車前端會跟著乘客畫，故不做 AOI 剔除以免乘客在視野內卻沒了車）。
+                                        vehicles: vehicles.clone(),
                                     }
                                 }
                                 other => other.clone(),
@@ -5014,6 +5019,52 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                     let mut players = app.players.write().unwrap();
                     if let Some(p) = players.get_mut(&id) {
                         p.flying_kite = false;
+                    }
+                }
+
+                // ── 蒸汽載具（Phase 1-E）───────────────────────────────────────────
+                Ok(ClientMsg::BoardVehicle) => {
+                    // 上車：需登入、未倒地、在室外、且尚未在騎車。守 prod-deadlock：
+                    //   ① 讀玩家權威座標（讀鎖即取即放）
+                    //   ② 另開載具寫鎖挑最近空車上車（不與 players 鎖巢狀）
+                    //   ③ 成功則另開 players 寫鎖標記騎乘
+                    if authed_uid.is_none() { continue; }
+                    let pos: Option<(f32, f32)> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| {
+                                !p.vitals.is_downed()
+                                    && p.indoor_plot_id.is_none()
+                                    && p.riding.is_none()
+                            })
+                            .map(|p| (p.x, p.y))
+                    };
+                    if let Some((px, py)) = pos {
+                        // 一律用玩家自己的權威座標挑車（防隔空上車）；附近沒空車回 None、靜默忽略。
+                        let outcome = app.vehicles.write().unwrap().board(id, px, py);
+                        if let crate::vehicle::BoardOutcome::Boarded(cid) = outcome {
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.riding = Some(cid);
+                            }
+                        }
+                    }
+                }
+
+                Ok(ClientMsg::DismountVehicle) => {
+                    // 下車：把車停在玩家當下座標、回步行。未在騎車時靜默忽略。守 prod-deadlock 同上。
+                    let pos: Option<(f32, f32)> = {
+                        let players = app.players.read().unwrap();
+                        players
+                            .get(&id)
+                            .filter(|p| p.riding.is_some())
+                            .map(|p| (p.x, p.y))
+                    };
+                    if let Some((px, py)) = pos {
+                        app.vehicles.write().unwrap().dismount(id, px, py);
+                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                            p.riding = None;
+                        }
                     }
                 }
 
@@ -9732,6 +9783,9 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
     // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
     if removed.is_some() {
+        // 蒸汽載具（Phase 1-E）：玩家離線時把他騎著的車釋放成空車，讓別人能再騎
+        // （另開載具寫鎖，不與 players 鎖巢狀；此處 players 鎖已釋放，守 prod-deadlock）。
+        app.vehicles.write().unwrap().release_rider(id);
         let _ = app.tx.send(Arc::new(ServerMsg::PlayerLeft { id }));
     }
 }
