@@ -227,6 +227,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             boost_trigger: None,
             boosting: false,
             bell_trigger: None,
+            mount_gather_at: None,
         }
     } else {
         // 等 Join
@@ -374,6 +375,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             boost_trigger: None,
             boosting: false,
             bell_trigger: None,
+            mount_gather_at: None,
         }
     };
     let id = player.id;
@@ -5098,6 +5100,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.clear_boost();
                                 // 一併清掉招呼鈴信標（ROADMAP 540）。
                                 p.clear_bell();
+                                // 一併清掉騎乘巡採冷卻（ROADMAP 544）。
+                                p.clear_mount_gather();
                             }
                             // 駕駛下車連帶被請下後座的乘客，也清掉其騎乘旗標（ROADMAP 538）。
                             if let Some(pid) = out.ejected_passenger {

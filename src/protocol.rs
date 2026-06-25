@@ -3096,6 +3096,9 @@ pub struct VehicleView {
     /// 本拍招呼鈴信標是否亮著（共乘招呼鈴，ROADMAP 540）。向後相容：false 時不序列化、舊前端忽略。
     #[serde(default, skip_serializing_if = "is_false")]
     pub bell_ringing: bool,
+    /// 本拍騎乘巡採的採集臂是否正在採（騎乘巡採，ROADMAP 544）。向後相容：false 時不序列化、舊前端忽略。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub harvesting: bool,
 }
 
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。

@@ -15125,6 +15125,23 @@
         const sway = reduce ? 0 : Math.sin(nowMs / 120 + (v.id || 0)) * 2;
         ctx.fillText("🔔", sway, -20);
       }
+      // 騎乘巡採採集臂火花（ROADMAP 544）：本拍順手採到節點時，車側冒一抹綠光 ＋ 🌿，
+      // 讓「騎車經過順手撿」一眼看得到。reduceMotion 下畫固定、不脈動。
+      if (v.harvesting) {
+        const pulse = reduce ? 0.6 : (Math.sin(nowMs / 90 + (v.id || 0)) * 0.5 + 0.5); // 0..1
+        ctx.save();
+        ctx.strokeStyle = `rgba(120,210,110,${0.4 + pulse * 0.45})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(11, 4, 6 + pulse * 3, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const bob = reduce ? 0 : Math.sin(nowMs / 110 + (v.id || 0)) * 1.5;
+        ctx.fillText("🌿", 13, -6 + bob);
+        ctx.restore();
+      }
       ctx.restore();
       // 招呼邀請提示（ROADMAP 540）：自己徒步、車亮信標、後座空、在招攬半徑內 → 車上方標「上車共乘」。
       if (v.bell_ringing && meOnFoot && v.rider !== myId) {

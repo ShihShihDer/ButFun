@@ -1724,6 +1724,8 @@ pub fn spawn(app: AppState) {
                 let mut passengers: Vec<(uuid::Uuid, u32)> = Vec::new(); // (乘客 id, 車 id)
                 // 共乘招呼鈴（ROADMAP 540）：本拍信標亮著的車 id（駕駛搖鈴窗內）。
                 let mut bells_ringing: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                // 騎乘巡採（ROADMAP 544）：本拍採集臂冷卻已退、可順手採的駕駛 (玩家 id, 車 id, x, y)。
+                let mut gatherers: Vec<(uuid::Uuid, u32, f32, f32)> = Vec::new();
                 {
                     let players = app.players.read().unwrap();
                     for p in players.values() {
@@ -1735,18 +1737,37 @@ pub fn spawn(app: AppState) {
                                 if p.bell_active() {
                                     bells_ringing.insert(cid);
                                 }
+                                // 駕駛且採集臂冷卻已退 → 本拍候選巡採（實際採不採到看附近有沒有節點）。
+                                if p.mount_gather_ready() {
+                                    gatherers.push((p.id, cid, p.x, p.y));
+                                }
                             }
                         }
                     }
                 }
+                // 騎乘巡採（ROADMAP 544）：在獨立 nodes 寫鎖內替本拍候選駕駛各採一下最近的節點（基礎產量、
+                // 不疊任何加成）。鎖序守 prod-deadlock：players 讀鎖已釋放，此 nodes 寫鎖獨立、不與
+                // players／vehicles 巢狀。採到的 (玩家 id, 物品, 量) 留到下方 players 寫鎖一次落袋。
+                let mut harvested: Vec<(uuid::Uuid, crate::inventory::ItemKind, u32)> = Vec::new();
+                let mut harvesting_cycles: std::collections::HashSet<u32> = std::collections::HashSet::new();
+                if !gatherers.is_empty() {
+                    let mut nodes = app.nodes.write().unwrap();
+                    for (pid, cid, x, y) in &gatherers {
+                        if let Some((kind, amount)) = nodes.collect_for_vehicle(*x, *y) {
+                            harvested.push((*pid, kind.into(), amount));
+                            harvesting_cycles.insert(*cid);
+                        }
+                    }
+                }
                 {
-                    // 一道 vehicles 寫鎖內同步座標與招呼鈴信標：即便本拍沒人駕駛也要跑 sync_bells
-                    // 把上一拍殘留的信標熄掉（駕駛剛下車那拍 driver_pos 會空，仍須清燈）。
+                    // 一道 vehicles 寫鎖內同步座標、招呼鈴信標與採集臂火花：即便本拍沒人駕駛也要跑
+                    // sync_bells／sync_harvesting 把上一拍殘留的信標／火花熄掉（剛下車那拍 driver_pos 會空，仍須清）。
                     let mut vehicles = app.vehicles.write().unwrap();
                     vehicles.sync_positions(&driver_pos);
                     vehicles.sync_bells(&bells_ringing);
+                    vehicles.sync_harvesting(&harvesting_cycles);
                 }
-                if !passengers.is_empty() {
+                if !passengers.is_empty() || !harvested.is_empty() {
                     let mut players = app.players.write().unwrap();
                     for (pid, cid) in passengers {
                         if let Some(&(dx, dy)) = driver_pos.get(&cid) {
@@ -1754,6 +1775,13 @@ pub fn spawn(app: AppState) {
                                 pp.x = dx;
                                 pp.y = dy;
                             }
+                        }
+                    }
+                    // 騎乘巡採落袋（ROADMAP 544）：基礎產量直接進駕駛背包、重置其採集臂冷卻。
+                    for (pid, item, qty) in harvested {
+                        if let Some(pp) = players.get_mut(&pid) {
+                            let _ = pp.add_item_overflow(item, qty);
+                            pp.note_mount_gather();
                         }
                     }
                 }
@@ -4851,7 +4879,7 @@ pub fn spawn(app: AppState) {
                         },
                         // 蒸汽載具（Phase 1-E）：故鄉草原上的蒸汽腳踏車（含乘客 id）。
                         vehicles: app.vehicles.read().unwrap().cycles().iter().map(|c| {
-                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger, bell_ringing: c.bell_ringing }
+                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger, bell_ringing: c.bell_ringing, harvesting: c.harvesting }
                         }).collect(),
                     }
                 };

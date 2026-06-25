@@ -17,6 +17,10 @@ const NODES_PER_CHUNK: usize = 2;
 /// 玩家採集的伸手範圍：站在節點這個距離內才採得到（比一格略大，走近即可）。
 pub const GATHER_REACH: f32 = 56.0;
 
+/// 騎乘巡採（ROADMAP 544）的採集臂伸手範圍（像素）：比徒步 `GATHER_REACH` 略大——
+/// 蒸汽載具側掛的採集臂探得遠一點，讓「騎車經過順手撿」順暢些，但仍要貼著節點開過。
+pub const VEHICLE_COLLECT_REACH: f32 = 80.0;
+
 /// 世界裡一個有座標的採集節點。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedNode {
@@ -86,17 +90,31 @@ impl NodeField {
 
     /// 玩家在 `(px, py)` 採集：在 `GATHER_REACH` 內、仍可採的節點中挑**最近**的採一下。
     pub fn gather_near(&mut self, px: f32, py: f32) -> Option<(NodeKind, u32)> {
+        self.gather_within(px, py, GATHER_REACH)
+    }
+
+    /// 騎乘巡採（ROADMAP 544）：以載具採集臂範圍 `VEHICLE_COLLECT_REACH` 採最近的可採節點。
+    /// 行為與 `gather_near` 完全一致（同一份節點耐久/重生邏輯），只是伸手範圍換成載具的。
+    /// **回傳基礎產量**（呼叫端刻意不疊任何採集加成）——騎車是順路撿的便利、不取代手動精採。
+    pub fn collect_for_vehicle(&mut self, px: f32, py: f32) -> Option<(NodeKind, u32)> {
+        self.gather_within(px, py, VEHICLE_COLLECT_REACH)
+    }
+
+    /// 在 `(px, py)` 的 `reach` 範圍內挑**最近**仍可採的節點採一下，回基礎產量。
+    /// `gather_near`（徒步）與 `collect_for_vehicle`（騎乘巡採）共用這份唯一實作，
+    /// 只差伸手範圍——節點耐久/重生/防隔空採集判定一字不改。
+    fn gather_within(&mut self, px: f32, py: f32, reach: f32) -> Option<(NodeKind, u32)> {
         if !px.is_finite() || !py.is_finite() {
             return None;
         }
-        
+
         // 確保目前座標所在的區塊已載入（防禦性）
-        self.ensure_chunks_around(px, py, GATHER_REACH);
+        self.ensure_chunks_around(px, py, reach);
 
         let (cx, cy) = chunk_key(px, py);
         // 記住節點「實際被找到的 chunk」——別從 id 推:節點重生會換位,id 內含的原 chunk 可能對不上。
         let mut best: Option<((i32, i32), (i32, i32, usize), f32)> = None; // (找到的 chunk, 節點 id, dist²)
-        let reach_sq = GATHER_REACH * GATHER_REACH;
+        let reach_sq = reach * reach;
 
         for dy in -1..=1 {
             for dx in -1..=1 {
@@ -311,6 +329,24 @@ mod tests {
         let got = f.gather_near(target.x, target.y);
         assert!(got.is_some());
         assert_eq!(got.unwrap().0, target.node.kind());
+    }
+
+    #[test]
+    fn collect_for_vehicle_picks_node_within_arm_reach() {
+        // 騎乘巡採（ROADMAP 544）：採集臂範圍比徒步寬，貼著節點開過就採得到、回基礎產量。
+        let mut f = NodeField::new();
+        f.ensure_chunks_around(0.0, 0.0, 2000.0);
+        let target = f.nodes()[0].clone();
+        // 站在「徒步搆不到、但採集臂搆得到」的距離外側採（GATHER_REACH < d <= VEHICLE_COLLECT_REACH）。
+        let d = (GATHER_REACH + VEHICLE_COLLECT_REACH) / 2.0;
+        let (px, py) = (target.x + d, target.y);
+        assert!(
+            f.gather_near(px, py).is_none(),
+            "此距離徒步搆不到"
+        );
+        let (kind, amount) = f.collect_for_vehicle(px, py).expect("採集臂搆得到");
+        // 採到的恰是該種節點的基礎產量（呼叫端刻意不疊任何加成）。
+        assert_eq!(amount, kind.yield_per_gather());
     }
 
     #[test]

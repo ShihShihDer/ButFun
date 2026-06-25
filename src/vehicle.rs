@@ -82,6 +82,23 @@ pub fn bell_invite_visible(dist_sq: f32, has_open_seat: bool, viewer_on_foot: bo
         && viewer_on_foot
 }
 
+// ── 騎乘巡採（ROADMAP 544·北極星 Phase 1）──────────────────────────────────────
+// 駕駛騎車經過資源節點時，車側的蒸汽採集臂每隔一段冷卻就順手採一下（基礎產量、不疊任何
+// 加成），採到的素材直接落進駕駛背包。把載具從「純代步」推進到「邊跑邊收」——騎車在大世界
+// 裡探索採集第一次有了主動的便利價值。療癒向：不必停、不必點，順路撿；刻意比手動採集慢、
+// 量也只給基礎產量，手動精採（吃工具/天氣/稀有度等加成）永遠更划算，不破壞既有採集經濟。
+// 零持久化、確定性（冷卻全由「上次巡採時刻＋牆上時鐘」推導，鏡像 boost／bell 做法）。
+
+/// 騎乘巡採冷卻（秒）：採集臂每隔這麼久才順手採一次。刻意比手動採集的節奏慢，
+/// 讓巡採是「順路撿」的便利而非高速吸乾節點。
+pub const MOUNT_GATHER_COOLDOWN_SECS: f32 = 1.5;
+
+/// 距上次巡採已 `elapsed_secs` 秒，採集臂冷卻是否已退、可再採一次（`>= MOUNT_GATHER_COOLDOWN_SECS`）。
+/// 確定性、無副作用；壞值（負、NaN、Infinity）保守回 `false`（不在壞時鐘下狂採）。
+pub fn mount_gather_ready(elapsed_secs: f32) -> bool {
+    elapsed_secs.is_finite() && elapsed_secs >= MOUNT_GATHER_COOLDOWN_SECS
+}
+
 /// 走近多少像素內可上車（玩家權威座標與車座標的距離門檻）。
 pub const BOARD_RADIUS: f32 = 80.0;
 /// 上車距離門檻平方（省一次開根號）。
@@ -123,6 +140,10 @@ pub struct SteamCycle {
     /// 駕駛的搖鈴時刻 + 牆上時鐘推算（`VehicleField::sync_bells`），快照廣播給所有人畫信標。
     /// 不是權威遊戲狀態、不持久化；空車一律 false。
     pub bell_ringing: bool,
+    /// 本拍騎乘巡採的採集臂是否正在採（騎乘巡採，ROADMAP 544）——純顯示旗標，由遊戲迴圈
+    /// 在「這台車的駕駛本拍順手採到節點」時設真（`VehicleField::sync_harvesting`），快照廣播
+    /// 給所有人畫採集臂火花。不是權威遊戲狀態、不持久化；空車／本拍沒採到一律 false。
+    pub harvesting: bool,
 }
 
 /// 全世界的蒸汽腳踏車場（記憶體前置、零持久化）。
@@ -171,6 +192,7 @@ impl VehicleField {
                 rider: None,
                 passenger: None,
                 bell_ringing: false,
+                harvesting: false,
             })
             .collect();
         Self { cycles }
@@ -266,6 +288,15 @@ impl VehicleField {
     pub fn sync_bells(&mut self, ringing: &std::collections::HashSet<u32>) {
         for c in self.cycles.iter_mut() {
             c.bell_ringing = ringing.contains(&c.id);
+        }
+    }
+
+    /// 把每台車的採集臂旗標同步成本拍狀態（騎乘巡採，ROADMAP 544，遊戲迴圈每拍呼叫）。
+    /// `harvesting`：本拍順手採到節點的車 id 集合（由接線端在巡採落袋時收集）；不在集合內者熄火花。
+    /// 純設值、確定性；空車／本拍沒採到者自然不在集合內、恆為 false。
+    pub fn sync_harvesting(&mut self, harvesting: &std::collections::HashSet<u32>) {
+        for c in self.cycles.iter_mut() {
+            c.harvesting = harvesting.contains(&c.id);
         }
     }
 
@@ -431,8 +462,8 @@ mod tests {
     fn nearest_boardable_picks_closest() {
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 100.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
-                SteamCycle { id: 2, x: 40.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
+                SteamCycle { id: 1, x: 100.0, y: 0.0, rider: None, passenger: None, bell_ringing: false, harvesting: false },
+                SteamCycle { id: 2, x: 40.0, y: 0.0, rider: None, passenger: None, bell_ringing: false, harvesting: false },
             ],
         };
         assert_eq!(f.nearest_boardable(0.0, 0.0), Some(2));
@@ -568,8 +599,8 @@ mod tests {
         // 一人不可同時佔兩個座位：先當某車駕駛，再去坐別車後座，原駕駛座應釋放。
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: Some(uid(9)), passenger: None, bell_ringing: false },
-                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
+                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: Some(uid(9)), passenger: None, bell_ringing: false, harvesting: false },
+                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false, harvesting: false },
             ],
         };
         // uid(5) 先當 id=2 駕駛
@@ -654,11 +685,38 @@ mod tests {
     }
 
     #[test]
+    fn mount_gather_ready_respects_cooldown_and_bad_values() {
+        // 騎乘巡採（ROADMAP 544）：冷卻未退不採、退了才採；壞時鐘保守不採。
+        assert!(!mount_gather_ready(0.0), "剛採完冷卻未退");
+        assert!(!mount_gather_ready(MOUNT_GATHER_COOLDOWN_SECS - 0.01), "冷卻將退未退");
+        assert!(mount_gather_ready(MOUNT_GATHER_COOLDOWN_SECS), "冷卻整退即可採");
+        assert!(mount_gather_ready(MOUNT_GATHER_COOLDOWN_SECS + 5.0), "冷卻早退仍可採");
+        assert!(!mount_gather_ready(-1.0), "壞值（負）保守不採");
+        assert!(!mount_gather_ready(f32::NAN), "壞值（NaN）保守不採");
+        assert!(!mount_gather_ready(f32::INFINITY), "壞值（Inf）保守不採");
+    }
+
+    #[test]
+    fn sync_harvesting_sets_only_listed_cycles() {
+        let mut f = VehicleField::with_default();
+        let id0 = f.cycles()[0].id;
+        let mut harvesting = std::collections::HashSet::new();
+        harvesting.insert(id0);
+        f.sync_harvesting(&harvesting);
+        for c in f.cycles() {
+            assert_eq!(c.harvesting, c.id == id0, "只有列入集合的車亮採集臂火花");
+        }
+        // 再同步空集合：全部熄火花。
+        f.sync_harvesting(&std::collections::HashSet::new());
+        assert!(f.cycles().iter().all(|c| !c.harvesting), "未列入者全熄");
+    }
+
+    #[test]
     fn rider_cannot_hold_two_cycles() {
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
-                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
+                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: None, passenger: None, bell_ringing: false, harvesting: false },
+                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false, harvesting: false },
             ],
         };
         let rider = uid(5);
