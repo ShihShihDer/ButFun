@@ -890,6 +890,8 @@ impl Player {
             meditating: self.meditation.is_some(),
             // ROADMAP 399：是否正在廣場獻奏（廣播給所有人，前端畫頭頂飄動音符）。
             busking: self.busking.is_some(),
+            // ROADMAP 535：曲目身段（由累計獻奏場次推導，前端據此挑頭頂音符調色盤的華麗度）。
+            busk_tier: crate::busking_repertoire::tier_for_count(self.busk_count).wire(),
             // ROADMAP 472：合奏人數（廣播給所有人，前端對樂團畫漸強和聲音符、圍聽者見療癒）。
             ensemble: self.ensemble_size,
             // ROADMAP 470：是否正在放風箏（廣播給所有人，前端畫順風飄揚的風箏）。

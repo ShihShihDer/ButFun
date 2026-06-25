@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5099,6 +5099,8 @@
             existing.meditating = !!p.meditating;
             // ROADMAP 399：廣場獻奏——是否正在獻奏（前端畫頭頂飄動音符）。
             existing.busking = !!p.busking;
+            // ROADMAP 535：曲目身段——0~3，越高階頭頂飄出的音符調色盤越華麗（0 省略時當新手）。
+            existing.busk_tier = (p.busk_tier | 0) || 0;
             // ROADMAP 472：街頭合奏——所屬樂團人數（≥2 畫漸強和聲音符與暖光、圍聽者見療癒）。
             existing.ensemble = (p.ensemble | 0) || 0;
             // ROADMAP 470：放風箏——是否正在放風箏（前端畫順風飄揚的風箏）。
@@ -6782,6 +6784,8 @@
         const bcPlayer = players.get(bcPid);
         if (bcPlayer) {
           bcPlayer.busking = false;
+          // ROADMAP 535：同步演奏者最新身段，旁觀者下一幀起飄出對應華麗度的音符。
+          bcPlayer.busk_tier = (msg.tier | 0) || 0;
           if (bcPid === myId) {
             const now = performance.now();
             hitFloaters.push({ wx: bcPlayer.x, wy: bcPlayer.y - 46, text: "🎶 獻奏完成", color: "255, 210, 90", size: 18, born: now });
@@ -6792,7 +6796,13 @@
             }
             SFX.success(); // 輕柔上揚音效（ROADMAP 376）
             const cnt = msg.busk_count ? `（第 ${msg.busk_count} 場）` : "";
-            announce(`獻奏完成！${msg.listeners || 0} 人聆賞，獲打賞 ${msg.ether_gained || 0} 乙太${cnt}`);
+            // ROADMAP 535：曲目身段——晉升的當下飄一則金色暖訊＋播報，平時則在播報裡附上身段名。
+            const tierName = BUSK_TIER_NAMES[(msg.tier | 0)] || BUSK_TIER_NAMES[0];
+            if (msg.tier_up) {
+              hitFloaters.push({ wx: bcPlayer.x, wy: bcPlayer.y - 92, text: `🎼 晉升 ${tierName}！`, color: "255, 224, 130", size: 17, born: now });
+              announce(`曲目身段晉升——你已是「${tierName}」！頭頂的音符更華麗了`);
+            }
+            announce(`獻奏完成！${msg.listeners || 0} 人聆賞，獲打賞 ${msg.ether_gained || 0} 乙太${cnt}·${tierName}`);
           }
         }
         break;
@@ -10074,7 +10084,7 @@
 
     // 廣場獻奏音符（ROADMAP 399）：正在街頭獻奏的玩家頭頂飄出輕快音符，
     // 讓旁觀者一眼看出「有人在演奏」，廣場因此熱鬧起來。畫在角色本體之上。
-    if (p.busking) drawBuskingNotes(sx, by - 34, p.ensemble | 0, sx, sy + 8);
+    if (p.busking) drawBuskingNotes(sx, by - 34, p.ensemble | 0, sx, sy + 8, p.busk_tier | 0);
 
     // 街頭合奏·圍聽療癒（ROADMAP 472）：未獻奏、且圍在某支合奏樂團（ensemble≥2）聆賞半徑內的玩家，
     // 頭頂浮一枚柔和的 🎵，讀作「正被合奏的和聲療癒」——後端對其緩緩回血，與此 cue 同一判定半徑。
@@ -11958,7 +11968,9 @@
       btn.textContent = "⏹ 停止獻奏";
       btn.style.color = "#ffb347";
     } else {
-      btn.textContent = "🎶 獻奏";
+      // ROADMAP 535：閒置時在按鈕附上目前曲目身段，玩家一眼看見自己的演奏藝途長到哪。
+      const tierName = BUSK_TIER_NAMES[(me.busk_tier | 0)] || BUSK_TIER_NAMES[0];
+      btn.textContent = `🎶 獻奏 · ${tierName}`;
       btn.style.color = "var(--ink)";
     }
   }
@@ -21464,7 +21476,22 @@
   // ── 廣場獻奏音符（ROADMAP 399）────────────────────────────────────────────────
   // 由 drawPlayer 對 busking=true 的玩家頭頂呼叫；飄出兩枚輕快音符（左右錯落、上下浮動），
   // 讓旁觀者一眼看出「有人在街頭獻奏」。尊重 reduceMotion（不浮動、只靜態擺兩枚音符）。
-  const BUSK_NOTE_GLYPHS = ["🎵", "🎶", "🎼"];
+  // ROADMAP 535 曲目身段：身段越高，頭頂飄出的音符調色盤越華麗（鏡像後端
+  // busking_repertoire::RepertoireTier::palette；wire 值 0~3 是兩端共用契約，別重排）。
+  const BUSK_TIER_PALETTES = [
+    ["🎵"],                     // 0 街頭新手
+    ["🎵", "🎶"],               // 1 廣場樂手
+    ["🎵", "🎶", "🎼"],         // 2 城鎮名伶
+    ["🎵", "🎶", "🎼", "🎷"],   // 3 傳奇吟遊
+  ];
+  // 面向玩家的身段名（集中於此便於在地化）。索引＝身段 wire 值。
+  const BUSK_TIER_NAMES = ["街頭新手", "廣場樂手", "城鎮名伶", "傳奇吟遊"];
+  // 純函式（可測）：依身段 wire 值取音符調色盤；壞值／越界一律退回新手單音符調色盤。
+  function buskTierPalette(tier) {
+    tier = tier | 0;
+    if (tier < 0 || tier >= BUSK_TIER_PALETTES.length) tier = 0;
+    return BUSK_TIER_PALETTES[tier];
+  }
   // 純函式（可測，render-smoke 真值表用）：聆賞半徑判定，鏡像後端 busking::within_listen_range。
   function withinListenRadius(ax, ay, bx, by) {
     if (![ax, ay, bx, by].every(Number.isFinite)) return false;
@@ -21479,8 +21506,10 @@
   // 街頭合奏·共鳴樂團（ROADMAP 472）：`ensemble` ≥2 時這位獻奏者正與身旁其他樂手合奏——
   // 腳下漾開一圈暖光（人越多越亮）、頭頂飄出更多更密的和聲音符，讓「眾人合奏、廣場熱起來」
   // 一眼可見；圍在身旁聆賞的群眾後端會緩緩回血。獨奏（ensemble<2）時維持 399 的兩枚音符。
-  function drawBuskingNotes(cx, cy, ensemble, footX, footY) {
+  function drawBuskingNotes(cx, cy, ensemble, footX, footY, tier) {
     ensemble = ensemble | 0;
+    // ROADMAP 535：依演奏者身段挑音符調色盤——越高階越華麗。
+    const palette = buskTierPalette(tier);
     const harmonizing = ensemble >= 2;
     // 合奏暖光：以腳邊為圓心畫一圈柔和的琥珀光暈，人越多半徑越大、越亮（封頂避免過曝）。
     if (harmonizing && Number.isFinite(footX) && Number.isFinite(footY)) {
@@ -21511,7 +21540,7 @@
       const spread = count <= 2 ? (i === 0 ? -8 : 9) : (i - (count - 1) / 2) * 9;
       const nx = cx + spread;
       const ny = cy - 2 + bob;
-      const glyph = BUSK_NOTE_GLYPHS[(Math.floor(t / Math.PI) + i) % BUSK_NOTE_GLYPHS.length];
+      const glyph = palette[(Math.floor(t / Math.PI) + i) % palette.length];
       ctx.globalAlpha = reduceMotion ? 0.85 : 0.6 + 0.35 * (0.5 + 0.5 * Math.cos(phase));
       ctx.font = `${13 + (i % 2)}px ${UI_FONT}`;
       ctx.fillText(glyph, nx, ny);
