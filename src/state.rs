@@ -514,6 +514,10 @@ pub struct Player {
     /// 冷卻全由「此時刻 + 牆上時鐘」確定性推導（見 `vehicle::bell_is_active` / `bell_off_cooldown`）。
     /// 只有駕駛搖得響；記憶體前置、零持久化、零 migration——重啟回到無信標、冷卻已退。
     pub bell_trigger: Option<std::time::Instant>,
+    /// 騎乘巡採（ROADMAP 544）：最近一次採集臂順手採到節點的時刻（None＝本次乘騎尚未巡採過）。
+    /// 採集冷卻由「此時刻 + 牆上時鐘」確定性推導（見 `vehicle::mount_gather_ready`）。
+    /// 只有駕駛巡採；記憶體前置、零持久化、零 migration——重啟回到可立即巡採。
+    pub mount_gather_at: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -1193,6 +1197,23 @@ impl Player {
     /// 共乘招呼鈴：下車／離線時清掉搖鈴狀態（不讓殘留信標帶到下一次乘騎）。
     pub fn clear_bell(&mut self) {
         self.bell_trigger = None;
+    }
+
+    /// 騎乘巡採（ROADMAP 544）：採集臂冷卻是否已退、此刻可順手採一次。
+    /// 本次乘騎尚未巡採過（`mount_gather_at` 為 None）一律可採；否則看距上次是否已過冷卻。
+    pub fn mount_gather_ready(&self) -> bool {
+        self.mount_gather_at
+            .map_or(true, |t| crate::vehicle::mount_gather_ready(t.elapsed().as_secs_f32()))
+    }
+
+    /// 騎乘巡採：記下「本拍剛順手採到節點」的時刻，重置採集臂冷卻。
+    pub fn note_mount_gather(&mut self) {
+        self.mount_gather_at = Some(std::time::Instant::now());
+    }
+
+    /// 騎乘巡採：下車／離線時清掉巡採冷卻（不讓殘留冷卻帶到下一次乘騎）。
+    pub fn clear_mount_gather(&mut self) {
+        self.mount_gather_at = None;
     }
 }
 
@@ -1978,6 +1999,7 @@ mod tests {
             boost_trigger: None,
             boosting: false,
             bell_trigger: None,
+            mount_gather_at: None,
         }
     }
 
