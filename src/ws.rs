@@ -226,6 +226,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             riding_passenger: false,
             boost_trigger: None,
             boosting: false,
+            bell_trigger: None,
         }
     } else {
         // 等 Join
@@ -372,6 +373,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             riding_passenger: false,
             boost_trigger: None,
             boosting: false,
+            bell_trigger: None,
         }
     };
     let id = player.id;
@@ -5094,6 +5096,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 p.riding_passenger = false;
                                 // 下車清掉衝刺狀態，不讓殘留旗標帶到下一次乘騎（ROADMAP 539）。
                                 p.clear_boost();
+                                // 一併清掉招呼鈴信標（ROADMAP 540）。
+                                p.clear_bell();
                             }
                             // 駕駛下車連帶被請下後座的乘客，也清掉其騎乘旗標（ROADMAP 538）。
                             if let Some(pid) = out.ejected_passenger {
@@ -5117,6 +5121,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                         if is_driver && !p.vitals.is_downed() {
                             // 冷卻退了才真的衝（trigger_boost 內部把關），靜默忽略冷卻中的重複按。
                             p.trigger_boost();
+                        }
+                    }
+                }
+
+                // 共乘招呼鈴（ROADMAP 540）：駕駛搖鈴亮信標招呼附近徒步旅人來坐後座共乘。守 prod-deadlock：
+                // 只一道 players 寫鎖即取即放、不與 vehicles 巢狀。非駕駛／倒地／冷卻未退一律靜默忽略。
+                Ok(ClientMsg::RingBell) => {
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        let is_driver = p.riding.is_some() && !p.riding_passenger;
+                        if is_driver && !p.vitals.is_downed() {
+                            // 冷卻退了才真的搖（ring_bell 內部把關），靜默忽略冷卻中的重複按。
+                            p.ring_bell();
                         }
                     }
                 }

@@ -3069,6 +3069,47 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error)) console.log("  ✅ 蒸汽衝刺：衝刺車噴汽爆發＋速度線＋壞 rider 皆乾淨");
 }
 
+// 共乘招呼鈴（ROADMAP 540）：bellInviteVisible 純函式真值表＋亮信標的車（bell_ringing）連跑多幀
+// 畫金色脈動光環＋🔔＋徒步玩家的「上車共乘」邀請提示皆零例外。
+{
+  const biv = sandbox.__bfTest && sandbox.__bfTest.bellInviteVisible;
+  console.log("── 情境：共乘招呼鈴（bellInviteVisible 真值表＋信標車連跑 4 幀）──");
+  if (typeof biv !== "function") { failed = true; console.error("  ❌ bellInviteVisible 未匯出"); }
+  else {
+    let ok = true;
+    const R2 = 520 * 520;
+    // 半徑內、後座空、徒步 → 看得到。
+    if (biv(0, true, true) !== true) { ok = false; console.error("  ❌ 半徑內/空座/徒步應可見"); }
+    if (biv(R2, true, true) !== true) { ok = false; console.error("  ❌ 邊界上應仍可見"); }
+    // 超半徑 / 後座滿 / 旁觀者在車上 → 看不到。
+    if (biv(R2 + 1, true, true) !== false) { ok = false; console.error("  ❌ 超半徑應不可見"); }
+    if (biv(0, false, true) !== false) { ok = false; console.error("  ❌ 後座滿應不可見"); }
+    if (biv(0, true, false) !== false) { ok = false; console.error("  ❌ 旁觀者在車上應不可見"); }
+    // 壞距離保守回 false。
+    for (const bad of [NaN, Infinity, -Infinity, -1, null, undefined, "x"]) {
+      if (biv(bad, true, true) !== false) { ok = false; console.error(`  ❌ bellInviteVisible(${bad}) 應為 false`); }
+    }
+    if (!ok) failed = true;
+    else console.log("  ✅ bellInviteVisible 真值表（半徑/座位/徒步/壞值）通過");
+  }
+
+  const before = caughtRenderErrors.length;
+  const lSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = lSnap.players[0];
+  me.riding = false; // 自己徒步（會收到邀請提示）
+  lSnap.vehicles = [
+    { id: 0, x: me.x + 40, y: me.y, rider: "other-player", bell_ringing: true },          // 他人駕駛、搖鈴、後座空、近 → 邀請
+    { id: 1, x: me.x + 60, y: me.y, rider: "other-2", passenger: "p3", bell_ringing: true }, // 搖鈴但後座滿 → 不邀請
+    { id: 2, x: me.x, y: me.y, rider: "no-such-player", bell_ringing: true },               // 壞 rider：查不到玩家、保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...lSnap, type: "snapshot" }) });
+  const r = pump("共乘招呼鈴", 4);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 共乘招呼鈴：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 共乘招呼鈴：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 共乘招呼鈴：信標光環＋🔔＋邀請提示＋壞 rider 皆乾淨");
+}
+
 // 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
 {
   const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;

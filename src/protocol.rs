@@ -470,6 +470,9 @@ pub enum ClientMsg {
     /// 蒸汽衝刺（ROADMAP 539）：駕駛按「💨 衝刺」灌一陣蒸汽，短時間速度從 ×3 拉到 ×5，過後回巡航。
     /// 無 payload——非駕駛（步行／後座乘客）／倒地／冷卻未退一律靜默忽略。零持久化、純記憶體。
     BoostVehicle,
+    /// 共乘招呼鈴（ROADMAP 540）：駕駛按「🔔 招呼鈴」搖鈴亮信標，招呼附近徒步旅人來坐後座共乘。
+    /// 無 payload——非駕駛（步行／後座乘客）／倒地／冷卻未退一律靜默忽略。零持久化、純記憶體。
+    RingBell,
     /// 建立公會（ROADMAP 29）：花 50 乙太建立新公會。
     /// `name` 最多 20 字；`tag` 最多 3 字元（英文自動轉大寫）。
     /// 未登入 / 已有公會 / 乙太不足靜默忽略。
@@ -3083,6 +3086,9 @@ pub struct VehicleView {
     /// 目前後座共乘乘客玩家 id（None＝後座空，ROADMAP 538）。向後相容：舊前端忽略此欄。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passenger: Option<Uuid>,
+    /// 本拍招呼鈴信標是否亮著（共乘招呼鈴，ROADMAP 540）。向後相容：false 時不序列化、舊前端忽略。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bell_ringing: bool,
 }
 
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。

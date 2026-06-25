@@ -510,6 +510,10 @@ pub struct Player {
     /// 蒸汽衝刺本拍是否正在加速窗內——遊戲迴圈每拍由 `refresh_boost` 從 `boost_trigger` 推算，
     /// `step` 與快照都讀它（避免在純 `step` 裡呼叫時鐘、保持可測）。
     pub boosting: bool,
+    /// 共乘招呼鈴（ROADMAP 540）：最近一次按下「🔔 招呼鈴」的時刻（None＝從未搖過）。信標亮燈窗與
+    /// 冷卻全由「此時刻 + 牆上時鐘」確定性推導（見 `vehicle::bell_is_active` / `bell_off_cooldown`）。
+    /// 只有駕駛搖得響；記憶體前置、零持久化、零 migration——重啟回到無信標、冷卻已退。
+    pub bell_trigger: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -1156,6 +1160,36 @@ impl Player {
     pub fn clear_boost(&mut self) {
         self.boost_trigger = None;
         self.boosting = false;
+    }
+
+    /// 共乘招呼鈴（ROADMAP 540）：冷卻是否已退、此刻可再次搖鈴。
+    /// 從未搖過（`bell_trigger` 為 None）一律可搖；否則看距上次觸發是否已過冷卻。
+    pub fn bell_ready(&self) -> bool {
+        self.bell_trigger
+            .map_or(true, |t| crate::vehicle::bell_off_cooldown(t.elapsed().as_secs_f32()))
+    }
+
+    /// 共乘招呼鈴：嘗試搖一次鈴。冷卻已退才成功（記下觸發時刻、本拍即亮信標）並回 `true`；
+    /// 仍在冷卻回 `false`、不改狀態。接線端（`ws.rs`）負責先確認「此人是駕駛」才呼叫。
+    pub fn ring_bell(&mut self) -> bool {
+        if self.bell_ready() {
+            self.bell_trigger = Some(std::time::Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 共乘招呼鈴：本拍信標是否還亮著（由遊戲迴圈讀去同步到所屬車輛的顯示旗標）。
+    /// 把時鐘呼叫收束在此，保持 `step` 與快照建構純粹。
+    pub fn bell_active(&self) -> bool {
+        self.bell_trigger
+            .map_or(false, |t| crate::vehicle::bell_is_active(t.elapsed().as_secs_f32()))
+    }
+
+    /// 共乘招呼鈴：下車／離線時清掉搖鈴狀態（不讓殘留信標帶到下一次乘騎）。
+    pub fn clear_bell(&mut self) {
+        self.bell_trigger = None;
     }
 }
 
@@ -1940,6 +1974,7 @@ mod tests {
             riding_passenger: false,
             boost_trigger: None,
             boosting: false,
+            bell_trigger: None,
         }
     }
 

@@ -1719,6 +1719,8 @@ pub fn spawn(app: AppState) {
                 let mut driver_pos: std::collections::HashMap<u32, (f32, f32)> =
                     std::collections::HashMap::new();
                 let mut passengers: Vec<(uuid::Uuid, u32)> = Vec::new(); // (乘客 id, 車 id)
+                // 共乘招呼鈴（ROADMAP 540）：本拍信標亮著的車 id（駕駛搖鈴窗內）。
+                let mut bells_ringing: std::collections::HashSet<u32> = std::collections::HashSet::new();
                 {
                     let players = app.players.read().unwrap();
                     for p in players.values() {
@@ -1727,12 +1729,19 @@ pub fn spawn(app: AppState) {
                                 passengers.push((p.id, cid));
                             } else {
                                 driver_pos.insert(cid, (p.x, p.y));
+                                if p.bell_active() {
+                                    bells_ringing.insert(cid);
+                                }
                             }
                         }
                     }
                 }
-                if !driver_pos.is_empty() {
-                    app.vehicles.write().unwrap().sync_positions(&driver_pos);
+                {
+                    // 一道 vehicles 寫鎖內同步座標與招呼鈴信標：即便本拍沒人駕駛也要跑 sync_bells
+                    // 把上一拍殘留的信標熄掉（駕駛剛下車那拍 driver_pos 會空，仍須清燈）。
+                    let mut vehicles = app.vehicles.write().unwrap();
+                    vehicles.sync_positions(&driver_pos);
+                    vehicles.sync_bells(&bells_ringing);
                 }
                 if !passengers.is_empty() {
                     let mut players = app.players.write().unwrap();
@@ -4840,7 +4849,7 @@ pub fn spawn(app: AppState) {
                         },
                         // 蒸汽載具（Phase 1-E）：故鄉草原上的蒸汽腳踏車（含乘客 id）。
                         vehicles: app.vehicles.read().unwrap().cycles().iter().map(|c| {
-                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger }
+                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger, bell_ringing: c.bell_ringing }
                         }).collect(),
                     }
                 };
