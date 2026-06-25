@@ -291,17 +291,30 @@ pub fn spawn(app: AppState) {
                 app.wildlife_manager.read().unwrap().alive_snapshot()
             };
 
-            // 野營篝火（ROADMAP 474／眾人拾柴 545）：先收集玩家座標（players 讀鎖即放），
-            // 以 campfires 寫鎖依圍爐人數同步各火火勢→有效暖意半徑，再取暖意區（含半徑）。
-            // 鎖序：players 讀→放、campfires 寫→放，循序不巢狀，亦不與下方 enemies 寫鎖巢狀（守 prod-deadlock）。
-            let campfire_zones: Vec<(f32, f32, f32)> = {
-                let positions: Vec<(f32, f32)> = {
+            // 野營篝火（ROADMAP 474／眾人拾柴 545）＋協力瞭望塔（ROADMAP 546）：先收集玩家座標
+            // （players 讀鎖即放），以 campfires 寫鎖依圍爐人數同步各火火勢→有效暖意半徑取暖意區；
+            // 再以 watchtowers 寫鎖依「站工地的活人」同步協力工→取已落成塔的壓制區。兩者合併成一份
+            // 安撫區餵給敵人安撫（落成塔沿用篝火同一安撫路徑）。
+            // 鎖序：players 讀→放、campfires 寫→放、watchtowers 寫→放，循序不巢狀，亦不與下方 enemies
+            // 寫鎖巢狀（守 prod-deadlock）。建造只算「活著（非倒地）的玩家」，倒地者不算出力。
+            let calm_zones: Vec<(f32, f32, f32)> = {
+                let (positions, live_positions): (Vec<(f32, f32)>, Vec<(f32, f32)>) = {
                     let players = app.players.read().unwrap();
-                    players.values().map(|p| (p.x, p.y)).collect()
+                    let all = players.values().map(|p| (p.x, p.y)).collect();
+                    let live = players.values().filter(|p| !p.vitals.is_downed()).map(|p| (p.x, p.y)).collect();
+                    (all, live)
                 };
-                let mut fires = app.campfires.write().unwrap();
-                fires.sync_warmth(&positions);
-                fires.warmth_zones()
+                let mut zones = {
+                    let mut fires = app.campfires.write().unwrap();
+                    fires.sync_warmth(&positions);
+                    fires.warmth_zones()
+                };
+                {
+                    let mut towers = app.watchtowers.write().unwrap();
+                    towers.sync_builders(&live_positions);
+                    zones.extend(towers.suppress_zones());
+                }
+                zones
             };
 
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
@@ -316,9 +329,10 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 enemies.tick(dt);
-                // 野營篝火（ROADMAP 474／眾人拾柴 545）：advance 之前先安撫落入篝火暖意圈的敵人，
-                // 使其本幀放棄追擊玩家——在火堆旁圍出一塊敵人不來犯的安全角落（眾人圍爐則圈更大）。
-                enemies.apply_campfire_calm(&campfire_zones);
+                // 野營篝火（474／545）＋協力瞭望塔（546）：advance 之前先安撫落入暖意圈／落成塔
+                // 壓制圈內的敵人，使其本幀放棄追擊玩家——圍出敵人不來犯的安全角落（眾人圍爐圈更大；
+                // 邊境瞭望塔落成後永久鎮守一圈）。
+                enemies.apply_campfire_calm(&calm_zones);
                 // ROADMAP 163：依怪物物種態度層級更新每種怪的 aggro 倍率。
                 {
                     let mults = app.monster_species.read().unwrap().aggro_multipliers_snapshot();
@@ -3330,6 +3344,11 @@ pub fn spawn(app: AppState) {
             // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
             app.campfires.write().unwrap().tick(dt);
 
+            // 協力瞭望塔 tick（ROADMAP 546）：各工地依本拍協力工人數累加建造進度（只進不退）、
+            // 蓋滿即落成。協力工人數已於上方 calm_zones 區塊以 sync_builders 同步。
+            // 寫鎖內只 tick 即釋放（守 prod-deadlock，不與其他鎖巢狀）。
+            app.watchtowers.write().unwrap().tick(dt);
+
             // 戰鬥記跡 tick（ROADMAP 499）：推進所有記跡的年齡，移除超過 5 分鐘的。
             app.combat_marks.write().unwrap().tick(dt);
 
@@ -4639,6 +4658,17 @@ pub fn spawn(app: AppState) {
                                 remaining_secs: c.remaining.ceil().max(0.0) as u32,
                                 gather_count: c.gather_count,
                                 warmth_radius: c.warmth_radius,
+                            })
+                            .collect(),
+                        // 協力共建·邊境瞭望塔（ROADMAP 546）。
+                        watchtowers: app.watchtowers.read().unwrap().all().iter()
+                            .map(|t| crate::protocol::WatchtowerView {
+                                id: t.id,
+                                wx: t.wx,
+                                wy: t.wy,
+                                progress: t.percent(),
+                                builders: t.builders,
+                                done: t.done,
                             })
                             .collect(),
                         // 雪季雪人（ROADMAP 478）。

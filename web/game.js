@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4379,6 +4379,11 @@
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
+  let watchtowers = []; // ROADMAP 546 協力瞭望塔 [{id, wx, wy, progress, builders, done}]——多人合力建造、落成後永久壓制周圍野獸
+  // 與後端 coop_build 對齊（像素）：站工地這半徑內才算協力工；落成塔的野獸壓制半徑。
+  const WATCHTOWER_BUILD_RADIUS = 150;
+  const WATCHTOWER_SUPPRESS_RADIUS = 180;
+  const WATCHTOWER_MIN_BUILDERS = 2; // 鏡像後端 MIN_BUILDERS：少於兩人推不動
   let vehicles = []; // Phase 1-E 蒸汽載具 [{id, x, y, rider, passenger}]——故鄉草原可乘騎的蒸汽腳踏車，騎上去快 3 倍
   // 雙人共乘（ROADMAP 538）：本幀所有「後座乘客」玩家 id 集合，每張快照重算。
   //   繪製時讓乘客稍微偏後座、與駕駛錯開（一眼看出兩人同乘）；自己是乘客時關預測（座標黏駕駛）。
@@ -5309,6 +5314,7 @@
         starCrystals = msg.star_crystals || [];
         sprinklers = msg.sprinklers || [];
         campfires = msg.campfires || []; // ROADMAP 474 野營篝火
+        watchtowers = msg.watchtowers || []; // ROADMAP 546 協力瞭望塔
         snowmen = msg.snowmen || []; // ROADMAP 478 雪季雪人
         vehicles = msg.vehicles || []; // Phase 1-E 蒸汽載具
         // 雙人共乘（ROADMAP 538）：重算本幀後座乘客 id 集合（供繪製錯位 + 自己關預測）。
@@ -11127,6 +11133,7 @@
     safeDraw("field", () => drawField(camX, camY));
     safeDraw("sprinklers", () => drawSprinklers(camX, camY)); // 灑水器（ROADMAP 112）
     safeDraw("campfires", () => drawCampfires(camX, camY, renderNow)); // 野營篝火暖意圈（ROADMAP 474），地表之上、玩家之下
+    safeDraw("watchtowers", () => drawWatchtowers(camX, camY, renderNow)); // 協力瞭望塔（ROADMAP 546），地表之上、玩家之下
     safeDraw("shipRepair", () => drawShipRepair(camX, camY, renderNow)); // 廢棄蒸汽星艦（ROADMAP 492），固定世界座標
     safeDraw("worldTally", () => drawWorldTally(camX, camY)); // 今日世界戰報石板（ROADMAP 495），廣場西側入口
     safeDraw("champStone", () => drawChampStone(camX, camY)); // 廣場英雄碑（ROADMAP 503），世界戰報石板左旁
@@ -14403,6 +14410,167 @@
     ctx.restore();
   }
 
+  // 協力瞭望塔建造階段（ROADMAP 546）：純函式、好測。把進度（0..100）對映成 0~4 的塔身段數，
+  // 讓塔一節一節「長高」——前端據此決定畫幾段塔身，玩家一眼看出蓋到哪了。確定性、無副作用。
+  function watchtowerBuildStage(progress) {
+    const p = Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0;
+    return Math.min(4, Math.floor(p / 25)); // 0,1,2,3 段施工中；100% 在 done 時另畫完整塔
+  }
+
+  // 協力共建·邊境瞭望塔（ROADMAP 546）：邊境工地由多人合力建造——站工地旁的活人越多蓋得越快，
+  // 但少於兩人推不動。未落成畫成施工中的鷹架塔（隨進度一節節升高）＋進度條＋「N 人合力中／需 2 人」
+  // 提示；落成後畫成發亮的瞭望塔（入夜亮起暖燈），並在塔周畫一圈「野獸不來犯」的壓制邊界。
+  // 落成的塔永久鎮守（與篝火「在場才有」的臨時光環不同），是社群親手把邊境前線變安全的前哨。
+  // reduceMotion 下燈光與旗幟停止抖動（仍看得見塔與壓制圈），照顧暈眩敏感的玩家。
+  function drawWatchtowers(camX, camY, nowMs) {
+    if (!watchtowers.length) return;
+    const reduce = typeof reduceMotion !== "undefined" && reduceMotion;
+    const isNight = daynight && typeof daynight.light === "number" && daynight.light < 0.42;
+    // clay 畫風：暖陶土塔；null＝非 clay＝吃像素／emoji 畫法（零回歸）。
+    const C = renderStyle === "clay" ? clayBuiltPalette("watchtower") : null;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const t of watchtowers) {
+      const sx = t.wx - camX;
+      const sy = t.wy - camY;
+      const done = !!t.done;
+      const r = WATCHTOWER_SUPPRESS_RADIUS;
+      // 視窗剔除：連同壓制圈整個在畫面外才略過。
+      if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
+
+      if (done) {
+        // 落成壓制圈：冷靜的暖綠光暈＋虛線邊界，標出「野獸不來犯」的安全範圍。
+        const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+        glow.addColorStop(0, "rgba(150,210,150,0.16)");
+        glow.addColorStop(0.6, "rgba(140,200,150,0.08)");
+        glow.addColorStop(1, "rgba(140,200,150,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.save();
+        ctx.setLineDash([6, 8]);
+        ctx.strokeStyle = "rgba(150,205,150,0.30)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        // 入夜亮起的暖燈光暈（落成塔的標誌）——夜裡更亮，白天淡。
+        const lampPulse = reduce ? 1 : 1 + 0.10 * Math.sin(nowMs / 380 + (t.id || 0));
+        const lampA = (isNight ? 0.50 : 0.22) * lampPulse;
+        const lg = ctx.createRadialGradient(sx, sy - 46, 0, sx, sy - 46, 64);
+        lg.addColorStop(0, `rgba(255,206,110,${Math.min(0.6, lampA)})`);
+        lg.addColorStop(0.6, `rgba(255,180,70,${Math.min(0.28, lampA * 0.5)})`);
+        lg.addColorStop(1, "rgba(255,170,60,0)");
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.arc(sx, sy - 46, 64, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 塔身：施工中依進度長高，落成畫完整塔。座標以塔底 (sx, sy) 為基準往上長。
+      const stage = done ? 4 : watchtowerBuildStage(t.progress || 0);
+      const segH = 13;                 // 每段塔身高
+      const towerH = (done ? 4 : Math.max(1, stage)) * segH; // 至少畫一段地基，免得 0% 看不到
+      const baseW = 22, topW = 14;     // 塔底寬、塔頂寬（梯形）
+      if (C) {
+        // clay：暖陶土木塔。塔身梯形＋頂蓋＋（落成）燈罩。
+        ctx.save();
+        ctx.lineWidth = 1.4;
+        ctx.fillStyle = C.post;
+        ctx.strokeStyle = C.postEdge;
+        ctx.beginPath();
+        ctx.moveTo(sx - baseW / 2, sy);
+        ctx.lineTo(sx + baseW / 2, sy);
+        ctx.lineTo(sx + topW / 2, sy - towerH);
+        ctx.lineTo(sx - topW / 2, sy - towerH);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // 象牙頂光（讓塔身讀作圓鼓鼓的黏土）。
+        ctx.fillStyle = C.top;
+        ctx.beginPath();
+        ctx.moveTo(sx - topW / 2 + 2, sy - towerH + 2);
+        ctx.lineTo(sx - 1, sy - towerH + 2);
+        ctx.lineTo(sx - 1, sy - 3);
+        ctx.lineTo(sx - baseW / 2 + 3, sy - 3);
+        ctx.closePath();
+        ctx.fill();
+        if (done) {
+          // 落成：暖橙燈罩＋頂蓋。
+          ctx.fillStyle = C.roof;
+          ctx.strokeStyle = C.roofEdge;
+          ctx.beginPath();
+          ctx.moveTo(sx - topW / 2 - 3, sy - towerH);
+          ctx.lineTo(sx + topW / 2 + 3, sy - towerH);
+          ctx.lineTo(sx, sy - towerH - 11);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = C.lampCore;
+          ctx.beginPath();
+          ctx.arc(sx, sy - towerH - 1, 3, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          // 施工中：頂端一截黏土鷹架橫桿。
+          ctx.strokeStyle = C.scaffold;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(sx - topW / 2 - 3, sy - towerH);
+          ctx.lineTo(sx + topW / 2 + 3, sy - towerH);
+          ctx.stroke();
+        }
+        ctx.restore();
+      } else {
+        // 像素／emoji 路徑（預設）：木褐塔身梯形＋頂部標誌。
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.fillStyle = done ? "#b07a3a" : "#8a6a48";
+        ctx.strokeStyle = done ? "#6e4a18" : "#4f3a22";
+        ctx.beginPath();
+        ctx.moveTo(sx - baseW / 2, sy);
+        ctx.lineTo(sx + baseW / 2, sy);
+        ctx.lineTo(sx + topW / 2, sy - towerH);
+        ctx.lineTo(sx - topW / 2, sy - towerH);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // 頂端標誌：落成🔭、施工中🔨（reduceMotion 下不晃）。
+        const bob = reduce ? 0 : Math.sin(nowMs / 240 + (t.id || 0)) * 1.5;
+        ctx.font = `15px ${UI_FONT}`;
+        ctx.fillText(done ? "🔭" : "🔨", sx, sy - towerH - 9 + bob);
+        ctx.restore();
+      }
+
+      // 施工中：進度條＋「N 人合力中／需 2 人合力」提示，浮在塔上方。
+      if (!done) {
+        const pct = Math.max(0, Math.min(100, Math.round(t.progress || 0)));
+        const barW = 40, barH = 5;
+        const barX = sx - barW / 2;
+        const barY = sy - towerH - 26;
+        ctx.fillStyle = "rgba(20,16,10,0.55)";
+        ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+        ctx.fillStyle = "#6b5836";
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = "#ffcf72";
+        ctx.fillRect(barX, barY, barW * pct / 100, barH);
+        // 合力人數提示。
+        const builders = Math.max(0, Math.floor(t.builders || 0));
+        const enough = builders >= WATCHTOWER_MIN_BUILDERS;
+        const label = enough ? `🔨 ${builders} 人合力中` : `需 ${WATCHTOWER_MIN_BUILDERS} 人合力`;
+        ctx.font = `11px ${UI_FONT}`;
+        ctx.fillStyle = "rgba(20,16,10,0.55)";
+        const tw = ctx.measureText(label).width;
+        ctx.fillRect(sx - tw / 2 - 3, barY - 16, tw + 6, 13);
+        ctx.fillStyle = enough ? "#ffe6a8" : "#ffd2c2";
+        ctx.fillText(label, sx, barY - 9);
+      }
+    }
+    ctx.restore();
+  }
+
   // ── 廢棄蒸汽星艦（ROADMAP 492）────────────────────────────────────────────────────
   // 世界東北方固定座標上一艘墜落的蒸汽龐克星艦：流線形艦身、鏽蝕齒輪、破損蒸汽管道。
   // 損毀狀態：深灰鏽褐；修繕中：進度條懸在艦身上方；修繕完成（閃耀）：金黃光暈。
@@ -17614,6 +17782,8 @@
     scarecrow: { post: "#8a6a4a", straw: "#dcb35a", strawEdge: "#b8924a", hat: "#a9763e", shadow: "rgba(80,56,32,0.26)", top: "rgba(255,250,238,0.4)" },
     // 篝火：把 emoji 🪵🔥 換成捏出來的暖褐黏土木柴＋暖橙黏土火舌（暖意光暈是「光」、跨畫風一致故不動）。
     campfire:  { log: "#8a6a4a", logEdge: "#6a4c30", flame: "#f0a64c", flameCore: "#ffe0a0", flameEdge: "#d97a30" },
+    // 協力瞭望塔（546）：暖陶土木造塔身＋暖褐邊＋象牙頂光，落成燈罩暖橙（與微縮世界桌上暖燈同調）。
+    watchtower:{ post: "#9a7448", postEdge: "#6e4f2c", roof: "#a9763e", roofEdge: "#7c5224", top: "rgba(255,250,238,0.45)", lamp: "#ffcf72", lampCore: "#fff0c4", scaffold: "#b39468" },
   };
   // clay 玩家建造物色盤查表（純函式、好測）：只認得 snowman／scarecrow／campfire；其餘一律回 null，
   // 呼叫端據此退回原本像素／emoji 畫法（零回歸：非 clay 或未知建造物吃不到暖陶土分支）。
