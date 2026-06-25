@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -14301,8 +14301,19 @@
     ctx.restore();
   }
 
-  // 野營篝火（ROADMAP 474）：畫一圈暖意光暈＋跳動的火焰。落入光暈的野獸會被火光逼退，
-  // 替玩家在野外圍出一塊敵人不來犯的安全角落。光暈半徑與後端暖意判定同口徑（CAMPFIRE_WARMTH_RADIUS）。
+  // 眾人拾柴火焰高（ROADMAP 545）：純函式，依圍爐人數算火焰「旺度」縮放——
+  // 0／1 人＝基礎（1.0），每多一位圍爐者火畫得更大，封頂 1.40（5 人，對齊後端半徑加成上限）。
+  // 壞值保守退 1.0。確定性、無副作用、好測（render-smoke 驗真值表）。
+  function campfireBlazeScale(gatherCount) {
+    const n = Number.isFinite(gatherCount) ? Math.max(0, Math.floor(gatherCount)) : 0;
+    const extra = Math.max(0, n - 1);
+    return 1 + Math.min(extra * 0.10, 0.40);
+  }
+
+  // 野營篝火（ROADMAP 474／眾人拾柴 545）：畫一圈暖意光暈＋跳動的火焰。落入光暈的野獸會被火光逼退，
+  // 替玩家在野外圍出一塊敵人不來犯的安全角落。光暈半徑改用後端廣播的有效半徑（warmth_radius，
+  // 已含圍爐人數加成）、與後端安撫判定同口徑；舊伺服器讀不到時退回固定半徑（向後相容）。
+  // 圍爐人越多火畫得越旺（campfireBlazeScale）——「聚在一起更暖」一眼看得到。
   // reduceMotion 下火焰停止抖動（仍看得見火堆與暖意圈），照顧暈眩敏感的玩家。
   function drawCampfires(camX, camY, nowMs) {
     if (!campfires.length) return;
@@ -14314,15 +14325,19 @@
     for (const c of campfires) {
       const sx = c.wx - camX;
       const sy = c.wy - camY;
-      const r = CAMPFIRE_WARMTH_RADIUS;
+      // 有效暖意半徑（眾人拾柴）：優先用後端廣播值，否則退回固定半徑（向後相容）。
+      const r = (typeof c.warmth_radius === "number" && c.warmth_radius > 0)
+        ? c.warmth_radius : CAMPFIRE_WARMTH_RADIUS;
       // 視窗剔除：連同暖意圈整個在畫面外才略過。
       if (sx < -r || sx > viewW + r || sy < -r || sy > viewH + r) continue;
+      // 眾人拾柴：圍爐人數決定火焰旺度與光暈濃度。
+      const blaze = campfireBlazeScale(c.gather_count || 0);
       // 火快燒完（remaining_secs 小）時暖意圈與火光一起漸弱，預告「火要熄了」。
       const fade = Math.max(0.25, Math.min(1, (c.remaining_secs || 0) / 12));
-      // 暖意光暈：橙黃徑向漸層，由內而外淡出；外圈一道虛線標出「敵人不來犯」的邊界。
+      // 暖意光暈：橙黃徑向漸層，由內而外淡出；火越旺光暈越濃。外圈一道虛線標出「敵人不來犯」的邊界。
       const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
-      grad.addColorStop(0, `rgba(255,176,84,${0.22 * fade})`);
-      grad.addColorStop(0.5, `rgba(255,140,60,${0.10 * fade})`);
+      grad.addColorStop(0, `rgba(255,176,84,${Math.min(0.34, 0.22 * fade * blaze)})`);
+      grad.addColorStop(0.5, `rgba(255,140,60,${Math.min(0.16, 0.10 * fade * blaze)})`);
       grad.addColorStop(1, "rgba(255,120,40,0)");
       ctx.fillStyle = grad;
       ctx.beginPath();
@@ -14336,8 +14351,8 @@
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
-      // 火堆本體：木柴＋跳動的火焰。火焰隨時間輕微縮放，像在劈啪燃燒。
-      const flick = reduce ? 1 : 1 + 0.12 * Math.sin(nowMs / 110 + (c.id || 0));
+      // 火堆本體：木柴＋跳動的火焰。火焰隨時間輕微縮放（像在劈啪燃燒），再乘圍爐旺度（眾人拾柴）。
+      const flick = (reduce ? 1 : 1 + 0.12 * Math.sin(nowMs / 110 + (c.id || 0))) * blaze;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.globalAlpha = fade;

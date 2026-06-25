@@ -2757,14 +2757,15 @@ for (const sc of scenarios) {
 // 驗證 drawCampfires 暖意光暈／虛線邊界／火焰跳動／剔除路徑連跑多幀皆不拋例外。
 {
   const before = caughtRenderErrors.length;
-  console.log("── 情境：野營篝火（暖意圈＋火焰＋將熄漸弱＋視野外剔除，連跑 5 幀）──");
+  console.log("── 情境：野營篝火（暖意圈＋火焰＋將熄漸弱＋視野外剔除＋眾人拾柴旺火，連跑 5 幀）──");
   const cSnap = JSON.parse(JSON.stringify(snapshot));
   const me = cSnap.players[0];
   cSnap.campfires = [
-    { id: 1, wx: me.x + 40, wy: me.y + 20, remaining_secs: 90 }, // 剛升起、滿燃
-    { id: 2, wx: me.x - 120, wy: me.y - 60, remaining_secs: 5 }, // 快燒完、漸弱
-    { id: 3, wx: 99999, wy: 99999, remaining_secs: 60 },         // 視野外：應被剔除
-    { id: 4, wx: me.x, wy: me.y, remaining_secs: 0 },            // 邊界 remaining=0：漸弱保底不爆
+    // 眾人拾柴（545）：滿燃＋眾人圍爐＝旺火＋放大暖意半徑。
+    { id: 1, wx: me.x + 40, wy: me.y + 20, remaining_secs: 90, gather_count: 4, warmth_radius: 300 },
+    { id: 2, wx: me.x - 120, wy: me.y - 60, remaining_secs: 5, gather_count: 1, warmth_radius: 210 }, // 快燒完、漸弱
+    { id: 3, wx: 99999, wy: 99999, remaining_secs: 60, gather_count: 2, warmth_radius: 240 },        // 視野外：應被剔除
+    { id: 4, wx: me.x, wy: me.y, remaining_secs: 0 },            // 邊界 remaining=0＋舊伺服器無 545 欄位：漸弱／半徑退回保底不爆
   ];
   lastWS.onmessage({ data: JSON.stringify({ ...cSnap, type: "snapshot" }) });
   const r = pump("野營篝火", 5);
@@ -2776,7 +2777,24 @@ for (const sc of scenarios) {
   if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 野營篝火：未捕捉例外"); }
   const newCaught = caughtRenderErrors.slice(before);
   if (newCaught.length) { failed = true; console.error(`  ❌ 野營篝火：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
-  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 野營篝火：暖意圈＋火焰＋將熄漸弱＋視野外剔除＋無火早退皆乾淨");
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 野營篝火：暖意圈＋火焰＋將熄漸弱＋視野外剔除＋眾人旺火＋無火早退皆乾淨");
+
+  // 眾人拾柴火焰高（545）：單元斷言純函式 campfireBlazeScale 真值表。
+  const blaze = sandbox.__bfTest && sandbox.__bfTest.campfireBlazeScale;
+  if (typeof blaze !== "function") {
+    failed = true;
+    console.error("  ❌ 眾人拾柴：game.js 未導出 campfireBlazeScale");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 眾人拾柴：${msg}`); } };
+    expect(blaze(0) === 1 && blaze(1) === 1, "0／1 人＝基礎旺度 1.0");
+    expect(blaze(2) > blaze(1), "2 人應比 1 人更旺");
+    expect(blaze(3) > blaze(2), "3 人應比 2 人更旺");
+    expect(Math.abs(blaze(5) - 1.4) < 1e-9, "5 人達旺度上限 1.40");
+    expect(blaze(9) === blaze(5) && blaze(99) === blaze(5), "超過 5 人封頂、不再變旺");
+    expect(blaze(NaN) === 1 && blaze(Infinity) === 1 && blaze(-3) === 1, "壞值／負數保守退 1.0");
+    if (!bad) console.log("  ✅ 眾人拾柴：campfireBlazeScale 真值表（0/1 基礎→階梯增→5 人封頂→壞值保守）全綠");
+  }
 }
 
 // 雪季雪人（ROADMAP 478）：單元斷言純函式 snowmanStyleSpec 的真值表——
