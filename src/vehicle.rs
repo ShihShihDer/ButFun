@@ -42,6 +42,46 @@ pub fn boost_off_cooldown(elapsed_secs: f32) -> bool {
     elapsed_secs.is_finite() && elapsed_secs >= BOOST_COOLDOWN_SECS
 }
 
+// ── 共乘招呼鈴（ROADMAP 540·北極星 Phase 1）──────────────────────────────────
+// 駕駛按「🔔 招呼鈴」搖一陣鈴，在車上亮起一圈招呼信標：附近徒步的旅人遠遠（比上車門檻寬得多）
+// 就看得到「這裡有人在揪共乘」，往回走近後座空就能坐上（538 共乘）。把 538 從「要剛好走進
+// 80px 才發現」補成「遠遠看得到、被招呼過去」——載具第一次有了主動的社交揪團動詞。
+// 療癒向：不搖也能被走近的人共乘、搖了也只是亮個信標，不強迫誰上車。
+// 零持久化、確定性（信標窗與冷卻全由「觸發時刻＋牆上時鐘」推導，鏡像 boost 做法）。
+
+/// 招呼鈴信標亮起的持續時間（秒）：搖一下亮一陣讓附近的人注意到，過了就熄。
+pub const BELL_DURATION_SECS: f32 = 4.0;
+/// 招呼鈴冷卻時間（秒，自觸發起算）：冷卻退了才能再搖，避免一路狂搖洗版。
+pub const BELL_COOLDOWN_SECS: f32 = 5.0;
+/// 招呼信標的招攬半徑（像素）：徒步旅人在此半徑內才看得到「上車共乘」邀請提示。
+/// 刻意比上車門檻 `BOARD_RADIUS`（80px）寬得多——遠遠就被招呼過去，是這片切片的重點。
+pub const BELL_INVITE_RADIUS: f32 = 520.0;
+/// 招攬半徑平方（省一次開根號）。
+pub const BELL_INVITE_RADIUS_SQ: f32 = BELL_INVITE_RADIUS * BELL_INVITE_RADIUS;
+
+/// 自招呼鈴觸發起算 `elapsed_secs` 秒，信標是否仍亮著（`< BELL_DURATION_SECS`）。
+/// 確定性、無副作用；壞值（負、NaN、Infinity）保守回 `false`（不亮信標）。
+pub fn bell_is_active(elapsed_secs: f32) -> bool {
+    elapsed_secs.is_finite() && elapsed_secs >= 0.0 && elapsed_secs < BELL_DURATION_SECS
+}
+
+/// 距上次搖鈴已 `elapsed_secs` 秒，冷卻是否已退、可再次搖鈴（`>= BELL_COOLDOWN_SECS`）。
+/// 確定性、無副作用；壞值保守回 `false`（不在壞時鐘下狂觸發）。
+pub fn bell_off_cooldown(elapsed_secs: f32) -> bool {
+    elapsed_secs.is_finite() && elapsed_secs >= BELL_COOLDOWN_SECS
+}
+
+/// 某個附近旅人是否該看到「上車共乘」邀請提示：要在招攬半徑內（`dist_sq <= BELL_INVITE_RADIUS_SQ`）、
+/// 車的後座還空著（`has_open_seat`）、且這位旁觀者正徒步（`viewer_on_foot`，已在車上的人不招攬）。
+/// 確定性、無副作用；壞距離（負、NaN、Infinity）保守回 `false`。前端鏡像同一份判定。
+pub fn bell_invite_visible(dist_sq: f32, has_open_seat: bool, viewer_on_foot: bool) -> bool {
+    dist_sq.is_finite()
+        && dist_sq >= 0.0
+        && dist_sq <= BELL_INVITE_RADIUS_SQ
+        && has_open_seat
+        && viewer_on_foot
+}
+
 /// 走近多少像素內可上車（玩家權威座標與車座標的距離門檻）。
 pub const BOARD_RADIUS: f32 = 80.0;
 /// 上車距離門檻平方（省一次開根號）。
@@ -79,6 +119,10 @@ pub struct SteamCycle {
     /// 目前後座乘客（共乘，ROADMAP 538；None = 後座空、可被附近的人坐上一同兜風）。
     /// 只有「車有駕駛」時後座才可被坐上；乘客不操控移動，由迴圈每拍黏到駕駛座標。
     pub passenger: Option<Uuid>,
+    /// 本拍招呼鈴信標是否亮著（共乘招呼鈴，ROADMAP 540）——純顯示旗標，由遊戲迴圈每拍依
+    /// 駕駛的搖鈴時刻 + 牆上時鐘推算（`VehicleField::sync_bells`），快照廣播給所有人畫信標。
+    /// 不是權威遊戲狀態、不持久化；空車一律 false。
+    pub bell_ringing: bool,
 }
 
 /// 全世界的蒸汽腳踏車場（記憶體前置、零持久化）。
@@ -126,6 +170,7 @@ impl VehicleField {
                 y,
                 rider: None,
                 passenger: None,
+                bell_ringing: false,
             })
             .collect();
         Self { cycles }
@@ -212,6 +257,15 @@ impl VehicleField {
                 c.x = x;
                 c.y = y;
             }
+        }
+    }
+
+    /// 把每台車的招呼鈴信標旗標同步成本拍狀態（共乘招呼鈴，ROADMAP 540，遊戲迴圈每拍呼叫）。
+    /// `ringing`：本拍信標亮著的車 id 集合（由接線端用駕駛搖鈴時刻 + 時鐘算好）；不在集合內者熄燈。
+    /// 純設值、確定性；空車自然不在集合內、恆為 false。
+    pub fn sync_bells(&mut self, ringing: &std::collections::HashSet<u32>) {
+        for c in self.cycles.iter_mut() {
+            c.bell_ringing = ringing.contains(&c.id);
         }
     }
 
@@ -377,8 +431,8 @@ mod tests {
     fn nearest_boardable_picks_closest() {
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 100.0, y: 0.0, rider: None, passenger: None },
-                SteamCycle { id: 2, x: 40.0, y: 0.0, rider: None, passenger: None },
+                SteamCycle { id: 1, x: 100.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
+                SteamCycle { id: 2, x: 40.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
             ],
         };
         assert_eq!(f.nearest_boardable(0.0, 0.0), Some(2));
@@ -514,8 +568,8 @@ mod tests {
         // 一人不可同時佔兩個座位：先當某車駕駛，再去坐別車後座，原駕駛座應釋放。
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: Some(uid(9)), passenger: None },
-                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None },
+                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: Some(uid(9)), passenger: None, bell_ringing: false },
+                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
             ],
         };
         // uid(5) 先當 id=2 駕駛
@@ -540,12 +594,71 @@ mod tests {
         assert_eq!(f.nearest_boardable(cx, cy), Some(0));
     }
 
+    // ── 共乘招呼鈴（ROADMAP 540）────────────────────────────────────────────────
+
+    #[test]
+    fn bell_active_window_is_bounded() {
+        assert!(bell_is_active(0.0), "剛搖鈴即亮信標");
+        assert!(bell_is_active(BELL_DURATION_SECS - 0.01), "窗結束前仍亮");
+        assert!(!bell_is_active(BELL_DURATION_SECS), "持續時間到即熄");
+        assert!(!bell_is_active(BELL_DURATION_SECS + 1.0), "窗外不亮");
+        // 壞值保守回 false。
+        assert!(!bell_is_active(-0.5));
+        assert!(!bell_is_active(f32::NAN));
+        assert!(!bell_is_active(f32::INFINITY));
+    }
+
+    #[test]
+    fn bell_cooldown_gates_retrigger() {
+        assert!(!bell_off_cooldown(0.0), "剛搖仍在冷卻");
+        assert!(!bell_off_cooldown(BELL_COOLDOWN_SECS - 0.01), "冷卻未退不可再搖");
+        assert!(bell_off_cooldown(BELL_COOLDOWN_SECS), "冷卻退了可再搖");
+        assert!(bell_off_cooldown(BELL_COOLDOWN_SECS + 5.0));
+        // 壞值保守回 false。
+        assert!(!bell_off_cooldown(f32::NAN));
+        assert!(!bell_off_cooldown(f32::INFINITY));
+    }
+
+    #[test]
+    fn bell_invite_visibility_rules() {
+        // 半徑內、後座空、徒步 → 看得到邀請。
+        assert!(bell_invite_visible(0.0, true, true));
+        assert!(bell_invite_visible(BELL_INVITE_RADIUS_SQ, true, true), "邊界上仍算在內");
+        // 招攬半徑比上車門檻寬得多（這片切片的重點：遠遠就被招呼）。
+        assert!(BELL_INVITE_RADIUS > BOARD_RADIUS);
+        // 超出招攬半徑：看不到。
+        assert!(!bell_invite_visible(BELL_INVITE_RADIUS_SQ + 1.0, true, true));
+        // 後座已滿：不招攬（沒位子可坐）。
+        assert!(!bell_invite_visible(0.0, false, true));
+        // 旁觀者本身已在車上：不招攬。
+        assert!(!bell_invite_visible(0.0, true, false));
+        // 壞距離保守回 false。
+        assert!(!bell_invite_visible(f32::NAN, true, true));
+        assert!(!bell_invite_visible(-1.0, true, true));
+        assert!(!bell_invite_visible(f32::INFINITY, true, true));
+    }
+
+    #[test]
+    fn sync_bells_sets_only_listed_cycles() {
+        let mut f = VehicleField::with_default();
+        let id0 = f.cycles()[0].id;
+        let mut ringing = std::collections::HashSet::new();
+        ringing.insert(id0);
+        f.sync_bells(&ringing);
+        for c in f.cycles() {
+            assert_eq!(c.bell_ringing, c.id == id0, "只有列入集合的車亮信標");
+        }
+        // 再同步空集合：全部熄燈。
+        f.sync_bells(&std::collections::HashSet::new());
+        assert!(f.cycles().iter().all(|c| !c.bell_ringing), "未列入者全熄");
+    }
+
     #[test]
     fn rider_cannot_hold_two_cycles() {
         let mut f = VehicleField {
             cycles: vec![
-                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: None, passenger: None },
-                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None },
+                SteamCycle { id: 1, x: 0.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
+                SteamCycle { id: 2, x: 10.0, y: 0.0, rider: None, passenger: None, bell_ringing: false },
             ],
         };
         let rider = uid(5);
