@@ -2558,14 +2558,13 @@ pub fn spawn(app: AppState) {
                             }
                             // ROADMAP 144：敵視物種近身攻擊玩家——找出 near_x/near_y 附近的玩家並扣血。
                             WildlifeEvent::WildlifeAttack { attacker_kind, near_x, near_y, damage } => {
-                                let reach2 = (crate::species_relations::HOSTILE_WILDLIFE_DAMAGE as f32 * 20.0_f32).powi(2);
                                 let victim_ids: Vec<uuid::Uuid> = {
                                     let pl = app.players.read().unwrap();
                                     pl.values()
+                                        // ROADMAP 543：命中＝在波及半徑內、不在新手村庇護所內（圈內絕對安全）、且尚未倒地。
                                         .filter(|p| {
-                                            let dx = p.x - near_x;
-                                            let dy = p.y - near_y;
-                                            dx * dx + dy * dy <= reach2 && !p.vitals.is_downed()
+                                            crate::species_relations::wildlife_attack_hits(p.x, p.y, near_x, near_y)
+                                                && !p.vitals.is_downed()
                                         })
                                         .map(|p| p.id)
                                         .collect()
