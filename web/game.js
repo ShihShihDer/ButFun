@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5169,6 +5169,14 @@
               existing._dodgeRecvAt = performance.now();
             } else {
               existing.dodge_secs = null;
+            }
+            // ROADMAP 541：復原喘息恩典窗——復原（或被扶起）後的免疫剩餘秒數。每收一筆快照
+            // 重錨「收到時間」，前端用本地時鐘自由推進恩典護盾微光的脈動與淡出。
+            if (typeof p.recovery_grace_secs === "number") {
+              existing.recovery_grace_secs = p.recovery_grace_secs;
+              existing._graceRecvAt = performance.now();
+            } else {
+              existing.recovery_grace_secs = null;
             }
             // ROADMAP 423：蓄力重擊——進行中蓄力的進度 [0,1]（沒在蓄力＝null）。
             // 自己與旁觀者都看得到，前端據此渲染逐漸收束、滿蓄即圓滿的蓄力環。
@@ -10832,6 +10840,26 @@
       ctx.restore();
     }
 
+    // 復原喘息恩典微光（ROADMAP 541）：剛從倒地爬起／被扶起、暫時免疫傷害的旅人身上，
+    // 罩一圈柔和的暖白恩典護盾光環——亮度隨恩典剩餘時間淡出、輕脈動。自己與旁觀者都看得到
+    // （旁觀者看別人剛喘口氣、刀槍不入地撤離）。脈動屬輕裝飾，reduceMotion 時不脈動。
+    {
+      const graceLeft = graceRemainingOf(p);
+      const baseAlpha = recoveryGraceAlpha(graceLeft);
+      if (baseAlpha > 0) {
+        const pulse = reduceMotion ? 0 : Math.sin(performance.now() / 150) * 1.5;
+        const r = 17 + pulse;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sx, by - 16, r, 0, Math.PI * 2);
+        // 暖白偏金的恩典色，與乙太藍護盾區隔（一個是「擋住一擊」、一個是「剛喘過氣」）。
+        ctx.strokeStyle = `rgba(255,244,205,${(0.30 + baseAlpha * 0.55).toFixed(3)})`;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // 守護者元素祝福光環（ROADMAP 533）：擊敗守護者的參戰玩家，角色外圍閃耀對應元素色彩光環，
     // 全服可見，持續 2 小時（伺服器計時、重啟清零）。依祝福種類選色：
     //   chaos（混沌）= 深紫金 / frost（冰霜）= 冰藍 / flame（烈焰）= 橘紅 / void（虛空）= 深紫
@@ -15336,6 +15364,22 @@
     if (!p || typeof p.dodge_secs !== "number") return null;
     const recv = p._dodgeRecvAt || performance.now();
     return p.dodge_secs + (performance.now() - recv) / 1000;
+  }
+
+  // ROADMAP 541 復原喘息恩典窗：與 vitals.rs RECOVERY_GRACE_SECS 對齊（前端僅供護盾微光淡出估算）。
+  const RECOVERY_GRACE_SECS = 3.0;
+  // 依恩典剩餘秒數算出恩典護盾微光的基礎不透明度 [0,1]：恩典越接近結束越淡（線性淡出）。
+  // 純函式、可測；非數字／非有限／非正一律回 0（不畫），超過總長夾鉗到 1。
+  function recoveryGraceAlpha(secs) {
+    if (typeof secs !== "number" || !isFinite(secs) || secs <= 0) return 0;
+    return Math.max(0, Math.min(1, secs / RECOVERY_GRACE_SECS));
+  }
+  // 玩家復原喘息恩典的「目前剩餘秒數」：以收到快照時錨點 + 本地時鐘往下扣（不低於 0）；
+  // 沒在恩典中回 null。讓微光在兩筆快照之間也能平滑淡出。
+  function graceRemainingOf(p) {
+    if (!p || typeof p.recovery_grace_secs !== "number") return null;
+    const recv = p._graceRecvAt || performance.now();
+    return Math.max(0, p.recovery_grace_secs - (performance.now() - recv) / 1000);
   }
 
   // 夜間乙太泉（ROADMAP 162）：回傳玩家搆得到的最近乙太泉，沒有就 null。
