@@ -1772,6 +1772,9 @@
   // 每幀：用「現在按住的鍵」推進預測位置。
   function stepPrediction(now) {
     if (!pred.has) return;
+    // 雙人共乘（ROADMAP 538）：自己是後座乘客時不自行預測——座標由伺服器每拍黏到駕駛，
+    // 交給 reconcilePrediction 收斂到權威位置即可（否則按鍵預測會與被黏的權威打架而抖動）。
+    if (vehiclePassengerIds.has(myId)) { pred.lastT = now; return; }
     if (!pred.lastT) { pred.lastT = now; return; }
     let dt = (now - pred.lastT) / 1000;
     pred.lastT = now;
@@ -4376,7 +4379,10 @@
   let placingSprinkler = false; // 是否正在選取放置灑水器的位置
   let snowmen = []; // ROADMAP 478 雪季雪人 [{id, wx, wy, builder, style}]——冬季玩家堆的署名雪人，回暖即融
   let campfires = []; // ROADMAP 474 野營篝火 [{id, wx, wy, remaining_secs}]——火光暖意逼退附近野獸
-  let vehicles = []; // Phase 1-E 蒸汽載具 [{id, x, y, rider}]——故鄉草原可乘騎的蒸汽腳踏車，騎上去快 3 倍
+  let vehicles = []; // Phase 1-E 蒸汽載具 [{id, x, y, rider, passenger}]——故鄉草原可乘騎的蒸汽腳踏車，騎上去快 3 倍
+  // 雙人共乘（ROADMAP 538）：本幀所有「後座乘客」玩家 id 集合，每張快照重算。
+  //   繪製時讓乘客稍微偏後座、與駕駛錯開（一眼看出兩人同乘）；自己是乘客時關預測（座標黏駕駛）。
+  let vehiclePassengerIds = new Set();
   // 上車距離門檻（像素）：鏡像後端 vehicle::BOARD_RADIUS，前後端同一契約。
   const VEHICLE_BOARD_RADIUS = 80;
   // ROADMAP 492 廢棄蒸汽星艦共修——進度 + 閃耀剩餘秒數（從快照同步）
@@ -5288,6 +5294,9 @@
         campfires = msg.campfires || []; // ROADMAP 474 野營篝火
         snowmen = msg.snowmen || []; // ROADMAP 478 雪季雪人
         vehicles = msg.vehicles || []; // Phase 1-E 蒸汽載具
+        // 雙人共乘（ROADMAP 538）：重算本幀後座乘客 id 集合（供繪製錯位 + 自己關預測）。
+        vehiclePassengerIds = new Set();
+        for (const v of vehicles) { if (v.passenger) vehiclePassengerIds.add(v.passenger); }
         // 村落節慶加成（ROADMAP 64）：從快照同步剩餘時間，確保新連線玩家也能看到。
         if (msg.village_buff_remaining_secs > 0) {
           villageBuffUntilMs = performance.now() + msg.village_buff_remaining_secs * 1000;
@@ -10047,8 +10056,11 @@
   // 遊戲規則(將來 WebXR renderer 自有角色呈現,這層只屬 2D 客戶端)。
 
   function drawPlayer(p, camX, camY) {
-    const sx = p.rx - camX;
-    const sy = p.ry - camY;
+    let sx = p.rx - camX;
+    let sy = p.ry - camY;
+    // 雙人共乘（ROADMAP 538）：後座乘客的座標與駕駛重合（伺服器每拍黏在一起），繪製時往後座
+    // 稍微錯開（偏右上一點），讓「兩人同乘一車」一眼可讀，而不是疊成一個人。
+    if (vehiclePassengerIds.has(p.id)) { sx += 9; sy -= 4; }
     const isMe = p.id === myId;
     // 被打趴(hp<=0,休息復原中):純讀權威快照血量,不在前端判任何戰鬥規則。被打趴的玩家
     // 在世界上要看得出來——HUD 只有自己看得到,其他玩家被打趴在畫面上原本和站著沒兩樣。
@@ -12213,6 +12225,21 @@
     }
     return best;
   }
+  /** 雙人共乘（ROADMAP 538）：走近一台「有他人駕駛、後座空」的車 → 可坐上後座共乘。
+   *  車座標由後端每拍同步成駕駛當下座標，故鄰近判定對得上駕駛真實位置。 */
+  function nearestCoRideVehicle(me) {
+    if (!me || !Array.isArray(vehicles)) return null;
+    let best = null;
+    let bestD2 = VEHICLE_BOARD_RADIUS * VEHICLE_BOARD_RADIUS;
+    for (const v of vehicles) {
+      if (!v.rider || v.passenger || v.rider === myId) continue; // 要有他人駕駛、後座空
+      const dx = v.x - me.x;
+      const dy = v.y - me.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= bestD2) { bestD2 = d2; best = v.id; }
+    }
+    return best;
+  }
   /** 每幀更新「🚲 上車／🚶 下車」按鈕：騎乘中顯示「下車」；否則走近空車（戶外、已登入、未倒地）顯示「上車」。 */
   function updateVehicleBtns(me, isGuestUser) {
     const btn = document.getElementById("vehicleBtn");
@@ -12225,11 +12252,16 @@
       btn.style.color = "#9fd6ff";
       return;
     }
-    const canBoard = !!me && !isGuestUser && me.indoor_plot_id == null && !downed
-      && nearestBoardableVehicle(me) != null;
-    btn.classList.toggle("hidden", !canBoard);
+    const eligible = !!me && !isGuestUser && me.indoor_plot_id == null && !downed;
+    const canBoard = eligible && nearestBoardableVehicle(me) != null;
+    // 沒有空車可駕，但走近他人在騎的車且後座空 → 可共乘（ROADMAP 538）。
+    const canCoRide = eligible && !canBoard && nearestCoRideVehicle(me) != null;
+    btn.classList.toggle("hidden", !(canBoard || canCoRide));
     if (canBoard) {
       btn.textContent = "🚲 上車";
+      btn.style.color = "var(--ink)";
+    } else if (canCoRide) {
+      btn.textContent = "🚲 共乘";
       btn.style.color = "var(--ink)";
     }
   }
@@ -35086,11 +35118,15 @@
         if (!me) return;
         if (me.riding) {
           safeSend({ type: "dismount_vehicle" });
-          announce("下了蒸汽腳踏車，回到步行");
+          announce(vehiclePassengerIds.has(myId) ? "下了後座，回到步行" : "下了蒸汽腳踏車，回到步行");
         } else {
           if (me.indoor_plot_id != null) return;
+          // 沒空車可駕、但附近有他人在騎的車 → 這次是坐上後座共乘（ROADMAP 538）。
+          const coRideOnly = nearestBoardableVehicle(me) == null && nearestCoRideVehicle(me) != null;
           safeSend({ type: "board_vehicle" });
-          announce("騎上蒸汽腳踏車——移動快多了！按「🚶 下車」回到步行");
+          announce(coRideOnly
+            ? "坐上朋友的後座，一同兜風——按「🚶 下車」隨時下車"
+            : "騎上蒸汽腳踏車——移動快多了！按「🚶 下車」回到步行");
         }
       });
     }

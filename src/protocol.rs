@@ -3070,9 +3070,12 @@ pub struct VehicleView {
     pub id: u32,
     pub x: f32,
     pub y: f32,
-    /// 目前乘客玩家 id（None＝空車可上）。
+    /// 目前駕駛玩家 id（None＝空車可上）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rider: Option<Uuid>,
+    /// 目前後座共乘乘客玩家 id（None＝後座空，ROADMAP 538）。向後相容：舊前端忽略此欄。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passenger: Option<Uuid>,
 }
 
 /// 今日世界戰報（ROADMAP 495）：全伺服器自啟動起的今日行動累計，向後相容預設全零。

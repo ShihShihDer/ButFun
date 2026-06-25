@@ -3000,6 +3000,33 @@ for (const sc of scenarios) {
   else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 蒸汽載具：銅輪＋車架＋煙囪＋騎乘跟人＋視野外剔除＋無車早退＋壞值皆乾淨");
 }
 
+// 雙人共乘（ROADMAP 538）：有駕駛＋後座乘客的車，乘客玩家繪製錯位（vehiclePassengerIds），
+// 連跑多幀＋壞乘客 id 皆不拋例外。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：雙人共乘（駕駛＋後座乘客錯位繪製＋壞乘客 id，連跑 4 幀）──");
+  const cSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = cSnap.players[0];
+  // 另一名玩家當駕駛，我（players[0]）當其後座乘客：座標與駕駛重合（伺服器每拍黏在一起）。
+  const driver = JSON.parse(JSON.stringify(me));
+  driver.id = "co-driver"; driver.name = "兜風夥伴";
+  driver.x = me.x; driver.y = me.y; driver.rx = me.rx; driver.ry = me.ry;
+  driver.riding = true;
+  me.riding = true; // 乘客也標記騎乘（HUD/旗標一致）
+  cSnap.players = [me, driver, ...cSnap.players.slice(1)];
+  cSnap.vehicles = [
+    { id: 0, x: driver.x, y: driver.y, rider: driver.id, passenger: me.id }, // 駕駛＋後座乘客（我）
+    { id: 1, x: me.x + 60, y: me.y, rider: null, passenger: null },          // 空車（可上）
+    { id: 2, x: me.x, y: me.y, rider: driver.id, passenger: "no-such-player" }, // 壞乘客 id：保守不爆
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...cSnap, type: "snapshot" }) });
+  const r = pump("雙人共乘", 4);
+  if (r instanceof Error) { failed = true; console.error("  ❌ 雙人共乘：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 雙人共乘：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error)) console.log("  ✅ 雙人共乘：後座乘客錯位繪製＋壞乘客 id 皆乾淨");
+}
+
 // 破綻時機（ROADMAP 488）：單元斷言純函式 weakpointGlowSpec——金色破綻光的脈動強度/環半徑。
 {
   const spec = sandbox.__bfTest && sandbox.__bfTest.weakpointGlowSpec;

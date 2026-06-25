@@ -500,6 +500,9 @@ pub struct Player {
     /// 玩家正乘騎的蒸汽腳踏車 id。None = 步行；Some(id) = 正騎著該台車（移動快 3 倍）。
     /// 記憶體前置、不持久化、零 migration——重啟回到步行、車回原位。
     pub riding: Option<u32>,
+    /// 雙人共乘（ROADMAP 538）：`riding` 為 Some 時，此旗標區分身分——false=駕駛（自己操控、快 3 倍）、
+    /// true=後座乘客（不操控移動，由迴圈每拍黏到駕駛座標）。記憶體前置、零持久化。
+    pub riding_passenger: bool,
 }
 
 impl Player {
@@ -1096,7 +1099,9 @@ impl Player {
         // 碰撞／對角正規化／水域阻擋全部仍走 world_core::step_with_keys 那唯一一份移動數學
         // （不另寫車輛物理）；車與人共用同一套碰撞，過不了牆、下不了水。
         let run_mult = if self.input.run { world_core::RUN_MULT } else { 1.0 };
-        let ride_dt = crate::vehicle::ride_effective_dt(dt, self.riding.is_some());
+        // 共乘乘客（ROADMAP 538）不自行推進——其座標由迴圈每拍黏到駕駛；只有「駕駛」才享 3 倍速。
+        let is_driver = self.riding.is_some() && !self.riding_passenger;
+        let ride_dt = crate::vehicle::ride_effective_dt(dt, is_driver);
         let effective_dt = ride_dt * self.stats.speed_mult() * run_mult;
         (self.x, self.y) = world_core::step_with_keys(
             self.x,
@@ -1889,6 +1894,7 @@ mod tests {
             streak_last_kill: None,
             newcomer_until: None,
             riding: None,
+            riding_passenger: false,
         }
     }
 

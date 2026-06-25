@@ -1707,6 +1707,43 @@ pub fn spawn(app: AppState) {
                 }
             }
 
+            // 雙人共乘位置同步（ROADMAP 538）：上方移動已算出本拍各駕駛的最終座標，這裡
+            //   ① 把「在騎」車輛的座標同步成駕駛座標（讓「走近共乘」鄰近判定對得上真實位置）；
+            //   ② 把後座乘客黏到其駕駛座標（乘客不自行移動，隨車兜風）。
+            // 鎖序守 prod-deadlock：players 讀鎖即取即放 → vehicles 寫鎖 → players 寫鎖，三者皆
+            // 「順序取用、彼此不巢狀」（與 ws 上下車接線同一紀律，players↔vehicles 永不互巢）。
+            {
+                let mut driver_pos: std::collections::HashMap<u32, (f32, f32)> =
+                    std::collections::HashMap::new();
+                let mut passengers: Vec<(uuid::Uuid, u32)> = Vec::new(); // (乘客 id, 車 id)
+                {
+                    let players = app.players.read().unwrap();
+                    for p in players.values() {
+                        if let Some(cid) = p.riding {
+                            if p.riding_passenger {
+                                passengers.push((p.id, cid));
+                            } else {
+                                driver_pos.insert(cid, (p.x, p.y));
+                            }
+                        }
+                    }
+                }
+                if !driver_pos.is_empty() {
+                    app.vehicles.write().unwrap().sync_positions(&driver_pos);
+                }
+                if !passengers.is_empty() {
+                    let mut players = app.players.write().unwrap();
+                    for (pid, cid) in passengers {
+                        if let Some(&(dx, dy)) = driver_pos.get(&cid) {
+                            if let Some(pp) = players.get_mut(&pid) {
+                                pp.x = dx;
+                                pp.y = dy;
+                            }
+                        }
+                    }
+                }
+            }
+
             // 易腐品腐壞通知（ROADMAP 106）：鎖已釋放，可安全送直接訊息。
             if !decay_notifications.is_empty() {
                 let senders = app.whisper_senders.read().unwrap();
@@ -4800,7 +4837,7 @@ pub fn spawn(app: AppState) {
                         },
                         // 蒸汽載具（Phase 1-E）：故鄉草原上的蒸汽腳踏車（含乘客 id）。
                         vehicles: app.vehicles.read().unwrap().cycles().iter().map(|c| {
-                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider }
+                            crate::protocol::VehicleView { id: c.id, x: c.x, y: c.y, rider: c.rider, passenger: c.passenger }
                         }).collect(),
                     }
                 };
