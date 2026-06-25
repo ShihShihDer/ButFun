@@ -44,6 +44,25 @@ pub const ATTACK_WILDLIFE_REACH: f32 = 64.0;
 /// 敵視野生動物造成的傷害（HP）。
 pub const HOSTILE_WILDLIFE_DAMAGE: u32 = 2;
 
+/// 野生物近身攻擊（`WildlifeEvent::WildlifeAttack`）是否命中位於 (px,py) 的玩家。
+///
+/// ROADMAP 543·536 品質硬化：補齊「新手村庇護所絕對安全」對**第四條敵對來源**
+/// （敵視物種近身攻擊）的最後缺口——542 已讓近戰反擊／中毒／怪物王重擊三路尊重
+/// 庇護所，唯獨敵視野獸攻擊還能傷到圈內玩家，讓「圈內絕對安全」對 wildlife 略過頭。
+/// 庇護所免疫沿用 542 的單一真相 `is_in_safe_zone`（不另立幾何）。
+///
+/// 純幾何＋庇護所判定，便於單測；倒地與否的判斷留在呼叫端（需讀 `vitals`）。
+pub fn wildlife_attack_hits(px: f32, py: f32, near_x: f32, near_y: f32) -> bool {
+    // 庇護所免疫優先：圈內玩家一律不受敵視野獸攻擊。
+    if crate::positions::is_in_safe_zone(px, py) {
+        return false;
+    }
+    let reach = HOSTILE_WILDLIFE_DAMAGE as f32 * 20.0;
+    let dx = px - near_x;
+    let dy = py - near_y;
+    dx * dx + dy * dy <= reach * reach
+}
+
 // ─── 所有物種清單 ─────────────────────────────────────────────────────────────
 
 pub const ALL_KINDS: &[WildlifeKind] = &[
@@ -242,6 +261,41 @@ mod tests {
             assert_eq!(sr.attitude(kind), 50);
             assert_eq!(sr.tier(kind), RelationTier::Neutral);
         }
+    }
+
+    // ───── ROADMAP 543 庇護所免疫·敵視野獸攻擊 ─────
+
+    #[test]
+    fn wildlife_attack_misses_player_in_safe_zone() {
+        // 站在新手村庇護所內的玩家，即使攻擊正壓在腳邊也不該被命中（圈內絕對安全）。
+        let (sx, sy) = crate::positions::default_spawn();
+        assert!(
+            crate::positions::is_in_safe_zone(sx, sy),
+            "前提：出生點在安全區內"
+        );
+        assert!(
+            !wildlife_attack_hits(sx, sy, sx, sy),
+            "庇護所內玩家應免疫敵視野獸近身攻擊"
+        );
+    }
+
+    #[test]
+    fn wildlife_attack_hits_player_outside_by_range() {
+        // 圈外：在波及半徑內才命中、超出半徑不命中——證明歸零來自庇護所而非半徑本身。
+        let (ox, oy) = (9000.0_f32, 9000.0_f32);
+        assert!(
+            !crate::positions::is_in_safe_zone(ox, oy),
+            "前提：對照點在安全區外"
+        );
+        let reach = HOSTILE_WILDLIFE_DAMAGE as f32 * 20.0;
+        assert!(
+            wildlife_attack_hits(ox, oy, ox + reach * 0.5, oy),
+            "圈外、半徑內的玩家應被命中"
+        );
+        assert!(
+            !wildlife_attack_hits(ox, oy, ox + reach * 2.0, oy),
+            "圈外、半徑外的玩家不該被命中"
+        );
     }
 
     #[test]
