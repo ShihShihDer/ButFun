@@ -290,27 +290,27 @@ impl EnemyField {
         }
     }
 
-    /// 野營篝火安撫（ROADMAP 474）：把落在任一篝火暖意半徑（`crate::campfire::WARMTH_RADIUS`）
-    /// 內的活著敵人的 `calm_timer` 設滿，使其在 `advance` 中暫時放棄追擊玩家。
+    /// 野營篝火安撫（ROADMAP 474／眾人拾柴 545）：把落在任一篝火暖意圈內的活著敵人的
+    /// `calm_timer` 設滿，使其在 `advance` 中暫時放棄追擊玩家。
     /// 每幀於 `advance` 之前呼叫；`calm_timer` 由 `advance` 自然遞減，故玩家踏出暖意圈或火燒完後
-    /// 敵人很快回神。純記憶體、確定性，無 IO。`centers` 為各篝火世界座標。
-    pub fn apply_campfire_calm(&mut self, centers: &[(f32, f32)]) {
-        if centers.is_empty() {
+    /// 敵人很快回神。純記憶體、確定性，無 IO。`zones` 為各篝火（世界座標 X／Y／**有效半徑**），
+    /// 有效半徑已含圍爐人數加成（眾人拾柴：人越多火越旺、逼退圈越大）。
+    pub fn apply_campfire_calm(&mut self, zones: &[(f32, f32, f32)]) {
+        if zones.is_empty() {
             return;
         }
-        let r2 = crate::campfire::WARMTH_RADIUS * crate::campfire::WARMTH_RADIUS;
         for enemies in self.chunks.values_mut() {
             for placed in enemies.iter_mut() {
                 if !placed.enemy.is_alive() {
                     continue;
                 }
-                for &(cx, cy) in centers {
-                    if !cx.is_finite() || !cy.is_finite() {
+                for &(cx, cy, radius) in zones {
+                    if !cx.is_finite() || !cy.is_finite() || !(radius > 0.0) {
                         continue;
                     }
                     let dx = cx - placed.x;
                     let dy = cy - placed.y;
-                    if dx * dx + dy * dy <= r2 {
+                    if dx * dx + dy * dy <= radius * radius {
                         // 設成「比一幀略長」以橋接幀與幀之間：只要還在圈內每幀都會被重設滿。
                         placed.calm_timer = CAMPFIRE_CALM_SECS;
                         break;
@@ -1825,7 +1825,7 @@ mod tests {
 
         // 有篝火（暖意中心就在怪身上）：先安撫、再推進——怪放棄追擊。
         let mut f2 = make();
-        f2.apply_campfire_calm(&[(ex, ey)]);
+        f2.apply_campfire_calm(&[(ex, ey, crate::campfire::WARMTH_RADIUS)]);
         assert!(f2.chunks[&key][0].calm_timer > 0.0, "落入暖意圈的怪應被安撫");
         f2.advance(0.5, &[player], false, |_, _| false);
         let d2 = dist_to_player(f2.chunks[&key][0].x, f2.chunks[&key][0].y);
@@ -1862,11 +1862,55 @@ mod tests {
         });
         // 篝火遠在暖意半徑之外。
         let far = ex + crate::campfire::WARMTH_RADIUS + 50.0;
-        f.apply_campfire_calm(&[(far, ey)]);
+        f.apply_campfire_calm(&[(far, ey, crate::campfire::WARMTH_RADIUS)]);
         assert_eq!(f.chunks[&key][0].calm_timer, 0.0, "圈外的怪不應被安撫");
         // 空篝火清單同樣不安撫任何怪。
         f.apply_campfire_calm(&[]);
         assert_eq!(f.chunks[&key][0].calm_timer, 0.0);
+    }
+
+    #[test]
+    fn campfire_gather_radius_calms_farther_enemy() {
+        // 眾人拾柴（545）：基礎半徑外、但放大後半徑內的怪——基礎火安撫不到、眾人旺火安撫得到。
+        use crate::combat::{Enemy, EnemyKind};
+        use world_core::chunk_key;
+
+        let ex = 6000.0_f32;
+        let ey = 6000.0_f32;
+        let key = chunk_key(ex, ey);
+        let make = || {
+            let mut f = EnemyField::new();
+            f.chunks.entry(key).or_default().push(PlacedEnemy {
+                id: (key.0, key.1, 0),
+                x: ex,
+                y: ey,
+                base_level: 1,
+                level: 1,
+                enemy: Enemy::new_leveled(EnemyKind::ScrapDrone, 1),
+                pack_target: None,
+                pack_target_timer: 0.0,
+                flee_boost_timer: 0.0,
+                retreat_timer: 0.0,
+                hunting_wildlife_target: None,
+                calm_timer: 0.0,
+            });
+            f
+        };
+        // 火心擺在「基礎半徑外、放大半徑內」的距離：基礎 210、5 人封頂 336。
+        let base = crate::campfire::WARMTH_RADIUS;
+        let big = crate::campfire::effective_warmth_radius(5);
+        let fire_x = ex - (base + 40.0); // 距怪 base+40：超出基礎圈、仍在放大圈內
+        assert!(base + 40.0 < big, "測試前提：該距離應落在放大半徑內");
+
+        // 孤火（基礎半徑）：安撫不到。
+        let mut lone = make();
+        lone.apply_campfire_calm(&[(fire_x, ey, base)]);
+        assert_eq!(lone.chunks[&key][0].calm_timer, 0.0, "基礎半徑外的怪不被孤火安撫");
+
+        // 眾人旺火（放大半徑）：同一隻怪被安撫。
+        let mut blaze = make();
+        blaze.apply_campfire_calm(&[(fire_x, ey, big)]);
+        assert!(blaze.chunks[&key][0].calm_timer > 0.0, "眾人旺火放大圈把更遠的怪也逼退");
     }
 
     #[test]

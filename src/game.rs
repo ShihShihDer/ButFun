@@ -291,9 +291,17 @@ pub fn spawn(app: AppState) {
                 app.wildlife_manager.read().unwrap().alive_snapshot()
             };
 
-            // 野營篝火（ROADMAP 474）：取各篝火暖意中心（讀鎖即放，不與下方 enemies 寫鎖巢狀）。
-            let campfire_centers: Vec<(f32, f32)> = {
-                app.campfires.read().unwrap().warmth_centers()
+            // 野營篝火（ROADMAP 474／眾人拾柴 545）：先收集玩家座標（players 讀鎖即放），
+            // 以 campfires 寫鎖依圍爐人數同步各火火勢→有效暖意半徑，再取暖意區（含半徑）。
+            // 鎖序：players 讀→放、campfires 寫→放，循序不巢狀，亦不與下方 enemies 寫鎖巢狀（守 prod-deadlock）。
+            let campfire_zones: Vec<(f32, f32, f32)> = {
+                let positions: Vec<(f32, f32)> = {
+                    let players = app.players.read().unwrap();
+                    players.values().map(|p| (p.x, p.y)).collect()
+                };
+                let mut fires = app.campfires.write().unwrap();
+                fires.sync_warmth(&positions);
+                fires.warmth_zones()
             };
 
             // 推進敵人:重生倒數(被打倒的復活)+ 移動(巡邏 / 追擊走近的玩家)。兩者無條件跑;
@@ -308,9 +316,9 @@ pub fn spawn(app: AppState) {
                     }
                 }
                 enemies.tick(dt);
-                // 野營篝火（ROADMAP 474）：advance 之前先安撫落入篝火暖意圈的敵人，
-                // 使其本幀放棄追擊玩家——在火堆旁圍出一塊敵人不來犯的安全角落。
-                enemies.apply_campfire_calm(&campfire_centers);
+                // 野營篝火（ROADMAP 474／眾人拾柴 545）：advance 之前先安撫落入篝火暖意圈的敵人，
+                // 使其本幀放棄追擊玩家——在火堆旁圍出一塊敵人不來犯的安全角落（眾人圍爐則圈更大）。
+                enemies.apply_campfire_calm(&campfire_zones);
                 // ROADMAP 163：依怪物物種態度層級更新每種怪的 aggro 倍率。
                 {
                     let mults = app.monster_species.read().unwrap().aggro_multipliers_snapshot();
@@ -4629,6 +4637,8 @@ pub fn spawn(app: AppState) {
                                 wx: c.wx,
                                 wy: c.wy,
                                 remaining_secs: c.remaining.ceil().max(0.0) as u32,
+                                gather_count: c.gather_count,
+                                warmth_radius: c.warmth_radius,
                             })
                             .collect(),
                         // 雪季雪人（ROADMAP 478）。
