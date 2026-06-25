@@ -5183,6 +5183,83 @@ for (const sc of scenarios) {
   else console.log("  ✅ 守護者元素祝福（ROADMAP 533）：guardianBlessingColor(4 種+壞值) + guardianBlessingLabel(4 種+壞值) + 四色各異");
 }
 
+// ── ROADMAP 534 四季黎明色調 ──────────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const stt = sandbox.__bfTest && sandbox.__bfTest.seasonalTwilightTint;
+    if (typeof stt !== "function") throw new Error("seasonalTwilightTint 未掛載");
+
+    const SEASONS = ["spring", "summer", "autumn", "winter"];
+    const PHASES  = ["dawn", "dusk"];
+
+    // 每個季節×相位都回 {r,g,b}，且各分量在 [0,255] 整數範圍內。
+    for (const s of SEASONS) {
+      for (const p of PHASES) {
+        const c = stt(p, s);
+        if (!c || typeof c.r !== "number" || typeof c.g !== "number" || typeof c.b !== "number") {
+          ok = false; console.error(`  ❌ seasonalTwilightTint("${p}","${s}") 應回 {r,g,b}，得 ${JSON.stringify(c)}`);
+        } else {
+          for (const ch of [c.r, c.g, c.b]) {
+            if (ch < 0 || ch > 255) {
+              ok = false; console.error(`  ❌ seasonalTwilightTint("${p}","${s}") 分量越界：${ch}`);
+            }
+          }
+        }
+      }
+    }
+
+    // 四個季節的破曉色兩兩不同（視覺多樣性）。
+    const dawnColors = SEASONS.map(s => { const c = stt("dawn", s); return `${c.r},${c.g},${c.b}`; });
+    const dawnSet = new Set(dawnColors);
+    if (dawnSet.size !== 4) {
+      ok = false; console.error(`  ❌ 四季破曉色應各異，實際：${JSON.stringify(dawnColors)}`);
+    }
+
+    // 壞值（未知季節）回 {r,g,b} 不 throw、不回 null。
+    const fallback = stt("dawn", "unknown");
+    if (!fallback || typeof fallback.r !== "number") {
+      ok = false; console.error(`  ❌ seasonalTwilightTint("dawn","unknown") 壞值應安全降級，得 ${JSON.stringify(fallback)}`);
+    }
+    const nullSeason = stt("dawn", null);
+    if (!nullSeason || typeof nullSeason.r !== "number") {
+      ok = false; console.error(`  ❌ seasonalTwilightTint("dawn",null) 應安全降級，得 ${JSON.stringify(nullSeason)}`);
+    }
+
+    // 冬季破曉應帶藍（b 分量最大）。
+    const winterDawn = stt("dawn", "winter");
+    if (winterDawn.b <= winterDawn.r || winterDawn.b <= winterDawn.g) {
+      ok = false; console.error(`  ❌ 冬季破曉應偏藍（b > r 且 b > g），得 r=${winterDawn.r} g=${winterDawn.g} b=${winterDawn.b}`);
+    }
+
+    // 渲染路徑：fixture 為 summer+dawn，drawTwilightGlow 連跑 4 幀不 throw。
+    sandbox.daynight = { phase: "dawn", light: 0.5, night_danger: false };
+    sandbox.currentSeason = "summer";
+    sandbox._parallaxEnabled = true;
+    for (let i = 0; i < 4; i++) {
+      let threw = false;
+      try { if (typeof sandbox.drawTwilightGlow === "function") sandbox.drawTwilightGlow(); } catch (e) {
+        threw = true; console.error(`  ❌ drawTwilightGlow(夏曉幀${i}) 拋出例外`, e && e.message);
+      }
+      if (threw) { ok = false; }
+    }
+    // 冬季破曉渲染也不 throw。
+    sandbox.currentSeason = "winter";
+    for (let i = 0; i < 4; i++) {
+      let threw = false;
+      try { if (typeof sandbox.drawTwilightGlow === "function") sandbox.drawTwilightGlow(); } catch (e) {
+        threw = true; console.error(`  ❌ drawTwilightGlow(冬曉幀${i}) 拋出例外`, e && e.message);
+      }
+      if (threw) { ok = false; }
+    }
+
+  } catch (e) {
+    ok = false; console.error("  ❌ 四季黎明色調：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 四季黎明色調（ROADMAP 534）：測試失敗"); }
+  else console.log("  ✅ 四季黎明色調（ROADMAP 534）：seasonalTwilightTint(4季×2相位+壞值+冬藍確認) + drawTwilightGlow(夏曉/冬曉各4幀)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
