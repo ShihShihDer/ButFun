@@ -1017,6 +1017,9 @@ pub fn spawn(app: AppState) {
                         let dmg = crate::boss_slam::slam_damage(level);
                         for (pid, px, py, downed) in &positions {
                             if *downed { continue; }
+                            // 庇護所免疫（ROADMAP 542）：站在新手村·城鎮保護圈內者，
+                            // 連怪物王重擊衝擊波也免疫，與 threat_at／poison_secs_at 一致。
+                            if crate::positions::is_in_safe_zone(*px, *py) { continue; }
                             if crate::boss_slam::is_in_blast(bx, by, *px, *py) {
                                 dmgs.push((*pid, dmg));
                             }
