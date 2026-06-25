@@ -2674,6 +2674,32 @@ for (const sc of scenarios) {
   }
 }
 
+// 街頭演奏者曲目身段（ROADMAP 535）：單元斷言純函式 buskTierPalette 的真值表——
+// 身段 wire 值 0~3 取到越來越華麗的音符調色盤（鏡像後端 busking_repertoire::palette），
+// 壞值／越界一律退回新手單音符調色盤、永不回 undefined。
+{
+  const palette = sandbox.__bfTest && sandbox.__bfTest.buskTierPalette;
+  if (typeof palette !== "function") {
+    failed = true;
+    console.error("  ❌ 曲目身段：game.js 未導出 buskTierPalette");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 曲目身段：${msg}`); } };
+    // 調色盤長度隨身段遞增（1→2→3→4），與後端 RepertoireTier::palette 對齊。
+    expect(palette(0).length === 1, "新手 1 種音符");
+    expect(palette(1).length === 2, "樂手 2 種音符");
+    expect(palette(2).length === 3, "名伶 3 種音符");
+    expect(palette(3).length === 4, "吟遊 4 種音符");
+    // 每個調色盤都以 🎵 起頭（與後端一致），確保 seed 0 不論身段都飄得出音符。
+    expect([0, 1, 2, 3].every((t) => palette(t)[0] === "🎵"), "各身段調色盤首音符皆 🎵");
+    // 壞值／越界保守退回新手調色盤、永不 undefined。
+    expect(palette(-1).length === 1 && palette(99).length === 1, "越界身段退回新手調色盤");
+    expect(palette(NaN).length === 1 && palette(undefined).length === 1, "壞值保守退回新手調色盤");
+    if (bad) failed = true;
+    else console.log("  ✅ 街頭演奏者曲目身段真值表：通過");
+  }
+}
+
 // 打水漂（ROADMAP 475）：單元斷言純函式 skipGaugeValue／skipStoneCount 的真值表——
 // 力道計三角波（兩端見底、半週期滿格、負時間與壞值保守 0）；放手力道→彈跳次數
 //（甜蜜點 0.82 跳最多 5、偏離遞減、兩端至少 1、壞值保守 1、恆在 [1,5]），常數須與後端 skipstone.rs 對齊。

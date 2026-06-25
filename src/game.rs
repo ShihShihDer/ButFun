@@ -1180,8 +1180,9 @@ pub fn spawn(app: AppState) {
             // (player_id, x, y, kind) — kind: true=完成, false=移動中斷
             let mut meditation_events: Vec<(uuid::Uuid, f32, f32, bool, u32, u32)> = Vec::new();
             // 廣場獻奏事件（ROADMAP 399）：完成或中斷，出鎖後廣播並給打賞。
-            // 完成：(player_id, ether_gained, listeners, busk_count)；中斷另記。
-            let mut busk_completes: Vec<(uuid::Uuid, u32, u32, u32)> = Vec::new();
+            // 完成：(player_id, ether_gained, listeners, busk_count, tier, tier_up)；中斷另記。
+            // tier／tier_up 為 ROADMAP 535 曲目身段（身段 wire 值＋這場是否晉升）。
+            let mut busk_completes: Vec<(uuid::Uuid, u32, u32, u32, u8, bool)> = Vec::new();
             let mut busk_aborts: Vec<uuid::Uuid> = Vec::new();
             // 寵物撈寶事件（ROADMAP 484）：一趟接物完成、小夥伴叼回了東西時，出鎖後對主人單播飄字。
             // (player_id, 寵物 x, 寵物 y, 叼回物 Option<ItemKind>, 乙太量, 羈絆等級)。獎勵已在鎖內發給玩家。
@@ -1567,8 +1568,14 @@ pub fn spawn(app: AppState) {
                                 .count() as u32;
                             let ether = crate::busking::tip_ether(listeners);
                             p.ether = p.ether.saturating_add(ether);
+                            let prev_count = p.busk_count;
                             p.busk_count = p.busk_count.saturating_add(1);
-                            busk_completes.push((p.id, ether, listeners, p.busk_count));
+                            // ROADMAP 535：依累計場次推當下身段，並判斷這一場是否恰好晉升。
+                            let tier = crate::busking_repertoire::tier_for_count(p.busk_count).wire();
+                            let tier_up =
+                                crate::busking_repertoire::is_tier_up(prev_count, p.busk_count)
+                                    .is_some();
+                            busk_completes.push((p.id, ether, listeners, p.busk_count, tier, tier_up));
                         }
                     }
                     // 暖食飽足回復（ROADMAP 395）：吃料理後一段時間 HP 緩慢回復、過期自動清。
@@ -1770,13 +1777,15 @@ pub fn spawn(app: AppState) {
             }
 
             // 廣場獻奏廣播（ROADMAP 399）：鎖已釋放，安全廣播完成或中斷事件。
-            for (pid, ether, listeners, busk_count) in busk_completes {
+            for (pid, ether, listeners, busk_count, tier, tier_up) in busk_completes {
                 let _ = app.tx.send(std::sync::Arc::new(
                     crate::protocol::ServerMsg::BuskComplete {
                         player_id: pid,
                         ether_gained: ether,
                         listeners,
                         busk_count,
+                        tier,
+                        tier_up,
                     }
                 ));
             }

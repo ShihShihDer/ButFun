@@ -2197,6 +2197,12 @@ pub enum ServerMsg {
         listeners: u32,
         /// 累積到第幾場獻奏（資歷，前端「第 N 場」呈現）。
         busk_count: u32,
+        /// 完成後的曲目身段 wire 值（ROADMAP 535；0=新手 1=樂手 2=名伶 3=吟遊）。
+        #[serde(default)]
+        tier: u8,
+        /// 這一場是否讓本人晉升到新身段（ROADMAP 535）。true 時前端對本人飄一則晉升暖訊。
+        #[serde(default)]
+        tier_up: bool,
     },
     /// 獻奏被打斷（ROADMAP 399）：廣播全服，音符消散。
     BuskAborted {
@@ -2648,6 +2654,12 @@ pub struct PlayerView {
     /// 玩家目前是否正在廣場獻奏。true 時前端在該玩家頭頂畫飄動音符。false 時省略流量。
     #[serde(default, skip_serializing_if = "is_false")]
     pub busking: bool,
+
+    // ── 街頭演奏者曲目身段（ROADMAP 535）─────────────────────────────────────
+    /// 此演奏者的曲目身段 wire 值（0=新手 1=樂手 2=名伶 3=吟遊；見 `busking_repertoire`）。
+    /// 越高階前端對其頭頂飄出的音符調色盤越華麗。0（新手）省略流量；舊前端忽略此欄位、向後相容。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub busk_tier: u8,
 
     // ── 街頭合奏·共鳴樂團（ROADMAP 472）──────────────────────────────────────
     /// 此獻奏者所屬樂團的合奏人數（含自己）。≥2 時前端對其畫漸強的和聲音符與暖光、圍聽者見療癒；
@@ -3395,6 +3407,7 @@ mod tests {
                 chain_links: 0,
                 meditating: false,
                 busking: false,
+                busk_tier: 0,
                 ensemble: 0,
                 flying_kite: false,
                 lantern_fireflies: 0,
@@ -3714,6 +3727,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            busk_tier: 0,
             ensemble: 0,
             flying_kite: false,
             lantern_fireflies: 0,
@@ -4015,6 +4029,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            busk_tier: 0,
             ensemble: 0,
             flying_kite: false,
             lantern_fireflies: 0,
@@ -4092,6 +4107,7 @@ mod tests {
             chain_links: 0,
             meditating: false,
             busking: false,
+            busk_tier: 0,
             ensemble: 0,
             flying_kite: false,
             lantern_fireflies: 0,

@@ -25,6 +25,7 @@ mod activity_chain;
 mod meditation;
 mod busking;
 mod busking_ensemble;
+mod busking_repertoire;
 mod kite;
 mod firefly_lantern;
 mod apiary;
