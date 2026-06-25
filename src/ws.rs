@@ -223,6 +223,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             onboarding: crate::onboarding::Onboarding::default(),
             newcomer_until: None,
             riding: None,
+            riding_passenger: false,
         }
     } else {
         // 等 Join
@@ -366,6 +367,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             onboarding: crate::onboarding::Onboarding::default(),
             newcomer_until: None,
             riding: None,
+            riding_passenger: false,
         }
     };
     let id = player.id;
@@ -5026,8 +5028,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 Ok(ClientMsg::BoardVehicle) => {
                     // 上車：需登入、未倒地、在室外、且尚未在騎車。守 prod-deadlock：
                     //   ① 讀玩家權威座標（讀鎖即取即放）
-                    //   ② 另開載具寫鎖挑最近空車上車（不與 players 鎖巢狀）
-                    //   ③ 成功則另開 players 寫鎖標記騎乘
+                    //   ② 另開載具寫鎖挑車（先空車當駕駛、否則他人車後座共乘；不與 players 鎖巢狀）
+                    //   ③ 成功則另開 players 寫鎖標記騎乘身分
                     if authed_uid.is_none() { continue; }
                     let pos: Option<(f32, f32)> = {
                         let players = app.players.read().unwrap();
@@ -5041,18 +5043,37 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .map(|p| (p.x, p.y))
                     };
                     if let Some((px, py)) = pos {
-                        // 一律用玩家自己的權威座標挑車（防隔空上車）；附近沒空車回 None、靜默忽略。
-                        let outcome = app.vehicles.write().unwrap().board(id, px, py);
-                        if let crate::vehicle::BoardOutcome::Boarded(cid) = outcome {
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                p.riding = Some(cid);
+                        // 一律用玩家自己的權威座標挑車（防隔空上車）。優先當駕駛坐空車；附近沒空車
+                        // 就試著坐上他人車的後座共乘（ROADMAP 538）。載具寫鎖只在小區塊內持有、
+                        // 出區塊即釋放，再另開 players 寫鎖（兩鎖不巢狀）。
+                        let outcome = {
+                            let mut field = app.vehicles.write().unwrap();
+                            match field.board(id, px, py) {
+                                crate::vehicle::BoardOutcome::None => field.board_passenger(id, px, py),
+                                other => other,
                             }
+                        };
+                        match outcome {
+                            crate::vehicle::BoardOutcome::Boarded(cid) => {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.riding = Some(cid);
+                                    p.riding_passenger = false;
+                                }
+                            }
+                            crate::vehicle::BoardOutcome::BoardedAsPassenger(cid) => {
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.riding = Some(cid);
+                                    p.riding_passenger = true;
+                                }
+                            }
+                            crate::vehicle::BoardOutcome::None => {}
                         }
                     }
                 }
 
                 Ok(ClientMsg::DismountVehicle) => {
-                    // 下車：把車停在玩家當下座標、回步行。未在騎車時靜默忽略。守 prod-deadlock 同上。
+                    // 下車：駕駛下車把車停在當下座標並連帶請後座乘客下車；後座乘客下車只清自己。
+                    // 未在車上時靜默忽略。守 prod-deadlock 同上（載具寫鎖→釋放→players 寫鎖）。
                     let pos: Option<(f32, f32)> = {
                         let players = app.players.read().unwrap();
                         players
@@ -5061,9 +5082,20 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             .map(|p| (p.x, p.y))
                     };
                     if let Some((px, py)) = pos {
-                        app.vehicles.write().unwrap().dismount(id, px, py);
-                        if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                            p.riding = None;
+                        let outcome = app.vehicles.write().unwrap().dismount(id, px, py);
+                        if let Some(out) = outcome {
+                            let mut players = app.players.write().unwrap();
+                            if let Some(p) = players.get_mut(&id) {
+                                p.riding = None;
+                                p.riding_passenger = false;
+                            }
+                            // 駕駛下車連帶被請下後座的乘客，也清掉其騎乘旗標（ROADMAP 538）。
+                            if let Some(pid) = out.ejected_passenger {
+                                if let Some(pp) = players.get_mut(&pid) {
+                                    pp.riding = None;
+                                    pp.riding_passenger = false;
+                                }
+                            }
                         }
                     }
                 }
@@ -9783,9 +9815,16 @@ async fn cleanup(app: &AppState, id: Uuid, persist_pos: bool) {
     // 只有真的移除了玩家（最後一條連線離線）才廣播離線；否則世界裡那名玩家還在，
     // 不該送 PlayerLeft（會讓其他客戶端先移除、下一張快照又加回造成閃爍）。
     if removed.is_some() {
-        // 蒸汽載具（Phase 1-E）：玩家離線時把他騎著的車釋放成空車，讓別人能再騎
-        // （另開載具寫鎖，不與 players 鎖巢狀；此處 players 鎖已釋放，守 prod-deadlock）。
-        app.vehicles.write().unwrap().release_rider(id);
+        // 蒸汽載具（Phase 1-E／共乘 538）：玩家離線時釋放他佔著的座位（駕駛→空車、後座→清後座），
+        // 若他是駕駛則連帶請後座乘客下車、清其騎乘旗標。另開載具寫鎖→釋放→再另開 players 寫鎖
+        // （兩鎖不巢狀；此處 players 鎖已釋放，守 prod-deadlock）。
+        let ejected = app.vehicles.write().unwrap().release_rider(id);
+        if let Some(pid) = ejected {
+            if let Some(pp) = app.players.write().unwrap().get_mut(&pid) {
+                pp.riding = None;
+                pp.riding_passenger = false;
+            }
+        }
         let _ = app.tx.send(Arc::new(ServerMsg::PlayerLeft { id }));
     }
 }
