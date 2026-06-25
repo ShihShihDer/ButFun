@@ -1512,6 +1512,9 @@ pub struct AppState {
     /// 野營篝火（ROADMAP 474）：玩家在荒野升起的篝火，火光暖意把附近野獸逼退。
     /// 純記憶體模式，重啟清零；不碰玩家資料與經濟。
     pub campfires: Arc<RwLock<crate::campfire::CampfireField>>,
+    /// 協力共建·邊境瞭望塔（ROADMAP 546）：邊境工地由多人合力建造，落成後永久壓制周圍野獸。
+    /// 純記憶體模式，重啟回到未完工的工地；不碰玩家資料與經濟。
+    pub watchtowers: Arc<RwLock<crate::coop_build::CoopBuildField>>,
     /// 蒸汽載具場（Phase 1-E 北極星「載具」MVP）：故鄉草原上可乘騎的蒸汽腳踏車。
     /// 純記憶體模式，重啟回到初始車況（車回原位、無人乘騎）；不碰玩家資料與經濟。
     pub vehicles: Arc<RwLock<crate::vehicle::VehicleField>>,
@@ -1792,6 +1795,7 @@ impl AppState {
             observatory_sem: Arc::new(Semaphore::new(crate::observatory::MAX_CONCURRENT_CALLS)),
             meteor_shower: Arc::new(RwLock::new(crate::meteor_shower::MeteorShowerState::new())),
             campfires: Arc::new(RwLock::new(crate::campfire::CampfireField::new())),
+            watchtowers: Arc::new(RwLock::new(crate::coop_build::CoopBuildField::new())),
             vehicles: Arc::new(RwLock::new(crate::vehicle::VehicleField::with_default())),
             ship_repair: Arc::new(RwLock::new(crate::ship_repair::ShipRepairState::new())),
             snowmen: Arc::new(RwLock::new(crate::snowman::SnowmanField::new())),

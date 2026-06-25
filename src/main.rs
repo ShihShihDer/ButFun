@@ -49,6 +49,7 @@ mod wandering_merchant;
 mod wayposts;
 mod bottle_drift;
 mod campfire;
+mod coop_build;
 mod ship_repair;
 mod snowman;
 mod combat_mark;

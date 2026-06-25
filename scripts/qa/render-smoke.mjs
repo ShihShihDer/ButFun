@@ -2797,6 +2797,47 @@ for (const sc of scenarios) {
   }
 }
 
+// 協力共建·邊境瞭望塔（ROADMAP 546）：驗證 drawWatchtowers 工地／落成塔／進度條／合力提示／
+// 壓制圈／視野外剔除路徑連跑多幀皆不拋例外；再驗純函式 watchtowerBuildStage 真值表。
+{
+  const before = caughtRenderErrors.length;
+  console.log("── 情境：協力瞭望塔（工地施工中＋落成發亮＋進度條＋合力提示＋壓制圈＋視野外剔除，連跑 5 幀）──");
+  const wSnap = JSON.parse(JSON.stringify(snapshot));
+  const me = wSnap.players[0];
+  wSnap.watchtowers = [
+    { id: 0, wx: me.x + 50, wy: me.y + 20, progress: 0, builders: 0, done: false },   // 0% 無人＝「需 2 人」
+    { id: 1, wx: me.x - 120, wy: me.y - 40, progress: 55, builders: 3, done: false }, // 施工中＋3 人合力
+    { id: 2, wx: me.x, wy: me.y - 80, progress: 100, builders: 0, done: true },        // 已落成＋壓制圈＋燈
+    { id: 3, wx: 99999, wy: 99999, progress: 30, builders: 2, done: false },           // 視野外：應被剔除
+  ];
+  lastWS.onmessage({ data: JSON.stringify({ ...wSnap, type: "snapshot" }) });
+  const r = pump("協力瞭望塔", 5);
+  const noTower = JSON.parse(JSON.stringify(snapshot));
+  noTower.watchtowers = [];
+  lastWS.onmessage({ data: JSON.stringify({ ...noTower, type: "snapshot" }) });
+  const r2 = pump("協力瞭望塔無塔", 2);
+  if (r instanceof Error || r2 instanceof Error) { failed = true; console.error("  ❌ 協力瞭望塔：未捕捉例外"); }
+  const newCaught = caughtRenderErrors.slice(before);
+  if (newCaught.length) { failed = true; console.error(`  ❌ 協力瞭望塔：safeRender 攔下 ${newCaught.length} 個繪製例外（底層真 bug）`); }
+  else if (!(r instanceof Error) && !(r2 instanceof Error)) console.log("  ✅ 協力瞭望塔：工地＋落成＋進度條＋合力提示＋壓制圈＋視野外剔除＋無塔早退皆乾淨");
+
+  const stage = sandbox.__bfTest && sandbox.__bfTest.watchtowerBuildStage;
+  if (typeof stage !== "function") {
+    failed = true;
+    console.error("  ❌ 協力瞭望塔：game.js 未導出 watchtowerBuildStage");
+  } else {
+    let bad = 0;
+    const expect = (cond, msg) => { if (!cond) { bad++; console.error(`  ❌ 協力瞭望塔：${msg}`); } };
+    expect(stage(0) === 0, "0% 為第 0 段");
+    expect(stage(24) === 0 && stage(25) === 1, "25% 跨入第 1 段");
+    expect(stage(50) === 2 && stage(75) === 3, "50/75% 為第 2／3 段");
+    expect(stage(100) === 4, "100% 為第 4 段（封頂）");
+    expect(stage(150) === 4 && stage(-10) === 0, "超界 clamp（>100→4、<0→0）");
+    expect(stage(NaN) === 0 && stage(Infinity) === 0, "壞值保守（非有限值 NaN／Inf 一律退第 0 段）");
+    if (!bad) console.log("  ✅ 協力瞭望塔：watchtowerBuildStage 真值表（段數遞增→封頂→clamp→壞值保守）全綠");
+  }
+}
+
 // 雪季雪人（ROADMAP 478）：單元斷言純函式 snowmanStyleSpec 的真值表——
 // 四款樣式各有圍巾色＋表情；超界以模數環繞（與後端 SNOWMAN_STYLES=4 對齊）、壞值保守退第 0 款。
 {

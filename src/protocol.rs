@@ -912,6 +912,24 @@ pub enum ClientMsg {
         pub warmth_radius: f32,
     }
 
+    /// 快照裡的協力瞭望塔（ROADMAP 546）。前端在世界座標畫工地／已落成的塔、進度條與
+    /// 「N 人合力中／需 2 人」提示。舊前端忽略此欄、向後相容。
+    #[derive(Debug, Clone, Serialize, PartialEq)]
+    pub struct WatchtowerView {
+        /// 瞭望塔唯一 ID。
+        pub id: u32,
+        /// 世界座標 X。
+        pub wx: f32,
+        /// 世界座標 Y。
+        pub wy: f32,
+        /// 建造進度百分比（0..=100）。前端據此畫塔身升起的高度與進度條。
+        pub progress: u8,
+        /// 本拍協力工人數（前端顯示「N 人合力中」；不足 2 人時提示「需 2 人合力」）。
+        pub builders: u8,
+        /// 是否已落成。落成後前端畫成發亮的瞭望塔（入夜亮燈），未落成畫成施工中的工地。
+        pub done: bool,
+    }
+
     /// 快照裡的雪人（ROADMAP 478）。前端在世界座標畫一座署名的雪人，天回暖即消失。
     #[derive(Debug, Clone, Serialize, PartialEq)]
     pub struct SnowmanView {
@@ -1259,6 +1277,10 @@ pub enum ServerMsg {
         /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時為空）。
         #[serde(default)]
         campfires: Vec<CampfireView>,
+        /// 協力共建·邊境瞭望塔（ROADMAP 546）。前端在各工地位置畫施工進度／落成的塔。
+        /// `#[serde(default)]` 向後相容舊客戶端（無此欄位時為空）。
+        #[serde(default)]
+        watchtowers: Vec<WatchtowerView>,
         /// 雪季雪人（ROADMAP 478）。`#[serde(default)]` 向後相容（無此欄位時為空）。
         #[serde(default)]
         snowmen: Vec<SnowmanView>,
@@ -3593,6 +3615,7 @@ mod tests {
             meteor_shower_secs: 0,
             dust_nodes: vec![],
             campfires: vec![],
+            watchtowers: vec![],
             snowmen: vec![],
             wandering_merchant_secs: 0,
             wandering_catalog: vec![],
