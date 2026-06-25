@@ -224,6 +224,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             newcomer_until: None,
             riding: None,
             riding_passenger: false,
+            boost_trigger: None,
+            boosting: false,
         }
     } else {
         // 等 Join
@@ -368,6 +370,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             newcomer_until: None,
             riding: None,
             riding_passenger: false,
+            boost_trigger: None,
+            boosting: false,
         }
     };
     let id = player.id;
@@ -5088,6 +5092,8 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             if let Some(p) = players.get_mut(&id) {
                                 p.riding = None;
                                 p.riding_passenger = false;
+                                // 下車清掉衝刺狀態，不讓殘留旗標帶到下一次乘騎（ROADMAP 539）。
+                                p.clear_boost();
                             }
                             // 駕駛下車連帶被請下後座的乘客，也清掉其騎乘旗標（ROADMAP 538）。
                             if let Some(pid) = out.ejected_passenger {
@@ -5096,6 +5102,21 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     pp.riding_passenger = false;
                                 }
                             }
+                        }
+                    }
+                }
+
+                // 蒸汽衝刺（ROADMAP 539）：駕駛灌一陣蒸汽短暫加速。守 prod-deadlock：只一道 players
+                // 寫鎖即取即放、不與 vehicles 巢狀。非駕駛（步行／後座乘客）／倒地／冷卻未退一律靜默忽略。
+                Ok(ClientMsg::BoostVehicle) => {
+                    if authed_uid.is_none() {
+                        continue;
+                    }
+                    if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                        let is_driver = p.riding.is_some() && !p.riding_passenger;
+                        if is_driver && !p.vitals.is_downed() {
+                            // 冷卻退了才真的衝（trigger_boost 內部把關），靜默忽略冷卻中的重複按。
+                            p.trigger_boost();
                         }
                     }
                 }

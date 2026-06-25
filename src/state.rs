@@ -503,6 +503,13 @@ pub struct Player {
     /// 雙人共乘（ROADMAP 538）：`riding` 為 Some 時，此旗標區分身分——false=駕駛（自己操控、快 3 倍）、
     /// true=後座乘客（不操控移動，由迴圈每拍黏到駕駛座標）。記憶體前置、零持久化。
     pub riding_passenger: bool,
+    /// 蒸汽衝刺（ROADMAP 539）：最近一次按下「💨 衝刺」的時刻（None＝從未衝過）。冷卻與加速窗
+    /// 全由「此時刻 + 牆上時鐘」確定性推導（見 `vehicle::boost_is_active` / `boost_off_cooldown`）。
+    /// 記憶體前置、零持久化、零 migration——重啟回到無衝刺、冷卻已退。
+    pub boost_trigger: Option<std::time::Instant>,
+    /// 蒸汽衝刺本拍是否正在加速窗內——遊戲迴圈每拍由 `refresh_boost` 從 `boost_trigger` 推算，
+    /// `step` 與快照都讀它（避免在純 `step` 裡呼叫時鐘、保持可測）。
+    pub boosting: bool,
 }
 
 impl Player {
@@ -935,6 +942,8 @@ impl Player {
                 .unwrap_or(false),
             // Phase 1-E 蒸汽載具：是否正乘騎，廣播給全服（前端把人畫在車座上）。
             riding: self.riding.is_some(),
+            // ROADMAP 539 蒸汽衝刺：駕駛此刻是否正在衝刺加速窗內，廣播給全服（前端噴一團蒸汽爆發）。
+            boosting: self.boosting,
             // ROADMAP 533：守護者元素祝福——由 game.rs 快照迴圈補填，view() 預設 None。
             guardian_blessing: None,
         }
@@ -1100,8 +1109,9 @@ impl Player {
         // （不另寫車輛物理）；車與人共用同一套碰撞，過不了牆、下不了水。
         let run_mult = if self.input.run { world_core::RUN_MULT } else { 1.0 };
         // 共乘乘客（ROADMAP 538）不自行推進——其座標由迴圈每拍黏到駕駛；只有「駕駛」才享 3 倍速。
+        // 蒸汽衝刺（ROADMAP 539）：駕駛衝刺窗內把巡航 ×3 拉到 ×5（boosting 僅對駕駛有效）。
         let is_driver = self.riding.is_some() && !self.riding_passenger;
-        let ride_dt = crate::vehicle::ride_effective_dt(dt, is_driver);
+        let ride_dt = crate::vehicle::ride_effective_dt(dt, is_driver, is_driver && self.boosting);
         let effective_dt = ride_dt * self.stats.speed_mult() * run_mult;
         (self.x, self.y) = world_core::step_with_keys(
             self.x,
@@ -1113,6 +1123,39 @@ impl Player {
             effective_dt,
             tile_solid,
         );
+    }
+
+    /// 蒸汽衝刺（ROADMAP 539）：冷卻是否已退、此刻可再次衝刺。
+    /// 從未衝過（`boost_trigger` 為 None）一律可衝；否則看距上次觸發是否已過冷卻。
+    pub fn boost_ready(&self) -> bool {
+        self.boost_trigger
+            .map_or(true, |t| crate::vehicle::boost_off_cooldown(t.elapsed().as_secs_f32()))
+    }
+
+    /// 蒸汽衝刺：嘗試觸發一次衝刺。冷卻已退才成功（記下觸發時刻、本拍即進加速窗）並回 `true`；
+    /// 仍在冷卻回 `false`、不改狀態。接線端（`ws.rs`）負責先確認「此人是駕駛」才呼叫。
+    pub fn trigger_boost(&mut self) -> bool {
+        if self.boost_ready() {
+            self.boost_trigger = Some(std::time::Instant::now());
+            self.boosting = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 蒸汽衝刺：遊戲迴圈每拍呼叫，依 `boost_trigger` 與牆上時鐘刷新本拍 `boosting`
+    /// （加速窗內為 true、過了回 false）。把時鐘呼叫收束在此，`step` 維持純粹可測。
+    pub fn refresh_boost(&mut self) {
+        self.boosting = self
+            .boost_trigger
+            .map_or(false, |t| crate::vehicle::boost_is_active(t.elapsed().as_secs_f32()));
+    }
+
+    /// 蒸汽衝刺：下車／離線時清除衝刺狀態（不讓殘留的衝刺旗標帶到下一次乘騎）。
+    pub fn clear_boost(&mut self) {
+        self.boost_trigger = None;
+        self.boosting = false;
     }
 }
 
@@ -1895,6 +1938,8 @@ mod tests {
             newcomer_until: None,
             riding: None,
             riding_passenger: false,
+            boost_trigger: None,
+            boosting: false,
         }
     }
 
