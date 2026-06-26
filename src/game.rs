@@ -1201,9 +1201,9 @@ pub fn spawn(app: AppState) {
             let mut decay_notifications: Vec<(uuid::Uuid, Vec<crate::perishable::DecayEvent>)> = Vec::new();
             // 釣魚脫鉤（ROADMAP 346）：等太久沒收竿的玩家，出鎖後廣播「魚跑了」。
             let mut fish_escapes: Vec<(uuid::Uuid, f32, f32)> = Vec::new();
-            // 打坐事件（ROADMAP 391）：完成或中斷，出鎖後廣播並給獎勵。
-            // (player_id, x, y, kind) — kind: true=完成, false=移動中斷
-            let mut meditation_events: Vec<(uuid::Uuid, f32, f32, bool, u32, u32)> = Vec::new();
+            // 打坐事件（ROADMAP 391；ROADMAP 552 三重定境）：結束後出鎖廣播。
+            // (player_id, completed, ether, hp_healed, tier) — completed=true 入了定境發獎；false=還沒入定就移動中斷。
+            let mut meditation_events: Vec<(uuid::Uuid, bool, u32, u32, u8)> = Vec::new();
             // 廣場獻奏事件（ROADMAP 399）：完成或中斷，出鎖後廣播並給打賞。
             // 完成：(player_id, ether_gained, listeners, busk_count, tier, tier_up)；中斷另記。
             // tier／tier_up 為 ROADMAP 535 曲目身段（身段 wire 值＋這場是否晉升）。
@@ -1556,23 +1556,17 @@ pub fn spawn(app: AppState) {
                     if p.skipping.is_some() && p.vitals.is_downed() {
                         p.skipping = None;
                     }
-                    // 安靜打坐推進（ROADMAP 391）：每 tick 檢查移動中斷或完成；出鎖後給獎勵並廣播。
+                    // 安靜打坐推進（ROADMAP 391；ROADMAP 552 三重定境）：每 tick 檢查
+                    // 「移動結束」或「坐到深定封頂」；結束時依已入的定境深度結算（單一入口
+                    // `finish_meditation`，與 ws.rs 主動結束共用），出鎖後廣播。
+                    // 注意：坐滿淺定（30s）後若仍靜止不動，**不再自動結束**——讓玩家繼續入更深的定，
+                    // 直到自己起身（移動）或坐到深定封頂（120s）才結算，這正是本切片的取捨所在。
                     if let Some(m) = p.meditation {
                         let now = std::time::Instant::now();
-                        if m.is_interrupted(p.x, p.y) {
-                            p.meditation = None;
-                            meditation_events.push((p.id, p.x, p.y, false, 0, 0));
-                        } else if m.is_complete(now) {
-                            p.meditation = None;
-                            p.last_meditate = Some(now);
-                            let hp_healed = crate::meditation::hp_heal(
-                                p.vitals.max_hp(),
-                                crate::meditation::MEDITATE_HP_PCT,
-                            );
-                            let actual_hp = p.vitals.heal(hp_healed);
-                            let ether = crate::meditation::MEDITATE_ETHER;
-                            p.ether = p.ether.saturating_add(ether);
-                            meditation_events.push((p.id, p.x, p.y, true, ether, actual_hp));
+                        if m.is_interrupted(p.x, p.y) || m.is_capped(now) {
+                            if let Some((completed, ether, hp_healed, tier)) = p.finish_meditation(now) {
+                                meditation_events.push((p.id, completed, ether, hp_healed, tier));
+                            }
                         }
                     }
                     // 廣場獻奏推進（ROADMAP 399）：每 tick 檢查移動中斷或完成；完成時依身旁聆賞的
@@ -1860,14 +1854,15 @@ pub fn spawn(app: AppState) {
                 }));
             }
 
-            // 安靜打坐廣播（ROADMAP 391）：鎖已釋放，安全廣播完成或中斷事件。
-            for (pid, px, py, completed, ether, hp_healed) in meditation_events {
+            // 安靜打坐廣播（ROADMAP 391；ROADMAP 552）：鎖已釋放，安全廣播完成或中斷事件。
+            for (pid, completed, ether, hp_healed, tier) in meditation_events {
                 if completed {
                     let _ = app.tx.send(std::sync::Arc::new(
                         crate::protocol::ServerMsg::MeditationComplete {
                             player_id: pid,
                             ether_gained: ether,
                             hp_healed,
+                            tier,
                         }
                     ));
                 } else {
@@ -1875,7 +1870,6 @@ pub fn spawn(app: AppState) {
                         crate::protocol::ServerMsg::MeditationAborted { player_id: pid }
                     ));
                 }
-                let _ = (px, py); // 座標備而不用，前端從快照讀取
             }
 
             // 廣場獻奏廣播（ROADMAP 399）：鎖已釋放，安全廣播完成或中斷事件。

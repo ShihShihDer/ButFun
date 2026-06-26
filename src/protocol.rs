@@ -2199,11 +2199,16 @@ pub enum ServerMsg {
         /// 打坐所需秒數（前端倒數顯示用）。
         duration_secs: f32,
     },
-    /// 打坐完成（ROADMAP 391）：廣播全服——旁觀者看到光圈消散、自己看到獎勵飄字。
+    /// 打坐完成（ROADMAP 391；ROADMAP 552 三重定境）：廣播全服——旁觀者看到光圈消散、
+    /// 自己看到獎勵飄字。`tier`＝結束時入的定境深度（1 淺定／2 入定／3 深定），前端據此
+    /// 在飄字標出定境名。
     MeditationComplete {
         player_id: Uuid,
         ether_gained: u32,
         hp_healed: u32,
+        /// ROADMAP 552：結束時入的定境深度（1/2/3）。
+        #[serde(default)]
+        tier: u8,
     },
     /// 打坐被打斷（ROADMAP 391）：廣播全服，光圈消散。
     MeditationAborted {
@@ -2701,6 +2706,11 @@ pub struct PlayerView {
     /// 玩家目前是否正在打坐。true 時前端在該玩家身旁畫呼吸光圈。false 時省略流量。
     #[serde(default, skip_serializing_if = "is_false")]
     pub meditating: bool,
+
+    /// ROADMAP 552：打坐中已入的定境深度（0＝還沒入定／1 淺定／2 入定／3 深定）。
+    /// 前端據此讓呼吸光圈隨定境加深而更盛、並在頭頂標出定境名。沒在打坐＝0（略過省流量）。
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub meditate_tier: u8,
 
     // ── 廣場獻奏（ROADMAP 399）───────────────────────────────────────────────
     /// 玩家目前是否正在廣場獻奏。true 時前端在該玩家頭頂畫飄動音符。false 時省略流量。
@@ -3487,6 +3497,7 @@ mod tests {
                 unlocked_titles: vec![],
                 chain_links: 0,
                 meditating: false,
+                meditate_tier: 0,
                 busking: false,
                 busk_tier: 0,
                 ensemble: 0,
@@ -3811,6 +3822,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            meditate_tier: 0,
             busking: false,
             busk_tier: 0,
             ensemble: 0,
@@ -4115,6 +4127,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            meditate_tier: 0,
             busking: false,
             busk_tier: 0,
             ensemble: 0,
@@ -4195,6 +4208,7 @@ mod tests {
             unlocked_titles: vec![],
             chain_links: 0,
             meditating: false,
+            meditate_tier: 0,
             busking: false,
             busk_tier: 0,
             ensemble: 0,

@@ -526,6 +526,32 @@ impl Player {
         self.exp / 100
     }
 
+    /// ROADMAP 552 三重定境：結束一段打坐並結算。依「已入第幾重定境」發 HP＋乙太、起冷卻。
+    ///
+    /// 回傳 `None`＝此刻沒在打坐（無事發生）。
+    /// 回傳 `Some((completed, ether, hp_healed, tier))`：
+    ///   - `tier >= 1`（已入至少淺定）→ `completed=true`，穩拿該重獎勵、起冷卻（純正向，移動不倒扣）。
+    ///   - `tier == 0`（還沒坐滿淺定就起身）→ `completed=false`，無所得、不起冷卻（與改版前中斷一致）。
+    ///
+    /// 單一結算入口：game.rs 每 tick（移動中斷／坐到深定封頂）與 ws.rs（主動按結束）共用，
+    /// 避免兩處各寫一份發獎邏輯而漂移。
+    pub fn finish_meditation(&mut self, now: std::time::Instant) -> Option<(bool, u32, u32, u8)> {
+        let m = self.meditation.take()?;
+        let tier = m.reached_tier(now);
+        if tier >= 1 {
+            self.last_meditate = Some(now);
+            let hp_healed =
+                crate::meditation::hp_heal(self.vitals.max_hp(), crate::meditation::tier_hp_pct(tier));
+            let actual_hp = self.vitals.heal(hp_healed);
+            let ether = crate::meditation::tier_ether(tier);
+            self.ether = self.ether.saturating_add(ether);
+            Some((true, ether, actual_hp, tier))
+        } else {
+            // 還沒入第一重定境就起身 → 中斷、無所得（不起冷卻，下次可立即再坐）。
+            Some((false, 0, 0, 0))
+        }
+    }
+
     /// `traveler_xy`：目前在場旅人的座標（None = 旅人不在場）。
     /// `wandering_merchant_active`：旅行商人是否在城鎮（ROADMAP 135）。
     pub fn view(&self, sch: &crate::npc_schedule::NpcScheduleManager, traveler_xy: Option<(f32, f32)>, wandering_merchant_active: bool) -> PlayerView {
@@ -914,6 +940,11 @@ impl Player {
             chain_links: self.activity_chain.link_count(),
             // ROADMAP 391：是否正在打坐（廣播給所有人，前端畫呼吸光圈）。
             meditating: self.meditation.is_some(),
+            // ROADMAP 552：打坐中已入的定境深度（0/1/2/3）——前端據此讓呼吸光圈隨定境加深而更盛、
+            // 並在打坐者頭頂標出「淺定／入定／深定」。沒在打坐＝0（is_zero_u8 略過、省流量）。
+            meditate_tier: self
+                .meditation
+                .map_or(0, |m| m.reached_tier(std::time::Instant::now())),
             // ROADMAP 399：是否正在廣場獻奏（廣播給所有人，前端畫頭頂飄動音符）。
             busking: self.busking.is_some(),
             // ROADMAP 535：曲目身段（由累計獻奏場次推導，前端據此挑頭頂音符調色盤的華麗度）。

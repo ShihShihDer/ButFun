@@ -4941,21 +4941,29 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                 }
 
                 Ok(ClientMsg::CancelMeditate) => {
-                    // 主動取消打坐。
-                    let was_meditating = {
+                    // 主動按「結束靜心」（ROADMAP 552）：不再一律歸零，而是依**已入的定境深度**結算——
+                    // 入了淺定／入定／深定就穩拿那一重的獎勵（純正向、療癒向）；還沒坐滿淺定就按結束
+                    // 才空手而回。與 game.rs（移動結束／坐到封頂）共用同一個結算入口 `finish_meditation`。
+                    let now = std::time::Instant::now();
+                    let outcome = {
                         let mut players = app.players.write().unwrap();
-                        match players.get_mut(&id) {
-                            Some(p) if p.meditation.is_some() => {
-                                p.meditation = None;
-                                true
-                            }
-                            _ => false,
-                        }
+                        players.get_mut(&id).and_then(|p| p.finish_meditation(now))
                     };
-                    if was_meditating {
-                        let _ = app.tx.send(std::sync::Arc::new(
-                            crate::protocol::ServerMsg::MeditationAborted { player_id: id }
-                        ));
+                    if let Some((completed, ether, hp_healed, tier)) = outcome {
+                        if completed {
+                            let _ = app.tx.send(std::sync::Arc::new(
+                                crate::protocol::ServerMsg::MeditationComplete {
+                                    player_id: id,
+                                    ether_gained: ether,
+                                    hp_healed,
+                                    tier,
+                                }
+                            ));
+                        } else {
+                            let _ = app.tx.send(std::sync::Arc::new(
+                                crate::protocol::ServerMsg::MeditationAborted { player_id: id }
+                            ));
+                        }
                     }
                 }
 
