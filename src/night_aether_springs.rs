@@ -97,6 +97,13 @@ impl NightAetherSprings {
         self.nodes.iter().filter(|n| !n.collected)
     }
 
+    /// 此刻是否「泉湧中且尚有未採的泉」——供 ROADMAP 426 情境提示判斷：入夜時若為真，
+    /// 就把夜間提示從被動的「看星空」升級成「去城外汲泉」這個具體主動目標。
+    /// 純查詢、即取即放。`active && 至少一口未採` 才為真（全採完或天亮清零都回 false）。
+    pub fn has_uncollected(&self) -> bool {
+        self.active && self.active_nodes().next().is_some()
+    }
+
     /// 推進時間。`moon_full` 為今夜是否恰逢滿月（ROADMAP 362，由 game.rs 餵入權威月相）。回傳 `SpringsEvent`。
     ///
     /// - `None`：無特殊事件。
@@ -364,6 +371,24 @@ mod tests {
             s.try_collect(id, wx, wy);
         }
         assert!(s.all_collected());
+    }
+
+    #[test]
+    fn has_uncollected_tracks_three_states() {
+        // 未啟動（白天）：沒有泉可採。
+        let mut s = NightAetherSprings::new();
+        assert!(!s.has_uncollected(), "未啟動時不該回報有未採的泉");
+        // 入夜湧現：尚有未採的泉。
+        s.last_phase = Phase::Dusk;
+        s.tick(Phase::Night, false);
+        assert!(s.has_uncollected(), "泉剛湧現時該回報有未採的泉");
+        // 全採完：不再回報（避免提示玩家去採早已採光的泉）。
+        for i in 0..SPRING_COUNT {
+            let node = &s.nodes[i];
+            let (wx, wy, id) = (node.wx, node.wy, node.id);
+            s.try_collect(id, wx, wy);
+        }
+        assert!(!s.has_uncollected(), "全採完後不該再回報有未採的泉");
     }
 
     #[test]
