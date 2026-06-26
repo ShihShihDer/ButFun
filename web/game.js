@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -5858,6 +5858,8 @@
           }
           // 新手引導（ROADMAP 373）：每份快照讀 me 座標 + in-memory 旗標，推進引導步驟。
           tickOnboard(me);
+          // 進程目標（ROADMAP 550）：每份快照刷新「中期成長里程碑＋進度」，給已登入玩家持續的進程感。
+          updateGoalHud(me, isGuest);
           // 住家按鈕顯示/隱藏（ROADMAP 111）
           updateHomeBtn(me);
           // 住家家具面板（ROADMAP 155）
@@ -8932,6 +8934,25 @@
         seedEl.removeAttribute("tabindex");
       }
     }
+  }
+
+  // 進程目標 HUD（ROADMAP 550）：把 progressGoal 算出的「中期里程碑＋進度」寫進 #hudGoal。
+  // 只對已登入玩家顯示（訪客交給 hudGuestHint）；無目標（老手已全達成）或無 me 時隱藏，不佔畫面。
+  // text/icon 全是內部固定字串（progressGoal 的 LADDER），無使用者輸入、無注入風險。
+  function updateGoalHud(me, guest) {
+    const el = document.getElementById("hudGoal");
+    if (!el) return;
+    const g = me ? progressGoal({ isGuest: guest, ether: me.ether, level: me.level, kills: me.kill_count }) : null;
+    if (!g) {
+      el.classList.add("hidden");
+      el.removeAttribute("aria-label");
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, Math.round((g.cur / g.goal) * 100)));
+    el.innerHTML = `🎯 目標：${g.icon} ${g.text} <span class="goal-prog">${g.cur}/${g.goal}</span>`
+      + `<span class="goal-bar"><span class="goal-bar-fill" style="width:${pct}%"></span></span>`;
+    el.classList.remove("hidden");
+    el.setAttribute("aria-label", `當前成長目標：${g.text}，進度 ${g.cur} / ${g.goal}`);
   }
 
   // 點「播種品種」列：循環到下一個品種，立刻回饋新選擇（更新 HUD 文字＋報讀器播報）。
@@ -27073,6 +27094,40 @@
       outs.push(r.out);
     }
     return outs;
+  }
+
+  // ── 進程目標：中期成長里程碑＋可量化進度（ROADMAP 550）──────────────────────────
+  // 訪客／新手回饋最大宗（suggestions.jsonl 數十條）是「不知道下一步該做什麼、缺一個明確的
+  // 目標指示器、目標感／進程感不足」。既有 HUD 子提示（hudFarm 缺水／hudRipe 可收／hudPlant
+  // 可種／hudWeaponHint 合武器）只回答「此刻該點的下一個『微動作』」；本函式補上過去 HUD 完全
+  // 沒有的另一個時間尺度——「我正朝哪個『中期里程碑』前進、還差多少」，把抽象的「進程感」變成
+  // 看得見的目標＋進度條。純函式、確定性、零副作用、好測。
+  //   state＝{ isGuest, ether, level, kills }（皆讀自玩家快照）。
+  //   訪客交給既有 hudGuestHint 專責「登入領地」，這裡回 null 不重複打擾。
+  //   階梯由前往後取「第一個尚未達成」的里程碑；全數達成（老手）回 null＝功成身退、不再佔 HUD。
+  //   壞值（NaN／負數／非數）一律當 0、永不 throw。回 { id, icon, text, cur, goal }（cur 夾在
+  //   [0, goal]）或 null。面向玩家字串集中於此，便於日後 i18n。
+  function progressGoal(state) {
+    const s = state || {};
+    if (s.isGuest) return null; // 訪客由 hudGuestHint 專責「登入領地」，不重複
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; };
+    const ether = num(s.ether);
+    const level = num(s.level);
+    const kills = num(s.kills);
+    // 早→中期的成長脊椎：賺第一桶乙太 → 學會打怪 → 升級變強 → 攢錢擴張 → 再升一程。
+    const LADDER = [
+      { id: "ether50",  icon: "💎", text: "攢到 50 乙太",          cur: ether, goal: 50 },
+      { id: "hunt5",    icon: "⚔️", text: "擊退 5 隻野怪",         cur: kills, goal: 5 },
+      { id: "lv5",      icon: "⭐", text: "修練到 5 級",           cur: level, goal: 5 },
+      { id: "ether300", icon: "💎", text: "攢到 300 乙太擴張家業", cur: ether, goal: 300 },
+      { id: "lv10",     icon: "⭐", text: "修練到 10 級",          cur: level, goal: 10 },
+    ];
+    for (const rung of LADDER) {
+      if (rung.cur < rung.goal) {
+        return { id: rung.id, icon: rung.icon, text: rung.text, cur: Math.max(0, Math.min(rung.cur, rung.goal)), goal: rung.goal };
+      }
+    }
+    return null; // 全數達成＝老手，功成身退、不再佔 HUD
   }
 
   // ── 掌勺照譜烹調覆蓋層（ROADMAP 349）──────────────────────────────────────────

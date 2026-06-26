@@ -575,6 +575,14 @@
     #hudGuestHint { color: var(--brass); margin: 2px 0; padding: 3px 7px; border: 1px solid var(--brass);
       border-radius: 6px; opacity: 0.92; }
     #hudGuestHint b { color: #ffd24a; }
+    /* 進程目標(ROADMAP 550):用青綠色(呼應成長/進程),跟乙太黃、缺水藍、武器紅一眼分得開。
+       內含一條細進度條,把「離下一個里程碑還差多少」畫成看得見的長度。 */
+    #hudGoal { color: #64dcc8; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    #hudGoal .goal-prog { color: #9aa0ac; font-size: 0.82em; }
+    #hudGoal .goal-bar { display: inline-block; width: 88px; height: 6px; border-radius: 3px;
+      background: rgba(255,255,255,0.12); overflow: hidden; vertical-align: middle; }
+    #hudGoal .goal-bar-fill { display: block; height: 100%; border-radius: 3px;
+      background: #64dcc8; transition: width 0.3s; }
     /* 新手引導卡（ROADMAP 373）：三步驟引導，新玩家第一次進場顯示，做完自動收起 */
     #onboardCard {
       position: fixed; left: 50%; transform: translateX(-50%);
@@ -1257,6 +1265,10 @@
     <!-- 武器引導:還沒合出武器時一行提示「合一把更痛」,把「採集→合成→變強打怪」那步顯到 HUD;
          合出後改由上面的 🗡️ pill 亮起、這行隱藏(純前端引導,配方與合成台/伺服器一致,不嵌規則)。 -->
     <div id="hudWeaponHint" class="hud-sub hidden"></div>
+    <!-- 進程目標(ROADMAP 550):上面那些子提示只報「此刻該點的下一個微動作」(澆水/收成/種/合武器);
+         這行補上另一個時間尺度——「我正朝哪個中期里程碑前進、還差多少」(攢乙太/打怪/升級),
+         把抽象的「目標感/進程感不足」變成看得見的目標+進度條。只給已登入玩家;老手全達成後隱藏。 -->
+    <div id="hudGoal" class="hud-sub hidden"></div>
   </div>
 
   <!-- dock 點開的專屬視窗:同時只開一個,點 ✕／按 Esc／點世界任一處可關(見 game.js initDock)。
