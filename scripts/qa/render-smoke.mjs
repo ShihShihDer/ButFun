@@ -5572,6 +5572,67 @@ for (const sc of scenarios) {
   else console.log("  ✅ 背包材料用途反查（ROADMAP 549）：materialUses(保序去重+空查+壞值+去重)");
 }
 
+// ── 進程目標里程碑（ROADMAP 550）──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const pg = sandbox.__bfTest && sandbox.__bfTest.progressGoal;
+    if (typeof pg !== "function") throw new Error("progressGoal 未掛載");
+
+    // 訪客：交給 hudGuestHint 專責，永遠回 null（不重複打擾）。
+    if (pg({ isGuest: true, ether: 0, level: 0, kills: 0 }) !== null) {
+      ok = false; console.error("  ❌ progressGoal(訪客) 應回 null");
+    }
+    // 第一階：乙太不足 50 → 攢乙太里程碑，cur=當前乙太。
+    const g1 = pg({ ether: 10, level: 0, kills: 0 });
+    if (!g1 || g1.id !== "ether50" || g1.cur !== 10 || g1.goal !== 50) {
+      ok = false; console.error(`  ❌ progressGoal(乙太10) 應回 ether50 cur10/50，得 ${JSON.stringify(g1)}`);
+    }
+    // 乙太達 50 → 進到打怪里程碑（第一階已達成自動推進）。
+    const g2 = pg({ ether: 50, level: 0, kills: 2 });
+    if (!g2 || g2.id !== "hunt5" || g2.cur !== 2 || g2.goal !== 5) {
+      ok = false; console.error(`  ❌ progressGoal(乙太50·殺2) 應回 hunt5 cur2/5，得 ${JSON.stringify(g2)}`);
+    }
+    // 乙太足、殺夠 → 升級里程碑。
+    const g3 = pg({ ether: 80, level: 3, kills: 5 });
+    if (!g3 || g3.id !== "lv5" || g3.cur !== 3 || g3.goal !== 5) {
+      ok = false; console.error(`  ❌ progressGoal(殺5·Lv3) 應回 lv5 cur3/5，得 ${JSON.stringify(g3)}`);
+    }
+    // 過了 5 級門檻、乙太未達 300 → 擴張家業里程碑。
+    const g4 = pg({ ether: 120, level: 6, kills: 9 });
+    if (!g4 || g4.id !== "ether300" || g4.cur !== 120 || g4.goal !== 300) {
+      ok = false; console.error(`  ❌ progressGoal(Lv6·乙太120) 應回 ether300 cur120/300，得 ${JSON.stringify(g4)}`);
+    }
+    // 乙太破 300、未滿 10 級 → 再升一程里程碑。
+    const g5 = pg({ ether: 500, level: 7, kills: 9 });
+    if (!g5 || g5.id !== "lv10" || g5.cur !== 7 || g5.goal !== 10) {
+      ok = false; console.error(`  ❌ progressGoal(乙太500·Lv7) 應回 lv10 cur7/10，得 ${JSON.stringify(g5)}`);
+    }
+    // 全數達成（老手）→ null，功成身退、不再佔 HUD。
+    if (pg({ ether: 999, level: 20, kills: 99 }) !== null) {
+      ok = false; console.error("  ❌ progressGoal(老手全達成) 應回 null");
+    }
+    // 壞值（NaN／負數／缺欄位）一律當 0、永不 throw → 退回第一階 ether50 cur0。
+    const gbad = pg({ ether: -5, level: NaN, kills: undefined });
+    if (!gbad || gbad.id !== "ether50" || gbad.cur !== 0) {
+      ok = false; console.error(`  ❌ progressGoal(壞值) 應保守回 ether50 cur0，得 ${JSON.stringify(gbad)}`);
+    }
+    // 空 state／null 也不 throw（退回第一階）。
+    if (pg(null).id !== "ether50" || pg(undefined).id !== "ether50") {
+      ok = false; console.error("  ❌ progressGoal(null/undefined) 應保守回 ether50");
+    }
+    // cur 永遠夾在 [0, goal]（防呆，雖然只在 cur<goal 時回該階）。
+    const gc = pg({ ether: 49, level: 0, kills: 0 });
+    if (gc.cur < 0 || gc.cur > gc.goal) {
+      ok = false; console.error(`  ❌ progressGoal cur 未夾界，得 ${JSON.stringify(gc)}`);
+    }
+  } catch (e) {
+    ok = false; console.error("  ❌ 進程目標里程碑：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 進程目標里程碑（ROADMAP 550）：測試失敗"); }
+  else console.log("  ✅ 進程目標里程碑（ROADMAP 550）：progressGoal(訪客null+五階推進+老手畢業+壞值保守)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
