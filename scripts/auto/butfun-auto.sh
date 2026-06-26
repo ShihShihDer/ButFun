@@ -29,7 +29,8 @@ BUDGET_WEEKLY_PCT="${BUTFUN_BUDGET_WEEKLY_PCT:-80}"      # 你的目標：週用
 BUDGET_WEEKLY_USD="${BUTFUN_BUDGET_WEEKLY_USD:-250}"     # 退路：ccusage totalCost 代理（真實%數天過舊/缺才用）
 PCT_STALE_MAX_SEC="${BUTFUN_PCT_STALE_MAX_SEC:-86400}"   # 真實%「過期但仍沿用」上限(秒)，預設 1 天：兼顧修半夜假停＋失花費追蹤最多 1 天就退$保底
 REVIEW_MODEL="${BUTFUN_REVIEW_MODEL:-claude-sonnet-4-6}"          # 把關用（Sonnet，比 Opus 省）
-WORKER_FALLBACK_MODEL="${BUTFUN_WORKER_FALLBACK_MODEL:-claude-sonnet-4-6}"  # Gemini 沒額度時的備胎 worker
+WORKER_FALLBACK_MODEL="${BUTFUN_WORKER_FALLBACK_MODEL:-claude-sonnet-4-6}"  # agy 失敗時的備胎 worker（燒 Claude）
+WORKER_AGY_MODEL="${BUTFUN_WORKER_AGY_MODEL:-Gemini 3.1 Pro (High)}"  # 免費主力 worker：Antigravity(agy) 用的模型（2026-06-26 gemini tier 死後改用 agy，免費額度）
 
 log(){ echo "[auto $(date '+%H:%M')] $*"; }
 
@@ -113,13 +114,13 @@ case "$turn" in
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }
     cd "$WT" || { log "❌ worker worktree ($WT) 不可用，本輪中止——絕不 fallback 到主樹(免在主樹留 WIP 弄髒、擋部署一整天)"; exit 1; }
     "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
-    log "worker：先試 Gemini（獨立額度，但也有限會見底）"
-    # 注意：set -e 下「gout=$(gemini…)」失敗會直接 kill 腳本、根本跑不到 fallback——故用 && / || 保住 grc
-    gout="$(gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" 2>&1)" && grc=0 || grc=$?
+    log "worker：先試 Antigravity(agy，免費額度) 模型「$WORKER_AGY_MODEL」"
+    # 注意：set -e 下「gout=$(agy…)」失敗會直接 kill 腳本、根本跑不到 fallback——故用 && / || 保住 grc
+    gout="$(agy --print --dangerously-skip-permissions --model "$WORKER_AGY_MODEL" "$(cat "$HERE/worker.prompt")" 2>&1)" && grc=0 || grc=$?
     printf '%s\n' "$gout" | tail -25
-    # Gemini 失敗（額度用盡 429 或任何錯）→ fallback 改用 Claude Sonnet（agentic、比 Opus 省、受 80% 守衛保護）
+    # agy 失敗（額度用盡/auth 失效/任何錯）→ fallback 改用 Claude（agentic、受預算守衛保護）
     if [ "$grc" -ne 0 ]; then
-      log "Gemini 失敗/額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
+      log "Antigravity(agy) 失敗/額度用盡（rc=$grc）→ fallback 用 Claude $WORKER_FALLBACK_MODEL 當 worker"
       cd "$WT" || { log "❌ worker worktree 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }
       exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
     fi
@@ -147,5 +148,5 @@ case "$turn" in
     fi
     log "turn=human：(已推播) 等人處理 for_human.md，閒置"; exit 0 ;;
   # 註：done 不再單獨閒置，已併入上面 work|done)＝改跑自主提案模式（AI 自營運，絕不空轉）。
-  *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }; cd "$WT" || { log "❌ worker worktree 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }; exec gemini --yolo --skip-trust -p "$(cat "$HERE/worker.prompt")" ;;
+  *)     log "未知 turn=$turn，當 work"; WT="${BUTFUN_WORKER_WORKTREE:-/tmp/bf-worker}"; git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }; cd "$WT" || { log "❌ worker worktree 不可用，本輪中止——絕不 fallback 到主樹"; exit 1; }; exec agy --print --dangerously-skip-permissions --model "$WORKER_AGY_MODEL" "$(cat "$HERE/worker.prompt")" ;;
 esac
