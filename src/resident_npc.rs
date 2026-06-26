@@ -741,6 +741,9 @@ pub struct ResidentManager {
     /// 餘韻期間追蹤的「英雄玩家名」（ROADMAP 188）；該英雄本人走近居民時觸發專屬致謝。
     /// 由 notify_hero_triumph 設定，餘韻耗盡時清除（None = 無進行中的凱旋餘韻）。
     hero_name: Option<String>,
+    /// 居民兩兩之間的鄰里熟識度（ROADMAP 557）：反覆相遇會累積、招呼隨之升級成老鄰居對話。
+    /// 居民退休時清掉其條目，避免帳目堆積。
+    bonds: crate::resident_bonds::ResidentBonds,
 }
 
 impl ResidentManager {
@@ -762,6 +765,7 @@ impl ResidentManager {
             celebrate_timer: 0.0,
             afterglow_timer: 0.0,
             hero_name: None,
+            bonds: crate::resident_bonds::ResidentBonds::new(),
         }
     }
 
@@ -1100,6 +1104,8 @@ impl ResidentManager {
         // 3. 壽命到期：回歸乙太 + 新居民遷入替補（每幀最多處理一位，防同時大量廣播）
         if let Some(pos) = self.residents.iter().position(|r| r.should_retire()) {
             let old = self.residents.remove(pos);
+            // ROADMAP 557：退休居民的鄰里熟識度條目一併清掉，避免帳目無限堆積。
+            self.bonds.forget(&old.id);
             let new_idx = self.next_index;
             self.next_index += 1;
             let new_r = ResidentNpc::new(new_idx, &mut self.rng);
@@ -1200,8 +1206,10 @@ impl ResidentManager {
                 let y_b    = self.residents[j].y;
                 let seed_a = self.residents[i].thought_count;
                 let seed_b = self.residents[j].thought_count;
-                let text_a = crate::resident_chat::get_neighbor_greet(name_b, seed_a);
-                let text_b = crate::resident_chat::get_neighbor_reply(seed_b).to_string();
+                // ROADMAP 557：記一次相遇、累積熟識度，招呼依當前階層升級（陌生→點頭之交→老鄰居）。
+                let tier = self.bonds.record_meeting(&id_a, &id_b);
+                let text_a = crate::resident_chat::get_neighbor_greet_tiered(name_b, tier, seed_a);
+                let text_b = crate::resident_chat::get_neighbor_reply_tiered(tier, seed_b).to_string();
                 // 設定互動狀態
                 self.residents[i].chat_remaining = CHAT_DURATION;
                 self.residents[i].chat_cooldown  = CHAT_COOLDOWN;
