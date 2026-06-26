@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -8807,6 +8807,37 @@
     return { kind, n, dry, ripe, empty };
   }
 
+  // 最快收成倒數（ROADMAP 551）：在「都照顧好了」這個沒有缺水、沒有可收、沒有空地的「靜待成長」
+  // 空檔，從快照算出「最快一格還要多久成熟」，把死寂的等待變成看得見的盼頭——直擊建議箱反覆
+  // 出現的「可種空格:0、成熟可收:0 缺乏接近目標的動能／預計提醒／空轉感」回饋。
+  // 純函式、無副作用、確定性、好測。回最小的正 eta_secs（生長中作物格：state 2~3 且 eta_secs 有限>0），
+  // 沒有任何生長中作物（全空地／全成熟／壞值）回 null。eta_secs 由後端隨田格快照下傳（field.rs，
+  // 以無雨估計；下雨時實際更快），舊伺服器缺欄→視為 0→回 null，HUD 優雅退回靜態句。
+  function soonestCropEta(cells) {
+    if (!Array.isArray(cells)) return null;
+    let best = null;
+    for (const c of cells) {
+      if (!c) continue;
+      const s = c.state | 0;
+      if (s !== 2 && s !== 3) continue;          // 只看生長中（2=種子／3=發芽）；成熟/空地/自然地略過
+      const eta = Number(c.eta_secs);
+      if (!Number.isFinite(eta) || eta <= 0) continue;
+      if (best === null || eta < best) best = eta;
+    }
+    return best;
+  }
+
+  // 最快收成倒數的面向玩家短句（ROADMAP 551）。面向玩家字串集中於此，便於日後 i18n。
+  // <60 秒→「快熟了」（不報秒避免每次快照數字跳動）；否則無條件進位成整分鐘（不誇大、不報成已熟）。
+  // null／壞值回 null，呼叫端據此退回既有靜態句（永不騙玩家）。
+  function harvestEtaLabel(secs) {
+    const e = Number(secs);
+    if (!Number.isFinite(e) || e <= 0) return null;
+    if (e < 60) return "🌿 都照顧好了 · 作物快熟了";
+    const mins = Math.ceil(e / 60);
+    return `🌿 都照顧好了 · 最快約 ${mins} 分鐘後可收成`;
+  }
+
   // 農地缺水提醒：數出快照裡「有作物且缺水」的格數，顯示在 HUD，讓玩家離開田去
   // 探索時也知道作物渴了該回去澆水。缺水格的判定刻意對齊 drawTile 畫藍點的條件
   //（state 2~4 且 dry），HUD 數字與看得到的提示點一致；沒有缺水格時隱藏整行。
@@ -8875,7 +8906,9 @@
         plantEl.textContent = `🌱 ${digest.n} 格空地 · 去播種`;
         plantEl.classList.remove("hidden");
       } else if (digest.kind === "allgood") {
-        plantEl.textContent = "🌿 農地都照顧好了，靜待成長";
+        // 「靜待成長」不再死寂：算出最快一格的成熟倒數，給玩家一個明確的回來時機（ROADMAP 551）。
+        // 缺 eta 欄（舊伺服器）或算不出時優雅退回既有靜態句。
+        plantEl.textContent = harvestEtaLabel(soonestCropEta(f && f.cells)) || "🌿 農地都照顧好了，靜待成長";
         plantEl.classList.remove("hidden");
       } else {
         plantEl.classList.add("hidden");
