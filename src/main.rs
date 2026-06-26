@@ -79,6 +79,7 @@ mod market;
 mod moon;
 mod npc;
 mod npc_chat;
+mod npc_agent;
 mod inventory;
 mod inventory_store;
 mod journey;
