@@ -389,6 +389,13 @@ async fn llm_chat(system: &str, user: &str) -> Option<String> {
     ollama_chat(system, user).await
 }
 
+/// 給「自主 agent 決策」（npc_agent）共用同一條 LLM 路由 + 降級鏈。
+/// 只是把私有的 `llm_chat` 開一個 crate 內可見的窗口，行為完全一致：
+/// Groq → ollama → None（呼叫端退罐頭）。永遠不卡迴圈、永遠回得出東西。
+pub(crate) async fn agent_llm_chat(system: &str, user: &str) -> Option<String> {
+    llm_chat(system, user).await
+}
+
 /// 生成 NPC 對玩家這句話的回應。LLM 沒啟用或失敗 → 罐頭句（永遠回得出東西）。
 /// `world_news`：引擎世界事件段落（ROADMAP 65），空字串表示無近況。
 /// `elder_context`：老年感悟語境（ROADMAP 66），空字串表示非老年。
