@@ -261,6 +261,46 @@ static REPLY_TEMPLATES: &[&str] = &[
     "好啊好啊！",
 ];
 
+// ── 鄰里熟識度招呼模板（ROADMAP 557） ──────────────────────────────────────────
+// 反覆碰上的同一對居民會「處出交情」，招呼依熟識階層升級：
+// 點頭之交＝叫得出名字、語氣漸熟；老鄰居＝見面格外親、嘮得更深。
+
+/// 點頭之交向對方招呼（帶對方名字，語氣比初識熟一些）
+static GREET_ACQUAINTANCE: &[&str] = &[
+    "{other}，又碰上啦！",
+    "嘿{other}，最近常見到你呢。",
+    "{other}，這幾天還順心吧？",
+    "又見面了，{other}！",
+    "{other}，老照面囉，哈哈。",
+];
+
+/// 老鄰居向對方招呼（帶對方名字，見面格外親）
+static GREET_FRIEND: &[&str] = &[
+    "🤝 {other}！老地方又碰上啦，今天可好？",
+    "🤝 哎呀{other}，就愛跟你嘮兩句。",
+    "🤝 {other}，老鄰居，過來坐坐！",
+    "🤝 可算遇上你了，{other}，最近怎樣？",
+    "🤝 {other}，見著你就高興，走兩步一塊兒？",
+];
+
+/// 點頭之交的回應
+static REPLY_ACQUAINTANCE: &[&str] = &[
+    "是啊，挺巧的！",
+    "你也常在這兒呢，哈。",
+    "還順，謝你問候！",
+    "嗯，碰著你就親切！",
+    "彼此彼此，回頭聊！",
+];
+
+/// 老鄰居的回應
+static REPLY_FRIEND: &[&str] = &[
+    "🤝 可不是嘛，跟你說話最舒坦了！",
+    "🤝 哈，老鄰居就是不一樣！",
+    "🤝 走啊，一塊兒溜達溜達！",
+    "🤝 有你這鄰居，日子都暖些。",
+    "🤝 好嘞，回頭上你那兒坐！",
+];
+
 // ── 主要 NPC 白天招呼模板（ROADMAP 244） ───────────────────────────────────────────
 
 /// 主要 NPC 向路過居民主動招呼（帶居民名字）
@@ -370,17 +410,35 @@ pub fn get_major_npc_reply(seed: usize) -> &'static str {
     MAJOR_REPLY_TEMPLATES[seed % MAJOR_REPLY_TEMPLATES.len()]
 }
 
-/// 取得居民向鄰居主動招呼的文字（帶對方名字）。
-
+/// 依鄰里熟識階層取得居民向鄰居招呼的文字（ROADMAP 557）。
 ///
-/// `other_name` 為對方居民顯示名；`seed` 供模板輪替。
-pub fn get_neighbor_greet(other_name: &str, seed: usize) -> String {
-    GREET_TEMPLATES[seed % GREET_TEMPLATES.len()].replace("{other}", other_name)
+/// 老鄰居／點頭之交叫得出名字、語氣更親；陌生則退回既有泛泛招呼。
+pub fn get_neighbor_greet_tiered(
+    other_name: &str,
+    tier: crate::resident_bonds::NeighborTier,
+    seed: usize,
+) -> String {
+    use crate::resident_bonds::NeighborTier::*;
+    let pool: &[&str] = match tier {
+        Friend => GREET_FRIEND,
+        Acquaintance => GREET_ACQUAINTANCE,
+        Stranger => GREET_TEMPLATES,
+    };
+    pool[seed % pool.len()].replace("{other}", other_name)
 }
 
-/// 取得居民對招呼的回應文字。
-pub fn get_neighbor_reply(seed: usize) -> &'static str {
-    REPLY_TEMPLATES[seed % REPLY_TEMPLATES.len()]
+/// 依鄰里熟識階層取得居民對招呼的回應文字（ROADMAP 557）。
+pub fn get_neighbor_reply_tiered(
+    tier: crate::resident_bonds::NeighborTier,
+    seed: usize,
+) -> &'static str {
+    use crate::resident_bonds::NeighborTier::*;
+    let pool: &[&str] = match tier {
+        Friend => REPLY_FRIEND,
+        Acquaintance => REPLY_ACQUAINTANCE,
+        Stranger => REPLY_TEMPLATES,
+    };
+    pool[seed % pool.len()]
 }
 
 /// 取得居民的思想泡泡文字。
@@ -1110,20 +1168,28 @@ mod tests {
 
     #[test]
     fn neighbor_greet_contains_other_name() {
-        let result = get_neighbor_greet("阿土", 0);
-        assert!(result.contains("阿土"), "招呼文字應包含對方名字");
+        use crate::resident_bonds::NeighborTier;
+        // 三個熟識階層的招呼都該叫得出對方名字
+        for tier in [NeighborTier::Stranger, NeighborTier::Acquaintance, NeighborTier::Friend] {
+            let result = get_neighbor_greet_tiered("阿土", tier, 0);
+            assert!(result.contains("阿土"), "招呼文字應包含對方名字（{:?}）", tier);
+        }
     }
 
     #[test]
     fn neighbor_greet_seed_wraps_without_panic() {
-        let r = get_neighbor_greet("梅子", 9999);
+        use crate::resident_bonds::NeighborTier;
+        let r = get_neighbor_greet_tiered("梅子", NeighborTier::Friend, 9999);
         assert!(!r.is_empty());
     }
 
     #[test]
     fn neighbor_reply_nonempty_for_all_seeds() {
-        for seed in [0, 1, 2, 3, 4, 9999] {
-            assert!(!get_neighbor_reply(seed).is_empty());
+        use crate::resident_bonds::NeighborTier;
+        for tier in [NeighborTier::Stranger, NeighborTier::Acquaintance, NeighborTier::Friend] {
+            for seed in [0, 1, 2, 3, 4, 9999] {
+                assert!(!get_neighbor_reply_tiered(tier, seed).is_empty());
+            }
         }
     }
 

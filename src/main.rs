@@ -199,6 +199,7 @@ mod home_furniture;
 mod home_decor;
 mod resident_npc;
 mod resident_chat;
+mod resident_bonds;
 mod resident_care_back;
 mod town_prosperity;
 mod community_gathering;
