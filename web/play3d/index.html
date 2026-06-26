@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <!-- 手機友善：滿版、禁縮放（搖桿／拖曳轉鏡頭自己處理觸控） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>ButFun · 3D 遊樂場（可玩原型）</title>
+  <style>
+    /* 沒風格的風格：純色背景、零美術資產，實體全在 main.js 程式生成 */
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #10141c; touch-action: none; }
+    #app { position: fixed; inset: 0; }
+
+    /* HUD：收集數 + 操作提示，半透明不擋視線 */
+    #hud {
+      position: fixed; left: 12px; top: 12px; z-index: 10;
+      font: 14px/1.5 system-ui, -apple-system, "Noto Sans CJK TC", sans-serif;
+      color: #e6edf3; background: rgba(13,17,23,0.6);
+      padding: 8px 12px; border-radius: 10px; max-width: 70vw;
+      pointer-events: none; white-space: pre-line;
+    }
+    #hud b { color: #ffd54a; }
+    #hint {
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; z-index: 10;
+      font: 12px/1.4 system-ui, sans-serif; color: #9aa4b2;
+      background: rgba(13,17,23,0.5); padding: 6px 12px; border-radius: 8px;
+      pointer-events: none; text-align: center; max-width: 92vw;
+    }
+    /* 錯誤浮層：任何例外不白屏，顯示紅字 */
+    #err {
+      position: fixed; inset: 0; z-index: 50; display: none;
+      align-items: center; justify-content: center;
+      font: 14px/1.6 system-ui, sans-serif; color: #ffb4b4;
+      background: rgba(13,17,23,0.92); padding: 24px; text-align: center;
+      white-space: pre-wrap;
+    }
+
+    /* ---- 觸控控制（手機才顯示，桌機用滑鼠鍵盤）---- */
+    #touch { position: fixed; inset: 0; z-index: 20; display: none; pointer-events: none; }
+    /* 左下虛擬搖桿底座 */
+    #joy {
+      position: absolute; left: 22px; bottom: 28px; width: 120px; height: 120px;
+      border-radius: 50%; background: rgba(255,255,255,0.08);
+      border: 2px solid rgba(255,255,255,0.18); pointer-events: auto; touch-action: none;
+    }
+    #joyNub {
+      position: absolute; left: 35px; top: 35px; width: 50px; height: 50px;
+      border-radius: 50%; background: rgba(255,255,255,0.35); pointer-events: none;
+    }
+    /* 右下跳躍鈕 */
+    #jump {
+      position: absolute; right: 24px; bottom: 36px; width: 92px; height: 92px;
+      border-radius: 50%; background: rgba(255,213,74,0.22);
+      border: 2px solid rgba(255,213,74,0.5); color: #ffd54a;
+      font: bold 18px/92px system-ui, sans-serif; text-align: center;
+      pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+    }
+    #jump:active { background: rgba(255,213,74,0.4); }
+  </style>
+  <!--
+    Three.js 走 CDN importmap（原型階段可接受，比照 web/3d/）。
+    版本固定 0.160.0，addons（CapsuleGeometry 等）走同版 jsm。
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">載入中…</div>
+  <div id="hint">WASD 移動 · 滑鼠拖曳轉鏡頭 · 空白鍵跳 · 收集發光球</div>
+  <div id="err"></div>
+
+  <!-- 觸控控制層（main.js 偵測到觸控裝置才顯示） -->
+  <div id="touch">
+    <div id="joy"><div id="joyNub"></div></div>
+    <div id="jump">跳</div>
+  </div>
+
+  <!-- 相對 /play3d/ 載入；?v 供 cache-bust -->
+  <script type="module" src="main.js?v=1"></script>
+</body>
+</html>
