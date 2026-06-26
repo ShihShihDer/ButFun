@@ -404,6 +404,10 @@ pub struct Player {
     /// 關心居民冷卻剩餘秒數（ROADMAP 554：園丁撫慰防連發洗泡泡）。0.0 = 可關心；> 0 = 冷卻中。
     /// 由 game.rs 每 tick 遞減；記憶體前置、不持久化（純社交互動，重啟清零無妨）。
     pub comfort_cooldown: f32,
+    /// 領受居民回禮療傷的冷卻剩餘秒數（ROADMAP 556：深交居民見你帶傷反過來關心你）。
+    /// 0.0 = 可被療傷；> 0 = 冷卻中。比 comfort_cooldown 長得多（嚴格節流回血、非貼身回血泉）。
+    /// 由 game.rs 每 tick 遞減；記憶體前置、不持久化（純暖意點綴，重啟清零無妨）。
+    pub care_cooldown: f32,
 
     // ── 玩家擊掌（ROADMAP 339：玩家↔玩家雙向同步動作）────────────────────────
     /// 擊掌意願倒數（幀）。玩家比擊掌時由 ws.rs 設為 `high_five::OFFER_TICKS`；game.rs 每幀
@@ -2012,6 +2016,7 @@ mod tests {
             toast_cooldown: 0.0,
             toast_count: 0,
             comfort_cooldown: 0.0,
+            care_cooldown: 0.0,
             high_five_offer: 0,
             recent_emote: None,
             cheer_offer: 0,

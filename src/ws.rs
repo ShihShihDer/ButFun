@@ -187,6 +187,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_cooldown: 0.0,
             toast_count: 0,
             comfort_cooldown: 0.0,
+            care_cooldown: 0.0,
             high_five_offer: 0,
             recent_emote: None,
             cheer_offer: 0,
@@ -336,6 +337,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             toast_cooldown: 0.0,
             toast_count: 0,
             comfort_cooldown: 0.0,
+            care_cooldown: 0.0,
             high_five_offer: 0,
             recent_emote: None,
             cheer_offer: 0,
@@ -6337,16 +6339,49 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                             ));
                             // 5. 撫慰：把那份偏低需求往上推（幅度依交情；需求寫鎖即取即放）。
                             app.npc_needs.write().unwrap().comfort_by(nid, need, amount);
-                            // 6. 起冷卻，防連點洗泡泡（players 寫鎖）。
-                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
-                                p.comfort_cooldown = COMFORT_COOLDOWN_SECS;
-                            }
-                            // 7. 廣播該居民的領情泡泡（就地定位在其身上）：剛因這次照料「跨進更深一層交情」
-                            //    那一刻，說一句專屬暖語（世界記得你三番五次的照料）；否則說尋常領情話。
+                            // 6. 起冷卻防連點洗泡泡；並判「居民回禮」（ROADMAP 556）：若這位居民
+                            //    已是與你深交的餐桌熟客、而你此刻正帶著傷，她反過來關心你——順手替你
+                            //    療一小段傷（受獨立長冷卻 care_cooldown 嚴格節流，回血速率遠低於脫戰
+                            //    自然回血，純暖意點綴、不擾平衡；療傷只動 hp，零經濟產出）。同一把 players
+                            //    寫鎖內取完即放、不巢狀其他鎖，守 prod-deadlock。
+                            let cared_back = {
+                                let mut healed = false;
+                                if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                    p.comfort_cooldown = COMFORT_COOLDOWN_SECS;
+                                    let tier_now = tier_ord(crate::lunch_regular::tier_of(bond.count));
+                                    if p.care_cooldown <= 0.0
+                                        && crate::resident_care_back::reciprocates(
+                                            tier_now,
+                                            p.vitals.hp(),
+                                            p.vitals.max_hp(),
+                                        )
+                                    {
+                                        let heal = crate::resident_care_back::care_heal_amount(
+                                            p.vitals.max_hp(),
+                                        );
+                                        if p.vitals.heal(heal) > 0 {
+                                            p.care_cooldown =
+                                                crate::resident_care_back::CARE_BACK_COOLDOWN_SECS;
+                                            healed = true;
+                                        }
+                                    }
+                                }
+                                healed
+                            };
+                            // 7. 廣播該居民的泡泡（就地定位在其身上）。文字優先序：剛「跨進更深一層交情」
+                            //    那一刻的專屬暖語（里程碑最重）＞回禮關心你的暖語（🍵，你帶傷她疼你）＞
+                            //    尋常領情話。
                             let text = bond
                                 .crossed
                                 .map(tier_ord)
                                 .and_then(crate::npc_agent::bond_deepened_line)
+                                .or_else(|| {
+                                    if cared_back {
+                                        crate::resident_care_back::care_back_line(nid, bond.count as usize)
+                                    } else {
+                                        None
+                                    }
+                                })
                                 .unwrap_or_else(|| crate::npc_agent::comfort_line(need))
                                 .to_string();
                             let _ = app.tx.send(std::sync::Arc::new(
@@ -6359,7 +6394,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     wy: ny,
                                 },
                             ));
-                            tracing::info!(player = %id, npc = nid, ?need, bond = bond.count, "園丁撫慰居民");
+                            tracing::info!(player = %id, npc = nid, ?need, bond = bond.count, cared_back, "園丁撫慰居民");
                         }
                     }
                 }
