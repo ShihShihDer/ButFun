@@ -379,31 +379,64 @@ pub fn canned_action(sense: &SenseInput) -> AgentDecision {
 
 /// 由「居民此刻的處境」推出一句**面向玩家**的內心話（💭 思想泡泡）。
 ///
-/// 取材順序（越能反映角色越優先）：
-/// 1. 正埋頭在某件工作（`activity_code`）→ 心思反映本行（最有角色感）。
-/// 2. 沒在工作但**有旅人靠近**（`someone_near`）→ 想招呼（居民互動）。
-/// 3. 夜間危機時段（`night`）→ 心生警覺。
-/// 4. 其餘 → 一句閒適的家常心思。
+/// 取材順序（越能反映「這位居民此刻是誰、過得如何」越優先）：
+/// 1. **內心有件偏低的心事**（`low_need`，ROADMAP 554）→ 流露那份煩惱（情緒狀態最響亮，
+///    壓過手上的活）——把居民的**內在需求**第一次攤到玩家眼前，也是園丁該上前撫慰的訊號。
+/// 2. 正埋頭在某件工作（`activity_code`）→ 心思反映本行（最有角色感）。
+/// 3. 沒在工作但**有旅人靠近**（`someone_near`）→ 想招呼（居民互動）。
+/// 4. 夜間危機時段（`night`）→ 心生警覺。
+/// 5. 其餘 → 一句閒適的家常心思。
 ///
 /// 純函式、確定性、可測；面向玩家字串集中於此，便於日後在地化（i18n）。
 /// 永遠回得出一句（不回 `None`），讓前端自行決定冒泡的節律與頻率。
-pub fn resident_thought(activity_code: Option<&str>, someone_near: bool, night: bool) -> String {
-    // 1) 正在埋頭工作 → 心思反映本行。
+pub fn resident_thought(
+    low_need: Option<crate::npc_needs::NeedKind>,
+    activity_code: Option<&str>,
+    someone_near: bool,
+    night: bool,
+) -> String {
+    // 1) 內心有件偏低的心事 → 情緒狀態浮上心頭（壓過手上的活），招來園丁的關心。
+    if let Some(need) = low_need {
+        return need_thought(need).to_string();
+    }
+    // 2) 正在埋頭工作 → 心思反映本行。
     if let Some(code) = activity_code {
         if let Some(work) = work_thought(code) {
             return work.to_string();
         }
     }
-    // 2) 沒在工作時，先看周遭：有旅人靠近 → 想招呼。
+    // 3) 沒在工作時，先看周遭：有旅人靠近 → 想招呼。
     if someone_near {
         return "有旅人來了，打個招呼吧".to_string();
     }
-    // 3) 夜間危機時段 → 心生警覺。
+    // 4) 夜間危機時段 → 心生警覺。
     if night {
         return "夜深了，得當心外頭的怪物".to_string();
     }
-    // 4) 閒適時段的家常心思。
+    // 5) 閒適時段的家常心思。
     "忙裡偷閒，喘口氣".to_string()
+}
+
+/// 一件偏低的需求 → 一句**流露那份煩惱**的內心話（ROADMAP 554）。
+/// 玩家看了便知這位居民此刻不好過、可上前撫慰；撫慰後需求回升、煩惱自然褪去。
+pub fn need_thought(need: crate::npc_needs::NeedKind) -> &'static str {
+    use crate::npc_needs::NeedKind;
+    match need {
+        NeedKind::Safety => "外頭那些怪物，叫人睡不安穩……",
+        NeedKind::Belonging => "這城裡，可有人記得我這張臉？",
+        NeedKind::Prosperity => "日子緊巴巴的，這月的進帳實在薄……",
+    }
+}
+
+/// 玩家上前關心後，居民回的一句**領情**話（ROADMAP 554，就地 NpcSpeech 泡泡）。
+/// 依被撫平的那件心事給不同回應，讓「被在乎」這件事有具體著落。
+pub fn comfort_line(need: crate::npc_needs::NeedKind) -> &'static str {
+    use crate::npc_needs::NeedKind;
+    match need {
+        NeedKind::Safety => "💚 有你這句，心裡踏實多了。",
+        NeedKind::Belonging => "💚 還有人惦記著我，真好。",
+        NeedKind::Prosperity => "💚 謝謝你來看看，日子總會好起來的。",
+    }
 }
 
 /// 工作活動碼 → 一句反映該行當的心思；認不出 / 非工作態（resting/commuting/visiting）回 `None`，
@@ -673,16 +706,16 @@ mod tests {
         assert!(d.reason.is_empty());
     }
 
-    // ── resident_thought（ROADMAP 553 思想泡泡）────────────────────────
+    // ── resident_thought（ROADMAP 553 思想泡泡 + 554 需求驅動）────────────
     #[test]
     fn thought_working_reflects_the_trade() {
         // 正在埋頭工作 → 心思反映本行，且優先於旅人 / 夜間。
         assert_eq!(
-            resident_thought(Some("tallying"), true, true),
+            resident_thought(None, Some("tallying"), true, true),
             "帳目得算清楚，一文都不能差"
         );
         assert_eq!(
-            resident_thought(Some("hammering"), false, false),
+            resident_thought(None, Some("hammering"), false, false),
             "這把工具，再敲幾下就成了"
         );
     }
@@ -690,30 +723,65 @@ mod tests {
     #[test]
     fn thought_nonwork_activity_falls_through() {
         // 休息 / 通勤 / 串門子不是「工作態」→ 不回工作心思，往下走通用分支。
-        assert_eq!(resident_thought(Some("resting"), true, false), "有旅人來了，打個招呼吧");
+        assert_eq!(resident_thought(None, Some("resting"), true, false), "有旅人來了，打個招呼吧");
         assert_eq!(
-            resident_thought(Some("commuting"), false, true),
+            resident_thought(None, Some("commuting"), false, true),
             "夜深了，得當心外頭的怪物"
         );
         // 未知碼也安全退回通用心思，不 panic。
-        assert_eq!(resident_thought(Some("teleporting"), false, false), "忙裡偷閒，喘口氣");
+        assert_eq!(resident_thought(None, Some("teleporting"), false, false), "忙裡偷閒，喘口氣");
     }
 
     #[test]
     fn thought_idle_priority_player_then_night_then_calm() {
         // 沒工作時：有旅人優先招呼。
-        assert_eq!(resident_thought(None, true, true), "有旅人來了，打個招呼吧");
+        assert_eq!(resident_thought(None, None, true, true), "有旅人來了，打個招呼吧");
         // 沒旅人但夜間 → 警覺。
-        assert_eq!(resident_thought(None, false, true), "夜深了，得當心外頭的怪物");
+        assert_eq!(resident_thought(None, None, false, true), "夜深了，得當心外頭的怪物");
         // 白天閒適 → 家常心思。
-        assert_eq!(resident_thought(None, false, false), "忙裡偷閒，喘口氣");
+        assert_eq!(resident_thought(None, None, false, false), "忙裡偷閒，喘口氣");
+    }
+
+    #[test]
+    fn thought_low_need_overrides_everything() {
+        use crate::npc_needs::NeedKind;
+        // ROADMAP 554：內心有件偏低的心事 → 流露煩惱，壓過手上的活 / 旅人 / 夜間。
+        assert_eq!(
+            resident_thought(Some(NeedKind::Safety), Some("tallying"), true, true),
+            need_thought(NeedKind::Safety)
+        );
+        assert_eq!(
+            resident_thought(Some(NeedKind::Belonging), None, false, false),
+            need_thought(NeedKind::Belonging)
+        );
+        assert_eq!(
+            resident_thought(Some(NeedKind::Prosperity), Some("hammering"), false, false),
+            need_thought(NeedKind::Prosperity)
+        );
+        // 三件心事各有各的一句、且互不相同。
+        let s = need_thought(NeedKind::Safety);
+        let b = need_thought(NeedKind::Belonging);
+        let p = need_thought(NeedKind::Prosperity);
+        assert!(s != b && b != p && s != p);
+        assert!(!s.is_empty() && !b.is_empty() && !p.is_empty());
+    }
+
+    #[test]
+    fn comfort_line_distinct_per_need() {
+        use crate::npc_needs::NeedKind;
+        // 撫慰後的領情話：三件心事各有著落、皆非空。
+        let s = comfort_line(NeedKind::Safety);
+        let b = comfort_line(NeedKind::Belonging);
+        let p = comfort_line(NeedKind::Prosperity);
+        assert!(s != b && b != p && s != p);
+        assert!(!s.is_empty() && !b.is_empty() && !p.is_empty());
     }
 
     #[test]
     fn thought_is_deterministic() {
         // 同輸入恆得同心思（前端可安心快取、不抖動）。
-        let a = resident_thought(Some("mapping"), false, false);
-        let b = resident_thought(Some("mapping"), false, false);
+        let a = resident_thought(None, Some("mapping"), false, false);
+        let b = resident_thought(None, Some("mapping"), false, false);
         assert_eq!(a, b);
         assert!(!a.is_empty());
     }
