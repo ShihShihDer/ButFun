@@ -114,6 +114,26 @@ case "$turn" in
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }
     cd "$WT" || { log "❌ worker worktree ($WT) 不可用，本輪中止——絕不 fallback 到主樹(免在主樹留 WIP 弄髒、擋部署一整天)"; exit 1; }
     "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
+    # 一起燒：BUTFUN_WORKER_DUAL=1 → Claude(主軸) + agy(玩家建議/打磨) 兩個 worker 並行，各自 worktree、各開 PR、分流避免撞同項。
+    # （2026-06-26 維護者「agy claude 一起燒」。要回單 worker 把 env 設回 0/unset。）
+    if [ "${BUTFUN_WORKER_DUAL:-0}" = "1" ]; then
+      WTA="${BUTFUN_WORKER_WORKTREE_AGY:-/tmp/bf-worker-agy}"
+      git -C "$WTA" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WTA" >/dev/null 2>&1 || true; }
+      if ! git -C "$WTA" rev-parse --git-dir >/dev/null 2>&1; then
+        log "⚠️ agy worktree ($WTA) 不可用 → 本輪只跑 Claude 單 worker"
+        exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
+      fi
+      log "worker（一起燒）：Claude $WORKER_FALLBACK_MODEL（主軸） + agy「$WORKER_AGY_MODEL」（玩家建議/打磨） 並行"
+      AGY_LANE='【一起燒·分流】另一個 worker（Claude Opus）正在做最上面的 ROADMAP 主軸項。你（agy）請改走「玩家建議驅動的小打磨」：優先讀 data/suggestions.jsonl 挑一個可直接做、合 GDD、玩家有感的建議實作；若沒有適合的，就做一處既有系統的小修穩/打磨。務必避免和對方撞同一個 ROADMAP 主軸項。其餘照下方守則。'
+      ( cd "$WTA" && printf '%s\n\n%s' "$AGY_LANE" "$(cat "$HERE/worker.prompt")" | agy --print --dangerously-skip-permissions --model "$WORKER_AGY_MODEL" ) >/tmp/bf-agy-worker.log 2>&1 &
+      pa=$!
+      ( cd "$WT" && claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")" ) >/tmp/bf-claude-worker.log 2>&1 &
+      pc=$!
+      wait "$pc" || true; wait "$pa" || true
+      log "一起燒完成。agy 末段："; tail -10 /tmp/bf-agy-worker.log 2>/dev/null || true
+      log "Claude 末段："; tail -10 /tmp/bf-claude-worker.log 2>/dev/null || true
+      exit 0
+    fi
     # 可逆開關：BUTFUN_WORKER_SKIP_AGY=1 → 跳過 agy(Antigravity 非真免費+長 prompt 會 flaky)，
     # worker 直接燒 Claude（「用力騷額度」模式，2026-06-26 維護者要這幾天直接燒）。要省再把 env 設回 0/unset 即回 agy。
     if [ "${BUTFUN_WORKER_SKIP_AGY:-0}" = "1" ]; then
