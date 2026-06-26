@@ -467,6 +467,11 @@ pub struct ResidentNpc {
     gratitude_cooldown: f32,
     /// 致謝模板種子（每次致謝遞增，供模板輪替）。
     gratitude_seed: usize,
+    // ── 自主 agent live 接線（P0「由 AI 棲居的世界」）──────
+    /// 是否為「會自己思考」的 agent 居民（只有頭 AGENT_ENABLED_COUNT 位是）。
+    pub is_agent: bool,
+    /// agent 思考時鐘倒數（秒）；只有 `is_agent` 時有意義，到點時由 game.rs 主迴圈發起一次思考。
+    agent_think_timer: f32,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -547,6 +552,12 @@ impl ResidentNpc {
             celebrating: false,
             gratitude_cooldown: 0.0,
             gratitude_seed: index,
+            // 只有頭 AGENT_ENABLED_COUNT 位居民是 agent；思考時鐘以 index 確定性錯開起始，
+            // 避免兩位同 tick 一起想。**刻意不動用 rng**——這個建構式共用 ResidentManager 的種子隨機源，
+            // 多取一個值會位移整條 RNG 串、打亂既有居民/採集隊測試的確定性，故改用純 index 偏移。
+            is_agent: index < crate::npc_agent_wire::AGENT_ENABLED_COUNT,
+            agent_think_timer: crate::npc_agent_wire::THINK_INTERVAL_SECS
+                + (index % 2) as f32 * (crate::npc_agent_wire::THINK_INTERVAL_SECS / 2.0),
         }
     }
 
@@ -559,6 +570,31 @@ impl ResidentNpc {
     fn should_announce_retirement(&self) -> bool {
         !self.retirement_announced
             && self.age_secs >= self.lifespan_secs * RESIDENT_RETIREMENT_FRACTION
+    }
+
+    /// agent 思考時鐘（P0 live 接線）：每幀遞減，到點回 `true` 並重置間隔。
+    /// 純計時、不碰世界——由 game.rs 主迴圈在已持有居民鎖時呼叫，回 `true` 才去蒐集快照、spawn 思考。
+    /// 非 agent 居民永遠回 `false`（不浪費）。
+    pub fn agent_think_due(&mut self, dt: f32) -> bool {
+        if !self.is_agent {
+            return false;
+        }
+        self.agent_think_timer -= dt;
+        if self.agent_think_timer <= 0.0 {
+            self.agent_think_timer = crate::npc_agent_wire::THINK_INTERVAL_SECS;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 套用 agent 的 `MoveTo` 決策：把行走目標改成指定座標（夾在城鎮漫遊範圍內，避免居民走失），
+    /// 並清掉等待，讓居民下一幀就朝那裡走。這是**溫和覆寫**——抵達後即回到原本的模板閒晃，
+    /// 不接管整個生命，故與既有 tick 行為不會長期打架。
+    pub fn set_agent_target(&mut self, x: f32, y: f32) {
+        self.target_x = x.clamp(WANDER_X_MIN, WANDER_X_MAX);
+        self.target_y = y.clamp(WANDER_Y_MIN, WANDER_Y_MAX);
+        self.wait_timer = 0.0;
     }
 
     /// 每幀推進：移動 + 等待計時。若時段切換則立即換新目標（ROADMAP 119）。
