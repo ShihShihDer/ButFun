@@ -3032,6 +3032,12 @@ pub struct NpcView {
     /// "resting"／"commuting"），前端據此在頭頂浮現活動符號；其他 NPC（旅人 / 居民 / 他星商人）為 None。
     #[serde(default)]
     pub activity: Option<String>,
+    /// ROADMAP 553 居民思想泡泡：故鄉七大居民依當下處境（手上的活／旁邊有沒有旅人／是否夜間危機）
+    /// 冒出的一句內心話，前端據此在頭頂偶爾飄一個 💭 泡泡，讓世界住著「有在想事情的人」。
+    /// 只有故鄉居民有值；其他 NPC（他星商人／旅人／路人居民）為 None。
+    /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought: Option<String>,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -3587,6 +3593,7 @@ mod tests {
                 alarmed: false,
                 celebrating: false,
                 activity: Some("tallying".to_string()),
+                thought: Some("帳目得算清楚，一文都不能差".to_string()),
             }],
             terrain: vec![],
             world_event: None,

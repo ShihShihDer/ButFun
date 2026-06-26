@@ -367,6 +367,62 @@ pub fn canned_action(sense: &SenseInput) -> AgentDecision {
     AgentDecision::new(AgentAction::Idle, String::new(), "附近沒什麼好做的，先歇著".to_string())
 }
 
+// ── 居民思想泡泡（ROADMAP 553，NPC 內心戲的「呈現層」）────────────────────────
+//
+// 這是把 agent 概念第一次**讓玩家看得見**的最小一步：故鄉居民依當下處境冒出一句
+// 內心話（💭），讓世界住著「有在想事情的人」而非靜止木樁，呼應北極星「由 AI 棲居的世界」、
+// 在 2D 試驗場先驗證。
+//
+// 鐵律：這層**不驅動移動、不呼叫 LLM、不持鎖**——只把已知處境（手上的活 / 周遭有沒有旅人 /
+// 是否夜間危機）攤成一句可讀心思。日後 LLM 腦接上時，可由 [`AgentDecision::reason`] 餵更豐富的
+// 心思取代本規則版，呈現層（前端泡泡）不必動。
+
+/// 由「居民此刻的處境」推出一句**面向玩家**的內心話（💭 思想泡泡）。
+///
+/// 取材順序（越能反映角色越優先）：
+/// 1. 正埋頭在某件工作（`activity_code`）→ 心思反映本行（最有角色感）。
+/// 2. 沒在工作但**有旅人靠近**（`someone_near`）→ 想招呼（居民互動）。
+/// 3. 夜間危機時段（`night`）→ 心生警覺。
+/// 4. 其餘 → 一句閒適的家常心思。
+///
+/// 純函式、確定性、可測；面向玩家字串集中於此，便於日後在地化（i18n）。
+/// 永遠回得出一句（不回 `None`），讓前端自行決定冒泡的節律與頻率。
+pub fn resident_thought(activity_code: Option<&str>, someone_near: bool, night: bool) -> String {
+    // 1) 正在埋頭工作 → 心思反映本行。
+    if let Some(code) = activity_code {
+        if let Some(work) = work_thought(code) {
+            return work.to_string();
+        }
+    }
+    // 2) 沒在工作時，先看周遭：有旅人靠近 → 想招呼。
+    if someone_near {
+        return "有旅人來了，打個招呼吧".to_string();
+    }
+    // 3) 夜間危機時段 → 心生警覺。
+    if night {
+        return "夜深了，得當心外頭的怪物".to_string();
+    }
+    // 4) 閒適時段的家常心思。
+    "忙裡偷閒，喘口氣".to_string()
+}
+
+/// 工作活動碼 → 一句反映該行當的心思；認不出 / 非工作態（resting/commuting/visiting）回 `None`，
+/// 交回 [`resident_thought`] 走通用心思。碼對齊 `npc_schedule::NpcActivity::code()`。
+fn work_thought(code: &str) -> Option<&'static str> {
+    match code {
+        "tallying" => Some("帳目得算清楚，一文都不能差"),
+        "hammering" => Some("這把工具，再敲幾下就成了"),
+        "sharpening" => Some("刃要開得利，獵人才好討伐野怪"),
+        "mapping" => Some("城外那片，地圖該補一補了"),
+        "stocktaking" => Some("庫存盤一盤，別缺了貨"),
+        "judging" => Some("鄉里的事，總得有人秉公斷一斷"),
+        "patrolling" => Some("四下走走，看看可有不對勁"),
+        "lunching" => Some("這頓飯，香"),
+        // resting / commuting / visiting / 未知碼 → 回 None，走通用心思
+        _ => None,
+    }
+}
+
 /// 兩點平方距離（避免不必要的開根號）。
 fn dist2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     let dx = ax - bx;
@@ -615,5 +671,50 @@ mod tests {
         assert_eq!(d.action, AgentAction::Idle);
         assert!(d.say.is_empty());
         assert!(d.reason.is_empty());
+    }
+
+    // ── resident_thought（ROADMAP 553 思想泡泡）────────────────────────
+    #[test]
+    fn thought_working_reflects_the_trade() {
+        // 正在埋頭工作 → 心思反映本行，且優先於旅人 / 夜間。
+        assert_eq!(
+            resident_thought(Some("tallying"), true, true),
+            "帳目得算清楚，一文都不能差"
+        );
+        assert_eq!(
+            resident_thought(Some("hammering"), false, false),
+            "這把工具，再敲幾下就成了"
+        );
+    }
+
+    #[test]
+    fn thought_nonwork_activity_falls_through() {
+        // 休息 / 通勤 / 串門子不是「工作態」→ 不回工作心思，往下走通用分支。
+        assert_eq!(resident_thought(Some("resting"), true, false), "有旅人來了，打個招呼吧");
+        assert_eq!(
+            resident_thought(Some("commuting"), false, true),
+            "夜深了，得當心外頭的怪物"
+        );
+        // 未知碼也安全退回通用心思，不 panic。
+        assert_eq!(resident_thought(Some("teleporting"), false, false), "忙裡偷閒，喘口氣");
+    }
+
+    #[test]
+    fn thought_idle_priority_player_then_night_then_calm() {
+        // 沒工作時：有旅人優先招呼。
+        assert_eq!(resident_thought(None, true, true), "有旅人來了，打個招呼吧");
+        // 沒旅人但夜間 → 警覺。
+        assert_eq!(resident_thought(None, false, true), "夜深了，得當心外頭的怪物");
+        // 白天閒適 → 家常心思。
+        assert_eq!(resident_thought(None, false, false), "忙裡偷閒，喘口氣");
+    }
+
+    #[test]
+    fn thought_is_deterministic() {
+        // 同輸入恆得同心思（前端可安心快取、不抖動）。
+        let a = resident_thought(Some("mapping"), false, false);
+        let b = resident_thought(Some("mapping"), false, false);
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
     }
 }

@@ -52,6 +52,10 @@ fn build_home_sell_list_with_stock(
 /// 每秒 tick 數（伺服器模擬頻率）。
 const TICK_HZ: f32 = 15.0;
 
+/// ROADMAP 553 居民思想泡泡：居民「注意到旁邊有旅人」的半徑平方（px²）。
+/// 約 140px 內有玩家，居民就會冒出想招呼的心思。比平方距離省一次開根號。
+const RESIDENT_NOTICE_R2: f32 = 140.0 * 140.0;
+
 /// flush 時從玩家快照收下的「線上已登入玩家狀態列」。與 `PositionStore::OnlinePlayerRow` 完全對齊。
 type OnlinePlayerRow = crate::positions::OnlinePlayerRow;
 
@@ -4542,6 +4546,20 @@ pub fn spawn(app: AppState) {
                             ),
                             _ => (Vec::new(), Vec::new()), // 其他 NPC 暫無商店功能
                         };
+                        // ROADMAP 553 居民思想泡泡：把當下處境攤成一句內心話。
+                        // `someone_near`＝注意半徑內有沒有玩家（沿用已持有的 players 讀鎖，
+                        // 只比平方距離、不另上鎖、O(玩家數)，每快照 7 居民共計極輕量）。
+                        let activity = sch.get_activity(s.id);
+                        let someone_near = players.values().any(|pl| {
+                            let dx = pl.x - pos.0;
+                            let dy = pl.y - pos.1;
+                            dx * dx + dy * dy <= RESIDENT_NOTICE_R2
+                        });
+                        let thought = crate::npc_agent::resident_thought(
+                            activity.map(|a| a.code()),
+                            someone_near,
+                            is_night,
+                        );
                         npc_views.push(NpcView {
                             id: s.id.to_string(),
                             name: lc.current_display(s.id).to_string(),
@@ -4554,7 +4572,9 @@ pub fn spawn(app: AppState) {
                             alarmed: false,
                             celebrating: false,
                             // ROADMAP 324：故鄉 NPC 的工作 / 活動狀態，前端據此畫頭頂活動符號。
-                            activity: sch.get_activity(s.id).map(|a| a.code().to_string()),
+                            activity: activity.map(|a| a.code().to_string()),
+                            // ROADMAP 553：居民當下的一句內心話（前端偶爾飄 💭 泡泡）。
+                            thought: Some(thought),
                         });
                     }
                     drop(lc);
@@ -4573,6 +4593,7 @@ pub fn spawn(app: AppState) {
                         alarmed: false,
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
+                        thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -4587,6 +4608,7 @@ pub fn spawn(app: AppState) {
                         alarmed: false,
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
+                        thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -4601,6 +4623,7 @@ pub fn spawn(app: AppState) {
                         alarmed: false,
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
+                        thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -4615,6 +4638,7 @@ pub fn spawn(app: AppState) {
                         alarmed: false,
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
+                        thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -4629,6 +4653,7 @@ pub fn spawn(app: AppState) {
                         alarmed: false,
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
+                        thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -4647,6 +4672,7 @@ pub fn spawn(app: AppState) {
                                 alarmed: false,
                                 celebrating: false,
                                 activity: None, // 旅人不走故鄉作息工作狀態
+                                thought: None,  // 旅人非故鄉居民，不冒思想泡泡（ROADMAP 553）
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -4672,6 +4698,7 @@ pub fn spawn(app: AppState) {
                                 alarmed,
                                 celebrating,
                                 activity: None, // 路人居民另有作息調度，不走故鄉七大 NPC 工作狀態
+                                thought: None,  // 路人居民思想泡泡留待後續切片（本切片聚焦故鄉七大居民）（ROADMAP 553）
                             });
                         }
                     }
