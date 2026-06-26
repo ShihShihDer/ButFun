@@ -5675,6 +5675,48 @@ for (const sc of scenarios) {
   else console.log("  ✅ 進程目標里程碑（ROADMAP 550）：progressGoal(訪客null+五階推進+老手畢業+壞值保守)");
 }
 
+// ── 居民思想泡泡（ROADMAP 553）──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const rta = sandbox.__bfTest && sandbox.__bfTest.residentThoughtAlpha;
+    if (typeof rta !== "function") throw new Error("residentThoughtAlpha 未掛載");
+    // 確定性：同 (id, t) 恆得同 alpha。
+    if (rta("merchant", 1234) !== rta("merchant", 1234)) {
+      ok = false; console.error("  ❌ residentThoughtAlpha 非確定性");
+    }
+    // alpha 恆夾在 [0,1]，掃一整輪都不越界、不 NaN。
+    for (const id of ["merchant", "workshop_npc", "village_chief"]) {
+      for (let t = 0; t < 14000; t += 211) {
+        const a = rta(id, t);
+        if (!(a >= 0 && a <= 1)) { ok = false; console.error(`  ❌ alpha 越界 id=${id} t=${t} → ${a}`); break; }
+      }
+    }
+    // 一輪內：露出期至少有一刻 > 0、靜默期至少有一刻 == 0。
+    let sawZero = false, sawPos = false;
+    for (let t = 0; t < 13000; t += 100) {
+      const a = rta("merchant", t);
+      if (a === 0) sawZero = true;
+      if (a > 0) sawPos = true;
+    }
+    if (!sawZero) { ok = false; console.error("  ❌ residentThoughtAlpha 整輪都沒有靜默期（應有 0）"); }
+    if (!sawPos) { ok = false; console.error("  ❌ residentThoughtAlpha 整輪都沒有露出期（應有 >0）"); }
+    // 不同 id 相位錯開：兩位居民至少某刻 alpha 不同。
+    let differ = false;
+    for (let t = 0; t < 13000; t += 100) {
+      if (rta("merchant", t) !== rta("village_chief", t)) { differ = true; break; }
+    }
+    if (!differ) { ok = false; console.error("  ❌ residentThoughtAlpha 不同居民相位未錯開"); }
+    // 壞值（NaN nowMs、null id）不 throw、回有限值。
+    const gbad = rta(null, NaN);
+    if (!(gbad >= 0 && gbad <= 1)) { ok = false; console.error(`  ❌ residentThoughtAlpha 壞值未保守，得 ${gbad}`); }
+  } catch (e) {
+    ok = false; console.error("  ❌ 居民思想泡泡：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 居民思想泡泡（ROADMAP 553）：測試失敗"); }
+  else console.log("  ✅ 居民思想泡泡（ROADMAP 553）：residentThoughtAlpha(確定性+夾界+靜默/露出期+相位錯開+壞值保守)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");

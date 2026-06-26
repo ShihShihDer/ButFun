@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -18857,6 +18857,65 @@
   }
 
   // 畫 NPC 商人（新手村固定位置）。外觀：黃銅色頭部 + 棕色身體 + 小旗招牌。
+  // ROADMAP 553 居民思想泡泡：算某位故鄉居民「此刻內心話泡泡」的淡入淡出透明度。
+  // 純函式、確定性：每位居民依 id 雜湊錯開相位（七大居民不會同時冒泡、彼此交錯），
+  // 每 PERIOD 毫秒一輪，輪內只在前 VISIBLE 毫秒露出（兩端各 FADE 漸顯/漸隱），其餘時間靜默。
+  // 回 0 表示此刻不畫。讓內心話是「偶爾飄出」的安靜陪伴，而非喋喋不休洗版。
+  function residentThoughtAlpha(npcId, nowMs) {
+    const PERIOD = 13000, VISIBLE = 4200, FADE = 700;
+    const t = Number.isFinite(nowMs) ? nowMs : 0;
+    // id 雜湊 → [0,PERIOD) 相位偏移，讓各居民錯開冒泡時機。
+    let h = 0;
+    const s = String(npcId == null ? "" : npcId);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    const phase = (((t + (h % PERIOD)) % PERIOD) + PERIOD) % PERIOD;
+    if (phase >= VISIBLE) return 0;
+    if (phase < FADE) return phase / FADE;                     // 漸顯
+    if (phase > VISIBLE - FADE) return (VISIBLE - phase) / FADE; // 漸隱
+    return 1;
+  }
+
+  // ROADMAP 553：畫一個安靜的「內心話」泡泡——刻意比 NpcSpeech 對話泡泡更柔（淡紫底、💭 前綴、
+  // 半透明），讓玩家一眼分得出「這是 TA 心裡在想的，不是說出口的話」。單行、過長截斷。
+  function drawResidentThought(sx, topY, text, alpha) {
+    const a = Math.max(0, Math.min(1, alpha));
+    if (a <= 0) return;
+    const FONT_SIZE = 10;
+    ctx.save();
+    ctx.font = `${FONT_SIZE}px ${UI_FONT}`;
+    ctx.textBaseline = "top";
+    // 💭 + 文字；過長截斷（內心話本就短）。
+    let label = "💭 " + String(text == null ? "" : text);
+    const MAX_W = 150, PAD_X = 9, PAD_Y = 5;
+    while (label.length > 2 && ctx.measureText(label).width > MAX_W - PAD_X * 2) {
+      label = label.slice(0, -1);
+    }
+    const tw = ctx.measureText(label).width;
+    const bubbleW = tw + PAD_X * 2;
+    const bubbleH = FONT_SIZE + PAD_Y * 2;
+    const bx = sx - bubbleW / 2;
+    const by = topY - bubbleH;
+    ctx.globalAlpha = a * 0.8;
+    // 柔淡紫底（與白色對話泡泡區隔）+ 細框。
+    ctx.fillStyle = "rgba(238,234,250,0.95)";
+    ctx.strokeStyle = "rgba(168,150,210,0.5)";
+    ctx.lineWidth = 1;
+    const r = 7;
+    ctx.beginPath();
+    ctx.moveTo(bx + r, by);
+    ctx.arcTo(bx + bubbleW, by, bx + bubbleW, by + r, r);
+    ctx.arcTo(bx + bubbleW, by + bubbleH, bx + bubbleW - r, by + bubbleH, r);
+    ctx.arcTo(bx, by + bubbleH, bx, by + bubbleH - r, r);
+    ctx.arcTo(bx, by, bx + r, by, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(74,60,104,0.95)";
+    ctx.textAlign = "left";
+    ctx.fillText(label, bx + PAD_X, by + PAD_Y);
+    ctx.restore();
+  }
+
   function drawNpcs(camX, camY) {
     const me = myId ? players.get(myId) : null;
     const myPlanet = me ? (me.planet || "home") : "home";
@@ -18915,6 +18974,14 @@
         ctx.globalAlpha = calm ? 0.8 : 1.0;
         ctx.fillText(actIcon, sx, by - 34 + iconBob);
         ctx.globalAlpha = 1.0;
+      }
+
+      // ROADMAP 553 居民思想泡泡：故鄉居民偶爾飄一句內心話（隨作息／周遭／日夜變動）。
+      // 只在故鄉、有 thought、且當下沒有 NpcSpeech 對話泡泡時露出（不與說出口的話互疊）。
+      // 純表現、只讀快照；安靜、低頻、各居民錯開，讓世界住著「有在想事情的人」。
+      if (npc.thought && myPlanet === "home" && !npcSpeechBubbles.has(npc.id)) {
+        const ta = residentThoughtAlpha(npc.id, performance.now());
+        if (ta > 0.01) drawResidentThought(sx, by - 52, npc.thought, ta);
       }
 
       // 鎮民撐傘避雨（ROADMAP 468）：草原細雨時，戶外的居民與旅人撐起一把小傘擋雨，隨世界的風
