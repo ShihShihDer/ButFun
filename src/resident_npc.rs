@@ -312,6 +312,18 @@ pub fn should_start_stroll(
     matches!(tier, crate::resident_bonds::NeighborTier::Friend) && (seed_a + seed_b) % 3 == 0
 }
 
+/// 老鄰居偶爾「鬧彆扭」（ROADMAP 559）：只有老鄰居階層、且依雙方種子確定性中籤才拌嘴。
+/// 比結伴（約三取一）更難得（約七取一），用乘積取模與 `should_start_stroll` 的加和取模岔開，
+/// 讓「結伴」與「鬧彆扭」不撞同一組種子、各有各的觸發時機。純函式、確定性、好測。
+pub fn should_have_tiff(
+    tier: crate::resident_bonds::NeighborTier,
+    seed_a: usize,
+    seed_b: usize,
+) -> bool {
+    matches!(tier, crate::resident_bonds::NeighborTier::Friend)
+        && (seed_a + 1).wrapping_mul(seed_b + 1) % 7 == 1
+}
+
 /// 結伴同行：算出跟隨者該走去的「老鄰居身邊」落腳點——朝領路者位置、但保留一個身位間距，
 /// 夾鉗在漫遊邊界 `(x0, x1, y0, y1)` 內。純函式、確定性、好測。
 pub fn companion_follow_target(
@@ -1266,16 +1278,41 @@ impl ResidentManager {
                 let seed_b = self.residents[j].thought_count;
                 // ROADMAP 557：記一次相遇、累積熟識度，招呼依當前階層升級（陌生→點頭之交→老鄰居）。
                 let tier = self.bonds.record_meeting(&id_a, &id_b);
+                // ROADMAP 559：老鄰居也會鬧彆扭、然後和好——交情有起有落，小社會才像真的。
+                // 決策優先序（互斥）：①已在彆扭中→這次碰面＝和好收場；②否則中籤結伴；
+                // ③否則中籤鬧彆扭；④都沒中＝照常打招呼。
+                let was_sulking = self.bonds.is_sulking(&id_a, &id_b);
                 // ROADMAP 558：老鄰居偶爾不只打招呼，而是真的「結伴同行」——這一刻招呼換成邀約／應約，
                 // 之後跟隨者（j）會黏著領路者（i）並肩溜達一段（見 apply_companion_strolls）。
-                // 條件：兩人都沒在結伴（避免一個人被兩頭拉），且 should_start_stroll 中籤。
-                let start_stroll = should_start_stroll(tier, seed_a, seed_b)
+                // 條件：沒在彆扭、兩人都沒在結伴（避免一個人被兩頭拉），且 should_start_stroll 中籤。
+                let start_stroll = !was_sulking
+                    && should_start_stroll(tier, seed_a, seed_b)
                     && self.residents[i].companion_remaining <= 0.0
                     && self.residents[j].companion_remaining <= 0.0;
-                let (text_a, text_b) = if start_stroll {
+                // 鬧彆扭：沒在結伴／不正和好、兩人都沒在結伴，且 should_have_tiff 中籤（比結伴更難得）。
+                let start_tiff = !was_sulking
+                    && !start_stroll
+                    && should_have_tiff(tier, seed_a, seed_b)
+                    && self.residents[i].companion_remaining <= 0.0
+                    && self.residents[j].companion_remaining <= 0.0;
+                let (text_a, text_b) = if was_sulking {
+                    // 和好：解除彆扭、交情回暖（重修舊好反而更親）。
+                    self.bonds.make_up(&id_a, &id_b);
+                    (
+                        crate::resident_chat::get_neighbor_makeup_open(name_b, seed_a),
+                        crate::resident_chat::get_neighbor_makeup_reply(seed_b).to_string(),
+                    )
+                } else if start_stroll {
                     (
                         crate::resident_chat::get_neighbor_stroll_invite(name_b, seed_a),
                         crate::resident_chat::get_neighbor_stroll_accept(seed_b).to_string(),
+                    )
+                } else if start_tiff {
+                    // 鬧彆扭：標記彆扭中（下次碰面就和好）、交情暫時冷一格但仍是老鄰居。
+                    self.bonds.begin_tiff(&id_a, &id_b);
+                    (
+                        crate::resident_chat::get_neighbor_tiff_open(name_b, seed_a),
+                        crate::resident_chat::get_neighbor_tiff_reply(seed_b).to_string(),
                     )
                 } else {
                     (
@@ -2802,6 +2839,20 @@ mod tests {
         // 老鄰居但沒中籤 → 不結伴（確定性，非每次都結伴）。
         assert!(!should_start_stroll(Friend, 1, 0));
         assert!(!should_start_stroll(Friend, 2, 2));
+    }
+
+    #[test]
+    fn tiff_only_starts_between_friends() {
+        use crate::resident_bonds::NeighborTier::*;
+        // 非老鄰居一律不鬧彆扭，即使種子組合中籤。
+        assert!(!should_have_tiff(Stranger, 0, 0));
+        assert!(!should_have_tiff(Acquaintance, 1, 3));
+        // 老鄰居 + 中籤（(a+1)*(b+1)%7==1）→ 鬧彆扭。
+        assert!(should_have_tiff(Friend, 1, 3)); // 2*4=8 %7=1
+        assert!(should_have_tiff(Friend, 0, 0)); // 1*1=1 %7=1
+        // 老鄰居但沒中籤 → 不鬧彆扭（確定性，難得才拌嘴）。
+        assert!(!should_have_tiff(Friend, 1, 2)); // 2*3=6
+        assert!(!should_have_tiff(Friend, 2, 2)); // 3*3=9 %7=2
     }
 
     #[test]

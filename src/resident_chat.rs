@@ -318,6 +318,39 @@ static STROLL_ACCEPT: &[&str] = &[
     "🚶 那還等啥，前頭帶路！",
 ];
 
+// ── 老鄰居鬧彆扭與和好（ROADMAP 559）─────────────────────────────────────────────
+/// 老鄰居偶爾拌嘴鬧彆扭時、先開口那位的話（帶對方名字，語氣是熟人間的小慪氣、非惡意）。
+static TIFF_OPEN: &[&str] = &[
+    "😤 {other}，上回那事我可還記著呢，哼！",
+    "😤 跟你說過多少遍了{other}，怎麼又這樣！",
+    "😤 哼，{other}，今兒個我不想搭理你。",
+    "😤 {other}你呀你，真是叫人沒法子。",
+];
+
+/// 鬧彆扭時、被慪那位的回嘴（一樣是老鄰居間的小彆扭，扭頭就走）。
+static TIFF_REPLY: &[&str] = &[
+    "😤 哼，不理就不理，誰稀罕！",
+    "😤 你才是呢，氣死我了！",
+    "😤 算了算了，各走各的！",
+    "😤 好好好，你最有理，行了吧！",
+];
+
+/// 鬧過彆扭的老鄰居再碰上、主動和好那位的話（帶對方名字，台階遞出去）。
+static MAKEUP_OPEN: &[&str] = &[
+    "😌 {other}，前兒個是我話重了，別往心裡去哈。",
+    "😌 哎{other}，老鄰居哪有隔夜仇，來握個手？",
+    "😌 {other}，氣也消了，還是你這老夥計處得來。",
+    "😌 別彆扭啦{other}，我給你賠個不是。",
+];
+
+/// 和好時、另一位順著台階下的回應（重修舊好、反而更親）。
+static MAKEUP_REPLY: &[&str] = &[
+    "🤝 嗨，我也沒真生氣，過去就過去了！",
+    "🤝 早該和好啦，走，喝茶去！",
+    "🤝 還是你敞亮，這事兒翻篇兒！",
+    "🤝 老鄰居嘛，哪能為這點事傷和氣。",
+];
+
 // ── 主要 NPC 白天招呼模板（ROADMAP 244） ───────────────────────────────────────────
 
 /// 主要 NPC 向路過居民主動招呼（帶居民名字）
@@ -452,6 +485,26 @@ pub fn get_neighbor_stroll_invite(other_name: &str, seed: usize) -> String {
 /// 老鄰居結伴同行時、被邀者的應約文字（ROADMAP 558）。
 pub fn get_neighbor_stroll_accept(seed: usize) -> &'static str {
     STROLL_ACCEPT[seed % STROLL_ACCEPT.len()]
+}
+
+/// 老鄰居鬧彆扭時、先開口那位的話（帶對方名字）（ROADMAP 559）。
+pub fn get_neighbor_tiff_open(other_name: &str, seed: usize) -> String {
+    TIFF_OPEN[seed % TIFF_OPEN.len()].replace("{other}", other_name)
+}
+
+/// 鬧彆扭時、被慪那位的回嘴（ROADMAP 559）。
+pub fn get_neighbor_tiff_reply(seed: usize) -> &'static str {
+    TIFF_REPLY[seed % TIFF_REPLY.len()]
+}
+
+/// 鬧過彆扭後再碰上、主動和好那位的話（帶對方名字）（ROADMAP 559）。
+pub fn get_neighbor_makeup_open(other_name: &str, seed: usize) -> String {
+    MAKEUP_OPEN[seed % MAKEUP_OPEN.len()].replace("{other}", other_name)
+}
+
+/// 和好時、順著台階下的回應（ROADMAP 559）。
+pub fn get_neighbor_makeup_reply(seed: usize) -> &'static str {
+    MAKEUP_REPLY[seed % MAKEUP_REPLY.len()]
 }
 
 /// 依鄰里熟識階層取得居民對招呼的回應文字（ROADMAP 557）。
@@ -1667,6 +1720,36 @@ mod tests {
         for template in HERO_GRATITUDE {
             assert!(template.contains("{name}"), "禮讚模板應含 {{name}}：{template}");
             assert!(template.contains("{player}"), "禮讚模板應含 {{player}}：{template}");
+        }
+    }
+
+    // ── ROADMAP 559：鬧彆扭與和好招呼語 ──────────────────────────────────────────
+
+    #[test]
+    fn tiff_and_makeup_lines_fill_and_are_deterministic() {
+        for seed in [0usize, 1, 3, 7, 99, usize::MAX] {
+            // 帶名字那兩句：替換後不殘留佔位符、含對方名字、非空。
+            for s in [
+                get_neighbor_tiff_open("阿福", seed),
+                get_neighbor_makeup_open("阿福", seed),
+            ] {
+                assert!(!s.is_empty(), "彆扭/和好文字不應為空（seed={seed}）");
+                assert!(!s.contains('{'), "替換後不應殘留佔位符：{s}");
+                assert!(s.contains("阿福"), "應含對方名：{s}");
+            }
+            // 回應那兩句：非空。
+            assert!(!get_neighbor_tiff_reply(seed).is_empty());
+            assert!(!get_neighbor_makeup_reply(seed).is_empty());
+        }
+        // 確定性：同 seed 取兩次一致。
+        assert_eq!(get_neighbor_tiff_open("甲", 2), get_neighbor_tiff_open("甲", 2));
+        assert_eq!(get_neighbor_makeup_reply(5), get_neighbor_makeup_reply(5));
+    }
+
+    #[test]
+    fn tiff_makeup_open_templates_have_placeholder() {
+        for t in TIFF_OPEN.iter().chain(MAKEUP_OPEN.iter()) {
+            assert!(t.contains("{other}"), "帶名招呼模板應含 {{other}}：{t}");
         }
     }
 }

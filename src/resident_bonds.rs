@@ -9,7 +9,7 @@
 //! 純記憶體、確定性、零 IO／零 LLM；居民退休（壽命到期替補）時清掉其所有條目，
 //! 避免退休 id 的帳目無限堆積。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// 跨過「點頭之交」門檻所需的累計相遇次數。
 pub const ACQUAINTANCE_MEETS: u16 = 2;
@@ -17,6 +17,12 @@ pub const ACQUAINTANCE_MEETS: u16 = 2;
 pub const FRIEND_MEETS: u16 = 4;
 /// 相遇次數上限（到頂即飽和，避免長壽世界數值無限長大；不影響階層判定）。
 const MEETS_CAP: u16 = FRIEND_MEETS + 1;
+
+/// 鬧彆扭時熟識度降幅（ROADMAP 559）。拌個嘴會讓交情**暫時**冷一格，
+/// 但有下限（見 `begin_tiff`）——老鄰居拌嘴不會一夜變回陌生人，療癒向不殘酷。
+const TIFF_COOL: u16 = 1;
+/// 和好時熟識度回暖幅度（ROADMAP 559）。拌嘴後和好，交情反而更進一步（不打不相識）。
+const MAKEUP_WARM: u16 = 1;
 
 /// 鄰里熟識階層。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +52,13 @@ pub fn tier_from_meets(meets: u16) -> NeighborTier {
 #[derive(Debug, Default)]
 pub struct ResidentBonds {
     meets: HashMap<(String, String), u16>,
+    /// 正在鬧彆扭、尚未和好的居民對（ROADMAP 559）。在此集合內的一對下次碰面＝和好收場。
+    sulking: HashSet<(String, String)>,
 }
 
 impl ResidentBonds {
     pub fn new() -> Self {
-        Self { meets: HashMap::new() }
+        Self { meets: HashMap::new(), sulking: HashSet::new() }
     }
 
     /// 把一對 id 正規化成排序後的 key，確保對稱。
@@ -86,14 +94,52 @@ impl ResidentBonds {
         self.meets.get(&Self::key(a, b)).copied().unwrap_or(0)
     }
 
+    /// 一對居民現在是否正在鬧彆扭（尚未和好）。
+    pub fn is_sulking(&self, a: &str, b: &str) -> bool {
+        self.sulking.contains(&Self::key(a, b))
+    }
+
+    /// 開始鬧彆扭（ROADMAP 559）：標記這一對「彆扭中」，交情暫時冷一格——
+    /// 但有下限 `FRIEND_MEETS`（拌嘴後仍是老鄰居、不會掉回點頭之交或陌生人，療癒向）。
+    /// 已在彆扭中則維持原狀（防呆，理論上不會被重複呼叫）。
+    pub fn begin_tiff(&mut self, a: &str, b: &str) {
+        if a == b {
+            return;
+        }
+        let key = Self::key(a, b);
+        if let Some(entry) = self.meets.get_mut(&key) {
+            *entry = entry.saturating_sub(TIFF_COOL).max(FRIEND_MEETS);
+        }
+        self.sulking.insert(key);
+    }
+
+    /// 和好（ROADMAP 559）：解除「彆扭中」標記，交情回暖一格（到頂即飽和）——
+    /// 拌嘴後重修舊好，反而更親。不在彆扭中則不回暖（防呆）。
+    pub fn make_up(&mut self, a: &str, b: &str) {
+        if a == b {
+            return;
+        }
+        let key = Self::key(a, b);
+        if self.sulking.remove(&key) {
+            let entry = self.meets.entry(key).or_insert(FRIEND_MEETS);
+            *entry = (*entry + MAKEUP_WARM).min(MEETS_CAP);
+        }
+    }
+
     /// 居民退休（壽命到期）時呼叫：清掉所有牽涉該 id 的條目，避免帳目無限堆積。
     pub fn forget(&mut self, id: &str) {
         self.meets.retain(|(a, b), _| a != id && b != id);
+        self.sulking.retain(|(a, b)| a != id && b != id);
     }
 
     /// 目前記錄的居民對數（測試／除錯用）。
     pub fn pair_count(&self) -> usize {
         self.meets.len()
+    }
+
+    /// 目前正在鬧彆扭的居民對數（測試／除錯用）。
+    pub fn sulking_count(&self) -> usize {
+        self.sulking.len()
     }
 }
 
@@ -166,5 +212,76 @@ mod tests {
         let mut b = ResidentBonds::new();
         assert_eq!(b.record_meeting("resident_3", "resident_3"), NeighborTier::Stranger);
         assert_eq!(b.pair_count(), 0);
+    }
+
+    // ── ROADMAP 559：鬧彆扭與和好 ──────────────────────────────────────────────
+
+    #[test]
+    fn tiff_then_makeup_cycle() {
+        let mut b = ResidentBonds::new();
+        // 先處成老鄰居（4 次相遇）
+        for _ in 0..FRIEND_MEETS {
+            b.record_meeting("resident_0", "resident_1");
+        }
+        assert_eq!(b.tier_of("resident_0", "resident_1"), NeighborTier::Friend);
+        assert!(!b.is_sulking("resident_0", "resident_1"));
+        // 鬧彆扭：標記彆扭中、仍是老鄰居（不掉階）
+        b.begin_tiff("resident_0", "resident_1");
+        assert!(b.is_sulking("resident_0", "resident_1"));
+        assert_eq!(b.tier_of("resident_0", "resident_1"), NeighborTier::Friend);
+        assert_eq!(b.sulking_count(), 1);
+        // 和好：解除彆扭、交情回暖一格
+        b.make_up("resident_0", "resident_1");
+        assert!(!b.is_sulking("resident_0", "resident_1"));
+        assert_eq!(b.sulking_count(), 0);
+        assert_eq!(b.meets_between("resident_0", "resident_1"), MEETS_CAP); // 4→cool 4→makeup 5
+    }
+
+    #[test]
+    fn tiff_and_makeup_are_symmetric() {
+        let mut b = ResidentBonds::new();
+        for _ in 0..FRIEND_MEETS {
+            b.record_meeting("resident_2", "resident_5");
+        }
+        // 反序開彆扭、反序查詢與和好都指同一筆
+        b.begin_tiff("resident_5", "resident_2");
+        assert!(b.is_sulking("resident_2", "resident_5"));
+        b.make_up("resident_2", "resident_5");
+        assert!(!b.is_sulking("resident_5", "resident_2"));
+        assert_eq!(b.sulking_count(), 0);
+    }
+
+    #[test]
+    fn makeup_without_tiff_is_noop() {
+        let mut b = ResidentBonds::new();
+        for _ in 0..FRIEND_MEETS {
+            b.record_meeting("resident_0", "resident_1");
+        }
+        // 沒在彆扭就和好＝不動交情、不憑空回暖
+        b.make_up("resident_0", "resident_1");
+        assert_eq!(b.meets_between("resident_0", "resident_1"), FRIEND_MEETS);
+        assert_eq!(b.sulking_count(), 0);
+    }
+
+    #[test]
+    fn forget_clears_sulking_entries() {
+        let mut b = ResidentBonds::new();
+        for _ in 0..FRIEND_MEETS {
+            b.record_meeting("resident_0", "resident_1");
+        }
+        b.begin_tiff("resident_0", "resident_1");
+        assert_eq!(b.sulking_count(), 1);
+        // 其中一位退休：彆扭記錄也該一併清掉，避免退休 id 的帳目殘留
+        b.forget("resident_0");
+        assert_eq!(b.sulking_count(), 0);
+        assert!(!b.is_sulking("resident_0", "resident_1"));
+    }
+
+    #[test]
+    fn self_pair_tiff_makeup_ignored() {
+        let mut b = ResidentBonds::new();
+        b.begin_tiff("resident_3", "resident_3");
+        b.make_up("resident_3", "resident_3");
+        assert_eq!(b.sulking_count(), 0);
     }
 }
