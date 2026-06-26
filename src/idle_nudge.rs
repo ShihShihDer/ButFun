@@ -26,6 +26,8 @@ pub enum Nudge {
     Rest,
     /// 入夜且站在水邊——夜釣正是時候。
     NightFish,
+    /// 入夜、城外乙太泉正湧現——去汲泉，把「夜裡只能等」變成具體可做的事。
+    NightSpring,
     /// 入夜、手邊沒急事——抬頭看看星空、放鬆一下，等天明。
     NightStargaze,
     /// 白天站在水邊閒著——何不垂釣片刻。
@@ -40,6 +42,7 @@ impl Nudge {
             Nudge::ClaimLand => "claim_land",
             Nudge::Rest => "rest",
             Nudge::NightFish => "night_fish",
+            Nudge::NightSpring => "night_spring",
             Nudge::NightStargaze => "night_stargaze",
             Nudge::Fish => "fish",
         }
@@ -63,6 +66,9 @@ pub struct NudgeCtx {
     pub is_nightish: bool,
     /// 是否站在水邊（可垂釣）。
     pub near_water: bool,
+    /// 城外夜間乙太泉是否正湧現且尚有未採的泉（ROADMAP 162/362；入夜時把提示
+    /// 從被動看星空升級成「去汲泉」這個具體主動目標）。
+    pub night_springs_active: bool,
 }
 
 /// 視為「血量偏低」的比例門檻（低於上限這個比例才提醒歇息回血）。
@@ -75,9 +81,10 @@ pub const LOW_HP_FRAC: f32 = 0.35;
 ///   2. 還沒有田 → 先引導落腳開墾（這是核心循環的起點）
 ///   3. 血量偏低 → 提醒歇息回血
 ///   4. 入夜且在水邊 → 夜釣
-///   5. 入夜 → 看星空放鬆（夜間留存的主場提示）
-///   6. 白天在水邊 → 垂釣
-///   7. 其餘（白天、有田、血足、不在水邊、沒在忙）→ None（玩家多半正照料農事，不需提示）
+///   5. 入夜且乙太泉湧現 → 去城外汲泉（夜間「具體可做的事」優先於被動看星空）
+///   6. 入夜 → 看星空放鬆（夜間留存的後備提示）
+///   7. 白天在水邊 → 垂釣
+///   8. 其餘（白天、有田、血足、不在水邊、沒在忙）→ None（玩家多半正照料農事，不需提示）
 pub fn suggest(ctx: &NudgeCtx) -> Option<Nudge> {
     // 引導讓位、進行中互動不打斷、倒地不催促。
     if ctx.onboarding_active || ctx.busy || ctx.downed {
@@ -91,6 +98,11 @@ pub fn suggest(ctx: &NudgeCtx) -> Option<Nudge> {
     }
     if ctx.is_nightish && ctx.near_water {
         return Some(Nudge::NightFish);
+    }
+    // 入夜時若城外乙太泉正湧現，給「去汲泉」這個具體主動目標，凌駕被動的看星空——
+    // 正面回應建議箱裡「夜裡只能等待／觀察、沒事可做」的最高頻呼聲。
+    if ctx.is_nightish && ctx.night_springs_active {
+        return Some(Nudge::NightSpring);
     }
     if ctx.is_nightish {
         return Some(Nudge::NightStargaze);
@@ -185,14 +197,47 @@ mod tests {
         assert_eq!(suggest(&ctx), Some(Nudge::NightFish));
     }
 
-    /// 入夜但不在水邊 → 看星空（夜間留存主場提示）。
+    /// 入夜、不在水邊、乙太泉沒湧現 → 看星空（夜間後備提示）。
     #[test]
-    fn night_inland_suggests_stargaze() {
+    fn night_inland_no_springs_suggests_stargaze() {
         let ctx = NudgeCtx {
             is_nightish: true,
             ..Default::default()
         };
         assert_eq!(suggest(&ctx), Some(Nudge::NightStargaze));
+    }
+
+    /// 入夜、不在水邊、乙太泉湧現 → 去汲泉（具體主動目標，凌駕被動看星空）。
+    #[test]
+    fn night_inland_with_springs_suggests_spring() {
+        let ctx = NudgeCtx {
+            is_nightish: true,
+            night_springs_active: true,
+            ..Default::default()
+        };
+        assert_eq!(suggest(&ctx), Some(Nudge::NightSpring));
+    }
+
+    /// 入夜且在水邊時，夜釣優先於汲泉（人已在水邊，就近垂釣最自然）。
+    #[test]
+    fn night_near_water_beats_spring() {
+        let ctx = NudgeCtx {
+            is_nightish: true,
+            near_water: true,
+            night_springs_active: true,
+            ..Default::default()
+        };
+        assert_eq!(suggest(&ctx), Some(Nudge::NightFish));
+    }
+
+    /// 白天即使乙太泉旗標為真（不該發生，泉只夜裡湧現）也不提示汲泉——汲泉純屬夜間情境。
+    #[test]
+    fn daytime_springs_flag_does_not_suggest_spring() {
+        let ctx = NudgeCtx {
+            night_springs_active: true,
+            ..Default::default()
+        };
+        assert_eq!(suggest(&ctx), None);
     }
 
     /// 白天在水邊閒著 → 垂釣。
@@ -212,11 +257,15 @@ mod tests {
             Nudge::ClaimLand,
             Nudge::Rest,
             Nudge::NightFish,
+            Nudge::NightSpring,
             Nudge::NightStargaze,
             Nudge::Fish,
         ];
         let keys: Vec<&str> = all.iter().map(|n| n.wire_key()).collect();
-        assert_eq!(keys, ["claim_land", "rest", "night_fish", "night_stargaze", "fish"]);
+        assert_eq!(
+            keys,
+            ["claim_land", "rest", "night_fish", "night_spring", "night_stargaze", "fish"]
+        );
         let uniq: std::collections::BTreeSet<&str> = keys.iter().copied().collect();
         assert_eq!(uniq.len(), keys.len(), "wire key 不可重複");
     }

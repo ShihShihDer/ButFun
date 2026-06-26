@@ -4537,6 +4537,11 @@ pub fn spawn(app: AppState) {
                         }
                     }
 
+                    // ROADMAP 426 深化：城外夜間乙太泉（162/362）是否正湧現且尚有未採的泉。
+                    // 即取即放（守 prod-deadlock，與上方 traveler/residents 讀鎖同模式），算成一個
+                    // 布林快照供下方 per-player 情境提示共用——不在 per-player 迴圈裡重複上鎖。
+                    let night_springs_active = app.night_springs.read().unwrap().has_uncollected();
+
                     ServerMsg::Snapshot {
                         tick,
                         players: players.values().map(|p| {
@@ -4567,6 +4572,7 @@ pub fn spawn(app: AppState) {
                                     < (p.vitals.max_hp() as f32) * crate::idle_nudge::LOW_HP_FRAC,
                                 is_nightish: is_night || is_dusk,
                                 near_water: crate::fishing::is_near_water(p.x, p.y),
+                                night_springs_active,
                             };
                             pv.idle_nudge =
                                 crate::idle_nudge::suggest(&nudge_ctx).map(|n| n.wire_key().to_string());
