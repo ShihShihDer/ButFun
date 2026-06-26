@@ -1,19 +1,34 @@
-// ButFun — /3d/ Three.js spike
-// 目標：維護者開一個網址，立刻看到「現在這個 2D 世界」在 3D 裡動（玩家／NPC 在跑、地形在）。
-// 求「看得到、會動」，不求完整或精緻。
+// ButFun — /3d/ 可操控的真實世界 3D 客戶端
+// 目標：維護者（手機也行）開這個網址 → 以一個「真正的玩家」身分加入**真實 ButFun 世界** →
+//        用搖桿／WASD 操控自己的角色在 live 世界裡走動（旁邊有真實的 NPC、敵人、其他玩家、
+//        節點地形）→ 第三人稱鏡頭跟著自己。從「繞著看」升級成「在裡面走」。
 //
 // 核心原則（與 2D 遊戲井水不犯河水）：
-//   - 完全不改後端、不改 world-core、不改 web/game.js。後端是 2D 權威，
-//     3D 只是「前端多一層讀同一份 WebSocket 快照來畫」。Z（高度）在前端補。
-//   - 連線/加入/解析快照的邏輯，是把 web/game.js 的對應段「鏡像」成精簡唯讀版
-//     （不 import 它、自己寫），只連線觀察、不送任何輸入。
+//   - 伺服器是 2D 權威：完全不改後端／world-core／web/game.js／play3d。
+//     這頁只是「前端多一層讀同一份 WebSocket 快照來畫，並送 Input 表達移動意圖」。
+//   - 加入／送 Input／找出自己，都是把 web/game.js 的對應協議「鏡像」成精簡版（不 import）：
+//       · 加入：onopen 送 {type:"join", name, species}（訪客即可動，伺服器不擋訪客 Input）。
+//       · 移動：搖桿／按鍵 → 換算成「相對鏡頭」的移動意圖 → 對應成世界四向布林 →
+//               送 {type:"input", up,down,left,right,run}；自己的位置以伺服器回來的快照為準。
+//       · 找出自己：welcome 給的 msg.id 當 myId，快照裡 players.find(p => p.id === myId)。
+//   - 跳躍：伺服器是 2D 的，跳只是**前端視覺**（本地高度，cosmetic），不影響玩法。已標註。
 //   - 沒風格的風格：實體全用盒子／膠囊／低多邊形程式生成，零美術資產。
 
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-// ---- 狀態浮層（連不上 / 沒資料時要看得到字，不白屏）----
+// ---- 錯誤浮層：任何例外不白屏，把訊息顯示出來（紅字）----
+const errEl = document.getElementById("err");
+function showErr(msg) {
+  if (!errEl) return;
+  errEl.style.display = "flex";
+  errEl.textContent = "出錯了，但不白屏：\n" + msg;
+}
+window.addEventListener("error", (e) => showErr(e.message || String(e.error || e)));
+window.addEventListener("unhandledrejection", (e) => showErr(String(e.reason)));
+
+// ---- 浮層：狀態（連線／找不到自己）＋ HUD（線上人數／自己名字／提示）----
 const statusEl = document.getElementById("status");
+const hudEl = document.getElementById("hud");
 function setStatus(text, isErr = false) {
   if (!statusEl) return;
   statusEl.textContent = text;
@@ -23,7 +38,8 @@ function setStatus(text, isErr = false) {
 // ---- 世界座標 → 3D 場景座標 ----
 // 後端世界是 6000×6000 像素（見 state.rs WORLD_WIDTH/HEIGHT），TILE_PX=32。
 // Three.js 的 y 軸朝上，世界的 (x, y) 對應 3D 的 (x, z)：position = (x, 高度, y)。
-// 縮放把 6000px 壓到約 300 個場景單位，並以世界中心為原點（鏡頭好擺、地面好對齊）。
+// 縮放把 6000px 壓到約 300 個場景單位，並以世界中心為原點。
+// 軸向對應（操控換算會用到）：3D +x = 世界 right(+x)；3D +z = 世界 down(+y)。
 const WORLD_SCALE = 0.05;
 let worldW = 6000, worldH = 6000; // 收到 welcome.world 會以權威值覆蓋
 const worldCenter = { x: worldW / 2, y: worldH / 2 };
@@ -36,8 +52,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0d1117);
 scene.fog = new THREE.Fog(0x0d1117, 250, 600);
 
-const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 2000);
-camera.position.set(0, 160, 200);
+const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.5, 2000);
+camera.position.set(0, 60, 80);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -45,20 +61,13 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 app.appendChild(renderer.domElement);
 
-// OrbitControls：讓維護者用滑鼠／手指繞著看（手機觸控可轉可縮）
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.maxPolarAngle = Math.PI * 0.49; // 不要轉到地平線以下
-controls.target.set(0, 0, 0);
-
 // 燈光：半球光給柔和環境色 + 一盞方向光給立體感
 scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x20303a, 1.1));
 const sun = new THREE.DirectionalLight(0xffffff, 1.2);
 sun.position.set(120, 200, 80);
 scene.add(sun);
 
-// 地面：一塊草綠平面 + 格線，給尺度感（biome 上色 spike 階段先略，保持簡單）
+// 地面：一塊草綠平面 + 格線，給尺度感
 {
   const size = worldW * WORLD_SCALE;
   const ground = new THREE.Mesh(
@@ -95,7 +104,6 @@ function makeLabel(text) {
 }
 
 // ---- 實體 mesh 工廠（低多邊形）----
-// 各類用不同形狀／顏色，一眼分得出玩家／NPC／野生動物／敵人／採集節點。
 const SELF_COLOR = 0xffd54a;     // 自己：金色膠囊
 const PLAYER_COLOR = 0x4aa3ff;   // 其他玩家：藍色膠囊
 const NPC_COLOR = 0xd8b070;      // NPC：暖棕盒子
@@ -159,14 +167,11 @@ const nodes = new Map(); // key 用座標字串（節點無穩定 id）
 
 let myId = null;
 let snapshotCount = 0;
-let centeredOnce = false;
+let firstFollowDone = false;
+let missingSelfWarned = false;
 
-// 通用 reconcile：依快照陣列建立／更新／移除某一類實體。
-//   list      ：快照裡的陣列
-//   map       ：對應的 Map
-//   keyOf     ：算每筆的 key
-//   create    ：(item) => group（新實體首次出現時造 mesh）
-//   每筆都包 try/catch：單筆資料壞掉不該讓整個 render 掛掉。
+// 通用 reconcile：依快照陣列建立／更新／移除某一類實體。每筆都包 try/catch，
+// 單筆資料壞掉不該讓整個 render 掛掉。
 function reconcile(list, map, keyOf, create) {
   const seen = new Set();
   if (Array.isArray(list)) {
@@ -177,16 +182,13 @@ function reconcile(list, map, keyOf, create) {
         seen.add(key);
         let g = map.get(key);
         if (!g) { g = create(item); map.set(key, g); }
-        // 更新內插目標（位置平滑由 render loop 完成）
         g.userData.tx = sx(item.x);
         g.userData.tz = sz(item.y);
       } catch (e) {
-        // 防呆：略過這一筆，繼續處理其他實體
         console.warn("reconcile 單筆失敗，已略過", e);
       }
     }
   }
-  // 移除這次快照沒出現的（實體消失 → 移除 mesh）
   for (const [key, g] of map) {
     if (!seen.has(key)) { scene.remove(g); map.delete(key); }
   }
@@ -196,13 +198,13 @@ function reconcile(list, map, keyOf, create) {
 function handleServerMsg(msg) {
   switch (msg.type) {
     case "welcome":
-      // 自己的 id（用來把自己畫成金色）＋ 世界尺寸（對齊地面與鏡頭）
+      // 自己的 id（用來把自己畫成金色＋鏡頭跟隨）＋ 世界尺寸（對齊地面與鏡頭）
       myId = msg.id;
       if (msg.world && typeof msg.world.width === "number") {
         worldW = msg.world.width; worldH = msg.world.height;
         worldCenter.x = worldW / 2; worldCenter.y = worldH / 2;
       }
-      setStatus("已連上，等待世界快照…");
+      setStatus("已以玩家身分加入，等待世界快照…");
       break;
     case "snapshot": {
       snapshotCount++;
@@ -235,37 +237,219 @@ function handleServerMsg(msg) {
       reconcile(
         msg.nodes, nodes,
         (n) => n.kind + "@" + Math.round(n.x) + "," + Math.round(n.y),
-        (n) => { const g = makeNode(n.kind); return g; }
+        (n) => makeNode(n.kind)
       );
 
-      // 首次收到有玩家的快照時，把鏡頭對準玩家群的重心（之後交給使用者自由繞看）
-      if (!centeredOnce && players.size > 0) {
-        let cx = 0, cz = 0, k = 0;
-        for (const g of players.values()) { cx += g.userData.tx; cz += g.userData.tz; k++; }
-        if (k > 0) {
-          controls.target.set(cx / k, 0, cz / k);
-          camera.position.set(cx / k, 140, cz / k + 160);
-          centeredOnce = true;
+      // 找出「自己」：快照裡 id === myId 的那個玩家。沒找到就提示（不白屏）。
+      const meGroup = myId ? players.get(myId) : null;
+      if (meGroup) {
+        // 第一份含自己的快照：把鏡頭直接吸到自己身上（之後交給跟隨鏡頭平滑跟）
+        if (!firstFollowDone) {
+          camera.position.set(meGroup.userData.tx, 60, meGroup.userData.tz + 70);
+          firstFollowDone = true;
         }
+        missingSelfWarned = false;
+      } else if (myId && snapshotCount > 3 && !missingSelfWarned) {
+        missingSelfWarned = true;
+        setStatus("已連上，但在快照裡找不到自己（myId=" + myId + "）。\n世界仍在顯示，移動可能未生效。", true);
       }
 
-      const total = players.size + npcs.size + wildlife.size + enemies.size;
+      // HUD：線上人數／自己名字／操作提示
+      const meItem = Array.isArray(msg.players) ? msg.players.find((p) => p.id === myId) : null;
+      const myName = meItem ? (meItem.name || "玩家") : "（加入中…）";
+      hudEl.innerHTML =
+        `<b>${myName}</b> · 線上 ${players.size} 人\n` +
+        `NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size}\n` +
+        `${isTouch ? "搖桿移動 · 右側拖曳轉鏡頭 · 跳鈕跳" : "WASD 移動 · 拖曳轉鏡頭 · 空白鍵跳"}`;
+
       setStatus(
-        `世界已連上 · 快照 #${snapshotCount}\n` +
-        `玩家 ${players.size} · NPC ${npcs.size} · 野生 ${wildlife.size} · 敵人 ${enemies.size} · 節點 ${nodes.size}` +
-        (total === 0 ? "\n（目前世界上沒有可見實體，地形仍在）" : "")
+        `真實世界已連上 · 快照 #${snapshotCount}` +
+        (meGroup ? "（鏡頭跟著你）" : "")
       );
       break;
     }
     default:
-      // 其他訊息類型（聊天、各種事件…）3D spike 不需要，忽略
+      // 其他訊息類型（聊天、各種事件…）這頁不需要，忽略
       break;
   }
 }
 
-// ---- WebSocket 連線（鏡像 game.js：same-origin、/ws、訪客即連觀察）----
-// game.js 的連線流程：proto 視 https 決定 wss/ws → new WebSocket(`${proto}://${host}/ws`)
-//   → onopen 送 {type:"join", name, species}。這裡走最省事的訪客路徑、只觀察、不送輸入。
+// ============================================================
+// 操控：鍵盤 + 搖桿 → 相對鏡頭的移動意圖 → 世界四向布林 → 送 Input
+// ============================================================
+// inputKeys：目前要送給伺服器的方向意圖（與 game.js 的 input 協議同形）。
+const inputKeys = { up: false, down: false, left: false, right: false, run: false };
+let lastSentInput = "";        // 與 game.js 一樣：只在意圖改變時送，省流量
+const heldKeys = Object.create(null); // 鍵盤方向意圖（up/down/left/right）
+let runHeld = false;           // Shift 跑
+const joy = { active: false, x: 0, y: 0 }; // 搖桿輸出 [-1,1]，x=右、y=下
+
+// 鏡頭角度（第三人稱）：camYaw 一開始把鏡頭擺在 +z（世界往下方）看向自己。
+let camYaw = 0;
+let camPitch = 0.6;
+const PITCH_MIN = 0.18, PITCH_MAX = 1.25;
+let camDist = 70;
+const DIST_MIN = 24, DIST_MAX = 160;
+
+// 跳躍（純前端視覺，cosmetic）：只給自己的膠囊本地補一個垂直 bob，不影響伺服器 2D 玩法。
+let jumpZ = 0;        // 視覺高度（場景單位）
+let jumpV = 0;        // 視覺垂直速度
+let wantJump = false; // 這一幀有沒有按跳
+const JUMP_V = 26, JUMP_G = 70; // 視覺跳的初速／重力（純好看）
+
+// ---- 鍵盤（桌機）----
+function keyToDir(e) {
+  switch (e.code) {
+    case "KeyW": case "ArrowUp": return "up";
+    case "KeyS": case "ArrowDown": return "down";
+    case "KeyA": case "ArrowLeft": return "left";
+    case "KeyD": case "ArrowRight": return "right";
+  }
+  return null;
+}
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { wantJump = true; e.preventDefault(); return; }
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") { runHeld = true; return; }
+  const dir = keyToDir(e);
+  if (dir) { heldKeys[dir] = true; e.preventDefault(); }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code === "ShiftLeft" || e.code === "ShiftRight") { runHeld = false; return; }
+  const dir = keyToDir(e);
+  if (dir) heldKeys[dir] = false;
+});
+
+// ---- 滑鼠拖曳轉鏡頭（桌機）----
+let dragging = false, lastMX = 0, lastMY = 0;
+renderer.domElement.addEventListener("mousedown", (e) => {
+  dragging = true; lastMX = e.clientX; lastMY = e.clientY;
+});
+window.addEventListener("mouseup", () => { dragging = false; });
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  camYaw -= (e.clientX - lastMX) * 0.005;
+  camPitch += (e.clientY - lastMY) * 0.005;
+  camPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camPitch));
+  lastMX = e.clientX; lastMY = e.clientY;
+});
+// 滾輪縮放（桌機）：調整第三人稱距離
+renderer.domElement.addEventListener("wheel", (e) => {
+  camDist = Math.max(DIST_MIN, Math.min(DIST_MAX, camDist + e.deltaY * 0.05));
+  e.preventDefault();
+}, { passive: false });
+
+// ---- 觸控：偵測到觸控裝置就顯示搖桿/跳鈕（沿用 play3d 的控制法）----
+const isTouch = ("ontouchstart" in window) || (navigator.maxTouchPoints > 0);
+if (isTouch) {
+  const touchUI = document.getElementById("touch");
+  if (touchUI) touchUI.style.display = "block";
+
+  // 左下虛擬搖桿
+  const joyEl = document.getElementById("joy");
+  const nubEl = document.getElementById("joyNub");
+  let joyId = null;
+  const JOY_R = 35; // 旋鈕可移動半徑（px）
+  function joyStart(t) { joyId = t.identifier; joy.active = true; joyMove(t); }
+  function joyMove(t) {
+    const r = joyEl.getBoundingClientRect();
+    let dx = t.clientX - (r.left + r.width / 2);
+    let dy = t.clientY - (r.top + r.height / 2);
+    const len = Math.hypot(dx, dy) || 1;
+    const clamped = Math.min(len, JOY_R);
+    const nx = (dx / len), ny = (dy / len);
+    nubEl.style.left = (35 + nx * clamped) + "px";
+    nubEl.style.top = (35 + ny * clamped) + "px";
+    joy.x = nx * (clamped / JOY_R);
+    joy.y = ny * (clamped / JOY_R);
+  }
+  function joyEnd() {
+    joyId = null; joy.active = false; joy.x = 0; joy.y = 0;
+    nubEl.style.left = "35px"; nubEl.style.top = "35px";
+  }
+  joyEl.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    if (joyId === null) joyStart(e.changedTouches[0]);
+  }, { passive: false });
+  joyEl.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) if (t.identifier === joyId) joyMove(t);
+  }, { passive: false });
+  joyEl.addEventListener("touchend", (e) => {
+    for (const t of e.changedTouches) if (t.identifier === joyId) joyEnd();
+  });
+  joyEl.addEventListener("touchcancel", joyEnd);
+
+  // 右下跳躍鈕
+  const jumpEl = document.getElementById("jump");
+  jumpEl.addEventListener("touchstart", (e) => { e.preventDefault(); wantJump = true; }, { passive: false });
+
+  // 右半邊拖曳轉鏡頭（避開搖桿/跳鈕；用 identifier 同時並存）
+  let camId = null, camLX = 0, camLY = 0;
+  function isOnUI(t) {
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    return el && (el.closest("#joy") || el.closest("#jump"));
+  }
+  window.addEventListener("touchstart", (e) => {
+    if (camId !== null) return;
+    for (const t of e.changedTouches) {
+      if (isOnUI(t)) continue;
+      camId = t.identifier; camLX = t.clientX; camLY = t.clientY; break;
+    }
+  }, { passive: true });
+  window.addEventListener("touchmove", (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== camId) continue;
+      camYaw -= (t.clientX - camLX) * 0.006;
+      camPitch += (t.clientY - camLY) * 0.006;
+      camPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, camPitch));
+      camLX = t.clientX; camLY = t.clientY;
+    }
+  }, { passive: true });
+  window.addEventListener("touchend", (e) => {
+    for (const t of e.changedTouches) if (t.identifier === camId) camId = null;
+  });
+}
+
+// 把搖桿／按鍵的「相對鏡頭移動意圖」換算成世界四向布林，並在改變時送 Input。
+//   1) 收集 inF（前/後）inR（左/右），來自鍵盤與搖桿。
+//   2) 用 camYaw 把它投影成 3D 世界平面方向 (mx, mz)。
+//   3) 3D +x = 世界 right、3D +z = 世界 down(+y) → 換成 up/down/left/right 布林。
+// 伺服器只認四向布林（每 tick 整合位置），故 8 向意圖會被量化成最接近的四向組合。
+function updateInput() {
+  let inF = 0, inR = 0;
+  if (heldKeys.up) inF += 1;
+  if (heldKeys.down) inF -= 1;
+  if (heldKeys.right) inR += 1;
+  if (heldKeys.left) inR -= 1;
+  if (joy.active) { inF += -joy.y; inR += joy.x; } // 搖桿上＝前進
+  const inLen = Math.hypot(inF, inR);
+  if (inLen > 1) { inF /= inLen; inR /= inLen; }
+
+  // 鏡頭朝向投影到地面：forward 指向鏡頭看出去的方向
+  const fwdX = -Math.sin(camYaw), fwdZ = -Math.cos(camYaw);
+  const rightX = -fwdZ, rightZ = fwdX;
+  const mx = fwdX * inF + rightX * inR; // 3D x 分量（=世界 x）
+  const mz = fwdZ * inF + rightZ * inR; // 3D z 分量（=世界 y）
+
+  // 量化成四向布林（門檻避免微小漂移誤觸）
+  const TH = 0.35;
+  inputKeys.right = mx > TH;
+  inputKeys.left = mx < -TH;
+  inputKeys.down = mz > TH;   // 3D +z = 世界 +y = 「下」
+  inputKeys.up = mz < -TH;    // 3D -z = 世界 -y = 「上」
+  inputKeys.run = runHeld || (joy.active && inLen > 0.92); // 搖桿推到底＝跑
+
+  // 只在意圖改變時送（鏡像 game.js sendInputIfChanged）
+  const sig = `${inputKeys.up}${inputKeys.down}${inputKeys.left}${inputKeys.right}${inputKeys.run}`;
+  if (sig !== lastSentInput && ws && ws.readyState === WebSocket.OPEN) {
+    lastSentInput = sig;
+    ws.send(JSON.stringify({ type: "input", ...inputKeys }));
+  }
+}
+
+// ============================================================
+// WebSocket 連線（鏡像 game.js：same-origin、/ws、join 後送 Input）
+// ============================================================
 let ws = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -282,25 +466,19 @@ function connect() {
 
   ws.onopen = () => {
     reconnectAttempts = 0;
-    // 訪客身分加入、唯讀觀察（伺服器允許訪客即連，名字／物種只是顯示用）
-    ws.send(JSON.stringify({ type: "join", name: "3D觀察者", species: "terran" }));
+    // 以玩家身分加入（訪客即可動：伺服器不擋訪客 Input）。名字／物種只是顯示用。
+    ws.send(JSON.stringify({ type: "join", name: "3D玩家", species: "terran" }));
     setStatus("已加入，等待世界快照…");
+    // 重連後清掉上次的 input 簽章，下一幀 updateInput 會把意圖重送給新連線
+    lastSentInput = "";
   };
 
   ws.onmessage = (ev) => {
     let msg;
-    try {
-      msg = JSON.parse(ev.data);
-    } catch {
-      // 後端有些世界事件走純字串（非 JSON），3D spike 直接忽略
-      return;
-    }
-    try {
-      handleServerMsg(msg);
-    } catch (e) {
-      // 韌性：處理單則訊息出錯不該讓連線或 render 掛掉
-      console.warn("handleServerMsg 失敗", e);
-    }
+    try { msg = JSON.parse(ev.data); }
+    catch { return; } // 後端有些世界事件走純字串（非 JSON），忽略
+    try { handleServerMsg(msg); }
+    catch (e) { console.warn("handleServerMsg 失敗", e); }
   };
 
   ws.onclose = () => {
@@ -318,10 +496,13 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
 }
 
-// ---- Render loop ----
+// ============================================================
+// Render loop
+// ============================================================
 const clock = new THREE.Clock();
-function lerpEntities(map, k) {
-  for (const g of map.values()) {
+function lerpEntities(map, k, skipKey) {
+  for (const [key, g] of map) {
+    if (skipKey !== undefined && key === skipKey) continue; // 自己另外處理（要疊視覺跳）
     g.position.x += (g.userData.tx - g.position.x) * k;
     g.position.z += (g.userData.tz - g.position.z) * k;
   }
@@ -330,20 +511,49 @@ function lerpEntities(map, k) {
 function safeRender() {
   requestAnimationFrame(safeRender);
   try {
-    const dt = clock.getDelta();
+    const dt = Math.min(0.05, clock.getDelta());
+    // 每幀把目前操控意圖換算並（在改變時）送出
+    updateInput();
+
+    // 視覺跳（cosmetic）：只動自己膠囊的本地高度，不送伺服器
+    if (wantJump && jumpZ <= 0.01) { jumpV = JUMP_V; }
+    wantJump = false;
+    if (jumpV !== 0 || jumpZ > 0) {
+      jumpV -= JUMP_G * dt;
+      jumpZ += jumpV * dt;
+      if (jumpZ < 0) { jumpZ = 0; jumpV = 0; }
+    }
+
     // 內插係數隨幀時間調整，不同更新率都平滑（採目標 ~8/s 收斂）
     const k = Math.min(1, dt * 8);
-    lerpEntities(players, k);
+    const meGroup = myId ? players.get(myId) : null;
+    lerpEntities(players, k, myId);
     lerpEntities(npcs, k);
     lerpEntities(wildlife, k);
     lerpEntities(enemies, k);
-    // 節點是靜態地形物：直接吸附到目標座標（k=1），新節點進來立即就位
-    lerpEntities(nodes, 1);
-    controls.update();
+    lerpEntities(nodes, 1); // 節點靜態：直接吸附
+
+    // 自己：位置以伺服器快照為準（內插），再疊上視覺跳的高度
+    if (meGroup) {
+      meGroup.position.x += (meGroup.userData.tx - meGroup.position.x) * k;
+      meGroup.position.z += (meGroup.userData.tz - meGroup.position.z) * k;
+      meGroup.position.y = jumpZ;
+
+      // 第三人稱跟隨鏡頭：在自己後方、平滑 lerp
+      const cx = Math.sin(camYaw) * Math.cos(camPitch) * camDist;
+      const cz = Math.cos(camYaw) * Math.cos(camPitch) * camDist;
+      const cy = Math.sin(camPitch) * camDist + 8;
+      const tx = meGroup.position.x, ty = meGroup.position.y + 6, tz = meGroup.position.z;
+      const desired = new THREE.Vector3(tx + cx, ty + cy, tz + cz);
+      camera.position.lerp(desired, Math.min(1, dt * 6));
+      camera.lookAt(tx, ty, tz);
+    }
+
     renderer.render(scene, camera);
   } catch (e) {
     // 護網：render 任一例外不該永久凍住畫面（rAF 已先排好下一幀）
     console.error("render 例外，已跳過本幀", e);
+    showErr(String(e && e.message ? e.message : e));
   }
 }
 
