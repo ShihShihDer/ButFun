@@ -1624,6 +1624,10 @@ pub fn spawn(app: AppState) {
                     if p.comfort_cooldown > 0.0 {
                         p.comfort_cooldown = (p.comfort_cooldown - dt).max(0.0);
                     }
+                    // 領受居民回禮療傷冷卻倒數（ROADMAP 556：深交居民見你帶傷反過來關心你）。
+                    if p.care_cooldown > 0.0 {
+                        p.care_cooldown = (p.care_cooldown - dt).max(0.0);
+                    }
                     // 星際貿易路線冷卻倒數（ROADMAP 51）。
                     crate::trade_route::tick_cooldowns(&mut p.trade_cooldowns, dt);
                     // 工匠工坊訂單計時（ROADMAP 52）。
