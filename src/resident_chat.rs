@@ -301,6 +301,23 @@ static REPLY_FRIEND: &[&str] = &[
     "🤝 好嘞，回頭上你那兒坐！",
 ];
 
+// ── 老鄰居結伴同行招呼（ROADMAP 558）─────────────────────────────────────────────
+/// 老鄰居起意結伴時、領路者向對方發出的邀約（帶對方名字）。
+static STROLL_INVITE: &[&str] = &[
+    "🚶 {other}，難得碰上，陪我繞村子走兩圈唄？",
+    "🚶 走，{other}，咱倆一塊兒溜達溜達！",
+    "🚶 {other}，正悶得慌，跟我串串門子去？",
+    "🚶 來嘛{other}，老地方走一遭，邊走邊嘮！",
+];
+
+/// 被邀約的老鄰居應約一起走。
+static STROLL_ACCEPT: &[&str] = &[
+    "🚶 成啊，走著！",
+    "🚶 好咧，正想活動活動腿腳！",
+    "🚶 跟你走哪兒都樂意～",
+    "🚶 那還等啥，前頭帶路！",
+];
+
 // ── 主要 NPC 白天招呼模板（ROADMAP 244） ───────────────────────────────────────────
 
 /// 主要 NPC 向路過居民主動招呼（帶居民名字）
@@ -425,6 +442,16 @@ pub fn get_neighbor_greet_tiered(
         Stranger => GREET_TEMPLATES,
     };
     pool[seed % pool.len()].replace("{other}", other_name)
+}
+
+/// 老鄰居結伴同行時、領路者向對方發出的邀約文字（ROADMAP 558）。
+pub fn get_neighbor_stroll_invite(other_name: &str, seed: usize) -> String {
+    STROLL_INVITE[seed % STROLL_INVITE.len()].replace("{other}", other_name)
+}
+
+/// 老鄰居結伴同行時、被邀者的應約文字（ROADMAP 558）。
+pub fn get_neighbor_stroll_accept(seed: usize) -> &'static str {
+    STROLL_ACCEPT[seed % STROLL_ACCEPT.len()]
 }
 
 /// 依鄰里熟識階層取得居民對招呼的回應文字（ROADMAP 557）。

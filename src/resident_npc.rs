@@ -294,6 +294,51 @@ pub const CHAT_DURATION: f32 = 8.0;
 /// 每位居民每次互動後的冷卻時間（秒）= 3 分鐘。
 pub const CHAT_COOLDOWN: f32 = 180.0;
 
+// ── 老鄰居結伴同行常數（ROADMAP 558）──────────────────────────────────────────
+/// 一次結伴同行的持續秒數：兩位老鄰居並肩溜達這麼久後自然散夥。
+pub const COMPANION_DURATION: f32 = 16.0;
+/// 跟隨者與領路者並肩時保留的身位間距（像素），免得疊在一起。
+pub const COMPANION_SIDE_GAP: f32 = 28.0;
+/// 結伴拉開到這個距離（像素）就散夥——避難/換時段把兩人扯遠時，自動斷開不硬黏。
+pub const COMPANION_MAX_SEP: f32 = 220.0;
+
+/// 老鄰居偶爾起意「結伴同行」：只有老鄰居階層、且依雙方種子確定性中籤（約三次相遇取一）才結伴。
+/// 純函式、確定性、好測。
+pub fn should_start_stroll(
+    tier: crate::resident_bonds::NeighborTier,
+    seed_a: usize,
+    seed_b: usize,
+) -> bool {
+    matches!(tier, crate::resident_bonds::NeighborTier::Friend) && (seed_a + seed_b) % 3 == 0
+}
+
+/// 結伴同行：算出跟隨者該走去的「老鄰居身邊」落腳點——朝領路者位置、但保留一個身位間距，
+/// 夾鉗在漫遊邊界 `(x0, x1, y0, y1)` 內。純函式、確定性、好測。
+pub fn companion_follow_target(
+    follower: (f32, f32),
+    leader: (f32, f32),
+    side_gap: f32,
+    bounds: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let dx = follower.0 - leader.0;
+    let dy = follower.1 - leader.1;
+    let d = (dx * dx + dy * dy).sqrt();
+    // 從領路者朝跟隨者方向退一個身位；重疊（距離趨零）時給固定偏移避免除以零。
+    let (ox, oy) = if d > 1e-3 {
+        (dx / d * side_gap, dy / d * side_gap)
+    } else {
+        (side_gap, 0.0)
+    };
+    let tx = (leader.0 + ox).clamp(bounds.0, bounds.1);
+    let ty = (leader.1 + oy).clamp(bounds.2, bounds.3);
+    (tx, ty)
+}
+
+/// 結伴是否該散夥：時間到、或兩人被扯得太遠（平方距離超上限）。純函式、好測。
+pub fn companion_should_part(remaining: f32, separation_sq: f32, max_sep_sq: f32) -> bool {
+    remaining <= 0.0 || separation_sq > max_sep_sq
+}
+
 // ── 居民隨機小事件計時器常數（ROADMAP 122）────────────────────────────────────
 /// 小事件最短間隔（秒）= 20 分鐘。
 pub const MINI_EVENT_TIMER_MIN: f32 = 1200.0;
@@ -472,6 +517,11 @@ pub struct ResidentNpc {
     pub is_agent: bool,
     /// agent 思考時鐘倒數（秒）；只有 `is_agent` 時有意義，到點時由 game.rs 主迴圈發起一次思考。
     agent_think_timer: f32,
+    // ── 老鄰居結伴同行（ROADMAP 558）──────────────────────
+    /// 正在結伴同行的對象 id（跟隨者才設；領路者不設）。None = 沒在結伴。
+    companion_id: Option<String>,
+    /// 結伴同行剩餘秒數（> 0 = 正跟著老鄰居溜達；到 0 自然散夥）。
+    companion_remaining: f32,
 }
 
 /// 居民野外採集隊狀態（ROADMAP 177）。
@@ -558,6 +608,8 @@ impl ResidentNpc {
             is_agent: index < crate::npc_agent_wire::AGENT_ENABLED_COUNT,
             agent_think_timer: crate::npc_agent_wire::THINK_INTERVAL_SECS
                 + (index % 2) as f32 * (crate::npc_agent_wire::THINK_INTERVAL_SECS / 2.0),
+            companion_id: None,
+            companion_remaining: 0.0,
         }
     }
 
@@ -1090,6 +1142,12 @@ impl ResidentManager {
             }
         }
 
+        // ROADMAP 558：老鄰居結伴同行——跟隨者每幀黏到領路者身邊並肩溜達。
+        // 避難／歡慶時居民另有去處（奔回廣場／原地歡呼），暫不結伴跟隨。
+        if !alarmed && !celebrating {
+            self.apply_companion_strolls(dt);
+        }
+
         // 4. 退休公告（90% 壽命，防重複）
         for r in &mut self.residents {
             if r.should_announce_retirement() {
@@ -1208,8 +1266,23 @@ impl ResidentManager {
                 let seed_b = self.residents[j].thought_count;
                 // ROADMAP 557：記一次相遇、累積熟識度，招呼依當前階層升級（陌生→點頭之交→老鄰居）。
                 let tier = self.bonds.record_meeting(&id_a, &id_b);
-                let text_a = crate::resident_chat::get_neighbor_greet_tiered(name_b, tier, seed_a);
-                let text_b = crate::resident_chat::get_neighbor_reply_tiered(tier, seed_b).to_string();
+                // ROADMAP 558：老鄰居偶爾不只打招呼，而是真的「結伴同行」——這一刻招呼換成邀約／應約，
+                // 之後跟隨者（j）會黏著領路者（i）並肩溜達一段（見 apply_companion_strolls）。
+                // 條件：兩人都沒在結伴（避免一個人被兩頭拉），且 should_start_stroll 中籤。
+                let start_stroll = should_start_stroll(tier, seed_a, seed_b)
+                    && self.residents[i].companion_remaining <= 0.0
+                    && self.residents[j].companion_remaining <= 0.0;
+                let (text_a, text_b) = if start_stroll {
+                    (
+                        crate::resident_chat::get_neighbor_stroll_invite(name_b, seed_a),
+                        crate::resident_chat::get_neighbor_stroll_accept(seed_b).to_string(),
+                    )
+                } else {
+                    (
+                        crate::resident_chat::get_neighbor_greet_tiered(name_b, tier, seed_a),
+                        crate::resident_chat::get_neighbor_reply_tiered(tier, seed_b).to_string(),
+                    )
+                };
                 // 設定互動狀態
                 self.residents[i].chat_remaining = CHAT_DURATION;
                 self.residents[i].chat_cooldown  = CHAT_COOLDOWN;
@@ -1217,6 +1290,11 @@ impl ResidentManager {
                 self.residents[j].chat_remaining = CHAT_DURATION;
                 self.residents[j].chat_cooldown  = CHAT_COOLDOWN;
                 self.residents[j].thought_count += 1;
+                if start_stroll {
+                    // 跟隨者鎖定領路者，結伴計時開始倒數（招呼停頓期間先不走，見 apply_companion_strolls）。
+                    self.residents[j].companion_id = Some(id_a.clone());
+                    self.residents[j].companion_remaining = COMPANION_DURATION;
+                }
                 result.push(ResidentLifecycleEvent::NeighborChat {
                     id_a, name_a, text_a, x_a, y_a,
                     id_b, name_b, text_b, x_b, y_b,
@@ -1225,6 +1303,57 @@ impl ResidentManager {
             }
         }
         result
+    }
+
+    /// 推進「老鄰居結伴同行」（ROADMAP 558）：讓跟隨者每幀把行走目標鎖到領路者身邊，
+    /// 兩位老鄰居就會並肩在村裡溜達一段；時間到、夥伴退休、或被扯太遠就散夥。
+    ///
+    /// 先把所有居民位置快照成 id→座標，再對跟隨者改寫目標，避免同時可變借用整個 residents。
+    fn apply_companion_strolls(&mut self, dt: f32) {
+        // 沒人在結伴就早退，省下快照成本（常見情況）。
+        if self.residents.iter().all(|r| r.companion_remaining <= 0.0) {
+            return;
+        }
+        let positions: std::collections::HashMap<String, (f32, f32)> =
+            self.residents.iter().map(|r| (r.id.clone(), (r.x, r.y))).collect();
+        for r in &mut self.residents {
+            if r.companion_remaining <= 0.0 {
+                continue;
+            }
+            // 招呼停頓期間（chat_remaining > 0）先別走、也別倒數，等寒暄完再開步。
+            if r.chat_remaining > 0.0 {
+                continue;
+            }
+            r.companion_remaining -= dt;
+            let leader_pos = r.companion_id.as_ref().and_then(|id| positions.get(id).copied());
+            let part = match leader_pos {
+                // 領路者退休／消失：立刻散夥。
+                None => true,
+                Some((lx, ly)) => {
+                    let sx = r.x - lx;
+                    let sy = r.y - ly;
+                    companion_should_part(
+                        r.companion_remaining,
+                        sx * sx + sy * sy,
+                        COMPANION_MAX_SEP * COMPANION_MAX_SEP,
+                    )
+                }
+            };
+            if part {
+                r.companion_id = None;
+                r.companion_remaining = 0.0;
+                continue;
+            }
+            // 還在結伴：把目標鎖到領路者身邊，並清掉等待計時，讓跟隨者持續跟上不發呆。
+            if let Some(leader) = leader_pos {
+                let bounds = (WANDER_X_MIN, WANDER_X_MAX, WANDER_Y_MIN, WANDER_Y_MAX);
+                let (tx, ty) =
+                    companion_follow_target((r.x, r.y), leader, COMPANION_SIDE_GAP, bounds);
+                r.target_x = tx;
+                r.target_y = ty;
+                r.wait_timer = 0.0;
+            }
+        }
     }
 
     /// 掃描居民與主要 NPC（含旅人）的配對，觸發招呼（ROADMAP 244）。
@@ -2657,5 +2786,109 @@ mod tests {
         // 第二次 tick，不應重複觸發
         let (e2, _) = mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &major_npcs, &[], &crate::npc_relations::NpcRelationsState::default());
         assert!(!e2.iter().any(|e| matches!(e, ResidentLifecycleEvent::MajorNpcChat { .. })), "冷卻中不應重複觸發主要 NPC 招呼");
+    }
+
+    // ── 老鄰居結伴同行（ROADMAP 558）─────────────────────────────────────────────
+
+    #[test]
+    fn stroll_only_starts_between_friends() {
+        use crate::resident_bonds::NeighborTier::*;
+        // 中籤的種子組合（和為 3 的倍數）：非老鄰居一律不結伴。
+        assert!(!should_start_stroll(Stranger, 0, 0));
+        assert!(!should_start_stroll(Acquaintance, 1, 2));
+        // 老鄰居 + 中籤 → 結伴。
+        assert!(should_start_stroll(Friend, 1, 2));
+        assert!(should_start_stroll(Friend, 0, 0));
+        // 老鄰居但沒中籤 → 不結伴（確定性，非每次都結伴）。
+        assert!(!should_start_stroll(Friend, 1, 0));
+        assert!(!should_start_stroll(Friend, 2, 2));
+    }
+
+    #[test]
+    fn companion_target_keeps_a_body_gap() {
+        let bounds = (WANDER_X_MIN, WANDER_X_MAX, WANDER_Y_MIN, WANDER_Y_MAX);
+        // 跟隨者在領路者右側 100px：落腳點應退到領路者右側一個身位（gap），而非貼到身上。
+        let leader = (2400.0, 2400.0);
+        let follower = (2500.0, 2400.0);
+        let (tx, ty) = companion_follow_target(follower, leader, COMPANION_SIDE_GAP, bounds);
+        assert!((tx - (leader.0 + COMPANION_SIDE_GAP)).abs() < 0.01, "應在領路者右側一個身位");
+        assert!((ty - leader.1).abs() < 0.01);
+        // 落腳點離領路者剛好一個身位（保持並肩、不重疊）。
+        let d = ((tx - leader.0).powi(2) + (ty - leader.1).powi(2)).sqrt();
+        assert!((d - COMPANION_SIDE_GAP).abs() < 0.01);
+    }
+
+    #[test]
+    fn companion_target_handles_overlap_without_nan() {
+        let bounds = (WANDER_X_MIN, WANDER_X_MAX, WANDER_Y_MIN, WANDER_Y_MAX);
+        // 完全重疊（距離為零）：不可除以零、不可 NaN，給固定偏移。
+        let (tx, ty) = companion_follow_target((2400.0, 2400.0), (2400.0, 2400.0), COMPANION_SIDE_GAP, bounds);
+        assert!(tx.is_finite() && ty.is_finite());
+        assert!((tx - (2400.0 + COMPANION_SIDE_GAP)).abs() < 0.01);
+    }
+
+    #[test]
+    fn companion_target_clamped_to_bounds() {
+        let bounds = (WANDER_X_MIN, WANDER_X_MAX, WANDER_Y_MIN, WANDER_Y_MAX);
+        // 領路者貼著邊界、跟隨者在界外側：落腳點被夾鉗回漫遊範圍內。
+        let leader = (WANDER_X_MAX, WANDER_Y_MAX);
+        let follower = (WANDER_X_MAX + 500.0, WANDER_Y_MAX + 500.0);
+        let (tx, ty) = companion_follow_target(follower, leader, COMPANION_SIDE_GAP, bounds);
+        assert!(tx <= WANDER_X_MAX && tx >= WANDER_X_MIN);
+        assert!(ty <= WANDER_Y_MAX && ty >= WANDER_Y_MIN);
+    }
+
+    #[test]
+    fn companion_parts_on_timeout_or_distance() {
+        let max_sep_sq = COMPANION_MAX_SEP * COMPANION_MAX_SEP;
+        // 時間到 → 散夥。
+        assert!(companion_should_part(0.0, 10.0, max_sep_sq));
+        assert!(companion_should_part(-0.5, 10.0, max_sep_sq));
+        // 還有時間且距離在內 → 不散。
+        assert!(!companion_should_part(5.0, 10.0, max_sep_sq));
+        // 還有時間但被扯太遠 → 散夥。
+        assert!(companion_should_part(5.0, max_sep_sq + 1.0, max_sep_sq));
+    }
+
+    #[test]
+    fn stroll_follower_trails_leader_and_parts_after_duration() {
+        let mut mgr = ResidentManager::new();
+        // 手動把 0 號設成 1 號的跟隨者，模擬剛結伴。
+        let leader_id = mgr.residents[0].id.clone();
+        mgr.residents[1].companion_id = Some(leader_id.clone());
+        mgr.residents[1].companion_remaining = COMPANION_DURATION;
+        // 把領路者擺在跟隨者一段距離外（但在 MAX_SEP 內），看跟隨者會不會被拉去身邊。
+        mgr.residents[0].x = 2400.0;
+        mgr.residents[0].y = 2400.0;
+        mgr.residents[1].x = 2500.0;
+        mgr.residents[1].y = 2400.0;
+        mgr.residents[1].chat_remaining = 0.0;
+        let start_dx = (mgr.residents[1].x - mgr.residents[0].x).abs();
+
+        // 推進數秒：跟隨者目標應鎖到領路者身邊、並逐步靠近。
+        for _ in 0..30 {
+            mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
+        }
+        // 跟隨者該比一開始更靠近領路者（朝身邊落腳點移動）。
+        let now_dx = (mgr.residents[1].x - mgr.residents[0].x).abs();
+        assert!(now_dx < start_dx, "結伴中跟隨者應朝領路者靠攏（{now_dx} < {start_dx}）");
+
+        // 推進遠超過結伴時長：應自然散夥（companion_remaining 歸零、id 清空）。
+        // 多給餘裕——途中與其他居民寒暄會暫停倒數，故抓寬鬆的 ticks 數確保走完整段。
+        for _ in 0..((COMPANION_DURATION / 0.1) as usize * 4) {
+            mgr.tick(0.1, 50, Phase::Day, &[], 0.0, &[], &[], &crate::npc_relations::NpcRelationsState::default());
+        }
+        assert!(mgr.residents[1].companion_remaining <= 0.0);
+        assert!(mgr.residents[1].companion_id.is_none(), "時間到應散夥");
+    }
+
+    #[test]
+    fn stroll_text_helpers_are_nonempty_and_named() {
+        for seed in 0..8 {
+            let invite = crate::resident_chat::get_neighbor_stroll_invite("梅子", seed);
+            assert!(!invite.is_empty());
+            assert!(invite.contains("梅子"), "邀約應叫得出對方名字");
+            assert!(!crate::resident_chat::get_neighbor_stroll_accept(seed).is_empty());
+        }
     }
 }
