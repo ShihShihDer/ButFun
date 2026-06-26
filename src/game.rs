@@ -2382,6 +2382,71 @@ pub fn spawn(app: AppState) {
                         .map(|p| (p.name.clone(), p.x, p.y))
                         .collect()
                 };
+
+                // ── 自主 agent live 接線（P0）：是否啟用整套 agent 思考 ──
+                let agents_on = crate::npc_agent_wire::agents_enabled();
+
+                // ── 自主 agent：套用上一 tick 思考出的決策（同步、短鎖、絕不 await）──
+                // 鎖紀律：先在一把居民寫鎖裡套用 MoveTo / 蒐集「要採集」與「要說話」清單，
+                // **釋放居民寫鎖後**才動 nodes 寫鎖（採集）與 tx 廣播（思想泡泡），全程不同時持有兩把世界鎖、不 await。
+                {
+                    let decisions = app.agent_bus.drain();
+                    if !decisions.is_empty() {
+                        // (居民 id, 顯示名, x, y)：要就地採集的；以及 (id, name, x, y, 要說的話)：要冒思想泡泡的。
+                        let mut to_gather: Vec<(String, &'static str, f32, f32)> = Vec::new();
+                        let mut to_say: Vec<(String, &'static str, f32, f32, String)> = Vec::new();
+                        {
+                            let mut res = app.residents.write().unwrap();
+                            for (id, dec) in decisions {
+                                let r = match res.residents.iter_mut().find(|r| r.id == id) {
+                                    Some(r) => r,
+                                    None => continue, // 居民可能已退休離場，忽略
+                                };
+                                use crate::npc_agent::AgentAction;
+                                // 有 say 就用 say 當泡泡內容；Talk 沒 say 時補一句招呼，讓罐頭決策也有點生氣。
+                                let mut bubble = dec.say.trim().to_string();
+                                match &dec.action {
+                                    AgentAction::MoveTo { x, y } => {
+                                        r.set_agent_target(*x, *y);
+                                    }
+                                    AgentAction::Gather => {
+                                        to_gather.push((r.id.clone(), r.name, r.x, r.y));
+                                    }
+                                    AgentAction::Talk { target } => {
+                                        if bubble.is_empty() {
+                                            bubble = format!("{}向{}打了聲招呼。", r.name, target);
+                                        }
+                                    }
+                                    AgentAction::Idle => {}
+                                }
+                                if !bubble.is_empty() {
+                                    to_say.push((r.id.clone(), r.name, r.x, r.y, bubble));
+                                }
+                            }
+                        } // 居民寫鎖在此釋放
+                        // 採集：此刻已無居民鎖，安全取 nodes 寫鎖走既有採集權威入口。
+                        for (id, name, gx, gy) in to_gather {
+                            let got = app.nodes.write().unwrap().gather_near(gx, gy);
+                            if let Some((kind, qty)) = got {
+                                to_say.push((
+                                    id, name, gx, gy,
+                                    format!("採到了{} ×{}", crate::npc_agent_wire::node_kind_label(kind), qty),
+                                ));
+                            }
+                        }
+                        // 思想泡泡：廣播 NpcSpeech（與既有居民泡泡同格式）。
+                        for (id, name, x, y, text) in to_say {
+                            let _ = app.tx.send(std::sync::Arc::new(crate::protocol::ServerMsg::NpcSpeech {
+                                npc_id: id,
+                                npc_name: format!("居民 {}", name),
+                                text,
+                                display_secs: 6,
+                                wx: x,
+                                wy: y,
+                            }));
+                        }
+                    }
+                }
                 // 街坊相認（ROADMAP 331）：白天各自在崗位的七大 NPC，認出走近的熟客玩家、點名招呼一句，
                 // 把 329/330 在午休桌上攢起的相熟度，第一次兌現到午休之外的整日城鎮裡。
                 // 只在白天工作時段、非午休（午休另走席間舉杯）、相熟度 ≥ 點頭之交、且過了招呼冷卻時觸發。
@@ -2921,9 +2986,89 @@ pub fn spawn(app: AppState) {
                 let eco_for_residents = app.director.read().unwrap().eco_pressure();
                 let world_log_snap: Vec<String> = app.world_log.read().unwrap().recent().iter().cloned().collect();
                 let relations_ref = app.npc_relations.read().unwrap();
-                let (resident_events, thought_events) = app.residents.write().unwrap()
-                    .tick(dt, avg_prosperity, current_phase, &player_positions, eco_for_residents, &major_npcs, &world_log_snap, &relations_ref);
+                // 在「同一把已持有的居民寫鎖」裡跑既有 tick，並順手推進 agent 思考時鐘、蒐集這 tick
+                // 該思考者的**最小快照**（id / 名 / 人設 / 座標 / 生命 / 心情）。蒐集完即隨本區塊結束
+                // 釋放居民寫鎖；之後（無鎖狀態）才補感知、spawn 思考——嚴守「短鎖→快照→drop→spawn」。
+                let (resident_events, thought_events, agent_due) = {
+                    let mut res = app.residents.write().unwrap();
+                    let (ev, th) = res.tick(dt, avg_prosperity, current_phase, &player_positions, eco_for_residents, &major_npcs, &world_log_snap, &relations_ref);
+                    let mut agent_due: Vec<(String, &'static str, crate::resident_npc::ResidentPersona, f32, f32, i32, i32, i32)> = Vec::new();
+                    if agents_on {
+                        for r in res.residents.iter_mut() {
+                            if r.agent_think_due(dt) {
+                                agent_due.push((
+                                    r.id.clone(), r.name, r.persona,
+                                    r.x, r.y, r.hp as i32, r.max_hp as i32, r.happiness as i32,
+                                ));
+                            }
+                        }
+                    }
+                    (ev, th, agent_due)
+                };
                 drop(relations_ref);
+
+                // ── 自主 agent：補感知 → spawn 非同步思考（不卡 15Hz 迴圈）──
+                // 此刻已無任何居民鎖。對每位該思考的 agent 居民：
+                //   1) 由 player_positions 快照過濾出附近玩家；短鎖 nodes 讀出附近可採節點快照後立刻 drop。
+                //   2) 組成純資料 SenseInput → try_begin_thinking 防重入 → clone persona/semaphore/bus → tokio::spawn。
+                //   3) task 內：取 LLM 並發 permit → npc_think().await（LLM 關閉時內部自動走罐頭規則、仍回得出決策）
+                //      → 把 (id, decision) 投進 AgentBus，主迴圈下一 tick 套用。task 全程不碰任何遊戲狀態鎖、不改世界。
+                for (id, name, persona, ax, ay, hp, max_hp, mood) in agent_due {
+                    // 防重入：上一輪思考還沒回來就先不發新的（ollama 逾時可能 > 思考間隔）。
+                    if !app.agent_bus.try_begin_thinking(&id) {
+                        continue;
+                    }
+                    let radius_sq = crate::npc_agent_wire::SENSE_RADIUS * crate::npc_agent_wire::SENSE_RADIUS;
+                    let nearby_players: Vec<crate::npc_agent::NearbyPlayer> = player_positions.iter()
+                        .filter(|(_, px, py)| {
+                            let dx = px - ax;
+                            let dy = py - ay;
+                            dx * dx + dy * dy <= radius_sq
+                        })
+                        .map(|(pname, px, py)| crate::npc_agent::NearbyPlayer { name: pname.clone(), x: *px, y: *py })
+                        .collect();
+                    let nearby_nodes: Vec<crate::npc_agent::NearbyNode> = {
+                        let nodes = app.nodes.read().unwrap();
+                        nodes.nodes().into_iter()
+                            .filter(|n| n.node.is_harvestable())
+                            .filter(|n| {
+                                let dx = n.x - ax;
+                                let dy = n.y - ay;
+                                dx * dx + dy * dy <= radius_sq
+                            })
+                            .map(|n| crate::npc_agent::NearbyNode {
+                                kind: crate::npc_agent_wire::node_kind_label(n.node.kind()).to_string(),
+                                x: n.x,
+                                y: n.y,
+                            })
+                            .collect()
+                    }; // nodes 讀鎖在此釋放
+                    let sense = crate::npc_agent::SenseInput {
+                        x: ax,
+                        y: ay,
+                        hp,
+                        max_hp,
+                        energy: mood, // 居民沒有獨立「活力」概念，以心情近似當活力
+                        mood,
+                        needs_summary: String::new(),
+                        nearby_players,
+                        nearby_nodes,
+                        world_news: String::new(),
+                    };
+                    let persona_str = crate::npc_agent_wire::resident_agent_persona(name, persona);
+                    let sem = app.npc_llm_sem.clone();
+                    let bus = app.agent_bus.clone();
+                    tokio::spawn(async move {
+                        // LLM 並發 permit（同 ws.rs TalkToNpc：拿不到/逾時就算了，思考可走罐頭也回得出決策）。
+                        let _permit = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            sem.acquire_owned(),
+                        ).await.ok().and_then(|r| r.ok());
+                        let decision = crate::npc_agent::npc_think(&sense, &persona_str).await;
+                        bus.push_decision(id.clone(), decision);
+                        bus.end_thinking(&id);
+                    });
+                }
                 for ev in resident_events {
                     use crate::resident_npc::ResidentLifecycleEvent;
                     match ev {

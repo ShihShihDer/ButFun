@@ -1336,6 +1336,9 @@ pub struct AppState {
     pub npc_gift_stock: Arc<RwLock<HashMap<String, u32>>>,
     /// LLM 並發信號量（全域上限 MAX_CONCURRENT_LLM）。超限等待 2 秒 → 逾時回罐頭句。
     pub npc_llm_sem: Arc<Semaphore>,
+    /// 自主 agent 決策匯流排（P0 live 接線）：少數居民每 ~15 秒在主迴圈短鎖快照 → spawn 思考 →
+    /// 思考 task 把決策投進這裡 → 主迴圈下一 tick 同步套用。兩把內部鎖都絕不跨 await 持有。
+    pub agent_bus: Arc<crate::npc_agent_wire::AgentBus>,
     /// 玩家對各 NPC 的上次對話時間（(player_id, npc_id) → Instant）。
     /// 同一玩家對同一 NPC 需間隔 PER_PLAYER_NPC_COOLDOWN_SECS 秒。
     pub npc_last_chat: Arc<RwLock<HashMap<(Uuid, String), Instant>>>,
@@ -1720,6 +1723,7 @@ impl AppState {
                 stock
             })),
             npc_llm_sem: Arc::new(Semaphore::new(crate::npc_chat::MAX_CONCURRENT_LLM)),
+            agent_bus: Arc::new(crate::npc_agent_wire::AgentBus::new()),
             npc_last_chat: Arc::new(RwLock::new(HashMap::new())),
             npc_memory_store,
             npc_pending_discount: Arc::new(RwLock::new(HashMap::new())),

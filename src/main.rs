@@ -80,6 +80,7 @@ mod moon;
 mod npc;
 mod npc_chat;
 mod npc_agent;
+mod npc_agent_wire;
 mod inventory;
 mod inventory_store;
 mod journey;
