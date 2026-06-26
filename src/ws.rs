@@ -6313,24 +6313,53 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                 })
                         };
                         if let Some((nid, nx, ny, need, _)) = target {
-                            // 4. 撫慰：把那份偏低需求往上推一階（需求寫鎖；與上方讀鎖不重疊、即取即放）。
-                            app.npc_needs.write().unwrap().comfort(nid, need);
-                            // 5. 起冷卻，防連點洗泡泡（players 寫鎖）。
+                            // 4. 記一筆「園丁照料」進**既有**的玩家↔居民相熟度帳本（ROADMAP 555，複用 330
+                            //    RegularBook）：照料與午休舉杯（329）同樣加深「同一份交情」，刻意不另立帳本
+                            //    （避免重複骨架），且順帶兌現成 331「整日相認」——你常來照料的居民，日後在崗
+                            //    位上會認得你、點名招呼。玩家鍵與舉杯一致：登入玩家用帳號 uid（跨連線延續本
+                            //    場），訪客用連線 id（lunch_regulars 寫鎖即取即放、不與其他鎖巢狀）。
+                            let player_key = authed_uid.unwrap_or(id).to_string();
+                            let bond = app
+                                .lunch_regulars
+                                .write()
+                                .unwrap()
+                                .record(&player_key, nid);
+                            // 交情層級序（0 生面孔／1 點頭之交／2 餐桌熟客）→ 撫慰幅度（交情越深越有效）。
+                            let tier_ord = |f: crate::lunch_regular::Familiarity| -> u8 {
+                                match f {
+                                    crate::lunch_regular::Familiarity::Stranger => 0,
+                                    crate::lunch_regular::Familiarity::Acquaintance => 1,
+                                    crate::lunch_regular::Familiarity::Regular => 2,
+                                }
+                            };
+                            let amount = crate::npc_needs::comfort_amount(tier_ord(
+                                crate::lunch_regular::tier_of(bond.count),
+                            ));
+                            // 5. 撫慰：把那份偏低需求往上推（幅度依交情；需求寫鎖即取即放）。
+                            app.npc_needs.write().unwrap().comfort_by(nid, need, amount);
+                            // 6. 起冷卻，防連點洗泡泡（players 寫鎖）。
                             if let Some(p) = app.players.write().unwrap().get_mut(&id) {
                                 p.comfort_cooldown = COMFORT_COOLDOWN_SECS;
                             }
-                            // 6. 廣播該居民的領情泡泡（就地定位在其身上）。
+                            // 7. 廣播該居民的領情泡泡（就地定位在其身上）：剛因這次照料「跨進更深一層交情」
+                            //    那一刻，說一句專屬暖語（世界記得你三番五次的照料）；否則說尋常領情話。
+                            let text = bond
+                                .crossed
+                                .map(tier_ord)
+                                .and_then(crate::npc_agent::bond_deepened_line)
+                                .unwrap_or_else(|| crate::npc_agent::comfort_line(need))
+                                .to_string();
                             let _ = app.tx.send(std::sync::Arc::new(
                                 crate::protocol::ServerMsg::NpcSpeech {
                                     npc_id: nid.to_string(),
                                     npc_name: crate::lunch_chatter::display_name(nid).to_string(),
-                                    text: crate::npc_agent::comfort_line(need).to_string(),
+                                    text,
                                     display_secs: 6,
                                     wx: nx,
                                     wy: ny,
                                 },
                             ));
-                            tracing::info!(player = %id, npc = nid, ?need, "園丁撫慰居民");
+                            tracing::info!(player = %id, npc = nid, ?need, bond = bond.count, "園丁撫慰居民");
                         }
                     }
                 }

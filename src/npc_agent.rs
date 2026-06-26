@@ -439,6 +439,19 @@ pub fn comfort_line(need: crate::npc_needs::NeedKind) -> &'static str {
     }
 }
 
+/// 園丁的照料累積成交情，「跨進更深一層」那一刻居民道出的暖語（ROADMAP 555）。
+/// `bond_tier_ord` ＝ 剛跨進的相熟層級序（1 ＝ 點頭之交、2 ＝ 餐桌熟客，對齊
+/// [`crate::lunch_regular::Familiarity`]）；0（沒跨層）回 `None`，由呼叫端改用一般 [`comfort_line`]。
+/// 與 [`comfort_line`] 刻意區隔——這是「世界記得你三番五次的照料」的專屬時刻，比尋常領情更重一分。
+/// 純查表、確定性；面向玩家字串集中於此作為 i18n 替換點。
+pub fn bond_deepened_line(bond_tier_ord: u8) -> Option<&'static str> {
+    match bond_tier_ord {
+        1 => Some("💚 你三番五次來看顧我，這份惦記，我記在心裡了。"),
+        2 => Some("💚 你我這份交情，早不是外人了——往後有我一口飯，便有你一席。"),
+        _ => None,
+    }
+}
+
 /// 工作活動碼 → 一句反映該行當的心思；認不出 / 非工作態（resting/commuting/visiting）回 `None`，
 /// 交回 [`resident_thought`] 走通用心思。碼對齊 `npc_schedule::NpcActivity::code()`。
 fn work_thought(code: &str) -> Option<&'static str> {
@@ -784,5 +797,18 @@ mod tests {
         let b = resident_thought(None, Some("mapping"), false, false);
         assert_eq!(a, b);
         assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn bond_deepened_line_only_on_crossing() {
+        // 沒跨層（tier 0）→ None，由呼叫端走一般領情話。
+        assert_eq!(bond_deepened_line(0), None);
+        // 跨進點頭之交／餐桌熟客 → 各有一句專屬暖語、皆非空且彼此不同。
+        let one = bond_deepened_line(1).expect("跨進點頭之交應有暖語");
+        let two = bond_deepened_line(2).expect("跨進餐桌熟客應有暖語");
+        assert!(!one.is_empty() && !two.is_empty());
+        assert_ne!(one, two);
+        // 越界序（>2）保守回 None（跨層只發生在 1/2 兩道門檻）。
+        assert_eq!(bond_deepened_line(9), None);
     }
 }
