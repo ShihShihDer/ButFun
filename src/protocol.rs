@@ -855,6 +855,13 @@ pub enum ClientMsg {
         /// 再挑最近就座的 NPC 回敬一句（廣播 NpcSpeech 泡泡）。不符條件靜默忽略。
         #[serde(rename = "join_lunch_toast")]
         JoinLunchToast,
+        /// 關心一位有心事的居民（ROADMAP 554：園丁撫慰）。玩家走近一位需求偏低、正流露煩惱的
+        /// 故鄉居民，按「💚 關心」上前撫慰。後端驗：未倒地、冷卻已到期，挑 COMFORT_REACH 內
+        /// 最近、且確有偏低需求的居民，把那份需求往上推一階（記憶體，零持久化），廣播一句領情的
+        /// NpcSpeech 泡泡。無 payload——對象一律用玩家自己的權威座標挑（防隔空關心）。
+        /// 不符條件靜默忽略。
+        #[serde(rename = "comfort_resident")]
+        ComfortResident,
     }
 
     /// 快照裡的城鎮大工程狀態（ROADMAP 131）。
@@ -3038,6 +3045,11 @@ pub struct NpcView {
     /// 新增欄、舊前端忽略即可（向後相容、零 migration）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought: Option<String>,
+    /// ROADMAP 554：這位居民此刻**有件偏低的心事、可被玩家上前關心**（園丁撫慰）。
+    /// 只有故鄉七大居民可能為 true；前端據此在頭頂亮一枚 💚 提示、玩家走近時亮出「💚 關心」鈕。
+    /// 撫慰後需求回升、煩惱褪去即轉回 false。新增欄、舊前端忽略即可（向後相容、零 migration）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_care: bool,
 }
 
 /// 快照裡的日夜狀態：目前階段與環境亮度，讓前端疊出柔和的明暗流轉。
@@ -3594,6 +3606,7 @@ mod tests {
                 celebrating: false,
                 activity: Some("tallying".to_string()),
                 thought: Some("帳目得算清楚，一文都不能差".to_string()),
+                needs_care: false,
             }],
             terrain: vec![],
             world_event: None,
@@ -3966,6 +3979,13 @@ mod tests {
     fn join_lunch_toast_message_parses_correctly() {
         let msg: ClientMsg = serde_json::from_str(r#"{"type":"join_lunch_toast"}"#).unwrap();
         assert!(matches!(msg, ClientMsg::JoinLunchToast));
+    }
+
+    /// 前端送的 comfort_resident 訊息要能被解析成 `ClientMsg::ComfortResident`（ROADMAP 554 wire contract）。
+    #[test]
+    fn comfort_resident_message_parses_correctly() {
+        let msg: ClientMsg = serde_json::from_str(r#"{"type":"comfort_resident"}"#).unwrap();
+        assert!(matches!(msg, ClientMsg::ComfortResident));
     }
 
     #[test]

@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, soonestCropEta, harvestEtaLabel, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses, progressGoal, residentThoughtAlpha, nearestCareResident }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -4017,6 +4017,56 @@
       btn.style.opacity = "1";
       btn.style.cursor = "pointer";
     }
+  }
+
+  // ROADMAP 554：園丁撫慰——挑「搆得著範圍內、最近、且正有心事（needs_care）」的故鄉居民。
+  // 純函式：給玩家座標、npc 清單、搆得著半徑，回最近一位需要關心者的 id，沒有則回 null。
+  // 壞值（缺 me／npcs 非陣列／座標非數字）一律保守回 null、不 throw（前端永不因髒資料炸掉）。
+  function nearestCareResident(me, npcList, reachPx) {
+    if (!me || !Array.isArray(npcList)) return null;
+    const mx = me.x, my = me.y;
+    if (typeof mx !== "number" || typeof my !== "number") return null;
+    const reach2 = reachPx * reachPx;
+    let bestId = null, bestD2 = Infinity;
+    for (const npc of npcList) {
+      if (!npc || !npc.needs_care) continue;
+      const nx = npc.x, ny = npc.y;
+      if (typeof nx !== "number" || typeof ny !== "number") continue;
+      const d2 = (nx - mx) ** 2 + (ny - my) ** 2;
+      if (d2 <= reach2 && d2 < bestD2) { bestD2 = d2; bestId = npc.id; }
+    }
+    return bestId;
+  }
+
+  // 撫慰搆得著的半徑（像素）：與後端 COMFORT_REACH 同量級，前端只決定何時亮鈕，判定仍以後端權威座標為準。
+  const COMFORT_REACH_PX = 130;
+  function updateComfortBtn(me) {
+    let btn = document.getElementById("hudComfort");
+    // 只在走近一位正有心事的故鄉居民時才亮出（needs_care 由後端依需求偏低判定）。
+    const careId = nearestCareResident(me, npcs, COMFORT_REACH_PX);
+    if (!careId) {
+      if (btn) btn.style.display = "none";
+      return;
+    }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "hudComfort";
+      btn.style.cssText = [
+        // 疊在舉杯鈕之上一截，避免兩鈕在同一角落重疊。
+        "position:fixed", "bottom:140px", "right:140px",
+        "background:rgba(40,80,55,0.85)", "border:1px solid #6fd39a",
+        "border-radius:10px", "color:#bdf5d4",
+        "font-size:.8rem", "font-family:monospace",
+        "padding:4px 12px", "z-index:1001", "cursor:pointer",
+      ].join(";");
+      btn.addEventListener("click", () => { SFX.click(); safeSend({ type: "comfort_resident" }); });
+      document.body.appendChild(btn);
+    }
+    btn.style.display = "block";
+    btn.textContent = "💚 關心";
+    btn.disabled = false;
+    btn.style.opacity = "1";
+    btn.style.cursor = "pointer";
   }
 
   // 統一物種視圖（ROADMAP 144/163/167）：左下角小面板，整合顯示生態壓力、野生物種、
@@ -11414,6 +11464,7 @@
       updateFeedWildlifeBtn();              // 近距離餵食按鈕
       updateScarePredatorBtn();             // 驅趕正在追獵的掠食者按鈕（ROADMAP 357）
       updateLunchToastBtn();                // 席間舉杯同席按鈕（ROADMAP 329）
+      updateComfortBtn(me);                 // 關心有心事的居民按鈕（ROADMAP 554：園丁撫慰）
       foldBannerColumn();                   // 右上事件欄折疊（最多露 3 條，多的折「＋N 則」）
     });
 
@@ -18982,6 +19033,20 @@
       if (npc.thought && myPlanet === "home" && !npcSpeechBubbles.has(npc.id)) {
         const ta = residentThoughtAlpha(npc.id, performance.now());
         if (ta > 0.01) drawResidentThought(sx, by - 52, npc.thought, ta);
+      }
+
+      // ROADMAP 554 園丁撫慰提示：居民正有偏低的心事（needs_care）時，頭頂常駐一枚輕輕脈動的 💚，
+      // 讓玩家一眼看出「這位需要被關心」、走近即可亮出「💚 關心」鈕。純表現、只讀快照。
+      if (npc.needs_care && myPlanet === "home") {
+        const calm = !!reduceMotion;
+        const pulse = calm ? 1.0 : 0.78 + 0.22 * Math.sin(performance.now() * 0.004 + npc.x * 0.02);
+        ctx.save();
+        ctx.font = `13px ${UI_FONT}`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.globalAlpha = pulse;
+        ctx.fillText("💚", sx + 14, by - 30);
+        ctx.restore();
       }
 
       // 鎮民撐傘避雨（ROADMAP 468）：草原細雨時，戶外的居民與旅人撐起一把小傘擋雨，隨世界的風

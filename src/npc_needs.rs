@@ -20,6 +20,23 @@ const DECAY_STEP: i32 = 1;
 /// game.rs 呼叫 `tick_decay_all` 的週期（秒）。較慢的回歸讓情緒狀態有明顯持續性。
 pub const DECAY_INTERVAL_SECS: u64 = 120; // 每 2 分鐘衰減一次
 
+/// 需求偏低、足以讓居民「面露難色」並讓玩家可上前撫慰的門檻（ROADMAP 554）。
+/// 取在「略感緊張／略有距離感／平凡度日」這一檔（< BASELINE）再低一些，
+/// 確保只有**真的不好過**時才浮出煩惱、招來園丁，而非日常起伏。
+pub const WORRY_THRESHOLD: i32 = 40;
+
+/// 玩家上前「關心」一次，把那份偏低的需求往上推的幅度（ROADMAP 554）。
+/// 刻意一次推不滿——幾句關心才把人從谷底拉回平衡，讓「照料」是有過程的陪伴而非一鍵清空。
+const COMFORT_STEP: i32 = 8;
+
+/// 三大需求之一，用來標出「此刻最該被撫平的那一件心事」（ROADMAP 554）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeedKind {
+    Safety,
+    Belonging,
+    Prosperity,
+}
+
 /// 一個 NPC 的三大需求值（0~100）。
 #[derive(Debug, Clone)]
 pub struct NpcNeeds {
@@ -42,6 +59,35 @@ impl NpcNeeds {
         self.safety = self.safety.clamp(0, 100);
         self.belonging = self.belonging.clamp(0, 100);
         self.prosperity = self.prosperity.clamp(0, 100);
+    }
+
+    /// 此刻**最該被撫平的那件心事**：三大需求中**低於 [`WORRY_THRESHOLD`]、且數值最低**的那一個。
+    /// 全都還算安穩（皆 ≥ 門檻）→ `None`（這位居民現在不需要被關心）。
+    /// 平手時依 安全感 ＞ 歸屬感 ＞ 繁榮感 的順序取（安危最要緊）。純函式、確定性。
+    pub fn lowest_low_need(&self) -> Option<NeedKind> {
+        let mut pick: Option<(NeedKind, i32)> = None;
+        // 依優先序逐一比較：只有「更低」才取代，平手保留先到者（即上述優先序）。
+        for (kind, val) in [
+            (NeedKind::Safety, self.safety),
+            (NeedKind::Belonging, self.belonging),
+            (NeedKind::Prosperity, self.prosperity),
+        ] {
+            if val < WORRY_THRESHOLD && pick.map_or(true, |(_, best)| val < best) {
+                pick = Some((kind, val));
+            }
+        }
+        pick.map(|(k, _)| k)
+    }
+
+    /// 玩家上前關心，把指定的那件心事往上推 [`COMFORT_STEP`]（夾在 0~100）。
+    /// 只動那一項，其餘不變；園丁的撫慰是把谷底慢慢拉回平衡。
+    pub fn comfort(&mut self, need: NeedKind) {
+        match need {
+            NeedKind::Safety => self.safety += COMFORT_STEP,
+            NeedKind::Belonging => self.belonging += COMFORT_STEP,
+            NeedKind::Prosperity => self.prosperity += COMFORT_STEP,
+        }
+        self.clamp_all();
     }
 
     /// 每個值向基線靠近 DECAY_STEP 單位（高的降、低的升、恰好的不動）。
@@ -126,6 +172,18 @@ impl NpcNeedsState {
     /// 取得指定 NPC 的需求狀態複本（未知 NPC 回預設值）。
     pub fn get(&self, npc_id: &str) -> NpcNeeds {
         self.map.get(npc_id).cloned().unwrap_or_default()
+    }
+
+    /// 指定 NPC 此刻最該被撫平的那件心事（ROADMAP 554）；都安穩或未知 NPC → `None`。
+    pub fn lowest_low_need(&self, npc_id: &str) -> Option<NeedKind> {
+        self.map.get(npc_id).and_then(|n| n.lowest_low_need())
+    }
+
+    /// 玩家上前關心指定 NPC 的某件心事，把那份需求往上推（ROADMAP 554）。未知 NPC → 無動作。
+    pub fn comfort(&mut self, npc_id: &str, need: NeedKind) {
+        if let Some(n) = self.map.get_mut(npc_id) {
+            n.comfort(need);
+        }
     }
 
     /// 世界事件發生，調整所有相關 NPC 的需求值。
@@ -324,5 +382,73 @@ mod tests {
     fn prompt_section_empty_for_unknown_npc() {
         let s = NpcNeedsState::new();
         assert!(s.to_prompt_section("不存在").is_empty());
+    }
+
+    // ── ROADMAP 554：低需求偵測 + 玩家撫慰 ──────────────────────────────
+    #[test]
+    fn lowest_low_need_none_when_all_calm() {
+        // 三大需求皆在門檻以上 → 不需要被關心。
+        let n = NpcNeeds { safety: 50, belonging: 50, prosperity: 50 };
+        assert_eq!(n.lowest_low_need(), None);
+        // 恰在門檻（40）也算安穩（嚴格小於才算偏低）。
+        let edge = NpcNeeds { safety: WORRY_THRESHOLD, belonging: WORRY_THRESHOLD, prosperity: WORRY_THRESHOLD };
+        assert_eq!(edge.lowest_low_need(), None);
+    }
+
+    #[test]
+    fn lowest_low_need_picks_single_low() {
+        let n = NpcNeeds { safety: 60, belonging: 25, prosperity: 55 };
+        assert_eq!(n.lowest_low_need(), Some(NeedKind::Belonging));
+    }
+
+    #[test]
+    fn lowest_low_need_picks_the_lowest_among_several() {
+        // 安全 35、繁榮 20 都偏低 → 取更低的繁榮。
+        let n = NpcNeeds { safety: 35, belonging: 55, prosperity: 20 };
+        assert_eq!(n.lowest_low_need(), Some(NeedKind::Prosperity));
+    }
+
+    #[test]
+    fn lowest_low_need_tie_breaks_by_priority() {
+        // 三者同低且平手 → 依 安全 ＞ 歸屬 ＞ 繁榮 取安全（安危最要緊）。
+        let n = NpcNeeds { safety: 30, belonging: 30, prosperity: 30 };
+        assert_eq!(n.lowest_low_need(), Some(NeedKind::Safety));
+        // 歸屬與繁榮平手、安全已安穩 → 取歸屬。
+        let m = NpcNeeds { safety: 60, belonging: 30, prosperity: 30 };
+        assert_eq!(m.lowest_low_need(), Some(NeedKind::Belonging));
+    }
+
+    #[test]
+    fn comfort_raises_only_target_need_and_clamps() {
+        let mut n = NpcNeeds { safety: 30, belonging: 50, prosperity: 50 };
+        n.comfort(NeedKind::Safety);
+        assert_eq!(n.safety, 30 + COMFORT_STEP, "安全感應被推高一階");
+        assert_eq!(n.belonging, 50, "其餘需求不動");
+        assert_eq!(n.prosperity, 50, "其餘需求不動");
+        // 封頂不溢出 100。
+        let mut hi = NpcNeeds { safety: 98, belonging: 50, prosperity: 50 };
+        hi.comfort(NeedKind::Safety);
+        assert_eq!(hi.safety, 100);
+    }
+
+    #[test]
+    fn state_comfort_lifts_npc_out_of_worry() {
+        let mut s = NpcNeedsState::new();
+        // 把獵手安全感打到谷底，確認他開始有心事、撫慰後逐步回升。
+        for _ in 0..3 {
+            s.apply_world_event(NeedsEvent::HordeArriving); // 每次 safety -25
+        }
+        let before = s.get("bounty_npc").safety;
+        assert!(before < WORRY_THRESHOLD, "獸潮連襲後獵手該不安");
+        assert_eq!(s.lowest_low_need("bounty_npc"), Some(NeedKind::Safety));
+        s.comfort("bounty_npc", NeedKind::Safety);
+        assert_eq!(s.get("bounty_npc").safety, (before + COMFORT_STEP).min(100));
+    }
+
+    #[test]
+    fn state_comfort_unknown_npc_is_noop() {
+        let mut s = NpcNeedsState::new();
+        s.comfort("不存在", NeedKind::Safety); // 不 panic、無副作用
+        assert_eq!(s.lowest_low_need("不存在"), None);
     }
 }

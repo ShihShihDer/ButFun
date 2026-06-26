@@ -1620,6 +1620,10 @@ pub fn spawn(app: AppState) {
                     if p.toast_cooldown > 0.0 {
                         p.toast_cooldown = (p.toast_cooldown - dt).max(0.0);
                     }
+                    // 關心居民冷卻倒數（ROADMAP 554：園丁撫慰）。
+                    if p.comfort_cooldown > 0.0 {
+                        p.comfort_cooldown = (p.comfort_cooldown - dt).max(0.0);
+                    }
                     // 星際貿易路線冷卻倒數（ROADMAP 51）。
                     crate::trade_route::tick_cooldowns(&mut p.trade_cooldowns, dt);
                     // 工匠工坊訂單計時（ROADMAP 52）。
@@ -4526,6 +4530,16 @@ pub fn spawn(app: AppState) {
             // ③ 無限世界（切片 C）：傳出 Arc<ServerMsg> 原始結構，不在此序列化。
             if want_broadcast {
                 let snapshot = {
+                    // ROADMAP 554：先一次讀出七大居民「此刻最該被撫平的心事」——在取 players 讀鎖前
+                    // 取完即放（不與下方 players/sch/lc 等讀鎖巢狀，守 prod-deadlock 鎖序紀律），
+                    // 餵給 553 思想泡泡（流露煩惱）與 needs_care 旗標（亮出園丁可撫慰的訊號）。
+                    let resident_low_needs: std::collections::HashMap<&'static str, Option<crate::npc_needs::NeedKind>> = {
+                        let needs = app.npc_needs.read().unwrap();
+                        crate::npc_schedule::VILLAGE_NPCS
+                            .iter()
+                            .map(|s| (s.id, needs.lowest_low_need(s.id)))
+                            .collect()
+                    };
                     let players = app.players.read().unwrap();
                     // 每次快照帶上 NPC 目錄（六大商人，收購價套用浮動市場價格）。
                     let now_secs = unix_secs();
@@ -4555,7 +4569,10 @@ pub fn spawn(app: AppState) {
                             let dy = pl.y - pos.1;
                             dx * dx + dy * dy <= RESIDENT_NOTICE_R2
                         });
+                        // ROADMAP 554：此刻最該被撫平的心事（已在 players 鎖外備好，不另上鎖）。
+                        let low_need = resident_low_needs.get(s.id).copied().flatten();
                         let thought = crate::npc_agent::resident_thought(
+                            low_need,
                             activity.map(|a| a.code()),
                             someone_near,
                             is_night,
@@ -4575,6 +4592,8 @@ pub fn spawn(app: AppState) {
                             activity: activity.map(|a| a.code().to_string()),
                             // ROADMAP 553：居民當下的一句內心話（前端偶爾飄 💭 泡泡）。
                             thought: Some(thought),
+                            // ROADMAP 554：有偏低心事 → 亮出園丁可上前撫慰的訊號。
+                            needs_care: low_need.is_some(),
                         });
                     }
                     drop(lc);
@@ -4594,6 +4613,7 @@ pub fn spawn(app: AppState) {
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
                         thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                        needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                     });
                     let (cmx, cmy) = crimson_merchant_pos();
                     npc_views.push(NpcView {
@@ -4609,6 +4629,7 @@ pub fn spawn(app: AppState) {
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
                         thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                        needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                     });
                     let (vmx2, vmy2) = void_merchant_pos();
                     npc_views.push(NpcView {
@@ -4624,6 +4645,7 @@ pub fn spawn(app: AppState) {
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
                         thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                        needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                     });
                     let (amx, amy) = aether_merchant_pos();
                     npc_views.push(NpcView {
@@ -4639,6 +4661,7 @@ pub fn spawn(app: AppState) {
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
                         thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                        needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                     });
                     let (omx, omy) = origin_merchant_pos();
                     npc_views.push(NpcView {
@@ -4654,6 +4677,7 @@ pub fn spawn(app: AppState) {
                         celebrating: false,
                         activity: None, // 他星商人不安排故鄉作息工作狀態
                         thought: None,  // 他星商人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                        needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                     });
 
                     // —— 城外旅人（ROADMAP 74）——：可見時加入快照。
@@ -4673,6 +4697,7 @@ pub fn spawn(app: AppState) {
                                 celebrating: false,
                                 activity: None, // 旅人不走故鄉作息工作狀態
                                 thought: None,  // 旅人非故鄉居民，不冒思想泡泡（ROADMAP 553）
+                                needs_care: false, // 非故鄉居民，無園丁撫慰（ROADMAP 554）
                             });
                             Some((tv.x, tv.y))
                         } else {
@@ -4699,6 +4724,7 @@ pub fn spawn(app: AppState) {
                                 celebrating,
                                 activity: None, // 路人居民另有作息調度，不走故鄉七大 NPC 工作狀態
                                 thought: None,  // 路人居民思想泡泡留待後續切片（本切片聚焦故鄉七大居民）（ROADMAP 553）
+                                needs_care: false, // 非故鄉七大居民，無園丁撫慰（ROADMAP 554）
                             });
                         }
                     }

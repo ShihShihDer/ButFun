@@ -186,6 +186,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
+            comfort_cooldown: 0.0,
             high_five_offer: 0,
             recent_emote: None,
             cheer_offer: 0,
@@ -334,6 +335,7 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
             reconcile_errand: None,
             toast_cooldown: 0.0,
             toast_count: 0,
+            comfort_cooldown: 0.0,
             high_five_offer: 0,
             recent_emote: None,
             cheer_offer: 0,
@@ -6256,6 +6258,79 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
                                     ));
                                 }
                             }
+                        }
+                    }
+                }
+
+                // ── 關心有心事的居民（ROADMAP 554：園丁撫慰）──────────────────────
+                Ok(ClientMsg::ComfortResident) => {
+                    // 玩家走近一位正流露煩惱（需求偏低）的故鄉居民，上前撫慰一句，把那份需求往上推一階。
+                    // 零 LLM、純查表＋記憶體需求調整；只發就地 NpcSpeech 領情泡泡，與午休舉杯（329）同調。
+                    // 鎖序：players 讀（取完即放）→ npc_schedule 讀（放）→ npc_needs 讀（放）→
+                    //       npc_needs 寫（放）→ players 寫（放）→ tx.send，全程循序不巢狀（守 prod-deadlock）。
+                    use crate::npc_schedule::VILLAGE_NPCS;
+                    // 撫慰搆得著的半徑（像素）：要走到居民跟前這麼近才關心得到（與舉杯舉手範圍同量級）。
+                    const COMFORT_REACH: f32 = 130.0;
+                    // 兩次關心間的冷卻（秒）：純防連點洗泡泡（撫慰無經濟產出，僅作節流）。
+                    const COMFORT_COOLDOWN_SECS: f32 = 5.0;
+
+                    // 1. 取玩家權威位置 + 是否可關心（未倒地、冷卻到期）。
+                    let player_pos = {
+                        let players = app.players.read().unwrap();
+                        players.get(&id).and_then(|p| {
+                            if p.vitals.is_downed() || p.comfort_cooldown > 0.0 {
+                                None
+                            } else {
+                                Some((p.x, p.y))
+                            }
+                        })
+                    };
+                    if let Some((px, py)) = player_pos {
+                        // 2. 收集七大居民此刻座標（npc_schedule 讀鎖，取完即放）。
+                        let positions: Vec<(&'static str, f32, f32)> = {
+                            let sch = app.npc_schedule.read().unwrap();
+                            VILLAGE_NPCS
+                                .iter()
+                                .filter_map(|s| sch.get_pos(s.id).map(|(x, y)| (s.id, x, y)))
+                                .collect()
+                        };
+                        // 3. 挑「搆得著範圍內、最近、且此刻確有偏低心事」的那位居民（npc_needs 讀鎖，取完即放）。
+                        let target = {
+                            let needs = app.npc_needs.read().unwrap();
+                            let reach2 = COMFORT_REACH * COMFORT_REACH;
+                            positions
+                                .iter()
+                                .filter_map(|&(nid, nx, ny)| {
+                                    let d2 = (nx - px) * (nx - px) + (ny - py) * (ny - py);
+                                    if d2 <= reach2 {
+                                        needs.lowest_low_need(nid).map(|need| (nid, nx, ny, need, d2))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .min_by(|a, b| {
+                                    a.4.partial_cmp(&b.4).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                        };
+                        if let Some((nid, nx, ny, need, _)) = target {
+                            // 4. 撫慰：把那份偏低需求往上推一階（需求寫鎖；與上方讀鎖不重疊、即取即放）。
+                            app.npc_needs.write().unwrap().comfort(nid, need);
+                            // 5. 起冷卻，防連點洗泡泡（players 寫鎖）。
+                            if let Some(p) = app.players.write().unwrap().get_mut(&id) {
+                                p.comfort_cooldown = COMFORT_COOLDOWN_SECS;
+                            }
+                            // 6. 廣播該居民的領情泡泡（就地定位在其身上）。
+                            let _ = app.tx.send(std::sync::Arc::new(
+                                crate::protocol::ServerMsg::NpcSpeech {
+                                    npc_id: nid.to_string(),
+                                    npc_name: crate::lunch_chatter::display_name(nid).to_string(),
+                                    text: crate::npc_agent::comfort_line(need).to_string(),
+                                    display_secs: 6,
+                                    wx: nx,
+                                    wy: ny,
+                                },
+                            ));
+                            tracing::info!(player = %id, npc = nid, ?need, "園丁撫慰居民");
                         }
                     }
                 }
