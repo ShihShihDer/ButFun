@@ -5519,6 +5519,59 @@ for (const sc of scenarios) {
   else console.log("  ✅ 四季黎明色調（ROADMAP 534）：seasonalTwilightTint(4季×2相位+壞值+冬藍確認) + drawTwilightGlow(夏曉/冬曉各4幀)");
 }
 
+// ── ROADMAP 549 背包材料用途反查 ──────────────────────────────────────────────
+{
+  let ok = true;
+  try {
+    const mu = sandbox.__bfTest && sandbox.__bfTest.materialUses;
+    if (typeof mu !== "function") throw new Error("materialUses 未掛載");
+
+    // 自備一張小配方表（結構對齊 game.js 的 CRAFT_RECIPES：out + inputs[[mat,qty]...]）。
+    const recipes = [
+      { id: "axe",         out: "axe",         inputs: [["wood", 4], ["stone", 3]] },
+      { id: "fishing_rod", out: "fishing_rod", inputs: [["wood", 3], ["ether", 2]] },
+      { id: "steam_bed",   out: "steam_bed",   inputs: [["wood", 4], ["stone", 2]] },
+      { id: "weapon",      out: "weapon",      inputs: [["stone", 4], ["ether", 2]] },
+    ];
+
+    // wood 參與 axe / fishing_rod / steam_bed 三條 → 保序去重回三個產物。
+    const woodUses = mu("wood", recipes);
+    if (!Array.isArray(woodUses) || woodUses.length !== 3
+        || woodUses[0] !== "axe" || woodUses[1] !== "fishing_rod" || woodUses[2] !== "steam_bed") {
+      ok = false; console.error(`  ❌ materialUses("wood") 應保序回 [axe,fishing_rod,steam_bed]，得 ${JSON.stringify(woodUses)}`);
+    }
+    // stone 參與 axe / steam_bed / weapon。
+    const stoneUses = mu("stone", recipes);
+    if (stoneUses.length !== 3 || stoneUses[0] !== "axe") {
+      ok = false; console.error(`  ❌ materialUses("stone") 應回 3 個產物且首個為 axe，得 ${JSON.stringify(stoneUses)}`);
+    }
+    // 沒有任何配方用到的素材 → 空陣列。
+    const noneUses = mu("gold_ore", recipes);
+    if (noneUses.length !== 0) { ok = false; console.error(`  ❌ materialUses("gold_ore") 應回空陣列，得 ${JSON.stringify(noneUses)}`); }
+    // 壞值一律保守回空陣列、不 throw。
+    if (mu("", recipes).length !== 0) { ok = false; console.error("  ❌ materialUses(空字串) 應回空陣列"); }
+    if (mu(null, recipes).length !== 0) { ok = false; console.error("  ❌ materialUses(null) 應回空陣列"); }
+    if (mu("wood", null).length !== 0) { ok = false; console.error("  ❌ materialUses(配方非陣列) 應回空陣列"); }
+    // 重複產物只算一次（去重）。
+    const dupUses = mu("wood", [
+      { out: "axe", inputs: [["wood", 1]] },
+      { out: "axe", inputs: [["wood", 2]] },
+    ]);
+    if (dupUses.length !== 1 || dupUses[0] !== "axe") {
+      ok = false; console.error(`  ❌ materialUses 應對同產物去重，得 ${JSON.stringify(dupUses)}`);
+    }
+    // 真實配方表（game.js CRAFT_RECIPES）下，wood 一定有用途（>0）——確保反查接得上真資料。
+    const realRecipes = sandbox.__bfTest && sandbox.__bfTest.CRAFT_RECIPES;
+    if (Array.isArray(realRecipes) && mu("wood", realRecipes).length === 0) {
+      ok = false; console.error("  ❌ 真實配方表下 materialUses('wood') 不該為空");
+    }
+  } catch (e) {
+    ok = false; console.error("  ❌ 背包材料用途反查：拋出例外", e && e.message);
+  }
+  if (!ok) { failed = true; console.error("  ❌ 背包材料用途反查（ROADMAP 549）：測試失敗"); }
+  else console.log("  ✅ 背包材料用途反查（ROADMAP 549）：materialUses(保序去重+空查+壞值+去重)");
+}
+
 console.log("");
 if (failed) {
   console.error("🔴 render-smoke 發現繪製例外（見上）。safeRender 雖防止凍結，但應根治根因。");
