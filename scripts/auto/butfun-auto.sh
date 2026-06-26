@@ -114,6 +114,12 @@ case "$turn" in
     git -C "$WT" rev-parse --git-dir >/dev/null 2>&1 || { git worktree prune >/dev/null 2>&1; git worktree add --detach "$WT" >/dev/null 2>&1 || true; }
     cd "$WT" || { log "❌ worker worktree ($WT) 不可用，本輪中止——絕不 fallback 到主樹(免在主樹留 WIP 弄髒、擋部署一整天)"; exit 1; }
     "$HERE/notify.sh" beat "🔨 $(date '+%H:%M') 還在開發中（做好會通知你）…" >/dev/null 2>&1 || true
+    # 可逆開關：BUTFUN_WORKER_SKIP_AGY=1 → 跳過 agy(Antigravity 非真免費+長 prompt 會 flaky)，
+    # worker 直接燒 Claude（「用力騷額度」模式，2026-06-26 維護者要這幾天直接燒）。要省再把 env 設回 0/unset 即回 agy。
+    if [ "${BUTFUN_WORKER_SKIP_AGY:-0}" = "1" ]; then
+      log "worker：跳過 agy，直接用 Claude $WORKER_FALLBACK_MODEL（用力騷額度模式）"
+      exec claude -p --dangerously-skip-permissions --model "$WORKER_FALLBACK_MODEL" "$(cat "$HERE/worker.prompt")"
+    fi
     log "worker：先試 Antigravity(agy，免費額度) 模型「$WORKER_AGY_MODEL」"
     # 注意：set -e 下「gout=$(agy…)」失敗會直接 kill 腳本、根本跑不到 fallback——故用 && / || 保住 grc
     gout="$(agy --print --dangerously-skip-permissions --model "$WORKER_AGY_MODEL" "$(cat "$HERE/worker.prompt")" 2>&1)" && grc=0 || grc=$?
