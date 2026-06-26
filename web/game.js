@@ -425,7 +425,7 @@
     "🧭 自家農地跑遠了？畫面邊緣會浮出黃銅羅盤指路回家。",
     "🤝 城裡的居民都能聊天，多走動認識大家、人情會慢慢變好。",
     "⛏️ 朝岩壁走會自動鑿隧道，但絕不會挖到你親手蓋的牆。",
-    "🌙 夜裡想歇會兒？在安全處靜靜打坐 30 秒能回血回乙太。",
+    "🌙 夜裡想歇會兒？在安全處靜心——坐越久入越深的定（淺定→入定→深定），越深回血回乙太越多。",
     "🎣 水邊偶有魚汛，魚群浮現時下竿更容易上鉤。",
     "💎 採集偶爾會迸出稀有好手氣，多採幾次碰碰運氣。",
     "⚙️ 覺得太吵或字太小？右下「設定」能調音量、字級與畫面動態。",
@@ -5120,6 +5120,8 @@
             existing.mining_tremor = p.mining_tremor || null;
             // ROADMAP 391：安靜打坐——是否正在打坐（前端畫呼吸光圈）。
             existing.meditating = !!p.meditating;
+            // ROADMAP 552：打坐中已入的定境深度（0/1/2/3）——光圈隨定境加深而更盛、頭頂標定境名。
+            existing.meditate_tier = (typeof p.meditate_tier === "number") ? p.meditate_tier : 0;
             // ROADMAP 399：廣場獻奏——是否正在獻奏（前端畫頭頂飄動音符）。
             existing.busking = !!p.busking;
             // ROADMAP 535：曲目身段——0~3，越高階頭頂飄出的音符調色盤越華麗（0 省略時當新手）。
@@ -6763,22 +6765,25 @@
         if (!msPid) break;
         const msPlayer = players.get(msPid);
         // 即時更新 meditating 旗標（不等下一幀快照），前端立刻畫光圈。
-        if (msPlayer) msPlayer.meditating = true;
+        if (msPlayer) { msPlayer.meditating = true; msPlayer.meditate_tier = 0; }
         if (msPid === myId) {
-          announce(`開始打坐，靜止 ${msg.duration_secs || 30} 秒可恢復生命與乙太——移動會中斷打坐`);
+          // ROADMAP 552：越坐越深——靜止越久入越深的定，結束時依定境深度發更多回復。
+          announce(`開始靜心：靜止 ${msg.duration_secs || 30} 秒入「淺定」，再撐久一點入「入定」「深定」——越深回復越多；移動或按結束即領取，移動前未入定才算中斷`);
         }
         break;
       }
       case "meditation_complete": {
-        // 廣播給所有人：打坐完成。本人冒飄字＋音效＋播報。
+        // 廣播給所有人：打坐完成。本人冒飄字＋音效＋播報（ROADMAP 552：標出入的定境深度）。
         const mcPid = msg.player_id;
         if (!mcPid) break;
         const mcPlayer = players.get(mcPid);
         if (mcPlayer) {
           mcPlayer.meditating = false;
+          mcPlayer.meditate_tier = 0;
           if (mcPid === myId) {
             const now = performance.now();
-            hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 46, text: "🧘 打坐完成", color: "255, 210, 90", size: 18, born: now });
+            const tierName = meditateTierName(msg.tier);
+            hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 46, text: `🧘 ${tierName}·圓滿`, color: "255, 210, 90", size: 18, born: now });
             if (msg.hp_healed > 0) {
               hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 68, text: `+${msg.hp_healed} HP`, color: "120,255,160", size: 15, born: now });
             }
@@ -6786,20 +6791,21 @@
               hitFloaters.push({ wx: mcPlayer.x, wy: mcPlayer.y - 88, text: `+${msg.ether_gained} 乙太`, color: "140,240,255", size: 15, born: now });
             }
             SFX.success(); // 採集成功音效，輕柔上揚（ROADMAP 376）
-            announce(`打坐完成！恢復 ${msg.hp_healed || 0} HP ＋ ${msg.ether_gained || 0} 乙太`);
+            announce(`靜心圓滿（${tierName}）！恢復 ${msg.hp_healed || 0} HP ＋ ${msg.ether_gained || 0} 乙太`);
           }
         }
         break;
       }
       case "meditation_aborted": {
-        // 廣播給所有人：打坐被打斷。
+        // 廣播給所有人：打坐被打斷（還沒入第一重定境就起身）。
         const maPid = msg.player_id;
         if (!maPid) break;
         const maPlayer = players.get(maPid);
         if (maPlayer) {
           maPlayer.meditating = false;
+          maPlayer.meditate_tier = 0;
           if (maPid === myId) {
-            announce("打坐中斷——移動了，需要靜止才能打坐");
+            announce("靜心中斷——還沒坐滿「淺定」就移動了，需靜止至少 30 秒才入定");
           }
         }
         break;
@@ -10177,9 +10183,10 @@
     // 隨主人即時座標走（圈跟著主人移動）。reduceMotion 下不旋轉、只留靜態柔光圈。
     drawPopGathering(p.id, sx, sy + 11);
 
-    // 安靜打坐光圈（ROADMAP 391）：正在打坐的玩家身旁漾出金色呼吸光圈，
-    // 讓旁觀者一眼看出「有人在靜心」。畫在陰影之上、角色本體之下。
-    if (p.meditating) drawMeditationGlow(sx, sy + 8);
+    // 安靜打坐光圈（ROADMAP 391；ROADMAP 552）：正在打坐的玩家身旁漾出金色呼吸光圈，
+    // 定境越深光圈越盛（淺定→入定→深定），讓旁觀者一眼看出「誰入了更深的定」。
+    // 畫在陰影之上、角色本體之下。
+    if (p.meditating) drawMeditationGlow(sx, sy + 8, p.meditate_tier || 1);
 
     // 夜螢提燈（ROADMAP 477）：夜裡提燈有螢火的玩家，身邊漾起一圈暖黃柔光（越多越亮），
     // 並在身側畫一盞螢火燈——全服旁觀者一眼看見「誰提著一盞螢火燈」（自我表達）。畫在陰影之上、
@@ -12076,10 +12083,12 @@
     btn.classList.toggle("hidden", !canShow);
     if (!canShow) return;
     if (me.meditating) {
-      btn.textContent = "⏹ 取消打坐";
+      // ROADMAP 552：打坐中顯示「結束靜心」並標出目前定境深度——按下即領取該重獎勵。
+      const tier = me.meditate_tier || 0;
+      btn.textContent = tier >= 1 ? `⏹ 結束靜心（${meditateTierName(tier)}）` : "⏹ 結束靜心";
       btn.style.color = "#ffb347";
     } else {
-      btn.textContent = "🧘 打坐";
+      btn.textContent = "🧘 靜心";
       btn.style.color = "var(--ink)";
     }
   }
@@ -21963,25 +21972,44 @@
   // 由 render() 每幀更新，供 drawPlayer 系列子函式（不在 render 作用域）存取當前幀時間。
   let _renderFrameNow = 0;
 
-  // ── 安靜打坐光圈（ROADMAP 391）──────────────────────────────────────────────
+  // ── 安靜打坐定境名（ROADMAP 552）──────────────────────────────────────────────
+  /** 定境深度（0/1/2/3）→ 面向玩家的定境名。與後端 meditation::tier_name 同口徑。 */
+  function meditateTierName(tier) {
+    switch (tier) {
+      case 1: return "淺定";
+      case 2: return "入定";
+      case 3: return "深定";
+      default: return "靜心";
+    }
+  }
+
+  // ── 安靜打坐光圈（ROADMAP 391；ROADMAP 552 三重定境）──────────────────────────
   // 由 drawPlayer 在 meditating=true 的玩家身上呼叫；畫一個金色呼吸光圈，
-  // 讓旁觀者一眼看出「有人在靜心」。尊重 reduceMotion（關呼吸動畫、只留靜態光圈）。
-  function drawMeditationGlow(cx, cy) {
+  // 讓旁觀者一眼看出「有人在靜心」。`tier`（1/2/3，0 當淺定起步）越深，光圈越大越盛、
+  // 並多疊一圈漣漪，旁觀者一眼看出「誰入了更深的定」。尊重 reduceMotion（關呼吸動畫）。
+  function drawMeditationGlow(cx, cy, tier) {
+    const t = Math.max(1, Math.min(3, tier | 0)); // 夾在 1~3（0/未知＝淺定起步）
     const pulse = reduceMotion ? 0.55 : 0.45 + 0.45 * Math.sin(_renderFrameNow / 900);
-    const r = reduceMotion ? 26 : 22 + pulse * 6;
+    // 定境越深、光圈越大越亮（每深一重 +8px 半徑、+0.12 亮度係數）。
+    const baseR = (reduceMotion ? 26 : 22 + pulse * 6) + (t - 1) * 8;
+    const intensity = 0.85 + (t - 1) * 0.12;
     ctx.save();
-    const grad = ctx.createRadialGradient(cx, cy, 3, cx, cy, r);
-    grad.addColorStop(0, `rgba(255, 215, 100, ${0.55 * pulse})`);
-    grad.addColorStop(0.6, `rgba(255, 200, 80, ${0.25 * pulse})`);
+    const grad = ctx.createRadialGradient(cx, cy, 3, cx, cy, baseR);
+    grad.addColorStop(0, `rgba(255, 215, 100, ${0.55 * pulse * intensity})`);
+    grad.addColorStop(0.6, `rgba(255, 200, 80, ${0.25 * pulse * intensity})`);
     grad.addColorStop(1, "rgba(255, 200, 80, 0)");
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
     ctx.fillStyle = grad;
     ctx.fill();
-    // 外圓環：柔和金邊
-    ctx.strokeStyle = `rgba(255, 210, 90, ${0.5 * pulse})`;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    // 定境每深一重，多畫一圈柔和金色漣漪（淺定 1 圈、入定 2 圈、深定 3 圈）。
+    for (let i = 0; i < t; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseR - i * 6, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255, 210, 90, ${(0.5 - i * 0.12) * pulse})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
     ctx.restore();
   }
   // ── 安靜打坐光圈 end ─────────────────────────────────────────────────────────
@@ -35415,10 +35443,13 @@
         const me = myId ? players.get(myId) : null;
         if (!me || me.indoor_plot_id != null) return;
         if (me.meditating) {
+          // ROADMAP 552：按結束＝領取目前已入的定境獎勵（淺定／入定／深定）。
           safeSend({ type: "cancel_meditate" });
+          const tier = me.meditate_tier || 0;
+          announce(tier >= 1 ? `結束靜心，領取「${meditateTierName(tier)}」的回復` : "結束靜心");
         } else {
           safeSend({ type: "begin_meditate" });
-          announce("準備打坐，靜止 30 秒可恢復生命與乙太——移動即中斷");
+          announce("準備靜心：靜止越久入越深的定（淺定 30 秒→入定→深定），越深回復越多；移動或按結束即領取");
         }
       });
     }
