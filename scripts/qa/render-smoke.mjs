@@ -1535,6 +1535,48 @@ for (const sc of scenarios) {
   }
 }
 
+// 最快收成倒數（ROADMAP 551）：單元斷言純函式 soonestCropEta（取生長中作物格的最小正 eta_secs）
+// 與 harvestEtaLabel（面向玩家短句）的真值表——把「都照顧好了」的死寂等待變成看得見的盼頭。
+{
+  const eta = sandbox.__bfTest && sandbox.__bfTest.soonestCropEta;
+  const label = sandbox.__bfTest && sandbox.__bfTest.harvestEtaLabel;
+  if (typeof eta !== "function" || typeof label !== "function") {
+    failed = true;
+    console.error("  ❌ 最快收成倒數：game.js 未導出 soonestCropEta／harvestEtaLabel");
+  } else {
+    const cell = (state, eta_secs) => ({ state, eta_secs });
+    // soonestCropEta：[說明, cells, 期望(null 或數字)]
+    const etaCases = [
+      ["空/無田→null", [], null],
+      ["非陣列→null", null, null],
+      ["全自然地/空地→null", [cell(0, 0), cell(1, 0)], null],
+      ["全成熟(state 4)不算→null", [cell(4, 0), cell(4, 0)], null],
+      ["生長中取最小正 eta", [cell(2, 80), cell(3, 30), cell(2, 55)], 30],
+      ["成熟格的 eta 不參與", [cell(4, 5), cell(3, 90)], 90],
+      ["eta<=0 或壞值的生長格略過", [cell(2, 0), cell(3, -1), cell(2, NaN), cell(3, 45)], 45],
+      ["壞值容錯(null/缺欄)", [null, {}, cell(2, 70)], 70],
+    ];
+    let bad = 0;
+    for (const [desc, cells, want] of etaCases) {
+      const got = eta(cells);
+      if (got !== want) { bad++; console.error(`  ❌ 最快收成倒數：${desc} 期望 ${want} 得到 ${got}`); }
+    }
+    // harvestEtaLabel：[說明, secs, 期望(null 或字串謂詞)]
+    const labelCases = [
+      ["null/壞值→null", null, (s) => s === null],
+      ["0/負→null", -3, (s) => s === null],
+      ["<60 秒→快熟了", 42, (s) => typeof s === "string" && s.includes("快熟了")],
+      ["120 秒→約 2 分鐘", 120, (s) => typeof s === "string" && s.includes("2 分鐘")],
+      ["61 秒進位成 2 分鐘", 61, (s) => typeof s === "string" && s.includes("2 分鐘")],
+    ];
+    for (const [desc, secs, pred] of labelCases) {
+      if (!pred(label(secs))) { bad++; console.error(`  ❌ 最快收成倒數·短句：${desc} 得到 ${JSON.stringify(label(secs))}`); }
+    }
+    if (bad) failed = true;
+    else console.log(`  ✅ 最快收成倒數·soonestCropEta＋harvestEtaLabel 真值表：${etaCases.length + labelCases.length}/${etaCases.length + labelCases.length}`);
+  }
+}
+
 // 作物品種（ROADMAP 452）：單元斷言三支純函式 seedVarietyMeta／cycleSeedVariety／seedVarietyByCode
 // 的真值表——對齊後端 crop_variety.rs（線格式字串往返、未知退主食穀、品種碼 0/1/2、循環順序）。
 {
