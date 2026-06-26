@@ -25,9 +25,23 @@ pub const DECAY_INTERVAL_SECS: u64 = 120; // 每 2 分鐘衰減一次
 /// 確保只有**真的不好過**時才浮出煩惱、招來園丁，而非日常起伏。
 pub const WORRY_THRESHOLD: i32 = 40;
 
-/// 玩家上前「關心」一次，把那份偏低的需求往上推的幅度（ROADMAP 554）。
+/// 玩家上前「關心」一次（生面孔／交情尚淺時）把那份偏低的需求往上推的幅度（ROADMAP 554）。
 /// 刻意一次推不滿——幾句關心才把人從谷底拉回平衡，讓「照料」是有過程的陪伴而非一鍵清空。
+/// 同時是 [`comfort_amount`] 的最低一階（生面孔＝改版前幅度，向後相容）。
 const COMFORT_STEP: i32 = 8;
+
+/// 交情越深，撫慰越深入人心（ROADMAP 555）：把園丁的照料效力綁在與該居民「累積的交情」上。
+/// `bond_tier_ord` ＝ 相熟層級的序（0 ＝ 生面孔、1 ＝ 點頭之交、2 ＝ 餐桌熟客，對齊
+/// [`crate::lunch_regular::Familiarity`] 的順序），數值越大撫慰幅度越大；越界（>2）夾到最高一階。
+/// 設計：居民對信得過的人更願意敞開心房，同一句關心落在老友心上，比落在生面孔心上更能撫平愁緒。
+/// 純函式、確定性、可測；最低一階刻意等於 [`COMFORT_STEP`]（生面孔＝改版前，向後相容）。
+pub fn comfort_amount(bond_tier_ord: u8) -> i32 {
+    match bond_tier_ord {
+        0 => COMFORT_STEP,      // 生面孔：8（＝改版前）
+        1 => COMFORT_STEP + 4,  // 點頭之交：12
+        _ => COMFORT_STEP + 8,  // 餐桌熟客（含越界）：16
+    }
+}
 
 /// 三大需求之一，用來標出「此刻最該被撫平的那一件心事」（ROADMAP 554）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,11 +95,18 @@ impl NpcNeeds {
 
     /// 玩家上前關心，把指定的那件心事往上推 [`COMFORT_STEP`]（夾在 0~100）。
     /// 只動那一項，其餘不變；園丁的撫慰是把谷底慢慢拉回平衡。
+    /// 維持生面孔／改版前幅度，等同 `comfort_by(need, COMFORT_STEP)`（向後相容）。
     pub fn comfort(&mut self, need: NeedKind) {
+        self.comfort_by(need, COMFORT_STEP);
+    }
+
+    /// 同 [`comfort`](Self::comfort)，但撫慰幅度由呼叫端給定（ROADMAP 555）。
+    /// 交情越深、`amount` 越大（見 [`comfort_amount`]）；只動目標那一項、其餘不變、夾在 0~100。
+    pub fn comfort_by(&mut self, need: NeedKind, amount: i32) {
         match need {
-            NeedKind::Safety => self.safety += COMFORT_STEP,
-            NeedKind::Belonging => self.belonging += COMFORT_STEP,
-            NeedKind::Prosperity => self.prosperity += COMFORT_STEP,
+            NeedKind::Safety => self.safety += amount,
+            NeedKind::Belonging => self.belonging += amount,
+            NeedKind::Prosperity => self.prosperity += amount,
         }
         self.clamp_all();
     }
@@ -183,6 +204,14 @@ impl NpcNeedsState {
     pub fn comfort(&mut self, npc_id: &str, need: NeedKind) {
         if let Some(n) = self.map.get_mut(npc_id) {
             n.comfort(need);
+        }
+    }
+
+    /// 同 [`comfort`](Self::comfort)，但撫慰幅度由呼叫端給定（ROADMAP 555：交情越深、幅度越大）。
+    /// 未知 NPC → 無動作。
+    pub fn comfort_by(&mut self, npc_id: &str, need: NeedKind, amount: i32) {
+        if let Some(n) = self.map.get_mut(npc_id) {
+            n.comfort_by(need, amount);
         }
     }
 
@@ -450,5 +479,49 @@ mod tests {
         let mut s = NpcNeedsState::new();
         s.comfort("不存在", NeedKind::Safety); // 不 panic、無副作用
         assert_eq!(s.lowest_low_need("不存在"), None);
+    }
+
+    // ── ROADMAP 555：交情越深、撫慰越有效 ──────────────────────────────
+    #[test]
+    fn comfort_amount_is_monotonic_and_backcompat() {
+        // 生面孔一階 ＝ 改版前幅度（向後相容）。
+        assert_eq!(comfort_amount(0), COMFORT_STEP);
+        // 嚴格遞增：交情越深、撫慰越深入人心。
+        assert!(comfort_amount(1) > comfort_amount(0));
+        assert!(comfort_amount(2) > comfort_amount(1));
+        // 越界（>2）夾到最高一階、永不再長。
+        assert_eq!(comfort_amount(7), comfort_amount(2));
+        assert_eq!(comfort_amount(u8::MAX), comfort_amount(2));
+    }
+
+    #[test]
+    fn comfort_by_uses_given_amount_and_clamps() {
+        let mut n = NpcNeeds { safety: 30, belonging: 50, prosperity: 50 };
+        // 老友級幅度（tier 2）把同一谷底拉得比生面孔更高。
+        n.comfort_by(NeedKind::Safety, comfort_amount(2));
+        assert_eq!(n.safety, 30 + comfort_amount(2), "撫慰幅度依交情放大");
+        assert_eq!(n.belonging, 50, "其餘需求不動");
+        assert_eq!(n.prosperity, 50, "其餘需求不動");
+        // 封頂不溢出 100。
+        let mut hi = NpcNeeds { safety: 95, belonging: 50, prosperity: 50 };
+        hi.comfort_by(NeedKind::Safety, comfort_amount(2));
+        assert_eq!(hi.safety, 100);
+    }
+
+    #[test]
+    fn state_comfort_by_lifts_more_for_closer_bond() {
+        // 同一份谷底：生面孔一句 vs 老友一句，老友把人拉得更高。
+        let mut stranger = NpcNeedsState::new();
+        let mut friend = NpcNeedsState::new();
+        for _ in 0..3 {
+            stranger.apply_world_event(NeedsEvent::HordeArriving);
+            friend.apply_world_event(NeedsEvent::HordeArriving);
+        }
+        stranger.comfort_by("bounty_npc", NeedKind::Safety, comfort_amount(0));
+        friend.comfort_by("bounty_npc", NeedKind::Safety, comfort_amount(2));
+        assert!(
+            friend.get("bounty_npc").safety > stranger.get("bounty_npc").safety,
+            "老友的關心應比生面孔更能撫平愁緒"
+        );
     }
 }
