@@ -179,18 +179,36 @@ let collected = 0;
 // ============================================================
 // 玩家：低多邊形膠囊 + 客戶端物理狀態
 // ============================================================
-const PR = 0.45;      // 碰撞半徑（XZ）
-const PH = 1.7;       // 身高
-const GRAVITY = 28;   // 重力加速度
-const JUMP_V = 11.0;  // 跳躍初速（跳高約 v²/2g ≈ 2.16 單位，跨得上一階平台，留點手感餘裕）
-const SPEED = 7.0;    // 水平移動速度
-const COYOTE = 0.12;  // 土狼時間：離地一瞬間仍可跳，手感較好
+// 手感調校（參考 Mario / Celeste 的平台跳躍：有重量的加減速、可變跳躍、coyote/buffer）
+const PR = 0.45;        // 碰撞半徑（XZ）
+const PH = 1.7;         // 身高
+const GRAVITY = 30;     // 基礎重力加速度
+const FALL_MULT = 1.5;  // 下墜時的重力加成：少一點飄、落地更俐落（Celeste 式快落）
+const LOW_JUMP_MULT = 3.0; // 上升中放開跳鍵的額外重力 → 可變跳躍高度（短按矮跳、長按高跳）
+const MAX_FALL = 38;    // 最大下墜速度，避免失速與穿模
+const JUMP_V = 12.0;    // 跳躍初速
+const RUN_SPEED = 7.5;  // 水平最高速
+const ACCEL_GROUND = 70;   // 地面加速度（要一點時間才到頂速 → 起步有重量）
+const ACCEL_AIR = 32;      // 空中加速度（保留微操但不如地面靈活）
+const FRICTION_GROUND = 60;// 放開後的地面減速（會再滑一點點才停）
+const FRICTION_AIR = 10;   // 空中阻力很小 → 保留動量
+const COYOTE = 0.10;       // 土狼時間：離開邊緣後仍可跳的寬限
+const JUMP_BUFFER = 0.12;  // 跳躍緩衝：落地前一點點按跳會被記住，落地即跳
+
+// 朝目標值逼近（用於加速/減速，給移動重量感）
+function approach(cur, target, maxDelta) {
+  if (cur < target) return Math.min(cur + maxDelta, target);
+  if (cur > target) return Math.max(cur - maxDelta, target);
+  return cur;
+}
 
 const spawn = new THREE.Vector3(0, 1.5, 6);
 const p = spawn.clone();              // 玩家「腳底」位置
 const vel = new THREE.Vector3(0, 0, 0);
 let onGround = false;
-let coyoteT = 0;
+let coyoteT = 99;       // 自上次離地起算的時間（土狼時間用）
+let jumpBufferT = 99;   // 自上次按跳起算的時間（跳躍緩衝用）
+let jumpHeld = false;   // 跳鍵是否仍按住（可變跳躍高度用）
 let facing = 0;
 
 // 膠囊視覺（含一個小「臉」方向標，看得出朝向）
@@ -213,14 +231,17 @@ scene.add(player);
 // 輸入：鍵盤 + 滑鼠 +（手機）虛擬搖桿 / 拖曳轉鏡頭 / 跳鈕
 // ============================================================
 const keys = Object.create(null);
-let wantJump = false;        // 這一幀有沒有要跳（鍵盤/按鈕觸發）
 const joy = { active: false, x: 0, y: 0 }; // 搖桿輸出 [-1,1]
 
 window.addEventListener("keydown", (e) => {
   keys[e.code] = true;
-  if (e.code === "Space") { wantJump = true; e.preventDefault(); }
+  // 按跳：記進 buffer（落地即跳）並標記按住（可變跳躍高度）
+  if (e.code === "Space") { jumpBufferT = 0; jumpHeld = true; e.preventDefault(); }
 });
-window.addEventListener("keyup", (e) => { keys[e.code] = false; });
+window.addEventListener("keyup", (e) => {
+  keys[e.code] = false;
+  if (e.code === "Space") jumpHeld = false; // 放開→上升中改用大重力，矮跳
+});
 
 // ---- 鏡頭角度（第三人稱）----
 let camYaw = 0;   // 一開始鏡頭在角色後方（+z），角色面朝 -z 進入遊樂場
@@ -264,8 +285,12 @@ if (isTouch) {
     const nx = (dx / len), ny = (dy / len);
     nubEl.style.left = (35 + nx * clamped) + "px";
     nubEl.style.top = (35 + ny * clamped) + "px";
-    joy.x = nx * (clamped / JOY_R);
-    joy.y = ny * (clamped / JOY_R);
+    // deadzone + 類比 magnitude：小幅晃動不誤觸，推多少走多快（跟手）
+    let mag = clamped / JOY_R;
+    const DEAD = 0.18;
+    mag = mag < DEAD ? 0 : (mag - DEAD) / (1 - DEAD);
+    joy.x = nx * mag;
+    joy.y = ny * mag;
   }
   function joyEnd() {
     joyId = null; joy.active = false; joy.x = 0; joy.y = 0;
@@ -284,9 +309,11 @@ if (isTouch) {
   });
   joyEl.addEventListener("touchcancel", joyEnd);
 
-  // 右下跳躍鈕
+  // 右下跳躍鈕：按下記 buffer + 標記按住；放開→矮跳（可變跳躍高度同鍵盤）
   const jumpEl = document.getElementById("jump");
-  jumpEl.addEventListener("touchstart", (e) => { e.preventDefault(); wantJump = true; }, { passive: false });
+  jumpEl.addEventListener("touchstart", (e) => { e.preventDefault(); jumpBufferT = 0; jumpHeld = true; }, { passive: false });
+  jumpEl.addEventListener("touchend", (e) => { e.preventDefault(); jumpHeld = false; }, { passive: false });
+  jumpEl.addEventListener("touchcancel", () => { jumpHeld = false; });
 
   // 右半邊拖曳轉鏡頭（避開搖桿/跳鈕；用 identifier 同時並存）
   let camId = null, camLX = 0, camLY = 0;
@@ -340,19 +367,30 @@ function physics(dt) {
   // 鏡頭朝向投影到地面：forward 指向角色前方（鏡頭看出去的方向）
   const fwdX = -Math.sin(camYaw), fwdZ = -Math.cos(camYaw);
   const rightX = -fwdZ, rightZ = fwdX;
-  const mx = fwdX * inF + rightX * inR;
-  const mz = fwdZ * inF + rightZ * inR;
-  vel.x = mx * SPEED;
-  vel.z = mz * SPEED;
-  if (mx * mx + mz * mz > 1e-4) facing = Math.atan2(mx, mz);
+  const dirX = fwdX * inF + rightX * inR;
+  const dirZ = fwdZ * inF + rightZ * inR;
 
-  // ---- 跳躍（含土狼時間）----
-  if (wantJump && (onGround || coyoteT < COYOTE)) {
+  // 目標速度：類比量（搖桿推一半就半速）當油門 → 跟手。
+  // 不直接設速度，而是朝目標加速/減速 → 起步、煞停都有重量感（非瞬間到頂速）。
+  const targetVX = dirX * RUN_SPEED;
+  const targetVZ = dirZ * RUN_SPEED;
+  const hasInput = inLen > 0.01;
+  const rate = hasInput
+    ? (onGround ? ACCEL_GROUND : ACCEL_AIR)
+    : (onGround ? FRICTION_GROUND : FRICTION_AIR);
+  vel.x = approach(vel.x, targetVX, rate * dt);
+  vel.z = approach(vel.z, targetVZ, rate * dt);
+  // 角色朝「實際移動方向」轉身（用速度而非輸入 → 轉向帶一點慣性，較自然）
+  if (vel.x * vel.x + vel.z * vel.z > 0.6) facing = Math.atan2(vel.x, vel.z);
+
+  // ---- 跳躍：jump buffer + 土狼時間 ----
+  jumpBufferT += dt;
+  if (jumpBufferT < JUMP_BUFFER && (onGround || coyoteT < COYOTE)) {
     vel.y = JUMP_V;
     onGround = false;
-    coyoteT = COYOTE; // 用掉
+    coyoteT = COYOTE;          // 用掉土狼，避免空中再跳
+    jumpBufferT = JUMP_BUFFER; // 用掉緩衝
   }
-  wantJump = false;
 
   // ---- X 軸移動 + 解算 ----
   p.x += vel.x * dt;
@@ -380,10 +418,14 @@ function physics(dt) {
     vel.z = 0;
   }
 
-  // ---- Y 軸：重力 + 整合 + 落地/撞頭解算 ----
-  vel.y -= GRAVITY * dt;
+  // ---- Y 軸：可變重力 + 整合 + 落地/撞頭解算 ----
+  // 上升中放開跳鍵→大重力（矮跳）；下墜→加成重力（快落不飄）。兩者合起來＝可變跳躍高度。
+  let g = GRAVITY;
+  if (vel.y > 0 && !jumpHeld) g *= LOW_JUMP_MULT;
+  else if (vel.y < 0) g *= FALL_MULT;
+  vel.y -= g * dt;
+  if (vel.y < -MAX_FALL) vel.y = -MAX_FALL;
   p.y += vel.y * dt;
-  const wasGround = onGround;
   onGround = false;
   for (const b of boxes) {
     if (!overlaps(b)) continue;
@@ -401,9 +443,8 @@ function physics(dt) {
     }
   }
 
-  // ---- 土狼時間計時 ----
+  // ---- 土狼時間計時：在地面歸零，離地後累加（離地一小段時間內仍可跳）----
   if (onGround) coyoteT = 0;
-  else if (wasGround) coyoteT = 0; // 剛離地，從 0 起算
   else coyoteT += dt;
 
   // ---- 掉出世界：拉回起點（不穿模、不掉光）----
@@ -505,14 +546,17 @@ function frame() {
     while (d < -Math.PI) d += Math.PI * 2;
     player.rotation.y += d * Math.min(1, dt * 12);
 
-    // 第三人稱跟隨鏡頭：在角色後方、平滑 lerp
+    // 第三人稱跟隨鏡頭：在角色後方、平滑跟隨（damping 用 1-exp → 跟幀率無關，順）
     const dist = 8, lookH = 1.4;
     const ox = Math.sin(camYaw) * Math.cos(camPitch) * dist;
     const oz = Math.cos(camYaw) * Math.cos(camPitch) * dist;
     const oy = Math.sin(camPitch) * dist + lookH;
     const tgt = new THREE.Vector3(p.x, p.y + lookH, p.z);
     const desired = new THREE.Vector3(p.x + ox, p.y + oy, p.z + oz);
-    camera.position.lerp(desired, Math.min(1, dt * 8));
+    // 避免鏡頭穿到地面下：壓在地面與角色腳底之上
+    if (desired.y < p.y + 1.2) desired.y = p.y + 1.2;
+    if (desired.y < 0.6) desired.y = 0.6;
+    camera.position.lerp(desired, 1 - Math.exp(-dt * 9));
     camera.lookAt(tgt);
 
     // 發光球：自轉 + 上下浮動 + 光暈呼吸，給回饋感
