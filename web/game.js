@@ -710,7 +710,7 @@
   }
 
   // 純函式測試掛載（client-only、無副作用；供 render-smoke 單元斷言畫面動態偏好解析／農地待辦小結／世界風搖曳／魚汛幾何／背景旋律樂理／星光明信片呈現）。
-  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint }); } catch {}
+  try { globalThis.__bfTest = Object.assign(globalThis.__bfTest || {}, { effectiveReduceMotion, setMotionPref, farmDigest, audioVol, windSwayAngle, fishSchoolPoint, weatherWindVel, hapticPattern, hapticEnabled, uiFontPx, bgmScaleHz, bgmNextDegree, bgmChordDegrees, nextTipIndex, glimpseThemeClass, postcardStarStyle, exploreCellKey, recordExplored, isExplored, exploredCount, clayCrumbSpec, clayGroveSpec, clayBuiltPalette, fireflyCatchable, withinCatchRadius, fireflyMilestoneCrossed, seedVarietyMeta, cycleSeedVariety, seedVarietyByCode, seedSeasonHint, cropDemandVariety, cropBarFillKind, harvestBurstSpec, mealAromaSpec, menuSearchMatch, recordRecentPanel, recentPanelIds, clayBuildingPalette, clayLandmarkPalette, nextGuideStep, reviveGlowSpec, windowGlowStrength, inGroveShade, residentUmbrellaSpec, poisonBubbleSpec, kiteSoar, kiteSwayAmp, kiteFlightSpec, withinListenRadius, ensembleNoteCount, buskTierPalette, skipGaugeValue, skipStoneCount, snowmanStyleSpec, snowmanCheerTarget, petBondHearts, cartographerRank, cartographerCrossed, milestoneProgress, clayPetPalette, weakpointGlowSpec, enemyDeathThroesAlpha, drawEnemyDeathThroes, sfxHit: () => SFX.hit(), sfxWeakHit: () => SFX.weakHit(), sfxPowerHit: () => SFX.powerHit(), sfxChime: () => SFX.chime(), inferPlayerActivity, withinShipRepairReach, cropPeakVariety, setRenderStyle, drawClayEnemy, clockHandAngles, gameHourFromFraction, seasonFireworkColors, advanceFireworkParticle, seasonFireworksDone, triggerSeasonFireworks, drawSeasonFireworks, drawEtherSurge, surgeShouldShowCompass, nodeRespawnPulseRadius, nodeRespawnPulseAlpha, killStreakLabel, killStreakBadgeAlpha, lootPickupText, rangedTrailT, rangedTrailPos, dayphaseLabel, dayphaseBannerStyle, triggerDayphaseBanner, drawDayphaseBanner, dangerPulseAlpha, drawDangerPulse, biomeEntryLabel, biomeEntryStyle, triggerBiomeBanner, drawBiomeBanner, threatStars, thrivingBreathAlpha, thrivingSparkleActive, drawThrive, meleeSwingAlpha, drawMeleeSwings, boostPuffAlpha, bellInviteVisible, campfireBlazeScale, watchtowerBuildStage, recoveryGraceAlpha, healFlashAlpha, drawHealFlash, footprintAlpha, footprintStyle, drawFootprints, stepSoundSpec, tickStepSound, sfxStep: (b) => SFX.step(b), goldRushNearLabel, withinGoldRushReach, drawGoldRush, withinAuctionReach, auctionBidLabel, drawAuction, fishingContestHudText, withinWonderRadius, wonderNearLabel, withinBossReach, bossHpFraction, drawWorldBoss, isNearMonument, monumentEntryLines, drawMonument, fountainPhase, fountainDropletPos, drawFountain, telegraphWeatherLine, telegraphBossLine, telegraphContestLine, telegraphGoldRushLine, telegraphLines, drawTelegraph, plazaFloralDots, plazaLeafPiles, plazaSnowPatches, drawPlazaSeasonDecor, ruinForVariant, ruinGlowAlpha, withinRuinReach, drawGuardianRuins, guardianBlessingColor, guardianBlessingLabel, seasonalTwilightTint, materialUses }); } catch {}
   let _ambientTickLast = 0; // 環境音效節流時間戳（ROADMAP 377）
 
   // ---- 主音量（ROADMAP 429）：把過去「只能整段開/關」的音訊升級成可連續調節的響度 ----
@@ -27055,6 +27055,26 @@
     { id: "night_potion",  out: "night_potion",  outQty: 1, inputs: [["star_crystal_shard", 3]], cook: true },
   ];
 
+  // ── 背包材料「能做什麼」反查（ROADMAP 549）────────────────────────────────────
+  // 合成面板（CRAFT_RECIPES）是「產物←素材」的視角（我想做斧頭、它要木×4 石×3）；玩家在背包裡
+  // 看著一堆採來的木材、石頭卻是反方向的疑問——「這東西能拿來做什麼？」。建議箱最高頻的回饋之一
+  // 就是「採了一堆不知道有什麼用、收穫後沒有用途展示、目標感不足」。本純函式替背包補上那條反查：
+  // 給一個素材碼，掃配方表找出「以它為素材」的所有產物碼（保序去重）。確定性、零副作用、好測；
+  // 壞值（非字串／空字串／配方非陣列）一律保守回空陣列、不 throw。
+  function materialUses(item, recipes) {
+    if (typeof item !== "string" || !item || !Array.isArray(recipes)) return [];
+    const outs = [];
+    const seen = new Set();
+    for (const r of recipes) {
+      if (!r || !Array.isArray(r.inputs) || typeof r.out !== "string" || !r.out) continue;
+      const usesIt = r.inputs.some((pair) => Array.isArray(pair) && pair[0] === item);
+      if (!usesIt || seen.has(r.out)) continue;
+      seen.add(r.out);
+      outs.push(r.out);
+    }
+    return outs;
+  }
+
   // ── 掌勺照譜烹調覆蓋層（ROADMAP 349）──────────────────────────────────────────
   // 順序記憶小遊戲：先依序閃示步驟（看譜），再讓玩家憑記憶把步驟鈕依序敲回（敲滿自動送出）。
   // 與後端 cooking_steps.rs 的 CookStep / CookGrade 線格式（snake_case）對齊。
@@ -27362,7 +27382,21 @@
             decayTag = `<span class="decay-tag" title="易腐品，剩 ${mins} 分鐘">⏰${mins}m</span>`;
           }
         }
-        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}<span class="bag-qty">×${s.qty}</span>${decayTag}${placeBtn}${useBtn}${gearTag}</div>`;
+        // 採集材料的「能做什麼」用途標籤（ROADMAP 549）：消耗品有自己的 🧪 說明、裝備有 ⚔️ 說明，
+        // 唯獨採來的原料（木材／石頭／乙太／各式碎片…）過去在背包只有名字＋數量，玩家看著一堆料卻
+        // 不知道能拿來合成什麼。這裡反查配方表，就地標出它能做出的前幾樣東西，把「採集→合成」的
+        // 目標接起來。只標「本身不是消耗品也不是裝備」的純素材（避免跟既有說明重複）；查無用途則不標。
+        let craftTag = "";
+        if (!CONSUMABLE.has(s.item) && !GEAR_DESC[s.item]) {
+          const uses = materialUses(s.item, CRAFT_RECIPES).map((o) => ITEM_NAME[o] || o);
+          if (uses.length) {
+            const shown = uses.slice(0, 2).join("・");
+            const more = uses.length > 2 ? ` +${uses.length - 2}` : "";
+            const full = uses.join("、");
+            craftTag = `<span class="bag-craft-use" title="可合成：${full}" aria-label="可合成：${full}">🔨 ${shown}${more}</span>`;
+          }
+        }
+        return `<div class="bag-row"><span class="bag-ico">${icon}</span>${name}${craftTag}<span class="bag-qty">×${s.qty}</span>${decayTag}${placeBtn}${useBtn}${gearTag}</div>`;
       })
       .join("");
     // 綁定 bag-place-btn 點擊事件（動態 HTML，每次重繪後重綁）。
