@@ -2,32 +2,71 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
-  <!-- 手機友善：禁止使用者縮放、滿版，OrbitControls 自己處理觸控縮放/旋轉 -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>ButFun · 3D Spike（低多邊形即時世界）</title>
+  <!-- 手機友善：滿版、禁縮放（搖桿／跳鈕／拖曳轉鏡頭自己處理觸控） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>ButFun · 3D 世界（可操控真實世界客戶端）</title>
   <style>
     /* 沒風格的風格：純色背景、零美術資產，實體全在 main.js 程式生成 */
-    html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1117; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1117; touch-action: none; }
     #app { position: fixed; inset: 0; }
-    /* 連線/錯誤狀態浮層——連不上 WS 或沒資料時要看得到字，不白屏 */
-    #status {
+
+    /* HUD：線上人數 + 自己名字 + 操作提示，半透明不擋視線 */
+    #hud {
       position: fixed; left: 12px; top: 12px; z-index: 10;
       font: 13px/1.5 system-ui, -apple-system, "Noto Sans CJK TC", sans-serif;
-      color: #e6edf3; background: rgba(13,17,23,0.72);
-      padding: 8px 12px; border-radius: 8px; max-width: 70vw;
+      color: #e6edf3; background: rgba(13,17,23,0.62);
+      padding: 8px 12px; border-radius: 10px; max-width: 72vw;
       pointer-events: none; white-space: pre-line;
+    }
+    #hud b { color: #ffd54a; }
+    /* 狀態浮層——連不上 WS / 找不到自己時要看得到字，不白屏 */
+    #status {
+      position: fixed; left: 12px; bottom: 12px; z-index: 10;
+      font: 12px/1.5 system-ui, sans-serif; color: #8b949e;
+      background: rgba(13,17,23,0.6); padding: 6px 10px; border-radius: 8px;
+      pointer-events: none; white-space: pre-line; max-width: 72vw;
     }
     #status.err { color: #ffb4b4; }
     #hint {
-      position: fixed; right: 12px; bottom: 12px; z-index: 10;
-      font: 12px/1.4 system-ui, sans-serif; color: #8b949e;
-      background: rgba(13,17,23,0.6); padding: 6px 10px; border-radius: 8px;
-      pointer-events: none;
+      position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 10;
+      font: 12px/1.4 system-ui, sans-serif; color: #9aa4b2;
+      background: rgba(13,17,23,0.5); padding: 6px 12px; border-radius: 8px;
+      pointer-events: none; text-align: center; max-width: 92vw;
     }
+    /* 錯誤浮層：任何例外不白屏，顯示紅字 */
+    #err {
+      position: fixed; inset: 0; z-index: 50; display: none;
+      align-items: center; justify-content: center;
+      font: 14px/1.6 system-ui, sans-serif; color: #ffb4b4;
+      background: rgba(13,17,23,0.92); padding: 24px; text-align: center;
+      white-space: pre-wrap;
+    }
+
+    /* ---- 觸控控制（手機才顯示，桌機用滑鼠鍵盤）---- */
+    #touch { position: fixed; inset: 0; z-index: 20; display: none; pointer-events: none; }
+    /* 左下虛擬搖桿底座 */
+    #joy {
+      position: absolute; left: 22px; bottom: 28px; width: 120px; height: 120px;
+      border-radius: 50%; background: rgba(255,255,255,0.08);
+      border: 2px solid rgba(255,255,255,0.18); pointer-events: auto; touch-action: none;
+    }
+    #joyNub {
+      position: absolute; left: 35px; top: 35px; width: 50px; height: 50px;
+      border-radius: 50%; background: rgba(255,255,255,0.35); pointer-events: none;
+    }
+    /* 右下跳躍鈕（純前端視覺跳，不影響 2D 玩法） */
+    #jump {
+      position: absolute; right: 24px; bottom: 36px; width: 92px; height: 92px;
+      border-radius: 50%; background: rgba(255,213,74,0.22);
+      border: 2px solid rgba(255,213,74,0.5); color: #ffd54a;
+      font: bold 18px/92px system-ui, sans-serif; text-align: center;
+      pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+    }
+    #jump:active { background: rgba(255,213,74,0.4); }
   </style>
   <!--
-    Three.js 走 CDN importmap（spike 階段可接受；之後要穩定上線可改 vendored 進 web/wasm 同層）。
-    版本固定在 0.160.0，addons（OrbitControls / CapsuleGeometry 等）走同版 jsm。
+    Three.js 走 CDN importmap（比照原 /3d/ 與 /play3d/）。
+    版本固定在 0.160.0，addons（CapsuleGeometry 等）走同版 jsm。
   -->
   <script type="importmap">
   {
@@ -40,9 +79,18 @@
 </head>
 <body>
   <div id="app"></div>
+  <div id="hud">載入中…</div>
   <div id="status">連線中…</div>
-  <div id="hint">拖曳旋轉 · 滾輪/雙指縮放 · 右鍵/雙指平移</div>
-  <!-- 相對於 /3d/ 載入；頁面在 /3d/ 或 /3d/index.html 都解析成 /3d/main.js -->
-  <script type="module" src="main.js?v=1"></script>
+  <div id="hint">WASD／搖桿 移動 · 拖曳轉鏡頭 · 空白鍵／跳鈕 跳</div>
+  <div id="err"></div>
+
+  <!-- 觸控控制層（main.js 偵測到觸控裝置才顯示） -->
+  <div id="touch">
+    <div id="joy"><div id="joyNub"></div></div>
+    <div id="jump">跳</div>
+  </div>
+
+  <!-- 相對於 /3d/ 載入；?v 供 cache-bust -->
+  <script type="module" src="main.js?v=2"></script>
 </body>
 </html>
