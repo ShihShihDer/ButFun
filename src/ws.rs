@@ -78,7 +78,13 @@ pub async fn ws_handler(
         .auth
         .as_ref()
         .and_then(|cfg| user_id_from_cookies(&headers, &cfg.session_secret));
-    ws.on_upgrade(move |socket| handle_socket(socket, app, authed_uid))
+    // 安全硬化：把每則訊息/分片上限從 axum 預設（64 MiB/16 MiB）收到 64 KiB。
+    // 任何合法 ClientMsg（含聊天、建議、星座連線等）都遠小於此；超大 frame 在解析前即被拒、
+    // 連線關閉，堵住「訪客免驗證即可串送數十 MiB 文字逼出大量配置＋JSON 解析 CPU」的放大 DoS。
+    const WS_MAX_MSG_BYTES: usize = 64 * 1024;
+    ws.max_message_size(WS_MAX_MSG_BYTES)
+        .max_frame_size(WS_MAX_MSG_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, app, authed_uid))
 }
 
 async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid>) {
@@ -5645,6 +5651,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 // ── 收尾掌勺（ROADMAP 349）──────────────────────────────────────────────
                 Ok(ClientMsg::SubmitCook { steps }) => {
+                    // 安全硬化：一道菜的步序至多寥寥數步，遠低於此上限即拒。
+                    if steps.len() > 256 {
+                        continue;
+                    }
                     // 以開灶時存下的標準步序評級，走既有 recipe.craft 扣料產菜、依評級回饋工匠熟練度。
                     // 沒在煮則靜默忽略。同一把 players 寫鎖、純記憶體；廣播出鎖後送（守 prod-deadlock）。
                     use crate::cooking_steps::{score_cook, CookStep};
@@ -5791,6 +5801,11 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 // ── 觀星連星座：玩家送出連好的邊、由伺服器驗證（ROADMAP 347）──────────
                 Ok(ClientMsg::TraceConstellation { edges }) => {
+                    // 安全硬化：星座至多數十條邊，遠低於此上限即拒，避免巨量 edges 觸發
+                    // sort/dedup 的 O(n log n)（與 64 KiB 訊息上限互為防線）。
+                    if edges.len() > 256 {
+                        continue;
+                    }
                     // 以**伺服器重算的今夜星座**為準驗證（前端送的星座不算數，防作弊）；
                     // 連對且首次即記入星座錄＋給乙太與探索熟練度。全程同一把 players 寫鎖、純記憶體，
                     // 廣播在出鎖後才送（守 prod-deadlock 鐵律：鎖內不送廣播）。
@@ -5903,6 +5918,10 @@ async fn handle_socket(socket: WebSocket, app: AppState, authed_uid: Option<Uuid
 
                 // ── 古代啟靈：玩家送出符文序列（ROADMAP 384）────────────────────────────
                 Ok(ClientMsg::SolveInscription { inscription_key, sequence }) => {
+                    // 安全硬化：秘文序列至多寥寥數符，遠低於此上限即拒。
+                    if sequence.len() > 256 {
+                        continue;
+                    }
                     use crate::ancient_inscription as ai;
                     // 驗證序列是否正確（伺服器以靜態目錄為準，防作弊）。
                     let ins = match ai::by_key(&inscription_key) {
